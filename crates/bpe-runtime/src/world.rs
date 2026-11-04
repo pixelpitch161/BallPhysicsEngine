@@ -15,7 +15,7 @@ use crate::events::HASH_OFFSET;
 use crate::pairs::{Pairs, Support, collide_pairs, pop};
 use crate::plugins::{Limits, ModuleSim, SimCx, Sims, ThingState};
 use crate::pose::Pose;
-use crate::{Bodies, Event, EventKind, History, Log, Party, Wall, keep_inside, reflect};
+use crate::{Bodies, Event, EventKind, History, Log, Party, Wall, keep_clear_from, reflect};
 
 /// The furthest a ball may move in one substep without skipping a wall.
 pub const SAFE_MOVE: f32 = 16.0;
@@ -76,6 +76,9 @@ pub struct World {
     pub(crate) order: Vec<ThingId>,
     /// Scratch space for the ball-to-ball stage.
     pairs: Pairs,
+    /// Every wall's outline as the step began, before keys and scripts moved it: which side of
+    /// a wall a ball is on is judged against it, so a wall that jumps keeps its balls.
+    walls_before: BTreeMap<ThingId, crate::Outline>,
     /// Every built thing's parent, how it hangs off it and its own transform.
     attach: BTreeMap<ThingId, (ThingId, Attach, Transform)>,
     /// Per thing and slot, the module kind and its prepared state (Motion and Bounce).
@@ -130,6 +133,7 @@ impl World {
             kinds: BTreeMap::new(),
             order: Vec::new(),
             pairs: Pairs::default(),
+            walls_before: BTreeMap::new(),
             attach: BTreeMap::new(),
             modules: BTreeMap::new(),
             animated: None,
@@ -329,6 +333,8 @@ impl World {
     /// One step: every stage, in order.
     pub fn step(&mut self, sims: &Sims, log: &mut Log) {
         self.step += 1;
+        self.walls_before.clear();
+        self.walls_before.extend(self.walls.iter().map(|(id, w)| (*id, w.outline.clone())));
         self.animate(sims);
         let limits = self.limits();
         let dt = self.dt();
@@ -429,7 +435,7 @@ impl World {
     /// Collide and Respond, then the Hit events: first the walls around the balls, then the
     /// balls against each other. What each ball touched holds it up in the pair solve.
     fn collide(&mut self, sims: &Sims, dt: f32, limits: &Limits, log: &mut Log) {
-        let World { step, steps_per_second, bodies, walls, modules, kinds, tags, pairs, seed, .. } = self;
+        let World { step, steps_per_second, bodies, walls, walls_before, modules, kinds, tags, pairs, seed, .. } = self;
         let step = *step;
         let seed = *seed;
         let time = step as f32 / *steps_per_second as f32;
@@ -440,6 +446,7 @@ impl World {
             let own = mover_bounce.and_then(|s| Some((sims.module(&s.kind)?, s.state.as_ref())));
             let cx = SimCx { thing: *mover, time, seed };
             for (wall_id, wall) in walls.iter() {
+                let before = walls_before.get(wall_id).unwrap_or(&wall.outline);
                 let wall_bounce = modules.get(wall_id).and_then(|m| m.get(&SlotId::Bounce));
                 let decider = decide(sims, wall_bounce, mover_bounce);
                 let special = is_special(own, &matcher, *mover, *wall_id);
@@ -449,7 +456,11 @@ impl World {
                     }
                     let velocity = bodies.velocity[i];
                     let radius = bodies.radius[i];
-                    let Some(contact) = keep_inside(&mut bodies.position[i], velocity, radius, wall) else { continue };
+                    let previous = bodies.previous[i];
+                    let at = &mut bodies.position[i];
+                    let Some(contact) = keep_clear_from(at, previous, before, velocity, radius, wall) else {
+                        continue;
+                    };
                     supports.push(Support {
                         thing: *mover,
                         item: i as u32,
@@ -670,6 +681,26 @@ impl Hasher {
                 for [x, y] in ps {
                     self.f32(*x);
                     self.f32(*y);
+                }
+            }
+            Value::Path(p) => {
+                self.bytes(&[10]);
+                self.bytes(&(p.points.len() as u64).to_le_bytes());
+                for [x, y] in &p.points {
+                    self.f32(*x);
+                    self.f32(*y);
+                }
+                for b in &p.bends {
+                    match b {
+                        None => self.bytes(&[0]),
+                        Some(hs) => {
+                            self.bytes(&[1]);
+                            for [x, y] in hs {
+                                self.f32(*x);
+                                self.f32(*y);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -924,8 +955,43 @@ mod tests {
     }
 
     #[test]
+    fn a_fast_ball_never_crosses_a_thin_band_from_either_side() {
+        for start_outside in [false, true] {
+            let (mut scene, _, sims) = dots_in_ring(1);
+            scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("gravity", Value::Vec2([0.0, 0.0]));
+            scene.things.get_mut(&WALL).unwrap().params.set("radius", Value::Number(100.0));
+            let dots = scene.things.get_mut(&DOTS).unwrap();
+            let velocity = if start_outside { [-6000.0, 1300.0] } else { [6000.0, 2500.0] };
+            dots.params.set("velocity", Value::Vec2(velocity));
+            if start_outside {
+                dots.transform.position = Vec2::new(300.0, 0.0);
+            }
+            let resolved = resolve(&scene, &reg());
+            let mut w = World::build(&scene, &resolved, &sims);
+            let mut log = Log::default();
+            let mut hits = 0;
+            for k in 1..=480 {
+                w.advance_to(k as f64 / 240.0, &sims, &mut log);
+                let p = w.bodies[&DOTS].position[0];
+                // The ring is 2 px thick at radius 100 and the dot's radius is 5.
+                if start_outside {
+                    assert!(p.length() >= 106.0 - 1e-2, "step {k}: the dot got in, at {p}");
+                } else {
+                    assert!(p.length() <= 94.0 + 1e-2, "step {k}: the dot got out, at {p}");
+                }
+                hits = log.events().len();
+            }
+            assert!(hits > 0, "it hit the band (outside {start_outside})");
+        }
+    }
+
+    #[test]
     fn pair_collisions_are_deterministic_in_a_pile() {
-        let (scene, resolved, sims) = dots_pile(400);
+        let (mut scene, _, sims) = dots_pile(400);
+        // Wide enough that the whole block of dots starts inside it: a dot that starts outside a
+        // hollow wall stays outside.
+        scene.things.get_mut(&WALL).unwrap().params.set("radius", Value::Number(175.0));
+        let resolved = resolve(&scene, &reg());
         let run = || {
             let mut w = World::build(&scene, &resolved, &sims);
             let mut log = Log::default();
@@ -937,7 +1003,7 @@ mod tests {
         assert_eq!(l1.hash(), l2.hash());
         assert_eq!(w1.bodies[&DOTS].position, w2.bodies[&DOTS].position);
         assert!(l1.events().iter().any(|e| e.b.is_some_and(|b| b.thing == DOTS)), "balls hit each other");
-        assert!(w1.bodies[&DOTS].position.iter().all(|p| p.is_finite() && p.length() < 160.0));
+        assert!(w1.bodies[&DOTS].position.iter().all(|p| p.is_finite() && p.length() < 175.0));
         assert!(l1.events().windows(2).all(|p| p[0].step <= p[1].step));
     }
 

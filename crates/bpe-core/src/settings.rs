@@ -284,6 +284,18 @@ impl SettingValue for Vec<[f32; 2]> {
     }
 }
 
+impl SettingValue for crate::ShapePath {
+    fn value_type() -> ValueType {
+        ValueType::Path
+    }
+    fn to_value(&self) -> Value {
+        Value::Path(self.clone())
+    }
+    fn from_value(v: &Value) -> Option<Self> {
+        if let Value::Path(x) = v { Some(x.clone()) } else { None }
+    }
+}
+
 impl SettingValue for Target {
     fn value_type() -> ValueType {
         ValueType::Target
@@ -362,6 +374,7 @@ fn is_on(v: &Value) -> bool {
         Value::Text(t) => !t.trim().is_empty(),
         Value::Gradient(g) => g.stops.len() > 1,
         Value::Points(ps) => !ps.is_empty(),
+        Value::Path(p) => !p.is_empty(),
         _ => true,
     }
 }

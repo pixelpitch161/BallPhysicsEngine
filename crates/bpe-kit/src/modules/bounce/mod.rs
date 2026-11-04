@@ -12,7 +12,7 @@ pub struct BasicBounce {
     #[setting(
         label = "Bounciness",
         group = "Basics",
-        when = "thing!=arena or takes_over",
+        when = "thing!=shape or takes_over",
         range(0, 1.5),
         simple,
         keyframe,
@@ -23,7 +23,7 @@ pub struct BasicBounce {
     #[setting(
         label = "Speed gain",
         group = "Basics",
-        when = "thing!=arena or takes_over",
+        when = "thing!=shape or takes_over",
         range(0.5, 1.5),
         simple,
         keyframe
@@ -33,7 +33,7 @@ pub struct BasicBounce {
     #[setting(
         label = "Top speed",
         group = "Basics",
-        when = "thing!=arena or takes_over",
+        when = "thing!=shape or takes_over",
         range(50, 20000),
         unit = "px/s",
         simple,
@@ -41,49 +41,49 @@ pub struct BasicBounce {
     )]
     pub top_speed: f32,
     /// How much sideways speed rubs off when the ball touches walls or other balls.
-    #[setting(label = "Friction", group = "Basics", when = "thing!=arena or takes_over", range(0, 1), keyframe)]
+    #[setting(label = "Friction", group = "Basics", when = "thing!=shape or takes_over", range(0, 1), keyframe)]
     pub friction: f32,
     /// Decides every bounce against this thing, even when the other thing is the one moving.
-    #[setting(label = "Takes over", group = "Basics", when = "thing=arena")]
+    #[setting(label = "Takes over", group = "Basics", when = "thing=shape")]
     pub takes_over: bool,
     /// How much bigger the ball gets on every hit. Negative shrinks it.
-    #[setting(label = "Grow per hit", group = "Growing", when = "thing!=arena or takes_over", range(-20, 20), unit = "px", simple, keyframe)]
+    #[setting(label = "Grow per hit", group = "Growing", when = "thing!=shape or takes_over", range(-20, 20), unit = "px", simple, keyframe)]
     pub grow: f32,
     /// The ball never grows past this.
     #[setting(
         label = "Biggest size",
         group = "Growing",
-        when = "thing!=arena or takes_over",
+        when = "thing!=shape or takes_over",
         range(0.5, 400),
         unit = "px"
     )]
     pub max_size: f32,
     /// The ball disappears after this many hits. 0 never pops it.
-    #[setting(label = "Pops after", group = "Growing", when = "thing!=arena", range(0, 1000), unit = "hits")]
+    #[setting(label = "Pops after", group = "Growing", when = "thing!=shape", range(0, 1000), unit = "hits")]
     pub pops_after: u32,
     /// These balls bump into other balls instead of passing through them.
-    #[setting(label = "Hits other balls", group = "Other balls", when = "thing!=arena", simple)]
+    #[setting(label = "Hits other balls", group = "Other balls", when = "thing!=shape", simple)]
     pub hit_balls: bool,
     /// Only balls on these things are bumped into; both sides have to agree.
-    #[setting(label = "Which balls", when = "thing!=arena and hit_balls", group = "Other balls")]
+    #[setting(label = "Which balls", when = "thing!=shape and hit_balls", group = "Other balls")]
     pub balls_to_hit: Target,
     /// Use the settings below when hitting the things picked here.
-    #[setting(label = "Different against some things", when = "thing!=arena", group = "Against some things")]
+    #[setting(label = "Different against some things", when = "thing!=shape", group = "Against some things")]
     pub special: bool,
     /// The things the different bounce applies to.
-    #[setting(label = "Those things", when = "thing!=arena and special", group = "Against some things")]
+    #[setting(label = "Those things", when = "thing!=shape and special", group = "Against some things")]
     pub special_target: Target,
     /// How much speed the ball keeps against those things.
     #[setting(
         label = "Bounciness against them",
-        when = "thing!=arena and special",
+        when = "thing!=shape and special",
         range(0, 1.5),
         group = "Against some things",
         keyframe
     )]
     pub special_bounciness: f32,
     /// How much the ball grows on each hit against those things.
-    #[setting(label = "Grow against them", when = "thing!=arena and special", range(-20, 20), unit = "px", group = "Against some things", keyframe)]
+    #[setting(label = "Grow against them", when = "thing!=shape and special", range(-20, 20), unit = "px", group = "Against some things", keyframe)]
     pub special_grow: f32,
 }
 

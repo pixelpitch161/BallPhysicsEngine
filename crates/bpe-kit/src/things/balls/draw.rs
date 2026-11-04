@@ -313,7 +313,7 @@ mod tests {
         let mut frame = Frame::default();
         build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
         assert!(frame.layered.is_empty() && frame.look_layers.is_empty(), "no look, nothing to draw them with");
-        assert_eq!(frame.shapes.len(), 1, "the arena still draws");
+        assert_eq!(frame.paths.len(), 1, "the shape still draws");
         assert_eq!((frame.width, frame.height), (1080, 1920));
     }
 
@@ -459,7 +459,7 @@ mod tests {
         let world = World::build(&scene, &resolved, &kit.sims);
         let mut frame = Frame::default();
         build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
-        assert!(frame.layered.is_empty() && frame.shapes.is_empty());
+        assert!(frame.layered.is_empty() && frame.paths.is_empty());
     }
 
     #[test]
@@ -672,10 +672,8 @@ mod tests {
         set_layer(&mut scene, BALL, BODY, "colours", Value::Gradient(bpe_core::Gradient::even(&[RED, BLUE])));
         set_layer(&mut scene, BALL, BODY, "follow", Value::Choice("step".into()));
         set_layer(&mut scene, BALL, BODY, "take_hit_colour", Value::Bool(true));
-        // Paint the arena's own look green.
-        let green = bpe_core::Color::rgb(0, 255, 0);
-        let arena_look = &mut scene.card_mut(ThingId(1), SlotId::Look).unwrap().params;
-        arena_look.set("colours", Value::Gradient(bpe_core::Gradient::solid(green)));
+        // The shape is plain white.
+        let white = bpe_core::Color::WHITE;
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         let mut playback = bpe_runtime::Playback::new(&scene, &resolved, kit.sims.clone());
         let mut frame = Frame::default();
@@ -684,12 +682,12 @@ mod tests {
         playback.seek(4.0);
         assert!(playback.world().bodies[&BALL].hits[0] > 0, "the ball hit the wall");
         build_frame(&scene, &resolved, playback.world(), playback.log(), 4.0, &kit.draws, &mut frame);
-        assert_eq!(frame.layered[0].body, green.to_linear());
+        assert_eq!(frame.layered[0].body, white.to_linear());
         // Without taking it, the ball steps through its own colours.
         set_layer(&mut scene, BALL, BODY, "take_hit_colour", Value::Bool(false));
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         build_frame(&scene, &resolved, playback.world(), playback.log(), 4.0, &kit.draws, &mut frame);
-        assert_ne!(frame.layered[0].body, green.to_linear());
+        assert_ne!(frame.layered[0].body, white.to_linear());
     }
 
     #[test]

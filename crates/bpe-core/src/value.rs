@@ -1,6 +1,6 @@
 //! Setting values, their types, and sparse maps of them.
 
-use crate::{Color, Gradient, Target};
+use crate::{Color, Gradient, ShapePath, Target};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -22,6 +22,8 @@ pub enum Value {
     Strokes(Strokes),
     /// A list of points, in pixels (a custom group's ball places).
     Points(Vec<[f32; 2]>),
+    /// A Shape's moulded outline, in shape units. Never keyframed.
+    Path(ShapePath),
 }
 
 /// What kind of value a setting holds.
@@ -40,6 +42,8 @@ pub enum ValueType {
     Strokes,
     /// A list of points; never keyframed.
     Points,
+    /// A Shape's moulded outline; never keyframed.
+    Path,
 }
 
 impl ValueType {
@@ -58,6 +62,7 @@ impl ValueType {
             (ValueType::Choice(names), Value::Choice(n)) => names.contains(&n.as_str()),
             (ValueType::Strokes, Value::Strokes(s)) => s.is_finite(),
             (ValueType::Points, Value::Points(ps)) => ps.iter().flatten().all(|x| x.is_finite()),
+            (ValueType::Path, Value::Path(p)) => p.is_valid(),
             _ => false,
         }
     }
@@ -212,6 +217,23 @@ mod tests {
         p.set("none", Value::Points(Vec::new()));
         let text = ron::to_string(&p).unwrap();
         assert_eq!(ron::from_str::<Params>(&text).unwrap(), p);
+    }
+
+    #[test]
+    fn paths_round_trip_and_bad_ones_are_refused() {
+        let mut path = ShapePath::even(5);
+        path.create_curve(2);
+        let v = Value::Path(path);
+        let text = ron::to_string(&v).unwrap();
+        assert_eq!(ron::from_str::<Value>(&text).unwrap(), v);
+        assert!(ValueType::Path.accepts(&v));
+        assert!(ValueType::Path.accepts(&Value::Path(ShapePath::default())));
+        let two = ShapePath { points: vec![[0.0, 0.0], [1.0, 0.0]], bends: vec![None; 2] };
+        assert!(!ValueType::Path.accepts(&Value::Path(two)));
+        let mut nan = ShapePath::even(4);
+        nan.points[1][1] = f32::NAN;
+        assert!(!ValueType::Path.accepts(&Value::Path(nan)));
+        assert!(!ValueType::Path.accepts(&Value::Points(Vec::new())));
     }
 
     #[test]

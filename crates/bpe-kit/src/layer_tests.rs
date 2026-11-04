@@ -5,7 +5,6 @@ use bpe_gfx::{Frame, build_frame};
 
 use crate::{Kit, kit, new_scene};
 
-const ARENA: ThingId = ThingId(1);
 const BALL: ThingId = ThingId(2);
 
 /// The module filling `slot` on `thing`.
@@ -24,6 +23,13 @@ fn set_blend(scene: &mut Scene, module: (bpe_core::ThingId, bpe_core::SlotId), b
     let params = &mut scene.card_mut(module.0, module.1).unwrap().params;
     params.set("blend", Value::Choice(blend.into()));
     params.set("blend_amount", Value::Number(amount));
+}
+
+/// A second ball beside the first, with a layered look of its own.
+fn second_ball(scene: &mut Scene, kit: &Kit) -> ThingId {
+    let id = crate::add_thing(scene, &kit.registry, "balls", ThingId::ROOT).unwrap();
+    scene.things.get_mut(&id).unwrap().transform.position = glam::Vec2::new(150.0, -200.0);
+    id
 }
 
 /// `scene` drawn at `time` seconds into its run.
@@ -55,7 +61,7 @@ fn a_multiply_look_puts_the_ball_in_a_layer() {
     let layer = &frame.layers[0];
     assert_eq!((layer.blend, layer.amount), (Blend::Multiply, 1.0));
     assert_eq!(layer.frame.layered.len(), 1);
-    assert!(!frame.shapes.is_empty(), "the arena keeps its plain look");
+    assert!(!frame.paths.is_empty(), "the shape keeps its plain look");
 }
 
 #[test]
@@ -112,19 +118,21 @@ fn trail_add_stays_in_the_main_frame_but_trail_screen_uses_a_layer() {
 #[test]
 fn two_things_with_the_same_mode_and_amount_share_one_layer() {
     let (mut scene, kit) = ball_blended("difference", 1.0);
-    let arena_look = module_of(&scene, &kit, ARENA, SlotId::Look);
-    set_blend(&mut scene, arena_look, "difference", 1.0);
+    let other = second_ball(&mut scene, &kit);
+    let other_look = module_of(&scene, &kit, other, SlotId::Look);
+    set_blend(&mut scene, other_look, "difference", 1.0);
     let frame = frame_at(&scene, &kit, 0.0);
     assert_eq!(frame.layers.len(), 1);
     let layer = &frame.layers[0].frame;
-    assert!(!layer.shapes.is_empty() && layer.layered.len() == 1, "the arena and the ball");
-    assert!(frame.shapes.is_empty() && frame.layered.is_empty());
+    assert_eq!(layer.layered.len(), 2, "both balls");
+    assert!(frame.layered.is_empty());
+    assert_eq!(frame.paths.len(), 1, "the shape stays in the main frame");
 
     let look = module_of(&scene, &kit, BALL, SlotId::Look);
     set_blend(&mut scene, look, "difference", 0.5);
     let frame = frame_at(&scene, &kit, 0.0);
     let kept: Vec<(Blend, f32)> = frame.layers.iter().map(|l| (l.blend, l.amount)).collect();
-    assert_eq!(kept, [(Blend::Difference, 1.0), (Blend::Difference, 0.5)], "the arena drew first");
+    assert_eq!(kept, [(Blend::Difference, 0.5), (Blend::Difference, 1.0)], "the first ball drew first");
 }
 
 #[test]
@@ -132,8 +140,8 @@ fn the_scene_itself_never_goes_into_a_layer() {
     let kit = kit();
     let mut scene = new_scene(&kit.registry);
     let plain = frame_at(&scene, &kit, 0.0);
-    let arena_look = module_of(&scene, &kit, ARENA, SlotId::Look);
-    set_blend(&mut scene, arena_look, "multiply", 0.5);
+    let ball_look = module_of(&scene, &kit, BALL, SlotId::Look);
+    set_blend(&mut scene, ball_look, "multiply", 0.5);
     let frame = frame_at(&scene, &kit, 0.0);
     assert_eq!((frame.width, frame.height, frame.bloom), (plain.width, plain.height, plain.bloom));
     assert_eq!(frame.background, plain.background);
@@ -213,17 +221,18 @@ fn a_layered_ball_still_hands_its_hits_to_the_frame() {
 #[test]
 fn a_look_blending_with_each_other_gets_its_own_layer() {
     let (mut scene, kit) = ball_blended("screen", 1.0);
-    let arena_look = module_of(&scene, &kit, ARENA, SlotId::Look);
-    set_blend(&mut scene, arena_look, "screen", 1.0);
+    let other = second_ball(&mut scene, &kit);
+    let other_look = module_of(&scene, &kit, other, SlotId::Look);
+    set_blend(&mut scene, other_look, "screen", 1.0);
     let look = module_of(&scene, &kit, BALL, SlotId::Look);
     crate::testing::set_layer(&mut scene, BALL, crate::modules::look::layers::BLEND, "blend_each", Value::Bool(true));
     let frame = frame_at(&scene, &kit, 0.0);
     let kept: Vec<(Blend, f32, bool)> = frame.layers.iter().map(|l| (l.blend, l.amount, l.each)).collect();
-    assert_eq!(kept, [(Blend::Screen, 1.0, false), (Blend::Screen, 1.0, true)], "the arena, then the ball");
-    assert_eq!(frame.layers[1].frame.layered.len(), 1);
+    assert_eq!(kept, [(Blend::Screen, 1.0, true), (Blend::Screen, 1.0, false)], "the first ball, then the other");
+    assert_eq!(frame.layers[0].frame.layered.len(), 1);
 
     // Overlay cannot blend with itself: the switch is ignored and the two share again.
-    set_blend(&mut scene, arena_look, "overlay", 1.0);
+    set_blend(&mut scene, other_look, "overlay", 1.0);
     set_blend(&mut scene, look, "overlay", 1.0);
     let frame = frame_at(&scene, &kit, 0.0);
     let kept: Vec<(Blend, bool)> = frame.layers.iter().map(|l| (l.blend, l.each)).collect();

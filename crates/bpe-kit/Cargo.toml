@@ -16,7 +16,7 @@ anyhow.workspace = true
 skrifa = "0.44"
 
 [features]
-# The test scenes (and the arena-plus-ball `new_scene`): only tests turn this on, so the program ships
+# The test scenes (and the shape-plus-ball `new_scene`): only tests turn this on, so the program ships
 # with no built-in scenes.
 test-scenes = []
 

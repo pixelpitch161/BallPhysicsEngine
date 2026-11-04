@@ -8,7 +8,7 @@ use bpe_core::{EditError, Registry, Scene, SlotId, ThingId};
 fn starter_kind(thing: &str, slot: SlotId) -> Option<&'static str> {
     Some(match slot {
         SlotId::Look if thing == "balls" => crate::modules::look::layers::CARD,
-        SlotId::Look => "look.basic",
+        SlotId::Look if thing == crate::things::shape::KIND => crate::modules::look::shape::CARD,
         SlotId::Motion => "motion.basic",
         SlotId::Bounce => "bounce.basic",
         _ => return None,
@@ -58,7 +58,7 @@ mod tests {
                 "balls",
                 &[(SlotId::Look, "look.layers"), (SlotId::Motion, "motion.basic"), (SlotId::Bounce, "bounce.basic")],
             ),
-            ("arena", &[(SlotId::Look, "look.basic"), (SlotId::Bounce, "bounce.basic")]),
+            ("shape", &[(SlotId::Look, "look.shape"), (SlotId::Bounce, "bounce.basic")]),
         ];
         for &(kind, slots) in table {
             let mut scene = Scene::empty(&reg);
@@ -89,6 +89,27 @@ mod tests {
         assert_eq!(body, BodyLayer::default());
         assert_eq!(body.ball_shape, crate::BallShape::Circle);
         assert_eq!(body.fill.colours, bpe_core::Gradient::solid(bpe_core::Color::WHITE));
+    }
+
+    #[test]
+    fn a_new_shape_is_a_plain_white_hollow_circle_with_one_body_layer() {
+        use crate::{ShapeFill, ShapeSettings, ShapeStart};
+        use bpe_core::Settings;
+        let reg = registry();
+        let mut scene = Scene::empty(&reg);
+        let a = add_thing(&mut scene, &reg, "shape", ThingId::ROOT).unwrap();
+        let card = &scene.things[&a].slots[&SlotId::Look];
+        let kinds: Vec<&str> = card.layers.iter().map(|l| l.kind.as_str()).collect();
+        assert_eq!(kinds, [crate::modules::look::shape::BODY]);
+        assert_eq!(card.layers[0].name, "Body");
+        let resolved = resolve(&scene, &reg);
+        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+        let s = ShapeSettings::from_params(&resolved.things[&a].params);
+        assert_eq!(
+            (s.start, s.fill, s.size, s.thickness, s.spin, s.shrink),
+            (ShapeStart::Circle, ShapeFill::Hollow, 400.0, 8.0, 0.0, 0.0)
+        );
+        assert_eq!(scene.things[&a].colour, Some(bpe_core::TrackColour::Orange));
     }
 
     #[test]

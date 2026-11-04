@@ -243,7 +243,7 @@ impl ThingSim for BallsSim {
 
 #[cfg(test)]
 mod tests {
-    use crate::testing::{ARENA, BALLS, scene_with_balls};
+    use crate::testing::{BALLS, SHAPE, scene_with_balls};
     use crate::{kit, new_scene};
     use bpe_core::{Address, Attach, Value, resolve};
     use bpe_runtime::{Log, World};
@@ -254,11 +254,11 @@ mod tests {
     fn balls_riding_a_spinning_arena_start_with_its_rim_speed() {
         let kit = kit();
         let mut scene = new_scene(&kit.registry);
-        scene.things.get_mut(&ARENA).unwrap().params.set("spin", Value::Number(90.0));
+        scene.things.get_mut(&SHAPE).unwrap().params.set("spin", Value::Number(90.0));
         scene
             .set_parent(
                 BALLS,
-                ARENA,
+                SHAPE,
                 Attach::Ride { offset: Vec2::new(0.0, -300.0), turn_with_parent: true, item: None },
             )
             .unwrap();

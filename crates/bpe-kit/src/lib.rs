@@ -31,9 +31,6 @@ pub use modules::shader::draw::EffectDraw;
 pub use modules::trail::draw::StreakDraw;
 pub use modules::trail::{StreakTrail, StreakTrailKind, TrailSource};
 pub use starters::{add_thing, fill_slot};
-pub use things::arena::draw::ArenaDraw;
-pub use things::arena::sim::{ArenaSim, ArenaState};
-pub use things::arena::{ArenaKind, ArenaSettings, ArenaShape};
 pub use things::balls::draw::BallsDraw;
 pub use things::balls::sim::{BallsSim, BallsState};
 pub use things::balls::{BallsKind, BallsSettings, GroupShape, Launch, Release, ReleaseOrder};
@@ -44,12 +41,15 @@ pub use things::scene::ROOT_CARDS;
 pub use things::scene::draw::SceneDraw;
 pub use things::scene::sim::SceneSim;
 pub use things::scene::{SceneKind, SceneSettings};
+pub use things::shape::draw::ShapeDraw;
+pub use things::shape::sim::{ShapeSim, ShapeState};
+pub use things::shape::{BODY_HEADINGS, ShapeFill, ShapeKind, ShapeSettings, ShapeStart};
 
 /// Every kind's simulation part, for the runtime.
 pub fn sims() -> Sims {
     let mut s = Sims::default();
     s.add_thing(SceneSim);
-    s.add_thing(ArenaSim);
+    s.add_thing(ShapeSim);
     s.add_thing(BallsSim);
     s.add_thing(FolderSim);
     s.add_thing(CameraSim);
@@ -62,7 +62,7 @@ pub fn sims() -> Sims {
 pub fn draws() -> Draws {
     let mut d = Draws::default();
     d.add(SceneDraw);
-    d.add(ArenaDraw);
+    d.add(ShapeDraw);
     d.add(BallsDraw);
     for b in &bpe_gfx::effects::BUILTINS {
         d.add_module(EffectDraw(b));
@@ -92,7 +92,7 @@ pub fn resolve_scene(scene: &Scene, reg: &Registry) -> Resolved {
 pub fn registry() -> Registry {
     let mut r = Registry::new();
     r.add_thing(SceneKind);
-    r.add_thing(ArenaKind);
+    r.add_thing(ShapeKind);
     r.add_thing(BallsKind);
     r.add_thing(FolderKind);
     r.add_thing(CameraKind);
@@ -101,6 +101,8 @@ pub fn registry() -> Registry {
     for k in modules::look::layers::kinds() {
         r.add_layer(k);
     }
+    r.add_module(modules::look::ShapeLookKind);
+    r.add_layer(modules::look::shape::ShapeBody);
     r.add_module(StreakTrailKind);
     r.add_module(HitBurstKind);
     r.add_module(BasicMotionKind);
@@ -111,7 +113,7 @@ pub fn registry() -> Registry {
     r
 }
 
-/// The test scenes' starting point: a circle arena and one pink ball, with the values the
+/// The test scenes' starting point: a hollow circle shape (the old arena's) and one pink ball, with the values the
 /// settings had before the blank project (a dark blue background, a little bloom and glow, and
 /// gravity on). Only tests build it; the program starts from [`new_studio_scene`].
 #[cfg(any(test, feature = "test-scenes"))]
@@ -122,7 +124,8 @@ pub fn new_scene(reg: &Registry) -> Scene {
     scene.name = "New scene".into();
     let root = ThingId::ROOT;
     scenes::classic_scene_settings(&mut scene);
-    add_thing(&mut scene, reg, "arena", root).expect("kit kinds are registered");
+    let shape = add_thing(&mut scene, reg, "shape", root).expect("kit kinds are registered");
+    scene.things.get_mut(&shape).expect("just added").params = ShapeSettings::circle(508.0, 3.0).to_params();
     let ball = add_thing(&mut scene, reg, "balls", root).expect("kit kinds are registered");
     scene.rename_thing(ball, "Ball");
     scenes::put_card(&mut scene, reg, ball, SlotId::Look, "look.basic");
@@ -174,18 +177,20 @@ mod tests {
     }
 
     #[test]
-    fn an_arena_and_a_ball_added_to_the_blank_project_have_no_glow_or_gravity() {
+    fn a_shape_and_a_ball_added_to_the_blank_project_have_no_glow_or_gravity() {
         let reg = registry();
         let mut scene = new_studio_scene(&reg);
-        let arena = add_thing(&mut scene, &reg, "arena", ThingId::ROOT).unwrap();
+        let shape = add_thing(&mut scene, &reg, "shape", ThingId::ROOT).unwrap();
         let ball = add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
         let thing = scene.things.get_mut(&ball).unwrap();
         let mut still = BallsSettings::from_params(&thing.params);
         still.velocity = glam::Vec2::ZERO;
         thing.params = still.to_params();
         let resolved = resolve(&scene, &reg);
-        let look = BasicLook::from_params(&resolved.things[&arena].slots[&SlotId::Look].params);
-        assert_eq!(look.glow, 0.0, "the arena");
+        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+        let shape_look = &scene.things[&shape].slots[&SlotId::Look];
+        assert_eq!(shape_look.kind, "look.shape");
+        assert_eq!(shape_look.layers.len(), 1, "the shape is its plain body, with no glow");
         let stack = modules::look::layers::gpu::Stack::of(&resolved.things[&ball].slots[&SlotId::Look]).unwrap();
         assert!(stack.drawn.is_empty(), "a new ball is its body alone, with no glow");
         let motion = BasicMotion::from_params(&resolved.things[&ball].slots[&SlotId::Motion].params);
@@ -198,7 +203,7 @@ mod tests {
 
     #[test]
     fn every_addable_thing_has_a_family() {
-        let families = ["Bouncers", "Walls"];
+        let families = ["Bouncers", "Shapes"];
         let reg = registry();
         for kind in reg.things().filter(|k| !["scene", "folder", "camera"].contains(&k.id())) {
             assert!(families.contains(&kind.family()), "{} has family {}", kind.id(), kind.family());
@@ -310,26 +315,30 @@ mod tests {
             reg.kinds_fitting(slot, t).map(|m| m.id()).collect()
         };
         assert_eq!(ids("balls", SlotId::Look), ["look.layers"]);
-        assert_eq!(ids("arena", SlotId::Look), ["look.basic"]);
+        assert_eq!(ids("shape", SlotId::Look), ["look.shape"]);
+        assert!(ids("scene", SlotId::Look).is_empty());
         assert_eq!(ids("balls", SlotId::Motion), ["motion.basic"]);
         assert_eq!(ids("balls", SlotId::Shader).len(), 13);
     }
 
     #[test]
-    fn the_look_registry_has_one_look_for_balls_and_one_for_the_rest() {
+    fn the_look_registry_has_a_look_for_balls_one_for_shapes_and_the_old_one() {
         let reg = registry();
         let looks: Vec<&str> = reg.modules_for(SlotId::Look).map(|m| m.id()).collect();
-        assert_eq!(looks, ["look.basic", "look.layers"]);
-        assert_eq!(reg.module("look.basic").unwrap().name(), "Look");
-        assert_eq!(reg.module("look.layers").unwrap().name(), "Look");
+        assert_eq!(looks, ["look.basic", "look.layers", "look.shape"]);
+        for look in looks {
+            assert_eq!(reg.module(look).unwrap().name(), "Look");
+        }
     }
 
     #[test]
-    fn a_ball_bigger_than_its_arena_is_pinned_and_logs_no_hits() {
+    fn a_ball_bigger_than_its_shape_is_pinned_and_logs_no_hits() {
         let kit = kit();
         let mut scene = new_scene(&kit.registry);
-        scene.things.get_mut(&ThingId(1)).unwrap().params.set("radius", Value::Number(20.0));
+        scene.things.get_mut(&ThingId(1)).unwrap().params.set("size", Value::Number(20.0));
         scene.things.get_mut(&ThingId(2)).unwrap().params.set("radius", Value::Number(24.0));
+        // It starts inside the shape (a ball that starts outside a hollow shape stays outside).
+        scene.things.get_mut(&ThingId(2)).unwrap().transform.position = glam::Vec2::new(0.0, -5.0);
         let resolved = resolve(&scene, &kit.registry);
         let mut world = World::build(&scene, &resolved, &kit.sims);
         let mut log = Log::default();

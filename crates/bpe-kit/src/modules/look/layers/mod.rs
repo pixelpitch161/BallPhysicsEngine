@@ -294,7 +294,10 @@ mod tests {
             "in the add menus' order"
         );
         assert!(reg.layer(BODY).unwrap().base());
-        assert_eq!(reg.layers().filter(|k| k.base()).count(), 1);
+        assert_eq!(reg.layers_for(CARD).filter(|k| k.base()).count(), 1);
+        let shape = crate::modules::look::shape::CARD;
+        let bases: Vec<&str> = reg.layers_for(shape).filter(|k| k.base()).map(|k| k.id()).collect();
+        assert_eq!(bases, [crate::modules::look::shape::BODY], "a shape's look has its own Body");
         for k in reg.layers() {
             for d in k.settings() {
                 assert!(!d.key.contains('/'), "{}: {}", k.id(), d.key);
@@ -336,11 +339,13 @@ mod tests {
     }
 
     #[test]
-    fn the_look_card_fits_only_balls_and_the_old_look_only_other_things() {
+    fn each_look_card_fits_its_own_kind_and_the_old_look_none() {
         let reg = registry();
         let layers = reg.module(CARD).unwrap();
+        let shape = reg.module(crate::modules::look::shape::CARD).unwrap();
         let basic = reg.module("look.basic").unwrap();
-        assert!(layers.fits("balls") && !layers.fits("arena"));
-        assert!(!basic.fits("balls") && basic.fits("arena"));
+        assert!(layers.fits("balls") && !layers.fits("shape"));
+        assert!(shape.fits("shape") && !shape.fits("balls"));
+        assert!(["balls", "shape", "scene", "folder", "camera"].iter().all(|k| !basic.fits(k)));
     }
 }

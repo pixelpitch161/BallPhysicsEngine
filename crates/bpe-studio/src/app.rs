@@ -604,7 +604,7 @@ impl Studio {
         }
         if ui
             .add(style::toggle_button("Snap", self.grid.snap))
-            .on_hover_text("Drags land on the grid: moving, resizing the arena and aiming. Hold Alt to place freely.")
+            .on_hover_text("Drags land on the grid: moving, moulding shapes and aiming. Hold Alt to place freely.")
             .clicked()
         {
             self.grid.snap = !self.grid.snap;
@@ -752,9 +752,10 @@ impl eframe::App for Studio {
         }
         if outcome.drag_started {
             // Dragging lays the scene out, so show where everything starts. The camera stays at
-            // the playhead, so a keyed shot gets its key where it is being looked at.
+            // the playhead, so a keyed shot gets its key where it is being looked at, and so does
+            // moulding a shape, which goes on where it was grabbed.
             self.set_playing(false);
-            if !outcome.drag_camera {
+            if !outcome.keep_playhead {
                 self.seek(0.0);
             }
         }

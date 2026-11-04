@@ -205,6 +205,35 @@ pub struct LayeredInstance {
     pub place: [f32; 4],
 }
 
+/// A Shape: a closed outline, a circle or a list of points (`Frame::path_points`) in the shape's
+/// own units, filled or drawn as a band, with a one-pixel soft edge at any zoom. Points are placed
+/// by turning them by `a.z`, scaling them by `a.w` and moving them to `a.xy`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct PathInstance {
+    /// Centre x, y, angle (radians clockwise), scale (world pixels per shape unit).
+    pub a: [f32; 4],
+    /// Half the band's thickness in world pixels (0 = filled), kind (0 circle, 1 points), the
+    /// first point in `Frame::path_points`, how many points.
+    pub b: [f32; 4],
+    /// Thing code, how far the outline reaches from the centre (shape units), two spare.
+    pub c: [f32; 4],
+    /// Linear-light colour.
+    pub color: [f32; 4],
+}
+
+impl PathInstance {
+    /// Whether it draws a filled shape rather than a band.
+    pub fn solid(&self) -> bool {
+        self.b[0] <= 0.0
+    }
+
+    /// How far it reaches from its centre, in world pixels.
+    pub fn reach(&self) -> f32 {
+        self.c[1] * self.a[3] + self.b[0]
+    }
+}
+
 /// A wall outline, drawn as an instanced quad with a distance function. `c.x` picks the shape:
 /// 0 ring or polygon, 1 box, 2 capsule (a filled rounded line between two points), 3 filled
 /// rounded box clipped to an x range, 4 filled arc band.
@@ -249,11 +278,13 @@ impl ShapeInstance {
                 color,
                 paint,
             },
-            Outline::Rounded { center, half, corner, angle, thickness } => Self {
+            // A free outline draws through the paths pipeline ([`PathInstance`]); here it is
+            // nothing.
+            Outline::Path { center, angle, .. } => Self {
                 a: [center.x, center.y, angle, 0.0],
-                b: [half.x, half.y, corner, 0.0],
-                c: [1.0, thickness * 0.5, glow, 0.0],
-                color,
+                b: [0.0, 0.0, 0.0, 0.0],
+                c: [0.0, 0.0, 0.0, 0.0],
+                color: [0.0; 4],
                 paint,
             },
         }
@@ -583,6 +614,10 @@ pub struct Frame {
     pub bloom: f32,
     pub exposure: f32,
     pub shapes: Vec<ShapeInstance>,
+    /// Shapes, drawn right after `shapes`, and the points (xy, two spare) their outlines run
+    /// through.
+    pub paths: Vec<PathInstance>,
+    pub path_points: Vec<[f32; 4]>,
     pub balls: Vec<BallInstance>,
     pub flashes: Vec<FlashInstance>,
     pub looks: Vec<LookInstance>,
@@ -706,6 +741,8 @@ impl Default for Frame {
             bloom: 0.0,
             exposure: 1.0,
             shapes: Vec::new(),
+            paths: Vec::new(),
+            path_points: Vec::new(),
             balls: Vec::new(),
             flashes: Vec::new(),
             looks: Vec::new(),
@@ -733,6 +770,8 @@ impl Frame {
     /// Empties the instance lists and the gradients and keeps the globals.
     pub fn clear(&mut self) {
         self.shapes.clear();
+        self.paths.clear();
+        self.path_points.clear();
         self.balls.clear();
         self.flashes.clear();
         self.looks.clear();
@@ -817,11 +856,13 @@ impl Frame {
             || self.looks.iter().any(|l| is(l.extent[1]))
             || self.layered.iter().any(|l| is(l.misc[1]))
             || self.shapes.iter().any(|s| is(s.c[3]))
+            || self.paths.iter().any(|p| is(p.c[0]))
     }
 
     /// Whether none of the lists the picture is drawn from has anything in them.
     fn draws_nothing(&self) -> bool {
         self.shapes.is_empty()
+            && self.paths.is_empty()
             && self.balls.is_empty()
             && self.flashes.is_empty()
             && self.looks.is_empty()
@@ -829,6 +870,37 @@ impl Frame {
             && self.trails.is_empty()
             && self.bursts.is_empty()
             && self.layers.is_empty()
+    }
+
+    /// Adds a shape: a circle of radius `scale` when `points` is None, else the closed outline
+    /// through `points` (shape units, turned by `angle`, scaled by `scale`). `half_thickness` 0
+    /// fills it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_path(
+        &mut self,
+        center: Vec2,
+        angle: f32,
+        scale: f32,
+        half_thickness: f32,
+        points: Option<&[Vec2]>,
+        color: [f32; 4],
+        code: f32,
+    ) {
+        let first = self.path_points.len();
+        let (kind, reach) = match points {
+            None => (0.0, 1.0),
+            Some(ps) => {
+                self.path_points.extend(ps.iter().map(|p| [p.x, p.y, 0.0, 0.0]));
+                (1.0, ps.iter().map(|p| p.length()).fold(0.0, f32::max))
+            }
+        };
+        let count = self.path_points.len() - first;
+        self.paths.push(PathInstance {
+            a: [center.x, center.y, angle, scale],
+            b: [half_thickness.max(0.0), kind, first as f32, count as f32],
+            c: [code, reach, 0.0, 0.0],
+            color,
+        });
     }
 
     /// The frame stuck-to-screen things draw into, made on first use with this frame's size and
@@ -875,6 +947,7 @@ impl Frame {
     pub fn has_overlay(&self) -> bool {
         self.overlay.as_ref().is_some_and(|o| {
             !(o.shapes.is_empty()
+                && o.paths.is_empty()
                 && o.balls.is_empty()
                 && o.flashes.is_empty()
                 && o.looks.is_empty()
@@ -913,6 +986,7 @@ impl Frame {
         let video = Vec2::new(width as f32, height as f32);
         let sees = |c: [f32; 2], r: f32| camera.sees(video, Vec2::from(c), r + CULL_MARGIN);
         self.balls.retain(|b| sees(b.center, b.radius * 2.0));
+        self.paths.retain(|p| sees([p.a[0], p.a[1]], p.reach()));
         self.looks.retain(|l| sees(l.center, l.radius * 2.0));
         let seen: Vec<bool> = self
             .layered
@@ -1680,15 +1754,10 @@ mod tests {
         assert_eq!(s.c, [0.0, 2.0, 0.1, 0.0]);
         let b = Outline::Box { center: glam::Vec2::ZERO, half: glam::Vec2::new(3.0, 4.0), angle: 0.0, thickness: 2.0 };
         assert_eq!(ShapeInstance::outline(&b, PaintGpu::default(), [1.0; 4], 0.0).c, [1.0, 1.0, 0.0, 0.0]);
-        let r = Outline::Rounded {
-            center: glam::Vec2::ZERO,
-            half: glam::Vec2::new(30.0, 40.0),
-            corner: 10.0,
-            angle: 0.1,
-            thickness: 2.0,
-        };
-        let s = ShapeInstance::outline(&r, PaintGpu::default(), [1.0; 4], 0.0);
-        assert_eq!((s.c[0], s.b), (1.0, [30.0, 40.0, 10.0, 0.0]));
+        let points: std::sync::Arc<[glam::Vec2]> = vec![glam::Vec2::ZERO; 3].into();
+        let p = Outline::Path { center: glam::Vec2::ZERO, angle: 0.1, scale: 30.0, points, thickness: 2.0 };
+        let s = ShapeInstance::outline(&p, PaintGpu::default(), [1.0; 4], 0.0);
+        assert_eq!((s.b, s.color), ([0.0; 4], [0.0; 4]), "free outlines draw elsewhere");
         let cap = ShapeInstance::capsule(glam::Vec2::new(-10.0, 0.0), glam::Vec2::new(10.0, 0.0), 3.0, [1.0; 4], 0.2);
         assert_eq!((cap.c[0], cap.c[1], cap.c[2], cap.b[0]), (2.0, 3.0, 0.2, 10.0));
         assert_eq!(cap.a, [0.0, 0.0, 0.0, 0.0]);

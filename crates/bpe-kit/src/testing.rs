@@ -5,7 +5,7 @@ use glam::Vec2;
 
 use crate::{Kit, kit, new_scene};
 
-pub const ARENA: ThingId = ThingId(1);
+pub const SHAPE: ThingId = ThingId(1);
 pub const BALLS: ThingId = ThingId(2);
 
 /// The new scene with its balls at the origin, in the old `arrangement` ("single", "block" or

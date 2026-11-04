@@ -1,5 +1,5 @@
 //! Every thing but the scene settings carries an editor track colour: new things take the next
-//! free one, the arena and camera start with their own, and old files get theirs on opening.
+//! free one, the shape and camera start with their own, and old files get theirs on opening.
 
 use bpe_core::{Scene, ThingId, TrackColour, load, save};
 use bpe_kit::{registry, starters::add_thing};
@@ -20,12 +20,12 @@ fn colours_go_in_order() {
 }
 
 #[test]
-fn arena_and_camera_take_their_own() {
+fn shapes_and_cameras_take_their_own() {
     let reg = registry();
     let mut scene = Scene::empty(&reg);
     let camera = add_thing(&mut scene, &reg, "camera", ThingId::ROOT).unwrap();
-    let arena = add_thing(&mut scene, &reg, "arena", ThingId::ROOT).unwrap();
-    let second = add_thing(&mut scene, &reg, "arena", ThingId::ROOT).unwrap();
+    let arena = add_thing(&mut scene, &reg, "shape", ThingId::ROOT).unwrap();
+    let second = add_thing(&mut scene, &reg, "shape", ThingId::ROOT).unwrap();
     assert_eq!(scene.things[&camera].colour, Some(TrackColour::Violet));
     assert_eq!(scene.things[&arena].colour, Some(TrackColour::Orange));
     assert_eq!(scene.things[&second].colour, Some(TrackColour::Pink), "orange is taken");
@@ -47,7 +47,7 @@ fn the_ninth_thing_takes_the_least_used() {
 fn old_scenes_get_colours_in_tree_order() {
     let reg = registry();
     let mut scene = Scene::empty(&reg);
-    for kind in ["balls", "arena", "balls", "camera"] {
+    for kind in ["balls", "shape", "balls", "camera"] {
         add_thing(&mut scene, &reg, kind, ThingId::ROOT).unwrap();
     }
     for thing in scene.things.values_mut() {

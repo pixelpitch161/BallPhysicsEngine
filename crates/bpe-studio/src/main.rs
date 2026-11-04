@@ -14,6 +14,7 @@ mod palettes;
 mod preview;
 mod selection;
 mod settings;
+mod shape_handles;
 mod style;
 mod timeline;
 mod transport;

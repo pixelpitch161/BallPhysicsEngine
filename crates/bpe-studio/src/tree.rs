@@ -71,7 +71,7 @@ enum Action {
 }
 
 /// The headings of the "Add thing" menu, in order. Kinds in no family follow Folder.
-const FAMILIES: [&str; 2] = ["Bouncers", "Walls"];
+const FAMILIES: [&str; 2] = ["Bouncers", "Shapes"];
 
 /// Draws the tree and applies what was clicked. `selection` follows the clicks.
 pub fn show(
@@ -752,8 +752,8 @@ pub(crate) fn paint_eye(painter: &egui::Painter, rect: Rect, open: bool, ink: Co
 /// The shape drawn next to a thing of some kind in the tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Icon {
-    /// An arena.
-    Ring,
+    /// A shape: a hexagon outline.
+    Shape,
     /// Balls.
     Disc,
     /// The scene's defaults.
@@ -768,7 +768,7 @@ enum Icon {
 
 fn icon_shape(kind: &str) -> Icon {
     match kind {
-        "arena" => Icon::Ring,
+        "shape" => Icon::Shape,
         "balls" => Icon::Disc,
         "scene" => Icon::Square,
         "camera" => Icon::Frame,
@@ -782,8 +782,10 @@ fn paint_icon(painter: &egui::Painter, rect: Rect, kind: &str, ink: Color32) {
     let r = rect.width() * 0.32;
     let stroke = Stroke::new(1.5, ink);
     match icon_shape(kind) {
-        Icon::Ring => {
-            painter.circle_stroke(c, r, stroke);
+        Icon::Shape => {
+            let corners: Vec<Pos2> =
+                (0..6).map(|k| c + Vec2::angled((k as f32 + 0.5) * std::f32::consts::FRAC_PI_3) * r).collect();
+            painter.add(egui::Shape::closed_line(corners, stroke));
         }
         Icon::Disc => {
             painter.circle_filled(c, r * 0.8, ink);
@@ -985,8 +987,8 @@ mod tests {
         }
         let y = |h: &Harness<'_, State>, l: &str| h.get_by_label(l).rect().min.y;
         assert!(y(&h, "Bouncers") < y(&h, "Balls"));
-        assert!(y(&h, "Balls") < y(&h, "Walls"));
-        assert!(y(&h, "Walls") < y(&h, "Folder"), "Folder comes after the families");
+        assert!(y(&h, "Balls") < y(&h, "Shapes"));
+        assert!(y(&h, "Shapes") < y(&h, "Folder"), "Folder comes after the families");
     }
 
     #[test]
@@ -1019,7 +1021,7 @@ mod tests {
     #[test]
     fn ctrl_click_extends_the_selection_and_delete_removes_it_all() {
         let mut h = harness();
-        h.get_by_label("Arena").click();
+        h.get_by_label("Shape").click();
         h.run();
         click_with(&mut h, "Ball", Modifiers::COMMAND);
         assert_eq!(h.state().selection.all(&h.state().scene), vec![ThingId(1), ThingId(2)]);
@@ -1037,7 +1039,7 @@ mod tests {
     fn shift_click_selects_the_rows_between() {
         let mut h = harness();
         let f = add_folder(&mut h);
-        h.get_by_label("Arena").click();
+        h.get_by_label("Shape").click();
         h.run();
         click_with(&mut h, "Folder", Modifiers::SHIFT);
         assert_eq!(h.state().selection.all(&h.state().scene), vec![ThingId(1), ThingId(2), f]);
@@ -1049,9 +1051,9 @@ mod tests {
         // Typing goes to the focused field, and a click is what focuses it.
         h.get_by_label("Filter").click();
         h.run();
-        h.get_by_label("Filter").type_text("are");
+        h.get_by_label("Filter").type_text("hap");
         h.run();
-        assert!(h.query_by_label("Arena").is_some());
+        assert!(h.query_by_label("Shape").is_some());
         assert!(h.query_by_label("Ball").is_none());
     }
 
@@ -1150,7 +1152,7 @@ mod tests {
         };
         h.run();
         let from = h.get_by_label("Ball").rect().center();
-        let arena = h.get_by_label("Arena").rect();
+        let arena = h.get_by_label("Shape").rect();
         drag(&mut h, from, egui::pos2(arena.center().x, arena.top() + 1.0), Modifiers::NONE);
         let s = h.state();
         assert_eq!(s.scene.things[&ThingId(2)].parent, Some(ThingId::ROOT));
@@ -1224,7 +1226,7 @@ mod tests {
         assert_eq!(scene.things[&ThingId(2)].parent, Some(ThingId::ROOT));
         assert_eq!(scene.things[&ThingId(2)].attach, Attach::Group);
         assert_eq!(scene.things[&ThingId(2)].transform.position, glam::Vec2::new(50.0, 0.0));
-        // Back under the arena, nothing can make the arena hang under it.
+        // Back under the shape, nothing can make the shape hang under it.
         apply_drop(&mut scene, ThingId(2), ThingId(1), Drop::Into(Attach::Group)).unwrap();
         assert!(matches!(
             apply_drop(&mut scene, ThingId(1), ThingId(2), Drop::Into(Attach::Group)),
@@ -1278,7 +1280,7 @@ mod tests {
         let Attach::Ride { offset, .. } = scene.things[&ThingId(2)].attach else { panic!() };
         assert!((offset - glam::Vec2::new(-50.0, 0.0)).length() < 1e-3, "{offset:?}");
         assert!((world_position(&scene, ThingId(2)).unwrap() - glam::Vec2::new(100.0, 50.0)).length() < 1e-3);
-        // A folder riding the arena carries its own riders' places along.
+        // A folder riding the shape carries its own riders' places along.
         apply_drop(&mut scene, f, ThingId(1), Drop::Into(ride)).unwrap();
         apply_drop(&mut scene, ThingId(2), f, Drop::Into(ride)).unwrap();
         assert!((world_position(&scene, ThingId(2)).unwrap() - glam::Vec2::new(100.0, 50.0)).length() < 1e-3);
@@ -1301,7 +1303,7 @@ mod tests {
         h.get_by_label("Collapse Folder").click();
         h.run();
         assert!(h.query_by_label("Ball").is_none());
-        assert!(h.query_by_label("Arena").is_none());
+        assert!(h.query_by_label("Shape").is_none());
         h.get_by_label("Expand Folder").click();
         h.run();
         assert!(h.query_by_label("Ball").is_some());
@@ -1316,9 +1318,9 @@ mod tests {
         drag(&mut h, from, to, Modifiers::NONE);
         assert_eq!(h.state().scene.things[&ThingId(2)].parent, Some(f));
         assert_eq!(h.state().scene.things[&ThingId(2)].attach, Attach::Group);
-        // Dragging it back out, onto the top edge of the arena's row, puts it before the arena.
+        // Dragging it back out, onto the top edge of the shape's row, puts it before the shape.
         let from = h.get_by_label("Ball").rect().center();
-        let arena = h.get_by_label("Arena").rect();
+        let arena = h.get_by_label("Shape").rect();
         drag(&mut h, from, egui::pos2(arena.center().x, arena.top() + 1.0), Modifiers::NONE);
         assert_eq!(h.state().scene.order, vec![ThingId::ROOT, ThingId(2), ThingId(1), f]);
         // A thing can't be dropped into itself: the status line says so.
@@ -1333,7 +1335,7 @@ mod tests {
     fn dragging_with_alt_makes_the_thing_ride() {
         let mut h = harness();
         let from = h.get_by_label("Ball").rect().center();
-        let to = h.get_by_label("Arena").rect().center();
+        let to = h.get_by_label("Shape").rect().center();
         drag(&mut h, from, to, Modifiers::ALT);
         let thing = &h.state().scene.things[&ThingId(2)];
         assert_eq!(thing.parent, Some(ThingId(1)));
@@ -1353,7 +1355,7 @@ mod tests {
             s.resolved.things[&ThingId(2)].slots[&SlotId::Look].params.clone()
         };
         h.run();
-        h.get_by_label("Arena").click_secondary();
+        h.get_by_label("Shape").click_secondary();
         h.run();
         h.get_by_label("Make folder from selection").click();
         h.run();
@@ -1440,14 +1442,14 @@ mod tests {
         h.run();
         let rows = |h: &Harness<'_, State>, name: &str| h.query_all_by_label(name).count();
         let (folder, ball, arena, root) =
-            (rows(&h, "Folder"), rows(&h, "Ball"), rows(&h, "Arena"), rows(&h, "Scene settings"));
+            (rows(&h, "Folder"), rows(&h, "Ball"), rows(&h, "Shape"), rows(&h, "Scene settings"));
         h.get_by_label("Folder").click_secondary();
         h.run();
         h.get_by_label("Move into").click();
         h.run();
         assert_eq!(rows(&h, "Folder"), folder, "not the folder itself");
         assert_eq!(rows(&h, "Ball"), ball, "not what is in it");
-        assert_eq!(rows(&h, "Arena"), arena, "only folders and the root are offered");
+        assert_eq!(rows(&h, "Shape"), arena, "only folders and the root are offered");
         assert_eq!(rows(&h, "Scene settings"), root, "not where it already is");
         h.key_press(Key::Escape);
         h.run();

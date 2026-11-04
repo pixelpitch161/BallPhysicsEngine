@@ -237,7 +237,7 @@ mod tests {
 
     /// No arena: the ball falls forever.
     fn falling(scene: &mut Scene) {
-        scene.things.get_mut(&crate::testing::ARENA).unwrap().enabled = false;
+        scene.things.get_mut(&crate::testing::SHAPE).unwrap().enabled = false;
     }
 
     fn video() -> Vec2 {

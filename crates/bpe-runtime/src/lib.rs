@@ -24,5 +24,5 @@ pub use pairs::{Grid, Pairs, Support};
 pub use playback::Playback;
 pub use plugins::{Limits, ModuleSim, ModuleState, PairRule, SimCx, Sims, ThingSim, ThingState, state, state_mut};
 pub use pose::Pose;
-pub use walls::{Contact, Outline, Wall, keep_inside, reflect, wall_velocity};
+pub use walls::{Contact, MAX_SIDES, Outline, Wall, keep_clear, keep_clear_from, reflect, wall_velocity};
 pub use world::{World, fingerprint, physics_animation};

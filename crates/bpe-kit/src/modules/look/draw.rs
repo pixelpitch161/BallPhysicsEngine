@@ -143,9 +143,11 @@ impl<'a> StillColours<'a> {
             #[cfg(test)]
             LOOK_READS.with(|n| n.set(n.get() + 1));
             let look = r.slots.get(&SlotId::Look)?;
-            // A layered look paints with its Body's colours; any other with its own.
+            // A layered look paints with its Body's colours, a shape with its plain white body; any
+            // other with its own.
             let fill = match super::layers::gpu::Stack::of(look) {
                 Some(stack) => stack.body.fill,
+                None if look.kind == super::shape::CARD => Paint::solid(Color::WHITE),
                 None => BasicLook::from_params(&look.params).fill,
             };
             Some((for_balls(fill), r.screen))

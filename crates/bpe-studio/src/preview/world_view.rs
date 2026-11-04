@@ -257,7 +257,7 @@ mod tests {
         let view = world_view(WorldNav::default());
         let world = studio.playback.world().clone();
         assert_eq!(camera_hit(&studio.scene, &world, &view, view.to_screen(Vec2::ZERO)), Some(Handle::CameraMove(cam)));
-        let drag = Drag { handle: Handle::CameraMove(cam), offset: Vec2::ZERO };
+        let drag = Drag::new(Handle::CameraMove(cam), Vec2::ZERO);
         let reg = bpe_kit::registry();
         apply_camera_drag(&mut studio.scene, &reg, &world, drag, Vec2::new(100.0, 0.0), None, 0.0);
         assert_eq!(studio.scene.things[&cam].params.get("position"), Some(&Value::Vec2([100.0, 0.0])));
@@ -269,10 +269,10 @@ mod tests {
         let world = studio.playback.world().clone();
         let reg = bpe_kit::registry();
         let corner = Vec2::new(540.0, 960.0);
-        let drag = Drag { handle: Handle::CameraZoom(cam), offset: Vec2::ZERO };
+        let drag = Drag::new(Handle::CameraZoom(cam), Vec2::ZERO);
         apply_camera_drag(&mut studio.scene, &reg, &world, drag, corner * 0.5, None, 0.0);
         assert_eq!(studio.scene.things[&cam].params.get("zoom"), Some(&Value::Number(2.0)));
-        let drag = Drag { handle: Handle::CameraTurn(cam), offset: Vec2::ZERO };
+        let drag = Drag::new(Handle::CameraTurn(cam), Vec2::ZERO);
         apply_camera_drag(&mut studio.scene, &reg, &world, drag, Vec2::new(100.0, 0.0), None, 0.0);
         assert_eq!(studio.scene.things[&cam].params.get("turn"), Some(&Value::Number(90.0)));
     }
@@ -284,7 +284,7 @@ mod tests {
         let zoom = Address { thing: cam, slot: None, key: "zoom".into() };
         studio.scene.set_key(&reg, &zoom, 0.0, Value::Number(1.0)).unwrap();
         let world = studio.playback.world().clone();
-        let drag = Drag { handle: Handle::CameraZoom(cam), offset: Vec2::ZERO };
+        let drag = Drag::new(Handle::CameraZoom(cam), Vec2::ZERO);
         let keyed = apply_camera_drag(&mut studio.scene, &reg, &world, drag, Vec2::new(270.0, 480.0), None, 2.0);
         assert!(keyed);
         let times: Vec<f64> = studio.scene.tracks[&zoom].keys.iter().map(|k| k.time).collect();
@@ -296,7 +296,7 @@ mod tests {
         let (mut studio, cam) = studio_with_camera();
         let world = studio.playback.world().clone();
         let reg = bpe_kit::registry();
-        let drag = Drag { handle: Handle::CameraMove(cam), offset: Vec2::ZERO };
+        let drag = Drag::new(Handle::CameraMove(cam), Vec2::ZERO);
         apply_camera_drag(&mut studio.scene, &reg, &world, drag, Vec2::new(1234.0, -77.0), Some(60.0), 0.0);
         assert_eq!(studio.scene.things[&cam].params.get("position"), Some(&Value::Vec2([1260.0, -60.0])));
     }
