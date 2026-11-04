@@ -122,7 +122,7 @@ pub struct BusesSpec {
 
 impl BusesSpec {
     /// The buses of the scene's mixer card (`card` its resolved card, when it has one).
-    pub fn build(scene: &Scene, mixer: &MixerSettings, reg: &Registry) -> BusesSpec {
+    pub fn build(scene: &Scene, mixer: &MixerSettings, reg: &Registry, tempo: &TempoMap) -> BusesSpec {
         let track = |key: String| {
             let a = Address { thing: ThingId::ROOT, slot: Some(SlotId::Mixer), key };
             scene.tracks.get(&a).filter(|t| !t.keys.is_empty()).cloned()
@@ -137,7 +137,7 @@ impl BusesSpec {
                     pan: track(key("pan")),
                     sends: std::array::from_fn(|t| track(key(&format!("send{}", t + 1)))),
                 },
-                chain: FxChain::build(scene, i as u8, reg),
+                chain: FxChain::build(scene, i as u8, reg, tempo),
             }
         });
         BusesSpec { buses }
@@ -303,7 +303,7 @@ impl Buses {
     /// Silence, as new, with every setting where it is at `time`.
     pub fn reset(&mut self, time: f64) {
         for bus in &mut self.buses {
-            bus.chain.reset();
+            bus.chain.reset(time);
             bus.shapes_lag.reset();
             bus.bus_lags.iter_mut().for_each(Lag::reset);
             bus.out_lag.reset();
@@ -405,7 +405,7 @@ impl Buses {
                     bus.asleep = true;
                 } else {
                     if bus.asleep {
-                        bus.chain.reset();
+                        bus.chain.reset(time);
                         bus.shapes_lag.reset();
                         bus.bus_lags.iter_mut().for_each(Lag::reset);
                         bus.asleep = false;
@@ -606,7 +606,7 @@ mod tests {
         card.params.set(&bpe_core::layered_key(id, "ceiling"), Value::Number(0.0));
         card.params.set("bus2_on", Value::Bool(true));
         let mixer = MixerSettings::from_params(&card.params);
-        let mut buses = Buses::new(BusesSpec::build(&scene, &mixer, reg));
+        let mut buses = Buses::new(BusesSpec::build(&scene, &mixer, reg, &TempoMap::default()));
         assert!(buses.latency() > 0, "the limiter looks ahead");
         let meters = Meters::default();
         let tempo = TempoMap::default();

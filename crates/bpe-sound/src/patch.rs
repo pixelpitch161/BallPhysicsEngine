@@ -158,7 +158,6 @@ impl SoundPatch {
         let root = resolved.things.get(&ThingId::ROOT);
         let card = root.and_then(|r| r.slots.get(&SlotId::Mixer));
         let master = card.map(|s| MixerSettings::from_params(&s.params)).unwrap_or_default();
-        let buses = BusesSpec::build(scene, &master, &kit.registry);
         let track = |key: &str| {
             let a = Address { thing: ThingId::ROOT, slot: Some(SlotId::Mixer), key: key.into() };
             scene.tracks.get(&a).filter(|t| !t.keys.is_empty()).cloned()
@@ -166,6 +165,7 @@ impl SoundPatch {
         let master_keys = MasterKeys { input: track("master_input"), output: track("master_output") };
         let settings = root.map(|r| SceneSettings::from_params(&r.params)).unwrap_or_default();
         let tempo = TempoMap::from_settings(&settings);
+        let buses = BusesSpec::build(scene, &master, &kit.registry, &tempo);
         let mut voices: Vec<Box<dyn VoiceSource>> = Vec::new();
         let mut routes = Vec::new();
         for id in &scene.order {
