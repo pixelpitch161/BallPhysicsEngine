@@ -24,6 +24,9 @@ pub struct ShapeState {
     pub scale: f32,
     /// Where its parent put it at the start, when it rides one.
     pub anchor: Pose,
+    /// Its outline in shape units, moulded or not (`ShapeSettings::outline_path`): the corners
+    /// and sides a hit's Place and Side are read against.
+    pub path: bpe_core::ShapePath,
 }
 
 impl ShapeState {
@@ -58,7 +61,8 @@ impl ShapeState {
         Wall {
             outline: self.outline(anchor),
             solid: self.settings.fill == ShapeFill::Filled,
-            spin: self.settings.spin.to_radians(),
+            // Its own spin on top of its parent's, when it turns with what it rides.
+            spin: anchor.spin + self.settings.spin.to_radians(),
             growth,
             velocity: anchor.velocity,
         }
@@ -104,7 +108,8 @@ impl ThingSim for ShapeSim {
         let anchor = world.anchor(thing.id);
         let rotation = anchor.angle;
         let base = base_outline(&settings, anchor.position, rotation);
-        let st = ShapeState { settings, base, rotation, angle: 0.0, scale: 1.0, anchor };
+        let path = settings.outline_path();
+        let st = ShapeState { settings, base, rotation, angle: 0.0, scale: 1.0, anchor, path };
         let spin = st.settings.spin.to_radians();
         world.walls.insert(thing.id, st.wall(&anchor, 0.0));
         world.poses.insert(thing.id, Pose { spin: anchor.spin + spin, ..anchor });
@@ -120,6 +125,10 @@ impl ThingSim for ShapeSim {
         let Some(st) = world.states.get_mut(&thing) else { return };
         let st = state_mut::<ShapeState>(st.as_mut());
         st.base = base_outline(&settings, st.base.center(), st.rotation);
+        let s = &st.settings;
+        if (s.start, s.sides, &s.path) != (settings.start, settings.sides, &settings.path) {
+            st.path = settings.outline_path();
+        }
         st.settings = settings;
         let wall = st.wall(&anchor, growth);
         world.walls.insert(thing, wall);
@@ -159,7 +168,7 @@ pub fn side_of(world: &World, shape: ThingId, point: Vec2) -> u32 {
     let Some(st) = world.states.get(&shape).and_then(|s| s.as_any().downcast_ref::<ShapeState>()) else {
         return 0;
     };
-    side_on(world, shape, &st.settings.outline_path(), point)
+    side_on(world, shape, &st.path, point)
 }
 
 /// [`side_of`] with the shape's outline in shape units (`ShapeSettings::outline_path`) made
@@ -168,11 +177,54 @@ pub fn side_on(world: &World, shape: ThingId, path: &bpe_core::ShapePath, point:
     let Some(st) = world.states.get(&shape).and_then(|s| s.as_any().downcast_ref::<ShapeState>()) else {
         return 0;
     };
+    path.nearest_side(in_shape_units(world, shape, st, point)).map_or(0, |(side, _, _)| side as u32)
+}
+
+/// `point` (in scene pixels) in shape `shape`'s own units, as it stands in `world` now.
+fn in_shape_units(world: &World, shape: ThingId, st: &ShapeState, point: Vec2) -> Vec2 {
     let anchor = world.anchor(shape);
     let turn = st.rotation + st.angle + (anchor.angle - st.anchor.angle);
     let size = (st.settings.size * st.scale).max(1e-3);
-    let local = Vec2::from_angle(-turn).rotate(point - anchor.position) / size;
-    path.nearest_side(local).map_or(0, |(side, _, _)| side as u32)
+    Vec2::from_angle(-turn).rotate(point - anchor.position) / size
+}
+
+/// Where on shape `shape`'s outline (as it is in `world` now) the point nearest `point` is: the
+/// way round clockwise from its first corner as a fraction (0..1) of the whole way, the side
+/// (as [`side_on`] has it, so side k is By side's slot k), and how many sides it has (a circle
+/// has its 8). `None` when the world has no such shape. Never allocates.
+pub fn place_on_edge(world: &World, shape: ThingId, point: Vec2) -> Option<(f32, usize, usize)> {
+    let st = world.states.get(&shape)?.as_any().downcast_ref::<ShapeState>()?;
+    let path = &st.path;
+    let n = path.side_count();
+    let (side, t, _) = path.nearest_side(in_shape_units(world, shape, st, point))?;
+    let (mut total, mut at) = (0.0f32, 0.0f32);
+    for s in 0..n {
+        if s == side {
+            at = total + side_length(path, s, t);
+        }
+        total += side_length(path, s, 1.0);
+    }
+    let place = if total > 0.0 { (at / total).clamp(0.0, 1.0) } else { 0.0 };
+    Some((place, side, n))
+}
+
+/// How long side `side` of `path` is from its corner to `t` along it: a curve measured over
+/// [`bpe_core::shape_path::FLATTEN`] straight pieces.
+fn side_length(path: &bpe_core::ShapePath, side: usize, t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    if path.bends[side].is_none() {
+        let (a, b) = path.side_ends(side);
+        return (b - a).length() * t;
+    }
+    let pieces = bpe_core::shape_path::FLATTEN;
+    let mut length = 0.0;
+    let mut last = path.side_point(side, 0.0);
+    for k in 1..=pieces {
+        let next = path.side_point(side, t * k as f32 / pieces as f32);
+        length += (next - last).length();
+        last = next;
+    }
+    length
 }
 
 #[cfg(test)]
@@ -241,6 +293,37 @@ mod tests {
         assert_eq!(center, scene.things[&SHAPE].transform.position);
         w.advance_to(1.5, &kit.sims, &mut log);
         assert!((ring(&w).0 - 254.0).abs() < 1e-3, "{}", ring(&w).0);
+    }
+
+    /// A key at 0 s is the shape's size from the very start, before the first step.
+    #[test]
+    fn a_size_key_at_the_start_holds_from_the_first_frame() {
+        let kit = kit();
+        let mut scene = new_scene(&kit.registry);
+        let size = Address { thing: SHAPE, slot: None, key: "size".into() };
+        scene.set_key(&kit.registry, &size, 0.0, Value::Number(250.0)).unwrap();
+        scene.set_key(&kit.registry, &size, 1.0, Value::Number(250.0)).unwrap();
+        let w = world(&scene);
+        assert!(matches!(w.walls[&SHAPE].outline, Outline::Ring { radius: 250.0, .. }), "{:?}", w.walls[&SHAPE]);
+    }
+
+    /// A shape riding a turning shape, turning with it, turns at both spins, and its wall moves
+    /// that fast under the balls.
+    #[test]
+    fn a_shape_turning_with_its_parent_spins_with_it() {
+        let kit = kit();
+        let mut scene = new_scene(&kit.registry);
+        scene.things.get_mut(&SHAPE).unwrap().params.set("spin", Value::Number(90.0));
+        let inner = crate::add_thing(&mut scene, &kit.registry, "shape", bpe_core::ThingId::ROOT).unwrap();
+        let ride = bpe_core::Attach::Ride { offset: Vec2::ZERO, turn_with_parent: true, item: None };
+        scene.set_parent(inner, SHAPE, ride).unwrap();
+        scene.things.get_mut(&inner).unwrap().params.set("spin", Value::Number(30.0));
+        let mut w = world(&scene);
+        let want = 120f32.to_radians();
+        assert!((w.walls[&inner].spin - want).abs() < 1e-5, "{}", w.walls[&inner].spin);
+        w.advance_to(0.5, &kit.sims, &mut Log::default());
+        assert!((w.walls[&inner].spin - want).abs() < 1e-5, "{}", w.walls[&inner].spin);
+        assert!((w.walls[&SHAPE].spin - 90f32.to_radians()).abs() < 1e-5);
     }
 
     #[test]

@@ -54,7 +54,8 @@ pub fn state_mut<T: 'static>(s: &mut dyn ThingState) -> &mut T {
 pub struct Limits {
     /// The fastest anything may move, in pixels per second: 16 px × 64 substeps × the step rate.
     pub ceiling: f32,
-    /// Touches slower than this are resting, not hits: `|gravity| × dt × 4 + 1`.
+    /// Touches slower than this are resting, not hits: `|gravity| × dt × 4 + 1`, or for a ball
+    /// whose Motion pulls harder (Gravity ×, Wind), the same from its own pull.
     pub resting: f32,
 }
 
@@ -125,6 +126,12 @@ pub trait ModuleSim: Send + Sync + 'static {
     fn prepare(&self, params: &Params) -> Box<dyn ThingState>;
     /// Changes velocities before the move: gravity, drag, wind.
     fn forces(&self, _state: &dyn ThingState, _bodies: &mut Bodies, _gravity: Vec2, _dt: f32) {}
+    /// The steady pull, in pixels per second squared, this Motion module puts on its balls
+    /// under the scene's `gravity`: what a ball lying on something presses into it with, so a
+    /// resting touch is told from a hit. `None` for a module that doesn't pull steadily.
+    fn pull(&self, _state: &dyn ThingState, _gravity: Vec2) -> Option<Vec2> {
+        None
+    }
     /// Like [`ModuleSim::forces`], also told which thing, what time it is and the scene's seed,
     /// for forces that change over time or use random numbers. The default calls `forces`.
     fn forces_at(&self, state: &dyn ThingState, bodies: &mut Bodies, gravity: Vec2, dt: f32, _cx: &SimCx) {

@@ -224,9 +224,10 @@ impl BallsSettings {
         self.ring_radius = ring_radius;
     }
 
-    /// From one ball's middle to its neighbour's.
+    /// From one ball's middle to its neighbour's: never less than a tenth of a ball's size, so a
+    /// Space between below minus twice the Size still lays the balls out forwards.
     pub fn step(&self) -> f32 {
-        2.0 * self.radius + self.space
+        (2.0 * self.radius + self.space).max(0.1 * self.radius.max(0.5))
     }
 }
 

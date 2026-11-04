@@ -100,6 +100,30 @@ pub fn ball_velocity(balls: &Balls, i: usize, ago: f32) -> Vec2 {
     (ball_at(balls, i, newer) - ball_at(balls, i, ago + step)) / span
 }
 
+/// When each of `balls` (of thing `thing`) was there, in seconds: from the step its history
+/// first saw it to the step it popped (infinite while it is alive). A ball that popped before
+/// step `since` (no Remove left in the log from then) was never there for what is looked at.
+fn lifetimes(thing: ThingId, balls: &Balls, log: &Log, rate: u32, since: u64) -> Vec<(f64, f64)> {
+    let bodies = balls.bodies;
+    let rate_f = rate.max(1) as f64;
+    let mut lives: Vec<(f64, f64)> = (0..bodies.len())
+        .map(|i| {
+            let came = balls.history.born(i).map_or(0.0, |s| s as f64 / rate_f);
+            (came, if bodies.alive[i] { f64::INFINITY } else { f64::NEG_INFINITY })
+        })
+        .collect();
+    for e in log.since(since) {
+        if e.kind == EventKind::Remove
+            && e.a.thing == thing
+            && let Some(life) = lives.get_mut(e.a.item as usize)
+            && !bodies.alive[e.a.item as usize]
+        {
+            life.1 = e.time(rate);
+        }
+    }
+    lives
+}
+
 /// The emissions of `layer` worn by the balls `balls` (of thing `thing`, rows that `wears`)
 /// whose particles may be alive at `now`, oldest first.
 /// Only the newest whose particles add up to `cap` are worked out (see [`capped`]).
@@ -172,6 +196,7 @@ pub fn ball_emissions(
             }
             let first = ((now - life as f64) * per).ceil().max(0.0) as i64;
             let last = (now * per).floor() as i64;
+            let lives = lifetimes(thing, balls, log, rate, first_step(now, life, rate));
             for k in (first..=last).rev() {
                 if total >= cap {
                     break;
@@ -179,7 +204,9 @@ pub fn ball_emissions(
                 let time = k as f64 / per;
                 let ago = (now - time) as f32;
                 for i in (0..bodies.len()).rev() {
-                    if !bodies.alive[i] || !wears(i) {
+                    // Only while the ball was there: from when it came to when it popped.
+                    let (came, went) = lives[i];
+                    if time < came || time > went || !wears(i) {
                         continue;
                     }
                     let velocity = ball_velocity(balls, i, ago);
@@ -247,12 +274,19 @@ pub fn shape_emissions(
                 total += 1;
                 let seed = hash(&[shape.0, k as u32, (k >> 32) as u32, 11]);
                 let u = (seed >> 8) as f32 / (1u32 << 24) as f32 * std::f32::consts::TAU;
-                let place = wall.outline.point(u);
-                let (_, line) = wall.outline.nearest(place + Vec2::from_angle(u) * 1e-3);
+                let here = wall.outline.point(u);
+                // The edge's normal, outward from the middle (the way `point` looks), so the side
+                // a seed picks turns with the shape.
+                let outward = (here - wall.outline.center()).try_normalize().unwrap_or(Vec2::from_angle(u));
+                // A quarter pixel out, so the normal is the edge's whatever the rounding.
+                let (_, line) = wall.outline.nearest(here + outward * 0.25);
                 // Either side of the edge.
-                let normal = if seed & 1 == 0 { line } else { -line };
+                let line = if seed & 1 == 0 { line } else { -line };
+                // Let off from the edge as it was then, not as it has turned and shrunk to since.
+                let time = k as f64 / per;
+                let (place, normal) = rewound(wall, here, line, (now - time) as f32, rate);
                 out.push(Emission {
-                    time: k as f64 / per,
+                    time,
                     row: None,
                     by: None,
                     place,
@@ -300,6 +334,23 @@ pub fn shape_emissions(
     }
     out.reverse();
     capped(out, cap)
+}
+
+/// Where the point `p` on `wall` (as it is now) was `ago` seconds back, and which way the
+/// direction `way` there pointed then, the wall's spin, growth and speed taken as steady over
+/// that time (exact for a shape that spins and shrinks steadily on the spot), at `rate` steps a
+/// second.
+fn rewound(wall: &Wall, p: Vec2, way: Vec2, ago: f32, rate: u32) -> (Vec2, Vec2) {
+    if ago <= 0.0 {
+        return (p, way);
+    }
+    let centre = wall.outline.center();
+    let turn = Vec2::from_angle(-wall.spin * ago);
+    // A shrinking shape loses `-growth / rate` of its size each step.
+    let per_step = (1.0 + wall.growth / rate.max(1) as f32).max(1e-6);
+    let scale = if wall.growth == 0.0 { 1.0 } else { per_step.powf(-ago * rate as f32) };
+    let then = centre - wall.velocity * ago;
+    (then + turn.rotate(p - centre) * scale, turn.rotate(way))
 }
 
 /// How far off a shape's edge, the way its particles fly, their side of it is judged.
@@ -373,6 +424,119 @@ mod tests {
         assert_eq!(per_hit(&flat, 1.0), 10);
         assert_eq!(impact(true, FULL_HIT_SPEED * 0.5), 0.8);
         assert_eq!(impact(false, 0.0), 1.0);
+    }
+
+    /// Two balls moving right at 240 px/s from x = 0, the second let go at step `late`, the
+    /// first popped at step `popped` (when given), stepped to 1 s at 240 steps a second.
+    fn two_balls(late: u64, popped: Option<u64>) -> (bpe_runtime::Bodies, bpe_runtime::History, Log) {
+        let mut bodies = bpe_runtime::Bodies::default();
+        let mut history = bpe_runtime::History::new(240, bpe_runtime::HistoryWant { seconds: 2.0, forever: false });
+        let mut log = Log::default();
+        bodies.push(Vec2::ZERO, Vec2::new(240.0, 0.0), 10.0);
+        history.note(0, 1);
+        for step in 1..=240u64 {
+            if step == late {
+                bodies.push(Vec2::new(0.0, 100.0), Vec2::new(240.0, 0.0), 10.0);
+            }
+            for i in 0..bodies.len() {
+                if bodies.alive[i] {
+                    let v = bodies.velocity[i];
+                    bodies.position[i] += v / 240.0;
+                }
+            }
+            if Some(step) == popped {
+                bodies.alive[0] = false;
+                let a = Party { thing: ThingId(2), item: 0 };
+                let point = bodies.position[0];
+                log.push(bpe_runtime::Event {
+                    step,
+                    kind: EventKind::Remove,
+                    a,
+                    b: None,
+                    point,
+                    normal: Vec2::ZERO,
+                    speed: 0.0,
+                    at: 0.0,
+                });
+            }
+            history.record(step, &bodies.position);
+        }
+        (bodies, history, log)
+    }
+
+    fn steady(bodies: &bpe_runtime::Bodies, history: &bpe_runtime::History, log: &Log) -> Vec<Emission> {
+        let layer = ParticlesLayer { emit: Emit::Steady, rate: 60.0, life: 2.0, ..ParticlesLayer::default() };
+        let colour = |_: usize| [1.0; 4];
+        let number = |i: usize| i as u32;
+        let turned = |_: usize, _: f32| None;
+        let balls = Balls {
+            bodies,
+            history,
+            interval: 1.0 / 60.0,
+            newest_ago: 0.0,
+            colour: &colour,
+            number: &number,
+            turned: &turned,
+            last_hits: &[],
+        };
+        ball_emissions(&layer, ThingId(2), &balls, &|_| true, log, 240, 1.0, usize::MAX)
+    }
+
+    /// A ball let go late lets nothing off from before it was there.
+    #[test]
+    fn a_late_ball_lets_nothing_off_before_it_came() {
+        let (bodies, history, log) = two_balls(120, None);
+        let late: Vec<Emission> = steady(&bodies, &history, &log).into_iter().filter(|e| e.row == Some(1)).collect();
+        assert!(!late.is_empty());
+        assert!(late.iter().all(|e| e.time >= 0.5 - 1e-9), "{:?}", late.iter().map(|e| e.time).collect::<Vec<_>>());
+        assert_eq!(late.len(), 31, "one every 60th of a second from 0.5 s to 1 s");
+        // Each one is where the ball was then, on its own row.
+        for e in &late {
+            assert!((e.place.x - (e.time as f32 - 0.5) * 240.0).abs() < 4.5, "{e:?}");
+        }
+    }
+
+    /// A ball that popped keeps the particles it let off before the pop, and lets off no more.
+    #[test]
+    fn a_popped_ball_keeps_what_it_let_off_before() {
+        let (bodies, history, log) = two_balls(1000, Some(180));
+        let first: Vec<Emission> = steady(&bodies, &history, &log).into_iter().filter(|e| e.row == Some(0)).collect();
+        assert!(!first.is_empty(), "the particles in the air stay");
+        assert!(first.iter().all(|e| e.time <= 0.75 + 1e-9));
+        assert_eq!(first.len(), 46, "one every 60th of a second up to 0.75 s");
+    }
+
+    /// A steady emission off a turning, shrinking shape stays where it was let off: drawn later,
+    /// as the shape has turned on, it starts from the same place.
+    #[test]
+    fn a_turning_shape_s_steady_particles_stay_where_they_left() {
+        let layer = ParticlesLayer { emit: Emit::Steady, rate: 20.0, life: 2.0, ..ParticlesLayer::default() };
+        let log = Log::default();
+        let shrink: f32 = 0.2;
+        let wall = |angle: f32, scale: f32| Wall {
+            outline: bpe_runtime::Outline::Ring {
+                center: Vec2::new(10.0, -20.0),
+                radius: 300.0 * scale,
+                sides: 5,
+                angle,
+                thickness: 2.0,
+            },
+            solid: false,
+            spin: 1.0,
+            growth: -shrink,
+            velocity: Vec2::ZERO,
+        };
+        let a = shape_emissions(&layer, ThingId(1), Some(&wall(1.0, 1.0)), &log, 240, 1.0, usize::MAX);
+        let later = (1.0 - shrink / 240.0).powi(120);
+        let b = shape_emissions(&layer, ThingId(1), Some(&wall(1.5, later)), &log, 240, 1.5, usize::MAX);
+        let mut same = 0;
+        for e in &a {
+            let Some(f) = b.iter().find(|f| f.seed == e.seed) else { continue };
+            assert!((e.place - f.place).length() < 0.05, "{:?} then {:?}", e.place, f.place);
+            assert!((e.normal - f.normal).length() < 1e-3, "{:?} then {:?}", e.normal, f.normal);
+            same += 1;
+        }
+        assert!(same > 10, "{same}");
     }
 
     #[test]
