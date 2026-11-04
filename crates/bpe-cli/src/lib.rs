@@ -28,6 +28,8 @@ pub struct ExportOptions {
     pub max_frames: Option<u32>,
     /// Which video encoder to use.
     pub encoder: Encoder,
+    /// Also save each bus and the master as 24-bit WAVs beside the video.
+    pub stems: bool,
 }
 
 impl ExportOptions {
@@ -40,6 +42,7 @@ impl ExportOptions {
             scale: 1.0,
             max_frames: None,
             encoder: Encoder::Auto,
+            stems: false,
         }
     }
 }
@@ -280,7 +283,8 @@ fn export_with(
     let sound = sound_dir.path().join("sound.wav");
     if sound_share > 0 {
         let seconds = total as f64 / fps as f64;
-        bpe_sound::render_to_wav(scene, kit, &sound, seconds, |done| {
+        let extras = bpe_sound::Extras { stems: options.stems.then(|| bpe_sound::stem_paths(scene, &output)) };
+        bpe_sound::render_sound(scene, kit, &sound, seconds, &extras, |done| {
             progress(((done * sound_share as f64) as u32).min(sound_share), total)
         })
         .map_err(|e| if e.to_string().contains("cancelled") { anyhow::anyhow!(CANCELLED) } else { e })?;

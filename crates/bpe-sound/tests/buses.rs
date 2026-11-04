@@ -125,3 +125,81 @@ fn a_bus_limiter_keeps_the_sound_on_time() {
     assert_eq!(first(&limited), first(&one));
     assert!(off_by(&limited, &one, 1.0) < 1e-4, "a -12 dB blip is under a 0 dB ceiling");
 }
+
+/// The mix and each bus's stem, rendered with stems recorded.
+fn render_stems(scene: &Scene, kit: &Kit, seconds: f64) -> (Vec<f32>, [Vec<f32>; 3]) {
+    let resolved = resolve_scene(scene, &kit.registry);
+    let mut e = Engine::new(scene, &resolved, kit);
+    e.record_stems(true);
+    let blocks = (seconds * 48_000.0 / BLOCK as f64).ceil() as usize;
+    let (mut mix, mut stems) = (Vec::new(), [Vec::new(), Vec::new(), Vec::new()]);
+    let mut block = [0.0f32; BLOCK * 2];
+    for _ in 0..blocks {
+        e.render(&mut block);
+        mix.extend_from_slice(&block);
+        for (s, b) in stems.iter_mut().zip(e.stems()) {
+            s.extend_from_slice(b);
+        }
+    }
+    (mix, stems)
+}
+
+/// Bus 1 with the blip, sending to Bus 2 (on, with a limiter so the paths differ in time).
+fn two_buses(kit: &Kit) -> Scene {
+    let mut scene = toned(kit, 1);
+    set(&mut scene, "bus1_send2", Value::Number(-3.0));
+    set(&mut scene, "bus2_on", Value::Bool(true));
+    set(&mut scene, "bus2_pan", Value::Number(40.0));
+    let id = scene.add_layer_in(&kit.registry, ThingId::ROOT, SlotId::Mixer, "fx.limiter", Some(1)).unwrap();
+    set(&mut scene, &bpe_core::layered_key(id, "ceiling"), Value::Number(0.0));
+    scene
+}
+
+#[test]
+fn stems_sum_to_the_mix_before_the_limiter() {
+    let kit = kit();
+    let scene = two_buses(&kit);
+    let (mix, stems) = render_stems(&scene, &kit, SECONDS);
+    assert!(peak(&stems[0]) > 0.1 && peak(&stems[1]) > 0.05, "both buses play");
+    assert_eq!(peak(&stems[2]), 0.0, "Bus 3 is off");
+    // The blip is far under the ceiling, so the master's limiter leaves it as it is.
+    let off =
+        mix.iter().enumerate().fold(0.0f32, |m, (i, v)| m.max((v - stems[0][i] - stems[1][i] - stems[2][i]).abs()));
+    assert!(off < 1e-6, "{off}");
+    // Written to 24-bit files, they still add up to within the files' steps.
+    let dir = std::env::temp_dir().join(format!("bpe-stems-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let video = dir.join("clip.mp4");
+    let (buses, master) = bpe_sound::stem_paths(&scene, &video);
+    assert!(buses[1].ends_with("clip - Bus 2.wav") && master.ends_with("clip - Master.wav"));
+    let extras = bpe_sound::Extras { stems: Some((buses.clone(), master.clone())) };
+    bpe_sound::render_sound(&scene, &kit, &dir.join("clip.wav"), SECONDS, &extras, |_| true).unwrap();
+    let read = |p: &std::path::Path| -> Vec<f32> {
+        let mut r = hound::WavReader::open(p).unwrap();
+        assert_eq!((r.spec().bits_per_sample, r.spec().sample_rate, r.spec().channels), (24, 48_000, 2));
+        r.samples::<i32>().map(|s| s.unwrap() as f32 / 8_388_607.0).collect()
+    };
+    let files: Vec<Vec<f32>> = buses.iter().map(|p| read(p)).collect();
+    let m = read(&master);
+    let step = 1.5 / 8_388_607.0 * 4.0;
+    let off =
+        m.iter().enumerate().fold(0.0f32, |acc, (i, v)| acc.max((v - files.iter().map(|f| f[i]).sum::<f32>()).abs()));
+    assert!(off < step, "{off}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn muted_bus_stem_is_silent() {
+    let kit = kit();
+    let mut scene = two_buses(&kit);
+    set(&mut scene, "bus2_mute", Value::Bool(true));
+    let (mix, stems) = render_stems(&scene, &kit, SECONDS);
+    assert_eq!(peak(&stems[1]), 0.0);
+    assert!(mix.iter().zip(&stems[0]).all(|(a, b)| (a - b).abs() < 1e-6), "the mix is Bus 1 alone");
+    // Soloing Bus 2 silences Bus 1's stem, and Bus 2 then hears nothing from Bus 1.
+    let mut scene = two_buses(&kit);
+    set(&mut scene, "bus2_solo", Value::Bool(true));
+    let (_, stems) = render_stems(&scene, &kit, SECONDS);
+    assert_eq!(peak(&stems[0]), 0.0);
+    assert_eq!(peak(&stems[1]), 0.0);
+}

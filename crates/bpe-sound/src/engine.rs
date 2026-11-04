@@ -2,10 +2,12 @@
 
 use crate::buses::{Buses, ShapeRoute};
 use crate::hits::HitCursor;
+use crate::lag::Lag;
 use crate::{BLOCK, BlockCx, BlockHit, Master, MeterReading, Meters, SAMPLE_RATE, SoundPatch, TempoMap, VoiceSource};
 use bpe_core::{Resolved, Scene};
 use bpe_dsp::{FlushGuard, LoudnessMeter, gain_to_db};
 use bpe_kit::Kit;
+use bpe_kit::sound::BUSES;
 use bpe_runtime::Playback;
 use std::sync::Arc;
 
@@ -48,6 +50,12 @@ pub struct Engine {
     queue: [[f32; 2]; QUEUE],
     queue_head: usize,
     queue_len: usize,
+    /// Each bus's sound beside the queue, while stems are recorded.
+    record_stems: bool,
+    stem_queue: Box<[[[f32; 2]; BUSES]; QUEUE]>,
+    /// Line the stems up with the master's output (the limiter's lookahead).
+    stem_lags: [Lag; BUSES],
+    stems_out: [[f32; BLOCK * 2]; BUSES],
     /// The physics is where the voices are. A scene with no voices runs no physics (it would
     /// only hold the playhead back); the first voice brings it up to date.
     physics_synced: bool,
@@ -94,6 +102,10 @@ impl Engine {
             queue: [[0.0; 2]; QUEUE],
             queue_head: 0,
             queue_len: 0,
+            record_stems: false,
+            stem_queue: Box::new([[[0.0; 2]; BUSES]; QUEUE]),
+            stem_lags: std::array::from_fn(|_| Lag::new()),
+            stems_out: [[0.0; BLOCK * 2]; BUSES],
             physics_synced: true,
             paused_pos: 0,
         }
@@ -156,6 +168,9 @@ impl Engine {
             self.loudness.reset();
             return;
         }
+        for lag in &mut self.stem_lags {
+            lag.reset();
+        }
         self.voice_pos = start;
         self.sync_physics();
         self.out_pos = start;
@@ -167,6 +182,23 @@ impl Engine {
             self.render(&mut scratch);
         }
         self.loudness.reset();
+    }
+
+    /// Keeps each bus's sound from now on, lined up with the mix ([`Engine::stems`]). For the
+    /// export; the editor never records.
+    pub fn record_stems(&mut self, on: bool) {
+        self.record_stems = on;
+        for lag in &mut self.stem_lags {
+            lag.set(self.master.latency());
+            lag.reset();
+        }
+    }
+
+    /// Each bus's sound (interleaved stereo) in the block [`Engine::render`] last handed out,
+    /// after its fader, mute and solo: the three add up to the mix before the master. Silence
+    /// unless [`Engine::record_stems`] is on.
+    pub fn stems(&self) -> &[[f32; BLOCK * 2]; BUSES] {
+        &self.stems_out
     }
 
     /// Frames from a voice to the speakers: the buses' and the master's delays.
@@ -340,6 +372,12 @@ impl Engine {
         }
         for i in 0..BLOCK {
             let [l, r] = self.queue[self.queue_head];
+            if self.record_stems {
+                for (b, stem) in self.stem_queue[self.queue_head].iter().enumerate() {
+                    self.stems_out[b][2 * i] = stem[0];
+                    self.stems_out[b][2 * i + 1] = stem[1];
+                }
+            }
             self.queue_head = (self.queue_head + 1) % QUEUE;
             out[2 * i] = l;
             out[2 * i + 1] = r;
@@ -359,6 +397,14 @@ impl Engine {
         self.master.at(time);
         self.master.process(&mut self.bus_l, &mut self.bus_r);
         self.voice_pos += BLOCK as u64;
+        let mut stems = [[[0.0f32; BLOCK]; 2]; BUSES];
+        if self.record_stems {
+            stems = *self.buses.stems();
+            for (stem, lag) in stems.iter_mut().zip(&mut self.stem_lags) {
+                let [l, r] = stem;
+                lag.process(l, r);
+            }
+        }
         for i in 0..BLOCK {
             if self.discard > 0 {
                 self.discard -= 1;
@@ -366,6 +412,11 @@ impl Engine {
             }
             let at = (self.queue_head + self.queue_len) % QUEUE;
             self.queue[at] = [self.bus_l[i], self.bus_r[i]];
+            if self.record_stems {
+                for b in 0..BUSES {
+                    self.stem_queue[at][b] = [stems[b][0][i], stems[b][1][i]];
+                }
+            }
             self.queue_len += 1;
         }
     }
