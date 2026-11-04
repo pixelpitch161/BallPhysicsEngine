@@ -438,3 +438,27 @@ pub fn slot_changes(
     };
     SlotClock::changes_until(&spec, v.notes_slots.len(), clock_seed(shape), &tempo, end, &accepted)
 }
+
+/// [`slot_changes`] read from a physics `log`, in seconds up to `end_seconds`: where the
+/// timeline marks `shape`'s slot changes.
+pub fn slot_change_times(
+    scene: &Scene,
+    shape: ThingId,
+    log: &bpe_runtime::Log,
+    world: &World,
+    end_seconds: f64,
+) -> Vec<(f64, usize)> {
+    let per_step = SAMPLE_RATE as f64 / world.steps_per_second.max(1) as f64;
+    let mut hits: Vec<(u64, BlockHit)> = log
+        .events()
+        .iter()
+        .filter(|e| e.kind == bpe_runtime::EventKind::Hit)
+        .map(|e| (crate::hits::hit_sample(e, per_step), BlockHit { offset: 0, event: e.clone() }))
+        .collect();
+    hits.sort_by_key(|(at, _)| *at);
+    let end = (end_seconds.max(0.0) * SAMPLE_RATE as f64).round() as u64;
+    slot_changes(scene, shape, &hits, world, end)
+        .into_iter()
+        .map(|(at, s)| (at as f64 / SAMPLE_RATE as f64, s))
+        .collect()
+}

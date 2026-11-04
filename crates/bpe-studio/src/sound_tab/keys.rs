@@ -62,23 +62,6 @@ impl KeyGeom {
     pub fn is_black(note: u8) -> bool {
         !WHITE.contains(&(note % 12))
     }
-
-    /// The note whose column `x` is in: a black key's narrow column where it is, else the
-    /// white key under `x`.
-    pub fn note_at(&self, x: f32) -> Option<u8> {
-        let (lo, hi) = self.range();
-        let w = ((x - self.left) / self.kw).floor();
-        if w < 0.0 || w as usize >= 7 * self.octaves as usize {
-            return None;
-        }
-        for note in lo..=hi {
-            if Self::is_black(note) && self.x_of(note).is_some_and(|bx| (x - bx).abs() < self.kw * 0.3) {
-                return Some(note);
-            }
-        }
-        let w = w as usize;
-        Some(lo + 12 * (w / 7) as u8 + WHITE[w % 7])
-    }
 }
 
 /// The keyboard drawn in `rect` with its keys at `geom`; keys `in_key` says are in the
@@ -180,10 +163,5 @@ mod tests {
         assert_eq!(g.x_of(48), Some(5.0), "C4 in the middle of the first white key");
         assert_eq!(g.x_of(49), Some(10.0), "C#4 on the line after it");
         assert_eq!(g.x_of(47), None);
-        assert_eq!(g.note_at(5.0), Some(48));
-        assert_eq!(g.note_at(10.5), Some(49));
-        assert_eq!(g.note_at(13.5), Some(50), "D4 below its black keys' columns");
-        assert_eq!(g.note_at(209.0), Some(83));
-        assert_eq!(g.note_at(-1.0), None);
     }
 }

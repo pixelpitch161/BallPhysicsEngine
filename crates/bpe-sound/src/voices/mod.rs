@@ -13,4 +13,4 @@ pub use hit_filter::{HitFilter, STRONG_HIT, strength};
 pub use notes::{NotePick, NotePicker, PickCx};
 pub use pick::{AnyPick, RandomPick};
 pub use shape::{LEAVE_MS, ShapeSpec, ShapeVoice, note_hz};
-pub use slots::{NotesSpec, SlotClock, clock_seed, slot_changes};
+pub use slots::{NotesSpec, SlotClock, clock_seed, slot_change_times, slot_changes};
