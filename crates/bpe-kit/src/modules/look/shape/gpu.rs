@@ -140,13 +140,28 @@ impl ShapeStack {
         if b.blend == Blend::Normal && b.blend_amount >= 1.0 {
             return None;
         }
-        let at = self.blend_at.min(self.drawn.len());
-        if !self.drawn[at..].iter().any(|(_, d, _)| d.writes()) {
+        let drawn = &self.drawn[..self.kept()];
+        let at = self.blend_at.min(drawn.len());
+        if !drawn[at..].iter().any(|(_, d, _)| d.writes()) {
             return None;
         }
-        let under: usize =
-            self.drawn[..at].iter().filter(|(_, d, _)| d.writes()).map(|(_, _, subs)| 1 + written(subs).count()).sum();
+        let under: usize = drawn[..at].iter().map(|(_, d, subs)| records_of(d, subs)).sum();
         Some(1 + under as u32)
+    }
+
+    /// How many of `drawn` (from the bottom) have their records written: the walk reads at most
+    /// [`MAX_LAYERS`] records, so past that whole layers are left out from the top, never part
+    /// of one.
+    pub fn kept(&self) -> usize {
+        let room = MAX_LAYERS as usize - 1;
+        let mut used = 0;
+        for (i, (_, d, subs)) in self.drawn.iter().enumerate() {
+            used += records_of(d, subs);
+            if used > room {
+                return i;
+            }
+        }
+        self.drawn.len()
     }
 
     /// How the whole shape mixes with what is behind it: its Blend layer's, Normal without one.
@@ -213,7 +228,7 @@ impl ShapeStack {
 
     /// The records the stack draws with, bottom first, its gradients baked into `atlas`. The
     /// Body's is first; each layer's sub-layers follow it; a Shader whose own code doesn't read
-    /// writes none. At most [`MAX_LAYERS`].
+    /// writes none. At most [`MAX_LAYERS`]: the layers past [`ShapeStack::kept`] are left out.
     pub fn records(&self, geometry: &Geometry, atlas: &mut GradientAtlas) -> Vec<LayerGpu> {
         let blend = |b: Blend| b.shader_code();
         let flag = |from: ColourFrom| if from == ColourFrom::SameAsBody { LayerGpu::FLAG } else { 0 };
@@ -234,7 +249,7 @@ impl ShapeStack {
         let mut placed: Vec<(LayerId, usize)> = vec![(self.body_id, 0)];
         // Shapes have no brush; cuts and shading never add tiles.
         let mut tiles = Vec::new();
-        for (id, d, subs) in &self.drawn {
+        for (id, d, subs) in &self.drawn[..self.kept()] {
             let r = match d {
                 ShapeDrawn::Paint(p) => LayerGpu {
                     head: [LayerGpu::SHAPE_PAINT, blend(p.blend), 0, 0],
@@ -278,9 +293,14 @@ impl ShapeStack {
             }
             placed.push((*id, at));
         }
-        out.truncate(MAX_LAYERS as usize);
         out
     }
+}
+
+/// How many records drawn layer `d` with sub-layers `subs` writes: its own and its shown
+/// sub-layers', none when it writes none.
+fn records_of(d: &ShapeDrawn, subs: &[Sub]) -> usize {
+    if d.writes() { 1 + written(subs).count() } else { 0 }
 }
 
 /// What a layer's own `colours` paint: nothing for one colour (the record's `colour` is used),
@@ -460,6 +480,33 @@ mod tests {
         // The outline sits inside: the glow on it reaches its own way out.
         assert_eq!(stack.reach_past(), (GLOW_REACH * 30.0).max(GLOW_REACH * 20.0));
         assert!(!stack.needs_hits());
+    }
+
+    #[test]
+    fn too_many_records_cut_whole_layers() {
+        use super::super::SUB_GLOW;
+        let mut atlas = GradientAtlas::default();
+        let (stack, _) = shape_with(|s, reg, t| {
+            // Ten paint layers of thirteen records each, and a Blend layer after the ninth.
+            for i in 0..10 {
+                let paint = s.add_layer(reg, t, SlotId::Look, PAINT).unwrap();
+                for _ in 0..bpe_core::MAX_SUBS {
+                    s.add_sub_layer(reg, t, SlotId::Look, paint, SUB_GLOW).unwrap();
+                }
+                if i == 8 {
+                    let blend = s.add_layer(reg, t, SlotId::Look, BLEND).unwrap();
+                    set(s, t, blend, "blend", Blend::Screen.to_value());
+                }
+            }
+        });
+        let r = stack.records(&Geometry::default(), &mut atlas);
+        // Nine fit (1 + 9 × 13 = 118): the tenth is left out whole, sub-layers and all.
+        assert_eq!(r.len(), 1 + 9 * 13);
+        assert_eq!(stack.kept(), 9);
+        let last = 1 + 8 * 13;
+        assert_eq!((r[last].head[0], r[last].head[3]), (LayerGpu::SHAPE_PAINT, bpe_core::MAX_SUBS as u32));
+        assert!(r[last + 1..].iter().all(|l| l.head[0] == LayerGpu::SUB_GLOW));
+        assert_eq!(stack.split(), None, "nothing kept is over the Blend layer");
     }
 
     #[test]
