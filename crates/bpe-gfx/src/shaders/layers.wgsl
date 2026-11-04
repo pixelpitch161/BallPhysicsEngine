@@ -272,6 +272,12 @@ fn own_colour(l: LayerGpu, p: vec2<f32>, out: f32, plain: vec3<f32>) -> vec3<f32
 // left by the walk of its lower part.
 var<private> TOP_COVER: vec2<f32>;
 
+// Set while an effect runs on a Shader sub-layer's picture: the walk it samples (from the layer's
+// record to the shader's) then works the layer at full opacity and without its cuts (they still
+// decide where the layer shows), over PIECE_UNDER, the colour of the stack under the layer.
+var<private> PIECE_PICTURE: bool;
+var<private> PIECE_UNDER: vec3<f32>;
+
 // What a thing covering `cover` of the pixel draws there, walked as `w` for part `split` (see
 // layers_walk.wgsl): its inside and outside mixed by `cover`. The lower part of a thing split by
 // its Blend layer leaves out what its upper part covers (TOP_COVER), so that the upper part drawn

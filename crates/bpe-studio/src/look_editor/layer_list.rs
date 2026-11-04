@@ -201,7 +201,8 @@ pub fn row(
             ui.allocate_exact_size(Vec2::splat(if sub { 14.0 } else { 16.0 }), Sense::click());
         if sub {
             paint_sub_thumbnail(ui.painter(), thumb, cx, layer);
-            if sub_name(&layer.kind) == Some("cut") {
+            // Only balls have a view to show a layer's cuts alone in.
+            if layer.kind == kinds::SUB_CUT {
                 alt_click_solo(ui, inspector, cx, &thumb_response, solo, layer);
             }
         } else {

@@ -295,3 +295,46 @@ fn a_shape_s_outline_takes_a_glow_sub_layer_lighting_inside_its_band_and_a_recol
     let green = at(recoloured + Vec2::new(0.5, 0.5));
     assert!(green[1] > 200 && green[0] < 30, "the red paint turned green: {green:?}");
 }
+
+#[test]
+fn a_glow_layer_takes_colour_sub_layers_and_a_half_opaque_layer_s_outline_is_as_opaque_as_it() {
+    let glowing = Vec2::new(-130.0, -200.0);
+    let half = Vec2::new(130.0, -200.0);
+    let glow_layer = LayerGpu {
+        head: [LayerGpu::GLOW, 0, 0, 1],
+        amount: [1.0, 1.0, 0.0, 0.0],
+        p0: [0.4, 0.0, 0.0, 0.0],
+        colour: [1.0, 0.0, 0.0, 1.0],
+        ..LayerGpu::ZERO
+    };
+    // Tinted wholly green.
+    let green = LayerGpu {
+        head: [LayerGpu::SUB_RECOLOUR, 0, 0, 0],
+        amount: [1.0, 1.0, 0.0, 0.0],
+        p0: [0.0, 0.0, 0.0, 1.0],
+        p1: [1.0, 0.0, 0.0, 0.0],
+        colour: [0.0, 1.0, 0.0, 1.0],
+        ..LayerGpu::ZERO
+    };
+    // A red outline of the same red sitting inside the edge of a red pattern at half opacity.
+    let same_red = LayerGpu {
+        head: [LayerGpu::SUB_OUTLINE, 0, 0, 0],
+        amount: [1.0, 0.0, 0.0, 0.0],
+        p0: [20.0, 0.0, 0.0, 0.0],
+        colour: [1.0, 0.0, 0.0, 1.0],
+        ..LayerGpu::ZERO
+    };
+    let frame = balls(|f| {
+        let mut red = plain_pattern(f, Color::rgb(255, 0, 0), 1);
+        red.amount[0] = 0.5;
+        vec![(glowing, 80.0, GREY, vec![body(), glow_layer, green]), (half, 80.0, GREY, vec![body(), red, same_red])]
+    });
+    let Some(px) = render_sized(&frame, W, H) else { return };
+    save("sub-glow-layer-opacity", &px, W, H);
+    let light = at(&px, glowing + Vec2::new(90.0, 0.5));
+    assert!(light[1] > light[0] + 30, "the glow's light turned green: {light:?}");
+    let (band, middle) = (at(&px, half + Vec2::new(70.0, 0.5)), at(&px, half + Vec2::new(0.5, 0.5)));
+    for i in 0..3 {
+        assert!(band[i].abs_diff(middle[i]) < 4, "the band as opaque as the layer: {band:?} vs {middle:?}");
+    }
+}

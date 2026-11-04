@@ -35,6 +35,11 @@ fn SHAPE_WALK(world: vec2<f32>, s: ShapeAt, first: u32, count_in: u32, split: u3
     var top_in = vec4<f32>(0.0);
     var top_out = vec4<f32>(0.0);
     var cover_top = vec2<f32>(0.0);
+    // The lower part: the whole stack up to here, with the layers above the Blend layer, so what
+    // reads the stack (cuts from light or dark, colours the same as under) reads the same layers
+    // as in the upper part.
+    var whole_in = vec4<f32>(0.0);
+    var whole_out = vec4<f32>(0.0);
     let count = min(count_in, MAX_LAYERS);
     // Read before it is written only by a walk that starts at a layer above the body (a shader
     // sub-layer's picture): nothing under that layer then hides it.
@@ -60,14 +65,32 @@ fn SHAPE_WALK(world: vec2<f32>, s: ShapeAt, first: u32, count_in: u32, split: u3
             open = false;
             let mode = ll.head.y;
             let above = cut > 0u && lk >= cut;
-            let p_in = clamp(piece.a_in, 0.0, 1.0);
-            let p_out = clamp(piece.a_out, 0.0, 1.0);
+            // The layer's opacity, applied once to the piece and everything its sub-layers added
+            // (a sub-layer's picture shows the layer whole). A glow layer's light is made here,
+            // from its colour after its sub-layers and its strength after its cuts.
+            let lo = select(clamp(ll.amount.x, 0.0, 1.0), 1.0, PIECE_PICTURE);
+            piece.light_in *= lo;
+            piece.light_out *= lo;
+            glow_amount *= lo;
+            if ll.head.x == 4u {
+                piece.light_out += sub_light(piece.c_out, glow_amount, select(outer, whole_out, lower && above), mode);
+            }
+            let p_in = clamp(piece.a_in, 0.0, 1.0) * lo;
+            let p_out = clamp(piece.a_out, 0.0, 1.0) * lo;
             SHAPE_COV_IN[lk] = p_in;
             SHAPE_COV_OUT[lk] = select(p_out, clamp(glow_amount, 0.0, 1.0), ll.head.x == 4u);
             below = lk;
             if lower && above {
                 // Left out of the lower part; only how much it covers counts (light covers nothing).
                 cover_top = vec2<f32>(p_in, p_out) + cover_top * (vec2<f32>(1.0) - vec2<f32>(p_in, p_out));
+                if p_in > 0.0 {
+                    whole_in = layer_over(whole_in, piece.c_in, p_in, mode);
+                }
+                if p_out > 0.0 {
+                    whole_out = layer_over(whole_out, piece.c_out, p_out, mode);
+                }
+                whole_in = vec4<f32>(whole_in.rgb + piece.light_in, whole_in.a);
+                whole_out = vec4<f32>(whole_out.rgb + piece.light_out, whole_out.a);
             } else {
                 if upper && above {
                     if p_in > 0.0 {
@@ -87,6 +110,10 @@ fn SHAPE_WALK(world: vec2<f32>, s: ShapeAt, first: u32, count_in: u32, split: u3
                 }
                 inner = vec4<f32>(inner.rgb + piece.light_in, inner.a);
                 outer = vec4<f32>(outer.rgb + piece.light_out, outer.a);
+                if lower && lk < cut {
+                    whole_in = inner;
+                    whole_out = outer;
+                }
             }
         }
         if end {
@@ -97,14 +124,17 @@ fn SHAPE_WALK(world: vec2<f32>, s: ShapeAt, first: u32, count_in: u32, split: u3
             continue;
         }
         let flag = (r.head.z & 1u) != 0u;
-        let opacity = clamp(r.amount.x, 0.0, 1.0);
+        // A layer is worked out whole: its opacity applies to its piece once it is done, so what
+        // its sub-layers add fades with it. A sub-layer's own opacity applies as it works.
+        let opacity = select(1.0, clamp(r.amount.x, 0.0, 1.0), sub);
         let mode = select(r.head.y, ll.head.y, sub);
-        // What a sub-layer adds (glow, outline, shadow) fades with its layer's opacity.
-        if sub && r.head.x >= 21u && r.head.x <= 23u {
-            r.amount.x = opacity * clamp(ll.amount.x, 0.0, 1.0);
-        }
-        // The colour of the layers under this one here, as if wholly inside the shape.
-        let under = select(vec3<f32>(1.0), inner.rgb / inner.a, inner.a > 1e-5);
+        // The layers under this one, as the whole shape has them (the lower part of a split shape
+        // keeps them with the layers above the Blend layer, so both parts read the same).
+        let above_here = cut > 0u && select(k, lk, sub) >= cut;
+        let stack_in = select(inner, whole_in, lower && above_here);
+        let stack_out = select(outer, whole_out, lower && above_here);
+        // Their colour here, as if wholly inside the shape.
+        let under = select(select(vec3<f32>(1.0), stack_in.rgb / stack_in.a, stack_in.a > 1e-5), PIECE_UNDER, PIECE_PICTURE);
         // How far along its colours each kind reads, and its colours there (one place for every
         // kind, so the paint maths compiles once): a layer's run along the shape, a sub-layer's
         // across it (or across an outline's band, out to a glow's size).
@@ -178,13 +208,15 @@ fn SHAPE_WALK(world: vec2<f32>, s: ShapeAt, first: u32, count_in: u32, split: u3
                 if t >= 0 && u32(t) < lk {
                     chosen = vec2<f32>(SHAPE_COV_IN[t], SHAPE_COV_OUT[t]);
                 }
-                let v = cut_value(r, s.q, upright, vec2<f32>(SHAPE_COV_IN[below], SHAPE_COV_OUT[below]), chosen, inner, outer, unit_aa);
-                piece = sub_cut(piece, v.xy, v.z * scale);
-                glow_amount *= v.y;
+                if !PIECE_PICTURE {
+                    let v = cut_value(r, s.q, upright, vec2<f32>(SHAPE_COV_IN[below], SHAPE_COV_OUT[below]), chosen, stack_in, stack_out, unit_aa);
+                    piece = sub_cut(piece, v.xy, v.z * scale);
+                    glow_amount *= v.y;
+                }
             }
             case 21u: {
                 let col = select(own_c, piece_colour(piece), flag);
-                piece = sub_glow(piece, r, col, fade, inner, outer, mode);
+                piece = sub_glow(piece, r, col, fade, stack_in, stack_out, mode);
             }
             case 22u: {
                 let lohi = sub_outline_band(r, max(r.p0.x, 0.0));
@@ -241,7 +273,6 @@ fn SHAPE_WALK(world: vec2<f32>, s: ShapeAt, first: u32, count_in: u32, split: u3
             if r.head.x == 4u {
                 piece.a_in = 0.0;
                 piece.a_out = 0.0;
-                piece.light_out = sub_light(c, a_out, outer, mode);
                 glow_amount = a_out;
             }
         }

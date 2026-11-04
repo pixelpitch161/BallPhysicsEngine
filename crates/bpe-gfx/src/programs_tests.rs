@@ -388,18 +388,27 @@ fn a_shader_sub_layer_sees_only_its_own_layer() {
     let mut frame = frame_with(vec![], &[Cow::Borrowed(SWAP)]);
     let mut red = pattern(&mut frame, Gradient::solid(Color::rgb(255, 0, 0)), 0.0, 0.0);
     red.amount[0] = 0.5;
-    red.head[3] = 1;
+    red.head[3] = 2;
+    // Cut by the body (which covers it all), so its picture is the same uncut.
+    let by_body = LayerGpu {
+        head: [LayerGpu::SUB_CUT, 0, 0, 0],
+        amount: [1.0, 0.0, 0.0, 0.0],
+        p0: [1.0, 0.0, 0.05, 1.0],
+        p1: [0.0, 0.0, 0.5, -1.0],
+        ..LayerGpu::ZERO
+    };
     let mut swap = shader("lava", 0, 1.0);
     swap.head[0] = LayerGpu::SUB_SHADER;
     swap.extra = [[1.0, 0.0, 0.0, 0.0], [0.0; 4], [0.0; 4], [0.0; 4]];
-    frame.look_layers = vec![body(), red, swap];
-    frame.layered[0].range[1] = 3;
+    frame.look_layers = vec![body(), red, by_body, swap];
+    frame.layered[0].range[1] = 4;
     frame.layered[0].body = [0.0, 1.0, 0.0, 1.0];
     let Some((px, errors)) = draw(&frame) else { return };
     save("program-sub-shader", &px, W, H);
     assert!(errors.is_empty(), "{errors:?}");
     // It sees the red layer alone (blue after the swap) and the green body shows through half of
-    // it; had it seen the green under it too, it would keep the green and be greener still.
+    // it; had it seen the green under it too, it would keep the green and be greener still, and
+    // had the cut read the wrong layer it would see black.
     let middle = at(&px, 0.0, 0.0);
     assert!(middle[0] < 20 && middle[2] > 100 && middle[1] < 205, "{middle:?}");
 }

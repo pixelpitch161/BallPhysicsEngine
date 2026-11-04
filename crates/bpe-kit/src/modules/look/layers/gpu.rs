@@ -1097,7 +1097,9 @@ mod tests {
     fn a_sub_layer_shader_joins_the_effects_once() {
         let stack = stack_after(|reg, s, b| {
             let lava = s.add_layer(reg, b, SlotId::Look, SHADER).unwrap();
-            let sub = s.add_sub_layer(reg, b, SlotId::Look, lava, SUB_SHADER).unwrap();
+            assert!(s.add_sub_layer(reg, b, SlotId::Look, lava, SUB_SHADER).is_err(), "no shader on a shader");
+            let p = s.add_layer(reg, b, SlotId::Look, PATTERN).unwrap();
+            let sub = s.add_sub_layer(reg, b, SlotId::Look, p, SUB_SHADER).unwrap();
             s.set_at(
                 reg,
                 &bpe_core::Address::on(b, SlotId::Look, &layered_key(sub, "effect")),

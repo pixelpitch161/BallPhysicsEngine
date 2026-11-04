@@ -16,7 +16,7 @@
 // effect) is written once for layers and sub-layers alike: the shader compiles small. COV_IN and
 // COV_OUT keep each layer's piece's final cover, by record, for the cuts of layers above it. A
 // shader sub-layer samples its piece alone: the walk it samples starts at the layer's record and
-// stops before the shader's.
+// stops before the shader's, with PIECE_PICTURE set (the layer whole, uncut, over PIECE_UNDER).
 
 var<private> COV_IN: array<f32, 128>;
 var<private> COV_OUT: array<f32, 128>;
@@ -106,8 +106,18 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
                 TOP_COVER = vec2<f32>(0.0);
                 return Walked(vec4<f32>(vec3<f32>(cuts.x), 1.0), vec4<f32>(0.0));
             }
-            let p_in = clamp(piece.a_in, 0.0, 1.0);
-            let p_out = clamp(piece.a_out, 0.0, 1.0);
+            // The layer's opacity, applied once to the piece and everything its sub-layers added
+            // (a sub-layer's picture shows the layer whole). A glow layer's light is made here,
+            // from its colour after its sub-layers and its strength after its cuts.
+            let lo = select(clamp(ll.amount.x, 0.0, 1.0), 1.0, PIECE_PICTURE);
+            piece.light_in *= lo;
+            piece.light_out *= lo;
+            glow_amount *= lo;
+            if ll.head.x == 4u {
+                piece.light_out += sub_light(piece.c_out, glow_amount, select(outer, whole_out, lower && above), mode);
+            }
+            let p_in = clamp(piece.a_in, 0.0, 1.0) * lo;
+            let p_out = clamp(piece.a_out, 0.0, 1.0) * lo;
             COV_IN[lk] = p_in;
             COV_OUT[lk] = select(p_out, clamp(glow_amount, 0.0, 1.0), ll.head.x == 4u);
             below = lk;
@@ -171,14 +181,11 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
             continue;
         }
         let flag = (r.head.z & 1u) != 0u;
-        let opacity = clamp(r.amount.x, 0.0, 1.0);
+        // A layer is worked out whole: its opacity applies to its piece once it is done, so what
+        // its sub-layers add fades with it. A sub-layer's own opacity applies as it works.
+        let opacity = select(1.0, clamp(r.amount.x, 0.0, 1.0), sub);
         // A layer mixes in by its own blend; a sub-layer's light by its layer's.
         let mode = select(r.head.y, ll.head.y, sub);
-        // What a sub-layer adds (glow, outline, shadow) fades with its layer's opacity, so a layer
-        // at 0 (or one a ball doesn't wear) shows nothing of its own.
-        if sub && r.head.x >= 21u && r.head.x <= 23u {
-            r.amount.x = opacity * clamp(ll.amount.x, 0.0, 1.0);
-        }
         // How far along its own colours each kind reads: across an outline's band, out from the
         // edge to a glow's size, from the middle out for the rest.
         var along = length(p);
@@ -246,7 +253,7 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
                 // Shine: white light, or its own colours (straight across the ball, or from its
                 // middle), over the layers under it, or over its layer's piece.
                 let light = select(vec3<f32>(1.0), own_c, flag);
-                let under = select(body_c, inner.rgb / inner.a, inner.a > 1e-5);
+                let under = select(select(body_c, inner.rgb / inner.a, inner.a > 1e-5), PIECE_UNDER, PIECE_PICTURE);
                 let lit_in = shine_material(lit_at, select(under, piece.c_in, sub), r.p0.xy, r.p0.z, r.p0.w, r.p1.x, light);
                 let strength = clamp(r.amount.y, 0.0, 1.0);
                 if sub {
@@ -282,22 +289,25 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
                 top_out = group_over(top_out);
             }
             case 20u: {
-                let t = i32(r.amount.y);
-                var chosen = vec2<f32>(0.0);
-                if t >= 0 && u32(t) < lk {
-                    chosen = vec2<f32>(COV_IN[t], COV_OUT[t]);
+                if !PIECE_PICTURE {
+                    let t = i32(r.amount.y);
+                    var chosen = vec2<f32>(0.0);
+                    if t >= 0 && u32(t) < lk {
+                        chosen = vec2<f32>(COV_IN[t], COV_OUT[t]);
+                    }
+                    let above = cut > 0u && lk >= cut;
+                    let under_in = select(inner, whole_in, lower && above);
+                    let under_out = select(outer, whole_out, lower && above);
+                    let v = cut_value(r, p, screen, vec2<f32>(COV_IN[below], COV_OUT[below]), chosen, under_in, under_out, aa);
+                    piece = sub_cut(piece, v.xy, v.z);
+                    cuts *= v.xy;
+                    glow_amount *= v.y;
                 }
-                let above = cut > 0u && lk >= cut;
-                let under_in = select(inner, whole_in, lower && above);
-                let under_out = select(outer, whole_out, lower && above);
-                let v = cut_value(r, p, screen, vec2<f32>(COV_IN[below], COV_OUT[below]), chosen, under_in, under_out, aa);
-                piece = sub_cut(piece, v.xy, v.z);
-                cuts *= v.xy;
-                glow_amount *= v.y;
             }
             case 21u: {
                 let col = select(own_c, piece_colour(piece), flag);
-                piece = sub_glow(piece, r, col, fade, inner, outer, mode);
+                let above = cut > 0u && lk >= cut;
+                piece = sub_glow(piece, r, col, fade, select(inner, whole_in, lower && above), select(outer, whole_out, lower && above), mode);
             }
             case 22u: {
                 let lohi = sub_outline_band(r, max(r.p0.x, 0.0) / layered_ball.radius.y);
@@ -350,15 +360,14 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
             lk = k;
             ll = r;
             lc = c;
-            la_in = a_in;
-            la_out = a_out;
+            la_in = a_in * clamp(r.amount.x, 0.0, 1.0);
+            la_out = a_out * clamp(r.amount.x, 0.0, 1.0);
             piece = Piece(c, a_in, c, a_out, vec3<f32>(0.0), vec3<f32>(0.0), ball_layer_sd(r, d));
             glow_amount = 0.0;
             cuts = vec2<f32>(1.0);
             if r.head.x == 4u {
                 piece.a_in = 0.0;
                 piece.a_out = 0.0;
-                piece.light_out = sub_light(c, a_out, outer, mode);
                 glow_amount = a_out;
             }
         }

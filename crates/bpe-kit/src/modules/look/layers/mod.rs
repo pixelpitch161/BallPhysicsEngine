@@ -149,6 +149,12 @@ impl LayerKind for Kind {
     fn takes_subs(&self) -> bool {
         self.takes_subs
     }
+    /// A Shader layer takes no Shader sub-layer: the picture a shader sub-layer reads is its
+    /// layer worked out without effects.
+    fn takes_sub(&self, sub: &str) -> bool {
+        !((self.id == SHADER && sub == SUB_SHADER)
+            || (self.id == super::shape::SHADER && sub == super::shape::SUB_SHADER))
+    }
     fn dynamic_defs(&self, get: &dyn Fn(&str) -> Option<Value>) -> &'static [SettingDef] {
         (self.dynamic)(get)
     }
