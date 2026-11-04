@@ -502,21 +502,28 @@ pub fn show(
             .copied()
             .filter(|s| !thing.slots.contains_key(s) && reg.kinds_fitting(*s, kind).next().is_some())
             .collect();
-        // Motion and Bounce are one entry, Physics, which adds whichever of them is missing.
-        let mut entries: Vec<(&str, Vec<SlotId>)> = Vec::new();
+        // Motion and Bounce are one entry, Physics, at the first of them. It adds every Physics
+        // card the kind uses, so each selected thing gets whichever it lacks.
+        let mut entries: Vec<(&str, Vec<SlotId>, String)> = Vec::new();
         for &slot in &missing {
             if !PHYSICS.contains(&slot) {
-                entries.push((kind.slot_label(slot), vec![slot]));
-            } else if let Some((_, slots)) = entries.iter_mut().find(|(label, _)| *label == "Physics") {
-                slots.push(slot);
-            } else {
-                entries.push(("Physics", vec![slot]));
+                let label = kind.slot_label(slot);
+                entries.push((label, vec![slot], format!("Adds {label} to this thing")));
+            } else if !entries.iter().any(|(label, ..)| *label == "Physics") {
+                let all: Vec<SlotId> = PHYSICS
+                    .into_iter()
+                    .filter(|s| kind.slots().contains(s) && reg.kinds_fitting(*s, kind).next().is_some())
+                    .collect();
+                let lacks: Vec<&str> =
+                    missing.iter().filter(|s| PHYSICS.contains(s)).map(|s| kind.slot_label(*s)).collect();
+                let help = format!("Adds {} to this thing's Physics", lacks.join(" and "));
+                entries.push(("Physics", all, help));
             }
         }
         ui.add_enabled_ui(!missing.is_empty(), |ui| {
             ui.menu_button("+ Add slot", |ui| {
-                for (label, slots) in &entries {
-                    if ui.button(*label).clicked() {
+                for (label, slots, help) in &entries {
+                    if ui.button(*label).on_hover_text(help).clicked() {
                         edits.extend(slots.iter().map(|s| Edit::AddSlot(*s)));
                         ui.close();
                     }
@@ -2479,6 +2486,7 @@ mod tests {
         assert!(h.query_all_by_role_and_label(Role::Slider, "Bounciness").next().is_none(), "only with Takes over");
         assert!(h.query_all_by_label("Gravity ×").next().is_none(), "a shape has no Motion card");
         assert!(h.query_by_label("Hide Motion").is_none());
+        assert!(h.query_by_label("Hide Bounce").is_some(), "the shape's Bounce settings show");
     }
 
     #[test]
@@ -2503,5 +2511,29 @@ mod tests {
         drag_slider(&mut h, rect, 0.2);
         assert_ne!(card(&h, SlotId::Bounce), bounce, "Bounciness is Bounce's");
         assert_eq!(card(&h, SlotId::Motion), motion, "Motion is untouched");
+    }
+
+    #[test]
+    fn adding_physics_fills_every_selected_ball() {
+        let mut h = harness(Some(ThingId(2)));
+        {
+            let s = h.state_mut();
+            let other = bpe_kit::add_thing(&mut s.scene, &s.kit.registry, "balls", ThingId::ROOT).unwrap();
+            s.scene.remove_slot(ThingId(2), SlotId::Bounce);
+            s.scene.remove_slot(other, SlotId::Motion);
+            s.scene.remove_slot(other, SlotId::Bounce);
+            s.selection.extra.insert(other);
+            s.resolved = resolve(&s.scene, &s.kit.registry);
+        }
+        h.run();
+        h.get_by_label("+ Add slot").click();
+        h.run();
+        h.get_all_by_label("Physics").last().expect("the Physics entry").click();
+        h.run();
+        let s = h.state();
+        for t in [ThingId(2), *s.selection.extra.last().expect("the other ball")] {
+            let slots = &s.scene.things[&t].slots;
+            assert!(slots.contains_key(&SlotId::Motion) && slots.contains_key(&SlotId::Bounce), "{t:?}");
+        }
     }
 }
