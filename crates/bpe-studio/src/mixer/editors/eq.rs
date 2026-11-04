@@ -11,7 +11,7 @@ use crate::style;
 use bpe_core::{Choice, LayerId, Settings, Value};
 use bpe_dsp::fx::analyser::Analyser;
 use bpe_dsp::fx::eq::band_response_db;
-use bpe_kit::sound::fx::{AnalyserMode, BAND_FREQS, BandKind, EqBand, EqSettings, Slope, StereoPlace};
+use bpe_kit::sound::fx::{AnalyserMode, BandKind, EqBand, EqSettings, Slope, StereoPlace};
 use bpe_sound::fx_chain::eq_bands;
 use bpe_sound::{FX_BINS, Meters};
 use eframe::egui::{self, Align2, Pos2, Rect, RichText, Sense, Shape, Stroke, Ui, Vec2};
@@ -224,12 +224,15 @@ fn curve(ui: &mut Ui, cx: &mut MixCx, mixer: &mut Mixer, meters: Option<&Meters>
                 ui.close();
             }
             if ui.button("Delete").on_hover_text("Turns it off and puts it back as it started").clicked() {
-                let start = EqBand::bell(BAND_FREQS[i]);
+                let fresh = EqSettings::default();
+                let start = fresh.bands()[i];
                 cx.set(&key(i, "on"), Value::Bool(false));
                 cx.set(&key(i, "kind"), Value::Choice(start.kind.name().into()));
                 cx.set(&key(i, "freq"), Value::Number(start.freq as f64));
-                cx.set(&key(i, "gain"), Value::Number(0.0));
+                cx.set(&key(i, "gain"), Value::Number(start.gain as f64));
                 cx.set(&key(i, "q"), Value::Number(start.q as f64));
+                cx.set(&key(i, "slope"), Value::Choice(start.slope.name().into()));
+                cx.set(&key(i, "place"), Value::Choice(start.place.name().into()));
                 ui.close();
             }
         });

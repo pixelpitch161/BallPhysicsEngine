@@ -73,8 +73,20 @@ pub fn stem_paths(scene: &Scene, video: &Path) -> ([PathBuf; BUSES], PathBuf) {
         .card(bpe_core::ThingId::ROOT, SlotId::Mixer)
         .map(|c| MixerSettings::from_params(&c.params))
         .unwrap_or_default();
-    let file = |name: &str| dir.join(format!("{base} - {}.wav", safe_name(name)));
-    (std::array::from_fn(|i| file(&mixer.bus(i as u8 + 1).name)), file("Master"))
+    let file = |name: &str| dir.join(format!("{base} - {name}.wav"));
+    let names: [String; BUSES] = std::array::from_fn(|i| safe_name(&mixer.bus(i as u8 + 1).name));
+    // Two buses of one name (or one called Master) get their numbers, so no file is written twice.
+    let taken = |i: usize| {
+        let n = names[i].to_lowercase();
+        n == "master" || names.iter().enumerate().any(|(j, m)| j != i && m.to_lowercase() == n)
+    };
+    let buses =
+        std::array::from_fn(
+            |i| {
+                if taken(i) { file(&format!("{} (Bus {})", names[i], i + 1)) } else { file(&names[i]) }
+            },
+        );
+    (buses, file("Master"))
 }
 
 /// `name` with the characters Windows won't take in a file name replaced.
@@ -162,13 +174,20 @@ pub fn render_sound(
             bail!("sound render cancelled");
         }
     }
+    let mut result = Ok(());
     for w in stems {
-        w.finish()?;
+        result = result.and_then(|()| w.finish());
     }
     if let Some(midi) = &extras.midi {
-        crate::midi::write_midi(midi, scene, engine.note_log(), engine.tempo(), total as u64)?;
+        written_files.push(midi.clone());
+        result =
+            result.and_then(|()| crate::midi::write_midi(midi, scene, engine.note_log(), engine.tempo(), total as u64));
     }
-    out.finish()
+    result = result.and_then(|()| out.finish());
+    if result.is_err() {
+        remove_all(&written_files);
+    }
+    result
 }
 
 /// `seconds` of the scene's sound, interleaved stereo, all in memory (for tests and short

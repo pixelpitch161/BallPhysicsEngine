@@ -27,9 +27,20 @@ const FADER_HI: f64 = 6.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SlotDrag(pub LayerId);
 
-/// The mixer card's settings as set (no keys), for the send graph.
+/// The mixer card's settings as set, for the send graph: a send with keys counts as up, as
+/// the sound counts it.
 pub fn mixer_settings(cx: &MixCx) -> MixerSettings {
-    cx.scene.card(ThingId::ROOT, SlotId::Mixer).map(|c| MixerSettings::from_params(&c.params)).unwrap_or_default()
+    let Some(card) = cx.scene.card(ThingId::ROOT, SlotId::Mixer) else { return MixerSettings::default() };
+    let mut params = card.params.clone();
+    for from in 1..=BUSES as u8 {
+        for to in 1..=BUSES as u8 {
+            let key = MixerSettings::bus_key(from, &format!("send{to}"));
+            if cx.scene.keyed(&bpe_core::Address::on(ThingId::ROOT, SlotId::Mixer, &key)) {
+                params.set(&key, Value::Number(0.0));
+            }
+        }
+    }
+    MixerSettings::from_params(&params)
 }
 
 /// A plain-text pan: "C", "L 40", "R 100".
@@ -283,6 +294,12 @@ fn slot_row(ui: &mut Ui, cx: &mut MixCx, mixer: &mut Mixer, lane: u8, index: usi
                 mixer.renaming = None;
             }
         }
+    } else if response.double_clicked() {
+        // (A double-click is a click too: this comes first. The first click already opened it.)
+        let on_dot = response.interact_pointer_pos().is_some_and(|p| p.x < dot.right() + 2.0);
+        if !on_dot {
+            mixer.renaming = Some((Renaming::Layer(layer.id), String::new()));
+        }
     } else if response.clicked() {
         let on_dot = response.interact_pointer_pos().is_some_and(|p| p.x < dot.right() + 2.0);
         if on_dot {
@@ -290,8 +307,6 @@ fn slot_row(ui: &mut Ui, cx: &mut MixCx, mixer: &mut Mixer, lane: u8, index: usi
         } else {
             cx.edits.push(MixEdit::Pick(Some(MixerPick::Layer(layer.id))));
         }
-    } else if response.double_clicked() {
-        mixer.renaming = Some((Renaming::Layer(layer.id), String::new()));
     }
     let response = response.on_hover_text(format!("{kind_name}: click to open, drag to move, right-click for more"));
     slot_menu::row_menu(&response, cx, mixer, lane, layer);
@@ -305,16 +320,24 @@ pub fn fader(ui: &mut Ui, cx: &mut MixCx, key: &str, name: &str) -> egui::Respon
     let before = crate::sound_tab::number(&now).unwrap_or(0.0);
     let mut v = before;
     let track = rect.shrink2(Vec2::new(0.0, 6.0));
+    // While dragging, the exact value is kept aside: the setting is rounded to 0.1 dB, and a
+    // slow fine drag would round back to where it was every frame.
+    let exact_id = response.id.with("exact");
     if response.dragged_by(egui::PointerButton::Primary) {
         let fine = if ui.input(|i| i.modifiers.shift) { 0.1 } else { 1.0 };
         let dy = response.drag_delta().y as f64;
-        v = (v - dy / track.height() as f64 * (FADER_HI - FADER_LO) * fine).clamp(FADER_LO, FADER_HI);
+        let exact: f64 = ui.data(|d| d.get_temp(exact_id)).unwrap_or(before);
+        let exact = (exact - dy / track.height() as f64 * (FADER_HI - FADER_LO) * fine).clamp(FADER_LO, FADER_HI);
+        ui.data_mut(|d| d.insert_temp(exact_id, exact));
+        v = (exact * 10.0).round() / 10.0;
+    } else {
+        ui.data_mut(|d| d.remove::<f64>(exact_id));
     }
     if response.double_clicked() {
         v = 0.0;
     }
     if v != before {
-        cx.set(key, Value::Number((v * 10.0).round() / 10.0));
+        cx.set(key, Value::Number(v));
     }
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
@@ -590,6 +613,33 @@ pub(crate) mod tests {
             assert!(h.state_mut().undo());
         }
         assert_eq!(mixer_value(h.state(), "bus1_pan"), None);
+    }
+
+    #[test]
+    fn an_effect_renames_by_double_click() {
+        let mut h = mixer_harness();
+        let s = h.state_mut();
+        let kit = s.kit.clone();
+        let id = s.scene.add_layer_in(&kit.registry, ThingId::ROOT, SlotId::Mixer, "fx.reverb", Some(0)).unwrap();
+        h.run();
+        let at =
+            h.query_all_by_label("Reverb").find(|n| n.accesskit_node().role() == Role::Button).unwrap().rect().center();
+        h.hover_at(at);
+        h.run();
+        for _ in 0..2 {
+            press(&mut h, at, true);
+            h.step();
+            press(&mut h, at, false);
+            h.step();
+        }
+        h.run();
+        assert!(h.query_by_label("Effect name").is_some(), "a box to type the name");
+        h.event(egui::Event::Text("Big room".into()));
+        h.key_press(egui::Key::Enter);
+        h.run();
+        let layer = h.state().scene.card(ThingId::ROOT, SlotId::Mixer).unwrap().layer(id).unwrap().clone();
+        assert_eq!(layer.name, "Big room");
+        assert!(layer.enabled, "still on");
     }
 
     #[test]

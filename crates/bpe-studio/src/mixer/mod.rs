@@ -74,6 +74,7 @@ impl Mixer {
 const GAP: f32 = 6.0;
 
 /// The Mixer panel. `bus_meters` has the buses' and effects' levels while the sound plays.
+/// Returns whether a keyed setting was edited (the studio pauses, so a drag keys one place).
 #[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut Ui,
@@ -84,7 +85,7 @@ pub fn show(
     meters: Option<&MeterReading>,
     bus_meters: Option<&Meters>,
     time: f64,
-) {
+) -> bool {
     let _ = resolved;
     mixer.record(meters, time);
     let reading = meters.copied().unwrap_or(MeterReading::SILENT);
@@ -115,6 +116,7 @@ pub fn show(
     if let Some(pick) = applied.pick {
         mixer.pick = pick;
     }
+    applied.keyed
 }
 
 /// A number setting's value as a number.

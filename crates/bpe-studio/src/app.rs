@@ -731,7 +731,7 @@ impl Studio {
                     .show(ui, |ui| {
                         ui.set_min_width(ui.available_width());
                         left_switch(ui, &mut left);
-                        mixer::show(
+                        let keyed = mixer::show(
                             ui,
                             &mut self.panels.mixer,
                             &mut self.scene,
@@ -741,6 +741,9 @@ impl Studio {
                             meters.as_deref(),
                             self.time,
                         );
+                        if keyed {
+                            self.panels.inspector.keyed_edit = true;
+                        }
                     });
                 if self.playing {
                     // The meters move while the sound plays.
@@ -799,7 +802,17 @@ impl Studio {
                         master: self.panels.mixer.reading.unwrap_or(bpe_sound::MeterReading::SILENT),
                     };
                     egui::Frame::new().inner_margin(egui::Margin::same(12)).show(&mut contents, |ui| {
-                        mixer::editors::show(ui, &mut self.panels.mixer, &mut self.scene, &self.kit, &readings, time);
+                        let keyed = mixer::editors::show(
+                            ui,
+                            &mut self.panels.mixer,
+                            &mut self.scene,
+                            &self.kit,
+                            &readings,
+                            time,
+                        );
+                        if keyed {
+                            self.panels.inspector.keyed_edit = true;
+                        }
                     });
                 } else {
                     inspector::show(

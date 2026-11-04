@@ -463,6 +463,11 @@ impl Buses {
 
     /// Each bus's sound in the last block as the master heard it (after its fader, mute and
     /// solo, lined up): the stems.
+    /// The layer ids of every bus's effects (allocates: off the audio path).
+    pub fn fx_layers(&self) -> Vec<u32> {
+        self.buses.iter().flat_map(|b| b.chain.layers().map(|id| id.0)).collect()
+    }
+
     pub fn stems(&self) -> &[[[f32; BLOCK]; 2]; BUSES] {
         &self.stems
     }
@@ -519,6 +524,14 @@ impl ShapeRoute {
             let db = self.keys[i].as_ref().and_then(|t| track_value(t, time)).unwrap_or(self.base[i]);
             // A send to the main bus is not offered: it would only double the shape.
             g.set_target(if i + 1 == self.main as usize { 0.0 } else { fader_gain(db) });
+        }
+    }
+
+    /// The sends straight at their targets (after a seek).
+    pub fn snap(&mut self) {
+        for g in &mut self.gains {
+            let t = g.target();
+            g.reset(t);
         }
     }
 

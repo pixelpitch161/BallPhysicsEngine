@@ -107,4 +107,53 @@ fn render_does_not_allocate() {
     }
     COUNTING.store(false, Ordering::SeqCst);
     assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0, "a block while stopped allocated");
+
+    // Every bus effect on Bus 1, sending to Bus 2 with a hall and a compressor keyed by the
+    // shape's hits, with keys on a delay time, an EQ band and the fader.
+    let (root, mixer) = (bpe_core::ThingId::ROOT, SlotId::Mixer);
+    let reg = &kit.registry;
+    let mut layered = Vec::new();
+    for kind in bpe_kit::sound::fx::FX_KINDS {
+        layered.push((kind, scene.add_layer_in(reg, root, mixer, kind, Some(0)).unwrap()));
+    }
+    let hall = scene.add_layer_in(reg, root, mixer, "fx.reverb", Some(1)).unwrap();
+    let comp = scene.add_layer_in(reg, root, mixer, "fx.compressor", Some(1)).unwrap();
+    {
+        let card = scene.card_mut(root, mixer).unwrap();
+        let set = |card: &mut bpe_core::Slot, key: String, v: bpe_core::Value| card.params.set(&key, v);
+        set(card, "bus2_on".into(), bpe_core::Value::Bool(true));
+        set(card, "bus1_send2".into(), bpe_core::Value::Number(-6.0));
+        set(card, bpe_core::layered_key(hall, "kind"), bpe_core::Value::Choice("hall".into()));
+        set(card, bpe_core::layered_key(comp, "sidechain"), bpe_core::Value::Choice("hits".into()));
+        set(card, bpe_core::layered_key(comp, "sc_shape"), bpe_core::Value::Target(bpe_core::Target::Thing(shape)));
+    }
+    let delay = layered.iter().find(|(k, _)| *k == "fx.delay").unwrap().1;
+    let eq = layered.iter().find(|(k, _)| *k == "fx.eq").unwrap().1;
+    for (key, t, v) in [
+        (bpe_core::layered_key(delay, "time_ms"), 0.0, 200.0),
+        (bpe_core::layered_key(delay, "time_ms"), 5.0, 400.0),
+        (bpe_core::layered_key(eq, "band5_freq"), 0.0, 500.0),
+        (bpe_core::layered_key(eq, "band5_freq"), 5.0, 4000.0),
+        ("bus1_fader".to_owned(), 0.0, -6.0),
+        ("bus1_fader".to_owned(), 5.0, 0.0),
+    ] {
+        scene.set_key(reg, &bpe_core::Address::on(root, mixer, &key), t, bpe_core::Value::Number(v)).unwrap();
+    }
+    let resolved = resolve_scene(&scene, reg);
+    let mut e = Engine::new(&scene, &resolved, &kit);
+    for _ in 0..200 {
+        e.render(&mut block);
+    }
+    let mut heard = false;
+    for _ in 0..1_000 {
+        e.step_physics();
+        ALLOCATIONS.store(0, Ordering::SeqCst);
+        COUNTING.store(true, Ordering::SeqCst);
+        e.render_prepared(&mut block);
+        COUNTING.store(false, Ordering::SeqCst);
+        assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0, "a block through the bus effects allocated");
+        assert!(block.iter().all(|v| v.is_finite()));
+        heard |= block.iter().any(|&v| v != 0.0);
+    }
+    assert!(heard, "the buses were heard while counting");
 }

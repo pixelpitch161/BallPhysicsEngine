@@ -140,6 +140,7 @@ impl Engine {
     /// Writes the meters into `meters` from now on (the editor keeps one set across rebuilds).
     pub fn share_meters(&mut self, meters: Arc<Meters>) {
         self.meters = meters;
+        self.meters.keep_fx(&self.buses.fx_layers());
     }
 
     /// Goes to `time` (rounded down to a block): every voice and the master start over, the
@@ -162,6 +163,7 @@ impl Engine {
         self.buses.reset(first as f64 / rate);
         for r in &mut self.routes {
             r.at(first as f64 / rate);
+            r.snap();
         }
         self.paused_pos = 0;
         if self.voices.is_empty() {
@@ -241,6 +243,8 @@ impl Engine {
         let mut buses = Buses::new(patch.buses);
         buses.adopt(&mut self.buses);
         self.buses = buses;
+        // Effects that went free their meters (a new one may reuse a layer id).
+        self.meters.keep_fx(&self.buses.fx_layers());
         // A limiter added or taken away changes how late the sound comes out: skip ahead or
         // wait so the sound stays on time (the editor only; an export never swaps).
         let after = self.latency();

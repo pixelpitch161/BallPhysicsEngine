@@ -203,3 +203,18 @@ fn muted_bus_stem_is_silent() {
     assert_eq!(peak(&stems[0]), 0.0);
     assert_eq!(peak(&stems[1]), 0.0);
 }
+
+#[test]
+fn stems_of_buses_with_one_name_get_their_numbers() {
+    let kit = kit();
+    let mut scene = toned(&kit, 1);
+    set(&mut scene, "bus2_name", Value::Text("Drums".into()));
+    set(&mut scene, "bus3_name", Value::Text("drums".into()));
+    set(&mut scene, "bus1_name", Value::Text("Master".into()));
+    let (buses, master) = bpe_sound::stem_paths(&scene, std::path::Path::new("clip.mp4"));
+    let names: Vec<String> = buses.iter().chain([&master]).map(|p| p.to_string_lossy().into_owned()).collect();
+    assert_eq!(
+        names,
+        ["clip - Master (Bus 1).wav", "clip - Drums (Bus 2).wav", "clip - drums (Bus 3).wav", "clip - Master.wav"]
+    );
+}

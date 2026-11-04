@@ -46,9 +46,10 @@ pub fn title(scene: &Scene, kit: &Kit, pick: MixerPick) -> String {
     }
 }
 
-/// The picked editor. Edits apply after drawing, through the usual path.
-pub fn show(ui: &mut Ui, mixer: &mut Mixer, scene: &mut Scene, kit: &Kit, readings: &Readings, time: f64) {
-    let Some(pick) = mixer.pick else { return };
+/// The picked editor. Edits apply after drawing, through the usual path. Returns whether a
+/// keyed setting was edited.
+pub fn show(ui: &mut Ui, mixer: &mut Mixer, scene: &mut Scene, kit: &Kit, readings: &Readings, time: f64) -> bool {
+    let Some(pick) = mixer.pick else { return false };
     let mut edits = Vec::new();
     let choices = TargetChoices::default();
     ui.horizontal(|ui| {
@@ -112,6 +113,7 @@ pub fn show(ui: &mut Ui, mixer: &mut Mixer, scene: &mut Scene, kit: &Kit, readin
     if let Some(p) = applied.pick {
         mixer.pick = p;
     }
+    applied.keyed
 }
 
 /// The effect's settings as they stand at the playhead.
