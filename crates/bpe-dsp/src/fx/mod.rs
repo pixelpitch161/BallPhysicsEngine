@@ -7,6 +7,7 @@ pub mod compressor;
 pub mod delay;
 pub mod eq;
 pub mod modfx;
+pub mod reverb_common;
 pub mod reverb_hall;
 pub mod reverb_plate;
 pub mod reverb_spring;
