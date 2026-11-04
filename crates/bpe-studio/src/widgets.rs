@@ -559,6 +559,10 @@ pub fn value_words(value: &Value, unit: &str, choices: &TargetChoices) -> String
         Value::Points(ps) if ps.len() == 1 => "1 point".to_owned(),
         Value::Points(ps) => format!("{} points", ps.len()),
         Value::Path(p) => path_words(p),
+        Value::Routes(r) if r.len() == 1 => "1 route".to_owned(),
+        Value::Routes(r) => format!("{} routes", r.len()),
+        Value::Slots(n) if n.len() == 1 => "1 slot".to_owned(),
+        Value::Slots(n) => format!("{} slots", n.len()),
     }
 }
 

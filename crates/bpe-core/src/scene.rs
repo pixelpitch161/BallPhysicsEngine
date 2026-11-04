@@ -348,7 +348,9 @@ impl Default for Scene {
 
 impl Scene {
     /// The save format this version writes.
-    pub const FORMAT: u32 = 7;
+    pub const FORMAT: u32 = 8;
+    /// The oldest format that still opens.
+    pub const OLDEST_FORMAT: u32 = 7;
 
     /// A scene holding only the scene settings. Panics if `reg` has no `"scene"` kind.
     pub fn empty(reg: &Registry) -> Scene {
@@ -603,7 +605,7 @@ mod tests {
         let s = Scene::empty(&testkit::registry());
         assert_eq!(s.order, vec![ThingId::ROOT]);
         assert_eq!(s.things[&ThingId::ROOT].name, "Scene settings");
-        assert_eq!(s.format, 7);
+        assert_eq!(s.format, Scene::FORMAT);
         assert_eq!(s.next_thing, 1);
     }
 

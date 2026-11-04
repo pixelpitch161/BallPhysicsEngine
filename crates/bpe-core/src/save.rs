@@ -37,7 +37,8 @@ pub fn save(scene: &Scene) -> String {
 pub fn load(text: &str, reg: &Registry) -> Result<Scene, LoadError> {
     match probe_format(text)? {
         None => return Err(LoadError::OldEditor),
-        Some(v) if v < Scene::FORMAT => return Err(LoadError::OldEditor),
+        // Format 7 is format 8 without sound, so it opens as it is.
+        Some(v) if v < Scene::OLDEST_FORMAT => return Err(LoadError::OldEditor),
         Some(v) if v > Scene::FORMAT => return Err(LoadError::Newer(v)),
         Some(_) => {}
     }
@@ -46,6 +47,8 @@ pub fn load(text: &str, reg: &Registry) -> Result<Scene, LoadError> {
         return Err(LoadError::Broken("it has no scene settings".into()));
     }
     scene.give_colours();
+    // An older format opens as this one: saving it again writes the new number.
+    scene.format = Scene::FORMAT;
 
     for thing in scene.things.values_mut() {
         if let Some(kind) = reg.thing(&thing.kind) {
@@ -183,7 +186,7 @@ mod tests {
 
     #[test]
     fn newer_files_are_refused() {
-        let e = load("(format: 8)", &testkit::registry()).unwrap_err();
+        let e = load("(format: 9)", &testkit::registry()).unwrap_err();
         assert_eq!(e.to_string(), "This scene was made with a newer version of Ball Studio");
     }
 
@@ -259,6 +262,50 @@ mod tests {
         let b = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
         s.things.get_mut(&b).unwrap().params.set("radius", Value::Number(f64::NAN));
         assert_eq!(load(&save(&s), &r).unwrap().things[&b].params.get("radius"), None);
+    }
+
+    #[test]
+    fn format_7_files_still_load() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        testkit::push(&mut s, "balls", ThingId::ROOT);
+        let text = save(&s).replacen("format: 8", "format: 7", 1);
+        assert!(text.contains("format: 7"));
+        assert_eq!(load(&text, &r).unwrap(), s);
+    }
+
+    #[test]
+    fn routes_and_slots_round_trip() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let b = testkit::push(&mut s, "balls", ThingId::ROOT);
+        let routes = vec![
+            crate::ModRoute {
+                source: crate::LayerId(2),
+                target: "a_gain".into(),
+                amount: -0.5,
+                bipolar: true,
+                invert: false,
+            },
+            crate::ModRoute {
+                source: crate::LayerId(3),
+                target: "4/cutoff".into(),
+                amount: 1.0,
+                bipolar: false,
+                invert: true,
+            },
+        ];
+        let slots = vec![
+            crate::NoteSlot { notes: vec![60, 64, 67], order_clicked: vec![64, 60, 67] },
+            crate::NoteSlot::default(),
+        ];
+        let params = &mut s.things.get_mut(&b).unwrap().params;
+        params.set("routes", Value::Routes(routes.clone()));
+        params.set("notes_slots", Value::Slots(slots.clone()));
+        let back = load(&save(&s), &r).unwrap();
+        assert_eq!(back, s);
+        assert_eq!(back.things[&b].params.get("routes"), Some(&Value::Routes(routes)));
+        assert_eq!(back.things[&b].params.get("notes_slots"), Some(&Value::Slots(slots)));
     }
 
     #[test]

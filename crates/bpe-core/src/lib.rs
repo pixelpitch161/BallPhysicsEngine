@@ -21,12 +21,13 @@ pub mod save;
 pub mod scene;
 pub mod settings;
 pub mod shape_path;
+pub mod sound_values;
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;
 pub mod value;
 
 pub use address::Address;
-pub use animation::{Animation, Ease, Inputs, Key, Pulse, PulseSource, SAME_TIME, Track, pulse_strength};
+pub use animation::{Animation, Ease, Inputs, Key, Pulse, PulseSource, SAME_TIME, SoundSource, Track, pulse_strength};
 pub use blend::Blend;
 pub use color::{Color, Gradient, Stop, Transition};
 pub use contract::check_registry;
@@ -42,6 +43,7 @@ pub use settings::{
     section_rank,
 };
 pub use shape_path::ShapePath;
+pub use sound_values::{ModRoute, NoteSlot, ROUTES_KEY, SLOTS_KEY};
 pub use value::{Params, Stroke, Strokes, Value, ValueType};
 
 /// `#[derive(Settings)]` and `#[derive(Choice)]`.

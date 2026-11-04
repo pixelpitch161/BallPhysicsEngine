@@ -671,6 +671,14 @@ impl Hasher {
                 self.bytes(&[7]);
                 self.bytes(format!("{t:?}").as_bytes());
             }
+            Value::Routes(r) => {
+                self.bytes(&[11]);
+                self.bytes(format!("{r:?}").as_bytes());
+            }
+            Value::Slots(n) => {
+                self.bytes(&[12]);
+                self.bytes(format!("{n:?}").as_bytes());
+            }
             Value::Strokes(s) => {
                 self.bytes(&[8]);
                 self.bytes(&s.hash64().to_le_bytes());

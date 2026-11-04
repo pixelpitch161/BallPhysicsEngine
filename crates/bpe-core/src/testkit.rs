@@ -308,6 +308,9 @@ impl ModuleKind for StackLookKind {
 
 macro_rules! layer_kind {
     ($kind:ident, $id:literal, $name:literal, $settings:ident, $section:ident, $repeats:literal, $base:literal, $maskable:literal) => {
+        layer_kind!($kind, $id, $name, $settings, $section, $repeats, $base, $maskable, "look.stack");
+    };
+    ($kind:ident, $id:literal, $name:literal, $settings:ident, $section:ident, $repeats:literal, $base:literal, $maskable:literal, $card:literal) => {
         impl LayerKind for $kind {
             fn id(&self) -> &'static str {
                 $id
@@ -328,7 +331,7 @@ macro_rules! layer_kind {
                 $repeats
             }
             fn card(&self) -> &'static str {
-                "look.stack"
+                $card
             }
             fn base(&self) -> bool {
                 $base
@@ -355,6 +358,33 @@ layer_kind!(CutLayerKind, "layer.cut", "Mask", CutLayer, Mask, true, false, fals
 layer_kind!(CodeLayerKind, "layer.code", "Code", CodeLayer, Drawn, true, false, true);
 layer_kind!(WashLayerKind, "group.wash", "Wash", RingLayer, Group, false, false, false);
 layer_kind!(SwirlLayerKind, "group.swirl", "Swirl", RingLayer, Group, true, false, false);
+layer_kind!(ChainTestKind, "chain.test", "Filter", RingLayer, Chain, true, false, false, "sound.test");
+layer_kind!(ModTestKind, "mod.test", "LFO", PopLayer, Modulator, true, false, false, "sound.test");
+
+/// A sound card holding chain layers and modulators.
+pub struct SoundTestKind;
+/// A chain layer of the test sound card.
+pub struct ChainTestKind;
+/// A modulator of the test sound card.
+pub struct ModTestKind;
+
+impl ModuleKind for SoundTestKind {
+    fn id(&self) -> &'static str {
+        "sound.test"
+    }
+    fn name(&self) -> &'static str {
+        "Sound"
+    }
+    fn help(&self) -> &'static str {
+        "A test sound."
+    }
+    fn slot(&self) -> SlotId {
+        SlotId::Sound
+    }
+    fn settings(&self) -> &'static [SettingDef] {
+        &[]
+    }
+}
 
 /// A registry with every test plugin.
 pub fn registry() -> Registry {
@@ -373,6 +403,9 @@ pub fn registry() -> Registry {
     r.add_layer(CodeLayerKind);
     r.add_layer(WashLayerKind);
     r.add_layer(SwirlLayerKind);
+    r.add_module(SoundTestKind);
+    r.add_layer(ChainTestKind);
+    r.add_layer(ModTestKind);
     r
 }
 

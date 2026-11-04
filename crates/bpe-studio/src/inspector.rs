@@ -338,7 +338,7 @@ pub fn show(
         }
 
         // ---------- one card per slot ----------
-        for slot in SlotId::ALL {
+        for slot in SlotId::ALL.into_iter().filter(|s| s.in_card_list()) {
             let Some(card_now) = thing.slots.get(&slot) else { continue };
             ui.add_space(6.0);
             card(ui, |ui| {
@@ -1002,7 +1002,10 @@ fn jump_bar(
         vec![(Card::Thing, "Thing")]
     };
     let cards = own.into_iter().chain(
-        SlotId::ALL.into_iter().filter(|s| thing.slots.contains_key(s)).map(|s| (Card::Slot(s), kind.slot_label(s))),
+        SlotId::ALL
+            .into_iter()
+            .filter(|s| s.in_card_list() && thing.slots.contains_key(s))
+            .map(|s| (Card::Slot(s), kind.slot_label(s))),
     );
     ui.horizontal_wrapped(|ui| {
         for (card, label) in cards {
