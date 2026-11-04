@@ -1,10 +1,14 @@
 //! The modulators at audio rate: LFO, Hit and Distance, each against hand-worked values.
 
 use bpe_core::{Scene, Settings, SlotId, ThingId, Value};
-use bpe_kit::sound::{HitPick, HitSettings, LfoSettings, LfoShape, LfoStart, NoteFeel, NoteLength};
+use bpe_kit::sound::{
+    DistanceSettings, Follows, HitPick, HitSettings, LfoSettings, LfoShape, LfoStart, Measure, NoteFeel, NoteLength,
+};
 use bpe_kit::{Kit, kit, new_scene, resolve_scene};
 use bpe_runtime::{Party, Playback};
-use bpe_sound::mods::{HitMod, HitValues, LfoMod, ModCx, Modulator, NoteCx, hit_values, lfo_rate_hz};
+use bpe_sound::mods::{
+    DistanceMod, DistanceParams, HitMod, HitValues, LfoMod, ModCx, Modulator, NoteCx, hit_values, lfo_rate_hz,
+};
 use bpe_sound::{BLOCK, SAMPLE_RATE, TempoMap};
 use glam::Vec2;
 
@@ -107,7 +111,7 @@ fn restart_lfo_starts_from_phase_on_each_hit_and_fades_in() {
     m.set(&s, &tempo, 1.0);
     run(&mut m, &pb, shape, 0, 100);
     let hit = HitValues::default();
-    m.note_on(&NoteCx { sample: 100 * BLOCK as u64, hit: &hit });
+    m.note_on(&NoteCx { sample: 100 * BLOCK as u64, hit: &hit, ball: None });
     let v = run(&mut m, &pb, shape, 100, 400);
     assert_eq!(v[0], 0.0, "inside the delay");
     // 0.2 s after the hit (half way through the fade), the saw is at 0.2.
@@ -169,7 +173,7 @@ fn hit_low_high_maps_and_clamps() {
     m.set(&s);
     let at = |m: &mut HitMod, strength: f32| {
         let hv = HitValues { strength, ..HitValues::default() };
-        m.note_on(&NoteCx { sample: 0, hit: &hv });
+        m.note_on(&NoteCx { sample: 0, hit: &hv, ball: None });
         run(m, &pb, shape, 0, 1)[0]
     };
     assert!((at(&mut m, 0.4) - 0.5).abs() < 1e-6);
@@ -189,10 +193,155 @@ fn hit_low_high_maps_and_clamps() {
         (HitPick::Random, HitValues { random: 0.15, ..Default::default() }, 0.15),
     ] {
         m.set(&HitSettings { pick, ..HitSettings::default() });
-        m.note_on(&NoteCx { sample: 0, hit: &hv });
+        m.note_on(&NoteCx { sample: 0, hit: &hv, ball: None });
         let v = run(&mut m, &pb, shape, 0, 1)[0];
         assert!((v - want).abs() < 1e-6, "{pick:?}: {v}");
     }
     let _ = HitSettings::from_params(&bpe_core::Params::default());
     let _ = SlotId::Sound;
+}
+
+/// The test scene's world (a ball in a hollow circle of radius 508 round the middle) with `n`
+/// more balls, and the shape and the balls' thing.
+fn world_with(kit: &Kit, n: usize) -> (bpe_runtime::World, ThingId, ThingId) {
+    let scene = new_scene(&kit.registry);
+    let shape = shape_of(&scene);
+    let ball = scene.order.iter().copied().find(|id| scene.things[id].kind == "balls").unwrap();
+    let resolved = resolve_scene(&scene, &kit.registry);
+    let mut world = bpe_runtime::World::build(&scene, &resolved, &kit.sims);
+    let b = world.bodies.get_mut(&ball).unwrap();
+    for _ in 0..n {
+        let (p, v, r) = (b.position[0], b.velocity[0], b.radius[0]);
+        b.position.push(p);
+        b.previous.push(p);
+        b.start.push(p);
+        b.spawn.push(p);
+        b.velocity.push(v);
+        b.radius.push(r);
+        b.alive.push(true);
+    }
+    (world, shape, ball)
+}
+
+fn put(world: &mut bpe_runtime::World, ball: ThingId, i: usize, p: Vec2) {
+    let b = world.bodies.get_mut(&ball).unwrap();
+    b.position[i] = p;
+    b.previous[i] = p;
+}
+
+fn step_value(m: &mut DistanceMod, world: &bpe_runtime::World, shape: ThingId, block: u64) -> f32 {
+    let tempo = TempoMap::default();
+    let cx = ModCx { start_sample: block * BLOCK as u64, tempo: &tempo, world, shape };
+    m.next_block(&cx);
+    m.value()
+}
+
+fn distance(s: DistanceSettings) -> DistanceMod {
+    let mut m = DistanceMod::new(s.heard_from.clone());
+    m.set_params(DistanceParams::of(&s));
+    m
+}
+
+#[test]
+fn distance_is_one_inside_near_zero_past_far() {
+    let kit = kit();
+    let (mut world, shape, ball) = world_with(&kit, 0);
+    let mut m = distance(DistanceSettings { near: 50.0, far: 250.0, smooth: 0.0, ..DistanceSettings::default() });
+    // A scripted path out from the middle.
+    let mut seen = Vec::new();
+    for (b, x) in [0.0f32, 40.0, 50.0, 150.0, 250.0, 400.0].into_iter().enumerate() {
+        put(&mut world, ball, 0, Vec2::new(x, 0.0));
+        seen.push(step_value(&mut m, &world, shape, b as u64));
+    }
+    assert_eq!(&seen[..3], &[1.0, 1.0, 1.0], "at Near or closer: full");
+    assert!((seen[3] - 0.5).abs() < 1e-5, "half way: half (a smooth S is 0.5 in the middle): {}", seen[3]);
+    assert_eq!(&seen[4..], &[0.0, 0.0], "at Far or beyond: nothing");
+    // Invert flips it; Curve bends the middle only.
+    let mut inv =
+        distance(DistanceSettings { near: 50.0, far: 250.0, smooth: 0.0, invert: true, ..Default::default() });
+    put(&mut world, ball, 0, Vec2::new(0.0, 0.0));
+    assert_eq!(step_value(&mut inv, &world, shape, 0), 0.0);
+    let mut bent =
+        distance(DistanceSettings { near: 50.0, far: 250.0, smooth: 0.0, curve: 80.0, ..Default::default() });
+    put(&mut world, ball, 0, Vec2::new(150.0, 0.0));
+    assert!(step_value(&mut bent, &world, shape, 0) > 0.6);
+    // Smooth follows over time: a jump from far to near takes blocks.
+    let mut smooth = distance(DistanceSettings { near: 50.0, far: 250.0, smooth: 100.0, ..Default::default() });
+    put(&mut world, ball, 0, Vec2::new(400.0, 0.0));
+    assert_eq!(step_value(&mut smooth, &world, shape, 0), 0.0);
+    put(&mut world, ball, 0, Vec2::new(0.0, 0.0));
+    let first = step_value(&mut smooth, &world, shape, 1);
+    assert!(first > 0.0 && first < 0.1, "{first}");
+}
+
+#[test]
+fn edge_measures_to_the_outline_inside_and_out() {
+    let kit = kit();
+    let (mut world, shape, ball) = world_with(&kit, 0);
+    let s = DistanceSettings { measure: Measure::Edge, near: 0.0, far: 100.0, smooth: 0.0, ..Default::default() };
+    let mut m = distance(s);
+    // The circle's line is 508 out.
+    put(&mut world, ball, 0, Vec2::new(458.0, 0.0));
+    let inside = step_value(&mut m, &world, shape, 0);
+    put(&mut world, ball, 0, Vec2::new(0.0, 558.0));
+    let outside = step_value(&mut m, &world, shape, 1);
+    assert!((inside - 0.5).abs() < 1e-3 && (outside - 0.5).abs() < 1e-3, "50 px either side: {inside} {outside}");
+    put(&mut world, ball, 0, Vec2::new(0.0, 0.0));
+    assert_eq!(step_value(&mut m, &world, shape, 2), 0.0, "the middle is 508 from the edge");
+}
+
+#[test]
+fn how_many_counts_balls_in_range() {
+    let kit = kit();
+    let (mut world, shape, ball) = world_with(&kit, 4);
+    let s = DistanceSettings { follows: Follows::HowMany, far: 100.0, full_at: 4, smooth: 0.0, ..Default::default() };
+    let mut m = distance(s);
+    for i in 0..5 {
+        put(&mut world, ball, i, Vec2::new(300.0, 0.0));
+    }
+    assert_eq!(step_value(&mut m, &world, shape, 0), 0.0);
+    put(&mut world, ball, 1, Vec2::new(20.0, 0.0));
+    put(&mut world, ball, 3, Vec2::new(0.0, 99.0));
+    assert!((step_value(&mut m, &world, shape, 1) - 0.5).abs() < 1e-6, "two of four");
+    for i in 0..5 {
+        put(&mut world, ball, i, Vec2::ZERO);
+    }
+    assert_eq!(step_value(&mut m, &world, shape, 2), 1.0, "five is still full");
+    // Average and Nearest.
+    put(&mut world, ball, 0, Vec2::new(200.0, 0.0));
+    let mut avg =
+        distance(DistanceSettings { follows: Follows::Average, far: 100.0, smooth: 0.0, ..Default::default() });
+    let mut near = distance(DistanceSettings { far: 100.0, smooth: 0.0, ..Default::default() });
+    // Average of 200, 0, 0, 0, 0 is 40.
+    let want = 1.0 - {
+        let t = 0.4f32;
+        t * t * (3.0 - 2.0 * t)
+    };
+    assert!((step_value(&mut avg, &world, shape, 0) - want).abs() < 1e-5);
+    assert_eq!(step_value(&mut near, &world, shape, 0), 1.0);
+}
+
+#[test]
+fn each_notes_ball_holds_after_the_ball_pops() {
+    let kit = kit();
+    let (mut world, shape, ball) = world_with(&kit, 1);
+    let s = DistanceSettings { follows: Follows::EachNotesBall, far: 200.0, smooth: 0.0, ..Default::default() };
+    let mut m = distance(s);
+    put(&mut world, ball, 0, Vec2::new(0.0, 0.0));
+    put(&mut world, ball, 1, Vec2::new(100.0, 0.0));
+    let hv = HitValues::default();
+    m.note_on(&NoteCx { sample: 0, hit: &hv, ball: Some(Party { thing: ball, item: 1 }) });
+    assert!((step_value(&mut m, &world, shape, 0) - 0.5).abs() < 1e-5, "its own ball, not the nearest");
+    put(&mut world, ball, 1, Vec2::new(150.0, 0.0));
+    let before = step_value(&mut m, &world, shape, 1);
+    // The ball pops: the value stays where it was.
+    world.bodies.get_mut(&ball).unwrap().alive[1] = false;
+    put(&mut world, ball, 1, Vec2::new(0.0, 0.0));
+    for b in 2..10 {
+        assert_eq!(step_value(&mut m, &world, shape, b), before);
+    }
+    // A ball that was never there holds 0.
+    let mut lost = distance(DistanceSettings { follows: Follows::EachNotesBall, smooth: 0.0, ..Default::default() });
+    lost.note_on(&NoteCx { sample: 0, hit: &hv, ball: Some(Party { thing: ball, item: 40 }) });
+    assert_eq!(step_value(&mut lost, &world, shape, 0), 0.0);
 }

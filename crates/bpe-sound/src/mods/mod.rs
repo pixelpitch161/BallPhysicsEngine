@@ -35,6 +35,8 @@ pub struct NoteCx<'a> {
     pub sample: u64,
     /// The numbers its hit gives.
     pub hit: &'a HitValues,
+    /// The ball whose hit it is (none for a key clicked in the editor).
+    pub ball: Option<bpe_runtime::Party>,
 }
 
 /// A modulator that moves once a block.
