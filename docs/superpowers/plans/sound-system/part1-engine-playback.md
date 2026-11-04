@@ -232,8 +232,10 @@ log: `docs/superpowers/plans/sound-system/decisions.md` (append any call you mak
     1 kHz blip at −12 dBFS on each hit on its shape).
   - `patch.rs`: `pub struct SoundPatch` — everything the engine reads from the scene, built by
     `SoundPatch::build(scene: &Scene, resolved: &Resolved, kit: &Kit) -> SoundPatch` (master settings, tempo, and
-    a `Vec<Box<dyn VoiceSource>>` factory list; voices keep state across a patch swap when their thing id matches,
-    via `VoiceSource::take_patch(&mut self, new: &dyn Any)`— part 2 fills in).
+    a `Vec<Box<dyn VoiceSource>>`). `VoiceSource` also has `fn adopt(&mut self, old: &mut dyn VoiceSource)` (default
+    no-op) and `fn as_any_mut(&mut self) -> &mut dyn Any`: on `swap_patch` the engine calls `new.adopt(old)` for
+    voices whose `thing()` matches, so ringing notes carry over (part 2 implements it for shapes). Patches are built
+    on the sound thread outside `render`, so building may allocate.
   - `master.rs`: `pub struct Master` (input gain → limiter → output gain, all smoothed) with `process`.
   - `meters.rs`: `pub struct Meters` of atomics (`AtomicU32` holding f32 bits): peak L/R, momentary, short-term,
     integrated LUFS, true peak, master gain reduction. `pub fn read(&self) -> MeterReading` (plain copy).
