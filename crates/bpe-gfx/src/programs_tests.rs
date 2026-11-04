@@ -272,3 +272,51 @@ fn a_group_shader_can_change_one_layer_only() {
     assert_ne!(at(&s, 0.0, -200.0), at(&a, 0.0, -200.0), "the body takes the effect");
     assert!(u == a, "a group shader no layer names, not over the whole ball, does nothing");
 }
+
+#[test]
+fn a_group_shader_covering_half_the_group_from_the_top_reaches_only_the_top_ball() {
+    let flow = [builtin("rainbow_flow")];
+    let plain = pair_with(vec![body()], &[]);
+    // Half the group left uncovered, from the top (90°), with a hard edge.
+    let mut half = group_shader("rainbow_flow", 0, 1.0, true, 0.0);
+    half.p1 = [0.0, 0.5, 90f32.to_radians(), 0.0];
+    let covered = pair_with(vec![body(), half], &flow);
+    let Some((a, _)) = draw(&plain) else { return };
+    let (b, errors) = draw(&covered).unwrap();
+    save("program-group-covers-half", &b, W, H);
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_ne!(at(&b, 0.0, -200.0), at(&a, 0.0, -200.0), "the top ball is covered");
+    assert_eq!(at(&b, 0.0, 200.0), at(&a, 0.0, 200.0), "the bottom ball isn't");
+}
+
+#[test]
+fn programs_built_in_the_background_draw_without_the_effect_until_ready_and_are_shared() {
+    let plain = frame_with(vec![body()], &[]);
+    let lava = frame_with(vec![body(), shader("lava", 0, 1.0)], &[builtin("lava")]);
+    let Ok((device, queue)) = headless_device() else { return };
+    let store = crate::ProgramStore::in_background();
+    let mut r = Renderer::new(&device, W, H);
+    r.share_programs(&store);
+    r.render(&device, &queue, &plain);
+    let without = r.read_output(&device, &queue).unwrap();
+    r.render(&device, &queue, &lava);
+    let first = r.read_output(&device, &queue).unwrap();
+    if first == without {
+        assert!(r.programs_waiting(), "a frame without its effect says so, to be drawn again");
+    }
+    // The first frame may only miss the effect: it never stalls to build it.
+    store.wait();
+    assert!(!store.pending());
+    r.render(&device, &queue, &lava);
+    let ready = r.read_output(&device, &queue).unwrap();
+    assert!(!r.programs_waiting());
+    assert!(first == without || first == ready, "a frame draws with or without the effect, nothing else");
+    assert!(ready != without, "once built, the effect shows");
+    assert!(r.program_errors().is_empty(), "{:?}", r.program_errors());
+    // Another renderer on the store draws it straight away, with no build of its own.
+    let mut other = Renderer::new(&device, W, H);
+    other.share_programs(&store);
+    other.render(&device, &queue, &lava);
+    assert!(!store.pending());
+    assert!(other.read_output(&device, &queue).unwrap() == ready);
+}

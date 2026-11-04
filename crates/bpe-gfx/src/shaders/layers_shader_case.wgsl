@@ -11,7 +11,8 @@
                     let uv = group_begin(l, first, k, screen);
                     let run = run_effect(u32(l.p0.w), uv, l);
                     c = select(clamp(run, vec3<f32>(0.0), vec3<f32>(64.0)), vec3<f32>(0.0), run != run);
-                    a_in = opacity;
+                    let covered = opacity * group_covers(l, screen);
+                    a_in = covered;
                     let around = l.p1.x;
                     if around > 0.0 {
                         let out = max(d, 0.0) / around;
@@ -19,7 +20,7 @@
                         let reach = max(layered_ball.form.w, 1.0);
                         let quad = max(abs(local.x), abs(local.y));
                         let fade = 1.0 - smoothstep(0.8 * reach, reach, quad);
-                        a_out = opacity * exp(-3.0 * out * out) * fade;
+                        a_out = covered * exp(-3.0 * out * out) * fade;
                     }
                 }
             }

@@ -33,7 +33,7 @@ pub use frame::{
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, PaintGpu};
 pub use masks::{MASK_TILE, MAX_MASK_TILES};
-pub use programs::{LayeredRun, LookProgram, in_ball_problem};
+pub use programs::{LayeredRun, LookProgram, ProgramStore, in_ball_problem};
 pub use wgpu;
 
 use bpe_runtime::CameraView;
@@ -279,8 +279,10 @@ pub struct Renderer {
     /// The layer records of layered balls: group 2 of their pipelines.
     layers_layout: wgpu::BindGroupLayout,
     layered_pipeline_layout: wgpu::PipelineLayout,
-    /// The pipelines of stacks with shader layers.
-    programs: programs::Programs,
+    /// The pipelines of stacks with shader layers, maybe shared with other renderers.
+    programs: ProgramStore,
+    /// The last frame drew some balls without their shader layers, their program still building.
+    waiting: bool,
     sampler: wgpu::Sampler,
     background: wgpu::RenderPipeline,
     trail: wgpu::RenderPipeline,
@@ -912,7 +914,8 @@ impl Renderer {
             paint_layout,
             layers_layout,
             layered_pipeline_layout: layered_pipeline_layout.clone(),
-            programs: programs::Programs::default(),
+            programs: ProgramStore::default(),
+            waiting: false,
             sampler,
             background,
             trail,
@@ -971,7 +974,24 @@ impl Renderer {
     /// Why the in-ball programs the last frame named could not be built, by program key (see
     /// [`LookProgram::key`]).
     pub fn program_errors(&self) -> Vec<(u64, String)> {
-        self.programs.errors().map(|(k, e)| (k, e.to_owned())).collect()
+        self.programs.lock().errors().map(|(k, e)| (k, e.to_owned())).collect()
+    }
+
+    /// Builds in-ball programs in `store` from now on, shared with every renderer using it (on
+    /// the same device), and on a background thread if the store says so.
+    pub fn share_programs(&mut self, store: &ProgramStore) {
+        self.programs = store.clone();
+    }
+
+    /// Whether the last frame drew some balls without their shader layers because their program
+    /// was still building: draw it again soon and they show.
+    pub fn programs_waiting(&self) -> bool {
+        self.waiting
+    }
+
+    /// The renderer's program store.
+    pub fn programs(&self) -> &ProgramStore {
+        &self.programs
     }
 
     /// Why shader effects in the last frame could not be built, one line each: "{name}: {why}".
@@ -1013,7 +1033,7 @@ impl Renderer {
         let frames = std::iter::once((frame, None))
             .chain(overlay.map(|o| (o, None)))
             .chain(layers.iter().map(|l| (&l.frame, l.each.then_some(l.blend))));
-        self.programs.ensure(device, &self.layered_pipeline_layout, frames);
+        self.waiting = self.programs.lock().ensure(device, &self.layered_pipeline_layout, frames);
         self.paint.sync(device, queue, &self.paint_layout, &self.sampler, &frame.gradients);
         self.grade_map.sync(queue, &frame.grade);
         if let Some(o) = overlay {
@@ -1217,7 +1237,8 @@ impl Renderer {
             for run in runs {
                 // A program that didn't build draws with the plain pipeline, leaving shader layers out.
                 let program = run.program.and_then(|i| f.programs.get(i as usize));
-                let pipeline = program.and_then(|p| self.programs.pipeline(p.key, each)).unwrap_or(plain);
+                let built = program.and_then(|p| self.programs.lock().pipeline(p.key, each));
+                let pipeline = built.as_ref().unwrap_or(plain);
                 let end = run.end.min(f.layered.len() as u32);
                 if run.start < end {
                     pass.set_pipeline(pipeline);

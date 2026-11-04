@@ -128,136 +128,165 @@ impl ThingDraw for BallsDraw {
     }
 
     fn draw(&self, cx: &DrawCx, frame: &mut Frame) {
-        let id = cx.thing.id;
-        let Some(bodies) = cx.world.bodies.get(&id) else { return };
         let Some(stack) = stack_of(cx) else { return };
-        let color = colours(&stack, cx, bodies, false);
-        let seen = colours(&stack, cx, bodies, true);
-        let time = cx.time as f32;
-        let group = group_cx(&stack, cx);
-        let on_gpu = stack.group_on_gpu();
-        let records = stack.records(&mut frame.gradients, &mut frame.mask_tiles, time);
-        // Balls given layers of their own wear their own range of records: one range for each
-        // set of layers worn, most scenes one range for every ball.
-        let mut ranges: std::collections::HashMap<Vec<bool>, (u32, u32)> = std::collections::HashMap::new();
-        let mut range_for = |frame: &mut Frame, number: u32| -> (u32, u32) {
-            let wears: Vec<bool> = if stack.has_only() {
-                (0..stack.drawn.len()).map(|k| stack.applies(k, number)).collect()
-            } else {
-                Vec::new()
-            };
-            *ranges.entry(wears).or_insert_with_key(|wears| {
-                let first = frame.look_layers.len() as u32;
-                let picked = if wears.is_empty() { records.clone() } else { stack.records_for(&records, |k| wears[k]) };
-                let count = picked.len() as u32;
-                frame.look_layers.extend(picked);
-                (first, count)
-            })
-        };
-        // Each ball's own variation, only read when a pattern paints from its own gradient.
-        let fill = for_balls(stack.body.fill.clone());
-        let vary = stack.varies().then(|| BallInputs::new(cx, bodies, &[&fill]));
-        // Group shaders spread across the square round the group's places, a ball wide past them.
-        let shaded = stack.group_shaders().next().is_some();
-        // The biggest a ball of the group can be, whether let go yet or not.
-        let widest =
-            group.look.radius * if group.look.group { 1.0 + 0.5 * group.look.vary_size.clamp(0.0, 1.0) } else { 1.0 };
-        let side = 2.0 * (group.info.furthest + widest).max(1.0);
-        let start = frame.layered.len() as u32;
-        for i in 0..bodies.len() {
-            if !bodies.alive[i] {
-                continue;
-            }
-            let seed = ball_seed(id, i);
-            let code = thing_code(id) + seed * 0.5;
-            let own = vary.as_ref().map_or(bpe_gfx::NO_VARY, |v| {
-                let at = v.get(&fill, i);
-                vary_gpu(&fill, at.seed, at.time)
-            });
-            let (center, velocity, radius) = (bodies.position[i], bodies.velocity[i], bodies.radius[i]);
-            let body = blend_alpha(color(i));
-            let number = group.number(i);
-            let (first, count) = range_for(frame, number);
-            let mut ball = stack.instance(body, center, velocity, radius, time, code, seed, own, first, count);
-            if let Some(g) = on_gpu {
-                let c = group_colour(g, &group.info, &group.ball(bodies, i, time));
-                ball.group = [c[0], c[1], c[2], g.amount.clamp(0.0, 1.0)];
-                ball.range[3] = g.mix.code();
-            }
-            if shaded {
-                let at = group.ball(bodies, i, time).offset - group.info.middle;
-                ball.place = [at.x, at.y, side, 0.0];
-            }
-            if group.state.is_some() {
-                ball.form[2] += look_turn(&group.look, number).to_radians();
-            }
-            frame.layered.push(ball);
-        }
-        // Which pipeline draws them: the stack's in-ball program, once per frame, or the plain one.
-        let program = stack.program().map(|p| match frame.programs.iter().position(|q| q.key == p.key) {
-            Some(i) => i as u32,
-            None => {
-                frame.programs.push(p);
-                frame.programs.len() as u32 - 1
-            }
-        });
-        let end = frame.layered.len() as u32;
-        frame.layered_runs.push(LayeredRun { program, start, end });
+        let part = stack.split().unwrap_or(0);
+        draw_part(cx, frame, &stack, part);
+    }
 
-        // Recent hits, for the flashes here and for the particle and shader modules. Only the
-        // flashes' worth is scanned when nothing else wants them.
-        let rate = cx.world.steps_per_second;
-        let flash = stack.flash.as_ref().filter(|f| f.flash > 0.0 && f.flash_seconds > 0.0);
-        // The scene settings' effects aren't passed down but still pulse on every hit.
-        let scene_effects = cx.scene.things.get(&ThingId::ROOT).is_some_and(|r| r.slots.contains_key(&SlotId::Shader));
-        let wants_hits =
-            scene_effects || [SlotId::Particles, SlotId::Shader].iter().any(|s| cx.resolved.slots.contains_key(s));
-        let memory = if wants_hits {
-            HIT_MEMORY
-        } else if let Some(f) = flash {
-            f.flash_seconds as f64
-        } else {
-            return;
-        };
-        let since = ((cx.time - memory) * rate as f64).floor().max(0.0) as u64;
-        for e in cx.log.since(since) {
-            if e.kind != EventKind::Hit || e.a.thing != id {
-                continue;
-            }
-            let time = e.time(rate);
-            if time > cx.time {
-                continue;
-            }
-            frame.hits.push(HitMark {
-                thing: id,
-                other: e.b.map(|b| b.thing),
-                point: e.point.into(),
-                normal: e.normal.into(),
-                time: time as f32,
-                speed: e.speed,
-                color: seen(e.a.item as usize),
-            });
-            let Some(f) = flash else { continue };
-            let age = (cx.time - time) as f32 / f.flash_seconds;
-            if !(0.0..=1.0).contains(&age) {
-                continue;
-            }
-            let intensity = (e.speed / FULL_FLASH_SPEED).min(1.5) * (-3.0 * age).exp() * 0.35 * f.flash / 0.4;
-            if intensity < 0.002 {
-                continue;
-            }
-            let c = seen(e.a.item as usize);
-            frame.flashes.push(FlashInstance {
-                center: e.point.into(),
-                size: f.flash_size,
-                color: [
-                    (c[0] + 1.0) * 0.5 * intensity,
-                    (c[1] + 1.0) * 0.5 * intensity,
-                    (c[2] + 1.0) * 0.5 * intensity,
-                    1.0,
-                ],
-            });
+    /// The layers above the Blend layer, painted normally over the blended rest.
+    fn draw_over(&self, cx: &DrawCx, frame: &mut Frame) {
+        let Some(stack) = stack_of(cx) else { return };
+        if let Some(cut) = stack.split() {
+            draw_part(cx, frame, &stack, cut | OVER);
         }
+    }
+}
+
+/// The bit of a ball instance's `range.z` that draws the layers above its Blend layer.
+const OVER: u32 = 0x1_0000;
+
+/// Draws the balls of the thing `cx` is drawing, wearing `stack`: whole (`part` 0), the layers
+/// under the Blend layer with the flashes (`part` the first record above it), or the layers above
+/// it (that with [`OVER`]): see layers_walk.wgsl.
+fn draw_part(cx: &DrawCx, frame: &mut Frame, stack: &Stack, part: u32) {
+    let id = cx.thing.id;
+    let Some(bodies) = cx.world.bodies.get(&id) else { return };
+    let color = colours(stack, cx, bodies, false);
+    let seen = colours(stack, cx, bodies, true);
+    let time = cx.time as f32;
+    let group = group_cx(stack, cx);
+    let on_gpu = stack.group_on_gpu();
+    let records = stack.records(&mut frame.gradients, &mut frame.mask_tiles, time);
+    // Balls given layers of their own wear their own range of records: one range for each
+    // set of layers worn, most scenes one range for every ball.
+    let mut ranges: std::collections::HashMap<Vec<bool>, (u32, u32)> = std::collections::HashMap::new();
+    let mut range_for = |frame: &mut Frame, number: u32| -> (u32, u32) {
+        let wears: Vec<bool> = if stack.has_only() {
+            (0..stack.drawn.len()).map(|k| stack.applies(k, number)).collect()
+        } else {
+            Vec::new()
+        };
+        *ranges.entry(wears).or_insert_with_key(|wears| {
+            let first = frame.look_layers.len() as u32;
+            let picked = if wears.is_empty() { records.clone() } else { stack.records_for(&records, |k| wears[k]) };
+            let count = picked.len() as u32;
+            frame.look_layers.extend(picked);
+            (first, count)
+        })
+    };
+    // Each ball's own variation, only read when a pattern paints from its own gradient.
+    let fill = for_balls(stack.body.fill.clone());
+    let vary = stack.varies().then(|| BallInputs::new(cx, bodies, &[&fill]));
+    // Group shaders spread across the square round the group's places, a ball wide past them.
+    let shaded = stack.group_shaders().next().is_some();
+    // The biggest a ball of the group can be, whether let go yet or not.
+    let widest =
+        group.look.radius * if group.look.group { 1.0 + 0.5 * group.look.vary_size.clamp(0.0, 1.0) } else { 1.0 };
+    let side = 2.0 * (group.info.furthest + widest).max(1.0);
+    let start = frame.layered.len() as u32;
+    for i in 0..bodies.len() {
+        if !bodies.alive[i] {
+            continue;
+        }
+        let seed = ball_seed(id, i);
+        let code = thing_code(id) + seed * 0.5;
+        let own = vary.as_ref().map_or(bpe_gfx::NO_VARY, |v| {
+            let at = v.get(&fill, i);
+            vary_gpu(&fill, at.seed, at.time)
+        });
+        let (center, velocity, radius) = (bodies.position[i], bodies.velocity[i], bodies.radius[i]);
+        let body = blend_alpha(color(i));
+        let number = group.number(i);
+        let (first, count) = range_for(frame, number);
+        let mut ball = stack.instance(body, center, velocity, radius, time, code, seed, own, first, count);
+        ball.range[2] = part;
+        if stack.body_each_ball() {
+            // A gradient body turns by the ball's own hue turns, as a plain body's colour does.
+            let hits = bodies.hits.get(i).copied().unwrap_or(0) as f32;
+            let spin = if group.state.is_some() { colour_turn(&group.look, number) } else { 0.0 };
+            ball.vary[3] = (spin + stack.hue_per_hit() * hits) / 360.0;
+        }
+        if let Some(g) = on_gpu {
+            let c = group_colour(g, &group.info, &group.ball(bodies, i, time));
+            ball.group = [c[0], c[1], c[2], g.amount.clamp(0.0, 1.0)];
+            ball.range[3] = g.mix.code();
+        }
+        if shaded {
+            let at = group.ball(bodies, i, time).offset - group.info.middle;
+            ball.place = [at.x, at.y, side, 0.0];
+        }
+        if group.state.is_some() {
+            ball.form[2] += look_turn(&group.look, number).to_radians();
+        }
+        frame.layered.push(ball);
+    }
+    // Which pipeline draws them: the stack's in-ball program, once per frame, or the plain one.
+    let program = stack.program().map(|p| match frame.programs.iter().position(|q| q.key == p.key) {
+        Some(i) => i as u32,
+        None => {
+            frame.programs.push(p);
+            frame.programs.len() as u32 - 1
+        }
+    });
+    let end = frame.layered.len() as u32;
+    frame.layered_runs.push(LayeredRun { program, start, end });
+    if part & OVER != 0 {
+        return;
+    }
+
+    // Recent hits, for the flashes here and for the particle and shader modules. Only the
+    // flashes' worth is scanned when nothing else wants them.
+    let rate = cx.world.steps_per_second;
+    let flash = stack.flash.as_ref().filter(|f| f.flash > 0.0 && f.flash_seconds > 0.0);
+    // The scene settings' effects aren't passed down but still pulse on every hit.
+    let scene_effects = cx.scene.things.get(&ThingId::ROOT).is_some_and(|r| r.slots.contains_key(&SlotId::Shader));
+    let wants_hits =
+        scene_effects || [SlotId::Particles, SlotId::Shader].iter().any(|s| cx.resolved.slots.contains_key(s));
+    let memory = if wants_hits {
+        HIT_MEMORY
+    } else if let Some(f) = flash {
+        f.flash_seconds as f64
+    } else {
+        return;
+    };
+    let since = ((cx.time - memory) * rate as f64).floor().max(0.0) as u64;
+    for e in cx.log.since(since) {
+        if e.kind != EventKind::Hit || e.a.thing != id {
+            continue;
+        }
+        let time = e.time(rate);
+        if time > cx.time {
+            continue;
+        }
+        frame.hits.push(HitMark {
+            thing: id,
+            other: e.b.map(|b| b.thing),
+            point: e.point.into(),
+            normal: e.normal.into(),
+            time: time as f32,
+            speed: e.speed,
+            color: seen(e.a.item as usize),
+        });
+        let Some(f) = flash else { continue };
+        let age = (cx.time - time) as f32 / f.flash_seconds;
+        if !(0.0..=1.0).contains(&age) {
+            continue;
+        }
+        let intensity = (e.speed / FULL_FLASH_SPEED).min(1.5) * (-3.0 * age).exp() * 0.35 * f.flash / 0.4;
+        if intensity < 0.002 {
+            continue;
+        }
+        let c = seen(e.a.item as usize);
+        frame.flashes.push(FlashInstance {
+            center: e.point.into(),
+            size: f.flash_size,
+            color: [
+                (c[0] + 1.0) * 0.5 * intensity,
+                (c[1] + 1.0) * 0.5 * intensity,
+                (c[2] + 1.0) * 0.5 * intensity,
+                1.0,
+            ],
+        });
     }
 }
 

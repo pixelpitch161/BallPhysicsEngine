@@ -783,6 +783,32 @@ impl Frame {
         f
     }
 
+    /// The layer of what things paint normally over their blended parts (the layers of a ball
+    /// above its Blend layer): a Normal layer at full amount, which [`Frame::layer_mut`] never
+    /// makes. [`build_frame`] moves it after every other layer, so it is mixed in last.
+    pub fn over_layer_mut(&mut self) -> &mut Frame {
+        let over = |l: &BlendLayer| l.blend == Blend::Normal && l.amount >= 1.0 && !l.each;
+        if !self.layers.iter().any(over) {
+            self.layers.push(BlendLayer { blend: Blend::Normal, amount: 1.0, each: false, frame: Frame::default() });
+        }
+        let i = self.layers.iter().position(over).expect("just made");
+        let (width, height, time, video, camera) = (self.width, self.height, self.time, self.video, self.camera);
+        let (bloom, exposure, on_screen) = (self.bloom, self.exposure, self.background_on_screen);
+        let f = &mut self.layers[i].frame;
+        (f.width, f.height, f.time, f.video, f.camera) = (width, height, time, video, camera);
+        (f.bloom, f.exposure, f.background_on_screen) = (bloom, exposure, on_screen);
+        f
+    }
+
+    /// Moves the over layer (see [`Frame::over_layer_mut`]) after every other layer.
+    fn over_layer_last(&mut self) {
+        let over = |l: &BlendLayer| l.blend == Blend::Normal && l.amount >= 1.0 && !l.each;
+        if let Some(i) = self.layers.iter().position(over) {
+            let l = self.layers.remove(i);
+            self.layers.push(l);
+        }
+    }
+
     /// Whether this frame's own lists (not its layers') draw the thing with `code` (see
     /// [`thing_code`]) into the object picture: a wall, a ball or a styled ball of it.
     pub(crate) fn draws_thing(&self, code: f32) -> bool {
@@ -935,11 +961,21 @@ fn draw_routed(target: &mut Frame, blend: Blend, amount: f32, each: bool, draw: 
         draw(target);
         return;
     }
+    draw_into_layer(target, |t| t.layer_mut(blend, amount, each), draw);
+}
+
+/// Runs `draw` on the frame's over layer (see [`Frame::over_layer_mut`]), borrowing `target`'s
+/// atlas, hits and effects as [`draw_routed`] does.
+fn draw_over_routed(target: &mut Frame, draw: impl FnOnce(&mut Frame)) {
+    draw_into_layer(target, Frame::over_layer_mut, draw);
+}
+
+fn draw_into_layer(target: &mut Frame, layer: impl FnOnce(&mut Frame) -> &mut Frame, draw: impl FnOnce(&mut Frame)) {
     let before = target.layers.len();
     let take =
         |f: &mut Frame| (std::mem::take(&mut f.gradients), std::mem::take(&mut f.hits), std::mem::take(&mut f.effects));
     let shared = take(target);
-    let layer = target.layer_mut(blend, amount, each);
+    let layer = layer(target);
     (layer.gradients, layer.hits, layer.effects) = shared;
     draw(layer);
     let shared = take(layer);
@@ -974,6 +1010,9 @@ pub trait ThingDraw: Send + Sync + 'static {
     fn blend(&self, _resolved: &ResolvedThing) -> Option<(Blend, f32, bool)> {
         None
     }
+    /// What the thing draws over its blended part, painted normally whatever its blend: the
+    /// layers of a ball above its Blend layer. Drawn right after [`ThingDraw::draw`].
+    fn draw_over(&self, _cx: &DrawCx, _frame: &mut Frame) {}
 }
 
 /// How a module kind draws for every thing whose slot it fills: a trail behind the balls, a
@@ -1060,6 +1099,12 @@ pub fn build_frame(
         let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
         let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time };
         draw_routed(target, blend, amount, each, |into| d.draw(&cx, into));
+        // Only a thing that blends has parts to paint over the blend: into the over layer, which
+        // is mixed in after every blend layer.
+        if layered(blend, amount) {
+            let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
+            draw_over_routed(target, |into| d.draw_over(&cx, into));
+        }
     }
     for (id, r) in &resolved.things {
         let Some(thing) = scene.things.get(id) else { continue };
@@ -1075,6 +1120,10 @@ pub fn build_frame(
             let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time };
             draw_routed(target, blend, amount, each, |into| d.draw(&cx, slot, into));
         }
+    }
+    frame.over_layer_last();
+    if let Some(o) = frame.overlay.as_deref_mut() {
+        o.over_layer_last();
     }
     frame.camera = world.camera;
     for l in &mut frame.layers {

@@ -81,6 +81,27 @@ fn group_begin(l: LayerGpu, first: u32, below: u32, screen: vec2<f32>) -> vec2<f
     return world / side / in_ball.scale + vec2<f32>(0.5);
 }
 
+// How much of group shader `l` reaches upright ball point `screen` (in radii): 1 where it
+// covers the group, 0 where it doesn't. `p1.y` is how much of the group it leaves uncovered (0:
+// the whole group is covered), `p1.z` the side it covers from (radians: 0 from the left), `p1.w`
+// how soft the edge is (as a share of the group).
+fn group_covers(l: LayerGpu, screen: vec2<f32>) -> f32 {
+    let covers = 1.0 - clamp(l.p1.y, 0.0, 1.0);
+    if covers >= 1.0 {
+        return 1.0;
+    }
+    let side = max(layered_ball.place.z, 1e-3);
+    let at = (layered_ball.place.xy + screen * layered_ball.radius.y) / side;
+    let dir = vec2<f32>(cos(l.p1.z), sin(l.p1.z));
+    // 0 on the side it covers from to 1 on the far side, across the group's square.
+    let t = dot(at, dir) / max(abs(dir.x) + abs(dir.y), 1e-3) + 0.5;
+    let e = max(0.5 * clamp(l.p1.w, 0.0, 1.0), 1e-3);
+    // The edge runs from wholly before the group (covers 0) to wholly past it (covers 1), so
+    // animating Covers wipes smoothly from end to end.
+    let cut = mix(-e, 1.0 + e, covers);
+    return 1.0 - smoothstep(cut - e, cut + e, t);
+}
+
 // The quad point (see layers_walk.wgsl) a shader uv stands for.
 fn in_ball_local(uv: vec2<f32>) -> vec2<f32> {
     var pt = (uv - vec2<f32>(0.5)) * 2.0 * in_ball.scale;
@@ -110,7 +131,7 @@ fn fold_uv(uv: vec2<f32>) -> vec2<f32> {
 // went on past its edge, so a ring Around it is lit by the ball's own colours.
 fn sample(uv: vec2<f32>) -> vec3<f32> {
     let local = in_ball_local(uv);
-    let w = walk_plain(local, in_ball.first, in_ball.below);
+    let w = walk_plain(local, in_ball.first, in_ball.below, 0u);
     if in_ball.group > 0.5 {
         return w.inner.rgb;
     }

@@ -16,10 +16,11 @@ use super::{
     OutlineLayer, OutlineSits, PATTERN, PatternLayer, RAINBOW, SHADER, SHADING, SHINE, STRETCH, ShaderLayer,
     ShadingLayer, ShineLayer, StretchWhenFast, TURNING, Turning,
 };
-use super::{MaskFrom, ShadingKind};
+use super::{GradientShape, MaskFrom, ShadingKind};
 use crate::modules::look::BallShape;
 use crate::modules::look::basic::{STRETCH_SPEED, facing_degrees, heading, shift_linear_hue};
-use crate::paint::{InsideFrom, inside_gpu};
+use crate::paint::gpu::repeat_code;
+use crate::paint::{Follow, InsideFrom, PlaceShape, inside_gpu};
 
 /// How far a ball's shapes reach from its centre, in radii (a triangle's corners, a heart's
 /// lobes); matches SHAPE_REACH in styled.wgsl.
@@ -80,6 +81,8 @@ pub struct Stack {
     /// The group layers that write records after the ball's own, in order.
     pub ends: Vec<GroupEnd>,
     pub blend: Option<BlendLayer>,
+    /// How many drawn layers sit under the Blend layer (all of them without one).
+    pub blend_at: usize,
     pub flash: Option<FlashOnHit>,
     pub hue: Option<ColourOnHit>,
     pub stretch: Option<StretchWhenFast>,
@@ -101,6 +104,7 @@ impl Stack {
             group: None,
             ends: Vec::new(),
             blend: None,
+            blend_at: 0,
             flash: None,
             hue: None,
             stretch: None,
@@ -126,7 +130,12 @@ impl Stack {
                     }
                 }
                 // Blend and the reactions are there at most once; the first counts.
-                BLEND => stack.blend = stack.blend.take().or(Some(BlendLayer::from_params(&p))),
+                BLEND => {
+                    if stack.blend.is_none() {
+                        stack.blend = Some(BlendLayer::from_params(&p));
+                        stack.blend_at = stack.drawn.len();
+                    }
+                }
                 FLASH => stack.flash = stack.flash.take().or(Some(FlashOnHit::from_params(&p))),
                 HUE => stack.hue = stack.hue.take().or(Some(ColourOnHit::from_params(&p))),
                 STRETCH => stack.stretch = stack.stretch.take().or(Some(StretchWhenFast::from_params(&p))),
@@ -148,7 +157,33 @@ impl Stack {
                 _ => {}
             }
         }
+        if stack.blend.is_none() {
+            stack.blend_at = stack.drawn.len();
+        }
         Some(stack)
+    }
+
+    /// Whether the Body's colours run across each ball on its own (Each ball, several colours).
+    pub fn body_each_ball(&self) -> bool {
+        self.body.fill.follow == Follow::EachBall && self.body.fill.colours.stops.len() > 1
+    }
+
+    /// Where the records of the layers above the Blend layer start, when the ball draws in two
+    /// parts: the layers under the Blend layer mixed with what is behind by its blend, then the
+    /// ones above it painted normally over them. `None` when it draws in one: no Blend layer, a
+    /// Normal one at full amount, or nothing drawn above it.
+    pub fn split(&self) -> Option<u32> {
+        let b = self.blend.as_ref()?;
+        if b.blend == Blend::Normal && b.blend_amount >= 1.0 {
+            return None;
+        }
+        let writes = |d: &&DrawnLayer| d.writes();
+        if !self.drawn[self.blend_at.min(self.drawn.len())..].iter().any(|d| d.writes()) {
+            return None;
+        }
+        let under: usize =
+            self.drawn[..self.blend_at.min(self.drawn.len())].iter().filter(writes).map(|d| 1 + d.masks.len()).sum();
+        Some(1 + under as u32)
     }
 
     /// How the whole ball mixes with what is behind it: the Blend layer's, Normal without one.
@@ -172,9 +207,14 @@ impl Stack {
         recoloured(base, self.hue_per_hit(), self.rainbow() * time, hits)
     }
 
-    /// Whether any pattern paints from its own gradient, so balls need their own variation.
+    /// Whether any pattern paints from its own gradient, or the body's colours run across each
+    /// ball, so balls need their own variation.
     pub fn varies(&self) -> bool {
-        self.drawn.iter().any(|d| matches!(&d.layer, Drawn::Pattern(p) if p.inside.from == InsideFrom::OwnGradient))
+        self.body_each_ball()
+            || self
+                .drawn
+                .iter()
+                .any(|d| matches!(&d.layer, Drawn::Pattern(p) if p.inside.from == InsideFrom::OwnGradient))
     }
 
     /// Whether the shape turns to point the way the ball goes (never a circle, which has no point).
@@ -184,13 +224,14 @@ impl Stack {
 
     /// How the group gradient reaches the GPU: `None` when it doesn't (no gradient, or it
     /// changes only the body, which is mixed on the CPU).
+    /// A gradient body is changed on the GPU too, as the CPU can't reach its colours.
     pub fn group_on_gpu(&self) -> Option<&GroupGradient> {
-        self.group.as_ref().filter(|g| g.changes != Changes::Body)
+        self.group.as_ref().filter(|g| g.changes != Changes::Body || self.body_each_ball())
     }
 
-    /// The group gradient when it changes the body colour (mixed on the CPU).
+    /// The group gradient when it changes the body colour on the CPU (a plain body).
     pub fn group_on_body(&self) -> Option<&GroupGradient> {
-        self.group.as_ref().filter(|g| g.changes == Changes::Body)
+        self.group.as_ref().filter(|g| g.changes == Changes::Body && !self.body_each_ball())
     }
 
     /// Whether some drawn layer is given to some balls only.
@@ -211,18 +252,43 @@ impl Stack {
     pub fn records(&self, atlas: &mut GradientAtlas, tiles: &mut Vec<(u64, Arc<[u8]>)>, time: f32) -> Vec<LayerGpu> {
         let blend = |b: Blend| b.shader_code();
         let flag = |on: bool| if on { LayerGpu::FLAG } else { 0 };
-        let chosen = self.group_on_gpu().filter(|g| g.changes == Changes::Choose).map(|g| g.chosen_ids());
+        let chosen = self.group_on_gpu().and_then(|g| match g.changes {
+            Changes::Choose => Some(g.chosen_ids()),
+            // A gradient body takes the group's colour on the GPU.
+            Changes::Body => Some(vec![self.body_id.0]),
+            Changes::EveryLayer => None,
+        });
         let grouped =
             |id: LayerId| if chosen.as_ref().is_some_and(|c| c.contains(&id.0)) { LayerGpu::GROUPED } else { 0 };
+        let turn = self.rainbow() * time;
+        let body_paint = if self.body_each_ball() {
+            let f = &self.body.fill;
+            let mut colours = f.colours.clone();
+            if turn != 0.0 {
+                for stop in &mut colours.stops {
+                    stop.color = stop.color.shift_hue(turn);
+                }
+            }
+            let shape = match f.shape {
+                PlaceShape::Straight => GradientShape::Straight,
+                PlaceShape::Round => GradientShape::Round,
+            };
+            let mut paint = own_paint(&colours, shape, f.angle, atlas);
+            paint.scroll = if f.scroll.is_finite() { f.scroll } else { 0.0 };
+            paint.repeat = repeat_code(f.repeat);
+            paint
+        } else {
+            bpe_gfx::PaintGpu::default()
+        };
         let mut out = vec![LayerGpu {
             head: [LayerGpu::BODY, 0, grouped(self.body_id), 0],
-            amount: [1.0, 0.0, 0.0, 0.0],
+            amount: [self.body.opacity.clamp(0.0, 1.0), 0.0, 0.0, 0.0],
+            paint: body_paint,
             ..LayerGpu::ZERO
         }];
         // Where each layer's record is, by id, for masks that name a layer.
         let mut placed: Vec<(LayerId, usize)> = vec![(self.body_id, 0)];
         let sources = self.effect_sources();
-        let turn = self.rainbow() * time;
         for d in &self.drawn {
             let r = match &d.layer {
                 Drawn::Pattern(p) => {
@@ -243,20 +309,23 @@ impl Stack {
                     head: [LayerGpu::OUTLINE, blend(o.blend), flag(o.colour_from == ColourFrom::SameAsBody), 0],
                     amount: [o.opacity, 0.0, 0.0, 0.0],
                     p0: [o.width.max(0.0), o.sits.code(), 0.0, 0.0],
-                    colour: o.colour.to_linear(),
+                    colour: o.colour.sample(0.5),
+                    paint: own_paint(&o.colour, o.gradient, o.direction, atlas),
                     ..LayerGpu::ZERO
                 },
                 Drawn::Shine(s) => LayerGpu {
                     head: [LayerGpu::SHINE, blend(s.blend), 0, 0],
                     amount: [s.opacity, s.strength, 0.0, 0.0],
-                    p0: [s.spot.x, s.spot.y, s.size, 0.0],
+                    p0: [s.spot.x, s.spot.y, s.size, s.material.code()],
+                    p1: [s.sharpness(), 0.0, 0.0, 0.0],
                     ..LayerGpu::ZERO
                 },
                 Drawn::Glow(g) => LayerGpu {
                     head: [LayerGpu::GLOW, blend(g.blend), flag(g.colour_from == ColourFrom::SameAsBody), 0],
                     amount: [g.opacity, g.strength, 0.0, 0.0],
                     p0: [g.size.max(0.05), 0.0, 0.0, 0.0],
-                    colour: g.colour.to_linear(),
+                    colour: g.colour.sample(0.5),
+                    paint: own_paint(&g.colour, g.gradient, g.direction, atlas),
                     ..LayerGpu::ZERO
                 },
                 Drawn::Shading(s) => {
@@ -271,7 +340,8 @@ impl Stack {
                         amount: [s.opacity, 0.0, 0.0, 0.0],
                         p0: [s.kind.code(), s.softness, s.space.code(), s.amount],
                         p1,
-                        colour: s.colour.to_linear(),
+                        colour: s.colour.sample(0.5),
+                        paint: own_paint(&s.colour, s.gradient, s.direction, atlas),
                         ..LayerGpu::ZERO
                     }
                 }
@@ -339,7 +409,8 @@ impl Stack {
                         head: [LayerGpu::GROUP_SHADER, blend(gs.mix.blend()), 0, 0],
                         amount: [gs.amount, 0.0, 0.0, 0.0],
                         p0: [sh.speed, sh.scale, if whole { 1.0 } else { 0.0 }, slot as f32],
-                        p1: [gs.around.unwrap_or(0.0), 0.0, 0.0, 0.0],
+                        // How much it leaves uncovered (0: the whole group), from where, how soft.
+                        p1: [gs.around.unwrap_or(0.0), 1.0 - gs.covers, gs.from.to_radians(), gs.edge],
                         extra,
                         ..LayerGpu::ZERO
                     });
@@ -539,8 +610,28 @@ impl Stack {
     }
 }
 
-/// Where `strokes`' tile is in `tiles`, adding it if it isn't there yet; -1 for no strokes or
-/// past the most a frame holds.
+/// How a layer's own `colours` paint across each ball: nothing (row -1, the record's plain colour)
+/// for one colour, else straight across at `direction` degrees (pattern 1) or outward (pattern 2,
+/// which layers.wgsl measures for the layer: an outline across its ring, a glow out from the edge).
+fn own_paint(
+    colours: &bpe_core::Gradient,
+    shape: GradientShape,
+    direction: f32,
+    atlas: &mut GradientAtlas,
+) -> bpe_gfx::PaintGpu {
+    if colours.stops.len() <= 1 {
+        return bpe_gfx::PaintGpu::default();
+    }
+    bpe_gfx::PaintGpu {
+        row: atlas.row(colours) as f32,
+        pattern: shape.pattern(),
+        angle: if direction.is_finite() { direction } else { 90.0 },
+        scale: 1.0,
+        steps: if colours.transition == bpe_core::Transition::Steps { 1.0 } else { 0.0 },
+        ..bpe_gfx::PaintGpu::default()
+    }
+}
+
 /// How far ball point `q` is from the edge of `shape`, in radii; negative inside. The circle,
 /// square and donut are exact; the other shapes are taken as a circle.
 pub fn shape_distance(shape: BallShape, roundness: f32, q: Vec2) -> f32 {
@@ -555,6 +646,8 @@ pub fn shape_distance(shape: BallShape, roundness: f32, q: Vec2) -> f32 {
     }
 }
 
+/// Where `strokes`' tile is in `tiles`, adding it if it isn't there yet; -1 for no strokes or
+/// past the most a frame holds.
 fn tile_index(tiles: &mut Vec<(u64, Arc<[u8]>)>, strokes: &bpe_core::Strokes) -> f32 {
     if strokes.list.is_empty() {
         return -1.0;
@@ -880,5 +973,130 @@ mod tests {
     fn choice_labels_read_as_words() {
         assert_eq!(choice_label(ColourFrom::SameAsBody), "Same as body");
         assert_eq!(choice_label(OutlineSits::Inside), "Inside");
+    }
+}
+
+#[cfg(test)]
+mod fixes_tests {
+    use super::*;
+    use crate::registry;
+    use bpe_core::{Address, Color, Gradient, Scene, SlotId, ThingId, Value, layered_key, resolve};
+
+    fn stack_after(f: impl FnOnce(&bpe_core::Registry, &mut Scene, ThingId)) -> Stack {
+        let reg = registry();
+        let mut s = Scene::empty(&reg);
+        let b = crate::add_thing(&mut s, &reg, "balls", ThingId::ROOT).unwrap();
+        f(&reg, &mut s, b);
+        Stack::of(&resolve(&s, &reg).things[&b].slots[&SlotId::Look]).unwrap()
+    }
+
+    fn set(reg: &bpe_core::Registry, s: &mut Scene, b: ThingId, layer: LayerId, key: &str, v: Value) {
+        s.set_at(reg, &Address::on(b, SlotId::Look, &layered_key(layer, key)), v).unwrap();
+    }
+
+    #[test]
+    fn a_blend_layer_splits_the_ball_where_it_sits_unless_nothing_draws_above_it() {
+        // Outline, Blend, Pattern: the body and the outline blend, the pattern paints over them.
+        let stack = stack_after(|reg, s, b| {
+            s.add_layer(reg, b, SlotId::Look, OUTLINE).unwrap();
+            s.add_layer(reg, b, SlotId::Look, BLEND).unwrap();
+            s.add_layer(reg, b, SlotId::Look, PATTERN).unwrap();
+        });
+        assert_eq!(stack.blend_at, 1);
+        assert_eq!(stack.split(), Some(2), "the pattern's record, after the body's and the outline's");
+        // At the top it blends the whole ball, as before.
+        let top = stack_after(|reg, s, b| {
+            s.add_layer(reg, b, SlotId::Look, OUTLINE).unwrap();
+            s.add_layer(reg, b, SlotId::Look, BLEND).unwrap();
+        });
+        assert_eq!(top.split(), None);
+        assert_eq!(top.whole_blend().0, Blend::Add);
+        // A Normal blend at full amount needs no split.
+        let normal = stack_after(|reg, s, b| {
+            let blend = s.add_layer(reg, b, SlotId::Look, BLEND).unwrap();
+            set(reg, s, b, blend, "blend", Value::Choice("normal".into()));
+            s.add_layer(reg, b, SlotId::Look, PATTERN).unwrap();
+        });
+        assert_eq!(normal.split(), None);
+    }
+
+    #[test]
+    fn a_split_ball_draws_twice_the_upper_part_painted_normally() {
+        use bpe_gfx::{Frame, build_frame};
+        let kit = crate::kit();
+        let reg = &kit.registry;
+        let mut scene = crate::new_studio_scene(reg);
+        let b = crate::add_thing(&mut scene, reg, "balls", ThingId::ROOT).unwrap();
+        scene.add_layer(reg, b, SlotId::Look, BLEND).unwrap();
+        scene.add_layer(reg, b, SlotId::Look, OUTLINE).unwrap();
+        let resolved = resolve(&scene, reg);
+        let world = bpe_runtime::World::build(&scene, &resolved, &kit.sims);
+        let mut frame = Frame::default();
+        build_frame(&scene, &resolved, &world, &bpe_runtime::Log::default(), 0.0, &kit.draws, &mut frame);
+        // The body under the Blend layer goes into the Add layer, the outline over it drawn normally.
+        let added = frame.layers.iter().find(|l| l.blend == Blend::Add).expect("an Add layer");
+        assert_eq!(added.frame.layered.len(), 1);
+        assert_eq!(added.frame.layered[0].range[2], 1);
+        assert!(frame.layered.is_empty(), "nothing of the ball in the frame's own lists");
+        // The over layer comes last, so the outline is mixed in after the blended body.
+        let over = frame.layers.last().unwrap();
+        assert_eq!((over.blend, over.amount, over.each), (Blend::Normal, 1.0, false));
+        assert_eq!(over.frame.layered.len(), 1);
+        assert_eq!(over.frame.layered[0].range[2], 1 | 0x1_0000);
+        assert_eq!(over.frame.look_layers.len(), 2, "the upper part walks the whole stack");
+    }
+
+    #[test]
+    fn a_body_gradient_runs_across_each_ball_by_default_and_layers_take_their_own() {
+        let two = Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)]);
+        let stack = stack_after(|reg, s, b| {
+            let body = s.card(b, SlotId::Look).unwrap().layers[0].id;
+            set(reg, s, b, body, "colours", Value::Gradient(two.clone()));
+            set(reg, s, b, body, "opacity", Value::Number(0.4));
+            let o = s.add_layer(reg, b, SlotId::Look, OUTLINE).unwrap();
+            set(reg, s, b, o, "colour_from", Value::Choice("own".into()));
+            set(reg, s, b, o, "colour", Value::Gradient(two.clone()));
+            set(reg, s, b, o, "gradient", Value::Choice("round".into()));
+            s.add_layer(reg, b, SlotId::Look, GLOW).unwrap();
+        });
+        assert!(stack.body_each_ball() && stack.varies());
+        let mut atlas = GradientAtlas::default();
+        let records = stack.records(&mut atlas, &mut Vec::new(), 0.0);
+        assert!(records[0].paint.row >= 0.0, "the body paints its gradient");
+        assert_eq!((records[0].paint.pattern, records[0].paint.angle), (1.0, 90.0), "straight, top to bottom");
+        assert_eq!(records[0].amount[0], 0.4, "the body's opacity");
+        assert!(records[1].paint.row >= 0.0 && records[1].paint.pattern == 2.0, "the outline's own, outward");
+        assert!(records[2].paint.row < 0.0, "a one-colour glow paints its plain colour");
+    }
+
+    #[test]
+    fn a_body_gradient_following_the_group_place_paints_one_colour_per_ball() {
+        let stack = stack_after(|reg, s, b| {
+            let body = s.card(b, SlotId::Look).unwrap().layers[0].id;
+            let two = Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)]);
+            set(reg, s, b, body, "colours", Value::Gradient(two));
+            set(reg, s, b, body, "follow", Value::Choice("place".into()));
+        });
+        assert!(!stack.body_each_ball());
+        let records = stack.records(&mut GradientAtlas::default(), &mut Vec::new(), 0.0);
+        assert!(records[0].paint.row < 0.0);
+    }
+
+    #[test]
+    fn shine_and_group_shader_settings_reach_their_records() {
+        let stack = stack_after(|reg, s, b| {
+            let shine = s.add_layer(reg, b, SlotId::Look, SHINE).unwrap();
+            set(reg, s, b, shine, "material", Value::Choice("metal".into()));
+            set(reg, s, b, shine, "softness", Value::Number(0.0));
+            let gs = s.add_layer(reg, b, SlotId::Look, super::super::GROUP_SHADER).unwrap();
+            set(reg, s, b, gs, "covers", Value::Number(0.25));
+            set(reg, s, b, gs, "from", Value::Number(90.0));
+        });
+        let records = stack.records(&mut GradientAtlas::default(), &mut Vec::new(), 0.0);
+        assert_eq!(records[1].p0[3], 2.0, "metal");
+        assert!((records[1].p1[0] - 3.0).abs() < 1e-5, "softness 0 is four times sharper");
+        let gs = records.iter().find(|r| r.head[0] == LayerGpu::GROUP_SHADER).unwrap();
+        assert_eq!(gs.p1[1], 0.75, "three quarters uncovered");
+        assert!((gs.p1[2] - 90f32.to_radians()).abs() < 1e-6);
     }
 }
