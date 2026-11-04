@@ -1,6 +1,8 @@
 //! The sound path never allocates. Alone in its own test binary, since the counting allocator
 //! sees every thread.
 
+use bpe_core::{Settings, SlotId};
+use bpe_kit::sound::{SubWave, VoiceSettings, starter_voice};
 use bpe_kit::{kit, new_scene, resolve_scene};
 use bpe_sound::{BLOCK, Engine};
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -57,4 +59,42 @@ fn render_does_not_allocate() {
         heard |= block.iter().any(|&v| v != 0.0);
     }
     assert!(heard, "hits were heard while counting");
+
+    // The shape voice (both oscillators at full unison), playing and stopped. In the same test:
+    // the counter is the whole program's.
+    let mut scene = new_scene(&kit.registry);
+    let shape = scene.order.iter().copied().find(|id| scene.things[id].kind == "shape").unwrap();
+    let mut card = starter_voice(&kit.registry);
+    let mut v = VoiceSettings::from_params(&card.params);
+    v.a.unison = 16;
+    v.b.on = true;
+    v.b.unison = 16;
+    v.a.sub = SubWave::Square;
+    card.params = v.to_params();
+    scene.things.get_mut(&shape).unwrap().slots.insert(SlotId::Sound, card);
+    let resolved = resolve_scene(&scene, &kit.registry);
+    let mut e = Engine::new(&scene, &resolved, &kit);
+    for _ in 0..200 {
+        e.render(&mut block);
+    }
+    let mut heard = false;
+    for _ in 0..1_000 {
+        e.step_physics();
+        ALLOCATIONS.store(0, Ordering::SeqCst);
+        COUNTING.store(true, Ordering::SeqCst);
+        e.render_prepared(&mut block);
+        COUNTING.store(false, Ordering::SeqCst);
+        assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0, "a shape voice block allocated");
+        heard |= block.iter().any(|&v| v != 0.0);
+    }
+    assert!(heard, "the shape voice was heard while counting");
+    e.stop_notes();
+    e.audition(shape, 64);
+    ALLOCATIONS.store(0, Ordering::SeqCst);
+    COUNTING.store(true, Ordering::SeqCst);
+    for _ in 0..100 {
+        e.render_paused(&mut block);
+    }
+    COUNTING.store(false, Ordering::SeqCst);
+    assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0, "a block while stopped allocated");
 }

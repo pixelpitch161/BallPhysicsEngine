@@ -43,6 +43,8 @@ pub struct Engine {
     /// The physics is where the voices are. A scene with no voices runs no physics (it would
     /// only hold the playhead back); the first voice brings it up to date.
     physics_synced: bool,
+    /// Where hand-played notes are in sound time while stopped (from the playhead on).
+    paused_pos: u64,
 }
 
 impl Engine {
@@ -71,6 +73,7 @@ impl Engine {
             queue_head: 0,
             queue_len: 0,
             physics_synced: true,
+            paused_pos: 0,
         }
     }
 
@@ -111,6 +114,7 @@ impl Engine {
         }
         self.leaving.clear();
         self.master.reset();
+        self.paused_pos = 0;
         if self.voices.is_empty() {
             // Silence needs no pre-roll and no physics.
             self.voice_pos = target;
@@ -176,6 +180,49 @@ impl Engine {
     /// Whether anything is sounding or still to come from voices that went away.
     pub fn has_leaving(&self) -> bool {
         !self.leaving.is_empty()
+    }
+
+    /// Whether every voice is silent (the master may still have a few milliseconds to give).
+    pub fn is_quiet(&self) -> bool {
+        self.leaving.is_empty() && self.voices.iter().all(|v| v.is_silent())
+    }
+
+    /// Every note stops at once (playback stopped); the next [`Engine::seek`] starts over.
+    pub fn stop_notes(&mut self) {
+        for v in &mut self.voices {
+            v.reset();
+        }
+        self.leaving.clear();
+        self.master.reset();
+    }
+
+    /// While stopped: the next block of the notes played by hand ([`Engine::audition`]) through
+    /// the master, straight out. No hits, no physics, and the playhead stays where it is: the
+    /// keys read at that moment. Never allocates.
+    pub fn render_paused(&mut self, out: &mut [f32; BLOCK * 2]) {
+        let _flush = FlushGuard::new();
+        self.paused_pos = self.paused_pos.max(self.voice_pos);
+        self.bus_l = [0.0; BLOCK];
+        self.bus_r = [0.0; BLOCK];
+        let cx = BlockCx {
+            start_sample: self.paused_pos,
+            time: self.out_pos as f64 / SAMPLE_RATE as f64,
+            tempo: &self.tempo,
+            world: self.physics.world(),
+        };
+        for v in &mut self.voices {
+            v.on_block(&cx, &[], &mut self.bus_l, &mut self.bus_r);
+        }
+        for v in &mut self.leaving {
+            v.on_block(&cx, &[], &mut self.bus_l, &mut self.bus_r);
+        }
+        self.master.process(&mut self.bus_l, &mut self.bus_r);
+        self.paused_pos += BLOCK as u64;
+        for i in 0..BLOCK {
+            out[2 * i] = self.bus_l[i];
+            out[2 * i + 1] = self.bus_r[i];
+        }
+        self.meter();
     }
 
     /// Renders the next block, interleaved stereo.

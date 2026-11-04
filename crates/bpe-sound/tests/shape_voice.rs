@@ -403,3 +403,4 @@ fn heavy_patch_renders_8x_real_time() {
     assert!(factor >= 8.0, "only {factor:.1}x real time");
 }
 
+
