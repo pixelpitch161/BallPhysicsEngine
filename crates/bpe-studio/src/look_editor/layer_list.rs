@@ -2,7 +2,9 @@
 //! layers (and the sub-layers in their box) into another order.
 
 use bpe_core::{Color, Layer, LayerId, LayerSection, Settings, Slot};
-use bpe_kit::modules::look::layers::{self as kinds, CutFrom, CutLayer, CutShape, ShapeCut, gpu::choice_label};
+use bpe_kit::modules::look::layers::{
+    self as kinds, CutFrom, CutLayer, CutShape, ShapeCut, gpu::choice_label, particles, trail,
+};
 use bpe_kit::modules::look::shape as shape_look;
 use eframe::egui::{self, Color32, Key, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 
@@ -375,7 +377,9 @@ pub fn cut_params(cx: &LookCx, layer: &Layer) -> CutLayer {
 /// The copied layer when it is a sub-layer that layer `parent` of `card` takes, with room for it.
 fn copied_sub(inspector: &Inspector, cx: &LookCx, card: &Slot, parent: &Layer) -> Option<bpe_core::CopiedLayer> {
     let reg = cx.reg();
-    let takes = reg.layer(&parent.kind).filter(|k| k.section() == LayerSection::Drawn && k.takes_subs())?;
+    let takes = reg
+        .layer(&parent.kind)
+        .filter(|k| matches!(k.section(), LayerSection::Drawn | LayerSection::Around) && k.takes_subs())?;
     let room = subs_of(card, parent.id).count() < bpe_core::MAX_SUBS;
     inspector.clipboard.layer.clone().filter(|c| {
         room && takes.takes_sub(&c.kind)
@@ -429,7 +433,8 @@ fn menu(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, card: &Slot, layer:
     let kind = reg.layer(&layer.kind);
     let base = kind.is_some_and(|k| k.base());
     let drawn = kind.is_some_and(|k| k.section() == LayerSection::Drawn) && !base;
-    let takes_subs = drawn && kind.is_some_and(|k| k.takes_subs());
+    let around = kind.is_some_and(|k| k.section() == LayerSection::Around);
+    let takes_subs = (drawn || around) && kind.is_some_and(|k| k.takes_subs());
     let group = kind.is_some_and(|k| k.section() == LayerSection::Group);
     let repeats = kind.is_some_and(|k| k.repeats());
     let index = place_of(card, layer.id).unwrap_or(0);
@@ -438,8 +443,13 @@ fn menu(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, card: &Slot, layer:
     let top_drawn = tops.iter().filter(|l| section(l) == Some(LayerSection::Drawn)).count().saturating_sub(1);
     // A group layer moves among the group layers, at the end of the card.
     let group_start = tops.iter().position(|l| section(l) == Some(LayerSection::Group)).unwrap_or(tops.len());
+    // A trail or particles layer moves among the others of its list.
+    let around_start = tops.iter().position(|l| section(l) == Some(LayerSection::Around)).unwrap_or(tops.len());
+    let around_end = around_start + tops.iter().filter(|l| section(l) == Some(LayerSection::Around)).count();
     let (can_up, can_down) = if group {
         (index + 1 < tops.len(), index > group_start)
+    } else if around {
+        (index + 1 < around_end, index > around_start)
     } else {
         (drawn && index < top_drawn, drawn && index > 1)
     };
@@ -521,7 +531,7 @@ pub fn drop_target(ui: &mut Ui, cx: &LookCx, card: &Slot, rows: &[(LayerId, Rect
     let ctx = ui.ctx().clone();
     let Some(dragged) = egui::DragAndDrop::payload::<Dragged>(&ctx) else { return };
     let Dragged(thing, layer) = *dragged;
-    if thing != cx.id {
+    if thing != cx.id || section_of(cx, card, layer) != Some(LayerSection::Drawn) {
         return;
     }
     let Some(pointer) = ctx.pointer_latest_pos() else { return };
@@ -550,6 +560,46 @@ pub fn drop_target(ui: &mut Ui, cx: &LookCx, card: &Slot, rows: &[(LayerId, Rect
         _ => gap,
     };
     let to = others.len() + 1 - place;
+    if place_of(card, layer) != Some(to) {
+        edits.push(Edit::MoveLayer(cx.slot, layer, to));
+    }
+    egui::DragAndDrop::clear_payload(&ctx);
+}
+
+/// The section of `card`'s layer `id`.
+fn section_of(cx: &LookCx, card: &Slot, id: LayerId) -> Option<LayerSection> {
+    card.layer(id).and_then(|l| cx.reg().layer(&l.kind)).map(|k| k.section())
+}
+
+/// Where a trail or particles layer dragged over the `rows` of their list (top first) lands: a
+/// line marks the gap, and letting go moves it there, among the others of the list only.
+pub fn around_drop_target(ui: &mut Ui, cx: &LookCx, card: &Slot, rows: &[(LayerId, Rect)], edits: &mut Vec<Edit>) {
+    let ctx = ui.ctx().clone();
+    let Some(dragged) = egui::DragAndDrop::payload::<Dragged>(&ctx) else { return };
+    let Dragged(thing, layer) = *dragged;
+    if thing != cx.id || section_of(cx, card, layer) != Some(LayerSection::Around) {
+        return;
+    }
+    let Some(pointer) = ctx.pointer_latest_pos() else { return };
+    let (Some(&(_, list_top)), Some(&(_, list_bottom))) = (rows.first(), rows.last()) else { return };
+    let list = Rect::from_min_max(list_top.min, list_bottom.max).expand2(Vec2::new(0.0, ROW_H * 0.5));
+    if !list.contains(pointer) {
+        return;
+    }
+    let gap = rows.iter().position(|(_, r)| pointer.y < r.center().y).unwrap_or(rows.len());
+    let line_y = rows.get(gap).map_or(list_bottom.bottom(), |(_, r)| r.top());
+    ui.painter().hline(list_top.x_range(), line_y - 1.0, Stroke::new(2.0, style::TEXT));
+    if !ctx.input(|i| i.pointer.any_released()) {
+        return;
+    }
+    // The layers before the list (the drawn ones), then the others of the list from the bottom.
+    let before = top_level(card).take_while(|l| section_of(cx, card, l.id) != Some(LayerSection::Around)).count();
+    let others = rows.iter().filter(|(l, _)| *l != layer).count();
+    let place = match rows.iter().position(|(l, _)| *l == layer) {
+        Some(at) if at < gap => gap - 1,
+        _ => gap,
+    };
+    let to = before + others - place;
     if place_of(card, layer) != Some(to) {
         edits.push(Edit::MoveLayer(cx.slot, layer, to));
     }
@@ -642,6 +692,24 @@ fn settings_summary(cx: &LookCx, card: &Slot, layer: &Layer) -> String {
             let l = kinds::BlendLayer::from_params(&p);
             format!("{} {}", choice_label(l.blend), percent(l.blend_amount))
         }
+        kinds::TRAIL => trail_words(&trail::TrailLayer::from_params(&p)),
+        kinds::PARTICLES => {
+            let l = particles::ParticlesLayer::from_params(&p);
+            let when = match l.emit {
+                particles::Emit::OnHit => "on hit".to_owned(),
+                particles::Emit::WhenItPops => "when it pops".to_owned(),
+                _ => a_second(l.rate),
+            };
+            format!("{} · {when}", choice_label(l.made_of))
+        }
+        kinds::SHAPE_PARTICLES => {
+            let l = particles::ShapeParticlesLayer::from_params(&p);
+            let when = match l.emit {
+                particles::ShapeEmit::OnHit => "on hit".to_owned(),
+                particles::ShapeEmit::Steady => a_second(l.rate),
+            };
+            format!("{} · {when}", choice_label(l.made_of))
+        }
         kinds::FLASH => format!("{:.1}", kinds::FlashOnHit::from_params(&p).flash),
         kinds::HUE => format!("{:.0}° a hit", kinds::ColourOnHit::from_params(&p).hue_per_hit),
         kinds::STRETCH => percent(kinds::StretchWhenFast::from_params(&p).stretch),
@@ -665,6 +733,28 @@ fn settings_summary(cx: &LookCx, card: &Slot, layer: &Layer) -> String {
         }
         _ => String::new(),
     }
+}
+
+/// A trail in a few words: "Streak · 0.5 s", "Dots · 300 px", "Line · stays", "Ghosts · 4".
+fn trail_words(l: &trail::TrailLayer) -> String {
+    let length = match (l.kind, l.length_by) {
+        (trail::TrailKind::Ghosts, _) => format!("{}", l.ghosts.max(0)),
+        (trail::TrailKind::Line, _) if l.forever => "stays".to_owned(),
+        (_, trail::LengthBy::Time) => format!("{} s", trim(l.seconds)),
+        (_, trail::LengthBy::Distance) => format!("{:.0} px", l.pixels),
+    };
+    format!("{} · {length}", choice_label(l.kind))
+}
+
+/// "60 a second", "2.5 a second".
+fn a_second(rate: f32) -> String {
+    format!("{} a second", trim(rate))
+}
+
+/// A number with at most two places and no trailing zeros: 0.5, 2, 1.25.
+fn trim(x: f32) -> String {
+    let text = format!("{x:.2}");
+    text.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
 /// A shape's outline in a few words: "Circle", "6 sides", "7 points, 1 curve", then "filled" when
@@ -891,6 +981,22 @@ fn paint_thumbnail(painter: &egui::Painter, rect: Rect, cx: &LookCx, card: &Slot
             painter.circle_stroke(c + Vec2::new(-r * 0.3, 0.0), r * 0.6, stroke);
             painter.circle_stroke(c + Vec2::new(r * 0.3, 0.0), r * 0.6, stroke);
         }
+        kinds::TRAIL => {
+            let l = trail::TrailLayer::from_params(&p);
+            let col = if l.source == trail::TrailSource::Own { shown(l.colour.colours.first()) } else { body };
+            paint_trail_thumbnail(painter, c, r, l.kind, &|a| fade(col.gamma_multiply(a)));
+        }
+        kinds::PARTICLES => {
+            let l = particles::ParticlesLayer::from_params(&p);
+            let col = if l.source == particles::ParticleSource::Own { shown(l.colour.colours.first()) } else { body };
+            paint_particles_thumbnail(painter, c, r, fade(col));
+        }
+        kinds::SHAPE_PARTICLES => {
+            let l = particles::ShapeParticlesLayer::from_params(&p);
+            let own = l.source == particles::ParticleSource::Own;
+            let col = if own { shown(l.colour.colours.first()) } else { style::TEXT_STRONG };
+            paint_particles_thumbnail(painter, c, r, fade(col));
+        }
         _ => {
             // A reaction: a small spark.
             let stroke = Stroke::new(1.3, fade(style::MUTED));
@@ -900,6 +1006,55 @@ fn paint_thumbnail(painter: &egui::Painter, rect: Rect, cx: &LookCx, card: &Slot
                 painter.line_segment([c + d * r * 0.3, c + d * r], stroke);
             }
         }
+    }
+}
+
+/// A short trail of `kind` running up to a ball at the top right, `col(a)` its colour `a` strong.
+fn paint_trail_thumbnail(
+    painter: &egui::Painter,
+    c: Pos2,
+    r: f32,
+    kind: trail::TrailKind,
+    col: &dyn Fn(f32) -> Color32,
+) {
+    let head = c + Vec2::new(r * 0.55, -r * 0.55);
+    let tail = c + Vec2::new(-r, r);
+    let along = |t: f32| tail + (head - tail) * t;
+    let side = (head - tail).normalized().rot90();
+    match kind {
+        trail::TrailKind::Streak | trail::TrailKind::Ribbon => {
+            let w = r * 0.38;
+            let wide = if kind == trail::TrailKind::Ribbon { 0.8 } else { 1.0 };
+            let points = vec![along(0.0), along(1.0) + side * w * wide, along(1.0) - side * w * wide];
+            painter.add(egui::Shape::convex_polygon(points, col(0.55), Stroke::NONE));
+        }
+        trail::TrailKind::Line => {
+            painter.line_segment([along(0.0), along(1.0)], Stroke::new(1.2, col(0.8)));
+        }
+        trail::TrailKind::Dots => {
+            for (t, a) in [(0.15, 0.35), (0.45, 0.6), (0.75, 0.85)] {
+                painter.circle_filled(along(t), r * 0.13, col(a));
+            }
+        }
+        trail::TrailKind::Ghosts => {
+            for (t, a) in [(0.2, 0.25), (0.55, 0.5)] {
+                painter.circle_filled(along(t), r * 0.3, col(a));
+            }
+        }
+        trail::TrailKind::Smoke => {
+            for (t, k, a) in [(0.1, 0.42, 0.25), (0.45, 0.33, 0.4), (0.75, 0.25, 0.55)] {
+                painter.circle_filled(along(t), r * k, col(a));
+            }
+        }
+    }
+    painter.circle_filled(head, r * 0.36, col(1.0));
+}
+
+/// A few particles flying out from the middle.
+fn paint_particles_thumbnail(painter: &egui::Painter, c: Pos2, r: f32, col: Color32) {
+    for (dx, dy, k) in [(-0.6, -0.5, 0.16), (0.55, -0.6, 0.13), (0.7, 0.35, 0.17), (-0.5, 0.6, 0.12), (0.05, 0.05, 0.2)]
+    {
+        painter.circle_filled(c + Vec2::new(dx * r, dy * r), r * k * 1.4, col);
     }
 }
 
