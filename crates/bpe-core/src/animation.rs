@@ -210,6 +210,24 @@ impl Track {
         i
     }
 
+    /// Puts key `index` down where it is: any other key within [`SAME_TIME`] of it goes, so a
+    /// key moved onto another replaces it. Called when a drag ends, so keys passed on the way
+    /// stay. Returns its new index.
+    pub fn settle_key(&mut self, index: usize) -> usize {
+        let Some(time) = self.keys.get(index).map(|k| k.time) else { return index };
+        let mut at = index;
+        let mut i = 0;
+        self.keys.retain(|k| {
+            let keep = i == index || (k.time - time).abs() > SAME_TIME;
+            if !keep && i < index {
+                at -= 1;
+            }
+            i += 1;
+            keep
+        });
+        at
+    }
+
     pub fn remove_key(&mut self, index: usize) {
         if index < self.keys.len() {
             self.keys.remove(index);
@@ -414,6 +432,13 @@ impl Scene {
     pub fn move_key(&mut self, a: &Address, index: usize, time: f64) -> Option<usize> {
         let track = self.tracks.get_mut(a)?;
         (index < track.keys.len()).then(|| track.move_key(index, time))
+    }
+
+    /// Puts key `index` of the track at `a` down where it is, replacing any key at the same
+    /// time ([`Track::settle_key`]). Returns its new index.
+    pub fn settle_key(&mut self, a: &Address, index: usize) -> Option<usize> {
+        let track = self.tracks.get_mut(a)?;
+        (index < track.keys.len()).then(|| track.settle_key(index))
     }
 
     /// Sets how key `index` of the track at `a` eases into the next key.
@@ -659,6 +684,33 @@ mod tests {
         assert_eq!(t.move_key(9, 1.0), 9, "a missing key is left alone");
         t.remove_key(0);
         assert_eq!(t.keys.len(), 2);
+    }
+
+    #[test]
+    fn a_key_put_down_on_another_replaces_it() {
+        // Keys at 0, 1 (value 5) and 2: the one at 0 is dragged past 1 onto 2.
+        let mut t = two_key_track(Ease::Linear);
+        t.set_key(1.0, key(5.0));
+        let i = t.move_key(0, 1.5);
+        let i = t.move_key(i, 2.001);
+        assert_eq!(t.keys.len(), 3, "keys passed on the way are kept until the drag ends");
+        let i = t.settle_key(i);
+        assert_eq!(t.keys.iter().map(|k| k.time).collect::<Vec<_>>(), [1.0, 2.001]);
+        assert_eq!(i, 1);
+        assert_eq!(t.keys[1].value, key(1.0), "the moved key's value wins");
+        assert_eq!(t.value_at(3.0), Some(key(1.0)));
+        // A key put down on its own stays as it is.
+        assert_eq!(t.settle_key(0), 0);
+        assert_eq!(t.keys.len(), 2);
+        assert_eq!(t.settle_key(9), 9, "a missing key is left alone");
+        let (reg, mut scene, a, _) = scene();
+        let glow = glow_of(a);
+        scene.set_key(&reg, &glow, 0.0, key(0.0)).unwrap();
+        scene.set_key(&reg, &glow, 1.0, key(1.0)).unwrap();
+        assert_eq!(scene.move_key(&glow, 0, 1.0), Some(1));
+        assert_eq!(scene.settle_key(&glow, 1), Some(0));
+        assert_eq!(scene.tracks[&glow].keys.len(), 1);
+        assert_eq!(scene.tracks[&glow].keys[0].value, key(0.0));
     }
 
     #[test]

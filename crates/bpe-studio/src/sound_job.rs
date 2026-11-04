@@ -88,7 +88,14 @@ pub struct SoundJob {
     _out: Option<AudioOut>,
     /// Playing (else the clock holds: what the speakers play while stopped is hand-played).
     playing: bool,
+    /// Where the engine is while stopped, as far as the editor knows: keys clicked then sound
+    /// as they are there. `None` while playing.
+    parked: Option<f64>,
 }
+
+/// How far the engine may be from the playhead while stopped and still play a clicked key where
+/// it is: a pause leaves it up to the ring's fill (100 ms) ahead.
+const PARK_SLACK: f64 = 0.15;
 
 /// `time` rounded down to a block, as the engine seeks.
 fn block_floor(time: f64) -> f64 {
@@ -130,6 +137,7 @@ impl SoundJob {
             base: 0.0,
             _out: None,
             playing: false,
+            parked: Some(0.0),
         }
     }
 
@@ -144,6 +152,7 @@ impl SoundJob {
             base: 0.0,
             _out: None,
             playing: false,
+            parked: Some(0.0),
         }
     }
 
@@ -171,10 +180,12 @@ impl SoundJob {
     pub fn play(&mut self, time: f64) {
         self.seek(time);
         self.playing = true;
+        self.parked = None;
         self.send(Command::Play);
     }
 
     pub fn pause(&mut self) {
+        self.parked = Some(self.clock());
         self.playing = false;
         self.clear += 1;
         let clear = self.clear;
@@ -185,8 +196,20 @@ impl SoundJob {
     pub fn seek(&mut self, time: f64) {
         self.clear += 1;
         self.base = block_floor(time);
+        if !self.playing {
+            self.parked = Some(self.base);
+        }
         let clear = self.clear;
         self.send(Command::Seek(time, clear));
+    }
+
+    /// While stopped, takes the engine to the playhead at `time` when it is somewhere else (a
+    /// scrub or a rebuild moved it), so a key clicked next sounds as it does there. Scrubbing
+    /// tells the sound nothing; this is called just before a key plays.
+    pub fn park(&mut self, time: f64) {
+        if !self.playing && self.parked.is_none_or(|at| (at - block_floor(time)).abs() > PARK_SLACK) {
+            self.seek(time);
+        }
     }
 
     pub fn patch(&mut self, patch: SoundPatch) {
@@ -195,6 +218,9 @@ impl SoundJob {
 
     /// A new engine for a scene whose physics changed. It starts at 0; seek after it.
     pub fn rebuild(&mut self, scene: &Scene, resolved: &Resolved) {
+        if !self.playing {
+            self.parked = Some(0.0);
+        }
         self.send(Command::Rebuild(Box::new(scene.clone()), Box::new(resolved.clone())));
     }
 

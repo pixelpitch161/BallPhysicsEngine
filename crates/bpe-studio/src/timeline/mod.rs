@@ -288,7 +288,7 @@ fn group_header(
             }
         }
     }
-    slot_ticks(ui, &painter, strip, ruler, marks);
+    slot_ticks(ui, &painter, strip, ruler, group.thing, marks);
     playhead(&painter, studio, ruler, rect);
     // The colour square opens a colour picker for the thing's colour.
     let mut recoloured = None;
@@ -307,7 +307,7 @@ fn group_header(
 }
 
 /// Ticks where a shape's slots change, numbered where they are far enough apart.
-fn slot_ticks(ui: &Ui, painter: &egui::Painter, strip: Rect, ruler: &Ruler, marks: &[(f64, usize)]) {
+fn slot_ticks(ui: &Ui, painter: &egui::Painter, strip: Rect, ruler: &Ruler, thing: ThingId, marks: &[(f64, usize)]) {
     let mut last_number = f32::NEG_INFINITY;
     for (i, &(time, slot)) in marks.iter().enumerate() {
         let x = ruler.x_of(time);
@@ -327,7 +327,7 @@ fn slot_ticks(ui: &Ui, painter: &egui::Painter, strip: Rect, ruler: &Ruler, mark
             let name = format!("Slot {} from {}", slot + 1, clock(time));
             let r = ui.interact(
                 tick.expand2(egui::vec2(2.0, 0.0)),
-                ui.scope_id().with(("slot mark", i, x as i32)),
+                ui.scope_id().with(("slot mark", thing, i, x as i32)),
                 Sense::hover(),
             );
             r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, name.clone()));
@@ -444,6 +444,8 @@ fn track_lane(
         if key.drag_started() {
             timeline.dragging = Some((a.clone(), i));
             studio.set_playing(false);
+            // Each drag is its own undo step.
+            studio.panels.inspector.own_step = true;
         }
         key.context_menu(|ui| {
             timeline.selected = Some((a.clone(), i));
@@ -491,6 +493,10 @@ fn track_lane(
                 }
             }
         } else {
+            // Put down on another key, it takes that key's place.
+            if let Some(new_index) = studio.scene.settle_key(a, i) {
+                timeline.selected = Some((a.clone(), new_index));
+            }
             timeline.dragging = None;
         }
     }
@@ -782,6 +788,25 @@ mod tests {
     }
 
     #[test]
+    fn a_key_dragged_onto_another_replaces_it_and_is_its_own_undo_step() {
+        let mut h = harness();
+        {
+            let s = h.state_mut();
+            let kit = s.kit.clone();
+            s.scene.set_key(&kit.registry, &size_address(), 4.0, Value::Number(90.0)).unwrap();
+        }
+        h.run();
+        let from = h.get_by_label("Key at 0:02.00 of Ball · Size").rect().center();
+        let to = h.get_by_label("Key at 0:04.00 of Ball · Size").rect().center();
+        press_drag_release(&mut h, from, to);
+        let keys = &h.state().scene.tracks[&size_address()].keys;
+        assert_eq!(keys.len(), 1, "{keys:?}");
+        assert_eq!((keys[0].time, &keys[0].value), (4.0, &Value::Number(60.0)), "the moved key wins");
+        assert_eq!(h.state().panels.timeline.selected, Some((size_address(), 0)));
+        assert!(h.state().panels.inspector.own_step, "the drag starts an undo step of its own");
+    }
+
+    #[test]
     fn delete_removes_the_selected_key_not_the_thing() {
         let mut h = harness();
         h.get_by_label("Key at 0:02.00 of Ball · Size").click();
@@ -880,6 +905,19 @@ mod tests {
         assert!(h.query_by_label("Slot 1 from 0:06.00").is_some());
         let one = sounding(1);
         assert!(one.query_by_label(&format!("{name} lanes")).is_none(), "one slot never changes");
+    }
+
+    #[test]
+    fn two_shapes_slot_ticks_at_the_same_time_are_both_there() {
+        let mut h = sounding(3);
+        {
+            let s = h.state_mut();
+            let kit = s.kit.clone();
+            crate::tree::duplicate(&mut s.scene, &kit.registry, SHAPE).expect("a copy");
+            s.revision += 1;
+        }
+        h.run();
+        assert_eq!(h.query_all_by_label("Slot 2 from 0:02.00").count(), 2, "one tick on each shape's group");
     }
 
     #[test]

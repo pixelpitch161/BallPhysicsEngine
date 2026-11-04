@@ -281,24 +281,33 @@ fn export_with(
     let total = options.max_frames.map_or(frames_in_video, |m| m.min(frames_in_video)).max(1);
 
     // The sound first, all of it, into a float WAV: the first tenth of the progress bar.
-    let sound_share = if bpe_sound::has_sound(scene) { total / 10 } else { 0 };
+    let has_sound = bpe_sound::has_sound(scene);
+    let sound_share = if has_sound { total / 10 } else { 0 };
     let sound_dir = tempfile::tempdir().context("a folder for the sound")?;
     let sound = sound_dir.path().join("sound.wav");
     let extras = bpe_sound::Extras {
         stems: options.stems.then(|| bpe_sound::stem_paths(scene, &output)),
         midi: options.midi.then(|| bpe_sound::midi_path(&output)),
     };
-    // The video and the stems and MIDI file beside it, all gone if the export stops.
+    // The video and the stems and MIDI file beside it, all gone if the export stops. The stems
+    // and MIDI file are only this export's when its sound is rendered: a file of the same name
+    // from an earlier export is left alone.
     let written: Vec<PathBuf> = std::iter::once(output.clone())
-        .chain(extras.stems.iter().flat_map(|(buses, master)| buses.iter().cloned().chain([master.clone()])))
-        .chain(extras.midi.clone())
+        .chain(
+            extras
+                .stems
+                .iter()
+                .filter(|_| has_sound)
+                .flat_map(|(buses, master)| buses.iter().cloned().chain([master.clone()])),
+        )
+        .chain(extras.midi.clone().filter(|_| has_sound))
         .collect();
     let remove_outputs = || {
         for f in &written {
             let _ = std::fs::remove_file(f);
         }
     };
-    if sound_share > 0 {
+    if has_sound {
         let seconds = total as f64 / fps as f64;
         bpe_sound::render_sound(scene, kit, &sound, seconds, &extras, |done| {
             progress(((done * sound_share as f64) as u32).min(sound_share), total)
@@ -312,7 +321,7 @@ fn export_with(
     ffmpeg.args(["-hide_banner", "-loglevel", "error", "-y"]);
     ffmpeg.args(["-f", "rawvideo", "-pix_fmt", "rgba", "-s", &format!("{width}x{height}"), "-r", &fps.to_string()]);
     ffmpeg.args(["-i", "-"]);
-    if sound_share > 0 {
+    if has_sound {
         ffmpeg.arg("-i").arg(&sound);
     } else {
         // A silent stereo track, so apps that expect sound take the clip.

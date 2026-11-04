@@ -16,6 +16,7 @@ use crate::{inspector, preview, settings, style, timeline, tree};
 use bpe_core::{Resolved, Scene, Settings, ThingId};
 use bpe_dsp::{WarpModeId, WaveBank, WaveShape};
 use bpe_kit::{Kit, SceneSettings, resolve_scene};
+use bpe_runtime::world::sound_fingerprint;
 use bpe_runtime::{Playback, fingerprint};
 use bpe_sound::SoundPatch;
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, RichText, Stroke};
@@ -102,6 +103,9 @@ pub struct Studio {
     pub playback: Playback,
     /// The physics fingerprint `playback` was built from.
     pub fingerprint: u64,
+    /// The part of it the sound hears ([`sound_fingerprint`]): the sound starts its run over
+    /// only when this changes.
+    pub sound_fingerprint: u64,
     /// The scene's sound as the picture reads it, while some setting follows sound.
     pub follow: Option<std::sync::Arc<bpe_sound::ControlSampler>>,
     /// Goes up whenever `resolved` or `playback` is rebuilt for a changed scene, so the
@@ -213,6 +217,7 @@ impl Studio {
         bpe_kit::ensure_mixer(&mut scene, &kit.registry);
         let resolved = resolve_scene(&scene, &kit.registry);
         let fingerprint = fingerprint(&scene, &resolved, &kit.sims);
+        let sound_fingerprint = sound_fingerprint(&scene, &resolved, &kit.sims);
         let playback = Playback::new(&scene, &resolved, kit.sims.clone());
         let follow = follow_of(&scene, &resolved);
         Self {
@@ -222,6 +227,7 @@ impl Studio {
             path: None,
             playback,
             fingerprint,
+            sound_fingerprint,
             follow,
             revision: 0,
             kit,
@@ -332,9 +338,13 @@ impl Studio {
         self.time = self.time.min(self.duration());
         self.revision += 1;
         // The sound follows: a physics change starts its world over (no hits from the old
-        // layout), anything else swaps the settings in where it is.
+        // layout), anything else swaps the settings in where it is. How much of the balls' past
+        // trails keep is the editor's alone: the sound plays on through it.
+        let heard = sound_fingerprint(&self.scene, &self.resolved, &self.kit.sims);
+        let sound_rebuilt = heard != self.sound_fingerprint;
+        self.sound_fingerprint = heard;
         if let Some(job) = &mut self.sound {
-            if rebuilt {
+            if sound_rebuilt {
                 job.rebuild(&self.scene, &self.resolved);
                 if self.playing {
                     job.seek(self.time);
@@ -361,9 +371,12 @@ impl Studio {
         self.recorded = true;
         self.resolved = resolve_scene(&self.scene, &self.kit.registry);
         self.fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
+        self.sound_fingerprint = sound_fingerprint(&self.scene, &self.resolved, &self.kit.sims);
         self.playback = Playback::new(&self.scene, &self.resolved, self.kit.sims.clone());
         self.follow = follow_of(&self.scene, &self.resolved);
         self.revision += 1;
+        // The file chosen to export to was the last scene's.
+        self.panels.export.path = None;
         if let Some(job) = &mut self.sound {
             job.rebuild(&self.scene, &self.resolved);
         }
@@ -953,7 +966,11 @@ impl Studio {
 
     fn send_auditions(&mut self) {
         let auditions = std::mem::take(&mut self.panels.inspector.auditions);
-        if let Some(job) = &mut self.sound {
+        if let Some(job) = &mut self.sound
+            && !auditions.is_empty()
+        {
+            // While stopped, a key sounds as the sound is at the playhead.
+            job.park(self.time);
             for (thing, note) in auditions {
                 job.audition(crate::sound_job::Audition { thing, note, velocity: 0.8, on: true });
             }
@@ -1226,6 +1243,64 @@ mod tests {
         studio.set_playing(false);
         let sent = studio.sound.as_ref().unwrap().recorded();
         assert_eq!(sent, ["seek", "play", "rebuild", "seek", "patch", "pause"]);
+    }
+
+    #[test]
+    fn a_trail_length_edit_patches_the_sound_and_keeps_it_playing() {
+        let mut studio = Studio::headless();
+        let kit = studio.kit.clone();
+        let before = studio.scene.clone();
+        let trail = studio
+            .scene
+            .add_layer(&kit.registry, ThingId(2), SlotId::Look, bpe_kit::modules::look::layers::TRAIL)
+            .unwrap();
+        studio.after_edit(before);
+        studio.sound = Some(SoundJob::recording());
+        studio.set_playing(true);
+        let physics = studio.fingerprint;
+        let before = studio.scene.clone();
+        // Longer when fast stretches its half-second Length to 3.5 s.
+        let faster = Address::on(ThingId(2), SlotId::Look, &bpe_core::layered_key(trail, "faster"));
+        studio.scene.set_at(&kit.registry, &faster, Value::Number(2.0)).unwrap();
+        studio.after_edit(before);
+        assert_ne!(studio.fingerprint, physics, "the editor keeps a longer history for the trail");
+        let sent = studio.sound.as_ref().unwrap().recorded();
+        assert_eq!(sent, ["seek", "play", "patch"], "the sound plays on");
+    }
+
+    #[test]
+    fn a_key_clicked_while_stopped_sounds_at_the_playhead() {
+        let mut studio = Studio::headless();
+        studio.sound = Some(SoundJob::recording());
+        let click = |studio: &mut Studio| {
+            studio.panels.inspector.auditions.push((ThingId(1), 60));
+            studio.send_auditions();
+        };
+        // At the start the sound is where the playhead is.
+        click(&mut studio);
+        // Scrubbing tells it nothing; the click takes it there first.
+        studio.seek(3.0);
+        studio.seek(5.0);
+        click(&mut studio);
+        click(&mut studio);
+        // A rebuild starts the sound at 0 again.
+        let before = studio.scene.clone();
+        studio.scene.things.get_mut(&ThingId(2)).unwrap().transform.position.x += 40.0;
+        studio.after_edit(before);
+        click(&mut studio);
+        let sent = studio.sound.as_ref().unwrap().recorded();
+        assert_eq!(sent, ["audition", "seek", "audition", "audition", "rebuild", "seek", "audition"]);
+    }
+
+    #[test]
+    fn another_scene_forgets_the_export_file_chosen() {
+        let mut studio = Studio::headless();
+        studio.panels.export.path = Some(PathBuf::from("/videos/A.mp4"));
+        studio.new_scene();
+        assert_eq!(studio.panels.export.path, None, "exporting the new scene doesn't overwrite A.mp4");
+        studio.panels.export.path = Some(PathBuf::from("/videos/A.mp4"));
+        studio.replace_scene(bpe_kit::new_scene(&studio.kit.registry), Some(PathBuf::from("/scenes/B.json")));
+        assert_eq!(studio.panels.export.path, None);
     }
 
     #[test]
