@@ -239,31 +239,6 @@ pub fn show(
                     }
                 }
                 ui.end_row();
-                // Row 3, for balls: their look on one ball or across the whole group.
-                if kind.id() == BALLS {
-                    use crate::look_editor::LookMode;
-                    let label = grid_label(ui, lw, "Edit")
-                        .on_hover_text("One ball's look, or the whole group: where the balls start and their colours");
-                    let mut mode = inspector.look_mode.get(&id).copied().unwrap_or_default();
-                    ui.horizontal(|ui| {
-                        crate::look_editor::ball_view::segmented(
-                            ui,
-                            &mut mode,
-                            &[
-                                (LookMode::Ball, "Ball", "One ball's look, layer by layer"),
-                                (
-                                    LookMode::Group,
-                                    "Group",
-                                    "The whole group: where the balls start and the colours across them",
-                                ),
-                            ],
-                        );
-                    })
-                    .response
-                    .labelled_by(label.id);
-                    inspector.look_mode.insert(id, mode);
-                    ui.end_row();
-                }
             })
         });
         ui.add_space(6.0);
@@ -306,6 +281,10 @@ pub fn show(
                             .slots
                             .get(&SlotId::Look)
                             .is_some_and(|c| c.kind == bpe_kit::modules::look::layers::CARD);
+                        if !layered {
+                            ui.add_space(6.0);
+                            look_mode_switch(ui, inspector, id, lw);
+                        }
                         if group_mode(inspector, id) && !layered {
                             let look = crate::look_editor::LookCx {
                                 scene,
@@ -409,6 +388,10 @@ pub fn show(
                 }
                 if card_now.kind == bpe_kit::modules::look::layers::CARD {
                     ui.add_space(4.0);
+                    if kind.id() == BALLS {
+                        look_mode_switch(ui, inspector, id, lw);
+                        ui.add_space(4.0);
+                    }
                     let look =
                         crate::look_editor::LookCx { scene, kit, choices: &choices, id, slot, time, label_width: lw };
                     if kind.id() == BALLS && group_mode(inspector, id) {
@@ -552,6 +535,31 @@ pub fn show(
 
 /// The kind whose things have a Ball / Group switch.
 const BALLS: &str = "balls";
+
+/// The Ball / Group switch of a Balls thing: its look on one ball, or across the whole group.
+/// It heads the Look card (or, with no layered Look card, sits in the Balls card).
+fn look_mode_switch(ui: &mut Ui, inspector: &mut Inspector, id: ThingId, lw: f32) {
+    use crate::look_editor::LookMode;
+    let mut mode = inspector.look_mode.get(&id).copied().unwrap_or_default();
+    settings_like_grid(("look mode", id)).show(ui, |ui| {
+        let label = grid_label(ui, lw, "Edit")
+            .on_hover_text("One ball's look, or the whole group: where the balls start and their colours");
+        ui.horizontal(|ui| {
+            crate::look_editor::ball_view::segmented(
+                ui,
+                &mut mode,
+                &[
+                    (LookMode::Ball, "Ball", "One ball's look, layer by layer"),
+                    (LookMode::Group, "Group", "The whole group: where the balls start and the colours across them"),
+                ],
+            );
+        })
+        .response
+        .labelled_by(label.id);
+        ui.end_row();
+    });
+    inspector.look_mode.insert(id, mode);
+}
 
 /// Whether thing `id`'s look shows across its group.
 fn group_mode(inspector: &Inspector, id: ThingId) -> bool {

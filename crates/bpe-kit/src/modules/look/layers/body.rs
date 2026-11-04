@@ -4,7 +4,7 @@
 use bpe_core::Settings;
 
 use crate::modules::look::BallShape;
-use crate::paint::Paint;
+use crate::paint::{Follow, Paint};
 
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct BodyLayer {
@@ -20,14 +20,20 @@ pub struct BodyLayer {
         label = "Colours",
         prefix = "",
         group = "Colours",
-        follows = "place|start|order|speed|hits|step|time|path",
+        follows = "each_ball|place|start|order|speed|hits|step|time|path",
         simple
     )]
     pub fill: Paint,
+    /// 0 is invisible, 1 is solid: a see-through body leaves its outline, glow and the rest on
+    /// their own. Mixing it with what is behind the ball is the Blend layer's job, right above it.
+    #[setting(label = "Opacity", range(0, 1), group = "Mixing", keyframe, pulse)]
+    pub opacity: f32,
 }
 
 impl Default for BodyLayer {
     fn default() -> Self {
-        Self { ball_shape: BallShape::Circle, roundness: 0.15, fill: Paint::default() }
+        // A gradient picked for the body runs across each ball on its own.
+        let fill = Paint { follow: Follow::EachBall, ..Paint::default() };
+        Self { ball_shape: BallShape::Circle, roundness: 0.15, fill, opacity: 1.0 }
     }
 }

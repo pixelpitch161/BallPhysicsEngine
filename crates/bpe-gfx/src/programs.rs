@@ -2,10 +2,14 @@
 //! scene shader plus each distinct effect it runs (see `effects::in_ball_effects`), one program
 //! per distinct list of effect sources. Programs are built the first time a frame names them and
 //! kept; one that doesn't build draws its balls with the plain pipeline (which leaves shader
-//! layers out) and keeps its error for the editor.
+//! layers out) and keeps its error for the editor. Building one takes about a second, so the
+//! editor builds them on a background thread (its balls draw without their shader layers until
+//! it is ready) and shares one store between its renderers ([`ProgramStore`]).
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
+use std::sync::mpsc::{Receiver, channel};
+use std::sync::{Arc, Mutex};
 
 use crate::{Frame, HDR_FORMAT, LAYERED_ATTRIBUTES, LayeredInstance};
 
@@ -52,8 +56,48 @@ struct Made {
 #[derive(Default)]
 pub(crate) struct Programs {
     made: HashMap<u64, Result<Made, String>>,
+    /// Programs being built on a background thread, by key.
+    pending: HashMap<u64, Receiver<Result<Made, String>>>,
     /// The keys the last frame named.
     used: Vec<u64>,
+    /// Programs are built on a background thread rather than while drawing.
+    background: bool,
+}
+
+/// The built in-ball programs, which renderers on one device can share (see
+/// [`crate::Renderer::share_programs`]), so a program is built once for all of them.
+#[derive(Clone, Default)]
+pub struct ProgramStore(pub(crate) Arc<Mutex<Programs>>);
+
+impl ProgramStore {
+    /// A store whose programs build on a background thread: until one is ready, its balls draw
+    /// without their shader layers. For the editor; exports build while drawing, so no frame
+    /// misses its effects.
+    pub fn in_background() -> Self {
+        let store = Self::default();
+        store.lock().background = true;
+        store
+    }
+
+    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, Programs> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Whether a program is still being built.
+    pub fn pending(&self) -> bool {
+        let mut p = self.lock();
+        p.collect();
+        !p.pending.is_empty()
+    }
+
+    /// Waits for every program being built.
+    pub fn wait(&self) {
+        let pending: Vec<(u64, Receiver<Result<Made, String>>)> = self.lock().pending.drain().collect();
+        for (key, rx) in pending {
+            let made = rx.recv().unwrap_or_else(|_| Err("the shader build stopped".to_owned()));
+            self.lock().made.insert(key, made);
+        }
+    }
 }
 
 fn pipeline(
@@ -137,18 +181,56 @@ fn first_line(text: &str) -> String {
 }
 
 impl Programs {
-    /// Builds every program `frames` name that isn't built yet, with the pipelines for blending
-    /// with each other by `each` where a frame needs them.
+    /// Takes in the programs finished on the background thread.
+    fn collect(&mut self) {
+        let done: Vec<u64> = self
+            .pending
+            .iter()
+            .filter_map(|(k, rx)| match rx.try_recv() {
+                Ok(made) => {
+                    self.made.insert(*k, made);
+                    Some(*k)
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.made.insert(*k, Err("the shader build stopped".to_owned()));
+                    Some(*k)
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            })
+            .collect();
+        for k in done {
+            self.pending.remove(&k);
+        }
+    }
+
+    /// Builds every program `frames` name that isn't built yet (or starts building it, in the
+    /// background), with the pipelines for blending with each other by `each` where a frame
+    /// needs them.
     pub(crate) fn ensure<'a>(
         &mut self,
         device: &wgpu::Device,
         layout: &wgpu::PipelineLayout,
         frames: impl IntoIterator<Item = (&'a Frame, Option<bpe_core::Blend>)>,
     ) {
+        self.collect();
         let mut used = Vec::new();
         for (frame, each) in frames {
             for program in &frame.programs {
                 used.push(program.key);
+                if self.pending.contains_key(&program.key) {
+                    continue;
+                }
+                if self.background && !self.made.contains_key(&program.key) {
+                    let (tx, rx) = channel();
+                    let (device, layout, copy) = (device.clone(), layout.clone(), program.clone());
+                    let spawned = std::thread::Builder::new().name("ball shader build".into()).spawn(move || {
+                        let _ = tx.send(build(&device, &layout, &copy));
+                    });
+                    if spawned.is_ok() {
+                        self.pending.insert(program.key, rx);
+                        continue;
+                    }
+                }
                 let made = self.made.entry(program.key).or_insert_with(|| build(device, layout, program));
                 if let (Ok(made), Some(blend)) = (made, each) {
                     let code = blend.shader_code();
@@ -167,12 +249,12 @@ impl Programs {
     }
 
     /// The pipeline program `key` draws with (in a layer whose things blend with each other by
-    /// `each`), when it built.
-    pub(crate) fn pipeline(&self, key: u64, each: Option<u32>) -> Option<&wgpu::RenderPipeline> {
+    /// `each`), when it is built.
+    pub(crate) fn pipeline(&self, key: u64, each: Option<u32>) -> Option<wgpu::RenderPipeline> {
         let made = self.made.get(&key)?.as_ref().ok()?;
         match each {
-            Some(code) => made.each.get(&code),
-            None => Some(&made.normal),
+            Some(code) => made.each.get(&code).cloned(),
+            None => Some(made.normal.clone()),
         }
     }
 

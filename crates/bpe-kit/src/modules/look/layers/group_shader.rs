@@ -96,6 +96,43 @@ pub fn defs() -> &'static [SettingDef] {
         let keyed = Flags { keyframe: true, pulse: true };
         defs.extend([
             SettingDef {
+                range: Some((0.0, 1.0)),
+                flags: keyed,
+                group: "",
+                ..def(
+                    "covers",
+                    "Covers",
+                    "How much of the group it covers, from the From side: 1 is the whole group, 0.5 half of it. Animate it to wipe the effect across the group.",
+                    ValueType::Number,
+                    Value::Number(1.0),
+                )
+            },
+            SettingDef {
+                span: Some((-180.0, 180.0)),
+                unit: "°",
+                flags: Flags { keyframe: true, pulse: false },
+                group: "",
+                ..def(
+                    "from",
+                    "From",
+                    "The side it covers the group from: 0 from the left, 90 from the top.",
+                    ValueType::Number,
+                    Value::Number(0.0),
+                )
+            },
+            SettingDef {
+                range: Some((0.0, 1.0)),
+                group: "",
+                flags: Flags { keyframe: true, pulse: false },
+                ..def(
+                    "edge",
+                    "Edge",
+                    "How soft the edge of the covered part is, as a share of the group.",
+                    ValueType::Number,
+                    Value::Number(0.2),
+                )
+            },
+            SettingDef {
                 depth: Depth::Simple,
                 ..def(
                     "mix",
@@ -175,6 +212,12 @@ pub struct GroupShader {
     pub around: Option<f32>,
     /// The layers it changes, by number, for Choose ("3,5").
     pub chosen: String,
+    /// How much of the group it covers, 0 to 1, from the side `from` says.
+    pub covers: f32,
+    /// The side it covers from, in degrees: 0 from the left.
+    pub from: f32,
+    /// How soft the covered part's edge is, 0 to 1 of the group.
+    pub edge: f32,
 }
 
 impl GroupShader {
@@ -198,6 +241,9 @@ impl GroupShader {
                 Some(Value::Text(t)) => t.clone(),
                 _ => String::new(),
             },
+            covers: number("covers", 1.0).clamp(0.0, 1.0),
+            from: number("from", 0.0),
+            edge: number("edge", 0.2).clamp(0.0, 1.0),
         }
     }
 
@@ -224,7 +270,10 @@ mod tests {
             assert!(!keys.contains(&gone), "{gone}");
         }
         assert!(keys.contains(&"rainbow_flow.bands"), "built-ins' own settings come along");
-        assert_eq!(&keys[keys.len() - 6..], ["mix", "amount", "changes", "shows", "around", "chosen"]);
+        assert_eq!(
+            &keys[keys.len() - 9..],
+            ["covers", "from", "edge", "mix", "amount", "changes", "shows", "around", "chosen"]
+        );
     }
 
     #[test]
@@ -242,5 +291,21 @@ mod tests {
         p.set("chosen", Value::Text("3, 5,x".into()));
         assert_eq!(read(&p).chosen_ids(), [3, 5]);
         assert_eq!(GroupShaderMix::Tint.blend(), Blend::Colour);
+    }
+}
+
+#[cfg(test)]
+mod covers_tests {
+    use super::*;
+
+    #[test]
+    fn it_covers_the_whole_group_unless_told() {
+        let mut p = Params::default();
+        let g = GroupShader::from_params(&p);
+        assert_eq!((g.covers, g.from, g.edge), (1.0, 0.0, 0.2));
+        p.set("covers", Value::Number(3.0));
+        p.set("from", Value::Number(90.0));
+        assert_eq!(GroupShader::from_params(&p).covers, 1.0);
+        assert_eq!(GroupShader::from_params(&p).from, 90.0);
     }
 }

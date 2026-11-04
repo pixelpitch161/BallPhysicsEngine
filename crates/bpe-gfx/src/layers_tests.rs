@@ -448,3 +448,77 @@ fn group_mode_none_changes_nothing() {
     let b = render_sized(&without, W, H).unwrap();
     assert!(a == b, "no group mode, no change");
 }
+
+/// What the bit of `range.z` that draws a split ball's upper part is.
+const OVER: u32 = 0x1_0000;
+
+#[test]
+fn a_ball_split_by_its_blend_layer_draws_the_layers_under_it_and_over_it_apart() {
+    let records = vec![body(), outline(20.0, 0.0)];
+    let whole = one(records.clone(), WHITE, 200.0, 1.45);
+    let mut under = whole.clone();
+    under.layered[0].range[2] = 1;
+    let mut over = whole.clone();
+    over.layered[0].range[2] = 1 | OVER;
+    let Some(w) = render_sized(&whole, W, H) else { return };
+    let (u, o) = (render_sized(&under, W, H).unwrap(), render_sized(&over, W, H).unwrap());
+    save("layers-split-under", &u, W, H);
+    save("layers-split-over", &o, W, H);
+    let ring = (-190.0, 0.0);
+    assert!(at(&w, ring.0, ring.1)[2] > 200 && at(&w, ring.0, ring.1)[0] < 40, "the whole ball has its blue ring");
+    assert!(at(&u, ring.0, ring.1)[..3].iter().all(|&c| c > 240), "under: the white body without the ring");
+    assert!(at(&o, ring.0, ring.1)[2] > 200, "over: the ring");
+    assert_eq!(&at(&o, 0.0, 0.0)[..3], &[0, 0, 0], "over: nothing where only the body is");
+}
+
+/// A record's own gradient from `a` to `b`, straight at `angle` (pattern 1) or outward (2).
+fn own(frame: &mut Frame, a: Color, b: Color, pattern: f32, angle: f32) -> PaintGpu {
+    let row = frame.gradients.row(&Gradient::even(&[a, b]));
+    PaintGpu { row: row as f32, pattern, angle, scale: 1.0, ..PaintGpu::default() }
+}
+
+#[test]
+fn a_body_gradient_runs_across_each_ball_and_an_outline_s_round_one_across_its_ring() {
+    let mut frame = one(vec![], WHITE, 200.0, 1.45);
+    let mut b = body();
+    b.paint = own(&mut frame, Color::rgb(255, 0, 0), Color::rgb(0, 0, 255), 1.0, 0.0);
+    frame.look_layers = vec![b];
+    frame.layered[0].range[1] = 1;
+    let Some(px) = render_sized(&frame, W, H) else { return };
+    save("layers-body-gradient", &px, W, H);
+    let (left, right) = (at(&px, -150.0, 0.0), at(&px, 150.0, 0.0));
+    assert!(left[0] > 200 && left[0] > left[2] + 100, "red on the left: {left:?}");
+    assert!(right[2] > 200 && right[2] > right[0] + 100, "blue on the right: {right:?}");
+
+    let mut frame = one(vec![], WHITE, 200.0, 1.45);
+    let mut ring = outline(40.0, 0.0);
+    ring.paint = own(&mut frame, Color::rgb(255, 0, 0), Color::rgb(0, 255, 0), 2.0, 0.0);
+    frame.look_layers = vec![body(), ring];
+    frame.layered[0].range[1] = 2;
+    let px = render_sized(&frame, W, H).unwrap();
+    let (inner, outer) = (at(&px, 0.0, -165.0), at(&px, 0.0, -197.0));
+    assert!(inner[0] > inner[1], "red at the ring's inner edge: {inner:?}");
+    assert!(outer[1] > outer[0], "green at its outer edge: {outer:?}");
+}
+
+#[test]
+fn shine_materials_and_softness_light_the_ball_differently() {
+    let lit = |material: f32, sharpness: f32| {
+        let mut s = shine();
+        s.p0[3] = material;
+        s.p1[0] = sharpness;
+        render_sized(&one(vec![body(), s], [0.3, 0.3, 0.3, 1.0], 200.0, 1.45), W, H)
+    };
+    let Some(glossy) = lit(0.0, 0.0) else { return };
+    let mut seen = vec![glossy.clone()];
+    for m in [1.0, 2.0, 3.0] {
+        let px = lit(m, 0.0).unwrap();
+        save(&format!("layers-shine-material-{m}"), &px, W, H);
+        assert!(seen.iter().all(|p| *p != px), "material {m} looks like no other");
+        seen.push(px);
+    }
+    // A sharper spot lights fewer pixels brightly, a softer one more.
+    let bright = |px: &[u8]| px.chunks(4).filter(|p| p[0] > 200).count();
+    let (sharp, soft) = (lit(0.0, 3.0).unwrap(), lit(0.0, -0.75).unwrap());
+    assert!(bright(&sharp) < bright(&glossy) && bright(&glossy) < bright(&soft));
+}

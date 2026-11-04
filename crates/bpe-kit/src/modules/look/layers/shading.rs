@@ -1,7 +1,9 @@
 //! Shading: darkens part of the ball, along a line (Linear), outside a circle (Radial) or where
 //! it is painted (Brush).
 
-use bpe_core::{Blend, Choice, Color, Settings, Strokes};
+use bpe_core::{Blend, Choice, Color, Gradient, Settings, Strokes};
+
+use super::GradientShape;
 use glam::Vec2;
 
 /// How a Shading layer decides where to darken.
@@ -70,9 +72,15 @@ pub struct ShadingLayer {
     /// The painted strokes: painted on the big ball with the brush.
     #[setting(label = "Strokes", when = "kind=brush", simple)]
     pub strokes: Strokes,
-    /// The colour it darkens towards.
+    /// The colour it darkens towards, or colours: several run across each ball.
     #[setting(label = "Colour", simple, keyframe)]
-    pub colour: Color,
+    pub colour: Gradient,
+    /// How its colours run: straight across the ball, or from its middle to its edge.
+    #[setting(label = "Gradient", when = "colour")]
+    pub gradient: GradientShape,
+    /// The way straight colours run across the ball, in degrees: 90 from top to bottom.
+    #[setting(label = "Direction", when = "colour and gradient=straight", span(-180, 180), unit = "°", keyframe)]
+    pub direction: f32,
     /// How dark it gets at its darkest.
     #[setting(label = "Amount", range(0, 1), simple, keyframe, pulse)]
     pub amount: f32,
@@ -101,7 +109,9 @@ impl Default for ShadingLayer {
             size: 0.9,
             invert: false,
             strokes: Strokes::default(),
-            colour: Color::rgb(0, 0, 0),
+            colour: Gradient::solid(Color::rgb(0, 0, 0)),
+            gradient: GradientShape::Straight,
+            direction: 90.0,
             amount: 0.6,
             softness: 0.5,
             space: Space::Ball,

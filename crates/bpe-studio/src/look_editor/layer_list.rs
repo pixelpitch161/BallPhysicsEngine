@@ -499,11 +499,11 @@ fn paint_thumbnail(painter: &egui::Painter, rect: Rect, cx: &LookCx, card: &Slot
         }
         kinds::OUTLINE => {
             let l = kinds::OutlineLayer::from_params(&p);
-            painter.circle_stroke(c, r - 1.0, Stroke::new(2.0, fade(own(l.colour_from, l.colour))));
+            painter.circle_stroke(c, r - 1.0, Stroke::new(2.0, fade(own(l.colour_from, l.colour.first()))));
         }
         kinds::GLOW => {
             let l = kinds::GlowLayer::from_params(&p);
-            let col = own(l.colour_from, l.colour);
+            let col = own(l.colour_from, l.colour.first());
             for (k, a) in [(1.0, 0.25), (0.7, 0.45), (0.4, 1.0)] {
                 painter.circle_filled(c, r * k, fade(col.gamma_multiply(a)));
             }

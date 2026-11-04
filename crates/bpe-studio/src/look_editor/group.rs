@@ -562,6 +562,33 @@ mod tests {
     }
 
     #[test]
+    fn typing_how_many_sets_it() {
+        let mut h = harness();
+        turn_group_on(&mut h);
+        h.get_by_role_and_label(Role::SpinButton, "How many").click();
+        h.run();
+        // The box starts with its text picked, so typing replaces it.
+        for c in ["2", "5"] {
+            h.event(egui::Event::Text(c.into()));
+            h.run();
+        }
+        assert_eq!(own(&h, "count"), Some(Value::Int(25)), "typed numbers aren't snapped to tens");
+    }
+
+    #[test]
+    fn the_ball_group_switch_heads_the_look_card_or_the_balls_card_without_one() {
+        let mut h = harness();
+        // Once, at the top of the Look card, under its title.
+        assert_eq!(h.query_all_by_role_and_label(Role::Button, "Group").count(), 1);
+        let switch = h.get_by_role_and_label(Role::Button, "Group").rect();
+        let look = h.query_all_by_label("Look").next().unwrap().rect();
+        assert!(switch.top() > look.bottom(), "{switch:?} under {look:?}");
+        h.state_mut().scene.things.get_mut(&BALL).unwrap().slots.remove(&SlotId::Look);
+        h.run();
+        assert_eq!(h.query_all_by_role_and_label(Role::Button, "Group").count(), 1, "in the Balls card");
+    }
+
+    #[test]
     fn group_mode_with_the_group_off_says_one_ball() {
         let h = harness();
         assert_eq!(h.state().inspector.look_mode.get(&BALL), Some(&LookMode::Group));
@@ -772,18 +799,17 @@ mod tests {
     }
 
     #[test]
-    fn dragging_the_launch_arrow_sets_the_launch_speed() {
+    fn the_group_view_has_no_launch_arrow_to_drag() {
         let mut h = harness();
         turn_group_on(&mut h);
         let s = settings(&h);
         let places = shapes::offsets(&s);
         let (lo, hi) = shapes::bounds(&places);
-        let middle = (lo + hi) * 0.5;
-        let tip = screen(&h, middle + s.velocity * group_view::ARROW_SECONDS);
+        // Where the old arrow's tip was: dragging there changes nothing.
+        let tip = screen(&h, (lo + hi) * 0.5 + s.velocity * 0.3);
+        let before = h.state().scene.clone();
         drag(&mut h, tip, tip + egui::vec2(-30.0, 0.0));
-        let v = settings(&h).velocity;
-        assert!(v.x < s.velocity.x - 20.0, "{v} from {}", s.velocity);
-        assert!((v.y - s.velocity.y).abs() < 15.0, "{v}");
+        assert_eq!(h.state().scene, before);
     }
 
     #[test]

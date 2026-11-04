@@ -92,6 +92,8 @@ pub fn offset(p: &Paint, i: &Inputs) -> f32 {
             i.time * if p.scroll == 0.0 { DEFAULT_TIME_SPEED } else { p.scroll }
         }
         Follow::NearestBall => return 0.0,
+        // Painted across each ball on the GPU; on its own a ball stands for the middle colour.
+        Follow::EachBall => return 0.5,
     };
     let t = if scrolls { finite(raw) + finite(i.time) * finite(p.scroll) } else { finite(raw) };
     wrap(t, repeat)

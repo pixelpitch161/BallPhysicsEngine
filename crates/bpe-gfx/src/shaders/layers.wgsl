@@ -119,6 +119,52 @@ fn shine_light(q: vec2<f32>, color: vec3<f32>, spot: vec2<f32>, size: f32) -> ve
     return color * diffuse + vec3<f32>(spec);
 }
 
+// The Shine layer's light on `color`: `shine_light` for Glossy (material 0) at sharpness 0,
+// otherwise its spot's exponent times `1 + sharpness` (above 0 sharper, below softer and wider),
+// and the light of Matte (1), Metal (2) or Glass (3). The kit turns Softness into sharpness.
+fn shine_material(q: vec2<f32>, color: vec3<f32>, spot: vec2<f32>, size: f32, material: f32, sharpness: f32) -> vec3<f32> {
+    let m = u32(material + 0.5);
+    if m == 0u && abs(sharpness) < 1e-4 {
+        return shine_light(q, color, spot, size);
+    }
+    let r = length(q);
+    let n = vec3<f32>(q, sqrt(max(1.0 - r * r, 0.0)));
+    let l = normalize(vec3<f32>(spot, 0.7));
+    let h = normalize(l + vec3<f32>(0.0, 0.0, 1.0));
+    let lit = max(dot(n, l), 0.0);
+    let facing = max(dot(n, h), 0.0);
+    let sharp = max(1.0 + sharpness, 0.05);
+    let power = 24.0 / max(size * size, 0.04) * sharp;
+    let peak = pow(sharp, 0.35);
+    switch m {
+        case 1u: {
+            // Matte: wide, even light that wraps round, and a faint broad sheen.
+            let wrap = clamp((dot(n, l) + 0.4) / 1.4, 0.0, 1.0);
+            let sheen = pow(facing, max(power * 0.15, 1.0)) * 0.12 * peak;
+            return color * (0.3 + 0.85 * wrap) + vec3<f32>(sheen);
+        }
+        case 2u: {
+            // Metal: dark sides, a reflected horizon across the ball, a spot in the ball's colour.
+            let horizon = smoothstep(-0.25, 0.15, n.y + 0.35 * spot.y);
+            let env = mix(0.85, 0.12, horizon) + 0.25 * pow(1.0 - n.z, 2.0);
+            let spec = pow(facing, power * 1.5) * peak;
+            return color * (0.1 + 0.55 * lit + 0.7 * env) + (0.35 + 0.9 * color) * spec;
+        }
+        case 3u: {
+            // Glass: a darker middle, a bright rim, a sharp white spot and a faint glint opposite.
+            let rim = pow(1.0 - n.z, 3.0);
+            let spec = pow(facing, power * 3.0) * 1.1 * peak;
+            let back = normalize(vec3<f32>(-spot, 0.9));
+            let glint = pow(max(dot(n, normalize(back + vec3<f32>(0.0, 0.0, 1.0))), 0.0), power * 0.8) * 0.25;
+            return color * (0.45 + 0.25 * lit) + (0.5 + 0.5 * color) * rim * 0.8 + vec3<f32>(spec + glint);
+        }
+        default: {
+            let diffuse = 0.45 + 0.8 * lit;
+            return color * diffuse + vec3<f32>(pow(facing, power) * 0.7 * peak);
+        }
+    }
+}
+
 // How much of a band from `lo` to `hi` (distances to the shape's edge, in radii) covers a point
 // at `d`. `inside` works it out for the part of the pixel inside the shape, where an edge at or
 // past the shape's own edge is the shape's edge and needs no softening of its own; outside, the
@@ -191,6 +237,45 @@ fn group_over(acc: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(with_group(acc.rgb / m) * m, acc.a);
 }
 
+
+// The colour of a layer whose own colours are a gradient (`l.paint.row` 0 or more) at ball point
+// `p`: straight across the ball (pattern 1), or outward (2) at `out` (0 to 1, worked out for the
+// layer); `plain` for a layer of one colour.
+fn own_colour(l: LayerGpu, p: vec2<f32>, out: f32, plain: vec3<f32>) -> vec3<f32> {
+    if l.paint.row < 0.0 {
+        return plain;
+    }
+    if l.paint.pattern > 1.5 {
+        return paint_along(l.paint, out, g.view.w).rgb;
+    }
+    return paint_colour(l.paint, p, g.view.w, vec4<f32>(plain, 1.0)).rgb;
+}
+
+// `top`, the layers above a Blend layer, with a layer of colour `cs` covering `a_in` of it laid
+// over: mixed by `mode` with `under` (the whole stack under the layer), as `layer_over` mixes it,
+// then painted normally over the layers above the Blend layer under it.
+fn top_over(top: vec4<f32>, under: vec4<f32>, cs: vec3<f32>, a_in: f32, mode: u32) -> vec4<f32> {
+    let a = clamp(a_in, 0.0, 1.0);
+    let ab = under.a;
+    var mixed = cs;
+    if mode != 0u && ab > 1e-5 {
+        mixed = (1.0 - ab) * cs + ab * blended(mode, under.rgb / ab, cs);
+    }
+    return vec4<f32>(a * mixed + (1.0 - a) * top.rgb, a + top.a * (1.0 - a));
+}
+
+// `top` with colour `cs` mixed into what it covers by `mode` at `a`, covering no more than it did.
+fn recoloured_top(top: vec4<f32>, cs: vec3<f32>, a: f32, mode: u32) -> vec4<f32> {
+    if top.a <= 1e-5 || a <= 0.0 {
+        return top;
+    }
+    let t = top.rgb / top.a;
+    var mixed = cs;
+    if mode != 0u {
+        mixed = blended(mode, t, cs);
+    }
+    return vec4<f32>(mix(t, mixed, clamp(a, 0.0, 1.0)) * top.a, top.a);
+}
 
 // What a walk over the stack gives at one point: as if wholly inside the shape, and as if wholly
 // outside it.
@@ -347,7 +432,7 @@ fn shade_layers(in: LayeredOut) -> vec4<f32> {
     let p = rotate(in.local, -in.form.z);
     let d = ball_shape(p, in.form.x, in.form.y);
     let cover = clamp(-d / aa + 0.5, 0.0, 1.0);
-    let w = walk_layers(in.local, in.range.x, in.range.y);
+    let w = walk_layers(in.local, in.range.x, in.range.y, in.range.z);
     var out = cover * w.inner + (1.0 - cover) * w.outer;
     // An additive body colour makes the whole ball add its light.
     if in.body.a < 0.0 {

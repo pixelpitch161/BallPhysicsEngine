@@ -974,6 +974,9 @@ pub trait ThingDraw: Send + Sync + 'static {
     fn blend(&self, _resolved: &ResolvedThing) -> Option<(Blend, f32, bool)> {
         None
     }
+    /// What the thing draws over its blended part, painted normally whatever its blend: the
+    /// layers of a ball above its Blend layer. Drawn right after [`ThingDraw::draw`].
+    fn draw_over(&self, _cx: &DrawCx, _frame: &mut Frame) {}
 }
 
 /// How a module kind draws for every thing whose slot it fills: a trail behind the balls, a
@@ -1060,6 +1063,8 @@ pub fn build_frame(
         let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
         let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time };
         draw_routed(target, blend, amount, each, |into| d.draw(&cx, into));
+        let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
+        d.draw_over(&cx, target);
     }
     for (id, r) in &resolved.things {
         let Some(thing) = scene.things.get(id) else { continue };

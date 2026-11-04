@@ -13,6 +13,6 @@
                 let uv = group_begin(gs, first, k + 1u + masks, screen);
                 let run = run_effect(u32(gs.p0.w), uv, gs);
                 let e = select(clamp(run, vec3<f32>(0.0), vec3<f32>(64.0)), vec3<f32>(0.0), run != run);
-                c = mix(c, blended(gs.head.y, c, e), clamp(gs.amount.x, 0.0, 1.0));
+                c = mix(c, blended(gs.head.y, c, e), clamp(gs.amount.x, 0.0, 1.0) * group_covers(gs, screen));
             }
         }

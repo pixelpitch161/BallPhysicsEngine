@@ -616,18 +616,19 @@ pub struct NumberFeel {
 }
 
 /// The feel of a number spanning `span`: the step is the power of ten nearest a two-hundredth of
-/// the span, so every slider moves in round, even steps (0 to 1 by 0.001, 0 to 40 by 0.1, 0 to
-/// 2000 by 1), and a drag on the number box crosses the span in about 400 pixels (Shift is
-/// ten times finer).
+/// the span, but never more than 1, so every slider moves in round, even steps (0 to 1 by
+/// 0.001, 0 to 40 by 0.1, 0 to 2000 and 1 to 5000 by 1). A drag on the number box crosses a
+/// small span in about 400 pixels and counts a wide one in ones (Shift is ten times finer).
+/// The cap matters for typing too: the slider snaps what is typed to its steps.
 pub fn number_feel(span: f64, integer: bool) -> NumberFeel {
     let span = if span.is_finite() && span > 0.0 { span } else { 1.0 };
-    let power = (span / 200.0).log10().floor();
+    let power = (span / 200.0).log10().floor().min(0.0);
     let mut step = 10f64.powf(power).max(1e-4);
     if integer {
         step = step.max(1.0).round();
     }
     let decimals = if integer { 0 } else { (-power).max(0.0) as usize };
-    let drag_speed = (span / 400.0).max(step / 4.0);
+    let drag_speed = (span / 400.0).min(1.0).max(step / 4.0);
     NumberFeel { step, decimals, drag_speed }
 }
 
@@ -1411,7 +1412,13 @@ mod tests {
         assert_eq!(feel(1980.0).step, 1.0);
         assert_eq!(feel(1980.0).decimals, 0);
         assert_eq!(number_feel(126.0, true).step, 1.0);
-        assert!((feel(2000.0).drag_speed - 5.0).abs() < 1e-9, "a drag crosses the span in 400 pixels");
+        assert!((feel(40.0).drag_speed - 0.1).abs() < 1e-9, "a drag crosses a small span in 400 pixels");
+        // Wide spans move by ones, on the slider and the number box alike.
+        for span in [2000.0, 4999.0, 40000.0] {
+            assert_eq!(feel(span).step, 1.0, "{span}");
+            assert_eq!(number_feel(span, true).step, 1.0, "{span}");
+            assert_eq!(feel(span).drag_speed, 1.0, "{span}");
+        }
         let speed = bpe_kit::BallsSettings::defs().iter().find(|d| d.key == "velocity").unwrap();
         assert_eq!(setting_feel(speed).step, 1.0, "a speed without a range moves by its usual span");
     }

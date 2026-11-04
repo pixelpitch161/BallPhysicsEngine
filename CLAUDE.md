@@ -72,6 +72,13 @@ Dependencies go bottom to top:
   Group records sit after a ball's own: 8 the group gradient's colour, 9 a group shader, which runs in the same
   program with uv in the group's square (`LayeredInstance.place`: the ball's start offset and the group's side);
   `layers_group_shaded.wgsl` mixes a group shader into the layers that name it (`amount.z/w` of their records).
+  A ball with a Blend layer under other drawn layers draws in two parts (`LayeredInstance.range.z`: the first record
+  above the Blend layer, bit 16 for the upper part): the layers under it go through the blend, the ones above paint
+  normally over them (`ThingDraw::draw_over`, `Stack::split`). A record whose own colours are a gradient carries a
+  `paint` (pattern 1 straight across the ball, 2 outward), the Body's too when its colours follow Each ball
+  (`Follow::EachBall`, the Body's default). In-ball programs live in a `ProgramStore`; the editor shares one between
+  its renderers and builds programs on a background thread (`ProgramStore::in_background`,
+  `preview::shared_programs`), exports build them while drawing.
 - `bpe-kit`: **every plugin**, with one folder per thing kind in `src/things/` (arena, balls, camera, folder, scene)
   and one per card kind in `src/modules/` (look, trail, motion, bounce, particles, shader). A ball's Look is
   `look.layers` (`modules/look/layers/`: Body, Pattern, Outline, Shine, Glow, Shading, Shader, Blend, the reactions
@@ -105,7 +112,8 @@ Dependencies go bottom to top:
   their menus, drag to reorder and rename, masks indented under their layer, then the picked layer's settings; the
   copied layer/look live in `Inspector.clipboard`). `layer_rows.rs` draws a mask's From/Layer and a Shader's
   Effect, `code_box.rs` the own-code box, `handles.rs` the handles on the ball view and `brush.rs` painting strokes
-  there. A Balls thing's header has a Ball / Group switch (`Inspector.look_mode`): Group mode
+  there. A Balls thing's Look card starts with a Ball / Group switch (`Inspector.look_mode`; in the Balls card when there is
+  no layered Look card): Group mode
   (`look_editor/group.rs`, `group_view.rs`) shows the whole group where it starts (custom balls, the launch arrow
   and the gradient's line drag there; balls can be picked for layers of their own), the shape chips and group
   settings, Across the group (the group layers: gradient and shaders) and folds for Variety, Release, Launch and

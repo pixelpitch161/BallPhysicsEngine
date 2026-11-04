@@ -1,7 +1,6 @@
 //! The Group view at the top of a Balls thing's Look in Group mode: the whole group where it
 //! starts, drawn by the same renderer as the video, with what can be dragged on it: each ball of
-//! a custom shape, the launch arrow, the group gradient's line, and balls picked for layers of
-//! their own. It never steps the physics.
+//! a custom shape, the group gradient's line, and balls picked for layers of their own. It never steps the physics.
 
 use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
@@ -24,8 +23,6 @@ use crate::style;
 const MAX_SIZE: f32 = 300.0;
 /// How far past the group the view reaches, as a share of the group's size.
 const MARGIN: f32 = 0.1;
-/// How long the launch arrow is, as the distance a ball covers in this many seconds.
-pub const ARROW_SECONDS: f32 = 0.3;
 /// How close, in points, the pointer must be to grab a handle.
 const GRAB: f32 = 10.0;
 
@@ -34,8 +31,6 @@ const GRAB: f32 = 10.0;
 enum Drag {
     /// A custom shape's ball, by its place in the list.
     Point(usize),
-    /// The launch arrow's tip.
-    Arrow,
     /// One of the gradient line's end dots: the end (true) or the start.
     GradientEnd(bool),
     /// The gradient line's easing diamond.
@@ -244,14 +239,10 @@ pub fn show(
     let side = ui.available_width().clamp(40.0, MAX_SIZE);
     let (rect, response) = ui.allocate_exact_size(egui::vec2(side, side), Sense::click_and_drag());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "Group view"));
-    // Kept still through a drag, fitted again otherwise, with room for the launch arrow.
+    // Kept still through a drag, fitted again otherwise.
     let (centre, size) = match (view.drag, view.fit) {
         (Some(_), Some(f)) => f,
-        _ => {
-            let mut seen = places.clone();
-            seen.push(arrow_tip(&s, &places));
-            fit(&seen, s.radius)
-        }
+        _ => fit(&places, s.radius),
     };
     view.fit = Some((centre, size));
     let map = ViewMap { rect, centre, size };
@@ -287,7 +278,8 @@ fn picture(
     let pixels = (rect.width() * ui.ctx().pixels_per_point()).round().max(2.0) as u32;
     let device = &render.device;
     let (renderer, texture) = view.renderer.get_or_insert_with(|| {
-        let renderer = Renderer::new(device, pixels, pixels);
+        let mut renderer = Renderer::new(device, pixels, pixels);
+        renderer.share_programs(crate::preview::shared_programs());
         let texture =
             render.renderer.write().register_native_texture(device, renderer.output_view(), wgpu::FilterMode::Linear);
         (renderer, texture)
@@ -312,6 +304,9 @@ fn picture(
         build_group_frame(&mini, &resolved, cx.kit, cx.time, centre, size, &mut view.frame);
         renderer.render(device, &render.queue, &view.frame);
         view.drawn = Some(key);
+    }
+    if crate::preview::redraw_when_built(renderer, ui.ctx()) {
+        view.drawn = None;
     }
     let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
     painter.image(*texture, rect, uv, style::UNTINTED);
@@ -359,13 +354,7 @@ fn ball_at(places: &[Vec2], radius: f32, map: &ViewMap, p: Pos2) -> Option<u32> 
         .map(|(i, _)| i as u32)
 }
 
-/// The launch arrow's tip in the world.
-fn arrow_tip(s: &BallsSettings, places: &[Vec2]) -> Vec2 {
-    let (lo, hi) = bounds(places);
-    (lo + hi) * 0.5 + s.velocity * ARROW_SECONDS
-}
-
-/// What a press at `p` grabs, in order: the gradient line, a custom ball, the arrow's tip.
+/// What a press at `p` grabs, in order: the gradient line, a custom ball.
 fn grab(view: &GroupView, cx: &ViewCx, s: &BallsSettings, places: &[Vec2], map: &ViewMap, p: Pos2) -> Option<Drag> {
     if view.edit_gradient
         && let Some((_, g)) = &cx.gradient
@@ -395,9 +384,6 @@ fn grab(view: &GroupView, cx: &ViewCx, s: &BallsSettings, places: &[Vec2], map: 
         {
             return Some(Drag::Point(i));
         }
-    }
-    if map.to_screen(arrow_tip(s, places)).distance(p) <= GRAB {
-        return Some(Drag::Arrow);
     }
     None
 }
@@ -433,11 +419,6 @@ fn interact(
                     *slot = unturned(s, world);
                     edits.push(Edit::SetOwnHere("custom".into(), Value::Points(points)));
                 }
-            }
-            Drag::Arrow => {
-                let (lo, hi) = bounds(places);
-                let v = (world - (lo + hi) * 0.5) / ARROW_SECONDS;
-                edits.push(Edit::SetOwn("velocity".into(), Value::Vec2([v.x.round(), v.y.round()])));
             }
             Drag::GradientEnd(end) => {
                 if let Some((layer, _)) = &cx.gradient {
@@ -508,8 +489,7 @@ fn choice_name(e: Easing) -> &'static str {
     bpe_core::Choice::name(e)
 }
 
-/// What is drawn over the picture: custom handles, picked balls, the launch arrow, the gradient
-/// line.
+/// What is drawn over the picture: custom handles, picked balls, the gradient line.
 fn overlays(ui: &mut Ui, view: &GroupView, cx: &ViewCx, s: &BallsSettings, places: &[Vec2], map: ViewMap) {
     let painter = ui.painter_at(map.rect);
     let r = (s.radius * map.scale()).max(3.0);
@@ -529,17 +509,6 @@ fn overlays(ui: &mut Ui, view: &GroupView, cx: &ViewCx, s: &BallsSettings, place
             painter.circle_stroke(map.to_screen(*w), r + 3.0, Stroke::new(2.0, style::TEXT_STRONG));
             painter.circle_stroke(map.to_screen(*w), r + 5.0, Stroke::new(1.0, style::OUTLINE));
         }
-    }
-    // The launch arrow.
-    let (lo, hi) = bounds(places);
-    let from = map.to_screen((lo + hi) * 0.5);
-    let tip = map.to_screen(arrow_tip(s, places));
-    if from.distance(tip) > 2.0 {
-        let ink = if view.drag == Some(Drag::Arrow) { style::TEXT_STRONG } else { style::TEXT };
-        painter.arrow(from, tip - from, Stroke::new(4.0, style::OUTLINE));
-        painter.arrow(from, tip - from, Stroke::new(2.0, ink));
-        painter.circle_filled(tip, 5.0, style::OUTLINE);
-        painter.circle_filled(tip, 4.0, ink);
     }
     // The gradient line, its end dots and its easing diamond.
     if view.edit_gradient

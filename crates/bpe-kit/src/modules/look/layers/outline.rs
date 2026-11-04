@@ -1,8 +1,8 @@
 //! Outline: a ring along the ball's edge.
 
-use bpe_core::{Blend, Choice, Color, Settings};
+use bpe_core::{Blend, Choice, Color, Gradient, Settings};
 
-use super::ColourFrom;
+use super::{ColourFrom, GradientShape};
 
 /// Where the ring sits on the ball's edge.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
@@ -35,9 +35,15 @@ pub struct OutlineLayer {
     /// Same as body takes the body's colour a little darker, so a white ball still shows its ring.
     #[setting(label = "Colour from", simple)]
     pub colour_from: ColourFrom,
-    /// The ring's own colour.
+    /// The ring's own colour, or colours: several run across each ball's ring.
     #[setting(label = "Colour", when = "colour_from=own", simple, keyframe)]
-    pub colour: Color,
+    pub colour: Gradient,
+    /// How its colours run: straight across the ball, or across the ring from its inner edge out.
+    #[setting(label = "Gradient", when = "colour_from=own and colour")]
+    pub gradient: GradientShape,
+    /// The way straight colours run across the ball, in degrees: 90 from top to bottom.
+    #[setting(label = "Direction", when = "colour_from=own and colour and gradient=straight", span(-180, 180), unit = "°", keyframe)]
+    pub direction: f32,
     /// 0 is invisible, 1 is solid.
     #[setting(label = "Opacity", range(0, 1), group = "Mixing", keyframe, pulse)]
     pub opacity: f32,
@@ -52,7 +58,9 @@ impl Default for OutlineLayer {
             width: 4.0,
             sits: OutlineSits::Inside,
             colour_from: ColourFrom::SameAsBody,
-            colour: Color::WHITE,
+            colour: Gradient::solid(Color::WHITE),
+            gradient: GradientShape::Straight,
+            direction: 90.0,
             opacity: 1.0,
             blend: Blend::Normal,
         }

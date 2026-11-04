@@ -262,7 +262,8 @@ pub fn show(
         Some(render) => {
             let device = &render.device;
             let (renderer, texture) = view.renderer.get_or_insert_with(|| {
-                let renderer = Renderer::new(device, pixels, pixels);
+                let mut renderer = Renderer::new(device, pixels, pixels);
+                renderer.share_programs(crate::preview::shared_programs());
                 let texture = render.renderer.write().register_native_texture(
                     device,
                     renderer.output_view(),
@@ -283,6 +284,9 @@ pub fn show(
             if view.drawn != Some(key) {
                 renderer.render(device, &render.queue, &view.frame);
                 view.drawn = Some(key);
+            }
+            if crate::preview::redraw_when_built(renderer, ui.ctx()) {
+                view.drawn = None;
             }
             let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
             ui.painter().image(*texture, rect, uv, style::UNTINTED);

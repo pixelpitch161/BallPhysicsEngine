@@ -35,6 +35,8 @@ pub enum Follow {
     Time,
     NearestBall,
     Path,
+    /// Across each ball on its own, as a straight or round gradient inside it: the Body's.
+    EachBall,
 }
 
 /// Whether positions are in the world or on the screen.
@@ -129,9 +131,16 @@ fn also(when: &str, term: &str) -> &'static str {
     leak(when.split(" or ").map(|alt| format!("{alt} and {term}")).collect::<Vec<_>>().join(" or "))
 }
 
-/// The choices a group may offer: its list, or all of them when it names none.
+/// The choices a group may offer: its list, or all of them but Each ball (the Body's own) when it
+/// names none.
 fn follow_names(o: &GroupOpts) -> &'static [&'static str] {
-    if o.follows.is_empty() { Follow::NAMES } else { o.follows }
+    use std::sync::OnceLock;
+    static GENERAL: OnceLock<Vec<&'static str>> = OnceLock::new();
+    if o.follows.is_empty() {
+        GENERAL.get_or_init(|| Follow::NAMES.iter().copied().filter(|n| *n != Follow::EachBall.name()).collect())
+    } else {
+        o.follows
+    }
 }
 
 /// What a group follows when nothing is saved: Place, or the first listed name when the list
@@ -216,7 +225,7 @@ impl SettingGroup for Paint {
         );
         v.push(follow);
 
-        let near = on(&format!(" and {f}=place|start"));
+        let near = on(&format!(" and {f}=each_ball|place|start"));
         v.push(def(
             "shape",
             "Gradient",
@@ -232,7 +241,7 @@ impl SettingGroup for Paint {
                 "The direction the colours run in, in degrees.",
                 ty(&d.angle),
                 val(&d.angle),
-                on(&format!(" and {f}=place|start and {shape}=straight")),
+                on(&format!(" and {f}=each_ball|place|start and {shape}=straight")),
             ),
             (-180.0, 180.0),
             "deg",
@@ -458,7 +467,7 @@ mod tests {
         let f = Two::defs().iter().find(|d| d.key == "follow").unwrap();
         assert_eq!(f.ty, ValueType::Choice(&["place", "order", "speed"]));
         let a = Two::defs().iter().find(|d| d.key == "outline_angle").unwrap();
-        assert!(a.when.contains("outline_colours") && a.when.contains("outline_follow=place|start"));
+        assert!(a.when.contains("outline_colours") && a.when.contains("outline_follow=each_ball|place|start"));
     }
 
     #[test]

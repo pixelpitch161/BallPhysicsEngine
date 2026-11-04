@@ -203,7 +203,8 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
 
     let device = &render_state.device;
     let mut preview = studio.panels.preview.take().unwrap_or_else(|| {
-        let renderer = Renderer::new(device, width, height);
+        let mut renderer = Renderer::new(device, width, height);
+        renderer.share_programs(shared_programs());
         let texture = render_state.renderer.write().register_native_texture(
             device,
             renderer.output_view(),
@@ -231,6 +232,9 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         &mut preview.drawn,
         look,
     );
+    if redraw_when_built(&preview.renderer, ui.ctx()) {
+        preview.drawn = None;
+    }
     let mut outcome = Outcome { catching_up, ..Outcome::default() };
     outcome.shader_problem = preview.renderer.shader_problems().into_iter().next();
 
@@ -358,6 +362,25 @@ fn navigate(ui: &Ui, response: &egui::Response, studio: &mut Studio, view: &View
         }
     }
     studio.world_nav != before
+}
+
+/// The editor's in-ball shader programs, shared by its renderers (the preview, the ball view and
+/// the group view, which all draw on the one GPU) and built on a background thread, so adding or
+/// changing a shader never stalls the editor: until a program is ready its balls draw without
+/// their shader layers.
+pub fn shared_programs() -> &'static bpe_gfx::ProgramStore {
+    static STORE: std::sync::OnceLock<bpe_gfx::ProgramStore> = std::sync::OnceLock::new();
+    STORE.get_or_init(bpe_gfx::ProgramStore::in_background)
+}
+
+/// True while `renderer` has a shader program building: its picture is drawn again in a moment,
+/// so the effect shows as soon as it is ready.
+pub fn redraw_when_built(renderer: &Renderer, ctx: &egui::Context) -> bool {
+    let pending = renderer.programs().pending();
+    if pending {
+        ctx.request_repaint_after(std::time::Duration::from_millis(50));
+    }
+    pending
 }
 
 /// Draws the playhead's moment into `renderer`, unless `drawn` says the picture already shows

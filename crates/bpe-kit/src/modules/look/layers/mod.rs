@@ -32,7 +32,7 @@ pub use pattern::PatternLayer;
 pub use reactions::{ColourOnHit, ColourOverTime, FlashOnHit, StretchWhenFast, Turning};
 pub use shader::ShaderLayer;
 pub use shading::{ShadingKind, ShadingLayer, Space};
-pub use shine::ShineLayer;
+pub use shine::{ShineLayer, ShineMaterial};
 
 /// The card kind that holds the stack.
 pub const CARD: &str = "look.layers";
@@ -68,6 +68,27 @@ pub enum ColourFrom {
     #[default]
     SameAsBody,
     Own,
+}
+
+/// How a layer's own colours run across each ball, when they are a gradient.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum GradientShape {
+    /// Straight across the ball, at the layer's Direction.
+    #[default]
+    Straight,
+    /// Outward: from the ball's middle to its edge (an outline across its ring, a glow from the
+    /// ball's edge out).
+    Round,
+}
+
+impl GradientShape {
+    /// Its pattern number in paint.wgsl: 1 linear, 2 radial.
+    pub fn pattern(self) -> f32 {
+        match self {
+            Self::Straight => 1.0,
+            Self::Round => 2.0,
+        }
+    }
 }
 
 /// How a kind finds the settings a layer's own values add.
@@ -295,12 +316,14 @@ mod tests {
     }
 
     #[test]
-    fn drawn_layers_but_body_and_blend_have_opacity_and_blend() {
+    fn drawn_layers_but_body_and_blend_have_opacity_and_blend_and_body_has_opacity() {
         let reg = registry();
         for k in reg.layers_for(CARD) {
             let has = |key: &str| k.settings().iter().any(|d| d.key == key);
             let drawn = k.section() == LayerSection::Drawn && !matches!(k.id(), BODY | BLEND);
             assert_eq!(has("opacity") && has("blend"), drawn, "{}", k.id());
+            // The Body has an opacity but no blend: nothing is under it inside the ball.
+            assert_eq!(has("opacity"), drawn || k.id() == BODY, "{}", k.id());
             assert_eq!(
                 k.repeats(),
                 drawn || k.section() == LayerSection::Mask || k.id() == GROUP_SHADER,

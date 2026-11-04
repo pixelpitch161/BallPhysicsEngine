@@ -121,7 +121,8 @@ pub fn layers_from_basic(look: &BasicLook) -> Slot {
             card.params.set(&layered_key(id, k), v.clone());
         }
     };
-    let body = BodyLayer { ball_shape: look.ball_shape, roundness: look.roundness, fill: look.fill.clone() };
+    let body =
+        BodyLayer { ball_shape: look.ball_shape, roundness: look.roundness, fill: look.fill.clone(), opacity: 1.0 };
     add(l::BODY, "Body", body.to_params());
     if look.inside.pattern != Pattern::None {
         add(l::PATTERN, "Pattern", PatternLayer { inside: look.inside.clone(), ..PatternLayer::default() }.to_params());
@@ -134,7 +135,7 @@ pub fn layers_from_basic(look: &BasicLook) -> Slot {
         let outline = OutlineLayer {
             width: look.outline,
             colour_from: ColourFrom::Own,
-            colour: outline_colour,
+            colour: bpe_core::Gradient::solid(outline_colour),
             ..OutlineLayer::default()
         };
         add(l::OUTLINE, "Outline", outline.to_params());
@@ -144,7 +145,7 @@ pub fn layers_from_basic(look: &BasicLook) -> Slot {
             strength: look.glow,
             size: look.glow_size,
             colour_from: if look.outline > 0.0 { ColourFrom::Own } else { ColourFrom::SameAsBody },
-            colour: outline_colour,
+            colour: bpe_core::Gradient::solid(outline_colour),
             ..GlowLayer::default()
         };
         add(l::GLOW, "Glow", glow.to_params());
