@@ -17,6 +17,9 @@ ron.workspace = true
 bpe-kit.workspace = true
 bpe-cli.workspace = true
 bpe-sound.workspace = true
+cpal.workspace = true
+rubato.workspace = true
+rtrb.workspace = true
 eframe.workspace = true
 egui-wgpu.workspace = true
 rfd.workspace = true
@@ -26,3 +29,4 @@ glam.workspace = true
 [dev-dependencies]
 bpe-kit = { workspace = true, features = ["test-scenes"] }
 egui_kittest = "0.37"
+bpe-sound = { workspace = true, features = ["test-tone"] }

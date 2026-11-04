@@ -1,17 +1,21 @@
 //! The editor's state and frame: files, undo, shortcuts and the panel layout.
 
+use crate::audio_out::AudioOut;
 use crate::export_window::ExportWindow;
 use crate::grid::{self, Grid};
 use crate::history::{History, UNDO_MERGE};
 use crate::inspector::Inspector;
 use crate::preview::Preview;
 use crate::selection::Selection;
+use crate::settings::ListenSettings;
+use crate::sound_job::SoundJob;
 use crate::timeline::Timeline;
 use crate::tree::Tree;
 use crate::{inspector, preview, settings, style, timeline, tree};
 use bpe_core::{Resolved, Scene, Settings, ThingId};
 use bpe_kit::{Kit, SceneSettings, resolve_scene};
 use bpe_runtime::{Playback, fingerprint};
+use bpe_sound::SoundPatch;
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, RichText, Stroke};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -101,6 +105,11 @@ pub struct Studio {
     closing: bool,
     last_tick: Option<Instant>,
     clicked: Option<ToolbarClick>,
+    /// The sound thread and the speakers; `None` without a sound device (or in tests), when
+    /// the playhead follows the wall clock.
+    pub sound: Option<SoundJob>,
+    /// The speaker button and the listening volume (only what you hear).
+    pub listen: ListenSettings,
 }
 
 impl Studio {
@@ -111,9 +120,13 @@ impl Studio {
         studio.grid = Grid::load();
         studio.inspector_width = settings::load_inspector_width();
         studio.persist_settings = true;
+        studio.listen = settings::load_listen();
         if let Some(path) = scene_path {
             studio.open_path(&path);
         }
+        studio.sound =
+            AudioOut::open().and_then(|out| SoundJob::start(&studio.scene, &studio.resolved, studio.kit.clone(), out));
+        studio.apply_listen();
         studio
     }
 
@@ -167,6 +180,8 @@ impl Studio {
             closing: false,
             last_tick: None,
             clicked: None,
+            sound: None,
+            listen: ListenSettings::default(),
         }
     }
 
@@ -232,12 +247,25 @@ impl Studio {
     fn scene_changed(&mut self) {
         self.resolved = resolve_scene(&self.scene, &self.kit.registry);
         let fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
-        if fingerprint != self.fingerprint {
+        let rebuilt = fingerprint != self.fingerprint;
+        if rebuilt {
             self.fingerprint = fingerprint;
             self.playback = Playback::new(&self.scene, &self.resolved, self.kit.sims.clone());
         }
         self.time = self.time.min(self.duration());
         self.revision += 1;
+        // The sound follows: a physics change starts its world over (no hits from the old
+        // layout), anything else swaps the settings in where it is.
+        if let Some(job) = &mut self.sound {
+            if rebuilt {
+                job.rebuild(&self.scene, &self.resolved);
+                if self.playing {
+                    job.seek(self.time);
+                }
+            } else {
+                job.patch(SoundPatch::build(&self.scene, &self.resolved, &self.kit));
+            }
+        }
     }
 
     pub fn replace_scene(&mut self, mut scene: Scene, path: Option<PathBuf>) {
@@ -258,6 +286,9 @@ impl Studio {
         self.fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
         self.playback = Playback::new(&self.scene, &self.resolved, self.kit.sims.clone());
         self.revision += 1;
+        if let Some(job) = &mut self.sound {
+            job.rebuild(&self.scene, &self.resolved);
+        }
     }
 
     pub fn new_scene(&mut self) {
@@ -292,29 +323,69 @@ impl Studio {
     pub fn seek(&mut self, time: f64) {
         self.time = time.clamp(0.0, self.duration());
         self.playback.seek_within(self.sim_time(), Some(CATCH_UP_BUDGET));
+        if self.playing
+            && let Some(job) = &mut self.sound
+        {
+            job.seek(self.time);
+        }
     }
 
     pub fn set_playing(&mut self, playing: bool) {
         if playing && self.time >= self.duration() {
             self.time = 0.0;
         }
+        if let Some(job) = &mut self.sound
+            && playing != self.playing
+        {
+            if playing { job.play(self.time) } else { job.pause() }
+        }
         self.playing = playing;
         self.last_tick = None;
     }
 
-    /// Moves the playhead while playing, with the wall clock.
+    /// Sets the speaker button and listening volume, and remembers them.
+    pub fn set_listen(&mut self, listen: ListenSettings) {
+        if listen == self.listen {
+            return;
+        }
+        self.listen = listen;
+        self.apply_listen();
+        if self.persist_settings {
+            settings::save_listen(listen);
+        }
+    }
+
+    fn apply_listen(&self) {
+        if let Some(job) = &self.sound {
+            job.shared().set_volume(self.listen.volume);
+            job.shared().set_muted(!self.listen.on);
+        }
+    }
+
+    /// Moves the playhead while playing: with the sound the speakers have played, or with the
+    /// wall clock when there are no speakers.
     fn tick(&mut self) {
         let now = Instant::now();
         let dt = self.last_tick.replace(now).map_or(0.0, |last| (now - last).as_secs_f64().min(0.25));
         if !self.playing {
             return;
         }
+        if self.sound.as_ref().is_some_and(SoundJob::failed) {
+            self.sound = None;
+            self.status = "The speakers stopped working, so it plays on without sound.".into();
+        }
         let duration = self.duration();
-        let next = self.time + dt;
+        let next = match &self.sound {
+            Some(job) => job.clock(),
+            None => self.time + dt,
+        };
         if next < duration {
             self.time = next;
         } else if self.looping {
             self.time = 0.0;
+            if let Some(job) = &mut self.sound {
+                job.seek(0.0);
+            }
         } else {
             self.time = duration;
             self.set_playing(false);
@@ -681,6 +752,7 @@ impl eframe::App for Studio {
     fn on_exit(&mut self) {
         // A running export would otherwise leave a half-written video behind.
         self.panels.export.shutdown();
+        self.sound = None;
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -851,6 +923,46 @@ mod tests {
         Harness,
         kittest::{NodeT, Queryable},
     };
+
+    #[test]
+    fn no_device_falls_back_to_the_wall_clock() {
+        let mut studio = Studio::headless();
+        assert!(studio.sound.is_none(), "no speakers in tests");
+        studio.set_playing(true);
+        studio.tick();
+        std::thread::sleep(Duration::from_millis(30));
+        studio.tick();
+        assert!(studio.time > 0.02, "the wall clock moves the playhead: {}", studio.time);
+    }
+
+    #[test]
+    fn a_physics_edit_rebuilds_and_a_tempo_edit_patches() {
+        let mut studio = Studio::headless();
+        studio.sound = Some(SoundJob::recording());
+        studio.set_playing(true);
+        let ball = studio.scene.order.iter().copied().find(|id| studio.scene.things[id].kind == "balls").unwrap();
+        let before = studio.scene.clone();
+        studio.scene.things.get_mut(&ball).unwrap().transform.position.x += 40.0;
+        studio.after_edit(before);
+        let before = studio.scene.clone();
+        studio.scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("tempo", Value::Number(97.0));
+        studio.after_edit(before);
+        studio.set_playing(false);
+        let sent = studio.sound.as_ref().unwrap().recorded();
+        assert_eq!(sent, ["seek", "play", "rebuild", "seek", "patch", "pause"]);
+    }
+
+    #[test]
+    fn seeking_while_playing_tells_the_sound() {
+        let mut studio = Studio::headless();
+        studio.sound = Some(SoundJob::recording());
+        studio.seek(1.0);
+        studio.set_playing(true);
+        studio.seek(2.0);
+        let sent = studio.sound.as_ref().unwrap().recorded();
+        assert_eq!(sent, ["seek", "play", "seek"], "a seek while stopped waits for play");
+        assert_eq!(studio.sound.as_ref().unwrap().clock(), 2.0, "the clock holds at the seek");
+    }
 
     /// The studio's inspector beside an empty middle, in a wide window. The state keeps the
     /// inspector's width as drawn.

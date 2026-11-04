@@ -85,9 +85,65 @@ pub fn save_inspector_width_in(dir: &Path, w: f32) {
     let _ = std::fs::write(dir.join(INSPECTOR_WIDTH), format!("{}", w.round()));
 }
 
+const LISTEN: &str = "listening.txt";
+
+/// The editor's own listening: the speaker on or off and its volume. Only what you hear; the
+/// export is not changed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ListenSettings {
+    pub on: bool,
+    /// 0..1.
+    pub volume: f32,
+}
+
+impl Default for ListenSettings {
+    fn default() -> Self {
+        ListenSettings { on: true, volume: 0.8 }
+    }
+}
+
+pub fn load_listen() -> ListenSettings {
+    settings_dir().map_or_else(ListenSettings::default, |d| load_listen_in(&d))
+}
+
+/// The saved listening settings in `dir` (`on 0.8` or `off 0.5`), or the defaults.
+pub fn load_listen_in(dir: &Path) -> ListenSettings {
+    let text = std::fs::read_to_string(dir.join(LISTEN)).unwrap_or_default();
+    let mut words = text.split_whitespace();
+    let on = match words.next() {
+        Some("on") => true,
+        Some("off") => false,
+        _ => return ListenSettings::default(),
+    };
+    let volume = words.next().and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite());
+    ListenSettings { on, volume: volume.map_or(ListenSettings::default().volume, |v| v.clamp(0.0, 1.0)) }
+}
+
+pub fn save_listen(listen: ListenSettings) {
+    if let Some(dir) = settings_dir() {
+        save_listen_in(&dir, listen);
+    }
+}
+
+pub fn save_listen_in(dir: &Path, listen: ListenSettings) {
+    let _ = std::fs::create_dir_all(dir);
+    let word = if listen.on { "on" } else { "off" };
+    let _ = std::fs::write(dir.join(LISTEN), format!("{word} {:.3}", listen.volume));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn listening_settings_round_trip_and_default_to_on_at_80_percent() {
+        let dir = std::env::temp_dir().join(format!("ball-studio-listen-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(load_listen_in(&dir), ListenSettings { on: true, volume: 0.8 });
+        save_listen_in(&dir, ListenSettings { on: false, volume: 0.25 });
+        assert_eq!(load_listen_in(&dir), ListenSettings { on: false, volume: 0.25 });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn recent_scenes_keep_the_last_eight_existing_files_newest_first() {

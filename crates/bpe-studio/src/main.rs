@@ -4,6 +4,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod audio_out;
 mod export_window;
 mod gradient_bar;
 mod grid;
@@ -15,6 +16,7 @@ mod preview;
 mod selection;
 mod settings;
 mod shape_handles;
+mod sound_job;
 mod style;
 mod timeline;
 mod transport;
