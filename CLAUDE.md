@@ -76,7 +76,7 @@ Dependencies go bottom to top:
   (even-odd inside), and `Wall.solid` makes a filled shape that balls bounce off from outside only. Follow sound
   (`sound.rs`): `SoundAt` (a scene's sound levels from the world and log), `SoundMaker` in `Sims.sound` (a world
   whose physics settings follow sound gets one at build and reads it at the previous step's end in `animate`),
-  `LevelsAt` adapts it to core's `SoundLevels`; `fingerprint` then counts every Sound/Mixer card.
+  `LevelsAt` adapts it to core's `SoundLevels`; `fingerprint` then counts only what Follow sound reads (`SoundMaker::fingerprint`, `bpe_sound::control::heard_fingerprint`: tempo, playing/notes, envelopes, modulators, routes, osc on/Gain/Level, Volume, bus, bus on/mute/solo/fader).
 - `bpe-gfx`: the renderer. Things draw into a frame (`frame.rs`) and the GPU draws it: gradients, blend, grade,
   shader effects, particles and trails. Shapes draw through `shaders/paths.wgsl` (`Frame.paths`, `PathInstance`,
   `Frame.push_path`: a filled or banded outline from `Frame.path_points`, group 2 binding 4 beside the layer records,

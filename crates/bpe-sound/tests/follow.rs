@@ -223,3 +223,54 @@ fn the_engine_and_follow_sound_agree() {
     }
     assert!(compared > 50, "{compared}");
 }
+
+/// The scene with the ball's size following LFO 1, and its physics fingerprint.
+fn size_follows_lfo(kit: &Kit) -> Scene {
+    let mut scene = scene_with_sound(kit);
+    let (ball, shape) = (ball_of(&scene), shape_of(&scene));
+    let source = PulseSource::Sound { shape, source: SoundSource::Modulator(LayerId(4)) };
+    scene.set_pulse(&kit.registry, &Address::own(ball, "radius"), source, Value::Number(30.0), 0.25).unwrap();
+    scene
+}
+
+fn print(kit: &Kit, scene: &Scene) -> u64 {
+    bpe_runtime::fingerprint(scene, &resolve_scene(scene, &kit.registry), &kit.sims)
+}
+
+#[test]
+fn a_physics_follow_restarts_on_what_it_hears_and_the_tempo() {
+    let kit = bpe_sound::kit();
+    let scene = size_follows_lfo(&kit);
+    let before = print(&kit, &scene);
+    // The tempo sets synced LFO rates and gates in beats.
+    let mut tempo = scene.clone();
+    tempo.things.get_mut(&ThingId::ROOT).unwrap().params.set("tempo", Value::Number(90.0));
+    assert_ne!(print(&kit, &tempo), before, "the tempo");
+    let mut rate = scene.clone();
+    let card = rate.things.get_mut(&shape_of(&rate)).unwrap().slots.get_mut(&SlotId::Sound).unwrap();
+    card.params.set(&layered_key(LayerId(0), "attack"), Value::Number(250.0));
+    assert_ne!(print(&kit, &rate), before, "ADSR 1's attack");
+    let mut fader = scene.clone();
+    let mixer = fader.things.get_mut(&ThingId::ROOT).unwrap().slots.get_mut(&SlotId::Mixer).unwrap();
+    mixer.params.set(&MixerSettings::bus_key(1, "fader"), Value::Number(-6.0));
+    assert_ne!(print(&kit, &fader), before, "a bus fader");
+}
+
+#[test]
+fn a_physics_follow_keeps_playing_through_sound_it_does_not_hear() {
+    let kit = bpe_sound::kit();
+    let scene = size_follows_lfo(&kit);
+    let before = print(&kit, &scene);
+    let shape = shape_of(&scene);
+    for key in ["a_cents", "b_detune", "out_pan", "out_send2"] {
+        let mut s = scene.clone();
+        let card = s.things.get_mut(&shape).unwrap().slots.get_mut(&SlotId::Sound).unwrap();
+        card.params.set(key, Value::Number(7.0));
+        assert_eq!(print(&kit, &s), before, "{key}");
+    }
+    let mut s = scene.clone();
+    let mixer = s.things.get_mut(&ThingId::ROOT).unwrap().slots.get_mut(&SlotId::Mixer).unwrap();
+    mixer.params.set(&MixerSettings::bus_key(1, "pan"), Value::Number(0.5));
+    mixer.params.set("master_output", Value::Number(-3.0));
+    assert_eq!(print(&kit, &s), before, "the mixer's pans and Master");
+}

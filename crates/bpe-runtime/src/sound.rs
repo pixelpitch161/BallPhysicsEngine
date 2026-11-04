@@ -19,6 +19,9 @@ pub trait SoundAt: Send + Sync {
 /// editor's, the export's and the sound engine's) follows sound the same way.
 pub trait SoundMaker: Send + Sync {
     fn make(&self, scene: &Scene, resolved: &Resolved) -> Arc<dyn SoundAt>;
+    /// A hash of everything in `scene` its [`SoundAt`] reads (and nothing else), so a physics
+    /// setting following sound restarts the run on those edits only.
+    fn fingerprint(&self, scene: &Scene) -> u64;
 }
 
 /// A [`SoundAt`] read at one world and log, as the pulses read it.

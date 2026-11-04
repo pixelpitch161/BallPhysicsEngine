@@ -26,7 +26,7 @@ use crate::{BlockHit, SAMPLE_RATE, TempoMap};
 use bpe_core::{Address, LayerId, PulseSource, Resolved, Scene, Settings, SlotId, SoundSource, ThingId, Track};
 use bpe_dsp::{EnvParams, db_to_gain, level_at};
 use bpe_kit::SceneSettings;
-use bpe_kit::sound::{BUSES, Follows, GateMode, GateUnit, LfoStart, MixerSettings, PlayMode, PlayWhen};
+use bpe_kit::sound::{BUSES, Follows, GateMode, GateUnit, LfoStart, MOD_KINDS, MixerSettings, PlayMode, PlayWhen};
 use bpe_runtime::{Event, EventKind, Log, SoundAt, SoundMaker, World};
 use std::sync::{Arc, Mutex};
 
@@ -48,6 +48,67 @@ impl SoundMaker for FollowSound {
     fn make(&self, scene: &Scene, resolved: &Resolved) -> Arc<dyn SoundAt> {
         Arc::new(ControlSampler::new(scene, resolved))
     }
+
+    fn fingerprint(&self, scene: &Scene) -> u64 {
+        heard_fingerprint(scene)
+    }
+}
+
+/// A hash of what a [`ControlSampler`] reads from `scene`: the tempo; each sounding shape's
+/// playing and notes settings, routes, envelopes and modulators, its oscillators' on, Gain and
+/// Level and its Volume and bus; and each bus's on, mute, solo and fader, with their keys and
+/// pulses. Wave, pitch, pan, sends, layer chains, bus effects and the Master are left out.
+pub fn heard_fingerprint(scene: &Scene) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut put = |address: &Address, value: &dyn std::fmt::Debug| {
+        format!("{address:?}").hash(&mut h);
+        format!("{value:?}").hash(&mut h);
+        if let Some(track) = scene.tracks.get(address) {
+            format!("{track:?}").hash(&mut h);
+        }
+        if let Some(pulse) = scene.pulses.get(address) {
+            format!("{pulse:?}").hash(&mut h);
+        }
+    };
+    if let Some(root) = scene.things.get(&ThingId::ROOT) {
+        for key in ["tempo", "time_top", "time_bottom"] {
+            put(&Address::own(ThingId::ROOT, key), &root.params.get(key));
+        }
+        if let Some(mixer) = root.slots.get(&SlotId::Mixer) {
+            for n in 1..=BUSES as u8 {
+                for part in ["on", "mute", "solo", "fader"] {
+                    let key = MixerSettings::bus_key(n, part);
+                    let a = Address { thing: ThingId::ROOT, slot: Some(SlotId::Mixer), key: key.clone() };
+                    put(&a, &mixer.params.get(&key));
+                }
+            }
+        }
+    }
+    for (id, thing) in &scene.things {
+        let Some(card) = thing.slots.get(&SlotId::Sound) else { continue };
+        let heard_layer = |layer: LayerId| {
+            card.layer(layer).is_some_and(|l| l.kind == bpe_kit::sound::ADSR || MOD_KINDS.contains(&l.kind.as_str()))
+        };
+        for l in card.layers.iter().filter(|l| heard_layer(l.id)) {
+            put(&Address::on(*id, SlotId::Sound, &l.id.to_string()), &(&l.kind, l.enabled));
+        }
+        for (key, value) in card.params.iter() {
+            let heard = match bpe_core::split_layered(key) {
+                Some((layer, _)) => heard_layer(layer),
+                None => match key.split_once('_') {
+                    Some(("a" | "b", rest)) => matches!(rest, "on" | "gain" | "level"),
+                    Some(("out", rest)) => matches!(rest, "volume" | "bus"),
+                    _ => true,
+                },
+            };
+            if heard {
+                put(&Address::on(*id, SlotId::Sound, key), value);
+            }
+        }
+        put(&Address::on(*id, SlotId::Sound, "kind"), &card.kind);
+    }
+    h.finish()
 }
 
 /// A scene's sound levels from its physics. See the module notes.

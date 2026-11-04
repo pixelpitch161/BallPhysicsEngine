@@ -523,13 +523,10 @@ fn parent_pose(scene: &Scene, world: &World, parent: ThingId, item: Option<u32>)
 }
 
 /// What is under `pos`: the selected balls' arrow tip first, then a ball, then a selected thing
-/// with nothing of its own to show, then the selected shape's handles, then any shape itself.
+/// with nothing of its own to show, then the selected shape's handles, then the Sound tab's zone
+/// lines, then any shape itself.
 pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
     let world: &World = studio.playback.world();
-    // The Sound tab's zone lines sit over everything while it is open.
-    if let Some(zone) = zones::hit(studio, view, pos) {
-        return Some(zone);
-    }
     // Each thing through its own view: stuck things aren't seen through the camera.
     let seen = |id: &ThingId| {
         if studio.scene.things.get(id).is_some_and(|t| t.enabled) { view.of(studio, *id) } else { None }
@@ -572,6 +569,10 @@ pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
         && let Some(handle) = shape_handles::hit_handle(world, &v, id, pos)
     {
         return Some(handle);
+    }
+    // The Sound tab's zone lines come after the balls and the shape's own handles.
+    if let Some(zone) = zones::hit(studio, view, pos) {
+        return Some(zone);
     }
     world
         .walls
@@ -849,12 +850,23 @@ mod tests {
         );
         studio.panels.inspector.tab.insert(shape, crate::inspector::InspectorTab::Sound);
         assert_eq!(hit_test(&studio, &view, on_far), Some(Handle::Zone(shape, distance, true)));
-        let on_near = view.to_screen(Vec2::new(0.0, 0.0));
-        assert_eq!(
-            hit_test(&studio, &view, on_near),
+        let middle = view.to_screen(Vec2::new(0.0, 0.0));
+        assert_ne!(
+            hit_test(&studio, &view, middle),
             Some(Handle::Zone(shape, distance, false)),
-            "Near is 0: the middle"
+            "Near is 0 (the middle): not drawn, so nothing to grab"
         );
+        // A ball, or the shape's own handles, come before a zone line on them.
+        let key = format!("{distance}/far");
+        let card = studio.scene.card_mut(shape, bpe_core::SlotId::Sound).unwrap();
+        card.params.set(&key, Value::Number(508.0));
+        let edge = view.to_screen(Vec2::new(508.0, 0.0));
+        assert_eq!(hit_test(&studio, &view, edge), Some(Handle::Radius(shape)), "the shape's edge handle wins");
+        let card = studio.scene.card_mut(shape, bpe_core::SlotId::Sound).unwrap();
+        card.params.set(&key, Value::Number(200.0));
+        let on_near = view.to_screen(Vec2::new(0.0, 50.0));
+        card.params.set(&format!("{distance}/near"), Value::Number(50.0));
+        assert_eq!(hit_test(&studio, &view, on_near), Some(Handle::Zone(shape, distance, false)));
         let world = studio.playback.world().clone();
         let drag = Drag::new(Handle::Zone(shape, distance, true), Vec2::ZERO);
         apply_drag(&mut studio.scene, &world, &drag, Vec2::new(0.0, 300.0), None);

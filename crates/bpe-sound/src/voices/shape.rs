@@ -1468,7 +1468,9 @@ impl ShapeVoice {
         if n.fade <= 0.0 {
             return false;
         }
-        if n.fade_step == 0.0 {
+        // A held note (a drone) waits, silent, for the next hit however low its sustain.
+        let held = self.spec.play_when != PlayWhen::OnHit && (0..envs).any(|e| n.gate[e] == u64::MAX);
+        if n.fade_step == 0.0 && !held {
             let mut any_level = false;
             let mut all_done = true;
             let mut every_done = true;

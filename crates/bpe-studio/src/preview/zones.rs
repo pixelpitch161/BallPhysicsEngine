@@ -117,9 +117,11 @@ pub fn hit(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
         let (o, v) = (outline(world, z.shape)?, view.of(studio, z.shape)?);
         let d = measured(o, z.measure, v.to_world(pos));
         let reach = LINE_GRAB / v.world_scale();
-        if (d - z.far).abs() <= reach {
+        // A line that isn't drawn (at the middle) can't be grabbed.
+        let drawn = |at: f32| at > 0.0 || z.measure == Measure::Edge;
+        if drawn(z.far) && (d - z.far).abs() <= reach {
             Some(Handle::Zone(z.shape, z.layer, true))
-        } else if (d - z.near).abs() <= reach {
+        } else if drawn(z.near) && (d - z.near).abs() <= reach {
             Some(Handle::Zone(z.shape, z.layer, false))
         } else {
             None

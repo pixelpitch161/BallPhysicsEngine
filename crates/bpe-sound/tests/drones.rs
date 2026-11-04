@@ -188,3 +188,26 @@ fn drone_follows_slot_changes() {
     assert_eq!(playing, [67]);
     assert_eq!(v.sounding(), 1, "one voice, gliding");
 }
+
+#[test]
+fn a_drone_on_the_starter_envelope_rings_once_and_waits_for_hits() {
+    let kit = kit();
+    let mut scene = scene_with(&kit, PlayWhen::Always, &[&[60]], |_| {});
+    // The starter ADSR: Sustain 0, so the note dies away after its decay.
+    let shape = shape_of(&scene);
+    let card = scene.things.get_mut(&shape).unwrap().slots.get_mut(&SlotId::Sound).unwrap();
+    card.params.set(&layered_key(LayerId(0), "sustain"), Value::Number(0.0));
+    let (mut v, w) = (voice(&scene, &kit), world(&scene, &kit));
+    let (peak, _) = run(&mut v, &w, 0, 4, &[]);
+    assert!(peak > 0.01, "it sounds at the start: {peak}");
+    run(&mut v, &w, 4, 750, &[]);
+    // From one second on it stays silent: no plucking again by itself.
+    let (peak, playing) = run(&mut v, &w, 754, 1500, &[]);
+    assert!(peak < 1e-4, "silent after its decay, not plucked again: {peak}");
+    assert_eq!(playing, [60], "still held");
+    // A hit plays it again.
+    let h = [(2300, hit(ball_of(&scene), shape))];
+    let (peak, playing) = run(&mut v, &w, 2254, 100, &h);
+    assert!(peak > 0.01, "a hit plays the held note: {peak}");
+    assert_eq!(playing, [60]);
+}

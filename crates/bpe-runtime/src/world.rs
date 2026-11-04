@@ -590,9 +590,6 @@ fn respond(
     }
 }
 
-/// A hash of everything about a scene that changes how it simulates. Scenes that differ only
-/// in how they look fingerprint the same, so the editor can keep playing through
-/// those edits.
 /// Whether any of `animation`'s pulses follows sound.
 fn follows_sound(scene: &Scene, animation: &Animation) -> bool {
     animation
@@ -601,6 +598,9 @@ fn follows_sound(scene: &Scene, animation: &Animation) -> bool {
         .any(|a| scene.pulses.get(*a).is_some_and(|p| matches!(p.source, bpe_core::PulseSource::Sound { .. })))
 }
 
+/// A hash of everything about a scene that changes how it simulates. Scenes that differ only
+/// in how they look fingerprint the same, so the editor can keep playing through
+/// those edits.
 pub fn fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64 {
     let mut h = Hasher(HASH_OFFSET);
     for (id, r) in &resolved.things {
@@ -669,21 +669,11 @@ pub fn fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64 {
                 h.bytes(format!("{pulse:?}").as_bytes());
             }
         }
-        // A physics setting that follows sound moves with every sound setting.
-        if sims.sound.is_some() && follows_sound(scene, &animation) {
-            for (id, thing) in &scene.things {
-                for slot in [SlotId::Sound, SlotId::Mixer] {
-                    if let Some(s) = thing.slots.get(&slot) {
-                        h.bytes(&id.0.to_le_bytes());
-                        h.bytes(format!("{s:?}").as_bytes());
-                    }
-                }
-            }
-            for (a, track) in &scene.tracks {
-                if matches!(a.slot, Some(SlotId::Sound) | Some(SlotId::Mixer)) {
-                    h.bytes(format!("{a:?}{track:?}").as_bytes());
-                }
-            }
+        // A physics setting that follows sound moves with what of the sound it reads.
+        if let Some(maker) = &sims.sound
+            && follows_sound(scene, &animation)
+        {
+            h.bytes(&maker.fingerprint(scene).to_le_bytes());
         }
     }
     h.0
