@@ -3,11 +3,15 @@
 
 mod controls;
 mod fonts;
+mod knob;
+mod meter;
 mod tokens;
 mod track;
 
 pub use controls::*;
 pub use fonts::{medium, mono, semibold};
+pub use knob::{Knob, KnobResponse, ModRing, knob};
+pub use meter::{level_meter, loudness_graph, loudness_row};
 pub use tokens::*;
 pub use track::{colour_of, track_color};
 

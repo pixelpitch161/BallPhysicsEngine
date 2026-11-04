@@ -16,6 +16,7 @@ bpe-gfx.workspace = true
 ron.workspace = true
 bpe-kit.workspace = true
 bpe-cli.workspace = true
+bpe-sound.workspace = true
 eframe.workspace = true
 egui-wgpu.workspace = true
 rfd.workspace = true

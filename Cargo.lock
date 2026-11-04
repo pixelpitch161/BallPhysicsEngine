@@ -290,6 +290,7 @@ dependencies = [
  "bpe-gfx",
  "bpe-kit",
  "bpe-runtime",
+ "bpe-sound",
  "eframe",
  "egui-wgpu",
  "egui_kittest",
