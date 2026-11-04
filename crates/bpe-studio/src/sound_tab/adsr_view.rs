@@ -390,6 +390,7 @@ mod tests {
             id: SHAPE,
             time: 0.0,
             colour: style::TEXT,
+            notes_clip: None,
             edits: Vec::new(),
         };
         layout(&Env::read(&cx, LayerId(0)), rect)
@@ -420,7 +421,10 @@ mod tests {
     fn gate_beats_switch_shows_beats() {
         let mut h = sounding();
         assert!(h.query_by_role_and_label(Role::Slider, "Gate length").is_some());
-        h.get_by_label("Beats").click();
+        // The envelope's Beats (the Notes panel's Slots change has one too, further down).
+        let gate = h.get_by_role_and_label(Role::Slider, "Gate length").rect();
+        let beats = h.query_all_by_label("Beats").min_by_key(|n| (n.rect().center().y - gate.center().y).abs() as i64);
+        beats.unwrap().click();
         h.run();
         assert!(h.query_by_role_and_label(Role::Slider, "Gate beats").is_some());
         assert!(h.query_by_role_and_label(Role::Slider, "Gate length").is_none());

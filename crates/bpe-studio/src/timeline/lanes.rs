@@ -24,6 +24,8 @@ pub struct Group {
     pub thing: ThingId,
     pub name: String,
     pub lanes: Vec<Lane>,
+    /// The thing's sound has slots that take turns: the header marks where they change.
+    pub slots: bool,
 }
 
 /// A group for every thing with keys or pulses, in tree order (the scene settings first). Keys
@@ -35,9 +37,19 @@ pub fn groups_for(scene: &Scene, kit: &Kit) -> Vec<Group> {
         .filter_map(|&id| {
             let thing = scene.things.get(&id)?;
             let lanes = lanes_for(scene, kit, id);
-            (!lanes.is_empty()).then(|| Group { thing: id, name: thing.name.clone(), lanes })
+            let slots = slots_take_turns(scene, id);
+            (!lanes.is_empty() || slots).then(|| Group { thing: id, name: thing.name.clone(), lanes, slots })
         })
         .collect()
+}
+
+/// Whether `thing` sounds with two or more slots, so its slot changes show on the timeline.
+pub fn slots_take_turns(scene: &Scene, thing: ThingId) -> bool {
+    let Some(card) = scene.card(thing, SlotId::Sound).filter(|c| c.kind == bpe_kit::sound::VOICE) else {
+        return false;
+    };
+    let on = !matches!(card.params.get("enabled"), Some(bpe_core::Value::Bool(false)));
+    on && matches!(card.params.get(bpe_core::SLOTS_KEY), Some(bpe_core::Value::Slots(s)) if s.len() >= 2)
 }
 
 /// The lanes of one thing: its tracks then its pulses, each setting at most once per kind of

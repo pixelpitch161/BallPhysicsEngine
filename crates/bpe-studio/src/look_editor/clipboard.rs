@@ -12,4 +12,6 @@ pub struct Clipboard {
     /// A sound chain layer (Copy layer on a strip) and the shape it came from, pasted into
     /// either oscillator.
     pub chain_layer: Option<(bpe_core::ThingId, CopiedLayer)>,
+    /// A slot's notes (Copy notes on a slot row), for any shape.
+    pub notes: Option<Vec<u8>>,
 }

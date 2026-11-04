@@ -152,6 +152,29 @@ impl ThingSim for ShapeSim {
     }
 }
 
+/// Which side of `shape` the point `point` (in scene pixels, on or near its outline) is on, 0
+/// first, in the order of the shape's corners (a circle counts as its 8 curved sides). 0 when
+/// `shape` is not a shape in `world`.
+pub fn side_of(world: &World, shape: ThingId, point: Vec2) -> u32 {
+    let Some(st) = world.states.get(&shape).and_then(|s| s.as_any().downcast_ref::<ShapeState>()) else {
+        return 0;
+    };
+    side_on(world, shape, &st.settings.outline_path(), point)
+}
+
+/// [`side_of`] with the shape's outline in shape units (`ShapeSettings::outline_path`) made
+/// beforehand, so it never allocates (the sound engine asks on every hit).
+pub fn side_on(world: &World, shape: ThingId, path: &bpe_core::ShapePath, point: Vec2) -> u32 {
+    let Some(st) = world.states.get(&shape).and_then(|s| s.as_any().downcast_ref::<ShapeState>()) else {
+        return 0;
+    };
+    let anchor = world.anchor(shape);
+    let turn = st.rotation + st.angle + (anchor.angle - st.anchor.angle);
+    let size = (st.settings.size * st.scale).max(1e-3);
+    let local = Vec2::from_angle(-turn).rotate(point - anchor.position) / size;
+    path.nearest_side(local).map_or(0, |(side, _, _)| side as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,6 +193,30 @@ mod tests {
         let mut scene = new_scene(&kit.registry);
         scene.things.get_mut(&SHAPE).unwrap().params = settings.to_params();
         scene
+    }
+
+    #[test]
+    fn side_of_follows_the_corners_and_the_turn() {
+        let kit = kit();
+        let square = ShapeSettings { sides: 4, ..ShapeSettings::default() };
+        let scene = with(square.clone());
+        let w = world(&scene);
+        let mid = scene.things[&SHAPE].transform.position;
+        let path = square.outline_path();
+        let size = square.size;
+        // The middle of each side, out in the scene, is on that side.
+        for side in 0..4 {
+            let p = mid + path.side_point(side, 0.5) * size;
+            assert_eq!(side_of(&w, SHAPE, p), side as u32, "side {side}");
+        }
+        assert_eq!(side_of(&w, crate::testing::BALLS, mid), 0, "not a shape");
+        // Turned a quarter: each side's middle is where the next one's was.
+        let turned = with(ShapeSettings { sides: 4, ..ShapeSettings::default() });
+        let mut turned = turned;
+        turned.things.get_mut(&SHAPE).unwrap().transform.rotation = FRAC_PI_2;
+        let w = World::build(&turned, &resolve(&turned, &kit.registry), &kit.sims);
+        let p0 = mid + Vec2::from_angle(FRAC_PI_2).rotate(path.side_point(0, 0.5) * size);
+        assert_eq!(side_of(&w, SHAPE, p0), 0);
     }
 
     #[test]

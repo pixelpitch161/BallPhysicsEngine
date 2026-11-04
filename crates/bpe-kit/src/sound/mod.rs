@@ -4,6 +4,7 @@
 pub mod adsr;
 pub mod chain;
 pub mod mixer;
+pub mod notes;
 pub mod voice;
 
 pub use adsr::{ADSR, AdsrKind, AdsrSettings};
@@ -12,6 +13,7 @@ pub use chain::{
     ModKind, ModulationSettings, Quality, Slope, Source, layer_summary,
 };
 pub use mixer::{MixerKind, MixerSettings};
+pub use notes::{BeatsOrBars, Change, MAX_SLOTS, NOTE_NAMES, Plays, Root, Scale, SlotOrder, StrumDir};
 pub use voice::{
     GateMode, GateUnit, NoiseColour, OscSettings, PhaseMode, PlayMode, SILENT_DB, SubOctave, SubWave, VOICE, VoiceKind,
     VoiceSettings, WarpMode, Wave, starter_voice,

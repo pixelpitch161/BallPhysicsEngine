@@ -29,6 +29,11 @@ pub trait VoiceSource: Send {
     }
     /// Silences it, as new (on a seek).
     fn reset(&mut self);
+    /// After a seek (and [`VoiceSource::reset`]): counts the clip's hits before sound sample
+    /// `upto` (`hits`, in sample order) as if it had played them, without making sound, so the
+    /// voice goes on as it would have from the start. May take a while; never on the steady
+    /// sound path.
+    fn catch_up(&mut self, _hits: &[(u64, BlockHit)], _upto: u64, _tempo: &TempoMap, _world: &World) {}
     /// Takes over what `old` (the same thing's voice from before a patch swap) is still
     /// playing, so ringing notes carry on.
     fn adopt(&mut self, _old: &mut dyn VoiceSource) {}
@@ -40,6 +45,10 @@ pub trait VoiceSource: Send {
     }
     /// Plays `note` from the editor (a key clicked), outside the hits.
     fn audition(&mut self, _note: u8) {}
+    /// The slot of notes it is playing (0 first), for the editor; `None` for a voice without.
+    fn playing_slot(&self) -> Option<usize> {
+        None
+    }
     /// The loudest sample of the last block, for its meter.
     fn level(&self) -> f32 {
         0.0

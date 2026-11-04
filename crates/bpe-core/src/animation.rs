@@ -372,7 +372,11 @@ impl Scene {
         let value = def.clamp(value);
         let track = self.tracks.entry(a.clone()).or_default();
         track.range = def.range;
-        Ok(track.set_key(time, value))
+        let i = track.set_key(time, value);
+        if def.flags.hold {
+            track.keys[i].ease = Ease::Hold;
+        }
+        Ok(i)
     }
 
     /// Removes key `index` of the track at `a`; an emptied track goes too. False if there was

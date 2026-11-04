@@ -4,7 +4,7 @@
 pub mod draw;
 pub mod sim;
 
-pub use sim::{ShapeSim, ShapeState};
+pub use sim::{ShapeSim, ShapeState, side_of, side_on};
 
 use bpe_core::{Choice, SettingDef, Settings, ShapePath, SlotId, ThingKind};
 

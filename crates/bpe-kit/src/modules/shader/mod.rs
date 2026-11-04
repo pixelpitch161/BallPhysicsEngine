@@ -88,7 +88,7 @@ fn settings_of(header: &Header) -> Vec<SettingDef> {
         unit: "",
         group: "Basics",
         depth: Depth::Simple,
-        flags: Flags { keyframe: true, pulse: true },
+        flags: Flags { keyframe: true, pulse: true, hold: false },
         when: "",
     }];
     defs.extend(param_defs(header, "", "", "Basics", true));
@@ -117,22 +117,22 @@ pub fn param_defs(
                 ValueType::Number,
                 Value::Number(default as f64),
                 Some((min as f64, max as f64)),
-                Flags { keyframe: true, pulse: true },
+                Flags { keyframe: true, pulse: true, hold: false },
             ),
             ParamKind::Number { default, min, max, int: true } => (
                 ValueType::Int,
                 Value::Int(default.round() as i64),
                 Some((min as f64, max as f64)),
-                Flags { keyframe: true, pulse: true },
+                Flags { keyframe: true, pulse: true, hold: false },
             ),
             ParamKind::Toggle { default } => {
-                (ValueType::Bool, Value::Bool(default), None, Flags { keyframe: false, pulse: false })
+                (ValueType::Bool, Value::Bool(default), None, Flags { keyframe: false, pulse: false, hold: false })
             }
             ParamKind::Color { default } => (
                 ValueType::Color,
                 Value::Color(Color::from_linear([default[0], default[1], default[2], 1.0])),
                 None,
-                Flags { keyframe: true, pulse: false },
+                Flags { keyframe: true, pulse: false, hold: false },
             ),
         };
         defs.push(SettingDef {

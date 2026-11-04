@@ -13,7 +13,7 @@ use bpe_runtime::EventKind;
 use bpe_sound::TempoMap;
 use eframe::egui::{self, Align, Color32, Key, Layout, Modifiers, Pos2, Rect, RichText, Sense, Stroke, Ui, UiBuilder};
 use lanes::{Group, Lane, groups_for};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The width of the column naming each lane.
 pub const LABEL_WIDTH: f32 = style::LANE_NAME_W;
@@ -31,7 +31,19 @@ pub struct Timeline {
     dragging: Option<(Address, usize)>,
     /// The curve editor is open for the selected key.
     curve_open: bool,
+    /// Where each sounding shape's slots change, worked out again when the scene, the run so
+    /// far or the clip's length changes.
+    slot_marks: SlotMarks,
 }
+
+#[derive(Default)]
+struct SlotMarks {
+    made_for: Option<(u64, usize, u64)>,
+    marks: BTreeMap<ThingId, Vec<(f64, usize)>>,
+}
+
+/// At most this many slot changes get a name of their own (for screen readers and tests).
+const NAMED_MARKS: usize = 256;
 
 /// Where time sits across the lanes.
 struct Ruler {
@@ -135,6 +147,18 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
         timeline.dragging = None;
         timeline.curve_open = false;
     }
+    let made_for = (studio.revision, studio.playback.log().events().len(), ruler.duration.to_bits());
+    if timeline.slot_marks.made_for != Some(made_for) {
+        let (log, world) = (studio.playback.log(), studio.playback.world());
+        timeline.slot_marks.marks = groups
+            .iter()
+            .filter(|g| g.slots)
+            .map(|g| {
+                (g.thing, bpe_sound::voices::slot_change_times(&studio.scene, g.thing, log, world, ruler.duration))
+            })
+            .collect();
+        timeline.slot_marks.made_for = Some(made_for);
+    }
     let mut picked = None;
     let mut recoloured = None;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -149,7 +173,8 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
         for group in &groups {
             let colour = studio.scene.things.get(&group.thing).and_then(|t| t.colour).map(style::track_color);
             let is_open = group.thing == open;
-            let (clicked, colour_now) = group_header(ui, studio, group, colour, is_open, &ruler);
+            let marks = timeline.slot_marks.marks.get(&group.thing).map(Vec::as_slice).unwrap_or_default();
+            let (clicked, colour_now) = group_header(ui, studio, group, colour, is_open, &ruler, marks);
             if clicked {
                 picked = Some(group.thing);
             }
@@ -221,7 +246,8 @@ pub fn hit_colour(scene: &bpe_core::Scene, thing: ThingId) -> Color32 {
 
 /// A group's header: its swatch and name, and across the track a thin line in its colour when
 /// open, or when folded a bar with every key of the thing on it. A click selects the thing,
-/// which opens its group. True when clicked.
+/// which opens its group. A sounding shape's slot changes are ticks along it, each with the
+/// slot's number where there is room. True when clicked.
 fn group_header(
     ui: &mut Ui,
     studio: &Studio,
@@ -229,6 +255,7 @@ fn group_header(
     colour: Option<Color32>,
     open: bool,
     ruler: &Ruler,
+    marks: &[(f64, usize)],
 ) -> (bool, Option<bpe_core::TrackColour>) {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), GROUP_HEIGHT), Sense::click());
     let name = format!("{} lanes", group.name);
@@ -261,6 +288,7 @@ fn group_header(
             }
         }
     }
+    slot_ticks(ui, &painter, strip, ruler, marks);
     playhead(&painter, studio, ruler, rect);
     // The colour square opens a colour picker for the thing's colour.
     let mut recoloured = None;
@@ -276,6 +304,36 @@ fn group_header(
     }
     let hint = if open { "This thing's lanes" } else { "Click to open this thing's lanes" };
     (response.on_hover_text(hint).clicked(), recoloured)
+}
+
+/// Ticks where a shape's slots change, numbered where they are far enough apart.
+fn slot_ticks(ui: &Ui, painter: &egui::Painter, strip: Rect, ruler: &Ruler, marks: &[(f64, usize)]) {
+    let mut last_number = f32::NEG_INFINITY;
+    for (i, &(time, slot)) in marks.iter().enumerate() {
+        let x = ruler.x_of(time);
+        let tick = Rect::from_min_max(Pos2::new(x - 0.5, strip.top() + 1.0), Pos2::new(x + 0.5, strip.bottom() - 1.0));
+        painter.rect_filled(tick, 0.0, style::TEXT_STRONG);
+        if x - last_number >= 16.0 {
+            painter.text(
+                Pos2::new(x + 2.0, strip.top()),
+                egui::Align2::LEFT_TOP,
+                (slot + 1).to_string(),
+                style::mono(9.0),
+                style::TEXT,
+            );
+            last_number = x;
+        }
+        if i < NAMED_MARKS {
+            let name = format!("Slot {} from {}", slot + 1, clock(time));
+            let r = ui.interact(
+                tick.expand2(egui::vec2(2.0, 0.0)),
+                ui.scope_id().with(("slot mark", i, x as i32)),
+                Sense::hover(),
+            );
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, name.clone()));
+            r.on_hover_text(name);
+        }
+    }
 }
 
 /// A lane's name, at the left of its column and centred up and down.
@@ -340,16 +398,46 @@ fn track_lane(
         studio.scene.tracks.get(a).map(|t| t.keys.iter().map(|k| (k.time, k.ease)).collect()).unwrap_or_default();
     let mut ease_pick: Option<(usize, Ease, bool)> = None;
     let mut delete: Option<usize> = None;
+    // A setting that only holds (Jump to slot) has no eases; a jump's key says its slot.
+    let hold = studio.scene.def_at(&studio.kit.registry, a).is_some_and(|d| d.flags.hold);
+    let jump = a.slot == Some(bpe_core::SlotId::Sound) && a.key == "notes_jump";
+    let slots: Vec<Option<String>> = studio
+        .scene
+        .tracks
+        .get(a)
+        .map(|t| {
+            t.keys
+                .iter()
+                .map(|k| match k.value {
+                    Value::Int(n) if jump => Some(format!("Slot {n}")),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     for (i, (time, ease)) in keys.iter().enumerate() {
         let video = *time;
         let center = Pos2::new(ruler.x_of(video), rect.center().y);
         let key_rect = Rect::from_center_size(center, egui::vec2(14.0, 14.0));
         let key = ui.interact(key_rect, ui.scope_id().with(("key", index, i)), Sense::click_and_drag());
-        let name = format!("Key at {} of {}", clock(video), lane.label);
+        let slot = slots.get(i).cloned().flatten();
+        let name = match &slot {
+            Some(slot) => format!("Key at {} of {} · {slot}", clock(video), lane.label),
+            None => format!("Key at {} of {}", clock(video), lane.label),
+        };
         key.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name.clone()));
         let selected = timeline.selected.as_ref() == Some(&(a.clone(), i));
         let size = if key.hovered() { KEY_SIZE + 1.0 } else { KEY_SIZE };
         style::paint_diamond(ui.painter(), center, size, selected);
+        if let Some(slot) = &slot {
+            ui.painter().text(
+                center + egui::vec2(KEY_SIZE + 3.0, 0.0),
+                egui::Align2::LEFT_CENTER,
+                slot,
+                style::mono(9.0),
+                style::TEXT,
+            );
+        }
         if key.clicked() || key.drag_started() {
             timeline.selected = Some((a.clone(), i));
         }
@@ -359,9 +447,13 @@ fn track_lane(
         }
         key.context_menu(|ui| {
             timeline.selected = Some((a.clone(), i));
-            ui.label(RichText::new("Eases into the next key").small().color(style::MUTED));
-            if let Some(picked) = ease::ease_menu(ui, ease) {
-                ease_pick = Some((i, picked, matches!(picked, Ease::Curve { .. })));
+            if hold {
+                ui.label(RichText::new("Holds until the next key").small().color(style::MUTED));
+            } else {
+                ui.label(RichText::new("Eases into the next key").small().color(style::MUTED));
+                if let Some(picked) = ease::ease_menu(ui, ease) {
+                    ease_pick = Some((i, picked, matches!(picked, Ease::Curve { .. })));
+                }
             }
             ui.separator();
             if ui.button("Delete key").clicked() {
@@ -369,9 +461,13 @@ fn track_lane(
                 ui.close();
             }
         });
-        key.on_hover_text(format!("{} · {}\nDrag to move · right-click for the ease", clock(video), ease.name()));
+        let hover = match &slot {
+            Some(slot) => format!("{} · jumps to {slot}\nDrag to move · right-click to delete", clock(video)),
+            None => format!("{} · {}\nDrag to move · right-click for the ease", clock(video), ease.name()),
+        };
+        key.on_hover_text(hover);
     }
-    if let Some((i, picked, own)) = ease_pick {
+    if let Some((i, picked, own)) = ease_pick.filter(|_| !hold) {
         studio.scene.set_ease(a, i, picked);
         if own {
             timeline.curve_open = true;
@@ -512,7 +608,10 @@ mod tests {
     use super::*;
     use bpe_core::ThingId;
     use eframe::egui::PointerButton;
-    use egui_kittest::{Harness, kittest::Queryable};
+    use egui_kittest::{
+        Harness,
+        kittest::{NodeT, Queryable},
+    };
 
     fn ruler(width: f32, duration: f64) -> Ruler {
         let track = Rect::from_min_size(Pos2::ZERO, egui::vec2(width, 18.0));
@@ -732,5 +831,59 @@ mod tests {
         assert_eq!(keys.len(), 2, "{keys:?}");
         assert!(keys[1].time > 2.0);
         assert_eq!(keys[1].value, Value::Number(60.0), "the new key holds the value at that time");
+    }
+
+    const SHAPE: ThingId = ThingId(1);
+
+    /// A studio whose shape sounds with `slots` slots, the shape selected.
+    fn sounding(slots: usize) -> Harness<'static, Studio> {
+        let mut studio = Studio::headless();
+        let reg = &studio.kit.registry;
+        assert!(crate::sound_tab::write::enable(&mut studio.scene, reg, SHAPE));
+        let notes = (0..slots).map(|i| bpe_core::NoteSlot { notes: vec![60 + i as u8], order_clicked: vec![] });
+        let slots_at = Address::on(SHAPE, bpe_core::SlotId::Sound, "notes_slots");
+        studio.scene.set_at(reg, &slots_at, Value::Slots(notes.collect())).unwrap();
+        studio.selection.set(SHAPE);
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1000.0, 300.0))
+            .with_step_dt(1.0 / 60.0)
+            .with_max_steps(60)
+            .allow_missing_glyphs()
+            .with_context_setup(crate::style::apply)
+            .build_ui_state(|ui, s: &mut Studio| show(ui, s), studio);
+        h.run();
+        h
+    }
+
+    #[test]
+    fn slot_change_ticks_on_the_timeline() {
+        let h = sounding(3);
+        let name = h.state().scene.things[&SHAPE].name.clone();
+        assert!(h.query_by_label(&format!("{name} lanes")).is_some(), "a shape whose slots take turns has a group");
+        // 120 BPM in 4/4 changes slot every bar, 2 s: slot 2 at 2 s, 3 at 4 s, 1 at 6 s.
+        assert!(h.query_by_label("Slot 2 from 0:02.00").is_some());
+        assert!(h.query_by_label("Slot 3 from 0:04.00").is_some());
+        assert!(h.query_by_label("Slot 1 from 0:06.00").is_some());
+        let one = sounding(1);
+        assert!(one.query_by_label(&format!("{name} lanes")).is_none(), "one slot never changes");
+    }
+
+    #[test]
+    fn jump_keys_show_their_slot_and_hold() {
+        let mut h = sounding(3);
+        let jump = Address::on(SHAPE, bpe_core::SlotId::Sound, "notes_jump");
+        {
+            let s = h.state_mut();
+            let kit = s.kit.clone();
+            s.scene.set_key(&kit.registry, &jump, 1.0, Value::Int(3)).unwrap();
+        }
+        h.run();
+        let key = h.query_all_by_label_contains("Key at 0:01.00 of").next().expect("the jump key");
+        let key = key.accesskit_node().label().unwrap_or_default().to_string();
+        assert!(key.ends_with("Slot 3"), "{key}");
+        h.get_by_label(&key).click_secondary();
+        h.run();
+        assert!(h.query_by_label("Ease out").is_none(), "a jump has no ease");
+        assert!(h.query_by_label("Holds until the next key").is_some());
     }
 }
