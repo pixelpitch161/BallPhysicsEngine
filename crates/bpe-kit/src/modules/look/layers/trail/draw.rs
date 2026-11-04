@@ -5,18 +5,19 @@
 //! first two) or over (the last) its own.
 
 use bpe_core::Blend;
-use bpe_gfx::{DrawCx, Frame, Particle, StreakStyle, TrailVertex, push_trail};
+use bpe_gfx::{DrawCx, Frame, Particle, StreakStyle, push_trail};
 use bpe_runtime::{Bodies, History};
 use glam::Vec2;
 
 use super::kinds::{self, Cut, Path};
 use super::{TrailKind, TrailLayer, TrailSource, Twist};
-use crate::modules::look::layers::OutlineSits;
 use crate::modules::look::layers::around::AroundLayer;
+use crate::modules::look::layers::around_subs::{
+    Extras, GLOW, HitInfo, OUTLINE, OWN, Pieces, SHADOW, coloured, darker, glow_light, like_layer, outline_reach,
+    particle_with_extras, shadow_offset, sub_colour,
+};
 use crate::modules::look::layers::gpu::SubLayer;
-use crate::modules::look::layers::subs::{SubColourFrom, SubGlow, SubOutline, SubShadow};
 use crate::modules::look::layers::trail::AroundPlace;
-use crate::paint::recolour::{flash, hue_on_hit, recolour};
 use crate::paint::{Follow, Inputs, Paint, colour_at, seed_of};
 
 /// The margin each strip edge keeps for anti-aliasing, in video pixels. The preview shows the
@@ -51,8 +52,8 @@ impl Balls<'_> {
         self.last_hits.get(i).copied().filter(|h| h.0 < bpe_gfx::NO_HIT[0])
     }
 
-    fn hits(&self, i: usize) -> u32 {
-        self.bodies.hits.get(i).copied().unwrap_or(0)
+    fn hit(&self, i: usize) -> HitInfo {
+        HitInfo { last: self.last_hit(i), hits: self.bodies.hits.get(i).copied().unwrap_or(0) }
     }
 
     /// Ball `i`'s trail as `trail` cuts it, before any wobble.
@@ -60,35 +61,6 @@ impl Balls<'_> {
         let speed = self.bodies.velocity[i].length();
         let cut = Cut::of(trail, speed, self.last_hit(i).map(|h| h.0));
         kinds::path(self.bodies.position[i], self.history, i, self.newest_ago, self.interval, cut)
-    }
-}
-
-/// What a trail layer draws, in the order it lands in the frame: shadows, glows, its own, then
-/// outlines.
-#[derive(Default)]
-struct Pieces {
-    strips: [Vec<TrailVertex>; 4],
-    particles: [Vec<Particle>; 4],
-}
-
-const SHADOW: usize = 0;
-const GLOW: usize = 1;
-const OWN: usize = 2;
-const OUTLINE: usize = 3;
-
-impl Pieces {
-    fn into_frame(self, frame: &mut Frame, front: bool) {
-        let (strips, particles) = if front {
-            (&mut frame.trails_front, &mut frame.particles_front)
-        } else {
-            (&mut frame.trails, &mut frame.particles)
-        };
-        for s in self.strips {
-            strips.extend(s);
-        }
-        for p in self.particles {
-            particles.extend(p);
-        }
     }
 }
 
@@ -144,66 +116,6 @@ fn own_colour(cx: &DrawCx, paint: &Paint, path: &Path, k: usize, speed: f32, see
         ..Inputs::default()
     };
     colour_at(paint, &inputs)
-}
-
-/// The colour subs of `subs` (Recolour, Flash on hit, Colour on hit) up to `upto`, worked on
-/// `c` for ball `i`.
-fn coloured(subs: &[SubLayer], upto: usize, c: [f32; 4], balls: &Balls, i: usize) -> [f32; 4] {
-    let mut rgb = [c[0], c[1], c[2]];
-    for sub in &subs[..upto] {
-        rgb = match sub {
-            SubLayer::Recolour(r) => recolour(r, rgb),
-            SubLayer::Flash(f) => match balls.last_hit(i) {
-                Some((age, strength)) => flash(f, rgb, age, strength),
-                None => rgb,
-            },
-            SubLayer::Hue(h) => hue_on_hit(h, rgb, balls.hits(i)),
-            _ => rgb,
-        };
-    }
-    [rgb[0], rgb[1], rgb[2], c[3]]
-}
-
-/// A sub-layer's own colour at `s` along, or `same` when it takes the layer's.
-fn sub_colour(from: SubColourFrom, own: &bpe_core::Gradient, s: f32, same: [f32; 4]) -> [f32; 4] {
-    match from {
-        SubColourFrom::SameAsLayer => same,
-        SubColourFrom::Own => own.sample(s),
-    }
-}
-
-/// How far an outline of `width` px that `sits` as it does reaches from the middle of something
-/// `half` wide, and the share of that its band covers.
-fn outline_reach(o: &SubOutline, half: f32) -> (f32, f32) {
-    let w = o.width.max(0.0);
-    let reach = match o.sits {
-        OutlineSits::Outside => half + w,
-        OutlineSits::Centre => half + w * 0.5,
-        OutlineSits::Inside => half,
-    };
-    (reach, if reach > 0.0 { (w / reach).clamp(0.0, 1.0) } else { 0.0 })
-}
-
-/// Where a shadow falls from what casts it, `unit` world units a radius.
-fn shadow_offset(s: &SubShadow, unit: f32) -> Vec2 {
-    Vec2::from_angle(s.angle.to_radians()) * s.distance * unit
-}
-
-/// A colour darkened for an outline that takes its layer's colour, so it shows.
-fn darker(c: [f32; 4]) -> [f32; 4] {
-    [c[0] * 0.7, c[1] * 0.7, c[2] * 0.7, c[3]]
-}
-
-/// The light a glow adds, from `c` (linear light, straight).
-fn glow_light(g: &SubGlow, c: [f32; 4], fade: f32) -> [f32; 4] {
-    let k = g.strength.max(0.0) * g.opacity.clamp(0.0, 1.0) * fade;
-    [c[0] * k, c[1] * k, c[2] * k, -1.0]
-}
-
-/// `c` drawn the way the layer draws: added when the layer adds light (alpha -1 then), else
-/// covering at `alpha`.
-fn like_layer(adds: bool, c: [f32; 4], alpha: f32) -> [f32; 4] {
-    if adds { [c[0] * alpha, c[1] * alpha, c[2] * alpha, -1.0] } else { [c[0], c[1], c[2], alpha] }
 }
 
 /// Draws `trail` (the around layer `layer`) for every ball it is worn by, into `frame`.
@@ -314,7 +226,7 @@ impl BallCx<'_> {
         let fade: Vec<f32> = (0..n).map(|k| trail.fade.at(path.along(k))).collect();
         let head = widths.first().copied().unwrap_or(0.0).max(1e-3);
         let colours = |upto: usize| -> Vec<[f32; 4]> {
-            (0..n).map(|k| coloured(subs, upto, bases[k], self.balls, self.i)).collect()
+            (0..n).map(|k| coloured(subs, upto, bases[k], self.balls.hit(self.i))).collect()
         };
         let own = colours(subs.len());
         let shaded: Vec<[f32; 4]> = (0..n).map(|k| shade(trail, own[k], fade[k])).collect();
@@ -368,39 +280,13 @@ impl BallCx<'_> {
     fn particle(&self, at: Vec2, size: f32, s: f32, base: [f32; 4], shape: u32, soft: f32, out: &mut Pieces) {
         let (trail, subs) = (self.trail, &self.layer.subs);
         let fade = trail.fade.at(s);
-        let own = shade(trail, coloured(subs, subs.len(), base, self.balls, self.i), fade);
-        let adds = own[3] < 0.0;
+        let hit = self.balls.hit(self.i);
+        let own = shade(trail, coloured(subs, subs.len(), base, hit), fade);
         let mut p = Particle::new(shape, at, 0.0, size, as_particle(own));
         p.style[2] = soft;
-        out.particles[OWN].push(p);
-        for (k, sub) in subs.iter().enumerate() {
-            match sub {
-                SubLayer::Shadow(sh) if sh.opacity > 0.0 => {
-                    let c = sh.colour.to_linear();
-                    let colour = [c[0], c[1], c[2], sh.opacity.clamp(0.0, 1.0) * fade];
-                    let mut q = Particle::new(shape, at + shadow_offset(sh, self.radius), 0.0, size, colour);
-                    q.style[2] = soft.max((sh.softness.max(0.0) * self.radius / size.max(1e-3)).min(1.0));
-                    out.particles[SHADOW].push(q);
-                }
-                SubLayer::Glow(g) if g.strength > 0.0 && g.opacity > 0.0 => {
-                    let same = coloured(subs, k, base, self.balls, self.i);
-                    let light = glow_light(g, sub_colour(g.colour_from, &g.colour, s, same), fade);
-                    let mut q = Particle::new(shape, at, 0.0, size + g.size.max(0.0) * self.radius, as_particle(light));
-                    q.style[2] = 1.0;
-                    out.particles[GLOW].push(q);
-                }
-                SubLayer::Outline(o) if o.width > 0.0 && o.opacity > 0.0 => {
-                    let same = coloured(subs, k, base, self.balls, self.i);
-                    let (reach, band) = outline_reach(o, size);
-                    let c = sub_colour(o.colour_from, &o.colour, s, darker(same));
-                    let alpha = (o.opacity.clamp(0.0, 1.0) * fade * trail.brightness.clamp(0.0, 1.0) * 2.0).min(1.0);
-                    let mut q = Particle::new(shape, at, 0.0, reach, as_particle(like_layer(adds, c, alpha)));
-                    q.style[3] = band;
-                    out.particles[OUTLINE].push(q);
-                }
-                _ => {}
-            }
-        }
+        let outline = trail.brightness.clamp(0.0, 1.0) * 2.0;
+        let extras = Extras { subs, base, s, fade, unit: self.radius, hit, outline, added: 0.5 };
+        particle_with_extras(p, &extras, out);
     }
 }
 

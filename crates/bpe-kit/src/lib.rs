@@ -25,12 +25,8 @@ pub use modules::bounce::{BasicBounce, BasicBounceKind};
 pub use modules::look::{BallShape, BasicLook, BasicLookKind, Style};
 pub use modules::motion::sim::{BasicMotionSim, MotionState};
 pub use modules::motion::{BasicMotion, BasicMotionKind};
-pub use modules::particles::draw::BurstDraw;
-pub use modules::particles::{BurstPreset, BurstSource, HitBurst, HitBurstKind};
 pub use modules::shader::EffectKind;
 pub use modules::shader::draw::EffectDraw;
-pub use modules::trail::draw::StreakDraw;
-pub use modules::trail::{StreakTrail, StreakTrailKind, TrailSource};
 pub use starters::{add_thing, fill_slot};
 pub use things::balls::draw::BallsDraw;
 pub use things::balls::sim::{BallsSim, BallsState};
@@ -68,8 +64,6 @@ pub fn draws() -> Draws {
     for b in &bpe_gfx::effects::BUILTINS {
         d.add_module(EffectDraw(b));
     }
-    d.add_module(StreakDraw);
-    d.add_module(BurstDraw);
     d
 }
 
@@ -107,8 +101,6 @@ pub fn registry() -> Registry {
     for k in modules::look::shape::kinds() {
         r.add_layer(k);
     }
-    r.add_module(StreakTrailKind);
-    r.add_module(HitBurstKind);
     r.add_module(BasicMotionKind);
     r.add_module(BasicBounceKind);
     for k in modules::shader::kinds() {

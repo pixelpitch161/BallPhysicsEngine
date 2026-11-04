@@ -165,37 +165,6 @@ fn box_path_runs_clockwise_from_the_top_left() {
     assert!(bottom[2] > bottom[0] && bottom[1] < 60, "{bottom:?}: five eighths of the way round, mostly blue");
 }
 
-/// A covering burst of confetti at the centre, green (so a shader that ignores its paint fails),
-/// painted from `paint` the way `follow` says.
-fn confetti(paint: PaintGpu, follow: u32) -> crate::Burst {
-    crate::Burst {
-        origin: [0.0, 0.0],
-        normal: [0.0, -1.0],
-        time: 0.0,
-        color: [0.0, 1.0, 0.0, 1.0],
-        count: 300,
-        speed: 500.0,
-        spread: 360.0,
-        size: 12.0,
-        life: 1.0,
-        gravity: 0.0,
-        drag: 0.0,
-        shape: 2,
-        additive: false,
-        seed: 11,
-        paint,
-        follow,
-        amount: 1.0,
-    }
-}
-
-/// [`confetti`] drawn `at` seconds after it went off.
-fn painted_burst(name: &str, frame: &mut Frame, paint: PaintGpu, follow: u32, at: f32) -> Option<Vec<u8>> {
-    frame.time = at;
-    frame.bursts.push(confetti(paint, follow));
-    render(name, frame)
-}
-
 /// `frame` drawn on the software GPU and saved as `name`; `None` without a GPU.
 fn render(name: &str, frame: &Frame) -> Option<Vec<u8>> {
     let (device, queue) = gpu()?;
@@ -204,83 +173,6 @@ fn render(name: &str, frame: &Frame) -> Option<Vec<u8>> {
     let pixels = renderer.read_output(&device, &queue).unwrap();
     crate::pictures::save(name, &pixels, W, H);
     Some(pixels)
-}
-
-/// The pixels a particle covers: the background is black.
-fn lit(pixels: &[u8]) -> Vec<[u8; 3]> {
-    pixels.chunks(4).map(|p| [p[0], p[1], p[2]]).filter(|p| p.iter().any(|&c| c > 40)).collect()
-}
-
-#[test]
-fn particles_life_fades_through_colours() {
-    for (at, red_first) in [(0.1, true), (0.9, false)] {
-        let mut frame = Frame { bloom: 0.0, ..Frame::default() };
-        let row = frame.gradients.row(&Gradient { transition: Transition::Smooth, ..red_blue_steps() });
-        let paint = PaintGpu { row: row as f32, ..PaintGpu::default() };
-        let name = format!("particles-life-{}", (at * 100.0) as u32);
-        let Some(pixels) = painted_burst(&name, &mut frame, paint, 1, at) else { return };
-        let lit = lit(&pixels);
-        assert!(lit.len() > 50, "{name}: only {} pixels drawn", lit.len());
-        for p in lit {
-            assert!(p[1] < 40, "{name}: {p:?} is green, the burst's own colour");
-            if red_first {
-                assert!(p[0] > p[2], "{name}: {p:?} should be mostly red early in its life");
-            } else {
-                assert!(p[2] > p[0], "{name}: {p:?} should be mostly blue late in its life");
-            }
-        }
-    }
-}
-
-#[test]
-fn particles_of_things_stuck_to_the_screen_paint_from_their_own_atlas() {
-    let mut frame = Frame { bloom: 0.0, time: 0.1, ..Frame::default() };
-    // The world's rows 0 and 1 are all green, so a burst reading the wrong atlas shows.
-    frame.gradients.row(&Gradient::solid(Color::rgb(0, 255, 0)));
-    frame.gradients.row(&Gradient::solid(Color::rgb(0, 250, 0)));
-    let o = frame.overlay_mut();
-    o.gradients.row(&Gradient::solid(Color::rgb(255, 255, 255)));
-    let row = o.gradients.row(&Gradient { transition: Transition::Smooth, ..red_blue_steps() });
-    o.bursts.push(confetti(PaintGpu { row: row as f32, ..PaintGpu::default() }, 1));
-    frame.lift_overlay_extras();
-    let Some(pixels) = render("particles-overlay", &frame) else { return };
-    let lit = lit(&pixels);
-    assert!(lit.len() > 50, "only {} pixels drawn", lit.len());
-    for p in lit {
-        assert!(p[1] < 40, "{p:?} is green or white: the burst read another row than its own");
-        assert!(p[0] > p[2], "{p:?} should be mostly red early in its life");
-    }
-}
-
-#[test]
-fn particles_painted_on_the_gpu_fade_with_the_blend_amount() {
-    let row_of =
-        |frame: &mut Frame| frame.gradients.row(&Gradient { transition: Transition::Smooth, ..red_blue_steps() });
-    for (amount, glows) in [(1.0, true), (0.0, false)] {
-        for additive in [false, true] {
-            let mut frame = Frame { bloom: 0.0, time: 0.1, ..Frame::default() };
-            let paint = PaintGpu { row: row_of(&mut frame) as f32, ..PaintGpu::default() };
-            frame.bursts.push(crate::Burst { additive, amount, ..confetti(paint, 1) });
-            let name = format!("particles-amount-{}-{}", amount as u32, if additive { "add" } else { "normal" });
-            let Some(pixels) = render(&name, &frame) else { return };
-            let lit = lit(&pixels).len();
-            assert_eq!(lit > 50, glows, "{name}: {lit} pixels lit");
-        }
-    }
-}
-
-#[test]
-fn particles_order_takes_one_stop_each() {
-    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
-    let row = frame.gradients.row(&red_blue_steps());
-    let paint = PaintGpu { row: row as f32, steps: 1.0, scale: 2.0, ..PaintGpu::default() };
-    let Some(pixels) = painted_burst("particles-order", &mut frame, paint, 2, 0.2) else { return };
-    let lit = lit(&pixels);
-    let red = lit.iter().filter(|p| p[0] > 40 && p[2] < 10).count();
-    let blue = lit.iter().filter(|p| p[2] > 40 && p[0] < 10).count();
-    assert!(red > 50 && blue > 50, "both stops show: {red} red, {blue} blue");
-    // Overlapping particles may mix, but none is green or half way.
-    assert!(lit.iter().all(|p| p[1] < 40), "no green");
 }
 
 /// The red and the blue pixels along the horizontal and vertical lines through the middle of a

@@ -627,44 +627,6 @@ fn strip(
     }
 }
 
-/// A puff of particles let off at one moment. The GPU works every particle out from the burst
-/// and its age, so nothing is kept between frames.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Burst {
-    pub origin: [f32; 2],
-    /// The way the puff flies, unit length.
-    pub normal: [f32; 2],
-    /// When it went off, in seconds into the clip.
-    pub time: f32,
-    /// Linear light.
-    pub color: [f32; 4],
-    pub count: u32,
-    /// Pixels per second.
-    pub speed: f32,
-    /// How wide the puff fans out, in degrees.
-    pub spread: f32,
-    /// Pixels.
-    pub size: f32,
-    /// Seconds each particle lasts.
-    pub life: f32,
-    /// Pixels per second squared, downwards.
-    pub gravity: f32,
-    pub drag: f32,
-    /// 0 sparks, 1 smoke, 2 confetti, 3 stars, 4 shards, 5 rings.
-    pub shape: u32,
-    /// Added light rather than covering paint.
-    pub additive: bool,
-    pub seed: u32,
-    /// The gradient the particles take their colour from, for `follow` 1 and 2.
-    pub paint: PaintGpu,
-    /// 0: every particle is `color`. 1: each runs along `paint` over its life. 2: each takes one
-    /// of `paint`'s stops at random, `paint.scale` of them evenly spaced on a Steps row.
-    pub follow: u32,
-    /// How much of a colour painted on the GPU (`follow` 1 and 2) shows, 0 to 1: its alpha, or
-    /// for added light its light, is scaled by this. `color` comes faded already.
-    pub amount: f32,
-}
-
 /// One particle (or a round bit of a trail) as the GPU draws it: the CPU has worked out where it
 /// is and how it looks. Matches `SpriteIn` in sprites.wgsl.
 #[repr(C)]
@@ -816,7 +778,6 @@ pub struct Frame {
     pub programs: Vec<crate::LookProgram>,
     pub layered_runs: Vec<crate::LayeredRun>,
     pub trails: Vec<TrailVertex>,
-    pub bursts: Vec<Burst>,
     /// Particles and trail bits behind the balls, drawn right after `trails`.
     pub particles: Vec<Particle>,
     /// Trails and particles in front of the balls, drawn after them (and after the effects on
@@ -980,7 +941,6 @@ impl Default for Frame {
             programs: Vec::new(),
             layered_runs: Vec::new(),
             trails: Vec::new(),
-            bursts: Vec::new(),
             particles: Vec::new(),
             trails_front: Vec::new(),
             particles_front: Vec::new(),
@@ -1012,7 +972,6 @@ impl Frame {
         self.programs.clear();
         self.layered_runs.clear();
         self.trails.clear();
-        self.bursts.clear();
         self.particles.clear();
         self.trails_front.clear();
         self.particles_front.clear();
@@ -1123,7 +1082,6 @@ impl Frame {
             && self.looks.is_empty()
             && self.layered.is_empty()
             && self.trails.is_empty()
-            && self.bursts.is_empty()
             && self.particles.is_empty()
             && self.trails_front.is_empty()
             && self.particles_front.is_empty()
@@ -1174,35 +1132,15 @@ impl Frame {
         overlay
     }
 
-    /// Moves the overlay's shader effects, hit particles and hit marks into this frame: those of
-    /// stuck things work on the whole picture like everyone else's, and the overlay only holds
-    /// what is drawn as shapes. Particles in one of the overlay's layers go into this frame's
-    /// layer of the same blend and amount, and a layer left with nothing to draw is dropped.
+    /// Moves the overlay's shader effects and hit marks into this frame: those of stuck things
+    /// work on the whole picture like everyone else's. A layer left with nothing to draw is
+    /// dropped.
     pub fn lift_overlay_extras(&mut self) {
         let Some(o) = self.overlay.as_deref_mut() else { return };
-        let (effects, mut bursts, hits) =
-            (std::mem::take(&mut o.effects), std::mem::take(&mut o.bursts), std::mem::take(&mut o.hits));
-        let mut layered: Vec<(Blend, f32, bool, Vec<Burst>)> = o
-            .layers
-            .iter_mut()
-            .filter(|l| !l.frame.bursts.is_empty())
-            .map(|l| (l.blend, l.amount, l.each, std::mem::take(&mut l.frame.bursts)))
-            .collect();
+        let (effects, hits) = (std::mem::take(&mut o.effects), std::mem::take(&mut o.hits));
         o.layers.retain(|l| !l.frame.draws_nothing());
-        // A burst names its gradient by the overlay's atlas row: give it the same row here.
-        for b in bursts.iter_mut().chain(layered.iter_mut().flat_map(|(_, _, _, list)| list.iter_mut())) {
-            if b.paint.row >= 0.0
-                && let Some(baked) = o.gradients.rows().get(b.paint.row as usize)
-            {
-                b.paint.row = self.gradients.adopt(baked) as f32;
-            }
-        }
         self.effects.extend(effects);
-        self.bursts.extend(bursts);
         self.hits.extend(hits);
-        for (blend, amount, each, list) in layered {
-            self.layer_mut(blend, amount, each).bursts.extend(list);
-        }
     }
 
     /// Whether the overlay has anything to draw.
@@ -1847,44 +1785,6 @@ mod tests {
         assert_eq!((o.width, o.height, o.camera), (300, 200, CameraView::default()), "stuck things keep no camera");
         let ol = &o.layers[0].frame;
         assert_eq!((ol.width, ol.height, ol.camera), (300, 200, CameraView::default()));
-    }
-
-    #[test]
-    fn lifting_moves_a_stuck_layers_bursts_into_the_frames_layer_with_their_atlas_rows() {
-        use bpe_core::{Blend, Color, Gradient};
-        let mut frame = Frame::default();
-        frame.gradients.row(&Gradient::solid(Color::rgb(0, 255, 0)));
-        let o = frame.overlay_mut();
-        o.gradients.row(&Gradient::solid(Color::rgb(255, 255, 255)));
-        let red = o.gradients.row(&Gradient::solid(Color::rgb(255, 0, 0)));
-        let burst = Burst {
-            origin: [0.0; 2],
-            normal: [0.0, -1.0],
-            time: 0.0,
-            color: [1.0; 4],
-            count: 4,
-            speed: 1.0,
-            spread: 1.0,
-            size: 1.0,
-            life: 1.0,
-            gravity: 0.0,
-            drag: 0.0,
-            shape: 0,
-            additive: false,
-            seed: 1,
-            paint: PaintGpu { row: red as f32, ..PaintGpu::default() },
-            follow: 1,
-            amount: 1.0,
-        };
-        o.layer_mut(Blend::Screen, 0.5, false).bursts.push(burst);
-        frame.lift_overlay_extras();
-        let o = frame.overlay.as_deref().unwrap();
-        assert!(o.layers.is_empty(), "a layer left with nothing to draw is dropped");
-        assert!(frame.bursts.is_empty());
-        assert_eq!((frame.layers.len(), frame.layers[0].blend, frame.layers[0].amount), (1, Blend::Screen, 0.5));
-        let lifted = frame.layers[0].frame.bursts[0];
-        let row = frame.gradients.rows()[lifted.paint.row as usize];
-        assert_eq!(row[0], Color::rgb(255, 0, 0).to_linear(), "the burst paints from the frame's atlas now");
     }
 
     struct Painter;

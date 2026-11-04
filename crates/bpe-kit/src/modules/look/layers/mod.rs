@@ -7,6 +7,7 @@
 //! stack into what the renderer draws.
 
 pub mod around;
+pub mod around_subs;
 pub mod blend;
 pub mod body;
 pub mod cards_to_layers;
@@ -401,15 +402,12 @@ pub fn sub_kinds() -> Vec<Kind> {
 
 /// How much of its balls' past a thing's shown trail and particle layers need kept (see
 /// [`trail::TrailLayer::reach`], [`particles::ParticlesLayer::reach`]); `None` when they need
-/// none. The old Trail card, while it is still drawn, keeps today's two seconds.
+/// none.
 pub fn around_history(resolved: &bpe_core::ResolvedThing) -> Option<bpe_runtime::HistoryWant> {
     use bpe_core::Settings;
     use bpe_runtime::HistoryWant;
     let mut want: Option<HistoryWant> = None;
     let mut add = |w: HistoryWant| want = Some(want.map_or(w, |o| o.and(w)));
-    if resolved.slots.get(&SlotId::Trail).is_some_and(|t| t.kind.starts_with("trail.")) {
-        add(HistoryWant { seconds: 2.0, forever: false });
-    }
     let Some(look) = resolved.slots.get(&SlotId::Look).filter(|l| l.kind == CARD) else { return want };
     for layer in &look.layers {
         match layer.kind.as_str() {
@@ -419,10 +417,7 @@ pub fn around_history(resolved: &bpe_core::ResolvedThing) -> Option<bpe_runtime:
             }
             PARTICLES => {
                 let p = particles::ParticlesLayer::from_params(&look.layer_params(layer.id));
-                let reach = p.reach();
-                if reach > 0.0 {
-                    add(HistoryWant { seconds: reach, forever: false });
-                }
+                add(HistoryWant { seconds: p.reach(), forever: false });
             }
             _ => {}
         }
@@ -640,13 +635,12 @@ mod tests {
         set(&mut s, short, "forever", Value::Bool(true));
         assert_eq!(world(&s).history[&b].cap(), usize::MAX);
         assert_ne!(fp(&s), fp_long);
-        // Particles let off while moving read the past too.
+        // Particles read the past too: where and how fast the ball went.
         let mut s2 = Scene::empty(reg);
         let b2 = crate::add_thing(&mut s2, reg, "balls", ThingId::ROOT).unwrap();
         let p = s2.add_layer(reg, b2, SlotId::Look, PARTICLES).unwrap();
-        assert!(world(&s2).history.is_empty(), "on hit needs no past");
-        s2.set_at(reg, &Address::on(b2, SlotId::Look, &layered_key(p, "emit")), Value::Choice("while_moving".into()))
-            .unwrap();
-        assert!(world(&s2).history.contains_key(&b2));
+        assert_eq!(world(&s2).history[&b2].cap(), 2 * 60 + 1);
+        s2.set_at(reg, &Address::on(b2, SlotId::Look, &layered_key(p, "life")), Value::Number(3.0)).unwrap();
+        assert_eq!(world(&s2).history[&b2].cap(), 3 * 60 + 1);
     }
 }

@@ -48,6 +48,11 @@ impl AroundLayer {
         matches!(&self.kind, AroundKind::Trail(t) if t.kind == TrailKind::Ghosts)
     }
 
+    /// Whether it is particles made of mini balls, which draw as balls.
+    pub fn is_mini_balls(&self) -> bool {
+        matches!(&self.kind, AroundKind::Particles(p) if p.made_of == super::particles::MadeOf::MiniBalls)
+    }
+
     /// Whether ball number `number` wears it.
     pub fn applies(&self, number: u32) -> bool {
         self.only.is_empty() || self.only.contains(&number)

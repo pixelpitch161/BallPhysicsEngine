@@ -176,8 +176,8 @@ pub fn wobble(path: &mut Path, amount: f32, waves: f32, speed: f32, time: f32) {
     }
     let length = path.length().max(1e-3);
     let sides: Vec<Option<Vec2>> = (0..n).map(|k| path.heading(k).map(|h| h.perp())).collect();
-    for k in 1..n {
-        let Some(side) = sides[k] else { continue };
+    for (k, side) in sides.iter().enumerate().skip(1) {
+        let Some(side) = *side else { continue };
         let s = path.arc[k] / length;
         let grow = (s / 0.2).min(1.0);
         let wave = (std::f32::consts::TAU * (waves * s + speed * time)).sin();

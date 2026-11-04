@@ -94,8 +94,9 @@ fn stage5_scenes_keep_their_stage2_twins_logs() {
         expected.seek(SECONDS);
         assert_eq!(playback.log().hash(), expected.log().hash(), "{name} drifted from {twin}");
         assert_eq!(playback.log().len(), expected.log().len(), "{name} drifted from {twin}");
-        // The trail's history is the one thing the world keeps that its twin doesn't.
-        let has_trail = resolved.things.values().any(|t| t.slots.contains_key(&bpe_core::SlotId::Trail));
+        // The history trails and particles read is the one thing the world keeps that its twin
+        // doesn't.
+        let has_trail = resolved.things.values().any(|t| bpe_kit::modules::look::layers::around_history(t).is_some());
         assert_eq!(!playback.world().history.is_empty(), has_trail, "{name}");
     }
 }

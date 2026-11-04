@@ -4,8 +4,10 @@
 
 use bpe_core::{Blend, Color, Gradient, Params, Registry, Scene, Settings, SlotId, ThingId, Value};
 
+use crate::modules::look::layers::particles::{MadeOf, ParticlesLayer};
+use crate::modules::look::layers::trail::{TrailLayer, TrailSource};
 use crate::paint::{InsideFrom, InsidePaint, Paint, Pattern};
-use crate::{BallShape, BasicLook, BurstPreset, HitBurst, StreakTrail, Style, TrailSource, scenes::stage2};
+use crate::{BallShape, BasicLook, Style, scenes::stage2};
 
 const BALLS: ThingId = ThingId(2);
 
@@ -42,6 +44,9 @@ pub fn stage5(reg: &Registry) -> Vec<(String, Scene)> {
 /// A new card on one thing. Asked of Scene settings for a slot it doesn't have (a burst or a
 /// trail), every thing that has the slot gets a copy instead.
 fn own_module(scene: &mut Scene, reg: &Registry, thing: ThingId, kind: &str, params: Params) {
+    if super::put_old_card(scene, thing, kind, &params) {
+        return;
+    }
     let slot = reg.module(kind).expect("kit kinds are registered").slot();
     let root_has = reg.thing("scene").is_some_and(|k| k.slots().contains(&slot));
     let has_slot = |id: &ThingId| reg.thing(&scene.things[id].kind).is_some_and(|k| k.slots().contains(&slot));
@@ -93,21 +98,21 @@ fn lava_ball(reg: &Registry, scene: &mut Scene) {
         |_| {},
     );
     own_module(scene, reg, BALLS, "shader.lava", params([number("heat", 1.8), number("scale", 2.0)]));
-    let trail = StreakTrail {
+    let trail = TrailLayer {
         seconds: 0.7,
         width: 0.8,
         brightness: 0.8,
         source: TrailSource::Own,
-        colour: Paint { colours: Gradient::solid(Color::rgb(0xff, 0x70, 0x10)), ..StreakTrail::default().colour },
-        ..StreakTrail::default()
+        colour: Paint { colours: Gradient::solid(Color::rgb(0xff, 0x70, 0x10)), ..TrailLayer::default().colour },
+        ..TrailLayer::default()
     };
     own_module(scene, reg, BALLS, "trail.streak", trail.to_params());
 }
 
 /// The reel block raining confetti, each tiny ball with a short streak.
 fn confetti_drop(reg: &Registry, scene: &mut Scene) {
-    let burst = HitBurst {
-        preset: BurstPreset::Confetti,
+    let burst = ParticlesLayer {
+        made_of: MadeOf::Confetti,
         count: 5,
         speed: 260.0,
         size: 4.0,
@@ -116,16 +121,23 @@ fn confetti_drop(reg: &Registry, scene: &mut Scene) {
         drag: 1.5,
         // Confetti covers what is behind it, as it always has.
         blend: Blend::Normal,
-        ..HitBurst::default()
+        ..ParticlesLayer::default()
     };
     own_module(scene, reg, ThingId::ROOT, "particles.burst", burst.to_params());
-    let trail = StreakTrail { seconds: 0.2, width: 0.6, brightness: 0.35, ..StreakTrail::default() };
+    let trail = TrailLayer { seconds: 0.2, width: 0.6, brightness: 0.35, ..TrailLayer::default() };
     own_module(scene, reg, ThingId::ROOT, "trail.streak", trail.to_params());
 }
 
 /// The box drop with sparks flying off every hit and the picture flaring with them.
 fn spark_block(reg: &Registry, scene: &mut Scene) {
-    let burst = HitBurst { count: 10, speed: 420.0, size: 2.5, life: 0.5, least_speed: 120.0, ..HitBurst::default() };
+    let burst = ParticlesLayer {
+        count: 10,
+        speed: 420.0,
+        size: 2.5,
+        life: 0.5,
+        least_speed: 120.0,
+        ..ParticlesLayer::default()
+    };
     own_module(scene, reg, ThingId::ROOT, "particles.burst", burst.to_params());
     own_module(scene, reg, BALLS, "shader.rainbow_flow", params([number("bands", 1.5)]));
     own_module(scene, reg, ThingId::ROOT, "shader.hit_glow", params([number("punch", 0.6)]));
@@ -161,7 +173,7 @@ fn kaleido_hexagon(reg: &Registry, scene: &mut Scene) {
             };
         },
     );
-    let trail = StreakTrail { seconds: 0.4, width: 0.5, brightness: 0.6, ..StreakTrail::default() };
+    let trail = TrailLayer { seconds: 0.4, width: 0.5, brightness: 0.6, ..TrailLayer::default() };
     own_module(scene, reg, ThingId::ROOT, "trail.streak", trail.to_params());
     let kaleido = params([number("spin", 0.02), number("pulse", 0.3)]);
     own_module(scene, reg, ThingId::ROOT, "shader.kaleidoscope", kaleido);
@@ -184,18 +196,18 @@ fn neon_ring(reg: &Registry, scene: &mut Scene) {
         },
         |_| {},
     );
-    let burst = HitBurst {
-        preset: BurstPreset::Rings,
+    let burst = ParticlesLayer {
+        made_of: MadeOf::Rings,
         count: 1,
         size: 90.0,
         life: 0.5,
         gravity: 0.0,
         drag: 0.0,
         follow_impact: false,
-        ..HitBurst::default()
+        ..ParticlesLayer::default()
     };
     own_module(scene, reg, ThingId::ROOT, "particles.burst", burst.to_params());
-    let trail = StreakTrail { seconds: 0.5, width: 1.0, brightness: 0.5, ..StreakTrail::default() };
+    let trail = TrailLayer { seconds: 0.5, width: 1.0, brightness: 0.5, ..TrailLayer::default() };
     own_module(scene, reg, BALLS, "trail.streak", trail.to_params());
     let echo = params([number("fade", 0.85), number("zoom", 1.03), number("hue", 0.01)]);
     own_module(scene, reg, ThingId::ROOT, "shader.echo", echo);
@@ -228,10 +240,11 @@ mod tests {
             let kinds: Vec<&str> = cards.iter().map(|c| c.kind.as_str()).collect();
             let styled =
                 cards.iter().any(|c| c.kind == "look.basic" && !BasicLook::from_params(&c.params).is_classic_ball());
-            let new = styled
-                || kinds
-                    .iter()
-                    .any(|k| k.starts_with("shader.") || k.starts_with("trail.") || k.starts_with("particles."));
+            let around = cards.iter().flat_map(|c| &c.layers).any(|l| {
+                use crate::modules::look::layers::{PARTICLES, TRAIL};
+                l.kind == TRAIL || l.kind == PARTICLES
+            });
+            let new = styled || around || kinds.iter().any(|k| k.starts_with("shader."));
             assert!(new, "{name}: {kinds:?}");
         }
     }

@@ -184,6 +184,8 @@ impl ThingDraw for BallsDraw {
             .iter()
             .map(|a| {
                 let (blend, amount) = a.blend();
+                // Mini balls are balls: they draw as the balls do.
+                let (blend, amount) = if a.is_mini_balls() { (Blend::Normal, 1.0) } else { (blend, amount) };
                 Around { blend, amount, behind: a.place() == AroundPlace::Behind }
             })
             .collect()
@@ -197,7 +199,14 @@ impl ThingDraw for BallsDraw {
                 let memory = hit_memory(cx, &layer);
                 with_balls(cx, &stack, memory, |balls| trail::draw::draw(cx, &layer, trail, balls, frame));
             }
-            AroundKind::Particles(_) => {}
+            AroundKind::Particles(particles) => {
+                let memory = hit_memory(cx, &layer);
+                with_balls(cx, &stack, memory, |balls| {
+                    crate::modules::look::layers::particles::draw::draw_balls(
+                        cx, &layer, particles, balls, &stack, frame,
+                    )
+                });
+            }
         }
     }
 }
@@ -415,7 +424,7 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, stack: &Stack, part: u32) {
     let flash = stack.flash.as_ref().filter(|f| f.flash > 0.0 && f.flash_seconds > 0.0);
     // The scene settings' effects aren't passed down but still pulse on every hit.
     let scene_effects = cx.scene.things.get(&ThingId::ROOT).is_some_and(|r| r.slots.contains_key(&SlotId::Shader));
-    let wants_hits = scene_effects || cx.resolved.slots.contains_key(&SlotId::Particles);
+    let wants_hits = scene_effects;
     let memory = if wants_hits {
         HIT_MEMORY
     } else if let Some(f) = flash {
@@ -554,7 +563,8 @@ mod tests {
         let ball = crate::add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
         let thing = scene.things.get_mut(&ball).unwrap();
         thing.params.set("velocity", Value::Vec2([0.0, 900.0]));
-        scene.add_slot(&reg, ball, SlotId::Particles, "particles.burst").unwrap();
+        // The scene's effects list the hits.
+        scene.add_slot(&reg, ThingId::ROOT, SlotId::Shader, "shader.kaleidoscope").unwrap();
         let resolved = bpe_core::resolve(&scene, &reg);
         let kit = kit();
         let mut playback = bpe_runtime::Playback::new(&scene, &resolved, kit.sims.clone());
@@ -733,8 +743,8 @@ mod tests {
     #[test]
     fn balls_leave_a_hit_mark_in_their_colour() {
         let (mut scene, _, kit) = crate::testing::one_ball_with_bounce(|_| {});
-        // Hits are listed for the modules that use them: here the ball's own burst.
-        scene.add_slot(&kit.registry, BALL, SlotId::Particles, "particles.burst").unwrap();
+        // Hits are listed for what uses them: here the scene's effect.
+        scene.add_slot(&kit.registry, ThingId::ROOT, SlotId::Shader, "shader.kaleidoscope").unwrap();
 
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         let mut playback = bpe_runtime::Playback::new(&scene, &resolved, kit.sims.clone());
@@ -757,8 +767,8 @@ mod tests {
         let old: Vec<_> = playback.log().events().iter().filter(|e| e.time(rate) > 7.0).collect();
         build_frame(&scene, &resolved, playback.world(), playback.log(), 10.0, &kit.draws, &mut frame);
         assert_eq!(frame.hits.len(), old.len());
-        // Without a module that wants them, only the flashes' quarter second is listed.
-        scene.remove_slot(BALL, SlotId::Particles);
+        // Without an effect that wants them, only the flashes' quarter second is listed.
+        scene.remove_slot(ThingId::ROOT, SlotId::Shader);
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         build_frame(&scene, &resolved, playback.world(), playback.log(), 10.0, &kit.draws, &mut frame);
         let flash_worth = playback.log().events().iter().filter(|e| e.time(rate) > 10.0 - 0.25).count();

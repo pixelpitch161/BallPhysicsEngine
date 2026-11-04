@@ -14,11 +14,10 @@ use bpe_core::{
 use glam::Vec2;
 use std::collections::BTreeMap;
 
+use crate::modules::look::layers::particles::{ParticleSource, ParticlesLayer};
+use crate::modules::look::layers::trail::{TrailLayer, TrailSource};
 use crate::paint::{Follow, InsideFrom, InsidePaint, Paint, Pattern, PlaceShape, Repeat};
-use crate::{
-    BallsSettings, BasicBounce, BasicLook, BasicMotion, BurstSource, HitBurst, SceneSettings, ShapeSettings,
-    StreakTrail, Style, TrailSource, new_scene,
-};
+use crate::{BallsSettings, BasicBounce, BasicLook, BasicMotion, SceneSettings, ShapeSettings, Style, new_scene};
 
 const SHAPE: ThingId = ThingId(1);
 const BALLS: ThingId = ThingId(2);
@@ -104,6 +103,29 @@ pub fn classic_cards(scene: &mut Scene) {
             }
         }
     }
+    // Trail and Particles cards (as test scenes are written) become layers of the Look.
+    crate::modules::look::layers::cards_to_layers::cards_to_layers(scene);
+}
+
+/// Puts an old Trail or Particles card of `kind` with `params` on `thing` (on Scene settings,
+/// on every ball group), for [`classic_cards`] to turn into a layer; false for another kind.
+pub(crate) fn put_old_card(scene: &mut Scene, thing: ThingId, kind: &str, params: &Params) -> bool {
+    use crate::modules::look::layers::cards_to_layers::{OLD_PARTICLES, OLD_TRAIL};
+    let slot = match kind {
+        OLD_TRAIL => SlotId::Trail,
+        OLD_PARTICLES => SlotId::Particles,
+        _ => return false,
+    };
+    let takers: Vec<ThingId> = if thing == ThingId::ROOT {
+        scene.order.iter().copied().filter(|id| scene.things[id].kind == "balls").collect()
+    } else {
+        vec![thing]
+    };
+    for id in takers {
+        let card = Slot { kind: kind.into(), params: params.clone(), ..Slot::default() };
+        scene.things.get_mut(&id).expect("listed").slots.insert(slot, card);
+    }
+    true
 }
 
 /// The stack of layers that draws most like the old look `look` on a ball: its Body (shape and
@@ -237,7 +259,7 @@ pub fn colour_demo(reg: &Registry) -> Scene {
         };
         l.glow = 0.3;
     });
-    let streak = StreakTrail {
+    let streak = TrailLayer {
         seconds: 0.35,
         width: 0.55,
         brightness: 0.45,
@@ -247,22 +269,22 @@ pub fn colour_demo(reg: &Registry) -> Scene {
             follow: Follow::Life,
             ..Paint::default()
         },
-        ..StreakTrail::default()
+        ..TrailLayer::default()
     };
     b.own_module(BALLS, "trail.streak", streak.to_params());
-    let sparks = HitBurst {
+    let sparks = ParticlesLayer {
         count: 6,
         speed: 360.0,
         size: 3.0,
         life: 0.55,
         least_speed: 160.0,
-        source: BurstSource::Own,
+        source: ParticleSource::Own,
         colour: Paint {
             colours: Gradient::even(&[hex(0xffffff), hex(0xffd23e), hex(0xff6a2e), hex(0xc8104a)]),
             follow: Follow::Life,
             ..Paint::default()
         },
-        ..HitBurst::default()
+        ..ParticlesLayer::default()
     };
     b.own_module(BALLS, "particles.burst", sparks.to_params());
     b.finish()
@@ -327,7 +349,7 @@ pub fn blend_demo(reg: &Registry) -> Scene {
     );
     let comet_look = BasicLook { fill: Paint::solid(hex(0xffffff)), glow: 0.6, ..classic_look() };
     b.own_module(comets, "look.basic", comet_look.to_params());
-    let streak = StreakTrail {
+    let streak = TrailLayer {
         seconds: 0.6,
         width: 0.8,
         brightness: 0.9,
@@ -338,7 +360,7 @@ pub fn blend_demo(reg: &Registry) -> Scene {
             ..Paint::default()
         },
         blend: Blend::Add,
-        ..StreakTrail::default()
+        ..TrailLayer::default()
     };
     b.own_module(comets, "trail.streak", streak.to_params());
     // Styled balls whose hue drifts around one colour.
@@ -596,6 +618,9 @@ impl<'a> Builder<'a> {
     /// folder (or anything with things under it), the things inside that shared the card copy
     /// this one instead.
     fn own_module(&mut self, thing: ThingId, kind: &str, params: Params) {
+        if put_old_card(&mut self.scene, thing, kind, &params) {
+            return;
+        }
         let slot = self.reg.module(kind).expect("kit kinds are registered").slot();
         let users: Vec<ThingId> =
             self.src.iter().filter(|(k, s)| k.1 == slot && **s == Src::Shared).map(|(k, _)| k.0).collect();

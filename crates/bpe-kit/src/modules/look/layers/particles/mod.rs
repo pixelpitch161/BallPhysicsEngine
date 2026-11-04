@@ -313,11 +313,10 @@ impl Default for ParticlesLayer {
 
 impl ParticlesLayer {
     /// How many seconds of the ball's past these particles read: where the ball was when each
-    /// still-living one was let off (while moving, only when fast), or to pull them back to it.
-    /// 0 when they need none.
+    /// still-living one was let off and how fast it went, and where to pull them back to. Every
+    /// particles layer reads some (the world keeps at least two seconds anyway).
     pub fn reach(&self) -> f32 {
-        let moving = matches!(self.emit, Emit::WhileMoving | Emit::OnlyWhenFast);
-        if moving || self.pull > 0.0 { self.life.max(0.0) } else { 0.0 }
+        self.life.max(0.0)
     }
 }
 
