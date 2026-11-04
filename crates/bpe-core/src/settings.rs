@@ -81,6 +81,13 @@ pub const SECTION_ORDER: &[&str] = &[
     "Variation",
     "Blending",
     "Master",
+    "Sound",
+    "Osc A",
+    "Osc B",
+    "Playing",
+    "Notes",
+    "Output",
+    "Modulation",
 ];
 
 /// The sections that stay folded until opened.
