@@ -4,11 +4,14 @@
 use std::f32::consts::FRAC_PI_2;
 
 use bpe_core::{Blend, ResolvedThing, ShapePath, SlotId};
-use bpe_gfx::{DrawCx, Frame, PathInstance, ThingDraw, thing_code};
+use bpe_gfx::{Around, DrawCx, Frame, PathInstance, ThingDraw, thing_code};
 use bpe_runtime::{EventKind, Outline, Wall};
 use glam::Vec2;
 
 use super::KIND;
+use crate::modules::look::layers::around::{AroundKind, AroundLayer, around_layers};
+use crate::modules::look::layers::around_subs::HitInfo;
+use crate::modules::look::layers::trail::AroundPlace;
 use crate::modules::look::shape::ShapeStack;
 use crate::modules::look::shape::gpu::Geometry;
 use crate::things::balls::draw::hit_strength;
@@ -46,6 +49,36 @@ impl ThingDraw for ShapeDraw {
         if let Some(cut) = shape_stack(cx).and_then(|s| s.split()) {
             draw_part(cx, frame, cut | OVER);
         }
+    }
+
+    /// Its Look's particles.
+    fn around(&self, resolved: &ResolvedThing) -> Vec<Around> {
+        around_of(resolved)
+            .iter()
+            .map(|a| {
+                let (blend, amount) = a.blend();
+                Around { blend, amount, behind: a.place() == AroundPlace::Behind }
+            })
+            .collect()
+    }
+
+    fn draw_around(&self, cx: &DrawCx, index: usize, frame: &mut Frame) {
+        let Some(layer) = around_of(cx.resolved).into_iter().nth(index) else { return };
+        if let AroundKind::Particles(particles) = &layer.kind {
+            let reads = layer.subs.iter().any(|s| s.reads_hits());
+            let hit = if reads { shape_hits(cx) } else { bpe_gfx::NO_HIT };
+            let last = (hit[0] < bpe_gfx::NO_HIT[0]).then_some((hit[0], hit[1]));
+            let hits = HitInfo { last, hits: hit[2] as u32 };
+            crate::modules::look::layers::particles::draw::draw_shape(cx, &layer, particles, hits, frame);
+        }
+    }
+}
+
+/// The shape's shown particles layers, bottom first.
+fn around_of(resolved: &ResolvedThing) -> Vec<AroundLayer> {
+    match resolved.slots.get(&SlotId::Look) {
+        Some(look) if look.kind == crate::modules::look::shape::CARD => around_layers(look, true),
+        _ => Vec::new(),
     }
 }
 

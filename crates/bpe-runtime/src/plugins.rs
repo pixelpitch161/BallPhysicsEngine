@@ -110,6 +110,11 @@ pub trait ThingSim: Send + Sync + 'static {
     fn affects_physics(&self, _key: &str) -> bool {
         true
     }
+    /// How much of its balls' past the thing wants kept, for its trails and particles; `None`
+    /// keeps none. Asked when the world is built, and hashed into the world's fingerprint.
+    fn history(&self, _resolved: &ResolvedThing) -> Option<crate::HistoryWant> {
+        None
+    }
 }
 
 /// How a Motion or Bounce module moves and bounces the things that use it.

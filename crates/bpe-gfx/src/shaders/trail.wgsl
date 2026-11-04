@@ -6,12 +6,16 @@ struct TrailIn {
     // x: signed distance from the streak's centre line, y: half width at this point
     @location(1) edge: vec2<f32>,
     @location(2) color: vec4<f32>,
+    // x: softness (0 crisp, 1 soft from the centre line out), y: band (0 filled, else only the
+    // outer share of the half width shows)
+    @location(3) style: vec2<f32>,
 };
 
 struct TrailOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) edge: vec2<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) style: vec2<f32>,
 };
 
 @vertex
@@ -20,6 +24,7 @@ fn vs_trail(v: TrailIn) -> TrailOut {
     out.pos = to_clip(v.pos);
     out.edge = v.edge;
     out.color = v.color;
+    out.style = v.style;
     return out;
 }
 
@@ -29,7 +34,17 @@ fn shade_trail(in: TrailOut) -> vec4<f32> {
     let half_width = max(in.edge.y, 0.5 * px);
     // Streaks thinner than a pixel get dimmer instead of aliasing.
     let thin = min(in.edge.y / (0.5 * px), 1.0);
-    let cover = clamp((half_width - abs(in.edge.x)) / px + 0.5, 0.0, 1.0) * thin;
+    var cover = clamp((half_width - abs(in.edge.x)) / px + 0.5, 0.0, 1.0) * thin;
+    let soft = in.style.x;
+    if soft > 0.0 {
+        // Soft from `soft` of the width in from the edge to as far past it.
+        let w = max(px, soft * half_width * 2.0);
+        cover = smoothstep(0.0, 1.0, 0.5 - (abs(in.edge.x) - half_width) / w);
+    }
+    if in.style.y > 0.0 {
+        // Only the outer band: an outline along the edges.
+        cover = cover * clamp(0.5 + (abs(in.edge.x) - half_width * (1.0 - in.style.y)) / px, 0.0, 1.0);
+    }
     if cover <= 0.0 {
         discard;
     }

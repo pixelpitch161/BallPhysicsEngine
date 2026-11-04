@@ -1708,20 +1708,14 @@ mod tests {
     #[test]
     fn add_slot_lists_only_slots_the_kind_lacks_and_adds_a_starter() {
         let mut h = harness(Some(ThingId(2)));
-        // Trail and Particles have card kinds and aren't shown on a new ball, so there is
-        // something to add.
-        assert!(!h.get_by_label("+ Add slot").accesskit_node().is_disabled());
-        h.get_by_label("+ Add slot").click();
-        h.run();
-        assert!(h.query_by_label("Particles").is_some());
-        h.key_press(egui::Key::Escape);
-        h.run();
-        assert!(h.query_by_label("Particles").is_none(), "the menu closed");
+        // A new ball has every card a ball can have: trails and particles are layers of its Look.
+        assert!(h.get_by_label("+ Add slot").accesskit_node().is_disabled());
         h.state_mut().scene.things.get_mut(&ThingId(2)).unwrap().slots.remove(&SlotId::Motion);
         h.run();
         h.get_by_label("+ Add slot").click();
         h.run();
-        assert!(h.query_by_label("Trail").is_some());
+        assert!(h.query_all_by_label("Trail").next().is_none(), "trails are layers of the Look");
+        assert!(h.query_all_by_label("Particles").next().is_none(), "particles are layers of the Look");
         assert!(h.query_all_by_label("Shader").next().is_none(), "a ball's shaders are layers of its Look");
         assert!(h.query_all_by_label("Motion").next().is_none(), "Motion is added as part of Physics");
         // The menu's Physics, not the card's header or the bar's button.
@@ -1960,9 +1954,7 @@ mod tests {
         let mut h = harness(Some(ThingId(2)));
         let s = h.state_mut();
         s.scene.card_mut(ThingId(2), SlotId::Bounce).unwrap().params = bpe_core::Params::default();
-        for slot in [SlotId::Motion, SlotId::Trail, SlotId::Particles] {
-            s.scene.remove_slot(ThingId(2), slot);
-        }
+        s.scene.remove_slot(ThingId(2), SlotId::Motion);
         s.resolved = resolve(&s.scene, &s.kit.registry);
         h.run();
         h.get_by_label("Hide Bounce").click();
@@ -2171,14 +2163,12 @@ mod tests {
         assert!(h.query_by_role_and_label(Role::Label, "Rotation").is_some());
     }
 
-    const BAR_LABELS: [&str; 15] = [
+    const BAR_LABELS: [&str; 13] = [
         "Thing",
         "Look",
-        "Trail",
         "Physics",
         "Motion",
         "Bounce",
-        "Particles",
         "Shader",
         "Effects",
         "Video",
@@ -2207,30 +2197,17 @@ mod tests {
             .expect("the bar's button")
     }
 
-    fn a_ball_with_every_slot() -> Scene {
-        let reg = bpe_kit::registry();
-        let mut scene = bpe_kit::new_scene(&reg);
-        for slot in [SlotId::Trail, SlotId::Particles] {
-            bpe_kit::fill_slot(&mut scene, &reg, ThingId(2), slot).unwrap();
-        }
-        scene
-    }
-
     #[test]
     fn slider_columns_line_up_across_cards() {
-        let mut h = harness(Some(ThingId(2)));
-        h.get_by_label("+ Add slot").click();
-        h.run();
-        h.get_by_label("Trail").click();
-        h.run();
-        // The Look's Size, under its layer lists, and the Trail's Length.
+        let h = harness(Some(ThingId(2)));
+        // The Look's Size, under its layer lists, and the Physics card's Gravity.
         let size = h.get_all_by_role_and_label(Role::Slider, "Size").next().unwrap().rect();
-        let length = slider_rect(&h, "Length");
+        let gravity = slider_rect(&h, "Gravity ×");
         assert!(
-            (size.left() - length.left()).abs() <= 1.0,
-            "Size starts at {}, Length at {}",
+            (size.left() - gravity.left()).abs() <= 1.0,
+            "Size starts at {}, Gravity at {}",
             size.left(),
-            length.left()
+            gravity.left()
         );
     }
 
@@ -2253,33 +2230,33 @@ mod tests {
 
     #[test]
     fn the_jump_bar_lists_thing_then_the_slots_in_order() {
-        let h = harness_of(a_ball_with_every_slot(), Some(ThingId(2)));
+        let h = harness_of(bpe_kit::new_scene(&bpe_kit::registry()), Some(ThingId(2)));
         let labels: Vec<String> = jump_bar(&h).into_iter().map(|(l, _)| l).collect();
-        assert_eq!(labels, ["Thing", "Look", "Trail", "Physics", "Particles"]);
+        assert_eq!(labels, ["Thing", "Look", "Physics"]);
         assert_eq!(jump_bar(&h)[0], ("Thing".to_owned(), true), "at the top, Thing is selected");
     }
 
     #[test]
-    fn the_jump_bar_unfolds_and_scrolls_to_trail() {
-        let mut h = harness_sized(a_ball_with_every_slot(), Some(ThingId(2)), 600.0);
-        h.state_mut().inspector.collapsed.insert((ThingId(2), Some(SlotId::Trail), ""));
+    fn the_jump_bar_unfolds_and_scrolls_to_physics() {
+        let mut h = harness_sized(bpe_kit::new_scene(&bpe_kit::registry()), Some(ThingId(2)), 600.0);
+        h.state_mut().inspector.collapsed.insert(Card::Physics.fold_key(ThingId(2)));
         h.run();
-        assert!(h.query_by_label("Show Trail").is_some(), "the Trail card starts folded");
-        the_bar_button(&h, "Trail").click();
+        assert!(h.query_by_label("Show Physics").is_some(), "the Physics card starts folded");
+        the_bar_button(&h, "Physics").click();
         h.run();
         let s = h.state();
-        let open = !s.inspector.collapsed.contains(&(ThingId(2), Some(SlotId::Trail), ""));
-        assert!(open, "the Trail card is open");
+        let open = !s.inspector.collapsed.contains(&Card::Physics.fold_key(ThingId(2)));
+        assert!(open, "the Physics card is open");
         assert!(s.inspector.jump_to.is_none());
         let tops = &s.inspector.card_tops;
-        let top = tops.iter().find(|(c, _)| *c == Card::Slot(SlotId::Trail)).expect("Trail' top").1;
-        assert!(top.abs() <= 2.0, "Trail' header is at the top of the scroll area, at {top}");
+        let top = tops.iter().find(|(c, _)| *c == Card::Physics).expect("Physics' top").1;
+        assert!(top.abs() <= 2.0, "Physics' header is at the top of the scroll area, at {top}");
         // The header's own rect sits just under the bar, where the scroll area starts.
-        let header = h.get_by_label("Hide Trail").rect();
+        let header = h.get_by_label("Hide Physics").rect();
         let bar = the_bar_button(&h, "Thing").rect();
         assert!(header.top() > bar.bottom() && header.top() < bar.bottom() + 60.0, "{header:?} under {bar:?}");
         let selected: Vec<String> = jump_bar(&h).into_iter().filter(|(_, on)| *on).map(|(l, _)| l).collect();
-        assert_eq!(selected, ["Trail"], "tops {:?} bar {:?}", h.state().inspector.card_tops, jump_bar(&h));
+        assert_eq!(selected, ["Physics"], "tops {:?} bar {:?}", h.state().inspector.card_tops, jump_bar(&h));
     }
 
     /// Scene settings with every slot it can have, so its cards run well past one screen.
@@ -2416,8 +2393,8 @@ mod tests {
 
     #[test]
     fn the_jump_bar_marks_the_card_at_the_top_while_scrolling() {
-        let mut h = harness_sized(a_ball_with_every_slot(), Some(ThingId(2)), 600.0);
-        // Scroll down until Look's header has passed the top but Trail's hasn't.
+        let mut h = harness_sized(bpe_kit::new_scene(&bpe_kit::registry()), Some(ThingId(2)), 600.0);
+        // Scroll down until Look's header has passed the top but Physics' hasn't.
         for _ in 0..200 {
             let tops = &h.state().inspector.card_tops;
             let top_of = |card| tops.iter().find(|(c, _)| *c == card).map(|(_, t)| *t);
@@ -2436,8 +2413,8 @@ mod tests {
         }
         let tops = &h.state().inspector.card_tops;
         let look = tops.iter().find(|(c, _)| *c == Card::Slot(SlotId::Look)).unwrap().1;
-        let trail = tops.iter().find(|(c, _)| *c == Card::Slot(SlotId::Trail)).unwrap().1;
-        assert!(look < -1.0 && trail > 1.0, "scrolled past Look's header but not Trail's: {look}, {trail}");
+        let physics = tops.iter().find(|(c, _)| *c == Card::Physics).unwrap().1;
+        assert!(look < -1.0 && physics > 1.0, "scrolled past Look's header but not Physics': {look}, {physics}");
         let selected: Vec<String> = jump_bar(&h).into_iter().filter(|(_, on)| *on).map(|(l, _)| l).collect();
         assert_eq!(selected, ["Look"]);
     }

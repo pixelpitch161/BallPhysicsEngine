@@ -1,6 +1,6 @@
 //! The Look editor: the Look card of a thing whose look is a stack of layers. A list of the
-//! drawn layers (the top one first, the Body at the bottom), a list of the reactions, and under
-//! them the settings of the one picked.
+//! drawn layers (the top one first, the Body at the bottom), a list of its trails and particles,
+//! a list of the reactions, and under them the settings of the one picked.
 
 pub mod ball_view;
 mod brush;
@@ -89,8 +89,12 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
     let section = |kind: &str| reg.layer(kind).map(|k| k.section());
     // The group's layers show in Group mode, not here.
     let drawn: Vec<&bpe_core::Layer> = layer_list::top_level(card)
-        .filter(|l| !matches!(section(&l.kind), Some(LayerSection::Reaction | LayerSection::Group)))
+        .filter(|l| {
+            !matches!(section(&l.kind), Some(LayerSection::Around | LayerSection::Reaction | LayerSection::Group))
+        })
         .collect();
+    let around: Vec<&bpe_core::Layer> =
+        layer_list::top_level(card).filter(|l| section(&l.kind) == Some(LayerSection::Around)).collect();
     let reactions: Vec<&bpe_core::Layer> =
         layer_list::top_level(card).filter(|l| section(&l.kind) == Some(LayerSection::Reaction)).collect();
 
@@ -111,6 +115,20 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
     if records > DRAWN_LIMIT {
         ui.label(RichText::new(format!("Only the first {DRAWN_LIMIT} layers are drawn")).small().color(style::MUTED));
     }
+
+    // ---------- Trails and particles ----------
+    ui.add_space(6.0);
+    let add = if shape { "+ Add particles" } else { "+ Add trail or particles" };
+    list_header(ui, cx, card, "Trails and particles", add, LayerSection::Around, edits);
+    if around.is_empty() {
+        let none = if shape { "None yet: add particles." } else { "None yet: add a trail or particles." };
+        ui.label(RichText::new(none).small().color(style::FAINT));
+    }
+    let mut rows = Vec::new();
+    for layer in around.iter().rev() {
+        rows.push((layer.id, layer_list::piece(ui, inspector, cx, card, layer, picked, edits)));
+    }
+    layer_list::around_drop_target(ui, cx, card, &rows, edits);
 
     // ---------- Reactions ----------
     if !shape {
@@ -1258,5 +1276,126 @@ mod tests {
         let view = h.state().inspector.ball_view.last_rect().unwrap();
         let handle = h.get_by_label("Size handle").rect();
         assert!(view.contains_rect(handle), "{handle:?} in {view:?}");
+    }
+
+    // ---------- trails and particles ----------
+
+    #[test]
+    fn a_trail_added_from_its_list_sits_there_and_its_settings_change_with_kind() {
+        let mut h = harness();
+        assert!(label_shown(&h, "None yet: add a trail or particles."));
+        add(&mut h, "+ Add trail or particles", "Trail");
+        assert_eq!(kinds_of(&h, BALL), [kinds::BODY, kinds::TRAIL]);
+        let trail = layer_named(&h, BALL, "Trail");
+        assert_eq!(h.state().inspector.selected_layer.get(&BALL), Some(&trail.id), "the new row is picked");
+        assert!(!label_shown(&h, "None yet: add a trail or particles."));
+        assert!(has_text(&h, "Streak · 0.5 s"), "its summary");
+        // Below the Layers list's Body, above the Reactions.
+        let body = h.get_by_role_and_label(Role::Button, "Body").rect();
+        let row = h.get_by_role_and_label(Role::Button, "Trail").rect();
+        let reactions = h.get_by_label("+ Add reaction").rect();
+        assert!(row.top() > body.bottom() && row.bottom() < reactions.top(), "{body:?} {row:?} {reactions:?}");
+        assert!(label_shown(&h, "Width at the tail") && !label_shown(&h, "Dot size") && !label_shown(&h, "Twist"));
+        let key = layered_key(trail.id, "kind");
+        let s = h.state_mut();
+        s.scene.card_mut(BALL, SlotId::Look).unwrap().params.set(&key, Value::Choice("dots".into()));
+        s.resolved = resolve(&s.scene, &s.kit.registry);
+        h.run();
+        assert!(label_shown(&h, "Dot size") && !label_shown(&h, "Twist"));
+        let s = h.state_mut();
+        s.scene.card_mut(BALL, SlotId::Look).unwrap().params.set(&key, Value::Choice("ribbon".into()));
+        s.resolved = resolve(&s.scene, &s.kit.registry);
+        h.run();
+        assert!(label_shown(&h, "Twist") && !label_shown(&h, "Dot size"));
+    }
+
+    #[test]
+    fn a_trail_takes_a_glow_but_not_a_cut() {
+        let mut h = harness();
+        add(&mut h, "+ Add trail or particles", "Trail");
+        h.get_by_role_and_label(Role::Button, "Trail").click_secondary();
+        h.run();
+        h.get_by_label("Add sub-layer").click();
+        h.run();
+        assert!(h.query_all_by_role_and_label(Role::Button, "Glow").next().is_some());
+        assert!(h.query_all_by_role_and_label(Role::Button, "Cut").next().is_none(), "no cuts on a trail");
+        h.get_all_by_role_and_label(Role::Button, "Glow").last().unwrap().click();
+        h.run();
+        let trail = layer_named(&h, BALL, "Trail");
+        let added = subs(&h, trail.id);
+        assert_eq!(added.iter().map(|l| l.kind.as_str()).collect::<Vec<_>>(), [kinds::SUB_GLOW]);
+        assert!(label_shown(&h, "Glow on Trail"));
+    }
+
+    #[test]
+    fn dragging_reorders_trails_and_particles_within_their_list_only() {
+        let mut h = harness();
+        add(&mut h, "+ Add layer", "Outline");
+        add(&mut h, "+ Add trail or particles", "Trail");
+        add(&mut h, "+ Add trail or particles", "Particles");
+        assert_eq!(kinds_of(&h, BALL), [kinds::BODY, kinds::OUTLINE, kinds::TRAIL, kinds::PARTICLES]);
+        // Top first: Particles, Trail. Drag Particles below Trail.
+        let drag = |h: &mut Harness<'_, State>, from: &str, onto: &str| {
+            let from = h.get_by_role_and_label(Role::Button, from).rect();
+            let onto = h.get_by_role_and_label(Role::Button, onto).rect();
+            let to = egui::pos2(onto.center().x, onto.bottom() + 2.0);
+            h.drag_at(from.center());
+            h.run();
+            h.hover_at(to);
+            h.run();
+            h.drop_at(to);
+            h.run();
+        };
+        drag(&mut h, "Particles", "Trail");
+        assert_eq!(kinds_of(&h, BALL), [kinds::BODY, kinds::OUTLINE, kinds::PARTICLES, kinds::TRAIL]);
+        // Dropped on the Layers list, it stays in its own.
+        drag(&mut h, "Trail", "Outline");
+        assert_eq!(kinds_of(&h, BALL), [kinds::BODY, kinds::OUTLINE, kinds::PARTICLES, kinds::TRAIL]);
+        // And a drawn layer stays out of it.
+        drag(&mut h, "Outline", "Particles");
+        assert_eq!(kinds_of(&h, BALL), [kinds::BODY, kinds::OUTLINE, kinds::PARTICLES, kinds::TRAIL]);
+        // The row menu moves it within the list too.
+        row_menu(&mut h, "Particles", "Move up");
+        assert_eq!(kinds_of(&h, BALL), [kinds::BODY, kinds::OUTLINE, kinds::TRAIL, kinds::PARTICLES]);
+    }
+
+    #[test]
+    fn a_shape_offers_particles_only_and_no_mini_balls() {
+        let mut h = shape_harness(|_| {});
+        assert!(label_shown(&h, "None yet: add particles."));
+        h.get_by_label("+ Add particles").click();
+        h.run();
+        assert!(h.query_all_by_role_and_label(Role::Button, "Trail").next().is_none(), "no trails on shapes");
+        h.get_by_role_and_label(Role::Button, "Particles").click();
+        h.run();
+        assert_eq!(kinds_of(&h, SHAPE), [bpe_kit::modules::look::shape::BODY, kinds::SHAPE_PARTICLES]);
+        assert!(has_text(&h, "Sparks · on hit"));
+        h.get_by_label("Made of").click();
+        h.run();
+        assert!(h.query_all_by_label("Confetti").next().is_some());
+        assert!(h.query_all_by_label("Mini balls").next().is_none(), "a shape lets off no mini balls");
+    }
+
+    #[test]
+    fn a_ball_s_particles_can_be_mini_balls() {
+        let mut h = harness();
+        add(&mut h, "+ Add trail or particles", "Particles");
+        assert!(has_text(&h, "Sparks · on hit"));
+        h.get_by_label("Made of").click();
+        h.run();
+        assert!(h.query_all_by_label("Mini balls").next().is_some());
+    }
+
+    #[test]
+    fn a_trail_setting_s_lane_is_named_after_the_layer() {
+        let mut h = harness();
+        add(&mut h, "+ Add trail or particles", "Trail");
+        let trail = layer_named(&h, BALL, "Trail");
+        let s = h.state_mut();
+        let at = Address::on(BALL, SlotId::Look, &layered_key(trail.id, "width"));
+        s.scene.set_key(&s.kit.registry, &at, 0.0, Value::Number(2.0)).unwrap();
+        let lanes: Vec<String> =
+            crate::timeline::lanes::lanes_for(&s.scene, &s.kit, BALL).into_iter().map(|l| l.short).collect();
+        assert_eq!(lanes, ["Trail · Width"]);
     }
 }

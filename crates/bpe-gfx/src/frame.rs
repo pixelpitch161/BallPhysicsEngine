@@ -482,6 +482,41 @@ pub struct TrailVertex {
     pub edge: [f32; 2],
     /// Linear light; alpha -1 is additive (the light itself fades along the streak).
     pub color: [f32; 4],
+    /// How soft its edges are and how much of it shows (see [`StreakStyle`]).
+    pub style: [f32; 2],
+}
+
+/// How a streak's edges look: its own, a soft glow, or only a band along its edge.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StreakStyle {
+    /// 0 keeps a crisp one-pixel edge; 1 is soft from the centre line out to twice the width.
+    pub softness: f32,
+    /// 0 fills it; otherwise only the outer `band` share of its half width shows (an outline).
+    pub band: f32,
+}
+
+/// Appends a strip through `points` (newest first) as a triangle list, two triangles per
+/// segment, `half_widths[i]` wide and coloured `colors[i]` at `points[i]` (a point past the end
+/// of either takes the last one), drawn as `style` says. Nothing fades or narrows here: the
+/// caller has done that. `pixel` is a pixel in world units, the anti-aliasing margin each edge
+/// keeps. Fewer than two points draw nothing.
+pub fn push_trail(
+    out: &mut Vec<TrailVertex>,
+    points: &[Vec2],
+    half_widths: &[f32],
+    colors: &[[f32; 4]],
+    style: StreakStyle,
+    pixel: f32,
+) {
+    let (Some(&w), Some(&c)) = (half_widths.last(), colors.last()) else { return };
+    strip(
+        out,
+        points,
+        |i| half_widths.get(i).copied().unwrap_or(w),
+        |i| colors.get(i).copied().unwrap_or(c),
+        style,
+        pixel,
+    );
 }
 
 /// Appends a streak through `points` (newest first) as a triangle list: two triangles per
@@ -525,6 +560,35 @@ fn streak(
     if n < 2 || half_width <= 0.0 {
         return;
     }
+    let taper = taper.clamp(0.0, 1.0);
+    let along = |i: usize| i as f32 / (n - 1) as f32;
+    let width_at = |i: usize| half_width * (1.0 - along(i) * taper);
+    let faded = |i: usize| {
+        let fade = (1.0 - along(i)) * (1.0 - along(i));
+        let color = color_at(i);
+        if color[3] < 0.0 {
+            [color[0] * fade, color[1] * fade, color[2] * fade, -1.0]
+        } else {
+            [color[0], color[1], color[2], color[3] * fade]
+        }
+    };
+    strip(out, points, width_at, faded, StreakStyle::default(), pixel);
+}
+
+/// The strip under [`push_trail`] and [`push_streak`]: each point `width_at` wide and `color_at`.
+fn strip(
+    out: &mut Vec<TrailVertex>,
+    points: &[Vec2],
+    width_at: impl Fn(usize) -> f32,
+    color_at: impl Fn(usize) -> [f32; 4],
+    style: StreakStyle,
+    pixel: f32,
+) {
+    let n = points.len();
+    if n < 2 {
+        return;
+    }
+    let (softness, band) = (style.softness.clamp(0.0, 1.0), style.band.clamp(0.0, 1.0));
     // Each segment's direction, worked out once: every segment's corners need its neighbours' too.
     let directions: Vec<Option<Vec2>> = points.windows(2).map(|w| (w[1] - w[0]).try_normalize()).collect();
     let direction = |i: usize| directions[i];
@@ -543,19 +607,16 @@ fn streak(
             _ => own.perp(),
         }
     };
-    let taper = taper.clamp(0.0, 1.0);
     let vertex = |i: usize, side: Vec2, sign: f32| {
-        let t = i as f32 / (n - 1) as f32;
-        let width = half_width * (1.0 - t * taper);
-        let reach = width + pixel;
-        let fade = (1.0 - t) * (1.0 - t);
-        let color = color_at(i);
-        let color = if color[3] < 0.0 {
-            [color[0] * fade, color[1] * fade, color[2] * fade, -1.0]
-        } else {
-            [color[0], color[1], color[2], color[3] * fade]
-        };
-        TrailVertex { position: (points[i] + side * reach * sign).into(), edge: [reach * sign, width], color }
+        let width = width_at(i).max(0.0);
+        // A soft edge reaches out past the width.
+        let reach = width * (1.0 + softness) + pixel;
+        TrailVertex {
+            position: (points[i] + side * reach * sign).into(),
+            edge: [reach * sign, width],
+            color: color_at(i),
+            style: [softness, band],
+        }
     };
     for i in 0..n - 1 {
         let Some(own) = direction(i) else { continue };
@@ -566,42 +627,35 @@ fn streak(
     }
 }
 
-/// A puff of particles let off at one moment. The GPU works every particle out from the burst
-/// and its age, so nothing is kept between frames.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Burst {
-    pub origin: [f32; 2],
-    /// The way the puff flies, unit length.
-    pub normal: [f32; 2],
-    /// When it went off, in seconds into the clip.
-    pub time: f32,
-    /// Linear light.
+/// One particle (or a round bit of a trail) as the GPU draws it: the CPU has worked out where it
+/// is and how it looks. Matches `SpriteIn` in sprites.wgsl.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct Particle {
+    /// Centre (world pixels), turn (radians), half size (pixels; a ring's radius).
+    pub place: [f32; 4],
+    /// Linear light. A negative alpha adds `|alpha|` of the light and covers nothing.
     pub color: [f32; 4],
-    pub count: u32,
-    /// Pixels per second.
-    pub speed: f32,
-    /// How wide the puff fans out, in degrees.
-    pub spread: f32,
-    /// Pixels.
-    pub size: f32,
-    /// Seconds each particle lasts.
-    pub life: f32,
-    /// Pixels per second squared, downwards.
-    pub gravity: f32,
-    pub drag: f32,
-    /// 0 sparks, 1 smoke, 2 confetti, 3 stars, 4 shards, 5 rings.
-    pub shape: u32,
-    /// Added light rather than covering paint.
-    pub additive: bool,
-    pub seed: u32,
-    /// The gradient the particles take their colour from, for `follow` 1 and 2.
-    pub paint: PaintGpu,
-    /// 0: every particle is `color`. 1: each runs along `paint` over its life. 2: each takes one
-    /// of `paint`'s stops at random, `paint.scale` of them evenly spaced on a Steps row.
-    pub follow: u32,
-    /// How much of a colour painted on the GPU (`follow` 1 and 2) shows, 0 to 1: its alpha, or
-    /// for added light its light, is scaled by this. `color` comes faded already.
-    pub amount: f32,
+    /// Half length along the turn (sparks, streaks, confetti, shards), shade (1 as it is),
+    /// softness 0 to 1 (see [`StreakStyle`]), band 0 to 1 (0 filled, else only the outer share
+    /// of its size shows).
+    pub style: [f32; 4],
+    /// Its shape: 0 sparks, 1 smoke, 2 confetti, 3 stars, 4 shards, 5 rings, 6 dots, 7 hearts,
+    /// 8 bubbles, 9 streaks; three spare.
+    pub shape: [u32; 4],
+}
+
+impl Particle {
+    /// A particle of `shape` at `at`, turned `angle` radians, `size` pixels (half size), in
+    /// `color`, shaded 1, crisp and filled.
+    pub fn new(shape: u32, at: Vec2, angle: f32, size: f32, color: [f32; 4]) -> Self {
+        Self { place: [at.x, at.y, angle, size], color, style: [size, 1.0, 0.0, 0.0], shape: [shape, 0, 0, 0] }
+    }
+
+    /// Where it is.
+    pub fn at(&self) -> Vec2 {
+        Vec2::new(self.place[0], self.place[1])
+    }
 }
 
 /// Where something hit recently, for modules that react to hits: particles, shader pulses.
@@ -724,7 +778,12 @@ pub struct Frame {
     pub programs: Vec<crate::LookProgram>,
     pub layered_runs: Vec<crate::LayeredRun>,
     pub trails: Vec<TrailVertex>,
-    pub bursts: Vec<Burst>,
+    /// Particles and trail bits behind the balls, drawn right after `trails`.
+    pub particles: Vec<Particle>,
+    /// Trails and particles in front of the balls, drawn after them (and after the effects on
+    /// things), trails first.
+    pub trails_front: Vec<TrailVertex>,
+    pub particles_front: Vec<Particle>,
     /// Recent hits, filled by the things' drawing parts for the modules' ones.
     pub hits: Vec<HitMark>,
     pub effects: Vec<EffectCall>,
@@ -882,7 +941,9 @@ impl Default for Frame {
             programs: Vec::new(),
             layered_runs: Vec::new(),
             trails: Vec::new(),
-            bursts: Vec::new(),
+            particles: Vec::new(),
+            trails_front: Vec::new(),
+            particles_front: Vec::new(),
             hits: Vec::new(),
             effects: Vec::new(),
             gradients: GradientAtlas::default(),
@@ -911,7 +972,9 @@ impl Frame {
         self.programs.clear();
         self.layered_runs.clear();
         self.trails.clear();
-        self.bursts.clear();
+        self.particles.clear();
+        self.trails_front.clear();
+        self.particles_front.clear();
         self.hits.clear();
         self.effects.clear();
         self.gradients.clear();
@@ -1019,7 +1082,9 @@ impl Frame {
             && self.looks.is_empty()
             && self.layered.is_empty()
             && self.trails.is_empty()
-            && self.bursts.is_empty()
+            && self.particles.is_empty()
+            && self.trails_front.is_empty()
+            && self.particles_front.is_empty()
             && self.layers.is_empty()
     }
 
@@ -1067,35 +1132,15 @@ impl Frame {
         overlay
     }
 
-    /// Moves the overlay's shader effects, hit particles and hit marks into this frame: those of
-    /// stuck things work on the whole picture like everyone else's, and the overlay only holds
-    /// what is drawn as shapes. Particles in one of the overlay's layers go into this frame's
-    /// layer of the same blend and amount, and a layer left with nothing to draw is dropped.
+    /// Moves the overlay's shader effects and hit marks into this frame: those of stuck things
+    /// work on the whole picture like everyone else's. A layer left with nothing to draw is
+    /// dropped.
     pub fn lift_overlay_extras(&mut self) {
         let Some(o) = self.overlay.as_deref_mut() else { return };
-        let (effects, mut bursts, hits) =
-            (std::mem::take(&mut o.effects), std::mem::take(&mut o.bursts), std::mem::take(&mut o.hits));
-        let mut layered: Vec<(Blend, f32, bool, Vec<Burst>)> = o
-            .layers
-            .iter_mut()
-            .filter(|l| !l.frame.bursts.is_empty())
-            .map(|l| (l.blend, l.amount, l.each, std::mem::take(&mut l.frame.bursts)))
-            .collect();
+        let (effects, hits) = (std::mem::take(&mut o.effects), std::mem::take(&mut o.hits));
         o.layers.retain(|l| !l.frame.draws_nothing());
-        // A burst names its gradient by the overlay's atlas row: give it the same row here.
-        for b in bursts.iter_mut().chain(layered.iter_mut().flat_map(|(_, _, _, list)| list.iter_mut())) {
-            if b.paint.row >= 0.0
-                && let Some(baked) = o.gradients.rows().get(b.paint.row as usize)
-            {
-                b.paint.row = self.gradients.adopt(baked) as f32;
-            }
-        }
         self.effects.extend(effects);
-        self.bursts.extend(bursts);
         self.hits.extend(hits);
-        for (blend, amount, each, list) in layered {
-            self.layer_mut(blend, amount, each).bursts.extend(list);
-        }
     }
 
     /// Whether the overlay has anything to draw.
@@ -1108,6 +1153,9 @@ impl Frame {
                 && o.looks.is_empty()
                 && o.layered.is_empty()
                 && o.trails.is_empty()
+                && o.particles.is_empty()
+                && o.trails_front.is_empty()
+                && o.particles_front.is_empty()
                 && o.layers.is_empty())
         })
     }
@@ -1123,6 +1171,28 @@ impl Frame {
         if let Some(o) = &mut self.overlay {
             let camera = o.camera;
             o.set_view(camera, size);
+        }
+    }
+
+    /// Cuts its trail and particle lists (its overlay's and blend layers' too) to what the
+    /// graphics card can hold in one buffer, keeping the first: a last guard, far above what any
+    /// layer draws on its own.
+    pub fn fit_lists(&mut self) {
+        self.fit_lists_to(MOST_TRAIL_VERTICES, MOST_SPRITES);
+    }
+
+    fn fit_lists_to(&mut self, vertices: usize, sprites: usize) {
+        // Whole triangles.
+        let vertices = vertices - vertices % 6;
+        self.trails.truncate(vertices);
+        self.trails_front.truncate(vertices);
+        self.particles.truncate(sprites);
+        self.particles_front.truncate(sprites);
+        if let Some(o) = &mut self.overlay {
+            o.fit_lists_to(vertices, sprites);
+        }
+        for l in &mut self.layers {
+            l.frame.fit_lists_to(vertices, sprites);
         }
     }
 
@@ -1169,6 +1239,9 @@ impl Frame {
             seen[i - 1]
         });
         self.flashes.retain(|f| sees(f.center, f.size));
+        let reach = |p: &Particle| p.place[3].max(p.style[0]) * (1.0 + p.style[2]) + 4.0;
+        self.particles.retain(|p| sees([p.place[0], p.place[1]], reach(p)));
+        self.particles_front.retain(|p| sees([p.place[0], p.place[1]], reach(p)));
         for l in &mut self.layers {
             l.frame.cull_through(camera, (width, height));
         }
@@ -1261,6 +1334,24 @@ pub trait ThingDraw: Send + Sync + 'static {
     /// What the thing draws over its blended part, painted normally whatever its blend: the
     /// layers of a ball above its Blend layer. Drawn right after [`ThingDraw::draw`].
     fn draw_over(&self, _cx: &DrawCx, _frame: &mut Frame) {}
+    /// What the thing draws round itself, each with a blend of its own (its trails and
+    /// particles), bottom first: each one's blend, amount, and whether it sits behind the balls.
+    /// Normal (at any amount) and Add draw straight into the frame, mixing themselves in; any
+    /// other blend draws into a layer of its own. Drawn after every thing has drawn itself.
+    fn around(&self, _resolved: &ResolvedThing) -> Vec<Around> {
+        Vec::new()
+    }
+    /// Draws the `index`th of what [`ThingDraw::around`] lists.
+    fn draw_around(&self, _cx: &DrawCx, _index: usize, _frame: &mut Frame) {}
+}
+
+/// One of the things a thing draws round itself (a trail, particles), with its own blend.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Around {
+    pub blend: Blend,
+    pub amount: f32,
+    /// Behind the balls: a layer of its own is mixed in before they are drawn.
+    pub behind: bool,
 }
 
 /// How a module kind draws for every thing whose slot it fills: a trail behind the balls, a
@@ -1376,6 +1467,20 @@ pub fn build_frame_with(
     }
     for (id, r) in &resolved.things {
         let Some(thing) = scene.things.get(id) else { continue };
+        let Some(d) = draws.thing(&r.kind) else { continue };
+        for (index, around) in d.around(r).into_iter().enumerate() {
+            let (blend, amount) = match around.blend {
+                Blend::Normal | Blend::Add => (Blend::Normal, 1.0),
+                other => (other, around.amount),
+            };
+            let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
+            let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time };
+            let z = z_order(thing, r);
+            draw_routed_at(target, z, blend, amount, false, around.behind, |into| d.draw_around(&cx, index, into));
+        }
+    }
+    for (id, r) in &resolved.things {
+        let Some(thing) = scene.things.get(id) else { continue };
         for slot in SlotId::ALL {
             let Some(s) = r.slots.get(&slot) else { continue };
             let Some(d) = draws.module(&s.kind) else { continue };
@@ -1399,7 +1504,13 @@ pub fn build_frame_with(
         l.frame.camera = world.camera;
     }
     frame.lift_overlay_extras();
+    frame.fit_lists();
 }
+
+/// The most trail vertices one list of a frame holds (about 115 MB).
+pub const MOST_TRAIL_VERTICES: usize = 3_000_000;
+/// The most particles one list of a frame holds (about 61 MB).
+pub const MOST_SPRITES: usize = 1_000_000;
 
 #[cfg(test)]
 mod tests {
@@ -1433,6 +1544,19 @@ mod tests {
             frame.balls.push(BallInstance { center: [1.0, 2.0], radius, color: [1.0; 4], ..BallInstance::default() });
             frame.flashes.push(FlashInstance { center: [0.0; 2], size: 1.0, color: [1.0; 4] });
         }
+    }
+
+    #[test]
+    fn oversized_lists_are_cut_to_whole_triangles_that_fit() {
+        let mut f = Frame { trails: vec![TrailVertex::default(); 107], ..Frame::default() };
+        f.particles = vec![Particle::new(0, Vec2::ZERO, 0.0, 1.0, [1.0; 4]); 50];
+        let mut inner = Frame { trails_front: vec![TrailVertex::default(); 107], ..Frame::default() };
+        inner.particles_front = f.particles.clone();
+        f.overlay = Some(Box::new(inner));
+        f.fit_lists_to(100, 40);
+        assert_eq!((f.trails.len(), f.particles.len()), (96, 40));
+        let o = f.overlay.as_ref().unwrap();
+        assert_eq!((o.trails_front.len(), o.particles_front.len()), (96, 40));
     }
 
     #[test]
@@ -1702,44 +1826,6 @@ mod tests {
         assert_eq!((o.width, o.height, o.camera), (300, 200, CameraView::default()), "stuck things keep no camera");
         let ol = &o.layers[0].frame;
         assert_eq!((ol.width, ol.height, ol.camera), (300, 200, CameraView::default()));
-    }
-
-    #[test]
-    fn lifting_moves_a_stuck_layers_bursts_into_the_frames_layer_with_their_atlas_rows() {
-        use bpe_core::{Blend, Color, Gradient};
-        let mut frame = Frame::default();
-        frame.gradients.row(&Gradient::solid(Color::rgb(0, 255, 0)));
-        let o = frame.overlay_mut();
-        o.gradients.row(&Gradient::solid(Color::rgb(255, 255, 255)));
-        let red = o.gradients.row(&Gradient::solid(Color::rgb(255, 0, 0)));
-        let burst = Burst {
-            origin: [0.0; 2],
-            normal: [0.0, -1.0],
-            time: 0.0,
-            color: [1.0; 4],
-            count: 4,
-            speed: 1.0,
-            spread: 1.0,
-            size: 1.0,
-            life: 1.0,
-            gravity: 0.0,
-            drag: 0.0,
-            shape: 0,
-            additive: false,
-            seed: 1,
-            paint: PaintGpu { row: red as f32, ..PaintGpu::default() },
-            follow: 1,
-            amount: 1.0,
-        };
-        o.layer_mut(Blend::Screen, 0.5, false).bursts.push(burst);
-        frame.lift_overlay_extras();
-        let o = frame.overlay.as_deref().unwrap();
-        assert!(o.layers.is_empty(), "a layer left with nothing to draw is dropped");
-        assert!(frame.bursts.is_empty());
-        assert_eq!((frame.layers.len(), frame.layers[0].blend, frame.layers[0].amount), (1, Blend::Screen, 0.5));
-        let lifted = frame.layers[0].frame.bursts[0];
-        let row = frame.gradients.rows()[lifted.paint.row as usize];
-        assert_eq!(row[0], Color::rgb(255, 0, 0).to_linear(), "the burst paints from the frame's atlas now");
     }
 
     struct Painter;

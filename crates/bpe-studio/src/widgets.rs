@@ -1480,9 +1480,7 @@ mod tests {
     }
 
     #[test]
-    fn the_trail_and_bounce_cards_sections_come_in_order() {
-        let trail = bpe_kit::modules::trail::StreakTrail::defs();
-        assert_eq!(headings(&rows_for(trail, &|_| true)), ["Shape", "Colours", "Light", "Variation", "Blending"]);
+    fn the_bounce_card_s_sections_come_in_order() {
         let bounce = bpe_kit::BasicBounce::defs();
         assert_eq!(headings(&rows_for(bounce, &|_| true)), ["Bounce", "Growing", "Other balls", "Against some things"]);
     }

@@ -168,6 +168,22 @@ bounce_kind!(BouncyKind, "bounce.bouncy");
 
 /// A trail, which asks the runtime to keep a history of where the dots have been.
 struct TrailKind;
+
+#[derive(Settings)]
+struct TrailSettings {
+    #[setting(label = "Length", range(0, 100))]
+    seconds: f32,
+    #[setting(label = "Forever")]
+    forever: bool,
+    #[setting(label = "Width", range(0, 10))]
+    width: f32,
+}
+
+impl Default for TrailSettings {
+    fn default() -> Self {
+        Self { seconds: 0.5, forever: false, width: 1.0 }
+    }
+}
 impl ModuleKind for TrailKind {
     fn id(&self) -> &'static str {
         "trail.test"
@@ -182,7 +198,7 @@ impl ModuleKind for TrailKind {
         SlotId::Trail
     }
     fn settings(&self) -> &'static [SettingDef] {
-        NoSettings::defs()
+        TrailSettings::defs()
     }
 }
 
@@ -278,9 +294,11 @@ impl ThingSim for TestDots {
             bodies.push(at.position + offset, s.velocity + at.velocity, 5.0);
         }
         world.bodies.insert(thing.id, bodies);
-        if resolved.slots.get(&SlotId::Trail).is_some_and(|t| t.kind.starts_with("trail.")) {
-            world.keep_history(thing.id);
-        }
+    }
+    fn history(&self, resolved: &ResolvedThing) -> Option<crate::HistoryWant> {
+        let t = resolved.slots.get(&SlotId::Trail).filter(|t| t.kind.starts_with("trail."))?;
+        let s = TrailSettings::from_params(&t.params);
+        Some(crate::HistoryWant { seconds: s.seconds, forever: s.forever })
     }
     fn affects_physics(&self, key: &str) -> bool {
         key != "tint"

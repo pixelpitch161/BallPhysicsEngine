@@ -89,6 +89,30 @@ fn exports_a_scene_with_many_balls() {
 }
 
 #[test]
+fn exports_a_scene_with_a_trail_and_particles() {
+    use bpe_core::SlotId;
+    use bpe_kit::modules::look::layers::{PARTICLES, SHAPE_PARTICLES, SUB_GLOW, TRAIL};
+    let Some((device, queue)) = ready() else { return };
+    let kit = kit();
+    let reg = &kit.registry;
+    let mut scene = new_scene(reg);
+    let (shape, ball) = (bpe_core::ThingId(1), bpe_core::ThingId(2));
+    let trail = scene.add_layer(reg, ball, SlotId::Look, TRAIL).unwrap();
+    scene.add_sub_layer(reg, ball, SlotId::Look, trail, SUB_GLOW).unwrap();
+    scene.add_layer(reg, ball, SlotId::Look, PARTICLES).unwrap();
+    scene.add_layer(reg, shape, SlotId::Look, SHAPE_PARTICLES).unwrap();
+    let dir = temp_dir("around");
+    let mut options = ExportOptions::new(dir.join("around.mp4"));
+    options.max_frames = Some(30);
+    options.scale = 0.25;
+    options.encoder = Encoder::Cpu;
+    export_video(&device, &queue, &scene, &kit, &options, |_, _| true).unwrap();
+    let size = std::fs::metadata(dir.join("around.mp4")).unwrap().len();
+    assert!(size > 1000, "{size} bytes");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn export_without_ffmpeg_fails_clearly_and_leaves_no_file() {
     let Some((device, queue)) = ready() else { return };
     let kit = kit();

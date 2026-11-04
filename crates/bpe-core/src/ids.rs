@@ -20,9 +20,13 @@ pub type KindId = String;
 pub enum SlotId {
     #[default]
     Look,
+    /// Kept so files before format 10 open: trails are Look layers now, and no card kind fits
+    /// this slot.
     Trail,
     Motion,
     Bounce,
+    /// Kept so files before format 10 open: particles are Look layers now, and no card kind
+    /// fits this slot.
     Particles,
     Shader,
     /// A thing's sound (the Sound tab), not shown in the inspector's card list.
@@ -59,9 +63,9 @@ impl SlotId {
     }
 
     /// Whether the inspector lists this slot's card with the others. The sound and the mixer have
-    /// panels of their own.
+    /// panels of their own; Trail and Particles are kept only so files before format 10 open.
     pub fn in_card_list(self) -> bool {
-        !matches!(self, SlotId::Sound | SlotId::Mixer)
+        !matches!(self, SlotId::Sound | SlotId::Mixer | SlotId::Trail | SlotId::Particles)
     }
 }
 
@@ -80,5 +84,6 @@ mod tests {
         assert!(!SlotId::Sound.in_card_list());
         assert!(!SlotId::Mixer.in_card_list());
         assert!(SlotId::Look.in_card_list());
+        assert!(!SlotId::Trail.in_card_list() && !SlotId::Particles.in_card_list(), "old cards, now Look layers");
     }
 }

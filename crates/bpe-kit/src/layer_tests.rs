@@ -92,25 +92,30 @@ fn a_stuck_blended_thing_goes_into_the_overlays_layer() {
 
 #[test]
 fn trail_add_stays_in_the_main_frame_but_trail_screen_uses_a_layer() {
+    use crate::modules::look::layers::TRAIL;
+    use crate::testing::set_layer;
     let kit = kit();
     let mut scene = new_scene(&kit.registry);
-    scene.add_slot(&kit.registry, BALL, SlotId::Trail, "trail.streak").unwrap();
-    let trail = (BALL, SlotId::Trail);
-
+    let blend = |scene: &mut Scene, mode: &str, amount: f64| {
+        set_layer(scene, BALL, TRAIL, "blend", Value::Choice(mode.into()));
+        set_layer(scene, BALL, TRAIL, "blend_amount", Value::Number(amount));
+    };
+    blend(&mut scene, "add", 1.0);
     let frame = frame_at(&scene, &kit, 2.0);
     assert!(!frame.trails.is_empty(), "Add is the trail's own");
     assert!(frame.layers.is_empty(), "an empty layer is never kept");
-    set_blend(&mut scene, trail, "normal", 0.5);
+    blend(&mut scene, "normal", 0.5);
     let frame = frame_at(&scene, &kit, 2.0);
     assert!(!frame.trails.is_empty() && frame.layers.is_empty(), "so is Normal at any amount");
 
-    set_blend(&mut scene, trail, "normal", 1.0);
+    blend(&mut scene, "normal", 1.0);
     let plain = frame_at(&scene, &kit, 2.0);
-    set_blend(&mut scene, trail, "screen", 0.3);
+    blend(&mut scene, "screen", 0.3);
     let frame = frame_at(&scene, &kit, 2.0);
     assert!(frame.trails.is_empty());
     assert_eq!(frame.layers.len(), 1);
     assert_eq!((frame.layers[0].blend, frame.layers[0].amount), (Blend::Screen, 0.3));
+    assert!(frame.layers[0].behind(), "a trail behind the balls is mixed in before them");
     // The layer is mixed in at its amount later: in it the streak is plain, Normal at full.
     assert_eq!(frame.layers[0].frame.trails, plain.trails);
 }
@@ -170,52 +175,52 @@ fn a_layered_inside_pattern_keeps_a_valid_atlas_row() {
     assert!(layer.gradients.is_empty());
 }
 
-/// The starter scene with a root burst of `blend` at `amount`, its own colours following Life.
-fn painted_bursts(blend: &str, amount: f64) -> Frame {
+/// The starter scene with a particles layer on its ball of `blend` at `amount`, its own colours
+/// following Life.
+fn painted_particles(blend: &str, amount: f64) -> Frame {
+    use crate::modules::look::layers::PARTICLES;
+    use crate::testing::set_layer;
     let kit = kit();
     let mut scene = new_scene(&kit.registry);
-    scene.add_slot(&kit.registry, BALL, SlotId::Particles, "particles.burst").unwrap();
-    let m = (BALL, SlotId::Particles);
-    let params = &mut scene.card_mut(m.0, m.1).unwrap().params;
-    params.set("life", Value::Number(2.0));
-    params.set("source", Value::Choice("own".into()));
-    params.set("follow", Value::Choice("life".into()));
-    params.set("colours", Value::Gradient(Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)])));
-
-    set_blend(&mut scene, m, blend, amount);
+    set_layer(&mut scene, BALL, PARTICLES, "life", Value::Number(2.0));
+    set_layer(&mut scene, BALL, PARTICLES, "source", Value::Choice("own".into()));
+    set_layer(&mut scene, BALL, PARTICLES, "follow", Value::Choice("life".into()));
+    let colours = Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)]);
+    set_layer(&mut scene, BALL, PARTICLES, "colours", Value::Gradient(colours));
+    set_layer(&mut scene, BALL, PARTICLES, "blend", Value::Choice(blend.into()));
+    set_layer(&mut scene, BALL, PARTICLES, "blend_amount", Value::Number(amount));
     frame_at(&scene, &kit, 4.0)
 }
 
 #[test]
-fn bursts_painted_on_the_gpu_carry_the_blend_amount() {
+fn particles_carry_the_blend_amount() {
     for (blend, amount) in [("normal", 0.25), ("add", 0.5), ("normal", 1.0)] {
-        let frame = painted_bursts(blend, amount);
-        assert!(!frame.bursts.is_empty() && frame.layers.is_empty(), "{blend}");
-        assert!(frame.bursts.iter().all(|b| b.follow == 1 && b.amount == amount as f32), "{blend} {amount}");
+        let frame = painted_particles(blend, amount);
+        assert!(!frame.particles.is_empty() && frame.layers.is_empty(), "{blend}");
+        let a = amount as f32;
+        let ok = |c: f32| if blend == "add" { c < 0.0 && -c <= a + 1e-6 } else { c > 0.0 && c <= a + 1e-6 };
+        assert!(frame.particles.iter().all(|p| ok(p.color[3])), "{blend} {amount}");
     }
 }
 
 #[test]
-fn layered_bursts_are_plain_and_still_see_the_hits() {
-    let plain = painted_bursts("normal", 1.0);
-    let frame = painted_bursts("hue", 0.3);
-    assert!(frame.bursts.is_empty());
+fn layered_particles_are_plain() {
+    let plain = painted_particles("normal", 1.0);
+    let frame = painted_particles("hue", 0.3);
+    assert!(frame.particles.is_empty());
     assert_eq!((frame.layers.len(), frame.layers[0].blend), (1, Blend::Hue));
-    let bursts = &frame.layers[0].frame.bursts;
-    assert_eq!(bursts.len(), plain.bursts.len(), "the hits reached the layered module");
-    assert!(bursts.iter().all(|b| !b.additive && b.amount == 1.0));
-    let row = bursts[0].paint.row as usize;
-    assert_eq!(frame.gradients.rows()[row], plain.gradients.rows()[plain.bursts[0].paint.row as usize]);
+    let inside = &frame.layers[0].frame.particles;
+    assert_eq!(inside, &plain.particles, "in the layer they are plain, Normal at full");
 }
 
 #[test]
-fn a_layered_ball_still_hands_its_hits_to_the_frame() {
+fn a_layered_ball_s_added_particles_draw_in_the_frame() {
+    use crate::modules::look::layers::PARTICLES;
     let (mut scene, kit) = ball_blended("subtract", 1.0);
-    scene.add_slot(&kit.registry, BALL, SlotId::Particles, "particles.burst").unwrap();
+    scene.add_layer(&kit.registry, BALL, SlotId::Look, PARTICLES).unwrap();
     let frame = frame_at(&scene, &kit, 4.0);
-    assert!(!frame.hits.is_empty());
-    assert!(!frame.bursts.is_empty(), "the ball's additive bursts are drawn in the frame");
-    assert!(frame.layers[0].frame.hits.is_empty());
+    assert!(!frame.particles.is_empty(), "the ball's additive particles are drawn in the frame");
+    assert!(frame.layers[0].frame.particles.is_empty());
 }
 
 #[test]

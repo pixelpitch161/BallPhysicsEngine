@@ -18,7 +18,6 @@ mod layers_tests;
 mod masks;
 #[cfg(test)]
 mod paint_tests;
-pub mod particles;
 #[cfg(test)]
 mod paths_tests;
 #[cfg(test)]
@@ -26,15 +25,18 @@ mod pictures;
 mod programs;
 #[cfg(test)]
 mod programs_tests;
+pub mod sprites;
+#[cfg(test)]
+mod sprites_tests;
 #[cfg(test)]
 mod sub_layers_tests;
 mod util;
 
 pub use frame::{
-    BackgroundPaint, BallInstance, BlendLayer, Burst, DrawCx, Draws, EffectCall, FlashInstance, Frame, Grade, HitMark,
-    LayerGpu, LayeredInstance, LookInstance, MAX_LAYERS, ModuleDraw, NO_HIT, PathInstance, Place, ShapeInstance, Stage,
-    ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_with, hit_strength, push_streak, push_streak_colours,
-    thing_code,
+    Around, BackgroundPaint, BallInstance, BlendLayer, DrawCx, Draws, EffectCall, FlashInstance, Frame, Grade, HitMark,
+    LayerGpu, LayeredInstance, LookInstance, MAX_LAYERS, ModuleDraw, NO_HIT, Particle, PathInstance, Place,
+    ShapeInstance, Stage, StreakStyle, ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_with,
+    hit_strength, push_streak, push_streak_colours, push_trail, thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, PaintGpu};
 pub use masks::{MASK_TILE, MASK_TILE_BYTES, MAX_MASK_TILES, TILE_DISTANCE_REACH, tile_distance};
@@ -59,8 +61,8 @@ const BALL_ATTRIBUTES: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
     0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4,
     7 => Float32x4
 ];
-const TRAIL_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
-    wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4];
+const TRAIL_ATTRIBUTES: [wgpu::VertexAttribute; 4] =
+    wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x2];
 const LOOK_ATTRIBUTES: [wgpu::VertexAttribute; 12] = wgpu::vertex_attr_array![
     0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
     6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4, 10 => Float32x4, 11 => Float32x4
@@ -308,7 +310,7 @@ pub struct Renderer {
     look_object: wgpu::RenderPipeline,
     layered_object: wgpu::RenderPipeline,
     chain: effects::chain::Chain,
-    particles: particles::Particles,
+    sprites: sprites::Sprites,
     downsample: wgpu::RenderPipeline,
     upsample: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
@@ -339,7 +341,9 @@ struct FrameBuffers {
     /// The frame's time and hits, for shader layers inside balls.
     fx: Option<wgpu::Buffer>,
     flashes: GrowableBuffer,
-    bursts: particles::BurstList,
+    particles: GrowableBuffer,
+    trails_front: GrowableBuffer,
+    particles_front: GrowableBuffer,
 }
 
 impl Default for FrameBuffers {
@@ -357,7 +361,9 @@ impl Default for FrameBuffers {
             masks: None,
             fx: None,
             flashes: GrowableBuffer::new("flash instances"),
-            bursts: particles::BurstList::default(),
+            particles: GrowableBuffer::new("particles behind"),
+            trails_front: GrowableBuffer::new("trail vertices in front"),
+            particles_front: GrowableBuffer::new("particles in front"),
         }
     }
 }
@@ -368,7 +374,6 @@ impl FrameBuffers {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        particles: &particles::Particles,
         layers_layout: &wgpu::BindGroupLayout,
         sampler: &wgpu::Sampler,
         fx: &effects::chain::Fx,
@@ -417,7 +422,9 @@ impl FrameBuffers {
             }
         }
         self.flashes.upload(device, queue, bytemuck::cast_slice(&f.flashes));
-        particles.fill(&mut self.bursts, device, queue, particles::pick(&f.bursts, f.time));
+        self.particles.upload(device, queue, bytemuck::cast_slice(&f.particles));
+        self.trails_front.upload(device, queue, bytemuck::cast_slice(&f.trails_front));
+        self.particles_front.upload(device, queue, bytemuck::cast_slice(&f.particles_front));
     }
 }
 
@@ -985,7 +992,7 @@ impl Renderer {
         let first_height = gradients::atlas_height(0, device.limits().max_texture_dimension_2d as usize);
         let paint = PaintTexture::new(device, &paint_layout, &sampler, first_height);
         let overlay_paint = PaintTexture::new(device, &paint_layout, &sampler, first_height);
-        let particles = particles::Particles::new(device, &globals_layout, &paint_layout);
+        let sprites = sprites::Sprites::new(device, &globals_layout);
         Self {
             globals,
             globals_group,
@@ -1020,7 +1027,7 @@ impl Renderer {
             look_object,
             layered_object,
             chain: effects::chain::Chain::new(device),
-            particles,
+            sprites,
             downsample,
             upsample,
             composite,
@@ -1109,16 +1116,16 @@ impl Renderer {
                 0,
                 bytemuck::bytes_of(&Globals::new(frame, &identity, self.targets.width)),
             );
-            self.overlay.upload(device, queue, &self.particles, &self.layers_layout, &self.sampler, &fx, o);
+            self.overlay.upload(device, queue, &self.layers_layout, &self.sampler, &fx, o);
         }
-        self.buffers.upload(device, queue, &self.particles, &self.layers_layout, &self.sampler, &fx, frame);
+        self.buffers.upload(device, queue, &self.layers_layout, &self.sampler, &fx, frame);
         // Every blend layer's lists, the frame's then the overlay's, each in its own buffers.
         let overlay_layers = overlay.map_or(&[][..], |o| &o.layers[..]);
         let layers: Vec<&BlendLayer> = frame.layers.iter().chain(overlay_layers).collect();
         let mut layer_buffers = std::mem::take(&mut self.layer_buffers);
         layer_buffers.resize_with(layer_buffers.len().max(layers.len()), FrameBuffers::default);
         for (b, l) in layer_buffers.iter_mut().zip(&layers) {
-            b.upload(device, queue, &self.particles, &self.layers_layout, &self.sampler, &fx, &l.frame);
+            b.upload(device, queue, &self.layers_layout, &self.sampler, &fx, &l.frame);
         }
         // The programs of stacks with shader layers, built the first time a frame names them.
         let frames = std::iter::once((frame, None))
@@ -1207,7 +1214,7 @@ impl Renderer {
             &self.targets.hdr,
             object_view.as_ref(),
         );
-        if !frame.flashes.is_empty() || !frame.bursts.is_empty() {
+        if !frame.flashes.is_empty() || !frame.trails_front.is_empty() || !frame.particles_front.is_empty() {
             let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "flashes", wgpu::LoadOp::Load);
             pass.set_bind_group(0, &self.globals_group, &[]);
             self.draw_front(&mut pass, frame, &self.buffers, &world);
@@ -1300,6 +1307,11 @@ impl Renderer {
             pass.set_vertex_buffer(0, b.trails.slice());
             pass.draw(0..f.trails.len() as u32, 0..1);
         }
+        if !f.particles.is_empty() {
+            self.sprites.draw(pass, &b.particles, f.particles.len() as u32);
+            // The sprites bind only the globals: put the paint back for what follows.
+            pass.set_bind_group(1, &through.paint, &[]);
+        }
         if !f.shapes.is_empty() {
             pass.set_pipeline(self.pipeline(&self.shape, Kind::Shape, through));
             pass.set_vertex_buffer(0, b.shapes.slice());
@@ -1381,7 +1393,15 @@ impl Renderer {
             pass.set_vertex_buffer(0, b.flashes.slice());
             pass.draw(0..4, 0..f.flashes.len() as u32);
         }
-        self.particles.draw_list(pass, &through.paint, &b.bursts);
+        if !f.trails_front.is_empty() {
+            pass.set_pipeline(self.pipeline(&self.trail, each::Kind::Trail, through));
+            pass.set_bind_group(1, &through.paint, &[]);
+            pass.set_vertex_buffer(0, b.trails_front.slice());
+            pass.draw(0..f.trails_front.len() as u32, 0..1);
+        }
+        if !f.particles_front.is_empty() {
+            self.sprites.draw(pass, &b.particles_front, f.particles_front.len() as u32);
+        }
     }
 
     /// Where `f`'s shapes, balls and styled balls are, for effects on things.

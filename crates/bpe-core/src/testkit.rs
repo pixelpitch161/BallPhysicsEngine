@@ -201,6 +201,8 @@ pub struct CutLayerKind;
 pub struct GlowSubKind;
 /// A drawn layer whose `code` names one more setting it has: `extra`.
 pub struct CodeLayerKind;
+/// A trail-or-particles layer (section Around) that repeats and takes sub-layers.
+pub struct SparkLayerKind;
 
 #[derive(Settings, Default)]
 pub struct TintLayer {
@@ -362,6 +364,7 @@ layer_kind!(TintLayerKind, "layer.tint", "Tint", TintLayer, Drawn, false, false,
 layer_kind!(CutLayerKind, "sub.cut", "Cut", CutLayer, Sub, true, false, false);
 layer_kind!(GlowSubKind, "sub.glow", "Glow", TintLayer, Sub, true, false, false);
 layer_kind!(CodeLayerKind, "layer.code", "Code", CodeLayer, Drawn, true, false, true);
+layer_kind!(SparkLayerKind, "around.spark", "Spark", RingLayer, Around, true, false, true);
 layer_kind!(WashLayerKind, "group.wash", "Wash", RingLayer, Group, false, false, false);
 layer_kind!(SwirlLayerKind, "group.swirl", "Swirl", RingLayer, Group, true, false, false);
 layer_kind!(ChainTestKind, "chain.test", "Filter", RingLayer, Chain, true, false, false, "sound.test");
@@ -408,6 +411,7 @@ pub fn registry() -> Registry {
     r.add_layer(CutLayerKind);
     r.add_layer(GlowSubKind);
     r.add_layer(CodeLayerKind);
+    r.add_layer(SparkLayerKind);
     r.add_layer(WashLayerKind);
     r.add_layer(SwirlLayerKind);
     r.add_module(SoundTestKind);

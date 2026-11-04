@@ -17,8 +17,8 @@ decisions log `decisions.md` there); all six parts are in: 1 (engine, playback, 
 voice, Sound tab), 3 (oscillator layer chains), 4 (modulators, drones, Follow sound), 5 (notes, scales, slots) and
 6 (buses, console-strip Mixer, bus effects, stems and MIDI export).
 
-Rework step 2 (same day) dropped shared modules: every thing owns its settings. A thing's cards (Look, Trail,
-Motion, Bounce, Particles, Shader) live in `Thing.slots` as `Slot { kind, params, stash }` (balls have no Shader card and shapes none of Trail, Motion or Shader: effects on a thing are Shader layers of its Look; only the scene settings keep a Shader card, the picture's Effects); nothing is shared,
+Rework step 2 (same day) dropped shared modules: every thing owns its settings. A thing's cards (Look,
+Motion, Bounce, Shader) live in `Thing.slots` as `Slot { kind, params, stash }` (balls have no Shader card and shapes none of Motion or Shader: effects on a thing are Shader layers of its Look; only the scene settings keep a Shader card, the picture's Effects; trails and particles are Look layers, and `SlotId::Trail`/`Particles` are kept only so files before format 10 open); nothing is shared,
 linked, inherited from a folder or locked, and there is no Library, presets or randomize (dice). Right-clicking a
 setting opens Copy Value / Paste Value (…) / Create Keyframe; there are no keyframe diamonds in the inspector.
 
@@ -66,7 +66,11 @@ Dependencies go bottom to top:
   Brush strokes are a value, `Value::Strokes` (points in ball space, never keyframed). A shape's moulded outline is
   `Value::Path(ShapePath)` (`shape_path.rs`: corners in shape units, x right, y down, middle at 0, size 1, each side
   straight or a cubic with two handles; `even(n)`, `circle()`, `add_point`, `delete_point`, `create_curve`, mirror
-  partners). Scene files are format 9 (formats 7 and 8 still load and are upgraded). Sound data: `SlotId::Sound` and
+  partners). Scene files are format 10 (formats 7 to 9 still load and are upgraded; format 9 Trail and Particles cards become
+  Look layers with their keyframes, `add_upgrade(10, cards_to_layers)`). **Around layers** (`LayerSection::Around`)
+  sit after the drawn layers and before the reactions: a ball's `layer.trail` and `layer.particles`, a shape's
+  `shape.particles`; they take the sub-layers Glow, Outline, Shadow, Recolour, Flash on hit and Colour on hit
+  (`AROUND_SUBS`), and move only among themselves. Sound data: `SlotId::Sound` and
   `SlotId::Mixer` (last in `SlotId::ALL`, `in_card_list()` false: the inspector doesn't list them), layer sections
   `Chain`/`Modulator`/`Effect` (`Layer.lane` puts chain and effect layers in lanes; `move_layer` keeps them in
   their lane; `add_layer_in`), `Value::Routes` (`ModRoute`, key `ROUTES_KEY`; removing a modulator drops its
@@ -74,7 +78,9 @@ Dependencies go bottom to top:
   (`SoundSource::Modulator/Level/Bus`): Follow sound. `Inputs { hits, sound }` hands pulses a `SoundLevels`; a
   Sound pulse may go on any keyframe setting (`set_pulse`), a Hits pulse only on `pulse` ones.
 - `bpe-runtime`: the world, the fixed 240 Hz staged step loop, the shared collision pass (`pairs.rs`, `walls.rs`),
-  the camera, the event log (`events.rs`) and playback/snapshots. The generic `ThingSim` hooks (spawn, forces,
+  the camera, the event log (`events.rs`) and playback/snapshots. `history.rs` keeps each ball's past positions
+  at 60 a second (and how far it has `travelled`) for as long as its trails and particles ask (`HistoryWant`:
+  `seconds`, at least 2, or `forever` for a Line that stays; `around_history` in the kit works it out). The generic `ThingSim` hooks (spawn, forces,
   settle, after_step) stay for new thing kinds even where no current kind uses them. Walls are **two-sided**:
   `keep_clear` keeps a ball on the side its centre was on at the start of the step (`Bodies.previous`); a hollow
   `Outline::Ring`/`Box` with the ball inside keeps the exact old maths (goldens), `Outline::Path` is a free outline
@@ -83,7 +89,11 @@ Dependencies go bottom to top:
   whose physics settings follow sound gets one at build and reads it at the previous step's end in `animate`),
   `LevelsAt` adapts it to core's `SoundLevels`; `fingerprint` then counts only what Follow sound reads (`SoundMaker::fingerprint`, `bpe_sound::control::heard_fingerprint`: tempo, playing/notes, envelopes, modulators, routes, osc on/Gain/Level, Volume, bus, bus on/mute/solo/fader).
 - `bpe-gfx`: the renderer. Things draw into a frame (`frame.rs`) and the GPU draws it: gradients, blend, grade,
-  shader effects, particles and trails. Shapes draw through `shaders/paths.wgsl` (`Frame.paths`, `PathInstance`,
+  shader effects, particles and trails. Trails are strips of `TrailVertex` (`style`: soft edge, band) in
+  `Frame.trails` (under the balls) and `Frame.trails_front` (over them); particles are `Particle` sprites
+  (`sprites.rs`, `shaders/sprites.wgsl`: a shape code per sprite, soft edge and band, a negative alpha adds light)
+  in `Frame.particles`/`particles_front`. A thing whose trails or particles blend other than Normal/Add reports
+  them through `ThingDraw::around`/`draw_around` and `build_frame_with` draws each through `draw_routed_at`. Shapes draw through `shaders/paths.wgsl` (`Frame.paths`, `PathInstance`,
   `Frame.push_path`: a filled or banded outline from `Frame.path_points`, group 2 binding 4 beside the layer records,
   or a circle with no points). A shape with paint layers names its records in `PathInstance.layers` (first, count,
   program); `shaders/shape_layers.wgsl` works out where a pixel is against the outline (`shape_at`: distance, edge,
@@ -118,12 +128,18 @@ Dependencies go bottom to top:
   its renderers and builds programs on a background thread (`ProgramStore::in_background`,
   `preview::shared_programs`), exports build them while drawing.
 - `bpe-kit`: **every plugin**, with one folder per thing kind in `src/things/` (balls, camera, folder, scene, shape)
-  and one per card kind in `src/modules/` (look, trail, motion, bounce, particles, shader). A ball's Look is
+  and one per card kind in `src/modules/` (look, motion, bounce, shader). A ball's Look is
   `look.layers` (`modules/look/layers/`: Body, Pattern, Outline, Shine (its Light is white or its own colours/gradient, `ShineLight`), Glow, Shading, Shader, Blend, the reactions
   Flash on hit, Colour on hit, Stretch when fast, Colour over time, Turning, the sub-layers, and the group layers Gradient
   (`layers/group.rs`: a colour per ball across the group, mixed into the body on the CPU or into every/chosen
   layer by the shader's group record, code 8) and Shader (`layers/group_shader.rs`: an effect spread across the
   group, record code 9, over the whole ball and optionally a ring around it, or into the Body/chosen layers);
+  `layers/trail/` (settings, `kinds.rs` the path maths, `draw.rs` the six kinds: Streak, Ribbon, Ghosts (drawn
+  with the balls, in their own program), Dots, Line, Smoke) and `layers/particles/` (`emit.rs`: emissions found
+  again each frame from the log and the balls' history, at most `MAX_PARTICLES` 4000 a layer; `sim.rs`: each
+  particle worked out at the moment drawn, closed form or 1/120 s steps for swirl, pull and bounces; `draw.rs`:
+  sprites or Mini balls), with `around.rs`/`around_subs.rs` for their sub-layers and `paint/recolour.rs` for
+  the CPU colour subs. Nothing is kept between frames, so scrubbing and export draw the same.
   `gpu.rs` turns a stack into records (a ball wearing only some layers gets them at opacity 0, `records_for`) and has `topmost_at` for clicks on the ball; `paint/brush.rs`
   rasterises strokes to tiles). The **Shape** (`things/shape/`, replacing the old Arena) is an outline balls bounce
   off from both sides: `ShapeSettings` (the `BODY_HEADINGS` settings Start from, Sides, Size, Fill, Thickness and

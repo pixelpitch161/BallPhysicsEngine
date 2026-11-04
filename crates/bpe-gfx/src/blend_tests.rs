@@ -38,7 +38,7 @@ fn flat(d: [f32; 3]) -> Frame {
 
 /// A square `half` world pixels each way from the centre in one plain colour (alpha -1 adds it).
 fn square(half: f32, colour: [f32; 4]) -> Vec<TrailVertex> {
-    let v = |x: f32, y: f32| TrailVertex { position: [x, y], edge: [0.0, 1.0e4], color: colour };
+    let v = |x: f32, y: f32| TrailVertex { position: [x, y], edge: [0.0, 1.0e4], color: colour, style: [0.0, 0.0] };
     let (a, b, c, d) = (v(-half, -half), v(half, -half), v(half, half), v(-half, half));
     vec![a, b, c, a, c, d]
 }
