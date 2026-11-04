@@ -4,8 +4,8 @@
 //! [`super::adsr`]).
 
 use super::adsr::{ADSR, AdsrSettings};
-use super::notes::{BeatsOrBars, Change, Plays, Root, Scale, SlotOrder, StrumDir};
 use super::mods::{DISTANCE, LFO};
+use super::notes::{BeatsOrBars, Change, Plays, Root, Scale, SlotOrder, StrumDir};
 use bpe_core::{
     Choice, GroupOpts, Layer, LayerId, ModRoute, ModuleKind, NoteSlot, Params, ROUTES_KEY, Registry, SettingDef,
     SettingGroup, Settings, Slot, SlotId, Target, Value,

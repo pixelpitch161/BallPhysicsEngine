@@ -152,6 +152,42 @@ impl ModMatrix {
         }
     }
 
+    /// [`ModMatrix::apply`] for the knobs at places `lo..hi` only: `out[lo..hi]` is `base`'s
+    /// with the routes reaching those knobs applied, the rest of `out` is left alone.
+    pub fn apply_range(&self, sources: &[f32], base: &[f32], out: &mut [f32], lo: usize, hi: usize) {
+        out[lo..hi].copy_from_slice(&base[lo..hi]);
+        let mine = |r: &&Route| (lo..hi).contains(&(r.target as usize));
+        for r in self.routes.iter().filter(mine) {
+            let (t, s) = (r.target as usize, sources.get(r.source as usize).copied().unwrap_or(0.0));
+            let m = if r.invert { 1.0 - s } else { s };
+            match r.combine {
+                Combine::Add => {
+                    let m = if r.bipolar { 2.0 * m - 1.0 } else { m };
+                    if r.log {
+                        let span = (r.hi / r.lo).ln();
+                        let v = (out[t].max(r.lo) / r.lo).ln() + r.amount * m * span;
+                        out[t] = r.lo * v.exp();
+                    } else {
+                        out[t] += r.amount * m * (r.hi - r.lo);
+                    }
+                }
+                Combine::Scale => {
+                    let f = 1.0 - r.amount.abs() * (1.0 - m.clamp(0.0, 1.0));
+                    out[t] += 20.0 * f.max(0.0).log10();
+                }
+            }
+        }
+        for r in self.routes.iter().filter(mine).filter(|r| r.combine == Combine::Add) {
+            let t = r.target as usize;
+            out[t] = out[t].clamp(r.lo, r.hi);
+        }
+    }
+
+    /// Whether any route reaches a knob at places `lo..hi`.
+    pub fn reaches_range(&self, lo: usize, hi: usize) -> bool {
+        self.routes.iter().any(|r| (lo..hi).contains(&(r.target as usize)))
+    }
+
     /// The linear gain the scaling routes on `target` multiply its level by, with the
     /// modulators at `sources` (for working per sample).
     #[inline]

@@ -237,7 +237,7 @@ fn step_value(m: &mut DistanceMod, world: &bpe_runtime::World, shape: ThingId, b
 }
 
 fn distance(s: DistanceSettings) -> DistanceMod {
-    let mut m = DistanceMod::new(s.heard_from.clone());
+    let mut m = DistanceMod::new(std::sync::Arc::new(s.heard_from.clone()));
     m.set_params(DistanceParams::of(&s));
     m
 }

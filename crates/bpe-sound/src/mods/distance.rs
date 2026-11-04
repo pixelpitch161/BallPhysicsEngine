@@ -8,6 +8,7 @@ use bpe_dsp::lfo::smooth_coefficient;
 use bpe_kit::sound::{DistanceSettings, Follows, Measure};
 use bpe_runtime::{Party, World};
 use glam::Vec2;
+use std::sync::Arc;
 
 /// A Distance's settings for one block.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -130,15 +131,15 @@ pub fn distance_value(
 #[derive(Clone, Debug)]
 pub struct DistanceMod {
     p: DistanceParams,
-    heard_from: Target,
+    heard_from: Arc<Target>,
     ball: Option<Party>,
     value: f32,
     fresh: bool,
 }
 
 impl DistanceMod {
-    /// Allocates nothing later; `heard_from` is cloned here, off the audio path.
-    pub fn new(heard_from: Target) -> Self {
+    /// Cloning it later allocates nothing (the balls it hears are shared).
+    pub fn new(heard_from: Arc<Target>) -> Self {
         DistanceMod { p: DistanceParams::default(), heard_from, ball: None, value: 0.0, fresh: true }
     }
 
@@ -148,6 +149,13 @@ impl DistanceMod {
 
     pub fn params(&self) -> &DistanceParams {
         &self.p
+    }
+
+    /// Takes over another's value (a patch swap), so it carries on smoothly.
+    pub fn take_over(&mut self, old: &DistanceMod) {
+        self.value = old.value;
+        self.fresh = old.fresh;
+        self.ball = old.ball;
     }
 }
 

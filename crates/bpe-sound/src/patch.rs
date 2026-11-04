@@ -7,14 +7,14 @@ use crate::chain_graph::{ChainGraph, chain_layers};
 use crate::master::MasterKeys;
 use crate::modmatrix::ModMatrix;
 use crate::voices::knobs;
-use crate::voices::shape::{EnvSpec, OscSpec, ShapeSpec};
+use crate::voices::shape::{DistSpec, EnvSpec, HitSpec, LfoSpec, ModsSpec, OscSpec, ShapeSpec};
 use crate::voices::slots::NotesSpec;
 use crate::{ShapeVoice, TempoMap, VoiceSource};
 use bpe_core::{Address, LayerId, Resolved, ResolvedSlot, Scene, Settings, SlotId, ThingId};
 use bpe_dsp::{TableSet, WarpModeId, WaveBank, WaveShape};
 use bpe_kit::sound::{
-    ADSR, AdsrSettings, DistortionSettings, FILTER, FilterSettings, MODULATION, MixerSettings, ModulationSettings,
-    OscSettings, Slope, VOICE, VoiceSettings, Wave,
+    ADSR, AdsrSettings, DISTANCE, DistanceSettings, DistortionSettings, FILTER, FilterSettings, HIT, HitSettings, LFO,
+    LfoSettings, MODULATION, MixerSettings, ModulationSettings, OscSettings, Slope, VOICE, VoiceSettings, Wave,
 };
 use bpe_kit::things::shape::ShapeSettings;
 use bpe_kit::{Kit, SceneSettings};
@@ -144,7 +144,13 @@ fn voice_with(
     let ids: Vec<_> = envs.iter().map(|e| e.id).collect();
     let (graph, chain) = chain_of(scene, id, card, [v.a.on, v.b.on]);
     let chain_ids: Vec<(LayerId, &str)> = graph.layers.iter().map(|l| (l.id, l.kind.as_str())).collect();
-    let layout = knobs::layout_with(&ids, &chain_ids);
+    let mods = mods_of(id, card, &v.routes);
+    let mod_ids = knobs::ModIds {
+        lfos: mods.lfos.iter().map(|m| m.id).collect(),
+        dists: mods.dists.iter().map(|m| m.id).collect(),
+        hits: mods.hits.iter().map(|m| m.id).collect(),
+    };
+    let layout = knobs::layout_all(&ids, &chain_ids, &mod_ids);
     let base = knobs::values(&layout, &|key| card.params.get(key).cloned());
     let keyed = layout
         .iter()
@@ -186,7 +192,39 @@ fn voice_with(
         },
         width,
         chain: Arc::new(chain),
+        mods,
     }))
+}
+
+/// The card's LFO, Distance and Hit layers that are on (up to eight of each, in card order),
+/// and the order they run in.
+fn mods_of(id: ThingId, card: &ResolvedSlot, routes: &[bpe_core::ModRoute]) -> ModsSpec {
+    let of = |kind: &'static str| card.layers.iter().filter(move |l| l.kind == kind).take(knobs::MAX_EACH);
+    let lfos: Vec<LfoSpec> = of(LFO)
+        .map(|l| LfoSpec {
+            id: l.id,
+            settings: LfoSettings::from_params(&card.layer_params(l.id)),
+            seed: crate::mods::lfo::seed_of(id, l.id),
+        })
+        .collect();
+    let dists: Vec<DistSpec> = of(DISTANCE)
+        .map(|l| {
+            let settings = DistanceSettings::from_params(&card.layer_params(l.id));
+            DistSpec { id: l.id, heard: Arc::new(settings.heard_from.clone()), settings }
+        })
+        .collect();
+    let hits: Vec<HitSpec> =
+        of(HIT).map(|l| HitSpec { id: l.id, pick: HitSettings::from_params(&card.layer_params(l.id)).pick }).collect();
+    let running: Vec<LayerId> = card
+        .layers
+        .iter()
+        .map(|l| l.id)
+        .filter(|l| {
+            lfos.iter().any(|m| m.id == *l) || dists.iter().any(|m| m.id == *l) || hits.iter().any(|m| m.id == *l)
+        })
+        .collect();
+    let (order, _) = crate::mods::mod_order(routes, &running);
+    ModsSpec { lfos, dists, hits, order }
 }
 
 /// The shape's layer chains: their structure from the scene's card (switched-off layers keep

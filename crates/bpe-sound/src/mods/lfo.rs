@@ -81,6 +81,11 @@ pub fn lfo_value(p: &LfoParams, cycles: f64, since: f64, seed: u64) -> f32 {
     shape_at(p.wave, cycles + p.phase, seed) * fade_at(since, p.delay, p.fade_in)
 }
 
+/// The random seed of LFO `layer` on shape `shape`.
+pub fn seed_of(shape: bpe_core::ThingId, layer: bpe_core::LayerId) -> u64 {
+    bpe_dsp::lfo::hash(((shape.0 as u64) << 32) ^ layer.0 as u64 ^ 0x4C46_4F00)
+}
+
 /// One LFO.
 #[derive(Clone, Debug)]
 pub struct LfoMod {
@@ -108,12 +113,26 @@ impl LfoMod {
         self.p = LfoParams::of(s, lfo_rate_hz(s, rate_hz, tempo));
     }
 
+    /// A new random seed (a per-note LFO takes one from its note).
+    pub fn reseed(&mut self, seed: u64) {
+        self.seed = seed;
+    }
+
     pub fn set_params(&mut self, p: LfoParams) {
         self.p = p;
     }
 
     pub fn params(&self) -> &LfoParams {
         &self.p
+    }
+
+    /// Takes over another's place in its wave (a patch swap), so it carries on smoothly.
+    pub fn take_over(&mut self, old: &LfoMod) {
+        self.cycles = old.cycles;
+        self.started = old.started;
+        self.restart = old.restart;
+        self.fresh = old.fresh;
+        self.value = old.value;
     }
 }
 

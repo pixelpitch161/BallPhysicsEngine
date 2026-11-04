@@ -5,8 +5,8 @@
 use crate::modmatrix::{TargetInfo, TargetTable};
 use bpe_core::{LayerId, SettingDef, Settings, Value, layered_key};
 use bpe_kit::sound::{
-    AdsrSettings, DISTORTION, DistortionSettings, FILTER, FilterSettings, MAX_CHAIN, MODULATION, ModulationSettings,
-    VoiceSettings,
+    AdsrSettings, DISTORTION, DistanceSettings, DistortionSettings, FILTER, FilterSettings, HitSettings, LfoSettings,
+    MAX_CHAIN, MODULATION, ModulationSettings, VoiceSettings,
 };
 
 /// Knobs of one oscillator, from its key prefix on.
@@ -121,8 +121,64 @@ pub const BIAS: usize = 12;
 pub const TONE: usize = 13;
 pub const CHAIN_LEN: usize = CHAIN_KEYS.len();
 
+/// The most modulators of one kind (LFO, Distance, Hit) a shape's sound runs.
+pub const MAX_EACH: usize = bpe_kit::sound::MAX_OF_EACH;
+
+/// One LFO's knobs.
+pub const LFO_KEYS: [&str; 5] = ["rate_hz", "phase", "fade_in", "delay", "smooth"];
+pub const LFO_RATE: usize = 0;
+pub const LFO_PHASE: usize = 1;
+pub const LFO_FADE_IN: usize = 2;
+pub const LFO_DELAY: usize = 3;
+pub const LFO_SMOOTH: usize = 4;
+pub const LFO_LEN: usize = LFO_KEYS.len();
+/// Where the LFOs' knobs start, after the chain layers'.
+pub const LFO_START: usize = CHAIN_START + MAX_CHAIN * CHAIN_LEN;
+
+/// One Distance's knobs.
+pub const DIST_KEYS: [&str; 5] = ["near", "far", "curve", "smooth", "full_at"];
+pub const NEAR: usize = 0;
+pub const FAR: usize = 1;
+pub const DIST_CURVE: usize = 2;
+pub const DIST_SMOOTH: usize = 3;
+pub const FULL_AT: usize = 4;
+pub const DIST_LEN: usize = DIST_KEYS.len();
+pub const DIST_START: usize = LFO_START + MAX_EACH * LFO_LEN;
+
+/// One Hit modulator's knobs.
+pub const HIT_KEYS: [&str; 4] = ["low", "high", "curve", "smooth"];
+pub const LOW: usize = 0;
+pub const HIGH: usize = 1;
+pub const HIT_CURVE: usize = 2;
+pub const HIT_SMOOTH: usize = 3;
+pub const HIT_LEN: usize = HIT_KEYS.len();
+pub const HIT_START: usize = DIST_START + MAX_EACH * DIST_LEN;
+
 /// Every knob.
-pub const KNOBS: usize = CHAIN_START + MAX_CHAIN * CHAIN_LEN;
+pub const KNOBS: usize = HIT_START + MAX_EACH * HIT_LEN;
+
+/// LFO `i`'s knob `k`.
+pub const fn lfo(i: usize, k: usize) -> usize {
+    LFO_START + i * LFO_LEN + k
+}
+
+/// Distance `i`'s knob `k`.
+pub const fn dist(i: usize, k: usize) -> usize {
+    DIST_START + i * DIST_LEN + k
+}
+
+/// Hit modulator `i`'s knob `k`.
+pub const fn hit(i: usize, k: usize) -> usize {
+    HIT_START + i * HIT_LEN + k
+}
+
+/// A card's LFO, Distance and Hit layers that run, each kind in card order.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ModIds {
+    pub lfos: Vec<LayerId>,
+    pub dists: Vec<LayerId>,
+    pub hits: Vec<LayerId>,
+}
 
 /// Oscillator `osc`'s knob `k`.
 pub const fn osc(osc: usize, k: usize) -> usize {
@@ -162,6 +218,34 @@ pub fn layout(envs: &[LayerId]) -> Vec<(String, &'static SettingDef, usize)> {
 
 /// [`layout`] with the card's running chain layers (id and kind, in their places' order).
 pub fn layout_with(envs: &[LayerId], chain_layers: &[(LayerId, &str)]) -> Vec<(String, &'static SettingDef, usize)> {
+    layout_all(envs, chain_layers, &ModIds::default())
+}
+
+/// [`layout_with`] and the other modulators' knobs.
+pub fn layout_all(
+    envs: &[LayerId],
+    chain_layers: &[(LayerId, &str)],
+    mods: &ModIds,
+) -> Vec<(String, &'static SettingDef, usize)> {
+    let mut out = chain_layout(envs, chain_layers);
+    let kinds: [(&[LayerId], &[&str], &'static [SettingDef], fn(usize, usize) -> usize); 3] = [
+        (&mods.lfos, &LFO_KEYS, LfoSettings::defs(), lfo),
+        (&mods.dists, &DIST_KEYS, DistanceSettings::defs(), dist),
+        (&mods.hits, &HIT_KEYS, HitSettings::defs(), hit),
+    ];
+    for (ids, keys, defs, place) in kinds {
+        for (i, id) in ids.iter().take(MAX_EACH).enumerate() {
+            for (k, key) in keys.iter().enumerate() {
+                if let Some(d) = def_of(defs, key) {
+                    out.push((layered_key(*id, key), d, place(i, k)));
+                }
+            }
+        }
+    }
+    out
+}
+
+fn chain_layout(envs: &[LayerId], chain_layers: &[(LayerId, &str)]) -> Vec<(String, &'static SettingDef, usize)> {
     let mut out = osc_shape_env_layout(envs);
     for (place, (id, kind)) in chain_layers.iter().take(MAX_CHAIN).enumerate() {
         let defs: &'static [SettingDef] = match *kind {
@@ -249,6 +333,26 @@ mod tests {
         assert_eq!(v[VOICES], 16.0);
         assert_eq!(v[env(1, DECAY)], 350.0);
         assert_eq!(v[env(0, GATE_MS)], 100.0);
+    }
+
+    #[test]
+    fn modulator_knobs_have_places_of_their_own() {
+        let mods = ModIds { lfos: vec![LayerId(4), LayerId(9)], dists: vec![LayerId(2)], hits: vec![LayerId(11)] };
+        let l = layout_all(&[LayerId(0)], &[(LayerId(5), FILTER)], &mods);
+        let mut seen = std::collections::BTreeSet::new();
+        for (key, _, i) in &l {
+            assert!(seen.insert(*i), "{key} shares place {i}");
+            assert!(*i < KNOBS);
+        }
+        let place = |key: &str| l.iter().find(|(k, _, _)| k == key).map(|(_, _, i)| *i);
+        assert_eq!(place("9/rate_hz"), Some(lfo(1, LFO_RATE)));
+        assert_eq!(place("2/far"), Some(dist(0, FAR)));
+        assert_eq!(place("11/high"), Some(hit(0, HIGH)));
+        let v = values(&l, &|_| None);
+        assert_eq!(v[lfo(0, LFO_RATE)], 2.0);
+        assert_eq!(v[dist(0, FAR)], 200.0);
+        assert_eq!(v[dist(0, FULL_AT)], 4.0);
+        assert_eq!(v[hit(0, HIGH)], 1.0);
     }
 
     #[test]
