@@ -40,6 +40,9 @@ pub struct Inspector {
     /// The layer of each thing's layered Look shown in the Look editor; its Body when none is,
     /// or when the one stored has gone.
     pub selected_layer: BTreeMap<ThingId, LayerId>,
+    /// The layers of the Look editor whose sub-layers are folded away, by thing (editor state,
+    /// never saved).
+    pub folded_pieces: BTreeSet<(ThingId, LayerId)>,
     /// The layer or whole look last copied in the Look editor, kept while the selection changes.
     pub clipboard: crate::look_editor::Clipboard,
     /// The layer being renamed in place, and the name typed so far.
@@ -160,8 +163,13 @@ pub(crate) enum Edit {
     // layer they add.
     AddLayer(SlotId, &'static str),
     RemoveLayer(SlotId, LayerId),
-    /// A mask on a layer, its From set to the choice named (such as "layer_below").
-    AddMask(SlotId, LayerId, &'static str),
+    /// A sub-layer of the kind named on a layer, last of its sub-layers.
+    AddSubLayer(SlotId, LayerId, &'static str),
+    /// A sub-layer to the place given among its layer's sub-layers, 0 the first.
+    MoveSubLayer(SlotId, LayerId, usize),
+    /// A copied sub-layer onto a layer, last of its sub-layers; then, with `Some(at)`, moved to
+    /// that place among them.
+    PasteSubLayer(SlotId, LayerId, CopiedLayer, Option<usize>),
     /// To the index given, counted from the bottom of the card's layers.
     MoveLayer(SlotId, LayerId, usize),
     DuplicateLayer(SlotId, LayerId),
@@ -704,12 +712,16 @@ fn apply_layer_edit(
     let added = match edit {
         Edit::AddLayer(slot, kind) => scene.add_layer(reg, id, slot, kind).map(Some),
         Edit::RemoveLayer(slot, layer) => scene.remove_layer(reg, id, slot, layer).map(|_| None),
-        Edit::AddMask(slot, parent, from) => scene.add_mask(reg, id, slot, parent).map(|mask| {
-            if let Some(card) = scene.card_mut(id, slot) {
-                card.params.set(&bpe_core::layered_key(mask, "from"), Value::Choice(from.into()));
-            }
-            Some(mask)
-        }),
+        Edit::AddSubLayer(slot, parent, kind) => scene.add_sub_layer(reg, id, slot, parent, kind).map(Some),
+        Edit::MoveSubLayer(slot, layer, to) => scene.move_sub_layer(id, slot, layer, to).map(|_| None),
+        Edit::PasteSubLayer(slot, parent, copied, at) => {
+            scene.paste_sub_layer(reg, id, slot, parent, &copied).and_then(|sub| {
+                if let Some(at) = at {
+                    scene.move_sub_layer(id, slot, sub, at)?;
+                }
+                Ok(Some(sub))
+            })
+        }
         Edit::MoveLayer(slot, layer, to) => scene.move_layer(reg, id, slot, layer, to).map(|_| None),
         Edit::DuplicateLayer(slot, layer) => scene.duplicate_layer(reg, id, slot, layer).map(Some),
         Edit::RenameLayer(slot, layer, name) => scene.rename_layer(reg, id, slot, layer, &name).map(|_| None),

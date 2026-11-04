@@ -1,5 +1,6 @@
-//! Brush strokes as a picture: a Strokes value drawn into a small greyscale tile the renderer
-//! reads, white where painted. The same strokes always give the same bytes.
+//! Brush strokes as a picture: a Strokes value drawn into a small two-channel tile the renderer
+//! reads: how painted each pixel is, and how far it is from the painted edge (so a brush Cut has
+//! an edge for later sub-layers to follow). The same strokes always give the same bytes.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -61,13 +62,59 @@ fn apply(level: &mut [f32], s: &Stroke) {
     }
 }
 
-/// `level` as tile bytes.
-fn bytes(level: &[f32]) -> Vec<u8> {
-    level.iter().map(|l| (l.clamp(0.0, 1.0) * 255.0).round() as u8).collect()
+/// Ball radii per tile pixel: the tile covers two radii.
+const RADII_PER_PIXEL: f32 = 2.0 / TILE as f32;
+
+/// How far each pixel of `inside` is from the nearest pixel that isn't (in pixels, times 3): a
+/// two-pass 3-4 chamfer distance. Every pixel is far when no pixel is outside.
+fn chamfer(inside: &[bool]) -> Vec<u32> {
+    const FAR: u32 = u32::MAX / 2;
+    let mut d: Vec<u32> = inside.iter().map(|&i| if i { FAR } else { 0 }).collect();
+    let n = TILE as i32;
+    let at = |x: i32, y: i32| (y * n + x) as usize;
+    let forward = [(-1, 0, 3), (-1, -1, 4), (0, -1, 3), (1, -1, 4)];
+    for y in 0..n {
+        for x in 0..n {
+            for (dx, dy, w) in forward {
+                let (nx, ny) = (x + dx, y + dy);
+                if nx >= 0 && nx < n && ny >= 0 {
+                    d[at(x, y)] = d[at(x, y)].min(d[at(nx, ny)] + w);
+                }
+            }
+        }
+    }
+    for y in (0..n).rev() {
+        for x in (0..n).rev() {
+            for (dx, dy, w) in forward {
+                let (nx, ny) = (x - dx, y - dy);
+                if nx >= 0 && nx < n && ny < n {
+                    d[at(x, y)] = d[at(x, y)].min(d[at(nx, ny)] + w);
+                }
+            }
+        }
+    }
+    d
 }
 
-/// The strokes as a `TILE` × `TILE` tile, row by row from the top: how painted each pixel is, 0
-/// to 255. Strokes paint in order; erasing ones take paint away.
+/// `level` as tile bytes: per pixel how painted it is, then its distance to the painted edge (the
+/// 0.5 level) in radii, positive inside, as [`bpe_gfx::tile_distance`] stores it.
+fn bytes(level: &[f32]) -> Vec<u8> {
+    let inside: Vec<bool> = level.iter().map(|&l| l >= 0.5).collect();
+    let outside: Vec<bool> = inside.iter().map(|i| !i).collect();
+    let (to_out, to_in) = (chamfer(&inside), chamfer(&outside));
+    let mut out = Vec::with_capacity(2 * level.len());
+    for (i, l) in level.iter().enumerate() {
+        // The edge runs between pixels: half a pixel from the nearest one across it.
+        let px = if inside[i] { to_out[i] as f32 / 3.0 - 0.5 } else { 0.5 - to_in[i] as f32 / 3.0 };
+        out.push((l.clamp(0.0, 1.0) * 255.0).round() as u8);
+        out.push(bpe_gfx::tile_distance(px * RADII_PER_PIXEL));
+    }
+    out
+}
+
+/// The strokes as a `TILE` × `TILE` tile, row by row from the top, two bytes a pixel: how
+/// painted it is, 0 to 255, and its distance to the painted edge. Strokes paint in order;
+/// erasing ones take paint away.
 pub fn rasterise(strokes: &Strokes) -> Vec<u8> {
     let mut level = vec![0.0f32; TILE * TILE];
     for s in &strokes.list {
@@ -136,16 +183,55 @@ mod tests {
         Stroke { points: vec![[-0.5, 0.0], [0.5, 0.0]], size: 0.1, softness: 0.5, strength: 1.0, erase }
     }
 
-    /// The tile's value at ball point `q`.
+    /// The tile's paint at ball point `q`.
     fn at(tile: &[u8], q: [f32; 2]) -> u8 {
+        tile[2 * pixel(q)]
+    }
+
+    /// The tile's distance byte at ball point `q`.
+    fn dist(tile: &[u8], q: [f32; 2]) -> u8 {
+        tile[2 * pixel(q) + 1]
+    }
+
+    fn pixel(q: [f32; 2]) -> usize {
         let px = |v: f32| ((v + 1.0) * 0.5 * TILE as f32) as usize;
-        tile[px(q[1]) * TILE + px(q[0])]
+        px(q[1]) * TILE + px(q[0])
+    }
+
+    #[test]
+    fn a_painted_disc_knows_how_far_its_edge_is() {
+        let disc = Stroke { points: vec![[0.0, 0.0]], size: 0.4, softness: 0.0, strength: 1.0, erase: false };
+        let tile = rasterise(&Strokes { list: vec![disc] });
+        assert_eq!(tile.len(), 2 * TILE * TILE);
+        let edge = dist(&tile, [0.4, 0.0]);
+        assert!((120..=136).contains(&edge), "about half on the edge: {edge}");
+        assert_eq!(dist(&tile, [0.0, 0.0]), 255, "deep inside is clamped high");
+        assert_eq!(dist(&tile, [0.9, 0.9]), 0, "far outside is clamped low");
+        let (inside, outside) = (dist(&tile, [0.3, 0.0]), dist(&tile, [0.5, 0.0]));
+        assert!(inside > 140 && outside < 116, "{inside} {outside}");
+        // Symmetric about the edge, within a step or two.
+        let (a, b) = (inside as i32 - 128, 128 - outside as i32);
+        assert!((a - b).abs() <= 6, "{a} {b}");
+        // Same both sides of the disc.
+        assert!(dist(&tile, [-0.3, 0.0]).abs_diff(inside) <= 3);
+    }
+
+    #[test]
+    fn the_paint_channel_is_what_it_was() {
+        // The paint bytes alone, as a one-channel tile was before the distance channel.
+        let strokes = Strokes { list: vec![line(false)] };
+        let tile = rasterise(&strokes);
+        let paint: Vec<u8> = tile.iter().step_by(2).copied().collect();
+        let mut level = vec![0.0f32; TILE * TILE];
+        apply(&mut level, &strokes.list[0]);
+        let old: Vec<u8> = level.iter().map(|l| (l.clamp(0.0, 1.0) * 255.0).round() as u8).collect();
+        assert_eq!(paint, old);
     }
 
     #[test]
     fn a_stroke_paints_along_its_path_and_nowhere_else() {
         let tile = rasterise(&Strokes { list: vec![line(false)] });
-        assert_eq!(tile.len(), TILE * TILE);
+        assert_eq!(tile.len(), 2 * TILE * TILE);
         assert!(at(&tile, [0.0, 0.0]) > 240, "{}", at(&tile, [0.0, 0.0]));
         assert!(at(&tile, [-0.45, 0.0]) > 240);
         assert_eq!(at(&tile, [0.0, 0.5]), 0);
@@ -160,7 +246,7 @@ mod tests {
         let erased = Strokes { list: vec![line(false), line(true)] };
         assert_eq!(at(&rasterise(&erased), [0.0, 0.0]), 0);
         assert_eq!(rasterise(&painted), rasterise(&painted.clone()));
-        assert!(rasterise(&Strokes::default()).iter().all(|&b| b == 0));
+        assert!(rasterise(&Strokes::default()).iter().step_by(2).all(|&b| b == 0));
         let dot = Strokes { list: vec![Stroke { points: vec![[0.2, -0.2]], ..line(false) }] };
         assert!(at(&rasterise(&dot), [0.2, -0.2]) > 240);
     }

@@ -26,16 +26,18 @@ mod pictures;
 mod programs;
 #[cfg(test)]
 mod programs_tests;
+#[cfg(test)]
+mod sub_layers_tests;
 mod util;
 
 pub use frame::{
     BackgroundPaint, BallInstance, BlendLayer, Burst, DrawCx, Draws, EffectCall, FlashInstance, Frame, Grade, HitMark,
-    LayerGpu, LayeredInstance, LookInstance, MAX_LAYERS, ModuleDraw, PathInstance, Place, ShapeInstance, Stage,
+    LayerGpu, LayeredInstance, LookInstance, MAX_LAYERS, ModuleDraw, NO_HIT, PathInstance, Place, ShapeInstance, Stage,
     ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_with, hit_strength, push_streak, push_streak_colours,
     thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, PaintGpu};
-pub use masks::{MASK_TILE, MAX_MASK_TILES};
+pub use masks::{MASK_TILE, MASK_TILE_BYTES, MAX_MASK_TILES, TILE_DISTANCE_REACH, tile_distance};
 pub use programs::{LayeredRun, LookProgram, ProgramStore, in_ball_problem};
 pub use wgpu;
 
@@ -63,12 +65,13 @@ const LOOK_ATTRIBUTES: [wgpu::VertexAttribute; 12] = wgpu::vertex_attr_array![
     0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
     6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4, 10 => Float32x4, 11 => Float32x4
 ];
-pub(crate) const LAYERED_ATTRIBUTES: [wgpu::VertexAttribute; 11] = wgpu::vertex_attr_array![
+pub(crate) const LAYERED_ATTRIBUTES: [wgpu::VertexAttribute; 12] = wgpu::vertex_attr_array![
     0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
-    6 => Float32x4, 7 => Float32x4, 8 => Uint32x4, 9 => Float32x4, 10 => Float32x4
+    6 => Float32x4, 7 => Float32x4, 8 => Uint32x4, 9 => Float32x4, 10 => Float32x4, 11 => Float32x4
 ];
-pub(crate) const PATH_ATTRIBUTES: [wgpu::VertexAttribute; 5] =
-    wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Uint32x4];
+pub(crate) const PATH_ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
+    0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Uint32x4, 5 => Float32x4
+];
 const FLASH_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
     wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32x4];
 #[repr(C)]
@@ -436,10 +439,11 @@ pub(crate) fn scene_source(effects: Option<&str>) -> String {
     .concat()
 }
 
-/// layers.wgsl with its stack walk, and shape_layers.wgsl with the shapes': `None` for stacks
-/// without shader layers (they are left out); `Some(effects)` adds the walks shader layers sample
-/// (`walk_plain`, `walk_shape_plain`, leaving them out) and the walks that run them, with
-/// `effects` (the effect code and `run_effect`) after.
+/// layers.wgsl with its stack walk, and shape_layers.wgsl with the shapes', both with the
+/// sub-layers' maths (sub_layers.wgsl): `None` for stacks without shader layers (they are left
+/// out); `Some(effects)` adds the walks shader layers sample (`walk_plain`, `walk_shape_plain`,
+/// leaving them out) and the walks that run them, with `effects` (the effect code and
+/// `run_effect`) after.
 pub(crate) fn layers_source(effects: Option<&str>) -> String {
     let walk = include_str!("shaders/layers_walk.wgsl");
     let named = |name: &str, cov: &str, case: &str, shaded: &str| {
@@ -450,14 +454,20 @@ pub(crate) fn layers_source(effects: Option<&str>) -> String {
             .replace("//GROUP_SHADED", shaded)
     };
     let shape_walk = include_str!("shaders/shape_walk.wgsl");
-    let shape_named =
-        |name: &str, case: &str| shape_walk.replace("SHAPE_WALK", name).replace("//SHAPE_SHADER_CASE", case);
+    let shape_named = |name: &str, cov: &str, case: &str| {
+        shape_walk
+            .replace("SHAPE_WALK", name)
+            .replace("SHAPE_COV_IN", &format!("{cov}_in"))
+            .replace("SHAPE_COV_OUT", &format!("{cov}_out"))
+            .replace("//SHAPE_SHADER_CASE", case)
+    };
     let mut out = String::from(include_str!("shaders/layers.wgsl"));
+    out.push_str(include_str!("shaders/sub_layers.wgsl"));
     out.push_str(include_str!("shaders/shape_layers.wgsl"));
     match effects {
         None => {
             out.push_str(&named("walk_layers", "cov", "", ""));
-            out.push_str(&shape_named("walk_shape", ""));
+            out.push_str(&shape_named("walk_shape", "shape_cov", ""));
         }
         Some(code) => {
             out.push_str(&named("walk_plain", "cov_plain", "", ""));
@@ -467,8 +477,8 @@ pub(crate) fn layers_source(effects: Option<&str>) -> String {
                 include_str!("shaders/layers_shader_case.wgsl"),
                 include_str!("shaders/layers_group_shaded.wgsl"),
             ));
-            out.push_str(&shape_named("walk_shape_plain", ""));
-            out.push_str(&shape_named("walk_shape", include_str!("shaders/shape_shader_case.wgsl")));
+            out.push_str(&shape_named("walk_shape_plain", "shape_cov_plain", ""));
+            out.push_str(&shape_named("walk_shape", "shape_cov", include_str!("shaders/shape_shader_case.wgsl")));
             out.push_str(code);
         }
     }

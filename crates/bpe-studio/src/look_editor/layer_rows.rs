@@ -1,10 +1,10 @@
-//! Settings of a layer that have rows of their own above its settings grid: a mask's From (as
+//! Settings of a layer that have rows of their own above its settings grid: a Cut's From (as
 //! buttons) and the layer it follows (a menu of the layers under its layer), and a Shader
-//! layer's Effect (a menu) and own code (a code box).
+//! layer's (or sub-layer's) Effect (a menu) and own code (a code box).
 
 use bpe_core::{Layer, LayerId, Slot, Value, layered_key};
 use bpe_gfx::effects::Builtin;
-use bpe_kit::modules::look::layers::{self as kinds, MaskFrom, shader};
+use bpe_kit::modules::look::layers::{self as kinds, CutFrom, shader};
 use eframe::egui::{self, RichText, Ui};
 
 use super::{LookCx, code_box, layer_list};
@@ -12,14 +12,14 @@ use crate::inspector::{Edit, Inspector};
 use crate::style;
 use crate::widgets::{grid_label, settings_like_grid, widget_cell};
 
-/// The mask's From buttons: each choice, its words and its help.
-const FROM: [(MaskFrom, &str, &str); 6] = [
-    (MaskFrom::LayerBelow, "Layer below", "Shows where the layer just under it covers the ball"),
-    (MaskFrom::Layer, "Layer", "Shows where another layer under it covers the ball"),
-    (MaskFrom::Shape, "Shape", "Shows inside a shape: half, wedge, quarters, ring, circle or band"),
-    (MaskFrom::Brush, "Brush", "Shows where you paint on the ball in the view above"),
-    (MaskFrom::Light, "Light", "Shows where the layers under it are light"),
-    (MaskFrom::Dark, "Dark", "Shows where the layers under it are dark"),
+/// The Cut's From buttons: each choice, its words and its help.
+const FROM: [(CutFrom, &str, &str); 6] = [
+    (CutFrom::LayerBelow, "Layer below", "Shows where the layer just under it covers the ball"),
+    (CutFrom::Layer, "Layer", "Shows where another layer under it covers the ball"),
+    (CutFrom::Shape, "Shape", "Shows inside a shape: half, wedge, quarters, ring, circle or band"),
+    (CutFrom::Brush, "Brush", "Shows where you paint on the ball in the view above"),
+    (CutFrom::Light, "Light", "Shows where the layers under it are light"),
+    (CutFrom::Dark, "Dark", "Shows where the layers under it are dark"),
 ];
 
 /// Draws `layer`'s own rows and returns the keys of the settings they show, which the settings
@@ -33,12 +33,22 @@ pub fn show(
     edits: &mut Vec<Edit>,
 ) -> Vec<&'static str> {
     let _ = inspector;
-    match (layer.parent, layer.kind.as_str()) {
-        (Some(parent), _) => {
-            mask_rows(ui, cx, card, layer, parent, edits);
+    match (layer.parent, layer_list::sub_name(&layer.kind)) {
+        (Some(parent), Some("cut")) => {
+            let shape = layer.kind.starts_with("shape.");
+            cut_rows(ui, cx, card, layer, parent, shape, edits);
             vec!["from", "target"]
         }
-        (None, kinds::SHADER | kinds::GROUP_SHADER | bpe_kit::modules::look::shape::SHADER) => {
+        (Some(_), Some("shader")) => {
+            shader_rows(ui, cx, layer.id, edits);
+            vec!["effect", "code"]
+        }
+        (None, _)
+            if matches!(
+                layer.kind.as_str(),
+                kinds::SHADER | kinds::GROUP_SHADER | bpe_kit::modules::look::shape::SHADER
+            ) =>
+        {
             shader_rows(ui, cx, layer.id, edits);
             vec!["effect", "code"]
         }
@@ -55,31 +65,33 @@ fn set(cx: &LookCx, layer: LayerId, key: &str, v: Value) -> Edit {
     Edit::SetSlot(cx.slot, layered_key(layer, key), v)
 }
 
-fn mask_rows(ui: &mut Ui, cx: &LookCx, card: &Slot, layer: &Layer, parent: LayerId, edits: &mut Vec<Edit>) {
-    let from = value(cx, layer.id, "from").and_then(|v| <MaskFrom as bpe_core::SettingValue>::from_value(&v));
+/// A Cut's From buttons (a shape's without Brush: shapes have no brush view) and, for Layer, the
+/// layer it follows.
+fn cut_rows(ui: &mut Ui, cx: &LookCx, card: &Slot, layer: &Layer, parent: LayerId, shape: bool, edits: &mut Vec<Edit>) {
+    let from = value(cx, layer.id, "from").and_then(|v| <CutFrom as bpe_core::SettingValue>::from_value(&v));
     let from = from.unwrap_or_default();
     let right = ui.available_rect_before_wrap().right();
-    settings_like_grid(("mask rows", cx.id, layer.id.0)).show(ui, |ui| {
-        grid_label(ui, cx.label_width, "From").on_hover_text("What the mask shows its layer by");
+    settings_like_grid(("cut rows", cx.id, layer.id.0)).show(ui, |ui| {
+        grid_label(ui, cx.label_width, "From").on_hover_text("What the cut shows its layer by");
         widget_cell(ui, right, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(2.0, 2.0);
-                for (choice, words, help) in FROM {
+                for (choice, words, help) in FROM.into_iter().filter(|(c, ..)| !shape || *c != CutFrom::Brush) {
                     let on = from == choice;
                     let button = style::toggle_button(words, on).frame_when_inactive(true);
                     if ui.add(button).on_hover_text(help).clicked() && !on {
                         edits.push(set(cx, layer.id, "from", bpe_core::SettingValue::to_value(&choice)));
                     }
                 }
-                let delete = ui.add(egui::Button::new(RichText::new("Delete mask").small()).frame(false));
-                if delete.on_hover_text("Takes the mask away: the layer shows everywhere again").clicked() {
+                let delete = ui.add(egui::Button::new(RichText::new("Delete cut").small()).frame(false));
+                if delete.on_hover_text("Takes the cut away: the layer shows everywhere again").clicked() {
                     edits.push(Edit::RemoveLayer(cx.slot, layer.id));
                 }
             });
         });
         ui.end_row();
-        if from == MaskFrom::Layer {
-            grid_label(ui, cx.label_width, "Layer").on_hover_text("The layer the mask follows");
+        if from == CutFrom::Layer {
+            grid_label(ui, cx.label_width, "Layer").on_hover_text("The layer the cut follows");
             let below = layer_list::layers_below(cx, card, parent);
             let target = match value(cx, layer.id, "target") {
                 Some(Value::Int(t)) => t,

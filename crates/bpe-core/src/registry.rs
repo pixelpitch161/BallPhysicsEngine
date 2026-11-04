@@ -63,17 +63,17 @@ pub trait ModuleKind: Send + Sync + 'static {
 }
 
 /// Where a layer sits in a card's stack: with the drawn layers, painted bottom to top, with
-/// the reactions, which change the whole finished stack when something happens, as a mask
-/// under the drawn layer it limits (its `Layer::parent`), or with the group layers, which spread
+/// the reactions, which change the whole finished stack when something happens, as a sub-layer
+/// of the drawn layer it changes (its `Layer::parent`), or with the group layers, which spread
 /// one look across every ball of the thing (applied in their order, after the reactions and
-/// masks in the card's list). A sound card's layers are chain layers (in an oscillator's lane,
+/// sub-layers in the card's list). A sound card's layers are chain layers (in an oscillator's lane,
 /// top to bottom), modulators (in tile order, after the chains), and a mixer's are bus effects
 /// (in a bus's lane); see [`crate::Layer::lane`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LayerSection {
     Drawn,
     Reaction,
-    Mask,
+    Sub,
     Group,
     Chain,
     Modulator,
@@ -103,8 +103,13 @@ pub trait LayerKind: Send + Sync + 'static {
     fn base(&self) -> bool {
         false
     }
-    /// Whether layers of this kind may carry masks (a drawn layer that isn't the base layer).
-    fn maskable(&self) -> bool {
+    /// Whether layers of this kind may carry sub-layers (a drawn layer that isn't the base layer).
+    fn takes_subs(&self) -> bool {
+        true
+    }
+    /// Whether a layer of this kind takes a sub-layer of kind `sub` (asked only when
+    /// [`LayerKind::takes_subs`] says yes).
+    fn takes_sub(&self, _sub: &str) -> bool {
         true
     }
     /// Whether some balls of a group can wear this drawn layer alone (`Layer.only`). A layer
@@ -136,6 +141,9 @@ pub fn layer_def(
     kind.dynamic_defs(&with_defaults).iter().find(|d| d.key == key)
 }
 
+/// A fix to a scene loaded from an older format.
+pub type Upgrade = fn(&mut crate::Scene);
+
 /// Every registered kind, by id.
 #[derive(Default)]
 pub struct Registry {
@@ -143,6 +151,9 @@ pub struct Registry {
     modules: BTreeMap<&'static str, Box<dyn ModuleKind>>,
     /// In the order they were registered, which is the order the editor lists them in.
     layers: Vec<Box<dyn LayerKind>>,
+    /// Scene fixes for files older than a format, in the order they were added (see
+    /// [`Registry::add_upgrade`]).
+    upgrades: Vec<(u32, Upgrade)>,
 }
 
 impl Registry {
@@ -170,6 +181,17 @@ impl Registry {
         let id = k.id();
         self.check_new(id);
         self.layers.push(Box::new(k));
+    }
+
+    /// Adds a fix that [`crate::load`] runs on a scene whose file format is below `below`, after
+    /// mending it and before cleaning its settings. Fixes run in the order they were added.
+    pub fn add_upgrade(&mut self, below: u32, f: Upgrade) {
+        self.upgrades.push((below, f));
+    }
+
+    /// The fixes a file of `format` needs, in order.
+    pub fn upgrades_for(&self, format: u32) -> impl Iterator<Item = fn(&mut crate::Scene)> + '_ {
+        self.upgrades.iter().filter(move |(below, _)| format < *below).map(|(_, f)| *f)
     }
 
     fn check_new(&self, id: &str) {

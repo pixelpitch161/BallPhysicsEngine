@@ -15,6 +15,8 @@ struct PathIn {
     @location(3) color: vec4<f32>,
     // First record, how many (0: plain), program (CPU only), spare.
     @location(4) layers: vec4<u32>,
+    // Seconds since a ball last hit it, that hit's strength, how many hits, spare.
+    @location(5) hit: vec4<f32>,
 };
 
 struct PathOut {
@@ -25,6 +27,7 @@ struct PathOut {
     @location(3) @interpolate(flat) c: vec4<f32>,
     @location(4) @interpolate(flat) color: vec4<f32>,
     @location(5) @interpolate(flat) layers: vec4<u32>,
+    @location(6) @interpolate(flat) hit: vec4<f32>,
 };
 
 @group(2) @binding(4) var<storage, read> path_points: array<vec4<f32>>;
@@ -43,6 +46,7 @@ fn vs_path(@builtin(vertex_index) i: u32, s: PathIn) -> PathOut {
     out.c = s.c;
     out.color = s.color;
     out.layers = s.layers;
+    out.hit = s.hit;
     return out;
 }
 
@@ -102,7 +106,7 @@ fn path_cover(in: PathOut) -> f32 {
 
 fn shade_path(in: PathOut) -> vec4<f32> {
     if in.layers.y > 0u {
-        return shade_shape_layers(in.world, in.a, in.b, in.c, in.layers);
+        return shade_shape_layers(in.world, in.a, in.b, in.c, in.layers, in.hit);
     }
     let cover = path_cover(in) * abs(in.color.a);
     if cover <= 0.0 {

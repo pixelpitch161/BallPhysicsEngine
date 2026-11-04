@@ -839,7 +839,7 @@ impl LayerKind for FxKind {
     fn card(&self) -> &'static str {
         MIXER
     }
-    fn maskable(&self) -> bool {
+    fn takes_subs(&self) -> bool {
         false
     }
     fn per_ball(&self) -> bool {

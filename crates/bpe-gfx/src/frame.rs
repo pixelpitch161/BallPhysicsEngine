@@ -91,7 +91,6 @@ pub struct LookInstance {
 /// | 4    | glow    | opacity, strength              | size in radii                          | -                 | 1 colour from the body   |
 /// | 5    | shading | opacity                        | kind (0 linear, 1 radial, 2 brush), softness, space (0 ball, 1 screen), amount | linear: from xy, to xy; radial: centre xy, size; brush: tile in w | 2 radial darkens the middle |
 /// | 6    | shader  | opacity                        | speed, scale, space, effect slot       | -                 | -                        |
-/// | 7    | mask    | -, target record (-1 none), parent angle, shape | from (0 layer below, 1 layer, 2 shape, 3 brush, 4 light, 5 dark), invert, softness, moves (0 layer, 1 ball, 2 screen) | angle rad, size, threshold, tile | - |
 /// | 8    | group   | -                              | -                                      | -                 | -                        |
 /// | 9    | group shader | amount                    | speed, scale, 1 over the whole ball, effect slot | around in radii (0 inside only) | - |
 ///
@@ -107,11 +106,31 @@ pub struct LookInstance {
 /// only run in a stack's in-ball program.
 ///
 /// `head.y` is the layer's blend against the layers under it in the same ball
-/// ([`Blend::shader_code`]); `head.w` how many mask records follow it (they limit it and are
-/// skipped as layers). `colour` is the layer's own linear colour; `paint` what a pattern paints
-/// (its variation comes from the ball's instance); `extra` a shader layer's effect settings. A
-/// mask's target is a record index within the ball's range; a brush tile indexes
+/// ([`Blend::shader_code`]); `head.w` how many sub-layer records follow it (they change it and
+/// are skipped as layers). `colour` is the layer's own linear colour; `paint` what a pattern
+/// paints (its variation comes from the ball's instance); `extra` a shader layer's effect
+/// settings. A cut's target is a record index within the ball's range; a brush tile indexes
 /// [`Frame::mask_tiles`] (-1 none).
+///
+/// Sub-layer records (codes 20..29) follow their layer's record, in order, on balls and shapes
+/// alike (sub_layers.wgsl). Sizes are in the walk's unit: ball radii, or a shape's world pixels;
+/// outline widths are pixels on both. Flag 1 on Glow and Outline takes the layer's own colour.
+///
+/// | code | sub-layer     | `amount`                                    | `p0`                                                   | `p1`                               |
+/// | ---- | ------------- | ------------------------------------------- | ------------------------------------------------------ | ---------------------------------- |
+/// | 20   | cut           | -, target record (-1 none), parent angle, shape | from (0 layer below, 1 layer, 2 shape, 3 brush, 4 light, 5 dark), invert, softness, moves (0 layer, 1 ball, 2 screen) | angle rad, size, threshold, tile |
+/// | 21   | glow          | opacity, strength                           | size, where (0 outside, 1 inside, 2 both)              | -                                  |
+/// | 22   | outline       | opacity                                     | width px, sits (0 in, 1 centre, 2 out)                 | -                                  |
+/// | 23   | shadow        | opacity                                     | offset xy, softness, moves (0 screen, 1 ball)          | -                                  |
+/// | 24   | shading       | as a shading layer's (5)                    |                                                        |                                    |
+/// | 25   | shine         | as a shine layer's (3)                      |                                                        |                                    |
+/// | 26   | shader        | as a shader layer's (6)                     |                                                        |                                    |
+/// | 27   | recolour      | opacity, amount                             | mode (0 tint, 1 hue, 2 gradient, 3 light), turn in turns, brightness, contrast | saturation |
+/// | 28   | flash on hit  | strength, length s, 1 follows impact        | -                                                      | -                                  |
+/// | 29   | colour on hit | turn per hit in turns                       | -                                                      | -                                  |
+///
+/// A recolour's `colour` is its tint and `paint` its gradient (always a row); a shadow's or
+/// flash's `colour` is its colour.
 ///
 /// A shape ([`PathInstance::layers`]) names records of its own, walked by shape_walk.wgsl, the
 /// Body's first. Lengths are world pixels; `lo`, `hi` are where Across starts and ends along
@@ -169,12 +188,22 @@ impl LayerGpu {
     pub const GLOW: u32 = 4;
     pub const SHADING: u32 = 5;
     pub const SHADER: u32 = 6;
-    pub const MASK: u32 = 7;
+    /// Sub-layer records (see the table above).
+    pub const SUB_CUT: u32 = 20;
+    pub const SUB_GLOW: u32 = 21;
+    pub const SUB_OUTLINE: u32 = 22;
+    pub const SUB_SHADOW: u32 = 23;
+    pub const SUB_SHADING: u32 = 24;
+    pub const SUB_SHINE: u32 = 25;
+    pub const SUB_SHADER: u32 = 26;
+    pub const SUB_RECOLOUR: u32 = 27;
+    pub const SUB_FLASH: u32 = 28;
+    pub const SUB_HUE: u32 = 29;
     /// A shape's Colour and gradient layer (shape records only, see below).
     pub const SHAPE_PAINT: u32 = 10;
     /// A radial shading darkens the middle instead of the outside.
     pub const INVERT: u32 = 2;
-    /// The editor's view shows this layer's masks alone: white where they let it show.
+    /// The editor's view shows this layer's cuts alone: white where they let it show.
     pub const SOLO: u32 = 4;
     /// The group's colour over the whole ball (see the table above).
     pub const GROUP: u32 = 8;
@@ -190,11 +219,15 @@ impl LayerGpu {
 }
 
 /// The most layers one ball is drawn with; the rest of a longer stack is left out.
-pub const MAX_LAYERS: u32 = 64;
+pub const MAX_LAYERS: u32 = 128;
+
+/// The hit data of a ball or shape never hit: seconds since its last hit (a long time), that
+/// hit's strength, how many hits, spare.
+pub const NO_HIT: [f32; 4] = [1e6, 0.0, 0.0, 0.0];
 
 /// One ball drawn with a stack of layers (see [`LayerGpu`]).
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct LayeredInstance {
     pub center: [f32; 2],
     pub radius: f32,
@@ -221,13 +254,36 @@ pub struct LayeredInstance {
     /// Where the ball started in its group, from the group's middle (world units), and the
     /// group's side (world units): the square group shaders spread across.
     pub place: [f32; 4],
+    /// Seconds since the ball's last hit, that hit's strength (speed over a full flash's, at
+    /// most 1.5), how many hits it has had, spare: what Flash on hit and Colour on hit sub-layers
+    /// read. [`NO_HIT`] for a ball never hit.
+    pub hit: [f32; 4],
+}
+
+impl Default for LayeredInstance {
+    fn default() -> Self {
+        Self {
+            center: [0.0; 2],
+            radius: 0.0,
+            seed: 0.0,
+            body: [0.0; 4],
+            stretch: [0.0; 4],
+            form: [0.0; 4],
+            misc: [0.0; 4],
+            vary: [0.0; 4],
+            range: [0; 4],
+            group: [0.0; 4],
+            place: [0.0; 4],
+            hit: NO_HIT,
+        }
+    }
 }
 
 /// A Shape: a closed outline, a circle or a list of points (`Frame::path_points`) in the shape's
 /// own units, filled or drawn as a band, with a one-pixel soft edge at any zoom. Points are placed
 /// by turning them by `a.z`, scaling them by `a.w` and moving them to `a.xy`.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct PathInstance {
     /// Centre x, y, angle (radians clockwise), scale (world pixels per shape unit).
     pub a: [f32; 4],
@@ -245,6 +301,14 @@ pub struct PathInstance {
     /// [`PathInstance::NO_PROGRAM`] for none; read on the CPU only), spare. See the shape records
     /// table on [`LayerGpu`].
     pub layers: [u32; 4],
+    /// Hits on the shape, as [`LayeredInstance::hit`].
+    pub hit: [f32; 4],
+}
+
+impl Default for PathInstance {
+    fn default() -> Self {
+        Self { a: [0.0; 4], b: [0.0; 4], c: [0.0; 4], color: [0.0; 4], layers: [0; 4], hit: NO_HIT }
+    }
 }
 
 impl PathInstance {
@@ -989,6 +1053,7 @@ impl Frame {
             c: [code, reach, 0.0, reach],
             color,
             layers: [0, 0, PathInstance::NO_PROGRAM, 0],
+            hit: NO_HIT,
         });
         self.paths.len() - 1
     }

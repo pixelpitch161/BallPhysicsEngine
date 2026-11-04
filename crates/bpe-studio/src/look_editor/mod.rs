@@ -97,14 +97,13 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
     // ---------- Layers ----------
     list_header(ui, cx, card, "Layers", "+ Add layer", LayerSection::Drawn, edits);
     let mut rows = Vec::new();
-    // Records the shader draws: each shown layer's, and its shown masks'.
+    // Records the shader draws: each shown layer's, and its shown sub-layers'.
     let mut records = 0;
     for layer in drawn.iter().rev() {
-        let rect = layer_list::row(ui, inspector, cx, card, layer, picked, edits);
+        let rect = layer_list::piece(ui, inspector, cx, card, layer, picked, edits);
         rows.push((layer.id, rect));
-        for mask in layer_list::masks_of(card, layer.id) {
-            layer_list::row(ui, inspector, cx, card, mask, picked, edits);
-            records += usize::from(layer.enabled && mask.enabled);
+        for sub in layer_list::subs_of(card, layer.id) {
+            records += usize::from(layer.enabled && sub.enabled);
         }
         records += usize::from(layer.enabled);
     }
@@ -136,8 +135,14 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
     ui.add_space(8.0);
     style::divider(ui);
     ui.add_space(4.0);
+    // A sub-layer's heading names its layer: "Glow on Outline".
+    let on = layer.parent.and_then(|p| card.layer(p)).map(|p| p.name.as_str());
     ui.horizontal(|ui| {
-        ui.label(RichText::new(&layer.name).font(style::semibold(13.0)));
+        let title = match on {
+            Some(parent) => format!("{} on {parent}", layer.name),
+            None => layer.name.clone(),
+        };
+        ui.label(RichText::new(title).font(style::semibold(13.0)));
         if layer.name != kind.name() {
             ui.label(RichText::new(kind.name()).small().color(style::MUTED));
         }
@@ -152,7 +157,7 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
     if kind.base() {
         size_row(ui, cx, edits);
     }
-    // Some settings have rows of their own above the grid: a mask's From and Layer, a Shader's
+    // Some settings have rows of their own above the grid: a Cut's From and Layer, a Shader's
     // Effect and Code.
     let own_rows = layer_rows::show(ui, inspector, cx, card, layer, edits);
     let get = |key: &str| cx.scene.value_at_time(reg, &cx.at(picked, key), cx.time);
@@ -177,17 +182,17 @@ fn ball_view_part(
         bpe_kit::things::balls::shapes::offsets(&<bpe_kit::BallsSettings as bpe_core::Settings>::from_params(&t.params))
             .len()
     });
-    // A mask shows on the balls its layer does.
+    // A sub-layer shows on the balls its layer does.
     let wearer = card.layer(picked).and_then(|l| l.parent.and_then(|p| card.layer(p)).or(Some(l)));
     let number = wearer.and_then(|l| l.only.iter().copied().find(|n| (*n as usize) < count)).unwrap_or(0);
     {
         let Inspector { ball_view, render, own_step, .. } = inspector;
-        // Masks shown alone go back to the look when their layer goes.
+        // Cuts shown alone go back to the look when their layer goes.
         if ball_view.solo.is_some_and(|(t, l)| t == cx.id && card.layer(l).is_none()) {
             ball_view.solo = None;
         }
         let layer = card.layer(picked);
-        // A Brush shading or mask paints on the ball instead of picking layers.
+        // A Brush shading or cut paints on the ball instead of picking layers.
         let strokes = layer.and_then(|l| brush::target(cx, l));
         // A stroke left from another layer, ball or brush setting is dropped.
         if strokes.is_none() || ball_view.painting.as_ref().is_some_and(|p| p.thing != cx.id || p.layer != picked) {
@@ -805,7 +810,7 @@ mod tests {
         s.scene.value_at_time(&s.kit.registry, &Address::on(id, SlotId::Look, &layered_key(layer, key)), 0.0)
     }
 
-    fn masks(h: &Harness<'_, State>, parent: LayerId) -> Vec<bpe_core::Layer> {
+    fn subs(h: &Harness<'_, State>, parent: LayerId) -> Vec<bpe_core::Layer> {
         card(h, BALL).layers.iter().filter(|l| l.parent == Some(parent)).cloned().collect()
     }
 
@@ -866,55 +871,201 @@ mod tests {
         assert!(has_text(&h, "Own code that doesn't run"), "the row's summary");
     }
 
+    /// Picks sub-layer kind `kind` from "Add sub-layer" in the right-click menu of the row `row`.
+    fn add_sub(h: &mut Harness<'_, State>, row: &str, kind: &str) {
+        h.get_by_role_and_label(Role::Button, row).click_secondary();
+        h.run();
+        h.get_by_label("Add sub-layer").click();
+        h.run();
+        h.get_all_by_role_and_label(Role::Button, kind).last().unwrap().click();
+        h.run();
+    }
+
     #[test]
-    fn mask_with_layer_below_adds_an_indented_mask_that_goes_with_its_layer() {
+    fn add_sub_layer_from_the_menu_makes_a_box() {
+        let mut h = harness();
+        add(&mut h, "+ Add layer", "Outline");
+        let outline = layer_named(&h, BALL, "Outline");
+        add_sub(&mut h, "Outline", "Glow");
+        let added = subs(&h, outline.id);
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].kind, kinds::SUB_GLOW);
+        assert_eq!(h.state().inspector.selected_layer.get(&BALL), Some(&added[0].id), "the glow is picked");
+        assert!(has_text(&h, "+ Sub-layer"), "the box ends with its add row");
+        assert!(label_shown(&h, "Glow on Outline"), "the heading names its layer");
+        let glow_row = h.get_all_by_role_and_label(Role::Button, "Glow").next().unwrap().rect();
+        let outline_row = h.get_by_role_and_label(Role::Button, "Outline").rect();
+        assert!(glow_row.left() > outline_row.left(), "indented");
+        assert!(glow_row.top() > outline_row.top(), "under its layer");
+    }
+
+    #[test]
+    fn plus_sub_layer_adds_another_at_the_end() {
+        let mut h = harness();
+        add(&mut h, "+ Add layer", "Outline");
+        let outline = layer_named(&h, BALL, "Outline");
+        add_sub(&mut h, "Outline", "Glow");
+        h.get_by_label("+ Sub-layer").click();
+        h.run();
+        h.get_all_by_role_and_label(Role::Button, "Shadow").last().unwrap().click();
+        h.run();
+        let subs: Vec<String> = subs(&h, outline.id).into_iter().map(|l| l.kind).collect();
+        assert_eq!(subs, [kinds::SUB_GLOW, kinds::SUB_SHADOW]);
+    }
+
+    #[test]
+    fn dragging_a_sub_row_reorders_within_its_box_only() {
+        let mut h = harness();
+        add(&mut h, "+ Add layer", "Outline");
+        add(&mut h, "+ Add layer", "Pattern");
+        let outline = layer_named(&h, BALL, "Outline");
+        add_sub(&mut h, "Outline", "Glow");
+        add_sub(&mut h, "Outline", "Shadow");
+        add_sub(&mut h, "Pattern", "Recolour");
+        let order =
+            |h: &Harness<'_, State>| -> Vec<String> { subs(h, outline.id).into_iter().map(|l| l.kind).collect() };
+        let drag = |h: &mut Harness<'_, State>, from: egui::Pos2, to: egui::Pos2| {
+            h.drag_at(from);
+            h.run();
+            h.hover_at(to);
+            h.run();
+            h.drop_at(to);
+            h.run();
+        };
+        // Shadow above Glow.
+        let glow = h.get_all_by_role_and_label(Role::Button, "Glow").next().unwrap().rect();
+        let shadow = h.get_by_role_and_label(Role::Button, "Shadow").rect();
+        drag(&mut h, shadow.center(), egui::pos2(glow.center().x, glow.top() + 2.0));
+        assert_eq!(order(&h), [kinds::SUB_SHADOW, kinds::SUB_GLOW]);
+        // Onto the pattern's box: nothing changes.
+        let shadow = h.get_by_role_and_label(Role::Button, "Shadow").rect();
+        let recolour = h.get_by_role_and_label(Role::Button, "Recolour").rect();
+        drag(&mut h, shadow.center(), recolour.center());
+        assert_eq!(order(&h), [kinds::SUB_SHADOW, kinds::SUB_GLOW]);
+        assert_eq!(subs(&h, layer_named(&h, BALL, "Pattern").id).len(), 1);
+    }
+
+    #[test]
+    fn folding_hides_the_sub_rows_and_counts_them() {
+        let mut h = harness();
+        add(&mut h, "+ Add layer", "Outline");
+        add_sub(&mut h, "Outline", "Glow");
+        add_sub(&mut h, "Outline", "Shadow");
+        h.get_by_label("Fold sub-layers of Outline").click();
+        h.run();
+        assert!(h.query_by_role_and_label(Role::Button, "Shadow").is_none(), "folded away");
+        assert!(label_shown(&h, "2 sub-layers"));
+        h.get_by_label("Show sub-layers of Outline").click();
+        h.run();
+        assert!(h.query_by_role_and_label(Role::Button, "Shadow").is_some());
+    }
+
+    #[test]
+    fn a_sub_row_menu_duplicates_copies_pastes_and_deletes() {
+        let mut h = harness();
+        add(&mut h, "+ Add layer", "Outline");
+        add(&mut h, "+ Add layer", "Pattern");
+        let outline = layer_named(&h, BALL, "Outline");
+        let pattern = layer_named(&h, BALL, "Pattern");
+        add_sub(&mut h, "Outline", "Glow");
+        add_sub(&mut h, "Outline", "Shadow");
+        let names = |h: &Harness<'_, State>, of| -> Vec<String> { subs(h, of).into_iter().map(|l| l.name).collect() };
+        row_menu(&mut h, "Glow", "Duplicate");
+        assert_eq!(names(&h, outline.id), ["Glow", "Glow copy", "Shadow"], "beside itself");
+        row_menu(&mut h, "Shadow", "Copy layer");
+        row_menu(&mut h, "Glow", "Paste layer");
+        let kinds_now: Vec<String> = subs(&h, outline.id).into_iter().map(|l| l.kind).collect();
+        assert_eq!(kinds_now, [kinds::SUB_GLOW, kinds::SUB_SHADOW, kinds::SUB_GLOW, kinds::SUB_SHADOW], "after it");
+        // Pasted on a layer's own row, it comes last.
+        row_menu(&mut h, "Pattern", "Paste layer");
+        let on_pattern: Vec<String> = subs(&h, pattern.id).into_iter().map(|l| l.kind).collect();
+        assert_eq!(on_pattern, [kinds::SUB_SHADOW]);
+        row_menu(&mut h, "Glow copy", "Delete");
+        assert_eq!(subs(&h, outline.id).len(), 3);
+    }
+
+    #[test]
+    fn the_body_blend_and_reactions_offer_no_sub_layers() {
+        let mut h = harness();
+        add(&mut h, "+ Add layer", "Blend");
+        add(&mut h, "+ Add reaction", "Flash on hit");
+        for row in ["Body", "Blend", "Flash on hit"] {
+            h.get_by_role_and_label(Role::Button, row).click_secondary();
+            h.run();
+            assert!(h.get_by_label("Add sub-layer").accesskit_node().is_disabled(), "{row}");
+            h.key_press(egui::Key::Escape);
+            h.run();
+        }
+    }
+
+    #[test]
+    fn a_shape_layer_takes_sub_layers_without_brush() {
+        let mut h = shape_harness(|_| {});
+        add(&mut h, "+ Add layer", "Outline");
+        let outline = layer_named(&h, SHAPE, "Outline");
+        add_sub(&mut h, "Outline", "Cut");
+        let cut = card(&h, SHAPE).layers.iter().find(|l| l.parent == Some(outline.id)).cloned().unwrap();
+        assert_eq!(cut.kind, bpe_kit::modules::look::shape::SUB_CUT);
+        assert!(h.query_by_role_and_label(Role::Button, "Shape").is_some(), "its From buttons");
+        assert!(h.query_by_role_and_label(Role::Button, "Brush").is_none(), "shapes have no brush");
+    }
+
+    #[test]
+    fn twelve_is_the_most() {
+        let mut h = harness();
+        add(&mut h, "+ Add layer", "Outline");
+        let outline = layer_named(&h, BALL, "Outline");
+        {
+            let s = h.state_mut();
+            for _ in 0..bpe_core::MAX_SUBS {
+                s.scene.add_sub_layer(&s.kit.registry, BALL, SlotId::Look, outline.id, kinds::SUB_GLOW).unwrap();
+            }
+            s.resolved = resolve(&s.scene, &s.kit.registry);
+        }
+        h.run();
+        h.get_by_label("+ Sub-layer").click();
+        h.run();
+        assert!(h.get_all_by_role_and_label(Role::Button, "Shadow").last().unwrap().accesskit_node().is_disabled());
+    }
+
+    #[test]
+    fn a_cut_from_layer_below_goes_with_its_layer() {
         let mut h = harness();
         add(&mut h, "+ Add layer", "Pattern");
         let pattern = layer_named(&h, BALL, "Pattern");
-        row_menu(&mut h, "Pattern", "Mask with layer below");
-        let added = masks(&h, pattern.id);
+        add_sub(&mut h, "Pattern", "Cut");
+        let added = subs(&h, pattern.id);
         assert_eq!(added.len(), 1);
-        assert_eq!(param(&h, BALL, added[0].id, "from"), Some(Value::Choice("layer_below".into())));
-        assert_eq!(h.state().inspector.selected_layer.get(&BALL), Some(&added[0].id), "the mask is picked");
-        let mask_row = h.get_by_role_and_label(Role::Button, &added[0].name).rect();
-        let pattern_row = h.get_by_role_and_label(Role::Button, "Pattern").rect();
-        assert!(mask_row.left() > pattern_row.left(), "indented");
-        assert!(mask_row.top() > pattern_row.top(), "under its layer");
+        assert_eq!(added[0].kind, kinds::SUB_CUT);
+        assert_eq!(h.state().inspector.selected_layer.get(&BALL), Some(&added[0].id), "the cut is picked");
         assert!(has_text(&h, "Layer below"));
         // Its eye hides it.
         h.get_by_label(&format!("Hide {}", added[0].name)).click();
         h.run();
-        assert!(!masks(&h, pattern.id)[0].enabled);
-        // Deleting the pattern takes the mask with it.
+        assert!(!subs(&h, pattern.id)[0].enabled);
+        // Deleting the pattern takes the cut with it.
         row_menu(&mut h, "Pattern", "Delete");
         assert_eq!(kinds_of(&h, BALL), [kinds::BODY]);
         assert!(h.query_by_role_and_label(Role::Button, &added[0].name).is_none());
     }
 
     #[test]
-    fn the_body_and_blend_cannot_be_masked() {
-        let mut h = harness();
-        h.get_by_role_and_label(Role::Button, "Body").click_secondary();
-        h.run();
-        assert!(h.get_by_label("Add mask").accesskit_node().is_disabled());
-        assert!(h.get_by_label("Mask with layer below").accesskit_node().is_disabled());
-    }
-
-    #[test]
-    fn a_mask_s_layer_menu_lists_only_the_layers_under_its_layer() {
+    fn a_cut_s_layer_menu_lists_only_the_layers_under_its_layer() {
         let mut h = harness();
         add(&mut h, "+ Add layer", "Outline");
         add(&mut h, "+ Add layer", "Pattern");
         add(&mut h, "+ Add layer", "Glow");
         let pattern = layer_named(&h, BALL, "Pattern");
-        row_menu(&mut h, "Pattern", "Add mask");
-        let mask = masks(&h, pattern.id).remove(0);
-        assert_eq!(param(&h, BALL, mask.id, "from"), Some(Value::Choice("shape".into())));
+        add_sub(&mut h, "Pattern", "Cut");
+        let cut = subs(&h, pattern.id).remove(0);
+        h.get_by_role_and_label(Role::Button, "Shape").click();
+        h.run();
+        assert_eq!(param(&h, BALL, cut.id, "from"), Some(Value::Choice("shape".into())));
         assert!(has_text(&h, "Top half"));
         h.get_by_role_and_label(Role::Button, "Layer").click();
         h.run();
-        assert_eq!(param(&h, BALL, mask.id, "from"), Some(Value::Choice("layer".into())));
-        assert!(has_text(&h, "masked by a missing layer"), "no layer picked yet");
+        assert_eq!(param(&h, BALL, cut.id, "from"), Some(Value::Choice("layer".into())));
+        assert!(has_text(&h, "cut by a missing layer"), "no layer picked yet");
         h.get_by_role_and_label(Role::Button, "Pick a layer").click();
         h.run();
         let count = |h: &Harness<'_, State>, name: &str| h.query_all_by_label(name).count();
@@ -924,7 +1075,7 @@ mod tests {
         let outline = layer_named(&h, BALL, "Outline");
         h.query_all_by_label("Outline").last().unwrap().click();
         h.run();
-        assert_eq!(param(&h, BALL, mask.id, "target"), Some(Value::Int(outline.id.0.into())));
+        assert_eq!(param(&h, BALL, cut.id, "target"), Some(Value::Int(outline.id.0.into())));
     }
 
     #[test]
@@ -953,19 +1104,19 @@ mod tests {
     }
 
     #[test]
-    fn a_layer_moves_with_its_masks_counting_only_the_layers() {
+    fn a_layer_moves_with_its_sub_layers_counting_only_the_layers() {
         let mut h = harness();
         add(&mut h, "+ Add layer", "Outline");
-        row_menu(&mut h, "Outline", "Add mask");
+        add_sub(&mut h, "Outline", "Cut");
         add(&mut h, "+ Add layer", "Glow");
         row_menu(&mut h, "Outline", "Move up");
-        assert_eq!(kinds_of(&h, BALL), [kinds::BODY, kinds::GLOW, kinds::OUTLINE, kinds::MASK]);
+        assert_eq!(kinds_of(&h, BALL), [kinds::BODY, kinds::GLOW, kinds::OUTLINE, kinds::SUB_CUT]);
         row_menu(&mut h, "Outline", "Move down");
-        assert_eq!(kinds_of(&h, BALL), [kinds::BODY, kinds::OUTLINE, kinds::MASK, kinds::GLOW]);
+        assert_eq!(kinds_of(&h, BALL), [kinds::BODY, kinds::OUTLINE, kinds::SUB_CUT, kinds::GLOW]);
     }
 
     #[test]
-    fn undo_brings_back_each_mask_step() {
+    fn undo_brings_back_each_cut_step() {
         let mut h = harness();
         let mut history = crate::history::History::default();
         let mut steps = vec![h.state().scene.clone()];
@@ -973,7 +1124,7 @@ mod tests {
         add(&mut h, "+ Add layer", "Pattern");
         steps.push(h.state().scene.clone());
         history.record(steps[1].clone(), true);
-        row_menu(&mut h, "Pattern", "Add mask");
+        add_sub(&mut h, "Pattern", "Cut");
         steps.push(h.state().scene.clone());
         history.record(steps[2].clone(), true);
         h.get_by_role_and_label(Role::Button, "Brush").click();

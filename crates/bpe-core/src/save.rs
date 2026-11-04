@@ -35,18 +35,21 @@ pub fn save(scene: &Scene) -> String {
 /// type are dropped and numbers are pulled into range; settings and kinds the registry doesn't
 /// know are kept for `resolve` to report.
 pub fn load(text: &str, reg: &Registry) -> Result<Scene, LoadError> {
-    match probe_format(text)? {
+    let format = match probe_format(text)? {
         None => return Err(LoadError::OldEditor),
         // Format 7 is format 8 without sound, so it opens as it is.
         Some(v) if v < Scene::OLDEST_FORMAT => return Err(LoadError::OldEditor),
         Some(v) if v > Scene::FORMAT => return Err(LoadError::Newer(v)),
-        Some(_) => {}
-    }
+        Some(v) => v,
+    };
     let mut scene: Scene = ron::from_str(text).map_err(|e| LoadError::Broken(e.to_string()))?;
     if !scene.mend() {
         return Err(LoadError::Broken("it has no scene settings".into()));
     }
     scene.give_colours();
+    for upgrade in reg.upgrades_for(format) {
+        upgrade(&mut scene);
+    }
     // An older format opens as this one: saving it again writes the new number.
     scene.format = Scene::FORMAT;
 
@@ -178,6 +181,25 @@ mod tests {
     }
 
     #[test]
+    fn upgrades_run_only_on_files_older_than_their_format() {
+        fn rename(s: &mut Scene) {
+            for t in s.things.values_mut() {
+                t.name = format!("{} upgraded", t.name);
+            }
+        }
+        let mut r = testkit::registry();
+        r.add_upgrade(9, rename);
+        let mut s = Scene::empty(&r);
+        let b = testkit::push(&mut s, "balls", ThingId::ROOT);
+        let text = save(&s);
+        assert!(text.contains("format: 9"), "{text}");
+        assert_eq!(load(&text, &r).unwrap().things[&b].name, s.things[&b].name, "a format 9 file is left");
+        let old = load(&text.replace("format: 9", "format: 8"), &r).unwrap();
+        assert_eq!(old.things[&b].name, format!("{} upgraded", s.things[&b].name));
+        assert_eq!(old.format, Scene::FORMAT);
+    }
+
+    #[test]
     fn format_three_to_six_files_are_old() {
         for v in 3..=6 {
             assert_eq!(load(&format!("(format: {v})"), &testkit::registry()).unwrap_err(), LoadError::OldEditor);
@@ -186,7 +208,7 @@ mod tests {
 
     #[test]
     fn newer_files_are_refused() {
-        let e = load("(format: 9)", &testkit::registry()).unwrap_err();
+        let e = load("(format: 10)", &testkit::registry()).unwrap_err();
         assert_eq!(e.to_string(), "This scene was made with a newer version of Ball Studio");
     }
 
@@ -269,7 +291,7 @@ mod tests {
         let r = testkit::registry();
         let mut s = Scene::empty(&r);
         testkit::push(&mut s, "balls", ThingId::ROOT);
-        let text = save(&s).replacen("format: 8", "format: 7", 1);
+        let text = save(&s).replacen("format: 9", "format: 7", 1);
         assert!(text.contains("format: 7"));
         assert_eq!(load(&text, &r).unwrap(), s);
     }

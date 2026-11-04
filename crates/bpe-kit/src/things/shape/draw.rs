@@ -5,12 +5,13 @@ use std::f32::consts::FRAC_PI_2;
 
 use bpe_core::{Blend, ResolvedThing, ShapePath, SlotId};
 use bpe_gfx::{DrawCx, Frame, PathInstance, ThingDraw, thing_code};
-use bpe_runtime::{Outline, Wall};
+use bpe_runtime::{EventKind, Outline, Wall};
 use glam::Vec2;
 
 use super::KIND;
 use crate::modules::look::shape::ShapeStack;
 use crate::modules::look::shape::gpu::Geometry;
+use crate::things::balls::draw::hit_strength;
 
 /// A shape's body colour in linear light.
 pub const BODY_WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
@@ -79,9 +80,30 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
             }
         }
     });
+    let hit = if stack.needs_hits() { shape_hits(cx) } else { bpe_gfx::NO_HIT };
     let path = &mut frame.paths[index];
     path.layers = [first, count, program, part];
     path.c[2] = stack.reach_past();
+    path.hit = hit;
+}
+
+/// The hit data of the shape `cx` is drawing, for its Flash and Colour on hit sub-layers: how long
+/// ago its last hit was (by a ball against it), that hit's strength and its hits so far.
+fn shape_hits(cx: &DrawCx) -> [f32; 4] {
+    let id = cx.thing.id;
+    let rate = cx.world.steps_per_second;
+    let mut hit = bpe_gfx::NO_HIT;
+    for e in cx.log.since(0) {
+        if e.kind != EventKind::Hit || e.b.is_none_or(|b| b.thing != id) {
+            continue;
+        }
+        let time = e.time(rate);
+        if time > cx.time {
+            break;
+        }
+        hit = [(cx.time - time) as f32, hit_strength(e.speed), hit[2] + 1.0, 0.0];
+    }
+    hit
 }
 
 /// A wall as it is drawn, in the shape's own frame, so its layers turn with it.
@@ -268,6 +290,36 @@ mod tests {
         assert_eq!(codes, [0, bpe_gfx::LayerGpu::SHAPE_PAINT, 4, 6]);
         assert_eq!(p.c[2], crate::modules::look::shape::gpu::GLOW_REACH * 30.0, "the glow widens its quad");
         assert!(p.reach() > 300.0 + 6.0 + 60.0);
+    }
+
+    #[test]
+    fn a_shape_with_a_hit_sub_layer_knows_its_last_hit_and_its_hits_so_far() {
+        use crate::modules::look::shape as look;
+        let mut scene = with(ShapeSettings::circle(300.0, 12.0));
+        let kit = crate::kit();
+        let reg = &kit.registry;
+        let paint = add(&mut scene, look::PAINT);
+        scene.add_sub_layer(reg, SHAPE, SlotId::Look, paint, look::SUB_HUE).unwrap();
+        let resolved = bpe_core::resolve(&scene, reg);
+        let mut playback = bpe_runtime::Playback::new(&scene, &resolved, kit.sims.clone());
+        playback.seek(10.0);
+        let rate = playback.world().steps_per_second;
+        let on_me: Vec<f64> = playback
+            .log()
+            .events()
+            .iter()
+            .filter(|e| e.kind == EventKind::Hit && e.b.is_some_and(|b| b.thing == SHAPE))
+            .map(|e| e.time(rate))
+            .collect();
+        assert!(on_me.len() >= 3, "the balls hit the shape: {on_me:?}");
+        let at = on_me[2] + 0.01;
+        let mut frame = Frame::default();
+        build_frame(&scene, &resolved, playback.world(), playback.log(), at, &kit.draws, &mut frame);
+        let hit = frame.paths[0].hit;
+        assert_eq!(hit[2], on_me.iter().filter(|t| **t <= at).count() as f32);
+        assert!((hit[0] - 0.01).abs() < 0.006, "just after its last hit: {hit:?}");
+        assert_eq!(frame.look_layers[1].head[3], 1, "the paint layer has one sub-layer");
+        assert_eq!(frame.look_layers[2].head[0], bpe_gfx::LayerGpu::SUB_HUE);
     }
 
     #[test]

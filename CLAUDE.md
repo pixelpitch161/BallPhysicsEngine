@@ -54,14 +54,19 @@ Dependencies go bottom to top:
   group layers out and `paste_look` keeps the target's own. `Value::Points` holds a list of points. A layer's settings
   live in the card's params under layered keys `"<layer id>/<key>"` (`layered_key`, `split_layered`); edits are
   `add_layer`, `remove_layer`, `move_layer`, `duplicate_layer`, `rename_layer`, `set_layer_enabled`,
-  `copy_layer`/`paste_layer` and `copy_look`/`paste_look`. A **mask** is a layer too (kind `layer.mask`, section
-  `LayerSection::Mask`) whose `Layer.parent` is the drawn layer it limits; it sits right after its parent in
-  `Slot.layers`, and moving, duplicating, copying or deleting a layer carries its masks (`add_mask`). A layer kind can
+  `copy_layer`/`paste_layer` and `copy_look`/`paste_look`. A **sub-layer** is a layer too (section
+  `LayerSection::Sub`) whose `Layer.parent` is the drawn layer it changes; it sits right after its parent in
+  `Slot.layers` (one level, at most `MAX_SUBS` 12 a layer, `takes_subs()`/`takes_sub()` on the kinds), and moving,
+  duplicating, copying or deleting a layer carries its sub-layers (`add_sub_layer`). Ten kinds, `sub.*` on balls and
+  `shape.sub.*` on shapes (`layers/subs.rs`, `layers/cut.rs`, `shape/subs.rs`): Cut (the old Mask: From Layer
+  below / Layer / Shape / Brush / Light / Dark), Glow, Outline, Shadow, Shading, Shine, Shader, Recolour, Flash on
+  hit and Colour on hit, worked in order over the layer alone. Format 8 masks become cuts on load
+  (`Registry::add_upgrade(9, masks_to_cuts)`). A layer kind can
   add settings from its own values (`LayerKind::dynamic_defs`, read through `layer_def`): a Shader layer's own code.
   Brush strokes are a value, `Value::Strokes` (points in ball space, never keyframed). A shape's moulded outline is
   `Value::Path(ShapePath)` (`shape_path.rs`: corners in shape units, x right, y down, middle at 0, size 1, each side
   straight or a cubic with two handles; `even(n)`, `circle()`, `add_point`, `delete_point`, `create_curve`, mirror
-  partners). Scene files are format 8 (format 7 files still load and are upgraded). Sound data: `SlotId::Sound` and
+  partners). Scene files are format 9 (formats 7 and 8 still load and are upgraded). Sound data: `SlotId::Sound` and
   `SlotId::Mixer` (last in `SlotId::ALL`, `in_card_list()` false: the inspector doesn't list them), layer sections
   `Chain`/`Modulator`/`Effect` (`Layer.lane` puts chain and effect layers in lanes; `move_layer` keeps them in
   their lane; `add_layer_in`), `Value::Routes` (`ModRoute`, key `ROUTES_KEY`; removing a modulator drops its
@@ -83,19 +88,25 @@ Dependencies go bottom to top:
   or a circle with no points). A shape with paint layers names its records in `PathInstance.layers` (first, count,
   program); `shaders/shape_layers.wgsl` works out where a pixel is against the outline (`shape_at`: distance, edge,
   position along the edge) and the `shape_walk.wgsl` template walks the shape records (table on `LayerGpu`: body 0,
-  colour and gradient 10, outline 2, glow 4, shader 6). Shader layers in shapes run in the same in-ball programs as
+  colour and gradient 10, outline 2, glow 4, shader 6, sub-layers 20..29 as balls'). Shader layers in shapes run in the same in-ball programs as
   balls' (`Made.shape`, `effects/in_shape.wgsl`; `sample` dispatches on `in_ball.shape`). Paths and layered balls
   share one pipeline layout.
   Balls draw through `shaders/layers.wgsl`, one uber-shader: a thing writes
   its `LayerGpu` records once a frame (`frame.look_layers`) and one `LayeredInstance` per ball names them. The
   older `BallInstance`/`LookInstance` pipelines are still in the renderer but nothing in the kit draws with them.
-  The stack walk is `shaders/layers_walk.wgsl`, a template pasted in by `layers_source`. Records cover Shading (5),
-  Shader (6) and Mask (7) layers; a mask record follows its layer's (whose `head[3]` counts them). Brush strokes reach
-  the GPU as 128² tiles in a `MaskAtlas` (`masks.rs`, `Frame.mask_tiles`). Shader layers run **inside** the ball: a
+  The stack walk is `shaders/layers_walk.wgsl`, a template pasted in by `layers_source`. Records cover Shading (5) and
+  Shader (6) layers; a layer's sub-layer records (codes 20..29, table on `LayerGpu`) follow its own (whose `head[3]`
+  counts them). The walk is one loop over every record (so each costly function has one call site and compiles
+  once): it works a layer out as a `Piece` (`shaders/sub_layers.wgsl`: colour and cover inside/outside, light, its
+  edge distance), runs its sub-layers over the piece, then mixes the piece in at the next layer; a cut re-read for a
+  shadow uses the light `cut_distance`. What a Glow/Outline/Shadow sub-layer adds fades with its layer's opacity.
+  `LayeredInstance.hit` and `PathInstance.hit` carry `[age, strength, hits so far, 0]` (`NO_HIT`) for Flash and
+  Colour on hit, filled by the kit only when the stack `needs_hits()`. Brush strokes reach the GPU as 128² Rg8 tiles
+  (R cover, G distance to the stroke edge) in a `MaskAtlas` (`masks.rs`, `Frame.mask_tiles`). Shader layers run **inside** the ball: a
   stack with them draws with a generated program (`programs.rs`, `LookProgram`, `Frame.programs` and
   `Frame.layered_runs`) made of `layers.wgsl` plus each effect once, renamed by `effects::prefixed` and given the
   `effects/in_ball.wgsl` prelude, whose `sample()` walks the layers under the shader layer. `in_ball_problem(code)`
-  checks own code without a GPU. The `SOLO` record bit makes a layer show its masks alone (the editor's view).
+  checks own code without a GPU. The `SOLO` record bit makes a layer show its cuts alone (the editor's view).
   Group records sit after a ball's own: 8 the group gradient's colour, 9 a group shader, which runs in the same
   program with uv in the group's square (`LayeredInstance.place`: the ball's start offset and the group's side);
   `layers_group_shaded.wgsl` mixes a group shader into the layers that name it (`amount.z/w` of their records).
@@ -109,7 +120,7 @@ Dependencies go bottom to top:
 - `bpe-kit`: **every plugin**, with one folder per thing kind in `src/things/` (balls, camera, folder, scene, shape)
   and one per card kind in `src/modules/` (look, trail, motion, bounce, particles, shader). A ball's Look is
   `look.layers` (`modules/look/layers/`: Body, Pattern, Outline, Shine (its Light is white or its own colours/gradient, `ShineLight`), Glow, Shading, Shader, Blend, the reactions
-  Flash on hit, Colour on hit, Stretch when fast, Colour over time, Turning, Mask, and the group layers Gradient
+  Flash on hit, Colour on hit, Stretch when fast, Colour over time, Turning, the sub-layers, and the group layers Gradient
   (`layers/group.rs`: a colour per ball across the group, mixed into the body on the CPU or into every/chosen
   layer by the shader's group record, code 8) and Shader (`layers/group_shader.rs`: an effect spread across the
   group, record code 9, over the whole ball and optionally a ring around it, or into the Body/chosen layers);
@@ -235,8 +246,10 @@ Dependencies go bottom to top:
   Turn into points); a `look.shape` card shows the Look editor without the ball view or Reactions, and its Body
   shows the shape's `BODY_HEADINGS` settings (changing Sides or Start from removes the path in the same edit).
   A `look.layers` card shows the Look editor (`look_editor/`: the ball view, the Layers and Reactions lists with
-  their menus, drag to reorder and rename, masks indented under their layer, then the picked layer's settings; the
-  copied layer/look live in `Inspector.clipboard`). `layer_rows.rs` draws a mask's From/Layer and a Shader's
+  their menus, drag to reorder and rename, a layer's sub-layers in one box under it (`layer_list::piece`: "+
+  Sub-layer", fold arrow, drag within the box, row menu; `Edit::AddSubLayer`/`MoveSubLayer`/`PasteSubLayer`,
+  `Inspector.folded_pieces`), then the picked layer's settings; the
+  copied layer/look live in `Inspector.clipboard`). `layer_rows.rs` draws a cut's From/Layer and a Shader's
   Effect, `code_box.rs` the own-code box, `handles.rs` the handles on the ball view and `brush.rs` painting strokes
   there. A Balls thing's Look card starts with a Ball / Group switch (`Inspector.look_mode`; in the Balls card when there is
   no layered Look card): Group mode

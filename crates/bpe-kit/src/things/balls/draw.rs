@@ -14,7 +14,42 @@ use crate::things::balls::sim::{BallsState, colour_turn, look_turn};
 pub struct BallsDraw;
 
 /// The speed at which a flash is at full strength.
-const FULL_FLASH_SPEED: f32 = 600.0;
+pub(crate) const FULL_FLASH_SPEED: f32 = 600.0;
+
+/// How strong a hit at `speed` is, for flashes: 1 at [`FULL_FLASH_SPEED`], at most 1.5.
+pub(crate) fn hit_strength(speed: f32) -> f32 {
+    (speed / FULL_FLASH_SPEED).clamp(0.0, 1.5)
+}
+
+/// Each ball's last hit up to `now` seconds, no further back than `memory` seconds: how long ago
+/// it was and how strong (`bpe_gfx::NO_HIT`'s age and 0 without one in that time), by row.
+fn last_hits(cx: &DrawCx, count: usize, memory: f32) -> Vec<(f32, f32)> {
+    let mut last = vec![(bpe_gfx::NO_HIT[0], 0.0); count];
+    if memory <= 0.0 {
+        return last;
+    }
+    let id = cx.thing.id;
+    let rate = cx.world.steps_per_second;
+    let since = ((cx.time - memory as f64) * rate as f64).floor().max(0.0) as u64;
+    for e in cx.log.since(since) {
+        if e.kind != EventKind::Hit {
+            continue;
+        }
+        let time = e.time(rate);
+        if time > cx.time {
+            break;
+        }
+        // Both balls of a ball-on-ball hit were hit.
+        for side in std::iter::once(e.a).chain(e.b) {
+            if side.thing == id
+                && let Some(l) = last.get_mut(side.item as usize)
+            {
+                *l = ((cx.time - time) as f32, hit_strength(e.speed));
+            }
+        }
+    }
+    last
+}
 /// How far back hits are listed for particles and shaders, in seconds.
 pub const HIT_MEMORY: f64 = 3.0;
 
@@ -183,6 +218,9 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, stack: &Stack, part: u32) {
     let widest =
         group.look.radius * if group.look.group { 1.0 + 0.5 * group.look.vary_size.clamp(0.0, 1.0) } else { 1.0 };
     let side = 2.0 * (group.info.furthest + widest).max(1.0);
+    // Flash and Colour on hit sub-layers read each ball's last hit and its hits so far.
+    let hits = stack.needs_hits();
+    let last = if hits { last_hits(cx, bodies.len(), stack.flash_memory()) } else { Vec::new() };
     let start = frame.layered.len() as u32;
     for i in 0..bodies.len() {
         if !bodies.alive[i] {
@@ -200,6 +238,10 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, stack: &Stack, part: u32) {
         let (first, count) = range_for(frame, number);
         let mut ball = stack.instance(body, center, velocity, radius, time, code, seed, own, first, count);
         ball.range[2] = part;
+        if hits {
+            let (age, strength) = last.get(i).copied().unwrap_or((bpe_gfx::NO_HIT[0], 0.0));
+            ball.hit = [age, strength, bodies.hits.get(i).copied().unwrap_or(0) as f32, 0.0];
+        }
         if stack.body_each_ball() {
             // A gradient body turns by the ball's own hue turns, as a plain body's colour does.
             let hits = bodies.hits.get(i).copied().unwrap_or(0) as f32;
@@ -271,7 +313,7 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, stack: &Stack, part: u32) {
         if !(0.0..=1.0).contains(&age) {
             continue;
         }
-        let intensity = (e.speed / FULL_FLASH_SPEED).min(1.5) * (-3.0 * age).exp() * 0.35 * f.flash / 0.4;
+        let intensity = hit_strength(e.speed) * (-3.0 * age).exp() * 0.35 * f.flash / 0.4;
         if intensity < 0.002 {
             continue;
         }
@@ -430,6 +472,40 @@ mod tests {
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         build_frame(&scene, &resolved, playback.world(), playback.log(), at, &kit.draws, &mut frame);
         assert!(frame.flashes.is_empty());
+    }
+
+    #[test]
+    fn hit_sub_layers_give_each_ball_its_last_hit_and_its_hits_so_far() {
+        use crate::modules::look::layers::{OUTLINE, SUB_FLASH};
+        let kit = kit();
+        let reg = &kit.registry;
+        let mut scene = new_scene(reg);
+        let outline = scene.add_layer(reg, BALL, SlotId::Look, OUTLINE).unwrap();
+        let resolved = bpe_core::resolve(&scene, reg);
+        let mut playback = bpe_runtime::Playback::new(&scene, &resolved, kit.sims.clone());
+        playback.seek(10.0);
+        let rate = playback.world().steps_per_second;
+        let mine: Vec<f64> = playback
+            .log()
+            .events()
+            .iter()
+            .filter(|e| e.kind == bpe_runtime::EventKind::Hit && e.a.thing == BALL && e.a.item == 0)
+            .map(|e| e.time(rate))
+            .collect();
+        assert!(mine.len() >= 3, "the ball hits the arena three times: {mine:?}");
+        let at = mine[2] + 0.01;
+        playback.seek(at);
+        let mut frame = Frame::default();
+        build_frame(&scene, &resolved, playback.world(), playback.log(), at, &kit.draws, &mut frame);
+        assert_eq!(frame.layered[0].hit, bpe_gfx::NO_HIT, "nothing reads hits yet");
+        scene.add_sub_layer(reg, BALL, SlotId::Look, outline, SUB_FLASH).unwrap();
+        let resolved = bpe_core::resolve(&scene, reg);
+        build_frame(&scene, &resolved, playback.world(), playback.log(), at, &kit.draws, &mut frame);
+        let hit = frame.layered[0].hit;
+        assert_eq!(hit[2], playback.world().bodies[&BALL].hits[0] as f32);
+        assert!(hit[2] >= 3.0, "{hit:?}");
+        assert!((hit[0] - 0.01).abs() < 0.006, "just after its last hit: {hit:?}");
+        assert!(hit[1] > 0.0 && hit[1] <= 1.5);
     }
 
     #[test]

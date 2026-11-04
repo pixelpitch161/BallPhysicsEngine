@@ -4,13 +4,21 @@
 
 use std::borrow::Cow;
 
-use bpe_core::{Blend, Gradient, LayerId, ResolvedSlot, Settings};
+use bpe_core::{Blend, Gradient, LayerId, Params, ResolvedSlot, Settings};
 use bpe_gfx::{GradientAtlas, LayerGpu, LookProgram, MAX_LAYERS, PaintGpu};
 use glam::Vec2;
 
+use super::subs::{ShapeShading, ShapeSubGlow, ShapeSubShadow};
 use super::{BLEND, BODY, CARD, GLOW, OUTLINE, PAINT, SHADER};
-use super::{PaintLayer, ShapeGlow, ShapeOutline};
-use crate::modules::look::layers::{BlendLayer, ColourFrom, OutlineSits, ShaderLayer};
+use super::{
+    PaintLayer, SUB_CUT, SUB_FLASH, SUB_GLOW, SUB_HUE, SUB_OUTLINE, SUB_RECOLOUR, SUB_SHADER, SUB_SHADING, SUB_SHADOW,
+    SUB_SHINE, ShapeGlow, ShapeOutline,
+};
+use crate::modules::look::layers::gpu::{Sub, SubCx, SubLayer, shader_record, sub_record, written};
+use crate::modules::look::layers::{
+    BlendLayer, ColourFrom, CutLayer, OutlineSits, ShaderLayer, ShapeCut, ShineLayer, SubFlash, SubHue, SubOutline,
+    SubRecolour,
+};
 
 /// How far past its edge a glow reaches, in its sizes: where its light has all but gone. Matches
 /// the balls' HALO_REACH.
@@ -32,12 +40,30 @@ impl ShapeDrawn {
     }
 }
 
+/// A shape's sub-layer of `kind` with its settings `p`, read into a ball's sub-layer settings
+/// (sizes in pixels); `None` for a kind that isn't one.
+pub fn shape_sub(kind: &str, p: &Params) -> Option<SubLayer> {
+    Some(match kind {
+        SUB_CUT => SubLayer::Cut(CutLayer::from(ShapeCut::from_params(p))),
+        SUB_GLOW => SubLayer::Glow(ShapeSubGlow::from_params(p).into()),
+        SUB_OUTLINE => SubLayer::Outline(SubOutline::from_params(p)),
+        SUB_SHADOW => SubLayer::Shadow(ShapeSubShadow::from_params(p).into()),
+        SUB_SHADING => SubLayer::Shading(ShapeShading::from_params(p).into()),
+        SUB_SHINE => SubLayer::Shine(ShineLayer::from_params(p)),
+        SUB_SHADER => SubLayer::Shader(Box::new(ShaderLayer::from_params(p))),
+        SUB_RECOLOUR => SubLayer::Recolour(SubRecolour::from_params(p)),
+        SUB_FLASH => SubLayer::Flash(SubFlash::from_params(p)),
+        SUB_HUE => SubLayer::Hue(SubHue::from_params(p)),
+        _ => return None,
+    })
+}
+
 /// A shape's shown stack, read from its resolved Look card.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShapeStack {
     pub body_id: LayerId,
-    /// The layers above the Body, bottom first, with their ids.
-    pub drawn: Vec<(LayerId, ShapeDrawn)>,
+    /// The layers above the Body, bottom first, with their ids and shown sub-layers.
+    pub drawn: Vec<(LayerId, ShapeDrawn, Vec<Sub>)>,
     pub blend: Option<BlendLayer>,
     /// Where the Blend layer sits: how many of `drawn` are under it.
     pub blend_at: usize,
@@ -81,6 +107,15 @@ impl ShapeStack {
                 OUTLINE => ShapeDrawn::Outline(ShapeOutline::from_params(&p)),
                 GLOW => ShapeDrawn::Glow(ShapeGlow::from_params(&p)),
                 SHADER => ShapeDrawn::Shader(Box::new(ShaderLayer::from_params(&p))),
+                // A sub-layer goes with its layer; a hidden layer's don't matter.
+                kind if layer.parent.is_some() => {
+                    if let Some(sub) = shape_sub(kind, &p)
+                        && let Some((_, _, subs)) = stack.drawn.iter_mut().find(|(id, ..)| Some(*id) == layer.parent)
+                    {
+                        subs.push(Sub { id: layer.id, sub });
+                    }
+                    continue;
+                }
                 // The first Blend counts.
                 BLEND => {
                     if stack.blend.is_none() {
@@ -91,7 +126,7 @@ impl ShapeStack {
                 }
                 _ => continue,
             };
-            stack.drawn.push((layer.id, drawn));
+            stack.drawn.push((layer.id, drawn, Vec::new()));
         }
         Some(stack)
     }
@@ -106,10 +141,12 @@ impl ShapeStack {
             return None;
         }
         let at = self.blend_at.min(self.drawn.len());
-        if !self.drawn[at..].iter().any(|(_, d)| d.writes()) {
+        if !self.drawn[at..].iter().any(|(_, d, _)| d.writes()) {
             return None;
         }
-        Some(1 + self.drawn[..at].iter().filter(|(_, d)| d.writes()).count() as u32)
+        let under: usize =
+            self.drawn[..at].iter().filter(|(_, d, _)| d.writes()).map(|(_, _, subs)| 1 + written(subs).count()).sum();
+        Some(1 + under as u32)
     }
 
     /// How the whole shape mixes with what is behind it: its Blend layer's, Normal without one.
@@ -117,16 +154,25 @@ impl ShapeStack {
         self.blend.as_ref().map_or((Blend::Normal, 1.0, false), |b| (b.blend, b.blend_amount, b.blend_each))
     }
 
-    /// The effects its Shader layers run, each once, in order: a shader record's effect slot is
-    /// its place here. Own code that doesn't read is left out.
+    /// The effects its Shader layers and shader sub-layers run, each once, in order: a shader
+    /// record's effect slot is its place here. Own code that doesn't read is left out.
     pub fn effect_sources(&self) -> Vec<Cow<'static, str>> {
         let mut out: Vec<Cow<'static, str>> = Vec::new();
-        for (_, d) in &self.drawn {
-            if let ShapeDrawn::Shader(sh) = d
-                && sh.header.is_ok()
-                && !out.contains(&sh.source)
-            {
+        let mut add = |sh: &ShaderLayer| {
+            if sh.header.is_ok() && !out.contains(&sh.source) {
                 out.push(sh.source.clone());
+            }
+        };
+        for (_, d, subs) in &self.drawn {
+            if let ShapeDrawn::Shader(sh) = d {
+                add(sh);
+            }
+            if d.writes() {
+                for s in subs {
+                    if let SubLayer::Shader(sh) = &s.sub {
+                        add(sh);
+                    }
+                }
             }
         }
         out
@@ -139,26 +185,35 @@ impl ShapeStack {
     }
 
     /// How far past the shape's edge its layers reach, in world pixels: an outline outside it
-    /// (half of one centred on it), a glow until its light has all but gone.
+    /// (half of one centred on it), a glow until its light has all but gone, and each sub-layer
+    /// that reaches further (a glow, an outline outside, a shadow) from there.
     pub fn reach_past(&self) -> f32 {
         self.drawn
             .iter()
-            .map(|(_, d)| match d {
-                ShapeDrawn::Outline(o) => match o.sits {
-                    OutlineSits::Inside => 0.0,
-                    OutlineSits::Centre => 0.5 * o.width.max(0.0),
-                    OutlineSits::Outside => o.width.max(0.0),
-                },
-                ShapeDrawn::Glow(g) => GLOW_REACH * g.size.max(1.0),
-                _ => 0.0,
+            .map(|(_, d, subs)| {
+                let own = match d {
+                    ShapeDrawn::Outline(o) => match o.sits {
+                        OutlineSits::Inside => 0.0,
+                        OutlineSits::Centre => 0.5 * o.width.max(0.0),
+                        OutlineSits::Outside => o.width.max(0.0),
+                    },
+                    ShapeDrawn::Glow(g) => GLOW_REACH * g.size.max(1.0),
+                    _ => 0.0,
+                };
+                own + subs.iter().map(|s| s.sub.reach(1.0, true)).sum::<f32>()
             })
             .filter(|r| r.is_finite())
             .fold(0.0, f32::max)
     }
 
+    /// Whether a shown sub-layer reads the shape's hits (Flash on hit, Colour on hit).
+    pub fn needs_hits(&self) -> bool {
+        self.drawn.iter().any(|(_, d, subs)| d.writes() && subs.iter().any(|s| s.sub.reads_hits()))
+    }
+
     /// The records the stack draws with, bottom first, its gradients baked into `atlas`. The
-    /// Body's is first; a Shader whose own code doesn't read writes none. At most
-    /// [`MAX_LAYERS`].
+    /// Body's is first; each layer's sub-layers follow it; a Shader whose own code doesn't read
+    /// writes none. At most [`MAX_LAYERS`].
     pub fn records(&self, geometry: &Geometry, atlas: &mut GradientAtlas) -> Vec<LayerGpu> {
         let blend = |b: Blend| b.shader_code();
         let flag = |from: ColourFrom| if from == ColourFrom::SameAsBody { LayerGpu::FLAG } else { 0 };
@@ -175,7 +230,11 @@ impl ShapeStack {
             colour: [1.0, 1.0, 1.0, 1.0],
             ..LayerGpu::ZERO
         }];
-        for (_, d) in &self.drawn {
+        // Where each layer's record is, by id, for cuts that name a layer.
+        let mut placed: Vec<(LayerId, usize)> = vec![(self.body_id, 0)];
+        // Shapes have no brush; cuts and shading never add tiles.
+        let mut tiles = Vec::new();
+        for (id, d, subs) in &self.drawn {
             let r = match d {
                 ShapeDrawn::Paint(p) => LayerGpu {
                     head: [LayerGpu::SHAPE_PAINT, blend(p.blend), 0, 0],
@@ -207,21 +266,17 @@ impl ShapeStack {
                 // Own code that doesn't read draws nothing; the editor says why.
                 ShapeDrawn::Shader(sh) if sh.header.is_err() => continue,
                 ShapeDrawn::Shader(sh) => {
-                    let slot = sources.iter().position(|src| *src == sh.source).unwrap_or(0);
-                    let mut extra = [[0.0; 4]; 4];
-                    for (i, v) in sh.params.iter().enumerate() {
-                        extra[i / 4][i % 4] = *v;
-                    }
-                    LayerGpu {
-                        head: [LayerGpu::SHADER, blend(sh.blend), 0, 0],
-                        amount: [sh.opacity, 0.0, 0.0, 0.0],
-                        p0: [sh.speed, sh.scale, sh.space.code(), slot as f32],
-                        extra,
-                        ..LayerGpu::ZERO
-                    }
+                    LayerGpu { head: [LayerGpu::SHADER, blend(sh.blend), 0, 0], ..shader_record(sh, &sources) }
                 }
             };
-            out.push(r);
+            let at = out.len();
+            let count = written(subs).count() as u32;
+            out.push(LayerGpu { head: [r.head[0], r.head[1], r.head[2], count], ..r });
+            let mut cx = SubCx { placed: &placed, angle: 0.0, sources: &sources, atlas, tiles: &mut tiles };
+            for s in written(subs) {
+                out.push(sub_record(&s.sub, &mut cx));
+            }
+            placed.push((*id, at));
         }
         out.truncate(MAX_LAYERS as usize);
         out
@@ -278,7 +333,7 @@ mod tests {
         let kinds: Vec<&str> = stack
             .drawn
             .iter()
-            .map(|(_, d)| match d {
+            .map(|(_, d, _)| match d {
                 ShapeDrawn::Paint(_) => "paint",
                 ShapeDrawn::Outline(_) => "outline",
                 ShapeDrawn::Glow(_) => "glow",
@@ -365,6 +420,46 @@ mod tests {
         });
         assert!(broken.program().is_none());
         assert_eq!(broken.records(&Geometry::default(), &mut atlas).len(), 1, "the body alone");
+    }
+
+    #[test]
+    fn sub_layers_follow_their_layer_in_pixels_and_cuts_name_layers_by_record() {
+        use super::super::{SUB_CUT, SUB_GLOW, SUB_SHADOW};
+        let mut atlas = GradientAtlas::default();
+        let (stack, _) = shape_with(|s, reg, t| {
+            let paint = s.add_layer(reg, t, SlotId::Look, PAINT).unwrap();
+            let outline = s.add_layer(reg, t, SlotId::Look, OUTLINE).unwrap();
+            let glow = s.add_sub_layer(reg, t, SlotId::Look, outline, SUB_GLOW).unwrap();
+            set(s, t, glow, "size", Value::Number(20.0));
+            let cut = s.add_sub_layer(reg, t, SlotId::Look, outline, SUB_CUT).unwrap();
+            set(s, t, cut, "from", Value::Choice("layer".into()));
+            set(s, t, cut, "target", Value::Int(paint.0 as i64));
+            let hidden = s.add_sub_layer(reg, t, SlotId::Look, outline, SUB_SHADOW).unwrap();
+            s.set_layer_enabled(reg, t, SlotId::Look, hidden, false).unwrap();
+            s.add_layer(reg, t, SlotId::Look, BLEND).unwrap();
+            s.add_layer(reg, t, SlotId::Look, GLOW).unwrap();
+        });
+        assert_eq!(stack.drawn[1].2.len(), 2, "the hidden shadow is left out");
+        let r = stack.records(&Geometry::default(), &mut atlas);
+        let codes: Vec<u32> = r.iter().map(|l| l.head[0]).collect();
+        assert_eq!(
+            codes,
+            [
+                LayerGpu::BODY,
+                LayerGpu::SHAPE_PAINT,
+                LayerGpu::OUTLINE,
+                LayerGpu::SUB_GLOW,
+                LayerGpu::SUB_CUT,
+                LayerGpu::GLOW
+            ]
+        );
+        assert_eq!(r[2].head[3], 2);
+        assert_eq!(r[3].p0[0], 20.0, "a shape's glow size is in pixels");
+        assert_eq!(r[4].amount[1], 1.0, "the cut names the paint layer's record");
+        assert_eq!(stack.split(), Some(5), "the top glow, after the outline's sub-layers");
+        // The outline sits inside: the glow on it reaches its own way out.
+        assert_eq!(stack.reach_past(), (GLOW_REACH * 30.0).max(GLOW_REACH * 20.0));
+        assert!(!stack.needs_hits());
     }
 
     #[test]
