@@ -753,6 +753,9 @@ pub struct BlendLayer {
     /// the layer then counts as covering everywhere one drew. Only for a blend that
     /// [combines with itself](Blend::combines_with_itself).
     pub each: bool,
+    /// Its things sit behind the balls (shapes): it is mixed in right after the frame's trails
+    /// and shapes, before its balls are drawn, so it mixes with what is behind it only.
+    pub behind: bool,
     /// The layer's own lists. Its globals follow the frame it belongs to; it paints from that
     /// frame's gradient atlas, so its own `gradients` stay empty, and the hits and effects drawn
     /// into it are handed to that frame.
@@ -828,17 +831,25 @@ impl Frame {
     /// itself](Blend::combines_with_itself)), made on first use. The layer takes this frame's
     /// size, moment, camera and picture settings.
     pub fn layer_mut(&mut self, blend: Blend, amount: f32, each: bool) -> &mut Frame {
+        self.layer_behind_mut(blend, amount, each, false)
+    }
+
+    /// [`Frame::layer_mut`] for things that sit behind the balls when `behind` (see
+    /// [`BlendLayer::behind`]): a layer of their own, mixed in before the balls are drawn.
+    pub fn layer_behind_mut(&mut self, blend: Blend, amount: f32, each: bool, behind: bool) -> &mut Frame {
         if !layered(blend, amount) {
             return self;
         }
         // -0 and 0 are one amount (their bits differ).
         let amount = amount + 0.0;
         let each = each && blend.combines_with_itself();
-        let same = |l: &BlendLayer| l.blend == blend && l.amount.to_bits() == amount.to_bits() && l.each == each;
+        let same = |l: &BlendLayer| {
+            l.blend == blend && l.amount.to_bits() == amount.to_bits() && l.each == each && l.behind == behind
+        };
         let i = match self.layers.iter().position(same) {
             Some(i) => i,
             None => {
-                self.layers.push(BlendLayer { blend, amount, each, frame: Frame::default() });
+                self.layers.push(BlendLayer { blend, amount, each, behind, frame: Frame::default() });
                 self.layers.len() - 1
             }
         };
@@ -854,9 +865,10 @@ impl Frame {
     /// above its Blend layer): a Normal layer at full amount, which [`Frame::layer_mut`] never
     /// makes. [`build_frame`] moves it after every other layer, so it is mixed in last.
     pub fn over_layer_mut(&mut self) -> &mut Frame {
-        let over = |l: &BlendLayer| l.blend == Blend::Normal && l.amount >= 1.0 && !l.each;
+        let over = |l: &BlendLayer| l.blend == Blend::Normal && l.amount >= 1.0 && !l.each && !l.behind;
         if !self.layers.iter().any(over) {
-            self.layers.push(BlendLayer { blend: Blend::Normal, amount: 1.0, each: false, frame: Frame::default() });
+            let frame = Frame::default();
+            self.layers.push(BlendLayer { blend: Blend::Normal, amount: 1.0, each: false, behind: false, frame });
         }
         let i = self.layers.iter().position(over).expect("just made");
         let (width, height, time, video, camera) = (self.width, self.height, self.time, self.video, self.camera);
@@ -1062,11 +1074,23 @@ fn layered(blend: Blend, amount: f32) -> bool {
 /// rows the renderer uploads and every module reads every hit. A layer nothing was drawn into is
 /// not kept.
 fn draw_routed(target: &mut Frame, blend: Blend, amount: f32, each: bool, draw: impl FnOnce(&mut Frame)) {
+    draw_routed_behind(target, blend, amount, each, false, draw);
+}
+
+/// [`draw_routed`] into a layer behind the balls when `behind` (see [`BlendLayer::behind`]).
+fn draw_routed_behind(
+    target: &mut Frame,
+    blend: Blend,
+    amount: f32,
+    each: bool,
+    behind: bool,
+    draw: impl FnOnce(&mut Frame),
+) {
     if !layered(blend, amount) {
         draw(target);
         return;
     }
-    draw_into_layer(target, |t| t.layer_mut(blend, amount, each), draw);
+    draw_into_layer(target, |t| t.layer_behind_mut(blend, amount, each, behind), draw);
 }
 
 /// Runs `draw` on the frame's over layer (see [`Frame::over_layer_mut`]), borrowing `target`'s
@@ -1114,6 +1138,11 @@ pub trait ThingDraw: Send + Sync + 'static {
     /// says so itself rather than through its Look card's `blend` settings.
     fn blend(&self, _resolved: &ResolvedThing) -> Option<(Blend, f32, bool)> {
         None
+    }
+    /// Whether the thing sits behind the balls (a shape): when it blends, its layer is mixed in
+    /// before the balls are drawn, so it never tints them.
+    fn behind(&self) -> bool {
+        false
     }
     /// What the thing draws over its blended part, painted normally whatever its blend: the
     /// layers of a ball above its Blend layer. Drawn right after [`ThingDraw::draw`].
@@ -1203,7 +1232,7 @@ pub fn build_frame(
         };
         let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
         let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time };
-        draw_routed(target, blend, amount, each, |into| d.draw(&cx, into));
+        draw_routed_behind(target, blend, amount, each, d.behind(), |into| d.draw(&cx, into));
         // Only a thing that blends has parts to paint over the blend: into the over layer, which
         // is mixed in after every blend layer.
         if layered(blend, amount) {

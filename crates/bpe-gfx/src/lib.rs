@@ -1152,6 +1152,14 @@ impl Renderer {
             pass.set_bind_group(1, &self.paint.group, &[]);
             self.draw_back(&mut pass, frame, &self.buffers, &world);
         }
+        // Blended things behind the balls (shapes) mix with what is behind them before the balls
+        // are drawn over them.
+        for (i, (l, b)) in frame.layers.iter().zip(&layer_buffers).enumerate().filter(|(_, (l, _))| l.behind) {
+            let effects = Some((frame, i, None));
+            let through = self.layer_through(device, queue, frame, l, Some(i), &world);
+            self.draw_layer(device, queue, &mut encoder, l, b, &through, slot, effects);
+            slot += 1;
+        }
         {
             let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "balls", wgpu::LoadOp::Load);
             pass.set_bind_group(0, &self.globals_group, &[]);
@@ -1163,9 +1171,13 @@ impl Renderer {
             let mut pass = begin_pass(&mut encoder, view, "objects", wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
             pass.set_bind_group(0, &self.globals_group, &[]);
             pass.set_bind_group(1, &self.paint.group, &[]);
+            // Blended things behind the balls go under the rest; other blended things are drawn
+            // above the rest, so they are on top here too.
+            for (l, b) in frame.layers.iter().zip(&layer_buffers).filter(|(l, _)| l.behind) {
+                self.draw_objects(&mut pass, &l.frame, b);
+            }
             self.draw_objects(&mut pass, frame, &self.buffers);
-            // Blended things are drawn above the rest, so they are on top here too.
-            for (l, b) in frame.layers.iter().zip(&layer_buffers) {
+            for (l, b) in frame.layers.iter().zip(&layer_buffers).filter(|(l, _)| !l.behind) {
                 self.draw_objects(&mut pass, &l.frame, b);
             }
         }
@@ -1186,7 +1198,7 @@ impl Renderer {
             pass.set_bind_group(0, &self.globals_group, &[]);
             self.draw_front(&mut pass, frame, &self.buffers, &world);
         }
-        for (i, (l, b)) in frame.layers.iter().zip(&layer_buffers).enumerate() {
+        for (i, (l, b)) in frame.layers.iter().zip(&layer_buffers).enumerate().filter(|(_, (l, _))| !l.behind) {
             let effects = Some((frame, i, object_view.as_ref()));
             let through = self.layer_through(device, queue, frame, l, Some(i), &world);
             self.draw_layer(device, queue, &mut encoder, l, b, &through, slot, effects);

@@ -87,13 +87,12 @@ fn shape_cover_at(s: ShapeAt) -> f32 {
     return clamp((half_width - abs(s.sd)) / px + 0.5, 0.0, 1.0) * min(half * 2.0 / px, 1.0);
 }
 
-// 1 well inside the shape's quad, falling to 0 over its last fifth, so light that reaches far
-// (a big glow) never ends in a hard square.
-fn shape_quad_fade(world: vec2<f32>) -> f32 {
-    let s = layered_shape;
-    let reach = path_quad_reach(s.a, s.b, s.c);
-    let local = rotate(world - s.a.xy, -s.a.z);
-    return 1.0 - smoothstep(0.8 * reach, reach, max(abs(local.x), abs(local.y)));
+// 1 up to four fifths of the way out to where the shape's layers reach past its edge (`c.z`),
+// falling to 0 there, so light that reaches far (a big glow) fades out evenly all round and never
+// meets the quad's edge (every point that near the edge is inside the quad).
+fn shape_reach_fade(s: ShapeAt) -> f32 {
+    let past = max(layered_shape.c.z, 1e-3);
+    return 1.0 - smoothstep(0.8 * past, past, s.edge);
 }
 
 // Where along its gradient record `l` is at `s`, by `runs`: 0 across (from `lo` to `hi` along

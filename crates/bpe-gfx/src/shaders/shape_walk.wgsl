@@ -51,7 +51,7 @@ fn SHAPE_WALK(world: vec2<f32>, s: ShapeAt, first: u32, count_in: u32) -> Walked
             case 4u: {
                 let gd = max(s.edge, 0.0) / max(l.p0.x, 1.0);
                 c = select(shape_colour(l, u32(l.p0.z + 0.5), s, clamp(gd, 0.0, 1.0)), under, flag);
-                a_out = max(l.amount.y, 0.0) * exp(-gd * gd) * opacity * shape_quad_fade(world);
+                a_out = max(l.amount.y, 0.0) * exp(-gd * gd) * opacity * shape_reach_fade(s);
             }
             //SHAPE_SHADER_CASE
             default: {}

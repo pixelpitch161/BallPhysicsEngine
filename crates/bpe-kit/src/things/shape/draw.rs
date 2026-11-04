@@ -22,6 +22,11 @@ impl ThingDraw for ShapeDraw {
         KIND
     }
 
+    /// A shape is a wall the balls play in front of: a blended one never tints them.
+    fn behind(&self) -> bool {
+        true
+    }
+
     /// How the whole shape mixes with what is behind it: its Blend layer's.
     fn blend(&self, resolved: &ResolvedThing) -> Option<(Blend, f32, bool)> {
         ShapeStack::of(resolved.slots.get(&SlotId::Look)?).map(|s| s.whole_blend())
@@ -254,5 +259,6 @@ mod tests {
         assert!(frame.paths.is_empty(), "drawn into its blend layer");
         assert_eq!(frame.layers.len(), 1);
         assert_eq!(frame.layers[0].frame.paths.len(), 1);
+        assert!(frame.layers[0].behind, "mixed in before the balls are drawn");
     }
 }

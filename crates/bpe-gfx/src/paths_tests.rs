@@ -227,3 +227,63 @@ fn a_body_alone_draws_the_same_band_as_the_plain_shape() {
     let differs = a.iter().zip(&b).filter(|(x, y)| x.abs_diff(**y) > 2).count();
     assert!(differs < 20, "{differs} values differ");
 }
+
+#[test]
+fn a_big_shape_s_glow_is_as_bright_on_its_sides_as_on_its_diagonals() {
+    const W: u32 = 1080;
+    const H: u32 = 1920;
+    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+    frame.push_path(Vec2::ZERO, 0.0, 400.0, 0.0, None, WHITE, 2.0);
+    let glow = LayerGpu {
+        head: [LayerGpu::GLOW, 0, 0, 0],
+        amount: [1.0, 1.0, 0.0, 0.0],
+        p0: [30.0, 0.0, 0.0, 0.0],
+        colour: RED,
+        ..LayerGpu::ZERO
+    };
+    wear(&mut frame, 0, vec![body_record(), glow], 66.0);
+    let Some(pixels) = render_sized(&frame, W, H) else { return };
+    let at = |p: Vec2| pixel_sized(&pixels, W, H, p);
+    let side = at(Vec2::new(415.0, 0.5));
+    let diagonal = at(Vec2::from_angle(std::f32::consts::FRAC_PI_4) * 415.0);
+    assert!(side[0] > 60, "{side:?}");
+    assert!(side[0].abs_diff(diagonal[0]) < 12, "side {side:?} vs diagonal {diagonal:?}");
+}
+
+#[test]
+fn a_shape_blended_behind_the_balls_never_tints_them() {
+    use crate::{BlendLayer, LayeredInstance};
+    use bpe_core::Blend;
+    const W: u32 = 540;
+    const H: u32 = 960;
+    // A white ball in front, a black filled square multiplied in a layer.
+    let ball = |frame: &mut Frame| {
+        frame.look_layers.push(body_record());
+        frame.layered.push(LayeredInstance {
+            center: [0.0, 0.0],
+            radius: 100.0,
+            seed: 0.3,
+            body: WHITE,
+            stretch: [1.0, 0.0, 1.0, 1.0],
+            form: [0.0, 0.15, 0.0, 1.45],
+            misc: [1.0, 3.0, 0.0, 0.0],
+            vary: crate::NO_VARY,
+            range: [0, 1, 0, 0],
+            group: [0.0; 4],
+            place: [0.0; 4],
+        });
+    };
+    let picture = |behind: bool| {
+        let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+        ball(&mut frame);
+        let mut layer = Frame::default();
+        layer.push_path(Vec2::ZERO, 0.0, 300.0, 0.0, Some(&square()), [0.0, 0.0, 0.0, 1.0], 2.0);
+        frame.layers.push(BlendLayer { blend: Blend::Multiply, amount: 1.0, each: false, behind, frame: layer });
+        render_sized(&frame, W, H)
+    };
+    let Some(behind) = picture(true) else { return };
+    let over = picture(false).unwrap();
+    let at = |px: &[u8]| pixel_sized(px, W, H, Vec2::new(0.5, 0.5));
+    assert!(bright(at(&behind)), "the ball stays white: {:?}", at(&behind));
+    assert!(dark(at(&over)), "a layer over the balls darkens them: {:?}", at(&over));
+}
