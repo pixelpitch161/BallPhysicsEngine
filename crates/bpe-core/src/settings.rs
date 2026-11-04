@@ -17,6 +17,9 @@ pub struct Flags {
     pub keyframe: bool,
     /// It can pulse with the hits.
     pub pulse: bool,
+    /// Its keys always jump (ease Hold): it names something, such as a slot, that has no
+    /// in-between.
+    pub hold: bool,
 }
 
 /// One setting of a thing or module kind.
