@@ -1,12 +1,14 @@
 //! Drawing the balls and their hit flashes, through the layers of their Look.
 
 use bpe_core::{Blend, ResolvedThing, Settings, SlotId, ThingId};
-use bpe_gfx::{DrawCx, FlashInstance, Frame, HitMark, LayeredRun, ThingDraw, blend_alpha, thing_code};
+use bpe_gfx::{Around, DrawCx, FlashInstance, Frame, HitMark, LayeredRun, ThingDraw, blend_alpha, thing_code};
 use bpe_runtime::{Bodies, EventKind};
 
 use crate::modules::look::draw::{BallInputs, for_balls};
-use crate::modules::look::layers::gpu::Stack;
+use crate::modules::look::layers::around::{AroundKind, AroundLayer, around_layers};
+use crate::modules::look::layers::gpu::{Stack, SubLayer};
 use crate::modules::look::layers::group::{BallInGroup, GroupShapeInfo, group_colour, mixed};
+use crate::modules::look::layers::trail::{self, AroundPlace, TrailKind, draw::Balls};
 use crate::paint::{colour_at, vary_gpu};
 use crate::things::balls::BallsSettings;
 use crate::things::balls::sim::{BallsState, colour_turn, look_turn};
@@ -23,7 +25,7 @@ pub(crate) fn hit_strength(speed: f32) -> f32 {
 
 /// Each ball's last hit up to `now` seconds, no further back than `memory` seconds: how long ago
 /// it was and how strong (`bpe_gfx::NO_HIT`'s age and 0 without one in that time), by row.
-fn last_hits(cx: &DrawCx, count: usize, memory: f32) -> Vec<(f32, f32)> {
+pub(crate) fn last_hits(cx: &DrawCx, count: usize, memory: f32) -> Vec<(f32, f32)> {
     let mut last = vec![(bpe_gfx::NO_HIT[0], 0.0); count];
     if memory <= 0.0 {
         return last;
@@ -175,6 +177,135 @@ impl ThingDraw for BallsDraw {
             draw_part(cx, frame, &stack, cut | OVER);
         }
     }
+
+    /// The Look's trails and particles, but Ghosts (which the balls draw with themselves).
+    fn around(&self, resolved: &ResolvedThing) -> Vec<Around> {
+        own_around(resolved)
+            .iter()
+            .map(|a| {
+                let (blend, amount) = a.blend();
+                Around { blend, amount, behind: a.place() == AroundPlace::Behind }
+            })
+            .collect()
+    }
+
+    fn draw_around(&self, cx: &DrawCx, index: usize, frame: &mut Frame) {
+        let Some(stack) = stack_of(cx) else { return };
+        let Some(layer) = own_around(cx.resolved).into_iter().nth(index) else { return };
+        match &layer.kind {
+            AroundKind::Trail(trail) => {
+                let memory = hit_memory(cx, &layer);
+                with_balls(cx, &stack, memory, |balls| trail::draw::draw(cx, &layer, trail, balls, frame));
+            }
+            AroundKind::Particles(_) => {}
+        }
+    }
+}
+
+/// The thing's shown trails and particles, bottom first.
+fn around_of(resolved: &ResolvedThing) -> Vec<AroundLayer> {
+    match resolved.slots.get(&SlotId::Look) {
+        Some(look) if look.kind == crate::modules::look::layers::CARD => around_layers(look, false),
+        _ => Vec::new(),
+    }
+}
+
+/// [`around_of`] but Ghosts, which draw with the balls and blend as they do.
+fn own_around(resolved: &ResolvedThing) -> Vec<AroundLayer> {
+    around_of(resolved).into_iter().filter(|a| !a.is_ghosts()).collect()
+}
+
+/// How far back `layer` reads the balls' hits: as far as its trail reaches when it restarts at
+/// each bounce, the flash memory for a Flash on hit sub-layer, else not at all.
+fn hit_memory(cx: &DrawCx, layer: &AroundLayer) -> f32 {
+    let mut memory = 0.0f32;
+    if let AroundKind::Trail(t) = &layer.kind
+        && t.restart
+    {
+        memory = if t.stays() { cx.time as f32 } else { t.reach() };
+    }
+    for sub in &layer.subs {
+        if let SubLayer::Flash(f) = sub {
+            memory = memory.max(f.length * 4.0);
+        }
+    }
+    memory
+}
+
+/// Runs `f` with what trails read about the balls of the thing `cx` draws, wearing `stack`,
+/// their hits read `memory` seconds back; nothing without bodies or a history.
+fn with_balls<R>(cx: &DrawCx, stack: &Stack, memory: f32, f: impl FnOnce(&Balls) -> R) -> Option<R> {
+    let id = cx.thing.id;
+    let bodies = cx.world.bodies.get(&id)?;
+    let history = cx.world.history.get(&id)?;
+    let dt = cx.world.dt();
+    let newest = history.newest_step().map_or(0.0, |s| s as f64 * dt as f64);
+    let colour = colours(stack, cx, bodies, true);
+    let group = group_cx(stack, cx);
+    let number = |i: usize| group.number(i);
+    let time = cx.time as f32;
+    let turned = |i: usize, ago: f32| {
+        stack.turning.as_ref().map(|t| {
+            let own = if group.state.is_some() { look_turn(&group.look, group.number(i)) } else { 0.0 };
+            (t.turn + t.spin * (time - ago) + own).to_radians()
+        })
+    };
+    let last = last_hits(cx, bodies.len(), memory);
+    let balls = Balls {
+        bodies,
+        history,
+        interval: history.interval(dt),
+        newest_ago: (cx.time - newest).max(0.0) as f32,
+        colour: &colour,
+        number: &number,
+        turned: &turned,
+        last_hits: &last,
+    };
+    Some(f(&balls))
+}
+
+/// Draws the balls `made` (by row) with the Ghosts their Look's Ghosts trails leave: copies of
+/// each ball (of the same `part`) back along where it has been, those behind before every ball,
+/// those in front after, with what their sub-layers add round them.
+fn draw_ghosts(
+    cx: &DrawCx,
+    frame: &mut Frame,
+    stack: &Stack,
+    part: u32,
+    made: &[(usize, bpe_gfx::LayeredInstance)],
+    seen: &dyn Fn(usize) -> [f32; 4],
+) {
+    let ghosts: Vec<AroundLayer> = around_of(cx.resolved).into_iter().filter(|a| a.is_ghosts()).collect();
+    let (mut behind, mut front) = (Vec::new(), Vec::new());
+    let (mut under, mut over_behind, mut over_front) = (Vec::new(), Vec::new(), Vec::new());
+    if !ghosts.is_empty() {
+        let memory = ghosts.iter().map(|g| hit_memory(cx, g)).fold(0.0, f32::max);
+        with_balls(cx, stack, memory, |balls| {
+            for layer in &ghosts {
+                let AroundKind::Trail(t) = &layer.kind else { continue };
+                debug_assert_eq!(t.kind, TrailKind::Ghosts);
+                let in_front = t.place == AroundPlace::InFront;
+                for (i, ball) in made {
+                    for g in trail::draw::ghosts_of(layer, t, balls, *i) {
+                        let mut copy = *ball;
+                        copy.center = g.at.into();
+                        copy.misc[0] *= g.opacity;
+                        if in_front { &mut front } else { &mut behind }.push(copy);
+                        if part & OVER == 0 {
+                            let over = if in_front { &mut over_front } else { &mut over_behind };
+                            trail::draw::ghost_extras(layer, g, ball.radius, seen(*i), &mut under, over);
+                        }
+                    }
+                }
+            }
+        });
+    }
+    frame.layered.extend(behind);
+    frame.layered.extend(made.iter().map(|(_, b)| *b));
+    frame.layered.extend(front);
+    frame.particles.extend(under);
+    frame.particles.extend(over_behind);
+    frame.particles_front.extend(over_front);
 }
 
 /// The bit of a ball instance's `range.z` that draws the layers above its Blend layer.
@@ -222,6 +353,7 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, stack: &Stack, part: u32) {
     let hits = stack.needs_hits();
     let last = if hits { last_hits(cx, bodies.len(), stack.flash_memory()) } else { Vec::new() };
     let start = frame.layered.len() as u32;
+    let mut made: Vec<(usize, bpe_gfx::LayeredInstance)> = Vec::with_capacity(bodies.len());
     for i in 0..bodies.len() {
         if !bodies.alive[i] {
             continue;
@@ -260,8 +392,9 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, stack: &Stack, part: u32) {
         if group.state.is_some() {
             ball.form[2] += look_turn(&group.look, number).to_radians();
         }
-        frame.layered.push(ball);
+        made.push((i, ball));
     }
+    draw_ghosts(cx, frame, stack, part, &made, &seen);
     // Which pipeline draws them: the stack's in-ball program, once per frame, or the plain one.
     let program = stack.program().map(|p| match frame.programs.iter().position(|q| q.key == p.key) {
         Some(i) => i as u32,

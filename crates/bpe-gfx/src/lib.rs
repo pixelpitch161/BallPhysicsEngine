@@ -34,8 +34,8 @@ mod sub_layers_tests;
 mod util;
 
 pub use frame::{
-    BackgroundPaint, BallInstance, BlendLayer, Burst, DrawCx, Draws, EffectCall, FlashInstance, Frame, Grade, HitMark,
-    LayerGpu, LayeredInstance, LookInstance, MAX_LAYERS, ModuleDraw, NO_HIT, Particle, PathInstance, Place,
+    Around, BackgroundPaint, BallInstance, BlendLayer, Burst, DrawCx, Draws, EffectCall, FlashInstance, Frame, Grade,
+    HitMark, LayerGpu, LayeredInstance, LookInstance, MAX_LAYERS, ModuleDraw, NO_HIT, Particle, PathInstance, Place,
     ShapeInstance, Stage, StreakStyle, ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_with,
     hit_strength, push_streak, push_streak_colours, push_trail, thing_code,
 };

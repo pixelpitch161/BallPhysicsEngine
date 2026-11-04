@@ -6,6 +6,7 @@
 //! Each layer kind is a `#[derive(Settings)]` struct in its own file; `gpu.rs` turns a resolved
 //! stack into what the renderer draws.
 
+pub mod around;
 pub mod blend;
 pub mod body;
 pub mod cards_to_layers;

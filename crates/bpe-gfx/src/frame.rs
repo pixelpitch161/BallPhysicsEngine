@@ -1374,6 +1374,24 @@ pub trait ThingDraw: Send + Sync + 'static {
     /// What the thing draws over its blended part, painted normally whatever its blend: the
     /// layers of a ball above its Blend layer. Drawn right after [`ThingDraw::draw`].
     fn draw_over(&self, _cx: &DrawCx, _frame: &mut Frame) {}
+    /// What the thing draws round itself, each with a blend of its own (its trails and
+    /// particles), bottom first: each one's blend, amount, and whether it sits behind the balls.
+    /// Normal (at any amount) and Add draw straight into the frame, mixing themselves in; any
+    /// other blend draws into a layer of its own. Drawn after every thing has drawn itself.
+    fn around(&self, _resolved: &ResolvedThing) -> Vec<Around> {
+        Vec::new()
+    }
+    /// Draws the `index`th of what [`ThingDraw::around`] lists.
+    fn draw_around(&self, _cx: &DrawCx, _index: usize, _frame: &mut Frame) {}
+}
+
+/// One of the things a thing draws round itself (a trail, particles), with its own blend.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Around {
+    pub blend: Blend,
+    pub amount: f32,
+    /// Behind the balls: a layer of its own is mixed in before they are drawn.
+    pub behind: bool,
 }
 
 /// How a module kind draws for every thing whose slot it fills: a trail behind the balls, a
@@ -1485,6 +1503,20 @@ pub fn build_frame_with(
         if layered(blend, amount) {
             let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
             draw_over_routed(target, z, d.behind(), |into| d.draw_over(&cx, into));
+        }
+    }
+    for (id, r) in &resolved.things {
+        let Some(thing) = scene.things.get(id) else { continue };
+        let Some(d) = draws.thing(&r.kind) else { continue };
+        for (index, around) in d.around(r).into_iter().enumerate() {
+            let (blend, amount) = match around.blend {
+                Blend::Normal | Blend::Add => (Blend::Normal, 1.0),
+                other => (other, around.amount),
+            };
+            let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
+            let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time };
+            let z = z_order(thing, r);
+            draw_routed_at(target, z, blend, amount, false, around.behind, |into| d.draw_around(&cx, index, into));
         }
     }
     for (id, r) in &resolved.things {

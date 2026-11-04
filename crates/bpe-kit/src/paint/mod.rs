@@ -15,6 +15,7 @@ pub mod harmony;
 pub mod inside;
 pub mod palette_gen;
 pub mod palettes;
+pub mod recolour;
 pub mod vary;
 pub use eval::{Inputs, colour_at, hits_on, last_hit, last_hit_at, offset};
 pub use gpu::{background_gpu, inside_gpu, paint_gpu};

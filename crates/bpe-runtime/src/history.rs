@@ -43,6 +43,8 @@ pub struct History {
     /// Samples kept per ball; `usize::MAX` keeps every one.
     cap: usize,
     balls: Vec<VecDeque<Vec2>>,
+    /// How far each ball has gone from its first sample to its newest.
+    travelled: Vec<f32>,
     /// How many samples each ball has, up to `cap`.
     count: usize,
     /// The step the newest sample was taken at.
@@ -55,7 +57,14 @@ impl History {
     pub fn new(steps_per_second: u32, want: HistoryWant) -> Self {
         let cap =
             if want.forever { usize::MAX } else { (want.rounded() * SAMPLE_RATE as f32).ceil() as usize + 1 }.max(2);
-        Self { every: (steps_per_second / SAMPLE_RATE).max(1) as u64, cap, balls: Vec::new(), count: 0, last: None }
+        Self {
+            every: (steps_per_second / SAMPLE_RATE).max(1) as u64,
+            cap,
+            balls: Vec::new(),
+            travelled: Vec::new(),
+            count: 0,
+            last: None,
+        }
     }
 
     /// Seconds between samples.
@@ -86,12 +95,16 @@ impl History {
         }
         for &p in positions.iter().skip(self.balls.len()) {
             self.balls.push(std::iter::repeat_n(p, self.count).collect());
+            self.travelled.push(0.0);
         }
         let full = self.count >= self.cap;
         if !full {
             self.count += 1;
         }
-        for (ring, &p) in self.balls.iter_mut().zip(positions) {
+        for ((ring, gone), &p) in self.balls.iter_mut().zip(&mut self.travelled).zip(positions) {
+            if let Some(&last) = ring.back() {
+                *gone += (p - last).length();
+            }
             if full {
                 ring.pop_front();
             }
@@ -103,6 +116,12 @@ impl History {
     /// Ball `ball`'s samples, newest first.
     pub fn points(&self, ball: usize) -> impl Iterator<Item = Vec2> + '_ {
         self.balls.get(ball).into_iter().flat_map(|r| r.iter().rev().copied())
+    }
+
+    /// How far ball `ball` has gone from its first sample to its newest, in world units: a
+    /// place along its path that stays put as samples come and go (dots along a trail).
+    pub fn travelled(&self, ball: usize) -> f32 {
+        self.travelled.get(ball).copied().unwrap_or(0.0)
     }
 
     /// Where ball `ball` was `ago` seconds before the newest sample, read between samples
@@ -174,6 +193,10 @@ mod tests {
         assert_eq!(h.points(1).count(), 2);
         assert!(h.points(1).all(|p| p == Vec2::new(5.0, 5.0)));
         assert_eq!(h.points(0).collect::<Vec<_>>(), [Vec2::ONE, Vec2::ZERO]);
+        assert_eq!(h.travelled(0), std::f32::consts::SQRT_2);
+        assert_eq!(h.travelled(1), 0.0);
+        h.record(3, &[Vec2::ONE, Vec2::new(5.0, 8.0)]);
+        assert_eq!(h.travelled(1), 3.0);
     }
 
     #[test]
