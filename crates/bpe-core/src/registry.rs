@@ -141,6 +141,9 @@ pub fn layer_def(
     kind.dynamic_defs(&with_defaults).iter().find(|d| d.key == key)
 }
 
+/// A fix to a scene loaded from an older format.
+pub type Upgrade = fn(&mut crate::Scene);
+
 /// Every registered kind, by id.
 #[derive(Default)]
 pub struct Registry {
@@ -150,7 +153,7 @@ pub struct Registry {
     layers: Vec<Box<dyn LayerKind>>,
     /// Scene fixes for files older than a format, in the order they were added (see
     /// [`Registry::add_upgrade`]).
-    upgrades: Vec<(u32, fn(&mut crate::Scene))>,
+    upgrades: Vec<(u32, Upgrade)>,
 }
 
 impl Registry {
@@ -182,7 +185,7 @@ impl Registry {
 
     /// Adds a fix that [`crate::load`] runs on a scene whose file format is below `below`, after
     /// mending it and before cleaning its settings. Fixes run in the order they were added.
-    pub fn add_upgrade(&mut self, below: u32, f: fn(&mut crate::Scene)) {
+    pub fn add_upgrade(&mut self, below: u32, f: Upgrade) {
         self.upgrades.push((below, f));
     }
 
