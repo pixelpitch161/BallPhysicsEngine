@@ -6,6 +6,17 @@ pub mod sim;
 
 pub use sim::{ShapeSim, ShapeState, side_of, side_on};
 
+/// Where on shape `shape`'s outline (as it is in `world` now) the point nearest `point` is: the
+/// way round clockwise from its first corner as a fraction (0..1), the side, and how many sides
+/// it has (a circle has one). `None` when the world has no such shape. Never allocates.
+pub fn place_on_edge(
+    world: &bpe_runtime::World,
+    shape: bpe_core::ThingId,
+    point: glam::Vec2,
+) -> Option<(f32, usize, usize)> {
+    world.walls.get(&shape).map(|w| w.outline.place(point))
+}
+
 use bpe_core::{Choice, SettingDef, Settings, ShapePath, SlotId, ThingKind};
 
 pub struct ShapeKind;

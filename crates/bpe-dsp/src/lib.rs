@@ -6,6 +6,7 @@ pub mod denormal;
 pub mod envelope;
 pub mod filter;
 pub mod fx;
+pub mod lfo;
 pub mod limiter;
 pub mod loudness;
 pub mod noise;

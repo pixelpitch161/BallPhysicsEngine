@@ -223,6 +223,48 @@ impl Outline {
         }
     }
 
+    /// Where on the outline the point nearest `p` is: the way round from the first corner,
+    /// clockwise, as a fraction of the whole way (0..1), which side that is, and how many sides
+    /// there are. A round ring counts from `angle` and has one side; a free outline's corners
+    /// are its points. Never allocates.
+    pub fn place(&self, p: Vec2) -> (f32, usize, usize) {
+        if let &Outline::Ring { center, sides: 0..3, angle, .. } = self {
+            let d = p - center;
+            let a = d.y.atan2(d.x) - angle;
+            return ((a / TAU).rem_euclid(1.0), 0, 1);
+        }
+        let mut buf = [Vec2::ZERO; MAX_SIDES];
+        let (points, map): (&[Vec2], Option<(Vec2, f32, f32)>) = match self {
+            Outline::Path { center, angle, scale, points, .. } => (points, Some((*center, *angle, *scale))),
+            _ => {
+                let n = self.corners_into(&mut buf);
+                (&buf[..n], None)
+            }
+        };
+        let n = points.len();
+        if n < 2 {
+            return (0.0, 0, 1);
+        }
+        let world = |q: Vec2| match map {
+            Some((center, angle, scale)) => center + Vec2::from_angle(angle).rotate(q * scale),
+            None => q,
+        };
+        let (mut total, mut best, mut at, mut side) = (0.0f32, f32::INFINITY, 0.0f32, 0usize);
+        for i in 0..n {
+            let (a, b) = (world(points[i]), world(points[(i + 1) % n]));
+            let (t, _, d) = nearest_on_segment(a, b, p);
+            let len = (b - a).length();
+            if d < best {
+                (best, at, side) = (d, total + t * len, i);
+            }
+            total += len;
+        }
+        if total <= 0.0 {
+            return (0.0, 0, n);
+        }
+        ((at / total).clamp(0.0, 1.0), side, n)
+    }
+
     /// The nearest point to `p` on the centre line, and the unit normal there pointing from it
     /// towards `p`. When `p` is on the line, the normal is the line's own (either way round).
     pub fn nearest(&self, p: Vec2) -> (Vec2, Vec2) {

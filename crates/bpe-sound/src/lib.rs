@@ -15,6 +15,7 @@ pub mod meters;
 pub mod midi;
 pub mod modmatrix;
 pub mod music;
+pub mod mods;
 pub mod offline;
 pub mod patch;
 pub mod tempo;
