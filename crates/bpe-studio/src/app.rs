@@ -795,6 +795,7 @@ impl Studio {
                 contents.shrink_clip_rect(rect);
                 let time = self.sim_time();
                 self.panels.inspector.meters = self.sound.as_ref().map(SoundJob::meters);
+                self.panels.inspector.playing = self.playing;
                 if mixing {
                     let meters = self.panels.inspector.meters.clone();
                     let readings = mixer::editors::Readings {

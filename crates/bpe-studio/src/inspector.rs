@@ -64,6 +64,8 @@ pub struct Inspector {
     pub auditions: Vec<(ThingId, u8)>,
     /// The sound's levels, for the Sound tab's meter; none without speakers.
     pub meters: Option<std::sync::Arc<bpe_sound::Meters>>,
+    /// Whether playback is running (the Sound tab outlines the slot playing).
+    pub playing: bool,
 }
 
 /// What the inspector shows of a shape.

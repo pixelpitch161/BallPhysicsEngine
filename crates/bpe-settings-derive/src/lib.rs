@@ -33,6 +33,8 @@ struct FieldAttrs {
     simple: bool,
     keyframe: bool,
     pulse: bool,
+    /// Its keys always jump (ease Hold).
+    hold: bool,
     /// The field is a group of settings (such as `Paint`) that expands to several prefixed ones.
     paint: bool,
     prefix: Option<LitStr>,
@@ -76,6 +78,8 @@ fn field_attrs(field: &syn::Field) -> syn::Result<FieldAttrs> {
                 a.span = Some(pair(&meta)?);
             } else if p.is_ident("pulse") {
                 a.pulse = true;
+            } else if p.is_ident("hold") {
+                a.hold = true;
             } else if p.is_ident("paint") {
                 a.paint = true;
             } else if p.is_ident("prefix") {
@@ -165,7 +169,7 @@ fn settings(input: &DeriveInput) -> syn::Result<Tokens> {
         };
         let (range, span) = (pair_of(a.range), pair_of(a.span));
         let depth = if a.simple { quote!(::bpe_core::Depth::Simple) } else { quote!(::bpe_core::Depth::More) };
-        let (keyframe, pulse) = (a.keyframe, a.pulse);
+        let (keyframe, pulse, hold) = (a.keyframe, a.pulse, a.hold);
         defs.push(quote! {
             v.push(::bpe_core::SettingDef {
                 key: #key,
@@ -178,7 +182,7 @@ fn settings(input: &DeriveInput) -> syn::Result<Tokens> {
                 unit: #unit,
                 group: #group,
                 depth: #depth,
-                flags: ::bpe_core::Flags { keyframe: #keyframe, pulse: #pulse },
+                flags: ::bpe_core::Flags { keyframe: #keyframe, pulse: #pulse, hold: #hold },
                 when: #when,
             });
         });

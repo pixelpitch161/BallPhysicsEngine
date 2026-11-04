@@ -3,11 +3,18 @@
 
 pub mod adsr;
 pub mod fx;
+pub mod chain;
 pub mod mixer;
+pub mod notes;
 pub mod voice;
 
 pub use adsr::{ADSR, AdsrKind, AdsrSettings};
+pub use chain::{
+    CHAIN_KINDS, DISTORTION, DistKind, DistortionSettings, FILTER, FilterKind, FilterSettings, MAX_CHAIN, MODULATION,
+    ModKind, ModulationSettings, Quality, Slope, Source, layer_summary,
+};
 pub use mixer::{BUSES, BusSettings, MIXER, MixerKind, MixerSettings};
+pub use notes::{BeatsOrBars, Change, MAX_SLOTS, NOTE_NAMES, Plays, Root, Scale, SlotOrder, StrumDir};
 pub use voice::{
     GateMode, GateUnit, NoiseColour, OscSettings, PhaseMode, PlayMode, SILENT_DB, SubOctave, SubWave, VOICE, VoiceKind,
     VoiceSettings, WarpMode, Wave, starter_voice,
@@ -21,4 +28,7 @@ pub fn register(reg: &mut Registry) {
     reg.add_module(VoiceKind);
     reg.add_layer(AdsrKind);
     fx::register(reg);
+    reg.add_layer(chain::ModulationKind);
+    reg.add_layer(chain::FilterLayerKind);
+    reg.add_layer(chain::DistortionKind);
 }

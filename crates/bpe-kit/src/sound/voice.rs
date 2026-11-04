@@ -4,6 +4,7 @@
 //! [`super::adsr`]).
 
 use super::adsr::{ADSR, AdsrSettings};
+use super::notes::{BeatsOrBars, Change, Plays, Root, Scale, SlotOrder, StrumDir};
 use bpe_core::{
     Choice, GroupOpts, Layer, LayerId, ModRoute, ModuleKind, NoteSlot, Params, ROUTES_KEY, Registry, SettingDef,
     SettingGroup, Settings, Slot, SlotId, Target, Value,
@@ -371,6 +372,55 @@ pub struct VoiceSettings {
     /// How many octaves the keyboard shows.
     #[setting(label = "Octaves", range(1, 8), group = "Notes")]
     pub notes_octaves: i32,
+    /// The shape's key: its root note.
+    #[setting(label = "Root", group = "Notes")]
+    pub notes_root: Root,
+    /// The shape's key: its scale. In-scale keys are marked on the keyboard.
+    #[setting(label = "Scale", group = "Notes")]
+    pub notes_scale: Scale,
+    /// How each hit picks notes from the slot playing.
+    #[setting(label = "Plays", group = "Notes")]
+    pub notes_plays: Plays,
+    /// How long a chord takes to strum, first note to last (0 plays them together).
+    #[setting(
+        label = "Strum",
+        range(0, 200),
+        unit = "ms",
+        group = "Notes",
+        keyframe,
+        when = "notes_plays=all_at_once"
+    )]
+    pub notes_strum: f32,
+    /// Which way a strum runs.
+    #[setting(label = "Strum from", group = "Notes", when = "notes_plays=all_at_once")]
+    pub notes_strum_dir: StrumDir,
+    /// How many hits each note (or chord) plays for before the next.
+    #[setting(label = "Repeat each", range(1, 16), group = "Notes")]
+    pub notes_repeat: i32,
+    /// How many octaves above the slot's notes the play order runs on into.
+    #[setting(label = "Octave range", range(0, 3), group = "Notes")]
+    pub notes_octave_range: i32,
+    /// What moves the shape on to its next slot.
+    #[setting(label = "Slots change", group = "Notes")]
+    pub notes_change: Change,
+    /// By tempo: how many beats or bars each slot lasts.
+    #[setting(label = "Every", range(1, 64), group = "Notes", when = "notes_change=by_tempo")]
+    pub notes_every_beats: i32,
+    /// By tempo: counted in beats or in bars.
+    #[setting(label = "Every unit", group = "Notes", when = "notes_change=by_tempo")]
+    pub notes_every_unit: BeatsOrBars,
+    /// By time: how long each slot lasts.
+    #[setting(label = "Every", range(0.1, 60), unit = "s", group = "Notes", keyframe, when = "notes_change=by_time")]
+    pub notes_every_seconds: f32,
+    /// By hits: how many hits on this shape each slot lasts.
+    #[setting(label = "Every", range(1, 256), unit = "hits", group = "Notes", when = "notes_change=by_hits")]
+    pub notes_every_hits: i32,
+    /// The order the slots take turns in.
+    #[setting(label = "Order", group = "Notes", when = "notes_change!=only_keyframes")]
+    pub notes_order: SlotOrder,
+    /// Jumps to a slot where it is keyed, whatever Slots change says (its keys always jump).
+    #[setting(label = "Jump to slot", range(1, 16), group = "Notes", keyframe, hold)]
+    pub notes_jump: i32,
     /// The shape's loudness.
     #[setting(label = "Volume", range(-60, 6), unit = "dB", group = "Output", keyframe)]
     pub out_volume: f32,
@@ -410,6 +460,20 @@ impl Default for VoiceSettings {
             notes_slots: vec![NoteSlot { notes: vec![60], order_clicked: Vec::new() }],
             notes_low_octave: 4,
             notes_octaves: 3,
+            notes_root: Root::C,
+            notes_scale: Scale::Major,
+            notes_plays: Plays::Random,
+            notes_strum: 0.0,
+            notes_strum_dir: StrumDir::Up,
+            notes_repeat: 1,
+            notes_octave_range: 0,
+            notes_change: Change::ByTempo,
+            notes_every_beats: 1,
+            notes_every_unit: BeatsOrBars::Bars,
+            notes_every_seconds: 2.0,
+            notes_every_hits: 4,
+            notes_order: SlotOrder::Forward,
+            notes_jump: 1,
             out_volume: 0.0,
             out_pan: 0.0,
             out_follow_hit: 0.0,
@@ -505,6 +569,47 @@ mod tests {
         assert_eq!((adsr.gate_mode, adsr.gate_unit, adsr.gate_ms), (GateMode::Fixed, GateUnit::Ms, 100.0));
         // No layer param differs from the ADSR's defaults.
         assert!(card.params.iter().all(|(k, _)| k == ROUTES_KEY), "{:?}", card.params);
+    }
+
+    #[test]
+    fn notes_defaults() {
+        let v = VoiceSettings::from_params(&Params::default());
+        assert_eq!((v.notes_root, v.notes_scale, v.notes_plays), (Root::C, Scale::Major, Plays::Random));
+        assert_eq!((v.notes_strum, v.notes_strum_dir, v.notes_repeat, v.notes_octave_range), (0.0, StrumDir::Up, 1, 0));
+        assert_eq!((v.notes_change, v.notes_every_beats, v.notes_every_unit), (Change::ByTempo, 1, BeatsOrBars::Bars));
+        assert_eq!((v.notes_every_seconds, v.notes_every_hits, v.notes_order), (2.0, 4, SlotOrder::Forward));
+        assert_eq!((v.notes_low_octave, v.notes_octaves), (4, 3), "the keyboard shows C4..B6");
+        let defs = VoiceSettings::defs();
+        let def = |k: &str| defs.iter().find(|d| d.key == k).unwrap_or_else(|| panic!("{k}"));
+        assert_eq!(def("notes_strum").range, Some((0.0, 200.0)));
+        assert_eq!(def("notes_octave_range").range, Some((0.0, 3.0)));
+        assert_eq!(def("notes_jump").range, Some((1.0, 16.0)));
+        assert_eq!(def("notes_scale").default, Value::Choice("major".into()));
+        assert_eq!(def("notes_root").default, Value::Choice("c".into()));
+        assert_eq!(Scale::ALL.len(), 12);
+        assert_eq!(Plays::ALL.len(), 13);
+        assert_eq!(Root::Fs.label(), "F#");
+    }
+
+    #[test]
+    fn jump_keys_are_always_hold() {
+        let reg = reg();
+        let jump = VoiceSettings::defs().iter().find(|d| d.key == "notes_jump").unwrap();
+        assert!(jump.flags.keyframe && jump.flags.hold);
+        assert!(VoiceSettings::defs().iter().filter(|d| d.key != "notes_jump").all(|d| !d.flags.hold));
+        let mut scene = bpe_core::Scene::empty(&reg);
+        let id = scene.add_thing(&reg, "shape", ThingId::ROOT).unwrap();
+        scene.add_slot(&reg, id, SlotId::Sound, VOICE).unwrap();
+        let a = bpe_core::Address { thing: id, slot: Some(SlotId::Sound), key: "notes_jump".into() };
+        scene.set_key(&reg, &a, 1.0, Value::Int(3)).unwrap();
+        scene.set_key(&reg, &a, 2.0, Value::Int(5)).unwrap();
+        let t = &scene.tracks[&a];
+        assert!(t.keys.iter().all(|k| k.ease == bpe_core::Ease::Hold));
+        assert_eq!(t.value_at(1.9), Some(Value::Int(3)), "no in-between slot");
+        // Other knobs keep the usual ease.
+        let g = bpe_core::Address { thing: id, slot: Some(SlotId::Sound), key: "a_gain".into() };
+        scene.set_key(&reg, &g, 1.0, Value::Number(-3.0)).unwrap();
+        assert_ne!(scene.tracks[&g].keys[0].ease, bpe_core::Ease::Hold);
     }
 
     #[test]

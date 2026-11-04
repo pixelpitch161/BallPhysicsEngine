@@ -104,7 +104,14 @@ fn renumbered(card: &Slot) -> Slot {
             (ROUTES_KEY, Value::Routes(routes)) => Value::Routes(
                 routes
                     .iter()
-                    .filter_map(|r| Some(bpe_core::ModRoute { source: new_id(r.source)?, ..r.clone() }))
+                    .filter_map(|r| {
+                        // A route to a layer's knob follows that layer too.
+                        let target = match bpe_core::split_layered(&r.target) {
+                            Some((layer, rest)) => bpe_core::layered_key(new_id(layer)?, rest),
+                            None => r.target.clone(),
+                        };
+                        Some(bpe_core::ModRoute { source: new_id(r.source)?, target, ..r.clone() })
+                    })
                     .collect(),
             ),
             _ => value.clone(),
@@ -119,6 +126,7 @@ fn renumbered(card: &Slot) -> Slot {
         params.set(&key, value);
     }
     out.params = params;
+    bpe_kit::sound::chain::retarget_sources(&mut out, &new_id);
     out
 }
 
@@ -148,6 +156,36 @@ mod tests {
         assert_eq!(out.params.get(&layered_key(LayerId(1), "attack")), Some(&Value::Number(40.0)));
         match out.params.get(ROUTES_KEY) {
             Some(Value::Routes(r)) => assert_eq!(r[0].source, LayerId(1)),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn renumbering_follows_modulation_sources_and_route_targets() {
+        use bpe_kit::sound::{FILTER, MODULATION};
+        let mut card = Slot::new(VOICE);
+        let layer =
+            |id: u32, kind: &str| Layer { id: LayerId(id), kind: kind.into(), lane: Some(0), ..Layer::default() };
+        card.layers = vec![layer(7, bpe_kit::sound::ADSR), layer(5, FILTER), layer(9, MODULATION)];
+        card.params.set(&layered_key(LayerId(9), "source"), Value::Text("5".into()));
+        card.params.set(
+            ROUTES_KEY,
+            Value::Routes(vec![ModRoute {
+                source: LayerId(7),
+                target: layered_key(LayerId(5), "cutoff"),
+                amount: 0.5,
+                bipolar: false,
+                invert: false,
+            }]),
+        );
+        let out = renumbered(&card);
+        assert_eq!(
+            out.params.get(&layered_key(LayerId(2), "source")),
+            Some(&Value::Text("1".into())),
+            "after the filter"
+        );
+        match out.params.get(ROUTES_KEY) {
+            Some(Value::Routes(r)) => assert_eq!(r[0].target, layered_key(LayerId(1), "cutoff")),
             other => panic!("{other:?}"),
         }
     }

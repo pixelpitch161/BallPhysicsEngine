@@ -43,6 +43,8 @@ pub struct Meters {
     /// none) and its loudest peak since the last read.
     shape_ids: [AtomicU32; SHAPE_METERS],
     shapes: [AtomicF32; SHAPE_METERS],
+    /// The slot each of those shapes plays, plus one (0 for none).
+    slots: [AtomicU32; SHAPE_METERS],
     buses: [BusMeter; 3],
     fx: Box<[FxMeter; FX_METERS]>,
 }
@@ -169,6 +171,7 @@ impl Default for Meters {
             shapes: std::array::from_fn(|_| AtomicF32::new(f32::NEG_INFINITY)),
             buses: Default::default(),
             fx: Box::new(std::array::from_fn(|_| FxMeter::default())),
+            slots: std::array::from_fn(|_| AtomicU32::new(0)),
         }
     }
 }
@@ -194,6 +197,21 @@ impl Meters {
             }
             self.shapes[place].raise(peak_db);
         }
+    }
+
+    /// Voice `place` plays slot `slot` (0 first; `None` for a voice without slots).
+    pub fn write_slot(&self, place: usize, slot: Option<usize>) {
+        if place < SHAPE_METERS {
+            self.slots[place].store(slot.map_or(0, |s| s as u32 + 1), Ordering::Relaxed);
+        }
+    }
+
+    /// The slot `thing`'s voice is playing (0 first), if it has one.
+    pub fn shape_slot(&self, thing: u32) -> Option<usize> {
+        let id = thing.wrapping_add(1);
+        (0..SHAPE_METERS)
+            .find(|&i| self.shape_ids[i].load(Ordering::Relaxed) == id)
+            .and_then(|i| self.slots[i].load(Ordering::Relaxed).checked_sub(1).map(|s| s as usize))
     }
 
     /// No voice at `place` or after it.
@@ -359,6 +377,17 @@ mod tests {
         assert_eq!(bins[200], -6.0);
         m.keep_fx(&[9]);
         assert_eq!(m.read_fx(4), FxReading::SILENT, "its layer went");
+    }
+
+    #[test]
+    fn a_shape_s_slot_is_found_by_its_thing() {
+        let m = Meters::default();
+        assert_eq!(m.shape_slot(7), None);
+        m.write_shape(2, 7, -12.0);
+        m.write_slot(2, Some(3));
+        assert_eq!(m.shape_slot(7), Some(3));
+        m.write_slot(2, None);
+        assert_eq!(m.shape_slot(7), None);
     }
 
     #[test]

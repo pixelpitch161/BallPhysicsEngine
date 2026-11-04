@@ -135,7 +135,13 @@ Dependencies go bottom to top:
   first use into the shared `WaveBank`; `octaves`/`mips_at` pick the copies, crossfading only over the top quarter
   of an octave, `XFADE_FROM`), `osc.rs` (the unison oscillator: up to 16 copies, Detune/Spread/Blend, f64 phase
   between blocks and u32 fixed-point inside one, 4-point Lagrange four samples at a time), `noise.rs` (seeded
-  white and pink) and `envelope.rs` (DAHDSR with a curve per segment). Bus effects in `fx/`: `eq.rs` (`Eq8`, 8
+  white and pink) and `envelope.rs` (DAHDSR with a curve per segment). For the chain layers: `filter/` (`StereoFilter`:
+  Cytomic SVF low/high/band pass, notch, peak and shelves at 12 or 24 dB, a ZDF ladder, a comb and a three-band
+  formant, coefficients glided over a block; `response_db` draws the real curve), `shaper.rs` (`Shaper`: the ten
+  distortion curves through a `StereoOversampler`, four sub-samples at a time in `f32x4`, first-order antiderivative
+  antialiasing on the cornered curves at 2× and up, bias taken back out, a 5 Hz DC blocker and the Tone tilt;
+  `transfer` draws the curve) and `pm_delay.rs` (`PmDelay`: FM and PD as a moving Hermite delay of at most 2 ms,
+  `am`, `ring`). Bus effects in `fx/`: `eq.rs` (`Eq8`, 8
   bands, `band_response_db` for the editor's curve), `compressor.rs` (`Key::SelfInput/External/Hits`),
   `delay.rs` (Standard/Ping-pong/Multi-tap, Digital/Analog/Tape), `reverb_plate.rs`, `reverb_hall.rs`,
   `reverb_spring.rs` (shared parts in `reverb_common.rs`), `modfx.rs` (Chorus, Phaser, Flanger), `width.rs` and
@@ -150,15 +156,36 @@ Dependencies go bottom to top:
   WAV) and `has_sound`. The `test-tone` feature gives a thing tagged `test-tone` (or `test-tone-decay=<s>`) a test
   blip voice; tests use it, the program never does. **Shape voice** (part 2): a shape's `sound.voice` card
   (`bpe-kit/src/sound/voice.rs`: `VoiceSettings` with Osc A/B as prefixed `OscSettings` (`a_`/`b_` keys), Playing,
-  Notes, Output and `routes`; ADSR layers `sound.adsr` in `adsr.rs`; `starter_voice` is what Enable sound adds)
-  becomes a `ShapeVoice` (`voices/shape.rs`, built by `patch::shape_voice`): hits pass the `HitFilter` (min strength,
-  retrigger, Heard from), `NotePicker` picks a note of slot 0, `Voices` (`alloc.rs`) gives it a slot (Poly up to
-  16, the oldest fading in 5 ms; Mono glides). Every number knob has a place in `knobs::layout` (keys read once a
-  block from `ShapeSpec.keyed`), `ModMatrix` (`modmatrix.rs`) applies routes (gain-like knobs scale per sample,
-  `scale_by_routes`), `chain.rs` is the (still empty) layer chain. The Master's Input/Output keys are read every
-  block too (`MasterKeys`). `Engine::audition`, `stop_notes` and `render_paused` (stopped: no hits or physics) play
+  Notes, Output and `routes`; ADSR layers `sound.adsr` in `adsr.rs`; `starter_voice` is what Enable sound adds;
+  the chain layers `chain.modulation`, `chain.filter` and `chain.distortion` are in `bpe-kit/src/sound/chain.rs`,
+  a Modulation's `source` text being "" (the other osc), "a", "b" or a layer id) becomes a `ShapeVoice`
+  (`voices/shape.rs`, built by `patch::shape_voice`): hits pass the `HitFilter` (min strength, retrigger, Heard from),
+  `NotePicker` picks a note of slot 0, `Voices` (`alloc.rs`) gives it a slot (Poly up to 16, the oldest fading in 5 ms;
+  Mono glides). Every number knob has a place in `knobs::layout` (keys read once a block from `ShapeSpec.keyed`),
+  `ModMatrix` (`modmatrix.rs`) applies routes (gain-like knobs scale per sample, `scale_by_routes`), the
+  oscillator layer chains (part 3) are `chain_graph.rs` (`ChainGraph`: which layer reads which, by lane; a Modulation
+  layer's source is an oscillator raw or the sound after any layer; a tap that would close a circle is a loop and
+  reads one sample late, the first layer in card order hearing on time; `loops_of` for the editor's loop mark) and
+  `chain.rs` (`ChainSpec` built per patch, `VoiceChain` per note: Osc → Gain → layers → Level → Pan, Solo cuts a lane
+  at its layer, a tapped oscillator that is off still runs unheard, `adopt` keeps ringing filters by layer id). Chain
+  knobs have fixed places (`knobs::chain(place, key)`, 14 keys, `MAX_CHAIN` 32 layers a card) so keys and routes reach
+  them. The Master's Input/Output keys are read every block too (`MasterKeys`). `Engine::audition`, `stop_notes` and
+  `render_paused` (stopped: no hits or physics) play
   keys clicked on the Sound tab; `Meters` also carries a level per shape (`write_shape`/`take_shape` by thing id).
-  Sound goldens: `tests/golden-sound*.txt` (an FNV hash of the starter patch), blessed like the physics goldens.
+  Sound goldens: `tests/golden-sound*.txt` (an FNV hash of the starter patch; `golden-sound-chain*` a patch with
+  layers on both oscillators), blessed like the physics goldens. `tests/ab_clips.rs` (ignored) renders the FM/PD A/B
+  clips.
+  **Notes** (part 5): the key/plays/slot-change settings and their enums are in `bpe-kit/src/sound/notes.rs`
+  (`Root`, `Scale`, `Plays`, `Change`, `SlotOrder`, `MAX_SLOTS` 16); `notes_jump` ("Jump to slot") is the one
+  `hold` setting (`Flags.hold`: `Scene::set_key` makes its keys `Ease::Hold`). `bpe-sound/src/music/` is pure
+  theory: `scale.rs` (`in_scale`, `move_into_key`, never drops a note), `chord_name.rs` (FL names, slash chords),
+  `voicing.rs` (`voice_progression`, least movement) and `presets.rs` (`PRESETS`, 40 in 8 `Mood`s, `realise`).
+  `voices/pick.rs` holds the play orders (`AnyPick`, pure in the hit step except Random walk; `ChordPick` strums),
+  `voices/slots.rs` the `SlotClock` (`begin_block`/`until`/`hit`/`end_block`; tempo and time lines from the
+  absolute sample; a change on a hit's own sample comes first) and `slot_changes`/`slot_change_times` for the
+  timeline. `Engine::seek` calls `VoiceSource::catch_up` with every hit before the pre-roll so slots and orders
+  are exact after a seek; `Meters::write_slot`/`shape_slot` report the slot playing. By side uses
+  `things::shape::side_on` (no allocation; the outline is made at patch build).
   **Buses** (part 6): the mixer card holds Bus 1..3 (`bus1_…` keys: name, on, fader, pan, mute, solo, send1..3;
   Bus 1 on, 2 and 3 off) and their effects as layers (`bpe-kit/src/sound/fx.rs`, `fx.eq` … `fx.width`, section
   Effect, `Layer.lane` = bus 0..2). `buses.rs`: `Buses` runs them in send order (post-fader sends; a send that
@@ -215,6 +242,19 @@ Dependencies go bottom to top:
   (paste renumbers layers), `osc.rs` the Osc A/B panels with `wave_view.rs`, `mod_row.rs` the modulator tiles,
   `adsr_view.rs` the draggable envelope and what it modulates, `keys.rs` the keyboard (FL names: C5 = MIDI 60; a
   click toggles the note and auditions it, also while stopped), `playing.rs` and `output.rs` (per-shape meter).
+  Each oscillator's layer box is `chain_box.rs` ("+ Add layer" with Paste layer, drag a strip's row to reorder in
+  its lane, `paste` keeps a Modulation's source when the card has it), `strip.rs` (a folded row: arrow, on switch,
+  name and `layer_summary`, a 76×32 mini view, the Mix mini-knob, the loop mark; open: type, slope or quality chips,
+  Solo "S", the 64 px view and the knobs; right-click Rename in place / Duplicate / Copy layer / Paste layer /
+  Delete; open strips in `SoundTab.open_strips`) and `strip_views.rs` (filter response with its cutoff/reso
+  handle, transfer curve, modulated wave). The copied chain layer is `Clipboard.chain_layer`.
+  `notes/` is the Notes panel (part 5): `header.rs` (Key, Chord
+  presets, octaves), `grid.rs` (a row per slot whose cells sit over the keys via `keys::KeyGeom`; gutter number and
+  chord name, row menu, drag to reorder, out-of-range markers), `presets_menu.rs`, `mod.rs` (`NotesState`, the pure
+  `apply_op`, the Move notes / Keep notes modal, Plays and Slots change). Copied notes live in
+  `Inspector.clipboard.notes`; `TabEdit::OwnStep` makes an edit its own undo step. The timeline gives a shape whose
+  slots take turns a group with slot-change ticks (`lanes::slots_take_turns`, `Timeline.slot_marks`), and hold
+  keys have no ease menu.
 
 ## Working rules
 

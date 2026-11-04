@@ -4,7 +4,10 @@
 
 use crate::modmatrix::{TargetInfo, TargetTable};
 use bpe_core::{LayerId, SettingDef, Settings, Value, layered_key};
-use bpe_kit::sound::{AdsrSettings, VoiceSettings};
+use bpe_kit::sound::{
+    AdsrSettings, DISTORTION, DistortionSettings, FILTER, FilterSettings, MAX_CHAIN, MODULATION, ModulationSettings,
+    VoiceSettings,
+};
 
 /// Knobs of one oscillator, from its key prefix on.
 pub const OSC_KEYS: [&str; 14] = [
@@ -82,8 +85,44 @@ pub const ADSR_LEN: usize = ADSR_KEYS.len();
 
 /// The most envelopes a shape's notes run (more are left silent).
 pub const MAX_ENVS: usize = 8;
+/// Where the chain layers' knobs start, after the envelopes'.
+pub const CHAIN_START: usize = SHAPE_LEN + MAX_ENVS * ADSR_LEN;
+
+/// One chain layer's knobs: every key any of the three kinds has, each kind using its own.
+pub const CHAIN_KEYS: [&str; 14] = [
+    "amount",
+    "output",
+    "mix",
+    "cutoff",
+    "reso",
+    "drive",
+    "key_track",
+    "gain",
+    "vowel",
+    "shift",
+    "bits",
+    "rate",
+    "bias",
+    "tone",
+];
+pub const AMOUNT: usize = 0;
+pub const OUTPUT: usize = 1;
+pub const MIX: usize = 2;
+pub const CUTOFF: usize = 3;
+pub const RESO: usize = 4;
+pub const DRIVE: usize = 5;
+pub const KEY_TRACK: usize = 6;
+pub const CHAIN_GAIN: usize = 7;
+pub const VOWEL: usize = 8;
+pub const SHIFT: usize = 9;
+pub const BITS: usize = 10;
+pub const RATE: usize = 11;
+pub const BIAS: usize = 12;
+pub const TONE: usize = 13;
+pub const CHAIN_LEN: usize = CHAIN_KEYS.len();
+
 /// Every knob.
-pub const KNOBS: usize = SHAPE_LEN + MAX_ENVS * ADSR_LEN;
+pub const KNOBS: usize = CHAIN_START + MAX_CHAIN * CHAIN_LEN;
 
 /// Oscillator `osc`'s knob `k`.
 pub const fn osc(osc: usize, k: usize) -> usize {
@@ -93,6 +132,11 @@ pub const fn osc(osc: usize, k: usize) -> usize {
 /// Envelope `env`'s knob `k`.
 pub const fn env(env: usize, k: usize) -> usize {
     SHAPE_LEN + env * ADSR_LEN + k
+}
+
+/// Chain layer `layer`'s knob `k` (the layer's place among the card's running chain layers).
+pub const fn chain(layer: usize, k: usize) -> usize {
+    CHAIN_START + layer * CHAIN_LEN + k
 }
 
 /// The knobs' values, by place.
@@ -113,6 +157,29 @@ fn def_of(defs: &'static [SettingDef], key: &str) -> Option<&'static SettingDef>
 /// Every knob's card key (layered for envelopes), description and place, for a card whose
 /// envelopes are `envs` in order.
 pub fn layout(envs: &[LayerId]) -> Vec<(String, &'static SettingDef, usize)> {
+    layout_with(envs, &[])
+}
+
+/// [`layout`] with the card's running chain layers (id and kind, in their places' order).
+pub fn layout_with(envs: &[LayerId], chain_layers: &[(LayerId, &str)]) -> Vec<(String, &'static SettingDef, usize)> {
+    let mut out = osc_shape_env_layout(envs);
+    for (place, (id, kind)) in chain_layers.iter().take(MAX_CHAIN).enumerate() {
+        let defs: &'static [SettingDef] = match *kind {
+            MODULATION => ModulationSettings::defs(),
+            FILTER => FilterSettings::defs(),
+            DISTORTION => DistortionSettings::defs(),
+            _ => continue,
+        };
+        for (k, key) in CHAIN_KEYS.iter().enumerate() {
+            if let Some(d) = def_of(defs, key) {
+                out.push((layered_key(*id, key), d, chain(place, k)));
+            }
+        }
+    }
+    out
+}
+
+fn osc_shape_env_layout(envs: &[LayerId]) -> Vec<(String, &'static SettingDef, usize)> {
     let voice = VoiceSettings::defs();
     let adsr = AdsrSettings::defs();
     let mut out = Vec::with_capacity(KNOBS);
@@ -182,5 +249,24 @@ mod tests {
         assert_eq!(v[VOICES], 16.0);
         assert_eq!(v[env(1, DECAY)], 350.0);
         assert_eq!(v[env(0, GATE_MS)], 100.0);
+    }
+
+    #[test]
+    fn chain_knobs_have_places_of_their_own() {
+        let l = layout_with(&[LayerId(0)], &[(LayerId(5), FILTER), (LayerId(6), DISTORTION), (LayerId(7), MODULATION)]);
+        let mut seen = std::collections::BTreeSet::new();
+        for (key, _, i) in &l {
+            assert!(seen.insert(*i), "{key} shares place {i}");
+            assert!(*i < KNOBS);
+        }
+        let place = |key: &str| l.iter().find(|(k, _, _)| k == key).map(|(_, _, i)| *i);
+        assert_eq!(place("5/cutoff"), Some(chain(0, CUTOFF)));
+        assert_eq!(place("6/drive"), Some(chain(1, DRIVE)));
+        assert_eq!(place("7/amount"), Some(chain(2, AMOUNT)));
+        assert_eq!(place("7/cutoff"), None, "Modulation has no cutoff");
+        let v = values(&l, &|_| None);
+        assert_eq!(v[chain(0, CUTOFF)], 2000.0);
+        assert_eq!(v[chain(1, DRIVE)], 12.0);
+        assert_eq!(v[chain(2, MIX)], 100.0);
     }
 }

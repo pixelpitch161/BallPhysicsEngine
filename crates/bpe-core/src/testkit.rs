@@ -241,7 +241,7 @@ pub static EXTRA_DEFS: std::sync::LazyLock<[SettingDef; 1]> = std::sync::LazyLoc
         unit: "",
         group: "",
         depth: crate::Depth::Simple,
-        flags: crate::Flags { keyframe: true, pulse: false },
+        flags: crate::Flags { keyframe: true, pulse: false, hold: false },
         when: "",
     }]
 });

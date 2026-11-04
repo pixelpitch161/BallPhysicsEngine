@@ -5,6 +5,7 @@
 
 pub mod buses;
 pub mod chain;
+pub mod chain_graph;
 pub mod engine;
 pub mod fx_chain;
 pub mod hits;
@@ -13,6 +14,7 @@ pub mod master;
 pub mod meters;
 pub mod midi;
 pub mod modmatrix;
+pub mod music;
 pub mod offline;
 pub mod patch;
 pub mod tempo;

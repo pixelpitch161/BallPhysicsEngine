@@ -6,11 +6,15 @@
 //! is drawn, through [`write::write`] (a key at the playhead when the setting has keys).
 
 pub mod adsr_view;
+pub mod chain_box;
 pub mod keys;
 pub mod mod_row;
+pub mod notes;
 pub mod osc;
 pub mod output;
 pub mod playing;
+pub mod strip;
+pub mod strip_views;
 pub mod wave_view;
 pub mod write;
 
@@ -27,6 +31,14 @@ use eframe::egui::{self, Color32, RichText, Ui};
 pub struct SoundTab {
     /// The modulator each shape's editor shows.
     pub picked: std::collections::BTreeMap<ThingId, bpe_core::LayerId>,
+    /// The layer strips that are open (any number at once).
+    pub open_strips: std::collections::BTreeSet<(ThingId, bpe_core::LayerId)>,
+    /// The strip being renamed in place, and its name so far.
+    pub renaming: Option<(ThingId, bpe_core::LayerId, String)>,
+    /// A chain layer has been copied (Paste layer is offered).
+    pub can_paste_layer: bool,
+    /// The Notes panel's state.
+    pub notes: notes::NotesState,
 }
 
 /// A change the tab asks for, applied once it is drawn.
@@ -42,6 +54,29 @@ pub enum TabEdit {
     PasteSound,
     /// Play a note on the shape now (a key clicked).
     Audition(u8),
+    /// A chain layer of `kind` at the bottom of oscillator `lane`'s chain (it opens).
+    AddLayer {
+        lane: u8,
+        kind: &'static str,
+    },
+    /// Turns a layer on or off.
+    LayerOn(bpe_core::LayerId, bool),
+    /// Moves a chain layer to this place in the card, within its lane.
+    MoveLayer(bpe_core::LayerId, usize),
+    RenameLayer(bpe_core::LayerId, String),
+    DuplicateLayer(bpe_core::LayerId),
+    CopyLayer(bpe_core::LayerId),
+    /// The copied layer into oscillator `lane`'s chain, after `after` (else at the bottom).
+    PasteLayer {
+        lane: u8,
+        after: Option<bpe_core::LayerId>,
+    },
+    DeleteLayer(bpe_core::LayerId),
+    /// A slot's notes onto the clipboard.
+    CopyNotes(Vec<u8>),
+    /// The edits made with this one are an undo step of their own (a preset, a key change, a
+    /// row's edit), never merged with a knob turned just before.
+    OwnStep,
 }
 
 /// What drawing the tab reads, and the edits it gathers.
@@ -54,6 +89,8 @@ pub struct TabCx<'a> {
     pub time: f64,
     /// The shape's track colour (modulation rings, the keyboard's lit keys).
     pub colour: Color32,
+    /// Notes copied from a slot (any shape's), for Paste notes.
+    pub notes_clip: Option<Vec<u8>>,
     pub edits: Vec<TabEdit>,
 }
 
@@ -100,6 +137,22 @@ impl TabCx<'_> {
     /// A knob on the number setting `key`, labelled `label`, its value read by `format`, with
     /// the usual right-click menu (Copy Value, Paste Value, Create Keyframe).
     pub fn knob(&mut self, ui: &mut Ui, key: &str, label: &str, format: &dyn Fn(f64) -> String) -> egui::Response {
+        self.knob_with(ui, key, label, format, false)
+    }
+
+    /// As [`TabCx::knob`], turning evenly in ratios (frequencies).
+    pub fn log_knob(&mut self, ui: &mut Ui, key: &str, label: &str, format: &dyn Fn(f64) -> String) -> egui::Response {
+        self.knob_with(ui, key, label, format, true)
+    }
+
+    fn knob_with(
+        &mut self,
+        ui: &mut Ui,
+        key: &str,
+        label: &str,
+        format: &dyn Fn(f64) -> String,
+        log: bool,
+    ) -> egui::Response {
         let Some(def) = self.def(key) else {
             return ui.label(RichText::new(format!("{label}?")).color(style::MUTED));
         };
@@ -108,7 +161,8 @@ impl TabCx<'_> {
         let now = self.get(key);
         let mut v = number(&now).unwrap_or(default);
         let bipolar = lo < 0.0 && hi > 0.0 && !is_db(def);
-        let r = Knob::new(&mut v, lo..=hi, default, label).format(format).bipolar(bipolar).width(KNOB_W).show(ui);
+        let r =
+            Knob::new(&mut v, lo..=hi, default, label).format(format).bipolar(bipolar).log(log).width(KNOB_W).show(ui);
         if r.changed {
             let value = match def.ty {
                 ValueType::Int => Value::Int(v.round() as i64),
@@ -212,7 +266,8 @@ pub fn show(
     let colour = style::colour_of(scene, id);
     let edits = {
         let scene: &Scene = scene;
-        let mut cx = TabCx { scene, kit, choices, id, time, colour, edits: Vec::new() };
+        let notes_clip = inspector.clipboard.notes.clone();
+        let mut cx = TabCx { scene, kit, choices, id, time, colour, notes_clip, edits: Vec::new() };
         let card = scene.card(id, SlotId::Sound).filter(|c| c.kind == VOICE);
         let on = card.is_some() && cx.flag("enabled");
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -268,9 +323,10 @@ pub fn show(
 
 /// Everything under Enable sound.
 fn body(ui: &mut Ui, inspector: &mut Inspector, cx: &mut TabCx) {
+    inspector.sound.can_paste_layer = inspector.clipboard.chain_layer.is_some();
     ui.columns(2, |cols| {
-        osc::show(&mut cols[0], cx, osc::Osc::A);
-        osc::show(&mut cols[1], cx, osc::Osc::B);
+        osc::show(&mut cols[0], cx, osc::Osc::A, &mut inspector.sound);
+        osc::show(&mut cols[1], cx, osc::Osc::B, &mut inspector.sound);
     });
     ui.add_space(8.0);
     panel(ui, |ui| {
@@ -284,7 +340,11 @@ fn body(ui: &mut Ui, inspector: &mut Inspector, cx: &mut TabCx) {
         }
     });
     ui.add_space(8.0);
-    keys::show(ui, cx);
+    let playing = match (&inspector.meters, inspector.playing) {
+        (Some(m), true) => m.shape_slot(cx.id.0),
+        _ => None,
+    };
+    notes::show(ui, cx, &mut inspector.sound.notes, playing);
     ui.add_space(8.0);
     let level = inspector.meters.as_ref().map_or(f32::NEG_INFINITY, |m| m.take_shape(cx.id.0));
     if level > f32::NEG_INFINITY {
@@ -327,6 +387,49 @@ fn apply(inspector: &mut Inspector, scene: &mut Scene, kit: &Kit, id: ThingId, t
             },
             TabEdit::Audition(note) => {
                 inspector.auditions.push((id, note));
+                false
+            }
+            TabEdit::AddLayer { lane, kind } => match scene.add_layer_in(reg, id, SlotId::Sound, kind, Some(lane)) {
+                Ok(layer) => {
+                    inspector.sound.open_strips.insert((id, layer));
+                    true
+                }
+                Err(_) => false,
+            },
+            TabEdit::LayerOn(layer, on) => scene.set_layer_enabled(reg, id, SlotId::Sound, layer, on).is_ok(),
+            TabEdit::MoveLayer(layer, to) => scene.move_layer(reg, id, SlotId::Sound, layer, to).is_ok(),
+            TabEdit::RenameLayer(layer, name) => scene.rename_layer(reg, id, SlotId::Sound, layer, &name).is_ok(),
+            TabEdit::DuplicateLayer(layer) => scene.duplicate_layer(reg, id, SlotId::Sound, layer).is_ok(),
+            TabEdit::CopyLayer(layer) => {
+                if let Some(copied) = scene.copy_layer(id, SlotId::Sound, layer) {
+                    inspector.clipboard.chain_layer = Some((id, copied));
+                }
+                false
+            }
+            TabEdit::PasteLayer { lane, after } => match inspector.clipboard.chain_layer.clone() {
+                Some((from, copied)) => match chain_box::paste(scene, reg, id, from, &copied, lane, after) {
+                    Some(layer) => {
+                        inspector.sound.open_strips.insert((id, layer));
+                        true
+                    }
+                    None => false,
+                },
+                None => false,
+            },
+            TabEdit::DeleteLayer(layer) => {
+                inspector.sound.open_strips.remove(&(id, layer));
+                // Modulations hearing it hear their own oscillator, as they sound, from now on.
+                if let Some(card) = scene.things.get_mut(&id).and_then(|t| t.slots.get_mut(&SlotId::Sound)) {
+                    bpe_kit::sound::chain::retarget_sources(card, &|l| (l != layer).then_some(l));
+                }
+                scene.remove_layer(reg, id, SlotId::Sound, layer).is_ok()
+            }
+            TabEdit::CopyNotes(notes) => {
+                inspector.clipboard.notes = Some(notes);
+                false
+            }
+            TabEdit::OwnStep => {
+                inspector.own_step = true;
                 false
             }
         };
