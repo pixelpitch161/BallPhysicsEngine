@@ -567,6 +567,9 @@ mod tests {
         let card = bpe_kit::sound::starter_voice(&kit.registry);
         scene.things.get_mut(&shape).unwrap().slots.insert(bpe_core::SlotId::Sound, card);
         let resolved = bpe_kit::resolve_scene(&scene, &kit.registry);
+        // The sound thread never bakes wavetables (the editor builds the sound again once they
+        // are in), so the starter's is baked here first, as the editor does when it opens.
+        bpe_dsp::WaveBank::get(bpe_dsp::WaveShape::Triangle, bpe_dsp::WarpModeId::Sync);
         let (producer, consumer) = ring();
         let shared = Arc::new(Shared::default());
         let mut feeder = Feeder::new(consumer, shared.clone(), RATE);
