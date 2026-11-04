@@ -170,6 +170,17 @@ Dependencies go bottom to top:
   Sound goldens: `tests/golden-sound*.txt` (an FNV hash of the starter patch; `golden-sound-chain*` a patch with
   layers on both oscillators), blessed like the physics goldens. `tests/ab_clips.rs` (ignored) renders the FM/PD A/B
   clips.
+  **Notes** (part 5): the key/plays/slot-change settings and their enums are in `bpe-kit/src/sound/notes.rs`
+  (`Root`, `Scale`, `Plays`, `Change`, `SlotOrder`, `MAX_SLOTS` 16); `notes_jump` ("Jump to slot") is the one
+  `hold` setting (`Flags.hold`: `Scene::set_key` makes its keys `Ease::Hold`). `bpe-sound/src/music/` is pure
+  theory: `scale.rs` (`in_scale`, `move_into_key`, never drops a note), `chord_name.rs` (FL names, slash chords),
+  `voicing.rs` (`voice_progression`, least movement) and `presets.rs` (`PRESETS`, 40 in 8 `Mood`s, `realise`).
+  `voices/pick.rs` holds the play orders (`AnyPick`, pure in the hit step except Random walk; `ChordPick` strums),
+  `voices/slots.rs` the `SlotClock` (`begin_block`/`until`/`hit`/`end_block`; tempo and time lines from the
+  absolute sample; a change on a hit's own sample comes first) and `slot_changes`/`slot_change_times` for the
+  timeline. `Engine::seek` calls `VoiceSource::catch_up` with every hit before the pre-roll so slots and orders
+  are exact after a seek; `Meters::write_slot`/`shape_slot` report the slot playing. By side uses
+  `things::shape::side_on` (no allocation; the outline is made at patch build).
 - `bpe-cli`: headless export. With sound it renders the WAV first (into a temp folder) and muxes it as AAC 320 kbps
   48 kHz (`AUDIO_ARGS`); a scene without sound gets a silent track.
 - `bpe-studio`: the egui 0.37 editor. Its look is the Ball Studio Design System (spec
@@ -215,6 +226,13 @@ Dependencies go bottom to top:
   Solo "S", the 64 px view and the knobs; right-click Rename in place / Duplicate / Copy layer / Paste layer /
   Delete; open strips in `SoundTab.open_strips`) and `strip_views.rs` (filter response with its cutoff/reso
   handle, transfer curve, modulated wave). The copied chain layer is `Clipboard.chain_layer`.
+  `notes/` is the Notes panel (part 5): `header.rs` (Key, Chord
+  presets, octaves), `grid.rs` (a row per slot whose cells sit over the keys via `keys::KeyGeom`; gutter number and
+  chord name, row menu, drag to reorder, out-of-range markers), `presets_menu.rs`, `mod.rs` (`NotesState`, the pure
+  `apply_op`, the Move notes / Keep notes modal, Plays and Slots change). Copied notes live in
+  `Inspector.clipboard.notes`; `TabEdit::OwnStep` makes an edit its own undo step. The timeline gives a shape whose
+  slots take turns a group with slot-change ticks (`lanes::slots_take_turns`, `Timeline.slot_marks`), and hold
+  keys have no ease menu.
 
 ## Working rules
 
