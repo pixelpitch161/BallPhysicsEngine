@@ -7,6 +7,8 @@ pub mod limiter;
 pub mod loudness;
 pub mod oversample;
 pub mod smooth;
+pub mod tables;
+pub mod warp;
 
 pub use db::{db_to_gain, gain_to_db};
 pub use denormal::FlushGuard;
@@ -14,6 +16,8 @@ pub use limiter::TruePeakLimiter;
 pub use loudness::LoudnessMeter;
 pub use oversample::{Halfband, Oversampler, true_peak};
 pub use smooth::Smoother;
+pub use tables::{Reader, TableSet, WaveBank};
+pub use warp::{WarpModeId, WaveShape};
 
 /// The engine's sample rate, in Hz.
 pub const SAMPLE_RATE: f32 = 48_000.0;
