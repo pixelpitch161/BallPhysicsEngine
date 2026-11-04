@@ -70,10 +70,15 @@ fn label_of(scene: &Scene, kit: &Kit, a: &Address) -> String {
         Some(slot) if let Some((layer, _)) = bpe_core::split_layered(&a.key) => {
             // A layer's setting goes by the layer's own name: "Ball · Outline · Width".
             let name = found.and_then(|t| t.slots.get(&slot)).and_then(|c| c.layer(layer)).map(|l| l.name.as_str());
-            format!("{thing} · {} · {setting}", name.unwrap_or("?"))
+            match def.map(|d| d.group).filter(|g| !g.is_empty() && slot == SlotId::Mixer) {
+                // A bus effect's band: "Scene settings · Equalizer · Band 5 · Frequency".
+                Some(group) => format!("{thing} · {} · {group} · {setting}", name.unwrap_or("?")),
+                None => format!("{thing} · {} · {setting}", name.unwrap_or("?")),
+            }
         }
         // A sound setting goes by its part of the voice: "Shape · Osc A · Gain".
-        Some(SlotId::Sound) if let Some(group) = def.map(|d| d.group).filter(|g| !g.is_empty()) => {
+        // A bus setting by its bus: "Scene settings · Bus 2 · Fader".
+        Some(SlotId::Sound | SlotId::Mixer) if let Some(group) = def.map(|d| d.group).filter(|g| !g.is_empty()) => {
             format!("{thing} · {group} · {setting}")
         }
         Some(slot) => {
