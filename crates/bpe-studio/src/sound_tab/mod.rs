@@ -9,6 +9,7 @@ pub mod adsr_view;
 pub mod chain_box;
 pub mod keys;
 pub mod mod_row;
+pub mod notes;
 pub mod osc;
 pub mod output;
 pub mod playing;
@@ -36,6 +37,8 @@ pub struct SoundTab {
     pub renaming: Option<(ThingId, bpe_core::LayerId, String)>,
     /// A chain layer has been copied (Paste layer is offered).
     pub can_paste_layer: bool,
+    /// The Notes panel's state.
+    pub notes: notes::NotesState,
 }
 
 /// A change the tab asks for, applied once it is drawn.
@@ -69,6 +72,11 @@ pub enum TabEdit {
         after: Option<bpe_core::LayerId>,
     },
     DeleteLayer(bpe_core::LayerId),
+    /// A slot's notes onto the clipboard.
+    CopyNotes(Vec<u8>),
+    /// The edits made with this one are an undo step of their own (a preset, a key change, a
+    /// row's edit), never merged with a knob turned just before.
+    OwnStep,
 }
 
 /// What drawing the tab reads, and the edits it gathers.
@@ -81,6 +89,8 @@ pub struct TabCx<'a> {
     pub time: f64,
     /// The shape's track colour (modulation rings, the keyboard's lit keys).
     pub colour: Color32,
+    /// Notes copied from a slot (any shape's), for Paste notes.
+    pub notes_clip: Option<Vec<u8>>,
     pub edits: Vec<TabEdit>,
 }
 
@@ -256,7 +266,8 @@ pub fn show(
     let colour = style::colour_of(scene, id);
     let edits = {
         let scene: &Scene = scene;
-        let mut cx = TabCx { scene, kit, choices, id, time, colour, edits: Vec::new() };
+        let notes_clip = inspector.clipboard.notes.clone();
+        let mut cx = TabCx { scene, kit, choices, id, time, colour, notes_clip, edits: Vec::new() };
         let card = scene.card(id, SlotId::Sound).filter(|c| c.kind == VOICE);
         let on = card.is_some() && cx.flag("enabled");
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -329,7 +340,11 @@ fn body(ui: &mut Ui, inspector: &mut Inspector, cx: &mut TabCx) {
         }
     });
     ui.add_space(8.0);
-    keys::show(ui, cx);
+    let playing = match (&inspector.meters, inspector.playing) {
+        (Some(m), true) => m.shape_slot(cx.id.0),
+        _ => None,
+    };
+    notes::show(ui, cx, &mut inspector.sound.notes, playing);
     ui.add_space(8.0);
     let level = inspector.meters.as_ref().map_or(f32::NEG_INFINITY, |m| m.take_shape(cx.id.0));
     if level > f32::NEG_INFINITY {
@@ -408,6 +423,14 @@ fn apply(inspector: &mut Inspector, scene: &mut Scene, kit: &Kit, id: ThingId, t
                     bpe_kit::sound::chain::retarget_sources(card, &|l| (l != layer).then_some(l));
                 }
                 scene.remove_layer(reg, id, SlotId::Sound, layer).is_ok()
+            }
+            TabEdit::CopyNotes(notes) => {
+                inspector.clipboard.notes = Some(notes);
+                false
+            }
+            TabEdit::OwnStep => {
+                inspector.own_step = true;
+                false
             }
         };
     }

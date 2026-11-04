@@ -7,10 +7,13 @@
 //! goes; the voice runs it from the start of the clip after a seek, so it plays the same however
 //! playback got there.
 
+use super::hit_filter::HitFilter;
 use super::notes::mix;
-use crate::{SAMPLE_RATE, TempoMap};
-use bpe_core::{Track, Value};
+use crate::{BlockHit, SAMPLE_RATE, TempoMap};
+use bpe_core::{Address, Scene, Settings, SlotId, ThingId, Track, Value};
+use bpe_kit::SceneSettings;
 use bpe_kit::sound::{BeatsOrBars, Change, MAX_SLOTS, Plays, SlotOrder, StrumDir, VoiceSettings};
+use bpe_runtime::World;
 
 /// A shape's notes settings that are not slots, as the engine reads them.
 #[derive(Clone, Debug)]
@@ -349,24 +352,89 @@ impl SlotClock {
     }
 
     /// The samples where the slot changes from the start of the clip to `end`, and the slot it
-    /// changes to, for a mode that needs no hits (By hits gives none). For the timeline.
-    pub fn changes_until(spec: &NotesSpec, n: usize, seed: u64, tempo: &TempoMap, end: u64) -> Vec<(u64, usize)> {
+    /// changes to. `hits` are the samples of the accepted hits on the shape, in order (only By
+    /// hits reads them). For the timeline's marks and tests.
+    pub fn changes_until(
+        spec: &NotesSpec,
+        n: usize,
+        seed: u64,
+        tempo: &TempoMap,
+        end: u64,
+        hits: &[u64],
+    ) -> Vec<(u64, usize)> {
         let mut c = SlotClock::new(n, seed);
         let mut out = Vec::new();
         let block = crate::BLOCK as u64;
         let mut start = 0;
+        let mut next_hit = 0;
         while start < end {
             c.begin_block(start, block as u32, start as f64 / SAMPLE_RATE as f64, spec, tempo);
-            while c.n_pending > 0 {
-                let at = c.pending[0].offset;
+            loop {
+                let hit = hits.get(next_hit).copied().filter(|&h| h < start + block);
+                let change = (c.n_pending > 0).then(|| c.pending[0].offset as u64 + start);
+                // A change on a hit's sample comes first.
+                let (at, is_hit) = match (change, hit) {
+                    (Some(a), Some(h)) if a <= h => (a, false),
+                    (_, Some(h)) => (h.max(start), true),
+                    (Some(a), None) => (a, false),
+                    (None, None) => break,
+                };
                 let before = c.changes;
-                c.until(at, spec);
+                c.until((at - start) as u32, spec);
+                if is_hit {
+                    c.hit(spec);
+                    next_hit += 1;
+                }
                 if c.changes != before {
-                    out.push((start + at as u64, c.current));
+                    out.push((at, c.current));
                 }
             }
             start += block;
         }
         out
     }
+}
+
+/// The seed a shape's slot clock runs on (its Random and Shuffle orders).
+pub fn clock_seed(thing: ThingId) -> u64 {
+    mix(0x5107 ^ ((thing.0 as u64) << 20))
+}
+
+/// Where `shape`'s slots change from the start to `end` (sound samples), and to which slot, as
+/// its voice would play them: hits filtered by its Min hit strength, Retrigger guard and Heard
+/// from as set (not keyed). `hits` are the clip's hits so far, in sample order. Empty when the
+/// shape has no sound or one slot.
+pub fn slot_changes(
+    scene: &Scene,
+    shape: ThingId,
+    hits: &[(u64, BlockHit)],
+    world: &World,
+    end: u64,
+) -> Vec<(u64, usize)> {
+    let Some(card) = scene.card(shape, SlotId::Sound).filter(|c| c.kind == bpe_kit::sound::VOICE) else {
+        return Vec::new();
+    };
+    let v = VoiceSettings::from_params(&card.params);
+    if !v.enabled || v.notes_slots.len() < 2 {
+        return Vec::new();
+    }
+    let settings = scene.things.get(&ThingId::ROOT).map(|r| SceneSettings::from_params(&r.params)).unwrap_or_default();
+    let tempo = TempoMap::from_settings(&settings);
+    let track = |key: &str| {
+        let a = Address { thing: shape, slot: Some(SlotId::Sound), key: key.into() };
+        scene.tracks.get(&a).filter(|t| !t.keys.is_empty()).cloned()
+    };
+    let spec = NotesSpec::from_settings(
+        &v,
+        tempo.top(),
+        [track("notes_strum"), track("notes_every_seconds"), track("notes_jump")],
+    );
+    let accepted: Vec<u64> = if spec.change == Change::ByHits {
+        let mut f =
+            HitFilter::new(shape, v.play_min_strength / 100.0, v.play_retrigger / 1000.0, v.play_heard_from.clone());
+        hits.iter().filter(|(at, h)| f.accept(h, *at, world).is_some()).map(|(at, _)| *at).collect()
+    } else {
+        Vec::new()
+    };
+    SlotClock::changes_until(&spec, v.notes_slots.len(), clock_seed(shape), &tempo, end, &accepted)
 }

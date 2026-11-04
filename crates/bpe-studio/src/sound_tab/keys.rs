@@ -1,19 +1,11 @@
-//! The notes (part 2: one slot): a keyboard from the lowest octave up, − and + for fewer or
-//! more octaves. A key clicked turns its note on or off in the slot and plays it, stopped or
-//! playing. Notes are named as FL Studio names them: C5 is middle C (MIDI 60).
+//! The keyboard under the slot grid (see [`super::notes`]), and where its keys sit so the grid
+//! lines up with them. Notes are named as FL Studio names them: C5 is middle C (MIDI 60).
 
-use super::{TabCx, TabEdit, panel};
 use crate::style;
-use bpe_core::{NoteSlot, Value};
-use eframe::egui::{self, Color32, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
-
-/// The slot keys of the card.
-const SLOTS: &str = "notes_slots";
-const LOW: &str = "notes_low_octave";
-const OCTAVES: &str = "notes_octaves";
+use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 
 /// The keyboard's height.
-const KEYS_H: f32 = 80.0;
+pub const KEYS_H: f32 = 80.0;
 const BLACK_H: f32 = 48.0;
 
 /// Note names in an octave.
@@ -26,26 +18,97 @@ pub fn note_name(note: u8) -> String {
     format!("{}{}", NAMES[note as usize % 12], note / 12)
 }
 
-/// A keyboard of `octaves` octaves from C of `low`, the `lit` notes in `colour`. The key
-/// clicked, if any.
-pub fn keyboard(ui: &mut Ui, low: u8, octaves: u8, lit: &[u8], colour: Color32) -> Option<u8> {
+/// Where the keys sit: `whites` white keys of `kw` from `left`, from C of octave `low`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KeyGeom {
+    pub left: f32,
+    pub kw: f32,
+    pub low: u8,
+    pub octaves: u8,
+}
+
+impl KeyGeom {
+    /// The keys across `width` from `left`.
+    pub fn new(left: f32, width: f32, low: u8, octaves: u8) -> Self {
+        let whites = 7 * octaves.max(1) as usize;
+        KeyGeom { left, kw: width / whites as f32, low, octaves: octaves.max(1) }
+    }
+
+    /// The lowest and highest notes shown.
+    pub fn range(&self) -> (u8, u8) {
+        (12 * self.low, (12 * (self.low as u16 + self.octaves as u16) - 1).min(127) as u8)
+    }
+
+    /// The middle of `note`'s key across (a black key sits on the line between two whites).
+    /// `None` when the note is not on the keyboard.
+    pub fn x_of(&self, note: u8) -> Option<f32> {
+        let (lo, hi) = self.range();
+        if note < lo || note > hi {
+            return None;
+        }
+        let rel = (note - lo) as usize;
+        let (octave, pc) = (rel / 12, (rel % 12) as u8);
+        let base = self.left + (7 * octave) as f32 * self.kw;
+        Some(match WHITE.iter().position(|&w| w == pc) {
+            Some(w) => base + (w as f32 + 0.5) * self.kw,
+            None => {
+                let below = WHITE.iter().position(|&w| w == pc - 1).unwrap_or(0);
+                base + (below + 1) as f32 * self.kw
+            }
+        })
+    }
+
+    /// Whether `note` is a black key.
+    pub fn is_black(note: u8) -> bool {
+        !WHITE.contains(&(note % 12))
+    }
+
+    /// The note whose column `x` is in: a black key's narrow column where it is, else the
+    /// white key under `x`.
+    pub fn note_at(&self, x: f32) -> Option<u8> {
+        let (lo, hi) = self.range();
+        let w = ((x - self.left) / self.kw).floor();
+        if w < 0.0 || w as usize >= 7 * self.octaves as usize {
+            return None;
+        }
+        for note in lo..=hi {
+            if Self::is_black(note) && self.x_of(note).is_some_and(|bx| (x - bx).abs() < self.kw * 0.3) {
+                return Some(note);
+            }
+        }
+        let w = w as usize;
+        Some(lo + 12 * (w / 7) as u8 + WHITE[w % 7])
+    }
+}
+
+/// The keyboard drawn in `rect` with its keys at `geom`; keys `in_key` says are in the
+/// shape's key get a faint dot.
+pub fn keyboard_at(
+    ui: &mut Ui,
+    rect: Rect,
+    geom: KeyGeom,
+    lit: &[u8],
+    colour: Color32,
+    in_key: &dyn Fn(u8) -> bool,
+) -> Option<u8> {
+    let (low, octaves, kw) = (geom.low, geom.octaves, geom.kw);
     let whites = 7 * octaves as usize;
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), KEYS_H), Sense::hover());
-    let kw = rect.width() / whites.max(1) as f32;
     let first = 12 * low;
     let mut clicked = None;
     let mut keys: Vec<(u8, Rect, bool)> = Vec::new();
     for w in 0..whites {
         let note = first + 12 * (w / 7) as u8 + WHITE[w % 7];
-        let r = Rect::from_min_size(Pos2::new(rect.left() + w as f32 * kw, rect.top()), Vec2::new(kw - 1.0, KEYS_H));
+        let r =
+            Rect::from_min_size(Pos2::new(geom.left + w as f32 * kw, rect.top()), Vec2::new(kw - 1.0, rect.height()));
         keys.push((note, r, false));
     }
+    let black_h = rect.height() * BLACK_H / KEYS_H;
     for w in 0..whites {
         let n = WHITE[w % 7];
         if matches!(n, 0 | 2 | 5 | 7 | 9) {
             let note = first + 12 * (w / 7) as u8 + n + 1;
-            let x = rect.left() + (w + 1) as f32 * kw - kw * 0.3;
-            keys.push((note, Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(kw * 0.6, BLACK_H)), true));
+            let x = geom.left + (w + 1) as f32 * kw - kw * 0.3;
+            keys.push((note, Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(kw * 0.6, black_h)), true));
         }
     }
     // White keys first, so the black ones on top of them take the clicks there.
@@ -77,6 +140,11 @@ pub fn keyboard(ui: &mut Ui, low: u8, octaves: u8, lit: &[u8], colour: Color32) 
                     style::ON_LIGHT,
                 );
             }
+            if in_key(note) && !on {
+                let y = if black { r.bottom() - 6.0 } else { r.bottom() - 20.0 };
+                let dot = if black { style::LINE } else { style::FAINT };
+                painter.circle_filled(Pos2::new(r.center().x, y), 2.0, dot);
+            }
             if response.hovered() {
                 painter.rect_stroke(r, 2.0, Stroke::new(1.0, style::TEXT_STRONG), egui::StrokeKind::Inside);
             }
@@ -85,10 +153,8 @@ pub fn keyboard(ui: &mut Ui, low: u8, octaves: u8, lit: &[u8], colour: Color32) 
     // The C labels, for screen readers and tests too.
     for o in 0..octaves {
         let note = first + 12 * o;
-        let at = Rect::from_min_size(
-            Pos2::new(rect.left() + 7.0 * o as f32 * kw, rect.bottom() - 16.0),
-            Vec2::new(kw, 14.0),
-        );
+        let at =
+            Rect::from_min_size(Pos2::new(geom.left + 7.0 * o as f32 * kw, rect.bottom() - 16.0), Vec2::new(kw, 14.0));
         let label = ui.interact(at, ui.scope_id().with(("c label", note)), Sense::hover());
         let name = note_name(note);
         label.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &name));
@@ -96,85 +162,9 @@ pub fn keyboard(ui: &mut Ui, low: u8, octaves: u8, lit: &[u8], colour: Color32) 
     clicked
 }
 
-/// The notes of slot 0.
-pub fn slot_notes(cx: &TabCx) -> Vec<u8> {
-    match cx.get(SLOTS) {
-        Value::Slots(slots) => slots.first().map(|s| s.notes.clone()).unwrap_or_default(),
-        _ => Vec::new(),
-    }
-}
-
-/// Draws the Notes panel.
-pub fn show(ui: &mut Ui, cx: &mut TabCx) {
-    panel(ui, |ui| {
-        let low = cx.number(LOW).round().clamp(0.0, 8.0) as u8;
-        let octaves = cx.number(OCTAVES).round().clamp(1.0, 8.0) as u8;
-        let top = (low + octaves).min(10);
-        let octaves = top - low;
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Notes").font(style::semibold(13.0)));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let more =
-                    ui.add_enabled(octaves < 8 && top < 10, egui::Button::new("+")).on_hover_text("One octave more");
-                super::name_it(ui, &more, "One octave more");
-                if more.clicked() {
-                    cx.set(OCTAVES, Value::Int(octaves as i64 + 1));
-                }
-                let fewer = ui.add_enabled(octaves > 1, egui::Button::new("-")).on_hover_text("One octave fewer");
-                super::name_it(ui, &fewer, "One octave fewer");
-                if fewer.clicked() {
-                    cx.set(OCTAVES, Value::Int(octaves as i64 - 1));
-                }
-                let range = format!("{} to {}", note_name(12 * low), note_name(12 * top - 1));
-                ui.label(RichText::new(range).small().color(style::MUTED));
-            });
-        });
-        let lit = slot_notes(cx);
-        if let Some(note) = keyboard(ui, low, octaves, &lit, cx.colour) {
-            let mut notes = lit.clone();
-            match notes.binary_search(&note) {
-                Ok(i) => {
-                    notes.remove(i);
-                }
-                Err(i) => notes.insert(i, note),
-            }
-            let mut slots = match cx.get(SLOTS) {
-                Value::Slots(s) => s,
-                _ => Vec::new(),
-            };
-            if slots.is_empty() {
-                slots.push(NoteSlot::default());
-            }
-            slots[0].order_clicked.retain(|n| notes.contains(n));
-            if notes.contains(&note) {
-                slots[0].order_clicked.push(note);
-            }
-            slots[0].notes = notes;
-            cx.set(SLOTS, Value::Slots(slots));
-            cx.edits.push(TabEdit::Audition(note));
-        }
-        ui.label(
-            RichText::new("Each hit plays one of the lit notes, picked at random. Click a key to hear it.")
-                .small()
-                .color(style::MUTED),
-        );
-    });
-}
-
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{SHAPE, sounding};
     use super::*;
-    use bpe_core::{Address, SlotId};
-    use egui_kittest::kittest::Queryable;
-
-    fn notes(h: &egui_kittest::Harness<'_, (crate::app::Studio, f32)>) -> Vec<u8> {
-        let reg = bpe_kit::registry();
-        match h.state().0.scene.value_at_time(&reg, &Address::on(SHAPE, SlotId::Sound, SLOTS), 0.0) {
-            Some(Value::Slots(s)) => s[0].notes.clone(),
-            other => panic!("{other:?}"),
-        }
-    }
 
     #[test]
     fn note_names_follow_fl_studio() {
@@ -184,40 +174,16 @@ mod tests {
     }
 
     #[test]
-    fn clicking_a_key_toggles_it_and_auditions() {
-        let mut h = sounding();
-        assert_eq!(notes(&h), [60]);
-        h.get_by_role_and_label(egui::Role::Button, "D5").click();
-        h.run();
-        assert_eq!(notes(&h), [60, 62]);
-        assert!(h.state().0.panels.inspector.auditions.contains(&(SHAPE, 62)), "it plays");
-        h.get_by_role_and_label(egui::Role::Button, "D5").click();
-        h.run();
-        assert_eq!(notes(&h), [60]);
-        h.get_by_role_and_label(egui::Role::Button, "C#5").click();
-        h.run();
-        assert_eq!(notes(&h), [60, 61], "the black key, not the white under it");
-    }
-
-    #[test]
-    fn octave_buttons_grow_and_shrink() {
-        let mut h = sounding();
-        assert!(h.query_by_role_and_label(egui::Role::Button, "C7").is_none());
-        h.get_by_label("One octave more").click();
-        h.run();
-        assert!(h.query_by_role_and_label(egui::Role::Button, "C7").is_some());
-        h.get_by_label("One octave fewer").click();
-        h.run();
-        h.get_by_label("One octave fewer").click();
-        h.run();
-        assert!(h.query_by_role_and_label(egui::Role::Button, "C6").is_none());
-        assert!(h.query_by_role_and_label(egui::Role::Button, "B5").is_some());
-    }
-
-    #[test]
-    fn key_labels_use_fl_names() {
-        let h = sounding();
-        assert!(h.query_by_role_and_label(egui::Role::Label, "C5").is_some(), "C5 under middle C");
-        assert!(h.query_by_label("C4 to B6").is_some());
+    fn key_columns_line_up() {
+        let g = KeyGeom::new(0.0, 210.0, 4, 3);
+        assert_eq!(g.range(), (48, 83));
+        assert_eq!(g.x_of(48), Some(5.0), "C4 in the middle of the first white key");
+        assert_eq!(g.x_of(49), Some(10.0), "C#4 on the line after it");
+        assert_eq!(g.x_of(47), None);
+        assert_eq!(g.note_at(5.0), Some(48));
+        assert_eq!(g.note_at(10.5), Some(49));
+        assert_eq!(g.note_at(13.5), Some(50), "D4 below its black keys' columns");
+        assert_eq!(g.note_at(209.0), Some(83));
+        assert_eq!(g.note_at(-1.0), None);
     }
 }

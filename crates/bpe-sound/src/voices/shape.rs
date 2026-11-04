@@ -319,7 +319,7 @@ impl ShapeVoice {
         let mut v = ShapeVoice {
             filter,
             picker: AnyPick::new(spec.notes.plays),
-            clock: SlotClock::new(spec.slots.len(), mix(0x5107 ^ ((spec.thing.0 as u64) << 20))),
+            clock: SlotClock::new(spec.slots.len(), super::slots::clock_seed(spec.thing)),
             slot_hits: 0,
             slot_turn: 0,
             strums: [Strum { sample: 0, note: 0, strength: 0.0, ball: AUDITION_BALL, point: Vec2::ZERO, seed: 0 };
@@ -1112,6 +1112,10 @@ impl VoiceSource for ShapeVoice {
 
     fn level(&self) -> f32 {
         self.peak
+    }
+
+    fn playing_slot(&self) -> Option<usize> {
+        Some(self.clock.current())
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {

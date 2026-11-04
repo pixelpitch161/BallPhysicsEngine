@@ -45,6 +45,10 @@ pub trait VoiceSource: Send {
     }
     /// Plays `note` from the editor (a key clicked), outside the hits.
     fn audition(&mut self, _note: u8) {}
+    /// The slot of notes it is playing (0 first), for the editor; `None` for a voice without.
+    fn playing_slot(&self) -> Option<usize> {
+        None
+    }
     /// The loudest sample of the last block, for its meter.
     fn level(&self) -> f32 {
         0.0

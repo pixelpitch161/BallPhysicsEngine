@@ -29,25 +29,35 @@ fn jumps(keys: &[(f64, i64)]) -> Track {
 fn by_tempo_changes_on_bar_lines() {
     let s = spec(|_| {});
     let tempo = TempoMap::new(120.0, 4, 4);
-    let c = SlotClock::changes_until(&s, 4, 1, &tempo, 4 * BAR + 1);
+    let c = SlotClock::changes_until(&s, 4, 1, &tempo, 4 * BAR + 1, &[]);
     assert_eq!(c, [(BAR, 1), (2 * BAR, 2), (3 * BAR, 3), (4 * BAR, 0)]);
     // Every 2 beats, 6/8: a beat is an eighth (0.25 s), so a change every 0.5 s.
     let s = spec(|v| {
         v.notes_every_unit = BeatsOrBars::Beats;
         v.notes_every_beats = 2;
     });
-    let c = SlotClock::changes_until(&s, 3, 1, &TempoMap::new(120.0, 6, 8), 48_000 + 1);
+    let c = SlotClock::changes_until(&s, 3, 1, &TempoMap::new(120.0, 6, 8), 48_000 + 1, &[]);
     assert_eq!(c, [(24_000, 1), (48_000, 2)]);
     // By time, every 1.5 s.
     let s = spec(|v| {
         v.notes_change = Change::ByTime;
         v.notes_every_seconds = 1.5;
     });
-    let c = SlotClock::changes_until(&s, 2, 1, &tempo, 3 * 48_000 + 1);
+    let c = SlotClock::changes_until(&s, 2, 1, &tempo, 3 * 48_000 + 1, &[]);
     assert_eq!(c, [(72_000, 1), (144_000, 0)]);
     // Only on keyframes: nothing moves on its own.
     let s = spec(|v| v.notes_change = Change::OnlyKeyframes);
-    assert!(SlotClock::changes_until(&s, 4, 1, &tempo, 10 * BAR).is_empty());
+    assert!(SlotClock::changes_until(&s, 4, 1, &tempo, 10 * BAR, &[]).is_empty());
+}
+
+#[test]
+fn by_hits_marks_follow_the_hits() {
+    let s = spec(|v| {
+        v.notes_change = Change::ByHits;
+        v.notes_every_hits = 2;
+    });
+    let c = SlotClock::changes_until(&s, 3, 1, &TempoMap::default(), 48_000, &[100, 200, 300, 400, 500]);
+    assert_eq!(c, [(200, 1), (400, 2)], "after every second hit, on its sample");
 }
 
 #[test]
@@ -55,7 +65,7 @@ fn orders() {
     let tempo = TempoMap::default();
     let seq = |order: SlotOrder, n: usize| -> Vec<usize> {
         let s = spec(|v| v.notes_order = order);
-        SlotClock::changes_until(&s, n, 7, &tempo, 8 * BAR + 1).into_iter().map(|(_, slot)| slot).collect()
+        SlotClock::changes_until(&s, n, 7, &tempo, 8 * BAR + 1, &[]).into_iter().map(|(_, slot)| slot).collect()
     };
     assert_eq!(seq(SlotOrder::Forward, 3), [1, 2, 0, 1, 2, 0, 1, 2]);
     assert_eq!(seq(SlotOrder::Reverse, 3), [2, 1, 0, 2, 1, 0, 2, 1]);
@@ -78,14 +88,14 @@ fn jump_key_overrides_the_mode() {
     let tempo = TempoMap::default();
     let mut s = spec(|_| {});
     s.jump = Some(jumps(&[(0.5, 3), (5.0, 1)]));
-    let c = SlotClock::changes_until(&s, 4, 1, &tempo, 3 * BAR + 1);
+    let c = SlotClock::changes_until(&s, 4, 1, &tempo, 3 * BAR + 1, &[]);
     // Jumps to slot 3 half a second in, then carries on from there on the bar lines; at 5 s
     // back to slot 1.
     assert_eq!(c, [(24_000, 2), (BAR, 3), (2 * BAR, 0), (5 * 48_000, 0), (3 * BAR, 1)]);
     // Only on keyframes moves only there; a key past the last slot plays the last.
     let mut s = spec(|v| v.notes_change = Change::OnlyKeyframes);
     s.jump = Some(jumps(&[(1.0, 2), (2.0, 9)]));
-    assert_eq!(SlotClock::changes_until(&s, 3, 1, &tempo, 3 * 48_000), [(48_000, 1), (96_000, 2)]);
+    assert_eq!(SlotClock::changes_until(&s, 3, 1, &tempo, 3 * 48_000, &[]), [(48_000, 1), (96_000, 2)]);
 }
 
 // The voice: the slot plays.
