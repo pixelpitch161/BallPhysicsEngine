@@ -42,6 +42,7 @@ fn card_knob(
     bipolar: bool,
     log: bool,
     time: f64,
+    width: f32,
 ) {
     let reg = &kit.registry;
     let a = address(key);
@@ -53,7 +54,7 @@ fn card_knob(
     let default = super::number(&def.default).unwrap_or(0.0);
     let now = scene.value_at_time(reg, &a, time).unwrap_or_else(|| def.default.clone());
     let mut v = super::number(&now).unwrap_or(default);
-    let r = Knob::new(&mut v, lo..=hi, default, label).format(format).bipolar(bipolar).log(log).show(ui);
+    let r = Knob::new(&mut v, lo..=hi, default, label).format(format).bipolar(bipolar).log(log).width(width).show(ui);
     let mut keyed = false;
     if r.changed {
         crate::inspector::set_or_key(scene, reg, &a, Value::Number(v), time, &mut keyed);
@@ -72,6 +73,28 @@ fn card_knob(
     }
 }
 
+/// The Master's knobs, in the order the strips show them.
+pub const KNOBS: [&str; 4] = ["master_input", "master_output", "master_ceiling", "master_release"];
+
+/// The Master's knob for setting `key` (one of [`KNOBS`]), `width` wide.
+pub fn knob(ui: &mut Ui, scene: &mut Scene, kit: &Kit, key: &str, time: f64, width: f32) {
+    match key {
+        "master_input" => card_knob(ui, scene, kit, key, "Input", &db, "dB", true, false, time, width),
+        "master_output" => card_knob(ui, scene, kit, key, "Output", &db, "dB", true, false, time, width),
+        "master_ceiling" => card_knob(ui, scene, kit, key, "Ceiling", &dbtp, "dBTP", false, false, time, width),
+        "master_release" => card_knob(ui, scene, kit, key, "Release", &ms, "ms", false, true, time, width),
+        _ => {}
+    }
+}
+
+/// The loudness readouts and the loudness graph with its -14 LUFS mark.
+pub fn loudness(ui: &mut Ui, reading: &MeterReading, history: &[f32]) {
+    style::loudness_row(ui, reading);
+    ui.add_space(4.0);
+    ui.label(RichText::new("Loudness (short-term), -14 LUFS is where the apps play it").small().color(style::MUTED));
+    style::loudness_graph(ui, history, TARGET_LUFS);
+}
+
 /// The Master strip.
 pub fn strip(ui: &mut Ui, scene: &mut Scene, kit: &Kit, meters: Option<&MeterReading>, loudness: &[f32], time: f64) {
     let reading = meters.copied().unwrap_or(MeterReading::SILENT);
@@ -79,10 +102,9 @@ pub fn strip(ui: &mut Ui, scene: &mut Scene, kit: &Kit, meters: Option<&MeterRea
         ui.label(RichText::new("Master").font(style::semibold(14.0)).color(style::TEXT));
         ui.add_space(4.0);
         ui.horizontal_top(|ui| {
-            card_knob(ui, scene, kit, "master_input", "Input", &db, "dB", true, false, time);
-            card_knob(ui, scene, kit, "master_output", "Output", &db, "dB", true, false, time);
-            card_knob(ui, scene, kit, "master_ceiling", "Ceiling", &dbtp, "dBTP", false, false, time);
-            card_knob(ui, scene, kit, "master_release", "Release", &ms, "ms", false, true, time);
+            for key in KNOBS {
+                knob(ui, scene, kit, key, time, 64.0);
+            }
             ui.add_space(6.0);
             style::level_meter(ui, reading.peak_l, reading.peak_r, 72.0).on_hover_text("Peak level, left and right");
         });

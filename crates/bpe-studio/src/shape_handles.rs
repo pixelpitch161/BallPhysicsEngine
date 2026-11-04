@@ -428,6 +428,7 @@ pub fn act(scene: &mut Scene, target: MenuTarget, action: MenuAction) -> bool {
 /// dragged (`active`): a side lights with its two corners, a corner with its two sides, a circle's
 /// edge with its radius dot. The rest of a selected shape shows only its faint outline, its middle
 /// ring and the bend handles of its curved sides, so the handles never cover the shape.
+#[allow(clippy::too_many_arguments)]
 pub fn draw(
     painter: &Painter,
     scene: &Scene,
@@ -436,12 +437,15 @@ pub fn draw(
     id: ThingId,
     selected: bool,
     active: Option<Handle>,
+    lit: bool,
 ) {
     let Some(s) = seen(world, id) else { return };
     let on_screen = |p: Vec2| view.to_screen(s.frame.to_world(p));
     let mark = style::colour_of(scene, id);
     let outline: Vec<Pos2> = s.path.flatten(FLATTEN).into_iter().map(on_screen).collect();
-    painter.add(egui::Shape::closed_line(outline.clone(), Stroke::new(1.0, style::FAINT_MARK)));
+    // Lit (it plays into the bus strip under the pointer): in its own colour.
+    let line = if lit { Stroke::new(2.0, mark) } else { Stroke::new(1.0, style::FAINT_MARK) };
+    painter.add(egui::Shape::closed_line(outline.clone(), line));
     if !selected {
         return;
     }

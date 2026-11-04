@@ -680,7 +680,7 @@ impl Studio {
     /// The inspector on the right, as wide as the user last dragged it. Returns its width.
     /// The left panel, Things or Mixer, with the switch on top. Each face keeps its own width.
     /// Returns the width it was drawn at.
-    fn left_panel(&mut self, ui: &mut egui::Ui, before: &Scene) -> f32 {
+    pub(crate) fn left_panel(&mut self, ui: &mut egui::Ui, before: &Scene) -> f32 {
         let mut left = self.left;
         let width = match self.left {
             LeftPanel::Things => {
@@ -717,7 +717,8 @@ impl Studio {
                 shown.response.rect.width()
             }
             LeftPanel::Mixer => {
-                let reading = self.sound.as_ref().map(|job| job.meters().read());
+                let meters = self.sound.as_ref().map(SoundJob::meters);
+                let reading = meters.as_ref().map(|m| m.read());
                 let shown = egui::Panel::left("mixer")
                     .default_size(MIXER_W)
                     .min_size(360.0)
@@ -734,6 +735,7 @@ impl Studio {
                             &self.kit,
                             &self.resolved,
                             reading.as_ref(),
+                            meters.as_deref(),
                             self.time,
                         );
                     });

@@ -20,7 +20,7 @@ pub mod voices;
 mod wav;
 
 pub use bpe_dsp::{BLOCK, SAMPLE_RATE};
-pub use buses::{BusesSpec, ShapeRoute, would_loop};
+pub use buses::{BusesSpec, ShapeRoute, sends, would_loop};
 pub use engine::{Engine, PRE_ROLL, SAMPLES_PER_BLOCK_TIME};
 pub use hits::{BlockHit, HitCursor};
 pub use master::{Master, MasterKeys};
