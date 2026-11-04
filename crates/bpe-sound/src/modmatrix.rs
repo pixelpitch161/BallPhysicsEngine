@@ -87,13 +87,17 @@ impl ModMatrix {
                     m.sources.len() - 1
                 }
             } as u16;
+            let combine = combine_of(&r.target);
+            // A scaling knob's amount is how far towards silence; a negative one works the other
+            // way round, as Inv does (the louder the modulator, the quieter).
+            let flip = combine == Combine::Scale && r.amount < 0.0;
             m.routes.push(Route {
                 source,
                 target: t.index,
-                amount: r.amount,
+                amount: if flip { -r.amount } else { r.amount },
                 bipolar: r.bipolar,
-                invert: r.invert,
-                combine: combine_of(&r.target),
+                invert: r.invert != flip,
+                combine,
                 lo: t.range.0 as f32,
                 hi: t.range.1 as f32,
                 log: t.log && t.range.0 > 0.0,
@@ -326,6 +330,18 @@ mod tests {
         r.invert = true;
         let m = ModMatrix::build(&[r], &table());
         assert!((run(&m, &[1.0], &[0.0, 10.0, 0.0])[1] - 10.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_negative_amount_on_a_gain_works_the_other_way() {
+        let down = ModMatrix::build(&[route(1, "a_gain", -0.5)], &table());
+        let up = ModMatrix::build(&[route(1, "a_gain", 0.5)], &table());
+        // At 1 the positive one leaves the gain; the negative one takes it half way to silence.
+        assert!((run(&up, &[1.0], &[0.0, 0.0, 1000.0])[0]).abs() < 1e-4);
+        let half = 20.0 * 0.5f32.log10();
+        assert!((run(&down, &[1.0], &[0.0, 0.0, 1000.0])[0] - half).abs() < 1e-3);
+        assert!((run(&down, &[0.0], &[0.0, 0.0, 1000.0])[0]).abs() < 1e-4);
+        assert!((down.factor(0, &[1.0]) - 0.5).abs() < 1e-5);
     }
 
     #[test]

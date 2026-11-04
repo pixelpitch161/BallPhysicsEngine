@@ -171,6 +171,13 @@ impl Scene {
         // Their keys and pulses go with them (a saved file would otherwise keep them forever).
         self.tracks.retain(|a, _| !removed.contains(&a.thing));
         self.pulses.retain(|a, _| !removed.contains(&a.thing));
+        // So do settings elsewhere that followed one of their sounds (a bus is no one's).
+        self.pulses.retain(|_, p| match p.source {
+            crate::PulseSource::Sound { shape, source } => {
+                matches!(source, crate::SoundSource::Bus(_)) || !removed.contains(&shape)
+            }
+            crate::PulseSource::Hits => true,
+        });
         Ok(removed)
     }
 
@@ -409,6 +416,23 @@ mod tests {
         s.set_pulse(&r, &glow, crate::PulseSource::Hits, Value::Number(0.5), 0.25).unwrap();
         s.remove_thing(a).unwrap();
         assert!(s.tracks.is_empty() && s.pulses.is_empty());
+    }
+
+    #[test]
+    fn removing_a_thing_stops_settings_following_its_sound() {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let shape = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        let b = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        s.add_slot(&r, b, SlotId::Look, "look.plain").unwrap();
+        let glow = Address { thing: b, slot: Some(SlotId::Look), key: "glow".into() };
+        let follows = |source| crate::PulseSource::Sound { shape, source };
+        s.set_pulse(&r, &glow, follows(crate::SoundSource::Level), Value::Number(0.5), 0.25).unwrap();
+        let other = Address { thing: b, slot: Some(SlotId::Look), key: "size".into() };
+        let bus = s.set_pulse(&r, &other, follows(crate::SoundSource::Bus(1)), Value::Number(0.5), 0.25).is_ok();
+        s.remove_thing(shape).unwrap();
+        assert!(!s.pulses.contains_key(&glow), "the setting stops following the deleted shape");
+        assert_eq!(s.pulses.contains_key(&other), bus, "a bus is no one shape's: it keeps following it");
     }
 
     #[test]

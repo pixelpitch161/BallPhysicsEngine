@@ -61,11 +61,15 @@ impl SvfCoefs {
     }
 }
 
-/// Soft-limits a state past 2 towards 4, so a screaming resonance stays bounded.
+/// Where a state starts to be soft-limited. Well above any level a sound reaches (+12 dB of Gain
+/// on a full-scale wave is 4), so only a screaming resonance meets it, never a loud clean sound.
+const KNEE: f32 = 8.0;
+
+/// Soft-limits a state past [`KNEE`] towards twice it, so a screaming resonance stays bounded.
 #[inline]
 pub(crate) fn knee(x: f32) -> f32 {
     let a = x.abs();
-    if a <= 2.0 { x } else { x.signum() * (2.0 + 2.0 * ((a - 2.0) * 0.5).tanh()) }
+    if a <= KNEE { x } else { x.signum() * (KNEE + KNEE * ((a - KNEE) / KNEE).tanh()) }
 }
 
 /// Zero for a value too small to hear (no denormals where flushing is off).

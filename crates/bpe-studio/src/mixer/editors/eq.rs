@@ -152,18 +152,28 @@ fn curve(ui: &mut Ui, cx: &mut MixCx, mixer: &mut Mixer, meters: Option<&Meters>
         // Where the press began: the drag starts only once the pointer has moved a little.
         let origin = ui.input(|i| i.pointer.press_origin()).or(response.interact_pointer_pos());
         mixer.eq_drag = origin.and_then(nearest);
-        if let Some(i) = mixer.eq_drag {
+        if let (Some(i), Some(o)) = (mixer.eq_drag, origin) {
             mixer.eq_band = i;
+            // The point moves by how far the pointer goes, wherever on it the press was.
+            let offset = point(&plot, bands[i]) - o;
+            ui.data_mut(|d| d.insert_temp(response.id.with("eq grab"), offset));
         }
     }
     if response.dragged()
         && let (Some(i), Some(p)) = (mixer.eq_drag, response.interact_pointer_pos())
     {
+        let offset: Vec2 = ui.data(|d| d.get_temp(response.id.with("eq grab"))).unwrap_or(Vec2::ZERO);
+        let p = p + offset;
+        // Only what changed is written (a sideways drag leaves the gain, and its keys, alone).
         let f = (plot.freq(p.x) * 10.0).round() / 10.0;
-        cx.set(&key(i, "freq"), Value::Number(f as f64));
+        if (f - bands[i].freq).abs() > 0.05 {
+            cx.set(&key(i, "freq"), Value::Number(f as f64));
+        }
         if has_gain(bands[i].kind) {
             let g = (plot.gain(p.y) * 10.0).round() / 10.0;
-            cx.set(&key(i, "gain"), Value::Number(g as f64));
+            if (g - bands[i].gain).abs() > 0.05 {
+                cx.set(&key(i, "gain"), Value::Number(g as f64));
+            }
         }
     }
     if response.drag_stopped() {
@@ -176,15 +186,7 @@ fn curve(ui: &mut Ui, cx: &mut MixCx, mixer: &mut Mixer, meters: Option<&Meters>
         mixer.eq_band = i;
     }
     if let Some(i) = hovered {
-        let notches: f32 = ui.input(|inp| {
-            inp.events
-                .iter()
-                .filter_map(|e| match e {
-                    egui::Event::MouseWheel { delta, .. } if delta.y != 0.0 => Some(delta.y.signum()),
-                    _ => None,
-                })
-                .sum()
-        });
+        let notches = style::wheel_notches(ui, response.id.with(i), false) as f32;
         if notches != 0.0 {
             let q = (bands[i].q * 1.15f32.powf(notches)).clamp(0.1, 18.0);
             cx.set(&key(i, "q"), Value::Number(((q * 100.0).round() / 100.0) as f64));

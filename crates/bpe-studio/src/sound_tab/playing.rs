@@ -4,7 +4,8 @@
 use super::{TabCx, panel};
 use crate::style;
 use bpe_core::Value;
-use bpe_kit::sound::{DISTANCE, PlayMode, PlayWhen};
+use bpe_kit::sound::{ADSR, DISTANCE, PlayMode, PlayWhen};
+use bpe_sound::modmatrix::{Combine, combine_of};
 use eframe::egui::{RichText, Ui};
 
 fn plain(v: f64) -> String {
@@ -47,8 +48,26 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx) {
                 &[(PlayWhen::OnHit, "On hit"), (PlayWhen::Always, "Always"), (PlayWhen::InRange, "In range")],
             );
         });
-        if cx.choice::<PlayWhen>("play_when") == PlayWhen::InRange {
+        let when = cx.choice::<PlayWhen>("play_when");
+        if when == PlayWhen::InRange {
             zone_menu(ui, cx);
+        }
+        if when != PlayWhen::OnHit
+            && let Some((id, name)) = deciding_envelope(cx)
+            && cx.number(&bpe_core::layered_key(id, "sustain")) <= 0.0
+        {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    RichText::new(format!("{name}'s Sustain is 0, so a held note dies away after its Decay."))
+                        .small()
+                        .color(style::FAINT),
+                );
+                let raise =
+                    ui.small_button("Raise Sustain").on_hover_text("Sets its Sustain to 70 % so the note drones");
+                if raise.clicked() {
+                    cx.set(&bpe_core::layered_key(id, "sustain"), Value::Number(70.0));
+                }
+            });
         }
         ui.horizontal(|ui| {
             let label = ui.label(RichText::new("Heard from").small().color(style::MUTED));
@@ -64,6 +83,17 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx) {
     });
 }
 
+/// The envelope that decides when a held note fades: the first one on that scales a level (as the
+/// sound works it out), else the first one on.
+fn deciding_envelope(cx: &TabCx) -> Option<(bpe_core::LayerId, String)> {
+    let card = cx.scene.card(cx.id, bpe_core::SlotId::Sound)?;
+    let routes = cx.routes();
+    let mut on = card.layers.iter().filter(|l| l.kind == ADSR && l.enabled);
+    let scales =
+        |id: bpe_core::LayerId| routes.iter().any(|r| r.source == id && combine_of(&r.target) == Combine::Scale);
+    on.clone().find(|l| scales(l.id)).or_else(|| on.next()).map(|l| (l.id, l.name.clone()))
+}
+
 /// In range of which Distance (the first that is on when none is named).
 fn zone_menu(ui: &mut Ui, cx: &mut TabCx) {
     let Some(card) = cx.scene.card(cx.id, bpe_core::SlotId::Sound) else { return };
@@ -73,9 +103,10 @@ fn zone_menu(ui: &mut Ui, cx: &mut TabCx) {
         Value::Text(t) => t.trim().parse::<u32>().ok(),
         _ => None,
     };
+    // The Distance the sound uses: the named one while it is on, otherwise the first that is on.
     let now = dists
         .iter()
-        .find(|(id, _, _)| Some(id.0) == named)
+        .find(|(id, _, on)| Some(id.0) == named && *on)
         .or_else(|| dists.iter().find(|(_, _, on)| *on))
         .map(|(_, name, _)| name.clone());
     ui.horizontal(|ui| {

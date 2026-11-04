@@ -51,6 +51,7 @@ pub struct Knob<'a> {
     colour: Color32,
     log: bool,
     width: f32,
+    step: Option<f64>,
 }
 
 /// The dial's side.
@@ -84,6 +85,7 @@ impl<'a> Knob<'a> {
             colour: TEXT,
             log: false,
             width: WIDTH,
+            step: None,
         }
     }
 
@@ -122,6 +124,24 @@ impl<'a> Knob<'a> {
     pub fn width(mut self, width: f32) -> Self {
         self.width = width.max(DIAL);
         self
+    }
+
+    /// The value moves in whole steps of `step` (1 for a whole-number setting): a slow drag still
+    /// gets there, since the dial keeps the turn between steps until the drag ends, and each
+    /// wheel notch moves at least one step.
+    pub fn step(mut self, step: Option<f64>) -> Self {
+        self.step = step.filter(|s| *s > 0.0 && s.is_finite());
+        self
+    }
+
+    /// `v` put on a whole step (when the knob has steps) and inside the range.
+    fn snap(&self, v: f64) -> f64 {
+        let (lo, hi) = (*self.range.start(), *self.range.end());
+        let v = match self.step {
+            Some(s) => lo + ((v - lo) / s).round() * s,
+            None => v,
+        };
+        v.clamp(lo.min(hi), hi.max(lo))
     }
 
     /// Where `v` sits along the dial, 0 at the bottom of the range and 1 at the top.
@@ -196,27 +216,36 @@ impl<'a> Knob<'a> {
                         ui.data_mut(|d| d.remove::<usize>(grab_id));
                     }
                 } else if response.dragged_by(egui::PointerButton::Primary) {
+                    // The turn is kept while dragging, unrounded, so a whole-number knob (or a
+                    // setting the caller rounds) still moves on a slow drag.
+                    let turn_id = response.id.with("turn");
                     let fine = if ui.input(|i| i.modifiers.shift) { 0.1 } else { 1.0 };
                     let dy = response.drag_delta().y as f64;
-                    let t = self.to_turn(*self.value) - dy / FULL_DRAG * fine;
-                    *self.value = self.value_at_turn(t);
+                    let held: Option<f64> = ui.data(|d| d.get_temp(turn_id));
+                    let from = held
+                        .filter(|t| (self.snap(self.value_at_turn(*t)) - *self.value).abs() <= self.slack())
+                        .unwrap_or_else(|| self.to_turn(*self.value));
+                    let t = (from - dy / FULL_DRAG * fine).clamp(0.0, 1.0);
+                    ui.data_mut(|d| d.insert_temp(turn_id, t));
+                    *self.value = self.snap(self.value_at_turn(t));
+                }
+                if !response.dragged() {
+                    ui.data_mut(|d| d.remove::<f64>(response.id.with("turn")));
                 }
                 if response.hovered() {
-                    // Each wheel notch nudges 1 %; the scroll is kept from the panel underneath.
-                    let notches: f64 = ui.input(|i| {
-                        i.events
-                            .iter()
-                            .filter_map(|e| match e {
-                                egui::Event::MouseWheel { delta, .. } if delta.y != 0.0 => {
-                                    Some(delta.y.signum() as f64)
-                                }
-                                _ => None,
-                            })
-                            .sum()
-                    });
+                    // Each wheel notch nudges 1 % (a stepped knob one step at a whole notch); the
+                    // scroll is kept from the panel underneath.
+                    let notches = wheel_notches(ui, response.id, self.step.is_some());
                     if notches != 0.0 {
-                        let t = self.to_turn(*self.value) + 0.01 * notches;
-                        *self.value = self.value_at_turn(t);
+                        *self.value = match self.step {
+                            // A notch on a stepped knob is at least one step.
+                            Some(s) => {
+                                let t = self.to_turn(*self.value) + 0.01 * notches;
+                                let nudged = self.snap(self.value_at_turn(t));
+                                if nudged == *self.value { self.snap(*self.value + s * notches) } else { nudged }
+                            }
+                            None => self.value_at_turn(self.to_turn(*self.value) + 0.01 * notches),
+                        };
                     }
                     ui.input_mut(|i| i.smooth_scroll_delta = Vec2::ZERO);
                 }
@@ -249,7 +278,7 @@ impl<'a> Knob<'a> {
                             if ui.input(|i| i.key_pressed(egui::Key::Enter))
                                 && let Some(v) = parse(&text)
                             {
-                                *self.value = v.clamp(*self.range.start(), *self.range.end());
+                                *self.value = self.snap(v);
                             }
                             ui.data_mut(|d| d.remove::<String>(edit_id));
                         } else {
@@ -280,6 +309,13 @@ impl<'a> Knob<'a> {
         );
         let (response, context, ring) = inner.inner;
         KnobResponse { changed: *self.value != before, response, context, ring }
+    }
+
+    /// How far the value may sit from the held turn's and still be this drag's own value (anything
+    /// further means the value was changed from elsewhere, and the drag starts again from it).
+    fn slack(&self) -> f64 {
+        let (lo, hi) = (*self.range.start(), *self.range.end());
+        self.step.map_or(0.0, |s| s * 0.5).max((hi - lo).abs() * 1e-9)
     }
 
     /// Where ring `i`'s draggable end is drawn, around the dial's middle `c`.
@@ -345,6 +381,37 @@ impl Widget for Knob<'_> {
     fn ui(self, ui: &mut Ui) -> Response {
         self.show(ui).response
     }
+}
+
+/// Pixels of a smooth (touchpad) scroll that count as one wheel notch.
+const POINTS_PER_NOTCH: f32 = 50.0;
+
+/// The wheel notches this frame over the control `id`: a mouse wheel's lines as they come, a
+/// touchpad's pixels as fractions of a notch. With `whole`, only whole notches come out and the
+/// rest waits for the next scroll (a stepped control then moves one step a notch, however finely
+/// the scroll arrives).
+pub fn wheel_notches(ui: &Ui, id: egui::Id, whole: bool) -> f64 {
+    let raw: f32 = ui.input(|i| {
+        i.events
+            .iter()
+            .filter_map(|e| match e {
+                egui::Event::MouseWheel { delta, unit, .. } if delta.y != 0.0 => Some(match unit {
+                    egui::MouseWheelUnit::Point => delta.y / POINTS_PER_NOTCH,
+                    egui::MouseWheelUnit::Line => delta.y,
+                    egui::MouseWheelUnit::Page => delta.y * 3.0,
+                }),
+                _ => None,
+            })
+            .sum()
+    });
+    if !whole {
+        return raw as f64;
+    }
+    let rest_id = id.with("wheel rest");
+    let rest: f32 = ui.data(|d| d.get_temp(rest_id)).unwrap_or(0.0) + raw;
+    let notches = rest.trunc();
+    ui.data_mut(|d| d.insert_temp(rest_id, rest - notches));
+    notches as f64
 }
 
 /// Reads a typed number, ignoring a unit after it ("−6 dB", "120bpm").
@@ -492,6 +559,59 @@ mod tests {
         });
         h.run_steps(20);
         assert!((*h.state() - 0.48).abs() < 0.01, "{}", h.state());
+    }
+
+    /// A whole-number knob whose caller rounds the value every frame, as the Sound tab does.
+    fn int_harness(start: f64) -> Harness<'static, f64> {
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(200.0, 200.0))
+            .with_step_dt(1.0 / 60.0)
+            .allow_missing_glyphs()
+            .with_context_setup(super::super::apply)
+            .build_ui_state(
+                |ui, v: &mut f64| {
+                    let mut x = *v;
+                    ui.add(Knob::new(&mut x, -3.0..=3.0, 0.0, "Input").step(Some(1.0)));
+                    *v = x.round();
+                },
+                start,
+            );
+        h.run();
+        h
+    }
+
+    #[test]
+    fn a_slow_drag_moves_a_whole_number_knob() {
+        let mut h = int_harness(0.0);
+        let from = dial(&h).center();
+        h.hover_at(from);
+        h.run();
+        press(&mut h, from, true, egui::Modifiers::NONE);
+        h.step();
+        // One pixel a frame: each frame alone is far less than one step (33 px).
+        for k in 1..=80 {
+            h.event(egui::Event::PointerMoved(from - egui::vec2(0.0, k as f32)));
+            h.step();
+        }
+        press(&mut h, from - egui::vec2(0.0, 80.0), false, egui::Modifiers::NONE);
+        h.run();
+        assert_eq!(*h.state(), 2.0, "80 px of a 200 px turn over 6 steps is 2.4 steps");
+    }
+
+    #[test]
+    fn a_wheel_notch_moves_a_whole_number_knob_one_step() {
+        let mut h = int_harness(0.0);
+        h.hover_at(dial(&h).center());
+        h.run();
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, -1.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run_steps(20);
+        assert_eq!(*h.state(), -1.0);
     }
 
     #[test]

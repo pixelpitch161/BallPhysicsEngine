@@ -52,6 +52,7 @@ pub fn title(scene: &Scene, kit: &Kit, pick: MixerPick) -> String {
 pub fn show(ui: &mut Ui, mixer: &mut Mixer, scene: &mut Scene, kit: &Kit, readings: &Readings, time: f64) -> bool {
     let Some(pick) = mixer.pick else { return false };
     let mut edits = Vec::new();
+    let mut master_keyed = false;
     let choices = TargetChoices::default();
     ui.horizontal(|ui| {
         ui.label(RichText::new(title(scene, kit, pick)).font(style::semibold(15.0)).color(style::TEXT));
@@ -64,7 +65,7 @@ pub fn show(ui: &mut Ui, mixer: &mut Mixer, scene: &mut Scene, kit: &Kit, readin
     ui.add_space(6.0);
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match pick {
         MixerPick::Master => {
-            master::show(ui, scene, kit, &readings.master, &mixer.loudness, time);
+            master_keyed = master::show(ui, scene, kit, &readings.master, &mixer.loudness, time);
         }
         MixerPick::Layer(id) => {
             let Some(layer) = scene.card(ThingId::ROOT, SlotId::Mixer).and_then(|c| c.layer(id)).cloned() else {
@@ -115,7 +116,7 @@ pub fn show(ui: &mut Ui, mixer: &mut Mixer, scene: &mut Scene, kit: &Kit, readin
     if let Some(p) = applied.pick {
         mixer.pick = p;
     }
-    applied.keyed
+    applied.keyed || master_keyed
 }
 
 /// The effect's settings as they stand at the playhead.

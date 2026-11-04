@@ -114,6 +114,11 @@ fn renumbered(card: &Slot) -> Slot {
                     })
                     .collect(),
             ),
+            // In range's Distance, named by its layer id.
+            ("play_zone", Value::Text(t)) => match t.trim().parse::<u32>().ok().and_then(|n| new_id(LayerId(n))) {
+                Some(n) => Value::Text(n.0.to_string()),
+                None => Value::Text(String::new()),
+            },
             _ => value.clone(),
         };
         let key = match bpe_core::split_layered(key) {

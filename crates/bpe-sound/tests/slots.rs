@@ -155,8 +155,13 @@ fn hit(scene: &Scene, offset: u32, speed: f32, on_shape: bool) -> BlockHit {
 /// Runs block `b` of `v` with `hits`.
 fn block(v: &mut ShapeVoice, w: &World, b: u64, hits: &[BlockHit]) {
     let tempo = TempoMap::default();
-    let cx =
-        BlockCx { start_sample: b * BLOCK as u64, time: (b * BLOCK as u64) as f64 / 48_000.0, tempo: &tempo, world: w };
+    let cx = BlockCx {
+        start_sample: b * BLOCK as u64,
+        time: (b * BLOCK as u64) as f64 / 48_000.0,
+        tempo: &tempo,
+        world: w,
+        playing: true,
+    };
     let (mut l, mut r) = ([0.0; BLOCK], [0.0; BLOCK]);
     v.on_block(&cx, hits, &mut l, &mut r);
 }

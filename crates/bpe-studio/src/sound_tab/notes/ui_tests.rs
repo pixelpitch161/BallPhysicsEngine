@@ -230,6 +230,25 @@ fn octave_buttons_grow_and_shrink() {
 }
 
 #[test]
+fn lower_and_higher_reach_every_octave() {
+    let mut h = sounding();
+    assert!(h.query_by_role_and_label(Role::Button, "C3").is_none());
+    h.get_by_label("Show one octave lower").click();
+    h.run();
+    assert!(h.query_by_label("C3 to B5").is_some());
+    assert!(h.query_by_role_and_label(Role::Button, "C3").is_some(), "the lower octave's keys show");
+    assert!(h.query_by_role_and_label(Role::Button, "Slot 1 C3").is_some(), "the grid follows the keys");
+    for _ in 0..3 {
+        h.get_by_label("Show one octave lower").click();
+        h.run();
+    }
+    assert!(h.query_by_label("C0 to B2").is_some(), "down to the bottom of MIDI");
+    h.get_by_label("Show one octave higher").click();
+    h.run();
+    assert!(h.query_by_label("C1 to B3").is_some());
+}
+
+#[test]
 fn key_labels_use_fl_names() {
     let h = sounding();
     assert!(h.query_all_by_label("C5").any(|n| n.accesskit_node().role() == Role::Label), "C5 under middle C");

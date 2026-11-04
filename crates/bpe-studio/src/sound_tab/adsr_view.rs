@@ -229,12 +229,17 @@ fn view(ui: &mut Ui, cx: &mut TabCx, layer: LayerId, name: &str) {
     super::name_it(ui, &response, &format!("{name} envelope"));
     let l = layout(&env, rect);
     let grab_id = response.id.with("grab");
+    // Which ways the pointer has gone since the press (it may come back to where it started).
+    let axes_id = response.id.with("axes");
     // What was pressed, not where the pointer is once the drag gets going.
     if response.drag_started()
         && let Some(p) = ui.input(|i| i.pointer.press_origin())
     {
         let grab = grab_at(&l, p);
-        ui.data_mut(|d| d.insert_temp(grab_id, (grab, env, l.scale)));
+        ui.data_mut(|d| {
+            d.insert_temp(grab_id, (grab, env, l.scale));
+            d.insert_temp(axes_id, (false, false));
+        });
     }
     if response.dragged()
         && let Some((Some(grab), start, scale)) = ui.data(|d| d.get_temp::<(Option<Grab>, Env, f32)>(grab_id))
@@ -243,29 +248,47 @@ fn view(ui: &mut Ui, cx: &mut TabCx, layer: LayerId, name: &str) {
         // From where the drag started, at the scale it started with, so the view rescaling under
         // the pointer doesn't run away with it.
         let d = now - origin;
-        let set = |cx: &mut TabCx, k: &str, v: f32| {
-            let def = cx.def(&layered_key(layer, k));
+        let (mx, my) = ui.data_mut(|data| {
+            let a = data.get_temp_mut_or_default::<(bool, bool)>(axes_id);
+            a.0 |= d.x != 0.0;
+            a.1 |= d.y != 0.0;
+            *a
+        });
+        // A setting is written only along a way the pointer has moved, and only when its value
+        // changes (a sideways drag of the corner leaves Sustain, and its keys, alone).
+        let set = |cx: &mut TabCx, k: &str, v: f32, moved: bool| {
+            if !moved {
+                return;
+            }
+            let key = layered_key(layer, k);
+            let def = cx.def(&key);
             let (lo, hi) = def.and_then(|d| d.range).unwrap_or((0.0, 10_000.0));
-            cx.set(&layered_key(layer, k), Value::Number((v as f64).clamp(lo, hi).round()));
+            let v = (v as f64).clamp(lo, hi).round();
+            if (cx.number(&key) - v).abs() > 1e-9 {
+                cx.set(&key, Value::Number(v));
+            }
         };
         let h = l.rect.height();
         match grab {
-            Grab::Peak => set(cx, "attack", start.attack + d.x / scale),
+            Grab::Peak => set(cx, "attack", start.attack + d.x / scale, mx),
             Grab::Decayed => {
-                set(cx, "decay", start.decay + d.x / scale);
-                set(cx, "sustain", start.sustain - d.y / h * 100.0);
+                set(cx, "decay", start.decay + d.x / scale, mx);
+                set(cx, "sustain", start.sustain - d.y / h * 100.0, my);
             }
-            Grab::End => set(cx, "release", start.release + d.x / scale),
+            Grab::End => set(cx, "release", start.release + d.x / scale, mx),
             Grab::Curve(i) => {
                 let k = ["attack_curve", "decay_curve", "release_curve"][i];
                 // Up bows the segment up: the attack rises sooner, the decay and release fall later.
                 let sign = if i == 0 { 1.0 } else { -1.0 };
-                set(cx, k, start.curves[i] - sign * d.y * CURVE_PER_PX);
+                set(cx, k, start.curves[i] - sign * d.y * CURVE_PER_PX, my);
             }
         }
     }
     if response.drag_stopped() {
-        ui.data_mut(|d| d.remove::<(Option<Grab>, Env, f32)>(grab_id));
+        ui.data_mut(|d| {
+            d.remove::<(Option<Grab>, Env, f32)>(grab_id);
+            d.remove::<(bool, bool)>(axes_id);
+        });
     }
     if ui.is_rect_visible(rect) {
         let painter = ui.painter_at(rect);

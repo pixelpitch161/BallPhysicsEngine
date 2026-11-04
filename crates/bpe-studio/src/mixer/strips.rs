@@ -382,7 +382,8 @@ pub fn master(
     reading: &bpe_sound::MeterReading,
     time: f64,
     width: f32,
-) {
+) -> bool {
+    let mut keyed = false;
     ui.allocate_ui_with_layout(Vec2::new(width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
         ui.set_width(width);
         ui.spacing_mut().item_spacing = Vec2::new(2.0, 4.0);
@@ -404,7 +405,7 @@ pub fn master(
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 for k in pair {
-                    super::master::knob(ui, scene, kit, k, time, half);
+                    keyed |= super::master::knob(ui, scene, kit, k, time, half);
                 }
             });
         }
@@ -421,6 +422,7 @@ pub fn master(
             });
         }
     });
+    keyed
 }
 
 #[cfg(test)]

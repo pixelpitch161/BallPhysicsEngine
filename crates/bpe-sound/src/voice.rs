@@ -14,6 +14,8 @@ pub struct BlockCx<'a> {
     pub tempo: &'a TempoMap,
     /// The engine's physics, at or a little past the block's end.
     pub world: &'a World,
+    /// Playing (false while stopped, when only keys clicked by hand sound: drones wait).
+    pub playing: bool,
 }
 
 /// The sound of one thing. Any thing kind can own one (only shapes do, from part 2).

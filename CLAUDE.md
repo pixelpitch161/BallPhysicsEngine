@@ -209,7 +209,10 @@ Dependencies go bottom to top:
   block in `ModsSpec.order` (`mods/order.rs`), per-note ones live in each note; every number knob of the card is a
   route target (`patch::routable`). `Meters` carries each shape's modulator values and last hits
   (`mod_value`, `recent_hits`). `VoiceSettings.play_when` (`PlayWhen`: On hit / Always / In range of
-  `play_zone`) makes drones (`ShapeVoice::hold`). **Follow sound**: `control.rs` `ControlSampler` (built from
+  `play_zone`) makes drones (`ShapeVoice::hold`: held notes are never retriggered by hits; only notes in
+  `ShapeVoice.held` count as drone notes; `BlockCx.playing` is false while stopped, when drones wait and clicked
+  keys (gate at most 0.4 s, their own voice beside a drone) sound alone). Switched-off modulators' routes are
+  left out at patch build. **Follow sound**: `control.rs` `ControlSampler` (built from
   `patch::shape_specs`, no wavetables) works modulators, `Level` and `Bus(n)` out from the log's accepted hits
   and the world at a moment (`bpe_dsp::level_at` closed-form envelopes) with no audio; `FollowSound` is its
   `SoundMaker` and `bpe_sound::kit()` the kit with it (the editor and the renderer use it, so physics follows

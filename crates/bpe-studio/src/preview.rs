@@ -345,6 +345,12 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
                 time,
             );
             studio.panels.inspector.keyed_edit |= keyed;
+        } else if let Handle::Zone(shape, layer, far) = drag.handle {
+            // Near and Far take keys: a keyed one keys at the playhead (and playing pauses).
+            let pointer = view.pointer_for(studio, drag.handle, pos);
+            let (time, reg) = (studio.sim_time(), &studio.kit.registry);
+            let keyed = zones::apply(&mut studio.scene, reg, studio.playback.world(), shape, layer, far, pointer, time);
+            studio.panels.inspector.keyed_edit |= keyed;
         } else {
             let pointer = view.pointer_for(studio, drag.handle, pos);
             apply_drag(&mut studio.scene, studio.playback.world(), &drag, pointer, step);
@@ -621,7 +627,8 @@ pub fn apply_drag(scene: &mut Scene, world: &World, drag: &Drag, pointer: Vec2, 
         Handle::Corner(..) | Handle::Side(..) | Handle::Bend(..) | Handle::Radius(_) => {
             shape_handles::apply(scene, drag, pointer, step);
         }
-        Handle::Zone(shape, layer, far) => zones::apply(scene, world, shape, layer, far, pointer),
+        // Applied by the preview itself, with the playhead (see `zones::apply`).
+        Handle::Zone(..) => {}
     }
 }
 
@@ -868,11 +875,19 @@ mod tests {
         card.params.set(&format!("{distance}/near"), Value::Number(50.0));
         assert_eq!(hit_test(&studio, &view, on_near), Some(Handle::Zone(shape, distance, false)));
         let world = studio.playback.world().clone();
-        let drag = Drag::new(Handle::Zone(shape, distance, true), Vec2::ZERO);
-        apply_drag(&mut studio.scene, &world, &drag, Vec2::new(0.0, 300.0), None);
+        let kit = studio.kit.clone();
+        let reg = &kit.registry;
+        let keyed = zones::apply(&mut studio.scene, reg, &world, shape, distance, true, Vec2::new(0.0, 300.0), 0.0);
+        assert!(!keyed);
         let far =
             studio.scene.card(shape, bpe_core::SlotId::Sound).unwrap().params.get(&format!("{distance}/far")).cloned();
         assert_eq!(far, Some(Value::Number(300.0)));
+        // Keyed: the drag keys at the playhead, and the line shows where it was dragged.
+        let a = bpe_core::Address::on(shape, bpe_core::SlotId::Sound, &format!("{distance}/far"));
+        studio.scene.set_key(reg, &a, 0.0, Value::Number(500.0)).unwrap();
+        let keyed = zones::apply(&mut studio.scene, reg, &world, shape, distance, true, Vec2::new(0.0, 250.0), 2.0);
+        assert!(keyed, "it keys");
+        assert_eq!(studio.scene.value_at_time(reg, &a, 2.0), Some(Value::Number(250.0)));
     }
 
     /// A drag on the blank project's circle by its edge.

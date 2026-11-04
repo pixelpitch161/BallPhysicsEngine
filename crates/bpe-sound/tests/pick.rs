@@ -132,3 +132,29 @@ fn deterministic_after_seek() {
     walk.reset();
     assert_eq!(walk_all(&mut walk), first);
 }
+
+/// The first note each of `hits` hits plays from `slot`, with `octave_range` octaves above.
+fn run_on(plays: Plays, notes: &[u8], octave_range: u8, hits: u64) -> Vec<u8> {
+    let slot = NoteSlot { notes: notes.to_vec(), order_clicked: vec![] };
+    let mut p = AnyPick::new(plays);
+    (0..hits)
+        .map(|i| {
+            let mut cx = PickCx::plain(&slot, i);
+            cx.seed = 0xC0FFEE;
+            cx.octave_range = octave_range;
+            p.pick(&cx).notes().first().copied().unwrap_or(0)
+        })
+        .collect()
+}
+
+#[test]
+fn octave_range_runs_rise_with_each_pitch_once() {
+    // A slot spanning an octave: its copy an octave up overlaps it.
+    assert_eq!(run_on(Plays::Up, &[60, 64, 67, 72], 1, 7), [60, 64, 67, 72, 76, 79, 84]);
+    assert_eq!(run_on(Plays::Up, &[48, 60, 64], 1, 5), [48, 60, 64, 72, 76]);
+}
+
+#[test]
+fn a_random_walk_on_one_note_stays_on_it() {
+    assert_eq!(run_on(Plays::RandomWalk, &[62], 0, 5), [62; 5]);
+}

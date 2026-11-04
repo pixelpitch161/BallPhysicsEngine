@@ -130,6 +130,7 @@ fn run_with(
             time: (b * BLOCK as u64) as f64 / 48_000.0,
             tempo: &tempo,
             world: w,
+            playing: true,
         };
         let (mut l, mut r) = ([0.0; BLOCK], [0.0; BLOCK]);
         v.on_block(&cx, &theirs, &mut l, &mut r);

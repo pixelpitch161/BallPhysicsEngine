@@ -198,3 +198,29 @@ fn ringing_down_reaches_zero() {
     }
     assert_eq!(last, 0.0);
 }
+
+#[test]
+fn a_loud_sound_through_a_clean_low_pass_stays_clean() {
+    // A 200 Hz sine peaking at 3.5 (Gain +12 dB, or a few shapes summed) through a 12 dB low
+    // pass at 5 kHz with no resonance: the output is the input, not soft-clipped.
+    let p = FilterParams {
+        kind: FilterType::LowPass,
+        slope24: false,
+        cutoff_hz: 5000.0,
+        reso: 0.0,
+        ..FilterParams::default()
+    };
+    let mut f = StereoFilter::new(p.kind, p.slope24);
+    let mut peak = 0.0f32;
+    for i in 0..48_000usize {
+        if i % BLOCK == 0 {
+            f.set(&p);
+        }
+        let x = (3.5 * (TAU * 200.0 * i as f64 / SAMPLE_RATE as f64).sin()) as f32;
+        let (y, _) = f.tick(x, x);
+        if i > 4800 {
+            peak = peak.max(y.abs());
+        }
+    }
+    assert!((peak - 3.5).abs() < 0.05, "peak {peak}");
+}

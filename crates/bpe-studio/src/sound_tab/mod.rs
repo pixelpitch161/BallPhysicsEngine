@@ -203,6 +203,7 @@ impl TabCx<'_> {
             .bipolar(bipolar)
             .log(log)
             .width(KNOB_W)
+            .step((def.ty == ValueType::Int).then_some(1.0))
             .rings(&rings)
             .colour(self.colour)
             .show(ui);
@@ -433,7 +434,9 @@ fn body(ui: &mut Ui, inspector: &mut Inspector, cx: &mut TabCx) {
         osc::show(&mut cols[1], cx, osc::Osc::B, &mut inspector.sound);
     });
     ui.add_space(8.0);
-    let meters = inspector.meters.clone();
+    // The modulators' live readings (Now, the last hits) show only while playing: stopped, the
+    // last readings would stay frozen and keep the editor redrawing.
+    let meters = if inspector.playing { inspector.meters.clone() } else { None };
     panel(ui, |ui| mods::show(ui, cx, &mut inspector.sound, meters.as_deref()));
     ui.add_space(8.0);
     let playing = match (&inspector.meters, inspector.playing) {
@@ -518,6 +521,11 @@ fn apply(inspector: &mut Inspector, scene: &mut Scene, kit: &Kit, id: ThingId, t
                 // Modulations hearing it hear their own oscillator, as they sound, from now on.
                 if let Some(card) = scene.things.get_mut(&id).and_then(|t| t.slots.get_mut(&SlotId::Sound)) {
                     bpe_kit::sound::chain::retarget_sources(card, &|l| (l != layer).then_some(l));
+                    // In range of a Distance that goes: back to the first one that is on (a new
+                    // layer taking its id later must not be picked up by surprise).
+                    if matches!(card.params.get("play_zone"), Some(Value::Text(t)) if t.trim() == layer.0.to_string()) {
+                        card.params.set("play_zone", Value::Text(String::new()));
+                    }
                 }
                 scene.remove_layer(reg, id, SlotId::Sound, layer).is_ok()
             }

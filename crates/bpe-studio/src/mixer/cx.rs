@@ -135,8 +135,13 @@ impl MixCx<'_> {
         let mut v = number(&now).unwrap_or(default);
         let bipolar = lo < 0.0 && hi > 0.0 && def.unit != "dB";
         let log = matches!(def.unit, "Hz" | "ms" | "s") && lo > 0.0 && hi / lo >= 20.0;
-        let r =
-            Knob::new(&mut v, lo..=hi, default, label).format(format).bipolar(bipolar).log(log).width(width).show(ui);
+        let r = Knob::new(&mut v, lo..=hi, default, label)
+            .format(format)
+            .bipolar(bipolar)
+            .log(log)
+            .width(width)
+            .step((def.ty == ValueType::Int).then_some(1.0))
+            .show(ui);
         if r.changed {
             let value = match def.ty {
                 ValueType::Int => Value::Int(v.round() as i64),
