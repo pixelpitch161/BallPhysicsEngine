@@ -160,6 +160,19 @@ impl TableSet {
         Reader { set: self, m0, m1, t }
     }
 
+    /// The two copies a note at `freq_hz` reads and how much of the second.
+    #[inline]
+    pub fn mips_for(&self, freq_hz: f32) -> (usize, usize, f32) {
+        let r = self.reader(freq_hz);
+        (r.m0, r.m1, r.t)
+    }
+
+    /// Step `step` of copy `m`: its `mip_len(m)` samples with one before and two after.
+    #[inline(always)]
+    pub fn frame(&self, m: usize, step: usize) -> &[f32] {
+        self.mips[m].frame(step)
+    }
+
     /// One sample at `phase` (cycles, wrapped), Warp step position `step` (0..1) for a note at
     /// `freq_hz`.
     pub fn sample(&self, phase: f64, step: f32, freq_hz: f32) -> f32 {
