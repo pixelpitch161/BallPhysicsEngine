@@ -244,6 +244,25 @@ fn an_off_oscillator_still_modulates() {
 }
 
 #[test]
+fn an_off_oscillator_keeps_its_sub_as_a_source() {
+    let kit = kit();
+    // Osc B is off but rings A; its square sub must be part of what rings A.
+    let with = |sub: bpe_kit::sound::SubWave| {
+        let mut s = voiced(&kit, |v| {
+            v.b.wave = Wave::Sine;
+            v.b.sub = sub;
+            v.b.sub_level = 0.0;
+        });
+        add(&kit, &mut s, 0, MODULATION, &[("kind", choice("ring")), ("amount", num(100.0))]);
+        play(&s, &kit, 60)
+    };
+    let off = with(bpe_kit::sound::SubWave::Off);
+    let square = with(bpe_kit::sound::SubWave::Square);
+    let diff: Vec<f32> = off.iter().zip(&square).map(|(a, b)| a - b).collect();
+    assert!(rms(&diff) > 0.05 * rms(&off), "B's sub is heard through the ring: {}", rms(&diff));
+}
+
+#[test]
 fn a_patch_change_keeps_a_ringing_filter() {
     let kit = kit();
     let mut s = voiced(&kit, |_| {});

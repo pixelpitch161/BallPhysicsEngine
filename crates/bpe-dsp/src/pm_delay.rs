@@ -1,7 +1,8 @@
 //! Modulation of the sound reaching a chain layer by another sound (the source). FM and Phase
 //! distortion are phase modulation done as a short moving delay of at most 2 ms, read with
 //! cubic Hermite interpolation: first in a chain, on a sine, that is exactly FM of the
-//! oscillator. AM and Ring scale the sound by the source.
+//! oscillator. The delay's centre is fixed (about 1 ms for FM, 0.6 ms for PD) so Amount can move
+//! without bending the pitch. AM and Ring scale the sound by the source.
 
 use crate::SAMPLE_RATE;
 
@@ -24,6 +25,11 @@ impl Default for PmDelay {
         PmDelay { buf: [0.0; LEN], pos: 0 }
     }
 }
+
+/// Where FM reads with the source at 0: the deepest swing (1 ms) past the base delay.
+const FM_CENTRE: f32 = BASE_DELAY + 0.5 * MAX_DELAY_S * SAMPLE_RATE;
+/// Where PD reads with the source at its average (1/π of the way up its 2 ms reach).
+const PD_CENTRE: f32 = BASE_DELAY + MAX_DELAY_S * SAMPLE_RATE * std::f32::consts::FRAC_1_PI;
 
 /// The depth at Amount 100 %, in samples (1 ms).
 fn depth(amount: f32) -> f32 {
@@ -64,7 +70,9 @@ impl PmDelay {
         self.push(x);
         let d = depth(amount);
         let m = if m.is_finite() { m.clamp(-1.0, 1.0) } else { 0.0 };
-        (self.read(BASE_DELAY + d + d * m), self.read(BASE_DELAY + d))
+        // Centred at the deepest swing whatever Amount is, so turning Amount never moves the
+        // whole sound in time (which would bend its pitch while it turns).
+        (self.read(FM_CENTRE + d * m), self.read(FM_CENTRE))
     }
 
     /// Phase distortion: as [`PmDelay::fm`] but one-sided, the source rectified so the wave is
@@ -74,8 +82,9 @@ impl PmDelay {
         self.push(x);
         let d = 2.0 * depth(amount);
         let m = if m.is_finite() { m.clamp(0.0, 1.0) } else { 0.0 };
-        // A rectified sine sits at 1/π on average.
-        (self.read(BASE_DELAY + d * m), self.read(BASE_DELAY + d * std::f32::consts::FRAC_1_PI))
+        // A rectified sine sits at 1/π on average: that is the fixed centre, as for FM.
+        let pi = std::f32::consts::FRAC_1_PI;
+        (self.read(PD_CENTRE + d * (m - pi)), self.read(PD_CENTRE))
     }
 }
 
@@ -162,22 +171,34 @@ mod tests {
 
     #[test]
     fn pd_is_one_sided() {
-        // An impulse read back: with the source below zero, PD leaves the delay at its base,
-        // where FM moves it earlier; above zero both move it later.
-        let delay_of = |pd: bool, m: f32| {
-            let mut d = PmDelay::default();
-            let mut out = Vec::new();
-            for i in 0..100 {
-                let x = if i == 10 { 1.0 } else { 0.0 };
-                out.push(if pd { d.pd(x, m, 1.0).0 } else { d.fm(x, m, 1.0).0 });
-            }
-            out.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0 as f32 - 10.0
-        };
-        assert_eq!(delay_of(true, -0.5), BASE_DELAY);
-        assert_eq!(delay_of(true, -1.0), BASE_DELAY);
-        assert_eq!(delay_of(true, 0.5), BASE_DELAY + 48.0);
-        assert_eq!(delay_of(false, -0.5), BASE_DELAY + 24.0);
-        assert_eq!(delay_of(false, 0.5), BASE_DELAY + 72.0);
+        // With the source below zero PD leaves the delay where it is; above zero both move it.
+        let (pd, fm) = (PmDelay::pd as fn(&mut PmDelay, f32, f32, f32) -> (f32, f32), PmDelay::fm as _);
+        assert_eq!(delay_of(pd, -0.5, 1.0), delay_of(pd, -1.0, 1.0));
+        assert_eq!(delay_of(pd, 0.5, 1.0) - delay_of(pd, -1.0, 1.0), 48.0);
+        assert_eq!(delay_of(fm, 0.5, 1.0) - delay_of(fm, -0.5, 1.0), 48.0);
+        assert_eq!(delay_of(fm, -0.5, 1.0) - delay_of(fm, -1.0, 1.0), 24.0, "FM moves both ways");
+    }
+
+    /// Where an impulse comes back out of `f` (in samples) with the source held at `m`.
+    fn delay_of(f: fn(&mut PmDelay, f32, f32, f32) -> (f32, f32), m: f32, amount: f32) -> f32 {
+        let mut d = PmDelay::default();
+        let mut out = Vec::new();
+        for i in 0..120 {
+            let x = if i == 10 { 1.0 } else { 0.0 };
+            out.push(f(&mut d, x, m, amount).0);
+        }
+        out.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0 as f32 - 10.0
+    }
+
+    #[test]
+    fn the_centre_stays_put_as_amount_moves() {
+        // Turning Amount must not move the whole sound in time (that bends its pitch while
+        // Amount changes): with the source at its middle, every Amount reads at one place.
+        let fm: Vec<f32> = [0.0, 0.3, 1.0].iter().map(|&a| delay_of(PmDelay::fm, 0.0, a)).collect();
+        assert_eq!(fm, vec![fm[0]; 3], "FM centre: {fm:?}");
+        let pd: Vec<f32> =
+            [0.0, 0.3, 1.0].iter().map(|&a| delay_of(PmDelay::pd, std::f32::consts::FRAC_1_PI, a)).collect();
+        assert_eq!(pd, vec![pd[0]; 3], "PD centre: {pd:?}");
     }
 
     #[test]

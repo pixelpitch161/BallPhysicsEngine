@@ -433,6 +433,20 @@ pub fn vowel_name(v: f64) -> &'static str {
     ["A", "E", "I", "O", "U"][(v.round().clamp(0.0, 4.0)) as usize]
 }
 
+/// Points every Modulation layer of `card` whose source is "after" a layer at `map` of that
+/// layer; where `map` gives nothing (the layer is gone), at the raw oscillator of the lane the
+/// Modulation sits in, as the sound falls back.
+pub fn retarget_sources(card: &mut bpe_core::Slot, map: &dyn Fn(LayerId) -> Option<LayerId>) {
+    for layer in card.layers.iter().filter(|l| l.kind == MODULATION) {
+        let key = bpe_core::layered_key(layer.id, "source");
+        let Some(bpe_core::Value::Text(text)) = card.params.get(&key) else { continue };
+        if let Source::After(id) = Source::parse(text) {
+            let to = map(id).map_or(Source::Raw(layer.lane.unwrap_or(0).min(1)), Source::After);
+            card.params.set(&key, bpe_core::Value::Text(to.text()));
+        }
+    }
+}
+
 /// Where a source is, in words: "Osc B", "Osc B · after Filter".
 pub fn source_text(source: Source, lane: u8, layers: &[Layer]) -> String {
     match source.in_lane(lane) {

@@ -112,13 +112,16 @@ fn reorder(
     }
 }
 
-/// Pastes `copied` into oscillator `lane`'s chain of `thing`'s sound card, just after `after`
-/// (at the bottom without one), and returns the new layer. A Modulation layer whose source is
-/// a layer the card doesn't have takes the oscillator it lands on, as the sound would.
+/// Pastes `copied` (from `from`'s sound) into oscillator `lane`'s chain of `thing`'s sound card,
+/// just after `after` (at the bottom without one), and returns the new layer. A Modulation layer
+/// whose source is a layer of another shape, or one this card no longer has, takes the
+/// oscillator it lands on, as the sound would.
+#[allow(clippy::too_many_arguments)]
 pub fn paste(
     scene: &mut Scene,
     reg: &Registry,
     thing: ThingId,
+    from: ThingId,
     copied: &CopiedLayer,
     lane: u8,
     after: Option<LayerId>,
@@ -129,10 +132,11 @@ pub fn paste(
         && let Some(Value::Text(t)) = c.params.get("source")
         && let Source::After(src) = Source::parse(t)
     {
-        let there = scene
-            .card(thing, SlotId::Sound)
-            .and_then(|card| card.layer(src))
-            .is_some_and(|l| CHAIN_KINDS.contains(&l.kind.as_str()));
+        let there = from == thing
+            && scene
+                .card(thing, SlotId::Sound)
+                .and_then(|card| card.layer(src))
+                .is_some_and(|l| CHAIN_KINDS.contains(&l.kind.as_str()));
         if !there {
             c.params.set("source", Value::Text(Source::Raw(lane).text()));
         }
@@ -423,5 +427,55 @@ mod tests {
         strip_menu(&mut h, "Filter", "Duplicate");
         let names: Vec<String> = lane_layers(&card(&h).layers, 0).iter().map(|l| l.name.clone()).collect();
         assert_eq!(names, vec!["Filter".to_owned(), "Filter copy".to_owned()]);
+    }
+
+    #[test]
+    fn deleting_a_source_points_fm_at_its_own_osc() {
+        let mut h = sounding();
+        let fb = add(&mut h, 1, FILTER);
+        let m = add(&mut h, 0, MODULATION);
+        let reg = bpe_kit::registry();
+        let a = Address::on(SHAPE, SlotId::Sound, &layered_key(m, "source"));
+        h.state_mut().0.scene.set_at(&reg, &a, Value::Text(fb.0.to_string())).unwrap();
+        h.run();
+        strip_menu(&mut h, "Filter", "Delete");
+        assert_eq!(value(&h, m, "source"), Some(Value::Text("a".into())), "its own oscillator, as it sounds");
+        // A new layer that takes the old number is not the FM's source.
+        let d = add(&mut h, 0, DISTORTION);
+        assert_eq!(value(&h, m, "source"), Some(Value::Text("a".into())));
+        assert!(!bpe_sound::chain_graph::loops_of(&card(&h)).contains(&m), "{d:?} is not tapped");
+    }
+
+    #[test]
+    fn paste_into_another_shape_drops_a_layer_source() {
+        let mut h = sounding();
+        let f = add(&mut h, 0, FILTER);
+        let m = add(&mut h, 0, MODULATION);
+        let reg = bpe_kit::registry();
+        let a = Address::on(SHAPE, SlotId::Sound, &layered_key(m, "source"));
+        h.state_mut().0.scene.set_at(&reg, &a, Value::Text(f.0.to_string())).unwrap();
+        h.run();
+        strip_menu(&mut h, "Modulation", "Copy layer");
+        // Another shape whose own layers happen to carry the same numbers.
+        let other = {
+            let studio = &mut h.state_mut().0;
+            let id = bpe_kit::add_thing(&mut studio.scene, &reg, bpe_kit::things::shape::KIND, ThingId::ROOT).unwrap();
+            crate::sound_tab::write::enable(&mut studio.scene, &reg, id);
+            for _ in 0..3 {
+                studio.scene.add_layer_in(&reg, id, SlotId::Sound, DISTORTION, Some(1)).unwrap();
+            }
+            studio.selection.set(id);
+            studio.panels.inspector.tab.insert(id, crate::inspector::InspectorTab::Sound);
+            id
+        };
+        h.run();
+        h.get_by_label("Add layer to Osc A").click();
+        h.run();
+        h.get_by_label("Paste layer").click();
+        h.run();
+        let c = h.state().0.scene.card(other, SlotId::Sound).unwrap().clone();
+        let pasted = lane_layers(&c.layers, 0)[0];
+        let key = layered_key(pasted.id, "source");
+        assert_eq!(c.params.get(&key), Some(&Value::Text("a".into())), "not a layer of this shape");
     }
 }

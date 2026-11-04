@@ -387,12 +387,12 @@ fn apply(inspector: &mut Inspector, scene: &mut Scene, kit: &Kit, id: ThingId, t
             TabEdit::DuplicateLayer(layer) => scene.duplicate_layer(reg, id, SlotId::Sound, layer).is_ok(),
             TabEdit::CopyLayer(layer) => {
                 if let Some(copied) = scene.copy_layer(id, SlotId::Sound, layer) {
-                    inspector.clipboard.chain_layer = Some(copied);
+                    inspector.clipboard.chain_layer = Some((id, copied));
                 }
                 false
             }
             TabEdit::PasteLayer { lane, after } => match inspector.clipboard.chain_layer.clone() {
-                Some(copied) => match chain_box::paste(scene, reg, id, &copied, lane, after) {
+                Some((from, copied)) => match chain_box::paste(scene, reg, id, from, &copied, lane, after) {
                     Some(layer) => {
                         inspector.sound.open_strips.insert((id, layer));
                         true
@@ -403,6 +403,10 @@ fn apply(inspector: &mut Inspector, scene: &mut Scene, kit: &Kit, id: ThingId, t
             },
             TabEdit::DeleteLayer(layer) => {
                 inspector.sound.open_strips.remove(&(id, layer));
+                // Modulations hearing it hear their own oscillator, as they sound, from now on.
+                if let Some(card) = scene.things.get_mut(&id).and_then(|t| t.slots.get_mut(&SlotId::Sound)) {
+                    bpe_kit::sound::chain::retarget_sources(card, &|l| (l != layer).then_some(l));
+                }
                 scene.remove_layer(reg, id, SlotId::Sound, layer).is_ok()
             }
         };

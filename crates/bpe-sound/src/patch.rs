@@ -139,7 +139,11 @@ fn voice_with(
         base,
         keyed,
         matrix,
-        square: if [&v.a, &v.b].iter().any(|o| o.on && o.sub != bpe_kit::sound::SubWave::Off) {
+        square: if [&v.a, &v.b]
+            .iter()
+            .zip(chain.raw_needed)
+            .any(|(o, tapped)| (o.on || tapped) && o.sub != bpe_kit::sound::SubWave::Off)
+        {
             tables.get(WaveShape::Square, WarpModeId::Sync, pending)
         } else {
             None
