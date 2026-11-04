@@ -1,0 +1,9 @@
+[package]
+name = "bpe-dsp"
+description = "Ball Studio's signal processing blocks: smoothers, oversampling, the true-peak limiter and the loudness meter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+wide.workspace = true
