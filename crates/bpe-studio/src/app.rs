@@ -1123,6 +1123,21 @@ mod tests {
     }
 
     #[test]
+    fn master_knobs_offer_no_keyframes_yet() {
+        let mut h = left_harness();
+        h.get_by_label("Mixer").click();
+        h.run();
+        h.query_all_by_label("Output")
+            .find(|n| n.accesskit_node().role() == egui::accesskit::Role::Slider)
+            .unwrap()
+            .click_secondary();
+        h.run();
+        let key = h.get_by_label("Create Keyframe");
+        assert!(key.accesskit_node().is_disabled(), "the Master's keys come with part 2's keyed sound settings");
+        assert!(h.query_by_label("Copy Value").is_some(), "the rest of the value menu is there");
+    }
+
+    #[test]
     fn switching_back_restores_the_tree_width() {
         let mut h = left_harness();
         let tree = h.state().1;

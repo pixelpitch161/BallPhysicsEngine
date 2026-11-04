@@ -58,7 +58,9 @@ fn card_knob(
     if r.changed {
         crate::inspector::set_or_key(scene, reg, &a, Value::Number(v), time, &mut keyed);
     }
-    let mark = Some(KeyMark { can_key: def.flags.keyframe, keyed: scene.keyed(&a), pulsed: false });
+    // The Master's keys take effect when every sound setting does (part 2); until then a key
+    // that changes nothing isn't offered.
+    let mark = Some(KeyMark { can_key: false, keyed: scene.keyed(&a), pulsed: false });
     let choices = TargetChoices::default();
     match widgets::value_menu(&r.response, def, unit, &now, mark, &choices) {
         ValueMenu::Nothing => {}

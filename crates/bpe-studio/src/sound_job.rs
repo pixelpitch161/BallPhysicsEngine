@@ -203,9 +203,14 @@ impl SoundJob {
         &self.shared
     }
 
-    /// The speakers stopped working.
+    /// The speakers stopped working, or the sound thread did.
     pub fn failed(&self) -> bool {
-        self.shared.failed()
+        let thread_gone = match &self.outbox {
+            Outbox::Thread { thread, .. } => thread.as_ref().is_none_or(JoinHandle::is_finished),
+            #[cfg(test)]
+            Outbox::Record(_) => false,
+        };
+        self.shared.failed() || thread_gone
     }
 }
 
@@ -213,11 +218,9 @@ impl Drop for SoundJob {
     // Without tests the outbox is always the thread.
     #[allow(irrefutable_let_patterns)]
     fn drop(&mut self) {
-        if let Outbox::Thread { tx, thread } = &mut self.outbox {
+        // The thread stops at its next look; closing the editor doesn't wait for a long seek.
+        if let Outbox::Thread { tx, .. } = &self.outbox {
             let _ = tx.send(Command::Quit);
-            if let Some(thread) = thread.take() {
-                let _ = thread.join();
-            }
         }
     }
 }
@@ -230,6 +233,8 @@ struct Worker {
     shared: Arc<Shared>,
     ring: Producer<f32>,
     playing: bool,
+    /// A new engine waits for the seek that follows it before it plays.
+    held: bool,
 }
 
 impl Worker {
@@ -251,16 +256,20 @@ impl Worker {
             Command::Play => self.playing = true,
             Command::Pause(number) => {
                 self.playing = false;
+                self.held = false;
                 if !comes(&["seek", "pause"]) {
                     self.clear(number);
                 }
             }
             Command::Seek(time, number) => {
-                if !comes(&["seek", "rebuild"]) {
-                    self.engine.seek(time);
-                }
+                // The old sound stops first (a long pre-roll would otherwise let it play on);
+                // nothing new is written until the seek is done.
                 if !comes(&["seek", "pause"]) {
                     self.clear(number);
+                }
+                if !comes(&["seek", "rebuild"]) {
+                    self.engine.seek(time);
+                    self.held = false;
                 }
             }
             Command::Patch(patch) => {
@@ -272,6 +281,8 @@ impl Worker {
                 if !comes(&["rebuild"]) {
                     self.engine = Engine::new(&scene, &resolved, &self.kit);
                     self.engine.share_meters(self.meters.clone());
+                    // It starts at 0; the editor's seek to the playhead follows.
+                    self.held = true;
                 }
             }
             Command::Audition(_) => {}
@@ -282,6 +293,9 @@ impl Worker {
 
     /// Renders blocks until the ring holds [`FILL_FRAMES`].
     fn fill(&mut self) {
+        if self.held {
+            return;
+        }
         let mut block = [0.0f32; BLOCK * 2];
         let capacity = self.ring.buffer().capacity();
         while capacity - self.ring.slots() < FILL_FRAMES * 2 && self.ring.slots() >= BLOCK * 2 {
@@ -307,7 +321,7 @@ fn run(
 ) {
     let mut engine = Engine::new(&scene, &resolved, &kit);
     engine.share_meters(meters.clone());
-    let mut w = Worker { engine, kit, meters, shared, ring, playing: false };
+    let mut w = Worker { engine, kit, meters, shared, ring, playing: false, held: false };
     let mut batch = Vec::new();
     loop {
         let first = if w.playing {
@@ -384,6 +398,59 @@ mod tests {
     }
 
     #[test]
+    fn a_seek_stops_the_old_sound_at_once() {
+        let kit = Arc::new(bpe_kit::kit());
+        let (scene, resolved) = toned(&kit, "test-tone-decay=30");
+        let (producer, consumer) = ring();
+        let shared = Arc::new(Shared::default());
+        let mut feeder = Feeder::new(consumer, shared.clone(), RATE);
+        let mut job = SoundJob::start_with_sink(&scene, &resolved, kit, producer, shared.clone());
+        job.play(0.0);
+        consume(&mut feeder, 80, &mut Vec::new());
+        // A far seek: four seconds of pre-roll to work out before the new sound starts.
+        job.seek(20.0);
+        let mut old = Vec::new();
+        let started = Instant::now();
+        while shared.cleared() != 2 && started.elapsed() < Duration::from_secs(10) {
+            consume_real(&mut feeder, &shared, 1, &mut old);
+        }
+        assert!(old.len() <= 150, "{} frames of the old sound played after the seek", old.len());
+    }
+
+    #[test]
+    fn a_rebuild_waits_for_its_seek() {
+        let kit = Arc::new(bpe_kit::kit());
+        let (scene, resolved) = toned(&kit, "test-tone");
+        let (ring_in, ring_out) = ring();
+        let shared = Arc::new(Shared::default());
+        let meters = Arc::new(Meters::default());
+        let engine = Engine::new(&scene, &resolved, &kit);
+        let mut w = Worker { engine, kit, meters, shared: shared.clone(), ring: ring_in, playing: true, held: false };
+        w.handle(Command::Rebuild(Box::new(scene.clone()), Box::new(resolved.clone())), &[]);
+        w.fill();
+        assert_eq!(ring_out.slots(), 0, "nothing from the new world's start before the seek lands");
+        shared.cleared.store(1, std::sync::atomic::Ordering::Release);
+        w.handle(Command::Seek(2.0, 1), &[]);
+        w.fill();
+        assert!(ring_out.slots() > 0);
+    }
+
+    #[test]
+    fn a_dead_sound_thread_lets_the_wall_clock_take_over() {
+        let kit = Arc::new(bpe_kit::kit());
+        let (scene, resolved) = toned(&kit, "test-tone");
+        let (producer, _consumer) = ring();
+        let mut job = SoundJob::start_with_sink(&scene, &resolved, kit, producer, Arc::new(Shared::default()));
+        assert!(!job.failed());
+        job.send(Command::Quit);
+        let started = Instant::now();
+        while !job.failed() && started.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(job.failed(), "a thread that stopped counts as failed");
+    }
+
+    #[test]
     fn the_job_stays_ahead() {
         let kit = Arc::new(bpe_kit::kit());
         let (scene, resolved) = toned(&kit, "test-tone");
@@ -417,8 +484,12 @@ mod tests {
             consume(&mut feeder, 1, &mut Vec::new());
         }
         assert_eq!(shared.cleared(), 2, "the ring was cleared");
+        // The new sound starts once the seek's pre-roll is worked out.
         let mut after = Vec::new();
-        consume_real(&mut feeder, &shared, 150, &mut after);
+        let started = Instant::now();
+        while after.len() < 4_000 && started.elapsed() < Duration::from_secs(10) {
+            consume_real(&mut feeder, &shared, 10, &mut after);
+        }
         assert!(after.len() > 3_000, "{} frames after the seek", after.len());
 
         let mut reference = Engine::new(&scene, &resolved, &kit);
