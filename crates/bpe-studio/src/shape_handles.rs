@@ -26,6 +26,8 @@ const BEND_GRAB: f32 = 10.0;
 const DOT_GRAB: f32 = 8.0;
 /// A hollow shape's band can be grabbed this close to its centre line at least, in screen points.
 const BAND_GRAB: f32 = 6.0;
+/// How close to a selected shape's middle, in screen points, counts as grabbing it to move it.
+const MIDDLE_GRAB: f32 = 10.0;
 /// The smallest Size a drag sets.
 const SMALLEST: f32 = 20.0;
 
@@ -56,6 +58,8 @@ pub struct Seen {
     pub path: ShapePath,
     /// It starts from a circle, which is moulded by its radius only.
     pub circle: bool,
+    /// How much it has shrunk or grown since the start: its Size times this is `frame.size`.
+    pub scale: f32,
 }
 
 /// Shape `id` as the world has it now, when it is a shape.
@@ -68,7 +72,12 @@ pub fn seen(world: &World, id: ThingId) -> Option<Seen> {
         ref outline => outline.angle(),
     };
     let frame = ShapeFrame { centre: wall.outline.center(), angle, size: st.settings.size * st.scale };
-    Some(Seen { frame, path: st.settings.outline_path(), circle: st.settings.start == ShapeStart::Circle })
+    Some(Seen {
+        frame,
+        path: st.settings.outline_path(),
+        circle: st.settings.start == ShapeStart::Circle,
+        scale: st.scale,
+    })
 }
 
 /// Screen points per shape unit.
@@ -82,10 +91,18 @@ pub fn hit_handle(world: &World, view: &View, id: ThingId, pos: Pos2) -> Option<
     let s = seen(world, id)?;
     let on_screen = |p: Vec2| view.to_screen(s.frame.to_world(p));
     let near = |p: Vec2, reach: f32| (on_screen(p) - pos).length() <= reach;
+    // The middle moves the whole shape, as a band too thin to grab apart from its sides can't.
+    let middle = (view.to_screen(s.frame.centre) - pos).length() <= MIDDLE_GRAB;
     if s.circle {
+        if near(Vec2::X, DOT_GRAB) {
+            return Some(Handle::Radius(id));
+        }
+        if middle {
+            return Some(Handle::Body(id));
+        }
         let from_middle = (view.to_world(pos) - s.frame.centre).length() * view.world_scale();
         let edge = (from_middle - units(view, s.frame)).abs() <= EDGE_GRAB;
-        return (near(Vec2::X, DOT_GRAB) || edge).then_some(Handle::Radius(id));
+        return edge.then_some(Handle::Radius(id));
     }
     let path = &s.path;
     for side in 0..path.side_count() {
@@ -103,6 +120,9 @@ pub fn hit_handle(world: &World, view: &View, id: ThingId, pos: Pos2) -> Option<
         .min_by(|a, b| a.1.total_cmp(&b.1));
     if let Some((i, _)) = corner {
         return Some(Handle::Corner(id, i));
+    }
+    if middle {
+        return Some(Handle::Body(id));
     }
     let (side, _, d) = path.nearest_side(s.frame.to_shape(view.to_world(pos)))?;
     (d * units(view, s.frame) <= EDGE_GRAB).then_some(Handle::Side(id, side))
@@ -139,12 +159,20 @@ enum Mirror {
     Side {
         partner: Option<usize>,
     },
+    /// A circle's edge: nothing to mirror.
+    Nothing,
 }
 
 /// What a moulding drag holds from its start: the outline then (with the even polygon's corners
 /// when it had none), how far the pointer was from the dragged point, and the mirror partners.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mould {
+    /// Where the shape was shown when the drag began. The drag goes on through it, so a shape
+    /// that was turned or shrunk at the playhead moulds as it was seen, whatever the world does
+    /// once the edit rebuilds it.
+    frame: ShapeFrame,
+    /// [`Seen::scale`] then.
+    scale: f32,
     start: ShapePath,
     /// The pointer at the press less the dragged point (a side's first corner), in world pixels.
     offset: Vec2,
@@ -180,9 +208,10 @@ pub fn start(world: &World, handle: Handle, press: Vec2) -> Option<Mould> {
             let partner = path.mirror_partner_bend(side, usize::from(which));
             (h, Mirror::Bend { on_line: h.x.abs() < ON_THE_LINE, partner })
         }
+        Handle::Radius(_) => (Vec2::ZERO, Mirror::Nothing),
         _ => return None,
     };
-    Some(Mould { offset: press - s.frame.to_world(point), start: path, mirror })
+    Some(Mould { frame: s.frame, scale: s.scale, offset: press - s.frame.to_world(point), start: path, mirror })
 }
 
 /// `p` across the middle line.
@@ -248,20 +277,22 @@ fn moulded(m: &Mould, handle: Handle, to: Vec2, shift: bool) -> ShapePath {
     path
 }
 
-/// Moulds the shape `drag` holds to the pointer at `pointer` (world pixels): a corner, side or
-/// bend handle to it (snapped to a grid `step`), or a circle's Size to its distance from the
-/// middle. The first change gives an even polygon its own corners.
-pub fn apply(scene: &mut Scene, world: &World, drag: &Drag, pointer: Vec2, step: Option<f32>) {
+/// Moulds the shape `drag` holds to the pointer at `pointer` (world pixels), through the shape
+/// as it was seen when the drag began: a corner, side or bend handle to it (snapped to a grid
+/// `step`), or a circle's Size to its distance from the middle. The first change gives an even
+/// polygon its own corners.
+pub fn apply(scene: &mut Scene, drag: &Drag, pointer: Vec2, step: Option<f32>) {
     let id = drag.handle.thing();
-    let Some(s) = seen(world, id) else { return };
+    let Some(m) = &drag.mould else { return };
     let Some(thing) = scene.things.get_mut(&id) else { return };
     if let Handle::Radius(_) = drag.handle {
-        let size = snap_length((pointer - s.frame.centre).length(), step).round().max(SMALLEST);
+        // The Size that shows that far out, shrunk as it was seen.
+        let shown = (pointer - m.frame.centre).length() / m.scale.max(1e-6);
+        let size = snap_length(shown, step).round().max(SMALLEST);
         thing.params.set("size", Value::Number(f64::from(size)));
         return;
     }
-    let Some(m) = &drag.mould else { return };
-    let to = s.frame.to_shape(snap_point(pointer - m.offset, step));
+    let to = m.frame.to_shape(snap_point(pointer - m.offset, step));
     let path = moulded(m, drag.handle, to, drag.shift);
     let had = ShapeSettings::from_params(&thing.params).moulded().is_some();
     if path.is_valid() && (had || path != m.start) {
@@ -418,6 +449,13 @@ pub fn draw(
         outline,
         Stroke::new(if body_active { 2.5 } else { 1.5 }, if body_active { style::TEXT_STRONG } else { mark }),
     ));
+    // The middle, which moves the shape: a ring like a ball's.
+    let moving = is_active(Handle::Body(id));
+    painter.circle_stroke(
+        view.to_screen(s.frame.centre),
+        6.0,
+        Stroke::new(if moving { 2.0 } else { 1.2 }, if moving { style::TEXT_STRONG } else { mark }),
+    );
     if s.circle {
         let dot = on_screen(Vec2::X);
         let lit = is_active(Handle::Radius(id));
@@ -521,7 +559,7 @@ mod tests {
         let world = studio.playback.world().clone();
         let mould = start(&world, handle, press);
         let drag = Drag { mould, shift, ..Drag::new(handle, Vec2::ZERO) };
-        apply(&mut studio.scene, &world, &drag, press + by, step);
+        apply(&mut studio.scene, &drag, press + by, step);
     }
 
     /// Corner `i` of the even polygon in world pixels (400 px shape at the middle).
@@ -643,6 +681,37 @@ mod tests {
         assert_eq!(hit_test(&studio, &v, v.to_screen(Vec2::new(0.0, 508.0))), Some(Handle::Radius(SHAPE)));
         drag(&mut studio, Handle::Radius(SHAPE), Vec2::new(508.0, 0.0), Vec2::new(-500.0, 0.0), false, None);
         assert_eq!(studio.scene.things[&SHAPE].params.get("size"), Some(&Value::Number(20.0)));
+    }
+
+    #[test]
+    fn a_spinning_shape_moulds_as_it_is_shown_at_the_playhead() {
+        let mut studio = studio_with(|p| {
+            p.set("start", Value::Choice("polygon".into()));
+            p.set("size", Value::Number(400.0));
+            p.set("spin", Value::Number(90.0));
+        });
+        studio.playback.seek_within(1.0, None);
+        let shown = studio.playback.world().clone();
+        let frame = seen(&shown, SHAPE).unwrap().frame;
+        assert!((frame.angle - std::f32::consts::FRAC_PI_2).abs() < 1e-2, "a quarter turn after 1 s: {}", frame.angle);
+        // Grabbed where it is drawn now; the edit then rebuilds the world from its start, and the
+        // drag goes on through the shape as it was seen.
+        let handle = Handle::Corner(SHAPE, 2);
+        let press = frame.to_world(ShapePath::even(6).point(2));
+        let drag = Drag { mould: start(&shown, handle, press), ..Drag::new(handle, Vec2::ZERO) };
+        let by = Vec2::new(0.0, 40.0);
+        apply(&mut studio.scene, &drag, press + by, None);
+        let expected = ShapePath::even(6).point(2) + Vec2::from_angle(-frame.angle).rotate(by) / 400.0;
+        assert!(close(path(&studio).point(2), expected), "{} vs {expected}", path(&studio).point(2));
+    }
+
+    #[test]
+    fn a_selected_shape_moves_by_its_middle() {
+        for mut studio in [Studio::headless(), polygon(6)] {
+            studio.selection.set(SHAPE);
+            let v = view();
+            assert_eq!(hit_test(&studio, &v, v.to_screen(Vec2::new(3.0, -2.0))), Some(Handle::Body(SHAPE)));
+        }
     }
 
     #[test]

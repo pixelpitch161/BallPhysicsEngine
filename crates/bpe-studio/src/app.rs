@@ -752,9 +752,10 @@ impl eframe::App for Studio {
         }
         if outcome.drag_started {
             // Dragging lays the scene out, so show where everything starts. The camera stays at
-            // the playhead, so a keyed shot gets its key where it is being looked at.
+            // the playhead, so a keyed shot gets its key where it is being looked at, and so does
+            // moulding a shape, which goes on where it was grabbed.
             self.set_playing(false);
-            if !outcome.drag_camera {
+            if !outcome.keep_playhead {
                 self.seek(0.0);
             }
         }

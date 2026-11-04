@@ -85,6 +85,11 @@ impl Handle {
         }
     }
 
+    /// A shape's corner, side, bend handle or circle edge.
+    fn is_mould(self) -> bool {
+        matches!(self, Handle::Corner(..) | Handle::Side(..) | Handle::Bend(..) | Handle::Radius(_))
+    }
+
     fn is_camera(self) -> bool {
         matches!(self, Handle::CameraMove(_) | Handle::CameraZoom(_) | Handle::CameraTurn(_))
     }
@@ -116,8 +121,9 @@ pub struct Outcome {
     pub selected: Option<ThingId>,
     /// A drag began: the app pauses and jumps to the start so the starting layout is visible.
     pub drag_started: bool,
-    /// The drag that began holds the camera, which stays at the playhead so keys land there.
-    pub drag_camera: bool,
+    /// The drag that began stays at the playhead: the camera's, so keys land there, and a
+    /// shape's moulding, so a turned or shrunk shape is moulded where it is seen.
+    pub keep_playhead: bool,
     /// The preview was clicked while playing.
     pub clicked: bool,
     /// What is wrong with a shader module the picture skipped, when one is.
@@ -312,7 +318,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         // Each drag is its own undo step.
         studio.panels.inspector.own_step = true;
         outcome.drag_started = true;
-        outcome.drag_camera = handle.is_camera();
+        outcome.keep_playhead = handle.is_camera() || handle.is_mould();
     }
     if response.drag_stopped() {
         preview.drag = None;
@@ -603,7 +609,7 @@ pub fn apply_drag(scene: &mut Scene, world: &World, drag: &Drag, pointer: Vec2, 
             thing.params.set("velocity", Value::Vec2([velocity.x, velocity.y]));
         }
         Handle::Corner(..) | Handle::Side(..) | Handle::Bend(..) | Handle::Radius(_) => {
-            shape_handles::apply(scene, world, drag, pointer, step);
+            shape_handles::apply(scene, drag, pointer, step);
         }
     }
 }
@@ -783,6 +789,12 @@ mod tests {
         assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(75.0, -250.0))), Some(Handle::Aim(ThingId(2))));
     }
 
+    /// A drag on the blank project's circle by its edge.
+    fn radius_drag(world: &World) -> Drag {
+        let handle = Handle::Radius(ThingId(1));
+        Drag { mould: shape_handles::start(world, handle, Vec2::new(508.0, 0.0)), ..Drag::new(handle, Vec2::ZERO) }
+    }
+
     #[test]
     fn dragging_moves_aims_and_resizes() {
         let mut studio = Studio::headless();
@@ -803,13 +815,7 @@ mod tests {
             None,
         );
         assert_eq!(studio.scene.things[&ThingId(2)].params.get("velocity"), Some(&Value::Vec2([400.0, 0.0])));
-        apply_drag(
-            &mut studio.scene,
-            &world,
-            &Drag::new(Handle::Radius(ThingId(1)), Vec2::ZERO),
-            Vec2::new(300.0, 400.0),
-            None,
-        );
+        apply_drag(&mut studio.scene, &world, &radius_drag(&world), Vec2::new(300.0, 400.0), None);
         assert_eq!(studio.scene.things[&ThingId(1)].params.get("size"), Some(&Value::Number(500.0)));
     }
 
@@ -875,13 +881,7 @@ mod tests {
         );
         assert_eq!(studio.scene.things[&ThingId(2)].params.get("velocity"), Some(&Value::Vec2([240.0, 0.0])));
         // A circle's radius grows in whole steps.
-        apply_drag(
-            &mut studio.scene,
-            &world,
-            &Drag::new(Handle::Radius(ThingId(1)), Vec2::ZERO),
-            Vec2::new(0.0, 455.0),
-            step,
-        );
+        apply_drag(&mut studio.scene, &world, &radius_drag(&world), Vec2::new(0.0, 455.0), step);
         assert_eq!(studio.scene.things[&ThingId(1)].params.get("size"), Some(&Value::Number(480.0)));
     }
 
