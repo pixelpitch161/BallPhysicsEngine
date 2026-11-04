@@ -145,9 +145,18 @@ fn section_of(reg: &Registry, layer: &Layer) -> LayerSection {
     reg.layer(&layer.kind).map_or(LayerSection::Drawn, |k| k.section())
 }
 
-/// Where the drawn layers (and their sub-layers) end: the index of the first reaction or group layer,
-/// or the length.
+/// Where the drawn layers (and their sub-layers) end: the index of the first around, reaction or
+/// group layer, or the length.
 fn drawn_end(reg: &Registry, card: &Slot) -> usize {
+    card.layers
+        .iter()
+        .position(|l| matches!(section_of(reg, l), LayerSection::Around | LayerSection::Reaction | LayerSection::Group))
+        .unwrap_or(card.layers.len())
+}
+
+/// Where the around layers (trails and particles, and their sub-layers) end: the index of the
+/// first reaction or group layer, or the length.
+fn around_end(reg: &Registry, card: &Slot) -> usize {
     card.layers
         .iter()
         .position(|l| matches!(section_of(reg, l), LayerSection::Reaction | LayerSection::Group))
@@ -209,7 +218,8 @@ impl Scene {
     }
 
     /// Adds a layer of `kind`, every setting at its default, and returns its id. A drawn layer goes
-    /// on top of the drawn layers (under the reactions), a reaction after the reactions (under the
+    /// on top of the drawn layers (under the trails and particles), a trail or particles layer
+    /// after the others of its section (under the reactions), a reaction after the reactions (under the
     /// group layers), a group layer at the end and a base layer at the bottom. A kind that doesn't
     /// repeat may be in a card only once.
     pub fn add_layer(
@@ -246,6 +256,7 @@ impl Scene {
         } else {
             match k.section() {
                 LayerSection::Drawn => drawn_end(reg, card),
+                LayerSection::Around => around_end(reg, card),
                 LayerSection::Reaction => group_start(reg, card),
                 LayerSection::Group => card.layers.len(),
                 LayerSection::Sub => return Err(EditError::NotAccepted),
@@ -300,7 +311,7 @@ impl Scene {
     fn check_sub(reg: &Registry, card: &Slot, index: usize, sk: &dyn LayerKind) -> Result<(), EditError> {
         let parent = &card.layers[index];
         let pk = reg.layer(&parent.kind).ok_or(EditError::NotAccepted)?;
-        let refused = pk.section() != LayerSection::Drawn
+        let refused = !matches!(pk.section(), LayerSection::Drawn | LayerSection::Around)
             || pk.base()
             || !pk.takes_subs()
             || parent.parent.is_some()
@@ -390,9 +401,9 @@ impl Scene {
 
     /// Moves drawn layer `id`, with its sub-layers, to `to` in the stack, counting layers from the
     /// bottom and leaving sub-layers out of the count. Drawn layers stay above the base layer and
-    /// under the reactions; reactions and sub-layers have no order to change here (see
-    /// [`Scene::move_sub_layer`]); group layers move among the
-    /// group layers only. Chain layers and bus effects move only within their own lane, and
+    /// under the trails and particles; reactions and sub-layers have no order to change here (see
+    /// [`Scene::move_sub_layer`]); trails and particles (around layers) move among themselves,
+    /// with their sub-layers, and group layers move among the group layers only. Chain layers and bus effects move only within their own lane, and
     /// modulators among the modulators.
     pub fn move_layer(
         &mut self,
@@ -422,18 +433,24 @@ impl Scene {
             return Ok(());
         }
         let group = section == Some(LayerSection::Group);
+        let around = section == Some(LayerSection::Around);
         let drawn = section == Some(LayerSection::Drawn) && card.layers[index].parent.is_none();
-        // Where the layers it may sit among end.
-        let end_of = |c: &Slot| if group { c.layers.len() } else { drawn_end(reg, c) };
+        // Where the layers it may sit among end, and where those before them end.
+        let end_of = |c: &Slot| match () {
+            _ if group => c.layers.len(),
+            _ if around => around_end(reg, c),
+            _ => drawn_end(reg, c),
+        };
         let tops =
             |c: &Slot| -> Vec<usize> { (0..end_of(c)).filter(|&i| c.layers[i].parent.is_none()).collect::<Vec<_>>() };
-        let lowest = if group {
-            card.layers[..group_start(reg, card)].iter().filter(|l| l.parent.is_none()).count()
-        } else {
-            usize::from(is_base(reg, card, 0))
+        let tops_before = |c: &Slot, end: usize| c.layers[..end].iter().filter(|l| l.parent.is_none()).count();
+        let lowest = match () {
+            _ if group => tops_before(card, group_start(reg, card)),
+            _ if around => tops_before(card, drawn_end(reg, card)),
+            _ => usize::from(is_base(reg, card, 0)),
         };
         let highest = tops(card).len().saturating_sub(1);
-        if !(drawn || group) || to < lowest || to > highest {
+        if !(drawn || group || around) || to < lowest || to > highest {
             return Err(EditError::NotAccepted);
         }
         let end = block_end(card, index);
@@ -1377,5 +1394,76 @@ mod tests {
         assert_eq!(get(&s), Some(Value::Routes(vec![second])));
         s.remove_layer(&r, f, SlotId::Sound, a1).unwrap();
         assert_eq!(get(&s), Some(Value::Routes(vec![])));
+    }
+
+    #[test]
+    fn trails_and_particles_sit_between_the_drawn_layers_and_the_reactions() {
+        let (r, mut s, b) = stacked();
+        let pop = s.add_layer(&r, b, LOOK, "react.pop").unwrap();
+        let spark = s.add_layer(&r, b, LOOK, "around.spark").unwrap();
+        let ring = s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
+        let spark2 = s.add_layer(&r, b, LOOK, "around.spark").unwrap();
+        s.add_layer(&r, b, LOOK, "group.wash").unwrap();
+        assert_eq!(kinds(&s, b), ["Base", "Ring", "Spark", "Spark 2", "Pop", "Wash"]);
+        // A sub-layer on a trail rides with it, and a drawn layer's sub stays with its layer.
+        let glow = s.add_sub_layer(&r, b, LOOK, spark, "sub.glow").unwrap();
+        let cut = s.add_sub_layer(&r, b, LOOK, ring, "sub.cut").unwrap();
+        assert_eq!(kinds(&s, b), ["Base", "Ring", "Cut", "Spark", "Glow", "Spark 2", "Pop", "Wash"]);
+        // A new drawn layer goes under the trails, a new trail after the others.
+        s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
+        s.add_layer(&r, b, LOOK, "around.spark").unwrap();
+        assert_eq!(
+            kinds(&s, b),
+            ["Base", "Ring", "Cut", "Ring 2", "Spark", "Glow", "Spark 2", "Spark 3", "Pop", "Wash"]
+        );
+        let _ = (pop, cut, glow, spark2);
+    }
+
+    #[test]
+    fn trails_and_particles_move_only_among_themselves_with_their_sub_layers() {
+        let (r, mut s, b) = stacked();
+        let ring = s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
+        let a = s.add_layer(&r, b, LOOK, "around.spark").unwrap();
+        let c = s.add_layer(&r, b, LOOK, "around.spark").unwrap();
+        s.add_layer(&r, b, LOOK, "react.pop").unwrap();
+        s.add_sub_layer(&r, b, LOOK, a, "sub.glow").unwrap();
+        // Tops from the bottom: Base 0, Ring 1, Spark 2, Spark 2 3.
+        assert_eq!(s.move_layer(&r, b, LOOK, a, 1), Err(EditError::NotAccepted), "not among the drawn layers");
+        assert_eq!(s.move_layer(&r, b, LOOK, a, 4), Err(EditError::NotAccepted), "not past the last trail");
+        assert_eq!(s.move_layer(&r, b, LOOK, ring, 2), Err(EditError::NotAccepted), "a drawn layer stays under them");
+        s.move_layer(&r, b, LOOK, a, 3).unwrap();
+        assert_eq!(kinds(&s, b), ["Base", "Ring", "Spark 2", "Spark", "Glow", "Pop"]);
+        s.move_layer(&r, b, LOOK, a, 2).unwrap();
+        assert_eq!(kinds(&s, b), ["Base", "Ring", "Spark", "Glow", "Spark 2", "Pop"]);
+        let _ = c;
+    }
+
+    #[test]
+    fn trails_take_sub_layers_and_a_whole_look_carries_them() {
+        let (r, mut s, b) = stacked();
+        let spark = s.add_layer(&r, b, LOOK, "around.spark").unwrap();
+        s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
+        s.add_sub_layer(&r, b, LOOK, spark, "sub.glow").unwrap();
+        s.card_mut(b, LOOK).unwrap().params.set(&layered_key(spark, "width"), Value::Number(3.0));
+        let look = s.copy_look(&r, b, LOOK).unwrap();
+        let other = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        s.add_slot(&r, other, LOOK, "look.stack").unwrap();
+        s.add_layer(&r, other, LOOK, "layer.base").unwrap();
+        s.paste_look(&r, other, LOOK, &look).unwrap();
+        assert_eq!(kinds(&s, other), ["Base", "Ring", "Spark", "Glow"]);
+        let card = s.card(other, LOOK).unwrap();
+        let pasted = card.layers.iter().find(|l| l.name == "Spark").unwrap().id;
+        assert_eq!(card.params.get(&layered_key(pasted, "width")), Some(&Value::Number(3.0)));
+        // A pasted single trail keeps its sub-layers and goes with the trails.
+        let one = s.copy_layer(b, LOOK, spark).unwrap();
+        s.paste_layer(&r, other, LOOK, &one).unwrap();
+        assert_eq!(kinds(&s, other), ["Base", "Ring", "Spark", "Glow", "Spark 2", "Glow 2"]);
+        // A duplicate sits beside it with its own copy of the sub-layer.
+        let dup = s.duplicate_layer(&r, b, LOOK, spark).unwrap();
+        assert_eq!(kinds(&s, b), ["Base", "Ring", "Spark", "Glow", "Spark copy", "Glow"]);
+        assert_eq!(s.card(b, LOOK).unwrap().params.get(&layered_key(dup, "width")), Some(&Value::Number(3.0)));
+        // Removing it takes its sub-layer.
+        s.remove_layer(&r, b, LOOK, spark).unwrap();
+        assert_eq!(kinds(&s, b), ["Base", "Ring", "Spark copy", "Glow"]);
     }
 }

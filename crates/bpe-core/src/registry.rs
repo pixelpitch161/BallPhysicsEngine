@@ -63,6 +63,7 @@ pub trait ModuleKind: Send + Sync + 'static {
 }
 
 /// Where a layer sits in a card's stack: with the drawn layers, painted bottom to top, with
+/// the trails and particles round the ball (`Around`, after the drawn layers), with
 /// the reactions, which change the whole finished stack when something happens, as a sub-layer
 /// of the drawn layer it changes (its `Layer::parent`), or with the group layers, which spread
 /// one look across every ball of the thing (applied in their order, after the reactions and
@@ -72,6 +73,9 @@ pub trait ModuleKind: Send + Sync + 'static {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LayerSection {
     Drawn,
+    /// Trails and particles: drawn round the ball, not on it. They sit after the drawn layers
+    /// (and their sub-layers), before the reactions, and move among themselves.
+    Around,
     Reaction,
     Sub,
     Group,
@@ -103,7 +107,8 @@ pub trait LayerKind: Send + Sync + 'static {
     fn base(&self) -> bool {
         false
     }
-    /// Whether layers of this kind may carry sub-layers (a drawn layer that isn't the base layer).
+    /// Whether layers of this kind may carry sub-layers (a drawn or around layer that isn't the
+    /// base layer).
     fn takes_subs(&self) -> bool {
         true
     }

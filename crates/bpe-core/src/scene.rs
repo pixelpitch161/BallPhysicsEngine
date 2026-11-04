@@ -200,7 +200,8 @@ pub struct Slot {
     /// What earlier kinds of this card left behind, by kind, to restore if it switches back.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub stash: BTreeMap<KindId, SlotStash>,
-    /// The card's stack of layers, bottom first, then its reactions, for a card kind that holds
+    /// The card's stack of layers, bottom first, then its trails and particles, then its
+    /// reactions, for a card kind that holds
     /// layers (the balls' Look). Each layer's settings sit in `params` under layered keys.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub layers: Vec<Layer>,
@@ -348,7 +349,7 @@ impl Default for Scene {
 
 impl Scene {
     /// The save format this version writes.
-    pub const FORMAT: u32 = 9;
+    pub const FORMAT: u32 = 10;
     /// The oldest format that still opens.
     pub const OLDEST_FORMAT: u32 = 7;
 
