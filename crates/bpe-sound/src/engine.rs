@@ -24,6 +24,8 @@ pub struct Engine {
     cursor: HitCursor,
     hits: Vec<BlockHit>,
     voices: Vec<Box<dyn VoiceSource>>,
+    /// Voices whose thing went away, fading out; dropped once silent.
+    leaving: Vec<Box<dyn VoiceSource>>,
     master: Master,
     tempo: TempoMap,
     loudness: LoudnessMeter,
@@ -55,6 +57,7 @@ impl Engine {
             cursor,
             hits: Vec::with_capacity(MAX_BLOCK_HITS),
             voices: patch.voices,
+            leaving: Vec::new(),
             master,
             tempo: patch.tempo,
             loudness: LoudnessMeter::new(),
@@ -106,6 +109,7 @@ impl Engine {
         for v in &mut self.voices {
             v.reset();
         }
+        self.leaving.clear();
         self.master.reset();
         if self.voices.is_empty() {
             // Silence needs no pre-roll and no physics.
@@ -142,12 +146,36 @@ impl Engine {
         self.tempo = patch.tempo;
         let mut old = std::mem::take(&mut self.voices);
         let mut voices = patch.voices;
+        let mut kept = vec![false; old.len()];
         for v in &mut voices {
-            if let Some(o) = old.iter_mut().find(|o| o.thing() == v.thing()) {
-                v.adopt(o.as_mut());
+            if let Some(i) = old.iter().position(|o| o.thing() == v.thing()) {
+                v.adopt(old[i].as_mut());
+                kept[i] = true;
+            }
+        }
+        // A voice whose thing has gone (or whose sound was turned off) fades out.
+        for (o, kept) in old.into_iter().zip(kept) {
+            if !kept {
+                let mut o = o;
+                o.fade_out(crate::voices::LEAVE_MS);
+                if !o.is_silent() {
+                    self.leaving.push(o);
+                }
             }
         }
         self.voices = voices;
+    }
+
+    /// Plays `note` on `shape`'s voice from the editor (a key clicked), outside the hits.
+    pub fn audition(&mut self, shape: bpe_core::ThingId, note: u8) {
+        if let Some(v) = self.voices.iter_mut().find(|v| v.thing() == shape) {
+            v.audition(note);
+        }
+    }
+
+    /// Whether anything is sounding or still to come from voices that went away.
+    pub fn has_leaving(&self) -> bool {
+        !self.leaving.is_empty()
     }
 
     /// Renders the next block, interleaved stereo.
@@ -172,6 +200,8 @@ impl Engine {
     /// does this itself; it is apart so the physics, which may allocate, can be kept out of a
     /// check on the sound path.
     pub fn step_physics(&mut self) {
+        // Voices that finished fading go here, where freeing them is allowed.
+        self.leaving.retain(|v| !v.is_silent());
         if self.voices.is_empty() {
             self.physics_synced = false;
             return;
@@ -230,6 +260,9 @@ impl Engine {
             world: self.physics.world(),
         };
         for v in &mut self.voices {
+            v.on_block(&cx, &self.hits, &mut self.bus_l, &mut self.bus_r);
+        }
+        for v in &mut self.leaving {
             v.on_block(&cx, &self.hits, &mut self.bus_l, &mut self.bus_r);
         }
         self.master.process(&mut self.bus_l, &mut self.bus_r);

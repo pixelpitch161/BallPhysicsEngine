@@ -25,6 +25,8 @@ pub const TOP_HARMONICS: usize = 1024;
 const LENS: [usize; MIPS] = [16384, 8192, 4096, 4096, 2048, 2048, 1024, 1024, 1024, 1024, 1024];
 /// The highest a harmonic may play, in Hz (half the sample rate).
 const NYQUIST: f64 = crate::SAMPLE_RATE as f64 / 2.0;
+/// Where in a copy's octave (0..1) the crossfade to the next copy starts.
+pub const XFADE_FROM: f32 = 0.75;
 /// Sets the bank keeps.
 pub const BANK_SIZE: usize = 12;
 
@@ -58,6 +60,12 @@ pub struct TableSet {
     pub wave: WaveShape,
     pub mode: WarpModeId,
     mips: Vec<Mip>,
+}
+
+impl std::fmt::Debug for TableSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TableSet").field("wave", &self.wave).field("mode", &self.mode).finish()
+    }
 }
 
 /// In-place iterative radix-2 complex FFT. `inverse` leaves out the 1/n.
@@ -144,10 +152,15 @@ impl TableSet {
     /// How to read it for a note at `freq_hz` with Warp at `warp` (0..1). Cheap; no allocation.
     #[inline]
     pub fn reader(&self, freq_hz: f32) -> Reader<'_> {
+        let (m0, m1, t) = self.mips_at(octaves(freq_hz));
+        Reader { set: self, m0, m1, t }
+    }
+
+    /// The two copies a note [`octaves`] `mu` up reads, and how much of the second.
+    #[inline]
+    pub fn mips_at(&self, mu: f64) -> (usize, usize, f32) {
         // The copy whose top harmonic is under half the sample rate at this pitch, crossfaded
-        // toward the next one as the pitch rises through its octave.
-        let f = (freq_hz.abs() as f64).max(1e-3);
-        let mu = (f * TOP_HARMONICS as f64 / NYQUIST).log2();
+        // toward the next one as the pitch rises through the top of its octave.
         let (m0, t) = if mu <= 0.0 {
             (0usize, 0.0f32)
         } else {
@@ -156,8 +169,10 @@ impl TableSet {
         };
         let m0 = m0.min(MIPS - 1);
         let m1 = (m0 + 1).min(MIPS - 1);
-        let t = if m0 == m1 { 0.0 } else { t.clamp(0.0, 1.0) };
-        Reader { set: self, m0, m1, t }
+        // Only the top quarter of the octave crossfades: below it the one copy is safe and
+        // bright, and a note there reads one copy instead of two.
+        let t = if m0 == m1 { 0.0 } else { ((t - XFADE_FROM) / (1.0 - XFADE_FROM)).clamp(0.0, 1.0) };
+        (m0, m1, t)
     }
 
     /// The two copies a note at `freq_hz` reads and how much of the second.
@@ -165,6 +180,13 @@ impl TableSet {
     pub fn mips_for(&self, freq_hz: f32) -> (usize, usize, f32) {
         let r = self.reader(freq_hz);
         (r.m0, r.m1, r.t)
+    }
+
+    /// Every step of copy `m` one after another, each `mip_len(m) + 3` samples long (one
+    /// guard sample before, two after).
+    #[inline(always)]
+    pub fn mip_data(&self, m: usize) -> &[f32] {
+        &self.mips[m].data
     }
 
     /// Step `step` of copy `m`: its `mip_len(m)` samples with one before and two after.
@@ -243,6 +265,14 @@ impl Reader<'_> {
         let b = self.read_mip(self.m1, phase, s0, s1, sf);
         a + (b - a) * self.t
     }
+}
+
+/// How many octaves above the pitch whose fullest copy's top harmonic is exactly at half the
+/// sample rate a note at `freq_hz` is ([`TableSet::mips_at`] reads it).
+#[inline]
+pub fn octaves(freq_hz: f32) -> f64 {
+    let f = (freq_hz.abs() as f64).max(1e-3);
+    (f * TOP_HARMONICS as f64 / NYQUIST).log2()
 }
 
 /// Keeps the sets baked so far (the last [`BANK_SIZE`] used) and hands them out shared.

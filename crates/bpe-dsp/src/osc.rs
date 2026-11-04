@@ -1,10 +1,10 @@
-//! The unison oscillator (up to 16 detuned copies of a wavetable, eight at a time in SIMD lanes)
+//! The unison oscillator (up to 16 detuned copies of a wavetable, eight samples at a time in SIMD lanes)
 //! and the sub oscillator.
 
 use crate::BLOCK;
 use crate::noise::Noise;
-use crate::tables::{Reader, TableSet, mip_len};
-use wide::f32x8;
+use crate::tables::{Reader, TableSet, mip_len, octaves};
+use wide::{f32x4, f32x8, i32x4};
 
 /// The most unison copies.
 pub const MAX_UNISON: usize = 16;
@@ -61,10 +61,14 @@ fn pan_gains(pan: f32) -> (f32, f32) {
 pub struct UnisonOsc {
     phase: [f64; MAX_UNISON],
     inc: [f64; MAX_UNISON],
+    /// Each copy's tuning in octaves from the note.
+    oct: [f64; MAX_UNISON],
     gl: [f32; MAX_UNISON],
     gr: [f32; MAX_UNISON],
     n: usize,
     params: UnisonParams,
+    /// The tunings and pans follow `params`.
+    ready: bool,
     rng: Noise,
 }
 
@@ -74,44 +78,17 @@ impl Default for UnisonOsc {
     }
 }
 
-/// `y[i..i + 4]` of one copy for each lane, and where between `y[1]` and `y[2]` it reads.
-#[derive(Clone, Copy)]
-struct Taps {
-    y: [[f32; LANES]; 4],
-    f: [f32; LANES],
-}
-
-impl Taps {
-    const ZERO: Taps = Taps { y: [[0.0; LANES]; 4], f: [0.0; LANES] };
-
-    /// 4-point Lagrange over the eight lanes at once.
-    #[inline(always)]
-    fn lagrange(&self) -> f32x8 {
-        let f = f32x8::from(self.f);
-        let (y0, y1, y2, y3) =
-            (f32x8::from(self.y[0]), f32x8::from(self.y[1]), f32x8::from(self.y[2]), f32x8::from(self.y[3]));
-        let one = f32x8::splat(1.0);
-        let two = f32x8::splat(2.0);
-        let fm1 = f - one;
-        let fm2 = f - two;
-        let fp1 = f + one;
-        let c0 = -f * fm1 * fm2 * f32x8::splat(1.0 / 6.0);
-        let c1 = fp1 * fm1 * fm2 * f32x8::splat(0.5);
-        let c2 = -fp1 * f * fm2 * f32x8::splat(0.5);
-        let c3 = fp1 * f * fm1 * f32x8::splat(1.0 / 6.0);
-        c0 * y0 + c1 * y1 + c2 * y2 + c3 * y3
-    }
-}
-
 impl UnisonOsc {
     pub fn new() -> Self {
         let mut o = UnisonOsc {
             phase: [0.0; MAX_UNISON],
             inc: [0.0; MAX_UNISON],
+            oct: [0.0; MAX_UNISON],
             gl: [0.0; MAX_UNISON],
             gr: [0.0; MAX_UNISON],
             n: 1,
             params: UnisonParams::default(),
+            ready: false,
             rng: Noise::new(0),
         };
         o.set(&UnisonParams::default());
@@ -129,6 +106,11 @@ impl UnisonOsc {
 
     /// New settings; the copies' tunings and pans follow at once (the caller smooths).
     pub fn set(&mut self, p: &UnisonParams) {
+        // Called every block: the tunings and pans only need working out when something moved.
+        if *p == self.params && self.ready {
+            return;
+        }
+        self.ready = true;
         self.params = *p;
         let n = (p.unison as usize).clamp(1, MAX_UNISON);
         self.n = n;
@@ -153,13 +135,15 @@ impl UnisonOsc {
         for i in 0..MAX_UNISON {
             if i >= n {
                 self.inc[i] = 0.0;
+                self.oct[i] = 0.0;
                 self.gl[i] = 0.0;
                 self.gr[i] = 0.0;
                 continue;
             }
             let x = place(i, n);
             let cents = x.signum() * x.abs().powf(1.5) * half;
-            self.inc[i] = p.freq_hz.max(0.0) as f64 * 2f64.powf(cents as f64 / 1200.0) / rate;
+            self.oct[i] = cents as f64 / 1200.0;
+            self.inc[i] = p.freq_hz.max(0.0) as f64 * 2f64.powf(self.oct[i]) / rate;
             let is_centre = if n % 2 == 1 { i == n / 2 } else { i == n / 2 || i + 1 == n / 2 };
             let g = if is_centre { centre_g } else { side_g };
             // Alternately left and right, further out the further the copy is from the middle.
@@ -183,6 +167,14 @@ impl UnisonOsc {
         }
     }
 
+    /// Moves every copy back `samples` samples (a note starting part way into a block reads
+    /// its start phase on its first sample).
+    pub fn rewind(&mut self, samples: u32) {
+        for v in 0..MAX_UNISON {
+            self.phase[v] = (self.phase[v] - samples as f64 * self.inc[v]).rem_euclid(1.0);
+        }
+    }
+
     /// Takes over another oscillator's phases (a patch swap keeps ringing notes in step).
     pub fn take_phases(&mut self, other: &UnisonOsc) {
         self.phase = other.phase;
@@ -190,6 +182,10 @@ impl UnisonOsc {
 
     /// Adds one block into `l` and `r`: the table read at each copy's pitch, Warp at
     /// `warp[i]` (0..1) and gain `gain[i]` on each sample.
+    ///
+    /// Each copy runs on its own, eight samples at a time in SIMD lanes, its phase a 32-bit
+    /// fixed-point count for the block (the tables are powers of two long, so the index is
+    /// the top bits and the fraction the rest); the f64 phase is the one kept between blocks.
     pub fn render(
         &mut self,
         set: &TableSet,
@@ -198,77 +194,172 @@ impl UnisonOsc {
         l: &mut [f32; BLOCK],
         r: &mut [f32; BLOCK],
     ) {
-        let n = self.n;
-        let rate = crate::SAMPLE_RATE;
-        let mut m0 = [0usize; MAX_UNISON];
-        let mut m1 = [0usize; MAX_UNISON];
-        let mut mt = [0.0f32; MAX_UNISON];
-        let mut any_m1 = false;
-        for v in 0..n {
-            let (a, b, t) = set.mips_for(self.inc[v] as f32 * rate);
-            m0[v] = a;
-            m1[v] = b;
-            mt[v] = t;
-            any_m1 |= t > 1e-6;
-        }
-        let groups = n.div_ceil(LANES);
-        let gl: [f32x8; 2] = [f32x8::from(arr8(&self.gl, 0)), f32x8::from(arr8(&self.gl, 1))];
-        let gr: [f32x8; 2] = [f32x8::from(arr8(&self.gr, 0)), f32x8::from(arr8(&self.gr, 1))];
-        let mtv: [f32x8; 2] = [f32x8::from(arr8(&mt, 0)), f32x8::from(arr8(&mt, 1))];
-        for i in 0..BLOCK {
-            let (s0, s1, sf) = Reader::steps(warp[i]);
-            let need_s1 = sf > 1e-6 && s0 != s1;
-            let (mut sl, mut sr) = (f32x8::splat(0.0), f32x8::splat(0.0));
-            for g in 0..groups {
-                let lanes = (n - g * LANES).min(LANES);
-                let mut taps = [Taps::ZERO; 4];
-                for k in 0..lanes {
-                    let v = g * LANES + k;
-                    let ph = self.phase[v];
-                    for (slot, (m, s)) in [(m0[v], s0), (m0[v], s1), (m1[v], s0), (m1[v], s1)].into_iter().enumerate() {
-                        if (slot & 1 == 1 && !need_s1) || (slot >= 2 && !any_m1) {
-                            continue;
-                        }
-                        let len = mip_len(m);
-                        let x = ph * len as f64;
-                        let idx = (x as usize).min(len - 1);
-                        let frame = set.frame(m, s);
-                        let t = &mut taps[slot];
-                        t.f[k] = (x - idx as f64) as f32;
-                        t.y[0][k] = frame[idx];
-                        t.y[1][k] = frame[idx + 1];
-                        t.y[2][k] = frame[idx + 2];
-                        t.y[3][k] = frame[idx + 3];
-                    }
-                    let next = ph + self.inc[v];
-                    self.phase[v] = if next >= 1.0 { next - 1.0 } else { next };
-                }
-                let mut a = taps[0].lagrange();
-                if need_s1 {
-                    a += (taps[1].lagrange() - a) * f32x8::splat(sf);
-                }
-                if any_m1 {
-                    let mut b = taps[2].lagrange();
-                    if need_s1 {
-                        b += (taps[3].lagrange() - b) * f32x8::splat(sf);
-                    }
-                    a += (b - a) * mtv[g];
-                }
-                sl += a * gl[g];
-                sr += a * gr[g];
+        // The Warp steps of each sample, shared by every copy.
+        let mut s0 = [0u32; BLOCK];
+        let mut s1 = [0u32; BLOCK];
+        let mut sf = [0.0f32; BLOCK];
+        let mut cross = [false; BLOCK / 4];
+        let step_of = |w: f32| {
+            let (a, b, f) = Reader::steps(w);
+            (a as u32, b as u32, if a == b { 0.0 } else { f })
+        };
+        if warp.iter().all(|w| *w == warp[0]) {
+            let (a, b, f) = step_of(warp[0]);
+            s0 = [a; BLOCK];
+            s1 = [b; BLOCK];
+            sf = [f; BLOCK];
+            cross = [f > 1e-6; BLOCK / 4];
+        } else {
+            for i in 0..BLOCK {
+                (s0[i], s1[i], sf[i]) = step_of(warp[i]);
+                cross[i / 4] |= sf[i] > 1e-6;
             }
-            l[i] += sl.reduce_add() * gain[i];
-            r[i] += sr.reduce_add() * gain[i];
+        }
+        let even: [bool; BLOCK / 4] = std::array::from_fn(|c| s0[4 * c..4 * c + 4].iter().all(|s| *s == s0[4 * c]));
+        let steps = Steps { s0: &s0, s1: &s1, sf: &sf, even: &even, cross: &cross };
+        let (mut sl, mut sr) = ([0.0f32; BLOCK], [0.0f32; BLOCK]);
+        let mu = octaves(self.params.freq_hz);
+        for v in 0..self.n {
+            let (m0, m1, t) = set.mips_at(mu + self.oct[v]);
+            let phase = (self.phase[v] * TWO_32) as u64 as u32;
+            let inc = (self.inc[v] * TWO_32).round() as u32;
+            let (gl, gr) = (self.gl[v], self.gr[v]);
+            let mut out = Out { l: &mut sl, r: &mut sr };
+            if t > 1e-6 {
+                read_copy(set, m0, phase, inc, &steps, (gl * (1.0 - t), gr * (1.0 - t)), &mut out);
+                read_copy(set, m1, phase, inc, &steps, (gl * t, gr * t), &mut out);
+            } else {
+                read_copy(set, m0, phase, inc, &steps, (gl, gr), &mut out);
+            }
+            self.phase[v] = (self.phase[v] + BLOCK as f64 * self.inc[v]).rem_euclid(1.0);
+        }
+        for c in 0..BLOCK / LANES {
+            let at = c * LANES;
+            let g = f32x8::from(lanes(gain, at));
+            let a = f32x8::from(lanes(l, at)) + f32x8::from(lanes(&sl, at)) * g;
+            let b = f32x8::from(lanes(r, at)) + f32x8::from(lanes(&sr, at)) * g;
+            put(l, at, a);
+            put(r, at, b);
         }
     }
 }
 
-/// Lanes `8 * g .. 8 * g + 8` of `a`.
+/// 2^32: a phase of one whole cycle in fixed point.
+const TWO_32: f64 = 4_294_967_296.0;
+
+/// Where the copies add up, left and right.
+struct Out<'a> {
+    l: &'a mut [f32; BLOCK],
+    r: &'a mut [f32; BLOCK],
+}
+
+/// The Warp steps of a block's samples.
+struct Steps<'a> {
+    s0: &'a [u32; BLOCK],
+    s1: &'a [u32; BLOCK],
+    sf: &'a [f32; BLOCK],
+    /// Whether each four samples share one step.
+    even: &'a [bool; BLOCK / 4],
+    /// Whether any sample of each four crossfades to a second step.
+    cross: &'a [bool; BLOCK / 4],
+}
+
+/// Adds one copy's block, read from copy `m` of the tables, into `out` (times `weight`, left
+/// and right).
 #[inline(always)]
-fn arr8(a: &[f32; MAX_UNISON], g: usize) -> [f32; LANES] {
-    let mut out = [0.0; LANES];
-    out.copy_from_slice(&a[g * LANES..g * LANES + LANES]);
-    out
+fn read_copy(set: &TableSet, m: usize, phase: u32, inc: u32, steps: &Steps, weight: (f32, f32), out: &mut Out) {
+    let data = set.mip_data(m);
+    // The length as a constant lets the compiler see every tap is inside its frame.
+    match mip_len(m) {
+        16384 => read_len::<18>(data, phase, inc, steps, weight, out),
+        8192 => read_len::<19>(data, phase, inc, steps, weight, out),
+        4096 => read_len::<20>(data, phase, inc, steps, weight, out),
+        2048 => read_len::<21>(data, phase, inc, steps, weight, out),
+        1024 => read_len::<22>(data, phase, inc, steps, weight, out),
+        other => unreachable!("no copy is {other} long"),
+    }
+}
+
+/// [`read_copy`] for a copy `1 << (32 - SHIFT)` samples long, four samples at a time: each
+/// sample's four taps are one load, turned into a tap per lane with a 4x4 transpose.
+#[inline(always)]
+fn read_len<const SHIFT: u32>(data: &[f32], phase: u32, inc: u32, steps: &Steps, weight: (f32, f32), out: &mut Out) {
+    let len = 1usize << (32 - SHIFT);
+    let stride = len + 3;
+    let low = i32x4::splat(((1u32 << (32 - SHIFT)) - 1) as i32);
+    let mask = i32x4::splat(((1u32 << SHIFT) - 1) as i32);
+    let scale = f32x4::splat(1.0 / (1u64 << SHIFT) as f32);
+    let (wl, wr) = (f32x4::splat(weight.0), f32x4::splat(weight.1));
+    let ramp: [i32; 4] = std::array::from_fn(|k| phase.wrapping_add(inc.wrapping_mul(k as u32)) as i32);
+    let mut p = i32x4::from(ramp);
+    let jump = i32x4::splat(inc.wrapping_mul(4) as i32);
+    for c in 0..BLOCK / 4 {
+        let at = c * 4;
+        // Logical shift: the arithmetic one, with the sign bits masked off.
+        let idx = ((p >> SHIFT) & low).to_array();
+        let f = (p & mask).round_float() * scale;
+        p += jump;
+        let mut a = if steps.even[c] {
+            let start = steps.s0[at] as usize * stride;
+            lagrange4::<SHIFT>(&data[start..start + stride], [0; 4], &idx, f)
+        } else {
+            lagrange_steps::<SHIFT>(data, &steps.s0[at..at + 4], &idx, f)
+        };
+        if steps.cross[c] {
+            let b = lagrange_steps::<SHIFT>(data, &steps.s1[at..at + 4], &idx, f);
+            a += (b - a) * f32x4::from(quad(steps.sf, at));
+        }
+        let l = f32x4::from(quad(out.l, at)) + a * wl;
+        let r = f32x4::from(quad(out.r, at)) + a * wr;
+        out.l[at..at + 4].copy_from_slice(&l.to_array());
+        out.r[at..at + 4].copy_from_slice(&r.to_array());
+    }
+}
+
+/// 4-point Lagrange in each lane `k` between samples `idx[k] + 1` and `idx[k] + 2` of the frame
+/// at `frames[k]` in `data`.
+#[inline(always)]
+fn lagrange4<const SHIFT: u32>(data: &[f32], frames: [usize; 4], idx: &[i32; 4], f: f32x4) -> f32x4 {
+    let len = 1usize << (32 - SHIFT);
+    let rows: [f32x4; 4] = std::array::from_fn(|k| {
+        let frame = &data[frames[k]..frames[k] + len + 3];
+        let i = idx[k] as usize & (len - 1);
+        let t: [f32; 4] = frame[i..i + 4].try_into().expect("four taps");
+        f32x4::from(t)
+    });
+    let [y0, y1, y2, y3] = f32x4::transpose(rows);
+    let one = f32x4::splat(1.0);
+    let two = f32x4::splat(2.0);
+    let (fm1, fm2, fp1) = (f - one, f - two, f + one);
+    let c0 = -f * fm1 * fm2 * f32x4::splat(1.0 / 6.0);
+    let c1 = fp1 * fm1 * fm2 * f32x4::splat(0.5);
+    let c2 = -fp1 * f * fm2 * f32x4::splat(0.5);
+    let c3 = fp1 * f * fm1 * f32x4::splat(1.0 / 6.0);
+    c0 * y0 + c1 * y1 + c2 * y2 + c3 * y3
+}
+
+/// [`lagrange4`] with each lane on its own Warp step.
+#[inline(always)]
+fn lagrange_steps<const SHIFT: u32>(data: &[f32], steps: &[u32], idx: &[i32; 4], f: f32x4) -> f32x4 {
+    let stride = (1usize << (32 - SHIFT)) + 3;
+    lagrange4::<SHIFT>(data, std::array::from_fn(|k| steps[k] as usize * stride), idx, f)
+}
+
+/// Samples `at .. at + 4` of a block.
+#[inline(always)]
+fn quad(a: &[f32; BLOCK], at: usize) -> [f32; 4] {
+    a[at..at + 4].try_into().expect("four lanes")
+}
+
+/// Samples `at .. at + 8` of a block.
+#[inline(always)]
+fn lanes(a: &[f32; BLOCK], at: usize) -> [f32; LANES] {
+    a[at..at + LANES].try_into().expect("eight lanes")
+}
+
+#[inline(always)]
+fn put(a: &mut [f32; BLOCK], at: usize, v: f32x8) {
+    a[at..at + LANES].copy_from_slice(&v.to_array());
 }
 
 /// The sub oscillator's wave.
@@ -301,6 +392,11 @@ impl SubOsc {
     /// A note starts the sub at the start of its wave.
     pub fn note_on(&mut self) {
         self.phase = 0.0;
+    }
+
+    /// Moves back `samples` samples (see [`UnisonOsc::rewind`]).
+    pub fn rewind(&mut self, samples: u32) {
+        self.phase = (self.phase - samples as f64 * self.inc).rem_euclid(1.0);
     }
 
     pub fn is_off(&self) -> bool {
@@ -510,3 +606,4 @@ mod tests {
         assert!(off.is_off());
     }
 }
+

@@ -4,6 +4,7 @@
 //! call the same [`Engine::render`]; nothing else makes sound.
 
 pub mod engine;
+pub mod chain;
 pub mod hits;
 pub mod master;
 pub mod meters;
@@ -12,6 +13,7 @@ pub mod offline;
 pub mod patch;
 pub mod tempo;
 pub mod voice;
+pub mod voices;
 mod wav;
 
 pub use bpe_dsp::{BLOCK, SAMPLE_RATE};
@@ -23,3 +25,4 @@ pub use offline::{has_sound, render_samples, render_to_wav};
 pub use patch::SoundPatch;
 pub use tempo::TempoMap;
 pub use voice::{BlockCx, VoiceSource};
+pub use voices::{ShapeVoice, note_hz};

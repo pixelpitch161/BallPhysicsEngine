@@ -111,6 +111,11 @@ impl ModMatrix {
         self.routes.is_empty()
     }
 
+    /// Whether source `source` moves the knob at `target` in the `combine` way.
+    pub fn route_from(&self, source: u16, target: u16, combine: Combine) -> bool {
+        self.routes.iter().any(|r| r.source == source && r.target == target && r.combine == combine)
+    }
+
     /// Whether any route reaches the knob at `target`.
     pub fn reaches(&self, target: u16) -> bool {
         self.routes.iter().any(|r| r.target == target)
@@ -160,6 +165,15 @@ impl ModMatrix {
             }
         }
         f
+    }
+
+    /// The scaling routes on `target`: each one's source, amount and whether it is inverted
+    /// (for working a block at a time; [`ModMatrix::factor`] is the same, sample by sample).
+    pub fn scaling(&self, target: u16) -> impl Iterator<Item = (u16, f32, bool)> + '_ {
+        self.routes
+            .iter()
+            .filter(move |r| r.target == target && r.combine == Combine::Scale)
+            .map(|r| (r.source, r.amount, r.invert))
     }
 
     /// How many knob values `apply` reads and writes.
