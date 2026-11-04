@@ -13,8 +13,9 @@ use crate::{ShapeVoice, TempoMap, VoiceSource};
 use bpe_core::{Address, LayerId, Resolved, ResolvedSlot, Scene, Settings, SlotId, ThingId};
 use bpe_dsp::{TableSet, WarpModeId, WaveBank, WaveShape};
 use bpe_kit::sound::{
-    ADSR, AdsrSettings, DISTANCE, DistanceSettings, DistortionSettings, FILTER, FilterSettings, HIT, HitSettings, LFO,
-    LfoSettings, MODULATION, MixerSettings, ModulationSettings, OscSettings, Slope, VOICE, VoiceSettings, Wave,
+    ADSR, AdsrSettings, DISTANCE, DISTORTION, DistanceSettings, DistortionSettings, FILTER, FilterSettings, HIT,
+    HitSettings, LFO, LfoSettings, MODULATION, MixerSettings, ModulationSettings, OscSettings, Slope, VOICE,
+    VoiceSettings, Wave,
 };
 use bpe_kit::things::shape::ShapeSettings;
 use bpe_kit::{Kit, SceneSettings};
@@ -194,6 +195,28 @@ fn voice_with(
         chain: Arc::new(chain),
         mods,
     }))
+}
+
+/// Whether a modulator can reach the sound card's knob `key` (switched-off layers' knobs too):
+/// the oscillators', the envelopes', the chain layers', the other modulators' and Output's
+/// number knobs.
+pub fn routable(card: &bpe_core::Slot, key: &str) -> bool {
+    let ids = |kind: &str, most: usize| -> Vec<LayerId> {
+        card.layers.iter().filter(|l| l.kind == kind).take(most).map(|l| l.id).collect()
+    };
+    let envs = ids(ADSR, knobs::MAX_ENVS);
+    let chain: Vec<(LayerId, &str)> = card
+        .layers
+        .iter()
+        .filter(|l| [MODULATION, FILTER, DISTORTION].contains(&l.kind.as_str()))
+        .map(|l| (l.id, l.kind.as_str()))
+        .collect();
+    let mods = knobs::ModIds {
+        lfos: ids(LFO, knobs::MAX_EACH),
+        dists: ids(DISTANCE, knobs::MAX_EACH),
+        hits: ids(HIT, knobs::MAX_EACH),
+    };
+    knobs::layout_all(&envs, &chain, &mods).iter().any(|(k, _, _)| k == key)
 }
 
 /// The card's LFO, Distance and Hit layers that are on (up to eight of each, in card order),

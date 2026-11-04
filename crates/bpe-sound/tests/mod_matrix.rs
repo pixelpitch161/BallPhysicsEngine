@@ -300,3 +300,18 @@ fn modulators_patch_golden() {
     let expected = std::fs::read_to_string(&path).expect("the golden file is missing; run with BLESS_GOLDEN=1");
     assert_eq!(line, expected, "the modulators patch sounds different");
 }
+
+#[test]
+fn routable_knobs_are_the_number_knobs_a_voice_reads() {
+    let kit = kit();
+    let mut scene = voiced(&kit);
+    let filter = add_layer(&kit, &mut scene, FILTER, &[]);
+    let card = scene.card(shape_of(&scene), SlotId::Sound).unwrap().clone();
+    let lfo = card.layers.iter().find(|l| l.kind == LFO).unwrap().id;
+    for key in ["a_gain", "b_cents", "out_volume", &layered_key(filter, "cutoff"), &layered_key(lfo, "rate_hz")] {
+        assert!(bpe_sound::patch::routable(&card, key), "{key}");
+    }
+    for key in ["enabled", "a_wave", &layered_key(lfo, "shape"), &layered_key(LayerId(999), "rate_hz")] {
+        assert!(!bpe_sound::patch::routable(&card, key), "{key}");
+    }
+}

@@ -513,6 +513,9 @@ impl Engine {
         for (i, v) in self.voices.iter().enumerate() {
             self.meters.write_shape(i, v.thing().0, gain_to_db(v.level()));
             self.meters.write_slot(i, v.playing_slot());
+            self.meters.write_mods(i, &mut |f| v.each_mod(f));
+            let (recent, heard) = v.recent_hits();
+            self.meters.write_hits(i, recent, heard);
         }
         self.meters.clear_shapes_from(self.voices.len());
     }

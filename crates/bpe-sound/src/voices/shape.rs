@@ -377,6 +377,9 @@ pub struct ShapeVoice {
     slot_turn: u64,
     strums: [Strum; MAX_STRUMS],
     n_strums: usize,
+    /// The last accepted hits' numbers, a ring written at `heard % RECENT_HITS`.
+    recent: [HitValues; crate::meters::RECENT_HITS],
+    heard: u32,
     notes: Voices<Note>,
     /// The knobs this block (keys read).
     now: Values,
@@ -525,6 +528,8 @@ impl ShapeVoice {
             auditions: [0; MAX_AUDITIONS],
             n_auditions: 0,
             audition_count: 0,
+            recent: [HitValues::default(); crate::meters::RECENT_HITS],
+            heard: 0,
             peak: 0.0,
             noted: None,
             src,
@@ -975,6 +980,8 @@ impl ShapeVoice {
                 ^ ((self.spec.thing.0 as u64) << 48));
             self.hit_arrives(at, sample);
             let hv = self.hit_values_of(cx, hit, seed, strength);
+            self.recent[self.heard as usize % crate::meters::RECENT_HITS] = hv;
+            self.heard = self.heard.wrapping_add(1);
             self.restart_shared(&NoteCx { sample, hit: &hv, ball: Some(ball) });
             let pick = self.pick_for(cx, hit, cx.time);
             self.clock.hit(&self.spec.notes);
@@ -1503,6 +1510,8 @@ impl VoiceSource for ShapeVoice {
         }
         self.strums = old.strums;
         self.n_strums = old.n_strums;
+        self.recent = old.recent;
+        self.heard = old.heard;
         // The smoothers glide on from where the old ones were.
         for (new, prev) in self.smooth.iter_mut().zip(&old.smooth) {
             let target = new.target();
@@ -1639,6 +1648,21 @@ impl VoiceSource for ShapeVoice {
         if let Some(noted) = self.noted.as_mut() {
             out.append(noted);
         }
+    }
+
+    fn each_mod(&self, f: &mut dyn FnMut(LayerId, f32)) {
+        let m = &self.spec.mods;
+        let envs = self.spec.envs.iter().take(MAX_ENVS).map(|e| e.id);
+        let others = m.lfos.iter().map(|x| x.id).chain(m.dists.iter().map(|x| x.id)).chain(m.hits.iter().map(|x| x.id));
+        for layer in envs.chain(others) {
+            if let Some(v) = self.mod_value(layer) {
+                f(layer, v);
+            }
+        }
+    }
+
+    fn recent_hits(&self) -> (&[HitValues], u32) {
+        (&self.recent, self.heard)
     }
 
     fn playing_slot(&self) -> Option<usize> {

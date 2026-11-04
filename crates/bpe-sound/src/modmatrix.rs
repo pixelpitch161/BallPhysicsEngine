@@ -218,6 +218,22 @@ impl ModMatrix {
     }
 }
 
+/// Where route `r` takes its knob (set at `base`, over `range`) with its modulator at 0 and at
+/// 1: the ends of its ring. A scaling route's silent end reads as the bottom of the range.
+pub fn route_ends(r: &ModRoute, base: f64, range: (f64, f64)) -> (f64, f64) {
+    let mut table = TargetTable::default();
+    table.insert(r.target.clone(), TargetInfo { index: 0, range, log: false });
+    let one = ModRoute { source: LayerId(0), ..r.clone() };
+    let m = ModMatrix::build(std::slice::from_ref(&one), &table);
+    let at = |s: f32| {
+        let mut out = [0.0f32];
+        m.apply(&[s], &[base as f32], &mut out);
+        let v = out[0] as f64;
+        if v.is_finite() { v.clamp(range.0, range.1) } else { range.0 }
+    };
+    (at(0.0), at(1.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,6 +268,20 @@ mod tests {
         // Half the amount never goes silent.
         let half = ModMatrix::build(&[route(4, "a_gain", 0.5)], &table());
         assert!((half.factor(0, &[0.0]) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_route_s_ends_are_the_knob_at_0_and_1() {
+        let r = route(4, "a_cents", 0.5);
+        assert_eq!(route_ends(&r, 0.0, (-100.0, 100.0)), (0.0, 100.0));
+        let r = ModRoute { bipolar: true, ..route(4, "a_cents", 0.25) };
+        assert_eq!(route_ends(&r, 10.0, (-100.0, 100.0)), (-40.0, 60.0));
+        let r = ModRoute { invert: true, ..route(4, "a_cents", 1.0) };
+        assert_eq!(route_ends(&r, 0.0, (-100.0, 100.0)), (100.0, 0.0), "inverted runs the other way");
+        let (silent, full) = route_ends(&route(4, "a_gain", 1.0), -3.0, (-60.0, 12.0));
+        assert_eq!((silent, full), (-60.0, -3.0), "a gain's ring runs from silence up to the knob");
+        let (half, _) = route_ends(&route(4, "a_gain", 0.5), 0.0, (-60.0, 12.0));
+        assert!((half + 6.0206).abs() < 1e-3);
     }
 
     #[test]

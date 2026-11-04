@@ -2,9 +2,9 @@
 //! times and the sustain, a segment dragged up or down to bend its curve, the gate as a dashed
 //! line; its knobs, the Gate chips and the list of knobs it moves.
 
-use super::{TabCx, db, number};
+use super::TabCx;
 use crate::style;
-use bpe_core::{LayerId, ROUTES_KEY, Value, layered_key};
+use bpe_core::{LayerId, Value, layered_key};
 use bpe_dsp::envelope::bend;
 use bpe_kit::sound::{GateMode, GateUnit};
 use eframe::egui::{self, Pos2, Rect, RichText, Sense, Shape, Stroke, Ui, Vec2};
@@ -208,7 +208,6 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx, layer: LayerId, name: &str) {
             }
         });
     });
-    modulates(ui, cx, layer, name);
 }
 
 fn ms(v: f64) -> String {
@@ -294,58 +293,12 @@ fn view(ui: &mut Ui, cx: &mut TabCx, layer: LayerId, name: &str) {
     response.on_hover_text("Drag a corner to set its time (and the sustain), or a segment up or down to bend it");
 }
 
-/// The knobs the envelope moves, read only: "Osc A · Gain  -inf dB → 0.0 dB  100 %".
-fn modulates(ui: &mut Ui, cx: &mut TabCx, layer: LayerId, name: &str) {
-    let Value::Routes(routes) = cx.get(ROUTES_KEY) else { return };
-    let mine: Vec<_> = routes.iter().filter(|r| r.source == layer).collect();
-    ui.add_space(4.0);
-    ui.label(RichText::new(format!("{name} modulates")).small().color(style::MUTED));
-    if mine.is_empty() {
-        ui.label(RichText::new("Nothing yet").small().color(style::FAINT));
-    }
-    for r in mine {
-        let target = target_words(cx, &r.target);
-        let base = number(&cx.get(&r.target)).unwrap_or(0.0);
-        let range = match bpe_sound::modmatrix::combine_of(&r.target) {
-            bpe_sound::modmatrix::Combine::Scale => {
-                let low = 1.0 - r.amount.abs() as f64;
-                let low = if low <= 0.0 { f64::NEG_INFINITY } else { base + 20.0 * low.log10() };
-                format!("{} → {}", db(low.max(-1e9)), db(base))
-            }
-            bpe_sound::modmatrix::Combine::Add => format!("{base:.1} ± {:.0} %", r.amount * 100.0),
-        };
-        ui.horizontal(|ui| {
-            let (dot, _) = ui.allocate_exact_size(Vec2::splat(6.0), Sense::hover());
-            ui.painter().rect_filled(dot, 0.0, cx.colour);
-            ui.label(RichText::new(&target).color(style::TEXT));
-            ui.label(RichText::new(range).font(style::mono(11.0)).color(style::MUTED));
-            ui.label(RichText::new(format!("{:.0} %", r.amount * 100.0)).font(style::mono(11.0)).color(style::TEXT));
-        });
-    }
-}
-
-/// "Osc A · Gain" for `a_gain`, "Output · Volume" for `out_volume`.
-fn target_words(cx: &TabCx, key: &str) -> String {
-    let label = cx.def(key).map_or(key, |d| d.label);
-    let owner = if key.starts_with("a_") {
-        "Osc A"
-    } else if key.starts_with("b_") {
-        "Osc B"
-    } else if key.starts_with("out_") {
-        "Output"
-    } else if key.starts_with("play_") {
-        "Playing"
-    } else {
-        "Sound"
-    };
-    format!("{owner} · {label}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::tests::{SHAPE, sounding};
     use super::*;
     use crate::app::Studio;
+    use crate::sound_tab::number;
     use bpe_core::{Address, SlotId};
     use eframe::egui::{Modifiers, PointerButton, accesskit::Role};
     use egui_kittest::{Harness, kittest::Queryable};
@@ -391,6 +344,7 @@ mod tests {
             time: 0.0,
             colour: style::TEXT,
             notes_clip: None,
+            hot: None,
             edits: Vec::new(),
         };
         layout(&Env::read(&cx, LayerId(0)), rect)

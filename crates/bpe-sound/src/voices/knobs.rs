@@ -228,7 +228,8 @@ pub fn layout_all(
     mods: &ModIds,
 ) -> Vec<(String, &'static SettingDef, usize)> {
     let mut out = chain_layout(envs, chain_layers);
-    let kinds: [(&[LayerId], &[&str], &'static [SettingDef], fn(usize, usize) -> usize); 3] = [
+    type Kind<'a> = (&'a [LayerId], &'a [&'a str], &'static [SettingDef], fn(usize, usize) -> usize);
+    let kinds: [Kind; 3] = [
         (&mods.lfos, &LFO_KEYS, LfoSettings::defs(), lfo),
         (&mods.dists, &DIST_KEYS, DistanceSettings::defs(), dist),
         (&mods.hits, &HIT_KEYS, HitSettings::defs(), hit),

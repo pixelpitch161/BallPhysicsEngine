@@ -377,7 +377,7 @@ pub fn count_of(card: &Slot, kind: &str) -> usize {
 }
 
 /// The first free "<Kind> <n>" name in the card.
-fn numbered_name(card: &Slot, kind: &str) -> String {
+pub fn numbered_name(card: &Slot, kind: &str) -> String {
     let base = kind_name(kind);
     (1u32..).map(|n| format!("{base} {n}")).find(|n| !card.layers.iter().any(|l| &l.name == n)).expect("a free number")
 }

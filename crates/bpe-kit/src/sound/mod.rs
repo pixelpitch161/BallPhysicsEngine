@@ -19,7 +19,7 @@ pub use notes::{BeatsOrBars, Change, MAX_SLOTS, NOTE_NAMES, Plays, Root, Scale, 
 pub use mixer::{MixerKind, MixerSettings};
 pub use mods::{
     DISTANCE, DistanceSettings, Follows, HIT, HitPick, HitSettings, LFO, LfoSettings, LfoShape, LfoStart, MAX_OF_EACH,
-    MOD_KINDS, Measure, NoteFeel, NoteLength, add_modulator, turn_on_distance,
+    MOD_KINDS, Measure, NoteFeel, NoteLength, add_modulator, count_of, kind_name, numbered_name, turn_on_distance,
 };
 pub use notes::{BeatsOrBars, Change, MAX_SLOTS, NOTE_NAMES, Plays, Root, Scale, SlotOrder, StrumDir};
 pub use voice::{

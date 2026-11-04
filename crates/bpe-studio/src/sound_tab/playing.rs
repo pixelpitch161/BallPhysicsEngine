@@ -64,6 +64,8 @@ mod tests {
         let mut h = sounding();
         assert!(h.query_by_role_and_label(Role::Slider, "Glide").is_none());
         assert!(h.query_by_role_and_label(Role::Slider, "Voices").is_some());
+        h.get_by_label("Mono").scroll_to_me();
+        h.run();
         h.get_by_label("Mono").click();
         h.run();
         assert!(h.query_by_role_and_label(Role::Slider, "Glide").is_some());

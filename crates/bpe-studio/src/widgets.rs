@@ -396,9 +396,9 @@ pub fn setting(
     if resettable(&name, value, &fallback) || (!gradient && resettable(&response, value, &fallback)) {
         changed = true;
     }
-    let mut picks = vec![row_menu(&name, def, unit, &before, mark, cx.choices)];
+    let mut picks = vec![row_menu(&name, def, unit, &before, mark, cx.choices, None)];
     if !own_clicks {
-        picks.push(row_menu(&response, def, unit, &before, mark, cx.choices));
+        picks.push(row_menu(&response, def, unit, &before, mark, cx.choices, None));
     }
     ui.end_row();
     let mut action = if changed { RowAction::Changed } else { RowAction::Nothing };
@@ -466,6 +466,7 @@ fn row_menu(
     value: &Value,
     mark: Option<KeyMark>,
     choices: &TargetChoices,
+    mut extra: Option<&mut dyn FnMut(&mut Ui)>,
 ) -> MenuPick {
     let mut pick = MenuPick::Nothing;
     let open = if response.container_secondary_clicked() {
@@ -507,6 +508,9 @@ fn row_menu(
             pick = MenuPick::CreateKey;
             ui.close();
         }
+        if let Some(extra) = extra.as_mut() {
+            extra(ui);
+        }
     });
     pick
 }
@@ -529,7 +533,20 @@ pub(crate) fn value_menu(
     mark: Option<KeyMark>,
     choices: &TargetChoices,
 ) -> ValueMenu {
-    match row_menu(response, def, unit, value, mark, choices) {
+    value_menu_with(response, def, unit, value, mark, choices, None)
+}
+
+/// [`value_menu`] with more items under Create Keyframe, drawn by `extra` (Modulate by).
+pub(crate) fn value_menu_with(
+    response: &Response,
+    def: &SettingDef,
+    unit: &str,
+    value: &Value,
+    mark: Option<KeyMark>,
+    choices: &TargetChoices,
+    extra: Option<&mut dyn FnMut(&mut Ui)>,
+) -> ValueMenu {
+    match row_menu(response, def, unit, value, mark, choices, extra) {
         MenuPick::Nothing => ValueMenu::Nothing,
         MenuPick::Paste(v) => ValueMenu::Paste(v),
         MenuPick::CreateKey => ValueMenu::CreateKey,
