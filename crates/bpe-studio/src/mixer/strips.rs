@@ -449,7 +449,7 @@ pub(crate) mod tests {
         s.scene.card(ThingId::ROOT, SlotId::Mixer).unwrap().layers.iter().map(|l| (l.kind.clone(), l.lane)).collect()
     }
 
-    fn press(h: &mut Harness<'_, Studio>, pos: egui::Pos2, pressed: bool) {
+    fn press<S>(h: &mut Harness<'_, S>, pos: egui::Pos2, pressed: bool) {
         h.event(egui::Event::PointerButton {
             pos,
             button: egui::PointerButton::Primary,
@@ -459,7 +459,7 @@ pub(crate) mod tests {
     }
 
     /// Drags from `from` to `to` in a few steps.
-    pub fn drag(h: &mut Harness<'_, Studio>, from: egui::Pos2, to: egui::Pos2) {
+    pub fn drag<S>(h: &mut Harness<'_, S>, from: egui::Pos2, to: egui::Pos2) {
         h.hover_at(from);
         h.run();
         press(h, from, true);

@@ -133,6 +133,8 @@ pub struct Studio {
     inspector_resizing: bool,
     /// The inspector showed a Sound tab last frame.
     inspector_sound: bool,
+    /// The selection when the Mixer's editor was last drawn: a new one closes it.
+    mixer_selection: Option<ThingId>,
     /// Scrubbing paused the playback; it starts again when the scrub ends.
     pub resume_after_scrub: bool,
     /// This frame's change to the scene is already in the history (undo, open, delete…).
@@ -225,6 +227,7 @@ impl Studio {
             inspector_seen: settings::INSPECTOR_DEFAULT,
             inspector_resizing: false,
             inspector_sound: false,
+            mixer_selection: None,
             resume_after_scrub: false,
             recorded: false,
             closing: false,
@@ -753,7 +756,14 @@ impl Studio {
     pub(crate) fn inspector_panel(&mut self, ui: &mut egui::Ui) -> f32 {
         // A shape's Sound tab is wide (Osc A and Osc B side by side), with a width of its own:
         // a panel of its own id keeps each width as it was left.
-        let sound = self.panels.inspector.sound_open(&self.scene, self.selection.primary);
+        // Selecting a thing closes the Mixer's editor.
+        if self.selection.primary != self.mixer_selection {
+            self.mixer_selection = self.selection.primary;
+            self.panels.mixer.pick = None;
+        }
+        // While the Mixer is open, a bus effect or the Master picked in it shows here, wide.
+        let mixing = self.left == LeftPanel::Mixer && self.panels.mixer.pick.is_some();
+        let sound = mixing || self.panels.inspector.sound_open(&self.scene, self.selection.primary);
         let (id, width, range) = if sound {
             ("inspector sound", self.sound_width, settings::SOUND_WIDTH_RANGE)
         } else {
@@ -782,15 +792,26 @@ impl Studio {
                 contents.shrink_clip_rect(rect);
                 let time = self.sim_time();
                 self.panels.inspector.meters = self.sound.as_ref().map(SoundJob::meters);
-                inspector::show(
-                    &mut contents,
-                    &mut self.panels.inspector,
-                    &mut self.scene,
-                    &self.kit,
-                    &self.resolved,
-                    &self.selection,
-                    time,
-                );
+                if mixing {
+                    let meters = self.panels.inspector.meters.clone();
+                    let readings = mixer::editors::Readings {
+                        meters: meters.as_deref(),
+                        master: self.panels.mixer.reading.unwrap_or(bpe_sound::MeterReading::SILENT),
+                    };
+                    egui::Frame::new().inner_margin(egui::Margin::same(12)).show(&mut contents, |ui| {
+                        mixer::editors::show(ui, &mut self.panels.mixer, &mut self.scene, &self.kit, &readings, time);
+                    });
+                } else {
+                    inspector::show(
+                        &mut contents,
+                        &mut self.panels.inspector,
+                        &mut self.scene,
+                        &self.kit,
+                        &self.resolved,
+                        &self.selection,
+                        time,
+                    );
+                }
                 ui.advance_cursor_after_rect(rect);
             });
         let shown = panel.response.rect.width();

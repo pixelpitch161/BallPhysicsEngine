@@ -3,6 +3,7 @@
 //! its editor in the wide inspector.
 
 pub mod cx;
+pub mod editors;
 pub mod master;
 pub mod slot_menu;
 pub mod strips;
@@ -35,6 +36,13 @@ pub struct Mixer {
     pub renaming: Option<(Renaming, String)>,
     /// The bus strip under the pointer (1..=3): the preview rings the shapes playing into it.
     pub hover_bus: Option<u8>,
+    /// The EQ band picked in the EQ editor (0..7), the one being dragged, and the one whose
+    /// menu is open.
+    pub eq_band: usize,
+    pub eq_drag: Option<usize>,
+    pub eq_menu: Option<usize>,
+    /// The Master's last reading, for its editor.
+    pub reading: Option<MeterReading>,
 }
 
 /// What is being renamed in the Mixer.
@@ -80,6 +88,7 @@ pub fn show(
     let _ = resolved;
     mixer.record(meters, time);
     let reading = meters.copied().unwrap_or(MeterReading::SILENT);
+    mixer.reading = meters.copied();
     // A picked effect that is gone (deleted, or undone) closes.
     if let Some(MixerPick::Layer(id)) = mixer.pick
         && scene.card(ThingId::ROOT, bpe_core::SlotId::Mixer).is_none_or(|c| c.layer(id).is_none())

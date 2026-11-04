@@ -1,4 +1,4 @@
-//! The Master strip: the last stop before the speakers and the export. Input and Output gain,
+//! The Master: the last stop before the speakers and the export. Input and Output gain,
 //! the true-peak Ceiling and its Release, the level meter, the loudness readouts and the
 //! loudness graph with the -14 LUFS mark the apps aim for.
 
@@ -93,27 +93,4 @@ pub fn loudness(ui: &mut Ui, reading: &MeterReading, history: &[f32]) {
     ui.add_space(4.0);
     ui.label(RichText::new("Loudness (short-term), -14 LUFS is where the apps play it").small().color(style::MUTED));
     style::loudness_graph(ui, history, TARGET_LUFS);
-}
-
-/// The Master strip.
-pub fn strip(ui: &mut Ui, scene: &mut Scene, kit: &Kit, meters: Option<&MeterReading>, loudness: &[f32], time: f64) {
-    let reading = meters.copied().unwrap_or(MeterReading::SILENT);
-    ui.vertical(|ui| {
-        ui.label(RichText::new("Master").font(style::semibold(14.0)).color(style::TEXT));
-        ui.add_space(4.0);
-        ui.horizontal_top(|ui| {
-            for key in KNOBS {
-                knob(ui, scene, kit, key, time, 64.0);
-            }
-            ui.add_space(6.0);
-            style::level_meter(ui, reading.peak_l, reading.peak_r, 72.0).on_hover_text("Peak level, left and right");
-        });
-        ui.add_space(6.0);
-        style::loudness_row(ui, &reading);
-        ui.add_space(4.0);
-        ui.label(
-            RichText::new("Loudness (short-term), -14 LUFS is where the apps play it").small().color(style::MUTED),
-        );
-        style::loudness_graph(ui, loudness, TARGET_LUFS);
-    });
 }
