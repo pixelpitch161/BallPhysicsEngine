@@ -4,8 +4,8 @@
 
 use bpe_core::{Params, Settings, Value, layered_key};
 use bpe_kit::modules::look::layers::{
-    self as kinds, GlowLayer, MaskFrom, MaskLayer, MaskShape, OutlineLayer, OutlineSits, PatternLayer, ShadingKind,
-    ShadingLayer, ShineLayer, Turning,
+    self as kinds, CutFrom, CutLayer, CutShape, GlowLayer, OutlineLayer, OutlineSits, PatternLayer, ShadingKind,
+    ShadingLayer, ShineLayer, SubShadow, Turning,
 };
 use eframe::egui::{self, Pos2, Rect, Sense, Stroke, Ui, Vec2 as EVec2};
 use glam::Vec2;
@@ -35,7 +35,7 @@ impl Handle {
     }
 }
 
-/// A point at `angle` degrees from straight up, clockwise (as the mask shapes turn), `r` out.
+/// A point at `angle` degrees from straight up, clockwise (as the cut shapes turn), `r` out.
 fn from_up(angle: f32, r: f32) -> Vec2 {
     let a = angle.to_radians();
     Vec2::new(a.sin(), -a.cos()) * r
@@ -88,7 +88,7 @@ pub fn handles(kind: &str, p: &Params, radius: f32) -> Vec<Handle> {
             let at = Vec2::new(a.cos(), a.sin()) * 0.75;
             vec![Handle { from: Some(Vec2::ZERO), ..Handle::dot("Angle", at, format!("{:.0}°", l.inside.angle)) }]
         }
-        kinds::SHADING => {
+        kinds::SHADING | kinds::SUB_SHADING => {
             let s = ShadingLayer::from_params(p);
             match s.kind {
                 ShadingKind::Linear => {
@@ -111,16 +111,23 @@ pub fn handles(kind: &str, p: &Params, radius: f32) -> Vec<Handle> {
                 ShadingKind::Brush => Vec::new(),
             }
         }
-        kinds::MASK => {
-            let m = MaskLayer::from_params(p);
-            if m.from != MaskFrom::Shape {
+        kinds::SUB_SHADOW => {
+            let s = SubShadow::from_params(p);
+            let a = s.angle.to_radians();
+            let at = Vec2::new(a.cos(), a.sin()) * s.distance;
+            let words = format!("{:.0}° · {:.2}", s.angle, s.distance);
+            vec![Handle { from: Some(Vec2::ZERO), ..Handle::dot("Offset", at, words) }]
+        }
+        kinds::SUB_CUT => {
+            let m = CutLayer::from_params(p);
+            if m.from != CutFrom::Shape {
                 return Vec::new();
             }
             let mut out = vec![Handle {
                 from: Some(Vec2::ZERO),
                 ..Handle::dot("Angle", from_up(m.angle, 0.85), format!("{:.0}°", m.angle))
             }];
-            if matches!(m.shape, MaskShape::Wedge | MaskShape::Ring | MaskShape::Circle | MaskShape::Band) {
+            if matches!(m.shape, CutShape::Wedge | CutShape::Ring | CutShape::Circle | CutShape::Band) {
                 out.push(Handle::dot("Size", from_up(m.angle + 90.0, m.size), format!("size {:.2}", m.size)));
             }
             out
@@ -152,22 +159,35 @@ pub fn dragged(kind: &str, p: &Params, radius: f32, name: &str, q: Vec2) -> Opti
         (kinds::GLOW, "Size") => Some(("size", number(hundredths((q.length() - 1.0).clamp(0.05, 4.0))))),
         (kinds::SHINE, "Spot") => Some(("spot", point(inside(q)))),
         (kinds::PATTERN, "Angle") => Some(("in_angle", number(wrapped(q.y.atan2(q.x).to_degrees())))),
-        (kinds::SHADING, "Dark end") => Some(("from", point(inside(q)))),
-        (kinds::SHADING, "Light end") => Some(("to", point(inside(q)))),
-        (kinds::SHADING, "Centre") => Some(("centre", point(inside(q)))),
-        (kinds::SHADING, "Size") => {
+        (kinds::SHADING | kinds::SUB_SHADING, "Dark end") => Some(("from", point(inside(q)))),
+        (kinds::SHADING | kinds::SUB_SHADING, "Light end") => Some(("to", point(inside(q)))),
+        (kinds::SHADING | kinds::SUB_SHADING, "Centre") => Some(("centre", point(inside(q)))),
+        (kinds::SHADING | kinds::SUB_SHADING, "Size") => {
             let s = ShadingLayer::from_params(p);
             let size = (q - Vec2::new(s.centre.x, s.centre.y)).length();
             Some(("size", number(hundredths(size.clamp(0.1, 2.0)))))
         }
-        (kinds::MASK, "Angle") => Some(("angle", number(wrapped(up_angle(q))))),
-        (kinds::MASK, "Size") => Some(("size", number(hundredths(q.length().clamp(0.0, 1.0))))),
+        (kinds::SUB_CUT, "Angle") => Some(("angle", number(wrapped(up_angle(q))))),
+        (kinds::SUB_CUT, "Size") => Some(("size", number(hundredths(q.length().clamp(0.0, 1.0))))),
         (kinds::TURNING, "Turn") => {
             let t = Turning::from_params(p);
             // `q` is on the ball as it is turned now, so its angle from up is how much further.
             Some(("turn", number(wrapped(t.turn + up_angle(q)))))
         }
         _ => None,
+    }
+}
+
+/// The settings a drag of handle `name` to ball point `q` changes, with their new values: one,
+/// or a Shadow's offset's angle and distance together.
+pub fn drags(kind: &str, p: &Params, radius: f32, name: &str, q: Vec2) -> Vec<(&'static str, Value)> {
+    let number = |x: f32| Value::Number(f64::from(x));
+    match (kind, name) {
+        (kinds::SUB_SHADOW, "Offset") => vec![
+            ("angle", number(wrapped(q.y.atan2(q.x).to_degrees()))),
+            ("distance", number(hundredths(q.length().clamp(0.0, 2.0)))),
+        ],
+        _ => dragged(kind, p, radius, name, q).into_iter().collect(),
     }
 }
 
@@ -218,9 +238,10 @@ pub fn show(
         }
         if response.dragged()
             && let Some(pointer) = response.interact_pointer_pos()
-            && let Some((key, value)) = dragged(&layer.kind, &p, radius, h.name, map.to_ball(pointer))
         {
-            edits.push(Edit::SetSlot(cx.slot, layered_key(layer.id, key), value));
+            for (key, value) in drags(&layer.kind, &p, radius, h.name, map.to_ball(pointer)) {
+                edits.push(Edit::SetSlot(cx.slot, layered_key(layer.id, key), value));
+            }
         }
     }
     busy
@@ -284,8 +305,12 @@ mod tests {
     #[test]
     fn angles_and_points_come_from_where_the_handle_is_dragged() {
         let p = Params::default();
-        let mask = |q| dragged(kinds::MASK, &p, 40.0, "Angle", q);
-        assert_eq!(mask(Vec2::new(1.0, 0.0)), Some(("angle", Value::Number(90.0))), "right of up is 90°");
+        let cut = |q| dragged(kinds::SUB_CUT, &p, 40.0, "Angle", q);
+        assert_eq!(cut(Vec2::new(1.0, 0.0)), Some(("angle", Value::Number(90.0))), "right of up is 90°");
+        let shadow = drags(kinds::SUB_SHADOW, &p, 40.0, "Offset", Vec2::new(0.0, 0.5));
+        assert_eq!(shadow, [("angle", Value::Number(90.0)), ("distance", Value::Number(0.5))], "straight down");
+        let h = handles(kinds::SUB_SHADOW, &Params::default(), 40.0);
+        assert!((h[0].at - Vec2::splat(0.15 * 45f32.to_radians().cos())).length() < 1e-5, "down and right");
         let spot = dragged(kinds::SHINE, &p, 40.0, "Spot", Vec2::new(-2.0, 0.333));
         assert_eq!(spot, Some(("spot", Value::Vec2([-1.0, 0.33]))), "kept on the ball");
         let pattern = dragged(kinds::PATTERN, &p, 40.0, "Angle", Vec2::new(0.0, 1.0));

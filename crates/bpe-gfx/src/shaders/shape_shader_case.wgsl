@@ -1,7 +1,13 @@
-            case 6u: {
-                // An effect, run with the layers under it as its picture.
-                let uv = shape_begin(l, first, k, s, world);
-                let run = run_effect(u32(l.p0.w), uv, l);
-                c = select(clamp(run, vec3<f32>(0.0), vec3<f32>(64.0)), vec3<f32>(0.0), run != run);
-                a_in = opacity;
+            case 6u, 26u: {
+                // An effect, run with the layers under it as its picture, or, as a sub-layer, its
+                // layer's piece so far (the layer and the sub-layers above this one, over black).
+                let uv = shape_begin(r, select(first, first + lk, sub), select(k, k - lk, sub), s, world);
+                let run = run_effect(u32(r.p0.w), uv, r);
+                let e = select(clamp(run, vec3<f32>(0.0), vec3<f32>(64.0)), vec3<f32>(0.0), run != run);
+                if sub {
+                    piece = piece_recoloured(piece, e, e, opacity);
+                } else {
+                    c = e;
+                    a_in = opacity;
+                }
             }

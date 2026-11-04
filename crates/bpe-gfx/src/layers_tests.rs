@@ -24,6 +24,7 @@ fn ball(center: Vec2, radius: f32, body: [f32; 4], first: u32, count: u32, reach
         range: [first, count, 0, 0],
         group: [0.0; 4],
         place: [0.0; 4],
+        hit: crate::NO_HIT,
     }
 }
 
@@ -233,7 +234,7 @@ fn red_pattern(frame: &mut Frame, masks: u32) -> LayerGpu {
 /// angle (radians) and size, moving with the ball.
 fn mask(from: f32, shape: f32, angle: f32, size: f32) -> LayerGpu {
     LayerGpu {
-        head: [LayerGpu::MASK, 0, 0, 0],
+        head: [LayerGpu::SUB_CUT, 0, 0, 0],
         amount: [1.0, -1.0, 0.0, shape],
         p0: [from, 0.0, 0.05, 1.0],
         p1: [angle, size, 0.5, -1.0],
@@ -273,7 +274,8 @@ fn brush_shading_darkens_only_where_the_stroke_went() {
     let mut frame = white(|_| vec![body(), shading(2.0, [0.0, 0.0, 0.0, 0.0])]);
     // A band across the middle third of the tile, top to bottom.
     let n = crate::MASK_TILE;
-    let tile: Vec<u8> = (0..n * n).map(|i| if (n / 3..2 * n / 3).contains(&(i % n)) { 255 } else { 0 }).collect();
+    let tile: Vec<u8> =
+        (0..n * n).flat_map(|i| if (n / 3..2 * n / 3).contains(&(i % n)) { [255, 255] } else { [0, 0] }).collect();
     frame.mask_tiles.push((7, tile.into()));
     let Some(px) = render_sized(&frame, W, H) else { return };
     save("layers-shading-brush", &px, W, H);

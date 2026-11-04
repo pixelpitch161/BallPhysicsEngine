@@ -66,7 +66,7 @@ pub struct BallView {
     pub brush: super::brush::Brush,
     /// The stroke being painted, until the button is let go.
     pub painting: Option<super::brush::Painting>,
-    /// A layer whose masks the view shows alone (white where they let it show, black where they
+    /// A layer whose cuts the view shows alone (white where they let it show, black where they
     /// hide it), until Alt-click again or another thing is picked.
     pub solo: Option<(ThingId, bpe_core::LayerId)>,
 }
@@ -253,7 +253,7 @@ pub fn show(
         let at = time + clock;
         build_view_frame(&mini, &resolved, kit, id, number, radius, view.mode, at, clock, loops, &mut view.frame);
         if let Some(layer) = solo {
-            show_masks_alone(&mut view.frame, &resolved, id, layer);
+            show_cuts_alone(&mut view.frame, &resolved, id, layer);
         }
         view.built = Some(key);
     }
@@ -314,9 +314,9 @@ pub fn show(
     Some(ViewOut { response, map, radius, picked })
 }
 
-/// Makes the frame of [`build_view_frame`] show layer `layer`'s masks alone: white where they let
+/// Makes the frame of [`build_view_frame`] show layer `layer`'s cuts alone: white where they let
 /// it show, black where they hide it. Nothing changes when the layer draws nothing.
-pub fn show_masks_alone(frame: &mut Frame, resolved: &Resolved, id: ThingId, layer: bpe_core::LayerId) {
+pub fn show_cuts_alone(frame: &mut Frame, resolved: &Resolved, id: ThingId, layer: bpe_core::LayerId) {
     let Some(slot) = resolved.things.get(&id).and_then(|t| t.slots.get(&SlotId::Look)) else { return };
     let Some(stack) = bpe_kit::modules::look::layers::gpu::Stack::of(slot) else { return };
     let (Some(at), Some(ball)) = (stack.record_of(layer), frame.layered.first()) else { return };
@@ -407,21 +407,21 @@ mod tests {
     }
 
     #[test]
-    fn masks_alone_mark_their_layer_s_record_only() {
+    fn cuts_alone_mark_their_layer_s_record_only() {
         let kit = bpe_kit::kit();
         let reg = &kit.registry;
         let mut scene = bpe_kit::new_studio_scene(reg);
         let ball = bpe_kit::add_thing(&mut scene, reg, "balls", ThingId::ROOT).unwrap();
         scene.add_layer(reg, ball, SlotId::Look, bpe_kit::modules::look::layers::OUTLINE).unwrap();
         let pattern = scene.add_layer(reg, ball, SlotId::Look, bpe_kit::modules::look::layers::PATTERN).unwrap();
-        scene.add_mask(reg, ball, SlotId::Look, pattern).unwrap();
+        scene.add_sub_layer(reg, ball, SlotId::Look, pattern, bpe_kit::modules::look::layers::SUB_CUT).unwrap();
         let mini = mini_scene(&scene, &kit, ball, Ground::Dark).unwrap();
         let resolved = bpe_core::resolve(&mini, reg);
         let mut frame = Frame::default();
         build_view_frame(&mini, &resolved, &kit, ball, 0, 30.0, ViewMode::Still, 0.0, 0.0, 0, &mut frame);
-        show_masks_alone(&mut frame, &resolved, ball, pattern);
+        show_cuts_alone(&mut frame, &resolved, ball, pattern);
         let solo: Vec<bool> = frame.look_layers.iter().map(|r| r.head[2] & bpe_gfx::LayerGpu::SOLO != 0).collect();
-        assert_eq!(solo, [false, false, true, false], "body, outline, pattern, its mask");
+        assert_eq!(solo, [false, false, true, false], "body, outline, pattern, its cut");
     }
 
     #[test]

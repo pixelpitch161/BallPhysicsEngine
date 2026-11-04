@@ -115,6 +115,8 @@ pub fn registry() -> Registry {
         r.add_module(k);
     }
     sound::register(&mut r);
+    // Format 8 masks open as Cut sub-layers.
+    r.add_upgrade(9, modules::look::layers::masks_to_cuts);
     r
 }
 

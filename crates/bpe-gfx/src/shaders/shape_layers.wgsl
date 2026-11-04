@@ -13,6 +13,8 @@ struct LayeredShape {
     b: vec4<f32>,
     c: vec4<f32>,
     layers: vec4<u32>,
+    // Seconds since a ball last hit it, that hit's strength, how many hits (for sub-layers).
+    hit: vec4<f32>,
 };
 
 var<private> layered_shape: LayeredShape;
@@ -119,6 +121,41 @@ fn shape_run(l: LayerGpu, runs: u32, s: ShapeAt, outward: f32) -> f32 {
     }
 }
 
+// The distance from shape layer record `l`'s own edge at `s`, in world pixels, negative inside:
+// the shape's for layers that fill it, the band of an outline, and for a glow where its light
+// falls to half.
+fn shape_layer_sd(l: LayerGpu, s: ShapeAt) -> f32 {
+    switch l.head.x {
+        case 2u: {
+            let w = max(l.p0.x, 0.0);
+            var lo = -w;
+            var hi = 0.0;
+            if l.p0.y > 1.5 {
+                lo = 0.0;
+                hi = w;
+            } else if l.p0.y > 0.5 {
+                lo = -0.5 * w;
+                hi = 0.5 * w;
+            }
+            return max(lo - s.edge, s.edge - hi);
+        }
+        case 4u: {
+            let size = max(l.p0.x, 1.0);
+            let gd = max(s.edge, 0.0) / size;
+            let a = clamp(max(l.amount.y, 0.0) * exp(-gd * gd), 0.0, 1.0);
+            return (0.5 - a) * size;
+        }
+        default: {
+            return s.edge;
+        }
+    }
+}
+
+// Where `world` is in the shape's units, upright on the screen (its middle at 0, its size 1).
+fn shape_upright(world: vec2<f32>) -> vec2<f32> {
+    return (world - layered_shape.a.xy) / max(layered_shape.a.w, 1e-6);
+}
+
 // Record `l`'s own colour at `s`: its one colour, or its gradient along `runs`.
 fn shape_colour(l: LayerGpu, runs: u32, s: ShapeAt, outward: f32) -> vec3<f32> {
     if l.paint.row < 0.0 {
@@ -128,8 +165,15 @@ fn shape_colour(l: LayerGpu, runs: u32, s: ShapeAt, outward: f32) -> vec3<f32> {
 }
 
 // A shape with layers: premultiplied colour and coverage.
-fn shade_shape_layers(world: vec2<f32>, a: vec4<f32>, b: vec4<f32>, c: vec4<f32>, layers: vec4<u32>) -> vec4<f32> {
-    layered_shape = LayeredShape(a, b, c, layers);
+fn shade_shape_layers(
+    world: vec2<f32>,
+    a: vec4<f32>,
+    b: vec4<f32>,
+    c: vec4<f32>,
+    layers: vec4<u32>,
+    hit: vec4<f32>,
+) -> vec4<f32> {
+    layered_shape = LayeredShape(a, b, c, layers, hit);
     let s = shape_at(world);
     let cover = shape_cover_at(s);
     let w = walk_shape(world, s, layers.x, layers.y, layers.w);

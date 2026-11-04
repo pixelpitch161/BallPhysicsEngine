@@ -25,6 +25,7 @@ fn ball(x: f32, first: u32, count: u32) -> LayeredInstance {
         range: [first, count, 0, 0],
         group: [0.0; 4],
         place: [0.0; 4],
+        hit: crate::NO_HIT,
     }
 }
 
@@ -379,4 +380,26 @@ fn a_shader_layer_inside_a_shape_runs_on_the_layers_under_it() {
     let (_, errors) = draw(&lava).unwrap();
     assert!(errors.is_empty(), "{errors:?}");
     assert_eq!(lava.programs.len(), 1);
+}
+
+#[test]
+fn a_shader_sub_layer_sees_only_its_own_layer() {
+    // A green ball under a red pattern at half opacity, its Shader sub-layer swapping red to blue.
+    let mut frame = frame_with(vec![], &[Cow::Borrowed(SWAP)]);
+    let mut red = pattern(&mut frame, Gradient::solid(Color::rgb(255, 0, 0)), 0.0, 0.0);
+    red.amount[0] = 0.5;
+    red.head[3] = 1;
+    let mut swap = shader("lava", 0, 1.0);
+    swap.head[0] = LayerGpu::SUB_SHADER;
+    swap.extra = [[1.0, 0.0, 0.0, 0.0], [0.0; 4], [0.0; 4], [0.0; 4]];
+    frame.look_layers = vec![body(), red, swap];
+    frame.layered[0].range[1] = 3;
+    frame.layered[0].body = [0.0, 1.0, 0.0, 1.0];
+    let Some((px, errors)) = draw(&frame) else { return };
+    save("program-sub-shader", &px, W, H);
+    assert!(errors.is_empty(), "{errors:?}");
+    // It sees the red layer alone (blue after the swap) and the green body shows through half of
+    // it; had it seen the green under it too, it would keep the green and be greener still.
+    let middle = at(&px, 0.0, 0.0);
+    assert!(middle[0] < 20 && middle[2] > 100 && middle[1] < 205, "{middle:?}");
 }

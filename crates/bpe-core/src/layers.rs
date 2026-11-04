@@ -313,13 +313,7 @@ impl Scene {
 
     /// Moves sub-layer `id` to place `to` among its layer's sub-layers (counting from 0, the first
     /// to work on the layer; past the last is the last). Every other layer keeps its place.
-    pub fn move_sub_layer(
-        &mut self,
-        thing: ThingId,
-        slot: SlotId,
-        id: LayerId,
-        to: usize,
-    ) -> Result<(), EditError> {
+    pub fn move_sub_layer(&mut self, thing: ThingId, slot: SlotId, id: LayerId, to: usize) -> Result<(), EditError> {
         let card = self.layer_card(thing, slot)?;
         let index = card.layer_index(id).ok_or(EditError::NoLayer(id))?;
         let parent = card.layers[index].parent.ok_or(EditError::NotAccepted)?;
@@ -470,6 +464,12 @@ impl Scene {
         }
         if !kind.repeats() {
             return Err(EditError::OnlyOne(kind.name().into()));
+        }
+        // A sub-layer's copy sits beside it, while its layer has room for one more.
+        if let Some(parent) = layer.parent
+            && subs_of(card, parent).len() >= MAX_SUBS
+        {
+            return Err(EditError::NotAccepted);
         }
         // The layer and its sub-layers (a sub-layer on its own copies just itself), each with a new id.
         let end = if layer.parent.is_some() { index + 1 } else { block_end(card, index) };
@@ -1024,6 +1024,8 @@ mod tests {
         // A pasted copy of the full layer brings all twelve.
         let pasted = s.paste_layer(&r, b, LOOK, &copied).unwrap();
         assert_eq!(subs_of(s.card(b, LOOK).unwrap(), pasted).len(), MAX_SUBS);
+        let last = *subs_of(s.card(b, LOOK).unwrap(), pasted).last().unwrap();
+        assert_eq!(s.duplicate_layer(&r, b, LOOK, last), Err(EditError::NotAccepted), "no room for a copy");
     }
 
     #[test]
@@ -1062,7 +1064,14 @@ mod tests {
         let new = s.paste_sub_layer(&r, b, LOOK, other, &copied).unwrap();
         assert_eq!(
             names_and_parents(&s, b),
-            np(&[("Base", None), ("Ring", None), ("Half", Some(1)), ("Ring 2", None), ("Glow", Some(2)), ("Cut", Some(2))])
+            np(&[
+                ("Base", None),
+                ("Ring", None),
+                ("Half", Some(1)),
+                ("Ring 2", None),
+                ("Glow", Some(2)),
+                ("Cut", Some(2))
+            ])
         );
         assert_eq!(s.value_at(&r, &Address::on(b, LOOK, &layered_key(new, "size"))), Some(Value::Number(0.25)));
         let ring_copy = s.copy_layer(b, LOOK, ring).unwrap();

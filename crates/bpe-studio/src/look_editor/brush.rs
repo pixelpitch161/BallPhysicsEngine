@@ -1,4 +1,4 @@
-//! Painting brush strokes on the ball view, for a Brush shading or a Brush mask. The brush's
+//! Painting brush strokes on the ball view, for a Brush shading or a Brush cut. The brush's
 //! settings are the view's, not saved; each stroke keeps the ones it was painted with. A stroke
 //! is one edit when the button is let go; while it is painted the view shows it from the stroke
 //! held here.
@@ -59,7 +59,7 @@ impl Painting {
 }
 
 /// The key of the strokes the picked layer paints into: its Strokes setting, when it shows (a
-/// Brush shading or a Brush mask).
+/// Brush shading or a Brush cut).
 pub fn target(cx: &LookCx, layer: &Layer) -> Option<&'static str> {
     let kind = cx.reg().layer(&layer.kind)?;
     let get = |k: &str| cx.scene.value_at_time(cx.reg(), &cx.at(layer.id, k), cx.time);
@@ -77,7 +77,7 @@ pub fn preview(view: &BallView, thing: ThingId, layer: LayerId) -> Option<(Strin
 pub fn bar(ui: &mut Ui, brush: &mut Brush) {
     ui.horizontal_wrapped(|ui| {
         for (erase, words, help) in
-            [(false, "Paint", "Strokes add to the mask or shading"), (true, "Erase", "Strokes take it away")]
+            [(false, "Paint", "Strokes add to the cut or shading"), (true, "Erase", "Strokes take it away")]
         {
             let button = style::toggle_button(words, brush.erase == erase).frame_when_inactive(true);
             if ui.add(button).on_hover_text(help).clicked() {

@@ -11,12 +11,14 @@ use bpe_gfx::{GradientAtlas, LayerGpu, LayeredInstance, LookProgram};
 use glam::Vec2;
 
 use super::{
-    BLEND, BODY, BlendLayer, BodyLayer, Changes, ColourFrom, ColourOnHit, ColourOverTime, FLASH, FlashOnHit, GLOW,
-    GROUP_GRADIENT, GROUP_SHADER, GlowLayer, GroupGradient, GroupMix, GroupShader, HUE, MASK, MaskLayer, OUTLINE,
-    OutlineLayer, OutlineSits, PATTERN, PatternLayer, RAINBOW, SHADER, SHADING, SHINE, STRETCH, ShaderLayer,
-    ShadingLayer, ShineLayer, ShineLight, StretchWhenFast, TURNING, Turning,
+    BLEND, BODY, BlendLayer, BodyLayer, Changes, ColourFrom, ColourOnHit, ColourOverTime, CutFrom, CutLayer, FLASH,
+    FlashOnHit, GLOW, GROUP_GRADIENT, GROUP_SHADER, GlowLayer, GlowWhere, GroupGradient, GroupMix, GroupShader, HUE,
+    OUTLINE, OutlineLayer, OutlineSits, PATTERN, PatternLayer, RAINBOW, RecolourMode, SHADER, SHADING, SHINE, STRETCH,
+    SUB_CUT, SUB_FLASH, SUB_GLOW, SUB_HUE, SUB_OUTLINE, SUB_RECOLOUR, SUB_SHADER, SUB_SHADING, SUB_SHADOW, SUB_SHINE,
+    ShaderLayer, ShadingLayer, ShineLayer, ShineLight, StretchWhenFast, SubColourFrom, SubFlash, SubGlow, SubHue,
+    SubOutline, SubRecolour, SubShadow, TURNING, Turning,
 };
-use super::{GradientShape, MaskFrom, ShadingKind};
+use super::{GradientShape, ShadingKind};
 use crate::modules::look::BallShape;
 use crate::modules::look::basic::{STRETCH_SPEED, facing_degrees, heading, shift_linear_hue};
 use crate::paint::gpu::repeat_code;
@@ -42,13 +44,255 @@ pub enum Drawn {
     Shader(Box<ShaderLayer>),
 }
 
-/// A drawn layer above the body, with its id and its shown masks.
+/// A sub-layer of a drawn layer (a ball's or a shape's), with its settings: it changes only that
+/// layer (see sub_layers.wgsl). A shape's are read into the same settings, sizes in pixels.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SubLayer {
+    Cut(CutLayer),
+    Glow(SubGlow),
+    Outline(SubOutline),
+    Shadow(SubShadow),
+    Shading(ShadingLayer),
+    Shine(ShineLayer),
+    Shader(Box<ShaderLayer>),
+    Recolour(SubRecolour),
+    Flash(SubFlash),
+    Hue(SubHue),
+}
+
+impl SubLayer {
+    /// A ball's sub-layer of `kind` with its settings `p`; `None` for a kind that isn't one.
+    pub fn of_ball(kind: &str, p: &bpe_core::Params) -> Option<SubLayer> {
+        Some(match kind {
+            SUB_CUT => SubLayer::Cut(CutLayer::from_params(p)),
+            SUB_GLOW => SubLayer::Glow(SubGlow::from_params(p)),
+            SUB_OUTLINE => SubLayer::Outline(SubOutline::from_params(p)),
+            SUB_SHADOW => SubLayer::Shadow(SubShadow::from_params(p)),
+            SUB_SHADING => SubLayer::Shading(ShadingLayer::from_params(p)),
+            SUB_SHINE => SubLayer::Shine(ShineLayer::from_params(p)),
+            SUB_SHADER => SubLayer::Shader(Box::new(ShaderLayer::from_params(p))),
+            SUB_RECOLOUR => SubLayer::Recolour(SubRecolour::from_params(p)),
+            SUB_FLASH => SubLayer::Flash(SubFlash::from_params(p)),
+            SUB_HUE => SubLayer::Hue(SubHue::from_params(p)),
+            _ => return None,
+        })
+    }
+
+    /// Whether it writes a record: all do but a Shader whose own code doesn't read.
+    pub fn writes(&self) -> bool {
+        !matches!(self, SubLayer::Shader(sh) if sh.header.is_err())
+    }
+
+    /// Whether it reads the thing's hits (Flash on hit, Colour on hit).
+    pub fn reads_hits(&self) -> bool {
+        matches!(self, SubLayer::Flash(_) | SubLayer::Hue(_))
+    }
+
+    /// How much further than its layer it reaches past the thing's edge, in its own units (ball
+    /// radii, or a shape's pixels for `px` true; `radius` turns an outline's pixels into radii).
+    pub fn reach(&self, radius: f32, px: bool) -> f32 {
+        let unit = if px { 1.0 } else { radius.max(1e-3) };
+        let r = match self {
+            SubLayer::Glow(g) if g.strength > 0.0 && g.opacity > 0.0 && g.side != GlowWhere::Inside => {
+                // A ball's glow is in radii, a shape's in pixels: both reach the same sizes out.
+                HALO_REACH * g.size.max(0.0)
+            }
+            SubLayer::Outline(o) => {
+                let w = o.width.max(0.0) / unit;
+                match o.sits {
+                    OutlineSits::Inside => 0.0,
+                    OutlineSits::Centre => 0.5 * w,
+                    OutlineSits::Outside => w,
+                }
+            }
+            SubLayer::Shadow(s) if s.opacity > 0.0 => s.distance.max(0.0) + s.softness.max(0.0),
+            _ => 0.0,
+        };
+        if r.is_finite() { r } else { 0.0 }
+    }
+}
+
+/// A shown sub-layer, with its id.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Sub {
+    pub id: LayerId,
+    pub sub: SubLayer,
+}
+
+/// The sub-layers of a layer that write records.
+pub fn written(subs: &[Sub]) -> impl Iterator<Item = &Sub> {
+    subs.iter().filter(|s| s.sub.writes())
+}
+
+/// What a sub-layer record needs besides the sub-layer: where the layers under it are, by id
+/// (for a cut that names a layer), how far its layer's pattern has spun (for a cut moving with
+/// the layer), the stack's effects (for a shader) and where gradients and brush tiles go.
+pub struct SubCx<'a> {
+    pub placed: &'a [(LayerId, usize)],
+    pub angle: f32,
+    pub sources: &'a [Cow<'static, str>],
+    pub atlas: &'a mut GradientAtlas,
+    pub tiles: &'a mut Vec<(u64, Arc<[u8]>)>,
+}
+
+/// The record of sub-layer `sub` (codes 20 to 29, see `LayerGpu` in bpe-gfx): its fields as
+/// sub_layers.wgsl and the walks read them. Sizes are in the walk's units (a ball's radii, a
+/// shape's pixels) but for an outline's width, in pixels for both.
+///
+/// | code | head.z | amount | p0 | p1 | colour / paint |
+/// | --- | --- | --- | --- | --- | --- |
+/// | 20 Cut | | 1, target record, pattern spin, shape | from, invert, softness, moves | angle, size, threshold, tile | |
+/// | 21 Glow | FLAG same as layer | opacity, strength | size, where | | its own |
+/// | 22 Outline | FLAG same as layer | opacity | width px, sits | | its own |
+/// | 23 Shadow | | opacity | offset x, y, softness, moves | | its colour |
+/// | 24 Shading | INVERT | as a Shading layer's | | | |
+/// | 25 Shine | FLAG own light | as a Shine layer's | | | |
+/// | 26 Shader | | as a Shader layer's | | | |
+/// | 27 Recolour | | opacity, amount | mode, turn (turns), brightness, contrast | saturation | tint / gradient |
+/// | 28 Flash | | strength, length, follow impact | | | its colour |
+/// | 29 Colour on hit | | turn per hit (turns) | | | |
+pub fn sub_record(sub: &SubLayer, cx: &mut SubCx) -> LayerGpu {
+    let flag = |from: SubColourFrom| if from == SubColourFrom::SameAsLayer { LayerGpu::FLAG } else { 0 };
+    let r = match sub {
+        SubLayer::Cut(m) => {
+            // A cut naming a layer that is missing, hidden, not under it or not drawn passes nothing.
+            let target =
+                cx.placed.iter().find(|(id, _)| id.0 as i64 == m.target as i64).map_or(-1.0, |&(_, i)| i as f32);
+            let tile = if m.from == CutFrom::Brush { tile_index(cx.tiles, &m.strokes) } else { -1.0 };
+            LayerGpu {
+                head: [LayerGpu::SUB_CUT, 0, 0, 0],
+                amount: [1.0, target, cx.angle, m.shape.code()],
+                p0: [m.from.code(), if m.invert { 1.0 } else { 0.0 }, m.softness, m.moves.code()],
+                p1: [m.angle.to_radians(), m.size, m.threshold, tile],
+                ..LayerGpu::ZERO
+            }
+        }
+        SubLayer::Glow(g) => LayerGpu {
+            head: [LayerGpu::SUB_GLOW, 0, flag(g.colour_from), 0],
+            amount: [g.opacity, g.strength, 0.0, 0.0],
+            p0: [g.size.max(1e-3), g.side.code(), 0.0, 0.0],
+            colour: g.colour.sample(0.5),
+            paint: own_paint(&g.colour, g.gradient, g.direction, cx.atlas),
+            ..LayerGpu::ZERO
+        },
+        SubLayer::Outline(o) => LayerGpu {
+            head: [LayerGpu::SUB_OUTLINE, 0, flag(o.colour_from), 0],
+            amount: [o.opacity, 0.0, 0.0, 0.0],
+            p0: [o.width.max(0.0), o.sits.code(), 0.0, 0.0],
+            colour: o.colour.sample(0.5),
+            paint: own_paint(&o.colour, o.gradient, o.direction, cx.atlas),
+            ..LayerGpu::ZERO
+        },
+        SubLayer::Shadow(s) => {
+            let a = if s.angle.is_finite() { s.angle } else { 0.0 }.to_radians();
+            let d = s.distance.max(0.0);
+            LayerGpu {
+                head: [LayerGpu::SUB_SHADOW, 0, 0, 0],
+                amount: [s.opacity, 0.0, 0.0, 0.0],
+                p0: [d * a.cos(), d * a.sin(), s.softness.max(0.0), s.moves.code()],
+                colour: s.colour.to_linear(),
+                ..LayerGpu::ZERO
+            }
+        }
+        SubLayer::Shading(s) => {
+            LayerGpu { head: [LayerGpu::SUB_SHADING, 0, 0, 0], ..shading_record(s, cx.atlas, cx.tiles) }
+        }
+        SubLayer::Shine(s) => LayerGpu { head: [LayerGpu::SUB_SHINE, 0, 0, 0], ..shine_record(s, cx.atlas) },
+        SubLayer::Shader(sh) => LayerGpu { head: [LayerGpu::SUB_SHADER, 0, 0, 0], ..shader_record(sh, cx.sources) },
+        SubLayer::Recolour(c) => {
+            let gradient = c.mode == RecolourMode::Gradient;
+            LayerGpu {
+                head: [LayerGpu::SUB_RECOLOUR, 0, 0, 0],
+                amount: [c.opacity, c.amount, 0.0, 0.0],
+                p0: [c.mode.code(), c.turn / 360.0, c.brightness, c.contrast],
+                p1: [c.saturation, 0.0, 0.0, 0.0],
+                colour: if gradient { c.colours.sample(0.5) } else { c.tint.to_linear() },
+                // The gradient's colours, darkest first, read by how light each colour is.
+                paint: if gradient {
+                    bpe_gfx::PaintGpu {
+                        row: cx.atlas.row(&c.colours) as f32,
+                        steps: if c.colours.transition == bpe_core::Transition::Steps { 1.0 } else { 0.0 },
+                        ..bpe_gfx::PaintGpu::default()
+                    }
+                } else {
+                    bpe_gfx::PaintGpu::default()
+                },
+                ..LayerGpu::ZERO
+            }
+        }
+        SubLayer::Flash(f) => LayerGpu {
+            head: [LayerGpu::SUB_FLASH, 0, 0, 0],
+            amount: [f.strength, f.length, if f.follow_impact { 1.0 } else { 0.0 }, 0.0],
+            colour: f.colour.to_linear(),
+            ..LayerGpu::ZERO
+        },
+        SubLayer::Hue(h) => LayerGpu {
+            head: [LayerGpu::SUB_HUE, 0, 0, 0],
+            amount: [h.turn_per_hit / 360.0, 0.0, 0.0, 0.0],
+            ..LayerGpu::ZERO
+        },
+    };
+    // The codes are fixed above; the shared records keep their own flags.
+    LayerGpu { head: [r.head[0], 0, r.head[2], 0], ..r }
+}
+
+/// A Shading layer's record (top level or sub-layer), its code and blend left to the caller.
+fn shading_record(s: &ShadingLayer, atlas: &mut GradientAtlas, tiles: &mut Vec<(u64, Arc<[u8]>)>) -> LayerGpu {
+    let p1 = match s.kind {
+        ShadingKind::Linear => [s.from.x, s.from.y, s.to.x, s.to.y],
+        ShadingKind::Radial => [s.centre.x, s.centre.y, s.size, 0.0],
+        ShadingKind::Brush => [0.0, 0.0, 0.0, tile_index(tiles, &s.strokes)],
+    };
+    LayerGpu {
+        head: [LayerGpu::SHADING, 0, if s.invert { LayerGpu::INVERT } else { 0 }, 0],
+        amount: [s.opacity, 0.0, 0.0, 0.0],
+        p0: [s.kind.code(), s.softness, s.space.code(), s.amount],
+        p1,
+        colour: s.colour.sample(0.5),
+        paint: own_paint(&s.colour, s.gradient, s.direction, atlas),
+        ..LayerGpu::ZERO
+    }
+}
+
+/// A Shine layer's record (top level or sub-layer): white light is the classic shine; own
+/// colours tint its light.
+fn shine_record(s: &ShineLayer, atlas: &mut GradientAtlas) -> LayerGpu {
+    let own = s.light == ShineLight::Own;
+    LayerGpu {
+        head: [LayerGpu::SHINE, 0, if own { LayerGpu::FLAG } else { 0 }, 0],
+        amount: [s.opacity, s.strength, 0.0, 0.0],
+        p0: [s.spot.x, s.spot.y, s.size, s.material.code()],
+        p1: [s.sharpness(), 0.0, 0.0, 0.0],
+        colour: if own { s.colour.sample(0.5) } else { [1.0; 4] },
+        paint: if own { own_paint(&s.colour, s.gradient, s.direction, atlas) } else { bpe_gfx::PaintGpu::default() },
+        ..LayerGpu::ZERO
+    }
+}
+
+/// A Shader layer's record (top level or sub-layer): its effect's slot in `sources` and its
+/// settings in `extra`.
+pub fn shader_record(sh: &ShaderLayer, sources: &[Cow<'static, str>]) -> LayerGpu {
+    let slot = sources.iter().position(|src| *src == sh.source).unwrap_or(0);
+    let mut extra = [[0.0; 4]; 4];
+    for (i, v) in sh.params.iter().enumerate().take(16) {
+        extra[i / 4][i % 4] = *v;
+    }
+    LayerGpu {
+        head: [LayerGpu::SHADER, 0, 0, 0],
+        amount: [sh.opacity, 0.0, 0.0, 0.0],
+        p0: [sh.speed, sh.scale, sh.space.code(), slot as f32],
+        extra,
+        ..LayerGpu::ZERO
+    }
+}
+
+/// A drawn layer above the body, with its id and its shown sub-layers.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DrawnLayer {
     pub layer: Drawn,
     pub id: LayerId,
-    /// Its shown masks, in order; they multiply.
-    pub masks: Vec<MaskLayer>,
+    /// Its shown sub-layers, in order, each over the layer and the ones before it.
+    pub subs: Vec<Sub>,
     /// The balls of a group it is given to (empty: every ball), from [`bpe_core::Layer::only`].
     pub only: Vec<u32>,
 }
@@ -57,6 +301,11 @@ impl DrawnLayer {
     /// Whether it writes a record: all do but a Shader layer whose own code doesn't read.
     pub fn writes(&self) -> bool {
         !matches!(&self.layer, Drawn::Shader(sh) if sh.header.is_err())
+    }
+
+    /// How many records it writes: its own and its sub-layers' (none when it writes none).
+    pub fn records(&self) -> usize {
+        if self.writes() { 1 + written(&self.subs).count() } else { 0 }
     }
 }
 
@@ -114,7 +363,7 @@ impl Stack {
         for layer in &slot.layers {
             let p = slot.layer_params(layer.id);
             let mut push = |d: Drawn| {
-                stack.drawn.push(DrawnLayer { layer: d, id: layer.id, masks: Vec::new(), only: layer.only.clone() })
+                stack.drawn.push(DrawnLayer { layer: d, id: layer.id, subs: Vec::new(), only: layer.only.clone() })
             };
             match layer.kind.as_str() {
                 PATTERN => push(Drawn::Pattern(PatternLayer::from_params(&p))),
@@ -123,10 +372,12 @@ impl Stack {
                 GLOW => push(Drawn::Glow(GlowLayer::from_params(&p))),
                 SHADING => push(Drawn::Shading(ShadingLayer::from_params(&p))),
                 SHADER => push(Drawn::Shader(Box::new(ShaderLayer::from_params(&p)))),
-                // A mask goes with its layer; a hidden layer's masks don't matter.
-                MASK => {
-                    if let Some(d) = stack.drawn.iter_mut().find(|d| Some(d.id) == layer.parent) {
-                        d.masks.push(MaskLayer::from_params(&p));
+                // A sub-layer goes with its layer; a hidden layer's don't matter.
+                kind if layer.parent.is_some() => {
+                    if let Some(sub) = SubLayer::of_ball(kind, &p)
+                        && let Some(d) = stack.drawn.iter_mut().find(|d| Some(d.id) == layer.parent)
+                    {
+                        d.subs.push(Sub { id: layer.id, sub });
                     }
                 }
                 // Blend and the reactions are there at most once; the first counts.
@@ -182,7 +433,7 @@ impl Stack {
             return None;
         }
         let under: usize =
-            self.drawn[..self.blend_at.min(self.drawn.len())].iter().filter(writes).map(|d| 1 + d.masks.len()).sum();
+            self.drawn[..self.blend_at.min(self.drawn.len())].iter().filter(writes).map(|d| d.records()).sum();
         Some(1 + under as u32)
     }
 
@@ -246,7 +497,7 @@ impl Stack {
 
     /// The records the stack draws with at `time` seconds, bottom first, its gradients baked into
     /// `atlas` and its brush strokes added to `tiles` (a frame's [`bpe_gfx::Frame::mask_tiles`]).
-    /// Hidden layers, Blend and the reactions have none; each drawn layer's masks follow it, and
+    /// Hidden layers, Blend and the reactions have none; each drawn layer's sub-layers follow it, and
     /// the group colour's record comes last when the group gradient changes every layer. Layers
     /// the group gradient's Choose picks are flagged [`LayerGpu::GROUPED`].
     pub fn records(&self, atlas: &mut GradientAtlas, tiles: &mut Vec<(u64, Arc<[u8]>)>, time: f32) -> Vec<LayerGpu> {
@@ -286,7 +537,7 @@ impl Stack {
             paint: body_paint,
             ..LayerGpu::ZERO
         }];
-        // Where each layer's record is, by id, for masks that name a layer.
+        // Where each layer's record is, by id, for cuts that name a layer.
         let mut placed: Vec<(LayerId, usize)> = vec![(self.body_id, 0)];
         let sources = self.effect_sources();
         for d in &self.drawn {
@@ -314,21 +565,8 @@ impl Stack {
                     ..LayerGpu::ZERO
                 },
                 Drawn::Shine(s) => {
-                    // White light is the classic shine; own colours tint its light.
-                    let own = s.light == ShineLight::Own;
-                    LayerGpu {
-                        head: [LayerGpu::SHINE, blend(s.blend), flag(own), 0],
-                        amount: [s.opacity, s.strength, 0.0, 0.0],
-                        p0: [s.spot.x, s.spot.y, s.size, s.material.code()],
-                        p1: [s.sharpness(), 0.0, 0.0, 0.0],
-                        colour: if own { s.colour.sample(0.5) } else { [1.0; 4] },
-                        paint: if own {
-                            own_paint(&s.colour, s.gradient, s.direction, atlas)
-                        } else {
-                            bpe_gfx::PaintGpu::default()
-                        },
-                        ..LayerGpu::ZERO
-                    }
+                    let r = shine_record(s, atlas);
+                    LayerGpu { head: [LayerGpu::SHINE, blend(s.blend), r.head[2], 0], ..r }
                 }
                 Drawn::Glow(g) => LayerGpu {
                     head: [LayerGpu::GLOW, blend(g.blend), flag(g.colour_from == ColourFrom::SameAsBody), 0],
@@ -339,59 +577,27 @@ impl Stack {
                     ..LayerGpu::ZERO
                 },
                 Drawn::Shading(s) => {
-                    let p1 = match s.kind {
-                        ShadingKind::Linear => [s.from.x, s.from.y, s.to.x, s.to.y],
-                        ShadingKind::Radial => [s.centre.x, s.centre.y, s.size, 0.0],
-                        ShadingKind::Brush => [0.0, 0.0, 0.0, tile_index(tiles, &s.strokes)],
-                    };
-                    let invert = if s.invert { LayerGpu::INVERT } else { 0 };
-                    LayerGpu {
-                        head: [LayerGpu::SHADING, blend(s.blend), invert, 0],
-                        amount: [s.opacity, 0.0, 0.0, 0.0],
-                        p0: [s.kind.code(), s.softness, s.space.code(), s.amount],
-                        p1,
-                        colour: s.colour.sample(0.5),
-                        paint: own_paint(&s.colour, s.gradient, s.direction, atlas),
-                        ..LayerGpu::ZERO
-                    }
+                    let r = shading_record(s, atlas, tiles);
+                    LayerGpu { head: [LayerGpu::SHADING, blend(s.blend), r.head[2], 0], ..r }
                 }
                 // Own code that doesn't read draws nothing; the editor says why.
                 Drawn::Shader(_) if !d.writes() => continue,
                 Drawn::Shader(sh) => {
-                    let slot = sources.iter().position(|src| *src == sh.source).unwrap_or(0);
-                    let mut extra = [[0.0; 4]; 4];
-                    for (i, v) in sh.params.iter().enumerate() {
-                        extra[i / 4][i % 4] = *v;
-                    }
-                    LayerGpu {
-                        head: [LayerGpu::SHADER, blend(sh.blend), 0, 0],
-                        amount: [sh.opacity, 0.0, 0.0, 0.0],
-                        p0: [sh.speed, sh.scale, sh.space.code(), slot as f32],
-                        extra,
-                        ..LayerGpu::ZERO
-                    }
+                    LayerGpu { head: [LayerGpu::SHADER, blend(sh.blend), 0, 0], ..shader_record(sh, &sources) }
                 }
             };
             let at = out.len();
-            // "Moves with the layer": a pattern's mask turns as the pattern spins, from where the
-            // mask's own angle puts it, not by the pattern's own angle.
+            // "Moves with the layer": a pattern's cut turns as the pattern spins, from where the
+            // cut's own angle puts it, not by the pattern's own angle.
             let angle = match &d.layer {
                 Drawn::Pattern(p) => (r.paint.angle - p.inside.angle).to_radians(),
                 _ => 0.0,
             };
-            out.push(LayerGpu { head: [r.head[0], r.head[1], r.head[2] | grouped(d.id), d.masks.len() as u32], ..r });
-            for m in &d.masks {
-                // A mask on a layer that is missing, hidden, not under it or not drawn passes nothing.
-                let target =
-                    placed.iter().find(|(id, _)| id.0 as i64 == m.target as i64).map_or(-1.0, |&(_, i)| i as f32);
-                let tile = if m.from == MaskFrom::Brush { tile_index(tiles, &m.strokes) } else { -1.0 };
-                out.push(LayerGpu {
-                    head: [LayerGpu::MASK, 0, 0, 0],
-                    amount: [1.0, target, angle, m.shape.code()],
-                    p0: [m.from.code(), if m.invert { 1.0 } else { 0.0 }, m.softness, m.moves.code()],
-                    p1: [m.angle.to_radians(), m.size, m.threshold, tile],
-                    ..LayerGpu::ZERO
-                });
+            let subs = written(&d.subs).count() as u32;
+            out.push(LayerGpu { head: [r.head[0], r.head[1], r.head[2] | grouped(d.id), subs], ..r });
+            let mut cx = SubCx { placed: &placed, angle, sources: &sources, atlas, tiles };
+            for s in written(&d.subs) {
+                out.push(sub_record(&s.sub, &mut cx));
             }
             placed.push((d.id, at));
         }
@@ -409,10 +615,7 @@ impl Stack {
                 GroupEnd::Shader(_, gs) => {
                     let sh = &gs.shader;
                     let slot = sources.iter().position(|src| *src == sh.source).unwrap_or(0);
-                    let mut extra = [[0.0; 4]; 4];
-                    for (i, v) in sh.params.iter().enumerate() {
-                        extra[i / 4][i % 4] = *v;
-                    }
+                    let extra = shader_record(sh, &sources).extra;
                     let whole = gs.changes == Changes::EveryLayer;
                     let bit = out.len() - ends_at;
                     out.push(LayerGpu {
@@ -448,7 +651,7 @@ impl Stack {
     /// The layer a click at ball point `q` (in radii, y down, before the ball turns) picks: the
     /// topmost shown drawn layer covering it, else the Body inside the shape, else nothing.
     /// Patterns, shine, shading and shaders cover the shape; an outline its band (`radius` is the
-    /// ball's, in pixels); a glow the ring just outside. Masks don't change what a click picks.
+    /// ball's, in pixels); a glow the ring just outside. Sub-layers don't change what a click picks.
     pub fn topmost_at(&self, q: Vec2, radius: f32) -> Option<LayerId> {
         let d = shape_distance(self.body.ball_shape, self.body.roundness, q);
         // Thin bands still take a click a few pixels wide.
@@ -485,21 +688,31 @@ impl Stack {
             if d.id == id {
                 return Some(at);
             }
-            at += 1 + d.masks.len();
+            at += d.records();
         }
         None
     }
 
-    /// The effects the stack's shader layers run, each once, in order: a shader record's effect
-    /// slot is its place here. Own code that doesn't read is left out.
+    /// The effects the stack's shader layers and shader sub-layers run, each once, in order: a
+    /// shader record's effect slot is its place here. Own code that doesn't read is left out.
     pub fn effect_sources(&self) -> Vec<Cow<'static, str>> {
         let mut out: Vec<Cow<'static, str>> = Vec::new();
-        for d in &self.drawn {
-            if let Drawn::Shader(sh) = &d.layer
-                && sh.header.is_ok()
-                && !out.contains(&sh.source)
-            {
+        let mut add = |sh: &ShaderLayer| {
+            if sh.header.is_ok() && !out.contains(&sh.source) {
                 out.push(sh.source.clone());
+            }
+        };
+        for d in &self.drawn {
+            if let Drawn::Shader(sh) = &d.layer {
+                add(sh);
+            }
+            // A layer that writes no record writes none of its sub-layers'.
+            if d.writes() {
+                for s in &d.subs {
+                    if let SubLayer::Shader(sh) = &s.sub {
+                        add(sh);
+                    }
+                }
             }
         }
         for end in &self.ends {
@@ -510,6 +723,24 @@ impl Stack {
             }
         }
         out
+    }
+
+    /// Whether a shown sub-layer reads the balls' hits (Flash on hit, Colour on hit), so each
+    /// ball's instance needs its hit data.
+    pub fn needs_hits(&self) -> bool {
+        self.drawn.iter().any(|d| d.writes() && d.subs.iter().any(|s| s.sub.reads_hits()))
+    }
+
+    /// How long ago a hit can still show in a Flash sub-layer, in seconds (its light has all but
+    /// gone five lengths on); 0 without one.
+    pub fn flash_memory(&self) -> f32 {
+        let lengths = self.drawn.iter().filter(|d| d.writes()).flat_map(|d| &d.subs);
+        lengths
+            .filter_map(|s| match &s.sub {
+                SubLayer::Flash(f) if f.strength > 0.0 => Some(5.0 * f.length.max(0.0)),
+                _ => None,
+            })
+            .fold(0.0, f32::max)
     }
 
     /// The group shaders, in the group list's order.
@@ -528,7 +759,8 @@ impl Stack {
 
     /// The records for a ball that wears only the drawn layers `wears` says (by index in
     /// `drawn`): `all` (from [`Stack::records`]) with the others marked [`LayerGpu::UNWORN`] (and
-    /// at opacity 0), so every record stays where masks and the group records expect it.
+    /// at opacity 0), so every record stays where cuts and the group records expect it. Their sub-layers' records
+    /// stay: what they add fades with the layer's opacity.
     pub fn records_for(&self, all: &[LayerGpu], wears: impl Fn(usize) -> bool) -> Vec<LayerGpu> {
         let mut out = all.to_vec();
         for (i, d) in self.drawn.iter().enumerate() {
@@ -546,18 +778,21 @@ impl Stack {
     pub fn reach(&self, radius: f32) -> f32 {
         let mut past_edge: f32 = 0.0;
         for d in &self.drawn {
-            match &d.layer {
-                Drawn::Glow(g) if g.strength > 0.0 && g.opacity > 0.0 => past_edge = past_edge.max(HALO_REACH * g.size),
+            let own = match &d.layer {
+                Drawn::Glow(g) if g.strength > 0.0 && g.opacity > 0.0 => HALO_REACH * g.size,
                 Drawn::Outline(o) => {
                     let out = match o.sits {
                         OutlineSits::Inside => 0.0,
                         OutlineSits::Centre => 0.5 * o.width,
                         OutlineSits::Outside => o.width,
                     };
-                    past_edge = past_edge.max(out.max(0.0) / radius.max(1e-3));
+                    out.max(0.0) / radius.max(1e-3)
                 }
-                _ => {}
-            }
+                _ => 0.0,
+            };
+            // Each sub-layer that reaches out does so from where the piece reaches so far.
+            let subs: f32 = d.subs.iter().map(|s| s.sub.reach(radius, false)).sum();
+            past_edge = past_edge.max(own + subs);
         }
         // A group shader's ring fades out a little past its size.
         for gs in self.group_shaders() {
@@ -616,6 +851,7 @@ impl Stack {
             range: [first, count, 0, 0],
             group: [0.0; 4],
             place: [0.0; 4],
+            hit: bpe_gfx::NO_HIT,
         }
     }
 }
@@ -774,24 +1010,111 @@ mod tests {
     }
 
     #[test]
-    fn masks_stay_with_their_shown_layer() {
+    fn sub_layers_stay_with_their_shown_layer() {
         let stack = stack_after(|reg, s, b| {
             let pat = s.add_layer(reg, b, SlotId::Look, PATTERN).unwrap();
-            s.add_mask(reg, b, SlotId::Look, pat).unwrap();
-            let off = s.add_mask(reg, b, SlotId::Look, pat).unwrap();
+            s.add_sub_layer(reg, b, SlotId::Look, pat, SUB_CUT).unwrap();
+            let off = s.add_sub_layer(reg, b, SlotId::Look, pat, SUB_GLOW).unwrap();
             s.set_layer_enabled(reg, b, SlotId::Look, off, false).unwrap();
             let hidden = s.add_layer(reg, b, SlotId::Look, OUTLINE).unwrap();
-            s.add_mask(reg, b, SlotId::Look, hidden).unwrap();
+            s.add_sub_layer(reg, b, SlotId::Look, hidden, SUB_CUT).unwrap();
             s.set_layer_enabled(reg, b, SlotId::Look, hidden, false).unwrap();
             s.add_layer(reg, b, SlotId::Look, SHADING).unwrap();
         });
         assert_eq!(stack.drawn.len(), 2, "the hidden outline is left out");
-        assert_eq!(stack.drawn[0].masks.len(), 1, "the hidden mask is left out");
-        assert!(matches!(stack.drawn[1].layer, Drawn::Shading(_)) && stack.drawn[1].masks.is_empty());
+        assert_eq!(stack.drawn[0].subs.len(), 1, "the hidden glow is left out");
+        assert!(matches!(stack.drawn[0].subs[0].sub, SubLayer::Cut(_)));
+        assert!(matches!(stack.drawn[1].layer, Drawn::Shading(_)) && stack.drawn[1].subs.is_empty());
     }
 
     #[test]
-    fn masks_follow_their_layer_and_name_their_target_by_record() {
+    fn each_sub_layer_writes_its_code_after_its_layer_in_order() {
+        let stack = stack_after(|reg, s, b| {
+            let pat = s.add_layer(reg, b, SlotId::Look, PATTERN).unwrap();
+            for kind in [SUB_SHADOW, SUB_GLOW, SUB_RECOLOUR] {
+                s.add_sub_layer(reg, b, SlotId::Look, pat, kind).unwrap();
+            }
+            let outline = s.add_layer(reg, b, SlotId::Look, OUTLINE).unwrap();
+            for kind in [SUB_OUTLINE, SUB_SHADING, SUB_SHINE, SUB_FLASH, SUB_HUE, SUB_CUT] {
+                s.add_sub_layer(reg, b, SlotId::Look, outline, kind).unwrap();
+            }
+        });
+        let records = stack.records(&mut GradientAtlas::default(), &mut Vec::new(), 0.0);
+        let codes: Vec<u32> = records.iter().map(|r| r.head[0]).collect();
+        assert_eq!(
+            codes,
+            [
+                LayerGpu::BODY,
+                LayerGpu::PATTERN,
+                LayerGpu::SUB_SHADOW,
+                LayerGpu::SUB_GLOW,
+                LayerGpu::SUB_RECOLOUR,
+                LayerGpu::OUTLINE,
+                LayerGpu::SUB_OUTLINE,
+                LayerGpu::SUB_SHADING,
+                LayerGpu::SUB_SHINE,
+                LayerGpu::SUB_FLASH,
+                LayerGpu::SUB_HUE,
+                LayerGpu::SUB_CUT,
+            ]
+        );
+        assert_eq!((records[1].head[3], records[5].head[3]), (3, 6), "each layer counts its sub-layers");
+        assert!(records[2..5].iter().all(|r| r.head[1] == 0 && r.head[3] == 0), "sub-layers have no blend");
+        // The shadow falls 45° down and right, 0.15 radii.
+        let off = 0.15 * 45f32.to_radians().cos();
+        assert!((records[2].p0[0] - off).abs() < 1e-5 && (records[2].p0[1] - off).abs() < 1e-5);
+        assert_eq!(records[3].head[2], LayerGpu::FLAG, "the glow takes its layer's colour");
+        assert_eq!(records[3].amount[..2], [1.0, 0.8]);
+        assert_eq!(records[9].amount[..3], [0.8, 0.3, 1.0], "flash strength, length, follow impact");
+        assert!((records[10].amount[0] - 30.0 / 360.0).abs() < 1e-6, "turns per hit");
+        assert!(stack.needs_hits());
+        assert_eq!(stack.record_of(stack.drawn[1].id), Some(5));
+        assert_eq!(stack.split(), None);
+        assert!(stack.reach(10.0) > SHAPE_REACH + HALO_REACH * 0.4, "the glow on the pattern reaches out");
+    }
+
+    #[test]
+    fn a_split_never_lands_on_a_sub_layer_and_records_for_keeps_sub_records() {
+        let stack = stack_after(|reg, s, b| {
+            let o = s.add_layer(reg, b, SlotId::Look, OUTLINE).unwrap();
+            s.add_sub_layer(reg, b, SlotId::Look, o, SUB_GLOW).unwrap();
+            s.add_sub_layer(reg, b, SlotId::Look, o, SUB_SHADOW).unwrap();
+            s.add_layer(reg, b, SlotId::Look, BLEND).unwrap();
+            s.add_layer(reg, b, SlotId::Look, PATTERN).unwrap();
+        });
+        assert_eq!(stack.split(), Some(4), "the pattern's record, after the body, the outline and its two");
+        let all = stack.records(&mut GradientAtlas::default(), &mut Vec::new(), 0.0);
+        assert_eq!(all[4].head[0], LayerGpu::PATTERN);
+        let some = stack.records_for(&all, |k| k != 0);
+        assert_eq!(some.len(), all.len());
+        assert_eq!(some[1].head[2] & LayerGpu::UNWORN, LayerGpu::UNWORN);
+        assert_eq!(some[1].amount[0], 0.0);
+        assert_eq!(some[2], all[2], "its sub-layers stay where they are");
+        assert!(!stack.needs_hits());
+    }
+
+    #[test]
+    fn a_sub_layer_shader_joins_the_effects_once() {
+        let stack = stack_after(|reg, s, b| {
+            let lava = s.add_layer(reg, b, SlotId::Look, SHADER).unwrap();
+            let sub = s.add_sub_layer(reg, b, SlotId::Look, lava, SUB_SHADER).unwrap();
+            s.set_at(
+                reg,
+                &bpe_core::Address::on(b, SlotId::Look, &layered_key(sub, "effect")),
+                Value::Choice("glitch".into()),
+            )
+            .unwrap();
+            let o = s.add_layer(reg, b, SlotId::Look, OUTLINE).unwrap();
+            s.add_sub_layer(reg, b, SlotId::Look, o, SUB_SHADER).unwrap();
+        });
+        assert_eq!(stack.effect_sources().len(), 2, "lava and glitch, each once");
+        let records = stack.records(&mut GradientAtlas::default(), &mut Vec::new(), 0.0);
+        let slots: Vec<f32> = records.iter().filter(|r| r.head[0] == LayerGpu::SUB_SHADER).map(|r| r.p0[3]).collect();
+        assert_eq!(slots, [1.0, 0.0]);
+    }
+
+    #[test]
+    fn cuts_follow_their_layer_and_name_their_target_by_record() {
         let set = |reg: &bpe_core::Registry, s: &mut Scene, b, id, key: &str, v: Value| {
             s.set_at(reg, &bpe_core::Address::on(b, SlotId::Look, &layered_key(id, key)), v).unwrap();
         };
@@ -800,9 +1123,9 @@ mod tests {
             let hidden = s.add_layer(reg, b, SlotId::Look, SHINE).unwrap();
             let shown = s.add_layer(reg, b, SlotId::Look, GLOW).unwrap();
             let pat = s.add_layer(reg, b, SlotId::Look, PATTERN).unwrap();
-            let m1 = s.add_mask(reg, b, SlotId::Look, pat).unwrap();
-            let m2 = s.add_mask(reg, b, SlotId::Look, pat).unwrap();
-            let off = s.add_mask(reg, b, SlotId::Look, pat).unwrap();
+            let m1 = s.add_sub_layer(reg, b, SlotId::Look, pat, SUB_CUT).unwrap();
+            let m2 = s.add_sub_layer(reg, b, SlotId::Look, pat, SUB_CUT).unwrap();
+            let off = s.add_sub_layer(reg, b, SlotId::Look, pat, SUB_CUT).unwrap();
             s.set_layer_enabled(reg, b, SlotId::Look, off, false).unwrap();
             s.set_layer_enabled(reg, b, SlotId::Look, hidden, false).unwrap();
             set(reg, s, b, m1, "from", Value::Choice("layer".into()));
@@ -826,13 +1149,13 @@ mod tests {
                 LayerGpu::BODY,
                 LayerGpu::GLOW,
                 LayerGpu::PATTERN,
-                LayerGpu::MASK,
-                LayerGpu::MASK,
+                LayerGpu::SUB_CUT,
+                LayerGpu::SUB_CUT,
                 LayerGpu::OUTLINE,
                 LayerGpu::SHADING
             ]
         );
-        assert_eq!(records[2].head[3], 2, "the hidden mask is left out of the count");
+        assert_eq!(records[2].head[3], 2, "the hidden cut is left out of the count");
         assert_eq!(records[3].amount[1], -1.0, "a hidden target passes nothing");
         assert_eq!(records[4].amount[1], 1.0, "the glow is record 1");
         assert_eq!(records[5].head[3], 0);
@@ -840,27 +1163,27 @@ mod tests {
         assert_eq!(records[6].p1[3], 0.0, "the brush names its tile");
         assert_eq!(stack.record_of(stack.body_id), Some(0));
         assert_eq!(stack.record_of(ids[0]), Some(2), "the pattern");
-        assert_eq!(stack.record_of(ids[1]), Some(5), "the outline, after the pattern's masks");
+        assert_eq!(stack.record_of(ids[1]), Some(5), "the outline, after the pattern's cuts");
         assert_eq!(stack.record_of(LayerId(999)), None);
         let middle = (bpe_gfx::MASK_TILE / 2) * bpe_gfx::MASK_TILE + bpe_gfx::MASK_TILE / 2;
-        assert_eq!(tiles[0].1[middle], 255, "the tile holds the stroke");
+        assert_eq!(tiles[0].1[2 * middle], 255, "the tile holds the stroke");
         assert_eq!(stack.reach(10.0), stack.reach(10.0));
         let _ = ids;
     }
 
     #[test]
-    fn a_mask_moving_with_a_pattern_turns_only_as_the_pattern_spins() {
+    fn a_cut_moving_with_a_pattern_turns_only_as_the_pattern_spins() {
         let set = |reg: &bpe_core::Registry, s: &mut Scene, b, id, key: &str, v: Value| {
             s.set_at(reg, &bpe_core::Address::on(b, SlotId::Look, &layered_key(id, key)), v).unwrap();
         };
         let stack = stack_after(|reg, s, b| {
             let pat = s.add_layer(reg, b, SlotId::Look, PATTERN).unwrap();
-            let m = s.add_mask(reg, b, SlotId::Look, pat).unwrap();
+            let m = s.add_sub_layer(reg, b, SlotId::Look, pat, SUB_CUT).unwrap();
             set(reg, s, b, m, "from", Value::Choice("shape".into()));
             set(reg, s, b, pat, "in_spin", Value::Number(90.0));
         });
         let at = |time: f32| stack.records(&mut GradientAtlas::default(), &mut Vec::new(), time)[2].amount[2];
-        assert_eq!(at(0.0), 0.0, "a still pattern's mask sits where its handles and summary say");
+        assert_eq!(at(0.0), 0.0, "a still pattern's cut sits where its handles and summary say");
         assert!((at(1.0) - 90f32.to_radians()).abs() < 1e-5, "and turns as the pattern spins: {}", at(1.0));
     }
 

@@ -271,6 +271,7 @@ fn a_shape_blended_behind_the_balls_never_tints_them() {
             range: [0, 1, 0, 0],
             group: [0.0; 4],
             place: [0.0; 4],
+            hit: crate::NO_HIT,
         });
     };
     let picture = |behind: bool| {

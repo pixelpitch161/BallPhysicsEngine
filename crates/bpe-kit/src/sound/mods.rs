@@ -347,7 +347,7 @@ macro_rules! mod_kind {
             fn card(&self) -> &'static str {
                 VOICE
             }
-            fn maskable(&self) -> bool {
+            fn takes_subs(&self) -> bool {
                 false
             }
             fn per_ball(&self) -> bool {

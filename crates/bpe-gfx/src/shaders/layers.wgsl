@@ -11,18 +11,19 @@
 // A glow is light added outside the shape with no coverage, as the halo always was.
 
 struct LayerGpu {
-    // Kind (0 body, 1 pattern, 2 outline, 3 shine, 4 glow, 5 shading, 6 shader, 7 mask, 8 group
-    // colour, 9 group shader), blend code, flags (1 kind's own, 2 and 4 see LayerGpu, 8 the group
-    // colour mixes into this layer, 16 the ball doesn't wear it), how many mask records follow it.
+    // Kind (0 body, 1 pattern, 2 outline, 3 shine, 4 glow, 5 shading, 6 shader, 8 group colour,
+    // 9 group shader, 20..29 sub-layers: see sub_layers.wgsl), blend code, flags (1 kind's own, 2
+    // and 4 see LayerGpu, 8 the group colour mixes into this layer, 16 the ball doesn't wear it),
+    // how many sub-layer records follow it.
     head: vec4<u32>,
-    // Opacity, then per kind (shine and glow: strength; mask: target record, parent angle, shape;
+    // Opacity, then per kind (shine and glow: strength; cut: target record, parent angle, shape;
     // a drawn layer a group shader changes: the first group record and a bit mask of them).
     amount: vec4<f32>,
     // Outline: width in pixels, where it sits (0 inside, 1 centre, 2 outside). Shine: spot xy,
-    // size. Glow: size in radii. Shading: kind, softness, space, amount. Mask: from, invert,
+    // size. Glow: size in radii. Shading: kind, softness, space, amount. Cut: from, invert,
     // softness, moves. Shader: speed, scale, space, effect slot.
     p0: vec4<f32>,
-    // Shading: linear from xy, to xy; radial centre xy, size; brush tile in w. Mask: angle,
+    // Shading: linear from xy, to xy; radial centre xy, size; brush tile in w. Cut: angle,
     // size, threshold, brush tile.
     p1: vec4<f32>,
     colour: vec4<f32>,
@@ -32,12 +33,13 @@ struct LayerGpu {
 };
 
 @group(2) @binding(0) var<storage, read> look_layers: array<LayerGpu>;
-// Brush strokes, one 128 x 128 tile per layer of the array (see masks.rs).
+// Brush strokes, one 128 x 128 tile per layer of the array (see masks.rs): how painted (r) and
+// the distance to the painted edge (g).
 @group(2) @binding(1) var mask_tiles: texture_2d_array<f32>;
 @group(2) @binding(2) var mask_sampler: sampler;
 
 // Matches MAX_LAYERS in frame.rs.
-const MAX_LAYERS: u32 = 64u;
+const MAX_LAYERS: u32 = 128u;
 
 struct LayeredIn {
     @location(0) center: vec2<f32>,
@@ -56,6 +58,8 @@ struct LayeredIn {
     @location(9) group: vec4<f32>,
     // Where the ball started from its group's middle, and the group's side (world units).
     @location(10) place: vec4<f32>,
+    // Seconds since its last hit, that hit's strength, how many hits, spare.
+    @location(11) hit: vec4<f32>,
 };
 
 struct LayeredOut {
@@ -71,6 +75,7 @@ struct LayeredOut {
     @location(7) @interpolate(flat) dir: vec2<f32>,
     @location(8) @interpolate(flat) group: vec4<f32>,
     @location(9) @interpolate(flat) place: vec4<f32>,
+    @location(10) @interpolate(flat) hit: vec4<f32>,
 };
 
 @vertex
@@ -93,6 +98,7 @@ fn vs_layers(@builtin(vertex_index) i: u32, b: LayeredIn) -> LayeredOut {
     out.dir = dir;
     out.group = b.group;
     out.place = b.place;
+    out.hit = b.hit;
     return out;
 }
 
@@ -216,6 +222,8 @@ struct LayeredBall {
     group_mode: u32,
     // Where the ball started from its group's middle, and the group's side (world units).
     place: vec4<f32>,
+    // Seconds since its last hit, that hit's strength, how many hits (for sub-layers).
+    hit: vec4<f32>,
 };
 
 var<private> layered_ball: LayeredBall;
@@ -326,6 +334,17 @@ fn tile_at(tile: f32, q: vec2<f32>) -> f32 {
     return textureSampleLevel(mask_tiles, mask_sampler, uv, i32(tile + 0.5), 0.0).r;
 }
 
+// How far ball point `q` is from brush tile `tile`'s painted edge, in radii, negative inside the
+// paint (see masks.rs: the distance channel reaches a quarter of a radius). No tile: far outside.
+fn tile_d_at(tile: f32, q: vec2<f32>) -> f32 {
+    let uv = q * 0.5 + vec2<f32>(0.5);
+    if tile < 0.0 || any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) {
+        return 0.25;
+    }
+    let g = textureSampleLevel(mask_tiles, mask_sampler, uv, i32(tile + 0.5), 0.0).g;
+    return -(g - 0.5) * 0.5;
+}
+
 // How light `c` (linear light) looks, 0 to 1: its luminance as the eye reads it, so a threshold of
 // 0.5 sits at a middle grey.
 fn layers_luminance(c: vec3<f32>) -> f32 {
@@ -337,35 +356,68 @@ fn soft_inside(d: f32, s: f32) -> f32 {
     return 1.0 - smoothstep(-s, s, d);
 }
 
-// A Shape mask at mask point `m` (already turned by its angle): 0 half (the top), 1 wedge (round
-// the top, `size` of a turn), 2 quarters (top left and bottom right), 3 ring, 4 circle, 5 band.
-fn shape_mask(shape: f32, m: vec2<f32>, size: f32, s: f32) -> f32 {
+// How far cut point `m` (already turned by its angle) is from a Shape cut's edge, negative
+// inside it: 0 half (the top), 1 wedge (round the top, `size` of a turn), 2 quarters (top left and
+// bottom right), 3 ring, 4 circle, 5 band. A wedge of the whole turn is everywhere (-1).
+fn shape_mask_d(shape: f32, m: vec2<f32>, size: f32) -> f32 {
     let r = length(m);
     switch u32(shape + 0.5) {
         case 0u: {
-            return soft_inside(m.y, s);
+            return m.y;
         }
         case 1u: {
             let span = clamp(size, 0.0, 1.0) * LAYERS_TAU;
             if span >= LAYERS_TAU - 1e-4 {
-                return 1.0;
+                return -1.0;
             }
             let a = atan2(m.x, -m.y);
-            return soft_inside((abs(a) - 0.5 * span) * r, s);
+            return (abs(a) - 0.5 * span) * r;
         }
         case 2u: {
-            return soft_inside(-min(abs(m.x), abs(m.y)) * sign(m.x * m.y), s);
+            return -min(abs(m.x), abs(m.y)) * sign(m.x * m.y);
         }
         case 3u: {
-            return soft_inside(abs(r - 0.7) - 0.5 * size, s);
+            return abs(r - 0.7) - 0.5 * size;
         }
         case 4u: {
-            return soft_inside(r - size, s);
+            return r - size;
         }
         default: {
-            return soft_inside(abs(m.y) - 0.5 * size, s);
+            return abs(m.y) - 0.5 * size;
         }
     }
+}
+
+// The edge distance of cut record `m` at ball point `q` (`screen_q` on the screen) for a Shape or
+// Brush cut, negative where it lets its layer show; far inside (no edge) for the other kinds. A
+// shadow re-reads the cuts above it at its shifted point with this.
+fn cut_distance(m: LayerGpu, q: vec2<f32>, screen_q: vec2<f32>) -> f32 {
+    let cut_from = u32(m.p0.x + 0.5);
+    if cut_from != 2u && cut_from != 3u {
+        return -1e6;
+    }
+    var pt = q;
+    let moves = u32(m.p0.w + 0.5);
+    if moves == 0u {
+        pt = rotate(q, -m.amount.z);
+    } else if moves == 2u {
+        pt = screen_q;
+    }
+    var dist = 0.0;
+    if cut_from == 2u {
+        dist = shape_mask_d(m.amount.w, rotate(pt, -m.p1.x), m.p1.y);
+    } else {
+        dist = tile_d_at(m.p1.w, pt);
+    }
+    return select(dist, -dist, m.p0.y > 0.5);
+}
+
+// How much a Shape cut lets show at cut point `m`, its edge faded over `s`.
+fn shape_mask(shape: f32, m: vec2<f32>, size: f32, s: f32) -> f32 {
+    if u32(shape + 0.5) == 1u && clamp(size, 0.0, 1.0) * LAYERS_TAU >= LAYERS_TAU - 1e-4 {
+        return 1.0;
+    }
+    return soft_inside(shape_mask_d(shape, m, size), s);
 }
 
 // How much a Shading layer `l` darkens at ball point `q` (or `screen_q` when it stays with the
@@ -389,9 +441,11 @@ fn shading_factor(l: LayerGpu, q: vec2<f32>, screen_q: vec2<f32>, aa: f32) -> f3
     return tile_at(l.p1.w, pt);
 }
 
-// A mask record `m`'s value at the point: `below`, `chosen` the coverage (inside, outside) of the
-// layer directly under its layer and of its chosen layer; `under` the stack under its layer.
-fn mask_value(
+// A Cut record `m` at the point: how much it lets show inside and outside the shape, and its
+// own distance (negative where it lets show; in cut units, ball radii or a shape's units).
+// `below`, `chosen` are the cover (inside, outside) of the layer directly under its layer and of
+// its chosen layer; `under` the stack under its layer.
+fn cut_value(
     m: LayerGpu,
     q: vec2<f32>,
     screen_q: vec2<f32>,
@@ -400,10 +454,12 @@ fn mask_value(
     under_in: vec4<f32>,
     under_out: vec4<f32>,
     aa: f32,
-) -> vec2<f32> {
+) -> vec3<f32> {
     let soft = clamp(m.p0.z, 0.0, 1.0);
+    let cut_from = u32(m.p0.x + 0.5);
     var v = vec2<f32>(0.0);
-    switch u32(m.p0.x + 0.5) {
+    var dist = 0.0;
+    switch cut_from {
         case 0u: {
             v = below;
         }
@@ -418,11 +474,14 @@ fn mask_value(
             } else if moves == 2u {
                 pt = screen_q;
             }
-            if u32(m.p0.x + 0.5) == 2u {
+            if cut_from == 2u {
                 let s = max(0.5 * soft, aa);
-                v = vec2<f32>(shape_mask(m.amount.w, rotate(pt, -m.p1.x), m.p1.y, s));
+                let turned = rotate(pt, -m.p1.x);
+                v = vec2<f32>(shape_mask(m.amount.w, turned, m.p1.y, s));
+                dist = shape_mask_d(m.amount.w, turned, m.p1.y);
             } else {
                 v = vec2<f32>(tile_at(m.p1.w, pt));
+                dist = tile_d_at(m.p1.w, pt);
             }
         }
         default: {
@@ -431,15 +490,50 @@ fn mask_value(
             let li = layers_luminance(select(vec3<f32>(0.0), under_in.rgb / under_in.a, under_in.a > 1e-5));
             let lo = layers_luminance(select(vec3<f32>(0.0), under_out.rgb / under_out.a, under_out.a > 1e-5));
             v = vec2<f32>(smoothstep(t - s, t + s, li), smoothstep(t - s, t + s, lo));
-            if u32(m.p0.x + 0.5) == 5u {
+            if cut_from == 5u {
                 v = vec2<f32>(1.0) - v;
             }
         }
     }
+    if cut_from != 2u && cut_from != 3u {
+        // No edge of its own: one from how much it lets show.
+        dist = (0.5 - max(v.x, v.y)) * 0.1;
+    }
     if m.p0.y > 0.5 {
         v = vec2<f32>(1.0) - v;
+        dist = -dist;
     }
-    return clamp(v, vec2<f32>(0.0), vec2<f32>(1.0));
+    return vec3<f32>(clamp(v, vec2<f32>(0.0), vec2<f32>(1.0)), dist);
+}
+
+// The distance from a ball layer record `l`'s own edge at a point whose distance to the ball's
+// edge is `d` (radii, negative inside): the ball's shape for layers that fill it, the band of an
+// outline, and for a glow where its light falls to half.
+fn ball_layer_sd(l: LayerGpu, d: f32) -> f32 {
+    switch l.head.x {
+        case 2u: {
+            let w = max(l.p0.x, 0.0) / layered_ball.radius.y;
+            var lo = -w;
+            var hi = 0.0;
+            if l.p0.y > 1.5 {
+                lo = 0.0;
+                hi = w;
+            } else if l.p0.y > 0.5 {
+                lo = -0.5 * w;
+                hi = 0.5 * w;
+            }
+            return max(lo - d, d - hi);
+        }
+        case 4u: {
+            let size = max(l.p0.x, 0.05);
+            let gd = max(d, 0.0) / size;
+            let a = clamp(max(l.amount.y, 0.0) * exp(-gd * gd), 0.0, 1.0);
+            return (0.5 - a) * size;
+        }
+        default: {
+            return d;
+        }
+    }
 }
 
 // What `fs_layers` and `fs_layers_each` draw: premultiplied colour and coverage.
@@ -459,6 +553,7 @@ fn shade_layers(in: LayeredOut) -> vec4<f32> {
             in.group,
             in.range.w,
             in.place,
+            in.hit,
         );
     let p = rotate(in.local, -in.form.z);
     let d = ball_shape(p, in.form.x, in.form.y);

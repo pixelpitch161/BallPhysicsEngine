@@ -35,7 +35,7 @@ pub use color::{Color, Gradient, Stop, Transition};
 pub use contract::check_registry;
 pub use edit::EditError;
 pub use ids::{KindId, SlotId, ThingId};
-pub use layers::{CopiedLayer, CopiedLook, Layer, LayerId, layered_key, split_layered};
+pub use layers::{CopiedLayer, CopiedLook, Layer, LayerId, MAX_SUBS, layered_key, split_layered};
 pub use registry::{LayerKind, LayerSection, ModuleKind, Registry, ThingKind, layer_def};
 pub use resolve::{Problem, ProblemKind, Resolved, ResolvedLayer, ResolvedSlot, ResolvedThing, resolve};
 pub use save::{LoadError, load, save};
