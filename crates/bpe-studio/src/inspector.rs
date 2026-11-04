@@ -95,6 +95,16 @@ pub enum Card {
     /// One of the root's cards of its own settings, by name: one of [`bpe_kit::ROOT_CARDS`].
     Section(&'static str),
     Slot(SlotId),
+    /// Motion and Bounce shown as one card ([`PHYSICS`]); the scene still keeps the two.
+    Physics,
+}
+
+/// The slots whose cards show together as one Physics card, in the order their settings read.
+const PHYSICS: [SlotId; 2] = [SlotId::Motion, SlotId::Bounce];
+
+/// The slots of [`PHYSICS`] the thing has, in that order.
+fn physics_slots(thing: &bpe_core::Thing) -> Vec<SlotId> {
+    PHYSICS.into_iter().filter(|s| thing.slots.contains_key(s)).collect()
 }
 
 impl Card {
@@ -105,6 +115,7 @@ impl Card {
             Card::Placement => (id, None, "placement"),
             Card::Section(name) => (id, None, name),
             Card::Slot(slot) => (id, Some(slot), ""),
+            Card::Physics => (id, None, "physics"),
         }
     }
 }
@@ -390,7 +401,16 @@ pub fn show(
         }
 
         // ---------- one card per slot ----------
+        // Motion and Bounce show as one Physics card, where the first of them would be.
+        let physics = physics_slots(&thing);
         for slot in SlotId::ALL.into_iter().filter(|s| s.in_card_list()) {
+            if PHYSICS.contains(&slot) {
+                if physics.first() == Some(&slot) {
+                    ui.add_space(6.0);
+                    physics_card(ui, inspector, &cx, kind, resolved, &physics, &mut edits);
+                }
+                continue;
+            }
             let Some(card_now) = thing.slots.get(&slot) else { continue };
             ui.add_space(6.0);
             card(ui, |ui| {
@@ -470,42 +490,7 @@ pub fn show(
                     }
                     return;
                 }
-                let Some(ckind) = reg.module(&card_now.kind) else { return };
-                let defs = ckind.settings();
-                debug_assert!(
-                    unknown_groups(defs).is_empty(),
-                    "{} has groups that are not sections: {:?}",
-                    card_now.kind,
-                    unknown_groups(defs)
-                );
-                ui.add_space(4.0);
-                let at = |key: &str| Address::on(id, slot, key);
-                let get = |key: &str| scene.value_at_time(reg, &at(key), time).expect("a card's settings all resolve");
-                let marks = |key: &str| {
-                    let def = defs.iter().find(|d| d.key == key)?;
-                    Some(mark_for(scene, def, &at(key)))
-                };
-                let applies =
-                    |d: &SettingDef| d.applies(Some(&thing.kind), &|k| scene.value_at_time(reg, &at(k), time));
-                let shut = folded_groups(inspector, (id, Some(slot)), defs);
-                let folded = |group: &str| shut.contains(group);
-                let follow_menu = crate::follow::menu(scene);
-                let follow_now = |key: &str| crate::follow::now(scene, &at(key));
-                let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now };
-                let cx = GridCx {
-                    choices: &choices,
-                    marks: &marks,
-                    applies: &applies,
-                    folded: Some(&folded),
-                    label_width: lw,
-                    track: style::colour_of(scene, id),
-                    follow: Some(&follow),
-                };
-                let out = settings_grid(ui, ("slot", id, slot), defs, get, &cx);
-                fold_groups(inspector, (id, Some(slot)), &out.folds);
-                edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key.into(), value)));
-                edits.extend(out.new_keys.into_iter().map(|key| Edit::NewKey(Some(slot), key.into())));
-                edits.extend(out.follows.into_iter().map(|(key, source)| Edit::Follow(Some(slot), key.into(), source)));
+                slot_grid(ui, inspector, &cx, slot, &card_now.kind, &mut edits);
             });
         }
 
@@ -517,11 +502,22 @@ pub fn show(
             .copied()
             .filter(|s| !thing.slots.contains_key(s) && reg.kinds_fitting(*s, kind).next().is_some())
             .collect();
+        // Motion and Bounce are one entry, Physics, which adds whichever of them is missing.
+        let mut entries: Vec<(&str, Vec<SlotId>)> = Vec::new();
+        for &slot in &missing {
+            if !PHYSICS.contains(&slot) {
+                entries.push((kind.slot_label(slot), vec![slot]));
+            } else if let Some((_, slots)) = entries.iter_mut().find(|(label, _)| *label == "Physics") {
+                slots.push(slot);
+            } else {
+                entries.push(("Physics", vec![slot]));
+            }
+        }
         ui.add_enabled_ui(!missing.is_empty(), |ui| {
             ui.menu_button("+ Add slot", |ui| {
-                for slot in &missing {
-                    if ui.button(kind.slot_label(*slot)).clicked() {
-                        edits.push(Edit::AddSlot(*slot));
+                for (label, slots) in &entries {
+                    if ui.button(*label).clicked() {
+                        edits.extend(slots.iter().map(|s| Edit::AddSlot(*s)));
                         ui.close();
                     }
                 }
@@ -918,6 +914,97 @@ struct OwnCx<'a> {
     applies: &'a dyn Fn(&SettingDef) -> bool,
 }
 
+/// Motion and Bounce as one card, Physics: its header folds, counts and removes both, and each
+/// card's settings grid shows inside it, Motion's first. The scene still keeps the two cards.
+fn physics_card(
+    ui: &mut Ui,
+    inspector: &mut Inspector,
+    cx: &OwnCx,
+    kind: &dyn bpe_core::ThingKind,
+    resolved: &Resolved,
+    slots: &[SlotId],
+    edits: &mut Vec<Edit>,
+) {
+    let (reg, id) = (&cx.kit.registry, cx.id);
+    card(ui, |ui| {
+        let header = ui.horizontal_wrapped(|ui| {
+            let open = fold_arrow(ui, &mut inspector.collapsed, Card::Physics.fold_key(id), "Physics");
+            ui.label(RichText::new("Physics").font(style::semibold(13.0)));
+            let changed = slots.iter().filter_map(|s| cx.thing.slots.get(s)).map(|c| c.params.iter().count()).sum();
+            folded_summary(ui, open, changed);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let remove = egui::Button::new(RichText::new("Remove").small()).frame(false);
+                let remove = ui.add(remove).on_hover_text("Take Physics off this thing");
+                remove.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Remove Physics"));
+                if remove.clicked() {
+                    edits.extend(slots.iter().map(|s| Edit::RemoveSlot(*s)));
+                }
+            });
+            open
+        });
+        card_header(ui, inspector, Card::Physics, &header.response);
+        let problems: Vec<String> = resolved
+            .problems
+            .iter()
+            .filter(|p| p.thing == id && p.slot.is_some_and(|s| slots.contains(&s)))
+            .map(crate::tree::problem_words)
+            .collect();
+        if !problems.is_empty() {
+            ui.label(RichText::new(problems.join("\n")).small().color(style::TEXT));
+        }
+        if !header.inner {
+            return;
+        }
+        for &slot in slots {
+            let Some(card_now) = cx.thing.slots.get(&slot) else { continue };
+            // Each slot has one kind today; a second would need a Type menu here.
+            debug_assert!(reg.kinds_fitting(slot, kind).count() <= 1, "{slot:?} needs a Type menu in Physics");
+            slot_grid(ui, inspector, cx, slot, &card_now.kind, edits);
+        }
+    });
+}
+
+/// A plain card's settings: the card in `slot`, of kind `card_kind`, as a grid with folding
+/// groups. Its edits are pushed to `edits`.
+fn slot_grid(ui: &mut Ui, inspector: &mut Inspector, cx: &OwnCx, slot: SlotId, card_kind: &str, edits: &mut Vec<Edit>) {
+    let (scene, reg, id, time) = (cx.scene, &cx.kit.registry, cx.id, cx.time);
+    let Some(ckind) = reg.module(card_kind) else { return };
+    let defs = ckind.settings();
+    debug_assert!(
+        unknown_groups(defs).is_empty(),
+        "{} has groups that are not sections: {:?}",
+        card_kind,
+        unknown_groups(defs)
+    );
+    ui.add_space(4.0);
+    let at = |key: &str| Address::on(id, slot, key);
+    let get = |key: &str| scene.value_at_time(reg, &at(key), time).expect("a card's settings all resolve");
+    let marks = |key: &str| {
+        let def = defs.iter().find(|d| d.key == key)?;
+        Some(mark_for(scene, def, &at(key)))
+    };
+    let applies = |d: &SettingDef| d.applies(Some(&cx.thing.kind), &|k| scene.value_at_time(reg, &at(k), time));
+    let shut = folded_groups(inspector, (id, Some(slot)), defs);
+    let folded = |group: &str| shut.contains(group);
+    let follow_menu = crate::follow::menu(scene);
+    let follow_now = |key: &str| crate::follow::now(scene, &at(key));
+    let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now };
+    let grid = GridCx {
+        choices: cx.choices,
+        marks: &marks,
+        applies: &applies,
+        folded: Some(&folded),
+        label_width: cx.label_width,
+        track: style::colour_of(scene, id),
+        follow: Some(&follow),
+    };
+    let out = settings_grid(ui, ("slot", id, slot), defs, get, &grid);
+    fold_groups(inspector, (id, Some(slot)), &out.folds);
+    edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key.into(), value)));
+    edits.extend(out.new_keys.into_iter().map(|key| Edit::NewKey(Some(slot), key.into())));
+    edits.extend(out.follows.into_iter().map(|(key, source)| Edit::Follow(Some(slot), key.into(), source)));
+}
+
 /// A grid of some of a thing's own settings, with folding groups. Its edits are pushed to
 /// `edits`.
 fn own_grid(
@@ -1071,12 +1158,14 @@ fn jump_bar(
     } else {
         vec![(Card::Thing, "Thing")]
     };
-    let cards = own.into_iter().chain(
-        SlotId::ALL
-            .into_iter()
-            .filter(|s| s.in_card_list() && thing.slots.contains_key(s))
-            .map(|s| (Card::Slot(s), kind.slot_label(s))),
-    );
+    // Motion and Bounce share one button, Physics, at the first of them.
+    let mut cards = own;
+    for s in SlotId::ALL.into_iter().filter(|s| s.in_card_list() && thing.slots.contains_key(s)) {
+        let entry = if PHYSICS.contains(&s) { (Card::Physics, "Physics") } else { (Card::Slot(s), kind.slot_label(s)) };
+        if !cards.contains(&entry) {
+            cards.push(entry);
+        }
+    }
     ui.horizontal_wrapped(|ui| {
         for (card, label) in cards {
             if ui.selectable_label(card == at_top, label).clicked() {
@@ -1606,14 +1695,18 @@ mod tests {
         h.get_by_label("+ Add slot").click();
         h.run();
         assert!(h.query_by_label("Particles").is_some());
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert!(h.query_by_label("Particles").is_none(), "the menu closed");
         h.state_mut().scene.things.get_mut(&ThingId(2)).unwrap().slots.remove(&SlotId::Motion);
         h.run();
         h.get_by_label("+ Add slot").click();
         h.run();
         assert!(h.query_by_label("Trail").is_some());
         assert!(h.query_all_by_label("Shader").next().is_none(), "a ball's shaders are layers of its Look");
-        // The menu's Motion, not the look's Motion heading.
-        h.get_all_by_label("Motion").last().expect("the Motion slot").click();
+        assert!(h.query_all_by_label("Motion").next().is_none(), "Motion is added as part of Physics");
+        // The menu's Physics, not the card's header or the bar's button.
+        h.get_all_by_label("Physics").last().expect("the Physics entry").click();
         h.run();
         assert_eq!(h.state().scene.things[&ThingId(2)].slots[&SlotId::Motion].kind, "motion.basic");
     }
@@ -1843,8 +1936,8 @@ mod tests {
 
     #[test]
     fn a_folded_section_with_only_a_pulse_shows_the_dot() {
-        // The ball's Bounce card has a Basics section; start it at its defaults so it starts clean.
-        // The other cards with a Basics section go.
+        // The ball's Bounce card has a Bounce section; start it at its defaults so it starts clean.
+        // The other cards go.
         let mut h = harness(Some(ThingId(2)));
         let s = h.state_mut();
         s.scene.card_mut(ThingId(2), SlotId::Bounce).unwrap().params = bpe_core::Params::default();
@@ -1853,16 +1946,16 @@ mod tests {
         }
         s.resolved = resolve(&s.scene, &s.kit.registry);
         h.run();
-        h.get_by_label("Hide Basics").click();
+        h.get_by_label("Hide Bounce").click();
         h.run();
-        assert!(h.query_by_label("Basics (changed)").is_none(), "Basics holds no changes yet");
+        assert!(h.query_by_label("Bounce (changed)").is_none(), "Bounce holds no changes yet");
         let def = bpe_kit::modules::bounce::BasicBounce::defs().iter().find(|d| d.key == "bounciness").unwrap();
-        assert!(def.flags.pulse && def.group == "Basics");
+        assert!(def.flags.pulse && def.group == "Bounce");
         let address = Address::on(ThingId(2), SlotId::Bounce, def.key);
         let reg = bpe_kit::registry();
         h.state_mut().scene.set_pulse(&reg, &address, bpe_core::PulseSource::Hits, Value::Number(0.25), 0.25).unwrap();
         h.run();
-        assert!(h.query_by_label("Basics (changed)").is_some(), "a pulse moves the video");
+        assert!(h.query_by_label("Bounce (changed)").is_some(), "a pulse moves the video");
         assert!(h.query_by_label("Changes inside").is_some());
     }
 
@@ -2059,10 +2152,11 @@ mod tests {
         assert!(h.query_by_role_and_label(Role::Label, "Rotation").is_some());
     }
 
-    const BAR_LABELS: [&str; 14] = [
+    const BAR_LABELS: [&str; 15] = [
         "Thing",
         "Look",
         "Trail",
+        "Physics",
         "Motion",
         "Bounce",
         "Particles",
@@ -2142,7 +2236,7 @@ mod tests {
     fn the_jump_bar_lists_thing_then_the_slots_in_order() {
         let h = harness_of(a_ball_with_every_slot(), Some(ThingId(2)));
         let labels: Vec<String> = jump_bar(&h).into_iter().map(|(l, _)| l).collect();
-        assert_eq!(labels, ["Thing", "Look", "Trail", "Motion", "Bounce", "Particles"]);
+        assert_eq!(labels, ["Thing", "Look", "Trail", "Physics", "Particles"]);
         assert_eq!(jump_bar(&h)[0], ("Thing".to_owned(), true), "at the top, Thing is selected");
     }
 
@@ -2284,15 +2378,20 @@ mod tests {
     #[test]
     fn a_short_last_card_stays_marked_after_jumping_to_it() {
         let mut h = harness_sized(bpe_kit::new_scene(&bpe_kit::registry()), Some(ThingId(2)), 600.0);
-        the_bar_button(&h, "Bounce").click();
+        // Physics with its Motion, Bounce and Growing folded is short enough not to reach the top.
+        for (slot, group) in [(SlotId::Motion, "Motion"), (SlotId::Bounce, "Bounce"), (SlotId::Bounce, "Growing")] {
+            h.state_mut().inspector.collapsed.insert((ThingId(2), Some(slot), group));
+        }
+        h.run();
+        the_bar_button(&h, "Physics").click();
         h.run();
         let tops = &h.state().inspector.card_tops;
-        let last = tops.iter().find(|(c, _)| *c == Card::Slot(SlotId::Bounce)).expect("Bounce's top").1;
-        assert!(last > 1.0, "Bounce is too short to reach the top, at {last}");
-        assert_eq!(selected_in_bar(&h), ["Bounce"], "the card jumped to stays marked");
+        let last = tops.iter().find(|(c, _)| *c == Card::Physics).expect("Physics' top").1;
+        assert!(last > 1.0, "Physics is too short to reach the top, at {last}");
+        assert_eq!(selected_in_bar(&h), ["Physics"], "the card jumped to stays marked");
         // A scroll hands the mark back to the card at the top.
         wheel(&mut h, 40.0);
-        assert_ne!(selected_in_bar(&h), ["Bounce"]);
+        assert_ne!(selected_in_bar(&h), ["Physics"]);
         assert!(h.state().inspector.jumped.is_none());
     }
 
@@ -2322,5 +2421,87 @@ mod tests {
         assert!(look < -1.0 && trail > 1.0, "scrolled past Look's header but not Trail's: {look}, {trail}");
         let selected: Vec<String> = jump_bar(&h).into_iter().filter(|(_, on)| *on).map(|(l, _)| l).collect();
         assert_eq!(selected, ["Look"]);
+    }
+
+    #[test]
+    fn a_ball_shows_one_physics_card_with_motion_and_bounce_inside() {
+        let h = harness(Some(ThingId(2)));
+        let tops = &h.state().inspector.card_tops;
+        assert_eq!(tops.iter().filter(|(c, _)| *c == Card::Physics).count(), 1, "one Physics card: {tops:?}");
+        assert!(
+            !tops.iter().any(|(c, _)| matches!(c, Card::Slot(SlotId::Motion) | Card::Slot(SlotId::Bounce))),
+            "no Motion or Bounce card of their own: {tops:?}"
+        );
+        assert!(h.query_by_label("Hide Physics").is_some(), "the Physics card's fold arrow");
+        for row in ["Gravity ×", "Bounciness"] {
+            assert!(h.query_all_by_role_and_label(Role::Slider, row).next().is_some(), "{row} shows");
+        }
+        for heading in ["Hide Motion", "Hide Bounce", "Hide Growing", "Show Other balls", "Show Against some things"] {
+            assert!(h.query_by_label(heading).is_some(), "the {heading} heading");
+        }
+        // Motion's settings read first.
+        let gravity = slider_rect(&h, "Gravity ×").top();
+        let bounciness = slider_rect(&h, "Bounciness").top();
+        assert!(gravity < bounciness, "Gravity × at {gravity}, Bounciness at {bounciness}");
+    }
+
+    #[test]
+    fn removing_physics_takes_both_cards_off() {
+        let mut h = harness(Some(ThingId(2)));
+        h.get_by_label("Remove Physics").click();
+        h.run();
+        let slots = &h.state().scene.things[&ThingId(2)].slots;
+        assert!(!slots.contains_key(&SlotId::Motion) && !slots.contains_key(&SlotId::Bounce));
+        assert!(h.query_by_label("Hide Physics").is_none(), "no Physics card left");
+    }
+
+    #[test]
+    fn adding_physics_brings_both_back() {
+        let mut h = harness(Some(ThingId(2)));
+        h.get_by_label("Remove Physics").click();
+        h.run();
+        h.get_by_label("+ Add slot").click();
+        h.run();
+        assert_eq!(h.query_all_by_label("Physics").count(), 1, "one Physics entry in the menu");
+        h.get_by_label("Physics").click();
+        h.run();
+        let slots = &h.state().scene.things[&ThingId(2)].slots;
+        assert_eq!(slots[&SlotId::Motion].kind, "motion.basic");
+        assert_eq!(slots[&SlotId::Bounce].kind, "bounce.basic");
+    }
+
+    #[test]
+    fn a_shape_shows_bounce_settings_only() {
+        let h = harness(Some(ThingId(1)));
+        assert_eq!(h.state().scene.things[&ThingId(1)].kind, "shape", "the new scene's thing 1 is a shape");
+        assert!(h.state().inspector.card_tops.iter().any(|(c, _)| *c == Card::Physics), "a Physics card");
+        assert!(h.query_all_by_label("Takes over").next().is_some());
+        assert!(h.query_all_by_role_and_label(Role::Slider, "Bounciness").next().is_none(), "only with Takes over");
+        assert!(h.query_all_by_label("Gravity ×").next().is_none(), "a shape has no Motion card");
+        assert!(h.query_by_label("Hide Motion").is_none());
+    }
+
+    #[test]
+    fn the_jump_bar_has_one_physics_chip() {
+        let h = harness(Some(ThingId(2)));
+        let labels: Vec<String> = jump_bar(&h).into_iter().map(|(l, _)| l).collect();
+        assert_eq!(labels.iter().filter(|l| *l == "Physics").count(), 1, "{labels:?}");
+        assert!(!labels.iter().any(|l| l == "Motion" || l == "Bounce"), "{labels:?}");
+    }
+
+    #[test]
+    fn editing_inside_physics_edits_the_right_card() {
+        let mut h = harness(Some(ThingId(2)));
+        let card = |h: &Harness<'_, State>, slot| h.state().scene.things[&ThingId(2)].slots[&slot].params.clone();
+        let (motion, bounce) = (card(&h, SlotId::Motion), card(&h, SlotId::Bounce));
+        let rect = slider_rect(&h, "Air drag");
+        drag_slider(&mut h, rect, 0.9);
+        assert_ne!(card(&h, SlotId::Motion), motion, "Air drag is Motion's");
+        assert_eq!(card(&h, SlotId::Bounce), bounce, "Bounce is untouched");
+        let motion = card(&h, SlotId::Motion);
+        let rect = slider_rect(&h, "Bounciness");
+        drag_slider(&mut h, rect, 0.2);
+        assert_ne!(card(&h, SlotId::Bounce), bounce, "Bounciness is Bounce's");
+        assert_eq!(card(&h, SlotId::Motion), motion, "Motion is untouched");
     }
 }

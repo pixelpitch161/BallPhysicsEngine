@@ -11,7 +11,7 @@ pub struct BasicBounce {
     /// How much of its speed into the wall the ball keeps. Above 1 it speeds up.
     #[setting(
         label = "Bounciness",
-        group = "Basics",
+        group = "Bounce",
         when = "thing!=shape or takes_over",
         range(0, 1.5),
         simple,
@@ -22,7 +22,7 @@ pub struct BasicBounce {
     /// The whole speed is multiplied by this on every hit.
     #[setting(
         label = "Speed gain",
-        group = "Basics",
+        group = "Bounce",
         when = "thing!=shape or takes_over",
         range(0.5, 1.5),
         simple,
@@ -32,7 +32,7 @@ pub struct BasicBounce {
     /// The ball never goes faster than this.
     #[setting(
         label = "Top speed",
-        group = "Basics",
+        group = "Bounce",
         when = "thing!=shape or takes_over",
         range(50, 20000),
         unit = "px/s",
@@ -41,10 +41,10 @@ pub struct BasicBounce {
     )]
     pub top_speed: f32,
     /// How much sideways speed rubs off when the ball touches walls or other balls.
-    #[setting(label = "Friction", group = "Basics", when = "thing!=shape or takes_over", range(0, 1), keyframe)]
+    #[setting(label = "Friction", group = "Bounce", when = "thing!=shape or takes_over", range(0, 1), keyframe)]
     pub friction: f32,
     /// Decides every bounce against this thing, even when the other thing is the one moving.
-    #[setting(label = "Takes over", group = "Basics", when = "thing=shape")]
+    #[setting(label = "Takes over", group = "Bounce", when = "thing=shape")]
     pub takes_over: bool,
     /// How much bigger the ball gets on every hit. Negative shrinks it.
     #[setting(label = "Grow per hit", group = "Growing", when = "thing!=shape or takes_over", range(-20, 20), unit = "px", simple, keyframe)]
