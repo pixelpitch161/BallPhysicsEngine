@@ -17,10 +17,8 @@ The work is three parts, each its own plan and PR:
 | 3 | Physics card | `docs/superpowers/plans/2026-11-04-physics-card.md` | nothing (builds beside part 1) |
 | 2 | Trail and Particles layers | `docs/superpowers/plans/2026-11-04-trail-particle-layers.md` | part 1 merged |
 
-**Merge order:** part 3 first (it is small), then part 1, then part 2. Each part bumps the scene file format once:
-part 3 takes **9**, part 1 takes **10**, part 2 takes **11**. If part 1 is ready first, it waits for part 3 or takes
-9 and part 3 rebases onto 10; whichever merges second renumbers. Old files keep opening: each bump has an upgrade
-step in `bpe-core/src/save.rs` (and the kit's load hook for kind renames), even though the owner does not require
+**Merge order:** part 3 and part 1 in either order (they touch different files apart from `inspector.rs`, where part 3 changes only the per-slot card loop), then part 2. Part 3 changes no saved data. Part 1 bumps the scene file format to **9** and part 2 to **10**. Old files keep opening: each bump has an upgrade
+step in `bpe-core/src/save.rs` (the kit registers it with `Registry::add_upgrade`, added in part 1), even though the owner does not require
 backward compatibility, because the upgrades are cheap and the owner was told old scenes would open.
 
 Words used here: a **layer** is a top-level row of a Look's Layers list (Body, Pattern, Outline, ...). A
@@ -63,7 +61,8 @@ are its **piece**.
 ### The kinds
 
 All ten are sub-layer-only kinds (section `LayerSection::Sub`, which replaces `LayerSection::Mask`). Ids are new;
-settings structs are reused where the wording fits.
+settings structs are reused where the wording fits. Balls' kinds are `sub.*` (card `look.layers`); shapes get the
+same ten as `shape.sub.*` (card `look.shape`), with sizes in world pixels.
 
 | Kind id | Name | Settings | What it does to the piece |
 | --- | --- | --- | --- |
@@ -167,15 +166,18 @@ layer above or below the Blend layer.
 - `LayerSection::Mask` is renamed `LayerSection::Sub`. `Layer.parent` keeps meaning "the layer this one belongs
   to"; sub-layers sit straight after their layer in `Slot.layers` (today's mask rule).
 - `Scene::add_mask` becomes `Scene::add_sub_layer(reg, thing, slot, parent, kind) -> Result<LayerId, EditError>`:
-  refuses a parent that is the base, not Drawn, itself a sub-layer, of a kind whose `takes_subs()` is false, or a
-  sub kind that doesn't fit the parent's card (`fits_card`), or a 13th sub-layer (`EditError::NotAccepted`).
+  refuses a parent that is the base, not Drawn, itself a sub-layer, of a kind whose `takes_subs()` is false, a
+  sub kind of another card, one the parent's kind refuses (`LayerKind::takes_sub(sub)`, default yes; part 2's
+  trail and particle layers use it), or a 13th sub-layer (`EditError::NotAccepted`).
 - New `Scene::move_sub_layer(reg, thing, slot, id, to)` moves a sub-layer to place `to` among its siblings.
 - `LayerKind::maskable()` is renamed `takes_subs()`. `CopiedLayer.masks` becomes `subs`.
 - `remove_layer`, `move_layer`, `duplicate_layer`, `copy_layer`, `paste_layer`, `copy_look`, `paste_look` keep
   today's mask behaviour for sub-layers. `paste_layer` of a copied sub-layer onto a top-level layer adds it as the
   layer's last sub-layer (new `Scene::paste_sub_layer(reg, thing, slot, parent, copied)`).
 - A Cut naming another layer keeps naming it by id (today's `target`).
-- Format **10** upgrade (kit load hook): every `layer.mask` layer becomes `sub.cut`, params unchanged. A sub-layer
+- Format **9** upgrade: `Registry::add_upgrade(below, f)` lets the kit register scene fixes that `save::load` runs
+  on files older than `below`; part 1 registers one that renames every `layer.mask` layer to `sub.cut` (params
+  unchanged). A sub-layer
   whose parent is gone is dropped on load (today's rule).
 
 ### Editor (bpe-studio)
@@ -193,7 +195,7 @@ layer above or below the Blend layer.
 ### Testing
 
 - bpe-core: sub-layer edits (add, refuse, order, move within box, duplicate/copy/paste carrying, delete,
-  12 limit, paste a sub-layer onto a layer), the format 10 upgrade (a format 9 file with masks loads with cuts).
+  12 limit, paste a sub-layer onto a layer), the format 9 upgrade (a format 8 file with masks loads with cuts).
 - bpe-kit: `Stack::records` writes sub records after their layer with the right codes and counts; shapes too;
   `topmost_at` unchanged by sub-layers; hit data reaches instances.
 - bpe-gfx pictures (GPU tests, `layers_tests.rs`, `paths_tests.rs`): Glow on an Outline lights the body inside the
@@ -299,7 +301,7 @@ place (`Frame.trails_front`, `Frame.bursts_front`).
 ### Data
 
 - `SlotId::Trail` and `SlotId::Particles` go. New layer section `LayerSection::Around` for the list.
-- Format **11** upgrade: a thing's Trail card becomes a Streak `layer.trail` at the end of its Look's Around list
+- Format **10** upgrade: a thing's Trail card becomes a Streak `layer.trail` at the end of its Look's Around list
   with the same values (`taper` → Width at the tail = 1 - taper, Width curve Even); a Particles card becomes an On
   hit `layer.particles` (`preset` → Made of; other values carried). Keyframes, pulses and Follow sound on those
   settings move to the layered keys.
@@ -317,21 +319,27 @@ place (`Frame.trails_front`, `Frame.bursts_front`).
 
 ## Part 3: Physics card
 
-- `SlotId::Motion` and `SlotId::Bounce` become one `SlotId::Physics` ("Physics"). Its card kind `physics.basic`
-  ("Physics") holds every Motion and Bounce setting with the same keys, ranges and defaults, in folds: **Motion**
-  (Gravity ×, Air drag, Wind), **Bounce** (Bounciness, Speed gain, Top speed, Friction, Takes over), **Growing**,
-  **Other balls**, **Against some things**.
-- Balls start with one Physics card (today they start with Motion and Bounce). Shapes start with one Physics card
-  showing only what applies to them: Motion settings gain `when = "thing!=shape"`; Bounce settings keep their
-  `when`s.
-- The sim is one `ModuleSim` doing today's motion `forces` and today's bounce hooks, unchanged maths. `SIM_SLOTS`
-  becomes `[SlotId::Physics]`.
-- Format **9** upgrade: a thing's Motion and Bounce cards merge into one Physics card (keys don't clash);
-  keyframes, pulses and Follow sound addresses on `SlotId::Motion`/`SlotId::Bounce` move to `SlotId::Physics`.
-- Test scenes and the test helpers (`bpe-kit/src/scenes.rs`, `testing.rs`, `bpe-runtime/src/testing.rs`,
-  `bpe-core/src/testkit.rs`) write Physics cards.
-- **Goldens must not move at all**, in debug and release. That is this part's main check.
-- The timeline's lane names and the inspector's card list follow (`SlotId::ALL`, `name`).
+The owner sees one **Physics** card where Motion and Bounce were. Underneath, the scene keeps its two cards
+(`SlotId::Motion`, `motion.basic` and `SlotId::Bounce`, `bounce.basic`): the merge is in the inspector only. That
+keeps the physics, the save format, keyframe addresses, Follow sound and the runtime untouched, so goldens cannot
+move, and it leaves room for later physics cards to show inside Physics too.
+
+- The inspector draws one card titled **Physics** for a thing that has a Motion card, a Bounce card or both, in
+  the place Motion's card had. Inside it, folds in this order: **Motion** (Gravity ×, Air drag, Wind: Motion's
+  `Basics` group, renamed `Motion`), **Bounce** (Bounce's `Basics` group renamed `Bounce`: Bounciness, Speed gain,
+  Top speed, Friction, Takes over), **Growing**, **Other balls**, **Against some things**. Each fold is the
+  settings grid of the card that owns those settings, so edits, the value menu, keyframes, pulses and Follow sound
+  work exactly as today.
+- The header's fold arrow folds the whole card; the folded summary counts both cards' settings. **Remove** takes
+  both cards off. The "+ Add" menu lists **Physics** once (adding whichever of Motion/Bounce the thing lacks and
+  fits). The jump bar shows one **Physics** chip. Problems on either card show under the header.
+- Shapes have only a Bounce card, so their Physics card shows only Bounce's folds (with today's `when`s).
+- The timeline groups lanes by thing, not card, so it needs no change; its "physics setting" test
+  (`lanes.rs`) stays.
+- Testing: kittests that a ball shows one Physics card holding both grids (Gravity × and Bounciness rows under
+  it, no separate Motion/Bounce headers), that Remove takes both, that "+ Add" Physics brings both back, that a
+  shape's Physics shows Bounce settings only, and that the jump bar has one Physics chip. Goldens untouched.
+- No format bump.
 
 ---
 
