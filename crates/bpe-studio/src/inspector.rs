@@ -137,6 +137,9 @@ pub(crate) enum Edit {
     /// A key at the playhead holding the setting's value as it stands (a slot's setting, or the
     /// thing's own with `None`), for every selected thing that has the setting.
     NewKey(Option<SlotId>, String),
+    /// The setting (a slot's, or the thing's own with `None`) follows a part of a shape's sound,
+    /// or stops following with `None`, for every selected thing that has the setting.
+    Follow(Option<SlotId>, String, Option<bpe_core::PulseSource>),
     /// A card for a slot the thing doesn't have yet, with its kind's starting settings, for
     /// every selected thing of the kind without one.
     AddSlot(SlotId),
@@ -486,6 +489,9 @@ pub fn show(
                     |d: &SettingDef| d.applies(Some(&thing.kind), &|k| scene.value_at_time(reg, &at(k), time));
                 let shut = folded_groups(inspector, (id, Some(slot)), defs);
                 let folded = |group: &str| shut.contains(group);
+                let follow_menu = crate::follow::menu(scene);
+                let follow_now = |key: &str| crate::follow::now(scene, &at(key));
+                let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now };
                 let cx = GridCx {
                     choices: &choices,
                     marks: &marks,
@@ -493,11 +499,13 @@ pub fn show(
                     folded: Some(&folded),
                     label_width: lw,
                     track: style::colour_of(scene, id),
+                    follow: Some(&follow),
                 };
                 let out = settings_grid(ui, ("slot", id, slot), defs, get, &cx);
                 fold_groups(inspector, (id, Some(slot)), &out.folds);
                 edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key.into(), value)));
                 edits.extend(out.new_keys.into_iter().map(|key| Edit::NewKey(Some(slot), key.into())));
+                edits.extend(out.follows.into_iter().map(|(key, source)| Edit::Follow(Some(slot), key.into(), source)));
             });
         }
 
@@ -579,6 +587,14 @@ pub fn show(
                 for t in reached_key(scene, &selected, id, slot, &key) {
                     let a = Address { thing: t, slot, key: key.clone() };
                     any |= new_key(scene, reg, &a, time);
+                }
+                any
+            }
+            Edit::Follow(slot, key, source) => {
+                let mut any = false;
+                for t in reached_key(scene, &selected, id, slot, &key) {
+                    let a = Address { thing: t, slot, key: key.clone() };
+                    any |= crate::follow::set(scene, reg, &a, source);
                 }
                 any
             }
@@ -920,6 +936,9 @@ fn own_grid(
         Some(mark_for(scene, def, &own(key)))
     };
     let folded = |group: &str| is_folded(inspector, (id, None), group);
+    let follow_menu = crate::follow::menu(scene);
+    let follow_now = |key: &str| crate::follow::now(scene, &own(key));
+    let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now };
     let grid_cx = GridCx {
         choices: cx.choices,
         marks: &marks,
@@ -927,11 +946,13 @@ fn own_grid(
         folded: Some(&folded),
         label_width: cx.label_width,
         track: style::colour_of(scene, id),
+        follow: Some(&follow),
     };
     let out = settings_grid(ui, grid, defs, get, &grid_cx);
     fold_groups(inspector, (id, None), &out.folds);
     edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetOwn(key.into(), value)));
     edits.extend(out.new_keys.into_iter().map(|key| Edit::NewKey(None, key.into())));
+    edits.extend(out.follows.into_iter().map(|(key, source)| Edit::Follow(None, key.into(), source)));
 }
 
 /// One of the root's cards: the root's own settings whose group is `name`, under a title that
@@ -1375,6 +1396,57 @@ mod tests {
         h.run();
         assert_eq!(h.state().scene, before, "a right-click never changes a value");
         assert!(h.query_by_label("Create Keyframe").is_some(), "the menu is open");
+    }
+
+    /// The test scene with the starter sound on its shape (thing 1).
+    fn sounding_scene() -> Scene {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        bpe_kit::ensure_mixer(&mut scene, &reg);
+        let card = bpe_kit::sound::starter_voice(&reg);
+        scene.things.get_mut(&ThingId(1)).unwrap().slots.insert(SlotId::Sound, card);
+        scene
+    }
+
+    #[test]
+    fn follow_sound_menu_adds_a_band() {
+        use bpe_core::{LayerId, PulseSource, SoundSource};
+        let scene = sounding_scene();
+        let shape = scene.things[&ThingId(1)].name.clone();
+        let mut h = harness_of(scene, Some(ThingId(2)));
+        pick_layer(&mut h, "Glow");
+        menu_of(&mut h, "Strength");
+        h.get_by_label("Follow sound").click();
+        h.run();
+        h.get_by_label(&shape).click();
+        h.run();
+        h.get_by_label("ADSR 1").click();
+        h.run();
+        let glow = Address::on(ThingId(2), SlotId::Look, BALL_GLOW);
+        let pulse = &h.state().scene.pulses[&glow];
+        assert_eq!(pulse.source, PulseSource::Sound { shape: ThingId(1), source: SoundSource::Modulator(LayerId(0)) });
+        assert_eq!(pulse.amount, Value::Number(0.5), "a quarter of Strength's 0..2");
+        assert!(h.query_by_label(&format!("Follows {shape} · ADSR 1")).is_some(), "the band shows");
+        // Following a bus, then stopping.
+        menu_of(&mut h, "Strength");
+        h.get_by_label("Follow sound").click();
+        h.run();
+        h.get_by_label("Bus 1").click();
+        h.run();
+        let source = h.state().scene.pulses[&glow].source;
+        assert!(matches!(source, PulseSource::Sound { source: SoundSource::Bus(1), .. }), "{source:?}");
+        menu_of(&mut h, "Strength");
+        h.get_by_label("Stop following sound").click();
+        h.run();
+        assert!(!h.state().scene.pulses.contains_key(&glow));
+        assert!(h.query_by_label(&format!("Follows {shape} · ADSR 1")).is_none());
+    }
+
+    #[test]
+    fn without_a_sounding_shape_follow_sound_is_greyed_out() {
+        let mut h = harness(Some(ThingId(2)));
+        menu_of(&mut h, "Size");
+        assert!(h.get_by_label("Follow sound").accesskit_node().is_disabled());
     }
 
     #[test]

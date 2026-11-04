@@ -532,24 +532,35 @@ fn snap(studio: &Studio, ruler: &Ruler, x: f32) -> f64 {
 fn pulse_lane(ui: &mut Ui, studio: &mut Studio, lane: &Lane, colour: Option<Color32>, ruler: &Ruler) {
     let (_rect, strip, _response) = lane_frame(ui, studio, lane, colour, ruler);
     let a = &lane.address;
+    // A setting following sound says what it follows; its source is picked from its menu.
+    let follows = studio
+        .scene
+        .pulses
+        .get(a)
+        .filter(|p| matches!(p.source, PulseSource::Sound { .. }))
+        .map(|p| crate::follow::words(&studio.scene, &p.source));
     let Some(pulse) = studio.scene.pulses.get_mut(a) else { return };
     let mut remove = false;
     let mut child = ui.new_child(
         UiBuilder::new().max_rect(strip.shrink2(egui::vec2(6.0, 0.0))).layout(Layout::left_to_right(Align::Center)),
     );
     child.spacing_mut().item_spacing.x = 6.0;
-    child.label(RichText::new("Pulse with").small().color(style::MUTED));
-    egui::ComboBox::from_id_salt(("pulse-source", &lane.label)).selected_text(pulse.source.name()).width(80.0).show_ui(
-        &mut child,
-        |ui| {
-            for source in PulseSource::NAMED {
-                if source == PulseSource::Hits && lane.physics {
-                    continue;
+    if let Some(words) = &follows {
+        child.label(RichText::new(format!("Follows {words}")).small().color(style::MUTED));
+    } else {
+        child.label(RichText::new("Pulse with").small().color(style::MUTED));
+        egui::ComboBox::from_id_salt(("pulse-source", &lane.label))
+            .selected_text(pulse.source.name())
+            .width(80.0)
+            .show_ui(&mut child, |ui| {
+                for source in PulseSource::NAMED {
+                    if source == PulseSource::Hits && lane.physics {
+                        continue;
+                    }
+                    ui.selectable_value(&mut pulse.source, source, source.name());
                 }
-                ui.selectable_value(&mut pulse.source, source, source.name());
-            }
-        },
-    );
+            });
+    }
     child.label(RichText::new("Amount").small().color(style::MUTED));
     match &mut pulse.amount {
         Value::Number(x) => _ = child.add(egui::DragValue::new(x).speed(0.01)),
@@ -561,9 +572,12 @@ fn pulse_lane(ui: &mut Ui, studio: &mut Studio, lane: &Lane, colour: Option<Colo
         Value::Color(_) => _ = child.label(RichText::new("towards white").small()),
         _ => {}
     }
-    child.label(RichText::new("Decay").small().color(style::MUTED));
-    child.add(egui::DragValue::new(&mut pulse.decay).speed(0.01).range(0.01..=5.0).suffix(" s"));
-    if child.add(egui::Button::new("×").small()).on_hover_text("Stop pulsing").clicked() {
+    if follows.is_none() {
+        child.label(RichText::new("Decay").small().color(style::MUTED));
+        child.add(egui::DragValue::new(&mut pulse.decay).speed(0.01).range(0.01..=5.0).suffix(" s"));
+    }
+    let stop = if follows.is_some() { "Stop following sound" } else { "Stop pulsing" };
+    if child.add(egui::Button::new("×").small()).on_hover_text(stop).clicked() {
         remove = true;
     }
     if remove {

@@ -37,7 +37,7 @@ pub const LEAVE_MS: f32 = 10.0;
 /// The most hits one note takes in one block (more are let go).
 const MAX_EVENTS: usize = 8;
 /// A note with no envelope on its levels lasts this long.
-const PLAIN_NOTE_S: f32 = 0.1;
+pub(crate) const PLAIN_NOTE_S: f32 = 0.1;
 /// The ball an audition counts as.
 const AUDITION_BALL: Party = Party { thing: ThingId::ROOT, item: u32::MAX };
 /// Auditions waiting for the next block.
@@ -120,11 +120,11 @@ pub struct ModsSpec {
 }
 
 impl ModsSpec {
-    fn lfo_per_note(&self, i: usize) -> bool {
+    pub(crate) fn lfo_per_note(&self, i: usize) -> bool {
         self.lfos[i].settings.start == LfoStart::PerNote
     }
 
-    fn dist_per_note(&self, i: usize) -> bool {
+    pub(crate) fn dist_per_note(&self, i: usize) -> bool {
         self.dists[i].settings.follows == Follows::EachNotesBall
     }
 }
@@ -141,7 +141,7 @@ enum Src {
 }
 
 /// An LFO's settings for a block from the knobs `kv` (keys and routes applied).
-fn lfo_params(spec: &LfoSpec, i: usize, kv: &[f32], tempo: &crate::TempoMap) -> LfoParams {
+pub(crate) fn lfo_params(spec: &LfoSpec, i: usize, kv: &[f32], tempo: &crate::TempoMap) -> LfoParams {
     let at = |key: usize| kv[k::lfo(i, key)];
     let rate = crate::mods::lfo_rate_hz(&spec.settings, at(k::LFO_RATE) as f64, tempo);
     LfoParams {
@@ -156,7 +156,7 @@ fn lfo_params(spec: &LfoSpec, i: usize, kv: &[f32], tempo: &crate::TempoMap) -> 
 }
 
 /// A Distance's settings for a block from the knobs `kv`.
-fn dist_params(spec: &DistSpec, i: usize, kv: &[f32]) -> DistanceParams {
+pub(crate) fn dist_params(spec: &DistSpec, i: usize, kv: &[f32]) -> DistanceParams {
     let at = |key: usize| kv[k::dist(i, key)];
     DistanceParams {
         near: at(k::NEAR),
@@ -356,7 +356,7 @@ impl Scratch {
 }
 
 /// A dB knob's gain, with the bottom of its range silent.
-fn knob_gain(db: f32) -> f32 {
+pub(crate) fn knob_gain(db: f32) -> f32 {
     if db <= SILENT_DB + 1e-3 { 0.0 } else { db_to_gain(db) }
 }
 
@@ -439,7 +439,7 @@ pub struct ShapeVoice {
 }
 
 /// The smoothed knobs' places: per oscillator Gain, Level, Sub level, then Volume.
-const SMOOTHED: [usize; 7] = [
+pub(crate) const SMOOTHED: [usize; 7] = [
     k::osc(0, k::GAIN),
     k::osc(0, k::LEVEL),
     k::osc(0, k::SUB_LEVEL),
@@ -1496,7 +1496,7 @@ impl ShapeVoice {
 }
 
 /// Envelope `e`'s settings from the knobs `kv`.
-fn env_params_of(kv: &[f32], e: usize) -> EnvParams {
+pub(crate) fn env_params_of(kv: &[f32], e: usize) -> EnvParams {
     let at = |key: usize| kv[k::env(e, key)];
     EnvParams {
         delay: at(k::DELAY) / 1000.0,
@@ -1509,7 +1509,7 @@ fn env_params_of(kv: &[f32], e: usize) -> EnvParams {
     }
 }
 
-fn params_velocity(now: &Values, e: usize) -> f32 {
+pub(crate) fn params_velocity(now: &Values, e: usize) -> f32 {
     (now[k::env(e, k::VELOCITY)] / 100.0).clamp(0.0, 1.0)
 }
 

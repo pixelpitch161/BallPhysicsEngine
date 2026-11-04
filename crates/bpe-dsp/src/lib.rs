@@ -20,7 +20,7 @@ pub mod warp;
 
 pub use db::{db_to_gain, gain_to_db};
 pub use denormal::FlushGuard;
-pub use envelope::{EnvParams, Envelope, Stage};
+pub use envelope::{EnvParams, Envelope, Stage, level_at};
 pub use filter::{FilterParams, FilterType, StereoFilter, response_db};
 pub use limiter::TruePeakLimiter;
 pub use loudness::LoudnessMeter;

@@ -60,6 +60,8 @@ pub struct GridCx<'a> {
     pub label_width: f32,
     /// The thing's track colour: the label colour of a setting with keys or a pulse.
     pub track: Color32,
+    /// Follow sound for these settings (none: the menu doesn't offer it).
+    pub follow: Option<&'a crate::follow::FollowCx<'a>>,
 }
 
 /// How wide the label column of every settings grid in a panel `panel` wide is: the Design
@@ -139,6 +141,8 @@ pub struct GridOutcome {
     pub new_keys: Vec<&'static str>,
     /// Groups folded shut (true) or opened from their heading's arrow.
     pub folds: Vec<(&'static str, bool)>,
+    /// Settings that start following sound (or stop, with `None`) from their menu.
+    pub follows: Vec<(&'static str, Option<bpe_core::PulseSource>)>,
 }
 
 /// `electric_piano` to "Electric piano".
@@ -321,6 +325,7 @@ fn grid_row(
         RowAction::Nothing => {}
         RowAction::Changed => out.changes.push((def.key, value)),
         RowAction::CreateKey => out.new_keys.push(def.key),
+        RowAction::Follow(source) => out.follows.push((def.key, source)),
     }
 }
 
@@ -332,6 +337,8 @@ pub enum RowAction {
     Changed,
     /// A key at the playhead, holding the value as it stands.
     CreateKey,
+    /// Follow this part of the sound (or stop following, with `None`).
+    Follow(Option<bpe_core::PulseSource>),
 }
 
 /// The arrow that folds a card or a group of settings away (pointing right) and back (pointing
@@ -396,9 +403,13 @@ pub fn setting(
     if resettable(&name, value, &fallback) || (!gradient && resettable(&response, value, &fallback)) {
         changed = true;
     }
-    let mut picks = vec![row_menu(&name, def, unit, &before, mark, cx.choices, None)];
+    let follow = cx.follow.map(|f| (f, def.key));
+    if let Some(now) = follow.and_then(|(f, key)| (f.now)(key)) {
+        follow_band(ui, def, value, &response, &now);
+    }
+    let mut picks = vec![row_menu_following(&name, def, unit, &before, mark, cx.choices, None, follow)];
     if !own_clicks {
-        picks.push(row_menu(&response, def, unit, &before, mark, cx.choices, None));
+        picks.push(row_menu_following(&response, def, unit, &before, mark, cx.choices, None, follow));
     }
     ui.end_row();
     let mut action = if changed { RowAction::Changed } else { RowAction::Nothing };
@@ -410,9 +421,34 @@ pub fn setting(
                 action = RowAction::Changed;
             }
             MenuPick::CreateKey => action = RowAction::CreateKey,
+            MenuPick::Follow(source) => action = RowAction::Follow(source),
         }
     }
     action
+}
+
+/// The band under a following setting's slider: from its value to where the sound takes it at
+/// full level, in the colour of what it follows, named "Follows <what>" for the screen reader.
+fn follow_band(ui: &mut Ui, def: &SettingDef, value: &Value, response: &Response, now: &crate::follow::Following) {
+    let rail = ui.ctx().data(|d| d.get_temp::<egui::Rect>(response.id.with("rail"))).unwrap_or(response.rect);
+    let x = match value {
+        Value::Number(x) => *x,
+        Value::Int(x) => *x as f64,
+        _ => 0.0,
+    };
+    let (lo, hi) = def.range.or(def.span).unwrap_or((x.min(x + now.amount), x.max(x + now.amount)));
+    let at = |v: f64| {
+        let t = if hi > lo { ((v - lo) / (hi - lo)).clamp(0.0, 1.0) } else { 0.0 };
+        rail.left() + rail.width() * t as f32
+    };
+    let (a, b) = (at(x), at(x + now.amount));
+    let band =
+        egui::Rect::from_x_y_ranges(a.min(b)..=a.max(b).max(a.min(b) + 2.0), rail.bottom() - 3.0..=rail.bottom());
+    let r = ui.interact(band, response.id.with("follow band"), Sense::hover());
+    let words = format!("Follows {}", now.words);
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, words.clone()));
+    r.on_hover_text(&words);
+    ui.painter().rect_filled(band, 1.5, now.colour);
 }
 
 /// Whether the right mouse button is down or was just let go: a slider or number box under it is
@@ -454,6 +490,8 @@ enum MenuPick {
     /// The copied value, made to fit the setting.
     Paste(Value),
     CreateKey,
+    /// Follow sound ▸ …, or Stop following sound (`None`).
+    Follow(Option<bpe_core::PulseSource>),
 }
 
 /// The right-click menu of one setting's row: Copy Value, Paste Value (naming what is copied) and
@@ -466,7 +504,22 @@ fn row_menu(
     value: &Value,
     mark: Option<KeyMark>,
     choices: &TargetChoices,
+    extra: Option<&mut dyn FnMut(&mut Ui)>,
+) -> MenuPick {
+    row_menu_following(response, def, unit, value, mark, choices, extra, None)
+}
+
+/// [`row_menu`] with Follow sound under Create Keyframe, when `follow` is given.
+#[allow(clippy::too_many_arguments)]
+fn row_menu_following(
+    response: &Response,
+    def: &SettingDef,
+    unit: &str,
+    value: &Value,
+    mark: Option<KeyMark>,
+    choices: &TargetChoices,
     mut extra: Option<&mut dyn FnMut(&mut Ui)>,
+    follow: Option<(&crate::follow::FollowCx, &str)>,
 ) -> MenuPick {
     let mut pick = MenuPick::Nothing;
     let open = if response.container_secondary_clicked() {
@@ -508,11 +561,62 @@ fn row_menu(
             pick = MenuPick::CreateKey;
             ui.close();
         }
+        if let Some((f, key)) = follow {
+            follow_items(ui, def, f, (f.now)(key), &mut pick);
+        }
         if let Some(extra) = extra.as_mut() {
             extra(ui);
         }
     });
     pick
+}
+
+/// Follow sound ▸ (a shape ▸ its modulators and Level; the buses), and Stop following sound
+/// when the setting follows already.
+fn follow_items(
+    ui: &mut Ui,
+    def: &SettingDef,
+    f: &crate::follow::FollowCx,
+    now: Option<crate::follow::Following>,
+    pick: &mut MenuPick,
+) {
+    use bpe_core::{PulseSource, SoundSource};
+    let can = crate::follow::can_follow(def);
+    let any = !f.menu.shapes.is_empty() || !f.menu.buses.is_empty();
+    let why = if !can { "This setting can't follow sound" } else { "No shape makes sound yet" };
+    ui.add_enabled_ui(can && any, |ui| {
+        let r = ui.menu_button("Follow sound", |ui| {
+            for shape in &f.menu.shapes {
+                ui.menu_button(&shape.name, |ui| {
+                    for (part, name) in &shape.parts {
+                        let source = PulseSource::Sound { shape: shape.id, source: *part };
+                        let on = now.as_ref().is_some_and(|n| n.source == source);
+                        if ui.add(egui::Button::selectable(on, name)).clicked() {
+                            *pick = MenuPick::Follow(Some(source));
+                            ui.close();
+                        }
+                    }
+                });
+            }
+            for (n, name) in &f.menu.buses {
+                let shape = f.menu.shapes.first().map_or(ThingId::ROOT, |s| s.id);
+                let source = PulseSource::Sound { shape, source: SoundSource::Bus(*n) };
+                let on = now.as_ref().is_some_and(
+                    |x| matches!(x.source, PulseSource::Sound { source: SoundSource::Bus(m), .. } if m == *n),
+                );
+                let label = if name.trim().is_empty() { format!("Bus {n}") } else { name.clone() };
+                if ui.add(egui::Button::selectable(on, label)).clicked() {
+                    *pick = MenuPick::Follow(Some(source));
+                    ui.close();
+                }
+            }
+        });
+        r.response.on_hover_text("Move this setting with a shape's sound").on_disabled_hover_text(why);
+    });
+    if now.is_some() && ui.button("Stop following sound").clicked() {
+        *pick = MenuPick::Follow(None);
+        ui.close();
+    }
 }
 
 /// What the value menu on a control outside a settings grid (a knob) asked for.
@@ -547,7 +651,7 @@ pub(crate) fn value_menu_with(
     extra: Option<&mut dyn FnMut(&mut Ui)>,
 ) -> ValueMenu {
     match row_menu(response, def, unit, value, mark, choices, extra) {
-        MenuPick::Nothing => ValueMenu::Nothing,
+        MenuPick::Nothing | MenuPick::Follow(_) => ValueMenu::Nothing,
         MenuPick::Paste(v) => ValueMenu::Paste(v),
         MenuPick::CreateKey => ValueMenu::CreateKey,
     }
@@ -723,11 +827,17 @@ pub fn number_slider<N: egui::emath::Numeric>(
         slider = slider.logarithmic(true);
     }
     // The rail left of the knob is a lighter grey; nothing else here uses the selection colour.
-    ui.scope(|ui| {
-        ui.visuals_mut().selection.bg_fill = style::SLIDER_FILL;
-        ui.add(slider.trailing_fill(true))
-    })
-    .inner
+    let width = ui.spacing().slider_width;
+    let r = ui
+        .scope(|ui| {
+            ui.visuals_mut().selection.bg_fill = style::SLIDER_FILL;
+            ui.add(slider.trailing_fill(true))
+        })
+        .inner;
+    // Where the rail is, for a following setting's band.
+    let rail = egui::Rect::from_min_size(r.rect.min, Vec2::new(width.min(r.rect.width()), r.rect.height()));
+    ui.ctx().data_mut(|d| d.insert_temp(r.id.with("rail"), rail));
+    r
 }
 
 fn widget(
@@ -1181,6 +1291,7 @@ mod tests {
                         folded: None,
                         label_width: label_width(420.0),
                         track: style::TEXT,
+                        follow: None,
                     };
                     let got = settings_grid(ui, "g", defs, |k| state.values[k].clone(), &cx);
                     for (key, value) in got.changes {
@@ -1392,6 +1503,7 @@ mod tests {
                     folded: Some(&|_| false),
                     label_width: label_width(420.0),
                     track: style::TEXT,
+                    follow: None,
                 };
                 settings_grid(ui, "g", defs, |k| value(k).unwrap(), &cx);
             });
@@ -1446,6 +1558,7 @@ mod tests {
                 folded: Some(&|_| false),
                 label_width: label_width(420.0),
                 track: style::TEXT,
+                follow: None,
             };
             settings_grid(ui, "g", defs, |k| value(k).unwrap(), &cx);
         });

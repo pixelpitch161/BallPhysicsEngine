@@ -11,6 +11,7 @@ pub mod pairs;
 pub mod playback;
 pub mod plugins;
 pub mod pose;
+pub mod sound;
 #[cfg(test)]
 pub mod testing;
 pub mod walls;
@@ -24,5 +25,6 @@ pub use pairs::{Grid, Pairs, Support};
 pub use playback::Playback;
 pub use plugins::{Limits, ModuleSim, ModuleState, PairRule, SimCx, Sims, ThingSim, ThingState, state, state_mut};
 pub use pose::Pose;
+pub use sound::{LevelsAt, SoundAt, SoundMaker};
 pub use walls::{Contact, MAX_SIDES, Outline, Wall, keep_clear, keep_clear_from, reflect, wall_velocity};
 pub use world::{World, fingerprint, physics_animation};

@@ -278,6 +278,9 @@ fn shape_body(ui: &mut Ui, cx: &LookCx, edits: &mut Vec<Edit>) {
         Some(mark_for(scene, def, &own(key)))
     };
     let applies = |d: &SettingDef| d.applies(Some(&thing.kind), &|k| scene.value_at_time(reg, &own(k), time));
+    let follow_menu = crate::follow::menu(scene);
+    let follow_now = |key: &str| crate::follow::now(scene, &own(key));
+    let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now };
     let grid = GridCx {
         choices: cx.choices,
         marks: &marks,
@@ -285,10 +288,12 @@ fn shape_body(ui: &mut Ui, cx: &LookCx, edits: &mut Vec<Edit>) {
         folded: None,
         label_width: cx.label_width,
         track: style::colour_of(scene, cx.id),
+        follow: Some(&follow),
     };
     let out = settings_grid(ui, ("shape body", cx.id), &defs, get, &grid);
     edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetOwn(key.into(), value)));
     edits.extend(out.new_keys.into_iter().map(|key| Edit::NewKey(None, key.into())));
+    edits.extend(out.follows.into_iter().map(|(key, source)| Edit::Follow(None, key.into(), source)));
     ui.add_space(4.0);
     ui.label(RichText::new("Drag corners and sides in the video to mould it.").small().color(style::MUTED));
 }
@@ -303,6 +308,9 @@ fn size_row(ui: &mut Ui, cx: &LookCx, edits: &mut Vec<Edit>) {
     let get = |key: &str| cx.scene.value_at_time(cx.reg(), &own(key), cx.time).unwrap_or(Value::Number(0.0));
     let marks = |key: &str| (key == def.key).then(|| mark_for(cx.scene, &def, &own(key)));
     let applies = |_: &SettingDef| true;
+    let follow_menu = crate::follow::menu(cx.scene);
+    let follow_now = |key: &str| crate::follow::now(cx.scene, &own(key));
+    let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now };
     let grid = GridCx {
         choices: cx.choices,
         marks: &marks,
@@ -310,10 +318,12 @@ fn size_row(ui: &mut Ui, cx: &LookCx, edits: &mut Vec<Edit>) {
         folded: None,
         label_width: cx.label_width,
         track: style::colour_of(cx.scene, cx.id),
+        follow: Some(&follow),
     };
     let out = settings_grid(ui, ("look size", cx.id), std::slice::from_ref(&def), get, &grid);
     edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetOwn(key.into(), value)));
     edits.extend(out.new_keys.into_iter().map(|key| Edit::NewKey(None, key.into())));
+    edits.extend(out.follows.into_iter().map(|(key, source)| Edit::Follow(None, key.into(), source)));
 }
 
 /// Layer `layer`'s settings grid. Its edits carry the layered keys.
@@ -335,6 +345,9 @@ pub(crate) fn layer_settings(
     let applies = |d: &SettingDef| d.applies(kind.as_deref(), &|k| scene.value_at_time(reg, &cx.at(layer, k), time));
     let shut = crate::inspector::folded_groups(inspector, (cx.id, Some(cx.slot)), defs);
     let folded = |group: &str| shut.contains(group);
+    let follow_menu = crate::follow::menu(scene);
+    let follow_now = |key: &str| crate::follow::now(scene, &cx.at(layer, key));
+    let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now };
     let grid = GridCx {
         choices: cx.choices,
         marks: &marks,
@@ -342,12 +355,15 @@ pub(crate) fn layer_settings(
         folded: Some(&folded),
         label_width: cx.label_width,
         track: style::colour_of(scene, cx.id),
+        follow: Some(&follow),
     };
     let out = settings_grid(ui, ("layer", cx.id, cx.slot, layer.0), defs, get, &grid);
     crate::inspector::fold_groups(inspector, (cx.id, Some(cx.slot)), &out.folds);
     let slot = cx.slot;
     edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, layered_key(layer, key), value)));
     edits.extend(out.new_keys.into_iter().map(|key| Edit::NewKey(Some(slot), layered_key(layer, key))));
+    edits
+        .extend(out.follows.into_iter().map(|(key, source)| Edit::Follow(Some(slot), layered_key(layer, key), source)));
 }
 
 pub(crate) fn mark_for(scene: &Scene, def: &SettingDef, a: &Address) -> KeyMark {

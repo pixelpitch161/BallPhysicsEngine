@@ -13,8 +13,9 @@ version before that is **Version 1**, kept on the `version-1` branch (with its e
 windows, the canvas and paint marks, the whole sound and chords system (`bpe-synth`, `bpe-mix`), and the Obstacle,
 Liquid, Soft body, Swarm, Field, Meter, Emitter and Text things. A new sound system is being built in six parts
 (spec `docs/superpowers/specs/2026-11-04-sound-system-design.md`, plans in `docs/superpowers/plans/sound-system/`,
-decisions log `decisions.md` there); parts 1 (engine, playback, export audio, Master), 2 (shape voice, Sound
-tab) and 6 (buses, console-strip Mixer, bus effects, stems and MIDI export) are in.
+decisions log `decisions.md` there); all six parts are in: 1 (engine, playback, export audio, Master), 2 (shape
+voice, Sound tab), 3 (oscillator layer chains), 4 (modulators, drones, Follow sound), 5 (notes, scales, slots) and
+6 (buses, console-strip Mixer, bus effects, stems and MIDI export).
 
 Rework step 2 (same day) dropped shared modules: every thing owns its settings. A thing's cards (Look, Trail,
 Motion, Bounce, Particles, Shader) live in `Thing.slots` as `Slot { kind, params, stash }` (balls have no Shader card and shapes none of Trail, Motion or Shader: effects on a thing are Shader layers of its Look; only the scene settings keep a Shader card, the picture's Effects); nothing is shared,
@@ -64,13 +65,18 @@ Dependencies go bottom to top:
   `SlotId::Mixer` (last in `SlotId::ALL`, `in_card_list()` false: the inspector doesn't list them), layer sections
   `Chain`/`Modulator`/`Effect` (`Layer.lane` puts chain and effect layers in lanes; `move_layer` keeps them in
   their lane; `add_layer_in`), `Value::Routes` (`ModRoute`, key `ROUTES_KEY`; removing a modulator drops its
-  routes) and `Value::Slots` (`NoteSlot`, key `SLOTS_KEY`) in `sound_values.rs`, and `PulseSource::Sound`.
+  routes) and `Value::Slots` (`NoteSlot`, key `SLOTS_KEY`) in `sound_values.rs`, and `PulseSource::Sound`
+  (`SoundSource::Modulator/Level/Bus`): Follow sound. `Inputs { hits, sound }` hands pulses a `SoundLevels`; a
+  Sound pulse may go on any keyframe setting (`set_pulse`), a Hits pulse only on `pulse` ones.
 - `bpe-runtime`: the world, the fixed 240 Hz staged step loop, the shared collision pass (`pairs.rs`, `walls.rs`),
   the camera, the event log (`events.rs`) and playback/snapshots. The generic `ThingSim` hooks (spawn, forces,
   settle, after_step) stay for new thing kinds even where no current kind uses them. Walls are **two-sided**:
   `keep_clear` keeps a ball on the side its centre was on at the start of the step (`Bodies.previous`); a hollow
   `Outline::Ring`/`Box` with the ball inside keeps the exact old maths (goldens), `Outline::Path` is a free outline
-  (even-odd inside), and `Wall.solid` makes a filled shape that balls bounce off from outside only.
+  (even-odd inside), and `Wall.solid` makes a filled shape that balls bounce off from outside only. Follow sound
+  (`sound.rs`): `SoundAt` (a scene's sound levels from the world and log), `SoundMaker` in `Sims.sound` (a world
+  whose physics settings follow sound gets one at build and reads it at the previous step's end in `animate`),
+  `LevelsAt` adapts it to core's `SoundLevels`; `fingerprint` then counts every Sound/Mixer card.
 - `bpe-gfx`: the renderer. Things draw into a frame (`frame.rs`) and the GPU draws it: gradients, blend, grade,
   shader effects, particles and trails. Shapes draw through `shaders/paths.wgsl` (`Frame.paths`, `PathInstance`,
   `Frame.push_path`: a filled or banded outline from `Frame.path_points`, group 2 binding 4 beside the layer records,
@@ -196,8 +202,21 @@ Dependencies go bottom to top:
   Export extras (`offline.rs` `render_sound` with `Extras`): `stems` (24-bit WAV per bus + Master,
   `stem_paths`) and `midi` (`midi.rs`: `NoteLog` from `Engine::record_notes`, `write_midi`, format 1, PPQ
   960).
+  **Modulators** (part 4): kit layers `sound.distance`, `sound.lfo`, `sound.hit` (`bpe-kit/src/sound/mods.rs`,
+  `MOD_KINDS`, `add_modulator`, at most `MAX_OF_EACH` 8 of a kind, `turn_on_distance`) beside the ADSRs;
+  `mods/` holds `LfoMod`, `DistanceMod` (`distance_value`, Centre/Edge, Nearest/Each note's ball/Average/How
+  many) and `HitMod` (`hit_values`: strength, place on edge, side, ball number, random). Shared ones run once a
+  block in `ModsSpec.order` (`mods/order.rs`), per-note ones live in each note; every number knob of the card is a
+  route target (`patch::routable`). `Meters` carries each shape's modulator values and last hits
+  (`mod_value`, `recent_hits`). `VoiceSettings.play_when` (`PlayWhen`: On hit / Always / In range of
+  `play_zone`) makes drones (`ShapeVoice::hold`). **Follow sound**: `control.rs` `ControlSampler` (built from
+  `patch::shape_specs`, no wavetables) works modulators, `Level` and `Bus(n)` out from the log's accepted hits
+  and the world at a moment (`bpe_dsp::level_at` closed-form envelopes) with no audio; `FollowSound` is its
+  `SoundMaker` and `bpe_sound::kit()` the kit with it (the editor and the renderer use it, so physics follows
+  sound everywhere). `tests/follow.rs` checks it against the engine (`Engine::voice_time`).
 - `bpe-cli`: headless export. With sound it renders the WAV first (into a temp folder) and muxes it as AAC 320 kbps
-  48 kHz (`AUDIO_ARGS`); a scene without sound gets a silent track. `--stems` and `--midi` (`ExportOptions`)
+  48 kHz (`AUDIO_ARGS`); a scene without sound gets a silent track. Frames draw with `build_frame_with` and a
+  `ControlSampler` when a setting follows sound. `--stems` and `--midi` (`ExportOptions`)
   save the stems and the MIDI file beside the video.
 - `bpe-studio`: the egui 0.37 editor. Its look is the Ball Studio Design System (spec
   `docs/superpowers/specs/2026-11-03-design-system-editor-design.md`): `style/` holds every token, the IBM Plex
@@ -239,7 +258,7 @@ Dependencies go bottom to top:
   Settings | Sound chips (`InspectorTab`, `Inspector.tab`); the Sound tab (`sound_tab/`) widens the inspector to
   its own panel id and saved width (760 px, `settings::load_sound_width`). `sound_tab/mod.rs` has `TabCx` (knobs
   with the value menu) and gathers `TabEdit`s applied after drawing; `write.rs` Enable/Disable/Copy/Paste sound
-  (paste renumbers layers), `osc.rs` the Osc A/B panels with `wave_view.rs`, `mod_row.rs` the modulator tiles,
+  (paste renumbers layers), `osc.rs` the Osc A/B panels with `wave_view.rs`, `mods/` the modulator row and editors,
   `adsr_view.rs` the draggable envelope and what it modulates, `keys.rs` the keyboard (FL names: C5 = MIDI 60; a
   click toggles the note and auditions it, also while stopped), `playing.rs` and `output.rs` (per-shape meter).
   Each oscillator's layer box is `chain_box.rs` ("+ Add layer" with Paste layer, drag a strip's row to reorder in
@@ -255,6 +274,17 @@ Dependencies go bottom to top:
   `Inspector.clipboard.notes`; `TabEdit::OwnStep` makes an edit its own undo step. The timeline gives a shape whose
   slots take turns a group with slot-change ticks (`lanes::slots_take_turns`, `Timeline.slot_marks`), and hold
   keys have no ease menu.
+  `sound_tab/mods/` is the modulator row (part 4): `row.rs` (tiles grouped by kind with a four-arrow handle that
+  drags a `ModDrag` onto a knob, right-click Rename/Duplicate/Delete, **+**), `drag.rs` (the ghost and the "Can't
+  modulate this" note, `check`, `on_knob`), `routes.rs` (the "<name> modulates" list: range in real units, Amount,
+  Inv, ±, ×, and the settings that follow it), and the editors `distance.rs`, `lfo.rs`, `hit.rs` (ADSR is
+  `adsr_view.rs`). Knobs show a ring per route (`style::ModRing`, drag its end to set the amount, Alt for both
+  ways) and a Modulate by submenu. `playing.rs` has the Plays chips; `preview/zones.rs` draws and drags the
+  Distances' Near/Far lines while the Sound tab is open. **Follow sound** in the editor: `follow.rs` (`menu`,
+  `FollowCx` on `GridCx.follow`, `now`, `set`, `followers`); a settings row's menu has Follow sound ▸ shape ▸
+  modulator | Level, the buses, and Stop following sound; a following slider shows a band ("Follows …"); the
+  pulse lane says what it follows. `Studio.follow` holds a `ControlSampler` for `build_frame_with` while any
+  setting follows sound.
 
 ## Working rules
 

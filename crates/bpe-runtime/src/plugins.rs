@@ -196,6 +196,8 @@ pub trait ModuleSim: Send + Sync + 'static {
 pub struct Sims {
     things: BTreeMap<&'static str, Box<dyn ThingSim>>,
     modules: BTreeMap<&'static str, Box<dyn ModuleSim>>,
+    /// Works out a scene's sound for physics settings that follow it (none: they stay put).
+    pub sound: Option<std::sync::Arc<dyn crate::SoundMaker>>,
 }
 
 impl Sims {

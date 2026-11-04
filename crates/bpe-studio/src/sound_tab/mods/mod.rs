@@ -429,4 +429,20 @@ mod tests {
         assert_eq!(h.state().0.scene, before, "one undo brings it all back");
         let _ = ThingId::ROOT;
     }
+    #[test]
+    fn a_setting_following_a_modulator_shows_in_its_list() {
+        let mut h = sounding();
+        let lfo = layer(&h, "LFO 1");
+        let a = Address { thing: BALL, slot: None, key: "radius".into() };
+        let follows = PulseSource::Sound { shape: SHAPE, source: SoundSource::Modulator(lfo) };
+        h.state_mut().0.scene.pulses.insert(a.clone(), bpe_core::Pulse { source: follows, ..Default::default() });
+        h.get_by_role_and_label(Role::Button, "LFO 1").click();
+        h.run();
+        let ball = h.state().0.scene.things[&BALL].name.clone();
+        let words = format!("{ball} · Size");
+        assert!(h.query_by_label(&words).is_some(), "the follower is listed by its thing's name");
+        h.get_by_label(&format!("Stop {words} following")).click();
+        h.run();
+        assert!(!h.state().0.scene.pulses.contains_key(&a));
+    }
 }

@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use bpe_core::{Animation, Blend, Inputs, Resolved, ResolvedThing, Scene, SlotId, Thing, ThingId};
-use bpe_runtime::{CameraView, EventKind, Log, Outline, World};
+use bpe_runtime::{CameraView, EventKind, LevelsAt, Log, Outline, SoundAt, World};
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
 
@@ -1258,6 +1258,21 @@ pub fn build_frame(
     draws: &Draws,
     frame: &mut Frame,
 ) {
+    build_frame_with(scene, resolved, world, log, time, draws, None, frame);
+}
+
+/// [`build_frame`] with the scene's sound, for settings that follow it.
+#[allow(clippy::too_many_arguments)]
+pub fn build_frame_with(
+    scene: &Scene,
+    resolved: &Resolved,
+    world: &World,
+    log: &Log,
+    time: f64,
+    draws: &Draws,
+    sound: Option<&dyn SoundAt>,
+    frame: &mut Frame,
+) {
     frame.clear();
     let animation = Animation::new(scene, resolved);
     let animated;
@@ -1265,7 +1280,11 @@ pub fn build_frame(
         resolved
     } else {
         let mut copy = resolved.clone();
-        let inputs = Inputs { hits: hit_strength(log, time, world.steps_per_second) };
+        let levels = sound.map(|sound| LevelsAt { sound, world, log });
+        let inputs = Inputs {
+            hits: hit_strength(log, time, world.steps_per_second),
+            sound: levels.as_ref().map(|l| l as &dyn bpe_core::SoundLevels),
+        };
         animation.apply(&mut copy, time, &inputs);
         animated = copy;
         &animated

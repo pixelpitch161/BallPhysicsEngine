@@ -13,7 +13,8 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx, layer: LayerId, name: &str) {
     let routes = cx.routes();
     ui.add_space(4.0);
     ui.label(RichText::new(format!("{name} modulates")).small().color(style::MUTED));
-    if !routes.iter().any(|r| r.source == layer) {
+    let followers = crate::follow::followers(cx.scene, &cx.kit.registry, cx.id, layer);
+    if !routes.iter().any(|r| r.source == layer) && followers.is_empty() {
         ui.label(RichText::new("Nothing yet. Drag the handle on its tile onto a knob.").small().color(style::FAINT));
     }
     for (i, r) in routes.iter().enumerate().filter(|(_, r)| r.source == layer) {
@@ -64,6 +65,21 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx, layer: LayerId, name: &str) {
             } else if new != *r {
                 all[i] = new;
                 cx.set_routes(all);
+            }
+        });
+    }
+    // Settings of things that follow it (Follow sound), by the thing's name.
+    for (a, words) in followers {
+        ui.horizontal(|ui| {
+            let (dot, _) = ui.allocate_exact_size(Vec2::splat(6.0), Sense::hover());
+            ui.painter().circle_stroke(dot.center(), 2.5, egui::Stroke::new(1.0, cx.colour));
+            ui.label(RichText::new(&words).color(style::TEXT));
+            ui.label(RichText::new("follows").small().color(style::MUTED));
+            let x = ui.add(egui::Button::new("×").frame(false)).on_hover_text("Stop following");
+            name_it(ui, &x, &format!("Stop {words} following"));
+            if x.clicked() {
+                cx.edits.push(super::super::TabEdit::Unfollow(a));
+                cx.edits.push(super::super::TabEdit::OwnStep);
             }
         });
     }

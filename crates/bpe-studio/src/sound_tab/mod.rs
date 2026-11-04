@@ -83,6 +83,8 @@ pub enum TabEdit {
     DuplicateMod(bpe_core::LayerId),
     /// A slot's notes onto the clipboard.
     CopyNotes(Vec<u8>),
+    /// The setting stops following this shape's sound.
+    Unfollow(Address),
     /// The edits made with this one are an undo step of their own (a preset, a key change, a
     /// row's edit), never merged with a knob turned just before.
     OwnStep,
@@ -465,6 +467,7 @@ fn apply(inspector: &mut Inspector, scene: &mut Scene, kit: &Kit, id: ThingId, t
                 }
                 write::WriteOutcome::Failed => false,
             },
+            TabEdit::Unfollow(a) => scene.remove_pulse(&a),
             TabEdit::NewKey(a) => match scene.value_at_time(reg, &a, time) {
                 Some(v) => scene.set_key(reg, &a, time, v).is_ok(),
                 None => false,

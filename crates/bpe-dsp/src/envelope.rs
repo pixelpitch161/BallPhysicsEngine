@@ -206,6 +206,42 @@ impl Envelope {
     }
 }
 
+/// The level an envelope with `p` has `since` seconds after a trigger to `peak` from `from`
+/// (where it was), its gate closing `gate` seconds in (`f32::INFINITY` for never), worked out
+/// in one go rather than sample by sample; and whether it has finished. Follow sound reads
+/// envelopes this way.
+pub fn level_at(p: &EnvParams, peak: f32, from: f32, since: f32, gate: f32) -> (f32, bool) {
+    let peak = peak.clamp(0.0, 1.0);
+    let before = |s: f32| -> (f32, bool) {
+        let sus = p.sustain * peak;
+        let (d, a, h, dc) = (p.delay.max(0.0), p.attack.max(0.0), p.hold.max(0.0), p.decay.max(0.0));
+        if s < d {
+            (from, false)
+        } else if s < d + a {
+            (from + (peak - from) * bend((s - d) / a, p.curves[0]), false)
+        } else if s < d + a + h {
+            (peak, false)
+        } else if s < d + a + h + dc {
+            (sus + (peak - sus) * (1.0 - bend((s - d - a - h) / dc, p.curves[1])), false)
+        } else {
+            (sus, sus <= 0.0)
+        }
+    };
+    if since < 0.0 {
+        return (from, false);
+    }
+    if since < gate {
+        return before(since);
+    }
+    let (held, done) = before(gate.max(0.0));
+    if done {
+        return (0.0, true);
+    }
+    let r = since - gate;
+    let release = p.release.max(0.0);
+    if r >= release { (0.0, true) } else { (held * (1.0 - bend(r / release, p.curves[2])), false) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,5 +361,28 @@ mod tests {
         assert_eq!(env.stage(), Stage::Release);
         stages(&mut env, 48 * 31);
         assert!(env.is_done());
+    }
+    #[test]
+    fn level_at_matches_the_envelope_sample_by_sample() {
+        let p = EnvParams { curves: [0.4, -0.3, 0.6], ..params() };
+        let mut env = Envelope::new();
+        env.set(p);
+        env.trigger(0.8);
+        let gate = 1500; // samples
+        let sr = crate::SAMPLE_RATE;
+        for i in 0..6000u32 {
+            if i == gate {
+                env.release();
+            }
+            let level = env.next();
+            let since = (i + 1) as f32 / sr;
+            let (closed, done) = level_at(&p, 0.8, 0.0, since, gate as f32 / sr);
+            assert!((closed - level).abs() < 0.01, "sample {i}: {closed} against {level}");
+            if done {
+                assert!(level <= 1e-3, "sample {i}");
+            }
+        }
+        assert!(level_at(&p, 0.8, 0.0, 1.0, f32::INFINITY).0 > 0.39, "sustain holds without a gate");
+        assert_eq!(level_at(&EnvParams { sustain: 0.0, ..p }, 1.0, 0.0, 1.0, f32::INFINITY), (0.0, true));
     }
 }

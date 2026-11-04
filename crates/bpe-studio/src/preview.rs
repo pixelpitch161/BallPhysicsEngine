@@ -6,7 +6,7 @@ use crate::grid::snap_point;
 use crate::shape_handles::{self, MenuTarget, Mould};
 use crate::style;
 use bpe_core::{Attach, Resolved, Scene, Settings, ThingId, Value};
-use bpe_gfx::{Frame, Renderer, build_frame, wgpu};
+use bpe_gfx::{Frame, Renderer, build_frame_with, wgpu};
 use bpe_kit::BallsSettings;
 use bpe_runtime::{CameraView, Pose, World};
 use eframe::egui::{self, Align2, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, Ui};
@@ -467,13 +467,14 @@ fn draw_picture(
         look,
     };
     if drawn.as_ref() != Some(&now) {
-        build_frame(
+        build_frame_with(
             &studio.scene,
             &studio.resolved,
             studio.playback.world(),
             studio.playback.log(),
             shown_time,
             &studio.kit.draws,
+            studio.follow.as_deref().map(|f| f as &dyn bpe_runtime::SoundAt),
             frame,
         );
         // The World view looks through its own camera at a picture the panel's shape, and

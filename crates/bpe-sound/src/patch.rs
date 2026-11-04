@@ -44,6 +44,8 @@ pub enum Tables {
     /// Only those already baked; the rest start baking in the background (the editor, which
     /// must never wait).
     Ready,
+    /// None at all: only the settings are wanted (Follow sound reads no waves).
+    Skip,
 }
 
 impl Tables {
@@ -55,6 +57,7 @@ impl Tables {
                 *pending |= set.is_none();
                 set
             }
+            Tables::Skip => None,
         }
     }
 }
@@ -120,6 +123,36 @@ fn voice_with(
     tables: Tables,
     pending: &mut bool,
 ) -> Option<ShapeVoice> {
+    spec_with(scene, id, card, b, tables, pending).map(ShapeVoice::new)
+}
+
+/// Every sounding shape's voice settings, in scene order, without wavetables: what Follow sound
+/// reads.
+pub fn shape_specs(scene: &Scene, resolved: &Resolved) -> Vec<ShapeSpec> {
+    let settings =
+        resolved.things.get(&ThingId::ROOT).map(|r| SceneSettings::from_params(&r.params)).unwrap_or_default();
+    let mut out = Vec::new();
+    for id in &scene.order {
+        let Some(thing) = resolved.things.get(id) else { continue };
+        let Some(card) = thing.slots.get(&SlotId::Sound) else { continue };
+        let shape = ShapeSettings::from_params(&thing.params);
+        let top = TempoMap::from_settings(&settings).top();
+        let b = Build { index: out.len(), width: settings.width as f32, shape: &shape, tempo_top: top };
+        if let Some(spec) = spec_with(scene, *id, card, &b, Tables::Skip, &mut false) {
+            out.push(spec);
+        }
+    }
+    out
+}
+
+fn spec_with(
+    scene: &Scene,
+    id: ThingId,
+    card: &ResolvedSlot,
+    b: &Build,
+    tables: Tables,
+    pending: &mut bool,
+) -> Option<ShapeSpec> {
     let Build { index, width, shape, tempo_top } = *b;
     if card.kind != VOICE {
         return None;
@@ -161,7 +194,7 @@ fn voice_with(
         })
         .collect();
     let matrix = ModMatrix::build(&v.routes, &knobs::targets(&layout));
-    Some(ShapeVoice::new(ShapeSpec {
+    Some(ShapeSpec {
         thing: id,
         index,
         osc: [
@@ -196,7 +229,7 @@ fn voice_with(
         width,
         chain: Arc::new(chain),
         mods,
-    }))
+    })
 }
 
 /// Whether a modulator can reach the sound card's knob `key` (switched-off layers' knobs too):

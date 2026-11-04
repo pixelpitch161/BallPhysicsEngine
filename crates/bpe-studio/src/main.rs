@@ -6,6 +6,7 @@
 mod app;
 mod audio_out;
 mod export_window;
+mod follow;
 mod gradient_bar;
 mod grid;
 mod history;
