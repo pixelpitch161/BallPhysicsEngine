@@ -513,6 +513,28 @@ mod tests {
         );
     }
 
+    /// Space between well below minus twice the Size still keeps neighbours a little apart: a
+    /// filled ring spreads out from the middle instead of stacking thousands in a dot.
+    #[test]
+    fn a_very_negative_space_still_steps_forward() {
+        let s = settings(GroupShape::FilledRing, |s| {
+            s.radius = 24.0;
+            s.space = -100.0;
+        });
+        assert!(s.step() > 0.0, "{}", s.step());
+        let p = offsets(&s);
+        assert!(closest(&p) >= s.step() * 0.999);
+        let furthest = p.iter().map(|q| q.length()).fold(0.0, f32::max);
+        assert!(furthest > 50.0, "{} balls within {furthest} px", p.len());
+        let tri = offsets(&settings(GroupShape::Triangle, |s| {
+            s.count = 6;
+            s.space = -100.0;
+        }));
+        // The point of the triangle stays at the top.
+        let top = tri.iter().map(|q| q.y).fold(f32::MAX, f32::min);
+        assert_eq!(tri[0].y, top, "{tri:?}");
+    }
+
     #[test]
     fn a_ring_is_the_old_ring() {
         let mut s = BallsSettings::default();

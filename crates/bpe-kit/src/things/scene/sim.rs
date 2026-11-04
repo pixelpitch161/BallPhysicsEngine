@@ -25,8 +25,9 @@ impl ThingSim for SceneSim {
         world.gravity = SceneSettings::from_params(&resolved.params).gravity;
     }
 
+    /// The video's size counts too: the camera's Stay inside, Slack and Fit all read it.
     fn affects_physics(&self, key: &str) -> bool {
-        matches!(key, "gravity" | "steps_per_second" | "duration" | "seed")
+        matches!(key, "gravity" | "steps_per_second" | "duration" | "seed" | "width" | "height")
     }
 }
 
@@ -43,6 +44,23 @@ mod tests {
         scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("seed", Value::Int(77));
         let resolved = resolve(&scene, &kit.registry);
         assert_eq!(World::build(&scene, &resolved, &kit.sims).seed, 77);
+    }
+
+    /// The camera reads the video's size (Stay inside, Slack, Fit all), so a new size is a new
+    /// run.
+    #[test]
+    fn changing_the_video_size_rebuilds_the_world() {
+        let kit = kit();
+        let mut scene = new_scene(&kit.registry);
+        let resolved = resolve(&scene, &kit.registry);
+        let before = bpe_runtime::fingerprint(&scene, &resolved, &kit.sims);
+        scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("width", Value::Int(720));
+        let resolved = resolve(&scene, &kit.registry);
+        let wide = bpe_runtime::fingerprint(&scene, &resolved, &kit.sims);
+        assert_ne!(wide, before);
+        scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("height", Value::Int(1280));
+        let resolved = resolve(&scene, &kit.registry);
+        assert_ne!(bpe_runtime::fingerprint(&scene, &resolved, &kit.sims), wide);
     }
 
     /// The camera's shake reads the seed, so a new seed is a new run.

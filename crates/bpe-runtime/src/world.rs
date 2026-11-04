@@ -144,12 +144,22 @@ impl World {
             animated: None,
             sound: None,
         };
+        // Keys and pulses on physics settings hold from the very start: the world is built from
+        // the settings as they are at 0 s (the sound, which no step has made yet, left out), so
+        // the first frame and the first step's judgement of sides see them.
+        let animation = physics_animation(scene, resolved, sims);
+        let at_start = animation.as_ref().map(|animation| {
+            let mut at_start = resolved.clone();
+            animation.apply(&mut at_start, 0.0, &Inputs::NONE);
+            at_start
+        });
+        let built_from = at_start.as_ref().unwrap_or(resolved);
         // Things that need the walls (none of today's kinds) are built in a second pass, so
         // an arena after them in the tree is there all the same; they come last in `order`. A
         // thing without a sim is still known by kind and tags, so a target can name it.
         for needs_walls in [false, true] {
             for id in &scene.order {
-                let Some(r) = resolved.things.get(id) else { continue };
+                let Some(r) = built_from.things.get(id) else { continue };
                 let Some(thing) = scene.things.get(id) else { continue };
                 let sim = sims.thing(&r.kind);
                 if sim.is_some_and(|s| s.needs_walls()) != needs_walls {
@@ -183,14 +193,19 @@ impl World {
                 }
             }
         }
+        // The balls there from the start were there at step 0.
+        for (id, history) in &mut world.history {
+            if let Some(bodies) = world.bodies.get(id) {
+                history.note(0, bodies.len());
+            }
+        }
         // Everything is there now: things that depend on the whole scene finish building.
         for id in world.order.clone() {
             if let Some(sim) = world.kinds.get(&id).and_then(|kind| sims.thing(kind)) {
                 sim.after_build(id, &mut world);
             }
         }
-        world.animated = physics_animation(scene, resolved, sims)
-            .map(|animation| Animated { animation, resolved: resolved.clone() });
+        world.animated = animation.zip(at_start).map(|(animation, resolved)| Animated { animation, resolved });
         if let (Some(maker), Some(a)) = (&sims.sound, &world.animated)
             && follows_sound(scene, &a.animation)
         {
@@ -237,18 +252,18 @@ impl World {
         self.animated = Some(animated);
     }
 
-    /// Where a thing sits this step: on its parent when it rides one, else where its own
-    /// transform puts it. A rider whose parent has no pose (or no such ball) uses its own
-    /// transform too. A thing the world doesn't know is at the origin.
+    /// Where a thing sits this step: on its parent when it rides one (one ball of it by the ball's
+    /// number, when it names one), else where its own transform puts it. A rider whose parent has
+    /// no pose (or no such ball) uses its own transform too. A thing the world doesn't know is at
+    /// the origin.
     pub fn anchor(&self, thing: ThingId) -> Pose {
         let Some((parent, attach, transform)) = self.attach.get(&thing) else { return Pose::default() };
         let own = Pose::from_transform(transform);
         let Attach::Ride { offset, turn_with_parent, item } = *attach else { return own };
         let parent_pose = match item {
-            Some(i) => self.bodies.get(parent).filter(|b| (i as usize) < b.len()).map(|b| Pose {
-                position: b.position[i as usize],
-                velocity: b.velocity[i as usize],
-                ..Pose::default()
+            Some(number) => self.bodies.get(parent).and_then(|b| {
+                let row = b.row_of(number)?;
+                Some(Pose { position: b.position[row], velocity: b.velocity[row], ..Pose::default() })
             }),
             None => self.poses.get(parent).copied(),
         };
@@ -350,7 +365,7 @@ impl World {
 
     /// Steps until `time` seconds have passed.
     pub fn advance_to(&mut self, time: f64, sims: &Sims, log: &mut Log) {
-        let target = (time * self.steps_per_second as f64).floor() as u64;
+        let target = step_at(time, self.steps_per_second);
         while self.step < target {
             self.step(sims, log);
         }
@@ -465,6 +480,7 @@ impl World {
         let World {
             step,
             steps_per_second,
+            gravity,
             bodies,
             walls,
             walls_before,
@@ -480,12 +496,16 @@ impl World {
         let (sub_index, sub_count) = *substep;
         let seed = *seed;
         let time = step as f32 / *steps_per_second as f32;
+        let step_dt = 1.0 / *steps_per_second as f32;
         let matcher = |t: &Target, me: ThingId, other: ThingId| matches(kinds, tags, t, me, other);
+        let resting = |thing: ThingId| resting_for(modules, sims, thing, *gravity, step_dt, limits.resting);
         let mut supports: Vec<Support> = Vec::new();
         for (mover, bodies) in bodies.iter_mut() {
             let mover_bounce = modules.get(mover).and_then(|m| m.get(&SlotId::Bounce));
             let own = mover_bounce.and_then(|s| Some((sims.module(&s.kind)?, s.state.as_ref())));
             let cx = SimCx { thing: *mover, time, seed };
+            // This mover's own: a ball pulled harder than the scene's gravity presses harder.
+            let limits = &Limits { resting: resting(*mover), ..*limits };
             for (wall_id, wall) in walls.iter() {
                 let before = walls_before.get(wall_id).unwrap_or(&wall.outline);
                 let wall_bounce = modules.get(wall_id).and_then(|m| m.get(&SlotId::Bounce));
@@ -541,7 +561,7 @@ impl World {
 
         // Balls against balls.
         let substep = (sub_index, sub_count);
-        collide_pairs(bodies, modules, &matcher, sims, pairs, &supports, step, substep, dt, limits, log);
+        collide_pairs(bodies, modules, &matcher, &resting, sims, pairs, &supports, step, substep, dt, limits, log);
     }
 }
 
@@ -598,6 +618,32 @@ fn respond(
         Some((sim, state)) => sim.respond_at(state, contact, bodies, i, limits, special, cx),
         None => bodies.velocity[i] = reflect(bodies.velocity[i], contact, 1.0),
     }
+}
+
+/// The step a moment `time` seconds in falls in, at `rate` steps a second: the last one taken
+/// by then. A time worked out as a frame's (`index / fps`) that lands a hair under a step still
+/// counts as that step, so the export and the editor draw every frame from the same step.
+pub fn step_at(time: f64, rate: u32) -> u64 {
+    // A millionth of a step: far below any real gap between frames, far above the rounding.
+    (time * rate as f64 + 1e-6).floor().max(0.0) as u64
+}
+
+/// How slow a touch of `thing`'s balls is to be resting, not a hit: `base` (from the scene's
+/// gravity), or more for balls whose Motion pulls harder (Gravity ×, Wind), each step's worth of
+/// their own pull four times over, as `base` is of the scene's. `dt` is a whole step.
+pub(crate) fn resting_for(
+    modules: &BTreeMap<ThingId, Prepared>,
+    sims: &Sims,
+    thing: ThingId,
+    gravity: Vec2,
+    dt: f32,
+    base: f32,
+) -> f32 {
+    let pull = modules
+        .get(&thing)
+        .and_then(|m| m.get(&SlotId::Motion))
+        .and_then(|s| sims.module(&s.kind)?.pull(s.state.as_ref(), gravity));
+    pull.map_or(base, |p| base.max(p.length() * dt * 4.0 + 1.0))
 }
 
 /// Whether any of `animation`'s pulses follows sound.
@@ -942,6 +988,41 @@ mod tests {
         assert_eq!(w.gravity, Vec2::new(0.0, -500.0));
         // The resolved scene the world was built from is untouched.
         assert_eq!(resolved.things[&ThingId::ROOT].params.get("gravity"), Some(&Value::Vec2([0.0, 500.0])));
+    }
+
+    /// A key at 0 s holds from the start: the world is built with it, not with the setting
+    /// under it.
+    #[test]
+    fn a_key_at_the_start_is_there_before_the_first_step() {
+        let (mut scene, _, sims) = dots_in_ring(1);
+        let reg = reg();
+        let gravity = root_setting("gravity");
+        scene.set_key(&reg, &gravity, 0.0, Value::Vec2([0.0, 100.0])).unwrap();
+        scene.set_key(&reg, &gravity, 1.0, Value::Vec2([0.0, 100.0])).unwrap();
+        let resolved = resolve(&scene, &reg);
+        let w = World::build(&scene, &resolved, &sims);
+        assert_eq!(w.gravity, Vec2::new(0.0, 100.0));
+        assert_eq!(w.limits().resting, 100.0 * w.dt() * 4.0 + 1.0);
+    }
+
+    /// A frame's time, `index / fps`, lands on its own step even when the product rounds just
+    /// under it (2.05 s × 240 is 491.99999999999994), so the export and the editor agree.
+    #[test]
+    fn a_frame_time_lands_on_its_own_step() {
+        let (scene, resolved, sims) = dots_in_ring(1);
+        let mut w = World::build(&scene, &resolved, &sims);
+        let mut log = Log::default();
+        w.advance_to(123.0 / 60.0, &sims, &mut log);
+        assert_eq!(w.step, 492);
+        for index in 0..2000u64 {
+            let time = index as f64 / 60.0;
+            assert_eq!(crate::step_at(time, 240), index * 4, "frame {index}");
+            let time = index as f64 / 30.0;
+            assert_eq!(crate::step_at(time, 240), index * 8, "frame {index} at 30 fps");
+        }
+        let mut playback = crate::Playback::new(&scene, &resolved, std::sync::Arc::new(sims));
+        playback.seek(2.05);
+        assert_eq!(playback.world().step, 492);
     }
 
     #[test]

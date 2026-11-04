@@ -4,18 +4,7 @@
 pub mod draw;
 pub mod sim;
 
-pub use sim::{ShapeSim, ShapeState, side_of, side_on};
-
-/// Where on shape `shape`'s outline (as it is in `world` now) the point nearest `point` is: the
-/// way round clockwise from its first corner as a fraction (0..1), the side, and how many sides
-/// it has (a circle has one). `None` when the world has no such shape. Never allocates.
-pub fn place_on_edge(
-    world: &bpe_runtime::World,
-    shape: bpe_core::ThingId,
-    point: glam::Vec2,
-) -> Option<(f32, usize, usize)> {
-    world.walls.get(&shape).map(|w| w.outline.place(point))
-}
+pub use sim::{ShapeSim, ShapeState, place_on_edge, side_of, side_on};
 
 use bpe_core::{Choice, SettingDef, Settings, ShapePath, SlotId, ThingKind};
 
@@ -190,6 +179,58 @@ mod tests {
             let half = s.moulded().unwrap().is_axis_rectangle().unwrap() * s.size;
             assert_eq!(half, Vec2::new(w * 0.5, h * 0.5));
         }
+    }
+
+    /// Place and Side read the shape's own corners, as By side does: side k is By side's slot k,
+    /// and Place starts at the first corner, the top-most (the left of two at a flat top).
+    #[test]
+    fn place_and_side_follow_the_shapes_own_corners() {
+        use crate::testing::SHAPE;
+        use crate::{kit, new_scene};
+        use bpe_core::resolve;
+        let kit = kit();
+        let check = |settings: ShapeSettings| {
+            let mut scene = new_scene(&kit.registry);
+            scene.things.get_mut(&SHAPE).unwrap().params = settings.to_params();
+            scene.things.get_mut(&SHAPE).unwrap().transform.rotation = 0.3;
+            let w = bpe_runtime::World::build(&scene, &resolve(&scene, &kit.registry), &kit.sims);
+            let path = settings.outline_path();
+            let n = path.side_count();
+            let mid = scene.things[&SHAPE].transform.position;
+            let turn = Vec2::from_angle(0.3);
+            let world_at = |q: Vec2| mid + turn.rotate(q * settings.size);
+            // Every side's middle is on that side, as side_on has it, and the places go round
+            // in order from the first corner.
+            let mut last = -1.0;
+            for side in 0..n {
+                let p = world_at(path.side_point(side, 0.5));
+                let (place, s, sides) = place_on_edge(&w, SHAPE, p).unwrap();
+                assert_eq!((s, sides), (side, n), "{settings:?} side {side}");
+                assert_eq!(s as u32, side_on(&w, SHAPE, &path, p));
+                assert!(place > last, "{settings:?}: {place} after {last}");
+                last = place;
+            }
+            let (start, _, _) = place_on_edge(&w, SHAPE, world_at(path.point(0))).unwrap();
+            assert!(!(1e-3..=1.0 - 1e-3).contains(&start), "{settings:?}: the first corner is at {start}");
+            (path, w, mid, turn)
+        };
+        // A square: its first corner the top left, a quarter of the way round at the top right.
+        let (path, w, mid, turn) = check(ShapeSettings::polygon(4, 300.0, 3.0));
+        let (q, _, _) = place_on_edge(&w, SHAPE, mid + turn.rotate(path.side_point(1, 0.01) * 300.0)).unwrap();
+        assert!((q - 0.2525).abs() < 1e-3, "{q}");
+        check(ShapeSettings::polygon(5, 300.0, 3.0));
+        // A circle: eight sides from the top.
+        let (path, w, mid, turn) = check(ShapeSettings::circle(300.0, 3.0));
+        let _ = path;
+        let (q, side, _) = place_on_edge(&w, SHAPE, mid + turn.rotate(Vec2::from_angle(0.05) * 300.0)).unwrap();
+        let want = 0.25 + 0.05 / std::f32::consts::TAU;
+        assert!((q - want).abs() < 1e-3 && side == 2, "just past 3 o'clock is a quarter round: {q} {side}");
+        // A moulded outline with a curved side counts it as one side.
+        let mut curved = ShapeSettings::polygon(5, 300.0, 3.0);
+        let mut path = ShapePath::even(5);
+        path.create_curve(1);
+        curved.path = path;
+        check(curved);
     }
 
     #[test]
