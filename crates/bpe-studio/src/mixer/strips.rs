@@ -118,7 +118,7 @@ fn bus(ui: &mut Ui, cx: &mut MixCx, mixer: &mut Mixer, graph: &MixerSettings, n:
                 let looping = bpe_sound::would_loop(graph, n, to);
                 let to_on = cx.flag(&MixerSettings::bus_key(to, "on"));
                 let send = key(&format!("send{to}"));
-                let label = format!("To Bus {to}");
+                let label = format!("To {to}");
                 let r = ui.add_enabled_ui(!looping, |ui| cx.knob_w(ui, &send, &label, &db, half)).inner;
                 if looping {
                     r.on_disabled_hover_text("That would feed back into itself");
@@ -182,11 +182,13 @@ fn caption(ui: &mut Ui, text: &str) {
 /// Bus `lane`'s effects as rows, scrolling past five, with the add row last.
 fn slots(ui: &mut Ui, cx: &mut MixCx, mixer: &mut Mixer, lane: u8) {
     let effects = cx.effects(lane);
-    let height = ROW_H * (effects.len() + 1).min(ROWS + 1) as f32 + 4.0;
+    // Always as tall as five effects and the add row, so the strips line up side by side.
+    let height = ROW_H * (ROWS + 1) as f32;
     egui::Frame::new().fill(style::GROUND).corner_radius(style::RADIUS).inner_margin(egui::Margin::same(2)).show(
         ui,
         |ui| {
             ui.set_width(ui.available_width());
+            ui.set_min_height(height);
             egui::ScrollArea::vertical()
                 .id_salt(("bus slots", lane))
                 .max_height(height)
@@ -561,12 +563,12 @@ pub(crate) mod tests {
         let mut h = mixer_harness();
         set_mixer(&mut h, "bus2_on", Value::Bool(true));
         set_mixer(&mut h, "bus3_on", Value::Bool(true));
-        assert!(!slider_disabled(&h, "To Bus 1", 0), "nothing sends yet");
+        assert!(!slider_disabled(&h, "To 1", 0), "nothing sends yet");
         set_mixer(&mut h, "bus1_send2", Value::Number(0.0));
         // Bus 1 sends to Bus 2, so Bus 2 can't send back; Bus 3 still can.
-        assert!(slider_disabled(&h, "To Bus 1", 0), "Bus 2 to Bus 1 would feed back");
-        assert!(!slider_disabled(&h, "To Bus 1", 1), "Bus 3 to Bus 1 is fine");
-        assert!(!slider_disabled(&h, "To Bus 3", 1), "Bus 2 to Bus 3 is fine");
+        assert!(slider_disabled(&h, "To 1", 0), "Bus 2 to Bus 1 would feed back");
+        assert!(!slider_disabled(&h, "To 1", 1), "Bus 3 to Bus 1 is fine");
+        assert!(!slider_disabled(&h, "To 3", 1), "Bus 2 to Bus 3 is fine");
     }
 
     #[test]
