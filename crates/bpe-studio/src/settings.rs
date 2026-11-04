@@ -85,6 +85,38 @@ pub fn save_inspector_width_in(dir: &Path, w: f32) {
     let _ = std::fs::write(dir.join(INSPECTOR_WIDTH), format!("{}", w.round()));
 }
 
+const SOUND_WIDTH: &str = "sound-inspector-width.txt";
+
+/// The inspector's width while a shape's Sound tab is open, when nothing is saved: Osc A and
+/// Osc B side by side.
+pub const SOUND_WIDTH_DEFAULT: f32 = 760.0;
+/// The narrowest and widest the inspector can be dragged on the Sound tab.
+pub const SOUND_WIDTH_RANGE: std::ops::RangeInclusive<f32> = 640.0..=960.0;
+
+/// The Sound tab's width the user dragged to last time, or the default.
+pub fn load_sound_width() -> f32 {
+    settings_dir().map_or(SOUND_WIDTH_DEFAULT, |d| load_sound_width_in(&d))
+}
+
+pub fn load_sound_width_in(dir: &Path) -> f32 {
+    let text = std::fs::read_to_string(dir.join(SOUND_WIDTH)).unwrap_or_default();
+    match text.trim().parse::<f32>() {
+        Ok(w) if w.is_finite() => w.clamp(*SOUND_WIDTH_RANGE.start(), *SOUND_WIDTH_RANGE.end()),
+        _ => SOUND_WIDTH_DEFAULT,
+    }
+}
+
+pub fn save_sound_width(w: f32) {
+    if let Some(dir) = settings_dir() {
+        save_sound_width_in(&dir, w);
+    }
+}
+
+pub fn save_sound_width_in(dir: &Path, w: f32) {
+    let _ = std::fs::create_dir_all(dir);
+    let _ = std::fs::write(dir.join(SOUND_WIDTH), format!("{}", w.round()));
+}
+
 const LISTEN: &str = "listening.txt";
 
 /// The editor's own listening: the speaker on or off and its volume. Only what you hear; the

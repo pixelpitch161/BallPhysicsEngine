@@ -24,6 +24,8 @@ pub struct Engine {
     cursor: HitCursor,
     hits: Vec<BlockHit>,
     voices: Vec<Box<dyn VoiceSource>>,
+    /// Voices whose thing went away, fading out; dropped once silent.
+    leaving: Vec<Box<dyn VoiceSource>>,
     master: Master,
     tempo: TempoMap,
     loudness: LoudnessMeter,
@@ -41,20 +43,31 @@ pub struct Engine {
     /// The physics is where the voices are. A scene with no voices runs no physics (it would
     /// only hold the playhead back); the first voice brings it up to date.
     physics_synced: bool,
+    /// Where hand-played notes are in sound time while stopped (from the playhead on).
+    paused_pos: u64,
 }
 
 impl Engine {
+    /// The engine for `scene`, its wavetables baked if need be.
     pub fn new(scene: &Scene, resolved: &Resolved, kit: &Kit) -> Engine {
+        Self::with_patch(scene, resolved, kit, SoundPatch::build(scene, resolved, kit))
+    }
+
+    /// The engine for `scene` playing `patch` (built from the same scene).
+    pub fn with_patch(scene: &Scene, resolved: &Resolved, kit: &Kit, patch: SoundPatch) -> Engine {
         let physics = Playback::new(scene, resolved, kit.sims.clone());
         let cursor = HitCursor::new(physics.world().steps_per_second);
-        let patch = SoundPatch::build(scene, resolved, kit);
-        let master = Master::new(&patch.master);
+        let mut master = Master::new(&patch.master);
+        master.set_keys(patch.master_keys);
+        master.at(0.0);
+        master.reset();
         let discard = master.latency();
         Engine {
             physics,
             cursor,
             hits: Vec::with_capacity(MAX_BLOCK_HITS),
             voices: patch.voices,
+            leaving: Vec::new(),
             master,
             tempo: patch.tempo,
             loudness: LoudnessMeter::new(),
@@ -68,6 +81,7 @@ impl Engine {
             queue_head: 0,
             queue_len: 0,
             physics_synced: true,
+            paused_pos: 0,
         }
     }
 
@@ -106,7 +120,12 @@ impl Engine {
         for v in &mut self.voices {
             v.reset();
         }
+        self.leaving.clear();
+        // The master's keyed gains start where they are at the first block rendered.
+        let first = if self.voices.is_empty() { target } else { start };
+        self.master.at(first as f64 / rate);
         self.master.reset();
+        self.paused_pos = 0;
         if self.voices.is_empty() {
             // Silence needs no pre-roll and no physics.
             self.voice_pos = target;
@@ -139,15 +158,84 @@ impl Engine {
     /// was still playing.
     pub fn swap_patch(&mut self, patch: SoundPatch) {
         self.master.set(&patch.master);
+        self.master.set_keys(patch.master_keys);
         self.tempo = patch.tempo;
         let mut old = std::mem::take(&mut self.voices);
         let mut voices = patch.voices;
+        let mut kept = vec![false; old.len()];
         for v in &mut voices {
-            if let Some(o) = old.iter_mut().find(|o| o.thing() == v.thing()) {
-                v.adopt(o.as_mut());
+            if let Some(i) = old.iter().position(|o| o.thing() == v.thing()) {
+                v.adopt(old[i].as_mut());
+                kept[i] = true;
+            }
+        }
+        // A voice whose thing has gone (or whose sound was turned off) fades out.
+        for (o, kept) in old.into_iter().zip(kept) {
+            if !kept {
+                let mut o = o;
+                o.fade_out(crate::voices::LEAVE_MS);
+                if !o.is_silent() {
+                    self.leaving.push(o);
+                }
             }
         }
         self.voices = voices;
+    }
+
+    /// Plays `note` on `shape`'s voice from the editor (a key clicked), outside the hits.
+    pub fn audition(&mut self, shape: bpe_core::ThingId, note: u8) {
+        if let Some(v) = self.voices.iter_mut().find(|v| v.thing() == shape) {
+            v.audition(note);
+        }
+    }
+
+    /// Whether anything is sounding or still to come from voices that went away.
+    pub fn has_leaving(&self) -> bool {
+        !self.leaving.is_empty()
+    }
+
+    /// Whether every voice is silent (the master may still have a few milliseconds to give).
+    pub fn is_quiet(&self) -> bool {
+        self.leaving.is_empty() && self.voices.iter().all(|v| v.is_silent())
+    }
+
+    /// Every note stops at once (playback stopped); the next [`Engine::seek`] starts over.
+    pub fn stop_notes(&mut self) {
+        for v in &mut self.voices {
+            v.reset();
+        }
+        self.leaving.clear();
+        self.master.reset();
+    }
+
+    /// While stopped: the next block of the notes played by hand ([`Engine::audition`]) through
+    /// the master, straight out. No hits, no physics, and the playhead stays where it is: the
+    /// keys read at that moment. Never allocates.
+    pub fn render_paused(&mut self, out: &mut [f32; BLOCK * 2]) {
+        let _flush = FlushGuard::new();
+        self.paused_pos = self.paused_pos.max(self.voice_pos);
+        self.bus_l = [0.0; BLOCK];
+        self.bus_r = [0.0; BLOCK];
+        let cx = BlockCx {
+            start_sample: self.paused_pos,
+            time: self.out_pos as f64 / SAMPLE_RATE as f64,
+            tempo: &self.tempo,
+            world: self.physics.world(),
+        };
+        for v in &mut self.voices {
+            v.on_block(&cx, &[], &mut self.bus_l, &mut self.bus_r);
+        }
+        for v in &mut self.leaving {
+            v.on_block(&cx, &[], &mut self.bus_l, &mut self.bus_r);
+        }
+        self.master.at(cx.time);
+        self.master.process(&mut self.bus_l, &mut self.bus_r);
+        self.paused_pos += BLOCK as u64;
+        for i in 0..BLOCK {
+            out[2 * i] = self.bus_l[i];
+            out[2 * i + 1] = self.bus_r[i];
+        }
+        self.meter();
     }
 
     /// Renders the next block, interleaved stereo.
@@ -172,6 +260,8 @@ impl Engine {
     /// does this itself; it is apart so the physics, which may allocate, can be kept out of a
     /// check on the sound path.
     pub fn step_physics(&mut self) {
+        // Voices that finished fading go here, where freeing them is allowed.
+        self.leaving.retain(|v| !v.is_silent());
         if self.voices.is_empty() {
             self.physics_synced = false;
             return;
@@ -232,6 +322,10 @@ impl Engine {
         for v in &mut self.voices {
             v.on_block(&cx, &self.hits, &mut self.bus_l, &mut self.bus_r);
         }
+        for v in &mut self.leaving {
+            v.on_block(&cx, &self.hits, &mut self.bus_l, &mut self.bus_r);
+        }
+        self.master.at(cx.time);
         self.master.process(&mut self.bus_l, &mut self.bus_r);
         self.voice_pos += BLOCK as u64;
         for i in 0..BLOCK {
@@ -258,5 +352,9 @@ impl Engine {
             true_peak: self.loudness.true_peak_db(),
             reduction: self.master.gain_reduction_db(),
         });
+        for (i, v) in self.voices.iter().enumerate() {
+            self.meters.write_shape(i, v.thing().0, gain_to_db(v.level()));
+        }
+        self.meters.clear_shapes_from(self.voices.len());
     }
 }

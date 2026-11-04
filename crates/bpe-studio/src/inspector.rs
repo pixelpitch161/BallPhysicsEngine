@@ -56,6 +56,32 @@ pub struct Inspector {
     pub group_view: crate::look_editor::GroupView,
     /// The window's GPU, for the ball view; none in tests.
     pub render: Option<eframe::egui_wgpu::RenderState>,
+    /// Each shape's tab: its settings or its sound.
+    pub tab: BTreeMap<ThingId, InspectorTab>,
+    /// The Sound tab's own state.
+    pub sound: crate::sound_tab::SoundTab,
+    /// Keys clicked on a Sound tab's keyboard this frame, for the studio to play: (shape, note).
+    pub auditions: Vec<(ThingId, u8)>,
+    /// The sound's levels, for the Sound tab's meter; none without speakers.
+    pub meters: Option<std::sync::Arc<bpe_sound::Meters>>,
+}
+
+/// What the inspector shows of a shape.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InspectorTab {
+    #[default]
+    Settings,
+    Sound,
+}
+
+impl Inspector {
+    /// Whether `primary` is a shape showing its Sound tab (the inspector is wide then).
+    pub fn sound_open(&self, scene: &Scene, primary: Option<ThingId>) -> bool {
+        primary.is_some_and(|id| {
+            scene.things.get(&id).is_some_and(|t| t.kind == SHAPE)
+                && self.tab.get(&id).copied().unwrap_or_default() == InspectorTab::Sound
+        })
+    }
 }
 
 /// One of the inspector's cards, as the jump bar names it.
@@ -188,6 +214,27 @@ pub fn show(
     let selected = selection.all(scene);
     let choices = TargetChoices::from_scene(scene, reg);
     let mut edits = Vec::new();
+
+    // A shape's settings or its sound.
+    if thing.kind == SHAPE {
+        let mut tab = inspector.tab.get(&id).copied().unwrap_or_default();
+        ui.horizontal(|ui| {
+            ui.add_space(CARD_MARGIN as f32);
+            crate::look_editor::ball_view::segmented(
+                ui,
+                &mut tab,
+                &[
+                    (InspectorTab::Settings, "Settings", "The shape's outline, look and how it moves"),
+                    (InspectorTab::Sound, "Sound", "The sound the shape makes when balls hit it"),
+                ],
+            );
+        });
+        ui.add_space(4.0);
+        inspector.tab.insert(id, tab);
+        if tab == InspectorTab::Sound {
+            return crate::sound_tab::show(ui, inspector, scene, kit, &choices, id, time);
+        }
+    }
 
     let marked = jump_bar(ui, inspector, id, kind, &thing);
     inspector.card_tops.clear();

@@ -17,11 +17,16 @@ use std::time::{Duration, Instant};
 pub const AHEAD_FRAMES: usize = 2_400;
 /// ...by filling it up to this many (100 ms) whenever it looks.
 const FILL_FRAMES: usize = 4_800;
+/// While stopped, hand-played notes are kept this few frames ahead (20 ms), so a key sounds
+/// soon after it is clicked.
+const PAUSED_FRAMES: usize = 1_024;
+/// Blocks rendered after the last note goes quiet while stopped, for the master's tail.
+const TAIL_BLOCKS: u32 = 40;
 /// How long the thread waits for the speakers to clear the ring after a seek.
 const CLEAR_WAIT: Duration = Duration::from_millis(250);
 
-/// A note played by hand from the editor (part 2's keyboard and pads).
-#[allow(dead_code)]
+/// A note played by hand from the editor (the keyboard). It plays at a fixed strength with the
+/// sound's own envelopes; `velocity` and `on` are kept for later parts (pads, held keys).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Audition {
     pub thing: ThingId,
@@ -41,7 +46,6 @@ pub enum Command {
     Patch(Box<SoundPatch>),
     /// The physics changed: a new engine from the start.
     Rebuild(Box<Scene>, Box<Resolved>),
-    #[allow(dead_code)]
     Audition(Audition),
     Quit,
 }
@@ -82,6 +86,8 @@ pub struct SoundJob {
     base: f64,
     /// The open device, kept alive while the job runs.
     _out: Option<AudioOut>,
+    /// Playing (else the clock holds: what the speakers play while stopped is hand-played).
+    playing: bool,
 }
 
 /// `time` rounded down to a block, as the engine seeks.
@@ -116,7 +122,15 @@ impl SoundJob {
             .name("ball-studio sound".into())
             .spawn(move || run(rx, ring, thread_shared, kit, scene, resolved, thread_meters))
             .ok();
-        SoundJob { outbox: Outbox::Thread { tx, thread }, shared, meters, clear: 0, base: 0.0, _out: None }
+        SoundJob {
+            outbox: Outbox::Thread { tx, thread },
+            shared,
+            meters,
+            clear: 0,
+            base: 0.0,
+            _out: None,
+            playing: false,
+        }
     }
 
     /// A job with no thread that keeps the commands it is sent.
@@ -129,6 +143,7 @@ impl SoundJob {
             clear: 0,
             base: 0.0,
             _out: None,
+            playing: false,
         }
     }
 
@@ -155,10 +170,12 @@ impl SoundJob {
     /// Plays from `time`.
     pub fn play(&mut self, time: f64) {
         self.seek(time);
+        self.playing = true;
         self.send(Command::Play);
     }
 
     pub fn pause(&mut self) {
+        self.playing = false;
         self.clear += 1;
         let clear = self.clear;
         self.send(Command::Pause(clear));
@@ -181,7 +198,7 @@ impl SoundJob {
         self.send(Command::Rebuild(Box::new(scene.clone()), Box::new(resolved.clone())));
     }
 
-    #[allow(dead_code)]
+    /// Plays a note on a shape now, playing or stopped.
     pub fn audition(&mut self, audition: Audition) {
         self.send(Command::Audition(audition));
     }
@@ -189,7 +206,7 @@ impl SoundJob {
     /// The time the speakers are at: where the last seek landed plus what has been played since.
     /// Holds still until the speakers have dropped what they held from before the seek.
     pub fn clock(&self) -> f64 {
-        if self.shared.cleared() != self.clear {
+        if !self.playing || self.shared.cleared() != self.clear {
             return self.base;
         }
         self.base + self.shared.played() as f64 / RATE as f64
@@ -235,6 +252,8 @@ struct Worker {
     playing: bool,
     /// A new engine waits for the seek that follows it before it plays.
     held: bool,
+    /// Blocks still to render while stopped (hand-played notes and their tail); 0 when quiet.
+    tail: u32,
 }
 
 impl Worker {
@@ -257,6 +276,9 @@ impl Worker {
             Command::Pause(number) => {
                 self.playing = false;
                 self.held = false;
+                // Stopping stops the sound; a key clicked afterwards starts from quiet.
+                self.engine.stop_notes();
+                self.tail = 0;
                 if !comes(&["seek", "pause"]) {
                     self.clear(number);
                 }
@@ -279,16 +301,47 @@ impl Worker {
             }
             Command::Rebuild(scene, resolved) => {
                 if !comes(&["rebuild"]) {
-                    self.engine = Engine::new(&scene, &resolved, &self.kit);
+                    let patch = SoundPatch::build_ready(&scene, &resolved, &self.kit);
+                    self.engine = Engine::with_patch(&scene, &resolved, &self.kit, patch);
                     self.engine.share_meters(self.meters.clone());
                     // It starts at 0; the editor's seek to the playhead follows.
                     self.held = true;
                 }
             }
-            Command::Audition(_) => {}
+            Command::Audition(a) => {
+                if a.on {
+                    self.engine.audition(a.thing, a.note);
+                    self.tail = TAIL_BLOCKS;
+                }
+            }
             Command::Quit => return false,
         }
         true
+    }
+
+    /// While stopped: renders hand-played notes until the ring holds [`PAUSED_FRAMES`], and
+    /// stops a little after they go quiet.
+    fn fill_paused(&mut self) {
+        let mut block = [0.0f32; BLOCK * 2];
+        let capacity = self.ring.buffer().capacity();
+        while self.tail > 0 && capacity - self.ring.slots() < PAUSED_FRAMES * 2 && self.ring.slots() >= BLOCK * 2 {
+            self.engine.render_paused(&mut block);
+            self.write(&block);
+            if self.engine.is_quiet() {
+                self.tail -= 1;
+            } else {
+                self.tail = TAIL_BLOCKS;
+            }
+        }
+    }
+
+    fn write(&mut self, block: &[f32; BLOCK * 2]) {
+        if let Ok(mut chunk) = self.ring.write_chunk(BLOCK * 2) {
+            let (a, b) = chunk.as_mut_slices();
+            a.copy_from_slice(&block[..a.len()]);
+            b.copy_from_slice(&block[a.len()..]);
+            chunk.commit_all();
+        }
     }
 
     /// Renders blocks until the ring holds [`FILL_FRAMES`].
@@ -300,12 +353,7 @@ impl Worker {
         let capacity = self.ring.buffer().capacity();
         while capacity - self.ring.slots() < FILL_FRAMES * 2 && self.ring.slots() >= BLOCK * 2 {
             self.engine.render(&mut block);
-            if let Ok(mut chunk) = self.ring.write_chunk(BLOCK * 2) {
-                let (a, b) = chunk.as_mut_slices();
-                a.copy_from_slice(&block[..a.len()]);
-                b.copy_from_slice(&block[a.len()..]);
-                chunk.commit_all();
-            }
+            self.write(&block);
         }
     }
 }
@@ -319,12 +367,14 @@ fn run(
     resolved: Resolved,
     meters: Arc<Meters>,
 ) {
-    let mut engine = Engine::new(&scene, &resolved, &kit);
+    // Wavetables not yet baked start baking elsewhere; the editor builds the sound again then.
+    let patch = SoundPatch::build_ready(&scene, &resolved, &kit);
+    let mut engine = Engine::with_patch(&scene, &resolved, &kit, patch);
     engine.share_meters(meters.clone());
-    let mut w = Worker { engine, kit, meters, shared, ring, playing: false, held: false };
+    let mut w = Worker { engine, kit, meters, shared, ring, playing: false, held: false, tail: 0 };
     let mut batch = Vec::new();
     loop {
-        let first = if w.playing {
+        let first = if w.playing || w.tail > 0 {
             match rx.recv_timeout(Duration::from_millis(2)) {
                 Ok(c) => Some(c),
                 Err(RecvTimeoutError::Timeout) => None,
@@ -346,6 +396,8 @@ fn run(
         }
         if w.playing {
             w.fill();
+        } else {
+            w.fill_paused();
         }
     }
 }
@@ -425,7 +477,8 @@ mod tests {
         let shared = Arc::new(Shared::default());
         let meters = Arc::new(Meters::default());
         let engine = Engine::new(&scene, &resolved, &kit);
-        let mut w = Worker { engine, kit, meters, shared: shared.clone(), ring: ring_in, playing: true, held: false };
+        let mut w =
+            Worker { engine, kit, meters, shared: shared.clone(), ring: ring_in, playing: true, held: false, tail: 0 };
         w.handle(Command::Rebuild(Box::new(scene.clone()), Box::new(resolved.clone())), &[]);
         w.fill();
         assert_eq!(ring_out.slots(), 0, "nothing from the new world's start before the seek lands");
@@ -504,5 +557,48 @@ mod tests {
         assert!(expected[96..].iter().any(|f| f[0].abs() > 0.01), "the tone rings at 3 s");
         let worst = after[96..].iter().zip(&expected[96..]).fold(0.0f32, |m, (a, b)| m.max((a[0] - b[0]).abs()));
         assert!(worst < 1e-6, "the sound after the seek is the sound at 3 s: {worst}");
+    }
+
+    #[test]
+    fn audition_sounds_while_paused() {
+        let kit = Arc::new(bpe_kit::kit());
+        let mut scene = bpe_kit::new_scene(&kit.registry);
+        let shape = scene.order.iter().copied().find(|id| scene.things[id].kind == "shape").unwrap();
+        let card = bpe_kit::sound::starter_voice(&kit.registry);
+        scene.things.get_mut(&shape).unwrap().slots.insert(bpe_core::SlotId::Sound, card);
+        let resolved = bpe_kit::resolve_scene(&scene, &kit.registry);
+        // The sound thread never bakes wavetables (the editor builds the sound again once they
+        // are in), so the starter's is baked here first, as the editor does when it opens.
+        bpe_dsp::WaveBank::get(bpe_dsp::WaveShape::Triangle, bpe_dsp::WarpModeId::Sync);
+        let (producer, consumer) = ring();
+        let shared = Arc::new(Shared::default());
+        let mut feeder = Feeder::new(consumer, shared.clone(), RATE);
+        let mut job = SoundJob::start_with_sink(&scene, &resolved, kit, producer, shared.clone());
+        job.seek(1.5);
+        job.pause();
+        // The seek's pre-roll is worked out, then the pause clears the ring.
+        let started = Instant::now();
+        while shared.cleared() != 2 && started.elapsed() < Duration::from_secs(20) {
+            consume(&mut feeder, 1, &mut Vec::new());
+        }
+        assert_eq!(shared.cleared(), 2);
+        let quiet = |frames: &[[f32; 2]]| frames.iter().all(|f| f[0].abs() < 1e-6 && f[1].abs() < 1e-6);
+        let mut before = Vec::new();
+        consume_real(&mut feeder, &shared, 40, &mut before);
+        assert!(quiet(&before), "stopped and nothing played: silence");
+        job.audition(Audition { thing: shape, note: 60, velocity: 0.8, on: true });
+        let mut heard = Vec::new();
+        let started = Instant::now();
+        while heard.len() < 4_800 && started.elapsed() < Duration::from_secs(10) {
+            consume_real(&mut feeder, &shared, 10, &mut heard);
+        }
+        assert!(!quiet(&heard), "the key sounds while stopped ({} frames came)", heard.len());
+        assert_eq!(job.clock(), 1.5, "the playhead stays put");
+        // It rings out and the thread stops rendering.
+        consume(&mut feeder, 1_500, &mut Vec::new());
+        let mut after = Vec::new();
+        consume_real(&mut feeder, &shared, 50, &mut after);
+        assert!(quiet(&after), "quiet again once the note is over");
+        assert_eq!(job.clock(), 1.5);
     }
 }

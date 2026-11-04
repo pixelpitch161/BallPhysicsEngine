@@ -128,7 +128,13 @@ Dependencies go bottom to top:
   to the program unless the owner asks.
 - `bpe-dsp`: sound building blocks at 48 kHz in 64-frame blocks (`SAMPLE_RATE`, `BLOCK`): dB helpers, a
   `Smoother`, `FlushGuard` (denormals off), polyphase IIR halfband oversamplers (2/4/8×), a 4× true-peak detector,
-  the two-stage lookahead `TruePeakLimiter` (3.4 ms) and an EBU R128 `LoudnessMeter`.
+  the two-stage lookahead `TruePeakLimiter` (3.4 ms) and an EBU R128 `LoudnessMeter`. For the synth: `warp.rs` (the
+  five waves and ten Warp modes, drawn plain; the editor's wave view uses `warp::draw`), `tables.rs` (band-limited
+  wavetables: a `TableSet` per wave and Warp mode, `WARP_STEPS` steps × `MIPS` copies of 16384..1024 samples, baked on
+  first use into the shared `WaveBank`; `octaves`/`mips_at` pick the copies, crossfading only over the top quarter
+  of an octave, `XFADE_FROM`), `osc.rs` (the unison oscillator: up to 16 copies, Detune/Spread/Blend, f64 phase
+  between blocks and u32 fixed-point inside one, 4-point Lagrange four samples at a time), `noise.rs` (seeded
+  white and pink) and `envelope.rs` (DAHDSR with a curve per segment).
 - `bpe-sound`: the sound engine. `Engine` runs its own `Playback` of the physics and renders 64-frame blocks with
   every hit on its exact sample (`Event.at` is where in the step a hit happened, never hashed; `hits.rs`
   `HitCursor`), the voices (`VoiceSource`, built per scene by `SoundPatch::build`; `swap_patch` keeps ringing notes
@@ -137,7 +143,17 @@ Dependencies go bottom to top:
   `PRE_ROLL` (4 s) and renders silently so tails ring. `render` never allocates (a counting-allocator test).
   `TempoMap` reads the scene's Tempo / Beats in a bar / Beat note. `offline.rs`: `render_to_wav` (streamed float
   WAV) and `has_sound`. The `test-tone` feature gives a thing tagged `test-tone` (or `test-tone-decay=<s>`) a test
-  blip voice; tests use it, the program never does.
+  blip voice; tests use it, the program never does. **Shape voice** (part 2): a shape's `sound.voice` card
+  (`bpe-kit/src/sound/voice.rs`: `VoiceSettings` with Osc A/B as prefixed `OscSettings` (`a_`/`b_` keys), Playing,
+  Notes, Output and `routes`; ADSR layers `sound.adsr` in `adsr.rs`; `starter_voice` is what Enable sound adds)
+  becomes a `ShapeVoice` (`voices/shape.rs`, built by `patch::shape_voice`): hits pass the `HitFilter` (min strength,
+  retrigger, Heard from), `NotePicker` picks a note of slot 0, `Voices` (`alloc.rs`) gives it a slot (Poly up to
+  16, the oldest fading in 5 ms; Mono glides). Every number knob has a place in `knobs::layout` (keys read once a
+  block from `ShapeSpec.keyed`), `ModMatrix` (`modmatrix.rs`) applies routes (gain-like knobs scale per sample,
+  `scale_by_routes`), `chain.rs` is the (still empty) layer chain. The Master's Input/Output keys are read every
+  block too (`MasterKeys`). `Engine::audition`, `stop_notes` and `render_paused` (stopped: no hits or physics) play
+  keys clicked on the Sound tab; `Meters` also carries a level per shape (`write_shape`/`take_shape` by thing id).
+  Sound goldens: `tests/golden-sound*.txt` (an FNV hash of the starter patch), blessed like the physics goldens.
 - `bpe-cli`: headless export. With sound it renders the WAV first (into a temp folder) and muxes it as AAC 320 kbps
   48 kHz (`AUDIO_ARGS`); a scene without sound gets a silent track.
 - `bpe-studio`: the egui 0.37 editor. Its look is the Ball Studio Design System (spec
@@ -170,7 +186,13 @@ Dependencies go bottom to top:
   sound, anything else patches it; a seek clears the speakers' ring with a 2 ms fade-in. The transport has the
   speaker button and listening volume (`settings::ListenSettings`, never in the scene). The left panel switches
   Things / Mixer (`LeftPanel`; `mixer/`: the tempo row and `master::strip` with `style::Knob` knobs, the level
-  meter, loudness readouts and the -14 LUFS graph from `style/meter.rs`).
+  meter, loudness readouts and the -14 LUFS graph from `style/meter.rs`). A selected shape's inspector has
+  Settings | Sound chips (`InspectorTab`, `Inspector.tab`); the Sound tab (`sound_tab/`) widens the inspector to
+  its own panel id and saved width (760 px, `settings::load_sound_width`). `sound_tab/mod.rs` has `TabCx` (knobs
+  with the value menu) and gathers `TabEdit`s applied after drawing; `write.rs` Enable/Disable/Copy/Paste sound
+  (paste renumbers layers), `osc.rs` the Osc A/B panels with `wave_view.rs`, `mod_row.rs` the modulator tiles,
+  `adsr_view.rs` the draggable envelope and what it modulates, `keys.rs` the keyboard (FL names: C5 = MIDI 60; a
+  click toggles the note and auditions it, also while stopped), `playing.rs` and `output.rs` (per-shape meter).
 
 ## Working rules
 

@@ -39,7 +39,14 @@ pub struct Meters {
     integrated: AtomicF32,
     true_peak: AtomicF32,
     reduction: AtomicF32,
+    /// Each shape's level, by its voice's place in the patch: the thing's id plus one (0 for
+    /// none) and its loudest peak since the last read.
+    shape_ids: [AtomicU32; SHAPE_METERS],
+    shapes: [AtomicF32; SHAPE_METERS],
 }
+
+/// How many shapes have a level meter.
+pub const SHAPE_METERS: usize = 64;
 
 /// A copy of the meters at one moment. Levels in dB (dBFS, LUFS, dBTP); minus infinity for
 /// silence.
@@ -78,6 +85,8 @@ impl Default for Meters {
             integrated: AtomicF32::new(r.integrated),
             true_peak: AtomicF32::new(r.true_peak),
             reduction: AtomicF32::new(r.reduction),
+            shape_ids: std::array::from_fn(|_| AtomicU32::new(0)),
+            shapes: std::array::from_fn(|_| AtomicF32::new(f32::NEG_INFINITY)),
         }
     }
 }
@@ -92,6 +101,32 @@ impl Meters {
         self.integrated.set(r.integrated);
         self.true_peak.set(r.true_peak);
         self.reduction.set(r.reduction);
+    }
+
+    /// Voice `place` (of the patch) is `thing`'s and peaked at `peak_db` in the block just made.
+    pub fn write_shape(&self, place: usize, thing: u32, peak_db: f32) {
+        if place < SHAPE_METERS {
+            let id = thing.wrapping_add(1);
+            if self.shape_ids[place].swap(id, Ordering::Relaxed) != id {
+                self.shapes[place].set(f32::NEG_INFINITY);
+            }
+            self.shapes[place].raise(peak_db);
+        }
+    }
+
+    /// No voice at `place` or after it.
+    pub fn clear_shapes_from(&self, place: usize) {
+        for i in place..SHAPE_METERS {
+            self.shape_ids[i].store(0, Ordering::Relaxed);
+        }
+    }
+
+    /// `thing`'s loudest peak (dB) since the last read, or silence when it has no voice.
+    pub fn take_shape(&self, thing: u32) -> f32 {
+        let id = thing.wrapping_add(1);
+        (0..SHAPE_METERS)
+            .find(|&i| self.shape_ids[i].load(Ordering::Relaxed) == id)
+            .map_or(f32::NEG_INFINITY, |i| self.shapes[i].take())
     }
 
     /// The meters now, with the loudest peaks since the last read.
@@ -124,6 +159,19 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_shape_s_level_is_found_by_its_thing() {
+        let m = Meters::default();
+        m.write_shape(1, 7, -12.0);
+        m.write_shape(1, 7, -20.0);
+        assert_eq!(m.take_shape(7), -12.0);
+        assert_eq!(m.take_shape(7), f32::NEG_INFINITY, "taken");
+        assert_eq!(m.take_shape(3), f32::NEG_INFINITY, "no voice");
+        m.write_shape(1, 7, -6.0);
+        m.clear_shapes_from(1);
+        assert_eq!(m.take_shape(7), f32::NEG_INFINITY, "its voice went");
+    }
 
     #[test]
     fn a_reading_round_trips() {

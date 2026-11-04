@@ -1,8 +1,18 @@
-//! The master: input gain, the true-peak limiter, output gain, every knob smoothed.
+//! The master: input gain, the true-peak limiter, output gain, every knob smoothed. Input and
+//! Output can be keyed on the timeline; their keys are read every block.
 
 use crate::BLOCK;
+use crate::voices::knobs::track_value;
+use bpe_core::Track;
 use bpe_dsp::{Smoother, TruePeakLimiter, db_to_gain};
 use bpe_kit::sound::MixerSettings;
+
+/// The keys on the Master's Input and Output, if any.
+#[derive(Clone, Debug, Default)]
+pub struct MasterKeys {
+    pub input: Option<Track>,
+    pub output: Option<Track>,
+}
 
 pub struct Master {
     input: Smoother,
@@ -10,6 +20,9 @@ pub struct Master {
     limiter: TruePeakLimiter,
     ceiling: f32,
     release: f32,
+    /// Input and Output as set (dB), for when they have no keys.
+    base: (f32, f32),
+    keys: MasterKeys,
 }
 
 impl Master {
@@ -20,6 +33,8 @@ impl Master {
             limiter: TruePeakLimiter::new(),
             ceiling: f32::NAN,
             release: f32::NAN,
+            base: (settings.master_input, settings.master_output),
+            keys: MasterKeys::default(),
         };
         m.set(settings);
         m.input.reset(db_to_gain(settings.master_input));
@@ -29,6 +44,7 @@ impl Master {
 
     /// New settings, glided to.
     pub fn set(&mut self, s: &MixerSettings) {
+        self.base = (s.master_input, s.master_output);
         self.input.set_target(db_to_gain(s.master_input));
         self.output.set_target(db_to_gain(s.master_output));
         if s.master_ceiling != self.ceiling || s.master_release != self.release {
@@ -36,6 +52,19 @@ impl Master {
             self.release = s.master_release;
             self.limiter.set(s.master_ceiling, s.master_release);
         }
+    }
+
+    /// New keys for Input and Output, read from the next [`Master::at`].
+    pub fn set_keys(&mut self, keys: MasterKeys) {
+        self.keys = keys;
+    }
+
+    /// Heads Input and Output for where their keys are at `time` (seconds). Never allocates.
+    pub fn at(&mut self, time: f64) {
+        let input = self.keys.input.as_ref().and_then(|t| track_value(t, time)).unwrap_or(self.base.0);
+        let output = self.keys.output.as_ref().and_then(|t| track_value(t, time)).unwrap_or(self.base.1);
+        self.input.set_target(db_to_gain(input));
+        self.output.set_target(db_to_gain(output));
     }
 
     /// Silence, as new, with the gains where they are headed.

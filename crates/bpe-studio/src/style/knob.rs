@@ -36,6 +36,7 @@ pub struct Knob<'a> {
     rings: &'a [ModRing],
     colour: Color32,
     log: bool,
+    width: f32,
 }
 
 /// The dial's side.
@@ -49,7 +50,18 @@ const SWEEP: f32 = 270.0;
 
 impl<'a> Knob<'a> {
     pub fn new(value: &'a mut f64, range: RangeInclusive<f64>, default: f64, label: &'a str) -> Self {
-        Knob { value, range, default, label, format: None, bipolar: false, rings: &[], colour: TEXT, log: false }
+        Knob {
+            value,
+            range,
+            default,
+            label,
+            format: None,
+            bipolar: false,
+            rings: &[],
+            colour: TEXT,
+            log: false,
+            width: WIDTH,
+        }
     }
 
     /// How the value reads under the dial (a plain number when not given).
@@ -84,6 +96,13 @@ impl<'a> Knob<'a> {
         self
     }
 
+    /// The knob's whole width (the dial stays the same size); narrower knobs fit six in a row of
+    /// the Sound tab.
+    pub fn width(mut self, width: f32) -> Self {
+        self.width = width.max(DIAL);
+        self
+    }
+
     /// Where `v` sits along the dial, 0 at the bottom of the range and 1 at the top.
     fn to_turn(&self, v: f64) -> f64 {
         let (lo, hi) = (*self.range.start(), *self.range.end());
@@ -111,10 +130,10 @@ impl<'a> Knob<'a> {
     pub fn show(self, ui: &mut Ui) -> KnobResponse {
         let before = *self.value;
         let inner = ui.allocate_ui_with_layout(
-            Vec2::new(WIDTH, DIAL + 36.0),
+            Vec2::new(self.width, DIAL + 36.0),
             egui::Layout::top_down(egui::Align::Center),
             |ui| {
-                ui.set_width(WIDTH);
+                ui.set_width(self.width);
                 ui.spacing_mut().item_spacing.y = 2.0;
                 let label = ui.add(
                     egui::Label::new(egui::RichText::new(self.label).small().color(MUTED)).selectable(false).truncate(),
@@ -165,7 +184,7 @@ impl<'a> Knob<'a> {
                             egui::TextEdit::singleline(&mut text)
                                 .hint_text(self.text(*self.value))
                                 .font(mono(11.0))
-                                .desired_width(WIDTH - 6.0),
+                                .desired_width(self.width - 6.0),
                         );
                         let name = format!("Type {}", self.label);
                         ui.ctx().accesskit_node_builder(edit.id, |node| node.set_label(name));

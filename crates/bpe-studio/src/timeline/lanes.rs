@@ -63,13 +63,18 @@ pub fn lanes_for(scene: &Scene, kit: &Kit, thing: ThingId) -> Vec<Lane> {
 fn label_of(scene: &Scene, kit: &Kit, a: &Address) -> String {
     let found = scene.things.get(&a.thing);
     let thing = found.map(|t| t.name.as_str()).unwrap_or("?");
-    let setting = scene.def_at(&kit.registry, a).map(|d| d.label).unwrap_or(a.key.as_str());
+    let def = scene.def_at(&kit.registry, a);
+    let setting = def.map(|d| d.label).unwrap_or(a.key.as_str());
     match a.slot {
         None => format!("{thing} · {setting}"),
         Some(slot) if let Some((layer, _)) = bpe_core::split_layered(&a.key) => {
             // A layer's setting goes by the layer's own name: "Ball · Outline · Width".
             let name = found.and_then(|t| t.slots.get(&slot)).and_then(|c| c.layer(layer)).map(|l| l.name.as_str());
             format!("{thing} · {} · {setting}", name.unwrap_or("?"))
+        }
+        // A sound setting goes by its part of the voice: "Shape · Osc A · Gain".
+        Some(SlotId::Sound) if let Some(group) = def.map(|d| d.group).filter(|g| !g.is_empty()) => {
+            format!("{thing} · {group} · {setting}")
         }
         Some(slot) => {
             // The card's title as the inspector shows it ("Effects" for the Shader slot).
@@ -130,5 +135,24 @@ mod tests {
         let gone = Address::own(ThingId(99), "radius");
         scene.tracks.insert(gone, bpe_core::Track::default());
         assert!(groups_for(&scene, &kit).is_empty());
+    }
+
+    #[test]
+    fn a_sound_key_shows_in_the_shapes_timeline_group() {
+        let kit = bpe_kit::kit();
+        let reg = &kit.registry;
+        let mut scene = bpe_kit::new_scene(reg);
+        let shape = bpe_kit::starters::add_thing(&mut scene, reg, bpe_kit::things::shape::KIND, ThingId::ROOT).unwrap();
+        scene.add_slot(reg, shape, SlotId::Sound, bpe_kit::sound::VOICE).unwrap();
+        scene.things.get_mut(&shape).unwrap().slots.insert(SlotId::Sound, bpe_kit::sound::starter_voice(reg));
+        let gain = Address::on(shape, SlotId::Sound, "a_gain");
+        let attack = Address::on(shape, SlotId::Sound, &bpe_core::layered_key(bpe_core::LayerId(0), "attack"));
+        scene.set_key(reg, &gain, 1.0, Value::Number(-6.0)).unwrap();
+        scene.set_key(reg, &attack, 1.0, Value::Number(20.0)).unwrap();
+        let groups = groups_for(&scene, &kit);
+        let group = groups.iter().find(|g| g.thing == shape).expect("the shape has a group");
+        let shorts: Vec<_> = group.lanes.iter().map(|l| l.short.as_str()).collect();
+        assert_eq!(shorts, ["ADSR 1 · Attack", "Osc A · Gain"], "Osc A and Osc B both have a Gain");
+        assert!(group.lanes.iter().all(|l| !l.physics), "sound never moves the physics");
     }
 }

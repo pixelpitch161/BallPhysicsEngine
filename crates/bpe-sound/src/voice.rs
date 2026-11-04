@@ -32,6 +32,18 @@ pub trait VoiceSource: Send {
     /// Takes over what `old` (the same thing's voice from before a patch swap) is still
     /// playing, so ringing notes carry on.
     fn adopt(&mut self, _old: &mut dyn VoiceSource) {}
+    /// Fades everything out over `ms` (its thing went away); then it stays silent.
+    fn fade_out(&mut self, _ms: f32) {}
+    /// Whether it is making no sound and will make none (a faded-out voice can then go).
+    fn is_silent(&self) -> bool {
+        true
+    }
+    /// Plays `note` from the editor (a key clicked), outside the hits.
+    fn audition(&mut self, _note: u8) {}
+    /// The loudest sample of the last block, for its meter.
+    fn level(&self) -> f32 {
+        0.0
+    }
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 

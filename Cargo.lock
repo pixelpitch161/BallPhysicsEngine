@@ -309,6 +309,7 @@ dependencies = [
  "anyhow",
  "bpe-cli",
  "bpe-core",
+ "bpe-dsp",
  "bpe-gfx",
  "bpe-kit",
  "bpe-runtime",

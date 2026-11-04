@@ -14,6 +14,7 @@ use crate::timeline::Timeline;
 use crate::tree::Tree;
 use crate::{inspector, preview, settings, style, timeline, tree};
 use bpe_core::{Resolved, Scene, Settings, ThingId};
+use bpe_dsp::{WarpModeId, WaveBank, WaveShape};
 use bpe_kit::{Kit, SceneSettings, resolve_scene};
 use bpe_runtime::{Playback, fingerprint};
 use bpe_sound::SoundPatch;
@@ -124,10 +125,14 @@ pub struct Studio {
     persist_settings: bool,
     /// The inspector's width as last saved.
     inspector_width: f32,
+    /// The inspector's width on a shape's Sound tab as last saved.
+    sound_width: f32,
     /// The inspector's width last frame.
     inspector_seen: f32,
     /// The inspector's edge is being dragged: its width changed while a button was down.
     inspector_resizing: bool,
+    /// The inspector showed a Sound tab last frame.
+    inspector_sound: bool,
     /// Scrubbing paused the playback; it starts again when the scrub ends.
     pub resume_after_scrub: bool,
     /// This frame's change to the scene is already in the history (undo, open, delete…).
@@ -142,6 +147,9 @@ pub struct Studio {
     pub listen: ListenSettings,
     /// The left panel's face (not saved in the scene).
     pub left: LeftPanel,
+    /// Wavetables baked in the background when the sound was last built
+    /// ([`WaveBank::baked`]); more means it is built again.
+    tables_baked: u64,
 }
 
 impl Studio {
@@ -151,10 +159,16 @@ impl Studio {
         let mut studio = Self::blank();
         studio.grid = Grid::load();
         studio.inspector_width = settings::load_inspector_width();
+        studio.sound_width = settings::load_sound_width();
         studio.persist_settings = true;
         studio.listen = settings::load_listen();
         if let Some(path) = scene_path {
             studio.open_path(&path);
+        }
+        // The starter sound's wavetables (Triangle, and the subs' Square), so Enable sound is
+        // heard at once.
+        for wave in [WaveShape::Triangle, WaveShape::Square] {
+            WaveBank::ready(wave, WarpModeId::Sync);
         }
         studio.sound =
             AudioOut::open().and_then(|out| SoundJob::start(&studio.scene, &studio.resolved, studio.kit.clone(), out));
@@ -207,8 +221,10 @@ impl Studio {
             view_centre: glam::Vec2::ZERO,
             persist_settings: false,
             inspector_width: settings::INSPECTOR_DEFAULT,
+            sound_width: settings::SOUND_WIDTH_DEFAULT,
             inspector_seen: settings::INSPECTOR_DEFAULT,
             inspector_resizing: false,
+            inspector_sound: false,
             resume_after_scrub: false,
             recorded: false,
             closing: false,
@@ -217,6 +233,7 @@ impl Studio {
             sound: None,
             listen: ListenSettings::default(),
             left: LeftPanel::Things,
+            tables_baked: WaveBank::baked(),
         }
     }
 
@@ -298,7 +315,7 @@ impl Studio {
                     job.seek(self.time);
                 }
             } else {
-                job.patch(SoundPatch::build(&self.scene, &self.resolved, &self.kit));
+                job.patch(SoundPatch::build_ready(&self.scene, &self.resolved, &self.kit));
             }
         }
     }
@@ -731,11 +748,25 @@ impl Studio {
         width
     }
 
-    fn inspector_panel(&mut self, ui: &mut egui::Ui) -> f32 {
-        let panel = egui::Panel::right("inspector")
-            .default_size(self.inspector_width)
-            .min_size(*settings::INSPECTOR_RANGE.start())
-            .max_size(*settings::INSPECTOR_RANGE.end())
+    pub(crate) fn inspector_panel(&mut self, ui: &mut egui::Ui) -> f32 {
+        // A shape's Sound tab is wide (Osc A and Osc B side by side), with a width of its own:
+        // a panel of its own id keeps each width as it was left.
+        let sound = self.panels.inspector.sound_open(&self.scene, self.selection.primary);
+        let (id, width, range) = if sound {
+            ("inspector sound", self.sound_width, settings::SOUND_WIDTH_RANGE)
+        } else {
+            ("inspector", self.inspector_width, settings::INSPECTOR_RANGE)
+        };
+        if sound != self.inspector_sound {
+            // The other width shows from this frame: not a drag of the edge.
+            self.inspector_sound = sound;
+            self.inspector_seen = width;
+            self.inspector_resizing = false;
+        }
+        let panel = egui::Panel::right(id)
+            .default_size(width)
+            .min_size(*range.start())
+            .max_size(*range.end())
             .resizable(true)
             .frame(side_frame())
             .show(ui, |ui| {
@@ -748,6 +779,7 @@ impl Studio {
                 let mut contents = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(*ui.layout()));
                 contents.shrink_clip_rect(rect);
                 let time = self.sim_time();
+                self.panels.inspector.meters = self.sound.as_ref().map(SoundJob::meters);
                 inspector::show(
                     &mut contents,
                     &mut self.panels.inspector,
@@ -759,21 +791,55 @@ impl Studio {
                 );
                 ui.advance_cursor_after_rect(rect);
             });
-        let width = panel.response.rect.width();
+        let shown = panel.response.rect.width();
         // Only a drag of the edge is remembered, once the mouse lets go; a window squeezing the
         // panel is not.
         let down = ui.input(|i| i.pointer.any_down());
-        if down && (width - self.inspector_seen).abs() >= 0.5 {
+        if down && (shown - self.inspector_seen).abs() >= 0.5 {
             self.inspector_resizing = true;
         }
-        self.inspector_seen = width;
-        if !down && std::mem::take(&mut self.inspector_resizing) && (width - self.inspector_width).abs() >= 0.5 {
-            self.inspector_width = width;
-            if self.persist_settings {
-                settings::save_inspector_width(width);
+        self.inspector_seen = shown;
+        if !down && std::mem::take(&mut self.inspector_resizing) && (shown - width).abs() >= 0.5 {
+            if sound {
+                self.sound_width = shown;
+                if self.persist_settings {
+                    settings::save_sound_width(shown);
+                }
+            } else {
+                self.inspector_width = shown;
+                if self.persist_settings {
+                    settings::save_inspector_width(shown);
+                }
             }
         }
-        width
+        shown
+    }
+
+    /// Plays the notes clicked on a Sound tab's keyboard, after this frame's edit has reached
+    /// the sound (a key that was just turned on plays with its new note list).
+    /// When wavetables finish baking in the background, the sound is built again with them
+    /// (until then the oscillators that need them are silent). Looks again shortly while a bake
+    /// is under way.
+    fn follow_bakes(&mut self, ctx: &egui::Context) {
+        let baked = WaveBank::baked();
+        if baked != self.tables_baked {
+            self.tables_baked = baked;
+            if let Some(job) = &mut self.sound {
+                job.patch(SoundPatch::build_ready(&self.scene, &self.resolved, &self.kit));
+            }
+        }
+        if WaveBank::busy() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
+    }
+
+    fn send_auditions(&mut self) {
+        let auditions = std::mem::take(&mut self.panels.inspector.auditions);
+        if let Some(job) = &mut self.sound {
+            for (thing, note) in auditions {
+                job.audition(crate::sound_job::Audition { thing, note, velocity: 0.8, on: true });
+            }
+        }
     }
 
     /// The grid buttons: show the lines, snap drags to them, and the size of one square.
@@ -948,6 +1014,8 @@ impl eframe::App for Studio {
         if !std::mem::take(&mut self.recorded) {
             self.after_edit(before);
         }
+        self.send_auditions();
+        self.follow_bakes(&ctx);
         if self.revision != revision {
             // The preview drew this frame before the edit was resolved; draw it again now.
             ctx.request_repaint();
@@ -1123,18 +1191,28 @@ mod tests {
     }
 
     #[test]
-    fn master_knobs_offer_no_keyframes_yet() {
+    fn master_output_takes_keyframes_but_ceiling_doesnt() {
         let mut h = left_harness();
         h.get_by_label("Mixer").click();
         h.run();
-        h.query_all_by_label("Output")
-            .find(|n| n.accesskit_node().role() == egui::accesskit::Role::Slider)
-            .unwrap()
-            .click_secondary();
+        let knob = |h: &Harness<'_, (Studio, f32)>, label: &str| {
+            h.query_all_by_label(label)
+                .find(|n| n.accesskit_node().role() == egui::accesskit::Role::Slider)
+                .unwrap()
+                .click_secondary()
+        };
+        knob(&h, "Output");
         h.run();
-        let key = h.get_by_label("Create Keyframe");
-        assert!(key.accesskit_node().is_disabled(), "the Master's keys come with part 2's keyed sound settings");
         assert!(h.query_by_label("Copy Value").is_some(), "the rest of the value menu is there");
+        h.get_by_label("Create Keyframe").click();
+        h.run();
+        let a = Address::on(ThingId::ROOT, SlotId::Mixer, "master_output");
+        assert!(h.state().0.scene.keyed(&a), "Output is keyed");
+        h.key_press(egui::Key::Escape);
+        h.run();
+        knob(&h, "Ceiling");
+        h.run();
+        assert!(h.get_by_label("Create Keyframe").accesskit_node().is_disabled(), "Ceiling takes no keys");
     }
 
     #[test]
