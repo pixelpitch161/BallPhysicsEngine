@@ -2,8 +2,8 @@
 //! made here; `bpe-sound` reads these settings.
 
 pub mod adsr;
-pub mod fx;
 pub mod chain;
+pub mod fx;
 pub mod mixer;
 pub mod notes;
 pub mod voice;

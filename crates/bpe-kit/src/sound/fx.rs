@@ -2,6 +2,7 @@
 //! of its bus (0..2). Every effect has an on switch (the layer's own), and a Mix (dry against
 //! wet). The sound engine reads these settings; no sound is made here.
 
+use super::chain::{DistortionSettings, FilterSettings};
 use super::mixer::MIXER;
 use super::voice::{full_params, prefixed_defs};
 use bpe_core::{
@@ -17,9 +18,17 @@ pub const CHORUS: &str = "fx.chorus";
 pub const PHASER: &str = "fx.phaser";
 pub const FLANGER: &str = "fx.flanger";
 pub const WIDTH: &str = "fx.width";
+/// The chain's Filter and Distortion on a bus: the same settings (`FilterSettings`,
+/// `DistortionSettings`) without the ones only a note has (Key track, Solo).
+pub const FILTER: &str = "fx.filter";
+pub const DISTORTION: &str = "fx.distortion";
 
 /// Every bus effect kind, in the add menu's order.
-pub const FX_KINDS: [&str; 9] = [EQ, COMPRESSOR, DELAY, REVERB, LIMITER, CHORUS, PHASER, FLANGER, WIDTH];
+pub const FX_KINDS: [&str; 11] =
+    [EQ, COMPRESSOR, FILTER, DISTORTION, DELAY, REVERB, LIMITER, CHORUS, PHASER, FLANGER, WIDTH];
+
+/// The chain settings a bus Filter or Distortion leaves out.
+const NOTE_ONLY: [&str; 2] = ["key_track", "solo"];
 
 /// A note length a synced time or rate is set in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
@@ -774,6 +783,19 @@ fn defs_with<T: Settings>(id: &'static str, default: &T) -> &'static [SettingDef
     })
 }
 
+/// `defs` without the settings in `leave_out`. Leaked once per kind.
+fn defs_except(id: &'static str, defs: &'static [SettingDef], leave_out: &[&str]) -> &'static [SettingDef] {
+    use std::collections::BTreeMap;
+    use std::sync::{Mutex, OnceLock};
+    static MADE: OnceLock<Mutex<BTreeMap<&'static str, &'static [SettingDef]>>> = OnceLock::new();
+    let made = MADE.get_or_init(Default::default);
+    let mut made = made.lock().unwrap_or_else(|e| e.into_inner());
+    made.entry(id).or_insert_with(|| {
+        let kept: Vec<SettingDef> = defs.iter().filter(|d| !leave_out.contains(&d.key)).cloned().collect();
+        Box::leak(kept.into_boxed_slice())
+    })
+}
+
 /// The starting values of a Phaser or Flanger, read on top of the saved ones.
 pub fn mod_fx_settings(kind: &str, p: &Params) -> ModFxSettings {
     let mut own = match kind {
@@ -826,7 +848,7 @@ impl LayerKind for FxKind {
 }
 
 /// Every bus effect kind.
-pub fn kinds() -> [FxKind; 9] {
+pub fn kinds() -> [FxKind; 11] {
     [
         FxKind {
             id: EQ,
@@ -839,6 +861,18 @@ pub fn kinds() -> [FxKind; 9] {
             name: "Compressor",
             help: "Turns loud parts down; can duck to another bus or to hits.",
             defs: CompressorSettings::defs,
+        },
+        FxKind {
+            id: FILTER,
+            name: "Filter",
+            help: "A filter: low, high, band, notch, peak, shelves, ladder, comb or formant.",
+            defs: || defs_except(FILTER, FilterSettings::defs(), &NOTE_ONLY),
+        },
+        FxKind {
+            id: DISTORTION,
+            name: "Distortion",
+            help: "Bends the wave: clipping, tube, tape, folding, crushing and more.",
+            defs: || defs_except(DISTORTION, DistortionSettings::defs(), &NOTE_ONLY),
         },
         FxKind { id: DELAY, name: "Delay", help: "Echoes, clean, analog or tape.", defs: DelaySettings::defs },
         FxKind { id: REVERB, name: "Reverb", help: "A plate, a hall or a spring.", defs: ReverbSettings::defs },
@@ -921,6 +955,14 @@ mod tests {
         assert_eq!(fb.default, Value::Number(40.0));
         assert_eq!(mod_fx_settings(FLANGER, &Params::default()).feedback, 50.0);
         assert_eq!(mod_fx_settings(CHORUS, &Params::default()).feedback, 0.0);
+        // The bus Filter and Distortion are the chain's, without what only a note has.
+        for id in [FILTER, DISTORTION] {
+            let keys: Vec<_> = reg.layer(id).unwrap().settings().iter().map(|d| d.key).collect();
+            assert!(keys.contains(&"mix") && keys.contains(&"kind"), "{id}");
+            assert!(!keys.contains(&"key_track") && !keys.contains(&"solo"), "{id}");
+        }
+        let f = reg.layer(FILTER).unwrap().settings();
+        assert_eq!(f.len(), FilterSettings::defs().len() - 2);
         // A bus effect goes into the mixer card, in its bus's lane.
         let mut scene = bpe_core::Scene::empty(&reg);
         scene.add_slot(&reg, ThingId::ROOT, SlotId::Mixer, MIXER).unwrap();

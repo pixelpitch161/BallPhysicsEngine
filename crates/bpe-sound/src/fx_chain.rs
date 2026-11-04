@@ -3,6 +3,7 @@
 //! the time effects), and its on switch fades it in and out so bypassing never clicks. Every
 //! number setting may be keyed on the timeline; keys are read once a block.
 
+use crate::chain::{filter_type, shaper_type};
 use crate::hits::BlockHit;
 use crate::lag::Lag;
 use crate::voices::knobs::track_value;
@@ -20,13 +21,13 @@ use bpe_dsp::fx::reverb_hall::Hall;
 use bpe_dsp::fx::reverb_plate::Plate;
 use bpe_dsp::fx::reverb_spring::Spring;
 use bpe_dsp::fx::width::{Correlation, Width};
-use bpe_dsp::{Smoother, TruePeakLimiter};
+use bpe_dsp::{FilterParams, Shaper, ShaperParams, Smoother, StereoFilter, TruePeakLimiter};
 use bpe_kit::sound::fx::{
     self, AnalyserMode, BandKind, CompressorSettings, DelayCharacter, DelayMode, DelaySettings, EqBand, EqSettings,
     Feel, HallLines, LimiterSettings, ModFxSettings, NoteLength, ReverbKind, ReverbSettings, Sidechain, StereoPlace,
     WidthSettings,
 };
-use bpe_kit::sound::{BUSES, MIXER};
+use bpe_kit::sound::{BUSES, DistortionSettings, FilterSettings, MIXER, Slope};
 use bpe_kit::things::shape::KIND as SHAPE;
 
 /// What an effect can read while it runs one block.
@@ -316,6 +317,33 @@ fn reverb_params(set: &ReverbSettings, k: &Keyed) -> ReverbParams {
     }
 }
 
+/// The bus filter's settings, keyed where they have keys (no key tracking: a bus has no note).
+fn filter_params(set: &FilterSettings, k: &Keyed, kind: bpe_dsp::FilterType, slope24: bool) -> FilterParams {
+    let pc = |key: &str, base: f32| (k.get(key, base) / 100.0).clamp(0.0, 1.0);
+    FilterParams {
+        kind,
+        slope24,
+        cutoff_hz: k.get("cutoff", set.cutoff).max(1.0),
+        reso: pc("reso", set.reso),
+        drive: pc("drive", set.drive),
+        gain_db: k.get("gain", set.gain),
+        vowel: k.get("vowel", set.vowel),
+        shift: k.get("shift", set.shift),
+    }
+}
+
+/// The bus distortion's settings, keyed where they have keys.
+fn shaper_params(set: &DistortionSettings, k: &Keyed) -> ShaperParams {
+    ShaperParams {
+        drive_db: k.get("drive", set.drive),
+        bits: k.get("bits", set.bits),
+        rate_hz: k.get("rate", set.rate),
+        bias: (k.get("bias", set.bias) / 100.0).clamp(-1.0, 1.0),
+        tone: (k.get("tone", set.tone) / 100.0).clamp(-1.0, 1.0),
+        output_db: k.get("output", set.output),
+    }
+}
+
 /// One effect's sound-making part, with its settings as set (keys read on top).
 enum Fx {
     Limiter {
@@ -353,6 +381,14 @@ enum Fx {
     Reverb {
         room: Room,
         set: Box<ReverbSettings>,
+    },
+    Filter {
+        dsp: Box<StereoFilter>,
+        set: Box<FilterSettings>,
+    },
+    Distortion {
+        dsp: Box<Shaper>,
+        set: Box<DistortionSettings>,
     },
 }
 
@@ -394,6 +430,17 @@ impl Fx {
                 let set = Box::new(ReverbSettings::from_params(p));
                 (Fx::Reverb { room: Room::of(&set), set }, MixLaw::Power)
             }
+            fx::FILTER => {
+                let set = Box::new(FilterSettings::from_params(p));
+                let dsp = Box::new(StereoFilter::new(filter_type(set.kind), set.slope == Slope::Db24));
+                (Fx::Filter { dsp, set }, MixLaw::Gain)
+            }
+            fx::DISTORTION => {
+                let set = Box::new(DistortionSettings::from_params(p));
+                let factor = if set.kind.oversampled() { set.quality.factor() } else { 1 };
+                let dsp = Box::new(Shaper::new(shaper_type(set.kind), factor));
+                (Fx::Distortion { dsp, set }, MixLaw::Gain)
+            }
             fx::WIDTH => {
                 let set = WidthSettings::from_params(p);
                 (Fx::Width { dsp: Box::default(), corr: Box::default(), set }, MixLaw::Gain)
@@ -406,6 +453,7 @@ impl Fx {
     fn latency(&self) -> usize {
         match self {
             Fx::Limiter { dsp, .. } => dsp.latency(),
+            Fx::Distortion { dsp, .. } => dsp.latency(),
             _ => 0,
         }
     }
@@ -429,6 +477,8 @@ impl Fx {
             Fx::Comp { dsp, .. } => dsp.reset(),
             Fx::Delay { dsp, .. } => dsp.reset(),
             Fx::Reverb { room, .. } => room.reset(),
+            Fx::Filter { dsp, .. } => dsp.reset(),
+            Fx::Distortion { dsp, .. } => dsp.reset(),
         }
     }
 
@@ -451,6 +501,17 @@ impl Fx {
             (Fx::Comp { dsp, .. }, Fx::Comp { dsp: o, .. }) => std::mem::swap(dsp, o),
             (Fx::Delay { dsp, .. }, Fx::Delay { dsp: o, .. }) => std::mem::swap(dsp, o),
             (Fx::Reverb { room, .. }, Fx::Reverb { room: o, .. }) => room.adopt(o),
+            // Another type, slope or quality starts empty.
+            (Fx::Filter { dsp, .. }, Fx::Filter { dsp: o, .. })
+                if dsp.kind() == o.kind() && dsp.slope24() == o.slope24() =>
+            {
+                std::mem::swap(dsp, o)
+            }
+            (Fx::Distortion { dsp, .. }, Fx::Distortion { dsp: o, .. })
+                if dsp.kind() == o.kind() && dsp.factor() == o.factor() =>
+            {
+                std::mem::swap(dsp, o)
+            }
             _ => {}
         }
     }
@@ -502,6 +563,8 @@ impl Fx {
             }
             Fx::Delay { dsp, set } => dsp.set(&delay_params(set, k, tempo)),
             Fx::Reverb { room, set } => room.set(&reverb_params(set, k)),
+            Fx::Filter { dsp, set } => dsp.set(&filter_params(set, k, dsp.kind(), dsp.slope24())),
+            Fx::Distortion { dsp, set } => dsp.set(&shaper_params(set, k)),
         }
     }
 
@@ -572,6 +635,14 @@ impl Fx {
             }
             Fx::Reverb { room, .. } => {
                 room.process(l, r);
+                0.0
+            }
+            Fx::Filter { dsp, .. } => {
+                dsp.process(l, r);
+                0.0
+            }
+            Fx::Distortion { dsp, .. } => {
+                dsp.process(l, r);
                 0.0
             }
         }
@@ -908,6 +979,35 @@ mod tests {
             assert!(tail > 1e-3, "{kind} rings: {tail}");
             assert!(late < tail * 0.1, "{kind} dies away: {late} after {tail}");
         }
+    }
+
+    #[test]
+    fn a_bus_low_pass_turns_the_sine_down() {
+        // The left sine is 382 Hz: a 100 Hz 24 dB low pass takes it down by about 30 dB.
+        let set = [("cutoff", Value::Number(100.0)), ("slope", Value::Choice("db24".into()))];
+        let mut c = chain_with(fx::FILTER, &set, true);
+        let out = run(&mut c, 60);
+        let peak = out[BLOCK * 40..].iter().fold(0.0f32, |m, v| m.max(v.0.abs()));
+        assert!(peak < 0.5 * bpe_dsp::db_to_gain(-20.0), "{peak}");
+        // And at Mix 0 it is the dry sound.
+        let mut dry = chain_with(fx::FILTER, &[set[0].clone(), ("mix", Value::Number(0.0))], true);
+        let mut plain = FxChain::default();
+        assert!(run(&mut dry, 10).iter().zip(run(&mut plain, 10)).all(|(a, b)| (a.0 - b.0).abs() < 1e-6));
+    }
+
+    #[test]
+    fn a_bus_distortion_squares_the_sine_and_counts_its_delay() {
+        let set = [("kind", Value::Choice("hard_clip".into())), ("drive", Value::Number(24.0))];
+        let mut c = chain_with(fx::DISTORTION, &set, true);
+        assert!(c.latency() > 0, "the 4x quality delays the sound");
+        let out = run(&mut c, 60);
+        let tail = &out[BLOCK * 40..];
+        let peak = tail.iter().fold(0.0f32, |m, v| m.max(v.0.abs()));
+        // A hard clip spends much of the cycle near its peak; a sine spends little.
+        let near = tail.iter().filter(|v| v.0.abs() > 0.9 * peak).count() as f32 / tail.len() as f32;
+        assert!(near > 0.5, "{near}");
+        let crush = chain_with(fx::DISTORTION, &[("kind", Value::Choice("bitcrush".into()))], true);
+        assert_eq!(crush.latency(), 0, "bitcrush runs at the plain rate");
     }
 
     #[test]

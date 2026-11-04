@@ -1,13 +1,14 @@
 //! The Mixer's editors in the wide inspector: a bus effect's (picked in its strip) or the
 //! Master's. Each effect kind has its own view where one helps (the EQ's curve, the
-//! compressor's level graph, the delay's echoes, the reverb's tail); the rest of an effect's
-//! settings are drawn from its settings list.
+//! compressor's level graph, the delay's echoes, the reverb's tail, the filter's response and
+//! the distortion's curve); the rest of an effect's settings are drawn from its settings list.
 
 pub mod comp;
 pub mod delay;
 pub mod eq;
 pub mod master;
 pub mod reverb;
+pub mod shaped;
 
 use super::Mixer;
 use super::cx::{self, MixCx, MixEdit, MixerPick};
@@ -86,6 +87,7 @@ pub fn show(ui: &mut Ui, mixer: &mut Mixer, scene: &mut Scene, kit: &Kit, readin
                 fx::COMPRESSOR => comp::show(ui, &mut cx, readings.meters, id, defs),
                 fx::DELAY => delay::show(ui, &mut cx, defs),
                 fx::REVERB => reverb::show(ui, &mut cx, defs),
+                fx::FILTER | fx::DISTORTION => shaped::show(ui, &mut cx, &layer.kind, defs),
                 kind => {
                     let reading = readings.meters.map_or(bpe_sound::FxReading::SILENT, |m| m.read_fx(id.0));
                     panel(ui, |ui| {
@@ -139,6 +141,7 @@ pub fn choice_label(name: &str) -> String {
         "multi_tap" => "Multi-tap".into(),
         "eight" => "8".into(),
         "sixteen" => "16".into(),
+        "x1" | "x2" | "x4" | "x8" => format!("{}x", &name[1..]),
         n if n.len() > 1 && n.starts_with('n') && n[1..].chars().all(|c| c.is_ascii_digit()) => {
             format!("1/{}", &n[1..])
         }
@@ -313,6 +316,27 @@ mod tests {
         h.get_by_label("Close").click();
         h.run();
         assert_eq!(h.state().0.panels.mixer.pick, None);
+    }
+
+    #[test]
+    fn bus_filter_and_distortion_show_their_pictures() {
+        let mut h = harness();
+        let s = &mut h.state_mut().0;
+        let kit = s.kit.clone();
+        let reg = &kit.registry;
+        s.scene.add_layer_in(reg, ThingId::ROOT, SlotId::Mixer, "fx.filter", Some(0)).unwrap();
+        let dist = s.scene.add_layer_in(reg, ThingId::ROOT, SlotId::Mixer, "fx.distortion", Some(0)).unwrap();
+        h.run();
+        h.query_all_by_label("Filter").find(|n| n.accesskit_node().role() == Role::Button).unwrap().click();
+        h.run();
+        assert!(h.query_by_label("Filter response").is_some());
+        assert!(h.query_by_label("Cutoff").is_some(), "its knobs");
+        assert!(h.query_by_label("Key track").is_none(), "a bus has no note to track");
+        h.query_all_by_label("Distortion").find(|n| n.accesskit_node().role() == Role::Button).unwrap().click();
+        h.run();
+        assert_eq!(h.state().0.panels.mixer.pick, Some(MixerPick::Layer(dist)));
+        assert!(h.query_by_label("Distortion curve").is_some());
+        assert!(h.query_by_label("4x").is_some(), "Quality chips");
     }
 
     #[test]

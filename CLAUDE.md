@@ -188,7 +188,7 @@ Dependencies go bottom to top:
   `things::shape::side_on` (no allocation; the outline is made at patch build).
   **Buses** (part 6): the mixer card holds Bus 1..3 (`bus1_…` keys: name, on, fader, pan, mute, solo, send1..3;
   Bus 1 on, 2 and 3 off) and their effects as layers (`bpe-kit/src/sound/fx.rs`, `fx.eq` … `fx.width`, section
-  Effect, `Layer.lane` = bus 0..2). `buses.rs`: `Buses` runs them in send order (post-fader sends; a send that
+  Effect, `Layer.lane` = bus 0..2; `fx.filter`/`fx.distortion` reuse the chain's settings without Key track and Solo). `buses.rs`: `Buses` runs them in send order (post-fader sends; a send that
   would loop is dropped, `would_loop`), solo/mute/on fades, and lines up latency with `Lag` (`lag.rs`); the
   engine takes `latency()` back so hits stay on their samples. A shape's main bus and sends are its
   `ShapeRoute` (`out_bus`, `out_send1..3`). `fx_chain.rs`: `FxChain` per bus (Mix crossfade, bypass fade,
