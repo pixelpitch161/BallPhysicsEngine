@@ -526,13 +526,12 @@ pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
         if studio.scene.things.get(id).is_some_and(|t| t.enabled) { view.of(studio, *id) } else { None }
     };
     // Only the selected thing shows its launch arrow.
-    if let Some(id) = studio.selection.primary.as_ref() {
-        if let Some(v) = seen(id)
-            && let Some(tip) = arrow_tip(&studio.scene, &studio.resolved, *id)
-            && (v.to_screen(tip) - pos).length() <= TIP_GRAB
-        {
-            return Some(Handle::Aim(*id));
-        }
+    if let Some(id) = studio.selection.primary.as_ref()
+        && let Some(v) = seen(id)
+        && let Some(tip) = arrow_tip(&studio.scene, &studio.resolved, *id)
+        && (v.to_screen(tip) - pos).length() <= TIP_GRAB
+    {
+        return Some(Handle::Aim(*id));
     }
     let mut best: Option<(f32, ThingId)> = None;
     for (id, bodies) in world.bodies.iter() {

@@ -2,7 +2,8 @@
 // across the ball before it turns or stretches): records `first` to `first + count`. `split`
 // draws one part of a ball split by its Blend layer: 0 the whole ball; else its low 16 bits are
 // the first record above the Blend layer, and with bit 16 clear the walk draws the layers under it
-// (and the group records), with bit 16 set the layers from there up as they show over the rest. Pasted in
+// (and the group records; how much the layers above cover is left in TOP_COVER), with bit 16 set
+// the layers from there up as they show over the rest. Pasted in
 // by `layers::source` with WALK, COV_IN and COV_OUT named, and SHADER_CASE and GROUP_SHADED either
 // empty or the shader layers' case and the group shaders mixed into a layer: a stack without
 // shader layers, and the walk shader layers sample (which can't call itself), leave shader and
@@ -45,6 +46,8 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
     // The layers above the Blend layer, as they show over the rest (upper part only).
     var top_in = vec4<f32>(0.0);
     var top_out = vec4<f32>(0.0);
+    // How much the layers above the Blend layer cover (lower part only).
+    var cover_top = vec2<f32>(0.0);
     let count = min(count_in, MAX_LAYERS);
     var below = 0u;
     var k = 0u;
@@ -63,7 +66,7 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
         // below the next one.
         // The lower part leaves out the layers above the Blend layer, not the group records.
         let above = cut > 0u && k >= cut && l.head.x != 8u && l.head.x != 9u;
-        if (l.head.z & 16u) != 0u || (lower && above) {
+        if (l.head.z & 16u) != 0u {
             COV_IN[k] = 0.0;
             COV_OUT[k] = 0.0;
             k += 1u + masks;
@@ -116,7 +119,9 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
             }
             case 3u: {
                 let under = select(body_c, inner.rgb / inner.a, inner.a > 1e-5);
-                let lit = shine_material(lit_at, under, l.p0.xy, l.p0.z, l.p0.w, l.p1.x);
+                // White light, or its own colours (straight across the ball, or from its middle).
+                let light = select(vec3<f32>(1.0), own_colour(l, p, length(p), l.colour.rgb), flag);
+                let lit = shine_material(lit_at, under, l.p0.xy, l.p0.z, l.p0.w, l.p1.x, light);
                 c = mix(under, lit, clamp(l.amount.y, 0.0, 1.0));
                 a_in = opacity;
             }
@@ -166,7 +171,19 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
         }
         // Showing its masks alone (the editor's view): white where they let it show, black elsewhere.
         if (l.head.z & 4u) != 0u {
+            TOP_COVER = vec2<f32>(0.0);
             return Walked(vec4<f32>(vec3<f32>(masked.x), 1.0), vec4<f32>(0.0));
+        }
+        if lower && above {
+            // Left out of the lower part; only how much it covers counts (light covers nothing).
+            if l.head.x != 4u {
+                let a = clamp(vec2<f32>(a_in, a_out), vec2<f32>(0.0), vec2<f32>(1.0));
+                cover_top = a + cover_top * (vec2<f32>(1.0) - a);
+            }
+            COV_IN[k] = 0.0;
+            COV_OUT[k] = 0.0;
+            k += 1u + masks;
+            continue;
         }
         if upper && l.head.x == 9u {
             // A group shader over the whole ball recolours the layers above the Blend layer where
@@ -209,6 +226,7 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
         below = k;
         k += 1u + masks;
     }
+    TOP_COVER = cover_top;
     if upper {
         return Walked(top_in, top_out);
     }

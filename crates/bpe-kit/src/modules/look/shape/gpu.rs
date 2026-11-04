@@ -25,6 +25,13 @@ pub enum ShapeDrawn {
     Shader(Box<ShaderLayer>),
 }
 
+impl ShapeDrawn {
+    /// Whether it writes a record: a Shader whose own code doesn't read writes none.
+    pub fn writes(&self) -> bool {
+        !matches!(self, ShapeDrawn::Shader(sh) if sh.header.is_err())
+    }
+}
+
 /// A shape's shown stack, read from its resolved Look card.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShapeStack {
@@ -32,6 +39,8 @@ pub struct ShapeStack {
     /// The layers above the Body, bottom first, with their ids.
     pub drawn: Vec<(LayerId, ShapeDrawn)>,
     pub blend: Option<BlendLayer>,
+    /// Where the Blend layer sits: how many of `drawn` are under it.
+    pub blend_at: usize,
 }
 
 /// The shape as it is drawn, in its own units (see `things::shape::draw::wall_form`).
@@ -64,7 +73,7 @@ impl ShapeStack {
             return None;
         }
         let body = slot.first_layer(BODY)?;
-        let mut stack = ShapeStack { body_id: body.id, drawn: Vec::new(), blend: None };
+        let mut stack = ShapeStack { body_id: body.id, drawn: Vec::new(), blend: None, blend_at: 0 };
         for layer in &slot.layers {
             let p = slot.layer_params(layer.id);
             let drawn = match layer.kind.as_str() {
@@ -76,6 +85,7 @@ impl ShapeStack {
                 BLEND => {
                     if stack.blend.is_none() {
                         stack.blend = Some(BlendLayer::from_params(&p));
+                        stack.blend_at = stack.drawn.len();
                     }
                     continue;
                 }
@@ -84,6 +94,22 @@ impl ShapeStack {
             stack.drawn.push((layer.id, drawn));
         }
         Some(stack)
+    }
+
+    /// Where the records of the layers above the Blend layer start, when the shape draws in two
+    /// parts: the layers under the Blend layer mixed with what is behind by its blend, then the
+    /// ones above it painted normally over them. `None` when it draws in one: no Blend layer, a
+    /// Normal one at full amount, or nothing drawn above it.
+    pub fn split(&self) -> Option<u32> {
+        let b = self.blend.as_ref()?;
+        if b.blend == Blend::Normal && b.blend_amount >= 1.0 {
+            return None;
+        }
+        let at = self.blend_at.min(self.drawn.len());
+        if !self.drawn[at..].iter().any(|(_, d)| d.writes()) {
+            return None;
+        }
+        Some(1 + self.drawn[..at].iter().filter(|(_, d)| d.writes()).count() as u32)
     }
 
     /// How the whole shape mixes with what is behind it: its Blend layer's, Normal without one.

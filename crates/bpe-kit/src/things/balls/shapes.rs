@@ -34,6 +34,7 @@ pub fn offsets(s: &BallsSettings) -> Vec<Vec2> {
         GroupShape::Grid => grid(count, s.columns, step),
         GroupShape::Line => line(count, step),
         GroupShape::Ring => ring(count, s.ring_radius),
+        GroupShape::FilledRing => filled_ring(s.ring_radius, step),
         GroupShape::FilledCircle => filled_circle(count, step),
         GroupShape::Triangle => triangle(count, step),
         GroupShape::Honeycomb => honeycomb(count, s.columns, step),
@@ -78,6 +79,30 @@ pub fn ring(count: usize, radius: f32) -> Vec<Vec2> {
             Vec2::new(angle.cos(), angle.sin()) * radius
         })
         .collect()
+}
+
+/// Rings of balls inside one another, numbered from the middle out: the outer ring `radius` from
+/// the middle and one every `step` inward, each holding as many balls as fit with no two closer
+/// than `step`, clockwise from the top. A ring smaller than half a step is one ball in the middle.
+/// At most [`MAX_BALLS`], the outer rings dropped first.
+pub fn filled_ring(radius: f32, step: f32) -> Vec<Vec2> {
+    let step = step.max(1e-3);
+    let radius = if radius.is_finite() { radius.max(0.0) } else { 0.0 };
+    let mut out = Vec::new();
+    let mut r = radius % step;
+    // From the middle out, so the numbering and the cap start at the middle.
+    if r < step * 0.5 {
+        out.push(Vec2::ZERO);
+        r += step;
+    }
+    while r <= radius + step * 1e-3 && out.len() < MAX_BALLS {
+        // The most balls whose neighbours (a chord apart) are at least a step apart.
+        let n = ((std::f32::consts::PI / (step / (2.0 * r)).min(1.0).asin()).floor() as usize).max(1);
+        let n = n.min(MAX_BALLS - out.len());
+        out.extend(ring(n, r));
+        r += step;
+    }
+    out
 }
 
 /// Packed like a honeycomb outward from the middle, nearest first, so the group is as round as
@@ -493,6 +518,39 @@ mod tests {
         let p = offsets(&s);
         assert_eq!(p.len(), 4);
         assert!((p[0] - Vec2::new(0.0, -10.0)).length() < 1e-4 && (p[1] - Vec2::new(10.0, 0.0)).length() < 1e-4);
+    }
+
+    #[test]
+    fn a_filled_ring_fills_the_ring_to_the_middle_with_room_between() {
+        for (radius, ball, space) in [(200.0, 24.0, 8.0), (100.0, 10.0, 0.0), (37.0, 5.0, 3.0), (5.0, 24.0, 8.0)] {
+            let s = settings(GroupShape::FilledRing, |s| {
+                s.ring_radius = radius;
+                s.radius = ball;
+                s.space = space;
+            });
+            let p = offsets(&s);
+            let step = s.step();
+            assert!(!p.is_empty());
+            if p.len() > 1 {
+                assert!(closest(&p) >= step * 0.999, "{radius}: neighbours closer than a step");
+            }
+            let furthest = p.iter().map(|q| q.length()).fold(0.0, f32::max);
+            assert!((furthest - radius).abs() < 1e-3 || p.len() == 1, "the outer ring sits at Radius");
+            // Every gap inside the outer ring is filled: each point of the disc is within a step
+            // of a ball.
+            for k in 0..200 {
+                let at = Vec2::from_angle(k as f32 * 0.7) * radius * (k as f32 / 200.0);
+                let near = p.iter().map(|q| q.distance(at)).fold(f32::MAX, f32::min);
+                assert!(near <= step * 1.05, "{radius}: a hole at {at}");
+            }
+            assert_eq!(p, offsets(&s), "the same every time");
+        }
+        // Numbered from the middle out: a ball in the middle when the rings reach it, else the
+        // innermost ring's top ball.
+        let four_steps = settings(GroupShape::FilledRing, |s| s.ring_radius = 4.0 * s.step());
+        assert_eq!(offsets(&four_steps)[0], Vec2::ZERO);
+        let s = settings(GroupShape::FilledRing, |s| s.ring_radius = 200.0);
+        assert!((offsets(&s)[0] - Vec2::new(0.0, -(200.0 % s.step()))).length() < 1e-3);
     }
 
     #[test]

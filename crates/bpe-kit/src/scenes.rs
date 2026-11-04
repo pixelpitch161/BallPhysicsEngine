@@ -609,6 +609,11 @@ impl<'a> Builder<'a> {
             }
             return;
         }
+        // A card a kind no longer has (a Shader card on balls, now a layer) is left out.
+        let kind_of = self.scene.things.get(&thing).and_then(|t| self.reg.thing(&t.kind));
+        if !kind_of.is_some_and(|k| k.slots().contains(&slot)) {
+            return;
+        }
         put_card(&mut self.scene, self.reg, thing, slot, kind);
         self.src.remove(&(thing, slot));
         self.card_mut(thing, slot).params = params;

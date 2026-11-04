@@ -104,13 +104,15 @@ mod tests {
     }
 
     #[test]
-    fn a_root_shader_is_a_picture_effect_and_a_thing_shader_is_a_material() {
+    fn a_root_shader_is_a_picture_effect_and_things_have_shader_layers_instead() {
         let (mut scene, _, kit) = scene_with_balls("single", |_| {});
         let reg = &kit.registry;
         scene.add_slot(reg, ThingId::ROOT, SlotId::Shader, "shader.kaleidoscope").unwrap();
-        scene.add_slot(reg, BALLS, SlotId::Shader, "shader.lava").unwrap();
-        let lava = (BALLS, SlotId::Shader);
-        scene.card_mut(lava.0, lava.1).unwrap().params.set("blend", Value::Number(0.5));
+        // Balls and shapes have Shader layers in their Look instead of a Shader card.
+        for thing in [BALLS, SHAPE] {
+            let refused = scene.add_slot(reg, thing, SlotId::Shader, "shader.lava");
+            assert_eq!(refused, Err(bpe_core::EditError::SlotNotSupported(SlotId::Shader)));
+        }
 
         let resolved = resolve(&scene, reg);
         assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
@@ -118,12 +120,9 @@ mod tests {
         let world = World::build(&scene, &resolved, &kit.sims);
         let mut frame = Frame::default();
         build_frame(&scene, &resolved, &world, &Log::default(), 0.5, &kit.draws, &mut frame);
-        assert_eq!(frame.effects.len(), 2, "one picture effect and one material");
+        assert_eq!(frame.effects.len(), 1, "one picture effect");
         let picture = &frame.effects[0];
         assert_eq!((picture.apply_to, picture.stage, picture.blend), (0.0, Stage::Picture, 1.0));
         assert!(picture.wgsl.contains("name: Kaleidoscope"));
-        let material = &frame.effects[1];
-        assert_eq!((material.apply_to, material.stage, material.blend), (thing_code(BALLS), Stage::Things, 0.5));
-        assert_ne!(picture.key, material.key);
     }
 }

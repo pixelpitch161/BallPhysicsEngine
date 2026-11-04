@@ -1065,7 +1065,13 @@ mod tests {
     #[test]
     fn the_editor_starts_on_the_blank_project_and_new_makes_another() {
         let studio = Studio::blank();
-        assert_eq!(studio.scene, bpe_kit::new_studio_scene(&studio.kit.registry));
+        // A new thing's colour is picked at random, so compare the two with colours left out.
+        let uncoloured = |mut scene: Scene| {
+            scene.things.values_mut().for_each(|t| t.colour = None);
+            scene
+        };
+        let blank = bpe_kit::new_studio_scene(&studio.kit.registry);
+        assert_eq!(uncoloured(studio.scene.clone()), uncoloured(blank));
         assert!(!studio.unsaved());
         let mut studio = Studio::headless();
         studio.new_scene();

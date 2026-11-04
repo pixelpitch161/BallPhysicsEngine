@@ -109,23 +109,32 @@ fn layer_over(acc: vec4<f32>, cs: vec3<f32>, a_in: f32, mode: u32) -> vec4<f32> 
 
 // `color` lit like a sphere at `q` (-1 to 1 across the ball as it sits on screen), the light from
 // `spot`; at the Shine layer's defaults exactly `sphere_light` in scene.wgsl.
-fn shine_light(q: vec2<f32>, color: vec3<f32>, spot: vec2<f32>, size: f32) -> vec3<f32> {
+fn shine_light(q: vec2<f32>, color: vec3<f32>, spot: vec2<f32>, size: f32, light: vec3<f32>) -> vec3<f32> {
     let r = length(q);
     let n = vec3<f32>(q, sqrt(max(1.0 - r * r, 0.0)));
     let l = normalize(vec3<f32>(spot, 0.7));
     let diffuse = 0.45 + 0.8 * max(dot(n, l), 0.0);
     let h = normalize(l + vec3<f32>(0.0, 0.0, 1.0));
     let spec = pow(max(dot(n, h), 0.0), 24.0 / max(size * size, 0.04)) * 0.7;
-    return color * diffuse + vec3<f32>(spec);
+    return color * diffuse + light * spec;
 }
 
 // The Shine layer's light on `color`: `shine_light` for Glossy (material 0) at sharpness 0,
 // otherwise its spot's exponent times `1 + sharpness` (above 0 sharper, below softer and wider),
-// and the light of Matte (1), Metal (2) or Glass (3). The kit turns Softness into sharpness.
-fn shine_material(q: vec2<f32>, color: vec3<f32>, spot: vec2<f32>, size: f32, material: f32, sharpness: f32) -> vec3<f32> {
+// and the light of Matte (1), Metal (2) or Glass (3). The kit turns Softness into sharpness. The
+// light's own colour `light` (white for the classic shine) tints its spot, sheen, glint and rim.
+fn shine_material(
+    q: vec2<f32>,
+    color: vec3<f32>,
+    spot: vec2<f32>,
+    size: f32,
+    material: f32,
+    sharpness: f32,
+    light: vec3<f32>,
+) -> vec3<f32> {
     let m = u32(material + 0.5);
     if m == 0u && abs(sharpness) < 1e-4 {
-        return shine_light(q, color, spot, size);
+        return shine_light(q, color, spot, size, light);
     }
     let r = length(q);
     let n = vec3<f32>(q, sqrt(max(1.0 - r * r, 0.0)));
@@ -141,14 +150,14 @@ fn shine_material(q: vec2<f32>, color: vec3<f32>, spot: vec2<f32>, size: f32, ma
             // Matte: wide, even light that wraps round, and a faint broad sheen.
             let wrap = clamp((dot(n, l) + 0.4) / 1.4, 0.0, 1.0);
             let sheen = pow(facing, max(power * 0.15, 1.0)) * 0.12 * peak;
-            return color * (0.3 + 0.85 * wrap) + vec3<f32>(sheen);
+            return color * (0.3 + 0.85 * wrap) + light * sheen;
         }
         case 2u: {
             // Metal: dark sides, a reflected horizon across the ball, a spot in the ball's colour.
             let horizon = smoothstep(-0.25, 0.15, n.y + 0.35 * spot.y);
             let env = mix(0.85, 0.12, horizon) + 0.25 * pow(1.0 - n.z, 2.0);
             let spec = pow(facing, power * 1.5) * peak;
-            return color * (0.1 + 0.55 * lit + 0.7 * env) + (0.35 + 0.9 * color) * spec;
+            return color * (0.1 + 0.55 * lit + 0.7 * env) + (0.35 + 0.9 * color) * light * spec;
         }
         case 3u: {
             // Glass: a darker middle, a bright rim, a sharp white spot and a faint glint opposite.
@@ -156,11 +165,11 @@ fn shine_material(q: vec2<f32>, color: vec3<f32>, spot: vec2<f32>, size: f32, ma
             let spec = pow(facing, power * 3.0) * 1.1 * peak;
             let back = normalize(vec3<f32>(-spot, 0.9));
             let glint = pow(max(dot(n, normalize(back + vec3<f32>(0.0, 0.0, 1.0))), 0.0), power * 0.8) * 0.25;
-            return color * (0.45 + 0.25 * lit) + (0.5 + 0.5 * color) * rim * 0.8 + vec3<f32>(spec + glint);
+            return color * (0.45 + 0.25 * lit) + (0.5 + 0.5 * color) * light * rim * 0.8 + light * (spec + glint);
         }
         default: {
             let diffuse = 0.45 + 0.8 * lit;
-            return color * diffuse + vec3<f32>(pow(facing, power) * 0.7 * peak);
+            return color * diffuse + light * (pow(facing, power) * 0.7 * peak);
         }
     }
 }
@@ -249,6 +258,28 @@ fn own_colour(l: LayerGpu, p: vec2<f32>, out: f32, plain: vec3<f32>) -> vec3<f32
         return paint_along(l.paint, out, g.view.w).rgb;
     }
     return paint_colour(l.paint, p, g.view.w, vec4<f32>(plain, 1.0)).rgb;
+}
+
+// How much the layers above a split thing's Blend layer cover, inside its shape and outside it,
+// left by the walk of its lower part.
+var<private> TOP_COVER: vec2<f32>;
+
+// What a thing covering `cover` of the pixel draws there, walked as `w` for part `split` (see
+// layers_walk.wgsl): its inside and outside mixed by `cover`. The lower part of a thing split by
+// its Blend layer leaves out what its upper part covers (TOP_COVER), so that the upper part drawn
+// over it adds up to the thing drawn whole: at an edge the lower part would otherwise show
+// through the soft edge of a layer over it, a thin ring round an Inside outline.
+fn split_lower_mixed(cover: f32, w: Walked, split: u32) -> vec4<f32> {
+    let lower = (split & 0xffffu) > 0u && (split & 0x10000u) == 0u;
+    if !lower {
+        return cover * w.inner + (1.0 - cover) * w.outer;
+    }
+    let t = clamp(TOP_COVER, vec2<f32>(0.0), vec2<f32>(1.0));
+    let left = 1.0 - (cover * t.x + (1.0 - cover) * t.y);
+    if left < 1e-4 {
+        return vec4<f32>(0.0);
+    }
+    return (cover * (1.0 - t.x) * w.inner + (1.0 - cover) * (1.0 - t.y) * w.outer) / left;
 }
 
 // `top`, the layers above a Blend layer, with a layer of colour `cs` covering `a_in` of it laid
@@ -433,7 +464,7 @@ fn shade_layers(in: LayeredOut) -> vec4<f32> {
     let d = ball_shape(p, in.form.x, in.form.y);
     let cover = clamp(-d / aa + 0.5, 0.0, 1.0);
     let w = walk_layers(in.local, in.range.x, in.range.y, in.range.z);
-    var out = cover * w.inner + (1.0 - cover) * w.outer;
+    var out = split_lower_mixed(cover, w, in.range.z);
     // An additive body colour makes the whole ball add its light.
     if in.body.a < 0.0 {
         out = vec4<f32>(out.rgb * -in.body.a, 0.0);

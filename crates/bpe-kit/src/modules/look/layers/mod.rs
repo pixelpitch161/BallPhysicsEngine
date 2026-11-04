@@ -32,7 +32,7 @@ pub use pattern::PatternLayer;
 pub use reactions::{ColourOnHit, ColourOverTime, FlashOnHit, StretchWhenFast, Turning};
 pub use shader::ShaderLayer;
 pub use shading::{ShadingKind, ShadingLayer, Space};
-pub use shine::{ShineLayer, ShineMaterial};
+pub use shine::{ShineLayer, ShineLight, ShineMaterial};
 
 /// The card kind that holds the stack.
 pub const CARD: &str = "look.layers";

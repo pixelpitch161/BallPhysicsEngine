@@ -1,7 +1,7 @@
 //! Picture tests for balls drawn with a stack of layers (layers.wgsl), on the software GPU.
 
 use crate::pictures::{pixel_sized, render_sized, save};
-use crate::{BallInstance, Frame, LayerGpu, LayeredInstance, PaintGpu};
+use crate::{BallInstance, BlendLayer, Frame, LayerGpu, LayeredInstance, PaintGpu, Place};
 use bpe_core::{Blend, Color, Gradient};
 use glam::Vec2;
 
@@ -131,6 +131,19 @@ fn shine_is_brightest_near_its_spot() {
     for (x, y) in [(60.0, 60.0), (-120.0, 120.0), (120.0, -120.0), (0.0, 150.0)] {
         assert!(spot > at(&px, x, y)[0], "{spot} at the spot, {:?} at ({x}, {y})", at(&px, x, y));
     }
+}
+
+#[test]
+fn a_shine_of_its_own_colour_tints_its_spot() {
+    let white = one(vec![body(), shine()], [0.3, 0.3, 0.3, 1.0], 200.0, 1.45);
+    let red_light = LayerGpu { head: [LayerGpu::SHINE, 0, LayerGpu::FLAG, 0], colour: [1.0, 0.0, 0.0, 1.0], ..shine() };
+    let red = one(vec![body(), red_light], [0.3, 0.3, 0.3, 1.0], 200.0, 1.45);
+    let Some(w) = render_sized(&white, W, H) else { return };
+    let r = render_sized(&red, W, H).unwrap();
+    let (ws, rs) = (at(&w, -50.0, -60.0), at(&r, -50.0, -60.0));
+    assert!(ws[0].abs_diff(ws[2]) < 4, "a white spot: {ws:?}");
+    assert!(rs[0] > rs[2] + 40, "a red spot: {rs:?}");
+    assert!(rs[0].abs_diff(ws[0]) < 6, "as bright in red: {rs:?} {ws:?}");
 }
 
 #[test]
@@ -466,9 +479,36 @@ fn a_ball_split_by_its_blend_layer_draws_the_layers_under_it_and_over_it_apart()
     save("layers-split-over", &o, W, H);
     let ring = (-190.0, 0.0);
     assert!(at(&w, ring.0, ring.1)[2] > 200 && at(&w, ring.0, ring.1)[0] < 40, "the whole ball has its blue ring");
-    assert!(at(&u, ring.0, ring.1)[..3].iter().all(|&c| c > 240), "under: the white body without the ring");
+    // Under: the white body, left out where the solid ring over it covers it.
+    assert!(at(&u, 0.0, 0.0)[..3].iter().all(|&c| c > 240), "under: the white body");
+    assert!(at(&u, ring.0, ring.1)[..3].iter().all(|&c| c < 10), "under: nothing under the solid ring");
     assert!(at(&o, ring.0, ring.1)[2] > 200, "over: the ring");
     assert_eq!(&at(&o, 0.0, 0.0)[..3], &[0, 0, 0], "over: nothing where only the body is");
+}
+
+#[test]
+fn a_split_ball_adds_up_to_the_whole_ball_at_its_soft_edge() {
+    // An Inside outline over a Blend layer: the lower part mixed in, then the upper part over it,
+    // match the ball drawn whole, its soft edge too: no ring of the body round the outline.
+    let records = vec![body(), outline(20.0, 0.0)];
+    let whole = one(records.clone(), WHITE, 201.0, 1.45);
+    let mut under = one(records.clone(), WHITE, 201.0, 1.45);
+    under.layered[0].range[2] = 1;
+    let mut over = one(records, WHITE, 201.0, 1.45);
+    over.layered[0].range[2] = 1 | OVER;
+    let mut split = Frame { bloom: 0.0, ..Frame::default() };
+    let layer = |place, frame| BlendLayer { blend: Blend::Normal, amount: 1.0, each: false, z: 0, place, frame };
+    split.layers.push(layer(Place::Blend, under));
+    split.layers.push(layer(Place::Over, over));
+    let Some(w) = render_sized(&whole, W, H) else { return };
+    let s = render_sized(&split, W, H).unwrap();
+    save("layers-split-edge", &s, W, H);
+    for k in 0..40 {
+        let x = 190.0 + k as f32 * 0.5;
+        let (a, b) = (at(&w, x, 0.0), at(&s, x, 0.0));
+        let worst = (0..3).map(|i| a[i].abs_diff(b[i])).max().unwrap();
+        assert!(worst <= 3, "at x {x}: whole {a:?}, split {b:?}");
+    }
 }
 
 /// A record's own gradient from `a` to `b`, straight at `angle` (pattern 1) or outward (2).
@@ -521,4 +561,22 @@ fn shine_materials_and_softness_light_the_ball_differently() {
     let bright = |px: &[u8]| px.chunks(4).filter(|p| p[0] > 200).count();
     let (sharp, soft) = (lit(0.0, 3.0).unwrap(), lit(0.0, -0.75).unwrap());
     assert!(bright(&sharp) < bright(&glossy) && bright(&glossy) < bright(&soft));
+}
+
+#[test]
+fn a_higher_z_order_draws_over_and_a_lower_one_under() {
+    let red = [1.0, 0.0, 0.0, 1.0];
+    let with = |z: i32, place: Place| {
+        let mut frame = one(vec![body()], WHITE, 200.0, 1.45);
+        let raised = one(vec![body()], red, 120.0, 1.45);
+        frame.layers.push(BlendLayer { blend: Blend::Normal, amount: 1.0, each: false, z, place, frame: raised });
+        frame
+    };
+    let Some(over) = render_sized(&with(1, Place::Front), W, H) else { return };
+    let under = render_sized(&with(-1, Place::Front), W, H).unwrap();
+    let back = render_sized(&with(3, Place::Back), W, H).unwrap();
+    let middle = |px: &[u8]| at(px, 0.0, 0.0);
+    assert!(middle(&over)[0] > 240 && middle(&over)[1] < 10, "the raised red ball is on top: {:?}", middle(&over));
+    assert!(middle(&under)[..3].iter().all(|&c| c > 240), "the lowered one is under the white: {:?}", middle(&under));
+    assert!(middle(&back)[0] > 240 && middle(&back)[1] < 10, "a raised shape's layer draws over too");
 }

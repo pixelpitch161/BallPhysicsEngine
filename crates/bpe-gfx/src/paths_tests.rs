@@ -79,7 +79,7 @@ fn culling_keeps_a_shape_whose_reach_touches_the_view() {
 
 // ---- Shapes with layers (shape_walk.wgsl) ----
 
-use crate::{LayerGpu, PaintGpu, PathInstance};
+use crate::{LayerGpu, PaintGpu, PathInstance, Place};
 use bpe_core::{Color, Gradient};
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
@@ -278,7 +278,14 @@ fn a_shape_blended_behind_the_balls_never_tints_them() {
         ball(&mut frame);
         let mut layer = Frame::default();
         layer.push_path(Vec2::ZERO, 0.0, 300.0, 0.0, Some(&square()), [0.0, 0.0, 0.0, 1.0], 2.0);
-        frame.layers.push(BlendLayer { blend: Blend::Multiply, amount: 1.0, each: false, behind, frame: layer });
+        frame.layers.push(BlendLayer {
+            blend: Blend::Multiply,
+            amount: 1.0,
+            each: false,
+            z: 0,
+            place: if behind { Place::Behind } else { Place::Blend },
+            frame: layer,
+        });
         render_sized(&frame, W, H)
     };
     let Some(behind) = picture(true) else { return };
@@ -286,4 +293,49 @@ fn a_shape_blended_behind_the_balls_never_tints_them() {
     let at = |px: &[u8]| pixel_sized(px, W, H, Vec2::new(0.5, 0.5));
     assert!(bright(at(&behind)), "the ball stays white: {:?}", at(&behind));
     assert!(dark(at(&over)), "a layer over the balls darkens them: {:?}", at(&over));
+}
+
+#[test]
+fn a_shape_split_by_its_blend_layer_adds_up_to_the_whole_shape() {
+    // A filled circle wearing a red Inside outline above its Blend layer: the lower part (the white
+    // body) mixed in, then the upper part over it, match the shape drawn whole, its soft edge too.
+    const W: u32 = 540;
+    const H: u32 = 960;
+    let outline = LayerGpu {
+        head: [LayerGpu::OUTLINE, 0, 0, 0],
+        amount: [1.0, 0.0, 0.0, 0.0],
+        p0: [20.0, 0.0, 0.0, 0.0],
+        colour: RED,
+        ..LayerGpu::ZERO
+    };
+    let shape = |part: u32| {
+        let mut f = Frame::default();
+        f.push_path(Vec2::ZERO, 0.0, 301.0, 0.0, None, WHITE, 2.0);
+        wear(&mut f, 0, vec![body_record(), outline], 0.0);
+        f.paths[0].layers[3] = part;
+        f
+    };
+    let whole = Frame { bloom: 0.0, ..shape(0) };
+    let mut split = Frame { bloom: 0.0, ..Frame::default() };
+    let layer = |place, frame| crate::BlendLayer {
+        blend: bpe_core::Blend::Normal,
+        amount: 1.0,
+        each: false,
+        z: 0,
+        place,
+        frame,
+    };
+    split.layers.push(layer(Place::Behind, shape(1)));
+    split.layers.push(layer(Place::BehindOver, shape(1 | 0x1_0000)));
+    let Some(w) = render_sized(&whole, W, H) else { return };
+    let s = render_sized(&split, W, H).unwrap();
+    save("paths-split-edge", &s, W, H);
+    assert!(reddish(pixel_sized(&s, W, H, Vec2::new(290.0, 0.0))), "the outline is drawn over");
+    assert!(pixel_sized(&s, W, H, Vec2::ZERO)[..3].iter().all(|&c| c > 240), "the body under it");
+    for k in 0..40 {
+        let x = 290.0 + k as f32 * 0.5;
+        let (a, b) = (pixel_sized(&w, W, H, Vec2::new(x, 0.0)), pixel_sized(&s, W, H, Vec2::new(x, 0.0)));
+        let worst = (0..3).map(|i| a[i].abs_diff(b[i])).max().unwrap();
+        assert!(worst <= 3, "at x {x}: whole {a:?}, split {b:?}");
+    }
 }

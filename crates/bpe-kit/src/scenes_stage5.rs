@@ -44,8 +44,10 @@ pub fn stage5(reg: &Registry) -> Vec<(String, Scene)> {
 fn own_module(scene: &mut Scene, reg: &Registry, thing: ThingId, kind: &str, params: Params) {
     let slot = reg.module(kind).expect("kit kinds are registered").slot();
     let root_has = reg.thing("scene").is_some_and(|k| k.slots().contains(&slot));
+    let has_slot = |id: &ThingId| reg.thing(&scene.things[id].kind).is_some_and(|k| k.slots().contains(&slot));
     let takers: Vec<ThingId> = if thing != ThingId::ROOT || root_has {
-        vec![thing]
+        // A card a kind no longer has (a Shader card on balls, now a layer) is left out.
+        [thing].into_iter().filter(has_slot).collect()
     } else {
         scene
             .order

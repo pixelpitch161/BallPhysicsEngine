@@ -111,11 +111,12 @@ pub fn track_picker(ui: &mut Ui, current: Option<TrackColour>) -> Option<TrackCo
     }
     ui.horizontal(|ui| {
         let label = ui.label(RichText::new("Hex").small().color(MUTED));
-        // The box keeps what is being typed until it reads as a colour.
+        // The box shows the colour greyed and keeps what is typed while it is being typed.
         let id = ui.make_persistent_id("track colour hex");
         let shown = current.map(|c| c.hex()).unwrap_or_default();
-        let mut text = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_else(|| shown.clone());
-        let edit = ui.add(egui::TextEdit::singleline(&mut text).desired_width(80.0)).labelled_by(label.id);
+        let mut text = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_default();
+        let field = egui::TextEdit::singleline(&mut text).desired_width(80.0).hint_text(shown);
+        let edit = ui.add(field).labelled_by(label.id);
         edit.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "Colour hex"));
         if edit.changed()
             && let Some(c) = TrackColour::parse(&text)

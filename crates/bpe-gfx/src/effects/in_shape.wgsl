@@ -44,7 +44,7 @@ fn in_shape_world(uv: vec2<f32>) -> vec2<f32> {
 fn shape_sample(uv: vec2<f32>) -> vec3<f32> {
     let world = in_shape_world(uv);
     let s = shape_at(world);
-    let w = walk_shape_plain(world, s, in_ball.first, in_ball.below);
+    let w = walk_shape_plain(world, s, in_ball.first, in_ball.below, 0u);
     let cover = shape_cover_at(s);
     return (cover * w.inner + (1.0 - cover) * w.outer).rgb;
 }

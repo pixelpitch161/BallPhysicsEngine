@@ -239,9 +239,17 @@ pub struct Thing {
     /// The thing's colour in the editor. `None` only for the scene settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub colour: Option<TrackColour>,
+    /// What draws over what: a thing with a higher z-order draws over one with a lower one. At
+    /// the same z-order things draw as they always have (shapes under balls). In
+    /// [`Thing::Z_ORDER_RANGE`].
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub z_order: i32,
 }
 
 impl Thing {
+    /// The z-orders a thing can have.
+    pub const Z_ORDER_RANGE: std::ops::RangeInclusive<i32> = -100..=100;
+
     /// Whether this thing sits on its parent instead of keeping its own place.
     pub fn rides(&self) -> bool {
         matches!(self.attach, Attach::Ride { .. })
@@ -269,6 +277,7 @@ impl Default for Thing {
             slots: BTreeMap::new(),
             screen: None,
             colour: None,
+            z_order: 0,
         }
     }
 }

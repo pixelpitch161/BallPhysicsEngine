@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     fn the_track_picker_picks() {
-        let mut h = Harness::builder().with_context_setup(apply).build_ui_state(
+        let mut h = Harness::builder().with_context_setup(apply).allow_missing_glyphs().build_ui_state(
             |ui, picked: &mut Option<TrackColour>| {
                 if let Some(c) = track_picker(ui, Some(TrackColour::PINK)) {
                     *picked = Some(c);

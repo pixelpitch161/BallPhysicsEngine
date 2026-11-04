@@ -282,7 +282,10 @@ fn shape_note(ui: &mut Ui, s: &BallsSettings) {
         GroupShape::Word if placed >= shapes::MAX_BALLS => {
             format!("Only {} balls fit: make the letters smaller or the balls bigger", shapes::MAX_BALLS)
         }
-        GroupShape::Word | GroupShape::Custom => balls(placed),
+        GroupShape::FilledRing if placed >= shapes::MAX_BALLS => {
+            format!("Only {} balls fit: make the radius smaller or the balls bigger", shapes::MAX_BALLS)
+        }
+        GroupShape::Word | GroupShape::Custom | GroupShape::FilledRing => balls(placed),
         _ if placed < (s.count as usize).min(shapes::MAX_BALLS) => format!("Only {placed} fit"),
         _ => return,
     };

@@ -1,8 +1,20 @@
 //! Shine: light on the ball, so it looks round and shiny. At full strength with its spot where it
 //! starts, it lights the ball exactly as the old Shiny style did.
 
-use bpe_core::{Blend, Choice, Settings};
+use bpe_core::{Blend, Choice, Color, Gradient, Settings};
 use glam::Vec2;
+
+use super::GradientShape;
+
+/// The colour of a Shine's light.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum ShineLight {
+    /// White light: the classic shine.
+    #[default]
+    White,
+    /// Its own colour, or colours: they tint the bright spot and the sheen.
+    Own,
+}
 
 /// What the ball seems to be made of, by how the light sits on it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
@@ -47,6 +59,24 @@ pub struct ShineLayer {
     /// How soft the bright spot's edge is: 0 sharp, 1 soft and wide; 0.5 is the classic shine.
     #[setting(label = "Softness", range(0, 1), simple, keyframe)]
     pub softness: f32,
+    /// White light, or light of its own colour.
+    #[setting(label = "Light", simple)]
+    pub light: ShineLight,
+    /// The light's colour, or colours: several run across each ball.
+    #[setting(label = "Colour", when = "light=own", keyframe)]
+    pub colour: Gradient,
+    /// How its colours run: straight across the ball, or from its middle out.
+    #[setting(label = "Gradient", when = "light=own and colour")]
+    pub gradient: GradientShape,
+    /// The way straight colours run across the ball, in degrees: 90 from top to bottom.
+    #[setting(
+        label = "Direction",
+        when = "light=own and colour and gradient=straight",
+        span(-180, 180),
+        unit = "°",
+        keyframe
+    )]
+    pub direction: f32,
     /// 0 is invisible, 1 is solid.
     #[setting(label = "Opacity", range(0, 1), group = "Mixing", keyframe, pulse)]
     pub opacity: f32,
@@ -76,6 +106,10 @@ impl Default for ShineLayer {
             spot: DEFAULT_SPOT,
             size: 1.0,
             softness: 0.5,
+            light: ShineLight::White,
+            colour: Gradient::solid(Color::rgb(0xff, 0xd8, 0x8a)),
+            gradient: GradientShape::Straight,
+            direction: 90.0,
             opacity: 1.0,
             blend: Blend::Normal,
         }

@@ -132,8 +132,8 @@ fn shade_shape_layers(world: vec2<f32>, a: vec4<f32>, b: vec4<f32>, c: vec4<f32>
     layered_shape = LayeredShape(a, b, c, layers);
     let s = shape_at(world);
     let cover = shape_cover_at(s);
-    let w = walk_shape(world, s, layers.x, layers.y);
-    let out = cover * w.inner + (1.0 - cover) * w.outer;
+    let w = walk_shape(world, s, layers.x, layers.y, layers.w);
+    let out = split_lower_mixed(cover, w, layers.w);
     if out.a < 1e-4 && max(out.r, max(out.g, out.b)) < 1e-4 {
         discard;
     }

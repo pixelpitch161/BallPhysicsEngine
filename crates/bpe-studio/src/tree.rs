@@ -515,13 +515,11 @@ fn row(ui: &mut Ui, tree: &mut Tree, scene: &Scene, thing: &Thing, cx: &RowCx, a
             let name = format!("Colour of {}", thing.name);
             tag_response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name.clone()));
             let tag_response = tag_response.on_hover_text("Click to change this thing's colour");
-            egui::Popup::menu(&tag_response).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(
-                |ui| {
-                    if let Some(colour) = style::track_picker(ui, thing.colour) {
-                        *action = Some(Action::Colour(id, colour));
-                    }
-                },
-            );
+            egui::Popup::menu(&tag_response).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+                if let Some(colour) = style::track_picker(ui, thing.colour) {
+                    *action = Some(Action::Colour(id, colour));
+                }
+            });
         }
         if thing.rides() {
             let (rect, response) = ui.allocate_exact_size(Vec2::new(10.0, 14.0), Sense::hover());
@@ -645,7 +643,10 @@ fn context_menu(ui: &mut Ui, scene: &Scene, thing: &Thing, single: bool, action:
         ui.close();
     }
     if id != ThingId::ROOT {
-        ui.menu_button("Colour", |ui| {
+        // The picker stays open while it is dragged in or typed into.
+        let stay =
+            egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+        egui::containers::menu::SubMenuButton::new("Colour").config(stay).ui(ui, |ui| {
             if let Some(colour) = style::track_picker(ui, thing.colour) {
                 *action = Some(Action::Colour(id, colour));
             }
@@ -1416,7 +1417,7 @@ mod tests {
         assert_ne!(before.things[&ThingId(2)].colour, Some(teal));
         h.get_by_label("Ball").click_secondary();
         h.run();
-        h.get_by_label("Colour").hover();
+        h.get_by_label("Colour").click();
         h.run();
         h.get_by_label("Colour hex").click();
         h.run();
