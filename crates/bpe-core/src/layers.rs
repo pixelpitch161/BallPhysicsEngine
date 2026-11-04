@@ -704,9 +704,10 @@ impl Scene {
         if let Some(crate::Value::Int(t)) = copied.params.get("target")
             && *t >= 0
         {
-            let same = copied.target.as_ref().is_some_and(|(at, kind)| {
-                i64::from(at.0) == *t && card.layer(*at).is_some_and(|l| &l.kind == kind)
-            });
+            let same = copied
+                .target
+                .as_ref()
+                .is_some_and(|(at, kind)| i64::from(at.0) == *t && card.layer(*at).is_some_and(|l| &l.kind == kind));
             if !same {
                 card.params.set(&crate::layered_key(id, "target"), crate::Value::Int(-1));
             }
