@@ -338,5 +338,9 @@ impl Engine {
             true_peak: self.loudness.true_peak_db(),
             reduction: self.master.gain_reduction_db(),
         });
+        for (i, v) in self.voices.iter().enumerate() {
+            self.meters.write_shape(i, v.thing().0, gain_to_db(v.level()));
+        }
+        self.meters.clear_shapes_from(self.voices.len());
     }
 }

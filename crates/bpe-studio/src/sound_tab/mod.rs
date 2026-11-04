@@ -6,8 +6,11 @@
 //! is drawn, through [`write::write`] (a key at the playhead when the setting has keys).
 
 pub mod adsr_view;
+pub mod keys;
 pub mod mod_row;
 pub mod osc;
+pub mod output;
+pub mod playing;
 pub mod wave_view;
 pub mod write;
 
@@ -279,6 +282,18 @@ fn body(ui: &mut Ui, inspector: &mut Inspector, cx: &mut TabCx) {
                 .map_or_else(|| "Envelope".to_owned(), |l| l.name.clone());
             adsr_view::show(ui, cx, layer, &name);
         }
+    });
+    ui.add_space(8.0);
+    keys::show(ui, cx);
+    ui.add_space(8.0);
+    let level = inspector.meters.as_ref().map_or(f32::NEG_INFINITY, |m| m.take_shape(cx.id.0));
+    if level > f32::NEG_INFINITY {
+        // Keep the meter moving while the shape sounds.
+        ui.ctx().request_repaint();
+    }
+    ui.columns(2, |cols| {
+        playing::show(&mut cols[0], cx);
+        output::show(&mut cols[1], cx, level);
     });
 }
 

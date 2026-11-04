@@ -848,7 +848,7 @@ fn widget(
 
 /// A menu naming the target, with Anything, Itself and the scene's things, tags and kinds to
 /// pick from. Marked changed when something is picked.
-fn target_picker(ui: &mut Ui, t: &mut Target, choices: &TargetChoices) -> Response {
+pub(crate) fn target_picker(ui: &mut Ui, t: &mut Target, choices: &TargetChoices) -> Response {
     let mut picked: Option<Target> = None;
     let menu = ui.menu_button(target_words(t, choices), |ui| {
         ui.set_min_width(160.0);
