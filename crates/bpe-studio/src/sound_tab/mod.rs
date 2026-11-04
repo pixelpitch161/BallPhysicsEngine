@@ -5,6 +5,8 @@
 //! Drawing reads the scene; every change is gathered as a [`TabEdit`] and applied once the tab
 //! is drawn, through [`write::write`] (a key at the playhead when the setting has keys).
 
+pub mod adsr_view;
+pub mod mod_row;
 pub mod osc;
 pub mod wave_view;
 pub mod write;
@@ -19,7 +21,10 @@ use eframe::egui::{self, Color32, RichText, Ui};
 
 /// The Sound tab's own state, kept in the inspector.
 #[derive(Clone, Debug, Default)]
-pub struct SoundTab {}
+pub struct SoundTab {
+    /// The modulator each shape's editor shows.
+    pub picked: std::collections::BTreeMap<ThingId, bpe_core::LayerId>,
+}
 
 /// A change the tab asks for, applied once it is drawn.
 #[derive(Clone, Debug, PartialEq)]
@@ -259,10 +264,21 @@ pub fn show(
 }
 
 /// Everything under Enable sound.
-fn body(ui: &mut Ui, _inspector: &mut Inspector, cx: &mut TabCx) {
+fn body(ui: &mut Ui, inspector: &mut Inspector, cx: &mut TabCx) {
     ui.columns(2, |cols| {
         osc::show(&mut cols[0], cx, osc::Osc::A);
         osc::show(&mut cols[1], cx, osc::Osc::B);
+    });
+    ui.add_space(8.0);
+    panel(ui, |ui| {
+        if let Some(layer) = mod_row::show(ui, cx, &mut inspector.sound) {
+            let name = cx
+                .scene
+                .card(cx.id, SlotId::Sound)
+                .and_then(|c| c.layer(layer))
+                .map_or_else(|| "Envelope".to_owned(), |l| l.name.clone());
+            adsr_view::show(ui, cx, layer, &name);
+        }
     });
 }
 
