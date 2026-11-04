@@ -73,7 +73,8 @@ impl Event {
 /// that was already touching at the start, or a move that didn't close the gap, gives 0.
 pub(crate) fn crossing(d0: f32, d1: f32) -> f32 {
     let closed = d0 - d1;
-    if !(d0 > 0.0) || !(closed > 1e-6) {
+    // NaN gaps count as no crossing too.
+    if d0.is_nan() || closed.is_nan() || d0 <= 0.0 || closed <= 1e-6 {
         return 0.0;
     }
     (d0 / closed).clamp(0.0, 1.0)
