@@ -211,7 +211,9 @@ pub fn row(
             paint_thumbnail(ui.painter(), thumb, cx, card, layer);
         }
         if thumb_response.clicked() && !ui.input(|i| i.modifiers.alt) {
-            inspector.selected_layer.insert(cx.id, layer.id);
+            // As the name does: a group layer is picked in Group mode's own list.
+            let picks = if group { &mut inspector.selected_group_layer } else { &mut inspector.selected_layer };
+            picks.insert(cx.id, layer.id);
         }
 
         let renaming = inspector.renaming_layer.as_ref().is_some_and(|(t, l, _)| *t == cx.id && *l == layer.id);

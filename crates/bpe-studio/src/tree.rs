@@ -842,13 +842,9 @@ pub fn duplicate(scene: &mut Scene, reg: &Registry, id: ThingId) -> Option<Thing
     let parent = source.parent?;
     let copy = scene.add_thing(reg, &source.kind, parent).ok()?;
     let thing = scene.things.get_mut(&copy)?;
-    thing.name = format!("{} copy", source.name);
-    thing.tags = source.tags;
-    thing.attach = source.attach;
-    thing.transform = source.transform;
-    thing.enabled = source.enabled;
-    thing.params = source.params;
-    thing.slots = source.slots;
+    // Everything is the original's but its id, its name and its own new colour.
+    let name = format!("{} copy", source.name);
+    *thing = bpe_core::Thing { id: copy, name, colour: thing.colour, ..source };
     // The copy's settings move the way the original's do.
     let tracks: Vec<_> =
         scene.tracks.iter().filter(|(a, _)| a.thing == id).map(|(a, t)| (a.clone(), t.clone())).collect();
@@ -1103,6 +1099,29 @@ mod tests {
         assert_eq!(copied.transform, original.transform);
         assert_eq!(scene.order, vec![ThingId::ROOT, ThingId(1), ThingId(2), ThingId(3)]);
         assert_eq!(duplicate(&mut scene, &kit.registry, ThingId::ROOT), None);
+    }
+
+    #[test]
+    fn a_duplicate_keeps_its_z_order_and_stick_to_screen_and_gets_its_own_colour() {
+        let kit = bpe_kit::kit();
+        let mut scene = bpe_kit::new_scene(&kit.registry);
+        let ball = scene.things.get_mut(&ThingId(2)).unwrap();
+        ball.z_order = 7;
+        ball.screen = Some(true);
+        ball.enabled = false;
+        ball.tags.insert("hero".into());
+        let copy = duplicate(&mut scene, &kit.registry, ThingId(2)).unwrap();
+        let (original, copied) = (&scene.things[&ThingId(2)], &scene.things[&copy]);
+        assert_eq!(copied.z_order, 7);
+        assert_eq!(copied.screen, Some(true));
+        assert!(!copied.enabled);
+        assert_eq!(copied.tags, original.tags);
+        assert_eq!((copied.id, copied.kind.as_str()), (copy, original.kind.as_str()));
+        assert!(copied.colour.is_some() && copied.colour != original.colour, "a colour of its own");
+        // Everything else is the original's.
+        let same =
+            bpe_core::Thing { id: original.id, name: original.name.clone(), colour: original.colour, ..copied.clone() };
+        assert_eq!(&same, original);
     }
 
     #[test]

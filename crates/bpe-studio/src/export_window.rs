@@ -17,8 +17,9 @@ type CheckedEncoders = (PathBuf, Vec<Encoder>);
 
 pub struct ExportWindow {
     pub open: bool,
-    /// The file chosen with "Change…". `None` saves next to the scene, named after it.
-    path: Option<PathBuf>,
+    /// The file chosen with "Change…". `None` saves next to the scene, named after it. It is
+    /// the open scene's: opening or starting another forgets it.
+    pub(crate) path: Option<PathBuf>,
     /// H.264 quality: lower is sharper and bigger.
     crf: u8,
     /// Output size as a fraction of the video size.

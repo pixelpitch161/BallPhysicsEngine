@@ -6,7 +6,7 @@
 use std::f32::consts::FRAC_PI_2;
 
 use bpe_core::shape_path::{FLATTEN, ON_THE_LINE};
-use bpe_core::{Scene, Settings, ShapePath, ThingId, Value};
+use bpe_core::{Address, Registry, Scene, Settings, ShapePath, ThingId, Value};
 use bpe_kit::{ShapeSettings, ShapeStart, ShapeState};
 use bpe_runtime::{Outline, World};
 use eframe::egui::{self, Painter, Pos2, Rect, Stroke};
@@ -280,24 +280,31 @@ fn moulded(m: &Mould, handle: Handle, to: Vec2, shift: bool) -> ShapePath {
 /// Moulds the shape `drag` holds to the pointer at `pointer` (world pixels), through the shape
 /// as it was seen when the drag began: a corner, side or bend handle to it (snapped to a grid
 /// `step`), or a circle's Size to its distance from the middle. The first change gives an even
-/// polygon its own corners.
-pub fn apply(scene: &mut Scene, drag: &Drag, pointer: Vec2, step: Option<f32>) {
+/// polygon its own corners. A keyframed Size gets a key at `time`; true when it did.
+pub fn apply(scene: &mut Scene, reg: &Registry, drag: &Drag, pointer: Vec2, step: Option<f32>, time: f64) -> bool {
     let id = drag.handle.thing();
-    let Some(m) = &drag.mould else { return };
-    let Some(thing) = scene.things.get_mut(&id) else { return };
+    let Some(m) = &drag.mould else { return false };
     if let Handle::Radius(_) = drag.handle {
         // The Size that shows that far out, shrunk as it was seen.
         let shown = (pointer - m.frame.centre).length() / m.scale.max(1e-6);
-        let size = snap_length(shown, step).round().max(SMALLEST);
-        thing.params.set("size", Value::Number(f64::from(size)));
-        return;
+        let size = Value::Number(f64::from(snap_length(shown, step).round().max(SMALLEST)));
+        let a = Address::own(id, "size");
+        if scene.keyed(&a) {
+            return scene.set_key(reg, &a, time, size).is_ok();
+        }
+        if let Some(thing) = scene.things.get_mut(&id) {
+            thing.params.set("size", size);
+        }
+        return false;
     }
+    let Some(thing) = scene.things.get_mut(&id) else { return false };
     let to = m.frame.to_shape(snap_point(pointer - m.offset, step));
     let path = moulded(m, drag.handle, to, drag.shift);
     let had = ShapeSettings::from_params(&thing.params).moulded().is_some();
     if path.is_valid() && (had || path != m.start) {
         thing.params.set("path", Value::Path(path));
     }
+    false
 }
 
 /// What a right-click on a shape was on.
@@ -561,7 +568,8 @@ mod tests {
         let world = studio.playback.world().clone();
         let mould = start(&world, handle, press);
         let drag = Drag { mould, shift, ..Drag::new(handle, Vec2::ZERO) };
-        apply(&mut studio.scene, &drag, press + by, step);
+        let kit = studio.kit.clone();
+        apply(&mut studio.scene, &kit.registry, &drag, press + by, step, 0.0);
     }
 
     /// Corner `i` of the even polygon in world pixels (400 px shape at the middle).
@@ -686,6 +694,28 @@ mod tests {
     }
 
     #[test]
+    fn dragging_a_keyed_circles_edge_keys_its_size_at_the_playhead() {
+        let mut studio = Studio::headless();
+        let kit = studio.kit.clone();
+        let size = Address::own(SHAPE, "size");
+        studio.scene.set_key(&kit.registry, &size, 0.0, Value::Number(508.0)).unwrap();
+        let world = studio.playback.world().clone();
+        let handle = Handle::Radius(SHAPE);
+        let press = Vec2::new(508.0, 0.0);
+        let drag = Drag { mould: start(&world, handle, press), ..Drag::new(handle, Vec2::ZERO) };
+        let keyed = apply(&mut studio.scene, &kit.registry, &drag, Vec2::new(300.0, 0.0), None, 2.0);
+        assert!(keyed, "a keyed edit, so playing pauses");
+        let keys = &studio.scene.tracks[&size].keys;
+        assert_eq!(keys.iter().map(|k| k.time).collect::<Vec<_>>(), [0.0, 2.0]);
+        assert_eq!(studio.scene.value_at_time(&kit.registry, &size, 2.0), Some(Value::Number(300.0)));
+        // Not keyed: the plain value, and no key.
+        studio.scene.tracks.clear();
+        assert!(!apply(&mut studio.scene, &kit.registry, &drag, Vec2::new(250.0, 0.0), None, 2.0));
+        assert_eq!(studio.scene.things[&SHAPE].params.get("size"), Some(&Value::Number(250.0)));
+        assert!(studio.scene.tracks.is_empty());
+    }
+
+    #[test]
     fn a_spinning_shape_moulds_as_it_is_shown_at_the_playhead() {
         let mut studio = studio_with(|p| {
             p.set("start", Value::Choice("polygon".into()));
@@ -702,7 +732,8 @@ mod tests {
         let press = frame.to_world(ShapePath::even(6).point(2));
         let drag = Drag { mould: start(&shown, handle, press), ..Drag::new(handle, Vec2::ZERO) };
         let by = Vec2::new(0.0, 40.0);
-        apply(&mut studio.scene, &drag, press + by, None);
+        let kit = studio.kit.clone();
+        apply(&mut studio.scene, &kit.registry, &drag, press + by, None, 1.0);
         let expected = ShapePath::even(6).point(2) + Vec2::from_angle(-frame.angle).rotate(by) / 400.0;
         assert!(close(path(&studio).point(2), expected), "{} vs {expected}", path(&studio).point(2));
     }

@@ -69,6 +69,9 @@ pub struct Inspector {
     pub meters: Option<std::sync::Arc<bpe_sound::Meters>>,
     /// Whether playback is running (the Sound tab outlines the slot playing).
     pub playing: bool,
+    /// The Tags field's text while it is being typed in, by thing; set on the thing when the
+    /// field lets go of the keyboard.
+    pub tags_draft: Option<(ThingId, String)>,
 }
 
 /// What the inspector shows of a shape.
@@ -302,15 +305,22 @@ pub fn show(
                 let tags_label = grid_label(ui, lw, "Tags").on_hover_text(
                     "Words that bounce targets and the camera can pick this out by, separated by spaces",
                 );
-                let mut tags = thing.tags.iter().cloned().collect::<Vec<_>>().join(" ");
+                // What is typed is kept while the field has the keyboard, and set when it lets go.
+                let mut tags = match &inspector.tags_draft {
+                    Some((t, draft)) if *t == id => draft.clone(),
+                    _ => thing.tags.iter().cloned().collect::<Vec<_>>().join(" "),
+                };
                 let tag_edit = ui
                     .add(egui::TextEdit::singleline(&mut tags).desired_width(f32::INFINITY).hint_text("none"))
                     .labelled_by(tags_label.id);
                 if tag_edit.lost_focus() {
+                    inspector.tags_draft = None;
                     let set: BTreeSet<String> = tags.split_whitespace().map(str::to_owned).collect();
                     if set != thing.tags {
                         edits.push(Edit::Tags(set));
                     }
+                } else if tag_edit.has_focus() {
+                    inspector.tags_draft = Some((id, tags));
                 }
                 ui.end_row();
             })
@@ -1174,6 +1184,9 @@ fn jump_bar(
     // settings are six cards, each with its own button.
     let own: Vec<(Card, &str)> = if id == ThingId::ROOT {
         bpe_kit::ROOT_CARDS.into_iter().map(|name| (Card::Section(name), name)).collect()
+    } else if kind.id() == BALLS && layered_look(thing) {
+        // A Balls thing with a layered Look has no card of its own: Thing goes to Placement.
+        vec![(Card::Placement, "Thing")]
     } else {
         vec![(Card::Thing, "Thing")]
     };
@@ -1186,8 +1199,10 @@ fn jump_bar(
         }
     }
     ui.horizontal_wrapped(|ui| {
+        // Placement counts as the thing's own card.
+        let own = |c: Card| if c == Card::Placement { Card::Thing } else { c };
         for (card, label) in cards {
-            if ui.selectable_label(card == at_top, label).clicked() {
+            if ui.selectable_label(own(card) == own(at_top), label).clicked() {
                 inspector.collapsed.remove(&card.fold_key(id));
                 inspector.jump_to = Some(card);
                 inspector.jumped = Some((id, card));
@@ -2234,6 +2249,37 @@ mod tests {
         let labels: Vec<String> = jump_bar(&h).into_iter().map(|(l, _)| l).collect();
         assert_eq!(labels, ["Thing", "Look", "Physics"]);
         assert_eq!(jump_bar(&h)[0], ("Thing".to_owned(), true), "at the top, Thing is selected");
+    }
+
+    #[test]
+    fn tags_can_be_typed_a_letter_at_a_time() {
+        let mut h = harness(Some(ThingId(2)));
+        h.get_by_role_and_label(Role::TextInput, "Tags").click();
+        h.run();
+        for letter in "red blue".chars() {
+            h.get_by_role_and_label(Role::TextInput, "Tags").type_text(&letter.to_string());
+            h.run();
+        }
+        h.key_press(egui::Key::Enter);
+        h.run();
+        let tags: Vec<&str> = h.state().scene.things[&ThingId(2)].tags.iter().map(String::as_str).collect();
+        assert_eq!(tags, ["blue", "red"]);
+    }
+
+    #[test]
+    fn a_balls_thing_button_jumps_to_its_placement() {
+        let mut h = harness_sized(bpe_kit::new_scene(&bpe_kit::registry()), Some(ThingId(2)), 600.0);
+        the_bar_button(&h, "Physics").click();
+        h.run();
+        the_bar_button(&h, "Thing").click();
+        h.run();
+        let s = h.state();
+        assert!(s.inspector.jump_to.is_none(), "the jump landed on a card that is drawn");
+        let tops = &s.inspector.card_tops;
+        let top = tops.iter().find(|(c, _)| *c == Card::Placement).expect("Placement's top").1;
+        assert!(top.abs() <= 2.0, "Placement's header is at the top of the scroll area, at {top}");
+        let selected: Vec<String> = jump_bar(&h).into_iter().filter(|(_, on)| *on).map(|(l, _)| l).collect();
+        assert_eq!(selected, ["Thing"]);
     }
 
     #[test]

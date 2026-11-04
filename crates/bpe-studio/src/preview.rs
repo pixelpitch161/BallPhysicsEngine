@@ -5,7 +5,7 @@ use crate::app::{CATCH_UP_BUDGET, Studio};
 use crate::grid::snap_point;
 use crate::shape_handles::{self, MenuTarget, Mould};
 use crate::style;
-use bpe_core::{Attach, Resolved, Scene, Settings, ThingId, Value};
+use bpe_core::{Attach, Registry, Resolved, Scene, Settings, ThingId, Value};
 use bpe_gfx::{Frame, Renderer, build_frame_with, wgpu};
 use bpe_kit::BallsSettings;
 use bpe_runtime::{CameraView, Pose, World};
@@ -108,11 +108,14 @@ pub struct Drag {
     pub mould: Option<Mould>,
     /// Shift is held: a moulding drag mirrors across the shape's middle line.
     pub shift: bool,
+    /// A rider grabbed by its body: where the pointer was pressed (world pixels) and its ride
+    /// offset then. The drag moves the offset by how far the pointer has gone since.
+    pub ride: Option<(Vec2, Vec2)>,
 }
 
 impl Drag {
     pub fn new(handle: Handle, offset: Vec2) -> Drag {
-        Drag { handle, offset, mould: None, shift: false }
+        Drag { handle, offset, mould: None, shift: false, ride: None }
     }
 }
 
@@ -309,16 +312,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         && let Some(press) = ui.input(|i| i.pointer.press_origin())
         && let Some(handle) = grab(studio, press)
     {
-        let anchor = match handle {
-            Handle::Body(id) => {
-                place_of(&studio.scene, studio.playback.world(), id).unwrap_or(view.pointer_for(studio, handle, press))
-            }
-            Handle::CameraMove(_) => studio.playback.world().camera.center,
-            _ => view.pointer_for(studio, handle, press),
-        };
-        let at = view.pointer_for(studio, handle, press);
-        let mould = shape_handles::start(studio.playback.world(), handle, at);
-        preview.drag = Some(Drag { mould, ..Drag::new(handle, at - anchor) });
+        preview.drag = Some(begin_drag(studio, &view, handle, press));
         // Each drag is its own undo step.
         studio.panels.inspector.own_step = true;
         outcome.drag_started = true;
@@ -352,8 +346,11 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
             let keyed = zones::apply(&mut studio.scene, reg, studio.playback.world(), shape, layer, far, pointer, time);
             studio.panels.inspector.keyed_edit |= keyed;
         } else {
+            // A keyed circle's Size keys at the playhead (and playing pauses).
             let pointer = view.pointer_for(studio, drag.handle, pos);
-            apply_drag(&mut studio.scene, studio.playback.world(), &drag, pointer, step);
+            let (time, reg) = (studio.sim_time(), &studio.kit.registry);
+            let keyed = apply_drag(&mut studio.scene, reg, studio.playback.world(), &drag, pointer, step, time);
+            studio.panels.inspector.keyed_edit |= keyed;
         }
         outcome.selected = Some(drag.handle.thing());
     } else if response.clicked()
@@ -380,6 +377,26 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     draw_hint(ui, rect, hint);
     studio.panels.preview = Some(preview);
     outcome
+}
+
+/// The drag of `handle` pressed at `press` on the screen. A rider keeps its ride offset at the
+/// press, and the drag moves it by how far the pointer goes, so it doesn't jump when its own
+/// position (a ball's, which is its parent's) or its parent's place at the playhead differ from
+/// where the drag goes on.
+fn begin_drag(studio: &Studio, view: &View, handle: Handle, press: Pos2) -> Drag {
+    let world = studio.playback.world();
+    let at = view.pointer_for(studio, handle, press);
+    let anchor = match handle {
+        Handle::Body(id) => place_of(&studio.scene, world, id).unwrap_or(at),
+        Handle::CameraMove(_) => world.camera.center,
+        _ => at,
+    };
+    let ride = match (handle, studio.scene.things.get(&handle.thing()).map(|t| t.attach)) {
+        (Handle::Body(_), Some(Attach::Ride { offset, .. })) => Some((at, offset)),
+        _ => None,
+    };
+    let mould = shape_handles::start(world, handle, at);
+    Drag { mould, ride, ..Drag::new(handle, at - anchor) }
 }
 
 /// The right-click menu on the selected shape: a side's, a corner's or a circle's edge's. What it
@@ -597,8 +614,17 @@ fn spot_only(studio: &Studio, world: &World, id: ThingId) -> bool {
 
 /// Moves, aims or moulds by a drag to `pointer`, in world pixels. A rider moves by its offset
 /// from the parent it rides, so it stays a rider; its own position is left alone. With a grid
-/// `step`, the thing's middle, the arrow tip and a shape's corners and size land on the grid.
-pub fn apply_drag(scene: &mut Scene, world: &World, drag: &Drag, pointer: Vec2, step: Option<f32>) {
+/// `step`, the thing's middle, the arrow tip and a shape's corners and size land on the grid. A
+/// keyframed circle's Size gets a key at `time`; true when a key was set.
+pub fn apply_drag(
+    scene: &mut Scene,
+    reg: &Registry,
+    world: &World,
+    drag: &Drag,
+    pointer: Vec2,
+    step: Option<f32>,
+    time: f64,
+) -> bool {
     let id = drag.handle.thing();
     let place = snap_point(pointer - drag.offset, step);
     if let Handle::Body(_) = drag.handle
@@ -606,15 +632,18 @@ pub fn apply_drag(scene: &mut Scene, world: &World, drag: &Drag, pointer: Vec2, 
         && let (Some(parent), Attach::Ride { turn_with_parent, item, .. }) = (thing.parent, thing.attach)
     {
         let anchor = parent_pose(scene, world, parent, item);
-        let mut offset = place - anchor.position;
-        if turn_with_parent {
-            offset = Vec2::from_angle(-anchor.angle).rotate(offset);
-        }
+        let turn = |v: Vec2, angle: f32| if turn_with_parent { Vec2::from_angle(angle).rotate(v) } else { v };
+        // Where it rode when grabbed, seen on the parent as it is now, moved with the pointer.
+        let place = match drag.ride {
+            Some((press, start)) => snap_point(anchor.position + turn(start, anchor.angle) + (pointer - press), step),
+            None => place,
+        };
+        let offset = turn(place - anchor.position, -anchor.angle);
         let thing = scene.things.get_mut(&id).expect("looked up above");
         thing.attach = Attach::Ride { offset: offset.round(), turn_with_parent, item };
-        return;
+        return false;
     }
-    let Some(thing) = scene.things.get_mut(&id) else { return };
+    let Some(thing) = scene.things.get_mut(&id) else { return false };
     match drag.handle {
         // The camera's handles are the World view's; see `world_view::apply_camera_drag`.
         Handle::CameraMove(_) | Handle::CameraZoom(_) | Handle::CameraTurn(_) => {}
@@ -625,11 +654,12 @@ pub fn apply_drag(scene: &mut Scene, world: &World, drag: &Drag, pointer: Vec2, 
             thing.params.set("velocity", Value::Vec2([velocity.x, velocity.y]));
         }
         Handle::Corner(..) | Handle::Side(..) | Handle::Bend(..) | Handle::Radius(_) => {
-            shape_handles::apply(scene, drag, pointer, step);
+            return shape_handles::apply(scene, reg, drag, pointer, step, time);
         }
         // Applied by the preview itself, with the playhead (see `zones::apply`).
         Handle::Zone(..) => {}
     }
+    false
 }
 
 /// Whether shape `id` has sound going into bus `n` (1..=3): its main bus, or a send that is up.
@@ -902,21 +932,33 @@ mod tests {
         let world = studio.playback.world().clone();
         apply_drag(
             &mut studio.scene,
+            &studio.kit.registry,
             &world,
             &Drag::new(Handle::Body(ThingId(2)), Vec2::ZERO),
             Vec2::new(50.0, 60.0),
             None,
+            0.0,
         );
         assert_eq!(studio.scene.things[&ThingId(2)].transform.position, Vec2::new(50.0, 60.0));
         apply_drag(
             &mut studio.scene,
+            &studio.kit.registry,
             &world,
             &Drag::new(Handle::Aim(ThingId(2)), Vec2::ZERO),
             Vec2::new(150.0, 60.0),
             None,
+            0.0,
         );
         assert_eq!(studio.scene.things[&ThingId(2)].params.get("velocity"), Some(&Value::Vec2([400.0, 0.0])));
-        apply_drag(&mut studio.scene, &world, &radius_drag(&world), Vec2::new(300.0, 400.0), None);
+        apply_drag(
+            &mut studio.scene,
+            &studio.kit.registry,
+            &world,
+            &radius_drag(&world),
+            Vec2::new(300.0, 400.0),
+            None,
+            0.0,
+        );
         assert_eq!(studio.scene.things[&ThingId(1)].params.get("size"), Some(&Value::Number(500.0)));
     }
 
@@ -936,10 +978,12 @@ mod tests {
         let world = studio.playback.world().clone();
         apply_drag(
             &mut studio.scene,
+            &studio.kit.registry,
             &world,
             &Drag::new(Handle::Body(ThingId(2)), Vec2::ZERO),
             Vec2::new(30.0, -100.0),
             None,
+            0.0,
         );
         let thing = &studio.scene.things[&ThingId(2)];
         assert!(
@@ -966,23 +1010,35 @@ mod tests {
         // Grabbed 7 px off the middle: the middle still lands on a grid point.
         apply_drag(
             &mut studio.scene,
+            &studio.kit.registry,
             &world,
             &Drag::new(Handle::Body(ThingId(2)), Vec2::new(7.0, -3.0)),
             Vec2::new(85.0, 50.0),
             step,
+            0.0,
         );
         assert_eq!(studio.scene.things[&ThingId(2)].transform.position, Vec2::new(60.0, 60.0));
         // The arrow tip lands on a grid point: 60 px right of the ball over a quarter second.
         apply_drag(
             &mut studio.scene,
+            &studio.kit.registry,
             &world,
             &Drag::new(Handle::Aim(ThingId(2)), Vec2::ZERO),
             Vec2::new(131.0, 52.0),
             step,
+            0.0,
         );
         assert_eq!(studio.scene.things[&ThingId(2)].params.get("velocity"), Some(&Value::Vec2([240.0, 0.0])));
         // A circle's radius grows in whole steps.
-        apply_drag(&mut studio.scene, &world, &radius_drag(&world), Vec2::new(0.0, 455.0), step);
+        apply_drag(
+            &mut studio.scene,
+            &studio.kit.registry,
+            &world,
+            &radius_drag(&world),
+            Vec2::new(0.0, 455.0),
+            step,
+            0.0,
+        );
         assert_eq!(studio.scene.things[&ThingId(1)].params.get("size"), Some(&Value::Number(480.0)));
     }
 
@@ -997,10 +1053,12 @@ mod tests {
         let world = studio.playback.world().clone();
         apply_drag(
             &mut studio.scene,
+            &studio.kit.registry,
             &world,
             &Drag::new(Handle::Body(ThingId(2)), Vec2::ZERO),
             Vec2::new(70.0, -110.0),
             Some(60.0),
+            0.0,
         );
         let thing = &studio.scene.things[&ThingId(2)];
         assert!(
@@ -1008,6 +1066,64 @@ mod tests {
             "the world spot (60, -120) less the shape at (15, 0): {:?}",
             thing.attach
         );
+    }
+
+    fn plain_view() -> View {
+        View {
+            rect: Rect::from_min_size(Pos2::ZERO, vec2(270.0, 480.0)),
+            scale: 0.25,
+            camera: CameraView::default(),
+            world: false,
+        }
+    }
+
+    fn ride_offset(studio: &Studio, id: ThingId) -> Vec2 {
+        match studio.scene.things[&id].attach {
+            Attach::Ride { offset, .. } => offset,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_riding_ball_moves_with_the_pointer_from_where_it_rides() {
+        let mut studio = Studio::headless();
+        let before = studio.scene.clone();
+        studio.scene.things.get_mut(&ThingId(1)).unwrap().transform.position = Vec2::new(15.0, 0.0);
+        let ride = Attach::Ride { offset: Vec2::new(0.0, -200.0), turn_with_parent: false, item: None };
+        studio.scene.set_parent(ThingId(2), ThingId(1), ride).unwrap();
+        studio.after_edit(before);
+        let view = plain_view();
+        // Grabbed where it is drawn, on the shape at (15, 0), and moved 10 px right.
+        let press = Vec2::new(15.0, -200.0);
+        let drag = begin_drag(&studio, &view, Handle::Body(ThingId(2)), view.to_screen(press));
+        let world = studio.playback.world().clone();
+        let kit = studio.kit.clone();
+        apply_drag(&mut studio.scene, &kit.registry, &world, &drag, press + Vec2::new(10.0, 0.0), None, 0.0);
+        assert_eq!(ride_offset(&studio, ThingId(2)), Vec2::new(10.0, -200.0), "it moved as far as the pointer");
+    }
+
+    #[test]
+    fn a_rider_grabbed_later_in_the_run_moves_from_where_it_starts() {
+        // A folder riding the ball, which falls: grabbed at 1 s, the drag goes on at the start.
+        let mut studio = Studio::headless();
+        let kit = studio.kit.clone();
+        let before = studio.scene.clone();
+        let folder = studio.scene.add_thing(&kit.registry, "folder", ThingId::ROOT).unwrap();
+        let ride = Attach::Ride { offset: Vec2::new(0.0, -100.0), turn_with_parent: false, item: Some(0) };
+        studio.scene.set_parent(folder, ThingId(2), ride).unwrap();
+        studio.after_edit(before);
+        studio.selection.set(folder);
+        let at_start = studio.playback.world().poses[&folder].position;
+        studio.playback.seek_within(1.0, None);
+        let at_one = studio.playback.world().poses[&folder].position;
+        assert!((at_one - at_start).length() > 50.0, "the ball has moved by 1 s: {at_start} {at_one}");
+        let view = plain_view();
+        let drag = begin_drag(&studio, &view, Handle::Body(folder), view.to_screen(at_one));
+        studio.playback.seek_within(0.0, None);
+        let start = studio.playback.world().clone();
+        apply_drag(&mut studio.scene, &kit.registry, &start, &drag, at_one + Vec2::new(0.0, 20.0), None, 0.0);
+        let offset = ride_offset(&studio, folder);
+        assert!((offset - Vec2::new(0.0, -80.0)).length() <= 1.0, "moved 20 px down from where it rode: {offset}");
     }
 
     #[test]

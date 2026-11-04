@@ -658,6 +658,17 @@ fn follows_sound(scene: &Scene, animation: &Animation) -> bool {
 /// in how they look fingerprint the same, so the editor can keep playing through
 /// those edits.
 pub fn fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64 {
+    fingerprint_of(scene, resolved, sims, true)
+}
+
+/// [`fingerprint`] without the balls' history (how much of their past trails and particles
+/// keep): what the sound hears of a run. A longer trail changes the run the editor keeps, not
+/// its hits, so the sound plays on through it.
+pub fn sound_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64 {
+    fingerprint_of(scene, resolved, sims, false)
+}
+
+fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool) -> u64 {
     let mut h = Hasher(HASH_OFFSET);
     for (id, r) in &resolved.things {
         let Some(thing) = scene.things.get(id) else { continue };
@@ -692,7 +703,7 @@ pub fn fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64 {
                 }
             }
         }
-        if let Some(want) = sims.thing(&r.kind).and_then(|s| s.history(r)) {
+        if let Some(want) = sims.thing(&r.kind).and_then(|s| s.history(r)).filter(|_| history) {
             // Whether a history is kept and how long, not how its trails look.
             h.bytes(b"history");
             h.f32(want.rounded());

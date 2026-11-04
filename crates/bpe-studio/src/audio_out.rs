@@ -348,10 +348,20 @@ fn build<T: cpal::SizedSample + cpal::FromSample<f32>>(
         .build_output_stream(
             *config,
             move |data: &mut [T], _: &cpal::OutputCallbackInfo| feeder.fill(data, channels),
-            move |_| shared.failed.store(true, Ordering::Relaxed),
+            move |error: cpal::Error| {
+                if stops_the_speakers(error.kind()) {
+                    shared.failed.store(true, Ordering::Relaxed);
+                }
+            },
             None,
         )
         .ok()
+}
+
+/// Whether a stream error means the speakers have stopped. A glitch (an underrun), a move to
+/// another output that the stream follows, or no real-time priority leave them playing.
+fn stops_the_speakers(kind: cpal::ErrorKind) -> bool {
+    !matches!(kind, cpal::ErrorKind::Xrun | cpal::ErrorKind::DeviceChanged | cpal::ErrorKind::RealtimeDenied)
 }
 
 /// Counts this thread's allocations while a check runs (tests only).
@@ -403,6 +413,17 @@ pub(crate) mod counting {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_lost_stream_stops_the_speakers() {
+        use cpal::ErrorKind::*;
+        for glitch in [Xrun, DeviceChanged, RealtimeDenied] {
+            assert!(!stops_the_speakers(glitch), "{glitch:?} leaves the stream playing");
+        }
+        for gone in [DeviceNotAvailable, StreamInvalidated, BackendError, HostUnavailable, Other] {
+            assert!(stops_the_speakers(gone), "{gone:?} stops it");
+        }
+    }
 
     /// How strongly `signal` (at `rate`) holds frequency `f`.
     fn strength(signal: &[f32], rate: f64, f: f64) -> f64 {

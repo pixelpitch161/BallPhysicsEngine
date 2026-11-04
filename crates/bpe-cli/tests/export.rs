@@ -222,6 +222,58 @@ fn exported_mp4_has_320k_aac_with_the_tone() {
 }
 
 #[test]
+fn a_clip_shorter_than_ten_frames_keeps_its_sound_stems_and_midi() {
+    let Some((device, queue)) = ready() else { return };
+    let kit = kit();
+    let mut scene = new_scene(&kit.registry);
+    let shape = scene.order.iter().copied().find(|id| scene.things[id].kind == "shape").unwrap();
+    scene.things.get_mut(&shape).unwrap().tags.insert("test-tone-decay=30".into());
+    let dir = temp_dir("short");
+    let out = dir.join("short.mp4");
+    let mut options = ExportOptions::new(&out);
+    options.max_frames = Some(5);
+    options.scale = 0.25;
+    options.encoder = Encoder::Cpu;
+    options.stems = true;
+    options.midi = true;
+    export_video(&device, &queue, &scene, &kit, &options, |_, _| true).unwrap();
+    let (buses, master) = bpe_sound::stem_paths(&scene, &out);
+    for stem in buses.iter().chain([&master]) {
+        assert!(stem.exists(), "{} was written", stem.display());
+    }
+    assert!(bpe_sound::midi_path(&out).exists(), "the MIDI file was written");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_cancelled_export_leaves_stems_and_midi_it_never_wrote() {
+    let Some((device, queue)) = ready() else { return };
+    let kit = kit();
+    // No sound: the stems and the MIDI file beside the video are an earlier export's.
+    let scene = new_scene(&kit.registry);
+    let dir = temp_dir("keep");
+    let out = dir.join("out.mp4");
+    let (buses, master) = bpe_sound::stem_paths(&scene, &out);
+    let earlier: Vec<PathBuf> = buses.iter().cloned().chain([master, bpe_sound::midi_path(&out)]).collect();
+    for f in &earlier {
+        std::fs::write(f, b"an earlier export").unwrap();
+    }
+    let mut options = ExportOptions::new(&out);
+    options.max_frames = Some(60);
+    options.scale = 0.25;
+    options.encoder = Encoder::Cpu;
+    options.stems = true;
+    options.midi = true;
+    let error = export_video(&device, &queue, &scene, &kit, &options, |done, _| done < 5).unwrap_err();
+    assert!(error.to_string().contains("export cancelled"), "{error:#}");
+    assert!(!out.exists());
+    for f in &earlier {
+        assert!(f.exists(), "{} is left alone", f.display());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn blank_scene_exports_a_silent_track() {
     let Some((device, queue)) = ready() else { return };
     let kit = kit();
