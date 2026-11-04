@@ -75,9 +75,13 @@ fn a_colour_survives_save_and_load_and_old_names_read() {
     assert!(text.contains("\"#12abef\""), "saved as hex");
     let opened = load(&text, &reg).unwrap();
     assert_eq!(opened.things[&id].colour, Some(TrackColour([0x12, 0xab, 0xef])));
-    // A file from before the picker names one of the eight colours.
-    let old = text.replace("\"#12abef\"", "\"teal\"");
-    assert_eq!(load(&old, &reg).unwrap().things[&id].colour, Some(TrackColour::TEAL));
+    // A file from before the picker names one of the eight colours bare, as it was saved: it
+    // opens, and the thing takes a new colour.
+    let old = text.replace("\"#12abef\"", "teal");
+    assert!(old.contains("Some(teal)"), "{old}");
+    assert!(load(&old, &reg).unwrap().things[&id].colour.is_some());
+    let quoted = text.replace("\"#12abef\"", "\"teal\"");
+    assert_eq!(load(&quoted, &reg).unwrap().things[&id].colour, Some(TrackColour::TEAL));
     assert_eq!(TrackColour::parse("nope"), None);
     assert_eq!(TrackColour::parse("#12abef"), Some(TrackColour([0x12, 0xab, 0xef])));
 }

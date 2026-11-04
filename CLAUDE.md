@@ -125,7 +125,7 @@ Dependencies go bottom to top:
   `docs/superpowers/specs/2026-11-03-design-system-editor-design.md`): `style/` holds every token, the IBM Plex
   fonts (`assets/fonts/`), track colours and drawn controls (switch, track picker, key diamonds). No other editor
   file may make up a colour (a test checks; a real scene colour line ends in `// scene colour`). Every thing but
-  the scene settings has a `Thing.colour` (`TrackColour([u8; 3])`, any colour, saved as `"#rrggbb"` (old names still read); a new thing gets a random readable one far from the hues in use, `Scene::new_colour`; editor only, never read by physics or export; picked with `style::track_picker` from the tree's tag and row menu, the timeline swatch and the inspector header). Its layout has the tree on the left, the inspector on the right, the preview
+  the scene settings has a `Thing.colour` (`TrackColour([u8; 3])`, any colour, saved as `"#rrggbb"` (older files with bare names open with new colours); a new thing gets a random readable one far from the hues in use, `Scene::new_colour`; editor only, never read by physics or export; picked with `style::track_picker` from the tree's tag and row menu, the timeline swatch and the inspector header). Its layout has the tree on the left, the inspector on the right, the preview
   in the middle and the timeline at the bottom. Key files are `app.rs`, `inspector.rs`, `preview.rs`, `timeline/`,
   `widgets.rs` (settings grids and the right-click value menu), `palettes.rs` and `export_window.rs`.
   A selected shape is moulded in the preview (`shape_handles.rs`: corners, sides, bend handles, a circle's edge,

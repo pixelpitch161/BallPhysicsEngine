@@ -321,7 +321,9 @@ mod tests {
         assert_eq!(ids("shape", SlotId::Look), ["look.shape"]);
         assert!(ids("scene", SlotId::Look).is_empty());
         assert_eq!(ids("balls", SlotId::Motion), ["motion.basic"]);
-        assert_eq!(ids("balls", SlotId::Shader).len(), 13);
+        // Effects are the scene's; a ball's shaders are layers of its Look.
+        assert_eq!(ids("scene", SlotId::Shader).len(), 13);
+        assert!(ids("balls", SlotId::Shader).is_empty() && ids("shape", SlotId::Shader).is_empty());
     }
 
     #[test]

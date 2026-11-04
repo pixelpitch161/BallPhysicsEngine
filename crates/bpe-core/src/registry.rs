@@ -220,7 +220,8 @@ impl Registry {
         slot: SlotId,
         thing: &'a dyn ThingKind,
     ) -> impl Iterator<Item = &'a dyn ModuleKind> {
-        self.modules().filter(move |m| m.slot() == slot && m.fits(thing.id()))
+        let has = thing.slots().contains(&slot);
+        self.modules().filter(move |m| has && m.slot() == slot && m.fits(thing.id()))
     }
 }
 

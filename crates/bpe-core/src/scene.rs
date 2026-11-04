@@ -29,8 +29,8 @@ pub enum Target {
 
 /// The colour that marks a thing in the editor (its tree tag, timeline group and selection), like
 /// a track colour in a DAW: any sRGB colour, picked with a colour picker. Only the editor reads it;
-/// it never changes the video. Saved as `"#rrggbb"`; the names of the old eight colours
-/// (`"pink"`) still read.
+/// it never changes the video. Saved as `"#rrggbb"`; a file saved before the picker (a bare
+/// `pink`) opens with new colours (`saved_colour`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TrackColour(pub [u8; 3]);
 
@@ -131,6 +131,37 @@ impl<'de> Deserialize<'de> for TrackColour {
         let text = String::deserialize(d)?;
         TrackColour::parse(&text).ok_or_else(|| serde::de::Error::custom(format!("not a colour: {text}")))
     }
+}
+
+/// A thing's saved colour: `"#rrggbb"` or an old colour's name. A file from before the picker
+/// names its colours bare (`pink`), which reads as no colour: the thing gets a new one on opening.
+fn saved_colour<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<TrackColour>, D::Error> {
+    struct Lenient(Option<TrackColour>);
+    impl<'de> Deserialize<'de> for Lenient {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            struct Any;
+            impl<'de> serde::de::Visitor<'de> for Any {
+                type Value = Lenient;
+                fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    f.write_str("a colour as \"#rrggbb\"")
+                }
+                fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<Lenient, E> {
+                    Ok(Lenient(TrackColour::parse(text)))
+                }
+                fn visit_unit<E: serde::de::Error>(self) -> Result<Lenient, E> {
+                    Ok(Lenient(None))
+                }
+                fn visit_enum<A: serde::de::EnumAccess<'de>>(self, data: A) -> Result<Lenient, A::Error> {
+                    use serde::de::VariantAccess;
+                    let (name, rest): (String, _) = data.variant()?;
+                    rest.unit_variant()?;
+                    Ok(Lenient(TrackColour::parse(&name)))
+                }
+            }
+            d.deserialize_any(Any)
+        }
+    }
+    Ok(Option::<Lenient>::deserialize(d)?.and_then(|l| l.0))
 }
 
 /// Where a thing sits and how it is turned, relative to its parent.
@@ -237,7 +268,7 @@ pub struct Thing {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screen: Option<bool>,
     /// The thing's colour in the editor. `None` only for the scene settings.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "saved_colour")]
     pub colour: Option<TrackColour>,
     /// What draws over what: a thing with a higher z-order draws over one with a lower one. At
     /// the same z-order things draw as they always have (shapes under balls). In

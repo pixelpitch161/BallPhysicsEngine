@@ -511,6 +511,32 @@ fn a_split_ball_adds_up_to_the_whole_ball_at_its_soft_edge() {
     }
 }
 
+#[test]
+fn a_split_ball_s_masks_above_the_blend_layer_read_the_same_layers_as_drawn_whole() {
+    // Over a Blend layer, an outline and a pattern clipped to it by a layer-below mask: the lower
+    // part must leave room only for the outline, not the whole ball.
+    let build = |range_z: u32| {
+        let mut frame = white(|f| vec![body(), outline(40.0, 0.0), red_pattern(f, 1), mask(0.0, 0.0, 0.0, 0.0)]);
+        frame.layered[0].range[2] = range_z;
+        frame
+    };
+    let whole = build(0);
+    let mut split = Frame { bloom: 0.0, ..Frame::default() };
+    // A layer's things paint from the frame's own gradients: the red one is the first there too.
+    split.gradients.row(&Gradient::solid(Color::rgb(255, 0, 0)));
+    let layer = |place, frame| BlendLayer { blend: Blend::Normal, amount: 1.0, each: false, z: 0, place, frame };
+    split.layers.push(layer(Place::Blend, build(1)));
+    split.layers.push(layer(Place::Over, build(1 | OVER)));
+    let Some(w) = render_sized(&whole, W, H) else { return };
+    let s = render_sized(&split, W, H).unwrap();
+    save("layers-split-masked", &s, W, H);
+    for (x, y) in [(0.0, 0.0), (100.0, 0.0), (180.0, 0.0), (0.0, -185.0), (199.0, 0.0)] {
+        let (a, b) = (at(&w, x, y), at(&s, x, y));
+        let worst = (0..3).map(|i| a[i].abs_diff(b[i])).max().unwrap();
+        assert!(worst <= 3, "at ({x}, {y}): whole {a:?}, split {b:?}");
+    }
+}
+
 /// A record's own gradient from `a` to `b`, straight at `angle` (pattern 1) or outward (2).
 fn own(frame: &mut Frame, a: Color, b: Color, pattern: f32, angle: f32) -> PaintGpu {
     let row = frame.gradients.row(&Gradient::even(&[a, b]));

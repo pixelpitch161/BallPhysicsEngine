@@ -48,6 +48,10 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
     var top_out = vec4<f32>(0.0);
     // How much the layers above the Blend layer cover (lower part only).
     var cover_top = vec2<f32>(0.0);
+    // The lower part: the whole stack up to here, with the layers above the Blend layer, so their
+    // masks read the same layers as in the upper part.
+    var whole_in = vec4<f32>(0.0);
+    var whole_out = vec4<f32>(0.0);
     let count = min(count_in, MAX_LAYERS);
     var below = 0u;
     var k = 0u;
@@ -164,7 +168,9 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
             if t >= 0 && u32(t) < k {
                 chosen = vec2<f32>(COV_IN[t], COV_OUT[t]);
             }
-            let v = mask_value(m, p, screen, vec2<f32>(COV_IN[below], COV_OUT[below]), chosen, inner, outer, aa);
+            let under_in = select(inner, whole_in, lower && above);
+            let under_out = select(outer, whole_out, lower && above);
+            let v = mask_value(m, p, screen, vec2<f32>(COV_IN[below], COV_OUT[below]), chosen, under_in, under_out, aa);
             a_in *= v.x;
             a_out *= v.y;
             masked *= v;
@@ -176,12 +182,22 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
         }
         if lower && above {
             // Left out of the lower part; only how much it covers counts (light covers nothing).
-            if l.head.x != 4u {
+            // It still counts for the masks of the layers over it.
+            if l.head.x == 4u {
+                whole_out = vec4<f32>(whole_out.rgb + c * a_out, whole_out.a);
+            } else {
                 let a = clamp(vec2<f32>(a_in, a_out), vec2<f32>(0.0), vec2<f32>(1.0));
                 cover_top = a + cover_top * (vec2<f32>(1.0) - a);
+                if a_in > 0.0 {
+                    whole_in = layer_over(whole_in, c, a_in, mode);
+                }
+                if a_out > 0.0 {
+                    whole_out = layer_over(whole_out, c, a_out, mode);
+                }
             }
-            COV_IN[k] = 0.0;
-            COV_OUT[k] = 0.0;
+            COV_IN[k] = clamp(a_in, 0.0, 1.0);
+            COV_OUT[k] = clamp(a_out, 0.0, 1.0);
+            below = k;
             k += 1u + masks;
             continue;
         }
@@ -224,6 +240,10 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
         COV_IN[k] = clamp(a_in, 0.0, 1.0);
         COV_OUT[k] = clamp(a_out, 0.0, 1.0);
         below = k;
+        if lower && k < cut {
+            whole_in = inner;
+            whole_out = outer;
+        }
         k += 1u + masks;
     }
     TOP_COVER = cover_top;

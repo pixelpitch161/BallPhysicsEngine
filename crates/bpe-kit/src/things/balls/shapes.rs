@@ -98,7 +98,9 @@ pub fn filled_ring(radius: f32, step: f32) -> Vec<Vec2> {
     while r <= radius + step * 1e-3 && out.len() < MAX_BALLS {
         // The most balls whose neighbours (a chord apart) are at least a step apart.
         let n = ((std::f32::consts::PI / (step / (2.0 * r)).min(1.0).asin()).floor() as usize).max(1);
-        let n = n.min(MAX_BALLS - out.len());
+        if n > MAX_BALLS - out.len() {
+            break;
+        }
         out.extend(ring(n, r));
         r += step;
     }
