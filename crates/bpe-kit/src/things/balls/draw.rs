@@ -1026,6 +1026,7 @@ mod tests {
         let frame = group_frame(6, |s| {
             s.things.get_mut(&BALL).unwrap().params.set("vary_colour", Value::Number(1.0));
             set_layer(s, BALL, BODY, "colours", Value::Gradient(bpe_core::Gradient::even(&[RED, BLUE])));
+            set_layer(s, BALL, BODY, "follow", Value::Choice("each_ball".into()));
         });
         let turns: Vec<f32> = frame.layered.iter().map(|b| b.vary[3]).collect();
         let (lo, hi) = turns.iter().fold((f32::MAX, f32::MIN), |(l, h), t| (l.min(*t), h.max(*t)));
