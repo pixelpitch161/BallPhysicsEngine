@@ -28,6 +28,14 @@ impl Osc {
             Osc::B => "Osc B",
         }
     }
+
+    /// Its chain's lane (`Layer.lane`).
+    pub fn lane(self) -> u8 {
+        match self {
+            Osc::A => 0,
+            Osc::B => 1,
+        }
+    }
 }
 
 fn plain(v: f64) -> String {
@@ -67,7 +75,7 @@ pub fn pan(v: f64) -> String {
 }
 
 /// Draws `which` oscillator's panel.
-pub fn show(ui: &mut Ui, cx: &mut TabCx, which: Osc) {
+pub fn show(ui: &mut Ui, cx: &mut TabCx, which: Osc, tab: &mut super::SoundTab) {
     let p = which.prefix();
     let key = |k: &str| format!("{p}{k}");
     panel(ui, |ui| {
@@ -142,7 +150,7 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx, which: Osc) {
                 sub(ui, cx, which);
             }
         });
-        layers_box(ui, cx, which);
+        super::chain_box::show(ui, cx, which.lane(), tab);
     });
 }
 
@@ -185,19 +193,6 @@ fn sub(ui: &mut Ui, cx: &mut TabCx, which: Osc) {
     if cx.choice::<SubWave>(&format!("{p}sub")) != SubWave::Off {
         cx.knob(ui, &format!("{p}sub_level"), "Sub level", &db);
     }
-}
-
-/// Where the oscillator's layers will go (a filter, a distortion…); empty until they come.
-pub fn layers_box(ui: &mut Ui, _cx: &mut TabCx, which: Osc) {
-    egui::Frame::new()
-        .stroke(egui::Stroke::new(1.0, style::LINE))
-        .corner_radius(style::RADIUS)
-        .inner_margin(egui::Margin::same(8))
-        .show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            ui.label(RichText::new(format!("{} layers", which.name())).small().color(style::MUTED));
-            ui.label(RichText::new("Layers come in a later update").small().color(style::FAINT));
-        });
 }
 
 #[cfg(test)]

@@ -2,6 +2,7 @@
 //! the elliptic design of Laurent de Soras' HIIR), cascaded for 2x, 4x and 8x.
 
 use std::sync::OnceLock;
+use wide::f32x4;
 
 /// The most allpass sections one halfband filter has.
 const MAX_COEFS: usize = 16;
@@ -390,5 +391,183 @@ mod tests {
             x.iter().enumerate().fold(0.0f32, |m, (i, &v)| if i < 480 { d.push(v).min(0.0) } else { m.max(d.push(v)) });
         // 4x finds it to within the 16 points it looks at a cycle: cos(pi / 16).
         assert!((0.98..1.01).contains(&tp), "{tp}");
+    }
+}
+
+/// [`Halfband`] for two channels at once: both paths of both channels side by side in one
+/// vector (`[left a, left b, right a, right b]`), so the four allpass chains run together.
+#[derive(Clone, Debug)]
+pub struct StereoHalfband {
+    coefs: [f32x4; MAX_COEFS / 2 + 1],
+    /// Section pairs; and whether the even path has one section more.
+    pairs: usize,
+    odd: bool,
+    x: [f32x4; MAX_COEFS / 2 + 1],
+    y: [f32x4; MAX_COEFS / 2 + 1],
+}
+
+impl StereoHalfband {
+    pub fn new(coefs: &[f32]) -> Self {
+        let n = coefs.len().min(MAX_COEFS);
+        let mut c = [f32x4::ZERO; MAX_COEFS / 2 + 1];
+        let pairs = n / 2;
+        for (p, v) in c.iter_mut().enumerate().take(pairs) {
+            *v = f32x4::from([coefs[2 * p], coefs[2 * p + 1], coefs[2 * p], coefs[2 * p + 1]]);
+        }
+        let odd = n % 2 == 1;
+        if odd {
+            c[pairs] = f32x4::from([coefs[n - 1], 0.0, coefs[n - 1], 0.0]);
+        }
+        StereoHalfband {
+            coefs: c,
+            pairs,
+            odd,
+            x: [f32x4::ZERO; MAX_COEFS / 2 + 1],
+            y: [f32x4::ZERO; MAX_COEFS / 2 + 1],
+        }
+    }
+
+    pub fn for_stage(stage: usize) -> Self {
+        Self::new(stage_coefs(stage))
+    }
+
+    pub fn reset(&mut self) {
+        self.x = [f32x4::ZERO; MAX_COEFS / 2 + 1];
+        self.y = [f32x4::ZERO; MAX_COEFS / 2 + 1];
+    }
+
+    #[inline]
+    fn paths(&mut self, mut v: f32x4) -> f32x4 {
+        for p in 0..self.pairs {
+            let old = self.x[p];
+            self.x[p] = v;
+            // c·v + x[n−1] − c·y[n−1]: only the last multiply and subtract wait on y.
+            v = (self.coefs[p] * v + old) - self.coefs[p] * self.y[p];
+            self.y[p] = v;
+        }
+        if self.odd {
+            let p = self.pairs;
+            let old = self.x[p];
+            self.x[p] = v;
+            let w = (v - self.y[p]) * self.coefs[p] + old;
+            self.y[p] = w;
+            // Only the even path has this section.
+            v = f32x4::from([w.as_array_ref()[0], v.as_array_ref()[1], w.as_array_ref()[2], v.as_array_ref()[3]]);
+        }
+        v
+    }
+
+    /// Two samples at twice the rate for one in, each channel.
+    #[inline]
+    pub fn up(&mut self, l: f32, r: f32) -> ([f32; 2], [f32; 2]) {
+        let [la, lb, ra, rb] = self.paths(f32x4::from([l, l, r, r])).to_array();
+        ([la, lb], [ra, rb])
+    }
+
+    /// One sample at half the rate for two in, each channel.
+    #[inline]
+    pub fn down(&mut self, l: [f32; 2], r: [f32; 2]) -> (f32, f32) {
+        let [la, lb, ra, rb] = self.paths(f32x4::from([l[1], l[0], r[1], r[0]])).to_array();
+        ((la + lb) * 0.5, (ra + rb) * 0.5)
+    }
+}
+
+/// [`Oversampler`] for two channels at once (the same filters, run side by side).
+#[derive(Clone, Debug)]
+pub struct StereoOversampler {
+    factor: usize,
+    latency: usize,
+    ups: [StereoHalfband; 3],
+    downs: [StereoHalfband; 3],
+}
+
+impl StereoOversampler {
+    pub fn new(factor: u8) -> Self {
+        let mono = Oversampler::new(factor);
+        let stage = StereoHalfband::for_stage;
+        StereoOversampler {
+            factor: mono.factor(),
+            latency: mono.latency(),
+            ups: [stage(0), stage(1), stage(2)],
+            downs: [stage(0), stage(1), stage(2)],
+        }
+    }
+
+    pub fn factor(&self) -> usize {
+        self.factor
+    }
+
+    /// As [`Oversampler::latency`].
+    pub fn latency(&self) -> usize {
+        self.latency
+    }
+
+    pub fn reset(&mut self) {
+        for h in self.ups.iter_mut().chain(self.downs.iter_mut()) {
+            h.reset();
+        }
+    }
+
+    /// One sample of each channel to `factor` samples of each.
+    #[inline]
+    pub fn up(&mut self, l: f32, r: f32, out_l: &mut [f32; 8], out_r: &mut [f32; 8]) {
+        out_l[0] = l;
+        out_r[0] = r;
+        let mut len = 1;
+        for s in 0..self.factor.trailing_zeros() as usize {
+            let (fl, fr) = (*out_l, *out_r);
+            for i in 0..len {
+                let ([a, b], [c, d]) = self.ups[s].up(fl[i], fr[i]);
+                out_l[2 * i] = a;
+                out_l[2 * i + 1] = b;
+                out_r[2 * i] = c;
+                out_r[2 * i + 1] = d;
+            }
+            len *= 2;
+        }
+    }
+
+    /// `factor` samples of each channel back to one of each.
+    #[inline]
+    pub fn down(&mut self, l: &[f32; 8], r: &[f32; 8]) -> (f32, f32) {
+        let (mut bl, mut br) = (*l, *r);
+        let mut len = self.factor;
+        for s in (0..self.factor.trailing_zeros() as usize).rev() {
+            for i in 0..len / 2 {
+                let (a, b) = self.downs[s].down([bl[2 * i], bl[2 * i + 1]], [br[2 * i], br[2 * i + 1]]);
+                bl[i] = a;
+                br[i] = b;
+            }
+            len /= 2;
+        }
+        (bl[0], br[0])
+    }
+}
+
+#[cfg(test)]
+mod stereo_tests {
+    use super::*;
+
+    #[test]
+    fn stereo_oversampler_matches_the_mono_one() {
+        for factor in [1u8, 2, 4, 8] {
+            let mut mono = [Oversampler::new(factor), Oversampler::new(factor)];
+            let mut st = StereoOversampler::new(factor);
+            let f = st.factor();
+            for i in 0..2000 {
+                let (l, r) = ((i as f32 * 0.37).sin(), (i as f32 * 0.11).cos() * 0.5);
+                let (mut ml, mut mr) = ([0.0f32; 8], [0.0f32; 8]);
+                mono[0].up_one(l, &mut ml[..f]);
+                mono[1].up_one(r, &mut mr[..f]);
+                let (mut sl, mut sr) = ([0.0f32; 8], [0.0f32; 8]);
+                st.up(l, r, &mut sl, &mut sr);
+                for k in 0..f {
+                    assert!((ml[k] - sl[k]).abs() < 1e-5 && (mr[k] - sr[k]).abs() < 1e-5, "{factor}x up");
+                }
+                let a = (mono[0].down_one(&ml[..f]), mono[1].down_one(&mr[..f]));
+                let b = st.down(&sl, &sr);
+                assert!((a.0 - b.0).abs() < 1e-5 && (a.1 - b.1).abs() < 1e-5, "{factor}x down");
+            }
+        }
     }
 }

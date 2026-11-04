@@ -4,6 +4,7 @@
 //! call the same [`Engine::render`]; nothing else makes sound.
 
 pub mod chain;
+pub mod chain_graph;
 pub mod engine;
 pub mod hits;
 pub mod master;
