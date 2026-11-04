@@ -80,6 +80,7 @@ pub const SECTION_ORDER: &[&str] = &[
     "Against some things",
     "Variation",
     "Blending",
+    "Master",
 ];
 
 /// The sections that stay folded until opened.

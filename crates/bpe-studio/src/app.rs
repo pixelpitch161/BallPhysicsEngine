@@ -244,6 +244,8 @@ impl Studio {
         // Every scene the editor holds has a camera; an older file gets one at the identity, so
         // it looks as it always did.
         bpe_kit::ensure_camera(&mut scene, &self.kit.registry);
+        // And a mixer card, for its sound.
+        bpe_kit::ensure_mixer(&mut scene, &self.kit.registry);
         self.saved = scene.clone();
         self.scene = scene;
         self.path = path;

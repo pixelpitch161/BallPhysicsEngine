@@ -8,6 +8,7 @@ pub mod paint;
 pub mod rng;
 #[cfg(any(test, feature = "test-scenes"))]
 pub mod scenes;
+pub mod sound;
 pub mod starters;
 #[cfg(test)]
 pub mod testing;
@@ -40,7 +41,7 @@ pub use things::folder::{FolderKind, FolderSettings, FolderSim};
 pub use things::scene::ROOT_CARDS;
 pub use things::scene::draw::SceneDraw;
 pub use things::scene::sim::SceneSim;
-pub use things::scene::{SceneKind, SceneSettings};
+pub use things::scene::{SceneKind, SceneSettings, TimeBottom};
 pub use things::shape::draw::ShapeDraw;
 pub use things::shape::sim::{ShapeSim, ShapeState};
 pub use things::shape::{BODY_HEADINGS, ShapeFill, ShapeKind, ShapeSettings, ShapeStart};
@@ -113,6 +114,7 @@ pub fn registry() -> Registry {
     for k in modules::shader::kinds() {
         r.add_module(k);
     }
+    sound::register(&mut r);
     r
 }
 
@@ -153,11 +155,20 @@ pub fn ensure_camera(scene: &mut Scene, reg: &Registry) -> ThingId {
     scene.add_thing(reg, "camera", ThingId::ROOT).expect("kit kinds are registered")
 }
 
-/// The blank project the editor opens to: Scene settings and a camera, nothing else.
+/// The scene's mixer card, added to the scene settings when it has none (older files).
+pub fn ensure_mixer(scene: &mut Scene, reg: &Registry) {
+    if scene.card(ThingId::ROOT, bpe_core::SlotId::Mixer).is_none() {
+        scene.add_slot(reg, ThingId::ROOT, bpe_core::SlotId::Mixer, "sound.mixer").expect("the kit has the mixer");
+    }
+}
+
+/// The blank project the editor opens to: Scene settings (with its mixer) and a camera,
+/// nothing else.
 pub fn new_studio_scene(reg: &Registry) -> Scene {
     let mut scene = Scene::empty(reg);
     scene.name = "New scene".into();
     ensure_camera(&mut scene, reg);
+    ensure_mixer(&mut scene, reg);
     scene
 }
 
@@ -173,10 +184,66 @@ mod tests {
         let scene = new_studio_scene(&reg);
         let kinds: Vec<&str> = scene.order.iter().map(|id| scene.things[id].kind.as_str()).collect();
         assert_eq!(kinds, ["scene", "camera"]);
-        assert!(scene.things.values().all(|t| t.slots.is_empty()), "nothing has a card yet");
+        let cards: Vec<(SlotId, &str)> =
+            scene.things.values().flat_map(|t| t.slots.iter().map(|(s, c)| (*s, c.kind.as_str()))).collect();
+        assert_eq!(cards, [(SlotId::Mixer, "sound.mixer")], "nothing has a card yet but the mixer");
         let s = SceneSettings::from_params(&resolve(&scene, &reg).things[&ThingId::ROOT].params);
         assert_eq!(s.background, paint::Paint::solid(bpe_core::Color::rgb(0x80, 0x80, 0x80)), "grey");
         assert_eq!(s.bloom, 0.0);
+    }
+
+    #[test]
+    fn the_blank_project_has_a_mixer_card_with_a_minus_one_ceiling() {
+        let reg = registry();
+        let scene = new_studio_scene(&reg);
+        let resolved = resolve(&scene, &reg);
+        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+        let card = &resolved.things[&ThingId::ROOT].slots[&SlotId::Mixer];
+        assert_eq!(card.kind, "sound.mixer");
+        let m = sound::MixerSettings::from_params(&card.params);
+        assert_eq!((m.master_ceiling, m.master_release, m.master_input, m.master_output), (-1.0, 60.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn tempo_defaults_to_120_in_four_four() {
+        let reg = registry();
+        let scene = new_studio_scene(&reg);
+        let s = SceneSettings::from_params(&resolve(&scene, &reg).things[&ThingId::ROOT].params);
+        assert_eq!((s.tempo, s.time_top, s.time_bottom), (120.0, 4, things::scene::TimeBottom::Four));
+        assert_eq!(things::scene::TimeBottom::Eight.beats(), 8);
+        let defs = SceneSettings::defs();
+        for key in ["tempo", "time_top", "time_bottom"] {
+            let d = defs.iter().find(|d| d.key == key).unwrap();
+            assert_eq!(d.group, "Sound", "{key}");
+            assert!(!d.flags.keyframe, "{key} is not keyframed");
+        }
+    }
+
+    #[test]
+    fn tempo_does_not_restart_the_physics() {
+        let kit = kit();
+        let mut scene = new_studio_scene(&kit.registry);
+        add_thing(&mut scene, &kit.registry, "balls", ThingId::ROOT).unwrap();
+        let before = bpe_runtime::fingerprint(&scene, &resolve(&scene, &kit.registry), &kit.sims);
+        let root = scene.things.get_mut(&ThingId::ROOT).unwrap();
+        root.params.set("tempo", Value::Number(93.5));
+        root.params.set("time_top", Value::Int(7));
+        root.params.set("time_bottom", Value::Choice("8".into()));
+        let resolved = resolve(&scene, &kit.registry);
+        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+        assert_eq!(SceneSettings::from_params(&resolved.things[&ThingId::ROOT].params).tempo, 93.5);
+        assert_eq!(bpe_runtime::fingerprint(&scene, &resolved, &kit.sims), before);
+    }
+
+    #[test]
+    fn ensure_mixer_is_idempotent() {
+        let reg = registry();
+        let mut scene = bpe_core::Scene::empty(&reg);
+        ensure_mixer(&mut scene, &reg);
+        let once = scene.clone();
+        ensure_mixer(&mut scene, &reg);
+        assert_eq!(scene, once);
+        assert!(scene.card(ThingId::ROOT, SlotId::Mixer).is_some());
     }
 
     #[test]

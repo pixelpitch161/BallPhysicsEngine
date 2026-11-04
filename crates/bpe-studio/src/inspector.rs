@@ -1938,7 +1938,7 @@ mod tests {
         assert!(h.query_by_role_and_label(Role::Label, "Rotation").is_some());
     }
 
-    const BAR_LABELS: [&str; 12] = [
+    const BAR_LABELS: [&str; 14] = [
         "Thing",
         "Look",
         "Trail",
@@ -1951,6 +1951,8 @@ mod tests {
         "World",
         "Background",
         "Picture",
+        "Sound",
+        "Mixer",
     ];
 
     /// The jump bar's buttons, in order, each with whether it is selected.
@@ -2051,6 +2053,8 @@ mod tests {
         let reg = bpe_kit::registry();
         let mut scene = bpe_kit::new_scene(&reg);
         bpe_kit::fill_slot(&mut scene, &reg, ThingId::ROOT, SlotId::Shader).unwrap();
+        // The mixer is there too, but has a panel of its own, not a card here.
+        bpe_kit::ensure_mixer(&mut scene, &reg);
         scene
     }
 

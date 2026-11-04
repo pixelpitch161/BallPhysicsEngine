@@ -7,13 +7,45 @@ pub mod sim;
 pub use sim::SceneSim;
 
 use crate::paint::Paint;
-use bpe_core::{Color, Gradient, SettingDef, Settings, SlotId, ThingKind};
+use bpe_core::{Choice, Color, Gradient, SettingDef, Settings, SlotId, ThingKind};
 use glam::Vec2;
 
 pub struct SceneKind;
 
 /// The root's inspector cards, in order. Every scene setting's `group` is one of these.
-pub const ROOT_CARDS: [&str; 4] = ["Video", "World", "Background", "Picture"];
+pub const ROOT_CARDS: [&str; 5] = ["Video", "World", "Background", "Picture", "Sound"];
+
+/// Which note a time signature's beat is: the bottom number.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TimeBottom {
+    Two,
+    #[default]
+    Four,
+    Eight,
+    Sixteen,
+}
+
+impl TimeBottom {
+    /// The bottom number itself.
+    pub fn beats(self) -> u32 {
+        match self {
+            TimeBottom::Two => 2,
+            TimeBottom::Four => 4,
+            TimeBottom::Eight => 8,
+            TimeBottom::Sixteen => 16,
+        }
+    }
+}
+
+impl Choice for TimeBottom {
+    const NAMES: &'static [&'static str] = &["2", "4", "8", "16"];
+    fn name(self) -> &'static str {
+        Self::NAMES[self as usize]
+    }
+    fn from_name(n: &str) -> Option<Self> {
+        [TimeBottom::Two, TimeBottom::Four, TimeBottom::Eight, TimeBottom::Sixteen].into_iter().find(|t| t.name() == n)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct SceneSettings {
@@ -88,6 +120,16 @@ pub struct SceneSettings {
     /// How much of the gradient map's colour replaces the picture's own.
     #[setting(label = "Gradient map amount", range(0, 1), group = "Picture", keyframe, pulse)]
     pub grade_map_amount: f32,
+    /// How fast the music goes, in beats a minute. Sound and the timeline's grid follow it;
+    /// the physics doesn't.
+    #[setting(label = "Tempo", range(20, 300), unit = "BPM", group = "Sound")]
+    pub tempo: f32,
+    /// The time signature's top number: beats in a bar.
+    #[setting(label = "Beats in a bar", range(1, 16), group = "Sound")]
+    pub time_top: u32,
+    /// The time signature's bottom number: which note counts as a beat.
+    #[setting(label = "Beat note", group = "Sound")]
+    pub time_bottom: TimeBottom,
 }
 
 impl Default for SceneSettings {
@@ -113,6 +155,9 @@ impl Default for SceneSettings {
             grade_map_amount: 0.0,
             seed: 1,
             background_on_screen: true,
+            tempo: 120.0,
+            time_top: 4,
+            time_bottom: TimeBottom::Four,
         }
     }
 }
@@ -151,7 +196,7 @@ impl ThingKind for SceneKind {
         SceneSettings::defs()
     }
     fn slots(&self) -> &'static [SlotId] {
-        &[SlotId::Shader]
+        &[SlotId::Shader, SlotId::Mixer]
     }
     fn default_slots(&self) -> &'static [SlotId] {
         &[]
@@ -221,7 +266,7 @@ mod tests {
     fn scene_settings_keep_their_effects_slot_to_themselves() {
         let k = SceneKind;
         assert_eq!(k.name(), "Scene settings");
-        assert_eq!(k.slots(), &[SlotId::Shader]);
+        assert_eq!(k.slots(), &[SlotId::Shader, SlotId::Mixer]);
         assert!(k.default_slots().is_empty());
         assert_eq!(k.slot_label(SlotId::Shader), "Effects");
     }
