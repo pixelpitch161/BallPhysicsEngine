@@ -193,10 +193,12 @@ pub struct BaseLayerKind;
 pub struct RingLayerKind;
 /// A reaction, at most one.
 pub struct PopLayerKind;
-/// A drawn layer that can't carry masks, at most one.
+/// A drawn layer that can't carry sub-layers, at most one.
 pub struct TintLayerKind;
-/// A mask on a drawn layer.
+/// A sub-layer that limits its layer.
 pub struct CutLayerKind;
+/// A second sub-layer kind, so order means something. The Code layer refuses it.
+pub struct GlowSubKind;
 /// A drawn layer whose `code` names one more setting it has: `extra`.
 pub struct CodeLayerKind;
 
@@ -307,10 +309,10 @@ impl ModuleKind for StackLookKind {
 }
 
 macro_rules! layer_kind {
-    ($kind:ident, $id:literal, $name:literal, $settings:ident, $section:ident, $repeats:literal, $base:literal, $maskable:literal) => {
-        layer_kind!($kind, $id, $name, $settings, $section, $repeats, $base, $maskable, "look.stack");
+    ($kind:ident, $id:literal, $name:literal, $settings:ident, $section:ident, $repeats:literal, $base:literal, $takes_subs:literal) => {
+        layer_kind!($kind, $id, $name, $settings, $section, $repeats, $base, $takes_subs, "look.stack");
     };
-    ($kind:ident, $id:literal, $name:literal, $settings:ident, $section:ident, $repeats:literal, $base:literal, $maskable:literal, $card:literal) => {
+    ($kind:ident, $id:literal, $name:literal, $settings:ident, $section:ident, $repeats:literal, $base:literal, $takes_subs:literal, $card:literal) => {
         impl LayerKind for $kind {
             fn id(&self) -> &'static str {
                 $id
@@ -336,8 +338,11 @@ macro_rules! layer_kind {
             fn base(&self) -> bool {
                 $base
             }
-            fn maskable(&self) -> bool {
-                $maskable
+            fn takes_subs(&self) -> bool {
+                $takes_subs
+            }
+            fn takes_sub(&self, sub: &str) -> bool {
+                !($id == "layer.code" && sub == "sub.glow")
             }
             fn dynamic_defs(&self, get: &dyn Fn(&str) -> Option<crate::Value>) -> &'static [SettingDef] {
                 if $id == "layer.code" && get("code") == Some(crate::Value::Text("extra".into())) {
@@ -354,7 +359,8 @@ layer_kind!(BaseLayerKind, "layer.base", "Base", BaseLayer, Drawn, false, true, 
 layer_kind!(RingLayerKind, "layer.ring", "Ring", RingLayer, Drawn, true, false, true);
 layer_kind!(PopLayerKind, "react.pop", "Pop", PopLayer, Reaction, false, false, false);
 layer_kind!(TintLayerKind, "layer.tint", "Tint", TintLayer, Drawn, false, false, false);
-layer_kind!(CutLayerKind, "layer.cut", "Mask", CutLayer, Mask, true, false, false);
+layer_kind!(CutLayerKind, "sub.cut", "Cut", CutLayer, Sub, true, false, false);
+layer_kind!(GlowSubKind, "sub.glow", "Glow", TintLayer, Sub, true, false, false);
 layer_kind!(CodeLayerKind, "layer.code", "Code", CodeLayer, Drawn, true, false, true);
 layer_kind!(WashLayerKind, "group.wash", "Wash", RingLayer, Group, false, false, false);
 layer_kind!(SwirlLayerKind, "group.swirl", "Swirl", RingLayer, Group, true, false, false);
@@ -400,6 +406,7 @@ pub fn registry() -> Registry {
     r.add_layer(PopLayerKind);
     r.add_layer(TintLayerKind);
     r.add_layer(CutLayerKind);
+    r.add_layer(GlowSubKind);
     r.add_layer(CodeLayerKind);
     r.add_layer(WashLayerKind);
     r.add_layer(SwirlLayerKind);
