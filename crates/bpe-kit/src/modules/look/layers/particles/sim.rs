@@ -7,8 +7,28 @@ use glam::Vec2;
 use super::emit::{Emission, hash};
 use super::{Direction, MadeOf, ParticlesLayer};
 
-/// The step particles move by, in seconds.
+/// The step particles move by, in seconds, while they are young.
 pub const STEP: f32 = 1.0 / 120.0;
+/// The most steps one particle is moved in, so a long life costs no more than a second's worth:
+/// older particles move in longer steps.
+pub const MOST_STEPS: u32 = 120;
+
+/// How many steps a particle `age` seconds old moves in, and how long each is.
+pub fn steps_for(age: f32) -> (u32, f32) {
+    let age = age.max(0.0);
+    let step = STEP.max(age / MOST_STEPS as f32);
+    let n = ((age / step).ceil() as u32).min(MOST_STEPS);
+    (n, step)
+}
+
+/// The swirl's push at `at` (in its own size units): along the noise's curl, so it turns
+/// particles round in eddies whether they are moving or not. About -1 to 1 a unit of Swirl.
+pub fn curl(at: Vec2) -> Vec2 {
+    const H: f32 = 0.25;
+    let dx = (noise(at + Vec2::new(H, 0.0)) - noise(at - Vec2::new(H, 0.0))) / (2.0 * H);
+    let dy = (noise(at + Vec2::new(0.0, H)) - noise(at - Vec2::new(0.0, H))) / (2.0 * H);
+    Vec2::new(dy, -dx) * 0.5
+}
 
 /// One particle at the moment drawn.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -92,7 +112,7 @@ pub fn simulate(layer: &ParticlesLayer, e: &Emission, k: u32, now: f64, motion: 
         let turn = rng.signed() * 0.5 * layer.spread.clamp(0.0, 360.0).to_radians();
         way = Vec2::from_angle(turn).rotate(way);
     }
-    let speed = layer.speed.max(0.0) * (0.6 + 0.8 * rng.unit());
+    let speed = layer.speed.max(0.0) * e.impact.max(0.0) * (0.6 + 0.8 * rng.unit());
     let v0 = way * speed + e.velocity * layer.inherit.clamp(0.0, 1.0);
     let size = layer.size.max(0.0) * (0.7 + 0.6 * rng.unit());
     let spin = layer.spin * (1.0 + layer.spin_spread.clamp(0.0, 1.0) * rng.signed());
@@ -113,20 +133,20 @@ pub fn simulate(layer: &ParticlesLayer, e: &Emission, k: u32, now: f64, motion: 
         }
     } else {
         let (mut p, mut v) = (e.place, v0);
-        let steps = (age / STEP).ceil() as u32;
+        let (steps, step) = steps_for(age);
         let radius = size * grow * 0.5;
+        if layer.bounce {
+            p = on_its_side(p, e.from, radius, motion.walls);
+        }
         for n in 0..steps {
-            let dt = if n + 1 == steps { age - n as f32 * STEP } else { STEP };
+            let dt = if n + 1 == steps { age - n as f32 * step } else { step };
             let mut a = gravity;
-            if layer.swirl != 0.0
-                && let Some(dir) = v.try_normalize()
-            {
-                let at = p / layer.swirl_size.max(1.0);
-                a += dir.perp() * layer.swirl * noise(at);
+            if layer.swirl != 0.0 {
+                a += curl(p / layer.swirl_size.max(1.0)) * layer.swirl;
             }
             if layer.pull > 0.0
                 && let Some(to) = motion.pull_to
-                && let Some(ball) = to(e.time + (n as f32 * STEP + dt) as f64)
+                && let Some(ball) = to(e.time + (n as f32 * step + dt) as f64)
             {
                 a += (ball - p) * layer.pull * layer.pull;
             }
@@ -154,6 +174,19 @@ pub fn simulate(layer: &ParticlesLayer, e: &Emission, k: u32, now: f64, motion: 
     Some(Live { place, velocity, angle, size: size * grow, alpha: layer.fade.at(t) * flicker, life: t })
 }
 
+/// `p` moved, where needed, to the side of each hollow wall that `from` is on: a shape that
+/// has shrunk or moved since the particle was let off doesn't shut it out.
+fn on_its_side(mut p: Vec2, from: Vec2, radius: f32, walls: &[&Wall]) -> Vec2 {
+    for wall in walls {
+        if wall.solid || wall.outline.inside(p) == wall.outline.inside(from) {
+            continue;
+        }
+        let (q, n) = wall.outline.nearest(p);
+        p = q - n * (radius + wall.outline.thickness() * 0.5 + 0.5);
+    }
+    p
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,6 +202,8 @@ mod tests {
             velocity: Vec2::new(100.0, 0.0),
             count: 20,
             seed: 42,
+            impact: 1.0,
+            from: Vec2::ZERO,
         }
     }
 
@@ -269,5 +304,51 @@ mod tests {
         let alphas: Vec<f32> =
             (0..20).map(|i| simulate(&twinkly, &emission(), 0, 1.0 + i as f64 * 0.05, &NONE).unwrap().alpha).collect();
         assert!(alphas.iter().any(|a| *a < 0.3) && alphas.iter().any(|a| *a > 0.7), "{alphas:?}");
+    }
+
+    fn ring(radius: f32) -> Wall {
+        let outline = Outline::Ring { center: Vec2::ZERO, radius, sides: 0, angle: 0.0, thickness: 2.0 };
+        Wall { outline, solid: false, spin: 0.0, growth: 0.0, velocity: Vec2::ZERO }
+    }
+
+    #[test]
+    fn a_harder_hit_sends_them_faster() {
+        let l = layer();
+        let soft = Emission { impact: 0.6, velocity: Vec2::ZERO, ..emission() };
+        let hard = Emission { impact: 1.2, ..soft };
+        let a = simulate(&l, &soft, 0, 1.5, &NONE).unwrap();
+        let b = simulate(&l, &hard, 0, 1.5, &NONE).unwrap();
+        assert!((b.place.length() / a.place.length() - 2.0).abs() < 1e-3, "{} {}", a.place, b.place);
+    }
+
+    #[test]
+    fn a_long_life_moves_in_at_most_its_steps() {
+        assert_eq!(steps_for(0.5), (60, STEP));
+        let (n, step) = steps_for(3.0);
+        assert_eq!(n, MOST_STEPS);
+        assert!((step * n as f32 - 3.0).abs() < 1e-4);
+        assert_eq!(steps_for(0.0).0, 0);
+    }
+
+    #[test]
+    fn swirl_turns_still_particles_too() {
+        let l = ParticlesLayer { speed: 0.0, inherit: 0.0, swirl: 800.0, swirl_size: 60.0, ..layer() };
+        let e = Emission { place: Vec2::new(37.0, 11.0), ..emission() };
+        let p = simulate(&l, &e, 0, 1.6, &NONE).unwrap();
+        assert!(p.place.distance(e.place) > 5.0, "{}", p.place);
+    }
+
+    #[test]
+    fn a_particle_let_off_outside_a_shrunk_ring_bounces_inside_it() {
+        // The ball hit the ring when it was 110 round; it is 100 now.
+        let wall = ring(100.0);
+        let walls = [&wall];
+        let m = Motion { walls: &walls, pull_to: None };
+        let l = ParticlesLayer { bounce: true, bounciness: 0.8, direction: Direction::AllRound, ..layer() };
+        let e = Emission { place: Vec2::new(110.0, 0.0), from: Vec2::new(90.0, 0.0), ..emission() };
+        for k in 0..20 {
+            let p = simulate(&l, &e, k, 2.5, &m).unwrap();
+            assert!(p.place.length() < 100.0, "{k}: {}", p.place);
+        }
     }
 }

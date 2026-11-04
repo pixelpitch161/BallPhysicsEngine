@@ -130,8 +130,7 @@ pub fn draw_balls(
 ) {
     let wears = |i: usize| layer.applies((balls.number)(i));
     let rate = cx.world.steps_per_second;
-    let emissions = emit::ball_emissions(particles, cx.thing.id, balls, &wears, cx.log, rate, cx.time);
-    let emissions = emit::capped(emissions, MAX_PARTICLES);
+    let emissions = emit::ball_emissions(particles, cx.thing.id, balls, &wears, cx.log, rate, cx.time, MAX_PARTICLES);
     if emissions.is_empty() {
         return;
     }
@@ -203,8 +202,7 @@ pub fn draw_shape(cx: &DrawCx, layer: &AroundLayer, particles: &ParticlesLayer, 
     let id = cx.thing.id;
     let wall = cx.world.walls.get(&id);
     let rate = cx.world.steps_per_second;
-    let emissions = emit::shape_emissions(particles, id, wall, cx.log, rate, cx.time);
-    let emissions = emit::capped(emissions, MAX_PARTICLES);
+    let emissions = emit::shape_emissions(particles, id, wall, cx.log, rate, cx.time, MAX_PARTICLES);
     if emissions.is_empty() {
         return;
     }

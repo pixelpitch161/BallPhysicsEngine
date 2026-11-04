@@ -33,6 +33,12 @@ pub struct Emission {
     pub count: u32,
     /// Its own number, for every random choice of its particles.
     pub seed: u32,
+    /// How hard the hit was, as a share of the layer's Speed its particles fly at (1 when it
+    /// doesn't follow the impact).
+    pub impact: f32,
+    /// A place on the side of the walls the particles start on: the ball's middle, or just off
+    /// a shape's edge the way they fly.
+    pub from: Vec2,
 }
 
 /// A number from `parts`, the same every time.
@@ -49,11 +55,20 @@ pub fn hash(parts: &[u32]) -> u32 {
     x
 }
 
-/// How many particles a hit at `speed` lets off.
+/// How hard a hit at `speed` is, for particles that follow the impact: 0.6 for the softest, 1
+/// at [`FULL_HIT_SPEED`], 1.2 at most (as the old Particles card had it); 1 when they don't.
+pub fn impact(follow: bool, speed: f32) -> f32 {
+    if follow { 0.6 + 0.4 * (speed.max(0.0) / FULL_HIT_SPEED).min(1.5) } else { 1.0 }
+}
+
+/// How many particles a hit at `speed` lets off: more for harder hits when they follow the
+/// impact, and at least one.
 fn per_hit(layer: &ParticlesLayer, speed: f32) -> u32 {
-    let count = layer.count.max(0) as f32;
-    let impact = if layer.follow_impact { (speed / FULL_HIT_SPEED).min(1.5) } else { 1.0 };
-    (count * impact).round() as u32
+    let count = layer.count.max(0);
+    if count == 0 {
+        return 0;
+    }
+    ((count as f32 * impact(layer.follow_impact, speed)).round() as u32).max(1)
 }
 
 /// The first step that can still have living particles at `now`, `life` seconds long.
@@ -87,6 +102,8 @@ pub fn ball_velocity(balls: &Balls, i: usize, ago: f32) -> Vec2 {
 
 /// The emissions of `layer` worn by the balls `balls` (of thing `thing`, rows that `wears`)
 /// whose particles may be alive at `now`, oldest first.
+/// Only the newest whose particles add up to `cap` are worked out (see [`capped`]).
+#[allow(clippy::too_many_arguments)]
 pub fn ball_emissions(
     layer: &ParticlesLayer,
     thing: ThingId,
@@ -95,6 +112,7 @@ pub fn ball_emissions(
     log: &Log,
     rate: u32,
     now: f64,
+    cap: usize,
 ) -> Vec<Emission> {
     let mut out = Vec::new();
     let life = layer.life.max(0.0);
@@ -102,20 +120,25 @@ pub fn ball_emissions(
         return out;
     }
     let bodies = balls.bodies;
+    // Newest first, until there are enough; turned round at the end.
+    let mut total = 0usize;
     match layer.emit {
         Emit::OnHit | Emit::WhenItPops => {
             let hits = layer.emit == Emit::OnHit;
-            for e in log.since(first_step(now, life, rate)) {
+            for e in log.since(first_step(now, life, rate)).iter().rev() {
+                if total >= cap {
+                    break;
+                }
                 let time = e.time(rate);
                 if time > now {
-                    break;
+                    continue;
                 }
                 let wanted = if hits { EventKind::Hit } else { EventKind::Remove };
                 if e.kind != wanted || (hits && e.speed < layer.least_speed) {
                     continue;
                 }
                 let sides = [(Some(e.a), e.normal), (e.b, -e.normal)];
-                for (k, (side, normal)) in sides.into_iter().enumerate() {
+                for (k, (side, normal)) in sides.into_iter().enumerate().rev() {
                     let Some(side) = side.filter(|s| s.thing == thing) else { continue };
                     let row = side.item as usize;
                     if row >= bodies.len() || !wears(row) {
@@ -126,6 +149,7 @@ pub fn ball_emissions(
                     if count == 0 {
                         continue;
                     }
+                    total += count as usize;
                     out.push(Emission {
                         time,
                         row: Some(row),
@@ -135,6 +159,8 @@ pub fn ball_emissions(
                         velocity: ball_velocity(balls, row, ago),
                         count,
                         seed: hash(&[thing.0, side.item, e.step as u32, (e.step >> 32) as u32, k as u32, hits as u32]),
+                        impact: if hits { impact(layer.follow_impact, e.speed) } else { 1.0 },
+                        from: ball_at(balls, row, ago),
                     });
                 }
             }
@@ -146,10 +172,13 @@ pub fn ball_emissions(
             }
             let first = ((now - life as f64) * per).ceil().max(0.0) as i64;
             let last = (now * per).floor() as i64;
-            for k in first..=last {
+            for k in (first..=last).rev() {
+                if total >= cap {
+                    break;
+                }
                 let time = k as f64 / per;
                 let ago = (now - time) as f32;
-                for i in 0..bodies.len() {
+                for i in (0..bodies.len()).rev() {
                     if !bodies.alive[i] || !wears(i) {
                         continue;
                     }
@@ -163,25 +192,31 @@ pub fn ball_emissions(
                     if !moving {
                         continue;
                     }
+                    let place = ball_at(balls, i, ago);
+                    total += 1;
                     out.push(Emission {
                         time,
                         row: Some(i),
                         by: None,
-                        place: ball_at(balls, i, ago),
+                        place,
                         normal: velocity.try_normalize().unwrap_or(Vec2::NEG_Y),
                         velocity,
                         count: 1,
                         seed: hash(&[thing.0, i as u32, k as u32, (k >> 32) as u32, 7]),
+                        impact: 1.0,
+                        from: place,
                     });
                 }
             }
         }
     }
-    out
+    out.reverse();
+    capped(out, cap)
 }
 
 /// The emissions of a shape's `layer` (read as a ball's), the shape `shape` with its `wall`,
 /// whose particles may be alive at `now`, oldest first.
+/// Only the newest whose particles add up to `cap` are worked out (see [`capped`]).
 pub fn shape_emissions(
     layer: &ParticlesLayer,
     shape: ThingId,
@@ -189,8 +224,10 @@ pub fn shape_emissions(
     log: &Log,
     rate: u32,
     now: f64,
+    cap: usize,
 ) -> Vec<Emission> {
     let mut out = Vec::new();
+    let mut total = 0usize;
     let life = layer.life.max(0.0);
     if life <= 0.0 {
         return out;
@@ -203,7 +240,11 @@ pub fn shape_emissions(
             }
             let first = ((now - life as f64) * per).ceil().max(0.0) as i64;
             let last = (now * per).floor() as i64;
-            for k in first..=last {
+            for k in (first..=last).rev() {
+                if total >= cap {
+                    break;
+                }
+                total += 1;
                 let seed = hash(&[shape.0, k as u32, (k >> 32) as u32, 11]);
                 let u = (seed >> 8) as f32 / (1u32 << 24) as f32 * std::f32::consts::TAU;
                 let place = wall.outline.point(u);
@@ -219,14 +260,19 @@ pub fn shape_emissions(
                     velocity: Vec2::ZERO,
                     count: 1,
                     seed,
+                    impact: 1.0,
+                    from: place + normal * OFF_THE_EDGE,
                 });
             }
         }
         _ => {
-            for e in log.since(first_step(now, life, rate)) {
+            for e in log.since(first_step(now, life, rate)).iter().rev() {
+                if total >= cap {
+                    break;
+                }
                 let time = e.time(rate);
                 if time > now {
-                    break;
+                    continue;
                 }
                 if e.kind != EventKind::Hit || e.speed < layer.least_speed {
                     continue;
@@ -236,6 +282,7 @@ pub fn shape_emissions(
                 if count == 0 {
                     continue;
                 }
+                total += count as usize;
                 out.push(Emission {
                     time,
                     row: None,
@@ -245,12 +292,18 @@ pub fn shape_emissions(
                     velocity: Vec2::ZERO,
                     count,
                     seed: hash(&[shape.0, b.item, e.a.thing.0, e.a.item, e.step as u32, (e.step >> 32) as u32]),
+                    impact: impact(layer.follow_impact, e.speed),
+                    from: e.point + e.normal * OFF_THE_EDGE,
                 });
             }
         }
     }
-    out
+    out.reverse();
+    capped(out, cap)
 }
+
+/// How far off a shape's edge, the way its particles fly, their side of it is judged.
+const OFF_THE_EDGE: f32 = 4.0;
 
 /// The newest of `emissions` (oldest first) whose particles add up to at most `cap`, still
 /// oldest first; an emission that doesn't fit whole keeps its newest share.
@@ -284,6 +337,8 @@ mod tests {
             velocity: Vec2::ZERO,
             count,
             seed: 0,
+            impact: 1.0,
+            from: Vec2::ZERO,
         }
     }
 
@@ -310,9 +365,27 @@ mod tests {
     fn impact_scales_a_hit_s_count() {
         let layer = ParticlesLayer { count: 10, ..ParticlesLayer::default() };
         assert_eq!(per_hit(&layer, FULL_HIT_SPEED), 10);
-        assert_eq!(per_hit(&layer, FULL_HIT_SPEED * 3.0), 15, "at most half again");
-        assert_eq!(per_hit(&layer, FULL_HIT_SPEED / 2.0), 5);
+        assert_eq!(per_hit(&layer, FULL_HIT_SPEED * 3.0), 12, "at most a fifth more");
+        assert_eq!(per_hit(&layer, 0.0), 6, "the softest touch still lets some off");
+        let one = ParticlesLayer { count: 1, ..layer.clone() };
+        assert_eq!(per_hit(&one, 0.0), 1);
         let flat = ParticlesLayer { follow_impact: false, ..layer };
         assert_eq!(per_hit(&flat, 1.0), 10);
+        assert_eq!(impact(true, FULL_HIT_SPEED * 0.5), 0.8);
+        assert_eq!(impact(false, 0.0), 1.0);
+    }
+
+    #[test]
+    fn only_the_newest_emissions_up_to_the_cap_are_worked_out() {
+        let outline =
+            bpe_runtime::Outline::Box { center: Vec2::ZERO, half: Vec2::splat(100.0), angle: 0.0, thickness: 2.0 };
+        let wall = Wall { outline, solid: false, spin: 0.0, growth: 0.0, velocity: Vec2::ZERO };
+        let layer = ParticlesLayer { emit: Emit::Steady, rate: 10_000.0, life: 3.0, ..ParticlesLayer::default() };
+        let log = Log::default();
+        let all = shape_emissions(&layer, ThingId(1), Some(&wall), &log, 240, 5.0, usize::MAX);
+        assert_eq!(all.len(), 30_001);
+        let kept = shape_emissions(&layer, ThingId(1), Some(&wall), &log, 240, 5.0, 4000);
+        assert_eq!(kept.len(), 4000);
+        assert_eq!(&kept[..], &all[all.len() - 4000..], "the newest, oldest first");
     }
 }

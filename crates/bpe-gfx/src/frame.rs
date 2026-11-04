@@ -1174,6 +1174,28 @@ impl Frame {
         }
     }
 
+    /// Cuts its trail and particle lists (its overlay's and blend layers' too) to what the
+    /// graphics card can hold in one buffer, keeping the first: a last guard, far above what any
+    /// layer draws on its own.
+    pub fn fit_lists(&mut self) {
+        self.fit_lists_to(MOST_TRAIL_VERTICES, MOST_SPRITES);
+    }
+
+    fn fit_lists_to(&mut self, vertices: usize, sprites: usize) {
+        // Whole triangles.
+        let vertices = vertices - vertices % 6;
+        self.trails.truncate(vertices);
+        self.trails_front.truncate(vertices);
+        self.particles.truncate(sprites);
+        self.particles_front.truncate(sprites);
+        if let Some(o) = &mut self.overlay {
+            o.fit_lists_to(vertices, sprites);
+        }
+        for l in &mut self.layers {
+            l.frame.fit_lists_to(vertices, sprites);
+        }
+    }
+
     /// Drops balls, looks and flashes the camera can't see, so a big world draws only what is
     /// near the shot. Blend layers are culled through this frame's camera and size, whatever
     /// their own say.
@@ -1482,7 +1504,13 @@ pub fn build_frame_with(
         l.frame.camera = world.camera;
     }
     frame.lift_overlay_extras();
+    frame.fit_lists();
 }
+
+/// The most trail vertices one list of a frame holds (about 115 MB).
+pub const MOST_TRAIL_VERTICES: usize = 3_000_000;
+/// The most particles one list of a frame holds (about 61 MB).
+pub const MOST_SPRITES: usize = 1_000_000;
 
 #[cfg(test)]
 mod tests {
@@ -1516,6 +1544,19 @@ mod tests {
             frame.balls.push(BallInstance { center: [1.0, 2.0], radius, color: [1.0; 4], ..BallInstance::default() });
             frame.flashes.push(FlashInstance { center: [0.0; 2], size: 1.0, color: [1.0; 4] });
         }
+    }
+
+    #[test]
+    fn oversized_lists_are_cut_to_whole_triangles_that_fit() {
+        let mut f = Frame { trails: vec![TrailVertex::default(); 107], ..Frame::default() };
+        f.particles = vec![Particle::new(0, Vec2::ZERO, 0.0, 1.0, [1.0; 4]); 50];
+        let mut inner = Frame { trails_front: vec![TrailVertex::default(); 107], ..Frame::default() };
+        inner.particles_front = f.particles.clone();
+        f.overlay = Some(Box::new(inner));
+        f.fit_lists_to(100, 40);
+        assert_eq!((f.trails.len(), f.particles.len()), (96, 40));
+        let o = f.overlay.as_ref().unwrap();
+        assert_eq!((o.trails_front.len(), o.particles_front.len()), (96, 40));
     }
 
     #[test]

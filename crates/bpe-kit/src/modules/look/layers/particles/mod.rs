@@ -191,7 +191,7 @@ pub struct ParticlesLayer {
     #[setting(label = "Made of", group = "Particles", simple)]
     pub made_of: MadeOf,
     /// Under the balls or over them.
-    #[setting(label = "Where", group = "Particles")]
+    #[setting(label = "Where", group = "Particles", when = "made_of!=mini_balls")]
     pub place: AroundPlace,
     /// The way they fly.
     #[setting(label = "Direction", group = "Each particle")]
@@ -538,6 +538,14 @@ impl ShapeParticlesLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mini_balls_have_no_where_they_draw_over_the_balls() {
+        let place = ParticlesLayer::defs().iter().find(|d| d.key == "place").unwrap();
+        let made = |m: &'static str| move |k: &str| (k == "made_of").then(|| bpe_core::Value::Choice(m.into()));
+        assert!(place.applies(None, &made("sparks")));
+        assert!(!place.applies(None, &made("mini_balls")));
+    }
 
     #[test]
     fn sizes_and_fades_over_life_start_and_end_where_they_say() {

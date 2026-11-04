@@ -17,12 +17,17 @@ use crate::modules::look::layers::around_subs::{
     particle_with_extras, shadow_offset, sub_colour,
 };
 use crate::modules::look::layers::gpu::SubLayer;
+use crate::modules::look::layers::particles::emit::MAX_PARTICLES;
 use crate::modules::look::layers::trail::AroundPlace;
 use crate::paint::{Follow, Inputs, Paint, colour_at, seed_of};
 
 /// The margin each strip edge keeps for anti-aliasing, in video pixels. The preview shows the
 /// video shrunk up to about four times, and the shader softens the edge over one output pixel.
 pub const AA_MARGIN: f32 = 4.0;
+
+/// The most points one trail layer's strips run through in a frame, across all its balls: a
+/// crowd of long Lines shares them out, each keeping its newest.
+pub const MOST_STRIP_POINTS: usize = 200_000;
 
 /// Particle shapes (as in sprites.wgsl).
 const SMOKE: u32 = 1;
@@ -126,9 +131,17 @@ pub fn draw(cx: &DrawCx, layer: &AroundLayer, trail: &TrailLayer, balls: &Balls,
     let mut pieces = Pieces::default();
     let bodies = balls.bodies;
     let time = cx.time as f32;
+    let wearing = (0..bodies.len()).filter(|&i| bodies.alive[i] && layer.applies((balls.number)(i))).count();
+    let points_each = MOST_STRIP_POINTS / wearing.max(1);
+    let newest = balls.history.newest_step().unwrap_or(0) / balls.history.every();
+    // Dots and puffs share the particles' cap.
+    let full = |pieces: &Pieces| pieces.particles[OWN].len() >= MAX_PARTICLES;
     for i in 0..bodies.len() {
         if !bodies.alive[i] || !layer.applies((balls.number)(i)) {
             continue;
+        }
+        if full(&pieces) {
+            break;
         }
         let speed = bodies.velocity[i].length();
         if speed < trail.least_speed {
@@ -139,6 +152,10 @@ pub fn draw(cx: &DrawCx, layer: &AroundLayer, trail: &TrailLayer, balls: &Balls,
             continue;
         }
         let rolled = balls.history.travelled(i) + (path.points[0] - path.points[1]).length();
+        if trail.kind == TrailKind::Line {
+            kinds::thin(&mut path, newest);
+        }
+        kinds::limit(&mut path, points_each);
         if matches!(trail.kind, TrailKind::Streak | TrailKind::Ribbon | TrailKind::Line | TrailKind::Dots) {
             kinds::wobble(&mut path, trail.wobble_amount, trail.wobble_waves, trail.wobble_speed, time);
         }
@@ -187,6 +204,9 @@ pub fn draw(cx: &DrawCx, layer: &AroundLayer, trail: &TrailLayer, balls: &Balls,
                 let length = path.length().max(1e-3);
                 let size = trail.dot_size.max(0.0) * radius;
                 for arc in kinds::dots(&path, rolled, trail.dot_every) {
+                    if full(&pieces) {
+                        break;
+                    }
                     let Some((at, k)) = path.at_arc(arc) else { continue };
                     ball_cx.particle(at, size, arc / length, base(k), DOTS, 0.0, &mut pieces);
                 }
@@ -195,6 +215,9 @@ pub fn draw(cx: &DrawCx, layer: &AroundLayer, trail: &TrailLayer, balls: &Balls,
                 let reach = path.reach().max(1e-3);
                 let softness = trail.softness.clamp(0.0, 1.0);
                 for ago in kinds::puffs(cx.time, trail.puffs, path.reach()) {
+                    if full(&pieces) {
+                        break;
+                    }
                     let Some(at) = path.at_ago(ago) else { continue };
                     let k = path.ago.partition_point(|&a| a <= ago).clamp(1, path.len()) - 1;
                     let size = trail.width.max(0.0) * radius * (1.0 + trail.spreads.max(0.0) * ago);
@@ -479,6 +502,19 @@ mod tests {
         let median = gaps[gaps.len() / 2];
         assert!((median - 40.0).abs() < 4.0, "{gaps:?}");
         assert!(f.particles.iter().all(|p| p.shape[0] == super::DOTS));
+    }
+
+    #[test]
+    fn smoke_on_a_crowd_stops_at_the_particles_cap() {
+        let f = trail_frame(3.0, |s, id| {
+            set(s, id, "kind", choice("smoke"));
+            set(s, id, "puffs", Value::Number(120.0));
+            set(s, id, "seconds", Value::Number(2.0));
+            let p = &mut s.things.get_mut(&BALL).unwrap().params;
+            p.set("group", Value::Bool(true));
+            p.set("count", Value::Int(40));
+        });
+        assert_eq!(f.particles.len(), super::MAX_PARTICLES);
     }
 
     #[test]

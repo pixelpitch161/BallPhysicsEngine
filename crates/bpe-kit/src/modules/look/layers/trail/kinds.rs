@@ -98,10 +98,14 @@ impl Cut {
     /// The cut a trail layer asks for, for a ball at `speed`: its Length (longer when fast),
     /// everything for a Line that stays, and nothing before `last_hit` seconds ago when it
     /// restarts at each bounce.
+    /// Ghosts reach back as far as their copies go, whatever the (hidden) Length says. It grows
+    /// up to three times Fast's worth, as far as [`TrailLayer::reach`] keeps history for.
     pub fn of(layer: &TrailLayer, speed: f32, last_hit: Option<f32>) -> Cut {
-        let factor = 1.0 + layer.faster.max(0.0) * speed / FAST;
+        let factor = 1.0 + layer.faster.max(0.0) * (speed / FAST).min(3.0);
         let mut cut = Cut::default();
-        if !layer.stays() {
+        if layer.kind == super::TrailKind::Ghosts {
+            cut.seconds = Some(layer.reach());
+        } else if !layer.stays() {
             match layer.length_by {
                 super::LengthBy::Time => cut.seconds = Some(layer.seconds.max(0.0) * factor),
                 super::LengthBy::Distance => cut.distance = Some(layer.pixels.max(0.0) * factor),
@@ -158,6 +162,56 @@ pub fn path(head: Vec2, history: &History, ball: usize, newest_ago: f32, interva
         path.arc.push(last_arc + step);
     }
     path
+}
+
+/// How many of a path's newest points are always kept whole: four seconds' worth.
+pub const KEEP_WHOLE: usize = 240;
+
+/// Drops points of `path` older than [`KEEP_WHOLE`] that a long Line doesn't need: it keeps
+/// every corner (where the way turns more than 10°, as at a bounce) and one sample in 4 (under
+/// 30 s old), 8 (under 60 s) or 16 (older) between them. Which samples those are is counted
+/// from the start of the clip (`newest` is the newest sample's number), so a point kept stays
+/// kept as the ball moves on.
+pub fn thin(path: &mut Path, newest: u64) {
+    let n = path.len();
+    if n <= KEEP_WHOLE + 2 {
+        return;
+    }
+    let p = &path.points;
+    let corner = |k: usize| match ((p[k - 1] - p[k]).try_normalize(), (p[k] - p[k + 1]).try_normalize()) {
+        (Some(a), Some(b)) => a.dot(b) < 10f32.to_radians().cos(),
+        _ => false,
+    };
+    let keep: Vec<bool> = (0..n)
+        .map(|k| {
+            if k <= KEEP_WHOLE || k + 1 >= n {
+                return true;
+            }
+            let ago = path.ago[k];
+            let every = if ago < 30.0 {
+                4
+            } else if ago < 60.0 {
+                8
+            } else {
+                16
+            };
+            newest.saturating_sub(k as u64 - 1).is_multiple_of(every) || corner(k)
+        })
+        .collect();
+    let mut k = 0;
+    path.points.retain(|_| (keep[k], k += 1).0);
+    let mut k = 0;
+    path.ago.retain(|_| (keep[k], k += 1).0);
+    let mut k = 0;
+    path.arc.retain(|_| (keep[k], k += 1).0);
+}
+
+/// Cuts `path` to its newest `most` points (at least two).
+pub fn limit(path: &mut Path, most: usize) {
+    let most = most.max(2);
+    path.points.truncate(most);
+    path.ago.truncate(most);
+    path.arc.truncate(most);
 }
 
 /// The half width at 0 (the ball) to 1 (the tail) along a trail `full` wide at the ball,
@@ -289,6 +343,66 @@ mod tests {
         assert_eq!(Cut::of(&line, 0.0, Some(0.1)), Cut::default(), "a line that stays keeps it all");
         let far = TrailLayer { length_by: super::super::LengthBy::Distance, pixels: 200.0, ..TrailLayer::default() };
         assert_eq!(Cut::of(&far, 0.0, None).distance, Some(200.0));
+    }
+
+    #[test]
+    fn ghosts_reach_back_as_far_as_their_copies_go() {
+        use super::super::{LengthBy, TrailKind};
+        let ghosts = TrailLayer {
+            kind: TrailKind::Ghosts,
+            ghosts: 10,
+            ghost_every: 0.5,
+            seconds: 0.5,
+            faster: 1.0,
+            length_by: LengthBy::Distance,
+            ..TrailLayer::default()
+        };
+        let cut = Cut::of(&ghosts, FAST * 2.0, None);
+        assert_eq!((cut.seconds, cut.distance), (Some(5.0), None));
+    }
+
+    #[test]
+    fn longer_when_fast_stops_at_three_times_fast() {
+        let layer = TrailLayer { seconds: 0.4, faster: 1.0, ..TrailLayer::default() };
+        assert_eq!(Cut::of(&layer, FAST * 50.0, None).seconds, Some(1.6));
+        assert!(Cut::of(&layer, FAST * 50.0, None).seconds.unwrap() <= layer.reach() + 1e-6);
+    }
+
+    /// A ball going round a circle of 300, with a bounce (a sharp turn) every so often, sampled
+    /// `samples` times; its path from the newest sample back.
+    fn long_path(samples: u64) -> Path {
+        let mut h = History::new(60, bpe_runtime::HistoryWant { seconds: 0.0, forever: true });
+        for step in 0..samples {
+            let t = step as f32 / 60.0;
+            let wobble = if step % 97 < 3 { 40.0 } else { 0.0 };
+            h.record(step, &[Vec2::from_angle(t) * (300.0 + wobble)]);
+        }
+        path(h.points(0).next().unwrap(), &h, 0, 0.0, 1.0 / 60.0, Cut::default())
+    }
+
+    #[test]
+    fn a_long_line_keeps_its_newest_and_corners_and_thins_the_rest() {
+        let mut p = long_path(60 * 120);
+        let (n, oldest) = (p.len(), *p.points.last().unwrap());
+        let whole = p.clone();
+        thin(&mut p, 60 * 120 - 1);
+        assert!(p.len() < n / 3, "{} of {n}", p.len());
+        assert_eq!(&p.points[..=KEEP_WHOLE], &whole.points[..=KEEP_WHOLE], "the newest four seconds whole");
+        assert_eq!(*p.points.last().unwrap(), oldest, "it still reaches the start");
+        // Every sharp turn stays.
+        let w = &whole.points;
+        let corners: Vec<Vec2> = (KEEP_WHOLE + 1..w.len() - 1)
+            .filter(|&k| (w[k - 1] - w[k]).normalize().dot((w[k] - w[k + 1]).normalize()) < 0.9)
+            .map(|k| w[k])
+            .collect();
+        assert!(corners.len() > 100, "{}", corners.len());
+        assert!(corners.iter().all(|c| p.points.contains(c)), "corners kept");
+        assert!(p.arc.windows(2).all(|w| w[0] <= w[1]), "still in order");
+        // A frame later the same old points are kept.
+        let mut later = long_path(60 * 120 + 1);
+        thin(&mut later, 60 * 120);
+        let old: Vec<Vec2> = p.points[KEEP_WHOLE + 60..KEEP_WHOLE + 160].to_vec();
+        assert!(old.iter().filter(|q| later.points.contains(q)).count() >= 95, "kept points stay kept");
     }
 
     #[test]
