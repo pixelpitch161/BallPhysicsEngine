@@ -129,11 +129,29 @@ pub fn write_midi(path: &Path, scene: &Scene, log: &NoteLog, tempo: &TempoMap, e
     for (shape, name) in shapes.iter().zip(&names) {
         // (tick, off first, note, velocity)
         let mut events: Vec<(u64, bool, u8, u8)> = Vec::new();
-        for &(t, note, vel, on, off) in spans.iter().filter(|s| s.0 == *shape) {
-            let _ = t;
-            let (a, b) = (tick_of(on, tempo), tick_of(off, tempo));
+        // (note, on tick, off tick, velocity), by note then start: two notes of one pitch that
+        // start on the same tick (a symmetric group hitting at once) are one note, so no key is
+        // ever on twice and no note ends after the next one of its pitch starts.
+        let mut notes: Vec<(u8, u64, u64, u8)> = spans
+            .iter()
+            .filter(|s| s.0 == *shape)
+            .map(|&(_, note, vel, on, off)| (note, tick_of(on, tempo), tick_of(off, tempo), vel))
+            .collect();
+        notes.sort_by_key(|n| (n.0, n.1));
+        let mut merged: Vec<(u8, u64, u64, u8)> = Vec::with_capacity(notes.len());
+        for n in notes {
+            match merged.last_mut() {
+                Some(m) if m.0 == n.0 && m.1 == n.1 => {
+                    m.2 = m.2.max(n.2);
+                    m.3 = m.3.max(n.3);
+                }
+                _ => merged.push(n),
+            }
+        }
+        for (i, &(note, a, b, vel)) in merged.iter().enumerate() {
+            let next = merged.get(i + 1).filter(|m| m.0 == note).map_or(u64::MAX, |m| m.1);
             events.push((a, false, note, vel));
-            events.push((b.max(a + 1), true, note, 0));
+            events.push((b.max(a + 1).min(next), true, note, 0));
         }
         // At the same tick a note ends before the next one starts.
         events.sort_by_key(|e| (e.0, !e.1));

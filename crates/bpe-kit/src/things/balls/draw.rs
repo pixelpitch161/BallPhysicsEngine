@@ -186,7 +186,9 @@ impl ThingDraw for BallsDraw {
                 let (blend, amount) = a.blend();
                 // Mini balls are balls: they draw as the balls do.
                 let (blend, amount) = if a.is_mini_balls() { (Blend::Normal, 1.0) } else { (blend, amount) };
-                Around { blend, amount, behind: a.place() == AroundPlace::Behind }
+                // They have no Where either: they draw over the balls at every z-order.
+                let behind = !a.is_mini_balls() && a.place() == AroundPlace::Behind;
+                Around { blend, amount, behind }
             })
             .collect()
     }
@@ -387,7 +389,8 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, stack: &Stack, part: u32) {
             // A gradient body turns by the ball's own hue turns, as a plain body's colour does.
             let hits = bodies.hits.get(i).copied().unwrap_or(0) as f32;
             let spin = if group.state.is_some() { colour_turn(&group.look, number) } else { 0.0 };
-            ball.vary[3] = (spin + stack.hue_per_hit() * hits) / 360.0;
+            // The Variety turn is in turns already; the reaction's is degrees a hit.
+            ball.vary[3] = spin + stack.hue_per_hit() * hits / 360.0;
         }
         if let Some(g) = on_gpu {
             let c = group_colour(g, &group.info, &group.ball(bodies, i, time));
@@ -1016,6 +1019,18 @@ mod tests {
         assert!(side > xs[4] - xs[0], "the square holds every ball: {side}");
         assert_eq!(frame.programs.len(), 1);
         assert_eq!(frame.layered_runs.last().unwrap().program, Some(0));
+    }
+
+    #[test]
+    fn colour_spread_turns_a_gradient_body_by_whole_turns() {
+        let frame = group_frame(6, |s| {
+            s.things.get_mut(&BALL).unwrap().params.set("vary_colour", Value::Number(1.0));
+            set_layer(s, BALL, BODY, "colours", Value::Gradient(bpe_core::Gradient::even(&[RED, BLUE])));
+        });
+        let turns: Vec<f32> = frame.layered.iter().map(|b| b.vary[3]).collect();
+        let (lo, hi) = turns.iter().fold((f32::MAX, f32::MIN), |(l, h), t| (l.min(*t), h.max(*t)));
+        assert!(hi - lo > 0.2, "a full spread turns the balls far round the wheel: {turns:?}");
+        assert!(turns.iter().all(|t| t.abs() <= 0.5), "{turns:?}");
     }
 
     #[test]

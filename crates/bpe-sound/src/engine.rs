@@ -239,7 +239,13 @@ impl Engine {
     /// Every voice counts the clip's hits before sound sample `upto` (the physics has run that
     /// far), so slots and play orders are where playing from the start would have put them.
     fn catch_up(&mut self, upto: u64) {
-        if upto == 0 {
+        let all = vec![true; self.voices.len()];
+        self.catch_up_these(upto, &all);
+    }
+
+    /// [`Engine::catch_up`] for the voices whose place in `these` is true.
+    fn catch_up_these(&mut self, upto: u64, these: &[bool]) {
+        if upto == 0 || !these.contains(&true) {
             return;
         }
         let sps = self.cursor.samples_per_step();
@@ -255,7 +261,7 @@ impl Engine {
             .collect();
         hits.sort_by_key(|(at, _)| *at);
         let world = self.physics.world();
-        for v in &mut self.voices {
+        for (v, _) in self.voices.iter_mut().zip(these).filter(|(_, on)| **on) {
             v.catch_up(&hits, upto, &self.tempo, world);
         }
     }
@@ -293,11 +299,13 @@ impl Engine {
         let mut voices = patch.voices;
         let mut routes = patch.routes;
         let mut kept = vec![false; old.len()];
-        for (v, r) in voices.iter_mut().zip(routes.iter_mut()) {
+        let mut fresh = vec![true; voices.len()];
+        for ((v, r), fresh) in voices.iter_mut().zip(routes.iter_mut()).zip(&mut fresh) {
             if let Some(i) = old.iter().position(|o| o.thing() == v.thing()) {
                 v.adopt(old[i].as_mut());
                 r.adopt(&old_routes[i]);
                 kept[i] = true;
+                *fresh = false;
             }
         }
         // A voice whose thing has gone (or whose sound was turned off) fades out.
@@ -313,6 +321,15 @@ impl Engine {
         }
         self.voices = voices;
         self.routes = routes;
+        // A voice new in the middle of the clip (sound just turned on, or pasted) counts the hits
+        // so far, as a seek would, so its slot and play order are where playing from the start
+        // puts them (and where the timeline's slot marks say).
+        if self.voice_pos > 0 && fresh.contains(&true) {
+            if !self.physics_synced {
+                self.sync_physics();
+            }
+            self.catch_up_these(self.voice_pos, &fresh);
+        }
     }
 
     /// Plays `note` on `shape`'s voice from the editor (a key clicked), outside the hits.

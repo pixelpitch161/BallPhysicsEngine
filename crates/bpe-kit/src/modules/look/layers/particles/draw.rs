@@ -378,6 +378,19 @@ mod tests {
     }
 
     #[test]
+    fn mini_balls_draw_with_their_balls_at_any_z_order() {
+        let scene = with_particles(BALL, PARTICLES, |s, id| {
+            set(s, BALL, id, "made_of", choice("mini_balls"));
+            set(s, BALL, id, "life", Value::Number(3.0));
+            s.things.get_mut(&BALL).unwrap().z_order = 5;
+        });
+        let f = frames(&scene, &[4.0]).remove(0);
+        let holding: Vec<_> = f.layers.iter().filter(|l| !l.frame.layered.is_empty()).collect();
+        assert_eq!(holding.len(), 1, "the balls and their mini balls in one layer, not behind the balls");
+        assert!(holding[0].frame.layered.len() > 1);
+    }
+
+    #[test]
     fn a_glow_sub_layer_lights_each_particle_from_under_it() {
         let reg = crate::registry();
         let plain = frames(&with_particles(BALL, PARTICLES, |_, _| {}), &[4.0]).remove(0);

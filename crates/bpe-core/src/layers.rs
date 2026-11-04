@@ -383,14 +383,21 @@ impl Scene {
                 self.pulses.remove(&a);
             }
         }
-        // Settings anywhere that follow a modulator going away stop following it.
-        self.pulses.retain(|_, p| match p.source {
-            crate::PulseSource::Sound { shape, source: crate::SoundSource::Modulator(l) } => {
-                shape != thing || !gone.contains(&l)
-            }
-            _ => true,
-        });
+        // Settings anywhere that follow a modulator going away stop following it. Modulators live
+        // only on the Sound card, and layer ids are counted per card, so a Look layer that shares
+        // a modulator's number takes nothing with it.
+        if slot == SlotId::Sound {
+            self.pulses.retain(|_, p| match p.source {
+                crate::PulseSource::Sound { shape, source: crate::SoundSource::Modulator(l) } => {
+                    shape != thing || !gone.contains(&l)
+                }
+                _ => true,
+            });
+        }
         let card = self.layer_card_mut(thing, slot);
+        // Ids are never given out twice in a card: a setting that still names a removed layer
+        // (a cut's layer, a group layer's chosen layers) must not pick up a new one by surprise.
+        card.used_ids = card.next_layer_id().0;
         card.layers.retain(|l| !gone.contains(&l.id));
         card.params.0.retain(|k, _| !gone.iter().any(|&g| of_layer(k, g)));
         if let Some(crate::Value::Routes(routes)) = card.params.0.get_mut(crate::ROUTES_KEY) {
@@ -1394,6 +1401,58 @@ mod tests {
         assert_eq!(get(&s), Some(Value::Routes(vec![second])));
         s.remove_layer(&r, f, SlotId::Sound, a1).unwrap();
         assert_eq!(get(&s), Some(Value::Routes(vec![])));
+    }
+
+    /// A pulse on some setting of `on` that follows modulator `m` of shape `shape`.
+    fn follow(s: &mut Scene, on: ThingId, shape: ThingId, m: LayerId) -> Address {
+        let a = Address::on(on, LOOK, "follower");
+        let source = crate::PulseSource::Sound { shape, source: crate::SoundSource::Modulator(m) };
+        s.pulses.insert(a.clone(), crate::Pulse { source, ..crate::Pulse::default() });
+        a
+    }
+
+    #[test]
+    fn removing_a_look_layer_leaves_a_modulator_with_the_same_number_followed() {
+        let (r, mut s, f, [_, _, _, m]) = sounding();
+        s.add_slot(&r, f, LOOK, "look.stack").unwrap();
+        // The folder's Look gets layers until one has the modulator's number.
+        s.add_layer(&r, f, LOOK, "layer.base").unwrap();
+        let mut same = s.add_layer(&r, f, LOOK, "layer.ring").unwrap();
+        while same != m {
+            same = s.add_layer(&r, f, LOOK, "layer.ring").unwrap();
+        }
+        let a = follow(&mut s, f, f, m);
+        s.remove_layer(&r, f, LOOK, same).unwrap();
+        assert!(s.pulses.contains_key(&a), "the modulator is still there, so is its follower");
+        s.remove_layer(&r, f, SlotId::Sound, m).unwrap();
+        assert!(!s.pulses.contains_key(&a), "removing the modulator itself ends the following");
+    }
+
+    #[test]
+    fn a_removed_layers_id_is_never_given_out_again() {
+        let (r, mut s, b) = stacked();
+        let ring = s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
+        s.remove_layer(&r, b, LOOK, ring).unwrap();
+        let next = s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
+        assert_ne!(next, ring, "a cut or group layer still naming the old one must not get the new one");
+        let card = s.card(b, LOOK).unwrap().clone();
+        let back: Slot = ron::from_str(&ron::to_string(&card).unwrap()).unwrap();
+        assert_eq!(back.next_layer_id(), card.next_layer_id(), "and it stays so after saving");
+        // A duplicate of the new layer doesn't take the old id either.
+        let dup = s.duplicate_layer(&r, b, LOOK, next).unwrap();
+        assert!(dup.0 > next.0);
+    }
+
+    #[test]
+    fn replacing_a_sound_card_ends_following_its_modulators_but_not_its_level() {
+        let (r, mut s, f, [_, _, _, m]) = sounding();
+        let a = follow(&mut s, f, f, m);
+        let level = Address::on(f, LOOK, "level");
+        let source = crate::PulseSource::Sound { shape: f, source: crate::SoundSource::Level };
+        s.pulses.insert(level.clone(), crate::Pulse { source, ..crate::Pulse::default() });
+        s.add_slot(&r, f, SlotId::Sound, "sound.test").unwrap();
+        assert!(!s.pulses.contains_key(&a), "the new card's layer with that number is someone else");
+        assert!(s.pulses.contains_key(&level));
     }
 
     #[test]

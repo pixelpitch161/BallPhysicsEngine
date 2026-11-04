@@ -214,6 +214,12 @@ impl UnisonOsc {
         let (mut sl, mut sr) = ([0.0f32; BLOCK], [0.0f32; BLOCK]);
         let mu = octaves(self.params.freq_hz);
         for v in 0..self.n {
+            // A copy pitched at or above half the sample rate can only alias (and above the
+            // sample rate its fixed-point step would overflow): it is silent, its phase kept.
+            if self.inc[v] >= 0.5 {
+                self.phase[v] = (self.phase[v] + BLOCK as f64 * self.inc[v]).rem_euclid(1.0);
+                continue;
+            }
             let (m0, m1, t) = set.mips_at(mu + self.oct[v]);
             let phase = (self.phase[v] * TWO_32) as u64 as u32;
             let inc = (self.inc[v] * TWO_32).round() as u32;
@@ -400,7 +406,8 @@ impl SubOsc {
     /// Adds one block into `l` and `r`, `gain[i]` on each sample. `square` is the band-limited
     /// square table.
     pub fn render(&mut self, square: &TableSet, gain: &[f32; BLOCK], l: &mut [f32; BLOCK], r: &mut [f32; BLOCK]) {
-        if self.is_off() {
+        // At or above half the sample rate it could only alias.
+        if self.is_off() || self.inc >= 0.5 {
             return;
         }
         let reader = square.reader(self.inc as f32 * crate::SAMPLE_RATE);
@@ -513,6 +520,24 @@ mod tests {
                 phase -= 1.0;
             }
         }
+    }
+
+    #[test]
+    fn a_pitch_past_half_the_sample_rate_is_silent_not_aliased() {
+        let set = saw();
+        for freq_hz in [30_000.0, 100_000.0] {
+            let mut osc = UnisonOsc::new();
+            osc.set(&UnisonParams { freq_hz, unison: 1, ..UnisonParams::default() });
+            osc.note_on();
+            let (l, _) = run(&mut osc, &set, 8);
+            assert!(l.iter().all(|v| *v == 0.0), "{freq_hz} Hz sounds");
+        }
+        // Just under, it still sounds.
+        let mut osc = UnisonOsc::new();
+        osc.set(&UnisonParams { freq_hz: 12_000.0, unison: 1, ..UnisonParams::default() });
+        osc.note_on();
+        let (l, _) = run(&mut osc, &set, 8);
+        assert!(l.iter().any(|v| v.abs() > 0.1));
     }
 
     #[test]

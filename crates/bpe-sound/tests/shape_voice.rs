@@ -488,3 +488,26 @@ fn building_for_the_editor_never_bakes() {
     }
     assert!(heard, "plays once baked");
 }
+
+#[test]
+fn sound_turned_on_mid_clip_starts_on_the_slot_the_clock_is_at() {
+    let kit = kit();
+    let plain = new_scene(&kit.registry);
+    let sounding = voiced(&kit, |v, _| {
+        v.notes_slots = (0..3).map(|n| bpe_core::NoteSlot { notes: vec![60 + n], order_clicked: vec![] }).collect();
+        v.notes_change = bpe_kit::sound::Change::ByTime;
+        v.notes_every_seconds = 1.0;
+    });
+    let shape = shape_of(&sounding);
+    let resolved = resolve_scene(&plain, &kit.registry);
+    let mut e = Engine::new(&plain, &resolved, &kit);
+    let mut block = [0.0f32; BLOCK * 2];
+    // 2.5 s of the clip with no sound anywhere, then the shape's sound goes on.
+    while e.sample_position() < 120_000 {
+        e.render(&mut block);
+    }
+    let sounding_resolved = resolve_scene(&sounding, &kit.registry);
+    e.swap_patch(SoundPatch::build(&sounding, &sounding_resolved, &kit));
+    e.render(&mut block);
+    assert_eq!(e.meters().shape_slot(shape.0), Some(2), "a slot a second: the third slot at 2.5 s");
+}
