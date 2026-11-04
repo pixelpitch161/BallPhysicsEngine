@@ -55,6 +55,13 @@ pub struct Extras {
     /// One 24-bit WAV per bus (after its fader, mute and solo) and one of the master (after
     /// the limiter), in that order.
     pub stems: Option<([PathBuf; BUSES], PathBuf)>,
+    /// A MIDI file of the notes the shapes played.
+    pub midi: Option<PathBuf>,
+}
+
+/// The MIDI file for a video saved as `video`: `<name>.mid` beside it.
+pub fn midi_path(video: &Path) -> PathBuf {
+    video.with_extension("mid")
 }
 
 /// The stem files for a video saved as `video`: `<name> - <bus name>.wav` per bus and
@@ -114,6 +121,9 @@ pub fn render_sound(
             }
         }
     }
+    if extras.midi.is_some() {
+        engine.record_notes(true);
+    }
     let mut chunk: Vec<f32> = Vec::with_capacity(CHUNK_BLOCKS * BLOCK * 2);
     let mut stem_chunks: Vec<Vec<f32>> =
         (0..stems.len()).map(|_| Vec::with_capacity(CHUNK_BLOCKS * BLOCK * 2)).collect();
@@ -154,6 +164,9 @@ pub fn render_sound(
     }
     for w in stems {
         w.finish()?;
+    }
+    if let Some(midi) = &extras.midi {
+        crate::midi::write_midi(midi, scene, engine.note_log(), engine.tempo(), total as u64)?;
     }
     out.finish()
 }

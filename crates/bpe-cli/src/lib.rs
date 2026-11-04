@@ -30,6 +30,8 @@ pub struct ExportOptions {
     pub encoder: Encoder,
     /// Also save each bus and the master as 24-bit WAVs beside the video.
     pub stems: bool,
+    /// Also save the notes the shapes played as a MIDI file beside the video.
+    pub midi: bool,
 }
 
 impl ExportOptions {
@@ -43,6 +45,7 @@ impl ExportOptions {
             max_frames: None,
             encoder: Encoder::Auto,
             stems: false,
+            midi: false,
         }
     }
 }
@@ -283,7 +286,10 @@ fn export_with(
     let sound = sound_dir.path().join("sound.wav");
     if sound_share > 0 {
         let seconds = total as f64 / fps as f64;
-        let extras = bpe_sound::Extras { stems: options.stems.then(|| bpe_sound::stem_paths(scene, &output)) };
+        let extras = bpe_sound::Extras {
+            stems: options.stems.then(|| bpe_sound::stem_paths(scene, &output)),
+            midi: options.midi.then(|| bpe_sound::midi_path(&output)),
+        };
         bpe_sound::render_sound(scene, kit, &sound, seconds, &extras, |done| {
             progress(((done * sound_share as f64) as u32).min(sound_share), total)
         })

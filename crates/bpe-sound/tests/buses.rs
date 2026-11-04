@@ -172,7 +172,7 @@ fn stems_sum_to_the_mix_before_the_limiter() {
     let video = dir.join("clip.mp4");
     let (buses, master) = bpe_sound::stem_paths(&scene, &video);
     assert!(buses[1].ends_with("clip - Bus 2.wav") && master.ends_with("clip - Master.wav"));
-    let extras = bpe_sound::Extras { stems: Some((buses.clone(), master.clone())) };
+    let extras = bpe_sound::Extras { stems: Some((buses.clone(), master.clone())), midi: None };
     bpe_sound::render_sound(&scene, &kit, &dir.join("clip.wav"), SECONDS, &extras, |_| true).unwrap();
     let read = |p: &std::path::Path| -> Vec<f32> {
         let mut r = hound::WavReader::open(p).unwrap();

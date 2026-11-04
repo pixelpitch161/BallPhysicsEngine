@@ -52,6 +52,10 @@ pub struct Engine {
     queue_len: usize,
     /// Each bus's sound beside the queue, while stems are recorded.
     record_stems: bool,
+    /// Noting the notes each shape starts (the export's MIDI file).
+    record_notes: bool,
+    note_log: crate::NoteLog,
+    noted: Vec<crate::NoteOn>,
     stem_queue: Box<[[[f32; 2]; BUSES]; QUEUE]>,
     /// Line the stems up with the master's output (the limiter's lookahead).
     stem_lags: [Lag; BUSES],
@@ -103,6 +107,9 @@ impl Engine {
             queue_head: 0,
             queue_len: 0,
             record_stems: false,
+            record_notes: false,
+            note_log: crate::NoteLog::default(),
+            noted: Vec::new(),
             stem_queue: Box::new([[[0.0; 2]; BUSES]; QUEUE]),
             stem_lags: std::array::from_fn(|_| Lag::new()),
             stems_out: [[0.0; BLOCK * 2]; BUSES],
@@ -186,6 +193,20 @@ impl Engine {
 
     /// Keeps each bus's sound from now on, lined up with the mix ([`Engine::stems`]). For the
     /// export; the editor never records.
+    /// Starts or stops noting every note the shapes start, for a MIDI file (the export only:
+    /// noting allocates).
+    pub fn record_notes(&mut self, on: bool) {
+        self.record_notes = on;
+        for v in &mut self.voices {
+            v.record_notes(on);
+        }
+    }
+
+    /// The notes noted so far.
+    pub fn note_log(&self) -> &crate::NoteLog {
+        &self.note_log
+    }
+
     pub fn record_stems(&mut self, on: bool) {
         self.record_stems = on;
         for lag in &mut self.stem_lags {
@@ -434,6 +455,13 @@ impl Engine {
             self.voice_l = [0.0; BLOCK];
             self.voice_r = [0.0; BLOCK];
             v.on_block(&cx, hits, &mut self.voice_l, &mut self.voice_r);
+            if self.record_notes {
+                v.take_notes(&mut self.noted);
+                let thing = v.thing();
+                for n in self.noted.drain(..) {
+                    self.note_log.push(thing, n);
+                }
+            }
             route.at(time);
             route.send(&mut self.buses, &self.voice_l, &self.voice_r);
         }

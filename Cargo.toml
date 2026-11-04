@@ -30,6 +30,7 @@ cpal = "0.18"
 rubato = "0.16"
 rtrb = "0.3"
 hound = "3.5"
+midly = "0.5"
 wide = "0.7"
 tempfile = "3"
 

@@ -26,6 +26,7 @@ pub struct ExportWindow {
     encoder: Encoder,
     /// Also save each bus and the master as WAVs beside the video.
     stems: bool,
+    midi: bool,
     ffmpeg: Option<PathBuf>,
     gpu: Arc<Mutex<Option<CheckedEncoders>>>,
     /// The ffmpeg a check was started for.
@@ -58,6 +59,7 @@ impl Default for ExportWindow {
             scale: 1.0,
             encoder: Encoder::Auto,
             stems: false,
+            midi: false,
             ffmpeg: find_ffmpeg(),
             gpu: Arc::default(),
             checking: None,
@@ -253,6 +255,11 @@ impl ExportWindow {
             );
             style::switch(ui, &mut self.stems).labelled_by(label.id);
             ui.end_row();
+            let label = ui.label("Also save MIDI").on_hover_text(
+                "The notes the shapes played, one track per shape, with the tempo, saved next to the video.",
+            );
+            style::switch(ui, &mut self.midi).labelled_by(label.id);
+            ui.end_row();
         });
         ui.add_space(8.0);
         if self.ffmpeg.is_none() {
@@ -370,6 +377,7 @@ impl ExportWindow {
         options.ffmpeg = ffmpeg;
         options.encoder = self.encoder;
         options.stems = self.stems;
+        options.midi = self.midi;
         options
     }
 }
@@ -438,6 +446,14 @@ mod tests {
         assert!(!window.options(Path::new("a.mp4"), "ffmpeg".into()).stems, "off by default");
         window.stems = true;
         assert!(window.options(Path::new("a.mp4"), "ffmpeg".into()).stems);
+    }
+
+    #[test]
+    fn export_window_has_stem_and_midi_switches() {
+        let mut window = ExportWindow::default();
+        assert!(!window.options(Path::new("a.mp4"), "ffmpeg".into()).midi, "off by default");
+        window.midi = true;
+        assert!(window.options(Path::new("a.mp4"), "ffmpeg".into()).midi);
     }
 
     #[test]

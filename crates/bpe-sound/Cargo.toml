@@ -17,6 +17,7 @@ bpe-dsp.workspace = true
 glam.workspace = true
 anyhow.workspace = true
 hound.workspace = true
+midly.workspace = true
 
 [dev-dependencies]
 bpe-kit = { workspace = true, features = ["test-scenes"] }
