@@ -5,6 +5,8 @@
 //! Drawing reads the scene; every change is gathered as a [`TabEdit`] and applied once the tab
 //! is drawn, through [`write::write`] (a key at the playhead when the setting has keys).
 
+pub mod osc;
+pub mod wave_view;
 pub mod write;
 
 use crate::inspector::Inspector;
@@ -257,7 +259,12 @@ pub fn show(
 }
 
 /// Everything under Enable sound.
-fn body(_ui: &mut Ui, _inspector: &mut Inspector, _cx: &mut TabCx) {}
+fn body(ui: &mut Ui, _inspector: &mut Inspector, cx: &mut TabCx) {
+    ui.columns(2, |cols| {
+        osc::show(&mut cols[0], cx, osc::Osc::A);
+        osc::show(&mut cols[1], cx, osc::Osc::B);
+    });
+}
 
 /// Applies the tab's edits. True when the scene changed.
 fn apply(inspector: &mut Inspector, scene: &mut Scene, kit: &Kit, id: ThingId, time: f64, edits: Vec<TabEdit>) -> bool {

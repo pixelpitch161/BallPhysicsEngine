@@ -17,6 +17,7 @@ ron.workspace = true
 bpe-kit.workspace = true
 bpe-cli.workspace = true
 bpe-sound.workspace = true
+bpe-dsp.workspace = true
 cpal.workspace = true
 rubato.workspace = true
 rtrb.workspace = true
