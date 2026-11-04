@@ -344,8 +344,12 @@ fn osc_b_off_costs_nothing() {
         run(&mut v, p.world(), 50, 400, &[]);
         t.elapsed().as_secs_f64()
     };
-    timed(false);
-    let (off, on) = (timed(false), timed(true));
+    // The best of five each, taken in turns, so a busy machine doesn't decide it.
+    let (mut off, mut on) = (f64::MAX, f64::MAX);
+    for _ in 0..5 {
+        off = off.min(timed(false));
+        on = on.min(timed(true));
+    }
     assert!(off < 0.7 * on, "Osc B off took {off:.4} s, on {on:.4} s");
 }
 
