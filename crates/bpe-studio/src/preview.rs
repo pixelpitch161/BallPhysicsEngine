@@ -531,11 +531,12 @@ fn place_of(scene: &Scene, world: &World, id: ThingId) -> Option<Vec2> {
 
 /// The pose a rider's offset is measured from: its parent's, or one ball of its parent's.
 fn parent_pose(scene: &Scene, world: &World, parent: ThingId, item: Option<u32>) -> Pose {
+    // `item` is the ball's number in its group, as the world's ride reads it, not its row.
     if let Some(i) = item
         && let Some(b) = world.bodies.get(&parent)
-        && (i as usize) < b.len()
+        && let Some(row) = b.row_of(i)
     {
-        return Pose { position: b.position[i as usize], ..Pose::default() };
+        return Pose { position: b.position[row], ..Pose::default() };
     }
     world
         .poses

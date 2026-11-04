@@ -337,20 +337,18 @@ pub fn shape_emissions(
 }
 
 /// Where the point `p` on `wall` (as it is now) was `ago` seconds back, and which way the
-/// direction `way` there pointed then, the wall's spin, growth and speed taken as steady over
-/// that time (exact for a shape that spins and shrinks steadily on the spot), at `rate` steps a
-/// second.
-fn rewound(wall: &Wall, p: Vec2, way: Vec2, ago: f32, rate: u32) -> (Vec2, Vec2) {
-    if ago <= 0.0 {
+/// direction `way` there pointed then, undoing the wall's turn at its spin now: a spinning
+/// shape's particles stay where they left rather than turn with it. Its shrinking and moving
+/// are not undone: the wall only knows how it changes now (its growth stops at its smallest
+/// size and a ridden ball turns round on every bounce), so undoing them would make the whole
+/// cloud jump the moment they change; the particles move along with the shape instead.
+fn rewound(wall: &Wall, p: Vec2, way: Vec2, ago: f32, _rate: u32) -> (Vec2, Vec2) {
+    if ago <= 0.0 || wall.spin == 0.0 {
         return (p, way);
     }
     let centre = wall.outline.center();
     let turn = Vec2::from_angle(-wall.spin * ago);
-    // A shrinking shape loses `-growth / rate` of its size each step.
-    let per_step = (1.0 + wall.growth / rate.max(1) as f32).max(1e-6);
-    let scale = if wall.growth == 0.0 { 1.0 } else { per_step.powf(-ago * rate as f32) };
-    let then = centre - wall.velocity * ago;
-    (then + turn.rotate(p - centre) * scale, turn.rotate(way))
+    (centre + turn.rotate(p - centre), turn.rotate(way))
 }
 
 /// How far off a shape's edge, the way its particles fly, their side of it is judged.
@@ -512,7 +510,7 @@ mod tests {
     fn a_turning_shape_s_steady_particles_stay_where_they_left() {
         let layer = ParticlesLayer { emit: Emit::Steady, rate: 20.0, life: 2.0, ..ParticlesLayer::default() };
         let log = Log::default();
-        let shrink: f32 = 0.2;
+        let shrink: f32 = 0.0;
         let wall = |angle: f32, scale: f32| Wall {
             outline: bpe_runtime::Outline::Ring {
                 center: Vec2::new(10.0, -20.0),
@@ -537,6 +535,25 @@ mod tests {
             same += 1;
         }
         assert!(same > 10, "{same}");
+    }
+
+    #[test]
+    fn a_shape_s_steady_particles_dont_jump_when_its_motion_changes() {
+        let layer = ParticlesLayer { emit: Emit::Steady, rate: 20.0, life: 2.0, ..ParticlesLayer::default() };
+        let log = Log::default();
+        let outline =
+            bpe_runtime::Outline::Ring { center: Vec2::ZERO, radius: 300.0, sides: 5, angle: 0.0, thickness: 2.0 };
+        // The same shape at the same moment, moving one way, then (after a bounce of the ball
+        // it rides, or reaching its smallest size) another: what is in the air stays put.
+        let moving =
+            Wall { outline: outline.clone(), solid: false, spin: 0.0, growth: -0.2, velocity: Vec2::new(500.0, 0.0) };
+        let turned = Wall { growth: 0.0, velocity: Vec2::new(-500.0, 0.0), ..moving.clone() };
+        let a = shape_emissions(&layer, ThingId(1), Some(&moving), &log, 240, 1.5, usize::MAX);
+        let b = shape_emissions(&layer, ThingId(1), Some(&turned), &log, 240, 1.5, usize::MAX);
+        assert!(!a.is_empty());
+        for (e, f) in a.iter().zip(&b) {
+            assert!((e.place - f.place).length() < 1e-3, "{:?} then {:?}", e.place, f.place);
+        }
     }
 
     #[test]

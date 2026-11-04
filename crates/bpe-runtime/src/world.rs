@@ -312,6 +312,7 @@ impl World {
         Limits {
             ceiling: SAFE_MOVE * MAX_SUBSTEPS as f32 * self.steps_per_second as f32,
             resting: self.gravity.length() * self.dt() * 4.0 + 1.0,
+            press: Vec2::ZERO,
         }
     }
 
@@ -498,14 +499,14 @@ impl World {
         let time = step as f32 / *steps_per_second as f32;
         let step_dt = 1.0 / *steps_per_second as f32;
         let matcher = |t: &Target, me: ThingId, other: ThingId| matches(kinds, tags, t, me, other);
-        let resting = |thing: ThingId| resting_for(modules, sims, thing, *gravity, step_dt, limits.resting);
+        let press = |thing: ThingId| press_of(modules, sims, thing, *gravity, step_dt);
         let mut supports: Vec<Support> = Vec::new();
         for (mover, bodies) in bodies.iter_mut() {
             let mover_bounce = modules.get(mover).and_then(|m| m.get(&SlotId::Bounce));
             let own = mover_bounce.and_then(|s| Some((sims.module(&s.kind)?, s.state.as_ref())));
             let cx = SimCx { thing: *mover, time, seed };
             // This mover's own: a ball pulled harder than the scene's gravity presses harder.
-            let limits = &Limits { resting: resting(*mover), ..*limits };
+            let limits = &Limits { press: press(*mover), ..*limits };
             for (wall_id, wall) in walls.iter() {
                 let before = walls_before.get(wall_id).unwrap_or(&wall.outline);
                 let wall_bounce = modules.get(wall_id).and_then(|m| m.get(&SlotId::Bounce));
@@ -537,7 +538,7 @@ impl World {
                         wall_velocity: contact.wall_velocity,
                     });
                     respond(decider, &contact, bodies, i, limits, special, &cx);
-                    if contact.speed >= limits.resting {
+                    if contact.speed >= limits.resting_along(contact.normal) {
                         bodies.hits[i] += 1;
                         log.push(Event {
                             step,
@@ -561,7 +562,7 @@ impl World {
 
         // Balls against balls.
         let substep = (sub_index, sub_count);
-        collide_pairs(bodies, modules, &matcher, &resting, sims, pairs, &supports, step, substep, dt, limits, log);
+        collide_pairs(bodies, modules, &matcher, &press, sims, pairs, &supports, step, substep, dt, limits, log);
     }
 }
 
@@ -628,22 +629,21 @@ pub fn step_at(time: f64, rate: u32) -> u64 {
     (time * rate as f64 + 1e-6).floor().max(0.0) as u64
 }
 
-/// How slow a touch of `thing`'s balls is to be resting, not a hit: `base` (from the scene's
-/// gravity), or more for balls whose Motion pulls harder (Gravity ×, Wind), each step's worth of
-/// their own pull four times over, as `base` is of the scene's. `dt` is a whole step.
-pub(crate) fn resting_for(
+/// `thing`'s balls' own steady pull (Gravity ×, Wind) four steps' worth, as
+/// [`Limits::press`]: how hard a ball lying on something presses into it. Zero for a thing whose
+/// Motion doesn't pull steadily. `dt` is a whole step.
+pub(crate) fn press_of(
     modules: &BTreeMap<ThingId, Prepared>,
     sims: &Sims,
     thing: ThingId,
     gravity: Vec2,
     dt: f32,
-    base: f32,
-) -> f32 {
-    let pull = modules
+) -> Vec2 {
+    modules
         .get(&thing)
         .and_then(|m| m.get(&SlotId::Motion))
-        .and_then(|s| sims.module(&s.kind)?.pull(s.state.as_ref(), gravity));
-    pull.map_or(base, |p| base.max(p.length() * dt * 4.0 + 1.0))
+        .and_then(|s| sims.module(&s.kind)?.pull(s.state.as_ref(), gravity))
+        .map_or(Vec2::ZERO, |p| p * dt * 4.0)
 }
 
 /// Whether any of `animation`'s pulses follows sound.

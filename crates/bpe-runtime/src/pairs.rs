@@ -194,8 +194,8 @@ struct PairHit {
 }
 
 /// What a body thing brings to the ball-to-ball stage: the thing, its Bounce module and state,
-/// its pair rule, its bounciness and how slow its touches are to be resting.
-type RuleOf<'a> = (ThingId, &'a dyn ModuleSim, &'a dyn ThingState, PairRule, f32, f32);
+/// its pair rule, its bounciness and its balls' own press (see [`Limits::press`]).
+type RuleOf<'a> = (ThingId, &'a dyn ModuleSim, &'a dyn ThingState, PairRule, f32, Vec2);
 
 /// Runs the ball-to-ball stage: every alive ball of every thing whose Bounce module wants pairs
 /// meets the balls it overlaps (when both sides' targets agree). The pairs are solved with
@@ -210,7 +210,7 @@ pub(crate) fn collide_pairs(
     bodies: &mut BTreeMap<ThingId, Bodies>,
     modules: &BTreeMap<ThingId, Prepared>,
     matches: &dyn Fn(&Target, ThingId, ThingId) -> bool,
-    resting: &dyn Fn(ThingId) -> f32,
+    press: &dyn Fn(ThingId) -> Vec2,
     sims: &Sims,
     pairs: &mut Pairs,
     supports: &[Support],
@@ -229,7 +229,7 @@ pub(crate) fn collide_pairs(
         let Some(sim) = sims.module(&s.kind) else { continue };
         let Some(rule) = sim.pairs(s.state.as_ref()) else { continue };
         let bounciness = sim.bounciness(s.state.as_ref());
-        rules.push((*thing, sim, s.state.as_ref(), rule, bounciness, resting(*thing)));
+        rules.push((*thing, sim, s.state.as_ref(), rule, bounciness, press(*thing)));
         let rule = rules.len() - 1;
         for i in 0..b.len() {
             if b.alive[i] {
@@ -289,7 +289,8 @@ pub(crate) fn collide_pairs(
         let closing = (balls[i].velocity - balls[j].velocity).dot(normal);
         // Slow touches don't bounce back: they stick, so piles settle. The side pressed in
         // harder decides what is slow.
-        let real_hit = closing >= rules[ri].5.max(rules[rj].5);
+        let along = |press: Vec2| Limits { press, ..*limits }.resting_along(normal);
+        let real_hit = closing >= along(rules[ri].5).max(along(rules[rj].5));
         let reach = balls[i].radius + balls[j].radius;
         let within = crossing((balls[j].start - balls[i].start).length() - reach, -overlap);
         let at = step_fraction(substep.0, substep.1, within);

@@ -66,7 +66,7 @@ Dependencies go bottom to top:
   Brush strokes are a value, `Value::Strokes` (points in ball space, never keyframed). A shape's moulded outline is
   `Value::Path(ShapePath)` (`shape_path.rs`: corners in shape units, x right, y down, middle at 0, size 1, each side
   straight or a cubic with two handles; `even(n)`, `circle()`, `add_point`, `delete_point`, `create_curve`, mirror
-  partners). Scene files are format 10 (formats 7 to 9 still load and are upgraded; format 9 Trail and Particles cards become
+  partners). `Slot.used_ids` keeps a removed layer's id from being given out again (`next_layer_id`). Scene files are format 10 (formats 7 to 9 still load and are upgraded; format 9 Trail and Particles cards become
   Look layers with their keyframes, `add_upgrade(10, cards_to_layers)`). **Around layers** (`LayerSection::Around`)
   sit after the drawn layers and before the reactions: a ball's `layer.trail` and `layer.particles`, a shape's
   `shape.particles`; they take the sub-layers Glow, Outline, Shadow, Recolour, Flash on hit and Colour on hit
@@ -80,7 +80,12 @@ Dependencies go bottom to top:
 - `bpe-runtime`: the world, the fixed 240 Hz staged step loop, the shared collision pass (`pairs.rs`, `walls.rs`),
   the camera, the event log (`events.rs`) and playback/snapshots. `history.rs` keeps each ball's past positions
   at 60 a second (and how far it has `travelled`) for as long as its trails and particles ask (`HistoryWant`:
-  `seconds`, at least 2, or `forever` for a Line that stays; `around_history` in the kit works it out). The generic `ThingSim` hooks (spawn, forces,
+  `seconds`, at least 2, or `forever` for a Line that stays; `around_history` in the kit works it out); a ball's
+  past starts at the step it was `born` (no padding before its spawn). `World::build` starts from the settings as
+  keyed at 0 s. A touch is resting, not a hit, below `Limits::resting_along(normal)` (the scene's gravity, or more
+  along a ball's own pull, `Limits.press`). `step_at` turns a frame time into its step (editor and export agree).
+  `Bodies.number` is each row's ball number (`row_of`; riding an Item uses it). `sound_fingerprint` is the
+  physics fingerprint without the history part (the editor rebuilds the sound only when it changes). The generic `ThingSim` hooks (spawn, forces,
   settle, after_step) stay for new thing kinds even where no current kind uses them. Walls are **two-sided**:
   `keep_clear` keeps a ball on the side its centre was on at the start of the step (`Bodies.previous`); a hollow
   `Outline::Ring`/`Box` with the ball inside keeps the exact old maths (goldens), `Outline::Path` is a free outline
@@ -217,7 +222,7 @@ Dependencies go bottom to top:
   `voices/slots.rs` the `SlotClock` (`begin_block`/`until`/`hit`/`end_block`; tempo and time lines from the
   absolute sample; a change on a hit's own sample comes first) and `slot_changes`/`slot_change_times` for the
   timeline. `Engine::seek` calls `VoiceSource::catch_up` with every hit before the pre-roll so slots and orders
-  are exact after a seek; `Meters::write_slot`/`shape_slot` report the slot playing. By side uses
+  are exact after a seek (and `swap_patch` does for a voice new mid-clip); `Meters::write_slot`/`shape_slot` report the slot playing. By side uses
   `things::shape::side_on` (no allocation; the outline is made at patch build).
   **Buses** (part 6): the mixer card holds Bus 1..3 (`bus1_…` keys: name, on, fader, pan, mute, solo, send1..3;
   Bus 1 on, 2 and 3 off) and their effects as layers (`bpe-kit/src/sound/fx.rs`, `fx.eq` … `fx.width`, section
