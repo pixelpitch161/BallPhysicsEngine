@@ -1,5 +1,6 @@
 //! The block engine.
 
+use crate::buses::{Buses, ShapeRoute};
 use crate::hits::HitCursor;
 use crate::{BLOCK, BlockCx, BlockHit, Master, MeterReading, Meters, SAMPLE_RATE, SoundPatch, TempoMap, VoiceSource};
 use bpe_core::{Resolved, Scene};
@@ -24,8 +25,15 @@ pub struct Engine {
     cursor: HitCursor,
     hits: Vec<BlockHit>,
     voices: Vec<Box<dyn VoiceSource>>,
-    /// Voices whose thing went away, fading out; dropped once silent.
+    /// Where each voice's sound goes, by the voice's place.
+    routes: Vec<ShapeRoute>,
+    /// Voices whose thing went away, fading out; dropped once silent. With their routes.
     leaving: Vec<Box<dyn VoiceSource>>,
+    leaving_routes: Vec<ShapeRoute>,
+    buses: Buses,
+    /// One voice's block before it goes to its buses.
+    voice_l: [f32; BLOCK],
+    voice_r: [f32; BLOCK],
     master: Master,
     tempo: TempoMap,
     loudness: LoudnessMeter,
@@ -61,13 +69,19 @@ impl Engine {
         master.set_keys(patch.master_keys);
         master.at(0.0);
         master.reset();
-        let discard = master.latency();
+        let buses = Buses::new(patch.buses);
+        let discard = master.latency() + buses.latency();
         Engine {
             physics,
             cursor,
             hits: Vec::with_capacity(MAX_BLOCK_HITS),
             voices: patch.voices,
+            routes: patch.routes,
             leaving: Vec::new(),
+            leaving_routes: Vec::new(),
+            buses,
+            voice_l: [0.0; BLOCK],
+            voice_r: [0.0; BLOCK],
             master,
             tempo: patch.tempo,
             loudness: LoudnessMeter::new(),
@@ -121,16 +135,21 @@ impl Engine {
             v.reset();
         }
         self.leaving.clear();
+        self.leaving_routes.clear();
         // The master's keyed gains start where they are at the first block rendered.
         let first = if self.voices.is_empty() { target } else { start };
         self.master.at(first as f64 / rate);
         self.master.reset();
+        self.buses.reset(first as f64 / rate);
+        for r in &mut self.routes {
+            r.at(first as f64 / rate);
+        }
         self.paused_pos = 0;
         if self.voices.is_empty() {
             // Silence needs no pre-roll and no physics.
             self.voice_pos = target;
             self.out_pos = target;
-            self.discard = self.master.latency();
+            self.discard = self.latency();
             self.queue_head = 0;
             self.queue_len = 0;
             self.physics_synced = false;
@@ -140,7 +159,7 @@ impl Engine {
         self.voice_pos = start;
         self.sync_physics();
         self.out_pos = start;
-        self.discard = self.master.latency();
+        self.discard = self.latency();
         self.queue_head = 0;
         self.queue_len = 0;
         let mut scratch = [0.0f32; BLOCK * 2];
@@ -148,6 +167,11 @@ impl Engine {
             self.render(&mut scratch);
         }
         self.loudness.reset();
+    }
+
+    /// Frames from a voice to the speakers: the buses' and the master's delays.
+    fn latency(&self) -> usize {
+        self.master.latency() + self.buses.latency()
     }
 
     pub fn tempo(&self) -> &TempoMap {
@@ -160,26 +184,47 @@ impl Engine {
         self.master.set(&patch.master);
         self.master.set_keys(patch.master_keys);
         self.tempo = patch.tempo;
+        let before = self.latency();
+        let mut buses = Buses::new(patch.buses);
+        buses.adopt(&mut self.buses);
+        self.buses = buses;
+        // A limiter added or taken away changes how late the sound comes out: skip ahead or
+        // wait so the sound stays on time (the editor only; an export never swaps).
+        let after = self.latency();
+        if after > before {
+            self.discard += after - before;
+        } else {
+            for _ in 0..(before - after).min(QUEUE - self.queue_len) {
+                let at = (self.queue_head + self.queue_len) % QUEUE;
+                self.queue[at] = [0.0; 2];
+                self.queue_len += 1;
+            }
+        }
         let mut old = std::mem::take(&mut self.voices);
+        let mut old_routes = std::mem::take(&mut self.routes);
         let mut voices = patch.voices;
+        let mut routes = patch.routes;
         let mut kept = vec![false; old.len()];
-        for v in &mut voices {
+        for (v, r) in voices.iter_mut().zip(routes.iter_mut()) {
             if let Some(i) = old.iter().position(|o| o.thing() == v.thing()) {
                 v.adopt(old[i].as_mut());
+                r.adopt(&old_routes[i]);
                 kept[i] = true;
             }
         }
         // A voice whose thing has gone (or whose sound was turned off) fades out.
-        for (o, kept) in old.into_iter().zip(kept) {
+        for ((o, r), kept) in old.drain(..).zip(old_routes.drain(..)).zip(kept) {
             if !kept {
                 let mut o = o;
                 o.fade_out(crate::voices::LEAVE_MS);
                 if !o.is_silent() {
                     self.leaving.push(o);
+                    self.leaving_routes.push(r);
                 }
             }
         }
         self.voices = voices;
+        self.routes = routes;
     }
 
     /// Plays `note` on `shape`'s voice from the editor (a key clicked), outside the hits.
@@ -205,7 +250,9 @@ impl Engine {
             v.reset();
         }
         self.leaving.clear();
+        self.leaving_routes.clear();
         self.master.reset();
+        self.buses.reset(self.out_pos as f64 / SAMPLE_RATE as f64);
     }
 
     /// While stopped: the next block of the notes played by hand ([`Engine::audition`]) through
@@ -214,21 +261,9 @@ impl Engine {
     pub fn render_paused(&mut self, out: &mut [f32; BLOCK * 2]) {
         let _flush = FlushGuard::new();
         self.paused_pos = self.paused_pos.max(self.voice_pos);
-        self.bus_l = [0.0; BLOCK];
-        self.bus_r = [0.0; BLOCK];
-        let cx = BlockCx {
-            start_sample: self.paused_pos,
-            time: self.out_pos as f64 / SAMPLE_RATE as f64,
-            tempo: &self.tempo,
-            world: self.physics.world(),
-        };
-        for v in &mut self.voices {
-            v.on_block(&cx, &[], &mut self.bus_l, &mut self.bus_r);
-        }
-        for v in &mut self.leaving {
-            v.on_block(&cx, &[], &mut self.bus_l, &mut self.bus_r);
-        }
-        self.master.at(cx.time);
+        let time = self.out_pos as f64 / SAMPLE_RATE as f64;
+        self.run_voices(self.paused_pos, time, false);
+        self.master.at(time);
         self.master.process(&mut self.bus_l, &mut self.bus_r);
         self.paused_pos += BLOCK as u64;
         for i in 0..BLOCK {
@@ -261,7 +296,15 @@ impl Engine {
     /// check on the sound path.
     pub fn step_physics(&mut self) {
         // Voices that finished fading go here, where freeing them is allowed.
-        self.leaving.retain(|v| !v.is_silent());
+        let mut i = 0;
+        while i < self.leaving.len() {
+            if self.leaving[i].is_silent() {
+                self.leaving.remove(i);
+                self.leaving_routes.remove(i);
+            } else {
+                i += 1;
+            }
+        }
         if self.voices.is_empty() {
             self.physics_synced = false;
             return;
@@ -311,21 +354,9 @@ impl Engine {
     /// One block of sound time through the voices and the master, onto the queue.
     fn render_voices(&mut self) {
         self.cursor.take_block(self.voice_pos, BLOCK as u64, &mut self.hits);
-        self.bus_l = [0.0; BLOCK];
-        self.bus_r = [0.0; BLOCK];
-        let cx = BlockCx {
-            start_sample: self.voice_pos,
-            time: self.voice_pos as f64 / SAMPLE_RATE as f64,
-            tempo: &self.tempo,
-            world: self.physics.world(),
-        };
-        for v in &mut self.voices {
-            v.on_block(&cx, &self.hits, &mut self.bus_l, &mut self.bus_r);
-        }
-        for v in &mut self.leaving {
-            v.on_block(&cx, &self.hits, &mut self.bus_l, &mut self.bus_r);
-        }
-        self.master.at(cx.time);
+        let time = self.voice_pos as f64 / SAMPLE_RATE as f64;
+        self.run_voices(self.voice_pos, time, true);
+        self.master.at(time);
         self.master.process(&mut self.bus_l, &mut self.bus_r);
         self.voice_pos += BLOCK as u64;
         for i in 0..BLOCK {
@@ -337,6 +368,24 @@ impl Engine {
             self.queue[at] = [self.bus_l[i], self.bus_r[i]];
             self.queue_len += 1;
         }
+    }
+
+    /// Every voice's block into its buses, and the buses into the master's input (`bus_l`,
+    /// `bus_r`). With `hits` false the voices hear no hits (stopped). Never allocates.
+    fn run_voices(&mut self, start_sample: u64, time: f64, hits: bool) {
+        let hits = if hits { &self.hits[..] } else { &[] };
+        let cx = BlockCx { start_sample, time, tempo: &self.tempo, world: self.physics.world() };
+        self.buses.begin(time);
+        let voices = self.voices.iter_mut().zip(self.routes.iter_mut());
+        let leaving = self.leaving.iter_mut().zip(self.leaving_routes.iter_mut());
+        for (v, route) in voices.chain(leaving) {
+            self.voice_l = [0.0; BLOCK];
+            self.voice_r = [0.0; BLOCK];
+            v.on_block(&cx, hits, &mut self.voice_l, &mut self.voice_r);
+            route.at(time);
+            route.send(&mut self.buses, &self.voice_l, &self.voice_r);
+        }
+        self.buses.process(&mut self.bus_l, &mut self.bus_r, time, &self.tempo, hits, &self.meters);
     }
 
     /// Measures the block just handed out (in the buses) and writes the meters.

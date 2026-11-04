@@ -1,6 +1,7 @@
 //! Everything the engine reads from the scene, built off the audio path so building may
 //! allocate, and swapped in between blocks.
 
+use crate::buses::{BusesSpec, ShapeRoute};
 use crate::master::MasterKeys;
 use crate::modmatrix::ModMatrix;
 use crate::voices::knobs;
@@ -18,6 +19,10 @@ pub struct SoundPatch {
     pub master_keys: MasterKeys,
     pub tempo: TempoMap,
     pub voices: Vec<Box<dyn VoiceSource>>,
+    /// Where each voice's sound goes, by the voice's place.
+    pub routes: Vec<ShapeRoute>,
+    /// The three buses and their effects.
+    pub buses: BusesSpec,
     /// Some wavetable was still baking ([`Tables::Ready`]): those oscillators are silent until
     /// the patch is built again.
     pub pending: bool,
@@ -148,13 +153,12 @@ impl SoundPatch {
         Self::build_with(scene, resolved, kit, Tables::Ready)
     }
 
-    pub fn build_with(scene: &Scene, resolved: &Resolved, _kit: &Kit, tables: Tables) -> SoundPatch {
+    pub fn build_with(scene: &Scene, resolved: &Resolved, kit: &Kit, tables: Tables) -> SoundPatch {
         let mut pending = false;
         let root = resolved.things.get(&ThingId::ROOT);
-        let master = root
-            .and_then(|r| r.slots.get(&SlotId::Mixer))
-            .map(|s| MixerSettings::from_params(&s.params))
-            .unwrap_or_default();
+        let card = root.and_then(|r| r.slots.get(&SlotId::Mixer));
+        let master = card.map(|s| MixerSettings::from_params(&s.params)).unwrap_or_default();
+        let buses = BusesSpec::build(scene, &master, &kit.registry);
         let track = |key: &str| {
             let a = Address { thing: ThingId::ROOT, slot: Some(SlotId::Mixer), key: key.into() };
             scene.tracks.get(&a).filter(|t| !t.keys.is_empty()).cloned()
@@ -163,12 +167,14 @@ impl SoundPatch {
         let settings = root.map(|r| SceneSettings::from_params(&r.params)).unwrap_or_default();
         let tempo = TempoMap::from_settings(&settings);
         let mut voices: Vec<Box<dyn VoiceSource>> = Vec::new();
+        let mut routes = Vec::new();
         for id in &scene.order {
             let Some(thing) = resolved.things.get(id) else { continue };
             if let Some(card) = thing.slots.get(&SlotId::Sound)
                 && let Some(v) = voice_with(scene, *id, card, voices.len(), settings.width as f32, tables, &mut pending)
             {
                 voices.push(Box::new(v));
+                routes.push(ShapeRoute::of(scene, *id, &VoiceSettings::from_params(&card.params)));
             }
         }
         #[cfg(feature = "test-tone")]
@@ -178,10 +184,12 @@ impl SoundPatch {
                 continue;
             }
             if let Some(tone) = thing.tags.iter().find_map(|t| crate::voice::TestTone::from_tag(*id, t)) {
+                let bus = thing.tags.iter().find_map(|t| t.strip_prefix("test-bus=")?.parse().ok()).unwrap_or(1);
                 voices.push(Box::new(tone));
+                routes.push(ShapeRoute::main_only(bus));
             }
         }
-        SoundPatch { master, master_keys, tempo, voices, pending }
+        SoundPatch { master, master_keys, tempo, voices, routes, buses, pending }
     }
 
     /// Whether anything in it makes sound.
