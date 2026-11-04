@@ -55,6 +55,38 @@ pub fn switch(ui: &mut Ui, on: &mut bool) -> Response {
     response
 }
 
+/// A speaker: a box and cone, with two sound waves when `on` and a cross when off.
+pub fn paint_speaker(painter: &Painter, rect: Rect, on: bool, ink: Color32) {
+    let c = rect.center();
+    let s = rect.height().min(rect.width()) * 0.22;
+    let body = vec![
+        c + Vec2::new(-s * 1.6, -s * 0.5),
+        c + Vec2::new(-s * 0.9, -s * 0.5),
+        c + Vec2::new(0.0, -s * 1.2),
+        c + Vec2::new(0.0, s * 1.2),
+        c + Vec2::new(-s * 0.9, s * 0.5),
+        c + Vec2::new(-s * 1.6, s * 0.5),
+    ];
+    painter.add(egui::Shape::convex_polygon(body, ink, Stroke::NONE));
+    let stroke = Stroke::new(1.3, ink);
+    if on {
+        for r in [s * 0.8, s * 1.5] {
+            let points: Vec<Pos2> = (0..=8)
+                .map(|i| {
+                    let a = (-45.0 + 90.0 * i as f32 / 8.0).to_radians();
+                    c + Vec2::new(s * 0.3 + r * a.cos(), r * a.sin())
+                })
+                .collect();
+            painter.add(egui::Shape::line(points, stroke));
+        }
+    } else {
+        let x = c + Vec2::new(s * 1.1, 0.0);
+        let d = s * 0.6;
+        painter.line_segment([x + Vec2::new(-d, -d), x + Vec2::new(d, d)], stroke);
+        painter.line_segment([x + Vec2::new(-d, d), x + Vec2::new(d, -d)], stroke);
+    }
+}
+
 /// A chevron pointing right when folded and down when open.
 pub fn paint_chevron(painter: &Painter, rect: Rect, open: bool, ink: Color32) {
     let c = rect.center();

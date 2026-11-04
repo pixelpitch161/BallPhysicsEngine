@@ -31,6 +31,8 @@ pub(crate) fn controls(ui: &mut Ui, studio: &mut Studio) {
             studio.looping = !studio.looping;
         }
         looped.labelled_by(label.id).on_hover_text("Start again from the beginning at the end");
+        ui.add_space(12.0);
+        listening(ui, studio);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let hint = "Lanes are grouped under the thing they belong to";
             ui.label(RichText::new(hint).small().color(style::MUTED));
@@ -79,6 +81,29 @@ pub(crate) fn scrub_bar(ui: &mut Ui, studio: &mut Studio, inset: f32) -> Rect {
     }
     response.on_hover_text("Click or drag to move through the video");
     track
+}
+
+/// The speaker button and the listening volume: only what you hear, never the scene.
+fn listening(ui: &mut Ui, studio: &mut Studio) {
+    const HINT: &str = "Only what you hear; the export is not changed";
+    let mut listen = studio.listen;
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), Sense::click());
+    if response.hovered() {
+        ui.painter().rect_filled(rect, style::RADIUS, style::HOVER);
+    }
+    let ink = if listen.on { style::TEXT } else { style::FAINT };
+    style::paint_speaker(ui.painter(), rect, listen.on, ink);
+    if response.clicked() {
+        listen.on = !listen.on;
+    }
+    let on = listen.on;
+    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, on, "Speaker"));
+    response.on_hover_text(if on { "Sound on. Click to mute" } else { "Muted. Click for sound" });
+    ui.spacing_mut().slider_width = 60.0;
+    let slider = ui.add_enabled(listen.on, egui::Slider::new(&mut listen.volume, 0.0..=1.0).show_value(false));
+    ui.ctx().accesskit_node_builder(slider.id, |node| node.set_label("Listening volume"));
+    slider.on_hover_text(HINT);
+    studio.set_listen(listen);
 }
 
 /// Play and pause: a light square with a dark icon. Restart: a frameless icon button.

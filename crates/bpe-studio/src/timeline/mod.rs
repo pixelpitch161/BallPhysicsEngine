@@ -10,6 +10,7 @@ use crate::style;
 use crate::transport;
 use bpe_core::{Address, Ease, PulseSource, ThingId, Value};
 use bpe_runtime::EventKind;
+use bpe_sound::TempoMap;
 use eframe::egui::{self, Align, Color32, Key, Layout, Modifiers, Pos2, Rect, RichText, Sense, Stroke, Ui, UiBuilder};
 use lanes::{Group, Lane, groups_for};
 use std::collections::BTreeSet;
@@ -36,6 +37,58 @@ pub struct Timeline {
 struct Ruler {
     track: Rect,
     duration: f64,
+    /// The bar and beat lines across the lanes, from [`beat_lines`].
+    beats: Vec<BeatLine>,
+}
+
+/// A line of the bars-and-beats grid: where it is, whether it starts a bar, and the bar's number
+/// when it is written on the ruler.
+type BeatLine = (f32, bool, Option<u32>);
+
+/// Lines closer than this are left out.
+const BEAT_MIN_PX: f32 = 4.0;
+/// Bar numbers closer than this are left out.
+const BAR_NUMBER_PX: f32 = 28.0;
+
+/// The bars-and-beats grid for `tempo` over the ruler: every beat, or only bars when beats would
+/// sit closer than 4 px, then only every 2nd, 4th… bar. Bars are numbered from 1.
+fn beat_lines(ruler: &Ruler, tempo: &TempoMap) -> Vec<BeatLine> {
+    let beat = tempo.beat_seconds();
+    let per_bar = tempo.top().max(1);
+    if !(beat > 0.0) || ruler.duration <= 0.0 {
+        return Vec::new();
+    }
+    let px = |seconds: f64| (seconds / ruler.duration) as f32 * ruler.track.width();
+    let show_beats = px(beat) >= BEAT_MIN_PX;
+    let bar_px = px(beat * per_bar as f64).max(1e-3);
+    let mut bar_every = 1u32;
+    while bar_px * (bar_every as f32) < BEAT_MIN_PX && bar_every < 1 << 20 {
+        bar_every *= 2;
+    }
+    let mut number_every = bar_every;
+    while bar_px * (number_every as f32) < BAR_NUMBER_PX && number_every < 1 << 20 {
+        number_every *= 2;
+    }
+    let beats = (ruler.duration / beat + 1e-9).floor() as u64;
+    let mut lines = Vec::new();
+    for n in 0..=beats {
+        let is_bar = n % per_bar as u64 == 0;
+        let bar = (n / per_bar as u64) as u32;
+        if is_bar && bar % bar_every != 0 || !is_bar && !show_beats {
+            continue;
+        }
+        let number = (is_bar && bar % number_every == 0).then_some(bar + 1);
+        lines.push((ruler.x_of(n as f64 * beat), is_bar, number));
+    }
+    lines
+}
+
+/// Draws the grid's lines across `strip`.
+fn paint_beats(painter: &egui::Painter, ruler: &Ruler, strip: Rect) {
+    for &(x, bar, _) in &ruler.beats {
+        let ink = if bar { style::LINE } else { style::LINE_SOFT };
+        painter.vline(x, strip.y_range(), Stroke::new(1.0, ink));
+    }
 }
 
 impl Ruler {
@@ -50,7 +103,21 @@ impl Ruler {
 pub fn show(ui: &mut Ui, studio: &mut Studio) {
     transport::controls(ui, studio);
     let track = transport::scrub_bar(ui, studio, LABEL_WIDTH + 8.0);
-    let ruler = Ruler { track, duration: studio.duration().max(0.001) };
+    let mut ruler = Ruler { track, duration: studio.duration().max(0.001), beats: Vec::new() };
+    ruler.beats = beat_lines(&ruler, &TempoMap::from_settings(&studio.settings()));
+    // Bar numbers along the top of the ruler.
+    let painter = ui.painter_at(track);
+    for &(x, _, number) in &ruler.beats {
+        if let Some(n) = number {
+            painter.text(
+                Pos2::new(x + 2.0, track.top()),
+                egui::Align2::LEFT_TOP,
+                n.to_string(),
+                style::mono(9.0),
+                style::FAINT,
+            );
+        }
+    }
     let groups = groups_for(&studio.scene, &studio.kit);
     // Only the selected thing's group is open; with nothing selected, the scene settings'.
     let open = studio.selection.primary.unwrap_or(ThingId::ROOT);
@@ -131,6 +198,7 @@ fn hits_lane(ui: &mut Ui, studio: &Studio, ruler: &Ruler) {
     name_cell(ui, name, egui::Label::new(RichText::new("Hits").small().color(style::MUTED)).selectable(false));
     let strip = strip_of(rect, ruler);
     let painter = ui.painter_at(rect);
+    paint_beats(&painter, ruler, strip);
     // One tick per pixel column and hitter is enough, however many hits land there.
     let rate = studio.playback.world().steps_per_second;
     let mut ticks: BTreeSet<(i32, ThingId)> = BTreeSet::new();
@@ -249,6 +317,7 @@ fn lane_frame(
     let painter = ui.painter_at(rect);
     let (fill, edge) = style::clip_colours(colour);
     painter.rect_filled(strip, 0.0, fill);
+    paint_beats(&painter, ruler, strip);
     painter.hline(strip.x_range(), strip.top() + 0.5, Stroke::new(1.0, edge));
     playhead(&painter, studio, ruler, rect);
     (rect, strip, response)
@@ -347,10 +416,12 @@ fn track_lane(
 }
 
 /// The time at `x`, pulled onto a hit the run has reached or a whole second when one is within
-/// a few pixels.
+/// a few pixels, and onto a beat too while the grid snaps.
 fn snap(studio: &Studio, ruler: &Ruler, x: f32) -> f64 {
     let time = ruler.time_of(x);
-    let seconds = (0..=ruler.duration.ceil() as u32).map(|s| s as f64);
+    let beat = TempoMap::from_settings(&studio.settings()).beat_seconds();
+    let beats = (0..=(ruler.duration / beat).floor() as u64).map(move |n| n as f64 * beat).filter(|_| studio.grid.snap);
+    let seconds = (0..=ruler.duration.ceil() as u32).map(|s| s as f64).chain(beats);
     let steps_per_second = studio.playback.world().steps_per_second;
     let hits =
         studio.playback.log().events().iter().filter(|e| e.kind == EventKind::Hit).map(|e| e.time(steps_per_second));
@@ -442,6 +513,58 @@ mod tests {
     use bpe_core::ThingId;
     use eframe::egui::PointerButton;
     use egui_kittest::{Harness, kittest::Queryable};
+
+    fn ruler(width: f32, duration: f64) -> Ruler {
+        let track = Rect::from_min_size(Pos2::ZERO, egui::vec2(width, 18.0));
+        Ruler { track, duration, beats: Vec::new() }
+    }
+
+    #[test]
+    fn bar_lines_follow_the_tempo() {
+        let r = ruler(800.0, 8.0);
+        let lines = beat_lines(&r, &TempoMap::new(120.0, 4, 4));
+        let bars: Vec<f32> = lines.iter().filter(|l| l.1).map(|l| l.0).collect();
+        assert_eq!(bars, [0.0, 200.0, 400.0, 600.0, 800.0], "a bar every 2 s, the last at the end");
+        assert_eq!(lines.len(), 17, "every half-second beat");
+        let numbers: Vec<u32> = lines.iter().filter_map(|l| l.2).collect();
+        assert_eq!(numbers, [1, 2, 3, 4, 5]);
+        // 6/8 at 90: a beat is an eighth (1/3 s), a bar 2 s.
+        let lines = beat_lines(&r, &TempoMap::new(90.0, 6, 8));
+        let bars: Vec<f32> = lines.iter().filter(|l| l.1).map(|l| l.0).collect();
+        assert_eq!(bars, [0.0, 200.0, 400.0, 600.0, 800.0]);
+    }
+
+    #[test]
+    fn dense_beats_are_thinned() {
+        // 300 BPM 4/4 over a minute on 600 px: beats 2 px apart, bars 8 px.
+        let r = ruler(600.0, 60.0);
+        let lines = beat_lines(&r, &TempoMap::new(300.0, 4, 4));
+        assert!(lines.iter().all(|l| l.1), "only bar lines");
+        assert_eq!(lines.len(), 76, "every bar");
+        // Over ten minutes the bars are 0.8 px apart: every 8th bar.
+        let r = ruler(600.0, 600.0);
+        let lines = beat_lines(&r, &TempoMap::new(300.0, 4, 4));
+        let gaps: Vec<f32> = lines.windows(2).map(|w| w[1].0 - w[0].0).collect();
+        assert!(gaps.iter().all(|g| *g >= BEAT_MIN_PX - 1e-3), "{gaps:?}");
+        let numbers: Vec<u32> = lines.iter().filter_map(|l| l.2).take(3).collect();
+        assert_eq!(numbers, [1, 65, 129], "numbers 28 px or more apart (every 64th bar here)");
+    }
+
+    #[test]
+    fn the_speaker_button_mutes_without_editing_the_scene() {
+        let mut h = harness();
+        let before = h.state().scene.clone();
+        assert!(h.state().listen.on);
+        h.get_by_label("Speaker").click();
+        h.run();
+        assert!(!h.state().listen.on, "muted");
+        assert_eq!(h.state().scene, before, "the scene is not touched");
+        assert!(!h.state().history.can_undo(), "nothing to undo");
+        assert!(h.query_by_label("Listening volume").is_some());
+        h.get_by_label("Speaker").click();
+        h.run();
+        assert!(h.state().listen.on);
+    }
 
     fn size_address() -> Address {
         Address::own(ThingId(2), "radius")
