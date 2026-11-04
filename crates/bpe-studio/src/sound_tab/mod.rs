@@ -32,6 +32,10 @@ pub struct SoundTab {
     pub picked: std::collections::BTreeMap<ThingId, bpe_core::LayerId>,
     /// The layer strips that are open (any number at once).
     pub open_strips: std::collections::BTreeSet<(ThingId, bpe_core::LayerId)>,
+    /// The strip being renamed in place, and its name so far.
+    pub renaming: Option<(ThingId, bpe_core::LayerId, String)>,
+    /// A chain layer has been copied (Paste layer is offered).
+    pub can_paste_layer: bool,
 }
 
 /// A change the tab asks for, applied once it is drawn.
@@ -54,6 +58,17 @@ pub enum TabEdit {
     },
     /// Turns a layer on or off.
     LayerOn(bpe_core::LayerId, bool),
+    /// Moves a chain layer to this place in the card, within its lane.
+    MoveLayer(bpe_core::LayerId, usize),
+    RenameLayer(bpe_core::LayerId, String),
+    DuplicateLayer(bpe_core::LayerId),
+    CopyLayer(bpe_core::LayerId),
+    /// The copied layer into oscillator `lane`'s chain, after `after` (else at the bottom).
+    PasteLayer {
+        lane: u8,
+        after: Option<bpe_core::LayerId>,
+    },
+    DeleteLayer(bpe_core::LayerId),
 }
 
 /// What drawing the tab reads, and the edits it gathers.
@@ -297,6 +312,7 @@ pub fn show(
 
 /// Everything under Enable sound.
 fn body(ui: &mut Ui, inspector: &mut Inspector, cx: &mut TabCx) {
+    inspector.sound.can_paste_layer = inspector.clipboard.chain_layer.is_some();
     ui.columns(2, |cols| {
         osc::show(&mut cols[0], cx, osc::Osc::A, &mut inspector.sound);
         osc::show(&mut cols[1], cx, osc::Osc::B, &mut inspector.sound);
@@ -366,6 +382,29 @@ fn apply(inspector: &mut Inspector, scene: &mut Scene, kit: &Kit, id: ThingId, t
                 Err(_) => false,
             },
             TabEdit::LayerOn(layer, on) => scene.set_layer_enabled(reg, id, SlotId::Sound, layer, on).is_ok(),
+            TabEdit::MoveLayer(layer, to) => scene.move_layer(reg, id, SlotId::Sound, layer, to).is_ok(),
+            TabEdit::RenameLayer(layer, name) => scene.rename_layer(reg, id, SlotId::Sound, layer, &name).is_ok(),
+            TabEdit::DuplicateLayer(layer) => scene.duplicate_layer(reg, id, SlotId::Sound, layer).is_ok(),
+            TabEdit::CopyLayer(layer) => {
+                if let Some(copied) = scene.copy_layer(id, SlotId::Sound, layer) {
+                    inspector.clipboard.chain_layer = Some(copied);
+                }
+                false
+            }
+            TabEdit::PasteLayer { lane, after } => match inspector.clipboard.chain_layer.clone() {
+                Some(copied) => match chain_box::paste(scene, reg, id, &copied, lane, after) {
+                    Some(layer) => {
+                        inspector.sound.open_strips.insert((id, layer));
+                        true
+                    }
+                    None => false,
+                },
+                None => false,
+            },
+            TabEdit::DeleteLayer(layer) => {
+                inspector.sound.open_strips.remove(&(id, layer));
+                scene.remove_layer(reg, id, SlotId::Sound, layer).is_ok()
+            }
         };
     }
     changed

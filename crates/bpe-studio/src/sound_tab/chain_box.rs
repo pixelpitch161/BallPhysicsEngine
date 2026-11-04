@@ -3,10 +3,10 @@
 
 use super::{SoundTab, TabCx, TabEdit, name_it, strip};
 use crate::style;
-use bpe_core::{Layer, SlotId};
+use bpe_core::{CopiedLayer, Layer, LayerId, Registry, Scene, SlotId, ThingId, Value};
 use bpe_kit::sound::chain::osc_name;
-use bpe_kit::sound::{CHAIN_KINDS, DISTORTION, FILTER, MODULATION};
-use eframe::egui::{self, RichText, Ui};
+use bpe_kit::sound::{CHAIN_KINDS, DISTORTION, FILTER, MODULATION, Source};
+use eframe::egui::{self, Rect, RichText, Ui};
 
 /// The "+ Add layer" menu's items: kind and name.
 pub const ADD: [(&str, &str); 3] = [(MODULATION, "Modulation"), (FILTER, "Filter"), (DISTORTION, "Distortion")];
@@ -34,15 +34,21 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx, lane: u8, tab: &mut SoundTab) {
                         ui.set_min_width(130.0);
                         for (kind, name) in ADD {
                             if ui.button(name).clicked() {
-                                picked = Some(kind);
+                                picked = Some(TabEdit::AddLayer { lane, kind });
                                 ui.close();
                             }
                         }
+                        ui.separator();
+                        let paste = ui
+                            .add_enabled(tab.can_paste_layer, egui::Button::new("Paste layer"))
+                            .on_disabled_hover_text("Copy a layer first");
+                        if paste.clicked() {
+                            picked = Some(TabEdit::PasteLayer { lane, after: None });
+                            ui.close();
+                        }
                     });
                     name_it(ui, &menu.response, &format!("Add layer to {osc}"));
-                    if let Some(kind) = picked {
-                        cx.edits.push(TabEdit::AddLayer { lane, kind });
-                    }
+                    cx.edits.extend(picked);
                 });
             });
             let scene = cx.scene;
@@ -55,17 +61,107 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx, lane: u8, tab: &mut SoundTab) {
                 return;
             }
             let loops = bpe_sound::chain_graph::loops_of(card);
-            for layer in strips {
-                strip::show(ui, cx, tab, layer, &card.layers, &loops);
+            let mut rows = Vec::with_capacity(strips.len());
+            let mut dragged = None;
+            for layer in &strips {
+                let row = strip::show(ui, cx, tab, layer, &card.layers, &loops);
+                if row.dragged() || row.drag_stopped() {
+                    dragged = Some((layer.id, row.drag_stopped()));
+                }
+                rows.push((layer.id, row.rect));
+            }
+            if let Some((id, dropped)) = dragged {
+                reorder(ui, cx, card, lane, &rows, id, dropped);
             }
         });
+}
+
+/// While strip `id` is dragged by its row: a line where it would go, and on letting go the move.
+fn reorder(
+    ui: &mut Ui,
+    cx: &mut TabCx,
+    card: &bpe_core::Slot,
+    lane: u8,
+    rows: &[(LayerId, Rect)],
+    id: LayerId,
+    dropped: bool,
+) {
+    let Some(at) = ui.input(|i| i.pointer.latest_pos()) else { return };
+    let others: Vec<Rect> = rows.iter().filter(|(l, _)| *l != id).map(|(_, r)| *r).collect();
+    let place = others.iter().filter(|r| r.center().y < at.y).count();
+    let now = rows.iter().position(|(l, _)| *l == id).unwrap_or(0);
+    let y = match place {
+        0 => others.first().map_or(at.y, |r| r.top() - 2.0),
+        p => others[p - 1].bottom() + 2.0,
+    };
+    let x = rows.first().map_or(at.x..=at.x, |(_, r)| r.left()..=r.right());
+    if place != now {
+        ui.painter().hline(x, y, egui::Stroke::new(2.0, style::TEXT));
+    }
+    if dropped && place != now {
+        let indices: Vec<usize> = card
+            .layers
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| CHAIN_KINDS.contains(&l.kind.as_str()) && l.lane.unwrap_or(0) == lane)
+            .map(|(i, _)| i)
+            .collect();
+        if let Some(&to) = indices.get(place) {
+            cx.edits.push(TabEdit::MoveLayer(id, to));
+        }
+    }
+}
+
+/// Pastes `copied` into oscillator `lane`'s chain of `thing`'s sound card, just after `after`
+/// (at the bottom without one), and returns the new layer. A Modulation layer whose source is
+/// a layer the card doesn't have takes the oscillator it lands on, as the sound would.
+pub fn paste(
+    scene: &mut Scene,
+    reg: &Registry,
+    thing: ThingId,
+    copied: &CopiedLayer,
+    lane: u8,
+    after: Option<LayerId>,
+) -> Option<LayerId> {
+    let mut c = copied.clone();
+    c.lane = Some(lane);
+    if c.kind == MODULATION
+        && let Some(Value::Text(t)) = c.params.get("source")
+        && let Source::After(src) = Source::parse(t)
+    {
+        let there = scene
+            .card(thing, SlotId::Sound)
+            .and_then(|card| card.layer(src))
+            .is_some_and(|l| CHAIN_KINDS.contains(&l.kind.as_str()));
+        if !there {
+            c.params.set("source", Value::Text(Source::Raw(lane).text()));
+        }
+    }
+    let new = scene.paste_layer(reg, thing, SlotId::Sound, &c).ok()?;
+    if let Some(after) = after {
+        let card = scene.card(thing, SlotId::Sound)?;
+        let indices: Vec<usize> = card
+            .layers
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| CHAIN_KINDS.contains(&l.kind.as_str()) && l.lane.unwrap_or(0) == lane)
+            .map(|(i, _)| i)
+            .collect();
+        let place = indices.iter().position(|&i| card.layers[i].id == after).map(|p| p + 1);
+        if let Some(&to) = place.and_then(|p| indices.get(p))
+            && card.layers[to].id != new
+        {
+            scene.move_layer(reg, thing, SlotId::Sound, new, to).ok()?;
+        }
+    }
+    Some(new)
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::tests::{SHAPE, sounding};
     use super::*;
-    use bpe_core::{Address, LayerId, Value, layered_key};
+    use bpe_core::{Address, layered_key};
     use eframe::egui::{Modifiers, PointerButton, accesskit::Role};
     use egui_kittest::kittest::Queryable;
 
@@ -217,5 +313,115 @@ mod tests {
         h.get_by_label("Osc B · after Filter").click();
         h.run();
         assert_eq!(value(&h, m, "source"), Some(Value::Text(f.0.to_string())));
+    }
+
+    #[test]
+    fn drag_reorders_within_the_lane() {
+        let mut h = sounding();
+        let f = add(&mut h, 0, FILTER);
+        let d = add(&mut h, 0, DISTORTION);
+        add(&mut h, 1, FILTER);
+        let from = h.get_by_label("Filter strip").rect().center();
+        let below = h.get_by_label("Distortion strip").rect();
+        drag(&mut h, from, egui::pos2(from.x, below.bottom() + 4.0));
+        let order: Vec<LayerId> = lane_layers(&card(&h).layers, 0).iter().map(|l| l.id).collect();
+        assert_eq!(order, vec![d, f], "the filter went under the distortion");
+        assert_eq!(lane_layers(&card(&h).layers, 1).len(), 1, "Osc B's chain is left alone");
+    }
+
+    fn strip_menu(h: &mut H, strip: &str, item: &str) {
+        h.get_by_label(&format!("{strip} strip")).click_secondary();
+        h.run();
+        h.get_by_label(item).click();
+        h.run();
+    }
+
+    #[test]
+    fn paste_into_the_other_osc_keeps_a_valid_source() {
+        let mut h = sounding();
+        let fb = add(&mut h, 1, FILTER);
+        let m = add(&mut h, 0, MODULATION);
+        let reg = bpe_kit::registry();
+        let a = Address::on(SHAPE, SlotId::Sound, &layered_key(m, "source"));
+        h.state_mut().0.scene.set_at(&reg, &a, Value::Text(fb.0.to_string())).unwrap();
+        h.run();
+        strip_menu(&mut h, "Modulation", "Copy layer");
+        h.get_by_label("Add layer to Osc B").click();
+        h.run();
+        h.get_by_label("Paste layer").click();
+        h.run();
+        let c = card(&h);
+        let b = lane_layers(&c.layers, 1);
+        assert_eq!(b.len(), 2);
+        let pasted = b[1];
+        assert_eq!(pasted.kind, MODULATION);
+        assert_eq!(value(&h, pasted.id, "source"), Some(Value::Text(fb.0.to_string())), "still after B's filter");
+        assert!(bpe_sound::chain_graph::loops_of(&c).is_empty(), "B's filter is above it: no loop");
+        // With the filter gone, a paste falls back to the oscillator it lands on.
+        h.state_mut().0.scene.remove_layer(&reg, SHAPE, SlotId::Sound, fb).unwrap();
+        h.run();
+        strip_menu(&mut h, "Modulation", "Paste layer");
+        let c = card(&h);
+        let a_lane = lane_layers(&c.layers, 0);
+        assert_eq!(a_lane.len(), 2, "pasted into Osc A after the strip");
+        assert_eq!(value(&h, a_lane[1].id, "source"), Some(Value::Text("a".into())));
+    }
+
+    #[test]
+    fn delete_removes_routes_to_its_knobs() {
+        let mut h = sounding();
+        let f = add(&mut h, 0, FILTER);
+        let reg = bpe_kit::registry();
+        let adsr = card(&h).layers.iter().find(|l| l.kind == bpe_kit::sound::ADSR).unwrap().id;
+        let route = bpe_core::ModRoute {
+            source: adsr,
+            target: layered_key(f, "cutoff"),
+            amount: 0.5,
+            bipolar: false,
+            invert: false,
+        };
+        let key = Address::on(SHAPE, SlotId::Sound, bpe_core::ROUTES_KEY);
+        let mut routes = match card(&h).params.get(bpe_core::ROUTES_KEY) {
+            Some(Value::Routes(r)) => r.clone(),
+            _ => Vec::new(),
+        };
+        let before = routes.len();
+        routes.push(route);
+        h.state_mut().0.scene.set_at(&reg, &key, Value::Routes(routes)).unwrap();
+        h.run();
+        strip_menu(&mut h, "Filter", "Delete");
+        let c = card(&h);
+        assert!(c.layer(f).is_none(), "the strip is gone");
+        let left = match c.params.get(bpe_core::ROUTES_KEY) {
+            Some(Value::Routes(r)) => r.clone(),
+            _ => Vec::new(),
+        };
+        assert_eq!(left.len(), before, "the route to its cutoff went with it");
+        assert!(h.query_by_label("Filter strip").is_none());
+    }
+
+    #[test]
+    fn rename_in_place() {
+        let mut h = sounding();
+        let f = add(&mut h, 0, FILTER);
+        strip_menu(&mut h, "Filter", "Rename");
+        let edit = h.get_by_label("Rename layer");
+        edit.focus();
+        h.run();
+        h.get_by_label("Rename layer").type_text("Warm");
+        h.run();
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(card(&h).layer(f).unwrap().name, "Warm", "typing replaced the name");
+        assert!(h.query_by_label("Warm strip").is_some());
+    }
+
+    #[test]
+    fn duplicate_adds_a_copy_under_it() {
+        let mut h = sounding();
+        add(&mut h, 0, FILTER);
+        strip_menu(&mut h, "Filter", "Duplicate");
+        let names: Vec<String> = lane_layers(&card(&h).layers, 0).iter().map(|l| l.name.clone()).collect();
+        assert_eq!(names, vec!["Filter".to_owned(), "Filter copy".to_owned()]);
     }
 }

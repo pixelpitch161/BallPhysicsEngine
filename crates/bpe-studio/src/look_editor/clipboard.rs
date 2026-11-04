@@ -9,4 +9,6 @@ pub struct Clipboard {
     pub look: Option<CopiedLook>,
     /// A shape's whole sound card (Copy sound on the Sound tab).
     pub sound: Option<bpe_core::Slot>,
+    /// A sound chain layer (Copy layer on a strip), pasted into either oscillator.
+    pub chain_layer: Option<CopiedLayer>,
 }

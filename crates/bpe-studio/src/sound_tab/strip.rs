@@ -116,18 +116,24 @@ pub fn show(
             if loops.contains(&layer.id) {
                 loop_mark(ui);
             }
-            // The name and summary fill what is left.
+            // The name and summary fill what is left; the name is a text box while renaming.
             let text = ui.available_rect_before_wrap();
+            let renaming = tab.renaming.as_ref().filter(|(t, l, _)| *t == cx.id && *l == layer.id).is_some();
+            if renaming {
+                rename_box(ui, cx, tab, layer, text);
+            }
             if ui.is_rect_visible(text) {
                 let painter = ui.painter().with_clip_rect(text);
                 let summary = layer_summary(layer, &params, layers);
-                painter.text(
-                    Pos2::new(text.left(), text.center().y - 1.0),
-                    egui::Align2::LEFT_BOTTOM,
-                    name,
-                    style::semibold(12.0),
-                    ink,
-                );
+                if !renaming {
+                    painter.text(
+                        Pos2::new(text.left(), text.center().y - 1.0),
+                        egui::Align2::LEFT_BOTTOM,
+                        name,
+                        style::semibold(12.0),
+                        ink,
+                    );
+                }
                 painter.text(
                     Pos2::new(text.left(), text.center().y + 1.0),
                     egui::Align2::LEFT_TOP,
@@ -138,6 +144,32 @@ pub fn show(
             }
         });
     }
+    row.context_menu(|ui| {
+        if ui.button("Rename").clicked() {
+            tab.renaming = Some((cx.id, layer.id, layer.name.clone()));
+            ui.close();
+        }
+        if ui.button("Duplicate").clicked() {
+            cx.edits.push(TabEdit::DuplicateLayer(layer.id));
+            ui.close();
+        }
+        if ui.button("Copy layer").clicked() {
+            cx.edits.push(TabEdit::CopyLayer(layer.id));
+            ui.close();
+        }
+        let paste = ui
+            .add_enabled(tab.can_paste_layer, egui::Button::new("Paste layer"))
+            .on_disabled_hover_text("Copy a layer first");
+        if paste.clicked() {
+            cx.edits.push(TabEdit::PasteLayer { lane: layer.lane.unwrap_or(0), after: Some(layer.id) });
+            ui.close();
+        }
+        ui.separator();
+        if ui.button("Delete").clicked() {
+            cx.edits.push(TabEdit::DeleteLayer(layer.id));
+            ui.close();
+        }
+    });
     if row.clicked() {
         if open {
             tab.open_strips.remove(&open_key);
@@ -327,6 +359,35 @@ fn source_menu(ui: &mut Ui, cx: &mut TabCx, layer: &Layer, layers: &[Layer], sou
     menu.response.on_hover_text("What moves the sound: an oscillator, or the sound after a layer");
     if let Some(s) = picked.filter(|s| *s != now) {
         cx.set(&layered_key(layer.id, "source"), Value::Text(s.text()));
+    }
+}
+
+/// The name's text box while renaming in place: Enter (or clicking away) keeps the name, Escape
+/// leaves it.
+fn rename_box(ui: &mut Ui, cx: &mut TabCx, tab: &mut SoundTab, layer: &Layer, text: Rect) {
+    let Some((_, _, name)) = tab.renaming.as_mut() else { return };
+    let line = Rect::from_min_size(Pos2::new(text.left(), text.center().y - 19.0), Vec2::new(text.width(), 20.0));
+    let edit = ui.put(line, egui::TextEdit::singleline(name).font(style::semibold(12.0)));
+    name_it(ui, &edit, "Rename layer");
+    if !edit.has_focus() && !edit.lost_focus() {
+        // Starting: the whole name is picked, so typing replaces it.
+        edit.request_focus();
+        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), edit.id) {
+            let all = egui::text::CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(name.chars().count()),
+            );
+            state.cursor.set_char_range(Some(all));
+            state.store(ui.ctx(), edit.id);
+        }
+    }
+    if edit.lost_focus() {
+        let keep = !ui.input(|i| i.key_pressed(egui::Key::Escape));
+        let name = std::mem::take(name);
+        tab.renaming = None;
+        if keep && name.trim() != layer.name {
+            cx.edits.push(TabEdit::RenameLayer(layer.id, name));
+        }
     }
 }
 
