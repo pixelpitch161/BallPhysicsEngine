@@ -13,8 +13,12 @@ use std::sync::{Arc, Mutex};
 
 use crate::{Frame, HDR_FORMAT, LAYERED_ATTRIBUTES, LayeredInstance, PATH_ATTRIBUTES, PathInstance};
 
-/// The most programs kept; past it, the ones the last frame didn't use go.
+/// The most programs kept; past it, the ones used longest ago go.
 const KEEP_PROGRAMS: usize = 64;
+
+/// How many frames back (calls of `ensure`, by any of the renderers sharing a store) a program
+/// counts as in use and is never let go: about five frames of the editor's three views.
+const RECENT_FRAMES: u64 = 16;
 
 /// The effects one in-ball program runs, by slot: `sources[i]` is effect slot `i` of its shader
 /// records. `key` tells programs apart: the same sources always give the same key.
@@ -69,6 +73,10 @@ pub(crate) struct Programs {
     pending: HashMap<u64, Receiver<Result<Made, String>>>,
     /// The keys the last frame named.
     used: Vec<u64>,
+    /// Frames drawn so far, by every renderer sharing the store.
+    frames: u64,
+    /// The frame each program was last named in, by key.
+    last_used: HashMap<u64, u64>,
     /// Programs are built on a background thread rather than while drawing.
     background: bool,
 }
@@ -273,12 +281,32 @@ impl Programs {
                 }
             }
         }
-        if self.made.len() > KEEP_PROGRAMS {
-            self.made.retain(|k, _| used.contains(k));
-        }
+        self.forget_unused(&used);
         let waiting = used.iter().any(|k| self.pending.contains_key(k));
         self.used = used;
         waiting
+    }
+
+    /// Counts a frame naming `used`, then, past [`KEEP_PROGRAMS`], lets go of the programs used
+    /// longest ago. The store is shared by several renderers, each naming only its own: a
+    /// program any of them named in the last [`RECENT_FRAMES`] frames stays.
+    fn forget_unused(&mut self, used: &[u64]) {
+        self.frames += 1;
+        for k in used {
+            self.last_used.insert(*k, self.frames);
+        }
+        if self.made.len() > KEEP_PROGRAMS {
+            let last = |k: &u64| self.last_used.get(k).copied().unwrap_or(0);
+            let mut old: Vec<(u64, u64)> =
+                self.made.keys().map(|k| (last(k), *k)).filter(|(at, _)| at + RECENT_FRAMES <= self.frames).collect();
+            old.sort_unstable();
+            let extra = self.made.len() - KEEP_PROGRAMS;
+            for (_, k) in old.into_iter().take(extra) {
+                self.made.remove(&k);
+            }
+        }
+        let (made, pending) = (&self.made, &self.pending);
+        self.last_used.retain(|k, _| made.contains_key(k) || pending.contains_key(k));
     }
 
     /// The pipeline program `key` draws with (in a layer whose things blend with each other by
@@ -307,5 +335,29 @@ impl Programs {
             Some(Err(e)) => Some((*k, e.as_str())),
             _ => None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_renderer_sharing_the_store_never_drops_a_program_another_one_still_draws_with() {
+        // The preview draws with program 0 every frame while the ball view names a new program
+        // each frame (own code being typed): program 0 stays, and the store stays small.
+        let mut p = Programs::default();
+        p.made.insert(0, Err(String::new()));
+        for k in 1..=200 {
+            p.made.insert(k, Err(String::new()));
+            p.forget_unused(&[k]);
+            p.forget_unused(&[0]);
+            assert!(p.made.contains_key(&0), "the preview's program went at {k}");
+            assert!(p.made.contains_key(&k), "the ball view's own went at {k}");
+            assert!(p.made.len() <= KEEP_PROGRAMS + 1, "{} programs kept", p.made.len());
+        }
+        // Past the most kept, the ones named longest ago go first.
+        assert!(!p.made.contains_key(&1) && p.made.contains_key(&199));
+        assert!(p.last_used.len() <= p.made.len());
     }
 }

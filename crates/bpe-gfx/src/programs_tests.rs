@@ -412,3 +412,34 @@ fn a_shader_sub_layer_sees_only_its_own_layer() {
     let middle = at(&px, 0.0, 0.0);
     assert!(middle[0] < 20 && middle[2] > 100 && middle[1] < 205, "{middle:?}");
 }
+
+// ---- Pixel sizes inside balls and shapes ----
+
+/// Own code painting the shader's picture side in video pixels (resolution / scale), a
+/// thousandth a step: the same at any output size when pixel-sized effects (Pixels, Film grain)
+/// are resolution independent.
+const SIDE: &str = "// name: Side\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { return vec3<f32>(fx.resolution.x / fx.scale / 1000.0); }\n";
+
+/// `frame` drawn into a `w` by `h` output, its pixel at world point `p`.
+fn pixel_at(frame: &Frame, w: u32, h: u32, p: Vec2) -> Option<[u8; 4]> {
+    let (device, queue) = headless_device().ok()?;
+    let mut r = Renderer::new(&device, w, h);
+    r.render(&device, &queue, frame);
+    assert!(r.program_errors().is_empty(), "{:?}", r.program_errors());
+    Some(pixel_sized(&r.read_output(&device, &queue).unwrap(), w, h, p))
+}
+
+#[test]
+fn pixel_sized_effects_inside_balls_shapes_and_groups_are_the_same_in_preview_and_export() {
+    let side = [Cow::Borrowed(SIDE)];
+    let ball = frame_with(vec![body(), shader("lava", 0, 1.0)], &side);
+    let shape = shape_with(vec![body(), red_paint(), shader("lava", 0, 1.0)], &side);
+    let group = pair_with(vec![body(), group_shader("lava", 0, 1.0, true, 0.0)], &side);
+    let top = Vec2::new(0.0, -200.0);
+    for (name, frame, p) in [("ball", ball, Vec2::ZERO), ("shape", shape, Vec2::ZERO), ("group", group, top)] {
+        let Some(half) = pixel_at(&frame, 540, 960, p) else { return };
+        let full = pixel_at(&frame, 1080, 1920, p).unwrap();
+        assert!(full[0] > 40, "{name}: the effect ran: {full:?}");
+        assert!(half[0].abs_diff(full[0]) <= 1, "{name}: a half-size preview sees {half:?}, the export {full:?}");
+    }
+}

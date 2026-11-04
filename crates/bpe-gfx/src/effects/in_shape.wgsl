@@ -19,7 +19,9 @@ fn shape_begin(l: LayerGpu, first: u32, k: u32, s: ShapeAt, world: vec2<f32>) ->
     let reach = in_shape_reach();
     let side = max(2.0 * reach * layered_shape.a.w / max(g.view.z, 1e-6), 1.0);
     fx.resolution = vec2<f32>(side, side);
-    fx.scale = 1.0;
+    // Output pixels per world unit (a video pixel at zoom 1), so pixel-sized effects (Pixels,
+    // Film grain) look the same in the preview and the export.
+    fx.scale = 1.0 / max(g.view.z, 1e-6);
     fx.blend = 1.0;
     fx.apply_to = 0.0;
     fx.in_layer = 0.0;
