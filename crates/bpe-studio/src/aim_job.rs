@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use bpe_core::{Resolved, Scene, Settings};
+use bpe_kit::things::emitter::aim_cache::StopWith;
 use bpe_kit::things::emitter::{Aim, EmitterSettings, KIND};
 use bpe_runtime::{Log, Sims, World};
 
@@ -41,7 +42,10 @@ impl AimJob {
         let (scene, resolved) = (scene.clone(), resolved.clone());
         let job = AimJob { reached: reached.clone(), done: done.clone(), stop: stop.clone() };
         let spawned = std::thread::Builder::new().name("aiming".into()).spawn(move || {
-            // Building aims a round fired at 0 s already.
+            // Done however it ends, a panic included, so the playback is never held for good.
+            let _done = Finished(done);
+            // Told to stop, its test flights give up and keep nothing.
+            let _stop = StopWith::new(Some(stop.clone()));
             let mut world = World::build(&scene, &resolved, &sims);
             let until = bpe_runtime::step_at(duration, world.steps_per_second);
             let mut log = Log::default();
@@ -49,7 +53,6 @@ impl AimJob {
                 world.step(&sims, &mut log);
                 reached.store(world.time().to_bits(), Ordering::Release);
             }
-            done.store(true, Ordering::Release);
         });
         // No thread: the playback aims for itself.
         spawned.ok().map(|_| job)
@@ -73,6 +76,15 @@ impl AimJob {
     pub fn holding(&self, time: f64) -> Option<f32> {
         let reached = self.reached();
         (!self.done() && reached < time).then(|| (reached / time.max(1e-9)).clamp(0.0, 1.0) as f32)
+    }
+}
+
+/// Marks the run done when it ends.
+struct Finished(Arc<AtomicBool>);
+
+impl Drop for Finished {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
     }
 }
 

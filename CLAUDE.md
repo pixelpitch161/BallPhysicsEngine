@@ -219,7 +219,9 @@ Dependencies go bottom to top:
   0.45 px or by turning the direction ≤ `MOST_TWEAK` 0.3°; fewest bounces (≥ `aim_bounces`) then nearest Speed; at
   most 40 flights to find a way plus 24 to settle when it leaves (moving walls). `aim_round`/`aim_catch` (rounds in
   parallel, ≤ 8 threads) are cached process-wide in `aim_cache.rs` by (`World.fingerprint`, emitter, round or
-  catch); `EmitterState.aimed` keeps the rounds launching and the latest (`BallAim.path` for the preview). Its
+  catch); `EmitterState.aimed` keeps the rounds launching and the latest (`BallAim.path` for the preview). A round
+  at 0 s aimed through bounces fires on the first step (not `after_build`). A catching target ends a flight's arcs at
+  the one it is entered on. A run under `aim_cache::StopWith` whose flag is set gives up and keeps nothing. Its
   marker, flashes and ripples are `draw.rs` (sprites), worked out from its state at the moment drawn. Group
   gradient `Spread` has Round and Launch angle; the around layer **Wavefront** (`layers/wavefront.rs`) draws a
   strip through each round's balls (`trail::draw::strip_with_subs`). Camera Follow "balls" follows emitters too.

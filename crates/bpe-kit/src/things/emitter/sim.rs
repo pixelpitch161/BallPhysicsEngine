@@ -517,7 +517,7 @@ struct Arrival {
 }
 
 /// Where the segment `a` → `b` first comes within `r` of `c`, when it does and `a` is outside.
-fn entry(a: Vec2, b: Vec2, c: Vec2, r: f32) -> Option<Vec2> {
+pub(crate) fn entry(a: Vec2, b: Vec2, c: Vec2, r: f32) -> Option<Vec2> {
     let r2 = r * r;
     if (a - c).length_squared() <= r2 {
         return None;
@@ -777,10 +777,12 @@ impl ThingSim for EmitterSim {
         world.states.insert(thing.id, Box::new(st));
     }
 
-    /// An aimed round at 0 s fires once everything is built.
+    /// An aimed round at 0 s fires once everything is built. Aimed through bounces it waits for
+    /// the first step (setting off from the same moment, 0 s): building stays quick, its test
+    /// flights see the keys, and the editor's background aiming does them.
     fn after_build(&self, thing: ThingId, world: &mut World) {
         let Some(st) = emitter_state(world, thing) else { return };
-        if st.settings.aim == Aim::Off {
+        if matches!(st.settings.aim, Aim::Off | Aim::ThroughBounces) {
             return;
         }
         let aim = Aimer::of(world, thing, &st.settings, 0);

@@ -59,6 +59,18 @@ fn bouncing(gravity: Vec2, at: Vec2, target: Vec2, f: impl FnOnce(&mut EmitterSe
     (scene, me, kit)
 }
 
+/// `scene` built and stepped once: a round at 0 s aimed through bounces fires on the first step
+/// (setting off from 0 s), arriving one step after Arrive after.
+fn fired(scene: &Scene, kit: &Kit) -> World {
+    fired_with(scene, &resolved(scene, kit), kit)
+}
+
+fn fired_with(scene: &Scene, resolved: &bpe_core::Resolved, kit: &Kit) -> World {
+    let mut world = World::build(scene, resolved, &kit.sims);
+    world.step(&kit.sims, &mut Log::default());
+    world
+}
+
 fn st(world: &World, id: ThingId) -> &EmitterState {
     emitter_state(world, id).expect("an emitter")
 }
@@ -109,13 +121,13 @@ fn fan_in_a_circle(f: impl FnOnce(&mut EmitterSettings)) -> (Scene, ThingId, Kit
 #[test]
 fn through_bounces_they_pass_the_target_together_after_a_bounce() {
     let (scene, me, kit) = fan_in_a_circle(|_| {});
-    let mut world = World::build(&scene, &resolved(&scene, &kit), &kit.sims);
+    let mut world = fired(&scene, &kit);
     assert!(world.fingerprint.is_some(), "aiming through bounces asks for the fingerprint");
     let aims = st(&world, me).aimed.last().cloned().expect("the round at 0 s was aimed");
     let reaching = aims.balls.iter().filter(|b| b.as_ref().is_some_and(|b| b.reaches)).count();
     assert!(reaching >= 4, "most of the fan finds a way: {:?}", aims.balls);
     let mut log = Log::default();
-    let near = nearest(&mut world, &kit, &mut log, me, 360, Vec2::new(250.0, 200.0));
+    let near = nearest(&mut world, &kit, &mut log, me, 361, Vec2::new(250.0, 200.0));
     assert_eq!(near.len(), reaching, "the ones without a way are skipped");
     for (d, hits) in &near {
         assert!(*d < 0.5, "{near:?}");
@@ -131,12 +143,12 @@ fn the_fewest_bounces_win_and_none_may_go_straight() {
         s.fan_angle = 20.0;
         s.speed = 700.0;
     });
-    let world = World::build(&scene, &resolved(&scene, &kit), &kit.sims);
+    let world = fired(&scene, &kit);
     let aims = st(&world, me).aimed.last().cloned().unwrap();
     // A 45° lob onto the target needs no bounce.
-    let mut world = World::build(&scene, &resolved(&scene, &kit), &kit.sims);
+    let mut world = fired(&scene, &kit);
     let mut log = Log::default();
-    let near = nearest(&mut world, &kit, &mut log, me, 360, Vec2::new(250.0, 200.0));
+    let near = nearest(&mut world, &kit, &mut log, me, 361, Vec2::new(250.0, 200.0));
     assert_eq!(near.len(), aims.balls.iter().flatten().count());
     assert!(near.iter().all(|(d, _)| *d < 0.5), "{near:?}");
     assert!(near.iter().any(|(_, hits)| *hits == 0), "a straight lob is allowed: {near:?}");
@@ -161,7 +173,7 @@ fn from_one_focus_of_an_ellipse_they_all_go_at_speed_and_meet_at_the_other() {
     scene.card_mut(me, SlotId::Motion).unwrap().params.set("gravity_scale", Value::Number(0.0));
     scene.card_mut(me, SlotId::Bounce).unwrap().params.set("touch", Value::Choice("middle".into()));
     scene.card_mut(me, SlotId::Bounce).unwrap().params.set("bounciness", Value::Number(1.0));
-    let mut world = World::build(&scene, &resolved(&scene, &kit), &kit.sims);
+    let mut world = fired(&scene, &kit);
     let aims = st(&world, me).aimed.last().cloned().unwrap();
     let balls: Vec<&BallAim> = aims.balls.iter().flatten().collect();
     assert_eq!(balls.len(), 16);
@@ -173,7 +185,7 @@ fn from_one_focus_of_an_ellipse_they_all_go_at_speed_and_meet_at_the_other() {
     }
     let other = crate::things::shape::foci(&world, SHAPE).unwrap()[1];
     let mut log = Log::default();
-    let near = nearest(&mut world, &kit, &mut log, me, 720, other);
+    let near = nearest(&mut world, &kit, &mut log, me, 721, other);
     assert_eq!(near.len(), 16);
     assert!(near.iter().all(|(d, _)| *d < 0.5), "{near:?}");
 }
@@ -184,12 +196,12 @@ fn in_a_spinning_square_the_way_is_checked_from_when_it_leaves() {
     let mut square = ShapeSettings::polygon(4, 560.0, 4.0);
     square.spin = 2.0;
     scene.things.get_mut(&SHAPE).unwrap().params = square.to_params();
-    let mut world = World::build(&scene, &resolved(&scene, &kit), &kit.sims);
+    let mut world = fired(&scene, &kit);
     let aims = st(&world, me).aimed.last().cloned().unwrap();
     let reaching = aims.balls.iter().filter(|b| b.as_ref().is_some_and(|b| b.reaches)).count();
     assert!(reaching >= 1, "{:?}", aims.balls);
     let mut log = Log::default();
-    let near = nearest(&mut world, &kit, &mut log, me, 360, Vec2::new(250.0, 200.0));
+    let near = nearest(&mut world, &kit, &mut log, me, 361, Vec2::new(250.0, 200.0));
     let met = near.iter().filter(|(d, _)| *d < 0.5).count();
     assert_eq!(met, reaching, "{near:?}");
 }
@@ -219,11 +231,14 @@ fn with_no_way_in_time_they_are_skipped_or_go_anyway_at_speed() {
 fn a_scene_aims_once_and_every_world_of_it_shares_the_answer() {
     let (scene, me, kit) = fan_in_a_circle(|s| s.count = 2);
     let r = resolved(&scene, &kit);
-    let one = World::build(&scene, &r, &kit.sims);
-    let two = World::build(&scene, &r, &kit.sims);
+    let one = fired_with(&scene, &r, &kit);
+    let two = fired_with(&scene, &r, &kit);
     let (a, b) = (st(&one, me).aimed.last().unwrap(), st(&two, me).aimed.last().unwrap());
     assert!(Arc::ptr_eq(a, b), "the second build took the kept answer");
-    assert!(is_kept(one.fingerprint.unwrap(), me, What::Round { round: 1, fire: 0 }));
+    assert!(
+        is_kept(one.fingerprint.unwrap(), me, What::Round { round: 1, fire: 1 }),
+        "a round at 0 s fires on the first step"
+    );
     // The same run either way.
     let run = |mut w: World| {
         let mut log = Log::default();
@@ -242,11 +257,11 @@ fn later_rounds_aim_from_where_the_world_is_then() {
         s.rounds = 2;
         s.arrive_after = 1.2;
     });
-    let mut world = World::build(&scene, &resolved(&scene, &kit), &kit.sims);
+    let mut world = fired(&scene, &kit);
     let mut log = Log::default();
     let target = Vec2::new(250.0, 200.0);
-    nearest(&mut world, &kit, &mut log, me, 288, target);
-    let second = nearest(&mut world, &kit, &mut log, me, 480 + 288, target);
+    nearest(&mut world, &kit, &mut log, me, 1 + 288, target);
+    let second = nearest(&mut world, &kit, &mut log, me, 1 + 480 + 288, target);
     let aims = st(&world, me).aimed.last().cloned().unwrap();
     assert_eq!(aims.round, 2);
     let reaching = aims.balls.iter().filter(|b| b.as_ref().is_some_and(|b| b.reaches)).count();
@@ -334,4 +349,30 @@ fn through_bounces_shows_its_rows() {
     assert!(!shown(&keep, "aim_bounces"));
     let straight = EmitterSettings { aim: Aim::StraightIn, ..through };
     assert!(shown(&straight, "gap") && shown(&straight, "order"));
+}
+
+#[test]
+fn a_target_that_catches_takes_the_ball_on_its_first_way_by() {
+    // Straight at the target along the middle line, at least one bounce: the way back off the
+    // circle's side passes it again, unless it catches the ball the first time by.
+    let aim_for = |catches: Catches| {
+        let (mut scene, me, kit) = bouncing(Vec2::ZERO, Vec2::new(-250.0, 0.0), Vec2::new(250.0, 0.0), |s| {
+            s.count = 1;
+            s.directions = Directions::OneWay;
+            s.aim_angle = 0.0;
+            s.speed = 500.0;
+            s.arrive_after = 2.0;
+            s.aim_bounces = 1;
+        });
+        let to = ThingId(EmitterSettings::from_params(&scene.things[&me].params).aim_target as u32);
+        let mut t = EmitterSettings::from_params(&scene.things[&to].params);
+        t.catches = catches;
+        t.catch_size = 20.0;
+        scene.things.get_mut(&to).unwrap().params = t.to_params();
+        let world = fired(&scene, &kit);
+        st(&world, me).aimed.last().cloned().unwrap().balls[0].as_ref().map(|b| b.reaches)
+    };
+    assert_eq!(aim_for(Catches::Nothing), Some(true), "back off the wall through the target");
+    assert_eq!(aim_for(Catches::PassThrough), Some(true), "passing through lets it fly on");
+    assert_eq!(aim_for(Catches::Remove), None, "caught on the way out: no way after a bounce");
 }

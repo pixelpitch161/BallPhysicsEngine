@@ -7,7 +7,9 @@
 //! Only the last [`MOST_SCENES`] fingerprints used are kept, and about [`MOST_BALLS`] aimed balls.
 
 use std::any::Any;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
 use bpe_core::ThingId;
@@ -62,6 +64,38 @@ impl Store {
     }
 }
 
+thread_local! {
+    /// The stop flag of the background run this thread works for, if any.
+    static STOP: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+}
+
+/// While it lives, this thread works for a run that `stop` can tell to give up: test flights
+/// stop flying ([`stopped`]) and nothing worked out then is kept.
+pub struct StopWith(Option<Arc<AtomicBool>>);
+
+impl StopWith {
+    pub fn new(stop: Option<Arc<AtomicBool>>) -> Self {
+        StopWith(STOP.with(|s| s.replace(stop)))
+    }
+}
+
+impl Drop for StopWith {
+    fn drop(&mut self) {
+        let before = self.0.take();
+        STOP.with(|s| *s.borrow_mut() = before);
+    }
+}
+
+/// The stop flag this thread works under (handed on to the threads it starts).
+pub fn stop_flag() -> Option<Arc<AtomicBool>> {
+    STOP.with(|s| s.borrow().clone())
+}
+
+/// Whether the run this thread works for has been told to stop.
+pub fn stopped() -> bool {
+    STOP.with(|s| s.borrow().as_ref().is_some_and(|f| f.load(Ordering::Relaxed)))
+}
+
 fn store() -> &'static (Mutex<Store>, Condvar) {
     static STORE: OnceLock<(Mutex<Store>, Condvar)> = OnceLock::new();
     STORE.get_or_init(Default::default)
@@ -75,9 +109,7 @@ impl Drop for Unfinished {
     fn drop(&mut self) {
         if let Some(key) = self.0.take() {
             let (lock, wake) = store();
-            if let Ok(mut s) = lock.lock() {
-                s.entries.remove(&key);
-            }
+            lock.lock().unwrap_or_else(|e| e.into_inner()).entries.remove(&key);
             wake.notify_all();
         }
     }
@@ -103,7 +135,10 @@ pub fn cached<T: Clone + Send + Sync + 'static>(
                 Some(Entry::Done { answer, .. }) => {
                     if let Some(t) = answer.downcast_ref::<T>() {
                         let t = t.clone();
-                        s.touch(fp);
+                        // A run told to stop doesn't keep its scene from going.
+                        if !stopped() {
+                            s.touch(fp);
+                        }
                         return t;
                     }
                     // Another kind of answer under the same key: work it out afresh.
@@ -117,6 +152,11 @@ pub fn cached<T: Clone + Send + Sync + 'static>(
     }
     let mut unfinished = Unfinished(Some(key));
     let answer = work();
+    if stopped() {
+        // Given up part way: not kept (the guard takes the entry back out, so a waiting thread
+        // works it out itself).
+        return answer;
+    }
     unfinished.0 = None;
     let mut s = lock.lock().unwrap_or_else(|e| e.into_inner());
     let n = balls(&answer);
@@ -129,6 +169,7 @@ pub fn cached<T: Clone + Send + Sync + 'static>(
 }
 
 /// Whether the answer for `what` of `me` in scene `fp` is kept.
+#[cfg(test)]
 pub fn is_kept(fp: u64, me: ThingId, what: What) -> bool {
     let s = store().0.lock().unwrap_or_else(|e| e.into_inner());
     matches!(s.entries.get(&(fp, me, what)), Some(Entry::Done { .. }))
@@ -204,5 +245,20 @@ mod tests {
         s.trim(4, 15);
         assert_eq!(s.scenes, vec![3]);
         assert_eq!(s.entries.len(), 1);
+    }
+
+    #[test]
+    fn a_run_told_to_stop_keeps_nothing() {
+        let fp = BASE + 200;
+        let what = What::Round { round: 2, fire: 40 };
+        let stop = Arc::new(AtomicBool::new(true));
+        {
+            let _stop = StopWith::new(Some(stop.clone()));
+            assert!(stopped());
+            assert_eq!(cached(Some(fp), ThingId(3), what, |_| 1, || 1u8), 1);
+        }
+        assert!(!stopped(), "the guard puts the flag back");
+        assert!(!is_kept(fp, ThingId(3), what));
+        assert_eq!(cached(Some(fp), ThingId(3), what, |_| 1, || 2u8), 2, "worked out afresh");
     }
 }

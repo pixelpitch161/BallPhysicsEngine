@@ -27,7 +27,8 @@ use super::EmitterSettings;
 use super::aim::{Aimer, now};
 use super::aim_cache::{What, cached};
 use super::fire::{direction, start_offset};
-use super::sim::{EmitterState, emitter_state};
+use super::sim::{EmitterState, emitter_state, entry};
+use super::{CatchFrom, Catches};
 
 /// The most test flights the search for one ball's way may take.
 pub const MOST_FLIGHTS: u32 = 40;
@@ -108,6 +109,10 @@ pub struct Lone {
     world: World,
     me: ThingId,
     radius: f32,
+    /// The catch circles that would take the ball out of the world: (on the target, radius).
+    /// On the target, the arc it is caught on is the last it has; on the emitter itself, the
+    /// flight ends there.
+    catchers: Vec<(bool, f32)>,
 }
 
 impl Lone {
@@ -121,10 +126,21 @@ impl Lone {
             lone.lend_cards(world, owner, me);
         }
         lone.bodies.insert(me, Bodies::default());
+        let mut catchers = Vec::new();
         if let Some(st) = emitter_state(world, me) {
             lone.states.insert(me, Box::new(EmitterState::quiet(st.settings.clone())));
+            let target = ThingId(st.settings.aim_target.max(0) as u32);
+            if st.settings.aim_target > 0
+                && target != me
+                && let Some(r) = catch_radius(world, target, owner)
+            {
+                catchers.push((true, r));
+            }
+            if let Some(r) = catch_radius(world, me, owner) {
+                catchers.push((false, r));
+            }
         }
-        Lone { world: lone, me, radius }
+        Lone { world: lone, me, radius, catchers }
     }
 
     /// The moment it stands at.
@@ -140,6 +156,18 @@ impl Lone {
             self.world.step(sims, &mut log);
         }
     }
+}
+
+/// How big `catcher`'s catch circle is for balls of `owner`, when it takes them out of the world
+/// (Remove or Send back out; Pass through lets them fly on).
+fn catch_radius(world: &World, catcher: ThingId, owner: ThingId) -> Option<f32> {
+    let s = &emitter_state(world, catcher)?.settings;
+    let takes = match s.catch_from {
+        CatchFrom::AnyBalls => true,
+        CatchFrom::ItsOwn => owner == catcher,
+        CatchFrom::Chosen => world.names(&s.catch_things, catcher, owner),
+    };
+    (takes && matches!(s.catches, Catches::Remove | Catches::SendBackOut)).then_some(s.catch_size.max(0.0))
 }
 
 /// A ball going by the target: how far off its way the target was (left positive) and when, in
@@ -211,6 +239,8 @@ fn fly(lone: &Lone, aim: &Aimer, p0: Vec2, v: Vec2, most: u64) -> Flight {
     let mut places = vec![p0];
     let mut rel = vec![p0 - aim.target_at(setoff as f64)];
     let mut hits = vec![0u32];
+    let mut last_arc = None;
+    let mut arc = 0usize;
     for _ in 0..most {
         let before = log.len();
         w.step(sims, &mut log);
@@ -223,11 +253,28 @@ fn fly(lone: &Lone, aim: &Aimer, p0: Vec2, v: Vec2, most: u64) -> Flight {
             .iter()
             .filter(|e| e.kind == EventKind::Hit && e.a.thing == lone.me && e.a.item == 0)
             .count();
+        arc += h;
+        let previous = *places.last().unwrap_or(&p0);
+        let target = aim.target_at(w.step as f64);
         places.push(p);
-        rel.push(p - aim.target_at(w.step as f64));
+        rel.push(p - target);
         hits.push(h as u32);
+        // Caught on the way: by the target, the arc it comes in on is its last; by the emitter
+        // itself, it goes no further.
+        let own = w.poses.get(&lone.me).map_or(p0, |pose| pose.position);
+        let caught = |on_target: bool, r: f32| entry(previous, p, if on_target { target } else { own }, r).is_some();
+        if lone.catchers.iter().any(|&(on_target, r)| !on_target && caught(false, r)) {
+            break;
+        }
+        if last_arc.is_none() && lone.catchers.iter().any(|&(on_target, r)| on_target && caught(true, r)) {
+            last_arc = Some(arc);
+        }
     }
-    Flight { passes: passes(&rel, &hits), places }
+    let mut passes = passes(&rel, &hits);
+    if let Some(last) = last_arc {
+        passes.truncate(last + 1);
+    }
+    Flight { passes, places }
 }
 
 /// A way through the target: the speed, the small turn off its own direction (radians), the arc
@@ -289,7 +336,9 @@ enum Try {
 
 impl Search<'_> {
     fn fly_at(&mut self, speed: f64, tweak: f64, most: u64) -> Option<Flight> {
-        if self.left == 0 {
+        // A background run told to stop gives up: its answer is never kept.
+        if self.left == 0 || super::aim_cache::stopped() {
+            self.left = 0;
             return None;
         }
         self.left -= 1;
@@ -588,12 +637,11 @@ pub fn aim_ball(base: &Lone, aim: &Aimer, s: &EmitterSettings, shot: Shot, fire:
     }
     let Some(mut found) = search.best(&speeds, most) else { return unaimed() };
     // When it sets off, and the way checked from then (the walls, the target or the emitter may
-    // have moved), at most twice.
-    // When it sets off, and the way checked from then (the walls, the target or the emitter may
     // have moved by then, changing the way and so when it must set off): a secant on how late it
     // would arrive against when it sets off.
     let leave_at = |start: u64| if start == earliest { fire } else { start + 1 };
-    let late = |found: &Found| -> Option<BallAim> {
+    // `u`: the way it goes from where `found` was worked out.
+    let late = |found: &Found, u: Vec2| -> Option<BallAim> {
         aim.fire_anyway.then(|| BallAim {
             leave: fire,
             velocity: found.velocity(u),
@@ -603,6 +651,7 @@ pub fn aim_ball(base: &Lone, aim: &Aimer, s: &EmitterSettings, shot: Shot, fire:
     };
     search.left += SETTLE_FLIGHTS;
     let mut lone = base.clone();
+    let mut found_u = u;
     let mut tried: Vec<(f64, f64)> = vec![(earliest as f64, earliest as f64 + found.e - arrive as f64)];
     for _ in 0..SETTLE_TRIES {
         let plain = arrive as f64 - found.e;
@@ -613,13 +662,17 @@ pub fn aim_ball(base: &Lone, aim: &Aimer, s: &EmitterSettings, shot: Shot, fire:
         let guess = if guess.is_finite() { guess } else { plain };
         if plain.round() < earliest as f64 && guess.round() < earliest as f64 {
             // It can only get there late.
-            return late(&found);
+            return late(&found, found_u);
         }
         let start = guess.round().max(earliest as f64) as u64;
         if lone.moment() == start {
-            let (_, u) = shot.at(&lone);
+            // Back where `found` was worked out: it gets there in time only if it arrives within
+            // half a step of the others from here.
+            if (start as f64 + found.e - arrive as f64).abs() > 0.5 {
+                break;
+            }
             let path = thin(&found.places);
-            return Some(BallAim { leave: leave_at(start), velocity: found.velocity(u), reaches: true, path });
+            return Some(BallAim { leave: leave_at(start), velocity: found.velocity(found_u), reaches: true, path });
         }
         if lone.moment() > start {
             lone = base.clone();
@@ -631,6 +684,7 @@ pub fn aim_ball(base: &Lone, aim: &Aimer, s: &EmitterSettings, shot: Shot, fire:
         search.left = again.left;
         let Some(next) = next else { break };
         found = next;
+        found_u = u;
         let off = start as f64 + found.e - arrive as f64;
         if off.abs() <= 0.5 {
             let path = thin(&found.places);
@@ -658,9 +712,11 @@ fn in_parallel<T: Send>(n: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
     }
     let next = AtomicUsize::new(0);
     let done: Mutex<Vec<(usize, T)>> = Mutex::new(Vec::with_capacity(n));
+    let stop = super::aim_cache::stop_flag();
     std::thread::scope(|scope| {
         for _ in 0..threads {
             scope.spawn(|| {
+                let _stop = super::aim_cache::StopWith::new(stop.clone());
                 loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     if i >= n {

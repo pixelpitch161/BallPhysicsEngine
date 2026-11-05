@@ -217,3 +217,23 @@ pub fn cached<T: Clone + Send + Sync + 'static>(fp: Option<u64>, me: ThingId, wh
 - Don't keep per-frame preview state; the paths come from the latest round's `RoundAim` in the world.
 - Don't make up colours in editor code; the label and paths use design-system tokens.
 - No built-in scenes; don't re-bless existing goldens.
+
+## 6. Changes after the review
+
+- **A round at 0 s aimed through bounces fires on the first step**, not in `after_build`: it sets off from the same
+  moment (`now(1) = 0`) and arrives one step after Arrive after. Building a world stays quick (the editor's own
+  playback never test-fires on the UI thread), and its flights see the keys (`World.animated` is set after
+  `after_build`).
+- **Stopping**: the editor's background run carries a stop flag (`aim_cache::StopWith`, handed to the search's worker
+  threads); a stopped run's flights give up and nothing it worked out is kept or touched in the cache. The run marks
+  itself done however it ends (a panic too), so the playback is never held for good.
+- **Catch circles in the flights**: a target that catches the shooter's balls (Remove or Send back out) ends the arcs
+  at the one it is first entered on; the emitter's own catch circle ends the flight.
+- `World::lone` keeps only the kept things' resolved settings (flights are cloned many times) and freezes a thing
+  riding one ball of a left-out thing where it is.
+- Settling: a start the secant comes back to only counts when it arrives within half a step from there; Fire anyway
+  late goes the way found from where it was worked out.
+- Left as they are (noted in the PR): the sound thread isn't held behind the background run (it waits on the same
+  cache entries); a caught ball's owner's keys and its hit count aren't in its flights; sibling order isn't in the
+  fingerprint (before this part).
+

@@ -435,8 +435,29 @@ impl World {
         let animated = self.animated.as_ref().and_then(|a| {
             let mut animation = a.animation.clone();
             animation.retain(|thing, _, _| keep(thing));
-            (!animation.is_empty()).then(|| Animated { animation, resolved: a.resolved.clone() })
+            // Only the kept things' resolved settings: a flight is cloned many times.
+            let resolved = Resolved {
+                things: a.resolved.things.iter().filter(|(id, _)| kept(id)).map(|(id, r)| (*id, r.clone())).collect(),
+                problems: Vec::new(),
+            };
+            (!animation.is_empty()).then_some(Animated { animation, resolved })
         });
+        // A thing riding one ball of a thing left out stays where it is now: its parent's balls
+        // are gone, so it would fall back to its own place.
+        let attach = self
+            .attach
+            .iter()
+            .map(|(id, entry)| {
+                let (parent, attach, _) = entry;
+                if matches!(attach, Attach::Ride { item: Some(_), .. }) && !keep(*parent) {
+                    let pose = self.anchor(*id);
+                    let transform = Transform { position: pose.position, rotation: pose.angle };
+                    (*id, (*parent, Attach::Group, transform))
+                } else {
+                    (*id, *entry)
+                }
+            })
+            .collect();
         World {
             step: self.step,
             steps_per_second: self.steps_per_second,
@@ -456,7 +477,7 @@ impl World {
             order: self.order.iter().copied().filter(kept).collect(),
             pairs: Pairs::default(),
             walls_before: BTreeMap::new(),
-            attach: self.attach.clone(),
+            attach,
             // A card varied across the balls answers with its own values: the lone ball is none of them.
             modules: self
                 .modules
