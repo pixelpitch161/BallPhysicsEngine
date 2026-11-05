@@ -21,7 +21,7 @@ pub use bodies::Bodies;
 pub use camera::CameraView;
 pub use events::{Event, EventKind, Log, Party};
 pub use history::{History, HistoryWant};
-pub use pairs::{Grid, Pairs, Support};
+pub use pairs::{Grid, Pairs, Support, pop};
 pub use playback::Playback;
 pub use plugins::{Limits, ModuleSim, ModuleState, PairRule, SimCx, Sims, ThingSim, ThingState, state, state_mut};
 pub use pose::Pose;

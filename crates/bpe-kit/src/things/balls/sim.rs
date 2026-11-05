@@ -4,6 +4,7 @@ use bpe_core::{ResolvedThing, Settings, Thing, ThingId};
 use bpe_runtime::{Bodies, Log, Pose, ThingSim, World, state, state_mut};
 use glam::Vec2;
 
+use super::rows::BallRows;
 use super::shapes::offsets;
 use super::{BallsSettings, Launch, Release, ReleaseOrder};
 use crate::rng::Rng;
@@ -16,11 +17,9 @@ pub struct BallsSim;
 #[derive(Clone, Debug, PartialEq)]
 pub struct BallsState {
     pub settings: BallsSettings,
-    /// Each body row's ball number: its place in the group's shape. Balls let go one by one
-    /// are pushed in the order they go, so a row isn't always its number.
-    pub numbers: Vec<u32>,
-    /// Each body row's size, as a share of the Size setting (Variety).
-    pub size_factor: Vec<f32>,
+    /// Each body row's own facts. A row's ball number is its place in the group's shape: balls
+    /// let go one by one are pushed in the order they go, so a row isn't always its number.
+    pub rows: BallRows,
     /// Where each ball starts from the thing, by number.
     pub offsets: Vec<Vec2>,
     /// The balls still to be let go: the step each goes on and its number, soonest last.
@@ -30,18 +29,18 @@ pub struct BallsState {
 impl BallsState {
     /// The ball number of body row `row` (the row itself for anything not listed).
     pub fn number(&self, row: usize) -> u32 {
-        self.numbers.get(row).copied().unwrap_or(row as u32)
+        self.rows.number(row)
     }
 }
 
-/// The ball numbers of `thing`'s body rows, when it is a Balls thing in `world`.
+/// The ball numbers of `thing`'s body rows, when it is a thing with ball rows (Balls, Emitter)
+/// in `world`.
 pub fn numbers(world: &World, thing: ThingId) -> Option<&[u32]> {
-    let st = world.states.get(&thing)?;
-    st.as_any().downcast_ref::<BallsState>().map(|s| s.numbers.as_slice())
+    super::rows::rows(world, thing).map(|r| r.numbers.as_slice())
 }
 
-/// The group number of `thing`'s ball in body row `item` (the row itself when `thing` is not a
-/// Balls thing).
+/// The group number of `thing`'s ball in body row `item` (the row itself when `thing` has no
+/// ball rows).
 pub fn ball_number(world: &World, thing: ThingId, item: u32) -> u32 {
     numbers(world, thing).and_then(|n| n.get(item as usize).copied()).unwrap_or(item)
 }
@@ -166,8 +165,8 @@ fn push_ball(bodies: &mut Bodies, st: &mut BallsState, at: Pose, number: u32) {
     let radius = if factor == 1.0 { s.radius } else { s.radius * factor };
     let row = bodies.push(position, velocity, radius) as usize;
     bodies.number[row] = number;
-    st.numbers.push(number);
-    st.size_factor.push(factor);
+    let launch = if launched.length_squared() > 0.0 { launched.to_angle() } else { 0.0 };
+    st.rows.push(number, factor, 0, launch, offset);
 }
 
 impl ThingSim for BallsSim {
@@ -183,13 +182,7 @@ impl ThingSim for BallsSim {
         let places = offsets(&settings);
         let order = release_order(&settings, &places);
         let rate = world.steps_per_second;
-        let mut st = BallsState {
-            settings,
-            numbers: Vec::with_capacity(places.len()),
-            size_factor: Vec::with_capacity(places.len()),
-            offsets: places,
-            pending: Vec::new(),
-        };
+        let mut st = BallsState { settings, rows: BallRows::default(), offsets: places, pending: Vec::new() };
         let mut bodies = Bodies::default();
         for (k, number) in order.into_iter().enumerate() {
             match release_step(&st.settings, k, rate) {
@@ -241,7 +234,7 @@ impl ThingSim for BallsSim {
         {
             let sized = |size: f32, factor: f32| if factor == 1.0 { size } else { size * factor };
             for (row, r) in bodies.radius.iter_mut().enumerate() {
-                let factor = st.size_factor.get(row).copied().unwrap_or(1.0);
+                let factor = st.rows.size_factor.get(row).copied().unwrap_or(1.0);
                 // A ball still at its own size takes the new one exactly; a grown one keeps its
                 // growth in proportion.
                 *r = if *r == sized(old, factor) || old <= 0.0 { sized(new, factor) } else { *r * (new / old) };
@@ -391,7 +384,7 @@ mod tests {
         assert!(b.velocity.iter().all(|v| *v == Vec2::new(300.0, -200.0)));
         assert!(b.radius.iter().all(|r| *r == 24.0));
         let st = bpe_runtime::state::<super::BallsState>(w.states[&BALLS].as_ref());
-        assert_eq!(st.numbers, (0..8).collect::<Vec<u32>>());
+        assert_eq!(st.rows.numbers, (0..8).collect::<Vec<u32>>());
     }
 
     #[test]

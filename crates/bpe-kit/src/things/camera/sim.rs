@@ -35,7 +35,14 @@ const SHAKE_RATE: f64 = 18.0;
 pub fn follow_point(world: &World, settings: &CameraSettings, me: ThingId) -> Option<(Vec2, Vec2, Vec2)> {
     let (mut lo, mut hi) = (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY));
     let (mut sum, mut vel, mut n) = (Vec2::ZERO, Vec2::ZERO, 0u32);
-    for id in world.matching(&settings.follow_target, me) {
+    let mut followed = world.matching(&settings.follow_target, me);
+    // Following Balls follows every thing's balls: emitters' too.
+    if settings.follow_target == bpe_core::Target::Kind(bpe_core::KindId::from("balls")) {
+        let emitters = bpe_core::Target::Kind(bpe_core::KindId::from(crate::things::emitter::KIND));
+        followed.extend(world.matching(&emitters, me));
+        followed.sort();
+    }
+    for id in followed {
         if let Some(bodies) = world.bodies.get(&id) {
             for i in 0..bodies.len() {
                 if !bodies.alive[i] {

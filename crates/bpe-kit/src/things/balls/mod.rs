@@ -1,6 +1,7 @@
 //! Balls: one ball or a group of them in a shape, launched together or one by one.
 
 pub mod draw;
+pub mod rows;
 pub mod shapes;
 pub mod sim;
 

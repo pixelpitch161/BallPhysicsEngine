@@ -33,6 +33,9 @@ pub use things::balls::sim::{BallsSim, BallsState};
 pub use things::balls::{BallsKind, BallsSettings, GroupShape, Launch, Release, ReleaseOrder};
 pub use things::camera::sim::{CameraSim, CameraState};
 pub use things::camera::{CameraKind, CameraSettings};
+pub use things::emitter::draw::EmitterDraw;
+pub use things::emitter::sim::{EmitterSim, EmitterState};
+pub use things::emitter::{EmitterKind, EmitterSettings};
 pub use things::folder::{FolderKind, FolderSettings, FolderSim};
 pub use things::scene::ROOT_CARDS;
 pub use things::scene::draw::SceneDraw;
@@ -48,6 +51,7 @@ pub fn sims() -> Sims {
     s.add_thing(SceneSim);
     s.add_thing(ShapeSim);
     s.add_thing(BallsSim);
+    s.add_thing(EmitterSim);
     s.add_thing(FolderSim);
     s.add_thing(CameraSim);
     s.add_module(BasicMotionSim);
@@ -61,6 +65,7 @@ pub fn draws() -> Draws {
     d.add(SceneDraw);
     d.add(ShapeDraw);
     d.add(BallsDraw);
+    d.add(EmitterDraw);
     for b in &bpe_gfx::effects::BUILTINS {
         d.add_module(EffectDraw(b));
     }
@@ -89,6 +94,7 @@ pub fn registry() -> Registry {
     r.add_thing(SceneKind);
     r.add_thing(ShapeKind);
     r.add_thing(BallsKind);
+    r.add_thing(EmitterKind);
     r.add_thing(FolderKind);
     r.add_thing(CameraKind);
     r.add_module(BasicLookKind);

@@ -232,7 +232,7 @@ pub(crate) fn collide_pairs(
         rules.push((*thing, sim, s.state.as_ref(), rule, bounciness, press(*thing)));
         let rule = rules.len() - 1;
         for i in 0..b.len() {
-            if b.alive[i] {
+            if b.alive[i] && !b.held[i] {
                 largest = largest.max(b.radius[i]);
                 balls.push(Ball {
                     thing: *thing,
@@ -438,7 +438,7 @@ pub(crate) fn collide_pairs(
 }
 
 /// Removes ball `item` of `thing` and logs it.
-pub(crate) fn pop(bodies: &mut Bodies, item: usize, thing: ThingId, step: u64, log: &mut Log) {
+pub fn pop(bodies: &mut Bodies, item: usize, thing: ThingId, step: u64, log: &mut Log) {
     bodies.alive[item] = false;
     log.push(Event {
         step,

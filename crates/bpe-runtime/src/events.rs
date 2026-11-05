@@ -22,6 +22,12 @@ pub enum EventKind {
     Hit,
     /// An item was removed.
     Remove,
+    /// A ball was fired: `a` the ball, `b` its thing with the round it belongs to as the item;
+    /// `point` where it starts, `normal` its direction and `speed` its speed.
+    Spawn,
+    /// A ball's centre came into a catcher: `a` the ball, `b` the catcher with the ball's round as
+    /// the item; `point` where it crossed the edge, `speed` how fast it was going.
+    Enter,
 }
 
 impl EventKind {
@@ -31,6 +37,8 @@ impl EventKind {
             EventKind::Hit => 0,
             // 1 and 3 to 7 were kinds that are gone; the numbers stay so hashes stay the same.
             EventKind::Remove => 2,
+            EventKind::Spawn => 8,
+            EventKind::Enter => 9,
         }
     }
 }
@@ -244,6 +252,7 @@ mod tests {
     fn tags_follow_the_spec_order() {
         assert_eq!(EventKind::Hit.tag(), 0);
         assert_eq!(EventKind::Remove.tag(), 2);
+        assert_eq!((EventKind::Spawn.tag(), EventKind::Enter.tag()), (8, 9));
     }
 
     #[test]

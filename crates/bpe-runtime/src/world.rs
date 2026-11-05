@@ -489,7 +489,7 @@ impl World {
             }
             bodies.start.copy_from_slice(&bodies.position);
             for i in 0..bodies.len() {
-                if bodies.alive[i] {
+                if bodies.alive[i] && !bodies.held[i] {
                     let v = bodies.velocity[i];
                     bodies.position[i] += v * dt;
                 }
@@ -536,7 +536,7 @@ impl World {
                 let decider = decide(sims, wall_bounce, mover_bounce);
                 let special = is_special(own, &matcher, *mover, *wall_id);
                 for i in 0..bodies.len() {
-                    if !bodies.alive[i] {
+                    if !bodies.alive[i] || bodies.held[i] {
                         continue;
                     }
                     let velocity = bodies.velocity[i];
@@ -1265,6 +1265,24 @@ mod tests {
         assert!(!w.bodies[&DOTS].alive[0]);
         assert_eq!(log.events().iter().filter(|e| e.kind == EventKind::Hit && e.a.thing == DOTS).count(), 2);
         assert!(w.bodies[&DOTS2].alive[0], "the other ball never pops");
+    }
+
+    /// A held ball stays where it is through gravity, the wall it sits on and a ball heading
+    /// into it, and logs nothing; let go, it moves again.
+    #[test]
+    fn a_held_ball_stays_put_through_gravity_walls_and_pairs() {
+        let (scene, resolved, sims) = dots_pair_popping(100);
+        let mut w = World::build(&scene, &resolved, &sims);
+        let held = w.bodies[&DOTS2].position[0];
+        w.bodies.get_mut(&DOTS2).unwrap().held[0] = true;
+        let mut log = Log::default();
+        w.advance_to(3.0, &sims, &mut log);
+        assert_eq!(w.bodies[&DOTS2].position[0], held, "never moved");
+        assert!(log.events().iter().all(|e| e.a.thing != DOTS2 && e.b.is_none_or(|b| b.thing != DOTS2)), "{log:?}");
+        assert!(log.events().iter().any(|e| e.a.thing == DOTS), "the other ball still bounces");
+        w.bodies.get_mut(&DOTS2).unwrap().held[0] = false;
+        w.advance_to(3.5, &sims, &mut log);
+        assert_ne!(w.bodies[&DOTS2].position[0], held, "let go, it falls");
     }
 
     #[test]

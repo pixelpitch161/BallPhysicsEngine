@@ -67,7 +67,7 @@ impl ModuleKind for LayersLookKind {
         &[]
     }
     fn fits(&self, thing_kind: &str) -> bool {
-        thing_kind == "balls"
+        crate::things::balls::rows::has_balls(thing_kind)
     }
 }
 

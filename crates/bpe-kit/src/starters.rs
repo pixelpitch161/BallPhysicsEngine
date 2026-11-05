@@ -7,7 +7,7 @@ use bpe_core::{EditError, Registry, Scene, SlotId, ThingId};
 /// for the slot that fits the thing.
 fn starter_kind(thing: &str, slot: SlotId) -> Option<&'static str> {
     Some(match slot {
-        SlotId::Look if thing == "balls" => crate::modules::look::layers::CARD,
+        SlotId::Look if crate::things::balls::rows::has_balls(thing) => crate::modules::look::layers::CARD,
         SlotId::Look if thing == crate::things::shape::KIND => crate::modules::look::shape::CARD,
         SlotId::Motion => "motion.basic",
         SlotId::Bounce => "bounce.basic",
