@@ -4,7 +4,7 @@
 //! the Speed (a ray is how far a ball flies in half a second).
 
 use bpe_core::{Color, SlotId, Value};
-use bpe_kit::things::emitter::{Catches, Directions, EmitterSettings, StartFrom, draw::round_colours, fire};
+use bpe_kit::things::emitter::{Aim, Catches, Directions, EmitterSettings, StartFrom, draw::round_colours, fire};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Ui};
 use glam::Vec2;
 
@@ -156,9 +156,12 @@ pub fn handle_at(s: &EmitterSettings, map: MiniMap, p: Pos2) -> Option<MiniDrag>
         consider(near(a), MiniDrag::FanEdge(false));
         consider(near(b), MiniDrag::FanEdge(true));
     }
-    for ray in rays(s) {
-        // The aim square sits on the first ray's end; it wins there.
-        consider(near(ray.to) + 0.5, MiniDrag::Speed(ray.k));
+    // Straight in works the speeds out itself.
+    if s.aim != Aim::StraightIn {
+        for ray in rays(s) {
+            // The aim square sits on the first ray's end; it wins there.
+            consider(near(ray.to) + 0.5, MiniDrag::Speed(ray.k));
+        }
     }
     best.map(|(_, w)| w)
 }
@@ -229,7 +232,11 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &OwnCx, s: &EmitterSetti
     painter.text(
         rect.left_bottom() + egui::vec2(6.0, -4.0),
         egui::Align2::LEFT_BOTTOM,
-        "Drag the square to aim · drag a ray end for speed",
+        if s.aim == Aim::StraightIn {
+            "Drag the square to aim"
+        } else {
+            "Drag the square to aim · drag a ray end for speed"
+        },
         egui::FontId::proportional(10.0),
         style::MUTED,
     );
@@ -336,6 +343,15 @@ mod tests {
         let m = map_for(rect, &all);
         let side = rays(&all)[3].to;
         assert_eq!(handle_at(&all, m, m.to_view(side)), Some(MiniDrag::Speed(3)));
+    }
+
+    #[test]
+    fn straight_in_has_no_speed_to_drag() {
+        let s = EmitterSettings { aim: Aim::StraightIn, ..EmitterSettings::default() };
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(300.0, HEIGHT));
+        let m = map_for(rect, &s);
+        assert_eq!(handle_at(&s, m, m.to_view(rays(&s)[3].to)), None);
+        assert_eq!(handle_at(&s, m, m.to_view(aim_handle(&s))), Some(MiniDrag::Aim));
     }
 
     #[test]

@@ -6,7 +6,8 @@ pub mod mini_view;
 pub mod strip;
 
 use bpe_core::{Address, SettingDef, Settings, ThingId, Value};
-use bpe_kit::things::emitter::{self, Catches, EmitterSettings, FireWhen, SitsFocus, foci};
+use bpe_kit::things::emitter::aim::AimCheck;
+use bpe_kit::things::emitter::{self, Aim, Catches, EmitterSettings, FireWhen, SitsFocus, foci};
 use eframe::egui::{RichText, Ui};
 
 use super::{Edit, Inspector, OwnCx, own_grid};
@@ -40,7 +41,7 @@ fn tab_defs(cx: &OwnCx, headings: &[&str]) -> Vec<SettingDef> {
     let Some(kind) = cx.kit.registry.thing(emitter::KIND) else { return Vec::new() };
     kind.settings()
         .iter()
-        .filter(|d| headings.contains(&d.group) && !matches!(d.key, "sits_on" | "sits_focus"))
+        .filter(|d| headings.contains(&d.group) && !matches!(d.key, "sits_on" | "sits_focus" | "aim_target"))
         .cloned()
         .collect()
 }
@@ -77,7 +78,8 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &OwnCx, edits: &mut Vec<
                 // Without a layered Look there is no Ball / Group switch to show the Size by.
                 own_grid(ui, inspector, cx, ("emitter size", id), &tab_defs(cx, &[emitter::SIZE]), edits);
             }
-            own_grid(ui, inspector, cx, ("emitter emit", id), &tab_defs(cx, &emitter::EMIT_HEADINGS), edits);
+            own_grid(ui, inspector, cx, ("emitter emit", id), &tab_defs(cx, &[emitter::FIRE, emitter::ROUNDS]), edits);
+            aim_rows(ui, inspector, cx, &s, edits);
         }
         EmitterTab::Catch => {
             own_grid(ui, inspector, cx, ("emitter catch", id), &tab_defs(cx, &emitter::CATCH_HEADINGS), edits);
@@ -89,6 +91,99 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &OwnCx, edits: &mut Vec<
             own_grid(ui, inspector, cx, ("emitter marker", id), &tab_defs(cx, &emitter::MARKER_HEADINGS), edits);
         }
     }
+}
+
+/// The Aim rows: how it aims, at what (a menu, between Aim and the rest), when the balls arrive and
+/// what happens to those that can't, then what may spoil it.
+fn aim_rows(ui: &mut Ui, inspector: &mut Inspector, cx: &OwnCx, s: &EmitterSettings, edits: &mut Vec<Edit>) {
+    let id = cx.id;
+    let defs = tab_defs(cx, &[emitter::AIM]);
+    let (first, rest): (Vec<SettingDef>, Vec<SettingDef>) = defs.into_iter().partition(|d| d.key == "aim");
+    own_grid(ui, inspector, cx, ("emitter aim", id), &first, edits);
+    if s.aim == Aim::Off || super::is_folded(inspector, (id, None), emitter::AIM) {
+        return;
+    }
+    target_row(ui, cx, s, edits);
+    // The rest of the heading's rows, under it without a heading of their own.
+    let rest: Vec<SettingDef> = rest.into_iter().map(|d| SettingDef { group: "", ..d }).collect();
+    own_grid(ui, inspector, cx, ("emitter aim rest", id), &rest, edits);
+    for line in aim_lines(inspector.aim_checks.get(&id)) {
+        ui.label(RichText::new(line).small().color(style::MUTED));
+    }
+}
+
+/// What the card says under the Aim rows, from the playback's check of the aim.
+pub fn aim_lines(check: Option<&AimCheck>) -> Vec<String> {
+    let Some(c) = check else { return Vec::new() };
+    if c.no_target {
+        return vec!["Pick what to aim at.".to_owned()];
+    }
+    let mut out = Vec::new();
+    if c.cant_reach > 0 {
+        let what = match (c.cant_reach == 1, c.skip) {
+            (true, true) => "it is skipped",
+            (true, false) => "it goes anyway",
+            (false, true) => "they are skipped",
+            (false, false) => "they go anyway",
+        };
+        out.push(format!("{} of {} balls can't reach it in time: {what}.", c.cant_reach, c.of));
+    }
+    if c.in_the_way {
+        out.push("Something in the way: balls may miss.".to_owned());
+    }
+    if c.target_moves {
+        out.push(
+            "The target moves on its own: balls aim where it is heading and miss if it turns or bounces.".to_owned(),
+        );
+    }
+    out
+}
+
+/// What the Target menu can aim at: the other focus of the shape it sits on (when it sits on
+/// one), then every other thing but the scene and the camera, in tree order.
+pub fn targets(scene: &bpe_core::Scene, me: ThingId) -> Vec<(i32, String)> {
+    scene
+        .order
+        .iter()
+        .filter(|id| **id != ThingId::ROOT && **id != me)
+        .filter_map(|id| scene.things.get(id).map(|t| (*id, t)))
+        .filter(|(_, t)| t.kind != "camera")
+        .map(|(id, t)| (id.0 as i32, t.name.clone()))
+        .collect()
+}
+
+/// The Target row: a menu of what the balls can be aimed at.
+fn target_row(ui: &mut Ui, cx: &OwnCx, s: &EmitterSettings, edits: &mut Vec<Edit>) {
+    let list = targets(cx.scene, cx.id);
+    let auto = if s.sits_on > 0 { "The other focus" } else { "Nothing" };
+    // A target that has gone aims at nothing.
+    let gone = if s.aim_target > 0 { "Nothing" } else { auto };
+    let shown = list.iter().find(|(id, _)| *id == s.aim_target).map_or(gone, |(_, name)| name.as_str()).to_owned();
+    settings_like_grid(("aim target", cx.id)).show(ui, |ui| {
+        let label = grid_label(ui, cx.label_width, "Target")
+            .on_hover_text("What the balls arrive at together: another emitter or the middle of any thing");
+        ui.menu_button(shown, |ui| {
+            ui.set_min_width(180.0);
+            let hover = if s.sits_on > 0 {
+                "The focus across from the one it sits on"
+            } else {
+                "Sit it on a shape's focus to aim at the other one"
+            };
+            if ui.selectable_label(s.aim_target <= 0, auto).on_hover_text(hover).clicked() {
+                edits.push(Edit::SetOwn("aim_target".into(), Value::Int(0)));
+                ui.close();
+            }
+            for (id, name) in &list {
+                if ui.selectable_label(s.aim_target == *id, name).clicked() {
+                    edits.push(Edit::SetOwn("aim_target".into(), Value::Int(*id as i64)));
+                    ui.close();
+                }
+            }
+        })
+        .response
+        .labelled_by(label.id);
+        ui.end_row();
+    });
 }
 
 /// A line under the Catch rows saying what the choice does that the rows can't.
@@ -371,6 +466,48 @@ mod tests {
             "edge touching doesn't spoil a circle"
         );
         assert_eq!(sits_on_hint(&s, None, false, false), None);
+    }
+
+    #[test]
+    fn aiming_shows_its_rows_and_the_target_menu_picks_another_emitter() {
+        let mut h = harness();
+        assert_eq!(h.query_all_by_label("Arrive after").count(), 0, "Aim off: no aim rows");
+        assert!(h.query_all_by_label("Speed").next().is_some());
+        let other = {
+            let s = h.state_mut();
+            let other = bpe_kit::add_thing(&mut s.scene, &s.kit.registry, emitter::KIND, ThingId::ROOT).unwrap();
+            s.scene.rename_thing(other, "Catcher");
+            let me = s.emitter;
+            s.scene.things.get_mut(&me).unwrap().params.set("aim", Value::Choice("straight_in".into()));
+            s.resolved = resolve(&s.scene, &s.kit.registry);
+            other
+        };
+        h.run();
+        assert!(h.query_all_by_label("Arrive after").next().is_some());
+        assert!(h.query_all_by_label("Can't reach").next().is_some());
+        assert_eq!(h.query_all_by_label("Speed").count(), 0, "Straight in works the speed out");
+        h.get_by_label("Target").click();
+        h.run();
+        h.get_by_label("Catcher").click();
+        h.run();
+        assert_eq!(own(&h, "aim_target"), Some(Value::Int(other.0 as i64)));
+        // What the playback's check says shows under the rows.
+        let id = h.state().emitter;
+        let check = AimCheck { in_the_way: true, cant_reach: 3, of: 10, skip: true, ..AimCheck::default() };
+        h.state_mut().inspector.aim_checks.insert(id, check);
+        h.run();
+        assert!(h.query_by_label("3 of 10 balls can't reach it in time: they are skipped.").is_some());
+        assert!(h.query_by_label("Something in the way: balls may miss.").is_some());
+    }
+
+    #[test]
+    fn aim_lines_say_what_to_fix() {
+        assert!(aim_lines(None).is_empty());
+        let none = AimCheck { no_target: true, ..AimCheck::default() };
+        assert_eq!(aim_lines(Some(&none)), ["Pick what to aim at."]);
+        let one = AimCheck { cant_reach: 1, of: 4, ..AimCheck::default() };
+        assert_eq!(aim_lines(Some(&one)), ["1 of 4 balls can't reach it in time: it goes anyway."]);
+        assert!(aim_lines(Some(&AimCheck { of: 4, ..AimCheck::default() })).is_empty());
     }
 
     #[test]

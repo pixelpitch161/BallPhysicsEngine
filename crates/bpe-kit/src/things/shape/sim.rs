@@ -56,7 +56,7 @@ impl ShapeState {
     }
 
     /// The smallest `scale` the settings allow.
-    fn floor(&self) -> f32 {
+    pub fn floor(&self) -> f32 {
         (self.settings.min_size / self.settings.unit().max(1e-3)).min(1.0)
     }
 

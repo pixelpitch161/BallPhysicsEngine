@@ -118,6 +118,14 @@ pub struct World {
     sound: Option<std::sync::Arc<dyn crate::SoundAt>>,
 }
 
+/// A thing's Motion or Bounce card as the world has it: see [`World::card`].
+#[derive(Clone, Copy)]
+pub struct Card<'a> {
+    pub kind: &'a str,
+    pub state: &'a dyn ThingState,
+    pub varies: bool,
+}
+
 /// See [`World::animated`].
 #[derive(Clone)]
 struct Animated {
@@ -396,6 +404,14 @@ impl World {
                 self.history.insert(thing, new);
             }
         }
+    }
+
+    /// `thing`'s card in `slot` (Motion or Bounce) as the world steps it now: its kind, its
+    /// prepared state (the card's own, not a ball's when it varies across the balls) and whether
+    /// it varies. `None` when the thing has no such card with a sim.
+    pub fn card(&self, thing: ThingId, slot: SlotId) -> Option<Card<'_>> {
+        let s = self.modules.get(&thing)?.get(&slot)?;
+        Some(Card { kind: &s.kind, state: s.state.as_ref(), varies: s.varies() })
     }
 
     /// Where body row `row` of `thing` sits in the spreads of its varied settings: as its sim
