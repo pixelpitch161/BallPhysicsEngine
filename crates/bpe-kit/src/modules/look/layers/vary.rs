@@ -43,7 +43,9 @@ fn whole(kind: &str, key: &str) -> bool {
 
 /// Where body row `row` of the thing being drawn sits in the spreads, as it moves now.
 pub fn spread_of(cx: &DrawCx, row: usize) -> BallSpread {
-    if let Some(s) = crate::things::balls::sim::spread_in(cx.world, cx.thing.id, row) {
+    if let Some(s) = crate::things::balls::sim::spread_in(cx.world, cx.thing.id, row)
+        .or_else(|| crate::things::emitter::sim::spread_in(cx.world, cx.thing.id, row))
+    {
         return s;
     }
     let bodies = cx.world.bodies.get(&cx.thing.id);

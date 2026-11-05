@@ -4,8 +4,11 @@
 //! (see [`classic_look`], [`classic_motion`] and [`classic_scene_settings`]), so the goldens and
 //! pictures stay put.
 
+#[path = "scenes_emitter.rs"]
+mod emitter;
 #[path = "scenes_stage5.rs"]
 mod stage5;
+pub use emitter::emitter_scenes;
 pub use stage5::{stage5, stage5_with_twins};
 
 use bpe_core::{
@@ -51,6 +54,7 @@ pub fn all(reg: &Registry) -> Vec<(String, Scene)> {
     scenes.push(("Blend modes".into(), blend_demo(reg)));
     scenes.push(("Graded sunset".into(), graded_sunset(reg)));
     scenes.push(("Ellipse focus".into(), ellipse_focus(reg)));
+    scenes.extend(emitter_scenes(reg));
     scenes
 }
 
@@ -854,7 +858,7 @@ mod tests {
     fn stage_scenes_resolve_and_round_trip() {
         let reg = registry();
         let scenes = scenes::all(&reg);
-        assert_eq!(scenes.len(), 16);
+        assert_eq!(scenes.len(), 18);
         let in_order: Vec<String> = [
             scenes::stage2(&reg),
             scenes::stage3(&reg),
@@ -865,6 +869,7 @@ mod tests {
                 ("Graded sunset".into(), scenes::graded_sunset(&reg)),
                 ("Ellipse focus".into(), scenes::ellipse_focus(&reg)),
             ],
+            scenes::emitter_scenes(&reg),
         ]
         .concat()
         .into_iter()
@@ -875,7 +880,8 @@ mod tests {
         assert_eq!(names[..5], ["One ball", "Reel block", "Box drop", "Spinning hexagon", "Shrinking ring"]);
         assert_eq!(names[5..7], ["Ball pit", "Riders"]);
         assert_eq!(names[7..12], ["Lava ball", "Confetti drop", "Spark block", "Kaleido hexagon", "Neon ring"]);
-        assert_eq!(names[12..], ["Colour paints", "Blend modes", "Graded sunset", "Ellipse focus"]);
+        assert_eq!(names[12..16], ["Colour paints", "Blend modes", "Graded sunset", "Ellipse focus"]);
+        assert_eq!(names[16..], ["Emitter rounds", "Emitter chain"]);
         for (name, scene) in &scenes {
             assert_eq!(&scene.name, name);
             assert!(crate::resolve_scene(scene, &reg).problems.is_empty(), "{name}");

@@ -270,57 +270,9 @@ impl BallCx<'_> {
     /// The strip through `path`, `widths` half wide and `bases` coloured at each point, with
     /// what its sub-layers add.
     fn strips(&self, path: &Path, widths: &[f32], bases: &[[f32; 4]], out: &mut Pieces) {
-        let (trail, subs) = (self.trail, &self.layer.subs);
-        let n = path.len();
-        let fade: Vec<f32> = (0..n).map(|k| trail.fade.at(path.along(k))).collect();
-        let head = widths.first().copied().unwrap_or(0.0).max(1e-3);
-        let colours = |upto: usize| -> Vec<[f32; 4]> {
-            (0..n).map(|k| coloured(subs, upto, bases[k], self.balls.hit(self.i))).collect()
-        };
-        let own = colours(subs.len());
-        let shaded: Vec<[f32; 4]> = (0..n).map(|k| shade(trail, own[k], fade[k])).collect();
-        let adds = shaded.first().is_some_and(|c| c[3] < 0.0);
-        let plain = StreakStyle::default();
-        push_trail(&mut out.strips[OWN], &path.points, widths, &shaded, plain, AA_MARGIN);
-        for (at, sub) in subs.iter().enumerate() {
-            match sub {
-                SubLayer::Shadow(s) if s.opacity > 0.0 => {
-                    let off = shadow_offset(s, self.radius);
-                    let points: Vec<Vec2> = path.points.iter().map(|p| *p + off).collect();
-                    let c = s.colour.to_linear();
-                    let colours: Vec<[f32; 4]> =
-                        fade.iter().map(|f| [c[0], c[1], c[2], s.opacity.clamp(0.0, 1.0) * f]).collect();
-                    let softness = (s.softness.max(0.0) * self.radius / head).min(1.0);
-                    let style = StreakStyle { softness, band: 0.0 };
-                    push_trail(&mut out.strips[SHADOW], &points, widths, &colours, style, AA_MARGIN);
-                }
-                SubLayer::Glow(g) if g.strength > 0.0 && g.opacity > 0.0 => {
-                    let same = colours(at);
-                    let reach = g.size.max(0.0) * self.radius;
-                    let wide: Vec<f32> = widths.iter().map(|w| w + reach).collect();
-                    let light: Vec<[f32; 4]> = (0..n)
-                        .map(|k| glow_light(g, sub_colour(g.colour_from, &g.colour, path.along(k), same[k]), fade[k]))
-                        .collect();
-                    let style = StreakStyle { softness: 1.0, band: 0.0 };
-                    push_trail(&mut out.strips[GLOW], &path.points, &wide, &light, style, AA_MARGIN);
-                }
-                SubLayer::Outline(o) if o.width > 0.0 && o.opacity > 0.0 => {
-                    let same = colours(at);
-                    let (_, band) = outline_reach(o, head);
-                    let wide: Vec<f32> = widths.iter().map(|w| outline_reach(o, *w).0).collect();
-                    let cs: Vec<[f32; 4]> = (0..n)
-                        .map(|k| {
-                            let c = sub_colour(o.colour_from, &o.colour, path.along(k), darker(same[k]));
-                            let alpha = o.opacity.clamp(0.0, 1.0) * fade[k] * trail.brightness.clamp(0.0, 1.0) * 2.0;
-                            like_layer(adds, c, alpha.min(1.0))
-                        })
-                        .collect();
-                    let style = StreakStyle { softness: 0.0, band };
-                    push_trail(&mut out.strips[OUTLINE], &path.points, &wide, &cs, style, AA_MARGIN);
-                }
-                _ => {}
-            }
-        }
+        let look =
+            StripLook { trail: self.trail, subs: &self.layer.subs, hit: self.balls.hit(self.i), radius: self.radius };
+        strip_with_subs(&look, path, widths, bases, 0.0, out);
     }
 
     /// One particle of the trail (a dot or a puff) at `at`, `size` half wide, `s` of the way
@@ -336,6 +288,77 @@ impl BallCx<'_> {
         let outline = trail.brightness.clamp(0.0, 1.0) * 2.0;
         let extras = Extras { subs, base, s, fade, unit: self.radius, hit, outline, added: 0.5 };
         particle_with_extras(p, &extras, out);
+    }
+}
+
+/// What a strip and its sub-layers are drawn with: the trail's look (or one standing in for
+/// it), its shown sub-layers, the hit its colour sub-layers read, and the size its sub-layers'
+/// reaches are shares of.
+pub(crate) struct StripLook<'a> {
+    pub trail: &'a TrailLayer,
+    pub subs: &'a [SubLayer],
+    pub hit: HitInfo,
+    pub radius: f32,
+}
+
+/// The strip through `path`, `widths` half wide and `bases` coloured at each point, its own edge
+/// `softness` soft, with what its sub-layers add.
+pub(crate) fn strip_with_subs(
+    look: &StripLook,
+    path: &Path,
+    widths: &[f32],
+    bases: &[[f32; 4]],
+    softness: f32,
+    out: &mut Pieces,
+) {
+    let (trail, subs) = (look.trail, look.subs);
+    let n = path.len();
+    let fade: Vec<f32> = (0..n).map(|k| trail.fade.at(path.along(k))).collect();
+    let head = widths.first().copied().unwrap_or(0.0).max(1e-3);
+    let colours = |upto: usize| -> Vec<[f32; 4]> { (0..n).map(|k| coloured(subs, upto, bases[k], look.hit)).collect() };
+    let own = colours(subs.len());
+    let shaded: Vec<[f32; 4]> = (0..n).map(|k| shade(trail, own[k], fade[k])).collect();
+    let adds = shaded.first().is_some_and(|c| c[3] < 0.0);
+    let plain = StreakStyle { softness, band: 0.0 };
+    push_trail(&mut out.strips[OWN], &path.points, widths, &shaded, plain, AA_MARGIN);
+    for (at, sub) in subs.iter().enumerate() {
+        match sub {
+            SubLayer::Shadow(s) if s.opacity > 0.0 => {
+                let off = shadow_offset(s, look.radius);
+                let points: Vec<Vec2> = path.points.iter().map(|p| *p + off).collect();
+                let c = s.colour.to_linear();
+                let colours: Vec<[f32; 4]> =
+                    fade.iter().map(|f| [c[0], c[1], c[2], s.opacity.clamp(0.0, 1.0) * f]).collect();
+                let softness = (s.softness.max(0.0) * look.radius / head).min(1.0);
+                let style = StreakStyle { softness, band: 0.0 };
+                push_trail(&mut out.strips[SHADOW], &points, widths, &colours, style, AA_MARGIN);
+            }
+            SubLayer::Glow(g) if g.strength > 0.0 && g.opacity > 0.0 => {
+                let same = colours(at);
+                let reach = g.size.max(0.0) * look.radius;
+                let wide: Vec<f32> = widths.iter().map(|w| w + reach).collect();
+                let light: Vec<[f32; 4]> = (0..n)
+                    .map(|k| glow_light(g, sub_colour(g.colour_from, &g.colour, path.along(k), same[k]), fade[k]))
+                    .collect();
+                let style = StreakStyle { softness: 1.0, band: 0.0 };
+                push_trail(&mut out.strips[GLOW], &path.points, &wide, &light, style, AA_MARGIN);
+            }
+            SubLayer::Outline(o) if o.width > 0.0 && o.opacity > 0.0 => {
+                let same = colours(at);
+                let (_, band) = outline_reach(o, head);
+                let wide: Vec<f32> = widths.iter().map(|w| outline_reach(o, *w).0).collect();
+                let cs: Vec<[f32; 4]> = (0..n)
+                    .map(|k| {
+                        let c = sub_colour(o.colour_from, &o.colour, path.along(k), darker(same[k]));
+                        let alpha = o.opacity.clamp(0.0, 1.0) * fade[k] * trail.brightness.clamp(0.0, 1.0) * 2.0;
+                        like_layer(adds, c, alpha.min(1.0))
+                    })
+                    .collect();
+                let style = StreakStyle { softness: 0.0, band };
+                push_trail(&mut out.strips[OUTLINE], &path.points, &wide, &cs, style, AA_MARGIN);
+            }
+            _ => {}
+        }
     }
 }
 

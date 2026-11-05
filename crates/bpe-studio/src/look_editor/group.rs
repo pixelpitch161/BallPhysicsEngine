@@ -60,6 +60,10 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
         group_view.keep_picks_for(cx.id);
         group_view::show(ui, group_view, render.as_ref(), &view_cx, cx.slot, own_step, edits);
     }
+    if view_cx.is_emitter() {
+        emitter_group(ui, inspector, cx, card, picked, s.seed, edits);
+        return;
+    }
     view_tools(ui, inspector, &s, edits);
 
     // ---------- Group ----------
@@ -102,6 +106,42 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
                     edits.push(Edit::SetOwnHere("seed".into(), Value::Int(s.seed as i64 + 1)));
                 }
             }
+        }
+    }
+    ui.add_space(6.0);
+    if fold(ui, inspector, cx.id, "Odd ones out") {
+        odd_ones_out(ui, inspector, cx, card, edits);
+    }
+}
+
+/// Group mode for an emitter: one round laid out, the colour across it, and the Variety and Odd
+/// ones out folds (what it fires and when is on its Emit tab).
+fn emitter_group(
+    ui: &mut Ui,
+    inspector: &mut Inspector,
+    cx: &LookCx,
+    card: Option<&bpe_core::Slot>,
+    picked: Option<LayerId>,
+    seed: i32,
+    edits: &mut Vec<Edit>,
+) {
+    use bpe_kit::things::emitter::{EmitterSettings, VARIETY as EMITTER_VARIETY};
+    ui.label(RichText::new("One round, a moment after it fires").small().color(style::MUTED));
+    if let Some(card) = card {
+        ui.add_space(8.0);
+        colour_section(ui, inspector, cx, card, picked, edits);
+    }
+    ui.add_space(6.0);
+    if fold(ui, inspector, cx.id, VARIETY) {
+        let defs: Vec<SettingDef> = EmitterSettings::defs()
+            .iter()
+            .filter(|d| d.group == EMITTER_VARIETY)
+            .map(|d| SettingDef { group: "", ..d.clone() })
+            .collect();
+        own_rows(ui, cx, VARIETY, &defs, edits);
+        let shuffle = ui.button("Shuffle").on_hover_text("Pick each ball's variety again");
+        if shuffle.clicked() {
+            edits.push(Edit::SetOwnHere("seed".into(), Value::Int(seed as i64 + 1)));
         }
     }
     ui.add_space(6.0);

@@ -157,6 +157,14 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
                 (g.thing, bpe_sound::voices::slot_change_times(&studio.scene, g.thing, log, world, ruler.duration))
             })
             .collect();
+        // An emitter's rounds, numbered from 1 as slots are.
+        for g in groups.iter().filter(|g| g.rounds) {
+            let marks = bpe_kit::things::emitter::sim::round_marks(world, g.thing, ruler.duration)
+                .into_iter()
+                .map(|m| (m.time, m.round.saturating_sub(1) as usize))
+                .collect();
+            timeline.slot_marks.marks.insert(g.thing, marks);
+        }
         timeline.slot_marks.made_for = Some(made_for);
     }
     let mut picked = None;
@@ -288,7 +296,8 @@ fn group_header(
             }
         }
     }
-    slot_ticks(ui, &painter, strip, ruler, group.thing, marks);
+    let word = if group.rounds { "Round" } else { "Slot" };
+    slot_ticks(ui, &painter, strip, ruler, group.thing, marks, word);
     playhead(&painter, studio, ruler, rect);
     // The colour square opens a colour picker for the thing's colour.
     let mut recoloured = None;
@@ -307,7 +316,16 @@ fn group_header(
 }
 
 /// Ticks where a shape's slots change, numbered where they are far enough apart.
-fn slot_ticks(ui: &Ui, painter: &egui::Painter, strip: Rect, ruler: &Ruler, thing: ThingId, marks: &[(f64, usize)]) {
+/// `word` names what a tick starts: "Slot" or "Round".
+fn slot_ticks(
+    ui: &Ui,
+    painter: &egui::Painter,
+    strip: Rect,
+    ruler: &Ruler,
+    thing: ThingId,
+    marks: &[(f64, usize)],
+    word: &str,
+) {
     let mut last_number = f32::NEG_INFINITY;
     for (i, &(time, slot)) in marks.iter().enumerate() {
         let x = ruler.x_of(time);
@@ -324,7 +342,7 @@ fn slot_ticks(ui: &Ui, painter: &egui::Painter, strip: Rect, ruler: &Ruler, thin
             last_number = x;
         }
         if i < NAMED_MARKS {
-            let name = format!("Slot {} from {}", slot + 1, clock(time));
+            let name = format!("{word} {} from {}", slot + 1, clock(time));
             let r = ui.interact(
                 tick.expand2(egui::vec2(2.0, 0.0)),
                 ui.scope_id().with(("slot mark", thing, i, x as i32)),

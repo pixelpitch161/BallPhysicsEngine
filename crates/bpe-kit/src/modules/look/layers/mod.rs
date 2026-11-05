@@ -26,6 +26,7 @@ pub mod shine;
 pub mod subs;
 pub mod trail;
 pub mod vary;
+pub mod wavefront;
 
 use bpe_core::{Choice, LayerKind, LayerSection, ModuleKind, SettingDef, SlotId, Value};
 
@@ -68,7 +69,7 @@ impl ModuleKind for LayersLookKind {
         &[]
     }
     fn fits(&self, thing_kind: &str) -> bool {
-        thing_kind == "balls"
+        crate::things::balls::rows::has_balls(thing_kind)
     }
 }
 
@@ -322,6 +323,13 @@ pub fn kinds() -> Vec<Kind> {
             "Bits let off by each ball: on hits, while it moves, when it pops or steadily.",
             particles::ParticlesLayer::defs,
         ),
+        around_kind(
+            CARD,
+            wavefront::WAVEFRONT,
+            "Wavefront",
+            "A line through each round's balls, in order round the round: a wavefront.",
+            wavefront::WavefrontLayer::defs,
+        ),
         reaction(FLASH, "Flash on hit", "A flash of light where the ball hits something.", FlashOnHit::defs),
         reaction(HUE, "Colour on hit", "Every hit turns the ball's colour round the colour wheel.", ColourOnHit::defs),
         reaction(STRETCH, "Stretch when fast", "Fast balls stretch along their path.", StretchWhenFast::defs),
@@ -469,6 +477,7 @@ mod tests {
                 BLEND,
                 TRAIL,
                 PARTICLES,
+                wavefront::WAVEFRONT,
                 FLASH,
                 HUE,
                 STRETCH,

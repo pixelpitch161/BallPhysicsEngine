@@ -6,6 +6,7 @@ use bpe_core::{Blend, Choice, Color, Gradient, Settings};
 use glam::Vec2;
 
 use crate::rng::Rng;
+pub use crate::things::balls::rows::RoundSpan;
 
 /// What spreads the gradient's colours across the group.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
@@ -25,6 +26,12 @@ pub enum Spread {
     Hits,
     /// Every ball round the gradient together, over time.
     Time,
+    /// The emitter round each ball was fired in, first to last (every ten round and round when
+    /// the rounds don't end). A Balls group's balls are all the first.
+    Round,
+    /// The direction each ball was fired or launched in, once round the gradient from the
+    /// gradient's angle.
+    LaunchAngle,
 }
 
 /// How the colours bunch along the gradient.
@@ -89,11 +96,11 @@ pub struct GroupGradient {
     /// The colours spread across the group.
     #[setting(label = "Colours", keyframe)]
     pub colours: Gradient,
-    /// Which way the colours run across the group, for Place.
-    #[setting(label = "Angle", when = "spread=place", span(-180, 180), unit = "°", keyframe)]
+    /// Which way the colours run across the group, for Place, and where Launch angle starts.
+    #[setting(label = "Angle", when = "spread=place|launch_angle", span(-180, 180), unit = "°", keyframe)]
     pub angle: f32,
     /// How much of the group the gradient spans, 1 being the whole group.
-    #[setting(label = "Stretch", when = "spread!=order|random", range(0.1, 4), keyframe)]
+    #[setting(label = "Stretch", when = "spread!=order|random|launch_angle", range(0.1, 4), keyframe)]
     pub stretch: f32,
     /// How the colours bunch: evenly, towards the start, towards the end, or towards both.
     #[setting(label = "Easing")]
@@ -153,6 +160,12 @@ pub struct BallInGroup {
     pub speed: f32,
     pub hits: u32,
     pub time: f32,
+    /// The emitter round it was fired in, from 1 (0 for a Balls group's), and how many rounds
+    /// the gradient spreads over.
+    pub round: u32,
+    pub rounds: RoundSpan,
+    /// The direction it was fired or launched in, radians clockwise from +x.
+    pub launch: f32,
 }
 
 /// What the gradient reads about the whole group: its places' middle and how far they spread.
@@ -189,6 +202,8 @@ pub const FULL_SPEED: f32 = 1500.0;
 pub const FULL_HITS: f32 = 10.0;
 /// How many times a second Time runs through the gradient (over Stretch).
 pub const TIME_SPEED: f32 = 0.25;
+/// How many rounds of an endless emitter one run through the gradient takes (times Stretch).
+pub const ENDLESS_ROUNDS: f32 = 10.0;
 
 /// Where along the gradient (0 to 1) ball `b` of group `g` sits, before easing.
 pub fn group_t(gr: &GroupGradient, g: &GroupShapeInfo, b: &BallInGroup) -> f32 {
@@ -213,6 +228,21 @@ pub fn group_t(gr: &GroupGradient, g: &GroupShapeInfo, b: &BallInGroup) -> f32 {
         Spread::Hits => b.hits as f32 / (FULL_HITS * span),
         Spread::Time => {
             let x = b.time * TIME_SPEED / span;
+            x - x.floor()
+        }
+        Spread::Round => {
+            let from_first = b.round.saturating_sub(1) as f32;
+            match b.rounds {
+                RoundSpan::Finite(n) if n <= 1 => 0.0,
+                RoundSpan::Finite(n) => from_first / ((n - 1) as f32 * span),
+                RoundSpan::Endless => {
+                    let x = from_first / (ENDLESS_ROUNDS * span);
+                    x - x.floor()
+                }
+            }
+        }
+        Spread::LaunchAngle => {
+            let x = (b.launch.to_degrees() - gr.angle) / 360.0;
             x - x.floor()
         }
     };
@@ -305,6 +335,31 @@ mod tests {
         assert_eq!(group_t(&gr, &g, &ball(0, 10)), 0.0);
         assert_eq!(group_t(&gr, &g, &ball(9, 10)), 1.0);
         assert_eq!(group_t(&gr, &g, &ball(0, 1)), 0.0, "one ball takes the first colour");
+    }
+
+    #[test]
+    fn round_runs_from_the_first_round_to_the_last_and_comes_round_when_endless() {
+        let gr = GroupGradient { spread: Spread::Round, ..GroupGradient::default() };
+        let g = GroupShapeInfo::default();
+        let at = |round, rounds| group_t(&gr, &g, &BallInGroup { round, rounds, ..BallInGroup::default() });
+        assert_eq!(at(1, RoundSpan::Finite(5)), 0.0);
+        assert_eq!(at(3, RoundSpan::Finite(5)), 0.5);
+        assert_eq!(at(5, RoundSpan::Finite(5)), 1.0);
+        assert_eq!(at(1, RoundSpan::Finite(1)), 0.0, "one round takes the first colour");
+        assert_eq!(at(0, RoundSpan::Finite(1)), 0.0, "a Balls group's balls are the first round");
+        assert!((at(6, RoundSpan::Endless) - 0.5).abs() < 1e-6);
+        assert_eq!(at(11, RoundSpan::Endless), 0.0, "every ten rounds it starts again");
+    }
+
+    #[test]
+    fn launch_angle_goes_once_round_from_the_gradients_angle() {
+        let gr = GroupGradient { spread: Spread::LaunchAngle, angle: 90.0, ..GroupGradient::default() };
+        let g = GroupShapeInfo::default();
+        let at = |deg: f32| group_t(&gr, &g, &BallInGroup { launch: deg.to_radians(), ..BallInGroup::default() });
+        assert!(at(90.0).abs() < 1e-5);
+        assert!((at(270.0) - 0.5).abs() < 1e-5);
+        assert!((at(0.0) - 0.75).abs() < 1e-5);
+        assert!((at(-90.0) - 0.5).abs() < 1e-5);
     }
 
     #[test]

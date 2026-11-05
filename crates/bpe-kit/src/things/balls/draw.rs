@@ -14,9 +14,11 @@ use crate::modules::look::layers::gpu::{Stack, SubLayer};
 use crate::modules::look::layers::group::{BallInGroup, GroupShapeInfo, group_colour, mixed};
 use crate::modules::look::layers::trail::{self, AroundPlace, TrailKind, draw::Balls};
 use crate::modules::look::layers::vary::{VariedLook, spread_of};
+use crate::modules::look::layers::wavefront::{self, Fronts, WavefrontLayer};
 use crate::paint::{colour_at, vary_gpu};
 use crate::things::balls::BallsSettings;
-use crate::things::balls::sim::{BallsState, colour_turn, look_turn};
+use crate::things::balls::rows::{GroupOf, RoundSpan, group_of, variety};
+use crate::things::balls::sim::{colour_turn, look_turn};
 
 pub struct BallsDraw;
 
@@ -39,15 +41,18 @@ pub(crate) fn last_hits(cx: &DrawCx, count: usize, memory: f32) -> Vec<(f32, f32
     let rate = cx.world.steps_per_second;
     let since = ((cx.time - memory as f64) * rate as f64).floor().max(0.0) as u64;
     for e in cx.log.since(since) {
-        if e.kind != EventKind::Hit {
-            continue;
-        }
+        // A ball's arrival at a catcher counts as a hit for its reactions.
+        let other = match e.kind {
+            EventKind::Hit => e.b,
+            EventKind::Enter => None,
+            _ => continue,
+        };
         let time = e.time(rate);
         if time > cx.time {
             break;
         }
         // Both balls of a ball-on-ball hit were hit.
-        for side in std::iter::once(e.a).chain(e.b) {
+        for side in std::iter::once(e.a).chain(other) {
             if side.thing == id
                 && let Some(l) = last.get_mut(side.item as usize)
             {
@@ -214,45 +219,67 @@ pub fn ball_colors<'a>(cx: &DrawCx<'a>) -> Option<impl Fn(usize) -> [f32; 4] + '
 
 /// The group the thing's balls belong to, and what the gradient reads about it.
 struct GroupCx<'a> {
-    state: Option<&'a BallsState>,
+    /// The rows and places of a thing with ball rows (a Balls thing, an emitter).
+    of: Option<GroupOf<'a>>,
     info: GroupShapeInfo,
     /// The thing's settings as they are now, for the look-only variety (which doesn't rebuild
     /// the world, so the state's copy can be old).
     look: BallsSettings,
+    /// The moment drawn, in steps, for fades.
+    now: f64,
 }
 
 impl GroupCx<'_> {
     /// Body row `row`'s ball number.
     fn number(&self, row: usize) -> u32 {
-        self.state.map_or(row as u32, |s| s.number(row))
+        self.of.map_or(row as u32, |g| g.rows.number(row))
+    }
+
+    /// Whether its balls have a group's variety.
+    fn varied(&self) -> bool {
+        self.of.is_some()
     }
 
     /// How many balls the group has in all, let go or not.
     fn count(&self, bodies: &Bodies) -> usize {
-        self.state.map_or(bodies.len(), |s| s.offsets.len())
+        self.of.map_or(bodies.len(), |g| g.count)
+    }
+
+    /// How many hits body row `row` has had, its arrivals at catchers counted in.
+    fn hits(&self, bodies: &Bodies, row: usize) -> u32 {
+        let arrived = self.of.and_then(|g| g.rows.arrivals.get(row).copied()).unwrap_or(0);
+        bodies.hits.get(row).copied().unwrap_or(0) + arrived
+    }
+
+    /// How much of body row `row` shows: 1 unless its round is fading out.
+    fn fade(&self, row: usize) -> f32 {
+        self.of.map_or(1.0, |g| g.fade(row, self.now))
     }
 
     /// What the group gradient reads about body row `row`.
     fn ball(&self, bodies: &Bodies, row: usize, time: f32) -> BallInGroup {
-        let number = self.number(row);
-        let offset = self.state.and_then(|s| s.offsets.get(number as usize).copied()).unwrap_or_default();
+        let rows = self.of.map(|g| g.rows);
         BallInGroup {
-            number,
+            number: self.number(row),
             count: self.count(bodies) as u32,
-            offset,
+            offset: rows.and_then(|r| r.place.get(row).copied()).unwrap_or_default(),
             speed: bodies.velocity.get(row).map_or(0.0, |v| v.length()),
-            hits: bodies.hits.get(row).copied().unwrap_or(0),
+            hits: self.hits(bodies, row),
             time,
+            round: rows.and_then(|r| r.round.get(row).copied()).unwrap_or(0),
+            rounds: self.of.map_or(RoundSpan::Finite(1), |g| g.rounds),
+            launch: rows.and_then(|r| r.launch.get(row).copied()).unwrap_or(0.0),
         }
     }
 }
 
 fn group_cx<'a>(stack: &Stack, cx: &DrawCx<'a>) -> GroupCx<'a> {
-    let state = cx.world.states.get(&cx.thing.id).and_then(|s| s.as_any().downcast_ref::<BallsState>());
-    let (offsets, seed) = state.map_or((&[][..], 1), |s| (s.offsets.as_slice(), s.settings.seed));
+    let of = group_of(cx.world, cx.thing.id);
+    let (places, seed) = of.map_or((&[][..], 1), |g| (g.places, g.seed));
     let angle = stack.group.as_ref().map_or(0.0, |g| g.angle);
-    let look = BallsSettings::from_params(&cx.resolved.params);
-    GroupCx { state, info: GroupShapeInfo::of(offsets, angle, seed), look }
+    let look = variety(&cx.thing.kind, &cx.resolved.params);
+    let now = cx.time * cx.world.steps_per_second as f64;
+    GroupCx { of, info: GroupShapeInfo::of(places, angle, seed), look, now }
 }
 
 /// [`ball_colors`] for `stack` and `bodies`; with `seen` false, the body colour the instance
@@ -279,12 +306,19 @@ fn colours_with<'a>(
     let gradient = if seen { stack.group.clone() } else { stack.group_on_body().cloned() };
     let time = cx.time as f32;
     move |i| {
+        // A fading ball's trails and particles fade with it (the ball itself by its opacity).
+        let faded = |mut c: [f32; 4]| {
+            if seen {
+                c[3] *= group.fade(i);
+            }
+            c
+        };
         let mut at = inputs.get(&fill, i);
         // Order counts the balls by their place in the group, let go yet or not.
         at.index = group.number(i) as usize;
         at.count = group.count(bodies);
         let mut base = colour_at(&fill, &at);
-        if group.state.is_some() {
+        if group.varied() {
             let spin = colour_turn(&group.look, group.number(i));
             if spin != 0.0 {
                 base = crate::modules::look::basic::shift_linear_hue(base, spin);
@@ -293,8 +327,7 @@ fn colours_with<'a>(
         if let Some(g) = &gradient {
             base = mixed(base, group_colour(g, &group.info, &group.ball(bodies, i, time)), g.mix, g.amount);
         }
-        let hits = bodies.hits.get(i).copied().unwrap_or(0);
-        crate::modules::look::layers::gpu::recoloured(base, hue_per_hit, turn, hits)
+        faded(crate::modules::look::layers::gpu::recoloured(base, hue_per_hit, turn, group.hits(bodies, i)))
     }
 }
 
@@ -344,6 +377,7 @@ impl ThingDraw for BallsDraw {
             AroundKind::Trail(trail) => {
                 with_balls(cx, &worn, memory, |balls| trail::draw::draw(cx, &layer, trail, balls, frame));
             }
+            AroundKind::Wavefront(w) => draw_wavefront(cx, &worn, &layer, w, frame),
             AroundKind::Particles(particles) => {
                 with_balls(cx, &worn, memory, |balls| {
                     crate::modules::look::layers::particles::draw::draw_balls(
@@ -390,6 +424,36 @@ fn hit_memory(cx: &DrawCx, layer: &AroundLayer) -> f32 {
     memory
 }
 
+/// Draws the wavefront `w` (the around layer `layer`) through the balls of the thing `cx` draws.
+fn draw_wavefront(cx: &DrawCx, worn: &Worn, layer: &AroundLayer, w: &WavefrontLayer, frame: &mut Frame) {
+    let Some(bodies) = cx.world.bodies.get(&cx.thing.id) else { return };
+    let colours = Colours::new(worn, cx, bodies, true);
+    let colour = |i: usize| colours.get(i);
+    let group = group_cx(worn.base(), cx);
+    let rows = group.of.map(|g| g.rows);
+    let shown = |i: usize| bodies.alive[i] && layer.applies(group.number(i));
+    let round = |i: usize| rows.and_then(|r| r.round.get(i).copied()).unwrap_or(0);
+    let order = |i: usize| rows.and_then(|r| r.in_round.get(i).copied()).unwrap_or(i as u32);
+    let fade = |i: usize| group.fade(i);
+    let all_round = if group.of.is_some_and(|g| g.emitter) {
+        crate::things::emitter::EmitterSettings::from_params(&cx.resolved.params).directions
+            == crate::things::emitter::Directions::AllRound
+    } else {
+        group.look.group && group.look.shape == crate::things::balls::GroupShape::Ring
+    };
+    let fronts = Fronts {
+        position: &bodies.position,
+        shown: &shown,
+        round: &round,
+        order: &order,
+        colour: &colour,
+        fade: &fade,
+        all_round,
+        radius: group.look.radius,
+    };
+    wavefront::draw(layer, w, &fronts, frame);
+}
+
 /// How far back around layer `layer` reads the balls' hits, at most: as [`hit_memory`] says for
 /// the layer as the card has it, or for any ball's own copy of it.
 fn around_memory(cx: &DrawCx, worn: &Worn, layer: &AroundLayer) -> f32 {
@@ -426,7 +490,7 @@ fn with_balls<R>(cx: &DrawCx, worn: &Worn, memory: f32, f: impl FnOnce(&Balls) -
     let own = |i: usize| worn.around(i).unwrap_or_default();
     let turned = |i: usize, ago: f32| {
         worn.stack(i).turning.as_ref().map(|t| {
-            let own = if group.state.is_some() { look_turn(&group.look, group.number(i)) } else { 0.0 };
+            let own = if group.varied() { look_turn(&group.look, group.number(i)) } else { 0.0 };
             (t.turn + t.spin * (time - ago) + own).to_radians()
         })
     };
@@ -572,12 +636,12 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, worn: &Worn, part: u32) {
         ball.range[2] = part;
         if hits {
             let (age, strength) = last.get(i).copied().unwrap_or((bpe_gfx::NO_HIT[0], 0.0));
-            ball.hit = [age, strength, bodies.hits.get(i).copied().unwrap_or(0) as f32, 0.0];
+            ball.hit = [age, strength, group.hits(bodies, i) as f32, 0.0];
         }
         if mine.body_each_ball() {
             // A gradient body turns by the ball's own hue turns, as a plain body's colour does.
-            let hits = bodies.hits.get(i).copied().unwrap_or(0) as f32;
-            let spin = if group.state.is_some() { colour_turn(&group.look, number) } else { 0.0 };
+            let hits = group.hits(bodies, i) as f32;
+            let spin = if group.varied() { colour_turn(&group.look, number) } else { 0.0 };
             // The Variety turn is in turns already; the reaction's is degrees a hit.
             ball.vary[3] = spin + mine.hue_per_hit() * hits / 360.0;
         }
@@ -590,8 +654,12 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, worn: &Worn, part: u32) {
             let at = group.ball(bodies, i, time).offset - group.info.middle;
             ball.place = [at.x, at.y, side, 0.0];
         }
-        if group.state.is_some() {
+        if group.varied() {
             ball.form[2] += look_turn(&group.look, number).to_radians();
+        }
+        let fade = group.fade(i);
+        if fade < 1.0 {
+            ball.misc[0] *= fade;
         }
         made.push((i, ball));
     }
@@ -631,22 +699,30 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, worn: &Worn, part: u32) {
     };
     let since = ((cx.time - memory) * rate as f64).floor().max(0.0) as u64;
     for e in cx.log.since(since) {
-        if e.kind != EventKind::Hit || e.a.thing != id {
+        let hit = match e.kind {
+            EventKind::Hit => true,
+            // Arrivals at a catcher flash as hits do, but aren't hits for the scene's effects.
+            EventKind::Enter => false,
+            _ => continue,
+        };
+        if e.a.thing != id {
             continue;
         }
         let time = e.time(rate);
         if time > cx.time {
             continue;
         }
-        frame.hits.push(HitMark {
-            thing: id,
-            other: e.b.map(|b| b.thing),
-            point: e.point.into(),
-            normal: e.normal.into(),
-            time: time as f32,
-            speed: e.speed,
-            color: seen(e.a.item as usize),
-        });
+        if hit {
+            frame.hits.push(HitMark {
+                thing: id,
+                other: e.b.map(|b| b.thing),
+                point: e.point.into(),
+                normal: e.normal.into(),
+                time: time as f32,
+                speed: e.speed,
+                color: seen(e.a.item as usize),
+            });
+        }
         if flash.is_none() {
             continue;
         }

@@ -22,6 +22,9 @@ pub struct Bodies {
     /// Each ball's number in its thing: its row unless the thing numbers them otherwise (a group
     /// lets its balls go in another order than their places). What riders name a ball by.
     pub number: Vec<u32>,
+    /// Held still by something (a catcher waiting to send it back out): not moved, not bounced
+    /// off walls or other balls, and never caught.
+    pub held: Vec<bool>,
 }
 
 impl Bodies {
@@ -37,6 +40,7 @@ impl Bodies {
         self.alive.push(true);
         self.hits.push(0);
         self.number.push(row);
+        self.held.push(false);
         row
     }
 
@@ -62,6 +66,7 @@ impl Bodies {
         self.position.capacity() * std::mem::size_of::<Vec2>() * 5
             + self.radius.capacity() * std::mem::size_of::<f32>()
             + self.alive.capacity()
+            + self.held.capacity()
             + (self.hits.capacity() + self.number.capacity()) * std::mem::size_of::<u32>()
     }
 }
@@ -85,6 +90,7 @@ mod tests {
         assert!(bodies.alive[1]);
         assert_eq!(bodies.hits[1], 0);
         assert_eq!(bodies.number, [0, 1], "numbered by row unless told otherwise");
+        assert_eq!(bodies.held, [false, false]);
         bodies.number[0] = 7;
         assert_eq!((bodies.row_of(7), bodies.row_of(1), bodies.row_of(0)), (Some(0), Some(1), None));
         bodies.alive[1] = false;

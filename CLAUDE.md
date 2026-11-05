@@ -105,7 +105,10 @@ Dependencies go bottom to top:
   really bounced instead of cutting across between two samples. `World::build` starts from the settings as
   keyed at 0 s. A touch is resting, not a hit, below `Limits::resting_along(normal)` (the scene's gravity, or more
   along a ball's own pull, `Limits.press`). `step_at` turns a frame time into its step (editor and export agree).
-  `Bodies.number` is each row's ball number (`row_of`; riding an Item uses it). `sound_fingerprint` is the
+  `Bodies.number` is each row's ball number (`row_of`; riding an Item uses it). `Bodies.held` keeps a row still
+  (not moved, bounced or paired, its speed kept at 0: an emitter holding a caught ball before sending it back). Events `Spawn` (tag 8:
+  an emitter fired a ball, `b` = (emitter, round)) and `Enter` (tag 9: a ball came into a catcher, `b` = (catcher,
+  its round)) sit beside Hit and Remove; every log reader filters by kind. `pairs::pop` is public. `sound_fingerprint` is the
   physics fingerprint without the history part (the editor rebuilds the sound only when it changes). The generic `ThingSim` hooks (spawn, forces,
   settle, after_step) stay for new thing kinds even where no current kind uses them. Walls are **two-sided**:
   `keep_clear` keeps a ball on the side its centre was on at the start of the step (`Bodies.previous`); a hollow
@@ -188,7 +191,20 @@ Dependencies go bottom to top:
   the IBM Plex font, Custom points), with Variety (size, speed, colour, turn spread by `seed`), Release (all at
   once, one by one, waves, via `ThingSim::spawn`) and Launch (same, fan, outward, random). A ball's number in the
   group (`sim::numbers`) is its place in the shape, not its row. Test scenes use `BallsSettings::block`/`ring`,
-  which keep the old Block/Ring positions exactly. A folder usually has
+  which keep the old Block/Ring positions exactly. `balls/rows.rs`: `BallRows` (each row's number, size share,
+  round, launch direction, place in its group, arrivals, fade start, place round its round) kept by both Balls and
+  Emitter states, `group_of` (`GroupOf`: what the shared ball drawing reads), `variety`, `has_balls`; the Balls draw
+  (`balls/draw.rs`) draws any thing with ball rows (fades, arrivals as hits for reactions). The **Emitter**
+  (`things/emitter/`, family Bouncers): fires balls of its own design (its own Look and Physics) in rounds
+  (`fire.rs`: directions All round / Fan / One way / Random, Start from Point / Ring / Line, Gap and Order, round
+  sizes ×/+, `layout` one round's places; `sim.rs`: Fire when At start / Every / When a wave lands, Rounds or
+  Endless, Earlier rounds Keep / Fade out / Remove, Most balls; catching by a swept circle test: Remove, Send back
+  out (Same way back / Out my way, Delay holds), Pass through; waves = arrivals of one (owner, round) within 0.5 s,
+  `landings`; `round_marks` for the editor) and sits on a focus of a circle or ellipse (`emitter/foci.rs` over `shape::foci`; the Sits on hint says what would spoil meeting at the other focus). Its
+  marker, flashes and ripples are `draw.rs` (sprites), worked out from its state at the moment drawn. Group
+  gradient `Spread` has Round and Launch angle; the around layer **Wavefront** (`layers/wavefront.rs`) draws a
+  strip through each round's balls (`trail::draw::strip_with_subs`). Camera Follow "balls" follows emitters too.
+  A folder usually has
   `mod.rs` (settings + kind), `sim.rs` (physics) and `draw.rs`. `lib.rs::kit()` registers them all. `paint/` is the
   colour and gradient system (not the removed canvas). `starters.rs` gives a new thing its starting cards (`add_thing`, `fill_slot`) and
   `scenes.rs` holds the test scenes, compiled only for tests (the `test-scenes` feature, a dev-dependency). They pin
@@ -310,7 +326,13 @@ Dependencies go bottom to top:
   (`look_editor/group.rs`, `group_view.rs`) shows the whole group where it starts (custom balls, the launch arrow
   and the gradient's line drag there; balls can be picked for layers of their own), the shape chips and group
   settings, Across the group (the group layers: gradient and shaders) and folds for Variety, Release, Launch and
-  Odd ones out. Those settings are left off the Balls card itself (`GROUP_HEADINGS`). The
+  Odd ones out. Those settings are left off the Balls card itself (`GROUP_HEADINGS`). An emitter's own card is the
+  Emitter card (`emitter_card/`, a child module of `inspector.rs`): chips Emit | Catch | Marker, the mini view
+  (`mini_view.rs`: rays, drag the square to aim, fan edges, ray ends for speed), the rounds strip (`strip.rs`, from
+  `Inspector.rounds`, which the app fills from the playback) and the Sits on menu; its Look has the Ball / Group
+  switch, Group mode showing one round laid out (`ViewCx::settings` stands it in as a custom group). In the
+  preview a selected emitter shows its catch circle and start ring/line and snaps onto a circle's middle when
+  dropped near it (`preview::seat_near`); the timeline ticks its rounds. The
   timeline (`timeline/`) shows a Hits lane and a group per thing with keys; only the selected thing's group is open,
   over a bars-and-beats grid from the tempo (`beat_lines`, thinned under 4 px; keys snap to beats when the grid
   snaps). Sound: `audio_out.rs` opens the default device with cpal (`AudioOut::open`, `None` without one: the
