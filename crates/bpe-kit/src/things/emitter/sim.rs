@@ -126,6 +126,55 @@ pub fn emitter_state(world: &World, thing: ThingId) -> Option<&EmitterState> {
     world.states.get(&thing)?.as_any().downcast_ref::<EmitterState>()
 }
 
+/// One round on the timeline: when it fires (seconds), which it is, how many balls it has, and
+/// whether it has fired yet or is still to come.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RoundMark {
+    pub time: f64,
+    pub round: u32,
+    pub size: u32,
+    pub fired: bool,
+}
+
+/// Emitter `thing`'s rounds up to `until` seconds: those fired so far in `world`, then those still
+/// to come when they come at known times (At start's one, Every's), none for a thing that isn't an
+/// emitter.
+pub fn round_marks(world: &World, thing: ThingId, until: f64) -> Vec<RoundMark> {
+    let Some(st) = emitter_state(world, thing) else { return Vec::new() };
+    let rate = world.steps_per_second as f64;
+    let s = &st.settings;
+    let mut out: Vec<RoundMark> = st
+        .fired
+        .iter()
+        .map(|f| RoundMark { time: f.step as f64 / rate, round: f.round, size: f.size, fired: true })
+        .collect();
+    if !s.emits {
+        return out;
+    }
+    let mut left = st.rounds_left();
+    let mut round = st.rounds_fired + 1;
+    let mut size = if st.rounds_fired == 0 { first_count(s) } else { st.next_count };
+    let every = s.every.max(0.0) as f64;
+    let mut at = match (st.rounds_fired, s.fire_when) {
+        (0, FireWhen::WhenAWaveLands) if !s.wave_first => return out,
+        (0, _) => s.start_delay.max(0.0) as f64,
+        (_, FireWhen::Every) => st.next_every.map_or(f64::INFINITY, |n| n as f64 / rate),
+        _ => return out,
+    };
+    // Every's rounds can be many: no more than the strip can show.
+    while left > 0 && at <= until && out.len() < 1000 {
+        out.push(RoundMark { time: at, round, size, fired: false });
+        left -= 1;
+        round += 1;
+        size = next_count(s, size);
+        if s.fire_when != FireWhen::Every || every <= 0.0 {
+            break;
+        }
+        at += every;
+    }
+    out
+}
+
 /// Where the emitter is this step: on its focus when it sits on one, else where its transform (or
 /// what it rides) puts it.
 fn pose_now(world: &World, thing: ThingId, s: &EmitterSettings) -> Pose {
@@ -231,7 +280,7 @@ fn launch_ball(st: &mut EmitterState, bodies: &mut Bodies, launch: Launch, at: &
     let row = bodies.push(position, velocity, radius) as usize;
     bodies.number[row] = number;
     let place = offset + Vec2::from_angle(way) * layout_reach(s);
-    st.rows.push(number, factor, round, dir, place);
+    st.rows.push(number, factor, round, dir, place, k);
     if let Some(f) = st.fired.iter_mut().rev().find(|f| f.round == round) {
         f.launched += 1;
     }

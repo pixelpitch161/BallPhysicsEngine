@@ -7,6 +7,8 @@ pub mod draw;
 pub mod fire;
 pub mod foci;
 pub mod sim;
+#[cfg(test)]
+pub(crate) mod test_scenes;
 
 use bpe_core::{Choice, Color, SettingDef, Settings, SlotId, Target, ThingKind};
 

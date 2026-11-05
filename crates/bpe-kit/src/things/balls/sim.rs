@@ -166,7 +166,7 @@ fn push_ball(bodies: &mut Bodies, st: &mut BallsState, at: Pose, number: u32) {
     let row = bodies.push(position, velocity, radius) as usize;
     bodies.number[row] = number;
     let launch = if launched.length_squared() > 0.0 { launched.to_angle() } else { 0.0 };
-    st.rows.push(number, factor, 0, launch, offset);
+    st.rows.push(number, factor, 0, launch, offset, number);
 }
 
 impl ThingSim for BallsSim {

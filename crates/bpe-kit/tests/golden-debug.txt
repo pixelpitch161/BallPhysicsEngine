@@ -14,3 +14,5 @@ Neon ring	70	46f766d1e8a24787
 Colour paints	1237	bb4e9bb93c15fab4
 Blend modes	185	aa434568516693a3
 Graded sunset	601	42e25326433241b1
+Emitter rounds	480	891d791a690184e7
+Emitter chain	14770	e770f6866d6bdf24

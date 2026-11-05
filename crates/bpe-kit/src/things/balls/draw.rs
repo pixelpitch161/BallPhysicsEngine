@@ -1,6 +1,6 @@
 //! Drawing the balls and their hit flashes, through the layers of their Look.
 
-use bpe_core::{Blend, ResolvedThing, SlotId, ThingId};
+use bpe_core::{Blend, ResolvedThing, Settings, SlotId, ThingId};
 use bpe_gfx::{Around, DrawCx, FlashInstance, Frame, HitMark, LayeredRun, ThingDraw, blend_alpha, thing_code};
 use bpe_runtime::{Bodies, EventKind};
 
@@ -9,6 +9,7 @@ use crate::modules::look::layers::around::{AroundKind, AroundLayer, around_layer
 use crate::modules::look::layers::gpu::{Stack, SubLayer};
 use crate::modules::look::layers::group::{BallInGroup, GroupShapeInfo, group_colour, mixed};
 use crate::modules::look::layers::trail::{self, AroundPlace, TrailKind, draw::Balls};
+use crate::modules::look::layers::wavefront::{self, Fronts, WavefrontLayer};
 use crate::paint::{colour_at, vary_gpu};
 use crate::things::balls::BallsSettings;
 use crate::things::balls::rows::{GroupOf, RoundSpan, group_of, variety};
@@ -233,6 +234,7 @@ impl ThingDraw for BallsDraw {
                 let memory = hit_memory(cx, &layer);
                 with_balls(cx, &stack, memory, |balls| trail::draw::draw(cx, &layer, trail, balls, frame));
             }
+            AroundKind::Wavefront(w) => draw_wavefront(cx, &stack, &layer, w, frame),
             AroundKind::Particles(particles) => {
                 let memory = hit_memory(cx, &layer);
                 with_balls(cx, &stack, memory, |balls| {
@@ -273,6 +275,35 @@ fn hit_memory(cx: &DrawCx, layer: &AroundLayer) -> f32 {
         }
     }
     memory
+}
+
+/// Draws the wavefront `w` (the around layer `layer`) through the balls of the thing `cx` draws.
+fn draw_wavefront(cx: &DrawCx, stack: &Stack, layer: &AroundLayer, w: &WavefrontLayer, frame: &mut Frame) {
+    let Some(bodies) = cx.world.bodies.get(&cx.thing.id) else { return };
+    let colour = colours(stack, cx, bodies, true);
+    let group = group_cx(stack, cx);
+    let rows = group.of.map(|g| g.rows);
+    let shown = |i: usize| bodies.alive[i] && layer.applies(group.number(i));
+    let round = |i: usize| rows.and_then(|r| r.round.get(i).copied()).unwrap_or(0);
+    let order = |i: usize| rows.and_then(|r| r.in_round.get(i).copied()).unwrap_or(i as u32);
+    let fade = |i: usize| group.fade(i);
+    let all_round = if group.of.is_some_and(|g| g.emitter) {
+        crate::things::emitter::EmitterSettings::from_params(&cx.resolved.params).directions
+            == crate::things::emitter::Directions::AllRound
+    } else {
+        group.look.group && group.look.shape == crate::things::balls::GroupShape::Ring
+    };
+    let fronts = Fronts {
+        position: &bodies.position,
+        shown: &shown,
+        round: &round,
+        order: &order,
+        colour: &colour,
+        fade: &fade,
+        all_round,
+        radius: group.look.radius,
+    };
+    wavefront::draw(layer, w, &fronts, frame);
 }
 
 /// Runs `f` with what trails read about the balls of the thing `cx` draws, wearing `stack`,

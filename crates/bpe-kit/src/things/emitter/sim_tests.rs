@@ -1,34 +1,8 @@
 use super::*;
 use crate::testing::run;
-use crate::things::emitter::{Directions, EmitterSettings, StartFrom};
-use crate::{Kit, add_thing, kit, new_scene};
-use bpe_core::{Resolved, Scene, Target, ThingId, resolve};
-
-/// The new scene without its ball, with an emitter at `at` set by `f`; and `more` for anything
-/// else. Gives back the emitter's id.
-fn scene_with(at: Vec2, f: impl FnOnce(&mut EmitterSettings)) -> (Scene, ThingId, Kit) {
-    let kit = kit();
-    let mut scene = new_scene(&kit.registry);
-    scene.remove_thing(crate::testing::BALLS).unwrap();
-    let id = add_emitter(&mut scene, &kit, at, f);
-    (scene, id, kit)
-}
-
-fn add_emitter(scene: &mut Scene, kit: &Kit, at: Vec2, f: impl FnOnce(&mut EmitterSettings)) -> ThingId {
-    let id = add_thing(scene, &kit.registry, KIND, ThingId::ROOT).unwrap();
-    let mut s = EmitterSettings::default();
-    f(&mut s);
-    let thing = scene.things.get_mut(&id).unwrap();
-    thing.params = s.to_params();
-    thing.transform.position = at;
-    id
-}
-
-fn resolved(scene: &Scene, kit: &Kit) -> Resolved {
-    let r = resolve(scene, &kit.registry);
-    assert!(r.problems.is_empty(), "{:?}", r.problems);
-    r
-}
+use crate::things::emitter::Directions;
+use crate::things::emitter::test_scenes::{resolved, scene_with, shooter_and_catcher};
+use bpe_core::{Target, ThingId};
 
 fn st(world: &World, id: ThingId) -> &EmitterState {
     emitter_state(world, id).expect("an emitter")
@@ -151,26 +125,6 @@ fn a_gap_fires_the_balls_one_after_another() {
     assert_eq!(world.bodies[&id].len(), 4);
     let steps: Vec<u64> = log.events().iter().filter(|e| e.kind == EventKind::Spawn).map(|e| e.step).collect();
     assert_eq!(steps, vec![60, 120, 180]);
-}
-
-/// An emitter at the origin firing `count` balls one way to the right at a catcher 200 px off,
-/// set by `f`.
-fn shooter_and_catcher(count: u32, f: impl FnOnce(&mut EmitterSettings)) -> (Scene, ThingId, ThingId, Kit) {
-    let (mut scene, shooter, kit) = scene_with(Vec2::ZERO, |s| {
-        s.count = count;
-        s.directions = Directions::OneWay;
-        s.aim_angle = 0.0;
-        s.start_from = StartFrom::Line;
-        s.start_length = 40.0;
-        s.speed = 400.0;
-    });
-    let catcher = add_emitter(&mut scene, &kit, Vec2::new(200.0, 0.0), |s| {
-        s.emits = false;
-        s.catches = Catches::Remove;
-        s.catch_size = 30.0;
-        f(s);
-    });
-    (scene, shooter, catcher, kit)
 }
 
 #[test]
@@ -333,4 +287,27 @@ fn the_entry_point_is_where_the_path_first_meets_the_circle() {
     assert_eq!(entry(Vec2::new(-5.0, 0.0), Vec2::new(5.0, 0.0), c, 10.0), None, "already inside");
     assert_eq!(entry(Vec2::new(-20.0, 20.0), Vec2::new(20.0, 20.0), c, 10.0), None, "passes by");
     assert!(entry(Vec2::new(-20.0, 0.0), Vec2::new(20.0, 0.0), c, 10.0).is_some(), "straight through");
+}
+
+#[test]
+fn the_timeline_shows_rounds_fired_and_those_still_to_come() {
+    let (scene, id, kit) = scene_with(Vec2::ZERO, |s| {
+        s.fire_when = FireWhen::Every;
+        s.every = 1.0;
+        s.rounds = 4;
+        s.count = 3;
+        s.grow_plus = 2;
+    });
+    let r = resolved(&scene, &kit);
+    let (world, _) = run(&scene, &r, &kit, 1.5);
+    let marks = round_marks(&world, id, 10.0);
+    let got: Vec<(f64, u32, u32, bool)> = marks.iter().map(|m| (m.time, m.round, m.size, m.fired)).collect();
+    assert_eq!(got, vec![(0.0, 1, 3, true), (1.0, 2, 5, true), (2.0, 3, 7, false), (3.0, 4, 9, false)]);
+    assert_eq!(round_marks(&world, id, 2.5).len(), 3, "only up to the end of the clip");
+    let (scene, id, kit) = scene_with(Vec2::ZERO, |s| {
+        s.fire_when = FireWhen::WhenAWaveLands;
+        s.wave_first = false;
+    });
+    let r = resolved(&scene, &kit);
+    assert!(round_marks(&World::build(&scene, &r, &kit.sims), id, 10.0).is_empty(), "it can't know when");
 }

@@ -771,6 +771,8 @@ enum Icon {
     Shape,
     /// Balls.
     Disc,
+    /// An emitter: a ring with a dot.
+    Emitter,
     /// The scene's defaults.
     Square,
     /// A folder: a tabbed box.
@@ -785,6 +787,7 @@ fn icon_shape(kind: &str) -> Icon {
     match kind {
         "shape" => Icon::Shape,
         "balls" => Icon::Disc,
+        "emitter" => Icon::Emitter,
         "scene" => Icon::Square,
         "camera" => Icon::Frame,
         "folder" => Icon::Folder,
@@ -804,6 +807,10 @@ fn paint_icon(painter: &egui::Painter, rect: Rect, kind: &str, ink: Color32) {
         }
         Icon::Disc => {
             painter.circle_filled(c, r * 0.8, ink);
+        }
+        Icon::Emitter => {
+            painter.circle_stroke(c, r * 0.95, stroke);
+            painter.circle_filled(c, r * 0.35, ink);
         }
         Icon::Square => {
             painter.rect_filled(Rect::from_center_size(c, Vec2::splat(r * 1.6)), 2.0, ink);

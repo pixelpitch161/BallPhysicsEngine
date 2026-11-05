@@ -4,8 +4,11 @@
 //! (see [`classic_look`], [`classic_motion`] and [`classic_scene_settings`]), so the goldens and
 //! pictures stay put.
 
+#[path = "scenes_emitter.rs"]
+mod emitter;
 #[path = "scenes_stage5.rs"]
 mod stage5;
+pub use emitter::emitter_scenes;
 pub use stage5::{stage5, stage5_with_twins};
 
 use bpe_core::{
@@ -50,6 +53,7 @@ pub fn all(reg: &Registry) -> Vec<(String, Scene)> {
     scenes.push(("Colour paints".into(), colour_demo(reg)));
     scenes.push(("Blend modes".into(), blend_demo(reg)));
     scenes.push(("Graded sunset".into(), graded_sunset(reg)));
+    scenes.extend(emitter_scenes(reg));
     scenes
 }
 

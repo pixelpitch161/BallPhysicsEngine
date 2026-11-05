@@ -6,6 +6,7 @@ use bpe_core::{Blend, LayerId, ResolvedSlot, Settings};
 use super::gpu::SubLayer;
 use super::particles::{PARTICLES, ParticlesLayer, SHAPE_PARTICLES, ShapeParticlesLayer};
 use super::trail::{AroundPlace, TRAIL, TrailKind, TrailLayer};
+use super::wavefront::{WAVEFRONT, WavefrontLayer};
 
 /// What one around layer is.
 #[derive(Clone, Debug, PartialEq)]
@@ -13,6 +14,8 @@ pub enum AroundKind {
     Trail(Box<TrailLayer>),
     /// A ball's particles, or a shape's read as a ball's.
     Particles(Box<ParticlesLayer>),
+    /// A line through each round's balls.
+    Wavefront(Box<WavefrontLayer>),
 }
 
 /// One shown trail or particles layer.
@@ -32,6 +35,7 @@ impl AroundLayer {
         match &self.kind {
             AroundKind::Trail(t) => t.place,
             AroundKind::Particles(p) => p.place,
+            AroundKind::Wavefront(w) => w.place,
         }
     }
 
@@ -40,6 +44,7 @@ impl AroundLayer {
         match &self.kind {
             AroundKind::Trail(t) => (t.blend, t.blend_amount),
             AroundKind::Particles(p) => (p.blend, p.blend_amount),
+            AroundKind::Wavefront(w) => (w.blend, w.blend_amount),
         }
     }
 
@@ -68,6 +73,7 @@ pub fn around_layers(slot: &ResolvedSlot, shape: bool) -> Vec<AroundLayer> {
         let kind = match layer.kind.as_str() {
             TRAIL if !shape => AroundKind::Trail(Box::new(TrailLayer::from_params(&p))),
             PARTICLES if !shape => AroundKind::Particles(Box::new(ParticlesLayer::from_params(&p))),
+            WAVEFRONT if !shape => AroundKind::Wavefront(Box::new(WavefrontLayer::from_params(&p))),
             SHAPE_PARTICLES if shape => AroundKind::Particles(Box::new(ShapeParticlesLayer::from_params(&p).as_ball())),
             kind => {
                 // A sub-layer of one of them.

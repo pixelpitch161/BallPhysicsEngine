@@ -28,12 +28,16 @@ pub struct BallRows {
     pub arrivals: Vec<u32>,
     /// The step each row began fading out at (an emitter's Earlier rounds: Fade out).
     pub fade_from: Vec<Option<u64>>,
+    /// Each row's place round its round: an emitter's ball's place in its round's directions, a
+    /// group's ball's number. What a wavefront goes through the balls in.
+    pub in_round: Vec<u32>,
 }
 
 impl BallRows {
     /// Adds a row.
-    pub fn push(&mut self, number: u32, size_factor: f32, round: u32, launch: f32, place: Vec2) {
+    pub fn push(&mut self, number: u32, size_factor: f32, round: u32, launch: f32, place: Vec2, in_round: u32) {
         self.numbers.push(number);
+        self.in_round.push(in_round);
         self.size_factor.push(size_factor);
         self.round.push(round);
         self.launch.push(launch);
