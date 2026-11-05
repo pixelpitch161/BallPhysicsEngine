@@ -1,5 +1,6 @@
 //! Moulding a shape in the preview: dragging its corners, sides and bend handles (a circle by its
-//! edge), the right-click menus on them, and drawing the handles. Corners are kept in the shape's
+//! edge, an ellipse by its edge and its width and height dots), the right-click menus on them, and
+//! drawing the handles (and an ellipse's or circle's foci). Corners are kept in the shape's
 //! own units (see [`ShapePath`]), so the world is turned back into them through the shape's
 //! middle, turn and size.
 
@@ -58,26 +59,56 @@ pub struct Seen {
     pub path: ShapePath,
     /// It starts from a circle, which is moulded by its radius only.
     pub circle: bool,
+    /// It is an exact ellipse, moulded by its edge and its width and height dots.
+    pub ellipse: Option<SeenEllipse>,
     /// How much it has shrunk or grown since the start: its Size times this is `frame.size`.
     pub scale: f32,
+}
+
+/// An ellipse as it is moulded.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SeenEllipse {
+    /// Its half-axes in shape units (the larger one 1).
+    pub axes: Vec2,
+    /// Its Turn, in radians clockwise, on top of the shape's own.
+    pub turn: f32,
+    /// Its Width and Height as set.
+    pub size: Vec2,
+}
+
+impl SeenEllipse {
+    /// Where the Width (0) or Height (1) dot is, in shape units: the right end of the width
+    /// axis, the top of the height axis, turned with the ellipse.
+    pub fn dot(&self, which: u8) -> Vec2 {
+        let end = if which == 0 { Vec2::new(self.axes.x, 0.0) } else { Vec2::new(0.0, -self.axes.y) };
+        Vec2::from_angle(self.turn).rotate(end)
+    }
 }
 
 /// Shape `id` as the world has it now, when it is a shape.
 pub fn seen(world: &World, id: ThingId) -> Option<Seen> {
     let wall = world.walls.get(&id)?;
     let st = world.states.get(&id)?.as_any().downcast_ref::<ShapeState>()?;
-    // An even polygon's ring is turned a further quarter (see `base_outline`).
+    let s = &st.settings;
+    let ellipse = (s.start == ShapeStart::Ellipse).then(|| SeenEllipse {
+        axes: s.ellipse_axes(),
+        turn: s.turn.to_radians(),
+        size: Vec2::new(s.width, s.height),
+    });
+    // An even polygon's ring is turned a further quarter (see `base_outline`), and an ellipse's
+    // outline by its Turn, which its shape units (and its outline path) carry instead.
     let angle = match wall.outline {
         Outline::Ring { sides, angle, .. } if sides >= 3 => angle - FRAC_PI_2,
-        ref outline => outline.angle(),
+        ref outline => outline.angle() - ellipse.map_or(0.0, |e| e.turn),
     };
-    let frame = ShapeFrame { centre: wall.outline.center(), angle, size: st.settings.size * st.scale };
-    Some(Seen {
-        frame,
-        path: st.settings.outline_path(),
-        circle: st.settings.start == ShapeStart::Circle,
-        scale: st.scale,
-    })
+    let frame = ShapeFrame { centre: wall.outline.center(), angle, size: s.unit() * st.scale };
+    Some(Seen { frame, path: s.outline_path(), circle: s.start == ShapeStart::Circle, ellipse, scale: st.scale })
+}
+
+/// The marks for shape `id`'s foci as the world has it now: an ellipse's two, a circle's middle
+/// (twice); none for any other shape.
+pub fn focus_marks(world: &World, id: ThingId) -> Vec<Vec2> {
+    bpe_kit::things::shape::foci(world, id).map(|f| f.to_vec()).unwrap_or_default()
 }
 
 /// Screen points per shape unit.
@@ -86,13 +117,26 @@ fn units(view: &View, frame: ShapeFrame) -> f32 {
 }
 
 /// The handle of selected shape `id` under `pos`: a bend handle, a corner, a circle's radius dot
-/// or edge, or a side.
+/// or edge, an ellipse's width or height dot or edge, or a side.
 pub fn hit_handle(world: &World, view: &View, id: ThingId, pos: Pos2) -> Option<Handle> {
     let s = seen(world, id)?;
     let on_screen = |p: Vec2| view.to_screen(s.frame.to_world(p));
     let near = |p: Vec2, reach: f32| (on_screen(p) - pos).length() <= reach;
     // The middle moves the whole shape, as a band too thin to grab apart from its sides can't.
     let middle = (view.to_screen(s.frame.centre) - pos).length() <= MIDDLE_GRAB;
+    if let Some(e) = s.ellipse {
+        for which in [0, 1] {
+            if near(e.dot(which), DOT_GRAB) {
+                return Some(Handle::Axis(id, which));
+            }
+        }
+        if middle {
+            return Some(Handle::Body(id));
+        }
+        let p = view.to_world(pos);
+        let (q, _) = world.walls.get(&id)?.outline.nearest(p);
+        return ((q - p).length() * view.world_scale() <= EDGE_GRAB).then_some(Handle::Radius(id));
+    }
     if s.circle {
         if near(Vec2::X, DOT_GRAB) {
             return Some(Handle::Radius(id));
@@ -182,6 +226,8 @@ pub struct Mould {
     /// The pointer at the press less the dragged point (a side's first corner), in world pixels.
     offset: Vec2,
     mirror: Mirror,
+    /// An ellipse's Width and Height then.
+    ellipse: Option<SeenEllipse>,
 }
 
 /// The side across the middle line from `side`: the one whose corners mirror its corners. A
@@ -244,9 +290,11 @@ pub fn start(world: &World, handle: Handle, press: Vec2) -> Option<Mould> {
             (h, Mirror::Bend { on_line: h.x.abs() < ON_THE_LINE, partner })
         }
         Handle::Radius(_) => (Vec2::ZERO, Mirror::Nothing),
+        Handle::Axis(_, which) => (s.ellipse?.dot(which), Mirror::Nothing),
         _ => return None,
     };
-    Some(Mould { frame: s.frame, scale: s.scale, offset: press - s.frame.to_world(point), start: path, mirror })
+    let offset = press - s.frame.to_world(point);
+    Some(Mould { frame: s.frame, scale: s.scale, offset, start: path, mirror, ellipse: s.ellipse })
 }
 
 /// `p` across the middle line.
@@ -328,23 +376,34 @@ fn moulded(m: &Mould, handle: Handle, to: Vec2, shift: bool) -> ShapePath {
 
 /// Moulds the shape `drag` holds to the pointer at `pointer` (world pixels), through the shape
 /// as it was seen when the drag began: a corner, side or bend handle to it (snapped to a grid
-/// `step`), or a circle's Size to its distance from the middle. The first change gives an even
-/// polygon its own corners. A keyframed Size gets a key at `time`; true when it did.
+/// `step`), a circle's Size to its distance from the middle, an ellipse's Width or Height to twice
+/// the pointer's distance along that axis, or both by its edge in step. The first change gives an
+/// even polygon its own corners. A keyframed Size, Width or Height gets a key at `time`; true
+/// when one did.
 pub fn apply(scene: &mut Scene, reg: &Registry, drag: &Drag, pointer: Vec2, step: Option<f32>, time: f64) -> bool {
     let id = drag.handle.thing();
     let Some(m) = &drag.mould else { return false };
-    if let Handle::Radius(_) = drag.handle {
-        // The Size that shows that far out, shrunk as it was seen.
-        let shown = (pointer - m.frame.centre).length() / m.scale.max(1e-6);
-        let size = Value::Number(f64::from(snap_length(shown, step).round().max(SMALLEST)));
-        let a = Address::own(id, "size");
-        if scene.keyed(&a) {
-            return scene.set_key(reg, &a, time, size).is_ok();
+    let snapped = |shown: f32| f64::from(snap_length(shown, step).round().max(SMALLEST));
+    match (drag.handle, m.ellipse) {
+        (Handle::Radius(_), Some(e)) => {
+            // Both, by how much further out the pointer is than where the drag began.
+            let k = (pointer - m.frame.centre).length() / (m.offset.length()).max(1e-3);
+            let width = set_number(scene, reg, id, "width", snapped(e.size.x * k), time);
+            let height = set_number(scene, reg, id, "height", snapped(e.size.y * k), time);
+            return width || height;
         }
-        if let Some(thing) = scene.things.get_mut(&id) {
-            thing.params.set("size", size);
+        (Handle::Radius(_), None) => {
+            // The Size that shows that far out, shrunk as it was seen.
+            let shown = (pointer - m.frame.centre).length() / m.scale.max(1e-6);
+            return set_number(scene, reg, id, "size", snapped(shown), time);
         }
-        return false;
+        (Handle::Axis(_, which), Some(e)) => {
+            let axis = Vec2::from_angle(m.frame.angle + e.turn).rotate(if which == 0 { Vec2::X } else { Vec2::Y });
+            let shown = 2.0 * (pointer - m.offset - m.frame.centre).dot(axis).abs() / m.scale.max(1e-6);
+            return set_number(scene, reg, id, if which == 0 { "width" } else { "height" }, snapped(shown), time);
+        }
+        (Handle::Axis(..), None) => return false,
+        _ => {}
     }
     let Some(thing) = scene.things.get_mut(&id) else { return false };
     let to = m.frame.to_shape(snap_point(pointer - m.offset, step));
@@ -356,13 +415,25 @@ pub fn apply(scene: &mut Scene, reg: &Registry, drag: &Drag, pointer: Vec2, step
     false
 }
 
+/// Sets shape `id`'s own number `key` to `value`: a key at `time` when it is keyframed (true then).
+fn set_number(scene: &mut Scene, reg: &Registry, id: ThingId, key: &str, value: f64, time: f64) -> bool {
+    let a = Address::own(id, key);
+    if scene.keyed(&a) {
+        return scene.set_key(reg, &a, time, Value::Number(value)).is_ok();
+    }
+    if let Some(thing) = scene.things.get_mut(&id) {
+        thing.params.set(key, Value::Number(value));
+    }
+    false
+}
+
 /// What a right-click on a shape was on.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MenuTarget {
     /// A side, `t` along it.
     Side(ThingId, usize, f32),
     Corner(ThingId, usize),
-    /// A circle's edge.
+    /// A circle's or an ellipse's edge.
     Circle(ThingId),
 }
 
@@ -370,7 +441,7 @@ pub enum MenuTarget {
 pub fn menu_target(world: &World, view: &View, id: ThingId, pos: Pos2) -> Option<MenuTarget> {
     let s = seen(world, id)?;
     match hit_handle(world, view, id, pos)? {
-        Handle::Radius(_) => Some(MenuTarget::Circle(id)),
+        Handle::Radius(_) | Handle::Axis(..) => Some(MenuTarget::Circle(id)),
         Handle::Corner(_, i) => Some(MenuTarget::Corner(id, i)),
         // A bend handle's menu is its side's.
         Handle::Side(_, side) | Handle::Bend(_, side, _) => {
@@ -434,14 +505,15 @@ pub fn menu(ui: &mut egui::Ui, scene: &Scene, target: MenuTarget) -> Option<Menu
             item(ui, enough, "Delete point", "Takes this corner away", MenuAction::DeletePoint)
                 .on_disabled_hover_text("A shape keeps at least 3 points");
         }
-        MenuTarget::Circle(_) => {
-            item(
-                ui,
-                true,
-                "Turn into points",
-                "Makes the circle a shape of 8 curved sides you can mould",
-                MenuAction::TurnIntoPoints,
-            );
+        MenuTarget::Circle(id) => {
+            let ellipse = outline_of(scene, id).is_some_and(|s| s.start == ShapeStart::Ellipse);
+            let help = if ellipse {
+                "Makes the ellipse a shape of 16 curved sides you can mould. It is no longer an exact ellipse: \
+                 balls fired from a focus will no longer meet perfectly"
+            } else {
+                "Makes the circle a shape of 8 curved sides you can mould"
+            };
+            item(ui, true, "Turn into points", help, MenuAction::TurnIntoPoints);
         }
     }
     picked
@@ -456,14 +528,17 @@ pub fn act(scene: &mut Scene, target: MenuTarget, action: MenuAction) -> bool {
     let Some(settings) = outline_of(scene, id) else { return false };
     let Some(thing) = scene.things.get_mut(&id) else { return false };
     if action == MenuAction::TurnIntoPoints {
-        if settings.start != ShapeStart::Circle {
-            return false;
+        match settings.start {
+            ShapeStart::Circle => {}
+            // Its 16 curves, turned by its Turn, at its size.
+            ShapeStart::Ellipse => thing.params.set("size", Value::Number(f64::from(settings.unit()))),
+            ShapeStart::Polygon => return false,
         }
         thing.params.set("start", Value::Choice("polygon".into()));
-        thing.params.set("path", Value::Path(ShapePath::circle()));
+        thing.params.set("path", Value::Path(settings.outline_path()));
         return true;
     }
-    if settings.start == ShapeStart::Circle {
+    if settings.start != ShapeStart::Polygon {
         return false;
     }
     let mut path = settings.outline_path();
@@ -508,7 +583,7 @@ pub fn draw(
     let is_active = |h: Handle| active == Some(h);
     let moving = is_active(Handle::Body(id));
     if moving {
-        painter.add(egui::Shape::closed_line(outline, Stroke::new(2.0, style::TEXT_STRONG)));
+        painter.add(egui::Shape::closed_line(outline.clone(), Stroke::new(2.0, style::TEXT_STRONG)));
     }
     // The middle, which moves the shape: a ring like a ball's.
     painter.circle_stroke(
@@ -516,6 +591,22 @@ pub fn draw(
         6.0,
         Stroke::new(if moving { 2.0 } else { 1.2 }, if moving { style::TEXT_STRONG } else { mark }),
     );
+    // The foci of an ellipse (and a circle's, at its middle): where balls fired from one meet.
+    for f in focus_marks(world, id) {
+        painter.circle_stroke(view.to_screen(f), 4.0, Stroke::new(1.2, style::TEXT));
+    }
+    if let Some(e) = s.ellipse {
+        if is_active(Handle::Radius(id)) {
+            painter.add(egui::Shape::closed_line(outline, Stroke::new(2.0, mark)));
+        }
+        for which in [0, 1] {
+            let lit = is_active(Handle::Axis(id, which)) || is_active(Handle::Radius(id));
+            let r = if lit { 5.5 } else { 4.5 };
+            let (fill, ring) = if lit { (style::TEXT_STRONG, style::OUTLINE) } else { (style::TEXT_STRONG, mark) };
+            painter.circle(on_screen(e.dot(which)), r, fill, Stroke::new(1.5, ring));
+        }
+        return;
+    }
     if s.circle {
         if is_active(Handle::Radius(id)) {
             let ring: Vec<Pos2> = s.path.flatten(FLATTEN).into_iter().map(on_screen).collect();
@@ -929,5 +1020,100 @@ mod tests {
         let s = ShapeSettings::from_params(&studio.scene.things[&SHAPE].params);
         assert_eq!((s.start, s.size, path(&studio)), (ShapeStart::Polygon, 508.0, ShapePath::circle()));
         assert_eq!(path(&studio).words(), "8 points, 8 curves");
+    }
+
+    /// A 900 × 1300 ellipse at the middle, turned `turn` degrees.
+    fn ellipse(turn: f64) -> Studio {
+        studio_with(|p| {
+            p.set("start", Value::Choice("ellipse".into()));
+            p.set("width", Value::Number(900.0));
+            p.set("height", Value::Number(1300.0));
+            p.set("turn", Value::Number(turn));
+        })
+    }
+
+    fn number(studio: &Studio, key: &str) -> f64 {
+        match studio.scene.things[&SHAPE].params.get(key) {
+            Some(Value::Number(x)) => *x,
+            other => panic!("{key}: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_ellipse_shows_width_and_height_dots() {
+        let studio = ellipse(0.0);
+        let world = studio.playback.world();
+        let v = view();
+        let s = seen(world, SHAPE).unwrap();
+        assert_eq!(s.frame.size, 650.0);
+        let screen = |p: Vec2| v.to_screen(p);
+        assert_eq!(hit_handle(world, &v, SHAPE, screen(Vec2::new(450.0, 0.0))), Some(Handle::Axis(SHAPE, 0)));
+        assert_eq!(hit_handle(world, &v, SHAPE, screen(Vec2::new(0.0, -650.0))), Some(Handle::Axis(SHAPE, 1)));
+        let edge = Vec2::from_angle(-0.6) * 1.0;
+        let on = world.walls[&SHAPE].outline.point(edge.to_angle());
+        assert_eq!(hit_handle(world, &v, SHAPE, screen(on)), Some(Handle::Radius(SHAPE)));
+        assert_eq!(hit_handle(world, &v, SHAPE, screen(Vec2::ZERO)), Some(Handle::Body(SHAPE)));
+        assert_eq!(hit_handle(world, &v, SHAPE, screen(Vec2::new(100.0, 100.0))), None);
+        // Turned, the dots turn with it.
+        let studio = ellipse(90.0);
+        let world = studio.playback.world();
+        assert_eq!(hit_handle(world, &v, SHAPE, screen(Vec2::new(0.0, 450.0))), Some(Handle::Axis(SHAPE, 0)));
+        assert_eq!(hit_handle(world, &v, SHAPE, screen(Vec2::new(650.0, 0.0))), Some(Handle::Axis(SHAPE, 1)));
+    }
+
+    #[test]
+    fn dragging_an_axis_dot_sets_width_or_height() {
+        let mut studio = ellipse(0.0);
+        drag(&mut studio, Handle::Axis(SHAPE, 0), Vec2::new(450.0, 0.0), Vec2::new(50.0, 30.0), false, None);
+        assert_eq!(number(&studio, "width"), 1000.0);
+        assert_eq!(number(&studio, "height"), 1300.0);
+        let mut studio = ellipse(0.0);
+        drag(&mut studio, Handle::Axis(SHAPE, 1), Vec2::new(0.0, -650.0), Vec2::new(0.0, 100.0), false, None);
+        assert_eq!(number(&studio, "height"), 1100.0);
+        // A keyed Height gets a key at the playhead instead.
+        let mut studio = ellipse(0.0);
+        let kit = studio.kit.clone();
+        let a = Address::own(SHAPE, "height");
+        studio.scene.set_key(&kit.registry, &a, 0.0, Value::Number(1300.0)).unwrap();
+        let world = studio.playback.world().clone();
+        let handle = Handle::Axis(SHAPE, 1);
+        let drag = Drag { mould: start(&world, handle, Vec2::new(0.0, -650.0)), ..Drag::new(handle, Vec2::ZERO) };
+        assert!(apply(&mut studio.scene, &kit.registry, &drag, Vec2::new(0.0, -700.0), None, 2.0));
+        assert_eq!(studio.scene.tracks[&a].keys.len(), 2);
+    }
+
+    #[test]
+    fn dragging_an_ellipse_edge_scales_both() {
+        let mut studio = ellipse(0.0);
+        drag(&mut studio, Handle::Radius(SHAPE), Vec2::new(0.0, 650.0), Vec2::new(0.0, 65.0), false, None);
+        assert_eq!((number(&studio, "width"), number(&studio, "height")), (990.0, 1430.0));
+    }
+
+    #[test]
+    fn turn_into_points_makes_16_curved_sides() {
+        let mut studio = ellipse(30.0);
+        assert!(act(&mut studio.scene, MenuTarget::Circle(SHAPE), MenuAction::TurnIntoPoints));
+        let s = ShapeSettings::from_params(&studio.scene.things[&SHAPE].params);
+        assert_eq!((s.start, s.size), (ShapeStart::Polygon, 650.0));
+        let p = path(&studio);
+        assert_eq!((p.side_count(), p.curve_count()), (16, 16));
+        let mut want = ShapeSettings::ellipse(900.0, 1300.0, 8.0);
+        want.turn = 30.0;
+        assert_eq!(p, want.outline_path());
+        // A polygon has nothing to turn into points.
+        let mut studio = polygon(6);
+        assert!(!act(&mut studio.scene, MenuTarget::Circle(SHAPE), MenuAction::TurnIntoPoints));
+    }
+
+    #[test]
+    fn foci_marks_show_for_an_ellipse_and_a_circle() {
+        let studio = ellipse(0.0);
+        let marks = focus_marks(studio.playback.world(), SHAPE);
+        let c = (650f32 * 650.0 - 450.0 * 450.0).sqrt();
+        assert_eq!(marks.len(), 2);
+        assert!((marks[0] - Vec2::new(0.0, -c)).length() < 1e-2 && (marks[1] - Vec2::new(0.0, c)).length() < 1e-2);
+        let circle = studio_with(|_| {});
+        assert_eq!(focus_marks(circle.playback.world(), SHAPE).len(), 2);
+        assert!(focus_marks(polygon(6).playback.world(), SHAPE).is_empty());
     }
 }

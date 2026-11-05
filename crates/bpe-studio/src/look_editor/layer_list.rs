@@ -759,7 +759,7 @@ fn trim(x: f32) -> String {
     text.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
-/// A shape's outline in a few words: "Circle", "6 sides", "7 points, 1 curve", then "filled" when
+/// A shape's outline in a few words: "Circle", "Ellipse", "6 sides", "7 points, 1 curve", then "filled" when
 /// it is solid.
 fn shape_words(cx: &LookCx) -> String {
     let Some(thing) = cx.scene.things.get(&cx.id) else { return String::new() };
