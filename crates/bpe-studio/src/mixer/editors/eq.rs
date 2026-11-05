@@ -16,7 +16,7 @@ use bpe_sound::fx_chain::eq_bands;
 use bpe_sound::{FX_BINS, Meters};
 use eframe::egui::{self, Pos2, RichText, Sense, Shape, Stroke, Ui, Vec2};
 
-/// The curve's height.
+/// The curve's height when there is room; a narrower curve is less tall.
 pub const CURVE_H: f32 = 300.0;
 /// The analyser shows -90..0 dB.
 const FLOOR_DB: f32 = -90.0;
@@ -31,20 +31,33 @@ pub fn show(ui: &mut Ui, cx: &mut MixCx, mixer: &mut Mixer, meters: Option<&Mete
     let set = EqSettings::from_params(&params(cx, defs));
     let bands = set.bands();
     panel(ui, |ui| {
-        ui.horizontal(|ui| {
+        let analyser = |ui: &mut Ui, cx: &mut MixCx| {
             ui.label(RichText::new("Analyser").color(style::MUTED));
             cx.chips(
                 ui,
                 "analyser",
                 &[(AnalyserMode::Post, "Post"), (AnalyserMode::Pre, "Pre"), (AnalyserMode::Off, "Off")],
             );
-            ui.add_space(12.0);
+        };
+        let knobs = |ui: &mut Ui, cx: &mut MixCx| {
+            ui.spacing_mut().item_spacing.x = 0.0;
             cx.knob_auto(ui, "output", "Output");
             cx.knob_auto(ui, "mix", "Mix");
-        });
+        };
+        // The analyser chips and the Output and Mix knobs in one row, or two when narrow.
+        if ui.available_width() >= 420.0 {
+            ui.horizontal(|ui| {
+                analyser(ui, cx);
+                ui.add_space(12.0);
+                knobs(ui, cx);
+            });
+        } else {
+            ui.horizontal(|ui| analyser(ui, cx));
+            ui.horizontal(|ui| knobs(ui, cx));
+        }
         curve(ui, cx, mixer, meters, id, &set);
         // The band chips: lit when picked, a dot under the ones that are on.
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             for (i, b) in bands.iter().enumerate() {
                 let text = if b.on { format!("{}", i + 1) } else { format!("({})", i + 1) };
@@ -62,17 +75,18 @@ pub fn show(ui: &mut Ui, cx: &mut MixCx, mixer: &mut Mixer, meters: Option<&Mete
             let r = cx.switch(ui, &key(i, "on"), &format!("Band {} on", i + 1));
             let _ = r;
             ui.label(RichText::new(format!("Band {}", i + 1)).font(style::semibold(13.0)));
-            ui.add_space(8.0);
-            let kinds: Vec<(BandKind, &str)> = BandKind::ALL.iter().map(|k| (*k, k.label())).collect();
-            cx.chips(ui, &key(i, "kind"), &kinds);
         });
-        ui.horizontal(|ui| {
-            if matches!(b.kind, BandKind::LowCut | BandKind::HighCut) {
+        // The chips have rows of their own, so they wrap in a narrow editor.
+        let kinds: Vec<(BandKind, &str)> = BandKind::ALL.iter().map(|k| (*k, k.label())).collect();
+        cx.chips(ui, &key(i, "kind"), &kinds);
+        if matches!(b.kind, BandKind::LowCut | BandKind::HighCut) {
+            ui.horizontal(|ui| {
                 ui.label(RichText::new("Slope").color(style::MUTED));
                 let slopes: Vec<(Slope, &str)> = Slope::ALL.iter().map(|s| (*s, s.label())).collect();
                 cx.chips(ui, &key(i, "slope"), &slopes);
-                ui.add_space(8.0);
-            }
+            });
+        }
+        ui.horizontal(|ui| {
             ui.label(RichText::new("Stereo").color(style::MUTED));
             let places: Vec<(StereoPlace, &str)> = StereoPlace::ALL.iter().map(|p| (*p, p.label())).collect();
             cx.chips(ui, &key(i, "place"), &places);
@@ -91,7 +105,8 @@ pub fn show(ui: &mut Ui, cx: &mut MixCx, mixer: &mut Mixer, meters: Option<&Mete
 /// The curve with its grid, analyser and points, and what dragging and clicking it does.
 fn curve(ui: &mut Ui, cx: &mut MixCx, mixer: &mut Mixer, meters: Option<&Meters>, id: LayerId, set: &EqSettings) {
     let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, CURVE_H), Sense::click_and_drag());
+    let height = CURVE_H.min(width * 0.6).round();
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click_and_drag());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "EQ curve"));
     let plot = Plot { rect };
     let bands = set.bands();
