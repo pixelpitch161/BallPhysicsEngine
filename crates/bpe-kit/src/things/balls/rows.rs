@@ -31,6 +31,18 @@ pub struct BallRows {
     /// Each row's place round its round: an emitter's ball's place in its round's directions, a
     /// group's ball's number. What a wavefront goes through the balls in.
     pub in_round: Vec<u32>,
+    /// Who caught and took out each row, and when: its trail can stay behind (an emitter's Leave
+    /// trails).
+    pub caught: Vec<Option<Caught>>,
+}
+
+/// A ball an emitter caught and took out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Caught {
+    /// The emitter that caught it.
+    pub by: ThingId,
+    /// The step it was caught at.
+    pub step: u64,
 }
 
 impl BallRows {
@@ -44,6 +56,7 @@ impl BallRows {
         self.place.push(place);
         self.arrivals.push(0);
         self.fade_from.push(None);
+        self.caught.push(None);
     }
 
     /// The ball number of row `row` (the row itself for anything not listed).
@@ -61,7 +74,10 @@ impl BallRows {
 
     /// Bytes the rows take, for playback budgets.
     pub fn memory(&self) -> usize {
-        self.numbers.capacity() * 4 * 4 + self.place.capacity() * 8 + self.fade_from.capacity() * 16
+        self.numbers.capacity() * 4 * 4
+            + self.place.capacity() * 8
+            + self.fade_from.capacity() * 16
+            + self.caught.capacity() * std::mem::size_of::<Option<Caught>>()
     }
 }
 
