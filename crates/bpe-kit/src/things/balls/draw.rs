@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use bpe_core::{BallSpread, Blend, ResolvedThing, Settings, SlotId, ThingId};
 use bpe_gfx::{Around, DrawCx, FlashInstance, Frame, HitMark, LayeredRun, ThingDraw, blend_alpha, thing_code};
-use bpe_runtime::{Bodies, EventKind};
+use bpe_runtime::{Bodies, Event, EventKind};
 
 use crate::modules::look::draw::{BallInputs, for_balls};
 use crate::modules::look::layers::around::{AroundKind, AroundLayer, around_layers};
@@ -33,6 +33,11 @@ pub(crate) fn hit_strength(speed: f32) -> f32 {
 /// Each ball's last hit up to `now` seconds, no further back than `memory` seconds: how long ago
 /// it was and how strong (`bpe_gfx::NO_HIT`'s age and 0 without one in that time), by row.
 pub(crate) fn last_hits(cx: &DrawCx, count: usize, memory: f32) -> Vec<(f32, f32)> {
+    last_hits_but(cx, count, memory, &|_, _| false)
+}
+
+/// [`last_hits`], leaving out the arrivals `skip` names (by the event and the row).
+fn last_hits_but(cx: &DrawCx, count: usize, memory: f32, skip: &dyn Fn(&Event, usize) -> bool) -> Vec<(f32, f32)> {
     let mut last = vec![(bpe_gfx::NO_HIT[0], 0.0); count];
     if memory <= 0.0 {
         return last;
@@ -54,6 +59,7 @@ pub(crate) fn last_hits(cx: &DrawCx, count: usize, memory: f32) -> Vec<(f32, f32
         // Both balls of a ball-on-ball hit were hit.
         for side in std::iter::once(e.a).chain(other) {
             if side.thing == id
+                && !(e.kind == EventKind::Enter && skip(e, side.item as usize))
                 && let Some(l) = last.get_mut(side.item as usize)
             {
                 *l = ((cx.time - time) as f32, hit_strength(e.speed));
@@ -494,7 +500,21 @@ fn with_balls<R>(cx: &DrawCx, worn: &Worn, memory: f32, f: impl FnOnce(&Balls) -
             (t.turn + t.spin * (time - ago) + own).to_radians()
         })
     };
-    let last = last_hits(cx, bodies.len(), memory);
+    let leaving = leaves_trails(cx);
+    let rows = group_of(cx.world, id).map(|g| g.rows);
+    let rate = cx.world.steps_per_second as f64;
+    // The step ball `i` was caught at, when the catcher leaves its trail behind.
+    let left = |i: usize| {
+        if leaving.is_empty() {
+            return None;
+        }
+        let c = rows?.caught.get(i).copied().flatten()?;
+        leaving.contains(&c.by).then_some(c.step)
+    };
+    let gone = |i: usize| left(i).map(|step| (cx.time - step as f64 / rate).max(0.0) as f32);
+    // The catch isn't a hit for a trail left behind: one that restarts at each bounce keeps
+    // what it had.
+    let last = last_hits_but(cx, bodies.len(), memory, &|e, i| left(i).is_some_and(|step| e.step >= step));
     let balls = Balls {
         bodies,
         history,
@@ -505,8 +525,20 @@ fn with_balls<R>(cx: &DrawCx, worn: &Worn, memory: f32, f: impl FnOnce(&Balls) -
         turned: &turned,
         last_hits: &last,
         own: worn.around_varies().then_some(&own as &dyn Fn(usize) -> Rc<Vec<AroundLayer>>),
+        gone: &gone,
     };
     Some(f(&balls))
+}
+
+/// The emitters whose caught balls leave their trails behind (Leave trails), as they are now.
+fn leaves_trails(cx: &DrawCx) -> Vec<ThingId> {
+    cx.scene
+        .things
+        .iter()
+        .filter(|(_, r)| r.kind == crate::things::emitter::KIND)
+        .filter(|(_, r)| matches!(r.params.get("leave_trails"), Some(bpe_core::Value::Bool(true))))
+        .map(|(id, _)| *id)
+        .collect()
 }
 
 /// Draws the balls `made` (by row) with the Ghosts their Look's Ghosts trails leave: copies of

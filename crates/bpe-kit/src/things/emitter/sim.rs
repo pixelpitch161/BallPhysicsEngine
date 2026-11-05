@@ -14,7 +14,7 @@ use super::fire::{
 };
 use super::foci::sits_on_pose;
 use super::{CatchFrom, Catches, Earlier, EmitterSettings, FireWhen, KIND, ReturnWay};
-use crate::things::balls::rows::{BallRows, rows_mut};
+use crate::things::balls::rows::{BallRows, Caught, rows_mut};
 use crate::things::balls::sim::size_factor;
 
 pub struct EmitterSim;
@@ -505,7 +505,15 @@ fn catch(me: ThingId, world: &mut World, log: &mut Log) {
         let Some(bodies) = world.bodies.get_mut(&a.thing) else { continue };
         match s.catches {
             Catches::Nothing | Catches::PassThrough => {}
-            Catches::Remove => pop(bodies, a.row, a.thing, step, log),
+            Catches::Remove => {
+                pop(bodies, a.row, a.thing, step, log);
+                // Who caught it and when, for its trail to stay behind (Leave trails).
+                if let Some(rows) = rows_mut(world, a.thing)
+                    && let Some(c) = rows.caught.get_mut(a.row)
+                {
+                    *c = Some(Caught { by: me, step });
+                }
+            }
             Catches::SendBackOut => {
                 let (place, velocity) = match s.return_way {
                     ReturnWay::SameWayBack => (a.point, -bodies.velocity[a.row]),
@@ -644,12 +652,12 @@ impl ThingSim for EmitterSim {
         spread_in(world, thing, row)
     }
 
-    /// The marker and the look-only variety change only how it looks.
+    /// The marker, the look-only variety and Leave trails change only how it looks.
     fn affects_physics(&self, key: &str) -> bool {
         !(key.starts_with("marker")
             || key.starts_with("flash_")
             || key.starts_with("ripple")
-            || matches!(key, "vary_colour" | "vary_turn"))
+            || matches!(key, "vary_colour" | "vary_turn" | "leave_trails"))
     }
 }
 

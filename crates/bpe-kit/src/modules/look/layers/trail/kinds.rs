@@ -82,6 +82,21 @@ impl Path {
         Some(self.points[k].lerp(self.points[k + 1], f.clamp(0.0, 1.0)))
     }
 
+    /// Drops the points at its head that stand where the next one does (a caught ball's place
+    /// since it stopped), so it starts at the newest of them: the last moment it moved. Gives
+    /// back how many it dropped.
+    pub fn drop_still_head(&mut self) -> usize {
+        let still = self.points.windows(2).take_while(|w| w[0] == w[1]).count();
+        if still == 0 || still + 1 >= self.len() {
+            return 0;
+        }
+        self.points.drain(..still);
+        self.ago.drain(..still);
+        self.arc.drain(..still);
+        self.corner.drain(..still);
+        still
+    }
+
     /// The way the trail runs at point `k`, from older to newer (unit; `None` where it stands).
     pub fn heading(&self, k: usize) -> Option<Vec2> {
         let n = self.len();
@@ -125,6 +140,23 @@ impl Cut {
             cut.since = last_hit;
         }
         cut
+    }
+
+    /// The cut for a ball that stopped dead `gone` seconds ago, having gone at `speed`: its
+    /// trail runs out into where it stopped as it would had it gone on (a distance cut is used up
+    /// at the speed it went), `None` once nothing is left. A trail that stays, stays.
+    pub fn after_gone(mut self, gone: f32, speed: f32) -> Option<Cut> {
+        if let Some(d) = self.distance {
+            let left = d - speed * gone;
+            if left <= 0.0 {
+                return None;
+            }
+            self.distance = Some(left);
+        }
+        if self.time().is_some_and(|t| t <= gone) {
+            return None;
+        }
+        Some(self)
     }
 
     /// The seconds back it reaches at most.

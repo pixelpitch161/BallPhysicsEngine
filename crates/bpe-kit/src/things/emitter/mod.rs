@@ -280,6 +280,10 @@ pub struct EmitterSettings {
     /// The things whose balls it catches, for Chosen.
     #[setting(label = "Things", group = "Catch", when = "catches!=nothing and catch_from=chosen")]
     pub catch_things: Target,
+    /// A caught ball's trail stays behind and runs out into the catch point over its own length,
+    /// as if the ball had stopped there.
+    #[setting(label = "Leave trails", group = "Catch", when = "catches=remove")]
+    pub leave_trails: bool,
     /// Which way a caught ball goes back out.
     #[setting(label = "Which way", group = "Send back out", when = "catches=send_back_out")]
     pub return_way: ReturnWay,
@@ -372,6 +376,7 @@ impl Default for EmitterSettings {
             catch_size: 40.0,
             catch_from: CatchFrom::AnyBalls,
             catch_things: Target::Anything,
+            leave_trails: false,
             return_way: ReturnWay::SameWayBack,
             return_delay: 0.0,
             marker: Marker::RingWithDot,
