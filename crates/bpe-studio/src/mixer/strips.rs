@@ -313,7 +313,7 @@ fn slot_row(ui: &mut Ui, cx: &mut MixCx, mixer: &mut Mixer, lane: u8, index: usi
 }
 
 /// A vertical fader over a dB setting, with the value menu on right-click. Drag up to turn it
-/// up (Shift for fine steps), double-click for 0 dB.
+/// up (Shift for fine steps), double-click or Alt+click for 0 dB.
 pub fn fader(ui: &mut Ui, cx: &mut MixCx, key: &str, name: &str) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(FADER_W, FADER_H), Sense::click_and_drag());
     let now = cx.get(key);
@@ -333,7 +333,7 @@ pub fn fader(ui: &mut Ui, cx: &mut MixCx, key: &str, name: &str) -> egui::Respon
     } else {
         ui.data_mut(|d| d.remove::<f64>(exact_id));
     }
-    if response.double_clicked() {
+    if response.double_clicked() || (response.clicked() && ui.input(|i| i.modifiers.alt)) {
         v = 0.0;
     }
     if v != before {
