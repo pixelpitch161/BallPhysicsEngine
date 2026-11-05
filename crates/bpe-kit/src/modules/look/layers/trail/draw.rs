@@ -53,6 +53,9 @@ pub struct Balls<'a> {
     /// Ball `i`'s own trails and particles, when the look's settings for them vary across the
     /// balls (see `layers::vary`); none when every ball wears them as the card says.
     pub own: Option<&'a dyn Fn(usize) -> std::rc::Rc<Vec<AroundLayer>>>,
+    /// How many seconds ago ball `i` was caught, when it is gone and the emitter that caught it
+    /// leaves trails behind (its trail runs out where it was caught); `None` for every other ball.
+    pub gone: &'a dyn Fn(usize) -> Option<f32>,
 }
 
 impl Balls<'_> {
@@ -77,11 +80,34 @@ impl Balls<'_> {
         self.history.travelled(i) + (self.bodies.position[i] - newest).length()
     }
 
-    /// Ball `i`'s trail as `trail` cuts it, before any wobble.
-    fn path(&self, trail: &TrailLayer, i: usize) -> Path {
+    /// How ball `i`'s trail is cut. A ball caught `gone` seconds ago stands still where it was
+    /// caught (its history keeps that place), so its trail runs out into it: `None` once it has,
+    /// or once the history no longer reaches back to when it moved.
+    fn cut(&self, trail: &TrailLayer, i: usize, gone: Option<f32>) -> Option<Cut> {
         let speed = self.bodies.velocity[i].length();
         let cut = Cut::of(trail, speed, self.last_hit(i).map(|h| h.0));
-        kinds::path(self.bodies.position[i], self.history, i, self.newest_ago, self.interval, cut)
+        let Some(gone) = gone else { return Some(cut) };
+        let kept = self.history.cap().saturating_sub(1) as f32 * self.interval;
+        if !trail.stays() && gone >= kept {
+            return None;
+        }
+        cut.after_gone(gone, speed)
+    }
+
+    /// Whether ball `i` has a trail of `trail` to draw: it is there, or it was caught and its
+    /// trail left behind is not yet run out.
+    fn shows(&self, trail: &TrailLayer, i: usize) -> bool {
+        self.bodies.alive[i] || (self.gone)(i).is_some_and(|g| self.cut(trail, i, Some(g)).is_some())
+    }
+
+    /// Ball `i`'s trail as `trail` cuts it, before any wobble; empty for a caught ball's trail
+    /// that has run out (see [`Balls::cut`]). A caught ball's still head is left in: see
+    /// [`Path::drop_still_head`].
+    fn path(&self, trail: &TrailLayer, i: usize, gone: Option<f32>) -> Path {
+        match self.cut(trail, i, gone) {
+            Some(cut) => kinds::path(self.bodies.position[i], self.history, i, self.newest_ago, self.interval, cut),
+            None => Path::default(),
+        }
     }
 }
 
@@ -147,14 +173,15 @@ pub fn draw(cx: &DrawCx, layer: &AroundLayer, trail: &TrailLayer, balls: &Balls,
     let mut pieces = Pieces::default();
     let bodies = balls.bodies;
     let time = cx.time as f32;
-    let wearing = (0..bodies.len()).filter(|&i| bodies.alive[i] && layer.applies((balls.number)(i))).count();
+    let wearing = (0..bodies.len()).filter(|&i| balls.shows(trail, i) && layer.applies((balls.number)(i))).count();
     let points_each = MOST_STRIP_POINTS / wearing.max(1);
     let newest = balls.history.newest_step().unwrap_or(0) / balls.history.every();
     // Dots and puffs share the particles' cap.
     let full = |pieces: &Pieces| pieces.particles[OWN].len() >= MAX_PARTICLES;
     let (base_layer, base_trail) = (layer, trail);
     for i in 0..bodies.len() {
-        if !bodies.alive[i] || !base_layer.applies((balls.number)(i)) {
+        let gone = if bodies.alive[i] { None } else { (balls.gone)(i) };
+        if !(bodies.alive[i] || gone.is_some()) || !base_layer.applies((balls.number)(i)) {
             continue;
         }
         if full(&pieces) {
@@ -173,13 +200,16 @@ pub fn draw(cx: &DrawCx, layer: &AroundLayer, trail: &TrailLayer, balls: &Balls,
         if speed < trail.least_speed {
             continue;
         }
-        let mut path = balls.path(trail, i);
+        let mut path = balls.path(trail, i, gone);
+        // A caught ball's trail starts where it last moved: the samples since are all one place.
+        let still = if gone.is_some() { path.drop_still_head() } else { 0 };
         if path.len() < 2 {
             continue;
         }
         let rolled = balls.rolled(i);
         if trail.kind == TrailKind::Line {
-            kinds::thin(&mut path, newest);
+            // Counted from the newest sample left in it.
+            kinds::thin(&mut path, newest.saturating_sub(still as u64));
         }
         kinds::limit(&mut path, points_each);
         if matches!(trail.kind, TrailKind::Streak | TrailKind::Ribbon | TrailKind::Line | TrailKind::Dots) {
@@ -243,6 +273,10 @@ pub fn draw(cx: &DrawCx, layer: &AroundLayer, trail: &TrailLayer, balls: &Balls,
                 for ago in kinds::puffs(cx.time, trail.puffs, path.reach()) {
                     if full(&pieces) {
                         break;
+                    }
+                    // No puffs from a caught ball standing still.
+                    if ago < path.ago[0] {
+                        continue;
                     }
                     let Some(at) = path.at_ago(ago) else { continue };
                     let k = path.ago.partition_point(|&a| a <= ago).clamp(1, path.len()) - 1;
@@ -378,7 +412,7 @@ pub fn ghosts_of(layer: &AroundLayer, trail: &TrailLayer, balls: &Balls, i: usiz
     if balls.bodies.velocity[i].length() < trail.least_speed {
         return Vec::new();
     }
-    let path = balls.path(trail, i);
+    let path = balls.path(trail, i, None);
     let strength = (trail.brightness.max(0.0) / 0.5).min(1.0);
     let mut out: Vec<Ghost> = kinds::ghosts(trail.ghosts, trail.ghost_every)
         .into_iter()
@@ -503,9 +537,10 @@ mod tests {
             turned: &turned,
             last_hits: &hits,
             own: None,
+            gone: &|_| None,
         };
         let trail = TrailLayer { restart: true, ..TrailLayer::default() };
-        let path = balls.path(&trail, 0);
+        let path = balls.path(&trail, 0, None);
         assert_eq!(path.len(), 2, "cut short of the newest sample");
         let rolled = balls.rolled(0);
         // From the first sample (10 px) to the newest (100 px), then on to the ball.
@@ -749,5 +784,102 @@ mod tests {
         let c = f.trails[0].color;
         assert_eq!(c[3], -1.0, "still added light");
         assert!(c[0] < 1e-4 && c[1] < 1e-4 && c[2] > 0.3, "{c:?}");
+    }
+
+    /// A shooter firing three balls at a catcher that takes them out (at about 0.43 s), its balls
+    /// wearing a half-second Streak set by `f`; the catcher leaves trails when `leave` says so.
+    fn caught_trails(leave: bool, f: impl FnOnce(&mut dyn FnMut(&str, Value))) -> Scene {
+        use crate::things::emitter::test_scenes::shooter_and_catcher;
+        let (mut scene, shooter, catcher, kit) = shooter_and_catcher(3, |_| {});
+        scene.things.get_mut(&catcher).unwrap().params.set("leave_trails", Value::Bool(leave));
+        let id = scene.add_layer(&kit.registry, shooter, SlotId::Look, TRAIL).unwrap();
+        let card = scene.card_mut(shooter, SlotId::Look).unwrap();
+        card.params.set(&layered_key(id, "seconds"), Value::Number(0.5));
+        card.params.set(&layered_key(id, "faster"), Value::Number(0.0));
+        f(&mut |key, v| card.params.set(&layered_key(id, key), v));
+        scene
+    }
+
+    fn vertices(scene: &Scene, time: f64) -> usize {
+        let f = frame_at(scene, time).0;
+        f.trails.len() + f.trails_front.len()
+    }
+
+    #[test]
+    fn a_caught_ball_s_trail_goes_with_it_unless_the_catcher_leaves_trails() {
+        let off = caught_trails(false, |_| {});
+        let on = caught_trails(true, |_| {});
+        assert!(vertices(&off, 0.4) > 0 && vertices(&off, 0.4) == vertices(&on, 0.4), "the same before the catch");
+        assert_eq!(vertices(&off, 0.5), 0, "gone with the balls");
+        // It runs out into the catch point over its half second, then is gone.
+        let (a, b, c) = (vertices(&on, 0.5), vertices(&on, 0.75), vertices(&on, 1.0));
+        assert!(a > b && b > 0, "{a} {b}");
+        assert_eq!(c, 0);
+        // What is left stays where the balls were caught: it reaches no further on.
+        let right = |time: f64| {
+            let f = frame_at(&on, time).0;
+            f.trails.iter().chain(&f.trails_front).map(|v| v.position[0]).fold(f32::MIN, f32::max)
+        };
+        assert!(right(0.7) <= right(0.5) + 1e-3, "{} {}", right(0.7), right(0.5));
+    }
+
+    #[test]
+    fn a_left_trail_cut_by_distance_runs_out_at_the_speed_its_ball_went() {
+        // 100 px at 400 px/s: run out a quarter of a second after the catch.
+        let on = caught_trails(true, |set| {
+            set("length_by", Value::Choice("distance".into()));
+            set("pixels", Value::Number(100.0));
+        });
+        assert!(vertices(&on, 0.5) > vertices(&on, 0.6));
+        assert!(vertices(&on, 0.6) > 0);
+        assert_eq!(vertices(&on, 0.75), 0);
+    }
+
+    /// Being caught isn't a bounce a left trail restarts at: a trail that restarts at each bounce
+    /// still runs out, and a Line that restarts and stays still stays.
+    #[test]
+    fn a_left_trail_that_restarts_at_bounces_doesnt_restart_at_the_catch() {
+        let streak = caught_trails(true, |set| set("restart", Value::Bool(true)));
+        assert!(vertices(&streak, 0.6) > 0);
+        let line = caught_trails(true, |set| {
+            set("kind", Value::Choice("line".into()));
+            set("forever", Value::Bool(true));
+            set("restart", Value::Bool(true));
+        });
+        assert!(vertices(&line, 2.0) > 0);
+    }
+
+    #[test]
+    fn a_left_line_that_stays_stays() {
+        let line = |set: &mut dyn FnMut(&str, Value)| {
+            set("kind", Value::Choice("line".into()));
+            set("forever", Value::Bool(true));
+        };
+        let (on, off) = (caught_trails(true, line), caught_trails(false, line));
+        assert!(vertices(&on, 3.0) > 0);
+        assert_eq!(vertices(&on, 3.0), vertices(&on, 1.0));
+        assert_eq!(vertices(&off, 3.0), 0);
+    }
+
+    #[test]
+    fn a_still_head_drops_to_the_last_moment_it_moved() {
+        use super::kinds::Path;
+        use glam::Vec2;
+        let p = |x: f32| Vec2::new(x, 0.0);
+        let mut path = Path {
+            points: vec![p(5.0), p(5.0), p(5.0), p(3.0), p(1.0)],
+            ago: vec![0.0, 0.1, 0.2, 0.3, 0.4],
+            arc: vec![0.0, 0.0, 0.0, 2.0, 4.0],
+            corner: vec![false; 5],
+        };
+        assert_eq!(path.drop_still_head(), 2);
+        assert_eq!(path.points, vec![p(5.0), p(3.0), p(1.0)]);
+        assert_eq!(path.ago, vec![0.2, 0.3, 0.4]);
+        assert_eq!(path.arc, vec![0.0, 2.0, 4.0]);
+        // A path standing still all the way is left alone.
+        let mut still =
+            Path { points: vec![p(1.0); 3], ago: vec![0.0, 0.1, 0.2], arc: vec![0.0; 3], corner: vec![false; 3] };
+        assert_eq!(still.drop_still_head(), 0);
+        assert_eq!(still.len(), 3);
     }
 }

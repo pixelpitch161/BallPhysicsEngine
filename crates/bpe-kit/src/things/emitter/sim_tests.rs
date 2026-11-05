@@ -149,6 +149,20 @@ fn a_catcher_takes_out_the_balls_that_reach_it_and_counts_one_wave() {
 }
 
 #[test]
+fn a_catcher_notes_who_caught_each_ball_it_takes_out_and_when() {
+    let (scene, shooter, catcher, kit) = shooter_and_catcher(3, |_| {});
+    let (world, _) = run(&scene, &resolved(&scene, &kit), &kit, 1.0);
+    let caught: Vec<_> = st(&world, shooter).rows.caught.iter().map(|c| c.map(|c| (c.by, c.step))).collect();
+    assert_eq!(caught, vec![Some((catcher, 107)), Some((catcher, 102)), Some((catcher, 107))]);
+    // Balls sent back out or let through are still there: nothing to note.
+    for catches in [Catches::SendBackOut, Catches::PassThrough] {
+        let (scene, shooter, _, kit) = shooter_and_catcher(3, |s| s.catches = catches);
+        let (world, _) = run(&scene, &resolved(&scene, &kit), &kit, 1.0);
+        assert!(st(&world, shooter).rows.caught.iter().all(Option::is_none), "{catches:?}");
+    }
+}
+
+#[test]
 fn removing_earlier_rounds_drops_their_balls_still_waiting_on_the_gap() {
     let (scene, id, kit) = scene_with(Vec2::ZERO, |s| {
         s.fire_when = FireWhen::Every;
@@ -399,7 +413,16 @@ fn a_key_on_size_resizes_its_balls() {
 
 #[test]
 fn marker_settings_dont_touch_the_physics() {
-    for key in ["marker", "marker_size", "marker_colour", "marker_glow", "flash_fire", "ripple_far", "vary_colour"] {
+    for key in [
+        "marker",
+        "marker_size",
+        "marker_colour",
+        "marker_glow",
+        "flash_fire",
+        "ripple_far",
+        "vary_colour",
+        "leave_trails",
+    ] {
         assert!(!EmitterSim.affects_physics(key), "{key}");
     }
     for key in ["speed", "count", "catches", "vary_size", "rounds"] {

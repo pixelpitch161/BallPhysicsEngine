@@ -199,7 +199,8 @@ Dependencies go bottom to top:
   (`fire.rs`: directions All round / Fan / One way / Random, Start from Point / Ring / Line, Gap and Order, round
   sizes ×/+, `layout` one round's places; `sim.rs`: Fire when At start / Every / When a wave lands, Rounds or
   Endless, Earlier rounds Keep / Fade out / Remove, Most balls; catching by a swept circle test: Remove, Send back
-  out (Same way back / Out my way, Delay holds), Pass through; waves = arrivals of one (owner, round) within 0.5 s,
+  out (Same way back / Out my way, Delay holds), Pass through; Leave trails (Remove only, drawing-only: `BallRows.caught` notes who caught a ball and when,
+  `Balls.gone` lets its trail run out into the catch point, `Cut::after_gone`); waves = arrivals of one (owner, round) within 0.5 s,
   `landings`; `round_marks` for the editor) and sits on a focus of a circle or ellipse (`emitter/foci.rs` over `shape::foci`; the Sits on hint says what would spoil meeting at the other focus). **Aim** (part 3, `emitter/aim.rs`): Straight in / Keep my directions, Target
   (`aim_target`, 0 = the other focus it sits on), Arrive after, Can't reach (Skip / Fire anyway). Exact in the world's
   own steps (semi-implicit Euler, one substep a step; a ball launched on step L sets off from `now(L)`): Straight in
