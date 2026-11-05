@@ -224,7 +224,8 @@ impl History {
         };
         // Corners between them, the nearest each side of `t`.
         let from = corners.partition_point(|c| c.0 <= older.0);
-        let to = corners.partition_point(|c| c.0 < newer.0);
+        // (None between when both are the same moment: a corner there is the sample itself.)
+        let to = corners.partition_point(|c| c.0 < newer.0).max(from);
         let split = corners.partition_point(|c| c.0 <= t).clamp(from, to);
         if split > from {
             older = corners[split - 1];
@@ -389,6 +390,8 @@ mod tests {
         h.corner(0, 20.0, Vec2::new(9.5, 10.5));
         h.record(20, &[Vec2::new(9.5, 10.5)]);
         assert_eq!(h.trace(0).filter(|c| c.0 == 20.0).count(), 1);
+        assert_eq!(h.place(0, 20.0, 20.0, Vec2::new(9.5, 10.5)), Some(Vec2::new(9.5, 10.5)));
+        assert_eq!(h.place(0, 19.0, 20.0, Vec2::new(9.5, 10.5)), Some(Vec2::new(9.5, 9.5)));
         // Corners go with the samples they sit between.
         for step in 21..=2000u64 {
             h.record(step, &[Vec2::new(9.5, step as f32)]);
