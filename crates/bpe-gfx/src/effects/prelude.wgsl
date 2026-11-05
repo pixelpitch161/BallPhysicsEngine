@@ -69,14 +69,30 @@ fn fold_uv(uv: vec2<f32>) -> vec2<f32> {
     return 1.0 - abs(1.0 - abs(uv) % vec2<f32>(2.0));
 }
 
+// How much a blend layer's pixel counts as covering: its coverage, or for light added with
+// little or no coverage (a glow, a flash) its brightest channel, as the blend composite counts it.
+fn bpe_cover(c: vec4<f32>) -> f32 {
+    return clamp(max(c.a, max(c.r, max(c.g, c.b))), 0.0, 1.0);
+}
+
+// A blend layer's picture holds colour already multiplied by how much it covers; effects see
+// the colour itself, and their result is multiplied back (see fs_main).
+fn bpe_straight(c: vec4<f32>) -> vec3<f32> {
+    if fx.in_layer > 0.5 {
+        let k = bpe_cover(c);
+        return select(vec3<f32>(0.0), c.rgb / k, k > 1e-4);
+    }
+    return c.rgb;
+}
+
 // The picture coming into this effect.
 fn sample(uv: vec2<f32>) -> vec3<f32> {
-    return textureSampleLevel(src_tex, samp, fold_uv(uv), 0.0).rgb;
+    return bpe_straight(textureSampleLevel(src_tex, samp, fold_uv(uv), 0.0));
 }
 
 // This effect's own output from the previous frame, for feedback and echo effects.
 fn prev(uv: vec2<f32>) -> vec3<f32> {
-    return textureSampleLevel(prev_tex, samp, uv, 0.0).rgb;
+    return bpe_straight(textureSampleLevel(prev_tex, samp, uv, 0.0));
 }
 
 fn aspect() -> f32 {

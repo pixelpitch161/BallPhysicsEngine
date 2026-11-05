@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use bytemuck::{Pod, Zeroable};
 
 use super::{MAX_PARAM_FLOATS, assemble, needs_history};
-use crate::{EffectCall, Frame, HDR_FORMAT, OBJECT_FORMAT, Stage};
+use crate::{BlendLayer, EffectCall, Frame, HDR_FORMAT, OBJECT_FORMAT, Stage};
 
 pub(crate) const MAX_HITS: usize = 16;
 /// How far back effects see hits, in seconds.
@@ -67,7 +67,8 @@ pub(crate) struct Chain {
     used: BTreeSet<u64>,
     uniforms: Vec<wgpu::Buffer>,
     used_uniforms: usize,
-    slots: BTreeMap<u64, Slot>,
+    /// Each call's history, per picture it runs on (none: the main one, else a blend layer's).
+    slots: BTreeMap<(u64, Option<usize>), Slot>,
     scratch: Option<(wgpu::Texture, wgpu::TextureView)>,
 }
 
@@ -157,7 +158,20 @@ impl Chain {
     /// Whether this frame needs the object picture drawn: an effect on one thing, or one that
     /// reads what is where itself (a material on the scene paints every thing).
     pub(crate) fn wants_objects(frame: &Frame) -> bool {
-        frame.effects.iter().any(|e| e.blend > 0.0 && (e.apply_to > 0.5 || super::needs_objects(&e.wgsl)))
+        frame.effects.iter().any(wants_objects)
+    }
+
+    /// Whether an effect of the Picture stage wants the object picture.
+    pub(crate) fn picture_wants_objects(frame: &Frame) -> bool {
+        frame.effects.iter().any(|e| e.stage == Stage::Picture && wants_objects(e))
+    }
+
+    /// Whether this frame has a material on the whole scene: an effect of the Things stage on
+    /// no one thing. It paints every thing, so a thing mixed in after the main picture's
+    /// effects (a blended ball, a higher z-order) gets it on its own layer before it is mixed
+    /// in (see [`Canvas::runs`]).
+    pub(crate) fn material(frame: &Frame) -> bool {
+        frame.effects.iter().any(is_material)
     }
 
     /// Starts a frame: forgets which effects and uniforms the last one used.
@@ -234,8 +248,18 @@ impl Chain {
                 Some(Ok(c)) => c,
                 _ => continue,
             };
-            let slot =
-                self.slots.entry(call.key).or_insert(Slot { history: None, frames: 0, last_time: None, used: true });
+            // A material runs on the main picture and on every blend layer: each keeps its own
+            // history, so an effect that reads its last frame doesn't read another picture's.
+            let canvas = match on {
+                Canvas::Main => None,
+                Canvas::Layer(i) => Some(i),
+            };
+            let slot = self.slots.entry((call.key, canvas)).or_insert(Slot {
+                history: None,
+                frames: 0,
+                last_time: None,
+                used: true,
+            });
             slot.used = true;
             let fresh = match slot.last_time {
                 Some(last) => frame.time < last || frame.time - last > MAX_STEP,
@@ -331,10 +355,29 @@ impl Canvas {
     /// Whether `call` runs on this picture. An effect on things at the Things stage runs where
     /// its thing is drawn: on the main picture if the thing draws anything there, else on the
     /// first blend layer it draws into, before that layer is mixed in (so the picture under a
-    /// blended thing is left alone). Every other effect runs on the main picture.
+    /// blended thing is left alone). A material on the whole scene runs on the main picture,
+    /// which by then holds the layers drawn before it (lower z-orders, things behind the
+    /// balls), and on every layer drawn after it, each painting its own things. Every other
+    /// effect runs on the main picture.
     fn runs(self, frame: &Frame, call: &EffectCall) -> bool {
-        self == canvas_of(frame, call)
+        let above = |i: usize| frame.layers.get(i).is_some_and(BlendLayer::above);
+        self == canvas_of(frame, call) || matches!(self, Canvas::Layer(i) if above(i) && is_material(call))
     }
+}
+
+/// Whether any effect of the Things stage runs on the frame's blend layer `index`.
+pub(crate) fn layer_has_effects(frame: &Frame, index: usize) -> bool {
+    frame.effects.iter().any(|call| call.stage == Stage::Things && Canvas::Layer(index).runs(frame, call))
+}
+
+/// See [`Chain::wants_objects`].
+fn wants_objects(e: &EffectCall) -> bool {
+    e.blend > 0.0 && (e.apply_to > 0.5 || super::needs_objects(&e.wgsl))
+}
+
+/// See [`Chain::material`].
+fn is_material(call: &EffectCall) -> bool {
+    call.stage == Stage::Things && call.blend > 0.0 && call.apply_to <= 0.5
 }
 
 /// See [`Canvas::runs`].
@@ -677,6 +720,140 @@ pub(crate) mod tests {
             assert_eq!(pixel(&on, edge), pixel(&off, edge), "{blend:?}: the edge");
             assert!(on == off, "{blend:?}: the same picture as with the switch off");
         }
+    }
+
+    /// A material on the whole scene: wherever a thing is (found as Lava finds it), its red
+    /// turns blue, green red and blue green.
+    const TURN_THINGS: &str = "// name: Turn things\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { if object_at(uv).w <= 0.0 { return sample(uv); } return sample(uv).yzx; }\n";
+
+    fn grey(frame: &mut Frame) {
+        let c = [0.3, 0.3, 0.3, 1.0];
+        frame.background = crate::BackgroundPaint { row: 0, ends: Some([c, c]), ..Default::default() };
+    }
+
+    #[test]
+    fn a_scene_material_paints_raised_and_blended_things_but_not_what_is_under_them() {
+        // Ball B added, screened, raised above the rest (plain), and blended behind the balls.
+        type Place = fn(&mut Frame) -> &mut Frame;
+        let places: [(&str, Place); 4] = [
+            ("added", |f| f.layer_mut(bpe_core::Blend::Add, 1.0, false)),
+            ("screened", |f| f.layer_mut(bpe_core::Blend::Screen, 1.0, false)),
+            ("raised", |f| f.target_mut(3, bpe_core::Blend::Normal, 1.0, false, false)),
+            ("behind", |f| f.layer_behind_mut(bpe_core::Blend::Add, 1.0, false, true)),
+        ];
+        for (name, place) in places {
+            let shot = |b_colour: Option<[f32; 4]>, material: bool| {
+                let mut frame = two_balls_frame();
+                grey(&mut frame);
+                let mut b = frame.balls.pop().unwrap();
+                if let Some(c) = b_colour {
+                    b.color = c;
+                }
+                place(&mut frame).balls.push(b);
+                if material {
+                    frame.effects.push(call(TURN_THINGS, 0.0, Stage::Things));
+                }
+                render(&frame)
+            };
+            let Some(after) = shot(None, true) else { return };
+            // What it should look like: ball B in the turned colour to begin with, mixed in the
+            // same way.
+            let want = shot(Some([0.25, 0.25, 1.0, 1.0]), false).unwrap();
+            let plain = shot(None, false).unwrap();
+            let a = pixel(&after, A);
+            assert!(a[2] > a[0] + 60, "{name}: {a:?}, ball A on the main picture is painted too");
+            assert_eq!(pixel(&after, EMPTY), pixel(&plain, EMPTY), "{name}: the background is left alone");
+            // Every pixel around B, its soft edge too.
+            for dy in (-90..=90).step_by(3) {
+                for dx in (-90..=90).step_by(3) {
+                    let at = B + Vec2::new(dx as f32, dy as f32);
+                    let (got, want) = (pixel(&after, at), pixel(&want, at));
+                    // B's own colour is turned, and nothing under it is.
+                    let off = (0..3).map(|i| got[i].abs_diff(want[i])).max().unwrap();
+                    assert!(off <= 3, "{name} at {at:?}: {got:?}, want {want:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_scene_material_that_changes_nothing_leaves_blended_and_raised_things_alone() {
+        // A layer's colours are premultiplied by its cover, and glows and flashes add light with
+        // no cover at all; an effect sees the colour straight and gives the light back.
+        const SAME: &str = "// name: Same\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { return sample(uv); }\n";
+        type Place = fn(&mut Frame) -> &mut Frame;
+        let places: [(&str, Place); 3] = [
+            ("half see-through", |f| f.layer_mut(bpe_core::Blend::Normal, 0.5, false)),
+            ("screened", |f| f.layer_mut(bpe_core::Blend::Screen, 1.0, false)),
+            ("raised", |f| f.target_mut(3, bpe_core::Blend::Normal, 1.0, false, false)),
+        ];
+        for (name, place) in places {
+            let mut frame = two_balls_frame();
+            grey(&mut frame);
+            let mut b = frame.balls.pop().unwrap();
+            b.glow = 1.5;
+            place(&mut frame).balls.push(b);
+            let Some(plain) = render(&frame) else { return };
+            let halo = pixel(&plain, B + Vec2::new(110.0, 0.0));
+            assert!(halo[0] > halo[1] + 30, "{name}: {halo:?}, the glow shows outside the ball");
+            frame.effects.push(call(SAME, 0.0, Stage::Things));
+            let after = render(&frame).unwrap();
+            let most = plain.iter().zip(&after).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+            assert!(most <= 1, "{name}: the picture moved by up to {most}");
+        }
+    }
+
+    #[test]
+    fn a_scene_material_paints_things_mixed_in_before_it_once() {
+        // Ball B added over ball C (plain, below everything), B behind the balls or itself
+        // below 0. The main picture holds both when the material runs, so it paints them
+        // together, once: turning twice would show.
+        type Place = fn(&mut Frame) -> &mut Frame;
+        let places: [(&str, Place); 2] = [
+            ("behind", |f| f.layer_behind_mut(bpe_core::Blend::Add, 1.0, false, true)),
+            ("lower", |f| f.target_mut(-2, bpe_core::Blend::Add, 1.0, false, false)),
+        ];
+        for (name, place) in places {
+            let shot = |turned: bool| {
+                let mut frame = two_balls_frame();
+                grey(&mut frame);
+                let mut b = frame.balls.pop().unwrap();
+                let mut c = b;
+                c.center = (B + Vec2::new(0.0, 60.0)).into();
+                c.code[0] = thing_code(ThingId(4)) + 0.25;
+                c.color = [0.25, 1.0, 0.25, 1.0];
+                if turned {
+                    b.color = [0.25, 0.25, 1.0, 1.0];
+                    c.color = [1.0, 0.25, 0.25, 1.0];
+                }
+                frame.target_mut(-3, bpe_core::Blend::Normal, 1.0, false, false).balls.push(c);
+                place(&mut frame).balls.push(b);
+                if !turned {
+                    frame.effects.push(call(TURN_THINGS, 0.0, Stage::Things));
+                }
+                render(&frame)
+            };
+            let Some(after) = shot(false) else { return };
+            let want = shot(true).unwrap();
+            let at = B + Vec2::new(0.0, 30.0);
+            let (got, want) = (pixel(&after, at), pixel(&want, at));
+            let off = (0..3).map(|i| got[i].abs_diff(want[i])).max().unwrap();
+            assert!(off <= 3, "{name}: {got:?}, want {want:?}");
+        }
+    }
+
+    #[test]
+    fn a_scene_material_keeps_a_history_for_each_picture_it_paints() {
+        let Ok((device, queue)) = headless_device() else { return };
+        const ECHO: &str = "// name: Echo things\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { return prev(uv) * 0.5 + sample(uv); }\n";
+        let mut renderer = Renderer::new(&device, W, H);
+        let mut frame = two_balls_frame();
+        let b = frame.balls.pop().unwrap();
+        frame.layer_mut(bpe_core::Blend::Screen, 1.0, false).balls.push(b);
+        frame.effects.push(call(ECHO, 0.0, Stage::Things));
+        renderer.render(&device, &queue, &frame);
+        let keys: Vec<_> = renderer.chain.slots.keys().copied().collect();
+        assert_eq!(keys, vec![(1, None), (1, Some(0))], "the main picture's and the layer's");
     }
 
     #[test]

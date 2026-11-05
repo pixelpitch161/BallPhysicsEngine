@@ -282,20 +282,21 @@ pub fn assemble(wgsl: &str) -> Result<String, String> {
 @fragment
 fn fs_main(in: FsIn) -> @location(0) vec4<f32> {
     // Effects on things leave every other pixel exactly as it was.
+    let here = textureLoad(src_tex, vec2<i32>(in.pos.xy), 0);
     var base = sample(in.uv);
     if fx.apply_to > 0.5 {
-        base = textureLoad(src_tex, vec2<i32>(in.pos.xy), 0).rgb;
+        base = bpe_straight(here);
     }
     var result = effect(in.uv, unpack());
     // A NaN leaves the pixel as it was instead of spreading, and feedback can't run away.
     result = select(result, base, result != result);
+    var blended = mix(base, result, fx.blend * target_weight(in.uv));
     // A blend layer keeps how much it covers, and the effect's colour covers that much too.
     var cover = 1.0;
     if fx.in_layer > 0.5 {
-        cover = textureLoad(src_tex, vec2<i32>(in.pos.xy), 0).a;
-        result = result * clamp(cover, 0.0, 1.0);
+        cover = here.a;
+        blended = blended * bpe_cover(here);
     }
-    let blended = mix(base, result, fx.blend * target_weight(in.uv));
     return vec4<f32>(clamp(blended, vec3<f32>(0.0), vec3<f32>(64.0)), cover);
 }
 ",

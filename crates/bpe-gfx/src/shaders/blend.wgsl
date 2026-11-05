@@ -6,7 +6,7 @@
 
 struct Mix {
     // x: the blend's number (Blend::shader_code), y: the amount, 0 to 1, z: 1 when the layer's
-    // things blend with each other.
+    // things blend with each other, w: 1 for a plain layer, put on as if drawn straight in.
     how: vec4<f32>,
 };
 
@@ -28,6 +28,10 @@ fn fs_blend(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let code = u32(mixing.how.x + 0.5);
     let amount = clamp(mixing.how.y, 0.0, 1.0);
     let c = max(l.rgb, vec3<f32>(0.0));
+    if mixing.how.w > 0.5 {
+        // Premultiplied over: light with no coverage adds, as it does drawn straight in.
+        return vec4<f32>(d.rgb * (1.0 - clamp(l.a, 0.0, 1.0)) + c, d.a);
+    }
     if mixing.how.z > 0.5 && code != 1u {
         if l.a <= 0.0 {
             return d;
