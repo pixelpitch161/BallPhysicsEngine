@@ -169,6 +169,10 @@ pub trait ModuleSim: Send + Sync + 'static {
     ) {
         self.respond_against(state, contact, bodies, item, limits, special)
     }
+    /// How the balls using this module meet walls: by their edge, or by their middle.
+    fn touch(&self, _state: &dyn ThingState) -> crate::Touch {
+        crate::Touch::Edge
+    }
     /// Whether this module, on the thing that was hit, decides the bounce instead of the mover's.
     fn takes_over(&self, _state: &dyn ThingState) -> bool {
         false

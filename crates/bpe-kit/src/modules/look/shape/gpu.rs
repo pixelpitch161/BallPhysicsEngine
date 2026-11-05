@@ -72,8 +72,10 @@ pub struct ShapeStack {
 /// The shape as it is drawn, in its own units (see `things::shape::draw::wall_form`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Geometry {
-    /// The outline's points; `None` for a circle of radius 1.
+    /// The outline's points; `None` for a circle of radius 1 or an ellipse.
     pub points: Option<Vec<Vec2>>,
+    /// An exact ellipse's half-axes (the larger one 1).
+    pub ellipse: Option<Vec2>,
     /// Half the band's thickness in shape units (0 filled).
     pub half: f32,
 }
@@ -81,11 +83,15 @@ pub struct Geometry {
 impl Geometry {
     /// Where the shape starts and ends along `dir` (a unit vector), band included.
     pub fn extent(&self, dir: Vec2) -> (f32, f32) {
-        let (lo, hi) = match &self.points {
-            Some(ps) if !ps.is_empty() => ps.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+        let (lo, hi) = match (&self.points, self.ellipse) {
+            (Some(ps), _) if !ps.is_empty() => ps.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
                 let d = p.dot(dir);
                 (lo.min(d), hi.max(d))
             }),
+            (_, Some(axes)) => {
+                let far = (axes * dir).length();
+                (-far, far)
+            }
             _ => (-1.0, 1.0),
         };
         (lo - self.half, hi + self.half)
@@ -396,14 +402,17 @@ mod tests {
     fn across_runs_from_edge_to_edge_of_the_shape_as_drawn() {
         let rect = Geometry {
             points: Some(vec![Vec2::new(-1.0, -0.5), Vec2::new(1.0, -0.5), Vec2::new(1.0, 0.5), Vec2::new(-1.0, 0.5)]),
+            ellipse: None,
             half: 0.0,
         };
         let (lo, hi) = rect.extent(Vec2::X);
         assert_eq!((lo, hi), (-1.0, 1.0));
         let (lo, hi) = rect.extent(Vec2::Y);
         assert_eq!((lo, hi), (-0.5, 0.5));
-        let band = Geometry { points: None, half: 0.1 };
+        let band = Geometry { points: None, ellipse: None, half: 0.1 };
         assert_eq!(band.extent(Vec2::new(0.6, 0.8)), (-1.1, 1.1), "a circle, with its band");
+        let oval = Geometry { points: None, ellipse: Some(Vec2::new(1.0, 0.5)), half: 0.0 };
+        assert_eq!((oval.extent(Vec2::X), oval.extent(Vec2::Y)), ((-1.0, 1.0), (-0.5, 0.5)), "an ellipse");
         let mut atlas = GradientAtlas::default();
         let (stack, _) = shape_with(|s, reg, t| {
             let paint = s.add_layer(reg, t, SlotId::Look, PAINT).unwrap();

@@ -765,6 +765,7 @@ fn shape_words(cx: &LookCx) -> String {
     let Some(thing) = cx.scene.things.get(&cx.id) else { return String::new() };
     let s = bpe_kit::ShapeSettings::from_params(&thing.params);
     let outline = match (s.start, s.moulded()) {
+        (bpe_kit::ShapeStart::Ellipse, _) => "Ellipse".to_owned(),
         (_, Some(path)) => path.words(),
         (bpe_kit::ShapeStart::Polygon, None) => format!("{} sides", s.sides),
         (bpe_kit::ShapeStart::Circle, None) => "Circle".to_owned(),

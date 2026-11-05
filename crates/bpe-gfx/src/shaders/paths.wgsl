@@ -7,7 +7,8 @@
 struct PathIn {
     // Centre xy, angle, scale (world pixels per shape unit).
     @location(0) a: vec4<f32>,
-    // Half thickness (0 = filled), kind (0 circle, 1 points), first point, point count.
+    // Half thickness (0 = filled), kind (0 circle, 1 points, 2 ellipse), first point and point
+    // count (an ellipse: its half-axes in shape units).
     @location(1) b: vec4<f32>,
     // Thing code, reach from the centre (shape units), how far its layers reach past the outline
     // (world pixels), the reach again for layers running from the middle.
@@ -62,12 +63,42 @@ fn path_local(in: PathOut) -> vec2<f32> {
     return rotate(in.world - in.a.xy, -in.a.z) / max(in.a.w, 1e-6);
 }
 
+// The nearest point to `q` on the ellipse with half-axes `ab`, both in its own frame: a trig-free
+// iteration on the first quadrant (each round moves the guess to where the circle of curvature
+// there says the nearest point is), then the signs put back. Five rounds are well inside a pixel
+// for any shape a video uses.
+fn ellipse_nearest(q: vec2<f32>, ab: vec2<f32>) -> vec2<f32> {
+    let p = abs(q);
+    let a = max(ab.x, 1e-6);
+    let b = max(ab.y, 1e-6);
+    var t = vec2<f32>(0.70710678, 0.70710678);
+    for (var i = 0; i < 5; i++) {
+        let e = vec2<f32>((a * a - b * b) * t.x * t.x * t.x / a, (b * b - a * a) * t.y * t.y * t.y / b);
+        let r = vec2<f32>(a * t.x, b * t.y) - e;
+        let d = p - e;
+        let moved = (d * length(r) / max(length(d), 1e-12) + e) / vec2<f32>(a, b);
+        t = clamp(moved, vec2<f32>(0.0), vec2<f32>(1.0));
+        t = t / max(length(t), 1e-12);
+    }
+    return vec2<f32>(a * t.x, b * t.y) * select(vec2<f32>(1.0), vec2<f32>(-1.0), q < vec2<f32>(0.0));
+}
+
+// The signed distance from the ellipse with half-axes `ab` to `q`, in shape units: negative inside.
+fn ellipse_signed(q: vec2<f32>, ab: vec2<f32>) -> f32 {
+    let d = length(q - ellipse_nearest(q, ab));
+    let level = q / max(ab, vec2<f32>(1e-6));
+    return select(d, -d, dot(level, level) < 1.0);
+}
+
 // Distance from the outline in world pixels: negative inside (even-odd, so a self-crossing
 // outline still has an inside).
 fn path_signed(in: PathOut) -> f32 {
     let q = path_local(in);
     if in.b.y < 0.5 {
         return (length(q) - 1.0) * in.a.w;
+    }
+    if in.b.y > 1.5 {
+        return ellipse_signed(q, in.b.zw) * in.a.w;
     }
     let first = u32(in.b.z);
     let n = u32(in.b.w);
