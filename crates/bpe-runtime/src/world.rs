@@ -613,6 +613,26 @@ impl World {
         // Balls against balls.
         let substep = (sub_index, sub_count);
         collide_pairs(bodies, modules, &matcher, &press, sims, pairs, &supports, step, substep, dt, limits, log);
+
+        // A ball touching with its middle sits a hair's breadth from the line, so a nudge from
+        // another ball can carry it across: put it back on its own side (no bounce, no event).
+        for (mover, bodies) in bodies.iter_mut() {
+            let bounce = modules.get(mover).and_then(|m| m.get(&SlotId::Bounce));
+            let touch = bounce.and_then(|s| Some(sims.module(&s.kind)?.touch(s.state.as_ref())));
+            if touch != Some(Touch::Middle) {
+                continue;
+            }
+            for (wall_id, wall) in walls.iter() {
+                let before = walls_before.get(wall_id).unwrap_or(&wall.outline);
+                for i in 0..bodies.len() {
+                    if bodies.alive[i] {
+                        let (previous, velocity) = (bodies.previous[i], bodies.velocity[i]);
+                        let at = &mut bodies.position[i];
+                        keep_clear_from(at, previous, before, velocity, 0.0, Touch::Middle, wall);
+                    }
+                }
+            }
+        }
     }
 }
 

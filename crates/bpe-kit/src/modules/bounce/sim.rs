@@ -146,8 +146,8 @@ mod tests {
         assert_eq!(super::BasicBounceSim.touch(st.as_ref()), bpe_runtime::Touch::Middle);
     }
 
-    /// Fast balls touching with their middles, in a hollow box and a hollow ellipse, at speeds up
-    /// to 3000 px/s for 10 s: none ever leaves.
+    /// Fast balls touching with their middles and bumping into each other under gravity, in a
+    /// hollow box and a hollow ellipse, at speeds up to 3000 px/s for 10 s: none ever leaves.
     #[test]
     fn a_middle_ball_never_leaves_a_box_or_an_ellipse() {
         use crate::ShapeSettings;
@@ -157,11 +157,11 @@ mod tests {
             scene.things.get_mut(&SHAPE).unwrap().params = shape.to_params();
             scene.things.get_mut(&SHAPE).unwrap().transform.position = Vec2::ZERO;
             let mut balls =
-                crate::BallsSettings { radius: 6.0, velocity: Vec2::new(2900.0, 700.0), ..Default::default() };
+                crate::BallsSettings { radius: 14.0, velocity: Vec2::new(2900.0, 700.0), ..Default::default() };
             balls.group = true;
             balls.shape = crate::things::balls::GroupShape::Scatter;
-            balls.count = 50;
-            balls.area = Vec2::new(300.0, 300.0);
+            balls.count = 120;
+            balls.area = Vec2::new(450.0, 700.0);
             balls.launch = crate::things::balls::Launch::Random;
             balls.vary_speed = 0.9;
             let thing = scene.things.get_mut(&BALLS).unwrap();
@@ -170,6 +170,9 @@ mod tests {
             let card = scene.card_mut(BALLS, SlotId::Bounce).unwrap();
             card.params.set("touch", Value::Choice("middle".into()));
             card.params.set("top_speed", Value::Number(5000.0));
+            // Other balls nudge them about too, under gravity.
+            card.params.set("hit_balls", Value::Bool(true));
+            scene.card_mut(BALLS, SlotId::Motion).unwrap().params.set("gravity_scale", Value::Number(1.0));
             let resolved = resolve(&scene, &kit.registry);
             let mut w = World::build(&scene, &resolved, &kit.sims);
             let mut log = Log::default();

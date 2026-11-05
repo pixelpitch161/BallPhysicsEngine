@@ -463,13 +463,15 @@ pub fn middle_crossing(
     velocity: Vec2,
     wall: &Wall,
 ) -> Option<(Contact, f32)> {
-    let own = |p: Vec2| on_own_side(p, previous, before, wall);
+    let inside = !wall.solid && before.inside(previous);
+    let own = |p: Vec2| wall.outline.inside(p) == inside;
     if !own(start) {
         return None;
     }
     // Still on its own side but within a hair's breadth of the line: it touched at the end.
-    let (mut lo, mut hi) = if own(moved_to) { (1.0f32, 1.0f32) } else { (0.0f32, 1.0f32) };
-    for _ in 0..24 {
+    let ended_on_own_side = own(moved_to);
+    let (mut lo, mut hi) = if ended_on_own_side { (1.0f32, 1.0f32) } else { (0.0f32, 1.0f32) };
+    for _ in 0..if ended_on_own_side { 0 } else { 24 } {
         let mid = (lo + hi) * 0.5;
         if own(start.lerp(moved_to, mid)) {
             lo = mid;

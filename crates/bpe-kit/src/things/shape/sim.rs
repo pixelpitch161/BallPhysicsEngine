@@ -139,6 +139,9 @@ impl ThingSim for ShapeSim {
         let st = state_mut::<ShapeState>(st.as_mut());
         st.base = base_outline(&settings, st.base.center(), st.rotation);
         let s = &st.settings;
+        // An ellipse's path follows its Width, Height and Turn, but nothing reads it while it is an
+        // ellipse (`side_on` and `place_on_edge` read the wall), so keys on them don't remake it
+        // (which would allocate every step).
         if (s.start, s.sides, &s.path) != (settings.start, settings.sides, &settings.path) {
             st.path = settings.outline_path();
         }
