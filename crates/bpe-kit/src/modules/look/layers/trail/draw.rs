@@ -61,6 +61,14 @@ impl Balls<'_> {
         HitInfo { last: self.last_hit(i), hits: self.bodies.hits.get(i).copied().unwrap_or(0) }
     }
 
+    /// How far ball `i` has rolled along its way, to where it is now: what Dots and a Ribbon
+    /// that follows the turning count from, so they stay put along the path wherever its trail
+    /// is cut.
+    fn rolled(&self, i: usize) -> f32 {
+        let newest = self.history.points(i).next().unwrap_or(self.bodies.position[i]);
+        self.history.travelled(i) + (self.bodies.position[i] - newest).length()
+    }
+
     /// Ball `i`'s trail as `trail` cuts it, before any wobble.
     fn path(&self, trail: &TrailLayer, i: usize) -> Path {
         let speed = self.bodies.velocity[i].length();
@@ -151,7 +159,7 @@ pub fn draw(cx: &DrawCx, layer: &AroundLayer, trail: &TrailLayer, balls: &Balls,
         if path.len() < 2 {
             continue;
         }
-        let rolled = balls.history.travelled(i) + (path.points[0] - path.points[1]).length();
+        let rolled = balls.rolled(i);
         if trail.kind == TrailKind::Line {
             kinds::thin(&mut path, newest);
         }
@@ -422,6 +430,44 @@ mod tests {
 
     fn trail_frame(time: f64, f: impl FnOnce(&mut Scene, LayerId)) -> Frame {
         frame_at(&with_trail(f), time).0
+    }
+
+    /// How far a ball has rolled counts to where it is, however short its trail is cut: a trail
+    /// that restarts at a bounce a moment ago doesn't move its Dots along.
+    #[test]
+    fn how_far_a_ball_rolled_does_not_hang_on_the_cut() {
+        use super::{Balls, TrailLayer};
+        use glam::Vec2;
+        let mut bodies = bpe_runtime::Bodies::default();
+        bodies.push(Vec2::ZERO, Vec2::new(600.0, 0.0), 10.0);
+        let mut history = bpe_runtime::History::new(240, bpe_runtime::HistoryWant { seconds: 2.0, forever: false });
+        history.note(0, 1);
+        for step in 1..=40u64 {
+            bodies.position[0] = Vec2::new(step as f32 * 2.5, 0.0);
+            history.record(step, &bodies.position);
+        }
+        // Two steps on from the newest sample, 5 px further.
+        bodies.position[0] = Vec2::new(105.0, 0.0);
+        let colour = |_: usize| [1.0; 4];
+        let number = |i: usize| i as u32;
+        let turned = |_: usize, _: f32| None;
+        let hits = [(0.001, 1.0)];
+        let balls = Balls {
+            bodies: &bodies,
+            history: &history,
+            interval: 1.0 / 60.0,
+            newest_ago: 2.0 / 240.0,
+            colour: &colour,
+            number: &number,
+            turned: &turned,
+            last_hits: &hits,
+        };
+        let trail = TrailLayer { restart: true, ..TrailLayer::default() };
+        let path = balls.path(&trail, 0);
+        assert_eq!(path.len(), 2, "cut short of the newest sample");
+        let rolled = balls.rolled(0);
+        // From the first sample (10 px) to the newest (100 px), then on to the ball.
+        assert!((rolled - 95.0).abs() < 1e-3, "{rolled}");
     }
 
     #[test]

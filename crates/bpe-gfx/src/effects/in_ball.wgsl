@@ -56,7 +56,9 @@ fn in_ball_begin(l: LayerGpu, first: u32, k: u32, q: vec2<f32>, screen: vec2<f32
     fx.time = fx_frame.time * l.p0.x;
     let side = max(2.0 * layered_ball.radius.x, 1.0);
     fx.resolution = vec2<f32>(side, side);
-    fx.scale = 1.0;
+    // Output pixels per world unit (a video pixel at zoom 1), so pixel-sized effects (Pixels,
+    // Film grain) look the same in the preview and the export.
+    fx.scale = 1.0 / max(g.view.z, 1e-6);
     fx.blend = 1.0;
     fx.apply_to = 0.0;
     fx.in_layer = 0.0;
@@ -75,7 +77,9 @@ fn group_begin(l: LayerGpu, first: u32, below: u32, screen: vec2<f32>) -> vec2<f
     // Output pixels per world unit.
     let px = layered_ball.radius.x / max(layered_ball.radius.y, 1e-3);
     fx.resolution = vec2<f32>(max(side * px, 1.0), max(side * px, 1.0));
-    fx.scale = 1.0;
+    // Output pixels per world unit (a video pixel at zoom 1), so pixel-sized effects (Pixels,
+    // Film grain) look the same in the preview and the export.
+    fx.scale = 1.0 / max(g.view.z, 1e-6);
     fx.blend = 1.0;
     fx.apply_to = 0.0;
     fx.in_layer = 0.0;

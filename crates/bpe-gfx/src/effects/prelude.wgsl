@@ -23,7 +23,8 @@ struct Fx {
     frame: f32,
     // Seconds since the previous frame of this effect.
     dt: f32,
-    // Picture pixels per video pixel (below 1 in the editor preview).
+    // Picture pixels per video pixel (below 1 in the editor preview). Inside a ball or a shape:
+    // output pixels per world unit, so its pixel sizes also grow as the camera zooms in.
     scale: f32,
     // How strong the hits are right now, 0 to 1.
     level: f32,

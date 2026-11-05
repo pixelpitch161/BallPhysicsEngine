@@ -75,7 +75,7 @@ impl Playback {
     /// yet, so the editor can keep drawing while a long stretch is worked out. Returns whether
     /// the playback reached `time`.
     pub fn seek_within(&mut self, time: f64, budget: Option<Duration>) -> bool {
-        let target = (time * self.world.steps_per_second as f64).floor() as u64;
+        let target = crate::step_at(time, self.world.steps_per_second);
         if target < self.world.step {
             let index = self.checkpoints.partition_point(|(w, _)| w.step <= target).max(1) - 1;
             let (world, len) = &self.checkpoints[index];

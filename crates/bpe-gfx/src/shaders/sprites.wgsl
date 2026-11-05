@@ -195,6 +195,11 @@ fn coverage(in: SpriteOut) -> f32 {
 
 @fragment
 fn fs_sprite(in: SpriteOut) -> @location(0) vec4<f32> {
+    return sprite_colour(in);
+}
+
+// The sprite's premultiplied colour and coverage here.
+fn sprite_colour(in: SpriteOut) -> vec4<f32> {
     let cover = coverage(in);
     let a = cover * abs(in.color.a);
     if a < 1e-4 {

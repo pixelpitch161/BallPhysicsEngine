@@ -608,3 +608,29 @@ fn a_higher_z_order_draws_over_and_a_lower_one_under() {
     assert!(middle(&under)[..3].iter().all(|&c| c > 240), "the lowered one is under the white: {:?}", middle(&under));
     assert!(middle(&back)[0] > 240 && middle(&back)[1] < 10, "a raised shape's layer draws over too");
 }
+
+#[test]
+fn things_stuck_to_the_screen_draw_in_the_same_order_as_the_rest() {
+    // A white ball stuck to the screen, and a smaller red one in a layer of the overlay: the
+    // red one sits where its place and z-order say, as it would in the frame itself.
+    let red = [1.0, 0.0, 0.0, 1.0];
+    let with = |z: i32, place: Place| {
+        let mut stuck = one(vec![body()], WHITE, 200.0, 1.45);
+        let layer = one(vec![body()], red, 120.0, 1.45);
+        stuck.layers.push(BlendLayer { blend: Blend::Normal, amount: 1.0, each: false, z, place, frame: layer });
+        let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+        frame.overlay = Some(Box::new(stuck));
+        frame
+    };
+    let middle = |z: i32, place: Place| render_sized(&with(z, place), W, H).map(|px| at(&px, 0.0, 0.0));
+    let Some(blended) = middle(0, Place::Blend) else { return };
+    let is_red = |c: [u8; 4]| c[0] > 240 && c[1] < 10;
+    let is_white = |c: [u8; 4]| c[..3].iter().all(|&v| v > 240);
+    assert!(is_red(blended), "a blended thing sits over the balls: {blended:?}");
+    for (z, place) in [(0, Place::Behind), (0, Place::BehindOver), (-1, Place::Front), (-1, Place::Back)] {
+        let c = middle(z, place).unwrap();
+        assert!(is_white(c), "z {z} {place:?} draws under the stuck ball: {c:?}");
+    }
+    let raised = middle(1, Place::Front).unwrap();
+    assert!(is_red(raised), "a raised one draws over: {raised:?}");
+}

@@ -224,13 +224,15 @@ pub fn gradient_tag(g: &GroupGradient) -> String {
 }
 
 /// Draws the view for thing `id` and handles what is dragged and clicked on it, pushing edits.
-/// `slot` is the Look card the gradient lives in.
+/// `slot` is the Look card the gradient lives in. A drag's start sets `own_step`, so the drag is
+/// an undo step of its own.
 pub fn show(
     ui: &mut Ui,
     view: &mut GroupView,
     render: Option<&egui_wgpu::RenderState>,
     cx: &ViewCx,
     slot: bpe_core::SlotId,
+    own_step: &mut bool,
     edits: &mut Vec<Edit>,
 ) {
     ground_buttons(ui, view);
@@ -247,7 +249,7 @@ pub fn show(
     view.fit = Some((centre, size));
     let map = ViewMap { rect, centre, size };
     picture(ui, view, render, cx, rect, centre, size);
-    interact(ui, view, cx, &s, &places, map, &response, slot, edits);
+    interact(ui, view, cx, &s, &places, map, &response, slot, own_step, edits);
     overlays(ui, view, cx, &s, &places, map);
 }
 
@@ -399,12 +401,14 @@ fn interact(
     map: ViewMap,
     response: &Response,
     slot: bpe_core::SlotId,
+    own_step: &mut bool,
     edits: &mut Vec<Edit>,
 ) {
     if response.drag_started_by(egui::PointerButton::Primary)
         && let Some(press) = ui.input(|i| i.pointer.press_origin())
     {
         view.drag = grab(view, cx, s, places, &map, press);
+        *own_step |= view.drag.is_some();
     }
     if response.drag_stopped() {
         view.drag = None;

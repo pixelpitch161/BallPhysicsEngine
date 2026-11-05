@@ -205,6 +205,10 @@ pub struct Slot {
     /// layers (the balls' Look). Each layer's settings sit in `params` under layered keys.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub layers: Vec<Layer>,
+    /// Layer ids below this have been given out (some to layers since removed), so a new layer
+    /// never takes a removed one's id. 0 when no layer was ever removed.
+    #[serde(skip_serializing_if = "is_default")]
+    pub used_ids: u32,
 }
 
 impl Slot {
@@ -223,9 +227,10 @@ impl Slot {
         self.layers.iter().position(|l| l.id == id)
     }
 
-    /// The id a new layer gets: one more than the largest in the card, 0 for the first.
+    /// The id a new layer gets: one more than the largest the card has given out, 0 for the
+    /// first. A removed layer's id is never given out again.
     pub fn next_layer_id(&self) -> LayerId {
-        LayerId(self.layers.iter().map(|l| l.id.0 + 1).max().unwrap_or(0))
+        LayerId(self.layers.iter().map(|l| l.id.0 + 1).max().unwrap_or(0).max(self.used_ids))
     }
 }
 

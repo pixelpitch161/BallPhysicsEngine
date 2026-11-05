@@ -146,3 +146,25 @@ fn front_particles_draw_over_the_balls_and_behind_ones_under() {
     assert!(red(o), "the dot in front shows: {o:?}");
     assert!(l[0] > 150 && l[2] > 150, "added light keeps the ball under it: {l:?}");
 }
+
+#[test]
+fn added_light_sprites_show_in_a_layer_whose_things_blend_with_each_other() {
+    // A dot of added light (a Ghosts glow, say) in Screen and Lighten layers that blend with each
+    // other: the light shows, as in a layer that doesn't.
+    use crate::{BlendLayer, Place};
+    use bpe_core::Blend;
+    let glow = Particle::new(6, Vec2::ZERO, 0.0, 60.0, [0.45, 0.0, 0.0, -1.0]);
+    for blend in [Blend::Screen, Blend::Lighten] {
+        let lit = |each: bool| {
+            let mut layer = Frame::default();
+            layer.particles.push(glow);
+            let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+            frame.layers.push(BlendLayer { blend, amount: 1.0, each, z: 0, place: Place::Blend, frame: layer });
+            render_sized(&frame, W, H).map(|px| pixel_sized(&px, W, H, Vec2::ZERO))
+        };
+        let Some(apart) = lit(false) else { return };
+        let each = lit(true).unwrap();
+        assert!(red(apart), "{blend:?}: the glow shows on its own: {apart:?}");
+        assert!(red(each), "{blend:?}: and blending with each other: {each:?}");
+    }
+}

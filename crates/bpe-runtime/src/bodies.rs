@@ -19,6 +19,9 @@ pub struct Bodies {
     pub alive: Vec<bool>,
     /// How many times the ball has hit something.
     pub hits: Vec<u32>,
+    /// Each ball's number in its thing: its row unless the thing numbers them otherwise (a group
+    /// lets its balls go in another order than their places). What riders name a ball by.
+    pub number: Vec<u32>,
 }
 
 impl Bodies {
@@ -33,7 +36,13 @@ impl Bodies {
         self.spawn.push(position);
         self.alive.push(true);
         self.hits.push(0);
+        self.number.push(row);
         row
+    }
+
+    /// The row of the ball numbered `number`, if there is one.
+    pub fn row_of(&self, number: u32) -> Option<usize> {
+        self.number.iter().position(|&n| n == number)
     }
 
     pub fn len(&self) -> usize {
@@ -53,7 +62,7 @@ impl Bodies {
         self.position.capacity() * std::mem::size_of::<Vec2>() * 5
             + self.radius.capacity() * std::mem::size_of::<f32>()
             + self.alive.capacity()
-            + self.hits.capacity() * std::mem::size_of::<u32>()
+            + (self.hits.capacity() + self.number.capacity()) * std::mem::size_of::<u32>()
     }
 }
 
@@ -75,6 +84,9 @@ mod tests {
         assert_eq!(bodies.spawn[0], Vec2::new(1.0, 2.0), "spawn stays where the ball began");
         assert!(bodies.alive[1]);
         assert_eq!(bodies.hits[1], 0);
+        assert_eq!(bodies.number, [0, 1], "numbered by row unless told otherwise");
+        bodies.number[0] = 7;
+        assert_eq!((bodies.row_of(7), bodies.row_of(1), bodies.row_of(0)), (Some(0), Some(1), None));
         bodies.alive[1] = false;
         assert_eq!(bodies.alive_count(), 1);
         assert!(bodies.memory() >= 2 * (4 * 8 + 4 + 1 + 4));

@@ -96,6 +96,9 @@ pub struct CopiedLayer {
     pub only: Vec<u32>,
     /// The chain or bus it was in (see [`Layer::lane`]).
     pub lane: Option<u8>,
+    /// For a sub-layer that names another layer (a cut's Layer), that layer's id and kind when
+    /// it was copied: pasted where that id is a layer of another kind, or none, it names none.
+    pub target: Option<(LayerId, KindId)>,
 }
 
 /// A whole stack as copied, bottom first, without the group layers; sub-layers ride with their layers.
@@ -383,14 +386,21 @@ impl Scene {
                 self.pulses.remove(&a);
             }
         }
-        // Settings anywhere that follow a modulator going away stop following it.
-        self.pulses.retain(|_, p| match p.source {
-            crate::PulseSource::Sound { shape, source: crate::SoundSource::Modulator(l) } => {
-                shape != thing || !gone.contains(&l)
-            }
-            _ => true,
-        });
+        // Settings anywhere that follow a modulator going away stop following it. Modulators live
+        // only on the Sound card, and layer ids are counted per card, so a Look layer that shares
+        // a modulator's number takes nothing with it.
+        if slot == SlotId::Sound {
+            self.pulses.retain(|_, p| match p.source {
+                crate::PulseSource::Sound { shape, source: crate::SoundSource::Modulator(l) } => {
+                    shape != thing || !gone.contains(&l)
+                }
+                _ => true,
+            });
+        }
         let card = self.layer_card_mut(thing, slot);
+        // Ids are never given out twice in a card: a setting that still names a removed layer
+        // (a cut's layer, a group layer's chosen layers) must not pick up a new one by surprise.
+        card.used_ids = card.next_layer_id().0;
         card.layers.retain(|l| !gone.contains(&l.id));
         card.params.0.retain(|k, _| !gone.iter().any(|&g| of_layer(k, g)));
         if let Some(crate::Value::Routes(routes)) = card.params.0.get_mut(crate::ROUTES_KEY) {
@@ -582,6 +592,12 @@ impl Scene {
         } else {
             Vec::new()
         };
+        let target = match params.get("target") {
+            Some(crate::Value::Int(t)) if layer.parent.is_some() && *t >= 0 => {
+                card.layer(LayerId(*t as u32)).map(|l| (l.id, l.kind.clone()))
+            }
+            _ => None,
+        };
         Some(CopiedLayer {
             id,
             kind: layer.kind.clone(),
@@ -591,6 +607,7 @@ impl Scene {
             subs,
             only: layer.only.clone(),
             lane: layer.lane,
+            target,
         })
     }
 
@@ -682,6 +699,19 @@ impl Scene {
                 card.params.set(&crate::layered_key(id, k), v);
             }
         }
+        // A cut naming a layer the copy came with names it here only if that id is still a layer
+        // of the same kind (pasted on another ball, it may be someone else, or no one).
+        if let Some(crate::Value::Int(t)) = copied.params.get("target")
+            && *t >= 0
+        {
+            let same = copied
+                .target
+                .as_ref()
+                .is_some_and(|(at, kind)| i64::from(at.0) == *t && card.layer(*at).is_some_and(|l| &l.kind == kind));
+            if !same {
+                card.params.set(&crate::layered_key(id, "target"), crate::Value::Int(-1));
+            }
+        }
         if let Some(l) = card.layers.iter_mut().find(|l| l.id == id) {
             l.enabled = copied.enabled || kind.base();
             l.only = if kind.base() || kind.section() != LayerSection::Drawn || !kind.per_ball() {
@@ -696,8 +726,8 @@ impl Scene {
     /// its settings, keyframes and pulses go, and the copied layers (and their sub-layers) come in
     /// with the ids they had, under the kept group layers, so a cut that names another layer
     /// still names it. A copy whose id clashes, with a kept group layer or an earlier copy, takes
-    /// the lowest id nobody has, and cuts naming it follow. The kept group layers' chosen layers
-    /// are gone, so their choices are cleared. Group layers in the copy are left out.
+    /// the lowest id nobody has, and cuts naming it follow. The kept group layers keep only the
+    /// chosen layers that come back as the same kind with the same id. Group layers in the copy are left out.
     pub fn paste_look(
         &mut self,
         reg: &Registry,
@@ -744,9 +774,32 @@ impl Scene {
         self.pulses.retain(|a, _| !on(a));
         let card = self.layer_card_mut(thing, slot);
         card.params.0.retain(|k, _| !goes(k));
-        // The layers the kept group layers chose are gone.
+        // The kept group layers keep the layers they chose that come back as the same kind of
+        // layer with the same id (a look pasted back where it was copied from); the rest are gone.
+        let before: Vec<(LayerId, KindId)> = card.layers.iter().map(|l| (l.id, l.kind.clone())).collect();
+        let back = |id: u32| {
+            let id = LayerId(id);
+            let was = before.iter().find(|(i, _)| *i == id).map(|(_, k)| k);
+            let now = flat.iter().zip(&ids).find(|(_, n)| **n == id).map(|((l, _, _), _)| &l.kind);
+            was.is_some() && was == now
+        };
         for l in &kept {
-            card.params.0.remove(&crate::layered_key(l.id, "chosen"));
+            let key = crate::layered_key(l.id, "chosen");
+            let kept_ids = match card.params.get(&key) {
+                Some(crate::Value::Text(t)) => t
+                    .split([',', ' '])
+                    .filter_map(|w| w.trim().parse::<u32>().ok())
+                    .filter(|&id| back(id))
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+                _ => String::new(),
+            };
+            if kept_ids.is_empty() {
+                card.params.0.remove(&key);
+            } else {
+                card.params.set(&key, crate::Value::Text(kept_ids));
+            }
         }
         card.layers.clear();
         for (i, &(l, kind, parent)) in flat.iter().enumerate() {
@@ -1294,6 +1347,56 @@ mod tests {
     }
 
     #[test]
+    fn a_pasted_cut_names_its_layer_only_where_that_layer_is_the_same_kind() {
+        let (r, mut s, b) = stacked();
+        let ring = s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
+        let code = s.add_layer(&r, b, LOOK, "layer.code").unwrap();
+        let cut = s.add_sub_layer(&r, b, LOOK, code, "sub.cut").unwrap();
+        s.set_at(&r, &Address::on(b, LOOK, &layered_key(cut, "target")), Value::Int(ring.0 as i64)).unwrap();
+        let copied = s.copy_layer(b, LOOK, code).unwrap();
+        let target = |s: &Scene, thing: ThingId| {
+            let card = s.card(thing, LOOK).unwrap();
+            let pasted_cut = card.layers.iter().rev().find(|l| l.parent.is_some()).unwrap().id;
+            card.params.get(&layered_key(pasted_cut, "target")).cloned()
+        };
+        // On the same ball the ring is still there: the pasted cut follows it.
+        s.paste_layer(&r, b, LOOK, &copied).unwrap();
+        assert_eq!(target(&s, b), Some(Value::Int(ring.0 as i64)));
+        // On a ball whose layer with that id is another kind, it follows nothing.
+        let other = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        s.add_slot(&r, other, LOOK, "look.stack").unwrap();
+        s.add_layer(&r, other, LOOK, "layer.base").unwrap();
+        let not_a_ring = s.add_layer(&r, other, LOOK, "layer.code").unwrap();
+        assert_eq!(not_a_ring, ring);
+        s.paste_layer(&r, other, LOOK, &copied).unwrap();
+        assert_eq!(target(&s, other), Some(Value::Int(-1)));
+        // A single cut pasted onto a layer there behaves the same.
+        let cut_only = s.copy_layer(b, LOOK, cut).unwrap();
+        s.paste_sub_layer(&r, other, LOOK, not_a_ring, &cut_only).unwrap();
+        assert_eq!(target(&s, other), Some(Value::Int(-1)));
+    }
+
+    #[test]
+    fn a_look_pasted_back_keeps_the_group_layers_choices() {
+        let (r, mut s, b) = stacked();
+        let ring = s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
+        let wash = s.add_layer(&r, b, LOOK, "group.wash").unwrap();
+        let chosen = layered_key(wash, "chosen");
+        s.card_mut(b, LOOK).unwrap().params.set(&chosen, Value::Text(ring.0.to_string()));
+        let look = s.copy_look(&r, b, LOOK).unwrap();
+        s.paste_look(&r, b, LOOK, &look).unwrap();
+        assert_eq!(s.card(b, LOOK).unwrap().params.get(&chosen), Some(&Value::Text(ring.0.to_string())));
+        // A look whose layer with that id is another kind clears the choice.
+        let other = s.add_thing(&r, "balls", ThingId::ROOT).unwrap();
+        s.add_slot(&r, other, LOOK, "look.stack").unwrap();
+        s.add_layer(&r, other, LOOK, "layer.base").unwrap();
+        s.add_layer(&r, other, LOOK, "layer.code").unwrap();
+        let theirs = s.copy_look(&r, other, LOOK).unwrap();
+        s.paste_look(&r, b, LOOK, &theirs).unwrap();
+        assert_eq!(s.card(b, LOOK).unwrap().params.get(&chosen), None);
+    }
+
+    #[test]
     fn a_layer_can_be_given_to_some_balls_but_the_base_is_everyones() {
         let (r, mut s, b) = stacked();
         let ring = s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
@@ -1394,6 +1497,62 @@ mod tests {
         assert_eq!(get(&s), Some(Value::Routes(vec![second])));
         s.remove_layer(&r, f, SlotId::Sound, a1).unwrap();
         assert_eq!(get(&s), Some(Value::Routes(vec![])));
+    }
+
+    /// A pulse on some setting of `on` that follows modulator `m` of shape `shape`.
+    fn follow(s: &mut Scene, on: ThingId, shape: ThingId, m: LayerId) -> Address {
+        let a = Address::on(on, LOOK, "follower");
+        let source = crate::PulseSource::Sound { shape, source: crate::SoundSource::Modulator(m) };
+        s.pulses.insert(a.clone(), crate::Pulse { source, ..crate::Pulse::default() });
+        a
+    }
+
+    #[test]
+    fn removing_a_look_layer_leaves_a_modulator_with_the_same_number_followed() {
+        let (r, mut s, f, _) = sounding();
+        // A modulator whose number a Look layer can reach (the first one is 0, the base's).
+        let m = s.add_layer(&r, f, SlotId::Sound, "mod.test").unwrap();
+        assert!(m.0 > 1);
+        s.add_slot(&r, f, LOOK, "look.stack").unwrap();
+        // The folder's Look gets layers until one has the modulator's number.
+        s.add_layer(&r, f, LOOK, "layer.base").unwrap();
+        let mut same = s.add_layer(&r, f, LOOK, "layer.ring").unwrap();
+        while same.0 < m.0 {
+            same = s.add_layer(&r, f, LOOK, "layer.ring").unwrap();
+        }
+        assert_eq!(same, m);
+        let a = follow(&mut s, f, f, m);
+        s.remove_layer(&r, f, LOOK, same).unwrap();
+        assert!(s.pulses.contains_key(&a), "the modulator is still there, so is its follower");
+        s.remove_layer(&r, f, SlotId::Sound, m).unwrap();
+        assert!(!s.pulses.contains_key(&a), "removing the modulator itself ends the following");
+    }
+
+    #[test]
+    fn a_removed_layers_id_is_never_given_out_again() {
+        let (r, mut s, b) = stacked();
+        let ring = s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
+        s.remove_layer(&r, b, LOOK, ring).unwrap();
+        let next = s.add_layer(&r, b, LOOK, "layer.ring").unwrap();
+        assert_ne!(next, ring, "a cut or group layer still naming the old one must not get the new one");
+        let card = s.card(b, LOOK).unwrap().clone();
+        let back: Slot = ron::from_str(&ron::to_string(&card).unwrap()).unwrap();
+        assert_eq!(back.next_layer_id(), card.next_layer_id(), "and it stays so after saving");
+        // A duplicate of the new layer doesn't take the old id either.
+        let dup = s.duplicate_layer(&r, b, LOOK, next).unwrap();
+        assert!(dup.0 > next.0);
+    }
+
+    #[test]
+    fn replacing_a_sound_card_ends_following_its_modulators_but_not_its_level() {
+        let (r, mut s, f, [_, _, _, m]) = sounding();
+        let a = follow(&mut s, f, f, m);
+        let level = Address::on(f, LOOK, "level");
+        let source = crate::PulseSource::Sound { shape: f, source: crate::SoundSource::Level };
+        s.pulses.insert(level.clone(), crate::Pulse { source, ..crate::Pulse::default() });
+        s.add_slot(&r, f, SlotId::Sound, "sound.test").unwrap();
+        assert!(!s.pulses.contains_key(&a), "the new card's layer with that number is someone else");
+        assert!(s.pulses.contains_key(&level));
     }
 
     #[test]

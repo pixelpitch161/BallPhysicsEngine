@@ -27,4 +27,4 @@ pub use plugins::{Limits, ModuleSim, ModuleState, PairRule, SimCx, Sims, ThingSi
 pub use pose::Pose;
 pub use sound::{LevelsAt, SoundAt, SoundMaker};
 pub use walls::{Contact, MAX_SIDES, Outline, Wall, keep_clear, keep_clear_from, reflect, wall_velocity};
-pub use world::{World, fingerprint, physics_animation};
+pub use world::{World, fingerprint, physics_animation, step_at};

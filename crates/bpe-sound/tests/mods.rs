@@ -131,8 +131,12 @@ fn hit_place_is_quarter_at_the_second_corner_of_a_square() {
     thing.params.set("sides", Value::Int(4));
     let pb = playback(&scene, &kit);
     let wall = pb.world().walls[&shape].outline.clone();
-    let corners = wall.corners();
+    // The shape's own corners, as By side counts them: the top left first, then clockwise.
+    let size = wall.reach();
+    let corners: Vec<Vec2> =
+        bpe_core::ShapePath::even(4).points.iter().map(|&p| wall.center() + Vec2::from(p) * size).collect();
     assert_eq!(corners.len(), 4);
+    assert!(corners[0].x < wall.center().x && corners[0].y < wall.center().y, "the top left: {corners:?}");
     let place = |p: Vec2| bpe_kit::things::shape::place_on_edge(pb.world(), shape, p).unwrap();
     assert!(place(corners[0]).0.abs() < 1e-4 || (place(corners[0]).0 - 1.0).abs() < 1e-4);
     let (p1, side, sides) = place(corners[1] + (corners[2] - corners[1]) * 1e-4);

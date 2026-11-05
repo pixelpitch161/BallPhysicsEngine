@@ -164,7 +164,8 @@ fn push_ball(bodies: &mut Bodies, st: &mut BallsState, at: Pose, number: u32) {
     let velocity = launched + at.velocity + (position - at.position).perp() * at.spin;
     let factor = size_factor(s, number);
     let radius = if factor == 1.0 { s.radius } else { s.radius * factor };
-    bodies.push(position, velocity, radius);
+    let row = bodies.push(position, velocity, radius) as usize;
+    bodies.number[row] = number;
     st.numbers.push(number);
     st.size_factor.push(factor);
 }
@@ -227,16 +228,23 @@ impl ThingSim for BallsSim {
         }
     }
 
-    /// A keyframe moved the size: every ball takes it, keeping its own share (Variety).
+    /// A keyframe moved one of the balls' settings. When it moved the size, every ball grows or
+    /// shrinks by as much, keeping its own share (Variety) and what it has grown by on its hits.
     /// Placement and launch speed only matter at the start, so they stay.
     fn settings_changed(&self, thing: ThingId, resolved: &ResolvedThing, world: &mut World) {
         let settings = BallsSettings::from_params(&resolved.params);
         let Some(st) = world.states.get_mut(&thing) else { return };
         let st = state_mut::<BallsState>(st.as_mut());
-        if let Some(bodies) = world.bodies.get_mut(&thing) {
+        let (old, new) = (st.settings.radius, settings.radius);
+        if new != old
+            && let Some(bodies) = world.bodies.get_mut(&thing)
+        {
+            let sized = |size: f32, factor: f32| if factor == 1.0 { size } else { size * factor };
             for (row, r) in bodies.radius.iter_mut().enumerate() {
                 let factor = st.size_factor.get(row).copied().unwrap_or(1.0);
-                *r = if factor == 1.0 { settings.radius } else { settings.radius * factor };
+                // A ball still at its own size takes the new one exactly; a grown one keeps its
+                // growth in proportion.
+                *r = if *r == sized(old, factor) || old <= 0.0 { sized(new, factor) } else { *r * (new / old) };
             }
         }
         st.settings = settings;
@@ -315,6 +323,53 @@ mod tests {
         assert_eq!(w.bodies[&BALLS].radius, vec![24.0, 24.0]);
         w.advance_to(1.5, &kit.sims, &mut Log::default());
         assert_eq!(w.bodies[&BALLS].radius, vec![48.0, 48.0]);
+    }
+
+    /// A key on Size leaves Grow per hit growing the balls, and a Size that moves scales what
+    /// they grew by with it.
+    #[test]
+    fn a_size_key_keeps_what_the_balls_grew_by() {
+        let (mut scene, _, kit) = scene_with_balls("single", |_| {});
+        scene.card_mut(BALLS, bpe_core::SlotId::Bounce).unwrap().params.set("grow", Value::Number(2.0));
+        let size = Address { thing: BALLS, slot: None, key: "radius".into() };
+        scene.set_key(&kit.registry, &size, 0.0, Value::Number(24.0)).unwrap();
+        scene.set_key(&kit.registry, &size, 2.0, Value::Number(24.0)).unwrap();
+        scene.set_key(&kit.registry, &size, 3.0, Value::Number(48.0)).unwrap();
+        let resolved = resolve(&scene, &kit.registry);
+        let mut w = World::build(&scene, &resolved, &kit.sims);
+        let mut log = Log::default();
+        w.advance_to(2.0, &kit.sims, &mut log);
+        let hits = w.bodies[&BALLS].hits[0];
+        assert!(hits > 0, "it hits the shape in 2 s");
+        let grown = w.bodies[&BALLS].radius[0];
+        assert!(grown > 24.0 + 1.0, "it grew: {grown} after {hits} hits");
+        let mut quiet = w.clone();
+        // Without hits from here on, doubling the Size doubles the grown ball.
+        quiet.states.remove(&SHAPE);
+        quiet.walls.clear();
+        quiet.advance_to(3.5, &kit.sims, &mut log);
+        let r = quiet.bodies[&BALLS].radius[0];
+        assert!((r / grown - 2.0).abs() < 1e-3, "{r} against {grown}");
+    }
+
+    /// Riding one ball of a group rides the ball with that number, wherever its row is.
+    #[test]
+    fn riding_an_item_rides_the_ball_of_that_number() {
+        let (mut scene, _, kit) = group(12, |p| {
+            p.set("release", Value::Choice("one_by_one".into()));
+            p.set("release_gap", Value::Number(0.0));
+            p.set("release_order", Value::Choice("random".into()));
+        });
+        let shape = SHAPE;
+        scene
+            .set_parent(shape, BALLS, Attach::Ride { offset: Vec2::ZERO, turn_with_parent: false, item: Some(5) })
+            .unwrap();
+        let resolved = resolve(&scene, &kit.registry);
+        let w = World::build(&scene, &resolved, &kit.sims);
+        let numbers = super::numbers(&w, BALLS).unwrap();
+        let row = numbers.iter().position(|&n| n == 5).unwrap();
+        assert_ne!(row, 5, "a random order puts ball 5 elsewhere");
+        assert_eq!(w.anchor(shape).position, w.bodies[&BALLS].position[row]);
     }
 
     /// A grid group of `count` balls, at rest unless `f` says otherwise.
@@ -412,6 +467,8 @@ mod tests {
     #[test]
     fn varied_sizes_are_the_same_every_run_and_survive_a_size_key() {
         let (mut scene, _, kit) = group(6, |p| p.set("vary_size", Value::Number(1.0)));
+        // Room to grow: a hit holds a ball to the Max size.
+        scene.card_mut(BALLS, bpe_core::SlotId::Bounce).unwrap().params.set("max_size", Value::Number(500.0));
         let size = Address { thing: BALLS, slot: None, key: "radius".into() };
         scene.set_key(&kit.registry, &size, 0.0, Value::Number(24.0)).unwrap();
         scene.set_key(&kit.registry, &size, 1.0, Value::Number(48.0)).unwrap();

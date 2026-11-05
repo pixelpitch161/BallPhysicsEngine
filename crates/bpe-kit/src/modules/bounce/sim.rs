@@ -77,7 +77,7 @@ impl ModuleSim for BasicBounceSim {
         special: bool,
     ) {
         let b = &state::<BounceState>(st).settings;
-        let hit = contact.speed >= limits.resting;
+        let hit = contact.speed >= limits.resting_along(contact.normal);
         let (v, r) = native(b, contact, bodies.velocity[item], bodies.radius[item], hit, limits, special);
         bodies.velocity[item] = v;
         bodies.radius[item] = r;

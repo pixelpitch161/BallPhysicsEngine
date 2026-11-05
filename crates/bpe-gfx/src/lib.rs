@@ -1098,8 +1098,8 @@ impl Renderer {
     }
 
     /// Draws one frame into the output texture. Each blend layer is drawn into its own picture
-    /// and mixed in after the frame's flashes (the overlay's layers after the overlay), so
-    /// blended things sit above the rest.
+    /// and mixed in where its z-order and place put it among the frame's own things (the
+    /// overlay's layers among the overlay's things, the same way).
     pub fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame) {
         queue.write_buffer(
             &self.globals,
@@ -1235,13 +1235,22 @@ impl Renderer {
             };
             let buffers = std::mem::take(&mut self.overlay);
             let hdr = self.targets.hdr.clone();
-            self.draw_things(&mut encoder, o, &buffers, &screen, &hdr);
+            // In the same order as the frame's own: lower z-orders, the overlay's trails and
+            // shapes, the layers behind its balls, its balls and flashes, then the rest.
+            let own = &layer_buffers[frame.layers.len()..];
+            let mut layers = |r: &mut Self, encoder: &mut wgpu::CommandEncoder, which: fn(&BlendLayer) -> bool| {
+                for (l, b) in o.layers.iter().zip(own).filter(|(l, _)| which(l)) {
+                    let through = r.layer_through(device, queue, frame, l, None, &screen);
+                    r.draw_layer(device, queue, encoder, l, b, &through, slot, None);
+                    slot += 1;
+                }
+            };
+            layers(self, &mut encoder, |l| l.z < 0);
+            self.draw_things_part(&mut encoder, o, &buffers, &screen, &hdr, false);
+            layers(self, &mut encoder, |l| l.z == 0 && l.behind());
+            self.draw_things_part(&mut encoder, o, &buffers, &screen, &hdr, true);
+            layers(self, &mut encoder, |l| l.z > 0 || (l.z == 0 && !l.behind()));
             self.overlay = buffers;
-            for (l, b) in o.layers.iter().zip(&layer_buffers[frame.layers.len()..]) {
-                let through = self.layer_through(device, queue, frame, l, None, &screen);
-                self.draw_layer(device, queue, &mut encoder, l, b, &through, slot, None);
-                slot += 1;
-            }
         }
         self.layer_buffers = layer_buffers;
         self.chain.run(
@@ -1308,7 +1317,7 @@ impl Renderer {
             pass.draw(0..f.trails.len() as u32, 0..1);
         }
         if !f.particles.is_empty() {
-            self.sprites.draw(pass, &b.particles, f.particles.len() as u32);
+            self.sprites.draw(pass, &b.particles, f.particles.len() as u32, through.each);
             // The sprites bind only the globals: put the paint back for what follows.
             pass.set_bind_group(1, &through.paint, &[]);
         }
@@ -1400,7 +1409,7 @@ impl Renderer {
             pass.draw(0..f.trails_front.len() as u32, 0..1);
         }
         if !f.particles_front.is_empty() {
-            self.sprites.draw(pass, &b.particles_front, f.particles_front.len() as u32);
+            self.sprites.draw(pass, &b.particles_front, f.particles_front.len() as u32, through.each);
         }
     }
 
@@ -1446,17 +1455,30 @@ impl Renderer {
         through: &Through,
         view: &wgpu::TextureView,
     ) {
-        {
-            let mut pass = begin_pass(encoder, view, "things", wgpu::LoadOp::Load);
-            pass.set_bind_group(0, &through.globals, &[]);
-            pass.set_bind_group(1, &through.paint, &[]);
-            self.draw_back(&mut pass, f, b, through);
-        }
-        let mut pass = begin_pass(encoder, view, "things in front", wgpu::LoadOp::Load);
+        self.draw_things_part(encoder, f, b, through, view, false);
+        self.draw_things_part(encoder, f, b, through, view, true);
+    }
+
+    /// One half of [`Renderer::draw_things`]: the trails and shapes behind (`front` false), or
+    /// the balls, styled balls, flashes and particles in front.
+    fn draw_things_part(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        f: &Frame,
+        b: &FrameBuffers,
+        through: &Through,
+        view: &wgpu::TextureView,
+        front: bool,
+    ) {
+        let mut pass = begin_pass(encoder, view, if front { "things in front" } else { "things" }, wgpu::LoadOp::Load);
         pass.set_bind_group(0, &through.globals, &[]);
         pass.set_bind_group(1, &through.paint, &[]);
-        self.draw_balls(&mut pass, f, b, through);
-        self.draw_front(&mut pass, f, b, through);
+        if front {
+            self.draw_balls(&mut pass, f, b, through);
+            self.draw_front(&mut pass, f, b, through);
+        } else {
+            self.draw_back(&mut pass, f, b, through);
+        }
     }
 
     /// Draws `frame`'s layer `l` (its `index`th): a plain one straight into the HDR picture, a
@@ -1518,6 +1540,9 @@ impl Renderer {
         let key = (code, !through.world);
         let group = self.each_globals.group(device, queue, &self.globals_layout, key, bytemuck::bytes_of(&globals));
         self.each.ensure(device, l.blend, &l.frame);
+        if !l.frame.particles.is_empty() || !l.frame.particles_front.is_empty() {
+            self.sprites.ensure_each(device, l.blend);
+        }
         Through { globals: group, each: Some(l.blend), ..through.clone() }
     }
 

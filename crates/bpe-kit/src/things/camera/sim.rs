@@ -261,6 +261,18 @@ mod tests {
         assert_eq!(log.camera_at(world.step), want);
     }
 
+    /// A Zoom key at 0 s is the shot from the first frame on.
+    #[test]
+    fn a_zoom_key_at_the_start_is_the_first_shot() {
+        let (mut scene, kit, cam) = with_camera(|_| {}, |_| {});
+        let zoom = bpe_core::Address { thing: cam, slot: None, key: "zoom".into() };
+        scene.set_key(&kit.registry, &zoom, 0.0, Value::Number(3.0)).unwrap();
+        scene.set_key(&kit.registry, &zoom, 2.0, Value::Number(3.0)).unwrap();
+        let resolved = resolve(&scene, &kit.registry);
+        let world = World::build(&scene, &resolved, &kit.sims);
+        assert_eq!(world.camera.zoom, 3.0);
+    }
+
     #[test]
     fn follow_converges_on_a_ball() {
         let (mut scene, kit, _) = with_camera(

@@ -81,11 +81,12 @@ impl Header {
     }
 }
 
-/// Names a setting can't have: the module's own Blend, and words WGSL keeps for itself.
+/// Names a setting can't have: the module's own Blend, words WGSL keeps for itself, and the
+/// effect's own functions.
 const RESERVED: &[&str] = &[
     "blend", "target", "active", "move", "fn", "let", "var", "const", "if", "else", "for", "loop", "return", "struct",
     "true", "false", "break", "continue", "switch", "case", "default", "while", "discard", "override", "enable",
-    "type", "alias", "p", "fx", "uv",
+    "type", "alias", "p", "fx", "uv", "effect", "unpack",
 ];
 
 /// The leading comment block of an effect: every `//` line before the first line of code.
@@ -339,31 +340,127 @@ const PRELUDE_NAMES: &[&str] = &[
     "rotate",
 ];
 
-/// The names an effect source declares at the top level: its functions, constants, structs,
-/// variables and aliases (declarations that start a line, outside comments).
-fn top_level_names(wgsl: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    for line in wgsl.lines() {
-        if line.starts_with(char::is_whitespace) || line.starts_with("//") {
-            continue;
-        }
-        let mut words = line.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '<' || c == '>' || c == ','));
-        let Some(first) = words.next() else { continue };
-        let keyword = first.split('<').next().unwrap_or(first);
-        if !matches!(keyword, "fn" | "const" | "struct" | "var" | "alias" | "override") {
-            continue;
-        }
-        let rest = &line[first.len()..];
-        let name: String = rest.trim_start().chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
-        if !name.is_empty() && !names.contains(&name) {
-            names.push(name);
+/// `wgsl` with its comments (`//` to the end of the line, `/* */`, which nest) turned to spaces,
+/// every other byte where it was.
+fn without_comments(wgsl: &str) -> String {
+    let b = wgsl.as_bytes();
+    let mut out = b.to_vec();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i..].starts_with(b"//") {
+            while i < b.len() && b[i] != b'\n' {
+                out[i] = b' ';
+                i += 1;
+            }
+        } else if b[i..].starts_with(b"/*") {
+            let mut depth = 0;
+            while i < b.len() {
+                if b[i..].starts_with(b"/*") {
+                    depth += 1;
+                    out[i..i + 2].fill(b' ');
+                    i += 2;
+                } else if b[i..].starts_with(b"*/") {
+                    depth -= 1;
+                    out[i..i + 2].fill(b' ');
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    if b[i] != b'\n' {
+                        out[i] = b' ';
+                    }
+                    i += 1;
+                }
+            }
+        } else {
+            i += 1;
         }
     }
-    names
+    // Only ASCII bytes were replaced, and only whole comments, so this stays UTF-8.
+    String::from_utf8(out).unwrap_or_else(|_| wgsl.to_owned())
 }
 
-/// `text` with every whole-word use of `from` (not right after a `.`, which is a field) as `to`.
-fn rename_word(text: &str, from: &str, to: &str) -> String {
+/// What [`scan`] finds in an effect source: the names it declares at the top level, and the
+/// byte ranges of its struct bodies (inside the braces).
+struct Scanned {
+    names: Vec<String>,
+    struct_bodies: Vec<std::ops::Range<usize>>,
+}
+
+/// Reads `wgsl`'s top level: each declaration (`fn`, `const`, `struct`, `var`, `alias`,
+/// `override`) outside every brace, however it is indented or whatever attributes come before
+/// it, and the bodies of its structs.
+fn scan(wgsl: &str) -> Scanned {
+    let code = without_comments(wgsl);
+    let b = code.as_bytes();
+    let word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let mut out = Scanned { names: Vec::new(), struct_bodies: Vec::new() };
+    let mut depth = 0usize;
+    // The keyword whose name comes next, and the struct whose body is next.
+    let mut naming = false;
+    let mut in_struct = false;
+    let mut body_start = None;
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if c == b'{' {
+            if depth == 0 && in_struct {
+                body_start = Some(i + 1);
+                in_struct = false;
+            }
+            depth += 1;
+        } else if c == b'}' {
+            depth = depth.saturating_sub(1);
+            if depth == 0
+                && let Some(start) = body_start.take()
+            {
+                out.struct_bodies.push(start..i);
+            }
+        } else if c == b'<' && naming {
+            // `var<private> name`: the address space comes before the name.
+            while i < b.len() && b[i] != b'>' {
+                i += 1;
+            }
+        } else if c.is_ascii_digit() {
+            // A number, suffix and all (`1e-3`, `2u`).
+            while i + 1 < b.len() && (word(b[i + 1]) || b[i + 1] == b'.') {
+                i += 1;
+            }
+        } else if word(c) {
+            let start = i;
+            while i + 1 < b.len() && word(b[i + 1]) {
+                i += 1;
+            }
+            let w = &code[start..=i];
+            let attribute = start > 0 && b[start - 1] == b'@';
+            if depth == 0 && !attribute {
+                if naming {
+                    if !out.names.iter().any(|n| n == w) {
+                        out.names.push(w.to_owned());
+                    }
+                    naming = false;
+                } else if matches!(w, "fn" | "const" | "struct" | "var" | "alias" | "override") {
+                    naming = true;
+                    in_struct = w == "struct";
+                }
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// The names an effect source declares at the top level: its functions, constants, structs,
+/// variables and aliases, outside comments and every brace.
+fn top_level_names(wgsl: &str) -> Vec<String> {
+    scan(wgsl).names
+}
+
+/// `text` with every whole-word use of `from` as `to`, but not a member: right after a `.` (a
+/// field read) or a field declared in one of `struct_bodies` (a name followed by `:`), nor an
+/// attribute's name (right after `@`).
+fn rename_word(text: &str, from: &str, to: &str, struct_bodies: &[std::ops::Range<usize>]) -> String {
     let bytes = text.as_bytes();
     let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
     let mut out = String::with_capacity(text.len());
@@ -373,8 +470,11 @@ fn rename_word(text: &str, from: &str, to: &str) -> String {
         let end = start + from.len();
         let before = if start > 0 { Some(bytes[start - 1]) } else { None };
         let after = bytes.get(end).copied();
+        let field = struct_bodies.iter().any(|r| r.contains(&start))
+            && text[end..].trim_start().starts_with(':')
+            && !text[end..].trim_start().starts_with("::");
         out.push_str(&text[i..start]);
-        if before.is_some_and(|b| word(b) || b == b'.') || after.is_some_and(word) {
+        if before.is_some_and(|b| word(b) || b == b'.' || b == b'@') || after.is_some_and(word) || field {
             out.push_str(from);
         } else {
             out.push_str(to);
@@ -423,7 +523,9 @@ pub fn prefixed(wgsl: &str, n: usize) -> Result<String, String> {
         if PRELUDE_NAMES.contains(&name.as_str()) {
             return Err(format!("`{name}` is a name effects already have; call it something else"));
         }
-        text = rename_word(&text, &name, &format!("fx{n}_{name}"));
+        // Each rename moves what follows it: the struct bodies are found again each time.
+        let bodies = scan(&text).struct_bodies;
+        text = rename_word(&text, &name, &format!("fx{n}_{name}"), &bodies);
     }
     Ok(text)
 }
@@ -601,6 +703,32 @@ mod tests {
         assert!(!out.contains("fx3_sample") && !out.contains("fx3_effect_size"), "{out}");
         let clash = "fn sample(uv: vec2<f32>) -> vec3<f32> { return vec3<f32>(0.0); }\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { return sample(uv); }\n";
         assert!(prefixed(clash, 0).unwrap_err().contains("sample"));
+    }
+
+    #[test]
+    fn prefixed_leaves_struct_fields_and_member_reads_alone_and_finds_every_top_level_name() {
+        // A setting named like a constant, and a struct of its own with a field named like one.
+        let same = "// name: Same\n// simple spread = 0.5 [0, 1] Spread\nconst spread: f32 = 2.0;\nstruct Pair { spread: f32, other: Pair2 }\nstruct Pair2 { x: f32 }\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { let q = Pair(p.spread * spread, Pair2(1.0)); return sample(uv) * q.spread * q.other.x; }\n";
+        validate(&in_ball_module(&in_ball_effects(&[same]).unwrap()));
+        let out = prefixed(same, 2).unwrap();
+        for want in ["const fx2_spread", "p.spread * fx2_spread", "struct fx2_Pair { spread: f32, other: fx2_Pair2 }"] {
+            assert!(out.contains(want), "{want} in\n{out}");
+        }
+        // Declarations behind an attribute or indented are top-level too: two effects with the
+        // same helpers run side by side.
+        let a = "// name: A\n@must_use fn helper(x: f32) -> f32 { return x; }\n  const lift: f32 = 0.5;\n  var<private> seen: f32;\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { seen = 1.0; return sample(uv) * helper(lift) * seen; }\n";
+        let b = "// name: B\n@must_use\nfn helper(x: f32) -> f32 { return 2.0 * x; }\n  const lift: f32 = 0.25;\n  var<private> seen: f32;\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { seen = 2.0; return sample(uv) * helper(lift) * seen; }\n";
+        validate(&in_ball_module(&in_ball_effects(&[a, b]).unwrap()));
+        let names = top_level_names(a);
+        assert_eq!(names, ["helper", "lift", "seen", "effect"]);
+        // Locals inside a function are not top-level.
+        assert!(!top_level_names("fn f() {\n    var x = 1.0;\nconst y = 2.0;\n}\n").contains(&"y".to_owned()));
+        for key in ["effect", "unpack"] {
+            let src = format!(
+                "// name: K\n// simple {key} = 0.5 [0, 1] K\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> {{ return sample(uv); }}\n"
+            );
+            assert!(parse(&src).unwrap_err().contains(key), "{key} is refused as a setting key");
+        }
     }
 
     /// The scene shader with these in-ball effects.

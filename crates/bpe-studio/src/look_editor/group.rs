@@ -55,10 +55,10 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
     let s = view_cx.settings();
     // ---------- the Group view ----------
     {
-        let Inspector { group_view, render, .. } = inspector;
+        let Inspector { group_view, render, own_step, .. } = inspector;
         // Picked balls belong to the thing they were picked on.
         group_view.keep_picks_for(cx.id);
-        group_view::show(ui, group_view, render.as_ref(), &view_cx, cx.slot, edits);
+        group_view::show(ui, group_view, render.as_ref(), &view_cx, cx.slot, own_step, edits);
     }
     view_tools(ui, inspector, &s, edits);
 
@@ -683,6 +683,32 @@ mod tests {
     }
 
     #[test]
+    fn clicking_a_group_layers_picture_picks_it_in_group_mode() {
+        let mut h = harness();
+        turn_group_on(&mut h);
+        for kind in ["Gradient", "Shader"] {
+            h.get_by_label("+ Add").click();
+            h.run();
+            h.get_by_role_and_label(Role::Button, kind).click();
+            h.run();
+        }
+        let card = h.state().scene.card(BALL, SlotId::Look).unwrap().clone();
+        let gradient = card.layers.iter().find(|l| l.kind == kinds::GROUP_GRADIENT).unwrap().id;
+        let ball_layer = h.state().inspector.selected_layer.get(&BALL).copied();
+        // The picture sits just left of the name.
+        let name = h.get_by_role_and_label(Role::Button, "Gradient").rect();
+        let picture = egui::pos2(name.left() - 6.0 - 8.0, name.center().y);
+        h.hover_at(picture);
+        h.run();
+        h.drag_at(picture);
+        h.step();
+        h.drop_at(picture);
+        h.run();
+        assert_eq!(h.state().inspector.selected_group_layer.get(&BALL), Some(&gradient));
+        assert_eq!(h.state().inspector.selected_layer.get(&BALL).copied(), ball_layer, "the ball's pick stays");
+    }
+
+    #[test]
     fn a_shader_across_the_group_shows_its_effect_and_choose_lists_the_layers() {
         let mut h = harness();
         turn_group_on(&mut h);
@@ -780,7 +806,9 @@ mod tests {
         h.run();
         let before = h.state().scene.clone();
         let from = screen(&h, Vec2::new(100.0, 0.0));
+        assert!(!h.state().inspector.own_step);
         drag(&mut h, from, from + egui::vec2(0.0, 20.0));
+        assert!(h.state().inspector.own_step, "the drag starts an undo step of its own");
         let s = settings(&h);
         assert_eq!(s.custom[0], [-100.0, 0.0]);
         assert!((s.custom[1][0] - 100.0).abs() < 1.0 && s.custom[1][1] > 10.0, "{:?}", s.custom);

@@ -54,8 +54,22 @@ pub fn state_mut<T: 'static>(s: &mut dyn ThingState) -> &mut T {
 pub struct Limits {
     /// The fastest anything may move, in pixels per second: 16 px × 64 substeps × the step rate.
     pub ceiling: f32,
-    /// Touches slower than this are resting, not hits: `|gravity| × dt × 4 + 1`.
+    /// Touches slower than this are resting, not hits: `|gravity| × dt × 4 + 1`. A ball whose
+    /// Motion pulls harder (Gravity ×, Wind) rests at more along its pull: see
+    /// [`Limits::resting_along`].
     pub resting: f32,
+    /// The ball's own pull, four steps' worth (`pull × dt × 4`): zero for the scene's limits.
+    pub press: glam::Vec2,
+}
+
+impl Limits {
+    /// How slow a touch along `normal` is to be resting: [`Limits::resting`], or more where the
+    /// ball's own pull presses it that way harder than the scene's gravity would (a ball lying
+    /// on a floor under Gravity × 5, or pinned to a side wall by Wind). Across its pull it is
+    /// the scene's, so a pull one way never hides real bounces the other way.
+    pub fn resting_along(&self, normal: glam::Vec2) -> f32 {
+        self.resting.max(self.press.dot(normal).abs() + 1.0)
+    }
 }
 
 /// What a Bounce module says about hitting other balls.
@@ -125,6 +139,12 @@ pub trait ModuleSim: Send + Sync + 'static {
     fn prepare(&self, params: &Params) -> Box<dyn ThingState>;
     /// Changes velocities before the move: gravity, drag, wind.
     fn forces(&self, _state: &dyn ThingState, _bodies: &mut Bodies, _gravity: Vec2, _dt: f32) {}
+    /// The steady pull, in pixels per second squared, this Motion module puts on its balls
+    /// under the scene's `gravity`: what a ball lying on something presses into it with, so a
+    /// resting touch is told from a hit. `None` for a module that doesn't pull steadily.
+    fn pull(&self, _state: &dyn ThingState, _gravity: Vec2) -> Option<Vec2> {
+        None
+    }
     /// Like [`ModuleSim::forces`], also told which thing, what time it is and the scene's seed,
     /// for forces that change over time or use random numbers. The default calls `forces`.
     fn forces_at(&self, state: &dyn ThingState, bodies: &mut Bodies, gravity: Vec2, dt: f32, _cx: &SimCx) {

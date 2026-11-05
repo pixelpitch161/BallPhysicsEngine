@@ -12,7 +12,7 @@ use wgpu::{BlendComponent, BlendFactor as F, BlendOperation as Op};
 use crate::{Frame, HDR_FORMAT};
 
 /// The kinds of instance a layer that blends with each other draws with their own pipelines.
-/// Particles keep their usual ones: no look that blends with each other draws them.
+/// Particles have theirs in [`crate::sprites::Sprites`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Kind {
     Trail,

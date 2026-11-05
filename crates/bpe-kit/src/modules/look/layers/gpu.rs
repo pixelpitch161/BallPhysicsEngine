@@ -194,10 +194,15 @@ pub fn sub_record(sub: &SubLayer, cx: &mut SubCx) -> LayerGpu {
                 ..LayerGpu::ZERO
             }
         }
+        // Shading keeps its INVERT and Shine its FLAG (own light) from the shared records.
         SubLayer::Shading(s) => {
-            LayerGpu { head: [LayerGpu::SUB_SHADING, 0, 0, 0], ..shading_record(s, cx.atlas, cx.tiles) }
+            let r = shading_record(s, cx.atlas, cx.tiles);
+            LayerGpu { head: [LayerGpu::SUB_SHADING, 0, r.head[2], 0], ..r }
         }
-        SubLayer::Shine(s) => LayerGpu { head: [LayerGpu::SUB_SHINE, 0, 0, 0], ..shine_record(s, cx.atlas) },
+        SubLayer::Shine(s) => {
+            let r = shine_record(s, cx.atlas);
+            LayerGpu { head: [LayerGpu::SUB_SHINE, 0, r.head[2], 0], ..r }
+        }
         SubLayer::Shader(sh) => LayerGpu { head: [LayerGpu::SUB_SHADER, 0, 0, 0], ..shader_record(sh, cx.sources) },
         SubLayer::Recolour(c) => {
             let gradient = c.mode == RecolourMode::Gradient;
@@ -428,13 +433,34 @@ impl Stack {
         if b.blend == Blend::Normal && b.blend_amount >= 1.0 {
             return None;
         }
-        let writes = |d: &&DrawnLayer| d.writes();
-        if !self.drawn[self.blend_at.min(self.drawn.len())..].iter().any(|d| d.writes()) {
+        let drawn = &self.drawn[..self.kept()];
+        let at = self.blend_at.min(drawn.len());
+        if !drawn[at..].iter().any(|d| d.writes()) {
             return None;
         }
-        let under: usize =
-            self.drawn[..self.blend_at.min(self.drawn.len())].iter().filter(writes).map(|d| d.records()).sum();
+        let under: usize = drawn[..at].iter().map(|d| d.records()).sum();
         Some(1 + under as u32)
+    }
+
+    /// How many records the group layers write after the ball's own.
+    fn group_records(&self) -> usize {
+        let gradient = self.group_on_gpu().is_some_and(|g| g.changes == Changes::EveryLayer);
+        self.ends.iter().filter(|e| matches!(e, GroupEnd::Shader(..)) || gradient).count()
+    }
+
+    /// How many of `drawn` (from the bottom) have their records written: the walk reads at most
+    /// [`bpe_gfx::MAX_LAYERS`] records, so past that whole layers are left out from the top,
+    /// never part of one, keeping room for the group records at the end.
+    pub fn kept(&self) -> usize {
+        let room = (bpe_gfx::MAX_LAYERS as usize).saturating_sub(1 + self.group_records());
+        let mut used = 0;
+        for (i, d) in self.drawn.iter().enumerate() {
+            used += d.records();
+            if used > room {
+                return i;
+            }
+        }
+        self.drawn.len()
     }
 
     /// How the whole ball mixes with what is behind it: the Blend layer's, Normal without one.
@@ -499,7 +525,8 @@ impl Stack {
     /// `atlas` and its brush strokes added to `tiles` (a frame's [`bpe_gfx::Frame::mask_tiles`]).
     /// Hidden layers, Blend and the reactions have none; each drawn layer's sub-layers follow it, and
     /// the group colour's record comes last when the group gradient changes every layer. Layers
-    /// the group gradient's Choose picks are flagged [`LayerGpu::GROUPED`].
+    /// the group gradient's Choose picks are flagged [`LayerGpu::GROUPED`]. At most
+    /// [`bpe_gfx::MAX_LAYERS`]: the layers past [`Stack::kept`] are left out.
     pub fn records(&self, atlas: &mut GradientAtlas, tiles: &mut Vec<(u64, Arc<[u8]>)>, time: f32) -> Vec<LayerGpu> {
         let blend = |b: Blend| b.shader_code();
         let flag = |on: bool| if on { LayerGpu::FLAG } else { 0 };
@@ -540,7 +567,7 @@ impl Stack {
         // Where each layer's record is, by id, for cuts that name a layer.
         let mut placed: Vec<(LayerId, usize)> = vec![(self.body_id, 0)];
         let sources = self.effect_sources();
-        for d in &self.drawn {
+        for d in &self.drawn[..self.kept()] {
             let r = match &d.layer {
                 Drawn::Pattern(p) => {
                     let mut inside = p.inside.clone();
@@ -678,13 +705,13 @@ impl Stack {
     }
 
     /// Where drawn layer `id`'s record is in [`Stack::records`] (the body's is 0); `None` for a
-    /// layer that writes none.
+    /// layer that writes none, or is left out past [`Stack::kept`].
     pub fn record_of(&self, id: LayerId) -> Option<usize> {
         if id == self.body_id {
             return Some(0);
         }
         let mut at = 1;
-        for d in self.drawn.iter().filter(|d| d.writes()) {
+        for d in self.drawn[..self.kept()].iter().filter(|d| d.writes()) {
             if d.id == id {
                 return Some(at);
             }
@@ -1028,6 +1055,21 @@ mod tests {
     }
 
     #[test]
+    fn shine_and_shading_sub_layers_keep_their_flags() {
+        let mut atlas = GradientAtlas::default();
+        let mut tiles = Vec::new();
+        let mut cx = SubCx { placed: &[], angle: 0.0, sources: &[], atlas: &mut atlas, tiles: &mut tiles };
+        let shine = ShineLayer { light: ShineLight::Own, ..ShineLayer::default() };
+        let r = sub_record(&SubLayer::Shine(shine), &mut cx);
+        assert_eq!((r.head[0], r.head[2]), (LayerGpu::SUB_SHINE, LayerGpu::FLAG), "own light");
+        let white = sub_record(&SubLayer::Shine(ShineLayer::default()), &mut cx);
+        assert_eq!(white.head[2], 0, "white light");
+        let shading = ShadingLayer { invert: true, ..ShadingLayer::default() };
+        let r = sub_record(&SubLayer::Shading(shading), &mut cx);
+        assert_eq!((r.head[0], r.head[2]), (LayerGpu::SUB_SHADING, LayerGpu::INVERT), "darken the middle");
+    }
+
+    #[test]
     fn each_sub_layer_writes_its_code_after_its_layer_in_order() {
         let stack = stack_after(|reg, s, b| {
             let pat = s.add_layer(reg, b, SlotId::Look, PATTERN).unwrap();
@@ -1302,6 +1344,46 @@ mod tests {
         assert_eq!(records[1].amount[2..], [2.0, 4.0]);
         assert!(stack.program().is_some());
         assert_eq!(stack.reach(24.0), SHAPE_REACH + 1.25, "the ring raises the reach");
+    }
+
+    #[test]
+    fn too_many_records_cut_whole_layers_and_keep_the_group_records() {
+        use bpe_core::SettingValue;
+        let max = bpe_gfx::MAX_LAYERS as usize;
+        let stack = stack_after(|reg, s, b| {
+            // Ten patterns of thirteen records each, and a Blend layer after the eighth.
+            for i in 0..10 {
+                let pat = s.add_layer(reg, b, SlotId::Look, PATTERN).unwrap();
+                for _ in 0..bpe_core::MAX_SUBS {
+                    s.add_sub_layer(reg, b, SlotId::Look, pat, SUB_GLOW).unwrap();
+                }
+                if i == 7 {
+                    let blend = s.add_layer(reg, b, SlotId::Look, BLEND).unwrap();
+                    let at = bpe_core::Address::on(b, SlotId::Look, &layered_key(blend, "blend"));
+                    s.set_at(reg, &at, Blend::Screen.to_value()).unwrap();
+                }
+            }
+            s.add_layer(reg, b, SlotId::Look, GROUP_SHADER).unwrap();
+        });
+        let records = stack.records(&mut GradientAtlas::default(), &mut Vec::new(), 0.0);
+        assert!(records.len() <= max, "{} records", records.len());
+        assert_eq!(records.last().unwrap().head[0], LayerGpu::GROUP_SHADER, "the group shader is kept");
+        // Every layer kept has all its sub-layers after it.
+        let mut k = 1;
+        while k < records.len() - 1 {
+            assert_eq!(records[k].head[0], LayerGpu::PATTERN, "record {k}");
+            let subs = records[k].head[3] as usize;
+            assert_eq!(subs, bpe_core::MAX_SUBS);
+            assert!(records[k + 1..=k + subs].iter().all(|r| r.head[0] == LayerGpu::SUB_GLOW));
+            k += 1 + subs;
+        }
+        assert_eq!(k, records.len() - 1);
+        // Nine patterns fit (1 + 9 × 13 + 1 = 119): the tenth is left out, and nothing names it.
+        assert_eq!(records.len(), 1 + 9 * 13 + 1);
+        assert_eq!(stack.record_of(stack.drawn[9].id), None);
+        assert_eq!(stack.record_of(stack.drawn[8].id), Some(1 + 8 * 13));
+        assert_eq!(stack.records_for(&records, |i| i != 9).len(), records.len());
+        assert_eq!(stack.split(), Some(1 + 8 * 13), "the ninth pattern is over the Blend layer");
     }
 
     #[test]

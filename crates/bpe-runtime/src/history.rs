@@ -35,7 +35,8 @@ impl HistoryWant {
     }
 }
 
-/// The recent positions of every ball of a thing, newest last, one list per ball.
+/// The recent positions of every ball of a thing, newest last, one list per ball. A ball's list
+/// starts at its first sample after it came, never before.
 #[derive(Clone, Debug, PartialEq)]
 pub struct History {
     /// Steps between samples.
@@ -45,26 +46,24 @@ pub struct History {
     balls: Vec<VecDeque<Vec2>>,
     /// How far each ball has gone from its first sample to its newest.
     travelled: Vec<f32>,
-    /// How many samples each ball has, up to `cap`.
+    /// The step each ball was first there at (the end of the step it came in).
+    born: Vec<u64>,
+    /// The most samples any ball has, up to `cap`.
     count: usize,
     /// The step the newest sample was taken at.
     last: Option<u64>,
 }
 
 impl History {
-    /// A history that samples `SAMPLE_RATE` times a second of `steps_per_second` steps and keeps
-    /// what `want` asks for.
+    /// A history that samples about `SAMPLE_RATE` times a second of `steps_per_second` steps
+    /// (every step when there are fewer) and keeps what `want` asks for.
     pub fn new(steps_per_second: u32, want: HistoryWant) -> Self {
+        let every = (steps_per_second / SAMPLE_RATE).max(1) as u64;
+        // As many samples as the seconds take at the rate they really come at.
+        let per_second = steps_per_second.max(1) as f64 / every as f64;
         let cap =
-            if want.forever { usize::MAX } else { (want.rounded() * SAMPLE_RATE as f32).ceil() as usize + 1 }.max(2);
-        Self {
-            every: (steps_per_second / SAMPLE_RATE).max(1) as u64,
-            cap,
-            balls: Vec::new(),
-            travelled: Vec::new(),
-            count: 0,
-            last: None,
-        }
+            if want.forever { usize::MAX } else { (want.rounded() as f64 * per_second).ceil() as usize + 1 }.max(2);
+        Self { every, cap, balls: Vec::new(), travelled: Vec::new(), born: Vec::new(), count: 0, last: None }
     }
 
     /// Seconds between samples.
@@ -87,33 +86,43 @@ impl History {
         self.cap
     }
 
-    /// Records `positions` when `step` is a sampling step. A ball that is new since the last
-    /// sample starts with its current position in every sample so far.
+    /// Notes that the first `rows` balls are there at `step`, for the ones not noted before.
+    pub fn note(&mut self, step: u64, rows: usize) {
+        while self.born.len() < rows {
+            self.born.push(step);
+        }
+    }
+
+    /// The step ball `ball` was first there at; `None` for a ball it hasn't seen.
+    pub fn born(&self, ball: usize) -> Option<u64> {
+        self.born.get(ball).copied()
+    }
+
+    /// Notes the balls new at `step`, and records `positions` when `step` is a sampling step. A
+    /// ball's samples start at the first one after it came.
     pub fn record(&mut self, step: u64, positions: &[Vec2]) {
+        self.note(step, positions.len());
         if !step.is_multiple_of(self.every) {
             return;
         }
-        for &p in positions.iter().skip(self.balls.len()) {
-            self.balls.push(std::iter::repeat_n(p, self.count).collect());
+        while self.balls.len() < positions.len() {
+            self.balls.push(VecDeque::new());
             self.travelled.push(0.0);
-        }
-        let full = self.count >= self.cap;
-        if !full {
-            self.count += 1;
         }
         for ((ring, gone), &p) in self.balls.iter_mut().zip(&mut self.travelled).zip(positions) {
             if let Some(&last) = ring.back() {
                 *gone += (p - last).length();
             }
-            if full {
+            if ring.len() >= self.cap {
                 ring.pop_front();
             }
             ring.push_back(p);
         }
+        self.count = (self.count + 1).min(self.cap);
         self.last = Some(step);
     }
 
-    /// Ball `ball`'s samples, newest first.
+    /// Ball `ball`'s samples, newest first, back to its first.
     pub fn points(&self, ball: usize) -> impl Iterator<Item = Vec2> + '_ {
         self.balls.get(ball).into_iter().flat_map(|r| r.iter().rev().copied())
     }
@@ -125,7 +134,8 @@ impl History {
     }
 
     /// Where ball `ball` was `ago` seconds before the newest sample, read between samples
-    /// `interval` seconds apart; `None` before its first sample.
+    /// `interval` seconds apart: where it was first sampled for further back than that, and
+    /// `None` without a sample.
     pub fn at(&self, ball: usize, ago: f32, interval: f32) -> Option<Vec2> {
         let ring = self.balls.get(ball)?;
         let n = ring.len();
@@ -139,7 +149,7 @@ impl History {
         Some(a.lerp(b, f))
     }
 
-    /// How many samples each ball has so far.
+    /// How many samples the longest-kept ball has so far.
     pub fn len(&self) -> usize {
         if self.balls.is_empty() { 0 } else { self.count }
     }
@@ -190,8 +200,7 @@ mod tests {
         let mut h = History::new(60, TWO);
         h.record(1, &[Vec2::ZERO]);
         h.record(2, &[Vec2::ONE, Vec2::new(5.0, 5.0)]);
-        assert_eq!(h.points(1).count(), 2);
-        assert!(h.points(1).all(|p| p == Vec2::new(5.0, 5.0)));
+        assert_eq!(h.points(1).collect::<Vec<_>>(), [Vec2::new(5.0, 5.0)], "nothing from before it came");
         assert_eq!(h.points(0).collect::<Vec<_>>(), [Vec2::ONE, Vec2::ZERO]);
         assert_eq!(h.travelled(0), std::f32::consts::SQRT_2);
         assert_eq!(h.travelled(1), 0.0);
@@ -210,6 +219,49 @@ mod tests {
         }
         assert_eq!(h.len(), 10 * 60 + 1);
         assert_eq!(h.points(0).last(), Some(Vec2::ZERO), "the very first sample is still there");
+    }
+
+    /// At a step rate that isn't a multiple of 60 the samples come faster, and the history keeps
+    /// as many seconds all the same.
+    #[test]
+    fn the_history_keeps_its_seconds_at_any_step_rate() {
+        for rate in [100, 240, 250, 90, 30] {
+            let h = History::new(rate, TWO);
+            let per_second = rate as f32 / h.every() as f32;
+            let kept = (h.cap() - 1) as f32 / per_second;
+            assert!((kept - 2.0).abs() < 0.05, "{rate} steps a second keeps {kept} s");
+        }
+    }
+
+    /// A ball that comes later has no samples from before it was there: its history stops where
+    /// it began, and it knows the step it began on.
+    #[test]
+    fn a_late_ball_has_no_past_before_it_began() {
+        let mut h = History::new(240, TWO);
+        h.note(0, 1);
+        for step in 1..=40 {
+            let mut positions = vec![Vec2::new(step as f32, 0.0)];
+            if step >= 22 {
+                positions.push(Vec2::new(0.0, step as f32));
+            }
+            h.record(step, &positions);
+        }
+        assert_eq!(h.points(0).count(), 10);
+        // Ball 1 came on step 22 and was sampled on 24, 28, ..., 40.
+        assert_eq!(h.points(1).collect::<Vec<_>>().len(), 5);
+        assert_eq!(h.points(1).last(), Some(Vec2::new(0.0, 24.0)));
+        assert_eq!(h.born(0), Some(0));
+        assert_eq!(h.born(1), Some(22));
+        assert_eq!(h.born(2), None);
+        // Reading further back than it goes gives where it began.
+        assert_eq!(h.at(1, 1.0, 1.0 / 60.0), Some(Vec2::new(0.0, 24.0)));
+        // Once full, each ball drops its own oldest.
+        for step in 41..=2000 {
+            h.record(step, &[Vec2::new(step as f32, 0.0), Vec2::new(0.0, step as f32)]);
+        }
+        assert_eq!(h.points(0).count(), h.cap());
+        assert_eq!(h.points(1).count(), h.cap());
+        assert_eq!(h.points(1).next(), Some(Vec2::new(0.0, 2000.0)));
     }
 
     #[test]
