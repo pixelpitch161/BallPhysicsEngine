@@ -22,7 +22,8 @@ var<private> layered_shape: LayeredShape;
 // Where a point is against the shape: `q` in shape units; `sd` the signed distance to the
 // outline's centre line in world pixels (negative inside, even-odd); `edge` the distance to the
 // edge of what the shape covers (its fill, or its band), negative inside it; `along` how far
-// round the outline the nearest point is, 0 to 1 clockwise from point 0 (a circle's top).
+// round the outline the nearest point is, 0 to 1 clockwise from point 0 (a circle's or an
+// ellipse's top; an ellipse measures it by the angle it is drawn with).
 struct ShapeAt {
     q: vec2<f32>,
     sd: f32,
@@ -40,6 +41,13 @@ fn shape_at(world: vec2<f32>) -> ShapeAt {
     if s.b.y < 0.5 {
         sd = (length(q) - 1.0) * s.a.w;
         along = fract(atan2(q.x, -q.y) / SHAPE_TAU + 1.0);
+    } else if s.b.y > 1.5 {
+        // An ellipse: round from its own top by the angle it is drawn with.
+        let ab = max(s.b.zw, vec2<f32>(1e-6));
+        let c = ellipse_nearest(q, ab);
+        let level = q / ab;
+        sd = select(1.0, -1.0, dot(level, level) < 1.0) * length(q - c) * s.a.w;
+        along = fract(atan2(c.x / ab.x, -c.y / ab.y) / SHAPE_TAU + 1.0);
     } else {
         let first = u32(s.b.z);
         let n = u32(s.b.w);
@@ -109,6 +117,10 @@ fn shape_run(l: LayerGpu, runs: u32, s: ShapeAt, outward: f32) -> f32 {
             let half = layered_shape.b.x;
             if half > 0.0 {
                 return (s.sd + half) / (2.0 * half);
+            }
+            // An ellipse runs out by its own shape.
+            if layered_shape.b.y > 1.5 {
+                return length(s.q / max(layered_shape.b.zw, vec2<f32>(1e-6)));
             }
             return length(s.q) / max(layered_shape.c.w, 1e-6);
         }

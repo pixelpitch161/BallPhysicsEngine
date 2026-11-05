@@ -109,6 +109,34 @@ fn render_does_not_allocate() {
     card.params.set("5/start", bpe_core::Value::Choice("per_note".into()));
     card.params.set("3/follows", bpe_core::Value::Choice("each_notes_ball".into()));
     scene.things.get_mut(&shape).unwrap().slots.insert(SlotId::Sound, card);
+    // Chain layers: an EQ on Osc A, with a key on a band and an LFO on another, and two
+    // Modulations tapping each other across the lanes (a loop: the chain moves on a sample at a
+    // time).
+    let reg = &kit.registry;
+    let chain_eq = scene.add_layer_in(reg, shape, SlotId::Sound, bpe_kit::sound::EQ, Some(0)).unwrap();
+    let fm_a = scene.add_layer_in(reg, shape, SlotId::Sound, bpe_kit::sound::MODULATION, Some(0)).unwrap();
+    let fm_b = scene.add_layer_in(reg, shape, SlotId::Sound, bpe_kit::sound::MODULATION, Some(1)).unwrap();
+    {
+        let card = scene.card_mut(shape, SlotId::Sound).unwrap();
+        let k = |id, key: &str| bpe_core::layered_key(id, key);
+        card.params.set(&k(chain_eq, "band5_on"), bpe_core::Value::Bool(true));
+        card.params.set(&k(chain_eq, "band5_gain"), bpe_core::Value::Number(9.0));
+        card.params.set(&k(chain_eq, "band8_on"), bpe_core::Value::Bool(true));
+        card.params.set(&k(chain_eq, "band8_kind"), bpe_core::Value::Choice("high_cut".into()));
+        card.params.set(&k(fm_a, "source"), bpe_core::Value::Text(fm_b.0.to_string()));
+        card.params.set(&k(fm_b, "source"), bpe_core::Value::Text(fm_a.0.to_string()));
+        let mut routes = match card.params.get(bpe_core::ROUTES_KEY) {
+            Some(bpe_core::Value::Routes(r)) => r.clone(),
+            _ => Vec::new(),
+        };
+        routes.push(route(lfo1, &k(chain_eq, "band5_gain")));
+        card.params.set(bpe_core::ROUTES_KEY, bpe_core::Value::Routes(routes));
+        assert_eq!(bpe_sound::chain_graph::loops_of(card), vec![fm_b], "the chain loops");
+    }
+    for (t, v) in [(0.0, 500.0), (5.0, 3000.0)] {
+        let a = bpe_core::Address::on(shape, SlotId::Sound, &bpe_core::layered_key(chain_eq, "band5_freq"));
+        scene.set_key(reg, &a, t, bpe_core::Value::Number(v)).unwrap();
+    }
     // Keys on a knob and on the Master, read every block.
     bpe_kit::ensure_mixer(&mut scene, &kit.registry);
     for (a, t, v) in [

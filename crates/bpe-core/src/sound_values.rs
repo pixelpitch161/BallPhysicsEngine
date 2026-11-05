@@ -1,4 +1,4 @@
-//! Values only the sound settings use: modulation routes and note slots.
+//! Values only the sound settings use: modulation routes, note slots and drawn LFO shapes.
 
 use crate::LayerId;
 use serde::{Deserialize, Serialize};
@@ -52,4 +52,44 @@ impl NoteSlot {
             && self.notes.iter().all(|&n| n <= 127)
             && self.order_clicked.iter().all(|n| self.notes.contains(n))
     }
+}
+
+/// The most points a drawn LFO shape has.
+pub const MAX_CURVE_POINTS: usize = 128;
+
+/// One point of a drawn LFO shape: `x` across one cycle (0..1, points in order, the first at 0
+/// and the last at 1; two points at the same `x` make a jump), `y` its height (0..1) and `bend`
+/// how the part from it to the next point bows (-1..1, 0 straight, above 0 bowed up on a rise).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct CurvePoint {
+    pub x: f32,
+    pub y: f32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub bend: f32,
+}
+
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
+}
+
+impl CurvePoint {
+    pub const fn new(x: f32, y: f32, bend: f32) -> Self {
+        CurvePoint { x, y, bend }
+    }
+}
+
+/// Whether `points` is a usable shape: 2 to [`MAX_CURVE_POINTS`] points, finite, in order from
+/// x 0 to x 1, heights 0..1 and bends -1..1.
+pub fn curve_is_valid(points: &[CurvePoint]) -> bool {
+    (2..=MAX_CURVE_POINTS).contains(&points.len())
+        && points.first().is_some_and(|p| p.x == 0.0)
+        && points.last().is_some_and(|p| p.x == 1.0)
+        && points.windows(2).all(|w| w[0].x <= w[1].x)
+        && points.iter().all(|p| {
+            p.x.is_finite()
+                && p.y.is_finite()
+                && p.bend.is_finite()
+                && (0.0..=1.0).contains(&p.y)
+                && (-1.0..=1.0).contains(&p.bend)
+        })
 }

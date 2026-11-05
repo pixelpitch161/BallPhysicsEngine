@@ -62,9 +62,6 @@ pub enum LeftPanel {
     Mixer,
 }
 
-/// The Mixer's width when it opens.
-pub const MIXER_W: f32 = 420.0;
-
 /// The two chips on top of the left panel.
 fn left_switch(ui: &mut egui::Ui, left: &mut LeftPanel) {
     ui.horizontal(|ui| {
@@ -143,8 +140,11 @@ pub struct Studio {
     inspector_resizing: bool,
     /// The inspector showed a Sound tab last frame.
     inspector_sound: bool,
-    /// The selection when the Mixer's editor was last drawn: a new one closes it.
-    mixer_selection: Option<ThingId>,
+    /// The tree panel's width when it was last drawn: the Mixer opens at it.
+    tree_width: f32,
+    /// How many times the left panel has switched to the Mixer. Its panel's id counts them, so
+    /// each switch opens it afresh at the tree's width.
+    mixer_opens: u32,
     /// Scrubbing paused the playback; it starts again when the scrub ends.
     pub resume_after_scrub: bool,
     /// This frame's change to the scene is already in the history (undo, open, delete…).
@@ -250,7 +250,8 @@ impl Studio {
             inspector_seen: settings::INSPECTOR_DEFAULT,
             inspector_resizing: false,
             inspector_sound: false,
-            mixer_selection: None,
+            tree_width: style::TREE_W,
+            mixer_opens: 0,
             resume_after_scrub: false,
             recorded: false,
             closing: false,
@@ -791,8 +792,9 @@ impl Studio {
     }
 
     /// The inspector on the right, as wide as the user last dragged it. Returns its width.
-    /// The left panel, Things or Mixer, with the switch on top. Each face keeps its own width.
-    /// Returns the width it was drawn at.
+    /// The left panel, Things or Mixer, with the switch on top. The tree keeps its width; the
+    /// Mixer opens at the tree's width each time it is switched to, and can be dragged wider
+    /// while open. Returns the width it was drawn at.
     pub(crate) fn left_panel(&mut self, ui: &mut egui::Ui, before: &Scene) -> f32 {
         let mut left = self.left;
         let width = match self.left {
@@ -827,14 +829,15 @@ impl Studio {
                     self.recorded = true;
                     self.after_separate_edit(before.clone());
                 }
-                shown.response.rect.width()
+                self.tree_width = shown.response.rect.width();
+                self.tree_width
             }
             LeftPanel::Mixer => {
                 let meters = self.sound.as_ref().map(SoundJob::meters);
                 let reading = meters.as_ref().map(|m| m.read());
-                let shown = egui::Panel::left("mixer")
-                    .default_size(MIXER_W)
-                    .min_size(360.0)
+                let shown = egui::Panel::left(("mixer", self.mixer_opens))
+                    .default_size(self.tree_width)
+                    .min_size(180.0)
                     .max_size(960.0)
                     .resizable(true)
                     .frame(side_frame().inner_margin(egui::Margin::symmetric(10, 10)))
@@ -862,6 +865,9 @@ impl Studio {
                 shown.response.rect.width()
             }
         };
+        if left == LeftPanel::Mixer && self.left != LeftPanel::Mixer {
+            self.mixer_opens += 1;
+        }
         self.left = left;
         width
     }
@@ -869,14 +875,8 @@ impl Studio {
     pub(crate) fn inspector_panel(&mut self, ui: &mut egui::Ui) -> f32 {
         // A shape's Sound tab is wide (Osc A and Osc B side by side), with a width of its own:
         // a panel of its own id keeps each width as it was left.
-        // Selecting a thing closes the Mixer's editor.
-        if self.selection.primary != self.mixer_selection {
-            self.mixer_selection = self.selection.primary;
-            self.panels.mixer.pick = None;
-        }
-        // While the Mixer is open, a bus effect or the Master picked in it shows here, wide.
-        let mixing = self.left == LeftPanel::Mixer && self.panels.mixer.pick.is_some();
-        let sound = mixing || self.panels.inspector.sound_open(&self.scene, self.selection.primary);
+        // (The Mixer's editors open in the Mixer itself: the inspector always shows the selection.)
+        let sound = self.panels.inspector.sound_open(&self.scene, self.selection.primary);
         let (id, width, range) = if sound {
             ("inspector sound", self.sound_width, settings::SOUND_WIDTH_RANGE)
         } else {
@@ -906,37 +906,16 @@ impl Studio {
                 let time = self.sim_time();
                 self.panels.inspector.meters = self.sound.as_ref().map(SoundJob::meters);
                 self.panels.inspector.playing = self.playing;
-                if mixing {
-                    let meters = self.panels.inspector.meters.clone();
-                    let readings = mixer::editors::Readings {
-                        meters: meters.as_deref(),
-                        master: self.panels.mixer.reading.unwrap_or(bpe_sound::MeterReading::SILENT),
-                    };
-                    egui::Frame::new().inner_margin(egui::Margin::same(12)).show(&mut contents, |ui| {
-                        let keyed = mixer::editors::show(
-                            ui,
-                            &mut self.panels.mixer,
-                            &mut self.scene,
-                            &self.kit,
-                            &readings,
-                            time,
-                        );
-                        if keyed {
-                            self.panels.inspector.keyed_edit = true;
-                        }
-                    });
-                } else {
-                    self.fill_rounds();
-                    inspector::show(
-                        &mut contents,
-                        &mut self.panels.inspector,
-                        &mut self.scene,
-                        &self.kit,
-                        &self.resolved,
-                        &self.selection,
-                        time,
-                    );
-                }
+                self.fill_rounds();
+                inspector::show(
+                    &mut contents,
+                    &mut self.panels.inspector,
+                    &mut self.scene,
+                    &self.kit,
+                    &self.resolved,
+                    &self.selection,
+                    time,
+                );
                 ui.advance_cursor_after_rect(rect);
             });
         let shown = panel.response.rect.width();
@@ -1368,7 +1347,7 @@ mod tests {
         for name in ["Tempo", "Beats in a bar", "Beat note", "Master", "Input", "Output", "Release", "Whole clip"] {
             assert!(h.query_by_label(name).is_some(), "{name} is shown");
         }
-        assert!((h.state().1 - MIXER_W).abs() < 1.0, "the Mixer opens 420 wide: {}", h.state().1);
+        assert!((h.state().1 - style::TREE_W).abs() < 1.0, "the Mixer opens as wide as the tree: {}", h.state().1);
     }
 
     #[test]
@@ -1431,18 +1410,67 @@ mod tests {
         assert!(h.get_by_label("Create Keyframe").accesskit_node().is_disabled(), "Ceiling takes no keys");
     }
 
+    /// Drags the left panel's edge from where it is by `dx`.
+    fn drag_left_edge(h: &mut Harness<'_, (Studio, f32)>, dx: f32) {
+        // Just outside the panel: inside it, its scroll bar is on top of the edge.
+        let edge = egui::pos2(h.state().1 + 2.0, 450.0);
+        crate::mixer::strips::tests::drag(h, edge, edge + egui::vec2(dx, 0.0));
+    }
+
     #[test]
-    fn switching_back_restores_the_tree_width() {
+    fn the_mixer_opens_at_the_trees_width() {
         let mut h = left_harness();
+        drag_left_edge(&mut h, -200.0);
         let tree = h.state().1;
-        assert!((tree - MIXER_W).abs() > 10.0, "the tree is not already 420 wide: {tree}");
+        // (The drag starts past egui's drag threshold, a few pixels short.)
+        assert!((tree - (style::TREE_W - 200.0)).abs() < 10.0, "the tree was dragged narrower: {tree}");
         h.get_by_label("Mixer").click();
         h.run();
-        assert!((h.state().1 - MIXER_W).abs() < 1.0);
+        assert!((h.state().1 - tree).abs() < 0.5, "the Mixer opens at the tree's {tree}: {}", h.state().1);
+        // Dragged wider while open, it stays so until it is switched away.
+        drag_left_edge(&mut h, 300.0);
+        let wide = h.state().1;
+        assert!(wide > tree + 250.0, "the Mixer was dragged wider: {wide}");
         h.get_by_label("Things").click();
         h.run();
         assert_eq!(h.state().0.left, LeftPanel::Things);
         assert!((h.state().1 - tree).abs() < 0.5, "{} back to {tree}", h.state().1);
+        // Opened again, it is the tree's width once more.
+        h.get_by_label("Mixer").click();
+        h.run();
+        assert!((h.state().1 - tree).abs() < 0.5, "{} opens at {tree} again", h.state().1);
+    }
+
+    #[test]
+    fn a_narrow_mixer_still_draws_its_strips() {
+        let mut h = left_harness();
+        drag_left_edge(&mut h, -400.0);
+        assert!((h.state().1 - 180.0).abs() < 1.0, "the tree at its narrowest: {}", h.state().1);
+        h.get_by_label("Mixer").click();
+        h.run();
+        assert!((h.state().1 - 180.0).abs() < 1.0, "the Mixer as narrow: {}", h.state().1);
+        for name in ["Bus 1 fader", "Bus 3 fader", "Ceiling", "Pan"] {
+            assert!(h.query_all_by_label(name).next().is_some(), "{name} is drawn");
+        }
+        // The strips keep their order, side by side at their narrowest (48 px and a 6 px gap),
+        // scrolling sideways past the edge.
+        let x = |h: &Harness<'_, (Studio, f32)>, name: &str| h.query_all_by_label(name).next().unwrap().rect().left();
+        let step = x(&h, "Bus 2 fader") - x(&h, "Bus 1 fader");
+        assert!((step - 54.0).abs() < 1.0, "{step}");
+        assert!(x(&h, "Bus 3 fader") - x(&h, "Bus 2 fader") == step);
+        // A little wider, all four fit.
+        h.get_by_label("Things").click();
+        h.run();
+        drag_left_edge(&mut h, 120.0);
+        h.get_by_label("Mixer").click();
+        h.run();
+        let width = h.state().1;
+        assert!((280.0..320.0).contains(&width), "{width}");
+        for name in ["Ceiling", "Release"] {
+            let knob = h.query_all_by_label(name).find(|n| n.accesskit_node().role() == egui::accesskit::Role::Slider);
+            let r = knob.unwrap().rect();
+            assert!(r.right() <= width, "{name} at {r:?} is inside the {width} px Mixer");
+        }
     }
 
     /// The studio's inspector beside an empty middle, in a wide window. The state keeps the

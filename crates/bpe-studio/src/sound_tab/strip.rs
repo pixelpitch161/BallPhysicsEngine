@@ -1,16 +1,19 @@
 //! One layer of an oscillator's chain as a strip. Folded it is one row: the fold arrow, the on
 //! switch, the name and a one-line summary, a live mini view and its Mix mini-knob (and a loop
 //! mark when its source feeds back). Click the row to open it: the type, slope or quality
-//! chips, Solo, a 64 px view and the knobs.
+//! chips, Solo, a 64 px view and the knobs. An EQ's open strip has its band chips, its curve with
+//! a point per band, the picked band's settings, then Output and Mix.
 
 use super::strip_views::{self, View};
 use super::{SoundTab, TabCx, TabEdit, db, name_it, number};
+use crate::eq_curve::{self, has_gain};
 use crate::style;
 use bpe_core::{Choice, Layer, LayerId, Params, SlotId, Value, layered_key, split_layered};
 use bpe_kit::sound::chain::{hz_text, osc_name, vowel_name};
+use bpe_kit::sound::fx::{BandKind, EqSettings, StereoPlace};
 use bpe_kit::sound::{
-    CHAIN_KINDS, DISTORTION, DistKind, DistortionSettings, FILTER, FilterKind, FilterSettings, MODULATION, ModKind,
-    ModulationSettings, Quality, Slope, Source, layer_summary,
+    CHAIN_KINDS, ChainEqSettings, DISTORTION, DistKind, DistortionSettings, EQ, FILTER, FilterKind, FilterSettings,
+    MODULATION, ModKind, ModulationSettings, Quality, Slope, Source, layer_summary,
 };
 use eframe::egui::{self, Align, Layout, Pos2, Rect, RichText, Sense, Shape, Stroke, Ui, UiBuilder, Vec2};
 
@@ -42,6 +45,7 @@ enum Settings {
     Modulation(ModulationSettings),
     Filter(FilterSettings),
     Distortion(DistortionSettings),
+    Eq(ChainEqSettings),
 }
 
 impl Settings {
@@ -51,6 +55,7 @@ impl Settings {
             MODULATION => Settings::Modulation(ModulationSettings::from_params(p)),
             FILTER => Settings::Filter(FilterSettings::from_params(p)),
             DISTORTION => Settings::Distortion(DistortionSettings::from_params(p)),
+            EQ => Settings::Eq(ChainEqSettings::from_params(p)),
             _ => return None,
         })
     }
@@ -60,6 +65,7 @@ impl Settings {
             Settings::Modulation(m) => View::Modulation(m),
             Settings::Filter(f) => View::Filter(f),
             Settings::Distortion(d) => View::Distortion(d),
+            Settings::Eq(e) => View::Eq(e),
         }
     }
 }
@@ -181,16 +187,19 @@ pub fn show(
         egui::Frame::new().inner_margin(egui::Margin { left: 8, right: 4, top: 6, bottom: 8 }).show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 6.0;
-            body(ui, cx, layer, layers, &settings);
+            body(ui, cx, tab, layer, layers, &settings);
         });
     }
     row
 }
 
 /// The open strip: the type and its chips with Solo at the end, the view and the knobs.
-fn body(ui: &mut Ui, cx: &mut TabCx, layer: &Layer, layers: &[Layer], settings: &Settings) {
+fn body(ui: &mut Ui, cx: &mut TabCx, tab: &mut SoundTab, layer: &Layer, layers: &[Layer], settings: &Settings) {
     let key = |k: &str| layered_key(layer.id, k);
     let name = layer.name.as_str();
+    if let Settings::Eq(e) = settings {
+        return eq_body(ui, cx, tab, layer, e);
+    }
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         match settings {
@@ -214,16 +223,9 @@ fn body(ui: &mut Ui, cx: &mut TabCx, layer: &Layer, layers: &[Layer], settings: 
                     );
                 }
             }
+            Settings::Eq(_) => {}
         }
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let solo = cx.flag(&key("solo"));
-            let chip = ui.add(style::toggle_button("S", solo).min_size(egui::vec2(22.0, 22.0)));
-            name_it(ui, &chip, &format!("{name} solo"));
-            let chip = chip.on_hover_text("Solo: hear the chain cut at this layer");
-            if chip.clicked() {
-                cx.set(&key("solo"), Value::Bool(!solo));
-            }
-        });
+        solo_chip(ui, cx, layer);
     });
     view(ui, cx, layer, settings);
     ui.horizontal_wrapped(|ui| {
@@ -260,8 +262,91 @@ fn body(ui: &mut Ui, cx: &mut TabCx, layer: &Layer, layers: &[Layer], settings: 
                 cx.knob(ui, &key("tone"), "Tone", &|v| format!("{v:+.0}"));
                 cx.knob(ui, &key("output"), "Output", &db);
             }
+            Settings::Eq(_) => {}
         }
     });
+}
+
+/// The Solo chip at the right of a strip's top row.
+fn solo_chip(ui: &mut Ui, cx: &mut TabCx, layer: &Layer) {
+    let key = layered_key(layer.id, "solo");
+    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        let solo = cx.flag(&key);
+        let chip = ui.add(style::toggle_button("S", solo).min_size(egui::vec2(22.0, 22.0)));
+        name_it(ui, &chip, &format!("{} solo", layer.name));
+        let chip = chip.on_hover_text("Solo: hear the chain cut at this layer");
+        if chip.clicked() {
+            cx.set(&key, Value::Bool(!solo));
+        }
+    });
+}
+
+/// An EQ's open strip: the band chips and Solo, the curve, the picked band's settings, then
+/// Output and Mix.
+fn eq_body(ui: &mut Ui, cx: &mut TabCx, tab: &mut SoundTab, layer: &Layer, e: &ChainEqSettings) {
+    let key = |k: &str| layered_key(layer.id, k);
+    let band_key = |i: usize, k: &str| layered_key(layer.id, &EqSettings::band_key(i + 1, k));
+    let name = layer.name.as_str();
+    let bands = e.bands();
+    let mut pick = tab.eq.get(&(cx.id, layer.id)).copied().unwrap_or_default();
+    // The band chips, as the Mixer's EQ has them: lit when picked, an off band in brackets.
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        for (i, b) in bands.iter().enumerate() {
+            let text = if b.on { format!("{}", i + 1) } else { format!("({})", i + 1) };
+            let chip = ui.add(style::toggle_button(&text, pick.band == i).min_size(egui::vec2(26.0, 22.0)));
+            name_it(ui, &chip, &format!("{name} band {}", i + 1));
+            let chip = chip.on_hover_text(if b.on { "On" } else { "Off" });
+            if chip.clicked() {
+                pick.band = i;
+            }
+        }
+        solo_chip(ui, cx, layer);
+    });
+    // The curve.
+    let (rect, r) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), strip_views::HEIGHT), Sense::click_and_drag());
+    name_it(ui, &r, &format!("{name} view"));
+    let plot = strip_views::eq_plot(rect);
+    let hovered = eq_curve::interact(ui, &r, &plot, bands, &mut pick, &mut |i, k, v| cx.set(&band_key(i, k), v));
+    if ui.is_rect_visible(rect) {
+        let ink = if layer.enabled { style::TEXT } else { style::FAINT };
+        let painter = ui.painter_at(rect);
+        strip_views::paint(&painter, rect, &View::Eq(e), ink);
+        eq_curve::paint_points(&painter, &plot, bands, &pick, hovered, 6.0);
+    }
+    // The picked band.
+    let i = pick.band.min(7);
+    let b = bands[i];
+    ui.horizontal_wrapped(|ui| {
+        cx.switch(ui, &band_key(i, "on"), &format!("{name} band {} on", i + 1));
+        ui.label(RichText::new(format!("Band {}", i + 1)).font(style::semibold(12.0)));
+        let kinds: Vec<(BandKind, &str)> = BandKind::ALL.iter().map(|k| (*k, k.label())).collect();
+        cx.chips(ui, &band_key(i, "kind"), &kinds);
+    });
+    ui.horizontal_wrapped(|ui| {
+        if b.kind.is_cut() {
+            ui.label(RichText::new("Slope").small().color(style::MUTED));
+            let slopes: Vec<(bpe_kit::sound::fx::Slope, &str)> =
+                bpe_kit::sound::fx::Slope::ALL.iter().map(|s| (*s, s.label())).collect();
+            cx.chips(ui, &band_key(i, "slope"), &slopes);
+            ui.add_space(6.0);
+        }
+        ui.label(RichText::new("Stereo").small().color(style::MUTED));
+        let places: Vec<(StereoPlace, &str)> = StereoPlace::ALL.iter().map(|p| (*p, p.label())).collect();
+        cx.chips(ui, &band_key(i, "place"), &places);
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        cx.knob(ui, &band_key(i, "freq"), "Frequency", &hz_text);
+        if has_gain(b.kind) {
+            cx.knob(ui, &band_key(i, "gain"), "Gain", &|v| format!("{v:+.1} dB"));
+        }
+        cx.knob(ui, &band_key(i, "q"), "Q", &|v| format!("{v:.2}"));
+        cx.knob(ui, &key("output"), "Output", &db);
+        cx.knob(ui, &key("mix"), "Mix", &|v| format!("{v:.0} %"));
+    });
+    tab.eq.insert((cx.id, layer.id), pick);
 }
 
 /// The open strip's view; a filter's has a handle (sideways Cutoff, or Vowel for a formant; up

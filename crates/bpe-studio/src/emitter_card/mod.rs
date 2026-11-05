@@ -119,21 +119,38 @@ pub fn seats(scene: &bpe_core::Scene) -> Vec<Seat> {
         .iter()
         .filter_map(|id| scene.things.get(id).map(|t| (*id, t)))
         .filter(|(_, t)| foci::can_sit_on(t))
-        .map(|(id, t)| Seat { id, name: t.name.clone(), two_foci: false })
+        .map(|(id, t)| Seat { id, name: t.name.clone(), two_foci: foci::two_foci(t) })
         .collect()
 }
 
-/// The words under Sits on, when it sits on a focus.
-pub fn sits_on_hint(s: &EmitterSettings, gravity: bool) -> Option<String> {
+/// The words under Sits on, when it sits on `seat` (a circle's middle or an ellipse's focus)
+/// with no aiming: where the round meets again, and what would spoil it (gravity pulling the
+/// balls; on an ellipse, balls bouncing by their edge).
+pub fn sits_on_hint(s: &EmitterSettings, seat: Option<&Seat>, gravity: bool, by_edge: bool) -> Option<String> {
+    let seat = seat?;
     if s.sits_on <= 0 || s.aim != emitter::Aim::Off {
         return None;
     }
-    let mut hint = "Balls from here meet again at the other focus".to_owned();
-    if gravity {
-        hint.push_str(" if gravity is off");
+    let (mut hint, by_edge) = if seat.two_foci {
+        ("Balls from here meet at the other focus".to_owned(), by_edge)
+    } else {
+        // From a circle's middle every ball comes straight back, whatever touches the wall.
+        ("Balls from here come back to the middle together".to_owned(), false)
+    };
+    match (gravity, by_edge) {
+        (true, true) => hint.push_str(" if gravity is off and balls touch walls with their middle"),
+        (true, false) => hint.push_str(" if gravity is off"),
+        (false, true) => hint.push_str(" if balls touch walls with their middle"),
+        (false, false) => {}
     }
     hint.push('.');
     Some(hint)
+}
+
+/// Whether the emitter's balls touch walls with their edge (not their middle).
+fn by_edge(cx: &OwnCx) -> bool {
+    let at = Address::on(cx.id, bpe_core::SlotId::Bounce, "touch");
+    !matches!(cx.scene.value_at_time(&cx.kit.registry, &at, cx.time), Some(Value::Choice(c)) if c == "middle")
 }
 
 /// Whether the emitter's balls fall: the scene has gravity and its Motion card lets it pull.
@@ -168,7 +185,7 @@ fn sits_on_row(ui: &mut Ui, cx: &OwnCx, s: &EmitterSettings, edits: &mut Vec<Edi
                 ui.close();
             }
             if seats.is_empty() {
-                ui.label(RichText::new("No circles in the scene").small().color(style::MUTED));
+                ui.label(RichText::new("No circles or ellipses in the scene").small().color(style::MUTED));
             }
             for seat in &seats {
                 let foci: &[(SitsFocus, &str)] = if seat.two_foci {
@@ -190,7 +207,7 @@ fn sits_on_row(ui: &mut Ui, cx: &OwnCx, s: &EmitterSettings, edits: &mut Vec<Edi
         .labelled_by(label.id);
         ui.end_row();
     });
-    if let Some(hint) = sits_on_hint(s, falls(cx)) {
+    if let Some(hint) = sits_on_hint(s, current, falls(cx), by_edge(cx)) {
         ui.label(RichText::new(hint).small().color(style::MUTED));
     }
 }
@@ -328,7 +345,32 @@ mod tests {
         h.run();
         let shape = h.state().shape;
         assert_eq!(own(&h, "sits_on"), Some(Value::Int(shape.0 as i64)));
-        assert!(h.query_by_label("Balls from here meet again at the other focus.").is_some());
+        assert!(h.query_by_label("Balls from here come back to the middle together.").is_some());
+    }
+
+    #[test]
+    fn the_sits_on_hint_says_what_would_spoil_meeting_at_the_other_focus() {
+        let s = EmitterSettings { sits_on: 3, ..EmitterSettings::default() };
+        let ellipse = Seat { id: ThingId(3), name: "Oval".into(), two_foci: true };
+        let circle = Seat { two_foci: false, ..ellipse.clone() };
+        assert_eq!(
+            sits_on_hint(&s, Some(&ellipse), false, false).as_deref(),
+            Some("Balls from here meet at the other focus.")
+        );
+        assert_eq!(
+            sits_on_hint(&s, Some(&ellipse), true, true).as_deref(),
+            Some("Balls from here meet at the other focus if gravity is off and balls touch walls with their middle.")
+        );
+        assert_eq!(
+            sits_on_hint(&s, Some(&ellipse), false, true).as_deref(),
+            Some("Balls from here meet at the other focus if balls touch walls with their middle.")
+        );
+        assert_eq!(
+            sits_on_hint(&s, Some(&circle), false, true).as_deref(),
+            Some("Balls from here come back to the middle together."),
+            "edge touching doesn't spoil a circle"
+        );
+        assert_eq!(sits_on_hint(&s, None, false, false), None);
     }
 
     #[test]

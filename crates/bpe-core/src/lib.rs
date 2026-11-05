@@ -45,7 +45,7 @@ pub use settings::{
     section_rank,
 };
 pub use shape_path::ShapePath;
-pub use sound_values::{ModRoute, NoteSlot, ROUTES_KEY, SLOTS_KEY};
+pub use sound_values::{CurvePoint, MAX_CURVE_POINTS, ModRoute, NoteSlot, ROUTES_KEY, SLOTS_KEY, curve_is_valid};
 pub use value::{Params, Stroke, Strokes, Value, ValueType};
 
 /// `#[derive(Settings)]` and `#[derive(Choice)]`.

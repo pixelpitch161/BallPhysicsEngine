@@ -324,8 +324,15 @@ mod tests {
         let params = &mut s.things.get_mut(&b).unwrap().params;
         params.set("routes", Value::Routes(routes.clone()));
         params.set("notes_slots", Value::Slots(slots.clone()));
+        let curve = vec![
+            crate::CurvePoint::new(0.0, 0.5, 0.0),
+            crate::CurvePoint::new(0.5, 1.0, -0.4),
+            crate::CurvePoint::new(1.0, 0.0, 0.0),
+        ];
+        params.set("3/curve", Value::Curve(curve.clone()));
         let back = load(&save(&s), &r).unwrap();
         assert_eq!(back, s);
+        assert_eq!(back.things[&b].params.get("3/curve"), Some(&Value::Curve(curve)));
         assert_eq!(back.things[&b].params.get("routes"), Some(&Value::Routes(routes)));
         assert_eq!(back.things[&b].params.get("notes_slots"), Some(&Value::Slots(slots)));
     }

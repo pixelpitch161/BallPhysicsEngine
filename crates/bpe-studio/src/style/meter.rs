@@ -50,9 +50,10 @@ pub fn level_meter(ui: &mut Ui, peak_db_l: f32, peak_db_r: f32, height: f32) -> 
     response
 }
 
-/// The loudness readouts in a row: Momentary, Short-term, Whole clip and True peak.
+/// The loudness readouts in a row: Momentary, Short-term, Whole clip and True peak (on two
+/// rows when narrow).
 pub fn loudness_row(ui: &mut Ui, reading: &MeterReading) {
-    ui.horizontal(|ui| {
+    ui.with_layout(egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true), |ui| {
         for (name, value, unit) in [
             ("Momentary", reading.momentary, "LUFS"),
             ("Short-term", reading.short_term, "LUFS"),

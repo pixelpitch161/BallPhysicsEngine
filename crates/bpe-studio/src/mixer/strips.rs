@@ -1,7 +1,9 @@
 //! The console strips: Bus 1, Bus 2, Bus 3 and the Master side by side. A bus strip has its
-//! on switch and name (double-click to rename), its effects (click one to open it in the
-//! inspector, drag to reorder or onto another bus, right-click for the rest), its sends, pan,
-//! fader with a meter, and mute and solo. A bus that is off is drawn faint.
+//! on switch and name (double-click to rename), its effects (click one to open its editor
+//! under the strips' tops, again to close it, drag to reorder or onto another bus, right-click
+//! for the rest), its sends, pan, fader with a meter, and mute and solo. A bus that is off is
+//! drawn faint. Each strip is drawn in three parts (top, sends, bottom) so an open editor can
+//! take the sends' place across the three buses.
 
 use super::cx::{MixCx, MixEdit, MixerPick, STRIP_KNOB_W};
 use super::{Mixer, Renaming, slot_menu};
@@ -9,7 +11,7 @@ use crate::sound_tab::{db, name_it};
 use crate::style;
 use bpe_core::{LayerId, Settings, SlotId, ThingId, Value};
 use bpe_kit::sound::{BUSES, MixerSettings};
-use bpe_sound::{BusReading, Meters};
+use bpe_sound::BusReading;
 use eframe::egui::{self, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 
 /// A slot row's height.
@@ -54,31 +56,45 @@ pub fn pan_text(v: f64) -> String {
     }
 }
 
-/// Draws the three bus strips; `width` is each column's.
-pub fn buses(ui: &mut Ui, cx: &mut MixCx, mixer: &mut Mixer, meters: Option<&Meters>, width: f32) {
-    let graph = mixer_settings(cx);
-    let mut hovered = None;
-    for n in 1..=BUSES as u8 {
-        let reading = meters.map_or(BusReading::SILENT, |m| m.read_bus(n as usize - 1));
-        let column =
-            ui.allocate_ui_with_layout(Vec2::new(width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
-                ui.set_width(width);
-                bus(ui, cx, mixer, &graph, n, &reading);
-            });
-        if ui.rect_contains_pointer(column.response.rect) {
-            hovered = Some(n);
-        }
-    }
-    mixer.hover_bus = hovered;
+/// The narrowest a knob draws: two side by side need twice this, or they go one under the
+/// other.
+const KNOB_MIN: f32 = 40.0;
+/// The space between things inside a strip.
+const STRIP_SPACING: Vec2 = Vec2::new(2.0, 4.0);
+
+/// Draws `add` in a column `width` wide; returns what it gave and the column's rect.
+pub fn column<R>(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui) -> R) -> (R, Rect) {
+    let column = ui.allocate_ui_with_layout(Vec2::new(width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+        ui.set_width(width);
+        add(ui)
+    });
+    (column.inner, column.response.rect)
 }
 
-/// One bus strip.
-fn bus(ui: &mut Ui, cx: &mut MixCx, mixer: &mut Mixer, graph: &MixerSettings, n: u8, reading: &BusReading) {
+/// Draws `add` twice side by side, each half the width, or one under the other when the
+/// halves would be too narrow for a knob. `add` gets the item (0 or 1) and the width to use.
+fn pair(ui: &mut Ui, mut add: impl FnMut(&mut Ui, usize, f32)) {
+    let half = (ui.available_width() / 2.0).floor();
+    if half >= KNOB_MIN {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            add(ui, 0, half);
+            add(ui, 1, half);
+        });
+    } else {
+        let width = ui.available_width();
+        add(ui, 0, width);
+        add(ui, 1, width);
+    }
+}
+
+/// The top of bus `n`'s strip: its on switch and name, then its effects.
+pub fn bus_top(ui: &mut Ui, cx: &mut MixCx, mixer: &mut Mixer, n: u8) {
+    ui.spacing_mut().item_spacing = STRIP_SPACING;
     let key = |k: &str| MixerSettings::bus_key(n, k);
     let on = cx.flag(&key("on"));
     let name = cx.text(&key("name"));
     let shown = if name.trim().is_empty() { format!("Bus {n}") } else { name.clone() };
-    ui.spacing_mut().item_spacing = Vec2::new(2.0, 4.0);
 
     // The on switch and the name.
     ui.horizontal(|ui| {
@@ -116,35 +132,48 @@ fn bus(ui: &mut Ui, cx: &mut MixCx, mixer: &mut Mixer, graph: &MixerSettings, n:
     });
 
     ui.add_enabled_ui(on, |ui| {
-        // The effects.
         caption(ui, "Layers");
         slots(ui, cx, mixer, n - 1);
+    });
+}
 
-        // The sends to the other two buses.
+/// The middle of bus `n`'s strip: its sends to the other two buses and its pan. An open
+/// effect editor takes their place.
+pub fn bus_sends(ui: &mut Ui, cx: &mut MixCx, graph: &MixerSettings, n: u8) {
+    ui.spacing_mut().item_spacing = STRIP_SPACING;
+    let key = |k: &str| MixerSettings::bus_key(n, k);
+    let on = cx.flag(&key("on"));
+    ui.add_enabled_ui(on, |ui| {
         caption(ui, "Sends");
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            let half = (ui.available_width() / 2.0).floor();
-            for to in (1..=BUSES as u8).filter(|to| *to != n) {
-                let looping = bpe_sound::would_loop(graph, n, to);
-                let to_on = cx.flag(&MixerSettings::bus_key(to, "on"));
-                let send = key(&format!("send{to}"));
-                let label = format!("To {to}");
-                let r = ui.add_enabled_ui(!looping, |ui| cx.knob_w(ui, &send, &label, &db, half)).inner;
-                if looping {
-                    r.on_disabled_hover_text("That would feed back into itself");
-                } else if !to_on {
-                    r.on_hover_text(format!("Bus {to} is off: this send is silent until it's on"));
-                }
+        let to: Vec<u8> = (1..=BUSES as u8).filter(|to| *to != n).collect();
+        pair(ui, |ui, i, width| {
+            let to = to[i];
+            let looping = bpe_sound::would_loop(graph, n, to);
+            let to_on = cx.flag(&MixerSettings::bus_key(to, "on"));
+            let send = key(&format!("send{to}"));
+            let label = format!("To {to}");
+            let r = ui.add_enabled_ui(!looping, |ui| cx.knob_w(ui, &send, &label, &db, width)).inner;
+            if looping {
+                r.on_disabled_hover_text("That would feed back into itself");
+            } else if !to_on {
+                r.on_hover_text(format!("Bus {to} is off: this send is silent until it's on"));
             }
         });
-
-        // Pan, then the fader with its meter.
         ui.horizontal(|ui| {
             let w = ui.available_width();
-            ui.add_space(((w - STRIP_KNOB_W) / 2.0).max(0.0));
-            cx.knob_w(ui, &key("pan"), "Pan", &pan_text, STRIP_KNOB_W);
+            let knob = STRIP_KNOB_W.min(w);
+            ui.add_space(((w - knob) / 2.0).max(0.0));
+            cx.knob_w(ui, &key("pan"), "Pan", &pan_text, knob);
         });
+    });
+}
+
+/// The bottom of bus `n`'s strip: the fader with its meter, then mute and solo.
+pub fn bus_bottom(ui: &mut Ui, cx: &mut MixCx, n: u8, reading: &BusReading) {
+    ui.spacing_mut().item_spacing = STRIP_SPACING;
+    let key = |k: &str| MixerSettings::bus_key(n, k);
+    let on = cx.flag(&key("on"));
+    ui.add_enabled_ui(on, |ui| {
         ui.horizontal(|ui| {
             let w = ui.available_width();
             ui.add_space(((w - FADER_W - 18.0) / 2.0).max(0.0));
@@ -162,11 +191,17 @@ fn bus(ui: &mut Ui, cx: &mut MixCx, mixer: &mut Mixer, graph: &MixerSettings, n:
 
         // Mute and solo.
         ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
             let w = ui.available_width();
-            ui.add_space(((w - 2.0 * 28.0 - 2.0) / 2.0).max(0.0));
-            for (k, chip, what) in [("mute", "M", "mute"), ("solo", "S", "solo")] {
+            let chip = ((w - 2.0) / 2.0).floor().min(28.0);
+            if chip < 28.0 {
+                // Narrow: less room round the letters, so the two still fit the strip.
+                ui.spacing_mut().button_padding.x = 2.0;
+            }
+            ui.add_space(((w - 2.0 * chip - 2.0) / 2.0).max(0.0));
+            for (k, label, what) in [("mute", "M", "mute"), ("solo", "S", "solo")] {
                 let lit = cx.flag(&key(k));
-                let r = ui.add(style::toggle_button(chip, lit).min_size(egui::vec2(28.0, 22.0)));
+                let r = ui.add(style::toggle_button(label, lit).min_size(egui::vec2(chip, 22.0)));
                 name_it(ui, &r, &format!("Bus {n} {what}"));
                 if r.clicked() {
                     cx.set(&key(k), Value::Bool(!lit));
@@ -295,20 +330,26 @@ fn slot_row(ui: &mut Ui, cx: &mut MixCx, mixer: &mut Mixer, lane: u8, index: usi
             }
         }
     } else if response.double_clicked() {
-        // (A double-click is a click too: this comes first. The first click already opened it.)
+        // (A double-click is a click too: this comes first. The first click opened or, on the
+        // open effect, closed its editor; a rename keeps it open either way.)
         let on_dot = response.interact_pointer_pos().is_some_and(|p| p.x < dot.right() + 2.0);
         if !on_dot {
             mixer.renaming = Some((Renaming::Layer(layer.id), String::new()));
+            if !picked {
+                cx.edits.push(MixEdit::Pick(Some(MixerPick::Layer(layer.id))));
+            }
         }
     } else if response.clicked() {
         let on_dot = response.interact_pointer_pos().is_some_and(|p| p.x < dot.right() + 2.0);
         if on_dot {
             cx.edits.push(MixEdit::Enable(layer.id, !layer.enabled));
         } else {
-            cx.edits.push(MixEdit::Pick(Some(MixerPick::Layer(layer.id))));
+            // Clicking the open effect again closes its editor.
+            cx.edits.push(MixEdit::Pick((!picked).then_some(MixerPick::Layer(layer.id))));
         }
     }
-    let response = response.on_hover_text(format!("{kind_name}: click to open, drag to move, right-click for more"));
+    let response =
+        response.on_hover_text(format!("{kind_name}: click to open or close, drag to move, right-click for more"));
     slot_menu::row_menu(&response, cx, mixer, lane, layer);
 }
 
@@ -373,56 +414,46 @@ pub fn fader(ui: &mut Ui, cx: &mut MixCx, key: &str, name: &str) -> egui::Respon
     response
 }
 
-/// The compact Master strip beside the buses: its knobs two by two and its meter.
-pub fn master(
-    ui: &mut Ui,
-    scene: &mut bpe_core::Scene,
-    kit: &bpe_kit::Kit,
-    mixer: &mut Mixer,
-    reading: &bpe_sound::MeterReading,
-    time: f64,
-    width: f32,
-) -> bool {
+/// The top of the compact Master strip: its title (click to open its editor, again to close
+/// it) and its knobs two by two. Returns whether a keyed setting was edited.
+pub fn master_top(ui: &mut Ui, scene: &mut bpe_core::Scene, kit: &bpe_kit::Kit, mixer: &mut Mixer, time: f64) -> bool {
+    ui.spacing_mut().item_spacing = STRIP_SPACING;
     let mut keyed = false;
-    ui.allocate_ui_with_layout(Vec2::new(width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
-        ui.set_width(width);
-        ui.spacing_mut().item_spacing = Vec2::new(2.0, 4.0);
-        let picked = mixer.pick == Some(MixerPick::Master);
-        let title = ui.add(
-            egui::Label::new(RichText::new("Master").font(style::semibold(13.0)).color(if picked {
-                style::TEXT_STRONG
-            } else {
-                style::TEXT
-            }))
-            .sense(Sense::click()),
-        );
-        if title.on_hover_text("Click to open the Master in the inspector").clicked() {
-            mixer.pick = Some(MixerPick::Master);
-        }
-        let half = (width / 2.0).floor();
-        let knobs = super::master::KNOBS;
-        for pair in knobs.chunks(2) {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                for k in pair {
-                    keyed |= super::master::knob(ui, scene, kit, k, time, half);
-                }
-            });
-        }
-        ui.horizontal(|ui| {
-            let w = ui.available_width();
-            ui.add_space(((w - 14.0) / 2.0).max(0.0));
-            style::level_meter(ui, reading.peak_l, reading.peak_r, FADER_H - 40.0)
-                .on_hover_text("Peak level, left and right");
+    let picked = mixer.pick == Some(MixerPick::Master);
+    let title = ui.add(
+        egui::Label::new(RichText::new("Master").font(style::semibold(13.0)).color(if picked {
+            style::TEXT_STRONG
+        } else {
+            style::TEXT
+        }))
+        .sense(Sense::click()),
+    );
+    let hint = if picked { "Click to close the Master's editor" } else { "Click to open the Master's editor" };
+    if title.on_hover_text(hint).clicked() {
+        mixer.pick = if picked { None } else { Some(MixerPick::Master) };
+    }
+    for keys in super::master::KNOBS.chunks(2) {
+        pair(ui, |ui, i, width| {
+            keyed |= super::master::knob(ui, scene, kit, keys[i], time, width);
         });
-        if reading.reduction < -0.1 {
-            ui.vertical_centered(|ui| {
-                ui.label(RichText::new(format!("GR {:.1}", reading.reduction)).small().color(style::MUTED))
-                    .on_hover_text("How far the ceiling is turning the sound down");
-            });
-        }
-    });
+    }
     keyed
+}
+
+/// The bottom of the Master strip: its meter, in line with the buses' faders.
+pub fn master_bottom(ui: &mut Ui, reading: &bpe_sound::MeterReading) {
+    ui.spacing_mut().item_spacing = STRIP_SPACING;
+    ui.horizontal(|ui| {
+        let w = ui.available_width();
+        ui.add_space(((w - 14.0) / 2.0).max(0.0));
+        style::level_meter(ui, reading.peak_l, reading.peak_r, FADER_H).on_hover_text("Peak level, left and right");
+    });
+    if reading.reduction < -0.1 {
+        ui.vertical_centered(|ui| {
+            ui.label(RichText::new(format!("GR {:.1}", reading.reduction)).small().color(style::MUTED))
+                .on_hover_text("How far the ceiling is turning the sound down");
+        });
+    }
 }
 
 #[cfg(test)]

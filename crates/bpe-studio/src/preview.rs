@@ -61,8 +61,10 @@ pub enum Handle {
     Side(ThingId, usize),
     /// Bend a shape's curved side by one of its two handles.
     Bend(ThingId, usize, u8),
-    /// Size a circle by its edge.
+    /// Size a circle by its edge (an ellipse: both its width and height together).
     Radius(ThingId),
+    /// Set an ellipse's Width (0) or Height (1) by the dot at the end of that axis.
+    Axis(ThingId, u8),
     /// Move the camera by its frame's middle or edge, in the World view.
     CameraMove(ThingId),
     /// Zoom the camera by a corner of its frame.
@@ -82,6 +84,7 @@ impl Handle {
             | Handle::Side(id, _)
             | Handle::Bend(id, _, _)
             | Handle::Radius(id)
+            | Handle::Axis(id, _)
             | Handle::CameraMove(id)
             | Handle::CameraZoom(id)
             | Handle::CameraTurn(id)
@@ -89,9 +92,9 @@ impl Handle {
         }
     }
 
-    /// A shape's corner, side, bend handle or circle edge.
+    /// A shape's corner, side, bend handle, circle or ellipse edge, or an ellipse's axis dot.
     fn is_mould(self) -> bool {
-        matches!(self, Handle::Corner(..) | Handle::Side(..) | Handle::Bend(..) | Handle::Radius(_))
+        matches!(self, Handle::Corner(..) | Handle::Side(..) | Handle::Bend(..) | Handle::Radius(_) | Handle::Axis(..))
     }
 
     fn is_camera(self) -> bool {
@@ -296,7 +299,6 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     if studio.playing {
         preview.drag = None;
         outcome.clicked = response.clicked();
-        draw_hint(ui, rect, "Click to pause");
         studio.panels.preview = Some(preview);
         return outcome;
     }
@@ -366,15 +368,6 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         ui.ctx().set_cursor_icon(if preview.drag.is_some() { CursorIcon::Grabbing } else { CursorIcon::Grab });
     }
     draw_handles(ui, studio, &view, active, outcome.selected.or(studio.selection.primary));
-    let hint = if world_mode {
-        "Scroll to zoom · middle-drag to pan · F to frame · drag the camera's frame to move, zoom or turn it"
-    } else if studio.grid.snap {
-        "Drags snap to the grid · hold Alt to place freely"
-    } else {
-        "Drag things to move them · drag the arrow tip to aim · drag a shape's corners and sides to mould it, \
-         Shift mirrors · right-click a side for more"
-    };
-    draw_hint(ui, rect, hint);
     studio.panels.preview = Some(preview);
     outcome
 }
@@ -625,11 +618,11 @@ pub const SEAT_SNAP: f32 = 48.0;
 pub fn seat_near(scene: &Scene, world: &World, place: Vec2) -> Option<(ThingId, usize)> {
     let reach = SEAT_SNAP / world.camera.zoom.max(1e-3);
     let mut best: Option<(f32, ThingId, usize)> = None;
-    for (id, wall) in &world.walls {
+    for id in world.walls.keys() {
         if !scene.things.get(id).is_some_and(bpe_kit::things::emitter::foci::can_sit_on) {
             continue;
         }
-        let Some(foci) = bpe_kit::things::emitter::foci::focus_points(&wall.outline) else { continue };
+        let Some(foci) = bpe_kit::things::shape::foci(world, *id) else { continue };
         for (k, f) in foci.iter().enumerate() {
             let d = f.distance(place);
             if d <= reach && best.is_none_or(|(b, ..)| d < b) {
@@ -697,7 +690,7 @@ pub fn apply_drag(
             let velocity = ((tip - thing.transform.position) / ARROW_SECONDS).round();
             thing.params.set("velocity", Value::Vec2([velocity.x, velocity.y]));
         }
-        Handle::Corner(..) | Handle::Side(..) | Handle::Bend(..) | Handle::Radius(_) => {
+        Handle::Corner(..) | Handle::Side(..) | Handle::Bend(..) | Handle::Radius(_) | Handle::Axis(..) => {
             return shape_handles::apply(scene, reg, drag, pointer, step, time);
         }
         // Applied by the preview itself, with the playhead (see `zones::apply`).
@@ -749,8 +742,7 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
         // Dragged near a focus, the focus it will sit on.
         if active == Some(Handle::Body(id))
             && let Some((shape, k)) = seat_near(&studio.scene, world, place)
-            && let Some(foci) =
-                world.walls.get(&shape).and_then(|w| bpe_kit::things::emitter::foci::focus_points(&w.outline))
+            && let Some(foci) = bpe_kit::things::shape::foci(world, shape)
         {
             painter.circle_stroke(view.to_screen(foci[k]), 10.0, Stroke::new(2.0, style::TEXT_STRONG));
         }
@@ -856,18 +848,6 @@ fn emitter_overlay(
         }
     }
     painter.circle_stroke(at(Vec2::ZERO), 9.0, Stroke::new(1.5, color));
-}
-
-fn draw_hint(ui: &Ui, rect: Rect, text: &str) {
-    let painter = ui.painter_at(rect);
-    let galley = painter.layout_no_wrap(text.to_string(), FontId::proportional(12.0), style::TEXT);
-    let size = galley.size() + egui::vec2(24.0, 10.0);
-    if size.x > rect.width() {
-        return;
-    }
-    let pill = Rect::from_center_size(rect.center_bottom() - egui::vec2(0.0, size.y / 2.0 + 10.0), size);
-    painter.rect_filled(pill, f32::from(style::RADIUS), style::PILL);
-    painter.galley(pill.min + egui::vec2(12.0, 5.0), galley, style::TEXT);
 }
 
 #[cfg(test)]

@@ -511,3 +511,21 @@ fn sound_turned_on_mid_clip_starts_on_the_slot_the_clock_is_at() {
     e.render(&mut block);
     assert_eq!(e.meters().shape_slot(shape.0), Some(2), "a slot a second: the third slot at 2.5 s");
 }
+
+#[test]
+fn the_notes_a_shape_sounds_reach_the_meters() {
+    let kit = kit();
+    let scene = voiced(&kit, |v, _| {
+        v.notes_slots = vec![bpe_core::NoteSlot { notes: vec![64], order_clicked: vec![64] }];
+    });
+    let shape = shape_of(&scene);
+    let resolved = resolve_scene(&scene, &kit.registry);
+    let mut e = Engine::new(&scene, &resolved, &kit);
+    let mut block = [0.0f32; BLOCK * 2];
+    let mut seen = 0u128;
+    for _ in 0..(3 * 48_000 / BLOCK) {
+        e.render(&mut block);
+        seen |= e.meters().take_notes(shape.0);
+    }
+    assert_eq!(seen, 1u128 << 64, "the ball's hits play E5 and nothing else");
+}

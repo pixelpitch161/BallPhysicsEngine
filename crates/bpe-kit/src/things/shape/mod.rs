@@ -2,11 +2,14 @@
 //! in the video. It replaces the old Arena.
 
 pub mod draw;
+pub mod foci;
 pub mod sim;
 
+pub use foci::foci;
 pub use sim::{ShapeSim, ShapeState, place_on_edge, side_of, side_on};
 
 use bpe_core::{Choice, SettingDef, Settings, ShapePath, SlotId, ThingKind};
+use glam::Vec2;
 
 pub struct ShapeKind;
 
@@ -24,6 +27,8 @@ pub enum ShapeStart {
     Polygon,
     #[default]
     Circle,
+    /// An exact ellipse of `width` × `height`, turned by `turn`.
+    Ellipse,
 }
 
 /// Whether a shape is a solid or a band.
@@ -38,7 +43,7 @@ pub enum ShapeFill {
 
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct ShapeSettings {
-    /// An even polygon you can mould, or a circle.
+    /// An even polygon you can mould, a circle, or an ellipse.
     #[setting(label = "Start from", group = "Body", simple)]
     pub start: ShapeStart,
     /// How many corners the even polygon has. Changing it starts the outline afresh.
@@ -46,8 +51,44 @@ pub struct ShapeSettings {
     pub sides: u32,
     /// The circle's radius, or how far a polygon's corners are from its middle. A moulded outline
     /// grows and shrinks with it.
-    #[setting(label = "Size", group = "Body", span(20, 2000), range(1, 20000), unit = "px", simple, keyframe)]
+    #[setting(
+        label = "Size",
+        group = "Body",
+        when = "start!=ellipse",
+        span(20, 2000),
+        range(1, 20000),
+        unit = "px",
+        simple,
+        keyframe
+    )]
     pub size: f32,
+    /// How wide the ellipse is, before it turns.
+    #[setting(
+        label = "Width",
+        group = "Body",
+        when = "start=ellipse",
+        span(20, 2000),
+        range(1, 20000),
+        unit = "px",
+        simple,
+        keyframe
+    )]
+    pub width: f32,
+    /// How tall the ellipse is, before it turns.
+    #[setting(
+        label = "Height",
+        group = "Body",
+        when = "start=ellipse",
+        span(20, 2000),
+        range(1, 20000),
+        unit = "px",
+        simple,
+        keyframe
+    )]
+    pub height: f32,
+    /// How far the ellipse is turned, clockwise.
+    #[setting(label = "Turn", group = "Body", when = "start=ellipse", span(-180, 180), unit = "°", keyframe)]
+    pub turn: f32,
     /// Solid, or a band balls can be on either side of.
     #[setting(label = "Fill", group = "Body", simple)]
     pub fill: ShapeFill,
@@ -82,6 +123,9 @@ impl Default for ShapeSettings {
             start: ShapeStart::Circle,
             sides: 6,
             size: 400.0,
+            width: 900.0,
+            height: 1300.0,
+            turn: 0.0,
             fill: ShapeFill::Hollow,
             thickness: 8.0,
             path: ShapePath::default(),
@@ -103,6 +147,25 @@ impl ShapeSettings {
         Self { start: ShapeStart::Polygon, sides, size: radius, thickness, ..Self::default() }
     }
 
+    /// A hollow `width` × `height` ellipse.
+    pub fn ellipse(width: f32, height: f32, thickness: f32) -> Self {
+        Self { start: ShapeStart::Ellipse, width, height, thickness, ..Self::default() }
+    }
+
+    /// World pixels per shape unit at full size: an ellipse's larger half-axis, else its Size.
+    /// Smallest size and the shape's own units are measured in it.
+    pub fn unit(&self) -> f32 {
+        match self.start {
+            ShapeStart::Ellipse => (self.width.max(self.height) * 0.5).max(1e-3),
+            _ => self.size,
+        }
+    }
+
+    /// An ellipse's half-axes in shape units (the larger one 1).
+    pub fn ellipse_axes(&self) -> Vec2 {
+        Vec2::new(self.width, self.height) * 0.5 / self.unit()
+    }
+
     /// A hollow `width` × `height` rectangle: a moulded 4-corner outline. Its Size is a power of
     /// two at least half its diagonal, so the corners scale back to exactly these numbers.
     pub fn rectangle(width: f32, height: f32, thickness: f32) -> Self {
@@ -117,9 +180,11 @@ impl ShapeSettings {
         (self.start == ShapeStart::Polygon && self.path.points.len() >= 3 && self.path.is_valid()).then_some(&self.path)
     }
 
-    /// The outline in shape units, moulded or not: a circle is its 8 curved sides.
+    /// The outline in shape units, moulded or not: a circle is its 8 curved sides, an ellipse
+    /// its 16, turned by its Turn.
     pub fn outline_path(&self) -> ShapePath {
         match (self.start, self.moulded()) {
+            (ShapeStart::Ellipse, _) => ShapePath::ellipse(self.ellipse_axes(), self.turn.to_radians()),
             (_, Some(p)) => p.clone(),
             (ShapeStart::Polygon, None) => ShapePath::even(self.sides),
             (ShapeStart::Circle, None) => ShapePath::circle(),
@@ -160,12 +225,32 @@ impl ThingKind for ShapeKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glam::Vec2;
+
+    #[test]
+    fn an_ellipse_outline_path_is_16_curves_through_its_axes() {
+        let mut s = ShapeSettings::ellipse(900.0, 1300.0, 3.0);
+        s.turn = 30.0;
+        let axes = s.ellipse_axes();
+        assert!((axes - Vec2::new(450.0 / 650.0, 1.0)).length() < 1e-6, "{axes}");
+        let path = s.outline_path();
+        assert_eq!((path.side_count(), path.curve_count()), (16, 16));
+        let turn = Vec2::from_angle(30f32.to_radians());
+        for (k, want) in [(0, Vec2::new(0.0, -axes.y)), (4, Vec2::new(axes.x, 0.0)), (8, Vec2::new(0.0, axes.y))] {
+            assert!((path.point(k) - turn.rotate(want)).length() < 1e-5, "corner {k}: {}", path.point(k));
+        }
+        for p in path.flatten(bpe_core::shape_path::FLATTEN) {
+            let own = Vec2::new(turn.x, -turn.y).rotate(p) / axes;
+            assert!((own.length() - 1.0).abs() < 1e-3, "{p} is off the ellipse");
+        }
+        assert_eq!(s.unit(), 650.0);
+        assert_eq!(ShapeSettings::circle(300.0, 1.0).unit(), 300.0);
+    }
 
     #[test]
     fn the_body_settings_sit_under_body_and_the_rest_do_not() {
         for d in ShapeSettings::defs() {
-            let body = ["start", "sides", "size", "fill", "thickness", "path"].contains(&d.key);
+            let body =
+                ["start", "sides", "size", "width", "height", "turn", "fill", "thickness", "path"].contains(&d.key);
             assert_eq!(d.group == BODY_HEADINGS[0], body, "{}", d.key);
         }
         let d = ShapeSettings::default();

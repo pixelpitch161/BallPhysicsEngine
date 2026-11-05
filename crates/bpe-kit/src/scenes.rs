@@ -53,6 +53,7 @@ pub fn all(reg: &Registry) -> Vec<(String, Scene)> {
     scenes.push(("Colour paints".into(), colour_demo(reg)));
     scenes.push(("Blend modes".into(), blend_demo(reg)));
     scenes.push(("Graded sunset".into(), graded_sunset(reg)));
+    scenes.push(("Ellipse focus".into(), ellipse_focus(reg)));
     scenes.extend(emitter_scenes(reg));
     scenes
 }
@@ -65,6 +66,11 @@ pub fn classic_look() -> BasicLook {
 /// Motion with gravity on, the way it was before the blank project's defaults.
 pub fn classic_motion() -> BasicMotion {
     BasicMotion { gravity_scale: 1.0, ..BasicMotion::default() }
+}
+
+/// A bounce with the top speed and biggest size every bounce had before they could be turned off.
+pub fn classic_bounce() -> BasicBounce {
+    BasicBounce { no_speed_limit: false, no_size_limit: false, ..BasicBounce::default() }
 }
 
 /// Gives the scene settings the dark blue background and the bloom they had before the blank
@@ -99,6 +105,14 @@ pub fn classic_cards(scene: &mut Scene) {
                 }
                 "motion.basic" if BasicMotion::from_params(&card.params) == BasicMotion::default() => {
                     card.params = classic_motion().to_params();
+                }
+                // The test scenes keep the speed and size caps bounces had before.
+                "bounce.basic" => {
+                    for key in ["no_speed_limit", "no_size_limit"] {
+                        if card.params.get(key).is_none() {
+                            card.params.set(key, Value::Bool(false));
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -612,7 +626,7 @@ impl<'a> Builder<'a> {
     }
 
     fn bounce(&mut self, f: impl FnOnce(&mut BasicBounce)) {
-        let mut s = BasicBounce::default();
+        let mut s = classic_bounce();
         f(&mut s);
         self.shared.get_mut(&SlotId::Bounce).expect("shared").params = s.to_params();
     }
@@ -759,7 +773,7 @@ fn shrinking_ring(reg: &Registry) -> Scene {
         s.grow = 1.5;
         s.max_size = 90.0;
     });
-    let lively = BasicBounce { bounciness: 1.05, takes_over: true, ..BasicBounce::default() }.to_params();
+    let lively = BasicBounce { bounciness: 1.05, takes_over: true, ..classic_bounce() }.to_params();
     b.own_module(SHAPE, "bounce.basic", lively);
     b.finish()
 }
@@ -797,6 +811,27 @@ fn ball_pit(reg: &Registry) -> Scene {
     b.finish()
 }
 
+/// An upright ellipse with a ring of 48 balls fired outward from its top focus, bouncing by their
+/// middles: every wave meets at the other focus.
+fn ellipse_focus(reg: &Registry) -> Scene {
+    let mut b = Builder::new(reg, "Ellipse focus");
+    b.scene_settings(|s| {
+        s.gravity = Vec2::ZERO;
+        s.duration = 20.0;
+    });
+    b.shape(ShapeSettings::ellipse(900.0, 1300.0, 3.0));
+    b.scene.things.get_mut(&SHAPE).expect("the shape").transform.position = Vec2::ZERO;
+    let focus = (650f32 * 650.0 - 450.0 * 450.0).sqrt();
+    b.balls("Wave", Vec2::new(0.0, -focus), |s| {
+        s.radius = 4.0;
+        s.ring(48, 1.0);
+        s.velocity = Vec2::new(500.0, 0.0);
+        s.launch = crate::Launch::Outward;
+    });
+    b.bounce(|s| s.touch = crate::WallTouch::Middle);
+    b.finish()
+}
+
 /// Balls riding a turning hexagon; the balls change hue with every hit and pop after
 /// forty.
 fn riders(reg: &Registry) -> Scene {
@@ -823,7 +858,7 @@ mod tests {
     fn stage_scenes_resolve_and_round_trip() {
         let reg = registry();
         let scenes = scenes::all(&reg);
-        assert_eq!(scenes.len(), 17);
+        assert_eq!(scenes.len(), 18);
         let in_order: Vec<String> = [
             scenes::stage2(&reg),
             scenes::stage3(&reg),
@@ -832,6 +867,7 @@ mod tests {
                 ("Colour paints".into(), scenes::colour_demo(&reg)),
                 ("Blend modes".into(), scenes::blend_demo(&reg)),
                 ("Graded sunset".into(), scenes::graded_sunset(&reg)),
+                ("Ellipse focus".into(), scenes::ellipse_focus(&reg)),
             ],
             scenes::emitter_scenes(&reg),
         ]
@@ -844,8 +880,8 @@ mod tests {
         assert_eq!(names[..5], ["One ball", "Reel block", "Box drop", "Spinning hexagon", "Shrinking ring"]);
         assert_eq!(names[5..7], ["Ball pit", "Riders"]);
         assert_eq!(names[7..12], ["Lava ball", "Confetti drop", "Spark block", "Kaleido hexagon", "Neon ring"]);
-        assert_eq!(names[12..15], ["Colour paints", "Blend modes", "Graded sunset"]);
-        assert_eq!(names[15..], ["Emitter rounds", "Emitter chain"]);
+        assert_eq!(names[12..16], ["Colour paints", "Blend modes", "Graded sunset", "Ellipse focus"]);
+        assert_eq!(names[16..], ["Emitter rounds", "Emitter chain"]);
         for (name, scene) in &scenes {
             assert_eq!(&scene.name, name);
             assert!(crate::resolve_scene(scene, &reg).problems.is_empty(), "{name}");

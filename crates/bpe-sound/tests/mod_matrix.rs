@@ -2,7 +2,7 @@
 //! a filter, an envelope times a Distance on a gain, and a golden for a patch using them all.
 
 use bpe_core::{Address, LayerId, ModRoute, ROUTES_KEY, Scene, Settings, SlotId, ThingId, Value, layered_key};
-use bpe_kit::sound::{DISTANCE, FILTER, HIT, LFO, VoiceSettings, Wave, starter_voice};
+use bpe_kit::sound::{DISTANCE, FILTER, HIT, LFO, LfoPreset, VoiceSettings, Wave, starter_voice};
 use bpe_kit::{Kit, kit, new_scene, resolve_scene};
 use bpe_runtime::{Event, EventKind, Party, World};
 use bpe_sound::mods::{LfoMod, LfoParams, ModCx, Modulator};
@@ -158,7 +158,12 @@ fn lfo2_on_lfo1_rate_changes_its_speed() {
     let mut moved = plain.clone();
     // LFO 2: a square held high for 50 s, pushing LFO 1's rate up by a fifth of the knob's travel,
     // which turns evenly in ratios over 0.01..40 Hz: 4000^0.2, about 5.25 times as fast.
-    let lfo2 = turn_on(&kit, &mut moved, "LFO 2", &[("shape", choice("square")), ("rate_hz", num(0.01))]);
+    let lfo2 = turn_on(
+        &kit,
+        &mut moved,
+        "LFO 2",
+        &[("curve", Value::Curve(LfoPreset::Square.points())), ("rate_hz", num(0.01))],
+    );
     route(&kit, &mut moved, lfo2, &layered_key(lfo1, "rate_hz"), 0.2);
     let count = |scene: &Scene| {
         let w = world(scene, &kit);
@@ -176,8 +181,18 @@ fn lfo2_on_lfo1_rate_changes_its_speed() {
 fn a_mod_loop_runs_one_block_late() {
     let kit = kit();
     let mut scene = voiced(&kit);
-    let lfo1 = turn_on(&kit, &mut scene, "LFO 1", &[("rate_hz", num(1.0)), ("shape", choice("triangle"))]);
-    let lfo2 = turn_on(&kit, &mut scene, "LFO 2", &[("rate_hz", num(2.0)), ("shape", choice("saw"))]);
+    let lfo1 = turn_on(
+        &kit,
+        &mut scene,
+        "LFO 1",
+        &[("rate_hz", num(1.0)), ("curve", Value::Curve(LfoPreset::Triangle.points()))],
+    );
+    let lfo2 = turn_on(
+        &kit,
+        &mut scene,
+        "LFO 2",
+        &[("rate_hz", num(2.0)), ("curve", Value::Curve(LfoPreset::SawUp.points()))],
+    );
     route(&kit, &mut scene, lfo1, "a_cents", 0.5);
     route(&kit, &mut scene, lfo2, &layered_key(lfo1, "rate_hz"), 0.05);
     route(&kit, &mut scene, lfo1, &layered_key(lfo2, "rate_hz"), 0.05);

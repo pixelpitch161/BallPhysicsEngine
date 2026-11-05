@@ -320,6 +320,54 @@ fn it_sits_on_a_circles_middle_and_follows_it() {
     assert!(world.bodies[&id].position.iter().all(|p| *p == Vec2::new(-40.0, 25.0)));
 }
 
+/// The emitter's own focus test: on focus 1 of an ellipse, with no gravity and its balls
+/// touching walls with their middles, one round all passes focus 2 together.
+#[test]
+fn from_one_focus_of_an_ellipse_a_round_meets_at_the_other() {
+    use crate::testing::SHAPE;
+    use crate::things::emitter::SitsFocus;
+    let (mut scene, id, kit) = scene_with(Vec2::ZERO, |s| {
+        s.sits_on = SHAPE.0 as i32;
+        s.sits_focus = SitsFocus::Focus1;
+        s.count = 72;
+        s.radius = 1.0;
+        s.speed = 600.0;
+    });
+    scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("gravity", bpe_core::Value::Vec2([0.0, 0.0]));
+    let shape = scene.things.get_mut(&SHAPE).unwrap();
+    shape.params = bpe_core::Settings::to_params(&crate::ShapeSettings::ellipse(900.0, 1300.0, 8.0));
+    shape.transform.position = Vec2::ZERO;
+    scene.card_mut(id, bpe_core::SlotId::Bounce).unwrap().params.set("touch", bpe_core::Value::Choice("middle".into()));
+    let r = resolved(&scene, &kit);
+    let c = (650f32 * 650.0 - 450.0 * 450.0).sqrt();
+    let (from, to) = (Vec2::new(0.0, -c), Vec2::new(0.0, c));
+    let mut w = World::build(&scene, &r, &kit.sims);
+    assert_eq!(w.poses[&id].position, from);
+    let mut log = Log::default();
+    let rate = w.steps_per_second as f64;
+    let arrive = (1300.0 - 1.0) / 600.0;
+    let mut best = vec![(f32::INFINITY, 0u64); 72];
+    let mut last = w.bodies[&id].position.clone();
+    let mut step = 0u64;
+    while (step as f64) < (arrive + 0.2) * rate {
+        step += 1;
+        w.advance_to(step as f64 / rate, &kit.sims, &mut log);
+        let now = &w.bodies[&id].position;
+        for (i, (a, b)) in last.iter().zip(now).enumerate() {
+            let (_, _, d) = bpe_core::shape_path::nearest_on_segment(*a, *b, to);
+            if d < best[i].0 {
+                best[i] = (d, step);
+            }
+        }
+        last = now.clone();
+    }
+    let worst = best.iter().map(|b| b.0).fold(0.0, f32::max);
+    assert!(worst < 0.5, "every ball passes the far focus: worst {worst}");
+    let mut steps: Vec<u64> = best.iter().map(|b| b.1).collect();
+    steps.sort_unstable();
+    assert!(steps[71] <= steps[0] + 2, "together: {} to {}", steps[0], steps[71]);
+}
+
 #[test]
 fn the_same_scene_makes_the_same_log() {
     let make = || {
@@ -344,7 +392,7 @@ fn a_key_on_size_resizes_its_balls() {
     EmitterSim.settings_changed(id, &later, &mut world);
     assert!(world.bodies[&id].radius.iter().all(|&r| r == 12.0));
     // A key on How many lays the gradient's round out again.
-    later.params.set("count", bpe_core::Value::Number(6.0));
+    later.params.set("count", bpe_core::Value::Int(6));
     EmitterSim.settings_changed(id, &later, &mut world);
     assert_eq!(st(&world, id).layout.len(), 6);
 }

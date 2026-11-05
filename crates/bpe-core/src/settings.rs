@@ -347,6 +347,18 @@ impl SettingValue for Vec<crate::NoteSlot> {
     }
 }
 
+impl SettingValue for Vec<crate::CurvePoint> {
+    fn value_type() -> ValueType {
+        ValueType::Curve
+    }
+    fn to_value(&self) -> Value {
+        Value::Curve(self.clone())
+    }
+    fn from_value(v: &Value) -> Option<Self> {
+        if let Value::Curve(x) = v { Some(x.clone()) } else { None }
+    }
+}
+
 impl SettingValue for Strokes {
     fn value_type() -> ValueType {
         ValueType::Strokes
@@ -377,7 +389,7 @@ pub fn applies(when: &str, kind: Option<&str>, get: &dyn Fn(&str) -> Option<Valu
     when.is_empty() || when.split(" or ").any(|all| all.split(" and ").all(|term| term_holds(term.trim(), kind, get)))
 }
 
-fn term_holds(term: &str, kind: Option<&str>, get: &dyn Fn(&str) -> Option<Value>) -> bool {
+pub(crate) fn term_holds(term: &str, kind: Option<&str>, get: &dyn Fn(&str) -> Option<Value>) -> bool {
     let (key, names, wanted) = if let Some((key, names)) = term.split_once("!=") {
         (key, Some(names), false)
     } else if let Some((key, names)) = term.split_once('=') {

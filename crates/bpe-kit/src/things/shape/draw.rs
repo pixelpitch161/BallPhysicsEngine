@@ -98,7 +98,8 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
     let form = wall_form(wall);
     let index = push_form(&form, BODY_WHITE, thing_code(cx.thing.id), frame);
     let Some(stack) = ShapeStack::of(look) else { return };
-    let geometry = Geometry { points: form.points.clone(), half: form.half / form.scale.max(1e-3) };
+    let geometry =
+        Geometry { points: form.points.clone(), ellipse: form.ellipse, half: form.half / form.scale.max(1e-3) };
     let records = stack.records(&geometry, &mut frame.gradients);
     let first = frame.look_layers.len() as u32;
     let count = records.len() as u32;
@@ -151,24 +152,26 @@ pub struct WallForm {
     pub half: f32,
     /// The outline's points in shape units, from the top (an even polygon's top-most corner, the
     /// left of two; a rectangle's top-left corner) going clockwise; `None` for a circle of radius
-    /// 1, which starts at its top.
+    /// 1, which starts at its top, or an ellipse.
     pub points: Option<Vec<Vec2>>,
+    /// An exact ellipse's half-axes in shape units (the larger one 1).
+    pub ellipse: Option<Vec2>,
 }
 
 /// How `wall` is drawn: a round ring is a circle; a ring polygon is an even polygon's corners
 /// (`ShapePath::even`, the corners its Ring has) turned by the ring's angle less the quarter turn
-/// `base_outline` adds; a box is its corners over its half diagonal; a free outline keeps its own
-/// points, angle and scale.
+/// `base_outline` adds; a box is its corners over its half diagonal; an ellipse is exact, scaled by
+/// its larger half-axis; a free outline keeps its own points, angle and scale.
 pub fn wall_form(wall: &Wall) -> WallForm {
     let half = if wall.solid { 0.0 } else { wall.outline.thickness() * 0.5 };
     match &wall.outline {
         &Outline::Ring { center, radius, sides, angle, .. } if sides < 3 => {
-            WallForm { center, turn: angle, scale: radius, half, points: None }
+            WallForm { center, turn: angle, scale: radius, half, points: None, ellipse: None }
         }
         &Outline::Ring { center, radius, sides, angle, .. } => {
             let even = ShapePath::even(sides);
             let points = (0..even.points.len()).map(|k| even.point(k)).collect();
-            WallForm { center, turn: angle - FRAC_PI_2, scale: radius, half, points: Some(points) }
+            WallForm { center, turn: angle - FRAC_PI_2, scale: radius, half, points: Some(points), ellipse: None }
         }
         &Outline::Box { center, half: size, angle, .. } => {
             let scale = size.length().max(1e-3);
@@ -177,16 +180,28 @@ pub fn wall_form(wall: &Wall) -> WallForm {
                 .into_iter()
                 .map(|(sx, sy)| Vec2::new(corner.x * sx, corner.y * sy))
                 .collect();
-            WallForm { center, turn: angle, scale, half, points: Some(points) }
+            WallForm { center, turn: angle, scale, half, points: Some(points), ellipse: None }
         }
-        Outline::Path { center, angle, scale, points, .. } => {
-            WallForm { center: *center, turn: *angle, scale: *scale, half, points: Some(points.to_vec()) }
+        &Outline::Ellipse { center, half: axes, angle, .. } => {
+            let scale = axes.x.max(axes.y).max(1e-3);
+            WallForm { center, turn: angle, scale, half, points: None, ellipse: Some(axes / scale) }
         }
+        Outline::Path { center, angle, scale, points, .. } => WallForm {
+            center: *center,
+            turn: *angle,
+            scale: *scale,
+            half,
+            points: Some(points.to_vec()),
+            ellipse: None,
+        },
     }
 }
 
 /// Adds `form` to `frame` as one plain shape in `color`, giving its index in `frame.paths`.
 fn push_form(form: &WallForm, color: [f32; 4], code: f32, frame: &mut Frame) -> usize {
+    if let Some(axes) = form.ellipse {
+        return frame.push_ellipse(form.center, form.turn, form.scale, form.half, axes, color, code);
+    }
     frame.push_path(form.center, form.turn, form.scale, form.half, form.points.as_deref(), color, code)
 }
 
@@ -241,6 +256,20 @@ mod tests {
         assert_eq!((frame.paths[0].b[0], frame.paths[0].b[1], frame.paths[0].a[3]), (0.0, 0.0, 300.0));
         assert!(frame.path_points.is_empty());
         assert!(frame.shapes.is_empty(), "shapes don't use the old wall pipeline");
+    }
+
+    #[test]
+    fn an_ellipse_draws_one_exact_shape() {
+        let mut s = ShapeSettings::ellipse(900.0, 1300.0, 6.0);
+        s.turn = 20.0;
+        let frame = frame_of(&with(s));
+        assert_eq!(frame.paths.len(), 1);
+        let p = frame.paths[0];
+        assert_eq!((p.b[0], p.b[1], p.a[3]), (3.0, 2.0, 650.0), "a band 6 px thick, kind ellipse, scale 650");
+        assert!((p.b[2] - 450.0 / 650.0).abs() < 1e-6 && p.b[3] == 1.0, "{:?}", p.b);
+        assert!((p.a[2] - 20f32.to_radians()).abs() < 1e-6);
+        assert!(frame.path_points.is_empty());
+        assert!(p.reach() >= 650.0 + 3.0);
     }
 
     #[test]

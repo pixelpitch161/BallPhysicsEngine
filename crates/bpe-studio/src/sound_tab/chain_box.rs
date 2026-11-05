@@ -5,11 +5,12 @@ use super::{SoundTab, TabCx, TabEdit, name_it, strip};
 use crate::style;
 use bpe_core::{CopiedLayer, Layer, LayerId, Registry, Scene, SlotId, ThingId, Value};
 use bpe_kit::sound::chain::osc_name;
-use bpe_kit::sound::{CHAIN_KINDS, DISTORTION, FILTER, MODULATION, Source};
+use bpe_kit::sound::{CHAIN_KINDS, DISTORTION, EQ, FILTER, MODULATION, Source};
 use eframe::egui::{self, Rect, RichText, Ui};
 
 /// The "+ Add layer" menu's items: kind and name.
-pub const ADD: [(&str, &str); 3] = [(MODULATION, "Modulation"), (FILTER, "Filter"), (DISTORTION, "Distortion")];
+pub const ADD: [(&str, &str); 4] =
+    [(MODULATION, "Modulation"), (FILTER, "Filter"), (DISTORTION, "Distortion"), (EQ, "EQ")];
 
 /// The chain layers of `lane` in `layers`, in order.
 pub fn lane_layers(layers: &[Layer], lane: u8) -> Vec<&Layer> {
@@ -481,5 +482,128 @@ mod tests {
         let pasted = lane_layers(&c.layers, 0)[0];
         let key = layered_key(pasted.id, "source");
         assert_eq!(c.params.get(&key), Some(&Value::Text("a".into())), "not a layer of this shape");
+    }
+
+    fn number(v: Option<Value>) -> f64 {
+        match v {
+            Some(Value::Number(n)) => n,
+            other => panic!("not a number: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn add_layer_adds_an_eq_strip() {
+        let mut h = sounding();
+        h.get_by_label("Add layer to Osc A").click();
+        h.run();
+        h.get_by_label("EQ").click();
+        h.run();
+        let c = card(&h);
+        let eqs: Vec<_> = c.layers.iter().filter(|l| l.kind == EQ).collect();
+        assert_eq!(eqs.len(), 1);
+        assert_eq!(eqs[0].lane, Some(0), "on Osc A");
+        assert!(h.query_by_label("EQ strip").is_some());
+        assert!(h.query_by_label("EQ view").is_some(), "a new strip opens on its curve");
+        assert!(h.query_by_label("EQ band 8").is_some(), "with its band chips");
+        assert!(h.query_all_by_role_and_label(Role::Slider, "Frequency").next().is_some());
+        assert!(h.query_all_by_role_and_label(Role::Slider, "Output").next().is_some());
+        // Picking band 5 shows its settings, and its switch turns it on.
+        h.get_by_label("EQ band 5").click();
+        h.run();
+        h.get_by_role_and_label(Role::CheckBox, "EQ band 5 on").click();
+        h.run();
+        assert_eq!(value(&h, eqs[0].id, "band5_on"), Some(Value::Bool(true)));
+    }
+
+    #[test]
+    fn the_eq_curve_drags_rolls_and_double_clicks() {
+        // Short steps, so two clicks come within a double-click's 0.3 s.
+        let mut h = super::super::tests::studio_harness_stepping(SHAPE, true, 1.0 / 60.0);
+        super::super::tests::click_switch(&mut h, "Enable sound");
+        let eq = add(&mut h, 0, EQ);
+        let reg = bpe_kit::registry();
+        let a = Address::on(SHAPE, SlotId::Sound, &layered_key(eq, "band5_on"));
+        h.state_mut().0.scene.set_at(&reg, &a, Value::Bool(true)).unwrap();
+        h.run();
+        h.get_by_label("EQ strip").click();
+        h.run();
+        let rect = h.get_by_label("EQ view").rect();
+        let plot = super::super::strip_views::eq_plot(rect);
+        // Drag band 5's point up and to the right.
+        drag(&mut h, plot.at(1000.0, 0.0), plot.at(2000.0, 6.0));
+        let f = number(value(&h, eq, "band5_freq"));
+        let g = number(value(&h, eq, "band5_gain"));
+        assert!((f - 2000.0).abs() < 150.0, "{f}");
+        assert!((g - 6.0).abs() < 1.0, "{g}");
+        let pick = h.state().0.panels.inspector.sound.eq.get(&(SHAPE, eq)).map(|p| p.band);
+        assert_eq!(pick, Some(4), "the dragged band is picked");
+        // The wheel over it changes its Q.
+        let at = plot.at(f as f32, g as f32);
+        h.hover_at(at);
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, 1.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Unknown,
+            modifiers: Modifiers::NONE,
+        });
+        h.run();
+        let q = number(value(&h, eq, "band5_q"));
+        assert!((q - 0.71 * 1.15).abs() < 0.02, "{q}");
+        // A double-click away from the points turns on the off band nearest there.
+        let at = plot.at(6000.0, -6.0);
+        h.hover_at(at);
+        for _ in 0..30 {
+            h.step();
+        }
+        for pressed in [true, false, true, false] {
+            h.event(egui::Event::PointerButton {
+                pos: at,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+            h.step();
+        }
+        h.run();
+        assert_eq!(value(&h, eq, "band7_on"), Some(Value::Bool(true)), "the 6 kHz band");
+        assert!((number(value(&h, eq, "band7_gain")) + 6.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn an_eq_copies_duplicates_and_pastes_with_its_bands() {
+        let mut h = sounding();
+        let eq = add(&mut h, 0, EQ);
+        let reg = bpe_kit::registry();
+        for (k, v) in [("band3_on", Value::Bool(true)), ("band3_gain", Value::Number(-4.5))] {
+            let a = Address::on(SHAPE, SlotId::Sound, &layered_key(eq, k));
+            h.state_mut().0.scene.set_at(&reg, &a, v).unwrap();
+        }
+        h.run();
+        strip_menu(&mut h, "EQ", "Duplicate");
+        let a: Vec<LayerId> = lane_layers(&card(&h).layers, 0).iter().map(|l| l.id).collect();
+        assert_eq!(a.len(), 2);
+        assert_eq!(value(&h, a[1], "band3_gain"), Some(Value::Number(-4.5)), "the copy has the bands");
+        strip_menu(&mut h, "EQ", "Copy layer");
+        h.get_by_label("Add layer to Osc B").click();
+        h.run();
+        h.get_by_label("Paste layer").click();
+        h.run();
+        let c = card(&h);
+        let b = lane_layers(&c.layers, 1);
+        assert_eq!(b.len(), 1);
+        assert_eq!(b[0].kind, EQ);
+        assert_eq!(value(&h, b[0].id, "band3_on"), Some(Value::Bool(true)));
+        assert_eq!(value(&h, b[0].id, "band3_gain"), Some(Value::Number(-4.5)));
+        // Its summary counts the bands that are on (the 30 Hz cut and band 3).
+        let mut params = bpe_core::Params::default();
+        for (k, v) in c.params.iter() {
+            if let Some((id, plain)) = bpe_core::split_layered(k)
+                && id == b[0].id
+            {
+                params.set(plain, v.clone());
+            }
+        }
+        assert_eq!(bpe_kit::sound::layer_summary(b[0], &params, &c.layers), "2 bands");
     }
 }

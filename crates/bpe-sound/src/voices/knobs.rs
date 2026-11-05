@@ -5,8 +5,8 @@
 use crate::modmatrix::{TargetInfo, TargetTable};
 use bpe_core::{LayerId, SettingDef, Settings, Value, layered_key};
 use bpe_kit::sound::{
-    AdsrSettings, DISTORTION, DistanceSettings, DistortionSettings, FILTER, FilterSettings, HitSettings, LfoSettings,
-    MAX_CHAIN, MODULATION, ModulationSettings, VoiceSettings,
+    AdsrSettings, ChainEqSettings, DISTORTION, DistanceSettings, DistortionSettings, EQ, FILTER, FilterSettings,
+    HitSettings, LfoSettings, MAX_CHAIN, MODULATION, ModulationSettings, VoiceSettings,
 };
 
 /// Knobs of one oscillator, from its key prefix on.
@@ -88,8 +88,9 @@ pub const MAX_ENVS: usize = 8;
 /// Where the chain layers' knobs start, after the envelopes'.
 pub const CHAIN_START: usize = SHAPE_LEN + MAX_ENVS * ADSR_LEN;
 
-/// One chain layer's knobs: every key any of the three kinds has, each kind using its own.
-pub const CHAIN_KEYS: [&str; 14] = [
+/// One chain layer's knobs: every key any of the four kinds has, each kind using its own. An
+/// EQ's bands follow the 14 shared ones, Frequency, Gain and Q of each ([`band_key`]).
+pub const CHAIN_KEYS: [&str; 38] = [
     "amount",
     "output",
     "mix",
@@ -104,6 +105,30 @@ pub const CHAIN_KEYS: [&str; 14] = [
     "rate",
     "bias",
     "tone",
+    "band1_freq",
+    "band1_gain",
+    "band1_q",
+    "band2_freq",
+    "band2_gain",
+    "band2_q",
+    "band3_freq",
+    "band3_gain",
+    "band3_q",
+    "band4_freq",
+    "band4_gain",
+    "band4_q",
+    "band5_freq",
+    "band5_gain",
+    "band5_q",
+    "band6_freq",
+    "band6_gain",
+    "band6_q",
+    "band7_freq",
+    "band7_gain",
+    "band7_q",
+    "band8_freq",
+    "band8_gain",
+    "band8_q",
 ];
 pub const AMOUNT: usize = 0;
 pub const OUTPUT: usize = 1;
@@ -119,7 +144,19 @@ pub const BITS: usize = 10;
 pub const RATE: usize = 11;
 pub const BIAS: usize = 12;
 pub const TONE: usize = 13;
+/// Where an EQ's bands start among a chain layer's knobs.
+pub const EQ_BANDS_AT: usize = 14;
+/// A band's Frequency, Gain and Q, in that order.
+pub const BAND_FREQ: usize = 0;
+pub const BAND_GAIN: usize = 1;
+pub const BAND_Q: usize = 2;
 pub const CHAIN_LEN: usize = CHAIN_KEYS.len();
+
+/// An EQ band's (0..8) knob `part` ([`BAND_FREQ`], [`BAND_GAIN`] or [`BAND_Q`]) among a chain
+/// layer's knobs.
+pub const fn band_key(band: usize, part: usize) -> usize {
+    EQ_BANDS_AT + band * 3 + part
+}
 
 /// The most modulators of one kind (LFO, Distance, Hit) a shape's sound runs.
 pub const MAX_EACH: usize = bpe_kit::sound::MAX_OF_EACH;
@@ -253,6 +290,7 @@ fn chain_layout(envs: &[LayerId], chain_layers: &[(LayerId, &str)]) -> Vec<(Stri
             MODULATION => ModulationSettings::defs(),
             FILTER => FilterSettings::defs(),
             DISTORTION => DistortionSettings::defs(),
+            EQ => ChainEqSettings::defs(),
             _ => continue,
         };
         for (k, key) in CHAIN_KEYS.iter().enumerate() {
@@ -375,5 +413,31 @@ mod tests {
         assert_eq!(v[chain(0, CUTOFF)], 2000.0);
         assert_eq!(v[chain(1, DRIVE)], 12.0);
         assert_eq!(v[chain(2, MIX)], 100.0);
+    }
+
+    #[test]
+    fn eq_bands_have_places_after_the_shared_knobs() {
+        for band in 0..8 {
+            for (part, name) in ["freq", "gain", "q"].iter().enumerate() {
+                assert_eq!(CHAIN_KEYS[band_key(band, part)], format!("band{}_{name}", band + 1));
+            }
+        }
+        assert_eq!(band_key(7, BAND_Q), CHAIN_LEN - 1);
+        let l = layout_with(&[], &[(LayerId(5), FILTER), (LayerId(6), EQ)]);
+        let mut seen = std::collections::BTreeSet::new();
+        for (key, _, i) in &l {
+            assert!(seen.insert(*i), "{key} shares place {i}");
+        }
+        let place = |key: &str| l.iter().find(|(k, _, _)| k == key).map(|(_, _, i)| *i);
+        assert_eq!(place("6/band3_gain"), Some(chain(1, band_key(2, BAND_GAIN))));
+        assert_eq!(place("6/output"), Some(chain(1, OUTPUT)));
+        assert_eq!(place("6/mix"), Some(chain(1, MIX)));
+        assert_eq!(place("6/cutoff"), None, "an EQ has no cutoff");
+        assert_eq!(place("5/band1_freq"), None, "a filter has no bands");
+        let v = values(&l, &|_| None);
+        assert_eq!(v[chain(1, band_key(0, BAND_FREQ))], 30.0);
+        assert_eq!(v[chain(1, band_key(4, BAND_FREQ))], 1000.0);
+        assert!((v[chain(1, band_key(4, BAND_Q))] - 0.71).abs() < 1e-6);
+        assert_eq!(v[chain(1, MIX)], 100.0);
     }
 }

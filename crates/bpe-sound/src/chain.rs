@@ -1,5 +1,5 @@
 //! Both oscillators' layer chains in one note: each oscillator's sound (after its Gain) runs
-//! through its Modulation, Filter and Distortion layers top to bottom, and on to its Level.
+//! through its Modulation, Filter, Distortion and EQ layers top to bottom, and on to its Level.
 //! A [`ChainSpec`] (built with the patch) says which layer reads which ([`ChainGraph`]); each
 //! note keeps a [`VoiceChain`] of the layers' memories. Lanes render a block at a time, layer by
 //! layer, unless some tap loops back: then every layer moves on one sample at a time, so a loop
@@ -10,6 +10,7 @@ use crate::chain_graph::{ChainGraph, Tap};
 use crate::voices::knobs::{self as k, Values};
 use crate::voices::note_hz;
 use bpe_core::LayerId;
+use bpe_dsp::fx::eq::{BandParams, Eq8};
 use bpe_dsp::{
     FilterParams, FilterType, PmDelay, Shaper, ShaperParams, ShaperType, StereoFilter, am, db_to_gain, ring,
 };
@@ -21,6 +22,9 @@ pub enum LayerType {
     Modulation(ModKind),
     Filter(FilterType, bool),
     Distortion(ShaperType, u8),
+    /// An EQ's bands as set: whether each is on, its shape, slope and stereo place hold while
+    /// the patch stands; frequency, gain and Q come from the knobs every block.
+    Eq([BandParams; 8]),
 }
 
 /// One running layer: what it is, where its knobs are and where its sound comes from.
@@ -198,6 +202,7 @@ enum LayerDsp {
     Modulation { kind: ModKind, pm: [PmDelay; 2], amount: Glide },
     Filter(StereoFilter),
     Distortion(Box<Shaper>, DryDelay),
+    Eq(Box<Eq8>, [BandParams; 8]),
 }
 
 /// What every layer shares: Output and Mix, glided.
@@ -223,6 +228,7 @@ impl Node {
                 let lat = s.latency();
                 LayerDsp::Distortion(Box::new(s), DryDelay::new(lat))
             }
+            LayerType::Eq(bands) => LayerDsp::Eq(Box::new(Eq8::new()), bands),
         };
         Node { id: spec.id, dsp, output: Glide::new(), mix: Glide::new(), last: [0.0; 2] }
     }
@@ -234,6 +240,8 @@ impl Node {
             (LayerDsp::Distortion(a, _), LayerDsp::Distortion(b, _)) => {
                 a.kind() == b.kind() && a.factor() == b.factor()
             }
+            // Bands turned on or off or changing shape fade in the EQ itself.
+            (LayerDsp::Eq(..), LayerDsp::Eq(..)) => true,
             _ => false,
         }
     }
@@ -246,6 +254,7 @@ impl Node {
                 s.reset();
                 d.reset();
             }
+            LayerDsp::Eq(eq, _) => eq.reset(),
         }
         self.last = [0.0; 2];
         self.output.left = 0;
@@ -268,6 +277,8 @@ impl Node {
                 s.copy_state_from(s2);
                 *d = *d2;
             }
+            // The whole EQ as it runs; this block's settings reach it from the new patch.
+            (LayerDsp::Eq(eq, _), LayerDsp::Eq(e2, _)) => eq.as_mut().clone_from(e2),
             _ => {}
         }
         self.output = other.output;
@@ -318,6 +329,21 @@ impl Node {
                 // The shaper takes its own Output.
                 self.output.set(1.0, true);
             }
+            LayerDsp::Eq(eq, fixed) => {
+                let bands = std::array::from_fn(|b| BandParams {
+                    freq: at(k::band_key(b, k::BAND_FREQ)),
+                    gain_db: at(k::band_key(b, k::BAND_GAIN)),
+                    q: at(k::band_key(b, k::BAND_Q)),
+                    ..fixed[b]
+                });
+                eq.set(&bands);
+                // The EQ glides its own Output.
+                eq.set_output_db(at(k::OUTPUT));
+                if snap {
+                    eq.reset();
+                }
+                self.output.set(1.0, true);
+            }
         }
     }
 
@@ -349,6 +375,10 @@ impl Node {
                 let (l, r) = s.tick(x[0], x[1]);
                 let (dl, dr) = d.tick(x[0], x[1]);
                 ([l, r], [dl, dr])
+            }
+            LayerDsp::Eq(eq, _) => {
+                let (l, r) = eq.tick(x[0], x[1]);
+                ([l, r], x)
             }
         };
         [dry[0] + mix * (wet[0] * out - dry[0]), dry[1] + mix * (wet[1] * out - dry[1])]

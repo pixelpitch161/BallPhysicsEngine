@@ -12,7 +12,7 @@ use bpe_kit::Kit;
 use bpe_kit::sound::{BUSES, MIXER};
 use eframe::egui::{self, RichText, Ui};
 
-/// What the inspector shows while the Mixer is open: a bus effect's editor, or the Master's.
+/// The editor open in the Mixer: a bus effect's, or the Master's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MixerPick {
     Layer(LayerId),
@@ -26,7 +26,7 @@ pub enum MixEdit {
     Set(Address, Value),
     /// A key at the playhead holding the setting's value as it stands.
     NewKey(Address),
-    /// A new effect of `kind` at the end of bus `lane` (0..2); it opens in the inspector.
+    /// A new effect of `kind` at the end of bus `lane` (0..2); its editor opens.
     Add {
         kind: &'static str,
         lane: u8,
@@ -60,7 +60,7 @@ pub struct MixCx<'a> {
     pub edits: Vec<MixEdit>,
 }
 
-/// Knobs in the strips are narrow, so four columns fit the 420 px panel.
+/// Knobs in the strips are narrow, so four columns fit a Mixer as wide as the tree.
 pub const STRIP_KNOB_W: f32 = 52.0;
 /// Knobs in the editors.
 pub const EDITOR_KNOB_W: f32 = 64.0;
@@ -234,7 +234,7 @@ pub struct Applied {
     pub changed: bool,
     /// A keyed setting was edited (the studio pauses).
     pub keyed: bool,
-    /// What the inspector should show now, when an edit picked something.
+    /// The editor to open now (or none), when an edit picked something.
     pub pick: Option<Option<MixerPick>>,
 }
 
