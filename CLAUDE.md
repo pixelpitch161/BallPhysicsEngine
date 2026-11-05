@@ -204,7 +204,7 @@ Dependencies go bottom to top:
   (`voices/shape.rs`, built by `patch::shape_voice`): hits pass the `HitFilter` (min strength, retrigger, Heard from),
   `NotePicker` picks a note of slot 0, `Voices` (`alloc.rs`) gives it a slot (Poly up to 16, the oldest fading in 5 ms;
   Mono glides). Every number knob has a place in `knobs::layout` (keys read once a block from `ShapeSpec.keyed`),
-  `ModMatrix` (`modmatrix.rs`) applies routes (gain-like knobs scale per sample, `scale_by_routes`), the
+  `ModMatrix` (`modmatrix.rs`) applies routes as Serum does: an Amount is a share of the knob's own travel from where it is set, clamped at its ends (Hz knobs turn in ratios, `turns_in_ratios`, the same in the engine and the editor's knob and ring); the one exception is an ADSR on a level knob (Gain, Level, Sub level, Volume, `combine_of(key, from_envelope)`), a VCA per sample (`scale_by_routes`), other routes on level knobs adding dB per sample (`offset_by_routes`), the
   oscillator layer chains (part 3) are `chain_graph.rs` (`ChainGraph`: which layer reads which, by lane; a Modulation
   layer's source is an oscillator raw or the sound after any layer; a tap that would close a circle is a loop and
   reads one sample late, the first layer in card order hearing on time; `loops_of` for the editor's loop mark) and

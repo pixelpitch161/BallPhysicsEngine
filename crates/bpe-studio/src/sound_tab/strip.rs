@@ -239,7 +239,7 @@ fn body(ui: &mut Ui, cx: &mut TabCx, layer: &Layer, layers: &[Layer], settings: 
                     cx.knob(ui, &key("vowel"), "Vowel", &|v| vowel_name(v).to_owned());
                     cx.knob(ui, &key("shift"), "Shift", &|v| format!("{v:+.1} st"));
                 } else {
-                    cx.log_knob(ui, &key("cutoff"), "Cutoff", &hz_text);
+                    cx.knob(ui, &key("cutoff"), "Cutoff", &hz_text);
                 }
                 cx.knob(ui, &key("reso"), "Reso", &pct);
                 cx.knob(ui, &key("drive"), "Drive", &pct);
@@ -253,7 +253,7 @@ fn body(ui: &mut Ui, cx: &mut TabCx, layer: &Layer, layers: &[Layer], settings: 
             Settings::Distortion(d) => {
                 match d.kind {
                     DistKind::Bitcrush => cx.knob(ui, &key("bits"), "Bits", &|v| format!("{v:.0} bits")),
-                    DistKind::Downsample => cx.log_knob(ui, &key("rate"), "Rate", &hz_text),
+                    DistKind::Downsample => cx.knob(ui, &key("rate"), "Rate", &hz_text),
                     _ => cx.knob(ui, &key("drive"), "Drive", &|v| format!("{v:+.1} dB")),
                 };
                 cx.knob(ui, &key("bias"), "Bias", &pct);

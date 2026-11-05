@@ -90,7 +90,7 @@ fn deciding_envelope(cx: &TabCx) -> Option<(bpe_core::LayerId, String)> {
     let routes = cx.routes();
     let mut on = card.layers.iter().filter(|l| l.kind == ADSR && l.enabled);
     let scales =
-        |id: bpe_core::LayerId| routes.iter().any(|r| r.source == id && combine_of(&r.target) == Combine::Scale);
+        |id: bpe_core::LayerId| routes.iter().any(|r| r.source == id && combine_of(&r.target, true) == Combine::Scale);
     on.clone().find(|l| scales(l.id)).or_else(|| on.next()).map(|l| (l.id, l.name.clone()))
 }
 

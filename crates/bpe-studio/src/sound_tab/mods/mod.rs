@@ -14,7 +14,7 @@ use crate::style::{self, ModRing};
 use bpe_core::{LayerId, ModRoute, SlotId};
 use bpe_kit::sound::{ADSR, DISTANCE, HIT, LFO, MOD_KINDS};
 use bpe_sound::Meters;
-use bpe_sound::modmatrix::{Combine, combine_of, route_ends};
+use bpe_sound::modmatrix::{Combine, is_level_key, route_ends};
 use eframe::egui::{RichText, Ui};
 
 pub use drag::ModDrag;
@@ -53,13 +53,14 @@ pub fn name_of(cx: &TabCx, layer: LayerId) -> String {
         .map_or_else(|| format!("Layer {}", layer.0), |l| l.name.clone())
 }
 
-/// The ring a route draws on its knob, which sits at `base` over `range`: from the knob's own
-/// side of the range to the end a drag moves.
-pub fn ring(r: &ModRoute, base: f64, range: (f64, f64), lit: bool) -> ModRing {
-    let (at0, at1) = route_ends(r, base, range);
+/// The ring a route draws on its knob, which sits at `base` over `range` (turning evenly in
+/// ratios when `log`), the route moving it the `combine` way: from the knob's own side of the
+/// range to the end a drag moves.
+pub fn ring(r: &ModRoute, base: f64, range: (f64, f64), log: bool, combine: Combine, lit: bool) -> ModRing {
+    let (at0, at1) = route_ends(r, base, range, log, combine);
     // The end away from the knob: the modulator at 1 when adding (at 0 inverted), at 0 when
     // scaling (at 1 inverted).
-    let far_is_one = match combine_of(&r.target) {
+    let far_is_one = match combine {
         Combine::Add => !r.invert,
         Combine::Scale => r.invert,
     };
@@ -67,14 +68,23 @@ pub fn ring(r: &ModRoute, base: f64, range: (f64, f64), lit: bool) -> ModRing {
     ModRing { from, to, lit }
 }
 
+/// Where `v` sits along a knob over `range`, 0 at the bottom and 1 at the top (evenly in ratios
+/// when `log`), as the knob draws it.
+fn turn(v: f64, range: (f64, f64), log: bool) -> f64 {
+    let (lo, hi) = range;
+    if hi <= lo {
+        return 0.0;
+    }
+    let t = if log && lo > 0.0 { (v.max(lo) / lo).ln() / (hi / lo).ln() } else { (v - lo) / (hi - lo) };
+    if t.is_finite() { t } else { 0.0 }
+}
+
 /// The amount that puts route `r`'s far ring end (see [`ring`]) at `to`, the knob sitting at
-/// `base` over `range`. Keeps the amount's sign for scaling routes.
-pub fn amount_for(r: &ModRoute, base: f64, range: (f64, f64), to: f64) -> f32 {
-    let a = match combine_of(&r.target) {
-        Combine::Add => {
-            let span = range.1 - range.0;
-            if span <= 0.0 { 0.0 } else { (to - base) / span }
-        }
+/// `base` over `range`: an adding route's amount is how far round the knob that is, as in
+/// Serum. Keeps the amount's sign for scaling routes.
+pub fn amount_for(r: &ModRoute, base: f64, range: (f64, f64), log: bool, combine: Combine, to: f64) -> f32 {
+    let a = match combine {
+        Combine::Add => turn(to, range, log) - turn(base, range, log),
         Combine::Scale => {
             let a = if to >= base || to <= range.0 {
                 if to >= base { 0.0 } else { 1.0 }
@@ -87,11 +97,19 @@ pub fn amount_for(r: &ModRoute, base: f64, range: (f64, f64), to: f64) -> f32 {
     (a.clamp(-1.0, 1.0) * 1000.0).round() as f32 / 1000.0
 }
 
-/// Adds a route from `layer` to the knob `key` at amount 0.5 (turning the modulator on when it
-/// is off), as an undo step of its own.
+/// The Amount a new route from `layer` to the knob `key` starts at: half the knob's travel, or a
+/// tenth (about 7 dB) when a modulator other than an envelope moves a level, so dropping an LFO
+/// on a Gain is a tremolo, not a jump to the top.
+pub fn starting_amount(cx: &TabCx, layer: LayerId, key: &str) -> f32 {
+    if !cx.is_envelope(layer) && is_level_key(key) { 0.1 } else { 0.5 }
+}
+
+/// Adds a route from `layer` to the knob `key` at its [`starting_amount`] (turning the modulator
+/// on when it is off), as an undo step of its own.
 pub fn add_route(cx: &mut TabCx, layer: LayerId, key: &str) {
     let mut routes = cx.routes();
-    routes.push(ModRoute { source: layer, target: key.into(), amount: 0.5, bipolar: false, invert: false });
+    let amount = starting_amount(cx, layer, key);
+    routes.push(ModRoute { source: layer, target: key.into(), amount, bipolar: false, invert: false });
     cx.set_routes(routes);
     let off = cx.scene.card(cx.id, SlotId::Sound).and_then(|c| c.layer(layer)).is_some_and(|l| !l.enabled);
     if off {
@@ -150,13 +168,13 @@ mod tests {
     #[test]
     fn a_ring_runs_from_the_knob_to_the_end_a_drag_moves() {
         let range = (-100.0, 100.0);
-        assert_eq!(
-            ring(&r("a_cents", 0.25, false, false), 0.0, range, false),
-            ModRing { from: 0.0, to: 50.0, lit: false }
-        );
-        assert_eq!(ring(&r("a_cents", 0.25, false, true), 0.0, range, false).to, 50.0, "inverted keeps its far end");
-        let gain = ring(&r("a_gain", 1.0, false, false), 0.0, (-60.0, 12.0), true);
-        assert_eq!((gain.from, gain.to), (0.0, -60.0), "a gain's far end is silence");
+        let add = |route: &ModRoute, base: f64| ring(route, base, range, false, Combine::Add, false);
+        assert_eq!(add(&r("a_cents", 0.25, false, false), 0.0), ModRing { from: 0.0, to: 50.0, lit: false });
+        assert_eq!(add(&r("a_cents", 0.25, false, true), 0.0).to, 50.0, "inverted keeps its far end");
+        let gain = ring(&r("a_gain", 1.0, false, false), 0.0, (-60.0, 12.0), false, Combine::Scale, true);
+        assert_eq!((gain.from, gain.to), (0.0, -60.0), "an envelope's far end on a gain is silence");
+        let lfo = ring(&r("a_gain", 0.25, false, false), -30.0, (-60.0, 12.0), false, Combine::Add, false);
+        assert_eq!((lfo.from, lfo.to), (-30.0, -12.0), "an LFO on a gain moves it like any knob");
     }
 
     #[test]
@@ -164,13 +182,37 @@ mod tests {
         let range = (-100.0, 100.0);
         for route in [r("a_cents", 0.25, false, false), r("a_cents", -0.4, true, false), r("a_cents", 0.3, false, true)]
         {
-            let end = ring(&route, 10.0, range, false).to;
-            assert!((amount_for(&route, 10.0, range, end) - route.amount).abs() < 1e-3, "{route:?}");
+            let end = ring(&route, 10.0, range, false, Combine::Add, false).to;
+            assert!(
+                (amount_for(&route, 10.0, range, false, Combine::Add, end) - route.amount).abs() < 1e-3,
+                "{route:?}"
+            );
+        }
+        let hz = (20.0, 20_000.0);
+        for route in [r("3/cutoff", 0.25, false, false), r("3/cutoff", -0.3, true, false)] {
+            let end = ring(&route, 400.0, hz, true, Combine::Add, false).to;
+            assert!((amount_for(&route, 400.0, hz, true, Combine::Add, end) - route.amount).abs() < 1e-3, "{route:?}");
         }
         let gain = r("a_gain", 0.5, false, false);
-        let end = ring(&gain, 0.0, (-60.0, 12.0), false).to;
-        assert!((amount_for(&gain, 0.0, (-60.0, 12.0), end) - 0.5).abs() < 1e-3);
-        assert_eq!(amount_for(&gain, 0.0, (-60.0, 12.0), -60.0), 1.0, "the bottom is silence: full amount");
+        let end = ring(&gain, 0.0, (-60.0, 12.0), false, Combine::Scale, false).to;
+        assert!((amount_for(&gain, 0.0, (-60.0, 12.0), false, Combine::Scale, end) - 0.5).abs() < 1e-3);
+        assert_eq!(
+            amount_for(&gain, 0.0, (-60.0, 12.0), false, Combine::Scale, -60.0),
+            1.0,
+            "the bottom is silence: full amount"
+        );
+    }
+
+    #[test]
+    fn a_ring_keeps_its_size_as_the_knob_turns() {
+        // On a frequency knob drawn in ratios the ring is the same arc wherever the knob sits.
+        let hz = (20.0, 20_000.0);
+        let route = r("3/cutoff", 0.2, false, false);
+        for base in [100.0, 400.0, 1_000.0, 3_000.0] {
+            let ring = ring(&route, base, hz, true, Combine::Add, false);
+            let arc = turn(ring.to, hz, true) - turn(ring.from, hz, true);
+            assert!((arc - 0.2).abs() < 1e-4, "at {base} Hz the arc is {arc}");
+        }
     }
 
     fn card(h: &H) -> bpe_core::Slot {

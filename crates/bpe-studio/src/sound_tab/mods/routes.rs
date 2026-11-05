@@ -5,7 +5,7 @@
 use super::super::{TabCx, db, name_it, number};
 use crate::style::{self, Knob};
 use bpe_core::{LayerId, SettingDef, SlotId, split_layered};
-use bpe_sound::modmatrix::{Combine, combine_of, route_ends};
+use bpe_sound::modmatrix::{Combine, route_ends, turns_in_ratios};
 use eframe::egui::{self, RichText, Sense, Ui, Vec2};
 
 /// Draws modulator `layer`'s routes ("<name> modulates").
@@ -21,8 +21,9 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx, layer: LayerId, name: &str) {
         let Some(def) = cx.def(&r.target) else { continue };
         let base = number(&cx.get(&r.target)).unwrap_or(0.0);
         let range = def.range.unwrap_or((0.0, 1.0));
-        let (at0, at1) = route_ends(r, base, range);
-        let scale = combine_of(&r.target) == Combine::Scale;
+        let combine = cx.combine(r);
+        let (at0, at1) = route_ends(r, base, range, turns_in_ratios(def), combine);
+        let scale = combine == Combine::Scale;
         ui.horizontal(|ui| {
             let (dot, _) = ui.allocate_exact_size(Vec2::splat(6.0), Sense::hover());
             ui.painter().rect_filled(dot, 0.0, cx.colour);

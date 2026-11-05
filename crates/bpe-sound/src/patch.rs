@@ -199,7 +199,7 @@ fn spec_with(
         ids.contains(l) || mod_ids.lfos.contains(l) || mod_ids.dists.contains(l) || mod_ids.hits.contains(l)
     };
     let routes: Vec<_> = v.routes.iter().filter(|r| runs(&r.source)).cloned().collect();
-    let matrix = ModMatrix::build(&routes, &knobs::targets(&layout));
+    let matrix = ModMatrix::build(&routes, &knobs::targets(&layout), &ids);
     Some(ShapeSpec {
         thing: id,
         index,

@@ -573,8 +573,8 @@ impl Shape {
         }
     }
 
-    /// How loud the shape is: the largest among its notes of its gain knobs times their scaling
-    /// routes (Output's Volume, and the louder oscillator's Gain and Level).
+    /// How loud the shape is: the largest among its notes of its gain knobs (moved by their adding
+    /// routes) times their scaling routes (Output's Volume, and the louder oscillator's Gain and Level).
     fn level(&self, tempo: &TempoMap, hits: &[Accepted], world: &World, t: u64, time: f64) -> f32 {
         let kv = knobs_at(&self.spec, time);
         let shared = self.shared(tempo, &kv, hits, world, t);
@@ -585,7 +585,10 @@ impl Shape {
             for (s, src) in self.src.iter().enumerate() {
                 vals[s] = self.source(tempo, &kv, world, &shared, *src, &n, t);
             }
-            let gain = |place: usize| knob_gain(kv[place]) * matrix.factor(place as u16, &vals);
+            let gain = |place: usize| {
+                let p = place as u16;
+                knob_gain(matrix.offset(p, kv[place], &vals)) * matrix.factor(p, &vals)
+            };
             let osc = (0..2)
                 .filter(|&o| self.spec.osc[o].on)
                 .map(|o| gain(k::osc(o, k::GAIN)) * gain(k::osc(o, k::LEVEL)))
