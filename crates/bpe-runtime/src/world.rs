@@ -419,7 +419,12 @@ impl World {
 
         for k in 0..substeps {
             self.substep = (k, substeps);
+            let before = log.len();
             self.substep(sims, &order, sub_dt, &limits, log);
+            if !self.history.is_empty() {
+                let at = (self.step - 1) as f64 + (k + 1) as f64 / substeps as f64;
+                self.note_corners(&log.events()[before..], at);
+            }
         }
 
         // Events: things log what happened to them this step, in tree order.
@@ -431,6 +436,23 @@ impl World {
         for (id, history) in &mut self.history {
             if let Some(bodies) = self.bodies.get(id) {
                 history.record(self.step, &bodies.position);
+            }
+        }
+    }
+
+    /// Notes in the histories where each ball hit in `events` was at the end of the substep it
+    /// hit in (the moment `at`, in steps): just touching what it hit, where it turned. (A wall
+    /// hit has noted the moment it touched already, in `collide`.)
+    fn note_corners(&mut self, events: &[Event], at: f64) {
+        for e in events.iter().filter(|e| e.kind == EventKind::Hit) {
+            for side in std::iter::once(e.a).chain(e.b) {
+                let (Some(history), Some(bodies)) = (self.history.get_mut(&side.thing), self.bodies.get(&side.thing))
+                else {
+                    continue;
+                };
+                if let Some(&place) = bodies.position.get(side.item as usize) {
+                    history.corner(side.item as usize, at, place);
+                }
             }
         }
     }
@@ -491,6 +513,7 @@ impl World {
             pairs,
             seed,
             substep,
+            history,
             ..
         } = self;
         let step = *step;
@@ -540,6 +563,12 @@ impl World {
                     respond(decider, &contact, bodies, i, limits, special, &cx);
                     if contact.speed >= limits.resting_along(contact.normal) {
                         bodies.hits[i] += 1;
+                        // Where its centre was as it touched, on the way it came in; the wall
+                        // pass leaves it just touching but slid along the wall from there, and
+                        // the end of the substep notes that too (`note_corners`).
+                        if let Some(h) = history.get_mut(mover) {
+                            h.corner(i, (step - 1) as f64 + hit_at as f64, start.lerp(moved_to, within));
+                        }
                         log.push(Event {
                             step,
                             kind: EventKind::Hit,
@@ -1294,6 +1323,36 @@ mod tests {
         bare.advance_to(1.0, &sims, &mut bare_log);
         assert_eq!(bare.bodies, world.bodies);
         assert_eq!(bare_log.events(), log.events());
+    }
+
+    /// A fast ball's history runs through every bounce: a trail drawn through it turns where the
+    /// ball really turned instead of cutting the corner between two samples.
+    #[test]
+    fn a_history_runs_through_every_bounce() {
+        let (mut scene, _, sims) = dots_in_ring(1);
+        scene.things.get_mut(&DOTS).unwrap().params.set("velocity", Value::Vec2([2600.0, -1700.0]));
+        crate::testing::give(&mut scene, DOTS, SlotId::Trail, "trail.test", &[("seconds", Value::Number(2.0))]);
+        let resolved = resolve(&scene, &reg());
+        let mut world = World::build(&scene, &resolved, &sims);
+        let mut log = Log::default();
+        world.advance_to(1.5, &sims, &mut log);
+        let history = &world.history[&DOTS];
+        let radius = world.bodies[&DOTS].radius[0];
+        let trace: Vec<(f64, Vec2)> = history.trace(0).collect();
+        assert!(trace.windows(2).all(|w| w[0].0 > w[1].0), "newest first, in order");
+        let oldest = trace.last().unwrap().0;
+        let hits: Vec<&Event> = log
+            .events()
+            .iter()
+            .filter(|e| e.kind == EventKind::Hit && e.a.thing == DOTS && e.step as f64 > oldest + 1.0)
+            .collect();
+        assert!(hits.len() >= 5, "{} bounces", hits.len());
+        for e in hits {
+            // Where the ball's centre was as it touched.
+            let centre = e.point + e.normal * radius;
+            let nearest = trace.iter().map(|(_, p)| (*p - centre).length()).fold(f32::INFINITY, f32::min);
+            assert!(nearest < 1.0, "the bounce on step {} is {nearest} px from the history", e.step);
+        }
     }
 
     #[test]

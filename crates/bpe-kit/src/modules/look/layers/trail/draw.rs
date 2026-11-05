@@ -65,7 +65,7 @@ impl Balls<'_> {
     /// that follows the turning count from, so they stay put along the path wherever its trail
     /// is cut.
     fn rolled(&self, i: usize) -> f32 {
-        let newest = self.history.points(i).next().unwrap_or(self.bodies.position[i]);
+        let newest = self.history.tip(i).map_or(self.bodies.position[i], |t| t.1);
         self.history.travelled(i) + (self.bodies.position[i] - newest).length()
     }
 
@@ -468,6 +468,60 @@ mod tests {
         let rolled = balls.rolled(0);
         // From the first sample (10 px) to the newest (100 px), then on to the ball.
         assert!((rolled - 95.0).abs() < 1e-3, "{rolled}");
+    }
+
+    /// A fast ball's trail turns where the ball bounced: through the very place it touched the
+    /// shape, coming in the way it came, not cutting across from the sample before the bounce to
+    /// the one after.
+    #[test]
+    fn a_fast_ball_s_trail_turns_where_it_bounced() {
+        use super::kinds::{self, Cut};
+        let mut scene = with_trail(|s, id| set(s, id, "seconds", Value::Number(1.0)));
+        scene.things.get_mut(&BALL).unwrap().params.set("velocity", Value::Vec2([2800.0, -1900.0]));
+        for time in [1.0, 1.51, 2.37] {
+            let (_, playback) = frame_at(&scene, time);
+            let world = playback.world();
+            let history = &world.history[&BALL];
+            let dt = world.dt();
+            let newest_ago = (time - history.newest_step().unwrap() as f64 * dt as f64) as f32;
+            let cut = Cut { seconds: Some(0.9), ..Cut::default() };
+            let path = kinds::path(world.bodies[&BALL].position[0], history, 0, newest_ago, history.interval(dt), cut);
+            let radius = world.bodies[&BALL].radius[0];
+            let rate = world.steps_per_second;
+            let hits: Vec<_> = playback
+                .log()
+                .since(0)
+                .iter()
+                .filter(|e| e.kind == bpe_runtime::EventKind::Hit && e.a.thing == BALL)
+                .filter(|e| (0.05..0.85).contains(&(time - e.time(rate))))
+                .collect();
+            assert!(hits.len() >= 2, "{} bounces before {time} s", hits.len());
+            for e in hits {
+                let centre = e.point + e.normal * radius;
+                let (k, gap) = path
+                    .points
+                    .iter()
+                    .enumerate()
+                    .map(|(k, p)| (k, (*p - centre).length()))
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .unwrap();
+                assert!(gap < 1.0, "the trail misses the bounce at {:.3} s by {gap} px", e.time(rate));
+                // The moment it touched, on the way it came in, just before.
+                let mut m = k;
+                while path.corner.get(m + 1) == Some(&true) && (path.points[m + 1] - centre).length() < 20.0 {
+                    m += 1;
+                }
+                let touch = path.points[m];
+                assert!(((touch - centre).dot(e.normal)).abs() < 0.5, "it touched the shape there");
+                // Coming in: from the point before to the touch, the way the two points before
+                // that went.
+                let (a, b) = (path.points[m + 2], path.points[m + 1]);
+                let turn = (b - a).normalize().dot((touch - b).normalize());
+                assert!(turn > 0.999, "the way in turns {:.1}° before the bounce", turn.acos().to_degrees());
+                // And the trail goes out of the bounce away from the wall.
+                assert!((path.points[k - 1] - path.points[k]).dot(e.normal) > 0.0);
+            }
+        }
     }
 
     #[test]
