@@ -11,7 +11,7 @@ pub mod sim;
 #[cfg(test)]
 pub(crate) mod test_scenes;
 
-use bpe_core::{Choice, Color, SettingDef, Settings, SlotId, Target, ThingKind};
+use bpe_core::{Choice, Color, SettingDef, Settings, SlotId, Target, ThingKind, VaryUse};
 
 use crate::things::balls::BallsSettings;
 use crate::things::balls::rows::RoundSpan;
@@ -531,5 +531,14 @@ impl ThingKind for EmitterKind {
     }
     fn default_slots(&self) -> &'static [SlotId] {
         SLOTS
+    }
+    /// Size may vary across the balls as they go; Speed is read once, as each ball is fired, so
+    /// it can't follow their speed or hits.
+    fn vary(&self, key: &str) -> Option<VaryUse> {
+        match key {
+            "radius" => Some(VaryUse::Live),
+            "speed" => Some(VaryUse::AtLaunch),
+            _ => None,
+        }
     }
 }

@@ -419,6 +419,21 @@ mod tests {
     }
 
     #[test]
+    fn the_speed_varies_across_the_balls_from_its_menu() {
+        let mut h = harness();
+        h.get_all_by_role_and_label(Role::Label, "Speed").next().unwrap().click_secondary();
+        h.run();
+        h.get_by_label("Vary across balls").click();
+        h.run();
+        assert!(own(&h, "speed~to").is_some(), "the To end is stored");
+        assert!(h.query_all_by_label("Speed varies by").next().is_some(), "the Varies by line shows");
+        // Read as each ball is fired, it can't follow the balls' speed or hits.
+        let (scene, id) = (&h.state().scene, h.state().emitter);
+        let a = bpe_core::Address { thing: id, slot: None, key: "speed".into() };
+        assert_eq!(scene.vary_use(&h.state().kit.registry, &a), Some(bpe_core::VaryUse::AtLaunch));
+    }
+
+    #[test]
     fn the_strip_counts_the_rounds_it_is_given() {
         let mut h = harness();
         let id = h.state().emitter;
