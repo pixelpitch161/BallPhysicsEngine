@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use bytemuck::{Pod, Zeroable};
 
 use super::{MAX_PARAM_FLOATS, assemble, needs_history};
-use crate::{EffectCall, Frame, HDR_FORMAT, OBJECT_FORMAT, Stage};
+use crate::{BlendLayer, EffectCall, Frame, HDR_FORMAT, OBJECT_FORMAT, Stage};
 
 pub(crate) const MAX_HITS: usize = 16;
 /// How far back effects see hits, in seconds.
@@ -167,8 +167,9 @@ impl Chain {
     }
 
     /// Whether this frame has a material on the whole scene: an effect of the Things stage on
-    /// no one thing. It paints every thing, so a thing mixed in by a blend layer, or drawn
-    /// above the rest, gets it on its own layer before it is mixed in (see [`Canvas::runs`]).
+    /// no one thing. It paints every thing, so a thing mixed in after the main picture's
+    /// effects (a blended ball, a higher z-order) gets it on its own layer before it is mixed
+    /// in (see [`Canvas::runs`]).
     pub(crate) fn material(frame: &Frame) -> bool {
         frame.effects.iter().any(is_material)
     }
@@ -354,11 +355,13 @@ impl Canvas {
     /// Whether `call` runs on this picture. An effect on things at the Things stage runs where
     /// its thing is drawn: on the main picture if the thing draws anything there, else on the
     /// first blend layer it draws into, before that layer is mixed in (so the picture under a
-    /// blended thing is left alone). A material on the whole scene runs on the main picture
-    /// and on every blend layer, each painting its own things. Every other effect runs on the
-    /// main picture.
+    /// blended thing is left alone). A material on the whole scene runs on the main picture,
+    /// which by then holds the layers drawn before it (lower z-orders, things behind the
+    /// balls), and on every layer drawn after it, each painting its own things. Every other
+    /// effect runs on the main picture.
     fn runs(self, frame: &Frame, call: &EffectCall) -> bool {
-        self == canvas_of(frame, call) || (matches!(self, Canvas::Layer(_)) && is_material(call))
+        let above = |i: usize| frame.layers.get(i).is_some_and(BlendLayer::above);
+        self == canvas_of(frame, call) || matches!(self, Canvas::Layer(i) if above(i) && is_material(call))
     }
 }
 
@@ -774,18 +777,69 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_scene_material_that_changes_nothing_leaves_a_blended_things_soft_edge_alone() {
-        // The layer's colours are premultiplied by its cover; an effect sees them straight.
+    fn a_scene_material_that_changes_nothing_leaves_blended_and_raised_things_alone() {
+        // A layer's colours are premultiplied by its cover, and glows and flashes add light with
+        // no cover at all; an effect sees the colour straight and gives the light back.
         const SAME: &str = "// name: Same\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { return sample(uv); }\n";
-        let mut frame = two_balls_frame();
-        grey(&mut frame);
-        let b = frame.balls.pop().unwrap();
-        frame.layer_mut(bpe_core::Blend::Normal, 0.5, false).balls.push(b);
-        let Some(plain) = render(&frame) else { return };
-        frame.effects.push(call(SAME, 0.0, Stage::Things));
-        let after = render(&frame).unwrap();
-        let most = plain.iter().zip(&after).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
-        assert!(most <= 1, "the picture moved by up to {most}");
+        type Place = fn(&mut Frame) -> &mut Frame;
+        let places: [(&str, Place); 3] = [
+            ("half see-through", |f| f.layer_mut(bpe_core::Blend::Normal, 0.5, false)),
+            ("screened", |f| f.layer_mut(bpe_core::Blend::Screen, 1.0, false)),
+            ("raised", |f| f.target_mut(3, bpe_core::Blend::Normal, 1.0, false, false)),
+        ];
+        for (name, place) in places {
+            let mut frame = two_balls_frame();
+            grey(&mut frame);
+            let mut b = frame.balls.pop().unwrap();
+            b.glow = 1.5;
+            place(&mut frame).balls.push(b);
+            let Some(plain) = render(&frame) else { return };
+            let halo = pixel(&plain, B + Vec2::new(110.0, 0.0));
+            assert!(halo[0] > halo[1] + 30, "{name}: {halo:?}, the glow shows outside the ball");
+            frame.effects.push(call(SAME, 0.0, Stage::Things));
+            let after = render(&frame).unwrap();
+            let most = plain.iter().zip(&after).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+            assert!(most <= 1, "{name}: the picture moved by up to {most}");
+        }
+    }
+
+    #[test]
+    fn a_scene_material_paints_things_mixed_in_before_it_once() {
+        // Ball B added over ball C (plain, below everything), B behind the balls or itself
+        // below 0. The main picture holds both when the material runs, so it paints them
+        // together, once: turning twice would show.
+        type Place = fn(&mut Frame) -> &mut Frame;
+        let places: [(&str, Place); 2] = [
+            ("behind", |f| f.layer_behind_mut(bpe_core::Blend::Add, 1.0, false, true)),
+            ("lower", |f| f.target_mut(-2, bpe_core::Blend::Add, 1.0, false, false)),
+        ];
+        for (name, place) in places {
+            let shot = |turned: bool| {
+                let mut frame = two_balls_frame();
+                grey(&mut frame);
+                let mut b = frame.balls.pop().unwrap();
+                let mut c = b;
+                c.center = (B + Vec2::new(0.0, 60.0)).into();
+                c.code[0] = thing_code(ThingId(4)) + 0.25;
+                c.color = [0.25, 1.0, 0.25, 1.0];
+                if turned {
+                    b.color = [0.25, 0.25, 1.0, 1.0];
+                    c.color = [1.0, 0.25, 0.25, 1.0];
+                }
+                frame.target_mut(-3, bpe_core::Blend::Normal, 1.0, false, false).balls.push(c);
+                place(&mut frame).balls.push(b);
+                if !turned {
+                    frame.effects.push(call(TURN_THINGS, 0.0, Stage::Things));
+                }
+                render(&frame)
+            };
+            let Some(after) = shot(false) else { return };
+            let want = shot(true).unwrap();
+            let at = B + Vec2::new(0.0, 30.0);
+            let (got, want) = (pixel(&after, at), pixel(&want, at));
+            let off = (0..3).map(|i| got[i].abs_diff(want[i])).max().unwrap();
+            assert!(off <= 3, "{name}: {got:?}, want {want:?}");
+        }
     }
 
     #[test]

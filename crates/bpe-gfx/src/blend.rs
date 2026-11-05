@@ -76,6 +76,7 @@ impl Composite {
         blend: Blend,
         amount: f32,
         each: bool,
+        plain: bool,
         under: &wgpu::TextureView,
         layer: &wgpu::TextureView,
         picture: &wgpu::TextureView,
@@ -89,7 +90,8 @@ impl Composite {
             }));
         }
         let uniform = &self.uniforms[slot];
-        let how = [blend.shader_code() as f32, amount.clamp(0.0, 1.0), if each { 1.0 } else { 0.0 }, 0.0];
+        let flag = |on: bool| if on { 1.0 } else { 0.0 };
+        let how = [blend.shader_code() as f32, amount.clamp(0.0, 1.0), flag(each), flag(plain)];
         queue.write_buffer(uniform, 0, bytemuck::cast_slice(&how));
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("blend"),

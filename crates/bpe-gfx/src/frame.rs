@@ -913,6 +913,12 @@ impl BlendLayer {
         matches!(self.place, Place::Back | Place::Behind | Place::BehindOver)
     }
 
+    /// Whether it is drawn after the frame's own things and the Things-stage effects on them:
+    /// a higher z-order, or at 0 not behind the balls.
+    pub fn above(&self) -> bool {
+        self.z > 0 || (self.z == 0 && !self.behind())
+    }
+
     /// A layer of things drawn straight into the picture, not mixed (things at a z-order
     /// other than 0 that don't blend).
     pub fn plain(&self) -> bool {
