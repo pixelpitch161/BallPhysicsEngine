@@ -9,8 +9,8 @@ use bpe_core::{SlotId, Target, ThingId};
 use glam::Vec2;
 
 use crate::events::{crossing, step_fraction};
-use crate::plugins::{Limits, ModuleSim, PairRule, Sims, ThingState};
-use crate::world::Prepared;
+use crate::plugins::{Limits, ModuleSim, PairRule, Sims};
+use crate::world::{Prepared, Slotted};
 use crate::{Bodies, Event, EventKind, Log, Party};
 
 /// Points sorted into square cells, so each one only meets its neighbours.
@@ -156,6 +156,11 @@ struct Ball {
     /// Where the overlap solve moves the ball this substep, as a speed that is never kept.
     shift: Vec2,
     radius: f32,
+    /// Its own bounciness, friction and press: its thing's, or its own when the thing's cards
+    /// vary across its balls.
+    bounciness: f32,
+    friction: f32,
+    press: Vec2,
 }
 
 /// One pair of overlapping balls this substep.
@@ -193,9 +198,9 @@ struct PairHit {
     at: f32,
 }
 
-/// What a body thing brings to the ball-to-ball stage: the thing, its Bounce module and state,
-/// its pair rule, its bounciness and its balls' own press (see [`Limits::press`]).
-type RuleOf<'a> = (ThingId, &'a dyn ModuleSim, &'a dyn ThingState, PairRule, f32, Vec2);
+/// What a body thing brings to the ball-to-ball stage: the thing, its Bounce module and card, its
+/// pair rule, its bounciness and its balls' own press (see [`Limits::press`]).
+type RuleOf<'a> = (ThingId, &'a dyn ModuleSim, &'a Slotted, PairRule, f32, Vec2);
 
 /// Runs the ball-to-ball stage: every alive ball of every thing whose Bounce module wants pairs
 /// meets the balls it overlaps (when both sides' targets agree). The pairs are solved with
@@ -210,7 +215,7 @@ pub(crate) fn collide_pairs(
     bodies: &mut BTreeMap<ThingId, Bodies>,
     modules: &BTreeMap<ThingId, Prepared>,
     matches: &dyn Fn(&Target, ThingId, ThingId) -> bool,
-    press: &dyn Fn(ThingId) -> Vec2,
+    press: &dyn Fn(ThingId, usize) -> Vec2,
     sims: &Sims,
     pairs: &mut Pairs,
     supports: &[Support],
@@ -229,12 +234,24 @@ pub(crate) fn collide_pairs(
         let Some(sim) = sims.module(&s.kind) else { continue };
         let Some(rule) = sim.pairs(s.state.as_ref()) else { continue };
         let bounciness = sim.bounciness(s.state.as_ref());
-        rules.push((*thing, sim, s.state.as_ref(), rule, bounciness, press(*thing)));
+        let pressed = modules.get(thing).and_then(|m| m.get(&SlotId::Motion)).is_some_and(Slotted::varies);
+        let thing_press = press(*thing, 0);
+        let (friction, varies) = (rule.friction, s.varies());
+        rules.push((*thing, sim, s, rule, bounciness, thing_press));
         let rule = rules.len() - 1;
         for i in 0..b.len() {
             if b.alive[i] {
                 largest = largest.max(b.radius[i]);
+                let (bounciness, friction) = if varies {
+                    let own = s.state_for(i);
+                    (sim.bounciness(own), sim.pairs(own).map_or(friction, |r| r.friction))
+                } else {
+                    (bounciness, friction)
+                };
                 balls.push(Ball {
+                    bounciness,
+                    friction,
+                    press: if pressed { press(*thing, i) } else { thing_press },
                     thing: *thing,
                     item: i as u32,
                     rule,
@@ -262,7 +279,7 @@ pub(crate) fn collide_pairs(
                 ball,
                 normal: s.normal,
                 wall_velocity: s.wall_velocity,
-                friction: rules[balls[ball].rule].3.friction,
+                friction: balls[ball].friction,
                 impulse: 0.0,
                 tangent_impulse: 0.0,
                 push_impulse: 0.0,
@@ -290,11 +307,11 @@ pub(crate) fn collide_pairs(
         // Slow touches don't bounce back: they stick, so piles settle. The side pressed in
         // harder decides what is slow.
         let along = |press: Vec2| Limits { press, ..*limits }.resting_along(normal);
-        let real_hit = closing >= along(rules[ri].5).max(along(rules[rj].5));
+        let real_hit = closing >= along(balls[i].press).max(along(balls[j].press));
         let reach = balls[i].radius + balls[j].radius;
         let within = crossing((balls[j].start - balls[i].start).length() - reach, -overlap);
         let at = step_fraction(substep.0, substep.1, within);
-        let bounce = if real_hit { closing * (rules[ri].4 + rules[rj].4) * 0.5 } else { 0.0 };
+        let bounce = if real_hit { closing * (balls[i].bounciness + balls[j].bounciness) * 0.5 } else { 0.0 };
         let push = (overlap - PAIR_SLOP).max(0.0) * PAIR_BIAS / dt;
         contacts.push(ContactPair {
             a: i,
@@ -304,7 +321,7 @@ pub(crate) fn collide_pairs(
             mass_b: balls[j].radius * balls[j].radius,
             bounce,
             push,
-            friction: (rules[ri].3.friction + rules[rj].3.friction) * 0.5,
+            friction: (balls[i].friction + balls[j].friction) * 0.5,
             normal_impulse: 0.0,
             tangent_impulse: 0.0,
             push_impulse: 0.0,
@@ -423,14 +440,15 @@ pub(crate) fn collide_pairs(
             at: hit.at,
         });
         for side in [a, b] {
-            let (_, sim, state, _, _, _) = &rules[side.rule];
+            let (_, sim, card, _, _, _) = &rules[side.rule];
             let body = bodies.get_mut(&side.thing).expect("gathered");
             let item = side.item as usize;
             if !body.alive[item] {
                 continue;
             }
-            sim.respond_pair(*state, body, item, hit.speed, limits);
-            if sim.effects(*state, body, item, hit.speed, limits) {
+            let state = card.state_for(item);
+            sim.respond_pair(state, body, item, hit.speed, limits);
+            if sim.effects(state, body, item, hit.speed, limits) {
                 pop(body, item, side.thing, step, log);
             }
         }

@@ -25,6 +25,7 @@ pub mod shading;
 pub mod shine;
 pub mod subs;
 pub mod trail;
+pub mod vary;
 
 use bpe_core::{Choice, LayerKind, LayerSection, ModuleKind, SettingDef, SlotId, Value};
 
@@ -169,6 +170,14 @@ impl LayerKind for Kind {
     /// Only a ball's drawn layers but Blend can be given to some balls of a group.
     fn per_ball(&self) -> bool {
         self.card == CARD && self.id != BLEND
+    }
+    /// A ball layer's numbers, pairs, colours and gradients can vary across the balls, but those
+    /// the whole thing shares (see [`vary::layer_vary`]).
+    fn vary(&self, def: &SettingDef) -> Option<bpe_core::VaryUse> {
+        if self.card != CARD {
+            return None;
+        }
+        vary::layer_vary(self.id, def)
     }
 }
 

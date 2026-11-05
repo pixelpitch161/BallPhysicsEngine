@@ -15,6 +15,7 @@ use crate::events::{HASH_OFFSET, crossing, step_fraction};
 use crate::pairs::{Pairs, Support, collide_pairs, pop};
 use crate::plugins::{Limits, ModuleSim, SimCx, Sims, ThingState};
 use crate::pose::Pose;
+use crate::rows::Rows;
 use crate::walls::middle_crossing;
 use crate::{Bodies, Event, EventKind, History, Log, Party, Touch, Wall, keep_clear_from, on_own_side, reflect};
 
@@ -30,6 +31,30 @@ pub(crate) struct Slotted {
     pub(crate) kind: String,
     pub(crate) params: Params,
     pub(crate) state: Box<dyn ThingState>,
+    /// A state per ball, when the card's settings vary across the balls.
+    pub(crate) rows: Option<Rows>,
+}
+
+impl Slotted {
+    /// `sim`'s card of kind `kind`, prepared from `params`.
+    pub(crate) fn new(sim: &dyn ModuleSim, kind: &str, params: &Params) -> Slotted {
+        Slotted {
+            kind: kind.to_owned(),
+            params: params.clone(),
+            state: sim.prepare(params),
+            rows: Rows::of(sim, params),
+        }
+    }
+
+    /// The state body row `row` uses: its own when the card varies across the balls, else the card's.
+    pub(crate) fn state_for(&self, row: usize) -> &dyn ThingState {
+        self.rows.as_ref().and_then(|r| r.state(row)).unwrap_or(self.state.as_ref())
+    }
+
+    /// Whether the card varies across the balls.
+    pub(crate) fn varies(&self) -> bool {
+        self.rows.is_some()
+    }
 }
 
 /// A thing's prepared modules, per slot.
@@ -108,7 +133,11 @@ pub fn physics_animation(scene: &Scene, resolved: &Resolved, sims: &Sims) -> Opt
     animation.retain(|thing, slot, key| match slot {
         Some(SlotId::Motion) | Some(SlotId::Bounce) => true,
         Some(_) => false,
-        None => resolved.things.get(&thing).and_then(|r| sims.thing(&r.kind)).is_some_and(|s| s.affects_physics(key)),
+        None => resolved
+            .things
+            .get(&thing)
+            .and_then(|r| sims.thing(&r.kind))
+            .is_some_and(|s| s.affects_physics(bpe_core::vary::base_key(key))),
     });
     (!animation.is_empty()).then_some(animation)
 }
@@ -185,8 +214,7 @@ impl World {
                 for slot in SIM_SLOTS {
                     let Some(s) = r.slots.get(&slot) else { continue };
                     if let Some(msim) = sims.module(&s.kind) {
-                        let state = msim.prepare(&s.params);
-                        prepared.insert(slot, Slotted { kind: s.kind.clone(), params: s.params.clone(), state });
+                        prepared.insert(slot, Slotted::new(msim, &s.kind, &s.params));
                     }
                 }
                 if !prepared.is_empty() {
@@ -206,6 +234,7 @@ impl World {
                 sim.after_build(id, &mut world);
             }
         }
+        world.refresh_rows(sims);
         world.animated = animation.zip(at_start).map(|(animation, resolved)| Animated { animation, resolved });
         if let (Some(maker), Some(a)) = (&sims.sound, &world.animated)
             && follows_sound(scene, &a.animation)
@@ -239,8 +268,12 @@ impl World {
                         && let Some(msim) = sims.module(&s.kind)
                     {
                         let prepared = self.modules.entry(thing).or_default();
-                        let state = msim.prepare(&s.params);
-                        prepared.insert(slot, Slotted { kind: s.kind.clone(), params: s.params.clone(), state });
+                        // A card whose settings didn't move this step keeps what it has: a card
+                        // varied across thousands of balls isn't prepared afresh for nothing.
+                        let same = prepared.get(&slot).is_some_and(|p| p.kind == s.kind && p.params == s.params);
+                        if !same {
+                            prepared.insert(slot, Slotted::new(msim, &s.kind, &s.params));
+                        }
                     }
                 }
                 None => {
@@ -365,6 +398,45 @@ impl World {
         }
     }
 
+    /// Where body row `row` of `thing` sits in the spreads of its varied settings: as its sim
+    /// says, else its number of all the rows; with its speed and hits as they are now.
+    pub fn ball_spread(&self, sims: &Sims, thing: ThingId, row: usize) -> bpe_core::BallSpread {
+        let Some(bodies) = self.bodies.get(&thing) else { return bpe_core::BallSpread::default() };
+        let own = self.kinds.get(&thing).and_then(|k| sims.thing(k)).and_then(|s| s.ball_spread(thing, self, row));
+        let mut spread = own.unwrap_or_else(|| bpe_core::BallSpread {
+            number: bodies.number.get(row).copied().unwrap_or(row as u32),
+            count: bodies.len() as u32,
+            seed: self.seed as u32,
+            ..bpe_core::BallSpread::default()
+        });
+        spread.speed = bodies.velocity.get(row).map_or(0.0, |v| v.length());
+        spread.hits = bodies.hits.get(row).copied().unwrap_or(0);
+        spread
+    }
+
+    /// Gives the balls of every card that varies across them the states for where they sit in its
+    /// spreads: balls new since the last time, and every ball when a spread follows speed or hits.
+    fn refresh_rows(&mut self, sims: &Sims) {
+        let mut todo = Vec::new();
+        for (id, prepared) in &self.modules {
+            let count = self.bodies.get(id).map_or(0, Bodies::len);
+            for (slot, s) in prepared {
+                if let Some(from) = s.rows.as_ref().and_then(|r| r.stale_from(count)) {
+                    todo.push((*id, *slot, from, count));
+                }
+            }
+        }
+        for (id, slot, from, count) in todo {
+            let spreads: Vec<bpe_core::BallSpread> = (from..count).map(|row| self.ball_spread(sims, id, row)).collect();
+            let Some(s) = self.modules.get_mut(&id).and_then(|m| m.get_mut(&slot)) else { continue };
+            let Some(sim) = sims.module(&s.kind) else { continue };
+            let Slotted { params, rows, .. } = s;
+            if let Some(rows) = rows {
+                rows.fill(sim, params, from, &spreads);
+            }
+        }
+    }
+
     /// Steps until `time` seconds have passed.
     pub fn advance_to(&mut self, time: f64, sims: &Sims, log: &mut Log) {
         let target = step_at(time, self.steps_per_second);
@@ -391,6 +463,7 @@ impl World {
                 sim.spawn(*id, self, log);
             }
         }
+        self.refresh_rows(sims);
 
         // Clamp speeds, remember where everything started and find the fastest ball.
         let mut fastest: f32 = 0.0;
@@ -486,7 +559,16 @@ impl World {
             if let Some(s) = modules.get(id).and_then(|m| m.get(&SlotId::Motion))
                 && let Some(sim) = sims.module(&s.kind)
             {
-                sim.forces_at(s.state.as_ref(), bodies, gravity, dt, &SimCx { thing: *id, time, seed });
+                let cx = SimCx { thing: *id, time, seed };
+                if s.varies() {
+                    for i in 0..bodies.len() {
+                        if bodies.alive[i] {
+                            sim.forces_one(s.state_for(i), bodies, i, gravity, dt, &cx);
+                        }
+                    }
+                } else {
+                    sim.forces_at(s.state.as_ref(), bodies, gravity, dt, &cx);
+                }
             }
             bodies.start.copy_from_slice(&bodies.position);
             for i in 0..bodies.len() {
@@ -523,15 +605,17 @@ impl World {
         let time = step as f32 / *steps_per_second as f32;
         let step_dt = 1.0 / *steps_per_second as f32;
         let matcher = |t: &Target, me: ThingId, other: ThingId| matches(kinds, tags, t, me, other);
-        let press = |thing: ThingId| press_of(modules, sims, thing, *gravity, step_dt);
+        let press = |thing: ThingId, row: usize| press_of(modules, sims, thing, row, *gravity, step_dt);
         let mut supports: Vec<Support> = Vec::new();
         for (mover, bodies) in bodies.iter_mut() {
             let mover_bounce = modules.get(mover).and_then(|m| m.get(&SlotId::Bounce));
             let own = mover_bounce.and_then(|s| Some((sims.module(&s.kind)?, s.state.as_ref())));
             let cx = SimCx { thing: *mover, time, seed };
             let touch = own.map_or(Touch::Edge, |(sim, state)| sim.touch(state));
-            // This mover's own: a ball pulled harder than the scene's gravity presses harder.
-            let limits = &Limits { press: press(*mover), ..*limits };
+            // This mover's own: a ball pulled harder than the scene's gravity presses harder. A
+            // Motion that varies across the balls presses each ball its own way.
+            let pressed = modules.get(mover).and_then(|m| m.get(&SlotId::Motion)).is_some_and(Slotted::varies);
+            let thing_limits = Limits { press: press(*mover, 0), ..*limits };
             for (wall_id, wall) in walls.iter() {
                 let before = walls_before.get(wall_id).unwrap_or(&wall.outline);
                 let wall_bounce = modules.get(wall_id).and_then(|m| m.get(&SlotId::Bounce));
@@ -541,6 +625,20 @@ impl World {
                     if !bodies.alive[i] {
                         continue;
                     }
+                    let row_limits;
+                    let limits = if pressed {
+                        row_limits = Limits { press: press(*mover, i), ..*limits };
+                        &row_limits
+                    } else {
+                        &thing_limits
+                    };
+                    // The mover's own card answers with this ball's own state.
+                    let decider =
+                        decider.map(|(sim, s, mine)| (sim, if mine { s.state_for(i) } else { s.state.as_ref() }));
+                    let own = match mover_bounce.filter(|s| s.varies()) {
+                        Some(s) => own.map(|(sim, _)| (sim, s.state_for(i))),
+                        None => own,
+                    };
                     let velocity = bodies.velocity[i];
                     let radius = bodies.radius[i];
                     let previous = bodies.previous[i];
@@ -666,13 +764,13 @@ fn is_special(
 /// A prepared Bounce module.
 type Bounce<'a> = Option<&'a Slotted>;
 
-/// Who answers a contact: the hit thing's Bounce when it takes over, else the mover's.
-fn decide<'a>(sims: &'a Sims, hit: Bounce<'a>, mover: Bounce<'a>) -> Option<(&'a dyn ModuleSim, &'a dyn ThingState)> {
+/// Who answers a contact: the hit thing's Bounce when it takes over, else the mover's (`true`).
+fn decide<'a>(sims: &'a Sims, hit: Bounce<'a>, mover: Bounce<'a>) -> Option<(&'a dyn ModuleSim, &'a Slotted, bool)> {
     hit.and_then(|s| {
         let sim = sims.module(&s.kind)?;
-        sim.takes_over(s.state.as_ref()).then_some((sim, s.state.as_ref()))
+        sim.takes_over(s.state.as_ref()).then_some((sim, s, false))
     })
-    .or_else(|| mover.and_then(|s| Some((sims.module(&s.kind)?, s.state.as_ref()))))
+    .or_else(|| mover.and_then(|s| Some((sims.module(&s.kind)?, s, true))))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -702,17 +800,19 @@ pub fn step_at(time: f64, rate: u32) -> u64 {
 /// `thing`'s balls' own steady pull (Gravity ×, Wind) four steps' worth, as
 /// [`Limits::press`]: how hard a ball lying on something presses into it. Zero for a thing whose
 /// Motion doesn't pull steadily. `dt` is a whole step.
+/// Body row `row`'s own, when the Motion varies across the balls.
 pub(crate) fn press_of(
     modules: &BTreeMap<ThingId, Prepared>,
     sims: &Sims,
     thing: ThingId,
+    row: usize,
     gravity: Vec2,
     dt: f32,
 ) -> Vec2 {
     modules
         .get(&thing)
         .and_then(|m| m.get(&SlotId::Motion))
-        .and_then(|s| sims.module(&s.kind)?.pull(s.state.as_ref(), gravity))
+        .and_then(|s| sims.module(&s.kind)?.pull(s.state_for(row), gravity))
         .map_or(Vec2::ZERO, |p| p * dt * 4.0)
 }
 
@@ -767,7 +867,7 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
         }
         if let Some(sim) = sims.thing(&r.kind) {
             for (key, value) in r.params.iter() {
-                if sim.affects_physics(key) {
+                if sim.affects_physics(bpe_core::vary::base_key(key)) {
                     h.bytes(key.as_bytes());
                     h.value(value);
                 }

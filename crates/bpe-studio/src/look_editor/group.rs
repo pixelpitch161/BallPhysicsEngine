@@ -159,6 +159,7 @@ fn own_rows(ui: &mut Ui, cx: &LookCx, salt: &str, defs: &[SettingDef], edits: &m
         label_width: cx.label_width,
         track: style::colour_of(scene, id),
         follow: Some(&follow),
+        vary: None,
     };
     let out = settings_grid(ui, ("group mode", salt, id), defs, get, &grid);
     edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetOwn(key.into(), value)));

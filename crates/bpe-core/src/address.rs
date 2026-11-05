@@ -31,6 +31,11 @@ impl Address {
 impl Scene {
     /// The description of the setting at `a`.
     pub fn def_at(&self, reg: &Registry, a: &Address) -> Option<&'static SettingDef> {
+        // A vary key's part: To is the setting itself, the spread and easing their own choices.
+        if let Some((base, part)) = crate::vary::split(&a.key) {
+            let base = Address { key: base.to_owned(), ..a.clone() };
+            return crate::vary::def_for(self.def_at(reg, &base), part);
+        }
         let thing = self.things.get(&a.thing)?;
         let defs = match a.slot {
             None => reg.thing(&thing.kind)?.settings(),
@@ -78,7 +83,8 @@ impl Scene {
             None => &mut thing.params,
             Some(slot) => &mut thing.slots.get_mut(&slot).expect("checked above").params,
         };
-        if def.default == v {
+        // A vary key stays even at its default: its spread being there is what makes the setting vary.
+        if def.default == v && !crate::vary::is_vary_key(&a.key) {
             params.remove(&a.key);
         } else {
             params.set(&a.key, v);

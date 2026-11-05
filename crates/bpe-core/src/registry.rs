@@ -41,6 +41,11 @@ pub trait ThingKind: Send + Sync + 'static {
     fn slot_label(&self, slot: SlotId) -> &'static str {
         slot.name()
     }
+    /// Whether the thing's own setting `key` can vary across its balls, and how it is read
+    /// (see [`crate::vary`]). Most can't.
+    fn vary(&self, _key: &str) -> Option<crate::VaryUse> {
+        None
+    }
 }
 
 /// A kind of card that fills one of a thing's slots, such as a look or one effect. Each thing
@@ -59,6 +64,11 @@ pub trait ModuleKind: Send + Sync + 'static {
     /// kinds that fit. Most fit every thing.
     fn fits(&self, _thing_kind: &str) -> bool {
         true
+    }
+    /// Whether this card's setting `key` can vary across the balls of the thing it is on, and
+    /// how it is read (see [`crate::vary`]). Most can't.
+    fn vary(&self, _key: &str) -> Option<crate::VaryUse> {
+        None
     }
 }
 
@@ -128,6 +138,12 @@ pub trait LayerKind: Send + Sync + 'static {
     fn dynamic_defs(&self, _get: &dyn Fn(&str) -> Option<crate::Value>) -> &'static [SettingDef] {
         &[]
     }
+    /// Whether this layer's setting `def` can vary across the balls that wear it, and how it is
+    /// read (see [`crate::vary`]). Most can't; a ball layer's numbers, pairs, colours and
+    /// gradients usually can, read while the ball lives.
+    fn vary(&self, _def: &SettingDef) -> Option<crate::VaryUse> {
+        None
+    }
 }
 
 /// The description of a layer of `kind`'s setting `key`: one of its kind's settings, or one of
@@ -138,6 +154,9 @@ pub fn layer_def(
     get: &dyn Fn(&str) -> Option<crate::Value>,
     key: &str,
 ) -> Option<&'static SettingDef> {
+    if let Some((base, part)) = crate::vary::split(key) {
+        return crate::vary::def_for(layer_def(kind, get, base), part);
+    }
     let fixed = kind.settings();
     if let Some(d) = fixed.iter().find(|d| d.key == key) {
         return Some(d);

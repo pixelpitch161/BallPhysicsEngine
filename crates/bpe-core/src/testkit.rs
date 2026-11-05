@@ -165,6 +165,9 @@ impl ModuleKind for PlainLookKind {
     fn settings(&self) -> &'static [SettingDef] {
         PlainLook::defs()
     }
+    fn vary(&self, _key: &str) -> Option<crate::VaryUse> {
+        Some(crate::VaryUse::Live)
+    }
 }
 
 impl ModuleKind for StreakKind {
@@ -342,6 +345,9 @@ macro_rules! layer_kind {
             }
             fn takes_subs(&self) -> bool {
                 $takes_subs
+            }
+            fn vary(&self, def: &SettingDef) -> Option<crate::VaryUse> {
+                crate::vary::can_vary_type(&def.ty).then_some(crate::VaryUse::Live)
             }
             fn takes_sub(&self, sub: &str) -> bool {
                 !($id == "layer.code" && sub == "sub.glow")

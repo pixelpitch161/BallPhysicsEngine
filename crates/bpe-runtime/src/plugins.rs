@@ -129,6 +129,13 @@ pub trait ThingSim: Send + Sync + 'static {
     fn history(&self, _resolved: &ResolvedThing) -> Option<crate::HistoryWant> {
         None
     }
+    /// Where body row `row` of the thing sits in the spreads its varied settings follow (see
+    /// [`bpe_core::vary`]): its number in the group and how many there are, its round, launch
+    /// angle and place. `None` leaves the runtime's own: the row's number of all the rows, the rest
+    /// 0. The runtime fills in the speed and hits itself.
+    fn ball_spread(&self, _thing: ThingId, _world: &World, _row: usize) -> Option<bpe_core::BallSpread> {
+        None
+    }
 }
 
 /// How a Motion or Bounce module moves and bounces the things that use it.
@@ -139,6 +146,23 @@ pub trait ModuleSim: Send + Sync + 'static {
     fn prepare(&self, params: &Params) -> Box<dyn ThingState>;
     /// Changes velocities before the move: gravity, drag, wind.
     fn forces(&self, _state: &dyn ThingState, _bodies: &mut Bodies, _gravity: Vec2, _dt: f32) {}
+    /// Whether a card of this kind can vary across its balls: the runtime then prepares a state
+    /// per ball (see [`bpe_core::vary`]), answers each ball's contacts with its own, and moves
+    /// each ball with [`ModuleSim::forces_one`] instead of [`ModuleSim::forces_at`].
+    fn per_ball(&self) -> bool {
+        false
+    }
+    /// [`ModuleSim::forces`] on body row `item` alone, for a card that varies across its balls.
+    fn forces_one(
+        &self,
+        _state: &dyn ThingState,
+        _bodies: &mut Bodies,
+        _item: usize,
+        _gravity: Vec2,
+        _dt: f32,
+        _cx: &SimCx,
+    ) {
+    }
     /// The steady pull, in pixels per second squared, this Motion module puts on its balls
     /// under the scene's `gravity`: what a ball lying on something presses into it with, so a
     /// resting touch is told from a hit. `None` for a module that doesn't pull steadily.

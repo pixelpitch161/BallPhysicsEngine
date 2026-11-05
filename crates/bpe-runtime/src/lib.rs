@@ -11,6 +11,7 @@ pub mod pairs;
 pub mod playback;
 pub mod plugins;
 pub mod pose;
+mod rows;
 pub mod sound;
 #[cfg(test)]
 pub mod testing;
