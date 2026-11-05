@@ -116,6 +116,10 @@ pub struct World {
     substep: (u32, u32),
     /// The scene's sound, when a physics setting follows it.
     sound: Option<std::sync::Arc<dyn crate::SoundAt>>,
+    /// The scene's physics fingerprint (the one without the history, [`sound_fingerprint`]'s),
+    /// when some thing's sim asked for it ([`crate::ThingSim::needs_fingerprint`]). Two worlds
+    /// with the same one run alike step for step, so work keyed by it can be shared.
+    pub fingerprint: Option<u64>,
 }
 
 /// A thing's Motion or Bounce card as the world has it: see [`World::card`].
@@ -181,7 +185,14 @@ impl World {
             modules: BTreeMap::new(),
             animated: None,
             sound: None,
+            fingerprint: None,
         };
+        // Worked out first: a thing may cache work by it while it builds.
+        let wants_fingerprint =
+            resolved.things.values().any(|r| sims.thing(&r.kind).is_some_and(|s| s.needs_fingerprint(r)));
+        if wants_fingerprint {
+            world.fingerprint = Some(sound_fingerprint(scene, resolved, sims));
+        }
         // Keys and pulses on physics settings hold from the very start: the world is built from
         // the settings as they are at 0 s (the sound, which no step has made yet, left out), so
         // the first frame and the first step's judgement of sides see them.
@@ -412,6 +423,71 @@ impl World {
     pub fn card(&self, thing: ThingId, slot: SlotId) -> Option<Card<'_>> {
         let s = self.modules.get(&thing)?.get(&slot)?;
         Some(Card { kind: &s.kind, state: s.state.as_ref(), varies: s.varies() })
+    }
+
+    /// A copy of the world for test-firing a ball: only the things `keep` names are stepped (their
+    /// states, walls, cards and keys kept; a card varied across the balls with its own values),
+    /// with no history. Every other thing is left out: not
+    /// stepped, its balls gone, its keys dropped, its pose left where it is now (a thing riding it
+    /// stays put). Kinds, names and tags stay whole, so targets still name what they named.
+    pub fn lone(&self, keep: &dyn Fn(ThingId) -> bool) -> World {
+        let kept = |id: &ThingId| keep(*id);
+        let animated = self.animated.as_ref().and_then(|a| {
+            let mut animation = a.animation.clone();
+            animation.retain(|thing, _, _| keep(thing));
+            (!animation.is_empty()).then(|| Animated { animation, resolved: a.resolved.clone() })
+        });
+        World {
+            step: self.step,
+            steps_per_second: self.steps_per_second,
+            gravity: self.gravity,
+            bodies: self.bodies.iter().filter(|(id, _)| kept(id)).map(|(id, b)| (*id, b.clone())).collect(),
+            walls: self.walls.iter().filter(|(id, _)| kept(id)).map(|(id, w)| (*id, w.clone())).collect(),
+            states: self.states.iter().filter(|(id, _)| kept(id)).map(|(id, s)| (*id, s.clone())).collect(),
+            poses: self.poses.clone(),
+            names: self.names.clone(),
+            tags: self.tags.clone(),
+            history: BTreeMap::new(),
+            seed: self.seed,
+            camera: self.camera,
+            video: self.video,
+            state_memory: BTreeMap::new(),
+            kinds: self.kinds.clone(),
+            order: self.order.iter().copied().filter(kept).collect(),
+            pairs: Pairs::default(),
+            walls_before: BTreeMap::new(),
+            attach: self.attach.clone(),
+            // A card varied across the balls answers with its own values: the lone ball is none of them.
+            modules: self
+                .modules
+                .iter()
+                .filter(|(id, _)| kept(id))
+                .map(|(id, m)| (*id, m.iter().map(|(slot, s)| (*slot, Slotted { rows: None, ..s.clone() })).collect()))
+                .collect(),
+            animated,
+            substep: (0, 1),
+            sound: self.sound.clone(),
+            fingerprint: self.fingerprint,
+        }
+    }
+
+    /// Gives `to` the Motion and Bounce cards `owner` has in `from` (as prepared now, the card's
+    /// own values when it varies across the balls), in place of its own: a lone copy firing
+    /// another thing's ball. Keys on `owner`'s cards aren't carried over.
+    pub fn lend_cards(&mut self, from: &World, owner: ThingId, to: ThingId) {
+        let lent: Prepared = from
+            .modules
+            .get(&owner)
+            .map(|m| m.iter().map(|(slot, s)| (*slot, Slotted { rows: None, ..s.clone() })).collect())
+            .unwrap_or_default();
+        if let Some(a) = &mut self.animated {
+            a.animation.retain(|thing, slot, _| thing != to || slot.is_none());
+        }
+        if lent.is_empty() {
+            self.modules.remove(&to);
+        } else {
+            self.modules.insert(to, lent);
+        }
     }
 
     /// Where body row `row` of `thing` sits in the spreads of its varied settings: as its sim
@@ -1048,6 +1124,39 @@ mod tests {
 
     fn root_setting(key: &str) -> Address {
         Address::own(ThingId::ROOT, key)
+    }
+
+    #[test]
+    fn a_lone_copy_steps_only_what_it_keeps_as_the_world_does() {
+        let (scene, resolved, sims) = dots_pair(120.0, Target::Anything);
+        let mut world = World::build(&scene, &resolved, &sims);
+        world.keep_history(DOTS, crate::HistoryWant { seconds: 2.0, forever: false });
+        let mut log = Log::default();
+        world.advance_to(0.1, &sims, &mut log);
+        let mut lone = world.lone(&|id| id != DOTS2);
+        assert!(lone.bodies.contains_key(&DOTS) && !lone.bodies.contains_key(&DOTS2));
+        assert!(lone.walls.contains_key(&WALL) && !lone.states.contains_key(&DOTS2));
+        assert!(lone.history.is_empty() && !lone.order().contains(&DOTS2));
+        assert_eq!(lone.kind(DOTS2), Some("dots"), "still named");
+        // Before the two meet, the kept ball goes exactly where it goes in the whole world.
+        let mut lone_log = Log::default();
+        for _ in 0..60 {
+            world.step(&sims, &mut log);
+            lone.step(&sims, &mut lone_log);
+            assert_eq!(world.bodies[&DOTS].position, lone.bodies[&DOTS].position);
+        }
+        assert!(world.fingerprint.is_none(), "nothing asked for it");
+    }
+
+    #[test]
+    fn lent_cards_move_a_ball_as_their_owner_does() {
+        let (scene, resolved, sims) = dots_pair(120.0, Target::Anything);
+        let world = World::build(&scene, &resolved, &sims);
+        let mut lone = world.lone(&|id| id != DOTS2);
+        lone.modules.remove(&DOTS);
+        assert!(lone.card(DOTS, SlotId::Motion).is_none());
+        lone.lend_cards(&world, DOTS2, DOTS);
+        assert_eq!(lone.card(DOTS, SlotId::Motion).map(|c| c.kind), Some("motion.gravity"));
     }
 
     #[test]

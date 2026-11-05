@@ -1,5 +1,6 @@
 //! The editor's state and frame: files, undo, shortcuts and the panel layout.
 
+use crate::aim_job::AimJob;
 use crate::audio_out::AudioOut;
 use crate::export_window::ExportWindow;
 use crate::grid::{self, Grid};
@@ -98,6 +99,9 @@ pub struct Studio {
     pub saved: Scene,
     pub path: Option<PathBuf>,
     pub playback: Playback,
+    /// Aims rounds through bounces ahead of `playback` on its own thread, while some emitter
+    /// does; the playback never steps past where it has got.
+    pub aim_job: Option<AimJob>,
     /// The physics fingerprint `playback` was built from.
     pub fingerprint: u64,
     /// The part of it the sound hears ([`sound_fingerprint`]): the sound starts its run over
@@ -218,6 +222,8 @@ impl Studio {
         let resolved = resolve_scene(&scene, &kit.registry);
         let fingerprint = fingerprint(&scene, &resolved, &kit.sims);
         let sound_fingerprint = sound_fingerprint(&scene, &resolved, &kit.sims);
+        // Started first, so the playback's own build waits on its work instead of doing it again.
+        let aim_job = aim_job_for(&scene, &resolved, &kit);
         let playback = Playback::new(&scene, &resolved, kit.sims.clone());
         let follow = follow_of(&scene, &resolved);
         Self {
@@ -226,6 +232,7 @@ impl Studio {
             resolved,
             path: None,
             playback,
+            aim_job,
             fingerprint,
             sound_fingerprint,
             follow,
@@ -284,6 +291,18 @@ impl Studio {
         self.time
     }
 
+    /// How far the playback may step towards the playhead now: up to where the background
+    /// aiming has got, while it runs.
+    pub fn sim_target(&self) -> f64 {
+        self.aim_job.as_ref().map_or(self.sim_time(), |job| job.allowed(self.sim_time()))
+    }
+
+    /// How far (0..1) the background aiming has got towards the playhead, while it holds the
+    /// picture back.
+    pub fn aiming(&self) -> Option<f32> {
+        self.aim_job.as_ref().and_then(|job| job.holding(self.sim_time()))
+    }
+
     pub fn unsaved(&self) -> bool {
         self.scene != self.saved
     }
@@ -334,6 +353,7 @@ impl Studio {
         self.follow = follow_of(&self.scene, &self.resolved);
         if rebuilt {
             self.fingerprint = fingerprint;
+            self.aim_job = aim_job_for(&self.scene, &self.resolved, &self.kit);
             self.playback = Playback::new(&self.scene, &self.resolved, self.kit.sims.clone());
         }
         self.time = self.time.min(self.duration());
@@ -373,6 +393,7 @@ impl Studio {
         self.resolved = resolve_scene(&self.scene, &self.kit.registry);
         self.fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
         self.sound_fingerprint = sound_fingerprint(&self.scene, &self.resolved, &self.kit.sims);
+        self.aim_job = aim_job_for(&self.scene, &self.resolved, &self.kit);
         self.playback = Playback::new(&self.scene, &self.resolved, self.kit.sims.clone());
         self.follow = follow_of(&self.scene, &self.resolved);
         self.revision += 1;
@@ -435,7 +456,7 @@ impl Studio {
     /// the rest a budget per frame.
     pub fn seek(&mut self, time: f64) {
         self.time = time.clamp(0.0, self.duration());
-        self.playback.seek_within(self.sim_time(), Some(CATCH_UP_BUDGET));
+        self.playback.seek_within(self.sim_target(), Some(CATCH_UP_BUDGET));
         if self.playing
             && let Some(job) = &mut self.sound
         {
@@ -1201,6 +1222,12 @@ fn file_label(path: &Path) -> String {
 }
 
 /// The scene's sound for the picture, when any setting follows it.
+/// The background aiming `scene` wants, started.
+fn aim_job_for(scene: &Scene, resolved: &Resolved, kit: &Kit) -> Option<AimJob> {
+    let duration = resolved.things.get(&ThingId::ROOT).map_or(0.0, |r| SceneSettings::from_params(&r.params).duration);
+    AimJob::start_if_wanted(scene, resolved, kit.sims.clone(), duration.max(0.0) as f64)
+}
+
 fn follow_of(scene: &Scene, resolved: &bpe_core::Resolved) -> Option<std::sync::Arc<bpe_sound::ControlSampler>> {
     bpe_sound::follows_sound(scene).then(|| std::sync::Arc::new(bpe_sound::ControlSampler::new(scene, resolved)))
 }

@@ -3,6 +3,7 @@
 //! catch circle (taken out, sent back out, or let through), in waves.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use bpe_core::{ResolvedThing, Settings, Thing, ThingId};
 use bpe_runtime::{Bodies, Event, EventKind, Log, Party, Pose, ThingSim, World, pop, state, state_mut};
@@ -14,6 +15,7 @@ use super::fire::{
     start_offset,
 };
 use super::foci::sits_on_pose;
+use super::test_fire::{RoundAim, aim_catch, aim_round};
 use super::{Aim, CatchFrom, Catches, Earlier, EmitterSettings, FireWhen, KIND, ReturnWay};
 use crate::things::balls::rows::{BallRows, Caught, rows_mut};
 use crate::things::balls::sim::size_factor;
@@ -97,6 +99,11 @@ pub struct EmitterState {
     pub waves: Vec<Wave>,
     /// Every wave that has landed on it so far, in order.
     pub landings: Vec<Landing>,
+    /// The rounds aimed through bounces still launching, and the latest one (the preview draws
+    /// its ways, the card counts who can't reach).
+    pub aimed: Vec<Arc<RoundAim>>,
+    /// A copy that test flights fire from: it fires and catches nothing, whatever keys say.
+    pub quiet: bool,
 }
 
 impl EmitterState {
@@ -115,7 +122,15 @@ impl EmitterState {
             held: Vec::new(),
             waves: Vec::new(),
             landings: Vec::new(),
+            aimed: Vec::new(),
+            quiet: false,
         }
+    }
+
+    /// A quiet copy for test flights: it sits where `settings` says but fires and catches
+    /// nothing.
+    pub fn quiet(settings: EmitterSettings) -> Self {
+        Self { quiet: true, ..Self::new(quieten(settings)) }
     }
 
     /// How many rounds may still fire.
@@ -225,6 +240,11 @@ fn pose_now(world: &World, thing: ThingId, s: &EmitterSettings) -> Pose {
     }
 }
 
+/// `settings` firing and catching nothing (a quiet copy's).
+fn quieten(settings: EmitterSettings) -> EmitterSettings {
+    EmitterSettings { emits: false, catches: Catches::Nothing, aim: Aim::Off, ..settings }
+}
+
 /// Everything a launch or a re-fire reads about the moment.
 struct Moment {
     step: u64,
@@ -234,6 +254,25 @@ struct Moment {
     pose: Pose,
     /// How it aims, when it does and has something to aim at.
     aim: Option<Aimer>,
+    /// The rounds due this step aimed through bounces, worked out before the state is changed.
+    through: Vec<Arc<RoundAim>>,
+}
+
+/// The rounds due on `at.step` aimed through bounces (the world standing at `now(at.step)`), in
+/// the order they fire; none unless it aims through bounces.
+fn aim_through(world: &World, st: &EmitterState, at: &Moment, landed: u32) -> Vec<Arc<RoundAim>> {
+    let Some(aim) = at.aim.filter(|a| a.style == Aim::ThroughBounces) else { return Vec::new() };
+    let s = &st.settings;
+    let mut n = if st.rounds_fired == 0 { first_count(s) } else { st.next_count };
+    let mut out = Vec::new();
+    for i in 0..rounds_due(st, at, landed) {
+        let round = st.rounds_fired + 1 + i;
+        if i > 0 {
+            n = next_count(s, n);
+        }
+        out.push(aim_round(world, at.thing, s, &aim, at.step, round, n));
+    }
+    out
 }
 
 /// Fires round `rounds_fired + 1`: the earlier rounds' balls are kept, faded or removed, and its
@@ -267,10 +306,19 @@ fn fire_round(st: &mut EmitterState, bodies: &mut Bodies, at: &Moment, log: Opti
             }
         }
     }
+    let through = at.through.iter().find(|r| r.round == round).filter(|_| at.aim.is_some());
     for (j, k) in launch_order(s, n, round, at.seed, at.thing.0).into_iter().enumerate() {
         let step = at.step + slot_step(s, j as u32, at.rate);
         let launch = match at.aim {
             None => Launch { step, round, k, n, arrive: None },
+            // Test-firing found when it leaves (or that it doesn't).
+            Some(aim) if aim.style == Aim::ThroughBounces => match through.and_then(|r| r.balls.get(k as usize)) {
+                Some(Some(b)) => {
+                    Launch { step: b.leave, round, k, n, arrive: b.reaches.then_some(at.step + aim.arrive) }
+                }
+                Some(None) => continue,
+                None => Launch { step: at.step, round, k, n, arrive: None },
+            },
             // Each ball leaves when its own way takes it there in time (no Gap).
             Some(aim) if aim.style == Aim::KeepMyDirections => {
                 let way = direction(s, k, n, round, at.seed, at.thing.0);
@@ -283,6 +331,9 @@ fn fire_round(st: &mut EmitterState, bodies: &mut Bodies, at: &Moment, log: Opti
             Some(aim) => Launch { step, round, k, n, arrive: Some(at.step + aim.arrive) },
         };
         st.pending.push_back(launch);
+    }
+    if let Some(r) = through {
+        st.aimed.push(r.clone());
     }
     // Stable: launches on the same step keep the order they were queued in.
     st.pending.make_contiguous().sort_by_key(|l| l.step);
@@ -327,6 +378,8 @@ fn aimed(aim: &Aimer, s: &EmitterSettings, position: Vec2, u: Vec2, leave: u64, 
         Aim::Off => None,
         Aim::StraightIn => aim.straight(position, leave, arrive),
         Aim::KeepMyDirections => aim.keep_velocity(position, u, s.speed.max(0.0), leave, arrive),
+        // Worked out when the round fired: see `launch_ball`.
+        Aim::ThroughBounces => None,
     }
 }
 
@@ -340,7 +393,19 @@ fn launch_ball(st: &mut EmitterState, bodies: &mut Bodies, launch: Launch, at: &
     let turn = Vec2::from_angle(at.pose.angle);
     let position = at.pose.position + turn.rotate(offset);
     let mut dir = way + at.pose.angle;
+    // A ball aimed through bounces goes as its test flights found, late or not.
+    let through = at
+        .aim
+        .filter(|a| a.style == Aim::ThroughBounces)
+        .and_then(|_| st.aimed.iter().find(|r| r.round == round))
+        .and_then(|r| r.balls.get(k as usize).cloned().flatten());
     let (velocity, speed) = match (at.aim, launch.arrive) {
+        _ if let Some(b) = &through => {
+            if b.velocity.length() > 0.0 {
+                dir = b.velocity.y.atan2(b.velocity.x);
+            }
+            (b.velocity, b.velocity.length())
+        }
         (Some(aim), Some(arrive)) => {
             let plain = Vec2::from_angle(dir) * s.speed.max(0.0);
             let v = match aimed(&aim, s, position, Vec2::from_angle(dir), at.step, arrive) {
@@ -417,6 +482,12 @@ fn fire_and_launch(st: &mut EmitterState, bodies: &mut Bodies, at: &Moment, land
         if launch_ball(st, bodies, launch, at, log.as_deref_mut()) {
             live += 1;
         }
+    }
+    // Rounds aimed through bounces are kept while they launch, and the latest after.
+    if st.aimed.len() > 1 {
+        let latest = st.aimed.last().map(|r| r.round);
+        let pending = &st.pending;
+        st.aimed.retain(|r| Some(r.round) == latest || pending.iter().any(|l| l.round == r.round));
     }
 }
 
@@ -523,7 +594,7 @@ fn catch(me: ThingId, world: &mut World, log: &mut Log) {
     } else {
         None
     };
-    let at = Moment { step, rate, seed: world.seed, thing: me, pose, aim };
+    let at = Moment { step, rate, seed: world.seed, thing: me, pose, aim, through: Vec::new() };
     let delay = (s.return_delay.max(0.0) as f64 * rate as f64).round() as u64;
     for a in found {
         // A caught ball falls by its own thing's Motion card, not the catcher's.
@@ -561,6 +632,21 @@ fn catch(me: ThingId, world: &mut World, log: &mut Log) {
         {
             *n += 1;
         }
+        // Sent out my way aimed through bounces: test-fired now, before its balls are borrowed,
+        // as a round of one fired when it would leave.
+        let through = match aim {
+            Some(aim) if aim.style == Aim::ThroughBounces && s.catches == Catches::SendBackOut => {
+                let n = size.max(k + 1);
+                let way = direction(&s, k, n, round.max(1), at.seed, me.0);
+                let place = pose.position + Vec2::from_angle(pose.angle).rotate(start_offset(&s, k, n, way));
+                let u = Vec2::from_angle(way + pose.angle);
+                let radius = world.bodies.get(&a.thing).and_then(|b| b.radius.get(a.row).copied()).unwrap_or(s.radius);
+                let leave = if delay == 0 { step + 1 } else { step + delay };
+                let ball = (a.thing, a.row as u32, radius);
+                Some(aim_catch(world, me, &s, &aim, ball, step, (place, u), leave))
+            }
+            _ => None,
+        };
         let Some(bodies) = world.bodies.get_mut(&a.thing) else { continue };
         match s.catches {
             Catches::Nothing | Catches::PassThrough => {}
@@ -590,7 +676,10 @@ fn catch(me: ThingId, world: &mut World, log: &mut Log) {
                                 (place, u * speed)
                             }
                             // Aimed as a round of its own fired when it would leave.
-                            Some(aim) => match send_aimed(&aim, &s, place, u, leave) {
+                            Some(aim) => match through.clone().map_or_else(
+                                || send_aimed(&aim, &s, place, u, leave),
+                                |b| b.map(|b| (b.leave, b.velocity)),
+                            ) {
                                 Some((go, v)) => {
                                     leave = go;
                                     (place, v)
@@ -626,7 +715,8 @@ fn catch(me: ThingId, world: &mut World, log: &mut Log) {
 fn send_aimed(aim: &Aimer, s: &EmitterSettings, place: Vec2, u: Vec2, fire: u64) -> Option<(u64, Vec2)> {
     let arrive = fire + aim.arrive;
     match aim.style {
-        Aim::Off => None,
+        // Through bounces is test-fired in `catch`.
+        Aim::Off | Aim::ThroughBounces => None,
         Aim::StraightIn => aim.straight(place, fire, arrive).map(|v| (fire, v)),
         Aim::KeepMyDirections => match aim.plan_keep(place, u, s.speed.max(0.0), fire) {
             Plan::Go { leave, arrive: Some(arrive), .. } => {
@@ -672,8 +762,15 @@ impl ThingSim for EmitterSim {
         // A round at 0 s is there from the first frame (no step logs it). An aimed one waits for
         // everything to be built (its target, its Motion card): `after_build`.
         if !aims {
-            let at =
-                Moment { step: 0, rate: world.steps_per_second, seed: world.seed, thing: thing.id, pose, aim: None };
+            let at = Moment {
+                step: 0,
+                rate: world.steps_per_second,
+                seed: world.seed,
+                thing: thing.id,
+                pose,
+                aim: None,
+                through: Vec::new(),
+            };
             fire_and_launch(&mut st, &mut bodies, &at, 0, None);
         }
         world.bodies.insert(thing.id, bodies);
@@ -688,7 +785,9 @@ impl ThingSim for EmitterSim {
         }
         let aim = Aimer::of(world, thing, &st.settings, 0);
         let pose = world.poses.get(&thing).copied().unwrap_or_default();
-        let at = Moment { step: 0, rate: world.steps_per_second, seed: world.seed, thing, pose, aim };
+        let mut at =
+            Moment { step: 0, rate: world.steps_per_second, seed: world.seed, thing, pose, aim, through: Vec::new() };
+        at.through = aim_through(world, st, &at, 0);
         let (Some(st), Some(bodies)) = (world.states.get_mut(&thing), world.bodies.get_mut(&thing)) else { return };
         fire_and_launch(state_mut::<EmitterState>(st.as_mut()), bodies, &at, 0, None);
         // The balls there from the start were there at step 0.
@@ -714,7 +813,16 @@ impl ThingSim for EmitterSim {
         let landed = landed_before(world, thing, &st.settings);
         let pose = world.poses.get(&thing).copied().unwrap_or_default();
         let aim = Aimer::of(world, thing, &st.settings, now(world.step));
-        let at = Moment { step: world.step, rate: world.steps_per_second, seed: world.seed, thing, pose, aim };
+        let mut at = Moment {
+            step: world.step,
+            rate: world.steps_per_second,
+            seed: world.seed,
+            thing,
+            pose,
+            aim,
+            through: Vec::new(),
+        };
+        at.through = aim_through(world, st, &at, landed);
         let (Some(st), Some(bodies)) = (world.states.get_mut(&thing), world.bodies.get_mut(&thing)) else { return };
         fire_and_launch(state_mut::<EmitterState>(st.as_mut()), bodies, &at, landed, Some(log));
     }
@@ -751,6 +859,7 @@ impl ThingSim for EmitterSim {
         let settings = EmitterSettings::from_params(&resolved.params);
         let Some(st) = world.states.get_mut(&thing) else { return };
         let st = state_mut::<EmitterState>(st.as_mut());
+        let settings = if st.quiet { quieten(settings) } else { settings };
         let (old, new) = (st.settings.radius, settings.radius);
         if new != old
             && let Some(bodies) = world.bodies.get_mut(&thing)
@@ -768,6 +877,11 @@ impl ThingSim for EmitterSim {
 
     fn ball_spread(&self, thing: ThingId, world: &World, row: usize) -> Option<bpe_core::BallSpread> {
         spread_in(world, thing, row)
+    }
+
+    /// Aims worked out by test-firing are kept by the scene's fingerprint.
+    fn needs_fingerprint(&self, resolved: &ResolvedThing) -> bool {
+        EmitterSettings::from_params(&resolved.params).aim == Aim::ThroughBounces
     }
 
     /// The marker, the look-only variety and Leave trails change only how it looks.

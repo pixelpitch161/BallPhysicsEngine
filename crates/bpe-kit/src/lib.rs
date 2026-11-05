@@ -59,6 +59,14 @@ pub fn sims() -> Sims {
     s
 }
 
+/// The kit's sims, made once for the process: what test flights step their stripped copies of
+/// the world with (`things::emitter::test_fire`), since a thing's sim hooks aren't handed the
+/// sims.
+pub fn lone_sims() -> &'static Sims {
+    static SIMS: std::sync::OnceLock<Sims> = std::sync::OnceLock::new();
+    SIMS.get_or_init(sims)
+}
+
 /// Every kind's drawing part, for the renderer.
 pub fn draws() -> Draws {
     let mut d = Draws::default();

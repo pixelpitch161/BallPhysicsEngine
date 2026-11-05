@@ -43,22 +43,31 @@ here.
    tie-break); Speed spread, Gap and Order are hidden (each ball sets its own leaving time, as under Keep).
 5. **The search, per ball** (budget `MOST_FLIGHTS` = 40 flights):
    1. Fly at Speed (when > 0).
-   2. Scan: `SCAN` = 14 speeds evenly in ratio from `lo = 0.1·D/Tb` to `hi = min(ceiling, max(40·D/Tb, 4·Speed))`,
-      D the distance to the target where it will be at arrival, Tb the longest flight that can still arrive in time
-      (arrival moment − the earliest set-off moment).
-   3. A pass already within `TOL` (0.25 px) on an allowed arc is a way (cost nothing more).
+   2. Scan: `SCAN` = 12 speeds evenly in ratio from `lo = 0.5·min(quickest, Speed)` to
+      `hi = min(ceiling, 4·max(quickest, Speed))`, `quickest` = D/Tb, D the distance to the target where it will be at
+      arrival, Tb the longest flight that can still arrive in time (arrival moment − the earliest set-off moment).
+   3. A pass within `GOOD` (0.45 px) on an allowed arc is a way (costs nothing more).
    4. Brackets: neighbouring speeds (sorted, Speed's flight included) whose passes on the same allowed arc have
-      opposite signs. Tried best first (fewest bounces, nearest Speed), each by the Illinois method (false position,
-      halving the stale end) until within `TOL`; a trial speed whose flight has no pass on that arc means the arc
-      broke there (a different wall), so that bracket is dropped and the next tried.
-   5. Each flight flies at most Tb steps; a pass after Tb doesn't count (too slow to arrive in time).
+      opposite signs, both near the target (|miss| ≤ `max(0.3·D, 40 px)`: far-abreast passes of a long flight are not
+      real crossings). Tried best first (fewest bounces, nearest Speed), each by the Illinois method (false position,
+      halving the stale end) towards `TOL` (0.25 px), stopping when the bracket stalls (relative width 1e-6); a trial
+      speed whose flight has no pass on that arc means the arc broke there (a different wall), so that bracket is
+      dropped and the next tried. With nothing yet, the speed between the two nearest neighbouring flights is tried.
+   5. **Edge bounces quantise**: with Touch walls with Edge a bounce lands on whole steps, so the miss against speed
+      is a sawtooth (jumps of 2–3 px when a bounce moves to the next step) and may never come within `TOL`. So the
+      nearest flight is taken when within `GOOD`; otherwise the direction is turned by at most `MOST_TWEAK` (0.3°)
+      around the nearest speed, by the same Illinois search on the angle (a turn of 0.3° is never seen).
+   6. Each flight flies at most Tb steps; a pass after Tb doesn't count (too slow to arrive in time).
 6. **When it leaves.** A way passes the target `e` steps after setting off; it sets off from `start = round(A − e)`
    (A the arrival moment), leaving on step `start + 1` (or on the firing step when `start` is the earliest moment),
    so it arrives within half a step of the others. Walls or the target may move, and the emitter itself may move, so
    when `start` isn't the earliest moment the way is **checked from `start`**: the stripped copy is stepped (no ball)
-   to that moment, the ball fired again from the emitter's place then; if it no longer passes within `TOL` or now
-   wants another start, the speed is searched again close by (brackets at ±1 %, ±3 %, ±10 %, then Illinois), at most
-   twice. All inside the 40 flights. A still scene costs one extra flight.
+   to that moment and the ball fired again from the emitter's place then. If it no longer passes within `GOOD`, the
+   speed is found again close by: the same speed, then secant steps on that arc (each clamped to ±6 %), then a fresh
+   search around it. When the new way wants another start, `start` is moved by a secant on
+   `g(start) = start + e − A`, at most `SETTLE_TRIES` (6) times. **Deviation from the spec's 40 flights:** the
+   settling gets its own `SETTLE_FLIGHTS` (24) on top of the 40 the search may use, because a spinning or shrinking
+   shape moves every bounce when `start` moves; a still scene costs one extra flight.
 7. **Can't reach**: no way in the budget → Skip (not fired; takes no number) or Fire anyway (goes at once, at Speed,
    unaimed). A way that would have to set off before the round fired (`start` < earliest) → Skip, or Fire anyway: goes
    at once at the found speed (late).
@@ -96,12 +105,14 @@ here.
 13. **What the sim keeps**: `EmitterState.aimed: Vec<Aimed>` (`Aimed { round, aims: Arc<RoundAim> }`), the rounds
     still launching plus the latest; `launch_ball` reads its ball's velocity from there (shared by `Arc`, so world
     snapshots stay cheap). `RoundAim { fire, arrive, meet, balls: Vec<Option<BallAim>> }`,
-    `BallAim { leave, velocity, reaches, path }` (`path`: at most 48 places along the found flight, for the preview).
+    `BallAim { leave, velocity, reaches, path }` (`path`: at most 96 places along the found flight, for the preview).
 14. **Preview and checks**: a selected emitter aiming Through bounces draws the **latest round's** found paths (faint,
     at most 400 balls) and a ring where they meet (the next round's can't be worked out every frame). The card's lines:
     "Pick what to aim at."; "N of M balls can't reach it in time: they are skipped / go anyway." from the latest
-    round; "Something in the way: balls may miss." only for `hit_balls` or a varied Motion card (walls, drag and wind
-    are inside the test flights); the moving-target line as in part 3. Before any round has fired there are no counts.
+    round; "Something in the way: balls may miss." for `hit_balls`, a varied Motion card or a varied Size (the test
+    flights use the card's Size; walls, drag and wind are inside the test flights); "The walls move: fewer balls find
+    a way through." when a wall spins, shrinks or moves (a fast spin breaks most ways between scan speeds); the
+    moving-target line as in part 3. Before any round has fired there are no counts.
 15. **Defaults**: `aim` Off (unchanged), `aim_bounces` 1. Aim Off and the other aims change nothing: goldens don't move.
 
 ## 2. Files
@@ -141,9 +152,13 @@ impl World {
 
 // test_fire.rs
 pub const MOST_FLIGHTS: u32 = 40;
-pub const SCAN: usize = 14;
+pub const SETTLE_FLIGHTS: u32 = 24;
+pub const SCAN: usize = 12;
 pub const TOL: f64 = 0.25;
-pub const PATH_POINTS: usize = 48;
+pub const GOOD: f64 = 0.45;
+pub const MOST_TWEAK: f64 = 0.3; // degrees
+pub const PATH_POINTS: usize = 96;
+pub const SETTLE_TRIES: u32 = 6;
 pub struct BallAim { pub leave: u64, pub velocity: Vec2, pub reaches: bool, pub path: Vec<Vec2> }
 pub struct RoundAim { pub fire: u64, pub arrive: u64, pub meet: Vec2, pub balls: Vec<Option<BallAim>> }
 pub struct Shot { pub start: Vec2, pub way: Vec2 }        // one ball's place (at firing) and direction
@@ -171,9 +186,9 @@ pub fn cached<T: Clone + Send + Sync + 'static>(fp: Option<u64>, me: ThingId, wh
 2. **Settings**: `Aim::ThroughBounces`, `aim_bounces`, `when`s; settings test: Gap/Order hidden, Speed shown,
    Bounces at least shown only under Through bounces.
 3. **test_fire.rs** (TDD): passes and signed misses on hand-made polylines (moving target included); the search
-   finds a speed through a target behind one bounce in a box with gravity (flight re-run passes within 0.25 px);
+   finds a speed through a target behind one bounce in a box with gravity (flight re-run passes within GOOD, 0.45 px);
    picks the fewest bounces and nearest Speed; no pull + a direction through the focus of an ellipse (Touch Middle)
-   goes at Speed in one flight; no way → None; never more than 40 flights (counted).
+   goes at Speed in one flight; no way → None; never more than 40 + 24 flights (counted).
 4. **Cache**: same key computes once (counter), waiting thread gets the same value, eviction past 4 fingerprints.
 5. **Sim**: aims before `fire_and_launch`; `launch_ball` reads `aimed`; Out my way. World tests (`test_fire_tests.rs`):
    - a box (polygon shape, gravity), emitter in one corner firing a fan of 6 up and away, target emitter in the other
@@ -181,7 +196,8 @@ pub fn cached<T: Clone + Send + Sync + 'static>(fp: Option<u64>, me: ThingId, wh
      moment, with at least one hit before (from the log);
    - an ellipse (Touch walls with Middle, no gravity) emitter on Focus 1, 16 balls All round, target = other focus:
      all reach, all at Speed, leave together;
-   - a spinning shape: still within 0.5 px (the check from `start` follows the walls);
+   - a slowly spinning shape (2°/s): still within 0.5 px (the check from `start` follows the walls); fast spins are
+     only warned about (walls_move);
    - Skip vs Fire anyway counts (`Fired.launched`), Out my way aimed through a bounce;
    - the cache: building the world twice gives identical logs; a second build doesn't fly again (cache counter);
    - Aim Off and the other aims: existing tests and goldens untouched.

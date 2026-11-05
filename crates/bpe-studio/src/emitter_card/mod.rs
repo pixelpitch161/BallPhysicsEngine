@@ -131,6 +131,9 @@ pub fn aim_lines(check: Option<&AimCheck>) -> Vec<String> {
     if c.in_the_way {
         out.push("Something in the way: balls may miss.".to_owned());
     }
+    if c.walls_move {
+        out.push("The walls move: fewer balls find a way through.".to_owned());
+    }
     if c.target_moves {
         out.push(
             "The target moves on its own: balls aim where it is heading and miss if it turns or bounces.".to_owned(),
@@ -498,6 +501,28 @@ mod tests {
         h.run();
         assert!(h.query_by_label("3 of 10 balls can't reach it in time: they are skipped.").is_some());
         assert!(h.query_by_label("Something in the way: balls may miss.").is_some());
+    }
+
+    #[test]
+    fn through_bounces_shows_bounces_at_least_and_hides_gap() {
+        let mut h = harness();
+        assert_eq!(h.query_all_by_label("Bounces at least").count(), 0, "Aim off: no bounce row");
+        assert!(h.query_all_by_label("Gap").next().is_some());
+        {
+            let s = h.state_mut();
+            let me = s.emitter;
+            s.scene.things.get_mut(&me).unwrap().params.set("aim", Value::Choice("through_bounces".into()));
+            s.resolved = resolve(&s.scene, &s.kit.registry);
+        }
+        h.run();
+        assert!(h.query_all_by_label("Bounces at least").next().is_some());
+        assert!(h.query_all_by_label("Speed").next().is_some(), "Speed is the first try and the tie-break");
+        assert_eq!(h.query_all_by_label("Gap").count(), 0, "each ball sets its own leaving time");
+        let id = h.state().emitter;
+        let check = AimCheck { walls_move: true, ..AimCheck::default() };
+        h.state_mut().inspector.aim_checks.insert(id, check);
+        h.run();
+        assert!(h.query_by_label("The walls move: fewer balls find a way through.").is_some());
     }
 
     #[test]

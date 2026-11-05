@@ -276,6 +276,9 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
     let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
     ui.painter().image(preview.texture, rect, uv, style::UNTINTED);
+    if let Some(done) = studio.aiming() {
+        aiming_pill(&ui.painter_at(rect), rect, done);
+    }
 
     let camera = if world_mode { studio.world_nav.camera() } else { studio.playback.world().camera };
     let mut view = View { rect, scale: view_scale, camera, world: world_mode };
@@ -472,7 +475,9 @@ fn draw_picture(
     drawn: &mut Option<Drawn>,
     look: Option<(CameraView, (u32, u32))>,
 ) -> bool {
-    let catching_up = !studio.playback.seek_within(studio.sim_time(), Some(CATCH_UP_BUDGET));
+    // The background aiming holds the playback back until it has aimed the rounds before it.
+    let held = studio.aiming().is_some();
+    let catching_up = !studio.playback.seek_within(studio.sim_target(), Some(CATCH_UP_BUDGET)) || held;
     // While catching up, the picture shows the moment the simulation has got to.
     let shown_time = if catching_up { studio.playback.time() } else { studio.sim_time() };
     let now = Drawn {
@@ -507,6 +512,16 @@ fn draw_picture(
         *drawn = Some(now);
     }
     catching_up
+}
+
+/// "Aiming… 37%" in the picture's top-left corner while the background aiming holds it back.
+fn aiming_pill(painter: &egui::Painter, rect: Rect, done: f32) {
+    let text = format!("Aiming\u{2026} {:.0}%", (done * 100.0).floor());
+    let galley = painter.layout_no_wrap(text, FontId::proportional(13.0), style::TEXT_STRONG);
+    let at = rect.min + egui::vec2(10.0, 10.0);
+    let back = Rect::from_min_size(at, galley.size() + egui::vec2(16.0, 8.0));
+    painter.rect_filled(back, style::RADIUS, style::PILL);
+    painter.galley(at + egui::vec2(8.0, 4.0), galley, style::TEXT_STRONG);
 }
 
 /// The launch arrow's tip of a Balls thing, in world pixels.
@@ -816,6 +831,9 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
     }
 }
 
+/// The most found ways a selected emitter's latest round shows in the preview.
+const MOST_PATHS: usize = 400;
+
 /// A selected emitter's catch circle (dashed) and the ring or line its balls start from, turned
 /// as it is.
 fn emitter_overlay(
@@ -848,8 +866,19 @@ fn emitter_overlay(
         }
     }
     painter.circle_stroke(at(Vec2::ZERO), 9.0, Stroke::new(1.5, color));
+    // Aimed through bounces: the latest round's ways as its test flights found them (worked out
+    // once a round, never each frame), and where they meet.
+    if s.aim == bpe_kit::things::emitter::Aim::ThroughBounces {
+        let world = studio.playback.world();
+        if let Some(round) = bpe_kit::things::emitter::sim::emitter_state(world, id).and_then(|st| st.aimed.last()) {
+            for ball in round.balls.iter().flatten().filter(|b| b.reaches).take(MOST_PATHS) {
+                let points: Vec<Pos2> = ball.path.iter().map(|p| view.to_screen(*p)).collect();
+                painter.add(egui::Shape::line(points, Stroke::new(1.0, style::FAINT_MARK)));
+            }
+            painter.circle_stroke(view.to_screen(round.meet), 7.0, Stroke::new(1.5, color));
+        }
     // Aimed: the next round's ways to the target, faint, and where they meet.
-    if s.aim != bpe_kit::things::emitter::Aim::Off {
+    } else if s.aim != bpe_kit::things::emitter::Aim::Off {
         use bpe_kit::things::emitter::aim;
         let world = studio.playback.world();
         let (aimer, balls) = aim::next_round(world, id, aim::MOST_CHECKED);

@@ -4,10 +4,12 @@
 //! `foci.rs` what it can sit on.
 
 pub mod aim;
+pub mod aim_cache;
 pub mod draw;
 pub mod fire;
 pub mod foci;
 pub mod sim;
+pub mod test_fire;
 #[cfg(test)]
 pub(crate) mod test_scenes;
 
@@ -110,6 +112,10 @@ pub enum Aim {
     /// Each ball keeps its own direction; how fast it goes and when it leaves are worked out so
     /// it reaches the target at the time.
     KeepMyDirections,
+    /// Each ball keeps its own direction; how fast it goes and when it leaves are found by
+    /// test-firing a lone copy of it, so it reaches the target at the time after bouncing off
+    /// whatever is in the way.
+    ThroughBounces,
 }
 
 /// What happens to an aimed ball that can't reach the target in time.
@@ -243,7 +249,7 @@ pub struct EmitterSettings {
     #[setting(
         label = "Gap",
         group = "Fire",
-        when = "aim!=keep_my_directions",
+        when = "aim=off or aim=straight_in",
         range(0, 30),
         span(0, 1),
         unit = "s",
@@ -251,7 +257,7 @@ pub struct EmitterSettings {
     )]
     pub gap: f32,
     /// Which balls of a round go first, when there is a gap.
-    #[setting(label = "Order", group = "Fire", when = "gap and aim!=keep_my_directions")]
+    #[setting(label = "Order", group = "Fire", when = "gap and aim=off or gap and aim=straight_in")]
     pub order: FireOrder,
     /// What starts a round.
     #[setting(label = "Fire when", group = "Rounds", simple)]
@@ -324,6 +330,10 @@ pub struct EmitterSettings {
     /// What happens to a ball that can't reach the target in time.
     #[setting(label = "Can't reach", group = "Aim", when = "aim!=off")]
     pub cant_reach: CantReach,
+    /// How many times a ball aimed through bounces bounces at least before it gets there (the
+    /// fewest that work win).
+    #[setting(label = "Bounces at least", group = "Aim", when = "aim=through_bounces", range(0, 20))]
+    pub aim_bounces: u32,
     /// What happens to a ball that reaches it.
     #[setting(label = "Catches", group = "Catch", simple)]
     pub catches: Catches,
@@ -439,6 +449,7 @@ impl Default for EmitterSettings {
             aim_target: 0,
             arrive_after: 2.0,
             cant_reach: CantReach::Skip,
+            aim_bounces: 1,
             catches: Catches::Nothing,
             catch_size: 40.0,
             catch_from: CatchFrom::AnyBalls,
