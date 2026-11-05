@@ -567,7 +567,9 @@ impl World {
                         // pass leaves it just touching but slid along the wall from there, and
                         // the end of the substep notes that too (`note_corners`).
                         if let Some(h) = history.get_mut(mover) {
-                            h.corner(i, (step - 1) as f64 + hit_at as f64, start.lerp(moved_to, within));
+                            // In f64, as the end-of-substep moments are, so the two stay in order.
+                            let touched = (sub_index as f64 + within as f64) / sub_count.max(1) as f64;
+                            h.corner(i, (step - 1) as f64 + touched, start.lerp(moved_to, within));
                         }
                         log.push(Event {
                             step,

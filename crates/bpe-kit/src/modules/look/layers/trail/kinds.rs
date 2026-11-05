@@ -191,7 +191,7 @@ pub fn path(head: Vec2, history: &History, ball: usize, newest_ago: f32, interva
 pub const KEEP_WHOLE: usize = 240;
 
 /// Drops points of `path` older than [`KEEP_WHOLE`] that a long Line doesn't need: it keeps
-/// every bounce and corner (where the way turns more than 10°) and one sample in 4 (under 30 s
+/// every corner (where the way turns more than 10°, as at a bounce) and one sample in 4 (under 30 s
 /// old), 8 (under 60 s) or 16 (older) between them. Which samples those are is counted from the
 /// start of the clip (`newest` is the newest sample's number), so a point kept stays kept as the
 /// ball moves on.
@@ -213,8 +213,12 @@ pub fn thin(path: &mut Path, newest: u64) {
             if k > 0 && !path.corner[k] {
                 back += 1;
             }
-            if k <= KEEP_WHOLE || k + 1 >= n || path.corner[k] {
+            if k <= KEEP_WHOLE || k + 1 >= n {
                 return true;
+            }
+            // A bounce between samples stays only where it turns.
+            if path.corner[k] {
+                return corner(k);
             }
             let ago = path.ago[k];
             let every = if ago < 30.0 {
