@@ -475,6 +475,7 @@ mod tests {
             number: &number,
             turned: &turned,
             last_hits: &[],
+            own: None,
         };
         ball_emissions(&layer, ThingId(2), &balls, &|_| true, log, 240, 1.0, usize::MAX)
     }

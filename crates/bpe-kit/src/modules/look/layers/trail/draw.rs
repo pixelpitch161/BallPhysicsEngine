@@ -11,7 +11,7 @@ use glam::Vec2;
 
 use super::kinds::{self, Cut, Path};
 use super::{TrailKind, TrailLayer, TrailSource, Twist};
-use crate::modules::look::layers::around::AroundLayer;
+use crate::modules::look::layers::around::{AroundKind, AroundLayer};
 use crate::modules::look::layers::around_subs::{
     Extras, GLOW, HitInfo, OUTLINE, OWN, Pieces, SHADOW, coloured, darker, glow_light, like_layer, outline_reach,
     particle_with_extras, shadow_offset, sub_colour,
@@ -50,9 +50,17 @@ pub struct Balls<'a> {
     /// Each ball's last hit: how many seconds ago (`bpe_gfx::NO_HIT`'s age without one) and how
     /// strong, by row.
     pub last_hits: &'a [(f32, f32)],
+    /// Ball `i`'s own trails and particles, when the look's settings for them vary across the
+    /// balls (see `layers::vary`); none when every ball wears them as the card says.
+    pub own: Option<&'a dyn Fn(usize) -> std::rc::Rc<Vec<AroundLayer>>>,
 }
 
 impl Balls<'_> {
+    /// Ball `i`'s own trails and particles, when they vary across the balls.
+    pub fn own_layers(&self, i: usize) -> Option<std::rc::Rc<Vec<AroundLayer>>> {
+        self.own.map(|f| f(i))
+    }
+
     fn last_hit(&self, i: usize) -> Option<(f32, f32)> {
         self.last_hits.get(i).copied().filter(|h| h.0 < bpe_gfx::NO_HIT[0])
     }
@@ -133,7 +141,7 @@ fn own_colour(cx: &DrawCx, paint: &Paint, path: &Path, k: usize, speed: f32, see
 
 /// Draws `trail` (the around layer `layer`) for every ball it is worn by, into `frame`.
 pub fn draw(cx: &DrawCx, layer: &AroundLayer, trail: &TrailLayer, balls: &Balls, frame: &mut Frame) {
-    if trail.kind == TrailKind::Ghosts || trail.brightness <= 0.0 {
+    if trail.kind == TrailKind::Ghosts || (trail.brightness <= 0.0 && balls.own.is_none()) {
         return;
     }
     let mut pieces = Pieces::default();
@@ -144,12 +152,22 @@ pub fn draw(cx: &DrawCx, layer: &AroundLayer, trail: &TrailLayer, balls: &Balls,
     let newest = balls.history.newest_step().unwrap_or(0) / balls.history.every();
     // Dots and puffs share the particles' cap.
     let full = |pieces: &Pieces| pieces.particles[OWN].len() >= MAX_PARTICLES;
+    let (base_layer, base_trail) = (layer, trail);
     for i in 0..bodies.len() {
-        if !bodies.alive[i] || !layer.applies((balls.number)(i)) {
+        if !bodies.alive[i] || !base_layer.applies((balls.number)(i)) {
             continue;
         }
         if full(&pieces) {
             break;
+        }
+        // The ball's own copy of the layer, when its settings vary across the balls.
+        let own = balls.own_layers(i);
+        let (layer, trail) = match own.as_ref().and_then(|o| o.iter().find(|a| a.id == base_layer.id)) {
+            Some(mine @ AroundLayer { kind: AroundKind::Trail(t), .. }) => (mine, &**t),
+            _ => (base_layer, base_trail),
+        };
+        if trail.brightness <= 0.0 {
+            continue;
         }
         let speed = bodies.velocity[i].length();
         if speed < trail.least_speed {
@@ -236,7 +254,7 @@ pub fn draw(cx: &DrawCx, layer: &AroundLayer, trail: &TrailLayer, balls: &Balls,
             TrailKind::Ghosts => {}
         }
     }
-    pieces.into_frame(frame, trail.place == AroundPlace::InFront);
+    pieces.into_frame(frame, base_trail.place == AroundPlace::InFront);
 }
 
 /// One ball's part of a trail layer.
@@ -461,6 +479,7 @@ mod tests {
             number: &number,
             turned: &turned,
             last_hits: &hits,
+            own: None,
         };
         let trail = TrailLayer { restart: true, ..TrailLayer::default() };
         let path = balls.path(&trail, 0);

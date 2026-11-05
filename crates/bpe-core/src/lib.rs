@@ -25,6 +25,7 @@ pub mod sound_values;
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;
 pub mod value;
+pub mod vary;
 
 pub use address::Address;
 pub use animation::{
@@ -47,6 +48,7 @@ pub use settings::{
 pub use shape_path::ShapePath;
 pub use sound_values::{CurvePoint, MAX_CURVE_POINTS, ModRoute, NoteSlot, ROUTES_KEY, SLOTS_KEY, curve_is_valid};
 pub use value::{Params, Stroke, Strokes, Value, ValueType};
+pub use vary::{BallSpread, Vary, VaryBy, VaryEase, VaryUse};
 
 /// `#[derive(Settings)]` and `#[derive(Choice)]`.
 pub use bpe_settings_derive::{Choice, Settings};

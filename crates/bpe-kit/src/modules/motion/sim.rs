@@ -1,7 +1,7 @@
 //! Gravity, drag and wind on every ball that uses the module.
 
 use bpe_core::{Params, Settings};
-use bpe_runtime::{Bodies, ModuleSim, ThingState, state};
+use bpe_runtime::{Bodies, ModuleSim, SimCx, ThingState, state};
 use glam::Vec2;
 
 use super::BasicMotion;
@@ -37,6 +37,19 @@ impl ModuleSim for BasicMotionSim {
                 *v = (*v + pull) * keep;
             }
         }
+    }
+
+    fn per_ball(&self) -> bool {
+        true
+    }
+
+    /// The same as `forces`, on one ball with its own settings.
+    fn forces_one(&self, st: &dyn ThingState, bodies: &mut Bodies, item: usize, gravity: Vec2, dt: f32, _cx: &SimCx) {
+        let m = &state::<MotionState>(st).settings;
+        let pull = (gravity * m.gravity_scale + m.wind) * dt;
+        let keep = (1.0 - m.drag * dt).max(0.0);
+        let v = &mut bodies.velocity[item];
+        *v = (*v + pull) * keep;
     }
 }
 

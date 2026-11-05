@@ -1,6 +1,10 @@
 //! Drawing the balls and their hit flashes, through the layers of their Look.
 
-use bpe_core::{Blend, ResolvedThing, Settings, SlotId, ThingId};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use bpe_core::{BallSpread, Blend, ResolvedThing, Settings, SlotId, ThingId};
 use bpe_gfx::{Around, DrawCx, FlashInstance, Frame, HitMark, LayeredRun, ThingDraw, blend_alpha, thing_code};
 use bpe_runtime::{Bodies, EventKind};
 
@@ -9,6 +13,7 @@ use crate::modules::look::layers::around::{AroundKind, AroundLayer, around_layer
 use crate::modules::look::layers::gpu::{Stack, SubLayer};
 use crate::modules::look::layers::group::{BallInGroup, GroupShapeInfo, group_colour, mixed};
 use crate::modules::look::layers::trail::{self, AroundPlace, TrailKind, draw::Balls};
+use crate::modules::look::layers::vary::{VariedLook, spread_of};
 use crate::paint::{colour_at, vary_gpu};
 use crate::things::balls::BallsSettings;
 use crate::things::balls::sim::{BallsState, colour_turn, look_turn};
@@ -67,9 +72,101 @@ pub fn ball_seed(thing: ThingId, index: usize) -> f32 {
     (x >> 8) as f32 / (1u32 << 24) as f32
 }
 
-/// The stack of layers the thing being drawn wears, when its Look card is a layered one.
-fn stack_of(cx: &DrawCx) -> Option<Stack> {
-    Stack::of(cx.resolved.slots.get(&SlotId::Look)?)
+/// What each ball of the thing being drawn wears: the Look card's own stack, or, when its
+/// settings vary across the balls, the stack at the ball's place in their spreads (and the same
+/// for its trails and particles).
+pub(crate) struct Worn<'a> {
+    look: VariedLook<'a>,
+    /// The stacks the balls wear, the card's own first.
+    stacks: Vec<Rc<Stack>>,
+    /// Which of `stacks` each body row wears; empty when every ball wears the first.
+    which: Vec<u32>,
+    /// Each body row's place in the spreads, when its trails and particles vary.
+    spreads: Vec<BallSpread>,
+}
+
+impl<'a> Worn<'a> {
+    /// What the balls of the thing `cx` draws wear, when its Look card is a layered one.
+    pub(crate) fn of(cx: &DrawCx<'a>) -> Option<Worn<'a>> {
+        let look = VariedLook::of(cx.resolved.slots.get(&SlotId::Look)?)?;
+        let rows = cx.world.bodies.get(&cx.thing.id).map_or(0, |b| b.len());
+        let spreads: Vec<BallSpread> = if look.plain() && look.plain_around() {
+            Vec::new()
+        } else {
+            (0..rows).map(|r| spread_of(cx, r)).collect()
+        };
+        let mut stacks = vec![look.base.clone()];
+        let mut which = Vec::new();
+        if !look.plain() {
+            let mut index: HashMap<Vec<u16>, u32> = HashMap::new();
+            which = spreads
+                .iter()
+                .map(|s| {
+                    *index.entry(look.key(s)).or_insert_with_key(|key| {
+                        stacks.push(look.stack_at(key));
+                        stacks.len() as u32 - 1
+                    })
+                })
+                .collect();
+        }
+        let spreads = if look.plain_around() { Vec::new() } else { spreads };
+        Some(Worn { look, stacks, which, spreads })
+    }
+
+    /// The card's own stack, as every ball wears it when nothing varies.
+    pub(crate) fn base(&self) -> &Stack {
+        &self.stacks[0]
+    }
+
+    /// Which of the stacks body row `row` wears.
+    fn index(&self, row: usize) -> usize {
+        self.which.get(row).map_or(0, |&w| w as usize)
+    }
+
+    /// The stack body row `row` wears.
+    fn stack(&self, row: usize) -> &Stack {
+        &self.stacks[self.index(row)]
+    }
+
+    /// Body row `row`'s own trails and particles, when they vary across the balls.
+    fn around(&self, row: usize) -> Option<Rc<Vec<AroundLayer>>> {
+        let spread = self.spreads.get(row)?;
+        Some(self.look.around_for(spread))
+    }
+
+    /// Whether the balls' trails and particles vary.
+    fn around_varies(&self) -> bool {
+        !self.spreads.is_empty()
+    }
+}
+
+/// Each ball's colour, as [`colours`] works it out for the stack it wears.
+struct Colours<'w, 'a> {
+    worn: &'w Worn<'a>,
+    cx: &'w DrawCx<'a>,
+    bodies: &'a Bodies,
+    seen: bool,
+    /// Each stack's colours, made the first time a ball wearing it is asked about.
+    made: RefCell<Vec<Option<Rc<dyn Fn(usize) -> [f32; 4] + 'a>>>>,
+}
+
+impl<'w, 'a> Colours<'w, 'a> {
+    fn new(worn: &'w Worn<'a>, cx: &'w DrawCx<'a>, bodies: &'a Bodies, seen: bool) -> Self {
+        Colours { worn, cx, bodies, seen, made: RefCell::new(vec![None; worn.stacks.len()]) }
+    }
+
+    /// Body row `i`'s colour.
+    fn get(&self, i: usize) -> [f32; 4] {
+        let at = self.worn.index(i);
+        let made = self.made.borrow()[at].clone();
+        let f = made.unwrap_or_else(|| {
+            let f: Rc<dyn Fn(usize) -> [f32; 4] + 'a> =
+                Rc::new(colours(&self.worn.stacks[at], self.cx, self.bodies, self.seen));
+            self.made.borrow_mut()[at] = Some(f.clone());
+            f
+        });
+        f(i)
+    }
 }
 
 /// The linear-light colour of each ball of the thing being drawn: its Body's colours (painted by
@@ -78,9 +175,19 @@ fn stack_of(cx: &DrawCx) -> Option<Stack> {
 /// time), when it has a layered look and bodies. Trails and particles take their colours from
 /// here too, with the group's colour in even where the GPU mixes it into the ball.
 pub fn ball_colors<'a>(cx: &DrawCx<'a>) -> Option<impl Fn(usize) -> [f32; 4] + 'a> {
-    let stack = stack_of(cx)?;
+    let worn = Worn::of(cx)?;
     let bodies = cx.world.bodies.get(&cx.thing.id)?;
-    Some(colours(&stack, cx, bodies, true))
+    if worn.stacks.len() == 1 {
+        let one = colours(worn.base(), cx, bodies, true);
+        return Some(Box::new(one) as Box<dyn Fn(usize) -> [f32; 4] + 'a>);
+    }
+    let each: Vec<Box<dyn Fn(usize) -> [f32; 4] + 'a>> = worn
+        .stacks
+        .iter()
+        .map(|s| Box::new(colours(s, cx, bodies, true)) as Box<dyn Fn(usize) -> [f32; 4] + 'a>)
+        .collect();
+    let which = worn.which.clone();
+    Some(Box::new(move |i: usize| each[which.get(i).map_or(0, |&w| w as usize)](i)))
 }
 
 /// The group the thing's balls belong to, and what the gradient reads about it.
@@ -165,16 +272,16 @@ impl ThingDraw for BallsDraw {
     }
 
     fn draw(&self, cx: &DrawCx, frame: &mut Frame) {
-        let Some(stack) = stack_of(cx) else { return };
-        let part = stack.split().unwrap_or(0);
-        draw_part(cx, frame, &stack, part);
+        let Some(worn) = Worn::of(cx) else { return };
+        let part = worn.base().split().unwrap_or(0);
+        draw_part(cx, frame, &worn, part);
     }
 
     /// The layers above the Blend layer, painted normally over the blended rest.
     fn draw_over(&self, cx: &DrawCx, frame: &mut Frame) {
-        let Some(stack) = stack_of(cx) else { return };
-        if let Some(cut) = stack.split() {
-            draw_part(cx, frame, &stack, cut | OVER);
+        let Some(worn) = Worn::of(cx) else { return };
+        if let Some(cut) = worn.base().split() {
+            draw_part(cx, frame, &worn, cut | OVER);
         }
     }
 
@@ -194,18 +301,22 @@ impl ThingDraw for BallsDraw {
     }
 
     fn draw_around(&self, cx: &DrawCx, index: usize, frame: &mut Frame) {
-        let Some(stack) = stack_of(cx) else { return };
+        let Some(worn) = Worn::of(cx) else { return };
         let Some(layer) = own_around(cx.resolved).into_iter().nth(index) else { return };
+        let memory = around_memory(cx, &worn, &layer);
         match &layer.kind {
             AroundKind::Trail(trail) => {
-                let memory = hit_memory(cx, &layer);
-                with_balls(cx, &stack, memory, |balls| trail::draw::draw(cx, &layer, trail, balls, frame));
+                with_balls(cx, &worn, memory, |balls| trail::draw::draw(cx, &layer, trail, balls, frame));
             }
             AroundKind::Particles(particles) => {
-                let memory = hit_memory(cx, &layer);
-                with_balls(cx, &stack, memory, |balls| {
+                with_balls(cx, &worn, memory, |balls| {
                     crate::modules::look::layers::particles::draw::draw_balls(
-                        cx, &layer, particles, balls, &stack, frame,
+                        cx,
+                        &layer,
+                        particles,
+                        balls,
+                        worn.base(),
+                        frame,
                     )
                 });
             }
@@ -243,20 +354,42 @@ fn hit_memory(cx: &DrawCx, layer: &AroundLayer) -> f32 {
     memory
 }
 
-/// Runs `f` with what trails read about the balls of the thing `cx` draws, wearing `stack`,
+/// How far back around layer `layer` reads the balls' hits, at most: as [`hit_memory`] says for
+/// the layer as the card has it, or for any ball's own copy of it.
+fn around_memory(cx: &DrawCx, worn: &Worn, layer: &AroundLayer) -> f32 {
+    let mut memory = hit_memory(cx, layer);
+    if worn.around_varies() {
+        let mut seen: Vec<*const Vec<AroundLayer>> = Vec::new();
+        for row in 0..worn.spreads.len() {
+            let Some(own) = worn.around(row) else { continue };
+            if seen.contains(&Rc::as_ptr(&own)) {
+                continue;
+            }
+            seen.push(Rc::as_ptr(&own));
+            if let Some(mine) = own.iter().find(|a| a.id == layer.id) {
+                memory = memory.max(hit_memory(cx, mine));
+            }
+        }
+    }
+    memory
+}
+
+/// Runs `f` with what trails read about the balls of the thing `cx` draws, wearing `worn`,
 /// their hits read `memory` seconds back; nothing without bodies or a history.
-fn with_balls<R>(cx: &DrawCx, stack: &Stack, memory: f32, f: impl FnOnce(&Balls) -> R) -> Option<R> {
+fn with_balls<R>(cx: &DrawCx, worn: &Worn, memory: f32, f: impl FnOnce(&Balls) -> R) -> Option<R> {
     let id = cx.thing.id;
     let bodies = cx.world.bodies.get(&id)?;
     let history = cx.world.history.get(&id)?;
     let dt = cx.world.dt();
     let newest = history.newest_step().map_or(0.0, |s| s as f64 * dt as f64);
-    let colour = colours(stack, cx, bodies, true);
-    let group = group_cx(stack, cx);
+    let colours = Colours::new(worn, cx, bodies, true);
+    let colour = |i: usize| colours.get(i);
+    let group = group_cx(worn.base(), cx);
     let number = |i: usize| group.number(i);
     let time = cx.time as f32;
+    let own = |i: usize| worn.around(i).unwrap_or_default();
     let turned = |i: usize, ago: f32| {
-        stack.turning.as_ref().map(|t| {
+        worn.stack(i).turning.as_ref().map(|t| {
             let own = if group.state.is_some() { look_turn(&group.look, group.number(i)) } else { 0.0 };
             (t.turn + t.spin * (time - ago) + own).to_radians()
         })
@@ -271,6 +404,7 @@ fn with_balls<R>(cx: &DrawCx, stack: &Stack, memory: f32, f: impl FnOnce(&Balls)
         number: &number,
         turned: &turned,
         last_hits: &last,
+        own: worn.around_varies().then_some(&own as &dyn Fn(usize) -> Rc<Vec<AroundLayer>>),
     };
     Some(f(&balls))
 }
@@ -281,7 +415,7 @@ fn with_balls<R>(cx: &DrawCx, stack: &Stack, memory: f32, f: impl FnOnce(&Balls)
 fn draw_ghosts(
     cx: &DrawCx,
     frame: &mut Frame,
-    stack: &Stack,
+    worn: &Worn,
     part: u32,
     made: &[(usize, bpe_gfx::LayeredInstance)],
     seen: &dyn Fn(usize) -> [f32; 4],
@@ -290,13 +424,16 @@ fn draw_ghosts(
     let (mut behind, mut front) = (Vec::new(), Vec::new());
     let (mut under, mut over_behind, mut over_front) = (Vec::new(), Vec::new(), Vec::new());
     if !ghosts.is_empty() {
-        let memory = ghosts.iter().map(|g| hit_memory(cx, g)).fold(0.0, f32::max);
-        with_balls(cx, stack, memory, |balls| {
-            for layer in &ghosts {
-                let AroundKind::Trail(t) = &layer.kind else { continue };
-                debug_assert_eq!(t.kind, TrailKind::Ghosts);
-                let in_front = t.place == AroundPlace::InFront;
+        let memory = ghosts.iter().map(|g| around_memory(cx, worn, g)).fold(0.0, f32::max);
+        with_balls(cx, worn, memory, |balls| {
+            for base in &ghosts {
                 for (i, ball) in made {
+                    // The ball's own copy of the layer, when its trails vary.
+                    let own = balls.own_layers(*i);
+                    let layer = own.as_ref().and_then(|o| o.iter().find(|a| a.id == base.id)).unwrap_or(base);
+                    let AroundKind::Trail(t) = &layer.kind else { continue };
+                    debug_assert_eq!(t.kind, TrailKind::Ghosts);
+                    let in_front = t.place == AroundPlace::InFront;
                     for g in trail::draw::ghosts_of(layer, t, balls, *i) {
                         let mut copy = *ball;
                         copy.center = g.at.into();
@@ -322,38 +459,43 @@ fn draw_ghosts(
 /// The bit of a ball instance's `range.z` that draws the layers above its Blend layer.
 const OVER: u32 = 0x1_0000;
 
-/// Draws the balls of the thing `cx` is drawing, wearing `stack`: whole (`part` 0), the layers
-/// under the Blend layer with the flashes (`part` the first record above it), or the layers above
-/// it (that with [`OVER`]): see layers_walk.wgsl.
-fn draw_part(cx: &DrawCx, frame: &mut Frame, stack: &Stack, part: u32) {
+/// Draws the balls of the thing `cx` is drawing, each wearing its stack of `worn`: whole (`part`
+/// 0), the layers under the Blend layer with the flashes (`part` the first record above it), or
+/// the layers above it (that with [`OVER`]): see layers_walk.wgsl. The layers' kinds and order
+/// are the same for every ball, so the card's own stack says how the balls split and which
+/// program draws them; only the settings in their records differ.
+fn draw_part(cx: &DrawCx, frame: &mut Frame, worn: &Worn, part: u32) {
     let id = cx.thing.id;
     let Some(bodies) = cx.world.bodies.get(&id) else { return };
-    let color = colours(stack, cx, bodies, false);
-    let seen = colours(stack, cx, bodies, true);
+    let stack = worn.base();
+    let color = Colours::new(worn, cx, bodies, false);
+    let seen_by = Colours::new(worn, cx, bodies, true);
+    let seen = |i: usize| seen_by.get(i);
     let time = cx.time as f32;
     let group = group_cx(stack, cx);
     let on_gpu = stack.group_on_gpu();
-    let records = stack.records(&mut frame.gradients, &mut frame.mask_tiles, time);
+    // Each stack's records, written the first time a ball wearing it is drawn.
+    let mut records: Vec<Option<Vec<bpe_gfx::LayerGpu>>> = vec![None; worn.stacks.len()];
     // Balls given layers of their own wear their own range of records: one range for each
-    // set of layers worn, most scenes one range for every ball.
-    let mut ranges: std::collections::HashMap<Vec<bool>, (u32, u32)> = std::collections::HashMap::new();
-    let mut range_for = |frame: &mut Frame, number: u32| -> (u32, u32) {
-        let wears: Vec<bool> = if stack.has_only() {
-            (0..stack.drawn.len()).map(|k| stack.applies(k, number)).collect()
-        } else {
-            Vec::new()
-        };
-        *ranges.entry(wears).or_insert_with_key(|wears| {
+    // stack and set of layers worn, most scenes one range for every ball.
+    let mut ranges: HashMap<(usize, Vec<bool>), (u32, u32)> = HashMap::new();
+    let mut range_for = |frame: &mut Frame, at: usize, number: u32| -> (u32, u32) {
+        let own = &worn.stacks[at];
+        let wears: Vec<bool> =
+            if own.has_only() { (0..own.drawn.len()).map(|k| own.applies(k, number)).collect() } else { Vec::new() };
+        *ranges.entry((at, wears)).or_insert_with_key(|(_, wears)| {
+            let all = records[at].get_or_insert_with(|| own.records(&mut frame.gradients, &mut frame.mask_tiles, time));
             let first = frame.look_layers.len() as u32;
-            let picked = if wears.is_empty() { records.clone() } else { stack.records_for(&records, |k| wears[k]) };
+            let picked = if wears.is_empty() { all.clone() } else { own.records_for(all, |k| wears[k]) };
             let count = picked.len() as u32;
             frame.look_layers.extend(picked);
             (first, count)
         })
     };
     // Each ball's own variation, only read when a pattern paints from its own gradient.
-    let fill = for_balls(stack.body.fill.clone());
-    let vary = stack.varies().then(|| BallInputs::new(cx, bodies, &[&fill]));
+    let fills: Vec<_> = worn.stacks.iter().map(|s| for_balls(s.body.fill.clone())).collect();
+    let vary =
+        worn.stacks.iter().any(|s| s.varies()).then(|| BallInputs::new(cx, bodies, &fills.iter().collect::<Vec<_>>()));
     // Group shaders spread across the square round the group's places, a ball wide past them.
     let shaded = stack.group_shaders().next().is_some();
     // The biggest a ball of the group can be, whether let go yet or not.
@@ -362,7 +504,8 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, stack: &Stack, part: u32) {
     let side = 2.0 * (group.info.furthest + widest).max(1.0);
     // Flash and Colour on hit sub-layers read each ball's last hit and its hits so far.
     let hits = stack.needs_hits();
-    let last = if hits { last_hits(cx, bodies.len(), stack.flash_memory()) } else { Vec::new() };
+    let memory = worn.stacks.iter().map(|s| s.flash_memory()).fold(0.0, f32::max);
+    let last = if hits { last_hits(cx, bodies.len(), memory) } else { Vec::new() };
     let start = frame.layered.len() as u32;
     let mut made: Vec<(usize, bpe_gfx::LayeredInstance)> = Vec::with_capacity(bodies.len());
     for i in 0..bodies.len() {
@@ -371,26 +514,29 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, stack: &Stack, part: u32) {
         }
         let seed = ball_seed(id, i);
         let code = thing_code(id) + seed * 0.5;
-        let own = vary.as_ref().map_or(bpe_gfx::NO_VARY, |v| {
-            let at = v.get(&fill, i);
-            vary_gpu(&fill, at.seed, at.time)
+        let at = worn.index(i);
+        let mine = &worn.stacks[at];
+        let own = vary.as_ref().filter(|_| mine.varies()).map_or(bpe_gfx::NO_VARY, |v| {
+            let fill = &fills[at];
+            let paint = v.get(fill, i);
+            vary_gpu(fill, paint.seed, paint.time)
         });
         let (center, velocity, radius) = (bodies.position[i], bodies.velocity[i], bodies.radius[i]);
-        let body = blend_alpha(color(i));
+        let body = blend_alpha(color.get(i));
         let number = group.number(i);
-        let (first, count) = range_for(frame, number);
-        let mut ball = stack.instance(body, center, velocity, radius, time, code, seed, own, first, count);
+        let (first, count) = range_for(frame, at, number);
+        let mut ball = mine.instance(body, center, velocity, radius, time, code, seed, own, first, count);
         ball.range[2] = part;
         if hits {
             let (age, strength) = last.get(i).copied().unwrap_or((bpe_gfx::NO_HIT[0], 0.0));
             ball.hit = [age, strength, bodies.hits.get(i).copied().unwrap_or(0) as f32, 0.0];
         }
-        if stack.body_each_ball() {
+        if mine.body_each_ball() {
             // A gradient body turns by the ball's own hue turns, as a plain body's colour does.
             let hits = bodies.hits.get(i).copied().unwrap_or(0) as f32;
             let spin = if group.state.is_some() { colour_turn(&group.look, number) } else { 0.0 };
             // The Variety turn is in turns already; the reaction's is degrees a hit.
-            ball.vary[3] = spin + stack.hue_per_hit() * hits / 360.0;
+            ball.vary[3] = spin + mine.hue_per_hit() * hits / 360.0;
         }
         if let Some(g) = on_gpu {
             let c = group_colour(g, &group.info, &group.ball(bodies, i, time));
@@ -406,7 +552,7 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, stack: &Stack, part: u32) {
         }
         made.push((i, ball));
     }
-    draw_ghosts(cx, frame, stack, part, &made, &seen);
+    draw_ghosts(cx, frame, worn, part, &made, &seen);
     // Which pipeline draws them: the stack's in-ball program, once per frame, or the plain one.
     let program = stack.program().map(|p| match frame.programs.iter().position(|q| q.key == p.key) {
         Some(i) => i as u32,
@@ -424,14 +570,19 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, stack: &Stack, part: u32) {
     // Recent hits, for the flashes here and for the particles and the scene's effects. Only the
     // flashes' worth is scanned when nothing else wants them.
     let rate = cx.world.steps_per_second;
-    let flash = stack.flash.as_ref().filter(|f| f.flash > 0.0 && f.flash_seconds > 0.0);
+    let flashing = |s: &Stack| s.flash.as_ref().is_some_and(|f| f.flash > 0.0 && f.flash_seconds > 0.0);
+    let flash = worn
+        .stacks
+        .iter()
+        .any(|s| flashing(s))
+        .then(|| worn.stacks.iter().filter_map(|s| s.flash.as_ref()).map(|f| f.flash_seconds).fold(0.0, f32::max));
     // The scene settings' effects aren't passed down but still pulse on every hit.
     let scene_effects = cx.scene.things.get(&ThingId::ROOT).is_some_and(|r| r.slots.contains_key(&SlotId::Shader));
     let wants_hits = scene_effects;
     let memory = if wants_hits {
         HIT_MEMORY
-    } else if let Some(f) = flash {
-        f.flash_seconds as f64
+    } else if let Some(seconds) = flash {
+        seconds as f64
     } else {
         return;
     };
@@ -453,7 +604,13 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, stack: &Stack, part: u32) {
             speed: e.speed,
             color: seen(e.a.item as usize),
         });
-        let Some(f) = flash else { continue };
+        if flash.is_none() {
+            continue;
+        }
+        let Some(f) = worn.stack(e.a.item as usize).flash.as_ref().filter(|f| f.flash > 0.0 && f.flash_seconds > 0.0)
+        else {
+            continue;
+        };
         let age = (cx.time - time) as f32 / f.flash_seconds;
         if !(0.0..=1.0).contains(&age) {
             continue;
@@ -1155,5 +1312,134 @@ mod tests {
         assert!(a.iter().any(|t| t.abs() > 0.1) && a.iter().all(|t| t.abs() <= 90f32.to_radians() + 1e-5));
         let plain = group_frame(6, |_| {});
         assert!(plain.layered.iter().all(|b| b.form[2] == 0.0));
+    }
+
+    /// The new scene's ball made a line of `count`, its look given a layer of `kind` whose
+    /// setting `key` varies by Number from `from` to `to`; with `vary` false, left at `from`.
+    fn varied_line(
+        count: u32,
+        kind: &str,
+        key: &str,
+        from: Value,
+        to: Value,
+        vary: bool,
+    ) -> (Scene, bpe_core::LayerId) {
+        let kit = kit();
+        let reg = &kit.registry;
+        let mut scene = new_scene(reg);
+        let ball = scene.things.get_mut(&BALL).unwrap();
+        ball.params.set("group", Value::Bool(true));
+        ball.params.set("shape", Value::Choice("line".into()));
+        ball.params.set("count", Value::Int(count as i64));
+        ball.params.set("radius", Value::Number(10.0));
+        let layer = scene.add_layer(reg, BALL, SlotId::Look, kind).unwrap();
+        let at = bpe_core::Address::on(BALL, SlotId::Look, &bpe_core::layered_key(layer, key));
+        scene.set_at(reg, &at, from).unwrap();
+        if vary {
+            scene.start_varying(reg, &at).unwrap();
+            let to_at = bpe_core::Address { key: bpe_core::vary::to_key(&at.key), ..at.clone() };
+            scene.set_at(reg, &to_at, to).unwrap();
+        }
+        (scene, layer)
+    }
+
+    /// Each layered ball's (by row) record of `code`'s first number.
+    fn record_values(frame: &Frame, code: u32) -> Vec<f32> {
+        frame
+            .layered
+            .iter()
+            .map(|b| {
+                let r = b.range;
+                let records = &frame.look_layers[r[0] as usize..(r[0] + r[1]) as usize];
+                records.iter().find(|l| l.head[0] == code).map_or(-1.0, |l| l.p0[0])
+            })
+            .collect()
+    }
+
+    /// The frame of `scene` at `time`.
+    fn frame_of(scene: &Scene, time: f64) -> Frame {
+        let kit = kit();
+        let resolved = bpe_core::resolve(scene, &kit.registry);
+        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+        let mut playback = bpe_runtime::Playback::new(scene, &resolved, kit.sims.clone());
+        playback.seek(time);
+        let mut frame = Frame::default();
+        build_frame(scene, &resolved, playback.world(), playback.log(), time, &kit.draws, &mut frame);
+        frame
+    }
+
+    #[test]
+    fn a_varied_layer_setting_gives_each_ball_its_own_records() {
+        use crate::modules::look::layers::OUTLINE;
+        let (scene, _) = varied_line(5, OUTLINE, "width", Value::Number(0.0), Value::Number(20.0), true);
+        let frame = frame_of(&scene, 0.0);
+        let widths = record_values(&frame, LayerGpu::OUTLINE);
+        assert_eq!(widths.len(), 5);
+        // Each ball by its number, the first at From and the last at To.
+        let mut sorted = widths.clone();
+        sorted.sort_by(f32::total_cmp);
+        assert_eq!(sorted.first(), Some(&0.0));
+        assert_eq!(sorted.last(), Some(&20.0));
+        assert!((sorted[2] - 10.0).abs() < 0.05, "{widths:?}");
+        // Unvaried, every ball shares one set of records.
+        let (plain, _) = varied_line(5, OUTLINE, "width", Value::Number(0.0), Value::Number(20.0), false);
+        let frame = frame_of(&plain, 0.0);
+        assert!(record_values(&frame, LayerGpu::OUTLINE).iter().all(|w| *w == 0.0));
+        let ranges: std::collections::BTreeSet<u32> = frame.layered.iter().map(|b| b.range[0]).collect();
+        assert_eq!(ranges.len(), 1);
+    }
+
+    #[test]
+    fn a_vary_to_the_same_value_draws_the_balls_as_before() {
+        use crate::modules::look::layers::OUTLINE;
+        let (same, _) = varied_line(4, OUTLINE, "width", Value::Number(6.0), Value::Number(6.0), true);
+        let (plain, _) = varied_line(4, OUTLINE, "width", Value::Number(6.0), Value::Number(6.0), false);
+        let (a, b) = (frame_of(&same, 0.5), frame_of(&plain, 0.5));
+        assert_eq!(record_values(&a, LayerGpu::OUTLINE), record_values(&b, LayerGpu::OUTLINE));
+        let strip = |f: &Frame| f.layered.iter().map(|l| (l.center, l.radius, l.body)).collect::<Vec<_>>();
+        assert_eq!(strip(&a), strip(&b));
+    }
+
+    #[test]
+    fn many_balls_share_at_most_one_set_of_records_per_step() {
+        use crate::modules::look::layers::OUTLINE;
+        let (scene, _) = varied_line(1500, OUTLINE, "width", Value::Number(0.0), Value::Number(20.0), true);
+        let frame = frame_of(&scene, 0.0);
+        assert_eq!(frame.layered.len(), 1500);
+        let ranges: std::collections::BTreeSet<u32> = frame.layered.iter().map(|b| b.range[0]).collect();
+        assert!(ranges.len() <= bpe_core::vary::VARY_LEVELS as usize, "{}", ranges.len());
+        assert!(ranges.len() > 500, "the line's balls spread over many steps: {}", ranges.len());
+    }
+
+    #[test]
+    fn a_varied_trail_setting_changes_each_ball_s_own_trail() {
+        use crate::modules::look::layers::trail::TRAIL;
+        // The first ball's trail is dark, so it draws none; the last's is bright.
+        let (scene, _) = varied_line(2, TRAIL, "brightness", Value::Number(0.0), Value::Number(1.0), true);
+        let varied = frame_of(&scene, 1.0);
+        let (plain, _) = varied_line(2, TRAIL, "brightness", Value::Number(1.0), Value::Number(1.0), false);
+        let both = frame_of(&plain, 1.0);
+        let strips = |f: &Frame| f.trails.len() + f.trails_front.len();
+        assert!(strips(&both) > 0);
+        assert!(strips(&varied) > 0, "the bright ball still has its trail");
+        assert!(strips(&varied) < strips(&both), "{} of {}", strips(&varied), strips(&both));
+    }
+
+    #[test]
+    fn a_varied_particles_setting_changes_each_ball_s_own_particles() {
+        use crate::modules::look::layers::particles::PARTICLES;
+        let steady = |scene: &mut Scene, layer| {
+            let at = bpe_core::Address::on(BALL, SlotId::Look, &bpe_core::layered_key(layer, "emit"));
+            scene.set_at(&kit().registry, &at, Value::Choice("steady".into())).unwrap();
+        };
+        // The first ball lets off one a second, the last a hundred.
+        let (mut varied, layer) = varied_line(2, PARTICLES, "rate", Value::Number(1.0), Value::Number(100.0), true);
+        steady(&mut varied, layer);
+        let (mut plain, layer) = varied_line(2, PARTICLES, "rate", Value::Number(100.0), Value::Number(100.0), false);
+        steady(&mut plain, layer);
+        let count = |f: &Frame| f.particles.len() + f.particles_front.len();
+        let (some, both) = (count(&frame_of(&varied, 1.0)), count(&frame_of(&plain, 1.0)));
+        assert!(both > 0);
+        assert!(some > both / 3 && some < both * 2 / 3, "about half: {some} of {both}");
     }
 }
