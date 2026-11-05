@@ -149,6 +149,81 @@ fn a_catcher_takes_out_the_balls_that_reach_it_and_counts_one_wave() {
 }
 
 #[test]
+fn removing_earlier_rounds_drops_their_balls_still_waiting_on_the_gap() {
+    let (scene, id, kit) = scene_with(Vec2::ZERO, |s| {
+        s.fire_when = FireWhen::Every;
+        s.every = 0.5;
+        s.rounds = 2;
+        s.count = 4;
+        s.gap = 0.3;
+        s.earlier = Earlier::Remove;
+    });
+    let r = resolved(&scene, &kit);
+    let (world, _) = run(&scene, &r, &kit, 2.0);
+    let s = st(&world, id);
+    // Round 1's balls go at 0 and 0.3 s; the ones due at 0.6 and 0.9 s never go.
+    assert_eq!(s.fired[0].launched, 2);
+    assert_eq!(s.rows.round.iter().filter(|&&r| r == 1).count(), 2);
+    assert!(s.pending.is_empty());
+    let b = &world.bodies[&id];
+    assert!((0..b.len()).all(|i| b.alive[i] == (s.rows.round[i] == 2)), "only round 2 is left");
+}
+
+#[test]
+fn an_earlier_rounds_ball_launched_late_fades_with_its_round() {
+    let (scene, id, kit) = scene_with(Vec2::ZERO, |s| {
+        s.fire_when = FireWhen::Every;
+        s.every = 0.5;
+        s.rounds = 2;
+        s.count = 4;
+        s.gap = 0.3;
+        s.earlier = Earlier::FadeOut;
+        s.fade_time = 2.0;
+    });
+    let r = resolved(&scene, &kit);
+    let (world, _) = run(&scene, &r, &kit, 0.7);
+    let s = st(&world, id);
+    let half = world.steps_per_second as u64 / 2;
+    let firsts: Vec<Option<u64>> =
+        (0..s.rows.len()).filter(|&i| s.rows.round[i] == 1).map(|i| s.rows.fade_from[i]).collect();
+    assert_eq!(firsts, vec![Some(half); 3], "the one launched at 0.6 s fades from round 2's start too");
+}
+
+#[test]
+fn a_held_ball_gathers_no_speed_while_it_waits() {
+    let (mut scene, shooter, _, kit) = shooter_and_catcher(1, |s| {
+        s.catches = Catches::SendBackOut;
+        s.return_way = ReturnWay::SameWayBack;
+        s.return_delay = 0.5;
+    });
+    // A wind along its path still gets it to the catcher, and would push a held ball.
+    scene.card_mut(shooter, bpe_core::SlotId::Motion).unwrap().params.set("wind", bpe_core::Value::Vec2([300.0, 0.0]));
+    let r = resolved(&scene, &kit);
+    let (world, _) = run(&scene, &r, &kit, 0.7);
+    let b = &world.bodies[&shooter];
+    assert!(b.held[0]);
+    assert_eq!(b.velocity[0], Vec2::ZERO);
+}
+
+#[test]
+fn a_ball_sent_back_by_one_catcher_isnt_caught_again_by_another_over_it() {
+    let (mut scene, shooter, _, kit) = shooter_and_catcher(1, |s| {
+        s.catches = Catches::SendBackOut;
+        s.return_way = ReturnWay::SameWayBack;
+    });
+    crate::things::emitter::test_scenes::add_emitter(&mut scene, &kit, Vec2::new(200.0, 0.0), |s| {
+        s.emits = false;
+        s.catches = Catches::SendBackOut;
+        s.return_way = ReturnWay::SameWayBack;
+        s.catch_size = 30.0;
+    });
+    let r = resolved(&scene, &kit);
+    let (world, log) = run(&scene, &r, &kit, 0.6);
+    assert_eq!(count(&log, EventKind::Enter), 1);
+    assert!(world.bodies[&shooter].velocity[0].x < -399.0, "on its way back");
+}
+
+#[test]
 fn passing_through_lets_the_balls_fly_on_but_they_still_arrive() {
     let (scene, shooter, catcher, kit) = shooter_and_catcher(1, |s| s.catches = Catches::PassThrough);
     let r = resolved(&scene, &kit);
@@ -268,6 +343,10 @@ fn a_key_on_size_resizes_its_balls() {
     later.params.set("radius", bpe_core::Value::Number(12.0));
     EmitterSim.settings_changed(id, &later, &mut world);
     assert!(world.bodies[&id].radius.iter().all(|&r| r == 12.0));
+    // A key on How many lays the gradient's round out again.
+    later.params.set("count", bpe_core::Value::Number(6.0));
+    EmitterSim.settings_changed(id, &later, &mut world);
+    assert_eq!(st(&world, id).layout.len(), 6);
 }
 
 #[test]

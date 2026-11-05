@@ -211,6 +211,8 @@ fn fire_round(st: &mut EmitterState, bodies: &mut Bodies, at: &Moment, log: Opti
                 }
             }
             Earlier::Remove => {
+                // Balls of earlier rounds still waiting on their Gap never go.
+                st.pending.retain(|l| l.round >= round);
                 if let Some(log) = log {
                     for row in 0..st.rows.len() {
                         if st.rows.round[row] < round && bodies.alive[row] {
@@ -281,6 +283,14 @@ fn launch_ball(st: &mut EmitterState, bodies: &mut Bodies, launch: Launch, at: &
     bodies.number[row] = number;
     let place = offset + Vec2::from_angle(way) * layout_reach(s);
     st.rows.push(number, factor, round, dir, place, k);
+    // A ball of an earlier round launched after a later round fired fades with its round.
+    if s.earlier == Earlier::FadeOut
+        && round < st.rounds_fired
+        && let Some(later) = st.fired.iter().find(|f| f.round == round + 1)
+    {
+        let row = st.rows.len() - 1;
+        st.rows.fade_from[row] = Some(later.step);
+    }
     if let Some(f) = st.fired.iter_mut().rev().find(|f| f.round == round) {
         f.launched += 1;
     }
@@ -471,6 +481,9 @@ fn catch(me: ThingId, world: &mut World, log: &mut Log) {
                     }
                 };
                 bodies.position[a.row] = place;
+                // It has gone nowhere this step as far as any other catcher can tell, so a second
+                // catcher over this one doesn't catch it again.
+                bodies.previous[a.row] = place;
                 let delay = (s.return_delay.max(0.0) as f64 * rate as f64).round() as u64;
                 if delay == 0 {
                     bodies.velocity[a.row] = velocity;
@@ -585,6 +598,8 @@ impl ThingSim for EmitterSim {
                 *r = if *r == sized(old, factor) || old <= 0.0 { sized(new, factor) } else { *r * (new / old) };
             }
         }
+        st.layout = layout(&settings);
+        st.planned = planned(&settings);
         st.settings = settings;
     }
 

@@ -28,7 +28,8 @@ pub enum MiniDrag {
     Aim,
     /// One of a fan's edges: the far one (true) or the near one.
     FanEdge(bool),
-    Speed,
+    /// The end of ball `k`'s ray.
+    Speed(u32),
 }
 
 /// How the view maps the emitter's space (world pixels round its middle, unturned) to points.
@@ -126,10 +127,13 @@ pub fn dragged(what: MiniDrag, s: &EmitterSettings, map: MiniMap, p: Pos2) -> (&
             let off = wrapped(map.angle_of(p).to_degrees() - s.aim_angle).abs();
             ("fan_angle", Value::Number((off * 2.0).clamp(0.0, 360.0) as f64))
         }
-        MiniDrag::Speed => {
-            // The ray's length from its start place; the start ring's radius is not speed.
-            let start = if s.start_from == StartFrom::Ring { s.start_radius.max(0.0) } else { 0.0 };
-            let along = (map.to_world(p).length() - start).max(0.0);
+        MiniDrag::Speed(k) => {
+            // How far along the dragged ray from its own start place (on a ring or a line, not
+            // the middle) the pointer is.
+            let n = fire::first_count(s).max(1);
+            let way = fire::direction(s, k.min(n - 1), n, 1, 0, 0);
+            let from = fire::start_offset(s, k.min(n - 1), n, way);
+            let along = (map.to_world(p) - from).dot(Vec2::from_angle(way)).max(0.0);
             ("speed", Value::Number(((along / RAY_SECONDS).round()).clamp(0.0, 20000.0) as f64))
         }
     }
@@ -154,7 +158,7 @@ pub fn handle_at(s: &EmitterSettings, map: MiniMap, p: Pos2) -> Option<MiniDrag>
     }
     for ray in rays(s) {
         // The aim square sits on the first ray's end; it wins there.
-        consider(near(ray.to) + 0.5, MiniDrag::Speed);
+        consider(near(ray.to) + 0.5, MiniDrag::Speed(ray.k));
     }
     best.map(|(_, w)| w)
 }
@@ -245,7 +249,7 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &OwnCx, s: &EmitterSetti
     {
         // The map stays as it was when the drag started for Speed, so the ray follows the
         // pointer rather than the view rescaling under it.
-        let held = if what == MiniDrag::Speed {
+        let held = if matches!(what, MiniDrag::Speed(_)) {
             ui.data(|d| d.get_temp::<f32>(response.id)).map_or(map, |scale| MiniMap { scale, ..map })
         } else {
             map
@@ -284,8 +288,27 @@ mod tests {
         assert_eq!((key, v), ("aim_angle", Value::Number(0.0)));
         let (_, v) = dragged(MiniDrag::Aim, &s, m, m.to_view(Vec2::new(0.0, -10.0)));
         assert_eq!(v, Value::Number(-90.0), "up the view is -90°");
-        let (key, v) = dragged(MiniDrag::Speed, &s, m, m.to_view(Vec2::new(200.0, 0.0)));
+        let (key, v) = dragged(MiniDrag::Speed(0), &s, m, m.to_view(Vec2::new(200.0, 0.0)));
         assert_eq!((key, v), ("speed", Value::Number(400.0)), "200 px in half a second");
+    }
+
+    #[test]
+    fn a_ray_from_a_line_sets_the_speed_from_its_own_start() {
+        // Balls from a line 200 px long, all fired one way (down): the end ray starts 100 px off
+        // the middle, so its end 50 px below its start is 100 px/s, not the distance from the middle.
+        let s = EmitterSettings {
+            start_from: StartFrom::Line,
+            start_length: 200.0,
+            directions: Directions::OneWay,
+            aim_angle: 90.0,
+            count: 5,
+            ..EmitterSettings::default()
+        };
+        let m = map();
+        let ray = rays(&s)[0];
+        let end = ray.from + Vec2::new(0.0, 50.0);
+        assert_eq!(dragged(MiniDrag::Speed(ray.k), &s, m, m.to_view(end)).1, Value::Number(100.0));
+        assert_eq!(handle_at(&s, m, m.to_view(ray.to)), Some(MiniDrag::Speed(ray.k)));
     }
 
     #[test]
@@ -311,7 +334,7 @@ mod tests {
         let all = EmitterSettings::default();
         let m = map_for(rect, &all);
         let side = rays(&all)[3].to;
-        assert_eq!(handle_at(&all, m, m.to_view(side)), Some(MiniDrag::Speed));
+        assert_eq!(handle_at(&all, m, m.to_view(side)), Some(MiniDrag::Speed(3)));
     }
 
     #[test]

@@ -492,6 +492,9 @@ impl World {
                 if bodies.alive[i] && !bodies.held[i] {
                     let v = bodies.velocity[i];
                     bodies.position[i] += v * dt;
+                } else if bodies.held[i] {
+                    // A held ball gathers no speed from the forces while it waits.
+                    bodies.velocity[i] = Vec2::ZERO;
                 }
             }
         }

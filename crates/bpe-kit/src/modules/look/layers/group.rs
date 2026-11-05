@@ -96,8 +96,8 @@ pub struct GroupGradient {
     /// The colours spread across the group.
     #[setting(label = "Colours", keyframe)]
     pub colours: Gradient,
-    /// Which way the colours run across the group, for Place.
-    #[setting(label = "Angle", when = "spread=place", span(-180, 180), unit = "°", keyframe)]
+    /// Which way the colours run across the group, for Place, and where Launch angle starts.
+    #[setting(label = "Angle", when = "spread=place|launch_angle", span(-180, 180), unit = "°", keyframe)]
     pub angle: f32,
     /// How much of the group the gradient spans, 1 being the whole group.
     #[setting(label = "Stretch", when = "spread!=order|random|launch_angle", range(0.1, 4), keyframe)]
