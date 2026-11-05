@@ -1,7 +1,8 @@
-//! An oscillator's layer chain: Modulation, Filter and Distortion layers of a shape's sound card,
+//! An oscillator's layer chain: Modulation, Filter, Distortion and EQ layers of a shape's sound card,
 //! in the oscillator's lane (`Layer.lane` 0 = Osc A, 1 = Osc B), run top to bottom between the
 //! oscillator's Gain and its Level. No sound is made here; `bpe-sound` reads these settings.
 
+use super::fx::{EqBand, EqSettings};
 use super::voice::VOICE;
 use bpe_core::{Choice, Layer, LayerId, LayerKind, LayerSection, Params, SettingDef, Settings};
 
@@ -11,8 +12,10 @@ pub const MODULATION: &str = "chain.modulation";
 pub const FILTER: &str = "chain.filter";
 /// The Distortion layer kind's id.
 pub const DISTORTION: &str = "chain.distortion";
+/// The EQ layer kind's id: the Mixer's 8-band EQ on one oscillator.
+pub const EQ: &str = "chain.eq";
 /// Every chain layer kind, in the "+ Add layer" menu's order.
-pub const CHAIN_KINDS: [&str; 3] = [MODULATION, FILTER, DISTORTION];
+pub const CHAIN_KINDS: [&str; 4] = [MODULATION, FILTER, DISTORTION, EQ];
 /// The most chain layers a sound runs, both oscillators together (more are let through
 /// untouched).
 pub const MAX_CHAIN: usize = 32;
@@ -358,6 +361,54 @@ impl Default for DistortionSettings {
     }
 }
 
+/// The Mixer's 8-band EQ on one oscillator: the same bands (`band1_`..`band8_`, as
+/// [`EqSettings`]), with Output, Mix and Solo.
+#[derive(Clone, Debug, PartialEq, Settings)]
+pub struct ChainEqSettings {
+    #[setting(paint, prefix = "band1_", label = "Band 1", group = "Band 1")]
+    pub band1: EqBand,
+    #[setting(paint, prefix = "band2_", label = "Band 2", group = "Band 2")]
+    pub band2: EqBand,
+    #[setting(paint, prefix = "band3_", label = "Band 3", group = "Band 3")]
+    pub band3: EqBand,
+    #[setting(paint, prefix = "band4_", label = "Band 4", group = "Band 4")]
+    pub band4: EqBand,
+    #[setting(paint, prefix = "band5_", label = "Band 5", group = "Band 5")]
+    pub band5: EqBand,
+    #[setting(paint, prefix = "band6_", label = "Band 6", group = "Band 6")]
+    pub band6: EqBand,
+    #[setting(paint, prefix = "band7_", label = "Band 7", group = "Band 7")]
+    pub band7: EqBand,
+    #[setting(paint, prefix = "band8_", label = "Band 8", group = "Band 8")]
+    pub band8: EqBand,
+    #[setting(label = "Output", range(-24, 24), unit = "dB", keyframe)]
+    pub output: f32,
+    #[setting(label = "Mix", range(0, 100), unit = "%", keyframe)]
+    pub mix: f32,
+    #[setting(label = "Solo")]
+    pub solo: bool,
+}
+
+impl Default for ChainEqSettings {
+    fn default() -> Self {
+        // The bus EQ's bands: a Low cut at 30 Hz that is on, the rest off bells.
+        let EqSettings { band1, band2, band3, band4, band5, band6, band7, band8, .. } = EqSettings::default();
+        Self { band1, band2, band3, band4, band5, band6, band7, band8, output: 0.0, mix: 100.0, solo: false }
+    }
+}
+
+impl ChainEqSettings {
+    /// The eight bands in order.
+    pub fn bands(&self) -> [&EqBand; 8] {
+        [&self.band1, &self.band2, &self.band3, &self.band4, &self.band5, &self.band6, &self.band7, &self.band8]
+    }
+
+    /// How many bands are on.
+    pub fn bands_on(&self) -> usize {
+        self.bands().iter().filter(|b| b.on).count()
+    }
+}
+
 macro_rules! chain_kind {
     ($kind:ident, $id:expr, $name:expr, $help:expr, $settings:ty) => {
         /// The layer kind.
@@ -416,6 +467,7 @@ chain_kind!(
     "Bends the wave: clipping, tube, tape, folding, crushing and more.",
     DistortionSettings
 );
+chain_kind!(EqLayerKind, EQ, "EQ", "An 8-band equaliser: cuts, shelves, bells and notches.", ChainEqSettings);
 
 /// A frequency read aloud: "440 Hz", "1.8 kHz", "12 kHz".
 pub fn hz_text(hz: f64) -> String {
@@ -491,6 +543,11 @@ pub fn layer_summary(layer: &Layer, params: &Params, layers: &[Layer]) -> String
                 k => format!("{} · {:+.0} dB · {}x", k.label(), d.drive, d.quality.factor()),
             }
         }
+        EQ => match ChainEqSettings::from_params(params).bands_on() {
+            0 => "No bands".into(),
+            1 => "1 band".into(),
+            n => format!("{n} bands"),
+        },
         _ => layer.name.clone(),
     }
 }
@@ -594,6 +651,41 @@ mod tests {
         // A source that went away reads as the layer's own oscillator.
         let gone = p(&[("source", Value::Text("99".into()))]);
         assert_eq!(layer_summary(&m, &gone, std::slice::from_ref(&m)), "FM from Osc A");
+    }
+
+    #[test]
+    fn chain_eq_has_the_bus_eqs_bands_and_round_trips() {
+        let eq = ChainEqSettings::default();
+        let bus = EqSettings::default();
+        assert_eq!(eq.bands(), bus.bands(), "the same bands as the Mixer's EQ");
+        assert_eq!((eq.output, eq.mix, eq.solo), (0.0, 100.0, false));
+        assert_eq!(ChainEqSettings::from_params(&Params::default()), eq);
+        let defs = ChainEqSettings::defs();
+        let def = |k: &str| defs.iter().find(|d| d.key == k).unwrap_or_else(|| panic!("{k}"));
+        assert_eq!(def("band1_kind").default, Value::Choice("low_cut".into()));
+        assert_eq!(def("band6_freq").default, Value::Number(2500.0));
+        for k in ["band3_freq", "band3_gain", "band3_q", "output", "mix"] {
+            assert!(def(k).flags.keyframe, "{k} takes keys");
+        }
+        assert!(defs.iter().all(|d| d.key != "analyser"), "no analyser on a note");
+        // Changed values come back as they went in.
+        let mut changed = eq.clone();
+        changed.band4.on = true;
+        changed.band4.kind = super::super::fx::BandKind::HighShelf;
+        changed.band4.gain = -7.5;
+        changed.band8.q = 3.0;
+        changed.output = 2.0;
+        changed.solo = true;
+        let p = changed.to_params();
+        assert_eq!(p.get("band4_gain"), Some(&Value::Number(-7.5)));
+        assert_eq!(ChainEqSettings::from_params(&p), changed);
+        // Its summary counts the bands that are on.
+        let layer = Layer { id: LayerId(3), kind: EQ.into(), name: "EQ".into(), lane: Some(0), ..Layer::default() };
+        assert_eq!(layer_summary(&layer, &Params::default(), &[]), "1 band");
+        assert_eq!(layer_summary(&layer, &p, &[]), "2 bands");
+        let mut none = Params::default();
+        none.set("band1_on", Value::Bool(false));
+        assert_eq!(layer_summary(&layer, &none, &[]), "No bands");
     }
 
     #[test]

@@ -3,7 +3,7 @@
 
 use crate::mods::HitValues;
 use bpe_core::LayerId;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// One f32 that any thread can read and write.
 #[derive(Debug, Default)]
@@ -47,6 +47,9 @@ pub struct Meters {
     shapes: [AtomicF32; SHAPE_METERS],
     /// The slot each of those shapes plays, plus one (0 for none).
     slots: [AtomicU32; SHAPE_METERS],
+    /// The MIDI notes each of those shapes sounded since the last read, as 128 bits (low half
+    /// first).
+    notes: [[AtomicU64; 2]; SHAPE_METERS],
     buses: [BusMeter; 3],
     fx: Box<[FxMeter; FX_METERS]>,
     /// Each of those shapes' modulators and recent hits, for the Sound tab.
@@ -131,8 +134,8 @@ impl BusReading {
     pub const SILENT: BusReading = BusReading { peak_l: f32::NEG_INFINITY, peak_r: f32::NEG_INFINITY, reduction: 0.0 };
 }
 
-/// Takes one modulator's layer and value.
-pub type ModSink<'a> = dyn FnMut(LayerId, f32) + 'a;
+/// Takes one modulator's layer, value and (an LFO's) place in its shape, 0..1 (NaN for none).
+pub type ModSink<'a> = dyn FnMut(LayerId, f32, f32) + 'a;
 
 /// How many modulators of a shape have a meter.
 pub const MOD_METERS: usize = 32;
@@ -145,6 +148,8 @@ struct ShapeMods {
     /// Each modulator's layer id plus one (0 for none) and its value, 0..1.
     ids: [AtomicU32; MOD_METERS],
     values: [AtomicF32; MOD_METERS],
+    /// An LFO's place in its shape (0..1), NaN for the others.
+    positions: [AtomicF32; MOD_METERS],
     /// The numbers of the last hits, by how many it had heard before each, in a ring.
     hits: [[AtomicF32; 5]; RECENT_HITS],
     heard: AtomicU32,
@@ -155,6 +160,7 @@ impl Default for ShapeMods {
         Self {
             ids: std::array::from_fn(|_| AtomicU32::new(0)),
             values: std::array::from_fn(|_| AtomicF32::new(0.0)),
+            positions: std::array::from_fn(|_| AtomicF32::new(f32::NAN)),
             hits: std::array::from_fn(|_| std::array::from_fn(|_| AtomicF32::new(0.0))),
             heard: AtomicU32::new(0),
         }
@@ -206,6 +212,7 @@ impl Default for Meters {
             buses: Default::default(),
             fx: Box::new(std::array::from_fn(|_| FxMeter::default())),
             slots: std::array::from_fn(|_| AtomicU32::new(0)),
+            notes: std::array::from_fn(|_| [AtomicU64::new(0), AtomicU64::new(0)]),
             mods: (0..SHAPE_METERS).map(|_| ShapeMods::default()).collect(),
         }
     }
@@ -229,6 +236,9 @@ impl Meters {
             let id = thing.wrapping_add(1);
             if self.shape_ids[place].swap(id, Ordering::Relaxed) != id {
                 self.shapes[place].set(f32::NEG_INFINITY);
+                for half in &self.notes[place] {
+                    half.store(0, Ordering::Relaxed);
+                }
             }
             self.shapes[place].raise(peak_db);
         }
@@ -239,6 +249,25 @@ impl Meters {
         if place < SHAPE_METERS {
             self.slots[place].store(slot.map_or(0, |s| s as u32 + 1), Ordering::Relaxed);
         }
+    }
+
+    /// Voice `place` is sounding the notes in `mask` (bit n for MIDI note n). They add to the
+    /// ones not read yet, so a note shorter than a frame of the editor still shows.
+    pub fn write_notes(&self, place: usize, mask: u128) {
+        if place < SHAPE_METERS && mask != 0 {
+            self.notes[place][0].fetch_or(mask as u64, Ordering::Relaxed);
+            self.notes[place][1].fetch_or((mask >> 64) as u64, Ordering::Relaxed);
+        }
+    }
+
+    /// The notes `thing`'s voice sounded since the last read (bit n for MIDI note n).
+    pub fn take_notes(&self, thing: u32) -> u128 {
+        let id = thing.wrapping_add(1);
+        (0..SHAPE_METERS).find(|&i| self.shape_ids[i].load(Ordering::Relaxed) == id).map_or(0, |i| {
+            let lo = self.notes[i][0].swap(0, Ordering::Relaxed) as u128;
+            let hi = self.notes[i][1].swap(0, Ordering::Relaxed) as u128;
+            lo | hi << 64
+        })
     }
 
     /// The slot `thing`'s voice is playing (0 first), if it has one.
@@ -253,10 +282,11 @@ impl Meters {
     pub fn write_mods(&self, place: usize, each: &mut dyn FnMut(&mut ModSink)) {
         let Some(m) = self.mods.get(place) else { return };
         let mut n = 0;
-        each(&mut |layer, v| {
+        each(&mut |layer, v, pos| {
             if n < MOD_METERS {
                 m.ids[n].store(layer.0.wrapping_add(1), Ordering::Relaxed);
                 m.values[n].set(v);
+                m.positions[n].set(pos);
                 n += 1;
             }
         });
@@ -289,6 +319,16 @@ impl Meters {
         let m = &self.mods[self.place_of(thing)?];
         let id = layer.0.wrapping_add(1);
         (0..MOD_METERS).find(|&i| m.ids[i].load(Ordering::Relaxed) == id).map(|i| m.values[i].get())
+    }
+
+    /// Where LFO `layer` of `thing` is in its shape now (0..1), if it is running.
+    pub fn mod_position(&self, thing: u32, layer: LayerId) -> Option<f32> {
+        let m = &self.mods[self.place_of(thing)?];
+        let id = layer.0.wrapping_add(1);
+        (0..MOD_METERS)
+            .find(|&i| m.ids[i].load(Ordering::Relaxed) == id)
+            .map(|i| m.positions[i].get())
+            .filter(|p| p.is_finite())
     }
 
     /// The numbers of `thing`'s last hits, oldest first (at most [`RECENT_HITS`]).
@@ -441,10 +481,12 @@ mod tests {
         let m = Meters::default();
         m.write_shape(3, 9, -12.0);
         m.write_mods(3, &mut |f| {
-            f(LayerId(4), 0.25);
-            f(LayerId(7), 0.5);
+            f(LayerId(4), 0.25, 0.75);
+            f(LayerId(7), 0.5, f32::NAN);
         });
         assert_eq!(m.mod_value(9, LayerId(7)), Some(0.5));
+        assert_eq!(m.mod_position(9, LayerId(4)), Some(0.75));
+        assert_eq!(m.mod_position(9, LayerId(7)), None, "not an LFO");
         assert_eq!(m.mod_value(9, LayerId(1)), None);
         assert_eq!(m.mod_value(2, LayerId(7)), None, "another shape");
         let mut ring = [HitValues::default(); RECENT_HITS];
@@ -489,6 +531,20 @@ mod tests {
         assert_eq!(bins[200], -6.0);
         m.keep_fx(&[9]);
         assert_eq!(m.read_fx(4), FxReading::SILENT, "its layer went");
+    }
+
+    #[test]
+    fn a_shape_s_notes_add_up_until_read() {
+        let m = Meters::default();
+        m.write_shape(2, 7, -12.0);
+        m.write_notes(2, 1 << 60);
+        m.write_notes(2, 1 << 100);
+        assert_eq!(m.take_notes(3), 0, "another shape");
+        assert_eq!(m.take_notes(7), 1 << 60 | 1 << 100);
+        assert_eq!(m.take_notes(7), 0, "taken");
+        m.write_notes(2, 1 << 61);
+        m.write_shape(2, 8, -12.0);
+        assert_eq!(m.take_notes(8), 0, "the place went to another shape");
     }
 
     #[test]

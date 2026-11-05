@@ -291,11 +291,12 @@ impl Band {
         }
     }
 
-    /// Runs a few samples (at most [`SUB`]) through the band.
-    fn run(&mut self, l: &mut [f32], r: &mut [f32], glide: f64, fade: f64) {
+    /// Starts a run of at most [`SUB`] samples: glides the settings one step, and gives whether
+    /// the band works on them (a band that is off and silent is passed over).
+    fn begin(&mut self, glide: f64) -> bool {
         if self.mix == 0.0 {
             if !self.target.on {
-                return;
+                return false;
             }
             // Silent and wanted: start afresh from the target, faded out.
             self.snap();
@@ -303,42 +304,52 @@ impl Band {
         } else {
             self.glide(glide);
         }
+        true
+    }
+
+    /// The band's effect heard on the next sample, faded towards on or off.
+    #[inline]
+    fn step_mix(&mut self, fade: f64) -> f64 {
         let want = if self.target.on && self.target.same_kind(&self.running) { 1.0 } else { 0.0 };
+        if self.mix != want {
+            self.mix = if want > self.mix { (self.mix + fade).min(want) } else { (self.mix - fade).max(want) };
+        }
+        self.mix
+    }
+
+    /// One sample through the band, in place.
+    #[inline]
+    fn sample(&mut self, a: &mut f32, b: &mut f32, fade: f64) {
+        let m = self.step_mix(fade);
         let sections = &self.sections[..self.used];
         let [s0, s1] = &mut self.state;
-        let mut mix = self.mix;
-        let mut step = || {
-            if mix != want {
-                mix = if want > mix { (mix + fade).min(want) } else { (mix - fade).max(want) };
-            }
-            mix
-        };
         let cascade = |st: &mut [[f64; 2]; MAX_SECTIONS], x: f64| {
             sections.iter().zip(st.iter_mut()).fold(x, |y, (c, s)| c.tick(s, y))
         };
+        let (x, y) = (*a as f64, *b as f64);
         match self.running.place {
             Place::Both => {
-                for (a, b) in l.iter_mut().zip(r.iter_mut()) {
-                    let m = step();
-                    let (x, y) = (*a as f64, *b as f64);
-                    *a = (x + m * (cascade(s0, x) - x)) as f32;
-                    *b = (y + m * (cascade(s1, y) - y)) as f32;
-                }
+                *a = (x + m * (cascade(s0, x) - x)) as f32;
+                *b = (y + m * (cascade(s1, y) - y)) as f32;
             }
             Place::Mid | Place::Side => {
-                let on_mid = self.running.place == Place::Mid;
-                for (a, b) in l.iter_mut().zip(r.iter_mut()) {
-                    let m = step();
-                    let (x, y) = (*a as f64, *b as f64);
-                    let (mut mid, mut side) = (0.5 * (x + y), 0.5 * (x - y));
-                    let part = if on_mid { &mut mid } else { &mut side };
-                    *part += m * (cascade(s0, *part) - *part);
-                    *a = (mid + side) as f32;
-                    *b = (mid - side) as f32;
-                }
+                let (mut mid, mut side) = (0.5 * (x + y), 0.5 * (x - y));
+                let part = if self.running.place == Place::Mid { &mut mid } else { &mut side };
+                *part += m * (cascade(s0, *part) - *part);
+                *a = (mid + side) as f32;
+                *b = (mid - side) as f32;
             }
         }
-        self.mix = mix;
+    }
+
+    /// Runs a few samples (at most [`SUB`]) through the band.
+    fn run(&mut self, l: &mut [f32], r: &mut [f32], glide: f64, fade: f64) {
+        if !self.begin(glide) {
+            return;
+        }
+        for (a, b) in l.iter_mut().zip(r.iter_mut()) {
+            self.sample(a, b, fade);
+        }
     }
 
     /// Clears memories small enough to drift into denormals.
@@ -355,12 +366,18 @@ impl Band {
 /// biquads, so frequency, gain and Q can glide every few samples. A band that is off costs
 /// nothing. Turning a band on or off, or changing its shape, slope or place, fades its effect
 /// out and back in over 10 ms.
+#[derive(Clone, Debug)]
 pub struct Eq8 {
     bands: [Band; 8],
     output: crate::Smoother,
     output_db: f32,
     glide: f64,
     fade: f64,
+    /// [`Eq8::tick`]'s place: samples into the run of [`SUB`] and into the block, and which
+    /// bands work on this run.
+    sub_at: usize,
+    block_at: usize,
+    running: [bool; 8],
 }
 
 impl Default for Eq8 {
@@ -381,6 +398,9 @@ impl Eq8 {
             output_db: 0.0,
             glide: 1.0 - 0.01f64.powf(SUB as f64 / (GLIDE_MS / 1_000.0 * fs)),
             fade: 1.0 / (FADE_MS / 1_000.0 * fs),
+            sub_at: 0,
+            block_at: 0,
+            running: [false; 8],
         }
     }
 
@@ -403,10 +423,15 @@ impl Eq8 {
             band.snap();
         }
         self.output.reset(self.output.target());
+        self.sub_at = 0;
+        self.block_at = 0;
     }
 
     /// Runs a stereo block through, in place.
     pub fn process(&mut self, l: &mut [f32], r: &mut [f32]) {
+        // A block starts a fresh run, wherever ticks left off.
+        self.sub_at = 0;
+        self.block_at = 0;
         let n = l.len().min(r.len());
         let (l, r) = (&mut l[..n], &mut r[..n]);
         for (cl, cr) in l.chunks_mut(SUB).zip(r.chunks_mut(SUB)) {
@@ -424,6 +449,35 @@ impl Eq8 {
         for band in &mut self.bands {
             band.flush();
         }
+    }
+
+    /// One stereo sample through, for a chain that moves on a sample at a time. A run of
+    /// [`crate::BLOCK`] ticks gives the same sound as one [`Eq8::process`] of that block.
+    #[inline]
+    pub fn tick(&mut self, l: f32, r: f32) -> (f32, f32) {
+        if self.sub_at == 0 {
+            for (band, on) in self.bands.iter_mut().zip(&mut self.running) {
+                *on = band.begin(self.glide);
+            }
+        }
+        let (mut a, mut b) = (l, r);
+        for (band, _) in self.bands.iter_mut().zip(&self.running).filter(|(_, on)| **on) {
+            band.sample(&mut a, &mut b, self.fade);
+        }
+        if !(self.output.settled() && self.output.value() == 1.0) {
+            let g = self.output.next();
+            a *= g;
+            b *= g;
+        }
+        self.sub_at = (self.sub_at + 1) % SUB;
+        self.block_at += 1;
+        if self.block_at == crate::BLOCK {
+            self.block_at = 0;
+            for band in &mut self.bands {
+                band.flush();
+            }
+        }
+        (a, b)
     }
 
     /// The curve in dB at `f` for the settings given (not where they have glided to so far):
@@ -645,6 +699,41 @@ mod tests {
         assert!(step < bound, "a jump of {step} (bound {bound})");
         // It did turn on: some of the sound was cut.
         assert!(rms(&l) < rms(&x) * 0.9);
+    }
+
+    #[test]
+    fn ticks_sound_as_a_block_does() {
+        use BandShape::*;
+        let mut by_block = Eq8::new();
+        let mut by_tick = Eq8::new();
+        let mut noise = Noise(11);
+        for b in 0..120 {
+            // Settings change between blocks: gliding, a band turning on, a shape change, a
+            // mid-only band and the output moving.
+            let t = b as f32 / 120.0;
+            let bands = with(&[
+                band(LowCut, 40.0 + 200.0 * t, 0.0, BUTTERWORTH, 2),
+                BandParams { on: b >= 30, ..band(Bell, 800.0, 9.0 - 18.0 * t, 2.0, 1) },
+                band(if b < 60 { HighShelf } else { HighCut }, 5_000.0, 6.0, 1.0, 4),
+                BandParams { place: Place::Mid, ..band(Notch, 300.0 + 40.0 * (b % 7) as f32, 0.0, 3.0, 1) },
+                BandParams { place: Place::Side, ..band(LowShelf, 150.0, -8.0, BUTTERWORTH, 1) },
+            ]);
+            for eq in [&mut by_block, &mut by_tick] {
+                eq.set(&bands);
+                eq.set_output_db(if b < 80 { 0.0 } else { -6.0 });
+            }
+            let mut l = [0.0f32; BLOCK];
+            let mut r = [0.0f32; BLOCK];
+            for (a, c) in l.iter_mut().zip(&mut r) {
+                *a = noise.next();
+                *c = noise.next();
+            }
+            let ticked: Vec<(f32, f32)> = l.iter().zip(&r).map(|(&a, &c)| by_tick.tick(a, c)).collect();
+            by_block.process(&mut l, &mut r);
+            for (i, (a, c)) in ticked.iter().enumerate() {
+                assert_eq!((*a, *c), (l[i], r[i]), "block {b} sample {i}");
+            }
+        }
     }
 
     #[test]

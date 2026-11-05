@@ -296,7 +296,6 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     if studio.playing {
         preview.drag = None;
         outcome.clicked = response.clicked();
-        draw_hint(ui, rect, "Click to pause");
         studio.panels.preview = Some(preview);
         return outcome;
     }
@@ -366,15 +365,6 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         ui.ctx().set_cursor_icon(if preview.drag.is_some() { CursorIcon::Grabbing } else { CursorIcon::Grab });
     }
     draw_handles(ui, studio, &view, active, outcome.selected.or(studio.selection.primary));
-    let hint = if world_mode {
-        "Scroll to zoom · middle-drag to pan · F to frame · drag the camera's frame to move, zoom or turn it"
-    } else if studio.grid.snap {
-        "Drags snap to the grid · hold Alt to place freely"
-    } else {
-        "Drag things to move them · drag the arrow tip to aim · drag a shape's corners and sides to mould it, \
-         Shift mirrors · right-click a side for more"
-    };
-    draw_hint(ui, rect, hint);
     studio.panels.preview = Some(preview);
     outcome
 }
@@ -761,18 +751,6 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
             );
         }
     }
-}
-
-fn draw_hint(ui: &Ui, rect: Rect, text: &str) {
-    let painter = ui.painter_at(rect);
-    let galley = painter.layout_no_wrap(text.to_string(), FontId::proportional(12.0), style::TEXT);
-    let size = galley.size() + egui::vec2(24.0, 10.0);
-    if size.x > rect.width() {
-        return;
-    }
-    let pill = Rect::from_center_size(rect.center_bottom() - egui::vec2(0.0, size.y / 2.0 + 10.0), size);
-    painter.rect_filled(pill, f32::from(style::RADIUS), style::PILL);
-    painter.galley(pill.min + egui::vec2(12.0, 5.0), galley, style::TEXT);
 }
 
 #[cfg(test)]

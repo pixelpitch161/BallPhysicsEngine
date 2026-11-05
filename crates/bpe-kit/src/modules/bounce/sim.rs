@@ -9,6 +9,19 @@ use super::BasicBounce;
 
 pub struct BasicBounceSim;
 
+/// The biggest a ball with no size limit grows: only there to keep the numbers finite.
+pub const MAX_RADIUS: f32 = 100_000.0;
+
+/// The fastest `b` lets a ball go.
+fn top_speed(b: &BasicBounce, limits: &Limits) -> f32 {
+    if b.no_speed_limit { limits.ceiling } else { b.top_speed.min(limits.ceiling) }
+}
+
+/// The biggest `b` lets a ball grow.
+fn biggest(b: &BasicBounce) -> f32 {
+    if b.no_size_limit { MAX_RADIUS } else { b.max_size.max(0.5) }
+}
+
 /// What a bounce module keeps while the world runs.
 #[derive(Clone, Debug)]
 pub struct BounceState {
@@ -43,10 +56,9 @@ fn native(
     // Resting touches push the ball out but are not hits: no gain, no growth.
     if hit {
         v *= b.speed_gain;
-        let max = b.max_size.max(0.5);
-        r = (radius + grow).clamp(0.5, max);
+        r = (radius + grow).clamp(0.5, biggest(b));
     }
-    let top = b.top_speed.min(limits.ceiling);
+    let top = top_speed(b, limits);
     let speed = v.length();
     if speed > top {
         v *= top / speed;
@@ -104,9 +116,8 @@ impl ModuleSim for BasicBounceSim {
     fn respond_pair(&self, st: &dyn ThingState, bodies: &mut Bodies, item: usize, _speed: f32, limits: &Limits) {
         let b = &state::<BounceState>(st).settings;
         let mut v = bodies.velocity[item] * b.speed_gain;
-        let max = b.max_size.max(0.5);
-        bodies.radius[item] = (bodies.radius[item] + b.grow).clamp(0.5, max);
-        let top = b.top_speed.min(limits.ceiling);
+        bodies.radius[item] = (bodies.radius[item] + b.grow).clamp(0.5, biggest(b));
+        let top = top_speed(b, limits);
         let speed = v.length();
         if speed > top {
             v *= top / speed;
@@ -225,6 +236,7 @@ mod tests {
             p.set("grow", Value::Number(2.0));
             p.set("speed_gain", Value::Number(1.1));
             p.set("max_size", Value::Number(30.0));
+            p.set("no_size_limit", Value::Bool(false));
         });
         let mut playback = Playback::new(&scene, &resolved, kit.sims.clone());
         playback.seek(10.0);
@@ -250,11 +262,45 @@ mod tests {
         let (scene, resolved, kit) = one_ball_with_bounce(|p| {
             p.set("bounciness", Value::Number(1.5));
             p.set("top_speed", Value::Number(400.0));
+            p.set("no_speed_limit", Value::Bool(false));
         });
         let mut playback = Playback::new(&scene, &resolved, kit.sims.clone());
         playback.seek(10.0);
         for e in playback.log().events() {
             assert!(e.speed <= 400.0 + 500.0 * 0.6, "{e:?}");
         }
+    }
+
+    #[test]
+    fn no_speed_limit_lets_a_lively_ball_pass_top_speed() {
+        let (scene, resolved, kit) = one_ball_with_bounce(|p| {
+            p.set("bounciness", Value::Number(1.5));
+            p.set("top_speed", Value::Number(400.0));
+            p.set("no_speed_limit", Value::Bool(true));
+        });
+        let mut playback = Playback::new(&scene, &resolved, kit.sims.clone());
+        playback.seek(10.0);
+        let fastest = playback.log().events().iter().map(|e| e.speed).fold(0.0, f32::max);
+        assert!(fastest > 1000.0, "it kept speeding up: {fastest}");
+    }
+
+    #[test]
+    fn no_size_limit_grows_past_the_biggest_size() {
+        let (scene, resolved, kit) = one_ball_with_bounce(|p| {
+            p.set("grow", Value::Number(2.0));
+            p.set("max_size", Value::Number(30.0));
+            p.set("no_size_limit", Value::Bool(true));
+        });
+        let mut playback = Playback::new(&scene, &resolved, kit.sims.clone());
+        playback.seek(10.0);
+        let hits = playback.log().len() as f32;
+        assert!(hits >= 4.0);
+        assert_eq!(playback.world().bodies[&BALLS].radius[0], 24.0 + 2.0 * hits);
+    }
+
+    #[test]
+    fn a_new_bounce_has_no_limits() {
+        let b = super::BasicBounce::default();
+        assert!(b.no_speed_limit && b.no_size_limit);
     }
 }

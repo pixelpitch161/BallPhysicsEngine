@@ -5,8 +5,8 @@
 
 use super::voice::VOICE;
 use bpe_core::{
-    EditError, LayerId, LayerKind, LayerSection, ModRoute, ROUTES_KEY, Registry, Scene, SettingDef, Settings, Slot,
-    SlotId, Target, ThingId, Value, layered_key,
+    CurvePoint, EditError, LayerId, LayerKind, LayerSection, ModRoute, ROUTES_KEY, Registry, Scene, SettingDef,
+    Settings, Slot, SlotId, Target, ThingId, Value, layered_key,
 };
 
 /// The layer kinds' ids.
@@ -44,14 +44,12 @@ pub enum Follows {
     HowMany,
 }
 
-/// An LFO's wave.
+/// An LFO's wave: a shape drawn by hand, or random values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, bpe_core::Choice)]
 pub enum LfoShape {
+    /// The drawn shape (`curve`).
     #[default]
-    Sine,
-    Triangle,
-    Saw,
-    Square,
+    Drawn,
     /// A new random value each cycle, held (sample and hold).
     Random,
     /// Random values each cycle, glided between.
@@ -59,19 +57,83 @@ pub enum LfoShape {
 }
 
 impl LfoShape {
-    pub const ALL: [LfoShape; 6] =
-        [LfoShape::Sine, LfoShape::Triangle, LfoShape::Saw, LfoShape::Square, LfoShape::Random, LfoShape::SmoothRandom];
-
     pub fn label(self) -> &'static str {
         match self {
-            LfoShape::Sine => "Sine",
-            LfoShape::Triangle => "Triangle",
-            LfoShape::Saw => "Saw",
-            LfoShape::Square => "Square",
+            LfoShape::Drawn => "Drawn",
             LfoShape::Random => "Random",
             LfoShape::SmoothRandom => "Smooth random",
         }
     }
+}
+
+/// A ready-made drawn shape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LfoPreset {
+    Sine,
+    Triangle,
+    SawUp,
+    SawDown,
+    Square,
+    Pulse,
+    ExpUp,
+    ExpDown,
+}
+
+impl LfoPreset {
+    pub const ALL: [LfoPreset; 8] = [
+        LfoPreset::Sine,
+        LfoPreset::Triangle,
+        LfoPreset::SawUp,
+        LfoPreset::SawDown,
+        LfoPreset::Square,
+        LfoPreset::Pulse,
+        LfoPreset::ExpUp,
+        LfoPreset::ExpDown,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LfoPreset::Sine => "Sine",
+            LfoPreset::Triangle => "Triangle",
+            LfoPreset::SawUp => "Saw up",
+            LfoPreset::SawDown => "Saw down",
+            LfoPreset::Square => "Square",
+            LfoPreset::Pulse => "Pulse",
+            LfoPreset::ExpUp => "Exp up",
+            LfoPreset::ExpDown => "Exp down",
+        }
+    }
+
+    /// The shape's points. Sine starts in the middle going up, as the old Sine wave did.
+    pub fn points(self) -> Vec<CurvePoint> {
+        let p = CurvePoint::new;
+        match self {
+            LfoPreset::Sine => {
+                // Eight parts, each bent to follow its eighth of a sine to within 1.5 %.
+                const BENDS: [f32; 8] = [0.037, 0.202, -0.238, -0.038, 0.037, 0.202, -0.238, -0.038];
+                (0..=8)
+                    .map(|i| {
+                        let x = i as f32 / 8.0;
+                        let y = (0.5 + 0.5 * (std::f32::consts::TAU * x).sin()).clamp(0.0, 1.0);
+                        let y = (y * 1e4).round() / 1e4;
+                        p(x, y, if i < 8 { BENDS[i] } else { 0.0 })
+                    })
+                    .collect()
+            }
+            LfoPreset::Triangle => vec![p(0.0, 0.5, 0.0), p(0.25, 1.0, 0.0), p(0.75, 0.0, 0.0), p(1.0, 0.5, 0.0)],
+            LfoPreset::SawUp => vec![p(0.0, 0.0, 0.0), p(1.0, 1.0, 0.0)],
+            LfoPreset::SawDown => vec![p(0.0, 1.0, 0.0), p(1.0, 0.0, 0.0)],
+            LfoPreset::Square => vec![p(0.0, 1.0, 0.0), p(0.5, 1.0, 0.0), p(0.5, 0.0, 0.0), p(1.0, 0.0, 0.0)],
+            LfoPreset::Pulse => vec![p(0.0, 1.0, 0.0), p(0.25, 1.0, 0.0), p(0.25, 0.0, 0.0), p(1.0, 0.0, 0.0)],
+            LfoPreset::ExpUp => vec![p(0.0, 0.0, -0.6), p(1.0, 1.0, 0.0)],
+            LfoPreset::ExpDown => vec![p(0.0, 1.0, 0.6), p(1.0, 0.0, 0.0)],
+        }
+    }
+}
+
+/// A drawn shape as the sound engine reads it: `[x, y, bend]` per point.
+pub fn curve_numbers(points: &[CurvePoint]) -> Vec<[f32; 3]> {
+    points.iter().map(|p| [p.x, p.y, p.bend]).collect()
 }
 
 /// A tempo-synced LFO's cycle: a note length.
@@ -247,11 +309,24 @@ impl Default for DistanceSettings {
     }
 }
 
-/// A wave of its own.
+/// A wave of its own, drawn or random.
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct LfoSettings {
     #[setting(label = "Shape")]
     pub shape: LfoShape,
+    /// The drawn shape, one cycle.
+    #[setting(label = "Drawn shape")]
+    pub curve: Vec<CurvePoint>,
+    /// Plays the shape one time from its start and holds its end, like an envelope.
+    #[setting(label = "Once")]
+    pub once: bool,
+    /// The editor's grid: parts across and up, and whether points snap to it.
+    #[setting(label = "Grid across", range(1, 32))]
+    pub grid_x: i32,
+    #[setting(label = "Grid up", range(1, 16))]
+    pub grid_y: i32,
+    #[setting(label = "Snap")]
+    pub snap: bool,
     /// Set in Hz, or in note lengths at the scene's tempo.
     #[setting(label = "Tempo sync")]
     pub sync: bool,
@@ -281,7 +356,12 @@ pub struct LfoSettings {
 impl Default for LfoSettings {
     fn default() -> Self {
         Self {
-            shape: LfoShape::Sine,
+            shape: LfoShape::Drawn,
+            curve: LfoPreset::Sine.points(),
+            once: false,
+            grid_x: 8,
+            grid_y: 4,
+            snap: true,
             sync: false,
             rate_hz: 2.0,
             rate_note: NoteLength::N4,

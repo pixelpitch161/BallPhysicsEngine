@@ -1,5 +1,5 @@
-//! The Mixer's editors in the wide inspector: a bus effect's (picked in its strip) or the
-//! Master's. Each effect kind has its own view where one helps (the EQ's curve, the
+//! The Mixer's editors, drawn in the Mixer under the strips' tops: a bus effect's (picked in its
+//! strip) or the Master's. Each effect kind has its own view where one helps (the EQ's curve, the
 //! compressor's level graph, the delay's echoes, the reverb's tail, the filter's response and
 //! the distortion's curve); the rest of an effect's settings are drawn from its settings list.
 
@@ -55,15 +55,18 @@ pub fn show(ui: &mut Ui, mixer: &mut Mixer, scene: &mut Scene, kit: &Kit, readin
     let mut master_keyed = false;
     let choices = TargetChoices::default();
     ui.horizontal(|ui| {
-        ui.label(RichText::new(title(scene, kit, pick)).font(style::semibold(15.0)).color(style::TEXT));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("Close").on_hover_text("Back to the selected thing's settings").clicked() {
+            if ui.button("Close").on_hover_text("Close this editor: the sends and pans show again").clicked() {
                 edits.push(MixEdit::Pick(None));
             }
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                let title = RichText::new(title(scene, kit, pick)).font(style::semibold(15.0)).color(style::TEXT);
+                ui.add(egui::Label::new(title).truncate());
+            });
         });
     });
-    ui.add_space(6.0);
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match pick {
+    // (The Mixer around it scrolls.)
+    ui.scope(|ui| match pick {
         MixerPick::Master => {
             master_keyed = master::show(ui, scene, kit, &readings.master, &mixer.loudness, time);
         }
@@ -150,10 +153,11 @@ pub fn choice_label(name: &str) -> String {
     }
 }
 
-/// A labelled row: a grey name, then `add`.
+/// A labelled row: a grey name, then `add`. The name takes less room in a narrow editor.
 fn row<R>(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui, egui::Id) -> R) -> R {
+    let name_w = (ui.available_width() * 0.3).clamp(60.0, 110.0);
     ui.horizontal(|ui| {
-        let l = ui.add_sized([110.0, 22.0], egui::Label::new(RichText::new(label).color(style::MUTED)).truncate());
+        let l = ui.add_sized([name_w, 22.0], egui::Label::new(RichText::new(label).color(style::MUTED)).truncate());
         add(ui, l.id)
     })
     .inner
@@ -254,9 +258,9 @@ mod tests {
         kittest::{NodeT, Queryable},
     };
 
-    /// The Mixer on the left and the inspector on the right; the state keeps the inspector's
-    /// width as drawn.
-    fn harness() -> Harness<'static, (Studio, f32)> {
+    /// The Mixer on the left and the inspector on the right; the state keeps the left panel's
+    /// and the inspector's widths as drawn.
+    fn harness() -> Harness<'static, (Studio, [f32; 2])> {
         let mut studio = Studio::headless();
         studio.left = LeftPanel::Mixer;
         let mut h = Harness::builder()
@@ -266,24 +270,24 @@ mod tests {
             .allow_missing_glyphs()
             .with_context_setup(style::apply)
             .build_ui_state(
-                |ui, (studio, width): &mut (Studio, f32)| {
+                |ui, (studio, widths): &mut (Studio, [f32; 2])| {
                     let before = studio.scene.clone();
                     studio.recorded = false;
-                    studio.left_panel(ui, &before);
-                    *width = studio.inspector_panel(ui);
+                    widths[0] = studio.left_panel(ui, &before);
+                    widths[1] = studio.inspector_panel(ui);
                     egui::CentralPanel::default().show(ui, |_| {});
                     if !std::mem::take(&mut studio.recorded) {
                         studio.after_edit(before);
                     }
                 },
-                (studio, 0.0),
+                (studio, [0.0; 2]),
             );
         h.run();
         h
     }
 
     /// Adds an EQ to Bus 1 and opens it.
-    fn with_eq(h: &mut Harness<'_, (Studio, f32)>) -> bpe_core::LayerId {
+    fn with_eq(h: &mut Harness<'_, (Studio, [f32; 2])>) -> bpe_core::LayerId {
         let s = &mut h.state_mut().0;
         let kit = s.kit.clone();
         let id = s.scene.add_layer_in(&kit.registry, ThingId::ROOT, SlotId::Mixer, "fx.eq", Some(0)).unwrap();
@@ -293,7 +297,7 @@ mod tests {
         id
     }
 
-    fn eq_value(h: &Harness<'_, (Studio, f32)>, id: bpe_core::LayerId, key: &str) -> Option<Value> {
+    fn eq_value(h: &Harness<'_, (Studio, [f32; 2])>, id: bpe_core::LayerId, key: &str) -> Option<Value> {
         h.state().0.scene.card(ThingId::ROOT, SlotId::Mixer).unwrap().params.get(&layered_key(id, key)).cloned()
     }
 
@@ -304,19 +308,131 @@ mod tests {
         }
     }
 
+    /// How many send knobs show.
+    fn sends(h: &Harness<'_, (Studio, [f32; 2])>) -> usize {
+        ["To 1", "To 2", "To 3"]
+            .iter()
+            .map(|name| h.query_all_by_label(name).filter(|n| n.accesskit_node().role() == Role::Slider).count())
+            .sum()
+    }
+
     #[test]
-    fn clicking_a_slot_opens_its_editor_wide() {
+    fn clicking_a_slot_opens_its_editor_in_the_mixer() {
         let mut h = harness();
-        let narrow = h.state().1;
+        let [left, inspector] = h.state().1;
+        assert_eq!(sends(&h), 6, "the sends show while nothing is open");
         let id = with_eq(&mut h);
         assert_eq!(h.state().0.panels.mixer.pick, Some(MixerPick::Layer(id)));
         assert!(h.query_by_label("Bus 1 \u{b7} Equalizer").is_some(), "titled with its bus");
-        assert!(h.query_by_label("EQ curve").is_some());
-        let wide = h.state().1;
-        assert!(wide > narrow + 100.0, "the inspector widens: {narrow} to {wide}");
+        let curve = h.get_by_label("EQ curve").rect();
+        assert!(curve.right() <= left + 0.5, "the curve is in the Mixer ({curve:?}, panel {left} wide)");
+        // Across the three bus columns, under their tops and over their faders.
+        let bus1 = h.get_by_label("Bus 1").rect();
+        let bus3 = h.query_all_by_label("Bus 3").next().unwrap().rect();
+        assert!(curve.left() <= bus1.left() + 12.0 && curve.right() > bus3.left(), "{curve:?}");
+        let slots = h.get_by_label("Add to Bus 1").rect();
+        let fader = h.query_all_by_label("Bus 1 fader").next().unwrap().rect();
+        assert!(slots.bottom() < curve.top() && curve.bottom() < fader.top(), "{slots:?} {curve:?} {fader:?}");
+        assert_eq!(sends(&h), 0, "the editor takes the sends' place");
+        assert!(h.query_all_by_label("Ceiling").next().is_some(), "the Master keeps its knobs");
+        assert_eq!(h.state().1[1], inspector, "the inspector stays as it was");
         h.get_by_label("Close").click();
         h.run();
         assert_eq!(h.state().0.panels.mixer.pick, None);
+        assert!(h.query_by_label("EQ curve").is_none());
+        assert_eq!(sends(&h), 6, "the sends are back");
+    }
+
+    #[test]
+    fn clicking_the_open_slot_again_closes_it() {
+        let mut h = harness();
+        with_eq(&mut h);
+        assert!(h.query_by_label("EQ curve").is_some());
+        // Long enough after the click that opened it, so this is not a double-click.
+        for _ in 0..30 {
+            h.step();
+        }
+        h.query_all_by_label("Equalizer").find(|n| n.accesskit_node().role() == Role::Button).unwrap().click();
+        h.run();
+        assert_eq!(h.state().0.panels.mixer.pick, None);
+        assert!(h.query_by_label("EQ curve").is_none());
+        // And the Master's title opens and closes the Master's editor.
+        h.query_all_by_label("Master").next().unwrap().click();
+        h.run();
+        assert_eq!(h.state().0.panels.mixer.pick, Some(MixerPick::Master));
+        for _ in 0..30 {
+            h.step();
+        }
+        h.query_all_by_label("Master").next().unwrap().click();
+        h.run();
+        assert_eq!(h.state().0.panels.mixer.pick, None);
+    }
+
+    fn set_bus_on(h: &mut Harness<'_, (Studio, [f32; 2])>, n: u8) {
+        let card = h.state_mut().0.scene.card_mut(ThingId::ROOT, SlotId::Mixer).unwrap();
+        card.params.set(&format!("bus{n}_on"), Value::Bool(true));
+        h.run();
+    }
+
+    #[test]
+    fn hovering_rings_the_bus_under_the_pointer() {
+        let mut h = harness();
+        set_bus_on(&mut h, 2);
+        let s = &mut h.state_mut().0;
+        let kit = s.kit.clone();
+        s.scene.add_layer_in(&kit.registry, ThingId::ROOT, SlotId::Mixer, "fx.reverb", Some(1)).unwrap();
+        h.run();
+        h.query_all_by_label("Reverb").find(|n| n.accesskit_node().role() == Role::Button).unwrap().click();
+        h.run();
+        // Over Bus 1's column, but the editor is Bus 2's.
+        let tail = h.get_by_label("Reverb tail").rect();
+        h.hover_at(egui::pos2(tail.left() + 4.0, tail.center().y));
+        h.run();
+        assert_eq!(h.state().0.panels.mixer.hover_bus, Some(2));
+        let fader = h.query_all_by_label("Bus 3 fader").next().unwrap().rect();
+        h.hover_at(fader.center());
+        h.run();
+        assert_eq!(h.state().0.panels.mixer.hover_bus, Some(3));
+        let name = h.get_by_label("Bus 1").rect();
+        h.hover_at(name.center());
+        h.run();
+        assert_eq!(h.state().0.panels.mixer.hover_bus, Some(1));
+    }
+
+    /// Every editor draws inside a Mixer as wide as the tree's default.
+    #[test]
+    fn every_editor_fits_the_mixer() {
+        let mut h = harness();
+        let left = h.state().1[0];
+        assert!((left - style::TREE_W).abs() < 1.0, "{left}");
+        let s = &mut h.state_mut().0;
+        let kit = s.kit.clone();
+        for kind in bpe_kit::sound::fx::FX_KINDS {
+            s.scene.add_layer_in(&kit.registry, ThingId::ROOT, SlotId::Mixer, kind, Some(0)).unwrap();
+        }
+        let ids: Vec<_> = s.scene.card(ThingId::ROOT, SlotId::Mixer).unwrap().layers.iter().map(|l| l.id).collect();
+        h.run();
+        let picks = ids.into_iter().map(MixerPick::Layer).chain([MixerPick::Master]);
+        let master = h.query_all_by_label("Master").next().unwrap().rect().left();
+        for pick in picks {
+            h.state_mut().0.panels.mixer.pick = Some(pick);
+            h.run();
+            let close = h.get_by_label("Close").rect();
+            assert!(close.right() <= left, "{pick:?}: Close is in the Mixer ({close:?})");
+            assert_eq!(h.state().1[0], left, "{pick:?}: the Mixer keeps its width");
+            // Everything between the editor's title and the faders stays left of the Master.
+            let faders = h.query_all_by_label("Bus 1 fader").next().unwrap().rect().top();
+            for node in h.root().children_recursive() {
+                let a = node.accesskit_node();
+                let (Some(name), Some(b)) = (a.label().filter(|l| !l.is_empty()), a.bounding_box()) else { continue };
+                if b.y0 as f32 >= close.top() && b.y1 as f32 <= faders {
+                    assert!(b.x1 as f32 <= master, "{pick:?}: {name} reaches {} past the Master at {master}", b.x1);
+                }
+            }
+        }
+        // The Master's readout keeps its words on one line (not squeezed beside the knobs).
+        let down = h.query_all_by_label("Turned down").next().unwrap().rect();
+        assert!(down.width() > down.height() * 2.0, "{down:?}");
     }
 
     #[test]
@@ -391,14 +507,14 @@ mod tests {
     }
 
     #[test]
-    fn selecting_a_thing_closes_the_bus_editor() {
+    fn selecting_a_thing_leaves_the_bus_editor_open() {
         let mut h = harness();
         with_eq(&mut h);
         assert!(h.state().0.panels.mixer.pick.is_some());
         h.state_mut().0.selection.set(ThingId(1));
         h.run();
-        assert_eq!(h.state().0.panels.mixer.pick, None);
-        assert!(h.query_by_label("EQ curve").is_none());
+        assert!(h.state().0.panels.mixer.pick.is_some(), "the editor is in the Mixer, beside the inspector");
+        assert!(h.query_by_label("EQ curve").is_some());
     }
 
     #[test]
