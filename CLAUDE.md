@@ -90,7 +90,7 @@ Dependencies go bottom to top:
   keyed at 0 s. A touch is resting, not a hit, below `Limits::resting_along(normal)` (the scene's gravity, or more
   along a ball's own pull, `Limits.press`). `step_at` turns a frame time into its step (editor and export agree).
   `Bodies.number` is each row's ball number (`row_of`; riding an Item uses it). `Bodies.held` keeps a row still
-  (not moved, bounced or paired: an emitter holding a caught ball before sending it back). Events `Spawn` (tag 8:
+  (not moved, bounced or paired, its speed kept at 0: an emitter holding a caught ball before sending it back). Events `Spawn` (tag 8:
   an emitter fired a ball, `b` = (emitter, round)) and `Enter` (tag 9: a ball came into a catcher, `b` = (catcher,
   its round)) sit beside Hit and Remove; every log reader filters by kind. `pairs::pop` is public. `sound_fingerprint` is the
   physics fingerprint without the history part (the editor rebuilds the sound only when it changes). The generic `ThingSim` hooks (spawn, forces,
@@ -184,7 +184,7 @@ Dependencies go bottom to top:
   sizes ×/+, `layout` one round's places; `sim.rs`: Fire when At start / Every / When a wave lands, Rounds or
   Endless, Earlier rounds Keep / Fade out / Remove, Most balls; catching by a swept circle test: Remove, Send back
   out (Same way back / Out my way, Delay holds), Pass through; waves = arrivals of one (owner, round) within 0.5 s,
-  `landings`; `round_marks` for the editor) and sits on a shape's focus (`foci.rs`, circles: the middle). Its
+  `landings`; `round_marks` for the editor) and sits on a focus of a circle or ellipse (`emitter/foci.rs` over `shape::foci`; the Sits on hint says what would spoil meeting at the other focus). Its
   marker, flashes and ripples are `draw.rs` (sprites), worked out from its state at the moment drawn. Group
   gradient `Spread` has Round and Launch angle; the around layer **Wavefront** (`layers/wavefront.rs`) draws a
   strip through each round's balls (`trail::draw::strip_with_subs`). Camera Follow "balls" follows emitters too.

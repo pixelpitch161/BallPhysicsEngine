@@ -247,7 +247,7 @@ fn rounds_due(st: &EmitterState, at: &Moment, landed: u32) -> u32 {
         return 0;
     }
     let mut due = 0u32;
-    let first = ((s.start_delay.max(0.0) as f64 * at.rate as f64).round() as u64).max(0);
+    let first = (s.start_delay.max(0.0) as f64 * at.rate as f64).round() as u64;
     let starts = s.fire_when != FireWhen::WhenAWaveLands || s.wave_first;
     if st.rounds_fired == 0 && starts && at.step >= first {
         due += 1;

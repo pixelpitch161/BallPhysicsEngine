@@ -288,7 +288,8 @@ mod tests {
         assert_eq!((key, v), ("aim_angle", Value::Number(0.0)));
         let (_, v) = dragged(MiniDrag::Aim, &s, m, m.to_view(Vec2::new(0.0, -10.0)));
         assert_eq!(v, Value::Number(-90.0), "up the view is -90°");
-        let (key, v) = dragged(MiniDrag::Speed(0), &s, m, m.to_view(Vec2::new(200.0, 0.0)));
+        // Ball 0 goes up the view, the aim: 200 px along its ray.
+        let (key, v) = dragged(MiniDrag::Speed(0), &s, m, m.to_view(Vec2::new(0.0, -200.0)));
         assert_eq!((key, v), ("speed", Value::Number(400.0)), "200 px in half a second");
     }
 
