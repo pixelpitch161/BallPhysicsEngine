@@ -447,7 +447,7 @@ mod tests {
             Outline::Ellipse { half, angle, .. } => {
                 assert!((half - Vec2::new(225.0, 325.0)).length() < 1e-2, "stops at half its size: {half}");
                 let turned = (angle - 900f32.to_radians()).rem_euclid(std::f32::consts::TAU);
-                assert!(turned < 1e-2 || turned > std::f32::consts::TAU - 1e-2, "{angle}");
+                assert!(!(1e-2..=std::f32::consts::TAU - 1e-2).contains(&turned), "{angle}");
             }
             ref other => panic!("{other:?}"),
         }

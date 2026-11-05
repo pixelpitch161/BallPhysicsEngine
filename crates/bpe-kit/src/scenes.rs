@@ -841,7 +841,7 @@ mod tests {
     fn stage_scenes_resolve_and_round_trip() {
         let reg = registry();
         let scenes = scenes::all(&reg);
-        assert_eq!(scenes.len(), 15);
+        assert_eq!(scenes.len(), 16);
         let in_order: Vec<String> = [
             scenes::stage2(&reg),
             scenes::stage3(&reg),
@@ -850,6 +850,7 @@ mod tests {
                 ("Colour paints".into(), scenes::colour_demo(&reg)),
                 ("Blend modes".into(), scenes::blend_demo(&reg)),
                 ("Graded sunset".into(), scenes::graded_sunset(&reg)),
+                ("Ellipse focus".into(), scenes::ellipse_focus(&reg)),
             ],
         ]
         .concat()
@@ -861,7 +862,7 @@ mod tests {
         assert_eq!(names[..5], ["One ball", "Reel block", "Box drop", "Spinning hexagon", "Shrinking ring"]);
         assert_eq!(names[5..7], ["Ball pit", "Riders"]);
         assert_eq!(names[7..12], ["Lava ball", "Confetti drop", "Spark block", "Kaleido hexagon", "Neon ring"]);
-        assert_eq!(names[12..], ["Colour paints", "Blend modes", "Graded sunset"]);
+        assert_eq!(names[12..], ["Colour paints", "Blend modes", "Graded sunset", "Ellipse focus"]);
         for (name, scene) in &scenes {
             assert_eq!(&scene.name, name);
             assert!(crate::resolve_scene(scene, &reg).problems.is_empty(), "{name}");
