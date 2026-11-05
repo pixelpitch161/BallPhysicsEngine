@@ -56,6 +56,13 @@ layer follows the true curve. `bpe-kit/src/things/shape/foci.rs` reads foci off 
 6. **"No longer an exact ellipse" note**: shown as the Turn into points menu item's hover text ("Makes the ellipse 16
    curved sides you can mould. Balls fired from a focus will no longer meet perfectly.") rather than a lasting
    inspector note, because once it's a path nothing marks it as having been an ellipse. Called out in the PR.
+8. **Built (notes from the build):** a Middle ball is kept `MIDDLE_GAP` (0.01 px) on its own side so the next step
+   still knows its side; its bounce is found exactly by halving the substep's move against the outline
+   (`walls::middle_crossing`) and uses the outline's own normal there (the projected point's normal was off by up to
+   7 px at the far focus). Result: 360 balls meet within 0.008 px. The settings contract's "at most 6 Simple" now
+   counts the Simple settings that can show at once over every mix of Choice values (Size never shows with Width and
+   Height). The editor's outline overlay is the 16-curve path (an overlay only; the shape itself draws exactly).
+
 7. Turn is baked into the ellipse's `outline_path()` (and into the Turn into points path), so shape units stay the
    unturned shape frame everywhere (`in_shape_units`, editor `ShapeFrame`).
 
