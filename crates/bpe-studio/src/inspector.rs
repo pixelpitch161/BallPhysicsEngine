@@ -189,6 +189,13 @@ pub(crate) enum Edit {
     AddLayerFor(SlotId, &'static str, Vec<u32>),
 }
 
+/// Whether `a` is a part of a vary (its To, spread or easing) on a setting that doesn't vary
+/// there: an edit to one thing's varied setting leaves the other selected things' alone.
+fn no_vary_here(scene: &Scene, a: &Address) -> bool {
+    bpe_core::vary::split(&a.key)
+        .is_some_and(|(base, _)| scene.vary_at(&Address { key: base.to_owned(), ..a.clone() }).is_none())
+}
+
 /// The things an edit to `id`'s setting reaches: every selected thing of `id`'s kind for its own
 /// settings (`slot` is `None`), or with a card of the same kind in `slot`.
 fn reached(scene: &Scene, selected: &[ThingId], id: ThingId, slot: Option<SlotId>) -> Vec<ThingId> {
@@ -580,6 +587,9 @@ pub fn show(
                 let mut any = false;
                 for t in reached(scene, &selected, id, None) {
                     let a = Address::own(t, &key);
+                    if no_vary_here(scene, &a) {
+                        continue;
+                    }
                     let set = set_or_key(scene, reg, &a, value.clone(), time, &mut inspector.keyed_edit);
                     any |= set;
                     if set {
@@ -602,6 +612,9 @@ pub fn show(
                 let mut any = false;
                 for t in reached_key(scene, &selected, id, Some(slot), &key) {
                     let a = Address::on(t, slot, &key);
+                    if no_vary_here(scene, &a) {
+                        continue;
+                    }
                     any |= set_or_key(scene, reg, &a, value.clone(), time, &mut inspector.keyed_edit);
                 }
                 any
@@ -610,6 +623,9 @@ pub fn show(
                 let mut any = false;
                 for t in reached_key(scene, &selected, id, slot, &key) {
                     let a = Address { thing: t, slot, key: key.clone() };
+                    if no_vary_here(scene, &a) {
+                        continue;
+                    }
                     any |= new_key(scene, reg, &a, time);
                 }
                 any
@@ -627,7 +643,10 @@ pub fn show(
                 for t in reached_key(scene, &selected, id, slot, &key) {
                     let a = Address { thing: t, slot, key: key.clone() };
                     any |= if on {
-                        scene.vary_at(&a).is_none() && scene.start_varying(reg, &a).is_ok()
+                        // Only things with balls to vary across (a single ball, a shape, never).
+                        crate::vary::offered(scene, t)
+                            && scene.vary_at(&a).is_none()
+                            && scene.start_varying(reg, &a).is_ok()
                     } else {
                         scene.stop_varying(&a)
                     };

@@ -441,8 +441,8 @@ fn setting(
         if offered.is_none() {
             return;
         }
-        if now.is_some() {
-            if ui.button("Stop varying").on_hover_text("Every ball takes this value again").clicked() {
+        if now.is_some() || !cx.vary.is_some_and(|v| v.offered) {
+            if now.is_some() && ui.button("Stop varying").on_hover_text("Every ball takes this value again").clicked() {
                 vary_pick.set(Some(VaryEdit::Stop));
                 ui.close();
             }

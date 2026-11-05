@@ -268,7 +268,12 @@ impl World {
                         && let Some(msim) = sims.module(&s.kind)
                     {
                         let prepared = self.modules.entry(thing).or_default();
-                        prepared.insert(slot, Slotted::new(msim, &s.kind, &s.params));
+                        // A card whose settings didn't move this step keeps what it has: a card
+                        // varied across thousands of balls isn't prepared afresh for nothing.
+                        let same = prepared.get(&slot).is_some_and(|p| p.kind == s.kind && p.params == s.params);
+                        if !same {
+                            prepared.insert(slot, Slotted::new(msim, &s.kind, &s.params));
+                        }
                     }
                 }
                 None => {

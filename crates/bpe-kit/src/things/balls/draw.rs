@@ -149,13 +149,23 @@ struct Colours<'w, 'a> {
     cx: &'w DrawCx<'a>,
     bodies: &'a Bodies,
     seen: bool,
+    /// What every stack's colours share, made with the first.
+    #[allow(clippy::type_complexity)]
+    shared: RefCell<Option<(Rc<GroupCx<'a>>, Rc<BallInputs<'a>>)>>,
     /// Each stack's colours, made the first time a ball wearing it is asked about.
     made: RefCell<Vec<Option<ColourOf<'a>>>>,
 }
 
 impl<'w, 'a> Colours<'w, 'a> {
     fn new(worn: &'w Worn<'a>, cx: &'w DrawCx<'a>, bodies: &'a Bodies, seen: bool) -> Self {
-        Colours { worn, cx, bodies, seen, made: RefCell::new(vec![None; worn.stacks.len()]) }
+        Colours {
+            worn,
+            cx,
+            bodies,
+            seen,
+            shared: RefCell::new(None),
+            made: RefCell::new(vec![None; worn.stacks.len()]),
+        }
     }
 
     /// Body row `i`'s colour.
@@ -163,7 +173,17 @@ impl<'w, 'a> Colours<'w, 'a> {
         let at = self.worn.index(i);
         let made = self.made.borrow()[at].clone();
         let f = made.unwrap_or_else(|| {
-            let f: ColourOf<'a> = Rc::new(colours(&self.worn.stacks[at], self.cx, self.bodies, self.seen));
+            let (group, inputs) = self
+                .shared
+                .borrow_mut()
+                .get_or_insert_with(|| {
+                    let fills: Vec<_> = self.worn.stacks.iter().map(|s| for_balls(s.body.fill.clone())).collect();
+                    let inputs = BallInputs::new(self.cx, self.bodies, &fills.iter().collect::<Vec<_>>());
+                    (Rc::new(group_cx(self.worn.base(), self.cx)), Rc::new(inputs))
+                })
+                .clone();
+            let f: ColourOf<'a> =
+                Rc::new(colours_with(&self.worn.stacks[at], self.cx, self.bodies, self.seen, group, inputs));
             self.made.borrow_mut()[at] = Some(f.clone());
             f
         });
@@ -239,9 +259,23 @@ fn group_cx<'a>(stack: &Stack, cx: &DrawCx<'a>) -> GroupCx<'a> {
 /// carries (a group colour the GPU mixes in stays out).
 fn colours<'a>(stack: &Stack, cx: &DrawCx<'a>, bodies: &'a Bodies, seen: bool) -> impl Fn(usize) -> [f32; 4] + use<'a> {
     let fill = for_balls(stack.body.fill.clone());
-    let inputs = BallInputs::new(cx, bodies, &[&fill]);
+    let inputs = Rc::new(BallInputs::new(cx, bodies, &[&fill]));
+    colours_with(stack, cx, bodies, seen, Rc::new(group_cx(stack, cx)), inputs)
+}
+
+/// [`colours`] with the group and the balls' paint inputs worked out already (shared by every
+/// stack a varied look's balls wear: the group layers never vary, and `inputs` must have been
+/// made for this stack's body paint among others).
+fn colours_with<'a>(
+    stack: &Stack,
+    cx: &DrawCx<'a>,
+    bodies: &'a Bodies,
+    seen: bool,
+    group: Rc<GroupCx<'a>>,
+    inputs: Rc<BallInputs<'a>>,
+) -> impl Fn(usize) -> [f32; 4] + use<'a> {
+    let fill = for_balls(stack.body.fill.clone());
     let (hue_per_hit, turn) = (stack.hue_per_hit(), stack.rainbow() * cx.time as f32);
-    let group = group_cx(stack, cx);
     let gradient = if seen { stack.group.clone() } else { stack.group_on_body().cloned() };
     let time = cx.time as f32;
     move |i| {
@@ -503,6 +537,13 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, worn: &Worn, part: u32) {
     // The biggest a ball of the group can be, whether let go yet or not.
     let widest =
         group.look.radius * if group.look.group { 1.0 + 0.5 * group.look.vary_size.clamp(0.0, 1.0) } else { 1.0 };
+    // A Size varying across the balls can reach past it.
+    let widest = match crate::things::balls::sim::size_to(&cx.resolved.params) {
+        Some(to) => {
+            widest.max(to * widest / group.look.radius.max(1e-3)).max(bodies.radius.iter().copied().fold(0.0, f32::max))
+        }
+        None => widest,
+    };
     let side = 2.0 * (group.info.furthest + widest).max(1.0);
     // Flash and Colour on hit sub-layers read each ball's last hit and its hits so far.
     let hits = stack.needs_hits();

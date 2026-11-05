@@ -255,6 +255,9 @@ pub struct BallSpread {
     pub hits: u32,
     /// The group's seed, for Random.
     pub seed: u32,
+    /// A ball on its own (a Balls thing that isn't a group): it has nothing to vary across,
+    /// so it sits at the start of every spread.
+    pub alone: bool,
 }
 
 /// How fast a ball reaches the far end for Speed, in px/s (the group gradient's).
@@ -265,6 +268,9 @@ pub const FULL_HITS: f32 = 10.0;
 impl BallSpread {
     /// Where this ball sits in spread `by` (0 to 1), `salt` picking its Random.
     pub fn t(&self, by: VaryBy, salt: u32) -> f32 {
+        if self.alone {
+            return 0.0;
+        }
         let t = match by {
             VaryBy::Number => {
                 if self.count <= 1 {
@@ -511,6 +517,11 @@ mod tests {
         assert_eq!(fast.t(VaryBy::LaunchAngle, 0), 0.75);
         let nan = BallSpread { place: f32::NAN, ..BallSpread::default() };
         assert_eq!(nan.t(VaryBy::Place, 0), 0.0);
+        // A ball on its own has nothing to vary across: every spread starts it at From.
+        let alone = BallSpread { alone: true, ..fast };
+        for by in [VaryBy::Speed, VaryBy::Hits, VaryBy::Random, VaryBy::Place, VaryBy::LaunchAngle] {
+            assert_eq!(alone.t(by, 7), 0.0, "{by:?}");
+        }
     }
 
     #[test]

@@ -18,12 +18,15 @@ pub struct VaryCx<'a> {
     pub time: f64,
     /// Where the grid's setting `key` lives.
     pub at: &'a dyn Fn(&str) -> Address,
+    /// Whether the thing has balls to vary across (see [`offered`]); a setting that varies
+    /// already still shows it, and can stop, when it hasn't.
+    pub offered: bool,
 }
 
 impl<'a> VaryCx<'a> {
-    /// Varying for the settings of thing `id` (whose keys live at `at`), when it has balls to
-    /// vary across: a Balls group, or an Emitter. `None` for anything else: its menus don't offer
-    /// it.
+    /// Varying for the settings of thing `id` (whose keys live at `at`). Only a thing with balls
+    /// to vary across (a Balls group, or an Emitter) is offered it; any other shows the settings
+    /// that vary already, so they can stop.
     pub fn of(
         scene: &'a Scene,
         reg: &'a Registry,
@@ -31,12 +34,15 @@ impl<'a> VaryCx<'a> {
         id: ThingId,
         at: &'a dyn Fn(&str) -> Address,
     ) -> Option<VaryCx<'a>> {
-        offered(scene, id).then_some(VaryCx { scene, reg, time, at })
+        Some(VaryCx { scene, reg, time, at, offered: offered(scene, id) })
     }
 
-    /// How setting `def` can vary across the balls; `None` when it can't.
+    /// How setting `def` can vary across the balls; `None` when it can't (or the thing has no
+    /// balls to vary it across, and it doesn't vary yet).
     pub fn use_of(&self, def: &SettingDef) -> Option<VaryUse> {
-        self.scene.vary_use(self.reg, &(self.at)(def.key))
+        let a = (self.at)(def.key);
+        let use_ = self.scene.vary_use(self.reg, &a);
+        if self.offered { use_ } else { self.scene.vary_at(&a).map(|_| use_.unwrap_or(VaryUse::Live)) }
     }
 
     /// How setting `key` varies, its To as it is at the playhead.

@@ -54,6 +54,7 @@ impl BallsState {
             speed: 0.0,
             hits: 0,
             seed: self.settings.seed as u32,
+            alone: !self.settings.group,
         }
     }
 
@@ -106,6 +107,23 @@ fn own_varies(params: &Params) -> Vec<Vary> {
         .into_iter()
         .filter(|v| matches!(v.key.as_str(), "radius" | "velocity") && v.to.is_some())
         .collect()
+}
+
+/// The settings a group is laid out by: when its Size varies up to `size_to` (bigger than Size),
+/// its places are spaced for that bigger end, so no ball starts overlapping its neighbours.
+pub fn laid_out(s: &BallsSettings, size_to: Option<f32>) -> std::borrow::Cow<'_, BallsSettings> {
+    match size_to {
+        Some(to) if to > s.radius => std::borrow::Cow::Owned(BallsSettings { radius: to, ..s.clone() }),
+        _ => std::borrow::Cow::Borrowed(s),
+    }
+}
+
+/// The far end of a Size that varies across the balls, in `params`.
+pub fn size_to(params: &Params) -> Option<f32> {
+    match vary::vary_of(params, "radius")?.to? {
+        Value::Number(x) => Some(x as f32),
+        _ => None,
+    }
 }
 
 /// Each ball's place from left to right across `offsets` (0 to 1; all 0 when they line up).
@@ -299,7 +317,7 @@ impl ThingSim for BallsSim {
         // Riders start where their parent is and move with it; everything else sits where its
         // own transform says.
         let at = world.anchor(thing.id);
-        let places = offsets(&settings);
+        let places = offsets(&laid_out(&settings, size_to(&resolved.params)));
         let order = release_order(&settings, &places);
         let rate = world.steps_per_second;
         let middle = places.iter().copied().sum::<Vec2>() / places.len().max(1) as f32;

@@ -162,10 +162,23 @@ pub fn draw_balls(
     };
     let emissions = if copies.len() > 1 {
         let mut all = Vec::new();
-        for at in 0..copies.len() {
+        // Each copy works out at most its share of the cap (by how many balls wear it), so
+        // a thousand copies never work out a thousand caps' worth.
+        let mut wearing = vec![0usize; copies.len()];
+        for (i, &at) in copy_of.iter().enumerate() {
+            if wears(i) {
+                wearing[at] += 1;
+            }
+        }
+        let total = wearing.iter().sum::<usize>().max(1);
+        for (at, &worn) in wearing.iter().enumerate() {
+            if worn == 0 {
+                continue;
+            }
             let wears = |i: usize| copy_of.get(i) == Some(&at) && wears(i);
             let p = mine(at).1;
-            all.extend(emit::ball_emissions(p, cx.thing.id, balls, &wears, cx.log, rate, cx.time, MAX_PARTICLES));
+            let cap = (MAX_PARTICLES * worn).div_ceil(total).max(16);
+            all.extend(emit::ball_emissions(p, cx.thing.id, balls, &wears, cx.log, rate, cx.time, cap));
         }
         all.sort_by(|a, b| a.time.total_cmp(&b.time));
         emit::capped(all, MAX_PARTICLES)

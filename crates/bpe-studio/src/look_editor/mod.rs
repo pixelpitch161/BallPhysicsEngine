@@ -710,6 +710,26 @@ mod tests {
     }
 
     #[test]
+    fn a_vary_left_on_a_ball_that_is_no_group_still_shows_and_stops() {
+        let mut h = harness();
+        make_group(&mut h);
+        add(&mut h, "+ Add layer", "Outline");
+        let outline = layer_named(&h, BALL, "Outline");
+        let width = Address::on(BALL, SlotId::Look, &layered_key(outline.id, "width"));
+        let s = h.state_mut();
+        s.scene.start_varying(&s.kit.registry, &width).unwrap();
+        s.scene.things.get_mut(&BALL).unwrap().params.set("group", bpe_core::Value::Bool(false));
+        s.resolved = resolve(&s.scene, &s.kit.registry);
+        h.run();
+        assert!(h.query_all_by_label("Width varies by").next().is_some(), "still shown");
+        h.get_all_by_role_and_label(Role::Label, "Width").next().unwrap().click_secondary();
+        h.run();
+        h.get_by_label("Stop varying").click();
+        h.run();
+        assert!(h.state().scene.vary_at(&width).is_none());
+    }
+
+    #[test]
     fn a_varied_colour_gets_a_to_row() {
         let mut h = harness();
         make_group(&mut h);

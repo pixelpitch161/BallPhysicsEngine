@@ -55,6 +55,11 @@ impl Rows {
     /// from `from`, preparing any state not made yet from `params`.
     pub(crate) fn fill(&mut self, sim: &dyn ModuleSim, params: &Params, from: usize, spreads: &[BallSpread]) {
         self.states.truncate(from);
+        // A spread by speed or hits beside another wanders over more and more steps: what was
+        // made is let go now and then, so it never piles up over a long clip.
+        if self.made.len() > 2 * vary::VARY_LEVELS as usize {
+            self.made.clear();
+        }
         for spread in spreads {
             let key: Vec<u16> =
                 self.varies.iter().zip(&self.salts).map(|(v, &salt)| vary::level(spread.t(v.by, salt))).collect();
