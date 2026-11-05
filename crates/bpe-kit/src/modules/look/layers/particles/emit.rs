@@ -77,16 +77,15 @@ fn first_step(now: f64, life: f32, rate: u32) -> u64 {
 }
 
 /// Where ball `i` was `ago` seconds back: between it and its newest sample, then along its
-/// history; where it is without one.
+/// history, through the bounces between samples; where it is without one.
 pub fn ball_at(balls: &Balls, i: usize, ago: f32) -> Vec2 {
     let head = balls.bodies.position[i];
     let h = balls.history;
-    let Some(newest) = h.points(i).next() else { return head };
-    if ago <= balls.newest_ago {
-        let f = if balls.newest_ago > 0.0 { ago / balls.newest_ago } else { 0.0 };
-        return head.lerp(newest, f.clamp(0.0, 1.0));
-    }
-    h.at(i, ago - balls.newest_ago, balls.interval).unwrap_or(head)
+    let Some(newest) = h.newest_step() else { return head };
+    // Seconds a step, and the moments (in steps) of the head and of `ago` back.
+    let dt = (balls.interval / h.every() as f32).max(1e-9) as f64;
+    let head_t = newest as f64 + balls.newest_ago.max(0.0) as f64 / dt;
+    h.place(i, head_t - ago.max(0.0) as f64 / dt, head_t, head).unwrap_or(head)
 }
 
 /// How fast ball `i` was going `ago` seconds back, from where it was either side of then.

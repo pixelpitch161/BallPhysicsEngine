@@ -81,7 +81,11 @@ Dependencies go bottom to top:
   the camera, the event log (`events.rs`) and playback/snapshots. `history.rs` keeps each ball's past positions
   at 60 a second (and how far it has `travelled`) for as long as its trails and particles ask (`HistoryWant`:
   `seconds`, at least 2, or `forever` for a Line that stays; `around_history` in the kit works it out); a ball's
-  past starts at the step it was `born` (no padding before its spawn). `World::build` starts from the settings as
+  past starts at the step it was `born` (no padding before its spawn). Between samples it keeps each ball's
+  bounce **corners** (`History::corner`: where its centre touched on the way in, noted in the wall pass, and where
+  the substep left it, noted after each substep from the log's hits, `World::note_corners`); `trace` merges them
+  with the samples and `place` reads through them, so trails (`Path.corner`) and particles turn where the ball
+  really bounced instead of cutting across between two samples. `World::build` starts from the settings as
   keyed at 0 s. A touch is resting, not a hit, below `Limits::resting_along(normal)` (the scene's gravity, or more
   along a ball's own pull, `Limits.press`). `step_at` turns a frame time into its step (editor and export agree).
   `Bodies.number` is each row's ball number (`row_of`; riding an Item uses it). `sound_fingerprint` is the

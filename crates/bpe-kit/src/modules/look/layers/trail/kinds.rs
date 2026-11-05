@@ -15,6 +15,8 @@ pub struct Path {
     pub ago: Vec<f32>,
     /// How far along the trail each point is from the ball, in world units.
     pub arc: Vec<f32>,
+    /// Whether each point is a bounce (a corner the ball turned at between two samples).
+    pub corner: Vec<bool>,
 }
 
 impl Path {
@@ -36,10 +38,18 @@ impl Path {
         self.ago.last().copied().unwrap_or(0.0)
     }
 
-    /// 0 at the ball to 1 at the tail, for point `k`: by its place in the list, as samples are
-    /// even in time.
+    /// 0 at the ball to 1 at the tail, for point `k`: by how long ago it was there, as points
+    /// are not evenly spaced (bounces sit between samples); by its place in the list for a path
+    /// that reaches no time back.
     pub fn along(&self, k: usize) -> f32 {
-        if self.len() < 2 { 0.0 } else { k as f32 / (self.len() - 1) as f32 }
+        let reach = self.reach();
+        if self.len() < 2 {
+            0.0
+        } else if reach > 0.0 {
+            (self.ago[k] / reach).clamp(0.0, 1.0)
+        } else {
+            k as f32 / (self.len() - 1) as f32
+        }
     }
 
     /// The place `arc` world units back along it, and the index of the point at or before it.
@@ -126,15 +136,26 @@ impl Cut {
     }
 }
 
-/// Ball `ball`'s trail: from `head` (where it is now) back through its history, whose newest
-/// sample is `newest_ago` seconds old and whose samples are `interval` seconds apart, as far as
-/// `cut` lets it.
+/// Ball `ball`'s trail: from `head` (where it is now) back through its history (its samples
+/// and the bounces between them), whose newest sample is `newest_ago` seconds old and whose
+/// samples are `interval` seconds apart, as far as `cut` lets it.
 pub fn path(head: Vec2, history: &History, ball: usize, newest_ago: f32, interval: f32, cut: Cut) -> Path {
-    let mut path = Path { points: vec![head], ago: vec![0.0], arc: vec![0.0] };
+    let mut path = Path { points: vec![head], ago: vec![0.0], arc: vec![0.0], corner: vec![false] };
     let time = cut.time();
-    for (j, p) in history.points(ball).enumerate() {
-        let ago = newest_ago.max(0.0) + j as f32 * interval;
+    let newest_ago = newest_ago.max(0.0) as f64;
+    // Seconds a step.
+    let dt = interval as f64 / history.every() as f64;
+    let newest = history.newest_step().unwrap_or(0) as f64;
+    for (t, p) in history.trace(ball) {
+        let ago = (newest_ago + (newest - t) * dt) as f32;
         let (last, last_ago, last_arc) = (path.points[path.len() - 1], path.ago[path.len() - 1], path.length());
+        // Samples are taken on whole multiples of `every` steps; bounces are anywhere between.
+        let is_corner = t % history.every() as f64 != 0.0;
+        // A bounce at or after the ball's own moment, or right where the point before is, adds
+        // nothing.
+        if is_corner && (ago <= last_ago + 1e-6 || p == last) {
+            continue;
+        }
         let step = (p - last).length();
         // How much of the way to this sample it may go: 1 all of it.
         let mut f = 1.0f32;
@@ -154,12 +175,14 @@ pub fn path(head: Vec2, history: &History, ball: usize, newest_ago: f32, interva
                 path.points.push(last.lerp(p, f));
                 path.ago.push(last_ago + (ago - last_ago) * f);
                 path.arc.push(last_arc + step * f);
+                path.corner.push(false);
             }
             break;
         }
         path.points.push(p);
         path.ago.push(ago);
         path.arc.push(last_arc + step);
+        path.corner.push(is_corner);
     }
     path
 }
@@ -168,10 +191,10 @@ pub fn path(head: Vec2, history: &History, ball: usize, newest_ago: f32, interva
 pub const KEEP_WHOLE: usize = 240;
 
 /// Drops points of `path` older than [`KEEP_WHOLE`] that a long Line doesn't need: it keeps
-/// every corner (where the way turns more than 10°, as at a bounce) and one sample in 4 (under
-/// 30 s old), 8 (under 60 s) or 16 (older) between them. Which samples those are is counted
-/// from the start of the clip (`newest` is the newest sample's number), so a point kept stays
-/// kept as the ball moves on.
+/// every corner (where the way turns more than 10°, as at a bounce) and one sample in 4 (under 30 s
+/// old), 8 (under 60 s) or 16 (older) between them. Which samples those are is counted from the
+/// start of the clip (`newest` is the newest sample's number), so a point kept stays kept as the
+/// ball moves on.
 pub fn thin(path: &mut Path, newest: u64) {
     let n = path.len();
     if n <= KEEP_WHOLE + 2 {
@@ -182,10 +205,20 @@ pub fn thin(path: &mut Path, newest: u64) {
         (Some(a), Some(b)) => a.dot(b) < 10f32.to_radians().cos(),
         _ => false,
     };
+    // Each point's sample number back from the newest (bounces between samples have none).
+    let mut back = 0u64;
     let keep: Vec<bool> = (0..n)
         .map(|k| {
+            let sample = back;
+            if k > 0 && !path.corner[k] {
+                back += 1;
+            }
             if k <= KEEP_WHOLE || k + 1 >= n {
                 return true;
+            }
+            // A bounce between samples stays only where it turns.
+            if path.corner[k] {
+                return corner(k);
             }
             let ago = path.ago[k];
             let every = if ago < 30.0 {
@@ -195,7 +228,7 @@ pub fn thin(path: &mut Path, newest: u64) {
             } else {
                 16
             };
-            newest.saturating_sub(k as u64 - 1).is_multiple_of(every) || corner(k)
+            newest.saturating_sub(sample).is_multiple_of(every) || corner(k)
         })
         .collect();
     let mut k = 0;
@@ -204,6 +237,8 @@ pub fn thin(path: &mut Path, newest: u64) {
     path.ago.retain(|_| (keep[k], k += 1).0);
     let mut k = 0;
     path.arc.retain(|_| (keep[k], k += 1).0);
+    let mut k = 0;
+    path.corner.retain(|_| (keep[k], k += 1).0);
 }
 
 /// Cuts `path` to its newest `most` points (at least two).
@@ -212,6 +247,7 @@ pub fn limit(path: &mut Path, most: usize) {
     path.points.truncate(most);
     path.ago.truncate(most);
     path.arc.truncate(most);
+    path.corner.truncate(most);
 }
 
 /// The half width at 0 (the ball) to 1 (the tail) along a trail `full` wide at the ball,

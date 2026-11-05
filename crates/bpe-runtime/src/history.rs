@@ -1,6 +1,8 @@
 //! Where each ball has been lately, for trails and particles. Recorded `SAMPLE_RATE` times a
 //! second, kept for as many seconds as the thing's longest trail asks for (or for good, for a
-//! Line that stays), and thrown away as new samples arrive.
+//! Line that stays), and thrown away as new samples arrive. Between samples it also keeps each
+//! ball's **corners**: where it was at the moment it bounced, so a trail turns where the ball
+//! really turned instead of cutting straight across from the sample before to the one after.
 
 use std::collections::VecDeque;
 
@@ -44,7 +46,12 @@ pub struct History {
     /// Samples kept per ball; `usize::MAX` keeps every one.
     cap: usize,
     balls: Vec<VecDeque<Vec2>>,
-    /// How far each ball has gone from its first sample to its newest.
+    /// Where each ball bounced between its samples: (the moment, in steps; where it was), oldest
+    /// first, none older than its oldest sample.
+    corners: Vec<VecDeque<(f64, Vec2)>>,
+    /// Each ball's newest place, sample or corner: (the moment, in steps; where it was).
+    tips: Vec<(f64, Vec2)>,
+    /// How far each ball has gone from its first sample to its newest place (sample or corner).
     travelled: Vec<f32>,
     /// The step each ball was first there at (the end of the step it came in).
     born: Vec<u64>,
@@ -63,7 +70,17 @@ impl History {
         let per_second = steps_per_second.max(1) as f64 / every as f64;
         let cap =
             if want.forever { usize::MAX } else { (want.rounded() as f64 * per_second).ceil() as usize + 1 }.max(2);
-        Self { every, cap, balls: Vec::new(), travelled: Vec::new(), born: Vec::new(), count: 0, last: None }
+        Self {
+            every,
+            cap,
+            balls: Vec::new(),
+            corners: Vec::new(),
+            tips: Vec::new(),
+            travelled: Vec::new(),
+            born: Vec::new(),
+            count: 0,
+            last: None,
+        }
     }
 
     /// Seconds between samples.
@@ -107,19 +124,69 @@ impl History {
         }
         while self.balls.len() < positions.len() {
             self.balls.push(VecDeque::new());
+            self.corners.push(VecDeque::new());
+            self.tips.push((step as f64, Vec2::ZERO));
             self.travelled.push(0.0);
         }
-        for ((ring, gone), &p) in self.balls.iter_mut().zip(&mut self.travelled).zip(positions) {
-            if let Some(&last) = ring.back() {
-                *gone += (p - last).length();
+        let now = step as f64;
+        for (b, &p) in positions.iter().enumerate() {
+            let ring = &mut self.balls[b];
+            if !ring.is_empty() {
+                self.travelled[b] += (p - self.tips[b].1).length();
             }
             if ring.len() >= self.cap {
                 ring.pop_front();
             }
             ring.push_back(p);
+            self.tips[b] = (now, p);
+            // Corners older than the oldest sample are past where any trail reaches.
+            let oldest = now - (ring.len() - 1) as f64 * self.every as f64;
+            let corners = &mut self.corners[b];
+            while corners.front().is_some_and(|c| c.0 < oldest) {
+                corners.pop_front();
+            }
         }
         self.count = (self.count + 1).min(self.cap);
         self.last = Some(step);
+    }
+
+    /// Notes that ball `ball` bounced, and was at `place`, at the moment `at` (in steps, between
+    /// whole ones). Left out for a ball with no sample yet (no trail reaches before its first
+    /// one) and for a moment not after its newest place.
+    pub fn corner(&mut self, ball: usize, at: f64, place: Vec2) {
+        let Some(ring) = self.balls.get(ball) else { return };
+        if ring.is_empty() || at <= self.tips[ball].0 {
+            return;
+        }
+        self.travelled[ball] += (place - self.tips[ball].1).length();
+        self.tips[ball] = (at, place);
+        self.corners[ball].push_back((at, place));
+    }
+
+    /// Ball `ball`'s newest place, sample or corner: (the moment, in steps; where it was).
+    pub fn tip(&self, ball: usize) -> Option<(f64, Vec2)> {
+        self.balls.get(ball).filter(|r| !r.is_empty()).map(|_| self.tips[ball])
+    }
+
+    /// Ball `ball`'s samples and corners, newest first, back to its first sample: (the moment,
+    /// in steps; where it was). A corner on a sample's own moment is the sample.
+    pub fn trace(&self, ball: usize) -> impl Iterator<Item = (f64, Vec2)> + '_ {
+        let last = self.last.unwrap_or(0) as f64;
+        let every = self.every as f64;
+        let mut samples = self.points(ball).enumerate().map(move |(j, p)| (last - j as f64 * every, p)).peekable();
+        let mut corners = self.corners.get(ball).into_iter().flat_map(|c| c.iter().rev().copied()).peekable();
+        std::iter::from_fn(move || match (samples.peek().copied(), corners.peek().copied()) {
+            (Some(s), Some(c)) if c.0 > s.0 => corners.next(),
+            (Some(s), Some(c)) => {
+                if c.0 == s.0 {
+                    corners.next();
+                }
+                samples.next()
+            }
+            (Some(_), None) => samples.next(),
+            // Corners are never older than the oldest sample.
+            (None, _) => None,
+        })
     }
 
     /// Ball `ball`'s samples, newest first, back to its first.
@@ -127,26 +194,48 @@ impl History {
         self.balls.get(ball).into_iter().flat_map(|r| r.iter().rev().copied())
     }
 
-    /// How far ball `ball` has gone from its first sample to its newest, in world units: a
-    /// place along its path that stays put as samples come and go (dots along a trail).
+    /// How far ball `ball` has gone from its first sample to its newest place (a sample or a
+    /// corner, see [`History::tip`]), in world units, through its corners: a place along its path
+    /// that stays put as samples come and go (dots along a trail).
     pub fn travelled(&self, ball: usize) -> f32 {
         self.travelled.get(ball).copied().unwrap_or(0.0)
     }
 
-    /// Where ball `ball` was `ago` seconds before the newest sample, read between samples
-    /// `interval` seconds apart: where it was first sampled for further back than that, and
-    /// `None` without a sample.
-    pub fn at(&self, ball: usize, ago: f32, interval: f32) -> Option<Vec2> {
-        let ring = self.balls.get(ball)?;
+    /// Where ball `ball` was at the moment `t` (in steps), when it is at `head` at the moment
+    /// `head_t` (at or after its newest place): along the way through its corners and samples,
+    /// where it was first sampled for further back than that, and `None` without a sample.
+    pub fn place(&self, ball: usize, t: f64, head_t: f64, head: Vec2) -> Option<Vec2> {
+        let ring = self.balls.get(ball).filter(|r| !r.is_empty())?;
+        let corners = &self.corners[ball];
         let n = ring.len();
-        if n == 0 || interval <= 0.0 {
-            return ring.back().copied();
+        let every = self.every as f64;
+        let last = self.last.unwrap_or(0) as f64;
+        let oldest = last - (n - 1) as f64 * every;
+        if t <= oldest {
+            return Some(ring[0]);
         }
-        let k = (ago.max(0.0) / interval).min((n - 1) as f32);
-        let (i, f) = (k.floor() as usize, k.fract());
-        let a = ring[n - 1 - i];
-        let b = ring[n - 1 - (i + 1).min(n - 1)];
-        Some(a.lerp(b, f))
+        // The two places either side of `t`: a sample, a corner or the head.
+        let (mut older, mut newer) = if t >= last {
+            ((last, ring[n - 1]), (head_t.max(last), head))
+        } else {
+            let i = ((t - oldest) / every).floor() as usize;
+            let i = i.min(n - 2);
+            ((oldest + i as f64 * every, ring[i]), (oldest + (i + 1) as f64 * every, ring[i + 1]))
+        };
+        // Corners between them, the nearest each side of `t`.
+        let from = corners.partition_point(|c| c.0 <= older.0);
+        // (None between when both are the same moment: a corner there is the sample itself.)
+        let to = corners.partition_point(|c| c.0 < newer.0).max(from);
+        let split = corners.partition_point(|c| c.0 <= t).clamp(from, to);
+        if split > from {
+            older = corners[split - 1];
+        }
+        if split < to {
+            newer = corners[split];
+        }
+        let span = newer.0 - older.0;
+        let f = if span > 0.0 { ((t - older.0) / span).clamp(0.0, 1.0) } else { 1.0 };
+        Some(older.1.lerp(newer.1, f as f32))
     }
 
     /// How many samples the longest-kept ball has so far.
@@ -160,7 +249,8 @@ impl History {
 
     /// Bytes the history takes, for playback budgets.
     pub fn memory(&self) -> usize {
-        self.balls.iter().map(|r| r.capacity() * std::mem::size_of::<Vec2>()).sum()
+        self.balls.iter().map(|r| r.capacity() * std::mem::size_of::<Vec2>()).sum::<usize>()
+            + self.corners.iter().map(|c| c.capacity() * std::mem::size_of::<(f64, Vec2)>()).sum::<usize>()
     }
 }
 
@@ -189,7 +279,7 @@ mod tests {
         assert_eq!(h.points(0).last(), Some(Vec2::new(last - 4.0 * (samples as f32 - 1.0), 0.0)));
         assert_eq!(h.newest_step(), Some(last as u64));
         // Between samples, a place in between.
-        assert_eq!(h.at(0, 0.5 / 60.0, 1.0 / 60.0), Some(Vec2::new(last - 2.0, 0.0)));
+        assert_eq!(h.place(0, last as f64 - 2.0, last as f64, Vec2::ZERO), Some(Vec2::new(last - 2.0, 0.0)));
         // A ball that isn't there has no history, and the memory grows with the balls.
         assert_eq!(h.points(5).count(), 0);
         assert!(h.memory() >= 2 * samples * 8);
@@ -254,7 +344,7 @@ mod tests {
         assert_eq!(h.born(1), Some(22));
         assert_eq!(h.born(2), None);
         // Reading further back than it goes gives where it began.
-        assert_eq!(h.at(1, 1.0, 1.0 / 60.0), Some(Vec2::new(0.0, 24.0)));
+        assert_eq!(h.place(1, 0.0, 40.0, Vec2::ZERO), Some(Vec2::new(0.0, 24.0)));
         // Once full, each ball drops its own oldest.
         for step in 41..=2000 {
             h.record(step, &[Vec2::new(step as f32, 0.0), Vec2::new(0.0, step as f32)]);
@@ -262,6 +352,52 @@ mod tests {
         assert_eq!(h.points(0).count(), h.cap());
         assert_eq!(h.points(1).count(), h.cap());
         assert_eq!(h.points(1).next(), Some(Vec2::new(0.0, 2000.0)));
+    }
+
+    /// A ball going right at 1 px a step that bounces straight up 1.5 steps after its sample at
+    /// step 8: its corner sits between the samples, in order, and counts in how far it went.
+    #[test]
+    fn corners_sit_between_the_samples() {
+        let mut h = History::new(240, TWO);
+        let at = |t: f64| if t <= 9.5 { Vec2::new(t as f32, 0.0) } else { Vec2::new(9.5, (t - 9.5) as f32) };
+        // No sample yet: nowhere for a corner to go.
+        h.corner(0, 1.5, at(1.5));
+        for step in 1..=16u64 {
+            if step == 10 {
+                h.corner(0, 9.5, at(9.5));
+            }
+            h.record(step, &[at(step as f64)]);
+        }
+        let trace: Vec<(f64, Vec2)> = h.trace(0).collect();
+        assert_eq!(trace, [(16.0, at(16.0)), (12.0, at(12.0)), (9.5, at(9.5)), (8.0, at(8.0)), (4.0, at(4.0))]);
+        assert_eq!(h.tip(0), Some((16.0, at(16.0))));
+        // 4 to 9.5 along, then 6.5 up: the corner counts, the straight cut across would not.
+        assert!((h.travelled(0) - 12.0).abs() < 1e-5, "{}", h.travelled(0));
+        // Read back through the corner, and between it and a sample.
+        assert_eq!(h.place(0, 9.5, 16.0, at(16.0)), Some(at(9.5)));
+        assert_eq!(h.place(0, 9.0, 16.0, at(16.0)), Some(at(9.0)));
+        assert_eq!(h.place(0, 11.0, 16.0, at(16.0)), Some(at(11.0)));
+        // Past the newest sample: towards the head, through a corner made since.
+        h.corner(0, 17.0, Vec2::new(9.5, 7.5));
+        assert_eq!(h.tip(0), Some((17.0, Vec2::new(9.5, 7.5))));
+        assert_eq!(h.trace(0).next(), Some((17.0, Vec2::new(9.5, 7.5))));
+        assert_eq!(h.place(0, 16.5, 18.0, Vec2::new(10.5, 7.5)), Some(Vec2::new(9.5, 7.0)));
+        assert_eq!(h.place(0, 17.5, 18.0, Vec2::new(10.5, 7.5)), Some(Vec2::new(10.0, 7.5)));
+        // A corner no later than the newest place is left out.
+        h.corner(0, 17.0, Vec2::ZERO);
+        assert_eq!(h.trace(0).count(), 6);
+        // A corner on a sample's own moment is that sample.
+        h.corner(0, 20.0, Vec2::new(9.5, 10.5));
+        h.record(20, &[Vec2::new(9.5, 10.5)]);
+        assert_eq!(h.trace(0).filter(|c| c.0 == 20.0).count(), 1);
+        assert_eq!(h.place(0, 20.0, 20.0, Vec2::new(9.5, 10.5)), Some(Vec2::new(9.5, 10.5)));
+        assert_eq!(h.place(0, 19.0, 20.0, Vec2::new(9.5, 10.5)), Some(Vec2::new(9.5, 9.5)));
+        // Corners go with the samples they sit between.
+        for step in 21..=2000u64 {
+            h.record(step, &[Vec2::new(9.5, step as f32)]);
+        }
+        assert_eq!(h.trace(0).count(), h.cap());
+        assert!(h.memory() >= h.cap() * 8);
     }
 
     #[test]
