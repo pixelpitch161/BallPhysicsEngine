@@ -1,6 +1,6 @@
 //! The round knob of the sound panels: a 40 × 40 dial with its label above and its value below.
-//! Drag up or down to turn it (Shift for fine steps), roll the wheel to nudge it, double-click the
-//! dial to put it back, double-click the value to type one.
+//! Drag up or down to turn it (Shift for fine steps), double-click or Alt+click the dial to put it
+//! back, double-click the value to type one. The wheel never turns it: it scrolls the panel.
 
 use super::fonts::mono;
 use super::tokens::*;
@@ -232,24 +232,7 @@ impl<'a> Knob<'a> {
                 if !response.dragged() {
                     ui.data_mut(|d| d.remove::<f64>(response.id.with("turn")));
                 }
-                if response.hovered() {
-                    // Each wheel notch nudges 1 % (a stepped knob one step at a whole notch); the
-                    // scroll is kept from the panel underneath.
-                    let notches = wheel_notches(ui, response.id, self.step.is_some());
-                    if notches != 0.0 {
-                        *self.value = match self.step {
-                            // A notch on a stepped knob is at least one step.
-                            Some(s) => {
-                                let t = self.to_turn(*self.value) + 0.01 * notches;
-                                let nudged = self.snap(self.value_at_turn(t));
-                                if nudged == *self.value { self.snap(*self.value + s * notches) } else { nudged }
-                            }
-                            None => self.value_at_turn(self.to_turn(*self.value) + 0.01 * notches),
-                        };
-                    }
-                    ui.input_mut(|i| i.smooth_scroll_delta = Vec2::ZERO);
-                }
-                if response.double_clicked() {
+                if response.double_clicked() || (response.clicked() && ui.input(|i| i.modifiers.alt)) {
                     *self.value = self.default;
                 }
                 let context = response.secondary_clicked();
@@ -545,20 +528,47 @@ mod tests {
         assert_eq!(node.accesskit_node().numeric_value(), Some(0.0));
     }
 
-    #[test]
-    fn the_wheel_nudges_one_percent() {
-        let mut h = harness(0.0);
-        h.hover_at(dial(&h).center());
+    fn wheel_over_dial(h: &mut Harness<'_, f64>, delta: f32) {
+        h.hover_at(dial(h).center());
         h.run();
         h.event(egui::Event::MouseWheel {
             unit: egui::MouseWheelUnit::Line,
-            delta: egui::vec2(0.0, 1.0),
+            delta: egui::vec2(0.0, delta),
             phase: egui::TouchPhase::Move,
             source: egui::MouseWheelSource::Wheel,
             modifiers: egui::Modifiers::NONE,
         });
         h.run_steps(20);
-        assert!((*h.state() - 0.48).abs() < 0.01, "{}", h.state());
+    }
+
+    #[test]
+    fn the_wheel_leaves_the_knob_alone() {
+        let mut h = harness(0.0);
+        wheel_over_dial(&mut h, 1.0);
+        assert_eq!(*h.state(), 0.0);
+    }
+
+    #[test]
+    fn alt_click_resets() {
+        let mut h = harness(9.0);
+        let at = dial(&h).center();
+        h.hover_at(at);
+        h.run();
+        h.event(egui::Event::ModifiersChanged(egui::Modifiers::ALT));
+        press(&mut h, at, true, egui::Modifiers::ALT);
+        h.step();
+        press(&mut h, at, false, egui::Modifiers::ALT);
+        h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+        h.run();
+        assert_eq!(*h.state(), 0.0);
+        // A plain click leaves it (a second later, so it isn't a double-click).
+        *h.state_mut() = 9.0;
+        h.run_steps(60);
+        press(&mut h, at, true, egui::Modifiers::NONE);
+        h.step();
+        press(&mut h, at, false, egui::Modifiers::NONE);
+        h.run();
+        assert_eq!(*h.state(), 9.0);
     }
 
     /// A whole-number knob whose caller rounds the value every frame, as the Sound tab does.
@@ -599,19 +609,10 @@ mod tests {
     }
 
     #[test]
-    fn a_wheel_notch_moves_a_whole_number_knob_one_step() {
+    fn the_wheel_leaves_a_whole_number_knob_alone() {
         let mut h = int_harness(0.0);
-        h.hover_at(dial(&h).center());
-        h.run();
-        h.event(egui::Event::MouseWheel {
-            unit: egui::MouseWheelUnit::Line,
-            delta: egui::vec2(0.0, -1.0),
-            phase: egui::TouchPhase::Move,
-            source: egui::MouseWheelSource::Wheel,
-            modifiers: egui::Modifiers::NONE,
-        });
-        h.run_steps(20);
-        assert_eq!(*h.state(), -1.0);
+        wheel_over_dial(&mut h, -1.0);
+        assert_eq!(*h.state(), 0.0);
     }
 
     #[test]

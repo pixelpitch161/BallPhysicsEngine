@@ -447,8 +447,8 @@ fn arc(c: Pos2, r: f32, t0: f32, t1: f32) -> Vec<Pos2> {
         .collect()
 }
 
-/// The folded strip's Mix knob: drag up and down, double-click for 100 %, right-click for the
-/// value menu.
+/// The folded strip's Mix knob: drag up and down, double-click or Alt+click for 100 %, right-click
+/// for the value menu.
 fn mini_knob(ui: &mut Ui, cx: &mut TabCx, key: &str, name: &str) {
     let Some(def) = cx.def(key) else { return };
     let now = cx.get(key);
@@ -470,7 +470,7 @@ fn mini_knob(ui: &mut Ui, cx: &mut TabCx, key: &str, name: &str) {
     } else {
         ui.data_mut(|d| d.remove::<f64>(held_id));
     }
-    if r.double_clicked() {
+    if r.double_clicked() || (r.clicked() && ui.input(|i| i.modifiers.alt)) {
         next = default;
     }
     if (next - v).abs() > 1e-9 {

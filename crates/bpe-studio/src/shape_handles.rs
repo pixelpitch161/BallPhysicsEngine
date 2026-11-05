@@ -5,7 +5,7 @@
 
 use std::f32::consts::FRAC_PI_2;
 
-use bpe_core::shape_path::{FLATTEN, ON_THE_LINE};
+use bpe_core::shape_path::{FLATTEN, MIRROR_REACH, ON_THE_LINE};
 use bpe_core::{Address, Registry, Scene, Settings, ShapePath, ThingId, Value};
 use bpe_kit::{ShapeSettings, ShapeStart, ShapeState};
 use bpe_runtime::{Outline, World};
@@ -143,13 +143,17 @@ pub fn on_body(world: &World, view: &View, id: ThingId, pos: Pos2) -> bool {
     (q - p).length() <= reach
 }
 
-/// How a corner, side or bend drag mirrors, worked out when it starts.
+/// How a corner, side or bend drag mirrors, worked out when it starts. Shift mirrors across the
+/// shape's up-down middle line; a corner or side that is its own mirror there (a square's top or
+/// bottom side, a diamond's top corner) mirrors across the left-right middle line instead, onto
+/// `flip`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Mirror {
     /// The dragged corner or handle sits on the middle line, and the corner or handle across it.
     Point {
         on_line: bool,
         partner: Option<usize>,
+        flip: Option<usize>,
     },
     Bend {
         on_line: bool,
@@ -158,6 +162,7 @@ enum Mirror {
     /// The side across the middle line (itself when it crosses the line evenly).
     Side {
         partner: Option<usize>,
+        flip: Option<usize>,
     },
     /// A circle's edge: nothing to mirror.
     Nothing,
@@ -190,6 +195,32 @@ fn mirror_side(path: &ShapePath, side: usize) -> Option<usize> {
     (0..n).find(|&t| (t == a && (t + 1) % n == b) || (t == b && (t + 1) % n == a))
 }
 
+/// The other corner nearest the image of corner `i` across the left-right middle line (y → −y),
+/// within [`MIRROR_REACH`]. None when corner `i` is on that line or nothing is near its image.
+fn flip_partner_point(path: &ShapePath, i: usize) -> Option<usize> {
+    let p = path.point(i);
+    if p.y.abs() < ON_THE_LINE {
+        return None;
+    }
+    let image = Vec2::new(p.x, -p.y);
+    (0..path.side_count())
+        .filter(|&j| j != i && path.point(j).y.abs() >= ON_THE_LINE)
+        .map(|j| (j, (path.point(j) - image).length()))
+        .filter(|&(_, d)| d <= MIRROR_REACH)
+        .min_by(|x, y| x.1.total_cmp(&y.1))
+        .map(|(j, _)| j)
+}
+
+/// The side across the left-right middle line from `side`, sharing no corner with it: a square's
+/// bottom side for its top.
+fn flip_side(path: &ShapePath, side: usize) -> Option<usize> {
+    let n = path.side_count();
+    let (a, b) = (flip_partner_point(path, side)?, flip_partner_point(path, (side + 1) % n)?);
+    (0..n)
+        .find(|&t| (t == a && (t + 1) % n == b) || (t == b && (t + 1) % n == a))
+        .filter(|&t| t != side && ![t, (t + 1) % n].iter().any(|c| [side, (side + 1) % n].contains(c)))
+}
+
 /// The start of a drag on `handle`, pressed at `press` (world pixels). None for handles that
 /// aren't a shape's corner, side or bend.
 pub fn start(world: &World, handle: Handle, press: Vec2) -> Option<Mould> {
@@ -198,10 +229,14 @@ pub fn start(world: &World, handle: Handle, press: Vec2) -> Option<Mould> {
     let (point, mirror) = match handle {
         Handle::Corner(_, i) if i < path.side_count() => {
             let p = path.point(i);
-            (p, Mirror::Point { on_line: p.x.abs() < ON_THE_LINE, partner: path.mirror_partner_point(i) })
+            let on_line = p.x.abs() < ON_THE_LINE;
+            let flip = if on_line { flip_partner_point(&path, i) } else { None };
+            (p, Mirror::Point { on_line, partner: path.mirror_partner_point(i), flip })
         }
         Handle::Side(_, side) if side < path.side_count() => {
-            (path.point(side), Mirror::Side { partner: mirror_side(&path, side) })
+            let partner = mirror_side(&path, side);
+            let flip = if partner == Some(side) { flip_side(&path, side) } else { None };
+            (path.point(side), Mirror::Side { partner, flip })
         }
         Handle::Bend(_, side, which) => {
             let h = Vec2::from(path.bends.get(side).copied().flatten()?[usize::from(which.min(1))]);
@@ -219,17 +254,26 @@ fn mirrored(p: Vec2) -> Vec2 {
     Vec2::new(-p.x, p.y)
 }
 
+/// `p` across the left-right middle line.
+fn flipped(p: Vec2) -> Vec2 {
+    Vec2::new(p.x, -p.y)
+}
+
 /// The outline `m` started from, moulded by dragging `handle`'s point to `to` (shape units),
 /// mirrored when `shift` is held.
 fn moulded(m: &Mould, handle: Handle, to: Vec2, shift: bool) -> ShapePath {
     let mut path = m.start.clone();
     let n = path.side_count();
     match (handle, m.mirror) {
-        (Handle::Corner(_, i), Mirror::Point { on_line, partner }) => {
+        (Handle::Corner(_, i), Mirror::Point { on_line, partner, flip }) => {
             let to = if shift && on_line { Vec2::new(0.0, to.y) } else { to };
             path.move_point(i, to);
             if let (true, Some(j)) = (shift, partner) {
                 path.move_point(j, mirrored(to));
+            }
+            // A corner on the up-down line mirrors the one across the left-right line.
+            if let (true, Some(j)) = (shift, flip) {
+                path.move_point(j, flipped(to));
             }
         }
         (Handle::Bend(_, side, which), Mirror::Bend { on_line, partner }) => {
@@ -239,12 +283,17 @@ fn moulded(m: &Mould, handle: Handle, to: Vec2, shift: bool) -> ShapePath {
                 path.move_bend(s, w, mirrored(to));
             }
         }
-        (Handle::Side(_, side), Mirror::Side { partner }) => {
+        (Handle::Side(_, side), Mirror::Side { partner, flip }) => {
             let by = to - m.start.point(side);
             match partner.filter(|_| shift) {
-                // A side across the line from itself stays even: it moves up and down only.
+                // A side across the line from itself stays even: it moves up and down only, and
+                // the side across the left-right line (a square's bottom for its top) moves the
+                // other way.
                 Some(t) if t == side => {
                     path.move_side(side, Vec2::new(0.0, by.y));
+                    if let Some(f) = flip {
+                        path.move_side(f, Vec2::new(0.0, -by.y));
+                    }
                 }
                 Some(t) => {
                     let back = mirrored(by);
@@ -651,13 +700,75 @@ mod tests {
         ] {
             assert!(close(p.point(k), even.point(k) + d), "corner {k}: {}", p.point(k));
         }
-        // The top side is its own mirror: it moves up and down only.
+        // The top side is its own mirror: it moves up and down only, and the bottom side the
+        // other way.
         let mut studio = polygon(6);
         drag(&mut studio, Handle::Side(SHAPE, 0), corner(6, 0), Vec2::new(40.0, 20.0), true, None);
         let p = path(&studio);
         for k in [0, 1] {
             assert!(close(p.point(k), even.point(k) + Vec2::new(0.0, 0.05)), "corner {k}");
         }
+        for k in [3, 4] {
+            assert!(close(p.point(k), even.point(k) + Vec2::new(0.0, -0.05)), "corner {k}");
+        }
+        for k in [2, 5] {
+            assert_eq!(p.point(k), even.point(k), "corner {k} stays");
+        }
+    }
+
+    #[test]
+    fn shift_on_a_squares_top_or_bottom_mirrors_the_other() {
+        // A square's corners: 0 top left, 1 top right, 2 bottom right, 3 bottom left.
+        let even = ShapePath::even(4);
+        // Dragging the top side up 20 px pulls the bottom side down 20 px.
+        let mut studio = polygon(4);
+        drag(&mut studio, Handle::Side(SHAPE, 0), corner(4, 0), Vec2::new(30.0, -20.0), true, None);
+        let p = path(&studio);
+        for (k, d) in [(0, -0.05), (1, -0.05), (2, 0.05), (3, 0.05)] {
+            assert!(close(p.point(k), even.point(k) + Vec2::new(0.0, d)), "corner {k}: {}", p.point(k));
+        }
+        // And the bottom side pushes the top the other way.
+        let mut studio = polygon(4);
+        drag(&mut studio, Handle::Side(SHAPE, 2), corner(4, 2), Vec2::new(0.0, -40.0), true, None);
+        let p = path(&studio);
+        for (k, d) in [(0, 0.1), (1, 0.1), (2, -0.1), (3, -0.1)] {
+            assert!(close(p.point(k), even.point(k) + Vec2::new(0.0, d)), "corner {k}: {}", p.point(k));
+        }
+        // Without Shift only the dragged side moves, freely.
+        let mut studio = polygon(4);
+        drag(&mut studio, Handle::Side(SHAPE, 0), corner(4, 0), Vec2::new(40.0, -20.0), false, None);
+        let p = path(&studio);
+        assert!(close(p.point(0), even.point(0) + Vec2::new(0.1, -0.05)));
+        assert_eq!(p.point(2), even.point(2));
+        // The left and right sides still mirror each other as before.
+        let mut studio = polygon(4);
+        drag(&mut studio, Handle::Side(SHAPE, 1), corner(4, 1), Vec2::new(40.0, 0.0), true, None);
+        let p = path(&studio);
+        for (k, d) in [(1, 0.1), (2, 0.1), (3, -0.1), (0, -0.1)] {
+            assert!(close(p.point(k), even.point(k) + Vec2::new(d, 0.0)), "corner {k}: {}", p.point(k));
+        }
+    }
+
+    #[test]
+    fn shift_on_a_diamonds_top_corner_mirrors_the_bottom_one() {
+        let mut studio = studio_with(|p| {
+            p.set("start", Value::Choice("polygon".into()));
+            p.set("sides", Value::Int(4));
+            p.set("size", Value::Number(400.0));
+            p.set(
+                "path",
+                Value::Path(ShapePath {
+                    points: vec![[0.0, -1.0], [1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]],
+                    bends: vec![None; 4],
+                }),
+            );
+        });
+        drag(&mut studio, Handle::Corner(SHAPE, 0), Vec2::new(0.0, -400.0), Vec2::new(20.0, -40.0), true, None);
+        let p = path(&studio);
+        assert!(close(p.point(0), Vec2::new(0.0, -1.1)), "{}", p.point(0));
+        assert!(close(p.point(2), Vec2::new(0.0, 1.1)), "{}", p.point(2));
+        assert_eq!(p.point(1), Vec2::new(1.0, 0.0));
+        assert_eq!(p.point(3), Vec2::new(-1.0, 0.0));
     }
 
     #[test]
