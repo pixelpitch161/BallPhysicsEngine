@@ -532,7 +532,7 @@ pub fn check(world: &World, me: ThingId) -> Option<AimCheck> {
         return Some(AimCheck {
             no_target: false,
             walls_move,
-            in_the_way: pull.varies || hits_balls(world, me) || s.vary_size > 0.0,
+            in_the_way: pull.varies || hits_balls(world, me) || s.vary_size > 0.0 || st.size_varies(),
             target_moves: aim.track.guessed(),
             cant_reach: latest.map_or(0, |r| r.cant_reach()),
             of: latest.map_or(0, |r| r.balls.len() as u32),
@@ -541,7 +541,7 @@ pub fn check(world: &World, me: ThingId) -> Option<AimCheck> {
     }
     let mut in_the_way = pull.drag > 0.0 || pull.varies || hits_balls(world, me);
     if !in_the_way {
-        let r = s.radius.max(0.0);
+        let r = st.biggest_size().max(0.0);
         // A hundred balls are plenty to see a wall in the way.
         in_the_way = balls.iter().filter(|b| b.reaches).step_by(balls.len().div_ceil(100).max(1)).any(|b| {
             let path = path_points(&aim, b, PATH_POINTS);

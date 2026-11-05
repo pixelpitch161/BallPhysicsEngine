@@ -27,7 +27,8 @@ group (or an Emitter) the row menu adds Vary across balls / Stop varying. A vari
 `"<key>~by"` (`VaryBy`: Number, Round, Launch angle, Place, Random, Speed, Hits) and `"<key>~ease"` beside it, layered
 keys keeping their prefix (`bpe-core/src/vary.rs`: `vary_of`, `with_varies`, `BallSpread::t`, `Scene::start_varying`/
 `stop_varying`/`vary_use`; `def_at` answers the parts, To keys like any setting). Which settings may vary is the
-kinds' say: `ThingKind::vary` (balls: Size live, Launch speed at launch, so no Speed/Hits), `ModuleKind::vary`
+kinds' say: `ThingKind::vary` (balls: Size live, Launch speed at launch, so no Speed/Hits; an Emitter: Size
+live, Speed at launch, `EmitterState::varies`/`own_size`, unaimed balls only), `ModuleKind::vary`
 (Motion, Bounce), `LayerKind::vary` (ball layers but group layers, Blend and the trail/particle settings the whole
 layer shares, `layers/vary.rs::layer_vary`). Places in a spread are quantised to `VARY_LEVELS` (1024) steps, and
 everything is shared per step: the runtime's `rows.rs` keeps a prepared Motion/Bounce state per ball
