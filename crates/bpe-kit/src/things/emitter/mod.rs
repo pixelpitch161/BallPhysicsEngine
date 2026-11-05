@@ -3,6 +3,7 @@
 //! ripples. `fire.rs` holds the firing maths, `sim.rs` the simulation, `draw.rs` the drawing and
 //! `foci.rs` what it can sit on.
 
+pub mod aim;
 pub mod draw;
 pub mod fire;
 pub mod foci;
@@ -98,12 +99,27 @@ pub enum Earlier {
     Remove,
 }
 
-/// How the balls are aimed. Arriving together comes in a later part.
+/// How the balls are aimed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
 pub enum Aim {
     /// They go the ways Directions says, at Speed.
     #[default]
     Off,
+    /// Each ball goes the way (and as fast) that takes it to the target at the time.
+    StraightIn,
+    /// Each ball keeps its own direction; how fast it goes and when it leaves are worked out so
+    /// it reaches the target at the time.
+    KeepMyDirections,
+}
+
+/// What happens to an aimed ball that can't reach the target in time.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum CantReach {
+    /// It isn't fired.
+    #[default]
+    Skip,
+    /// It goes all the same: as late as it must, or unaimed.
+    FireAnyway,
 }
 
 /// Which focus of a shape the emitter sits on.
@@ -182,29 +198,60 @@ pub struct EmitterSettings {
     #[setting(label = "Length", group = "Fire", when = "start_from=line", range(1, 4000), unit = "px")]
     pub start_length: f32,
     /// Which ways the balls go.
-    #[setting(label = "Directions", group = "Fire", simple)]
+    #[setting(label = "Directions", group = "Fire", when = "aim!=straight_in or start_from=ring", simple)]
     pub directions: Directions,
     /// The way the balls go, the middle of a fan, or where All round starts; clockwise from
     /// right, -90 is up.
-    #[setting(label = "Aim direction", group = "Fire", range(-180, 180), unit = "°", keyframe)]
+    #[setting(
+        label = "Aim direction",
+        group = "Fire",
+        when = "aim!=straight_in or start_from!=point",
+        range(-180, 180),
+        unit = "°",
+        keyframe
+    )]
     pub aim_angle: f32,
     /// How wide the fan opens.
-    #[setting(label = "Fan angle", group = "Fire", when = "directions=fan", range(0, 360), unit = "°", keyframe)]
+    #[setting(
+        label = "Fan angle",
+        group = "Fire",
+        when = "directions=fan and aim!=straight_in or directions=fan and start_from=ring",
+        range(0, 360),
+        unit = "°",
+        keyframe
+    )]
     pub fan_angle: f32,
     /// How fast the balls leave.
-    #[setting(label = "Speed", group = "Fire", range(0, 20000), span(50, 2000), unit = "px/s", simple, keyframe)]
+    #[setting(
+        label = "Speed",
+        group = "Fire",
+        when = "aim!=straight_in",
+        range(0, 20000),
+        span(50, 2000),
+        unit = "px/s",
+        simple,
+        keyframe
+    )]
     pub speed: f32,
     /// How much each ball's speed differs, at random.
-    #[setting(label = "Speed spread", group = "Fire", range(0, 1))]
+    #[setting(label = "Speed spread", group = "Fire", when = "aim=off", range(0, 1))]
     pub vary_speed: f32,
     /// How many balls the first round has.
     #[setting(label = "How many", group = "Fire", range(1, 20000), simple, keyframe)]
     pub count: u32,
     /// The time between one ball of a round and the next.
-    #[setting(label = "Gap", group = "Fire", range(0, 30), span(0, 1), unit = "s", keyframe)]
+    #[setting(
+        label = "Gap",
+        group = "Fire",
+        when = "aim!=keep_my_directions",
+        range(0, 30),
+        span(0, 1),
+        unit = "s",
+        keyframe
+    )]
     pub gap: f32,
     /// Which balls of a round go first, when there is a gap.
-    #[setting(label = "Order", group = "Fire", when = "gap")]
+    #[setting(label = "Order", group = "Fire", when = "gap and aim!=keep_my_directions")]
     pub order: FireOrder,
     /// What starts a round.
     #[setting(label = "Fire when", group = "Rounds", simple)]
@@ -260,6 +307,23 @@ pub struct EmitterSettings {
     /// How the balls are aimed.
     #[setting(label = "Aim", group = "Aim")]
     pub aim: Aim,
+    /// What the balls are aimed at (a thing id): 0 for the other focus of the shape it sits on.
+    #[setting(label = "Target", group = "Aim", when = "aim!=off")]
+    pub aim_target: i32,
+    /// How long after a round fires its balls reach the target.
+    #[setting(
+        label = "Arrive after",
+        group = "Aim",
+        when = "aim!=off",
+        range(0.1, 60),
+        span(0.1, 10),
+        unit = "s",
+        keyframe
+    )]
+    pub arrive_after: f32,
+    /// What happens to a ball that can't reach the target in time.
+    #[setting(label = "Can't reach", group = "Aim", when = "aim!=off")]
+    pub cant_reach: CantReach,
     /// What happens to a ball that reaches it.
     #[setting(label = "Catches", group = "Catch", simple)]
     pub catches: Catches,
@@ -372,6 +436,9 @@ impl Default for EmitterSettings {
             fade_time: 1.0,
             most_balls: 20000,
             aim: Aim::Off,
+            aim_target: 0,
+            arrive_after: 2.0,
+            cant_reach: CantReach::Skip,
             catches: Catches::Nothing,
             catch_size: 40.0,
             catch_from: CatchFrom::AnyBalls,

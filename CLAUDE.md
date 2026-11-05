@@ -201,7 +201,14 @@ Dependencies go bottom to top:
   Endless, Earlier rounds Keep / Fade out / Remove, Most balls; catching by a swept circle test: Remove, Send back
   out (Same way back / Out my way, Delay holds), Pass through; Leave trails (Remove only, drawing-only: `BallRows.caught` notes who caught a ball and when,
   `Balls.gone` lets its trail run out into the catch point, `Cut::after_gone`); waves = arrivals of one (owner, round) within 0.5 s,
-  `landings`; `round_marks` for the editor) and sits on a focus of a circle or ellipse (`emitter/foci.rs` over `shape::foci`; the Sits on hint says what would spoil meeting at the other focus). Its
+  `landings`; `round_marks` for the editor) and sits on a focus of a circle or ellipse (`emitter/foci.rs` over `shape::foci`; the Sits on hint says what would spoil meeting at the other focus). **Aim** (part 3, `emitter/aim.rs`): Straight in / Keep my directions, Target
+  (`aim_target`, 0 = the other focus it sits on), Arrive after, Can't reach (Skip / Fire anyway). Exact in the world's
+  own steps (semi-implicit Euler, one substep a step; a ball launched on step L sets off from `now(L)`): Straight in
+  `v0 = Δ/(N·dt) − a·dt·(N+1)/2`, Keep solves the step polyline across then along its direction (`keep_way`); the
+  pull is gravity × Gravity × + Wind from the world's Motion card (`World::card`); the target's future place is a
+  `Track` (a shape focus exactly through Spin/Shrink, else pose + velocity). `fire_round` plans Keep leaving steps,
+  `launch_ball` re-aims at launch (`Launch.arrive`); an aimed round at 0 s fires in `after_build`. Out my way aims
+  caught balls. `aim::check` (warnings, `Inspector.aim_checks`) and `next_round`/`path_points` (preview paths). Its
   marker, flashes and ripples are `draw.rs` (sprites), worked out from its state at the moment drawn. Group
   gradient `Spread` has Round and Launch angle; the around layer **Wavefront** (`layers/wavefront.rs`) draws a
   strip through each round's balls (`trail::draw::strip_with_subs`). Camera Follow "balls" follows emitters too.

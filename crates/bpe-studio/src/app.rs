@@ -408,10 +408,12 @@ impl Studio {
         true
     }
 
-    /// Gives the inspector the selected emitter's rounds as the playback has them so far.
+    /// Gives the inspector the selected emitter's rounds as the playback has them so far, and
+    /// what its aim should warn about.
     fn fill_rounds(&mut self) {
         let rounds = &mut self.panels.inspector.rounds;
         rounds.clear();
+        self.panels.inspector.aim_checks.clear();
         let Some(id) = self
             .selection
             .primary
@@ -422,6 +424,9 @@ impl Studio {
         let duration =
             bpe_kit::SceneSettings::from_params(&self.scene.things[&bpe_core::ThingId::ROOT].params).duration;
         rounds.insert(id, bpe_kit::things::emitter::sim::round_marks(self.playback.world(), id, duration as f64));
+        if let Some(check) = bpe_kit::things::emitter::aim::check(self.playback.world(), id) {
+            self.panels.inspector.aim_checks.insert(id, check);
+        }
     }
 
     // ---------- playback ----------

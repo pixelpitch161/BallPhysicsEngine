@@ -79,6 +79,9 @@ pub struct Inspector {
     /// Each emitter's rounds as the playback has them, for the rounds strip; the studio fills it
     /// every frame for the selected emitter.
     pub rounds: BTreeMap<ThingId, Vec<bpe_kit::things::emitter::sim::RoundMark>>,
+    /// What each aiming emitter's aim should warn about, as the playback has it; the studio fills
+    /// it every frame for the selected emitter, like `rounds`.
+    pub aim_checks: BTreeMap<ThingId, bpe_kit::things::emitter::aim::AimCheck>,
 }
 
 /// The Emitter card.

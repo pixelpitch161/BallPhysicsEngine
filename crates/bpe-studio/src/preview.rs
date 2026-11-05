@@ -848,6 +848,21 @@ fn emitter_overlay(
         }
     }
     painter.circle_stroke(at(Vec2::ZERO), 9.0, Stroke::new(1.5, color));
+    // Aimed: the next round's ways to the target, faint, and where they meet.
+    if s.aim != bpe_kit::things::emitter::Aim::Off {
+        use bpe_kit::things::emitter::aim;
+        let world = studio.playback.world();
+        let (aimer, balls) = aim::next_round(world, id, aim::MOST_CHECKED);
+        if let Some(aimer) = aimer {
+            for ball in balls.iter().filter(|b| b.reaches) {
+                let points: Vec<Pos2> =
+                    aim::path_points(&aimer, ball, aim::PATH_POINTS).into_iter().map(|p| view.to_screen(p)).collect();
+                painter.add(egui::Shape::line(points, Stroke::new(1.0, style::FAINT_MARK)));
+            }
+            let meet = aimer.target_at((world.step + 1 + aimer.arrive) as f64);
+            painter.circle_stroke(view.to_screen(meet), 7.0, Stroke::new(1.5, color));
+        }
+    }
 }
 
 #[cfg(test)]
