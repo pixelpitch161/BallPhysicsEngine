@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 bpe-core.workspace = true
+bpe-dsp.workspace = true
 bpe-runtime.workspace = true
 bpe-gfx.workspace = true
 glam.workspace = true

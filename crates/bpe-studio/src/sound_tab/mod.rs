@@ -42,6 +42,10 @@ pub struct SoundTab {
     pub notes: notes::NotesState,
     /// The modulator whose rings are lit (its tile hovered or its handle dragged).
     pub hot: Option<bpe_core::LayerId>,
+    /// What the pointer does in an LFO's drawn shape.
+    pub lfo_tool: mods::lfo_view::Tool,
+    /// Each EQ layer's picked, dragged and right-clicked band.
+    pub eq: std::collections::BTreeMap<(ThingId, bpe_core::LayerId), crate::eq_curve::Pick>,
 }
 
 /// A change the tab asks for, applied once it is drawn.
@@ -426,6 +430,11 @@ pub fn show(
         });
         cx.edits
     };
+    if edits.iter().any(|e| matches!(e, TabEdit::Audition(_))) {
+        // A clicked key reaches the meters a block later; look again then to light it, even
+        // while stopped, when nothing else asks for a frame.
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(30));
+    }
     apply(inspector, scene, kit, id, time, edits)
 }
 
@@ -446,7 +455,20 @@ fn body(ui: &mut Ui, inspector: &mut Inspector, cx: &mut TabCx) {
         (Some(m), true) => m.shape_slot(cx.id.0),
         _ => None,
     };
-    notes::show(ui, cx, &mut inspector.sound.notes, playing);
+    // Notes sound while stopped too (keys clicked), so they are read whenever there is sound.
+    let heard = inspector.meters.as_ref().map_or(0, |m| m.take_notes(cx.id.0));
+    // The meters add a shape's notes up until they are read, so the first read after this
+    // shape's tab was away (another shape, the Settings tab) holds old notes: drop it.
+    let frame = ui.ctx().cumulative_frame_nr();
+    let fresh = inspector.sound.notes.last_read.is_some_and(|(s, f)| s == cx.id && frame.saturating_sub(f) <= 1);
+    inspector.sound.notes.last_read = Some((cx.id, frame));
+    let heard = if fresh { heard } else { 0 };
+    let now = ui.input(|i| i.time);
+    let sounding = inspector.sound.notes.light(cx.id, heard, now);
+    if sounding != 0 {
+        ui.ctx().request_repaint();
+    }
+    notes::show(ui, cx, &mut inspector.sound.notes, playing, sounding);
     ui.add_space(8.0);
     let level = inspector.meters.as_ref().map_or(f32::NEG_INFINITY, |m| m.take_shape(cx.id.0));
     if level > f32::NEG_INFINITY {
@@ -596,6 +618,11 @@ pub(crate) mod tests {
     /// The studio's inspector beside an empty middle, in a wide window, each frame's edit
     /// recorded as the studio records it. The state keeps the inspector's width as drawn.
     pub fn studio_harness(selected: ThingId, sound: bool) -> Harness<'static, (Studio, f32)> {
+        studio_harness_stepping(selected, sound, 0.25)
+    }
+
+    /// [`studio_harness`] with `dt` seconds a step (a double-click needs steps under 0.15 s).
+    pub fn studio_harness_stepping(selected: ThingId, sound: bool, dt: f32) -> Harness<'static, (Studio, f32)> {
         let mut studio = Studio::headless();
         studio.selection.set(selected);
         if sound {
@@ -603,6 +630,7 @@ pub(crate) mod tests {
         }
         let mut h = Harness::builder()
             .with_size(egui::vec2(1500.0, 1400.0))
+            .with_step_dt(dt)
             .with_max_steps(120)
             .allow_missing_glyphs()
             .with_context_setup(style::apply)

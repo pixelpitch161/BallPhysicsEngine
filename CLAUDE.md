@@ -74,7 +74,8 @@ Dependencies go bottom to top:
   `SlotId::Mixer` (last in `SlotId::ALL`, `in_card_list()` false: the inspector doesn't list them), layer sections
   `Chain`/`Modulator`/`Effect` (`Layer.lane` puts chain and effect layers in lanes; `move_layer` keeps them in
   their lane; `add_layer_in`), `Value::Routes` (`ModRoute`, key `ROUTES_KEY`; removing a modulator drops its
-  routes) and `Value::Slots` (`NoteSlot`, key `SLOTS_KEY`) in `sound_values.rs`, and `PulseSource::Sound`
+  routes), `Value::Slots` (`NoteSlot`, key `SLOTS_KEY`) and `Value::Curve` (`CurvePoint { x, y, bend }`, an LFO's drawn
+  shape, at most `MAX_CURVE_POINTS` 128, `curve_is_valid`) in `sound_values.rs`, and `PulseSource::Sound`
   (`SoundSource::Modulator/Level/Bus`): Follow sound. `Inputs { hits, sound }` hands pulses a `SoundLevels`; a
   Sound pulse may go on any keyframe setting (`set_pulse`), a Hits pulse only on `pulse` ones.
 - `bpe-runtime`: the world, the fixed 240 Hz staged step loop, the shared collision pass (`pairs.rs`, `walls.rs`),
@@ -207,7 +208,8 @@ Dependencies go bottom to top:
   blip voice; tests use it, the program never does. **Shape voice** (part 2): a shape's `sound.voice` card
   (`bpe-kit/src/sound/voice.rs`: `VoiceSettings` with Osc A/B as prefixed `OscSettings` (`a_`/`b_` keys), Playing,
   Notes, Output and `routes`; ADSR layers `sound.adsr` in `adsr.rs`; `starter_voice` is what Enable sound adds;
-  the chain layers `chain.modulation`, `chain.filter` and `chain.distortion` are in `bpe-kit/src/sound/chain.rs`,
+  the chain layers `chain.modulation`, `chain.filter`, `chain.distortion` and `chain.eq` (8 bands like the bus EQ,
+  run per sample with `Eq8::tick`) are in `bpe-kit/src/sound/chain.rs`,
   a Modulation's `source` text being "" (the other osc), "a", "b" or a layer id) becomes a `ShapeVoice`
   (`voices/shape.rs`, built by `patch::shape_voice`): hits pass the `HitFilter` (min strength, retrigger, Heard from),
   `NotePicker` picks a note of slot 0, `Voices` (`alloc.rs`) gives it a slot (Poly up to 16, the oldest fading in 5 ms;
@@ -218,10 +220,11 @@ Dependencies go bottom to top:
   reads one sample late, the first layer in card order hearing on time; `loops_of` for the editor's loop mark) and
   `chain.rs` (`ChainSpec` built per patch, `VoiceChain` per note: Osc → Gain → layers → Level → Pan, Solo cuts a lane
   at its layer, a tapped oscillator that is off still runs unheard, `adopt` keeps ringing filters by layer id). Chain
-  knobs have fixed places (`knobs::chain(place, key)`, 14 keys, `MAX_CHAIN` 32 layers a card) so keys and routes reach
+  knobs have fixed places (`knobs::chain(place, key)`, 38 keys: 14 shared then 24 EQ band numbers from `EQ_BANDS_AT`, `MAX_CHAIN` 32 layers a card) so keys and routes reach
   them. The Master's Input/Output keys are read every block too (`MasterKeys`). `Engine::audition`, `stop_notes` and
   `render_paused` (stopped: no hits or physics) play
-  keys clicked on the Sound tab; `Meters` also carries a level per shape (`write_shape`/`take_shape` by thing id).
+  keys clicked on the Sound tab; `Meters` also carries a level per shape (`write_shape`/`take_shape` by thing id) and the notes it
+  sounds as a 128-bit mask (`write_notes`/`take_notes`, from `VoiceSource::sounding_notes`; the piano roll lights them).
   Sound goldens: `tests/golden-sound*.txt` (an FNV hash of the starter patch; `golden-sound-chain*` a patch with
   layers on both oscillators), blessed like the physics goldens. `tests/ab_clips.rs` (ignored) renders the FM/PD A/B
   clips.
@@ -251,7 +254,9 @@ Dependencies go bottom to top:
   `mods/` holds `LfoMod`, `DistanceMod` (`distance_value`, Centre/Edge, Nearest/Each note's ball/Average/How
   many) and `HitMod` (`hit_values`: strength, place on edge, side, ball number, random). Shared ones run once a
   block in `ModsSpec.order` (`mods/order.rs`), per-note ones live in each note; every number knob of the card is a
-  route target (`patch::routable`). `Meters` carries each shape's modulator values and last hits
+  route target (`patch::routable`). An LFO's shape is a drawn curve (`LfoShape::Drawn`, `curve`, `LfoPreset`;
+  `bpe_dsp::lfo::curve_at` with `bend_at`; `lfo_curve.rs` edits it: add/move/delete points, bends, Step/Ramp paint,
+  flips) or Random/Smooth random; `once` holds the end; `Meters::mod_position` gives the editor's playhead. `Meters` carries each shape's modulator values and last hits
   (`mod_value`, `recent_hits`). `VoiceSettings.play_when` (`PlayWhen`: On hit / Always / In range of
   `play_zone`) makes drones (`ShapeVoice::hold`: held notes are never retriggered by hits; only notes in
   `ShapeVoice.held` count as drone notes; `BlockCx.playing` is false while stopped, when drones wait and clicked
@@ -302,8 +307,8 @@ Dependencies go bottom to top:
   meter, loudness readouts and the -14 LUFS graph from `style/meter.rs`). The Mixer is console strips
   (`mixer/strips.rs`: Bus 1..3 and a compact Master; effect slots with `slot_menu.rs`, drag between buses via
   `cx::move_effect`; `mixer/cx.rs` `MixCx`/`MixEdit` gathers edits like `TabCx`). A slot or "Master" sets
-  `Mixer.pick` (`MixerPick`); while the left panel is the Mixer, the inspector shows that editor wide
-  (`mixer/editors/`: `eq.rs` curve, `comp.rs`, `delay.rs`, `reverb.rs`, `master.rs`, the rest from settings).
+  `Mixer.pick` (`MixerPick`); the editor opens inside the Mixer under the strips, across the three bus columns in place of
+  the sends and pan (the Mixer opens at the tree's width each time; `mixer/editors/`: `eq.rs` curve (shared with the chain EQ strip through `eq_curve.rs`), `comp.rs`, `delay.rs`, `reverb.rs`, `master.rs`, the rest from settings).
   Hovering a strip rings the shapes on that bus in the preview (`preview::plays_into`). The shape's Output
   panel picks Bus 1..3, has sends to the others and warns when a bus is off. A selected shape's inspector has
   Settings | Sound chips (`InspectorTab`, `Inspector.tab`); the Sound tab (`sound_tab/`) widens the inspector to
@@ -328,7 +333,7 @@ Dependencies go bottom to top:
   `sound_tab/mods/` is the modulator row (part 4): `row.rs` (tiles grouped by kind with a four-arrow handle that
   drags a `ModDrag` onto a knob, right-click Rename/Duplicate/Delete, **+**), `drag.rs` (the ghost and the "Can't
   modulate this" note, `check`, `on_knob`), `routes.rs` (the "<name> modulates" list: range in real units, Amount,
-  Inv, ±, ×, and the settings that follow it), and the editors `distance.rs`, `lfo.rs`, `hit.rs` (ADSR is
+  Inv, ±, ×, and the settings that follow it), and the editors `distance.rs`, `lfo.rs` (the wide LFO page; `lfo_view.rs` draws and edits the drawn shape, `SoundTab.lfo_tool`), `hit.rs` (ADSR is
   `adsr_view.rs`). Knobs show a ring per route (`style::ModRing`, drag its end to set the amount, Alt for both
   ways) and a Modulate by submenu. `playing.rs` has the Plays chips; `preview/zones.rs` draws and drags the
   Distances' Near/Far lines while the Sound tab is open. **Follow sound** in the editor: `follow.rs` (`menu`,

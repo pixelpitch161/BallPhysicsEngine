@@ -1,6 +1,6 @@
 //! Setting values, their types, and sparse maps of them.
 
-use crate::{Color, Gradient, ModRoute, NoteSlot, ShapePath, Target};
+use crate::{Color, CurvePoint, Gradient, ModRoute, NoteSlot, ShapePath, Target};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -28,6 +28,8 @@ pub enum Value {
     Routes(Vec<ModRoute>),
     /// A sound card's note slots. Never keyframed.
     Slots(Vec<NoteSlot>),
+    /// A drawn LFO shape. Never keyframed.
+    Curve(Vec<CurvePoint>),
 }
 
 /// What kind of value a setting holds.
@@ -52,6 +54,8 @@ pub enum ValueType {
     Routes,
     /// Note slots; never keyframed.
     Slots,
+    /// A drawn LFO shape; never keyframed.
+    Curve,
 }
 
 impl ValueType {
@@ -73,6 +77,7 @@ impl ValueType {
             (ValueType::Path, Value::Path(p)) => p.is_valid(),
             (ValueType::Routes, Value::Routes(rs)) => rs.iter().all(ModRoute::is_valid),
             (ValueType::Slots, Value::Slots(ss)) => ss.iter().all(NoteSlot::is_valid),
+            (ValueType::Curve, Value::Curve(c)) => crate::curve_is_valid(c),
             _ => false,
         }
     }

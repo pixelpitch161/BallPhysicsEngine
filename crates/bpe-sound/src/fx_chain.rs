@@ -143,7 +143,11 @@ pub fn band_params(b: &EqBand, freq: f32, gain: f32, q: f32) -> BandParams {
 
 /// Every band of an EQ as set (no keys), for the editor's curve.
 pub fn eq_bands(s: &EqSettings) -> [BandParams; 8] {
-    let b = s.bands();
+    bands_of(s.bands())
+}
+
+/// Eight bands as set (no keys): a bus EQ's or an oscillator's.
+pub fn bands_of(b: [&EqBand; 8]) -> [BandParams; 8] {
     std::array::from_fn(|i| band_params(b[i], b[i].freq, b[i].gain, b[i].q))
 }
 

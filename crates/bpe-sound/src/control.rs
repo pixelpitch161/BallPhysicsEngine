@@ -95,7 +95,8 @@ pub fn heard_fingerprint(scene: &Scene) -> u64 {
         }
         for (key, value) in card.params.iter() {
             let heard = match bpe_core::split_layered(key) {
-                Some((layer, _)) => heard_layer(layer),
+                // An LFO's grid and Snap only help draw its shape.
+                Some((layer, k)) => heard_layer(layer) && !matches!(k, "grid_x" | "grid_y" | "snap"),
                 None => match key.split_once('_') {
                     Some(("a" | "b", rest)) => matches!(rest, "on" | "gain" | "level"),
                     Some(("out", rest)) => matches!(rest, "volume" | "bus"),

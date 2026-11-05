@@ -347,6 +347,18 @@ impl SettingValue for Vec<crate::NoteSlot> {
     }
 }
 
+impl SettingValue for Vec<crate::CurvePoint> {
+    fn value_type() -> ValueType {
+        ValueType::Curve
+    }
+    fn to_value(&self) -> Value {
+        Value::Curve(self.clone())
+    }
+    fn from_value(v: &Value) -> Option<Self> {
+        if let Value::Curve(x) = v { Some(x.clone()) } else { None }
+    }
+}
+
 impl SettingValue for Strokes {
     fn value_type() -> ValueType {
         ValueType::Strokes

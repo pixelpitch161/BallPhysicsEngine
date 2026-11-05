@@ -40,11 +40,15 @@ pub struct BasicBounce {
         keyframe
     )]
     pub speed_gain: f32,
+    /// The ball can go as fast as the hits make it (the world still keeps it from leaving
+    /// the walls behind).
+    #[setting(label = "No speed limit", group = "Bounce", when = "thing!=shape or takes_over", simple)]
+    pub no_speed_limit: bool,
     /// The ball never goes faster than this.
     #[setting(
         label = "Top speed",
         group = "Bounce",
-        when = "thing!=shape or takes_over",
+        when = "thing!=shape and !no_speed_limit or takes_over and !no_speed_limit",
         range(50, 20000),
         unit = "px/s",
         simple,
@@ -64,11 +68,14 @@ pub struct BasicBounce {
     /// How much bigger the ball gets on every hit. Negative shrinks it.
     #[setting(label = "Grow per hit", group = "Growing", when = "thing!=shape or takes_over", range(-20, 20), unit = "px", simple, keyframe)]
     pub grow: f32,
+    /// The ball can grow as big as its hits make it.
+    #[setting(label = "No size limit", group = "Growing", when = "thing!=shape or takes_over")]
+    pub no_size_limit: bool,
     /// The ball never grows past this.
     #[setting(
         label = "Biggest size",
         group = "Growing",
-        when = "thing!=shape or takes_over",
+        when = "thing!=shape and !no_size_limit or takes_over and !no_size_limit",
         range(0.5, 400),
         unit = "px"
     )]
@@ -107,9 +114,11 @@ impl Default for BasicBounce {
         Self {
             bounciness: 1.0,
             speed_gain: 1.0,
+            no_speed_limit: true,
             top_speed: 3000.0,
             grow: 0.0,
             hit_balls: false,
+            no_size_limit: true,
             max_size: 60.0,
             takes_over: false,
             pops_after: 0,

@@ -1,11 +1,16 @@
-//! The drawings on a layer strip: a filter's real response, a distortion's transfer curve and a
-//! modulated wave, small in the folded strip and 64 px tall when it is open. A filter's open
-//! view has a handle: sideways for Cutoff (even in octaves), up and down for Reso.
+//! The drawings on a layer strip: a filter's real response, a distortion's transfer curve, a
+//! modulated wave and an EQ's curve, small in the folded strip and 64 px tall when it is open.
+//! A filter's open view has a handle: sideways for Cutoff (even in octaves), up and down for
+//! Reso; an EQ's has a point per band that is on ([`crate::eq_curve`]).
 
+use crate::eq_curve::{self, Plot};
 use crate::style;
 use bpe_dsp::{FilterParams, response_db, transfer};
-use bpe_kit::sound::{DistKind, DistortionSettings, FilterKind, FilterSettings, ModKind, ModulationSettings};
+use bpe_kit::sound::{
+    ChainEqSettings, DistKind, DistortionSettings, FilterKind, FilterSettings, ModKind, ModulationSettings,
+};
 use bpe_sound::chain::{filter_type, shaper_type};
+use bpe_sound::fx_chain::bands_of;
 use eframe::egui::{self, Painter, Pos2, Rect, Shape, Stroke};
 
 /// The folded strip's view.
@@ -118,6 +123,7 @@ pub enum View<'a> {
     Modulation(&'a ModulationSettings),
     Filter(&'a FilterSettings),
     Distortion(&'a DistortionSettings),
+    Eq(&'a ChainEqSettings),
 }
 
 /// Draws `view` into `rect`.
@@ -128,7 +134,17 @@ pub fn paint(painter: &Painter, rect: Rect, view: &View, ink: egui::Color32) {
         View::Filter(f) => line(painter, rect, &filter_curve(f, n), -DB_SPAN, DB_SPAN * 0.6, 0.0, ink),
         View::Distortion(d) => line(painter, rect, &transfer_curve(d, n), -1.1, 1.1, 0.0, ink),
         View::Modulation(m) => line(painter, rect, &modulated_wave(m, n), -1.1, 1.1, 0.0, ink),
+        View::Eq(e) => {
+            let plot = eq_plot(rect);
+            eq_curve::paint_grid(painter, &plot, false);
+            eq_curve::paint_curve(painter, &plot, &bands_of(e.bands()), e.output, Stroke::new(1.4, ink));
+        }
     }
+}
+
+/// Where an EQ's curve sits in a view's `rect`.
+pub fn eq_plot(rect: Rect) -> Plot {
+    Plot { rect: rect.shrink(3.0) }
 }
 
 /// Where a filter view's handle sits in `rect`: across at Cutoff (Vowel for a formant), up with
@@ -170,6 +186,20 @@ mod tests {
         let (x, reso) = handle_values(rect, handle_at(rect, &f));
         assert!((hz_at(x) - 1000.0).abs() < 1.0);
         assert_eq!(reso, 40.0);
+    }
+
+    #[test]
+    fn the_eq_view_reads_its_bands() {
+        let rect = Rect::from_min_size(Pos2::new(0.0, 0.0), egui::vec2(300.0, 64.0));
+        let mut e = ChainEqSettings::default();
+        e.band5.on = true;
+        e.band5.gain = 12.0;
+        let plot = eq_plot(rect);
+        let at = eq_curve::point(&plot, &e.band5);
+        assert!(at.y < rect.center().y, "a lift sits above the middle");
+        assert!((plot.freq(at.x) - 1000.0).abs() < 1.0);
+        let db = eq_curve::curve_db(&bands_of(e.bands()), e.output, 1000.0);
+        assert!((db - 12.0).abs() < 0.1, "{db}");
     }
 
     #[test]

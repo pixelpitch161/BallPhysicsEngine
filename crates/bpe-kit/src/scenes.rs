@@ -64,6 +64,11 @@ pub fn classic_motion() -> BasicMotion {
     BasicMotion { gravity_scale: 1.0, ..BasicMotion::default() }
 }
 
+/// A bounce with the top speed and biggest size every bounce had before they could be turned off.
+pub fn classic_bounce() -> BasicBounce {
+    BasicBounce { no_speed_limit: false, no_size_limit: false, ..BasicBounce::default() }
+}
+
 /// Gives the scene settings the dark blue background and the bloom they had before the blank
 /// project's grey and no bloom, keeping anything else already set.
 pub fn classic_scene_settings(scene: &mut Scene) {
@@ -96,6 +101,14 @@ pub fn classic_cards(scene: &mut Scene) {
                 }
                 "motion.basic" if BasicMotion::from_params(&card.params) == BasicMotion::default() => {
                     card.params = classic_motion().to_params();
+                }
+                // The test scenes keep the speed and size caps bounces had before.
+                "bounce.basic" => {
+                    for key in ["no_speed_limit", "no_size_limit"] {
+                        if card.params.get(key).is_none() {
+                            card.params.set(key, Value::Bool(false));
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -609,7 +622,7 @@ impl<'a> Builder<'a> {
     }
 
     fn bounce(&mut self, f: impl FnOnce(&mut BasicBounce)) {
-        let mut s = BasicBounce::default();
+        let mut s = classic_bounce();
         f(&mut s);
         self.shared.get_mut(&SlotId::Bounce).expect("shared").params = s.to_params();
     }
@@ -756,7 +769,7 @@ fn shrinking_ring(reg: &Registry) -> Scene {
         s.grow = 1.5;
         s.max_size = 90.0;
     });
-    let lively = BasicBounce { bounciness: 1.05, takes_over: true, ..BasicBounce::default() }.to_params();
+    let lively = BasicBounce { bounciness: 1.05, takes_over: true, ..classic_bounce() }.to_params();
     b.own_module(SHAPE, "bounce.basic", lively);
     b.finish()
 }

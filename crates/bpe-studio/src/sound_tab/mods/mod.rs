@@ -6,6 +6,7 @@ pub mod distance;
 pub mod drag;
 pub mod hit;
 pub mod lfo;
+pub mod lfo_view;
 pub mod routes;
 pub mod row;
 
@@ -141,7 +142,7 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx, tab: &mut SoundTab, meters: Option<&Met
     match m.kind {
         ADSR => adsr_view::show(ui, cx, m.id, &m.name),
         DISTANCE => distance::show(ui, cx, m.id, meters),
-        LFO => lfo::show(ui, cx, m.id),
+        LFO => lfo::show(ui, cx, tab, m.id, meters),
         HIT => hit::show(ui, cx, m.id, meters),
         _ => {}
     }
@@ -486,5 +487,90 @@ mod tests {
         h.get_by_label(&format!("Stop {words} following")).click();
         h.run();
         assert!(!h.state().0.scene.pulses.contains_key(&a));
+    }
+
+    /// LFO 1's drawn shape, picked and on screen.
+    fn lfo_shape(h: &mut H) -> (LayerId, egui::Rect) {
+        let lfo = layer(h, "LFO 1");
+        h.get_by_role_and_label(Role::Button, "LFO 1").click();
+        h.run();
+        let node = h.get_by_label("Drawn shape");
+        node.scroll_to_me();
+        h.run();
+        (lfo, h.get_by_label("Drawn shape").rect())
+    }
+
+    fn curve_of(h: &H, lfo: LayerId) -> Vec<bpe_core::CurvePoint> {
+        match card(h).params.get(&layered_key(lfo, "curve")) {
+            Some(Value::Curve(c)) => c.clone(),
+            _ => bpe_kit::sound::LfoPreset::Sine.points(),
+        }
+    }
+
+    fn click_at(h: &mut H, at: Pos2) {
+        press(h, at);
+        release(h, at);
+    }
+
+    /// Two quick clicks, a few frames after anything clicked before.
+    fn double_click_at(h: &mut H, at: Pos2) {
+        h.hover_at(at);
+        for _ in 0..30 {
+            h.step();
+        }
+        // This harness steps a quarter second a frame, too slow for egui's 0.3 s double-click.
+        h.ctx.options_mut(|o| o.input_options.max_double_click_delay = 2.0);
+        for pressed in [true, false, true, false] {
+            h.event(egui::Event::PointerButton {
+                pos: at,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+        }
+        h.run();
+    }
+
+    #[test]
+    fn double_clicking_the_lfo_shape_adds_a_point_on_the_grid() {
+        let mut h = sounding();
+        let (lfo, rect) = lfo_shape(&mut h);
+        // Start from a flat line, so the grid spot is free.
+        h.get_by_role_and_label(Role::Button, "Clear").click();
+        h.run();
+        assert_eq!(curve_of(&h, lfo), bpe_kit::sound::lfo_curve::flat());
+        let plot = lfo_view::Plot::new(rect);
+        let before = curve_of(&h, lfo).len();
+        // Near (0.27, 0.06), which snaps to the 8 x 4 grid at (0.25, 0).
+        let at = plot.pos(0.27, 0.06);
+        double_click_at(&mut h, at);
+        let after = curve_of(&h, lfo);
+        assert_eq!(after.len(), before + 1, "{after:?}");
+        assert!(after.iter().any(|p| p.x == 0.25 && p.y == 0.0), "{after:?}");
+        // Double-clicking it again takes it away.
+        let at = plot.pos(0.25, 0.0);
+        double_click_at(&mut h, at);
+        assert_eq!(curve_of(&h, lfo).len(), before);
+    }
+
+    #[test]
+    fn a_preset_replaces_the_shape_and_painting_puts_in_a_step() {
+        let mut h = sounding();
+        let (lfo, _) = lfo_shape(&mut h);
+        h.get_by_label("LFO preset").click();
+        h.run();
+        // The menu's row (an oscillator's wave chip is called Square too).
+        h.query_all_by_label("Square").last().unwrap().click();
+        h.run();
+        assert_eq!(curve_of(&h, lfo), bpe_kit::sound::LfoPreset::Square.points());
+        h.get_by_role_and_label(Role::Button, "Step").click();
+        h.run();
+        let rect = h.get_by_label("Drawn shape").rect();
+        let plot = lfo_view::Plot::new(rect);
+        // The seventh of eight cells, painted three quarters up.
+        click_at(&mut h, plot.pos(0.8, 0.74));
+        let c = bpe_kit::sound::curve_numbers(&curve_of(&h, lfo));
+        assert_eq!(bpe_dsp::lfo::curve_at(&c, 0.8), 0.75, "{c:?}");
+        assert_eq!(bpe_dsp::lfo::curve_at(&c, 0.6), 0.0, "the rest of the square is left alone");
     }
 }

@@ -7,17 +7,20 @@ use crate::style;
 use bpe_core::Scene;
 use bpe_kit::Kit;
 use bpe_sound::MeterReading;
-use eframe::egui::{RichText, Ui};
+use eframe::egui::{self, RichText, Ui};
 
 /// Returns whether a keyed setting was edited.
 pub fn show(ui: &mut Ui, scene: &mut Scene, kit: &Kit, reading: &MeterReading, loudness: &[f32], time: f64) -> bool {
     let mut keyed = false;
     panel(ui, |ui| {
-        ui.horizontal_top(|ui| {
+        // The knobs (wrapping in a narrow editor), then the meters.
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true), |ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
             for key in strip::KNOBS {
                 keyed |= strip::knob(ui, scene, kit, key, time, 64.0);
             }
-            ui.add_space(10.0);
+        });
+        ui.horizontal_top(|ui| {
             style::level_meter(ui, reading.peak_l, reading.peak_r, 72.0).on_hover_text("Peak level, left and right");
             ui.add_space(10.0);
             ui.vertical(|ui| {

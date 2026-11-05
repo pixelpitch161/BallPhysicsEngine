@@ -10,7 +10,7 @@ use bpe_kit::sound::fx::CompressorSettings;
 use bpe_sound::{FxReading, Meters};
 use eframe::egui::{self, Align2, Pos2, Rect, RichText, Sense, Shape, Stroke, Ui, Vec2};
 
-/// The graph's side and the levels it shows.
+/// The graph's side (less in a narrow editor) and the levels it shows.
 const GRAPH: f32 = 180.0;
 const LOW_DB: f32 = -60.0;
 
@@ -19,12 +19,14 @@ pub fn show(ui: &mut Ui, cx: &mut MixCx, meters: Option<&Meters>, id: LayerId, d
     let reading = meters.map_or(FxReading::SILENT, |m| m.read_fx(id.0));
     panel(ui, |ui| {
         ui.horizontal_top(|ui| {
-            graph(ui, &set, &reading);
+            // Room is kept for the turned-down readout beside it.
+            let side = GRAPH.min(ui.available_width() - 90.0).max(80.0).round();
+            graph(ui, &set, &reading, side);
             ui.add_space(10.0);
             ui.vertical(|ui| {
                 ui.label(RichText::new("Turned down").small().color(style::MUTED));
                 ui.label(RichText::new(format!("{:.1} dB", reading.reduction.min(0.0))).font(style::mono(13.0)));
-                gr_bar(ui, reading.reduction);
+                gr_bar(ui, reading.reduction, side - 40.0);
             });
         });
         controls(ui, cx, defs, &[]);
@@ -32,8 +34,8 @@ pub fn show(ui: &mut Ui, cx: &mut MixCx, meters: Option<&Meters>, id: LayerId, d
 }
 
 /// The curve from input to output, the input level now and the turned-down amount.
-fn graph(ui: &mut Ui, set: &CompressorSettings, reading: &FxReading) {
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(GRAPH), Sense::hover());
+fn graph(ui: &mut Ui, set: &CompressorSettings, reading: &FxReading, side: f32) {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "Compressor levels"));
     if !ui.is_rect_visible(rect) {
         return;
@@ -88,8 +90,8 @@ fn graph(ui: &mut Ui, set: &CompressorSettings, reading: &FxReading) {
 }
 
 /// A bar falling from the top as the compressor turns the sound down (0 to -24 dB).
-fn gr_bar(ui: &mut Ui, reduction: f32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(14.0, GRAPH - 40.0), Sense::hover());
+fn gr_bar(ui: &mut Ui, reduction: f32, height: f32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(14.0, height), Sense::hover());
     let painter = ui.painter();
     painter.rect_filled(rect, 1.0, style::GROUND);
     let t = (-reduction / 24.0).clamp(0.0, 1.0);

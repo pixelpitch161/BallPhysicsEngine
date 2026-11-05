@@ -709,6 +709,7 @@ pub fn value_words(value: &Value, unit: &str, choices: &TargetChoices) -> String
         Value::Routes(r) => format!("{} routes", r.len()),
         Value::Slots(n) if n.len() == 1 => "1 slot".to_owned(),
         Value::Slots(n) => format!("{} slots", n.len()),
+        Value::Curve(c) => format!("{} points", c.len()),
     }
 }
 

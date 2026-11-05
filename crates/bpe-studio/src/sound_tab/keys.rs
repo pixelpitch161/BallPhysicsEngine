@@ -64,13 +64,20 @@ impl KeyGeom {
     }
 }
 
+/// Whether note `note` is in `mask` (bit n for MIDI note n).
+pub fn in_mask(mask: u128, note: u8) -> bool {
+    note < 128 && mask >> note & 1 == 1
+}
+
 /// The keyboard drawn in `rect` with its keys at `geom`; keys `in_key` says are in the
-/// shape's key get a faint dot.
+/// shape's key get a faint dot. `lit` (the picked row's notes) are in the shape's colour, and
+/// the notes in `sounding` (bit n for MIDI note n) light up white while they play.
 pub fn keyboard_at(
     ui: &mut Ui,
     rect: Rect,
     geom: KeyGeom,
     lit: &[u8],
+    sounding: u128,
     colour: Color32,
     in_key: &dyn Fn(u8) -> bool,
 ) -> Option<u8> {
@@ -104,17 +111,22 @@ pub fn keyboard_at(
             clicked = Some(note);
         }
         let on = lit.contains(&note);
+        let playing = in_mask(sounding, note);
         if ui.is_rect_visible(r) {
             let painter = ui.painter();
-            let fill = match (on, black) {
-                (true, _) => colour,
-                (false, true) => style::STAGE,
-                (false, false) => style::SLIDER_FILL,
+            let fill = match (playing, on, black) {
+                (true, _, _) => style::TEXT_STRONG,
+                (false, true, _) => colour,
+                (false, false, true) => style::STAGE,
+                (false, false, false) => style::SLIDER_FILL,
             };
             painter.rect_filled(r, 2.0, fill);
+            if playing {
+                painter.rect_stroke(r, 2.0, Stroke::new(2.0, colour), egui::StrokeKind::Inside);
+            }
             if black {
                 painter.rect_stroke(r, 2.0, Stroke::new(1.0, style::GROUND), egui::StrokeKind::Inside);
-            } else if note % 12 == 0 {
+            } else if note % 12 == 0 && !playing {
                 painter.text(
                     Pos2::new(r.center().x, r.bottom() - 4.0),
                     egui::Align2::CENTER_BOTTOM,
@@ -123,7 +135,7 @@ pub fn keyboard_at(
                     style::ON_LIGHT,
                 );
             }
-            if in_key(note) && !on {
+            if in_key(note) && !on && !playing {
                 let y = if black { r.bottom() - 6.0 } else { r.bottom() - 20.0 };
                 let dot = if black { style::LINE } else { style::FAINT };
                 painter.circle_filled(Pos2::new(r.center().x, y), 2.0, dot);
