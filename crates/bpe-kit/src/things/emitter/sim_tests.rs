@@ -485,3 +485,111 @@ fn each_ball_knows_its_place_in_the_spreads() {
     assert_eq!(spreads[1].place, 1.0, "the right one");
     assert!(spread_in(&world, id, 12).is_none());
 }
+
+/// Sets emitter `id`'s own `key` varying to `to` by `by`.
+fn vary_own(scene: &mut bpe_core::Scene, id: ThingId, key: &str, to: f64, by: &str) {
+    let params = &mut scene.things.get_mut(&id).unwrap().params;
+    params.set(&format!("{key}~to"), bpe_core::Value::Number(to));
+    params.set(&format!("{key}~by"), bpe_core::Value::Choice(by.into()));
+}
+
+#[test]
+fn the_emitter_s_size_and_speed_may_vary_its_other_settings_not() {
+    let kit = crate::kit();
+    let kind = kit.registry.thing(crate::things::emitter::KIND).unwrap();
+    assert_eq!(kind.vary("radius"), Some(bpe_core::VaryUse::Live));
+    assert_eq!(kind.vary("speed"), Some(bpe_core::VaryUse::AtLaunch));
+    assert_eq!(kind.vary("count"), None);
+}
+
+#[test]
+fn a_size_varied_by_number_gives_each_fired_ball_its_own_size() {
+    let (mut scene, id, kit) = scene_with(Vec2::ZERO, |s| {
+        s.count = 4;
+        s.radius = 10.0;
+    });
+    vary_own(&mut scene, id, "radius", 40.0, "number");
+    let r = resolved(&scene, &kit);
+    let world = World::build(&scene, &r, &kit.sims);
+    assert_eq!(world.bodies[&id].radius, vec![10.0, 20.0, 30.0, 40.0]);
+    assert_eq!(st(&world, id).own_size, vec![10.0, 20.0, 30.0, 40.0]);
+}
+
+#[test]
+fn a_speed_varied_by_number_fires_each_ball_at_its_own_speed() {
+    let (mut scene, id, kit) = scene_with(Vec2::ZERO, |s| {
+        s.count = 3;
+        s.speed = 100.0;
+    });
+    vary_own(&mut scene, id, "speed", 300.0, "number");
+    let r = resolved(&scene, &kit);
+    let world = World::build(&scene, &r, &kit.sims);
+    let speeds: Vec<f32> = world.bodies[&id].velocity.iter().map(|v| v.length()).collect();
+    for (got, want) in speeds.iter().zip([100.0, 200.0, 300.0]) {
+        assert!((got - want).abs() < 1e-2, "{speeds:?}");
+    }
+}
+
+#[test]
+fn a_size_varied_by_round_gives_each_round_its_own_size() {
+    let (mut scene, id, kit) = scene_with(Vec2::ZERO, |s| {
+        s.fire_when = FireWhen::Every;
+        s.every = 0.5;
+        s.rounds = 3;
+        s.count = 2;
+        s.radius = 10.0;
+    });
+    vary_own(&mut scene, id, "radius", 30.0, "round");
+    let r = resolved(&scene, &kit);
+    let (world, _) = run(&scene, &r, &kit, 1.2);
+    assert_eq!(world.bodies[&id].radius, vec![10.0, 10.0, 20.0, 20.0, 30.0, 30.0]);
+}
+
+#[test]
+fn keys_on_the_to_end_resize_the_balls_already_fired() {
+    let (mut scene, id, kit) = scene_with(Vec2::ZERO, |s| {
+        s.count = 2;
+        s.radius = 10.0;
+        s.speed = 0.0;
+    });
+    vary_own(&mut scene, id, "radius", 20.0, "number");
+    let to = bpe_core::Address { thing: id, slot: None, key: "radius~to".into() };
+    scene.set_key(&kit.registry, &to, 0.0, bpe_core::Value::Number(20.0)).unwrap();
+    scene.set_key(&kit.registry, &to, 1.0, bpe_core::Value::Number(30.0)).unwrap();
+    let r = resolved(&scene, &kit);
+    let mut world = World::build(&scene, &r, &kit.sims);
+    assert_eq!(world.bodies[&id].radius, vec![10.0, 20.0]);
+    world.advance_to(1.5, &kit.sims, &mut Log::default());
+    assert_eq!(world.bodies[&id].radius, vec![10.0, 30.0]);
+}
+
+#[test]
+fn a_size_varied_by_hits_grows_as_its_balls_are_caught() {
+    let (mut scene, shooter, catcher, kit) = shooter_and_catcher(1, |s| s.catches = Catches::SendBackOut);
+    scene.things.get_mut(&shooter).unwrap().params.set("radius", bpe_core::Value::Number(5.0));
+    vary_own(&mut scene, shooter, "radius", 15.0, "hits");
+    let r = resolved(&scene, &kit);
+    let (world, _) = run(&scene, &r, &kit, 1.0);
+    let caught = st(&world, shooter).rows.arrivals[0];
+    assert!(caught >= 1, "the ball reached the catcher");
+    let _ = catcher;
+    assert!(world.bodies[&shooter].radius[0] > 5.0, "{:?}", world.bodies[&shooter].radius);
+}
+
+#[test]
+fn an_endless_emitter_s_size_by_number_runs_over_the_balls_fired_so_far() {
+    let (mut scene, id, kit) = scene_with(Vec2::ZERO, |s| {
+        s.fire_when = FireWhen::Every;
+        s.every = 0.5;
+        s.endless = true;
+        s.count = 1;
+        s.radius = 10.0;
+        s.speed = 0.0;
+    });
+    vary_own(&mut scene, id, "radius", 20.0, "number");
+    let r = resolved(&scene, &kit);
+    assert_eq!(st(&World::build(&scene, &r, &kit.sims), id).planned, 0, "endless");
+    let (world, _) = run(&scene, &r, &kit, 1.2);
+    // Three fired so far: the first at Size, the last at the To end.
+    assert_eq!(world.bodies[&id].radius, vec![10.0, 15.0, 20.0]);
+}

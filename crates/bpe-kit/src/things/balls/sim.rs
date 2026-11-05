@@ -286,13 +286,19 @@ fn push_ball(bodies: &mut Bodies, st: &mut BallsState, at: Pose, number: u32) {
 /// Moves every ball of `bodies` from its own size in `st` to `own` (by row): a ball still at its
 /// own size takes the new one exactly; a grown one keeps its growth in proportion.
 fn resize_to(st: &mut BallsState, bodies: &mut Bodies, own: Vec<f32>) {
+    resize_rows(&mut st.own_size, bodies, own);
+}
+
+/// Moves every ball of `bodies` from its own size in `own_size` to `own` (by row): a ball still
+/// at its own size takes the new one exactly; a grown one keeps its growth in proportion.
+pub fn resize_rows(own_size: &mut Vec<f32>, bodies: &mut Bodies, own: Vec<f32>) {
     for (row, r) in bodies.radius.iter_mut().enumerate() {
-        let (Some(&old), Some(&new)) = (st.own_size.get(row), own.get(row)) else { continue };
+        let (Some(&old), Some(&new)) = (own_size.get(row), own.get(row)) else { continue };
         if new != old {
             *r = if *r == old || old <= 0.0 { new } else { *r * (new / old) };
         }
     }
-    st.own_size = own;
+    *own_size = own;
 }
 
 /// Each body row's own size in `st` as its settings and spreads say now.

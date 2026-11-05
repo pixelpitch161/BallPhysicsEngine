@@ -4,7 +4,8 @@
 
 use std::collections::VecDeque;
 
-use bpe_core::{ResolvedThing, Settings, Thing, ThingId};
+use bpe_core::vary::{self, BallSpread, Vary, VaryBy};
+use bpe_core::{Params, ResolvedThing, Settings, Thing, ThingId, Value};
 use bpe_runtime::{Bodies, Event, EventKind, Log, Party, Pose, ThingSim, World, pop, state, state_mut};
 use glam::Vec2;
 
@@ -16,7 +17,7 @@ use super::fire::{
 use super::foci::sits_on_pose;
 use super::{Aim, CatchFrom, Catches, Earlier, EmitterSettings, FireWhen, KIND, ReturnWay};
 use crate::things::balls::rows::{BallRows, Caught, rows_mut};
-use crate::things::balls::sim::size_factor;
+use crate::things::balls::sim::{resize_rows, size_factor};
 
 pub struct EmitterSim;
 
@@ -97,10 +98,14 @@ pub struct EmitterState {
     pub waves: Vec<Wave>,
     /// Every wave that has landed on it so far, in order.
     pub landings: Vec<Landing>,
+    /// Its own settings that vary across the balls (Size, Speed), with a To.
+    pub varies: Vec<Vary>,
+    /// Each body row's own size: its Size, varied and with its Variety share, before any growth.
+    pub own_size: Vec<f32>,
 }
 
 impl EmitterState {
-    fn new(settings: EmitterSettings) -> Self {
+    fn new(settings: EmitterSettings, varies: Vec<Vary>) -> Self {
         Self {
             layout: layout(&settings),
             planned: planned(&settings),
@@ -115,7 +120,102 @@ impl EmitterState {
             held: Vec::new(),
             waves: Vec::new(),
             landings: Vec::new(),
+            varies,
+            own_size: Vec::new(),
         }
+    }
+
+    /// Where ball `number` of round `round`, fired the way `launch` (radians) from `place` in its
+    /// round's layout, sits in the spreads, going at `speed` with `hits` so far.
+    pub fn spread_at(&self, number: u32, round: u32, launch: f32, place: Vec2, speed: f32, hits: u32) -> BallSpread {
+        use crate::modules::look::layers::group::ENDLESS_ROUNDS;
+        use crate::things::balls::rows::RoundSpan;
+        let from_first = round.saturating_sub(1) as f32;
+        let round = match self.settings.round_span() {
+            RoundSpan::Finite(n) if n <= 1 => 0.0,
+            RoundSpan::Finite(n) => from_first / (n - 1) as f32,
+            RoundSpan::Endless => {
+                let x = from_first / ENDLESS_ROUNDS;
+                x - x.floor()
+            }
+        };
+        let (lo, hi) =
+            self.layout.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), p| (lo.min(p.x), hi.max(p.x)));
+        let place = if hi - lo > 1e-4 { ((place.x - lo) / (hi - lo)).clamp(0.0, 1.0) } else { 0.0 };
+        // Every ball fired so far counts, this one too.
+        let count = if self.planned > 0 { self.planned } else { (self.next_number as usize).max(number as usize + 1) };
+        BallSpread {
+            number,
+            count: count.max(1) as u32,
+            round,
+            launch: vary::launch_turn(Vec2::from_angle(launch)),
+            place,
+            speed,
+            hits,
+            seed: self.settings.seed as u32,
+            alone: false,
+        }
+    }
+
+    /// `key`'s value for a ball at `spread`: `base`, mixed towards its To when it varies.
+    fn own_value(&self, key: &str, base: f32, spread: &BallSpread) -> f32 {
+        let Some(v) = self.varies.iter().find(|v| v.key == key) else { return base };
+        let to = v.to.as_ref().expect("only varies with a To are kept");
+        match vary::mixed(&Value::Number(base as f64), to, v.amount(spread.t(v.by, v.salt()))) {
+            Value::Number(x) => x as f32,
+            _ => base,
+        }
+    }
+
+    /// The Size of a ball at `spread`, varied (before its Variety share).
+    pub fn size_at(&self, spread: &BallSpread) -> f32 {
+        self.own_value("radius", self.settings.radius, spread)
+    }
+
+    /// The Speed a ball at `spread` is fired at, varied (before its Speed spread).
+    pub fn speed_at(&self, spread: &BallSpread) -> f32 {
+        self.own_value("speed", self.settings.speed, spread).max(0.0)
+    }
+
+    /// The bigger end of its Size, when the Size varies across the balls (before Variety).
+    pub fn biggest_size(&self) -> f32 {
+        let to = self.varies.iter().find(|v| v.key == "radius").and_then(|v| match v.to {
+            Some(Value::Number(x)) => Some(x as f32),
+            _ => None,
+        });
+        to.map_or(self.settings.radius, |to| to.max(self.settings.radius))
+    }
+
+    /// Whether the Size varies across the balls.
+    fn size_varies(&self) -> bool {
+        self.varies.iter().any(|v| v.key == "radius")
+    }
+
+    /// Each body row's own size as its settings and spreads say now.
+    fn own_sizes(&self, bodies: &Bodies) -> Vec<f32> {
+        (0..bodies.len().min(self.rows.len()))
+            .map(|row| {
+                let size = match self.size_varies() {
+                    true => self.size_at(&self.spread_of(bodies, row)),
+                    false => self.settings.radius,
+                };
+                let factor = self.rows.size_factor[row];
+                if factor == 1.0 { size } else { size * factor }
+            })
+            .collect()
+    }
+
+    /// Where body row `row` of `bodies` sits in the spreads, as it moves now.
+    fn spread_of(&self, bodies: &Bodies, row: usize) -> BallSpread {
+        let r = &self.rows;
+        self.spread_at(
+            r.number(row),
+            r.round[row],
+            r.launch[row],
+            r.place[row],
+            bodies.velocity.get(row).map_or(0.0, |v| v.length()),
+            bodies.hits.get(row).copied().unwrap_or(0) + r.arrivals.get(row).copied().unwrap_or(0),
+        )
     }
 
     /// How many rounds may still fire.
@@ -132,38 +232,21 @@ pub fn emitter_state(world: &World, thing: ThingId) -> Option<&EmitterState> {
 /// Where body row `row` of emitter `thing` sits in the spreads a setting varies by, as it moves
 /// now: its number among every ball it has fired, its round across the rounds (every ten for
 /// endless ones, as the group gradient), its launch angle and its place across one round.
-pub fn spread_in(world: &World, thing: ThingId, row: usize) -> Option<bpe_core::BallSpread> {
-    use crate::modules::look::layers::group::ENDLESS_ROUNDS;
-    use crate::things::balls::rows::RoundSpan;
+pub fn spread_in(world: &World, thing: ThingId, row: usize) -> Option<BallSpread> {
     let st = emitter_state(world, thing)?;
     let bodies = world.bodies.get(&thing)?;
     if row >= st.rows.len() {
         return None;
     }
-    let from_first = st.rows.round[row].saturating_sub(1) as f32;
-    let round = match st.settings.round_span() {
-        RoundSpan::Finite(n) if n <= 1 => 0.0,
-        RoundSpan::Finite(n) => from_first / (n - 1) as f32,
-        RoundSpan::Endless => {
-            let x = from_first / ENDLESS_ROUNDS;
-            x - x.floor()
-        }
-    };
-    let (lo, hi) = st.layout.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), p| (lo.min(p.x), hi.max(p.x)));
-    let x = st.rows.place[row].x;
-    let place = if hi - lo > 1e-4 { ((x - lo) / (hi - lo)).clamp(0.0, 1.0) } else { 0.0 };
-    let count = if st.planned > 0 { st.planned } else { st.next_number as usize };
-    Some(bpe_core::BallSpread {
-        number: st.rows.number(row),
-        count: count.max(1) as u32,
-        round,
-        launch: bpe_core::vary::launch_turn(Vec2::from_angle(st.rows.launch[row])),
-        place,
-        speed: bodies.velocity.get(row).map_or(0.0, |v| v.length()),
-        hits: bodies.hits.get(row).copied().unwrap_or(0) + st.rows.arrivals.get(row).copied().unwrap_or(0),
-        seed: st.settings.seed as u32,
-        alone: false,
-    })
+    Some(st.spread_of(bodies, row))
+}
+
+/// Its own settings in `params` that vary across its balls: Size and Speed.
+fn own_varies(params: &Params) -> Vec<Vary> {
+    vary::varies_in(params)
+        .into_iter()
+        .filter(|v| matches!(v.key.as_str(), "radius" | "speed") && v.to.is_some())
+        .collect()
 }
 
 /// One round on the timeline: when it fires (seconds), which it is, how many balls it has, and
@@ -340,6 +423,8 @@ fn launch_ball(st: &mut EmitterState, bodies: &mut Bodies, launch: Launch, at: &
     let turn = Vec2::from_angle(at.pose.angle);
     let position = at.pose.position + turn.rotate(offset);
     let mut dir = way + at.pose.angle;
+    let number = st.next_number;
+    let place = offset + Vec2::from_angle(way) * layout_reach(s);
     let (velocity, speed) = match (at.aim, launch.arrive) {
         (Some(aim), Some(arrive)) => {
             let plain = Vec2::from_angle(dir) * s.speed.max(0.0);
@@ -357,18 +442,19 @@ fn launch_ball(st: &mut EmitterState, bodies: &mut Bodies, launch: Launch, at: &
         // An aimed emitter's ball that goes unaimed (Fire anyway) goes at Speed, unspread.
         (Some(_), None) => (Vec2::from_angle(dir) * s.speed.max(0.0), s.speed.max(0.0)),
         _ => {
-            let speed = s.speed.max(0.0) * speed_factor(s, round, k, at.seed, at.thing.0);
+            let own = st.speed_at(&st.spread_at(number, round, dir, place, 0.0, 0));
+            let speed = own * speed_factor(s, round, k, at.seed, at.thing.0);
             (Vec2::from_angle(dir) * speed, speed)
         }
     };
-    let number = st.next_number;
-    st.next_number += 1;
     let factor = size_factor(&s.variety(), number);
-    let radius = if factor == 1.0 { s.radius } else { s.radius * factor };
+    let size = st.size_at(&st.spread_at(number, round, dir, place, speed, 0));
+    let radius = if factor == 1.0 { size } else { size * factor };
+    st.next_number += 1;
     let row = bodies.push(position, velocity, radius) as usize;
     bodies.number[row] = number;
-    let place = offset + Vec2::from_angle(way) * layout_reach(s);
     st.rows.push(number, factor, round, dir, place, k);
+    st.own_size.push(radius);
     // A ball of an earlier round launched after a later round fired fades with its round.
     if s.earlier == Earlier::FadeOut
         && round < st.rounds_fired
@@ -529,6 +615,12 @@ fn catch(me: ThingId, world: &mut World, log: &mut Log) {
         // A caught ball falls by its own thing's Motion card, not the catcher's.
         let aim = at.aim.map(|aim| Aimer { accel: super::aim::pull_in(world, a.thing).accel, ..aim });
         let (round, size) = round_of(world, a.thing, a.row);
+        // One of its own balls goes back out at its own Speed when the Speed varies.
+        let own_speed = match a.thing == me {
+            true => emitter_state(world, me).zip(spread_in(world, me, a.row)).map(|(st, at)| st.speed_at(&at)),
+            false => None,
+        }
+        .unwrap_or(s.speed.max(0.0));
         log.push(Event {
             step,
             kind: EventKind::Enter,
@@ -586,7 +678,7 @@ fn catch(me: ThingId, world: &mut World, log: &mut Log) {
                         let u = Vec2::from_angle(way + pose.angle);
                         match aim {
                             None => {
-                                let speed = s.speed.max(0.0) * speed_factor(&s, round.max(1), k, at.seed, me.0);
+                                let speed = own_speed * speed_factor(&s, round.max(1), k, at.seed, me.0);
                                 (place, u * speed)
                             }
                             // Aimed as a round of its own fired when it would leave.
@@ -667,7 +759,7 @@ impl ThingSim for EmitterSim {
         let pose = pose_now(world, thing.id, &settings);
         world.poses.insert(thing.id, pose);
         let aims = settings.aim != Aim::Off;
-        let mut st = EmitterState::new(settings);
+        let mut st = EmitterState::new(settings, own_varies(&resolved.params));
         let mut bodies = Bodies::default();
         // A round at 0 s is there from the first frame (no step logs it). An aimed one waits for
         // everything to be built (its target, its Motion card): `after_build`.
@@ -721,8 +813,18 @@ impl ThingSim for EmitterSim {
 
     fn scripted(&self, thing: ThingId, world: &mut World) {
         let Some(st) = world.states.get(&thing) else { return };
-        let pose = pose_now(world, thing, &state::<EmitterState>(st.as_ref()).settings);
+        let st = state::<EmitterState>(st.as_ref());
+        // An endless emitter's Number spread runs over the balls fired so far, so it moves too.
+        let moves = |by: VaryBy| by.changes() || (by == VaryBy::Number && st.planned == 0);
+        let follows = st.varies.iter().any(|v| v.key == "radius" && moves(v.by));
+        let pose = pose_now(world, thing, &st.settings);
         world.poses.insert(thing, pose);
+        // A Size that varies by the balls' speed or hits (or an endless Number) follows them every step.
+        if follows && let (Some(st), Some(bodies)) = (world.states.get_mut(&thing), world.bodies.get_mut(&thing)) {
+            let st = state_mut::<EmitterState>(st.as_mut());
+            let own = st.own_sizes(bodies);
+            resize_rows(&mut st.own_size, bodies, own);
+        }
     }
 
     fn after_step(&self, thing: ThingId, world: &mut World, log: &mut Log) {
@@ -739,7 +841,8 @@ impl ThingSim for EmitterSim {
                     }
                 }
             }
-            let memory = st.rows.memory() + st.landings.capacity() * 24 + st.fired.capacity() * 24;
+            let memory =
+                st.rows.memory() + st.landings.capacity() * 24 + st.fired.capacity() * 24 + st.own_size.capacity() * 4;
             world.state_memory.insert(thing, memory);
         }
         catch(thing, world, log);
@@ -751,19 +854,18 @@ impl ThingSim for EmitterSim {
         let settings = EmitterSettings::from_params(&resolved.params);
         let Some(st) = world.states.get_mut(&thing) else { return };
         let st = state_mut::<EmitterState>(st.as_mut());
-        let (old, new) = (st.settings.radius, settings.radius);
-        if new != old
-            && let Some(bodies) = world.bodies.get_mut(&thing)
-        {
-            let sized = |size: f32, factor: f32| if factor == 1.0 { size } else { size * factor };
-            for (row, r) in bodies.radius.iter_mut().enumerate() {
-                let factor = st.rows.size_factor.get(row).copied().unwrap_or(1.0);
-                *r = if *r == sized(old, factor) || old <= 0.0 { sized(new, factor) } else { *r * (new / old) };
-            }
-        }
+        let varies = own_varies(&resolved.params);
+        let resize =
+            st.settings.radius != settings.radius || st.size_varies() || varies.iter().any(|v| v.key == "radius");
         st.layout = layout(&settings);
         st.planned = planned(&settings);
         st.settings = settings;
+        st.varies = varies;
+        // Each ball takes its own size from the new settings, keeping what it has grown by.
+        if resize && let Some(bodies) = world.bodies.get_mut(&thing) {
+            let own = st.own_sizes(bodies);
+            resize_rows(&mut st.own_size, bodies, own);
+        }
     }
 
     fn ball_spread(&self, thing: ThingId, world: &World, row: usize) -> Option<bpe_core::BallSpread> {
