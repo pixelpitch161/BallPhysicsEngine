@@ -24,7 +24,7 @@ use crate::widgets::{self, KeyMark, TargetChoices, ValueMenu};
 use bpe_core::{Address, Choice, ROUTES_KEY, Scene, SettingDef, SlotId, ThingId, Value, ValueType};
 use bpe_kit::Kit;
 use bpe_kit::sound::VOICE;
-use bpe_sound::modmatrix::{Combine, combine_of};
+use bpe_sound::modmatrix::{Combine, combine_of, turns_in_ratios};
 use eframe::egui::{self, Color32, RichText, Ui};
 
 /// The Sound tab's own state, kept in the inspector.
@@ -164,25 +164,23 @@ impl TabCx<'_> {
         self.set(ROUTES_KEY, Value::Routes(routes));
     }
 
+    /// Whether modulator `layer` is an ADSR (its routes on a level knob shape the volume).
+    pub fn is_envelope(&self, layer: bpe_core::LayerId) -> bool {
+        self.scene
+            .card(self.id, bpe_core::SlotId::Sound)
+            .and_then(|c| c.layer(layer))
+            .is_some_and(|l| l.kind == bpe_kit::sound::ADSR)
+    }
+
+    /// How route `r` moves its knob: an envelope scales a level, everything else adds.
+    pub fn combine(&self, r: &bpe_core::ModRoute) -> Combine {
+        combine_of(&r.target, self.is_envelope(r.source))
+    }
+
     /// A knob on the number setting `key`, labelled `label`, its value read by `format`, with
-    /// the usual right-click menu (Copy Value, Paste Value, Create Keyframe).
+    /// the usual right-click menu (Copy Value, Paste Value, Create Keyframe). A frequency knob
+    /// turns evenly in ratios ([`turns_in_ratios`]), as the sound moves it.
     pub fn knob(&mut self, ui: &mut Ui, key: &str, label: &str, format: &dyn Fn(f64) -> String) -> egui::Response {
-        self.knob_with(ui, key, label, format, false)
-    }
-
-    /// As [`TabCx::knob`], turning evenly in ratios (frequencies).
-    pub fn log_knob(&mut self, ui: &mut Ui, key: &str, label: &str, format: &dyn Fn(f64) -> String) -> egui::Response {
-        self.knob_with(ui, key, label, format, true)
-    }
-
-    fn knob_with(
-        &mut self,
-        ui: &mut Ui,
-        key: &str,
-        label: &str,
-        format: &dyn Fn(f64) -> String,
-        log: bool,
-    ) -> egui::Response {
         let Some(def) = self.def(key) else {
             return ui.label(RichText::new(format!("{label}?")).color(style::MUTED));
         };
@@ -191,12 +189,16 @@ impl TabCx<'_> {
         let now = self.get(key);
         let mut v = number(&now).unwrap_or(default);
         let bipolar = lo < 0.0 && hi > 0.0 && !is_db(def);
+        let log = turns_in_ratios(def);
         // A ring for each route reaching the knob.
         let mut routes = self.routes();
         let reaching: Vec<usize> = (0..routes.len()).filter(|i| routes[*i].target == key).collect();
         let rings: Vec<ModRing> = reaching
             .iter()
-            .map(|i| mods::ring(&routes[*i], v, (lo, hi), self.hot == Some(routes[*i].source)))
+            .map(|i| {
+                let r = &routes[*i];
+                mods::ring(r, v, (lo, hi), log, self.combine(r), self.hot == Some(r.source))
+            })
             .collect();
         let r = Knob::new(&mut v, lo..=hi, default, label)
             .format(format)
@@ -223,8 +225,9 @@ impl TabCx<'_> {
             && let Some(&i) = reaching.get(drag.ring)
         {
             let mut route = routes[i].clone();
-            route.amount = mods::amount_for(&route, v, (lo, hi), drag.to);
-            if drag.alt && combine_of(key) == Combine::Add && !route.bipolar {
+            let combine = self.combine(&route);
+            route.amount = mods::amount_for(&route, v, (lo, hi), log, combine, drag.to);
+            if drag.alt && combine == Combine::Add && !route.bipolar {
                 route.bipolar = true;
             }
             if route != routes[i] {

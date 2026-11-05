@@ -156,9 +156,10 @@ fn lfo2_on_lfo1_rate_changes_its_speed() {
     let lfo1 = turn_on(&kit, &mut plain, "LFO 1", &[("rate_hz", num(1.0))]);
     route(&kit, &mut plain, lfo1, "a_cents", 0.1);
     let mut moved = plain.clone();
-    // LFO 2: a square held high for 50 s, pushing LFO 1's rate up by a tenth of 0.01..40 Hz.
+    // LFO 2: a square held high for 50 s, pushing LFO 1's rate up by a fifth of the knob's travel,
+    // which turns evenly in ratios over 0.01..40 Hz: 4000^0.2, about 5.25 times as fast.
     let lfo2 = turn_on(&kit, &mut moved, "LFO 2", &[("shape", choice("square")), ("rate_hz", num(0.01))]);
-    route(&kit, &mut moved, lfo2, &layered_key(lfo1, "rate_hz"), 0.1);
+    route(&kit, &mut moved, lfo2, &layered_key(lfo1, "rate_hz"), 0.2);
     let count = |scene: &Scene| {
         let w = world(scene, &kit);
         let mut v = voice(scene, &kit);
@@ -188,16 +189,17 @@ fn a_mod_loop_runs_one_block_late() {
     let (s1, s2) =
         (bpe_sound::mods::lfo::seed_of(shape_of(&scene), lfo1), bpe_sound::mods::lfo::seed_of(shape_of(&scene), lfo2));
     let (mut a, mut b) = (LfoMod::new(s1), LfoMod::new(s2));
-    let span = 40.0 - 0.01;
+    // The Rate knobs turn evenly in ratios, so a route multiplies them.
+    let ratio = 40.0f64 / 0.01;
     let tempo = TempoMap::default();
     let mut vb = 0.0f32;
     for (blk, (ga, gb)) in got.iter().enumerate() {
         let cx = ModCx { start_sample: blk as u64 * BLOCK as u64, tempo: &tempo, world: &w, shape: shape_of(&scene) };
-        let ra = (1.0 + 0.05 * vb as f64 * span).clamp(0.01, 40.0);
+        let ra = (1.0 * ratio.powf(0.05 * vb as f64)).clamp(0.01, 40.0);
         a.set_params(LfoParams { rate_hz: ra, wave: bpe_dsp::lfo::LfoWave::Triangle, ..LfoParams::default() });
         a.next_block(&cx);
         let va = a.value();
-        let rb = (2.0 + 0.05 * va as f64 * span).clamp(0.01, 40.0);
+        let rb = (2.0 * ratio.powf(0.05 * va as f64)).clamp(0.01, 40.0);
         b.set_params(LfoParams { rate_hz: rb, wave: bpe_dsp::lfo::LfoWave::Saw, ..LfoParams::default() });
         b.next_block(&cx);
         vb = b.value();
@@ -227,15 +229,56 @@ fn per_note_adsr_on_filter_cutoff_is_independent_per_voice() {
     let mut seen = v.watched();
     seen.sort_by(|a, b| b.1.total_cmp(&a.1));
     assert_eq!(seen.len(), 2);
-    // The first note's envelope is half way up, the second's just starting.
-    assert!(seen[0].1 > 4000.0, "{seen:?}");
-    assert!(seen[1].1 < 1000.0, "{seen:?}");
+    // The first note's envelope is half way up (a quarter of the knob's travel above 200 Hz, in
+    // octaves: 200 Hz × 1000^¼ ≈ 1125 Hz), the second's just starting.
+    assert!(seen[0].1 > 900.0 && seen[0].1 < 1400.0, "{seen:?}");
+    assert!(seen[1].1 < 300.0, "{seen:?}");
     run(&mut v, &w, 39, 200, &[]);
     let late = v.watched();
-    assert!(
-        late.iter().all(|(_, c)| (*c - (200.0 + 0.5 * (20_000.0 - 20.0))).abs() < 1.0),
-        "both at the top: {late:?}"
-    );
+    // At the top: half the knob's travel up, evenly in ratios (200 Hz × √1000).
+    let top = 200.0 * 1000f32.sqrt();
+    assert!(late.iter().all(|(_, c)| (*c - top).abs() < 1.0), "both at the top: {late:?}");
+}
+
+/// The loudest sample of `scene` half a second in, its ball held 200 px out (where a Distance
+/// from 0 to 400 reads one half).
+fn held_peak(kit: &Kit, scene: &Scene) -> f32 {
+    let shape = shape_of(scene);
+    let mut w = world(scene, kit);
+    let ball = ball_of(scene);
+    let b = w.bodies.get_mut(&ball).unwrap();
+    b.position[0] = Vec2::new(200.0, 0.0);
+    let mut v = voice(scene, kit);
+    let out = run(&mut v, &w, 0, 400, &[(0, hit(ball, 0, shape, 0))]);
+    out[20_000..25_000].iter().fold(0.0f32, |m, x| m.max(x.abs()))
+}
+
+#[test]
+fn a_distance_on_gain_moves_it_in_db_under_the_envelope() {
+    // As in Serum: the amount is a share of the knob's travel (here -60..12 dB), whatever the
+    // knob is set to; the ADSR still shapes the volume on top.
+    let kit = kit();
+    let plain = voiced(&kit);
+    let mut down = plain.clone();
+    let d = turn_on(&kit, &mut down, "Distance 1", &[("near", num(0.0)), ("far", num(400.0)), ("smooth", num(0.0))]);
+    // At one half, -1/6 of 72 dB is 6 dB down.
+    route(&kit, &mut down, d, "a_gain", -1.0 / 6.0);
+    let (alone, moved) = (held_peak(&kit, &plain), held_peak(&kit, &down));
+    assert!(alone > 0.1);
+    let want = 10f32.powf(-6.0 / 20.0);
+    assert!((moved / alone - want).abs() < 0.01, "{moved} against {alone}");
+
+    // From silence: Gain at the bottom with the Distance pushing it up is heard: at one half,
+    // all of 72 dB is 36 dB up, to -24 dB.
+    let mut up = plain.clone();
+    let shape = shape_of(&up);
+    up.set_at(&kit.registry, &Address::on(shape, SlotId::Sound, "a_gain"), num(-60.0)).unwrap();
+    assert_eq!(held_peak(&kit, &up), 0.0, "silent at the bottom");
+    let d = turn_on(&kit, &mut up, "Distance 1", &[("near", num(0.0)), ("far", num(400.0)), ("smooth", num(0.0))]);
+    route(&kit, &mut up, d, "a_gain", 1.0);
+    let heard = held_peak(&kit, &up);
+    let want = 10f32.powf(-24.0 / 20.0);
+    assert!((heard / alone - want).abs() < 0.005, "{heard} against {alone}");
 }
 
 #[test]
@@ -244,9 +287,10 @@ fn adsr_times_distance_on_gain_multiplies() {
     let mut plain = voiced(&kit);
     let mut both = plain.clone();
     let shape = shape_of(&plain);
-    // Distance 1 on Osc A's gain (and B's), its ball held where it reads one half.
+    // Distance 1 on Osc A's gain (and B's), its ball held where it reads one half. It is no
+    // envelope, so it adds: half of -1 is 36 dB down.
     let d = turn_on(&kit, &mut both, "Distance 1", &[("near", num(0.0)), ("far", num(400.0)), ("smooth", num(0.0))]);
-    route(&kit, &mut both, d, "a_gain", 1.0);
+    route(&kit, &mut both, d, "a_gain", -1.0);
     let measure = |scene: &Scene| {
         let mut w = world(scene, &kit);
         let ball = ball_of(scene);
@@ -258,7 +302,8 @@ fn adsr_times_distance_on_gain_multiplies() {
     };
     let (alone, times) = (measure(&plain), measure(&both));
     assert!(alone > 0.1);
-    assert!((times / alone - 0.5).abs() < 0.01, "{times} against {alone}");
+    let want = 10f32.powf(-36.0 / 20.0);
+    assert!((times / alone - want).abs() < 0.002, "{times} against {alone}");
     plain.name.clear();
 }
 
@@ -273,7 +318,7 @@ fn modulators_patch_golden() {
     let h = add_layer(&kit, &mut scene, HIT, &[("pick", choice("place"))]);
     route(&kit, &mut scene, lfo1, "a_cents", 0.2);
     route(&kit, &mut scene, lfo2, &layered_key(filter, "cutoff"), 0.3);
-    route(&kit, &mut scene, d, "a_gain", 1.0);
+    route(&kit, &mut scene, d, "a_gain", -0.25);
     route(&kit, &mut scene, h, "out_pan", 0.5);
     let _ = (DISTANCE, LFO);
     let resolved = resolve_scene(&scene, &kit.registry);

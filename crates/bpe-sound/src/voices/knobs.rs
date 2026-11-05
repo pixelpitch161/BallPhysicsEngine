@@ -305,7 +305,9 @@ pub fn targets(layout: &[(String, &'static SettingDef, usize)]) -> TargetTable {
     let mut t = TargetTable::default();
     for (key, def, i) in layout {
         let range = def.range.unwrap_or((0.0, 1.0));
-        t.insert(key.clone(), TargetInfo { index: *i as u16, range, log: false });
+        // Frequency knobs turn evenly in ratios, as the editor draws them, so routes add octaves.
+        let log = crate::modmatrix::turns_in_ratios(def);
+        t.insert(key.clone(), TargetInfo { index: *i as u16, range, log });
     }
     t
 }

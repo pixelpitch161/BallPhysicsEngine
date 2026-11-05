@@ -344,6 +344,8 @@ struct Scratch {
     lanes: Vec<Buf>,
     /// Every route source sample by sample, this note, this block.
     src: [[f32; BLOCK]; MAX_SOURCES],
+    /// A level knob moved by its adding routes, sample by sample (a linear gain).
+    level: [f32; BLOCK],
 }
 
 impl Scratch {
@@ -361,6 +363,7 @@ impl Scratch {
             smooth: [[0.0; BLOCK]; 7],
             lanes: vec![[[0.0; BLOCK]; 2]; buffers.max(crate::chain::RAW_BUFFERS)],
             src: [[0.0; BLOCK]; MAX_SOURCES],
+            level: [0.0; BLOCK],
         })
     }
 }
@@ -410,6 +413,8 @@ pub struct ShapeVoice {
     level_envs: [bool; MAX_ENVS],
     /// Whether each of Gain, Level, Sub level (per oscillator) and Volume has routes.
     routed: [bool; 7],
+    /// Whether each of them has adding routes (from modulators other than envelopes).
+    offsets: [bool; 7],
     /// Whether each oscillator runs: it is on, or the other's layers tap it.
     plays: [bool; 2],
     scratch: Box<Scratch>,
@@ -512,8 +517,10 @@ impl ShapeVoice {
         let anything = Arc::new(Target::Anything);
         let mut level_envs = [false; MAX_ENVS];
         let mut routed = [false; 7];
+        let mut offsets = [false; 7];
         for (r, &target) in SMOOTHED.iter().enumerate() {
             routed[r] = spec.matrix.reaches(target as u16);
+            offsets[r] = spec.matrix.adds(target as u16);
         }
         // An envelope that scales any level decides when the note is over.
         for &target in &SMOOTHED {
@@ -546,6 +553,7 @@ impl ShapeVoice {
             pans: std::array::from_fn(|_| Smoother::new(Smoother::KNOB_MS)),
             level_envs,
             routed,
+            offsets,
             plays: std::array::from_fn(|o| spec.osc[o].on || spec.chain.raw_needed[o]),
             scratch: Scratch::new(spec.chain.buffers()),
             leaving: 1.0,
@@ -1467,10 +1475,17 @@ impl ShapeVoice {
                 continue;
             }
             let at = |key: usize| moved[k::osc(o, key)];
-            // Gain: the shape's smoothed knob, scaled by its routes sample by sample.
+            // Gain: the shape's smoothed knob, moved by its adding routes and scaled by its
+            // envelopes sample by sample.
             let (g_place, s_place) = (k::osc(o, k::GAIN), k::osc(o, k::SUB_LEVEL));
+            let g = if self.offsets[3 * o] {
+                offset_by_routes(&self.spec.matrix, &sc.src, g_place, &sc.smooth[3 * o], &mut sc.level);
+                &sc.level
+            } else {
+                &sc.smooth[3 * o]
+            };
             for s in 0..BLOCK {
-                sc.gain[s] = sc.smooth[3 * o][s] * sc.fade[s];
+                sc.gain[s] = g[s] * sc.fade[s];
             }
             if self.routed[3 * o] {
                 scale_by_routes(&self.spec.matrix, &sc.src, g_place, &mut sc.gain);
@@ -1512,8 +1527,14 @@ impl ShapeVoice {
                     let wave = if spec.sub == SubWave::Sine { SubWaveId::Sine } else { SubWaveId::Square };
                     let octave = if spec.sub_octave == SubOctave::Two { 2 } else { 1 };
                     n.sub[o].set(freq, wave, octave, 1.0);
+                    let sub = if self.offsets[3 * o + 2] {
+                        offset_by_routes(&self.spec.matrix, &sc.src, s_place, &sc.smooth[3 * o + 2], &mut sc.level);
+                        &sc.level
+                    } else {
+                        &sc.smooth[3 * o + 2]
+                    };
                     for s in 0..BLOCK {
-                        sc.sub_gain[s] = sc.gain[s] * sc.smooth[3 * o + 2][s];
+                        sc.sub_gain[s] = sc.gain[s] * sub[s];
                     }
                     if self.routed[3 * o + 2] {
                         scale_by_routes(&self.spec.matrix, &sc.src, s_place, &mut sc.sub_gain);
@@ -1531,6 +1552,9 @@ impl ShapeVoice {
             // Level and the oscillator's pan.
             let (pl, pr) = pan_gains(self.pans[o].value());
             let mut lv = sc.smooth[3 * o + 1];
+            if self.offsets[3 * o + 1] {
+                offset_by_routes(&self.spec.matrix, &sc.src, k::osc(o, k::LEVEL), &sc.smooth[3 * o + 1], &mut lv);
+            }
             if self.routed[3 * o + 1] {
                 scale_by_routes(&self.spec.matrix, &sc.src, k::osc(o, k::LEVEL), &mut lv);
             }
@@ -1544,6 +1568,9 @@ impl ShapeVoice {
         let follow = (moved[k::FOLLOW_HIT] / 100.0).clamp(0.0, 1.0);
         let (ol, or) = pan_gains(self.pans[2].value() + follow * n.across);
         let mut vol = sc.smooth[6];
+        if self.offsets[6] {
+            offset_by_routes(&self.spec.matrix, &sc.src, k::VOLUME, &sc.smooth[6], &mut vol);
+        }
         if self.routed[6] {
             scale_by_routes(&self.spec.matrix, &sc.src, k::VOLUME, &mut vol);
         }
@@ -1603,6 +1630,43 @@ pub(crate) fn env_params_of(kv: &[f32], e: usize) -> EnvParams {
 
 pub(crate) fn params_velocity(now: &Values, e: usize) -> f32 {
     (now[k::env(e, k::VELOCITY)] / 100.0).clamp(0.0, 1.0)
+}
+
+/// The level knob at `target` sample by sample into `out`: `smooth` (its smoothed gain) back in
+/// dB, moved by the knob's adding routes (their sources read from `src`, a source past the last
+/// reading 0), stopped at the knob's ends and made a gain again, the bottom being silence.
+fn offset_by_routes(
+    matrix: &ModMatrix,
+    src: &[[f32; BLOCK]; MAX_SOURCES],
+    target: usize,
+    smooth: &[f32; BLOCK],
+    out: &mut [f32; BLOCK],
+) {
+    let Some((lo, hi)) = matrix.range_of(target as u16) else {
+        *out = *smooth;
+        return;
+    };
+    let to_db = |g: f32| if g <= 0.0 { SILENT_DB } else { (20.0 * g.log10()).max(SILENT_DB) };
+    // A knob at rest (the usual case) needs one logarithm, not one a sample.
+    if smooth.iter().all(|g| *g == smooth[0]) {
+        out.fill(to_db(smooth[0]));
+    } else {
+        for (o, g) in out.iter_mut().zip(smooth) {
+            *o = to_db(*g);
+        }
+    }
+    for (source, depth, bipolar, invert) in matrix.adding(target as u16) {
+        let buf = src.get(source as usize);
+        for (s, o) in out.iter_mut().enumerate() {
+            let v = buf.map_or(0.0, |b| b[s]);
+            let m = if invert { 1.0 - v } else { v };
+            let m = if bipolar { 2.0 * m - 1.0 } else { m };
+            *o += depth * m;
+        }
+    }
+    for o in out.iter_mut() {
+        *o = knob_gain(o.clamp(lo, hi));
+    }
 }
 
 /// Scales `out` by every scaling route on the knob at `target`, sample by sample, its sources

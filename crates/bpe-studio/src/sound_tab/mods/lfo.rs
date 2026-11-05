@@ -61,7 +61,7 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx, layer: LayerId) {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 if !sync {
-                    cx.log_knob(ui, &key("rate_hz"), "Rate", &hz);
+                    cx.knob(ui, &key("rate_hz"), "Rate", &hz);
                 }
                 cx.knob(ui, &key("phase"), "Phase", &degrees);
                 cx.knob(ui, &key("fade_in"), "Fade in", &seconds);
