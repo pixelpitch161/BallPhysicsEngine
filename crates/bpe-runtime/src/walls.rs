@@ -1,4 +1,4 @@
-//! Closed walls (rings, polygons, boxes and free outlines) and how a ball meets them.
+//! Closed walls (rings, polygons, boxes, ellipses and free outlines) and how a ball meets them.
 //!
 //! Balls meet a wall from either side. [`keep_clear`] moves a ball back to its own side and
 //! reports the contact, and the mover's Bounce module decides what the velocity does with
@@ -15,7 +15,8 @@ use glam::Vec2;
 /// The most corners a ring polygon can have.
 pub const MAX_SIDES: usize = 64;
 
-/// A closed outline: a ring or regular polygon, a box, or a free outline of straight pieces.
+/// A closed outline: a ring or regular polygon, a box, an ellipse, or a free outline of straight
+/// pieces.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Outline {
     Ring {
@@ -34,6 +35,14 @@ pub enum Outline {
         angle: f32,
         thickness: f32,
     },
+    /// An exact ellipse: semi-axes `half` (along its own x and y before it turns), turned by
+    /// `angle` around `center`.
+    Ellipse {
+        center: Vec2,
+        half: Vec2,
+        angle: f32,
+        thickness: f32,
+    },
     /// A free outline: `points` (a closed list, in shape units: the shape's own frame before it
     /// turns, with its middle at 0) scaled by `scale`, turned by `angle` and placed at `center`.
     Path {
@@ -44,6 +53,20 @@ pub enum Outline {
         thickness: f32,
     },
 }
+
+/// How a ball meets walls.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Touch {
+    /// When its edge meets the wall's band.
+    #[default]
+    Edge,
+    /// When its centre meets the outline's centre line: its size and the band are left out, so
+    /// it bounces exactly on the outline.
+    Middle,
+}
+
+/// How far from the centre line a ball touching with its middle is kept, in pixels.
+pub const MIDDLE_GAP: f32 = 0.01;
 
 /// A wall that balls bounce off.
 #[derive(Clone, Debug, PartialEq)]
@@ -112,6 +135,11 @@ impl Outline {
                 let local = d * scale;
                 center + dir(angle) * local.x + dir(angle).perp() * local.y
             }
+            &Outline::Ellipse { center, half, angle, .. } => {
+                let d = dir(u);
+                let along = 1.0 / ((d.x / half.x.max(1e-6)).powi(2) + (d.y / half.y.max(1e-6)).powi(2)).sqrt();
+                center + Vec2::from_angle(angle).rotate(d * along)
+            }
             Outline::Path { center, angle, scale, points, .. } => {
                 let d = dir(u);
                 let mut far: f32 = 0.0;
@@ -137,22 +165,29 @@ impl Outline {
 
     pub fn center(&self) -> Vec2 {
         match self {
-            Outline::Ring { center, .. } | Outline::Box { center, .. } | Outline::Path { center, .. } => *center,
+            Outline::Ring { center, .. }
+            | Outline::Box { center, .. }
+            | Outline::Ellipse { center, .. }
+            | Outline::Path { center, .. } => *center,
         }
     }
 
     pub fn thickness(&self) -> f32 {
         match self {
-            Outline::Ring { thickness, .. } | Outline::Box { thickness, .. } | Outline::Path { thickness, .. } => {
-                *thickness
-            }
+            Outline::Ring { thickness, .. }
+            | Outline::Box { thickness, .. }
+            | Outline::Ellipse { thickness, .. }
+            | Outline::Path { thickness, .. } => *thickness,
         }
     }
 
     /// Radians clockwise from +x that the outline is turned.
     pub fn angle(&self) -> f32 {
         match self {
-            Outline::Ring { angle, .. } | Outline::Box { angle, .. } | Outline::Path { angle, .. } => *angle,
+            Outline::Ring { angle, .. }
+            | Outline::Box { angle, .. }
+            | Outline::Ellipse { angle, .. }
+            | Outline::Path { angle, .. } => *angle,
         }
     }
 
@@ -161,14 +196,15 @@ impl Outline {
         match self {
             Outline::Ring { radius, .. } => *radius,
             Outline::Box { half, .. } => half.length(),
+            Outline::Ellipse { half, .. } => half.x.max(half.y),
             Outline::Path { scale, points, .. } => {
                 points.iter().map(|p| p.length_squared()).fold(0.0, f32::max).sqrt() * *scale
             }
         }
     }
 
-    /// A polygon's or box's corners in the world, in order around it; empty for a round ring or
-    /// a free outline.
+    /// A polygon's or box's corners in the world, in order around it; empty for a round ring, an
+    /// ellipse or a free outline.
     pub fn corners(&self) -> Vec<Vec2> {
         let mut buf = [Vec2::ZERO; MAX_SIDES];
         let n = self.corners_into(&mut buf);
@@ -217,9 +253,24 @@ impl Outline {
                 let offset = p - center;
                 offset.dot(dir(angle)).abs() < half.x && offset.dot(dir(angle).perp()).abs() < half.y
             }
+            &Outline::Ellipse { center, half, angle, .. } => ellipse_level(half, own(center, angle, p)) < 1.0,
             Outline::Path { center, angle, scale, points, .. } => {
                 inside_polygon(points, Self::to_shape(*center, *angle, *scale, p))
             }
+        }
+    }
+
+    /// Whether `p` is surely at least `limit` from the centre line and on the side `inside` says,
+    /// known cheaply without finding the nearest point (only an ellipse can tell; the rest say
+    /// no). An ellipse's level `g = sqrt((x/a)² + (y/b)²)` changes by at most `1 / min(a, b)` per
+    /// pixel, so a point at level `g` is at least `|1 − g| · min(a, b)` from the outline.
+    fn clear_by(&self, p: Vec2, limit: f32, inside: bool) -> bool {
+        match *self {
+            Outline::Ellipse { center, half, angle, .. } => {
+                let g = ellipse_level(half, own(center, angle, p));
+                (g < 1.0) == inside && (1.0 - g).abs() * half.x.min(half.y) >= limit
+            }
+            _ => false,
         }
     }
 
@@ -237,6 +288,15 @@ impl Outline {
                 let d = (p - center).try_normalize().unwrap_or(dir(angle));
                 (center + d * radius, d)
             }
+            &Outline::Ellipse { center, half, angle, .. } => {
+                let local = own(center, angle, p);
+                let q = nearest_on_ellipse(half, local);
+                let line = Vec2::new(q.x / (half.x * half.x).max(1e-12), q.y / (half.y * half.y).max(1e-12))
+                    .try_normalize()
+                    .unwrap_or(Vec2::X);
+                let turn = Vec2::from_angle(angle);
+                (center + turn.rotate(q), turn.rotate(line))
+            }
             Outline::Path { center, angle, scale, points, .. } => {
                 let (q, n) = nearest_on_polygon(points, Self::to_shape(*center, *angle, *scale, p));
                 let turn = Vec2::from_angle(*angle);
@@ -249,6 +309,83 @@ impl Outline {
             }
         }
     }
+}
+
+/// `p` in a turned outline's own frame: from its centre, turned back by its angle.
+fn own(center: Vec2, angle: f32, p: Vec2) -> Vec2 {
+    Vec2::from_angle(-angle).rotate(p - center)
+}
+
+/// How far out `p` (in the ellipse's own frame) is: 1 on the outline, below 1 inside.
+fn ellipse_level(half: Vec2, p: Vec2) -> f32 {
+    ((p.x / half.x.max(1e-6)).powi(2) + (p.y / half.y.max(1e-6)).powi(2)).sqrt()
+}
+
+/// The nearest point to `p` on the ellipse with semi-axes `half`, both in the ellipse's own frame
+/// (its middle at 0, not turned). Exact: Eberly's robust method, the root found by bisection in
+/// f64 (at most 64 halvings); points on an axis take their own closed forms, and a circle
+/// (`half.x == half.y`) the ring's maths.
+pub fn nearest_on_ellipse(half: Vec2, p: Vec2) -> Vec2 {
+    if half.x == half.y {
+        let d = p.try_normalize().unwrap_or(Vec2::X);
+        return d * half.x;
+    }
+    // The first quadrant, the longer axis first.
+    let swap = half.y > half.x;
+    let (e0, e1) = if swap { (half.y, half.x) } else { (half.x, half.y) };
+    let (q0, q1) = if swap { (p.y, p.x) } else { (p.x, p.y) };
+    let (e0, e1) = (f64::from(e0.max(1e-6)), f64::from(e1.max(1e-6)));
+    let (y0, y1) = (f64::from(q0.abs()), f64::from(q1.abs()));
+    let (x0, x1) = if y1 > 0.0 {
+        if y0 > 0.0 {
+            let (z0, z1) = (y0 / e0, y1 / e1);
+            let g = z0 * z0 + z1 * z1 - 1.0;
+            if g != 0.0 {
+                let r0 = (e0 / e1) * (e0 / e1);
+                let s = ellipse_root(r0, z0, z1, g);
+                (r0 * y0 / (s + r0), y1 / (s + 1.0))
+            } else {
+                (y0, y1)
+            }
+        } else {
+            (0.0, e1)
+        }
+    } else {
+        let (n0, d0) = (e0 * y0, e0 * e0 - e1 * e1);
+        if n0 < d0 {
+            let xd = n0 / d0;
+            (e0 * xd, e1 * (1.0 - xd * xd).max(0.0).sqrt())
+        } else {
+            (e0, 0.0)
+        }
+    };
+    let (x0, x1) = ((x0 as f32).copysign(q0), (x1 as f32).copysign(q1));
+    if swap { Vec2::new(x1, x0) } else { Vec2::new(x0, x1) }
+}
+
+/// The root `s` of `(n0 / (s + r0))² + (z1 / (s + 1))² − 1` by bisection (see
+/// [`nearest_on_ellipse`]): `g` is its value at 0.
+fn ellipse_root(r0: f64, z0: f64, z1: f64, g: f64) -> f64 {
+    let n0 = r0 * z0;
+    let mut s0 = z1 - 1.0;
+    let mut s1 = if g < 0.0 { 0.0 } else { n0.hypot(z1) - 1.0 };
+    let mut s = 0.0;
+    for _ in 0..64 {
+        s = (s0 + s1) * 0.5;
+        if s == s0 || s == s1 {
+            break;
+        }
+        let (a, b) = (n0 / (s + r0), z1 / (s + 1.0));
+        let g = a * a + b * b - 1.0;
+        if g > 0.0 {
+            s0 = s;
+        } else if g < 0.0 {
+            s1 = s;
+        } else {
+            break;
+        }
+    }
+    s
 }
 
 /// Velocity of a wall point that turns at `spin` rad/s and scales at `growth` per second
@@ -276,12 +413,13 @@ fn contact(position: Vec2, velocity: Vec2, radius: f32, outward: Vec2, wall: &Wa
 // Inlined so a loop over every ball works out a box's or polygon's directions only once.
 #[inline(always)]
 pub fn keep_clear(position: &mut Vec2, previous: Vec2, velocity: Vec2, radius: f32, wall: &Wall) -> Option<Contact> {
-    keep_clear_from(position, previous, &wall.outline, velocity, radius, wall)
+    keep_clear_from(position, previous, &wall.outline, velocity, radius, Touch::Edge, wall)
 }
 
 /// [`keep_clear`], judging the ball's side by where `previous` was against `before`: the wall's
 /// outline as the step began, before keys and scripts moved it. A wall that jumps smaller keeps
-/// the balls that were inside it.
+/// the balls that were inside it. With [`Touch::Middle`] the ball's centre is kept on its side of
+/// the outline's centre line itself, its size and the band left out.
 #[inline(always)]
 pub fn keep_clear_from(
     position: &mut Vec2,
@@ -289,19 +427,71 @@ pub fn keep_clear_from(
     before: &Outline,
     velocity: Vec2,
     radius: f32,
+    touch: Touch,
     wall: &Wall,
 ) -> Option<Contact> {
+    let (radius, band) = match touch {
+        Touch::Edge => (radius, wall.outline.thickness() * 0.5),
+        // A hair's breadth on its own side, so the next step still knows which side that is.
+        Touch::Middle => (MIDDLE_GAP, 0.0),
+    };
     if !wall.solid && before.inside(previous) {
         match &wall.outline {
-            Outline::Path { thickness, .. } => {
-                keep_on_side(position, velocity, radius, radius + thickness * 0.5, true, wall)
+            Outline::Path { .. } | Outline::Ellipse { .. } => {
+                keep_on_side(position, velocity, radius, radius + band, true, wall)
             }
-            _ => keep_inside_exact(position, velocity, radius, wall),
+            _ => keep_inside_exact(position, velocity, radius, band, wall),
         }
     } else {
-        let limit = if wall.solid { radius } else { radius + wall.outline.thickness() * 0.5 };
+        let limit = if wall.solid { radius } else { radius + band };
         keep_on_side(position, velocity, radius, limit, false, wall)
     }
+}
+
+/// Where a ball touching with its middle crossed `wall`'s centre line on its way from `start` to
+/// `moved_to` in this substep (found by halving, against the outline as it is now), as the
+/// fraction of the way it had come and the contact there: at the outline's own nearest point,
+/// with its normal into the ball's side (the outline's own, which stays true however close to the
+/// line the ball is). A ball that ended the substep still on its own side, a hair's breadth from
+/// the line, touched at the end. `None` when `start` wasn't on its own side or it wasn't moving
+/// into the wall there.
+pub fn middle_crossing(
+    start: Vec2,
+    moved_to: Vec2,
+    previous: Vec2,
+    before: &Outline,
+    velocity: Vec2,
+    wall: &Wall,
+) -> Option<(Contact, f32)> {
+    let inside = !wall.solid && before.inside(previous);
+    let own = |p: Vec2| wall.outline.inside(p) == inside;
+    if !own(start) {
+        return None;
+    }
+    // Still on its own side but within a hair's breadth of the line: it touched at the end.
+    let ended_on_own_side = own(moved_to);
+    let (mut lo, mut hi) = if ended_on_own_side { (1.0f32, 1.0f32) } else { (0.0f32, 1.0f32) };
+    for _ in 0..if ended_on_own_side { 0 } else { 24 } {
+        let mid = (lo + hi) * 0.5;
+        if own(start.lerp(moved_to, mid)) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let within = (lo + hi) * 0.5;
+    let (point, line) = wall.outline.nearest_and_line(start.lerp(moved_to, within));
+    let normal = if (start - point).dot(line) >= 0.0 { line } else { -line };
+    let wall_velocity = wall.velocity + wall_velocity(point, wall.outline.center(), wall.spin, wall.growth);
+    let speed = (velocity - wall_velocity).dot(-normal);
+    (speed > 0.0).then_some((Contact { point, normal, speed, wall_velocity }, within))
+}
+
+/// Whether `p` is on the side of `wall` a ball whose centre was at `previous` belongs on, judged
+/// as [`keep_clear_from`] judges it against `before`.
+pub fn on_own_side(p: Vec2, previous: Vec2, before: &Outline, wall: &Wall) -> bool {
+    let inside = !wall.solid && before.inside(previous);
+    wall.outline.inside(p) == inside
 }
 
 /// Keeps the ball's centre at least `limit` from the centre line on one side of it: inside when
@@ -320,6 +510,9 @@ fn keep_on_side(
     const SETTLED: f32 = 1e-3;
     // A ball outside and further than the outline reaches is nowhere near it.
     if !inside && (*position - wall.outline.center()).length() > wall.outline.reach() + limit {
+        return None;
+    }
+    if wall.outline.clear_by(*position, limit, inside) {
         return None;
     }
     let mut p = *position;
@@ -362,11 +555,13 @@ fn keep_on_side(
     contact(p, velocity, radius, -side, wall)
 }
 
-/// Today's closed-arena collision: moves a ball inside a hollow ring or box back inside.
+/// Today's closed-arena collision: moves a ball inside a hollow ring or box back inside. `band` is
+/// half the band's thickness (0 for a ball that touches with its middle).
 #[inline(always)]
-fn keep_inside_exact(position: &mut Vec2, velocity: Vec2, radius: f32, wall: &Wall) -> Option<Contact> {
+fn keep_inside_exact(position: &mut Vec2, velocity: Vec2, radius: f32, band: f32, wall: &Wall) -> Option<Contact> {
+    let thickness = band * 2.0;
     match wall.outline {
-        Outline::Ring { center, radius: wall_radius, sides: 0, thickness, .. } => {
+        Outline::Ring { center, radius: wall_radius, sides: 0, .. } => {
             let inner = wall_radius - thickness * 0.5 - radius;
             if inner <= 0.0 {
                 // The ball doesn't fit: it sits at the centre with no wall to bounce off.
@@ -382,18 +577,18 @@ fn keep_inside_exact(position: &mut Vec2, velocity: Vec2, radius: f32, wall: &Wa
             *position = center + outward * inner;
             contact(*position, velocity, radius, outward, wall)
         }
-        Outline::Ring { center, radius: wall_radius, sides, angle, thickness } => {
+        Outline::Ring { center, radius: wall_radius, sides, angle, .. } => {
             let apothem = wall_radius * (PI / sides as f32).cos();
             let planes = (0..sides).map(|i| (dir(angle + TAU * i as f32 / sides as f32), apothem));
             keep_inside_planes(position, velocity, radius, center, planes, thickness, wall)
         }
-        Outline::Box { center, half, angle, thickness } => {
+        Outline::Box { center, half, angle, .. } => {
             let (x, y) = (dir(angle), dir(angle).perp());
             let planes = [(x, half.x), (-x, half.x), (y, half.y), (-y, half.y)];
             keep_inside_planes(position, velocity, radius, center, planes.into_iter(), thickness, wall)
         }
-        // Free outlines go through `keep_on_side`.
-        Outline::Path { .. } => None,
+        // Free outlines and ellipses go through `keep_on_side`.
+        Outline::Path { .. } | Outline::Ellipse { .. } => None,
     }
 }
 
@@ -510,6 +705,7 @@ mod tests {
             Outline::Ring { center: Vec2::ZERO, radius: 100.0, sides: 6, angle: 0.3, thickness: 2.0 },
             Outline::Box { center: Vec2::ZERO, half: Vec2::new(100.0, 60.0), angle: 0.2, thickness: 2.0 },
             Outline::Path { center: Vec2::ZERO, angle: 0.2, scale: 100.0, points: l_shape().into(), thickness: 2.0 },
+            Outline::Ellipse { center: Vec2::ZERO, half: Vec2::new(100.0, 40.0), angle: 0.4, thickness: 2.0 },
         ] {
             let wall = hollow(outline.clone());
             let mut p = Vec2::new(900.0, 700.0);
@@ -725,6 +921,7 @@ mod tests {
             Outline::Ring { center: Vec2::new(3.0, 4.0), radius: 80.0, sides: 7, angle: 0.3, thickness: 2.0 },
             Outline::Box { center: Vec2::new(3.0, 4.0), half: Vec2::new(80.0, 30.0), angle: 0.7, thickness: 2.0 },
             path(l_shape(), 70.0, -0.6, 2.0),
+            Outline::Ellipse { center: Vec2::new(3.0, 4.0), half: Vec2::new(90.0, 35.0), angle: 0.5, thickness: 2.0 },
         ];
         let mut seed = 12345u32;
         let mut rand = || {
@@ -751,6 +948,173 @@ mod tests {
                 assert!((n.length() - 1.0).abs() < 1e-4);
                 assert!((p - q).dot(n) >= -1e-3);
             }
+        }
+    }
+
+    fn ellipse(half: Vec2, angle: f32) -> Outline {
+        Outline::Ellipse { center: Vec2::new(-30.0, 20.0), half, angle, thickness: 4.0 }
+    }
+
+    /// The ellipse traced at `n` points, in the world.
+    fn traced(o: &Outline, n: usize) -> Vec<Vec2> {
+        let &Outline::Ellipse { center, half, angle, .. } = o else { unreachable!() };
+        (0..n)
+            .map(|k| {
+                let t = k as f32 / n as f32 * TAU;
+                center + Vec2::from_angle(angle).rotate(Vec2::new(half.x * t.cos(), half.y * t.sin()))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn nearest_on_an_ellipse_agrees_with_brute_force() {
+        let mut seed = 777u32;
+        let mut rand = |range: f32| {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            ((seed >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0) * range
+        };
+        for half in [Vec2::new(300.0, 150.0), Vec2::new(150.0, 300.0), Vec2::new(500.0, 40.0), Vec2::new(200.0, 199.0)]
+        {
+            for angle in [0.0, 0.7] {
+                let o = ellipse(half, angle);
+                let trace = traced(&o, 100_000);
+                for _ in 0..200 {
+                    let p = o.center() + Vec2::new(rand(half.x * 1.6), rand(half.y * 1.6));
+                    let (q, n) = o.nearest(p);
+                    let brute = trace.iter().map(|t| (*t - p).length()).fold(f32::INFINITY, f32::min);
+                    let got = (q - p).length();
+                    assert!((got - brute).abs() < 0.05, "{half} {angle} at {p}: {got} vs {brute}");
+                    assert!(got <= brute + 1e-3, "{half} {angle} at {p}: {got} vs {brute}");
+                    let local = own(o.center(), angle, q);
+                    assert!((ellipse_level(half, local) - 1.0).abs() < 1e-4, "{q} is not on it");
+                    assert!((n.length() - 1.0).abs() < 1e-4 && (p - q).dot(n) >= -1e-3);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn nearest_on_an_axis_is_exact() {
+        let half = Vec2::new(300.0, 100.0);
+        // The middle: the nearer end of the short axis.
+        let q = nearest_on_ellipse(half, Vec2::ZERO);
+        assert!(q.x == 0.0 && q.y.abs() == 100.0, "{q}");
+        // On the long axis inside, past where the nearest point leaves the axis (a − b²/a).
+        assert_eq!(nearest_on_ellipse(half, Vec2::new(290.0, 0.0)), Vec2::new(300.0, 0.0));
+        assert_eq!(nearest_on_ellipse(half, Vec2::new(-295.0, 0.0)), Vec2::new(-300.0, 0.0));
+        // Nearer the middle the nearest point is off the axis, the same distance either side.
+        let q = nearest_on_ellipse(half, Vec2::new(100.0, 0.0));
+        assert!(q.y.abs() > 1.0 && (ellipse_level(half, q) - 1.0).abs() < 1e-5, "{q}");
+        // On the short axis, inside or out, and on the long one outside: the axis ends.
+        assert_eq!(nearest_on_ellipse(half, Vec2::new(0.0, 40.0)), Vec2::new(0.0, 100.0));
+        assert_eq!(nearest_on_ellipse(half, Vec2::new(0.0, -400.0)), Vec2::new(0.0, -100.0));
+        assert_eq!(nearest_on_ellipse(half, Vec2::new(500.0, 0.0)), Vec2::new(300.0, 0.0));
+        // Upright (the long axis down y) works the same way round.
+        assert_eq!(nearest_on_ellipse(Vec2::new(100.0, 300.0), Vec2::new(0.0, 290.0)), Vec2::new(0.0, 300.0));
+    }
+
+    #[test]
+    fn a_circle_ellipse_matches_the_ring() {
+        let r = 120.0;
+        for p in [Vec2::new(30.0, -50.0), Vec2::new(200.0, 1.0), Vec2::new(-0.5, 0.25), Vec2::ZERO] {
+            let q = nearest_on_ellipse(Vec2::splat(r), p);
+            assert_eq!(q, p.try_normalize().unwrap_or(Vec2::X) * r, "{p}");
+        }
+        let ring = Outline::Ring { center: Vec2::new(5.0, 6.0), radius: r, sides: 0, angle: 0.0, thickness: 2.0 };
+        let round = Outline::Ellipse { center: Vec2::new(5.0, 6.0), half: Vec2::splat(r), angle: 0.0, thickness: 2.0 };
+        for p in [Vec2::new(30.0, -50.0), Vec2::new(200.0, 1.0)] {
+            assert_eq!(ring.nearest(p), round.nearest(p), "{p}");
+            assert_eq!(ring.inside(p), round.inside(p));
+        }
+    }
+
+    #[test]
+    fn a_ball_bounces_inside_and_outside_an_ellipse() {
+        let o = Outline::Ellipse { center: Vec2::ZERO, half: Vec2::new(300.0, 150.0), angle: 0.0, thickness: 4.0 };
+        let wall = hollow(o);
+        // Inside, moving down into the bottom.
+        let mut p = Vec2::new(0.0, 148.0);
+        let c = keep_clear(&mut p, Vec2::ZERO, Vec2::new(0.0, 100.0), 5.0, &wall).expect("hit");
+        assert!((p - Vec2::new(0.0, 143.0)).length() < 1e-3, "{p}");
+        assert!((c.normal - Vec2::new(0.0, -1.0)).length() < 1e-4 && (c.speed - 100.0).abs() < 1e-3, "{c:?}");
+        assert!((c.point - Vec2::new(0.0, 148.0)).length() < 1e-3);
+        // Outside, moving up into it.
+        let mut q = Vec2::new(0.0, 152.0);
+        keep_clear(&mut q, Vec2::new(0.0, 200.0), Vec2::new(0.0, -100.0), 5.0, &wall).expect("hit");
+        assert!((q - Vec2::new(0.0, 157.0)).length() < 1e-3, "{q}");
+        // Far inside and far outside: left alone.
+        for at in [Vec2::new(10.0, 10.0), Vec2::new(0.0, 400.0)] {
+            let mut r = at;
+            assert!(keep_clear(&mut r, at, Vec2::new(0.0, 100.0), 5.0, &wall).is_none());
+            assert_eq!(r, at);
+        }
+        // Solid: a ball starting inside is pushed out of the nearest edge (the bottom).
+        let filled = Outline::Ellipse { center: Vec2::ZERO, half: Vec2::new(300.0, 150.0), angle: 0.0, thickness: 0.0 };
+        let solid = Wall { solid: true, ..hollow(filled) };
+        let mut s = Vec2::new(0.0, 120.0);
+        let at = s;
+        keep_clear(&mut s, at, Vec2::ZERO, 5.0, &solid);
+        assert!((s - Vec2::new(0.0, 155.0)).length() < 1e-3, "{s}");
+    }
+
+    #[test]
+    fn a_very_flat_ellipse_keeps_balls_inside() {
+        let wall =
+            hollow(Outline::Ellipse { center: Vec2::ZERO, half: Vec2::new(1000.0, 1.0), angle: 0.3, thickness: 0.2 });
+        let mut seed = 99u32;
+        let mut rand = || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0
+        };
+        for _ in 0..1000 {
+            let start = Vec2::from_angle(0.3).rotate(Vec2::new(rand() * 900.0, rand() * 0.2));
+            assert!(wall.outline.inside(start));
+            let mut p = start + Vec2::new(rand(), rand()) * 5.0;
+            keep_clear(&mut p, start, Vec2::new(rand(), rand()) * 300.0, 0.3, &wall);
+            assert!(p.is_finite() && wall.outline.inside(p), "{start} left the ball at {p}");
+        }
+    }
+
+    #[test]
+    fn an_ellipse_point_is_on_it_in_its_direction() {
+        let o = ellipse(Vec2::new(300.0, 100.0), 0.5);
+        for u in [0.0, 0.7, 2.0, 4.0, 5.5] {
+            let rim = o.point(u);
+            let out = rim - o.center();
+            assert!((out.normalize() - dir(0.5 + u)).length() < 1e-4, "u {u}");
+            assert!(!o.inside(rim + out * 0.01) && o.inside(rim - out * 0.01), "u {u}: {rim}");
+        }
+        assert_eq!((o.reach(), o.corners().len(), o.angle(), o.thickness()), (300.0, 0, 0.5, 4.0));
+    }
+
+    #[test]
+    fn a_middle_ball_touches_with_its_centre() {
+        let wall = hollow(Outline::Ring { center: Vec2::ZERO, radius: 100.0, sides: 0, angle: 0.0, thickness: 10.0 });
+        let mut p = Vec2::new(101.0, 0.0);
+        let c = keep_clear_from(&mut p, Vec2::ZERO, &wall.outline, Vec2::new(50.0, 0.0), 20.0, Touch::Middle, &wall)
+            .expect("hit");
+        assert!((p - Vec2::new(100.0 - MIDDLE_GAP, 0.0)).length() < 1e-4, "{p}");
+        assert!(
+            (c.point - Vec2::new(100.0, 0.0)).length() < 1e-4 && (c.normal - Vec2::new(-1.0, 0.0)).length() < 1e-4,
+            "{c:?}"
+        );
+        // The same for every form: a ball just past the line comes back onto it.
+        for outline in [
+            Outline::Box { center: Vec2::ZERO, half: Vec2::new(100.0, 60.0), angle: 0.0, thickness: 10.0 },
+            Outline::Ellipse { center: Vec2::ZERO, half: Vec2::new(100.0, 60.0), angle: 0.0, thickness: 10.0 },
+            path(l_shape(), 100.0, 0.0, 10.0),
+        ] {
+            let wall = hollow(outline);
+            let at = wall.outline.center() + Vec2::new(-40.0, 0.0);
+            let mut p = Vec2::new(-101.0, wall.outline.center().y);
+            let mut q = p;
+            keep_clear_from(&mut p, at, &wall.outline, Vec2::new(-50.0, 0.0), 20.0, Touch::Middle, &wall);
+            let (near, _) = wall.outline.nearest(q);
+            assert!(((p - near).length() - MIDDLE_GAP).abs() < 1e-3, "{:?}: {p} vs {near}", wall.outline);
+            assert!(wall.outline.inside(p), "still inside, a hair's breadth in: {p}");
+            // An Edge ball the same size stays a ball and half a band inside.
+            keep_clear_from(&mut q, at, &wall.outline, Vec2::new(-50.0, 0.0), 20.0, Touch::Edge, &wall);
+            assert!(((q - near).length() - 25.0).abs() < 1e-2, "{:?}: {q}", wall.outline);
         }
     }
 }

@@ -14,3 +14,4 @@ Neon ring	70	46f766d1e8a24787
 Colour paints	1237	bb4e9bb93c15fab4
 Blend modes	185	aa434568516693a3
 Graded sunset	601	42e25326433241b1
+Ellipse focus	397	230c5ef0fe773704

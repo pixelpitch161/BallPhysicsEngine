@@ -103,8 +103,21 @@ impl ShapePath {
     /// The unit circle as 8 curved sides, starting at the top: each side a cubic whose handles are
     /// tangent at the corners, which traces the circle to within 0.01%.
     pub fn circle() -> ShapePath {
-        let n = 8;
-        let handle = 4.0 / 3.0 * (TAU / 32.0).tan();
+        Self::round(8, |p| p)
+    }
+
+    /// The ellipse with half-axes `half` (shape units), turned `turn` radians clockwise, as 16
+    /// curved sides starting at its own top: the circle's curves stretched and turned (a cubic
+    /// stretched is still the stretched curve's cubic), tracing it to within 0.01%.
+    pub fn ellipse(half: Vec2, turn: f32) -> ShapePath {
+        let rot = Vec2::from_angle(turn);
+        Self::round(16, |p| rot.rotate(p * half))
+    }
+
+    /// The unit circle as `n` curved sides from the top, each point put through `place`, which
+    /// must be linear (a stretch and a turn).
+    fn round(n: usize, place: impl Fn(Vec2) -> Vec2) -> ShapePath {
+        let handle = 4.0 / 3.0 * (TAU / (4 * n) as f32).tan();
         let corner = |k: usize| {
             let angle = -FRAC_PI_2 + k as f32 * TAU / n as f32;
             (Vec2::new(angle.cos(), angle.sin()), Vec2::new(-angle.sin(), angle.cos()))
@@ -113,8 +126,8 @@ impl ShapePath {
         for k in 0..n {
             let (p, tangent) = corner(k);
             let (q, next_tangent) = corner((k + 1) % n);
-            path.points.push(a(p));
-            path.bends.push(Some([a(p + tangent * handle), a(q - next_tangent * handle)]));
+            path.points.push(a(place(p)));
+            path.bends.push(Some([a(place(p + tangent * handle)), a(place(q - next_tangent * handle))]));
         }
         path
     }

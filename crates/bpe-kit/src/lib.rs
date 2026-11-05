@@ -21,7 +21,7 @@ use bpe_gfx::Draws;
 use bpe_runtime::Sims;
 
 pub use modules::bounce::sim::{BasicBounceSim, BounceState};
-pub use modules::bounce::{BasicBounce, BasicBounceKind};
+pub use modules::bounce::{BasicBounce, BasicBounceKind, WallTouch};
 pub use modules::look::{BallShape, BasicLook, BasicLookKind, Style};
 pub use modules::motion::sim::{BasicMotionSim, MotionState};
 pub use modules::motion::{BasicMotion, BasicMotionKind};
@@ -340,7 +340,7 @@ mod tests {
         };
         assert_eq!(
             keys_in("Bounce"),
-            sorted(vec!["bounciness", "speed_gain", "no_speed_limit", "top_speed", "friction", "takes_over"])
+            sorted(vec!["bounciness", "speed_gain", "no_speed_limit", "top_speed", "friction", "takes_over", "touch"])
         );
         assert_eq!(keys_in("Growing"), sorted(vec!["grow", "no_size_limit", "max_size", "pops_after"]));
         assert_eq!(keys_in("Other balls"), sorted(vec!["hit_balls", "balls_to_hit"]));

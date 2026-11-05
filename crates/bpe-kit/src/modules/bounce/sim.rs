@@ -2,10 +2,10 @@
 //! and bump into other balls.
 
 use bpe_core::{Params, Settings, Target};
-use bpe_runtime::{Bodies, Contact, Limits, ModuleSim, PairRule, ThingState, reflect, state};
+use bpe_runtime::{Bodies, Contact, Limits, ModuleSim, PairRule, ThingState, Touch, reflect, state};
 use glam::Vec2;
 
-use super::BasicBounce;
+use super::{BasicBounce, WallTouch};
 
 pub struct BasicBounceSim;
 
@@ -95,6 +95,13 @@ impl ModuleSim for BasicBounceSim {
         bodies.radius[item] = r;
     }
 
+    fn touch(&self, st: &dyn ThingState) -> Touch {
+        match state::<BounceState>(st).settings.touch {
+            WallTouch::Edge => Touch::Edge,
+            WallTouch::Middle => Touch::Middle,
+        }
+    }
+
     fn takes_over(&self, st: &dyn ThingState) -> bool {
         state::<BounceState>(st).settings.takes_over
     }
@@ -134,9 +141,66 @@ impl ModuleSim for BasicBounceSim {
 #[cfg(test)]
 mod tests {
     use crate::testing::{BALLS, SHAPE, one_ball_with_bounce};
+    use bpe_core::Settings;
     use bpe_core::{SlotId, Target, Value, resolve};
+    use bpe_runtime::ModuleSim;
     use bpe_runtime::{EventKind, Log, Party, Playback, World};
     use glam::Vec2;
+
+    #[test]
+    fn balls_touch_walls_with_their_edge_unless_set_to_their_middle() {
+        assert_eq!(super::BasicBounce::default().touch, super::WallTouch::Edge);
+        let st = super::BasicBounceSim.prepare(&super::BasicBounce::default().to_params());
+        assert_eq!(super::BasicBounceSim.touch(st.as_ref()), bpe_runtime::Touch::Edge);
+        let middle = super::BasicBounce { touch: super::WallTouch::Middle, ..Default::default() };
+        let st = super::BasicBounceSim.prepare(&middle.to_params());
+        assert_eq!(super::BasicBounceSim.touch(st.as_ref()), bpe_runtime::Touch::Middle);
+    }
+
+    /// Fast balls touching with their middles and bumping into each other under gravity, in a
+    /// hollow box and a hollow ellipse, at speeds up to 3000 px/s for 10 s: none ever leaves.
+    #[test]
+    fn a_middle_ball_never_leaves_a_box_or_an_ellipse() {
+        use crate::ShapeSettings;
+        for shape in [ShapeSettings::rectangle(700.0, 1100.0, 6.0), ShapeSettings::ellipse(700.0, 1100.0, 6.0)] {
+            let (mut scene, _, kit) = crate::testing::scene_with_balls("single", |_| {});
+            scene.things.get_mut(&bpe_core::ThingId::ROOT).unwrap().params.set("gravity", Value::Vec2([0.0, 900.0]));
+            scene.things.get_mut(&SHAPE).unwrap().params = shape.to_params();
+            scene.things.get_mut(&SHAPE).unwrap().transform.position = Vec2::ZERO;
+            let mut balls =
+                crate::BallsSettings { radius: 14.0, velocity: Vec2::new(2900.0, 700.0), ..Default::default() };
+            balls.group = true;
+            balls.shape = crate::things::balls::GroupShape::Scatter;
+            balls.count = 120;
+            balls.area = Vec2::new(450.0, 700.0);
+            balls.launch = crate::things::balls::Launch::Random;
+            balls.vary_speed = 0.9;
+            let thing = scene.things.get_mut(&BALLS).unwrap();
+            thing.params = balls.to_params();
+            thing.transform.position = Vec2::ZERO;
+            let card = scene.card_mut(BALLS, SlotId::Bounce).unwrap();
+            card.params.set("touch", Value::Choice("middle".into()));
+            card.params.set("top_speed", Value::Number(5000.0));
+            // Other balls nudge them about too, under gravity.
+            card.params.set("hit_balls", Value::Bool(true));
+            scene.card_mut(BALLS, SlotId::Motion).unwrap().params.set("gravity_scale", Value::Number(1.0));
+            let resolved = resolve(&scene, &kit.registry);
+            let mut w = World::build(&scene, &resolved, &kit.sims);
+            let mut log = Log::default();
+            for k in 1..=100 {
+                w.advance_to(k as f64 * 0.1, &kit.sims, &mut log);
+                let wall = &w.walls[&SHAPE].outline;
+                for p in &w.bodies[&BALLS].position {
+                    assert!(
+                        p.is_finite() && wall.inside(*p),
+                        "{wall:?}: a ball got out to {p} by {} s",
+                        k as f64 * 0.1
+                    );
+                }
+            }
+            assert!(log.events().iter().filter(|e| e.kind == EventKind::Hit).count() > 100);
+        }
+    }
 
     #[test]
     fn hit_balls_makes_a_block_collide_and_the_log_names_both_balls() {

@@ -340,3 +340,77 @@ fn a_shape_split_by_its_blend_layer_adds_up_to_the_whole_shape() {
         assert!(worst <= 3, "at x {x}: whole {a:?}, split {b:?}");
     }
 }
+
+// ---- Ellipses ----
+
+/// Point `t` (radians) round the ellipse with half-axes `axes` (shape units), turned `angle`
+/// and scaled by `scale` around `at`, and its outward normal, in the world.
+fn on_ellipse(at: Vec2, angle: f32, scale: f32, axes: Vec2, t: f32) -> (Vec2, Vec2) {
+    let turn = Vec2::from_angle(angle);
+    let p = Vec2::new(axes.x * t.cos(), axes.y * t.sin());
+    let n = Vec2::new(p.x / (axes.x * axes.x), p.y / (axes.y * axes.y)).normalize();
+    (at + turn.rotate(p * scale), turn.rotate(n))
+}
+
+#[test]
+fn an_ellipse_draws_on_its_true_outline() {
+    const W: u32 = 1080;
+    const H: u32 = 1920;
+    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+    let band_at = Vec2::new(0.0, -450.0);
+    let solid_at = Vec2::new(0.0, 500.0);
+    let layered_at = Vec2::new(-260.0, 120.0);
+    let (band_axes, solid_axes) = (Vec2::new(1.0, 0.5), Vec2::new(0.6, 1.0));
+    frame.push_ellipse(band_at, 0.4, 400.0, 2.0, band_axes, WHITE, 2.0);
+    frame.push_ellipse(solid_at, -0.3, 300.0, 0.0, solid_axes, WHITE, 3.0);
+    // The same band wearing records: its body, then an own green line 6 px wide inside the edge.
+    let i = frame.push_ellipse(layered_at, 0.0, 200.0, 0.0, Vec2::new(1.0, 0.45), WHITE, 4.0);
+    let line = LayerGpu {
+        head: [LayerGpu::OUTLINE, 0, 0, 0],
+        amount: [1.0, 0.0, 0.0, 0.0],
+        p0: [6.0, 0.0, 0.0, 0.0],
+        colour: GREEN,
+        ..LayerGpu::ZERO
+    };
+    wear(&mut frame, i, vec![body_record(), paint_record(RED), line], 0.0);
+    assert!(frame.path_points.is_empty(), "an ellipse names no points");
+    let Some(pixels) = render_sized(&frame, W, H) else { return };
+    save("ellipses", &pixels, W, H);
+    let at = |p: Vec2| pixel_sized(&pixels, W, H, p);
+    for k in 0..64 {
+        let t = k as f32 / 64.0 * std::f32::consts::TAU;
+        // The 4 px band is white on the true outline and black 4 px either side of it.
+        let (p, n) = on_ellipse(band_at, 0.4, 400.0, band_axes, t);
+        assert!(bright(at(p)), "band at {t}: {:?}", at(p));
+        assert!(dark(at(p + n * 4.5)) && dark(at(p - n * 4.5)), "band edges at {t}");
+        // The filled one: white just inside, black just outside.
+        let (p, n) = on_ellipse(solid_at, -0.3, 300.0, solid_axes, t);
+        assert!(
+            bright(at(p - n * 2.0)) && dark(at(p + n * 2.0)),
+            "solid at {t}: {:?} {:?}",
+            at(p - n * 2.0),
+            at(p + n * 2.0)
+        );
+        // The green line lies just inside the edge, red paint further in, nothing outside.
+        let (p, n) = on_ellipse(layered_at, 0.0, 200.0, Vec2::new(1.0, 0.45), t);
+        let green = at(p - n * 3.0);
+        assert!(green[1] > 200 && green[0] < 40, "line at {t}: {green:?}");
+        assert!(reddish(at(p - n * 10.0)) && dark(at(p + n * 2.0)), "layered at {t}");
+    }
+}
+
+#[test]
+fn a_gradient_runs_round_an_ellipse_from_its_top() {
+    const W: u32 = 1080;
+    const H: u32 = 1920;
+    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+    let i = frame.push_ellipse(Vec2::ZERO, 0.0, 400.0, 10.0, Vec2::new(0.6, 1.0), WHITE, 2.0);
+    let along = red_to_blue(&mut frame, LayerGpu::SHAPE_PAINT, 2.0);
+    wear(&mut frame, i, vec![body_record(), along], 0.0);
+    let Some(pixels) = render_sized(&frame, W, H) else { return };
+    let at = |p: Vec2| pixel_sized(&pixels, W, H, p);
+    assert!(reddish(at(Vec2::new(4.0, -400.0))), "{:?}", at(Vec2::new(4.0, -400.0)));
+    let left = at(Vec2::new(-240.0, 0.5));
+    assert!(left[2] > left[0] + 40, "three quarters round, bluer: {left:?}");
+    assert!(dark(at(Vec2::ZERO)), "the hole");
+}

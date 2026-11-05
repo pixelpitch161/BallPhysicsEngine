@@ -94,7 +94,11 @@ Dependencies go bottom to top:
   settle, after_step) stay for new thing kinds even where no current kind uses them. Walls are **two-sided**:
   `keep_clear` keeps a ball on the side its centre was on at the start of the step (`Bodies.previous`); a hollow
   `Outline::Ring`/`Box` with the ball inside keeps the exact old maths (goldens), `Outline::Path` is a free outline
-  (even-odd inside), and `Wall.solid` makes a filled shape that balls bounce off from outside only. Follow sound
+  (even-odd inside), `Outline::Ellipse` is exact (`nearest_on_ellipse`: Eberly's bisection in f64), and `Wall.solid`
+  makes a filled shape that balls bounce off from outside only. `Touch` (a Bounce module's `ModuleSim::touch`, the
+  Bounce card's "Touch walls with"): Edge, or Middle, where the ball's centre bounces on the outline's centre line
+  (`MIDDLE_GAP` 0.01 px inside, size and band left out), at the exact crossing (`middle_crossing`) and carries on for
+  the rest of the substep, so balls from one focus of an ellipse meet at the other within 0.01 px. Follow sound
   (`sound.rs`): `SoundAt` (a scene's sound levels from the world and log), `SoundMaker` in `Sims.sound` (a world
   whose physics settings follow sound gets one at build and reads it at the previous step's end in `animate`),
   `LevelsAt` adapts it to core's `SoundLevels`; `fingerprint` then counts only what Follow sound reads (`SoundMaker::fingerprint`, `bpe_sound::control::heard_fingerprint`: tempo, playing/notes, envelopes, modulators, routes, osc on/Gain/Level, Volume, bus, bus on/mute/solo/fader).
@@ -103,7 +107,8 @@ Dependencies go bottom to top:
   `Frame.trails` (under the balls) and `Frame.trails_front` (over them); particles are `Particle` sprites
   (`sprites.rs`, `shaders/sprites.wgsl`: a shape code per sprite, soft edge and band, a negative alpha adds light)
   in `Frame.particles`/`particles_front`. A thing whose trails or particles blend other than Normal/Add reports
-  them through `ThingDraw::around`/`draw_around` and `build_frame_with` draws each through `draw_routed_at`. Shapes draw through `shaders/paths.wgsl` (`Frame.paths`, `PathInstance`,
+  them through `ThingDraw::around`/`draw_around` and `build_frame_with` draws each through `draw_routed_at`. Shapes draw through `shaders/paths.wgsl` (`Frame.paths`, `PathInstance` (kind 0 circle, 1 points, 2 an exact
+  ellipse from `Frame::push_ellipse`, its half-axes in `b.zw`, nearest point by `ellipse_nearest`),
   `Frame.push_path`: a filled or banded outline from `Frame.path_points`, group 2 binding 4 beside the layer records,
   or a circle with no points). A shape with paint layers names its records in `PathInstance.layers` (first, count,
   program); `shaders/shape_layers.wgsl` works out where a pixel is against the outline (`shape_at`: distance, edge,
@@ -152,9 +157,12 @@ Dependencies go bottom to top:
   the CPU colour subs. Nothing is kept between frames, so scrubbing and export draw the same.
   `gpu.rs` turns a stack into records (a ball wearing only some layers gets them at opacity 0, `records_for`) and has `topmost_at` for clicks on the ball; `paint/brush.rs`
   rasterises strokes to tiles). The **Shape** (`things/shape/`, replacing the old Arena) is an outline balls bounce
-  off from both sides: `ShapeSettings` (the `BODY_HEADINGS` settings Start from, Sides, Size, Fill, Thickness and
-  the Corners `path`, plus Spin, Shrink, Smallest size); `sim.rs::base_outline` picks the exact Ring or Box form for
-  circles, even polygons and axis rectangles and an `Outline::Path` otherwise. Its Look is `look.shape`
+  off from both sides: `ShapeSettings` (the `BODY_HEADINGS` settings Start from (Polygon, Circle, Ellipse), Sides,
+  Size, Width/Height/Turn for an ellipse, Fill, Thickness and the Corners `path`, plus Spin, Shrink, Smallest size;
+  `unit()` is an ellipse's larger half-axis, else Size); `sim.rs::base_outline` picks the exact Ring or Box form for
+  circles, even polygons and axis rectangles, `Outline::Ellipse` for an ellipse (a Ring when round) and an
+  `Outline::Path` otherwise. `foci.rs::foci` gives an ellipse's two foci (a circle's middle twice) as the wall stands;
+  an ellipse is one side for By side and Place goes round from its own top. Its Look is `look.shape`
   (`modules/look/shape/`): the base `shape.body` (plain white) and the paint layers Colour and gradient (Across /
   From the middle / Along the edge, Flow), Outline, Glow, Shader and Blend (whole-shape); `shape/gpu.rs::ShapeStack`
   turns them into records and `things/shape/draw.rs::wall_form` draws every wall form in the shape's own frame. `look.basic`

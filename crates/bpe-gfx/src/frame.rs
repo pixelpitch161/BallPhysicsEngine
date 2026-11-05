@@ -287,8 +287,9 @@ impl Default for LayeredInstance {
 pub struct PathInstance {
     /// Centre x, y, angle (radians clockwise), scale (world pixels per shape unit).
     pub a: [f32; 4],
-    /// Half the band's thickness in world pixels (0 = filled), kind (0 circle, 1 points), the
-    /// first point in `Frame::path_points`, how many points.
+    /// Half the band's thickness in world pixels (0 = filled), kind (0 circle, 1 points, 2
+    /// ellipse), the first point in `Frame::path_points` and how many points (an ellipse: its
+    /// half-axes in shape units).
     pub b: [f32; 4],
     /// Thing code, how far the outline reaches from the centre (shape units), how far its layers
     /// reach past its outline (world pixels: an outline outside it, a glow), and how far the
@@ -370,9 +371,9 @@ impl ShapeInstance {
                 color,
                 paint,
             },
-            // A free outline draws through the paths pipeline ([`PathInstance`]); here it is
-            // nothing.
-            Outline::Path { center, angle, .. } => Self {
+            // A free outline or an ellipse draws through the paths pipeline ([`PathInstance`]);
+            // here it is nothing.
+            Outline::Path { center, angle, .. } | Outline::Ellipse { center, angle, .. } => Self {
                 a: [center.x, center.y, angle, 0.0],
                 b: [0.0, 0.0, 0.0, 0.0],
                 c: [0.0, 0.0, 0.0, 0.0],
@@ -1121,6 +1122,32 @@ impl Frame {
         self.paths.push(PathInstance {
             a: [center.x, center.y, angle, scale],
             b: [half_thickness.max(0.0), kind, first as f32, count as f32],
+            c: [code, reach, 0.0, reach],
+            color,
+            layers: [0, 0, PathInstance::NO_PROGRAM, 0],
+            hit: NO_HIT,
+        });
+        self.paths.len() - 1
+    }
+
+    /// Adds an exact ellipse with half-axes `axes` (shape units, the larger one at most 1) to the
+    /// shapes, as [`Frame::push_path`] adds a circle or a list of points (kind 2: see
+    /// [`PathInstance`]), giving its index in `paths`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_ellipse(
+        &mut self,
+        center: Vec2,
+        angle: f32,
+        scale: f32,
+        half_thickness: f32,
+        axes: Vec2,
+        color: [f32; 4],
+        code: f32,
+    ) -> usize {
+        let reach = axes.x.max(axes.y);
+        self.paths.push(PathInstance {
+            a: [center.x, center.y, angle, scale],
+            b: [half_thickness.max(0.0), 2.0, axes.x, axes.y],
             c: [code, reach, 0.0, reach],
             color,
             layers: [0, 0, PathInstance::NO_PROGRAM, 0],

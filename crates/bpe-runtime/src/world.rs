@@ -15,7 +15,8 @@ use crate::events::{HASH_OFFSET, crossing, step_fraction};
 use crate::pairs::{Pairs, Support, collide_pairs, pop};
 use crate::plugins::{Limits, ModuleSim, SimCx, Sims, ThingState};
 use crate::pose::Pose;
-use crate::{Bodies, Event, EventKind, History, Log, Party, Wall, keep_clear_from, reflect};
+use crate::walls::middle_crossing;
+use crate::{Bodies, Event, EventKind, History, Log, Party, Touch, Wall, keep_clear_from, on_own_side, reflect};
 
 /// The furthest a ball may move in one substep without skipping a wall.
 pub const SAFE_MOVE: f32 = 16.0;
@@ -528,6 +529,7 @@ impl World {
             let mover_bounce = modules.get(mover).and_then(|m| m.get(&SlotId::Bounce));
             let own = mover_bounce.and_then(|s| Some((sims.module(&s.kind)?, s.state.as_ref())));
             let cx = SimCx { thing: *mover, time, seed };
+            let touch = own.map_or(Touch::Edge, |(sim, state)| sim.touch(state));
             // This mover's own: a ball pulled harder than the scene's gravity presses harder.
             let limits = &Limits { press: press(*mover), ..*limits };
             for (wall_id, wall) in walls.iter() {
@@ -545,7 +547,7 @@ impl World {
                     let start = bodies.start[i];
                     let at = &mut bodies.position[i];
                     let moved_to = *at;
-                    let Some(contact) = keep_clear_from(at, previous, before, velocity, radius, wall) else {
+                    let Some(contact) = keep_clear_from(at, previous, before, velocity, radius, touch, wall) else {
                         continue;
                     };
                     // The ball was moved back to just touching: the gap to there along the
@@ -553,6 +555,13 @@ impl World {
                     let touching = *at;
                     let gap = |p: Vec2| (p - touching).dot(contact.normal);
                     let within = crossing(gap(start), gap(moved_to));
+                    // A ball touching with its middle bounces exactly where its centre crossed
+                    // the line, off the outline's own normal there.
+                    let exact = match touch {
+                        Touch::Middle => middle_crossing(start, moved_to, previous, before, velocity, wall),
+                        Touch::Edge => None,
+                    };
+                    let (contact, within) = exact.unwrap_or((contact, within));
                     let hit_at = step_fraction(sub_index, sub_count, within);
                     supports.push(Support {
                         thing: *mover,
@@ -561,7 +570,17 @@ impl World {
                         wall_velocity: contact.wall_velocity,
                     });
                     respond(decider, &contact, bodies, i, limits, special, &cx);
-                    if contact.speed >= limits.resting_along(contact.normal) {
+                    let hit = contact.speed >= limits.resting_along(contact.normal);
+                    // And goes on for the rest of the substep from there, along its new velocity
+                    // (unless that would put it on the wrong side, near a corner).
+                    if exact.is_some() && hit {
+                        let crossed = start.lerp(moved_to, within);
+                        let carried = crossed + bodies.velocity[i] * ((1.0 - within) * dt);
+                        if carried.is_finite() && on_own_side(carried, previous, before, wall) {
+                            bodies.position[i] = carried;
+                        }
+                    }
+                    if hit {
                         bodies.hits[i] += 1;
                         // Where its centre was as it touched, on the way it came in; the wall
                         // pass leaves it just touching but slid along the wall from there, and
@@ -594,6 +613,26 @@ impl World {
         // Balls against balls.
         let substep = (sub_index, sub_count);
         collide_pairs(bodies, modules, &matcher, &press, sims, pairs, &supports, step, substep, dt, limits, log);
+
+        // A ball touching with its middle sits a hair's breadth from the line, so a nudge from
+        // another ball can carry it across: put it back on its own side (no bounce, no event).
+        for (mover, bodies) in bodies.iter_mut() {
+            let bounce = modules.get(mover).and_then(|m| m.get(&SlotId::Bounce));
+            let touch = bounce.and_then(|s| Some(sims.module(&s.kind)?.touch(s.state.as_ref())));
+            if touch != Some(Touch::Middle) {
+                continue;
+            }
+            for (wall_id, wall) in walls.iter() {
+                let before = walls_before.get(wall_id).unwrap_or(&wall.outline);
+                for i in 0..bodies.len() {
+                    if bodies.alive[i] {
+                        let (previous, velocity) = (bodies.previous[i], bodies.velocity[i]);
+                        let at = &mut bodies.position[i];
+                        keep_clear_from(at, previous, before, velocity, 0.0, Touch::Middle, wall);
+                    }
+                }
+            }
+        }
     }
 }
 

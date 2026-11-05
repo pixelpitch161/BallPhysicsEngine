@@ -42,6 +42,9 @@ impl ShapeState {
             &Outline::Box { half, angle, thickness, .. } => {
                 Outline::Box { center, half: half * self.scale, angle: angle + turn, thickness }
             }
+            &Outline::Ellipse { half, angle, thickness, .. } => {
+                Outline::Ellipse { center, half: half * self.scale, angle: angle + turn, thickness }
+            }
             Outline::Path { angle, scale, points, thickness, .. } => Outline::Path {
                 center,
                 angle: angle + turn,
@@ -54,7 +57,7 @@ impl ShapeState {
 
     /// The smallest `scale` the settings allow.
     fn floor(&self) -> f32 {
-        (self.settings.min_size / self.settings.size.max(1e-3)).min(1.0)
+        (self.settings.min_size / self.settings.unit().max(1e-3)).min(1.0)
     }
 
     fn wall(&self, anchor: &Pose, growth: f32) -> Wall {
@@ -72,11 +75,21 @@ impl ShapeState {
 /// The outline the settings describe at full size, around `center`, turned by `turn`. Circles,
 /// even polygons and rectangles lined up with the shape take the exact Ring and Box forms (an
 /// even polygon is a Ring turned a further quarter, which puts its corners where
-/// `ShapePath::even` has them); anything else is a free outline. A filled shape has no thickness.
+/// `ShapePath::even` has them); an ellipse is exact (a Ring when it is round), turned by its Turn
+/// on top; anything else is a free outline. A filled shape has no thickness.
 pub fn base_outline(settings: &ShapeSettings, center: Vec2, turn: f32) -> Outline {
     let thickness = if settings.fill == ShapeFill::Filled { 0.0 } else { settings.thickness };
     let size = settings.size;
     match (settings.start, settings.moulded()) {
+        (ShapeStart::Ellipse, _) => {
+            let half = Vec2::new(settings.width, settings.height) * 0.5;
+            let angle = turn + settings.turn.to_radians();
+            if half.x == half.y {
+                Outline::Ring { center, radius: half.x, sides: 0, angle, thickness }
+            } else {
+                Outline::Ellipse { center, half, angle, thickness }
+            }
+        }
         (ShapeStart::Circle, _) => Outline::Ring { center, radius: size, sides: 0, angle: turn, thickness },
         (ShapeStart::Polygon, None) => Outline::Ring {
             center,
@@ -126,6 +139,9 @@ impl ThingSim for ShapeSim {
         let st = state_mut::<ShapeState>(st.as_mut());
         st.base = base_outline(&settings, st.base.center(), st.rotation);
         let s = &st.settings;
+        // An ellipse's path follows its Width, Height and Turn, but nothing reads it while it is an
+        // ellipse (`side_on` and `place_on_edge` read the wall), so keys on them don't remake it
+        // (which would allocate every step).
         if (s.start, s.sides, &s.path) != (settings.start, settings.sides, &settings.path) {
             st.path = settings.outline_path();
         }
@@ -162,8 +178,8 @@ impl ThingSim for ShapeSim {
 }
 
 /// Which side of `shape` the point `point` (in scene pixels, on or near its outline) is on, 0
-/// first, in the order of the shape's corners (a circle counts as its 8 curved sides). 0 when
-/// `shape` is not a shape in `world`.
+/// first, in the order of the shape's corners (a circle counts as its 8 curved sides, an ellipse
+/// as one side). 0 when `shape` is not a shape in `world`.
 pub fn side_of(world: &World, shape: ThingId, point: Vec2) -> u32 {
     let Some(st) = world.states.get(&shape).and_then(|s| s.as_any().downcast_ref::<ShapeState>()) else {
         return 0;
@@ -177,6 +193,9 @@ pub fn side_on(world: &World, shape: ThingId, path: &bpe_core::ShapePath, point:
     let Some(st) = world.states.get(&shape).and_then(|s| s.as_any().downcast_ref::<ShapeState>()) else {
         return 0;
     };
+    if st.settings.start == ShapeStart::Ellipse {
+        return 0;
+    }
     path.nearest_side(in_shape_units(world, shape, st, point)).map_or(0, |(side, _, _)| side as u32)
 }
 
@@ -184,16 +203,29 @@ pub fn side_on(world: &World, shape: ThingId, path: &bpe_core::ShapePath, point:
 fn in_shape_units(world: &World, shape: ThingId, st: &ShapeState, point: Vec2) -> Vec2 {
     let anchor = world.anchor(shape);
     let turn = st.rotation + st.angle + (anchor.angle - st.anchor.angle);
-    let size = (st.settings.size * st.scale).max(1e-3);
+    let size = (st.settings.unit() * st.scale).max(1e-3);
     Vec2::from_angle(-turn).rotate(point - anchor.position) / size
 }
 
 /// Where on shape `shape`'s outline (as it is in `world` now) the point nearest `point` is: the
 /// way round clockwise from its first corner as a fraction (0..1) of the whole way, the side
 /// (as [`side_on`] has it, so side k is By side's slot k), and how many sides it has (a circle
-/// has its 8). `None` when the world has no such shape. Never allocates.
+/// has its 8; an ellipse is one side, its places measured round from its own top by the angle
+/// it is drawn with). `None` when the world has no such shape. Never allocates.
 pub fn place_on_edge(world: &World, shape: ThingId, point: Vec2) -> Option<(f32, usize, usize)> {
     let st = world.states.get(&shape)?.as_any().downcast_ref::<ShapeState>()?;
+    if st.settings.start == ShapeStart::Ellipse {
+        let outline = &world.walls.get(&shape)?.outline;
+        let (center, half, angle) = match *outline {
+            Outline::Ellipse { center, half, angle, .. } => (center, half, angle),
+            Outline::Ring { center, radius, angle, .. } => (center, Vec2::splat(radius), angle),
+            _ => return Some((0.0, 0, 1)),
+        };
+        let own = Vec2::from_angle(-angle).rotate(point - center);
+        let q = bpe_runtime::nearest_on_ellipse(half, own) / half.max(Vec2::splat(1e-6));
+        let place = (q.x.atan2(-q.y) / std::f32::consts::TAU).rem_euclid(1.0);
+        return Some((place, 0, 1));
+    }
     let path = &st.path;
     let n = path.side_count();
     let (side, t, _) = path.nearest_side(in_shape_units(world, shape, st, point))?;
@@ -368,6 +400,81 @@ mod tests {
         curved.path = ShapePath::circle();
         let flat = kind(curved);
         assert!(matches!(&flat.outline, Outline::Path { points, .. } if points.len() == 8 * 16));
+        let oval = kind(ShapeSettings::ellipse(900.0, 1300.0, 3.0));
+        assert!(
+            matches!(oval.outline, Outline::Ellipse { half, angle: 0.0, thickness: 3.0, .. } if half == Vec2::new(450.0, 650.0)),
+            "{oval:?}"
+        );
+        let round = kind(ShapeSettings::ellipse(600.0, 600.0, 3.0));
+        assert!(matches!(round.outline, Outline::Ring { radius: 300.0, sides: 0, .. }), "{round:?}");
+        let mut turned = ShapeSettings::ellipse(900.0, 1300.0, 3.0);
+        turned.turn = 30.0;
+        let mut scene = with(turned);
+        scene.things.get_mut(&SHAPE).unwrap().transform.rotation = 0.25;
+        let angle = world(&scene).walls[&SHAPE].outline.angle();
+        assert!((angle - (0.25 + 30f32.to_radians())).abs() < 1e-6, "{angle}");
+    }
+
+    #[test]
+    fn width_keys_resize_the_ellipse_and_move_its_foci() {
+        let kit = kit();
+        let mut scene = with(ShapeSettings::ellipse(900.0, 1300.0, 3.0));
+        let width = Address { thing: SHAPE, slot: None, key: "width".into() };
+        scene.set_key(&kit.registry, &width, 0.0, Value::Number(900.0)).unwrap();
+        scene.set_key(&kit.registry, &width, 1.0, Value::Number(500.0)).unwrap();
+        let mut w = world(&scene);
+        let half = |w: &World| match w.walls[&SHAPE].outline {
+            Outline::Ellipse { half, .. } => half,
+            ref other => panic!("{other:?}"),
+        };
+        let gap = |w: &World| {
+            let [a, b] = crate::things::shape::foci(w, SHAPE).unwrap();
+            (b - a).length()
+        };
+        assert_eq!(half(&w), Vec2::new(450.0, 650.0));
+        assert!((gap(&w) - 2.0 * (650f32.powi(2) - 450f32.powi(2)).sqrt()).abs() < 1e-2);
+        w.advance_to(1.5, &kit.sims, &mut Log::default());
+        assert!((half(&w) - Vec2::new(250.0, 650.0)).length() < 1e-3, "{}", half(&w));
+        assert!((gap(&w) - 2.0 * (650f32.powi(2) - 250f32.powi(2)).sqrt()).abs() < 1e-2);
+    }
+
+    #[test]
+    fn an_ellipse_spins_and_shrinks_like_a_ring() {
+        let mut s = ShapeSettings::ellipse(900.0, 1300.0, 3.0);
+        s.spin = 90.0;
+        s.shrink = 0.5;
+        s.min_size = 325.0;
+        let mut w = world(&with(s));
+        w.advance_to(10.0, &kit().sims, &mut Log::default());
+        match w.walls[&SHAPE].outline {
+            Outline::Ellipse { half, angle, .. } => {
+                assert!((half - Vec2::new(225.0, 325.0)).length() < 1e-2, "stops at half its size: {half}");
+                let turned = (angle - 900f32.to_radians()).rem_euclid(std::f32::consts::TAU);
+                assert!(!(1e-2..=std::f32::consts::TAU - 1e-2).contains(&turned), "{angle}");
+            }
+            ref other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn side_on_and_place_treat_an_ellipse_as_one_side() {
+        let s = ShapeSettings::ellipse(900.0, 1300.0, 3.0);
+        let scene = with(s.clone());
+        let w = world(&scene);
+        let mid = scene.things[&SHAPE].transform.position;
+        let path = s.outline_path();
+        for (at, want) in [
+            (Vec2::new(0.0, -650.0), 0.0),
+            (Vec2::new(450.0, 0.0), 0.25),
+            (Vec2::new(0.0, 650.0), 0.5),
+            (Vec2::new(-450.0, 0.0), 0.75),
+        ] {
+            assert_eq!(side_on(&w, SHAPE, &path, mid + at), 0);
+            let (place, side, sides) = place_on_edge(&w, SHAPE, mid + at * 1.01).unwrap();
+            assert_eq!((side, sides), (0, 1));
+            let off = (place - want).abs();
+            assert!(off < 1e-3 || (want == 0.0 && off > 1.0 - 1e-3), "{at}: {place} not {want}");
+        }
     }
 
     #[test]

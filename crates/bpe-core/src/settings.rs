@@ -389,7 +389,7 @@ pub fn applies(when: &str, kind: Option<&str>, get: &dyn Fn(&str) -> Option<Valu
     when.is_empty() || when.split(" or ").any(|all| all.split(" and ").all(|term| term_holds(term.trim(), kind, get)))
 }
 
-fn term_holds(term: &str, kind: Option<&str>, get: &dyn Fn(&str) -> Option<Value>) -> bool {
+pub(crate) fn term_holds(term: &str, kind: Option<&str>, get: &dyn Fn(&str) -> Option<Value>) -> bool {
     let (key, names, wanted) = if let Some((key, names)) = term.split_once("!=") {
         (key, Some(names), false)
     } else if let Some((key, names)) = term.split_once('=') {

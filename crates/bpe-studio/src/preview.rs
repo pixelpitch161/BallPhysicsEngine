@@ -61,8 +61,10 @@ pub enum Handle {
     Side(ThingId, usize),
     /// Bend a shape's curved side by one of its two handles.
     Bend(ThingId, usize, u8),
-    /// Size a circle by its edge.
+    /// Size a circle by its edge (an ellipse: both its width and height together).
     Radius(ThingId),
+    /// Set an ellipse's Width (0) or Height (1) by the dot at the end of that axis.
+    Axis(ThingId, u8),
     /// Move the camera by its frame's middle or edge, in the World view.
     CameraMove(ThingId),
     /// Zoom the camera by a corner of its frame.
@@ -82,6 +84,7 @@ impl Handle {
             | Handle::Side(id, _)
             | Handle::Bend(id, _, _)
             | Handle::Radius(id)
+            | Handle::Axis(id, _)
             | Handle::CameraMove(id)
             | Handle::CameraZoom(id)
             | Handle::CameraTurn(id)
@@ -89,9 +92,9 @@ impl Handle {
         }
     }
 
-    /// A shape's corner, side, bend handle or circle edge.
+    /// A shape's corner, side, bend handle, circle or ellipse edge, or an ellipse's axis dot.
     fn is_mould(self) -> bool {
-        matches!(self, Handle::Corner(..) | Handle::Side(..) | Handle::Bend(..) | Handle::Radius(_))
+        matches!(self, Handle::Corner(..) | Handle::Side(..) | Handle::Bend(..) | Handle::Radius(_) | Handle::Axis(..))
     }
 
     fn is_camera(self) -> bool {
@@ -644,7 +647,7 @@ pub fn apply_drag(
             let velocity = ((tip - thing.transform.position) / ARROW_SECONDS).round();
             thing.params.set("velocity", Value::Vec2([velocity.x, velocity.y]));
         }
-        Handle::Corner(..) | Handle::Side(..) | Handle::Bend(..) | Handle::Radius(_) => {
+        Handle::Corner(..) | Handle::Side(..) | Handle::Bend(..) | Handle::Radius(_) | Handle::Axis(..) => {
             return shape_handles::apply(scene, reg, drag, pointer, step, time);
         }
         // Applied by the preview itself, with the playhead (see `zones::apply`).

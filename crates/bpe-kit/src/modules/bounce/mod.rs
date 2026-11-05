@@ -2,9 +2,20 @@
 
 pub mod sim;
 
-use bpe_core::{ModuleKind, SettingDef, Settings, SlotId, Target};
+use bpe_core::{Choice, ModuleKind, SettingDef, Settings, SlotId, Target};
 
 pub struct BasicBounceKind;
+
+/// What of a ball meets the walls.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum WallTouch {
+    /// Its edge: it bounces when its edge meets a wall.
+    #[default]
+    Edge,
+    /// Its middle: it bounces when its centre meets the wall's outline, so it bounces exactly on
+    /// the outline (balls fired from one focus of an ellipse all meet at the other).
+    Middle,
+}
 
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct BasicBounce {
@@ -47,6 +58,10 @@ pub struct BasicBounce {
     /// How much sideways speed rubs off when the ball touches walls or other balls.
     #[setting(label = "Friction", group = "Bounce", when = "thing!=shape or takes_over", range(0, 1), keyframe)]
     pub friction: f32,
+    /// Edge: balls bounce when their edge meets a wall. Middle: when their centre does, so they
+    /// bounce exactly on the outline.
+    #[setting(label = "Touch walls with", group = "Bounce", when = "thing!=shape")]
+    pub touch: WallTouch,
     /// Decides every bounce against this thing, even when the other thing is the one moving.
     #[setting(label = "Takes over", group = "Bounce", when = "thing=shape")]
     pub takes_over: bool,
@@ -109,6 +124,7 @@ impl Default for BasicBounce {
             pops_after: 0,
             balls_to_hit: Target::Anything,
             friction: 0.0,
+            touch: WallTouch::Edge,
             special: false,
             special_target: Target::Anything,
             special_bounciness: 1.0,

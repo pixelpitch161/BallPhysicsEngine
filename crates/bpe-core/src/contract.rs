@@ -8,6 +8,43 @@ use std::collections::BTreeSet;
 /// The most settings a kind may show at Simple depth, so the first view stays short.
 pub const MAX_SIMPLE: usize = 6;
 
+/// How many Simple settings can show at once: the most over every mix of values of the Choice
+/// settings (a shape's Size and an ellipse's Width and Height never show together), counting a
+/// setting unless its condition rules it out for that mix (conditions on anything but a Choice
+/// count as met). All of them when the mixes are too many to try.
+fn most_simple_at_once(defs: &[SettingDef]) -> usize {
+    let simple: Vec<&SettingDef> = defs.iter().filter(|d| d.depth == Depth::Simple).collect();
+    let choices: Vec<(&str, &[&str])> = defs
+        .iter()
+        .filter_map(|d| match d.ty {
+            ValueType::Choice(names) if !names.is_empty() => Some((d.key, names)),
+            _ => None,
+        })
+        .collect();
+    let mixes = choices.iter().try_fold(1usize, |n, (_, names)| n.checked_mul(names.len()).filter(|n| *n <= 4096));
+    let Some(mixes) = mixes else { return simple.len() };
+    let mut most = 0;
+    for mut m in 0..mixes {
+        let mut picked = Vec::with_capacity(choices.len());
+        for (key, names) in &choices {
+            picked.push((*key, names[m % names.len()]));
+            m /= names.len();
+        }
+        let get = |key: &str| picked.iter().find(|(k, _)| *k == key).map(|(_, n)| Value::Choice((*n).to_owned()));
+        let shows = |when: &str| {
+            when.trim().is_empty()
+                || when.split(" or ").any(|all| {
+                    all.split(" and ").map(str::trim).all(|term| {
+                        let key = term.split(['=', '!']).find(|k| !k.is_empty()).unwrap_or("").trim();
+                        get(key).is_none() || crate::settings::term_holds(term, None, &get)
+                    })
+                })
+        };
+        most = most.max(simple.iter().filter(|d| shows(d.when)).count());
+    }
+    most
+}
+
 /// Every rule a plugin breaks, one line each naming the plugin and the setting. Empty when all pass.
 pub fn check_registry(reg: &Registry) -> Vec<String> {
     let mut fails = Vec::new();
@@ -112,7 +149,7 @@ fn check_settings(id: &str, defs: &[SettingDef], fails: &mut Vec<String>) {
             }
         }
     }
-    let simple = defs.iter().filter(|d| d.depth == Depth::Simple).count();
+    let simple = most_simple_at_once(defs);
     if simple > MAX_SIMPLE {
         fails.push(format!("{id}: {simple} settings are Simple, at most {MAX_SIMPLE} may be"));
     }
@@ -145,6 +182,37 @@ mod tests {
         let defs = S::defs();
         assert_eq!((defs[0].span, defs[0].range), (Some((5.0, 20.0)), None));
         assert_eq!((defs[1].span, defs[1].range), (None, Some((0.0, 1.0))));
+    }
+
+    #[test]
+    fn simple_settings_that_never_show_together_count_once() {
+        #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, crate::Choice)]
+        enum Form {
+            #[default]
+            Round,
+            Long,
+        }
+        #[derive(Default, Settings)]
+        struct S {
+            #[setting(label = "Form", simple)]
+            form: Form,
+            #[setting(label = "A", simple)]
+            a: f32,
+            #[setting(label = "B", simple)]
+            b: f32,
+            #[setting(label = "C", simple)]
+            c: f32,
+            #[setting(label = "Size", when = "form!=long", simple)]
+            size: f32,
+            #[setting(label = "Width", when = "form=long", simple)]
+            width: f32,
+            #[setting(label = "Height", when = "form=long", simple)]
+            height: f32,
+            #[setting(label = "Other", when = "a", simple)]
+            other: f32,
+        }
+        // Form, A, B, C and Other always; then Size, or Width and Height: 7 at most, not 8.
+        assert_eq!(most_simple_at_once(S::defs()), 7);
     }
 
     #[test]

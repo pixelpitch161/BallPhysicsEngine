@@ -205,6 +205,7 @@ fn own_frame(o: &Outline) -> (Outline, Vec2, f32) {
     let (center, angle) = match &mut own {
         Outline::Ring { center, angle, .. }
         | Outline::Box { center, angle, .. }
+        | Outline::Ellipse { center, angle, .. }
         | Outline::Path { center, angle, .. } => (std::mem::take(center), std::mem::take(angle)),
     };
     (own, center, angle)
