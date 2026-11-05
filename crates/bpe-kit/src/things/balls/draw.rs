@@ -140,6 +140,9 @@ impl<'a> Worn<'a> {
     }
 }
 
+/// One stack's colour for each body row.
+type ColourOf<'a> = Rc<dyn Fn(usize) -> [f32; 4] + 'a>;
+
 /// Each ball's colour, as [`colours`] works it out for the stack it wears.
 struct Colours<'w, 'a> {
     worn: &'w Worn<'a>,
@@ -147,7 +150,7 @@ struct Colours<'w, 'a> {
     bodies: &'a Bodies,
     seen: bool,
     /// Each stack's colours, made the first time a ball wearing it is asked about.
-    made: RefCell<Vec<Option<Rc<dyn Fn(usize) -> [f32; 4] + 'a>>>>,
+    made: RefCell<Vec<Option<ColourOf<'a>>>>,
 }
 
 impl<'w, 'a> Colours<'w, 'a> {
@@ -160,8 +163,7 @@ impl<'w, 'a> Colours<'w, 'a> {
         let at = self.worn.index(i);
         let made = self.made.borrow()[at].clone();
         let f = made.unwrap_or_else(|| {
-            let f: Rc<dyn Fn(usize) -> [f32; 4] + 'a> =
-                Rc::new(colours(&self.worn.stacks[at], self.cx, self.bodies, self.seen));
+            let f: ColourOf<'a> = Rc::new(colours(&self.worn.stacks[at], self.cx, self.bodies, self.seen));
             self.made.borrow_mut()[at] = Some(f.clone());
             f
         });

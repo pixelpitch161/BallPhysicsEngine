@@ -62,6 +62,8 @@ pub struct GridCx<'a> {
     pub track: Color32,
     /// Follow sound for these settings (none: the menu doesn't offer it).
     pub follow: Option<&'a crate::follow::FollowCx<'a>>,
+    /// Varying these settings across the thing's balls (none: the menu doesn't offer it).
+    pub vary: Option<&'a crate::vary::VaryCx<'a>>,
 }
 
 /// How wide the label column of every settings grid in a panel `panel` wide is: the Design
@@ -143,6 +145,8 @@ pub struct GridOutcome {
     pub folds: Vec<(&'static str, bool)>,
     /// Settings that start following sound (or stop, with `None`) from their menu.
     pub follows: Vec<(&'static str, Option<bpe_core::PulseSource>)>,
+    /// What was asked of the settings that vary across the balls (or start or stop varying).
+    pub varies: Vec<(&'static str, crate::vary::VaryEdit)>,
 }
 
 /// `electric_piano` to "Electric piano".
@@ -321,7 +325,10 @@ fn grid_row(
 ) {
     let mut value = get(def.key);
     let unit = unit_for(def, &|k| Some(get(k)));
-    match setting(ui, def, unit, &mut value, (cx.marks)(def.key), cx, right) {
+    let mut varies = Vec::new();
+    let action = setting(ui, def, unit, &mut value, (cx.marks)(def.key), cx, right, &mut varies);
+    out.varies.extend(varies.into_iter().map(|v| (def.key, v)));
+    match action {
         RowAction::Nothing => {}
         RowAction::Changed => out.changes.push((def.key, value)),
         RowAction::CreateKey => out.new_keys.push(def.key),
@@ -360,7 +367,12 @@ pub fn fold_toggle(ui: &mut Ui, open: bool, title: &str) -> bool {
 /// A right-click on the label or the widget opens the row's menu ([`row_menu`]) and never
 /// changes the value, though sliders and number boxes otherwise move under any mouse button.
 /// A colour or gradient keeps its own clicks, so only its label has the menu.
-pub fn setting(
+///
+/// What was asked of its varying across the balls is added to `varies`: the menu's Vary across
+/// balls or Stop varying, and, while it varies, its two-ended slider (or a To row under it for a
+/// pair, colour or gradient) and the "Varies by" line.
+#[allow(clippy::too_many_arguments)]
+fn setting(
     ui: &mut Ui,
     def: &SettingDef,
     unit: &str,
@@ -368,7 +380,13 @@ pub fn setting(
     mark: Option<KeyMark>,
     cx: &GridCx,
     right: f32,
+    varies: &mut Vec<crate::vary::VaryEdit>,
 ) -> RowAction {
+    use crate::vary::VaryEdit;
+    let offered = cx.vary.and_then(|v| v.use_of(def).map(|u| (v, u)));
+    let now = offered.and_then(|(v, _)| v.now(def.key));
+    let mut to = now.as_ref().and_then(|n| n.to.clone());
+    let two_ended = matches!((&def.ty, def.range.or(def.span)), (ValueType::Number | ValueType::Int, Some(_)));
     let ink = label_colour(mark, cx.track);
     let differs = *value != def.default;
     let name = label_cell(ui, cx.label_width, |ui| {
@@ -387,8 +405,18 @@ pub fn setting(
     });
     let before = value.clone();
     let mut changed = false;
+    let mut to_response: Option<Response> = None;
     let response = widget_cell(ui, right, |ui| {
-        let r = style::wells(ui, |ui| widget(ui, def, unit, value, name.id, cx.choices));
+        let r = style::wells(ui, |ui| match (two_ended, to.as_mut()) {
+            (true, Some(end)) => {
+                let range = def.range.or(def.span).unwrap_or((0.0, 1.0));
+                let feel = setting_feel(def);
+                let (a, b) = crate::vary::two_ended(ui, def, (value, end), range, feel, suffix(unit), name.id);
+                to_response = Some(b);
+                a
+            }
+            _ => widget(ui, def, unit, value, name.id, cx.choices),
+        });
         changed |= r.changed();
         r
     });
@@ -407,11 +435,72 @@ pub fn setting(
     if let Some(now) = follow.and_then(|(f, key)| (f.now)(key)) {
         follow_band(ui, def, value, &response, &now);
     }
-    let mut picks = vec![row_menu_following(&name, def, unit, &before, mark, cx.choices, None, follow)];
+    // Vary across balls (or Stop varying) under the menu's other items.
+    let vary_pick = std::cell::Cell::new(None::<VaryEdit>);
+    let mut vary_items = |ui: &mut Ui| {
+        if offered.is_none() {
+            return;
+        }
+        if now.is_some() {
+            if ui.button("Stop varying").on_hover_text("Every ball takes this value again").clicked() {
+                vary_pick.set(Some(VaryEdit::Stop));
+                ui.close();
+            }
+        } else if ui
+            .button("Vary across balls")
+            .on_hover_text("Give each ball its own value, between this one and another")
+            .clicked()
+        {
+            vary_pick.set(Some(VaryEdit::Start));
+            ui.close();
+        }
+    };
+    let mut picks =
+        vec![row_menu_following(&name, def, unit, &before, mark, cx.choices, Some(&mut vary_items), follow)];
     if !own_clicks {
-        picks.push(row_menu_following(&response, def, unit, &before, mark, cx.choices, None, follow));
+        picks.push(row_menu_following(&response, def, unit, &before, mark, cx.choices, Some(&mut vary_items), follow));
     }
+    varies.extend(vary_pick.take());
     ui.end_row();
+    if let (Some((vcx, use_)), Some(v), Some(end)) = (offered, now.as_ref(), to.as_mut()) {
+        let to_mark = vcx.to_mark(def);
+        let end_before = end.clone();
+        // A pair, colour or gradient sets its To in a row of its own.
+        if !two_ended {
+            let to_name = label_cell(ui, cx.label_width, |ui| {
+                let room = ui.available_size();
+                ui.allocate_ui_with_layout(room, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add_space(9.0);
+                    let words = format!("{} to", def.label);
+                    let r = ui.add(egui::Label::new(RichText::new("to").color(label_colour(Some(to_mark), cx.track))));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, words.clone()));
+                    r.on_hover_text("The other end: what the last ball (or the far end of the spread) gets")
+                })
+                .inner
+            });
+            let r =
+                widget_cell(ui, right, |ui| style::wells(ui, |ui| widget(ui, def, unit, end, to_name.id, cx.choices)));
+            if r.changed() {
+                varies.push(VaryEdit::To(end.clone()));
+            }
+            to_response = Some(to_name);
+            ui.end_row();
+        } else if to_response.as_ref().is_some_and(|r| r.changed()) && !right_button_busy(ui) {
+            varies.push(VaryEdit::To(end.clone()));
+        }
+        if let Some(r) = &to_response {
+            match row_menu(r, def, unit, &end_before, Some(to_mark), cx.choices, None) {
+                MenuPick::Paste(pasted) => varies.push(VaryEdit::To(pasted)),
+                MenuPick::CreateKey => varies.push(VaryEdit::KeyTo),
+                MenuPick::Nothing | MenuPick::Follow(_) => {}
+            }
+        }
+        label_cell(ui, cx.label_width, |_| {});
+        widget_cell(ui, right, |ui| {
+            varies.extend(crate::vary::varies_line(ui, def, v, use_, vcx.rounds()));
+        });
+        ui.end_row();
+    }
     let mut action = if changed { RowAction::Changed } else { RowAction::Nothing };
     for pick in picks {
         match pick {
@@ -1293,6 +1382,7 @@ mod tests {
                         label_width: label_width(420.0),
                         track: style::TEXT,
                         follow: None,
+                        vary: None,
                     };
                     let got = settings_grid(ui, "g", defs, |k| state.values[k].clone(), &cx);
                     for (key, value) in got.changes {
@@ -1503,6 +1593,7 @@ mod tests {
                     label_width: label_width(420.0),
                     track: style::TEXT,
                     follow: None,
+                    vary: None,
                 };
                 settings_grid(ui, "g", defs, |k| value(k).unwrap(), &cx);
             });
@@ -1558,6 +1649,7 @@ mod tests {
                 label_width: label_width(420.0),
                 track: style::TEXT,
                 follow: None,
+                vary: None,
             };
             settings_grid(ui, "g", defs, |k| value(k).unwrap(), &cx);
         });

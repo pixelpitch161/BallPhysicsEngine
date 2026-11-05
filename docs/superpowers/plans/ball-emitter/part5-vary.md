@@ -17,7 +17,8 @@ every drawn layer and sub-layer of the Look, the reactions, and trail and partic
 
 1. **Storage** (spec): beside the value in the same params, `"<key>~to"`, `"<key>~by"`, `"<key>~ease"`; a layer's
    keep their prefix (`"3/width~to"`). A setting **varies exactly when its `~by` key is there**. `~to` missing
-   means To = the def's default; `~ease` missing means Even. `~by` and `~ease` are stored even when they equal
+   means no spread yet (every ball keeps the value; Vary across balls always writes one); `~ease` missing means
+   Even. `~by` and `~ease` are stored even when they equal
    their defaults (`set_at` never drops a vary key), so a vary never vanishes by being set to Number/Even.
 2. **Defs**: `def_at`/`layer_def` answer a vary key: `~to` gets the base setting's own def (same type, range,
    unit, keyframe flag), so `set_at`, `set_key`, `value_at`, clamping, pulses and Follow sound all work on To with

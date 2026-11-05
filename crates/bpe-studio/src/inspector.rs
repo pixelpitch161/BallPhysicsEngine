@@ -157,6 +157,9 @@ pub(crate) enum Edit {
     /// The setting (a slot's, or the thing's own with `None`) follows a part of a shape's sound,
     /// or stops following with `None`, for every selected thing that has the setting.
     Follow(Option<SlotId>, String, Option<bpe_core::PulseSource>),
+    /// The setting (a slot's, or the thing's own with `None`) starts varying across the balls
+    /// (true) or stops (false), for every selected thing that has the setting.
+    Vary(Option<SlotId>, String, bool),
     /// A card for a slot the thing doesn't have yet, with its kind's starting settings, for
     /// every selected thing of the kind without one.
     AddSlot(SlotId),
@@ -619,6 +622,18 @@ pub fn show(
                 }
                 any
             }
+            Edit::Vary(slot, key, on) => {
+                let mut any = false;
+                for t in reached_key(scene, &selected, id, slot, &key) {
+                    let a = Address { thing: t, slot, key: key.clone() };
+                    any |= if on {
+                        scene.vary_at(&a).is_none() && scene.start_varying(reg, &a).is_ok()
+                    } else {
+                        scene.stop_varying(&a)
+                    };
+                }
+                any
+            }
             Edit::AddSlot(slot) => {
                 let mut any = false;
                 for t in reached(scene, &selected, id, None) {
@@ -1018,6 +1033,7 @@ fn slot_grid(ui: &mut Ui, inspector: &mut Inspector, cx: &OwnCx, slot: SlotId, c
     let follow_menu = crate::follow::menu(scene);
     let follow_now = |key: &str| crate::follow::now(scene, &at(key));
     let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now };
+    let vary = crate::vary::VaryCx::of(scene, reg, time, id, &at);
     let grid = GridCx {
         choices: cx.choices,
         marks: &marks,
@@ -1026,12 +1042,14 @@ fn slot_grid(ui: &mut Ui, inspector: &mut Inspector, cx: &OwnCx, slot: SlotId, c
         label_width: cx.label_width,
         track: style::colour_of(scene, id),
         follow: Some(&follow),
+        vary: vary.as_ref(),
     };
     let out = settings_grid(ui, ("slot", id, slot), defs, get, &grid);
     fold_groups(inspector, (id, Some(slot)), &out.folds);
     edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key.into(), value)));
     edits.extend(out.new_keys.into_iter().map(|key| Edit::NewKey(Some(slot), key.into())));
     edits.extend(out.follows.into_iter().map(|(key, source)| Edit::Follow(Some(slot), key.into(), source)));
+    edits.extend(out.varies.into_iter().map(|(key, v)| crate::vary::edit(Some(slot), key, v)));
 }
 
 /// A grid of some of a thing's own settings, with folding groups. Its edits are pushed to
@@ -1055,6 +1073,7 @@ fn own_grid(
     let follow_menu = crate::follow::menu(scene);
     let follow_now = |key: &str| crate::follow::now(scene, &own(key));
     let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now };
+    let vary = crate::vary::VaryCx::of(scene, reg, time, id, &own);
     let grid_cx = GridCx {
         choices: cx.choices,
         marks: &marks,
@@ -1063,12 +1082,14 @@ fn own_grid(
         label_width: cx.label_width,
         track: style::colour_of(scene, id),
         follow: Some(&follow),
+        vary: vary.as_ref(),
     };
     let out = settings_grid(ui, grid, defs, get, &grid_cx);
     fold_groups(inspector, (id, None), &out.folds);
     edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetOwn(key.into(), value)));
     edits.extend(out.new_keys.into_iter().map(|key| Edit::NewKey(None, key.into())));
     edits.extend(out.follows.into_iter().map(|(key, source)| Edit::Follow(None, key.into(), source)));
+    edits.extend(out.varies.into_iter().map(|(key, v)| crate::vary::edit(None, key, v)));
 }
 
 /// One of the root's cards: the root's own settings whose group is `name`, under a title that
