@@ -13,9 +13,9 @@ use crate::{ShapeVoice, TempoMap, VoiceSource};
 use bpe_core::{Address, LayerId, Resolved, ResolvedSlot, Scene, Settings, SlotId, ThingId};
 use bpe_dsp::{TableSet, WarpModeId, WaveBank, WaveShape};
 use bpe_kit::sound::{
-    ADSR, AdsrSettings, DISTANCE, DISTORTION, DistanceSettings, DistortionSettings, FILTER, FilterSettings, HIT,
-    HitSettings, LFO, LfoSettings, MODULATION, MixerSettings, ModulationSettings, OscSettings, Slope, VOICE,
-    VoiceSettings, Wave,
+    ADSR, AdsrSettings, CHAIN_KINDS, ChainEqSettings, DISTANCE, DistanceSettings, DistortionSettings, EQ, FILTER,
+    FilterSettings, HIT, HitSettings, LFO, LfoSettings, MODULATION, MixerSettings, ModulationSettings, OscSettings,
+    Slope, VOICE, VoiceSettings, Wave,
 };
 use bpe_kit::things::shape::ShapeSettings;
 use bpe_kit::{Kit, SceneSettings};
@@ -249,7 +249,7 @@ pub fn routable(card: &bpe_core::Slot, key: &str) -> bool {
     let chain: Vec<(LayerId, &str)> = card
         .layers
         .iter()
-        .filter(|l| [MODULATION, FILTER, DISTORTION].contains(&l.kind.as_str()))
+        .filter(|l| CHAIN_KINDS.contains(&l.kind.as_str()))
         .map(|l| (l.id, l.kind.as_str()))
         .collect();
     let mods = knobs::ModIds {
@@ -325,6 +325,7 @@ fn chain_of(scene: &Scene, id: ThingId, card: &ResolvedSlot, heard: [bool; 2]) -
                     let f = FilterSettings::from_params(&p);
                     LayerType::Filter(filter_type(f.kind), f.slope == Slope::Db24)
                 }
+                EQ => LayerType::Eq(crate::fx_chain::bands_of(ChainEqSettings::from_params(&p).bands())),
                 _ => {
                     let d = DistortionSettings::from_params(&p);
                     LayerType::Distortion(shaper_type(d.kind), d.quality.factor())

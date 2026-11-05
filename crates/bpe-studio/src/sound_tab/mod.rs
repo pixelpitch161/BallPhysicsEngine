@@ -44,6 +44,8 @@ pub struct SoundTab {
     pub hot: Option<bpe_core::LayerId>,
     /// What the pointer does in an LFO's drawn shape.
     pub lfo_tool: mods::lfo_view::Tool,
+    /// Each EQ layer's picked, dragged and right-clicked band.
+    pub eq: std::collections::BTreeMap<(ThingId, bpe_core::LayerId), crate::eq_curve::Pick>,
 }
 
 /// A change the tab asks for, applied once it is drawn.
@@ -605,6 +607,11 @@ pub(crate) mod tests {
     /// The studio's inspector beside an empty middle, in a wide window, each frame's edit
     /// recorded as the studio records it. The state keeps the inspector's width as drawn.
     pub fn studio_harness(selected: ThingId, sound: bool) -> Harness<'static, (Studio, f32)> {
+        studio_harness_stepping(selected, sound, 0.25)
+    }
+
+    /// [`studio_harness`] with `dt` seconds a step (a double-click needs steps under 0.15 s).
+    pub fn studio_harness_stepping(selected: ThingId, sound: bool, dt: f32) -> Harness<'static, (Studio, f32)> {
         let mut studio = Studio::headless();
         studio.selection.set(selected);
         if sound {
@@ -612,6 +619,7 @@ pub(crate) mod tests {
         }
         let mut h = Harness::builder()
             .with_size(egui::vec2(1500.0, 1400.0))
+            .with_step_dt(dt)
             .with_max_steps(120)
             .allow_missing_glyphs()
             .with_context_setup(style::apply)

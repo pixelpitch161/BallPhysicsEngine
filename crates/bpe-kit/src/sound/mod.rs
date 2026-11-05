@@ -12,8 +12,8 @@ pub mod voice;
 
 pub use adsr::{ADSR, AdsrKind, AdsrSettings};
 pub use chain::{
-    CHAIN_KINDS, DISTORTION, DistKind, DistortionSettings, FILTER, FilterKind, FilterSettings, MAX_CHAIN, MODULATION,
-    ModKind, ModulationSettings, Quality, Slope, Source, layer_summary,
+    CHAIN_KINDS, ChainEqSettings, DISTORTION, DistKind, DistortionSettings, EQ, FILTER, FilterKind, FilterSettings,
+    MAX_CHAIN, MODULATION, ModKind, ModulationSettings, Quality, Slope, Source, layer_summary,
 };
 pub use mixer::{BUSES, BusSettings, MIXER, MixerKind, MixerSettings};
 pub use mods::{
@@ -41,4 +41,5 @@ pub fn register(reg: &mut Registry) {
     reg.add_layer(chain::ModulationKind);
     reg.add_layer(chain::FilterLayerKind);
     reg.add_layer(chain::DistortionKind);
+    reg.add_layer(chain::EqLayerKind);
 }

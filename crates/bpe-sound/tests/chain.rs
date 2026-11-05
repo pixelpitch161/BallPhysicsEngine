@@ -385,3 +385,96 @@ fn chain_patch_golden() {
     assert_eq!(line, expected, "the chain patch sounds different");
     assert_eq!(render(), out, "the same every time");
 }
+
+/// B5 (987.8 Hz): the note an EQ test plays, a held sine on Osc A.
+const B5: u8 = 83;
+const B5_HZ: f64 = 987.766_6;
+
+fn sine_b5(kit: &Kit) -> Scene {
+    voiced(kit, |v| {
+        v.a.wave = Wave::Sine;
+        v.notes_slots = vec![bpe_core::NoteSlot { notes: vec![B5], order_clicked: vec![] }];
+    })
+}
+
+fn bell(gain: f64) -> [(&'static str, Value); 4] {
+    [("band5_on", Value::Bool(true)), ("band5_freq", num(B5_HZ)), ("band5_gain", num(gain)), ("band5_q", num(1.0))]
+}
+
+#[test]
+fn an_eq_bell_lifts_its_note() {
+    let kit = kit();
+    let plain = play(&sine_b5(&kit), &kit, 300);
+    let mut s = sine_b5(&kit);
+    add(&kit, &mut s, 0, bpe_kit::sound::EQ, &bell(12.0));
+    let lifted = play(&s, &kit, 300);
+    let settled = 9_600..;
+    let gain = 20.0 * (rms(&lifted[settled.clone()]) / rms(&plain[settled.clone()])).log10();
+    assert!((gain - 12.0).abs() < 0.3, "a +12 dB bell on the note lifts it 12 dB: {gain}");
+    // A cut takes it down; Mix 0 leaves it as it was.
+    let mut cut = sine_b5(&kit);
+    add(&kit, &mut cut, 0, bpe_kit::sound::EQ, &bell(-12.0));
+    let gain = 20.0 * (rms(&play(&cut, &kit, 300)[settled.clone()]) / rms(&plain[settled])).log10();
+    assert!((gain + 12.0).abs() < 0.3, "{gain}");
+    let mut dry = sine_b5(&kit);
+    let mut set = bell(12.0).to_vec();
+    set.push(("mix", num(0.0)));
+    add(&kit, &mut dry, 0, bpe_kit::sound::EQ, &set);
+    assert_eq!(play(&dry, &kit, 100), plain[..100 * BLOCK], "Mix 0 lets the sound through untouched");
+}
+
+#[test]
+fn eq_knobs_take_routes_and_keys() {
+    let kit = kit();
+    let mut s = sine_b5(&kit);
+    let eq = add(&kit, &mut s, 0, bpe_kit::sound::EQ, &bell(0.0));
+    let card = card(&s).clone();
+    for key in ["band5_gain", "band1_freq", "band8_q", "output", "mix"] {
+        assert!(bpe_sound::patch::routable(&card, &layered_key(eq, key)), "{key} can be modulated");
+    }
+    assert!(!bpe_sound::patch::routable(&card, &layered_key(eq, "band5_on")));
+    // A key on the band's gain is heard.
+    let shape = shape_of(&s);
+    let a = Address::on(shape, SlotId::Sound, &layered_key(eq, "band5_gain"));
+    s.set_key(&kit.registry, &a, 0.0, num(12.0)).unwrap();
+    s.set_key(&kit.registry, &a, 10.0, num(12.0)).unwrap();
+    let plain = play(&sine_b5(&kit), &kit, 300);
+    let keyed = play(&s, &kit, 300);
+    let gain = 20.0 * (rms(&keyed[9_600..]) / rms(&plain[9_600..])).log10();
+    assert!((gain - 12.0).abs() < 0.3, "the keyed gain is heard: {gain}");
+}
+
+#[test]
+fn a_patch_change_keeps_a_ringing_eq() {
+    let kit = kit();
+    let mut s = voiced(&kit, |_| {});
+    let eq = add(
+        &kit,
+        &mut s,
+        0,
+        bpe_kit::sound::EQ,
+        &[("band4_on", Value::Bool(true)), ("band4_gain", num(18.0)), ("band4_q", num(12.0))],
+    );
+    let (shape, ball) = (shape_of(&s), ball_of(&s));
+    let resolved = resolve_scene(&s, &kit.registry);
+    let p = Playback::new(&s, &resolved, kit.sims.clone());
+    // Two voices playing the same: one goes on as it is, the other is taken over by a new patch.
+    let mut same = voice(&s, &kit);
+    let mut v = voice(&s, &kit);
+    let first = [(0, hit(ball, 0, shape, 0))];
+    let before = run(&mut v, p.world(), 0, 50, &first);
+    assert_eq!(run(&mut same, p.world(), 0, 50, &first), before);
+    let a = Address::on(shape, SlotId::Sound, &layered_key(eq, "band4_gain"));
+    s.set_at(&kit.registry, &a, num(17.9)).unwrap();
+    let mut next = voice(&s, &kit);
+    next.adopt(&mut v);
+    let after = run(&mut next, p.world(), 50, 5, &[]);
+    let going_on = run(&mut same, p.world(), 50, 5, &[]);
+    let jump = (after[0] - before[before.len() - 1]).abs();
+    let step = before.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
+    assert!(jump <= 2.0 * step, "no click: {jump} against steps of {step}");
+    // The ringing bell carried on: the sound is what the old patch would have made, near enough.
+    let peak = going_on.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    let worst = after.iter().zip(&going_on).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+    assert!(worst < 0.05 * peak, "kept ringing: {worst} against {peak}");
+}

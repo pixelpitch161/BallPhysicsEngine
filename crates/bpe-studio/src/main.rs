@@ -5,6 +5,7 @@
 
 mod app;
 mod audio_out;
+mod eq_curve;
 mod export_window;
 mod follow;
 mod gradient_bar;
