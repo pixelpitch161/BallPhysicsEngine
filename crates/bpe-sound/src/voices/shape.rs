@@ -96,6 +96,8 @@ pub struct LfoSpec {
     pub id: LayerId,
     pub settings: LfoSettings,
     pub seed: u64,
+    /// The drawn shape, as the engine reads it.
+    pub curve: crate::mods::lfo::Curve,
 }
 
 /// One Distance layer that runs.
@@ -151,6 +153,8 @@ pub(crate) fn lfo_params(spec: &LfoSpec, i: usize, kv: &[f32], tempo: &crate::Te
     let rate = crate::mods::lfo_rate_hz(&spec.settings, at(k::LFO_RATE) as f64, tempo);
     LfoParams {
         wave: crate::mods::lfo::wave_of(spec.settings.shape),
+        curve: spec.curve.clone(),
+        once: spec.settings.once,
         rate_hz: rate,
         phase: at(k::LFO_PHASE) as f64 / 360.0,
         fade_in: at(k::LFO_FADE_IN).max(0.0) as f64,
@@ -639,6 +643,20 @@ impl ShapeVoice {
             .filter(|&i| self.notes.meta[i].active && !self.notes.meta[i].fading)
             .map(|i| (self.notes.slots[i].note, self.watched[i]))
             .collect()
+    }
+
+    /// LFO `layer`'s place in its shape now (0..1): a shared one's own, a per-note one's in the
+    /// newest sounding note. `None` for another layer, or a per-note LFO with no note.
+    pub fn lfo_position(&self, layer: LayerId) -> Option<f32> {
+        let m = &self.spec.mods;
+        let i = m.lfos.iter().take(MAX_EACH).position(|x| x.id == layer)?;
+        if !m.lfo_per_note(i) {
+            return Some(self.lfo[i].position());
+        }
+        (0..CAPACITY)
+            .filter(|&n| self.notes.meta[n].active && !self.notes.meta[n].fading)
+            .max_by_key(|&n| self.notes.meta[n].started)
+            .map(|n| self.notes.slots[n].lfo[i].position())
     }
 
     /// Modulator `layer`'s value now, 0..1: a shared one's own, a per-note one's largest among
@@ -1937,13 +1955,13 @@ impl VoiceSource for ShapeVoice {
         }
     }
 
-    fn each_mod(&self, f: &mut dyn FnMut(LayerId, f32)) {
+    fn each_mod(&self, f: &mut dyn FnMut(LayerId, f32, f32)) {
         let m = &self.spec.mods;
         let envs = self.spec.envs.iter().take(MAX_ENVS).map(|e| e.id);
         let others = m.lfos.iter().map(|x| x.id).chain(m.dists.iter().map(|x| x.id)).chain(m.hits.iter().map(|x| x.id));
         for layer in envs.chain(others) {
             if let Some(v) = self.mod_value(layer) {
-                f(layer, v);
+                f(layer, v, self.lfo_position(layer).unwrap_or(f32::NAN));
             }
         }
     }
@@ -1954,6 +1972,12 @@ impl VoiceSource for ShapeVoice {
 
     fn playing_slot(&self) -> Option<usize> {
         Some(self.clock.current())
+    }
+
+    fn sounding_notes(&self) -> u128 {
+        (0..CAPACITY)
+            .filter(|&i| self.notes.meta[i].active && !self.notes.meta[i].fading)
+            .fold(0, |mask, i| mask | 1u128 << (self.notes.slots[i].note & 127))
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {

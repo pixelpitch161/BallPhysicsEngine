@@ -41,6 +41,33 @@ pub struct NotesState {
     /// The chord presets' options.
     pub voicing: Voicing,
     pub add_bass: bool,
+    /// Until when (the editor's clock, seconds) each note of each shape stays lit after it
+    /// sounded, so even a short note is seen.
+    pub lit_until: BTreeMap<ThingId, Box<[f64; 128]>>,
+}
+
+/// How long a note stays lit after it was last heard sounding.
+pub const LIT_FOR: f64 = 0.15;
+
+impl NotesState {
+    /// Notes `sounding` (bit n for MIDI note n) on `shape` stay lit until `now + LIT_FOR`;
+    /// returns the notes lit at `now`.
+    pub fn light(&mut self, shape: ThingId, sounding: u128, now: f64) -> u128 {
+        if sounding == 0 && !self.lit_until.contains_key(&shape) {
+            return 0;
+        }
+        let until = self.lit_until.entry(shape).or_insert_with(|| Box::new([f64::NEG_INFINITY; 128]));
+        let mut lit = 0u128;
+        for (n, t) in until.iter_mut().enumerate() {
+            if sounding >> n & 1 == 1 {
+                *t = now + LIT_FOR;
+            }
+            if *t > now {
+                lit |= 1 << n;
+            }
+        }
+        lit
+    }
 }
 
 /// The slots of the card (one empty slot when it has none).
@@ -190,7 +217,9 @@ pub fn choice_menu<T: bpe_core::Choice + Default + PartialEq + Copy>(
 }
 
 /// Draws the Notes panel.
-pub fn show(ui: &mut Ui, cx: &mut TabCx, state: &mut NotesState, playing: Option<usize>) {
+/// `playing` is the slot playing now and `sounding` the notes lit as they play (bit n for MIDI
+/// note n).
+pub fn show(ui: &mut Ui, cx: &mut TabCx, state: &mut NotesState, playing: Option<usize>, sounding: u128) {
     let clip = cx.notes_clip.clone();
     panel(ui, |ui| {
         let (root, scale) = key(cx);
@@ -208,7 +237,7 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx, state: &mut NotesState, playing: Option
         let geom = KeyGeom::new(left + GUTTER, (width - GUTTER - MARKER_W).max(60.0), low, n_oct);
         let mut rows = slots(cx);
         let picked = state.picked.get(&cx.id).copied().unwrap_or(0).min(rows.len() - 1);
-        let ops = grid::show(ui, cx, state, &rows, picked, geom, playing);
+        let ops = grid::show(ui, cx, state, &rows, picked, geom, playing, sounding);
         // A row number clicked picks that row for the keyboard now.
         let picked = state.picked.get(&cx.id).copied().unwrap_or(0).min(rows.len() - 1);
         // The keyboard, lined up with the grid's columns.
@@ -220,7 +249,7 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx, state: &mut NotesState, playing: Option
         let lit = rows[picked].notes.clone();
         let in_key = |n: u8| scale != Scale::Chromatic && in_scale(root, scale, n);
         let mut ops = ops;
-        if let Some(note) = keyboard_at(ui, keys_rect, geom, &lit, cx.colour, &in_key) {
+        if let Some(note) = keyboard_at(ui, keys_rect, geom, &lit, sounding, cx.colour, &in_key) {
             ops.push(RowOp::Toggle(picked, note));
             cx.edits.push(TabEdit::Audition(note));
         }
@@ -434,3 +463,19 @@ mod tests {
 
 #[cfg(test)]
 mod ui_tests;
+
+#[cfg(test)]
+mod lit_tests {
+    use super::*;
+
+    #[test]
+    fn a_note_stays_lit_a_moment_after_it_sounded() {
+        let mut s = NotesState::default();
+        let shape = ThingId(4);
+        assert_eq!(s.light(shape, 0, 0.0), 0);
+        assert_eq!(s.light(shape, 1 << 60, 1.0), 1 << 60);
+        assert_eq!(s.light(shape, 0, 1.0 + LIT_FOR / 2.0), 1 << 60, "still lit");
+        assert_eq!(s.light(shape, 1 << 62, 1.0 + LIT_FOR * 1.5), 1 << 62, "60 went out");
+        assert_eq!(s.light(ThingId(5), 0, 2.0), 0, "another shape");
+    }
+}

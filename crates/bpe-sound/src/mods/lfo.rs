@@ -2,19 +2,31 @@
 
 use super::{BLOCK_S, ModCx, Modulator, NoteCx};
 use crate::{BLOCK, SAMPLE_RATE, TempoMap};
-use bpe_dsp::lfo::{LfoWave, fade_at, shape_at, smooth_coefficient};
+use bpe_dsp::lfo::{LfoWave, fade_at, smooth_coefficient, wave_at, wave_end};
 use bpe_kit::sound::{LfoSettings, LfoShape, LfoStart};
+use std::sync::{Arc, OnceLock};
 
 /// The wave an LFO shape plays.
 pub fn wave_of(shape: LfoShape) -> LfoWave {
     match shape {
-        LfoShape::Sine => LfoWave::Sine,
-        LfoShape::Triangle => LfoWave::Triangle,
-        LfoShape::Saw => LfoWave::Saw,
-        LfoShape::Square => LfoWave::Square,
+        LfoShape::Drawn => LfoWave::Curve,
         LfoShape::Random => LfoWave::Random,
         LfoShape::SmoothRandom => LfoWave::SmoothRandom,
     }
+}
+
+/// A drawn shape's points as the engine reads them, shared without copying.
+pub type Curve = Arc<[[f32; 3]]>;
+
+/// No points (shared, so making one never allocates after the first).
+pub fn no_curve() -> Curve {
+    static EMPTY: OnceLock<Curve> = OnceLock::new();
+    EMPTY.get_or_init(|| Arc::from(Vec::new())).clone()
+}
+
+/// The drawn shape of `s` (allocates: build it with the patch).
+pub fn curve_of(s: &LfoSettings) -> Curve {
+    Arc::from(bpe_kit::sound::curve_numbers(&s.curve))
 }
 
 /// The LFO's rate in Hz: the Rate knob as it is now (`rate_hz`, keys and routes applied), or,
@@ -33,9 +45,13 @@ pub fn lfo_rate_hz(s: &LfoSettings, rate_hz: f64, tempo: &TempoMap) -> f64 {
 }
 
 /// An LFO's settings for one block.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LfoParams {
     pub wave: LfoWave,
+    /// The drawn shape (for [`LfoWave::Curve`]).
+    pub curve: Curve,
+    /// Plays one cycle and holds its end.
+    pub once: bool,
     pub rate_hz: f64,
     /// Where it starts, in cycles (0..1).
     pub phase: f64,
@@ -50,6 +66,8 @@ impl Default for LfoParams {
     fn default() -> Self {
         Self {
             wave: LfoWave::Sine,
+            curve: no_curve(),
+            once: false,
             rate_hz: 2.0,
             phase: 0.0,
             fade_in: 0.0,
@@ -61,10 +79,13 @@ impl Default for LfoParams {
 }
 
 impl LfoParams {
-    /// The params of `s` with the rate (in Hz, already worked out) and the knobs as given.
+    /// The params of `s` with the rate (in Hz, already worked out) and the knobs as given
+    /// (allocates the curve: for tests and building).
     pub fn of(s: &LfoSettings, rate_hz: f64) -> Self {
         LfoParams {
             wave: wave_of(s.shape),
+            curve: curve_of(s),
+            once: s.once,
             rate_hz,
             phase: s.phase as f64 / 360.0,
             fade_in: s.fade_in as f64,
@@ -76,9 +97,22 @@ impl LfoParams {
 }
 
 /// The value an LFO with `p` has `since` seconds after it started, at `cycles` cycles in
-/// (not counting Phase): the same sum the engine and Follow sound both use.
+/// (not counting Phase): the same sum the engine and Follow sound both use. Played once, it
+/// holds where the cycle ends.
 pub fn lfo_value(p: &LfoParams, cycles: f64, since: f64, seed: u64) -> f32 {
-    shape_at(p.wave, cycles + p.phase, seed) * fade_at(since, p.delay, p.fade_in)
+    let v = if p.once && cycles >= 1.0 {
+        wave_end(p.wave, &p.curve, p.phase, seed)
+    } else {
+        wave_at(p.wave, &p.curve, cycles + p.phase, seed)
+    };
+    v * fade_at(since, p.delay, p.fade_in)
+}
+
+/// Where in its shape (0..1 across one cycle) an LFO with `p` is at `cycles` cycles in, for the
+/// editor's playhead.
+pub fn lfo_position(p: &LfoParams, cycles: f64) -> f32 {
+    let at = if p.once && cycles >= 1.0 { p.phase + 1.0 - 1e-9 } else { cycles + p.phase };
+    if at.is_finite() { (at - at.floor()) as f32 } else { 0.0 }
 }
 
 /// The random seed of LFO `layer` on shape `shape`.
@@ -124,6 +158,11 @@ impl LfoMod {
 
     pub fn params(&self) -> &LfoParams {
         &self.p
+    }
+
+    /// Where in its shape it is now (0..1 across a cycle), for the editor's playhead.
+    pub fn position(&self) -> f32 {
+        lfo_position(&self.p, self.cycles)
     }
 
     /// Takes over another's place in its wave (a patch swap), so it carries on smoothly.

@@ -275,10 +275,14 @@ fn zone_of(v: &VoiceSettings, mods: &ModsSpec) -> Option<usize> {
 fn mods_of(id: ThingId, card: &ResolvedSlot, routes: &[bpe_core::ModRoute]) -> ModsSpec {
     let of = |kind: &'static str| card.layers.iter().filter(move |l| l.kind == kind).take(knobs::MAX_EACH);
     let lfos: Vec<LfoSpec> = of(LFO)
-        .map(|l| LfoSpec {
-            id: l.id,
-            settings: LfoSettings::from_params(&card.layer_params(l.id)),
-            seed: crate::mods::lfo::seed_of(id, l.id),
+        .map(|l| {
+            let settings = LfoSettings::from_params(&card.layer_params(l.id));
+            LfoSpec {
+                id: l.id,
+                curve: crate::mods::lfo::curve_of(&settings),
+                settings,
+                seed: crate::mods::lfo::seed_of(id, l.id),
+            }
         })
         .collect();
     let dists: Vec<DistSpec> = of(DISTANCE)

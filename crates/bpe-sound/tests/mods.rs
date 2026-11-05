@@ -2,7 +2,8 @@
 
 use bpe_core::{Scene, Settings, SlotId, ThingId, Value};
 use bpe_kit::sound::{
-    DistanceSettings, Follows, HitPick, HitSettings, LfoSettings, LfoShape, LfoStart, Measure, NoteFeel, NoteLength,
+    DistanceSettings, Follows, HitPick, HitSettings, LfoPreset, LfoSettings, LfoShape, LfoStart, Measure, NoteFeel,
+    NoteLength,
 };
 use bpe_kit::{Kit, kit, new_scene, resolve_scene};
 use bpe_runtime::{Party, Playback};
@@ -52,7 +53,7 @@ fn free_lfo_phase_matches_after_seek() {
     let scene = new_scene(&kit.registry);
     let shape = shape_of(&scene);
     let pb = playback(&scene, &kit);
-    let s = LfoSettings { shape: LfoShape::Triangle, rate_hz: 3.3, phase: 40.0, ..LfoSettings::default() };
+    let s = LfoSettings { curve: LfoPreset::Triangle.points(), rate_hz: 3.3, phase: 40.0, ..LfoSettings::default() };
     let tempo = TempoMap::default();
     let mut whole = LfoMod::new(9);
     whole.set(&s, &tempo, s.rate_hz as f64);
@@ -68,6 +69,43 @@ fn free_lfo_phase_matches_after_seek() {
     let t = 400.0 * BLOCK as f64 / SAMPLE_RATE as f64;
     let want = bpe_dsp::lfo::shape_at(bpe_dsp::lfo::LfoWave::Triangle, 3.3 * t + 40.0 / 360.0, 9);
     assert!((all[399] - want).abs() < 1e-5, "{} against {want}", all[399]);
+}
+
+#[test]
+fn a_drawn_lfo_played_once_holds_its_end() {
+    let kit = kit();
+    let scene = new_scene(&kit.registry);
+    let shape = shape_of(&scene);
+    let pb = playback(&scene, &kit);
+    // A ramp down at 4 cycles a second, once: after a quarter second it rests at the bottom.
+    let s = LfoSettings { curve: LfoPreset::SawDown.points(), rate_hz: 4.0, once: true, ..LfoSettings::default() };
+    let tempo = TempoMap::default();
+    let mut m = LfoMod::new(2);
+    m.set(&s, &tempo, 4.0);
+    let v = run(&mut m, &pb, shape, 0, 400);
+    let block_s = BLOCK as f64 / SAMPLE_RATE as f64;
+    let at = |t: f64| v[(t / block_s) as usize - 1];
+    assert!((at(0.125) - 0.5).abs() < 0.02, "half way down: {}", at(0.125));
+    assert_eq!(at(0.5), 0.0, "held at the end");
+    assert_eq!(at(5.0), 0.0);
+    assert_eq!(m.position(), 1.0 - 1e-9f64 as f32, "the playhead rests at the end");
+    // Without Once it goes round again.
+    let mut m = LfoMod::new(2);
+    m.set(&LfoSettings { once: false, ..s }, &tempo, 4.0);
+    let v = run(&mut m, &pb, shape, 0, 400);
+    assert!(v.iter().skip(200).any(|x| *x > 0.5));
+}
+
+#[test]
+fn the_sine_preset_follows_a_sine() {
+    let s = LfoSettings::default();
+    let n = bpe_kit::sound::curve_numbers(&s.curve);
+    for i in 0..=400 {
+        let x = i as f64 / 400.0;
+        let want = bpe_dsp::lfo::shape_at(bpe_dsp::lfo::LfoWave::Sine, x, 0);
+        let got = bpe_dsp::lfo::curve_at(&n, x);
+        assert!((got - want).abs() < 0.015, "at {x}: {got} against {want}");
+    }
 }
 
 #[test]
@@ -99,7 +137,7 @@ fn restart_lfo_starts_from_phase_on_each_hit_and_fades_in() {
     let shape = shape_of(&scene);
     let pb = playback(&scene, &kit);
     let s = LfoSettings {
-        shape: LfoShape::Saw,
+        curve: LfoPreset::SawUp.points(),
         rate_hz: 1.0,
         start: LfoStart::Restart,
         delay: 0.1,

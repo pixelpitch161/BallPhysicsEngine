@@ -42,6 +42,8 @@ pub struct SoundTab {
     pub notes: notes::NotesState,
     /// The modulator whose rings are lit (its tile hovered or its handle dragged).
     pub hot: Option<bpe_core::LayerId>,
+    /// What the pointer does in an LFO's drawn shape.
+    pub lfo_tool: mods::lfo_view::Tool,
 }
 
 /// A change the tab asks for, applied once it is drawn.
@@ -446,7 +448,14 @@ fn body(ui: &mut Ui, inspector: &mut Inspector, cx: &mut TabCx) {
         (Some(m), true) => m.shape_slot(cx.id.0),
         _ => None,
     };
-    notes::show(ui, cx, &mut inspector.sound.notes, playing);
+    // Notes sound while stopped too (keys clicked), so they are read whenever there is sound.
+    let heard = inspector.meters.as_ref().map_or(0, |m| m.take_notes(cx.id.0));
+    let now = ui.input(|i| i.time);
+    let sounding = inspector.sound.notes.light(cx.id, heard, now);
+    if sounding != 0 {
+        ui.ctx().request_repaint();
+    }
+    notes::show(ui, cx, &mut inspector.sound.notes, playing, sounding);
     ui.add_space(8.0);
     let level = inspector.meters.as_ref().map_or(f32::NEG_INFINITY, |m| m.take_shape(cx.id.0));
     if level > f32::NEG_INFINITY {

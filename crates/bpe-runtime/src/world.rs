@@ -833,6 +833,15 @@ impl Hasher {
                 self.bytes(&[12]);
                 self.bytes(format!("{n:?}").as_bytes());
             }
+            Value::Curve(c) => {
+                self.bytes(&[13]);
+                self.bytes(&(c.len() as u64).to_le_bytes());
+                for p in c {
+                    self.f32(p.x);
+                    self.f32(p.y);
+                    self.f32(p.bend);
+                }
+            }
             Value::Strokes(s) => {
                 self.bytes(&[8]);
                 self.bytes(&s.hash64().to_le_bytes());

@@ -4,6 +4,7 @@
 pub mod adsr;
 pub mod chain;
 pub mod fx;
+pub mod lfo_curve;
 pub mod mixer;
 pub mod mods;
 pub mod notes;
@@ -16,8 +17,9 @@ pub use chain::{
 };
 pub use mixer::{BUSES, BusSettings, MIXER, MixerKind, MixerSettings};
 pub use mods::{
-    DISTANCE, DistanceSettings, Follows, HIT, HitPick, HitSettings, LFO, LfoSettings, LfoShape, LfoStart, MAX_OF_EACH,
-    MOD_KINDS, Measure, NoteFeel, NoteLength, add_modulator, count_of, kind_name, numbered_name, turn_on_distance,
+    DISTANCE, DistanceSettings, Follows, HIT, HitPick, HitSettings, LFO, LfoPreset, LfoSettings, LfoShape, LfoStart,
+    MAX_OF_EACH, MOD_KINDS, Measure, NoteFeel, NoteLength, add_modulator, count_of, curve_numbers, kind_name,
+    numbered_name, turn_on_distance,
 };
 pub use notes::{BeatsOrBars, Change, MAX_SLOTS, NOTE_NAMES, Plays, Root, Scale, SlotOrder, StrumDir};
 pub use voice::{

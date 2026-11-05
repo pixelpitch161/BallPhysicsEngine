@@ -113,7 +113,12 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx, which: Osc, tab: &mut super::SoundTab) 
         let mode: WarpMode = cx.choice(&key("warp_mode"));
         let warp = (cx.number(&key("warp")) / 100.0) as f32;
         let id = egui::Id::unique(("wave view", cx.id, p));
-        wave_view::show(ui, id, &format!("{} wave", which.name()), wave, mode, warp);
+        let phase = wave_view::PhaseMark {
+            degrees: cx.number(&key("phase")) as f32,
+            spread: (cx.number(&key("random_phase")) / 100.0) as f32,
+            colour: cx.colour,
+        };
+        wave_view::show(ui, id, &format!("{} wave", which.name()), wave, mode, warp, Some(phase));
         let tonal = wave != Wave::Noise;
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;

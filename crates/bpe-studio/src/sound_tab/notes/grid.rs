@@ -60,6 +60,7 @@ pub fn show(
     picked: usize,
     geom: KeyGeom,
     playing: Option<usize>,
+    sounding: u128,
 ) -> Vec<RowOp> {
     let mut ops = Vec::new();
     let width = ui.available_width();
@@ -137,7 +138,13 @@ pub fn show(
             row_menu(&r, i, rows.len(), has_clip, &mut ops);
             let on = slot.notes.contains(&note);
             let dot = Rect::from_center_size(Pos2::new(x, rect.center().y), Vec2::splat(10.0));
-            if on {
+            let lit_row = playing.map_or(is_picked, |p| p == i);
+            if on && lit_row && super::super::keys::in_mask(sounding, note) {
+                // Sounding now: lit white, ringed in the shape's colour.
+                let big = dot.expand(2.0);
+                painter.rect_filled(big, style::RADIUS, style::TEXT_STRONG);
+                painter.rect_stroke(big, style::RADIUS, Stroke::new(1.5, cx.colour), egui::StrokeKind::Outside);
+            } else if on {
                 painter.rect_filled(dot, style::RADIUS, if is_picked { cx.colour } else { style::MUTED });
             } else if r.hovered() {
                 painter.rect_stroke(dot, style::RADIUS, Stroke::new(1.0, style::FAINT), egui::StrokeKind::Inside);
