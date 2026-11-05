@@ -438,3 +438,27 @@ fn the_timeline_shows_rounds_fired_and_those_still_to_come() {
     let r = resolved(&scene, &kit);
     assert!(round_marks(&World::build(&scene, &r, &kit.sims), id, 10.0).is_empty(), "it can't know when");
 }
+
+#[test]
+fn each_ball_knows_its_place_in_the_spreads() {
+    let (scene, id, kit) = scene_with(Vec2::ZERO, |s| {
+        s.fire_when = FireWhen::Every;
+        s.every = 0.5;
+        s.rounds = 3;
+        s.count = 4;
+    });
+    let r = resolved(&scene, &kit);
+    let (world, _) = run(&scene, &r, &kit, 1.2);
+    let spreads: Vec<bpe_core::BallSpread> = (0..12).map(|row| spread_in(&world, id, row).unwrap()).collect();
+    assert_eq!(spreads.iter().map(|s| s.round).collect::<Vec<_>>()[..], [[0.0; 4], [0.5; 4], [1.0; 4]].concat()[..]);
+    assert_eq!(spreads.iter().map(|s| s.number).collect::<Vec<_>>(), (0..12).collect::<Vec<_>>());
+    assert!(spreads.iter().all(|s| s.count == 12 && !s.alone));
+    // Four all round from straight up: up, right, down, left.
+    let launch: Vec<f32> = spreads[..4].iter().map(|s| s.launch).collect();
+    for (got, want) in launch.iter().zip([0.75, 0.0, 0.25, 0.5]) {
+        assert!((got - want).abs() < 1e-4 || (got - want).abs() > 0.9999, "{launch:?}");
+    }
+    assert_eq!(spreads[3].place, 0.0, "the left one");
+    assert_eq!(spreads[1].place, 1.0, "the right one");
+    assert!(spread_in(&world, id, 12).is_none());
+}

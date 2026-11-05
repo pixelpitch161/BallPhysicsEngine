@@ -5,7 +5,7 @@ pub mod rows;
 pub mod shapes;
 pub mod sim;
 
-use bpe_core::{Choice, SettingDef, Settings, SlotId, ThingKind};
+use bpe_core::{Choice, SettingDef, Settings, SlotId, ThingKind, VaryUse};
 use glam::Vec2;
 
 pub struct BallsKind;
@@ -259,5 +259,13 @@ impl ThingKind for BallsKind {
     }
     fn default_slots(&self) -> &'static [SlotId] {
         DEFAULT_SLOTS
+    }
+    /// Each ball of a group can have a size of its own, and a launch speed of its own.
+    fn vary(&self, key: &str) -> Option<VaryUse> {
+        match key {
+            "radius" => Some(VaryUse::Live),
+            "velocity" => Some(VaryUse::AtLaunch),
+            _ => None,
+        }
     }
 }

@@ -126,6 +126,43 @@ pub fn emitter_state(world: &World, thing: ThingId) -> Option<&EmitterState> {
     world.states.get(&thing)?.as_any().downcast_ref::<EmitterState>()
 }
 
+/// Where body row `row` of emitter `thing` sits in the spreads a setting varies by, as it moves
+/// now: its number among every ball it has fired, its round across the rounds (every ten for
+/// endless ones, as the group gradient), its launch angle and its place across one round.
+pub fn spread_in(world: &World, thing: ThingId, row: usize) -> Option<bpe_core::BallSpread> {
+    use crate::modules::look::layers::group::ENDLESS_ROUNDS;
+    use crate::things::balls::rows::RoundSpan;
+    let st = emitter_state(world, thing)?;
+    let bodies = world.bodies.get(&thing)?;
+    if row >= st.rows.len() {
+        return None;
+    }
+    let from_first = st.rows.round[row].saturating_sub(1) as f32;
+    let round = match st.settings.round_span() {
+        RoundSpan::Finite(n) if n <= 1 => 0.0,
+        RoundSpan::Finite(n) => from_first / (n - 1) as f32,
+        RoundSpan::Endless => {
+            let x = from_first / ENDLESS_ROUNDS;
+            x - x.floor()
+        }
+    };
+    let (lo, hi) = st.layout.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), p| (lo.min(p.x), hi.max(p.x)));
+    let x = st.rows.place[row].x;
+    let place = if hi - lo > 1e-4 { ((x - lo) / (hi - lo)).clamp(0.0, 1.0) } else { 0.0 };
+    let count = if st.planned > 0 { st.planned } else { st.next_number as usize };
+    Some(bpe_core::BallSpread {
+        number: st.rows.number(row),
+        count: count.max(1) as u32,
+        round,
+        launch: bpe_core::vary::launch_turn(Vec2::from_angle(st.rows.launch[row])),
+        place,
+        speed: bodies.velocity.get(row).map_or(0.0, |v| v.length()),
+        hits: bodies.hits.get(row).copied().unwrap_or(0) + st.rows.arrivals.get(row).copied().unwrap_or(0),
+        seed: st.settings.seed as u32,
+        alone: false,
+    })
+}
+
 /// One round on the timeline: when it fires (seconds), which it is, how many balls it has, and
 /// whether it has fired yet or is still to come.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -601,6 +638,10 @@ impl ThingSim for EmitterSim {
         st.layout = layout(&settings);
         st.planned = planned(&settings);
         st.settings = settings;
+    }
+
+    fn ball_spread(&self, thing: ThingId, world: &World, row: usize) -> Option<bpe_core::BallSpread> {
+        spread_in(world, thing, row)
     }
 
     /// The marker and the look-only variety change only how it looks.

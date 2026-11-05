@@ -115,6 +115,18 @@ impl ViewCx<'_> {
         }
         BallsSettings::from_params(&p)
     }
+
+    /// The far end of the Size, at the playhead, when it varies across the balls: the group is
+    /// spaced for it.
+    pub fn size_to(&self) -> Option<f32> {
+        let size = Address::own(self.id, "radius");
+        self.scene.vary_at(&size)?;
+        let to = Address { key: bpe_core::vary::to_key("radius"), ..size };
+        match self.scene.value_at_time(&self.kit.registry, &to, self.time)? {
+            bpe_core::Value::Number(x) => Some(x as f32),
+            _ => None,
+        }
+    }
 }
 
 /// The emitter kind.
@@ -275,7 +287,7 @@ pub fn show(
 ) {
     ground_buttons(ui, view);
     let s = cx.settings();
-    let places = places(&s);
+    let places = places(&bpe_kit::things::balls::sim::laid_out(&s, cx.size_to()));
     let side = ui.available_width().clamp(40.0, MAX_SIZE);
     let (rect, response) = ui.allocate_exact_size(egui::vec2(side, side), Sense::click_and_drag());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "Group view"));

@@ -25,6 +25,7 @@ mod style;
 mod timeline;
 mod transport;
 mod tree;
+mod vary;
 mod widgets;
 
 fn main() -> eframe::Result {

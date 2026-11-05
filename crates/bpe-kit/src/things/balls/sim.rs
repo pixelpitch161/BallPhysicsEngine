@@ -1,6 +1,7 @@
 //! Placing the balls, letting them go and keeping their settings.
 
-use bpe_core::{ResolvedThing, Settings, Thing, ThingId};
+use bpe_core::vary::{self, BallSpread, Vary};
+use bpe_core::{Params, ResolvedThing, Settings, Thing, ThingId, Value};
 use bpe_runtime::{Bodies, Log, Pose, ThingSim, World, state, state_mut};
 use glam::Vec2;
 
@@ -24,6 +25,14 @@ pub struct BallsState {
     pub offsets: Vec<Vec2>,
     /// The balls still to be let go: the step each goes on and its number, soonest last.
     pub pending: Vec<(u64, u32)>,
+    /// The thing's own settings that vary across the balls (Size, Launch speed), with a To.
+    pub varies: Vec<Vary>,
+    /// Each ball's place from left to right in the group (0 to 1), by number.
+    pub place: Vec<f32>,
+    /// Which way each ball is launched, round the circle (0 to 1), by number.
+    pub launch: Vec<f32>,
+    /// Each body row's own size: its Size, varied and with its Variety share, before any growth.
+    pub own_size: Vec<f32>,
 }
 
 impl BallsState {
@@ -31,6 +40,103 @@ impl BallsState {
     pub fn number(&self, row: usize) -> u32 {
         self.rows.number(row)
     }
+
+    /// Where ball `number` sits in the spreads, before it moves (no speed, no hits).
+    pub fn spread_of_number(&self, number: u32) -> BallSpread {
+        let n = number as usize;
+        BallSpread {
+            number,
+            count: self.offsets.len().max(1) as u32,
+            round: 0.0,
+            launch: self.launch.get(n).copied().unwrap_or(0.0),
+            place: self.place.get(n).copied().unwrap_or(0.0),
+            speed: 0.0,
+            hits: 0,
+            seed: self.settings.seed as u32,
+            alone: !self.settings.group,
+        }
+    }
+
+    /// Where body row `row` of `bodies` sits in the spreads, as it moves now.
+    pub fn spread_of(&self, bodies: &Bodies, row: usize) -> BallSpread {
+        BallSpread {
+            speed: bodies.velocity.get(row).map_or(0.0, |v| v.length()),
+            hits: bodies.hits.get(row).copied().unwrap_or(0),
+            ..self.spread_of_number(self.number(row))
+        }
+    }
+
+    /// `key`'s value for a ball at `spread`: `base`, mixed towards its To when it varies.
+    fn own_value(&self, key: &str, base: Value, spread: &BallSpread) -> Value {
+        match self.varies.iter().find(|v| v.key == key) {
+            Some(v) => {
+                let to = v.to.as_ref().expect("only varies with a To are kept");
+                vary::mixed(&base, to, v.amount(spread.t(v.by, v.salt())))
+            }
+            None => base,
+        }
+    }
+
+    /// Ball `spread`'s Size, varied (before its Variety share).
+    fn size_at(&self, spread: &BallSpread) -> f32 {
+        match self.own_value("radius", Value::Number(self.settings.radius as f64), spread) {
+            Value::Number(r) => r as f32,
+            _ => self.settings.radius,
+        }
+    }
+
+    /// Ball `spread`'s Launch speed, varied.
+    fn velocity_at(&self, spread: &BallSpread) -> Vec2 {
+        let v = self.settings.velocity;
+        match self.own_value("velocity", Value::Vec2([v.x, v.y]), spread) {
+            Value::Vec2([x, y]) => Vec2::new(x, y),
+            _ => v,
+        }
+    }
+
+    /// Whether the Size varies across the balls.
+    fn size_varies(&self) -> bool {
+        self.varies.iter().any(|v| v.key == "radius")
+    }
+}
+
+/// The thing's own settings in `params` that vary across its balls: Size and Launch speed.
+fn own_varies(params: &Params) -> Vec<Vary> {
+    vary::varies_in(params)
+        .into_iter()
+        .filter(|v| matches!(v.key.as_str(), "radius" | "velocity") && v.to.is_some())
+        .collect()
+}
+
+/// The settings a group is laid out by: when its Size varies up to `size_to` (bigger than Size),
+/// its places are spaced for that bigger end, so no ball starts overlapping its neighbours.
+pub fn laid_out(s: &BallsSettings, size_to: Option<f32>) -> std::borrow::Cow<'_, BallsSettings> {
+    match size_to {
+        Some(to) if to > s.radius => std::borrow::Cow::Owned(BallsSettings { radius: to, ..s.clone() }),
+        _ => std::borrow::Cow::Borrowed(s),
+    }
+}
+
+/// The far end of a Size that varies across the balls, in `params`.
+pub fn size_to(params: &Params) -> Option<f32> {
+    match vary::vary_of(params, "radius")?.to? {
+        Value::Number(x) => Some(x as f32),
+        _ => None,
+    }
+}
+
+/// Each ball's place from left to right across `offsets` (0 to 1; all 0 when they line up).
+fn places_across(offsets: &[Vec2]) -> Vec<f32> {
+    let (lo, hi) = offsets.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), p| (lo.min(p.x), hi.max(p.x)));
+    let width = hi - lo;
+    offsets.iter().map(|p| if width > 1e-4 { ((p.x - lo) / width).clamp(0.0, 1.0) } else { 0.0 }).collect()
+}
+
+/// The ball numbers of `thing`'s body rows' spreads, when it is a Balls thing in `world`.
+pub fn spread_in(world: &World, thing: ThingId, row: usize) -> Option<BallSpread> {
+    let st = world.states.get(&thing)?.as_any().downcast_ref::<BallsState>()?;
+    let bodies = world.bodies.get(&thing)?;
+    Some(st.spread_of(bodies, row))
 }
 
 /// The ball numbers of `thing`'s body rows, when it is a thing with ball rows (Balls, Emitter)
@@ -129,7 +235,11 @@ pub fn release_step(s: &BallsSettings, k: usize, rate: u32) -> u64 {
 /// Ball `number`'s launch velocity (before what it rides on adds), `offset` from the middle of a
 /// group whose places' centre is `middle`, of `count` balls.
 pub fn launch_velocity(s: &BallsSettings, number: u32, count: usize, offset: Vec2, middle: Vec2) -> Vec2 {
-    let v = s.velocity;
+    launch_velocity_from(s, s.velocity, number, count, offset, middle)
+}
+
+/// [`launch_velocity`] from the launch speed `v` (the ball's own, when it varies).
+pub fn launch_velocity_from(s: &BallsSettings, v: Vec2, number: u32, count: usize, offset: Vec2, middle: Vec2) -> Vec2 {
     if !s.group {
         return v;
     }
@@ -159,14 +269,41 @@ fn push_ball(bodies: &mut Bodies, st: &mut BallsState, at: Pose, number: u32) {
     let turn = Vec2::from_angle(at.angle);
     let position = at.position + turn.rotate(offset);
     let middle = turn.rotate(st.offsets.iter().copied().sum::<Vec2>() / st.offsets.len().max(1) as f32);
-    let launched = launch_velocity(s, number, st.offsets.len(), turn.rotate(offset), middle);
+    let spread = st.spread_of_number(number);
+    let own_velocity = if st.varies.is_empty() { s.velocity } else { st.velocity_at(&spread) };
+    let launched = launch_velocity_from(s, own_velocity, number, st.offsets.len(), turn.rotate(offset), middle);
     let velocity = launched + at.velocity + (position - at.position).perp() * at.spin;
     let factor = size_factor(s, number);
-    let radius = if factor == 1.0 { s.radius } else { s.radius * factor };
+    let size = if st.varies.is_empty() { s.radius } else { st.size_at(&spread) };
+    let radius = if factor == 1.0 { size } else { size * factor };
     let row = bodies.push(position, velocity, radius) as usize;
     bodies.number[row] = number;
     let launch = if launched.length_squared() > 0.0 { launched.to_angle() } else { 0.0 };
     st.rows.push(number, factor, 0, launch, offset, number);
+    st.own_size.push(radius);
+}
+
+/// Moves every ball of `bodies` from its own size in `st` to `own` (by row): a ball still at its
+/// own size takes the new one exactly; a grown one keeps its growth in proportion.
+fn resize_to(st: &mut BallsState, bodies: &mut Bodies, own: Vec<f32>) {
+    for (row, r) in bodies.radius.iter_mut().enumerate() {
+        let (Some(&old), Some(&new)) = (st.own_size.get(row), own.get(row)) else { continue };
+        if new != old {
+            *r = if *r == old || old <= 0.0 { new } else { *r * (new / old) };
+        }
+    }
+    st.own_size = own;
+}
+
+/// Each body row's own size in `st` as its settings and spreads say now.
+fn own_sizes(st: &BallsState, bodies: &Bodies) -> Vec<f32> {
+    (0..bodies.len().min(st.rows.size_factor.len()))
+        .map(|row| {
+            let size = st.size_at(&st.spread_of(bodies, row));
+            let factor = st.rows.size_factor[row];
+            if factor == 1.0 { size } else { size * factor }
+        })
+        .collect()
 }
 
 impl ThingSim for BallsSim {
@@ -179,10 +316,26 @@ impl ThingSim for BallsSim {
         // Riders start where their parent is and move with it; everything else sits where its
         // own transform says.
         let at = world.anchor(thing.id);
-        let places = offsets(&settings);
+        let places = offsets(&laid_out(&settings, size_to(&resolved.params)));
         let order = release_order(&settings, &places);
         let rate = world.steps_per_second;
-        let mut st = BallsState { settings, rows: BallRows::default(), offsets: places, pending: Vec::new() };
+        let middle = places.iter().copied().sum::<Vec2>() / places.len().max(1) as f32;
+        let launch = (0..places.len())
+            .map(|n| {
+                let v = launch_velocity(&settings, n as u32, places.len(), places[n], middle);
+                vary::launch_turn(v)
+            })
+            .collect();
+        let mut st = BallsState {
+            varies: own_varies(&resolved.params),
+            place: places_across(&places),
+            launch,
+            own_size: Vec::with_capacity(places.len()),
+            settings,
+            rows: BallRows::default(),
+            offsets: places,
+            pending: Vec::new(),
+        };
         let mut bodies = Bodies::default();
         for (k, number) in order.into_iter().enumerate() {
             match release_step(&st.settings, k, rate) {
@@ -228,6 +381,18 @@ impl ThingSim for BallsSim {
         let settings = BallsSettings::from_params(&resolved.params);
         let Some(st) = world.states.get_mut(&thing) else { return };
         let st = state_mut::<BallsState>(st.as_mut());
+        let varies = own_varies(&resolved.params);
+        if st.size_varies() || varies.iter().any(|v| v.key == "radius") {
+            // Each ball has a size of its own: worked out again from the new ends.
+            st.settings = settings;
+            st.varies = varies;
+            if let Some(bodies) = world.bodies.get_mut(&thing) {
+                let own = own_sizes(st, bodies);
+                resize_to(st, bodies, own);
+            }
+            return;
+        }
+        st.varies = varies;
         let (old, new) = (st.settings.radius, settings.radius);
         if new != old
             && let Some(bodies) = world.bodies.get_mut(&thing)
@@ -239,8 +404,26 @@ impl ThingSim for BallsSim {
                 // growth in proportion.
                 *r = if *r == sized(old, factor) || old <= 0.0 { sized(new, factor) } else { *r * (new / old) };
             }
+            st.own_size = st.rows.size_factor.iter().map(|&f| sized(new, f)).collect();
         }
         st.settings = settings;
+    }
+
+    /// A Size that varies by the balls' speed or hits follows them every step.
+    fn scripted(&self, thing: ThingId, world: &mut World) {
+        let Some(st) = world.states.get(&thing) else { return };
+        let st = state::<BallsState>(st.as_ref());
+        if !st.varies.iter().any(|v| v.key == "radius" && v.by.changes()) {
+            return;
+        }
+        let (Some(st), Some(bodies)) = (world.states.get_mut(&thing), world.bodies.get_mut(&thing)) else { return };
+        let st = state_mut::<BallsState>(st.as_mut());
+        let own = own_sizes(st, bodies);
+        resize_to(st, bodies, own);
+    }
+
+    fn ball_spread(&self, thing: ThingId, world: &World, row: usize) -> Option<BallSpread> {
+        spread_in(world, thing, row)
     }
 
     /// Colour and turn spread only change how the balls look.
@@ -520,5 +703,114 @@ mod tests {
         assert_eq!(p.len(), 4);
         assert!((p[0] - Vec2::new(0.0, -10.0)).length() < 1e-4, "{p:?}");
         assert!((p[1] - Vec2::new(10.0, 0.0)).length() < 1e-4, "{p:?}");
+    }
+
+    /// Sets `key` (of the thing, or of a card with `slot`) varying to `to` by `by`.
+    fn vary(scene: &mut bpe_core::Scene, slot: Option<bpe_core::SlotId>, key: &str, to: Value, by: &str) {
+        let thing = scene.things.get_mut(&BALLS).unwrap();
+        let params = match slot {
+            None => &mut thing.params,
+            Some(slot) => &mut thing.slots.get_mut(&slot).unwrap().params,
+        };
+        params.set(&format!("{key}~to"), to);
+        params.set(&format!("{key}~by"), Value::Choice(by.into()));
+    }
+
+    #[test]
+    fn a_size_varied_by_number_runs_from_the_value_to_to() {
+        let (mut scene, _, kit) = group(4, |p| p.set("radius", Value::Number(10.0)));
+        vary(&mut scene, None, "radius", Value::Number(40.0), "number");
+        let resolved = resolve(&scene, &kit.registry);
+        let w = World::build(&scene, &resolved, &kit.sims);
+        assert_eq!(w.bodies[&BALLS].radius, vec![10.0, 20.0, 30.0, 40.0]);
+        // Easing bunches them towards the start.
+        scene.things.get_mut(&BALLS).unwrap().params.set("radius~ease", Value::Choice("ease_in".into()));
+        let resolved = resolve(&scene, &kit.registry);
+        let r = World::build(&scene, &resolved, &kit.sims).bodies[&BALLS].radius.clone();
+        assert!(r[1] < 20.0 && r[0] == 10.0 && r[3] == 40.0, "{r:?}");
+    }
+
+    #[test]
+    fn keys_on_either_end_resize_the_balls() {
+        let (mut scene, _, kit) = group(2, |p| {
+            p.set("radius", Value::Number(10.0));
+            p.set("velocity", Value::Vec2([0.0, 0.0]));
+        });
+        vary(&mut scene, None, "radius", Value::Number(20.0), "number");
+        let to = Address { thing: BALLS, slot: None, key: "radius~to".into() };
+        scene.set_key(&kit.registry, &to, 0.0, Value::Number(20.0)).unwrap();
+        scene.set_key(&kit.registry, &to, 1.0, Value::Number(30.0)).unwrap();
+        let resolved = resolve(&scene, &kit.registry);
+        let mut w = World::build(&scene, &resolved, &kit.sims);
+        assert_eq!(w.bodies[&BALLS].radius, vec![10.0, 20.0]);
+        w.advance_to(1.5, &kit.sims, &mut Log::default());
+        assert_eq!(w.bodies[&BALLS].radius, vec![10.0, 30.0]);
+    }
+
+    #[test]
+    fn a_launch_speed_varied_by_number_launches_each_ball_its_own_way() {
+        let (mut scene, _, kit) = group(3, |p| p.set("velocity", Value::Vec2([100.0, 0.0])));
+        vary(&mut scene, None, "velocity", Value::Vec2([300.0, 0.0]), "number");
+        let resolved = resolve(&scene, &kit.registry);
+        let w = World::build(&scene, &resolved, &kit.sims);
+        let v = &w.bodies[&BALLS].velocity;
+        assert_eq!(v, &vec![Vec2::new(100.0, 0.0), Vec2::new(200.0, 0.0), Vec2::new(300.0, 0.0)]);
+    }
+
+    #[test]
+    fn bounciness_varied_by_number_gives_each_ball_its_own_bounce() {
+        // Four balls falling together onto the floor of the ring; the first keeps all its speed,
+        // the last none.
+        let (mut scene, _, kit) = group(4, |p| {
+            p.set("velocity", Value::Vec2([0.0, 300.0]));
+            p.set("space", Value::Number(10.0));
+        });
+        vary(&mut scene, Some(bpe_core::SlotId::Bounce), "bounciness", Value::Number(0.0), "number");
+        let resolved = resolve(&scene, &kit.registry);
+        let mut w = World::build(&scene, &resolved, &kit.sims);
+        let mut log = Log::default();
+        w.advance_to(3.0, &kit.sims, &mut log);
+        let speeds: Vec<f32> = w.bodies[&BALLS].velocity.iter().map(|v| v.length()).collect();
+        assert!(speeds[0] > 250.0, "the first bounces on: {speeds:?}");
+        assert!(speeds[3] < 50.0, "the last lies dead: {speeds:?}");
+        assert!(speeds[1] > speeds[2], "{speeds:?}");
+        // Stepping the same scene again gives the same balls.
+        let mut again = World::build(&scene, &resolved, &kit.sims);
+        again.advance_to(3.0, &kit.sims, &mut Log::default());
+        assert_eq!(again.bodies[&BALLS], w.bodies[&BALLS]);
+    }
+
+    #[test]
+    fn gravity_varied_by_number_pulls_later_balls_harder() {
+        let (mut scene, _, kit) = group(3, |p| p.set("velocity", Value::Vec2([0.0, 0.0])));
+        scene.things.get_mut(&bpe_core::ThingId::ROOT).unwrap().params.set("gravity", Value::Vec2([0.0, 500.0]));
+        let motion = scene.card_mut(BALLS, bpe_core::SlotId::Motion).unwrap();
+        motion.params.set("gravity_scale", Value::Number(0.0));
+        vary(&mut scene, Some(bpe_core::SlotId::Motion), "gravity_scale", Value::Number(2.0), "number");
+        let resolved = resolve(&scene, &kit.registry);
+        let mut w = World::build(&scene, &resolved, &kit.sims);
+        let start = w.bodies[&BALLS].position.clone();
+        w.advance_to(0.2, &kit.sims, &mut Log::default());
+        let fell: Vec<f32> = w.bodies[&BALLS].position.iter().zip(&start).map(|(p, s)| p.y - s.y).collect();
+        assert!(fell[0].abs() < 1e-3, "no pull on the first: {fell:?}");
+        assert!((fell[2] - 2.0 * fell[1]).abs() < 0.5, "twice the pull on the last: {fell:?}");
+    }
+
+    #[test]
+    fn a_size_varied_by_hits_grows_as_the_balls_hit() {
+        let (mut scene, _, kit) = scene_with_balls("single", |p| p.set("radius", Value::Number(10.0)));
+        scene.things.get_mut(&BALLS).unwrap().params.set("group", Value::Bool(true));
+        scene.things.get_mut(&BALLS).unwrap().params.set("count", Value::Int(1));
+        vary(&mut scene, None, "radius", Value::Number(30.0), "hits");
+        let resolved = resolve(&scene, &kit.registry);
+        let mut w = World::build(&scene, &resolved, &kit.sims);
+        assert_eq!(w.bodies[&BALLS].radius, vec![10.0]);
+        let mut log = Log::default();
+        w.advance_to(6.0, &kit.sims, &mut log);
+        let hits = w.bodies[&BALLS].hits[0];
+        assert!(hits >= 2, "{hits}");
+        let r = w.bodies[&BALLS].radius[0];
+        let want = 10.0 + 20.0 * (hits.min(10) as f32 / 10.0);
+        assert!((r - want).abs() < 1.5, "{r} against {want} after {hits} hits");
     }
 }

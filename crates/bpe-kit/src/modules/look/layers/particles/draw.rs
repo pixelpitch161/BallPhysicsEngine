@@ -10,7 +10,7 @@ use glam::Vec2;
 use super::emit::{self, Emission, MAX_PARTICLES};
 use super::sim::{Live, Motion, simulate};
 use super::{MadeOf, ParticleSource, ParticlesLayer};
-use crate::modules::look::layers::around::AroundLayer;
+use crate::modules::look::layers::around::{AroundKind, AroundLayer};
 use crate::modules::look::layers::around_subs::{Extras, HitInfo, Pieces, coloured, particle_with_extras};
 use crate::modules::look::layers::gpu::Stack;
 use crate::modules::look::layers::trail::AroundPlace;
@@ -48,8 +48,11 @@ pub fn sprite(made_of: MadeOf, live: &Live, colour: [f32; 4]) -> Particle {
 /// What drawing one layer's particles reads besides the layer.
 struct Source<'a> {
     cx: &'a DrawCx<'a>,
-    layer: &'a AroundLayer,
+    /// The layer as the card has it: where it draws and what it bounces off.
     particles: &'a ParticlesLayer,
+    /// The layer an emission's particles are (the card's, or their ball's own copy when the
+    /// layer's settings vary across the balls) and its settings.
+    pick: &'a dyn Fn(&Emission) -> (&'a AroundLayer, &'a ParticlesLayer),
     /// The colour an emission's particles take from the ball (Colour from: Ball).
     colour: &'a dyn Fn(&Emission) -> [f32; 4],
     /// The hits the colour sub-layers read for an emission's particles.
@@ -76,7 +79,7 @@ fn living<'a>(src: &Source, emissions: &'a [Emission], walls: &[&Wall], mut each
             if drawn >= MAX_PARTICLES {
                 return;
             }
-            if let Some(live) = simulate(src.particles, e, k, cx.time, &motion) {
+            if let Some(live) = simulate((src.pick)(e).1, e, k, cx.time, &motion) {
                 drawn += 1;
                 each(e, k, live);
             }
@@ -86,11 +89,12 @@ fn living<'a>(src: &Source, emissions: &'a [Emission], walls: &[&Wall], mut each
 
 /// Draws the particles of `emissions` as sprites, with their sub-layers.
 fn draw_sprites(src: &Source, emissions: &[Emission], frame: &mut Frame) {
-    let (cx, p) = (src.cx, src.particles);
-    let walls = walls(cx, p);
+    let cx = src.cx;
+    let walls = walls(cx, src.particles);
     let mut pieces = Pieces::default();
     let screen = cx.resolved.screen;
     living(src, emissions, &walls, |e, k, live| {
+        let (layer, p) = (src.pick)(e);
         let base = match p.source {
             ParticleSource::Ball => (src.colour)(e),
             ParticleSource::Own => {
@@ -110,13 +114,13 @@ fn draw_sprites(src: &Source, emissions: &[Emission], frame: &mut Frame) {
             }
         };
         let hit = (src.hit)(e);
-        let subs = &src.layer.subs;
+        let subs = &layer.subs;
         let own = shade(p, coloured(subs, subs.len(), base, hit), live.alpha);
         let extras =
             Extras { subs, base, s: live.life, fade: live.alpha, unit: (src.unit)(e), hit, outline: 1.0, added: 1.0 };
         particle_with_extras(sprite(p.made_of, &live, own), &extras, &mut pieces);
     });
-    pieces.into_frame(frame, p.place == AroundPlace::InFront);
+    pieces.into_frame(frame, src.particles.place == AroundPlace::InFront);
 }
 
 /// Draws the balls' `layer` (a particles one) into `frame`.
@@ -130,7 +134,58 @@ pub fn draw_balls(
 ) {
     let wears = |i: usize| layer.applies((balls.number)(i));
     let rate = cx.world.steps_per_second;
-    let emissions = emit::ball_emissions(particles, cx.thing.id, balls, &wears, cx.log, rate, cx.time, MAX_PARTICLES);
+    // When the layer's settings vary across the balls, each ball lets off particles of its own
+    // copy: the balls wearing the same copy are worked out together, then the newest of all of
+    // them kept.
+    let mut copies: Vec<(std::rc::Rc<Vec<AroundLayer>>, usize)> = Vec::new();
+    let mut copy_of: Vec<usize> = Vec::new();
+    if balls.own.is_some() {
+        for i in 0..balls.bodies.len() {
+            let own = balls.own_layers(i).unwrap_or_default();
+            let at = match copies.iter().position(|(c, _)| std::rc::Rc::ptr_eq(c, &own)) {
+                Some(at) => at,
+                None => {
+                    let index = own.iter().position(|a| a.id == layer.id && matches!(a.kind, AroundKind::Particles(_)));
+                    copies.push((own, index.unwrap_or(usize::MAX)));
+                    copies.len() - 1
+                }
+            };
+            copy_of.push(at);
+        }
+    }
+    let mine = |at: usize| -> (&AroundLayer, &ParticlesLayer) {
+        let Some((own, index)) = copies.get(at) else { return (layer, particles) };
+        match own.get(*index) {
+            Some(a @ AroundLayer { kind: AroundKind::Particles(p), .. }) => (a, &**p),
+            _ => (layer, particles),
+        }
+    };
+    let emissions = if copies.len() > 1 {
+        let mut all = Vec::new();
+        // Each copy works out at most its share of the cap (by how many balls wear it), so
+        // a thousand copies never work out a thousand caps' worth.
+        let mut wearing = vec![0usize; copies.len()];
+        for (i, &at) in copy_of.iter().enumerate() {
+            if wears(i) {
+                wearing[at] += 1;
+            }
+        }
+        let total = wearing.iter().sum::<usize>().max(1);
+        for (at, &worn) in wearing.iter().enumerate() {
+            if worn == 0 {
+                continue;
+            }
+            let wears = |i: usize| copy_of.get(i) == Some(&at) && wears(i);
+            let p = mine(at).1;
+            let cap = (MAX_PARTICLES * worn).div_ceil(total).max(16);
+            all.extend(emit::ball_emissions(p, cx.thing.id, balls, &wears, cx.log, rate, cx.time, cap));
+        }
+        all.sort_by(|a, b| a.time.total_cmp(&b.time));
+        emit::capped(all, MAX_PARTICLES)
+    } else {
+        let p = mine(0).1;
+        emit::ball_emissions(p, cx.thing.id, balls, &wears, cx.log, rate, cx.time, MAX_PARTICLES)
+    };
     if emissions.is_empty() {
         return;
     }
@@ -143,7 +198,8 @@ pub fn draw_balls(
     };
     let unit = |e: &Emission| balls.bodies.radius.get(row(e)).copied().unwrap_or(1.0);
     let pull_to = |e: &Emission, t: f64| Some(emit::ball_at(balls, row(e), (cx.time - t).max(0.0) as f32));
-    let src = Source { cx, layer, particles, colour: &colour, hit: &hit, unit: &unit, pull_to: &pull_to };
+    let pick = |e: &Emission| mine(e.row.and_then(|r| copy_of.get(r).copied()).unwrap_or(0));
+    let src = Source { cx, particles, pick: &pick, colour: &colour, hit: &hit, unit: &unit, pull_to: &pull_to };
     if particles.made_of == MadeOf::MiniBalls {
         draw_mini_balls(&src, &emissions, balls, stack, frame);
     } else {
@@ -222,7 +278,8 @@ pub fn draw_shape(cx: &DrawCx, layer: &AroundLayer, particles: &ParticlesLayer, 
     let hit = |_: &Emission| hits;
     let unit = |_: &Emission| 1.0;
     let pull_to = |_: &Emission, _: f64| None;
-    let src = Source { cx, layer, particles, colour: &colour, hit: &hit, unit: &unit, pull_to: &pull_to };
+    let pick = |_: &Emission| (layer, particles);
+    let src = Source { cx, particles, pick: &pick, colour: &colour, hit: &hit, unit: &unit, pull_to: &pull_to };
     draw_sprites(&src, &emissions, frame);
 }
 

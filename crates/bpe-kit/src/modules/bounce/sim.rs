@@ -75,6 +75,10 @@ impl ModuleSim for BasicBounceSim {
         Box::new(BounceState { settings: BasicBounce::from_params(params) })
     }
 
+    fn per_ball(&self) -> bool {
+        true
+    }
+
     fn respond(&self, st: &dyn ThingState, contact: &Contact, bodies: &mut Bodies, item: usize, limits: &Limits) {
         self.respond_against(st, contact, bodies, item, limits, false);
     }

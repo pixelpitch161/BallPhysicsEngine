@@ -86,6 +86,9 @@ fn label_of(scene: &Scene, kit: &Kit, a: &Address) -> String {
     let thing = found.map(|t| t.name.as_str()).unwrap_or("?");
     let def = scene.def_at(&kit.registry, a);
     let setting = def.map(|d| d.label).unwrap_or(a.key.as_str());
+    // The far end of a setting that varies across the balls: "Ball · Size (to)".
+    let to = matches!(bpe_core::vary::split(&a.key), Some((_, bpe_core::vary::VaryPart::To)));
+    let setting = if to { format!("{setting} (to)") } else { setting.to_owned() };
     match a.slot {
         None => format!("{thing} · {setting}"),
         Some(slot) if let Some((layer, _)) = bpe_core::split_layered(&a.key) => {

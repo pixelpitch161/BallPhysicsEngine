@@ -2,7 +2,7 @@
 
 pub mod sim;
 
-use bpe_core::{Choice, ModuleKind, SettingDef, Settings, SlotId, Target};
+use bpe_core::{Choice, ModuleKind, SettingDef, Settings, SlotId, Target, VaryUse};
 
 pub struct BasicBounceKind;
 
@@ -148,5 +148,12 @@ impl ModuleKind for BasicBounceKind {
     }
     fn settings(&self) -> &'static [SettingDef] {
         BasicBounce::defs()
+    }
+    /// Every number can differ from ball to ball (on and off switches and targets can't).
+    fn vary(&self, key: &str) -> Option<VaryUse> {
+        BasicBounce::defs()
+            .iter()
+            .any(|d| d.key == key && bpe_core::vary::can_vary_type(&d.ty))
+            .then_some(VaryUse::Live)
     }
 }

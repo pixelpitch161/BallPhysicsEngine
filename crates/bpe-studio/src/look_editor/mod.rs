@@ -312,6 +312,7 @@ fn shape_body(ui: &mut Ui, cx: &LookCx, edits: &mut Vec<Edit>) {
         label_width: cx.label_width,
         track: style::colour_of(scene, cx.id),
         follow: Some(&follow),
+        vary: None,
     };
     let out = settings_grid(ui, ("shape body", cx.id), &defs, get, &grid);
     edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetOwn(key.into(), value)));
@@ -334,6 +335,7 @@ fn size_row(ui: &mut Ui, cx: &LookCx, edits: &mut Vec<Edit>) {
     let follow_menu = crate::follow::menu(cx.scene);
     let follow_now = |key: &str| crate::follow::now(cx.scene, &own(key));
     let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now };
+    let vary = crate::vary::VaryCx::of(cx.scene, cx.reg(), cx.time, cx.id, &own);
     let grid = GridCx {
         choices: cx.choices,
         marks: &marks,
@@ -342,11 +344,13 @@ fn size_row(ui: &mut Ui, cx: &LookCx, edits: &mut Vec<Edit>) {
         label_width: cx.label_width,
         track: style::colour_of(cx.scene, cx.id),
         follow: Some(&follow),
+        vary: vary.as_ref(),
     };
     let out = settings_grid(ui, ("look size", cx.id), std::slice::from_ref(&def), get, &grid);
     edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetOwn(key.into(), value)));
     edits.extend(out.new_keys.into_iter().map(|key| Edit::NewKey(None, key.into())));
     edits.extend(out.follows.into_iter().map(|(key, source)| Edit::Follow(None, key.into(), source)));
+    edits.extend(out.varies.into_iter().map(|(key, v)| crate::vary::edit(None, key, v)));
 }
 
 /// Layer `layer`'s settings grid. Its edits carry the layered keys.
@@ -371,6 +375,8 @@ pub(crate) fn layer_settings(
     let follow_menu = crate::follow::menu(scene);
     let follow_now = |key: &str| crate::follow::now(scene, &cx.at(layer, key));
     let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now };
+    let at = |key: &str| cx.at(layer, key);
+    let vary = crate::vary::VaryCx::of(scene, reg, time, cx.id, &at);
     let grid = GridCx {
         choices: cx.choices,
         marks: &marks,
@@ -379,6 +385,7 @@ pub(crate) fn layer_settings(
         label_width: cx.label_width,
         track: style::colour_of(scene, cx.id),
         follow: Some(&follow),
+        vary: vary.as_ref(),
     };
     let out = settings_grid(ui, ("layer", cx.id, cx.slot, layer.0), defs, get, &grid);
     crate::inspector::fold_groups(inspector, (cx.id, Some(cx.slot)), &out.folds);
@@ -387,6 +394,7 @@ pub(crate) fn layer_settings(
     edits.extend(out.new_keys.into_iter().map(|key| Edit::NewKey(Some(slot), layered_key(layer, key))));
     edits
         .extend(out.follows.into_iter().map(|(key, source)| Edit::Follow(Some(slot), layered_key(layer, key), source)));
+    edits.extend(out.varies.into_iter().map(|(key, v)| crate::vary::edit(Some(slot), &layered_key(layer, key), v)));
 }
 
 pub(crate) fn mark_for(scene: &Scene, def: &SettingDef, a: &Address) -> KeyMark {
@@ -647,6 +655,95 @@ mod tests {
         let groups = crate::timeline::lanes::groups_for(&s.scene, &s.kit);
         let lanes: Vec<&str> = groups.iter().flat_map(|g| g.lanes.iter().map(|l| l.short.as_str())).collect();
         assert_eq!(lanes, ["Outline · Width"]);
+    }
+
+    /// Makes the selected ball a group, so its settings can vary across its balls.
+    fn make_group(h: &mut Harness<'_, State>) {
+        let s = h.state_mut();
+        s.scene.things.get_mut(&BALL).unwrap().params.set("group", bpe_core::Value::Bool(true));
+        s.resolved = resolve(&s.scene, &s.kit.registry);
+        h.run();
+    }
+
+    #[test]
+    fn a_layer_setting_varies_across_a_group_s_balls_from_its_menu() {
+        let mut h = harness();
+        make_group(&mut h);
+        add(&mut h, "+ Add layer", "Outline");
+        let outline = layer_named(&h, BALL, "Outline");
+        let width = Address::on(BALL, SlotId::Look, &layered_key(outline.id, "width"));
+        h.get_all_by_role_and_label(Role::Label, "Width").next().unwrap().click_secondary();
+        h.run();
+        h.get_by_label("Vary across balls").click();
+        h.run();
+        let v = h.state().scene.vary_at(&width).expect("it varies");
+        assert_eq!(v.by, bpe_core::VaryBy::Number);
+        // The two-ended slider's far end and the Varies by line.
+        assert!(h.query_all_by_label("Width to").next().is_some());
+        h.get_by_label("Width varies by").click();
+        h.run();
+        h.get_by_label("Random").click();
+        h.run();
+        assert_eq!(h.state().scene.vary_at(&width).unwrap().by, bpe_core::VaryBy::Random);
+        h.get_by_label("Width easing").click();
+        h.run();
+        h.get_by_label("Ease in").click();
+        h.run();
+        assert_eq!(h.state().scene.vary_at(&width).unwrap().ease, bpe_core::VaryEase::EaseIn);
+        // Stop varying takes it all away.
+        h.get_all_by_role_and_label(Role::Label, "Width").next().unwrap().click_secondary();
+        h.run();
+        h.get_by_label("Stop varying").click();
+        h.run();
+        assert!(h.state().scene.vary_at(&width).is_none());
+        assert!(h.query_all_by_label("Width to").next().is_none());
+    }
+
+    #[test]
+    fn a_single_ball_is_not_offered_varying() {
+        let mut h = harness();
+        add(&mut h, "+ Add layer", "Outline");
+        h.get_all_by_role_and_label(Role::Label, "Width").next().unwrap().click_secondary();
+        h.run();
+        assert!(h.query_by_label("Create Keyframe").is_some(), "the menu is open");
+        assert!(h.query_by_label("Vary across balls").is_none());
+    }
+
+    #[test]
+    fn a_vary_left_on_a_ball_that_is_no_group_still_shows_and_stops() {
+        let mut h = harness();
+        make_group(&mut h);
+        add(&mut h, "+ Add layer", "Outline");
+        let outline = layer_named(&h, BALL, "Outline");
+        let width = Address::on(BALL, SlotId::Look, &layered_key(outline.id, "width"));
+        let s = h.state_mut();
+        s.scene.start_varying(&s.kit.registry, &width).unwrap();
+        s.scene.things.get_mut(&BALL).unwrap().params.set("group", bpe_core::Value::Bool(false));
+        s.resolved = resolve(&s.scene, &s.kit.registry);
+        h.run();
+        assert!(h.query_all_by_label("Width varies by").next().is_some(), "still shown");
+        h.get_all_by_role_and_label(Role::Label, "Width").next().unwrap().click_secondary();
+        h.run();
+        h.get_by_label("Stop varying").click();
+        h.run();
+        assert!(h.state().scene.vary_at(&width).is_none());
+    }
+
+    #[test]
+    fn a_varied_colour_gets_a_to_row() {
+        let mut h = harness();
+        make_group(&mut h);
+        add(&mut h, "+ Add layer", "Outline");
+        let outline = layer_named(&h, BALL, "Outline");
+        let s = h.state_mut();
+        let colour_from = Address::on(BALL, SlotId::Look, &layered_key(outline.id, "colour_from"));
+        s.scene.set_at(&s.kit.registry, &colour_from, bpe_core::Value::Choice("own".into())).unwrap();
+        let colour = Address::on(BALL, SlotId::Look, &layered_key(outline.id, "colour"));
+        s.scene.start_varying(&s.kit.registry, &colour).unwrap();
+        s.resolved = resolve(&s.scene, &s.kit.registry);
+        h.run();
+        assert!(h.query_all_by_label("Colour to").next().is_some(), "a row for the other end");
+        assert!(h.query_all_by_label("Colour varies by").next().is_some());
     }
 
     #[test]

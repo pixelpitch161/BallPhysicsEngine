@@ -118,13 +118,26 @@ fn clean_layers(card: &mut crate::Slot, reg: &Registry) {
     }
 }
 
-/// Drops values their setting can't hold and clamps the rest.
-fn clean(params: &mut Params, defs: &[SettingDef]) {
+/// Drops values their setting can't hold and clamps the rest. A vary key stays when its
+/// setting can vary and the value fits that part; it goes otherwise.
+fn clean(params: &mut Params, defs: &'static [SettingDef]) {
     for def in defs {
         if let Some(v) = params.remove(def.key)
             && def.ty.accepts(&v)
         {
             params.set(def.key, def.clamp(v));
+        }
+    }
+    // A layer's are its layer's business (`clean_layers`).
+    let varied: Vec<String> =
+        params.0.keys().filter(|k| crate::vary::is_vary_key(k) && crate::split_layered(k).is_none()).cloned().collect();
+    for key in varied {
+        let (base, part) = crate::vary::split(&key).expect("filtered above");
+        let v = params.remove(&key).expect("listed above");
+        if let Some(def) = crate::vary::def_for(defs.iter().find(|d| d.key == base), part)
+            && def.ty.accepts(&v)
+        {
+            params.set(&key, def.clamp(v));
         }
     }
 }

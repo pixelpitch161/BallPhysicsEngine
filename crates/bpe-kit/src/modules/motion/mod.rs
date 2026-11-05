@@ -2,7 +2,7 @@
 
 pub mod sim;
 
-use bpe_core::{ModuleKind, SettingDef, Settings, SlotId};
+use bpe_core::{ModuleKind, SettingDef, Settings, SlotId, VaryUse};
 use glam::Vec2;
 
 pub struct BasicMotionKind;
@@ -41,5 +41,12 @@ impl ModuleKind for BasicMotionKind {
     }
     fn settings(&self) -> &'static [SettingDef] {
         BasicMotion::defs()
+    }
+    /// Every motion setting can differ from ball to ball.
+    fn vary(&self, key: &str) -> Option<VaryUse> {
+        BasicMotion::defs()
+            .iter()
+            .any(|d| d.key == key && bpe_core::vary::can_vary_type(&d.ty))
+            .then_some(VaryUse::Live)
     }
 }
