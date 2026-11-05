@@ -608,9 +608,36 @@ pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
 /// A thing with no balls or wall of its own, such as a folder. The camera
 /// has its own frame to grab instead.
 fn spot_only(studio: &Studio, world: &World, id: ThingId) -> bool {
-    !world.bodies.contains_key(&id)
-        && !world.walls.contains_key(&id)
-        && studio.scene.things.get(&id).is_some_and(|t| t.kind != "camera")
+    let kind = studio.scene.things.get(&id).map(|t| t.kind.as_str());
+    // An emitter can be grabbed at its middle even with no balls out.
+    kind == Some(EMITTER)
+        || (!world.bodies.contains_key(&id) && !world.walls.contains_key(&id) && kind != Some("camera"))
+}
+
+/// The emitter kind.
+const EMITTER: &str = bpe_kit::things::emitter::KIND;
+
+/// How near, in world pixels at zoom 1, a dragged emitter must come to a focus to sit on it.
+pub const SEAT_SNAP: f32 = 48.0;
+
+/// The focus of a shape an emitter dropped at `place` sits on: the shape and which focus, when
+/// one is within [`SEAT_SNAP`] (shrunk by the camera's zoom), nearest first.
+pub fn seat_near(scene: &Scene, world: &World, place: Vec2) -> Option<(ThingId, usize)> {
+    let reach = SEAT_SNAP / world.camera.zoom.max(1e-3);
+    let mut best: Option<(f32, ThingId, usize)> = None;
+    for (id, wall) in &world.walls {
+        if !scene.things.get(id).is_some_and(bpe_kit::things::emitter::foci::can_sit_on) {
+            continue;
+        }
+        let Some(foci) = bpe_kit::things::emitter::foci::focus_points(&wall.outline) else { continue };
+        for (k, f) in foci.iter().enumerate() {
+            let d = f.distance(place);
+            if d <= reach && best.is_none_or(|(b, ..)| d < b) {
+                best = Some((d, *id, k));
+            }
+        }
+    }
+    best.map(|(_, id, k)| (id, k))
 }
 
 /// Moves, aims or moulds by a drag to `pointer`, in world pixels. A rider moves by its offset
@@ -648,6 +675,22 @@ pub fn apply_drag(
     match drag.handle {
         // The camera's handles are the World view's; see `world_view::apply_camera_drag`.
         Handle::CameraMove(_) | Handle::CameraZoom(_) | Handle::CameraTurn(_) => {}
+        Handle::Body(_) if thing.kind == EMITTER => {
+            // Dropped on a focus it sits there; dragged off one it stands where it is dropped.
+            match seat_near(scene, world, place) {
+                Some((shape, focus)) => {
+                    let thing = scene.things.get_mut(&id).expect("looked up above");
+                    thing.params.set("sits_on", Value::Int(shape.0 as i64));
+                    let focus = if focus == 0 { "focus1" } else { "focus2" };
+                    thing.params.set("sits_focus", Value::Choice(focus.into()));
+                }
+                None => {
+                    let thing = scene.things.get_mut(&id).expect("looked up above");
+                    thing.params.set("sits_on", Value::Int(0));
+                    thing.transform.position = place.round();
+                }
+            }
+        }
         Handle::Body(_) => thing.transform.position = place.round(),
         Handle::Aim(_) => {
             let tip = snap_point(pointer, step);
@@ -693,7 +736,25 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
 
     // A selected thing with nothing of its own to show, such as a folder: a dashed ring and its
     // name, so it can still be found and dragged.
-    if let Some(id) = selected.filter(|id| shown(id) && spot_only(studio, world, *id))
+    if let Some(id) = selected.filter(|id| shown(id) && studio.scene.things.get(id).is_some_and(|t| t.kind == EMITTER))
+        && let Some(view) = view.of(studio, id)
+        && let Some(place) = place_of(&studio.scene, world, id)
+    {
+        let color = if active.is_some_and(|h| h.thing() == id) {
+            style::TEXT_STRONG
+        } else {
+            style::colour_of(&studio.scene, id)
+        };
+        emitter_overlay(&painter, studio, &view, id, place, color);
+        // Dragged near a focus, the focus it will sit on.
+        if active == Some(Handle::Body(id))
+            && let Some((shape, k)) = seat_near(&studio.scene, world, place)
+            && let Some(foci) =
+                world.walls.get(&shape).and_then(|w| bpe_kit::things::emitter::foci::focus_points(&w.outline))
+        {
+            painter.circle_stroke(view.to_screen(foci[k]), 10.0, Stroke::new(2.0, style::TEXT_STRONG));
+        }
+    } else if let Some(id) = selected.filter(|id| shown(id) && spot_only(studio, world, *id))
         && let Some(view) = view.of(studio, id)
         && let Some(thing) = studio.scene.things.get(&id)
         && let Some(place) = place_of(&studio.scene, world, id)
@@ -761,6 +822,40 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
             );
         }
     }
+}
+
+/// A selected emitter's catch circle (dashed) and the ring or line its balls start from, turned
+/// as it is.
+fn emitter_overlay(
+    painter: &egui::Painter,
+    studio: &Studio,
+    view: &View,
+    id: ThingId,
+    place: Vec2,
+    color: egui::Color32,
+) {
+    use bpe_kit::things::emitter::{Catches, EmitterSettings, StartFrom};
+    let Some(r) = studio.resolved.things.get(&id) else { return };
+    let s = EmitterSettings::from_params(&r.params);
+    let angle = studio.playback.world().poses.get(&id).map_or(0.0, |p| p.angle);
+    let at = |v: Vec2| view.to_screen(place + Vec2::from_angle(angle).rotate(v));
+    let circle = |radius: f32| -> Vec<Pos2> {
+        (0..=64).map(|i| at(Vec2::from_angle(i as f32 / 64.0 * std::f32::consts::TAU) * radius)).collect()
+    };
+    if s.catches != Catches::Nothing {
+        painter.add(egui::Shape::dashed_line(&circle(s.catch_size.max(0.0)), Stroke::new(1.2, color), 6.0, 4.0));
+    }
+    match s.start_from {
+        StartFrom::Point => {}
+        StartFrom::Ring => {
+            painter.add(egui::Shape::line(circle(s.start_radius.max(0.0)), Stroke::new(1.0, style::FAINT_MARK)));
+        }
+        StartFrom::Line => {
+            let across = Vec2::from_angle(s.aim_angle.to_radians()).perp() * s.start_length.max(0.0) * 0.5;
+            painter.line_segment([at(-across), at(across)], Stroke::new(1.0, style::FAINT_MARK));
+        }
+    }
+    painter.circle_stroke(at(Vec2::ZERO), 9.0, Stroke::new(1.5, color));
 }
 
 fn draw_hint(ui: &Ui, rect: Rect, text: &str) {
@@ -922,6 +1017,25 @@ mod tests {
     }
 
     /// A drag on the blank project's circle by its edge.
+    #[test]
+    fn an_emitter_dropped_on_a_circles_middle_sits_there_and_dragged_off_stands_free() {
+        let mut studio = Studio::headless();
+        let reg = &studio.kit.registry;
+        let id = bpe_kit::add_thing(&mut studio.scene, reg, bpe_kit::things::emitter::KIND, ThingId::ROOT).unwrap();
+        let world = studio.playback.world().clone();
+        assert!(spot_only(&studio, &world, id), "it can be grabbed at its middle with no balls out");
+        let drag = Drag::new(Handle::Body(id), Vec2::ZERO);
+        apply_drag(&mut studio.scene, &studio.kit.registry, &world, &drag, Vec2::new(12.0, -9.0), None, 0.0);
+        let thing = &studio.scene.things[&id];
+        assert_eq!(thing.params.get("sits_on"), Some(&Value::Int(1)));
+        assert_eq!(thing.params.get("sits_focus"), Some(&Value::Choice("focus1".into())));
+        apply_drag(&mut studio.scene, &studio.kit.registry, &world, &drag, Vec2::new(300.0, 250.0), None, 0.0);
+        let thing = &studio.scene.things[&id];
+        assert_eq!(thing.params.get("sits_on"), Some(&Value::Int(0)));
+        assert_eq!(thing.transform.position, Vec2::new(300.0, 250.0));
+        assert_eq!(seat_near(&studio.scene, &world, Vec2::new(0.0, SEAT_SNAP + 1.0)), None);
+    }
+
     fn radius_drag(world: &World) -> Drag {
         let handle = Handle::Radius(ThingId(1));
         Drag { mould: shape_handles::start(world, handle, Vec2::new(508.0, 0.0)), ..Drag::new(handle, Vec2::ZERO) }

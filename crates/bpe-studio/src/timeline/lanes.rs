@@ -26,6 +26,8 @@ pub struct Group {
     pub lanes: Vec<Lane>,
     /// The thing's sound has slots that take turns: the header marks where they change.
     pub slots: bool,
+    /// The thing is an emitter: the header marks where each round fires.
+    pub rounds: bool,
 }
 
 /// A group for every thing with keys or pulses, in tree order (the scene settings first). Keys
@@ -38,7 +40,14 @@ pub fn groups_for(scene: &Scene, kit: &Kit) -> Vec<Group> {
             let thing = scene.things.get(&id)?;
             let lanes = lanes_for(scene, kit, id);
             let slots = slots_take_turns(scene, id);
-            (!lanes.is_empty() || slots).then(|| Group { thing: id, name: thing.name.clone(), lanes, slots })
+            let rounds = thing.kind == bpe_kit::things::emitter::KIND;
+            (!lanes.is_empty() || slots || rounds).then(|| Group {
+                thing: id,
+                name: thing.name.clone(),
+                lanes,
+                slots,
+                rounds,
+            })
         })
         .collect()
 }

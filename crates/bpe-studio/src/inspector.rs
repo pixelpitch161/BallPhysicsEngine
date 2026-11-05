@@ -72,7 +72,18 @@ pub struct Inspector {
     /// The Tags field's text while it is being typed in, by thing; set on the thing when the
     /// field lets go of the keyboard.
     pub tags_draft: Option<(ThingId, String)>,
+    /// Each emitter's Emitter card tab.
+    pub emitter_tab: BTreeMap<ThingId, emitter_card::EmitterTab>,
+    /// What is being dragged on an emitter's mini view, and on which emitter.
+    pub emitter_drag: Option<(ThingId, emitter_card::mini_view::MiniDrag)>,
+    /// Each emitter's rounds as the playback has them, for the rounds strip; the studio fills it
+    /// every frame for the selected emitter.
+    pub rounds: BTreeMap<ThingId, Vec<bpe_kit::things::emitter::sim::RoundMark>>,
 }
+
+/// The Emitter card.
+#[path = "emitter_card/mod.rs"]
+pub(crate) mod emitter_card;
 
 /// What the inspector shows of a shape.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -330,7 +341,17 @@ pub fn show(
         // ---------- the kind's own settings ----------
         let own = |key: &str| Address { thing: id, slot: None, key: key.into() };
         let applies = |d: &SettingDef| d.applies(Some(&thing.kind), &|k| scene.value_at_time(reg, &own(k), time));
-        let cx = OwnCx { scene, kit, choices: &choices, id, thing: &thing, time, label_width: lw, applies: &applies };
+        let cx = OwnCx {
+            scene,
+            kit,
+            resolved,
+            choices: &choices,
+            id,
+            thing: &thing,
+            time,
+            label_width: lw,
+            applies: &applies,
+        };
         if id == ThingId::ROOT {
             // The root's settings are one card per group.
             for (i, name) in bpe_kit::ROOT_CARDS.into_iter().enumerate() {
@@ -339,6 +360,20 @@ pub fn show(
                 }
                 root_card(ui, inspector, &cx, name, &mut edits);
             }
+        } else if kind.id() == EMITTER {
+            card(ui, |ui| {
+                let title = kind.name().to_owned();
+                let header = ui.horizontal_wrapped(|ui| {
+                    let open = fold_arrow(ui, &mut inspector.collapsed, Card::Thing.fold_key(id), &title);
+                    ui.label(RichText::new(&title).font(style::semibold(13.0)));
+                    folded_summary(ui, open, thing.params.iter().count());
+                    open
+                });
+                card_header(ui, inspector, Card::Thing, &header.response);
+                if header.inner {
+                    emitter_card::show(ui, inspector, &cx, &mut edits);
+                }
+            });
         } else if kind.id() == BALLS && layered_look(&thing) {
             // A Balls thing's own settings show elsewhere: Ball size by the Look card's Ball /
             // Group switch, Launch speed under Placement, the group's in Group mode.
@@ -495,13 +530,13 @@ pub fn show(
                 }
                 if card_now.kind == bpe_kit::modules::look::layers::CARD {
                     ui.add_space(4.0);
-                    if kind.id() == BALLS {
+                    if has_ball_look(kind.id()) {
                         look_mode_switch(ui, inspector, &cx, &mut edits);
                         ui.add_space(4.0);
                     }
                     let look =
                         crate::look_editor::LookCx { scene, kit, choices: &choices, id, slot, time, label_width: lw };
-                    if kind.id() == BALLS && group_mode(inspector, id) {
+                    if has_ball_look(kind.id()) && group_mode(inspector, id) {
                         crate::look_editor::group::show(ui, inspector, &look, &mut edits);
                     } else {
                         crate::look_editor::show(ui, inspector, &look, &mut edits);
@@ -641,8 +676,15 @@ pub fn show(
     changed
 }
 
-/// The kind whose things have a Ball / Group switch.
+/// The kind of a group of balls.
 const BALLS: &str = "balls";
+/// The kind that fires balls of its own design.
+const EMITTER: &str = bpe_kit::things::emitter::KIND;
+
+/// Whether things of `kind` wear a ball Look with a Ball / Group switch.
+pub(crate) fn has_ball_look(kind: &str) -> bool {
+    bpe_kit::things::balls::rows::has_balls(kind)
+}
 
 /// The kind whose outline settings show under its Look's Body.
 const SHAPE: &str = bpe_kit::things::shape::KIND;
@@ -931,9 +973,10 @@ fn new_key(scene: &mut Scene, reg: &bpe_core::Registry, a: &Address, time: f64) 
 }
 
 /// What drawing a thing's own settings reads.
-struct OwnCx<'a> {
+pub(crate) struct OwnCx<'a> {
     scene: &'a Scene,
     kit: &'a Kit,
+    resolved: &'a Resolved,
     choices: &'a TargetChoices,
     id: ThingId,
     thing: &'a bpe_core::Thing,
@@ -2381,6 +2424,7 @@ mod tests {
                     let cx = OwnCx {
                         scene: &s.scene,
                         kit: &s.kit,
+                        resolved: &s.resolved,
                         choices: &choices,
                         id: ThingId::ROOT,
                         thing: &thing,

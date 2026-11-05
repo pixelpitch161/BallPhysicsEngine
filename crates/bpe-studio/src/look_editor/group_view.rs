@@ -9,6 +9,7 @@ use bpe_core::{Address, LayerId, Resolved, Scene, Settings, ThingId, Value, laye
 use bpe_gfx::{Frame, Renderer, build_frame};
 use bpe_kit::modules::look::layers::{Easing, GroupGradient, Spread};
 use bpe_kit::things::balls::shapes::{bounds, offsets};
+use bpe_kit::things::emitter::EmitterSettings;
 use bpe_kit::{BallsSettings, Kit};
 use bpe_runtime::{CameraView, Log, World};
 use eframe::{egui, egui_wgpu, wgpu};
@@ -86,10 +87,27 @@ pub struct ViewCx<'a> {
 }
 
 impl ViewCx<'_> {
-    /// The Balls settings as they are at the playhead.
+    /// Whether the thing is an emitter, whose group is one round laid out a short way along its
+    /// directions (nothing on it can be dragged but the gradient line).
+    pub fn is_emitter(&self) -> bool {
+        self.scene.things.get(&self.id).is_some_and(|t| t.kind == EMITTER)
+    }
+
+    /// The Balls settings as they are at the playhead. An emitter's stand in as a custom group
+    /// of one round's places, with its size and variety.
     pub fn settings(&self) -> BallsSettings {
         let reg = &self.kit.registry;
         let mut p = bpe_core::Params::default();
+        if self.is_emitter() {
+            for d in EmitterSettings::defs() {
+                if let Some(v) = self.scene.value_at_time(reg, &Address::own(self.id, d.key), self.time) {
+                    p.set(d.key, v);
+                }
+            }
+            let e = EmitterSettings::from_params(&p);
+            let custom = bpe_kit::things::emitter::fire::layout(&e).iter().map(|v| [v.x, v.y]).collect();
+            return BallsSettings { shape: bpe_kit::GroupShape::Custom, custom, ..e.variety() };
+        }
         for d in BallsSettings::defs() {
             if let Some(v) = self.scene.value_at_time(reg, &Address::own(self.id, d.key), self.time) {
                 p.set(d.key, v);
@@ -98,6 +116,9 @@ impl ViewCx<'_> {
         BallsSettings::from_params(&p)
     }
 }
+
+/// The emitter kind.
+const EMITTER: &str = bpe_kit::things::emitter::KIND;
 
 /// How the view maps the world to the screen: the view's rectangle, the world point at its
 /// middle and how much of the world it shows across.
@@ -146,12 +167,29 @@ pub fn build_group_frame(
     size: f32,
     frame: &mut Frame,
 ) {
-    let world = World::build(mini, resolved, &kit.sims);
+    let mut world = World::build(mini, resolved, &kit.sims);
+    lay_out_rounds(&mut world);
     build_frame(mini, resolved, &world, &Log::default(), time, &kit.draws, frame);
     let pixels = size.round().max(2.0) as u32;
     // The frame is `size` world pixels across at zoom 1, centred on the group.
     frame.set_view(CameraView { center: centre, ..CameraView::default() }, (pixels, pixels));
     frame.overlay = None;
+}
+
+/// Puts every emitter's balls in `world` at their places in the round, where the view shows its
+/// group (they all start at the emitter's middle).
+fn lay_out_rounds(world: &mut World) {
+    let emitters: Vec<ThingId> = world.order().iter().copied().filter(|id| world.kind(*id) == Some(EMITTER)).collect();
+    for id in emitters {
+        let Some(places) = bpe_kit::things::balls::rows::rows(world, id).map(|r| r.place.clone()) else { continue };
+        let at = world.poses.get(&id).map_or(Vec2::ZERO, |p| p.position);
+        if let Some(bodies) = world.bodies.get_mut(&id) {
+            for (i, place) in places.iter().enumerate().take(bodies.len()) {
+                bodies.position[i] = at + *place;
+                bodies.previous[i] = at + *place;
+            }
+        }
+    }
 }
 
 /// The places the group's balls start at, from the thing (turned by the group's Turn).
@@ -374,7 +412,7 @@ fn grab(view: &GroupView, cx: &ViewCx, s: &BallsSettings, places: &[Vec2], map: 
             return Some(Drag::GradientEnd(false));
         }
     }
-    if s.group && s.shape == bpe_kit::GroupShape::Custom {
+    if s.group && s.shape == bpe_kit::GroupShape::Custom && !cx.is_emitter() {
         let near = places
             .iter()
             .enumerate()

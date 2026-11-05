@@ -102,6 +102,21 @@ pub fn mini_scene(scene: &Scene, kit: &Kit, id: ThingId, ground: Ground) -> Opti
     ball.screen = None;
     ball.slots.retain(|slot, _| *slot == SlotId::Look);
     ball.params.set("release", Value::Choice("all_at_once".into()));
+    if ball.kind == bpe_kit::things::emitter::KIND {
+        // Its first round, all at once at the start, wherever the emitter would be; no marker.
+        for (key, v) in [
+            ("emits", Value::Bool(true)),
+            ("fire_when", Value::Choice("at_start".into())),
+            ("start_delay", Value::Number(0.0)),
+            ("gap", Value::Number(0.0)),
+            ("sits_on", Value::Int(0)),
+            ("catches", Value::Choice("nothing".into())),
+            ("marker", Value::Choice("none".into())),
+            ("ripple", Value::Bool(false)),
+        ] {
+            ball.params.set(key, v);
+        }
+    }
     // The Look's keys and pulses still move it, and on the scene's ground the scene's own.
     let kept = |a: &Address| {
         (a.thing == id && a.slot == Some(SlotId::Look))

@@ -407,6 +407,22 @@ impl Studio {
         true
     }
 
+    /// Gives the inspector the selected emitter's rounds as the playback has them so far.
+    fn fill_rounds(&mut self) {
+        let rounds = &mut self.panels.inspector.rounds;
+        rounds.clear();
+        let Some(id) = self
+            .selection
+            .primary
+            .filter(|id| self.scene.things.get(id).is_some_and(|t| t.kind == bpe_kit::things::emitter::KIND))
+        else {
+            return;
+        };
+        let duration =
+            bpe_kit::SceneSettings::from_params(&self.scene.things[&bpe_core::ThingId::ROOT].params).duration;
+        rounds.insert(id, bpe_kit::things::emitter::sim::round_marks(self.playback.world(), id, duration as f64));
+    }
+
     // ---------- playback ----------
 
     /// Moves the playhead. The simulation follows within the budget; the preview catches up
@@ -910,6 +926,7 @@ impl Studio {
                         }
                     });
                 } else {
+                    self.fill_rounds();
                     inspector::show(
                         &mut contents,
                         &mut self.panels.inspector,
