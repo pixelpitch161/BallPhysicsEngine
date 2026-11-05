@@ -109,10 +109,15 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx, tab: &mut SoundTab, layer: LayerId, met
     };
     let id = egui::Id::unique(("lfo view", cx.id, layer));
     let out = lfo_view::show(ui, id, &format!("{} shape", shape.label()), &view);
+    // A drag or paint starts its own undo step even when its first frame changes nothing yet
+    // (a point snapped to where it was), so the frames after it don't merge into the step before.
+    if out.new_step {
+        cx.edits.push(TabEdit::OwnStep);
+    }
     if let Some(p) = out.points
         && p != points
     {
-        set_curve(cx, layer, p, out.new_step);
+        set_curve(cx, layer, p, false);
     }
     if !drawn {
         ui.label(

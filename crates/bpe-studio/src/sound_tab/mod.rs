@@ -430,6 +430,11 @@ pub fn show(
         });
         cx.edits
     };
+    if edits.iter().any(|e| matches!(e, TabEdit::Audition(_))) {
+        // A clicked key reaches the meters a block later; look again then to light it, even
+        // while stopped, when nothing else asks for a frame.
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(30));
+    }
     apply(inspector, scene, kit, id, time, edits)
 }
 
@@ -452,6 +457,12 @@ fn body(ui: &mut Ui, inspector: &mut Inspector, cx: &mut TabCx) {
     };
     // Notes sound while stopped too (keys clicked), so they are read whenever there is sound.
     let heard = inspector.meters.as_ref().map_or(0, |m| m.take_notes(cx.id.0));
+    // The meters add a shape's notes up until they are read, so the first read after this
+    // shape's tab was away (another shape, the Settings tab) holds old notes: drop it.
+    let frame = ui.ctx().cumulative_frame_nr();
+    let fresh = inspector.sound.notes.last_read.is_some_and(|(s, f)| s == cx.id && frame.saturating_sub(f) <= 1);
+    inspector.sound.notes.last_read = Some((cx.id, frame));
+    let heard = if fresh { heard } else { 0 };
     let now = ui.input(|i| i.time);
     let sounding = inspector.sound.notes.light(cx.id, heard, now);
     if sounding != 0 {

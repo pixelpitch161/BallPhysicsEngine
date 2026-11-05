@@ -52,6 +52,7 @@ fn named(ui: &Ui, rect: Rect, id: impl std::hash::Hash + std::fmt::Debug, text: 
 }
 
 /// Draws the rows and "+ Slot". Returns the edits made.
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut Ui,
     cx: &mut TabCx,

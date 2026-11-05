@@ -49,8 +49,8 @@ pub fn phase_x(phase: f32) -> [f32; 2] {
     [t, 0.5 + t]
 }
 
-/// Where the Phase line goes: at `degrees`, in `colour`, with notes starting anywhere `spread`
-/// (0..1 of a cycle) around it.
+/// Where the Phase line goes: at `degrees`, in `colour`, with notes starting anywhere in the
+/// `spread` (0..1 of a cycle) after it.
 #[derive(Clone, Copy, Debug)]
 pub struct PhaseMark {
     pub degrees: f32,
@@ -87,7 +87,7 @@ pub fn show(
                 let spread = mark.spread.clamp(0.0, 1.0) * 0.5;
                 if spread > 0.0 {
                     // Two cycles are drawn, so a cycle is half the width; wrap the band around.
-                    let (a, b) = (t - spread / 2.0, t + spread / 2.0);
+                    let (a, b) = (t, t + spread);
                     let cycle = if t < 0.5 { (0.0, 0.5) } else { (0.5, 1.0) };
                     let band = |a: f32, b: f32| {
                         let r = egui::Rect::from_x_y_ranges(x_of(a)..=x_of(b), rect.y_range());

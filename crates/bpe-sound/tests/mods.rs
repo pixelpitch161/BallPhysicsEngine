@@ -87,7 +87,7 @@ fn a_drawn_lfo_played_once_holds_its_end() {
     let at = |t: f64| v[(t / block_s) as usize - 1];
     assert!((at(0.125) - 0.5).abs() < 0.02, "half way down: {}", at(0.125));
     assert_eq!(at(0.5), 0.0, "held at the end");
-    assert_eq!(at(5.0), 0.0);
+    assert_eq!(v[399], 0.0, "and still at the last block");
     assert_eq!(m.position(), 1.0 - 1e-9f64 as f32, "the playhead rests at the end");
     // Without Once it goes round again.
     let mut m = LfoMod::new(2);

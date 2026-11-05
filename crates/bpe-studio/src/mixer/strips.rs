@@ -330,10 +330,14 @@ fn slot_row(ui: &mut Ui, cx: &mut MixCx, mixer: &mut Mixer, lane: u8, index: usi
             }
         }
     } else if response.double_clicked() {
-        // (A double-click is a click too: this comes first. The first click already opened it.)
+        // (A double-click is a click too: this comes first. The first click opened or, on the
+        // open effect, closed its editor; a rename keeps it open either way.)
         let on_dot = response.interact_pointer_pos().is_some_and(|p| p.x < dot.right() + 2.0);
         if !on_dot {
             mixer.renaming = Some((Renaming::Layer(layer.id), String::new()));
+            if !picked {
+                cx.edits.push(MixEdit::Pick(Some(MixerPick::Layer(layer.id))));
+            }
         }
     } else if response.clicked() {
         let on_dot = response.interact_pointer_pos().is_some_and(|p| p.x < dot.right() + 2.0);

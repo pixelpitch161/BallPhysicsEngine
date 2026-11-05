@@ -44,6 +44,8 @@ pub struct NotesState {
     /// Until when (the editor's clock, seconds) each note of each shape stays lit after it
     /// sounded, so even a short note is seen.
     pub lit_until: BTreeMap<ThingId, Box<[f64; 128]>>,
+    /// The shape whose notes were last read from the meters, and on which frame.
+    pub last_read: Option<(ThingId, u64)>,
 }
 
 /// How long a note stays lit after it was last heard sounding.

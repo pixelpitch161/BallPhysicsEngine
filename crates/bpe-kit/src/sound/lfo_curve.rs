@@ -143,7 +143,14 @@ pub fn paint_cell(points: &[CurvePoint], x0: f32, x1: f32, y: f32, paint: Paint)
     out.push(CurvePoint::new(x0, a, 0.0));
     out.push(CurvePoint::new(x1, b, 0.0));
     if x1 < 1.0 {
-        out.push(CurvePoint::new(x1, after, points.iter().rev().find(|p| p.x <= x1).map_or(0.0, |p| p.bend)));
+        // The part after the cell starts where the shape was at x1 and bends to go through the
+        // old shape's middle, so it looks as it did (a cut power curve keeps no bend of its own).
+        let bend = points.iter().find(|p| p.x > x1).map_or(0.0, |q| {
+            let mid = bpe_dsp::lfo::curve_at(&numbers, ((x1 + q.x) / 2.0) as f64);
+            let rise = q.y - after;
+            if rise.abs() < 1e-4 { 0.0 } else { bpe_dsp::lfo::bend_for_middle((mid - after) / rise) }
+        });
+        out.push(CurvePoint::new(x1, after, bend));
         out.extend(points.iter().filter(|p| p.x > x1).copied());
     }
     tidy(&out)
@@ -176,12 +183,23 @@ pub fn flip_x(points: &[CurvePoint]) -> Vec<CurvePoint> {
     let out: Vec<CurvePoint> = (0..n)
         .map(|i| {
             let p = points[n - 1 - i];
-            // The part after this point was the part before it, bowing the other way.
-            let bend = if i + 1 < n { -points[n - 2 - i].bend } else { 0.0 };
+            // The part after this point was the part before it, bowing the other way: its
+            // middle goes where the old part's middle was.
+            let bend = if i + 1 < n { mirrored(points[n - 2 - i].bend) } else { 0.0 };
             CurvePoint::new(1.0 - p.x, p.y, bend)
         })
         .collect();
     tidy(&out)
+}
+
+/// The bend of a part played back to front: a power curve's mirror is not one, so it is the
+/// one whose middle sits where the old one's does.
+fn mirrored(bend: f32) -> f32 {
+    if bend == 0.0 {
+        return 0.0;
+    }
+    let middle = bpe_dsp::lfo::bend_at(0.5, bend);
+    bpe_dsp::lfo::bend_for_middle(1.0 - middle)
 }
 
 #[cfg(test)]
@@ -227,12 +245,31 @@ mod tests {
     }
 
     #[test]
+    fn painting_leaves_the_shape_after_the_cell_looking_as_it_did() {
+        let sine = super::super::LfoPreset::Sine.points();
+        let old = super::super::curve_numbers(&sine);
+        // A cell ending halfway along one of the sine's parts.
+        let s = paint_cell(&sine, 0.25, 0.3125, 0.0, Paint::Step);
+        let new = super::super::curve_numbers(&s);
+        for x in [0.32, 0.34375, 0.36, 0.37, 0.5, 0.8] {
+            let (a, b) = (bpe_dsp::lfo::curve_at(&old, x), bpe_dsp::lfo::curve_at(&new, x));
+            assert!((a - b).abs() < 0.01, "at {x}: {a} became {b}");
+        }
+    }
+
+    #[test]
     fn flips_and_tidy() {
         let saw = vec![p(0.0, 0.0), p(1.0, 1.0)];
         assert_eq!(flip_y(&saw), vec![p(0.0, 1.0), p(1.0, 0.0)]);
         assert_eq!(flip_x(&saw), vec![p(0.0, 1.0), p(1.0, 0.0)]);
         let bent = vec![CurvePoint::new(0.0, 0.0, 0.5), p(1.0, 1.0)];
-        assert_eq!(flip_x(&bent)[0].bend, -0.5);
+        let back = flip_x(&bent);
+        assert!(back[0].bend < 0.0, "{back:?}");
+        // Its middle is where the old middle was, and Reverse twice gives the shape back.
+        let (old, new) = (super::super::curve_numbers(&bent), super::super::curve_numbers(&back));
+        let (a, b) = (bpe_dsp::lfo::curve_at(&old, 0.5), bpe_dsp::lfo::curve_at(&new, 0.5));
+        assert!((a - b).abs() < 1e-3, "{a} {b}");
+        assert!((flip_x(&back)[0].bend - 0.5).abs() < 1e-3);
         let messy = vec![p(0.2, 0.1), p(0.5, 0.2), p(0.5, 0.3), p(0.5, 0.4), p(0.9, 2.0)];
         assert_eq!(tidy(&messy), vec![p(0.0, 0.1), p(0.5, 0.2), p(0.5, 0.4), p(1.0, 1.0)]);
         assert!(curve_is_valid(&tidy(&[])));

@@ -113,12 +113,14 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx, which: Osc, tab: &mut super::SoundTab) 
         let mode: WarpMode = cx.choice(&key("warp_mode"));
         let warp = (cx.number(&key("warp")) / 100.0) as f32;
         let id = egui::Id::unique(("wave view", cx.id, p));
-        let phase = wave_view::PhaseMark {
+        // Notes start at the Phase only when they restart; a free-running osc has no start to show.
+        let restart = cx.choice::<PhaseMode>(&key("phase_mode")) == PhaseMode::Restart;
+        let phase = restart.then(|| wave_view::PhaseMark {
             degrees: cx.number(&key("phase")) as f32,
             spread: (cx.number(&key("random_phase")) / 100.0) as f32,
             colour: cx.colour,
-        };
-        wave_view::show(ui, id, &format!("{} wave", which.name()), wave, mode, warp, Some(phase));
+        });
+        wave_view::show(ui, id, &format!("{} wave", which.name()), wave, mode, warp, phase);
         let tonal = wave != Wave::Noise;
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
