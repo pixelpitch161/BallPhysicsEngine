@@ -255,6 +255,7 @@ mod tests {
             kind: super::super::around::AroundKind::Wavefront(Box::new(w.clone())),
             subs: Vec::new(),
             only: Vec::new(),
+            light: [0.0; 4],
         };
         let mut frame = Frame::default();
         draw(&layer, &w, &f, &mut frame);

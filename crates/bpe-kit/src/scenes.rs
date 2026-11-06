@@ -850,6 +850,84 @@ fn riders(reg: &Registry) -> Scene {
     b.finish()
 }
 
+/// A lit room for the lighting tests (lighting part 1a): a mid-grey background in a white ring,
+/// one pink ball at the middle (drawn at 0 s, before it falls) and one Point light above it. Not in [`all`],
+/// which pins the unlit pictures.
+pub fn lit_room(reg: &Registry) -> Scene {
+    use crate::things::light::{LightType, add_light};
+    let mut scene = new_scene(reg);
+    scene.name = "Lit room".into();
+    let root = scene.things.get_mut(&ThingId::ROOT).expect("root");
+    let mut s = SceneSettings::from_params(&root.params);
+    s.background = Paint::solid(Color::rgb(0x80, 0x80, 0x80));
+    s.bloom = 0.0;
+    root.params = s.to_params();
+    let ball = scene.things.values().find(|t| t.kind == "balls").map(|t| t.id).expect("a ball");
+    scene.things.get_mut(&ball).expect("ball").transform.position = Vec2::ZERO;
+    let light = add_light(&mut scene, reg, LightType::Point, ThingId::ROOT).expect("a light");
+    scene.things.get_mut(&light).expect("light").params.set("position", Value::Vec2([0.0, -400.0]));
+    scene
+}
+
+/// The lighting demo (lighting part 1a's video): a dark room in a white ring, twelve balls flung
+/// out from the middle, each carrying a small light of its own, under a warm spot light, with a
+/// cool light riding the middle of the group. Not in [`all`].
+pub fn lit_demo(reg: &Registry) -> Scene {
+    use crate::things::light::{LightSettings, LightType, add_light};
+    let mut scene = lit_room(reg);
+    scene.name = "Lit demo".into();
+    let root = scene.things.get_mut(&ThingId::ROOT).expect("root");
+    let mut s = SceneSettings::from_params(&root.params);
+    s.background = Paint::solid(Color::rgb(0x2a, 0x2e, 0x3c));
+    s.bloom = 0.2;
+    root.params = s.to_params();
+    let lighting = root.slots.get_mut(&SlotId::Lighting).expect("lit");
+    lighting.params.set("ambient", Value::Number(0.12));
+    lighting.params.set("contact", Value::Number(0.4));
+    // The room's light becomes a warm spot from above.
+    let first = scene.things.values().find(|t| t.kind == "light").map(|t| t.id).expect("a light");
+    let mut spot = LightSettings::of_kind(LightType::Spot);
+    spot.position = Vec2::new(0.0, -460.0);
+    spot.cone = 90.0;
+    spot.cone_edge = 25.0;
+    spot.reach = 2200.0;
+    spot.strength = 2.2;
+    spot.height = 400.0;
+    spot.size = 40.0;
+    spot.colour = Color::rgb(0xff, 0xc8, 0x8a);
+    scene.things.get_mut(&first).expect("light").params = spot.to_params();
+    scene.rename_thing(first, "Spot light");
+    let shape = scene.things.values().find(|t| t.kind == "shape").map(|t| t.id).expect("a shape");
+    scene.things.get_mut(&shape).expect("shape").params.set("thickness", Value::Number(10.0));
+    let ball = scene.things.values().find(|t| t.kind == "balls").map(|t| t.id).expect("a ball");
+    let mut balls = BallsSettings::from_params(&scene.things[&ball].params);
+    balls.ring(12, 140.0);
+    balls.launch = crate::things::balls::Launch::Outward;
+    balls.velocity = Vec2::new(0.0, -700.0);
+    scene.things.get_mut(&ball).expect("ball").params = balls.to_params();
+    // A small coloured light on each ball, and a cool one riding the middle of the group.
+    let each = add_light(&mut scene, reg, LightType::Point, ball).expect("a light");
+    let mut on_each = LightSettings::of_kind(LightType::Point);
+    on_each.position = Vec2::ZERO;
+    on_each.colour = Color::rgb(0xff, 0x5c, 0xa8);
+    on_each.strength = 1.2;
+    on_each.reach = 320.0;
+    on_each.height = 40.0;
+    on_each.size = 10.0;
+    on_each.flare = 3.0;
+    scene.things.get_mut(&each).expect("light").params = on_each.to_params();
+    let middle = add_light(&mut scene, reg, LightType::Point, ball).expect("a light");
+    let mut cool = LightSettings::of_kind(LightType::Point);
+    cool.position = Vec2::ZERO;
+    cool.rides_on = crate::things::light::RidesOn::TheMiddle;
+    cool.colour = Color::rgb(0x6c, 0xb4, 0xff);
+    cool.strength = 1.4;
+    cool.reach = 1100.0;
+    cool.height = 120.0;
+    scene.things.get_mut(&middle).expect("light").params = cool.to_params();
+    scene
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{registry, scenes};

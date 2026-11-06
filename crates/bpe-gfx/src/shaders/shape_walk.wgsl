@@ -25,6 +25,7 @@ fn SHAPE_WALK(world: vec2<f32>, s: ShapeAt, first: u32, count_in: u32, split: u3
     let fade = shape_reach_fade(s);
     // Where the light of a Shine sub-layer falls, -1 to 1 across the shape's reach.
     let lit_at = s.q / max(layered_shape.c.y, 1e-3);
+    LIGHT_HEIGHT = 0.0;
     let cut = split & 0xffffu;
     let upper = cut > 0u && (split & 0x10000u) != 0u;
     let lower = cut > 0u && !upper;
@@ -63,7 +64,8 @@ fn SHAPE_WALK(world: vec2<f32>, s: ShapeAt, first: u32, count_in: u32, split: u3
         // ---------- the open piece mixed in, at the next layer or the end ----------
         if open && !sub {
             open = false;
-            let mode = ll.head.y;
+            // The light passes' surface (mode 2) mixes every layer plainly.
+            let mode = select(ll.head.y, 0u, g.light.x > 1.5);
             let above = cut > 0u && lk >= cut;
             // The layer's opacity, applied once to the piece and everything its sub-layers added
             // (a sub-layer's picture shows the layer whole). A glow layer's light is made here,
@@ -74,6 +76,9 @@ fn SHAPE_WALK(world: vec2<f32>, s: ShapeAt, first: u32, count_in: u32, split: u3
             glow_amount *= lo;
             if ll.head.x == 4u {
                 piece.light_out += sub_light(piece.c_out, glow_amount, select(outer, whole_out, lower && above), mode);
+            }
+            if g.light.x > 0.5 {
+                piece = light_piece(piece, ll);
             }
             let p_in = clamp(piece.a_in, 0.0, 1.0) * lo;
             let p_out = clamp(piece.a_out, 0.0, 1.0) * lo;

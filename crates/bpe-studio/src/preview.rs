@@ -138,6 +138,8 @@ pub struct Outcome {
     pub clicked: bool,
     /// What is wrong with a shader module the picture skipped, when one is.
     pub shader_problem: Option<String>,
+    /// The picture's lighting, when it is lit: how many lights and the GPU's time on them (ms).
+    pub lighting: Option<(usize, Option<f32>)>,
 }
 
 /// Converts between world pixels and screen points, through the camera the picture is drawn
@@ -272,6 +274,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     }
     let mut outcome = Outcome { catching_up, ..Outcome::default() };
     outcome.shader_problem = preview.renderer.shader_problems().into_iter().next();
+    outcome.lighting = preview.renderer.lighting_stats();
 
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
     let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
@@ -618,8 +621,10 @@ pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
 fn spot_only(studio: &Studio, world: &World, id: ThingId) -> bool {
     let kind = studio.scene.things.get(&id).map(|t| t.kind.as_str());
     // An emitter can be grabbed at its middle even with no balls out.
+    // A light's place is its own Position setting (its handles come with the Lights tab).
+    let light = kind == Some(bpe_kit::things::light::LIGHT);
     kind == Some(EMITTER)
-        || (!world.bodies.contains_key(&id) && !world.walls.contains_key(&id) && kind != Some("camera"))
+        || (!world.bodies.contains_key(&id) && !world.walls.contains_key(&id) && kind != Some("camera") && !light)
 }
 
 /// The emitter kind.

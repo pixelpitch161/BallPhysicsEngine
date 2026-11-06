@@ -67,6 +67,8 @@ pub struct ShapeStack {
     pub blend: Option<BlendLayer>,
     /// Where the Blend layer sits: how many of `drawn` are under it.
     pub blend_at: usize,
+    /// How each layer (the Body's first) takes the scene's light ([`crate::modules::look::layers::lighting::of`]).
+    pub light: Vec<(LayerId, [f32; 4])>,
 }
 
 /// The shape as it is drawn, in its own units (see `things::shape::draw::wall_form`).
@@ -99,15 +101,24 @@ impl Geometry {
 }
 
 impl ShapeStack {
+    /// How layer `id` takes the scene's light.
+    pub fn light_of(&self, id: LayerId) -> [f32; 4] {
+        self.light.iter().find(|(l, _)| *l == id).map_or([0.0; 4], |(_, light)| *light)
+    }
+
     /// The stack of a `look.shape` card; `None` for any other card, or one with no Body.
     pub fn of(slot: &ResolvedSlot) -> Option<ShapeStack> {
         if slot.kind != CARD {
             return None;
         }
         let body = slot.first_layer(BODY)?;
-        let mut stack = ShapeStack { body_id: body.id, drawn: Vec::new(), blend: None, blend_at: 0 };
+        let mut stack = ShapeStack { body_id: body.id, drawn: Vec::new(), blend: None, blend_at: 0, light: Vec::new() };
         for layer in &slot.layers {
             let p = slot.layer_params(layer.id);
+            let light = crate::modules::look::layers::lighting::of(&p);
+            if light != [0.0; 4] {
+                stack.light.push((layer.id, light));
+            }
             let drawn = match layer.kind.as_str() {
                 PAINT => ShapeDrawn::Paint(PaintLayer::from_params(&p)),
                 OUTLINE => ShapeDrawn::Outline(ShapeOutline::from_params(&p)),
@@ -249,6 +260,7 @@ impl ShapeStack {
             head: [LayerGpu::BODY, 0, 0, 0],
             amount: [1.0, 0.0, 0.0, 0.0],
             colour: [1.0, 1.0, 1.0, 1.0],
+            light: self.light_of(self.body_id),
             ..LayerGpu::ZERO
         }];
         // Where each layer's record is, by id, for cuts that name a layer.
@@ -292,7 +304,7 @@ impl ShapeStack {
             };
             let at = out.len();
             let count = written(subs).count() as u32;
-            out.push(LayerGpu { head: [r.head[0], r.head[1], r.head[2], count], ..r });
+            out.push(LayerGpu { head: [r.head[0], r.head[1], r.head[2], count], light: self.light_of(*id), ..r });
             let mut cx = SubCx { placed: &placed, angle: 0.0, sources: &sources, atlas, tiles: &mut tiles };
             for s in written(subs) {
                 out.push(sub_record(&s.sub, &mut cx));

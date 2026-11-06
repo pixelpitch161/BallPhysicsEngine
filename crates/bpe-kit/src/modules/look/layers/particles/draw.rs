@@ -201,18 +201,29 @@ pub fn draw_balls(
     let pick = |e: &Emission| mine(e.row.and_then(|r| copy_of.get(r).copied()).unwrap_or(0));
     let src = Source { cx, particles, pick: &pick, colour: &colour, hit: &hit, unit: &unit, pull_to: &pull_to };
     if particles.made_of == MadeOf::MiniBalls {
-        draw_mini_balls(&src, &emissions, balls, stack, frame);
+        draw_mini_balls(&src, &emissions, balls, stack, layer.light, frame);
     } else {
         draw_sprites(&src, &emissions, frame);
     }
 }
 
 /// Draws the particles of `emissions` as small balls wearing `stack`, the ball's own look.
-fn draw_mini_balls(src: &Source, emissions: &[Emission], balls: &Balls, stack: &Stack, frame: &mut Frame) {
+/// They take the light as their particles layer does (`light`), flat, not as the ball's Body.
+fn draw_mini_balls(
+    src: &Source,
+    emissions: &[Emission],
+    balls: &Balls,
+    stack: &Stack,
+    light: [f32; 4],
+    frame: &mut Frame,
+) {
     let cx = src.cx;
     let time = cx.time as f32;
     let walls = walls(cx, src.particles);
-    let records = stack.records(&mut frame.gradients, &mut frame.mask_tiles, time);
+    let mut records = stack.records(&mut frame.gradients, &mut frame.mask_tiles, time);
+    for r in &mut records {
+        r.light = [light[0], light[1], 0.0, 0.0];
+    }
     let first = frame.look_layers.len() as u32;
     let count = records.len() as u32;
     frame.look_layers.extend(records);

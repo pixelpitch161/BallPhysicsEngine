@@ -56,6 +56,8 @@ enum Action {
     /// Delete this row: with everything else selected when the row is part of the selection.
     DeleteRow(ThingId),
     Add(&'static str),
+    /// A light of this kind: inside a selected Balls, Emitter or Shape thing it rides on it.
+    AddLight(bpe_kit::things::light::LightType),
     /// A folder around this row, or around the whole selection when the row is part of it.
     MakeFolder(ThingId),
     Folder(Vec<ThingId>),
@@ -71,7 +73,7 @@ enum Action {
 }
 
 /// The headings of the "Add thing" menu, in order. Kinds in no family follow Folder.
-const FAMILIES: [&str; 2] = ["Bouncers", "Shapes"];
+const FAMILIES: [&str; 3] = ["Bouncers", "Shapes", "Lights"];
 
 /// Draws the tree and applies what was clicked. `selection` follows the clicks.
 pub fn show(
@@ -98,11 +100,12 @@ pub fn show(
             let present = |k: &str| scene.things.values().any(|t| t.kind == k);
             let kinds: Vec<_> =
                 reg.things().filter(|k| k.id() != "scene" && !(k.single() && present(k.id()))).collect();
-            let mut button = |ui: &mut Ui, kind: &dyn bpe_core::ThingKind| {
-                if ui.button(kind.name()).on_hover_text(kind.help()).clicked() {
-                    action = Some(Action::Add(kind.id()));
+            let button = |ui: &mut Ui, kind: &dyn bpe_core::ThingKind| {
+                let clicked = ui.button(kind.name()).on_hover_text(kind.help()).clicked();
+                if clicked {
                     ui.close();
                 }
+                clicked.then_some(Action::Add(kind.id()))
             };
             for family in FAMILIES {
                 let mut in_family = kinds.iter().filter(|k| k.family() == family).peekable();
@@ -111,16 +114,32 @@ pub fn show(
                 }
                 ui.label(RichText::new(family).small().color(style::MUTED));
                 for kind in in_family {
-                    button(ui, *kind);
+                    if kind.id() == bpe_kit::things::light::LIGHT {
+                        // One kind, five lamps: each its own entry.
+                        for lamp in bpe_kit::things::light::LightType::ALL {
+                            if ui.button(lamp.menu_name()).on_hover_text(kind.help()).clicked() {
+                                action = Some(Action::AddLight(lamp));
+                                ui.close();
+                            }
+                        }
+                        continue;
+                    }
+                    if let Some(a) = button(ui, *kind) {
+                        action = Some(a);
+                    }
                 }
             }
             ui.separator();
             let other = |k: &&&dyn bpe_core::ThingKind| !FAMILIES.contains(&k.family());
             for kind in kinds.iter().filter(other).filter(|k| k.id() == "folder") {
-                button(ui, *kind);
+                if let Some(a) = button(ui, *kind) {
+                    action = Some(a);
+                }
             }
             for kind in kinds.iter().filter(other).filter(|k| k.id() != "folder") {
-                button(ui, *kind);
+                if let Some(a) = button(ui, *kind) {
+                    action = Some(a);
+                }
             }
         });
         ui.add_space(4.0);
@@ -258,6 +277,22 @@ pub fn show(
             // The kit gives the thing the cards its kind starts with, such as a ball's look.
             let added = bpe_kit::add_thing(scene, reg, kind, parent);
             if let Ok(id) = added {
+                selection.set(id);
+                out.edited = true;
+                out.added = Some(id);
+            }
+        }
+        Some(Action::AddLight(lamp)) => {
+            // Into a selected thing it can ride or a selected folder, else beside the selection.
+            let parent = selection
+                .primary
+                .and_then(|s| scene.things.get(&s))
+                .and_then(|t| {
+                    let inside = t.kind == "folder" || bpe_kit::things::light::RIDES.contains(&t.kind.as_str());
+                    if inside { Some(t.id) } else { t.parent }
+                })
+                .unwrap_or(ThingId::ROOT);
+            if let Ok(id) = bpe_kit::things::light::add_light(scene, reg, lamp, parent) {
                 selection.set(id);
                 out.edited = true;
                 out.added = Some(id);
@@ -779,6 +814,8 @@ enum Icon {
     Folder,
     /// The camera: a 9:16 frame.
     Frame,
+    /// A light: a bulb with rays.
+    Lamp,
     /// Anything else.
     Diamond,
 }
@@ -791,6 +828,7 @@ fn icon_shape(kind: &str) -> Icon {
         "scene" => Icon::Square,
         "camera" => Icon::Frame,
         "folder" => Icon::Folder,
+        "light" => Icon::Lamp,
         _ => Icon::Diamond,
     }
 }
@@ -825,6 +863,13 @@ fn paint_icon(painter: &egui::Painter, rect: Rect, kind: &str, ink: Color32) {
             let rect = Rect::from_center_size(c, Vec2::new(r * 1.15, r * 2.0));
             painter.rect_stroke(rect, 1.5, Stroke::new(1.6, ink), egui::StrokeKind::Inside);
             painter.circle_filled(c, r * 0.28, ink);
+        }
+        Icon::Lamp => {
+            painter.circle_filled(c, r * 0.45, ink);
+            for k in 0..8 {
+                let d = Vec2::angled(k as f32 * std::f32::consts::FRAC_PI_4);
+                painter.line_segment([c + d * r * 0.7, c + d * r * 1.05], Stroke::new(1.2, ink));
+            }
         }
         Icon::Diamond => {
             let points =

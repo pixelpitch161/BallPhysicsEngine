@@ -39,7 +39,23 @@ fn main() -> eframe::Result {
             // Opens filling the screen; F11 goes fully fullscreen and back.
             .with_maximized(true)
             .with_title("Ball Studio Next"),
+        wgpu_options: wgpu_options(),
         ..Default::default()
     };
     eframe::run_native("Ball Studio Next", options, Box::new(move |cc| Ok(Box::new(app::Studio::new(cc, scene_path)))))
+}
+
+/// eframe's usual GPU set-up, asking also for GPU timestamps where the card has them, so the
+/// status line can say how long lighting takes.
+fn wgpu_options() -> egui_wgpu::WgpuConfiguration {
+    let mut setup = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+    let base = setup.device_descriptor.clone();
+    setup.device_descriptor = std::sync::Arc::new(move |adapter| {
+        let mut descriptor = base(adapter);
+        if adapter.features().contains(bpe_gfx::TIMING_FEATURES) {
+            descriptor.required_features |= bpe_gfx::TIMING_FEATURES;
+        }
+        descriptor
+    });
+    egui_wgpu::WgpuConfiguration { wgpu_setup: egui_wgpu::WgpuSetup::CreateNew(setup), ..Default::default() }
 }

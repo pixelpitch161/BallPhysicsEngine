@@ -134,7 +134,9 @@ pub fn resolve(scene: &Scene, reg: &Registry) -> Resolved {
                         let with_defaults = |k: &str| {
                             get(k).or_else(|| lkind.settings().iter().find(|d| d.key == k).map(|d| d.default.clone()))
                         };
-                        for d in lkind.settings().iter().chain(lkind.dynamic_defs(&with_defaults)) {
+                        for d in
+                            lkind.settings().iter().chain(lkind.dynamic_defs(&with_defaults)).chain(lkind.light_defs())
+                        {
                             let key = layered_key(layer.id, d.key);
                             let v = card.params.get(&key).unwrap_or(&d.default).clone();
                             params.set(&key, v);

@@ -29,6 +29,8 @@ pub enum SlotId {
     /// fits this slot.
     Particles,
     Shader,
+    /// The scene's lighting (the Lighting card): only the scene settings have one.
+    Lighting,
     /// A thing's sound (the Sound tab), not shown in the inspector's card list.
     Sound,
     /// The scene's mixer (the Mixer panel), not shown in the inspector's card list.
@@ -37,13 +39,14 @@ pub enum SlotId {
 
 impl SlotId {
     /// Every slot, in the order the inspector shows them. `slot as usize` indexes this list.
-    pub const ALL: [SlotId; 8] = [
+    pub const ALL: [SlotId; 9] = [
         SlotId::Look,
         SlotId::Trail,
         SlotId::Motion,
         SlotId::Bounce,
         SlotId::Particles,
         SlotId::Shader,
+        SlotId::Lighting,
         SlotId::Sound,
         SlotId::Mixer,
     ];
@@ -57,6 +60,7 @@ impl SlotId {
             SlotId::Bounce => "Bounce",
             SlotId::Particles => "Particles",
             SlotId::Shader => "Shader",
+            SlotId::Lighting => "Lighting",
             SlotId::Sound => "Sound",
             SlotId::Mixer => "Mixer",
         }
@@ -75,9 +79,9 @@ mod tests {
 
     #[test]
     fn sound_and_mixer_slots_are_last_and_hidden() {
-        assert_eq!(SlotId::ALL.len(), 8);
-        assert_eq!(SlotId::ALL[6], SlotId::Sound);
-        assert_eq!(SlotId::ALL[7], SlotId::Mixer);
+        assert_eq!(SlotId::ALL.len(), 9);
+        assert_eq!(SlotId::ALL[7], SlotId::Sound);
+        assert_eq!(SlotId::ALL[8], SlotId::Mixer);
         for (i, s) in SlotId::ALL.into_iter().enumerate() {
             assert_eq!(s as usize, i);
         }

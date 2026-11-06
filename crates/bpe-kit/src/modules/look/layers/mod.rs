@@ -16,6 +16,7 @@ pub mod glow;
 pub mod gpu;
 pub mod group;
 pub mod group_shader;
+pub mod lighting;
 pub mod outline;
 pub mod particles;
 pub mod pattern;
@@ -167,6 +168,10 @@ impl LayerKind for Kind {
     }
     fn dynamic_defs(&self, get: &dyn Fn(&str) -> Option<Value>) -> &'static [SettingDef] {
         (self.dynamic)(get)
+    }
+    /// Lit, Blocks light and (on a ball's Body) Bulge, in the layer's Lighting fold.
+    fn light_defs(&self) -> &'static [SettingDef] {
+        lighting::defs_of(self.id)
     }
     /// Only a ball's drawn layers but Blend can be given to some balls of a group.
     fn per_ball(&self) -> bool {
@@ -557,14 +562,14 @@ mod tests {
         let cut = scene.add_sub_layer(&reg, ball, slot, outline, SUB_CUT).unwrap();
         let size = bpe_core::Address::on(ball, slot, &bpe_core::layered_key(cut, "size"));
         scene.set_at(&reg, &size, Value::Number(0.25)).unwrap();
-        let text = bpe_core::save(&scene).replace("\"sub.cut\"", "\"layer.mask\"").replace("format: 10", "format: 8");
+        let text = bpe_core::save(&scene).replace("\"sub.cut\"", "\"layer.mask\"").replace("format: 11", "format: 8");
         assert!(text.contains("layer.mask"));
         let back = bpe_core::load(&text, &reg).unwrap();
         let layer = back.card(ball, slot).unwrap().layer(cut).unwrap();
         assert_eq!((layer.kind.as_str(), layer.parent), (SUB_CUT, Some(outline)));
         assert_eq!(back.value_at(&reg, &size), Some(Value::Number(0.25)));
         // A format 9 file keeps whatever it says.
-        let nine = bpe_core::save(&scene).replace("\"sub.cut\"", "\"layer.mask\"").replace("format: 10", "format: 9");
+        let nine = bpe_core::save(&scene).replace("\"sub.cut\"", "\"layer.mask\"").replace("format: 11", "format: 9");
         let back = bpe_core::load(&nine, &reg).unwrap();
         assert_eq!(back.card(ball, slot).unwrap().layer(cut).unwrap().kind, OLD_MASK);
     }

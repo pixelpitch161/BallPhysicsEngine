@@ -144,6 +144,11 @@ pub trait LayerKind: Send + Sync + 'static {
     fn vary(&self, _def: &SettingDef) -> Option<crate::VaryUse> {
         None
     }
+    /// How a layer of this kind takes the scene's lights (its Lighting fold: Lit, Blocks light
+    /// and, on a ball's Body, Roundness), when it takes them at all. Shown after its own settings.
+    fn light_defs(&self) -> &'static [SettingDef] {
+        &[]
+    }
 }
 
 /// The description of a layer of `kind`'s setting `key`: one of its kind's settings, or one of
@@ -159,6 +164,9 @@ pub fn layer_def(
     }
     let fixed = kind.settings();
     if let Some(d) = fixed.iter().find(|d| d.key == key) {
+        return Some(d);
+    }
+    if let Some(d) = kind.light_defs().iter().find(|d| d.key == key) {
         return Some(d);
     }
     let with_defaults = |k: &str| get(k).or_else(|| fixed.iter().find(|d| d.key == k).map(|d| d.default.clone()));

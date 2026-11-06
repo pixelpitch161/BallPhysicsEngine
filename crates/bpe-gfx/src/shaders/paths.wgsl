@@ -143,7 +143,7 @@ fn shade_path(in: PathOut) -> vec4<f32> {
     if cover <= 0.0 {
         discard;
     }
-    return vec4<f32>(in.color.rgb * cover, covering(cover, in.color.a));
+    return light_flat(vec4<f32>(in.color.rgb * cover, covering(cover, in.color.a)), 0.0, 0.0);
 }
 
 @fragment

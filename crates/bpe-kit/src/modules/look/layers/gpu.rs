@@ -300,6 +300,8 @@ pub struct DrawnLayer {
     pub subs: Vec<Sub>,
     /// The balls of a group it is given to (empty: every ball), from [`bpe_core::Layer::only`].
     pub only: Vec<u32>,
+    /// How it takes the scene's light ([`super::lighting::of`]).
+    pub light: [f32; 4],
 }
 
 impl DrawnLayer {
@@ -328,6 +330,8 @@ pub enum GroupEnd {
 pub struct Stack {
     pub body_id: LayerId,
     pub body: BodyLayer,
+    /// How the Body takes the scene's light ([`super::lighting::of`]).
+    pub body_light: [f32; 4],
     /// The drawn layers above the body, bottom first.
     pub drawn: Vec<DrawnLayer>,
     /// The group gradient, when the look has one shown and it mixes in.
@@ -354,6 +358,7 @@ impl Stack {
         let mut stack = Stack {
             body_id: body.id,
             body: BodyLayer::from_params(&slot.layer_params(body.id)),
+            body_light: super::lighting::of(&slot.layer_params(body.id)),
             drawn: Vec::new(),
             group: None,
             ends: Vec::new(),
@@ -368,7 +373,13 @@ impl Stack {
         for layer in &slot.layers {
             let p = slot.layer_params(layer.id);
             let mut push = |d: Drawn| {
-                stack.drawn.push(DrawnLayer { layer: d, id: layer.id, subs: Vec::new(), only: layer.only.clone() })
+                stack.drawn.push(DrawnLayer {
+                    layer: d,
+                    id: layer.id,
+                    subs: Vec::new(),
+                    only: layer.only.clone(),
+                    light: super::lighting::of(&p),
+                })
             };
             match layer.kind.as_str() {
                 PATTERN => push(Drawn::Pattern(PatternLayer::from_params(&p))),
@@ -562,6 +573,7 @@ impl Stack {
             head: [LayerGpu::BODY, 0, grouped(self.body_id), 0],
             amount: [self.body.opacity.clamp(0.0, 1.0), 0.0, 0.0, 0.0],
             paint: body_paint,
+            light: self.body_light,
             ..LayerGpu::ZERO
         }];
         // Where each layer's record is, by id, for cuts that name a layer.
@@ -621,7 +633,7 @@ impl Stack {
                 _ => 0.0,
             };
             let subs = written(&d.subs).count() as u32;
-            out.push(LayerGpu { head: [r.head[0], r.head[1], r.head[2] | grouped(d.id), subs], ..r });
+            out.push(LayerGpu { head: [r.head[0], r.head[1], r.head[2] | grouped(d.id), subs], light: d.light, ..r });
             let mut cx = SubCx { placed: &placed, angle, sources: &sources, atlas, tiles };
             for s in written(&d.subs) {
                 out.push(sub_record(&s.sub, &mut cx));
