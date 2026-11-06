@@ -49,14 +49,39 @@ pub struct Memo {
 /// simplified (the layer's level, see `draw::MOST_LEVEL`).
 pub type Key = (ThingId, LayerId, usize, u32);
 
-/// The most lines remembered at once; past it, everything is forgotten and worked out afresh.
-const MOST_MEMOS: usize = 200_000;
+/// The most lines remembered at once; past it, everything is forgotten (before a layer is
+/// drawn) and worked out afresh.
+const MOST_MEMOS: usize = 400_000;
+
+/// Memos kept for one line: one a renderer, more or less (the preview and an export at other
+/// moments, a camera zoom either side of a power of two).
+const MEMOS_EACH: usize = 3;
+
+/// How many of a memo's kept points are checked against the history before it is carried on.
+const CHECKS: usize = 16;
 
 /// The remembered lines, shared by every renderer (the memos check themselves, so it doesn't
-/// matter whose they were).
-pub fn memos() -> MutexGuard<'static, HashMap<Key, Memo>> {
-    static MEMOS: OnceLock<Mutex<HashMap<Key, Memo>>> = OnceLock::new();
-    MEMOS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
+/// matter whose they were). Forgets them all when there are too many.
+pub fn memos() -> MutexGuard<'static, HashMap<Key, Vec<Memo>>> {
+    static MEMOS: OnceLock<Mutex<HashMap<Key, Vec<Memo>>>> = OnceLock::new();
+    let mut memos = MEMOS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if memos.len() >= MOST_MEMOS {
+        memos.clear();
+    }
+    memos
+}
+
+/// Whether the history agrees with `m` up to its `upto`th kept point: the first and last of
+/// them and others spread between (a physics edit changes where balls went, so a memo from
+/// before one is caught even when where the ball started and where it is now are the same).
+fn agrees(m: &Memo, history: &History, ball: usize, upto: usize) -> bool {
+    let kept = &m.kept[..upto.min(m.kept.len())];
+    let n = kept.len();
+    if n == 0 {
+        return true;
+    }
+    let step = (n / CHECKS).max(1);
+    (0..n).step_by(step).chain([n - 1]).all(|j| history.item_at(ball, kept[j].t) == Some(kept[j].p))
 }
 
 /// The level each trail layer's Lines were last drawn at, where the next frame starts looking.
@@ -84,6 +109,7 @@ pub fn set_level(layer: (ThingId, LayerId), level: u32) {
 /// stopped each time it stood still. Carries on from `memo` when it still fits the history
 /// (and puts what it settled back in it). `newest_ago` is how old the history's newest sample
 /// is and `interval` the seconds between samples.
+#[allow(clippy::too_many_arguments)]
 pub fn staying_line(
     memo: &mut Option<Memo>,
     history: &History,
@@ -96,7 +122,11 @@ pub fn staying_line(
 ) -> Path {
     let Some(start) = history.first(ball) else { return Path::default() };
     let same = |m: &Memo| m.tol == tol && m.grid == grid && m.start == start;
-    let fits = |m: &Memo| same(m) && m.done.is_none_or(|(t, p)| history.item_at(ball, t) == Some(p));
+    let fits = |m: &Memo| {
+        same(m)
+            && m.done.is_none_or(|(t, p)| history.item_at(ball, t) == Some(p))
+            && agrees(m, history, ball, m.kept.len())
+    };
     if let Some(m) = memo.as_mut()
         && same(m)
         && !fits(m)
@@ -170,6 +200,9 @@ fn rewind(m: &mut Memo, history: &History, ball: usize) {
     else {
         return;
     };
+    if !agrees(m, history, ball, at + 1) {
+        return;
+    }
     let g = m.kept[at];
     m.kept.truncate(at + 1);
     m.sleeve = Sleeve::from_anchor(m.tol, g.p);
@@ -184,11 +217,12 @@ fn stops(before: &[Option<Vec2>; 2], p: Vec2) -> bool {
     before[0] == Some(p) && before[1] != Some(p)
 }
 
-/// Looks up `key`'s memo, works out its line and puts the memo back, forgetting every memo
-/// once there are too many.
+/// Looks up `key`'s memos, works out its line from the one that fits the history best (one that
+/// carries straight on, else one that rewinds, else afresh) and puts it back as the newest used,
+/// keeping at most [`MEMOS_EACH`].
 #[allow(clippy::too_many_arguments)]
 pub fn remembered_line(
-    memos: &mut HashMap<Key, Memo>,
+    memos: &mut HashMap<Key, Vec<Memo>>,
     key: Key,
     history: &History,
     ball: usize,
@@ -198,13 +232,25 @@ pub fn remembered_line(
     tol: f32,
     grid: u64,
 ) -> Path {
-    let mut memo = memos.remove(&key);
+    let list = memos.entry(key).or_default();
+    let newest = history.newest_step().unwrap_or(0) as f64;
+    let start = history.first(ball);
+    let same = |m: &Memo| m.tol == tol && m.grid == grid && Some(m.start) == start;
+    let on_time = |m: &Memo| m.done.is_none_or(|d| d.0 <= newest && history.item_at(ball, d.0) == Some(d.1));
+    // The furthest on that the history still has, else any to rewind.
+    let pick = (0..list.len())
+        .filter(|&j| same(&list[j]) && on_time(&list[j]))
+        .max_by(|&a, &b| {
+            list[a].done.map(|d| d.0).partial_cmp(&list[b].done.map(|d| d.0)).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .or_else(|| (0..list.len()).rev().find(|&j| same(&list[j])));
+    let mut memo = pick.map(|j| list.remove(j));
     let path = staying_line(&mut memo, history, ball, head, newest_ago, interval, tol, grid);
-    if memos.len() >= MOST_MEMOS {
-        memos.clear();
-    }
     if let Some(m) = memo {
-        memos.insert(key, m);
+        list.push(m);
+    }
+    if list.len() > MEMOS_EACH {
+        list.drain(..list.len() - MEMOS_EACH);
     }
     path
 }
@@ -256,6 +302,39 @@ mod tests {
         // Another tolerance or grid starts again.
         let other = staying_line(&mut memo, &h, 0, head(&h), 0.0, i, 1.0, 16);
         assert!(other.len() < back.len());
+    }
+
+    /// A memo from a world whose ball went another way between the same start and the same place
+    /// now (as after a physics edit, a held ball standing where it always stands) isn't used.
+    #[test]
+    fn a_memo_from_another_way_there_starts_again() {
+        let way = |bend: f32| {
+            let mut h = History::new(240, HistoryWant { seconds: 0.0, forever: true });
+            h.note(0, 1);
+            for step in 0..=4000u64 {
+                let x = step.min(3000) as f32;
+                let y = if step < 3000 { (x / 3000.0 * std::f32::consts::PI).sin() * bend } else { 0.0 };
+                h.record(step, &[Vec2::new(x, y)]);
+            }
+            h
+        };
+        let (a, b) = (way(100.0), way(-60.0));
+        let mut memo = None;
+        staying_line(&mut memo, &a, 0, head(&a), 0.0, 1.0 / 60.0, 0.15, 16);
+        let carried = staying_line(&mut memo, &b, 0, head(&b), 0.0, 1.0 / 60.0, 0.15, 16);
+        assert_eq!(carried, staying_line(&mut None, &b, 0, head(&b), 0.0, 1.0 / 60.0, 0.15, 16));
+        // And from an earlier moment of the other way, it doesn't rewind into this one.
+        let mut memo = None;
+        staying_line(&mut memo, &a, 0, head(&a), 0.0, 1.0 / 60.0, 0.15, 16);
+        let mut early = History::new(240, HistoryWant { seconds: 0.0, forever: true });
+        early.note(0, 1);
+        for step in 0..=3500u64 {
+            let x = step.min(3000) as f32;
+            let y = if step < 3000 { (x / 3000.0 * std::f32::consts::PI).sin() * -60.0 } else { 0.0 };
+            early.record(step, &[Vec2::new(x, y)]);
+        }
+        let carried = staying_line(&mut memo, &early, 0, head(&early), 0.0, 1.0 / 60.0, 0.15, 16);
+        assert_eq!(carried, staying_line(&mut None, &early, 0, head(&early), 0.0, 1.0 / 60.0, 0.15, 16));
     }
 
     #[test]

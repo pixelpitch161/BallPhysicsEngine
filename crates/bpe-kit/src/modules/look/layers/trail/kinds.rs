@@ -658,7 +658,7 @@ mod tests {
         for _ in 0..3000 {
             seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             let angle = (seed >> 8) as f32 / (1 << 24) as f32 * std::f32::consts::TAU;
-            q += Vec2::from_angle(angle) * if seed % 5 == 0 { 0.05 } else { 3.0 };
+            q += Vec2::from_angle(angle) * if seed.is_multiple_of(5) { 0.05 } else { 3.0 };
             points.push(q);
         }
         let whole = through(&points);

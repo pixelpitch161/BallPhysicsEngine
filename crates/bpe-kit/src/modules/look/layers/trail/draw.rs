@@ -196,22 +196,25 @@ pub const MOST_LEVEL: u32 = 8;
 
 /// Picks the level a layer's Lines are drawn at: the finest whose points fit `budget`, up to
 /// [`MOST_LEVEL`], looking from `start` (where the last frame ended up) so a frame usually works
-/// out only its own level and the one finer. Which it picks doesn't hang on `start`, so drawing
-/// a time again, scrubbing or exporting draws the same. Gives what `gather` made at that level
+/// out only its own level and the one finer. Which it picks doesn't hang on `start` (as long as
+/// a coarser level never has more points than a finer one), so drawing a time again, scrubbing
+/// or exporting draws the same. Gives what `gather` made at that level
 /// and the level.
 fn pick_level<T>(start: u32, budget: usize, mut gather: impl FnMut(u32) -> (T, usize)) -> (T, u32) {
     let mut level = start.min(MOST_LEVEL);
     let (mut made, mut total) = gather(level);
-    let mut coarser = false;
+    // The finest level known not to fit.
+    let mut over = None;
     while total > budget && level < MOST_LEVEL {
-        // A level at most halves the points (the grid's go by half, the rest by less), so one
-        // four times over the budget can skip the next.
+        over = Some(level);
+        // A level usually at most halves the points, so one four times over the budget skips
+        // ahead; the levels skipped are looked at again below.
         let skip = (total / budget.max(1)).max(1).ilog2().max(1);
         level = (level + skip).min(MOST_LEVEL);
-        coarser = true;
         (made, total) = gather(level);
     }
-    while !coarser && level > 0 {
+    // Finer ones while they fit, down to the one known not to.
+    while level > over.map_or(0, |o| o + 1) {
         let (finer, finer_total) = gather(level - 1);
         if finer_total > budget {
             break;
@@ -255,8 +258,14 @@ pub fn draw(cx: &DrawCx, layer: &AroundLayer, trail: &TrailLayer, balls: &Balls,
     let newest_step = balls.history.newest_step().unwrap_or(0);
     // Seconds a step.
     let step_dt = balls.interval / balls.history.every() as f32;
-    let budget = strip_budget(&base_layer.subs);
-    let mut memos = line::memos();
+    // Dots and Smoke draw no strips: their paths only place the particles.
+    let budget = if matches!(trail.kind, TrailKind::Dots | TrailKind::Smoke) {
+        MOST_STRIP_POINTS
+    } else {
+        strip_budget(&base_layer.subs)
+    };
+    // Only Lines remember anything between frames.
+    let mut memos = (trail.kind == TrailKind::Line).then(line::memos);
     // Every ball's path first, so a crowd can share the points out; Lines at `level`.
     let mut gather = |level: u32| -> (Vec<Drawn>, usize) {
         let (tol, scale) = (tol * (1u32 << level) as f32, 1u64 << level);
@@ -286,7 +295,10 @@ pub fn draw(cx: &DrawCx, layer: &AroundLayer, trail: &TrailLayer, balls: &Balls,
                 let key = (cx.thing.id, base_layer.id, i, level);
                 let head = bodies.position[i];
                 let (ago, every) = (balls.newest_ago, balls.interval);
-                line::remembered_line(&mut memos, key, balls.history, i, head, ago, every, tol, grid)
+                match memos.as_deref_mut() {
+                    Some(memos) => line::remembered_line(memos, key, balls.history, i, head, ago, every, tol, grid),
+                    None => line::staying_line(&mut None, balls.history, i, head, ago, every, tol, grid),
+                }
             } else {
                 balls.path(trail, i, gone)
             };
@@ -1092,6 +1104,11 @@ mod tests {
         assert_eq!(asked, vec![4, 3]);
         // Past the coarsest, it stops there.
         assert_eq!(pick_level(0, 10, |l| ((), totals[l as usize])).1, MOST_LEVEL);
+        // A level that drops far more than half isn't skipped past.
+        let steep = [900_000, 150_000, 100_000, 90_000, 80_000, 70_000, 60_000, 50_000, 40_000];
+        for start in 0..=MOST_LEVEL {
+            assert_eq!(pick_level(start, 200_000, |l| ((), steep[l as usize])).1, 1, "from {start}");
+        }
         // Cut to their newest share as a last resort.
         let long = |i: usize| Drawn {
             i,

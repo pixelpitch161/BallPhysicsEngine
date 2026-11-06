@@ -85,3 +85,13 @@ seconds, about 0.4 s for a first frame. Without gravity the lines stay at level 
    only).
 4. Timing check (release): 1200 balls at 60 s, frame build time before/after.
 5. `cargo test --workspace`, clippy, fmt; one Opus review; PR.
+
+## Review fixes
+
+- A memo is also checked at 16 of its kept points spread along it (and again before rewinding), so a physics
+  edit that leaves the start and the ball's place now the same (a held ball) still starts the line afresh.
+- Up to 3 memos a line (the preview and an export at other moments, a zoom either side of a power of two); the
+  one that carries straight on furthest is used, else one that rewinds.
+- `pick_level` looks back down at levels it skipped, so the level drawn is the finest that fits wherever it starts.
+- Only Line layers lock the memos; Dots and Smoke keep the whole budget (they draw no strips); the memo map is
+  forgotten only before a layer is drawn, never part way.
