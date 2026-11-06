@@ -78,7 +78,9 @@ physics, sound or no-card picture changes; goldens never move.
    same Order. A change crossfades over **Crossfade** seconds from the scene before (0 snaps): numbers, points and
    colours blend (colours in linear light), whole numbers round, everything else (choices, switches) switches at the
    halfway point. While a scene shows, its saved settings replace the light's own, keyframes and Follow sound
-   included; a key it doesn't hold is the light's own.
+   included; a key it doesn't hold is the light's own. A change that comes while an earlier crossfade is still running starts its own fade from
+   the scene before it (not from the blend on screen), so it can jump; set keys at least a Crossfade apart for
+   smooth chains. Back and forth chases light the places behind the head the way it is going.
 17. **Order of application** for one light: its resolved settings (keyframes, pulses, Follow sound) → the showing
    Lighting scene → its rigs' patterns (rigs' settings taken through the scene too) → `LightGpu`.
 18. **Editing scenes** (kit functions in `modules/light_scenes.rs`, used by the editor, each one undo step):
@@ -141,6 +143,10 @@ physics, sound or no-card picture changes; goldens never move.
   Update from the lights / Put on the lights / Duplicate / Move up / Move down / Delete), "+ Save the lights as a
   scene", and "Show here" on a row when Scenes play On the timeline (sets Show scene, a key when keyed).
 - `widgets.rs`: `Value::LightScenes` words ("3 scenes") and its grid row.
+
+Review fixes (one Opus review): a rig's colour list and places are prepared once per rig a frame (`Prepared`), a
+plain chase finds how long ago a light was lit directly, Back and forth lights behind the head only, a rig can't
+be grabbed in the preview, Every (hits/bars) and Least gap keyframe, the beat maths has a test against `TempoMap`.
 
 ## Tests (what passing looks like)
 

@@ -192,73 +192,104 @@ fn tail_level(ago: i64, phase: f32, tail: f32) -> f32 {
 /// The furthest back a pattern looks for when a light was last lit.
 const MOST_LOOK_BACK: i64 = 4096;
 
-/// What the rig does to fixture `i` of `n` at `clock`.
-pub fn drive(s: &RigSettings, clock: Clock, i: usize, n: usize) -> Drive {
-    if n == 0 {
-        return Drive::NONE;
+/// What a rig's pattern needs that is the same for all its fixtures in a frame: the colour list
+/// and each fixture's place. Made once per rig, then [`Prepared::drive`] per lamp.
+pub struct Prepared {
+    list: Vec<[f32; 3]>,
+    /// Each fixture's place, by its number.
+    places: Vec<usize>,
+    /// How many places there are.
+    count: usize,
+}
+
+impl Prepared {
+    pub fn new(s: &RigSettings, n: usize) -> Prepared {
+        let list = if s.colours_from == RigColours::TheList { colour_list(&s.colours) } else { Vec::new() };
+        let places = match s.order {
+            Order::Shuffled => shuffled(n, s.seed),
+            order => (0..n).map(|i| place_of(order, i, n, s.seed)).collect(),
+        };
+        Prepared { list, places, count: place_count(s.order, n) }
     }
-    let list = if s.colours_from == RigColours::TheList { colour_list(&s.colours) } else { Vec::new() };
-    let pick = |k: i64| (!list.is_empty()).then(|| list[k.rem_euclid(list.len() as i64) as usize]);
-    let (k, phase) = (clock.step, clock.phase);
-    let m = place_count(s.order, n);
-    let p = place_of(s.order, i, n, s.seed);
-    let tail = s.tail.max(0.0);
-    let (level, colour, wave) = match s.pattern {
-        Pattern::Still => (1.0, pick(p as i64), 0.0),
-        Pattern::Chase => {
-            let lit_at_once = s.lit_at_once.max(0.0).ceil() as i64;
-            let lit = |step: i64| {
-                let h = head(s.order, step, m);
-                if s.order == Order::BackAndForth {
-                    (h - p as i64).abs() < lit_at_once
+
+    /// What the rig does to fixture `i` at `clock`.
+    pub fn drive(&self, s: &RigSettings, clock: Clock, i: usize) -> Drive {
+        let Some(&p) = self.places.get(i) else { return Drive::NONE };
+        let list = &self.list;
+        let pick = |k: i64| (!list.is_empty()).then(|| list[k.rem_euclid(list.len() as i64) as usize]);
+        let (k, phase) = (clock.step, clock.phase);
+        let (m, p) = (self.count.max(1) as i64, p as i64);
+        let tail = s.tail.max(0.0);
+        let (level, colour, wave) = match s.pattern {
+            Pattern::Still => (1.0, pick(p), 0.0),
+            Pattern::Chase => {
+                let width = s.lit_at_once.max(0.0).ceil().min(1e9) as i64;
+                let ago = if width == 0 {
+                    None
+                } else if s.order == Order::BackAndForth {
+                    // Lit while within `width` places behind the head, the way it is going.
+                    let lit = |step: i64| {
+                        let h = head(s.order, step, m as usize);
+                        let way = (h - head(s.order, step - 1, m as usize)).signum();
+                        let behind = (h - p) * way;
+                        if way == 0 { h == p } else { (0..width).contains(&behind) }
+                    };
+                    let period = (2 * (m - 1)).max(1);
+                    (0..=period.min(MOST_LOOK_BACK)).find(|&ago| lit(k - ago))
                 } else {
-                    (h - p as i64).rem_euclid(m as i64) < lit_at_once
+                    // `d` places behind the head: lit within `width`, else lit `d − width + 1` steps ago.
+                    let d = (head(s.order, k, m as usize) - p).rem_euclid(m);
+                    Some(if d < width { 0 } else { d - width + 1 })
+                };
+                match ago {
+                    Some(ago) => (tail_level(ago, phase, tail), pick(k - ago), 0.0),
+                    None => (0.0, None, 0.0),
                 }
-            };
-            let period = if s.order == Order::BackAndForth { (2 * (m as i64 - 1)).max(1) } else { m as i64 };
-            match (0..=period.min(MOST_LOOK_BACK)).find(|&ago| lit(k - ago)) {
-                Some(ago) => (tail_level(ago, phase, tail), pick(k - ago), 0.0),
-                None => (0.0, None, 0.0),
             }
-        }
-        Pattern::Strobe => {
-            let flash = s.flash_length;
-            let level = if phase < flash {
-                1.0
-            } else if tail > 0.0 && phase.is_finite() {
-                (1.0 - (phase - flash) / tail).max(0.0)
-            } else {
-                0.0
-            };
-            (level, pick(k), 0.0)
-        }
-        Pattern::Sweep => {
-            let x = k as f64 + if phase.is_finite() { phase as f64 } else { 0.0 };
-            let wave = (std::f64::consts::PI * x + std::f64::consts::TAU * p as f64 * s.offset as f64).sin() as f32;
-            (1.0, pick(p as i64), wave)
-        }
-        Pattern::AlternateColours => (1.0, pick(p as i64 + k), 0.0),
-        Pattern::Random => {
-            let look = (tail.ceil() as i64 + 1).min(MOST_LOOK_BACK);
-            let lit = |step: i64| hash01(s.seed, step, i as u64) < s.lit_share;
-            match (0..=look).find(|&ago| lit(k - ago)) {
-                Some(ago) => {
-                    let at = k - ago;
-                    let colour = (!list.is_empty())
-                        .then(|| list[(hash(s.seed, at, i as u64 ^ 0xc01) % list.len() as u64) as usize]);
-                    (tail_level(ago, phase, tail), colour, 0.0)
+            Pattern::Strobe => {
+                let flash = s.flash_length;
+                let level = if phase < flash {
+                    1.0
+                } else if tail > 0.0 && phase.is_finite() {
+                    (1.0 - (phase - flash) / tail).max(0.0)
+                } else {
+                    0.0
+                };
+                (level, pick(k), 0.0)
+            }
+            Pattern::Sweep => {
+                let x = k as f64 + if phase.is_finite() { phase as f64 } else { 0.0 };
+                let wave = (std::f64::consts::PI * x + std::f64::consts::TAU * p as f64 * s.offset as f64).sin() as f32;
+                (1.0, pick(p), wave)
+            }
+            Pattern::AlternateColours => (1.0, pick(p + k), 0.0),
+            Pattern::Random => {
+                let look = (tail.ceil().min(1e9) as i64 + 1).min(MOST_LOOK_BACK);
+                let lit = |step: i64| hash01(s.seed, step, i as u64) < s.lit_share;
+                match (0..=look).find(|&ago| lit(k - ago)) {
+                    Some(ago) => {
+                        let at = k - ago;
+                        let colour = (!list.is_empty())
+                            .then(|| list[(hash(s.seed, at, i as u64 ^ 0xc01) % list.len() as u64) as usize]);
+                        (tail_level(ago, phase, tail), colour, 0.0)
+                    }
+                    None => (0.0, None, 0.0),
                 }
-                None => (0.0, None, 0.0),
             }
+        };
+        let off = s.off_level;
+        Drive {
+            strength: s.brightness * (off + (1.0 - off) * level),
+            colour,
+            turn: 0.5 * s.sweep_angle * wave,
+            sway: 0.5 * s.sway * wave,
         }
-    };
-    let off = s.off_level;
-    Drive {
-        strength: s.brightness * (off + (1.0 - off) * level),
-        colour,
-        turn: 0.5 * s.sweep_angle * wave,
-        sway: 0.5 * s.sway * wave,
     }
+}
+
+/// What the rig does to fixture `i` of `n` at `clock` (one lamp; a rig drawing many prepares once).
+pub fn drive(s: &RigSettings, clock: Clock, i: usize, n: usize) -> Drive {
+    Prepared::new(s, n).drive(s, clock, i)
 }
 
 #[cfg(test)]
@@ -312,6 +343,13 @@ mod tests {
         let heads: Vec<usize> =
             (0..7).map(|k| levels(&bounce, k, 0.0, 4).iter().position(|&l| l == 1.0).unwrap()).collect();
         assert_eq!(heads, [0, 1, 2, 3, 2, 1, 0]);
+        // Two lit at once: the head and the one behind it, the way it is going.
+        let two = rig(|s| {
+            s.order = Order::BackAndForth;
+            s.lit_at_once = 2.0;
+        });
+        assert_eq!(levels(&two, 2, 0.0, 6), [0.0, 1.0, 1.0, 0.0, 0.0, 0.0], "going up");
+        assert_eq!(levels(&two, 7, 0.0, 6), [0.0, 0.0, 0.0, 1.0, 1.0, 0.0], "coming back: head at 3, 4 behind it");
     }
 
     #[test]

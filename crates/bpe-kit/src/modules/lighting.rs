@@ -129,6 +129,7 @@ pub struct LightingSettings {
         range(0.001, 1e9),
         span(0.25, 16),
         unit = "bars",
+        keyframe,
         group = "Scenes"
     )]
     pub scene_every: f32,
@@ -142,6 +143,7 @@ pub struct LightingSettings {
         range(0, 1e9),
         span(0, 2),
         unit = "s",
+        keyframe,
         group = "Scenes"
     )]
     pub scene_gap: f32,

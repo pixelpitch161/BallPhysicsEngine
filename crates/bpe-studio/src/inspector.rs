@@ -721,7 +721,11 @@ pub fn show(
                 }
                 any
             }
-            Edit::LightScene(e) => crate::light_scenes_panel::apply(scene, reg, e, time),
+            Edit::LightScene(e) => {
+                // A rename names its row by its place, which another edit could move.
+                inspector.renaming_scene = None;
+                crate::light_scenes_panel::apply(scene, reg, e, time)
+            }
             edit => apply_layer_edit(scene, reg, inspector, id, edit),
         };
     }

@@ -67,7 +67,7 @@ pub fn drives(cx: &DrawCx, scenes: &ScenesNow, lamps: usize) -> Vec<Drive> {
         let clock = clock(cx, rig, &s);
         match s.across {
             Across::Lights => {
-                let d = pattern::drive(&s, clock, at, all.len());
+                let d = pattern::Prepared::new(&s, all.len()).drive(&s, clock, at);
                 for o in &mut out {
                     *o = o.then(d);
                 }
@@ -76,8 +76,9 @@ pub fn drives(cx: &DrawCx, scenes: &ScenesNow, lamps: usize) -> Vec<Drive> {
                 let before: usize = all[..at].iter().map(|&f| lamp_count(cx, f)).sum();
                 let after: usize = all[at + 1..].iter().map(|&f| lamp_count(cx, f)).sum();
                 let n = before + lamps + after;
+                let prepared = pattern::Prepared::new(&s, n);
                 for (j, o) in out.iter_mut().enumerate() {
-                    *o = o.then(pattern::drive(&s, clock, before + j, n));
+                    *o = o.then(prepared.drive(&s, clock, before + j));
                 }
             }
         }

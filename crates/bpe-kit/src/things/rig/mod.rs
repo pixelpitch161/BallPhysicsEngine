@@ -127,7 +127,15 @@ pub struct RigSettings {
     )]
     pub every_seconds: f32,
     /// How many hits make a step.
-    #[setting(label = "Every", when = "steps_on=hits", range(1, 1e9), span(1, 16), unit = "hits", group = "Pattern")]
+    #[setting(
+        label = "Every",
+        when = "steps_on=hits",
+        range(1, 1e9),
+        span(1, 16),
+        unit = "hits",
+        keyframe,
+        group = "Pattern"
+    )]
     pub every_hits: u32,
     /// Whose hits move the pattern on.
     #[setting(label = "Heard from", when = "steps_on=hits", group = "Pattern")]

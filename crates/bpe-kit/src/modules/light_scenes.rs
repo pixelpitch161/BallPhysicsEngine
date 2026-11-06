@@ -209,8 +209,8 @@ fn pick(
             // The latest key at or before now that changed the scene starts its crossfade.
             let change = keys
                 .windows(2)
-                .filter(|w| w[1].time <= time && w[1].value != w[0].value)
-                .last()
+                .rev()
+                .find(|w| w[1].time <= time && w[1].value != w[0].value)
                 .map(|w| (as_int(&w[0].value), w[1].time));
             match change {
                 Some((before, at)) => (in_range(before), to, at),

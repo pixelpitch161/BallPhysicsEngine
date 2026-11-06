@@ -137,7 +137,7 @@ pub(crate) fn show(
                     let label = format!("Show {} here", s.name);
                     here.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
                     if here
-                        .on_hover_text("Shows this scene from the playhead (a key when Show scene has keys)")
+                        .on_hover_text("Shows this scene: from the playhead on when Show scene has keys (a new key there), else all the way through")
                         .clicked()
                     {
                         edits.push(Edit::SetSlot(
