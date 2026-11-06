@@ -142,6 +142,28 @@ pub trait ThingSim: Send + Sync + 'static {
     fn needs_fingerprint(&self, _resolved: &ResolvedThing) -> bool {
         false
     }
+    /// A rule adds `ball` to the thing (Split, Spawn balls): its body row is pushed and whatever
+    /// the thing keeps per row is kept in step. The row, or `None` when the thing has no balls to
+    /// add to.
+    fn add_ball(&self, _thing: ThingId, _world: &mut World, _ball: &NewBall) -> Option<u32> {
+        None
+    }
+    /// A rule asks the thing to fire now (an emitter's round, in this step's Spawn stage); false
+    /// when it can't.
+    fn fire_now(&self, _thing: ThingId, _world: &mut World) -> bool {
+        false
+    }
+}
+
+/// A ball a rule adds to a thing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NewBall {
+    pub position: Vec2,
+    pub velocity: Vec2,
+    /// Its size; `None`: the thing's own, as a new ball of it would be.
+    pub radius: Option<f32>,
+    /// The body row it is split from: it takes that ball's number and facts.
+    pub like: Option<u32>,
 }
 
 /// How a Motion or Bounce module moves and bounces the things that use it.

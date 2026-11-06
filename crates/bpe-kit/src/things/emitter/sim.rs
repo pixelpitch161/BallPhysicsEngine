@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use bpe_core::vary::{self, BallSpread, Vary, VaryBy};
 use bpe_core::{Params, ResolvedThing, Settings, Thing, ThingId, Value};
-use bpe_runtime::{Bodies, Event, EventKind, Log, Party, Pose, ThingSim, World, pop, state, state_mut};
+use bpe_runtime::{Bodies, Event, EventKind, Log, NewBall, Party, Pose, ThingSim, World, pop, state, state_mut};
 use glam::Vec2;
 
 use super::aim::{Aimer, Plan, now};
@@ -19,7 +19,7 @@ use super::foci::sits_on_pose;
 use super::test_fire::{RoundAim, aim_catch, aim_round};
 use super::{Aim, CatchFrom, Catches, Earlier, EmitterSettings, FireWhen, KIND, ReturnWay};
 use crate::things::balls::rows::{BallRows, Caught, rows_mut};
-use crate::things::balls::sim::{resize_rows, size_factor};
+use crate::things::balls::sim::{push_rule_ball, resize_rows, size_factor};
 
 pub struct EmitterSim;
 
@@ -112,6 +112,8 @@ pub struct EmitterState {
     /// A rule changed some ball's Size the last time the settings changed, so the sizes are
     /// worked out again when that change ends.
     pub ruled_size: bool,
+    /// Rounds a rule asked for (Fire a round), fired at this step's Spawn stage.
+    pub asked: u32,
 }
 
 impl EmitterState {
@@ -135,6 +137,7 @@ impl EmitterState {
             varies,
             own_size: Vec::new(),
             ruled_size: false,
+            asked: 0,
         }
     }
 
@@ -302,6 +305,7 @@ pub fn round_marks(world: &World, thing: ThingId, until: f64) -> Vec<RoundMark> 
     let every = s.every.max(0.0) as f64;
     let mut at = match (st.rounds_fired, s.fire_when) {
         (0, FireWhen::WhenAWaveLands) if !s.wave_first => return out,
+        (_, FireWhen::ByARule) => return out,
         (0, _) => s.start_delay.max(0.0) as f64,
         (_, FireWhen::Every) => st.next_every.map_or(f64::INFINITY, |n| n as f64 / rate),
         _ => return out,
@@ -449,12 +453,18 @@ fn rounds_due(st: &EmitterState, at: &Moment, landed: u32) -> u32 {
     }
     let mut due = 0u32;
     let first = (s.start_delay.max(0.0) as f64 * at.rate as f64).round() as u64;
-    let starts = s.fire_when != FireWhen::WhenAWaveLands || s.wave_first;
+    let starts = match s.fire_when {
+        FireWhen::WhenAWaveLands => s.wave_first,
+        FireWhen::ByARule => false,
+        _ => true,
+    };
     if st.rounds_fired == 0 && starts && at.step >= first {
         due += 1;
     }
+    // Rounds a rule asked for, on top.
+    due = due.saturating_add(st.asked);
     match s.fire_when {
-        FireWhen::AtStart => {}
+        FireWhen::AtStart | FireWhen::ByARule => {}
         FireWhen::Every => {
             if st.rounds_fired > 0 && st.next_every.is_some_and(|n| n <= at.step) {
                 due += 1;
@@ -562,6 +572,7 @@ fn fire_and_launch(st: &mut EmitterState, bodies: &mut Bodies, at: &Moment, land
     for _ in 0..rounds_due(st, at, landed) {
         fire_round(st, bodies, at, log.as_deref_mut());
     }
+    st.asked = 0;
     if st.pending.front().is_none_or(|l| l.step > at.step) {
         return;
     }
@@ -1004,6 +1015,37 @@ impl ThingSim for EmitterSim {
     /// Aims worked out by test-firing are kept by the scene's fingerprint.
     fn needs_fingerprint(&self, resolved: &ResolvedThing) -> bool {
         EmitterSettings::from_params(&resolved.params).aim == Aim::ThroughBounces
+    }
+
+    /// A rule's ball (Split, Spawn balls): a split one takes the ball it came from's number and
+    /// facts; a new one the next number, in the latest round.
+    fn add_ball(&self, thing: ThingId, world: &mut World, ball: &NewBall) -> Option<u32> {
+        let (Some(st), Some(bodies)) = (world.states.get_mut(&thing), world.bodies.get_mut(&thing)) else {
+            return None;
+        };
+        let st = st.as_any_mut().downcast_mut::<EmitterState>()?;
+        let fresh = (st.next_number, st.settings.radius);
+        let row = push_rule_ball(&mut st.rows, &mut st.own_size, bodies, ball, fresh);
+        if ball.like.is_none_or(|r| r as usize >= st.rows.len() - 1) {
+            st.next_number += 1;
+            if let Some(r) = st.rows.round.last_mut() {
+                *r = st.rounds_fired;
+            }
+        }
+        Some(row)
+    }
+
+    /// Fire a round: one more round at this step's Spawn stage, whatever Fire when says (By a
+    /// rule fires only these).
+    fn fire_now(&self, thing: ThingId, world: &mut World) -> bool {
+        let Some(st) = world.states.get_mut(&thing).and_then(|s| s.as_any_mut().downcast_mut::<EmitterState>()) else {
+            return false;
+        };
+        if st.quiet || !st.settings.emits {
+            return false;
+        }
+        st.asked = st.asked.saturating_add(1);
+        true
     }
 
     /// The marker, the look-only variety and Leave trails change only how it looks.
