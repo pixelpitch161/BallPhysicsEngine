@@ -143,6 +143,9 @@ fn shape(kit: &Kit, form: GradientForm) -> Scene {
     scene
 }
 
+/// A scene drawing one site laid out by a form.
+type MakeScene = fn(&Kit, GradientForm) -> Scene;
+
 #[test]
 fn every_form_draws_on_the_background_balls_and_shapes() {
     let Ok((device, queue)) = headless_device() else {
@@ -185,7 +188,7 @@ fn every_form_draws_on_the_background_balls_and_shapes() {
     }
 
     // Inside a ball and on a shape: each form changes the picture from Straight's.
-    let sites: [(&str, fn(&Kit, GradientForm) -> Scene); 2] = [("ball", ball), ("shape", shape)];
+    let sites: [(&str, MakeScene); 2] = [("ball", ball), ("shape", shape)];
     for (site, make) in sites {
         let straight = draw(&device, &queue, &mut renderer, &kit, &make(&kit, GradientForm::Straight));
         save(&format!("{site}-straight"), &straight);

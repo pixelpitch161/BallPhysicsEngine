@@ -735,7 +735,7 @@ mod tests {
         let mid = free_colour(&g, &l, Vec2::new(0.0, 0.3));
         assert!((mid[0] - mid[2]).abs() < 1e-4, "half way is an even mix");
         // Missing points sit round a circle; past 16 stops are left out.
-        let many = Gradient::even(&vec![red; 17]);
+        let many = Gradient::even(&[red; 17]);
         assert_eq!(free_points(&many, &Layout::default()).len(), MOST_POINTS);
         assert_eq!(free_points(&g, &Layout::default())[1].0, default_point(1, 2));
         let one = Gradient::solid(red);

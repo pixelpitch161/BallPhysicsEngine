@@ -4,7 +4,7 @@
 
 use bpe_core::gradient_extras::{self, key};
 use bpe_core::gradient_form::{Layout, defaults, free_points, turned};
-use bpe_core::{Area, GradientForm, Params, SettingDef, SettingValue, Value, ValueType};
+use bpe_core::{Area, GradientForm, SettingDef, SettingValue, Value, ValueType};
 use glam::Vec2;
 
 /// One gradient of a layer laid out as Free points, and how its form's space sits on the ball
@@ -28,13 +28,13 @@ impl FreeOn {
     }
 
     /// Ball point `b` in the form's space.
-    pub fn from_ball(&self, b: Vec2) -> Vec2 {
+    pub fn ball_to_form(&self, b: Vec2) -> Vec2 {
         turned(b - self.centre, -self.turn) / self.size.max(1e-6)
     }
 
     /// The whole points list with point `i` moved to ball point `b` (to hundredths).
     pub fn moved(&self, i: usize, b: Vec2) -> Value {
-        let q = self.from_ball(b).clamp(Vec2::splat(-4.0), Vec2::splat(4.0));
+        let q = self.ball_to_form(b).clamp(Vec2::splat(-4.0), Vec2::splat(4.0));
         let round = |x: f32| (x * 100.0).round() / 100.0;
         Value::Points(
             self.points
@@ -101,7 +101,8 @@ pub fn free_on(defs: &'static [SettingDef], get: &dyn Fn(&str) -> Option<Value>)
 }
 
 /// [`free_on`] from a layer's params as they stand (`p`, companions included).
-pub fn free_on_params(defs: &'static [SettingDef], p: &Params) -> Vec<FreeOn> {
+#[cfg(test)]
+pub fn free_on_params(defs: &'static [SettingDef], p: &bpe_core::Params) -> Vec<FreeOn> {
     free_on(defs, &|k| p.get(k).cloned().or_else(|| defs.iter().find(|d| d.key == k).map(|d| d.default.clone())))
 }
 
@@ -125,7 +126,7 @@ mod tests {
     #[test]
     fn an_outline_laid_out_as_free_points_has_a_dot_per_stop_and_a_drag_writes_them_all() {
         let defs = OutlineLayer::defs();
-        let mut p = Params::default();
+        let mut p = bpe_core::Params::default();
         p.set("colour_from", Value::Choice("own".into()));
         p.set("colour", Value::Gradient(Gradient::even(&[Color::rgb(255, 0, 0), Color::WHITE, Color::rgb(0, 0, 255)])));
         assert!(free_on_params(defs, &p).is_empty(), "Straight: no dots");

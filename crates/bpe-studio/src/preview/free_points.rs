@@ -148,7 +148,7 @@ pub fn apply(
 ) -> bool {
     let all = dots_of(scene, reg, world, thing, time);
     let Some(d) = all.get(n as usize) else { return false };
-    let moved: Value = d.on.moved(i as usize, d.on.to_ball(d.on.from_ball(d.form_point(pointer))));
+    let moved: Value = d.on.moved(i as usize, d.form_point(pointer));
     let a = match d.layer {
         Some(_) => Address::on(d.thing, d.slot, &d.key()),
         None => Address::own(d.thing, &d.key()),

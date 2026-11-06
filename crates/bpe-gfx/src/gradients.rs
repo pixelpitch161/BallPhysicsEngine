@@ -59,7 +59,7 @@ impl GradientAtlas {
             }
         }
         // Kept apart from the gradients' hashes.
-        let key = h.rotate_left(17) ^ 0x5eed_0f_f7ee_0001;
+        let key = h.rotate_left(17) ^ 0x005e_ed0f_f7ee_0001;
         if let Some(&row) = self.index.get(&key) {
             return row;
         }
