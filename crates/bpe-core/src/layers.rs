@@ -176,7 +176,8 @@ fn sound_end(reg: &Registry, card: &Slot, section: LayerSection, lane: Option<u8
         LayerSection::Chain => 0,
         LayerSection::Modulator => 1,
         LayerSection::Effect => 2,
-        _ => 3,
+        LayerSection::Force => 3,
+        _ => 4,
     };
     let (r, lane) = (rank(section), lane.unwrap_or(0));
     card.layers
@@ -265,7 +266,7 @@ impl Scene {
                 LayerSection::Reaction => group_start(reg, card),
                 LayerSection::Group => card.layers.len(),
                 LayerSection::Sub => return Err(EditError::NotAccepted),
-                s @ (LayerSection::Chain | LayerSection::Modulator | LayerSection::Effect) => {
+                s @ (LayerSection::Chain | LayerSection::Modulator | LayerSection::Effect | LayerSection::Force) => {
                     sound_end(reg, card, s, lane)
                 }
             }
@@ -431,7 +432,9 @@ impl Scene {
             return Err(EditError::BaseLayer);
         }
         let section = reg.layer(&card.layers[index].kind).map(|k| k.section());
-        if let Some(s @ (LayerSection::Chain | LayerSection::Modulator | LayerSection::Effect)) = section {
+        if let Some(s @ (LayerSection::Chain | LayerSection::Modulator | LayerSection::Effect | LayerSection::Force)) =
+            section
+        {
             let lane = card.layers[index].lane;
             let same = |l: &Layer| section_of(reg, l) == s && (!has_lanes(s) || l.lane == lane);
             let lo = card.layers.iter().position(same).expect("the layer itself");

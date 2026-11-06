@@ -5,6 +5,7 @@ pub mod camera;
 pub mod emitter;
 pub mod folder;
 pub mod light;
+pub mod particles;
 pub mod rig;
 pub mod scene;
 pub mod shape;

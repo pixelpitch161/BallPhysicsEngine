@@ -56,6 +56,7 @@ pub fn sims() -> Sims {
     s.add_thing(EmitterSim);
     s.add_thing(FolderSim);
     s.add_thing(CameraSim);
+    s.add_thing(things::particles::sim::ParticlesSim);
     s.add_module(BasicMotionSim);
     s.add_module(BasicBounceSim);
     rules::add_sims(&mut s);
@@ -81,6 +82,7 @@ pub fn draws() -> Draws {
     d.add(EmitterDraw);
     d.add(things::light::draw::LightDraw);
     d.add(things::camera::draw::CameraDraw);
+    d.add(things::particles::draw::ParticlesDraw);
     d.add_module(EffectsDraw);
     d
 }
@@ -112,6 +114,13 @@ pub fn registry() -> Registry {
     r.add_thing(CameraKind);
     r.add_thing(things::light::LightKind);
     r.add_thing(things::rig::RigKind);
+    r.add_thing(things::particles::ParticlesKind);
+    r.add_module(things::particles::forces::ForcesCard);
+    r.add_module(things::particles::meets::MeetsCard);
+    r.add_module(things::particles::look::ParticlesLookKind);
+    for k in things::particles::forces::kinds().into_iter().chain(things::particles::look::kinds()) {
+        r.add_layer(k);
+    }
     r.add_module(BasicLookKind);
     r.add_module(modules::look::LayersLookKind);
     for k in modules::look::layers::kinds() {
