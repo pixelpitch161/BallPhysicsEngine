@@ -313,6 +313,8 @@ pub struct Aimer {
     pub style: Aim,
     pub track: Track,
     pub accel: Vec2,
+    /// The balls' drag (their Motion card's).
+    pub drag: f32,
     pub dt: f32,
     /// The moment (in steps) the world stands at: where the target and the poses are now.
     pub now: u64,
@@ -334,16 +336,23 @@ impl Aimer {
         if s.aim == Aim::Off {
             return None;
         }
+        let pull = pull_in(world, me);
         Some(Aimer {
             style: s.aim,
             track: target_track(world, s)?,
-            accel: pull_in(world, me).accel,
+            accel: pull.accel,
+            drag: pull.drag,
             dt: world.dt(),
             now,
             arrive: arrive_steps(s, world.steps_per_second),
             ceiling: world.limits().ceiling,
             fire_anyway: s.cant_reach == CantReach::FireAnyway,
         })
+    }
+
+    /// Whether gravity, wind or drag bend the balls' paths (a way then changes with the speed).
+    pub fn bends(&self) -> bool {
+        self.accel != Vec2::ZERO || self.drag > 0.0
     }
 
     /// Where the target is at the moment `moment` (in steps).

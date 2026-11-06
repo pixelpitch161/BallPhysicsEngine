@@ -21,11 +21,11 @@
 //! leaves when that way takes it there with the others.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use bpe_core::ThingId;
 use bpe_runtime::{Bodies, EventKind, Log, World};
-use glam::{DVec2, Vec2};
+use glam::Vec2;
 
 use super::aim::{Aimer, MOST_STEPS, now};
 use super::aim_cache::{What, cached};
@@ -39,8 +39,6 @@ pub const MOST_FLIGHTS: u32 = 40;
 /// The most more flights checking that way again from when it sets off may take, when the scene
 /// moves on meanwhile (a still scene takes one).
 pub const SETTLE_FLIGHTS: u32 = 24;
-/// How many speeds the first scan tries.
-pub const SCAN: usize = 12;
 /// How near the target (pixels) closing in tries to bring a pass.
 pub const TOL: f64 = 0.25;
 /// How near the target (pixels) a pass must go to count as through it, when the miss jumps
@@ -55,16 +53,28 @@ pub const REACH: f64 = 1.0;
 /// How near the target (pixels) a first way found by turning must pass: the second pass makes it
 /// exact.
 pub const ROUGH: f64 = 3.0;
-/// How many turns the first scan of Adjust each ball tries.
-const TURN_SCAN: usize = 16;
-/// How many first ways (one per arc) each ball looks for.
-const WAYS: usize = 3;
+/// How many directions the scan flies a group of balls (setting off from one place) at, each
+/// speed, about: each ball's window gets at least [`LEAST_SCAN`] and at most [`BALL_SCAN`].
+const SCAN_BUDGET: usize = 4096;
+const LEAST_SCAN: usize = 5;
+const BALL_SCAN: usize = 17;
+/// The speeds (× Speed) the scan flies at keeping the balls' directions when gravity, wind or
+/// drag bend the paths.
+const KEEP_SPEEDS: [f64; 4] = [1.0, 0.8, 0.64, 0.5];
+/// The most flights closing in on one lead may take.
+const CLOSE_FLIGHTS: u32 = 16;
+/// How many of its leads a ball closes in on looking for its soonest way, at most.
+const SOONEST_TRIES: usize = 8;
+/// How many of its ways a ball tries to meet the others from, at most.
+const MEET_TRIES: usize = 6;
 /// How many places along each found way are kept for the preview.
 pub const PATH_POINTS: usize = 96;
 /// How many times the way is checked again from when it would set off, at most.
 const SETTLE_TRIES: usize = 6;
-/// How many steps without touching a wall end a test flight (ten seconds).
-const QUIET_STEPS: u64 = 2400;
+/// How far (pixels) a test flight goes without touching a wall before it ends: it has left them
+/// all, or slides to and fro in a bowl (ten seconds at 600 px/s; by distance, so a ball slowed
+/// right down still gets as far).
+const QUIET_DISTANCE: f32 = 6000.0;
 /// How many steps all of one ball's test flights in one pass may take together.
 const BALL_STEPS: u64 = 400_000;
 /// How many threads a round's balls are aimed on, at most.
@@ -234,38 +244,17 @@ pub fn passes(rel: &[Vec2], hits: &[u32]) -> Vec<Option<Pass>> {
 }
 
 /// One test flight: its passes per arc, the places it went through (a step apart from where it
-/// set off), each relative to the target then, the arc it was on at each, and the arc the target
-/// caught it on (if it catches).
+/// set off) and the arc it was on at the last of them.
 struct Flight {
     passes: Vec<Option<Pass>>,
     places: Vec<Vec2>,
-    rel: Vec<Vec2>,
-    arcs: Vec<usize>,
-    caught_on: Option<usize>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    bounces: usize,
 }
 
 impl Flight {
     fn on(&self, arc: usize) -> Option<Pass> {
         self.passes.get(arc).copied().flatten()
-    }
-
-    /// Where it is against the target `t` steps after setting off (its place less the target's,
-    /// between the steps either side), the arc it is on then and which way it goes; `None` when
-    /// the flight ended before, or the target had caught it on an earlier arc.
-    fn at(&self, t: f64) -> Option<(DVec2, usize, DVec2)> {
-        let f = t.floor().max(0.0) as usize;
-        let c = f + 1;
-        if c >= self.rel.len() {
-            return None;
-        }
-        let x = (t - f as f64).clamp(0.0, 1.0);
-        let off = self.rel[f].as_dvec2().lerp(self.rel[c].as_dvec2(), x);
-        let arc = self.arcs[c];
-        if self.caught_on.is_some_and(|a| a < arc) {
-            return None;
-        }
-        let way = (self.places[c] - self.places[f]).as_dvec2().normalize_or_zero();
-        Some((off, arc, way))
     }
 }
 
@@ -282,9 +271,9 @@ fn fly(lone: &Lone, aim: &Aimer, p0: Vec2, v: Vec2, most: u64, most_arc: usize) 
     let mut places = vec![p0];
     let mut rel = vec![p0 - aim.target_at(setoff as f64)];
     let mut hits = vec![0u32];
-    let mut arcs = vec![0usize];
+    let mut bounces = 0usize;
     let mut still = 0u32;
-    let mut quiet = 0u64;
+    let mut quiet = 0f32;
     let mut last_arc = None;
     let mut arc = 0usize;
     for _ in 0..most {
@@ -303,19 +292,18 @@ fn fly(lone: &Lone, aim: &Aimer, p0: Vec2, v: Vec2, most: u64, most_arc: usize) 
         if arc > most_arc {
             break;
         }
-        // At rest a second, or ten seconds without touching a wall (it has left them all, or
-        // slides to and fro in a bowl): it goes nowhere new.
+        let previous = *places.last().unwrap_or(&p0);
+        // At rest a second, or [`QUIET_DISTANCE`] without touching a wall: it goes nowhere new.
         still = if b.velocity[0].length_squared() < 1.0 { still + 1 } else { 0 };
-        quiet = if h > 0 { 0 } else { quiet + 1 };
-        if still > 240 || quiet > QUIET_STEPS {
+        quiet = if h > 0 { 0.0 } else { quiet + (p - previous).length() };
+        if still > 240 || quiet > QUIET_DISTANCE {
             break;
         }
-        let previous = *places.last().unwrap_or(&p0);
         let target = aim.target_at(w.step as f64);
         places.push(p);
         rel.push(p - target);
         hits.push(h as u32);
-        arcs.push(arc);
+        bounces = arc;
         // Caught on the way: by the target, the arc it comes in on is its last; by the emitter
         // itself, it goes no further.
         let own = w.poses.get(&lone.me).map_or(p0, |pose| pose.position);
@@ -332,7 +320,7 @@ fn fly(lone: &Lone, aim: &Aimer, p0: Vec2, v: Vec2, most: u64, most_arc: usize) 
     if let Some(last) = last_arc {
         passes.truncate(last + 1);
     }
-    Flight { passes, places, rel, arcs, caught_on: last_arc }
+    Flight { passes, places, bounces }
 }
 
 /// A way through the target: the speed, the small turn off its own direction (radians), the arc
@@ -631,62 +619,6 @@ impl Search<'_> {
         }
     }
 
-    /// Flies at `speed` turned `tweak` and gives where it is against the target `t` steps after
-    /// setting off, when it is on an arc that counts then (outer `None`: no flights left).
-    #[allow(clippy::type_complexity)]
-    fn at_moment(&mut self, speed: f64, tweak: f64, t: f64) -> Option<Option<(DVec2, DVec2, Flight)>> {
-        let flight = self.fly_at(speed, tweak, t.ceil() as u64 + 2)?;
-        Some(
-            flight
-                .at(t)
-                .filter(|(_, arc, _)| (self.least_arc..=self.most_arc).contains(arc))
-                .map(|(off, _, way)| (off, way, flight)),
-        )
-    }
-
-    /// The way found at `speed` turned `tweak`, at the target `t` steps after setting off.
-    fn found_at(speed: f64, tweak: f64, t: f64, flight: &Flight) -> Found {
-        let upto = (t.ceil() as usize + 1).min(flight.places.len());
-        let arc = flight.arcs.get(upto.saturating_sub(1)).copied().unwrap_or(0);
-        Found { speed, tweak, arc, e: t, places: flight.places[..upto].to_vec(), slope: f64::NAN }
-    }
-
-    /// Keeping its direction (and `way`'s small turn), the speed that has it at the target `t`
-    /// steps after setting off, starting from `way` slowed or sped to get there then: the part
-    /// of the offset along its way is brought to nothing; it counts when the whole offset is
-    /// within [`REACH`], or (the nearest it got, with how near) within [`ROUGH`].
-    fn solve_keep(&mut self, way: &Found, t: f64, ceiling: f64) -> Option<(f64, Found)> {
-        let tweak = way.tweak;
-        let dt = self.aim.dt as f64;
-        let mut speed = (way.speed * way.e / t).min(ceiling);
-        let mut seen: Vec<(f64, f64)> = Vec::new();
-        let mut best: Option<(f64, Found)> = None;
-        for _ in 0..12 {
-            let Some(got) = self.at_moment(speed, tweak, t) else { break };
-            let Some((off, dir, flight)) = got else { break };
-            let miss = off.length();
-            if best.as_ref().is_none_or(|(m, _)| miss < *m) {
-                best = Some((miss, Self::found_at(speed, tweak, t, &flight)));
-            }
-            if miss <= GOOD {
-                break;
-            }
-            let along = off.dot(dir);
-            seen.push((speed, along));
-            // Ahead of the target (along > 0): too fast. A secant once two speeds are known.
-            let next = match seen.as_slice() {
-                [.., (s1, g1), (s2, g2)] if (g2 - g1).abs() > 1e-9 => s2 - g2 * (s2 - s1) / (g2 - g1),
-                _ => speed - along / (t * dt),
-            };
-            let next = next.clamp(speed * 0.5, (speed * 2.0).min(ceiling));
-            if !next.is_finite() || next <= 0.0 || (next - speed).abs() <= speed * 1e-7 {
-                break;
-            }
-            speed = next;
-        }
-        best.filter(|(m, _)| *m <= ROUGH)
-    }
-
     /// Turning at most `most_turn` off its direction, a way through the target on `way`'s arc
     /// that passes it `t` steps after setting off (within half a step): along the ways through
     /// it on that arc (at each speed, the turn that takes it through, [`Search::through`]), a
@@ -697,9 +629,11 @@ impl Search<'_> {
         let mut rough: Option<(f64, Found)> = None;
         // Slowed or sped as if its way stayed the same first, then the other way: on a curved
         // path, slower can be sooner.
-        let plain = (way.e / t).clamp(1.0 / 1.15, 1.15);
+        let whole = way.e / t;
+        let plain = whole.clamp(1.0 / 1.15, 1.15);
         let plain = if (plain - 1.0).abs() < 0.02 { 1.02f64.copysign(plain - 1.0) } else { plain };
-        for first in [plain, 1.0 / plain] {
+        for first in [whole, 1.0 / plain] {
+            let nudge = first.clamp(1.0 / 1.15, 1.15);
             // Another ball's way (from elsewhere) is only a first guess for this one.
             let mut tried: Vec<(f64, f64)> = if own { vec![(way.speed, way.e - t)] } else { Vec::new() };
             let mut tweak = way.tweak;
@@ -744,12 +678,12 @@ impl Search<'_> {
                                 break;
                             }
                             let [.., (s1, g1), (s2, g2)] = tried.as_slice() else {
-                                speed *= first;
+                                speed *= nudge;
                                 tweak = found.tweak;
                                 continue;
                             };
                             let next =
-                                if (g2 - g1).abs() > 1e-9 { s2 - g2 * (s2 - s1) / (g2 - g1) } else { s2 * first };
+                                if (g2 - g1).abs() > 1e-9 { s2 - g2 * (s2 - s1) / (g2 - g1) } else { s2 * nudge };
                             // Small steps keep it on the same run of ways.
                             next.clamp(speed / 1.15, (speed * 1.15).min(ceiling))
                         };
@@ -912,163 +846,300 @@ fn ceiling_of(aim: &Aimer, s: &EmitterSettings) -> f64 {
     if s.aim_arrive == AimArrive::AsSoonAsAllCan { world.min(s.speed.max(1.0) as f64) } else { world }
 }
 
-/// Shot `shot`'s first ways from `base` (standing at the moment the round's balls set off), one
-/// per arc from the fewest bounces allowed up, flying at most `horizon` steps (`limit`: the
-/// steps the round has to get there in, when it has a time to arrive by). `adjust`: at Speed,
-/// turning; else along its own direction, by speed.
-fn first_ways(
+/// A way through the target the scan found, from where its group sets off: the direction it
+/// goes (radians, not turned by anything), the speed, the arc it passes on, when (steps after
+/// setting off) and the places it goes through up to there.
+#[derive(Clone, Debug)]
+struct Way {
+    angle: f64,
+    speed: f64,
+    arc: usize,
+    e: f64,
+    places: Vec<Vec2>,
+}
+
+impl Way {
+    /// As a way of a ball going the way `own` (radians): turned off it.
+    fn turned(&self, own: f64) -> Found {
+        Found {
+            speed: self.speed,
+            tweak: wrap(self.angle - own),
+            arc: self.arc,
+            e: self.e,
+            places: self.places.clone(),
+            slope: f64::NAN,
+        }
+    }
+}
+
+/// Where the scan saw a way: two neighbouring flights (direction, miss) whose misses on `arc`
+/// are on either side of the target (`b`), or one that went through (`b` none), at `speed`;
+/// `e` is when it would pass, guessed from the flights.
+#[derive(Clone, Copy, Debug)]
+struct Lead {
+    arc: usize,
+    speed: f64,
+    a: (f64, f64),
+    b: Option<(f64, f64)>,
+    e: f64,
+}
+
+impl Lead {
+    /// Whether a ball going the way `own` (radians) can turn to it, at most `window`.
+    fn within(&self, own: f64, window: f64) -> bool {
+        let ok = |x: f64| wrap(x - own).abs() <= window + 1e-9;
+        ok(self.a.0) && self.b.is_none_or(|b| ok(b.0))
+    }
+}
+
+/// The balls of a round that set off from one place (within 1e-3 px: a flight depends only on
+/// where from, which way and how fast, so they share their test flights), the leads the scan
+/// found from there and, once closed in on, their ways (each closed once, by whichever ball
+/// wants it first).
+struct Group {
+    p0: Vec2,
+    balls: Vec<usize>,
+    near: f64,
+    leads: Vec<Lead>,
+    closed: Vec<OnceLock<Option<Way>>>,
+}
+
+/// How a round is searched: how far each ball may turn (radians), the speeds the scan flies at,
+/// how many steps a flight may take and the fastest a ball may go.
+struct Hunt {
+    window: f64,
+    speeds: Vec<f64>,
+    horizon: u64,
+    ceiling: f64,
+}
+
+/// An angle (radians) within (-π, π].
+fn wrap(a: f64) -> f64 {
+    let r = a.rem_euclid(std::f64::consts::TAU);
+    if r > std::f64::consts::PI { r - std::f64::consts::TAU } else { r }
+}
+
+/// The scan of a round of `shots` from `base` (standing at the moment they set off): the balls
+/// in groups by where they set off; each ball's window of directions flown at every speed of
+/// `hunt` (shared in its group: [`SCAN_BUDGET`] directions a group, at least [`LEAST_SCAN`] and
+/// at most [`BALL_SCAN`] a ball), each flight to Bounces at most; the leads it gives. `limit`:
+/// the steps the round has to get there in, when it has a time to arrive by.
+fn scan(base: &Lone, aim: &Aimer, s: &EmitterSettings, shots: &[Shot], hunt: &Hunt, limit: Option<f64>) -> Vec<Group> {
+    let at: Vec<(Vec2, Vec2)> = shots.iter().map(|shot| shot.at(base)).collect();
+    let mut groups: Vec<Group> = Vec::new();
+    for (k, &(p0, u)) in at.iter().enumerate() {
+        if u == Vec2::ZERO {
+            continue;
+        }
+        match groups.iter_mut().find(|g| (g.p0 - p0).length() < 1e-3) {
+            Some(g) => g.balls.push(k),
+            None => {
+                let reach = (aim.target_at(base.moment() as f64 + limit.unwrap_or(0.0)) - p0).length().max(1.0) as f64;
+                let near = (0.3 * reach).max(40.0);
+                groups.push(Group { p0, balls: vec![k], near, leads: Vec::new(), closed: Vec::new() });
+            }
+        }
+    }
+    // (group, direction, speed), each group's by speed then direction.
+    let mut jobs: Vec<(usize, f64, f64)> = Vec::new();
+    for (gi, g) in groups.iter().enumerate() {
+        let n = if hunt.window > 0.0 { (SCAN_BUDGET / g.balls.len()).clamp(LEAST_SCAN, BALL_SCAN) | 1 } else { 1 };
+        let mut angles: Vec<f64> = Vec::with_capacity(n * g.balls.len());
+        for &k in &g.balls {
+            let own = at[k].1.to_angle() as f64;
+            for i in 0..n {
+                let turn = if n == 1 { 0.0 } else { hunt.window * (2.0 * i as f64 / (n - 1) as f64 - 1.0) };
+                angles.push(wrap(own + turn));
+            }
+        }
+        angles.sort_by(f64::total_cmp);
+        angles.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+        for &speed in &hunt.speeds {
+            jobs.extend(angles.iter().map(|&a| (gi, a, speed)));
+        }
+    }
+    let least_arc = s.aim_bounces as usize;
+    let most_arc = (s.aim_bounces_most as usize).max(least_arc);
+    let flown: Vec<Vec<Option<Pass>>> = in_parallel(jobs.len(), |j| {
+        let (gi, angle, speed) = jobs[j];
+        if super::aim_cache::stopped() {
+            return Vec::new();
+        }
+        let v = Vec2::from_angle(angle as f32) * speed as f32;
+        fly(base, aim, groups[gi].p0, v, hunt.horizon, most_arc).passes
+    });
+    // The leads: each run of one group's flights at one speed, in order of direction, all round.
+    let mut start = 0;
+    while start < jobs.len() {
+        let (gi, _, speed) = jobs[start];
+        let mut end = start;
+        while end < jobs.len() && jobs[end].0 == gi && jobs[end].2 == speed {
+            end += 1;
+        }
+        let near = groups[gi].near;
+        let mut leads = Vec::new();
+        for i in start..end {
+            for arc in least_arc..flown[i].len() {
+                if let Some(p) = flown[i][arc]
+                    && p.miss.abs() <= ROUGH
+                {
+                    leads.push(Lead { arc, speed, a: (jobs[i].1, p.miss), b: None, e: p.e });
+                }
+            }
+            // Its neighbour the other way round, the last's the first.
+            let j = if i + 1 < end { i + 1 } else { start };
+            let gap = wrap(jobs[j].1 - jobs[i].1);
+            if j == i || gap <= 0.0 || gap > 2.0 * hunt.window + 1e-9 {
+                continue;
+            }
+            for arc in least_arc..flown[i].len().min(flown[j].len()) {
+                if let (Some(p), Some(q)) = (flown[i][arc], flown[j][arc])
+                    && p.miss.signum() != q.miss.signum()
+                    && p.miss.abs().max(q.miss.abs()) <= near
+                {
+                    let x = p.miss.abs() / (p.miss.abs() + q.miss.abs()).max(1e-12);
+                    let e = p.e + (q.e - p.e) * x;
+                    leads.push(Lead { arc, speed, a: (jobs[i].1, p.miss), b: Some((jobs[j].1, q.miss)), e });
+                }
+            }
+        }
+        groups[gi].leads.extend(leads);
+        start = end;
+    }
+    for g in &mut groups {
+        g.closed = (0..g.leads.len()).map(|_| OnceLock::new()).collect();
+    }
+    groups
+}
+
+/// Lead `li` of group `g` closed in on (once: the way is kept for every ball that wants it): a
+/// flight through it flown again for its places, or the direction between the two flights
+/// closed in on, flights stopping past its arc. `None`: the arc broke between them.
+fn close_lead<'g>(base: &Lone, aim: &Aimer, s: &EmitterSettings, g: &'g Group, li: usize, most: u64) -> &'g Option<Way> {
+    g.closed[li].get_or_init(|| {
+        let lead = g.leads[li];
+        let mut search = Search {
+            lone: base,
+            aim,
+            p0: g.p0,
+            u: Vec2::from_angle(lead.a.0 as f32),
+            least_arc: s.aim_bounces as usize,
+            most_arc: lead.arc,
+            prefer: lead.speed,
+            near: g.near,
+            tweak: 0.0,
+            accept: ROUGH,
+            left: CLOSE_FLIGHTS,
+            steps: CLOSE_FLIGHTS as u64 * most,
+        };
+        let found = match lead.b {
+            None => {
+                let flight = search.fly_at(lead.speed, 0.0, most)?;
+                let pass = flight.on(lead.arc).filter(|p| p.miss.abs() <= ROUGH)?;
+                Found::of(lead.speed, 0.0, lead.arc, pass, &flight)
+            }
+            Some(b) => {
+                search.close_in(lead.arc, Knob::Tweak(lead.speed), (0.0, lead.a.1), (wrap(b.0 - lead.a.0), b.1), most)?
+            }
+        };
+        Some(Way { angle: wrap(lead.a.0 + found.tweak), speed: found.speed, arc: found.arc, e: found.e, places: found.places })
+    })
+}
+
+/// Ball `k`'s leads in its group (those it can turn to), and its soonest way: its leads by when
+/// they would pass, closed in turn until one holds (at most [`SOONEST_TRIES`]).
+fn soonest(
     base: &Lone,
     aim: &Aimer,
     s: &EmitterSettings,
-    shot: Shot,
-    horizon: u64,
-    limit: Option<f64>,
-    adjust: bool,
-) -> Vec<Found> {
-    let (p0, u) = shot.at(base);
-    if u == Vec2::ZERO || horizon == 0 {
-        return Vec::new();
-    }
-    let setoff = base.moment() as f64;
-    let reach = (aim.target_at(setoff + limit.unwrap_or(0.0)) - p0).length().max(1.0) as f64;
-    let mut search = search_for(base, aim, s, shot, reach);
-    // No more arcs are looked for than `WAYS`: flights stop past them.
-    search.most_arc = search.most_arc.min(search.least_arc + WAYS - 1);
-    let ceiling = ceiling_of(aim, s);
-    if adjust {
-        let speed = search.prefer.min(ceiling);
-        let most_turn = (s.aim_turn.max(0.0) as f64).to_radians();
-        search.accept = ROUGH;
-        let mut turns = vec![0.0];
-        if most_turn > 0.0 {
-            turns.extend((0..TURN_SCAN).map(|i| -most_turn + 2.0 * most_turn * i as f64 / (TURN_SCAN - 1) as f64));
+    (g, own): (&Group, f64),
+    hunt: &Hunt,
+) -> (Vec<usize>, Option<Way>) {
+    let mut mine: Vec<usize> = (0..g.leads.len()).filter(|&i| g.leads[i].within(own, hunt.window)).collect();
+    mine.sort_by(|a, b| g.leads[*a].e.total_cmp(&g.leads[*b].e));
+    let first = mine.iter().take(SOONEST_TRIES).find_map(|&li| close_lead(base, aim, s, g, li, hunt.horizon).clone());
+    if std::env::var("AIM_DEBUG_BALL").ok().and_then(|v| v.parse::<f64>().ok()).is_some_and(|a| (a - own).abs() < 0.007) {
+        for &li in mine.iter().take(12) {
+            let l = g.leads[li];
+            let w = close_lead(base, aim, s, g, li, hunt.horizon);
+            eprintln!("   lead {l:?} -> {:?}", w.as_ref().map(|w| (w.angle, w.arc, w.e)));
         }
-        return search.ways(&turns, Knob::Tweak(speed), horizon, WAYS);
+        eprintln!("   own {own} first {:?}", first.as_ref().map(|w| (w.angle, w.arc, w.e)));
     }
-    let limited = limit.is_some();
-    let quickest = reach / (limit.unwrap_or(horizon as f64).max(1.0) * aim.dt as f64);
-    let prefer = if limited && s.speed <= 0.0 { quickest } else { search.prefer };
-    search.prefer = prefer;
-    // Speed first, then the scan: with a time limit, round what gets there in time; without,
-    // round Speed.
-    let (lo, hi) = if limited {
-        (0.5 * quickest.min(prefer), (4.0 * quickest.max(prefer)).min(ceiling))
-    } else {
-        (prefer / 8.0, (prefer * 8.0).min(ceiling))
-    };
-    let mut speeds = vec![prefer.min(ceiling)];
-    if hi > lo {
-        let ratio = (hi / lo).powf(1.0 / (SCAN - 1) as f64);
-        speeds.extend((0..SCAN).map(|i| lo * ratio.powi(i as i32)));
-    }
-    search.ways(&speeds, Knob::Speed, horizon, WAYS)
+    (mine, first)
 }
 
-/// Ball `k` of a round (`shots`, each with its first ways `firsts`) from `base` at the target
-/// `t` steps after setting off, all of the round leaving together. Keeping its
-/// direction: one of its own first ways slowed or sped to be there then. Adjusting it: a way
-/// another ball of the round found that is there then and needs a turn within Turn at most
-/// (the smallest), else the speed and turn worked out from the ways nearest `t` (its own and,
-/// turned to its direction, the others'). `None`: it can't.
+/// Ball `k` (going the way `own`, its leads `mine` in group `g`) at the target `t` steps after
+/// setting off, all of the round leaving together: from its leads that need least change of
+/// speed first (each closed in on, turned to its direction), the speed and turn that have it
+/// there then ([`Search::solve_turn`]: with nothing bending the paths, the way slowed or sped
+/// by its time over `t` is the very same way). The way, with how far off the target it is then
+/// (within [`ROUGH`]); `None`: it can't.
+#[allow(clippy::too_many_arguments)]
 fn meet(
     base: &Lone,
     aim: &Aimer,
     s: &EmitterSettings,
-    (shots, firsts): (&[Shot], &[Vec<Found>]),
-    k: usize,
+    shot: Shot,
+    (g, mine): (&Group, &[usize]),
+    hunt: &Hunt,
     t: f64,
 ) -> Option<(f64, Found)> {
-    let (p0, u) = shots[k].at(base);
+    let (p0, u) = shot.at(base);
+    let own = u.to_angle() as f64;
     let reach = (aim.target_at(base.moment() as f64 + t) - p0).length().max(1.0) as f64;
-    let mut search = search_for(base, aim, s, shots[k], reach);
+    let mut search = search_for(base, aim, s, shot, reach);
     search.left = SOLVE_FLIGHTS;
-    let ceiling = ceiling_of(aim, s);
-    // How far from the target a way of its own is then.
-    let off = |f: &Found| off_at(aim, base.moment(), f, t).unwrap_or(f64::INFINITY);
-    // The nearest way found so far that is within [`ROUGH`] but not [`REACH`]: it goes if none
-    // comes nearer (where the paths bunch up after a curved wall, some places can't be reached
-    // closer).
-    let mut rough: Option<(f64, Found)> = None;
-    let mut keep_rough = |m: f64, f: Found| {
-        if m <= ROUGH && rough.as_ref().is_none_or(|(r, _)| m < *r) {
-            rough = Some((m, f));
-        }
-    };
-    if s.aim_way == AimWay::KeepMine {
-        let mut own: Vec<&Found> = firsts[k].iter().collect();
-        // Those already there before `t` slow down, nearest first; then the rest.
-        own.sort_by(|a, b| {
-            let key = |f: &Found| if f.e <= t + 0.5 { (0, t - f.e) } else { (1, f.e) };
-            let (ka, kb) = (key(a), key(b));
-            ka.0.cmp(&kb.0).then(ka.1.total_cmp(&kb.1))
-        });
-        for way in own {
-            let d = off(way);
-            if d <= REACH {
-                return Some((d, way.clone()));
-            }
-            keep_rough(d, way.clone());
-            match search.solve_keep(way, t, ceiling) {
-                Some((m, f)) if m <= REACH => return Some((m, f)),
-                Some((m, f)) => keep_rough(m, f),
-                None => {}
-            }
-            if search.left == 0 {
-                break;
-            }
-        }
-        return rough;
-    }
-    let most_turn = (s.aim_turn.max(0.0) as f64).to_radians();
     search.accept = ROUGH;
-    // Every way of the round, as a turn off this ball's own direction: (way, from where it sets
-    // off too).
-    let mut ways: Vec<(Found, bool)> = Vec::new();
-    for (j, found) in firsts.iter().enumerate() {
-        let (q0, v) = shots[j].at(base);
-        let same = (q0 - p0).length() < 1e-3;
-        for f in found {
-            let dir = Vec2::from_angle(f.tweak as f32).rotate(v);
-            let turn = u.angle_to(dir) as f64;
-            if turn.abs() <= most_turn + 1e-9 {
-                ways.push((Found { tweak: turn, ..f.clone() }, same || j == k));
+    // Those it can get there from going no faster than it may first; then the rest, soonest
+    // first. With nothing bending the paths, the fewest bounces first: slowed or sped, the way
+    // stays the same, and the fewer the bounces the less the steps' rounding moves it. Else the
+    // least change of speed first: the way changes with the speed.
+    let bends = aim.bends();
+    let mut order: Vec<(bool, f64, usize)> = mine
+        .iter()
+        .map(|&li| {
+            let lead = &g.leads[li];
+            let can = lead.speed * lead.e / t <= hunt.ceiling * (1.0 + 1e-9);
+            let key = match (can, bends) {
+                (true, true) => (lead.e / t).ln().abs(),
+                (true, false) => lead.arc as f64 * 1e6 + lead.e,
+                (false, _) => lead.e,
+            };
+            (!can, key, li)
+        })
+        .collect();
+    order.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    let mut rough: Option<(f64, Found)> = None;
+    let (mut tried, mut closed) = (0, 0);
+    for (_, _, li) in order {
+        if tried >= MEET_TRIES || closed >= 2 * MEET_TRIES || search.left == 0 {
+            break;
+        }
+        closed += 1;
+        let Some(way) = close_lead(base, aim, s, g, li, hunt.horizon) else { continue };
+        tried += 1;
+        let found = way.turned(own);
+        // Slowed or sped by its time over `t` first, one flight: with nothing bending the paths
+        // the very same way, there then.
+        let speed = found.speed * found.e / t;
+        if (1.0..=hunt.ceiling * (1.0 + 1e-9)).contains(&speed)
+            && let Some(flight) = search.fly_at(speed, found.tweak, t.ceil() as u64 + 2)
+            && flight.on(found.arc).is_some_and(|p| (p.e - t).abs() < 2.0)
+        {
+            let upto = (t.ceil() as usize + 2).min(flight.places.len());
+            let f = Found { speed, e: t, places: flight.places[..upto].to_vec(), ..found.clone() };
+            match search.off_at(&f, t) {
+                Some(m) if m <= REACH => return Some((m, f)),
+                Some(m) if m <= ROUGH && rough.as_ref().is_none_or(|(r, _)| m < *r) => rough = Some((m, f)),
+                _ => {}
             }
         }
-    }
-    // One that is there already, turned least.
-    if let Some((d, f)) = ways
-        .iter()
-        .filter(|(_, same)| *same)
-        .map(|(f, _)| (off(f), f))
-        .filter(|(d, _)| *d <= REACH)
-        .min_by(|a, b| a.1.tweak.abs().total_cmp(&b.1.tweak.abs()))
-    {
-        return Some((d, f.clone()));
-    }
-    for (f, same) in &ways {
-        if *same {
-            keep_rough(off(f), f.clone());
-        }
-    }
-    // Else from the nearest in time (then turned least), each guess slowed or sped to get there
-    // then.
-    ways.sort_by(|a, b| {
-        (a.0.e - t).abs().total_cmp(&(b.0.e - t).abs()).then(a.0.tweak.abs().total_cmp(&b.0.tweak.abs()))
-    });
-    let mut tried: Vec<(f64, f64)> = Vec::new();
-    for (way, same) in &ways {
-        let guess = (way.speed, way.tweak);
-        if tried.iter().any(|g| (g.0 / guess.0 - 1.0).abs() < 0.01 && (g.1 - guess.1).abs() < 0.002) {
-            continue;
-        }
-        tried.push(guess);
-        match search.solve_turn((way, *same), t, most_turn, ceiling) {
+        let r = search.solve_turn((&found, true), t, hunt.window, hunt.ceiling);
+        match r {
             Some((m, f)) if m <= REACH => return Some((m, f)),
-            Some((m, f)) => keep_rough(m, f),
-            None => {}
-        }
-        if search.left == 0 {
-            break;
+            Some((m, f)) if rough.as_ref().is_none_or(|(r, _)| m < *r) => rough = Some((m, f)),
+            _ => {}
         }
     }
     rough
@@ -1172,90 +1243,90 @@ pub fn aim_shots(
     let later = if together { 2.0 } else { 1.0 };
     let horizon = limit.map_or(MOST_STEPS as u64, |t| (later * t).ceil() as u64 + 1).min(MOST_STEPS as u64);
     let adjust = together && s.aim_way == AimWay::AdjustEachBall;
-    let firsts = in_parallel(shots.len(), |k| first_ways(base, aim, s, shots[k], horizon, limit, adjust));
+    let ceiling = ceiling_of(aim, s);
+    let prefer = (s.speed.max(1.0) as f64).min(ceiling);
+    // Keeping its direction where the paths bend, slower speeds go other ways: they are scanned too.
+    let mut speeds: Vec<f64> = match !adjust && aim.bends() {
+        true => KEEP_SPEEDS.iter().map(|r| prefer * r).collect(),
+        false => vec![prefer],
+    };
+    speeds.dedup();
+    let window = if adjust { (s.aim_turn.max(0.0) as f64).to_radians() } else { MOST_TWEAK };
+    let hunt = Hunt { window, speeds, horizon, ceiling };
+    let groups = scan(base, aim, s, shots, &hunt, limit);
+    let mut group_of: Vec<Option<usize>> = vec![None; shots.len()];
+    for (gi, g) in groups.iter().enumerate() {
+        for &k in &g.balls {
+            group_of[k] = Some(gi);
+        }
+    }
+    let owns: Vec<f64> = shots.iter().map(|shot| shot.at(base).1.to_angle() as f64).collect();
+    let firsts: Vec<(Vec<usize>, Option<Way>)> = in_parallel(shots.len(), |k| match group_of[k] {
+        Some(gi) => soonest(base, aim, s, (&groups[gi], owns[k]), &hunt),
+        None => (Vec::new(), None),
+    });
     // As soon as all can: when the last of them can be there, each by its soonest way.
-    let soonest = |w: &Vec<Found>| w.iter().map(|f| f.e).reduce(f64::min);
-    let t = limit.or_else(|| firsts.iter().filter_map(soonest).reduce(f64::max));
+    let t = limit.or_else(|| firsts.iter().filter_map(|f| f.1.as_ref().map(|w| w.e)).reduce(f64::max));
     let Some(t) = t else {
         let balls = shots.iter().map(|shot| unaimed(aim, s, shot.at(base).1, fire)).collect();
         return (earliest as f64, balls);
     };
     let arrive = earliest as f64 + t;
+    if std::env::var_os("AIM_DEBUG").is_some() {
+        let mut es: Vec<f64> = firsts.iter().filter_map(|f| f.1.as_ref().map(|w| w.e / 240.0)).collect();
+        es.sort_by(f64::total_cmp);
+        let q = |x: f64| es.get(((es.len() as f64 - 1.0) * x) as usize).copied().unwrap_or(0.0);
+        let leads: usize = groups.iter().map(|g| g.leads.len()).sum();
+        let no_lead = firsts.iter().filter(|f| f.0.is_empty()).count();
+        eprintln!(
+            "  soonest: {} found, {no_lead} no lead, {leads} leads; s: min {:.1} median {:.1} 90% {:.1} max {:.1}",
+            es.len(), q(0.0), q(0.5), q(0.9), q(1.0)
+        );
+    }
     if together {
-        return (arrive, together_balls(base, aim, s, (shots, &firsts), t, fire));
+        let ways = in_parallel(shots.len(), |k| {
+            let gi = group_of[k]?;
+            // With no time to arrive by, one with no soonest way has none at all.
+            if limit.is_none() && firsts[k].1.is_none() {
+                return None;
+            }
+            meet(base, aim, s, shots[k], (&groups[gi], &firsts[k].0), &hunt, t)
+        });
+        if std::env::var_os("AIM_DEBUG").is_some() {
+            let bad: Vec<String> = (0..shots.len()).filter(|&k| ways[k].is_none() && firsts[k].1.is_some()).take(6)
+                .map(|k| format!("{} ({} leads, soonest {:?})", owns[k], firsts[k].0.len(), firsts[k].1.as_ref().map(|w| (w.arc, w.e)))).collect();
+            eprintln!("  failing: {bad:?}");
+        }
+        let balls: Vec<(Option<BallAim>, f64)> = ways
+            .iter()
+            .zip(shots)
+            .map(|(way, shot)| {
+                let u = shot.at(base).1;
+                match way {
+                    Some((d, f)) => {
+                        let path = thin(&f.places);
+                        (Some(BallAim { leave: fire, velocity: f.velocity(u), reaches: true, path }), *d)
+                    }
+                    None => (unaimed(aim, s, u, fire), f64::INFINITY),
+                }
+            })
+            .collect();
+        return (arrive, borrow_ways(base, window, shots, balls));
     }
     // Each by its soonest way: no later than the round's moment.
-    let balls = in_parallel(shots.len(), |k| match firsts[k].iter().min_by(|a, b| a.e.total_cmp(&b.e)) {
-        Some(f) => settle(base, aim, s, shots[k], f.clone(), fire, arrive.round() as u64),
+    let balls = in_parallel(shots.len(), |k| match &firsts[k].1 {
+        Some(way) => settle(base, aim, s, shots[k], way.turned(owns[k]), fire, arrive.round() as u64),
         None => unaimed(aim, s, shots[k].at(base).1, fire),
     });
     (arrive, balls)
 }
 
-/// Leaving together, each ball's aim to be at the target `t` steps after setting off ([`meet`]).
-/// Adjusting each ball, those that found no way look again from the ways the others found
-/// (they are at the target then: near ones need little more), and those still without one
-/// borrow another's ([`borrow_ways`]).
-fn together_balls(
-    base: &Lone,
-    aim: &Aimer,
-    s: &EmitterSettings,
-    (shots, firsts): (&[Shot], &[Vec<Found>]),
-    t: f64,
-    fire: u64,
-) -> Vec<Option<BallAim>> {
-    let mut ways = in_parallel(shots.len(), |k| meet(base, aim, s, (shots, firsts), k, t));
-    let adjust = s.aim_way == AimWay::AdjustEachBall;
-    let missing = |w: &Option<(f64, Found)>| w.as_ref().is_none_or(|(d, _)| *d > REACH);
-    if adjust && ways.iter().any(missing) && ways.iter().any(|w| !missing(w)) {
-        // The ways found, as if each passed at the round's moment (where it is then).
-        let found: Vec<Vec<Found>> = ways
-            .iter()
-            .map(|w| w.iter().filter(|(d, _)| *d <= REACH).map(|(_, f)| Found { e: t, ..f.clone() }).collect())
-            .collect();
-        let again = in_parallel(shots.len(), |k| {
-            if !missing(&ways[k]) {
-                return None;
-            }
-            let mut mine = found.clone();
-            mine[k] = Vec::new();
-            meet(base, aim, s, (shots, &mine), k, t)
-        });
-        for (way, again) in ways.iter_mut().zip(again) {
-            if let Some((d, f)) = again
-                && way.as_ref().is_none_or(|(w, _)| d < *w)
-            {
-                *way = Some((d, f));
-            }
-        }
-    }
-    let balls: Vec<(Option<BallAim>, f64)> = ways
-        .iter()
-        .zip(shots)
-        .map(|(way, shot)| {
-            let u = shot.at(base).1;
-            match way {
-                Some((d, f)) => {
-                    (Some(BallAim { leave: fire, velocity: f.velocity(u), reaches: true, path: thin(&f.places) }), *d)
-                }
-                None => (unaimed(aim, s, u, fire), f64::INFINITY),
-            }
-        })
-        .collect();
-    if adjust { borrow_ways(base, s, shots, balls) } else { balls.into_iter().map(|(b, _)| b).collect() }
-}
-
-/// Adjusting each ball: a ball that found no way of its own (or only a rough one) takes another
-/// ball's that gets there from where it sets off too, when that needs a turn within Turn at most
+/// Leaving together, a ball that found no way of its own (or only a rough one) takes another
+/// ball's that gets there from where it sets off too, when that needs a turn within `window`
 /// (the smallest such): from one place, the ways that get there together are few, so they are
 /// often shared.
-fn borrow_ways(
-    base: &Lone,
-    s: &EmitterSettings,
-    shots: &[Shot],
-    balls: Vec<(Option<BallAim>, f64)>,
-) -> Vec<Option<BallAim>> {
-    let most_turn = s.aim_turn.max(0.0).to_radians() + 1e-6;
+fn borrow_ways(base: &Lone, window: f64, shots: &[Shot], balls: Vec<(Option<BallAim>, f64)>) -> Vec<Option<BallAim>> {
+    let most_turn = window as f32 + 1e-6;
     let at: Vec<(Vec2, Vec2)> = shots.iter().map(|shot| shot.at(base)).collect();
     let mut out: Vec<Option<BallAim>> = balls.iter().map(|(b, _)| b.clone()).collect();
     for (k, ball) in out.iter_mut().enumerate() {
