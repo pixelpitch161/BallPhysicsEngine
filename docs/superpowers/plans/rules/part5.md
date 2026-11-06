@@ -293,3 +293,13 @@ a whole thing target tags the thing.
   determinism through seeks). The runtime-only cases in section 4 are covered there through the kit's blocks.
 - Goldens: "Split chain" and "Zones and signals" added to `scenes::rule_scenes`; `golden-rules*.txt` gained their two
   lines in debug and `--release`, the four part 1 lines unchanged.
+- After the review: a Spawn at the firing's point fans out from the firing's ball's middle (a hit's point is on the
+  wall's line), and Spawn and Split put a ball that would land across a wall at the middle instead
+  (`World::clear_way`); Enters keeps every live ball's place in watched zones and applies Who when it fires (a tag
+  given inside a zone is no coming in), a zone that starts being watched only notes who is in it, and a ball made
+  since the last stage (fired, released, spawned, split off) inside a zone was born there; `Bodies::row_of` gives
+  the first live row with a number (split balls share it); a Spawn queues no more balls than there is room for;
+  the stage lends its counters, ball tags and broken things out instead of copying them, and drops the tags of
+  balls gone.
+- Count reached on Hits so far only counts the hits of the stages its rule runs in (a rule too busy for a step
+  misses that step's hits); left as it is.

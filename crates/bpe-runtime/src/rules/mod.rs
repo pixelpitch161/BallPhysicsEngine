@@ -270,9 +270,16 @@ impl RulesState {
     pub(crate) fn run(&mut self, world: &World, sims: &Sims, events: &[Event], log: &mut Log) {
         let step = world.step;
         let time = world.time();
-        let broken = self.broken.clone();
-        let counters = self.counters.clone();
-        let ball_tags = self.ball_tags.clone();
+        // A ball gone (caught, faded, removed) keeps no tags.
+        let gone =
+            |&(t, r): &(ThingId, u32)| !world.bodies.get(&t).is_some_and(|b| b.alive.get(r as usize) == Some(&true));
+        if self.ball_tags.keys().any(gone) {
+            self.ball_tags.retain(|k, _| !gone(k));
+        }
+        // Read, not changed, while the rules run (their changes are actions): lent out, not copied.
+        let broken = std::mem::take(&mut self.broken);
+        let counters = std::mem::take(&mut self.counters);
+        let ball_tags = std::mem::take(&mut self.ball_tags);
         let count = self.rules.len();
         let mut noted: Vec<BTreeMap<usize, (Option<Party>, Vec2)>> = vec![BTreeMap::new(); count];
         let mut budget = vec![MOST_ACTIONS; count];
@@ -343,6 +350,7 @@ impl RulesState {
             }
             heard = sent;
         }
+        (self.broken, self.counters, self.ball_tags) = (broken, counters, ball_tags);
         // Signals sent in the last round wait for the next step.
         self.carried = heard;
         let mut fired = Vec::new();

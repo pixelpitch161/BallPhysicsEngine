@@ -241,7 +241,16 @@ impl BlockSim for Spawn {
             return;
         }
         let point = match s.at {
-            SpawnAt::TheFiringsPoint => firing.point,
+            // About a ball, from its middle: a hit's point is on the wall's line, and balls put
+            // round it would start on both sides.
+            SpawnAt::TheFiringsPoint => firing
+                .subject
+                .and_then(|p| {
+                    let b = cx.world.bodies.get(&p.thing)?;
+                    let i = p.item as usize;
+                    b.alive.get(i).copied()?.then(|| b.position[i])
+                })
+                .unwrap_or(firing.point),
             SpawnAt::AThingsPlace => match targets(cx, &s.place, firing).first() {
                 Some(&t) => place_of(cx.world, t),
                 None => return,
@@ -283,8 +292,12 @@ impl BlockSim for Spawn {
                 (_, Some(r)) => r,
                 (_, None) => own_radius(cx, (thing, None)),
             };
-            let balls = ways.iter().map(|&w| (point + w * reach, w * speed, size)).collect();
-            out.push(Action::Spawn { thing, balls });
+            // No more than there is room for now (others queued this step are cut when applied).
+            let room = cx.world.bodies.get(&thing).map_or(MAX_BALLS, |b| MAX_BALLS.saturating_sub(b.alive_count()));
+            let balls: Vec<_> = ways.iter().take(room).map(|&w| (point + w * reach, w * speed, size)).collect();
+            if !balls.is_empty() {
+                out.push(Action::Spawn { thing, from: point, balls });
+            }
         }
     }
 }

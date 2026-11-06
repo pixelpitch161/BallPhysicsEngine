@@ -1,6 +1,6 @@
 //! When blocks for what happens to balls and things: Enters / Leaves, Fired, Removed / Broken.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use bpe_core::{BlockSection, Choice, Params, Settings, ThingId, Who};
 use bpe_runtime::rules::WHOLE;
@@ -62,29 +62,34 @@ type Inside = (ThingId, ThingId, u32);
 #[derive(Clone, Debug)]
 struct EnterState {
     s: EnterSettings,
-    /// Where every ball watched was at the last stage.
+    /// Every live ball inside a zone watched at the last stage (whoever it is: a ball that
+    /// starts or stops matching Who hasn't moved).
     inside: BTreeSet<Inside>,
+    /// The zones watched at the last stage: one that starts matching only notes who is in it.
+    zones: BTreeSet<ThingId>,
+    /// How many rows each thing had at the last stage: a ball made since (fired, released,
+    /// spawned or split off) inside a zone was born there and doesn't come in.
+    rows: BTreeMap<ThingId, usize>,
 }
 
-/// Every live ball `ball_ok` takes that is inside a wall `zone_ok` takes, in order.
-fn inside_now(world: &World, ball_ok: impl Fn(Party) -> bool, zone_ok: impl Fn(ThingId) -> bool) -> BTreeSet<Inside> {
+/// Every live ball inside one of `zones`, in order.
+fn inside_now(world: &World, zones: &BTreeSet<ThingId>) -> BTreeSet<Inside> {
     let mut out = BTreeSet::new();
-    for (&zone, wall) in &world.walls {
-        if !zone_ok(zone) {
-            continue;
-        }
+    for &zone in zones {
+        let Some(wall) = world.walls.get(&zone) else { continue };
         for (&thing, bodies) in &world.bodies {
             for row in 0..bodies.len() {
-                if bodies.alive[row]
-                    && wall.outline.inside(bodies.position[row])
-                    && ball_ok(Party { thing, item: row as u32 })
-                {
+                if bodies.alive[row] && wall.outline.inside(bodies.position[row]) {
                     out.insert((zone, thing, row as u32));
                 }
             }
         }
     }
     out
+}
+
+fn rows_of(world: &World) -> BTreeMap<ThingId, usize> {
+    world.bodies.iter().map(|(&t, b)| (t, b.len())).collect()
 }
 
 impl BlockSim for Enter {
@@ -98,18 +103,20 @@ impl BlockSim for Enter {
         let s = EnterSettings::from_params(params);
         // The balls inside at the start are there already: they never "come in".
         let w = cx.world;
-        let inside = inside_now(
-            w,
-            |p| matches_thing(w, &s.who, p),
-            |z| matches_thing(w, &s.zone, Party { thing: z, item: WHOLE }),
-        );
-        Ok(Box::new(EnterState { s, inside }))
+        let zones = w.walls.keys().copied().filter(|&z| matches_thing(w, &s.zone, Party { thing: z, item: WHOLE }));
+        let zones: BTreeSet<ThingId> = zones.collect();
+        Ok(Box::new(EnterState { inside: inside_now(w, &zones), zones, rows: rows_of(w), s }))
     }
     fn fire(&self, st: &mut dyn ThingState, cx: &StageCx, out: &mut Vec<Firing>) {
         let e = state_mut::<EnterState>(st);
         let world = cx.world;
-        let zone_ok = |z: ThingId| !cx.is_broken(z) && matches(cx, &e.s.zone, Party { thing: z, item: WHOLE });
-        let now = inside_now(world, |p| matches(cx, &e.s.who, p), zone_ok);
+        let zones: BTreeSet<ThingId> = world
+            .walls
+            .keys()
+            .copied()
+            .filter(|&z| !cx.is_broken(z) && matches(cx, &e.s.zone, Party { thing: z, item: WHOLE }))
+            .collect();
+        let now = inside_now(world, &zones);
         let live = |thing: ThingId, row: u32| world.bodies.get(&thing).is_some_and(|b| b.alive[row as usize]);
         let fire = |(zone, thing, row): Inside, entered: bool, out: &mut Vec<Firing>| {
             let ball = Party { thing, item: row };
@@ -133,9 +140,18 @@ impl BlockSim for Enter {
         // In (zone, thing, row) order: comings in and goings out together.
         let changed: BTreeSet<Inside> = now.symmetric_difference(&e.inside).copied().collect();
         for k in changed {
+            let (zone, thing, row) = k;
             let entered = now.contains(&k);
-            // A ball that is gone, or a zone that is, leaves nothing.
-            if !entered && (!live(k.1, k.2) || !world.walls.contains_key(&k.0) || cx.is_broken(k.0)) {
+            // A zone that starts or stops being watched moves nobody.
+            if !(zones.contains(&zone) && e.zones.contains(&zone)) {
+                continue;
+            }
+            // A ball born inside never came in; a ball that is gone leaves nothing.
+            let born = e.rows.get(&thing).is_none_or(|&n| row as usize >= n);
+            if (entered && born) || (!entered && !live(thing, row)) {
+                continue;
+            }
+            if !matches(cx, &e.s.who, Party { thing, item: row }) {
                 continue;
             }
             if (entered && enters) || (!entered && leaves) {
@@ -167,6 +183,8 @@ impl BlockSim for Enter {
             }
         }
         e.inside = now;
+        e.zones = zones;
+        e.rows = rows_of(world);
     }
 }
 

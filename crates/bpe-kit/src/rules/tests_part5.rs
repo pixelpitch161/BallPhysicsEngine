@@ -555,3 +555,74 @@ fn part5_rules_replay_the_same_through_seeks() {
     assert_eq!(straight.world().bodies[&BALLS].position, jumpy.world().bodies[&BALLS].position);
     assert!(straight.world().bodies[&BALLS].len() > 3, "the balls split and spawned");
 }
+
+#[test]
+fn balls_born_inside_a_zone_never_come_in() {
+    // The ring is a zone too (Zone: Anything): an emitter's balls start inside it.
+    let (mut scene, kit, e) = emitter_scene("every");
+    scene.things.get_mut(&e).unwrap().params.set("every", n(0.25));
+    scene.things.get_mut(&e).unwrap().params.set("endless", Value::Bool(true));
+    let (rule, b) = lane(&mut scene, &kit.registry, &[("when.enter", vec![])]);
+    let (_, log) = run(&scene, &kit, 1.0);
+    assert!(!steps_of(&log, EventKind::Spawn).is_empty());
+    assert!(fired(&log, rule, b[0]).is_empty());
+}
+
+#[test]
+fn a_tag_given_inside_a_zone_is_no_coming_in() {
+    let (mut scene, kit, zone) = zone_scene();
+    lane(
+        &mut scene,
+        &kit.registry,
+        &[time(0.5, None), ("do.tag", vec![("who", who(thing(BALLS))), ("tag", text("red"))])],
+    );
+    let (rule, b) = lane(
+        &mut scene,
+        &kit.registry,
+        &[(
+            "when.enter",
+            vec![("zone", who(thing(zone))), ("who", who(Who::Tag("red".into()))), ("way", choice("either"))],
+        )],
+    );
+    let cross = crossings(&scene, &kit, 4.0);
+    let (_, log) = run(&scene, &kit, 4.0);
+    // Tagged at 0.5 s, before or after it came in: only real crossings after that count.
+    let after: Vec<u64> = cross.iter().map(|c| c.0).filter(|&s| s > 121).collect();
+    assert_eq!(fired(&log, rule, b[0]), after);
+}
+
+#[test]
+fn spawned_balls_round_a_wall_hit_stay_inside() {
+    let (mut scene, kit) = starter();
+    lane(
+        &mut scene,
+        &kit.registry,
+        &[
+            ("when.hit", vec![]),
+            ("if.only", vec![("n", Value::Int(1))]),
+            ("do.spawn", vec![("into", who(thing(BALLS))), ("count", Value::Int(8)), ("way", choice("all_round"))]),
+        ],
+    );
+    let (world, _) = run(&scene, &kit, 6.0);
+    let b = &world.bodies[&BALLS];
+    assert_eq!(b.len(), 9);
+    for i in 0..b.len() {
+        assert!(b.position[i].length() < 508.0, "ball {i} at {}", b.position[i]);
+    }
+}
+
+#[test]
+fn a_split_balls_number_finds_a_child_once_it_is_gone() {
+    let (mut scene, kit) = starter();
+    let one = Who::Thing { thing: BALLS, ball: Some(1) };
+    lane(
+        &mut scene,
+        &kit.registry,
+        &[time(0.1, None), ("do.split", vec![("who", who(one.clone())), ("into", Value::Int(3))])],
+    );
+    lane(&mut scene, &kit.registry, &[time(0.2, None), ("do.break", vec![("who", who(one.clone()))])]);
+    lane(&mut scene, &kit.registry, &[time(0.3, None), ("do.break", vec![("who", who(one))])]);
+    let (world, _) = run(&scene, &kit, 0.5);
+    // The middle one (the ball's own row) breaks first, then the next with its number.
+    assert_eq!(world.bodies[&BALLS].alive, [false, false, true]);
+}

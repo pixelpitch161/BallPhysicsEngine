@@ -5,7 +5,7 @@ use bpe_core::ThingId;
 use glam::Vec2;
 
 use super::{Change, ChangeKey, Firing, MAX_BALLS, MAX_ROWS};
-use crate::{Event, EventKind, Log, NewBall, Party, Sims, World, pop};
+use crate::{Event, EventKind, Log, NewBall, Party, Sims, World, on_own_side, pop};
 
 /// A change to a ball's motion, right now.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -38,8 +38,9 @@ pub enum Action {
     /// Splits one ball into `into` balls fanned `spread` radians across its way, going `speed`
     /// times as fast; `share` shares its area out between them, else each keeps its size.
     Split { thing: ThingId, row: u32, into: u32, spread: f32, speed: f32, share: bool },
-    /// Adds balls to a thing: each one's place, velocity and size (`None`: the thing's own).
-    Spawn { thing: ThingId, balls: Vec<(Vec2, Vec2, Option<f32>)> },
+    /// Adds balls to a thing: each one's place, velocity and size (`None`: the thing's own),
+    /// fanned out from `from`; a ball whose place is across a wall from there starts at `from`.
+    Spawn { thing: ThingId, from: Vec2, balls: Vec<(Vec2, Vec2, Option<f32>)> },
     /// Asks the thing to fire now (an emitter's round).
     Fire { thing: ThingId },
     /// Adds (or removes) a tag on a whole thing, or on one ball (its body row).
@@ -215,7 +216,7 @@ impl World {
                         self.split(sims, &mut rules, thing, row, into, spread, speed, share);
                     }
                 }
-                Action::Spawn { thing, balls } => {
+                Action::Spawn { thing, from, balls } => {
                     if rules.broken.contains(&thing) {
                         continue;
                     }
@@ -228,6 +229,7 @@ impl World {
                             continue;
                         }
                         let radius = radius.map(|r| r.max(0.0));
+                        let position = if self.clear_way(from, position) { position } else { from };
                         sim.add_ball(thing, self, &NewBall { position, velocity, radius, like: None });
                     }
                 }
@@ -322,10 +324,13 @@ impl World {
         let ball = |k: usize| {
             let t = k as f32 / (n - 1) as f32 - 0.5;
             let way = Vec2::from_angle(spread * t).rotate(dir);
-            (centre + dir.perp() * (t * 2.0 * reach), way * speed)
+            let place = centre + dir.perp() * (t * 2.0 * reach);
+            // Never across a wall from where the ball was (a Middle touch runs its centre right
+            // along a wall's line).
+            (if self.clear_way(centre, place) { place } else { centre }, way * speed)
         };
-        for k in 0..n {
-            let (position, velocity) = ball(k);
+        let fan: Vec<(Vec2, Vec2)> = (0..n).map(ball).collect();
+        for (k, (position, velocity)) in fan.into_iter().enumerate() {
             if !(position.is_finite() && velocity.is_finite()) {
                 continue;
             }
@@ -350,6 +355,14 @@ impl World {
             }
             rules.copy_row(thing, row, child);
         }
+    }
+}
+
+impl World {
+    /// Whether `to` is on the same side as `from` of every wall balls bounce off: a ball whose
+    /// centre was at `from` may be put at `to`.
+    pub fn clear_way(&self, from: Vec2, to: Vec2) -> bool {
+        to.is_finite() && self.walls.values().all(|w| w.passes || on_own_side(to, from, &w.outline, w))
     }
 }
 
