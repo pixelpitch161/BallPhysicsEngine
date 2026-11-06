@@ -195,8 +195,13 @@ pub fn refract(dir: Vec2, n: Vec2, from: f32, into: f32) -> Option<Vec2> {
     (k >= 0.0).then(|| (dir * eta + n * (eta * cosi - k.sqrt())).normalize_or(dir))
 }
 
+/// The most times a beam bounces, whatever its Bounces says: each bounce is a strip light every
+/// pixel of the light pass looks at, so a runaway count would stall the picture.
+pub const MOST_BOUNCES: u32 = 256;
+
 /// The beam from `from` along `dir` for `length` in all, bouncing at most `bounces` times
-/// (bends count as bounces), each thing answered by `meets(thing, is a ball)`.
+/// (bends count as bounces, and never more than [`MOST_BOUNCES`]), each thing answered by
+/// `meets(thing, is a ball)`.
 pub fn trace(
     scenery: &Scenery,
     from: Vec2,
@@ -206,6 +211,7 @@ pub fn trace(
     skip: Option<(ThingId, u32)>,
     meets: &dyn Fn(ThingId, bool) -> Meets,
 ) -> Path {
+    let bounces = bounces.min(MOST_BOUNCES);
     let mut points = vec![from];
     let Some(mut dir) = dir.try_normalize() else { return Path { points: vec![from, from], ended_on_hit: false } };
     let mut at = from;

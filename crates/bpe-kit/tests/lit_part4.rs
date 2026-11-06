@@ -4,7 +4,7 @@
 //!
 //! `BPE_SAVE_RENDERS=1` saves the pictures into `target/pictures/lit4-*.png`.
 
-use bpe_core::{Color, Registry, Scene, Settings, SlotId, Target, ThingId, Value, layered_key};
+use bpe_core::{Color, Registry, Scene, SlotId, Target, ThingId, Value, layered_key};
 use bpe_gfx::{Frame, Renderer, build_frame, headless_device};
 use bpe_kit::{kit, scenes};
 use bpe_runtime::Playback;

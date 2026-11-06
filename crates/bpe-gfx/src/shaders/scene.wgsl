@@ -67,8 +67,25 @@ fn light_extra(c: vec4<f32>, extra: vec4<f32>) -> vec4<f32> {
     if g.light.x < 5.5 {
         return vec4<f32>(c.rgb * max(extra.x, 0.0), c.a);
     }
+    // Shown only under UV light: it neither catches beams nor takes a link number.
+    if extra.y > 0.5 {
+        return vec4<f32>(0.0);
+    }
     let a = clamp(c.a, 0.0, 1.0);
-    return vec4<f32>(max(extra.z, 0.0) * a, extra.w * a, 0.0, a);
+    return hard_tags(vec4<f32>(max(extra.z, 0.0) * a, extra.w * a, 0.0, a));
+}
+
+// The tags pass's output (`t` premultiplied by cover): what catches beams adds up softly, while
+// the link number is written whole where the thing covers at least half the pixel and not at all
+// elsewhere, so two things' numbers never mix at an edge. Other passes pass `t` through.
+fn hard_tags(t: vec4<f32>) -> vec4<f32> {
+    if g.light.x < 5.5 {
+        return t;
+    }
+    if t.a < 0.5 {
+        return vec4<f32>(t.r, 0.0, 0.0, 0.0);
+    }
+    return vec4<f32>(t.r, t.g / t.a, 0.0, 1.0);
 }
 
 // The camera (centre xy, zoom, turn) turns a world point into screen units; with no camera

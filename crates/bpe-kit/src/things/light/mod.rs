@@ -386,8 +386,8 @@ pub struct LightSettings {
     /// How brightly it shines where it bounces or ends.
     #[setting(label = "Hit glow", when = "kind=laser", span(0, 4), keyframe, group = "Laser")]
     pub hit_glow: f32,
-    /// How many times it may bounce.
-    #[setting(label = "Bounces", when = "kind=laser", range(0, 1e9), span(0, 32), group = "Laser")]
+    /// How many times it may bounce (at most 256).
+    #[setting(label = "Bounces", when = "kind=laser", range(0, 256), span(0, 32), group = "Laser")]
     pub bounces: u32,
     /// How far it reaches in all, bounces and all.
     #[setting(

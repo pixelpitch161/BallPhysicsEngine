@@ -1342,10 +1342,17 @@ impl Frame {
         }
     }
 
-    /// The longest memory (seconds) of this frame's effects: how far back the editor replays
-    /// after a seek so the picture matches a straight run (0 when no effect remembers).
+    /// The longest memory (seconds) of this frame's effects and its glow in the dark: how far
+    /// back the editor replays after a seek so the picture matches a straight run (0 when
+    /// nothing remembers). Remembered light fades by e^(-t / fade), under 1/4096 after about
+    /// 8.3 fades.
     pub fn memory(&self) -> f32 {
-        self.effects.iter().filter(|e| e.blend != 0.0).map(|e| e.memory).fold(0.0, f32::max)
+        let glow = self
+            .light
+            .as_ref()
+            .filter(|l| l.settings.remembers())
+            .map_or(0.0, |l| (l.settings.memory[1].max(1e-3) * 4096f32.ln()).min(crate::effects::MAX_MEMORY));
+        self.effects.iter().filter(|e| e.blend != 0.0).map(|e| e.memory).fold(glow, f32::max)
     }
 
     /// The frame things drawn with `blend` at `amount` go into: this one for Normal at full

@@ -1476,7 +1476,8 @@ struct Shaded {
 
 // Lights the point `spot` (world point `p` on the picture) wearing surface `sf`, whose plain
 // colour is `base` (for metal), `here` the blockers' field there.
-fn shade(spot: Spot, p: vec2<f32>, sf: SurfaceGpu, base: vec3<f32>, here: f32) -> Shaded {
+// `link` is the link number of what is there (Lights up): a light that leaves it out gives none.
+fn shade(spot: Spot, p: vec2<f32>, sf: SurfaceGpu, base: vec3<f32>, here: f32, link: f32) -> Shaded {
     let stage = in_stage();
     let px = u.view.z;
     let n = spot.n;
@@ -1496,6 +1497,9 @@ fn shade(spot: Spot, p: vec2<f32>, sf: SurfaceGpu, base: vec3<f32>, here: f32) -
     let count = u32(u.more.w);
     for (var i = 0u; i < count; i++) {
         let l = lights[i];
+        if !lights_up(l, link) {
+            continue;
+        }
         let kind = l.p0.w;
         var amount = 1.0;
         var toward = vec2<f32>(0.0);
@@ -1699,9 +1703,10 @@ fn surfaced(ip: vec2<i32>, p: vec2<f32>, c: vec3<f32>, w: vec3<f32>, sf: Surface
     thing.p = vec3<f32>(p, h);
     thing.n = normalize(vec3<f32>(-slope, 1.0));
     let here = field_at(p);
+    let link = link_here(ip);
     var out: Surfaced;
     if !in_stage() {
-        var sh = shade(thing, p, sf, c / max(share, 1e-3), here);
+        var sh = shade(thing, p, sf, c / max(share, 1e-3), here, link);
         sh = with_field(sh, field);
         out.out = mixed(c, w, sh, sf, share);
         out.diffuse = sh.diffuse;
@@ -1715,7 +1720,7 @@ fn surfaced(ip: vec2<i32>, p: vec2<f32>, c: vec3<f32>, w: vec3<f32>, sf: Surface
     var on_thing = Surfaced(vec3<f32>(0.0), vec3<f32>(0.0));
     var on_stage = Surfaced(vec3<f32>(0.0), vec3<f32>(0.0));
     if cover > 0.02 {
-        var sh = shade(thing, p, sf, c / max(share, 1e-3), here);
+        var sh = shade(thing, p, sf, c / max(share, 1e-3), here, link);
         sh = with_field(sh, field);
         on_thing = Surfaced(mixed(c, w, sh, sf, share), sh.diffuse);
     }
@@ -1728,7 +1733,7 @@ fn surfaced(ip: vec2<i32>, p: vec2<f32>, c: vec3<f32>, w: vec3<f32>, sf: Surface
         let f = field_at(spot.p.xy);
         let dz = max(spot.p.z - st.room.z, 0.0);
         let near = select(max(f, 1e-3), length(vec2<f32>(max(f, 0.0), dz)), dz > 0.0);
-        var sh = shade(spot, p, plane, c, near);
+        var sh = shade(spot, p, plane, c, near, link);
         sh = with_field(sh, field);
         // The wall and floor take light as much as the background does (its lit share).
         on_stage = Surfaced(mixed(c, w, sh, plane, share), sh.diffuse);

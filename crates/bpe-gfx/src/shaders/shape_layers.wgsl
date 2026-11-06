@@ -195,5 +195,5 @@ fn shade_shape_layers(
     if out.a < 1e-4 && seen < 1e-4 {
         discard;
     }
-    return out;
+    return hard_tags(out);
 }

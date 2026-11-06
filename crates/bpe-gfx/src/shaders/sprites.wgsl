@@ -56,8 +56,15 @@ fn light_extra(c: vec4<f32>, extra: vec4<f32>) -> vec4<f32> {
     if g.light.x < 5.5 {
         return vec4<f32>(c.rgb * max(extra.x, 0.0), c.a);
     }
+    if extra.y > 0.5 {
+        return vec4<f32>(0.0);
+    }
     let a = clamp(c.a, 0.0, 1.0);
-    return vec4<f32>(max(extra.z, 0.0) * a, extra.w * a, 0.0, a);
+    // As scene.wgsl's hard_tags: beams soft, the link number whole where it covers half or more.
+    if a < 0.5 {
+        return vec4<f32>(max(extra.z, 0.0) * a, 0.0, 0.0, 0.0);
+    }
+    return vec4<f32>(max(extra.z, 0.0) * a, extra.w, 0.0, 1.0);
 }
 
 const SPARKS: u32 = 0u;

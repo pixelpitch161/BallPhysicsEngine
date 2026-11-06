@@ -720,7 +720,7 @@ fn shade_layers(in: LayeredOut) -> vec4<f32> {
     if out.a < 1e-4 && seen < 1e-4 {
         discard;
     }
-    return out;
+    return hard_tags(out);
 }
 
 @fragment

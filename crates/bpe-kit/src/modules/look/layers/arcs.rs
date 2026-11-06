@@ -419,6 +419,7 @@ mod tests {
             only: Vec::new(),
             light: [0.0; 4],
             emit: None,
+            more: [0.0; 4],
         };
         let balls = [ball(0.0, 1), ball(140.0, 2)];
         let mut frame = Frame::default();

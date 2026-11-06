@@ -707,6 +707,8 @@ fn draw_ghosts(
     if frame.light.is_some() {
         let light = ghosts.first().map_or([0.0; 4], |g| [g.light[0], g.light[1], 0.0, 0.0]);
         let emit = ghosts.first().and_then(|g| g.emit);
+        // And its UV, beams and link, not the ball's.
+        let more = ghosts.first().and_then(|g| g.more_in(cx, frame.light.as_mut())).unwrap_or([0.0; 4]);
         let mut copies: Vec<(u32, u32)> = Vec::new();
         for g in behind.iter_mut().chain(front.iter_mut()) {
             let first = g.range[0];
@@ -719,6 +721,7 @@ fn draw_ghosts(
                     for r in &mut records {
                         r.light = light;
                         r.emit = crate::modules::look::layers::gives_light::gpu_steady(emit);
+                        r.more = more;
                     }
                     frame.look_layers.extend(records);
                     copies.push((first, to));
@@ -729,6 +732,7 @@ fn draw_ghosts(
         }
         let stamp = |s: &mut bpe_gfx::Particle| {
             s.light = light;
+            s.extra = more;
             if let Some(e) = emit {
                 s.emit = e.at(s.color);
             }
@@ -810,7 +814,7 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, worn: &Worn, part: u32) {
     };
     let side = 2.0 * (group.info.furthest + widest).max(1.0);
     // Flash and Colour on hit sub-layers read each ball's last hit and its hits so far.
-    let hits = stack.needs_hits();
+    let hits = worn.stacks.iter().any(|s| s.needs_hits());
     let memory = worn.stacks.iter().map(|s| s.flash_memory()).fold(0.0, f32::max);
     let last = if hits { last_hits(cx, bodies.len(), memory) } else { Vec::new() };
     // Heat glow: each ball's heat from its hits (one heat a ball, by its first stack's heat).

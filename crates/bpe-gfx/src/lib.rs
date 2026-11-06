@@ -1111,6 +1111,7 @@ impl Renderer {
     /// Forgets what the effects remember of earlier frames: the next frame starts them afresh.
     pub fn forget_effect_history(&mut self) {
         self.chain.forget_history();
+        self.forget_memory();
     }
 
     /// Builds in-ball programs in `store` from now on, shared with every renderer using it (on
