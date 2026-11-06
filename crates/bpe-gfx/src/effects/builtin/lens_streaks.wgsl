@@ -1,8 +1,8 @@
 // name: Lens streaks
 // about: Every bright thing throws a long thin streak, like an anamorphic film lens, brighter when balls hit.
 // lens: rays
-// simple strength = 2 [0, 8] How bright the streaks are
-// simple threshold = 1 [0, 4] How bright a spot has to be to streak (1 is plain white)
+// simple strength = 1 [0, 8] How bright the streaks are
+// simple threshold = 2 [0, 8] How bright a spot has to be to streak (1 is plain white, lamps and glows go past it)
 // simple ray_length = 0.35 [0, 1] How long the streaks are, of the picture's height
 // simple kick = 1 [0, 5] How much brighter the streaks are when balls hit
 // simple tint_amount = 0.6 [0, 1] How much the streaks take the tint rather than their light's own colour

@@ -190,11 +190,7 @@ fn write_the_camera_demo_scene() {
         if !scene.things[&ThingId::ROOT].slots.contains_key(&SlotId::Shader) {
             scene.add_slot(&reg, ThingId::ROOT, SlotId::Shader, "effects").unwrap();
         }
-        let id = scene.add_layer(&reg, ThingId::ROOT, SlotId::Shader, kind).unwrap();
-        if kind == "picture.lens_flare" {
-            let card = scene.things.get_mut(&ThingId::ROOT).unwrap().slots.get_mut(&SlotId::Shader).unwrap();
-            card.params.set(&bpe_core::layered_key(id, "threshold"), Value::Number(0.8));
-        }
+        scene.add_layer(&reg, ThingId::ROOT, SlotId::Shader, kind).unwrap();
     }
     let camera = bpe_kit::ensure_camera(&mut scene, &reg);
     let key = |key: &str| bpe_core::Address { thing: camera, slot: None, key: key.into() };

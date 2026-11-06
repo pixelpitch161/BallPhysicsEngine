@@ -1,10 +1,10 @@
 // name: Lens flare
 // about: Bright lights throw ghosts, a halo ring and a starburst across the picture, moving as the lights move.
 // lens: rays soft
-// simple strength = 1 [0, 4] How bright the flare is
-// simple threshold = 1 [0, 4] How bright a spot has to be to flare (1 is plain white)
+// simple strength = 0.5 [0, 4] How bright the flare is
+// simple threshold = 2 [0, 8] How bright a spot has to be to flare (1 is plain white, lamps and glows go past it)
 // simple ghosts = 5 [0, 12] hard [0, 64] int How many ghosts the lens throws through the middle
-// simple halo = 0.4 [0, 2] How bright the ring round each light is
+// simple halo = 0.3 [0, 2] How bright the ring round each light is
 // simple star = 0.6 [0, 2] How bright the starburst round each light is
 // param spacing = 0.42 [0, 1.5] How far apart the ghosts are along the line through the middle
 // param softness = 2 [0, 4] How soft the ghosts and the halo are
