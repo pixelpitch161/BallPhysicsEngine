@@ -1024,6 +1024,9 @@ pub fn light_show(reg: &Registry) -> Scene {
     card.params.set("scenes_play", Value::Choice(ScenesPlay::InTurn.name().into()));
     card.params.set("scene_every", Value::Number(1.0));
     card.params.set("scene_fade", Value::Number(0.3));
+    scene
+}
+
 /// Lighting part 1b's room: [`lit_room`] darkened (no ambient, its lamp at strength 0) with a
 /// bigger ball in the middle whose Body gives off warm light. Tests switch things on from here.
 pub fn glow_room(reg: &Registry) -> Scene {
