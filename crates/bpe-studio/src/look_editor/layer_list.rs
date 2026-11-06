@@ -436,7 +436,8 @@ fn menu(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, card: &Slot, layer:
     let base = kind.is_some_and(|k| k.base());
     let drawn = kind.is_some_and(|k| k.section() == LayerSection::Drawn) && !base;
     let around = kind.is_some_and(|k| k.section() == LayerSection::Around);
-    let takes_subs = (drawn || around) && kind.is_some_and(|k| k.takes_subs());
+    // The Body takes the sub-layers its kind says (Gives off light).
+    let takes_subs = (drawn || around || base) && kind.is_some_and(|k| k.takes_subs());
     let group = kind.is_some_and(|k| k.section() == LayerSection::Group);
     let repeats = kind.is_some_and(|k| k.repeats());
     let index = place_of(card, layer.id).unwrap_or(0);

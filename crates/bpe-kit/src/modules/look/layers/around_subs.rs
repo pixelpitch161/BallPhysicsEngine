@@ -40,6 +40,14 @@ impl Pieces {
         }
     }
 
+    /// Gives what the layer itself drew (not its sub-layers' shadows, glows and outlines) the
+    /// light `emit` it gives off, by each piece's own colour.
+    pub fn give_light(&mut self, emit: Option<super::gives_light::Emit>) {
+        let Some(e) = emit else { return };
+        self.strips[OWN].iter_mut().for_each(|v| v.emit = e.at(v.color));
+        self.particles[OWN].iter_mut().for_each(|s| s.emit = e.at(s.color));
+    }
+
     /// How many particles in all.
     pub fn particle_count(&self) -> usize {
         self.particles.iter().map(Vec::len).sum()
@@ -178,4 +186,35 @@ pub fn particle_with_extras(own: Particle, e: &Extras, out: &mut Pieces) {
         }
     }
     out.particles[OWN].push(own);
+}
+
+#[cfg(test)]
+mod light_tests {
+    use super::*;
+    use crate::modules::look::layers::gives_light::{Emit, GivesLight};
+
+    #[test]
+    fn only_what_the_layer_itself_drew_gives_off_light() {
+        let mut pieces = Pieces::default();
+        let v = TrailVertex { color: [1.0, 0.5, 0.0, 1.0], ..bytemuck_zero() };
+        for k in [SHADOW, GLOW, OWN, OUTLINE] {
+            pieces.strips[k].push(v);
+        }
+        pieces.give_light(Some(Emit::of(&GivesLight { strength: 2.0, ..Default::default() })));
+        assert_eq!(pieces.strips[OWN][0].emit, [2.0, 1.0, 0.0, 0.0]);
+        for k in [SHADOW, GLOW, OUTLINE] {
+            assert_eq!(pieces.strips[k][0].emit, [0.0; 4], "{k}");
+        }
+    }
+
+    fn bytemuck_zero() -> TrailVertex {
+        TrailVertex {
+            position: [0.0; 2],
+            edge: [0.0; 2],
+            color: [0.0; 4],
+            style: [0.0; 2],
+            light: [0.0; 2],
+            emit: [0.0; 4],
+        }
+    }
 }

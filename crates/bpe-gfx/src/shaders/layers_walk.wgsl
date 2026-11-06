@@ -125,7 +125,7 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
                 piece.light_out += sub_light(piece.c_out, glow_amount, select(outer, whole_out, lower && above), mode);
             }
             if g.light.x > 0.5 {
-                piece = light_piece(piece, ll);
+                piece = light_piece(piece, ll, layered_ball.hit);
             }
             let p_in = clamp(piece.a_in, 0.0, 1.0) * lo;
             let p_out = clamp(piece.a_out, 0.0, 1.0) * lo;
@@ -273,6 +273,16 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
                 } else {
                     c = mix(under, lit_in, strength);
                     a_in = opacity;
+                    if g.light.x > 0.5 && g.light.x < 1.5 {
+                        // The lit share (`under` is the lit share of the layers under it): what
+                        // the shine leaves of them takes the light; how far it turns them white
+                        // keeps its colour as far as the layer's Lit is below 1.
+                        // How far toward white, as c = under (1 - h) + h best fits (least
+                        // squares, so a channel already full counts for little).
+                        let room = max(vec3<f32>(1.0) - under, vec3<f32>(0.0));
+                        let h = clamp(dot(c - under, room) / max(dot(room, room), 1e-4), 0.0, 1.0);
+                        c = mix(under * (1.0 - h), c, clamp(r.light.x, 0.0, 1.0));
+                    }
                 }
             }
             case 4u: {

@@ -202,6 +202,22 @@ Dependencies go bottom to top:
   (`Follow::EachBall`, the Body's default). In-ball programs live in a `ProgramStore`; the editor shares one between
   its renderers and builds programs on a background thread (`ProgramStore::in_background`,
   `preview::shared_programs`), exports build them while drawing.
+  **Lighting** (spec `docs/superpowers/specs/2026-11-06-lighting-design.md`, plans `docs/superpowers/plans/lighting/`;
+  `lighting.rs`, `shaders/lighting.wgsl`): a frame with `Frame.light` (`LightScene`) draws the things again in light
+  passes picked by `Globals.light.x`: 1 lit colour (colour × Lit), 2 surface (blocks, height, cover), 3 the light
+  things give off (only when `LightScene.glows`, `Frame::gives_light`), 4 the background's own light alone. Then a
+  jump-flood distance field of blockers, `fs_direct` (each Light thing's light on surfaces and in the air, soft
+  shadows), the **light field** (2D radiance cascades: cascade i has probes 2^i apart, 4^(i+1) directions, rays
+  marched by a second jump flood on `gi_scene` (opaque where something blocks or gives light) and faded over Glow
+  reach; resolved into four ways per texel, `gi_a/b/c`; a texel inside a blocker reads the ways facing out at its
+  nearest open texel so nothing lights itself; Bounce is a second run fed by lit colour × light), haze (air light
+  × Beam in haze, plus the field) and Light blooms (lamp bulbs + emission, 4 mips), mixed by `fs_mix`
+  (`c + (light − 1)·w`, light ≥ 0 per channel). A layer's emission is folded into its record (`LayerGpu.emit`,
+  trails' and particles' `emit`); in mode 3 a Shine/Shading/Shader layer that gives nothing leaves the light under
+  it, and in mode 1 at Lit 0 it leaves the lit share under it. The **Gives off light** sub-layer
+  (`bpe-kit/.../layers/gives_light.rs`, `sub.light`/`shape.sub.light`: Colour from, Strength, Negative, Flare on
+  hit) goes on any drawn or around layer and on a Body (the only sub-layer a Body takes); a layer that gives off
+  light counts as Lit 0. The scene's background has Gives off light settings (`bg_glow*`).
 - `bpe-kit`: **every plugin**, with one folder per thing kind in `src/things/` (balls, camera, folder, scene, shape)
   and one per card kind in `src/modules/` (look, motion, bounce, shader). A ball's Look is
   `look.layers` (`modules/look/layers/`: Body, Pattern, Outline, Shine (its Light is white or its own colours/gradient, `ShineLight`), Glow, Shading, Shader, Blend, the reactions

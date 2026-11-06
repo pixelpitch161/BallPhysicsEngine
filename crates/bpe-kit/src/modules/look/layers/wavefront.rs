@@ -204,6 +204,7 @@ pub fn draw(layer: &AroundLayer, w: &WavefrontLayer, f: &Fronts, frame: &mut Fra
             .collect();
         strip_with_subs(&look, &path, &widths, &bases, w.softness.clamp(0.0, 1.0), &mut pieces);
     }
+    pieces.give_light(layer.emit);
     pieces.into_frame(frame, w.place == AroundPlace::InFront);
 }
 
@@ -256,6 +257,7 @@ mod tests {
             subs: Vec::new(),
             only: Vec::new(),
             light: [0.0; 4],
+            emit: None,
         };
         let mut frame = Frame::default();
         draw(&layer, &w, &f, &mut frame);

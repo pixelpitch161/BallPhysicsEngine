@@ -248,3 +248,279 @@ fn write_the_demo_scene() {
     let reg = reg();
     std::fs::write(path, bpe_core::save::save(&scenes::lit_demo(&reg))).unwrap();
 }
+
+/// Writes lighting part 1b's demo scene to `BPE_GLOW_SCENE` (for the review video), when set.
+#[test]
+fn write_the_glow_demo_scene() {
+    let Some(path) = std::env::var_os("BPE_GLOW_SCENE") else { return };
+    let reg = reg();
+    std::fs::write(path, bpe_core::save::save(&scenes::glow_demo(&reg))).unwrap();
+}
+
+// Lighting part 1b: things that give off light, the light field, haze and Light blooms.
+
+/// The ball's Gives off light sub-layer in [`scenes::glow_room`].
+fn glow_of(scene: &Scene) -> (ThingId, bpe_core::LayerId) {
+    let ball = ball_of(scene);
+    let card = &scene.things[&ball].slots[&SlotId::Look];
+    let sub = card.layers.iter().find(|l| l.kind.as_str() == "sub.light").expect("a Gives off light").id;
+    (ball, sub)
+}
+
+fn set_glow(scene: &mut Scene, key: &str, v: Value) {
+    let (ball, sub) = glow_of(scene);
+    scene.card_mut(ball, SlotId::Look).unwrap().params.set(&layered_key(sub, key), v);
+}
+
+/// The glow room's ball without its Gives off light: an ordinary lit ball again.
+fn drop_glow(scene: &mut Scene) {
+    let (ball, sub) = glow_of(scene);
+    scene.remove_layer(&reg(), ball, SlotId::Look, sub).unwrap();
+}
+
+fn set_root(scene: &mut Scene, key: &str, v: Value) {
+    scene.things.get_mut(&ThingId::ROOT).unwrap().params.set(key, v);
+}
+
+fn redness(p: [u8; 4]) -> i32 {
+    p[0] as i32 - p[2] as i32
+}
+
+#[test]
+fn a_glowing_ball_lights_what_is_round_it_and_shows_its_own_colour() {
+    let Some(mut gpu) = gpu() else { return };
+    let reg = reg();
+    let scene = scenes::glow_room(&reg);
+    let lit = draw(&mut gpu, &scene, "glow");
+    let mut off = scene.clone();
+    set_glow(&mut off, "strength", Value::Number(0.0));
+    let dark = draw(&mut gpu, &off, "glow-off");
+    // Beside the ball the floor is lit warm; with the glow off, the room is black.
+    let near = at(&lit, 120.0, 0.0);
+    assert!(brightness(near) > brightness(at(&dark, 120.0, 0.0)) + 60, "near {near:?}");
+    assert!(redness(near) > 20, "warm: {near:?}");
+    // It fades with distance.
+    let far = at(&lit, 400.0, 700.0);
+    assert!(brightness(near) > brightness(far) + 40, "near {near:?} far {far:?}");
+    // The ball itself shows its colours, unlit: as it is without any lighting.
+    let mut plain = scene.clone();
+    plain.things.get_mut(&ThingId::ROOT).unwrap().slots.remove(&SlotId::Lighting);
+    let without = draw(&mut gpu, &plain, "glow-plain");
+    let (a, b) = (at(&lit, 0.0, 0.0), at(&without, 0.0, 0.0));
+    for c in 0..3 {
+        assert!((a[c] as i32 - b[c] as i32).abs() <= 3, "{a:?} vs {b:?}");
+    }
+    // Without a Lighting card a Gives off light changes nothing.
+    let mut plain_off = plain.clone();
+    set_glow(&mut plain_off, "strength", Value::Number(0.0));
+    assert_eq!(without, draw(&mut gpu, &plain_off, "glow-plain-off"));
+}
+
+#[test]
+fn something_in_the_way_throws_a_shadow_from_a_glow() {
+    let Some(mut gpu) = gpu() else { return };
+    let reg = reg();
+    let mut scene = scenes::glow_room(&reg);
+    // A second ball, not glowing, between the glow and the floor below it.
+    let other = bpe_kit::add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
+    let t = scene.things.get_mut(&other).unwrap();
+    t.transform.position = glam::Vec2::new(0.0, 200.0);
+    t.params.set("radius", Value::Number(50.0));
+    let pixels = draw(&mut gpu, &scene, "glow-shadow");
+    // Below the blocker, against the same distance from the glow off to the side.
+    let behind = at(&pixels, 0.0, 330.0);
+    let side = at(&pixels, 330.0, 0.0);
+    assert!(brightness(behind) + 30 < brightness(side), "behind {behind:?} side {side:?}");
+}
+
+#[test]
+fn negative_light_takes_light_away() {
+    let Some(mut gpu) = gpu() else { return };
+    let reg = reg();
+    let mut scene = scenes::glow_room(&reg);
+    set_lighting(&mut scene, "ambient", Value::Number(1.0));
+    set_glow(&mut scene, "strength", Value::Number(0.0));
+    let plain = draw(&mut gpu, &scene, "neg-off");
+    set_glow(&mut scene, "strength", Value::Number(3.0));
+    set_glow(&mut scene, "negative", Value::Bool(true));
+    let dark = draw(&mut gpu, &scene, "neg");
+    let (a, b) = (at(&dark, 120.0, 0.0), at(&plain, 120.0, 0.0));
+    assert!(brightness(a) + 30 < brightness(b), "negative {a:?} plain {b:?}");
+}
+
+#[test]
+fn bounce_light_spills_a_lit_balls_colour() {
+    let Some(mut gpu) = gpu() else { return };
+    let reg = reg();
+    let mut scene = scenes::lit_room(&reg);
+    set_lighting(&mut scene, "ambient", Value::Number(0.0));
+    // A big red ball lit by the lamp above it.
+    let ball = ball_of(&scene);
+    scene.things.get_mut(&ball).unwrap().params.set("radius", Value::Number(100.0));
+    let body = scene.things[&ball].slots[&SlotId::Look].layers[0].id;
+    let card = scene.card_mut(ball, SlotId::Look).unwrap();
+    let b = bpe_kit::modules::look::layers::BodyLayer {
+        fill: bpe_kit::paint::Paint::solid(Color::rgb(0xff, 0x10, 0x10)),
+        ..Default::default()
+    };
+    for (k, v) in b.to_params().iter() {
+        card.params.set(&layered_key(body, k), v.clone());
+    }
+    let before = draw(&mut gpu, &scene, "bounce-off");
+    set_lighting(&mut scene, "bounce", Value::Number(2.0));
+    let after = draw(&mut gpu, &scene, "bounce");
+    // Beside the ball, near its lit top.
+    let (a, b) = (at(&after, 120.0, -60.0), at(&before, 120.0, -60.0));
+    assert!(redness(a) > redness(b) + 8, "bounce {a:?} without {b:?}");
+}
+
+#[test]
+fn haze_shows_a_spots_beam_and_nothing_at_haze_0() {
+    let Some(mut gpu) = gpu() else { return };
+    let reg = reg();
+    let mut scene = scenes::lit_room(&reg);
+    let root = scene.things.get_mut(&ThingId::ROOT).unwrap();
+    let mut s = bpe_kit::SceneSettings::from_params(&root.params);
+    s.background = bpe_kit::paint::Paint::solid(Color::rgb(0, 0, 0));
+    root.params = s.to_params();
+    set_lighting(&mut scene, "ambient", Value::Number(0.0));
+    set_light(&mut scene, "kind", Value::Choice("spot".into()));
+    set_light(&mut scene, "cone", Value::Number(30.0));
+    set_light(&mut scene, "cone_edge", Value::Number(2.0));
+    set_light(&mut scene, "direction", Value::Number(90.0));
+    let clear = draw(&mut gpu, &scene, "haze-off");
+    set_lighting(&mut scene, "haze", Value::Number(0.0));
+    assert_eq!(clear, draw(&mut gpu, &scene, "haze-0"));
+    set_lighting(&mut scene, "haze", Value::Number(1.0));
+    let hazy = draw(&mut gpu, &scene, "haze");
+    let (inside, outside) = (at(&hazy, 0.0, -250.0), at(&hazy, 250.0, -300.0));
+    assert!(brightness(inside) > brightness(at(&clear, 0.0, -250.0)) + 20, "{inside:?}");
+    assert!(brightness(outside) <= 6, "{outside:?}");
+    // A beam of 0 shows nothing in the haze.
+    set_light(&mut scene, "beam", Value::Number(0.0));
+    let no_beam = draw(&mut gpu, &scene, "haze-nobeam");
+    let p = at(&no_beam, 0.0, -250.0);
+    assert!(brightness(p) + 10 < brightness(inside), "{p:?}");
+}
+
+#[test]
+fn light_blooms_brighten_round_a_lamp() {
+    let Some(mut gpu) = gpu() else { return };
+    let reg = reg();
+    let mut scene = scenes::glow_room(&reg);
+    let before = draw(&mut gpu, &scene, "blooms-off");
+    set_lighting(&mut scene, "light_blooms", Value::Number(1.5));
+    let after = draw(&mut gpu, &scene, "blooms");
+    let (a, b) = (at(&after, 80.0, 0.0), at(&before, 80.0, 0.0));
+    assert!(brightness(a) > brightness(b) + 15, "blooms {a:?} without {b:?}");
+}
+
+#[test]
+fn a_glowing_background_lights_the_room() {
+    let Some(mut gpu) = gpu() else { return };
+    let reg = reg();
+    let mut scene = scenes::glow_room(&reg);
+    drop_glow(&mut scene);
+    let dark = draw(&mut gpu, &scene, "bg-off");
+    set_root(&mut scene, "bg_glow", Value::Number(1.0));
+    set_root(&mut scene, "bg_glow_from", Value::Choice("own".into()));
+    set_root(&mut scene, "bg_glow_colour", Value::Color(Color::rgb(0x40, 0x80, 0xff)));
+    let lit = draw(&mut gpu, &scene, "bg");
+    // The background shows its own colour, a lamp; the ball takes its blue light.
+    let (a, b) = (at(&lit, 0.0, 30.0), at(&dark, 0.0, 30.0));
+    assert!(brightness(a) > brightness(b) + 40, "{a:?} vs {b:?}");
+    assert!(a[2] as i32 - a[0] as i32 > b[2] as i32 - b[0] as i32 + 20, "blue: {a:?} vs {b:?}");
+    let (a, b) = (at(&lit, 300.0, 600.0), at(&dark, 300.0, 600.0));
+    assert!(brightness(a) > brightness(b) + 40, "the background shows: {a:?} vs {b:?}");
+}
+
+#[test]
+fn a_glowing_shape_lights_the_ball_inside_it() {
+    let Some(mut gpu) = gpu() else { return };
+    let reg = reg();
+    let mut scene = scenes::glow_room(&reg);
+    drop_glow(&mut scene);
+    let before = draw(&mut gpu, &scene, "shape-off");
+    let shape = scene.things.values().find(|t| t.kind == "shape").map(|t| t.id).unwrap();
+    scene.things.get_mut(&shape).unwrap().params.set("thickness", Value::Number(30.0));
+    let sbody = scene.things[&shape].slots[&SlotId::Look].layers[0].id;
+    let sub = scene.add_sub_layer(&reg, shape, SlotId::Look, sbody, "shape.sub.light").unwrap();
+    scene.card_mut(shape, SlotId::Look).unwrap().params.set(&layered_key(sub, "strength"), Value::Number(4.0));
+    let after = draw(&mut gpu, &scene, "shape");
+    // The floor near the ring's edge, inside it.
+    let (a, b) = (at(&after, 0.0, 440.0), at(&before, 0.0, 440.0));
+    assert!(brightness(a) > brightness(b) + 40, "{a:?} vs {b:?}");
+    // And the ball in the middle takes some of it.
+    let (a, b) = (at(&after, 0.0, 0.0), at(&before, 0.0, 0.0));
+    assert!(brightness(a) > brightness(b) + 10, "ball {a:?} vs {b:?}");
+}
+
+#[test]
+fn a_frame_knows_when_something_gives_off_light() {
+    let reg = reg();
+    let kit = kit();
+    let scene = scenes::glow_room(&reg);
+    let frame = frame_of(&scene, &kit, 0.0);
+    assert!(frame.light.as_ref().unwrap().glows);
+    let mut off = scene.clone();
+    let (ball, sub) = glow_of(&off);
+    off.remove_layer(&reg, ball, SlotId::Look, sub).unwrap();
+    let frame = frame_of(&off, &kit, 0.0);
+    assert!(!frame.light.as_ref().unwrap().glows);
+}
+
+#[test]
+fn a_frame_with_nothing_glowing_keeps_no_glow_from_the_one_before() {
+    let Some(mut gpu) = gpu() else { return };
+    let reg = reg();
+    let mut scene = scenes::glow_room(&reg);
+    set_lighting(&mut scene, "light_blooms", Value::Number(1.0));
+    set_lighting(&mut scene, "bounce", Value::Number(1.0));
+    set_light(&mut scene, "strength", Value::Number(1.0));
+    draw(&mut gpu, &scene, "stale-before");
+    drop_glow(&mut scene);
+    let after = draw(&mut gpu, &scene, "stale-after");
+    let Some(mut fresh) = self::gpu() else { return };
+    assert!(after == draw(&mut fresh, &scene, "stale-fresh"), "the same as drawn afresh");
+}
+
+#[test]
+fn a_shine_keeps_its_white_on_a_ball_in_the_dark() {
+    let Some(mut gpu) = gpu() else { return };
+    let reg = reg();
+    let mut scene = scenes::glow_room(&reg);
+    drop_glow(&mut scene);
+    // A big red ball with the classic shine, in a room with no light at all.
+    let ball = ball_of(&scene);
+    scene.things.get_mut(&ball).unwrap().params.set("radius", Value::Number(200.0));
+    let body = scene.things[&ball].slots[&SlotId::Look].layers[0].id;
+    let b = bpe_kit::modules::look::layers::BodyLayer {
+        fill: bpe_kit::paint::Paint::solid(Color::rgb(0xff, 0x10, 0x10)),
+        ..Default::default()
+    };
+    let card = scene.card_mut(ball, SlotId::Look).unwrap();
+    for (k, v) in b.to_params().iter() {
+        card.params.set(&layered_key(body, k), v.clone());
+    }
+    let pixels = draw(&mut gpu, &scene, "shine-dark");
+    let mut brightest = [0u8; 4];
+    let mut reddest = 0;
+    for y in -180..180 {
+        for x in -180..180 {
+            if x * x + y * y > 170 * 170 {
+                continue;
+            }
+            let p = at(&pixels, x as f32, y as f32);
+            if brightness(p) > brightness(brightest) {
+                brightest = p;
+            }
+            reddest = reddest.max(redness(p));
+        }
+    }
+    // Its highlight shows white (never cyan), and the red body takes no light: dark.
+    assert!(brightness(brightest) > 300, "a highlight: {brightest:?}");
+    assert!((brightest[0] as i32 - brightest[1] as i32).abs() < 40, "white, not cyan: {brightest:?}");
+    let middle_low = at(&pixels, 0.0, 150.0);
+    assert!(brightness(middle_low) < 60, "the body in the dark: {middle_low:?}");
+    let _ = reddest;
+}

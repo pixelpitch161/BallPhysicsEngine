@@ -22,12 +22,17 @@ struct Globals {
 @group(0) @binding(0) var<uniform> g: Globals;
 
 // As scene.wgsl's: a sprite in the light passes (see lighting.wgsl).
-fn light_flat(c: vec4<f32>, lit: f32, blocks: f32) -> vec4<f32> {
+fn light_flat(c: vec4<f32>, lit: f32, blocks: f32, emit: vec3<f32>) -> vec4<f32> {
     if g.light.x < 0.5 {
         return c;
     }
     if g.light.x < 1.5 {
         return vec4<f32>(c.rgb * lit, c.a);
+    }
+    if g.light.x > 2.5 {
+        // The light it gives off, where it covers (light covering nothing by how bright it is).
+        let k = select(c.a, max(c.r, max(c.g, c.b)), c.a <= 0.0);
+        return vec4<f32>(emit * k, c.a);
     }
     // The surface: only what blocks covers it, so a spark or a trail passing over a ball leaves
     // the ball's blocking and height under it as they are.
@@ -56,6 +61,8 @@ struct SpriteIn {
     @location(3) shape: vec4<u32>,
     // Its layer's Lit and how much it blocks light, read in the light passes.
     @location(4) light: vec4<f32>,
+    // The light it gives off (straight, linear), read in the emission pass.
+    @location(5) emit: vec4<f32>,
 };
 
 struct SpriteOut {
@@ -68,6 +75,7 @@ struct SpriteOut {
     @location(3) @interpolate(flat) kind: u32,
     @location(4) shade: f32,
     @location(5) @interpolate(flat) light: vec2<f32>,
+    @location(6) @interpolate(flat) emit: vec3<f32>,
 };
 
 fn to_screen(p: vec2<f32>) -> vec2<f32> {
@@ -115,6 +123,7 @@ fn vs_sprite(@builtin(vertex_index) vi: u32, v: SpriteIn) -> SpriteOut {
     out.size = vec4<f32>(reach, size, clamp(v.style.z, 0.0, 1.0), clamp(v.style.w, 0.0, 1.0));
     out.kind = v.shape.x;
     out.light = v.light.xy;
+    out.emit = v.emit.rgb;
     out.shade = v.style.y;
     return out;
 }
@@ -218,7 +227,7 @@ fn coverage(in: SpriteOut) -> f32 {
 
 @fragment
 fn fs_sprite(in: SpriteOut) -> @location(0) vec4<f32> {
-    return light_flat(sprite_colour(in), in.light.x, in.light.y);
+    return light_flat(sprite_colour(in), in.light.x, in.light.y, in.emit);
 }
 
 // The sprite's premultiplied colour and coverage here.

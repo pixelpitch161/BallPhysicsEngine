@@ -82,6 +82,15 @@ pub struct LightingSettings {
     /// How much the background takes the light: 0 leaves it as it is.
     #[setting(label = "Background takes light", span(0, 1), keyframe, group = "Room")]
     pub background_lit: f32,
+    /// How much light lit things that block light bounce onto what is round them.
+    #[setting(label = "Bounce light", span(0, 2), keyframe, group = "Room")]
+    pub bounce: f32,
+    /// How far the light of glowing things (and bounced light) reaches.
+    #[setting(label = "Glow reach", range(0, 1e9), span(0, 4000), unit = "px", keyframe, group = "Room")]
+    pub glow_reach: f32,
+    /// How much the lamps and glowing things spill into a soft bloom (the lamps show as bulbs).
+    #[setting(label = "Light blooms", span(0, 2), keyframe, group = "Room")]
+    pub light_blooms: f32,
     /// How shadows look.
     #[setting(label = "Style", group = "Shadows")]
     pub shadow_style: ShadowStyle,
@@ -108,6 +117,15 @@ pub struct LightingSettings {
     /// How many bands of light a toon picture has.
     #[setting(label = "Toon steps", when = "shadow_style=toon", range(1, 1e9), span(1, 8), group = "Shadows")]
     pub toon_steps: u32,
+    /// How much the air shows the light: beams from the lamps, halos round glowing things.
+    #[setting(label = "Haze", span(0, 2), keyframe, group = "Air")]
+    pub haze: f32,
+    /// The colour the haze takes the light in.
+    #[setting(label = "Haze colour", when = "haze", keyframe, group = "Air")]
+    pub haze_colour: Color,
+    /// How much the haze veils what is behind it.
+    #[setting(label = "Haze dims", when = "haze", span(0, 1), keyframe, group = "Air")]
+    pub haze_dims: f32,
     /// How hard the lighting works, while editing and in the video alike.
     #[setting(label = "Quality", group = "Quality")]
     pub quality: Quality,
@@ -180,6 +198,12 @@ impl Default for LightingSettings {
             ambient_on: true,
             ambient: 0.25,
             background_lit: 1.0,
+            bounce: 0.0,
+            glow_reach: 2000.0,
+            light_blooms: 0.0,
+            haze: 0.0,
+            haze_colour: Color::WHITE,
+            haze_dims: 0.0,
             shadow_style: ShadowStyle::Soft,
             shadow_softness: 1.0,
             shadow_length: 2400.0,
@@ -201,14 +225,21 @@ impl Default for LightingSettings {
 }
 
 impl LightingSettings {
-    /// The card as the renderer reads it.
+    /// The card as the renderer reads it (the background's own light is the scene settings',
+    /// filled in by the scene's draw).
     pub fn gpu(&self) -> LightingGpu {
         let a = self.ambient_colour.to_linear();
         let ambient = if self.ambient_on { self.ambient } else { 0.0 };
+        let h = self.haze_colour.to_linear();
+        let finite = |v: f32| if v.is_finite() { v } else { 0.0 };
+        let haze = finite(self.haze);
         LightingGpu {
             ambient: [a[0] * ambient, a[1] * ambient, a[2] * ambient, self.background_lit],
             shadows: [self.shadow_style.code(), self.shadow_softness, self.shadow_length, self.contact],
             more: [self.contact_reach, self.toon_steps.max(1) as f32, self.quality.code(), 0.0],
+            glow: [finite(self.bounce), finite(self.glow_reach).max(0.0), finite(self.light_blooms), 0.0],
+            air: [h[0] * haze, h[1] * haze, h[2] * haze, if haze != 0.0 { finite(self.haze_dims) } else { 0.0 }],
+            background: [[0.0; 4]; 2],
         }
     }
 }

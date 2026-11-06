@@ -161,6 +161,10 @@ pub struct LayerGpu {
     /// How the layer takes the scene's lights (read only when the scene is lit): its Lit (0 as
     /// today, 1 fully lit), how much it blocks light, and on a ball's body record its Bulge.
     pub light: [f32; 4],
+    /// The light it gives off (its Gives off light sub-layers, read only in the emission pass):
+    /// `[0]` own colour times strength (rgb, linear) and the flare on hits (w); `[1]` what its own
+    /// colours are multiplied by (rgb) and the flare's length in seconds (w). All 0 gives none.
+    pub emit: [[f32; 4]; 2],
 }
 
 impl LayerGpu {
@@ -184,6 +188,7 @@ impl LayerGpu {
         },
         extra: [[0.0; 4]; 4],
         light: [0.0; 4],
+        emit: [[0.0; 4]; 2],
     };
     pub const BODY: u32 = 0;
     pub const PATTERN: u32 = 1;
@@ -491,6 +496,9 @@ pub struct TrailVertex {
     pub style: [f32; 2],
     /// Its layer's Lit and how much it blocks light (read only when the scene is lit).
     pub light: [f32; 2],
+    /// The light it gives off, straight linear rgb at full cover (read only in the emission
+    /// pass); w spare.
+    pub emit: [f32; 4],
 }
 
 /// How a streak's edges look: its own, a soft glow, or only a band along its edge.
@@ -624,6 +632,7 @@ fn strip(
             color: color_at(i),
             style: [softness, band],
             light: [0.0; 2],
+            emit: [0.0; 4],
         }
     };
     for i in 0..n - 1 {
@@ -653,6 +662,9 @@ pub struct Particle {
     pub shape: [u32; 4],
     /// Its layer's Lit and how much it blocks light (read only when the scene is lit); two spare.
     pub light: [f32; 4],
+    /// The light it gives off, straight linear rgb at full cover (read only in the emission
+    /// pass); w spare.
+    pub emit: [f32; 4],
 }
 
 impl Particle {
@@ -665,6 +677,7 @@ impl Particle {
             style: [size, 1.0, 0.0, 0.0],
             shape: [shape, 0, 0, 0],
             light: [0.0; 4],
+            emit: [0.0; 4],
         }
     }
 
@@ -847,11 +860,21 @@ pub struct LightGpu {
     /// How far short of the lamp shadows stop, the sun's size (tan of its radius), area shape (0
     /// rectangle, 1 disc), the light's own shadow softness.
     pub p6: [f32; 4],
+    /// How much its light shows in the scene's haze (Beam in haze); three spare.
+    pub p7: [f32; 4],
 }
 
 impl LightGpu {
-    pub const ZERO: LightGpu =
-        LightGpu { p0: [0.0; 4], p1: [0.0; 4], p2: [0.0; 4], p3: [0.0; 4], p4: [0.0; 4], p5: [0.0; 4], p6: [0.0; 4] };
+    pub const ZERO: LightGpu = LightGpu {
+        p0: [0.0; 4],
+        p1: [0.0; 4],
+        p2: [0.0; 4],
+        p3: [0.0; 4],
+        p4: [0.0; 4],
+        p5: [0.0; 4],
+        p6: [0.0; 4],
+        p7: [0.0; 4],
+    };
 }
 
 /// The scene's Lighting card as the renderer reads it.
@@ -863,6 +886,20 @@ pub struct LightingGpu {
     pub shadows: [f32; 4],
     /// Contact reach, toon steps, quality (0 draft .. 3 ultra), spare.
     pub more: [f32; 4],
+    /// Bounce light, glow reach (world units), Light blooms, spare.
+    pub glow: [f32; 4],
+    /// The haze: its colour times its amount (linear rgb), how much it dims what is behind it.
+    pub air: [f32; 4],
+    /// The background's own light (Gives off light): `[0]` own colour times strength, `[1]` what
+    /// the background's colours are multiplied by (rgb, linear; w spare).
+    pub background: [[f32; 4]; 2],
+}
+
+impl LightingGpu {
+    /// Whether the background gives off any light.
+    pub fn background_glows(&self) -> bool {
+        self.background.iter().any(|e| e[..3].iter().any(|c| *c != 0.0))
+    }
 }
 
 /// A lit frame's lights: the Lighting card's settings, every light, and the segments strip
@@ -874,6 +911,9 @@ pub struct LightScene {
     pub segments: Vec<[f32; 4]>,
     /// What the light pass shows: the lit picture, or (the editor's views) the light alone.
     pub show: LightShow,
+    /// Whether any thing drawn gives off light (a shown Gives off light sub-layer): the frame is
+    /// then drawn once more as the light things give off, for the light field.
+    pub glows: bool,
 }
 
 /// What a lit frame shows. Only the editor sets anything but the picture.
@@ -1170,6 +1210,17 @@ impl Frame {
             || self.layered.iter().any(|l| is(l.misc[1]))
             || self.shapes.iter().any(|s| is(s.c[3]))
             || self.paths.iter().any(|p| is(p.c[0]))
+    }
+
+    /// Whether anything it (or a layer or its overlay) draws gives off light: a layer record, a
+    /// trail vertex or a particle with an emission.
+    pub fn gives_light(&self) -> bool {
+        let on = |e: &[f32; 4]| e[..3].iter().any(|c| *c != 0.0);
+        self.look_layers.iter().any(|r| r.emit.iter().any(on))
+            || self.trails.iter().chain(&self.trails_front).any(|v| on(&v.emit))
+            || self.particles.iter().chain(&self.particles_front).any(|p| on(&p.emit))
+            || self.layers.iter().any(|l| l.frame.gives_light())
+            || self.overlay.as_deref().is_some_and(Frame::gives_light)
     }
 
     /// Whether none of the lists the picture is drawn from has anything in them.
@@ -1633,6 +1684,7 @@ pub fn build_frame_with(
             let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, tree: scene };
             d.light(&cx, &mut lit);
         }
+        lit.glows = frame.gives_light();
         frame.light = Some(lit);
     }
     frame.sort_layers();
@@ -1751,7 +1803,7 @@ mod tests {
     #[test]
     fn layer_records_and_layered_instances_fit_the_gpu() {
         assert_eq!(std::mem::size_of::<LayerGpu>() % 16, 0);
-        assert_eq!(std::mem::size_of::<LayerGpu>(), 208, "as layers.wgsl lays it out");
+        assert_eq!(std::mem::size_of::<LayerGpu>(), 240, "as layers.wgsl lays it out");
         assert!(std::mem::size_of::<LayeredInstance>() <= 160);
         assert_eq!(std::mem::size_of::<LayeredInstance>() % 16, 0);
         let mut f = Frame::default();
