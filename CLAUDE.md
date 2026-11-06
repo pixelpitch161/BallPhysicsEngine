@@ -263,6 +263,23 @@ CPU `paint::Inputs.hit_age` (filled by `BallInputs`/`WallInputs`) runs it in `co
 particles and lights have no hit, so no wave. The Move tab folds each move (`widgets::group_heading`, open state under
 the bar's id); one-colour gradients still show no tabs.
 
+Part 4 is in (plan `part4.md`, editor only): the **big editor** (`gradient_editor.rs`), a window opened by the
+"Editor" button beside a main gradient row's bar (`gradient_bar_named(.., big)`; drawn by `gradient_tabs::tab_rows`,
+so it lives while its row is drawn): a wide bar (`gradient_bar::bar_in`: its widgets under `bar.with("big")`, the
+selected stop under the row's `bar`, so both select the same stop), Mix chips and Loop, the tools, a table of stops
+(row, colour, hex, at, gap blend menu, gap middle, Remove) with Add colour (`gradient_tools::add_colour`), and
+painted previews on a ball and a ring of 12 by Order; controls are named "{label} editor …". The **tools**
+(`gradient_tools.rs`, a "Tools" row ending the Colours tab and in the window): Flip (`flipped`: `1 − at`, wrapped
+when looped, each new gap the old gap before it mirrored, Ease in ↔ Ease out, middle `1 − m`; exact for middles at
+0.5, an involution; its order vector permutes any `ValueType::Points` companion through `points_after_flip`),
+Spread evenly, Random (`recoloured`: new `palette_gen` colours, places/gaps/alpha kept) and **Pick from picture**
+(`eyedropper.rs`: `start`/`stop`/`target`/`deliver`/`take`, state in egui memory; `preview::pick_colour` turns the
+preview into an eyedropper, a click reads `Renderer::read_output` and delivers `pixel_at`, Esc or right-click stops,
+nothing else in the preview reacts; `tab_rows` puts the colour on the selected stop keeping its alpha; a colour
+untaken after `STALE_PASSES` is dropped). A main gradient row's menu has **Copy gradient with its settings**
+(`widgets::copy_with`, `Copied.extras` by companion name); Paste Value then also writes each carried companion the
+target offers (`companions_pasted`).
+
 ## Crate map
 
 Dependencies go bottom to top:
