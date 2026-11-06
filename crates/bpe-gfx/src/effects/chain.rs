@@ -192,6 +192,8 @@ impl Chain {
             label: Some("effect sampler"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            // Lens Softness between two levels mixes them (the other pictures have one level).
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
         let black = make_texture(device, 1, 1, HDR_FORMAT, "effect black").1;
@@ -561,14 +563,20 @@ pub(crate) fn fx_balls(frame: &Frame) -> Vec<FxBall> {
     let (w, h) = (frame.width.max(1) as f32, frame.height.max(1) as f32);
     // Balls well off the picture are left out: effects walk the list at every pixel.
     let half = (0.5 + ON_SCREEN_MARGIN * h / w, 0.5 + ON_SCREEN_MARGIN);
+    // Through a moved Stage camera the balls are where it shows them.
+    let stage = frame.stage_view().filter(|v| v.motion > 0.0);
     marks
-        .map(|m| {
-            let at = frame.camera.to_screen(glam::Vec2::from(m.center));
-            let radius = m.radius * frame.camera.zoom / h;
-            FxBall {
+        .filter_map(|m| {
+            let centre = glam::Vec2::from(m.center);
+            let (at, scale) = match &stage {
+                Some(s) => (s.screen_of(centre)?, s.scale_at(centre)?),
+                None => (frame.camera.to_screen(centre), frame.camera.zoom),
+            };
+            let radius = m.radius * scale / h;
+            Some(FxBall {
                 at: [at.x / w + 0.5, at.y / h + 0.5, radius, m.seed],
                 colour: [m.color[0], m.color[1], m.color[2], m.hit_age],
-            }
+            })
         })
         .filter(|b| {
             let (x, y, r) = (b.at[0] - 0.5, b.at[1] - 0.5, b.at[2]);

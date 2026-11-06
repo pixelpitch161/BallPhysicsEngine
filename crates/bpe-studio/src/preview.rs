@@ -192,7 +192,7 @@ impl View {
 
     /// Screen points per world pixel.
     pub fn world_scale(&self) -> f32 {
-        self.scale * self.camera.zoom
+        self.scale * self.camera.zoom * self.stage.map_or(1.0, |s| s.fill)
     }
 
     /// The view `id` is seen through. A thing stuck to the screen sits on the picture, where
@@ -591,15 +591,8 @@ fn draw_picture(
         // The World view looks through its own camera at a picture the panel's shape, and
         // things stuck to the screen belong to the video, not the world, so they are left out.
         // Blend layers move with the frame.
-        if let Some((camera, (w, h))) = look {
-            frame.set_view(camera, (w, h));
-            // The World view looks at the world itself, never through the Stage camera.
-            if let Some(light) = frame.light.as_mut() {
-                light.camera = None;
-            }
-            frame.overlay = None;
-            // The grade belongs to the finished video, not to the world seen through a camera.
-            frame.grade = Default::default();
+        if let Some((camera, size)) = look {
+            world_look(frame, camera, size);
         }
         show_light(frame, studio.light_show);
         if look.is_none() {
@@ -610,6 +603,18 @@ fn draw_picture(
         *drawn = Some(now);
     }
     catching_up
+}
+
+/// Makes `frame` the World view's: seen through `camera` at `size`, without what is stuck to the
+/// screen, the grade (it belongs to the finished video) or the Stage camera (the World view looks
+/// at the world itself).
+pub(crate) fn world_look(frame: &mut Frame, camera: CameraView, size: (u32, u32)) {
+    frame.set_view(camera, size);
+    frame.overlay = None;
+    frame.grade = Default::default();
+    if let Some(light) = frame.light.as_mut() {
+        light.camera = None;
+    }
 }
 
 /// Sets what a lit frame shows. Showing the light alone also leaves out the picture effects,
@@ -1553,7 +1558,7 @@ mod tests {
             CameraView { center: Vec2::new(500.0, 800.0), zoom: 3.0, turn: 0.6 },
             CameraView { center: Vec2::new(500.0, 800.0), zoom: 0.05, turn: 0.6 },
         ] {
-            let view = View { rect, scale: 0.25, camera, world: false };
+            let view = View { rect, scale: 0.25, camera, world: false, stage: None };
             let at = view.to_screen(Vec2::new(520.0, 790.0));
             // Zoomed far out, the launch arrow's tip sits on the ball too: either grabs it.
             assert_eq!(hit_test(&studio, &view, at).map(Handle::thing), Some(ThingId(2)), "{camera:?}");

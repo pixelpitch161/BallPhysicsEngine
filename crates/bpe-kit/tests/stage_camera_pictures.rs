@@ -178,3 +178,31 @@ fn wild_settings_still_draw_a_picture() {
     set_camera(&mut scene, "lens", Value::Number(1e9));
     let _ = draw(&mut gpu, &scene, "wild-long");
 }
+
+/// The stage demo with the lens effects on and the camera swinging round it, saved where
+/// `BPE_CAMERA_DEMO` says (for the progress video; the program has no example scenes).
+#[test]
+fn write_the_camera_demo_scene() {
+    let Some(path) = std::env::var_os("BPE_CAMERA_DEMO") else { return };
+    let reg = reg();
+    let mut scene = stage();
+    for kind in ["picture.lens_streaks", "picture.lens_flare", "picture.fringes"] {
+        if !scene.things[&ThingId::ROOT].slots.contains_key(&SlotId::Shader) {
+            scene.add_slot(&reg, ThingId::ROOT, SlotId::Shader, "effects").unwrap();
+        }
+        let id = scene.add_layer(&reg, ThingId::ROOT, SlotId::Shader, kind).unwrap();
+        if kind == "picture.lens_flare" {
+            let card = scene.things.get_mut(&ThingId::ROOT).unwrap().slots.get_mut(&SlotId::Shader).unwrap();
+            card.params.set(&bpe_core::layered_key(id, "threshold"), Value::Number(0.8));
+        }
+    }
+    let camera = bpe_kit::ensure_camera(&mut scene, &reg);
+    let key = |key: &str| bpe_core::Address { thing: camera, slot: None, key: key.into() };
+    for (t, orbit, tilt, height) in [(0.0, -28.0, 14.0, 0.0), (4.0, 0.0, -4.0, 200.0), (8.0, 28.0, 14.0, 0.0)] {
+        scene.set_key(&reg, &key("orbit"), t, Value::Number(orbit)).unwrap();
+        scene.set_key(&reg, &key("tilt"), t, Value::Number(tilt)).unwrap();
+        scene.set_key(&reg, &key("stage_height"), t, Value::Number(height)).unwrap();
+    }
+    scene.things.get_mut(&camera).unwrap().params.set("lens", Value::Number(28.0));
+    std::fs::write(path, bpe_core::save::save(&scene)).unwrap();
+}

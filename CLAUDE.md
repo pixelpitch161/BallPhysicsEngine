@@ -168,8 +168,13 @@ the lit front picture (`stage_camera_pass.rs`, `shaders/stage_camera.wgsl` paste
 three bind groups through `Lighting::layouts`/`bound`): the background drawn alone tells the bare wall from things,
 a pull–push fills the wall in under them, and each ray finds a ball (the sphere grid), a shape (the field extruded),
 the wall or floor, and the flat things on the picture plane; every hit is coloured where the rest camera saw it
-(`cam_rest_uv`), five rays a pixel at edges (one in Draft). Picture effects then see the moved picture, its unlit
-picture and lit colour. With no move (`motion` 0) the pass is skipped and the picture is the front one exactly. The
+(`cam_rest_uv`); a first look of one ray a pixel (`fs_cam_view`, a code of what it hit in alpha) is followed by
+four more rays where a neighbour hit something else (`fs_cam_edges`, not in Draft). Shapes come from the slab
+(stepped by the field, the outline found exactly in the full-size surface picture, `cam_blocks`), balls from the
+sphere grid. Picture effects then see the moved picture, its unlit picture and lit colour, the object picture seen
+again (`see_objects`) and the ball list through the camera (`fx_balls`, `StageView::scale_at`); things stuck to the
+screen are drawn after the move (`Renderer::draw_overlay`), unlit. With no move (`motion` 0) the pass is skipped
+and the picture is the front one exactly. The
 editor's `View.stage` (from `Studio.stage_view`, set when the shot is drawn; the World view clears it) maps the
 pointer and handles through the moved camera. Tests: `bpe-gfx/src/lens_tests.rs`, `bpe-kit/tests/stage_camera_pictures.rs`.
 

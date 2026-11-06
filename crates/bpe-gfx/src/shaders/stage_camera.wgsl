@@ -31,6 +31,11 @@ struct CamGpu {
 @group(3) @binding(2) var cam_b: texture_2d<f32>;
 @group(3) @binding(3) var cam_c: texture_2d<f32>;
 @group(3) @binding(4) var cam_d: texture_2d<f32>;
+// Edges: what the first look saw at each pixel (its colour, and a code for what it hit).
+@group(3) @binding(5) var cam_first: texture_2d<f32>;
+// Objects: where each pixel read the front picture, and the front object picture.
+@group(3) @binding(6) var cam_uv: texture_2d<f32>;
+@group(3) @binding(7) var cam_objects: texture_2d<f32>;
 
 // Under this share of things a front pixel counts as the bare wall or floor.
 const CAM_BARE: f32 = 0.02;
@@ -51,6 +56,17 @@ fn cam_things(uv: vec2<f32>) -> f32 {
     let differs = cam_max3(abs(unlit - back)) / max(cam_max3(max(abs(unlit), abs(back))), 1e-3);
     let cover = textureSampleLevel(surface, samp, uv, 0.0).a;
     return clamp(max(differs, cover), 0.0, 1.0);
+}
+
+// How much of the front picture at `uv` lies flat on the picture plane. Shapes standing out of
+// the wall less deep than it (their front behind the plane) come from the slab alone, so their
+// faces don't ride the plane apart from their sides.
+fn cam_sheet(uv: vec2<f32>) -> f32 {
+    let shallow = st.room.z < -1e-3 && st.room.z > -st.room.y + 1e-3;
+    if shallow && textureSampleLevel(surface, samp, uv, 0.0).r >= 0.5 {
+        return 0.0;
+    }
+    return cam_things(uv);
 }
 
 @fragment
@@ -170,18 +186,22 @@ fn cam_spheres(r: CamRay, best: CamHit) -> CamHit {
         next.y = (edge - r.o.y) / r.d.y;
         delta.y = cell / abs(r.d.y);
     }
-    let dd = dot(r.d, r.d);
+    // Measured from where the ray enters the band, along a unit direction, so a camera far away
+    // (a long lens) keeps the balls' edges exact.
+    let len = max(length(r.d), 1e-30);
+    let dn = r.d / len;
+    let base = r.o + r.d * s0;
     for (var i = 0; i < CAM_MOST_CELLS; i++) {
         let range = cells[c.y * size.x + c.x];
         for (var k = 0u; k < min(range.y, MOST_IN_CELL); k++) {
             let index = items[range.x + k];
             let sp = spheres[index];
-            let oc = r.o - vec3<f32>(sp.a.xy, 0.0);
-            let b = dot(oc, r.d);
-            let cc = dot(oc, oc) - sp.a.z * sp.a.z;
-            let disc = b * b - dd * cc;
+            let oc = base - vec3<f32>(sp.a.xy, 0.0);
+            let b = dot(oc, dn);
+            let f = oc - b * dn;
+            let disc = sp.a.z * sp.a.z - dot(f, f);
             if disc >= 0.0 {
-                let t = (-b - sqrt(disc)) / dd;
+                let t = s0 + (-b - sqrt(disc)) / len;
                 if t > 0.0 && t < out.t {
                     out = CamHit(t, 1u, index, r.o + r.d * t);
                 }
@@ -234,7 +254,7 @@ fn cam_slab(r: CamRay, best: CamHit) -> CamHit {
     let px = u.view.z;
     let flat = max(length(r.d.xy), 1e-9);
     // The field is a few texels rough: step short of it by that much, but at least 1.5 px.
-    let margin = 1.5 * max(u.field.y, px);
+    let margin = 1.5 * max(u.field.z, px);
     let least = 1.5 * px / max(length(r.d), 1e-9);
     var before = t;
     for (var i = 0; i < CAM_SLAB_STEPS; i++) {
@@ -351,7 +371,7 @@ fn cam_see(s: vec2<f32>) -> CamSeen {
         let t0 = -r.o.z / r.d.z;
         if t0 > 0.0 && t0 <= h.t {
             let uv0 = world_to_uv((r.o + r.d * t0).xy);
-            let a = cam_things(uv0);
+            let a = cam_sheet(uv0);
             if a > 0.0 {
                 // The flat things there over what is behind them: in the front view what is behind is
                 // the wall at the same pixel, so this is the lit picture exactly.
@@ -368,35 +388,66 @@ fn cam_see(s: vec2<f32>) -> CamSeen {
 }
 
 struct CamOut {
-    @location(0) picture: vec4<f32>,
+    @location(0) first: vec4<f32>,
     @location(1) unlit: vec4<f32>,
     @location(2) lit: vec4<f32>,
+    @location(3) uv: vec4<f32>,
 };
 
+// A number for what a ray hit, kept in a half float's alpha: the kind, and a hash of the ball.
+fn cam_code(what: u32) -> f32 {
+    return f32(what / 65536u) + 0.1 + 0.8 * fract(f32(what % 65536u) * 0.61803398875);
+}
+
+// The first look: one ray a pixel. Its colour and what it hit, the picture before lighting and
+// the lit colour where it read the front picture, and that place.
 @fragment
 fn fs_cam_view(in: FsIn) -> CamOut {
     let s = (in.uv - 0.5) * cam.size.xy;
-    let pixel = cam.size.xy / max(cam.size.zw, vec2<f32>(1.0));
     let mid = cam_see(s);
-    var colour = mid.colour;
-    if cam.down.w > 1.5 {
-        // Where the pixel's corners see something else, it takes the mean of its middle and corners.
-        var corners = array<vec2<f32>, 4>(
-            vec2<f32>(-0.375, -0.125), vec2<f32>(0.125, -0.375), vec2<f32>(0.375, 0.125), vec2<f32>(-0.125, 0.375));
-        var sum = mid.colour;
-        var edge = false;
-        for (var i = 0; i < 4; i++) {
-            let c = cam_see(s + corners[i] * pixel);
-            sum += c.colour;
-            edge = edge || c.what != mid.what;
-        }
-        if edge {
-            colour = sum / 5.0;
-        }
-    }
     var out: CamOut;
-    out.picture = vec4<f32>(clamp(colour, vec3<f32>(0.0), vec3<f32>(6.0e4)), 1.0);
+    out.first = vec4<f32>(clamp(mid.colour, vec3<f32>(0.0), vec3<f32>(6.0e4)), cam_code(mid.what));
     out.unlit = textureSampleLevel(picture, samp, mid.uv, 0.0);
     out.lit = textureSampleLevel(cam_d, samp, mid.uv, 0.0);
+    out.uv = vec4<f32>(mid.uv, 0.0, 1.0);
     return out;
+}
+
+// The picture: where a pixel's neighbours hit something else, the mean of its middle and four
+// corners (better qualities); elsewhere the first look as it is.
+@fragment
+fn fs_cam_edges(in: FsIn) -> @location(0) vec4<f32> {
+    let ip = vec2<i32>(in.pos.xy);
+    let most = vec2<i32>(textureDimensions(cam_first)) - 1;
+    let here = textureLoad(cam_first, ip, 0);
+    if cam.down.w < 1.5 {
+        return vec4<f32>(here.rgb, 1.0);
+    }
+    var edge = false;
+    let near = array<vec2<i32>, 4>(vec2<i32>(1, 0), vec2<i32>(-1, 0), vec2<i32>(0, 1), vec2<i32>(0, -1));
+    for (var i = 0; i < 4; i++) {
+        let other = textureLoad(cam_first, clamp(ip + near[i], vec2<i32>(0), most), 0).a;
+        edge = edge || abs(other - here.a) > 0.002;
+    }
+    if !edge {
+        return vec4<f32>(here.rgb, 1.0);
+    }
+    let s = (in.uv - 0.5) * cam.size.xy;
+    let pixel = cam.size.xy / max(cam.size.zw, vec2<f32>(1.0));
+    let corners = array<vec2<f32>, 4>(
+        vec2<f32>(-0.375, -0.125), vec2<f32>(0.125, -0.375), vec2<f32>(0.375, 0.125), vec2<f32>(-0.125, 0.375));
+    var sum = here.rgb;
+    for (var i = 0; i < 4; i++) {
+        sum += cam_see(s + corners[i] * pixel).colour;
+    }
+    return vec4<f32>(clamp(sum / 5.0, vec3<f32>(0.0), vec3<f32>(6.0e4)), 1.0);
+}
+
+// The object picture as the moved camera sees it: each pixel takes the front one it read.
+@fragment
+fn fs_cam_objects(in: FsIn) -> @location(0) vec4<f32> {
+    let uv = textureLoad(cam_uv, vec2<i32>(in.pos.xy), 0).xy;
+    let size = vec2<i32>(textureDimensions(cam_objects));
+    let at = clamp(vec2<i32>(floor(uv * vec2<f32>(size))), vec2<i32>(0), size - 1);
+    return textureLoad(cam_objects, at, 0);
 }

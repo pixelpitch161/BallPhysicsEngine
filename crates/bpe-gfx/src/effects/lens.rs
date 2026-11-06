@@ -46,7 +46,7 @@ impl RaySettings {
 /// passes reach about four lengths (where it has faded under 2%). A length under a texel is one
 /// pass with no tail.
 pub fn ray_passes(length: f32) -> (f32, u32) {
-    if !(length > 1e-3) || !length.is_finite() {
+    if length.is_nan() || length <= 1e-3 || !length.is_finite() {
         return (0.0, 1);
     }
     let a = (-1.0 / length).exp();
@@ -304,6 +304,13 @@ impl LensPass {
             pass.set_bind_group(0, bind, &[]);
             pass.draw(0..3, 0..1);
         };
+        // Without soft levels of its own, an effect's code still reads black ones, never the
+        // last effect's.
+        if !soft {
+            for level in &p.soft_levels[1..] {
+                drop(crate::begin_pass(encoder, level, "lens soft clear", wgpu::LoadOp::Clear(wgpu::Color::BLACK)));
+            }
+        }
         for (level, u) in softs {
             let g = group(u, &p.soft_levels[level - 1]);
             draw(encoder, &p.soft_levels[level], wgpu::LoadOp::Clear(wgpu::Color::BLACK), &self.soft_down, &g);

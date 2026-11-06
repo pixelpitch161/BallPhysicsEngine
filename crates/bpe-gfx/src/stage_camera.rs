@@ -183,7 +183,7 @@ impl StageView {
     pub fn screen_of(&self, p: Vec2) -> Option<Vec2> {
         let v = p.extend(0.0) - self.origin;
         let t = v.dot(self.forward) / self.dist;
-        if !(t > 1e-6) {
+        if t.is_nan() || t <= 1e-6 {
             return None;
         }
         let k = self.zoom() * self.fill;
@@ -191,6 +191,12 @@ impl StageView {
             k * (v.dot(self.right) / t - self.shift.dot(self.right)),
             k * (v.dot(self.down) / t - self.shift.dot(self.down)),
         ))
+    }
+
+    /// Screen units per world unit at picture-plane point `p`: how big a ball there shows.
+    pub fn scale_at(&self, p: Vec2) -> Option<f32> {
+        let t = (p.extend(0.0) - self.origin).dot(self.forward) / self.dist;
+        (t > 1e-6).then(|| self.zoom() * self.fill / t)
     }
 
     /// The front picture's uv (0..1, y down) where the rest camera saw world point `x`.

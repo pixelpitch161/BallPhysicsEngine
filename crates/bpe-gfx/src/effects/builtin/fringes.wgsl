@@ -15,7 +15,8 @@ fn effect(uv: vec2<f32>, p: Params) -> vec3<f32> {
         return sample(uv);
     }
     let way = q / r;
-    let split = p.amount * pow(min(r / 0.5, 16.0), max(p.falloff, 0.0)) * (1.0 + p.beat * kick(6.0));
+    // Held to a few pictures across, so wild settings still look up real places.
+    let split = clamp(p.amount * pow(min(r / 0.5, 16.0), max(p.falloff, 0.0)) * (1.0 + p.beat * kick(6.0)), -4.0, 4.0);
     let n = max(i32(clamp(p.samples, 1.0, 64.0)), 1);
     var sum = vec3<f32>(0.0);
     var weight = vec3<f32>(0.0);
