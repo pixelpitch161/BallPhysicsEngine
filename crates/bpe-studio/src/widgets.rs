@@ -151,7 +151,17 @@ pub struct GridOutcome {
 
 /// `electric_piano` to "Electric piano".
 pub fn pretty(name: &str) -> String {
-    let text = name.replace('_', " ");
+    let mut text = name.replace('_', " ");
+    // "flat2 d" (a choice named Flat2D) reads "flat 2D".
+    for dims in ["2", "3"] {
+        let split = format!("{dims} d");
+        if let Some(at) = text.find(&split)
+            && text[at + split.len()..].chars().next().is_none_or(|c| c == ' ')
+        {
+            let space = if at > 0 && !text[..at].ends_with(' ') { " " } else { "" };
+            text.replace_range(at..at + split.len(), &format!("{space}{dims}D"));
+        }
+    }
     let mut chars = text.chars();
     chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
 }
@@ -1376,6 +1386,8 @@ mod tests {
         assert_eq!(pretty("electric_piano"), "Electric piano");
         assert_eq!(pretty("box"), "Box");
         assert_eq!(pretty(""), "");
+        assert_eq!(pretty("flat2_d"), "Flat 2D");
+        assert_eq!(pretty("x2_delay"), "X2 delay");
     }
 
     mod bar {
