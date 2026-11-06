@@ -1,8 +1,9 @@
 // Shared by every effect. The effect file is pasted below this, and must define
 //     fn effect(uv: vec2<f32>, p: Params) -> vec3<f32>
 // which returns the colour for the pixel at `uv` (0,0 top left, 1,1 bottom right).
-// `p` holds the values of the settings declared with `// param`, `// simple` and `// color`
-// lines at the top of the file.
+// `p` holds the values of the settings declared with `// param`, `// simple`, `// choice` and
+// `// color` lines at the top of the file. What the effect sees through `sample` is what it
+// takes: the whole picture, the light falling on lit things, or the glow (see `bpe_taken`).
 
 const PI: f32 = 3.14159265;
 const TAU: f32 = 6.28318531;
@@ -42,6 +43,18 @@ struct Fx {
     // Newest hits first: position (uv), seconds since the hit, strength 0 to 1.
     hits: array<vec4<f32>, 16>,
     hit_colors: array<vec4<f32>, 16>,
+    // What the effect takes (0 the whole picture, 1 the light, 2 the glow), the glow's
+    // brightness, the Blend's code (see blend_maths.wgsl), and how many balls the list holds.
+    takes: vec4<f32>,
+    // The beat's phase (0 to 1), the bar's phase, beats per second, and 1 when there is a tempo.
+    beat: vec4<f32>,
+};
+
+// One ball of the frame: its centre (uv), its radius (in screen heights), its random number;
+// its colour (linear) and the seconds since its last hit.
+struct FxBall {
+    at: vec4<f32>,
+    colour: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> fx: Fx;
@@ -49,6 +62,15 @@ struct Fx {
 @group(0) @binding(2) var prev_tex: texture_2d<f32>;
 @group(0) @binding(3) var samp: sampler;
 @group(0) @binding(4) var object_tex: texture_2d<f32>;
+// A lit frame's picture before the light was mixed in, and the lit share of its colour (black
+// on a frame with no Lighting card).
+@group(0) @binding(5) var unlit_tex: texture_2d<f32>;
+@group(0) @binding(6) var lit_tex: texture_2d<f32>;
+@group(0) @binding(7) var<storage, read> fx_balls: array<FxBall>;
+
+// What the effect keeps at this pixel for its next frame (see keep and kept); below 0 when it
+// keeps nothing.
+var<private> bpe_keep: f32 = -1.0;
 
 struct FsIn {
     @builtin(position) pos: vec4<f32>,
@@ -85,14 +107,128 @@ fn bpe_straight(c: vec4<f32>) -> vec3<f32> {
     return c.rgb;
 }
 
-// The picture coming into this effect.
-fn sample(uv: vec2<f32>) -> vec3<f32> {
-    return bpe_straight(textureSampleLevel(src_tex, samp, fold_uv(uv), 0.0));
+// The light at a pixel of a lit picture `c`: `c = unlit + (light - 1) * lit share` (the
+// lighting's mix), so light = 1 + (c - unlit) / share, and 1 where nothing takes light.
+// Where the lit share is a sliver of the picture (a lit ball's soft edge over a bright
+// background) the picture's own rounding swamps it, so the light found there eases to 1.
+fn bpe_light_of(c: vec3<f32>, unlit: vec3<f32>, lit: vec3<f32>) -> vec3<f32> {
+    let w = clamp(lit, vec3<f32>(0.0), max(unlit, vec3<f32>(0.0)));
+    let some = w > vec3<f32>(1e-4);
+    let raw = select(vec3<f32>(1.0), vec3<f32>(1.0) + (c - unlit) / max(w, vec3<f32>(1e-4)), some);
+    let biggest = max(max(unlit.r, unlit.g), max(unlit.b, 1e-4));
+    let trust = smoothstep(vec3<f32>(1.0 / 64.0), vec3<f32>(1.0 / 16.0), w / biggest);
+    return mix(vec3<f32>(1.0), raw, trust);
 }
 
-// This effect's own output from the previous frame, for feedback and echo effects.
+// The lit share of the unlit picture, as the lighting's mix clamps it.
+fn bpe_share(unlit: vec3<f32>, lit: vec3<f32>) -> vec3<f32> {
+    return clamp(lit, vec3<f32>(0.0), max(unlit, vec3<f32>(0.0)));
+}
+
+// What the effect takes from picture colour `c` at `uv`: all of it, its light, or its glow.
+fn bpe_taken(c: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
+    if fx.takes.x < 0.5 {
+        return c;
+    }
+    if fx.takes.x < 1.5 {
+        let at = fold_uv(uv);
+        let unlit = textureSampleLevel(unlit_tex, samp, at, 0.0).rgb;
+        let lit = textureSampleLevel(lit_tex, samp, at, 0.0).rgb;
+        return bpe_light_of(c, unlit, lit);
+    }
+    return max(c - vec3<f32>(fx.takes.y), vec3<f32>(0.0));
+}
+
+// The picture coming into this effect: what it takes of it.
+fn sample(uv: vec2<f32>) -> vec3<f32> {
+    let c = bpe_straight(textureSampleLevel(src_tex, samp, fold_uv(uv), 0.0));
+    if fx.takes.x < 0.5 {
+        return c;
+    }
+    return bpe_taken(c, uv);
+}
+
+// This effect's own output from the previous frame, for feedback and echo effects (of what it
+// takes: the light's for an effect on the light).
 fn prev(uv: vec2<f32>) -> vec3<f32> {
     return bpe_straight(textureSampleLevel(prev_tex, samp, uv, 0.0));
+}
+
+// Keeps `v` (0 or more) at this pixel for the next frame, read back with kept(). On the main
+// picture only; inside a blend layer nothing is kept.
+fn keep(v: f32) {
+    bpe_keep = max(v, 0.0);
+}
+
+// What the effect kept at `uv` last frame (0 on its first frame).
+fn kept(uv: vec2<f32>) -> f32 {
+    if fx.in_layer > 0.5 {
+        return 0.0;
+    }
+    return max(textureSampleLevel(prev_tex, samp, uv, 0.0).a, 0.0);
+}
+
+// How many balls the frame has (its ball list).
+fn ball_count() -> u32 {
+    return u32(fx.takes.w);
+}
+
+// Ball `i`'s centre, in uv.
+fn ball_uv(i: u32) -> vec2<f32> {
+    return fx_balls[i].at.xy;
+}
+
+// Ball `i`'s radius, as a share of the picture's height (as `to_centered` measures).
+fn ball_radius(i: u32) -> f32 {
+    return fx_balls[i].at.z;
+}
+
+// Ball `i`'s random number, 0 to 1, the same in every frame.
+fn ball_seed(i: u32) -> f32 {
+    return fx_balls[i].at.w;
+}
+
+// Ball `i`'s colour, linear light.
+fn ball_color(i: u32) -> vec3<f32> {
+    return fx_balls[i].colour.rgb;
+}
+
+// Seconds since ball `i` last hit something (large when it never has).
+fn ball_hit(i: u32) -> f32 {
+    return fx_balls[i].colour.w;
+}
+
+// The ball nearest `uv`: its index and how far `uv` is from its edge (negative inside), in
+// screen heights. (0, 1e6) when there are no balls.
+fn nearest_ball(uv: vec2<f32>) -> vec2<f32> {
+    let q = to_centered(uv);
+    var best = 1e6;
+    var which = 0u;
+    for (var i = 0u; i < ball_count(); i++) {
+        let d = length(q - to_centered(ball_uv(i))) - ball_radius(i);
+        if d < best {
+            best = d;
+            which = i;
+        }
+    }
+    return vec2<f32>(f32(which), best);
+}
+
+// The beat's phase, 0 at each beat to 1 just before the next (0 with no tempo).
+fn beat_phase() -> f32 {
+    return fx.beat.x;
+}
+
+// The bar's phase, 0 at each bar's first beat.
+fn bar_phase() -> f32 {
+    return fx.beat.y;
+}
+
+// 1 on each beat, falling away before the next (`sharp` how fast), or the hits' pulse when it
+// is stronger.
+fn kick(sharp: f32) -> f32 {
+    let on_beat = select(0.0, exp(-fx.beat.x * max(sharp, 0.0)), fx.beat.w > 0.5);
+    return max(on_beat, fx.pulse);
 }
 
 fn aspect() -> f32 {

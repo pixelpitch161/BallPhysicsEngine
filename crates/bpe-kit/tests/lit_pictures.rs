@@ -524,3 +524,24 @@ fn a_shine_keeps_its_white_on_a_ball_in_the_dark() {
     assert!(brightness(middle_low) < 60, "the body in the dark: {middle_low:?}");
     let _ = reddest;
 }
+
+/// Writes the effects demo's scenes (lighting part 8's review video) into the folder
+/// `BPE_EFFECTS_DEMO`, one file a look, when set.
+#[test]
+fn write_the_effects_demo_scenes() {
+    let Some(dir) = std::env::var_os("BPE_EFFECTS_DEMO") else { return };
+    let reg = reg();
+    for (i, look) in scenes::EFFECTS_DEMOS.iter().enumerate() {
+        let path = std::path::Path::new(&dir).join(format!("{i:02}-{look}.json"));
+        std::fs::write(path, bpe_core::save::save(&scenes::effects_demo(&reg, look))).unwrap();
+    }
+}
+
+#[test]
+fn every_effects_demo_look_builds() {
+    let reg = reg();
+    for look in scenes::EFFECTS_DEMOS {
+        let scene = scenes::effects_demo(&reg, look);
+        assert!(scene.name.ends_with(look));
+    }
+}

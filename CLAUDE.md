@@ -74,6 +74,27 @@ lighting; `tests/lit_pictures.rs` checks lit pictures; `scenes::lit_room`/`lit_d
 shows "Lighting: N lights, X ms" (`Renderer::lighting_stats`, GPU timestamps via `timing.rs` when the device has
 `TIMING_FEATURES`, which `bpe-studio/src/main.rs` asks for where the card has them).
 
+Part 2a is in (plan `docs/superpowers/plans/lighting/part2a.md`): **Stage 3D** and **surfaces**. The Lighting card's
+Depth is Flat (1a's picture, pinned by `tests/lit_flat_pinned.rs` tile averages made before 2a) or Stage, with a
+"Stage" section (Back wall, Shape depth, Floor None / At the bottom / Under the lowest shape / At a height, Floor at,
+Looking down, Floor surface Matte / Glossy / Mirror, Floor blur, Reflection, Wall surface) and Sky light/top/bottom in
+Room (`modules/lighting.rs::gpu(lowest_shape)`, `things/scene/draw.rs::lowest_shape`; `LightingGpu.stage/floor/
+floor_more/sky_*`). In Stage each ball is an impostor sphere (`SphereGpu`, pushed by `balls/draw.rs::push_ball_light`,
+emitters too) whose shadows are analytic (`lighting.rs::SphereGrid`, a CPU uniform grid of spheres, group 1 of the light
+pass) and fall back onto a wall at z = −Back wall seen in an oblique view (k = tan Looking down, wall and floor only);
+balls write no 2D blocking in Stage (`LIGHT_BALL`); shapes stand out of the wall (the 2D field extruded,
+`slab_visibility`); `fs_floor` mirrors the picture in a Glossy/Mirror floor (Fresnel, blur growing with distance).
+Every Look card (`look.layers`, `look.shape`) has a **Surface** section (`modules/look/surface.rs`: Surface Matte /
+Plastic / Chrome / Metal / Glass / Toon, each a preset of Roughness, Metal, Clear coat, Bends light (IOR; F0 from it,
+Matte's 1.0 gives no shine so Flat Matte is exactly 1a), See-through, Toon steps, then Reflects and Bulge, which moved
+here from the Body); `surface_index` (1-based among things with such a card) goes in `LayerGpu.light[3]` and the
+surface picture's B channel, and `LightScene.surfaces` holds the `SurfaceGpu` table. The shader (`lighting.wgsl`
+`shade`/`mixed`) is GGX with Karis widening, metal tinting, a clear-coat lobe, Toon bands and a hard spot, sky-gradient
+reflections, and Glass dimming the diffuse with lighter tinted sphere shadows (no refraction yet). The editor shows the
+section as painted chips (`inspector.rs::surface_section`, `style/swatch.rs`) with the numbers folded under them;
+picking a chip writes its preset in the same edit. `scenes::stage_demo` is test-only; `tests/stage_pictures.rs` checks
+the stage pictures.
+
 Part 1c is in: the editor's side. The left panel switches Things / **Lights** / Mixer (`LeftPanel::Lights`,
 `bpe-studio/src/lights_panel/`): the Lighting card's Depth and Quality chips, "+ Point … + Strip" (`light_parent`, shared
 with the tree), and a strip per `LightSource` (`Light`, `Layer` for any layer whose kind is in `GIVES_OFF_LIGHT`
@@ -238,7 +259,7 @@ Dependencies go bottom to top:
   hit) goes on any drawn or around layer and on a Body (the only sub-layer a Body takes); a layer that gives off
   light counts as Lit 0. The scene's background has Gives off light settings (`bg_glow*`).
 - `bpe-kit`: **every plugin**, with one folder per thing kind in `src/things/` (balls, camera, folder, scene, shape)
-  and one per card kind in `src/modules/` (look, motion, bounce, shader). A ball's Look is
+  and one per card kind in `src/modules/` (look, motion, bounce, effects, lighting, light scenes). A ball's Look is
   `look.layers` (`modules/look/layers/`: Body, Pattern, Outline, Shine (its Light is white or its own colours/gradient, `ShineLight`), Glow, Shading, Shader, Blend, the reactions
   Flash on hit, Colour on hit, Stretch when fast, Colour over time, Turning, the sub-layers, and the group layers Gradient
   (`layers/group.rs`: a colour per ball across the group, mixed into the body on the CPU or into every/chosen
@@ -346,6 +367,26 @@ Dependencies go bottom to top:
   Crossfade (`now(cx)` → `ScenesNow::params`); edits renumber Show scene's keys. `LightDraw::light` applies the scene,
   then the rigs. `DrawCx.tree` is the saved `Scene` (tree and tracks). Editor: `light_scenes_panel.rs` under the
   Lighting card's grid (`Edit::LightScene`).
+- **Effects stack** (lighting part 8, plan `docs/superpowers/plans/lighting/part8.md`): the scene's Shader slot
+  holds one card, `effects` (`modules/effects/`), whose layers (section `LayerSection::Effect`) are the effects
+  applied bottom first: `picture.<id>` per built-in (`bpe_gfx::effects::BUILTINS`, 26) and `picture.own` (own
+  code, its settings from its header through `dynamic_defs`, checked by `bpe_gfx::picture_problem`). Each takes
+  Mix (unclamped), Blend, Takes (Whole picture / Light only / Glow only, `TakesChoice`; picture stage only) and Glow
+  above, then the header's own settings under plain keys (at most 6 Simple, `with_simple_room`). `EffectsDraw`
+  pushes one `EffectCall` per shown layer. Old `shader.<id>` cards become a one-layer stack on load
+  (`effects/upgrade.rs`, `add_upgrade(u32::MAX, single_effect_to_stack)`). Header lines gain `hard [a, b]`,
+  `// choice key = default [a, b, c]` and `// memory: <seconds>` / `// memory: fade <key>` (`memory_seconds`:
+  frames until under 1/4096, at most `MAX_MEMORY` 10 s); the prelude gains the ball list (`ball_count`, `ball_uv`,
+  `ball_radius`, `ball_color`, `ball_hit`, `ball_seed`, `nearest_ball`, from `Frame.ball_marks`, pushed by the
+  balls' draw only when the scene has effects), the beat (`fx.beat`, `beat_phase`, `bar_phase`, `kick`, from the
+  scene's tempo, `things::scene::draw::beat_at`) and `keep`/`kept` (a number per pixel in the memory picture).
+  Around layers **Electric arcs** (`layers/arcs.rs`, `layer.arcs`: seeded bolts between balls within Reach, firing
+  always / on hits / on the beat, lighting a lit scene with strip lights through `ThingDraw::light`,
+  `light::draw::push_strip`, at most `MOST_ARC_LIGHTS`) and **Aura field** (`layers/aura.rs`, `layer.aura`:
+  contour lines of the balls' summed field by marching squares). A Light's **Negative** flips its strength
+  (`fs_light` clamps the summed light at 0). The editor's Effects card is `look_editor/effects.rs`; after a jump
+  in time, `preview/warm.rs` replays the effects' remembered seconds on a spare renderer
+  (`Playback::rewound`), 6 frames per editor frame, and swaps it in ("Warming up effects… N%").
 - `bpe-dsp`: sound building blocks at 48 kHz in 64-frame blocks (`SAMPLE_RATE`, `BLOCK`): dB helpers, a
   `Smoother`, `FlushGuard` (denormals off), polyphase IIR halfband oversamplers (2/4/8×), a 4× true-peak detector,
   the two-stage lookahead `TruePeakLimiter` (3.4 ms) and an EBU R128 `LoudnessMeter`. For the synth: `warp.rs` (the

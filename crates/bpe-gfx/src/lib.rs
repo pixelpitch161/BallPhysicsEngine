@@ -38,15 +38,15 @@ mod sub_layers_tests;
 mod util;
 
 pub use frame::{
-    Around, BackgroundPaint, BallInstance, BlendLayer, DrawCx, Draws, EffectCall, FlashInstance, Frame, Grade, HitMark,
-    LayerGpu, LayeredInstance, LightGpu, LightScene, LightShow, LightingGpu, LookInstance, MAX_LAYERS,
-    MOST_TRAIL_VERTICES, ModuleDraw, NO_HIT, Particle, PathInstance, Place, ShapeInstance, Stage, StreakStyle,
-    ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_with, hit_strength, push_streak, push_streak_colours,
-    push_trail, thing_code,
+    Around, BackgroundPaint, BallInstance, BallMark, BlendLayer, DrawCx, Draws, EffectCall, FlashInstance, Frame,
+    Grade, HitMark, LayerGpu, LayeredInstance, LightGpu, LightScene, LightShow, LightingGpu, LookInstance, MAX_LAYERS,
+    MOST_TRAIL_VERTICES, ModuleDraw, NO_HIT, Particle, PathInstance, Place, ShapeInstance, SphereGpu, Stage,
+    StreakStyle, SurfaceGpu, Takes, ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_with, hit_strength,
+    push_streak, push_streak_colours, push_trail, thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, PaintGpu};
 pub use masks::{MASK_TILE, MASK_TILE_BYTES, MAX_MASK_TILES, TILE_DISTANCE_REACH, tile_distance};
-pub use programs::{LayeredRun, LookProgram, ProgramStore, in_ball_problem};
+pub use programs::{LayeredRun, LookProgram, ProgramStore, in_ball_problem, picture_problem};
 pub use wgpu;
 
 use bpe_runtime::CameraView;
@@ -107,7 +107,7 @@ struct Globals {
     /// The colour grade: tint, vignette, vignette size, gradient map amount.
     grade_more: [f32; 4],
     /// Lighting: x the light pass (0 the picture as always, 1 lit colour, 2 surface, 3 the light
-    /// things give off), y how much the background takes light (see lighting.wgsl).
+    /// things give off), y how much the background takes light, z 1 in Stage (see lighting.wgsl).
     light: [f32; 4],
     /// The light the background gives off (read in pass 3): its own colour times its strength,
     /// then what its colours are multiplied by (rgb, linear).
@@ -1108,6 +1108,11 @@ impl Renderer {
         self.programs.lock().errors().map(|(k, e)| (k, e.to_owned())).collect()
     }
 
+    /// Forgets what the effects remember of earlier frames: the next frame starts them afresh.
+    pub fn forget_effect_history(&mut self) {
+        self.chain.forget_history();
+    }
+
     /// Builds in-ball programs in `store` from now on, shared with every renderer using it (on
     /// the same device), and on a background thread if the store says so.
     pub fn share_programs(&mut self, store: &ProgramStore) {
@@ -1288,6 +1293,12 @@ impl Renderer {
             self.draw_all_objects(&mut pass, frame, &layer_buffers, true);
         }
         self.layer_buffers = layer_buffers;
+        // Effects on the light read the picture before lighting and the lit colour.
+        let light_pictures = match (frame.light.as_ref(), self.lighting.as_ref().and_then(|l| l.pictures())) {
+            (Some(_), Some([(_, lit), _, _])) => Some((self.targets.behind_view.clone(), lit)),
+            _ => None,
+        };
+        self.chain.set_light(light_pictures);
         self.chain.run(
             device,
             queue,
@@ -1506,7 +1517,7 @@ impl Renderer {
         }
         let at = 2 * (mode as usize - 1);
         let mut world = Globals::new(frame, &frame.camera, self.targets.width);
-        world.light = [mode as f32, background_lit, scene.background_link, 0.0];
+        world.light = [mode as f32, background_lit, scene.settings.stage[0], scene.background_link];
         world.light_emit = scene.settings.background;
         let mut screen = Globals::new(frame, &CameraView::default(), self.targets.width);
         screen.light = world.light;

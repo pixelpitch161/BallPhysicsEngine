@@ -7,14 +7,20 @@
 //! // name: Kaleidoscope
 //! // about: Mirrors the picture into slices around the centre.
 //! // stage: things
-//! // simple slices = 6 [2, 24] int Number of mirrored slices
+//! // simple slices = 6 [2, 24] hard [1, 1e9] int Number of mirrored slices
 //! // param spin = 0.03 [-1, 1] Turns per second
 //! // param dots = 0 toggle Draw round dots
+//! // choice fold = slices [slices, rings, grid] How the picture folds
 //! // color tint = #ff8000 The tint
+//! // memory: fade keep
 //! ```
 //!
-//! `simple` settings show at the Simple depth, `param` ones at More. A `color` takes three of
-//! the sixteen floats the shader gets. `stage: things` runs the effect before flashes and
+//! `simple` settings show at the Simple depth, `param` ones at More. A number's `[a, b]` is the
+//! slider's usual span: typed or dragged values go past it. `hard [a, b]` is a real limit, for
+//! values that break the maths (each says why in its effect). A `choice` is packed as the index
+//! of the picked name. A `color` takes three of the sixteen floats the shader gets. `memory`
+//! says how long an effect that reads its earlier frames remembers: a number of seconds, or
+//! `fade <key>`, a setting that keeps that share of the picture every 1/60 s. `stage: things` runs the effect before flashes and
 //! particles are drawn (materials do); the default runs it over the finished picture. The
 //! module kinds in `bpe-kit` are generated from these headers, and stage 4's node graphs will
 //! compile to the same file shape.
@@ -30,6 +36,11 @@ pub const MAX_PARAM_FLOATS: usize = 16;
 
 pub const PRELUDE: &str = include_str!("prelude.wgsl");
 
+/// The longest an effect's memory can be, in seconds: what the editor replays after a seek.
+pub const MAX_MEMORY: f32 = 10.0;
+/// How long an effect that reads its earlier frames remembers when its header doesn't say.
+pub const DEFAULT_MEMORY: f32 = 2.0;
+
 /// What an effect file's header says.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Header {
@@ -37,6 +48,18 @@ pub struct Header {
     pub about: String,
     pub stage: Stage,
     pub params: Vec<ParamDef>,
+    pub memory: Memory,
+}
+
+/// How long an effect remembers its earlier frames.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum Memory {
+    /// Its header says nothing: [`DEFAULT_MEMORY`] when it reads `prev(` or `kept(`, else none.
+    #[default]
+    Unsaid,
+    Seconds(f32),
+    /// The setting named keeps this share of the picture every 1/60 s.
+    Fade(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -52,9 +75,17 @@ pub struct ParamDef {
 pub enum ParamKind {
     Number {
         default: f32,
+        /// The slider's usual span.
         min: f32,
         max: f32,
         int: bool,
+        /// A real limit, for values that break the maths.
+        hard: Option<(f32, f32)>,
+    },
+    /// One of `names`, packed as its index.
+    Choice {
+        default: usize,
+        names: &'static [&'static str],
     },
     Toggle {
         default: bool,
@@ -81,12 +112,45 @@ impl Header {
     }
 }
 
-/// Names a setting can't have: the module's own Blend, words WGSL keeps for itself, and the
+/// Names a setting can't have: the module's own Blend (and an own effect's Code), words WGSL keeps for itself, and the
 /// effect's own functions.
 const RESERVED: &[&str] = &[
-    "blend", "target", "active", "move", "fn", "let", "var", "const", "if", "else", "for", "loop", "return", "struct",
-    "true", "false", "break", "continue", "switch", "case", "default", "while", "discard", "override", "enable",
-    "type", "alias", "p", "fx", "uv", "effect", "unpack",
+    "blend",
+    "code",
+    "mix",
+    "takes",
+    "glow_above",
+    "target",
+    "active",
+    "move",
+    "fn",
+    "let",
+    "var",
+    "const",
+    "if",
+    "else",
+    "for",
+    "loop",
+    "return",
+    "struct",
+    "true",
+    "false",
+    "break",
+    "continue",
+    "switch",
+    "case",
+    "default",
+    "while",
+    "discard",
+    "override",
+    "enable",
+    "type",
+    "alias",
+    "p",
+    "fx",
+    "uv",
+    "effect",
+    "unpack",
 ];
 
 /// The leading comment block of an effect: every `//` line before the first line of code.
@@ -101,7 +165,13 @@ pub fn header_lines(wgsl: &str) -> impl Iterator<Item = (usize, &str)> {
 
 /// Reads the header. The source must define `fn effect(`.
 pub fn parse(wgsl: &str) -> Result<Header, String> {
-    let mut header = Header { name: String::new(), about: String::new(), stage: Stage::Picture, params: Vec::new() };
+    let mut header = Header {
+        name: String::new(),
+        about: String::new(),
+        stage: Stage::Picture,
+        params: Vec::new(),
+        memory: Memory::Unsaid,
+    };
     let mut errors = Vec::new();
     for (index, comment) in header_lines(wgsl) {
         let comment = comment.trim();
@@ -129,6 +199,8 @@ pub fn parse(wgsl: &str) -> Result<Header, String> {
             "param" => parse_param(rest, false).map(|p| header.params.push(p)),
             "simple" => parse_param(rest, true).map(|p| header.params.push(p)),
             "color" => parse_color(rest).map(|p| header.params.push(p)),
+            "choice" => parse_choice(rest).map(|p| header.params.push(p)),
+            "memory" => parse_memory(rest).map(|m| header.memory = m),
             _ => continue,
         };
         if let Err(error) = outcome {
@@ -139,6 +211,11 @@ pub fn parse(wgsl: &str) -> Result<Header, String> {
         if header.params[..i].iter().any(|q| q.key == p.key) {
             errors.push(format!("`{}` is declared twice", p.key));
         }
+    }
+    if let Memory::Fade(key) = &header.memory
+        && !header.params.iter().any(|p| &p.key == key && matches!(p.kind, ParamKind::Number { .. }))
+    {
+        errors.push(format!("memory: fade `{key}` names no number setting"));
     }
     if header.floats() > MAX_PARAM_FLOATS {
         errors.push(format!(
@@ -166,7 +243,8 @@ fn parse_key(text: &str) -> Result<(&str, &str), String> {
     Ok((key, rest.trim_start()))
 }
 
-/// `key = default [min, max] [int] help` or `key = 0|1 toggle help`.
+/// `key = default [a, b] [hard [lo, hi]] [int] help` (`[a, b]` the usual span) or
+/// `key = 0|1 toggle help`.
 fn parse_param(text: &str, simple: bool) -> Result<ParamDef, String> {
     let (key, rest) = parse_key(text)?;
     let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
@@ -176,26 +254,131 @@ fn parse_param(text: &str, simple: bool) -> Result<ParamDef, String> {
     let (kind, help) = if let Some(help) = rest.strip_prefix("toggle") {
         (ParamKind::Toggle { default: default != 0.0 }, help)
     } else {
-        let inner = rest.strip_prefix('[').ok_or("expected a range like [0, 1] or the word toggle")?;
-        let (range, after) = inner.split_once(']').ok_or("missing `]`")?;
-        let (lo, hi) = range.split_once(',').ok_or("expected a range like [0, 1]")?;
-        let number = |s: &str| s.trim().parse::<f32>().map_err(|_| format!("`{}` is not a number", s.trim()));
-        let (min, max) = (number(lo)?, number(hi)?);
-        if !min.is_finite() || !max.is_finite() || min >= max {
-            return Err(format!("the range [{min}, {max}] is empty"));
-        }
-        if !(min..=max).contains(&default) {
-            return Err(format!("the default {default} is outside the range [{min}, {max}]"));
-        }
-        let after = after.trim_start();
-        match after.strip_prefix("int") {
-            Some(help) if help.is_empty() || help.starts_with(char::is_whitespace) => {
-                (ParamKind::Number { default, min, max, int: true }, help)
+        let ((min, max), mut after) = parse_pair(rest)?;
+        let (mut hard, mut int) = (None, false);
+        loop {
+            after = after.trim_start();
+            if let Some(more) = word(after, "hard") {
+                let (pair, left) = parse_pair(more.trim_start())?;
+                hard = Some(pair);
+                after = left;
+            } else if let Some(more) = word(after, "int") {
+                int = true;
+                after = more;
+            } else {
+                break;
             }
-            _ => (ParamKind::Number { default, min, max, int: false }, after),
         }
+        if let Some((lo, hi)) = hard
+            && !(lo..=hi).contains(&default)
+        {
+            return Err(format!("the default {default} is outside the hard limit [{lo}, {hi}]"));
+        }
+        (ParamKind::Number { default, min, max, int, hard }, after)
     };
     Ok(ParamDef { key: key.to_owned(), help: help.trim().to_owned(), kind, simple })
+}
+
+/// `text` after the whole word `w` at its start, if it starts with it.
+fn word<'a>(text: &'a str, w: &str) -> Option<&'a str> {
+    text.strip_prefix(w).filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+}
+
+/// `[a, b]` at the start of `text` (a below b, both finite), and what follows it.
+fn parse_pair(text: &str) -> Result<((f32, f32), &str), String> {
+    let inner = text.strip_prefix('[').ok_or("expected a span like [0, 1] or the word toggle")?;
+    let (range, after) = inner.split_once(']').ok_or("missing `]`")?;
+    let (lo, hi) = range.split_once(',').ok_or("expected a span like [0, 1]")?;
+    let number = |s: &str| s.trim().parse::<f32>().map_err(|_| format!("`{}` is not a number", s.trim()));
+    let (min, max) = (number(lo)?, number(hi)?);
+    if !min.is_finite() || !max.is_finite() || min >= max {
+        return Err(format!("the span [{min}, {max}] is empty"));
+    }
+    Ok(((min, max), after))
+}
+
+/// `key = default [a, b, c] help`: a choice of names, `default` one of them.
+fn parse_choice(text: &str) -> Result<ParamDef, String> {
+    let (key, rest) = parse_key(text)?;
+    let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    let default = &rest[..end];
+    let rest = rest[end..].trim_start();
+    let inner = rest.strip_prefix('[').ok_or("expected the names like [one, two]")?;
+    let (list, help) = inner.split_once(']').ok_or("missing `]`")?;
+    let names: Vec<&str> = list.split(',').map(str::trim).collect();
+    let valid = |n: &str| !n.is_empty() && n.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    if names.len() < 2 || !names.iter().all(|n| valid(n)) {
+        return Err("a choice needs two or more names (lower-case letters, digits and _)".to_owned());
+    }
+    let Some(at) = names.iter().position(|n| *n == default) else {
+        return Err(format!("the default `{default}` isn't one of the names"));
+    };
+    let names: &'static [&'static str] = interned_names(&names);
+    Ok(ParamDef {
+        key: key.to_owned(),
+        help: help.trim().to_owned(),
+        kind: ParamKind::Choice { default: at, names },
+        simple: false,
+    })
+}
+
+/// `names` kept for the program's life, each distinct list once (headers are read again and
+/// again as own code is typed).
+fn interned_names(names: &[&str]) -> &'static [&'static str] {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static MADE: OnceLock<Mutex<HashMap<Vec<String>, &'static [&'static str]>>> = OnceLock::new();
+    let key: Vec<String> = names.iter().map(|n| (*n).to_owned()).collect();
+    let mut made = MADE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(found) = made.get(&key) {
+        return found;
+    }
+    let kept: Vec<&'static str> = names.iter().map(|n| &*Box::leak((*n).to_owned().into_boxed_str())).collect();
+    let kept: &'static [&'static str] = Box::leak(kept.into_boxed_slice());
+    made.insert(key, kept);
+    kept
+}
+
+/// `<seconds>` or `fade <key>`.
+fn parse_memory(text: &str) -> Result<Memory, String> {
+    if let Some(key) = word(text, "fade") {
+        return Ok(Memory::Fade(key.trim().to_owned()));
+    }
+    match text.trim().parse::<f32>() {
+        Ok(s) if s.is_finite() && s >= 0.0 => Ok(Memory::Seconds(s.min(MAX_MEMORY))),
+        _ => Err(format!("memory must be a number of seconds or `fade <setting>`, not `{text}`")),
+    }
+}
+
+/// How many seconds an effect with `header`, its settings packed as `params`, remembers: 0 for
+/// one that never reads its earlier frames, at most [`MAX_MEMORY`].
+pub fn memory_seconds(header: &Header, wgsl: &str, params: &[f32; MAX_PARAM_FLOATS]) -> f32 {
+    match &header.memory {
+        Memory::Seconds(s) => s.clamp(0.0, MAX_MEMORY),
+        Memory::Unsaid if needs_history(wgsl) => DEFAULT_MEMORY,
+        Memory::Unsaid => 0.0,
+        Memory::Fade(key) => {
+            let mut at = 0;
+            let mut keep = None;
+            for p in &header.params {
+                if &p.key == key {
+                    keep = Some(params[at]);
+                }
+                at += p.floats();
+            }
+            let keep = keep.unwrap_or(0.0);
+            if keep.is_nan() || keep <= 0.0 {
+                return 0.0;
+            }
+            if keep >= 1.0 {
+                return MAX_MEMORY;
+            }
+            // Frames (of 1/60 s) until what is kept is under 1/4096 of what it was: in linear
+            // light, so that what is left shows as less than one step of the 8-bit picture.
+            let frames = (1.0f32 / 4096.0).ln() / keep.ln();
+            (frames / 60.0).clamp(0.0, MAX_MEMORY)
+        }
+    }
 }
 
 /// `key = #rrggbb help`.
@@ -219,9 +402,9 @@ fn parse_color(text: &str) -> Result<ParamDef, String> {
     })
 }
 
-/// Whether the effect reads its previous frame, which needs a history texture.
+/// Whether the effect reads its previous frame (or what it kept), which needs a history texture.
 pub fn needs_history(wgsl: &str) -> bool {
-    wgsl.contains("prev(")
+    wgsl.contains("prev(") || wgsl.contains("kept(")
 }
 
 /// Whether an effect reads the object picture (which thing is where) itself. Effects on one
@@ -238,6 +421,7 @@ pub fn defaults(header: &Header) -> [f32; MAX_PARAM_FLOATS] {
         match p.kind {
             ParamKind::Number { default, .. } => out[at] = default,
             ParamKind::Toggle { default } => out[at] = default as u8 as f32,
+            ParamKind::Choice { default, .. } => out[at] = default as f32,
             ParamKind::Color { default } => out[at..at + 3].copy_from_slice(&default),
         }
         at += p.floats();
@@ -245,10 +429,29 @@ pub fn defaults(header: &Header) -> [f32; MAX_PARAM_FLOATS] {
     out
 }
 
-/// The whole shader: the prelude, a `Params` struct, the effect file and the entry point.
+/// The blend modes' maths for an effect's Blend, every name starting `bpe_` so an effect's own
+/// names can't clash with them.
+fn blend_maths() -> &'static str {
+    static MADE: OnceLock<String> = OnceLock::new();
+    MADE.get_or_init(|| {
+        let mut text = include_str!("../shaders/blend_maths.wgsl").to_owned();
+        for name in top_level_names(&text) {
+            let bodies = scan(&text).struct_bodies;
+            text = rename_word(&text, &name, &format!("bpe_{name}"), &bodies);
+        }
+        text
+    })
+}
+
+/// The whole shader: the prelude, a `Params` struct, the effect file and the entry point. An
+/// effect that reads its earlier frames writes two pictures: the picture, and its memory (what
+/// `prev` and `kept` read next frame).
 pub fn assemble(wgsl: &str) -> Result<String, String> {
     let header = parse(wgsl)?;
+    let memory = needs_history(wgsl);
     let mut head = String::from(PRELUDE);
+    head.push('\n');
+    head.push_str(blend_maths());
     head.push_str("\nstruct Params {\n");
     for p in &header.params {
         let ty = if matches!(p.kind, ParamKind::Color { .. }) { "vec3<f32>" } else { "f32" };
@@ -275,12 +478,41 @@ pub fn assemble(wgsl: &str) -> Result<String, String> {
         }
         at += p.floats();
     }
-    tail.push_str(
-        "    return p;
-}
+    tail.push_str("    return p;\n}\n");
+    tail.push_str(if memory {
+        "
+struct FsOut {
+    @location(0) picture: vec4<f32>,
+    @location(1) memory: vec4<f32>,
+};
 
 @fragment
+fn fs_main(in: FsIn) -> FsOut {
+    let both = bpe_run(in);
+    // What the next frame's prev() and kept() read: the picture itself, or what the effect
+    // took, and what it kept (on the main picture).
+    var memory = both[0];
+    if fx.takes.x > 0.5 {
+        memory = both[1];
+    }
+    if fx.in_layer < 0.5 && bpe_keep >= 0.0 {
+        memory.a = bpe_keep;
+    }
+    return FsOut(both[0], memory);
+}
+"
+    } else {
+        "
+@fragment
 fn fs_main(in: FsIn) -> @location(0) vec4<f32> {
+    return bpe_run(in)[0];
+}
+"
+    });
+    tail.push_str(
+        "
+// The effect at this pixel: the picture out, and what the effect made of what it took.
+fn bpe_run(in: FsIn) -> array<vec4<f32>, 2> {
     // Effects on things leave every other pixel exactly as it was.
     let here = textureLoad(src_tex, vec2<i32>(in.pos.xy), 0);
     var base = sample(in.uv);
@@ -290,14 +522,37 @@ fn fs_main(in: FsIn) -> @location(0) vec4<f32> {
     var result = effect(in.uv, unpack());
     // A NaN leaves the pixel as it was instead of spreading, and feedback can't run away.
     result = select(result, base, result != result);
+    let code = u32(fx.takes.z);
+    if code != 0u {
+        result = bpe_blended(code, base, result);
+    }
     var blended = mix(base, result, fx.blend * target_weight(in.uv));
+    blended = select(blended, base, blended != blended);
+    let made = vec4<f32>(clamp(blended, vec3<f32>(-64.0), vec3<f32>(64.0)), 1.0);
+    // An effect on the light or the glow puts what it made back into the picture.
+    if fx.takes.x > 1.5 {
+        let p = here.rgb;
+        let glow = max(p - vec3<f32>(fx.takes.y), vec3<f32>(0.0));
+        let out = p - glow + max(blended, vec3<f32>(0.0));
+        return array<vec4<f32>, 2>(vec4<f32>(clamp(out, vec3<f32>(0.0), vec3<f32>(64.0)), here.a), made);
+    }
+    if fx.takes.x > 0.5 {
+        let ip = vec2<i32>(in.pos.xy);
+        let p = here.rgb;
+        let unlit = textureLoad(unlit_tex, ip, 0).rgb;
+        let share = bpe_share(unlit, textureLoad(lit_tex, ip, 0).rgb);
+        let light = bpe_light_of(p, unlit, textureLoad(lit_tex, ip, 0).rgb);
+        let out = p + (blended - light) * share;
+        return array<vec4<f32>, 2>(vec4<f32>(clamp(out, vec3<f32>(0.0), vec3<f32>(64.0)), here.a), made);
+    }
     // A blend layer keeps how much it covers, and the effect's colour covers that much too.
     var cover = 1.0;
     if fx.in_layer > 0.5 {
         cover = here.a;
         blended = blended * bpe_cover(here);
     }
-    return vec4<f32>(clamp(blended, vec3<f32>(0.0), vec3<f32>(64.0)), cover);
+    let out = vec4<f32>(clamp(blended, vec3<f32>(0.0), vec3<f32>(64.0)), cover);
+    return array<vec4<f32>, 2>(out, out);
 }
 ",
     );
@@ -339,6 +594,18 @@ const PRELUDE_NAMES: &[&str] = &[
     "TAU",
     "MAX_HITS",
     "rotate",
+    "keep",
+    "kept",
+    "ball_count",
+    "ball_uv",
+    "ball_radius",
+    "ball_seed",
+    "ball_color",
+    "ball_hit",
+    "nearest_ball",
+    "beat_phase",
+    "bar_phase",
+    "kick",
 ];
 
 /// `wgsl` with its comments (`//` to the end of the line, `/* */`, which nest) turned to spaces,
@@ -564,8 +831,9 @@ pub struct Builtin {
     header: OnceLock<Header>,
 }
 
-/// The effects that come with the program: ten over the picture, then three materials.
-pub static BUILTINS: [Builtin; 13] = [
+/// The effects that come with the program: 23 over the picture (the first ten from before the
+/// lighting, then the psychedelic ones), then three materials.
+pub static BUILTINS: [Builtin; 26] = [
     Builtin::new("color_cycle", include_str!("builtin/color_cycle.wgsl")),
     Builtin::new("color_split", include_str!("builtin/color_split.wgsl")),
     Builtin::new("echo", include_str!("builtin/echo.wgsl")),
@@ -576,6 +844,19 @@ pub static BUILTINS: [Builtin; 13] = [
     Builtin::new("mirror", include_str!("builtin/mirror.wgsl")),
     Builtin::new("pixels", include_str!("builtin/pixels.wgsl")),
     Builtin::new("shockwave", include_str!("builtin/shockwave.wgsl")),
+    Builtin::new("hue_storm", include_str!("builtin/hue_storm.wgsl")),
+    Builtin::new("liquid_light", include_str!("builtin/liquid_light.wgsl")),
+    Builtin::new("light_ripples", include_str!("builtin/light_ripples.wgsl")),
+    Builtin::new("ball_worlds", include_str!("builtin/ball_worlds.wgsl")),
+    Builtin::new("polar_tunnel", include_str!("builtin/polar_tunnel.wgsl")),
+    Builtin::new("breathing", include_str!("builtin/breathing.wgsl")),
+    Builtin::new("thermal", include_str!("builtin/thermal.wgsl")),
+    Builtin::new("op_art", include_str!("builtin/op_art.wgsl")),
+    Builtin::new("fractal", include_str!("builtin/fractal.wgsl")),
+    Builtin::new("rainbow_echoes", include_str!("builtin/rainbow_echoes.wgsl")),
+    Builtin::new("melting", include_str!("builtin/melting.wgsl")),
+    Builtin::new("solarize", include_str!("builtin/solarize.wgsl")),
+    Builtin::new("gravity_lens", include_str!("builtin/gravity_lens.wgsl")),
     Builtin::new("lava", include_str!("builtin/lava.wgsl")),
     Builtin::new("rainbow_flow", include_str!("builtin/rainbow_flow.wgsl")),
     Builtin::new("hit_glow", include_str!("builtin/hit_glow.wgsl")),
@@ -618,7 +899,7 @@ mod tests {
         assert_eq!(keys, ["speed", "bands", "dots", "tint"]);
         assert!(h.params[0].simple && !h.params[1].simple);
         assert_eq!(h.params[0].help, "How fast");
-        assert_eq!(h.params[1].kind, ParamKind::Number { default: 6.0, min: 2.0, max: 24.0, int: true });
+        assert_eq!(h.params[1].kind, ParamKind::Number { default: 6.0, min: 2.0, max: 24.0, int: true, hard: None });
         assert_eq!(h.params[2].kind, ParamKind::Toggle { default: true });
         let ParamKind::Color { default } = h.params[3].kind else { panic!() };
         assert!((default[0] - 1.0).abs() < 1e-6 && (default[1] - 0.2158).abs() < 1e-3 && default[2] == 0.0);
@@ -647,7 +928,13 @@ mod tests {
         let twice = parse("// param a = 1 [0, 1] x\n// param a = 0.5 [0, 1] y\nfn effect(").unwrap_err();
         assert!(twice.contains("twice"), "{twice}");
         assert!(parse("// param Bad-Key = 1 [0, 1] x\nfn effect(").unwrap_err().contains("Bad-Key"));
-        assert!(parse("// param a = 5 [0, 1] x\nfn effect(").unwrap_err().contains("outside"));
+        assert!(parse("// param a = 5 [0, 1] hard [0, 2] x\nfn effect(").unwrap_err().contains("outside"));
+        // Past the usual span is fine when there is no hard limit.
+        assert!(parse("// param a = 5 [0, 1] x\nfn effect(").is_ok());
+        assert!(parse("// choice c = d [a, b] x\nfn effect(").unwrap_err().contains("`d`"));
+        assert!(parse("// choice c = a [a] x\nfn effect(").unwrap_err().contains("two or more"));
+        assert!(parse("// memory: soon\nfn effect(").unwrap_err().contains("soon"));
+        assert!(parse("// memory: fade nope\nfn effect(").is_err());
         assert!(parse("// color c = #12 x\nfn effect(").unwrap_err().contains("#12"));
         assert!(parse("// stage: later\nfn effect(").unwrap_err().contains("later"));
         assert!(parse("fn main() {}").unwrap_err().contains("fn effect("));
@@ -677,6 +964,7 @@ mod tests {
         }
         let things: Vec<&str> = BUILTINS.iter().filter(|b| b.header().stage == Stage::Things).map(|b| b.id).collect();
         assert_eq!(things, ["lava", "rainbow_flow", "hit_glow"]);
+        assert_eq!(BUILTINS.len() - things.len(), 23);
         assert_eq!(Builtin::find("echo").map(|b| b.id), Some("echo"));
         assert!(Builtin::find("nope").is_none());
         assert!(needs_history(Builtin::find("echo").unwrap().wgsl));
@@ -730,6 +1018,45 @@ mod tests {
             );
             assert!(parse(&src).unwrap_err().contains(key), "{key} is refused as a setting key");
         }
+    }
+
+    #[test]
+    fn hard_limits_choices_and_memory_are_read() {
+        let src = "// name: T\n// simple n = 3 [1, 6] hard [0, 16] int Count\n// choice look = grid [slices, rings, grid] Fold\n// param keep = 0.9 [0, 1] Keep\n// memory: fade keep\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { return prev(uv) * p.keep * p.n * p.look; }\n";
+        let h = parse(src).unwrap();
+        assert_eq!(
+            h.params[0].kind,
+            ParamKind::Number { default: 3.0, min: 1.0, max: 6.0, int: true, hard: Some((0.0, 16.0)) }
+        );
+        assert_eq!(h.params[1].kind, ParamKind::Choice { default: 2, names: &["slices", "rings", "grid"] });
+        assert_eq!(h.memory, Memory::Fade("keep".to_owned()));
+        let mut packed = defaults(&h);
+        assert_eq!(&packed[..3], &[3.0, 2.0, 0.9]);
+        // 0.9 a frame falls under 1/4096 after about 79 frames.
+        let s = memory_seconds(&h, src, &packed);
+        assert!((s - 78.95 / 60.0).abs() < 0.01, "{s}");
+        packed[2] = 1.0;
+        assert_eq!(memory_seconds(&h, src, &packed), MAX_MEMORY);
+        packed[2] = 0.0;
+        assert_eq!(memory_seconds(&h, src, &packed), 0.0);
+        let unsaid = "// name: U\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { return prev(uv); }\n";
+        assert_eq!(memory_seconds(&parse(unsaid).unwrap(), unsaid, &packed), DEFAULT_MEMORY);
+        let none = "// name: N\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { return sample(uv); }\n";
+        assert_eq!(memory_seconds(&parse(none).unwrap(), none, &packed), 0.0);
+        let said = "// name: S\n// memory: 30\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { return prev(uv); }\n";
+        assert_eq!(memory_seconds(&parse(said).unwrap(), said, &packed), MAX_MEMORY);
+        validate(&assemble(src).unwrap());
+    }
+
+    #[test]
+    fn an_effect_that_keeps_values_writes_a_second_picture() {
+        let thermal = Builtin::find("thermal").unwrap().wgsl;
+        assert!(needs_history(thermal));
+        let full = assemble(thermal).unwrap();
+        assert!(full.contains("@location(1)"), "a memory picture");
+        validate(&full);
+        let plain = assemble(Builtin::find("film").unwrap().wgsl).unwrap();
+        assert!(!plain.contains("@location(1)"));
     }
 
     /// The scene shader with these in-ball effects.

@@ -128,7 +128,17 @@ pub fn classic_cards(scene: &mut Scene) {
 /// Puts an old Trail or Particles card of `kind` with `params` on `thing` (on Scene settings,
 /// on every ball group), for [`classic_cards`] to turn into a layer; false for another kind.
 pub(crate) fn put_old_card(scene: &mut Scene, thing: ThingId, kind: &str, params: &Params) -> bool {
+    use crate::modules::effects::upgrade;
     use crate::modules::look::layers::cards_to_layers::{OLD_PARTICLES, OLD_TRAIL};
+    if upgrade::is_old(kind) {
+        // The scene's one effect becomes its Effects stack; one on a thing is left out.
+        if thing == ThingId::ROOT
+            && let Some(stack) = upgrade::stack_of(kind, params)
+        {
+            scene.things.get_mut(&thing).expect("the scene").slots.insert(SlotId::Shader, stack);
+        }
+        return true;
+    }
     let slot = match kind {
         OLD_TRAIL => SlotId::Trail,
         OLD_PARTICLES => SlotId::Particles,
@@ -928,6 +938,116 @@ pub fn lit_demo(reg: &Registry) -> Scene {
     scene
 }
 
+/// The stage demo (lighting part 2a's video): five balls of five surfaces (Chrome, Glass,
+/// Plastic, Toon, Metal) bouncing in a thick ring on a 3D stage, a glossy floor under the ring, a
+/// warm key light, a cool fill and a magenta light between the balls and the wall. Not in [`all`].
+pub fn stage_demo(reg: &Registry) -> Scene {
+    use crate::modules::look::surface::{SurfaceKind, preset_values};
+    use crate::things::light::{LightSettings, LightType, add_light};
+    use bpe_core::Choice;
+    let hex = |h: u32| Color::rgb((h >> 16) as u8, (h >> 8) as u8, h as u8);
+    let mut b = Builder::new(reg, "Stage demo");
+    b.scene_settings(|s| {
+        s.duration = 10.0;
+        s.gravity = Vec2::new(0.0, 900.0);
+        s.bloom = 0.25;
+        s.background = Paint {
+            colours: Gradient::even(&[hex(0x30333d), hex(0x4a4c56)]),
+            angle: 90.0,
+            span: 1920.0,
+            ..Paint::default()
+        };
+    });
+    b.shape(ShapeSettings::circle(420.0, 28.0));
+    let plain =
+        |colour: Color| BasicLook { fill: Paint::solid(colour), glow: 0.0, style: Style::Flat, ..classic_look() };
+    b.balls("Chrome", Vec2::new(-160.0, -180.0), |s| {
+        s.radius = 52.0;
+        s.velocity = Vec2::new(420.0, -260.0);
+    });
+    b.ball_look(|l| *l = plain(hex(0xdfe3ea)));
+    let others = [
+        ("Glass", hex(0x8fe3ff), Vec2::new(150.0, -120.0), Vec2::new(-360.0, -320.0), 50.0),
+        ("Plastic", hex(0xe8344a), Vec2::new(0.0, 120.0), Vec2::new(300.0, -520.0), 46.0),
+        ("Toon", hex(0xffc83c), Vec2::new(-200.0, 140.0), Vec2::new(-240.0, -420.0), 44.0),
+        ("Metal", hex(0xe2b25a), Vec2::new(200.0, 160.0), Vec2::new(200.0, -600.0), 48.0),
+    ];
+    let mut ids = vec![("Chrome", BALLS)];
+    for (name, colour, at, velocity, radius) in others {
+        let id = b.add(
+            "balls",
+            ThingId::ROOT,
+            name,
+            at,
+            BallsSettings { radius, velocity, ..BallsSettings::default() }.to_params(),
+        );
+        b.own_module(id, "look.basic", plain(colour).to_params());
+        ids.push((name, id));
+    }
+    let mut scene = b.finish();
+    for (name, id) in ids {
+        let kind = match name {
+            "Chrome" => SurfaceKind::Chrome,
+            "Glass" => SurfaceKind::Glass,
+            "Plastic" => SurfaceKind::Plastic,
+            "Toon" => SurfaceKind::Toon,
+            _ => SurfaceKind::Metal,
+        };
+        let card = scene.card_mut(id, SlotId::Look).expect("a look");
+        card.params.set("surface", Value::Choice(kind.name().into()));
+        for (k, v) in preset_values(kind) {
+            card.params.set(k, v);
+        }
+    }
+    let shape = scene.card_mut(SHAPE, SlotId::Look).expect("the shape's look");
+    for (k, v) in preset_values(SurfaceKind::Plastic) {
+        shape.params.set(k, v);
+    }
+    shape.params.set("surface", Value::Choice(SurfaceKind::Plastic.name().into()));
+    let key = add_light(&mut scene, reg, LightType::Point, ThingId::ROOT).expect("a light");
+    let mut warm = LightSettings::of_kind(LightType::Point);
+    warm.position = Vec2::new(-340.0, -640.0);
+    warm.height = 520.0;
+    warm.strength = 2.6;
+    warm.reach = 2800.0;
+    warm.size = 70.0;
+    warm.colour = hex(0xffe0bc);
+    scene.things.get_mut(&key).expect("light").params = warm.to_params();
+    scene.rename_thing(key, "Key light");
+    let fill = add_light(&mut scene, reg, LightType::Point, ThingId::ROOT).expect("a light");
+    let mut cool = LightSettings::of_kind(LightType::Point);
+    cool.position = Vec2::new(440.0, -80.0);
+    cool.height = 280.0;
+    cool.strength = 1.0;
+    cool.reach = 2000.0;
+    cool.size = 40.0;
+    cool.colour = hex(0x8fb8ff);
+    scene.things.get_mut(&fill).expect("light").params = cool.to_params();
+    scene.rename_thing(fill, "Fill light");
+    let rim = add_light(&mut scene, reg, LightType::Point, ThingId::ROOT).expect("a light");
+    let mut back = LightSettings::of_kind(LightType::Point);
+    back.position = Vec2::new(0.0, -260.0);
+    back.height = -150.0;
+    back.strength = 1.6;
+    back.reach = 1100.0;
+    back.size = 30.0;
+    back.colour = hex(0xff4fc8);
+    scene.things.get_mut(&rim).expect("light").params = back.to_params();
+    scene.rename_thing(rim, "Back light");
+    let lighting = scene.card_mut(ThingId::ROOT, SlotId::Lighting).expect("lit");
+    for (k, v) in [
+        ("depth", Value::Choice("stage".into())),
+        ("ambient", Value::Number(0.1)),
+        ("sky_light", Value::Number(0.35)),
+        ("contact", Value::Number(0.7)),
+        ("looking_down", Value::Number(16.0)),
+        ("quality", Value::Choice("high".into())),
+    ] {
+        lighting.params.set(k, v);
+    }
+    scene
+}
+
 /// The light show (lighting part 6's tests and video): a dark room in a white ring, twelve balls
 /// flung out from the middle, a rig of four spots across the top playing a chase from its colour
 /// list, a second rig inside the balls whose lamps (one on each ball) chase ball to ball, and
@@ -1270,6 +1390,82 @@ pub fn water_demo(reg: &Registry) -> Scene {
     balls.launch = crate::things::balls::Launch::Outward;
     balls.velocity = Vec2::new(0.0, -500.0);
     scene.things.get_mut(&ball).expect("ball").params = balls.to_params();
+/// The looks of the effects demo (lighting part 8's video), in the order it shows them.
+pub const EFFECTS_DEMOS: [&str; 12] = [
+    "tunnel",
+    "hue_storm",
+    "ball_worlds",
+    "gravity_lens",
+    "thermal",
+    "solarize",
+    "arcs",
+    "aura",
+    "negative",
+    "polar_tunnel",
+    "liquid_light",
+    "melting",
+];
+
+/// The effects demo (lighting part 8's video): one of [`EFFECTS_DEMOS`] over the lit demo's twelve
+/// balls flung out in a ring. Not in [`all`].
+pub fn effects_demo(reg: &Registry, look: &str) -> Scene {
+    use crate::modules::effects::EFFECTS;
+    use crate::modules::look::layers::{arcs::ARCS, aura::AURA};
+    use crate::things::light::{LightSettings, LightType, add_light};
+    let mut scene = lit_demo(reg);
+    scene.name = format!("Effects demo: {look}");
+    let ball = scene.things.values().find(|t| t.kind == "balls").map(|t| t.id).expect("a ball");
+    let effect = |scene: &mut Scene, kind: &str, set: &[(&str, Value)]| {
+        if scene.card(ThingId::ROOT, SlotId::Shader).is_none() {
+            scene.add_slot(reg, ThingId::ROOT, SlotId::Shader, EFFECTS).expect("the scene takes Effects");
+        }
+        let layer = scene.add_layer(reg, ThingId::ROOT, SlotId::Shader, kind).expect("an effect");
+        let card = scene.things.get_mut(&ThingId::ROOT).expect("root").slots.get_mut(&SlotId::Shader).expect("fx");
+        for (key, value) in set {
+            card.params.set(&bpe_core::layered_key(layer, key), value.clone());
+        }
+    };
+    match look {
+        "tunnel" => {
+            effect(&mut scene, "picture.echo", &[("fade", Value::Number(0.93)), ("zoom", Value::Number(1.02))]);
+            effect(&mut scene, "picture.kaleidoscope", &[]);
+        }
+        "hue_storm" => effect(&mut scene, "picture.hue_storm", &[]),
+        "ball_worlds" => effect(&mut scene, "picture.ball_worlds", &[]),
+        "gravity_lens" => effect(&mut scene, "picture.gravity_lens", &[]),
+        "thermal" => effect(&mut scene, "picture.thermal", &[]),
+        "solarize" => effect(&mut scene, "picture.solarize", &[]),
+        "polar_tunnel" => {
+            effect(&mut scene, "picture.polar_tunnel", &[]);
+            effect(&mut scene, "picture.rainbow_echoes", &[]);
+        }
+        "liquid_light" => effect(&mut scene, "picture.liquid_light", &[]),
+        "melting" => effect(&mut scene, "picture.melting", &[]),
+        "arcs" => {
+            let layer = scene.add_layer(reg, ball, SlotId::Look, ARCS).expect("arcs");
+            let look = scene.things.get_mut(&ball).expect("ball").slots.get_mut(&SlotId::Look).expect("look");
+            look.params.set(&bpe_core::layered_key(layer, "reach"), Value::Number(420.0));
+            look.params.set(&bpe_core::layered_key(layer, "lights"), Value::Number(1.0));
+        }
+        "aura" => {
+            let layer = scene.add_layer(reg, ball, SlotId::Look, AURA).expect("aura");
+            let look = scene.things.get_mut(&ball).expect("ball").slots.get_mut(&SlotId::Look).expect("look");
+            look.params.set(&bpe_core::layered_key(layer, "reach"), Value::Number(9.0));
+            look.params.set(&bpe_core::layered_key(layer, "lines"), Value::Number(4.0));
+        }
+        "negative" => {
+            let dark = add_light(&mut scene, reg, LightType::Point, ThingId::ROOT).expect("a light");
+            let mut s = LightSettings::of_kind(LightType::Point);
+            s.position = glam::Vec2::new(0.0, 150.0);
+            s.negative = true;
+            s.strength = 2.5;
+            s.reach = 700.0;
+            s.height = 100.0;
+            scene.things.get_mut(&dark).expect("light").params = s.to_params();
+            scene.rename_thing(dark, "Darkness");
+        }
+        other => panic!("no demo look {other}"),
+    }
     scene
 }
 

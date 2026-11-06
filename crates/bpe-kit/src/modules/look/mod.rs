@@ -5,6 +5,7 @@ pub mod basic;
 pub mod draw;
 pub mod layers;
 pub mod shape;
+pub mod surface;
 
 pub use basic::{BallColours, BallShape, BasicLook, BasicLookKind, Style};
 pub use layers::LayersLookKind;

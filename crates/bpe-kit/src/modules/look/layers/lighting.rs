@@ -1,8 +1,8 @@
 //! How a layer takes the scene's light (lighting spec, part 1a): its **Lit** (0 keeps its own
-//! colour whatever the lamps do, 1 takes their light whole), whether it **Blocks light** (casts
-//! shadows) and, on a ball's Body, its **Bulge** (how much the ball bulges to the light). The
-//! settings sit in each drawn and around layer's "Lighting" fold; they change nothing until the
-//! scene has a Lighting card.
+//! colour whatever the lamps do, 1 takes their light whole) and whether it **Blocks light** (casts
+//! shadows). The settings sit in each drawn and around layer's "Lighting" fold; they change
+//! nothing until the scene has a Lighting card. A ball's Bulge is its Look's Surface section's
+//! (part 2a, `look::surface`).
 
 use bpe_core::{Choice, Params, SettingDef, Settings, Value};
 
@@ -11,7 +11,6 @@ use super::{BODY, GLOW, OUTLINE, PATTERN, SHADER, SHADING, SHINE};
 /// The settings' keys.
 pub const LIT: &str = "lit";
 pub const BLOCKS_LIGHT: &str = "blocks_light";
-pub const BULGE: &str = "bulge";
 pub const UNDER_UV: &str = "under_uv";
 pub const UV_GLOW: &str = "uv_glow";
 pub const CATCHES_BEAMS: &str = "catches_beams";
@@ -56,6 +55,7 @@ impl Default for AroundLit {
         Self { lit: 1.0, blocks_light: false, catches_beams: 0.0, under_uv: UnderUv::Normal, uv_glow: 1.5 }
     }
 }
+
 
 /// Lit by the lamps, not blocking them.
 #[derive(Clone, Debug, PartialEq, Settings)]
@@ -107,7 +107,7 @@ impl Default for Unlit {
     }
 }
 
-/// A shape's body: lit and casting shadows.
+/// A ball's or a shape's body: lit and casting shadows.
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct Solid {
     /// How much the scene's light changes this layer: 0 keeps its own colour, 1 takes the light
@@ -132,41 +132,12 @@ impl Default for Solid {
     }
 }
 
-/// A ball's Body: lit, casting shadows, and round.
-#[derive(Clone, Debug, PartialEq, Settings)]
-pub struct BodyLit {
-    /// How much the scene's light changes this layer: 0 keeps its own colour, 1 takes the light
-    /// whole, more takes it harder.
-    #[setting(label = "Lit", span(0, 1), keyframe, group = "Lighting")]
-    pub lit: f32,
-    /// Whether this layer casts shadows.
-    #[setting(label = "Blocks light", group = "Lighting")]
-    pub blocks_light: bool,
-    /// How much the ball bulges to the light: 0 is a flat disc, 1 a ball, more a taller dome.
-    #[setting(label = "Bulge", span(0, 2), keyframe, group = "Lighting")]
-    pub bulge: f32,
-    /// How the layer looks under ultraviolet light: Normal, Glows (bright in UV light) or Only
-    /// under UV (hidden until UV light falls on it).
-    #[setting(label = "Under UV", group = "Lighting")]
-    pub under_uv: UnderUv,
-    /// How brightly the layer glows where UV light falls on it.
-    #[setting(label = "UV glow", when = "under_uv!=normal", span(0, 4), keyframe, group = "Lighting")]
-    pub uv_glow: f32,
-}
-
-impl Default for BodyLit {
-    fn default() -> Self {
-        Self { lit: 1.0, blocks_light: true, bulge: 1.0, under_uv: UnderUv::Normal, uv_glow: 1.5 }
-    }
-}
-
 /// The Lighting settings a layer kind adds, by its id: none for Blend, the reactions, the
 /// sub-layers and the group layers.
 pub fn defs_of(kind: &str) -> &'static [SettingDef] {
     use crate::modules::look::shape;
     match kind {
-        BODY => BodyLit::defs(),
-        shape::BODY => Solid::defs(),
+        BODY | shape::BODY => Solid::defs(),
         PATTERN | OUTLINE | SHADING | SHADER | shape::PAINT | shape::OUTLINE | shape::SHADER => Lit::defs(),
         super::trail::TRAIL | super::particles::PARTICLES | super::particles::SHAPE_PARTICLES => AroundLit::defs(),
         super::wavefront::WAVEFRONT => AroundLit::defs(),
@@ -176,7 +147,8 @@ pub fn defs_of(kind: &str) -> &'static [SettingDef] {
 }
 
 /// A layer's Lighting as the renderer reads it ([`bpe_gfx::LayerGpu::light`]): Lit, Blocks light
-/// (0 or 1), Bulge and 0. A layer without the settings is neither lit nor blocking.
+/// (0 or 1), then 0 and 0 (the draw fills in the body's Bulge and the thing's surface index). A
+/// layer without the settings is neither lit nor blocking.
 pub fn of(p: &Params) -> [f32; 4] {
     let number = |key| match p.get(key) {
         Some(Value::Number(v)) => *v as f32,
@@ -184,7 +156,7 @@ pub fn of(p: &Params) -> [f32; 4] {
         Some(Value::Bool(b)) => f32::from(u8::from(*b)),
         _ => 0.0,
     };
-    [number(LIT), number(BLOCKS_LIGHT), number(BULGE), 0.0]
+    [number(LIT), number(BLOCKS_LIGHT), 0.0, 0.0]
 }
 
 /// A layer's part 4 lighting as the renderer reads it ([`bpe_gfx::LayerGpu::more`], a trail's or
@@ -244,7 +216,7 @@ mod tests {
             }
         }
         let light = |kind: &str| seen.iter().find(|(k, _)| k == kind).map(|(_, l)| *l);
-        assert_eq!(light("layer.body"), Some([1.0, 1.0, 1.0, 0.0]));
+        assert_eq!(light("layer.body"), Some([1.0, 1.0, 0.0, 0.0]));
         assert_eq!(light("shape.body"), Some([1.0, 1.0, 0.0, 0.0]));
         assert_eq!(light("layer.glow"), Some([0.0; 4]));
         assert_eq!(light("react.flash"), Some([0.0; 4]), "reactions have no Lighting");

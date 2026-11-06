@@ -3,6 +3,8 @@
 
 use bpe_core::{Blend, LayerId, ResolvedSlot, Settings};
 
+use super::arcs::{ARCS, ArcsLayer};
+use super::aura::{AURA, AuraLayer};
 use super::gpu::SubLayer;
 use super::particles::{PARTICLES, ParticlesLayer, SHAPE_PARTICLES, ShapeParticlesLayer};
 use super::trail::{AroundPlace, TRAIL, TrailKind, TrailLayer};
@@ -16,6 +18,10 @@ pub enum AroundKind {
     Particles(Box<ParticlesLayer>),
     /// A line through each round's balls.
     Wavefront(Box<WavefrontLayer>),
+    /// Lightning between near balls.
+    Arcs(Box<ArcsLayer>),
+    /// One field round all the balls.
+    Aura(Box<AuraLayer>),
 }
 
 /// One shown trail or particles layer.
@@ -86,6 +92,8 @@ impl AroundLayer {
             AroundKind::Trail(t) => t.place,
             AroundKind::Particles(p) => p.place,
             AroundKind::Wavefront(w) => w.place,
+            AroundKind::Arcs(a) => a.place,
+            AroundKind::Aura(a) => a.place,
         }
     }
 
@@ -95,6 +103,8 @@ impl AroundLayer {
             AroundKind::Trail(t) => (t.blend, t.blend_amount),
             AroundKind::Particles(p) => (p.blend, p.blend_amount),
             AroundKind::Wavefront(w) => (w.blend, w.blend_amount),
+            AroundKind::Arcs(a) => (a.blend, a.blend_amount),
+            AroundKind::Aura(a) => (a.blend, a.blend_amount),
         }
     }
 
@@ -124,6 +134,8 @@ pub fn around_layers(slot: &ResolvedSlot, shape: bool) -> Vec<AroundLayer> {
             TRAIL if !shape => AroundKind::Trail(Box::new(TrailLayer::from_params(&p))),
             PARTICLES if !shape => AroundKind::Particles(Box::new(ParticlesLayer::from_params(&p))),
             WAVEFRONT if !shape => AroundKind::Wavefront(Box::new(WavefrontLayer::from_params(&p))),
+            ARCS if !shape => AroundKind::Arcs(Box::new(ArcsLayer::from_params(&p))),
+            AURA if !shape => AroundKind::Aura(Box::new(AuraLayer::from_params(&p))),
             SHAPE_PARTICLES if shape => AroundKind::Particles(Box::new(ShapeParticlesLayer::from_params(&p).as_ball())),
             kind => {
                 // A sub-layer of one of them.

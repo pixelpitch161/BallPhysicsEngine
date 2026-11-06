@@ -132,8 +132,8 @@ fn fs_background(in: BgOut) -> @location(0) vec4<f32> {
         // The things' light: the background covers nothing there (its own is drawn alone).
         return vec4<f32>(0.0);
     }
-    // In the tags pass the background carries the scene's link number (Globals.light.z).
-    return light_flat(c, g.light.y, 0.0, vec3<f32>(0.0), vec4<f32>(0.0, 0.0, 0.0, g.light.z));
+    // In the tags pass the background carries the scene's link number (Globals.light.w).
+    return light_flat(c, g.light.y, 0.0, vec3<f32>(0.0), vec4<f32>(0.0, 0.0, 0.0, g.light.w));
 }
 
 fn background_colour(in: BgOut) -> vec4<f32> {

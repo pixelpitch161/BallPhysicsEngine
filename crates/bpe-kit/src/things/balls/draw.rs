@@ -9,7 +9,9 @@ use bpe_gfx::{Around, DrawCx, FlashInstance, Frame, HitMark, LayeredRun, ThingDr
 use bpe_runtime::{Bodies, Event, EventKind};
 
 use crate::modules::look::draw::{BallInputs, for_balls};
+use crate::modules::look::layers::arcs::{self, ArcBall, ArcMoment, ArcsLayer};
 use crate::modules::look::layers::around::{AroundKind, AroundLayer, around_layers};
+use crate::modules::look::layers::aura::{self, AuraBall};
 use crate::modules::look::layers::gpu::{Stack, SubLayer};
 use crate::modules::look::layers::group::{BallInGroup, GroupShapeInfo, group_colour, mixed};
 use crate::modules::look::layers::trail::{self, AroundPlace, TrailKind, draw::Balls};
@@ -375,10 +377,6 @@ impl ThingDraw for BallsDraw {
             .collect()
     }
 
-    fn light(&self, cx: &DrawCx, scene: &mut bpe_gfx::LightScene) {
-        push_stirs(cx, scene);
-    }
-
     fn draw_around(&self, cx: &DrawCx, index: usize, frame: &mut Frame) {
         let Some(worn) = Worn::of(cx) else { return };
         let Some(layer) = own_around(cx.resolved).into_iter().nth(index) else { return };
@@ -389,6 +387,17 @@ impl ThingDraw for BallsDraw {
                 with_balls(cx, &worn, memory, |balls| trail::draw::draw(cx, &layer, trail, balls, frame));
             }
             AroundKind::Wavefront(w) => draw_wavefront(cx, &worn, &layer, w, frame),
+            AroundKind::Arcs(a) => {
+                let balls = arc_balls(cx, &worn, &layer, a);
+                arcs::draw(&layer, a, &balls, arc_moment(cx), frame);
+            }
+            AroundKind::Aura(a) => {
+                let balls: Vec<AuraBall> = arc_balls(cx, &worn, &layer, &ArcsLayer::default())
+                    .into_iter()
+                    .map(|b| AuraBall { at: b.at, radius: b.radius, colour: b.colour })
+                    .collect();
+                aura::draw(&layer, a, &balls, cx.time as f32, frame);
+            }
             AroundKind::Particles(particles) => {
                 with_balls(cx, &worn, memory, |balls| {
                     crate::modules::look::layers::particles::draw::draw_balls(
@@ -404,6 +413,26 @@ impl ThingDraw for BallsDraw {
         }
         drew.light(frame, &layer, cx);
     }
+
+    /// The balls' surface and, for Stage, each ball as a sphere; then electric arcs that light
+    /// the scene.
+    fn light(&self, cx: &DrawCx, scene: &mut bpe_gfx::LightScene) {
+        push_ball_light(cx, scene);
+        push_stirs(cx, scene);
+        let lighting: Vec<AroundLayer> = own_around(cx.resolved)
+            .into_iter()
+            .filter(|l| matches!(&l.kind, AroundKind::Arcs(a) if a.lights != 0.0))
+            .collect();
+        if lighting.is_empty() {
+            return;
+        }
+        let Some(worn) = Worn::of(cx) else { return };
+        for layer in &lighting {
+            let AroundKind::Arcs(a) = &layer.kind else { continue };
+            let balls = arc_balls(cx, &worn, layer, a);
+            arcs::light(a, &balls, arc_moment(cx), scene);
+        }
+    }
 }
 
 /// Adds every live ball of the thing `cx` is drawing to the balls that stir a moving haze (lighting
@@ -417,6 +446,79 @@ pub fn push_stirs(cx: &DrawCx, scene: &mut bpe_gfx::LightScene) {
     for r in (0..bodies.len()).filter(|&r| bodies.alive[r]) {
         let (p, v) = (bodies.position[r], bodies.velocity[r]);
         scene.stirs.push([[p.x, p.y, v.x, v.y], [bodies.radius[r], 0.0, 0.0, 0.0]]);
+    }
+}
+
+/// The live balls that wear around layer `layer`, as electric arcs `a` see them (their last hits
+/// read only when the arcs fire on hits).
+fn arc_balls(cx: &DrawCx, worn: &Worn, layer: &AroundLayer, a: &ArcsLayer) -> Vec<ArcBall> {
+    let Some(bodies) = cx.world.bodies.get(&cx.thing.id) else { return Vec::new() };
+    let colours = Colours::new(worn, cx, bodies, true);
+    let group = group_cx(worn.base(), cx);
+    let hits = if a.fire == arcs::ArcFire::WhenTheyHit {
+        last_hits(cx, bodies.len(), a.fire_length.max(1e-3))
+    } else {
+        Vec::new()
+    };
+    (0..bodies.len())
+        .filter(|&i| bodies.alive[i] && layer.applies(group.number(i)))
+        .map(|i| {
+            let fade = group.fade(i);
+            let mut colour = colours.get(i);
+            for c in &mut colour[..3] {
+                *c *= fade;
+            }
+            ArcBall {
+                at: bodies.position[i],
+                radius: bodies.radius[i],
+                number: group.number(i),
+                colour,
+                hit_age: hits.get(i).map_or(f32::MAX, |h| h.0),
+            }
+        })
+        .collect()
+}
+
+/// The moment the arcs are drawn at: its time and the scene's beat.
+fn arc_moment(cx: &DrawCx) -> ArcMoment {
+    let beat = cx.scene.things.get(&ThingId::ROOT).map(|r| {
+        let s = crate::things::scene::SceneSettings::from_params(&r.params);
+        crate::things::scene::draw::beat_at(&s, cx.time)
+    });
+    ArcMoment { time: cx.time as f32, beat: beat.filter(|b| b[3] > 0.0 && b[2] > 0.0).map(|b| (b[0], 1.0 / b[2])) }
+}
+
+/// Adds the balls of the thing `cx` is drawing to a lit frame: its Look's surface at its surface
+/// index, and every ball alive as a sphere (centre, radius, see-through and its Body's colour,
+/// for the light it lets through).
+pub fn push_ball_light(cx: &DrawCx, scene: &mut bpe_gfx::LightScene) {
+    use crate::modules::look::surface;
+    let Some(look) = cx.resolved.slots.get(&SlotId::Look).filter(|l| surface::has_surface(&l.kind)) else { return };
+    let s = surface::of_card(look);
+    let index = surface::surface_index(cx.scene, cx.thing.id);
+    scene.set_surface(index, s.gpu(bpe_gfx::SurfaceGpu::BALL));
+    if scene.settings.stage[0] < 0.5 {
+        return;
+    }
+    let Some(bodies) = cx.world.bodies.get(&cx.thing.id) else { return };
+    let tint = match Stack::of(look) {
+        // A Body that doesn't block light casts no shadow in Stage either.
+        Some(stack) if stack.body_light[1] < 0.5 => return,
+        Some(stack) => {
+            let inputs = crate::paint::Inputs { time: cx.time as f32, ..Default::default() };
+            crate::paint::colour_at(&stack.body.fill, &inputs)
+        }
+        None => [1.0; 4],
+    };
+    let see = s.see_through.clamp(0.0, 1.0);
+    for i in 0..bodies.len() {
+        if !bodies.alive[i] {
+            continue;
+        }
+        let at = bodies.position[i];
+        scene
+            .spheres
+            .push(bpe_gfx::SphereGpu { a: [at.x, at.y, bodies.radius[i], see], b: [tint[0], tint[1], tint[2], 0.0] });
     }
 }
 
@@ -641,6 +743,9 @@ fn draw_ghosts(
     frame.particles_front.extend(over_front);
 }
 
+/// A ball's seconds since its last hit when it hasn't hit anything lately.
+const NEVER_HIT: f32 = 1e6;
+
 /// The bit of a ball instance's `range.z` that draws the layers above its Blend layer.
 const OVER: u32 = 0x1_0000;
 
@@ -665,6 +770,8 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, worn: &Worn, part: u32) {
     // Balls given layers of their own wear their own range of records: one range for each
     // stack and set of layers worn, most scenes one range for every ball.
     let mut ranges: HashMap<(usize, Vec<bool>), (u32, u32)> = HashMap::new();
+    // Every record names the thing's surface (read only by a lit frame's light pass).
+    let surface = crate::modules::look::surface::surface_index(cx.scene, id) as f32;
     let mut range_for = |frame: &mut Frame, at: usize, number: u32| -> (u32, u32) {
         let own = &worn.stacks[at];
         let wears: Vec<bool> =
@@ -678,7 +785,10 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, worn: &Worn, part: u32) {
             let first = frame.look_layers.len() as u32;
             let picked = if wears.is_empty() { all.clone() } else { own.records_for(all, |k| wears[k]) };
             let count = picked.len() as u32;
-            frame.look_layers.extend(picked);
+            frame.look_layers.extend(picked.into_iter().map(|mut r| {
+                r.light[3] = surface;
+                r
+            }));
             (first, count)
         })
     };
@@ -761,6 +871,23 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, worn: &Worn, part: u32) {
         made.push((i, ball));
     }
     draw_ghosts(cx, frame, worn, part, &made, &seen);
+    // The scene's effects see every ball drawn (once, with the whole or lower part).
+    let effects = crate::modules::effects::draw::scene_has_effects(cx.scene);
+    let mut mark_of = Vec::new();
+    if effects && part & OVER == 0 {
+        mark_of = vec![usize::MAX; bodies.len()];
+        for (i, _) in &made {
+            let c = seen(*i);
+            mark_of[*i] = frame.ball_marks.len();
+            frame.ball_marks.push(bpe_gfx::BallMark {
+                center: bodies.position[*i].into(),
+                radius: bodies.radius[*i],
+                color: [c[0], c[1], c[2]],
+                seed: ball_seed(id, *i),
+                hit_age: NEVER_HIT,
+            });
+        }
+    }
     // Which pipeline draws them: the stack's in-ball program, once per frame, or the plain one.
     let program = stack.program().map(|p| match frame.programs.iter().position(|q| q.key == p.key) {
         Some(i) => i as u32,
@@ -785,8 +912,7 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, worn: &Worn, part: u32) {
         .any(|s| flashing(s))
         .then(|| worn.stacks.iter().filter_map(|s| s.flash.as_ref()).map(|f| f.flash_seconds).fold(0.0, f32::max));
     // The scene settings' effects aren't passed down but still pulse on every hit.
-    let scene_effects = cx.scene.things.get(&ThingId::ROOT).is_some_and(|r| r.slots.contains_key(&SlotId::Shader));
-    let wants_hits = scene_effects;
+    let wants_hits = effects;
     let memory = if wants_hits {
         HIT_MEMORY
     } else if let Some(seconds) = flash {
@@ -802,11 +928,20 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, worn: &Worn, part: u32) {
             EventKind::Enter => false,
             _ => continue,
         };
-        if e.a.thing != id {
-            continue;
-        }
         let time = e.time(rate);
         if time > cx.time {
+            continue;
+        }
+        // The effects' ball list: both balls of a ball-on-ball hit were hit.
+        if hit && !mark_of.is_empty() {
+            for side in std::iter::once(e.a).chain(e.b).filter(|s| s.thing == id) {
+                if let Some(&m) = mark_of.get(side.item as usize).filter(|m| **m != usize::MAX) {
+                    let age = (cx.time - time) as f32;
+                    frame.ball_marks[m].hit_age = frame.ball_marks[m].hit_age.min(age);
+                }
+            }
+        }
+        if e.a.thing != id {
             continue;
         }
         if hit {
@@ -940,7 +1075,7 @@ mod tests {
         let thing = scene.things.get_mut(&ball).unwrap();
         thing.params.set("velocity", Value::Vec2([0.0, 900.0]));
         // The scene's effects list the hits.
-        scene.add_slot(&reg, ThingId::ROOT, SlotId::Shader, "shader.kaleidoscope").unwrap();
+        crate::testing::add_effect(&mut scene, &reg, "picture.kaleidoscope");
         let resolved = bpe_core::resolve(&scene, &reg);
         let kit = kit();
         let mut playback = bpe_runtime::Playback::new(&scene, &resolved, kit.sims.clone());
@@ -1120,7 +1255,7 @@ mod tests {
     fn balls_leave_a_hit_mark_in_their_colour() {
         let (mut scene, _, kit) = crate::testing::one_ball_with_bounce(|_| {});
         // Hits are listed for what uses them: here the scene's effect.
-        scene.add_slot(&kit.registry, ThingId::ROOT, SlotId::Shader, "shader.kaleidoscope").unwrap();
+        crate::testing::add_effect(&mut scene, &kit.registry, "picture.kaleidoscope");
 
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         let mut playback = bpe_runtime::Playback::new(&scene, &resolved, kit.sims.clone());
@@ -1154,7 +1289,7 @@ mod tests {
     #[test]
     fn an_effect_on_the_scene_settings_still_gets_the_balls_hits() {
         let (mut scene, _, kit) = crate::testing::one_ball_with_bounce(|_| {});
-        scene.add_slot(&kit.registry, ThingId::ROOT, SlotId::Shader, "shader.kaleidoscope").unwrap();
+        crate::testing::add_effect(&mut scene, &kit.registry, "picture.kaleidoscope");
 
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         assert!(!resolved.things[&BALL].slots.contains_key(&SlotId::Shader), "the effect is not passed down");

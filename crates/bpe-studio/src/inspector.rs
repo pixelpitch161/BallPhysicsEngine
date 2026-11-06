@@ -543,8 +543,16 @@ pub fn show(
                 if !header.inner {
                     return;
                 }
+                if card_now.kind == bpe_kit::modules::effects::EFFECTS {
+                    ui.add_space(4.0);
+                    let look =
+                        crate::look_editor::LookCx { scene, kit, choices: &choices, id, slot, time, label_width: lw };
+                    crate::look_editor::effects::show(ui, inspector, &look, &mut edits);
+                    return;
+                }
                 if card_now.kind == bpe_kit::modules::look::shape::CARD {
                     ui.add_space(4.0);
+                    surface_section(ui, inspector, &cx, slot, false, &mut edits);
                     let look =
                         crate::look_editor::LookCx { scene, kit, choices: &choices, id, slot, time, label_width: lw };
                     crate::look_editor::show(ui, inspector, &look, &mut edits);
@@ -556,6 +564,7 @@ pub fn show(
                         look_mode_switch(ui, inspector, &cx, &mut edits);
                         ui.add_space(4.0);
                     }
+                    surface_section(ui, inspector, &cx, slot, has_ball_look(kind.id()), &mut edits);
                     let look =
                         crate::look_editor::LookCx { scene, kit, choices: &choices, id, slot, time, label_width: lw };
                     if has_ball_look(kind.id()) && group_mode(inspector, id) {
@@ -1136,6 +1145,102 @@ fn slot_grid(ui: &mut Ui, inspector: &mut Inspector, cx: &OwnCx, slot: SlotId, c
     edits.extend(out.varies.into_iter().map(|(key, v)| crate::vary::edit(Some(slot), key, v)));
 }
 
+/// A Look card's Surface section (lighting part 2a): a chip per Surface, each a painted ball,
+/// which sets the numbers under it in the same edit, then those numbers (folded until opened;
+/// Bulge only on balls).
+fn surface_section(
+    ui: &mut Ui,
+    inspector: &mut Inspector,
+    cx: &OwnCx,
+    slot: SlotId,
+    ball: bool,
+    edits: &mut Vec<Edit>,
+) {
+    use bpe_core::Choice;
+    use bpe_kit::modules::look::surface::{self, SurfaceKind, preset_values};
+    const GROUP: &str = "Surface";
+    let (scene, reg, id, time) = (cx.scene, &cx.kit.registry, cx.id, cx.time);
+    let at = |key: &str| Address::on(id, slot, key);
+    let get = |key: &str| scene.value_at_time(reg, &at(key), time).expect("a Look card's Surface settings resolve");
+    let now = match get("surface") {
+        Value::Choice(name) => SurfaceKind::from_name(&name).unwrap_or_default(),
+        _ => SurfaceKind::default(),
+    };
+    let open = !is_folded(inspector, (id, Some(slot)), GROUP);
+    ui.horizontal(|ui| {
+        if fold_toggle(ui, open, GROUP) {
+            fold_groups(inspector, (id, Some(slot)), &[(GROUP, open)]);
+        }
+        ui.label(RichText::new(GROUP).font(style::semibold(12.0)));
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+        for (i, name) in SurfaceKind::NAMES.iter().enumerate() {
+            let kind = SurfaceKind::from_name(name).expect("one of the names");
+            if surface_chip(ui, i, &crate::widgets::pretty(name), kind == now).clicked() && kind != now {
+                edits.push(Edit::SetSlot(slot, "surface".into(), Value::Choice((*name).into())));
+                for (key, value) in preset_values(kind) {
+                    edits.push(Edit::SetSlot(slot, key.into(), value));
+                }
+            }
+        }
+    });
+    if !scene.things.get(&ThingId::ROOT).is_some_and(|r| r.slots.contains_key(&SlotId::Lighting)) {
+        ui.label(RichText::new("Surfaces show once the scene has lighting (add a light).").small().color(style::MUTED));
+    }
+    if !open {
+        return;
+    }
+    let defs: Vec<SettingDef> = surface::defs()
+        .iter()
+        .filter(|d| d.key != "surface" && (ball || d.key != "bulge"))
+        .map(|d| SettingDef { group: "", ..d.clone() })
+        .collect();
+    let marks = |key: &str| {
+        let def = defs.iter().find(|d| d.key == key)?;
+        Some(mark_for(scene, def, &at(key)))
+    };
+    let applies = |d: &SettingDef| d.applies(Some(&cx.thing.kind), &|k| scene.value_at_time(reg, &at(k), time));
+    let follow_menu = crate::follow::menu(scene);
+    let follow_now = |key: &str| crate::follow::now(scene, &at(key));
+    let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now };
+    let grid = GridCx {
+        choices: cx.choices,
+        marks: &marks,
+        applies: &applies,
+        folded: None,
+        label_width: cx.label_width,
+        track: style::colour_of(scene, id),
+        follow: Some(&follow),
+        vary: None,
+    };
+    let out = settings_grid(ui, ("surface", id, slot), &defs, get, &grid);
+    edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key.into(), value)));
+    edits.extend(out.new_keys.into_iter().map(|key| Edit::NewKey(Some(slot), key.into())));
+    edits.extend(out.follows.into_iter().map(|(key, source)| Edit::Follow(Some(slot), key.into(), source)));
+    ui.add_space(4.0);
+}
+
+/// One Surface chip: Surface number `kind` painted as a little ball, then its name; outlined in
+/// the text colour when picked.
+fn surface_chip(ui: &mut Ui, kind: usize, name: &str, on: bool) -> egui::Response {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let text = ui.painter().layout_no_wrap(name.to_owned(), font, if on { style::TEXT_STRONG } else { style::TEXT });
+    let size = egui::vec2(26.0 + text.size().x + 8.0, 24.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, on, name));
+    let response = response.on_hover_text(format!("Make it {}", name.to_lowercase()));
+    let painter = ui.painter();
+    if response.hovered() {
+        painter.rect_filled(rect, style::RADIUS, style::HOVER);
+    }
+    let edge = if on { style::TEXT } else { style::LINE };
+    painter.rect_stroke(rect, style::RADIUS, egui::Stroke::new(1.0, edge), egui::StrokeKind::Inside);
+    style::surface_swatch(painter, egui::pos2(rect.left() + 13.0, rect.center().y), 7.5, kind);
+    painter.galley(egui::pos2(rect.left() + 26.0, rect.center().y - text.size().y / 2.0), text, style::TEXT);
+    response
+}
+
 /// A grid of some of a thing's own settings, with folding groups. Its edits are pushed to
 /// `edits`.
 fn own_grid(
@@ -1476,6 +1581,24 @@ mod tests {
     fn menu_of(h: &mut Harness<'_, State>, label: &str) {
         h.get_all_by_role_and_label(Role::Label, label).next().unwrap().click_secondary();
         h.run();
+    }
+
+    #[test]
+    fn a_surface_chip_sets_the_surface_and_its_numbers_in_one_edit() {
+        let mut h = harness(Some(ThingId(2)));
+        h.get_by_role_and_label(Role::Button, "Chrome").click();
+        h.run();
+        let card = &h.state().scene.things[&ThingId(2)].slots[&SlotId::Look];
+        assert_eq!(card.params.get("surface"), Some(&Value::Choice("chrome".into())));
+        assert_eq!(card.params.get("metal"), Some(&Value::Number(1.0)));
+        assert_eq!(card.params.get("roughness"), Some(&Value::Number(0.05)));
+        // The numbers stay folded until opened; then they are there to edit, Bulge too on a ball.
+        assert!(h.query_all_by_label("Roughness").next().is_none());
+        h.get_by_label("Show Surface").click();
+        h.run();
+        for label in ["Roughness", "Clear coat", "Bends light", "See-through", "Bulge"] {
+            assert!(h.query_all_by_label(label).next().is_some(), "{label}");
+        }
     }
 
     #[test]
@@ -2124,108 +2247,38 @@ mod tests {
         assert!(slider(&h, "Vignette"));
     }
 
-    /// Opens the card's Type menu: the one Type button on the page.
-    fn open_type_menu(h: &mut Harness<'_, State>) {
-        h.get_by_role_and_label(Role::Button, "Type").click();
-        h.run();
-    }
-
-    /// A new scene whose settings have an effect in their Shader slot (only the scene has one), with one of its number
-    /// settings moved off its default, and that setting's address. The other effect kinds named
-    /// come back too: those that lack the setting.
-    fn scene_with_an_effect() -> (Scene, Address, Vec<&'static str>) {
-        let reg = bpe_kit::registry();
-        let mut scene = bpe_kit::new_scene(&reg);
-        bpe_kit::fill_slot(&mut scene, &reg, ThingId::ROOT, SlotId::Shader).unwrap();
-        let kind = reg.module(&scene.things[&ThingId::ROOT].slots[&SlotId::Shader].kind).unwrap();
-        let def = kind
-            .settings()
-            .iter()
-            .find(|d| d.key != "blend" && matches!(d.default, Value::Number(_)))
-            .expect("an effect with a number setting of its own");
-        let (Value::Number(n), Some((low, high))) = (&def.default, def.range) else { unreachable!() };
-        let a = Address::on(ThingId::ROOT, SlotId::Shader, def.key);
-        scene.set_at(&reg, &a, Value::Number(if *n == low { high } else { low })).unwrap();
-        let others = reg
-            .modules_for(SlotId::Shader)
-            .filter(|m| m.id() != kind.id() && m.settings().iter().all(|d| d.key != def.key))
-            .map(|m| m.name())
-            .collect();
-        (scene, a, others)
-    }
-
-    /// The name of the kind of `id`'s card in its Shader slot.
-    fn effect_name(s: &State, id: ThingId) -> &'static str {
-        s.kit.registry.module(&s.scene.things[&id].slots[&SlotId::Shader].kind).unwrap().name()
+    /// The kinds of the layers of the scene's Effects card, bottom first.
+    fn effect_kinds(s: &State) -> Vec<String> {
+        s.scene.things[&ThingId::ROOT].slots[&SlotId::Shader].layers.iter().map(|l| l.kind.clone()).collect()
     }
 
     #[test]
-    fn an_effects_card_has_a_type_menu_and_a_balls_look_has_none() {
+    fn the_effects_card_lists_its_effects_and_adds_them_from_its_menu() {
         let reg = bpe_kit::registry();
         let mut scene = bpe_kit::new_scene(&reg);
-        // Only the ball's Look, Motion and Bounce: each has one kind.
         bpe_kit::fill_slot(&mut scene, &reg, ThingId::ROOT, SlotId::Shader).unwrap();
-        let mut h = harness_of(scene, Some(ThingId(2)));
-        assert!(h.query_by_role_and_label(Role::Button, "Type").is_none(), "a ball's look has one kind");
-        h.state_mut().selection.set(ThingId::ROOT);
-        h.run();
-        let root = reg.thing("scene").unwrap();
-        let effects: Vec<&str> = reg.kinds_fitting(SlotId::Shader, root).map(|k| k.name()).collect();
-        assert!(effects.len() > 1, "{effects:?}");
-        let current = effect_name(h.state(), ThingId::ROOT);
-        open_type_menu(&mut h);
-        for name in &effects {
-            assert!(h.query_all_by_label(name).next().is_some(), "{name} is offered");
-        }
-        let other = effects.iter().find(|n| **n != current).unwrap();
-        h.get_all_by_label(other).last().unwrap().click();
-        h.run();
-        assert_eq!(effect_name(h.state(), ThingId::ROOT), *other);
-    }
-
-    #[test]
-    fn picking_a_type_switches_the_card_and_back_restores_it() {
-        let (scene, moved, others) = scene_with_an_effect();
-        let reg = bpe_kit::registry();
-        let value = scene.value_at(&reg, &moved);
+        assert_eq!(scene.things[&ThingId::ROOT].slots[&SlotId::Shader].kind, bpe_kit::modules::effects::EFFECTS);
         let mut h = harness_of(scene, Some(ThingId::ROOT));
-        let first = effect_name(h.state(), ThingId::ROOT);
-        let other = *others.first().expect("an effect without the moved setting");
-        open_type_menu(&mut h);
-        h.get_all_by_label(other).last().unwrap().click();
+        assert!(h.query_by_role_and_label(Role::Button, "Type").is_none(), "one kind of Effects card");
+        assert!(h.query_all_by_label_contains("None yet: add an effect").next().is_some());
+        h.get_by_role_and_label(Role::Button, "+ Add effect").click();
         h.run();
-        {
-            let s = h.state();
-            assert_eq!(effect_name(s, ThingId::ROOT), other);
-            assert!(s.scene.things[&ThingId::ROOT].slots[&SlotId::Shader].params.get(&moved.key).is_none());
-        }
-        open_type_menu(&mut h);
-        h.get_all_by_label(first).last().unwrap().click();
+        h.get_all_by_label("Kaleidoscope").last().unwrap().click();
         h.run();
+        assert_eq!(effect_kinds(h.state()), ["picture.kaleidoscope"]);
+        // A picture effect takes the whole picture, its light or its glow.
+        assert!(h.query_all_by_label("Takes").next().is_some(), "the Takes row");
+        assert!(h.query_all_by_label("Mix").next().is_some(), "the Mix row");
+        h.get_by_role_and_label(Role::Button, "+ Add effect").click();
+        h.run();
+        h.get_all_by_label("Lava").last().unwrap().click();
+        h.run();
+        assert_eq!(effect_kinds(h.state()), ["picture.kaleidoscope", "picture.lava"]);
+        // The new one is picked: a material paints the things, and takes nothing.
         let s = h.state();
-        assert_eq!(effect_name(s, ThingId::ROOT), first);
-        assert_eq!(s.scene.value_at(&s.kit.registry, &moved), value, "the moved setting is back");
-    }
-
-    #[test]
-    fn undo_after_a_type_switch_restores_the_card() {
-        let (scene, _, others) = scene_with_an_effect();
-        let before = scene.clone();
-        let mut h = harness_of(scene, Some(ThingId::ROOT));
-        let first = effect_name(h.state(), ThingId::ROOT);
-        open_type_menu(&mut h);
-        h.get_all_by_label(others[0]).last().unwrap().click();
-        h.run();
-        assert_eq!(effect_name(h.state(), ThingId::ROOT), others[0]);
-        // The studio records any frame that changed the scene as an undo step.
-        let mut history = crate::history::History::default();
-        history.record(before.clone(), false);
-        let s = h.state_mut();
-        assert!(history.undo(&mut s.scene));
-        assert_eq!(effect_name(s, ThingId::ROOT), first);
-        assert_eq!(s.scene, before);
-        assert!(history.redo(&mut s.scene));
-        assert_eq!(effect_name(s, ThingId::ROOT), others[0]);
+        let lava = s.scene.things[&ThingId::ROOT].slots[&SlotId::Shader].layers[1].id;
+        assert_eq!(s.inspector.selected_layer.get(&ThingId::ROOT), Some(&lava));
+        assert!(h.query_all_by_label("Takes").next().is_none(), "no Takes on a material");
     }
 
     #[test]

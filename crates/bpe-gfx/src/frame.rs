@@ -733,11 +733,78 @@ pub struct EffectCall {
     pub wgsl: Cow<'static, str>,
     /// The effect's params packed in header order, colours taking three.
     pub params: [f32; 16],
-    /// How much of the effect shows, 0 to 1.
+    /// How much of the effect shows (its Mix): 1 all of it, 0 none (skipped); past 1 pushes it
+    /// further, below 0 the other way.
     pub blend: f32,
     /// 0 for the whole picture, else the [`thing_code`] of the one thing it paints.
     pub apply_to: f32,
     pub stage: Stage,
+    /// How the effect's result mixes onto what it took (Normal replaces it).
+    pub mode: Blend,
+    /// What of the picture the effect works on (read at the Picture stage on the main picture).
+    pub takes: Takes,
+    /// For [`Takes::Glow`]: the brightness above which the picture counts as glow.
+    pub glow_above: f32,
+    /// How many seconds of earlier frames the effect remembers (0 for none), for the editor's
+    /// warm-up after a seek.
+    pub memory: f32,
+}
+
+impl EffectCall {
+    /// A call of `wgsl` over the whole picture at `stage`, fully mixed in, Normal, taking the
+    /// whole picture, its params all 0.
+    pub fn new(key: u64, wgsl: impl Into<Cow<'static, str>>, stage: Stage) -> Self {
+        Self {
+            key,
+            wgsl: wgsl.into(),
+            params: [0.0; 16],
+            blend: 1.0,
+            apply_to: 0.0,
+            stage,
+            mode: Blend::Normal,
+            takes: Takes::Whole,
+            glow_above: 0.9,
+            memory: 0.0,
+        }
+    }
+}
+
+/// What part of the picture an effect works on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Takes {
+    /// The whole picture.
+    #[default]
+    Whole,
+    /// The light that falls on lit things (needs a Lighting card; else the effect changes
+    /// nothing).
+    Light,
+    /// Only what is brighter than the call's `glow_above`.
+    Glow,
+}
+
+impl Takes {
+    /// The shader's code: 0 whole, 1 light, 2 glow.
+    pub fn code(self) -> f32 {
+        match self {
+            Takes::Whole => 0.0,
+            Takes::Light => 1.0,
+            Takes::Glow => 2.0,
+        }
+    }
+}
+
+/// One live ball, as the picture effects see it (their ball list).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BallMark {
+    /// Centre, world pixels.
+    pub center: [f32; 2],
+    pub radius: f32,
+    /// Its body colour, linear light.
+    pub color: [f32; 3],
+    /// 0 to 1, the same in every frame.
+    pub seed: f32,
+    /// Seconds since its last hit (a large number when never hit).
+    pub hit_age: f32,
 }
 
 /// A colour with alpha 0 but some light is an additive colour (the colour picker's "Additive"
@@ -849,6 +916,12 @@ pub struct Frame {
     /// The scene's lights, when it has a Lighting card (only the top frame's counts). `None`
     /// draws the picture exactly as it was before lighting.
     pub light: Option<LightScene>,
+    /// Every live ball, for the picture effects' ball list (filled only when the scene has an
+    /// Effects card). Blend layers' frames hold the balls drawn into them.
+    pub ball_marks: Vec<BallMark>,
+    /// The beat at this moment: its phase 0 to 1, the bar's phase 0 to 1, beats per second, and
+    /// 1 when the scene has a tempo (else all 0). Only the top frame's counts.
+    pub beat: [f32; 4],
 }
 
 /// One light as the lighting pass reads it (`LightGpu` in lighting.wgsl).
@@ -935,6 +1008,50 @@ pub struct LightingGpu {
     pub memory: [f32; 4],
     /// The glow's own colour (linear rgb), 1 to glow in the light's own colour instead.
     pub memory_colour: [f32; 4],
+    /// Stage (lighting part 2a): 1 in Stage (0 Flat), the back wall's depth, the shapes' front
+    /// (z, toward the camera), k = tan(looking down) (0 with no floor).
+    pub stage: [f32; 4],
+    /// The floor: kind (0 none, 1 at the world y in `y`, 2 at the picture's bottom), its y, its
+    /// surface (0 matte, 1 glossy, 2 mirror), the wall's surface (0 matte, 1 glossy).
+    pub floor: [f32; 4],
+    /// The floor's blur and reflection; two spare.
+    pub floor_more: [f32; 4],
+    /// The sky's top colour (linear rgb) and Sky light.
+    pub sky_top: [f32; 4],
+    /// The sky's bottom colour (linear rgb); w spare.
+    pub sky_bottom: [f32; 4],
+}
+
+/// How a surface takes light (`SurfaceGpu` in lighting.wgsl): an entry of
+/// [`LightScene::surfaces`], named by the surface index every record of a thing carries in
+/// [`LayerGpu::light`]`[3]`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct SurfaceGpu {
+    /// Roughness, metal, clear coat, see-through.
+    pub a: [f32; 4],
+    /// F0 (how much it reflects looked at straight on), toon steps (0 smooth), reflects the sky
+    /// (1) or nothing (0), kind ([`SurfaceGpu::SHEET`], `BALL`, `SHAPE`).
+    pub b: [f32; 4],
+}
+
+impl SurfaceGpu {
+    /// Trails, particles and anything else with no Surface: matte and flat.
+    pub const SHEET: f32 = 0.0;
+    pub const BALL: f32 = 1.0;
+    pub const SHAPE: f32 = 2.0;
+    /// A plain sheet: matte, reflecting nothing (index 0 of every table).
+    pub const MATTE: SurfaceGpu = SurfaceGpu { a: [1.0, 0.0, 0.0, 0.0], b: [0.0; 4] };
+}
+
+/// A ball as a sphere on the stage (`SphereGpu` in lighting.wgsl).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct SphereGpu {
+    /// Centre xy (world, on the picture plane), radius, see-through.
+    pub a: [f32; 4],
+    /// The colour of the light it lets through (linear rgb); w spare.
+    pub b: [f32; 4],
 }
 
 impl LightingGpu {
@@ -978,6 +1095,11 @@ pub struct LightScene {
     pub stirs: Vec<[[f32; 4]; 2]>,
     /// The scene's own link number (the background's, for Lights up).
     pub background_link: f32,
+    /// How each surface takes light, by surface index; 0 (and any index never set) is
+    /// [`SurfaceGpu::MATTE`].
+    pub surfaces: Vec<SurfaceGpu>,
+    /// Every ball as a sphere, for shadows and contact shading in Stage.
+    pub spheres: Vec<SphereGpu>,
 }
 
 impl LightScene {
@@ -994,6 +1116,15 @@ impl LightScene {
     /// Whether the frame needs its UV picture: drawn in light pass 5.
     pub fn needs_uv(&self) -> bool {
         self.uv && self.has_uv_light()
+    }
+
+    /// Sets surface `index`, growing the table with matte sheets.
+    pub fn set_surface(&mut self, index: u32, surface: SurfaceGpu) {
+        let i = index as usize;
+        if self.surfaces.len() <= i {
+            self.surfaces.resize(i + 1, SurfaceGpu::MATTE);
+        }
+        self.surfaces[i] = surface;
     }
 }
 
@@ -1172,6 +1303,8 @@ impl Default for Frame {
             layers: Vec::new(),
             grade: Grade::default(),
             light: None,
+            ball_marks: Vec::new(),
+            beat: [0.0; 4],
         }
     }
 }
@@ -1202,9 +1335,17 @@ impl Frame {
         self.layers.clear();
         self.grade = Grade::default();
         self.light = None;
+        self.ball_marks.clear();
+        self.beat = [0.0; 4];
         if let Some(overlay) = &mut self.overlay {
             overlay.clear();
         }
+    }
+
+    /// The longest memory (seconds) of this frame's effects: how far back the editor replays
+    /// after a seek so the picture matches a straight run (0 when no effect remembers).
+    pub fn memory(&self) -> f32 {
+        self.effects.iter().filter(|e| e.blend != 0.0).map(|e| e.memory).fold(0.0, f32::max)
     }
 
     /// The frame things drawn with `blend` at `amount` go into: this one for Normal at full

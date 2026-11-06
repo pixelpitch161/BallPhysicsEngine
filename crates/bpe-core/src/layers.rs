@@ -105,6 +105,8 @@ pub struct CopiedLayer {
 #[derive(Clone, Debug, PartialEq)]
 pub struct CopiedLook {
     pub layers: Vec<CopiedLayer>,
+    /// The card's own settings, not any layer's (a Look's Surface section).
+    pub card: Params,
 }
 
 /// Whether `key` is a layered key of layer `id`.
@@ -621,7 +623,8 @@ impl Scene {
             .filter(|l| l.parent.is_none() && section_of(reg, l) != LayerSection::Group)
             .map(|l| self.copy_layer(thing, slot, l.id))
             .collect::<Option<Vec<_>>>()?;
-        Some(CopiedLook { layers })
+        let own = card.params.iter().filter(|(k, _)| split_layered(k).is_none()).map(|(k, v)| (k.clone(), v.clone()));
+        Some(CopiedLook { layers, card: Params(own.collect()) })
     }
 
     /// Makes layer `id` apply only to the balls numbered in `only` (empty: every ball). The base
@@ -773,11 +776,17 @@ impl Scene {
         }
         let new_of = |old: i64| flat.iter().position(|(l, _, _)| i64::from(l.id.0) == old).map(|i| ids[i].0 as i64);
         let goes = |key: &str| split_layered(key).is_some_and(|(id, _)| !taken(id));
-        let on = |a: &Address| a.thing == thing && a.slot == Some(slot) && goes(&a.key);
+        let on =
+            |a: &Address| a.thing == thing && a.slot == Some(slot) && (goes(&a.key) || split_layered(&a.key).is_none());
         self.tracks.retain(|a, _| !on(a));
         self.pulses.retain(|a, _| !on(a));
         let card = self.layer_card_mut(thing, slot);
         card.params.0.retain(|k, _| !goes(k));
+        // The card's own settings (its Surface) come with the look.
+        card.params.0.retain(|k, _| split_layered(k).is_some());
+        for (k, v) in copied.card.iter() {
+            card.params.set(k, v.clone());
+        }
         // The kept group layers keep the layers they chose that come back as the same kind of
         // layer with the same id (a look pasted back where it was copied from); the rest are gone.
         let before: Vec<(LayerId, KindId)> = card.layers.iter().map(|l| (l.id, l.kind.clone())).collect();

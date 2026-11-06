@@ -14,6 +14,7 @@ use eframe::egui::{self, Align2, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, 
 use glam::Vec2;
 
 pub mod light_handles;
+mod warm;
 pub mod world_view;
 pub mod zones;
 
@@ -40,6 +41,11 @@ pub struct Preview {
     menu: Option<MenuTarget>,
     /// What the picture on screen was drawn from, so it is only drawn again when that changes.
     drawn: Option<Drawn>,
+    /// The effects' warm-up after a jump in time, and the renderer it draws on.
+    warm: Option<warm::Warmup>,
+    spare: Option<Renderer>,
+    /// What the last picture showed and whether its effects' memory is short, to see jumps by.
+    shown: warm::Shown,
 }
 
 #[derive(PartialEq)]
@@ -268,7 +274,17 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
             renderer.output_view(),
             wgpu::FilterMode::Linear,
         );
-        Preview { renderer, texture, frame: Frame::default(), drag: None, menu: None, drawn: None }
+        Preview {
+            renderer,
+            texture,
+            frame: Frame::default(),
+            drag: None,
+            menu: None,
+            drawn: None,
+            warm: None,
+            spare: None,
+            shown: warm::Shown::default(),
+        }
     });
     if preview.renderer.size() != (width, height) {
         preview.renderer.resize(device, width, height);
@@ -290,6 +306,18 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         &mut preview.drawn,
         look,
     );
+    if warm::update(&mut preview, studio, device, &render_state.queue, catching_up, look) {
+        // The warm renderer took the cold one's place: the picture shows its output now.
+        render_state.renderer.write().update_egui_texture_from_wgpu_texture(
+            device,
+            preview.renderer.output_view(),
+            wgpu::FilterMode::Linear,
+            preview.texture,
+        );
+    }
+    if warm::busy(&preview) {
+        ui.ctx().request_repaint();
+    }
     if redraw_when_built(&preview.renderer, ui.ctx()) {
         preview.drawn = None;
     }
@@ -302,6 +330,8 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     ui.painter().image(preview.texture, rect, uv, style::UNTINTED);
     if let Some(done) = studio.aiming() {
         aiming_pill(&ui.painter_at(rect), rect, done);
+    } else if let Some(w) = &preview.warm {
+        pill(&ui.painter_at(rect), rect, &format!("Warming up effects\u{2026} {:.0}%", (w.done() * 100.0).floor()));
     }
     if let Some(bar) = bar {
         show_bar(ui, bar, studio);
@@ -683,7 +713,12 @@ fn solo_pill(ui: &mut Ui, rect: Rect, studio: &mut Studio, below_aiming: bool) {
 
 /// "Aiming… 37%" in the picture's top-left corner while the background aiming holds it back.
 fn aiming_pill(painter: &egui::Painter, rect: Rect, done: f32) {
-    let text = format!("Aiming\u{2026} {:.0}%", (done * 100.0).floor());
+    pill(painter, rect, &format!("Aiming\u{2026} {:.0}%", (done * 100.0).floor()));
+}
+
+/// `text` in a pill in the picture's top-left corner.
+fn pill(painter: &egui::Painter, rect: Rect, text: &str) {
+    let text = text.to_owned();
     let galley = painter.layout_no_wrap(text, FontId::proportional(13.0), style::TEXT_STRONG);
     let at = rect.min + egui::vec2(10.0, 10.0);
     let back = Rect::from_min_size(at, galley.size() + egui::vec2(16.0, 8.0));
