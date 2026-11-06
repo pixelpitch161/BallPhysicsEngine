@@ -25,7 +25,8 @@ pub enum HitsTake {
 /// What happens when the health reaches 0.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
 pub enum AtZero {
-    /// The ball (or the shape) breaks.
+    /// The ball (or the shape) breaks, at the next step's start: a rule hearing it reach 0 can't
+    /// save it (pick Nothing and break it from a rule for that).
     #[default]
     Break,
     /// Nothing: rules decide.

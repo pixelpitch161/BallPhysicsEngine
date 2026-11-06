@@ -208,3 +208,10 @@ struct HealthOf { card: HealthCard, balls: bool, hp: Vec<Hp> }
 - The emitter offers the Health card from "+ Add slot" but doesn't start with one (`DEFAULT_SLOTS`).
 - Tests: `bpe-kit/src/rules/health_tests.rs` (16), runtime unit tests in `rules/health.rs`, core vary tests, the
   studio's `follow_health_is_offered_for_things_with_a_health_card`; goldens `tests/golden-rules-health*.txt`.
+- From the review: a test flight's copy (`World::lone`) keeps the health as it is, held (`RulesState::lone`,
+  `Health::held`: hits there take nothing), so aiming sees what Follow health reads; the world is built at full
+  health (`FullHealth` for the build's 0 s keyframes); a group before its first ball reads full (1), and 0 only once
+  every ball is gone; a starting health of 0 counts as `LEAST_START` so the first hit still reaches zero; endless
+  amounts clamp (−∞ empties, +∞ caps at `f64::MAX`), only NaN is dropped; taking a Health card away drops Follow
+  health of that thing (`drop_slot_animation`). At zero Break breaks at the next step's start, so a rule hearing it
+  reach zero can't save it (the setting's help says so); pick Nothing and break it from a rule for that.

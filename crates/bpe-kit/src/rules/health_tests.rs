@@ -301,10 +301,21 @@ fn a_physics_setting_can_follow_health() {
     let (_, log) = run(&scene, &kit, 3.0);
     let first = hits(&log, SHAPE).next().unwrap().step;
     let at = |step: u64| run(&scene, &kit, step as f64 / 240.0).0;
+    let built = World::build(&scene, &resolve(&scene, &kit.registry), &kit.sims);
+    assert!((bounciness(&built) - 0.9).abs() < 1e-6, "built at full health");
     assert!((bounciness(&at(first)) - 0.9).abs() < 1e-6, "full health: all of it");
     let w = at(first + 1);
     assert_eq!(w.health_levels().unwrap().share(SHAPE), 0.75);
     assert!((bounciness(&w) - 0.8).abs() < 1e-6, "{}", bounciness(&w));
+    // A test flight's copy keeps the health as it is, and hits there take none.
+    let mut lone = w.lone(&|id| id != BALLS);
+    assert_eq!(lone.health_levels().unwrap().share(SHAPE), 0.75);
+    lone.advance_to(3.0, &kit.sims, &mut Log::default());
+    assert_eq!(lone.health_levels().unwrap().share(SHAPE), 0.75);
+    // Taking the Health card away takes Follow health of it too.
+    let mut without = scene.clone();
+    assert!(without.remove_slot(SHAPE, SlotId::Health));
+    assert!(without.pulses.get(&a).is_none());
     // It changes the run, so it changes the fingerprint; so does a Health card.
     let resolved = resolve(&scene, &kit.registry);
     let plain = new_scene(&kit.registry);

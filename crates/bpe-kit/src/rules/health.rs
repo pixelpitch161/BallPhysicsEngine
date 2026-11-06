@@ -114,8 +114,7 @@ impl BlockSim for WhenHealth {
             values.set("health", m.after);
             values.set("damage", m.before - m.after);
             values.set("start", m.start);
-            let share = if m.start > 0.0 { (m.after / m.start).clamp(0.0, 1.0) } else { 0.0 };
-            values.set("share", share);
+            values.set("share", Hp { now: m.after, start: m.start }.share() as f64);
             values.set("strength", m.strength as f64);
             if m.row.is_some() {
                 ball_values(cx.world, subject, &mut values);

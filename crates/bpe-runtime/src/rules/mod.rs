@@ -246,6 +246,24 @@ impl RulesState {
         })
     }
 
+    /// A test flight's copy (`World::lone`): no rules, health held as it is now. `None` without
+    /// health.
+    pub(crate) fn lone(&self) -> Option<RulesState> {
+        if self.health.is_empty() {
+            return None;
+        }
+        Some(RulesState {
+            rules: Vec::new(),
+            pending: Vec::new(),
+            changes: BTreeMap::new(),
+            dirty: BTreeSet::new(),
+            broken: self.broken.clone(),
+            frozen: Vec::new(),
+            changes_settings: false,
+            health: self.health.held(),
+        })
+    }
+
     /// The Rules stage: first what this step's hits take from things' health, then every
     /// enabled rule without a problem, in list order, reads this step's `events` (and changes of
     /// health) and queues its actions; what fired is logged as `Rule` events.

@@ -66,7 +66,9 @@ impl HealthCard {
             }
             _ => self.start,
         };
-        if start.is_finite() { start.max(0.0) } else { 0.0 }
+        // A start of 0 is kept a hair above it, so the first hit that takes anything still
+        // reaches zero (and breaks).
+        if start.is_finite() { start.max(LEAST_START) } else { LEAST_START }
     }
 
     /// How much a hit of `strength` takes (before Least strength and Only hits from).
@@ -138,7 +140,12 @@ struct HealthOf {
 pub struct Health {
     things: BTreeMap<ThingId, HealthOf>,
     pub(crate) moments: Vec<HealthMoment>,
+    /// Held as it is: hits take nothing (a test flight's copy, `World::lone`).
+    still: bool,
 }
+
+/// The least starting health: a card's 0 counts as this.
+pub const LEAST_START: f64 = 1e-9;
 
 /// `template` (a card's action at zero) aimed at `thing` (or its ball `row`), with the place and
 /// strength of what did it.
@@ -163,7 +170,12 @@ impl Health {
             let hp = if balls { Vec::new() } else { vec![Hp { now: card.start_at(None), start: card.start_at(None) }] };
             things.insert(id, HealthOf { card, balls, hp });
         }
-        Health { things, moments: Vec::new() }
+        Health { things, moments: Vec::new(), still: false }
+    }
+
+    /// A copy whose health stays as it is now: hits take nothing (a test flight's world).
+    pub(crate) fn held(&self) -> Health {
+        Health { things: self.things.clone(), moments: Vec::new(), still: true }
     }
 
     /// Whether any thing has health.
@@ -221,13 +233,14 @@ impl Health {
     }
 
     /// `thing`'s share of its starting health (0 to 1): its own for a thing without balls, else
-    /// the mean over its live balls (0 when none is alive). 0 without a Health card.
+    /// the mean over its live balls (0 when they are all gone, 1 before it has any). 0 without a
+    /// Health card.
     pub fn thing_share(&self, world: &World, thing: ThingId) -> f32 {
         let Some(h) = self.things.get(&thing) else { return 0.0 };
         if !h.balls {
             return h.hp.first().map_or(0.0, Hp::share);
         }
-        let Some(b) = world.bodies.get(&thing) else { return 0.0 };
+        let Some(b) = world.bodies.get(&thing).filter(|b| b.len() > 0) else { return 1.0 };
         let (mut sum, mut n) = (0.0f32, 0u32);
         for row in (0..b.len()).filter(|&r| b.alive[r]) {
             sum += h.hp.get(row).map_or(1.0, Hp::share);
@@ -255,10 +268,10 @@ impl Health {
             HealthChange::Set(x) => x,
             HealthChange::Refill => hp.start,
         };
-        if !after.is_finite() {
+        if after.is_nan() {
             return None;
         }
-        let after = after.max(0.0);
+        let after = after.clamp(0.0, f64::MAX);
         if after == before {
             return None;
         }
@@ -289,7 +302,7 @@ impl Health {
         broken: &BTreeSet<ThingId>,
         out: &mut Vec<Action>,
     ) {
-        if self.things.is_empty() {
+        if self.things.is_empty() || self.still {
             return;
         }
         for e in events.iter().filter(|e| e.kind == EventKind::Hit) {
@@ -353,7 +366,7 @@ mod tests {
     fn one_thing(start: f64) -> Health {
         let mut things = BTreeMap::new();
         things.insert(ThingId(5), HealthOf { card: card(start), balls: false, hp: vec![Hp { now: start, start }] });
-        Health { things, moments: Vec::new() }
+        Health { things, moments: Vec::new(), still: false }
     }
 
     const AT: (Vec2, Vec2, Option<Party>, f32) = (Vec2::ZERO, Vec2::ZERO, None, 0.0);
@@ -383,6 +396,22 @@ mod tests {
         assert_eq!((m.before, m.after), (1.5, 3.0));
         assert_eq!(h.moments().len(), 5);
         assert!(h.change(ThingId(6), None, HealthChange::Refill, AT).is_none(), "no Health card");
+        let (m, _) = h.change(t, None, HealthChange::Heal(f64::INFINITY), AT).unwrap();
+        assert_eq!(m.after, f64::MAX, "an endless heal is capped");
+        let (m, zero) = h.change(t, None, HealthChange::Damage(f64::INFINITY), AT).unwrap();
+        assert_eq!((m.after, zero), (0.0, true), "an endless hit empties it");
+    }
+
+    #[test]
+    fn a_start_of_zero_still_reaches_zero_on_the_first_hit() {
+        let c = card(0.0);
+        let start = c.start_at(None);
+        assert_eq!(start, LEAST_START);
+        let mut things = BTreeMap::new();
+        things.insert(ThingId(5), HealthOf { card: c, balls: false, hp: vec![Hp { now: start, start }] });
+        let mut h = Health { things, moments: Vec::new(), still: false };
+        let (_, zero) = h.change(ThingId(5), None, HealthChange::Damage(1.0), AT).unwrap();
+        assert!(zero);
     }
 
     #[test]
@@ -396,7 +425,7 @@ mod tests {
         let at = |number| c.start_at(Some(&bpe_core::BallSpread { number, count: 5, ..Default::default() }));
         assert_eq!((at(0), at(2), at(4)), (2.0, 6.0, 10.0));
         assert_eq!(c.start_at(None), 2.0);
-        assert_eq!(card(-3.0).start_at(None), 0.0);
+        assert_eq!(card(-3.0).start_at(None), LEAST_START);
     }
 
     #[test]

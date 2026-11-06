@@ -76,12 +76,9 @@ impl World {
             false
         });
         let time = self.time();
-        // Walked by place, so a health that reaches 0 here can add its Break for this same pass.
-        let mut queue = std::mem::take(&mut rules.pending);
-        let mut next = 0;
-        while next < queue.len() {
-            let action = queue[next].clone();
-            next += 1;
+        // Walked as a queue, so a health that reaches 0 here can add its Break for this same pass.
+        let mut queue: std::collections::VecDeque<Action> = std::mem::take(&mut rules.pending).into();
+        while let Some(action) = queue.pop_front() {
             match action {
                 Action::Motion { thing, row, motion } => {
                     if rules.broken.contains(&thing) {
@@ -170,7 +167,7 @@ impl World {
                         if let Some((_, true)) = rules.health.change(thing, row, change, (point, Vec2::ZERO, None, 0.0))
                             && let Some(template) = at_zero
                         {
-                            queue.push(super::aimed(&template, thing, row, point, Vec2::ZERO, 0.0));
+                            queue.push_back(super::aimed(&template, thing, row, point, Vec2::ZERO, 0.0));
                         }
                     }
                 }

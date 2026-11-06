@@ -257,7 +257,9 @@ impl World {
         let animation = physics_animation(scene, resolved, sims);
         let at_start = animation.as_ref().map(|animation| {
             let mut at_start = resolved.clone();
-            animation.apply(&mut at_start, 0.0, &Inputs::NONE);
+            // Health is full at the start.
+            let full = FullHealth(resolved);
+            animation.apply(&mut at_start, 0.0, &Inputs { health: Some(&full), ..Inputs::NONE });
             at_start
         });
         let built_from = at_start.as_ref().unwrap_or(resolved);
@@ -745,8 +747,8 @@ impl World {
             light: self.light.clone(),
             pulls: BTreeMap::new(),
             fingerprint: self.fingerprint,
-            // A test flight finds its ways as if no rule acted from now on.
-            rules: None,
+            // A test flight finds its ways as if no rule acted from now on, health staying as it is.
+            rules: self.rules.as_ref().and_then(crate::rules::RulesState::lone),
             run: RunId::fresh(),
         }
     }
@@ -2276,5 +2278,15 @@ mod tests {
         assert_eq!(w.kind(ThingId(99)), None);
         assert!(w.tags(DOTS).contains("red"));
         assert!(w.tags(WALL).is_empty());
+    }
+}
+
+/// Every thing with a Health card at full health: what Follow health reads while the world is built.
+struct FullHealth<'a>(&'a Resolved);
+
+impl bpe_core::HealthLevels for FullHealth<'_> {
+    fn share(&self, thing: ThingId) -> f32 {
+        let has = self.0.things.get(&thing).is_some_and(|r| r.slots.contains_key(&bpe_core::SlotId::Health));
+        if has { 1.0 } else { 0.0 }
     }
 }

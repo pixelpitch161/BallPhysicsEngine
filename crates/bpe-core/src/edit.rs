@@ -231,6 +231,10 @@ impl Scene {
         // A Sound card going (or being replaced, as Paste sound does) takes its modulators, so
         // settings anywhere that followed one stop following it rather than pick up whatever
         // layer gets its number in the new card. Its Level and the buses stay.
+        // A Health card going takes Follow health of that thing with it.
+        if slot == SlotId::Health {
+            self.pulses.retain(|_, p| !matches!(p.source, crate::PulseSource::Health { thing } if thing == id));
+        }
         if slot == SlotId::Sound {
             self.pulses.retain(|_, p| {
                 !matches!(p.source, crate::PulseSource::Sound { shape, source: crate::SoundSource::Modulator(_) } if shape == id)
