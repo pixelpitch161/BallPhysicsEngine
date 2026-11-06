@@ -223,7 +223,13 @@ fn shape_hits(cx: &DrawCx) -> [f32; 4] {
     let rate = cx.world.steps_per_second;
     let mut hit = bpe_gfx::NO_HIT;
     for e in cx.log.since(0) {
-        if e.kind != EventKind::Hit || e.b.is_none_or(|b| b.thing != id) {
+        // Hits by a ball against it, and a rule's flashes of it (rules part 6).
+        let ours = match e.kind {
+            EventKind::Hit => e.b.is_some_and(|b| b.thing == id),
+            EventKind::Flash => e.a.thing == id,
+            _ => false,
+        };
+        if !ours {
             continue;
         }
         let time = e.time(rate);

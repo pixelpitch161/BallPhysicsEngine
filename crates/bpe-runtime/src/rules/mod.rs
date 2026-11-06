@@ -7,12 +7,14 @@ mod actions;
 mod changes;
 mod firing;
 mod remains;
+mod shows;
 mod sim;
 
 pub use actions::{Action, CountHow, MotionChange, WHOLE};
 pub use changes::{Change, ChangeKey, How, apply_to, fold};
 pub use firing::{Firing, Signal, Values};
 pub use remains::{BallAt, BreakShow, Remains};
+pub use shows::{AS_IF_HIT, FULL_FLASH_SPEED, Kick, MOST_KICKS, SceneOp, ShownScene, next_scene};
 pub use sim::{BlockSim, PrepareCx, StageCx};
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -38,6 +40,10 @@ pub const MOST_REMEMBERED: usize = 4096;
 
 /// The most changes one setting keeps at a time (see [`RulesState::add_change`]).
 pub const MOST_CHANGES: usize = 64;
+
+/// The slowest and fastest the simulation can run (Slow motion's pace).
+pub const MIN_PACE: f32 = 0.01;
+pub const MAX_PACE: f32 = 8.0;
 
 /// A number from 0 to 1 for a block, a step and a subject: a hash of the scene's seed with them,
 /// never a shared random stream, so adding a rule never changes another rule's dice.
@@ -201,6 +207,16 @@ pub struct RulesState {
     pub(crate) ball_tags: BTreeMap<(ThingId, u32), BTreeSet<String>>,
     /// Signals sent in the last round of the last stage, heard in this one's first.
     carried: Vec<Signal>,
+    /// The camera shakes and zoom punches still going, oldest first.
+    pub(crate) kicks: Vec<shows::Kick>,
+    /// How fast the simulation runs (Slow motion): changes on a pace of 1, in the order made.
+    pace: Vec<Change>,
+    /// Seconds the simulation's own clock is behind the video's (slow motion so far).
+    pub(crate) lag: f64,
+    /// How many times a rule flashed each ball (thing, body row) or thing (thing, 0).
+    pub(crate) flashes: BTreeMap<(ThingId, u32), u32>,
+    /// The lighting scene a rule shows, when one does.
+    pub(crate) scene: Option<shows::ShownScene>,
 }
 
 impl RulesState {
@@ -267,6 +283,11 @@ impl RulesState {
             counters: BTreeMap::new(),
             ball_tags: BTreeMap::new(),
             carried: Vec::new(),
+            kicks: Vec::new(),
+            pace: Vec::new(),
+            lag: 0.0,
+            flashes: BTreeMap::new(),
+            scene: None,
         })
     }
 
@@ -434,6 +455,66 @@ impl RulesState {
     /// The actions queued for the next step.
     pub fn pending(&self) -> &[Action] {
         &self.pending
+    }
+
+    // --- Spectacle (part 6) ---------------------------------------------------------------------
+
+    /// The camera shakes and zoom punches still going, oldest first.
+    pub fn kicks(&self) -> &[shows::Kick] {
+        &self.kicks
+    }
+
+    /// How fast the simulation runs at `time` (video seconds): 1 unless a rule slowed it.
+    pub fn pace_at(&self, time: f64) -> f32 {
+        if self.pace.is_empty() {
+            return 1.0;
+        }
+        match fold(&self.pace, &Value::Number(1.0), time) {
+            Value::Number(x) if x.is_finite() => (x as f32).clamp(MIN_PACE, MAX_PACE),
+            _ => 1.0,
+        }
+    }
+
+    /// Seconds the simulation's clock is behind the video's.
+    pub fn lag(&self) -> f64 {
+        self.lag
+    }
+
+    /// How many times a rule flashed body row `item` of `thing` (item 0 for a thing without
+    /// balls).
+    pub fn flashes(&self, thing: ThingId, item: u32) -> u32 {
+        self.flashes.get(&(thing, item)).copied().unwrap_or(0)
+    }
+
+    /// Whether a rule ever flashed something of `thing`.
+    pub fn flashed(&self, thing: ThingId) -> bool {
+        self.flashes.range((thing, 0)..=(thing, u32::MAX)).next().is_some()
+    }
+
+    /// The lighting scene a rule shows, when one does.
+    pub fn light_scene(&self) -> Option<&shows::ShownScene> {
+        self.scene.as_ref()
+    }
+
+    /// Adds a pace change; a Set with no glide that lasts for good replaces what was there.
+    pub(crate) fn add_pace(&mut self, change: Change) {
+        if change.covers() && change.glide <= 0.0 {
+            self.pace.clear();
+        }
+        self.pace.push(change);
+        if self.pace.len() > MOST_CHANGES {
+            self.pace.remove(0);
+        }
+    }
+
+    /// Drops the kicks and pace changes that are over at step `step` (`time` seconds).
+    pub(crate) fn prune_shows(&mut self, step: u64, rate: u32, time: f64) {
+        let _ = step;
+        self.kicks.retain(|k| k.age(time, rate).is_some());
+        self.pace.retain(|c| !c.done(time));
+        if let Some(last) = self.pace.iter().rposition(|c| c.covers() && time >= c.start + c.glide.max(0.0)) {
+            self.pace.drain(..last);
+        }
     }
 
     // --- Changes ------------------------------------------------------------------------------

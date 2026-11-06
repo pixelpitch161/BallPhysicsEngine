@@ -54,7 +54,8 @@ impl HitCursor {
             self.read = events.len();
         }
         for e in &events[self.read..] {
-            if e.kind == EventKind::Hit {
+            // Hits, and the notes rules play (rules part 6), each on its sample.
+            if matches!(e.kind, EventKind::Hit | EventKind::Note) {
                 let at = hit_sample(e, self.samples_per_step);
                 // Hits come in step order but can land out of order within a step.
                 let i = self.waiting.partition_point(|(s, _)| *s <= at);

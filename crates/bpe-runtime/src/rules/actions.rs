@@ -6,6 +6,7 @@ use std::sync::Arc;
 use bpe_core::ThingId;
 use glam::Vec2;
 
+use super::shows::{FULL_FLASH_SPEED, Kick, MOST_KICKS, SceneOp, ShownScene, next_scene};
 use super::{BallAt, BreakShow, Change, ChangeKey, Firing, MAX_BALLS, MAX_ROWS, Remains};
 use crate::{Event, EventKind, Log, NewBall, Party, Sims, World, on_own_side, pop};
 
@@ -38,6 +39,18 @@ pub enum Action {
     /// Breaks one ball (its body row) or the whole thing, `show` saying how its look plays out
     /// (drawn only; the default is Vanish).
     Break { thing: ThingId, row: Option<u32>, point: Vec2, normal: Vec2, strength: f32, show: Arc<BreakShow> },
+    /// Shakes a camera or punches its zoom (its `start` is set when it applies).
+    Kick(Kick),
+    /// Changes how fast the simulation runs (a Set on a pace of 1; its `start` is set when it
+    /// applies).
+    Pace(Box<Change>),
+    /// Flashes one ball (its body row), every live ball of the thing, or a thing without balls,
+    /// as if hit; `strength` 1 is a full-strength hit.
+    Flash { thing: ThingId, row: Option<u32>, strength: f32 },
+    /// Shows a lighting scene among `count`; `fade` the crossfade's seconds (`None`: the card's).
+    LightScene { op: SceneOp, count: u32, fade: Option<f32> },
+    /// Plays a note: the `Note` event to log (its step is set when it applies).
+    Note(Event),
     /// Splits one ball into `into` balls fanned `spread` radians across its way, going `speed`
     /// times as fast; `share` shares its area out between them, else each keeps its size.
     Split { thing: ThingId, row: u32, into: u32, spread: f32, speed: f32, share: bool },
@@ -98,6 +111,7 @@ impl World {
         });
         let time = self.time();
         rules.prune_remains(time);
+        rules.prune_shows(step, self.steps_per_second, time);
         let gravity = self.gravity;
         for action in std::mem::take(&mut rules.pending) {
             match action {
@@ -163,6 +177,81 @@ impl World {
                             None => bodies.velocity[i] = new_v,
                         }
                     }
+                }
+                Action::Kick(mut kick) => {
+                    if rules.broken.contains(&kick.thing)
+                        || !(kick.amount.is_finite() && kick.seconds.is_finite() && kick.rate.is_finite())
+                        || kick.seconds <= 0.0
+                    {
+                        continue;
+                    }
+                    kick.start = step;
+                    if rules.kicks.len() >= MOST_KICKS {
+                        rules.kicks.remove(0);
+                    }
+                    rules.kicks.push(kick);
+                }
+                Action::Pace(mut change) => {
+                    change.start = time;
+                    rules.add_pace(*change);
+                }
+                Action::Flash { thing, row, strength } => {
+                    if rules.broken.contains(&thing) || !strength.is_finite() {
+                        continue;
+                    }
+                    let flash = |item: u32, point: Vec2| Event {
+                        step,
+                        kind: EventKind::Flash,
+                        a: Party { thing, item },
+                        b: None,
+                        point,
+                        normal: Vec2::ZERO,
+                        speed: strength.max(0.0) * FULL_FLASH_SPEED,
+                        at: 0.0,
+                    };
+                    match self.bodies.get(&thing) {
+                        Some(bodies) => {
+                            let rows: Vec<usize> = match row {
+                                Some(r) => vec![r as usize],
+                                None => (0..bodies.len()).collect(),
+                            };
+                            for i in rows {
+                                if i < bodies.len() && bodies.alive[i] {
+                                    log.push(flash(i as u32, bodies.position[i]));
+                                    *rules.flashes.entry((thing, i as u32)).or_default() += 1;
+                                }
+                            }
+                        }
+                        None if self.names.contains_key(&thing) => {
+                            let point = match self.poses.get(&thing) {
+                                Some(p) => p.position,
+                                None => self.anchor(thing).position,
+                            };
+                            log.push(flash(0, point));
+                            *rules.flashes.entry((thing, 0)).or_default() += 1;
+                        }
+                        None => {}
+                    }
+                }
+                Action::LightScene { op, count, fade } => {
+                    let dice = super::dice(self.seed, bpe_core::RuleId(u32::MAX), bpe_core::BlockId(0), step, None, 7);
+                    if let Some(to) = next_scene(rules.scene.as_ref(), op, count, dice) {
+                        let from = rules.scene.as_ref().and_then(|s| s.to);
+                        let fade = fade.filter(|f| f.is_finite()).map(|f| f.max(0.0));
+                        rules.scene = Some(ShownScene { step, from, to, fade });
+                    }
+                }
+                Action::Note(mut e) => {
+                    let shape = e.b.map(|b| b.thing);
+                    if shape.is_none_or(|s| rules.broken.contains(&s))
+                        || !(e.speed.is_finite() && e.normal.is_finite() && e.point.is_finite())
+                    {
+                        continue;
+                    }
+                    e.step = step;
+                    e.kind = EventKind::Note;
+                    e.at = 0.0;
+                    log.push(e);
                 }
                 Action::Change { key, mut change } => {
                     if rules.broken.contains(&key.thing) {

@@ -254,7 +254,7 @@ impl Engine {
             .log()
             .events()
             .iter()
-            .filter(|e| e.kind == bpe_runtime::EventKind::Hit)
+            .filter(|e| matches!(e.kind, bpe_runtime::EventKind::Hit | bpe_runtime::EventKind::Note))
             .map(|e| (crate::hits::hit_sample(e, sps), e))
             .filter(|(at, _)| *at < upto)
             .map(|(at, e)| (at, BlockHit { offset: 0, event: e.clone() }))

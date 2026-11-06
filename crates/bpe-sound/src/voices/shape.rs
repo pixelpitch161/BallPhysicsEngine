@@ -27,7 +27,8 @@ use bpe_kit::sound::{
     DistanceSettings, Follows, GateMode, GateUnit, HitPick, LfoSettings, LfoStart, LightFollows, LightModSettings,
     NoiseColour, PhaseMode, PlayMode, PlayWhen, SILENT_DB, SubOctave, SubWave, Wave,
 };
-use bpe_runtime::Party;
+use bpe_runtime::rules::AS_IF_HIT;
+use bpe_runtime::{EventKind, Party};
 use glam::Vec2;
 use std::any::Any;
 use std::sync::Arc;
@@ -482,6 +483,8 @@ pub struct ShapeVoice {
     /// The note being started takes a voice of its own even on a Mono shape (a key clicked
     /// while a Mono drone holds the one voice).
     own_voice: bool,
+    /// A rule's note length in samples while it starts (the MIDI log notes it as the gate).
+    note_gate: Option<u64>,
     /// The hit (or drone change) the notes being started belong to, for the MIDI log.
     group: u64,
     /// The loudest sample of the last block.
@@ -624,6 +627,7 @@ impl ShapeVoice {
             n_auditions: 0,
             audition_count: 0,
             own_voice: false,
+            note_gate: None,
             group: 0,
             held: [0; MAX_HELD],
             held_notes: [0; MAX_HELD],
@@ -1062,7 +1066,11 @@ impl ShapeVoice {
         if self.noted.is_none() {
             return;
         }
-        let gate = if self.envs() > 0 { self.gate_samples(0, cx.tempo) } else { u64::MAX };
+        let gate = match self.note_gate {
+            Some(n) => n,
+            None if self.envs() > 0 => self.gate_samples(0, cx.tempo),
+            None => u64::MAX,
+        };
         let group = self.group;
         if let Some(noted) = self.noted.as_mut() {
             noted.push(crate::NoteOn::new(sample, note, strength, gate, group));
@@ -1141,6 +1149,10 @@ impl ShapeVoice {
             let at = hit.offset.min(BLOCK as u32 - 1);
             let sample = cx.start_sample + at as u64;
             self.clock.until(at, &self.spec.notes);
+            if hit.event.kind == EventKind::Note {
+                self.rule_note(cx, at, sample, hit);
+                continue;
+            }
             let Some(strength) = self.filter.accept(hit, sample, cx.world) else { continue };
             let ball = hit.event.a;
             let seed = mix(sample
@@ -1210,6 +1222,62 @@ impl ShapeVoice {
                 }
             }
         }
+    }
+
+    /// A rule's Play a note (rules part 6) on this shape, at `at` in the block: a set pitch, or
+    /// the slot's next pick as a hit would make it (a chord's notes together). It passes no hit
+    /// filter and moves no slot clock; on a drone it sounds on its own voice beside the held
+    /// notes, as a clicked key does.
+    fn rule_note(&mut self, cx: &BlockCx, at: u32, sample: u64, hit: &BlockHit) {
+        let e = &hit.event;
+        let Some(shape) = e.b.filter(|b| b.thing == self.spec.thing) else { return };
+        let strength = if e.speed.is_finite() { e.speed.clamp(0.0, 1.0) } else { 0.0 };
+        let ball = e.a;
+        let seed = mix(sample
+            ^ mix(((ball.thing.0 as u64) << 32) | ball.item as u64)
+            ^ ((self.spec.thing.0 as u64) << 48)
+            ^ 0x4e07e);
+        let mut hv = self.hit_values_of(cx, hit, seed, strength);
+        hv.strength = strength;
+        self.restart_shared(&NoteCx { sample, hit: &hv, ball: Some(ball) });
+        let drone = self.spec.play_when != PlayWhen::OnHit;
+        if !drone {
+            self.hit_arrives(at, sample);
+        }
+        self.group = sample;
+        let pick = (shape.item == AS_IF_HIT).then(|| self.pick_for(cx, hit, cx.time));
+        let one = [shape.item.min(127) as u8];
+        let notes: &[u8] = match &pick {
+            Some(p) => p.notes(),
+            None => &one,
+        };
+        let length = e.normal.x;
+        let length = if length.is_finite() && length > 0.0 { Some((length * crate::SAMPLE_RATE) as u64) } else { None };
+        self.own_voice = drone && self.n_held > 0;
+        // The MIDI log closes the note where its gates close.
+        self.note_gate = length.or(drone.then_some((AUDITION_GATE_S * crate::SAMPLE_RATE) as u64));
+        for &note in notes {
+            let mono = self.spec.play_mode == PlayMode::Mono && !self.own_voice;
+            let again = mono && self.notes.meta[0].active && !self.notes.meta[0].fading;
+            let note_seed = mix(seed ^ note as u64);
+            let Some(slot) = self.start_note(cx, at, note, strength, ball, e.point, note_seed, &hv) else { continue };
+            // A drone's own voice never waits for a hit; a length closes every gate after it (from
+            // the block's start for a Mono note that started before).
+            let gate = match length {
+                Some(n) => Some(if again { n + at as u64 } else { n }),
+                None if drone => Some((AUDITION_GATE_S * crate::SAMPLE_RATE) as u64),
+                None => None,
+            };
+            if let Some(gate) = gate {
+                for g in &mut self.notes.slots[slot].gate {
+                    if length.is_some() || *g == u64::MAX {
+                        *g = gate;
+                    }
+                }
+            }
+        }
+        self.own_voice = false;
+        self.note_gate = None;
     }
 
     /// Always and In range: holds the playing slot's notes (while a ball is in range), moving
@@ -1407,6 +1475,13 @@ impl ShapeVoice {
                     next += 1;
                     let at = (sample - start) as u32;
                     self.clock.until(at, &self.spec.notes);
+                    // A rule's note picks as a hit would (the next note) but passes no filter.
+                    if hit.event.kind == EventKind::Note {
+                        if hit.event.b.is_some_and(|b| b.thing == self.spec.thing && b.item == AS_IF_HIT) {
+                            let _ = self.pick_for(&cx, hit, time);
+                        }
+                        continue;
+                    }
                     if self.filter.accept(hit, *sample, world).is_none() {
                         continue;
                     }

@@ -29,6 +29,7 @@ use bpe_kit::sound::fx::{
 };
 use bpe_kit::sound::{BUSES, DistortionSettings, FilterSettings, MIXER, Slope};
 use bpe_kit::things::shape::KIND as SHAPE;
+use bpe_runtime::EventKind;
 
 /// What an effect can read while it runs one block.
 pub struct FxCx<'a> {
@@ -620,7 +621,13 @@ impl Fx {
                         for h in cx.hits {
                             let on_shape = h.event.a.thing == *shape || h.event.b.is_some_and(|b| b.thing == *shape);
                             if on_shape && n < MAX_KEY_HITS {
-                                hits[n] = (h.offset, strength(h.event.speed));
+                                // A rule's note (rules part 6) keys by its velocity.
+                                let s = match h.event.kind {
+                                    EventKind::Note if h.event.speed.is_finite() => h.event.speed.clamp(0.0, 1.0),
+                                    EventKind::Note => 0.0,
+                                    _ => strength(h.event.speed),
+                                };
+                                hits[n] = (h.offset, s);
                                 n += 1;
                             }
                         }

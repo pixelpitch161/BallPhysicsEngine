@@ -345,7 +345,8 @@ impl Aimer {
             dt: world.dt(),
             now,
             arrive: arrive_steps(s, world.steps_per_second),
-            ceiling: world.limits().ceiling,
+            // Aiming ignores slow motion: the ceiling at the normal pace.
+            ceiling: world.limits().ceiling * world.pace(),
             fire_anyway: s.cant_reach == CantReach::FireAnyway,
         })
     }

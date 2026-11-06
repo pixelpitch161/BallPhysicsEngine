@@ -118,6 +118,11 @@ fn every_kind_is_registered_with_settings_under_rule() {
             "do.tag",
             "do.count",
             "do.signal",
+            "do.camera",
+            "do.slow",
+            "do.flash",
+            "do.light_scene",
+            "do.note"
         ]
     );
     for b in kit.registry.blocks() {
