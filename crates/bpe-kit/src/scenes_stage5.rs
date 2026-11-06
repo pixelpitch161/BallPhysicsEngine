@@ -244,7 +244,7 @@ mod tests {
                 use crate::modules::look::layers::{PARTICLES, TRAIL};
                 l.kind == TRAIL || l.kind == PARTICLES
             });
-            let new = styled || around || kinds.iter().any(|k| k.starts_with("shader."));
+            let new = styled || around || kinds.contains(&"effects");
             assert!(new, "{name}: {kinds:?}");
         }
     }

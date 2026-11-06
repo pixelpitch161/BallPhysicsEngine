@@ -1,7 +1,7 @@
 // name: Glitch
 // about: Tears the picture into shifted bands and split colours, set off by hits.
 // simple amount = 0.5 [0, 1] How often and how far bands jump
-// simple bands = 24 [4, 120] int Number of horizontal bands
+// simple bands = 24 [4, 120] hard [1, 1e9] int Number of horizontal bands (zero bands divides by zero)
 // param react = 1 [0, 1] 1 only glitches on hits, 0 glitches all the time
 // param rate = 12 [1, 60] Times per second the glitch pattern changes
 // param pulse = 0 [0, 1] Pulse: how much each hit sets off glitches

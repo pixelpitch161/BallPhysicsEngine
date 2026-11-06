@@ -22,11 +22,11 @@ use bpe_runtime::Sims;
 
 pub use modules::bounce::sim::{BasicBounceSim, BounceState};
 pub use modules::bounce::{BasicBounce, BasicBounceKind, WallTouch};
+pub use modules::effects::draw::EffectsDraw;
+pub use modules::effects::{EffectsCard, OwnEffect, PictureEffect};
 pub use modules::look::{BallShape, BasicLook, BasicLookKind, Style};
 pub use modules::motion::sim::{BasicMotionSim, MotionState};
 pub use modules::motion::{BasicMotion, BasicMotionKind};
-pub use modules::shader::EffectKind;
-pub use modules::shader::draw::EffectDraw;
 pub use starters::{add_thing, fill_slot};
 pub use things::balls::draw::BallsDraw;
 pub use things::balls::sim::{BallsSim, BallsState};
@@ -75,9 +75,7 @@ pub fn draws() -> Draws {
     d.add(BallsDraw);
     d.add(EmitterDraw);
     d.add(things::light::draw::LightDraw);
-    for b in &bpe_gfx::effects::BUILTINS {
-        d.add_module(EffectDraw(b));
-    }
+    d.add_module(EffectsDraw);
     d
 }
 
@@ -121,14 +119,19 @@ pub fn registry() -> Registry {
     r.add_module(BasicMotionKind);
     r.add_module(modules::lighting::LightingKind);
     r.add_module(BasicBounceKind);
-    for k in modules::shader::kinds() {
-        r.add_module(k);
+    r.add_module(EffectsCard);
+    for k in modules::effects::kinds() {
+        r.add_layer(k);
     }
+    r.add_layer(OwnEffect);
     sound::register(&mut r);
     // Format 8 masks open as Cut sub-layers.
     r.add_upgrade(9, modules::look::layers::masks_to_cuts);
     // Trail and Particles cards before format 10 open as layers of the Look.
     r.add_upgrade(10, modules::look::layers::cards_to_layers::cards_to_layers);
+    // A scene's one Shader card opens as an Effects stack. Every format runs it: it does nothing
+    // to a scene without an old card.
+    r.add_upgrade(u32::MAX, modules::effects::upgrade::single_effect_to_stack);
     r
 }
 
@@ -406,7 +409,7 @@ mod tests {
         assert!(ids("scene", SlotId::Look).is_empty());
         assert_eq!(ids("balls", SlotId::Motion), ["motion.basic"]);
         // Effects are the scene's; a ball's shaders are layers of its Look.
-        assert_eq!(ids("scene", SlotId::Shader).len(), 13);
+        assert_eq!(ids("scene", SlotId::Shader), ["effects"]);
         assert!(ids("balls", SlotId::Shader).is_empty() && ids("shape", SlotId::Shader).is_empty());
     }
 

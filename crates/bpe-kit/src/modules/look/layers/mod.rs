@@ -6,8 +6,10 @@
 //! Each layer kind is a `#[derive(Settings)]` struct in its own file; `gpu.rs` turns a resolved
 //! stack into what the renderer draws.
 
+pub mod arcs;
 pub mod around;
 pub mod around_subs;
+pub mod aura;
 pub mod blend;
 pub mod body;
 pub mod cards_to_layers;
@@ -343,6 +345,20 @@ pub fn kinds() -> Vec<Kind> {
             "A line through each round's balls, in order round the round: a wavefront.",
             wavefront::WavefrontLayer::defs,
         ),
+        around_kind(
+            CARD,
+            arcs::ARCS,
+            "Electric arcs",
+            "Lightning that jumps between balls that come near each other; it can light the scene.",
+            arcs::ArcsLayer::defs,
+        ),
+        around_kind(
+            CARD,
+            aura::AURA,
+            "Aura field",
+            "One flowing field round the balls, drawn as glowing lines that merge where balls come near.",
+            aura::AuraLayer::defs,
+        ),
         reaction(FLASH, "Flash on hit", "A flash of light where the ball hits something.", FlashOnHit::defs),
         reaction(HUE, "Colour on hit", "Every hit turns the ball's colour round the colour wheel.", ColourOnHit::defs),
         reaction(STRETCH, "Stretch when fast", "Fast balls stretch along their path.", StretchWhenFast::defs),
@@ -492,6 +508,8 @@ mod tests {
                 TRAIL,
                 PARTICLES,
                 wavefront::WAVEFRONT,
+                arcs::ARCS,
+                aura::AURA,
                 FLASH,
                 HUE,
                 STRETCH,

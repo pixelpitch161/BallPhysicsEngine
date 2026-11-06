@@ -26,6 +26,8 @@ struct Fx {
     params: array<vec4<f32>, 4>,
     hits: array<vec4<f32>, 16>,
     hit_colors: array<vec4<f32>, 16>,
+    takes: vec4<f32>,
+    beat: vec4<f32>,
 };
 
 // The frame's values: its time, its hits and how they pulse.
@@ -150,6 +152,54 @@ fn sample(uv: vec2<f32>) -> vec3<f32> {
 
 fn prev(uv: vec2<f32>) -> vec3<f32> {
     return sample(uv);
+}
+
+// Inside a ball nothing is kept between frames and there is no ball list.
+fn keep(v: f32) {}
+
+fn kept(uv: vec2<f32>) -> f32 {
+    return 0.0;
+}
+
+fn ball_count() -> u32 {
+    return 0u;
+}
+
+fn ball_uv(i: u32) -> vec2<f32> {
+    return vec2<f32>(0.5);
+}
+
+fn ball_radius(i: u32) -> f32 {
+    return 0.0;
+}
+
+fn ball_seed(i: u32) -> f32 {
+    return 0.0;
+}
+
+fn ball_color(i: u32) -> vec3<f32> {
+    return vec3<f32>(0.0);
+}
+
+fn ball_hit(i: u32) -> f32 {
+    return 1e6;
+}
+
+fn nearest_ball(uv: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(0.0, 1e6);
+}
+
+fn beat_phase() -> f32 {
+    return fx.beat.x;
+}
+
+fn bar_phase() -> f32 {
+    return fx.beat.y;
+}
+
+fn kick(sharp: f32) -> f32 {
+    let on_beat = select(0.0, exp(-fx.beat.x * max(sharp, 0.0)), fx.beat.w > 0.5);
+    return max(on_beat, fx.pulse);
 }
 
 fn aspect() -> f32 {

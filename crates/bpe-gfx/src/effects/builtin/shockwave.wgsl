@@ -3,7 +3,7 @@
 // simple strength = 0.6 [0, 2] How much the ripples bend the picture
 // simple speed = 0.5 [0.05, 2] How fast rings spread, in screen heights per second
 // simple glow = 0.4 [0, 2] How much rings light up in the ball's colour
-// param width = 0.02 [0.005, 0.2] Thickness of each ring
+// param width = 0.02 [0.005, 0.2] hard [0.0005, 1e9] Thickness of each ring (a ring of no width divides by zero)
 // param life = 0.6 [0.1, 3] Seconds before a ring fades out
 // param pulse = 0 [0, 1] Pulse: how much each hit strengthens the ripples
 

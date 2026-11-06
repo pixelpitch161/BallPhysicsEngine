@@ -722,11 +722,78 @@ pub struct EffectCall {
     pub wgsl: Cow<'static, str>,
     /// The effect's params packed in header order, colours taking three.
     pub params: [f32; 16],
-    /// How much of the effect shows, 0 to 1.
+    /// How much of the effect shows (its Mix): 1 all of it, 0 none (skipped); past 1 pushes it
+    /// further, below 0 the other way.
     pub blend: f32,
     /// 0 for the whole picture, else the [`thing_code`] of the one thing it paints.
     pub apply_to: f32,
     pub stage: Stage,
+    /// How the effect's result mixes onto what it took (Normal replaces it).
+    pub mode: Blend,
+    /// What of the picture the effect works on (read at the Picture stage on the main picture).
+    pub takes: Takes,
+    /// For [`Takes::Glow`]: the brightness above which the picture counts as glow.
+    pub glow_above: f32,
+    /// How many seconds of earlier frames the effect remembers (0 for none), for the editor's
+    /// warm-up after a seek.
+    pub memory: f32,
+}
+
+impl EffectCall {
+    /// A call of `wgsl` over the whole picture at `stage`, fully mixed in, Normal, taking the
+    /// whole picture, its params all 0.
+    pub fn new(key: u64, wgsl: impl Into<Cow<'static, str>>, stage: Stage) -> Self {
+        Self {
+            key,
+            wgsl: wgsl.into(),
+            params: [0.0; 16],
+            blend: 1.0,
+            apply_to: 0.0,
+            stage,
+            mode: Blend::Normal,
+            takes: Takes::Whole,
+            glow_above: 0.9,
+            memory: 0.0,
+        }
+    }
+}
+
+/// What part of the picture an effect works on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Takes {
+    /// The whole picture.
+    #[default]
+    Whole,
+    /// The light that falls on lit things (needs a Lighting card; else the effect changes
+    /// nothing).
+    Light,
+    /// Only what is brighter than the call's `glow_above`.
+    Glow,
+}
+
+impl Takes {
+    /// The shader's code: 0 whole, 1 light, 2 glow.
+    pub fn code(self) -> f32 {
+        match self {
+            Takes::Whole => 0.0,
+            Takes::Light => 1.0,
+            Takes::Glow => 2.0,
+        }
+    }
+}
+
+/// One live ball, as the picture effects see it (their ball list).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BallMark {
+    /// Centre, world pixels.
+    pub center: [f32; 2],
+    pub radius: f32,
+    /// Its body colour, linear light.
+    pub color: [f32; 3],
+    /// 0 to 1, the same in every frame.
+    pub seed: f32,
+    /// Seconds since its last hit (a large number when never hit).
+    pub hit_age: f32,
 }
 
 /// A colour with alpha 0 but some light is an additive colour (the colour picker's "Additive"
@@ -838,6 +905,12 @@ pub struct Frame {
     /// The scene's lights, when it has a Lighting card (only the top frame's counts). `None`
     /// draws the picture exactly as it was before lighting.
     pub light: Option<LightScene>,
+    /// Every live ball, for the picture effects' ball list (filled only when the scene has an
+    /// Effects card). Blend layers' frames hold the balls drawn into them.
+    pub ball_marks: Vec<BallMark>,
+    /// The beat at this moment: its phase 0 to 1, the bar's phase 0 to 1, beats per second, and
+    /// 1 when the scene has a tempo (else all 0). Only the top frame's counts.
+    pub beat: [f32; 4],
 }
 
 /// One light as the lighting pass reads it (`LightGpu` in lighting.wgsl).
@@ -1091,6 +1164,8 @@ impl Default for Frame {
             layers: Vec::new(),
             grade: Grade::default(),
             light: None,
+            ball_marks: Vec::new(),
+            beat: [0.0; 4],
         }
     }
 }
@@ -1121,9 +1196,17 @@ impl Frame {
         self.layers.clear();
         self.grade = Grade::default();
         self.light = None;
+        self.ball_marks.clear();
+        self.beat = [0.0; 4];
         if let Some(overlay) = &mut self.overlay {
             overlay.clear();
         }
+    }
+
+    /// The longest memory (seconds) of this frame's effects: how far back the editor replays
+    /// after a seek so the picture matches a straight run (0 when no effect remembers).
+    pub fn memory(&self) -> f32 {
+        self.effects.iter().filter(|e| e.blend != 0.0).map(|e| e.memory).fold(0.0, f32::max)
     }
 
     /// The frame things drawn with `blend` at `amount` go into: this one for Normal at full

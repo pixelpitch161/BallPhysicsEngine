@@ -12,11 +12,11 @@ use bpe_core::{Blend, Depth, Flags, Params, SettingDef, SettingValue, Value, Val
 use bpe_gfx::effects::{BUILTINS, Builtin, Header, MAX_PARAM_FLOATS};
 
 use super::shading::Space;
-use crate::modules::shader::draw::pack_params;
-use crate::modules::shader::param_defs;
+use crate::modules::effects::draw::pack_params;
+use crate::modules::effects::param_defs;
 
 /// What the Effect setting offers: every built-in by id, then own code.
-pub const EFFECTS: [&str; 14] = [
+pub const EFFECTS: [&str; 27] = [
     "color_cycle",
     "color_split",
     "echo",
@@ -27,6 +27,19 @@ pub const EFFECTS: [&str; 14] = [
     "mirror",
     "pixels",
     "shockwave",
+    "hue_storm",
+    "liquid_light",
+    "light_ripples",
+    "ball_worlds",
+    "polar_tunnel",
+    "breathing",
+    "thermal",
+    "op_art",
+    "fractal",
+    "rainbow_echoes",
+    "melting",
+    "solarize",
+    "gravity_lens",
     "lava",
     "rainbow_flow",
     "hit_glow",

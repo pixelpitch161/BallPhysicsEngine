@@ -543,6 +543,13 @@ pub fn show(
                 if !header.inner {
                     return;
                 }
+                if card_now.kind == bpe_kit::modules::effects::EFFECTS {
+                    ui.add_space(4.0);
+                    let look =
+                        crate::look_editor::LookCx { scene, kit, choices: &choices, id, slot, time, label_width: lw };
+                    crate::look_editor::effects::show(ui, inspector, &look, &mut edits);
+                    return;
+                }
                 if card_now.kind == bpe_kit::modules::look::shape::CARD {
                     ui.add_space(4.0);
                     let look =
@@ -2124,108 +2131,38 @@ mod tests {
         assert!(slider(&h, "Vignette"));
     }
 
-    /// Opens the card's Type menu: the one Type button on the page.
-    fn open_type_menu(h: &mut Harness<'_, State>) {
-        h.get_by_role_and_label(Role::Button, "Type").click();
-        h.run();
-    }
-
-    /// A new scene whose settings have an effect in their Shader slot (only the scene has one), with one of its number
-    /// settings moved off its default, and that setting's address. The other effect kinds named
-    /// come back too: those that lack the setting.
-    fn scene_with_an_effect() -> (Scene, Address, Vec<&'static str>) {
-        let reg = bpe_kit::registry();
-        let mut scene = bpe_kit::new_scene(&reg);
-        bpe_kit::fill_slot(&mut scene, &reg, ThingId::ROOT, SlotId::Shader).unwrap();
-        let kind = reg.module(&scene.things[&ThingId::ROOT].slots[&SlotId::Shader].kind).unwrap();
-        let def = kind
-            .settings()
-            .iter()
-            .find(|d| d.key != "blend" && matches!(d.default, Value::Number(_)))
-            .expect("an effect with a number setting of its own");
-        let (Value::Number(n), Some((low, high))) = (&def.default, def.range) else { unreachable!() };
-        let a = Address::on(ThingId::ROOT, SlotId::Shader, def.key);
-        scene.set_at(&reg, &a, Value::Number(if *n == low { high } else { low })).unwrap();
-        let others = reg
-            .modules_for(SlotId::Shader)
-            .filter(|m| m.id() != kind.id() && m.settings().iter().all(|d| d.key != def.key))
-            .map(|m| m.name())
-            .collect();
-        (scene, a, others)
-    }
-
-    /// The name of the kind of `id`'s card in its Shader slot.
-    fn effect_name(s: &State, id: ThingId) -> &'static str {
-        s.kit.registry.module(&s.scene.things[&id].slots[&SlotId::Shader].kind).unwrap().name()
+    /// The kinds of the layers of the scene's Effects card, bottom first.
+    fn effect_kinds(s: &State) -> Vec<String> {
+        s.scene.things[&ThingId::ROOT].slots[&SlotId::Shader].layers.iter().map(|l| l.kind.clone()).collect()
     }
 
     #[test]
-    fn an_effects_card_has_a_type_menu_and_a_balls_look_has_none() {
+    fn the_effects_card_lists_its_effects_and_adds_them_from_its_menu() {
         let reg = bpe_kit::registry();
         let mut scene = bpe_kit::new_scene(&reg);
-        // Only the ball's Look, Motion and Bounce: each has one kind.
         bpe_kit::fill_slot(&mut scene, &reg, ThingId::ROOT, SlotId::Shader).unwrap();
-        let mut h = harness_of(scene, Some(ThingId(2)));
-        assert!(h.query_by_role_and_label(Role::Button, "Type").is_none(), "a ball's look has one kind");
-        h.state_mut().selection.set(ThingId::ROOT);
-        h.run();
-        let root = reg.thing("scene").unwrap();
-        let effects: Vec<&str> = reg.kinds_fitting(SlotId::Shader, root).map(|k| k.name()).collect();
-        assert!(effects.len() > 1, "{effects:?}");
-        let current = effect_name(h.state(), ThingId::ROOT);
-        open_type_menu(&mut h);
-        for name in &effects {
-            assert!(h.query_all_by_label(name).next().is_some(), "{name} is offered");
-        }
-        let other = effects.iter().find(|n| **n != current).unwrap();
-        h.get_all_by_label(other).last().unwrap().click();
-        h.run();
-        assert_eq!(effect_name(h.state(), ThingId::ROOT), *other);
-    }
-
-    #[test]
-    fn picking_a_type_switches_the_card_and_back_restores_it() {
-        let (scene, moved, others) = scene_with_an_effect();
-        let reg = bpe_kit::registry();
-        let value = scene.value_at(&reg, &moved);
+        assert_eq!(scene.things[&ThingId::ROOT].slots[&SlotId::Shader].kind, bpe_kit::modules::effects::EFFECTS);
         let mut h = harness_of(scene, Some(ThingId::ROOT));
-        let first = effect_name(h.state(), ThingId::ROOT);
-        let other = *others.first().expect("an effect without the moved setting");
-        open_type_menu(&mut h);
-        h.get_all_by_label(other).last().unwrap().click();
+        assert!(h.query_by_role_and_label(Role::Button, "Type").is_none(), "one kind of Effects card");
+        assert!(h.query_all_by_label_contains("None yet: add an effect").next().is_some());
+        h.get_by_role_and_label(Role::Button, "+ Add effect").click();
         h.run();
-        {
-            let s = h.state();
-            assert_eq!(effect_name(s, ThingId::ROOT), other);
-            assert!(s.scene.things[&ThingId::ROOT].slots[&SlotId::Shader].params.get(&moved.key).is_none());
-        }
-        open_type_menu(&mut h);
-        h.get_all_by_label(first).last().unwrap().click();
+        h.get_all_by_label("Kaleidoscope").last().unwrap().click();
         h.run();
+        assert_eq!(effect_kinds(h.state()), ["picture.kaleidoscope"]);
+        // A picture effect takes the whole picture, its light or its glow.
+        assert!(h.query_all_by_label("Takes").next().is_some(), "the Takes row");
+        assert!(h.query_all_by_label("Mix").next().is_some(), "the Mix row");
+        h.get_by_role_and_label(Role::Button, "+ Add effect").click();
+        h.run();
+        h.get_all_by_label("Lava").last().unwrap().click();
+        h.run();
+        assert_eq!(effect_kinds(h.state()), ["picture.kaleidoscope", "picture.lava"]);
+        // The new one is picked: a material paints the things, and takes nothing.
         let s = h.state();
-        assert_eq!(effect_name(s, ThingId::ROOT), first);
-        assert_eq!(s.scene.value_at(&s.kit.registry, &moved), value, "the moved setting is back");
-    }
-
-    #[test]
-    fn undo_after_a_type_switch_restores_the_card() {
-        let (scene, _, others) = scene_with_an_effect();
-        let before = scene.clone();
-        let mut h = harness_of(scene, Some(ThingId::ROOT));
-        let first = effect_name(h.state(), ThingId::ROOT);
-        open_type_menu(&mut h);
-        h.get_all_by_label(others[0]).last().unwrap().click();
-        h.run();
-        assert_eq!(effect_name(h.state(), ThingId::ROOT), others[0]);
-        // The studio records any frame that changed the scene as an undo step.
-        let mut history = crate::history::History::default();
-        history.record(before.clone(), false);
-        let s = h.state_mut();
-        assert!(history.undo(&mut s.scene));
-        assert_eq!(effect_name(s, ThingId::ROOT), first);
-        assert_eq!(s.scene, before);
-        assert!(history.redo(&mut s.scene));
-        assert_eq!(effect_name(s, ThingId::ROOT), others[0]);
+        let lava = s.scene.things[&ThingId::ROOT].slots[&SlotId::Shader].layers[1].id;
+        assert_eq!(s.inspector.selected_layer.get(&ThingId::ROOT), Some(&lava));
+        assert!(h.query_all_by_label("Takes").next().is_none(), "no Takes on a material");
     }
 
     #[test]

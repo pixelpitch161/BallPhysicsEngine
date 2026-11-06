@@ -7,7 +7,7 @@ use bpe_gfx::{DrawCx, Frame, LightGpu, LightScene, ThingDraw};
 use bpe_runtime::{EventKind, Outline, World};
 use glam::Vec2;
 
-use super::{AreaShape, LightSettings, LightType, Points, RidesOn, StripAlong};
+use super::{AreaShape, Falloff, LightSettings, LightType, Points, RidesOn, StripAlong};
 use crate::things::rig::pattern::Drive;
 
 pub struct LightDraw;
@@ -107,6 +107,7 @@ fn push_light(cx: &DrawCx, s: &LightSettings, place: &Place, drive: &Drive, scen
     let colour = drive.colour.unwrap_or_else(|| s.linear_colour());
     let strength = s.strength * (1.0 + s.flare * flare(cx, s, place)) * drive.strength;
     let place = &Place { at: place.at + Vec2::new(drive.sway, 0.0), ..*place };
+    let strength = if s.negative { -strength } else { strength };
     let dir = Vec2::from_angle(aim_angle(s, place, cx.time) + drive.turn.to_radians());
     let half_cone = (0.5 * s.cone).to_radians();
     let edge = s.cone_edge.max(0.0).to_radians();
@@ -161,6 +162,34 @@ pub fn aim_angle(s: &LightSettings, place: &Place, time: f64) -> f32 {
         Points::Spins => (s.direction + s.spin * time as f32).to_radians(),
     }
 }
+
+/// Adds a strip light along `points` (an open line) to the scene: `colour` its colour times
+/// strength (linear; below 0 it takes light away), `reach` how far it lights, `width` how wide the
+/// strip is. It casts no shadows. Electric arcs light the scene with these.
+pub fn push_strip(scene: &mut LightScene, points: &[Vec2], colour: [f32; 3], reach: f32, width: f32) {
+    if points.len() < 2 {
+        return;
+    }
+    let first = scene.segments.len() as f32;
+    for pair in points.windows(2) {
+        scene.segments.push([pair[0].x, pair[0].y, pair[1].x, pair[1].y]);
+    }
+    let middle = points.iter().copied().sum::<Vec2>() / points.len() as f32;
+    let size = 0.5 * width.max(0.0);
+    scene.lights.push(LightGpu {
+        p0: [middle.x, middle.y, ARC_HEIGHT, LightType::Strip.code()],
+        p1: [colour[0], colour[1], colour[2], 0.0],
+        p2: [reach.max(0.0), Falloff::Soft.code(), size, 0.0],
+        p3: [1.0, 0.0, 1.0, 1.0],
+        p4: [width.max(0.0), 0.0, first, (points.len() - 1) as f32],
+        p5: [0.0; 4],
+        p6: [0.0; 4],
+        p7: [0.0; 4],
+    });
+}
+
+/// How high above the picture a strip light from [`push_strip`] hangs.
+const ARC_HEIGHT: f32 = 60.0;
 
 /// How much the light flares now, 0 to 1 and more for stacked hits: each hit by what it hears
 /// (its own ball, when it rides one) flares it by its strength, fading over Flare length.

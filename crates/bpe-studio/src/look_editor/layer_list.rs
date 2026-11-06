@@ -436,6 +436,8 @@ fn menu(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, card: &Slot, layer:
     let base = kind.is_some_and(|k| k.base());
     let drawn = kind.is_some_and(|k| k.section() == LayerSection::Drawn) && !base;
     let around = kind.is_some_and(|k| k.section() == LayerSection::Around);
+    // The Effects card's effects move among themselves; they have no sub-layers or whole look.
+    let effect = kind.is_some_and(|k| k.section() == LayerSection::Effect);
     // The Body takes the sub-layers its kind says (Gives off light).
     let takes_subs = (drawn || around || base) && kind.is_some_and(|k| k.takes_subs());
     let group = kind.is_some_and(|k| k.section() == LayerSection::Group);
@@ -449,7 +451,9 @@ fn menu(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, card: &Slot, layer:
     // A trail or particles layer moves among the others of its list.
     let around_start = tops.iter().position(|l| section(l) == Some(LayerSection::Around)).unwrap_or(tops.len());
     let around_end = around_start + tops.iter().filter(|l| section(l) == Some(LayerSection::Around)).count();
-    let (can_up, can_down) = if group {
+    let (can_up, can_down) = if effect {
+        (index + 1 < tops.len(), index > 0)
+    } else if group {
         (index + 1 < tops.len(), index > group_start)
     } else if around {
         (index + 1 < around_end, index > around_start)
@@ -481,6 +485,23 @@ fn menu(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, card: &Slot, layer:
             edits.push(Edit::PasteLayer(slot, copied));
         }
         ui.close();
+    }
+    if effect {
+        ui.separator();
+        if ui.add_enabled(can_up, egui::Button::new("Move up")).clicked() {
+            edits.push(Edit::MoveLayer(slot, id, index + 1));
+            ui.close();
+        }
+        if ui.add_enabled(can_down, egui::Button::new("Move down")).clicked() {
+            edits.push(Edit::MoveLayer(slot, id, index - 1));
+            ui.close();
+        }
+        ui.separator();
+        if ui.button("Delete").clicked() {
+            edits.push(Edit::RemoveLayer(slot, id));
+            ui.close();
+        }
+        return;
     }
     if ui.button("Copy whole look").clicked() {
         inspector.clipboard.look = cx.scene.copy_look(cx.reg(), cx.id, slot);
@@ -577,10 +598,23 @@ fn section_of(cx: &LookCx, card: &Slot, id: LayerId) -> Option<LayerSection> {
 /// Where a trail or particles layer dragged over the `rows` of their list (top first) lands: a
 /// line marks the gap, and letting go moves it there, among the others of the list only.
 pub fn around_drop_target(ui: &mut Ui, cx: &LookCx, card: &Slot, rows: &[(LayerId, Rect)], edits: &mut Vec<Edit>) {
+    section_drop_target(ui, cx, card, rows, LayerSection::Around, edits);
+}
+
+/// Where a layer of `section` dragged over the `rows` of its list (top first) lands, among the
+/// others of its list only (the trails and particles, the Effects card's effects).
+pub fn section_drop_target(
+    ui: &mut Ui,
+    cx: &LookCx,
+    card: &Slot,
+    rows: &[(LayerId, Rect)],
+    section: LayerSection,
+    edits: &mut Vec<Edit>,
+) {
     let ctx = ui.ctx().clone();
     let Some(dragged) = egui::DragAndDrop::payload::<Dragged>(&ctx) else { return };
     let Dragged(thing, layer) = *dragged;
-    if thing != cx.id || section_of(cx, card, layer) != Some(LayerSection::Around) {
+    if thing != cx.id || section_of(cx, card, layer) != Some(section) {
         return;
     }
     let Some(pointer) = ctx.pointer_latest_pos() else { return };
@@ -596,7 +630,7 @@ pub fn around_drop_target(ui: &mut Ui, cx: &LookCx, card: &Slot, rows: &[(LayerI
         return;
     }
     // The layers before the list (the drawn ones), then the others of the list from the bottom.
-    let before = top_level(card).take_while(|l| section_of(cx, card, l.id) != Some(LayerSection::Around)).count();
+    let before = top_level(card).take_while(|l| section_of(cx, card, l.id) != Some(section)).count();
     let others = rows.iter().filter(|(l, _)| *l != layer).count();
     let place = match rows.iter().position(|(l, _)| *l == layer) {
         Some(at) if at < gap => gap - 1,
@@ -628,6 +662,9 @@ fn settings_summary(cx: &LookCx, card: &Slot, layer: &Layer) -> String {
     let percent = |v: f32| format!("{:.0} %", v * 100.0);
     if let Some(parent) = layer.parent {
         return sub_words(cx, card, parent, layer, &p);
+    }
+    if bpe_kit::modules::effects::is_effect(&layer.kind) {
+        return effect_words(cx, layer);
     }
     match layer.kind.as_str() {
         shape_look::BODY => shape_words(cx),
@@ -736,6 +773,33 @@ fn settings_summary(cx: &LookCx, card: &Slot, layer: &Layer) -> String {
         }
         _ => String::new(),
     }
+}
+
+/// An effect of the Effects card in a few words: "Light only · Add 60 %".
+fn effect_words(cx: &LookCx, layer: &Layer) -> String {
+    let Some(kind) = cx.reg().layer(&layer.kind) else { return String::new() };
+    let p = cx.params_of(layer.id, kind.settings());
+    let mix = match p.get(bpe_kit::modules::effects::MIX) {
+        Some(bpe_core::Value::Number(m)) => *m as f32,
+        _ => 1.0,
+    };
+    let blend = p.get("blend").and_then(<bpe_core::Blend as bpe_core::SettingValue>::from_value).unwrap_or_default();
+    let mut words = Vec::new();
+    if layer.kind == bpe_kit::modules::effects::OWN
+        && let Some(bpe_core::Value::Text(code)) = p.get("code")
+        && bpe_kit::modules::effects::own_problem(code).is_some()
+    {
+        words.push("doesn't run".to_owned());
+    }
+    match bpe_kit::modules::effects::takes_of(&p) {
+        bpe_kit::modules::effects::TakesChoice::WholePicture => {}
+        t => words.push(choice_label(t)),
+    }
+    if blend != bpe_core::Blend::Normal || (mix - 1.0).abs() > 1e-4 {
+        let name = if blend == bpe_core::Blend::Normal { "Mix".to_owned() } else { choice_label(blend) };
+        words.push(format!("{name} {:.0} %", mix * 100.0));
+    }
+    words.join(" · ")
 }
 
 /// A trail in a few words: "Streak · 0.5 s", "Dots · 300 px", "Line · stays", "Ghosts · 4".

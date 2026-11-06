@@ -128,7 +128,17 @@ pub fn classic_cards(scene: &mut Scene) {
 /// Puts an old Trail or Particles card of `kind` with `params` on `thing` (on Scene settings,
 /// on every ball group), for [`classic_cards`] to turn into a layer; false for another kind.
 pub(crate) fn put_old_card(scene: &mut Scene, thing: ThingId, kind: &str, params: &Params) -> bool {
+    use crate::modules::effects::upgrade;
     use crate::modules::look::layers::cards_to_layers::{OLD_PARTICLES, OLD_TRAIL};
+    if upgrade::is_old(kind) {
+        // The scene's one effect becomes its Effects stack; one on a thing is left out.
+        if thing == ThingId::ROOT
+            && let Some(stack) = upgrade::stack_of(kind, params)
+        {
+            scene.things.get_mut(&thing).expect("the scene").slots.insert(SlotId::Shader, stack);
+        }
+        return true;
+    }
     let slot = match kind {
         OLD_TRAIL => SlotId::Trail,
         OLD_PARTICLES => SlotId::Particles,
@@ -1024,6 +1034,9 @@ pub fn light_show(reg: &Registry) -> Scene {
     card.params.set("scenes_play", Value::Choice(ScenesPlay::InTurn.name().into()));
     card.params.set("scene_every", Value::Number(1.0));
     card.params.set("scene_fade", Value::Number(0.3));
+    scene
+}
+
 /// Lighting part 1b's room: [`lit_room`] darkened (no ambient, its lamp at strength 0) with a
 /// bigger ball in the middle whose Body gives off warm light. Tests switch things on from here.
 pub fn glow_room(reg: &Registry) -> Scene {
@@ -1125,6 +1138,85 @@ pub fn glow_demo(reg: &Registry) -> Scene {
     let sub = scene.add_sub_layer(reg, ball, SlotId::Look, trail, SUB_LIGHT).expect("a trail glows");
     let lit_trail = GivesLight { strength: 1.0, ..Default::default() };
     set_all(&mut scene, ball, sub, &lit_trail.to_params());
+    scene
+}
+
+/// The looks of the effects demo (lighting part 8's video), in the order it shows them.
+pub const EFFECTS_DEMOS: [&str; 12] = [
+    "tunnel",
+    "hue_storm",
+    "ball_worlds",
+    "gravity_lens",
+    "thermal",
+    "solarize",
+    "arcs",
+    "aura",
+    "negative",
+    "polar_tunnel",
+    "liquid_light",
+    "melting",
+];
+
+/// The effects demo (lighting part 8's video): one of [`EFFECTS_DEMOS`] over the lit demo's twelve
+/// balls flung out in a ring. Not in [`all`].
+pub fn effects_demo(reg: &Registry, look: &str) -> Scene {
+    use crate::modules::effects::EFFECTS;
+    use crate::modules::look::layers::{arcs::ARCS, aura::AURA};
+    use crate::things::light::{LightSettings, LightType, add_light};
+    let mut scene = lit_demo(reg);
+    scene.name = format!("Effects demo: {look}");
+    let ball = scene.things.values().find(|t| t.kind == "balls").map(|t| t.id).expect("a ball");
+    let effect = |scene: &mut Scene, kind: &str, set: &[(&str, Value)]| {
+        if scene.card(ThingId::ROOT, SlotId::Shader).is_none() {
+            scene.add_slot(reg, ThingId::ROOT, SlotId::Shader, EFFECTS).expect("the scene takes Effects");
+        }
+        let layer = scene.add_layer(reg, ThingId::ROOT, SlotId::Shader, kind).expect("an effect");
+        let card = scene.things.get_mut(&ThingId::ROOT).expect("root").slots.get_mut(&SlotId::Shader).expect("fx");
+        for (key, value) in set {
+            card.params.set(&bpe_core::layered_key(layer, key), value.clone());
+        }
+    };
+    match look {
+        "tunnel" => {
+            effect(&mut scene, "picture.echo", &[("fade", Value::Number(0.93)), ("zoom", Value::Number(1.02))]);
+            effect(&mut scene, "picture.kaleidoscope", &[]);
+        }
+        "hue_storm" => effect(&mut scene, "picture.hue_storm", &[]),
+        "ball_worlds" => effect(&mut scene, "picture.ball_worlds", &[]),
+        "gravity_lens" => effect(&mut scene, "picture.gravity_lens", &[]),
+        "thermal" => effect(&mut scene, "picture.thermal", &[]),
+        "solarize" => effect(&mut scene, "picture.solarize", &[]),
+        "polar_tunnel" => {
+            effect(&mut scene, "picture.polar_tunnel", &[]);
+            effect(&mut scene, "picture.rainbow_echoes", &[]);
+        }
+        "liquid_light" => effect(&mut scene, "picture.liquid_light", &[]),
+        "melting" => effect(&mut scene, "picture.melting", &[]),
+        "arcs" => {
+            let layer = scene.add_layer(reg, ball, SlotId::Look, ARCS).expect("arcs");
+            let look = scene.things.get_mut(&ball).expect("ball").slots.get_mut(&SlotId::Look).expect("look");
+            look.params.set(&bpe_core::layered_key(layer, "reach"), Value::Number(420.0));
+            look.params.set(&bpe_core::layered_key(layer, "lights"), Value::Number(1.0));
+        }
+        "aura" => {
+            let layer = scene.add_layer(reg, ball, SlotId::Look, AURA).expect("aura");
+            let look = scene.things.get_mut(&ball).expect("ball").slots.get_mut(&SlotId::Look).expect("look");
+            look.params.set(&bpe_core::layered_key(layer, "reach"), Value::Number(9.0));
+            look.params.set(&bpe_core::layered_key(layer, "lines"), Value::Number(4.0));
+        }
+        "negative" => {
+            let dark = add_light(&mut scene, reg, LightType::Point, ThingId::ROOT).expect("a light");
+            let mut s = LightSettings::of_kind(LightType::Point);
+            s.position = glam::Vec2::new(0.0, 150.0);
+            s.negative = true;
+            s.strength = 2.5;
+            s.reach = 700.0;
+            s.height = 100.0;
+            scene.things.get_mut(&dark).expect("light").params = s.to_params();
+            scene.rename_thing(dark, "Darkness");
+        }
+        other => panic!("no demo look {other}"),
+    }
     scene
 }
 

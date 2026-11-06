@@ -101,6 +101,27 @@ impl Playback {
         true
     }
 
+    /// A copy of this playback moved to `time`, made from the latest checkpoint at or before it
+    /// and keeping only that one: cheap beside a whole copy, for replaying a stretch next to
+    /// this playback (the editor's effect warm-up). The same as seeking a copy there.
+    pub fn rewound(&self, time: f64) -> Playback {
+        let target = crate::step_at(time, self.world.steps_per_second);
+        let index = self.checkpoints.partition_point(|(w, _)| w.step <= target).max(1) - 1;
+        let (world, len) = &self.checkpoints[index];
+        let mut log = self.log.clone();
+        log.truncate(*len);
+        log.truncate_camera(world.step);
+        let mut copy = Playback {
+            world: world.clone(),
+            log,
+            sims: self.sims.clone(),
+            checkpoints: vec![(world.clone(), *len)],
+            checkpoint_every: self.checkpoint_every,
+        };
+        copy.seek(time);
+        copy
+    }
+
     /// Bytes the playback holds: the world, its log and every checkpoint.
     pub fn memory(&self) -> usize {
         self.world.memory() + self.log.memory() + self.checkpoints.iter().map(|(w, _)| w.memory()).sum::<usize>()
@@ -164,5 +185,19 @@ mod tests {
         assert!(!done && p.time() > 0.0 && p.time() < 20.0);
         assert!(p.seek_within(p.time(), Some(Duration::from_millis(20))));
         assert!(p.memory() > 0);
+    }
+
+    #[test]
+    fn a_rewound_copy_is_where_a_seek_would_be() {
+        let (scene, resolved, sims) = dots_in_ring(20);
+        let mut p = Playback::new(&scene, &resolved, Arc::new(sims));
+        p.seek(3.0);
+        let copy = p.rewound(1.3);
+        let mut fresh = p.clone();
+        fresh.seek(1.3);
+        assert_eq!(copy.world().step, fresh.world().step);
+        assert_eq!(copy.world().bodies[&DOTS].position, fresh.world().bodies[&DOTS].position);
+        assert_eq!(copy.log().hash(), fresh.log().hash());
+        assert_eq!(p.time(), 3.0, "the playback itself stays where it was");
     }
 }

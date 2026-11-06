@@ -181,6 +181,10 @@ impl ThingDraw for EmitterDraw {
     fn draw_around(&self, cx: &DrawCx, index: usize, frame: &mut Frame) {
         BallsDraw.draw_around(cx, index, frame);
     }
+
+    fn light(&self, cx: &DrawCx, scene: &mut bpe_gfx::LightScene) {
+        BallsDraw.light(cx, scene);
+    }
 }
 
 #[cfg(test)]
