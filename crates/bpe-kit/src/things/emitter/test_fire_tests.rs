@@ -255,13 +255,12 @@ fn later_rounds_aim_from_where_the_world_is_then() {
         s.fire_when = FireWhen::Every;
         s.every = 2.0;
         s.rounds = 2;
-        s.arrive_after = 1.2;
     });
     let mut world = fired(&scene, &kit);
     let mut log = Log::default();
     let target = Vec2::new(250.0, 200.0);
-    nearest(&mut world, &kit, &mut log, me, 1 + 288, target);
-    let second = nearest(&mut world, &kit, &mut log, me, 1 + 480 + 288, target);
+    nearest(&mut world, &kit, &mut log, me, 1 + 360, target);
+    let second = nearest(&mut world, &kit, &mut log, me, 1 + 480 + 360, target);
     let aims = st(&world, me).aimed.last().cloned().unwrap();
     assert_eq!(aims.round, 2);
     let reaching = aims.balls.iter().filter(|b| b.as_ref().is_some_and(|b| b.reaches)).count();
