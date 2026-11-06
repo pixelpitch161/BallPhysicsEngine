@@ -216,6 +216,108 @@ pub struct Gradient {
     /// [`crate::gradient_extras::apply_moves`] just before drawing; never saved, never edited, and
     /// ignored by [`Gradient::sample`].
     pub grain: f32,
+    /// Draw-time only: how the gradient moves at the moment being drawn (its Move-tab
+    /// companions, worked out by [`crate::gradient_extras::apply_moves`] just before drawing).
+    /// [`Gradient::sample`] honours it; never saved, never edited, still by default.
+    pub moves: Moves,
+}
+
+/// How a gradient moves at one moment: set on the value by
+/// [`crate::gradient_extras::apply_moves`] from its Move-tab companions, honoured by
+/// [`Gradient::sample`] (all but the wave, which the GPU and the CPU colours apply per ball or
+/// shape from its last hit). The default is still.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Moves {
+    /// How far the colours have slid along (Cycle and Step on the beat), in gradient lengths.
+    pub shift: f32,
+    /// How far the stops are spread round the middle (Breathe), as a natural log: they sit
+    /// `e^breathe` times as far from the middle.
+    pub breathe: f32,
+    /// How far every colour's hue is turned (Hue spin), in turns round the OKLCH wheel.
+    pub hue: f32,
+    /// The second gradient the colours blend toward (Morph).
+    pub morph: Option<Box<Morph>>,
+    /// The bright band a hit sends along the gradient (Hit wave).
+    pub wave: Option<HitWave>,
+}
+
+impl Moves {
+    /// Whether sampling the gradient is as if it had no moves (the wave doesn't change sampling).
+    pub fn is_still(&self) -> bool {
+        self.shift == 0.0 && self.breathe == 0.0 && self.hue == 0.0 && self.morph.is_none()
+    }
+
+    /// Only the wave kept: what is left once the other moves are baked into the stops.
+    fn wave_only(&self) -> Moves {
+        Moves { wave: self.wave, ..Moves::default() }
+    }
+}
+
+/// Morph: every point of the gradient blends `amount` of the way toward the same point of `to`,
+/// in the gradient's own Mix.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Morph {
+    pub to: Gradient,
+    pub amount: f32,
+}
+
+/// Hit wave: after a hit, a band `width` wide (as a share of the gradient) runs along the
+/// gradient from its start at `speed` gradients a second (from its end when negative), turning
+/// the colours toward `colour` by `strength` (past 1 it adds light).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HitWave {
+    pub strength: f32,
+    pub width: f32,
+    pub speed: f32,
+    pub colour: Color,
+}
+
+impl HitWave {
+    /// `c` (linear light) at place `t` along the gradient `age` seconds after a hit, with the
+    /// wave on it. paint.wgsl's `paint_wave` does the same sums.
+    pub fn apply(&self, c: [f32; 4], t: f32, age: f32) -> [f32; 4] {
+        let i = self.at(t, age);
+        if i <= 0.0 {
+            return c;
+        }
+        let w = self.colour.to_linear();
+        let cover = i.min(1.0);
+        let extra = (i - 1.0).max(0.0);
+        [
+            c[0] + (w[0] - c[0]) * cover + w[0] * extra,
+            c[1] + (w[1] - c[1]) * cover + w[1] * extra,
+            c[2] + (w[2] - c[2]) * cover + w[2] * extra,
+            c[3],
+        ]
+    }
+
+    /// How strongly the wave shows at place `t` `age` seconds after a hit: its strength times a
+    /// smooth bump round the front, 0 past `width` from it.
+    pub fn at(&self, t: f32, age: f32) -> f32 {
+        if !(age >= 0.0 && age.is_finite() && t.is_finite()) || self.strength == 0.0 || !self.strength.is_finite() {
+            return 0.0;
+        }
+        let width = if self.width.is_finite() { self.width.max(1e-4) } else { 1e-4 };
+        let speed = if self.speed.is_finite() { self.speed } else { 0.0 };
+        let front = if speed < 0.0 { 1.0 + speed * age } else { speed * age };
+        let d = (t - front) / width;
+        if d.abs() >= 1.0 {
+            return 0.0;
+        }
+        let bump = 1.0 - d * d;
+        self.strength * bump * bump
+    }
+
+    /// How long after a hit the wave is still on the gradient, in seconds (a still wave never
+    /// leaves: 10 000 s).
+    pub fn lasts(&self) -> f32 {
+        let speed = if self.speed.is_finite() { self.speed.abs() } else { 0.0 };
+        if speed < 1e-4 {
+            return 10_000.0;
+        }
+        let width = if self.width.is_finite() { self.width.max(0.0) } else { 0.0 };
+        ((1.0 + width) / speed).min(10_000.0)
+    }
 }
 
 impl Default for Gradient {
@@ -278,7 +380,7 @@ impl<'de> Deserialize<'de> for Gradient {
                 }
                 let hue = matches!(transition, Some(SavedTransition::Hue));
                 let mix = mix.unwrap_or(if hue { Mix::RoundTheWheel } else { Mix::Light });
-                Gradient { stops, mix, looped, grain: 0.0 }.sorted()
+                Gradient { stops, mix, looped, grain: 0.0, moves: Moves::default() }.sorted()
             }
         })
     }
@@ -304,7 +406,11 @@ const GREY_CHROMA: f32 = 1e-4;
 /// `u` of the way from `a` to `b` (linear-light RGBA out) mixed the way `mix` says. Alpha always
 /// blends straight; 0 and 1 give the end colours exactly.
 pub fn mix_colours(a: Color, b: Color, u: f32, mix: Mix) -> [f32; 4] {
-    let (la, lb) = (a.to_linear(), b.to_linear());
+    mix_linear(a.to_linear(), b.to_linear(), u, mix)
+}
+
+/// [`mix_colours`] of two linear-light colours.
+pub fn mix_linear(la: [f32; 4], lb: [f32; 4], u: f32, mix: Mix) -> [f32; 4] {
     if u.is_nan() || u <= 0.0 {
         return la;
     }
@@ -352,7 +458,7 @@ pub fn mix_colours(a: Color, b: Color, u: f32, mix: Mix) -> [f32; 4] {
 impl Gradient {
     /// One colour everywhere.
     pub fn solid(c: Color) -> Self {
-        Self { stops: vec![Stop::new(0.0, c)], mix: Mix::Light, looped: false, grain: 0.0 }
+        Self { stops: vec![Stop::new(0.0, c)], mix: Mix::Light, looped: false, grain: 0.0, moves: Moves::default() }
     }
 
     /// The colours spread evenly from 0 to 1, blending smoothly in linear light. No colours is
@@ -366,7 +472,13 @@ impl Gradient {
     pub fn spread(colors: &[Color], mix: Mix, looped: bool) -> Self {
         let mut g = match colors {
             [] => Self::solid(Color::WHITE),
-            _ => Self { stops: colors.iter().map(|&c| Stop::new(0.0, c)).collect(), mix, looped, grain: 0.0 },
+            _ => Self {
+                stops: colors.iter().map(|&c| Stop::new(0.0, c)).collect(),
+                mix,
+                looped,
+                grain: 0.0,
+                moves: Moves::default(),
+            },
         };
         if colors.len() > 1 {
             g.mix = mix;
@@ -425,7 +537,37 @@ impl Gradient {
     /// The linear-light colour at `t`: clamped to 0 to 1, or wrapped round when the gradient
     /// loops. The stops are taken to be in order, and where two share a place the later one wins
     /// from there on.
+    ///
+    /// A moving gradient ([`Gradient::moves`]) is sampled moved: slid along (an unlooped one
+    /// wrapping with a cut), spread round the middle, blended toward its Morph gradient and its
+    /// hues turned. A still one samples exactly as its stops say.
     pub fn sample(&self, t: f32) -> [f32; 4] {
+        if self.moves.is_still() {
+            return self.sample_still(t);
+        }
+        let m = &self.moves;
+        let mut v = if t.is_finite() { t } else { 0.0 };
+        if m.shift != 0.0 && m.shift.is_finite() {
+            v -= m.shift;
+            if !self.looped {
+                v -= v.floor();
+            }
+        }
+        if m.breathe != 0.0 && m.breathe.is_finite() {
+            v = 0.5 + (v - 0.5) * (-m.breathe).exp();
+        }
+        let mut c = self.sample_still(v);
+        if let Some(morph) = &m.morph {
+            c = mix_linear(c, morph.to.sample(v), morph.amount, self.mix);
+        }
+        if m.hue != 0.0 && m.hue.is_finite() {
+            c = hue_turned(c, m.hue);
+        }
+        c
+    }
+
+    /// [`Gradient::sample`] as the stops say, without the moves.
+    pub fn sample_still(&self, t: f32) -> [f32; 4] {
         let n = self.stops.len();
         if n <= 1 {
             return self.first().to_linear();
@@ -480,7 +622,8 @@ impl Gradient {
 
     /// The gradient cut into `n` flat bands, each the colour at its band's middle (a looped
     /// gradient's bands wrap round through its last gap). Two stops a band, each band flat in any
-    /// mix; Loop and grain are kept. 0 bands leaves it as it is.
+    /// mix; Loop, grain and the wave are kept, the other moves baked into the bands' colours. 0
+    /// bands leaves it as it is.
     pub fn banded(&self, n: u32) -> Gradient {
         if n == 0 {
             return self.clone();
@@ -492,13 +635,26 @@ impl Gradient {
             stops.push(Stop::new(k as f32 * size, color));
             stops.push(Stop::new(if k + 1 == n { 1.0 } else { (k + 1) as f32 * size }, color));
         }
-        Gradient { stops, mix: Mix::Light, looped: self.looped, grain: self.grain }
+        Gradient { stops, mix: Mix::Light, looped: self.looped, grain: self.grain, moves: self.moves.wave_only() }
     }
 
     /// The stops for reading one colour at a time (stepping a colour on each hit, a light show's
     /// colour list): every stop, except that a gradient cut into bands ([`Gradient::banded`],
     /// each band two stops of one colour) gives each band's stop once.
+    ///
+    /// A moving gradient gives each stop its colour as moved (sampled at its place).
     pub fn step_stops(&self) -> std::borrow::Cow<'_, [Stop]> {
+        let stops = self.step_stops_still();
+        if self.moves.is_still() {
+            return stops;
+        }
+        std::borrow::Cow::Owned(
+            stops.iter().map(|s| Stop { color: Color::from_linear(self.sample(s.at)), ..*s }).collect(),
+        )
+    }
+
+    /// [`Gradient::step_stops`] without the moves.
+    fn step_stops_still(&self) -> std::borrow::Cow<'_, [Stop]> {
         let n = self.stops.len() / 2;
         let size = 1.0 / n.max(1) as f32;
         let near = |a: f32, b: f32| (a - b).abs() < 1e-6;
@@ -521,6 +677,89 @@ impl Gradient {
         let last = n.saturating_sub(1).max(1) as f32;
         (0..n).map(|i| self.sample(i as f32 / last)).collect()
     }
+
+    /// The gradient with its stops wandering (Stops wander) at `time` seconds: each drifts on
+    /// its own, smooth seeded noise at `speed` changes a second, by up to `amount` (1 at most)
+    /// of half the gap to its neighbour on the side it drifts to, so no stop ever passes another.
+    /// An end stop of an unlooped gradient drifts only inward. The same at the same time.
+    pub fn wandered(&self, amount: f32, speed: f32, seed: u32, time: f64) -> Gradient {
+        let n = self.stops.len();
+        let amount = if amount.is_finite() { amount.clamp(-1.0, 1.0) } else { 0.0 };
+        if n < 2 || amount == 0.0 {
+            return self.clone();
+        }
+        let speed = if speed.is_finite() { speed as f64 } else { 0.0 };
+        let x = if time.is_finite() { time * speed } else { 0.0 };
+        let mut out = self.clone();
+        for (i, stop) in out.stops.iter_mut().enumerate() {
+            let at = self.stops[i].at;
+            let drift = amount * wander_noise(seed, i, x);
+            // The gap to the neighbour on the side it drifts to (round through 1 = 0 when looped).
+            let room = if drift > 0.0 {
+                match self.stops.get(i + 1) {
+                    Some(next) => next.at - at,
+                    None if self.looped => self.stops[0].at + 1.0 - at,
+                    None => 0.0,
+                }
+            } else if i > 0 {
+                at - self.stops[i - 1].at
+            } else if self.looped {
+                at + 1.0 - self.stops[n - 1].at
+            } else {
+                0.0
+            };
+            stop.at = at + drift * 0.5 * room.max(0.0);
+        }
+        // A looped gradient's stops may drift through 1 = 0: brought back into 0 to 1 and kept
+        // in order round the circle.
+        if self.looped {
+            for s in &mut out.stops {
+                s.at -= s.at.floor();
+            }
+            out.stops.sort_by(|a, b| a.at.total_cmp(&b.at));
+        } else {
+            for s in &mut out.stops {
+                s.at = s.at.clamp(0.0, 1.0);
+            }
+        }
+        out
+    }
+}
+
+/// `c` (linear light) with its hue turned `turns` round the OKLCH wheel, lightness and chroma
+/// kept (greys stay grey; brought back into sRGB by lowering chroma). Alpha is kept.
+pub fn hue_turned(c: [f32; 4], turns: f32) -> [f32; 4] {
+    use crate::oklab::{fit_gamut, linear_to_oklab, oklab_to_lch};
+    if !turns.is_finite() || turns == 0.0 {
+        return c;
+    }
+    let mut lch = oklab_to_lch(linear_to_oklab([c[0], c[1], c[2]]));
+    if lch[1] < GREY_CHROMA {
+        return c;
+    }
+    lch[2] = (lch[2] + turns).rem_euclid(1.0);
+    let rgb = fit_gamut(lch);
+    [rgb[0], rgb[1], rgb[2], c[3]]
+}
+
+/// Smooth seeded noise in -1 to 1 for stop `i` at `x`: a value at each whole `x` from a hash of
+/// the seed, the stop and `x`, eased between them. Pure: the same on every machine.
+pub fn wander_noise(seed: u32, i: usize, x: f64) -> f32 {
+    fn pcg(v: u32) -> u32 {
+        let state = v.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
+        let word = ((state >> ((state >> 28) + 4)) ^ state).wrapping_mul(277_803_737);
+        (word >> 22) ^ word
+    }
+    let x = if x.is_finite() { x } else { 0.0 };
+    let k = x.floor();
+    let f = (x - k) as f32;
+    let at = |k: f64| {
+        let h = pcg(seed ^ pcg((i as u32).wrapping_mul(0x9e37_79b9) ^ pcg(k as i64 as u32)));
+        (h >> 8) as f32 / 16_777_215.0 * 2.0 - 1.0
+    };
+    let (a, b) = (at(k), at(k + 1.0));
+    let e = f * f * (3.0 - 2.0 * f);
+    a + (b - a) * e
 }
 
 impl Serialize for Color {
@@ -850,5 +1089,173 @@ mod tests {
         assert!(old("Eased").stops.iter().all(|s| s.blend == GapBlend::Eased));
         let hue = old("Hue");
         assert_eq!((hue.mix, hue.stops[0].blend), (Mix::RoundTheWheel, GapBlend::Smooth));
+    }
+
+    fn close(a: [f32; 4], b: [f32; 4]) -> bool {
+        (0..4).all(|k| (a[k] - b[k]).abs() < 1e-5)
+    }
+
+    fn rgb3() -> Gradient {
+        Gradient::spread(&[RED, Color::rgb(0, 255, 0), BLUE], Mix::Even, false)
+    }
+
+    fn moved(g: &Gradient, moves: Moves) -> Gradient {
+        Gradient { moves, ..g.clone() }
+    }
+
+    #[test]
+    fn a_still_gradient_samples_as_its_stops() {
+        let g = rgb3();
+        assert!(g.moves.is_still());
+        for i in 0..=40 {
+            let t = i as f32 / 40.0;
+            assert_eq!(g.sample(t), g.sample_still(t));
+        }
+        // A wave alone doesn't change sampling.
+        let w = HitWave { strength: 1.0, width: 0.1, speed: 1.0, colour: Color::WHITE };
+        assert!(Moves { wave: Some(w), ..Moves::default() }.is_still());
+    }
+
+    #[test]
+    fn a_shift_slides_the_colours_and_cuts_without_loop() {
+        let mut looped = rgb3();
+        looped.set_looped(true);
+        let slid = moved(&looped, Moves { shift: 0.3, ..Moves::default() });
+        for i in 0..=20 {
+            let t = i as f32 / 20.0;
+            assert!(close(slid.sample(t), looped.sample(t - 0.3)), "{t}");
+        }
+        let open = rgb3();
+        let slid = moved(&open, Moves { shift: 0.25, ..Moves::default() });
+        assert!(close(slid.sample(0.25), open.sample(0.0)));
+        assert!(close(slid.sample(0.75), open.sample(0.5)));
+        // The end wraps round to the start with a cut just before the shift.
+        assert!(close(slid.sample(0.1), open.sample(0.85)));
+        assert!(close(slid.sample(0.2499), open.sample(0.9999)));
+    }
+
+    #[test]
+    fn breathing_spreads_the_stops_round_the_middle() {
+        let g = rgb3();
+        let b = 0.4f32;
+        let spread = moved(&g, Moves { breathe: b, ..Moves::default() });
+        // The stop at 0.25... here the stops are 0, 0.5, 1: the one at 0 shows at 0.5 - 0.5·e^b
+        // (clamped), so look at a place inside: 0.4 shows as 0.5 + (0.4 - 0.5)·e^-b.
+        let inside = 0.5 + (0.4 - 0.5) * (-b).exp();
+        assert!(close(spread.sample(0.4), g.sample(inside)));
+        assert!(close(spread.sample(0.5), g.sample(0.5)), "the middle stays");
+    }
+
+    #[test]
+    fn hue_spin_turns_colours_and_leaves_greys() {
+        let red = Gradient::solid(RED);
+        let turned = moved(&red, Moves { hue: 0.5, ..Moves::default() });
+        let c = Color::from_linear(turned.sample(0.0));
+        assert!(c.r < 100 && c.g > 100 && c.b > 100, "red half way round is cyan-ish: {c:?}");
+        let grey = Gradient::solid(Color::rgb(128, 128, 128));
+        let still = moved(&grey, Moves { hue: 0.3, ..Moves::default() });
+        assert_eq!(still.sample(0.0), grey.sample(0.0));
+        assert!(
+            close(hue_turned(RED.to_linear(), 1.0), RED.to_linear()) || {
+                let back = Color::from_linear(hue_turned(RED.to_linear(), 1.0));
+                back.r >= 254 && back.g <= 1 && back.b <= 1
+            }
+        );
+    }
+
+    #[test]
+    fn morph_blends_every_point_toward_the_other_gradient() {
+        let a = rgb3();
+        let b = Gradient::spread(&[Color::rgb(255, 255, 0), Color::rgb(0, 0, 0)], Mix::Light, true);
+        let at =
+            |amount| moved(&a, Moves { morph: Some(Box::new(Morph { to: b.clone(), amount })), ..Moves::default() });
+        for i in 0..=10 {
+            let t = i as f32 / 10.0;
+            assert_eq!(at(0.0).sample(t), a.sample(t));
+            assert!(close(at(1.0).sample(t), b.sample(t)));
+            assert!(close(at(0.5).sample(t), mix_linear(a.sample(t), b.sample(t), 0.5, a.mix)));
+        }
+    }
+
+    #[test]
+    fn bands_bake_in_the_moves_and_keep_the_wave() {
+        let mut g = rgb3();
+        let w = HitWave { strength: 1.0, width: 0.1, speed: 1.0, colour: Color::WHITE };
+        g.moves = Moves { shift: 0.2, hue: 0.1, wave: Some(w), ..Moves::default() };
+        let banded = g.banded(4);
+        assert!(banded.moves.is_still());
+        assert_eq!(banded.moves.wave, Some(w));
+        let c = Color::from_linear(banded.sample(0.125));
+        assert_eq!(c, Color::from_linear(g.sample(0.125)));
+    }
+
+    #[test]
+    fn stops_wander_without_passing_each_other() {
+        let mut seed = 1u32;
+        let mut next = || {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+            (seed >> 8) as f32 / 16_777_216.0
+        };
+        for k in 0..50 {
+            let n = 2 + (next() * 6.0) as usize;
+            let mut ats: Vec<f32> = (0..n).map(|_| next()).collect();
+            ats.sort_by(f32::total_cmp);
+            let mut g = Gradient {
+                stops: ats.iter().enumerate().map(|(i, &at)| Stop::new(at, Color::rgb(i as u8 * 30, 0, 0))).collect(),
+                ..Gradient::default()
+            };
+            g.looped = k % 2 == 0;
+            for step in 0..200 {
+                let time = step as f64 * 0.37;
+                let w = g.wandered(1.0, 1.3, k, time);
+                // In the same order as before (round the circle when looped), nothing outside 0 to 1.
+                let colours: Vec<u8> = w.stops.iter().map(|s| s.color.r).collect();
+                let start = colours.iter().position(|&r| r == 0).unwrap();
+                for (i, &r) in colours.iter().cycle().skip(start).take(n).enumerate() {
+                    assert_eq!(r, i as u8 * 30, "order kept: {k} {time} {w:?}");
+                }
+                assert!(w.stops.iter().all(|s| (0.0..=1.0).contains(&s.at)));
+                if !g.looped {
+                    assert!(w.stops.windows(2).all(|p| p[0].at <= p[1].at));
+                }
+                assert_eq!(w, g.wandered(1.0, 1.3, k, time), "the same at the same time");
+            }
+        }
+        let g = rgb3();
+        assert_ne!(g.wandered(0.5, 1.0, 1, 3.3), g.wandered(0.5, 1.0, 1, 4.1), "it moves");
+        assert_ne!(g.wandered(0.5, 1.0, 1, 3.3), g.wandered(0.5, 1.0, 2, 3.3), "the seed counts");
+        assert_eq!(g.wandered(0.0, 1.0, 1, 3.3), g);
+        // The ends of an unlooped gradient only move inward.
+        for step in 0..100 {
+            let w = g.wandered(1.0, 2.0, 7, step as f64 * 0.21);
+            assert!(w.stops[0].at >= 0.0 && w.stops[2].at <= 1.0);
+        }
+    }
+
+    #[test]
+    fn stepping_reads_moved_colours() {
+        let g = moved(&rgb3(), Moves { hue: 0.5, ..Moves::default() });
+        let stops = g.step_stops();
+        assert_eq!(stops.len(), 3);
+        assert_eq!(stops[0].color, Color::from_linear(g.sample(0.0)));
+        assert_ne!(stops[0].color, RED);
+    }
+
+    #[test]
+    fn a_hit_wave_is_a_band_running_from_the_start() {
+        let w = HitWave { strength: 1.0, width: 0.2, speed: 2.0, colour: Color::WHITE };
+        assert_eq!(w.at(0.5, 0.25), 1.0, "the front is at the place half a gradient in after 0.25 s");
+        assert_eq!(w.at(0.75, 0.25), 0.0);
+        assert!(w.at(0.6, 0.25) > 0.0 && w.at(0.6, 0.25) < 1.0);
+        let black = [0.0, 0.0, 0.0, 1.0];
+        assert_eq!(w.apply(black, 0.5, 0.25), [1.0, 1.0, 1.0, 1.0]);
+        assert_eq!(w.apply(black, 0.9, 0.25), black);
+        let back = HitWave { speed: -2.0, ..w };
+        assert_eq!(back.at(0.5, 0.25), 1.0);
+        assert_eq!(back.at(1.0, 0.0), 1.0);
+        let strong = HitWave { strength: 3.0, ..w };
+        assert_eq!(strong.apply(black, 0.5, 0.25), [3.0, 3.0, 3.0, 1.0], "past 1 adds light");
+        assert!((w.lasts() - 0.6).abs() < 1e-6);
+        assert_eq!(HitWave { speed: 0.0, ..w }.lasts(), 10_000.0);
     }
 }

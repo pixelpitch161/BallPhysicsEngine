@@ -242,6 +242,27 @@ editor (`gradient_bar.rs`) has a diamond per gap (drag: the middle), a selected 
 Shape and Move once parts 2 and 3 add companions there); companion rows are ordinary grid rows under their full key
 (`companion_def`, `widgets::def_in`), and their timeline lanes read "Colours bands".
 
+Part 3 is in (plan `part3.md`): **movement**, the Move tab's companions (`gradient_extras::moves()`, each with its
+fold in `SettingDef.group`): Cycle (`~cycle`, `~cycle_shift`), Step on the beat (`~step_every` beats, `~step_glide`),
+Breathe (`~breathe`, `~breathe_speed`, `~breathe_every`), Hue spin (`~hue_speed`, `~hue_turn`), Stops wander
+(`~wander`, `~wander_speed`, `~wander_seed`), Hit wave (`~wave`, `~wave_width`, `~wave_speed`, `~wave_colour` a
+Color), Morph (`~morph`, `~morph_to` a Gradient companion, which has no companions of its own: `split` refuses a base
+that is a companion) and Shape spin (`~spin`, added onto part 2's `~turn`). `apply_moves(resolved, time)` reads the
+beat from the root's tempo (`gradient_extras::Beat::of`, the same as `beat_at`), moves the stops for Wander
+(`Gradient::wandered`, never past a neighbour) and puts the rest on the draw-time `Gradient.moves` (`Moves`: shift,
+breathe, hue, morph, wave; `#[serde(skip)]`), which `Gradient::sample` honours (slide, an unlooped one wrapping with a
+cut; spread round the middle; `mix_linear` toward Morph's; `hue_turned` in OKLCH), so bakes, bands, CPU colours,
+lights and the probe all see it; `sample_still` is the plain sampling; a one-colour gradient takes its moved colour
+into its stop; `step_stops` gives moved colours; bands bake the moves in. **Hit wave** (`HitWave`: `at`, `apply`,
+`lasts`) travels with the gradient's atlas row: `GradientAtlas::waves` (two texels a row, `wave_texels`, `NO_WAVE`)
+uploaded to the paint bind group's binding 2 (`Rgba32Float`), read by `paint.wgsl::paint_wave` with
+`var<private> paint_hit` (set beside `paint_px` in `shade_layers` and `shade_path` from the instance's hit) in
+`paint_along` (sample → vary → wave → grain); the atlas hash eats moves and waves only when there are any. Stacks
+(`Stack`/`ShapeStack.wave_memory`, `gradient_extras::wave_memory`) ask for hits while a gradient has a wave; on the
+CPU `paint::Inputs.hit_age` (filled by `BallInputs`/`WallInputs`) runs it in `colour_at`. The background, trails,
+particles and lights have no hit, so no wave. The Move tab folds each move (`widgets::group_heading`, open state under
+the bar's id); one-colour gradients still show no tabs.
+
 ## Crate map
 
 Dependencies go bottom to top:

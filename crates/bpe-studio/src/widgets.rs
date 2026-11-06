@@ -232,7 +232,7 @@ fn group_changed(defs: &[SettingDef], group: &str, get: &dyn Fn(&str) -> Value, 
 /// A group's heading: its name, which folds and opens the group when `fold` is given (as does
 /// the arrow before it), and a dot after it when the group is `shut` holding `changed` rows.
 /// True when the heading or its arrow was clicked.
-fn group_heading(ui: &mut Ui, group: &'static str, fold: bool, shut: bool, changed: bool) -> bool {
+pub(crate) fn group_heading(ui: &mut Ui, group: &'static str, fold: bool, shut: bool, changed: bool) -> bool {
     let mut clicked = false;
     ui.horizontal(|ui| {
         if fold && fold_toggle(ui, !shut, group) {

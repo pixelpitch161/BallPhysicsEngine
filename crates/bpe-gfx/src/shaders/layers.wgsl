@@ -733,6 +733,8 @@ fn ball_layer_sd(l: LayerGpu, d: f32) -> f32 {
 fn shade_layers(in: LayeredOut) -> vec4<f32> {
     // For the gradient grain (paint.wgsl).
     paint_px = in.pos.xy;
+    // For the Hit wave (paint.wgsl).
+    paint_hit = in.hit;
     let aa = 1.0 / max(in.radius.x, 0.5);
     layered_ball =
         LayeredBall(

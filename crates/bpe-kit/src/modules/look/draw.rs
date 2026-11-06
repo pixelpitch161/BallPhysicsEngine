@@ -44,7 +44,7 @@ impl<'a> BallInputs<'a> {
     /// The inputs for `bodies`, the balls of the thing `cx` draws, ready for `paints`.
     pub fn new(cx: &DrawCx<'a>, bodies: &'a Bodies, paints: &[&Paint]) -> Self {
         let steps_per_second = cx.world.steps_per_second;
-        let last = if paints.iter().any(|p| p.follow == Follow::Step) {
+        let last = if paints.iter().any(|p| p.follow == Follow::Step || p.colours.moves.wave.is_some()) {
             hits_on(cx.log, cx.thing.id, bodies.len(), cx.time, steps_per_second).into_iter().map(|h| h.1).collect()
         } else {
             Vec::new()
@@ -72,6 +72,12 @@ impl<'a> BallInputs<'a> {
         let place = b.position.get(i).copied().unwrap_or_default();
         let hits = b.hits.get(i).copied().unwrap_or(0);
         let mut inputs = ball_inputs(self.thing, b, i, self.on_screen(place), self.time);
+        if p.colours.moves.wave.is_some()
+            && hits > 0
+            && let Some(&Some((at, ..))) = self.last.get(i)
+        {
+            inputs.hit_age = Some((self.time - at) as f32);
+        }
         if p.follow == Follow::Step
             && hits > 0
             && let Some(&Some((at, other, point))) = self.last.get(i)
@@ -192,7 +198,7 @@ impl<'a> WallInputs<'a> {
     /// second, ready for `p` (already [`for_walls`]).
     pub fn new(cx: &DrawCx<'a>, p: &Paint, count: usize, speed: f32) -> Self {
         let steps_per_second = cx.world.steps_per_second;
-        let hits = if matches!(p.follow, Follow::Hits | Follow::Step) {
+        let hits = if matches!(p.follow, Follow::Hits | Follow::Step) || p.colours.moves.wave.is_some() {
             hits_on(cx.log, cx.thing.id, count, cx.time, steps_per_second)
         } else {
             Vec::new()
@@ -224,6 +230,11 @@ impl<'a> WallInputs<'a> {
             seed: seed_of(self.thing, i),
             ..Inputs::default()
         };
+        if p.colours.moves.wave.is_some()
+            && let Some((at, ..)) = last
+        {
+            inputs.hit_age = Some((self.time - at) as f32);
+        }
         if p.follow == Follow::Step
             && let Some((at, other, point)) = last
         {

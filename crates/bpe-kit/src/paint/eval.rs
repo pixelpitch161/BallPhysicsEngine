@@ -24,6 +24,9 @@ pub struct Inputs {
     pub time: f32,
     /// Which instance this is, for colour variation: see [`super::seed_of`].
     pub seed: u32,
+    /// Seconds since the instance's last hit, for the gradient's Hit wave: set only when the
+    /// gradient has one and the instance has been hit.
+    pub hit_age: Option<f32>,
 }
 
 /// How fast `Follow::Time` runs when the paint's scroll is still, in cycles per second.
@@ -152,6 +155,7 @@ fn step_colour(p: &Paint, hits: u32, since_hit: f32) -> [f32; 4] {
         mix: p.colours.mix,
         looped: false,
         grain: 0.0,
+        moves: bpe_core::Moves::default(),
     };
     pair.sample(f)
 }
@@ -160,9 +164,15 @@ fn step_colour(p: &Paint, hits: u32, since_hit: f32) -> [f32; 4] {
 /// simulation time `i.time`). Never NaN, whatever the inputs.
 pub fn colour_at(p: &Paint, i: &Inputs) -> [f32; 4] {
     let c = followed_colour(p, i);
-    match super::vary_offsets(p, i.seed, i.time) {
+    let c = match super::vary_offsets(p, i.seed, i.time) {
         Some(v) => super::apply_vary(c, v),
         None => c,
+    };
+    // The Hit wave runs along the gradient from the instance's last hit, after its variation,
+    // as the GPU paints it.
+    match (&p.colours.moves.wave, i.hit_age) {
+        (Some(wave), Some(age)) => wave.apply(c, offset(p, i), age),
+        _ => c,
     }
 }
 
@@ -536,5 +546,20 @@ mod tests {
         let mid = colour_at(&p, &Inputs { hits: 1, since_hit: 0.1, ..Inputs::default() });
         let want = Gradient::spread(&[RED, GREEN], Mix::Even, false).sample(0.5);
         assert!(near4(mid, want), "{mid:?} vs {want:?}");
+    }
+
+    #[test]
+    fn a_hit_wave_runs_along_a_ball_s_colours_from_its_last_hit() {
+        let wave = bpe_core::HitWave { strength: 1.0, width: 0.2, speed: 2.0, colour: Color::rgb(255, 255, 255) };
+        let mut colours = Gradient::spread(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)], Mix::Light, false);
+        colours.moves.wave = Some(wave);
+        let p = Paint { colours, follow: Follow::Order, ..Paint::default() };
+        // The middle ball of three sits half way along.
+        let ball = Inputs { index: 1, count: 3, ..Inputs::default() };
+        let plain = colour_at(&p, &ball);
+        let front = colour_at(&p, &Inputs { hit_age: Some(0.25), ..ball });
+        assert!(front.iter().all(|c| (c - 1.0).abs() < 1e-6), "the front is on it: {front:?}");
+        assert_eq!(colour_at(&p, &Inputs { hit_age: Some(2.0), ..ball }), plain, "long gone");
+        assert_eq!(colour_at(&p, &Inputs { hit_age: None, ..ball }), plain, "never hit");
     }
 }
