@@ -263,6 +263,9 @@ struct LayeredOut {
     @location(8) @interpolate(flat) group: vec4<f32>,
     @location(9) @interpolate(flat) place: vec4<f32>,
     @location(10) @interpolate(flat) hit: vec4<f32>,
+    // Where in the world, and the ball's centre (for Ripples, paint.wgsl).
+    @location(11) world: vec2<f32>,
+    @location(12) @interpolate(flat) centre: vec2<f32>,
 };
 
 @vertex
@@ -275,6 +278,8 @@ fn vs_layers(@builtin(vertex_index) i: u32, b: LayeredIn) -> LayeredOut {
     let offset = dir * corner.x * b.stretch.z + side * corner.y * b.stretch.w;
     var out: LayeredOut;
     out.pos = to_clip(b.center + offset * b.radius);
+    out.world = b.center + offset * b.radius;
+    out.centre = b.center;
     out.local = corner;
     out.body = b.body;
     out.radius = vec2<f32>(b.radius / g.view.z, radius);
@@ -442,17 +447,15 @@ fn group_over(acc: vec4<f32>) -> vec4<f32> {
 }
 
 
-// The colour of a layer whose own colours are a gradient (`l.paint.row` 0 or more) at ball point
-// `p`: straight across the ball (pattern 1), or outward (2) at `out` (0 to 1, worked out for the
-// layer); `plain` for a layer of one colour.
-fn own_colour(l: LayerGpu, p: vec2<f32>, out: f32, plain: vec3<f32>) -> vec3<f32> {
-    if l.paint.row < 0.0 {
-        return plain;
+// The colour of layer record `l` painting with paint `paint` (its own colours as a gradient, or a
+// Pattern's) at ball point `p` over `base`, laid out by its form (`paint_colour`); Round on a
+// layer with a band (`banded`: an outline across its ring, a glow out from its edge) reads `out`
+// (0 to 1, worked out for the layer) at the form's size instead.
+fn own_colour(paint: PaintGpu, p: vec2<f32>, out: f32, base: vec4<f32>, banded: bool) -> vec3<f32> {
+    if banded && paint.pattern > 1.5 && paint.pattern < 2.5 {
+        return paint_along(paint, out * paint.scale, g.view.w).rgb;
     }
-    if l.paint.pattern > 1.5 {
-        return paint_along(l.paint, out, g.view.w).rgb;
-    }
-    return paint_colour(l.paint, p, g.view.w, vec4<f32>(plain, 1.0)).rgb;
+    return paint_colour(paint, p, g.view.w, base).rgb;
 }
 
 // How much the layers above a split thing's Blend layer cover, inside its shape and outside it,
@@ -731,8 +734,10 @@ fn ball_layer_sd(l: LayerGpu, d: f32) -> f32 {
 
 // What `fs_layers` and `fs_layers_each` draw: premultiplied colour and coverage.
 fn shade_layers(in: LayeredOut) -> vec4<f32> {
-    // For the gradient grain (paint.wgsl).
+    // For the gradient grain and Ripples (paint.wgsl).
     paint_px = in.pos.xy;
+    paint_world = in.world;
+    paint_own = vec3<f32>(in.centre, 0.0);
     // For the Hit wave (paint.wgsl).
     paint_hit = in.hit;
     let aa = 1.0 / max(in.radius.x, 0.5);

@@ -250,7 +250,7 @@ const FROM_DEF: SettingDef = SettingDef {
     unit: "",
     group: "Rule",
     depth: crate::Depth::More,
-    flags: crate::Flags { keyframe: false, pulse: false, hold: false },
+    flags: crate::Flags { keyframe: false, pulse: false, hold: false, area: crate::Area::No },
     when: "",
 };
 
@@ -265,7 +265,7 @@ const TIMES_DEF: SettingDef = SettingDef {
     unit: "",
     group: "Rule",
     depth: crate::Depth::More,
-    flags: crate::Flags { keyframe: false, pulse: false, hold: false },
+    flags: crate::Flags { keyframe: false, pulse: false, hold: false, area: crate::Area::No },
     when: "",
 };
 
@@ -280,7 +280,7 @@ const PLUS_DEF: SettingDef = SettingDef {
     unit: "",
     group: "Rule",
     depth: crate::Depth::More,
-    flags: crate::Flags { keyframe: false, pulse: false, hold: false },
+    flags: crate::Flags { keyframe: false, pulse: false, hold: false, area: crate::Area::No },
     when: "",
 };
 

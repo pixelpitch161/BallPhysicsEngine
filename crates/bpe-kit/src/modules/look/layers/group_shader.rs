@@ -93,7 +93,7 @@ pub fn defs() -> &'static [SettingDef] {
                 _ => d.clone(),
             })
             .collect();
-        let keyed = Flags { keyframe: true, pulse: true, hold: false };
+        let keyed = Flags { keyframe: true, pulse: true, hold: false, area: bpe_core::Area::No };
         defs.extend([
             SettingDef {
                 range: Some((0.0, 1.0)),
@@ -110,7 +110,7 @@ pub fn defs() -> &'static [SettingDef] {
             SettingDef {
                 span: Some((-180.0, 180.0)),
                 unit: "°",
-                flags: Flags { keyframe: true, pulse: false, hold: false },
+                flags: Flags { keyframe: true, pulse: false, hold: false, area: bpe_core::Area::No },
                 group: "",
                 ..def(
                     "from",
@@ -123,7 +123,7 @@ pub fn defs() -> &'static [SettingDef] {
             SettingDef {
                 range: Some((0.0, 1.0)),
                 group: "",
-                flags: Flags { keyframe: true, pulse: false, hold: false },
+                flags: Flags { keyframe: true, pulse: false, hold: false, area: bpe_core::Area::No },
                 ..def(
                     "edge",
                     "Edge",
@@ -175,7 +175,7 @@ pub fn defs() -> &'static [SettingDef] {
                 when: "changes=every_layer and shows=around",
                 range: Some((0.1, 2.0)),
                 unit: "radii",
-                flags: Flags { keyframe: true, pulse: false, hold: false },
+                flags: Flags { keyframe: true, pulse: false, hold: false, area: bpe_core::Area::No },
                 ..def(
                     "around",
                     "Ring size",

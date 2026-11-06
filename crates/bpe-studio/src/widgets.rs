@@ -389,6 +389,19 @@ pub(crate) fn grid_row(
     out.follows.extend(companions.follows);
     out.varies.extend(companions.varies);
     out.varies.extend(varies.into_iter().map(|v| (def.key, v)));
+    // Free points follow their stops: a stop added or removed adds or removes its point.
+    if action == RowAction::Changed
+        && let (Value::Gradient(old), Value::Gradient(new)) = (get(def.key), &value)
+        && let Some(c) = bpe_core::gradient_extras::companion("points")
+        && bpe_core::gradient_extras::offers(def, c)
+    {
+        let points_def = crate::gradient_tabs::companion_def(def, c);
+        if let Value::Points(points) = get(points_def.key)
+            && let Some(moved) = bpe_core::gradient_form::points_after(&old, new, &points)
+        {
+            out.changes.push((points_def.key, Value::Points(moved)));
+        }
+    }
     match action {
         RowAction::Nothing => {}
         RowAction::Changed => out.changes.push((def.key, value)),

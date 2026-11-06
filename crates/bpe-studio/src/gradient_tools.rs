@@ -214,7 +214,7 @@ mod tests {
             stop(0.8, BLUE, GapBlend::Steps, 0.25),
             stop(if looped { 0.9 } else { 1.0 }, WHITE, GapBlend::Eased, 0.4),
         ];
-        Gradient { stops, mix, looped, grain: 0.0, moves: Default::default() }
+        Gradient { stops, mix, looped, grain: 0.0, moves: Default::default(), layout: Default::default() }
     }
 
     fn close(a: [f32; 4], b: [f32; 4]) -> bool {

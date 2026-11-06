@@ -6,10 +6,11 @@ use std::borrow::Cow;
 use std::f32::consts::FRAC_PI_2;
 use std::sync::Arc;
 
-use bpe_core::{Blend, Choice, LayerId, ResolvedSlot, Settings};
+use bpe_core::{Blend, Choice, GradientForm, LayerId, ResolvedSlot, Settings};
 use bpe_gfx::{GradientAtlas, LayerGpu, LayeredInstance, LookProgram};
 use glam::Vec2;
 
+use super::ShadingKind;
 use super::{
     BLEND, BODY, BlendLayer, BodyLayer, Changes, ColourFrom, ColourOnHit, ColourOverTime, CutFrom, CutLayer, FLASH,
     FlashOnHit, GLOW, GROUP_GRADIENT, GROUP_SHADER, GlowLayer, GlowWhere, GroupGradient, GroupMix, GroupShader, HUE,
@@ -18,11 +19,9 @@ use super::{
     ShaderLayer, ShadingLayer, ShineLayer, ShineLight, StretchWhenFast, SubColourFrom, SubFlash, SubGlow, SubHue,
     SubOutline, SubRecolour, SubShadow, TURNING, Turning,
 };
-use super::{GradientShape, ShadingKind};
 use crate::modules::look::BallShape;
 use crate::modules::look::basic::{STRETCH_SPEED, facing_degrees, heading, shift_linear_hue};
-use crate::paint::gpu::repeat_code;
-use crate::paint::{Follow, InsideFrom, PlaceShape, inside_gpu};
+use crate::paint::{Follow, InsideFrom, Placing, form_gpu, inside_gpu};
 
 /// How far a ball's shapes reach from its centre, in radii (a triangle's corners, a heart's
 /// lobes); matches SHAPE_REACH in styled.wgsl.
@@ -184,7 +183,7 @@ pub fn sub_record(sub: &SubLayer, cx: &mut SubCx) -> LayerGpu {
             amount: [g.opacity, g.strength, 0.0, 0.0],
             p0: [g.size.max(1e-3), g.side.code(), 0.0, 0.0],
             colour: g.colour.sample(0.5),
-            paint: own_paint(&g.colour, g.gradient, g.direction, cx.atlas),
+            paint: own_paint(&g.colour, cx.atlas),
             ..LayerGpu::ZERO
         },
         SubLayer::Outline(o) => LayerGpu {
@@ -192,7 +191,7 @@ pub fn sub_record(sub: &SubLayer, cx: &mut SubCx) -> LayerGpu {
             amount: [o.opacity, 0.0, 0.0, 0.0],
             p0: [o.width.max(0.0), o.sits.code(), 0.0, 0.0],
             colour: o.colour.sample(0.5),
-            paint: own_paint(&o.colour, o.gradient, o.direction, cx.atlas),
+            paint: own_paint(&o.colour, cx.atlas),
             ..LayerGpu::ZERO
         },
         SubLayer::Shadow(s) => {
@@ -269,7 +268,7 @@ fn shading_record(s: &ShadingLayer, atlas: &mut GradientAtlas, tiles: &mut Vec<(
         p0: [s.kind.code(), s.softness, s.space.code(), s.amount],
         p1,
         colour: s.colour.sample(0.5),
-        paint: own_paint(&s.colour, s.gradient, s.direction, atlas),
+        paint: own_paint(&s.colour, atlas),
         ..LayerGpu::ZERO
     }
 }
@@ -284,7 +283,7 @@ fn shine_record(s: &ShineLayer, atlas: &mut GradientAtlas) -> LayerGpu {
         p0: [s.spot.x, s.spot.y, s.size, s.material.code()],
         p1: [s.sharpness(), 0.0, 0.0, 0.0],
         colour: if own { s.colour.sample(0.5) } else { [1.0; 4] },
-        paint: if own { own_paint(&s.colour, s.gradient, s.direction, atlas) } else { bpe_gfx::PaintGpu::default() },
+        paint: if own { own_paint(&s.colour, atlas) } else { bpe_gfx::PaintGpu::default() },
         ..LayerGpu::ZERO
     }
 }
@@ -606,14 +605,9 @@ impl Stack {
                     stop.color = stop.color.shift_hue(turn);
                 }
             }
-            let shape = match f.shape {
-                PlaceShape::Straight => GradientShape::Straight,
-                PlaceShape::Round => GradientShape::Round,
-            };
-            let mut paint = own_paint(&colours, shape, f.angle, atlas);
-            paint.scroll = if f.scroll.is_finite() { f.scroll } else { 0.0 };
-            paint.repeat = repeat_code(f.repeat);
-            paint
+            // Across each ball by the paint's own form, placed by its Direction.
+            let place = Placing { turn: f.angle, centre: [0.0; 2], k: 1.0, repeat: f.repeat, scroll: f.scroll };
+            form_gpu(&colours, GradientForm::Straight, place, atlas)
         } else {
             bpe_gfx::PaintGpu::default()
         };
@@ -651,7 +645,7 @@ impl Stack {
                     amount: [o.opacity, 0.0, 0.0, 0.0],
                     p0: [o.width.max(0.0), o.sits.code(), 0.0, 0.0],
                     colour: o.colour.sample(0.5),
-                    paint: own_paint(&o.colour, o.gradient, o.direction, atlas),
+                    paint: own_paint(&o.colour, atlas),
                     ..LayerGpu::ZERO
                 },
                 Drawn::Shine(s) => {
@@ -663,7 +657,7 @@ impl Stack {
                     amount: [g.opacity, g.strength, 0.0, 0.0],
                     p0: [g.size.max(0.05), 0.0, 0.0, 0.0],
                     colour: g.colour.sample(0.5),
-                    paint: own_paint(&g.colour, g.gradient, g.direction, atlas),
+                    paint: own_paint(&g.colour, atlas),
                     ..LayerGpu::ZERO
                 },
                 Drawn::Shading(s) => {
@@ -981,25 +975,14 @@ impl Stack {
 }
 
 /// How a layer's own `colours` paint across each ball: nothing (row -1, the record's plain colour)
-/// for one colour, else straight across at `direction` degrees (pattern 1) or outward (pattern 2,
-/// which layers.wgsl measures for the layer: an outline across its ring, a glow out from the edge).
-fn own_paint(
-    colours: &bpe_core::Gradient,
-    shape: GradientShape,
-    direction: f32,
-    atlas: &mut GradientAtlas,
-) -> bpe_gfx::PaintGpu {
+/// for one colour, else laid out by the gradient's Shape tab (Straight top to bottom when nothing
+/// is stored; Round is measured by layers.wgsl for the layer: an outline across its ring, a glow
+/// out from the edge).
+fn own_paint(colours: &bpe_core::Gradient, atlas: &mut GradientAtlas) -> bpe_gfx::PaintGpu {
     if colours.stops.len() <= 1 {
         return bpe_gfx::PaintGpu::default();
     }
-    bpe_gfx::PaintGpu {
-        row: atlas.row(colours) as f32,
-        pattern: shape.pattern(),
-        angle: if direction.is_finite() { direction } else { 90.0 },
-        scale: 1.0,
-        grain: colours.grain,
-        ..bpe_gfx::PaintGpu::default()
-    }
+    form_gpu(colours, GradientForm::Straight, Placing::of_layout(&colours.layout), atlas)
 }
 
 /// How far ball point `q` is from the edge of `shape`, in radii; negative inside. The circle,
@@ -1063,7 +1046,9 @@ mod tests {
         let mut s = Scene::empty(&reg);
         let b = crate::add_thing(&mut s, &reg, "balls", ThingId::ROOT).unwrap();
         f(&reg, &mut s, b);
-        Stack::of(&resolve(&s, &reg).things[&b].slots[&SlotId::Look]).unwrap()
+        let mut resolved = resolve(&s, &reg);
+        bpe_core::gradient_extras::apply_moves(&mut resolved, 0.0);
+        Stack::of(&resolved.things[&b].slots[&SlotId::Look]).unwrap()
     }
 
     #[test]
@@ -1518,7 +1503,9 @@ mod fixes_tests {
         let mut s = Scene::empty(&reg);
         let b = crate::add_thing(&mut s, &reg, "balls", ThingId::ROOT).unwrap();
         f(&reg, &mut s, b);
-        Stack::of(&resolve(&s, &reg).things[&b].slots[&SlotId::Look]).unwrap()
+        let mut resolved = resolve(&s, &reg);
+        bpe_core::gradient_extras::apply_moves(&mut resolved, 0.0);
+        Stack::of(&resolved.things[&b].slots[&SlotId::Look]).unwrap()
     }
 
     fn set(reg: &bpe_core::Registry, s: &mut Scene, b: ThingId, layer: LayerId, key: &str, v: Value) {
@@ -1587,7 +1574,7 @@ mod fixes_tests {
             let o = s.add_layer(reg, b, SlotId::Look, OUTLINE).unwrap();
             set(reg, s, b, o, "colour_from", Value::Choice("own".into()));
             set(reg, s, b, o, "colour", Value::Gradient(two.clone()));
-            set(reg, s, b, o, "gradient", Value::Choice("round".into()));
+            set(reg, s, b, o, "colour~form", Value::Choice("round".into()));
             s.add_layer(reg, b, SlotId::Look, GLOW).unwrap();
         });
         assert!(stack.body_each_ball() && stack.varies());

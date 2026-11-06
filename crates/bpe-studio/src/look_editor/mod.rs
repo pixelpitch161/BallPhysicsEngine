@@ -7,6 +7,7 @@ mod brush;
 mod clipboard;
 mod code_box;
 pub mod effects;
+pub mod free_points;
 pub mod group;
 pub mod group_view;
 mod handles;
@@ -50,7 +51,7 @@ impl LookCx<'_> {
     }
 
     /// Where layer `layer`'s setting `key` is kept.
-    fn at(&self, layer: LayerId, key: &str) -> Address {
+    pub(crate) fn at(&self, layer: LayerId, key: &str) -> Address {
         Address::on(self.id, self.slot, &layered_key(layer, key))
     }
 
@@ -895,7 +896,8 @@ mod tests {
         look.params.set(&bpe_core::layered_key(id, "colours"), Value::Gradient(two));
         s.resolved = resolve(&s.scene, &s.kit.registry);
         h.run();
-        assert!(label_shown(&h, "Gradient") && label_shown(&h, "Flow") && label_shown(&h, "Direction"));
+        assert!(label_shown(&h, "Flow"), "two colours flow");
+        assert!(h.query_by_label("Colours tab Shape").is_some(), "and take a shape");
         add(&mut h, "+ Add layer", "Outline");
         assert!(label_shown(&h, "Width") && label_shown(&h, "Sits"));
         add(&mut h, "+ Add layer", "Glow");

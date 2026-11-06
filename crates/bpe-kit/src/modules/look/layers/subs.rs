@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 
 use bpe_core::{Choice, Color, Gradient, SettingDef, Settings};
 
-use super::{GradientShape, OutlineSits};
+use super::OutlineSits;
 
 /// Where a sub-layer Glow shines, against the piece's edge.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
@@ -59,14 +59,8 @@ pub struct SubGlow {
     #[setting(label = "Colour from", simple)]
     pub colour_from: SubColourFrom,
     /// Its own colour, or colours.
-    #[setting(label = "Colour", when = "colour_from=own", simple, keyframe)]
+    #[setting(area, label = "Colour", when = "colour_from=own", simple, keyframe)]
     pub colour: Gradient,
-    /// How its colours run: straight across the ball, or outward from the edge.
-    #[setting(label = "Gradient", when = "colour_from=own and colour")]
-    pub gradient: GradientShape,
-    /// The way straight colours run across the ball, in degrees: 90 from top to bottom.
-    #[setting(label = "Direction", when = "colour_from=own and colour and gradient=straight", span(-180, 180), unit = "°", keyframe)]
-    pub direction: f32,
     /// 0 is invisible, 1 is full.
     #[setting(label = "Opacity", range(0, 1), simple, keyframe, pulse)]
     pub opacity: f32,
@@ -80,8 +74,6 @@ impl Default for SubGlow {
             side: GlowWhere::Outside,
             colour_from: SubColourFrom::SameAsLayer,
             colour: Gradient::solid(Color::WHITE),
-            gradient: GradientShape::Straight,
-            direction: 90.0,
             opacity: 1.0,
         }
     }
@@ -100,14 +92,8 @@ pub struct SubOutline {
     #[setting(label = "Colour from", simple)]
     pub colour_from: SubColourFrom,
     /// Its own colour, or colours.
-    #[setting(label = "Colour", when = "colour_from=own", simple, keyframe)]
+    #[setting(area, label = "Colour", when = "colour_from=own", simple, keyframe)]
     pub colour: Gradient,
-    /// How its colours run: straight across, or across the band from its inner edge out.
-    #[setting(label = "Gradient", when = "colour_from=own and colour")]
-    pub gradient: GradientShape,
-    /// The way straight colours run across, in degrees: 90 from top to bottom.
-    #[setting(label = "Direction", when = "colour_from=own and colour and gradient=straight", span(-180, 180), unit = "°", keyframe)]
-    pub direction: f32,
     /// 0 is invisible, 1 is solid.
     #[setting(label = "Opacity", range(0, 1), simple, keyframe, pulse)]
     pub opacity: f32,
@@ -120,8 +106,6 @@ impl Default for SubOutline {
             sits: OutlineSits::Outside,
             colour_from: SubColourFrom::SameAsLayer,
             colour: Gradient::solid(Color::WHITE),
-            gradient: GradientShape::Straight,
-            direction: 90.0,
             opacity: 1.0,
         }
     }

@@ -262,6 +262,27 @@ editor (`gradient_bar.rs`) has a diamond per gap (drag: the middle), a selected 
 Shape and Move once parts 2 and 3 add companions there); companion rows are ordinary grid rows under their full key
 (`companion_def`, `widgets::def_in`), and their timeline lanes read "Colours bands".
 
+Part 2 is in (plan `part2.md`, "As built" at its end): **gradient shapes**. One form list for every area gradient
+(`bpe-core/src/gradient_form.rs`: `GradientForm` Straight, Round, Sweep, Stripes, Rings, Along the edge, Diamond,
+Polygon, Spiral, Kaleido, Off-centre, Waves, Marble, Free points, Ripples, Turbulence; GPU codes 1..6 and 13..22,
+`along` the CPU twin of `paint.wgsl`'s `paint_form`, `area_colour` what the editor's previews show, `free_points`/
+`free_colour`, `points_after` keeps a point per stop). A gradient setting's `Flags.area` (`Area::No`, `Fills(form)`:
+placed by its own Turn/Centre/Size/Beyond (`~turn ~centre ~size ~repeat`), `Placed(form)`: placed by its paint's
+Angle/Size/Centre/Span) offers the Shape companions `~form` and each form's numbers (`~sides ~star ~arms ~twist
+~mirrors ~focus ~stretch ~stretch_turn ~count ~height ~flow ~detail ~bend ~seed ~softness ~points ~spacing ~from
+~speed`, `when` written relative, `when_of`); `apply_moves` puts them into `Gradient.layout` (`Layout`, never
+saved) and the kit's `paint::form_gpu(g, default, Placing, atlas)` turns them into `PaintGpu.pattern`/`form` (80 bytes).
+The old per-site gradient choices are gone (the Paint's Gradient straight/round, the Pattern's Stripes/Rings/Linear,
+now Pattern Gradient + `in_colours~form`, Stripes by default; a shade-mode Pattern has its own Shape row).
+**Ripples** read a field of the frame's balls and shapes (`bpe-gfx/src/ripples.rs`, `shaders/ripples.wgsl`,
+`ripple_common.wgsl`): built only when `Frame.ripples` (`gradient_extras::any_ripples`), half the video size, two
+nearest sources of different owners among every / balls / shapes by a jump flood; things push `RippleSource`s
+(`push_ripple_ball`, `push_ripple_outline`), and paint skips its own owner (`paint_world`, `paint_own`). The
+editor's Shape tab (`gradient_tabs.rs::shape_chips`, CPU preview chips in `gradient_form_chips.rs`) then the form's
+rows; Free points show as dots in the stop colours on the ball view (`look_editor/free_points.rs`, `handles.rs`) and
+in the preview for a selected shape's layers and the background (`preview/free_points.rs`, `Handle::FreePoint`),
+a drag writing the whole `~points` list. Heavy paint maths has one call site per program (llvmpipe inlines it all).
+
 Part 3 is in (plan `part3.md`): **movement**, the Move tab's companions (`gradient_extras::moves()`, each with its
 fold in `SettingDef.group`): Cycle (`~cycle`, `~cycle_shift`), Step on the beat (`~step_every` beats, `~step_glide`),
 Breathe (`~breathe`, `~breathe_speed`, `~breathe_every`), Hue spin (`~hue_speed`, `~hue_turn`), Stops wander

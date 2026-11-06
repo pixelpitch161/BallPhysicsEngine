@@ -4,8 +4,6 @@
 use bpe_core::{Blend, Choice, Color, Gradient, Settings};
 use glam::Vec2;
 
-use super::GradientShape;
-
 /// The colour of a Shine's light.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
 pub enum ShineLight {
@@ -63,20 +61,8 @@ pub struct ShineLayer {
     #[setting(label = "Light", simple)]
     pub light: ShineLight,
     /// The light's colour, or colours: several run across each ball.
-    #[setting(label = "Colour", when = "light=own", keyframe)]
+    #[setting(area, label = "Colour", when = "light=own", keyframe)]
     pub colour: Gradient,
-    /// How its colours run: straight across the ball, or from its middle out.
-    #[setting(label = "Gradient", when = "light=own and colour")]
-    pub gradient: GradientShape,
-    /// The way straight colours run across the ball, in degrees: 90 from top to bottom.
-    #[setting(
-        label = "Direction",
-        when = "light=own and colour and gradient=straight",
-        span(-180, 180),
-        unit = "°",
-        keyframe
-    )]
-    pub direction: f32,
     /// 0 is invisible, 1 is solid.
     #[setting(label = "Opacity", range(0, 1), group = "Mixing", keyframe, pulse)]
     pub opacity: f32,
@@ -108,8 +94,6 @@ impl Default for ShineLayer {
             softness: 0.5,
             light: ShineLight::White,
             colour: Gradient::solid(Color::rgb(0xff, 0xd8, 0x8a)),
-            gradient: GradientShape::Straight,
-            direction: 90.0,
             opacity: 1.0,
             blend: Blend::Normal,
         }

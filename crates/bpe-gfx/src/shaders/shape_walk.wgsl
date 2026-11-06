@@ -156,20 +156,15 @@ fn SHAPE_WALK(world: vec2<f32>, s: ShapeAt, first: u32, count_in: u32, split: u3
         // kind, so the paint maths compiles once): a layer's run along the shape, a sub-layer's
         // across it (or across an outline's band, out to a glow's size).
         var along = 0.0;
-        var colour_from = 0u;
         var wants = true;
         switch r.head.x {
-            case 10u: {
-                colour_from = u32(r.p0.x + 0.5);
-            }
+            case 10u: {}
             case 2u: {
                 let lohi = sub_outline_band(r, max(r.p0.x, 0.0));
                 along = clamp((s.edge - lohi.x) / max(lohi.y - lohi.x, 1e-4), 0.0, 1.0);
-                colour_from = u32(r.p0.z + 0.5);
             }
             case 4u: {
                 along = clamp(max(s.edge, 0.0) / max(r.p0.x, 1.0), 0.0, 1.0);
-                colour_from = u32(r.p0.z + 0.5);
             }
             case 21u: {
                 along = clamp(max(piece.sd, 0.0) / max(r.p0.x, 1e-4), 0.0, 1.0);
@@ -186,10 +181,9 @@ fn SHAPE_WALK(world: vec2<f32>, s: ShapeAt, first: u32, count_in: u32, split: u3
             }
         }
         var own_c = r.colour.rgb;
-        if wants && !sub {
-            own_c = shape_colour(r, colour_from, s, along);
-        } else if wants {
-            own_c = own_colour(r, s.q, along, r.colour.rgb);
+        if wants {
+            let x = r.head.x;
+            own_c = shape_colour(r, s, along, x == 2u || x == 4u || x == 21u || x == 22u, !sub);
         }
         var c = vec3<f32>(0.0);
         var a_in = 0.0;

@@ -13,7 +13,7 @@ use std::sync::OnceLock;
 use bpe_core::{LayerKind, LayerSection, ModuleKind, SettingDef, SlotId, Value, ValueType};
 
 pub use gpu::ShapeStack;
-pub use layers::{LineRuns, PaintLayer, PaintRuns, ShapeGlow, ShapeOutline};
+pub use layers::{PaintLayer, ShapeGlow, ShapeOutline};
 pub use subs::{ShapeShading, ShapeShadingKind, ShapeShadowMoves, ShapeSpace, ShapeSubGlow, ShapeSubShadow};
 
 use crate::modules::look::layers::{Kind, shader, sub_kind};

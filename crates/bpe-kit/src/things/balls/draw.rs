@@ -788,6 +788,12 @@ fn draw_ghosts(
         };
         under.iter_mut().chain(over_behind.iter_mut()).chain(over_front.iter_mut()).for_each(stamp);
     }
+    // Ripples measure from every ball (once, not again for the part over its Blend layer).
+    if frame.ripples && part & OVER == 0 {
+        for (_, b) in made.iter() {
+            frame.push_ripple_ball(b.center, b.radius);
+        }
+    }
     frame.layered.extend(behind);
     frame.layered.extend(made.iter().map(|(_, b)| *b));
     frame.layered.extend(front);
@@ -1232,7 +1238,8 @@ mod tests {
     #[test]
     fn inside_linear_on_a_ball_adds_a_pattern_record() {
         let frame = frame_after(0.0, |s| {
-            set_layer(s, BALL, PATTERN, "in_pattern", Value::Choice("linear".into()));
+            set_layer(s, BALL, PATTERN, "in_pattern", Value::Choice("gradient".into()));
+            set_layer(s, BALL, PATTERN, "in_colours~form", Value::Choice("straight".into()));
         });
         let pattern = frame.look_layers.iter().find(|l| l.head[0] == LayerGpu::PATTERN).unwrap();
         assert_eq!(pattern.paint.pattern, 1.0);
@@ -1439,7 +1446,8 @@ mod tests {
 
         set_layer(&mut scene, BALL, BODY, "colours", Value::Gradient(bpe_core::Gradient::even(&[RED, BLUE])));
         set_layer(&mut scene, BALL, BODY, "follow", Value::Choice("order".into()));
-        set_layer(&mut scene, BALL, PATTERN, "in_pattern", Value::Choice("rings".into()));
+        set_layer(&mut scene, BALL, PATTERN, "in_pattern", Value::Choice("gradient".into()));
+        set_layer(&mut scene, BALL, PATTERN, "in_colours~form", Value::Choice("rings".into()));
         set_layer(&mut scene, BALL, PATTERN, "in_spin", Value::Number(90.0));
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         build_frame(&scene, &resolved, &world, &Log::default(), 2.0, &kit.draws, &mut frame);
@@ -1542,7 +1550,8 @@ mod tests {
             p.set("rows", Value::Int(1));
             p.set("velocity", Value::Vec2([0.0, 0.0]));
         });
-        set_layer(&mut scene, BALL, PATTERN, "in_pattern", Value::Choice("stripes".into()));
+        set_layer(&mut scene, BALL, PATTERN, "in_pattern", Value::Choice("gradient".into()));
+        set_layer(&mut scene, BALL, PATTERN, "in_colours~form", Value::Choice("stripes".into()));
         set_layer(&mut scene, BALL, PATTERN, "in_from", Value::Choice("own_gradient".into()));
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         let world = World::build(&scene, &resolved, &kit.sims);

@@ -32,7 +32,7 @@ pub enum Action {
     /// Changes the motion of one ball (its body row) or of every live ball of the thing.
     Motion { thing: ThingId, row: Option<u32>, motion: MotionChange },
     /// Changes a setting, for the whole thing or one ball.
-    Change { key: ChangeKey, change: Change },
+    Change { key: ChangeKey, change: Box<Change> },
     /// Breaks one ball (its body row) or the whole thing.
     Break { thing: ThingId, row: Option<u32>, point: Vec2, normal: Vec2, strength: f32 },
 }
@@ -143,7 +143,7 @@ impl World {
                         continue;
                     }
                     change.start = time;
-                    rules.add_change(key, change);
+                    rules.add_change(key, *change);
                 }
                 Action::Break { thing, row, point, normal, strength } => {
                     if rules.broken.contains(&thing) {
