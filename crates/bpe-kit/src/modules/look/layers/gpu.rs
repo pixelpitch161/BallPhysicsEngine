@@ -976,6 +976,7 @@ impl Stack {
             group: [0.0; 4],
             place: [0.0; 4],
             hit: bpe_gfx::NO_HIT,
+            clip: [0.0; 4],
         }
     }
 }

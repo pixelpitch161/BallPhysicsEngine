@@ -109,7 +109,8 @@ struct Does(String, f64);
 
 /// A Do block whose `does` says what: "push" (adds `amount` speed to the subject), "spam" (5000
 /// pushes), "gravity" (sets the scene's gravity up for `amount` seconds), "break wall", "break
-/// ball", "freeze" (`amount` seconds), "tint" (adds to the dots' look-only Tint).
+/// ball", "show wall" and "show ball" (breaks whose look lasts `amount` seconds), "freeze" (`amount`
+/// seconds), "tint" (adds to the dots' look-only Tint).
 struct Act;
 impl BlockSim for Act {
     fn kind(&self) -> &'static str {
@@ -160,19 +161,21 @@ impl BlockSim for Act {
                 key: ChangeKey { thing: DOTS, slot: None, row: None, key: "tint".into() },
                 change: change(How::Add, Value::Number(amount), None),
             }),
-            "break wall" => out.push(Action::Break {
+            "break wall" | "show wall" => out.push(Action::Break {
                 thing: WALL,
                 row: None,
                 point: firing.point,
                 normal: firing.normal,
                 strength: 1.0,
+                show: shown(&does, amount),
             }),
-            "break ball" => out.push(Action::Break {
+            "break ball" | "show ball" => out.push(Action::Break {
                 thing: DOTS,
                 row: Some(ball.map_or(0, |p| p.item)),
                 point: firing.point,
                 normal: firing.normal,
                 strength: 1.0,
+                show: shown(&does, amount),
             }),
             "freeze" => {
                 out.push(Action::Motion { thing: DOTS, row: Some(0), motion: MotionChange::Freeze(amount as f32) })
@@ -183,6 +186,14 @@ impl BlockSim for Act {
     fn changes_settings(&self, state: &dyn ThingState) -> bool {
         matches!(crate::state::<Does>(state).0.as_str(), "gravity" | "tint")
     }
+}
+
+/// A "show …" break's look: `lasts` seconds; a "break …" one vanishes.
+fn shown(does: &str, lasts: f64) -> Arc<BreakShow> {
+    let lasts = if does.starts_with("show") { lasts } else { 0.0 };
+    let mut look = Params::default();
+    look.set("look", Value::Text("test".into()));
+    Arc::new(BreakShow { look, lasts })
 }
 
 fn sims() -> Sims {
@@ -445,6 +456,59 @@ fn breaking_a_ball_logs_break_then_remove() {
     assert_eq!(kinds, [&EventKind::Hit, &EventKind::Break, &EventKind::Remove]);
     assert!(!world.bodies[&DOTS].alive[0]);
     assert!(!world.broken(DOTS), "one ball, not the thing");
+}
+
+#[test]
+fn a_break_with_a_look_keeps_its_remains_until_the_look_is_over() {
+    let shows = |does: &str| {
+        rule(
+            0,
+            vec![
+                block(0, "when.hits", &[], &[]),
+                block(1, "do.test", &[0], &[("does", Value::Text(does.into())), ("amount", Value::Number(0.5))]),
+            ],
+        )
+    };
+    // The wall: its remains keep the wall as it stood, while the physics has none.
+    let (scene, resolved, sims) = scene_with(vec![shows("show wall")]);
+    let sims = Arc::new(sims);
+    let mut playback = Playback::new(&scene, &resolved, sims.clone());
+    playback.seek(4.0);
+    let broke = playback.log().events().iter().find(|e| e.kind == EventKind::Break).expect("a break").time(240);
+    let mut p = Playback::new(&scene, &resolved, sims.clone());
+    p.seek(broke + 0.1);
+    let rules = p.world().rules().unwrap();
+    let r = rules.remains_of(WALL, None).expect("kept");
+    assert!(r.wall.is_some() && r.ball.is_none() && r.show.lasts == 0.5);
+    assert!((r.time - broke).abs() < 1e-9);
+    assert!(rules.showing(WALL, broke + 0.1) && !rules.showing(WALL, broke + 0.6));
+    assert!(!p.world().walls.contains_key(&WALL), "gone from the physics at once");
+    p.seek(broke + 0.6);
+    assert!(p.world().rules().unwrap().remains_of(WALL, None).is_none(), "forgotten once the look is over");
+    // Back before the break: none; forward again: the same remains.
+    p.seek(broke - 0.2);
+    assert!(p.world().rules().unwrap().remains().next().is_none());
+    p.seek(broke + 0.1);
+    let mut again = Playback::new(&scene, &resolved, sims.clone());
+    again.seek(broke + 0.1);
+    assert_eq!(
+        p.world().rules().unwrap().remains_of(WALL, None),
+        again.world().rules().unwrap().remains_of(WALL, None)
+    );
+    // A ball: its place and size as it broke.
+    let (scene, resolved, sims) = scene_with(vec![shows("show ball")]);
+    let (world, log) = run(&scene, &resolved, &sims, 4.0);
+    let e = log.events().iter().find(|e| e.kind == EventKind::Break).expect("a break");
+    let (w, _) = run(&scene, &resolved, &sims, e.time(240) + 0.01);
+    let r = w.rules().unwrap().remains_of(DOTS, Some(0)).expect("kept");
+    let b = r.ball.expect("a ball");
+    assert!(b.radius > 0.0 && (b.position - e.point).length() < 2.0 * b.radius, "{b:?} {:?}", e.point);
+    assert!(!w.bodies[&DOTS].alive[0]);
+    assert!(world.rules().unwrap().remains().next().is_none(), "over by 4 s");
+    // Vanish keeps nothing.
+    let (scene, resolved, sims) = scene_with(vec![shows("break wall")]);
+    let (w, _) = run(&scene, &resolved, &sims, 4.0);
+    assert!(w.broken(WALL) && w.rules().unwrap().remains().next().is_none());
 }
 
 #[test]

@@ -240,6 +240,22 @@ value from a pristine copy each step so they never compound; physics keys re-pre
 whole looks in `build_frame_sensing`). Dice are `rules::dice` (seed, rule, block, step, subject). Nothing changes
 for a scene without enabled rules (goldens, fingerprint); `tests/golden-rules*.txt` pin `scenes::rule_scenes`.
 
+Part 3 is in (plan `part3.md`): **break looks**, drawn only. `do.break`'s Look is Vanish / Fade out (Time) / Pop (Time,
+Swell) / Shatter (Pieces, Spread, Spin, Gravity, Hit shapes, Bounce, Fade after, Fade over; `breaks.rs`: `LookSettings`
+under the same keys, `show_for` gives a `BreakShow { look: Params, lasts }`, lasts 0 for Vanish and for kinds that
+can't show a look (only shape, balls, emitter, light can)). `Action::Break.show` (an `Arc<BreakShow>`); applying it
+keeps `RulesState.remains` (`bpe-runtime/src/rules/remains.rs`: `Remains` by (thing, row or `WHOLE`), with the hit,
+the gravity, a ball's `BallAt` or a shape's taken wall; `remains_of`, `showing`, pruned when over). The physics never
+reads them; the log and goldens are unchanged. `build_frame_sensing` (and the light probe) keep a broken thing while
+`showing`. The kit's `rules/remains/` (`showing` per look, `shatter.rs`: `cut` = a seeded Voronoi of the square round
+what is drawn, sites on the material (`Material`/`Edge`: inside, or a band along the outline), `piece_at` closed form or
+1/120 s steps with `keep_clear` against the world's walls; `draw.rs`: `shatter_shape`, `ball_remains`). Each piece is the
+thing's own instance again, moved and turned, with `PathInstance.clip`/`LayeredInstance.clip` = [first corner in
+`path_points`, count, fade, 0] (vertex attribute 6 / 12; group 2 binding 4 is now seen by the vertex stage, which fits
+a piece's quad to its cell; `clip_keep` in paths.wgsl, used by `shade_path`, `shade_shape_layers`' `keep`,
+`shade_layers` and the object passes; all-zero clip draws as before). A broken light's strength follows its look
+(`remains::whole_now`); a broken emitter's marker goes at once. `tests/break_pictures.rs` checks the pictures.
+
 ## Gradients (spec `docs/superpowers/specs/2026-11-06-gradients-design.md`, plans `docs/superpowers/plans/gradients/`)
 
 Part 1 is in (plan `part1.md`): the gradient value (`bpe-core/src/color.rs`) has a **Mix** (`Mix`: Light, the old

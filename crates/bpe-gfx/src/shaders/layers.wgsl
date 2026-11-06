@@ -247,6 +247,8 @@ struct LayeredIn {
     @location(10) place: vec4<f32>,
     // Seconds since its last hit, that hit's strength, how many hits, spare.
     @location(11) hit: vec4<f32>,
+    // A broken ball's look: its clip (corners in path_points, in the quad's frame) and fade.
+    @location(12) clip: vec4<f32>,
 };
 
 struct LayeredOut {
@@ -263,13 +265,18 @@ struct LayeredOut {
     @location(8) @interpolate(flat) group: vec4<f32>,
     @location(9) @interpolate(flat) place: vec4<f32>,
     @location(10) @interpolate(flat) hit: vec4<f32>,
+    @location(11) @interpolate(flat) clip: vec4<f32>,
 };
 
 @vertex
 fn vs_layers(@builtin(vertex_index) i: u32, b: LayeredIn) -> LayeredOut {
     let radius = max(b.radius, 1e-3);
     let margin = 2.0 * g.view.z / radius;
-    let corner = quad_corner(i) * (max(b.form.w, 1.0) + margin);
+    var corner = quad_corner(i) * (max(b.form.w, 1.0) + margin);
+    if b.clip.y > 2.5 {
+        // A piece of a shattered ball: only its cell's bounds, two pixels past them.
+        corner = clip_corner(quad_corner(i), b.clip, margin);
+    }
     let dir = b.stretch.xy;
     let side = vec2<f32>(-dir.y, dir.x);
     let offset = dir * corner.x * b.stretch.z + side * corner.y * b.stretch.w;
@@ -286,6 +293,7 @@ fn vs_layers(@builtin(vertex_index) i: u32, b: LayeredIn) -> LayeredOut {
     out.group = b.group;
     out.place = b.place;
     out.hit = b.hit;
+    out.clip = b.clip;
     return out;
 }
 
@@ -762,6 +770,10 @@ fn shade_layers(in: LayeredOut) -> vec4<f32> {
         out = vec4<f32>(out.rgb * -in.body.a, 0.0);
     }
     out *= clamp(in.misc.x, 0.0, 1.0);
+    // What a broken ball's look leaves of it (its piece's clip, its fade).
+    if clips(in.clip) {
+        out *= clip_keep(in.local, in.clip, aa);
+    }
     // The emission pass may give off darkness (negative light) where it covers nothing.
     let seen = select(max(out.r, max(out.g, out.b)), max(abs(out.r), max(abs(out.g), abs(out.b))), g.light.x > 2.5);
     if out.a < 1e-4 && seen < 1e-4 {
@@ -780,7 +792,10 @@ fn fs_layers(in: LayeredOut) -> @location(0) vec4<f32> {
 fn fs_layers_object(in: LayeredOut) -> @location(0) vec4<f32> {
     let p = rotate(in.local, -in.form.z);
     let aa = 1.0 / max(in.radius.x, 0.5);
-    let cover = clamp(-ball_shape(p, in.form.x, in.form.y) / aa + 0.5, 0.0, 1.0) * step(1e-4, in.misc.x);
+    var cover = clamp(-ball_shape(p, in.form.x, in.form.y) / aa + 0.5, 0.0, 1.0) * step(1e-4, in.misc.x);
+    if clips(in.clip) {
+        cover *= clip_keep(in.local, in.clip, aa);
+    }
     if cover <= 0.0 || in.misc.y < 0.5 {
         discard;
     }

@@ -47,7 +47,10 @@ impl ThingDraw for LightDraw {
         };
         // What a laser's beam meets, worked out once for all its lamps.
         let scenery = (s.kind == LightType::Laser).then(|| laser::scenery(cx.world));
-        for (spot, drive) in spots.iter().zip(drives) {
+        // A broken light dims (and a popped one flares) as its Break look plays out.
+        let broken = crate::rules::remains::whole_now(cx).map_or(1.0, |w| w.alpha * w.scale);
+        for (spot, mut drive) in spots.iter().zip(drives) {
+            drive.strength *= broken;
             let colour = drive.colour.or_else(|| picked.colour(spot));
             push_light(cx, &s, spot, &drive, colour, links, scenery.as_ref(), scene);
         }
