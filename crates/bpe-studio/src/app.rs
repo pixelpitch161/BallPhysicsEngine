@@ -55,6 +55,8 @@ pub struct Panels {
     pub final_frame: crate::final_frame::FinalFrame,
     pub timeline: Timeline,
     pub mixer: Mixer,
+    /// The Rules view in the bottom panel.
+    pub rules: crate::rules_panel::RulesPanel,
 }
 
 /// What the left panel shows: the things in the scene, every light, or the Mixer.
@@ -168,6 +170,9 @@ pub struct Studio {
     pub resume_after_scrub: bool,
     /// This frame's change to the scene is already in the history (undo, open, delete…).
     pub recorded: bool,
+    /// This frame's change to the scene is an undo step of its own (a rule or block added,
+    /// removed or linked).
+    pub separate_edit: bool,
     closing: bool,
     last_tick: Option<Instant>,
     clicked: Option<ToolbarClick>,
@@ -187,6 +192,8 @@ pub struct Studio {
     pub listen: ListenSettings,
     /// The left panel's face (not saved in the scene).
     pub left: LeftPanel,
+    /// What the bottom panel shows: the timeline or the rules (the editor's own setting).
+    pub bottom: settings::BottomView,
     /// The Lights tab's soloed lights: the editor's alone, never saved or exported.
     pub light_solo: std::collections::BTreeSet<crate::lights_panel::LightSource>,
     /// What a lit preview shows: the picture, or the light alone (the editor's alone).
@@ -206,6 +213,7 @@ impl Studio {
         studio.sound_width = settings::load_sound_width();
         studio.persist_settings = true;
         studio.listen = settings::load_listen();
+        studio.bottom = settings::load_bottom_view();
         if let Some(path) = scene_path {
             studio.open_path(&path);
         }
@@ -284,6 +292,7 @@ impl Studio {
             mixer_opens: 0,
             resume_after_scrub: false,
             recorded: false,
+            separate_edit: false,
             closing: false,
             last_tick: None,
             clicked: None,
@@ -294,6 +303,7 @@ impl Studio {
             listen_unsaved: None,
             listen: ListenSettings::default(),
             left: LeftPanel::Things,
+            bottom: settings::BottomView::Timeline,
             light_solo: Default::default(),
             light_show: Default::default(),
             tables_baked: WaveBank::baked(),
@@ -507,6 +517,16 @@ impl Studio {
     }
 
     /// Sets the speaker button and listening volume, and remembers them.
+    /// Shows the timeline or the rules in the bottom panel, and remembers it for next time.
+    pub fn set_bottom(&mut self, view: settings::BottomView) {
+        if self.bottom != view {
+            self.bottom = view;
+            if self.persist_settings {
+                settings::save_bottom_view(view);
+            }
+        }
+    }
+
     pub fn set_listen(&mut self, listen: ListenSettings) {
         if listen == self.listen {
             return;
@@ -976,15 +996,30 @@ impl Studio {
                 self.panels.inspector.meters = self.sound.as_ref().map(SoundJob::meters);
                 self.panels.inspector.playing = self.playing;
                 self.fill_rounds();
-                inspector::show(
-                    &mut contents,
-                    &mut self.panels.inspector,
-                    &mut self.scene,
-                    &self.kit,
-                    &self.resolved,
-                    &self.selection,
-                    time,
-                );
+                match self.picked_block() {
+                    Some(picked) => {
+                        let runtime =
+                            self.playback.world().rules().and_then(|r| r.problem(picked.0)).map(str::to_owned);
+                        crate::rules_panel::inspect::show(
+                            &mut contents,
+                            &mut self.scene,
+                            &self.kit,
+                            picked,
+                            runtime.as_deref(),
+                        );
+                    }
+                    None => {
+                        inspector::show(
+                            &mut contents,
+                            &mut self.panels.inspector,
+                            &mut self.scene,
+                            &self.kit,
+                            &self.resolved,
+                            &self.selection,
+                            time,
+                        );
+                    }
+                }
                 ui.advance_cursor_after_rect(rect);
             });
         let shown = panel.response.rect.width();
@@ -1009,6 +1044,30 @@ impl Studio {
             }
         }
         shown
+    }
+
+    /// Records this frame's change to the scene (`before` is how it started), unless it is in the
+    /// history already: as its own undo step when it asked to be. A thing selected takes the
+    /// inspector back from a rule block.
+    pub(crate) fn record_frame(&mut self, before: Scene) {
+        if std::mem::take(&mut self.recorded) {
+            self.separate_edit = false;
+        } else if std::mem::take(&mut self.separate_edit) {
+            self.after_separate_edit(before);
+        } else {
+            self.after_edit(before);
+        }
+        if self.selection.primary.is_some() {
+            self.panels.rules.picked = None;
+        }
+    }
+
+    /// The rule block the inspector shows: the one picked in the Rules view, while no thing is
+    /// selected and the block is still there.
+    pub fn picked_block(&self) -> Option<(bpe_core::RuleId, bpe_core::BlockId)> {
+        let (r, b) = self.panels.rules.picked?;
+        (self.selection.primary.is_none() && self.scene.rules.rule(r).and_then(|r| r.block(b)).is_some())
+            .then_some((r, b))
     }
 
     /// Plays the notes clicked on a Sound tab's keyboard, after this frame's edit has reached
@@ -1226,9 +1285,7 @@ impl eframe::App for Studio {
         }
         self.confirm_dialog(&ctx);
 
-        if !std::mem::take(&mut self.recorded) {
-            self.after_edit(before);
-        }
+        self.record_frame(before);
         self.send_auditions();
         self.follow_bakes(&ctx);
         if self.revision != revision {

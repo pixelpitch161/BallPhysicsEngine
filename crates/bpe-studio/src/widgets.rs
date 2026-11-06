@@ -17,6 +17,12 @@ pub struct TargetChoices {
     pub tags: Vec<String>,
     /// Thing kinds as (id, name), in registry order, without the scene itself.
     pub kinds: Vec<(String, String)>,
+    /// The things with balls (a Balls group or an emitter): a rule's who can name one ball of them.
+    pub ball_things: Vec<ThingId>,
+    /// A rule block's who picker offers the firing's own parties (That ball, The thing it hit,
+    /// That ball's group): true for If and Do blocks, false for When blocks, where they would mean
+    /// anything.
+    pub relative: bool,
 }
 
 impl TargetChoices {
@@ -26,7 +32,13 @@ impl TargetChoices {
             scene.things.values().flat_map(|t| t.tags.iter().cloned()).collect();
         let kinds =
             reg.things().filter(|k| k.id() != "scene").map(|k| (k.id().to_owned(), k.name().to_owned())).collect();
-        TargetChoices { things, tags: tags.into_iter().collect(), kinds }
+        let ball_things = scene
+            .order
+            .iter()
+            .filter(|id| scene.things.get(id).is_some_and(|t| bpe_kit::things::balls::rows::has_balls(&t.kind)))
+            .copied()
+            .collect();
+        TargetChoices { things, tags: tags.into_iter().collect(), kinds, ball_things, relative: true }
     }
 }
 
@@ -359,6 +371,23 @@ pub(crate) fn grid_row(
     right: f32,
     out: &mut GridOutcome,
 ) {
+    grid_row_with(ui, def, get, cx, right, out, None);
+}
+
+/// How wide the room is that [`grid_row_with`] keeps at the end of a widget cell.
+pub const TRAILING_W: f32 = 44.0;
+
+/// [`grid_row`] with `trailing` drawn at the end of the widget cell, in [`TRAILING_W`] kept free
+/// for it (a rule block's "from" chip).
+pub(crate) fn grid_row_with(
+    ui: &mut Ui,
+    def: &SettingDef,
+    get: &dyn Fn(&str) -> Value,
+    cx: &GridCx,
+    right: f32,
+    out: &mut GridOutcome,
+    trailing: Option<&mut dyn FnMut(&mut Ui)>,
+) {
     let mut value = get(def.key);
     let unit = unit_for(def, &|k| Some(get(k)));
     let mut varies = Vec::new();
@@ -377,7 +406,7 @@ pub(crate) fn grid_row(
             && !bpe_core::gradient_extras::is_companion_key(def.key)
             && bpe_core::vary::split(def.key).is_none();
         let row = gradient.then_some(GradientRow { tabs: &mut tabs, companions: &now, pasted: &mut pasted });
-        setting(ui, def, unit, &mut value, (cx.marks)(def.key), cx, right, &mut varies, row)
+        setting(ui, def, unit, &mut value, (cx.marks)(def.key), cx, right, &mut varies, row, trailing)
     };
     for (name, v) in pasted {
         if let Some(c) = bpe_core::gradient_extras::companion(name) {
@@ -456,6 +485,7 @@ fn setting(
     right: f32,
     varies: &mut Vec<crate::vary::VaryEdit>,
     mut grad_row: Option<GradientRow>,
+    trailing: Option<&mut dyn FnMut(&mut Ui)>,
 ) -> RowAction {
     use crate::vary::VaryEdit;
     // Where a gradient's bar and its tabs keep their memory (the selected stop, the open tab):
@@ -485,16 +515,34 @@ fn setting(
     let mut changed = false;
     let mut to_response: Option<Response> = None;
     let response = widget_cell(ui, right, |ui| {
-        let r = style::wells(ui, |ui| match (two_ended, to.as_mut()) {
-            (true, Some(end)) => {
-                let range = def.range.or(def.span).unwrap_or((0.0, 1.0));
-                let feel = setting_feel(def);
-                let (a, b) = crate::vary::two_ended(ui, def, (value, end), range, feel, suffix(unit), name.id);
-                to_response = Some(b);
-                a
+        let mut draw = |ui: &mut Ui| {
+            style::wells(ui, |ui| match (two_ended, to.as_mut()) {
+                (true, Some(end)) => {
+                    let range = def.range.or(def.span).unwrap_or((0.0, 1.0));
+                    let feel = setting_feel(def);
+                    let (a, b) = crate::vary::two_ended(ui, def, (value, end), range, feel, suffix(unit), name.id);
+                    to_response = Some(b);
+                    a
+                }
+                _ => widget(ui, def, unit, value, name.id, bar, cx.choices, grad_row.is_some()),
+            })
+        };
+        let r = match trailing {
+            Some(trailing) => {
+                // The widget in all but the room kept for the trailing control.
+                let room = (ui.available_width() - TRAILING_W).max(40.0);
+                let layout = egui::Layout::left_to_right(egui::Align::Center);
+                let r = ui
+                    .allocate_ui_with_layout(Vec2::new(room, 0.0), layout, |ui| {
+                        ui.set_max_width(room);
+                        draw(ui)
+                    })
+                    .inner;
+                trailing(ui);
+                r
             }
-            _ => widget(ui, def, unit, value, name.id, bar, cx.choices, grad_row.is_some()),
-        });
+            None => draw(ui),
+        };
         changed |= r.changed();
         r
     });
@@ -972,23 +1020,116 @@ pub fn value_words(value: &Value, unit: &str, choices: &TargetChoices) -> String
         Value::Slots(n) => format!("{} slots", n.len()),
         Value::Curve(c) => format!("{} points", c.len()),
         Value::LightScenes(l) => scenes_words(l.len()),
-        Value::Who(w) => who_words(w),
+        Value::Who(w) => who_words(w, choices),
     }
 }
 
-/// A rule block's Who in a few words (the rules editor comes in rules part 2).
-fn who_words(w: &bpe_core::Who) -> String {
+/// A rule block's Who in a few words, naming things and kinds as the scene does: "That ball",
+/// "Bricks", "Balls, ball 3", "Tagged breakable", "Any Shape".
+pub fn who_words(w: &bpe_core::Who, choices: &TargetChoices) -> String {
     use bpe_core::Who;
+    let thing = |id: &ThingId| match choices.things.iter().find(|(t, _)| t == id) {
+        Some((_, name)) => name.clone(),
+        None => format!("A missing thing (id {})", id.0),
+    };
     match w {
         Who::That => "That ball".to_owned(),
         Who::Other => "The thing it hit".to_owned(),
-        Who::Group => "Its group".to_owned(),
-        Who::Thing { ball: Some(n), .. } => format!("Ball {n}"),
-        Who::Thing { ball: None, .. } => "A thing".to_owned(),
+        Who::Group => "That ball's group".to_owned(),
+        Who::Thing { thing: id, ball: Some(n) } => format!("{}, ball {n}", thing(id)),
+        Who::Thing { thing: id, ball: None } => thing(id),
         Who::Tag(t) => format!("Tagged {t}"),
-        Who::Kind(k) => format!("Every {k}"),
+        Who::Kind(k) => {
+            let name = choices.kinds.iter().find(|(id, _)| id == k).map(|(_, n)| n.as_str()).unwrap_or(k);
+            format!("Any {name}")
+        }
         Who::Anything => "Anything".to_owned(),
     }
+}
+
+/// A rule block's who: a menu naming it, with the firing's own parties (when `choices.relative`),
+/// Anything, and the scene's things, tags and kinds. A thing with balls gets a "ball" number box
+/// beside it (0 = the whole thing). Marked changed when something is picked.
+pub(crate) fn who_picker(ui: &mut Ui, w: &mut bpe_core::Who, choices: &TargetChoices) -> Response {
+    use bpe_core::Who;
+    let mut picked: Option<Who> = None;
+    let menu = ui.menu_button(who_words(w, choices), |ui| {
+        ui.set_min_width(170.0);
+        let mut item = |ui: &mut Ui, who: Who, text: &str, help: &str| {
+            if ui.selectable_label(*w == who, text).on_hover_text(help).clicked() {
+                picked = Some(who);
+                ui.close();
+            }
+        };
+        if choices.relative {
+            item(ui, Who::That, "That ball", "The ball (or thing) this firing is about");
+            item(ui, Who::Other, "The thing it hit", "The other side of the firing");
+            item(ui, Who::Group, "That ball's group", "Every ball of that ball's thing");
+        }
+        item(ui, Who::Anything, "Anything", "Every thing");
+        ui.menu_button("Thing", |ui| {
+            for (id, name) in &choices.things {
+                let on = matches!(w, Who::Thing { thing, .. } if thing == id);
+                if ui.selectable_label(on, name).clicked() {
+                    picked = Some(Who::Thing { thing: *id, ball: None });
+                    ui.close();
+                }
+            }
+        });
+        if choices.tags.is_empty() {
+            ui.add_enabled(false, egui::Button::new("Tagged"))
+                .on_disabled_hover_text("No tags yet. Give things tags in their header.");
+        } else {
+            ui.menu_button("Tagged", |ui| {
+                for tag in &choices.tags {
+                    if ui.selectable_label(matches!(w, Who::Tag(x) if x == tag), tag).clicked() {
+                        picked = Some(Who::Tag(tag.clone()));
+                        ui.close();
+                    }
+                }
+            });
+        }
+        ui.menu_button("Any", |ui| {
+            for (id, name) in &choices.kinds {
+                if ui.selectable_label(matches!(w, Who::Kind(x) if x == id), name).clicked() {
+                    picked = Some(Who::Kind(id.clone()));
+                    ui.close();
+                }
+            }
+        });
+    });
+    let mut response = menu.response.on_hover_text("Who this block is about");
+    if let Some(p) = picked {
+        *w = p;
+        response.mark_changed();
+    }
+    // One ball of a thing with balls, by its number (0: the whole thing).
+    if let Who::Thing { thing, ball } = w
+        && choices.ball_things.contains(thing)
+    {
+        let mut n = ball.unwrap_or(0);
+        let number = ui
+            .add(
+                DragValue::new(&mut n)
+                    .range(0..=u32::MAX)
+                    .speed(0.1)
+                    .custom_formatter(|v, _| if v < 0.5 { "every ball".to_owned() } else { format!("ball {v:.0}") })
+                    .custom_parser(|t| {
+                        let t = t.trim().to_lowercase();
+                        if t.starts_with("every") {
+                            return Some(0.0);
+                        }
+                        t.trim_start_matches("ball").trim().parse::<f64>().ok()
+                    }),
+            )
+            .on_hover_text("One ball of it, by its number; 0 for every ball");
+        if number.changed() {
+            *ball = (n > 0).then_some(n);
+            response.mark_changed();
+        }
+        response |= number;
+    }
+    response
 }
 
 /// "Even" for a shape that isn't moulded, else its corners and curves: "7 points, 1 curve".
@@ -1380,6 +1521,7 @@ fn widget(
             ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY)).labelled_by(name)
         }
         (ValueType::Target, Value::Target(t)) => target_picker(ui, t, choices).labelled_by(name),
+        (ValueType::Who, Value::Who(w)) => ui.horizontal(|ui| who_picker(ui, w, choices)).inner.labelled_by(name),
         // Strokes are painted in the ball view; here they are counted and can be cleared.
         (ValueType::Strokes, Value::Strokes(strokes)) => {
             let words = strokes_words(strokes);

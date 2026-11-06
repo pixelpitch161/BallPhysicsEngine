@@ -240,6 +240,25 @@ value from a pristine copy each step so they never compound; physics keys re-pre
 whole looks in `build_frame_sensing`). Dice are `rules::dice` (seed, rule, block, step, subject). Nothing changes
 for a scene without enabled rules (goldens, fingerprint); `tests/golden-rules*.txt` pin `scenes::rule_scenes`.
 
+Part 2 is in (plan `part2.md`): the **editor**. The bottom panel switches Timeline / **Rules** (chips at the left of
+the transport row, `settings::BottomView` saved in `bottom-view.txt`, `Studio.bottom`/`set_bottom`; the scrub bar
+stays). `bpe-studio/src/rules_panel/`: `mod.rs` (`RulesPanel` in `Panels.rules`: `picked` block, rename, link and
+rule drags, copied rule/block; `show` → `Outcome { separate, message }`, a structural edit is its own undo step through
+`Studio.separate_edit` and `record_frame`), `layout.rs` (`lay_out`: column = longest path in, row = order added within
+the column, links with their input index), `face.rs` (section, name, up to three simple settings or the kind's
+`summary`; Change setting shows who, `setting_words`, how; who fields carry the thing's track-colour dot), `fired.rs`
+(`Fired` from the log's Rule events: `count` of end-block moments, `recent` within `RING_SECONDS` 0.15, `firings`),
+`menu.rs` (When / If / Logic / Do ▸ kinds), `setting_menu.rs` (thing ▸ card ▸ (layer ▸) setting, `cards_of`,
+`picked_def`, "(whole group)" where one ball can't change alone) and `inspect.rs` (the inspector for a block, shown by
+`Studio::picked_block` while no thing is selected: problems in `style::PROBLEM`, the settings through
+`widgets::grid_row_with`, a "from" chip on each of the kind's `firing_keys` (`RuleBlockKind::firing_keys`, `values()` names
+what a When's firings carry, both via `block_kind!`'s `values = [..], from = [..]` tail), Compare's Value menu, Change
+setting's To shown as the picked setting's own type). `widgets::who_picker` draws every `Value::Who` row
+(`TargetChoices.relative`, `ball_things`). Lanes: header (switch, name renamed in place, "fired N times", red problem
+dot named "Problem in <rule>", "too busy at"), blocks named "<Section> <name>" ("Logic" alone), out-dots "Link from …",
+"Add after …", "Add When to <rule>", right-click menus for headers, blocks and lines. The timeline has a Rules lane
+under the Hits lane while the scene has rules (`rules_lane`).
+
 ## Gradients (spec `docs/superpowers/specs/2026-11-06-gradients-design.md`, plans `docs/superpowers/plans/gradients/`)
 
 Part 1 is in (plan `part1.md`): the gradient value (`bpe-core/src/color.rs`) has a **Mix** (`Mix`: Light, the old

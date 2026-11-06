@@ -151,7 +151,9 @@ block_kind!(
     "Change setting",
     Do,
     ChangeSettingSettings,
-    "Changes any setting, for good or for a while, for a whole thing or one ball."
+    "Changes any setting, for good or for a while, for a whole thing or one ball.",
+    values = [],
+    from = ["to_number", "times"]
 );
 
 /// What a thing's setting is, as the change needs to know.

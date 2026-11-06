@@ -67,7 +67,9 @@ block_kind!(
     "Compare",
     If,
     CompareSettings,
-    "Goes on only when one of the firing's numbers passes a test."
+    "Goes on only when one of the firing's numbers passes a test.",
+    values = [],
+    from = ["amount", "to"]
 );
 
 #[derive(Clone, Debug)]
@@ -173,7 +175,16 @@ impl Default for IsSettings {
     }
 }
 
-block_kind!(Is, "if.is", "Is", If, IsSettings, "Goes on only when the ball, or what it hit, is the one you pick.");
+block_kind!(
+    Is,
+    "if.is",
+    "Is",
+    If,
+    IsSettings,
+    "Goes on only when the ball, or what it hit, is the one you pick.",
+    values = [],
+    from = ["number"]
+);
 
 #[derive(Clone, Debug)]
 struct IsState {
@@ -231,7 +242,9 @@ block_kind!(
     "Chance",
     If,
     ChanceSettings,
-    "Goes on only some of the time, the same way on every play."
+    "Goes on only some of the time, the same way on every play.",
+    values = [],
+    from = ["percent"]
 );
 
 impl BlockSim for Chance {
