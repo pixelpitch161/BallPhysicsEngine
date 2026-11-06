@@ -1390,6 +1390,9 @@ pub fn water_demo(reg: &Registry) -> Scene {
     balls.launch = crate::things::balls::Launch::Outward;
     balls.velocity = Vec2::new(0.0, -500.0);
     scene.things.get_mut(&ball).expect("ball").params = balls.to_params();
+    scene
+}
+
 /// The looks of the effects demo (lighting part 8's video), in the order it shows them.
 pub const EFFECTS_DEMOS: [&str; 12] = [
     "tunnel",

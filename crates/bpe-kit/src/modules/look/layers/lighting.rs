@@ -56,7 +56,6 @@ impl Default for AroundLit {
     }
 }
 
-
 /// Lit by the lamps, not blocking them.
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct Lit {
