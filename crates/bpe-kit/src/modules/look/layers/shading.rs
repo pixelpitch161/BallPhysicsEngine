@@ -3,7 +3,6 @@
 
 use bpe_core::{Blend, Choice, Color, Gradient, Settings, Strokes};
 
-use super::GradientShape;
 use glam::Vec2;
 
 /// How a Shading layer decides where to darken.
@@ -73,14 +72,8 @@ pub struct ShadingLayer {
     #[setting(label = "Strokes", when = "kind=brush", simple)]
     pub strokes: Strokes,
     /// The colour it darkens towards, or colours: several run across each ball.
-    #[setting(label = "Colour", simple, keyframe)]
+    #[setting(area, label = "Colour", simple, keyframe)]
     pub colour: Gradient,
-    /// How its colours run: straight across the ball, or from its middle to its edge.
-    #[setting(label = "Gradient", when = "colour")]
-    pub gradient: GradientShape,
-    /// The way straight colours run across the ball, in degrees: 90 from top to bottom.
-    #[setting(label = "Direction", when = "colour and gradient=straight", span(-180, 180), unit = "°", keyframe)]
-    pub direction: f32,
     /// How dark it gets at its darkest.
     #[setting(label = "Amount", range(0, 1), simple, keyframe, pulse)]
     pub amount: f32,
@@ -110,8 +103,6 @@ impl Default for ShadingLayer {
             invert: false,
             strokes: Strokes::default(),
             colour: Gradient::solid(Color::rgb(0, 0, 0)),
-            gradient: GradientShape::Straight,
-            direction: 90.0,
             amount: 0.6,
             softness: 0.5,
             space: Space::Ball,

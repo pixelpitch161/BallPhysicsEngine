@@ -105,32 +105,18 @@ fn shape_reach_fade(s: ShapeAt) -> f32 {
     return 1.0 - smoothstep(0.8 * past, past, s.edge);
 }
 
-// Where along its gradient record `l` is at `s`, by `runs`: 0 across (from `lo` to `hi` along
-// `dir`), 1 from the middle to the furthest point (a hollow shape: across its band, inner edge to
-// outer), 2 along the edge, 3 `outward` (worked out by the layer).
-fn shape_run(l: LayerGpu, runs: u32, s: ShapeAt, outward: f32) -> f32 {
-    switch runs {
-        case 0u: {
-            return (dot(s.q, l.p1.xy) - l.p1.z) / max(l.p1.w - l.p1.z, 1e-6);
-        }
-        case 1u: {
-            let half = layered_shape.b.x;
-            if half > 0.0 {
-                return (s.sd + half) / (2.0 * half);
-            }
-            // An ellipse runs out by its own shape.
-            if layered_shape.b.y > 1.5 {
-                return length(s.q / max(layered_shape.b.zw, vec2<f32>(1e-6)));
-            }
-            return length(s.q) / max(layered_shape.c.w, 1e-6);
-        }
-        case 2u: {
-            return s.along;
-        }
-        default: {
-            return outward;
-        }
+// How far from the middle out `s` is for a Colour and gradient layer's Round: across the band of
+// a hollow shape (inner edge to outer), out by its own shape in an ellipse, else to its furthest
+// point.
+fn shape_from_middle(s: ShapeAt) -> f32 {
+    let half = layered_shape.b.x;
+    if half > 0.0 {
+        return (s.sd + half) / (2.0 * half);
     }
+    if layered_shape.b.y > 1.5 {
+        return length(s.q / max(layered_shape.b.zw, vec2<f32>(1e-6)));
+    }
+    return length(s.q) / max(layered_shape.c.w, 1e-6);
 }
 
 // The distance from shape layer record `l`'s own edge at `s`, in world pixels, negative inside:
@@ -168,12 +154,32 @@ fn shape_upright(world: vec2<f32>) -> vec2<f32> {
     return (world - layered_shape.a.xy) / max(layered_shape.a.w, 1e-6);
 }
 
-// Record `l`'s own colour at `s`: its one colour, or its gradient along `runs`.
-fn shape_colour(l: LayerGpu, runs: u32, s: ShapeAt, outward: f32) -> vec3<f32> {
+// Record `l`'s own colour at `s`: its one colour, or its gradient laid out by its form in the
+// shape's units. A layer of the shape's own (`whole`) runs Straight from edge to edge at its turn
+// (`l.p1`: the direction and the outline's extent along it) and a Colour and gradient layer runs
+// Round from the middle; Round on a layer with a band (`banded`) reads `along`, worked out for it;
+// Along the edge runs round the outline.
+fn shape_colour(l: LayerGpu, s: ShapeAt, along: f32, banded: bool, whole: bool) -> vec3<f32> {
     if l.paint.row < 0.0 {
         return l.colour.rgb;
     }
-    return paint_along(l.paint, shape_run(l, runs, s, outward), g.view.w).rgb;
+    let code = u32(l.paint.pattern + 0.5);
+    let k = l.paint.scale;
+    if code == 1u && whole {
+        let width = max(l.p1.w - l.p1.z, 1e-6);
+        let t = (dot(s.q, l.p1.xy) - l.p1.z) / width - 0.5 - dot(l.paint.place.xy, l.p1.xy) / width;
+        return paint_along(l.paint, t * k + 0.5, g.view.w).rgb;
+    }
+    if code == 2u && banded {
+        return paint_along(l.paint, along * k, g.view.w).rgb;
+    }
+    if code == 2u && whole {
+        return paint_along(l.paint, shape_from_middle(s) * k, g.view.w).rgb;
+    }
+    if code == 4u {
+        return paint_pattern(l.paint, s.along, g.view.w).rgb;
+    }
+    return paint_colour(l.paint, s.q, g.view.w, vec4<f32>(l.colour.rgb, 1.0)).rgb;
 }
 
 // A shape with layers: premultiplied colour and coverage.
@@ -186,6 +192,9 @@ fn shade_shape_layers(
     hit: vec4<f32>,
 ) -> vec4<f32> {
     layered_shape = LayeredShape(a, b, c, layers, hit);
+    // For Ripples (paint.wgsl): measured from everything but the shape itself.
+    paint_world = world;
+    paint_own = vec3<f32>(a.xy, 1.0);
     let s = shape_at(world);
     let cover = shape_cover_at(s);
     let w = walk_shape(world, s, layers.x, layers.y, layers.w);

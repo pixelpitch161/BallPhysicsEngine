@@ -163,9 +163,61 @@ pub fn save_listen_in(dir: &Path, listen: ListenSettings) {
     let _ = std::fs::write(dir.join(LISTEN), format!("{word} {:.3}", listen.volume));
 }
 
+const BOTTOM_VIEW: &str = "bottom-view.txt";
+
+/// What the bottom panel shows: the timeline or the scene's rules (the editor's own, never saved
+/// in a scene).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BottomView {
+    #[default]
+    Timeline,
+    Rules,
+}
+
+pub fn load_bottom_view() -> BottomView {
+    settings_dir().map_or_else(BottomView::default, |d| load_bottom_view_in(&d))
+}
+
+/// The bottom view saved in `dir` (`timeline` or `rules`); the timeline when there is none.
+pub fn load_bottom_view_in(dir: &Path) -> BottomView {
+    match std::fs::read_to_string(dir.join(BOTTOM_VIEW)).unwrap_or_default().trim() {
+        "rules" => BottomView::Rules,
+        _ => BottomView::Timeline,
+    }
+}
+
+pub fn save_bottom_view(view: BottomView) {
+    if let Some(dir) = settings_dir() {
+        save_bottom_view_in(&dir, view);
+    }
+}
+
+pub fn save_bottom_view_in(dir: &Path, view: BottomView) {
+    let _ = std::fs::create_dir_all(dir);
+    let word = match view {
+        BottomView::Timeline => "timeline",
+        BottomView::Rules => "rules",
+    };
+    let _ = std::fs::write(dir.join(BOTTOM_VIEW), word);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_bottom_view_round_trips_and_defaults_to_the_timeline() {
+        let dir = std::env::temp_dir().join(format!("ball-studio-bottom-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(load_bottom_view_in(&dir), BottomView::Timeline, "a missing file");
+        save_bottom_view_in(&dir, BottomView::Rules);
+        assert_eq!(load_bottom_view_in(&dir), BottomView::Rules);
+        std::fs::write(dir.join(BOTTOM_VIEW), "sideways").unwrap();
+        assert_eq!(load_bottom_view_in(&dir), BottomView::Timeline, "an odd file");
+        save_bottom_view_in(&dir, BottomView::Timeline);
+        assert_eq!(load_bottom_view_in(&dir), BottomView::Timeline);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn listening_settings_round_trip_and_default_to_on_at_80_percent() {

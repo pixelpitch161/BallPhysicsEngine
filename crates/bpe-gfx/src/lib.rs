@@ -16,6 +16,7 @@ mod frame;
 mod grade_tests;
 mod gradients;
 mod lighting;
+mod ripples;
 pub mod stage_camera;
 mod stage_camera_pass;
 pub use stage_camera::{FillEdges, StageCamera, StageCameraGpu, StageLayout, StageView};
@@ -130,6 +131,11 @@ struct Globals {
     /// The light the background gives off (read in pass 3): its own colour times its strength,
     /// then what its colours are multiplied by (rgb, linear).
     light_emit: [[f32; 4]; 2],
+    /// The background's form when it is neither Straight nor Round (`bg.y` 3): its own numbers
+    /// (`PaintGpu::form`).
+    bg_form: [f32; 4],
+    /// x: the background's form code (`PaintGpu::pattern`), yzw spare.
+    bg_shape: [f32; 4],
 }
 
 impl Globals {
@@ -161,6 +167,8 @@ impl Globals {
             grade_more: [frame.grade.tint, frame.grade.vignette, frame.grade.vignette_size, frame.grade.map_amount],
             light: [0.0; 4],
             light_emit: [[0.0; 4]; 2],
+            bg_form: frame.background.form,
+            bg_shape: [frame.background.pattern, 0.0, 0.0, 0.0],
         }
     }
 }
@@ -238,17 +246,28 @@ impl GradeMap {
     }
 }
 
-/// The gradient atlas on the GPU, remade only when the frame has more gradients than it has rows.
+/// The gradient atlas on the GPU, remade only when the frame has more gradients than it has rows,
+/// bound with the Ripples field (rebound when either changes).
 struct PaintTexture {
     texture: wgpu::Texture,
+    view: wgpu::TextureView,
     /// Each row's Hit wave, two texels a row (`gradients::wave_texels`).
     waves: wgpu::Texture,
+    waves_view: wgpu::TextureView,
     rows: usize,
     group: wgpu::BindGroup,
+    /// The Ripples generation `group` binds (see [`ripples::Ripples::generation`]).
+    bound: u64,
 }
 
 impl PaintTexture {
-    fn new(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, sampler: &wgpu::Sampler, rows: usize) -> Self {
+    fn new(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
+        rows: usize,
+        ripples: &ripples::Ripples,
+    ) -> Self {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("gradient atlas"),
             size: wgpu::Extent3d { width: ATLAS_WIDTH as u32, height: rows as u32, depth_or_array_layers: 1 },
@@ -271,16 +290,45 @@ impl PaintTexture {
             view_formats: &[],
         });
         let waves_view = waves.create_view(&Default::default());
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let group = Self::group(device, layout, sampler, &view, &waves_view, ripples);
+        Self { texture, view, waves, waves_view, rows, group, bound: ripples.generation() }
+    }
+
+    fn group(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
+        view: &wgpu::TextureView,
+        waves: &wgpu::TextureView,
+        ripples: &ripples::Ripples,
+    ) -> wgpu::BindGroup {
+        let [a, b, c] = ripples.entries();
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("gradient atlas"),
             layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(view) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&waves_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(waves) },
+                a,
+                b,
+                c,
             ],
-        });
-        Self { texture, waves, rows, group }
+        })
+    }
+
+    /// Binds the Ripples field again when it changed since the group was made.
+    fn bind_ripples(
+        &mut self,
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
+        ripples: &ripples::Ripples,
+    ) {
+        if self.bound != ripples.generation() {
+            self.group = Self::group(device, layout, sampler, &self.view, &self.waves_view, ripples);
+            self.bound = ripples.generation();
+        }
     }
 
     /// Uploads `atlas`, making the texture taller first if its gradients do not fit.
@@ -291,6 +339,7 @@ impl PaintTexture {
         layout: &wgpu::BindGroupLayout,
         sampler: &wgpu::Sampler,
         atlas: &GradientAtlas,
+        ripples: &ripples::Ripples,
     ) {
         let max = device.limits().max_texture_dimension_2d as usize;
         if atlas.len() > max {
@@ -301,7 +350,7 @@ impl PaintTexture {
         }
         let rows = gradients::uploaded_rows(atlas.len(), max);
         if rows > self.rows {
-            *self = Self::new(device, layout, sampler, gradients::atlas_height(rows, max));
+            *self = Self::new(device, layout, sampler, gradients::atlas_height(rows, max), ripples);
         }
         if rows == 0 {
             return;
@@ -340,7 +389,7 @@ pub struct Renderer {
     globals_layout: wgpu::BindGroupLayout,
     post_layout: wgpu::BindGroupLayout,
     composite_layout: wgpu::BindGroupLayout,
-    /// The gradient atlas: bound at group 1 of the scene passes and group 2 of the particles.
+    /// The gradient atlas and the Ripples field: bound at group 1 of the scene passes.
     paint_layout: wgpu::BindGroupLayout,
     /// The layer records of layered balls: group 2 of their pipelines.
     layers_layout: wgpu::BindGroupLayout,
@@ -371,6 +420,8 @@ pub struct Renderer {
     upsample: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
     paint: PaintTexture,
+    /// What Ripples measure from, built for frames that have them (bound with the atlas).
+    ripples: ripples::Ripples,
     /// The overlay frame's own gradients: its instances name rows of its own atlas.
     overlay_paint: PaintTexture,
     targets: Targets,
@@ -1063,8 +1114,9 @@ impl Renderer {
         let grade_map = GradeMap::new(device);
         let targets = Targets::new(device, width, height, &post_layout, &composite_layout, &sampler, &grade_map.view);
         let first_height = gradients::atlas_height(0, device.limits().max_texture_dimension_2d as usize);
-        let paint = PaintTexture::new(device, &paint_layout, &sampler, first_height);
-        let overlay_paint = PaintTexture::new(device, &paint_layout, &sampler, first_height);
+        let ripples = ripples::Ripples::new(device);
+        let paint = PaintTexture::new(device, &paint_layout, &sampler, first_height, &ripples);
+        let overlay_paint = PaintTexture::new(device, &paint_layout, &sampler, first_height, &ripples);
         let sprites = sprites::Sprites::new(device, &globals_layout);
         Self {
             globals,
@@ -1081,6 +1133,7 @@ impl Renderer {
             post_layout,
             composite_layout,
             paint_layout,
+            ripples,
             layers_layout,
             layered_pipeline_layout: layered_pipeline_layout.clone(),
             programs: ProgramStore::default(),
@@ -1302,10 +1355,13 @@ impl Renderer {
             .chain(overlay.map(|o| (o, None)))
             .chain(layers.iter().map(|l| (&l.frame, l.each.then_some(l.blend))));
         self.waiting = self.programs.lock().ensure(device, &self.layered_pipeline_layout, frames);
-        self.paint.sync(device, queue, &self.paint_layout, &self.sampler, &frame.gradients);
+        self.ripples.prepare(device, queue, encoder, frame);
+        self.paint.sync(device, queue, &self.paint_layout, &self.sampler, &frame.gradients, &self.ripples);
+        self.paint.bind_ripples(device, &self.paint_layout, &self.sampler, &self.ripples);
         self.grade_map.sync(queue, &frame.grade);
         if let Some(o) = overlay {
-            self.overlay_paint.sync(device, queue, &self.paint_layout, &self.sampler, &o.gradients);
+            self.overlay_paint.sync(device, queue, &self.paint_layout, &self.sampler, &o.gradients, &self.ripples);
+            self.overlay_paint.bind_ripples(device, &self.paint_layout, &self.sampler, &self.ripples);
         }
 
         if !layers.is_empty() {
@@ -1580,6 +1636,12 @@ impl Renderer {
 
     /// The last frame's lighting, when it was lit: how many lights it drew and, on a device made
     /// with [`TIMING_FEATURES`], how long the GPU spent on the light passes lately (ms).
+    /// Whether the last frame built the Ripples field (only frames with a gradient laid out as
+    /// Ripples do).
+    pub fn ripples_built(&self) -> bool {
+        self.ripples.built()
+    }
+
     pub fn lighting_stats(&self) -> Option<(usize, Option<f32>)> {
         let ms = self.light_timer.as_ref().and_then(|t| t.as_ref()).and_then(|t| t.last_ms);
         self.lit_lights.map(|n| (n, ms))

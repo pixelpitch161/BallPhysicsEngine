@@ -151,7 +151,9 @@ block_kind!(
     "Change setting",
     Do,
     ChangeSettingSettings,
-    "Changes any setting, for good or for a while, for a whole thing or one ball."
+    "Changes any setting, for good or for a while, for a whole thing or one ball.",
+    values = [],
+    from = ["to_number", "times"]
 );
 
 /// What a thing's setting is, as the change needs to know.
@@ -279,7 +281,7 @@ impl BlockSim for ChangeSetting {
             };
             out.push(Action::Change {
                 key: ChangeKey { thing, slot: c.slot, row: row.filter(|_| info.per_ball), key: s.setting.clone() },
-                change: Change {
+                change: Box::new(Change {
                     how,
                     value,
                     start: 0.0,
@@ -287,7 +289,7 @@ impl BlockSim for ChangeSetting {
                     ease: s.ease.ease(),
                     lasts: (s.lasts == Lasts::ForATime).then_some(s.seconds.max(0.0)),
                     range: info.range,
-                },
+                }),
             });
         }
     }

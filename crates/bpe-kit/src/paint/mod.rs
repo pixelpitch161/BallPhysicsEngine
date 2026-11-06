@@ -4,7 +4,8 @@
 //! starting with the field's prefix.
 
 use bpe_core::{
-    Choice, Depth, Flags, Gradient, GroupOpts, Params, SettingDef, SettingGroup, SettingValue, Value, ValueType,
+    Area, Choice, Depth, Flags, Gradient, GradientForm, GroupOpts, Params, SettingDef, SettingGroup, SettingValue,
+    Value, ValueType,
 };
 use glam::Vec2;
 
@@ -18,7 +19,7 @@ pub mod palettes;
 pub mod recolour;
 pub mod vary;
 pub use eval::{Inputs, colour_at, hits_on, last_hit, last_hit_at, offset};
-pub use gpu::{background_gpu, inside_gpu, paint_gpu};
+pub use gpu::{Placing, background_gpu, form_gpu, inside_gpu, paint_gpu};
 pub use inside::{InsideFrom, InsidePaint, Pattern};
 pub use vary::{apply_vary, seed_of, vary_gpu, vary_offsets};
 
@@ -50,29 +51,14 @@ pub enum Space {
     Screen,
 }
 
-/// What happens past the end of the gradient.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
-pub enum Repeat {
-    #[default]
-    Clamp,
-    Repeat,
-    Mirror,
-}
-
-/// Where a place-based gradient runs from.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
-pub enum PlaceShape {
-    #[default]
-    Straight,
-    Round,
-}
+/// What happens past the end of the gradient (shared with every gradient's Shape tab).
+pub use bpe_core::Repeat;
 
 /// A gradient and how it is applied.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Paint {
     pub colours: Gradient,
     pub follow: Follow,
-    pub shape: PlaceShape,
     pub angle: f32,
     pub centre: Vec2,
     pub space: Space,
@@ -96,7 +82,6 @@ impl Default for Paint {
         Self {
             colours: Gradient::solid(bpe_core::Color::WHITE),
             follow: Follow::Place,
-            shape: PlaceShape::Straight,
             angle: 90.0,
             centre: Vec2::ZERO,
             space: Space::World,
@@ -118,6 +103,18 @@ impl Paint {
     pub fn solid(c: bpe_core::Color) -> Self {
         Self { colours: Gradient::solid(c), ..Self::default() }
     }
+
+    /// How its colours are laid out over the place (or across each ball): its gradient's Shape
+    /// tab, Straight when none is stored.
+    pub fn form(&self) -> GradientForm {
+        self.colours.layout.form_or(GradientForm::Straight)
+    }
+}
+
+/// Whether a paint with these follows lays its colours out over an area (a place, a start or
+/// each ball), and so offers its gradient's Shape tab.
+fn fills(o: &GroupOpts) -> bool {
+    follow_names(o).iter().any(|n| matches!(*n, "place" | "start" | "each_ball"))
 }
 
 /// Keeps a string for the rest of the program. Called once per outer type, because the
@@ -171,7 +168,6 @@ impl SettingGroup for Paint {
         let d = group_default(o, default);
         let p = o.prefix;
         let (c, f) = (format!("{p}colours"), format!("{p}follow"));
-        let shape = format!("{p}shape");
         let on = |extra: &str| also(o.when, &format!("{c}{extra}"));
         let def =
             |key: &str, label: &'static str, help: &'static str, ty: ValueType, default: Value, when: &'static str| {
@@ -213,6 +209,10 @@ impl SettingGroup for Paint {
             o.when,
         );
         colours.flags.keyframe = true;
+        if fills(o) {
+            // Laid out by the shared forms, placed by the paint's own Direction, Centre and span.
+            colours.flags.area = Area::Placed(GradientForm::Straight);
+        }
         if o.simple {
             colours.depth = Depth::Simple;
         }
@@ -228,23 +228,14 @@ impl SettingGroup for Paint {
         );
         v.push(follow);
 
-        let near = on(&format!(" and {f}=each_ball|place|start"));
-        v.push(def(
-            "shape",
-            "Gradient",
-            "Whether the colours run along a direction or outward from a centre.",
-            ty(&d.shape),
-            val(&d.shape),
-            near,
-        ));
         v.push(num(
             def(
                 "angle",
                 "Direction",
-                "The direction the colours run in, in degrees.",
+                "Which way the colours' shape points, in degrees: 90 runs straight colours top to bottom.",
                 ty(&d.angle),
                 val(&d.angle),
-                on(&format!(" and {f}=each_ball|place|start and {shape}=straight")),
+                on(&format!(" and {f}=each_ball|place|start")),
             ),
             (-180.0, 180.0),
             "deg",
@@ -253,10 +244,10 @@ impl SettingGroup for Paint {
         let mut centre = def(
             "centre",
             "Centre",
-            "The point the colours spread outward from.",
+            "Where the middle of the colours' shape sits.",
             ty(&d.centre),
             val(&d.centre),
-            on(&format!(" and {f}=place|start and {shape}=round")),
+            on(&format!(" and {f}=place|start")),
         );
         centre.flags.keyframe = true;
         v.push(centre);
@@ -391,7 +382,6 @@ impl SettingGroup for Paint {
         {
             s.follow = f;
         }
-        set(&mut s.shape, get("shape"));
         set(&mut s.angle, get("angle"));
         set(&mut s.centre, get("centre"));
         if !o.screen_only {
@@ -402,6 +392,10 @@ impl SettingGroup for Paint {
         set(&mut s.scroll, get("scroll"));
         set(&mut s.take_hit_colour, get("take_hit_colour"));
         set(&mut s.step_time, get("step_time"));
+        // The form rides with the colours (their Shape tab), so a look keeps it.
+        if let Some(form) = get(&bpe_core::gradient_extras::key("colours", "form")).and_then(GradientForm::from_value) {
+            s.colours.layout.form = Some(form);
+        }
         if o.vary {
             set(&mut s.vary_hue, get("vary_hue"));
             set(&mut s.vary_sat, get("vary_sat"));
@@ -418,11 +412,13 @@ impl SettingGroup for Paint {
                 params.set(&format!("{p}{key}"), now);
             }
         };
-        put("colours", val(&self.colours), val(&d.colours));
+        // The layout is worked out each frame from the companions; the form is saved as one.
+        let bare = |g: &bpe_core::Gradient| bpe_core::Gradient { layout: Default::default(), ..g.clone() };
+        put("colours", val(&bare(&self.colours)), val(&bare(&d.colours)));
+        put(&bpe_core::gradient_extras::key("colours", "form"), val(&self.form()), val(&d.form()));
         // Never save a follow the list doesn't offer; it would read back as the default anyway.
         let follow = if follow_names(o).contains(&self.follow.name()) { self.follow } else { d.follow };
         put("follow", val(&follow), val(&d.follow));
-        put("shape", val(&self.shape), val(&d.shape));
         put("angle", val(&self.angle), val(&d.angle));
         put("centre", val(&self.centre), val(&d.centre));
         if !o.screen_only {
@@ -471,6 +467,8 @@ mod tests {
         assert_eq!(f.ty, ValueType::Choice(&["place", "order", "speed"]));
         let a = Two::defs().iter().find(|d| d.key == "outline_angle").unwrap();
         assert!(a.when.contains("outline_colours") && a.when.contains("outline_follow=each_ball|place|start"));
+        let colours = Two::defs().iter().find(|d| d.key == "colours").unwrap();
+        assert_eq!(colours.flags.area, Area::Placed(GradientForm::Straight), "a placed paint lays out an area");
     }
 
     #[test]

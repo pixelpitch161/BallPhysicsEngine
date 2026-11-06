@@ -190,6 +190,15 @@ pub trait RuleBlockKind: Send + Sync + 'static {
     fn summary(&self, _get: &dyn Fn(&str) -> Option<Value>) -> String {
         self.name().to_owned()
     }
+    /// The values a When block's firings carry, by name ("strength", "speed"…), for the editor's
+    /// "from the firing" menus. None for the other sections.
+    fn values(&self) -> &'static [&'static str] {
+        &[]
+    }
+    /// The number settings that can come from the firing: their `"<key>~from"` is read.
+    fn firing_keys(&self) -> &'static [&'static str] {
+        &[]
+    }
 }
 
 // --- Values from the firing -------------------------------------------------------------------
@@ -250,7 +259,7 @@ const FROM_DEF: SettingDef = SettingDef {
     unit: "",
     group: "Rule",
     depth: crate::Depth::More,
-    flags: crate::Flags { keyframe: false, pulse: false, hold: false },
+    flags: crate::Flags { keyframe: false, pulse: false, hold: false, area: crate::Area::No },
     when: "",
 };
 
@@ -265,7 +274,7 @@ const TIMES_DEF: SettingDef = SettingDef {
     unit: "",
     group: "Rule",
     depth: crate::Depth::More,
-    flags: crate::Flags { keyframe: false, pulse: false, hold: false },
+    flags: crate::Flags { keyframe: false, pulse: false, hold: false, area: crate::Area::No },
     when: "",
 };
 
@@ -280,7 +289,7 @@ const PLUS_DEF: SettingDef = SettingDef {
     unit: "",
     group: "Rule",
     depth: crate::Depth::More,
-    flags: crate::Flags { keyframe: false, pulse: false, hold: false },
+    flags: crate::Flags { keyframe: false, pulse: false, hold: false, area: crate::Area::No },
     when: "",
 };
 

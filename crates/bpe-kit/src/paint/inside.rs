@@ -3,19 +3,17 @@
 
 use super::{Repeat, also, leak, val};
 use bpe_core::{
-    Choice, Color, Depth, Flags, Gradient, GroupOpts, Params, SettingDef, SettingGroup, SettingValue, Value, ValueType,
+    Area, Choice, Color, Depth, Flags, Gradient, GradientForm, GroupOpts, Params, SettingDef, SettingGroup,
+    SettingValue, Value, ValueType,
 };
 
-/// The pattern drawn inside each ball.
+/// The pattern drawn inside each ball: its colours laid out by a gradient form (the gradient's
+/// Shape tab), or one of the masks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
 pub enum Pattern {
     #[default]
     None,
-    Linear,
-    Radial,
-    Sweep,
-    Stripes,
-    Rings,
+    Gradient,
     Dots,
     Checker,
     Halves,
@@ -36,6 +34,9 @@ pub enum InsideFrom {
 #[derive(Clone, Debug, PartialEq)]
 pub struct InsidePaint {
     pub pattern: Pattern,
+    /// How Gradient lays the colours out: the colours' `~form` companion (Stripes when none is
+    /// stored), read and written with the group so a look keeps it.
+    pub form: GradientForm,
     pub from: InsideFrom,
     pub shade: f32,
     pub colours: Gradient,
@@ -51,6 +52,7 @@ impl Default for InsidePaint {
     fn default() -> Self {
         Self {
             pattern: Pattern::None,
+            form: GradientForm::Stripes,
             from: InsideFrom::ShadeOfOwnColour,
             shade: -0.5,
             colours: Gradient::even(&[Color::WHITE, Color::rgb(0, 0, 0)]),
@@ -73,8 +75,11 @@ impl SettingGroup for InsidePaint {
         let from_when = also(o.when, &format!("{pat}!=none|face"));
         let shade_when = also(o.when, &format!("{pat}!=none|face and {from}=shade_of_own_colour"));
         let own_when = also(o.when, &format!("{pat}!=none|face and {from}=own_gradient"));
-        // Only Linear, Radial and Sweep can run past the last colour.
-        let repeat_when = also(o.when, &format!("{pat}=linear|radial|sweep and {from}=own_gradient"));
+        // In a shade of each one's own colour the Colours row (and its Shape tab) is hidden, so
+        // the form gets a row of its own there.
+        let shade_form_when = also(o.when, &format!("{pat}=gradient and {from}=shade_of_own_colour"));
+        // Only a gradient can run past the last colour.
+        let repeat_when = also(o.when, &format!("{pat}=gradient"));
         let def = |key: &str,
                    label: &'static str,
                    help: &'static str,
@@ -141,16 +146,32 @@ impl SettingGroup for InsidePaint {
                 "",
             ),
             def(
-                "colours",
-                "Colours",
-                "The pattern's own colours, from the first stop to the last.",
-                ty(&d.colours),
-                val(&d.colours),
-                own_when,
+                &bpe_core::gradient_extras::key("colours", "form"),
+                "Shape",
+                "How the pattern lays its shades out: straight, round, in rings, a spiral and more.",
+                ty(&d.form),
+                val(&d.form),
+                shade_form_when,
                 None,
                 "",
                 false,
             ),
+            {
+                let mut colours = def(
+                    "colours",
+                    "Colours",
+                    "The pattern's own colours, from the first stop to the last.",
+                    ty(&d.colours),
+                    val(&d.colours),
+                    own_when,
+                    None,
+                    "",
+                    false,
+                );
+                // Laid out by the shared forms, placed by the pattern's own Angle and Size.
+                colours.flags.area = Area::Placed(InsidePaint::default().form);
+                colours
+            },
             def(
                 "repeat",
                 "Beyond the last colour",
@@ -223,6 +244,7 @@ impl SettingGroup for InsidePaint {
         set(&mut s.size, get("size"));
         set(&mut s.scroll, get("scroll"));
         set(&mut s.turns, get("turns"));
+        set(&mut s.form, get(&bpe_core::gradient_extras::key("colours", "form")));
         s
     }
 
@@ -243,6 +265,7 @@ impl SettingGroup for InsidePaint {
         put("size", val(&self.size), val(&default.size));
         put("scroll", val(&self.scroll), val(&default.scroll));
         put("turns", val(&self.turns), val(&default.turns));
+        put(&bpe_core::gradient_extras::key("colours", "form"), val(&self.form), val(&default.form));
     }
 }
 
@@ -290,12 +313,13 @@ mod tests {
     fn inside_rows_and_conditions() {
         let defs = Holder::defs();
         let n = "in_pattern!=none";
-        let own = "in_pattern=linear|radial|sweep and in_from=own_gradient";
+        let own = "in_pattern=gradient";
         #[allow(clippy::type_complexity)]
-        let rows: [(&str, &str, &str, Option<(f64, f64)>, bool); 10] = [
+        let rows: [(&str, &str, &str, Option<(f64, f64)>, bool); 11] = [
             ("in_pattern", "Pattern", "", None, false),
             ("in_from", "Inside colours", "in_pattern!=none|face", None, false),
             ("in_shade", "Shade", "in_pattern!=none|face and in_from=shade_of_own_colour", Some((-1.0, 1.0)), true),
+            ("in_colours~form", "Shape", "in_pattern=gradient and in_from=shade_of_own_colour", None, false),
             ("in_colours", "Colours", "in_pattern!=none|face and in_from=own_gradient", None, false),
             ("in_repeat", "Beyond the last colour", own, None, false),
             ("in_angle", "Angle", n, Some((-180.0, 180.0)), true),
@@ -330,11 +354,9 @@ mod tests {
             };
             d.applies(Some("balls"), &get)
         };
-        for p in ["linear", "radial", "sweep"] {
-            assert!(shows("in_repeat", p, "own_gradient"), "{p}");
-            assert!(!shows("in_repeat", p, "shade_of_own_colour"), "{p}");
-        }
-        for p in ["none", "stripes", "rings", "dots", "checker", "halves", "slices", "swirl", "face"] {
+        assert!(shows("in_repeat", "gradient", "own_gradient"));
+        assert!(shows("in_repeat", "gradient", "shade_of_own_colour"));
+        for p in ["none", "dots", "checker", "halves", "slices", "swirl", "face"] {
             assert!(!shows("in_repeat", p, "own_gradient"), "{p}");
         }
         for key in ["in_from", "in_shade"] {
@@ -360,7 +382,9 @@ mod tests {
         h.inside.size = 3.0;
         h.inside.scroll = 0.5;
         h.inside.turns = true;
+        h.inside.form = GradientForm::Spiral;
         let p = h.to_params();
+        assert_eq!(p.get("in_colours~form"), Some(&Value::Choice("spiral".into())), "the form is the companion");
         assert_eq!(p.get("in_pattern"), Some(&Value::Choice("checker".into())));
         assert_eq!(p.get("in_from"), Some(&Value::Choice("own_gradient".into())));
         assert_eq!(Holder::from_params(&p), h);

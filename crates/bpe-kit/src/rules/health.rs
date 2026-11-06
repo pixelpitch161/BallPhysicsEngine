@@ -86,7 +86,9 @@ block_kind!(
     "Health",
     When,
     WhenHealthSettings,
-    "Fires when a ball's or a thing's health drops, reaches 0 or goes up."
+    "Fires when a ball's or a thing's health drops, reaches 0 or goes up.",
+    values = ["health", "damage", "start", "share", "strength", "speed", "size", "hits", "ball"],
+    from = []
 );
 
 impl BlockSim for WhenHealth {
@@ -199,7 +201,9 @@ block_kind!(
     "Health is",
     If,
     HealthIsSettings,
-    "Goes on only when a ball's or a thing's health is below, above or between amounts, at zero or full."
+    "Goes on only when a ball's or a thing's health is below, above or between amounts, at zero or full.",
+    values = [],
+    from = ["amount", "to"]
 );
 
 #[derive(Clone, Debug)]
@@ -295,7 +299,9 @@ block_kind!(
     "Change health",
     Do,
     ChangeHealthSettings,
-    "Takes health away from a ball or a thing, gives it back, sets it or fills it up again."
+    "Takes health away from a ball or a thing, gives it back, sets it or fills it up again.",
+    values = [],
+    from = ["amount"]
 );
 
 #[derive(Clone, Debug)]

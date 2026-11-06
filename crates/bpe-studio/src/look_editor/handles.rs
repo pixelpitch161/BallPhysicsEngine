@@ -244,6 +244,37 @@ pub fn show(
             }
         }
     }
+    // A dot for each Free point of the layer's gradients, in its stop's colour.
+    let get = |k: &str| cx.scene.value_at_time(cx.reg(), &cx.at(layer.id, k), cx.time);
+    let free = super::free_points::free_on(kind.settings(), &get);
+    // A paint measured in the world (following Place or Start) has its dots in the preview only.
+    for (n, f) in free.iter().enumerate().filter(|(_, f)| !f.placed) {
+        for (i, (q, colour)) in f.points.iter().enumerate() {
+            let at = inside(view.shrink(8.0), map.centre, map.to_view(f.to_ball(*q)));
+            let id = ui.make_persistent_id(("free point", cx.id, layer.id.0, n, i));
+            let response = ui.interact(Rect::from_center_size(at, EVec2::splat(16.0)), id, Sense::drag());
+            let name = format!("{} handle", super::free_points::NAMES[i.min(15)]);
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &name));
+            let active = response.hovered() || response.dragged();
+            busy |= active;
+            let r = if active { 7.0 } else { 5.5 };
+            let fill = egui::Color32::from_rgb(colour.r, colour.g, colour.b); // scene colour
+            painter.circle_filled(at, r, fill);
+            painter.circle_stroke(at, r, Stroke::new(1.5, style::TEXT_STRONG));
+            if active {
+                tag(&painter, at, &format!("{:.2}, {:.2}", q.x, q.y));
+            }
+            if response.drag_started() {
+                *own_step = true;
+            }
+            if response.dragged()
+                && let Some(pointer) = response.interact_pointer_pos()
+            {
+                let key = super::free_points::points_key(f);
+                edits.push(Edit::SetSlot(cx.slot, layered_key(layer.id, &key), f.moved(i, map.to_ball(pointer))));
+            }
+        }
+    }
     busy
 }
 

@@ -29,7 +29,16 @@ impl Default for HitSettings {
     }
 }
 
-block_kind!(Hit, "when.hit", "Hit", When, HitSettings, "Fires when a ball hits a shape or another ball.");
+block_kind!(
+    Hit,
+    "when.hit",
+    "Hit",
+    When,
+    HitSettings,
+    "Fires when a ball hits a shape or another ball.",
+    values = ["strength", "speed", "size", "hits", "ball", "health", "share", "start"],
+    from = []
+);
 
 /// A ball's values for a firing about it.
 pub fn ball_values(world: &bpe_runtime::World, ball: Party, values: &mut Values) {
@@ -112,7 +121,16 @@ impl Default for TimeSettings {
     }
 }
 
-block_kind!(Time, "when.time", "Time", When, TimeSettings, "Fires at a moment, and again every so often if you like.");
+block_kind!(
+    Time,
+    "when.time",
+    "Time",
+    When,
+    TimeSettings,
+    "Fires at a moment, and again every so often if you like.",
+    values = ["time", "count"],
+    from = []
+);
 
 /// The moments a Time or Beat block fires at: `first + k·every` (once when `every` is none),
 /// up to `until`, and which of them it has fired so far.
@@ -210,7 +228,16 @@ impl Default for BeatSettings {
     }
 }
 
-block_kind!(Beat, "when.beat", "Beat", When, BeatSettings, "Fires on the beats or bars of the scene's tempo.");
+block_kind!(
+    Beat,
+    "when.beat",
+    "Beat",
+    When,
+    BeatSettings,
+    "Fires on the beats or bars of the scene's tempo.",
+    values = ["time", "count", "bar", "beat"],
+    from = []
+);
 
 #[derive(Clone, Debug, PartialEq)]
 struct BeatState {

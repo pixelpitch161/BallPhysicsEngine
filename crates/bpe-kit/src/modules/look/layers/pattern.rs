@@ -22,7 +22,7 @@ impl Default for PatternLayer {
     fn default() -> Self {
         // A new pattern shows straight away: stripes in a darker shade of the body.
         Self {
-            inside: InsidePaint { pattern: Pattern::Stripes, ..InsidePaint::default() },
+            inside: InsidePaint { pattern: Pattern::Gradient, ..InsidePaint::default() },
             opacity: 1.0,
             blend: Blend::Normal,
         }

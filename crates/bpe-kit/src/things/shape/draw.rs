@@ -130,6 +130,11 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
     let Some(wall) = cx.world.walls.get(&cx.thing.id) else { return };
     let form = wall_form(wall);
     let index = push_form(&form, BODY_WHITE, thing_code(cx.thing.id), frame);
+    // Ripples measure from its outline (once, not again for the part over its Blend layer).
+    if frame.ripples && part & OVER == 0 {
+        let points: Vec<[f32; 2]> = outline_world(&form).iter().map(|p| p.to_array()).collect();
+        frame.push_ripple_outline(form.center.to_array(), &points, form.half);
+    }
     let Some(stack) = ShapeStack::of(look) else { return };
     let geometry =
         Geometry { points: form.points.clone(), ellipse: form.ellipse, half: form.half / form.scale.max(1e-3) };

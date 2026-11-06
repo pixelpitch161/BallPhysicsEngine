@@ -44,6 +44,8 @@ pub const PATH_LINE: Color32 = Color32::from_rgba_premultiplied(0x3c, 0x3c, 0x3c
 pub const PILL: Color32 = Color32::from_rgba_premultiplied(0x00, 0x00, 0x00, 0xbe);
 /// A picture drawn as it is (no tint).
 pub const UNTINTED: Color32 = Color32::WHITE;
+/// The editor's only red: the mark on a rule with a problem, and its words.
+pub const PROBLEM: Color32 = Color32::from_rgb(0xe5, 0x4b, 0x4b);
 
 /// Buttons, fields and setting rows.
 pub const CONTROL_H: f32 = 26.0;

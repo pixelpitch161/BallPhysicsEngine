@@ -240,6 +240,25 @@ value from a pristine copy each step so they never compound; physics keys re-pre
 whole looks in `build_frame_sensing`). Dice are `rules::dice` (seed, rule, block, step, subject). Nothing changes
 for a scene without enabled rules (goldens, fingerprint); `tests/golden-rules*.txt` pin `scenes::rule_scenes`.
 
+Part 2 is in (plan `part2.md`): the **editor**. The bottom panel switches Timeline / **Rules** (chips at the left of
+the transport row, `settings::BottomView` saved in `bottom-view.txt`, `Studio.bottom`/`set_bottom`; the scrub bar
+stays). `bpe-studio/src/rules_panel/`: `mod.rs` (`RulesPanel` in `Panels.rules`: `picked` block, rename, link and
+rule drags, copied rule/block; `show` → `Outcome { separate, message }`, a structural edit is its own undo step through
+`Studio.separate_edit` and `record_frame`), `layout.rs` (`lay_out`: column = longest path in, row = order added within
+the column, links with their input index), `face.rs` (section, name, up to three simple settings or the kind's
+`summary`; Change setting shows who, `setting_words`, how; who fields carry the thing's track-colour dot), `fired.rs`
+(`Fired` from the log's Rule events: `count` of end-block moments, `recent` within `RING_SECONDS` 0.15, `firings`),
+`menu.rs` (When / If / Logic / Do ▸ kinds), `setting_menu.rs` (thing ▸ card ▸ (layer ▸) setting, `cards_of`,
+`picked_def`, "(whole group)" where one ball can't change alone) and `inspect.rs` (the inspector for a block, shown by
+`Studio::picked_block` while no thing is selected: problems in `style::PROBLEM`, the settings through
+`widgets::grid_row_with`, a "from" chip on each of the kind's `firing_keys` (`RuleBlockKind::firing_keys`, `values()` names
+what a When's firings carry, both via `block_kind!`'s `values = [..], from = [..]` tail), Compare's Value menu, Change
+setting's To shown as the picked setting's own type). `widgets::who_picker` draws every `Value::Who` row
+(`TargetChoices.relative`, `ball_things`). Lanes: header (switch, name renamed in place, "fired N times", red problem
+dot named "Problem in <rule>", "too busy at"), blocks named "<Section> <name>" ("Logic" alone), out-dots "Link from …",
+"Add after …", "Add When to <rule>", right-click menus for headers, blocks and lines. The timeline has a Rules lane
+under the Hits lane while the scene has rules (`rules_lane`).
+
 Part 4 is in (plan `part4.md`): **Health**. A **Health card** (`SlotId::Health`, last in `SlotId::ALL`; kind `health`,
 `bpe-kit/src/modules/health/`: Starting health (varies across balls at launch), Hits take Each hit / By strength /
 Nothing, Least strength, Only hits from (a `Target`), At zero Break / Nothing) goes on balls, emitters and shapes from
@@ -278,6 +297,27 @@ editor (`gradient_bar.rs`) has a diamond per gap (drag: the middle), a selected 
 (`gradient_tabs.rs`: Colours (stop colour, hex, at, gap blend, middle) | Blend (Mix, Loop, Bands, Grain, Every gap),
 Shape and Move once parts 2 and 3 add companions there); companion rows are ordinary grid rows under their full key
 (`companion_def`, `widgets::def_in`), and their timeline lanes read "Colours bands".
+
+Part 2 is in (plan `part2.md`, "As built" at its end): **gradient shapes**. One form list for every area gradient
+(`bpe-core/src/gradient_form.rs`: `GradientForm` Straight, Round, Sweep, Stripes, Rings, Along the edge, Diamond,
+Polygon, Spiral, Kaleido, Off-centre, Waves, Marble, Free points, Ripples, Turbulence; GPU codes 1..6 and 13..22,
+`along` the CPU twin of `paint.wgsl`'s `paint_form`, `area_colour` what the editor's previews show, `free_points`/
+`free_colour`, `points_after` keeps a point per stop). A gradient setting's `Flags.area` (`Area::No`, `Fills(form)`:
+placed by its own Turn/Centre/Size/Beyond (`~turn ~centre ~size ~repeat`), `Placed(form)`: placed by its paint's
+Angle/Size/Centre/Span) offers the Shape companions `~form` and each form's numbers (`~sides ~star ~arms ~twist
+~mirrors ~focus ~stretch ~stretch_turn ~count ~height ~flow ~detail ~bend ~seed ~softness ~points ~spacing ~from
+~speed`, `when` written relative, `when_of`); `apply_moves` puts them into `Gradient.layout` (`Layout`, never
+saved) and the kit's `paint::form_gpu(g, default, Placing, atlas)` turns them into `PaintGpu.pattern`/`form` (80 bytes).
+The old per-site gradient choices are gone (the Paint's Gradient straight/round, the Pattern's Stripes/Rings/Linear,
+now Pattern Gradient + `in_colours~form`, Stripes by default; a shade-mode Pattern has its own Shape row).
+**Ripples** read a field of the frame's balls and shapes (`bpe-gfx/src/ripples.rs`, `shaders/ripples.wgsl`,
+`ripple_common.wgsl`): built only when `Frame.ripples` (`gradient_extras::any_ripples`), half the video size, two
+nearest sources of different owners among every / balls / shapes by a jump flood; things push `RippleSource`s
+(`push_ripple_ball`, `push_ripple_outline`), and paint skips its own owner (`paint_world`, `paint_own`). The
+editor's Shape tab (`gradient_tabs.rs::shape_chips`, CPU preview chips in `gradient_form_chips.rs`) then the form's
+rows; Free points show as dots in the stop colours on the ball view (`look_editor/free_points.rs`, `handles.rs`) and
+in the preview for a selected shape's layers and the background (`preview/free_points.rs`, `Handle::FreePoint`),
+a drag writing the whole `~points` list. Heavy paint maths has one call site per program (llvmpipe inlines it all).
 
 Part 3 is in (plan `part3.md`): **movement**, the Move tab's companions (`gradient_extras::moves()`, each with its
 fold in `SettingDef.group`): Cycle (`~cycle`, `~cycle_shift`), Step on the beat (`~step_every` beats, `~step_glide`),

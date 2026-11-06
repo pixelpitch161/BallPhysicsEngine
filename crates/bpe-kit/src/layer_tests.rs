@@ -159,7 +159,8 @@ fn a_layered_inside_pattern_keeps_a_valid_atlas_row() {
     use crate::testing::set_layer;
     let (mut scene, kit) = ball_blended("normal", 1.0);
     let look = module_of(&scene, &kit, BALL, SlotId::Look);
-    set_layer(&mut scene, BALL, PATTERN, "in_pattern", Value::Choice("stripes".into()));
+    set_layer(&mut scene, BALL, PATTERN, "in_pattern", Value::Choice("gradient".into()));
+    set_layer(&mut scene, BALL, PATTERN, "in_colours~form", Value::Choice("stripes".into()));
     set_layer(&mut scene, BALL, PATTERN, "in_from", Value::Choice("own_gradient".into()));
     let colours = Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)]);
     set_layer(&mut scene, BALL, PATTERN, "in_colours", Value::Gradient(colours));

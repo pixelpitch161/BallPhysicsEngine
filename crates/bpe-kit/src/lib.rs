@@ -377,12 +377,12 @@ mod tests {
     }
 
     #[test]
-    fn the_place_choice_reads_straight_or_round() {
+    fn a_paint_s_form_is_its_colours_shape_not_a_setting_of_its_own() {
         let reg = registry();
         let defs = defs_of(&reg, "look.basic");
-        let shape = defs.iter().find(|d| d.key == "shape").unwrap();
-        assert_eq!(shape.label, "Gradient");
-        assert_eq!(shape.ty, bpe_core::ValueType::Choice(&["straight", "round"]));
+        assert!(defs.iter().all(|d| d.key != "shape"), "the old Gradient choice is gone");
+        let colours = defs.iter().find(|d| d.key == "colours").unwrap();
+        assert!(colours.flags.area.is_area(), "the colours take a form on their Shape tab");
         assert_eq!(defs.iter().find(|d| d.key == "repeat").unwrap().label, "Beyond the last colour");
     }
 

@@ -154,11 +154,11 @@ impl BlockSim for Act {
             }
             "gravity" => out.push(Action::Change {
                 key: ChangeKey { thing: ThingId::ROOT, slot: None, row: None, key: "gravity".into() },
-                change: change(How::Set, Value::Vec2([0.0, -500.0]), Some(amount)),
+                change: Box::new(change(How::Set, Value::Vec2([0.0, -500.0]), Some(amount))),
             }),
             "tint" => out.push(Action::Change {
                 key: ChangeKey { thing: DOTS, slot: None, row: None, key: "tint".into() },
-                change: change(How::Add, Value::Number(amount), None),
+                change: Box::new(change(How::Add, Value::Number(amount), None)),
             }),
             "break wall" => out.push(Action::Break {
                 thing: WALL,

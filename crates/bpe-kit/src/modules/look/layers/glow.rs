@@ -2,7 +2,7 @@
 
 use bpe_core::{Blend, Color, Gradient, Settings};
 
-use super::{ColourFrom, GradientShape};
+use super::ColourFrom;
 
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct GlowLayer {
@@ -16,14 +16,8 @@ pub struct GlowLayer {
     #[setting(label = "Colour from", simple)]
     pub colour_from: ColourFrom,
     /// The halo's own colour, or colours: several run across each ball's halo.
-    #[setting(label = "Colour", when = "colour_from=own", simple, keyframe)]
+    #[setting(area, label = "Colour", when = "colour_from=own", simple, keyframe)]
     pub colour: Gradient,
-    /// How its colours run: straight across the ball, or outward from the ball's edge.
-    #[setting(label = "Gradient", when = "colour_from=own and colour")]
-    pub gradient: GradientShape,
-    /// The way straight colours run across the ball, in degrees: 90 from top to bottom.
-    #[setting(label = "Direction", when = "colour_from=own and colour and gradient=straight", span(-180, 180), unit = "°", keyframe)]
-    pub direction: f32,
     /// 0 is invisible, 1 is solid.
     #[setting(label = "Opacity", range(0, 1), group = "Mixing", keyframe, pulse)]
     pub opacity: f32,
@@ -39,8 +33,6 @@ impl Default for GlowLayer {
             size: 0.8,
             colour_from: ColourFrom::SameAsBody,
             colour: Gradient::solid(Color::WHITE),
-            gradient: GradientShape::Straight,
-            direction: 90.0,
             opacity: 1.0,
             blend: Blend::Normal,
         }

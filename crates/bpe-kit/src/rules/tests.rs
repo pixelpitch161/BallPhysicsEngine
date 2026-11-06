@@ -694,3 +694,30 @@ fn compare_reads_a_thing_too() {
     assert!(hits(-1.0).len() == 17, "every tick: the ball has hits");
     assert!(hits(1e6).is_empty());
 }
+
+#[test]
+fn from_keys_are_number_settings_and_whens_name_their_values() {
+    use bpe_core::{BlockSection, ValueType};
+    let reg = crate::registry();
+    let mut whens = 0;
+    for kind in reg.blocks() {
+        for key in kind.firing_keys() {
+            let def = kind.settings().iter().find(|d| d.key == *key);
+            assert!(
+                def.is_some_and(|d| matches!(d.ty, ValueType::Number | ValueType::Int)),
+                "{}: {key} is a number setting",
+                kind.id()
+            );
+        }
+        if kind.section() == BlockSection::When {
+            whens += 1;
+            assert!(!kind.values().is_empty(), "{} names its values", kind.id());
+        } else {
+            assert!(kind.values().is_empty(), "{} starts no firing", kind.id());
+        }
+    }
+    assert!(whens >= 3);
+    let hit = reg.block("when.hit").unwrap();
+    assert!(hit.values().contains(&"strength"));
+    assert_eq!(reg.block("do.motion").unwrap().firing_keys(), &["amount", "angle"]);
+}
