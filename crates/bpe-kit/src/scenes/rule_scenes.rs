@@ -15,6 +15,7 @@ pub fn rule_scenes(reg: &Registry) -> Vec<(String, Scene)> {
         ("Per-ball bounce".into(), per_ball_bounce(reg)),
         ("Split chain".into(), split_chain(reg)),
         ("Zones and signals".into(), zones_and_signals(reg)),
+        ("Slow motion".into(), slow_motion(reg)),
     ]
 }
 
@@ -474,5 +475,33 @@ pub fn health_group(reg: &Registry) -> Scene {
             ("do.motion", vec![("mode", c("push")), ("amount", n(120.0))]),
         ],
     );
+    scene
+}
+
+/// Rules part 6: six balls in a spinning hexagon. Every third hit on it slows the world to 0.3×
+/// for a second (gliding in and out), flashes the ball and plays a note on the hexagon; the
+/// spin slows with the balls.
+pub fn slow_motion(reg: &Registry) -> Scene {
+    let mut b = Builder::new(reg, "Slow motion");
+    let mut hexagon = ShapeSettings::circle(480.0, 4.0);
+    hexagon.start = crate::things::shape::ShapeStart::Polygon;
+    hexagon.sides = 6;
+    hexagon.spin = 40.0;
+    b.shape(hexagon);
+    b.balls("Six", Vec2::ZERO, |s| {
+        s.radius = 18.0;
+        s.ring(6, 150.0);
+        s.velocity = Vec2::new(380.0, -520.0);
+    });
+    b.bounce(|s| s.bounciness = 1.0);
+    let mut scene = b.finish();
+    let rule = scene.add_rule("Slow on every third");
+    let hit = scene.add_when(reg, rule, "when.hit").expect("a when");
+    let every = block(&mut scene, reg, rule, "if.every", Some(hit), &[("n", Value::Int(3))]);
+    let slow = [("speed", n(0.3)), ("glide", n(0.2)), ("lasts", c("for_a_time")), ("seconds", n(1.0))];
+    block(&mut scene, reg, rule, "do.slow", Some(every), &slow);
+    block(&mut scene, reg, rule, "do.flash", Some(every), &[]);
+    let shape = who(Who::Thing { thing: SHAPE, ball: None });
+    block(&mut scene, reg, rule, "do.note", Some(every), &[("who", shape), ("note", Value::Int(67))]);
     scene
 }

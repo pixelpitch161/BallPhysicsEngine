@@ -166,6 +166,9 @@ pub struct World {
     pub fingerprint: Option<u64>,
     /// The scene's rules as they run (none without an enabled rule).
     pub(crate) rules: Option<crate::rules::RulesState>,
+    /// How fast the simulation runs this step: 1, unless a rule's Slow motion changed it. The
+    /// physics moves by `dt × pace` ([`World::sim_dt`]) while the video clock runs on.
+    pace: f32,
     /// Which run this is: fresh for every built world and every copy of one (a snapshot, a test
     /// flight), so a cache keyed by a moment of a run (the light probe's) never mixes two runs
     /// that are at the same step.
@@ -243,6 +246,7 @@ impl World {
             pulls: BTreeMap::new(),
             fingerprint: None,
             rules: None,
+            pace: 1.0,
             run: RunId::fresh(),
         };
         // Worked out first: a thing may cache work by it while it builds.
@@ -610,10 +614,35 @@ impl World {
         1.0 / self.steps_per_second as f32
     }
 
+    /// Seconds the physics moves by this step: a step's, times the pace a rule's Slow motion
+    /// set (1 without one).
+    pub fn sim_dt(&self) -> f32 {
+        self.dt() * self.pace
+    }
+
+    /// How fast the simulation runs this step (Slow motion): 1 normally.
+    pub fn pace(&self) -> f32 {
+        self.pace
+    }
+
+    /// Seconds the simulation has run: the video's [`World::time`] less what slow motion held
+    /// back.
+    pub fn sim_time(&self) -> f64 {
+        self.time() - self.rules.as_ref().map_or(0.0, |r| r.lag)
+    }
+
+    /// The simulation's clock for the cards (`SimCx::time`): exactly `step / rate` until a rule
+    /// slowed the simulation.
+    fn sim_clock(&self) -> f32 {
+        let lag = self.rules.as_ref().map_or(0.0, |r| r.lag);
+        if lag == 0.0 { self.step as f32 / self.steps_per_second as f32 } else { (self.time() - lag) as f32 }
+    }
+
     pub fn limits(&self) -> Limits {
         Limits {
-            ceiling: SAFE_MOVE * MAX_SUBSTEPS as f32 * self.steps_per_second as f32,
-            resting: self.gravity.length() * self.dt() * 4.0 + 1.0,
+            // A faster pace moves a ball further each step, so it may go only so much faster.
+            ceiling: SAFE_MOVE * MAX_SUBSTEPS as f32 * self.steps_per_second as f32 / self.pace,
+            resting: self.gravity.length() * self.sim_dt() * 4.0 + 1.0,
             press: Vec2::ZERO,
         }
     }
@@ -749,6 +778,7 @@ impl World {
             fingerprint: self.fingerprint,
             // A test flight finds its ways as if no rule acted from now on, health staying as it is.
             rules: self.rules.as_ref().and_then(crate::rules::RulesState::lone),
+            pace: 1.0,
             run: RunId::fresh(),
         }
     }
@@ -943,8 +973,11 @@ impl World {
         self.walls_before.clear();
         self.walls_before.extend(self.walls.iter().map(|(id, w)| (*id, w.outline.clone())));
         self.animate(sims, log);
+        // Slow motion: the physics moves by a share of the step (the video clock runs on).
+        let time = self.time();
+        self.pace = self.rules.as_ref().map_or(1.0, |r| r.pace_at(time));
         let limits = self.limits();
-        let dt = self.dt();
+        let dt = self.sim_dt();
         // Things take their turns in tree order: parents go first, so riders see where their
         // parent moved to.
         let order = self.order.clone();
@@ -1007,6 +1040,9 @@ impl World {
         }
         // Rules: what happened this step, and what to do about it at the next one's start.
         if let Some(mut rules) = self.rules.take() {
+            if self.pace != 1.0 {
+                rules.lag += self.dt() as f64 * (1.0 - self.pace as f64);
+            }
             let events = log.events()[first..].to_vec();
             rules.run(self, sims, &events, log);
             self.rules = Some(rules);
@@ -1050,10 +1086,10 @@ impl World {
 
     /// Forces from the Motion modules, then Integrate, per body thing.
     fn move_bodies(&mut self, sims: &Sims, dt: f32) {
-        let World { step, steps_per_second, gravity, bodies, modules, seed, pulls, .. } = self;
+        let time = self.sim_clock();
+        let World { gravity, bodies, modules, seed, pulls, .. } = self;
         let gravity = *gravity;
         let seed = *seed;
-        let time = *step as f32 / *steps_per_second as f32;
         for (id, bodies) in bodies.iter_mut() {
             if let Some(s) = modules.get(id).and_then(|m| m.get(&SlotId::Motion))
                 && let Some(sim) = sims.module(&s.kind)
@@ -1093,6 +1129,7 @@ impl World {
     /// Collide and Respond, then the Hit events: first the walls around the balls, then the
     /// balls against each other. What each ball touched holds it up in the pair solve.
     fn collide(&mut self, sims: &Sims, dt: f32, limits: &Limits, log: &mut Log) {
+        let time = self.sim_clock();
         let World {
             step,
             steps_per_second,
@@ -1107,13 +1144,13 @@ impl World {
             seed,
             substep,
             history,
+            pace,
             ..
         } = self;
         let step = *step;
         let (sub_index, sub_count) = *substep;
         let seed = *seed;
-        let time = step as f32 / *steps_per_second as f32;
-        let step_dt = 1.0 / *steps_per_second as f32;
+        let step_dt = 1.0 / *steps_per_second as f32 * *pace;
         let matcher = |t: &Target, me: ThingId, other: ThingId| matches(kinds, tags, t, me, other);
         let press = |thing: ThingId, row: usize| press_of(modules, sims, thing, row, *gravity, step_dt);
         let mut supports: Vec<Support> = Vec::new();

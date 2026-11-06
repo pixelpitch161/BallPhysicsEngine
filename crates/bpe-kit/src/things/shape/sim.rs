@@ -152,7 +152,8 @@ impl ThingSim for ShapeSim {
     }
 
     fn scripted(&self, thing: ThingId, world: &mut World) {
-        let dt = world.dt();
+        // Slow motion slows the spin and the shrink with the balls.
+        let dt = world.sim_dt();
         let anchor = world.anchor(thing);
         let Some(st) = world.states.get_mut(&thing) else { return };
         let st = state_mut::<ShapeState>(st.as_mut());

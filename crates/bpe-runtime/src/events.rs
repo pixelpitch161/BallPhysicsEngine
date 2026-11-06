@@ -34,6 +34,15 @@ pub enum EventKind {
     /// A rule broke a ball or a thing: `a` the ball (its row) or the thing (item `u32::MAX`),
     /// `point`/`normal` the hit that broke it and `speed` its strength. A ball's `Remove` follows.
     Break,
+    /// A rule flashed a ball or a thing as if it was hit (its Flash on hit and Colour on hit
+    /// layers react; nothing else does): `a` the ball (its row) or the thing (item 0), `point`
+    /// where it was, `speed` the strength as a hit speed (see [`crate::rules::FULL_FLASH_SPEED`]).
+    Flash,
+    /// A rule played a note on a shape's voice: `a` the firing's ball (or the shape, item 0), `b`
+    /// the shape with the pitch (0..127, or [`crate::rules::AS_IF_HIT`] for the shape's own next
+    /// note) as the item, `point` where the firing was, `normal.x` the note's length in seconds
+    /// (0: as its envelopes) and `speed` its velocity, 0 to 1.
+    Note,
 }
 
 impl EventKind {
@@ -47,6 +56,9 @@ impl EventKind {
             EventKind::Enter => 9,
             EventKind::Rule => 10,
             EventKind::Break => 11,
+            // 12 to 19 are left for the rules' other parts.
+            EventKind::Flash => 20,
+            EventKind::Note => 21,
         }
     }
 }

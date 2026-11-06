@@ -294,6 +294,20 @@ thing's share, a group's mean over live balls); the spread **`VaryBy::Health`** 
 ▸ (`follow::health_menu`), the Health spread (`VaryCx::healthy`). Goldens `tests/golden-rules-health*.txt`
 (`scenes::health_scenes`). Not yet: part 3's break looks on the card's At zero.
 
+Part 6 is in (plan `part6.md`): the **spectacle actions** `do.camera` (Shake / Zoom punch: `Action::Kick`, kept in
+`RulesState.kicks` (`Kick`, `MOST_KICKS` 64, weight (1 − age/time)²), added by the camera sim after its own shake and
+punch), `do.slow` (Slow motion: `Action::Pace`, part 1's `Change` folded on a pace of 1 (`RulesState::pace_at`, 0.01×
+to 8×); each step `World.pace` scales the physics' dt (`World::sim_dt`, the ceiling ÷ pace, the resting threshold, the
+shape's spin and shrink), the video clock, keys, camera, schedules and draws run on; `RulesState.lag`,
+`World::sim_time`, and `SimCx.time` reads the simulated clock, exactly `step / rate` while `lag` is 0), `do.flash`
+(`EventKind::Flash`, tag 20, one per ball, counted in `RulesState.flashes`: balls' `last_hits_but`, the Flash on hit
+sprite scan and `GroupCx::hits`, shapes' `shape_hits` read it; nothing else does), `do.light_scene` (`SceneOp`,
+`ShownScene` in `RulesState.scene`, resolved at apply by `next_scene`; `light_scenes::now` shows it over the card's own
+Show, crossfading from what showed) and `do.note` (`EventKind::Note`, tag 21: `b` = (shape, pitch or `AS_IF_HIT`),
+`normal.x` length, `speed` velocity; `HitCursor` places it, `ShapeVoice::rule_note` plays it past the hit filter (a
+drone on its own voice), `catch_up` replays its picks, `ControlSampler` hears it, MIDI records it). Tags 12..19 are left
+for parts 3 to 5. `tests/golden-rules*.txt` gain "Slow motion"; `bpe-sound/tests/rule_notes.rs`.
+
 ## Gradients (spec `docs/superpowers/specs/2026-11-06-gradients-design.md`, plans `docs/superpowers/plans/gradients/`)
 
 Part 1 is in (plan `part1.md`): the gradient value (`bpe-core/src/color.rs`) has a **Mix** (`Mix`: Light, the old
