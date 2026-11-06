@@ -1129,6 +1129,10 @@ impl Hasher {
                 self.bytes(&[12]);
                 self.bytes(format!("{n:?}").as_bytes());
             }
+            Value::LightScenes(l) => {
+                self.bytes(&[14]);
+                self.bytes(format!("{l:?}").as_bytes());
+            }
             Value::Curve(c) => {
                 self.bytes(&[13]);
                 self.bytes(&(c.len() as u64).to_le_bytes());

@@ -88,6 +88,7 @@ pub const SECTION_ORDER: &[&str] = &[
     "Room",
     "Shadows",
     "Quality",
+    "Scenes",
     "Master",
     "Bus 1",
     "Bus 2",
@@ -363,6 +364,18 @@ impl SettingValue for Vec<crate::CurvePoint> {
     }
 }
 
+impl SettingValue for Vec<crate::LightingScene> {
+    fn value_type() -> ValueType {
+        ValueType::LightScenes
+    }
+    fn to_value(&self) -> Value {
+        Value::LightScenes(self.clone())
+    }
+    fn from_value(v: &Value) -> Option<Self> {
+        if let Value::LightScenes(x) = v { Some(x.clone()) } else { None }
+    }
+}
+
 impl SettingValue for Strokes {
     fn value_type() -> ValueType {
         ValueType::Strokes
@@ -432,6 +445,7 @@ fn is_on(v: &Value) -> bool {
         Value::Path(p) => !p.is_empty(),
         Value::Routes(rs) => !rs.is_empty(),
         Value::Slots(ss) => !ss.is_empty(),
+        Value::LightScenes(ss) => !ss.is_empty(),
         _ => true,
     }
 }

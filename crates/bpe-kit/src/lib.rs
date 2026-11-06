@@ -107,6 +107,7 @@ pub fn registry() -> Registry {
     r.add_thing(FolderKind);
     r.add_thing(CameraKind);
     r.add_thing(things::light::LightKind);
+    r.add_thing(things::rig::RigKind);
     r.add_module(BasicLookKind);
     r.add_module(modules::look::LayersLookKind);
     for k in modules::look::layers::kinds() {

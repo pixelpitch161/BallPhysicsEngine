@@ -1272,6 +1272,7 @@ mod tests {
             world: &world,
             log: &Log::default(),
             time: 0.0,
+            tree: &scene,
         };
         let still = crate::modules::look::draw::StillColours::new(&cx);
         assert_eq!(still.at(other, glam::Vec2::ZERO), Some(green.to_linear()));

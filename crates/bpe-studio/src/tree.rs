@@ -274,8 +274,13 @@ pub fn show(
                 .and_then(|s| scene.things.get(&s))
                 .and_then(|t| if t.kind == "folder" { Some(t.id) } else { t.parent })
                 .unwrap_or(ThingId::ROOT);
-            // The kit gives the thing the cards its kind starts with, such as a ball's look.
-            let added = bpe_kit::add_thing(scene, reg, kind, parent);
+            // The kit gives the thing the cards its kind starts with, such as a ball's look; a new
+            // rig comes with four spots.
+            let added = if kind == bpe_kit::things::rig::RIG {
+                bpe_kit::things::rig::add_rig(scene, reg, parent)
+            } else {
+                bpe_kit::add_thing(scene, reg, kind, parent)
+            };
             if let Ok(id) = added {
                 selection.set(id);
                 out.edited = true;
@@ -283,12 +288,14 @@ pub fn show(
             }
         }
         Some(Action::AddLight(lamp)) => {
-            // Into a selected thing it can ride or a selected folder, else beside the selection.
+            // Into a selected thing it can ride, a selected rig or folder, else beside the selection.
             let parent = selection
                 .primary
                 .and_then(|s| scene.things.get(&s))
                 .and_then(|t| {
-                    let inside = t.kind == "folder" || bpe_kit::things::light::RIDES.contains(&t.kind.as_str());
+                    let inside = t.kind == "folder"
+                        || t.kind == bpe_kit::things::rig::RIG
+                        || bpe_kit::things::light::RIDES.contains(&t.kind.as_str());
                     if inside { Some(t.id) } else { t.parent }
                 })
                 .unwrap_or(ThingId::ROOT);
@@ -816,6 +823,8 @@ enum Icon {
     Frame,
     /// A light: a bulb with rays.
     Lamp,
+    /// A rig: a bar with lamps hanging from it.
+    Rig,
     /// Anything else.
     Diamond,
 }
@@ -829,6 +838,7 @@ fn icon_shape(kind: &str) -> Icon {
         "camera" => Icon::Frame,
         "folder" => Icon::Folder,
         "light" => Icon::Lamp,
+        "rig" => Icon::Rig,
         _ => Icon::Diamond,
     }
 }
@@ -869,6 +879,14 @@ fn paint_icon(painter: &egui::Painter, rect: Rect, kind: &str, ink: Color32) {
             for k in 0..8 {
                 let d = Vec2::angled(k as f32 * std::f32::consts::FRAC_PI_4);
                 painter.line_segment([c + d * r * 0.7, c + d * r * 1.05], Stroke::new(1.2, ink));
+            }
+        }
+        Icon::Rig => {
+            painter.line_segment([c + Vec2::new(-r * 1.05, -r * 0.6), c + Vec2::new(r * 1.05, -r * 0.6)], stroke);
+            for k in [-1.0f32, 0.0, 1.0] {
+                let top = c + Vec2::new(k * r * 0.7, -r * 0.6);
+                let cone = vec![top, top + Vec2::new(-r * 0.3, r * 0.9), top + Vec2::new(r * 0.3, r * 0.9)];
+                painter.add(egui::Shape::convex_polygon(cone, ink, Stroke::NONE));
             }
         }
         Icon::Diamond => {
@@ -1052,6 +1070,26 @@ mod tests {
         assert!(y(&h, "Bouncers") < y(&h, "Balls"));
         assert!(y(&h, "Balls") < y(&h, "Shapes"));
         assert!(y(&h, "Shapes") < y(&h, "Folder"), "Folder comes after the families");
+    }
+
+    #[test]
+    fn a_rig_comes_with_four_spots_and_takes_a_new_light_inside() {
+        let mut h = harness();
+        h.get_by_label("+ Add thing").click();
+        h.run();
+        h.get_by_label("Rig").click();
+        h.run();
+        let rig = h.state().selection.primary.expect("the rig is selected");
+        let s = h.state();
+        assert_eq!(s.scene.things[&rig].kind, "rig");
+        assert_eq!(s.scene.children(rig).len(), 4, "four spots");
+        h.get_by_label("+ Add thing").click();
+        h.run();
+        h.get_by_label("Point light").click();
+        h.run();
+        let s = h.state();
+        let light = s.selection.primary.unwrap();
+        assert_eq!(s.scene.things[&light].parent, Some(rig), "inside the selected rig");
     }
 
     #[test]
