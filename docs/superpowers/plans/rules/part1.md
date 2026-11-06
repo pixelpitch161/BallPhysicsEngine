@@ -74,7 +74,7 @@ pub enum BlockSection { When, If, Logic, Do }
   `add_when(reg, rule, kind)`, `remove_block` (its outputs that had it as an input take its inputs where the result
   is a valid count, else just drop it), `link(rule, from, to)` (onto a Logic: adds an input; onto an If/Do: replaces;
   onto a When: `EditError::WrongType`; a link that would close a cycle: `EditError::Loop`), `unlink(rule, from, to)`,
-  `copy_rule`/`paste_rule` (`CopiedRule`, pasted with a fresh id and name "<name> copy"), `copy_block`/
+  `copy_rule`/`paste_rule` (`CopiedRule`, pasted with a fresh id, named "<name> copy" when that name is taken), `copy_block`/
   `paste_block(rule, after)` (`CopiedBlock`, fresh id, input `after`). Block params are set with
   `set_block_param(reg, rule, block, key, value)` (typed and clamped like `set_at`; default removed).
 - `Registry::add_block(impl RuleBlockKind)`; trait: `id`, `name`, `help`, `section`, `settings`, `dynamic_defs(get)`
@@ -347,5 +347,14 @@ settings; rules changing sound.
 - Scenes: `bpe-kit/src/scenes/rule_scenes.rs` (a child of `scenes.rs`, for its `Builder`): Breakable bricks, Logic
   lanes, Glide and back, Per-ball bounce; `tests/golden_rules.rs`, `tests/golden-rules*.txt`.
 - Editor: only `widgets::value_words` learnt `Value::Who` (part 2 brings the Rules panel).
-- Not done in part 1: rules don't change the sound patch (the Sound and Mixer cards can't be picked); a ball's own
+- After the Opus review: per-ball changes are worked out again on the step after their glide ends (so a
+  glide that isn't a whole number of steps, or is shorter than one, still gets there: `Change::moving(since,
+  time)`); the stage hands blocks the broken things (`StageCx.broken`, the world's own answer is empty while the
+  stage runs); a setting keeps at most `MOST_CHANGES` (64) changes (settled Adds or Multiplies merge, else the
+  oldest goes) and a broken ball's own changes are forgotten; per-ball lookups are key ranges; change glides and
+  lengths are `f64`; a freeze never takes a ball something else holds; Chance is salted by the firing's point;
+  Break on the Group breaks each ball and leaves the thing; Compare can read a thing's values (Of: A thing).
+- Not done in part 1: a ball's own Motion/Bounce state made for a rule change takes its other varied settings at its
+  spread without its light and shadow (only `refresh_rows` reads the probe for Light/Shadow spreads).
+- Also not done: rules don't change the sound patch (the Sound and Mixer cards can't be picked); a ball's own
   Look stack is made afresh every frame (shared between balls changed alike), fine for a few hundred balls.

@@ -140,14 +140,17 @@ impl<'a> Worn<'a> {
         if let Some(rules) = cx.world.rules().filter(|_| !ruled.is_empty()) {
             which.resize(rows, 0);
             // Balls changed alike share one stack.
-            let mut seen: HashMap<String, (u32, Rc<Vec<AroundLayer>>)> = HashMap::new();
+            // Keyed by the ball's steps in the spreads and its changes now.
+            let mut seen: HashMap<OwnKey, (u32, Rc<Vec<AroundLayer>>)> = HashMap::new();
             for row in ruled {
-                let own = look.own_slot(&spreads[row], |p| {
-                    rules.apply_ball(cx.thing.id, Some(SlotId::Look), row as u32, p, cx.time)
-                });
+                let spread = &spreads[row];
+                let words = rules.ball_words(cx.thing.id, Some(SlotId::Look), row as u32, cx.time);
                 let (at, around) = seen
-                    .entry(format!("{:?}", own.params))
+                    .entry((look.key(spread), look.around_key(spread), words))
                     .or_insert_with(|| {
+                        let own = look.own_slot(spread, |p| {
+                            rules.apply_ball(cx.thing.id, Some(SlotId::Look), row as u32, p, cx.time)
+                        });
                         stacks.push(look.own_stack(&own));
                         (stacks.len() as u32 - 1, look.own_around(&own))
                     })
@@ -189,6 +192,10 @@ impl<'a> Worn<'a> {
         !self.spreads.is_empty()
     }
 }
+
+/// What balls whose look a rule changed share a stack by: their steps in the stack's and the
+/// trails' spreads, and their changes as text.
+type OwnKey = (Vec<u16>, Vec<u16>, String);
 
 /// One stack's colour for each body row.
 type ColourOf<'a> = Rc<dyn Fn(usize) -> [f32; 4] + 'a>;

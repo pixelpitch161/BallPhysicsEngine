@@ -194,7 +194,7 @@ mod tests {
         };
         scene.tracks.insert(key("seconds"), track(0.2, 1.0));
         scene.tracks.insert(key("taper"), track(1.0, 0.25));
-        let text = bpe_core::save(&scene).replace("format: 11", "format: 9");
+        let text = bpe_core::save(&scene).replace("format: 12", "format: 9");
         (text, ball, shape)
     }
 

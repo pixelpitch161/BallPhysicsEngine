@@ -213,6 +213,7 @@ fn copy_and_paste_give_fresh_ids() {
     let b = s.paste_rule(&copied);
     assert_ne!(a, b);
     assert_eq!(s.rules.rule(b).unwrap().blocks, s.rules.rule(a).unwrap().blocks);
+    assert_eq!(s.rules.rule(b).unwrap().name, format!("{} copy", s.rules.rule(a).unwrap().name));
     let block = s.copy_block(a, d).unwrap();
     let e = s.paste_block(&r, a, &block, Some(w)).unwrap();
     let rule = s.rules.rule(a).unwrap();

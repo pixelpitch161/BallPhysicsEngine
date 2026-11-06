@@ -27,9 +27,17 @@ pub struct StageCx<'a> {
     pub time: f64,
     pub rule: RuleId,
     pub block: BlockId,
+    /// The things a rule broke (the world's own answer, [`World::broken`], reads nothing while
+    /// the stage runs).
+    pub broken: &'a std::collections::BTreeSet<bpe_core::ThingId>,
 }
 
 impl StageCx<'_> {
+    /// Whether a rule broke `thing`.
+    pub fn is_broken(&self, thing: bpe_core::ThingId) -> bool {
+        self.broken.contains(&thing)
+    }
+
     /// A number from 0 to 1 for this block, this step and `subject`, the same on every run and
     /// never shared with another block or rule (see [`super::dice`]).
     pub fn dice(&self, subject: Option<crate::Party>, salt: u32) -> f32 {

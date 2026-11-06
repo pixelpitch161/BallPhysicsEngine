@@ -28,6 +28,9 @@ pub const MAX_BALLS: usize = 4096;
 /// oldest is forgotten first.
 pub const MOST_REMEMBERED: usize = 4096;
 
+/// The most changes one setting keeps at a time (see [`RulesState::add_change`]).
+pub const MOST_CHANGES: usize = 64;
+
 /// A number from 0 to 1 for a block, a step and a subject: a hash of the scene's seed with them,
 /// never a shared random stream, so adding a rule never changes another rule's dice.
 pub fn dice(seed: u64, rule: RuleId, block: BlockId, step: u64, subject: Option<Party>, salt: u32) -> f32 {
@@ -83,6 +86,7 @@ struct Run<'a> {
     step: u64,
     time: f64,
     rule: RuleId,
+    broken: &'a BTreeSet<ThingId>,
     /// Blocks that fired this step (by index), with the first firing's subject and point.
     noted: BTreeMap<usize, (Option<Party>, Vec2)>,
     actions: &'a mut Vec<Action>,
@@ -100,6 +104,7 @@ impl Run<'_> {
             time: self.time,
             rule: self.rule,
             block,
+            broken: self.broken,
         }
     }
 
@@ -239,6 +244,7 @@ impl RulesState {
         let step = world.step;
         let time = world.time();
         let mut fired = Vec::new();
+        let broken = self.broken.clone();
         for r in &mut self.rules {
             if r.problem.is_some() {
                 continue;
@@ -250,6 +256,7 @@ impl RulesState {
                 step,
                 time,
                 rule: r.id,
+                broken: &broken,
                 noted: BTreeMap::new(),
                 actions: &mut self.pending,
                 budget: MOST_ACTIONS,
@@ -335,11 +342,30 @@ impl RulesState {
 
     /// Adds a running change; a Set with no glide that lasts for good replaces what was there.
     pub(crate) fn add_change(&mut self, key: ChangeKey, change: Change) {
+        let now = change.start;
         let list = self.changes.entry(key.clone()).or_default();
         if change.covers() && change.glide <= 0.0 {
             list.clear();
         }
         list.push(change);
+        // A setting keeps at most MOST_CHANGES: changes fully in for good that add (or multiply)
+        // one after another become one, else the oldest goes.
+        while list.len() > MOST_CHANGES {
+            let pair = (0..list.len() - 1).find(|&i| {
+                let (a, b) = (&list[i], &list[i + 1]);
+                a.how == b.how && a.how != How::Set && a.settled(now) && b.settled(now) && a.merge(b).is_some()
+            });
+            match pair {
+                Some(i) => {
+                    let merged = list[i].merge(&list[i + 1]).expect("checked");
+                    list[i] = merged;
+                    list.remove(i + 1);
+                }
+                None => {
+                    list.remove(0);
+                }
+            }
+        }
         self.dirty.insert(key);
     }
 
@@ -350,7 +376,7 @@ impl RulesState {
         for (key, list) in self.changes.iter_mut() {
             let before = list.len();
             list.retain(|c| !c.done(time));
-            if let Some(last) = list.iter().rposition(|c| c.covers() && time >= c.start + c.glide.max(0.0) as f64) {
+            if let Some(last) = list.iter().rposition(|c| c.covers() && time >= c.start + c.glide.max(0.0)) {
                 list.drain(..last);
             }
             if list.len() != before && list.is_empty() {
@@ -368,6 +394,19 @@ impl RulesState {
         std::mem::take(&mut self.dirty)
     }
 
+    /// Forgets every change of body row `row` of `thing` alone (the ball broke).
+    pub(crate) fn forget_row(&mut self, thing: ThingId, row: u32) {
+        let keys: Vec<ChangeKey> = self.row_changes_any_slot(thing, row);
+        for k in keys {
+            self.changes.remove(&k);
+            self.dirty.insert(k);
+        }
+    }
+
+    fn row_changes_any_slot(&self, thing: ThingId, row: u32) -> Vec<ChangeKey> {
+        self.changes.keys().filter(|k| k.thing == thing && k.row == Some(row)).cloned().collect()
+    }
+
     /// Forgets every change on `thing` (it broke).
     pub(crate) fn forget(&mut self, thing: ThingId) {
         self.changes.retain(|k, _| k.thing != thing);
@@ -379,9 +418,9 @@ impl RulesState {
         self.changes.keys().filter(|k| k.row.is_none())
     }
 
-    /// Whether a change on `key` moves at `time` (gliding in or back).
-    pub fn moving(&self, key: &ChangeKey, time: f64) -> bool {
-        self.changes.get(key).is_some_and(|l| l.iter().any(|c| c.moving(time)))
+    /// Whether a change on `key` moved between `since` and `time` (see [`Change::moving`]).
+    pub fn moving(&self, key: &ChangeKey, since: f64, time: f64) -> bool {
+        self.changes.get(key).is_some_and(|l| l.iter().any(|c| c.moving(since, time)))
     }
 
     /// Writes every whole-thing change `keep` says yes to into `resolved` at `time`, on top of
@@ -398,27 +437,51 @@ impl RulesState {
     /// The body rows of `thing` with a change of their own on `slot` (the thing's own settings
     /// for `None`), in row order.
     pub fn ball_rows(&self, thing: ThingId, slot: Option<SlotId>) -> BTreeSet<u32> {
-        self.changes.keys().filter(|k| k.thing == thing && k.slot == slot).filter_map(|k| k.row).collect()
+        let from = ChangeKey { thing, slot, row: Some(0), key: String::new() };
+        self.changes
+            .range(from..)
+            .take_while(|(k, _)| k.thing == thing && k.slot == slot)
+            .filter_map(|(k, _)| k.row)
+            .collect()
+    }
+
+    /// Body row `row`'s own changes on `slot`, by setting (keys sort by thing, slot, row, key).
+    fn row_changes(
+        &self,
+        thing: ThingId,
+        slot: Option<SlotId>,
+        row: u32,
+    ) -> impl Iterator<Item = (&ChangeKey, &Vec<Change>)> {
+        let from = ChangeKey { thing, slot, row: Some(row), key: String::new() };
+        self.changes.range(from..).take_while(move |(k, _)| k.thing == thing && k.slot == slot && k.row == Some(row))
     }
 
     /// The settings body row `row` of `thing` has changes of its own on, on `slot`.
     pub fn ball_keys(&self, thing: ThingId, slot: Option<SlotId>, row: u32) -> Vec<ChangeKey> {
-        self.changes.keys().filter(|k| k.thing == thing && k.slot == slot && k.row == Some(row)).cloned().collect()
+        self.row_changes(thing, slot, row).map(|(k, _)| k.clone()).collect()
     }
 
-    /// Whether any ball of any thing has a change of its own on `slot`.
+    /// Whether some ball of `thing` has a change of its own on `slot`.
     pub fn any_ball_changes(&self, thing: ThingId, slot: Option<SlotId>) -> bool {
-        self.changes.keys().any(|k| k.thing == thing && k.slot == slot && k.row.is_some())
+        let from = ChangeKey { thing, slot, row: Some(0), key: String::new() };
+        self.changes.range(from..).next().is_some_and(|(k, _)| k.thing == thing && k.slot == slot)
     }
 
     /// Body row `row`'s own changes on `slot` written into `params` at `time`.
     pub fn apply_ball(&self, thing: ThingId, slot: Option<SlotId>, row: u32, params: &mut Params, time: f64) {
-        let keyed = self
-            .changes
-            .iter()
-            .filter(|(k, _)| k.thing == thing && k.slot == slot && k.row == Some(row))
-            .map(|(k, l)| (k.key.as_str(), l.as_slice()));
+        let keyed = self.row_changes(thing, slot, row).map(|(k, l)| (k.key.as_str(), l.as_slice()));
         apply_to(params, keyed, time);
+    }
+
+    /// Body row `row`'s own changes on `slot` as text, the same for two balls changed alike
+    /// (what the draw shares a ball's own stack by).
+    pub fn ball_words(&self, thing: ThingId, slot: Option<SlotId>, row: u32, time: f64) -> String {
+        let mut out = String::new();
+        for (k, l) in self.row_changes(thing, slot, row) {
+            let v: Vec<String> = l.iter().map(|c| format!("{:?}{:?}{}", c.how, c.value, c.weight(time))).collect();
+            out += &format!("{}={};", k.key, v.join(","));
+        }
+        out
     }
 
     /// The balls' own changes on one setting, for a sim to fold over each ball's own value.

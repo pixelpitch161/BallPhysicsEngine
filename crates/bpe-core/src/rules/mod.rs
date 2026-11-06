@@ -617,6 +617,10 @@ impl Scene {
     pub fn paste_rule(&mut self, copied: &CopiedRule) -> RuleId {
         let mut rule = copied.0.clone();
         rule.id = self.rules.take_id();
+        // Pasted beside a rule of the same name: "<name> copy".
+        if self.rules.list.iter().any(|r| r.name == rule.name) {
+            rule.name = format!("{} copy", rule.name);
+        }
         let id = rule.id;
         self.rules.list.push(rule);
         id

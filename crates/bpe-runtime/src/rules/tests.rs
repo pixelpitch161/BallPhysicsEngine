@@ -154,7 +154,7 @@ impl BlockSim for Act {
             }
             "gravity" => out.push(Action::Change {
                 key: ChangeKey { thing: ThingId::ROOT, slot: None, row: None, key: "gravity".into() },
-                change: change(How::Set, Value::Vec2([0.0, -500.0]), Some(amount as f32)),
+                change: change(How::Set, Value::Vec2([0.0, -500.0]), Some(amount)),
             }),
             "tint" => out.push(Action::Change {
                 key: ChangeKey { thing: DOTS, slot: None, row: None, key: "tint".into() },
@@ -504,4 +504,25 @@ fn dice_are_steady_and_spread() {
     let mean = all.iter().sum::<f32>() / all.len() as f32;
     assert!((mean - 0.5).abs() < 0.03, "{mean}");
     assert_ne!(a, dice(7, RuleId(2), BlockId(2), 30, None, 0));
+}
+
+#[test]
+fn a_setting_keeps_at_most_most_changes() {
+    let mut rules = RulesState::build(&scene_with(vec![push_on_hit(1.0)]).0, &dots_in_ring(1).1, &sims()).unwrap();
+    let key = ChangeKey { thing: DOTS, slot: None, row: None, key: "tint".into() };
+    let add = |start: f64| Change {
+        how: How::Add,
+        value: Value::Number(1.0),
+        start,
+        glide: 0.0,
+        ease: bpe_core::Ease::Linear,
+        lasts: None,
+        range: None,
+    };
+    for k in 0..500 {
+        rules.add_change(key.clone(), add(k as f64));
+    }
+    let list = rules.changes_on(&key);
+    assert!(list.len() <= MOST_CHANGES);
+    assert_eq!(fold(list, &Value::Number(0.0), 1000.0), Value::Number(500.0), "nothing lost");
 }

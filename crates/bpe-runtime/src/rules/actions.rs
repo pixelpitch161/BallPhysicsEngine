@@ -65,6 +65,7 @@ impl World {
             if let Some(b) = self.bodies.get_mut(&f.thing)
                 && let Some(i) = Some(f.row as usize).filter(|&i| i < b.len())
                 && b.alive[i]
+                && b.held[i]
             {
                 b.held[i] = false;
                 b.velocity[i] = f.velocity;
@@ -104,9 +105,13 @@ impl World {
                                 if to.length_squared() > 0.0 { to.normalize() * v.length() } else { v }
                             }
                             MotionChange::Freeze(seconds) => {
-                                let until = step + (seconds.max(0.0) as f64 * rate).round().max(1.0) as u64;
+                                let steps = (seconds.max(0.0) as f64 * rate).round().clamp(1.0, 1e15) as u64;
+                                let until = step.saturating_add(steps);
                                 match frozen {
                                     Some(k) => rules.frozen[k].until = rules.frozen[k].until.max(until),
+                                    // A ball something else holds (an emitter waiting to send it
+                                    // back) is left to it.
+                                    None if bodies.held[i] => {}
                                     None => {
                                         rules.frozen.push(Frozen { thing, row: i as u32, until, velocity: v });
                                         bodies.held[i] = true;
@@ -165,6 +170,7 @@ impl World {
                             pop(bodies, i, thing, step, log);
                             bodies.held[i] = false;
                             rules.frozen.retain(|f| !(f.thing == thing && f.row == r));
+                            rules.forget_row(thing, r);
                         }
                         None => {
                             log.push(event(WHOLE));

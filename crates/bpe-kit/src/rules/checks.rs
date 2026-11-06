@@ -18,7 +18,17 @@ pub enum Test {
     Equal,
 }
 
-/// Compares one of the firing's values with a number.
+/// Whose value Compare reads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum CompareOf {
+    /// The firing's own values.
+    #[default]
+    TheFiring,
+    /// A ball's (or a group's first live ball's) speed, size, hits and number, as it is now.
+    AThing,
+}
+
+/// Compares one of the firing's values, or a thing's, with a number.
 pub struct Compare;
 
 #[derive(Clone, Debug, PartialEq, Settings)]
@@ -26,6 +36,10 @@ pub struct CompareSettings {
     /// The firing's value: strength, speed, size, hits, ball, time, count, bar or beat.
     #[setting(label = "Value", simple, group = "Rule")]
     pub value: String,
+    #[setting(label = "Of", group = "Rule")]
+    pub of: CompareOf,
+    #[setting(label = "Thing", when = "of=a_thing", group = "Rule")]
+    pub who: Who,
     #[setting(label = "Is", simple, group = "Rule")]
     pub test: Test,
     #[setting(label = "Than", span(0, 2000), simple, group = "Rule")]
@@ -36,7 +50,14 @@ pub struct CompareSettings {
 
 impl Default for CompareSettings {
     fn default() -> Self {
-        CompareSettings { value: "strength".into(), test: Test::Over, amount: 500.0, to: 1000.0 }
+        CompareSettings {
+            value: "strength".into(),
+            of: CompareOf::TheFiring,
+            who: Who::That,
+            test: Test::Over,
+            amount: 500.0,
+            to: 1000.0,
+        }
     }
 }
 
@@ -52,6 +73,8 @@ block_kind!(
 #[derive(Clone, Debug)]
 struct CompareState {
     value: String,
+    of: CompareOf,
+    who: Who,
     test: Test,
     amount: Amount,
     to: Amount,
@@ -71,14 +94,20 @@ impl BlockSim for Compare {
         }
         Ok(Box::new(CompareState {
             value: s.value.trim().to_owned(),
+            of: s.of,
+            who: s.who,
             test: s.test,
             amount: Amount::read(params, "amount", s.amount as f64),
             to: Amount::read(params, "to", s.to as f64),
         }))
     }
-    fn pass(&self, st: &mut dyn ThingState, firing: &Firing, _cx: &StageCx) -> bool {
+    fn pass(&self, st: &mut dyn ThingState, firing: &Firing, cx: &StageCx) -> bool {
         let s = state::<CompareState>(st);
-        let (Some(v), Some(a)) = (firing.values.get(&s.value), s.amount.of(firing)) else { return false };
+        let v = match s.of {
+            CompareOf::TheFiring => firing.values.get(&s.value),
+            CompareOf::AThing => thing_values(cx, &s.who, firing).get(&s.value),
+        };
+        let (Some(v), Some(a)) = (v, s.amount.of(firing)) else { return false };
         match s.test {
             Test::Over => v > a,
             Test::Under => v < a,
@@ -89,6 +118,20 @@ impl BlockSim for Compare {
             }
         }
     }
+}
+
+/// The values of the first thing `who` names for `firing`: a ball's own (a whole thing's first
+/// live ball's), and the time.
+fn thing_values(cx: &StageCx, who: &Who, firing: &Firing) -> bpe_runtime::Values {
+    let mut values = bpe_runtime::Values::default();
+    values.set("time", cx.time);
+    if let Some(&(thing, row)) = super::who::targets(cx, who, firing).first()
+        && let Some(b) = cx.world.bodies.get(&thing)
+        && let Some(r) = row.or_else(|| b.alive.iter().position(|&a| a).map(|r| r as u32))
+    {
+        super::when::ball_values(cx.world, bpe_runtime::Party { thing, item: r }, &mut values);
+    }
+    values
 }
 
 /// Which side of the firing Is looks at.
@@ -204,7 +247,9 @@ impl BlockSim for Chance {
     }
     fn pass(&self, st: &mut dyn ThingState, firing: &Firing, cx: &StageCx) -> bool {
         let p = state::<Amount>(st).or_fixed(firing);
-        (cx.dice(firing.subject, 0) as f64) < p / 100.0
+        // Two firings about one ball in one step (two walls hit) roll apart: salted by where.
+        let salt = firing.point.x.to_bits() ^ firing.point.y.to_bits().rotate_left(16);
+        (cx.dice(firing.subject, salt) as f64) < p / 100.0
     }
 }
 

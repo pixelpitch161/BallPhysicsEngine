@@ -152,6 +152,11 @@ impl<'a> VariedLook<'a> {
         self.stack.key(spread)
     }
 
+    /// The step of each varied trail and particle setting a ball at `spread` is at.
+    pub fn around_key(&self, spread: &BallSpread) -> Vec<u16> {
+        self.around.key(spread)
+    }
+
     /// The stack a ball at `key` wears.
     pub fn stack_at(&self, key: &[u16]) -> Rc<Stack> {
         if key.is_empty() {

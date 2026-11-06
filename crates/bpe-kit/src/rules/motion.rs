@@ -105,7 +105,7 @@ struct MotionState {
 
 /// The first place `who` names for `firing`.
 fn place(cx: &StageCx, who: &Who, firing: &Firing) -> Option<Vec2> {
-    targets(cx.world, who, firing).first().map(|&t| place_of(cx.world, t))
+    targets(cx, who, firing).first().map(|&t| place_of(cx.world, t))
 }
 
 impl BlockSim for ChangeMotion {
@@ -131,7 +131,7 @@ impl BlockSim for ChangeMotion {
         };
         let toward =
             (s.mode == MotionMode::Push && s.way == Way::TowardAThing).then(|| place(cx, &s.toward, firing)).flatten();
-        for (thing, row) in targets(cx.world, &s.who, firing) {
+        for (thing, row) in targets(cx, &s.who, firing) {
             let Some(bodies) = cx.world.bodies.get(&thing) else { continue };
             let one = |motion: MotionChange| Action::Motion { thing, row, motion };
             let motion = match s.mode {

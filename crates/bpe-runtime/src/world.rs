@@ -467,6 +467,8 @@ impl World {
         time: f64,
     ) {
         let Some(rules) = self.rules.as_ref() else { return };
+        // The previous step's time: a change that moved since then is worked out again.
+        let since = time - self.dt() as f64;
         // (thing, slot) -> rows to work out again.
         let mut todo: BTreeMap<(ThingId, Option<SlotId>), BTreeSet<u32>> = BTreeMap::new();
         for k in dirty.iter().filter(|k| k.row.is_some()) {
@@ -481,7 +483,7 @@ impl World {
                 }
                 let all = afresh.contains(&(*thing, Some(*slot))) || s.rows.as_ref().is_some_and(|r| r.changes());
                 for row in rows {
-                    let moves = rules.ball_keys(*thing, Some(*slot), row).iter().any(|k| rules.moving(k, time));
+                    let moves = rules.ball_keys(*thing, Some(*slot), row).iter().any(|k| rules.moving(k, since, time));
                     if all || moves {
                         moving.push((*thing, Some(*slot), row));
                     }
@@ -498,7 +500,7 @@ impl World {
         }
         for thing in self.kinds.keys() {
             let rows = rules.ball_rows(*thing, None);
-            if rows.iter().any(|&row| rules.ball_keys(*thing, None, row).iter().any(|k| rules.moving(k, time))) {
+            if rows.iter().any(|&row| rules.ball_keys(*thing, None, row).iter().any(|k| rules.moving(k, since, time))) {
                 things.insert((*thing, None));
             }
         }

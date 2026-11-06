@@ -1,7 +1,7 @@
 //! Who a block points at, read against the world.
 
 use bpe_core::{ThingId, Who};
-use bpe_runtime::{Firing, Party, World};
+use bpe_runtime::{Firing, Party, StageCx, World};
 use glam::Vec2;
 
 /// A ball's number in its thing, counted from 1, when `party` is a live ball's row.
@@ -41,7 +41,8 @@ fn side(world: &World, party: Option<Party>) -> Option<Target> {
 /// when it is one), Other the other side, Group the subject's whole thing, a thing (or one of its
 /// balls, by number) by id, and Tag, Kind and Anything every built thing that matches, whole, in
 /// id order (never the scene settings). Broken things are left out.
-pub fn targets(world: &World, who: &Who, firing: &Firing) -> Vec<Target> {
+pub fn targets(cx: &StageCx, who: &Who, firing: &Firing) -> Vec<Target> {
+    let world = cx.world;
     let out: Vec<Target> = match who {
         Who::That => side(world, firing.subject).into_iter().collect(),
         Who::Other => side(world, firing.other).into_iter().collect(),
@@ -61,7 +62,7 @@ pub fn targets(world: &World, who: &Who, firing: &Firing) -> Vec<Target> {
             .map(|&t| (t, None))
             .collect(),
     };
-    out.into_iter().filter(|(t, _)| world.names.contains_key(t) && !world.broken(*t)).collect()
+    out.into_iter().filter(|(t, _)| world.names.contains_key(t) && !cx.is_broken(*t)).collect()
 }
 
 /// Where a target is: a ball's place; for a thing with balls its first live ball's; else its

@@ -623,3 +623,71 @@ fn blocks_settings_round_trip_through_their_structs() {
     assert_eq!(ChangeSettingSettings::from_params(&s.to_params()), s);
     assert_eq!(ThingId::ROOT, ThingId(0));
 }
+
+#[test]
+fn a_ball_s_own_glide_gets_all_the_way_there() {
+    for glide in [0.001, 0.33] {
+        let (mut scene, _, kit) = scene_with_balls("ring", |_| {});
+        lane(
+            &mut scene,
+            &kit.registry,
+            &[
+                time(0.25, None),
+                (
+                    "do.change",
+                    vec![
+                        ("who", who(Who::Thing { thing: BALLS, ball: Some(3) })),
+                        ("card", choice("bounce")),
+                        ("setting", text("bounciness")),
+                        ("to_number", n(0.1)),
+                        ("glide", n(glide)),
+                    ],
+                ),
+            ],
+        );
+        let (world, _) = run(&scene, &kit, 1.0);
+        let row = world.bodies[&BALLS].row_of(2).unwrap();
+        assert!((bounciness(&world, row) - 0.1).abs() < 1e-6, "glide {glide}: {}", bounciness(&world, row));
+    }
+}
+
+#[test]
+fn breaking_the_group_breaks_its_balls() {
+    let (mut scene, _, kit) = scene_with_balls("ring", |_| {});
+    lane(&mut scene, &kit.registry, &[("when.hit", vec![]), ("do.break", vec![("who", who(Who::Group))])]);
+    let (world, log) = run(&scene, &kit, 4.0);
+    assert!(world.bodies[&BALLS].alive.iter().all(|a| !a));
+    assert!(!world.broken(BALLS), "the thing stays");
+    assert_eq!(log.events().iter().filter(|e| e.kind == EventKind::Break).count(), 24);
+}
+
+#[test]
+fn a_broken_thing_is_no_target_any_more() {
+    let (mut scene, kit) = starter();
+    lane(
+        &mut scene,
+        &kit.registry,
+        &[time(0.1, None), ("do.break", vec![("who", who(Who::Thing { thing: SHAPE, ball: None }))])],
+    );
+    let (rule, ids) = lane(
+        &mut scene,
+        &kit.registry,
+        &[time(0.5, None), ("do.break", vec![("who", who(Who::Kind("shape".into())))])],
+    );
+    let (_, log) = run(&scene, &kit, 1.0);
+    assert_eq!(fired(&log, rule, ids[1]), [120], "it fired");
+    assert_eq!(log.events().iter().filter(|e| e.kind == EventKind::Break).count(), 1, "but broke nothing more");
+}
+
+#[test]
+fn compare_reads_a_thing_too() {
+    // The ball's hits so far, at each tick.
+    let hits = |over: f64| {
+        counted((
+            "if.compare",
+            vec![("value", text("hits")), ("of", choice("a_thing")), ("who", who(the_ball())), ("amount", n(over))],
+        ))
+    };
+    assert!(hits(-1.0).len() == 17, "every tick: the ball has hits");
+    assert!(hits(1e6).is_empty());
+}

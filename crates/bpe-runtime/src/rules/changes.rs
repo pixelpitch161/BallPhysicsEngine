@@ -33,10 +33,10 @@ pub struct Change {
     /// When it started, in seconds.
     pub start: f64,
     /// Seconds to glide there (and back).
-    pub glide: f32,
+    pub glide: f64,
     pub ease: Ease,
     /// Seconds it lasts before it glides back; `None` for good.
-    pub lasts: Option<f32>,
+    pub lasts: Option<f64>,
     /// The setting's hard range, which a change never pushes past.
     pub range: Option<(f64, f64)>,
 }
@@ -47,13 +47,12 @@ impl Change {
         if time < self.start {
             return 0.0;
         }
-        let ramp = |since: f64| -> f32 {
-            if self.glide > 0.0 { self.ease.apply((since / self.glide as f64) as f32) } else { 1.0 }
-        };
+        let ramp =
+            |since: f64| -> f32 { if self.glide > 0.0 { self.ease.apply((since / self.glide) as f32) } else { 1.0 } };
         let up = ramp(time - self.start);
         match self.lasts {
-            Some(n) if time >= self.start + n as f64 => {
-                let back = time - self.start - n as f64;
+            Some(n) if time >= self.start + n => {
+                let back = time - self.start - n;
                 let down = if self.glide > 0.0 { 1.0 - ramp(back) } else { 0.0 };
                 up.min(down)
             }
@@ -63,19 +62,34 @@ impl Change {
 
     /// Whether the change is over at `time`: it lasted and has glided back.
     pub fn done(&self, time: f64) -> bool {
-        self.lasts.is_some_and(|n| time >= self.start + n as f64 + self.glide.max(0.0) as f64)
+        self.lasts.is_some_and(|n| time >= self.start + n + self.glide.max(0.0))
     }
 
-    /// Whether the change's value moves at `time` (gliding in or back), so whatever was worked
-    /// out from it must be worked out again.
-    pub fn moving(&self, time: f64) -> bool {
-        let g = self.glide.max(0.0) as f64;
-        let into = time >= self.start && time <= self.start + g && g > 0.0;
-        let back = self.lasts.is_some_and(|n| {
-            let from = self.start + n as f64;
-            time >= from && time <= from + g
-        });
-        into || back
+    /// Whether the change's value moved between `since` and `time` (gliding in or back, the
+    /// ends of both glides counted), so whatever was worked out from it must be worked out again.
+    /// Asking from the step before makes sure the step after a glide ends sees the end value,
+    /// even for a glide shorter than a step.
+    pub fn moving(&self, since: f64, time: f64) -> bool {
+        let g = self.glide.max(0.0);
+        let meets = |from: f64| g > 0.0 && time >= from && since <= from + g;
+        meets(self.start) || self.lasts.is_some_and(|n| meets(self.start + n))
+    }
+
+    /// Whether the change is fully in at `time` and stays so for good.
+    pub fn settled(&self, time: f64) -> bool {
+        self.lasts.is_none() && time >= self.start + self.glide.max(0.0)
+    }
+
+    /// This change and `next` (both settled, one after the other) as one: two Adds summed, two
+    /// Multiplies multiplied. `None` for anything else.
+    pub fn merge(&self, next: &Change) -> Option<Change> {
+        let value = match (self.how, &self.value, &next.value) {
+            (How::Add, Value::Number(a), Value::Number(b)) => Value::Number(a + b),
+            (How::Add, Value::Vec2([a, b]), Value::Vec2([c, d])) => Value::Vec2([a + c, b + d]),
+            (How::Multiply, Value::Number(a), Value::Number(b)) => Value::Number(a * b),
+            _ => return None,
+        };
+        (self.how == next.how && self.range == next.range).then(|| Change { value, glide: 0.0, ..self.clone() })
     }
 
     /// Whether this change, once fully in, hides every change before it on the same setting.
@@ -191,7 +205,10 @@ mod tests {
         assert!((at(3.5) - 5.0).abs() < 1e-5, "on its way back");
         assert_eq!(at(4.0), 0.0);
         assert!(!c.done(3.9) && c.done(4.0));
-        assert!(c.moving(1.5) && !c.moving(2.5) && c.moving(3.5) && !c.moving(0.5));
+        assert!(c.moving(1.5, 1.5) && !c.moving(2.5, 2.5) && c.moving(3.5, 3.5) && !c.moving(0.5, 0.5));
+        assert!(c.moving(2.0, 2.1), "the step after it got there");
+        let short = Change { glide: 0.001, lasts: None, ..change(How::Add, 10.0) };
+        assert!(short.moving(1.0, 1.0) && short.moving(1.0, 1.004) && !short.moving(1.004, 1.008));
     }
 
     #[test]
@@ -200,7 +217,7 @@ mod tests {
         assert_eq!(c.on(&Value::Number(1.0), 1.2), Value::Number(4.0));
         assert_eq!(c.on(&Value::Number(1.0), 1.5), Value::Number(1.0));
         assert!(c.done(1.5));
-        assert!(!c.moving(1.2));
+        assert!(!c.moving(1.2, 1.2));
     }
 
     #[test]
@@ -230,5 +247,17 @@ mod tests {
         assert_eq!(on.on(&Value::Bool(false), 2.0), Value::Bool(true), "an Add on a switch is a Set");
         let wrong = change(How::Set, 1.0);
         assert_eq!(wrong.on(&Value::Bool(false), 2.0), Value::Bool(false), "a value of another type is ignored");
+    }
+
+    #[test]
+    fn settled_adds_and_multiplies_merge() {
+        let a = change(How::Add, 2.0);
+        let b = change(How::Add, 3.0);
+        assert_eq!(a.merge(&b).unwrap().value, Value::Number(5.0));
+        let m = a.merge(&b).unwrap();
+        assert_eq!(fold(&[m], &Value::Number(1.0), 9.0), fold(&[a.clone(), b], &Value::Number(1.0), 9.0));
+        assert_eq!(change(How::Multiply, 2.0).merge(&change(How::Multiply, 3.0)).unwrap().value, Value::Number(6.0));
+        assert!(a.merge(&change(How::Multiply, 3.0)).is_none());
+        assert!(change(How::Set, 1.0).merge(&change(How::Set, 1.0)).is_none());
     }
 }

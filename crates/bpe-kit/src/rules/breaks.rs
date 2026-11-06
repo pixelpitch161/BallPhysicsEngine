@@ -55,7 +55,18 @@ impl BlockSim for Break {
     }
     fn act(&self, st: &mut dyn ThingState, firing: &Firing, cx: &StageCx, out: &mut Vec<Action>) {
         let s = state::<BreakSettings>(st);
-        for (thing, row) in targets(cx.world, &s.who, firing) {
+        let mut each: Vec<(ThingId, Option<u32>)> = Vec::new();
+        for (thing, row) in targets(cx, &s.who, firing) {
+            match (&s.who, cx.world.bodies.get(&thing)) {
+                // The group is its balls: each of them breaks, and the thing (an emitter, say)
+                // carries on.
+                (Who::Group, Some(b)) => {
+                    each.extend((0..b.len() as u32).filter(|&r| b.alive[r as usize]).map(|r| (thing, Some(r))))
+                }
+                _ => each.push((thing, row)),
+            }
+        }
+        for (thing, row) in each {
             if thing == ThingId::ROOT {
                 continue;
             }

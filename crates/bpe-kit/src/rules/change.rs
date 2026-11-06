@@ -114,13 +114,13 @@ pub struct ChangeSettingSettings {
     pub times: f32,
     /// Seconds to glide there, and back when it ends.
     #[setting(label = "Glide", range(0, 1e9), span(0, 5), unit = "s", group = "Rule")]
-    pub glide: f32,
+    pub glide: f64,
     #[setting(label = "Ease", when = "glide", group = "Rule")]
     pub ease: GlideEase,
     #[setting(label = "Lasts", group = "Rule")]
     pub lasts: Lasts,
     #[setting(label = "For", when = "lasts=for_a_time", range(0, 1e9), span(0, 10), unit = "s", group = "Rule")]
-    pub seconds: f32,
+    pub seconds: f64,
 }
 
 impl Default for ChangeSettingSettings {
@@ -243,7 +243,7 @@ impl BlockSim for ChangeSetting {
     fn act(&self, st: &mut dyn ThingState, firing: &Firing, cx: &StageCx, out: &mut Vec<Action>) {
         let c = state::<ChangeState>(st);
         let s = &c.s;
-        for (thing, row) in targets(cx.world, &s.who, firing) {
+        for (thing, row) in targets(cx, &s.who, firing) {
             let Some(info) = c.things.get(&thing) else { continue };
             let numeric = matches!(info.ty, ValueType::Number | ValueType::Int | ValueType::Vec2);
             let how = match s.how {
