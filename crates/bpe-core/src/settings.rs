@@ -1,6 +1,7 @@
 //! The settings schema: one description of each setting drives the inspector, keyframes and
 //! pulses.
 
+use crate::gradient_form::Area;
 use crate::{Color, Gradient, Params, Strokes, Target, Value, ValueType};
 
 /// Whether a setting shows in a module's first, short view or only under More.
@@ -20,6 +21,9 @@ pub struct Flags {
     /// Its keys always jump (ease Hold): it names something, such as a slot, that has no
     /// in-between.
     pub hold: bool,
+    /// Whether it is a gradient that fills an area, and so lays its colours out by a
+    /// [`crate::gradient_form::GradientForm`] (the Shape tab). See [`Area`].
+    pub area: Area,
 }
 
 /// One setting of a thing or module kind.

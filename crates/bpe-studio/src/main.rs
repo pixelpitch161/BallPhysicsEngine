@@ -13,6 +13,7 @@ mod final_frame;
 mod follow;
 mod gradient_bar;
 mod gradient_editor;
+mod gradient_form_chips;
 mod gradient_tabs;
 mod gradient_tools;
 mod grid;

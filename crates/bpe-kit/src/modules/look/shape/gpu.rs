@@ -3,9 +3,10 @@
 //! shape per frame, bottom first, the Body's first.
 
 use crate::modules::look::layers::gives_light::{Emit, gpu_of, unlit_if_lamp};
+use crate::paint::{Placing, form_gpu};
 use std::borrow::Cow;
 
-use bpe_core::{Blend, Gradient, LayerId, Params, ResolvedSlot, Settings};
+use bpe_core::{Blend, Gradient, GradientForm, LayerId, Params, Repeat, ResolvedSlot, Settings};
 use bpe_gfx::{GradientAtlas, LayerGpu, LookProgram, MAX_LAYERS, PaintGpu};
 use glam::Vec2;
 
@@ -352,8 +353,7 @@ impl ShapeStack {
                 ShapeDrawn::Paint(p) => LayerGpu {
                     head: [LayerGpu::SHAPE_PAINT, blend(p.blend), 0, 0],
                     amount: [p.opacity, 0.0, 0.0, 0.0],
-                    p0: [p.runs.code(), 0.0, 0.0, 0.0],
-                    p1: across(p.direction),
+                    p1: across(turn_of(&p.colours)),
                     colour: p.colours.sample(0.5),
                     paint: run_paint(&p.colours, p.flow, atlas),
                     ..LayerGpu::ZERO
@@ -361,8 +361,8 @@ impl ShapeStack {
                 ShapeDrawn::Outline(o) => LayerGpu {
                     head: [LayerGpu::OUTLINE, blend(o.blend), flag(o.colour_from), 0],
                     amount: [o.opacity, 0.0, 0.0, 0.0],
-                    p0: [o.width.max(0.0), o.sits.code(), o.gradient.code(), 0.0],
-                    p1: across(o.direction),
+                    p0: [o.width.max(0.0), o.sits.code(), 0.0, 0.0],
+                    p1: across(turn_of(&o.colour)),
                     colour: o.colour.sample(0.5),
                     paint: run_paint(&o.colour, o.flow, atlas),
                     ..LayerGpu::ZERO
@@ -370,8 +370,8 @@ impl ShapeStack {
                 ShapeDrawn::Glow(g) => LayerGpu {
                     head: [LayerGpu::GLOW, blend(g.blend), flag(g.colour_from), 0],
                     amount: [g.opacity, g.strength, 0.0, 0.0],
-                    p0: [g.size.max(1.0), 0.0, g.gradient.code(), 0.0],
-                    p1: across(g.direction),
+                    p0: [g.size.max(1.0), 0.0, 0.0, 0.0],
+                    p1: across(turn_of(&g.colour)),
                     colour: g.colour.sample(0.5),
                     paint: run_paint(&g.colour, g.flow, atlas),
                     ..LayerGpu::ZERO
@@ -408,20 +408,26 @@ fn records_of(d: &ShapeDrawn, subs: &[Sub]) -> usize {
     if d.writes() { 1 + written(subs).count() } else { 0 }
 }
 
+/// The way a layer's own colours point (their Shape tab's Turn), 90° (top to bottom) when unset.
+fn turn_of(colours: &Gradient) -> f32 {
+    colours.layout.turn.filter(|t| t.is_finite()).unwrap_or(bpe_core::gradient_form::defaults::TURN)
+}
+
 /// What a layer's own `colours` paint: nothing for one colour (the record's `colour` is used),
-/// else their gradient, moving along by `flow` times a second and wrapping round while it does.
+/// else their gradient laid out by its Shape tab (Straight across the shape when nothing is
+/// stored), moving along by `flow` times a second and wrapping round while it does (unless it
+/// says how to go on past the last colour).
 fn run_paint(colours: &Gradient, flow: f32, atlas: &mut GradientAtlas) -> PaintGpu {
     if colours.stops.len() <= 1 {
         return PaintGpu::default();
     }
     let flow = if flow.is_finite() { flow } else { 0.0 };
-    PaintGpu {
-        row: atlas.row(colours) as f32,
-        grain: colours.grain,
-        scroll: flow,
-        repeat: if flow != 0.0 { 1.0 } else { 0.0 },
-        ..PaintGpu::default()
+    let mut place = Placing::of_layout(&colours.layout);
+    place.scroll = flow;
+    if flow != 0.0 && place.repeat == Repeat::Clamp {
+        place.repeat = Repeat::Repeat;
     }
+    form_gpu(colours, GradientForm::Straight, place, atlas)
 }
 
 #[cfg(test)]
@@ -436,7 +442,8 @@ mod tests {
         let mut scene = crate::new_studio_scene(&reg);
         let shape = crate::add_thing(&mut scene, &reg, "shape", ThingId::ROOT).unwrap();
         add(&mut scene, &reg, shape);
-        let resolved = resolve(&scene, &reg);
+        let mut resolved = resolve(&scene, &reg);
+        bpe_core::gradient_extras::apply_moves(&mut resolved, 0.0);
         let stack = ShapeStack::of(&resolved.things[&shape].slots[&SlotId::Look]).unwrap();
         (stack, scene)
     }
@@ -515,7 +522,7 @@ mod tests {
         let mut atlas = GradientAtlas::default();
         let (stack, _) = shape_with(|s, reg, t| {
             let paint = s.add_layer(reg, t, SlotId::Look, PAINT).unwrap();
-            set(s, t, paint, "direction", Value::Number(0.0));
+            set(s, t, paint, "colours~turn", Value::Number(0.0));
             set(s, t, paint, "colours", Value::Gradient(Gradient::even(&[Color::WHITE, Color::rgb(255, 0, 0)])));
             set(s, t, paint, "flow", Value::Number(0.5));
         });

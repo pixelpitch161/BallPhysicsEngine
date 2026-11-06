@@ -672,7 +672,11 @@ fn settings_summary(cx: &LookCx, card: &Slot, layer: &Layer) -> String {
             let l = shape_look::PaintLayer::from_params(&p);
             let stops = &l.colours.stops;
             let words = if stops.len() > 1 {
-                format!("{} colours · {}", stops.len(), choice_label(l.runs))
+                let form = p
+                    .get(&bpe_core::gradient_extras::key("colours", "form"))
+                    .and_then(<bpe_core::GradientForm as bpe_core::SettingValue>::from_value)
+                    .unwrap_or_default();
+                format!("{} colours · {}", stops.len(), form.label())
             } else {
                 colour_word(l.colours.first())
             };

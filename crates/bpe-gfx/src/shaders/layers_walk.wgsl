@@ -49,7 +49,7 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
         var bp = body_rec;
         let v = layered_ball.vary;
         bp.paint.vary = vec4<f32>(v.x + v.w, v.y, v.z, 0.0);
-        body_c = own_colour(bp, p, length(p), body.rgb);
+        body_c = own_colour(bp.paint, p, length(p), vec4<f32>(body.rgb, 1.0), false);
         // The group colour reaches a gradient body here, so layers the same as the body follow.
         if (body_rec.head.z & 8u) != 0u {
             body_c = with_group(body_c);
@@ -222,10 +222,30 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
         }
         // Its own colours there (one place for every kind that has them, so the paint maths
         // compiles once).
+        // A Pattern paints from its own paint (turned with the ball), a shade of the body or its
+        // own gradient; the others their own colours when they are a gradient.
         var own_c = r.colour.rgb;
         let x = r.head.x;
-        if (x >= 2u && x <= 5u) || x == 21u || x == 22u || x == 24u || x == 25u {
-            own_c = own_colour(r, p, along, r.colour.rgb);
+        var own_paint = r.paint;
+        var own_base = vec4<f32>(r.colour.rgb, 1.0);
+        var own_paints = false;
+        if x == 1u {
+            if own_paint.row >= 0.0 {
+                own_paint.vary = layered_ball.vary;
+            }
+            if flag {
+                own_paint.angle += layered_ball.misc.z;
+            }
+            if layered_ball.misc.w > 0.5 {
+                own_paint.angle -= layered_ball.misc.z;
+            }
+            own_base = base_c;
+            own_paints = paint_paints(own_paint);
+        } else if (x >= 2u && x <= 5u) || x == 21u || x == 22u || x == 24u || x == 25u {
+            own_paints = r.paint.row >= 0.0;
+        }
+        if own_paints {
+            own_c = own_colour(own_paint, p, along, own_base, x == 2u || x == 4u || x == 21u || x == 22u);
         }
         // A layer's colour and how much it covers, inside the shape and outside it.
         var c = vec3<f32>(0.0);
@@ -237,18 +257,8 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
                 a_in = opacity;
             }
             case 1u: {
-                var paint = r.paint;
-                if paint.row >= 0.0 {
-                    paint.vary = layered_ball.vary;
-                }
-                if flag {
-                    paint.angle += layered_ball.misc.z;
-                }
-                if layered_ball.misc.w > 0.5 {
-                    paint.angle -= layered_ball.misc.z;
-                }
-                if paint_paints(paint) {
-                    c = paint_colour(paint, p, g.view.w, base_c).rgb;
+                if own_paints {
+                    c = own_c;
                     a_in = opacity;
                 }
             }

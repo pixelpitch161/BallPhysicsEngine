@@ -9,7 +9,7 @@ use bpe_core::{Choice, Color, Gradient, SettingDef, Settings, Strokes};
 use glam::Vec2;
 
 use crate::modules::look::layers::{
-    GlowWhere, GradientShape, ShadingKind, ShadingLayer, ShadowMoves, Space, SubColourFrom, SubGlow, SubShadow,
+    GlowWhere, ShadingKind, ShadingLayer, ShadowMoves, Space, SubColourFrom, SubGlow, SubShadow,
 };
 
 /// Glow on a shape's layer: a ball's sub-layer Glow, its size in pixels.
@@ -28,14 +28,8 @@ pub struct ShapeSubGlow {
     #[setting(label = "Colour from", simple)]
     pub colour_from: SubColourFrom,
     /// Its own colour, or colours.
-    #[setting(label = "Colour", when = "colour_from=own", simple, keyframe)]
+    #[setting(area, label = "Colour", when = "colour_from=own", simple, keyframe)]
     pub colour: Gradient,
-    /// How its colours run: straight across the shape, or outward from the edge.
-    #[setting(label = "Gradient", when = "colour_from=own and colour")]
-    pub gradient: GradientShape,
-    /// The way straight colours run across, in degrees: 90 from top to bottom.
-    #[setting(label = "Direction", when = "colour_from=own and colour and gradient=straight", span(-180, 180), unit = "°", keyframe)]
-    pub direction: f32,
     /// 0 is invisible, 1 is full.
     #[setting(label = "Opacity", range(0, 1), simple, keyframe, pulse)]
     pub opacity: f32,
@@ -50,8 +44,6 @@ impl Default for ShapeSubGlow {
             side: g.side,
             colour_from: g.colour_from,
             colour: g.colour,
-            gradient: g.gradient,
-            direction: g.direction,
             opacity: g.opacity,
         }
     }
@@ -65,8 +57,6 @@ impl From<ShapeSubGlow> for SubGlow {
             side: g.side,
             colour_from: g.colour_from,
             colour: g.colour,
-            gradient: g.gradient,
-            direction: g.direction,
             opacity: g.opacity,
         }
     }
@@ -178,14 +168,8 @@ pub struct ShapeShading {
     #[setting(label = "Darken the middle", when = "kind=radial")]
     pub invert: bool,
     /// The colour it darkens towards, or colours.
-    #[setting(label = "Colour", simple, keyframe)]
+    #[setting(area, label = "Colour", simple, keyframe)]
     pub colour: Gradient,
-    /// How its colours run: straight across the shape, or from its middle to its edge.
-    #[setting(label = "Gradient", when = "colour")]
-    pub gradient: GradientShape,
-    /// The way straight colours run across, in degrees: 90 from top to bottom.
-    #[setting(label = "Direction", when = "colour and gradient=straight", span(-180, 180), unit = "°", keyframe)]
-    pub direction: f32,
     /// How dark it gets at its darkest.
     #[setting(label = "Amount", range(0, 1), simple, keyframe, pulse)]
     pub amount: f32,
@@ -211,8 +195,6 @@ impl Default for ShapeShading {
             size: s.size,
             invert: s.invert,
             colour: s.colour,
-            gradient: s.gradient,
-            direction: s.direction,
             amount: s.amount,
             softness: s.softness,
             space: ShapeSpace::Shape,
@@ -235,8 +217,6 @@ impl From<ShapeShading> for ShadingLayer {
             invert: s.invert,
             strokes: Strokes::default(),
             colour: s.colour,
-            gradient: s.gradient,
-            direction: s.direction,
             amount: s.amount,
             softness: s.softness,
             space: match s.space {

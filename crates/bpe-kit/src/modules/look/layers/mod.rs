@@ -88,27 +88,6 @@ pub enum ColourFrom {
     Own,
 }
 
-/// How a layer's own colours run across each ball, when they are a gradient.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
-pub enum GradientShape {
-    /// Straight across the ball, at the layer's Direction.
-    #[default]
-    Straight,
-    /// Outward: from the ball's middle to its edge (an outline across its ring, a glow from the
-    /// ball's edge out).
-    Round,
-}
-
-impl GradientShape {
-    /// Its pattern number in paint.wgsl: 1 linear, 2 radial.
-    pub fn pattern(self) -> f32 {
-        match self {
-            Self::Straight => 1.0,
-            Self::Round => 2.0,
-        }
-    }
-}
-
 /// How a kind finds the settings a layer's own values add.
 type DynamicDefs = fn(&dyn Fn(&str) -> Option<Value>) -> &'static [SettingDef];
 

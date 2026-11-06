@@ -42,6 +42,9 @@ struct FieldAttrs {
     screen_only: bool,
     /// The group offers no per-instance colour variation.
     no_vary: bool,
+    /// A gradient that fills an area: `Some((placed, default form name))` (`area`,
+    /// `area = "stripes"`, `area_placed`).
+    area: Option<(bool, String)>,
 }
 
 /// The `(min, max)` after an option such as `range`.
@@ -90,6 +93,13 @@ fn field_attrs(field: &syn::Field) -> syn::Result<FieldAttrs> {
                 a.screen_only = true;
             } else if p.is_ident("no_vary") {
                 a.no_vary = true;
+            } else if p.is_ident("area") || p.is_ident("area_placed") {
+                let form = if meta.input.peek(syn::Token![=]) {
+                    meta.value()?.parse::<LitStr>()?.value()
+                } else {
+                    "straight".to_owned()
+                };
+                a.area = Some((p.is_ident("area_placed"), form));
             } else {
                 return Err(meta.error("unknown setting option"));
             }
@@ -170,6 +180,14 @@ fn settings(input: &DeriveInput) -> syn::Result<Tokens> {
         let (range, span) = (pair_of(a.range), pair_of(a.span));
         let depth = if a.simple { quote!(::bpe_core::Depth::Simple) } else { quote!(::bpe_core::Depth::More) };
         let (keyframe, pulse, hold) = (a.keyframe, a.pulse, a.hold);
+        let area = match &a.area {
+            None => quote!(::bpe_core::Area::No),
+            Some((placed, form)) => {
+                let form = quote!(<::bpe_core::GradientForm as ::bpe_core::Choice>::from_name(#form)
+                    .expect("a gradient form's name"));
+                if *placed { quote!(::bpe_core::Area::Placed(#form)) } else { quote!(::bpe_core::Area::Fills(#form)) }
+            }
+        };
         defs.push(quote! {
             v.push(::bpe_core::SettingDef {
                 key: #key,
@@ -182,7 +200,7 @@ fn settings(input: &DeriveInput) -> syn::Result<Tokens> {
                 unit: #unit,
                 group: #group,
                 depth: #depth,
-                flags: ::bpe_core::Flags { keyframe: #keyframe, pulse: #pulse, hold: #hold },
+                flags: ::bpe_core::Flags { keyframe: #keyframe, pulse: #pulse, hold: #hold, area: #area },
                 when: #when,
             });
         });

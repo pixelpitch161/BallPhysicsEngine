@@ -462,3 +462,57 @@ fn inside_dots_mask_matches_the_old_fill_dots() {
     }
     assert!(inside > 2000 && outside > 2000, "{inside} {outside}: both dots and the gaps were checked");
 }
+
+/// A frame whose background is laid out as Ripples (spacing 100 px, from `list`) from the given
+/// balls, red to blue on Clamp (so it runs back and forth).
+fn rippled(list: f32, balls: &[([f32; 2], f32)]) -> Frame {
+    let mut frame = Frame { bloom: 0.0, ripples: true, ..Frame::default() };
+    let row = frame.gradients.row(&Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)]));
+    frame.background = crate::BackgroundPaint {
+        row,
+        place: [90.0, 1000.0, 0.0, 0.0],
+        mode: 3.0,
+        pattern: bpe_core::GradientForm::Ripples.code(),
+        form: [100.0, 0.0, list, 0.0],
+        ..crate::BackgroundPaint::default()
+    };
+    for &(c, r) in balls {
+        frame.push_ripple_ball(c, r);
+    }
+    frame
+}
+
+#[test]
+fn ripples_run_out_from_a_ball_and_only_frames_with_ripples_build_their_field() {
+    let Some((device, queue)) = gpu() else { return };
+    let mut renderer = Renderer::new(&device, W, H);
+    // One ball of radius 50 at the middle: rings 100 px apart from its edge, back and forth.
+    let frame = rippled(0.0, &[([0.0, 0.0], 50.0)]);
+    renderer.render(&device, &queue, &frame);
+    assert!(renderer.ripples_built());
+    let pixels = renderer.read_output(&device, &queue).unwrap();
+    crate::pictures::save("ripples", &pixels, W, H);
+    let at = |x: f32, y: f32| crate::pictures::pixel_sized(&pixels, W, H, glam::Vec2::new(x, y));
+    let red = |p: [u8; 4]| p[0] > 150 && p[2] < 80;
+    let blue = |p: [u8; 4]| p[2] > 150 && p[0] < 80;
+    assert!(red(at(0.0, 0.0)), "inside the ball: the start {:?}", at(0.0, 0.0));
+    assert!(blue(at(0.0, 150.0)), "one spacing out: the end {:?}", at(0.0, 150.0));
+    assert!(red(at(-250.0, 0.0)), "two spacings out: back at the start {:?}", at(-250.0, 0.0));
+    let half = at(200.0, 0.0);
+    assert!(half[0] > 60 && half[2] > 60, "one and a half spacings out: the middle {half:?}");
+    // Two balls: each pixel measures from the nearer.
+    let two = rippled(0.0, &[([0.0, -400.0], 20.0), ([0.0, 400.0], 20.0)]);
+    renderer.render(&device, &queue, &two);
+    let pixels = renderer.read_output(&device, &queue).unwrap();
+    let at = |x: f32, y: f32| crate::pictures::pixel_sized(&pixels, W, H, glam::Vec2::new(x, y));
+    assert!(blue(at(0.0, -280.0)) && blue(at(0.0, 280.0)), "{:?} {:?}", at(0.0, -280.0), at(0.0, 280.0));
+    // Only shapes asked for, and none drawn: nothing to measure from, the start everywhere.
+    let shapes = rippled(2.0, &[([0.0, 0.0], 50.0)]);
+    renderer.render(&device, &queue, &shapes);
+    let pixels = renderer.read_output(&device, &queue).unwrap();
+    let at = |x: f32, y: f32| crate::pictures::pixel_sized(&pixels, W, H, glam::Vec2::new(x, y));
+    assert!(red(at(0.0, 150.0)), "{:?}", at(0.0, 150.0));
+    // A frame without Ripples builds nothing.
+    renderer.render(&device, &queue, &Frame { bloom: 0.0, ..Frame::default() });
+    assert!(!renderer.ripples_built());
+}

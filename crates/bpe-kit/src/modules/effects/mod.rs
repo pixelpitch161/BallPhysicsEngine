@@ -282,7 +282,7 @@ fn common_defs(over_picture: bool) -> &'static [SettingDef] {
     static WITH: OnceLock<Vec<SettingDef>> = OnceLock::new();
     static WITHOUT: OnceLock<Vec<SettingDef>> = OnceLock::new();
     let make = |takes: bool| {
-        let keyed = Flags { keyframe: true, pulse: true, hold: false };
+        let keyed = Flags { keyframe: true, pulse: true, hold: false, area: bpe_core::Area::No };
         let mut defs = vec![
             SettingDef {
                 help: "How much of the effect shows: 0 none, 1 all of it. Above 1 pushes it further; below 0 \
@@ -308,7 +308,7 @@ fn common_defs(over_picture: bool) -> &'static [SettingDef] {
                 span: Some((0.0, 2.0)),
                 when: "takes=glow_only",
                 depth: Depth::More,
-                flags: Flags { keyframe: true, pulse: false, hold: false },
+                flags: Flags { keyframe: true, pulse: false, hold: false, area: bpe_core::Area::No },
                 ..def("glow_above", "Glow above", ValueType::Number, Value::Number(0.9))
             });
         }
@@ -336,7 +336,7 @@ pub fn param_defs(
         if let Some(first) = label.get(..1) {
             label = first.to_uppercase() + &label[1..];
         }
-        let keyed = Flags { keyframe: true, pulse: true, hold: false };
+        let keyed = Flags { keyframe: true, pulse: true, hold: false, area: bpe_core::Area::No };
         let (ty, default, range, span, flags) = match p.kind {
             ParamKind::Number { default, min, max, int: false, hard } => {
                 (ValueType::Number, Value::Number(default as f64), hard.map(pair), Some(pair((min, max))), keyed)
@@ -352,14 +352,14 @@ pub fn param_defs(
                 Value::Bool(default),
                 None,
                 None,
-                Flags { keyframe: false, pulse: false, hold: false },
+                Flags { keyframe: false, pulse: false, hold: false, area: bpe_core::Area::No },
             ),
             ParamKind::Color { default } => (
                 ValueType::Color,
                 Value::Color(Color::from_linear([default[0], default[1], default[2], 1.0])),
                 None,
                 None,
-                Flags { keyframe: true, pulse: false, hold: false },
+                Flags { keyframe: true, pulse: false, hold: false, area: bpe_core::Area::No },
             ),
         };
         defs.push(SettingDef {

@@ -95,14 +95,15 @@ fn paint_record(colour: [f32; 4]) -> LayerGpu {
 }
 
 /// A gradient from red to blue, running by `runs`, across along x from -1 to 1.
-fn red_to_blue(frame: &mut Frame, code: u32, runs: f32) -> LayerGpu {
+/// A red-to-blue layer of kind `code` laid out by gradient form `form` (1 straight across from
+/// edge to edge, 2 from the middle, 4 along the edge).
+fn red_to_blue(frame: &mut Frame, code: u32, form: f32) -> LayerGpu {
     let row = frame.gradients.row(&Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)]));
     LayerGpu {
         head: [code, 0, 0, 0],
         amount: [1.0, 0.0, 0.0, 0.0],
-        p0: [runs, 0.0, 0.0, 0.0],
         p1: [1.0, 0.0, -1.0, 1.0],
-        paint: PaintGpu { row: row as f32, ..PaintGpu::default() },
+        paint: PaintGpu { row: row as f32, pattern: form, angle: 0.0, scale: 1.0, ..PaintGpu::default() },
         ..LayerGpu::ZERO
     }
 }
@@ -137,9 +138,9 @@ fn a_gradient_runs_across_a_shape_from_edge_to_edge_and_along_its_edge() {
     let ring_at = Vec2::new(0.0, 400.0);
     frame.push_path(rect_at, 0.0, 200.0, 0.0, Some(&wide()), WHITE, 2.0);
     frame.push_path(ring_at, 0.0, 300.0, 10.0, None, WHITE, 3.0);
-    let across = red_to_blue(&mut frame, LayerGpu::SHAPE_PAINT, 0.0);
+    let across = red_to_blue(&mut frame, LayerGpu::SHAPE_PAINT, 1.0);
     wear(&mut frame, 0, vec![body_record(), across], 0.0);
-    let along = red_to_blue(&mut frame, LayerGpu::SHAPE_PAINT, 2.0);
+    let along = red_to_blue(&mut frame, LayerGpu::SHAPE_PAINT, 4.0);
     wear(&mut frame, 1, vec![body_record(), along], 0.0);
     let Some(pixels) = render_sized(&frame, W, H) else { return };
     save("shape-gradients", &pixels, W, H);
@@ -405,7 +406,7 @@ fn a_gradient_runs_round_an_ellipse_from_its_top() {
     const H: u32 = 1920;
     let mut frame = Frame { bloom: 0.0, ..Frame::default() };
     let i = frame.push_ellipse(Vec2::ZERO, 0.0, 400.0, 10.0, Vec2::new(0.6, 1.0), WHITE, 2.0);
-    let along = red_to_blue(&mut frame, LayerGpu::SHAPE_PAINT, 2.0);
+    let along = red_to_blue(&mut frame, LayerGpu::SHAPE_PAINT, 4.0);
     wear(&mut frame, i, vec![body_record(), along], 0.0);
     let Some(pixels) = render_sized(&frame, W, H) else { return };
     let at = |p: Vec2| pixel_sized(&pixels, W, H, p);

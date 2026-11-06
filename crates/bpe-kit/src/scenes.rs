@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 
 use crate::modules::look::layers::particles::{ParticleSource, ParticlesLayer};
 use crate::modules::look::layers::trail::{TrailLayer, TrailSource};
-use crate::paint::{Follow, InsideFrom, InsidePaint, Paint, Pattern, PlaceShape, Repeat};
+use crate::paint::{Follow, InsideFrom, InsidePaint, Paint, Pattern, Repeat};
 use crate::{BallsSettings, BasicBounce, BasicLook, BasicMotion, SceneSettings, ShapeSettings, Style, new_scene};
 
 mod rule_scenes;
@@ -262,8 +262,11 @@ pub fn colour_demo(reg: &Registry) -> Scene {
         s.gravity = Vec2::new(0.0, 700.0);
         s.bloom = 0.35;
         s.background = Paint {
-            colours: Gradient::even(&[hex(0x2b1458), hex(0x140a33), hex(0x05040f)]),
-            shape: PlaceShape::Round,
+            colours: {
+                let mut g = Gradient::even(&[hex(0x2b1458), hex(0x140a33), hex(0x05040f)]);
+                g.layout.form = Some(bpe_core::GradientForm::Round);
+                g
+            },
             span: 1150.0,
             ..Paint::default()
         };
@@ -279,7 +282,8 @@ pub fn colour_demo(reg: &Registry) -> Scene {
         l.fill =
             Paint { colours: colours.clone(), angle: 45.0, span: 700.0, repeat: Repeat::Mirror, ..Paint::default() };
         l.inside = InsidePaint {
-            pattern: Pattern::Rings,
+            pattern: Pattern::Gradient,
+            form: bpe_core::GradientForm::Rings,
             from: InsideFrom::OwnGradient,
             colours,
             repeat: Repeat::Mirror,
