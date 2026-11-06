@@ -297,6 +297,8 @@ pub(crate) struct Lighting {
     floor: wgpu::RenderPipeline,
     /// Depth of field (Stage, part 2b).
     dof: wgpu::RenderPipeline,
+    /// Mirror walls (part 2b).
+    mirror: wgpu::RenderPipeline,
     sampler: wgpu::Sampler,
     /// Surfaces and the stage (group 2 of the mix and floor passes).
     stage_layout: wgpu::BindGroupLayout,
@@ -614,6 +616,7 @@ impl Lighting {
             stir,
             floor: make("glossy floor", "fs_floor", three, &[HDR_FORMAT], None),
             dof: make("depth of field", "fs_dof", three, &[HDR_FORMAT], None),
+            mirror: make("mirror walls", "fs_mirror", three, &[HDR_FORMAT], None),
             stage_uniform: uniform_buffer(device, "lighting stage uniform", std::mem::size_of::<StageUniform>()),
             stage_layout,
             surfaces: GrowableBuffer::storage("light surfaces"),
@@ -813,13 +816,15 @@ impl Lighting {
         let reflects = s.stage[0] > 0.5 && s.floor[0] > 0.5 && s.floor[2] > 0.5;
         // Depth of field blurs the finished light: one more picture in the chain.
         let blurs = s.stage[0] > 0.5 && s.dof[0] > 0.5;
-        if (reflects || blurs)
+        // Mirror walls show the lit picture again, smoothly sampled: a pass of their own.
+        let mirror_walls = !scene.mirrors.is_empty();
+        let chained = usize::from(reflects) + usize::from(blurs) + usize::from(mirror_walls);
+        if chained > 0
             && let Some(t) = self.targets.as_mut().filter(|t| t.stage.is_none())
         {
             t.stage = Some(texture(device, "lit stage", (t.width, t.height), HDR_FORMAT, false));
         }
-        if reflects
-            && blurs
+        if chained > 1
             && let Some(t) = self.targets.as_mut().filter(|t| t.stage_more.is_none())
         {
             t.stage_more = Some(texture(device, "lit stage", (t.width, t.height), HDR_FORMAT, false));
@@ -1260,8 +1265,11 @@ impl Lighting {
         // The mix reads the background's own light where the cascades read the one above.
         let g = group_in(&self.mix_layout, MIX_BINDINGS, &base_glow, &GlowInputs { above: bg_view, ..all });
         self.bound = Some([main.clone(), stage_group.clone()]);
-        // The mix, then a glossy floor, then depth of field, each reading the one before.
+        // The mix, then mirror walls, a glossy floor, then depth of field, each reading the one before.
         let mut steps: Vec<(&wgpu::RenderPipeline, &str)> = vec![(&self.mix, "light")];
+        if mirror_walls {
+            steps.push((&self.mirror, "mirror walls"));
+        }
         if reflects {
             steps.push((&self.floor, "glossy floor"));
         }

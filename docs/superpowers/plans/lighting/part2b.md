@@ -216,10 +216,14 @@ the owner's PC until every lighting part is in.
   stage takes at most 16 pictures, so the mix reads it through group 1's `above` binding (only the cascades read
   `above` otherwise); the stage group gained bindings 5 (mirrors) and 6 (behind picture) only.
 - **Behind picture**: drawn as light pass `BEHIND_PASS` (7) in the renderer: `Globals.light = [0, lit, stage, 1]`, so
-  the walk's `left_behind` drops records carrying `SurfaceGpu::GLASS_FLAG`; no effects, plain blending.
-- **The pass chain**: mix → glossy floor → depth of field, each into `Targets.stage`/`stage_more` and the last
+  the walk's `left_behind` drops records carrying `SurfaceGpu::GLASS_FLAG`; no effects, plain blending. After
+  part 4 took `light.w` for the background's link, the flag is `light.x` -1 (`[-1, lit, stage, 0]`), and the mix
+  reads the background glow through its own binding 6 (`MIX_BINDINGS`), which puts the mix at 16 pictures.
+- **The pass chain**: mix → mirror walls (`fs_mirror`, only when a shape has one) → glossy floor → depth of field, each into `Targets.stage`/`stage_more` and the last
   into the output; depth of field is `fs_dof` (24 Vogel taps, a tap counts where its own blur reaches the pixel,
-  bright taps weigh more).
+  bright taps weigh more). Mirror walls first ran inside the mix (relighting each mirrored pixel through
+  `lit_at` at whole pixels), which looked blocky in the video; they now sample the mixed picture smoothly in a
+  pass of their own.
 - **Reflections off the picture**: a reflected ray meeting the wall or floor off the picture takes the colour at
   the picture's edge (the wall goes on as it is there).
 - **Brushed**: the highlight stretches across the lines (as on real brushed metal), not along them.
@@ -231,3 +235,11 @@ the owner's PC until every lighting part is in.
   `glass_room`/`mirror_room` in `scenes.rs`); `scenes::surfaces_demo` (test-only) is the video's scene. Not
   pictured: the black Lit 0 layer and the wide penumbra (both changed in the shader: Lit 0 layers write surface
   index 0; ≤ 128 balls test every sphere and the grid margin is 3 radii).
+- **Own surfaces on non-blocking layers**: a layer with its own Surface sub-layer carries `SurfaceGpu::OWN_FLAG`
+  (8192) beside its index; such a layer, or a painted layer at Lit 0 (surface code + 2048, read as matte with the
+  kind kept), covers the surface picture inside the thing with the Body's blocking (`LIGHT_BODY_BLOCKS`), so a
+  Pattern with its own Chrome shines even though it blocks no light.
+- **Stage balls in the light field**: they write a quarter of their blocking into R (seeds only take R > 0.5, so
+  the 2D field ignores them) and the field reads it back ×4 where `GlowUniform.on.w` says Stage.
+- **Lasers through glass**: wired through part 4's `meets` closure (`surface::glass_of` on the thing's Look,
+  unless the scene's at-balls/at-shapes answer is Stop); a bend counts as a bounce.

@@ -102,12 +102,12 @@ sub-layer** (`sub.surface`/`shape.sub.surface`, not on a Body: `Stamps` gives th
 index after every thing's, `surface::sub_defs` leaves out `WHOLE_THING_ONLY`; the editor writes the preset on pick),
 **Reflects: The scene** (default; `trace_scene` walks spheres, wall, floor and shape fronts up to the Lighting card's
 Reflection depth; spheres are pushed in Flat too, `SphereGpu.c` their surface, never for shadows), **glass**
-(`GLASS_FLAG` 4096 on a see-through record's `light[3]`; the renderer draws a **behind picture** as `BEHIND_PASS`
+(`GLASS_FLAG` 4096 on a see-through record's `light[3]`, `OWN_FLAG` 8192 on a layer with its own Surface sub-layer; the renderer draws a **behind picture** as `BEHIND_PASS`
 with those records left out (`left_behind`) and `transmitted` bends it by Bends light, Rainbow split and Frost;
 a shape's **Lens** is its body record's `light[2]`, a dome height in `shape_walk.wgsl`; `surface::glass_of` is the
 lasers' hook), **mirror walls** on shapes (Mirror wall Off/Outside/Inside/Both sides = where the reflection shows,
 strength, Squeeze (1 on a circle is circle inversion), tint; `MirrorGpu`, `MOST_MIRRORS` 16, `mirrored` in
-fs_mix relights the mirrored pixel through `lit_at`), **depth of field** (Stage: Depth of field, Focus at, Blur;
+`fs_mirror`, a pass after the mix that samples the mixed picture), **depth of field** (Stage: Depth of field, Focus at, Blur;
 `fs_dof` after the floor pass) and 2a's gaps (shapes' sheared slab in shadows and contact, `thing_point`; the light
 field sees Stage balls (`GlowUniform.on.w`, `field_round_ball`); the background's own light on shiny/Stage pixels
 (copied to `bg_glow`, read as `above` in the mix); every sphere tested with ≤ 128 balls, `SPHERE_MARGIN` 3; Lit 0

@@ -2524,7 +2524,7 @@ fn lit_at(ip: vec2<i32>, uv: vec2<f32>, turn: f32) -> vec4<f32> {
     return vec4<f32>(clamp(out, vec3<f32>(0.0), vec3<f32>(6.0e4)), c.a);
 }
 
-// Where a mirror wall shows something at world `p` (part 2b): the point it shows, how strongly,
+// Where a mirror wall shows something at world `p` (part 2b, `fs_mirror`): the point it shows, how strongly,
 // tinted how; `k` 0 where no mirror shows.
 struct Mirrored {
     p: vec2<f32>,
@@ -2585,21 +2585,21 @@ fn fs_mix(in: FsIn) -> @location(0) vec4<f32> {
     let ip = vec2<i32>(in.pos.xy);
     // Interleaved gradient noise (Jimenez): a different turn of frost's taps at each pixel.
     let turn = 6.2831853 * fract(52.9829189 * fract(dot(in.pos.xy, vec2<f32>(0.06711056, 0.00583715))));
-    if st.counts.x > 0.5 {
-        let m = mirrored(uv_to_world(in.uv));
-        let uv2 = world_to_uv(m.p);
-        if m.k > 0.0 && all(uv2 >= vec2<f32>(0.0)) && all(uv2 <= vec2<f32>(1.0)) {
-            let size = vec2<f32>(textureDimensions(picture));
-            let ip2 = vec2<i32>(min(uv2 * size, size - 1.0));
-            let seen = lit_at(ip2, uv2, turn);
-            if m.k >= 1.0 {
-                return vec4<f32>(seen.rgb * m.tint, seen.a);
-            }
-            let own = lit_at(ip, in.uv, turn);
-            return vec4<f32>(mix(own.rgb, seen.rgb * m.tint, m.k), own.a);
-        }
-    }
     return lit_at(ip, in.uv, turn);
+}
+
+// Mirror walls (part 2b): after the mix, `picture` is the lit picture; a pixel on a mirror's
+// mirrored side shows it again where the mirror sends it, sampled smoothly, over its own light.
+@fragment
+fn fs_mirror(in: FsIn) -> @location(0) vec4<f32> {
+    let own = textureLoad(picture, vec2<i32>(in.pos.xy), 0);
+    let m = mirrored(uv_to_world(in.uv));
+    let uv2 = world_to_uv(m.p);
+    if m.k <= 0.0 || any(uv2 < vec2<f32>(0.0)) || any(uv2 > vec2<f32>(1.0)) {
+        return own;
+    }
+    let seen = textureSampleLevel(picture, samp, uv2, 0.0).rgb * m.tint;
+    return vec4<f32>(mix(own.rgb, seen, m.k), own.a);
 }
 
 // ---------- depth of field (part 2b, Stage) ----------
