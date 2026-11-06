@@ -22,14 +22,23 @@ struct Globals {
 @group(0) @binding(0) var<uniform> g: Globals;
 
 // As scene.wgsl's: a sprite in the light passes (see lighting.wgsl).
-fn light_flat(c: vec4<f32>, lit: f32, blocks: f32, emit: vec3<f32>) -> vec4<f32> {
-    if g.light.x < 0.5 {
+fn light_flat(c: vec4<f32>, lit: f32, blocks: f32, emit: vec3<f32>, extra: vec4<f32>) -> vec4<f32> {
+    let m = g.light.x;
+    // Light passes 5 (what glows under UV) and 6 (what catches beams, link numbers).
+    if m > 4.5 {
+        return light_extra(c, extra);
+    }
+    // Shown only under UV light: nothing in the picture or the other light passes.
+    if extra.y > 0.5 {
+        return vec4<f32>(0.0);
+    }
+    if m < 0.5 {
         return c;
     }
-    if g.light.x < 1.5 {
+    if m < 1.5 {
         return vec4<f32>(c.rgb * lit, c.a);
     }
-    if g.light.x > 2.5 {
+    if m > 2.5 {
         // The light it gives off, where it covers (light covering nothing by how bright it is).
         let k = select(c.a, max(c.r, max(c.g, c.b)), c.a <= 0.0);
         return vec4<f32>(emit * k, c.a);
@@ -38,6 +47,17 @@ fn light_flat(c: vec4<f32>, lit: f32, blocks: f32, emit: vec3<f32>) -> vec4<f32>
     // the ball's blocking and height under it as they are.
     let a = clamp(blocks, 0.0, 1.0) * clamp(c.a, 0.0, 1.0);
     return vec4<f32>(a, 0.0, 0.0, a);
+}
+
+// Light pass 5: what glows under UV light, its colours times its UV glow (black, still covering
+// what is behind, when it doesn't glow). Pass 6: how much it catches beams and its thing's link
+// number, both times its cover.
+fn light_extra(c: vec4<f32>, extra: vec4<f32>) -> vec4<f32> {
+    if g.light.x < 5.5 {
+        return vec4<f32>(c.rgb * max(extra.x, 0.0), c.a);
+    }
+    let a = clamp(c.a, 0.0, 1.0);
+    return vec4<f32>(max(extra.z, 0.0) * a, extra.w * a, 0.0, a);
 }
 
 const SPARKS: u32 = 0u;
@@ -63,6 +83,8 @@ struct SpriteIn {
     @location(4) light: vec4<f32>,
     // The light it gives off (straight, linear), read in the emission pass.
     @location(5) emit: vec4<f32>,
+    // UV glow, only under UV, catches beams, link number (lighting part 4).
+    @location(6) extra: vec4<f32>,
 };
 
 struct SpriteOut {
@@ -76,6 +98,7 @@ struct SpriteOut {
     @location(4) shade: f32,
     @location(5) @interpolate(flat) light: vec2<f32>,
     @location(6) @interpolate(flat) emit: vec3<f32>,
+    @location(7) @interpolate(flat) extra: vec4<f32>,
 };
 
 fn to_screen(p: vec2<f32>) -> vec2<f32> {
@@ -124,6 +147,7 @@ fn vs_sprite(@builtin(vertex_index) vi: u32, v: SpriteIn) -> SpriteOut {
     out.kind = v.shape.x;
     out.light = v.light.xy;
     out.emit = v.emit.rgb;
+    out.extra = v.extra;
     out.shade = v.style.y;
     return out;
 }
@@ -227,7 +251,7 @@ fn coverage(in: SpriteOut) -> f32 {
 
 @fragment
 fn fs_sprite(in: SpriteOut) -> @location(0) vec4<f32> {
-    return light_flat(sprite_colour(in), in.light.x, in.light.y, in.emit);
+    return light_flat(sprite_colour(in), in.light.x, in.light.y, in.emit, in.extra);
 }
 
 // The sprite's premultiplied colour and coverage here.

@@ -65,6 +65,48 @@ impl Quality {
     }
 }
 
+/// How the haze moves (lighting part 4).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum HazeMoves {
+    /// Even and still, the same everywhere.
+    #[default]
+    Still,
+    /// Uneven clouds drifting one way.
+    Drifting,
+    /// Uneven clouds turning and curling.
+    Swirling,
+}
+
+impl HazeMoves {
+    pub fn code(self) -> f32 {
+        match self {
+            Self::Still => 0.0,
+            Self::Drifting => 1.0,
+            Self::Swirling => 2.0,
+        }
+    }
+}
+
+/// What glows in the dark after light has fallen on it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum Remembers {
+    /// Only the background, where no thing covers it.
+    #[default]
+    Background,
+    /// Everything the light falls on.
+    Everything,
+}
+
+/// The colour of a glow in the dark.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum GlowFrom {
+    /// Its own Glow colour, as bright as the light was.
+    #[default]
+    GlowColour,
+    /// The colour of the light that fell there.
+    TheLight,
+}
+
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct LightingSettings {
     /// How the scene is laid out for light.
@@ -126,6 +168,98 @@ pub struct LightingSettings {
     /// How much the haze veils what is behind it.
     #[setting(label = "Haze dims", when = "haze", span(0, 1), keyframe, group = "Air")]
     pub haze_dims: f32,
+    /// How the haze moves: still and even, or in clouds drifting or swirling.
+    #[setting(label = "Haze moves", when = "haze", group = "Air")]
+    pub haze_moves: HazeMoves,
+    /// How fast the haze's clouds move.
+    #[setting(label = "Speed", when = "haze_moves!=still", span(0, 4), unit = "×", keyframe, group = "Air")]
+    pub haze_speed: f32,
+    /// How big the haze's clouds are.
+    #[setting(
+        label = "Cloud size",
+        when = "haze_moves!=still",
+        range(0.001, 1e9),
+        span(50, 2000),
+        unit = "px",
+        keyframe,
+        group = "Air"
+    )]
+    pub haze_size: f32,
+    /// How uneven the haze is: 0 even, 1 thick clouds and clear gaps.
+    #[setting(label = "Patchiness", when = "haze_moves!=still", span(0, 1), keyframe, group = "Air")]
+    pub patchiness: f32,
+    /// Which way the haze drifts.
+    #[setting(label = "Drift direction", when = "haze_moves=drifting", span(-180, 180), unit = "°", keyframe, group = "Air")]
+    pub drift_direction: f32,
+    /// How much moving balls stir the haze as they pass through it.
+    #[setting(label = "Balls stir it", when = "haze_moves!=still", span(0, 4), unit = "×", keyframe, group = "Air")]
+    pub haze_stir: f32,
+    /// How much the scene is under water: rippling light from above, the water's colour deeper down.
+    #[setting(label = "Underwater", span(0, 1), keyframe, group = "Underwater")]
+    pub underwater: f32,
+    /// The water's colour, taking over deeper down.
+    #[setting(label = "Water colour", when = "underwater", keyframe, group = "Underwater")]
+    pub water_colour: Color,
+    /// Where the water's top is (down is deeper).
+    #[setting(label = "Water top", when = "underwater", span(-2000, 2000), unit = "px", keyframe, group = "Underwater")]
+    pub water_top: f32,
+    /// How deep the water's colour takes over.
+    #[setting(
+        label = "Depth fade",
+        when = "underwater",
+        range(0, 1e9),
+        span(0, 6000),
+        unit = "px",
+        keyframe,
+        group = "Underwater"
+    )]
+    pub depth_fade: f32,
+    /// How much the light ripples in bright lines (caustics).
+    #[setting(label = "Caustics", when = "underwater", span(0, 2), keyframe, group = "Underwater")]
+    pub caustics: f32,
+    /// How big the caustics' cells are.
+    #[setting(
+        label = "Caustic size",
+        when = "underwater",
+        range(0.001, 1e9),
+        span(20, 600),
+        unit = "px",
+        keyframe,
+        group = "Underwater"
+    )]
+    pub caustic_size: f32,
+    /// How fast the caustics ripple.
+    #[setting(label = "Caustic speed", when = "underwater", span(0, 4), unit = "×", keyframe, group = "Underwater")]
+    pub caustic_speed: f32,
+    /// How strong the slanting rays of sunlight from the top are.
+    #[setting(label = "Sun rays", when = "underwater", span(0, 2), keyframe, group = "Underwater")]
+    pub sun_rays: f32,
+    /// How brightly things glow in the dark after light has fallen on them: 0 never.
+    #[setting(label = "Glow in the dark", span(0, 4), keyframe, group = "Glow in the dark")]
+    pub glow_dark: f32,
+    /// What glows: only the background, or everything.
+    #[setting(label = "What glows", when = "glow_dark", group = "Glow in the dark")]
+    pub remembers: Remembers,
+    /// How fast light charges the glow up.
+    #[setting(label = "Charge speed", when = "glow_dark", span(0, 20), unit = "×", keyframe, group = "Glow in the dark")]
+    pub charge: f32,
+    /// How long the glow takes to fade to about a third.
+    #[setting(
+        label = "Fade time",
+        when = "glow_dark",
+        range(0.001, 1e9),
+        span(0.1, 20),
+        unit = "s",
+        keyframe,
+        group = "Glow in the dark"
+    )]
+    pub glow_fade: f32,
+    /// The colour the glow takes.
+    #[setting(label = "Colour from", when = "glow_dark", group = "Glow in the dark")]
+    pub glow_from: GlowFrom,
+    /// The glow's own colour.
+    #[setting(label = "Glow colour", when = "glow_from=glow_colour", keyframe, group = "Glow in the dark")]
+    pub glow_colour: Color,
     /// How hard the lighting works, while editing and in the video alike.
     #[setting(label = "Quality", group = "Quality")]
     pub quality: Quality,
@@ -210,6 +344,26 @@ impl Default for LightingSettings {
             contact: 0.0,
             contact_reach: 40.0,
             toon_steps: 3,
+            haze_moves: HazeMoves::Still,
+            haze_speed: 1.0,
+            haze_size: 400.0,
+            patchiness: 0.6,
+            drift_direction: 0.0,
+            haze_stir: 1.0,
+            underwater: 0.0,
+            water_colour: Color::rgb(0x0E, 0x5A, 0x7A),
+            water_top: -960.0,
+            depth_fade: 2400.0,
+            caustics: 1.0,
+            caustic_size: 160.0,
+            caustic_speed: 1.0,
+            sun_rays: 0.6,
+            glow_dark: 0.0,
+            remembers: Remembers::Background,
+            charge: 4.0,
+            glow_fade: 3.0,
+            glow_from: GlowFrom::GlowColour,
+            glow_colour: Color::rgb(0x7D, 0xFF, 0x9A),
             quality: Quality::Good,
             scenes_play: ScenesPlay::Off,
             show_scene: 1,
@@ -240,6 +394,37 @@ impl LightingSettings {
             glow: [finite(self.bounce), finite(self.glow_reach).max(0.0), finite(self.light_blooms), 0.0],
             air: [h[0] * haze, h[1] * haze, h[2] * haze, if haze != 0.0 { finite(self.haze_dims) } else { 0.0 }],
             background: [[0.0; 4]; 2],
+            haze: [
+                if haze != 0.0 { self.haze_moves.code() } else { 0.0 },
+                finite(self.haze_speed),
+                finite(self.haze_size).max(1e-3),
+                finite(self.patchiness),
+            ],
+            haze_more: {
+                let d = finite(self.drift_direction).to_radians();
+                [d.cos(), d.sin(), finite(self.haze_stir), 0.0]
+            },
+            water: [
+                finite(self.underwater),
+                finite(self.caustics),
+                finite(self.caustic_size).max(1e-3),
+                finite(self.caustic_speed),
+            ],
+            water_colour: {
+                let w = self.water_colour.to_linear();
+                [w[0], w[1], w[2], finite(self.sun_rays)]
+            },
+            water_depth: [finite(self.water_top), finite(self.depth_fade).max(0.0), 0.0, 0.0],
+            memory: [
+                finite(self.glow_dark),
+                finite(self.glow_fade).max(1e-3),
+                finite(self.charge).max(0.0),
+                if self.remembers == Remembers::Everything { 1.0 } else { 0.0 },
+            ],
+            memory_colour: {
+                let g = self.glow_colour.to_linear();
+                [g[0], g[1], g[2], if self.glow_from == GlowFrom::TheLight { 1.0 } else { 0.0 }]
+            },
         }
     }
 }

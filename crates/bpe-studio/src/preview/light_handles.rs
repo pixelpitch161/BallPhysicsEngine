@@ -113,7 +113,9 @@ fn dots(l: &Lamp, v: &View) -> Vec<(LightPart, Pos2)> {
     let out = AIM_OUT / v.world_scale().max(1e-6);
     let mut list = Vec::new();
     match l.s.kind {
-        LightType::Spot | LightType::Sun if aims(&l.s) => list.push((LightPart::Aim, v.to_screen(at + dir * out))),
+        LightType::Spot | LightType::Sun | LightType::Laser if aims(&l.s) => {
+            list.push((LightPart::Aim, v.to_screen(at + dir * out)))
+        }
         LightType::Area => {
             let half = Vec2::new(0.5 * l.s.width.max(0.0), 0.5 * l.s.length.max(0.0));
             list.push((LightPart::Corner, v.to_screen(at + dir * half.x + side * half.y)));
@@ -326,7 +328,7 @@ pub fn draw(painter: &egui::Painter, studio: &Studio, view: &View, active: Optio
                         painter.line_segment([centre, end], Stroke::new(if on { 2.0 } else { 1.2 }, line_ink(on, ink)));
                     }
                 }
-                LightType::Sun => {
+                LightType::Sun | LightType::Laser => {
                     let tip = v.to_screen(first.at + dir * (AIM_OUT / scale.max(1e-6)));
                     arrow(painter, centre, tip, line_ink(hot(LightPart::Aim), ink));
                 }

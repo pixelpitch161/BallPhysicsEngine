@@ -33,14 +33,23 @@ struct Globals {
 // colour times `lit` (mode 1), or how much it blocks light, its height (flat: 0) and its cover
 // (mode 2), or the light `emit` (straight) it gives off where it covers (mode 3); `c` itself
 // otherwise.
-fn light_flat(c: vec4<f32>, lit: f32, blocks: f32, emit: vec3<f32>) -> vec4<f32> {
-    if g.light.x < 0.5 {
+fn light_flat(c: vec4<f32>, lit: f32, blocks: f32, emit: vec3<f32>, extra: vec4<f32>) -> vec4<f32> {
+    let m = g.light.x;
+    // Light passes 5 (what glows under UV) and 6 (what catches beams, link numbers).
+    if m > 4.5 {
+        return light_extra(c, extra);
+    }
+    // Shown only under UV light: nothing in the picture or the other light passes.
+    if extra.y > 0.5 {
+        return vec4<f32>(0.0);
+    }
+    if m < 0.5 {
         return c;
     }
-    if g.light.x < 1.5 {
+    if m < 1.5 {
         return vec4<f32>(c.rgb * lit, c.a);
     }
-    if g.light.x > 2.5 {
+    if m > 2.5 {
         // The light it gives off, where it covers (light covering nothing by how bright it is).
         let k = select(c.a, max(c.r, max(c.g, c.b)), c.a <= 0.0);
         return vec4<f32>(emit * k, c.a);
@@ -49,6 +58,17 @@ fn light_flat(c: vec4<f32>, lit: f32, blocks: f32, emit: vec3<f32>) -> vec4<f32>
     // the ball's blocking and height under it as they are.
     let a = clamp(blocks, 0.0, 1.0) * clamp(c.a, 0.0, 1.0);
     return vec4<f32>(a, 0.0, 0.0, a);
+}
+
+// Light pass 5: what glows under UV light, its colours times its UV glow (black, still covering
+// what is behind, when it doesn't glow). Pass 6: how much it catches beams and its thing's link
+// number, both times its cover.
+fn light_extra(c: vec4<f32>, extra: vec4<f32>) -> vec4<f32> {
+    if g.light.x < 5.5 {
+        return vec4<f32>(c.rgb * max(extra.x, 0.0), c.a);
+    }
+    let a = clamp(c.a, 0.0, 1.0);
+    return vec4<f32>(max(extra.z, 0.0) * a, extra.w * a, 0.0, a);
 }
 
 // The camera (centre xy, zoom, turn) turns a world point into screen units; with no camera
@@ -105,14 +125,15 @@ fn screen_to_world(q: vec2<f32>) -> vec2<f32> {
 @fragment
 fn fs_background(in: BgOut) -> @location(0) vec4<f32> {
     let c = background_colour(in);
-    if g.light.x > 3.5 {
+    if g.light.x > 3.5 && g.light.x < 4.5 {
         return vec4<f32>(g.light_emit[0].rgb + g.light_emit[1].rgb * c.rgb, 1.0);
     }
-    if g.light.x > 2.5 {
+    if g.light.x > 2.5 && g.light.x < 3.5 {
         // The things' light: the background covers nothing there (its own is drawn alone).
         return vec4<f32>(0.0);
     }
-    return light_flat(c, g.light.y, 0.0, vec3<f32>(0.0));
+    // In the tags pass the background carries the scene's link number (Globals.light.z).
+    return light_flat(c, g.light.y, 0.0, vec3<f32>(0.0), vec4<f32>(0.0, 0.0, 0.0, g.light.z));
 }
 
 fn background_colour(in: BgOut) -> vec4<f32> {
@@ -483,7 +504,7 @@ fn shade_flash(in: FlashOut) -> vec4<f32> {
 
 @fragment
 fn fs_shape(in: ShapeOut) -> @location(0) vec4<f32> {
-    return light_flat(shade_shape(in), 0.0, 0.0, vec3<f32>(0.0));
+    return light_flat(shade_shape(in), 0.0, 0.0, vec3<f32>(0.0), vec4<f32>(0.0));
 }
 
 // In a layer whose things blend with each other (see each.wgsl).
@@ -494,7 +515,7 @@ fn fs_shape_each(in: ShapeOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_ball(in: BallOut) -> @location(0) vec4<f32> {
-    return light_flat(shade_ball(in), 0.0, 0.0, vec3<f32>(0.0));
+    return light_flat(shade_ball(in), 0.0, 0.0, vec3<f32>(0.0), vec4<f32>(0.0));
 }
 
 // In a layer whose things blend with each other (see each.wgsl).
@@ -505,7 +526,7 @@ fn fs_ball_each(in: BallOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_flash(in: FlashOut) -> @location(0) vec4<f32> {
-    return light_flat(shade_flash(in), 0.0, 0.0, vec3<f32>(0.0));
+    return light_flat(shade_flash(in), 0.0, 0.0, vec3<f32>(0.0), vec4<f32>(0.0));
 }
 
 // In a layer whose things blend with each other (see each.wgsl).

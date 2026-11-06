@@ -512,6 +512,11 @@ pub fn redraw_when_built(renderer: &Renderer, ctx: &egui::Context) -> bool {
 
 /// Draws the playhead's moment into `renderer`, unless `drawn` says the picture already shows
 /// it. Returns whether the picture is still catching up with the playhead.
+/// How far back the editor draws to charge glow in the dark after a seek, in seconds, and how
+/// many frames a second it draws for it.
+const WARM_BACK: f64 = 1.5;
+const WARM_RATE: f64 = 8.0;
+
 fn draw_picture(
     studio: &mut Studio,
     device: &wgpu::Device,
@@ -535,30 +540,49 @@ fn draw_picture(
         light: (studio.light_show, studio.light_solo.iter().copied().collect()),
     };
     if drawn.as_ref() != Some(&now) {
-        // Soloed lights: the picture from a copy with the others left out (never the scene's).
-        let solo = lights_panel::soloed(&studio.scene, &studio.resolved, &studio.light_solo);
-        build_frame_with(
-            &studio.scene,
-            solo.as_ref().unwrap_or(&studio.resolved),
-            studio.playback.world(),
-            studio.playback.log(),
-            shown_time,
-            &studio.kit.draws,
-            studio.follow.as_deref().map(|f| f as &dyn bpe_runtime::SoundAt),
-            frame,
-        );
-        // The World view looks through its own camera at a picture the panel's shape, and
-        // things stuck to the screen belong to the video, not the world, so they are left out.
-        // Blend layers move with the frame.
-        if let Some((camera, (w, h))) = look {
-            frame.set_view(camera, (w, h));
-            frame.overlay = None;
-            // The grade belongs to the finished video, not to the world seen through a camera.
-            frame.grade = Default::default();
+        let paint = |studio: &Studio, time: f64, frame: &mut Frame, renderer: &mut Renderer| {
+            // Soloed lights: the picture from a copy with the others left out (never the scene's).
+            let solo = lights_panel::soloed(&studio.scene, &studio.resolved, &studio.light_solo);
+            build_frame_with(
+                &studio.scene,
+                solo.as_ref().unwrap_or(&studio.resolved),
+                studio.playback.world(),
+                studio.playback.log(),
+                time,
+                &studio.kit.draws,
+                studio.follow.as_deref().map(|f| f as &dyn bpe_runtime::SoundAt),
+                frame,
+            );
+            // The World view looks through its own camera at a picture the panel's shape, and
+            // things stuck to the screen belong to the video, not the world, so they are left out.
+            // Blend layers move with the frame.
+            if let Some((camera, (w, h))) = look {
+                frame.set_view(camera, (w, h));
+                frame.overlay = None;
+                // The grade belongs to the finished video, not to the world seen through a camera.
+                frame.grade = Default::default();
+            }
+            show_light(frame, studio.light_show);
+            frame.cull();
+            renderer.render(device, queue, frame);
+        };
+        paint(studio, shown_time, frame, renderer);
+        // Glow in the dark remembers the light of the frames before; after a seek there are none,
+        // so the moments just before are drawn (unseen) to charge it as playing would have.
+        let fade = frame.light.as_ref().filter(|l| l.settings.remembers()).map(|l| l.settings.memory[1]);
+        if let Some(fade) = fade
+            && !catching_up
+            && renderer.memory_cold()
+        {
+            let back = (3.0 * fade.max(1e-3) as f64).min(WARM_BACK);
+            let from = (shown_time - back).max(0.0);
+            let steps = ((shown_time - from) * WARM_RATE).ceil().max(1.0) as usize;
+            for k in 0..=steps {
+                let time = from + (shown_time - from) * k as f64 / steps as f64;
+                studio.playback.seek(time);
+                paint(studio, time, frame, renderer);
+            }
         }
-        show_light(frame, studio.light_show);
-        frame.cull();
-        renderer.render(device, queue, frame);
         *drawn = Some(now);
     }
     catching_up

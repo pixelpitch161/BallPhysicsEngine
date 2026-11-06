@@ -33,7 +33,8 @@ impl ThingDraw for SceneDraw {
             let lighting = crate::modules::lighting::LightingSettings::from_params(&card.params);
             let mut settings = lighting.gpu();
             settings.background = background_glow(&s);
-            frame.light = Some(bpe_gfx::LightScene { settings, ..Default::default() });
+            let background_link = crate::things::light::links::number_of(cx.scene, cx.resolved.id);
+            frame.light = Some(bpe_gfx::LightScene { settings, background_link, ..Default::default() });
         }
     }
 }

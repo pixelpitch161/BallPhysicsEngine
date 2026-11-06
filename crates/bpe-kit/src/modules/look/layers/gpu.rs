@@ -60,6 +60,8 @@ pub enum SubLayer {
     Hue(SubHue),
     /// Gives off light: folded into its layer's record, it writes none of its own.
     Light(super::gives_light::GivesLight),
+    /// Heat glow: a Flash record that reads the heat.
+    Heat(super::heat::SubHeat),
 }
 
 impl SubLayer {
@@ -77,6 +79,7 @@ impl SubLayer {
             SUB_FLASH => SubLayer::Flash(SubFlash::from_params(p)),
             SUB_HUE => SubLayer::Hue(SubHue::from_params(p)),
             super::gives_light::SUB_LIGHT => SubLayer::Light(super::gives_light::GivesLight::from_params(p)),
+            super::heat::SUB_HEAT => SubLayer::Heat(super::heat::SubHeat::from_params(p)),
             _ => return None,
         })
     }
@@ -92,9 +95,9 @@ impl SubLayer {
         matches!(self, SubLayer::Light(g) if g.flare != 0.0)
     }
 
-    /// Whether it reads the thing's hits (Flash on hit, Colour on hit).
+    /// Whether it reads the thing's hits (Flash on hit, Colour on hit, Heat glow).
     pub fn reads_hits(&self) -> bool {
-        matches!(self, SubLayer::Flash(_) | SubLayer::Hue(_))
+        matches!(self, SubLayer::Flash(_) | SubLayer::Hue(_) | SubLayer::Heat(_))
     }
 
     /// How much further than its layer it reaches past the thing's edge, in its own units (ball
@@ -247,6 +250,7 @@ pub fn sub_record(sub: &SubLayer, cx: &mut SubCx) -> LayerGpu {
         },
         // Never written (see `SubLayer::writes`): its light rides on its layer's record.
         SubLayer::Light(_) => LayerGpu::ZERO,
+        SubLayer::Heat(h) => h.record(),
     };
     // The codes are fixed above; the shared records keep their own flags.
     LayerGpu { head: [r.head[0], 0, r.head[2], 0], ..r }
@@ -313,6 +317,8 @@ pub struct DrawnLayer {
     pub only: Vec<u32>,
     /// How it takes the scene's light ([`super::lighting::of`]).
     pub light: [f32; 4],
+    /// Its UV and beams ([`super::lighting::extra_of`], no link number yet).
+    pub more: [f32; 4],
 }
 
 impl DrawnLayer {
@@ -348,8 +354,12 @@ pub struct Stack {
     pub body: BodyLayer,
     /// How the Body takes the scene's light ([`super::lighting::of`]).
     pub body_light: [f32; 4],
+    /// The Body's UV ([`super::lighting::extra_of`], no link number yet).
+    pub body_more: [f32; 4],
     /// The light the Body gives off (its Gives off light sub-layers), when it gives any.
     pub body_emit: Option<super::gives_light::Emit>,
+    /// The Body's Heat glow sub-layers: their records follow the Body's.
+    pub body_heat: Vec<super::heat::SubHeat>,
     /// The drawn layers above the body, bottom first.
     pub drawn: Vec<DrawnLayer>,
     /// The group gradient, when the look has one shown and it mixes in.
@@ -377,7 +387,9 @@ impl Stack {
             body_id: body.id,
             body: BodyLayer::from_params(&slot.layer_params(body.id)),
             body_light: super::lighting::of(&slot.layer_params(body.id)),
+            body_more: super::lighting::extra_of(&slot.layer_params(body.id), 0.0, true),
             body_emit: None,
+            body_heat: Vec::new(),
             drawn: Vec::new(),
             group: None,
             ends: Vec::new(),
@@ -398,6 +410,7 @@ impl Stack {
                     subs: Vec::new(),
                     only: layer.only.clone(),
                     light: super::lighting::of(&p),
+                    more: super::lighting::extra_of(&p, 0.0, true),
                 })
             };
             match layer.kind.as_str() {
@@ -412,11 +425,13 @@ impl Stack {
                     if let Some(sub) = SubLayer::of_ball(kind, &p) {
                         if let Some(d) = stack.drawn.iter_mut().find(|d| Some(d.id) == layer.parent) {
                             d.subs.push(Sub { id: layer.id, sub });
-                        } else if layer.parent == Some(stack.body_id)
-                            && let SubLayer::Light(g) = &sub
-                        {
-                            // The Body takes Gives off light only.
-                            stack.body_emit.get_or_insert_with(Default::default).add(g);
+                        } else if layer.parent == Some(stack.body_id) {
+                            // The Body takes Gives off light and Heat glow only.
+                            match sub {
+                                SubLayer::Light(g) => stack.body_emit.get_or_insert_with(Default::default).add(&g),
+                                SubLayer::Heat(h) => stack.body_heat.push(h),
+                                _ => {}
+                            }
                         }
                     }
                 }
@@ -474,7 +489,7 @@ impl Stack {
             return None;
         }
         let under: usize = drawn[..at].iter().map(|d| d.records()).sum();
-        Some(1 + under as u32)
+        Some((self.body_records() + under) as u32)
     }
 
     /// How many records the group layers write after the ball's own.
@@ -487,7 +502,7 @@ impl Stack {
     /// [`bpe_gfx::MAX_LAYERS`] records, so past that whole layers are left out from the top,
     /// never part of one, keeping room for the group records at the end.
     pub fn kept(&self) -> usize {
-        let room = (bpe_gfx::MAX_LAYERS as usize).saturating_sub(1 + self.group_records());
+        let room = (bpe_gfx::MAX_LAYERS as usize).saturating_sub(self.body_records() + self.group_records());
         let mut used = 0;
         for (i, d) in self.drawn.iter().enumerate() {
             used += d.records();
@@ -594,13 +609,15 @@ impl Stack {
             bpe_gfx::PaintGpu::default()
         };
         let mut out = vec![LayerGpu {
-            head: [LayerGpu::BODY, 0, grouped(self.body_id), 0],
+            head: [LayerGpu::BODY, 0, grouped(self.body_id), self.body_heat.len() as u32],
             amount: [self.body.opacity.clamp(0.0, 1.0), 0.0, 0.0, 0.0],
             paint: body_paint,
             light: super::gives_light::unlit_if_lamp(self.body_light, self.body_emit),
             emit: super::gives_light::gpu_of(self.body_emit),
+            more: self.body_more,
             ..LayerGpu::ZERO
         }];
+        out.extend(self.body_heat.iter().map(super::heat::SubHeat::record));
         // Where each layer's record is, by id, for cuts that name a layer.
         let mut placed: Vec<(LayerId, usize)> = vec![(self.body_id, 0)];
         let sources = self.effect_sources();
@@ -663,6 +680,7 @@ impl Stack {
                 head: [r.head[0], r.head[1], r.head[2] | grouped(d.id), subs],
                 light: super::gives_light::unlit_if_lamp(d.light, emit),
                 emit: super::gives_light::gpu_of(emit),
+                more: d.more,
                 ..r
             });
             let mut cx = SubCx { placed: &placed, angle, sources: &sources, atlas, tiles };
@@ -753,7 +771,7 @@ impl Stack {
         if id == self.body_id {
             return Some(0);
         }
-        let mut at = 1;
+        let mut at = self.body_records();
         for d in self.drawn[..self.kept()].iter().filter(|d| d.writes()) {
             if d.id == id {
                 return Some(at);
@@ -795,11 +813,28 @@ impl Stack {
         out
     }
 
-    /// Whether a shown sub-layer reads the balls' hits (Flash on hit, Colour on hit), so each
-    /// ball's instance needs its hit data.
+    /// Whether a shown sub-layer reads the balls' hits (Flash on hit, Colour on hit, Heat glow),
+    /// so each ball's instance needs its hit data.
     pub fn needs_hits(&self) -> bool {
         self.drawn.iter().any(|d| d.writes() && d.subs.iter().any(|s| s.sub.reads_hits() || s.sub.flares()))
             || self.body_emit.is_some_and(|e| e.flare != 0.0)
+            || !self.body_heat.is_empty()
+    }
+
+    /// How many records the Body writes: its own and its Heat glows'.
+    pub fn body_records(&self) -> usize {
+        1 + self.body_heat.len()
+    }
+
+    /// The Heat glow whose heat its balls carry (`hit[3]`): the Body's first, else the first on a
+    /// drawn layer. One heat a ball; each Heat glow shows it by its own Glow and Hottest.
+    pub fn heat(&self) -> Option<&super::heat::SubHeat> {
+        self.body_heat.first().or_else(|| {
+            self.drawn.iter().filter(|d| d.writes()).flat_map(|d| &d.subs).find_map(|s| match &s.sub {
+                SubLayer::Heat(h) => Some(h),
+                _ => None,
+            })
+        })
     }
 
     /// Whether any of its shown layers gives off light (then a lit scene draws what it gives).

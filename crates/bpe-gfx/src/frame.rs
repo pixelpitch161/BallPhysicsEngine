@@ -165,6 +165,10 @@ pub struct LayerGpu {
     /// `[0]` own colour times strength (rgb, linear) and the flare on hits (w); `[1]` what its own
     /// colours are multiplied by (rgb) and the flare's length in seconds (w). All 0 gives none.
     pub emit: [[f32; 4]; 2],
+    /// Lighting part 4 (read only when the scene is lit): how bright it glows under UV light (0
+    /// not at all), 1 when it shows only under UV light, how much it catches the light in the air
+    /// (smoke), and its thing's link number (Lights up).
+    pub more: [f32; 4],
 }
 
 impl LayerGpu {
@@ -189,6 +193,7 @@ impl LayerGpu {
         extra: [[0.0; 4]; 4],
         light: [0.0; 4],
         emit: [[0.0; 4]; 2],
+        more: [0.0; 4],
     };
     pub const BODY: u32 = 0;
     pub const PATTERN: u32 = 1;
@@ -499,6 +504,8 @@ pub struct TrailVertex {
     /// The light it gives off, straight linear rgb at full cover (read only in the emission
     /// pass); w spare.
     pub emit: [f32; 4],
+    /// Lighting part 4, as [`LayerGpu::more`]: UV glow, only under UV, catches beams, link number.
+    pub extra: [f32; 4],
 }
 
 /// How a streak's edges look: its own, a soft glow, or only a band along its edge.
@@ -633,6 +640,7 @@ fn strip(
             style: [softness, band],
             light: [0.0; 2],
             emit: [0.0; 4],
+            extra: [0.0; 4],
         }
     };
     for i in 0..n - 1 {
@@ -665,6 +673,8 @@ pub struct Particle {
     /// The light it gives off, straight linear rgb at full cover (read only in the emission
     /// pass); w spare.
     pub emit: [f32; 4],
+    /// Lighting part 4, as [`LayerGpu::more`]: UV glow, only under UV, catches beams, link number.
+    pub extra: [f32; 4],
 }
 
 impl Particle {
@@ -678,6 +688,7 @@ impl Particle {
             shape: [shape, 0, 0, 0],
             light: [0.0; 4],
             emit: [0.0; 4],
+            extra: [0.0; 4],
         }
     }
 
@@ -860,8 +871,19 @@ pub struct LightGpu {
     /// How far short of the lamp shadows stop, the sun's size (tan of its radius), area shape (0
     /// rectangle, 1 disc), the light's own shadow softness.
     pub p6: [f32; 4],
-    /// How much its light shows in the scene's haze (Beam in haze); three spare.
+    /// How much its light shows in the scene's haze (Beam in haze), 1 when it is ultraviolet, the
+    /// share of an ultraviolet light that is ordinary light, a laser's glow.
     pub p7: [f32; 4],
+    /// Its gobo: kind (0 none, 1 stripes, 2 dots, 3 window, 4 leaves, 5 water caustics, 6 rings,
+    /// 7 clouds), size (world units), sharpness (0 soft to 1 crisp), depth (how dark its shade).
+    pub p8: [f32; 4],
+    /// The gobo's turn (cos, sin) and how far it has drifted (world units, in its own frame).
+    pub p9: [f32; 4],
+    /// Lights up: mode (0 everything, 1 only these, 2 everything but these), the first link
+    /// number in [`LightScene::links`], how many, 1 when it lights the background too.
+    pub p10: [f32; 4],
+    /// A laser's width (world units) and how bright it glows where it hits; two spare.
+    pub p11: [f32; 4],
 }
 
 impl LightGpu {
@@ -874,6 +896,10 @@ impl LightGpu {
         p5: [0.0; 4],
         p6: [0.0; 4],
         p7: [0.0; 4],
+        p8: [0.0; 4],
+        p9: [0.0; 4],
+        p10: [0.0; 4],
+        p11: [0.0; 4],
     };
 }
 
@@ -893,12 +919,38 @@ pub struct LightingGpu {
     /// The background's own light (Gives off light): `[0]` own colour times strength, `[1]` what
     /// the background's colours are multiplied by (rgb, linear; w spare).
     pub background: [[f32; 4]; 2],
+    /// Part 4, the haze moving: how (0 still, 1 drifting, 2 swirling), speed, size (world units),
+    /// patchiness (0 even, 1 in clouds).
+    pub haze: [f32; 4],
+    /// Which way it drifts (unit xy), how much balls stir it, spare.
+    pub haze_more: [f32; 4],
+    /// Underwater: how much (0 not), caustics, caustic size (world units), caustic speed.
+    pub water: [f32; 4],
+    /// The water's colour (linear rgb), sun rays.
+    pub water_colour: [f32; 4],
+    /// Where the water starts (world y, down is deeper), how deep its colour takes over, spare.
+    pub water_depth: [f32; 4],
+    /// Glow in the dark: how bright (0 none), fade time (s), charge speed, what remembers (0 the
+    /// background, 1 everything).
+    pub memory: [f32; 4],
+    /// The glow's own colour (linear rgb), 1 to glow in the light's own colour instead.
+    pub memory_colour: [f32; 4],
 }
 
 impl LightingGpu {
     /// Whether the background gives off any light.
     pub fn background_glows(&self) -> bool {
         self.background.iter().any(|e| e[..3].iter().any(|c| *c != 0.0))
+    }
+
+    /// Whether the haze moves (drifts or swirls): the extras pass then works out its density.
+    pub fn haze_moves(&self) -> bool {
+        self.haze[0] > 0.5 && self.air[..3].iter().any(|c| *c != 0.0)
+    }
+
+    /// Whether the picture remembers light (Glow in the dark).
+    pub fn remembers(&self) -> bool {
+        self.memory[0] != 0.0
     }
 }
 
@@ -914,6 +966,35 @@ pub struct LightScene {
     /// Whether any thing drawn gives off light (a shown Gives off light sub-layer): the frame is
     /// then drawn once more as the light things give off, for the light field.
     pub glows: bool,
+    /// Whether any layer glows under UV light (part 4): with an ultraviolet light the frame is
+    /// drawn once more as what glows under UV.
+    pub uv: bool,
+    /// Whether any layer catches the light in the air (smoke).
+    pub smoke: bool,
+    /// The things lights light up or leave out (Lights up), by link number; each light names a
+    /// run of them (`LightGpu::p10`).
+    pub links: Vec<f32>,
+    /// What stirs moving haze: each ball's place and velocity (world), then its radius.
+    pub stirs: Vec<[[f32; 4]; 2]>,
+    /// The scene's own link number (the background's, for Lights up).
+    pub background_link: f32,
+}
+
+impl LightScene {
+    /// Whether a light is ultraviolet.
+    pub fn has_uv_light(&self) -> bool {
+        self.lights.iter().any(|l| l.p7[1] > 0.5)
+    }
+
+    /// Whether the frame needs its tags picture (smoke, Lights up): drawn in light pass 6.
+    pub fn needs_tags(&self) -> bool {
+        self.smoke || self.lights.iter().any(|l| l.p10[0] > 0.5)
+    }
+
+    /// Whether the frame needs its UV picture: drawn in light pass 5.
+    pub fn needs_uv(&self) -> bool {
+        self.uv && self.has_uv_light()
+    }
 }
 
 /// What a lit frame shows. Only the editor sets anything but the picture.
@@ -1216,7 +1297,9 @@ impl Frame {
     /// trail vertex or a particle with an emission.
     pub fn gives_light(&self) -> bool {
         let on = |e: &[f32; 4]| e[..3].iter().any(|c| *c != 0.0);
-        self.look_layers.iter().any(|r| r.emit.iter().any(on))
+        // A Heat glow that lights the room counts too (lighting part 4).
+        let heat = |r: &LayerGpu| r.head[0] == LayerGpu::SUB_FLASH && r.amount[3] > 0.5 && r.amount[2] > 0.0;
+        self.look_layers.iter().any(|r| r.emit.iter().any(on) || heat(r))
             || self.trails.iter().chain(&self.trails_front).any(|v| on(&v.emit))
             || self.particles.iter().chain(&self.particles_front).any(|p| on(&p.emit))
             || self.layers.iter().any(|l| l.frame.gives_light())
@@ -1803,7 +1886,7 @@ mod tests {
     #[test]
     fn layer_records_and_layered_instances_fit_the_gpu() {
         assert_eq!(std::mem::size_of::<LayerGpu>() % 16, 0);
-        assert_eq!(std::mem::size_of::<LayerGpu>(), 240, "as layers.wgsl lays it out");
+        assert_eq!(std::mem::size_of::<LayerGpu>(), 256, "as layers.wgsl lays it out");
         assert!(std::mem::size_of::<LayeredInstance>() <= 160);
         assert_eq!(std::mem::size_of::<LayeredInstance>() % 16, 0);
         let mut f = Frame::default();

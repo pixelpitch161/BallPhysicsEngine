@@ -9,8 +9,8 @@ use bpe_core::Blend;
 
 use crate::{GrowableBuffer, HDR_FORMAT, Particle};
 
-const ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
-    0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Uint32x4, 4 => Float32x4, 5 => Float32x4
+const ATTRIBUTES: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
+    0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Uint32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4
 ];
 
 /// The sprites pipeline, and one for each blend things blend with each other by (see each.rs),

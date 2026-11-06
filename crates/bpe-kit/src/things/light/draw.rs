@@ -7,7 +7,8 @@ use bpe_gfx::{DrawCx, Frame, LightGpu, LightScene, ThingDraw};
 use bpe_runtime::{EventKind, Outline, World};
 use glam::Vec2;
 
-use super::{AreaShape, LightSettings, LightType, Points, RidesOn, StripAlong};
+use super::laser::{self, Meets};
+use super::{AreaShape, AtThings, FlickerStyle, LightColour, LightSettings, LightType, LightsUp, Points, RidesOn, StripAlong};
 use crate::things::rig::pattern::Drive;
 
 pub struct LightDraw;
@@ -31,8 +32,21 @@ impl ThingDraw for LightDraw {
         let s = LightSettings::from_params(&scenes.params(cx.resolved.id, &cx.resolved.params));
         let spots = places(cx, &s);
         let drives = crate::things::rig::fixtures::drives(cx, &scenes, spots.len());
+        let picked = Picked::of(cx, &s);
+        // Lights up: the link numbers it names, shared by all its lamps.
+        let links = if s.lights_up == LightsUp::Everything {
+            [0.0; 4]
+        } else {
+            let named = super::links::named(cx.scene, cx.world, &s, cx.resolved.id);
+            let first = scene.links.len() as f32;
+            scene.links.extend_from_slice(&named);
+            [s.lights_up.code(), first, named.len() as f32, 0.0]
+        };
+        // What a laser's beam meets, worked out once for all its lamps.
+        let scenery = (s.kind == LightType::Laser).then(|| laser::scenery(cx.world));
         for (spot, drive) in spots.iter().zip(drives) {
-            push_light(cx, &s, spot, &drive, scene);
+            let colour = drive.colour.or_else(|| picked.colour(spot));
+            push_light(cx, &s, spot, &drive, colour, links, scenery.as_ref(), scene);
         }
     }
 }
@@ -103,9 +117,21 @@ pub fn places_in(world: &World, parent: Option<ThingId>, s: &LightSettings) -> V
 }
 
 /// Adds the light at `place` to the scene, as its rigs drive it.
-fn push_light(cx: &DrawCx, s: &LightSettings, place: &Place, drive: &Drive, scene: &mut LightScene) {
-    let colour = drive.colour.unwrap_or_else(|| s.linear_colour());
-    let strength = s.strength * (1.0 + s.flare * flare(cx, s, place)) * drive.strength;
+fn push_light(
+    cx: &DrawCx,
+    s: &LightSettings,
+    place: &Place,
+    drive: &Drive,
+    colour: Option<[f32; 3]>,
+    links: [f32; 4],
+    scenery: Option<&laser::Scenery>,
+    scene: &mut LightScene,
+) {
+    let colour = colour.unwrap_or_else(|| s.linear_colour());
+    let strength = s.strength
+        * (1.0 + s.flare * flare(cx, s, place))
+        * drive.strength
+        * flicker(cx.time, s.flicker, s.flicker_speed, s.flicker_style, s.flicker_seed);
     let place = &Place { at: place.at + Vec2::new(drive.sway, 0.0), ..*place };
     let dir = Vec2::from_angle(aim_angle(s, place, cx.time) + drive.turn.to_radians());
     let half_cone = (0.5 * s.cone).to_radians();
@@ -115,6 +141,21 @@ fn push_light(cx: &DrawCx, s: &LightSettings, place: &Place, drive: &Drive, scen
     let shadow = s.shadow_colour.to_linear();
     let mut size = s.size.max(0.0);
     let (mut first, mut count) = (0.0, 0.0);
+    let mut ended_on_hit = 0.0;
+    if s.kind == LightType::Laser {
+        let shapes = meets_of(s.at_shapes);
+        let balls = meets_of(s.at_balls);
+        let meets = |_thing: ThingId, ball: bool| if ball { balls } else { shapes };
+        let empty = laser::Scenery::default();
+        let scenery = scenery.unwrap_or(&empty);
+        let path = laser::trace(scenery, place.at, dir, s.beam_length.max(0.0), s.bounces, place.ball, &meets);
+        first = scene.segments.len() as f32;
+        for pair in path.points.windows(2) {
+            scene.segments.push([pair[0].x, pair[0].y, pair[1].x, pair[1].y]);
+        }
+        count = path.points.len().saturating_sub(1) as f32;
+        ended_on_hit = if path.ended_on_hit { 1.0 } else { 0.0 };
+    }
     if s.kind == LightType::Strip {
         size += 0.5 * s.width.max(0.0);
         let points = match s.strip_along {
@@ -147,8 +188,149 @@ fn push_light(cx: &DrawCx, s: &LightSettings, place: &Place, drive: &Drive, scen
             if s.area_shape == AreaShape::Disc { 1.0 } else { 0.0 },
             s.softness.max(0.0),
         ],
-        p7: [if s.beam.is_finite() { s.beam } else { 0.0 }, 0.0, 0.0, 0.0],
+        p7: [
+            if s.beam.is_finite() { s.beam } else { 0.0 },
+            if s.ultraviolet { 1.0 } else { 0.0 },
+            s.uv_visible.max(0.0),
+            if s.kind == LightType::Laser { s.laser_glow.max(0.0) } else { 0.0 },
+        ],
+        p8: [s.gobo.code(), s.gobo_size.max(1e-3), s.gobo_sharpness, s.gobo_depth],
+        p9: gobo_turn(s, dir, cx.time),
+        p10: links,
+        p11: [s.laser_width.max(0.0), s.hit_glow.max(0.0), ended_on_hit, 0.0],
     });
+}
+
+/// How a laser meets a thing its At shapes or At balls answers.
+fn meets_of(at: AtThings) -> Meets {
+    match at {
+        AtThings::Bounce => Meets::Bounce,
+        AtThings::Stop => Meets::Stop,
+        AtThings::PassThrough => Meets::Pass,
+    }
+}
+
+/// A gobo's turn (cos, sin) and drift (the offset its pattern has moved) at `time`: a lamp's
+/// pattern turns with where it points (a sun's lies on the world), by Gobo turn and Spin.
+fn gobo_turn(s: &LightSettings, dir: Vec2, time: f64) -> [f32; 4] {
+    let t = time as f32;
+    let aim = if s.kind == LightType::Point || s.kind == LightType::Sun { 0.0 } else { dir.y.atan2(dir.x) };
+    let turn = aim + (s.gobo_turn + s.gobo_spin * t).to_radians();
+    let drift = s.gobo_drift * t;
+    [turn.cos(), turn.sin(), drift.x, drift.y]
+}
+
+/// How much of its strength a flickering light gives at `time` (1 with no Flicker): pure in
+/// the time and the seed, so every frame drawn again, scrubbed or exported is the same.
+pub fn flicker(time: f64, amount: f32, speed: f32, style: FlickerStyle, seed: u32) -> f32 {
+    if amount == 0.0 || !amount.is_finite() {
+        return 1.0;
+    }
+    let x = time * speed.max(0.0) as f64;
+    let n = match style {
+        // Smooth wandering noise, two speeds over each other.
+        FlickerStyle::Candle => 0.65 * smooth_noise(x, seed) + 0.35 * smooth_noise(2.7 * x + 13.0, seed ^ 0x9e37),
+        // Mostly on, now and then a short dropout (about one beat in six).
+        FlickerStyle::Faulty => {
+            let k = x.floor();
+            let r = hash(k as i64, seed);
+            if r > 0.83 {
+                let f = (x - k) as f32;
+                // Out for the middle of the beat, with a stutter.
+                if (0.15..0.75).contains(&f) { if hash((x * 7.0).floor() as i64, seed ^ 0x51) > 0.3 { 1.0 } else { 0.4 } } else { 0.0 }
+            } else {
+                0.0
+            }
+        }
+        FlickerStyle::Pulse => {
+            let w = (std::f64::consts::TAU * x).sin() as f32;
+            0.5 - 0.5 * w
+        }
+    };
+    (1.0 - amount * n).max(0.0)
+}
+
+/// A number from 0 to 1 for whole number `k` and `seed`.
+fn hash(k: i64, seed: u32) -> f32 {
+    let mut h = (k as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (seed as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+    h ^= h >> 31;
+    h = h.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    h ^= h >> 29;
+    (h >> 40) as f32 / (1u64 << 24) as f32
+}
+
+/// Value noise from 0 to 1, smooth between whole numbers.
+fn smooth_noise(x: f64, seed: u32) -> f32 {
+    let k = x.floor();
+    let f = (x - k) as f32;
+    let f = f * f * (3.0 - 2.0 * f);
+    let (a, b) = (hash(k as i64, seed), hash(k as i64 + 1, seed));
+    a + (b - a) * f
+}
+
+/// What a light with Colour from Picked takes its colour from: a thing's layer's main colour, or
+/// for a Body of balls each ball's own colour.
+enum Picked<'a> {
+    None,
+    One([f32; 3]),
+    EachBall { thing: ThingId, colours: Box<dyn Fn(usize) -> [f32; 4] + 'a>, first: usize },
+}
+
+impl<'a> Picked<'a> {
+    fn of(cx: &DrawCx<'a>, s: &LightSettings) -> Picked<'a> {
+        if s.colour_from != LightColour::Picked {
+            return Picked::None;
+        }
+        let Some(id) = cx.world.matching(&s.pick_from, cx.resolved.id).into_iter().find(|&id| id != cx.resolved.id)
+        else {
+            return Picked::None;
+        };
+        let (Some(thing), Some(resolved)) = (cx.tree.things.get(&id), cx.scene.things.get(&id)) else {
+            return Picked::None;
+        };
+        // A Body of balls: each ball's own colour, as it is drawn.
+        if s.pick_layer <= 1
+            && let Some(bodies) = cx.world.bodies.get(&id)
+        {
+            let theirs = DrawCx { thing, resolved, ..*cx };
+            if let Some(colours) = crate::things::balls::draw::ball_colors(&theirs) {
+                let first = (0..bodies.len()).find(|&r| bodies.alive[r]).unwrap_or(0);
+                return Picked::EachBall { thing: id, colours: Box::new(colours), first };
+            }
+        }
+        layer_colour(resolved, s.pick_layer).map_or(Picked::None, Picked::One)
+    }
+
+    /// The colour for the lamp at `place`: the ball it rides when it rides one of the picked
+    /// balls, else the first ball's.
+    fn colour(&self, place: &Place) -> Option<[f32; 3]> {
+        match self {
+            Picked::None => None,
+            Picked::One(c) => Some(*c),
+            Picked::EachBall { thing, colours, first } => {
+                let row = match place.ball {
+                    Some((t, row)) if t == *thing => row as usize,
+                    _ => *first,
+                };
+                let c = colours(row);
+                Some([c[0], c[1], c[2]])
+            }
+        }
+    }
+}
+
+/// The main colour (linear) of layer number `number` (1 the base layer, sub-layers not counted) of
+/// a thing's Look: its Colour, or its gradient at the middle.
+fn layer_colour(resolved: &bpe_core::ResolvedThing, number: u32) -> Option<[f32; 3]> {
+    let look = resolved.slots.get(&bpe_core::SlotId::Look)?;
+    let layer = look.layers.iter().filter(|l| l.parent.is_none()).nth(number.max(1) as usize - 1)?;
+    let params = look.layer_params(layer.id);
+    let c = ["colour", "colours", "color"].iter().find_map(|k| match params.get(k) {
+        Some(bpe_core::Value::Color(c)) => Some(c.to_linear()),
+        Some(bpe_core::Value::Gradient(g)) => Some(g.sample(0.5)),
+        _ => None,
+    })?;
+    Some([c[0], c[1], c[2]])
 }
 
 /// Which way the light at `place` points at `time`, in radians clockwise from the right: its

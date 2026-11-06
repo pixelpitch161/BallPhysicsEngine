@@ -13,6 +13,8 @@ struct TrailIn {
     @location(4) light: vec2<f32>,
     // The light it gives off (straight, linear), read in the emission pass.
     @location(5) emit: vec4<f32>,
+    // UV glow, only under UV, catches beams, link number (lighting part 4).
+    @location(6) extra: vec4<f32>,
 };
 
 struct TrailOut {
@@ -22,6 +24,7 @@ struct TrailOut {
     @location(2) style: vec2<f32>,
     @location(3) @interpolate(flat) light: vec2<f32>,
     @location(4) emit: vec3<f32>,
+    @location(5) @interpolate(flat) extra: vec4<f32>,
 };
 
 @vertex
@@ -33,6 +36,7 @@ fn vs_trail(v: TrailIn) -> TrailOut {
     out.style = v.style;
     out.light = v.light;
     out.emit = v.emit.rgb;
+    out.extra = v.extra;
     return out;
 }
 
@@ -66,7 +70,7 @@ fn shade_trail(in: TrailOut) -> vec4<f32> {
 
 @fragment
 fn fs_trail(in: TrailOut) -> @location(0) vec4<f32> {
-    return light_flat(shade_trail(in), in.light.x, in.light.y, in.emit);
+    return light_flat(shade_trail(in), in.light.x, in.light.y, in.emit, in.extra);
 }
 
 // In a layer whose things blend with each other (see each.wgsl).

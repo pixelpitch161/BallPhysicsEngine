@@ -45,6 +45,7 @@ fn square(half: f32, colour: [f32; 4]) -> Vec<TrailVertex> {
         style: [0.0, 0.0],
         light: [0.0; 2],
         emit: [0.0; 4],
+        extra: [0.0; 4],
     };
     let (a, b, c, d) = (v(-half, -half), v(half, -half), v(half, half), v(-half, half));
     vec![a, b, c, a, c, d]

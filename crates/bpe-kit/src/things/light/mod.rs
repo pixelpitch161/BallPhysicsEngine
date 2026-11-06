@@ -2,8 +2,13 @@
 //! A Point, Spot, Sun, Area or Strip light, with soft shadows. Inside a Balls, Emitter or Shape
 //! thing it rides on it: on each ball, the middle, one ball, or a point on a shape's edge. A
 //! light is drawn only as light: it has no sim and never touches the physics.
+//!
+//! Part 4 adds the Laser (a beam traced through the world, `laser.rs`), gobos and flicker,
+//! ultraviolet light, Lights up (light linking, `links.rs`) and colours picked from a layer.
 
 pub mod draw;
+pub mod laser;
+pub mod links;
 
 use bpe_core::{Choice, Color, KindId, SettingDef, Settings, SlotId, Target, ThingKind};
 use glam::Vec2;
@@ -27,6 +32,8 @@ pub enum LightType {
     Area,
     /// A neon tube: light along a line or a shape's outline.
     Strip,
+    /// A thin beam that bounces off shapes and balls.
+    Laser,
 }
 
 impl LightType {
@@ -38,6 +45,7 @@ impl LightType {
             Self::Sun => 2.0,
             Self::Area => 3.0,
             Self::Strip => 4.0,
+            Self::Laser => 5.0,
         }
     }
 
@@ -49,10 +57,11 @@ impl LightType {
             Self::Sun => "Sun",
             Self::Area => "Area light",
             Self::Strip => "Strip light",
+            Self::Laser => "Laser",
         }
     }
 
-    pub const ALL: [LightType; 5] = [Self::Point, Self::Spot, Self::Sun, Self::Area, Self::Strip];
+    pub const ALL: [LightType; 6] = [Self::Point, Self::Spot, Self::Sun, Self::Area, Self::Strip, Self::Laser];
 }
 
 /// Where the light's colour comes from.
@@ -63,6 +72,81 @@ pub enum LightColour {
     Own,
     /// The colour of a lamp at a temperature, in kelvin: low is warm, high is cold.
     Temperature,
+    /// The colour of a layer of a thing, as it is at that moment.
+    Picked,
+}
+
+/// What a pattern the light shines through looks like (a gobo).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum Gobo {
+    #[default]
+    None,
+    Stripes,
+    Dots,
+    Window,
+    Leaves,
+    WaterCaustics,
+    Rings,
+    Clouds,
+}
+
+impl Gobo {
+    /// Its number in lighting.wgsl.
+    pub fn code(self) -> f32 {
+        match self {
+            Self::None => 0.0,
+            Self::Stripes => 1.0,
+            Self::Dots => 2.0,
+            Self::Window => 3.0,
+            Self::Leaves => 4.0,
+            Self::WaterCaustics => 5.0,
+            Self::Rings => 6.0,
+            Self::Clouds => 7.0,
+        }
+    }
+}
+
+/// How a light flickers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum FlickerStyle {
+    /// Soft and restless, like a flame.
+    #[default]
+    Candle,
+    /// Mostly on, with sudden dropouts, like a failing tube.
+    Faulty,
+    /// A smooth throb.
+    Pulse,
+}
+
+/// Which things a light lights up (light linking).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum LightsUp {
+    #[default]
+    Everything,
+    OnlyThese,
+    EverythingButThese,
+}
+
+impl LightsUp {
+    pub fn code(self) -> f32 {
+        match self {
+            Self::Everything => 0.0,
+            Self::OnlyThese => 1.0,
+            Self::EverythingButThese => 2.0,
+        }
+    }
+}
+
+/// What a laser does when it meets a thing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum AtThings {
+    /// It bounces off like off a mirror.
+    #[default]
+    Bounce,
+    /// It ends there.
+    Stop,
+    /// It goes straight through.
+    PassThrough,
 }
 
 /// How the light fades with distance, out to its Reach.
@@ -145,6 +229,12 @@ pub struct LightSettings {
     /// The light's colour.
     #[setting(label = "Colour", when = "colour_from=own", simple, keyframe, group = "Light")]
     pub colour: Color,
+    /// The thing whose layer gives the colour.
+    #[setting(label = "Pick from", when = "colour_from=picked", group = "Light")]
+    pub pick_from: Target,
+    /// Which of its layers, counted from its base layer (1).
+    #[setting(label = "Layer", when = "colour_from=picked", range(1, 1e9), span(1, 8), group = "Light")]
+    pub pick_layer: u32,
     /// The lamp's temperature: about 2700 a warm bulb, 5500 daylight, 9000 a blue sky.
     #[setting(
         label = "Temperature",
@@ -275,6 +365,92 @@ pub struct LightSettings {
     /// How much its light shows in the scene's haze (the Lighting card's Haze): beams.
     #[setting(label = "Beam in haze", span(0, 4), keyframe, group = "Air")]
     pub beam: f32,
+    /// How wide the laser's beam is.
+    #[setting(label = "Beam width", when = "kind=laser", range(0, 1e9), span(0.5, 20), unit = "px", keyframe, group = "Laser")]
+    pub laser_width: f32,
+    /// How brightly the beam itself shows.
+    #[setting(label = "Beam glow", when = "kind=laser", span(0, 4), keyframe, group = "Laser")]
+    pub laser_glow: f32,
+    /// How brightly it shines where it bounces or ends.
+    #[setting(label = "Hit glow", when = "kind=laser", span(0, 4), keyframe, group = "Laser")]
+    pub hit_glow: f32,
+    /// How many times it may bounce.
+    #[setting(label = "Bounces", when = "kind=laser", range(0, 1e9), span(0, 32), group = "Laser")]
+    pub bounces: u32,
+    /// How far it reaches in all, bounces and all.
+    #[setting(
+        label = "Beam length",
+        when = "kind=laser",
+        range(0, 1e9),
+        span(0, 20000),
+        unit = "px",
+        keyframe,
+        group = "Laser"
+    )]
+    pub beam_length: f32,
+    /// What it does at a shape.
+    #[setting(label = "At shapes", when = "kind=laser", group = "Laser")]
+    pub at_shapes: AtThings,
+    /// What it does at a ball.
+    #[setting(label = "At balls", when = "kind=laser", group = "Laser")]
+    pub at_balls: AtThings,
+    /// A pattern the light shines through.
+    #[setting(label = "Gobo", group = "Gobo and flicker")]
+    pub gobo: Gobo,
+    /// How big the pattern is.
+    #[setting(
+        label = "Gobo size",
+        when = "gobo!=none",
+        range(0.001, 1e9),
+        span(10, 1000),
+        unit = "px",
+        keyframe,
+        group = "Gobo and flicker"
+    )]
+    pub gobo_size: f32,
+    /// How the pattern is turned.
+    #[setting(label = "Gobo turn", when = "gobo!=none", span(-180, 180), unit = "°", keyframe, group = "Gobo and flicker")]
+    pub gobo_turn: f32,
+    /// How fast the pattern turns.
+    #[setting(label = "Gobo spin", when = "gobo!=none", span(-360, 360), unit = "°/s", keyframe, group = "Gobo and flicker")]
+    pub gobo_spin: f32,
+    /// How fast the pattern slides, across and along.
+    #[setting(label = "Gobo drift", when = "gobo!=none", unit = "px/s", keyframe, group = "Gobo and flicker")]
+    pub gobo_drift: Vec2,
+    /// How crisp the pattern's edges are.
+    #[setting(label = "Sharpness", when = "gobo!=none", span(0, 1), keyframe, group = "Gobo and flicker")]
+    pub gobo_sharpness: f32,
+    /// How dark the pattern's shade is: 0 none, 1 black.
+    #[setting(label = "Gobo depth", when = "gobo!=none", span(0, 1), keyframe, group = "Gobo and flicker")]
+    pub gobo_depth: f32,
+    /// How much it flickers: 0 steady.
+    #[setting(label = "Flicker", span(0, 1), keyframe, group = "Gobo and flicker")]
+    pub flicker: f32,
+    /// How fast it flickers.
+    #[setting(label = "Flicker speed", when = "flicker", span(0.1, 30), unit = "Hz", keyframe, group = "Gobo and flicker")]
+    pub flicker_speed: f32,
+    /// How it flickers.
+    #[setting(label = "Flicker style", when = "flicker", group = "Gobo and flicker")]
+    pub flicker_style: FlickerStyle,
+    /// Picks another flicker.
+    #[setting(label = "Flicker seed", when = "flicker", span(0, 100), group = "Gobo and flicker")]
+    pub flicker_seed: u32,
+    /// Ultraviolet: it lights only what glows under UV (a layer's Under UV), but for its visible
+    /// share.
+    #[setting(label = "Ultraviolet", group = "Special")]
+    pub ultraviolet: bool,
+    /// How much ordinary light an ultraviolet lamp also gives.
+    #[setting(label = "Visible light", when = "ultraviolet", span(0, 1), keyframe, group = "Special")]
+    pub uv_visible: f32,
+    /// Which things it lights up. Its light in the air shows whatever it lights.
+    #[setting(label = "Lights up", group = "Lights up")]
+    pub lights_up: LightsUp,
+    /// The things it lights up, or leaves out: a thing, a tag or a kind.
+    #[setting(label = "Things", when = "lights_up!=everything", group = "Lights up")]
+    pub link_things: Target,
+    /// Whether it lights the background too.
+    #[setting(label = "The background", when = "lights_up!=everything", group = "Lights up")]
+    pub link_background: bool,
 }
 
 impl Default for LightSettings {
@@ -313,6 +489,31 @@ impl Default for LightSettings {
             flare_length: 0.3,
             flare_from: Target::Kind(KindId::from("balls")),
             beam: 1.0,
+            pick_from: Target::Kind(KindId::from("balls")),
+            pick_layer: 1,
+            laser_width: 3.0,
+            laser_glow: 1.0,
+            hit_glow: 1.0,
+            bounces: 8,
+            beam_length: 8000.0,
+            at_shapes: AtThings::Bounce,
+            at_balls: AtThings::Bounce,
+            gobo: Gobo::None,
+            gobo_size: 120.0,
+            gobo_turn: 0.0,
+            gobo_spin: 0.0,
+            gobo_drift: Vec2::ZERO,
+            gobo_sharpness: 0.6,
+            gobo_depth: 1.0,
+            flicker: 0.0,
+            flicker_speed: 8.0,
+            flicker_style: FlickerStyle::Candle,
+            flicker_seed: 1,
+            ultraviolet: false,
+            uv_visible: 0.15,
+            lights_up: LightsUp::Everything,
+            link_things: Target::Kind(KindId::from("balls")),
+            link_background: true,
         }
     }
 }
@@ -324,15 +525,23 @@ impl LightSettings {
         match kind {
             LightType::Strip => s.width = 8.0,
             LightType::Area => s.length = 120.0,
+            LightType::Laser => {
+                s.colour = Color::rgb(0xff, 0x2f, 0x4e);
+                s.strength = 3.0;
+                s.reach = 160.0;
+                s.size = 2.0;
+                s.height = 20.0;
+            }
             _ => {}
         }
         s
     }
 
-    /// The light's colour, linear, before its strength.
+    /// The light's colour, linear, before its strength (a picked colour is worked out when it is
+    /// drawn: here, its own colour).
     pub fn linear_colour(&self) -> [f32; 3] {
         match self.colour_from {
-            LightColour::Own => {
+            LightColour::Own | LightColour::Picked => {
                 let c = self.colour.to_linear();
                 [c[0], c[1], c[2]]
             }
@@ -345,7 +554,7 @@ impl LightSettings {
     /// The light's colour as sRGB bytes, for the editor's colour dot.
     pub fn display_colour(&self) -> [u8; 3] {
         match self.colour_from {
-            LightColour::Own => [self.colour.r, self.colour.g, self.colour.b],
+            LightColour::Own | LightColour::Picked => [self.colour.r, self.colour.g, self.colour.b],
             LightColour::Temperature => {
                 let enc = |c: f32| {
                     let c = c.clamp(0.0, 1.0);
@@ -461,7 +670,21 @@ mod tests {
         for d in LightSettings::defs() {
             if let Some((lo, hi)) = d.range {
                 assert!(
-                    matches!(d.key, "reach" | "size" | "width" | "length" | "cone" | "ball_number" | "flare_length"),
+                    matches!(
+                        d.key,
+                        "reach"
+                            | "size"
+                            | "width"
+                            | "length"
+                            | "cone"
+                            | "ball_number"
+                            | "flare_length"
+                            | "pick_layer"
+                            | "laser_width"
+                            | "bounces"
+                            | "beam_length"
+                            | "gobo_size"
+                    ),
                     "{} has a hard range {lo}..{hi}",
                     d.key
                 );

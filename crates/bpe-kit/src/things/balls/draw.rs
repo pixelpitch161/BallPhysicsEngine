@@ -375,6 +375,10 @@ impl ThingDraw for BallsDraw {
             .collect()
     }
 
+    fn light(&self, cx: &DrawCx, scene: &mut bpe_gfx::LightScene) {
+        push_stirs(cx, scene);
+    }
+
     fn draw_around(&self, cx: &DrawCx, index: usize, frame: &mut Frame) {
         let Some(worn) = Worn::of(cx) else { return };
         let Some(layer) = own_around(cx.resolved).into_iter().nth(index) else { return };
@@ -398,7 +402,21 @@ impl ThingDraw for BallsDraw {
                 });
             }
         }
-        drew.light(frame, layer.light);
+        drew.light(frame, &layer, cx);
+    }
+}
+
+/// Adds every live ball of the thing `cx` is drawing to the balls that stir a moving haze (lighting
+/// part 4: Balls stir it), when the scene's haze moves and they stir it.
+pub fn push_stirs(cx: &DrawCx, scene: &mut bpe_gfx::LightScene) {
+    let s = &scene.settings;
+    if !s.haze_moves() || s.haze_more[2] == 0.0 {
+        return;
+    }
+    let Some(bodies) = cx.world.bodies.get(&cx.thing.id) else { return };
+    for r in (0..bodies.len()).filter(|&r| bodies.alive[r]) {
+        let (p, v) = (bodies.position[r], bodies.velocity[r]);
+        scene.stirs.push([[p.x, p.y, v.x, v.y], [bodies.radius[r], 0.0, 0.0, 0.0]]);
     }
 }
 
@@ -643,6 +661,7 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, worn: &Worn, part: u32) {
     let on_gpu = stack.group_on_gpu();
     // Each stack's records, written the first time a ball wearing it is drawn.
     let mut records: Vec<Option<Vec<bpe_gfx::LayerGpu>>> = vec![None; worn.stacks.len()];
+    let link = crate::things::light::links::number_of(cx.scene, id);
     // Balls given layers of their own wear their own range of records: one range for each
     // stack and set of layers worn, most scenes one range for every ball.
     let mut ranges: HashMap<(usize, Vec<bool>), (u32, u32)> = HashMap::new();
@@ -651,7 +670,11 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, worn: &Worn, part: u32) {
         let wears: Vec<bool> =
             if own.has_only() { (0..own.drawn.len()).map(|k| own.applies(k, number)).collect() } else { Vec::new() };
         *ranges.entry((at, wears)).or_insert_with_key(|(_, wears)| {
-            let all = records[at].get_or_insert_with(|| own.records(&mut frame.gradients, &mut frame.mask_tiles, time));
+            let all = records[at].get_or_insert_with(|| {
+                let mut made = own.records(&mut frame.gradients, &mut frame.mask_tiles, time);
+                crate::modules::look::layers::lighting::stamp(&mut made, link, frame.light.as_mut());
+                made
+            });
             let first = frame.look_layers.len() as u32;
             let picked = if wears.is_empty() { all.clone() } else { own.records_for(all, |k| wears[k]) };
             let count = picked.len() as u32;
@@ -680,6 +703,13 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, worn: &Worn, part: u32) {
     let hits = stack.needs_hits();
     let memory = worn.stacks.iter().map(|s| s.flash_memory()).fold(0.0, f32::max);
     let last = if hits { last_hits(cx, bodies.len(), memory) } else { Vec::new() };
+    // Heat glow: each ball's heat from its hits (one heat a ball, by its first stack's heat).
+    let heats = worn
+        .stacks
+        .iter()
+        .find_map(|s| s.heat())
+        .map(|h| crate::modules::look::layers::heat::ball_heats(cx, bodies.len(), h))
+        .unwrap_or_default();
     let start = frame.layered.len() as u32;
     let mut made: Vec<(usize, bpe_gfx::LayeredInstance)> = Vec::with_capacity(bodies.len());
     for i in 0..bodies.len() {
@@ -703,7 +733,7 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, worn: &Worn, part: u32) {
         ball.range[2] = part;
         if hits {
             let (age, strength) = last.get(i).copied().unwrap_or((bpe_gfx::NO_HIT[0], 0.0));
-            ball.hit = [age, strength, group.hits(bodies, i) as f32, 0.0];
+            ball.hit = [age, strength, group.hits(bodies, i) as f32, heats.get(i).copied().unwrap_or(0.0)];
         }
         if mine.body_each_ball() {
             // A gradient body turns by the ball's own hue turns, as a plain body's colour does.

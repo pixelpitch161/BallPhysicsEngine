@@ -206,7 +206,8 @@ pub fn draw_balls(
     let pick = |e: &Emission| mine(e.row.and_then(|r| copy_of.get(r).copied()).unwrap_or(0));
     let src = Source { cx, particles, pick: &pick, colour: &colour, hit: &hit, unit: &unit, pull_to: &pull_to };
     if particles.made_of == MadeOf::MiniBalls {
-        draw_mini_balls(&src, &emissions, balls, stack, (layer.light, layer.emit), frame);
+        let more = layer.more_in(cx, frame.light.as_mut()).unwrap_or([0.0; 4]);
+        draw_mini_balls(&src, &emissions, balls, stack, (layer.light, layer.emit, more), frame);
     } else {
         draw_sprites(&src, &emissions, frame);
     }
@@ -220,7 +221,7 @@ fn draw_mini_balls(
     emissions: &[Emission],
     balls: &Balls,
     stack: &Stack,
-    (light, emit): ([f32; 4], Option<super::super::gives_light::Emit>),
+    (light, emit, more): ([f32; 4], Option<super::super::gives_light::Emit>, [f32; 4]),
     frame: &mut Frame,
 ) {
     let cx = src.cx;
@@ -230,6 +231,7 @@ fn draw_mini_balls(
     for r in &mut records {
         r.light = [light[0], light[1], 0.0, 0.0];
         r.emit = super::super::gives_light::gpu_steady(emit);
+        r.more = more;
     }
     let first = frame.look_layers.len() as u32;
     let count = records.len() as u32;

@@ -158,6 +158,12 @@ pub fn sub_kinds() -> Vec<Kind> {
             crate::modules::look::layers::gives_light::HELP,
             crate::modules::look::layers::gives_light::GivesLight::defs,
         ),
+        sub(
+            crate::modules::look::layers::heat::SHAPE_SUB_HEAT,
+            "Heat glow",
+            "Its layer heats up every time a ball hits the shape and glows red to white hot, cooling down between hits.",
+            crate::modules::look::layers::heat::SubHeat::defs,
+        ),
     ]
 }
 
@@ -227,7 +233,7 @@ impl LayerKind for ShapeBody {
         true
     }
     fn takes_sub(&self, sub: &str) -> bool {
-        sub == SUB_LIGHT
+        sub == SUB_LIGHT || sub == crate::modules::look::layers::heat::SHAPE_SUB_HEAT
     }
     fn per_ball(&self) -> bool {
         false
@@ -263,7 +269,8 @@ mod tests {
                 SUB_RECOLOUR,
                 SUB_FLASH,
                 SUB_HUE,
-                SUB_LIGHT
+                SUB_LIGHT,
+                crate::modules::look::layers::heat::SHAPE_SUB_HEAT
             ]
         );
         for k in reg.layers_for(CARD).filter(|k| k.section() != LayerSection::Around) {
