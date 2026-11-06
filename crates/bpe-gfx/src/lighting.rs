@@ -965,7 +965,9 @@ impl Lighting {
         // Part 3: a baked sample, its bounce light traced in Stage, and caustics.
         let baking = frame.bake.is_some();
         let bounce_setting = s.glow[0];
-        let traced = baking && s.stage[0] > 0.5 && bounce_setting != 0.0 && s.bake[1] >= 1.0;
+        // Bounced light is as live unless the bake traces it (Bounced light: Traced).
+        let more_bounces = baking && s.bake_more[3] > 0.5;
+        let traced = more_bounces && s.stage[0] > 0.5 && bounce_setting != 0.0 && s.bake[1] >= 1.0;
         let glass = if s.bake_more[2] != 0.0 && !scene.lights.is_empty() { caustic_glass(scene) } else { Vec::new() };
         let caustics_on = !glass.is_empty();
         // The background-light picture carries the background's own light, the caustics and the
@@ -1097,10 +1099,11 @@ impl Lighting {
         let [bounce, reach, blooms, _] = s.glow;
         // A Stage bake traces its bounce light: the field then carries only glowing things'. A
         // bake with no Light bounces has none.
-        let bounce = if traced || (baking && s.bake[1] < 1.0) { 0.0 } else { bounce };
+        let bounce = if traced || (more_bounces && s.bake[1] < 1.0) { 0.0 } else { bounce };
         let field_on = scene.glows || bounce != 0.0;
-        // Live, one bounce; baking, Light bounces (each run bounces the one before), at most 16.
-        let bounces = if baking { (s.bake[1].max(0.0) as usize).min(16) } else { 1 };
+        // One bounce, as live; a bake with Bounced light Traced, Light bounces (each run bounces the one
+        // before), at most 16.
+        let bounces = if more_bounces { (s.bake[1].max(0.0) as usize).min(16) } else { 1 };
         let runs = match () {
             _ if !field_on => 0,
             _ if bounce == 0.0 => 1,

@@ -112,6 +112,17 @@ pub enum OnExport {
     Bake,
 }
 
+/// How a bake works out the light bounced off lit things (Bounce light).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum BakeBounce {
+    /// As the editor draws it, so the baked video keeps the look you set.
+    #[default]
+    LikeLive,
+    /// Followed for real: in Stage traced in 3D off the balls, walls and floor (a plane can't
+    /// light itself, so a bare wall gets less), elsewhere bounced Light bounces times.
+    Traced,
+}
+
 /// How the haze moves (lighting part 4).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
 pub enum HazeMoves {
@@ -420,8 +431,17 @@ pub struct LightingSettings {
     /// How many times each frame is drawn and averaged: more is smoother and slower.
     #[setting(label = "Samples", when = "on_export=bake", range(1, 1e9), span(1, 64), group = "Quality")]
     pub bake_samples: u32,
-    /// How many times light bounces from lit things onto others (with Bounce light above 0).
-    #[setting(label = "Light bounces", when = "on_export=bake", range(0, 1e9), span(0, 6), group = "Quality")]
+    /// How the bake works out bounced light (with Bounce light above 0).
+    #[setting(label = "Bounced light", when = "on_export=bake", group = "Quality")]
+    pub bake_bounce: BakeBounce,
+    /// How many times traced light bounces from lit things onto others.
+    #[setting(
+        label = "Light bounces",
+        when = "on_export=bake and bake_bounce=traced",
+        range(0, 1e9),
+        span(0, 6),
+        group = "Quality"
+    )]
     pub light_bounces: u32,
     /// How many times a reflection bounces between mirror-like things in the bake.
     #[setting(label = "Bake reflections", when = "on_export=bake", range(1, 1e9), span(1, 16), group = "Quality")]
@@ -564,6 +584,7 @@ impl Default for LightingSettings {
             glass_caustics: 1.0,
             on_export: OnExport::SameAsLive,
             bake_samples: 16,
+            bake_bounce: BakeBounce::LikeLive,
             light_bounces: 2,
             bake_reflections: 8,
             motion_blur: true,
@@ -674,7 +695,7 @@ impl LightingSettings {
                 f32::from(u8::from(self.on_export == OnExport::Bake)),
                 f32::from(u8::from(self.clean_up)),
                 finite(self.glass_caustics),
-                0.0,
+                f32::from(u8::from(self.bake_bounce == BakeBounce::Traced)),
             ],
         }
     }
