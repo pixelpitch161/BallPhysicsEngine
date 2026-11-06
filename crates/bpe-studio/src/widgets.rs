@@ -683,11 +683,22 @@ fn follow_items(
 ) {
     use bpe_core::{PulseSource, SoundSource};
     let can = crate::follow::can_follow(def);
-    let any = !f.menu.shapes.is_empty() || !f.menu.buses.is_empty();
-    let why = if !can { "This setting can't follow sound" } else { "No shape makes sound yet" };
+    // A setting the lighting reads can't follow a sound that hears the light (one-way).
+    let lighting_reads = !f.menu.lit.is_empty() && !light_ok;
+    let shapes: Vec<_> = f.menu.shapes.iter().filter(|s| !(lighting_reads && s.hears_light)).collect();
+    let buses: &[(u8, String)] =
+        if lighting_reads && f.menu.shapes.iter().any(|s| s.hears_light) { &[] } else { &f.menu.buses };
+    let any = !shapes.is_empty() || !buses.is_empty();
+    let why = if !can {
+        "This setting can't follow sound"
+    } else if !f.menu.shapes.is_empty() {
+        "The lighting reads this setting, and the sound hears the light"
+    } else {
+        "No shape makes sound yet"
+    };
     ui.add_enabled_ui(can && any, |ui| {
         let r = ui.menu_button("Follow sound", |ui| {
-            for shape in &f.menu.shapes {
+            for shape in &shapes {
                 ui.menu_button(&shape.name, |ui| {
                     for (part, name) in &shape.parts {
                         let source = PulseSource::Sound { shape: shape.id, source: *part };
@@ -699,7 +710,7 @@ fn follow_items(
                     }
                 });
             }
-            for (n, name) in &f.menu.buses {
+            for (n, name) in buses {
                 let shape = f.menu.shapes.first().map_or(ThingId::ROOT, |s| s.id);
                 let source = PulseSource::Sound { shape, source: SoundSource::Bus(*n) };
                 let on = now.as_ref().is_some_and(

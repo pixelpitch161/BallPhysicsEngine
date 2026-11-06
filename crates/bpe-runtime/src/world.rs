@@ -67,6 +67,23 @@ pub(crate) type Prepared = BTreeMap<SlotId, Slotted>;
 /// Which slots the runtime asks a `ModuleSim` about.
 const SIM_SLOTS: [SlotId; 2] = [SlotId::Motion, SlotId::Bounce];
 
+/// A run's number (see [`World::run`]). A copy is a run of its own: cloning gives a fresh one.
+#[derive(Debug, PartialEq, Eq)]
+pub struct RunId(pub u64);
+
+impl RunId {
+    pub fn fresh() -> RunId {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        RunId(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
+impl Clone for RunId {
+    fn clone(&self) -> RunId {
+        RunId::fresh()
+    }
+}
+
 /// Everything that moves, and what it moves against.
 #[derive(Clone)]
 pub struct World {
@@ -129,6 +146,10 @@ pub struct World {
     /// when some thing's sim asked for it ([`crate::ThingSim::needs_fingerprint`]). Two worlds
     /// with the same one run alike step for step, so work keyed by it can be shared.
     pub fingerprint: Option<u64>,
+    /// Which run this is: fresh for every built world and every copy of one (a snapshot, a test
+    /// flight), so a cache keyed by a moment of a run (the light probe's) never mixes two runs
+    /// that are at the same step.
+    pub run: RunId,
 }
 
 /// A thing's Motion or Bounce card as the world has it: see [`World::card`].
@@ -197,6 +218,7 @@ impl World {
             light: None,
             pulls: BTreeMap::new(),
             fingerprint: None,
+            run: RunId::fresh(),
         };
         // Worked out first: a thing may cache work by it while it builds.
         let wants_fingerprint =
@@ -514,6 +536,7 @@ impl World {
             light: self.light.clone(),
             pulls: BTreeMap::new(),
             fingerprint: self.fingerprint,
+            run: RunId::fresh(),
         }
     }
 

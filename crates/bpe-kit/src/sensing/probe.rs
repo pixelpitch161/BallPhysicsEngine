@@ -38,13 +38,19 @@ pub struct Probe {
     animation: Animation,
     /// What the scene's lights follow of its sound, when they do.
     sound: Option<Arc<dyn SoundAt>>,
-    /// The lamps at the moment last asked (asked many times a step: once a ball).
-    cache: Mutex<Option<(Moment, Arc<Lamps>)>>,
+    /// The lamps at the moments last asked (asked many times a step: once a ball), newest last.
+    /// A few, so worlds of several runs asking in turn (test flights on threads) don't thrash.
+    cache: Mutex<Vec<(Moment, Arc<Lamps>)>>,
 }
 
-/// A moment the probe is asked at: the world's step, the time and how much has been logged.
+/// How many moments the probe keeps.
+const KEPT_MOMENTS: usize = 8;
+
+/// A moment the probe is asked at: the world's run and step, the time and how much has been
+/// logged.
 #[derive(Clone, Copy, PartialEq)]
 struct Moment {
+    run: u64,
     step: u64,
     time: u64,
     logged: usize,
@@ -76,22 +82,24 @@ impl Probe {
             Some(_) => true,
             None => false,
         });
-        Probe { scene: Arc::new(scene.clone()), resolved: kept, animation, sound, cache: Mutex::new(None) }
+        Probe { scene: Arc::new(scene.clone()), resolved: kept, animation, sound, cache: Mutex::new(Vec::new()) }
     }
 
     /// The lamps and blockers at `time`, with `world` and `log` as they are.
     fn lamps(&self, world: &World, log: &Log, time: f64) -> Arc<Lamps> {
         let balls = world.bodies.values().map(|b| b.len()).sum();
-        let moment = Moment { step: world.step, time: time.to_bits(), logged: log.len(), balls };
+        let moment = Moment { run: world.run.0, step: world.step, time: time.to_bits(), logged: log.len(), balls };
         if let Ok(cache) = self.cache.lock()
-            && let Some((at, lamps)) = cache.as_ref()
-            && *at == moment
+            && let Some((_, lamps)) = cache.iter().rev().find(|(at, _)| *at == moment)
         {
             return lamps.clone();
         }
         let lamps = Arc::new(self.work_out(world, log, time));
         if let Ok(mut cache) = self.cache.lock() {
-            *cache = Some((moment, lamps.clone()));
+            if cache.len() >= KEPT_MOMENTS {
+                cache.remove(0);
+            }
+            cache.push((moment, lamps.clone()));
         }
         lamps
     }
@@ -117,8 +125,21 @@ impl Probe {
         if !b.alive.get(row).copied().unwrap_or(false) {
             return None;
         }
+        // Worked out once a moment: Follow light, the spreads, Moths and every Light modulator
+        // ask about the same balls.
+        let at = b.position[row];
+        if let Ok(memo) = lamps.balls.lock()
+            && let Some((was, s)) = memo.get(&(thing, row))
+            && *was == at
+        {
+            return Some(*s);
+        }
         let me = Some((thing, row as u32));
-        Some(lamps.sample(b.position[row], Skip { ball: me, thing: None }, me))
+        let s = lamps.sample(at, Skip { ball: me, thing: None }, me);
+        if let Ok(mut memo) = lamps.balls.lock() {
+            memo.insert((thing, row), (at, s));
+        }
+        Some(s)
     }
 
     /// The light on every point `thing` is sensed at: its alive balls, round a shape's outline,
@@ -255,6 +276,8 @@ struct Lamps {
     strength: BTreeMap<ThingId, f32>,
     /// Where each Light thing shines from first (Light on a light).
     places: BTreeMap<ThingId, Vec2>,
+    /// The light on each ball asked about so far at this moment.
+    balls: Mutex<std::collections::HashMap<(ThingId, usize), (Vec2, Sample)>>,
 }
 
 impl Lamps {
@@ -273,6 +296,7 @@ impl Lamps {
                 blockers: Blockers::default(),
                 strength: BTreeMap::new(),
                 places: BTreeMap::new(),
+                balls: Mutex::default(),
             };
         };
         let settings = LightingSettings::from_params(&card.params).gpu(None);
@@ -372,6 +396,7 @@ impl Lamps {
             blockers,
             strength,
             places: places_of,
+            balls: Mutex::default(),
         }
     }
 
@@ -429,7 +454,7 @@ impl Lamps {
         let mut tint = [1.0f32; 3];
         if l.p5[3] > 0.5 && self.style < 2.5 && dist > 1e-3 {
             let soft = if self.style > 0.5 {
-                HARD_EDGE / dist.min(1e6).max(1e-3)
+                HARD_EDGE / dist.clamp(1e-3, 1e6)
             } else {
                 angular * self.softness * l.p6[3].max(0.0)
             };
@@ -505,6 +530,16 @@ fn glow_lamp(at: Vec2, radius: f32, colour: [f32; 3], reach: f32) -> LightGpu {
     }
 }
 
+/// The around layers (trails, particles, wavefronts, arcs, auras): what they give off is left out.
+const AROUND_KINDS: [&str; 6] = [
+    crate::modules::look::layers::TRAIL,
+    crate::modules::look::layers::particles::PARTICLES,
+    crate::modules::look::layers::particles::SHAPE_PARTICLES,
+    crate::modules::look::layers::wavefront::WAVEFRONT,
+    crate::modules::look::layers::arcs::ARCS,
+    crate::modules::look::layers::aura::AURA,
+];
+
 /// What a thing's look says about light: whether it blocks it, and what it gives off.
 struct LookLight {
     blocks: bool,
@@ -528,6 +563,10 @@ impl LookLight {
                 continue;
             }
             let Some(parent) = layer.parent.and_then(|p| look.layers.iter().find(|l| l.id == p)) else { continue };
+            if AROUND_KINDS.contains(&parent.kind.as_str()) {
+                // Trails, particles and the like are many small or spread-out sources: left out.
+                continue;
+            }
             let e = Emit::of(&GivesLight::from_params(&params));
             let c = layer_colour(&look.layer_params(parent.id));
             let rgb = [e.own[0] + e.tint[0] * c[0], e.own[1] + e.tint[1] * c[1], e.own[2] + e.tint[2] * c[2]];

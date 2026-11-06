@@ -39,9 +39,10 @@ impl<'a> VaryCx<'a> {
 
     /// Whether setting `def` may spread by Light or Shadow: a card's or a layer's setting (a
     /// thing's own settings are worked out by its sim, which has no light probe) in a scene with
-    /// a Lighting card.
+    /// a Lighting card, which the lighting itself doesn't read (sensing is one-way).
     pub fn lit(&self, def: &SettingDef) -> bool {
-        (self.at)(def.key).slot.is_some() && bpe_kit::sensing::has_lighting(self.scene)
+        let a = (self.at)(def.key);
+        a.slot.is_some() && bpe_kit::sensing::can_follow_light(self.scene, self.reg, &a)
     }
 
     /// How setting `def` can vary across the balls; `None` when it can't (or the thing has no

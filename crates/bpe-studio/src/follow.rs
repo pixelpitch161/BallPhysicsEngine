@@ -41,6 +41,9 @@ pub struct FollowShape {
     pub id: ThingId,
     pub name: String,
     pub parts: Vec<(SoundSource, String)>,
+    /// It has a Light modulator that is on: its sound hears the light, so a setting the lighting
+    /// reads can't follow it (sensing is one-way).
+    pub hears_light: bool,
 }
 
 /// What a setting following sound shows: its band and what it follows.
@@ -115,7 +118,8 @@ pub fn menu(scene: &Scene) -> FollowMenu {
             .map(|l| (SoundSource::Modulator(l.id), l.name.clone()))
             .collect();
         parts.push((SoundSource::Level, "Level".to_owned()));
-        shapes.push(FollowShape { id: *id, name: thing.name.clone(), parts });
+        let hears_light = card.layers.iter().any(|l| l.enabled && l.kind == bpe_kit::sound::LIGHT_MOD);
+        shapes.push(FollowShape { id: *id, name: thing.name.clone(), parts, hears_light });
     }
     let mixer = scene
         .things

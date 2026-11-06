@@ -128,7 +128,11 @@ out once a step (`World.pulls`) and added in `move_bodies`. A world makes a prob
 `k::light`, `ModsSpec.lights`/`probe` from `patch::probe_of`, `ModCx.light`/`log`, `BlockCx.log`) reads it once a step
 and Follow sound reads it too (`heard_fingerprint` adds the light's fingerprint). The editor keeps `Studio.light_probe`
 (`uses_light`) for `build_frame_sensing`; `bpe-cli` does the same. Menus: `follow.rs` (`lit_menu`, Follow light ▸),
-the Sound tab's Light page (`sound_tab/mods/light.rs`). Goldens: `tests/golden-moths*.txt` (`scenes::moth_scenes`).
+the Sound tab's Light page (`sound_tab/mods/light.rs`). Goldens: `tests/golden-moths*.txt` (`scenes::moth_scenes`). The probe's
+lamp cache is keyed by `World.run` (`RunId`, fresh on every clone, so test flights and snapshots never share
+moments) and keeps each ball's sample per moment. The physics' and the sound engine's probes hear no sound (lights
+that follow sound read as set there; only the picture's probe hears it). A setting the lighting reads can't follow
+light, spread by it, or follow the sound of a shape with a Light modulator (`FollowShape.hears_light`).
 
 ## Crate map
 

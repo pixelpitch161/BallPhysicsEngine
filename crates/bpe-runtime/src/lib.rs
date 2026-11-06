@@ -33,4 +33,4 @@ pub use walls::{
     Contact, MAX_SIDES, Outline, Touch, Wall, keep_clear, keep_clear_from, nearest_on_ellipse, on_own_side, reflect,
     wall_velocity,
 };
-pub use world::{Card, World, fingerprint, needs_light, physics_animation, step_at};
+pub use world::{Card, RunId, World, fingerprint, needs_light, physics_animation, step_at};

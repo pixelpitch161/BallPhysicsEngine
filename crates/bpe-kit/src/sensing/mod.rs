@@ -61,7 +61,8 @@ pub fn spreads_by_light(params: &bpe_core::Params) -> bool {
 
 /// Whether the lighting reads the setting at `a`: a Light's or a Rig's settings, the scene's
 /// Lighting card, the background's light, a Gives off light sub-layer's and every layer's
-/// Lighting settings. Such a setting may never follow light (sensing is one-way).
+/// Lighting settings, and every setting of a layer that gives off light. Such a setting may never
+/// follow light or spread by it (sensing is one-way).
 pub fn lighting_reads(scene: &Scene, reg: &Registry, a: &Address) -> bool {
     let Some(thing) = scene.things.get(&a.thing) else { return false };
     if LIGHTING_KINDS.contains(&thing.kind.as_str()) {
@@ -81,9 +82,13 @@ pub fn lighting_reads(scene: &Scene, reg: &Registry, a: &Address) -> bool {
             if matches!(plain, LIT | BLOCKS_LIGHT) {
                 return true;
             }
-            let kind = thing.slots.get(&slot).and_then(|s| s.layer(layer)).map(|l| l.kind.as_str());
             let _ = reg;
-            matches!(kind, Some(SUB_LIGHT | SHAPE_SUB_LIGHT))
+            let Some(card) = thing.slots.get(&slot) else { return false };
+            let gives = |kind: &str| matches!(kind, SUB_LIGHT | SHAPE_SUB_LIGHT);
+            // A Gives off light sub-layer's settings, and every setting of the layer it is on
+            // (the light it gives off takes the layer's colour).
+            card.layer(layer).is_some_and(|l| gives(&l.kind))
+                || card.layers.iter().any(|l| l.parent == Some(layer) && gives(&l.kind))
         }
     }
 }
@@ -99,8 +104,8 @@ pub fn has_lighting(scene: &Scene) -> bool {
     scene.things.get(&ThingId::ROOT).and_then(|r| r.slots.get(&SlotId::Lighting)).is_some_and(|s| s.kind == LIGHTING)
 }
 
-/// A hash of everything the probe reads: the lights and rigs, the Lighting card and the looks
-/// of balls, emitters and shapes, with their keys and pulses.
+/// A hash of everything the probe reads: the tempo, the lights and rigs, the Lighting card and
+/// the looks of balls, emitters and shapes, with their keys and pulses.
 pub fn fingerprint(scene: &Scene) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     let mut eat = |bytes: &[u8]| {
@@ -120,6 +125,15 @@ pub fn fingerprint(scene: &Scene) -> u64 {
             _ => false,
         }
     };
+    // Rigs and lighting scenes keep time by the scene's tempo.
+    if let Some(root) = scene.things.get(&ThingId::ROOT) {
+        for key in ["tempo", "time_top", "time_bottom"] {
+            eat(format!("{key}{:?}", root.params.get(key)).as_bytes());
+            if let Some(track) = scene.tracks.get(&Address::own(ThingId::ROOT, key)) {
+                eat(format!("{track:?}").as_bytes());
+            }
+        }
+    }
     for id in &scene.order {
         let Some(t) = scene.things.get(id) else { continue };
         if LIGHTING_KINDS.contains(&t.kind.as_str()) {

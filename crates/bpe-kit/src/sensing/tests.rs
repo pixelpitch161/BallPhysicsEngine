@@ -177,6 +177,39 @@ fn what_the_lighting_reads_never_follows_light() {
     let _ = SHAPE;
 }
 
+#[test]
+fn a_layer_that_gives_off_light_is_the_lightings_too() {
+    let (mut scene, _, kit) = lit("single", Vec2::ZERO, 0.25);
+    let reg = &kit.registry;
+    let body = scene.card(BALLS, SlotId::Look).unwrap().layers[0].id;
+    let colour = Address::on(BALLS, SlotId::Look, &bpe_core::layered_key(body, "colour"));
+    assert!(can_follow_light(&scene, reg, &colour));
+    scene.add_sub_layer(reg, BALLS, SlotId::Look, body, SUB_LIGHT).unwrap();
+    assert!(!can_follow_light(&scene, reg, &colour), "its light takes the Body's colour");
+}
+
+#[test]
+fn the_probes_fingerprint_hears_the_tempo() {
+    let (mut scene, _, _) = lit("single", Vec2::ZERO, 0.25);
+    let before = fingerprint(&scene);
+    scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("tempo", Value::Number(97.0));
+    assert_ne!(fingerprint(&scene), before, "rigs keep time by the tempo");
+}
+
+#[test]
+fn copies_of_a_world_never_share_the_probes_moments() {
+    let (scene, _, kit) = lit("single", Vec2::new(0.0, -200.0), 0.0);
+    let probe = probe_of(&scene, &kit);
+    let mut a = world_of(&scene, &kit);
+    let mut b = a.clone();
+    place(&mut a, &[Vec2::ZERO]);
+    place(&mut b, &[Vec2::new(0.0, 2000.0)]);
+    let log = Log::default();
+    let near = probe.ball(&a, &log, BALLS, 0, 0.0).light;
+    let far = probe.ball(&b, &log, BALLS, 0, 0.0).light;
+    assert!(near > far + 0.1, "the same step of two copies: {near} and {far}");
+}
+
 /// Runs `scene` for `seconds` and gives back where its first ball ends.
 fn ends_at(scene: &Scene, kit: &crate::Kit, seconds: f64) -> Vec2 {
     let resolved = resolve(scene, &kit.registry);
