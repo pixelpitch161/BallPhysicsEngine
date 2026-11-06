@@ -718,3 +718,139 @@ fn from_keys_are_number_settings_and_whens_name_their_values() {
     assert!(hit.values().contains(&"strength"));
     assert_eq!(reg.block("do.motion").unwrap().firing_keys(), &["amount", "angle"]);
 }
+
+/// The shape broken at 0.1 s (it applies on step 25, at 25/240 s) with `look` and its settings.
+fn shape_broken_with(look: &str, more: Vec<(&'static str, Value)>) -> (Scene, Kit) {
+    let (mut scene, kit) = starter();
+    let mut set = vec![("who", who(Who::Thing { thing: SHAPE, ball: None })), ("look", choice(look))];
+    set.extend(more);
+    lane(&mut scene, &kit.registry, &[time(0.1, None), ("do.break", set)]);
+    (scene, kit)
+}
+
+const BROKE: f64 = 25.0 / 240.0;
+
+#[test]
+fn a_faded_shape_fades_then_is_gone() {
+    let (scene, kit) = shape_broken_with("fade_out", vec![("fade_time", n(1.0))]);
+    let (world, _) = run(&scene, &kit, BROKE + 0.5);
+    assert!(world.broken(SHAPE) && !world.walls.contains_key(&SHAPE), "gone from the physics at once");
+    let half = frame_at(&scene, &kit, BROKE + 0.5);
+    assert_eq!(half.paths.len(), 1, "still drawn");
+    assert!((half.paths[0].clip[2] - 0.5).abs() < 0.01, "half faded: {:?}", half.paths[0].clip);
+    let early = frame_at(&scene, &kit, BROKE + 0.05);
+    assert!(early.paths[0].clip[2] < 0.05 && early.paths[0].clip[1] == 0.0);
+    assert!(frame_at(&scene, &kit, BROKE + 1.01).paths.is_empty(), "then gone");
+    // Before the break it is whole.
+    assert_eq!(frame_at(&scene, &kit, 0.05).paths[0].clip, [0.0; 4]);
+}
+
+#[test]
+fn a_popped_shape_swells_as_it_fades() {
+    let (scene, kit) = shape_broken_with("pop", vec![("pop_time", n(1.0)), ("swell", n(2.0))]);
+    let before = frame_at(&scene, &kit, 0.05).paths[0];
+    let mid = frame_at(&scene, &kit, BROKE + 0.5).paths[0];
+    assert!(mid.a[3] > before.a[3] * 1.5 && mid.a[3] < before.a[3] * 2.0, "{} then {}", before.a[3], mid.a[3]);
+    assert!(mid.clip[2] > 0.0 && mid.clip[2] < 1.0);
+    assert!(frame_at(&scene, &kit, BROKE + 1.01).paths.is_empty());
+}
+
+#[test]
+fn a_shattered_shape_draws_its_pieces_wearing_its_look() {
+    let pieces = 9;
+    let (scene, kit) = shape_broken_with(
+        "shatter",
+        vec![("pieces", i(pieces)), ("fade_after", n(1.0)), ("fade_over", n(0.5)), ("spread", n(400.0))],
+    );
+    let whole = frame_at(&scene, &kit, 0.05);
+    let at = |t: f64| frame_at(&scene, &kit, BROKE + t);
+    let soon = at(0.2);
+    assert!(soon.paths.len() as i64 >= pieces - 1 && soon.paths.len() as i64 <= pieces, "{}", soon.paths.len());
+    for p in &soon.paths {
+        assert_eq!(p.layers, whole.paths[0].layers, "every piece wears the shape's records");
+        assert_eq!((p.b, p.c, p.a[3]), (whole.paths[0].b, whole.paths[0].c, whole.paths[0].a[3]), "and its outline");
+        assert!(p.clip[1] >= 3.0 && p.clip[2] == 0.0, "{:?}", p.clip);
+        let (first, count) = (p.clip[0] as usize, p.clip[1] as usize);
+        assert!(first + count <= soon.path_points.len());
+    }
+    // Where the pieces' cells are in the world, on average.
+    let middle = |f: &Frame| {
+        let each = f.paths.iter().map(|p| {
+            let (first, count) = (p.clip[0] as usize, p.clip[1] as usize);
+            let c = f.path_points[first..first + count].iter().map(|q| glam::Vec2::new(q[0], q[1])).sum::<glam::Vec2>()
+                / count as f32;
+            glam::Vec2::new(p.a[0], p.a[1]) + glam::Vec2::from_angle(p.a[2]).rotate(c * p.a[3])
+        });
+        each.sum::<glam::Vec2>() / f.paths.len() as f32
+    };
+    let later = at(0.9);
+    assert!(middle(&later).y > middle(&soon).y + 50.0, "they fall: {} then {}", middle(&soon), middle(&later));
+    assert_eq!(at(0.5).paths, at(0.5).paths, "the same whenever drawn");
+    assert!(at(1.25).paths.iter().all(|p| p.clip[2] > 0.3 && p.clip[2] < 0.7), "fading");
+    assert!(at(1.51).paths.is_empty(), "then gone");
+}
+
+#[test]
+fn a_shattered_ball_draws_clipped_copies_of_itself() {
+    let (mut scene, kit) = starter();
+    lane(
+        &mut scene,
+        &kit.registry,
+        &[("when.hit", vec![]), ("do.break", vec![("look", choice("shatter")), ("pieces", i(6))])],
+    );
+    let (_, log) = run(&scene, &kit, 4.0);
+    let broke = log.events().iter().find(|e| e.kind == EventKind::Break).expect("broke").time(240);
+    let frame = frame_at(&scene, &kit, broke + 0.1);
+    let pieces: Vec<_> = frame.layered.iter().filter(|b| b.clip[1] >= 3.0).collect();
+    assert!((5..=6).contains(&pieces.len()), "{}", pieces.len());
+    assert!(pieces.iter().all(|b| b.range == pieces[0].range), "one stack for them all");
+    assert_eq!(frame.layered_runs.iter().map(|r| r.end - r.start).sum::<u32>() as usize, frame.layered.len());
+    assert!(frame_at(&scene, &kit, broke + 2.0).layered.is_empty(), "gone once faded");
+    // Vanish leaves nothing to draw.
+    let (mut plain, kit) = starter();
+    lane(&mut plain, &kit.registry, &[("when.hit", vec![]), ("do.break", vec![])]);
+    assert!(frame_at(&plain, &kit, broke + 0.1).layered.is_empty());
+}
+
+#[test]
+fn a_broken_light_dims_as_it_fades() {
+    let (mut scene, kit) = starter();
+    let light = crate::things::light::add_light(
+        &mut scene,
+        &kit.registry,
+        crate::things::light::LightType::Point,
+        ThingId::ROOT,
+    )
+    .unwrap();
+    let strength = |scene: &Scene, t: f64| {
+        let f = frame_at(scene, &kit, t);
+        f.light.map(|l| l.lights.iter().map(|g| g.p1[0] + g.p1[1] + g.p1[2]).sum::<f32>()).unwrap_or(0.0)
+    };
+    let full = strength(&scene, 0.6);
+    assert!(full > 0.0);
+    lane(
+        &mut scene,
+        &kit.registry,
+        &[
+            time(0.1, None),
+            (
+                "do.break",
+                vec![
+                    ("who", who(Who::Thing { thing: light, ball: None })),
+                    ("look", choice("fade_out")),
+                    ("fade_time", n(1.0)),
+                ],
+            ),
+        ],
+    );
+    let half = strength(&scene, BROKE + 0.5);
+    assert!((half / full - 0.5).abs() < 0.02, "{full} then {half}");
+    assert_eq!(strength(&scene, BROKE + 1.01), 0.0);
+    // A camera can't show a look: it is gone at once.
+    let look = crate::rules::breaks::LookSettings {
+        look: crate::rules::breaks::BreakLook::FadeOut,
+        ..crate::rules::breaks::LookSettings::default()
+    };
+    assert!(!crate::rules::breaks::show_for(&look, Some("camera")).shows());
+    assert!(crate::rules::breaks::show_for(&look, Some("shape")).shows());
+}

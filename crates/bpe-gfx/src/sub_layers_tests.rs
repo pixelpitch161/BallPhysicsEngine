@@ -23,6 +23,7 @@ fn ball(center: Vec2, radius: f32, body: [f32; 4], first: u32, count: u32) -> La
         group: [0.0; 4],
         place: [0.0; 4],
         hit: crate::NO_HIT,
+        clip: [0.0; 4],
     }
 }
 

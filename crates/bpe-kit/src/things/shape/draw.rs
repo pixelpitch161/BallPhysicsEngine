@@ -127,8 +127,19 @@ fn shape_stack(cx: &DrawCx) -> Option<ShapeStack> {
 /// the first record above it), or the layers above it (that with [`OVER`]): see shape_walk.wgsl.
 fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
     let Some(look) = cx.resolved.slots.get(&SlotId::Look) else { return };
-    let Some(wall) = cx.world.walls.get(&cx.thing.id) else { return };
-    let form = wall_form(wall);
+    // A broken shape draws as it stood while its Break look plays out.
+    let remains = crate::rules::remains::remains_now(cx, None);
+    let Some(wall) = cx.world.walls.get(&cx.thing.id).or_else(|| remains.as_ref().and_then(|(r, _)| r.wall.as_ref()))
+    else {
+        return;
+    };
+    let mut form = wall_form(wall);
+    let whole = remains.as_ref().and_then(|(r, l)| crate::rules::remains::draw::whole_look(r, l, cx.time));
+    if let Some(s) = whole {
+        // Pop swells it about its middle.
+        form.scale *= s.scale.max(0.0);
+        form.half *= s.scale.max(0.0);
+    }
     let index = push_form(&form, BODY_WHITE, thing_code(cx.thing.id), frame);
     // Ripples measure from its outline (once, not again for the part over its Blend layer).
     if frame.ripples && part & OVER == 0 {
@@ -172,6 +183,22 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
     path.layers = [first, count, program, part];
     path.c[2] = stack.reach_past();
     path.hit = hit;
+    if let Some((r, l)) = &remains {
+        use crate::rules::remains::{draw, shatter::Edge};
+        match whole {
+            Some(s) => path.clip[2] = 1.0 - s.alpha.clamp(0.0, 1.0),
+            None if l.look == crate::rules::breaks::BreakLook::Shatter => {
+                let edge = match (&form.points, form.ellipse) {
+                    (Some(points), _) => Edge::Points(points),
+                    (None, axes) => Edge::Ellipse(axes.unwrap_or(Vec2::ONE)),
+                };
+                let half = form.half / form.scale.max(1e-3);
+                let walls = draw::walls_of(cx.world);
+                draw::shatter_shape(r, l, cx.thing.id.0, edge, half, index, cx.time, &walls, frame);
+            }
+            None => {}
+        }
+    }
 }
 
 /// The hit data of the shape `cx` is drawing, for its Flash and Colour on hit sub-layers: how long

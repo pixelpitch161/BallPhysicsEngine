@@ -147,6 +147,10 @@ pub fn round_colours(look: Option<&bpe_core::ResolvedSlot>, s: &EmitterSettings)
 /// Draws the marker of the emitter `cx` draws, under its balls.
 fn draw_marker(cx: &DrawCx, frame: &mut Frame) {
     let id = cx.thing.id;
+    // A broken emitter's marker is gone at once; only its balls play out their look.
+    if cx.world.rules().is_some_and(|r| r.is_broken(id)) {
+        return;
+    }
     let s = EmitterSettings::from_params(&cx.resolved.params);
     let Some(st) = emitter_state(cx.world, id) else { return };
     let rate = cx.world.steps_per_second;

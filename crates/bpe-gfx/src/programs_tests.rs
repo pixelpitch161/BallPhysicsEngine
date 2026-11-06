@@ -26,6 +26,7 @@ fn ball(x: f32, first: u32, count: u32) -> LayeredInstance {
         group: [0.0; 4],
         place: [0.0; 4],
         hit: crate::NO_HIT,
+        clip: [0.0; 4],
     }
 }
 

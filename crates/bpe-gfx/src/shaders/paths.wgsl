@@ -18,6 +18,9 @@ struct PathIn {
     @location(4) layers: vec4<u32>,
     // Seconds since a ball last hit it, that hit's strength, how many hits, spare.
     @location(5) hit: vec4<f32>,
+    // A broken thing's look (rules part 3): the first corner of its convex clip in path_points
+    // (shape units), how many (0: none), how far it has faded, spare.
+    @location(6) clip: vec4<f32>,
 };
 
 struct PathOut {
@@ -29,15 +32,76 @@ struct PathOut {
     @location(4) @interpolate(flat) color: vec4<f32>,
     @location(5) @interpolate(flat) layers: vec4<u32>,
     @location(6) @interpolate(flat) hit: vec4<f32>,
+    @location(7) @interpolate(flat) clip: vec4<f32>,
 };
 
 @group(2) @binding(4) var<storage, read> path_points: array<vec4<f32>>;
+
+// ---- Clips: a piece of a shattered thing draws only inside its cell (rules part 3) ----
+
+// The bounds of the clip's corners (`first`, `n` in path_points): min xy, max xy.
+fn clip_bounds(first: u32, n: u32) -> vec4<f32> {
+    var lo = vec2<f32>(1e30);
+    var hi = vec2<f32>(-1e30);
+    for (var k = 0u; k < n; k++) {
+        let p = path_points[first + k].xy;
+        lo = min(lo, p);
+        hi = max(hi, p);
+    }
+    return vec4<f32>(lo, hi);
+}
+
+// How much of a pixel at `q` (the clip's own units) the convex clip covers, `unit_px` being one
+// pixel in those units. Its corners go round the positive way (the CPU sees to it), so its inside
+// is left of every edge; the largest distance past an edge is exact inside and a hair short past a
+// corner.
+fn clip_cover(q: vec2<f32>, first: u32, n: u32, unit_px: f32) -> f32 {
+    var d = -1e30;
+    var prev = path_points[first + n - 1u].xy;
+    for (var k = 0u; k < n; k++) {
+        let p = path_points[first + k].xy;
+        let e = p - prev;
+        let w = q - prev;
+        d = max(d, -(e.x * w.y - e.y * w.x) / max(length(e), 1e-12));
+        prev = p;
+    }
+    return clamp(0.5 - d / max(unit_px, 1e-9), 0.0, 1.0);
+}
+
+// What a clip `clip` leaves of a pixel at `q`: its cover times what is left after its fade. Only
+// read when the clip names corners or a fade (else everything is drawn as ever).
+fn clip_keep(q: vec2<f32>, clip: vec4<f32>, unit_px: f32) -> f32 {
+    var keep = 1.0 - clamp(clip.z, 0.0, 1.0);
+    let n = u32(clip.y + 0.5);
+    if n >= 3u {
+        keep *= clip_cover(q, u32(clip.x + 0.5), n, unit_px);
+    }
+    return keep;
+}
+
+// Whether `clip` changes anything drawn.
+fn clips(clip: vec4<f32>) -> bool {
+    return clip.y > 2.5 || clip.z > 0.0;
+}
+
+// A quad corner (-1 to 1 each way) on the bounds of the clip, `margin` past them.
+fn clip_corner(corner: vec2<f32>, clip: vec4<f32>, margin: f32) -> vec2<f32> {
+    let b = clip_bounds(u32(clip.x + 0.5), u32(clip.y + 0.5));
+    let lo = b.xy - vec2<f32>(margin);
+    let hi = b.zw + vec2<f32>(margin);
+    return mix(lo, hi, corner * 0.5 + vec2<f32>(0.5));
+}
 
 @vertex
 fn vs_path(@builtin(vertex_index) i: u32, s: PathIn) -> PathOut {
     let corner = quad_corner(i);
     let reach = path_quad_reach(s.a, s.b, s.c);
-    let turned = rotate(corner * reach, s.a.z);
+    var turned = rotate(corner * reach, s.a.z);
+    if s.clip.y > 2.5 {
+        // A piece: only its cell's bounds, two pixels past them.
+        let scale = max(s.a.w, 1e-6);
+        turned = rotate(clip_corner(corner, s.clip, 2.0 * g.view.z / scale) * scale, s.a.z);
+    }
     let world = s.a.xy + turned;
     var out: PathOut;
     out.pos = to_clip(world);
@@ -48,6 +112,7 @@ fn vs_path(@builtin(vertex_index) i: u32, s: PathIn) -> PathOut {
     out.color = s.color;
     out.layers = s.layers;
     out.hit = s.hit;
+    out.clip = s.clip;
     return out;
 }
 
@@ -140,10 +205,20 @@ fn shade_path(in: PathOut) -> vec4<f32> {
     paint_px = in.pos.xy;
     // For the Hit wave (paint.wgsl).
     paint_hit = in.hit;
-    if in.layers.y > 0u {
-        return shade_shape_layers(in.world, in.a, in.b, in.c, in.layers, in.hit);
+    var keep = 1.0;
+    if clips(in.clip) {
+        keep = clip_keep(path_local(in), in.clip, g.view.z / max(in.a.w, 1e-6));
+        if keep <= 0.0 {
+            discard;
+        }
     }
-    let cover = path_cover(in) * abs(in.color.a);
+    if in.layers.y > 0u {
+        return shade_shape_layers(in.world, in.a, in.b, in.c, in.layers, in.hit, keep);
+    }
+    var cover = path_cover(in) * abs(in.color.a);
+    if keep < 1.0 {
+        cover *= keep;
+    }
     if cover <= 0.0 {
         discard;
     }
@@ -164,7 +239,10 @@ fn fs_path_each(in: PathOut) -> @location(0) vec4<f32> {
 // The object picture: the shape's own position, -1 to 1 across its reach, turning with it.
 @fragment
 fn fs_path_object(in: PathOut) -> @location(0) vec4<f32> {
-    let cover = path_cover(in);
+    var cover = path_cover(in);
+    if clips(in.clip) {
+        cover *= clip_keep(path_local(in), in.clip, g.view.z / max(in.a.w, 1e-6));
+    }
     if cover <= 0.0 || in.c.x < 0.5 {
         discard;
     }
