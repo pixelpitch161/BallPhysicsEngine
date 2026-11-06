@@ -582,7 +582,7 @@ mod tests {
             let takes = drawn || k.id() == BODY;
             assert_eq!(k.takes_subs(), takes, "{}: drawn layers and the Body but Blend take sub-layers", k.id());
         }
-        assert_eq!(reg.layers_for(CARD).filter(|k| k.section() == LayerSection::Sub).count(), 11);
+        assert_eq!(reg.layers_for(CARD).filter(|k| k.section() == LayerSection::Sub).count(), 12);
     }
 
     #[test]

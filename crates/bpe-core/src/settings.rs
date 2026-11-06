@@ -91,6 +91,8 @@ pub const SECTION_ORDER: &[&str] = &[
     "Stage",
     "Shadows",
     "Air",
+    "Underwater",
+    "Glow in the dark",
     "Quality",
     "Scenes",
     "Master",

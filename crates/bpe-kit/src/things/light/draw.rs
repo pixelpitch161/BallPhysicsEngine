@@ -125,6 +125,7 @@ pub fn places_in(world: &World, parent: Option<ThingId>, s: &LightSettings) -> V
 }
 
 /// Adds the light at `place` to the scene, as its rigs drive it.
+#[allow(clippy::too_many_arguments)]
 fn push_light(
     cx: &DrawCx,
     s: &LightSettings,

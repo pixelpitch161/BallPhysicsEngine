@@ -33,11 +33,14 @@ pub struct Path {
     pub ended_on_hit: bool,
 }
 
+/// A wall as the tracer sees it: its thing, the sides of its outline, half its band's thickness.
+type Wall = (ThingId, Vec<(Vec2, Vec2)>, f32);
+
 /// The things a beam can meet, as the tracer sees them at one moment.
 #[derive(Clone, Debug, Default)]
 pub struct Scenery {
-    /// Each wall: its thing, the sides of its outline, half its band's thickness.
-    walls: Vec<(ThingId, Vec<(Vec2, Vec2)>, f32)>,
+    /// Each wall.
+    walls: Vec<Wall>,
     /// Each live ball: its thing, its row, its middle and radius.
     balls: Vec<(ThingId, u32, Vec2, f32)>,
 }

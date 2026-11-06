@@ -468,6 +468,10 @@ impl Lamps {
         if self.style > 1.5 && self.style < 2.5 {
             amount = (amount * self.toon + 0.5).floor() / self.toon;
         }
+        if l.p7[1] > 0.5 {
+            // An ultraviolet light: only its share of ordinary light is seen.
+            amount *= l.p7[2].max(0.0);
+        }
         let rgb = [l.p1[0] * amount, l.p1[1] * amount, l.p1[2] * amount];
         let lit = luminance([rgb[0] * tint[0], rgb[1] * tint[1], rgb[2] * tint[2]]);
         Some(One { lit, open: luminance(rgb), toward, dist })
@@ -512,7 +516,7 @@ impl Lamps {
 
 /// Whether `lamp` is a glowing ball's own light (not a Light thing riding it).
 fn lamp_is_glow(lamp: &Lamp) -> bool {
-    lamp.gpu.p7[1] > 0.5
+    lamp.gpu.p11[3] > 0.5
 }
 
 /// A glowing ball's (or shape's) light as a Point lamp of `colour` (linear, times strength).
@@ -525,8 +529,9 @@ fn glow_lamp(at: Vec2, radius: f32, colour: [f32; 3], reach: f32) -> LightGpu {
         p4: [0.0; 4],
         p5: [0.0, 0.0, 0.0, 1.0],
         p6: [radius.max(0.0), 0.0, 0.0, 1.0],
-        // p7.y marks it as a glow.
-        p7: [0.0, 1.0, 0.0, 0.0],
+        // p11.w (spare on the GPU) marks it as a glow.
+        p11: [0.0, 0.0, 0.0, 1.0],
+        ..LightGpu::ZERO
     }
 }
 
