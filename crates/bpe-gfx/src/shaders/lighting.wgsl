@@ -579,10 +579,27 @@ fn slab_visibility(p: vec3<f32>, l: vec3<f32>, dist: f32, ang: f32, stop: f32) -
     } else if rise < -1e-6 {
         end = min(end, (back - p.z) / rise);
     }
-    if end <= 0.0 {
+    // In front of the shapes (the floor before them), the ray only meets them once it comes back
+    // down to their front: the march starts there, and a ray coming down onto a shape's front face
+    // is stopped by it.
+    var start = 0.0;
+    if p.z > front && rise < -1e-6 {
+        start = (front - p.z) / rise;
+    }
+    if end <= start {
         return 1.0;
     }
-    return visibility(p.xy, toward, end, ang / max(across, 0.05), 1e9, 0.0);
+    let a = ang / max(across, 0.05);
+    var face = 1.0;
+    if start > 0.0 {
+        let d = field_at(p.xy + toward * start);
+        face = clamp(0.5 + 0.5 * d / max(start * max(a, 1e-4), max(u.field.z, 1e-3)), 0.0, 1.0);
+        face = face * face * (3.0 - 2.0 * face);
+        if face <= 0.0 {
+            return 0.0;
+        }
+    }
+    return face * visibility(p.xy + toward * start, toward, end - start, a, 1e9, 0.0);
 }
 
 // GGX highlight from a light along `l` (unit), times pi so it sits with the diffuse light (which
@@ -845,7 +862,12 @@ fn fs_light(in: FsIn) -> @location(0) vec4<f32> {
             let floor = st.floor.x > 0.5 && spot.n.y < -0.5;
             let plane = plane_surface(select(st.floor.w, st.floor.z, floor));
             let lit = clamp(u.ambient.w, 0.0, 1.0);
-            on_stage = mixed(c.rgb, w, shade(spot, p, plane, c.rgb, field_at(spot.p.xy)), plane, lit);
+            // How far the shapes are, for contact shading: the floor in front of them is that much
+            // farther away.
+            let f = field_at(spot.p.xy);
+            let dz = max(spot.p.z - st.room.z, 0.0);
+            let here = select(f, length(vec2<f32>(max(f, 0.0), dz)), dz > 0.0);
+            on_stage = mixed(c.rgb, w, shade(spot, p, plane, c.rgb, here), plane, lit);
         }
         out = mix(on_stage, on_thing, smoothstep(0.02, 0.98, cover));
     }
