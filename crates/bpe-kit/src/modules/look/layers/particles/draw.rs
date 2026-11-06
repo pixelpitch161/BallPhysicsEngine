@@ -65,7 +65,7 @@ struct Source<'a> {
 
 /// The walls `layer` bounces its particles off.
 fn walls<'a>(cx: &'a DrawCx, layer: &ParticlesLayer) -> Vec<&'a Wall> {
-    if layer.bounce { cx.world.walls.values().collect() } else { Vec::new() }
+    if layer.bounce { cx.world.walls.values().filter(|w| !w.passes).collect() } else { Vec::new() }
 }
 
 /// Each particle of `emissions` alive at the moment drawn, with its emission and number.

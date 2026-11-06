@@ -1,4 +1,4 @@
-//! Rules part 1's scenes, where rules move the physics (their own goldens,
+//! Rules part 1's and part 5's scenes, where rules move the physics (their own goldens,
 //! `tests/golden-rules*.txt`). Not in [`super::all`]: every other golden stays as it was.
 
 use bpe_core::{BlockId, Registry, RuleId, Scene, Settings, ThingId, Value, Who};
@@ -13,6 +13,8 @@ pub fn rule_scenes(reg: &Registry) -> Vec<(String, Scene)> {
         ("Logic lanes".into(), logic_lanes(reg)),
         ("Glide and back".into(), glide_and_back(reg)),
         ("Per-ball bounce".into(), per_ball_bounce(reg)),
+        ("Split chain".into(), split_chain(reg)),
+        ("Zones and signals".into(), zones_and_signals(reg)),
         ("Slow motion".into(), slow_motion(reg)),
     ]
 }
@@ -240,6 +242,150 @@ pub fn per_ball_bounce(reg: &Registry) -> Scene {
             ("when.hit", vec![("min_strength", n(500.0))]),
             ("if.only", vec![("n", Value::Int(6))]),
             ("do.break", vec![]),
+        ],
+    );
+    scene
+}
+
+/// Rules part 5: one ball that splits in three on each of its first hard hits (children too, up
+/// to six splits), tags each ball that hits, counts the hits of tagged balls and, at 20, spawns a
+/// ring of small balls from the middle.
+pub fn split_chain(reg: &Registry) -> Scene {
+    let mut b = Builder::new(reg, "Split chain");
+    b.shape(ShapeSettings::circle(508.0, 3.0));
+    b.balls("Ball", Vec2::new(0.0, -100.0), |s| {
+        s.radius = 40.0;
+        s.velocity = Vec2::new(350.0, -500.0);
+    });
+    b.bounce(|s| s.bounciness = 0.95);
+    let mut scene = b.finish();
+    lane(
+        &mut scene,
+        reg,
+        "Split",
+        &[
+            ("when.hit", vec![("min_strength", n(250.0))]),
+            ("if.only", vec![("n", Value::Int(6))]),
+            ("do.split", vec![("into", Value::Int(3)), ("spread", n(50.0)), ("speed", n(1.05))]),
+        ],
+    );
+    lane(&mut scene, reg, "Mark", &[("when.hit", vec![]), ("do.tag", vec![("tag", t("touched"))])]);
+    lane(
+        &mut scene,
+        reg,
+        "Count",
+        &[("when.hit", vec![("who", who(Who::Tag("touched".into())))]), ("do.count", vec![])],
+    );
+    lane(
+        &mut scene,
+        reg,
+        "Burst",
+        &[
+            ("when.count", vec![("of", c("a_counter")), ("amount", n(20.0))]),
+            (
+                "do.spawn",
+                vec![
+                    ("into", who(Who::Thing { thing: BALLS, ball: None })),
+                    ("at", c("a_things_place")),
+                    ("place", who(Who::Thing { thing: SHAPE, ball: None })),
+                    ("count", Value::Int(8)),
+                    ("way", c("all_round")),
+                    ("speed", n(250.0)),
+                    ("size", c("set_size")),
+                    ("radius", n(8.0)),
+                ],
+            ),
+        ],
+    );
+    scene
+}
+
+/// Rules part 5: a ring of balls falling through a zone balls pass through. Entering it sends a
+/// signal that pushes the ball up; leaving it counts; a ball's speed going over 700 shrinks it a
+/// while; every second hit of the ring by a ball removes it, and a removal makes the zone grow.
+pub fn zones_and_signals(reg: &Registry) -> Scene {
+    let mut b = Builder::new(reg, "Zones and signals");
+    b.shape(ShapeSettings::circle(508.0, 3.0));
+    b.balls("Ring", Vec2::new(0.0, -150.0), |s| {
+        s.radius = 10.0;
+        s.ring(12, 120.0);
+        s.velocity = Vec2::new(120.0, 0.0);
+    });
+    let mut scene = b.finish();
+    let zone = add_thing(&mut scene, reg, "shape", ThingId::ROOT).expect("a shape");
+    let thing = scene.things.get_mut(&zone).expect("just added");
+    thing.transform.position = Vec2::new(0.0, 250.0);
+    thing.params = ShapeSettings { passes: true, ..ShapeSettings::circle(140.0, 3.0) }.to_params();
+    let zone_who = who(Who::Thing { thing: zone, ball: None });
+    lane(
+        &mut scene,
+        reg,
+        "Enter",
+        &[("when.enter", vec![("zone", zone_who.clone())]), ("do.signal", vec![("name", t("lift"))])],
+    );
+    lane(
+        &mut scene,
+        reg,
+        "Lift",
+        &[
+            ("when.signal", vec![("name", t("lift"))]),
+            ("do.motion", vec![("mode", c("push")), ("way", c("up")), ("amount", n(500.0))]),
+        ],
+    );
+    lane(
+        &mut scene,
+        reg,
+        "Leave",
+        &[
+            ("when.enter", vec![("zone", zone_who.clone()), ("way", c("leaves"))]),
+            ("do.count", vec![("counter", t("left"))]),
+        ],
+    );
+    lane(
+        &mut scene,
+        reg,
+        "Fast",
+        &[
+            ("when.level", vec![("level", n(700.0))]),
+            (
+                "do.change",
+                vec![
+                    ("setting", t("radius")),
+                    ("how", c("multiply")),
+                    ("times", n(0.6)),
+                    ("lasts", c("for_a_time")),
+                    ("seconds", n(0.5)),
+                ],
+            ),
+        ],
+    );
+    lane(
+        &mut scene,
+        reg,
+        "Out",
+        &[
+            ("when.hit", vec![("whom", who(Who::Thing { thing: SHAPE, ball: None }))]),
+            ("if.every", vec![("n", Value::Int(2)), ("per", c("each_ball"))]),
+            ("if.counter", vec![("counter", t("left")), ("test", c("over")), ("amount", n(2.0))]),
+            ("do.break", vec![]),
+        ],
+    );
+    lane(
+        &mut scene,
+        reg,
+        "Grow",
+        &[
+            ("when.removed", vec![("what", c("broken"))]),
+            (
+                "do.change",
+                vec![
+                    ("who", zone_who),
+                    ("setting", t("size")),
+                    ("how", c("add")),
+                    ("to_number", n(10.0)),
+                    ("lasts", c("for_good")),
+                ],
+            ),
         ],
     );
     scene

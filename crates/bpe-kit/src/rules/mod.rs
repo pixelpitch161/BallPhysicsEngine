@@ -11,21 +11,32 @@
 //!   actions of part 6 ([`camera::CameraKick`], [`slow::SlowMotion`], [`flash::Flash`],
 //!   [`scene::ShowScene`], [`note::PlayNote`]).
 //!
+//! Part 5 (plan `docs/superpowers/plans/rules/part5.md`) adds When [`events::Enter`],
+//! [`events::Fired`], [`events::Removed`], [`counts::CountReached`], [`level::CrossesLevel`],
+//! [`signals::HearSignal`]; If [`counts::CounterIs`]; Do [`balls::Split`], [`balls::Spawn`],
+//! [`balls::FireRound`], [`tags::Tag`], [`counts::Count`], [`signals::SendSignal`].
+//!
 //! [`RuleBlockKind`]: bpe_core::RuleBlockKind
 //! [`BlockSim`]: bpe_runtime::BlockSim
 
 pub mod amount;
+pub mod balls;
 pub mod breaks;
 pub mod camera;
 pub mod change;
 pub mod checks;
+pub mod counts;
+pub mod events;
 pub mod flash;
+pub mod level;
 pub mod logic;
 pub mod memory;
 pub mod motion;
 pub mod note;
 pub mod scene;
+pub mod signals;
 pub mod slow;
+pub mod tags;
 pub mod when;
 pub mod who;
 
@@ -33,6 +44,8 @@ pub mod who;
 mod spectacle_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_part5;
 
 use bpe_core::Registry;
 use bpe_runtime::Sims;
@@ -87,6 +100,19 @@ pub fn register(r: &mut Registry) {
     r.add_block(motion::ChangeMotion);
     r.add_block(change::ChangeSetting);
     r.add_block(breaks::Break);
+    r.add_block(events::Enter);
+    r.add_block(events::Fired);
+    r.add_block(events::Removed);
+    r.add_block(counts::CountReached);
+    r.add_block(level::CrossesLevel);
+    r.add_block(signals::HearSignal);
+    r.add_block(counts::CounterIs);
+    r.add_block(balls::Split);
+    r.add_block(balls::Spawn);
+    r.add_block(balls::FireRound);
+    r.add_block(tags::Tag);
+    r.add_block(counts::Count);
+    r.add_block(signals::SendSignal);
     r.add_block(camera::CameraKick);
     r.add_block(slow::SlowMotion);
     r.add_block(flash::Flash);
@@ -110,6 +136,19 @@ pub fn add_sims(s: &mut Sims) {
     s.add_block(motion::ChangeMotion);
     s.add_block(change::ChangeSetting);
     s.add_block(breaks::Break);
+    s.add_block(events::Enter);
+    s.add_block(events::Fired);
+    s.add_block(events::Removed);
+    s.add_block(counts::CountReached);
+    s.add_block(level::CrossesLevel);
+    s.add_block(signals::HearSignal);
+    s.add_block(counts::CounterIs);
+    s.add_block(balls::Split);
+    s.add_block(balls::Spawn);
+    s.add_block(balls::FireRound);
+    s.add_block(tags::Tag);
+    s.add_block(counts::Count);
+    s.add_block(signals::SendSignal);
     s.add_block(camera::CameraKick);
     s.add_block(slow::SlowMotion);
     s.add_block(flash::Flash);

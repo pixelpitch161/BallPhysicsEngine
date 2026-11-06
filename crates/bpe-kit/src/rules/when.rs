@@ -74,7 +74,7 @@ impl BlockSim for Hit {
                 sides.push((b, e.a, -e.normal));
             }
             for (subject, other, normal) in sides {
-                if !matches(cx.world, &s.who, subject) || !matches(cx.world, &s.whom, other) {
+                if !matches(cx, &s.who, subject) || !matches(cx, &s.whom, other) {
                     continue;
                 }
                 let mut values = Values::default();

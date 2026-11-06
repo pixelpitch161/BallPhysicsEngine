@@ -508,7 +508,9 @@ fn dice_are_steady_and_spread() {
 
 #[test]
 fn a_setting_keeps_at_most_most_changes() {
-    let mut rules = RulesState::build(&scene_with(vec![push_on_hit(1.0)]).0, &dots_in_ring(1).1, &sims()).unwrap();
+    let (scene, resolved) = (scene_with(vec![push_on_hit(1.0)]).0, dots_in_ring(1).1);
+    let world = World::build(&scene, &resolved, &sims());
+    let mut rules = RulesState::build(&scene, &resolved, &sims(), &world).unwrap();
     let key = ChangeKey { thing: DOTS, slot: None, row: None, key: "tint".into() };
     let add = |start: f64| Change {
         how: How::Add,

@@ -259,6 +259,24 @@ dot named "Problem in <rule>", "too busy at"), blocks named "<Section> <name>" (
 "Add after …", "Add When to <rule>", right-click menus for headers, blocks and lines. The timeline has a Rules lane
 under the Hits lane while the scene has rules (`rules_lane`).
 
+Part 5 is in (plan `part5.md`, "As built" at its end): **more events and actions**, 13 kit blocks. Whens
+`when.enter` (Enters / Leaves / Either a zone, `rules/events.rs`: each (zone, thing, row) inside set worked out from the
+world at prepare and diffed every stage; a catcher's `Enter` events too), `when.fired` (an emitter's balls, `Spawn`
+events, or rounds, `EmitterState.fired`), `when.removed` (Removed / Broken), `when.count` (`counts.rs`: hits so far,
+ball count or a counter rising/falling to an amount), `when.level` (`level.rs`: a ball's speed, size, light or shadow,
+or a shape's/bus's sound crossing a level; `BlockSim::hears_sound`/`sees_light` put the sound/light makers'
+fingerprints into the world's), `when.signal`; If `if.counter`; Do `do.split` (`balls.rs`: a ball becomes `into`
+balls fanned over Spread, sizes shared by area or kept, each keeping the ball's number, own size, rule changes and
+tags, `World::split`, `RulesState::copy_row`), `do.spawn` (new balls in a Balls or Emitter thing through
+`ThingSim::add_ball(NewBall)`), `do.fire` (an emitter's round through `ThingSim::fire_now`; Fire when **By a rule**,
+`FireWhen::ByARule`, `EmitterState.asked`), `do.tag` (a thing's tag in `world.tags`, a ball's own in
+`RulesState::ball_tags`, which `who::matches(cx, ..)` reads; the physics sees only things' tags), `do.count`
+(`RulesState::counters`, Add / Set / Reset), `do.signal`. Spawned balls count against `MAX_BALLS` live and
+`MAX_ROWS` rows. Counters, tags, splits and spawns apply at the next step's start; a **signal** (`Action::Signal`,
+`rules::Signal`) is heard in the same stage by `BlockSim::hear`, in up to `MOST_ROUNDS` 8 more rounds, the last
+round's carried to the next step (`RulesState.carried`). A shape's **Balls pass through** (`ShapeSettings.passes`,
+`Wall.passes`) keeps its wall for everything but the collision pass, so a shape can be a zone.
+
 Part 6 is in (plan `part6.md`): the **spectacle actions** `do.camera` (Shake / Zoom punch: `Action::Kick`, kept in
 `RulesState.kicks` (`Kick`, `MOST_KICKS` 64, weight (1 − age/time)²), added by the camera sim after its own shake and
 punch), `do.slow` (Slow motion: `Action::Pace`, part 1's `Change` folded on a pace of 1 (`RulesState::pace_at`, 0.01×

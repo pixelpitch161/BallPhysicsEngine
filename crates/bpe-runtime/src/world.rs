@@ -323,7 +323,7 @@ impl World {
             world.light = Some(maker.make(scene, resolved));
         }
         world.refresh_rows(sims, &Log::default());
-        world.rules = crate::rules::RulesState::build(scene, resolved, sims);
+        world.rules = crate::rules::RulesState::build(scene, resolved, sims, &world);
         let pristine =
             world.rules.as_ref().filter(|r| r.changes_settings()).map(|_| std::sync::Arc::new(built_from.clone()));
         world.animated = match (animation.zip(at_start), pristine) {
@@ -937,7 +937,7 @@ impl World {
         self.step += 1;
         let first = log.len();
         // What the rules did in the last step's Rules stage happens now, before anything moves.
-        self.apply_rule_actions(log);
+        self.apply_rule_actions(sims, log);
         self.walls_before.clear();
         self.walls_before.extend(self.walls.iter().map(|(id, w)| (*id, w.outline.clone())));
         self.animate(sims, log);
@@ -1131,7 +1131,8 @@ impl World {
             // Motion that varies across the balls presses each ball its own way.
             let pressed = modules.get(mover).and_then(|m| m.get(&SlotId::Motion)).is_some_and(Slotted::varies);
             let thing_limits = Limits { press: press(*mover, 0), ..*limits };
-            for (wall_id, wall) in walls.iter() {
+            // A wall balls pass through bounces nothing.
+            for (wall_id, wall) in walls.iter().filter(|(_, w)| !w.passes) {
                 let before = walls_before.get(wall_id).unwrap_or(&wall.outline);
                 let wall_bounce = modules.get(wall_id).and_then(|m| m.get(&SlotId::Bounce));
                 let decider = decide(sims, wall_bounce, mover_bounce);
@@ -1222,7 +1223,7 @@ impl World {
                                     keep_clear_from(&mut carried, previous, before, v, radius, touch, wall);
                                     let crosses = |(id, w): (&ThingId, &Wall)| {
                                         let before = walls_before.get(id).unwrap_or(&w.outline);
-                                        !on_own_side(carried, previous, before, w)
+                                        !w.passes && !on_own_side(carried, previous, before, w)
                                     };
                                     if !walls.iter().any(crosses) {
                                         bodies.position[i] = carried;
@@ -1272,7 +1273,7 @@ impl World {
             if touch != Some(Touch::Middle) {
                 continue;
             }
-            for (wall_id, wall) in walls.iter() {
+            for (wall_id, wall) in walls.iter().filter(|(_, w)| !w.passes) {
                 let before = walls_before.get(wall_id).unwrap_or(&wall.outline);
                 for i in 0..bodies.len() {
                     if bodies.alive[i] {
@@ -1484,8 +1485,30 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
             h.bytes(&maker.fingerprint(scene).to_le_bytes());
         }
     }
-    // Rules change the run: every enabled rule's blocks and links (not names or switched-off ones).
+    // Rules change the run: every enabled rule's blocks and links (not names or switched-off ones),
+    // and what of the sound and the light they read.
     if scene.rules.any_enabled() {
+        let blocks = || {
+            scene
+                .rules
+                .list
+                .iter()
+                .filter(|r| r.enabled)
+                .flat_map(|r| &r.blocks)
+                .filter_map(|b| Some((sims.block(&b.kind)?, b)))
+        };
+        if let Some(maker) = &sims.sound
+            && blocks().any(|(sim, b)| sim.hears_sound(&b.params))
+        {
+            h.bytes(b"rules hear");
+            h.bytes(&maker.fingerprint(scene).to_le_bytes());
+        }
+        if let Some(maker) = &sims.light
+            && blocks().any(|(sim, b)| sim.sees_light(&b.params))
+        {
+            h.bytes(b"rules see");
+            h.bytes(&maker.fingerprint(scene).to_le_bytes());
+        }
         h.bytes(b"rules");
         for rule in scene.rules.list.iter().filter(|r| r.enabled) {
             h.bytes(&rule.id.0.to_le_bytes());
