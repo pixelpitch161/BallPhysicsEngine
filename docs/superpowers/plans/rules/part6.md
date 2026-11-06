@@ -141,3 +141,20 @@ All settings in group "Rule"; numbers marked * can come from the firing (`Amount
   effects; aimed rounds don't know about it.
 - Flash doesn't count as a hit for physics, sound, particles' "on hits", heat glow, rigs, lights or effects.
 - A rule's lighting scene isn't shown in the editor's Show scene readout (`words_at` has no playback).
+
+## As built
+
+- Built as planned. `FULL_FLASH_SPEED` is one constant (600 px/s, `bpe_runtime::rules`), shared with the balls'
+  Flash on hit sprites, so a Flash of strength 1 flashes as a full-strength hit does; Strength runs 0 to 1.5.
+- Slow motion: `World.pace` (from `RulesState::pace_at`, a fold of the Pace changes over 1) scales `sim_dt`, the
+  speed ceiling (`limits().ceiling / pace`) and the resting threshold; `lag` grows by `dt × (1 − pace)` a step and
+  `sim_time` = `time − lag`; `SimCx.time` is exactly `step / rate` while `lag` is 0, so nothing moves without a rule.
+  A shape's own Spin and Shrink follow `sim_dt`. Keyframed moves carry no wall velocity (as before), so they run on at
+  the video's pace. Emitter aim uses the ceiling at pace 1 (aiming ignores slow motion).
+- Lighting scene: `light_scenes::now` reads the card as it stood at a moment (Show scene from its hold keys, hits
+  heard up to that moment), so a crossfade from the card never jumps when the card would have moved on mid-fade.
+- Play a note: `ShapeVoice::rule_note`; the ControlSampler (Follow sound) takes the note's velocity as its strength
+  (and the Hit modulator's), its length as its gate and the engine's seed; the compressor's Hits key takes it by its
+  velocity; the MIDI log closes a drone's own-voice note where its gate closes.
+- Review follow-ups not done: a rule note on an Always/In range shape counts in Follow sound only as the latest hit
+  (the engine gives it a short voice of its own), and rule notes ignore Strum.

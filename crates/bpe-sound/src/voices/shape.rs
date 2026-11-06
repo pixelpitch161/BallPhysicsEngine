@@ -1254,7 +1254,8 @@ impl ShapeVoice {
         let length = e.normal.x;
         let length = if length.is_finite() && length > 0.0 { Some((length * crate::SAMPLE_RATE) as u64) } else { None };
         self.own_voice = drone && self.n_held > 0;
-        self.note_gate = length;
+        // The MIDI log closes the note where its gates close.
+        self.note_gate = length.or(drone.then_some((AUDITION_GATE_S * crate::SAMPLE_RATE) as u64));
         for &note in notes {
             let mono = self.spec.play_mode == PlayMode::Mono && !self.own_voice;
             let again = mono && self.notes.meta[0].active && !self.notes.meta[0].fading;

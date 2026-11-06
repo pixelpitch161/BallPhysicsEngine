@@ -167,6 +167,15 @@ struct Accepted {
     seed: u64,
 }
 
+impl Accepted {
+    /// A rule's note's own length in seconds (rules part 6), which closes its gates as the
+    /// engine's does; `None` for a hit or a note without one.
+    fn length(&self) -> Option<f32> {
+        let l = self.event.normal.x;
+        (self.event.kind == EventKind::Note && l.is_finite() && l > 0.0).then_some(l)
+    }
+}
+
 /// A shape's hits so far: the filter as the engine runs it, over the log in order.
 struct Heard {
     filter: HitFilter,
@@ -361,8 +370,12 @@ impl Shape {
             };
             if let Some(strength) = accepted {
                 let ball = e.a;
-                let seed =
-                    mix(sample ^ mix(((ball.thing.0 as u64) << 32) | ball.item as u64) ^ ((thing.0 as u64) << 48));
+                // A rule's note is seeded as the engine seeds it.
+                let note = if e.kind == EventKind::Note { 0x4e07e } else { 0 };
+                let seed = mix(sample
+                    ^ mix(((ball.thing.0 as u64) << 32) | ball.item as u64)
+                    ^ ((thing.0 as u64) << 48)
+                    ^ note);
                 h.hits.push(Accepted { sample, strength, event: e.clone(), seed });
             }
         }
@@ -405,7 +418,7 @@ impl Shape {
         &self,
         tempo: &TempoMap,
         kv: &Values,
-        triggers: &[(u64, f32)],
+        triggers: &[(u64, f32, Option<f32>)],
         held: bool,
         t: u64,
     ) -> ([f32; MAX_ENVS], [bool; MAX_ENVS]) {
@@ -415,10 +428,14 @@ impl Shape {
             let p: EnvParams = env_params_of(kv, e);
             let vel = params_velocity(kv, e);
             let mut from = 0.0;
-            for (j, &(on, strength)) in triggers.iter().enumerate() {
+            for (j, &(on, strength, length)) in triggers.iter().enumerate() {
                 let next = triggers.get(j + 1).map(|n| n.0);
                 let end = next.unwrap_or(t);
-                let gate = if held { f32::INFINITY } else { self.gate(tempo, kv, e, on, next) };
+                let gate = match length {
+                    _ if held => f32::INFINITY,
+                    Some(l) => l,
+                    None => self.gate(tempo, kv, e, on, next),
+                };
                 let (level, d) = level_at(&p, 1.0 - vel + vel * strength, from, seconds(end.saturating_sub(on)), gate);
                 from = level;
                 if next.is_none() {
@@ -451,7 +468,7 @@ impl Shape {
                     for e in 0..self.envs() {
                         let p = env_params_of(kv, e);
                         let vel = params_velocity(kv, e);
-                        let gate = self.gate(tempo, kv, e, h.sample, next);
+                        let gate = h.length().unwrap_or_else(|| self.gate(tempo, kv, e, h.sample, next));
                         (env[e], done[e]) = level_at(&p, 1.0 - vel + vel * h.strength, 0.0, since, gate);
                     }
                     if !self.over(&done, since) {
@@ -462,8 +479,8 @@ impl Shape {
             }
             PlayWhen::OnHit => {
                 let Some(last) = past.last() else { return Vec::new() };
-                let triggers: Vec<(u64, f32)> =
-                    past[upto.saturating_sub(CHAIN)..].iter().map(|h| (h.sample, h.strength)).collect();
+                let triggers: Vec<(u64, f32, Option<f32>)> =
+                    past[upto.saturating_sub(CHAIN)..].iter().map(|h| (h.sample, h.strength, h.length())).collect();
                 let (env, done) = self.chain(tempo, kv, &triggers, false, t);
                 if self.over(&done, seconds(t - last.sample)) {
                     return Vec::new();
@@ -476,7 +493,7 @@ impl Shape {
                     return Vec::new();
                 }
                 // Held from the start at full strength; hits don't play a held note again.
-                let (env, _) = self.chain(tempo, kv, &[(0, 1.0)], true, t);
+                let (env, _) = self.chain(tempo, kv, &[(0, 1.0, None)], true, t);
                 vec![NoteAt { on: 0, hit: past.last().cloned(), env }]
             }
         }
@@ -578,6 +595,10 @@ impl Shape {
             }
             Src::Hit(i) => {
                 let hv = match &n.hit {
+                    // A rule's note's strength is its velocity, as the engine has it.
+                    Some(h) if h.event.kind == EventKind::Note => {
+                        HitValues { strength: h.strength, ..hit_values(world, self.spec.thing, &h.event, h.seed) }
+                    }
                     Some(h) => hit_values(world, self.spec.thing, &h.event, h.seed),
                     None => HitValues { strength: 1.0, ..HitValues::default() },
                 };
