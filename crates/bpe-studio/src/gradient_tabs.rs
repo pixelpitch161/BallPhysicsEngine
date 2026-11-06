@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
 use bpe_core::gradient_extras::{self, Companion, ExtraTab};
-use bpe_core::{Color, GapBlend, Gradient, Mix, SettingDef, Value, ValueType};
+use bpe_core::{Choice, Color, GapBlend, Gradient, GradientForm, Mix, SettingDef, SettingValue, Value, ValueType};
 use eframe::egui::{self, Ui};
 
 use crate::gradient_bar::{select_stop, selected_stop};
@@ -79,14 +79,18 @@ fn tabs_for(def: &SettingDef) -> Vec<Tab> {
 }
 
 /// The description of companion `c` of the gradient `base`, under its full key
-/// (`"colours~bands"`), made once and kept for the program's life like every setting's.
+/// (`"colours~bands"`), its default the site's own (`~form`) and its `when` naming the gradient's
+/// own companions (`~form=spiral` on `3/colour` reads `3/colour~form`); made once and kept for
+/// the program's life like every setting's.
 pub fn companion_def(base: &SettingDef, c: &'static Companion) -> &'static SettingDef {
-    static MADE: LazyLock<Mutex<HashMap<(&'static str, &'static str), &'static SettingDef>>> =
-        LazyLock::new(Default::default);
+    type Made = HashMap<(&'static str, &'static str, String), &'static SettingDef>;
+    static MADE: LazyLock<Mutex<Made>> = LazyLock::new(Default::default);
     let mut made = MADE.lock().unwrap_or_else(|e| e.into_inner());
-    made.entry((base.key, c.name)).or_insert_with(|| {
+    made.entry((base.key, c.name, format!("{:?}", base.flags.area))).or_insert_with(|| {
         let key: &'static str = Box::leak(gradient_extras::key(base.key, c.name).into_boxed_str());
-        Box::leak(Box::new(SettingDef { key, ..c.def.clone() }))
+        let when: &'static str = Box::leak(gradient_extras::when_of(base.key, c.def.when).into_boxed_str());
+        let default = gradient_extras::default_on(base, c);
+        Box::leak(Box::new(SettingDef { key, when, default, ..c.def.clone() }))
     })
 }
 
@@ -136,9 +140,42 @@ pub(crate) fn tab_rows(
             companion_rows(ui, def, ExtraTab::Blend, cx, right, get, out);
             changed |= every_gap(ui, def, g, cx, right);
         }
+        Tab::Extra(ExtraTab::Shape) => {
+            shape_chips(ui, def, g, cx, right, get, out);
+            companion_rows(ui, def, ExtraTab::Shape, cx, right, get, out);
+        }
         Tab::Extra(t) => companion_rows(ui, def, t, cx, right, get, out),
     }
     changed
+}
+
+/// The Shape tab's first row: a chip per form, each painted as the gradient laid out that way.
+fn shape_chips(
+    ui: &mut Ui,
+    def: &SettingDef,
+    g: &Gradient,
+    cx: &GridCx,
+    right: f32,
+    get: &dyn Fn(&str) -> Value,
+    out: &mut GridOutcome,
+) {
+    let Some(form_c) = gradient_extras::companion("form") else { return };
+    let form_def = companion_def(def, form_c);
+    let now = GradientForm::from_value(&get(form_def.key)).unwrap_or_default();
+    let layout = gradient_extras::layout_from(def.key, &|k| Some(get(k)));
+    row_label(ui, cx, "Shape");
+    widget_cell(ui, right, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+            for form in GradientForm::ALL {
+                let name = format!("{} shape {}", def.label, form.label());
+                if crate::gradient_form_chips::chip(ui, g, form, &layout, form == now, name) && form != now {
+                    out.changes.push((form_def.key, Value::Choice(form.name().to_owned())));
+                }
+            }
+        });
+    });
+    ui.end_row();
 }
 
 /// The Colours tab: the selected stop's colour, hex and place, then the gap after it (left out
@@ -301,8 +338,12 @@ fn companion_rows(
     out: &mut GridOutcome,
 ) {
     debug_assert_eq!(def.ty, ValueType::Gradient);
-    for c in gradient_extras::companions_for(def).filter(|c| c.tab == tab) {
-        crate::widgets::grid_row(ui, companion_def(def, c), get, cx, right, out);
+    // The form has its chips; the rest show when their `when` holds (a form's own settings).
+    for c in gradient_extras::companions_for(def).filter(|c| c.tab == tab && c.name != "form") {
+        let d = companion_def(def, c);
+        if (cx.applies)(d) {
+            crate::widgets::grid_row(ui, d, get, cx, right, out);
+        }
     }
 }
 
@@ -318,23 +359,39 @@ mod tests {
     const GREEN: Color = Color { r: 0, g: 255, b: 0, a: 255 };
     const BLUE: Color = Color { r: 0, g: 0, b: 255, a: 255 };
 
+    fn def_with(area: bpe_core::Area) -> SettingDef {
+        SettingDef {
+            key: "colours",
+            label: "Colours",
+            help: "",
+            ty: ValueType::Gradient,
+            default: Value::Gradient(Gradient::default()),
+            range: None,
+            span: None,
+            unit: "",
+            group: "",
+            depth: bpe_core::Depth::Simple,
+            flags: bpe_core::Flags { keyframe: true, pulse: false, hold: false, area },
+            when: "",
+        }
+    }
+
     fn gradient_def() -> &'static [SettingDef] {
-        static DEFS: LazyLock<Vec<SettingDef>> = LazyLock::new(|| {
-            vec![SettingDef {
-                key: "colours",
-                label: "Colours",
-                help: "",
-                ty: ValueType::Gradient,
-                default: Value::Gradient(Gradient::default()),
-                range: None,
-                span: None,
-                unit: "",
-                group: "",
-                depth: bpe_core::Depth::Simple,
-                flags: bpe_core::Flags { keyframe: true, pulse: false, hold: false, area: bpe_core::Area::No },
-                when: "",
-            }]
-        });
+        static DEFS: LazyLock<Vec<SettingDef>> = LazyLock::new(|| vec![def_with(bpe_core::Area::No)]);
+        &DEFS
+    }
+
+    /// A gradient that fills an area by its own layout (a layer's colours).
+    fn fills_def() -> &'static [SettingDef] {
+        static DEFS: LazyLock<Vec<SettingDef>> =
+            LazyLock::new(|| vec![def_with(bpe_core::Area::Fills(GradientForm::Straight))]);
+        &DEFS
+    }
+
+    /// A gradient placed by the paint it belongs to (its Angle and Size).
+    fn placed_def() -> &'static [SettingDef] {
+        static DEFS: LazyLock<Vec<SettingDef>> =
+            LazyLock::new(|| vec![def_with(bpe_core::Area::Placed(GradientForm::Straight))]);
         &DEFS
     }
 
@@ -354,6 +411,11 @@ mod tests {
 
     /// One gradient setting in a settings grid; its changes are applied and noted.
     fn harness(g: Gradient) -> Harness<'static, State> {
+        harness_of(gradient_def(), g)
+    }
+
+    /// Setting `defs[0]` holding `g` in a settings grid, rows shown by their `when`.
+    fn harness_of(defs: &'static [SettingDef], g: Gradient) -> Harness<'static, State> {
         let mut values = BTreeMap::new();
         values.insert("colours".to_owned(), Value::Gradient(g));
         let state = State { values, changes: Vec::new() };
@@ -365,7 +427,9 @@ mod tests {
                 |ui, state: &mut State| {
                     let choices = TargetChoices::default();
                     let marks = |_: &str| Some(KeyMark { can_key: true, keyed: false, pulsed: false });
-                    let applies = |_: &SettingDef| true;
+                    let now = state.values.clone();
+                    let known = move |k: &str| now.get(k).cloned().or_else(|| gradient_extras::default_of(k));
+                    let applies = |d: &SettingDef| bpe_core::settings::applies(d.when, None, &known);
                     let cx = GridCx {
                         choices: &choices,
                         marks: &marks,
@@ -380,7 +444,7 @@ mod tests {
                     let get = |k: &str| {
                         values.get(k).cloned().unwrap_or_else(|| gradient_extras::default_of(k).expect("a known key"))
                     };
-                    let out = settings_grid(ui, "g", gradient_def(), get, &cx);
+                    let out = settings_grid(ui, "g", defs, get, &cx);
                     for (k, v) in out.changes {
                         state.values.insert(k.to_owned(), v.clone());
                         state.changes.push((k.to_owned(), v));
@@ -416,6 +480,33 @@ mod tests {
         assert!(h.query_by_label("Colours hex").is_none());
         h.run();
         assert!(h.query_by_label("Colours loop").is_some(), "the pick survives a frame");
+    }
+
+    #[test]
+    fn the_shape_tab_picks_a_form_and_shows_its_own_settings() {
+        let mut h = harness_of(fills_def(), three());
+        click(&mut h, "Colours tab Shape");
+        assert!(h.query_by_label("Colours shape Straight").is_some(), "a chip per form");
+        assert!(h.query_all_by_label("Turn").next().is_some(), "a layer's gradient places itself");
+        click(&mut h, "Colours shape Spiral");
+        let picked = h.state().changes.iter().find(|(k, _)| k == "colours~form").map(|(_, v)| v.clone());
+        assert_eq!(picked, Some(Value::Choice("spiral".into())));
+        h.run();
+        for label in ["Arms", "Twist"] {
+            assert!(h.query_all_by_label(label).next().is_some(), "Spiral shows {label}");
+        }
+        assert!(h.query_all_by_label("Sides").next().is_none(), "Sides is a polygon's");
+        click(&mut h, "Colours shape Polygon / star");
+        assert!(h.query_all_by_label("Sides").next().is_some(), "now Sides shows");
+        assert!(h.query_all_by_label("Arms").next().is_none());
+    }
+
+    #[test]
+    fn a_paint_s_gradient_picks_a_form_but_its_paint_places_it() {
+        let mut h = harness_of(placed_def(), three());
+        click(&mut h, "Colours tab Shape");
+        assert!(h.query_by_label("Colours shape Rings").is_some());
+        assert!(h.query_all_by_label("Turn").next().is_none(), "the paint's Angle turns it");
     }
 
     #[test]

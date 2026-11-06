@@ -44,6 +44,36 @@ impl GradientAtlas {
         (self.rows.len() - 1) as u32
     }
 
+    /// The row holding Free points `points` (each a point and its stop's linear colour, at most
+    /// [`bpe_core::gradient_form::MOST_POINTS`]): texel `2i` the point, `2i + 1` the colour. The
+    /// same points get the same row.
+    pub fn points_row(&mut self, points: &[([f32; 2], [f32; 4])]) -> u32 {
+        let points = &points[..points.len().min(ATLAS_WIDTH / 2)];
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325 ^ 0xf7;
+        for (p, c) in points {
+            for x in p.iter().chain(c.iter()) {
+                for b in x.to_bits().to_le_bytes() {
+                    h ^= b as u64;
+                    h = h.wrapping_mul(0x0000_0100_0000_01b3);
+                }
+            }
+        }
+        // Kept apart from the gradients' hashes.
+        let key = h.rotate_left(17) ^ 0x5eed_0f_f7ee_0001;
+        if let Some(&row) = self.index.get(&key) {
+            return row;
+        }
+        let mut baked = [[0.0; 4]; ATLAS_WIDTH];
+        for (i, (p, c)) in points.iter().enumerate() {
+            baked[2 * i] = [p[0], p[1], 0.0, 0.0];
+            baked[2 * i + 1] = *c;
+        }
+        let row = self.rows.len() as u32;
+        self.rows.push(baked);
+        self.index.insert(key, row);
+        row
+    }
+
     pub fn len(&self) -> usize {
         self.rows.len()
     }
@@ -82,9 +112,14 @@ fn hash(g: &Gradient) -> u64 {
     h
 }
 
-/// paint.wgsl, reading the atlas from bind group `group`.
+/// paint.wgsl (with what it shares with the Ripples field), reading the atlas and the field from
+/// bind group `group`.
 pub(crate) fn paint_wgsl(group: u32) -> String {
-    include_str!("shaders/paint.wgsl").replace("PAINT_GROUP", &group.to_string())
+    [
+        include_str!("shaders/ripple_common.wgsl"),
+        &include_str!("shaders/paint.wgsl").replace("PAINT_GROUP", &group.to_string()),
+    ]
+    .concat()
 }
 
 /// The bind group layout paint.wgsl reads the atlas through: the texture and its sampler, read
@@ -110,6 +145,9 @@ pub(crate) fn paint_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
+            crate::ripples::field_entry(2, S::VERTEX_FRAGMENT),
+            crate::ripples::field_entry(3, S::VERTEX_FRAGMENT),
+            crate::ripples::sources_entry(4, S::VERTEX_FRAGMENT),
         ],
     })
 }
@@ -197,6 +235,12 @@ pub struct PaintGpu {
     /// this many turns, saturation added, value multiplied, and one unused. [`NO_VARY`] leaves
     /// the colour exactly as sampled.
     pub vary: [f32; 4],
+    /// The form's own numbers (see `paint_form_along` in paint.wgsl and
+    /// [`bpe_core::Layout::numbers`]); for Free points `[1]` is the row [`GradientAtlas::points_row`]
+    /// gave, `[2]` how many and `[3]` 1 to blend in OKLab.
+    pub form: [f32; 4],
+    /// The form's centre xy in the instance's own space (before the turn), then spare.
+    pub place: [f32; 4],
 }
 
 /// A [`PaintGpu::vary`] that changes nothing.
@@ -214,6 +258,8 @@ impl Default for PaintGpu {
             scroll: 0.0,
             repeat: 0.0,
             vary: NO_VARY,
+            form: [0.0; 4],
+            place: [0.0; 4],
         }
     }
 }
@@ -312,6 +358,6 @@ mod tests {
     #[test]
     fn a_new_paint_paints_nothing() {
         assert_eq!(PaintGpu::default().row, -1.0);
-        assert_eq!(std::mem::size_of::<PaintGpu>(), 48);
+        assert_eq!(std::mem::size_of::<PaintGpu>(), 80);
     }
 }

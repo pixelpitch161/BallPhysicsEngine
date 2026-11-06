@@ -468,6 +468,62 @@ pub fn along(form: GradientForm, layout: &Layout, q: Vec2, k: f32, time: f32) ->
     if out.is_finite() { out } else { 0.0 }
 }
 
+/// The linear-light colour `g` laid out as `form` by `layout` gives at `q` in an area's own
+/// space (-1 to 1 across it), `time` seconds in, as a site that takes its place from the
+/// layout (Turn, Centre, Size and Beyond the last colour) paints it; Ripples, which need the
+/// frame's things, as rings from the middle. What the editor's Shape previews show.
+pub fn area_colour(g: &Gradient, form: GradientForm, layout: &Layout, q: Vec2, time: f32) -> [f32; 4] {
+    let turn = layout.turn.filter(|t| t.is_finite()).unwrap_or(defaults::TURN);
+    let centre = layout.centre.filter(|c| c[0].is_finite() && c[1].is_finite()).unwrap_or([0.0; 2]);
+    let size = layout.size.filter(|s| s.is_finite() && *s > 1e-6).unwrap_or(defaults::SIZE);
+    let local = turned(q - Vec2::from(centre), -turn) / size;
+    if form == GradientForm::FreePoints {
+        return free_colour(g, layout, local);
+    }
+    let mut repeat = layout.repeat.unwrap_or_default();
+    if form.mirrors_on_clamp() && repeat == Repeat::Clamp {
+        repeat = Repeat::Mirror;
+    }
+    g.sample(repeat.wrap(along(form, layout, local, 1.0 / size, time)))
+}
+
+/// Stored Free points `points` after the gradient's stops went from `old` to `new`: a stop added
+/// gets a point of its own where the defaults would put it, a removed stop's point goes, so each
+/// stop keeps its point. `None` when nothing is stored or the stops are as many as before.
+pub fn points_after(old: &Gradient, new: &Gradient, points: &[[f32; 2]]) -> Option<Vec<[f32; 2]>> {
+    let (was, now) = (old.stops.len(), new.stops.len());
+    if points.is_empty() || was == now {
+        return None;
+    }
+    // Every stored point, one per old stop (missing ones where the defaults put them).
+    let mut out: Vec<[f32; 2]> =
+        (0..was).map(|i| points.get(i).copied().unwrap_or_else(|| default_point(i, was.min(MOST_POINTS)))).collect();
+    let same = |a: &crate::Stop, b: &crate::Stop| a.at == b.at && a.color == b.color;
+    if now > was {
+        for (i, s) in new.stops.iter().enumerate() {
+            if old.stops.iter().all(|o| !same(o, s)) {
+                let at = i.min(out.len());
+                out.insert(at, default_point(i, now.min(MOST_POINTS)));
+                if out.len() == now {
+                    break;
+                }
+            }
+        }
+        while out.len() < now {
+            out.push(default_point(out.len(), now.min(MOST_POINTS)));
+        }
+    } else {
+        let gone: Vec<usize> =
+            (0..was).filter(|&i| new.stops.iter().all(|s| !same(s, &old.stops[i]))).take(was - now).collect();
+        for &i in gone.iter().rev() {
+            out.remove(i);
+        }
+        out.truncate(now);
+    }
+    out.truncate(MOST_POINTS);
+    Some(out)
+}
+
 /// Where Free point `i` of `n` sits when none is stored: round a circle from the top.
 pub fn default_point(i: usize, n: usize) -> [f32; 2] {
     let a = (-90.0 + 360.0 * i as f32 / n.max(1) as f32).to_radians();
@@ -532,6 +588,20 @@ pub fn free_colour(g: &Gradient, layout: &Layout, q: Vec2) -> [f32; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn points_follow_their_stops_when_stops_come_and_go() {
+        use crate::Color;
+        let three = Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 255, 0), Color::rgb(0, 0, 255)]);
+        let points = [[0.1, 0.1], [0.2, 0.2], [0.3, 0.3]];
+        let mut two = three.clone();
+        two.stops.remove(1);
+        assert_eq!(points_after(&three, &two, &points), Some(vec![[0.1, 0.1], [0.3, 0.3]]), "stop 1's point goes");
+        let back = points_after(&two, &three, &[[0.1, 0.1], [0.3, 0.3]]).unwrap();
+        assert_eq!((back.len(), back[0], back[2]), (3, [0.1, 0.1], [0.3, 0.3]), "a new stop gets a point between");
+        assert_eq!(points_after(&three, &two, &[]), None, "nothing stored, nothing to keep");
+        assert_eq!(points_after(&three, &three, &points), None);
+    }
     use crate::Color;
 
     fn near(a: f32, b: f32) -> bool {

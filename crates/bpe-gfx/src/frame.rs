@@ -189,6 +189,8 @@ impl LayerGpu {
             scroll: 0.0,
             repeat: 0.0,
             vary: [0.0, 0.0, 1.0, 0.0],
+            form: [0.0; 4],
+            place: [0.0; 4],
         },
         extra: [[0.0; 4]; 4],
         light: [0.0; 4],
@@ -830,13 +832,18 @@ pub struct BackgroundPaint {
     /// 0 clamp, 1 repeat, 2 mirror.
     pub repeat: f32,
     /// 0 paints the colour at `t0` everywhere, 1 works the place out along the direction, 2
-    /// outward from the centre.
+    /// outward from the centre, 3 by the form `pattern`.
     pub mode: f32,
     /// The gradient's grain, in 1/255 steps (see [`crate::PaintGpu::grain`]).
     pub grain: f32,
     /// A plain two-colour blend (linear light) the shader mixes itself, exactly, instead of
     /// reading the baked row, whose half floats are a hair off for very dark colours.
     pub ends: Option<[[f32; 4]; 2]>,
+    /// With `mode` 3, the form laid over the place (`PaintGpu::pattern`): the place measured from
+    /// the centre in spans, turned by the direction.
+    pub pattern: f32,
+    /// The form's own numbers (`PaintGpu::form`).
+    pub form: [f32; 4],
 }
 
 impl Default for BackgroundPaint {
@@ -850,6 +857,8 @@ impl Default for BackgroundPaint {
             mode: 0.0,
             grain: 0.0,
             ends: None,
+            pattern: 0.0,
+            form: [0.0; 4],
         }
     }
 }
@@ -919,6 +928,14 @@ pub struct Frame {
     /// Every live ball, for the picture effects' ball list (filled only when the scene has an
     /// Effects card). Blend layers' frames hold the balls drawn into them.
     pub ball_marks: Vec<BallMark>,
+    /// Whether some paint in the frame lays its colours out as Ripples: things then push their
+    /// [`RippleSource`]s and the renderer builds the distance field Ripples read. Blend layers'
+    /// frames take it from the frame they are made in.
+    pub ripples: bool,
+    /// What Ripples measure from (balls and shape outlines), in this frame and its layers' frames.
+    pub ripple_sources: Vec<RippleSource>,
+    /// The last owner number given out by [`Frame::ripple_owner`].
+    pub ripple_owners: u32,
     /// The beat at this moment: its phase 0 to 1, the bar's phase 0 to 1, beats per second, and
     /// 1 when the scene has a tempo (else all 0). Only the top frame's counts.
     pub beat: [f32; 4],
@@ -1356,8 +1373,97 @@ impl Default for Frame {
             grade: Grade::default(),
             light: None,
             ball_marks: Vec::new(),
+            ripples: false,
+            ripple_sources: Vec::new(),
+            ripple_owners: 0,
             beat: [0.0; 4],
             bake: None,
+        }
+    }
+}
+
+/// The most Ripples sources a frame keeps (its layers' together); past it they are left out.
+pub const MOST_RIPPLE_SOURCES: usize = 16384;
+/// The most segments one outline gives Ripples.
+pub const MOST_RIPPLE_SEGMENTS: usize = 256;
+
+/// Something Ripples measure from: a circle (a ball) or a thick segment of a shape's outline, in
+/// world pixels. Matches the sources in ripples.wgsl and paint.wgsl.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct RippleSource {
+    /// From xy, to xy (a circle: its centre twice).
+    pub a: [f32; 4],
+    /// Radius (half the band of a segment), its owner's number, 0 a ball or 1 a shape, spare.
+    pub b: [f32; 4],
+    /// Its owner's centre xy (what a paint inside it skips), two spare.
+    pub c: [f32; 4],
+}
+
+impl Frame {
+    /// A new owner number for [`Frame::push_ripple_ball`] and [`Frame::push_ripple_outline`]:
+    /// the sources of one thing (a ball, a shape) share one, and Ripples measure from the two
+    /// nearest owners.
+    pub fn ripple_owner(&mut self) -> u32 {
+        self.ripple_owners += 1;
+        self.ripple_owners
+    }
+
+    /// A ball as a Ripples source (only when the frame has Ripples).
+    pub fn push_ripple_ball(&mut self, centre: [f32; 2], radius: f32) {
+        if !self.ripples || self.ripple_sources.len() >= MOST_RIPPLE_SOURCES {
+            return;
+        }
+        let owner = self.ripple_owner() as f32;
+        let r = if radius.is_finite() { radius.max(0.0) } else { 0.0 };
+        self.ripple_sources.push(RippleSource {
+            a: [centre[0], centre[1], centre[0], centre[1]],
+            b: [r, owner, 0.0, 0.0],
+            c: [centre[0], centre[1], 0.0, 0.0],
+        });
+    }
+
+    /// A closed outline through `points` (world pixels), its band `half` wide each side, owned by
+    /// a thing centred at `centre`, as Ripples sources: at most [`MOST_RIPPLE_SEGMENTS`]
+    /// segments, every few corners when it has more.
+    pub fn push_ripple_outline(&mut self, centre: [f32; 2], points: &[[f32; 2]], half: f32) {
+        if !self.ripples || points.is_empty() {
+            return;
+        }
+        let owner = self.ripple_owner() as f32;
+        let half = if half.is_finite() { half.max(0.0) } else { 0.0 };
+        let step = points.len().div_ceil(MOST_RIPPLE_SEGMENTS).max(1);
+        let kept: Vec<[f32; 2]> = points.iter().step_by(step).copied().collect();
+        for k in 0..kept.len() {
+            if self.ripple_sources.len() >= MOST_RIPPLE_SOURCES {
+                return;
+            }
+            let (p, q) = (kept[k], kept[(k + 1) % kept.len()]);
+            self.ripple_sources.push(RippleSource {
+                a: [p[0], p[1], q[0], q[1]],
+                b: [half, owner, 1.0, 0.0],
+                c: [centre[0], centre[1], 0.0, 0.0],
+            });
+        }
+    }
+
+    /// Every Ripples source of this frame and its layers' frames, each frame's owners numbered
+    /// after the last's so no two things share one.
+    pub fn all_ripple_sources(&self) -> Vec<RippleSource> {
+        let mut all = Vec::new();
+        let mut base = 0.0;
+        self.gather_ripple_sources(&mut all, &mut base);
+        all.truncate(MOST_RIPPLE_SOURCES);
+        all
+    }
+
+    fn gather_ripple_sources(&self, all: &mut Vec<RippleSource>, base: &mut f32) {
+        all.extend(
+            self.ripple_sources.iter().map(|s| RippleSource { b: [s.b[0], s.b[1] + *base, s.b[2], s.b[3]], ..*s }),
+        );
+        *base += self.ripple_owners as f32;
+        for l in &self.layers {
+            l.frame.gather_ripple_sources(all, base);
         }
     }
 }
@@ -1389,6 +1495,9 @@ impl Frame {
         self.grade = Grade::default();
         self.light = None;
         self.ball_marks.clear();
+        self.ripples = false;
+        self.ripple_sources.clear();
+        self.ripple_owners = 0;
         self.beat = [0.0; 4];
         self.bake = None;
         if let Some(overlay) = &mut self.overlay {
@@ -1460,6 +1569,7 @@ impl Frame {
         let f = &mut self.layers[i].frame;
         (f.width, f.height, f.time, f.video, f.camera) = (width, height, time, video, camera);
         (f.bloom, f.exposure, f.background_on_screen) = (bloom, exposure, on_screen);
+        f.ripples = self.ripples;
         f
     }
 
@@ -1955,6 +2065,8 @@ pub fn build_frame_sensing(
         animated = copy;
         &animated
     };
+    // Things push what Ripples measure from only when some gradient is laid out as Ripples.
+    frame.ripples = bpe_core::gradient_extras::any_ripples(resolved);
     for (id, r) in &resolved.things {
         let Some(thing) = scene.things.get(id) else { continue };
         let Some(d) = draws.thing(&r.kind) else { continue };
@@ -2133,7 +2245,7 @@ mod tests {
     #[test]
     fn layer_records_and_layered_instances_fit_the_gpu() {
         assert_eq!(std::mem::size_of::<LayerGpu>() % 16, 0);
-        assert_eq!(std::mem::size_of::<LayerGpu>(), 256, "as layers.wgsl lays it out");
+        assert_eq!(std::mem::size_of::<LayerGpu>(), 288, "as layers.wgsl lays it out");
         assert!(std::mem::size_of::<LayeredInstance>() <= 160);
         assert_eq!(std::mem::size_of::<LayeredInstance>() % 16, 0);
         let mut f = Frame::default();
@@ -2543,8 +2655,8 @@ mod tests {
         assert_eq!(thing_code(ThingId::ROOT), 1.0);
         assert_eq!(thing_code(ThingId(41)), 42.0);
         assert_eq!(ShapeInstance::default().code(7.0).c[3], 7.0);
-        assert_eq!(std::mem::size_of::<LookInstance>(), 160);
-        assert_eq!(std::mem::size_of::<BallInstance>(), 96);
+        assert_eq!(std::mem::size_of::<LookInstance>(), 192);
+        assert_eq!(std::mem::size_of::<BallInstance>(), 128);
     }
 
     #[test]

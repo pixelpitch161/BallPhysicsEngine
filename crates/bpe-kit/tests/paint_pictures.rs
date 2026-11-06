@@ -111,7 +111,8 @@ fn inside_rings_draw_on_classic_balls() {
     let pattern = scene.add_layer(&kit.registry, ball, look, "layer.pattern").unwrap();
     scene.move_layer(&kit.registry, ball, look, pattern, 1).unwrap();
     let params = &mut scene.card_mut(ball, look).unwrap().params;
-    params.set(&layered_key(pattern, "in_pattern"), Value::Choice("rings".into()));
+    params.set(&layered_key(pattern, "in_pattern"), Value::Choice("gradient".into()));
+    params.set(&layered_key(pattern, "in_colours~form"), Value::Choice("rings".into()));
     params.set(&layered_key(pattern, "in_from"), Value::Choice("own_gradient".into()));
     params.set(&layered_key(pattern, "in_colours"), Value::Gradient(Gradient::even(&[red, blue])));
     let rings = draw(&scene);

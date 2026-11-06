@@ -639,6 +639,19 @@ fn apply_in(params: &mut Params) {
     }
 }
 
+/// The layout gradient `base`'s Shape companions give, each read through `get` (its full key;
+/// `None` for one not stored): what [`apply_moves`] puts on the gradient, for the editor's
+/// previews.
+pub fn layout_from(base: &str, get: &dyn Fn(&str) -> Option<Value>) -> Layout {
+    let mut f = Found::default();
+    for c in COMPANIONS.iter().filter(|c| c.tab == ExtraTab::Shape) {
+        if let Some(v) = get(&key(base, c.name)) {
+            take(&mut f, c.name, &v);
+        }
+    }
+    f.layout
+}
+
 /// The form a gradient at a site whose default is `default` is laid out by this frame.
 pub fn form_of(g: &Gradient, default: GradientForm) -> GradientForm {
     g.layout.form_or(default)

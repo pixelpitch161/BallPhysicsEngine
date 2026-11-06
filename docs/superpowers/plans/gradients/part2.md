@@ -245,3 +245,27 @@ from Straight. Commit.
 - CLAUDE.md "Gradients" section: part 2 as built. This plan's "As built" notes.
 - `cargo fmt`, `cargo clippy --workspace`, `cargo test --workspace` (background), goldens unchanged.
 - One Opus review of the branch; fix; PR.
+
+## As built
+
+- Every area gradient takes one form list (`GradientForm`, 16 forms) through its `~form` companion; `Area` on the
+  setting says whether it is placed by its own Turn/Centre/Size/Beyond (`Fills`) or by its paint (`Placed`). The old
+  per-site choices (Paint's Gradient, Pattern's Stripes/Rings/Linear, the layers' `GradientShape`) were removed, not
+  upgraded: there is no backward compatibility for scene files yet. The Pattern's Gradient defaults to Stripes.
+- `apply_moves` fills `Gradient.layout` once a frame; code that reads a resolved scene without it (unit tests that
+  build stacks straight from `resolve`) must call it to see companions. A Paint writes its colours without the layout
+  (`group_write`), so scenes round-trip.
+- The shaders keep every costly paint function at one call site: Marble and Turbulence share one `paint_fbm` call,
+  and the Pattern's colour goes through the same `own_colour` call as the other layers. Without that the in-ball
+  program tests ran out of memory compiling on llvmpipe.
+- Ripples: a half-size field of source indices (Rgba32Uint every/balls, Rg32Uint shapes), seeded by instanced quads
+  with write masks and spread by a 2-best jump flood keeping distinct owners. With no source it reads 0 (the first
+  colour). The CPU (`area_colour`, the chips) draws Ripples as rings from the middle.
+- A shade-mode Pattern (Inside colours: shade of own colour) hides the Colours row, so it has a plain "Shape" choice
+  row under the same `in_colours~form` key; the form's own numbers are only reachable with its own gradient.
+- Free point dots: the ball view for the picked layer, and the preview for a selected shape's Look layers and for
+  the background (on the screen unless "Background stays on screen" is off). Dots are not shown for a paint measured
+  on the screen inside a ball's paint (`space` = screen).
+- Picture tests: `bpe-kit/tests/gradient_form_pictures.rs` checks every form on the background against the CPU's
+  `area_colour` at a grid of points, and every form inside a ball and on a shape against Straight, rather than
+  pinning tile averages (that holds on any GPU).

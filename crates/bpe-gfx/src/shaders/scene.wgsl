@@ -25,6 +25,9 @@ struct Globals {
     // The background's own light (mode 4): its own colour times its strength, then what its
     // colours are multiplied by.
     light_emit: array<vec4<f32>, 2>,
+    // The background's form (with bg.y 3): its own numbers, then its code.
+    bg_form: vec4<f32>,
+    bg_shape: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -168,6 +171,15 @@ fn background_colour(in: BgOut) -> vec4<f32> {
         }
         let d = at - g.bg_place.zw;
         let span = max(g.bg_place.y, 0.001);
+        if g.bg.y > 2.5 {
+            // Any other form: the place in spans from the centre, the form turning it.
+            let p = PaintGpu(
+                g.bg_paint.x, g.bg_paint.y, g.bg_shape.x, g.bg.z, g.bg_place.x, 1.0, g.bg_paint.z, g.bg_paint.w,
+                PAINT_NO_VARY, g.bg_form, vec4<f32>(0.0),
+            );
+            paint_world = at;
+            return vec4<f32>(paint_colour(p, d / span, g.view.w, vec4<f32>(0.0, 0.0, 0.0, 1.0)).rgb, 1.0);
+        }
         if g.bg.y < 1.5 {
             let a = radians(g.bg_place.x);
             along = dot(d, vec2<f32>(cos(a), sin(a))) / span + 0.5;
@@ -180,7 +192,10 @@ fn background_colour(in: BgOut) -> vec4<f32> {
         let t = paint_wrap(along + g.bg_paint.y + g.view.w * g.bg_paint.z, g.bg_paint.w);
         return vec4<f32>(paint_grain(vec4<f32>(mix(g.bg_from.rgb, g.bg_to.rgb, t), 1.0), g.bg.z).rgb, 1.0);
     }
-    let p = PaintGpu(g.bg_paint.x, g.bg_paint.y, 0.0, g.bg.z, 0.0, 1.0, g.bg_paint.z, g.bg_paint.w, PAINT_NO_VARY);
+    let p = PaintGpu(
+        g.bg_paint.x, g.bg_paint.y, 0.0, g.bg.z, 0.0, 1.0, g.bg_paint.z, g.bg_paint.w, PAINT_NO_VARY, vec4<f32>(0.0),
+        vec4<f32>(0.0),
+    );
     return vec4<f32>(paint_along(p, along, g.view.w).rgb, 1.0);
 }
 

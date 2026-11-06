@@ -13,6 +13,7 @@ use bpe_runtime::{CameraView, Pose, World};
 use eframe::egui::{self, Align2, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, Ui};
 use glam::Vec2;
 
+pub mod free_points;
 pub mod light_handles;
 mod warm;
 pub mod world_view;
@@ -87,6 +88,8 @@ pub enum Handle {
     Zone(ThingId, bpe_core::LayerId, bool),
     /// A light's lamp, reach, cone, aim, panel corner or strip end.
     Light(ThingId, LightPart),
+    /// Point `.2` of the `.1`th gradient laid out as Free points that thing `.0` shows.
+    FreePoint(ThingId, u8, u8),
 }
 
 impl Handle {
@@ -103,7 +106,8 @@ impl Handle {
             | Handle::CameraZoom(id)
             | Handle::CameraTurn(id)
             | Handle::Zone(id, _, _)
-            | Handle::Light(id, _) => id,
+            | Handle::Light(id, _)
+            | Handle::FreePoint(id, _, _) => id,
         }
     }
 
@@ -396,8 +400,9 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         studio.panels.inspector.own_step = true;
         outcome.drag_started = true;
         // A light keeps the playhead too: its keys land where it is seen.
-        outcome.keep_playhead =
-            handle.is_camera() || handle.is_mould() || matches!(handle, Handle::Zone(..) | Handle::Light(..));
+        outcome.keep_playhead = handle.is_camera()
+            || handle.is_mould()
+            || matches!(handle, Handle::Zone(..) | Handle::Light(..) | Handle::FreePoint(..));
     }
     if response.drag_stopped() {
         preview.drag = None;
@@ -430,6 +435,12 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
             let pointer = view.pointer_for(studio, drag.handle, pos);
             let (time, reg) = (studio.sim_time(), &studio.kit.registry);
             let keyed = zones::apply(&mut studio.scene, reg, studio.playback.world(), shape, layer, far, pointer, time);
+            studio.panels.inspector.keyed_edit |= keyed;
+        } else if let Handle::FreePoint(thing, n, i) = drag.handle {
+            // A keyed points list keys at the playhead (and playing pauses).
+            let pointer = free_points::pointer(studio, &view, drag.handle, pos);
+            let (time, reg) = (studio.sim_time(), &studio.kit.registry);
+            let keyed = free_points::apply(&mut studio.scene, reg, studio.playback.world(), thing, n, i, pointer, time);
             studio.panels.inspector.keyed_edit |= keyed;
         } else {
             // A keyed circle's Size keys at the playhead (and playing pauses).
@@ -776,6 +787,10 @@ pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
     if let Some(handle) = light_handles::hit(studio, view, pos, light_handles::Pass::Selected) {
         return Some(handle);
     }
+    // The selected shape's or background's free gradient points, small and over everything.
+    if let Some(handle) = free_points::hit(studio, view, pos) {
+        return Some(handle);
+    }
     let mut best: Option<(f32, ThingId)> = None;
     for (id, bodies) in world.bodies.iter() {
         let Some(v) = seen(id) else { continue };
@@ -925,7 +940,7 @@ pub fn apply_drag(
             return shape_handles::apply(scene, reg, drag, pointer, step, time);
         }
         // Applied by the preview itself, with the playhead (see `zones::apply`).
-        Handle::Zone(..) => {}
+        Handle::Zone(..) | Handle::FreePoint(..) => {}
         Handle::Light(id, part) => {
             return match drag.light.as_ref() {
                 Some(grab) => light_handles::apply(scene, reg, id, part, grab, pointer, step, time),
@@ -1052,6 +1067,7 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
         }
     }
     light_handles::draw(&painter, studio, view, active, selected);
+    free_points::draw(&painter, studio, view, active);
 }
 
 /// The most found ways a selected emitter's latest round shows in the preview.
@@ -1263,6 +1279,52 @@ mod tests {
         let keyed = zones::apply(&mut studio.scene, reg, &world, shape, distance, true, Vec2::new(0.0, 250.0), 2.0);
         assert!(keyed, "it keys");
         assert_eq!(studio.scene.value_at_time(reg, &a, 2.0), Some(Value::Number(250.0)));
+    }
+
+    #[test]
+    fn a_shape_s_free_points_show_as_dots_that_drag_its_stops_points() {
+        let mut studio = Studio::headless();
+        let kit = studio.kit.clone();
+        let reg = &kit.registry;
+        let shape = ThingId(1);
+        let paint =
+            studio.scene.add_layer(reg, shape, bpe_core::SlotId::Look, bpe_kit::modules::look::shape::PAINT).unwrap();
+        let (red, blue) = (bpe_core::Color::rgb(255, 0, 0), bpe_core::Color::rgb(0, 0, 255));
+        let card = studio.scene.card_mut(shape, bpe_core::SlotId::Look).unwrap();
+        let colours = bpe_core::Gradient::even(&[red, bpe_core::Color::WHITE, blue]);
+        card.params.set(&bpe_core::layered_key(paint, "colours"), Value::Gradient(colours));
+        studio.selection.set(shape);
+        let view = View {
+            rect: Rect::from_min_size(Pos2::ZERO, vec2(270.0, 480.0)),
+            scale: 0.25,
+            camera: CameraView::default(),
+            world: false,
+            stage: None,
+        };
+        assert!(free_points::dots_for_test(&studio).is_empty(), "Straight: no dots");
+        let form = bpe_core::layered_key(paint, "colours~form");
+        let card = studio.scene.card_mut(shape, bpe_core::SlotId::Look).unwrap();
+        card.params.set(&form, Value::Choice("free_points".into()));
+        let dots = free_points::dots_for_test(&studio);
+        assert_eq!(dots.len(), 3, "a dot per stop");
+        let first = view.to_screen(dots[0]);
+        assert_eq!(hit_test(&studio, &view, first), Some(Handle::FreePoint(shape, 0, 0)));
+        let world = studio.playback.world().clone();
+        let to = Vec2::new(100.0, 50.0);
+        let keyed = free_points::apply(&mut studio.scene, reg, &world, shape, 0, 0, to, 0.0);
+        assert!(!keyed);
+        let points = studio
+            .scene
+            .card(shape, bpe_core::SlotId::Look)
+            .unwrap()
+            .params
+            .get(&bpe_core::layered_key(paint, "colours~points"))
+            .cloned();
+        let Some(Value::Points(points)) = points else { panic!("the points are written: {points:?}") };
+        assert_eq!(points.len(), 3, "the whole list, one point per stop");
+        let moved = free_points::dots_for_test(&studio);
+        assert!((moved[0] - to).length() < 6.0, "the first dot is where it was dragged: {:?}", moved[0]);
+        assert!((moved[1] - dots[1]).length() < 6.0, "the others stay");
     }
 
     /// A drag on the blank project's circle by its edge.

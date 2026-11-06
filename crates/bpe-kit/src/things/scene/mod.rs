@@ -246,7 +246,6 @@ mod tests {
             [
                 "Colours",
                 "Colours follow",
-                "Gradient",
                 "Direction",
                 "Centre",
                 "Colours end at",

@@ -1,8 +1,9 @@
 //! Turning a paint into colours: where along the gradient each ball sits (from what the paint
 //! follows, its scroll and its repeat), and the colour found there.
 
-use super::{Follow, Paint, PlaceShape, Repeat, Space};
-use bpe_core::{Color, GapBlend, Gradient, Stop, ThingId};
+use super::{Follow, Paint, Repeat, Space};
+use bpe_core::gradient_form::{along, free_colour, turned};
+use bpe_core::{Color, GapBlend, Gradient, GradientForm, Stop, ThingId};
 use bpe_runtime::{EventKind, Log};
 use glam::Vec2;
 
@@ -59,18 +60,19 @@ pub fn offset(p: &Paint, i: &Inputs) -> f32 {
     let s = finite(p.span).max(1e-3);
     let stops = &p.colours.stops;
     let n = stops.len().max(1);
-    let repeat = p.repeat;
+    let mut repeat = p.repeat;
     let mut scrolls = true;
     let raw = match p.follow {
         Follow::Place | Follow::Start => {
-            let pos = match (p.follow, p.space) {
-                (Follow::Start, _) => i.start,
-                (_, Space::World) => i.place,
-                (_, Space::Screen) => i.place_screen,
-            };
-            match p.shape {
-                PlaceShape::Straight => (pos - p.centre).dot(dir(p.angle)) / s + 0.5,
-                PlaceShape::Round => (pos - p.centre).length() / s,
+            let d = placed(p, i) - p.centre;
+            match p.form() {
+                GradientForm::Straight => d.dot(dir(p.angle)) / s + 0.5,
+                form => {
+                    if form.mirrors_on_clamp() && repeat == Repeat::Clamp {
+                        repeat = Repeat::Mirror;
+                    }
+                    along(form, &p.colours.layout, turned(d / s, -p.angle), 1.0, i.time)
+                }
             }
         }
         Follow::Order => order_place(i.index, i.count, p.colours.looped),
@@ -92,6 +94,15 @@ pub fn offset(p: &Paint, i: &Inputs) -> f32 {
     };
     let t = if scrolls { finite(raw) + finite(i.time) * finite(p.scroll) } else { finite(raw) };
     wrap(t, repeat)
+}
+
+/// The point a Place or Start paint reads for a ball.
+fn placed(p: &Paint, i: &Inputs) -> Vec2 {
+    match (p.follow, p.space) {
+        (Follow::Start, _) => i.start,
+        (_, Space::World) => i.place,
+        (_, Space::Screen) => i.place_screen,
+    }
 }
 
 /// Where ball `index` of `count` sits along a gradient by Order: the first at the start and the
@@ -152,6 +163,7 @@ fn step_colour(p: &Paint, hits: u32, since_hit: f32) -> [f32; 4] {
         mix: p.colours.mix,
         looped: false,
         grain: 0.0,
+        layout: Default::default(),
     };
     pair.sample(f)
 }
@@ -174,6 +186,10 @@ fn followed_colour(p: &Paint, i: &Inputs) -> [f32; 4] {
             Some(c) if p.take_hit_colour => c,
             _ => step_colour(p, i.hits, i.since_hit),
         },
+        Follow::Place | Follow::Start if p.form() == GradientForm::FreePoints => {
+            let q = turned((placed(p, i) - p.centre) / finite(p.span).max(1e-3), -p.angle);
+            free_colour(&p.colours, &p.colours.layout, q)
+        }
         _ => p.colours.sample(offset(p, i)),
     }
 }
@@ -307,7 +323,8 @@ mod tests {
 
     #[test]
     fn centre_shape_measures_distance() {
-        let p = Paint { shape: PlaceShape::Round, centre: Vec2::new(10.0, 0.0), span: 100.0, ..paint(Follow::Place) };
+        let mut p = Paint { centre: Vec2::new(10.0, 0.0), span: 100.0, ..paint(Follow::Place) };
+        p.colours.layout.form = Some(GradientForm::Round);
         assert!(near(offset(&p, &Inputs { place: Vec2::new(60.0, 0.0), ..Inputs::default() }), 0.5));
     }
 
