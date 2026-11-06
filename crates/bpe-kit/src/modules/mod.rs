@@ -2,6 +2,7 @@
 
 pub mod bounce;
 pub mod effects;
+pub mod health;
 pub mod light_scenes;
 pub mod lighting;
 pub mod look;

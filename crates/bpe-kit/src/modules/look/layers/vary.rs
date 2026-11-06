@@ -54,13 +54,16 @@ pub fn spread_lit(cx: &DrawCx, row: usize, lit: bool) -> BallSpread {
 
 /// Where body row `row` of the thing being drawn sits in the spreads, as it moves now.
 pub fn spread_of(cx: &DrawCx, row: usize) -> BallSpread {
+    // How much of its health is gone (rules part 4): 0 without a Health card.
+    let hurt = cx.world.hurt(cx.thing.id, row);
     if let Some(s) = crate::things::balls::sim::spread_in(cx.world, cx.thing.id, row)
         .or_else(|| crate::things::emitter::sim::spread_in(cx.world, cx.thing.id, row))
     {
-        return s;
+        return BallSpread { hurt, ..s };
     }
     let bodies = cx.world.bodies.get(&cx.thing.id);
     BallSpread {
+        hurt,
         number: bodies.and_then(|b| b.number.get(row).copied()).unwrap_or(row as u32),
         count: bodies.map_or(1, |b| b.len() as u32),
         speed: bodies.and_then(|b| b.velocity.get(row)).map_or(0.0, |v| v.length()),

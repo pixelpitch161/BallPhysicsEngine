@@ -232,7 +232,7 @@ impl BallsSettings {
     }
 }
 
-const SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Motion, SlotId::Bounce];
+const SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Motion, SlotId::Bounce, SlotId::Health];
 const DEFAULT_SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Motion, SlotId::Bounce];
 
 impl ThingKind for BallsKind {

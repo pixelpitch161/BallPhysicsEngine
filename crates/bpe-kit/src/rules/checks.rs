@@ -33,7 +33,8 @@ pub struct Compare;
 
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct CompareSettings {
-    /// The firing's value: strength, speed, size, hits, ball, time, count, bar or beat.
+    /// The firing's value: strength, speed, size, hits, ball, time, count, bar, beat, health, share,
+    /// start or damage.
     #[setting(label = "Value", simple, group = "Rule")]
     pub value: String,
     #[setting(label = "Of", group = "Rule")]
@@ -132,6 +133,11 @@ fn thing_values(cx: &StageCx, who: &Who, firing: &Firing) -> bpe_runtime::Values
         && let Some(r) = row.or_else(|| b.alive.iter().position(|&a| a).map(|r| r as u32))
     {
         super::when::ball_values(cx.world, bpe_runtime::Party { thing, item: r }, &mut values);
+    }
+    if let Some(&(thing, row)) = super::who::targets(cx, who, firing).first() {
+        let item =
+            row.or_else(|| cx.world.bodies.get(&thing).and_then(|b| b.alive.iter().position(|&a| a)).map(|r| r as u32));
+        super::health::health_values(cx, bpe_runtime::Party { thing, item: item.unwrap_or(0) }, &mut values);
     }
     values
 }

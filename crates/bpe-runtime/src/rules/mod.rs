@@ -6,6 +6,7 @@
 mod actions;
 mod changes;
 mod firing;
+mod health;
 mod remains;
 mod shows;
 mod sim;
@@ -13,6 +14,7 @@ mod sim;
 pub use actions::{Action, CountHow, MotionChange, WHOLE};
 pub use changes::{Change, ChangeKey, How, apply_to, fold};
 pub use firing::{Firing, Signal, Values};
+pub use health::{Health, HealthCard, HealthChange, HealthMoment, HealthSim, Hp, Takes, aimed};
 pub use remains::{BallAt, BreakShow, Remains};
 pub use shows::{AS_IF_HIT, FULL_FLASH_SPEED, Kick, MOST_KICKS, SceneOp, ShownScene, next_scene};
 pub use sim::{BlockSim, PrepareCx, StageCx};
@@ -95,6 +97,7 @@ struct RunRule {
 /// A rule's per-step run: what fired and what it queued.
 struct Run<'a> {
     world: &'a World,
+    health: &'a Health,
     sims: &'a Sims,
     events: &'a [Event],
     step: u64,
@@ -127,6 +130,7 @@ impl Run<'_> {
             log: self.log,
             counters: self.counters,
             ball_tags: self.ball_tags,
+            health: self.health,
         }
     }
 
@@ -207,6 +211,8 @@ pub struct RulesState {
     pub(crate) ball_tags: BTreeMap<(ThingId, u32), BTreeSet<String>>,
     /// Signals sent in the last round of the last stage, heard in this one's first.
     carried: Vec<Signal>,
+    /// Every thing's health, and this step's changes of it (rules part 4).
+    pub(crate) health: Health,
     /// The camera shakes and zoom punches still going, oldest first.
     pub(crate) kicks: Vec<shows::Kick>,
     /// How fast the simulation runs (Slow motion): changes on a pace of 1, in the order made.
@@ -220,10 +226,11 @@ pub struct RulesState {
 }
 
 impl RulesState {
-    /// The scene's enabled rules prepared, or `None` when it has none.
+    /// The scene's enabled rules prepared, and its things' health, or `None` when it has neither.
     pub fn build(scene: &Scene, resolved: &Resolved, sims: &Sims, world: &World) -> Option<RulesState> {
         let enabled: Vec<&Rule> = scene.rules.list.iter().filter(|r| r.enabled).collect();
-        if enabled.is_empty() {
+        let health = Health::build(resolved, world, sims);
+        if enabled.is_empty() && health.is_empty() {
             return None;
         }
         let mut rules = Vec::with_capacity(enabled.len());
@@ -283,6 +290,7 @@ impl RulesState {
             counters: BTreeMap::new(),
             ball_tags: BTreeMap::new(),
             carried: Vec::new(),
+            health,
             kicks: Vec::new(),
             pace: Vec::new(),
             lag: 0.0,
@@ -291,8 +299,36 @@ impl RulesState {
         })
     }
 
-    /// The Rules stage: every enabled rule without a problem, in list order, reads this step's
-    /// `events` and queues its actions; signals sent go round up to [`MOST_ROUNDS`] more times
+    /// A test flight's copy (`World::lone`): no rules, health held as it is now. `None` without
+    /// health.
+    pub(crate) fn lone(&self) -> Option<RulesState> {
+        if self.health.is_empty() {
+            return None;
+        }
+        Some(RulesState {
+            rules: Vec::new(),
+            pending: Vec::new(),
+            changes: BTreeMap::new(),
+            dirty: BTreeSet::new(),
+            broken: self.broken.clone(),
+            frozen: Vec::new(),
+            changes_settings: false,
+            counters: BTreeMap::new(),
+            ball_tags: BTreeMap::new(),
+            carried: Vec::new(),
+            health: self.health.held(),
+            remains: BTreeMap::new(),
+            kicks: Vec::new(),
+            pace: Vec::new(),
+            lag: 0.0,
+            flashes: BTreeMap::new(),
+            scene: None,
+        })
+    }
+
+    /// The Rules stage: first what this step's hits take from things' health, then every enabled
+    /// rule without a problem, in list order, reads this step's `events` (and changes of health)
+    /// and queues its actions; signals sent go round up to [`MOST_ROUNDS`] more times
     /// (the last round's wait for the next step); what fired is logged as `Rule` events.
     pub(crate) fn run(&mut self, world: &World, sims: &Sims, events: &[Event], log: &mut Log) {
         let step = world.step;
@@ -307,6 +343,8 @@ impl RulesState {
         let broken = std::mem::take(&mut self.broken);
         let counters = std::mem::take(&mut self.counters);
         let ball_tags = std::mem::take(&mut self.ball_tags);
+        self.health.fill(world, sims);
+        self.health.damage(world, events, &broken, &mut self.pending);
         let count = self.rules.len();
         let mut noted: Vec<BTreeMap<usize, (Option<Party>, Vec2)>> = vec![BTreeMap::new(); count];
         let mut budget = vec![MOST_ACTIONS; count];
@@ -333,6 +371,7 @@ impl RulesState {
                     log: seen,
                     counters: &counters,
                     ball_tags: &ball_tags,
+                    health: &self.health,
                     noted: std::mem::take(&mut noted[ri]),
                     actions: &mut self.pending,
                     signals: &mut sent,
@@ -399,6 +438,13 @@ impl RulesState {
         for e in fired {
             log.push(e);
         }
+        // This stage's changes of health were read.
+        self.health.moments.clear();
+    }
+
+    /// Every thing's health.
+    pub fn health(&self) -> &Health {
+        &self.health
     }
 
     /// What is wrong with rule `id`, when it is skipped for it.
@@ -583,7 +629,7 @@ impl RulesState {
         self.ball_tags.remove(&(thing, row));
     }
 
-    /// Gives body row `to` of `thing` every change and tag row `from` has of its own (a ball split
+    /// Gives body row `to` of `thing` every change, tag and health row `from` has of its own (a ball split
     /// off it).
     pub(crate) fn copy_row(&mut self, thing: ThingId, from: u32, to: u32) {
         let copies: Vec<(ChangeKey, Vec<Change>)> = self
@@ -599,6 +645,7 @@ impl RulesState {
         if let Some(tags) = self.ball_tags.get(&(thing, from)).cloned() {
             self.ball_tags.insert((thing, to), tags);
         }
+        self.health.copy_row(thing, from, to);
     }
 
     /// A counter's value (0 for one never set).

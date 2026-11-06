@@ -59,6 +59,7 @@ pub fn sims() -> Sims {
     s.add_module(BasicMotionSim);
     s.add_module(BasicBounceSim);
     rules::add_sims(&mut s);
+    s.add_health(modules::health::HealthCardSim);
     // Light sensing: worlds whose physics follows light get the probe (none do unless asked).
     s.light = Some(std::sync::Arc::new(sensing::KitLight));
     s
@@ -125,6 +126,7 @@ pub fn registry() -> Registry {
     r.add_module(BasicMotionKind);
     r.add_module(modules::lighting::LightingKind);
     r.add_module(BasicBounceKind);
+    r.add_module(modules::health::HealthKind);
     r.add_module(EffectsCard);
     for k in modules::effects::kinds() {
         r.add_layer(k);

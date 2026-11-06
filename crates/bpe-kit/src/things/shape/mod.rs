@@ -197,7 +197,7 @@ impl ShapeSettings {
     }
 }
 
-const SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Bounce, SlotId::Sound];
+const SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Bounce, SlotId::Sound, SlotId::Health];
 const DEFAULT_SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Bounce];
 
 impl ThingKind for ShapeKind {

@@ -293,6 +293,23 @@ tags, `World::split`, `RulesState::copy_row`), `do.spawn` (new balls in a Balls 
 round's carried to the next step (`RulesState.carried`). A shape's **Balls pass through** (`ShapeSettings.passes`,
 `Wall.passes`) keeps its wall for everything but the collision pass, so a shape can be a zone.
 
+Part 4 is in (plan `part4.md`): **Health**. A **Health card** (`SlotId::Health`, last in `SlotId::ALL`; kind `health`,
+`bpe-kit/src/modules/health/`: Starting health (varies across balls at launch), Hits take Each hit / By strength /
+Nothing, Least strength, Only hits from (a `Target`), At zero Break / Nothing) goes on balls, emitters and shapes from
+"+ Add slot". The world keeps health in `RulesState.health` (`bpe-runtime/src/rules/health.rs`: `Health`, `Hp` per body
+row, one for a thing without balls; the kit's `HealthSim` turns the card into a `HealthCard`); a scene with a Health card
+and no rule still gets a `RulesState`. The Rules stage first `fill`s new balls' starting health and works out the
+step's hits (`damage`, at zero the card's `at_zero` template `aimed` into `pending`), then runs the rules with
+`StageCx.health`; each change is a `HealthMoment` (cleared after the stage). `Action::Health { thing, row, change }`
+(`HealthChange` Damage/Heal/Set/Refill) applies at the next step's start, a zero Break in the same pass. A ball split off another (part 5's Split) keeps its health (`Health::copy_row`). Blocks
+`when.health` (Drops / Reaches zero / Goes up / Changes), `if.health` (Below/Above/Between/At zero/Full, Points or
+Percent), `do.health` (`bpe-kit/src/rules/health.rs`); Hit firings and Compare carry `health`/`share`/`start`. **Follow
+health** is `PulseSource::Health { thing }` read through `Inputs.health` (`HealthLevels`, `World::health_levels`: a
+thing's share, a group's mean over live balls); the spread **`VaryBy::Health`** reads `BallSpread.hurt` (1 − share,
+`World::hurt`/`hurts`; Balls/Emitter Size through `own_sizes`). The fingerprint hashes Health cards. Editor: Follow health
+▸ (`follow::health_menu`), the Health spread (`VaryCx::healthy`). Goldens `tests/golden-rules-health*.txt`
+(`scenes::health_scenes`). At zero Break takes part 3's Break looks (the card's `look` … `fade_over`, `look_settings`, the template's `show`).
+
 Part 6 is in (plan `part6.md`): the **spectacle actions** `do.camera` (Shake / Zoom punch: `Action::Kick`, kept in
 `RulesState.kicks` (`Kick`, `MOST_KICKS` 64, weight (1 − age/time)²), added by the camera sim after its own shake and
 punch), `do.slow` (Slow motion: `Action::Pace`, part 1's `Change` folded on a pace of 1 (`RulesState::pace_at`, 0.01×

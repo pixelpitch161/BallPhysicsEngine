@@ -111,6 +111,7 @@ pub const SECTION_ORDER: &[&str] = &[
     "Output",
     "Modulation",
     "Rule",
+    "Health",
 ];
 
 /// The sections that stay folded until opened.

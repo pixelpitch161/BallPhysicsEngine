@@ -261,7 +261,9 @@ impl World {
         let animation = physics_animation(scene, resolved, sims);
         let at_start = animation.as_ref().map(|animation| {
             let mut at_start = resolved.clone();
-            animation.apply(&mut at_start, 0.0, &Inputs::NONE);
+            // Health is full at the start.
+            let full = FullHealth(resolved);
+            animation.apply(&mut at_start, 0.0, &Inputs { health: Some(&full), ..Inputs::NONE });
             at_start
         });
         let built_from = at_start.as_ref().unwrap_or(resolved);
@@ -372,6 +374,8 @@ impl World {
             let inputs = Inputs {
                 sound: levels.as_ref().map(|l| l as &dyn bpe_core::SoundLevels),
                 light: lit.as_ref().map(|l| l as &dyn bpe_core::LightLevels),
+                // Health as the last Rules stage, and the actions applied since, left it.
+                health: self.health_levels(),
                 ..Inputs::NONE
             };
             animated.animation.apply(&mut animated.resolved, time, &inputs);
@@ -772,8 +776,8 @@ impl World {
             light: self.light.clone(),
             pulls: BTreeMap::new(),
             fingerprint: self.fingerprint,
-            // A test flight finds its ways as if no rule acted from now on.
-            rules: None,
+            // A test flight finds its ways as if no rule acted from now on, health staying as it is.
+            rules: self.rules.as_ref().and_then(crate::rules::RulesState::lone),
             pace: 1.0,
             run: RunId::fresh(),
         }
@@ -801,6 +805,33 @@ impl World {
     /// The scene's rules as they run, when it has an enabled rule.
     pub fn rules(&self) -> Option<&crate::rules::RulesState> {
         self.rules.as_ref()
+    }
+
+    /// `thing`'s health (its ball in body row `row`, for a thing with balls), when it has a
+    /// Health card (rules part 4).
+    pub fn health(&self, thing: ThingId, row: Option<u32>) -> Option<crate::rules::Hp> {
+        self.rules.as_ref()?.health.of(thing, row)
+    }
+
+    /// How much of the health of `thing`'s ball in body row `row` (or of `thing`, without balls)
+    /// is gone: 0 at full health or without health, 1 with none left (the Health spread).
+    pub fn hurt(&self, thing: ThingId, row: usize) -> f32 {
+        let Some(health) = self.rules.as_ref().map(|r| &r.health).filter(|h| h.has(thing)) else { return 0.0 };
+        let row = self.bodies.contains_key(&thing).then_some(row as u32);
+        health.of(thing, row).map_or(0.0, |hp| 1.0 - hp.share())
+    }
+
+    /// [`World::hurt`] for every body row of `thing`, in row order (empty without health).
+    pub fn hurts(&self, thing: ThingId) -> Vec<f32> {
+        if !self.rules.as_ref().is_some_and(|r| r.health.has(thing)) {
+            return Vec::new();
+        }
+        (0..self.bodies.get(&thing).map_or(0, Bodies::len)).map(|row| self.hurt(thing, row)).collect()
+    }
+
+    /// The things' health as pulses read it (Follow health), when some thing has health.
+    pub fn health_levels(&self) -> Option<&dyn bpe_core::HealthLevels> {
+        self.rules.as_ref().filter(|r| !r.health.is_empty()).map(|_| self as &dyn bpe_core::HealthLevels)
     }
 
     /// Whether a rule broke `thing`.
@@ -832,6 +863,7 @@ impl World {
         });
         spread.speed = bodies.velocity.get(row).map_or(0.0, |v| v.length());
         spread.hits = bodies.hits.get(row).copied().unwrap_or(0);
+        spread.hurt = self.hurt(thing, row);
         spread
     }
 
@@ -1287,6 +1319,13 @@ impl World {
     }
 }
 
+/// Follow health: a thing's share of its starting health (rules part 4).
+impl bpe_core::HealthLevels for World {
+    fn share(&self, thing: ThingId) -> f32 {
+        self.rules.as_ref().map_or(0.0, |r| r.health.thing_share(self, thing))
+    }
+}
+
 /// The target rules, over a world's kinds and tags.
 fn matches(
     kinds: &BTreeMap<ThingId, String>,
@@ -1467,6 +1506,20 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
             }
         }
     }
+    // Health cards change the run (a ball breaks at zero, rules read it): only scenes with one.
+    for (id, r) in &resolved.things {
+        if let Some(s) = r.slots.get(&SlotId::Health)
+            && sims.health(&s.kind).is_some()
+        {
+            h.bytes(b"health");
+            h.bytes(&id.0.to_le_bytes());
+            h.bytes(s.kind.as_bytes());
+            for (key, value) in s.params.iter() {
+                h.bytes(key.as_bytes());
+                h.value(value);
+            }
+        }
+    }
     // Keyframes and pulses on physics settings: moving a key changes the run.
     if let Some(animation) = physics_animation(scene, resolved, sims) {
         for a in animation.addresses() {
@@ -1642,6 +1695,16 @@ impl Hasher {
                 }
             }
         }
+    }
+}
+
+/// Every thing with a Health card at full health: what Follow health reads while the world is built.
+struct FullHealth<'a>(&'a Resolved);
+
+impl bpe_core::HealthLevels for FullHealth<'_> {
+    fn share(&self, thing: ThingId) -> f32 {
+        let has = self.0.things.get(&thing).is_some_and(|r| r.slots.contains_key(&bpe_core::SlotId::Health));
+        if has { 1.0 } else { 0.0 }
     }
 }
 
