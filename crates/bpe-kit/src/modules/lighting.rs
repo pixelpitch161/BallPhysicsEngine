@@ -150,12 +150,12 @@ pub struct LightingSettings {
     #[setting(label = "Floor", when = "depth=stage", group = "Stage")]
     pub floor: Floor,
     /// The floor's height (y in the world), when it is at a height of its own.
-    #[setting(label = "Floor at", when = "floor=at_a_height", span(-1000, 1000), unit = "px", keyframe, group = "Stage")]
+    #[setting(label = "Floor at", when = "depth=stage and floor=at_a_height", span(-1000, 1000), unit = "px", keyframe, group = "Stage")]
     pub floor_at: f32,
     /// How far above the floor the stage is seen from: more shows more floor.
     #[setting(
         label = "Looking down",
-        when = "floor!=none",
+        when = "depth=stage and floor!=none",
         range(0, 89),
         span(0, 45),
         unit = "°",
@@ -164,13 +164,25 @@ pub struct LightingSettings {
     )]
     pub looking_down: f32,
     /// How the floor takes light.
-    #[setting(label = "Floor surface", when = "floor!=none", group = "Stage")]
+    #[setting(label = "Floor surface", when = "depth=stage and floor!=none", group = "Stage")]
     pub floor_surface: FloorSurface,
     /// How much a glossy floor blurs what it mirrors, more the further from the floor.
-    #[setting(label = "Floor blur", when = "floor_surface=glossy", span(0, 1), keyframe, group = "Stage")]
+    #[setting(
+        label = "Floor blur",
+        when = "depth=stage and floor!=none and floor_surface=glossy",
+        span(0, 1),
+        keyframe,
+        group = "Stage"
+    )]
     pub floor_blur: f32,
     /// How strongly the floor mirrors: 1 as the surface does, more for a brighter mirror.
-    #[setting(label = "Reflection", when = "floor_surface!=matte", span(0, 1), keyframe, group = "Stage")]
+    #[setting(
+        label = "Reflection",
+        when = "depth=stage and floor!=none and floor_surface!=matte",
+        span(0, 1),
+        keyframe,
+        group = "Stage"
+    )]
     pub floor_reflection: f32,
     /// How the back wall takes light.
     #[setting(label = "Wall surface", when = "depth=stage", group = "Stage")]
@@ -295,5 +307,31 @@ impl ModuleKind for LightingKind {
     }
     fn fits(&self, thing_kind: &str) -> bool {
         thing_kind == "scene"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flat_leaves_the_stage_off_and_stage_fills_it_in() {
+        let flat = LightingSettings::default();
+        assert_eq!(flat.depth, Depth::Flat);
+        let g = flat.gpu(Some(500.0));
+        assert_eq!(g.stage[0], 0.0);
+        assert_eq!(g.floor[0], 0.0, "no floor in Flat");
+        let stage = LightingSettings { depth: Depth::Stage, ..LightingSettings::default() };
+        let g = stage.gpu(Some(500.0));
+        assert_eq!(g.stage[0], 1.0);
+        assert_eq!(g.stage[1], stage.wall_depth);
+        assert_eq!(g.stage[2], stage.shape_depth - stage.wall_depth, "the shapes' front, 0 the picture plane");
+        assert!((g.stage[3] - stage.looking_down.to_radians().tan()).abs() < 1e-6);
+        assert_eq!((g.floor[0], g.floor[1]), (1.0, 500.0), "under the lowest shape");
+        assert_eq!(g.floor[2], 1.0, "glossy");
+        // No shape: the floor falls back to the picture's bottom.
+        assert_eq!(stage.gpu(None).floor[0], 2.0);
+        let none = LightingSettings { floor: Floor::None, ..stage };
+        assert_eq!((none.gpu(Some(500.0)).floor[0], none.gpu(Some(500.0)).stage[3]), (0.0, 0.0));
     }
 }

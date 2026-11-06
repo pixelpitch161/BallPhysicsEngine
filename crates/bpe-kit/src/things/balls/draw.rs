@@ -421,6 +421,8 @@ pub fn push_ball_light(cx: &DrawCx, scene: &mut bpe_gfx::LightScene) {
     }
     let Some(bodies) = cx.world.bodies.get(&cx.thing.id) else { return };
     let tint = match Stack::of(look) {
+        // A Body that doesn't block light casts no shadow in Stage either.
+        Some(stack) if stack.body_light[1] < 0.5 => return,
         Some(stack) => {
             let inputs = crate::paint::Inputs { time: cx.time as f32, ..Default::default() };
             crate::paint::colour_at(&stack.body.fill, &inputs)

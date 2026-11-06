@@ -44,19 +44,22 @@ const MOST_CELLS: f32 = 256.0;
 
 /// A uniform grid over the stage's spheres, built on the CPU each frame: shadow rays and contact
 /// shading look up the spheres near a point by its cell. Each sphere is listed in every cell its
-/// disc reaches, widened by `margin` (twice the largest radius) so penumbras and contact
-/// shading near a ball find it.
+/// disc reaches, widened by [`SPHERE_MARGIN`] of its own radii so penumbras and contact shading
+/// near a ball find it; a shadow ray walks every cell it crosses.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SphereGrid {
     /// The grid's corner (world), cell size, the largest radius.
     pub grid: [f32; 4],
-    /// Cells across, cells down, the margin, 0.
+    /// Cells across, cells down, [`SPHERE_MARGIN`], 0.
     pub size: [f32; 4],
     /// Each cell's first item and how many, row by row.
     pub cells: Vec<[u32; 2]>,
     /// The spheres' indices, cell by cell.
     pub items: Vec<u32>,
 }
+
+/// How far past its edge a ball's contact shading reaches, in its radii.
+pub const SPHERE_MARGIN: f32 = 2.0;
 
 impl SphereGrid {
     pub fn build(spheres: &[SphereGpu]) -> SphereGrid {
@@ -74,24 +77,27 @@ impl SphereGrid {
             };
         }
         let rmax = live.iter().map(|(_, s)| s.a[2]).fold(0.0f32, f32::max);
-        let margin = 2.0 * rmax;
+        // Each ball is listed out to its own radius plus SPHERE_MARGIN radii, where its contact
+        // shading reaches; shadow rays walk every cell they cross, so they need no more.
+        let reach_of = |s: &SphereGpu| s.a[2] * (1.0 + SPHERE_MARGIN);
         let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
         for (_, s) in &live {
-            let reach = s.a[2] + margin;
+            let reach = reach_of(s);
             for k in 0..2 {
                 lo[k] = lo[k].min(s.a[k] - reach);
                 hi[k] = hi[k].max(s.a[k] + reach);
             }
         }
         let (w, h) = ((hi[0] - lo[0]).max(1e-3), (hi[1] - lo[1]).max(1e-3));
-        let mut cell = (2.0 * rmax).max((w * h / live.len() as f32).sqrt());
+        let mean = live.iter().map(|(_, s)| s.a[2]).sum::<f32>() / live.len() as f32;
+        let mut cell = (2.0 * mean).max((w * h / live.len() as f32).sqrt());
         cell = cell.max(w / MOST_CELLS).max(h / MOST_CELLS);
         let nx = ((w / cell).ceil() as usize).max(1);
         let ny = ((h / cell).ceil() as usize).max(1);
         let cell_of = |v: f32, k: usize, n: usize| (((v - lo[k]) / cell).floor().max(0.0) as usize).min(n - 1);
         let mut lists: Vec<Vec<u32>> = vec![Vec::new(); nx * ny];
         for (i, s) in &live {
-            let reach = s.a[2] + margin;
+            let reach = reach_of(s);
             let (x0, x1) = (cell_of(s.a[0] - reach, 0, nx), cell_of(s.a[0] + reach, 0, nx));
             let (y0, y1) = (cell_of(s.a[1] - reach, 1, ny), cell_of(s.a[1] + reach, 1, ny));
             for y in y0..=y1 {
@@ -106,7 +112,7 @@ impl SphereGrid {
             cells.push([items.len() as u32, list.len() as u32]);
             items.extend(list);
         }
-        SphereGrid { grid: [lo[0], lo[1], cell, rmax], size: [nx as f32, ny as f32, margin, 0.0], cells, items }
+        SphereGrid { grid: [lo[0], lo[1], cell, rmax], size: [nx as f32, ny as f32, SPHERE_MARGIN, 0.0], cells, items }
     }
 }
 
@@ -552,13 +558,14 @@ mod grid_tests {
             .collect();
         let g = SphereGrid::build(&balls);
         let (lo, cell, margin) = ([g.grid[0], g.grid[1]], g.grid[2], g.size[2]);
+        assert_eq!(margin, SPHERE_MARGIN);
         let (nx, ny) = (g.size[0] as usize, g.size[1] as usize);
         assert_eq!(g.cells.len(), nx * ny);
         for (i, b) in balls.iter().enumerate() {
             // Points round the ball, out to its radius plus the margin, each in a cell listing it.
             for k in 0..16 {
                 let a = k as f32 * std::f32::consts::TAU / 16.0;
-                let r = (b.a[2] + margin) * 0.999;
+                let r = b.a[2] * (1.0 + margin) * 0.999;
                 let (x, y) = (b.a[0] + r * a.cos(), b.a[1] + r * a.sin());
                 let cx = (((x - lo[0]) / cell).floor() as usize).min(nx - 1);
                 let cy = (((y - lo[1]) / cell).floor() as usize).min(ny - 1);

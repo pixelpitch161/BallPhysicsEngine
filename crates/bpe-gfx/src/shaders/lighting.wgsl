@@ -348,6 +348,8 @@ struct SphereGpu {
 const PI: f32 = 3.14159265;
 // The flattest the floor is ever seen: tan(0.5 degrees), so it always has some area.
 const LEAST_K: f32 = 0.0087;
+// The most balls a shadow ray tests in one cell of the sphere grid.
+const MOST_IN_CELL: u32 = 96u;
 
 fn in_stage() -> bool {
     return st.room.x > 0.5;
@@ -379,7 +381,12 @@ fn surface_index(s: vec4<f32>) -> u32 {
     if s.a < 0.02 {
         return 0u;
     }
-    let i = u32(max(round(s.b / s.a), 0.0));
+    let f = s.b / s.a;
+    // Where two things' edges mix, the index is between theirs: no surface rather than a third.
+    if abs(f - round(f)) > 0.2 {
+        return 0u;
+    }
+    let i = u32(max(round(f), 0.0));
     return select(0u, i, i < u32(st.more.z));
 }
 
@@ -431,6 +438,11 @@ fn sphere_block(p: vec3<f32>, l: vec3<f32>, dist: f32, ang: f32, sp: SphereGpu) 
     if dot(oc, oc) <= r * r * 1.0201 + 0.25 {
         return vec3<f32>(1.0);
     }
+    // A lamp in the ball (a light riding it) shines out of it.
+    let lamp = oc - l * dist;
+    if dot(lamp, lamp) <= r * r * 1.0201 {
+        return vec3<f32>(1.0);
+    }
     let tc = dot(oc, l);
     if tc <= 0.0 || tc >= dist {
         return vec3<f32>(1.0);
@@ -441,16 +453,17 @@ fn sphere_block(p: vec3<f32>, l: vec3<f32>, dist: f32, ang: f32, sp: SphereGpu) 
     return mix(through, vec3<f32>(1.0), v * v * (3.0 - 2.0 * v));
 }
 
-// How much of a light gets to `p` past every ball, going along unit `l` for `dist`: the grid is
-// walked only where the ray is within a ball's reach of the picture plane.
-fn sphere_shadow(p: vec3<f32>, l: vec3<f32>, dist: f32, ang: f32) -> vec3<f32> {
+// How much of a light gets to `p` past every ball, going along unit `l` for `dist` (the lamp
+// `stop` beyond where the march ends): the grid's cells are walked one by one along the ray, only
+// where it is within the biggest ball's reach of the picture plane.
+fn sphere_shadow(p: vec3<f32>, l: vec3<f32>, dist: f32, ang: f32, stop: f32) -> vec3<f32> {
     var vis = vec3<f32>(1.0);
     if st.more.w < 0.5 {
         return vis;
     }
-    let reach = st.grid.w + st.grid_size.z;
+    let reach = st.grid.w;
     var s0 = 0.0;
-    var s1 = dist;
+    var s1 = dist - max(stop, 0.0);
     if abs(l.z) > 1e-6 {
         let a = (-reach - p.z) / l.z;
         let b = (reach - p.z) / l.z;
@@ -477,29 +490,44 @@ fn sphere_shadow(p: vec3<f32>, l: vec3<f32>, dist: f32, ang: f32) -> vec3<f32> {
     if s1 < s0 {
         return vis;
     }
-    let across = length(l.xy);
-    let step = select(s1 - s0 + 1.0, 0.5 * cell / across, across > 1e-6);
+    // Amanatides and Woo: from the cell the ray starts in to the next across x or y, whichever
+    // boundary comes first, so no cell it crosses is missed.
     let size = vec2<i32>(st.grid_size.xy);
-    var last = -1;
-    var s = s0;
-    for (var i = 0; i < 512; i++) {
-        let q = p.xy + l.xy * min(s, s1);
-        let c = clamp(vec2<i32>(floor((q - lo) / cell)), vec2<i32>(0), size - 1);
-        let ci = c.y * size.x + c.x;
-        if ci != last {
-            last = ci;
-            let range = cells[ci];
-            for (var k = 0u; k < range.y; k++) {
-                vis = min(vis, sphere_block(p, l, dist, ang, spheres[items[range.x + k]]));
-            }
-            if max(vis.x, max(vis.y, vis.z)) <= 0.0 {
-                break;
-            }
+    let q = p.xy + l.xy * s0;
+    var c = clamp(vec2<i32>(floor((q - lo) / cell)), vec2<i32>(0), size - 1);
+    let go = vec2<i32>(select(-1, 1, l.x >= 0.0), select(-1, 1, l.y >= 0.0));
+    var next = vec2<f32>(1e30);
+    var delta = vec2<f32>(1e30);
+    if abs(l.x) > 1e-7 {
+        let edge = lo.x + f32(c.x + select(0, 1, l.x > 0.0)) * cell;
+        next.x = (edge - p.x) / l.x;
+        delta.x = cell / abs(l.x);
+    }
+    if abs(l.y) > 1e-7 {
+        let edge = lo.y + f32(c.y + select(0, 1, l.y > 0.0)) * cell;
+        next.y = (edge - p.y) / l.y;
+        delta.y = cell / abs(l.y);
+    }
+    for (var i = 0; i < 1024; i++) {
+        let range = cells[c.y * size.x + c.x];
+        // A crowded cell is tested as far as MOST_IN_CELL balls (the grid lists the nearest
+        // first-come; a frame-long freeze would be worse than a missing shadow).
+        for (var k = 0u; k < min(range.y, MOST_IN_CELL); k++) {
+            vis = min(vis, sphere_block(p, l, dist, ang, spheres[items[range.x + k]]));
         }
-        if s >= s1 {
+        if max(vis.x, max(vis.y, vis.z)) <= 0.0 || min(next.x, next.y) > s1 {
             break;
         }
-        s += step;
+        if next.x < next.y {
+            c.x += go.x;
+            next.x += delta.x;
+        } else {
+            c.y += go.y;
+            next.y += delta.y;
+        }
+        if any(c < vec2<i32>(0)) || any(c >= size) {
+            break;
+        }
     }
     return vis;
 }
@@ -515,7 +543,6 @@ fn sphere_ao(p: vec3<f32>, n: vec3<f32>) -> f32 {
     if any(c < vec2<i32>(0)) || any(c >= size) {
         return 1.0;
     }
-    let margin = max(st.grid_size.z, 1e-3);
     let range = cells[c.y * size.x + c.x];
     var occ = 0.0;
     for (var k = 0u; k < min(range.y, 64u); k++) {
@@ -526,7 +553,8 @@ fn sphere_ao(p: vec3<f32>, n: vec3<f32>) -> f32 {
         if len <= r * 1.01 {
             continue;
         }
-        let near = clamp(1.0 - (len - r) / margin, 0.0, 1.0);
+        // A ball darkens out to twice its radius from its edge (the grid lists it that far).
+        let near = clamp(1.0 - (len - r) / (st.grid_size.z * r), 0.0, 1.0);
         occ += (r * r) / (len * len) * max(dot(n, d / len), 0.0) * near;
     }
     return clamp(1.0 - occ, 0.0, 1.0);
@@ -534,7 +562,7 @@ fn sphere_ao(p: vec3<f32>, n: vec3<f32>) -> f32 {
 
 // How much light gets to `p` past the shapes in Stage: the blockers' field stood up from the wall
 // to the shapes' front, marched along the ray while it is within that depth.
-fn slab_visibility(p: vec3<f32>, l: vec3<f32>, dist: f32, ang: f32) -> f32 {
+fn slab_visibility(p: vec3<f32>, l: vec3<f32>, dist: f32, ang: f32, stop: f32) -> f32 {
     let across = length(l.xy);
     let front = st.room.z;
     let back = -st.room.y;
@@ -543,7 +571,7 @@ fn slab_visibility(p: vec3<f32>, l: vec3<f32>, dist: f32, ang: f32) -> f32 {
     }
     let toward = l.xy / across;
     let rise = l.z / across;
-    var end = dist * across;
+    var end = dist * across - max(stop, 0.0);
     if rise > 1e-6 {
         end = min(end, (front - p.z) / rise);
     } else if rise < -1e-6 {
@@ -567,7 +595,8 @@ fn ggx(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, rough: f32, f0: vec3<f32>, ang:
     let nh = max(dot(n, h), 0.0);
     let vh = max(dot(v, h), 0.0);
     let a = rough * rough;
-    let aw = min(a + 0.5 * ang, 1.0);
+    // At least a hair wide, so a near-mirror under a point lamp doesn't sparkle pixel by pixel.
+    let aw = min(a + 0.5 * max(ang, 0.02), 1.0);
     let a2 = aw * aw;
     let dd = nh * nh * (a2 - 1.0) + 1.0;
     let d = a2 / (PI * dd * dd) * (a / aw) * (a / aw);
@@ -680,17 +709,16 @@ fn shade(spot: Spot, p: vec2<f32>, sf: SurfaceGpu, base: vec3<f32>, here: f32) -
             if style > 0.5 {
                 soft = 0.5 * px / max(select(dist, dist3, stage), 1e-3);
             }
+            // The march stops short of the lamp by its size, a ridden ball's radius and however
+            // deep in a blocker the lamp sits (a strip along a shape's band, a light in a ball).
+            var stop = l.p6.x + max(l.p2.z, 0.0);
+            if kind < 1.5 || kind > 2.5 {
+                stop = max(stop, -field_at(source_point(l, select(p, spot.p.xy, stage))));
+            }
             var v = vec3<f32>(1.0);
             if stage {
-                v = sphere_shadow(spot.p, dir3, dist3, soft) * slab_visibility(spot.p, dir3, dist3, soft);
+                v = sphere_shadow(spot.p, dir3, dist3, soft, stop) * slab_visibility(spot.p, dir3, dist3, soft, stop);
             } else {
-                // The march stops short of the lamp by its size, a ridden ball's radius and
-                // however deep in a blocker the lamp sits (a strip along a shape's band, a light
-                // in a ball).
-                var stop = l.p6.x + max(l.p2.z, 0.0);
-                if kind < 1.5 || kind > 2.5 {
-                    stop = max(stop, -field_at(source_point(l, p)));
-                }
                 v = vec3<f32>(visibility(p, toward, dist, soft, u.shadows.z, stop));
             }
             tint = mix(vec3<f32>(1.0), l.p5.rgb, clamp((vec3<f32>(1.0) - v) * l.p2.w, vec3<f32>(0.0), vec3<f32>(1.0)));

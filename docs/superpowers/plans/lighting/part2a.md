@@ -200,3 +200,16 @@ overnight lighting run, 2026-11-06). A short video and stills go to project file
 - Don't touch physics, sound or their goldens.
 - No hard ranges for taste; no built-in scenes in the program; no colours outside `style/`.
 - Don't keep anything between frames.
+
+## After the review (as built)
+
+- Fixed: lamps inside a ball or a shape's band shine out in Stage (the march stops short as in Flat; a sphere holding
+  the lamp never blocks it); shadow rays walk the sphere grid cell by cell (Amanatides–Woo) and test at most 96 balls
+  a cell, each ball listed out to its own radius plus `SPHERE_MARGIN` (2) radii; the "Under the lowest shape" floor is
+  the shape's middle plus its farthest corner (spinning doesn't move it); a Body with Blocks light off casts no sphere
+  shadow; blended edges between two surfaces read no surface rather than a third; the Stage rows show only in Stage;
+  Copy / Paste Look carry the card's Surface (`CopiedLook.card`); highlights have a least width (no pixel sparkles).
+- The Surface section lives in `inspector.rs` (`surface_section`, `surface_chip`) rather than `look_editor/surface.rs`.
+- Known gaps for 2b: the oblique view shows the wall k × Back wall above a shape's drawn footprint (shape shadows sit
+  that much high); a black Lit 0 layer on a shiny ball takes highlights (the light pass can't tell it from black Lit
+  1); penumbras wider than two radii are clipped by the grid's margin.

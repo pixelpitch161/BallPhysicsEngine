@@ -37,18 +37,23 @@ impl ThingDraw for SceneDraw {
     }
 }
 
-/// The bottom of the lowest shape's wall (world y, down), for a stage floor under it: its outline's
-/// lowest point plus half its band.
+/// The bottom of the lowest shape's wall (world y, down), for a stage floor under it: its middle
+/// plus its farthest corner from the middle and half its band, so a spinning shape doesn't move
+/// the floor.
 fn lowest_shape(world: &bpe_runtime::World) -> Option<f32> {
     world
         .walls
         .values()
-        .map(|w| {
+        .filter_map(|w| {
             let points = crate::things::light::draw::outline_points(&w.outline);
-            let low = points.iter().map(|p| p.y).fold(f32::MIN, f32::max);
-            low + 0.5 * w.outline.thickness().max(0.0)
+            if points.is_empty() {
+                return None;
+            }
+            let middle = points.iter().copied().sum::<glam::Vec2>() / points.len() as f32;
+            let reach = points.iter().map(|p| p.distance(middle)).fold(0.0f32, f32::max);
+            Some(middle.y + reach + 0.5 * w.outline.thickness().max(0.0))
         })
-        .filter(|y| y.is_finite() && *y > f32::MIN)
+        .filter(|y| y.is_finite())
         .reduce(f32::max)
 }
 

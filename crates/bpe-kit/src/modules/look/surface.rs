@@ -196,6 +196,24 @@ mod tests {
     }
 
     #[test]
+    fn a_copied_look_carries_its_surface() {
+        let reg = crate::kit().registry;
+        let mut scene = crate::scenes::lit_room(&reg);
+        let from = scene.things.values().find(|t| t.kind == "balls").map(|t| t.id).unwrap();
+        let to = crate::add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
+        let card = scene.card_mut(from, bpe_core::SlotId::Look).unwrap();
+        card.params.set("surface", Value::Choice(SurfaceKind::Chrome.name().into()));
+        for (k, v) in preset_values(SurfaceKind::Chrome) {
+            card.params.set(k, v);
+        }
+        scene.card_mut(to, bpe_core::SlotId::Look).unwrap().params.set("bulge", Value::Number(0.3));
+        let copied = scene.copy_look(&reg, from, bpe_core::SlotId::Look).unwrap();
+        scene.paste_look(&reg, to, bpe_core::SlotId::Look, &copied).unwrap();
+        let s = SurfaceSettings::of(&scene.things[&to].slots[&bpe_core::SlotId::Look].params);
+        assert_eq!((s.surface, s.metal, s.bulge), (SurfaceKind::Chrome, 1.0, 1.0), "the target's own Bulge is gone");
+    }
+
+    #[test]
     fn surface_indices_count_looked_things_from_one() {
         let reg = crate::kit().registry;
         let scene = crate::scenes::lit_room(&reg);
