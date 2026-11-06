@@ -541,7 +541,7 @@ fn with_no_walls_to_bounce_off_the_search_gives_up_quickly() {
 #[ignore]
 fn diagnose_many_balls() {
     type Set = fn(&mut EmitterSettings);
-    let cases: [(&str, Vec2, Set); 7] = [
+    let cases: [(&str, Vec2, Set); 8] = [
         ("keep, no gravity", Vec2::ZERO, |s| s.aim_way = AimWay::KeepMine),
         ("keep, gravity", Vec2::new(0.0, 980.0), |s| s.aim_way = AimWay::KeepMine),
         ("adjust 30, no gravity", Vec2::ZERO, |_| {}),
@@ -554,6 +554,7 @@ fn diagnose_many_balls() {
             s.aim_arrive = AimArrive::After;
             s.arrive_after = 3.0;
         }),
+        ("adjust 30, gravity", Vec2::new(0.0, 980.0), |_| {}),
     ];
     let only = std::env::var("DIAG").ok();
     for (k, (name, gravity, f)) in cases.into_iter().enumerate() {
@@ -595,7 +596,10 @@ fn diagnose_many_balls() {
                     if !seen[i] && (from + d * s - target).length() <= 3.0 && shown < 6 {
                         seen[i] = true;
                         shown += 1;
-                        eprintln!("  unaimed ball {i} angle {} reaches step {} hits {}", angles[i], world.step, b.hits[i]);
+                        eprintln!(
+                            "  unaimed ball {i} angle {} reaches step {} hits {}",
+                            angles[i], world.step, b.hits[i]
+                        );
                     }
                 }
             }
@@ -626,4 +630,31 @@ fn diagnose_many_balls() {
 
 fn st_target(scene: &Scene, me: ThingId) -> u32 {
     EmitterSettings::from_params(&scene.things[&me].params).aim_target as u32
+}
+
+#[test]
+#[ignore]
+fn bench_fly() {
+    let (scene, me, kit) = bouncing(Vec2::ZERO, Vec2::new(-200.0, 0.0), Vec2::new(150.0, 120.0), |s| s.count = 500);
+    let world = World::build(&scene, &resolved(&scene, &kit), &kit.sims);
+    let aim = Aimer::of(&world, me, &st(&world, me).settings, 0).unwrap();
+    let base = Lone::new(&world, me, me, 6.0, 0);
+    let p0 = world.poses[&me].position;
+    let t0 = std::time::Instant::now();
+    let mut steps = 0;
+    for i in 0..20 {
+        let f = fly(&base, &aim, p0, Vec2::from_angle(i as f32 * 0.3) * 600.0, 20000, 100000);
+        steps += f.places.len();
+    }
+    let el = t0.elapsed().as_secs_f64();
+    eprintln!("{steps} steps, {:.2} us/step", el * 1e6 / steps as f64);
+    let mut w = base.world.clone();
+    let sims = crate::lone_sims();
+    w.bodies.get_mut(&me).unwrap().push(p0, Vec2::new(600.0, 0.0), 6.0);
+    let mut log = Log::default();
+    let t0 = std::time::Instant::now();
+    for _ in 0..20000 {
+        w.step(sims, &mut log);
+    }
+    eprintln!("bare: {:.2} us/step", t0.elapsed().as_secs_f64() * 1e6 / 20000.0);
 }
