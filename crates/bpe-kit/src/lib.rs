@@ -8,6 +8,7 @@ pub mod paint;
 pub mod rng;
 #[cfg(any(test, feature = "test-scenes"))]
 pub mod scenes;
+pub mod sensing;
 pub mod sound;
 pub mod starters;
 #[cfg(test)]
@@ -56,6 +57,8 @@ pub fn sims() -> Sims {
     s.add_thing(CameraSim);
     s.add_module(BasicMotionSim);
     s.add_module(BasicBounceSim);
+    // Light sensing: worlds whose physics follows light get the probe (none do unless asked).
+    s.light = Some(std::sync::Arc::new(sensing::KitLight));
     s
 }
 

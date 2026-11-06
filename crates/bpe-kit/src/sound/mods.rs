@@ -13,8 +13,10 @@ use bpe_core::{
 pub const DISTANCE: &str = "mod.distance";
 pub const LFO: &str = "mod.lfo";
 pub const HIT: &str = "mod.hit";
+/// Light you can hear (lighting part 7): how much light falls on the balls.
+pub const LIGHT_MOD: &str = "mod.light";
 /// Every modulator kind, in the order the + menu offers them.
-pub const MOD_KINDS: [&str; 4] = [super::adsr::ADSR, DISTANCE, LFO, HIT];
+pub const MOD_KINDS: [&str; 5] = [super::adsr::ADSR, DISTANCE, LFO, HIT, LIGHT_MOD];
 /// The most modulators of one kind a sound has.
 pub const MAX_OF_EACH: usize = 8;
 /// Where a Distance's Far starts when it is turned on, in scene pixels.
@@ -309,6 +311,85 @@ impl Default for DistanceSettings {
     }
 }
 
+/// What a Light modulator reads of the light on its balls.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, bpe_core::Choice)]
+pub enum LightReads {
+    /// How much light falls on them.
+    #[default]
+    Light,
+    /// How much of the light their shadows take.
+    Shadow,
+}
+
+/// Which ball (or balls) a Light modulator follows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, bpe_core::Choice)]
+pub enum LightFollows {
+    /// The balls' average.
+    #[default]
+    Average,
+    /// The ball with the most.
+    BrightestBall,
+    /// The ball with the least.
+    DarkestBall,
+    /// How many balls are over Lit at, full at Full at.
+    HowManyLit,
+    /// The ball whose hit played the note (one value per note).
+    EachNotesBall,
+}
+
+/// How much light falls on the balls (with a Lighting card), from Dark (nothing) to Bright
+/// (full).
+#[derive(Clone, Debug, PartialEq, Settings)]
+pub struct LightModSettings {
+    /// The light on the balls, or the shadow.
+    #[setting(label = "Reads")]
+    pub reads: LightReads,
+    /// Their average, the brightest or darkest ball, how many are lit, or each note's own ball.
+    #[setting(label = "Follows")]
+    pub follows: LightFollows,
+    /// The light (0 dark, 1 blinding) that reads as nothing.
+    #[setting(label = "Dark", span(0, 1), keyframe)]
+    pub dark: f32,
+    /// The light that reads as full.
+    #[setting(label = "Bright", span(0, 1), keyframe)]
+    pub bright: f32,
+    /// Bends the way from Dark to Bright (0 is straight).
+    #[setting(label = "Curve", span(-100, 100), keyframe)]
+    pub curve: f32,
+    /// How long it takes to follow a change.
+    #[setting(label = "Smooth", range(0, 1e9), span(0, 500), unit = "ms", keyframe)]
+    pub smooth: f32,
+    /// Full in the dark, nothing in the light.
+    #[setting(label = "Invert")]
+    pub invert: bool,
+    /// How much light a ball needs to count as lit.
+    #[setting(label = "Lit at", span(0, 1), keyframe, when = "follows=how_many_lit")]
+    pub lit_at: f32,
+    /// How many lit balls count as full.
+    #[setting(label = "Full at", range(1, 1e9), span(1, 64), keyframe, when = "follows=how_many_lit")]
+    pub full_at: i32,
+    /// Which balls count.
+    #[setting(label = "Heard from")]
+    pub heard_from: Target,
+}
+
+impl Default for LightModSettings {
+    fn default() -> Self {
+        Self {
+            reads: LightReads::Light,
+            follows: LightFollows::Average,
+            dark: 0.1,
+            bright: 0.8,
+            curve: 0.0,
+            smooth: 60.0,
+            invert: false,
+            lit_at: 0.5,
+            full_at: 10,
+            heard_from: Target::Anything,
+        }
+    }
+}
+
 /// A wave of its own, drawn or random.
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct LfoSettings {
@@ -440,6 +521,13 @@ macro_rules! mod_kind {
 mod_kind!(DistanceKind, DISTANCE, "Distance", "Moves knobs as balls come near the shape.", DistanceSettings);
 mod_kind!(LfoKind, LFO, "LFO", "A wave of its own that moves knobs up and down.", LfoSettings);
 mod_kind!(HitKind, HIT, "Hit", "A number taken from each hit, held for its note.", HitSettings);
+mod_kind!(
+    LightModKind,
+    LIGHT_MOD,
+    "Light",
+    "Moves knobs as light falls on the balls (needs a Lighting card).",
+    LightModSettings
+);
 
 /// The name a new modulator of `kind` shows: "ADSR", "Distance", "LFO" or "Hit".
 pub fn kind_name(kind: &str) -> &'static str {
@@ -447,6 +535,7 @@ pub fn kind_name(kind: &str) -> &'static str {
         DISTANCE => "Distance",
         LFO => "LFO",
         HIT => "Hit",
+        LIGHT_MOD => "Light",
         _ => "ADSR",
     }
 }

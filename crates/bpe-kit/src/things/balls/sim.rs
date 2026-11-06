@@ -54,6 +54,7 @@ impl BallsState {
             hits: 0,
             seed: self.settings.seed as u32,
             alone: !self.settings.group,
+            ..BallSpread::default()
         }
     }
 

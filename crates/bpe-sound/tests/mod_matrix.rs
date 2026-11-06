@@ -130,6 +130,7 @@ fn run_with(
             time: (b * BLOCK as u64) as f64 / 48_000.0,
             tempo: &tempo,
             world: w,
+            log: &bpe_runtime::Log::default(),
             playing: true,
         };
         let (mut l, mut r) = ([0.0; BLOCK], [0.0; BLOCK]);
@@ -209,7 +210,15 @@ fn a_mod_loop_runs_one_block_late() {
     let tempo = TempoMap::default();
     let mut vb = 0.0f32;
     for (blk, (ga, gb)) in got.iter().enumerate() {
-        let cx = ModCx { start_sample: blk as u64 * BLOCK as u64, tempo: &tempo, world: &w, shape: shape_of(&scene) };
+        let no_log = bpe_runtime::Log::default();
+        let cx = ModCx {
+            start_sample: blk as u64 * BLOCK as u64,
+            tempo: &tempo,
+            world: &w,
+            shape: shape_of(&scene),
+            log: &no_log,
+            light: None,
+        };
         let ra = (1.0 * ratio.powf(0.05 * vb as f64)).clamp(0.01, 40.0);
         a.set_params(LfoParams { rate_hz: ra, wave: bpe_dsp::lfo::LfoWave::Triangle, ..LfoParams::default() });
         a.next_block(&cx);

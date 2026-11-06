@@ -28,13 +28,18 @@ impl ThingDraw for LightDraw {
         // The showing lighting scene stands in for the light's own settings, then its rigs play
         // their patterns on each lamp.
         let scenes = crate::modules::light_scenes::now(cx);
-        let s = LightSettings::from_params(&scenes.params(cx.resolved.id, &cx.resolved.params));
+        let s = shown_settings(cx, &scenes);
         let spots = places(cx, &s);
         let drives = crate::things::rig::fixtures::drives(cx, &scenes, spots.len());
         for (spot, drive) in spots.iter().zip(drives) {
             push_light(cx, &s, spot, &drive, scene);
         }
     }
+}
+
+/// The light's settings as it shows now: the showing lighting scene's in place of its own.
+pub fn shown_settings(cx: &DrawCx, scenes: &crate::modules::light_scenes::ScenesNow<'_>) -> LightSettings {
+    LightSettings::from_params(&scenes.params(cx.resolved.id, &cx.resolved.params))
 }
 
 /// One place a light shines from: a light riding each ball is one per ball.

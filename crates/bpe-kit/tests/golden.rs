@@ -100,3 +100,35 @@ fn stage5_scenes_keep_their_stage2_twins_logs() {
         assert_eq!(!playback.world().history.is_empty(), has_trail, "{name}");
     }
 }
+
+/// Lighting part 7: the scenes where light moves the physics keep their own logs (the other
+/// goldens never see light sensing).
+#[test]
+fn light_sensing_scenes_keep_their_event_logs() {
+    let kit = kit();
+    let mut lines = String::from("# scene\tevents\thash\n");
+    for (name, scene) in scenes::moth_scenes(&kit.registry) {
+        let resolved = bpe_kit::resolve_scene(&scene, &kit.registry);
+        assert!(resolved.problems.is_empty(), "{name}: {:?}", resolved.problems);
+        let mut playback = Playback::new(&scene, &resolved, kit.sims.clone());
+        playback.seek(SECONDS);
+        let log = playback.log();
+        let hits = log.events().iter().filter(|e| e.kind == EventKind::Hit).count();
+        assert!(hits > 10, "{name}: only {hits} hits");
+        lines += &format!("{name}\t{}\t{:016x}\n", log.len(), log.hash());
+        // Seeking around replays it exactly.
+        let mut jumpy = Playback::new(&scene, &resolved, kit.sims.clone());
+        for t in [7.0, 3.0, SECONDS] {
+            jumpy.seek(t);
+        }
+        assert_eq!(jumpy.log().hash(), log.hash(), "{name}: seeking changed the run");
+    }
+    let file = if cfg!(debug_assertions) { "tests/golden-moths-debug.txt" } else { "tests/golden-moths.txt" };
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
+    if std::env::var_os("BLESS_GOLDEN").is_some() {
+        std::fs::write(&path, &lines).unwrap();
+        return;
+    }
+    let expected = std::fs::read_to_string(&path).expect("the golden file is missing; run with BLESS_GOLDEN=1");
+    assert_eq!(expected, lines, "light sensing event logs changed");
+}

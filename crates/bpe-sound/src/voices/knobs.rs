@@ -6,7 +6,7 @@ use crate::modmatrix::{TargetInfo, TargetTable};
 use bpe_core::{LayerId, SettingDef, Settings, Value, layered_key};
 use bpe_kit::sound::{
     AdsrSettings, ChainEqSettings, DISTORTION, DistanceSettings, DistortionSettings, EQ, FILTER, FilterSettings,
-    HitSettings, LfoSettings, MAX_CHAIN, MODULATION, ModulationSettings, VoiceSettings,
+    HitSettings, LfoSettings, LightModSettings, MAX_CHAIN, MODULATION, ModulationSettings, VoiceSettings,
 };
 
 /// Knobs of one oscillator, from its key prefix on.
@@ -191,8 +191,19 @@ pub const HIT_SMOOTH: usize = 3;
 pub const HIT_LEN: usize = HIT_KEYS.len();
 pub const HIT_START: usize = DIST_START + MAX_EACH * DIST_LEN;
 
+/// One Light modulator's knobs.
+pub const LIGHT_KEYS: [&str; 6] = ["dark", "bright", "curve", "smooth", "lit_at", "full_at"];
+pub const DARK: usize = 0;
+pub const BRIGHT: usize = 1;
+pub const LIGHT_CURVE: usize = 2;
+pub const LIGHT_SMOOTH: usize = 3;
+pub const LIT_AT: usize = 4;
+pub const LIGHT_FULL_AT: usize = 5;
+pub const LIGHT_LEN: usize = LIGHT_KEYS.len();
+pub const LIGHT_START: usize = HIT_START + MAX_EACH * HIT_LEN;
+
 /// Every knob.
-pub const KNOBS: usize = HIT_START + MAX_EACH * HIT_LEN;
+pub const KNOBS: usize = LIGHT_START + MAX_EACH * LIGHT_LEN;
 
 /// LFO `i`'s knob `k`.
 pub const fn lfo(i: usize, k: usize) -> usize {
@@ -209,12 +220,18 @@ pub const fn hit(i: usize, k: usize) -> usize {
     HIT_START + i * HIT_LEN + k
 }
 
-/// A card's LFO, Distance and Hit layers that run, each kind in card order.
+/// Light modulator `i`'s knob `k`.
+pub const fn light(i: usize, k: usize) -> usize {
+    LIGHT_START + i * LIGHT_LEN + k
+}
+
+/// A card's LFO, Distance, Hit and Light layers that run, each kind in card order.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ModIds {
     pub lfos: Vec<LayerId>,
     pub dists: Vec<LayerId>,
     pub hits: Vec<LayerId>,
+    pub lights: Vec<LayerId>,
 }
 
 /// Oscillator `osc`'s knob `k`.
@@ -266,10 +283,11 @@ pub fn layout_all(
 ) -> Vec<(String, &'static SettingDef, usize)> {
     let mut out = chain_layout(envs, chain_layers);
     type Kind<'a> = (&'a [LayerId], &'a [&'a str], &'static [SettingDef], fn(usize, usize) -> usize);
-    let kinds: [Kind; 3] = [
+    let kinds: [Kind; 4] = [
         (&mods.lfos, &LFO_KEYS, LfoSettings::defs(), lfo),
         (&mods.dists, &DIST_KEYS, DistanceSettings::defs(), dist),
         (&mods.hits, &HIT_KEYS, HitSettings::defs(), hit),
+        (&mods.lights, &LIGHT_KEYS, LightModSettings::defs(), light),
     ];
     for (ids, keys, defs, place) in kinds {
         for (i, id) in ids.iter().take(MAX_EACH).enumerate() {
@@ -378,7 +396,12 @@ mod tests {
 
     #[test]
     fn modulator_knobs_have_places_of_their_own() {
-        let mods = ModIds { lfos: vec![LayerId(4), LayerId(9)], dists: vec![LayerId(2)], hits: vec![LayerId(11)] };
+        let mods = ModIds {
+            lfos: vec![LayerId(4), LayerId(9)],
+            dists: vec![LayerId(2)],
+            hits: vec![LayerId(11)],
+            lights: vec![LayerId(13)],
+        };
         let l = layout_all(&[LayerId(0)], &[(LayerId(5), FILTER)], &mods);
         let mut seen = std::collections::BTreeSet::new();
         for (key, _, i) in &l {
@@ -389,11 +412,14 @@ mod tests {
         assert_eq!(place("9/rate_hz"), Some(lfo(1, LFO_RATE)));
         assert_eq!(place("2/far"), Some(dist(0, FAR)));
         assert_eq!(place("11/high"), Some(hit(0, HIGH)));
+        assert_eq!(place("13/bright"), Some(light(0, BRIGHT)));
         let v = values(&l, &|_| None);
         assert_eq!(v[lfo(0, LFO_RATE)], 2.0);
         assert_eq!(v[dist(0, FAR)], 200.0);
         assert_eq!(v[dist(0, FULL_AT)], 4.0);
         assert_eq!(v[hit(0, HIGH)], 1.0);
+        assert_eq!(v[light(0, DARK)], 0.1);
+        assert_eq!(v[light(0, LIGHT_FULL_AT)], 10.0);
     }
 
     #[test]

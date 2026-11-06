@@ -14,6 +14,8 @@ pub struct BlockCx<'a> {
     pub tempo: &'a TempoMap,
     /// The engine's physics, at or a little past the block's end.
     pub world: &'a World,
+    /// The engine's events, up to the world's step.
+    pub log: &'a bpe_runtime::Log,
     /// Playing (false while stopped, when only keys clicked by hand sound: drones wait).
     pub playing: bool,
 }

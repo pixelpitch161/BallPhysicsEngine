@@ -15,7 +15,7 @@ use crate::modules::look::layers::aura::{self, AuraBall};
 use crate::modules::look::layers::gpu::{Stack, SubLayer};
 use crate::modules::look::layers::group::{BallInGroup, GroupShapeInfo, group_colour, mixed};
 use crate::modules::look::layers::trail::{self, AroundPlace, TrailKind, draw::Balls};
-use crate::modules::look::layers::vary::{VariedLook, spread_of};
+use crate::modules::look::layers::vary::{VariedLook, spread_lit};
 use crate::modules::look::layers::wavefront::{self, Fronts, WavefrontLayer};
 use crate::paint::{colour_at, vary_gpu};
 use crate::things::balls::BallsSettings;
@@ -106,7 +106,8 @@ impl<'a> Worn<'a> {
         let spreads: Vec<BallSpread> = if look.plain() && look.plain_around() {
             Vec::new()
         } else {
-            (0..rows).map(|r| spread_of(cx, r)).collect()
+            let lit = look.needs_light();
+            (0..rows).map(|r| spread_lit(cx, r, lit)).collect()
         };
         let mut stacks = vec![look.base.clone()];
         let mut which = Vec::new();
@@ -1418,6 +1419,7 @@ mod tests {
             log: &Log::default(),
             time: 0.0,
             tree: &scene,
+            light: None,
         };
         let still = crate::modules::look::draw::StillColours::new(&cx);
         assert_eq!(still.at(other, glam::Vec2::ZERO), Some(green.to_linear()));
