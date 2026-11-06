@@ -169,6 +169,8 @@ fn what_the_lighting_reads_never_follows_light() {
     let body = scene.card(BALLS, SlotId::Look).unwrap().layers[0].id;
     let lit_key = Address::on(BALLS, SlotId::Look, &bpe_core::layered_key(body, "lit"));
     assert!(!can_follow_light(&scene, reg, &lit_key));
+    let surface = Address::on(BALLS, SlotId::Look, "roughness");
+    assert!(!can_follow_light(&scene, reg, &surface), "how a look takes light is the lighting's");
     assert!(can_follow_light(&scene, reg, &Address::own(BALLS, "radius")));
     // Without a Lighting card nothing follows light.
     let (plain, _, kit) = scene_with_balls("single", |_| {});
