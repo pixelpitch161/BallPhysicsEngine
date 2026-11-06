@@ -459,7 +459,11 @@ fn bake_summary(card: &bpe_kit::modules::lighting::LightingSettings) -> String {
 
 pub fn minutes(seconds: f32) -> String {
     let seconds = seconds.max(0.0).round() as u32;
-    if seconds < 60 { format!("{seconds} s") } else { format!("{}:{:02} min", seconds / 60, seconds % 60) }
+    match seconds {
+        0..60 => format!("{seconds} s"),
+        60..3600 => format!("{}:{:02} min", seconds / 60, seconds % 60),
+        _ => format!("{} h {:02} min", seconds / 3600, seconds % 3600 / 60),
+    }
 }
 
 /// The user's Videos folder, or their home folder if there is none.
@@ -551,6 +555,7 @@ mod tests {
     fn durations_read_naturally() {
         assert_eq!(minutes(42.4), "42 s");
         assert_eq!(minutes(75.0), "1:15 min");
+        assert_eq!(minutes(125_962.0), "34 h 59 min");
     }
 
     #[test]
