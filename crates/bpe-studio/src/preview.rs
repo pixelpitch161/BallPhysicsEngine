@@ -309,6 +309,8 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
             heat_legend(&ui.painter_at(rect), rect);
         }
     }
+    // Solo only what is still there (a soloed light deleted or undone away ends its solo).
+    lights_panel::prune_solo(studio);
     if !studio.light_solo.is_empty() {
         solo_pill(ui, rect, studio, studio.aiming().is_some());
     }
@@ -713,7 +715,7 @@ pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
         return Some(Handle::Aim(*id));
     }
     // The selected light's handles before the balls: a lamp riding a ball sits on it.
-    if let Some(handle) = light_handles::hit(studio, view, pos, true) {
+    if let Some(handle) = light_handles::hit(studio, view, pos, light_handles::Pass::Selected) {
         return Some(handle);
     }
     let mut best: Option<(f32, ThingId)> = None;
@@ -747,12 +749,16 @@ pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
     {
         return Some(handle);
     }
+    // The selected light's reach ring and cone edges cross balls: they come after them.
+    if let Some(handle) = light_handles::hit(studio, view, pos, light_handles::Pass::SelectedLines) {
+        return Some(handle);
+    }
     // The Sound tab's zone lines come after the balls and the shape's own handles.
     if let Some(zone) = zones::hit(studio, view, pos) {
         return Some(zone);
     }
     // The other lights' lamps while the Lights tab is open.
-    if let Some(handle) = light_handles::hit(studio, view, pos, false) {
+    if let Some(handle) = light_handles::hit(studio, view, pos, light_handles::Pass::Others) {
         return Some(handle);
     }
     world

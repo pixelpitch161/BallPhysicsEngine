@@ -66,7 +66,7 @@ fn a_rider_says_what_it_rides_and_a_folder_groups_its_lights() {
     let of = |id| list.iter().find(|s| s.source == LightSource::Light(id)).unwrap();
     assert_eq!(of(rider).what, "point · on Ball");
     assert_eq!(of(rider).group, None);
-    assert_eq!(of(lamp).group.as_deref(), Some("Warm side"));
+    assert_eq!(of(lamp).group.as_ref().map(|g| g.name.as_str()), Some("Warm side"));
 }
 
 #[test]
@@ -228,4 +228,42 @@ fn add_lighting_adds_the_card() {
     h.get_by_label("Add Lighting").click();
     h.run();
     assert!(h.state().scene.card(ThingId::ROOT, SlotId::Lighting).is_some());
+}
+
+#[test]
+fn a_folders_lights_are_listed_together_even_past_a_rider_and_a_rig_names_its_lights() {
+    let mut studio = Studio::headless();
+    let reg = &studio.kit.clone().registry;
+    let scene = &mut studio.scene;
+    let folder = bpe_kit::add_thing(scene, reg, "folder", ThingId::ROOT).unwrap();
+    scene.rename_thing(folder, "Stage");
+    let a = bpe_kit::things::light::add_light(scene, reg, LightType::Point, folder).unwrap();
+    let balls = bpe_kit::add_thing(scene, reg, "balls", folder).unwrap();
+    let rider = bpe_kit::things::light::add_light(scene, reg, LightType::Point, balls).unwrap();
+    let c = bpe_kit::things::light::add_light(scene, reg, LightType::Sun, folder).unwrap();
+    let outside = bpe_kit::things::light::add_light(scene, reg, LightType::Point, ThingId::ROOT).unwrap();
+    let rig = bpe_kit::things::rig::add_rig(scene, reg, balls).unwrap();
+    scene.rename_thing(rig, "Front rig");
+    let list = sources(scene, reg);
+    let at = |id| list.iter().position(|s| s.source == LightSource::Light(id)).unwrap();
+    // The folder's three are together, the light outside comes after them.
+    assert_eq!((at(a), at(rider), at(c)), (0, 1, 2), "{list:#?}");
+    assert!(at(outside) > at(c));
+    assert_eq!(list[at(rider)].group.as_ref().map(|g| g.id), Some(folder));
+    // A rig's spot rides the balls the rig sits in and is listed under the rig.
+    let spot = scene.descendants(rig).into_iter().find(|i| scene.things[i].kind == LIGHT).unwrap();
+    let of = &list[at(spot)];
+    assert!(of.what.ends_with(&format!("on {}", scene.things[&balls].name)), "{}", of.what);
+    let g = of.group.as_ref().unwrap();
+    assert!(g.rig);
+    assert_eq!(g.name, "Stage › Front rig");
+    assert_eq!(light_parent(scene, Some(rig)), rig, "a selected rig takes the new light");
+}
+
+#[test]
+fn opening_another_scene_ends_the_solo() {
+    let (mut studio, id) = lit_studio();
+    studio.light_solo.insert(LightSource::Light(id));
+    studio.replace_scene(studio.scene.clone(), None);
+    assert!(studio.light_solo.is_empty());
 }

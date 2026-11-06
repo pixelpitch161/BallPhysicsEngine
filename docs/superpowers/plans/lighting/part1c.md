@@ -41,8 +41,11 @@ shared files, so this part rebases on whatever has landed and runs every test ag
    `lights_panel::sources(scene, reg)` in tree order. A Layer source is any layer whose kind is in
    `GIVES_OFF_LIGHT = ["sub.light", "shape.sub.light"]` (the spec's kind ids for part 1b) and is registered; until 1b
    lands nothing matches. Its strip is named "Thing › Layer it changes" and its fader is that layer's `strength`.
-   Groups: a light whose parent is a folder (or, later, part 6's rig) is listed under the parent's name; riders show
-   "· on <parent>". Ambient is listed only when the scene has a Lighting card.
+   Groups: a source is listed under the nearest folder or rig (part 6) it sits in, headed by the names of the folders
+   and rigs down to it ("Stage › Front rig"; a rig's header adds "rig · N lights" from `rig::fixtures::fixtures` and
+   a click selects it). Every source of one group is listed together where its first one is, so a rider inside a
+   folder doesn't split the folder's run. Riders show "· on <what it rides>", read past rigs (`rig::fixtures::ridden`,
+   as the picture places them). Ambient is listed last, only when the scene has a Lighting card.
 4. **The fader** is the setting itself: `Address::own(light, "strength")` (a layer's `"<id>/strength"` on its card;
    Ambient's `ambient` on the Lighting card), read with `Scene::value_at_time` at the playhead and written with
    `inspector::set_or_key` (keys when keyed; a keyed edit pauses as the inspector's do). It is the same span slider
@@ -56,7 +59,9 @@ shared files, so this part rebases on whatever has landed and runs every test ag
    select it.
 7. **Handles** (`preview/light_handles.rs`): read the light's settings at the playhead (`settings_at`: the resolved
    settings with each keyed setting's `value_at_time`) and its places from the world
-   (`bpe_kit::things::light::draw::places_in`, split out of `places` so the editor and the draw agree). Parts
+   (`bpe_kit::things::light::draw::places_in`, split out of `places` so the editor and the draw agree; the parent is
+   `rig::fixtures::ridden`, past rigs). Handles show the light's own settings: a rig's pattern (turn, sway) moves the
+   lit picture but not the handles, which edit what the light itself is set to. Parts
    (`LightPart`): `Lamp(k)` (place k), `Reach`, `Cone(side)`, `Aim`, `Corner`, `End(0|1)`.
    - Lamp: moves Position. A rider's Position is its offset from what it rides, so the drag moves the offset by how
      far the pointer goes from where it was pressed (like the ride drag of other riders). Snaps to the grid.
@@ -69,10 +74,12 @@ shared files, so this part rebases on whatever has landed and runs every test ag
    - Area: a corner handle sets Width (along the aim) and Length (across) from the pointer's place in the panel's own
      frame; an aim handle past its far edge turns it.
    - Strip (Line): its two ends; dragging one keeps the other where it is (Position, Length and Direction change
-     together). A strip along a shape's outline only has its lamp.
+     together). With Where it's going the strip's way is the ball's, so an end only slides along it (Position and
+     Length change, never Direction). A strip along a shape's outline only has its lamp.
    Each drag is its own undo step and keeps the playhead (`Outcome::keep_playhead`), so keys land where the light is
-   seen. Hit order: the selected light's handles first (a lamp riding a ball sits on the ball), other lamps (Lights
-   tab open) after the balls and before the shapes. Riding Each ball draws at most `MOST_LAMPS` (400) lamps.
+   seen. Hit order: the selected light's lamps and dots first (a lamp riding a ball sits on the ball), its reach ring
+   and cone edges after the balls and the shape's handles (they cross balls), other lamps (Lights tab open) last,
+   before the walls. Riding Each ball draws at most `MOST_LAMPS` (400) lamps.
 8. **Show** (`bpe_gfx::LightShow`: Picture, LightOnly, HeatMap; `LightScene.show`) is set by the editor on the
    built frame (`Studio.light_show`), never by the kit, so export always draws the picture. The light pass sends it
    in the uniform's spare `ambient.w`; `fs_light` returns, instead of the mix, the light arriving at the pixel

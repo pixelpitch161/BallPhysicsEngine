@@ -143,3 +143,30 @@ fn a_rider_is_grabbed_before_its_ball_and_moves_by_its_offset() {
     drag(&mut studio, Handle::Light(id, LightPart::Lamp(0)), Vec2::new(0.0, -200.0), Vec2::new(30.0, -240.0));
     assert_eq!(get(&studio, id).position, Vec2::new(30.0, -40.0), "the offset from the ball it rides");
 }
+
+#[test]
+fn a_strip_that_points_where_its_ball_goes_slides_its_end_along_its_way() {
+    let (mut studio, id) = with_light(LightType::Strip);
+    let before = studio.scene.clone();
+    studio.scene.things.get_mut(&id).unwrap().params.set("points", Value::Choice("where_its_going".into()));
+    studio.after_edit(before);
+    let was = get(&studio, id).direction;
+    // Pulled off to the side, the end only slides along the strip: 500 px from the end at (0, 100).
+    drag(&mut studio, Handle::Light(id, LightPart::End(1)), Vec2::new(0.0, 500.0), Vec2::new(300.0, 600.0));
+    let s = get(&studio, id);
+    assert_eq!(s.direction, was, "its direction is not its own to set");
+    assert_eq!(s.length, 500.0);
+    assert_eq!(s.position, Vec2::new(0.0, 350.0));
+}
+
+#[test]
+fn the_reach_ring_gives_way_to_a_ball_under_it() {
+    let (mut studio, id) = with_light(LightType::Point);
+    let before = studio.scene.clone();
+    // The ring passes through the ball at (0, -200).
+    studio.scene.things.get_mut(&id).unwrap().params.set("reach", Value::Number(500.0));
+    studio.after_edit(before);
+    let v = view();
+    assert_eq!(hit_test(&studio, &v, v.to_screen(Vec2::new(0.0, -200.0))), Some(Handle::Body(ThingId(2))));
+    assert_eq!(hit_test(&studio, &v, v.to_screen(Vec2::new(500.0, 300.0))), Some(Handle::Light(id, LightPart::Reach)));
+}

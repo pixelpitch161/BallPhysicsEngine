@@ -1049,7 +1049,8 @@ pub fn span_slider(
             let mut field =
                 DragValue::new(&mut typed).speed(feel.drag_speed).fixed_decimals(feel.decimals).suffix(unit.clone());
             if let Some((a, b)) = range {
-                field = field.range(a.min(b)..=a.max(b));
+                // A value already past the range (keyed or from a file) shows as it is.
+                field = field.range(a.min(b)..=a.max(b)).clamp_existing_to_range(false);
             }
             ui.add(field)
         })

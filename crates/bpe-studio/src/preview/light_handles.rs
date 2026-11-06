@@ -131,17 +131,32 @@ fn dots(l: &Lamp, v: &View) -> Vec<(LightPart, Pos2)> {
     list
 }
 
-/// What of the shown lights' handles is under `pos`: with `selected_only`, only the selected
-/// light's (they come before the balls); otherwise only the other lights' lamps.
-pub fn hit(studio: &Studio, view: &View, pos: Pos2, selected_only: bool) -> Option<Handle> {
+/// Which of the shown lights' handles a hit test looks at. The selected light's lamps and dots
+/// come before the balls (a lamp riding a ball sits on it), its reach ring and cone edges after
+/// the balls and the shape's handles (they cross balls), and the other lights' lamps last.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pass {
+    Selected,
+    SelectedLines,
+    Others,
+}
+
+/// What of the shown lights' handles `pass` looks at is under `pos`.
+pub fn hit(studio: &Studio, view: &View, pos: Pos2, pass: Pass) -> Option<Handle> {
     let selected = studio.selection.primary;
     for id in shown(studio) {
-        if (Some(id) == selected) != selected_only {
+        if (Some(id) == selected) == (pass == Pass::Others) {
             continue;
         }
         let Some(v) = view.of(studio, id) else { continue };
         let Some(l) = lamp(studio, id) else { continue };
-        if selected_only {
+        if pass == Pass::SelectedLines {
+            if let Some(part) = line_under(&l, &v, pos) {
+                return Some(Handle::Light(id, part));
+            }
+            continue;
+        }
+        if pass == Pass::Selected {
             for (part, p) in dots(&l, &v) {
                 if (p - pos).length() <= DOT_GRAB {
                     return Some(Handle::Light(id, part));
@@ -153,27 +168,29 @@ pub fn hit(studio: &Studio, view: &View, pos: Pos2, selected_only: bool) -> Opti
                 return Some(Handle::Light(id, LightPart::Lamp(k as u32)));
             }
         }
-        if !selected_only {
-            continue;
-        }
-        let Some(first) = l.places.first() else { continue };
-        let centre = v.to_screen(first.at);
-        let scale = v.world_scale();
-        if l.s.kind == LightType::Spot {
-            let reach = l.s.reach.max(0.0) * scale;
-            for (edge, sign) in [(false, -1.0f32), (true, 1.0)] {
-                let a = l.aim + sign * (0.5 * l.s.cone).to_radians();
-                let end = v.to_screen(first.at + Vec2::from_angle(a) * (reach / scale.max(1e-6)));
-                if distance_to_segment(pos, centre, end) <= LINE_GRAB {
-                    return Some(Handle::Light(id, LightPart::Cone(edge)));
-                }
+    }
+    None
+}
+
+/// The reach ring or a cone edge of `l` under `pos`.
+fn line_under(l: &Lamp, v: &View, pos: Pos2) -> Option<LightPart> {
+    let first = l.places.first()?;
+    let centre = v.to_screen(first.at);
+    let scale = v.world_scale();
+    if l.s.kind == LightType::Spot {
+        let reach = l.s.reach.max(0.0) * scale;
+        for (edge, sign) in [(false, -1.0f32), (true, 1.0)] {
+            let a = l.aim + sign * (0.5 * l.s.cone).to_radians();
+            let end = v.to_screen(first.at + Vec2::from_angle(a) * (reach / scale.max(1e-6)));
+            if distance_to_segment(pos, centre, end) <= LINE_GRAB {
+                return Some(LightPart::Cone(edge));
             }
         }
-        if l.s.kind != LightType::Sun {
-            let r = l.s.reach.max(0.0) * scale;
-            if ((pos - centre).length() - r).abs() <= LINE_GRAB {
-                return Some(Handle::Light(id, LightPart::Reach));
-            }
+    }
+    if l.s.kind != LightType::Sun {
+        let r = l.s.reach.max(0.0) * scale;
+        if ((pos - centre).length() - r).abs() <= LINE_GRAB {
+            return Some(LightPart::Reach);
         }
     }
     None
@@ -255,12 +272,17 @@ pub fn apply(
             let half = dir * (0.5 * s.length);
             // The other end stays where it is.
             let (other, sign) = if end == 1 { (g.place - half, 1.0) } else { (g.place + half, -1.0) };
-            let tip = snap_point(pointer, step);
+            // A strip that points where its ball goes keeps its way: the end slides along it.
+            let tip = if aims(s) {
+                snap_point(pointer, step)
+            } else {
+                other + dir * sign * (pointer - other).dot(dir * sign).max(0.0)
+            };
             let span = (tip - other) * sign;
             let middle = ((tip + other) * 0.5 - anchor).round();
             set(scene, "position", Value::Vec2([middle.x, middle.y]));
             set(scene, "length", Value::Number(round(span.length(), 1.0)));
-            if span.length_squared() > 1e-6 {
+            if aims(s) && span.length_squared() > 1e-6 {
                 set(scene, "direction", Value::Number(round(wrap(degrees(span) - g.spun), 0.1)));
             }
         }

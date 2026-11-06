@@ -401,6 +401,8 @@ impl Studio {
         self.path = path;
         self.history = History::default();
         self.selection.clear();
+        // Solo is the editor's alone and was the last scene's.
+        self.light_solo.clear();
         self.time = 0.0;
         self.set_playing(false);
         self.recorded = true;

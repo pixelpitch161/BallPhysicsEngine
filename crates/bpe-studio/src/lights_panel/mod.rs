@@ -39,8 +39,8 @@ pub struct Source {
     pub name: String,
     /// The small words after the name: "spot · on Drifters", "gives off".
     pub what: String,
-    /// The folder (or rig) it is listed under.
-    pub group: Option<String>,
+    /// The folder or rig it is listed under.
+    pub group: Option<Group>,
     /// The thing whose track colour tags the strip (none for Ambient).
     pub thing: Option<ThingId>,
     /// Its colour as sRGB bytes, for the dot.
@@ -51,21 +51,63 @@ pub struct Source {
     pub strength: Option<Address>,
 }
 
-/// Every source of light in the scene, in tree order, Ambient last (when the scene is lit).
+/// The folder or rig a light is listed under: the nearest one it sits in.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Group {
+    pub id: ThingId,
+    /// Its name after the names of the folders and rigs it sits in: "Stage › Front rig".
+    pub name: String,
+    /// A rig (its lights follow its pattern).
+    pub rig: bool,
+}
+
+/// The folder or rig `id` is listed under.
+fn group_of(scene: &Scene, id: ThingId) -> Option<Group> {
+    let holds = |a: &ThingId| {
+        scene.things.get(a).is_some_and(|t| t.kind == "folder" || bpe_kit::things::rig::fixtures::is_rig(scene, t.id))
+    };
+    let mut path: Vec<ThingId> = scene.ancestors(id).into_iter().filter(holds).collect();
+    let nearest = *path.first()?;
+    path.reverse();
+    let name = path.iter().filter_map(|a| scene.things.get(a)).map(|t| t.name.as_str()).collect::<Vec<_>>();
+    Some(Group { id: nearest, name: name.join(" › "), rig: bpe_kit::things::rig::fixtures::is_rig(scene, nearest) })
+}
+
+/// Every source of light in the scene, Ambient last (when the scene is lit). They come in tree
+/// order, but every source under one folder or rig is listed together where its first one is.
 pub fn sources(scene: &Scene, reg: &Registry) -> Vec<Source> {
+    let mut out = listed(scene, reg);
+    let ambient = out.iter().position(|s| s.source == LightSource::Ambient).map(|k| out.remove(k));
+    let mut firsts: Vec<Option<ThingId>> = Vec::new();
+    for s in &out {
+        let key = s.group.as_ref().map(|g| g.id);
+        if !firsts.contains(&key) {
+            firsts.push(key);
+        }
+    }
+    // A stable sort: tree order within each group.
+    out.sort_by_key(|s| firsts.iter().position(|k| *k == s.group.as_ref().map(|g| g.id)));
+    out.extend(ambient);
+    out
+}
+
+/// Every source in tree order.
+fn listed(scene: &Scene, reg: &Registry) -> Vec<Source> {
     let mut out = Vec::new();
     for &id in &scene.order {
         let Some(thing) = scene.things.get(&id) else { continue };
         if thing.kind == LIGHT {
             let s = LightSettings::from_params(&thing.params);
-            let parent = thing.parent.and_then(|p| scene.things.get(&p)).filter(|p| p.id != ThingId::ROOT);
             let kind = kind_word(s.kind);
-            let rides = parent.filter(|p| bpe_kit::things::light::RIDES.contains(&p.kind.as_str()));
+            // What it rides: its parent past any rigs, as the picture places it.
+            let rides = bpe_kit::things::rig::fixtures::ridden(scene, id)
+                .and_then(|p| scene.things.get(&p))
+                .filter(|p| bpe_kit::things::light::RIDES.contains(&p.kind.as_str()));
             let what = match rides {
                 Some(p) => format!("{kind} · on {}", p.name),
                 None => kind.to_owned(),
             };
-            let group = parent.filter(|p| rides.is_none() && p.kind != "scene").map(|p| p.name.clone());
+            let group = group_of(scene, id);
             out.push(Source {
                 source: LightSource::Light(id),
                 name: thing.name.clone(),
@@ -100,7 +142,7 @@ pub fn sources(scene: &Scene, reg: &Registry) -> Vec<Source> {
                     source: LightSource::Layer(id, slot, layer.id),
                     name,
                     what: "gives off".into(),
-                    group: None,
+                    group: group_of(scene, id),
                     thing: Some(id),
                     colour,
                     on: layer.enabled && thing.enabled,
@@ -184,15 +226,26 @@ pub fn solo_names(scene: &Scene, reg: &Registry, solo: &BTreeSet<LightSource>) -
 }
 
 /// Where the Lights tab's "+ light" buttons and the tree's Add thing ▸ Light put a new light:
-/// inside a selected folder or a thing it can ride, else beside the selection.
+/// inside a selected folder, rig or thing it can ride, else beside the selection.
 pub fn light_parent(scene: &Scene, primary: Option<ThingId>) -> ThingId {
     primary
         .and_then(|s| scene.things.get(&s))
         .and_then(|t| {
-            let inside = t.kind == "folder" || bpe_kit::things::light::RIDES.contains(&t.kind.as_str());
+            let inside = t.kind == "folder"
+                || t.kind == bpe_kit::things::rig::RIG
+                || bpe_kit::things::light::RIDES.contains(&t.kind.as_str());
             if inside { Some(t.id) } else { t.parent }
         })
         .unwrap_or(ThingId::ROOT)
+}
+
+/// Drops soloed sources that are no longer in the scene.
+pub fn prune_solo(studio: &mut Studio) {
+    if studio.light_solo.is_empty() {
+        return;
+    }
+    let list = sources(&studio.scene, &studio.kit.registry);
+    studio.light_solo.retain(|s| list.iter().any(|x| x.source == *s));
 }
 
 /// Draws the Lights tab.
@@ -220,24 +273,49 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
         add_buttons(ui, studio, reg);
         ui.add_space(8.0);
         let list = sources(&studio.scene, reg);
-        // Solo only what is still there.
-        studio.light_solo.retain(|s| list.iter().any(|x| x.source == *s));
         if list.is_empty() {
             ui.label(RichText::new("No lights yet.").color(style::MUTED));
         }
-        let mut group: Option<&str> = None;
+        let mut group: Option<ThingId> = None;
         for source in &list {
-            if source.group.as_deref() != group {
-                group = source.group.as_deref();
-                if let Some(name) = group {
+            let key = source.group.as_ref().map(|g| g.id);
+            if key != group {
+                group = key;
+                if let Some(g) = &source.group {
                     ui.add_space(4.0);
-                    ui.label(RichText::new(name.to_uppercase()).small().color(style::MUTED));
+                    group_header(ui, studio, g);
                 }
             }
             strip::show(ui, studio, reg, source);
             ui.add_space(4.0);
         }
     });
+}
+
+/// A folder's or rig's name over its strips; a click selects it (a rig's pattern is in its
+/// card).
+fn group_header(ui: &mut Ui, studio: &mut Studio, g: &Group) {
+    let r = ui
+        .horizontal(|ui| {
+            let name = ui.add(
+                egui::Label::new(RichText::new(g.name.to_uppercase()).small().color(style::MUTED))
+                    .truncate()
+                    .selectable(false)
+                    .sense(egui::Sense::click()),
+            );
+            if g.rig {
+                let count = bpe_kit::things::rig::fixtures::fixtures(&studio.scene, &studio.resolved, g.id).len();
+                let words = if count == 1 { "rig · 1 light".to_owned() } else { format!("rig · {count} lights") };
+                ui.label(RichText::new(words).small().color(style::FAINT));
+            }
+            name
+        })
+        .inner;
+    let what =
+        if g.rig { "Click to show this rig (its pattern) in the inspector" } else { "Click to select this folder" };
+    if r.on_hover_text(what).clicked() {
+        studio.selection.set(g.id);
+    }
 }
 
 /// The Lighting card's choice setting `key` as a row of chips.

@@ -77,12 +77,12 @@ shows "Lighting: N lights, X ms" (`Renderer::lighting_stats`, GPU timestamps via
 Part 1c is in: the editor's side. The left panel switches Things / **Lights** / Mixer (`LeftPanel::Lights`,
 `bpe-studio/src/lights_panel/`): the Lighting card's Depth and Quality chips, "+ Point … + Strip" (`light_parent`, shared
 with the tree), and a strip per `LightSource` (`Light`, `Layer` for any layer whose kind is in `GIVES_OFF_LIGHT`
-(`sub.light`, `shape.sub.light`), `Ambient`; `sources` lists them in tree order, lights in a folder under its name):
+(`sub.light`, `shape.sub.light`), `Ambient`; `sources` lists them in tree order, each run under its nearest folder or rig (`Group`, a rig's header counting its `fixtures`), riders named by `rig::fixtures::ridden`):
 the Strength fader (the real setting at the playhead through `set_or_key`), **M** (a light's `Thing.enabled`, a layer's
 `enabled`, Ambient's new `ambient_on`) and **S** (`Studio.light_solo`, editor only: `soloed` gives the preview a
 resolved copy without the other lights and with ambient off; a "Solo: …" pill ends it). Light handles
 (`preview/light_handles.rs`, `Handle::Light(id, LightPart)`: Lamp(k), Reach, Cone, Aim, Corner, End) show for the
-selected light, or every light while the Lights tab is open; they read `settings_at` (keyed values at the playhead) and
+selected light, or every light while the Lights tab is open (hit in three passes, `light_handles::Pass`: the selected light's lamps and dots before the balls, its reach ring and cone edges after them, other lamps last); they read `settings_at` (keyed values at the playhead) and
 `light::draw::places_in`/`aim_angle`, drag with `set_or_key` and keep the playhead. **Show** (`Studio.light_show`,
 `bpe_gfx::LightShow` on `LightScene.show`, the light pass's `ambient.w`): Picture / Light only / Heat map (`heat` in
 lighting.wgsl, the same stops as `style::HEAT`), set only by the editor (`preview::show_light` also drops picture effects,

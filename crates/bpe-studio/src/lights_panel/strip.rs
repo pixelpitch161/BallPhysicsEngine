@@ -14,8 +14,11 @@ use crate::widgets::{self, KeyMark, ValueMenu};
 pub fn show(ui: &mut Ui, studio: &mut Studio, reg: &Registry, source: &Source) {
     let selected = match source.source {
         LightSource::Light(id) => studio.selection.primary == Some(id),
-        LightSource::Layer(id, _, layer) => {
-            studio.selection.primary == Some(id) && studio.panels.inspector.selected_layer.get(&id) == Some(&layer)
+        LightSource::Layer(id, slot, layer) => {
+            // A sub-layer is picked through the layer it belongs to.
+            let parent = studio.scene.card(id, slot).and_then(|c| c.layer(layer)).and_then(|l| l.parent);
+            studio.selection.primary == Some(id)
+                && studio.panels.inspector.selected_layer.get(&id) == Some(&parent.unwrap_or(layer))
         }
         LightSource::Ambient => studio.selection.primary == Some(ThingId::ROOT),
     };
