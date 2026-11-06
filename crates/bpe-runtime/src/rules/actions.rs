@@ -40,7 +40,7 @@ pub enum Action {
     Kick(Kick),
     /// Changes how fast the simulation runs (a Set on a pace of 1; its `start` is set when it
     /// applies).
-    Pace(Change),
+    Pace(Box<Change>),
     /// Flashes one ball (its body row), every live ball of the thing, or a thing without balls,
     /// as if hit; `strength` 1 is a full-strength hit.
     Flash { thing: ThingId, row: Option<u32>, strength: f32 },
@@ -167,7 +167,7 @@ impl World {
                 }
                 Action::Pace(mut change) => {
                     change.start = time;
-                    rules.add_pace(change);
+                    rules.add_pace(*change);
                 }
                 Action::Flash { thing, row, strength } => {
                     if rules.broken.contains(&thing) || !strength.is_finite() {

@@ -61,7 +61,9 @@ block_kind!(
     "Lighting scene",
     Do,
     ShowSceneSettings,
-    "Shows one of the Lighting card's scenes, crossfading to it."
+    "Shows one of the Lighting card's scenes, crossfading to it.",
+    values = [],
+    from = ["scene"]
 );
 
 #[derive(Clone, Debug)]

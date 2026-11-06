@@ -31,7 +31,9 @@ block_kind!(
     "Flash",
     Do,
     FlashSettings,
-    "Fires the Flash on hit and Colour on hit layers of a ball or a thing as if it was hit."
+    "Fires the Flash on hit and Colour on hit layers of a ball or a thing as if it was hit.",
+    values = [],
+    from = ["strength"]
 );
 
 #[derive(Clone, Debug)]

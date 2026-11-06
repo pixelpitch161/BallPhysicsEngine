@@ -54,7 +54,9 @@ block_kind!(
     "Play a note",
     Do,
     PlayNoteSettings,
-    "A shape's voice plays a note: one set here, or its own next note as if hit."
+    "A shape's voice plays a note: one set here, or its own next note as if hit.",
+    values = [],
+    from = ["note", "velocity", "length"]
 );
 
 #[derive(Clone, Debug)]

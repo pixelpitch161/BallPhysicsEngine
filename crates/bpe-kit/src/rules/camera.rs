@@ -70,7 +70,9 @@ block_kind!(
     "Camera",
     Do,
     CameraKickSettings,
-    "Shakes the camera or punches its zoom, dying away over a time."
+    "Shakes the camera or punches its zoom, dying away over a time.",
+    values = [],
+    from = ["amount", "punch", "seconds"]
 );
 
 #[derive(Clone, Debug)]

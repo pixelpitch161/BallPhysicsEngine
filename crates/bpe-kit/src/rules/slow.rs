@@ -48,7 +48,9 @@ block_kind!(
     "Slow motion",
     Do,
     SlowMotionSettings,
-    "Runs the simulation slower (or faster) for a while; the video and its keyframes run on."
+    "Runs the simulation slower (or faster) for a while; the video and its keyframes run on.",
+    values = [],
+    from = ["speed", "seconds"]
 );
 
 #[derive(Clone, Debug)]
@@ -78,7 +80,7 @@ impl BlockSim for SlowMotion {
             Lasts::ForGood => None,
             Lasts::ForATime => Some(m.seconds.or_fixed(firing).max(0.0)),
         };
-        out.push(Action::Pace(Change {
+        out.push(Action::Pace(Box::new(Change {
             how: How::Set,
             value: Value::Number(speed),
             start: 0.0,
@@ -86,6 +88,6 @@ impl BlockSim for SlowMotion {
             ease: m.s.ease.ease(),
             lasts,
             range: Some((MIN_PACE as f64, MAX_PACE as f64)),
-        }));
+        })));
     }
 }
