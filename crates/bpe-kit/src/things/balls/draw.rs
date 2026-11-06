@@ -888,8 +888,19 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, worn: &Worn, part: u32) {
         .unwrap_or_default();
     let start = frame.layered.len() as u32;
     let mut made: Vec<(usize, bpe_gfx::LayeredInstance)> = Vec::with_capacity(bodies.len());
+    // Broken balls whose Break look still plays out: drawn where they broke, after the rest.
+    let mut remains: Vec<bpe_gfx::LayeredInstance> = Vec::new();
+    let broken = cx.world.rules().is_some_and(|r| r.remains().next().is_some());
+    let walls = if broken { crate::rules::remains::draw::walls_of(cx.world) } else { Vec::new() };
+    // Shatter cells, cut once a break and shared by its balls.
+    let mut cuts = crate::rules::remains::draw::Cuts::default();
     for i in 0..bodies.len() {
-        if !bodies.alive[i] {
+        let left = if bodies.alive[i] || !broken {
+            None
+        } else {
+            crate::rules::remains::remains_now(cx, Some(i as u32)).filter(|(r, _)| r.ball.is_some())
+        };
+        if !bodies.alive[i] && left.is_none() {
             continue;
         }
         let seed = ball_seed(id, i);
@@ -901,11 +912,20 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, worn: &Worn, part: u32) {
             let paint = v.get(fill, i);
             vary_gpu(fill, paint.seed, paint.time)
         });
-        let (center, velocity, radius) = (bodies.position[i], bodies.velocity[i], bodies.radius[i]);
+        let (center, velocity, radius) = match left.as_ref().and_then(|(r, _)| r.ball) {
+            Some(b) => (b.position, b.velocity, b.radius),
+            None => (bodies.position[i], bodies.velocity[i], bodies.radius[i]),
+        };
         let body = blend_alpha(color.get(i));
         let number = group.number(i);
         let (first, count) = range_for(frame, at, number);
-        let mut ball = mine.instance(body, center, velocity, radius, time, code, seed, own, first, count);
+        // A broken ball stays as it was the moment it broke (its Turning stops, it faces the way
+        // it was going), standing still: no stretch.
+        let made_at = left.as_ref().map_or(time, |(r, _)| r.time as f32);
+        let mut ball = mine.instance(body, center, velocity, radius, made_at, code, seed, own, first, count);
+        if left.is_some() {
+            (ball.stretch[2], ball.stretch[3]) = (1.0, 1.0);
+        }
         ball.range[2] = part;
         if hits {
             let (age, strength) = last.get(i).copied().unwrap_or((bpe_gfx::NO_HIT[0], 0.0));
@@ -934,9 +954,16 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, worn: &Worn, part: u32) {
         if fade < 1.0 {
             ball.misc[0] *= fade;
         }
+        if let Some((r, look)) = &left {
+            let (thing, row) = (id.0, i as u32);
+            let draw = crate::rules::remains::draw::BallRemains { thing, row, time: cx.time, walls: &walls };
+            draw.draw(r, look, ball, &mut cuts, frame, &mut remains);
+            continue;
+        }
         made.push((i, ball));
     }
     draw_ghosts(cx, frame, worn, part, &made, &seen);
+    frame.layered.extend(remains);
     // The scene's effects see every ball drawn (once, with the whole or lower part).
     let effects = crate::modules::effects::draw::scene_has_effects(cx.scene);
     let mut mark_of = Vec::new();

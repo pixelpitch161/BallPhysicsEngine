@@ -1,11 +1,13 @@
 //! What Do blocks produce: actions, queued in the Rules stage and applied at the start of the
 //! next step, in the order queued. Applying an action never runs rules.
 
+use std::sync::Arc;
+
 use bpe_core::ThingId;
 use glam::Vec2;
 
 use super::shows::{FULL_FLASH_SPEED, Kick, MOST_KICKS, SceneOp, ShownScene, next_scene};
-use super::{Change, ChangeKey, Firing, MAX_BALLS, MAX_ROWS};
+use super::{BallAt, BreakShow, Change, ChangeKey, Firing, MAX_BALLS, MAX_ROWS, Remains};
 use crate::{Event, EventKind, Log, NewBall, Party, Sims, World, on_own_side, pop};
 
 /// A change to a ball's motion, right now.
@@ -34,8 +36,9 @@ pub enum Action {
     Motion { thing: ThingId, row: Option<u32>, motion: MotionChange },
     /// Changes a setting, for the whole thing or one ball.
     Change { key: ChangeKey, change: Box<Change> },
-    /// Breaks one ball (its body row) or the whole thing.
-    Break { thing: ThingId, row: Option<u32>, point: Vec2, normal: Vec2, strength: f32 },
+    /// Breaks one ball (its body row) or the whole thing, `show` saying how its look plays out
+    /// (drawn only; the default is Vanish).
+    Break { thing: ThingId, row: Option<u32>, point: Vec2, normal: Vec2, strength: f32, show: Arc<BreakShow> },
     /// Shakes a camera or punches its zoom (its `start` is set when it applies).
     Kick(Kick),
     /// Changes how fast the simulation runs (a Set on a pace of 1; its `start` is set when it
@@ -107,7 +110,9 @@ impl World {
             false
         });
         let time = self.time();
+        rules.prune_remains(time);
         rules.prune_shows(step, self.steps_per_second, time);
+        let gravity = self.gravity;
         for action in std::mem::take(&mut rules.pending) {
             match action {
                 Action::Motion { thing, row, motion } => {
@@ -255,10 +260,25 @@ impl World {
                     change.start = time;
                     rules.add_change(key, *change);
                 }
-                Action::Break { thing, row, point, normal, strength } => {
+                Action::Break { thing, row, point, normal, strength, show } => {
                     if rules.broken.contains(&thing) {
                         continue;
                     }
+                    let strength = if strength.is_finite() { strength } else { 0.0 };
+                    let remains = |wall, ball| Remains {
+                        step,
+                        time,
+                        point,
+                        normal,
+                        strength,
+                        show: show.clone(),
+                        gravity,
+                        wall,
+                        ball,
+                    };
+                    let ball_at = |b: &crate::Bodies, i: usize| {
+                        Some(BallAt { position: b.position[i], velocity: b.velocity[i], radius: b.radius[i] })
+                    };
                     let event = |item: u32| Event {
                         step,
                         kind: EventKind::Break,
@@ -266,7 +286,7 @@ impl World {
                         b: None,
                         point,
                         normal,
-                        speed: if strength.is_finite() { strength } else { 0.0 },
+                        speed: strength,
                         at: 0.0,
                     };
                     match row {
@@ -277,6 +297,9 @@ impl World {
                                 continue;
                             }
                             log.push(event(r));
+                            if show.shows() {
+                                rules.remains.insert((thing, r), remains(None, ball_at(bodies, i)));
+                            }
                             pop(bodies, i, thing, step, log);
                             bodies.held[i] = false;
                             rules.frozen.retain(|f| !(f.thing == thing && f.row == r));
@@ -287,12 +310,19 @@ impl World {
                             if let Some(bodies) = self.bodies.get_mut(&thing) {
                                 for i in 0..bodies.len() {
                                     if bodies.alive[i] {
+                                        if show.shows() {
+                                            let at = ball_at(bodies, i);
+                                            rules.remains.insert((thing, i as u32), remains(None, at));
+                                        }
                                         pop(bodies, i, thing, step, log);
                                     }
                                     bodies.held[i] = false;
                                 }
                             }
-                            self.walls.remove(&thing);
+                            let wall = self.walls.remove(&thing);
+                            if show.shows() {
+                                rules.remains.insert((thing, WHOLE), remains(wall, None));
+                            }
                             self.order.retain(|t| *t != thing);
                             rules.broken.insert(thing);
                             rules.frozen.retain(|f| f.thing != thing);

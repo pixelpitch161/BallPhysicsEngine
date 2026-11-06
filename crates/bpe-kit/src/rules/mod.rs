@@ -33,6 +33,7 @@ pub mod logic;
 pub mod memory;
 pub mod motion;
 pub mod note;
+pub mod remains;
 pub mod scene;
 pub mod signals;
 pub mod slow;

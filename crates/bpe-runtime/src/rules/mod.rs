@@ -6,12 +6,14 @@
 mod actions;
 mod changes;
 mod firing;
+mod remains;
 mod shows;
 mod sim;
 
 pub use actions::{Action, CountHow, MotionChange, WHOLE};
 pub use changes::{Change, ChangeKey, How, apply_to, fold};
 pub use firing::{Firing, Signal, Values};
+pub use remains::{BallAt, BreakShow, Remains};
 pub use shows::{AS_IF_HIT, FULL_FLASH_SPEED, Kick, MOST_KICKS, SceneOp, ShownScene, next_scene};
 pub use sim::{BlockSim, PrepareCx, StageCx};
 
@@ -194,6 +196,9 @@ pub struct RulesState {
     pub(crate) broken: BTreeSet<ThingId>,
     /// Balls a rule holds still.
     pub(crate) frozen: Vec<actions::Frozen>,
+    /// What is left of broken balls (by thing and body row) and things ([`WHOLE`]) while their
+    /// Break look plays out: drawn only.
+    pub(crate) remains: BTreeMap<(ThingId, u32), Remains>,
     /// Whether some block can change settings.
     changes_settings: bool,
     /// The named counters (Count), by name.
@@ -273,6 +278,7 @@ impl RulesState {
             dirty: BTreeSet::new(),
             broken: BTreeSet::new(),
             frozen: Vec::new(),
+            remains: BTreeMap::new(),
             changes_settings,
             counters: BTreeMap::new(),
             ball_tags: BTreeMap::new(),
@@ -423,6 +429,27 @@ impl RulesState {
     /// Whether the rules have changed anything the picture shows: a setting or a broken thing.
     pub fn changes_picture(&self) -> bool {
         !self.changes.is_empty() || !self.broken.is_empty()
+    }
+
+    /// What is left of body row `row` of `thing` (`None`: the whole thing) while its Break look
+    /// plays out.
+    pub fn remains_of(&self, thing: ThingId, row: Option<u32>) -> Option<&Remains> {
+        self.remains.get(&(thing, row.unwrap_or(WHOLE)))
+    }
+
+    /// Everything still showing its Break look, by thing and body row ([`WHOLE`] for a thing).
+    pub fn remains(&self) -> impl Iterator<Item = (ThingId, u32, &Remains)> {
+        self.remains.iter().map(|((t, r), m)| (*t, *r, m))
+    }
+
+    /// Whether anything of `thing` (itself, or a ball of it) still shows its Break look at `time`.
+    pub fn showing(&self, thing: ThingId, time: f64) -> bool {
+        self.remains.range((thing, 0)..=(thing, WHOLE)).any(|(_, r)| r.shows_at(time))
+    }
+
+    /// Forgets the remains whose look is over at `time`.
+    pub(crate) fn prune_remains(&mut self, time: f64) {
+        self.remains.retain(|_, r| r.shows_at(time));
     }
 
     /// The actions queued for the next step.
