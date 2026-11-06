@@ -688,7 +688,8 @@ fn catch(me: ThingId, world: &mut World, log: &mut Log) {
     let delay = (s.return_delay.max(0.0) as f64 * rate as f64).round() as u64;
     for a in found {
         // A caught ball falls by its own thing's Motion card, not the catcher's.
-        let aim = at.aim.map(|aim| Aimer { accel: super::aim::pull_in(world, a.thing).accel, ..aim });
+        let pull = super::aim::pull_in(world, a.thing);
+        let aim = at.aim.map(|aim| Aimer { accel: pull.accel, drag: pull.drag, ..aim });
         let (round, size) = round_of(world, a.thing, a.row);
         // One of its own balls goes back out at its own Speed when the Speed varies.
         let own_speed = match a.thing == me {

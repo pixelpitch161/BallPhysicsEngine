@@ -227,7 +227,7 @@ fn no_way_has_more_bounces_than_at_most_and_flights_stop_there() {
     let base = Lone::new(&world, me, me, 10.0, 0);
     let p0 = world.poses[&me].position;
     let flight = fly(&base, &aim, p0, Vec2::new(0.0, -1200.0), MOST_STEPS as u64, 1);
-    assert_eq!(*flight.arcs.last().unwrap(), 1);
+    assert_eq!(flight.bounces, 1);
     assert!(flight.places.len() < 240 * 5, "{}", flight.places.len());
 }
 
@@ -534,4 +534,78 @@ fn with_no_walls_to_bounce_off_the_search_gives_up_quickly() {
     let world = fired(&scene, &kit);
     assert_eq!(world.bodies[&me].alive_count(), 0);
     assert!(started.elapsed().as_secs_f32() < 20.0, "{:?}", started.elapsed());
+}
+
+/// A big round all round from the left of the circle (no gravity) at a target on the right,
+/// with up to 50 bounces, set by `f`: how many are aimed, when they meet and how near each aimed
+/// ball really comes to the target then (with how many bounces), in ball order.
+fn big_round(count: u32, f: impl FnOnce(&mut EmitterSettings)) -> (usize, u64, Vec<(f32, u32)>) {
+    let target = Vec2::new(150.0, 120.0);
+    let (scene, me, kit) = bouncing(Vec2::ZERO, Vec2::new(-200.0, 0.0), target, |s| {
+        s.count = count;
+        s.aim_bounces_most = 50;
+        f(s);
+    });
+    let mut world = fired(&scene, &kit);
+    let aims = st(&world, me).aimed.last().cloned().unwrap();
+    let s = st(&world, me).settings.clone();
+    let most_turn = match s.aim_way {
+        AimWay::KeepMine => MOST_TWEAK,
+        AimWay::AdjustEachBall => (s.aim_turn as f64).to_radians(),
+    };
+    for (k, b) in aims.balls.iter().enumerate() {
+        let Some(b) = b else { continue };
+        assert_eq!(b.leave, 1, "all leave on the round's step");
+        let own = Vec2::from_angle(direction(&s, k as u32, count, 0, world.seed, me.0));
+        let turn = own.angle_to(b.velocity).abs() as f64;
+        assert!(turn <= most_turn + 1e-4, "ball {k} turned {} degrees", turn.to_degrees());
+    }
+    let mut log = Log::default();
+    let near = nearest(&mut world, &kit, &mut log, me, aims.arrive, target);
+    // The balls fired, in ball order (the skipped ones aren't).
+    let fired: Vec<&Option<BallAim>> = aims.balls.iter().filter(|b| b.is_some()).collect();
+    let reached =
+        fired.iter().zip(&near).filter(|(b, _)| b.as_ref().is_some_and(|b| b.reaches)).map(|(_, n)| *n).collect();
+    (reaching(&aims), aims.arrive, reached)
+}
+
+#[test]
+fn a_big_round_turning_each_ball_finds_every_ball_a_way() {
+    // Part 4b aimed 370 of 500 here: only the first three arcs were looked at, and a ball whose
+    // soonest way was much sooner than the round's moment couldn't slow down enough.
+    let (aimed, arrive, near) = big_round(150, |_| {});
+    assert!(aimed >= 147, "{aimed} of 150");
+    assert!(arrive > 240, "the latest takes a while: {arrive}");
+    assert!(near.iter().all(|(d, _)| *d < ROUGH as f32 + 0.5), "{near:?}");
+    assert!(near.iter().all(|(_, hits)| *hits >= 1), "{near:?}");
+}
+
+#[test]
+fn keeping_their_directions_ways_with_many_bounces_count_too() {
+    // Part 4b aimed 6 of 500 balls keeping their directions: it never looked past three arcs.
+    let (aimed, arrive, near) = big_round(120, |s| {
+        s.aim_way = AimWay::KeepMine;
+        s.aim_arrive = AimArrive::After;
+        s.arrive_after = 10.0;
+    });
+    assert_eq!(arrive, 2401);
+    assert!(aimed >= 40, "{aimed} of 120");
+    assert!(near.iter().all(|(d, _)| *d < ROUGH as f32 + 0.5), "{near:?}");
+    assert!(near.iter().any(|(_, hits)| *hits > 4), "some take many bounces: {near:?}");
+}
+
+/// The 500-ball rounds Aedan tried (slow: run by hand).
+#[test]
+#[ignore]
+fn five_hundred_balls() {
+    let t0 = std::time::Instant::now();
+    let (aimed, arrive, near) = big_round(500, |_| {});
+    eprintln!("turning: {aimed} of 500 at {arrive} in {:.1} s", t0.elapsed().as_secs_f64());
+    assert!(aimed >= 495);
+    assert!(near.iter().all(|(d, _)| *d < ROUGH as f32 + 0.5));
+    let t0 = std::time::Instant::now();
+    let (aimed, arrive, near) = big_round(500, |s| s.aim_way = AimWay::KeepMine);
+    eprintln!("keeping: {aimed} of 500 at {arrive} in {:.1} s", t0.elapsed().as_secs_f64());
+    assert!(aimed >= 60);
+    assert!(near.iter().all(|(d, _)| *d < ROUGH as f32 + 0.5));
 }

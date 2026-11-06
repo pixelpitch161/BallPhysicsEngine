@@ -221,25 +221,33 @@ Dependencies go bottom to top:
   `launch_ball` re-aims at launch (`Launch.arrive`); an aimed round at 0 s fires in `after_build`. Out my way aims
   caught balls. `aim::check` (warnings, `Inspector.aim_checks`) and `next_round`/`path_points` (preview paths).
   **Through bounces** (part 4, plan `docs/superpowers/plans/ball-emitter/part4-test-fired.md`, reworked in part 4b,
-  `part4b-together.md`; `emitter/test_fire.rs`): ways are found by test-firing a lone copy (`Lone`: `World::lone`
-  keeps the things without balls and a quiet copy of the emitter, `EmitterState::quiet`; Out my way lends the caught
-  ball's cards, `World::lend_cards`) from the moment it would set off; `passes` gives the signed miss of the step
-  polyline against the target's track, grouped by arc (bounces before); `fly` stops past Bounces at most
-  (`aim_bounces_most`; phase 1 past the `WAYS` arcs it looks for), at rest a second, ten seconds without touching a
-  wall (`QUIET_STEPS`), or after `aim::MOST_STEPS` (2 min); one ball's flights in a pass take at most `BALL_STEPS`
-  (400,000) steps. As soon as all can, no ball goes faster than Speed (`ceiling_of`). Settings: Arrive (As soon as all can /
+  `part4b-together.md`, and 4c, `part4c-all-bounces.md`; `emitter/test_fire.rs`): ways are found by test-firing a
+  lone copy (`Lone`: `World::lone` keeps the things without balls and a quiet copy of the emitter,
+  `EmitterState::quiet`; Out my way lends the caught ball's cards, `World::lend_cards`) from the moment it would set
+  off; `passes` gives the signed miss of the step polyline against the target's track, grouped by arc (bounces
+  before); `fly` stops past Bounces at most (`aim_bounces_most`), at rest a second, `QUIET_DISTANCE` (6000 px) without
+  touching a wall, or after `aim::MOST_STEPS` (2 min). No ball goes faster than the speed that splits the world's
+  steps (`SAFE_MOVE`/dt) nor, as soon as all can, than Speed (`ceiling_of`). Settings: Arrive (As soon as all can /
   After: Arrive after), Bounces at least/most, Leave (Together / When needed), Ball directions (Adjust each ball /
-  Keep mine, Leave together only), Turn at most. `aim_shots`: phase 1 `first_ways` per ball (up to `WAYS` 3 arcs;
-  Keep mine scans speeds with Illinois brackets, the Edge sawtooth taken within `GOOD` 0.45 px or a ≤ `MOST_TWEAK`
-  0.3° turn; Adjust scans `TURN_SCAN` turns at Speed, `ROUGH` 3 px); T = the latest ball's soonest way (or Arrive
-  after); Together: `together_balls`/`meet` (≤ `SOLVE_FLIGHTS` 60 a ball) puts every ball **at** the target at T
-  (`off_at`, ≤ `REACH` 1 px, else the nearest within `ROUGH`: near a curved wall's focus some places can't be reached
-  closer), all leaving on the firing step: Keep mine by speed alone (`solve_keep`, exact only where nothing bends the
-  paths; `AimCheck.bends_keep` warns), Adjust by `solve_turn` (a secant on speed along the ways through the target
-  on one arc, each speed's turn found by `through`; folds where every way takes as long stop it), other balls' ways
-  from the same place reused as turns, a second pass from the others' answers and `borrow_ways` (from one place the
-  ways that meet are few, so balls often share a path). When needed: part 4's `settle` (each leaves so it arrives at
-  T). `aim_round`/`aim_catch` (rounds in parallel, ≤ 8 threads) are cached process-wide in `aim_cache.rs` by
+  Keep mine, Leave together only), Turn at most. Keep mine is Adjust each ball with the turn held to `MOST_TWEAK`
+  (0.3°). `aim_shots`: **scan** (`scan`): balls setting off from one place form a `Group` and share their flights;
+  each ball's window (±Turn at most) is flown at `SCAN_BUDGET`/(balls × speeds) directions (5..17 a ball), to Bounces
+  at most, at Speed (Keep mine where paths bend: `KEEP_SPEEDS`; with a time to arrive by: `TIMED_SPEEDS` round what
+  gets there); flights keep only their passes; a `Lead` is a flight within `ROUGH` or two neighbouring flights
+  (directions, or one direction at neighbouring speeds) on either side of the target on an arc (`brackets`).
+  `close_lead` closes one in (Illinois, `CLOSE_FLIGHTS`, flights stopping past its arc) once per lead (`OnceLock`;
+  every ball wanting it pays its share of the steps, `Group.sharers`, so answers never hang on threads). `soonest`:
+  each ball's leads by guessed time, closed until one holds; Keep mine where paths bend also searches its own speeds
+  (`own_ways`, part 4's `Search::ways`) when the scan found it none. T = the latest soonest (or Arrive after). Together:
+  `meet` checks up to `CHECK_TRIES` ways slowed or sped by e/T (one flight each: where nothing bends the paths the
+  very same way; fewest bounces first, else least change of speed first), then works on the nearest
+  `MEET_TRIES` with `solve_turn` (a secant on speed along the ways through the target on one arc, each speed's turn
+  found by `through`; a pass far from the nearest try's time is another run of ways, `BRANCH`); a ball is **at** the
+  target at T (`off_at`, ≤ `REACH` 1 px, else the nearest within `ROUGH` 3 px), its steps `BALL_STEPS` or
+  `MEET_FLIGHTS` flights to T; then `borrow_ways`. When needed: each ball's way nearest Speed that is there by T,
+  then part 4's `settle` (each leaves so it arrives at T). The Edge bounce isn't quite the same at every speed
+  (the wall's normal is taken where the ball was slid back to), so a way slowed a lot drifts a few px over several
+  bounces: Keep mine, which can only turn 0.3°, loses those balls. `aim_round`/`aim_catch` (rounds in parallel, ≤ 8 threads) are cached process-wide in `aim_cache.rs` by
   (`World.fingerprint`, emitter, round or catch); `RoundAim.arrive` is the round's moment (`fire_round` gives it to
   its launches); `EmitterState.aimed` keeps the rounds launching and the latest (`BallAim.path` for the preview). A
   round at 0 s aimed through bounces fires on the first step (not `after_build`). A catching target ends a flight's
