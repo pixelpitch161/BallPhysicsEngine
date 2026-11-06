@@ -1472,6 +1472,88 @@ pub fn effects_demo(reg: &Registry, look: &str) -> Scene {
     scene
 }
 
+/// Lighting part 7's scenes, where light moves the physics (their own goldens,
+/// `tests/golden-moths*.txt`). Not in [`all`]: every other golden stays as it was.
+pub fn moth_scenes(reg: &Registry) -> Vec<(String, Scene)> {
+    vec![
+        ("Moths".into(), moths(reg)),
+        ("Light pressure".into(), light_pressure(reg)),
+        ("Shadow switch".into(), shadow_switch(reg)),
+    ]
+}
+
+/// [`lit_room`] darkened, its balls a ring of `count` without gravity, their Motion set by `f`.
+fn moth_room(reg: &Registry, count: u32, f: impl FnOnce(&mut BasicMotion)) -> (Scene, ThingId, ThingId) {
+    let mut scene = lit_room(reg);
+    let root = scene.things.get_mut(&ThingId::ROOT).expect("root");
+    root.slots.get_mut(&SlotId::Lighting).expect("lit").params.set("ambient", Value::Number(0.05));
+    let ball = scene.things.values().find(|t| t.kind == "balls").map(|t| t.id).expect("a ball");
+    let mut balls = BallsSettings::from_params(&scene.things[&ball].params);
+    balls.radius = 14.0;
+    balls.ring(count, 220.0);
+    balls.velocity = Vec2::new(120.0, -60.0);
+    scene.things.get_mut(&ball).expect("ball").params = balls.to_params();
+    let card = scene.card_mut(ball, SlotId::Motion).expect("a motion card");
+    let mut m = BasicMotion::from_params(&card.params);
+    m.gravity_scale = 0.0;
+    f(&mut m);
+    card.params = m.to_params();
+    let light = scene.things.values().find(|t| t.kind == "light").map(|t| t.id).expect("a light");
+    (scene, ball, light)
+}
+
+/// Moths: 30 balls drawn to a lamp that circles the room.
+pub fn moths(reg: &Registry) -> Scene {
+    let (mut scene, _, light) = moth_room(reg, 30, |m| {
+        m.moths = crate::modules::motion::Moths::DrawnToLight;
+        m.moth_pull = 1500.0;
+        m.moth_near = 60.0;
+        m.drag = 0.4;
+    });
+    let at = bpe_core::Address::own(light, "position");
+    for (k, t) in [0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0].iter().enumerate() {
+        let a = k as f32 * std::f32::consts::FRAC_PI_2;
+        let p = Value::Vec2([300.0 * a.cos(), 300.0 * a.sin()]);
+        scene.set_key(reg, &at, *t, p).expect("a key");
+    }
+    scene
+}
+
+/// Light pressure: a low sun pushes 30 balls across the room, those in the others' shadows less.
+pub fn light_pressure(reg: &Registry) -> Scene {
+    use crate::things::light::{LightSettings, LightType};
+    let (mut scene, _, light) = moth_room(reg, 30, |m| {
+        m.moths = crate::modules::motion::Moths::PushedByLight;
+        m.moth_pull = 900.0;
+        m.moth_shadows = true;
+    });
+    let mut sun = LightSettings::of_kind(LightType::Sun);
+    sun.direction = 20.0;
+    sun.strength = 1.2;
+    scene.things.get_mut(&light).expect("light").params = sun.to_params();
+    scene
+}
+
+/// Shadow switch: a spot from above; each ball's Gravity × goes from 0 to 3 by how much it is in
+/// shadow, and every ball's wind follows the light on the group.
+pub fn shadow_switch(reg: &Registry) -> Scene {
+    use crate::things::light::{LightSettings, LightType};
+    let (mut scene, ball, light) = moth_room(reg, 24, |_| {});
+    let mut spot = LightSettings::of_kind(LightType::Spot);
+    spot.position = Vec2::new(0.0, -480.0);
+    spot.cone = 70.0;
+    spot.reach = 1400.0;
+    scene.things.get_mut(&light).expect("light").params = spot.to_params();
+    scene.things.get_mut(&ThingId::ROOT).expect("root").params.set("gravity", Value::Vec2([0.0, 300.0]));
+    let card = scene.card_mut(ball, SlotId::Motion).expect("a motion card");
+    card.params.set("gravity_scale~to", Value::Number(3.0));
+    card.params.set("gravity_scale~by", Value::Choice("shadow".into()));
+    let wind = bpe_core::Address::on(ball, SlotId::Motion, "wind");
+    let source = bpe_core::PulseSource::Light { thing: ball, source: bpe_core::LightSource::On };
+    scene.set_pulse(reg, &wind, source, Value::Vec2([250.0, 0.0]), 0.25).expect("wind follows light");
+    scene
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{registry, scenes};

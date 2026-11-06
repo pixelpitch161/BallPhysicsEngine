@@ -37,6 +37,14 @@ impl<'a> VaryCx<'a> {
         Some(VaryCx { scene, reg, time, at, offered: offered(scene, id) })
     }
 
+    /// Whether setting `def` may spread by Light or Shadow: a card's or a layer's setting (a
+    /// thing's own settings are worked out by its sim, which has no light probe) in a scene with
+    /// a Lighting card, which the lighting itself doesn't read (sensing is one-way).
+    pub fn lit(&self, def: &SettingDef) -> bool {
+        let a = (self.at)(def.key);
+        a.slot.is_some() && bpe_kit::sensing::can_follow_light(self.scene, self.reg, &a)
+    }
+
     /// How setting `def` can vary across the balls; `None` when it can't (or the thing has no
     /// balls to vary it across, and it doesn't vary yet).
     pub fn use_of(&self, def: &SettingDef) -> Option<VaryUse> {
@@ -237,14 +245,23 @@ pub fn two_ended(
 
 /// The line under a varied row: "Varies by" with the spread and easing menus. `offered` is how
 /// the setting can vary (a setting read once at launch can't spread by speed or hits); Round is
-/// only offered with `rounds` (balls fired in rounds), unless it is picked already.
-pub fn varies_line(ui: &mut Ui, def: &SettingDef, v: &Vary, offered: VaryUse, rounds: bool) -> Option<VaryEdit> {
+/// only offered with `rounds` (balls fired in rounds), unless it is picked already; Light and
+/// Shadow only with `lit` (see [`VaryCx::lit`]).
+pub fn varies_line(
+    ui: &mut Ui,
+    def: &SettingDef,
+    v: &Vary,
+    offered: VaryUse,
+    rounds: bool,
+    lit: bool,
+) -> Option<VaryEdit> {
     let mut pick = None;
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         ui.label(RichText::new("Varies by").small().color(style::MUTED));
         let by = ui.menu_button(by_words(v.by), |ui| {
-            for b in VaryBy::offered(offered).filter(|b| rounds || *b != VaryBy::Round || v.by == VaryBy::Round) {
+            let lit = lit || v.by.reads_light();
+            for b in VaryBy::offered(offered, lit).filter(|b| rounds || *b != VaryBy::Round || v.by == VaryBy::Round) {
                 if ui.add(egui::Button::selectable(b == v.by, by_words(b))).on_hover_text(by_help(b)).clicked() {
                     pick = Some(VaryEdit::By(b));
                     ui.close();
@@ -279,6 +296,8 @@ pub fn by_words(by: VaryBy) -> &'static str {
         VaryBy::Random => "Random",
         VaryBy::Speed => "Speed",
         VaryBy::Hits => "Hits",
+        VaryBy::Light => "Light",
+        VaryBy::Shadow => "Shadow",
     }
 }
 
@@ -291,6 +310,10 @@ fn by_help(by: VaryBy) -> &'static str {
         VaryBy::Random => "A different pick for each ball, the same every time",
         VaryBy::Speed => "How fast each ball goes now: still at one end, 1500 px/s and up at the other",
         VaryBy::Hits => "How many times each ball has hit something: none to ten",
+        VaryBy::Light => "How much light falls on each ball now: dark at one end, brightly lit at the other",
+        VaryBy::Shadow => {
+            "How much of the light each ball's shadows take now: in the open at one end, in shadow at the other"
+        }
     }
 }
 

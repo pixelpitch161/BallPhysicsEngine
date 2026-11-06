@@ -286,6 +286,40 @@ pub enum PulseSource {
     /// needs no sound to be playing; a setting that moves the physics reads it as it was at the
     /// end of the previous step.
     Sound { shape: ThingId, source: SoundSource },
+    /// How lit a thing is (Follow light, lighting part 7): worked out by a CPU light probe from
+    /// the lights and the world, never by the renderer. A setting that moves the physics reads it
+    /// as it was at the end of the previous step.
+    Light { thing: ThingId, source: LightSource },
+}
+
+/// What of the light on a thing a pulse follows. Each reads 0 to 1.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum LightSource {
+    /// How much light falls on it (its balls on average, round a shape's outline, or its place).
+    On,
+    /// How bright the single brightest light on it is (no ambient), the most over its balls.
+    Brightest,
+    /// How much of the light that would reach it its shadows take (1 in full shadow).
+    Shadow,
+    /// A switch: the share of its balls more than half in shadow (one ball: 0 or 1).
+    InShadow,
+    /// A Light thing's strength as it shines now (rigs, scenes, flares) over its own Strength.
+    Strength,
+}
+
+impl LightSource {
+    pub const ALL: [LightSource; 5] = [Self::On, Self::Brightest, Self::Shadow, Self::InShadow, Self::Strength];
+
+    /// What it is in words, after a thing's name: "Light on", "In shadow".
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::On => "Light on",
+            Self::Brightest => "Brightest light on",
+            Self::Shadow => "Shadow on",
+            Self::InShadow => "In shadow",
+            Self::Strength => "Strength of",
+        }
+    }
 }
 
 /// Which part of a shape's sound a pulse follows.
@@ -308,7 +342,13 @@ impl PulseSource {
         match self {
             PulseSource::Hits => "Hits",
             PulseSource::Sound { .. } => "Sound",
+            PulseSource::Light { .. } => "Light",
         }
+    }
+
+    /// Whether it follows light (Follow light).
+    pub fn follows_light(self) -> bool {
+        matches!(self, PulseSource::Light { .. })
     }
 }
 
@@ -338,6 +378,14 @@ pub trait SoundLevels {
     fn level(&self, shape: ThingId, source: &SoundSource, time: f64) -> f32;
 }
 
+/// How lit things are as a picture or the physics reads it (Follow light): each source's level
+/// at a moment, 0 to 1. The kit works it out from the lights and the world; the renderer never
+/// reads it.
+pub trait LightLevels {
+    /// How far `source` of thing `thing` is up at `time`, 0 to 1 (0 for one it can't have).
+    fn level(&self, thing: ThingId, source: &LightSource, time: f64) -> f32;
+}
+
 /// Everything a pulse can read at one moment.
 #[derive(Clone, Copy, Default)]
 pub struct Inputs<'a> {
@@ -345,16 +393,22 @@ pub struct Inputs<'a> {
     pub hits: f32,
     /// The shapes' sound, for pulses that follow it (none: they don't move).
     pub sound: Option<&'a dyn SoundLevels>,
+    /// How lit things are, for pulses that follow light (none: they don't move).
+    pub light: Option<&'a dyn LightLevels>,
 }
 
 impl std::fmt::Debug for Inputs<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Inputs").field("hits", &self.hits).field("sound", &self.sound.is_some()).finish()
+        f.debug_struct("Inputs")
+            .field("hits", &self.hits)
+            .field("sound", &self.sound.is_some())
+            .field("light", &self.light.is_some())
+            .finish()
     }
 }
 
 impl Inputs<'static> {
-    pub const NONE: Inputs<'static> = Inputs { hits: 0.0, sound: None };
+    pub const NONE: Inputs<'static> = Inputs { hits: 0.0, sound: None, light: None };
 }
 
 /// How strongly `pulse` pushes at `time`, 0 to 1.
@@ -362,6 +416,7 @@ pub fn pulse_strength(pulse: &Pulse, time: f64, inputs: &Inputs) -> f32 {
     let s = match pulse.source {
         PulseSource::Hits => inputs.hits,
         PulseSource::Sound { shape, source } => inputs.sound.map_or(0.0, |sound| sound.level(shape, &source, time)),
+        PulseSource::Light { thing, source } => inputs.light.map_or(0.0, |light| light.level(thing, &source, time)),
     };
     if s.is_finite() { s.clamp(0.0, 1.0) } else { 0.0 }
 }
@@ -462,9 +517,11 @@ impl Scene {
         amount: Value,
         decay: f32,
     ) -> Result<(), EditError> {
-        // Follow sound may move any setting that can take keys; the hits only those that pulse.
+        // Follow sound and Follow light may move any setting that can take keys; the hits only those that pulse.
         let def = match source {
-            PulseSource::Sound { .. } => self.animatable(reg, a, false).or_else(|_| self.animatable(reg, a, true))?,
+            PulseSource::Sound { .. } | PulseSource::Light { .. } => {
+                self.animatable(reg, a, false).or_else(|_| self.animatable(reg, a, true))?
+            }
             PulseSource::Hits => self.animatable(reg, a, true)?,
         };
         if !def.ty.accepts(&amount) && !matches!((&def.ty, &amount), (crate::ValueType::Int, Value::Number(_))) {
@@ -848,8 +905,36 @@ mod tests {
         anim.apply(&mut r, 0.5, &Inputs { sound: Some(&levels), ..Inputs::NONE });
         assert_eq!(r.things[&a].slots[&SlotId::Look].params.get("glow"), Some(&key(0.5)));
         // Hits don't move it; another shape's or modulator's sound doesn't either.
-        anim.apply(&mut r, 0.5, &Inputs { hits: 1.0, sound: None });
+        anim.apply(&mut r, 0.5, &Inputs { hits: 1.0, ..Inputs::NONE });
         assert_eq!(r.things[&a].slots[&SlotId::Look].params.get("glow"), Some(&key(0.0)));
+    }
+
+    /// How lit things are as a fixed table, for the tests.
+    struct Lit(f32);
+
+    impl LightLevels for Lit {
+        fn level(&self, thing: ThingId, source: &LightSource, _time: f64) -> f32 {
+            if thing == ThingId(9) && *source == LightSource::On { self.0 } else { 0.0 }
+        }
+    }
+
+    #[test]
+    fn a_pulse_following_light_reads_its_level() {
+        let (reg, mut scene, a, _) = scene();
+        let glow = glow_of(a);
+        let source = PulseSource::Light { thing: ThingId(9), source: LightSource::On };
+        assert!(source.follows_light() && !PulseSource::Hits.follows_light());
+        scene.set_pulse(&reg, &glow, source, key(1.0), 0.25).unwrap();
+        let resolved = resolve(&scene, &reg);
+        let anim = Animation::new(&scene, &resolved);
+        let mut r = resolved.clone();
+        anim.apply(&mut r, 0.5, &Inputs::NONE);
+        assert_eq!(r.things[&a].slots[&SlotId::Look].params.get("glow"), Some(&key(0.0)), "no probe: no pulse");
+        let lit = Lit(0.75);
+        anim.apply(&mut r, 0.5, &Inputs { light: Some(&lit), ..Inputs::NONE });
+        assert_eq!(r.things[&a].slots[&SlotId::Look].params.get("glow"), Some(&key(0.75)));
+        let size = Address::own(a, "radius");
+        assert!(scene.set_pulse(&reg, &size, source, key(1.0), 0.25).is_ok(), "any keyframed setting");
     }
 
     #[test]

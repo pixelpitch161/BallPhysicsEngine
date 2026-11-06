@@ -41,6 +41,17 @@ fn whole(kind: &str, key: &str) -> bool {
     }
 }
 
+/// [`spread_of`], with the ball's light and shadow from the frame's light probe when `lit` (some
+/// varied setting spreads by Light or Shadow) and the frame has one.
+pub fn spread_lit(cx: &DrawCx, row: usize, lit: bool) -> BallSpread {
+    let mut spread = spread_of(cx, row);
+    if lit && let Some(light) = cx.light {
+        let b = light.ball(cx.world, cx.log, cx.thing.id, row, cx.time);
+        (spread.light, spread.shadow) = (b.light, b.shadow);
+    }
+    spread
+}
+
 /// Where body row `row` of the thing being drawn sits in the spreads, as it moves now.
 pub fn spread_of(cx: &DrawCx, row: usize) -> BallSpread {
     if let Some(s) = crate::things::balls::sim::spread_in(cx.world, cx.thing.id, row)
@@ -114,6 +125,11 @@ impl<'a> VariedLook<'a> {
             }
         }
         Some(VariedLook { slot, base, stack: Part::new(on), around: Part::new(round) })
+    }
+
+    /// Whether some varied setting spreads by Light or Shadow.
+    pub fn needs_light(&self) -> bool {
+        self.stack.varies.iter().chain(&self.around.varies).any(|v| v.by.reads_light())
     }
 
     /// Whether every ball wears the same stack.

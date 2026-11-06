@@ -7,6 +7,7 @@ pub mod bodies;
 pub mod camera;
 pub mod events;
 pub mod history;
+pub mod light;
 pub mod pairs;
 pub mod playback;
 pub mod plugins;
@@ -22,6 +23,7 @@ pub use bodies::Bodies;
 pub use camera::CameraView;
 pub use events::{Event, EventKind, Log, Party};
 pub use history::{History, HistoryWant};
+pub use light::{BallLight, LightAt, LightLevelsAt, LightMaker, LightPull, level_of};
 pub use pairs::{Grid, Pairs, Support, pop};
 pub use playback::Playback;
 pub use plugins::{Limits, ModuleSim, ModuleState, PairRule, SimCx, Sims, ThingSim, ThingState, state, state_mut};
@@ -31,4 +33,4 @@ pub use walls::{
     Contact, MAX_SIDES, Outline, Touch, Wall, keep_clear, keep_clear_from, nearest_on_ellipse, on_own_side, reflect,
     wall_velocity,
 };
-pub use world::{Card, World, fingerprint, physics_animation, step_at};
+pub use world::{Card, RunId, World, fingerprint, needs_light, physics_animation, step_at};

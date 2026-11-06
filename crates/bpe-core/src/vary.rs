@@ -37,18 +37,33 @@ pub enum VaryBy {
     Speed,
     /// How many times a ball has hit something, up to 10.
     Hits,
+    /// How much light falls on a ball (with a Lighting card: lighting part 7's light probe).
+    Light,
+    /// How much of the light that would reach a ball its shadows take.
+    Shadow,
 }
 
 impl VaryBy {
     /// Whether a ball's place in this spread changes while it flies (its speed, its hits).
     pub fn changes(self) -> bool {
-        matches!(self, Self::Speed | Self::Hits)
+        matches!(self, Self::Speed | Self::Hits | Self::Light | Self::Shadow)
+    }
+
+    /// Whether a ball's place in this spread is read from the light probe.
+    pub fn reads_light(self) -> bool {
+        matches!(self, Self::Light | Self::Shadow)
     }
 
     /// The spreads offered for a setting read the way `use_` says: one read once at launch
-    /// can't follow the speed or hits.
-    pub fn offered(use_: VaryUse) -> impl Iterator<Item = VaryBy> {
-        Self::NAMES.iter().filter_map(|n| VaryBy::from_name(n)).filter(move |b| use_ == VaryUse::Live || !b.changes())
+    /// can't follow the speed, hits or light. Light and Shadow only where `lit` (a card's or a
+    /// layer's setting in a scene with a Lighting card: a thing's own settings are worked out by
+    /// its sim, which has no light probe).
+    pub fn offered(use_: VaryUse, lit: bool) -> impl Iterator<Item = VaryBy> {
+        Self::NAMES
+            .iter()
+            .filter_map(|n| VaryBy::from_name(n))
+            .filter(move |b| use_ == VaryUse::Live || !b.changes())
+            .filter(move |b| lit || !b.reads_light())
     }
 }
 
@@ -253,6 +268,10 @@ pub struct BallSpread {
     /// How fast it goes, in px/s, and its hits so far.
     pub speed: f32,
     pub hits: u32,
+    /// How lit it is and how much of its light its shadows take, each 0 to 1 (0 unless some
+    /// spread reads them: they are asked of the light probe only then).
+    pub light: f32,
+    pub shadow: f32,
     /// The group's seed, for Random.
     pub seed: u32,
     /// A ball on its own (a Balls thing that isn't a group): it has nothing to vary across,
@@ -288,6 +307,8 @@ impl BallSpread {
             }
             VaryBy::Speed => self.speed / FULL_SPEED,
             VaryBy::Hits => self.hits as f32 / FULL_HITS,
+            VaryBy::Light => self.light,
+            VaryBy::Shadow => self.shadow,
         };
         if t.is_finite() { t.clamp(0.0, 1.0) } else { 0.0 }
     }
@@ -619,10 +640,20 @@ mod tests {
 
     #[test]
     fn at_launch_settings_leave_out_speed_and_hits() {
-        let live: Vec<_> = VaryBy::offered(VaryUse::Live).collect();
+        let live: Vec<_> = VaryBy::offered(VaryUse::Live, false).collect();
         assert_eq!(live.len(), 7);
-        let once: Vec<_> = VaryBy::offered(VaryUse::AtLaunch).collect();
+        let lit: Vec<_> = VaryBy::offered(VaryUse::Live, true).collect();
+        assert!(lit.contains(&VaryBy::Light) && lit.contains(&VaryBy::Shadow) && lit.len() == 9);
+        let once: Vec<_> = VaryBy::offered(VaryUse::AtLaunch, true).collect();
         assert!(!once.contains(&VaryBy::Speed) && !once.contains(&VaryBy::Hits) && once.len() == 5);
+    }
+
+    #[test]
+    fn light_and_shadow_spreads_read_the_balls_light() {
+        let b = BallSpread { light: 0.25, shadow: 0.75, count: 3, ..BallSpread::default() };
+        assert_eq!(b.t(VaryBy::Light, 0), 0.25);
+        assert_eq!(b.t(VaryBy::Shadow, 0), 0.75);
+        assert!(VaryBy::Light.changes() && VaryBy::Shadow.reads_light() && !VaryBy::Speed.reads_light());
     }
 
     #[test]

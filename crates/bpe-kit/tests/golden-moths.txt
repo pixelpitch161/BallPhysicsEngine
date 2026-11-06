@@ -1,0 +1,4 @@
+# scene	events	hash
+Moths	100	690fa48c5244479b
+Light pressure	90	8a4d91c87cf59424
+Shadow switch	335	135400252947a5f8

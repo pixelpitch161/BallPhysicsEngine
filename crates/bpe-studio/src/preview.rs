@@ -7,7 +7,7 @@ use crate::lights_panel::{self, LightSource};
 use crate::shape_handles::{self, MenuTarget, Mould};
 use crate::style;
 use bpe_core::{Attach, Registry, Resolved, Scene, Settings, ThingId, Value};
-use bpe_gfx::{Frame, LightShow, Renderer, build_frame_with, wgpu};
+use bpe_gfx::{Frame, LightShow, Renderer, build_frame_sensing, wgpu};
 use bpe_kit::BallsSettings;
 use bpe_runtime::{CameraView, Pose, World};
 use eframe::egui::{self, Align2, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, Ui};
@@ -568,7 +568,7 @@ fn draw_picture(
     if drawn.as_ref() != Some(&now) {
         // Soloed lights: the picture from a copy with the others left out (never the scene's).
         let solo = lights_panel::soloed(&studio.scene, &studio.resolved, &studio.light_solo);
-        build_frame_with(
+        build_frame_sensing(
             &studio.scene,
             solo.as_ref().unwrap_or(&studio.resolved),
             studio.playback.world(),
@@ -576,6 +576,7 @@ fn draw_picture(
             shown_time,
             &studio.kit.draws,
             studio.follow.as_deref().map(|f| f as &dyn bpe_runtime::SoundAt),
+            studio.light_probe.as_deref(),
             frame,
         );
         // The World view looks through its own camera at a picture the panel's shape, and

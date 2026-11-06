@@ -17,9 +17,9 @@ pub use chain::{
 };
 pub use mixer::{BUSES, BusSettings, MIXER, MixerKind, MixerSettings};
 pub use mods::{
-    DISTANCE, DistanceSettings, Follows, HIT, HitPick, HitSettings, LFO, LfoPreset, LfoSettings, LfoShape, LfoStart,
-    MAX_OF_EACH, MOD_KINDS, Measure, NoteFeel, NoteLength, add_modulator, count_of, curve_numbers, kind_name,
-    numbered_name, turn_on_distance,
+    DISTANCE, DistanceSettings, Follows, HIT, HitPick, HitSettings, LFO, LIGHT_MOD, LfoPreset, LfoSettings, LfoShape,
+    LfoStart, LightFollows, LightModSettings, LightReads, MAX_OF_EACH, MOD_KINDS, Measure, NoteFeel, NoteLength,
+    add_modulator, count_of, curve_numbers, kind_name, numbered_name, turn_on_distance,
 };
 pub use notes::{BeatsOrBars, Change, MAX_SLOTS, NOTE_NAMES, Plays, Root, Scale, SlotOrder, StrumDir};
 pub use voice::{
@@ -36,6 +36,7 @@ pub fn register(reg: &mut Registry) {
     reg.add_layer(AdsrKind);
     fx::register(reg);
     reg.add_layer(mods::DistanceKind);
+    reg.add_layer(mods::LightModKind);
     reg.add_layer(mods::LfoKind);
     reg.add_layer(mods::HitKind);
     reg.add_layer(chain::ModulationKind);

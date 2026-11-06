@@ -27,7 +27,14 @@ fn run(m: &mut dyn Modulator, pb: &Playback, shape: ThingId, from: u64, blocks: 
     let tempo = TempoMap::default();
     (from..from + blocks)
         .map(|b| {
-            let cx = ModCx { start_sample: b * BLOCK as u64, tempo: &tempo, world: pb.world(), shape };
+            let cx = ModCx {
+                start_sample: b * BLOCK as u64,
+                tempo: &tempo,
+                world: pb.world(),
+                shape,
+                log: pb.log(),
+                light: None,
+            };
             m.next_block(&cx);
             m.value()
         })
@@ -273,7 +280,8 @@ fn put(world: &mut bpe_runtime::World, ball: ThingId, i: usize, p: Vec2) {
 
 fn step_value(m: &mut DistanceMod, world: &bpe_runtime::World, shape: ThingId, block: u64) -> f32 {
     let tempo = TempoMap::default();
-    let cx = ModCx { start_sample: block * BLOCK as u64, tempo: &tempo, world, shape };
+    let no_log = bpe_runtime::Log::default();
+    let cx = ModCx { start_sample: block * BLOCK as u64, tempo: &tempo, world, shape, log: &no_log, light: None };
     m.next_block(&cx);
     m.value()
 }

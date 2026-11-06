@@ -130,6 +130,29 @@ the remembered light, two pictures ping-ponged and reprojected through the last 
 (`layers/heat.rs`, `sub.heat`/`shape.sub.heat`, also on a Body: `Stack.body_heat`, `body_records`): a Flash record with
 `amount.w` 1; each ball's heat (`ball_heats`, one a ball: the first Heat glow found in its stacks) or the shape's in `hit[3]`; its light goes into pass 3.
 
+Part 7 is in: **light sensing** (plan `docs/superpowers/plans/lighting/part7.md`), optional and one-way: nothing the
+lighting or the probe reads may sense light. The CPU **light probe** (`bpe-kit/src/sensing/`: `probe.rs::Probe`, the
+runtime's `LightAt`/`LightMaker` in `bpe-runtime/src/light.rs`, `Sims.light` = `sensing::KitLight`) builds the same
+`LightScene` the renderer gets (through `LightDraw::light`, its own resolve with `Inputs.light` none) and evaluates
+`lighting.wgsl`'s lamps on a flat surface with 2D shadows (balls as circles, a grid past 16 balls with a
+penumbra-widening walk; shapes as outlines; glowing balls/shapes as lamps), cached per moment. Levels are
+`level_of(L) = 1 − e^(−L)`. **Follow light** is `PulseSource::Light { thing, source: LightSource }` (On, Brightest,
+Shadow, InShadow, Strength) read through `Inputs.light` (`LightLevels`); `sensing::can_follow_light` /
+`lighting_reads` keep it off anything the lighting reads. **Spreads** `VaryBy::Light`/`Shadow` (`BallSpread.light`/
+`.shadow`, `offered(use_, lit)`: card and layer settings only, with a Lighting card). **Moths** are Motion settings
+(`moths` Drawn to light / Pushed by light, `moth_pull`, `moth_near`, `moth_shadows`; `ModuleSim::light_pull`), worked
+out once a step (`World.pulls`) and added in `move_bodies`. A world makes a probe only when its physics senses light
+(`needs_light`), reading the light as it was at the previous step's end, and its fingerprint then hashes
+`sensing::fingerprint`. The **Light modulator** `mod.light` (`LightModSettings`, `bpe-sound/src/mods/light.rs`, knobs
+`k::light`, `ModsSpec.lights`/`probe` from `patch::probe_of`, `ModCx.light`/`log`, `BlockCx.log`) reads it once a step
+and Follow sound reads it too (`heard_fingerprint` adds the light's fingerprint). The editor keeps `Studio.light_probe`
+(`uses_light`) for `build_frame_sensing`; `bpe-cli` does the same. Menus: `follow.rs` (`lit_menu`, Follow light ▸),
+the Sound tab's Light page (`sound_tab/mods/light.rs`). Goldens: `tests/golden-moths*.txt` (`scenes::moth_scenes`). The probe's
+lamp cache is keyed by `World.run` (`RunId`, fresh on every clone, so test flights and snapshots never share
+moments) and keeps each ball's sample per moment. The physics' and the sound engine's probes hear no sound (lights
+that follow sound read as set there; only the picture's probe hears it). A setting the lighting reads can't follow
+light, spread by it, or follow the sound of a shape with a Light modulator (`FollowShape.hears_light`).
+
 ## Crate map
 
 Dependencies go bottom to top:

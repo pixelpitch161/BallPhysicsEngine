@@ -160,6 +160,7 @@ fn block(v: &mut ShapeVoice, w: &World, b: u64, hits: &[BlockHit]) {
         time: (b * BLOCK as u64) as f64 / 48_000.0,
         tempo: &tempo,
         world: w,
+        log: &bpe_runtime::Log::default(),
         playing: true,
     };
     let (mut l, mut r) = ([0.0; BLOCK], [0.0; BLOCK]);

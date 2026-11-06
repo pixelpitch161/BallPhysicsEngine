@@ -114,6 +114,9 @@ pub struct Studio {
     pub sound_fingerprint: u64,
     /// The scene's sound as the picture reads it, while some setting follows sound.
     pub follow: Option<std::sync::Arc<bpe_sound::ControlSampler>>,
+    /// The scene's light as the picture reads it, while something senses light (Follow light, a
+    /// Light or Shadow spread, Moths, a Light modulator). Never read by the lighting itself.
+    pub light_probe: Option<std::sync::Arc<dyn bpe_runtime::LightAt>>,
     /// Goes up whenever `resolved` or `playback` is rebuilt for a changed scene, so the
     /// preview knows its picture is out of date. The scene itself can be mid-edit during a
     /// frame, ahead of both, so the preview never compares scenes.
@@ -237,6 +240,7 @@ impl Studio {
         let aim_job = aim_job_for(&scene, &resolved, &kit);
         let playback = Playback::new(&scene, &resolved, kit.sims.clone());
         let follow = follow_of(&scene, &resolved);
+        let light_probe = light_probe_of(&scene, &resolved, &follow);
         Self {
             saved: scene.clone(),
             scene,
@@ -247,6 +251,7 @@ impl Studio {
             fingerprint,
             sound_fingerprint,
             follow,
+            light_probe,
             revision: 0,
             kit,
             time: 0.0,
@@ -365,6 +370,7 @@ impl Studio {
         let fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
         let rebuilt = fingerprint != self.fingerprint;
         self.follow = follow_of(&self.scene, &self.resolved);
+        self.light_probe = light_probe_of(&self.scene, &self.resolved, &self.follow);
         if rebuilt {
             self.fingerprint = fingerprint;
             self.aim_job = aim_job_for(&self.scene, &self.resolved, &self.kit);
@@ -412,6 +418,7 @@ impl Studio {
         self.aim_job = aim_job_for(&self.scene, &self.resolved, &self.kit);
         self.playback = Playback::new(&self.scene, &self.resolved, self.kit.sims.clone());
         self.follow = follow_of(&self.scene, &self.resolved);
+        self.light_probe = light_probe_of(&self.scene, &self.resolved, &self.follow);
         self.revision += 1;
         // The file chosen to export to was the last scene's.
         self.panels.export.path = None;
@@ -1264,6 +1271,17 @@ fn aim_job_for(scene: &Scene, resolved: &Resolved, kit: &Kit) -> Option<AimJob> 
 
 fn follow_of(scene: &Scene, resolved: &bpe_core::Resolved) -> Option<std::sync::Arc<bpe_sound::ControlSampler>> {
     bpe_sound::follows_sound(scene).then(|| std::sync::Arc::new(bpe_sound::ControlSampler::new(scene, resolved)))
+}
+
+/// The light probe the picture reads while something in `scene` senses light (lights that follow
+/// sound heard through `follow`).
+fn light_probe_of(
+    scene: &Scene,
+    resolved: &bpe_core::Resolved,
+    follow: &Option<std::sync::Arc<bpe_sound::ControlSampler>>,
+) -> Option<std::sync::Arc<dyn bpe_runtime::LightAt>> {
+    let sound = follow.clone().map(|f| f as std::sync::Arc<dyn bpe_runtime::SoundAt>);
+    bpe_kit::sensing::uses_light(scene).then(|| bpe_kit::sensing::probe(scene, resolved, sound))
 }
 
 /// The status line's lighting readout: "· Lighting: 3 lights, 1.8 ms", with a warning past 256
