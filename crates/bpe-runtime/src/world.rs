@@ -23,6 +23,10 @@ use crate::{Bodies, Event, EventKind, History, Log, Party, Touch, Wall, keep_cle
 pub const SAFE_MOVE: f32 = 16.0;
 /// The most substeps a step is split into.
 pub const MAX_SUBSTEPS: u32 = 64;
+/// How far into a wall a ball that touches it with its edge may begin a substep and still count
+/// as coming in from its own side (its bounce then carries on for the rest of the substep), in
+/// pixels: rounding, not a push from another ball.
+const TOUCHING: f32 = 1e-3;
 
 /// One module a thing uses, prepared: its kind, the settings it was prepared from and its
 /// state.
@@ -768,14 +772,32 @@ impl World {
                     // normal, at the start of the substep and where it had moved to.
                     let touching = *at;
                     let gap = |p: Vec2| (p - touching).dot(contact.normal);
-                    let within = crossing(gap(start), gap(moved_to));
+                    // At the start against the wall where it was then: one coming at the ball
+                    // has come this far nearer since.
+                    let start_gap = gap(start) + contact.wall_velocity.dot(contact.normal) * dt;
+                    let within = crossing(start_gap, gap(moved_to));
                     // A ball touching with its middle bounces exactly where its centre crossed
                     // the line, off the outline's own normal there.
                     let exact = match touch {
                         Touch::Middle => middle_crossing(start, moved_to, previous, before, velocity, wall),
                         Touch::Edge => None,
                     };
-                    let (contact, within) = exact.unwrap_or((contact, within));
+                    let (mut contact, within) = exact.unwrap_or((contact, within));
+                    // Where its centre was as it touched, on the way it came in.
+                    let crossed = start.lerp(moved_to, within);
+                    let hit = contact.speed >= limits.resting_along(contact.normal);
+                    // A ball that touched on its way in goes on from there for the rest of the
+                    // substep. One that began the substep already in the wall (another ball
+                    // pushed it there) only bounces where it was put back, so a pile settles.
+                    let carries = hit
+                        && match touch {
+                            Touch::Middle => exact.is_some(),
+                            Touch::Edge => start_gap > -TOUCHING,
+                        };
+                    if carries && touch == Touch::Edge {
+                        // It touched there, not where it was slid back to along the wall.
+                        contact.point += crossed - touching;
+                    }
                     let hit_at = step_fraction(sub_index, sub_count, within);
                     supports.push(Support {
                         thing: *mover,
@@ -784,25 +806,44 @@ impl World {
                         wall_velocity: contact.wall_velocity,
                     });
                     respond(decider, &contact, bodies, i, limits, special, &cx);
-                    let hit = contact.speed >= limits.resting_along(contact.normal);
-                    // And goes on for the rest of the substep from there, along its new velocity
-                    // (unless that would put it on the wrong side, near a corner).
-                    if exact.is_some() && hit {
-                        let crossed = start.lerp(moved_to, within);
-                        let carried = crossed + bodies.velocity[i] * ((1.0 - within) * dt);
-                        if carried.is_finite() && on_own_side(carried, previous, before, wall) {
-                            bodies.position[i] = carried;
+                    // And goes on from there for the rest of the substep, along its new velocity,
+                    // so a bounce loses none of the step: balls that touch a hair apart in time
+                    // leave a hair apart, not a step apart. A ball resting on a wall stays put.
+                    if carries {
+                        let mut carried = crossed + bodies.velocity[i] * ((1.0 - within) * dt);
+                        match touch {
+                            // Unless that would put it on the wrong side, near a corner.
+                            Touch::Middle => {
+                                if carried.is_finite() && on_own_side(carried, previous, before, wall) {
+                                    bodies.position[i] = carried;
+                                }
+                            }
+                            // Kept clear of the wall again where the rest of the way would reach
+                            // into it (a curve or a corner); and not across any other wall's line
+                            // (one already passed this substep wouldn't stop it).
+                            Touch::Edge => {
+                                if carried.is_finite() {
+                                    let v = bodies.velocity[i];
+                                    keep_clear_from(&mut carried, previous, before, v, radius, touch, wall);
+                                    let crosses = |(id, w): (&ThingId, &Wall)| {
+                                        let before = walls_before.get(id).unwrap_or(&w.outline);
+                                        !on_own_side(carried, previous, before, w)
+                                    };
+                                    if !walls.iter().any(crosses) {
+                                        bodies.position[i] = carried;
+                                    }
+                                }
+                            }
                         }
                     }
                     if hit {
                         bodies.hits[i] += 1;
-                        // Where its centre was as it touched, on the way it came in; the wall
-                        // pass leaves it just touching but slid along the wall from there, and
-                        // the end of the substep notes that too (`note_corners`).
+                        // Where its centre was as it touched, on the way it came in; the end of the
+                        // substep notes where it went on to (`note_corners`).
                         if let Some(h) = history.get_mut(mover) {
                             // In f64, as the end-of-substep moments are, so the two stay in order.
                             let touched = (sub_index as f64 + within as f64) / sub_count.max(1) as f64;
-                            h.corner(i, (step - 1) as f64 + touched, start.lerp(moved_to, within));
+                            h.corner(i, (step - 1) as f64 + touched, crossed);
                         }
                         log.push(Event {
                             step,
