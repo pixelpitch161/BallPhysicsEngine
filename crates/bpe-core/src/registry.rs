@@ -189,6 +189,8 @@ pub struct Registry {
     /// Scene fixes for files older than a format, in the order they were added (see
     /// [`Registry::add_upgrade`]).
     upgrades: Vec<(u32, Upgrade)>,
+    /// Rule block kinds, in the order they were registered (the block menu's order).
+    blocks: Vec<Box<dyn crate::rules::RuleBlockKind>>,
 }
 
 impl Registry {
@@ -218,6 +220,13 @@ impl Registry {
         self.layers.push(Box::new(k));
     }
 
+    /// Panics if a kind with the same id is already registered.
+    pub fn add_block(&mut self, k: impl crate::rules::RuleBlockKind) {
+        let id = k.id();
+        self.check_new(id);
+        self.blocks.push(Box::new(k));
+    }
+
     /// Adds a fix that [`crate::load`] runs on a scene whose file format is below `below`, after
     /// mending it and before cleaning its settings. Fixes run in the order they were added.
     pub fn add_upgrade(&mut self, below: u32, f: Upgrade) {
@@ -230,7 +239,11 @@ impl Registry {
     }
 
     fn check_new(&self, id: &str) {
-        if self.things.contains_key(id) || self.modules.contains_key(id) || self.layer(id).is_some() {
+        if self.things.contains_key(id)
+            || self.modules.contains_key(id)
+            || self.layer(id).is_some()
+            || self.block(id).is_some()
+        {
             panic!("plugin id registered twice: {id}");
         }
     }
@@ -248,6 +261,16 @@ impl Registry {
     /// The layer kind with this id.
     pub fn layer(&self, id: &str) -> Option<&dyn LayerKind> {
         self.layers.iter().find(|k| k.id() == id).map(|k| &**k)
+    }
+
+    /// The rule block kind with this id.
+    pub fn block(&self, id: &str) -> Option<&dyn crate::rules::RuleBlockKind> {
+        self.blocks.iter().find(|k| k.id() == id).map(|k| &**k)
+    }
+
+    /// Every rule block kind, in the order they were registered.
+    pub fn blocks(&self) -> impl Iterator<Item = &dyn crate::rules::RuleBlockKind> {
+        self.blocks.iter().map(|k| &**k)
     }
 
     /// Every layer kind, in the order they were registered.

@@ -959,6 +959,22 @@ pub fn value_words(value: &Value, unit: &str, choices: &TargetChoices) -> String
         Value::Slots(n) => format!("{} slots", n.len()),
         Value::Curve(c) => format!("{} points", c.len()),
         Value::LightScenes(l) => scenes_words(l.len()),
+        Value::Who(w) => who_words(w),
+    }
+}
+
+/// A rule block's Who in a few words (the rules editor comes in rules part 2).
+fn who_words(w: &bpe_core::Who) -> String {
+    use bpe_core::Who;
+    match w {
+        Who::That => "That ball".to_owned(),
+        Who::Other => "The thing it hit".to_owned(),
+        Who::Group => "Its group".to_owned(),
+        Who::Thing { ball: Some(n), .. } => format!("Ball {n}"),
+        Who::Thing { ball: None, .. } => "A thing".to_owned(),
+        Who::Tag(t) => format!("Tagged {t}"),
+        Who::Kind(k) => format!("Every {k}"),
+        Who::Anything => "Anything".to_owned(),
     }
 }
 

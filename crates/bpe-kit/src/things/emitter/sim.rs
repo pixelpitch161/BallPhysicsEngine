@@ -109,6 +109,9 @@ pub struct EmitterState {
     pub varies: Vec<Vary>,
     /// Each body row's own size: its Size, varied and with its Variety share, before any growth.
     pub own_size: Vec<f32>,
+    /// A rule changed some ball's Size the last time the settings changed, so the sizes are
+    /// worked out again when that change ends.
+    pub ruled_size: bool,
 }
 
 impl EmitterState {
@@ -131,6 +134,7 @@ impl EmitterState {
             quiet: false,
             varies,
             own_size: Vec::new(),
+            ruled_size: false,
         }
     }
 
@@ -207,14 +211,16 @@ impl EmitterState {
         self.varies.iter().any(|v| v.key == "radius")
     }
 
-    /// Each body row's own size as its settings and spreads say now.
-    fn own_sizes(&self, bodies: &Bodies) -> Vec<f32> {
+    /// Each body row's own size as its settings, spreads and the rules' changes to single balls
+    /// (`ruled`) say now.
+    fn own_sizes(&self, bodies: &Bodies, ruled: Option<&bpe_runtime::rules::Ruled>) -> Vec<f32> {
         (0..bodies.len().min(self.rows.len()))
             .map(|row| {
                 let size = match self.size_varies() {
                     true => self.size_at(&self.spread_of(bodies, row)),
                     false => self.settings.radius,
                 };
+                let size = ruled.map_or(size, |r| r.number(row, size));
                 let factor = self.rows.size_factor[row];
                 if factor == 1.0 { size } else { size * factor }
             })
@@ -936,9 +942,10 @@ impl ThingSim for EmitterSim {
         let pose = pose_now(world, thing, &st.settings);
         world.poses.insert(thing, pose);
         // A Size that varies by the balls' speed or hits (or an endless Number) follows them every step.
+        let ruled = if follows { world.ruled(thing, None, "radius") } else { None };
         if follows && let (Some(st), Some(bodies)) = (world.states.get_mut(&thing), world.bodies.get_mut(&thing)) {
             let st = state_mut::<EmitterState>(st.as_mut());
-            let own = st.own_sizes(bodies);
+            let own = st.own_sizes(bodies, ruled.as_ref());
             resize_rows(&mut st.own_size, bodies, own);
         }
     }
@@ -968,19 +975,24 @@ impl ThingSim for EmitterSim {
     /// the balls as a Balls thing's do.
     fn settings_changed(&self, thing: ThingId, resolved: &ResolvedThing, world: &mut World) {
         let settings = EmitterSettings::from_params(&resolved.params);
+        let ruled = world.ruled(thing, None, "radius");
         let Some(st) = world.states.get_mut(&thing) else { return };
         let st = state_mut::<EmitterState>(st.as_mut());
         let settings = if st.quiet { quieten(settings) } else { settings };
         let varies = if st.quiet { Vec::new() } else { own_varies(&resolved.params) };
-        let resize =
-            st.settings.radius != settings.radius || st.size_varies() || varies.iter().any(|v| v.key == "radius");
+        let resize = st.settings.radius != settings.radius
+            || st.size_varies()
+            || varies.iter().any(|v| v.key == "radius")
+            || ruled.is_some()
+            || st.ruled_size;
+        st.ruled_size = ruled.is_some();
         st.layout = layout(&settings);
         st.planned = planned(&settings);
         st.settings = settings;
         st.varies = varies;
         // Each ball takes its own size from the new settings, keeping what it has grown by.
         if resize && let Some(bodies) = world.bodies.get_mut(&thing) {
-            let own = st.own_sizes(bodies);
+            let own = st.own_sizes(bodies, ruled.as_ref());
             resize_rows(&mut st.own_size, bodies, own);
         }
     }

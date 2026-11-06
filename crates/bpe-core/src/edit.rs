@@ -30,6 +30,12 @@ pub enum EditError {
     NoLayer(crate::LayerId),
     /// The base layer (the balls' Body) always stays at the bottom and shown.
     BaseLayer,
+    /// The scene has no rule with that id.
+    NoRule(crate::rules::RuleId),
+    /// The rule has no block with that id.
+    NoBlock(crate::rules::BlockId),
+    /// The link would make a rule's blocks go round in a circle.
+    RuleLoop,
 }
 
 impl fmt::Display for EditError {
@@ -48,6 +54,9 @@ impl fmt::Display for EditError {
             EditError::NotAccepted => write!(f, "That kind of card can't go there"),
             EditError::NoLayer(_) => write!(f, "That layer isn't there any more"),
             EditError::BaseLayer => write!(f, "The bottom layer can't be removed, moved, copied or hidden"),
+            EditError::NoRule(_) => write!(f, "That rule isn't there any more"),
+            EditError::NoBlock(_) => write!(f, "That block isn't there any more"),
+            EditError::RuleLoop => write!(f, "That link would make the rule go round in a circle"),
         }
     }
 }

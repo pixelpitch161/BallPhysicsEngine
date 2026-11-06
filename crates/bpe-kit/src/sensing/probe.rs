@@ -116,6 +116,13 @@ impl Probe {
             };
             self.animation.apply(&mut now, time, &inputs);
         }
+        // What the rules changed, as the frame builder applies it.
+        if let Some(rules) = world.rules().filter(|r| r.changes_picture()) {
+            rules.apply_whole(&mut now, time, |_| true);
+            for id in rules.broken() {
+                now.things.remove(&id);
+            }
+        }
         // Gradients' companions, as the frame builder applies them (light colours can be
         // gradients).
         if bpe_core::gradient_extras::any_in(&now) {

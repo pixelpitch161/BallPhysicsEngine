@@ -106,6 +106,7 @@ pub const SECTION_ORDER: &[&str] = &[
     "Notes",
     "Output",
     "Modulation",
+    "Rule",
 ];
 
 /// The sections that stay folded until opened.
@@ -331,6 +332,18 @@ impl SettingValue for Target {
     }
     fn from_value(v: &Value) -> Option<Self> {
         if let Value::Target(x) = v { Some(x.clone()) } else { None }
+    }
+}
+
+impl SettingValue for crate::rules::Who {
+    fn value_type() -> ValueType {
+        ValueType::Who
+    }
+    fn to_value(&self) -> Value {
+        Value::Who(self.clone())
+    }
+    fn from_value(v: &Value) -> Option<Self> {
+        if let Value::Who(x) = v { Some(x.clone()) } else { None }
     }
 }
 

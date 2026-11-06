@@ -260,6 +260,7 @@ pub trait ModuleSim: Send + Sync + 'static {
 pub struct Sims {
     things: BTreeMap<&'static str, Box<dyn ThingSim>>,
     modules: BTreeMap<&'static str, Box<dyn ModuleSim>>,
+    blocks: BTreeMap<&'static str, Box<dyn crate::rules::BlockSim>>,
     /// Works out a scene's sound for physics settings that follow it (none: they stay put).
     pub sound: Option<std::sync::Arc<dyn crate::SoundMaker>>,
     /// Works out a scene's light for physics that follows it (none: it stays put).
@@ -277,6 +278,16 @@ impl Sims {
         let id = s.kind();
         assert!(!self.modules.contains_key(id), "sim registered twice: {id}");
         self.modules.insert(id, Box::new(s));
+    }
+
+    pub fn add_block(&mut self, s: impl crate::rules::BlockSim) {
+        let id = s.kind();
+        assert!(!self.blocks.contains_key(id), "sim registered twice: {id}");
+        self.blocks.insert(id, Box::new(s));
+    }
+
+    pub fn block(&self, kind: &str) -> Option<&dyn crate::rules::BlockSim> {
+        self.blocks.get(kind).map(|s| s.as_ref())
     }
 
     pub fn thing(&self, kind: &str) -> Option<&dyn ThingSim> {

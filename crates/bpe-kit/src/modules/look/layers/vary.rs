@@ -82,6 +82,11 @@ impl<T> Part<T> {
         Part { salts: varies.iter().map(Vary::salt).collect(), varies, made: RefCell::new(HashMap::new()) }
     }
 
+    /// Every varied setting with its salt.
+    fn varies_with_salts(&self) -> Vec<(&Vary, u32)> {
+        self.varies.iter().zip(self.salts.iter().copied()).collect()
+    }
+
     /// The steps a ball at `spread` is at, one per varied setting (empty when nothing varies).
     fn key(&self, spread: &BallSpread) -> Vec<u16> {
         self.varies.iter().zip(&self.salts).map(|(v, &s)| vary::level(spread.t(v.by, s))).collect()
@@ -147,6 +152,11 @@ impl<'a> VariedLook<'a> {
         self.stack.key(spread)
     }
 
+    /// The step of each varied trail and particle setting a ball at `spread` is at.
+    pub fn around_key(&self, spread: &BallSpread) -> Vec<u16> {
+        self.around.key(spread)
+    }
+
     /// The stack a ball at `key` wears.
     pub fn stack_at(&self, key: &[u16]) -> Rc<Stack> {
         if key.is_empty() {
@@ -165,6 +175,31 @@ impl<'a> VariedLook<'a> {
     pub fn around_for(&self, spread: &BallSpread) -> Rc<Vec<AroundLayer>> {
         let key = self.around.key(spread);
         self.around.get(self.slot, key, |s| around_layers(s, false))
+    }
+
+    /// The look settings of a ball at `spread` with every varied setting at its step, then
+    /// `change` on top: a rule's changes to this one ball (rules part 1).
+    pub fn own_slot(&self, spread: &BallSpread, change: impl FnOnce(&mut bpe_core::Params)) -> ResolvedSlot {
+        let (mut varies, mut ts) = (Vec::new(), Vec::new());
+        for part in [&self.stack.varies_with_salts(), &self.around.varies_with_salts()] {
+            for (v, salt) in part.iter() {
+                ts.push(vary::at_level(vary::level(spread.t(v.by, *salt))));
+                varies.push((*v).clone());
+            }
+        }
+        let mut params = vary::with_varies(&self.slot.params, &varies, &ts, &|_| None);
+        change(&mut params);
+        ResolvedSlot { params, ..self.slot.clone() }
+    }
+
+    /// The stack a ball with its own settings `own` (from [`VariedLook::own_slot`]) wears.
+    pub fn own_stack(&self, own: &ResolvedSlot) -> Rc<Stack> {
+        Rc::new(Stack::of(own).unwrap_or_else(|| (*self.base).clone()))
+    }
+
+    /// The trails and particles a ball with its own settings `own` wears.
+    pub fn own_around(&self, own: &ResolvedSlot) -> Rc<Vec<AroundLayer>> {
+        Rc::new(around_layers(own, false))
     }
 }
 

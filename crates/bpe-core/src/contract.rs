@@ -72,6 +72,9 @@ pub fn check_registry(reg: &Registry) -> Vec<String> {
             fails.push(format!("{}: a base layer must be drawn", kind.id()));
         }
     }
+    for kind in reg.blocks() {
+        check_settings(kind.id(), kind.settings(), &mut fails);
+    }
     if reg.thing("scene").is_some() {
         for p in resolve(&Scene::empty(reg), reg).problems {
             fails.push(format!("scene: an empty scene has a problem: {p:?}"));

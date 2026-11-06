@@ -94,8 +94,11 @@ pub(crate) struct Worn<'a> {
     stacks: Vec<Rc<Stack>>,
     /// Which of `stacks` each body row wears; empty when every ball wears the first.
     which: Vec<u32>,
-    /// Each body row's place in the spreads, when its trails and particles vary.
+    /// Each body row's place in the spreads, when its trails and particles vary (or some ball's
+    /// own look was changed by a rule).
     spreads: Vec<BallSpread>,
+    /// The trails and particles of the balls whose look a rule changed, by body row.
+    own_around: HashMap<usize, Rc<Vec<AroundLayer>>>,
 }
 
 impl<'a> Worn<'a> {
@@ -103,7 +106,17 @@ impl<'a> Worn<'a> {
     pub(crate) fn of(cx: &DrawCx<'a>) -> Option<Worn<'a>> {
         let look = VariedLook::of(cx.resolved.slots.get(&SlotId::Look)?)?;
         let rows = cx.world.bodies.get(&cx.thing.id).map_or(0, |b| b.len());
-        let spreads: Vec<BallSpread> = if look.plain() && look.plain_around() {
+        // Balls whose look a rule changed on their own (rules part 1).
+        let ruled: Vec<usize> = cx
+            .world
+            .rules()
+            .map(|r| r.ball_rows(cx.thing.id, Some(SlotId::Look)))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| r as usize)
+            .filter(|&r| r < rows)
+            .collect();
+        let spreads: Vec<BallSpread> = if look.plain() && look.plain_around() && ruled.is_empty() {
             Vec::new()
         } else {
             let lit = look.needs_light();
@@ -123,8 +136,31 @@ impl<'a> Worn<'a> {
                 })
                 .collect();
         }
-        let spreads = if look.plain_around() { Vec::new() } else { spreads };
-        Some(Worn { look, stacks, which, spreads })
+        let mut own_around = HashMap::new();
+        if let Some(rules) = cx.world.rules().filter(|_| !ruled.is_empty()) {
+            which.resize(rows, 0);
+            // Balls changed alike share one stack.
+            // Keyed by the ball's steps in the spreads and its changes now.
+            let mut seen: HashMap<OwnKey, (u32, Rc<Vec<AroundLayer>>)> = HashMap::new();
+            for row in ruled {
+                let spread = &spreads[row];
+                let words = rules.ball_words(cx.thing.id, Some(SlotId::Look), row as u32, cx.time);
+                let (at, around) = seen
+                    .entry((look.key(spread), look.around_key(spread), words))
+                    .or_insert_with(|| {
+                        let own = look.own_slot(spread, |p| {
+                            rules.apply_ball(cx.thing.id, Some(SlotId::Look), row as u32, p, cx.time)
+                        });
+                        stacks.push(look.own_stack(&own));
+                        (stacks.len() as u32 - 1, look.own_around(&own))
+                    })
+                    .clone();
+                which[row] = at;
+                own_around.insert(row, around);
+            }
+        }
+        let spreads = if look.plain_around() && own_around.is_empty() { Vec::new() } else { spreads };
+        Some(Worn { look, stacks, which, spreads, own_around })
     }
 
     /// The card's own stack, as every ball wears it when nothing varies.
@@ -144,6 +180,9 @@ impl<'a> Worn<'a> {
 
     /// Body row `row`'s own trails and particles, when they vary across the balls.
     fn around(&self, row: usize) -> Option<Rc<Vec<AroundLayer>>> {
+        if let Some(own) = self.own_around.get(&row) {
+            return Some(own.clone());
+        }
         let spread = self.spreads.get(row)?;
         Some(self.look.around_for(spread))
     }
@@ -153,6 +192,10 @@ impl<'a> Worn<'a> {
         !self.spreads.is_empty()
     }
 }
+
+/// What balls whose look a rule changed share a stack by: their steps in the stack's and the
+/// trails' spreads, and their changes as text.
+type OwnKey = (Vec<u16>, Vec<u16>, String);
 
 /// One stack's colour for each body row.
 type ColourOf<'a> = Rc<dyn Fn(usize) -> [f32; 4] + 'a>;

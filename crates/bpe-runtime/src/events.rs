@@ -28,6 +28,12 @@ pub enum EventKind {
     /// A ball's centre came into a catcher: `a` the ball, `b` the catcher with the ball's round as
     /// the item; `point` where it crossed the edge, `speed` how fast it was going.
     Enter,
+    /// A rule's block fired (once per block per step): `a` the firing's subject (the scene, item
+    /// 0, when it has none), `b` the scene with `rule × 65536 + block` as the item.
+    Rule,
+    /// A rule broke a ball or a thing: `a` the ball (its row) or the thing (item `u32::MAX`),
+    /// `point`/`normal` the hit that broke it and `speed` its strength. A ball's `Remove` follows.
+    Break,
 }
 
 impl EventKind {
@@ -39,6 +45,8 @@ impl EventKind {
             EventKind::Remove => 2,
             EventKind::Spawn => 8,
             EventKind::Enter => 9,
+            EventKind::Rule => 10,
+            EventKind::Break => 11,
         }
     }
 }
@@ -253,6 +261,7 @@ mod tests {
         assert_eq!(EventKind::Hit.tag(), 0);
         assert_eq!(EventKind::Remove.tag(), 2);
         assert_eq!((EventKind::Spawn.tag(), EventKind::Enter.tag()), (8, 9));
+        assert_eq!((EventKind::Rule.tag(), EventKind::Break.tag()), (10, 11));
     }
 
     #[test]

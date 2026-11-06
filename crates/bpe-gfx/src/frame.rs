@@ -1938,8 +1938,10 @@ pub fn build_frame_sensing(
     frame.clear();
     let animation = Animation::new(scene, resolved);
     let animated;
+    // What the scene's rules changed (rules part 1): settings, then broken things are gone.
+    let ruled = world.rules().filter(|r| r.changes_picture());
     // Gradients' companions (Bands, Grain) are applied once a frame, after the animation.
-    let resolved = if animation.is_empty() && !bpe_core::gradient_extras::any_in(resolved) {
+    let resolved = if animation.is_empty() && !bpe_core::gradient_extras::any_in(resolved) && ruled.is_none() {
         resolved
     } else {
         let mut copy = resolved.clone();
@@ -1951,6 +1953,12 @@ pub fn build_frame_sensing(
             light: lit.as_ref().map(|l| l as &dyn bpe_core::LightLevels),
         };
         animation.apply(&mut copy, time, &inputs);
+        if let Some(rules) = ruled {
+            rules.apply_whole(&mut copy, time, |_| true);
+            for id in rules.broken() {
+                copy.things.remove(&id);
+            }
+        }
         bpe_core::gradient_extras::apply_moves(&mut copy, time);
         animated = copy;
         &animated
