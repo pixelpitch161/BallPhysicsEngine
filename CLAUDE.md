@@ -52,6 +52,28 @@ its binary is named `ball-studio-next`. Older specs and plans in `docs/superpowe
 Old scene files don't need to keep loading or looking the same. The owner has said there's no backward
 compatibility until they are happy with the software.
 
+## Lighting (spec `docs/superpowers/specs/2026-11-06-lighting-design.md`, plans `docs/superpowers/plans/lighting/`)
+
+Part 1a is in (#106). **Light** things (`bpe-kit/src/things/light/`: `LightKind`, family "Lights", no cards; the
+Add thing menu offers Point, Spot, Sun, Area and Strip light through `add_light`, which also gives the scene its
+**Lighting** card `scene.lighting` (`modules/lighting.rs`, `SlotId::Lighting`) when it has none). A light's place is
+its own keyframable Position (the Placement card is hidden for lights, and the preview's placement ring leaves them
+out); inside a Balls, Emitter or Shape thing (`RIDES`) it rides it, read from the tree parent: Each ball, The middle,
+Ball number (1-based), A point on the edge (`draw.rs::places`, `outline_points`, `point_round`). `LightDraw::light`
+(the `ThingDraw::light` hook, called after every thing draws when the scene draw set `Frame.light`) turns settings
+into `LightGpu`s and strip segments. Every drawn and around layer has a "Lighting" fold (`LayerKind::light_defs`,
+`layers/lighting.rs`: `lit`, `blocks_light`, and `bulge` on a ball's Body, the spec's Roundness); records carry it in
+`LayerGpu.light`, `TrailVertex.light`, `Particle.light` (`around::Drew` stamps trails and particles; ghosts and mini
+balls take their layer's). The renderer (`bpe-gfx/src/lib.rs::render`, `lighting.rs`, `shaders/lighting.wgsl`) draws a
+lit frame three times through `draw_scene` (`Globals.light.x`: 0 the picture, 1 each layer's colour × Lit, 2 the
+surface: R blocks, G a ball's height), then a jump-flood signed distance field of the blockers, then each pixel's
+lights with a 2D shadow march (penumbra from the lamp's size, stopping short of the lamp by its size, a ridden ball's
+radius and how deep in a blocker it sits) and normals from the height: `C + (L − 1) × clamp(W, 0, C)`. No Lighting
+card leaves `Frame.light` `None` and the picture byte-identical (`bpe-kit/tests/unlit_pictures.rs`, hashes made before
+lighting; `tests/lit_pictures.rs` checks lit pictures; `scenes::lit_room`/`lit_demo` are test-only). The status line
+shows "Lighting: N lights, X ms" (`Renderer::lighting_stats`, GPU timestamps via `timing.rs` when the device has
+`TIMING_FEATURES`, which `bpe-studio/src/main.rs` asks for where the card has them).
+
 ## Crate map
 
 Dependencies go bottom to top:
@@ -83,7 +105,7 @@ Dependencies go bottom to top:
   Brush strokes are a value, `Value::Strokes` (points in ball space, never keyframed). A shape's moulded outline is
   `Value::Path(ShapePath)` (`shape_path.rs`: corners in shape units, x right, y down, middle at 0, size 1, each side
   straight or a cubic with two handles; `even(n)`, `circle()`, `add_point`, `delete_point`, `create_curve`, mirror
-  partners). `Slot.used_ids` keeps a removed layer's id from being given out again (`next_layer_id`). Scene files are format 10 (formats 7 to 9 still load and are upgraded; format 9 Trail and Particles cards become
+  partners). `Slot.used_ids` keeps a removed layer's id from being given out again (`next_layer_id`). Scene files are format 11 (format 11 added the Lighting card, no upgrade; formats 7 to 9 still load and are upgraded; format 9 Trail and Particles cards become
   Look layers with their keyframes, `add_upgrade(10, cards_to_layers)`). **Around layers** (`LayerSection::Around`)
   sit after the drawn layers and before the reactions: a ball's `layer.trail` and `layer.particles`, a shape's
   `shape.particles`; they take the sub-layers Glow, Outline, Shadow, Recolour, Flash on hit and Colour on hit
