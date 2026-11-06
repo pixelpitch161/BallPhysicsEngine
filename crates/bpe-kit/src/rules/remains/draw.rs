@@ -2,6 +2,9 @@
 //! Shatter piece, each copy clipped to its piece's cell (`PathInstance::clip`,
 //! `LayeredInstance::clip`).
 
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use bpe_gfx::{Frame, LayeredInstance, PathInstance};
 use bpe_runtime::{Remains, Wall};
 use glam::Vec2;
@@ -9,6 +12,10 @@ use glam::Vec2;
 use super::shatter::{Edge, Material, Piece, PieceNow, Start, cut, piece_at, seed_of};
 use super::{Showing, showing};
 use crate::rules::breaks::{BreakLook, LookSettings};
+
+/// How far past what a thing draws its pieces' cells reach, in world pixels: the GPU's soft edge
+/// and a little more.
+const MARGIN: f32 = 4.0;
 
 /// Every wall of the world, for pieces to bounce off (a broken shape's is gone already).
 pub fn walls_of(world: &bpe_runtime::World) -> Vec<&Wall> {
@@ -80,7 +87,7 @@ pub fn shatter_shape(
     let base = frame.paths[index];
     let (centre, turn, scale) = (Vec2::new(base.a[0], base.a[1]), base.a[2], base.a[3].max(1e-3));
     let material = Material { edge, half: half_units };
-    let bound = base.reach() / scale * 1.01 + 1e-3;
+    let bound = base.reach() / scale * 1.01 + MARGIN / scale;
     let n = look.pieces.clamp(2, 256);
     let start = Start {
         centre,
@@ -109,55 +116,79 @@ pub fn shatter_shape(
     }
 }
 
-/// A broken ball's look as instances, from `ball` (made where it broke, standing still):
-/// faded or swelled, or its Shatter pieces.
-pub fn ball_remains(
-    r: &Remains,
-    look: &LookSettings,
-    thing: u32,
-    row: u32,
-    ball: LayeredInstance,
-    time: f64,
-    walls: &[&Wall],
-    frame: &mut Frame,
-    out: &mut Vec<LayeredInstance>,
-) {
-    if let Some(s) = whole_look(r, look, time) {
-        if s.alpha > 0.0 {
-            out.push(LayeredInstance {
-                radius: ball.radius * s.scale.max(0.0),
-                misc: [ball.misc[0] * s.alpha, ball.misc[1], ball.misc[2], ball.misc[3]],
-                ..ball
-            });
+/// Shatter cells already cut this frame, by seed, pieces and bound: every ball of one break
+/// shares its break's cells (each ball turns them its own way).
+#[derive(Default)]
+pub struct Cuts(HashMap<(u32, u32, u32), Rc<Vec<Piece>>>);
+
+impl Cuts {
+    fn get(&mut self, m: &Material, bound: f32, n: u32, seed: u32) -> Rc<Vec<Piece>> {
+        self.0.entry((seed, n, bound.to_bits())).or_insert_with(|| Rc::new(cut(m, bound, n, seed))).clone()
+    }
+}
+
+/// Where a broken ball's remains are drawn from.
+pub struct BallRemains<'a> {
+    pub thing: u32,
+    pub row: u32,
+    pub time: f64,
+    pub walls: &'a [&'a Wall],
+}
+
+impl BallRemains<'_> {
+    /// A broken ball's look as instances, from `ball` (made as it was when it broke, standing
+    /// still): faded or swelled, or its Shatter pieces.
+    pub fn draw(
+        &self,
+        r: &Remains,
+        look: &LookSettings,
+        ball: LayeredInstance,
+        cuts: &mut Cuts,
+        frame: &mut Frame,
+        out: &mut Vec<LayeredInstance>,
+    ) {
+        if let Some(s) = whole_look(r, look, self.time) {
+            if s.alpha > 0.0 {
+                out.push(LayeredInstance {
+                    radius: ball.radius * s.scale.max(0.0),
+                    misc: [ball.misc[0] * s.alpha, ball.misc[1], ball.misc[2], ball.misc[3]],
+                    ..ball
+                });
+            }
+            return;
         }
-        return;
-    }
-    if look.look != BreakLook::Shatter {
-        return;
-    }
-    let radius = ball.radius.max(1e-3);
-    let centre = Vec2::from(ball.center);
-    let n = look.pieces.clamp(2, 256);
-    let bound = ball.form[3].max(1.0) * 1.01;
-    let start = Start {
-        centre,
-        turn: ball.stretch[1].atan2(ball.stretch[0]),
-        scale: radius,
-        velocity: r.ball.map_or(Vec2::ZERO, |b| b.velocity),
-        from: Start::from_of(centre, r.point, bound * radius),
-        gravity: r.gravity,
-        radius: radius / (n as f32).sqrt(),
-        seed: seed_of(thing, row, r.step),
-    };
-    for (piece, now, alpha) in pieces_now(r, look, &Material::DISC, bound, &start, time, walls) {
-        let at = now.centre(piece.site, radius);
-        let dir = Vec2::from_angle(now.turn);
-        let clip = clip_of(&piece, 1.0 - alpha, frame);
-        out.push(LayeredInstance {
-            center: at.into(),
-            stretch: [dir.x, dir.y, ball.stretch[2], ball.stretch[3]],
-            clip,
-            ..ball
-        });
+        if look.look != BreakLook::Shatter {
+            return;
+        }
+        let age = r.age(self.time);
+        let Some(shows) = showing(look, age).filter(|s| s.alpha > 0.0) else { return };
+        let radius = ball.radius.max(1e-3);
+        let centre = Vec2::from(ball.center);
+        let n = look.pieces.clamp(2, 256);
+        // The cells are turned for each ball, so they cover the quad's corners whichever way.
+        let reach = ball.form[3].max(1.0) + MARGIN / radius;
+        let bound = reach * std::f32::consts::SQRT_2 * 1.01;
+        let own = seed_of(self.thing, self.row, r.step);
+        let spin = Vec2::from_angle((own >> 8) as f32 / (1u32 << 24) as f32 * std::f32::consts::TAU);
+        let start = Start {
+            centre,
+            turn: ball.stretch[1].atan2(ball.stretch[0]),
+            scale: radius,
+            velocity: r.ball.map_or(Vec2::ZERO, |b| b.velocity),
+            from: Start::from_of(centre, r.point, reach * radius),
+            gravity: r.gravity,
+            radius: radius / (n as f32).sqrt(),
+            seed: own,
+        };
+        let cells = cuts.get(&Material::DISC, bound, n, seed_of(self.thing, u32::MAX, r.step));
+        for (k, piece) in cells.iter().enumerate() {
+            let piece =
+                Piece { site: spin.rotate(piece.site), cell: piece.cell.iter().map(|c| spin.rotate(*c)).collect() };
+            let now = piece_at(&piece, k as u32, &start, look, age as f32, self.walls);
+            let at = now.centre(piece.site, radius);
+            let dir = Vec2::from_angle(now.turn);
+            let clip = clip_of(&piece, 1.0 - shows.alpha, frame);
+            out.push(LayeredInstance { center: at.into(), stretch: [dir.x, dir.y, 1.0, 1.0], clip, ..ball });
+        }
     }
 }

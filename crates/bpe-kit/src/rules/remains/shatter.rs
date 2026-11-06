@@ -7,7 +7,7 @@ use bpe_runtime::{Wall, keep_clear, reflect};
 use glam::Vec2;
 
 use crate::modules::look::layers::particles::emit::hash;
-use crate::modules::look::layers::particles::sim::{on_its_side, steps_for};
+use crate::modules::look::layers::particles::sim::steps_for;
 use crate::rules::breaks::LookSettings;
 
 /// The outline of what a thing draws, in its own units.
@@ -282,7 +282,9 @@ pub fn piece_at(piece: &Piece, k: u32, start: &Start, look: &LookSettings, age: 
     }
     let bounce = if look.bounce.is_finite() { look.bounce.clamp(0.0, 1.0) } else { 0.0 };
     let radius = start.radius.max(0.5);
-    let (mut p, mut v) = (on_its_side(p0, start.centre, radius, walls), v0);
+    // Each piece starts on its own side of every wall (its site is where it was drawn), and
+    // `keep_clear` keeps it there.
+    let (mut p, mut v) = (p0, v0);
     let (steps, step) = steps_for(age);
     for n in 0..steps {
         let dt = if n + 1 == steps { age - n as f32 * step } else { step };

@@ -350,9 +350,9 @@ impl RulesState {
         self.remains.iter().map(|((t, r), m)| (*t, *r, m))
     }
 
-    /// Whether the broken `thing` still shows its Break look at `time`.
+    /// Whether anything of `thing` (itself, or a ball of it) still shows its Break look at `time`.
     pub fn showing(&self, thing: ThingId, time: f64) -> bool {
-        self.remains_of(thing, None).is_some_and(|r| r.shows_at(time))
+        self.remains.range((thing, 0)..=(thing, WHOLE)).any(|(_, r)| r.shows_at(time))
     }
 
     /// Forgets the remains whose look is over at `time`.
