@@ -9,7 +9,7 @@ use glam::Vec2;
 
 use super::around::AroundLayer;
 use super::around_subs::{HitInfo, Pieces};
-use super::trail::draw::{MOST_STRIP_POINTS, StripLook, strip_with_subs};
+use super::trail::draw::{StripLook, strip_budget, strip_with_subs};
 use super::trail::kinds::Path;
 use super::trail::{AroundPlace, TrailFade, TrailLayer, TrailSource};
 
@@ -169,7 +169,7 @@ pub fn draw(layer: &AroundLayer, w: &WavefrontLayer, f: &Fronts, frame: &mut Fra
     let look = StripLook { trail: &trail, subs: &layer.subs, hit: HitInfo::default(), radius: f.radius.max(1.0) };
     let adds = w.blend == Blend::Add;
     let mut pieces = Pieces::default();
-    let mut points_left = MOST_STRIP_POINTS;
+    let mut points_left = strip_budget(&layer.subs);
     for run in runs(w, f) {
         let mut rows = run.rows;
         if run.closed {
