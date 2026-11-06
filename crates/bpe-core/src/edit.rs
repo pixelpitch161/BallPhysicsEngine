@@ -187,6 +187,8 @@ impl Scene {
             }
             // Following the light on a thing that went stops too.
             crate::PulseSource::Light { thing, .. } => !removed.contains(&thing),
+            // So does following the health of a thing that went.
+            crate::PulseSource::Health { thing } => !removed.contains(&thing),
             crate::PulseSource::Hits => true,
         });
         Ok(removed)

@@ -45,6 +45,12 @@ impl<'a> VaryCx<'a> {
         a.slot.is_some() && bpe_kit::sensing::can_follow_light(self.scene, self.reg, &a)
     }
 
+    /// Whether the thing has a Health card, so its settings can spread by Health.
+    pub fn healthy(&self) -> bool {
+        let thing = (self.at)("").thing;
+        self.scene.things.get(&thing).is_some_and(|t| t.slots.contains_key(&SlotId::Health))
+    }
+
     /// How setting `def` can vary across the balls; `None` when it can't (or the thing has no
     /// balls to vary it across, and it doesn't vary yet).
     pub fn use_of(&self, def: &SettingDef) -> Option<VaryUse> {
@@ -246,7 +252,7 @@ pub fn two_ended(
 /// The line under a varied row: "Varies by" with the spread and easing menus. `offered` is how
 /// the setting can vary (a setting read once at launch can't spread by speed or hits); Round is
 /// only offered with `rounds` (balls fired in rounds), unless it is picked already; Light and
-/// Shadow only with `lit` (see [`VaryCx::lit`]).
+/// Shadow only with `lit` (see [`VaryCx::lit`]), Health only with `healthy` (a Health card).
 pub fn varies_line(
     ui: &mut Ui,
     def: &SettingDef,
@@ -254,6 +260,7 @@ pub fn varies_line(
     offered: VaryUse,
     rounds: bool,
     lit: bool,
+    healthy: bool,
 ) -> Option<VaryEdit> {
     let mut pick = None;
     ui.horizontal_wrapped(|ui| {
@@ -261,7 +268,10 @@ pub fn varies_line(
         ui.label(RichText::new("Varies by").small().color(style::MUTED));
         let by = ui.menu_button(by_words(v.by), |ui| {
             let lit = lit || v.by.reads_light();
-            for b in VaryBy::offered(offered, lit).filter(|b| rounds || *b != VaryBy::Round || v.by == VaryBy::Round) {
+            let healthy = healthy || v.by.reads_health();
+            for b in VaryBy::offered(offered, lit, healthy)
+                .filter(|b| rounds || *b != VaryBy::Round || v.by == VaryBy::Round)
+            {
                 if ui.add(egui::Button::selectable(b == v.by, by_words(b))).on_hover_text(by_help(b)).clicked() {
                     pick = Some(VaryEdit::By(b));
                     ui.close();
@@ -298,6 +308,7 @@ pub fn by_words(by: VaryBy) -> &'static str {
         VaryBy::Hits => "Hits",
         VaryBy::Light => "Light",
         VaryBy::Shadow => "Shadow",
+        VaryBy::Health => "Health",
     }
 }
 
@@ -314,6 +325,7 @@ fn by_help(by: VaryBy) -> &'static str {
         VaryBy::Shadow => {
             "How much of the light each ball's shadows take now: in the open at one end, in shadow at the other"
         }
+        VaryBy::Health => "How much health each ball has left: full at one end, none at the other",
     }
 }
 

@@ -243,3 +243,90 @@ pub fn per_ball_bounce(reg: &Registry) -> Scene {
     );
     scene
 }
+
+/// Rules part 4's scenes, where health moves the physics (their own goldens,
+/// `tests/golden-rules-health*.txt`).
+pub fn health_scenes(reg: &Registry) -> Vec<(String, Scene)> {
+    vec![("Health bricks".into(), health_bricks(reg)), ("Health group".into(), health_group(reg))]
+}
+
+/// Gives `thing` a Health card with `set` on it.
+fn with_health(scene: &mut Scene, reg: &Registry, thing: ThingId, set: &[(&str, Value)]) {
+    crate::fill_slot(scene, reg, thing, bpe_core::SlotId::Health).expect("a Health card fits");
+    let card = scene.card_mut(thing, bpe_core::SlotId::Health).expect("just added");
+    for (k, v) in set {
+        card.params.set(k, v.clone());
+    }
+}
+
+/// Breakable bricks with health: each brick takes three hits, and every hit that takes a
+/// brick's health speeds the ball up a little.
+pub fn health_bricks(reg: &Registry) -> Scene {
+    let mut b = Builder::new(reg, "Health bricks");
+    b.shape(ShapeSettings::circle(508.0, 3.0));
+    b.balls("Ball", Vec2::new(0.0, 200.0), |s| {
+        s.radius = 16.0;
+        s.velocity = Vec2::new(520.0, -780.0);
+    });
+    b.bounce(|s| s.bounciness = 1.0);
+    let mut scene = b.finish();
+    for k in 0..8 {
+        let id = add_thing(&mut scene, reg, "shape", ThingId::ROOT).expect("a shape");
+        let thing = scene.things.get_mut(&id).expect("just added");
+        let (col, row) = ((k % 4) as f32, (k / 4) as f32);
+        thing.transform.position = Vec2::new(-240.0 + col * 160.0, -260.0 + row * 110.0);
+        thing.params = ShapeSettings::rectangle(110.0, 40.0, 3.0).to_params();
+        thing.tags.insert("brick".into());
+        with_health(&mut scene, reg, id, &[("start", n(1.0 + (k % 3) as f64))]);
+    }
+    lane(
+        &mut scene,
+        reg,
+        "Faster on bricks",
+        &[
+            ("when.health", vec![("who", who(Who::Tag("brick".into())))]),
+            ("do.motion", vec![("who", who(Who::Other)), ("amount", n(40.0))]),
+        ],
+    );
+    scene
+}
+
+/// A ring of balls whose health starts from 1 to 4 across them, taken by how hard they hit; each
+/// shrinks as its health goes, and a ball under half its health gets a kick.
+pub fn health_group(reg: &Registry) -> Scene {
+    let mut b = Builder::new(reg, "Health group");
+    b.shape(ShapeSettings::circle(508.0, 3.0));
+    b.balls("Ring", Vec2::ZERO, |s| {
+        s.radius = 14.0;
+        s.ring(24, 200.0);
+        s.velocity = Vec2::new(150.0, -100.0);
+    });
+    let mut scene = b.finish();
+    let ring = scene.things.values().find(|t| t.kind == "balls").expect("the ring").id;
+    let p = &mut scene.things.get_mut(&ring).expect("the ring").params;
+    p.set("radius~to", n(6.0));
+    p.set("radius~by", c("health"));
+    with_health(
+        &mut scene,
+        reg,
+        ring,
+        &[
+            ("start", n(1.0)),
+            ("start~to", n(4.0)),
+            ("start~by", c("number")),
+            ("takes", c("by_strength")),
+            ("factor", n(0.002)),
+        ],
+    );
+    lane(
+        &mut scene,
+        reg,
+        "Kick the weak",
+        &[
+            ("when.health", vec![]),
+            ("if.health", vec![("measure", c("percent")), ("amount", n(50.0))]),
+            ("do.motion", vec![("mode", c("push")), ("amount", n(120.0))]),
+        ],
+    );
+    scene
+}

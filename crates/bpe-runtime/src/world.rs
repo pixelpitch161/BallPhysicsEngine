@@ -319,7 +319,7 @@ impl World {
             world.light = Some(maker.make(scene, resolved));
         }
         world.refresh_rows(sims, &Log::default());
-        world.rules = crate::rules::RulesState::build(scene, resolved, sims);
+        world.rules = crate::rules::RulesState::build(scene, resolved, sims, &world);
         let pristine =
             world.rules.as_ref().filter(|r| r.changes_settings()).map(|_| std::sync::Arc::new(built_from.clone()));
         world.animated = match (animation.zip(at_start), pristine) {
@@ -368,6 +368,8 @@ impl World {
             let inputs = Inputs {
                 sound: levels.as_ref().map(|l| l as &dyn bpe_core::SoundLevels),
                 light: lit.as_ref().map(|l| l as &dyn bpe_core::LightLevels),
+                // Health as the last Rules stage, and the actions applied since, left it.
+                health: self.health_levels(),
                 ..Inputs::NONE
             };
             animated.animation.apply(&mut animated.resolved, time, &inputs);
@@ -773,6 +775,33 @@ impl World {
         self.rules.as_ref()
     }
 
+    /// `thing`'s health (its ball in body row `row`, for a thing with balls), when it has a
+    /// Health card (rules part 4).
+    pub fn health(&self, thing: ThingId, row: Option<u32>) -> Option<crate::rules::Hp> {
+        self.rules.as_ref()?.health.of(thing, row)
+    }
+
+    /// How much of the health of `thing`'s ball in body row `row` (or of `thing`, without balls)
+    /// is gone: 0 at full health or without health, 1 with none left (the Health spread).
+    pub fn hurt(&self, thing: ThingId, row: usize) -> f32 {
+        let Some(health) = self.rules.as_ref().map(|r| &r.health).filter(|h| h.has(thing)) else { return 0.0 };
+        let row = self.bodies.contains_key(&thing).then_some(row as u32);
+        health.of(thing, row).map_or(0.0, |hp| 1.0 - hp.share())
+    }
+
+    /// [`World::hurt`] for every body row of `thing`, in row order (empty without health).
+    pub fn hurts(&self, thing: ThingId) -> Vec<f32> {
+        if !self.rules.as_ref().is_some_and(|r| r.health.has(thing)) {
+            return Vec::new();
+        }
+        (0..self.bodies.get(&thing).map_or(0, Bodies::len)).map(|row| self.hurt(thing, row)).collect()
+    }
+
+    /// The things' health as pulses read it (Follow health), when some thing has health.
+    pub fn health_levels(&self) -> Option<&dyn bpe_core::HealthLevels> {
+        self.rules.as_ref().filter(|r| !r.health.is_empty()).map(|_| self as &dyn bpe_core::HealthLevels)
+    }
+
     /// Whether a rule broke `thing`.
     pub fn broken(&self, thing: ThingId) -> bool {
         self.rules.as_ref().is_some_and(|r| r.is_broken(thing))
@@ -802,6 +831,7 @@ impl World {
         });
         spread.speed = bodies.velocity.get(row).map_or(0.0, |v| v.length());
         spread.hits = bodies.hits.get(row).copied().unwrap_or(0);
+        spread.hurt = self.hurt(thing, row);
         spread
     }
 
@@ -1249,6 +1279,13 @@ impl World {
     }
 }
 
+/// Follow health: a thing's share of its starting health (rules part 4).
+impl bpe_core::HealthLevels for World {
+    fn share(&self, thing: ThingId) -> f32 {
+        self.rules.as_ref().map_or(0.0, |r| r.health.thing_share(self, thing))
+    }
+}
+
 /// The target rules, over a world's kinds and tags.
 fn matches(
     kinds: &BTreeMap<ThingId, String>,
@@ -1426,6 +1463,20 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
                     h.bytes(key.as_bytes());
                     h.value(value);
                 }
+            }
+        }
+    }
+    // Health cards change the run (a ball breaks at zero, rules read it): only scenes with one.
+    for (id, r) in &resolved.things {
+        if let Some(s) = r.slots.get(&SlotId::Health)
+            && sims.health(&s.kind).is_some()
+        {
+            h.bytes(b"health");
+            h.bytes(&id.0.to_le_bytes());
+            h.bytes(s.kind.as_bytes());
+            for (key, value) in s.params.iter() {
+                h.bytes(key.as_bytes());
+                h.value(value);
             }
         }
     }

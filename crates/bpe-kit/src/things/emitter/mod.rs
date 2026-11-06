@@ -573,7 +573,8 @@ impl EmitterSettings {
     }
 }
 
-const SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Motion, SlotId::Bounce];
+const SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Motion, SlotId::Bounce, SlotId::Health];
+const DEFAULT_SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Motion, SlotId::Bounce];
 
 impl ThingKind for EmitterKind {
     fn id(&self) -> &'static str {
@@ -598,7 +599,7 @@ impl ThingKind for EmitterKind {
         SLOTS
     }
     fn default_slots(&self) -> &'static [SlotId] {
-        SLOTS
+        DEFAULT_SLOTS
     }
     /// Size may vary across the balls as they go; Speed is read once, as each ball is fired, so
     /// it can't follow their speed or hits.

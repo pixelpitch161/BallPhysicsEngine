@@ -1968,7 +1968,13 @@ mod tests {
     #[test]
     fn add_slot_lists_only_slots_the_kind_lacks_and_adds_a_starter() {
         let mut h = harness(Some(ThingId(2)));
-        // A new ball has every card a ball can have: trails and particles are layers of its Look.
+        // A new ball has every card a ball starts with: trails and particles are layers of its Look.
+        // Only Health (rules part 4) is left to add.
+        h.get_by_label("+ Add slot").click();
+        h.run();
+        h.get_by_label("Health").click();
+        h.run();
+        assert_eq!(h.state().scene.things[&ThingId(2)].slots[&SlotId::Health].kind, "health");
         assert!(h.get_by_label("+ Add slot").accesskit_node().is_disabled());
         h.state_mut().scene.things.get_mut(&ThingId(2)).unwrap().slots.remove(&SlotId::Motion);
         h.run();

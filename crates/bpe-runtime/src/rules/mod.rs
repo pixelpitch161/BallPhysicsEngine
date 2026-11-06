@@ -6,11 +6,13 @@
 mod actions;
 mod changes;
 mod firing;
+mod health;
 mod sim;
 
 pub use actions::{Action, MotionChange, WHOLE};
 pub use changes::{Change, ChangeKey, How, apply_to, fold};
 pub use firing::{Firing, Values};
+pub use health::{Health, HealthCard, HealthChange, HealthMoment, HealthSim, Hp, Takes, aimed};
 pub use sim::{BlockSim, PrepareCx, StageCx};
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -87,6 +89,7 @@ struct Run<'a> {
     time: f64,
     rule: RuleId,
     broken: &'a BTreeSet<ThingId>,
+    health: &'a Health,
     /// Blocks that fired this step (by index), with the first firing's subject and point.
     noted: BTreeMap<usize, (Option<Party>, Vec2)>,
     actions: &'a mut Vec<Action>,
@@ -105,6 +108,7 @@ impl Run<'_> {
             rule: self.rule,
             block,
             broken: self.broken,
+            health: self.health,
         }
     }
 
@@ -173,13 +177,16 @@ pub struct RulesState {
     pub(crate) frozen: Vec<actions::Frozen>,
     /// Whether some block can change settings.
     changes_settings: bool,
+    /// Every thing's health, and this step's changes of it (rules part 4).
+    pub(crate) health: Health,
 }
 
 impl RulesState {
-    /// The scene's enabled rules prepared, or `None` when it has none.
-    pub fn build(scene: &Scene, resolved: &Resolved, sims: &Sims) -> Option<RulesState> {
+    /// The scene's enabled rules prepared, and its things' health, or `None` when it has neither.
+    pub fn build(scene: &Scene, resolved: &Resolved, sims: &Sims, world: &World) -> Option<RulesState> {
         let enabled: Vec<&Rule> = scene.rules.list.iter().filter(|r| r.enabled).collect();
-        if enabled.is_empty() {
+        let health = Health::build(resolved, world, sims);
+        if enabled.is_empty() && health.is_empty() {
             return None;
         }
         let mut rules = Vec::with_capacity(enabled.len());
@@ -235,16 +242,20 @@ impl RulesState {
             broken: BTreeSet::new(),
             frozen: Vec::new(),
             changes_settings,
+            health,
         })
     }
 
-    /// The Rules stage: every enabled rule without a problem, in list order, reads this step's
-    /// `events` and queues its actions; what fired is logged as `Rule` events.
+    /// The Rules stage: first what this step's hits take from things' health, then every
+    /// enabled rule without a problem, in list order, reads this step's `events` (and changes of
+    /// health) and queues its actions; what fired is logged as `Rule` events.
     pub(crate) fn run(&mut self, world: &World, sims: &Sims, events: &[Event], log: &mut Log) {
         let step = world.step;
         let time = world.time();
         let mut fired = Vec::new();
         let broken = self.broken.clone();
+        self.health.fill(world, sims);
+        self.health.damage(world, events, &broken, &mut self.pending);
         for r in &mut self.rules {
             if r.problem.is_some() {
                 continue;
@@ -257,6 +268,7 @@ impl RulesState {
                 time,
                 rule: r.id,
                 broken: &broken,
+                health: &self.health,
                 noted: BTreeMap::new(),
                 actions: &mut self.pending,
                 budget: MOST_ACTIONS,
@@ -301,6 +313,13 @@ impl RulesState {
         for e in fired {
             log.push(e);
         }
+        // This stage's changes of health were read.
+        self.health.moments.clear();
+    }
+
+    /// Every thing's health.
+    pub fn health(&self) -> &Health {
+        &self.health
     }
 
     /// What is wrong with rule `id`, when it is skipped for it.

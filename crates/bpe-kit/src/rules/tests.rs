@@ -104,7 +104,10 @@ fn every_kind_is_registered_with_settings_under_rule() {
             "logic",
             "do.motion",
             "do.change",
-            "do.break"
+            "do.break",
+            "when.health",
+            "if.health",
+            "do.health"
         ]
     );
     for b in kit.registry.blocks() {

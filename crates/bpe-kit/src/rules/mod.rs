@@ -8,6 +8,7 @@
 //!   [`checks::Cooldown`], [`checks::OnlyN`], [`checks::BetweenTimes`].
 //! - Logic: [`logic::Logic`].
 //! - Do: [`motion::ChangeMotion`], [`change::ChangeSetting`], [`breaks::Break`].
+//! - Health (part 4): [`health::WhenHealth`], [`health::HealthIs`], [`health::ChangeHealth`].
 //!
 //! [`RuleBlockKind`]: bpe_core::RuleBlockKind
 //! [`BlockSim`]: bpe_runtime::BlockSim
@@ -16,12 +17,15 @@ pub mod amount;
 pub mod breaks;
 pub mod change;
 pub mod checks;
+pub mod health;
 pub mod logic;
 pub mod memory;
 pub mod motion;
 pub mod when;
 pub mod who;
 
+#[cfg(test)]
+mod health_tests;
 #[cfg(test)]
 mod tests;
 
@@ -68,6 +72,9 @@ pub fn register(r: &mut Registry) {
     r.add_block(motion::ChangeMotion);
     r.add_block(change::ChangeSetting);
     r.add_block(breaks::Break);
+    r.add_block(health::WhenHealth);
+    r.add_block(health::HealthIs);
+    r.add_block(health::ChangeHealth);
 }
 
 /// Puts every block kind's simulation in the sims.
@@ -86,6 +93,9 @@ pub fn add_sims(s: &mut Sims) {
     s.add_block(motion::ChangeMotion);
     s.add_block(change::ChangeSetting);
     s.add_block(breaks::Break);
+    s.add_block(health::WhenHealth);
+    s.add_block(health::HealthIs);
+    s.add_block(health::ChangeHealth);
 }
 
 /// The kit's registry, made once for the process: what Change setting reads the scene's setting

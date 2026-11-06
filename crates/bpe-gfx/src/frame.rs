@@ -1951,6 +1951,7 @@ pub fn build_frame_sensing(
             hits: hit_strength(log, time, world.steps_per_second),
             sound: levels.as_ref().map(|l| l as &dyn bpe_core::SoundLevels),
             light: lit.as_ref().map(|l| l as &dyn bpe_core::LightLevels),
+            health: world.health_levels(),
         };
         animation.apply(&mut copy, time, &inputs);
         if let Some(rules) = ruled {

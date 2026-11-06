@@ -113,6 +113,7 @@ impl Probe {
                 hits: bpe_gfx::hit_strength(log, time, world.steps_per_second),
                 sound: levels.as_ref().map(|l| l as &dyn bpe_core::SoundLevels),
                 light: None,
+                health: world.health_levels(),
             };
             self.animation.apply(&mut now, time, &inputs);
         }

@@ -4,7 +4,7 @@
 use bpe_core::ThingId;
 use glam::Vec2;
 
-use super::{Change, ChangeKey};
+use super::{Change, ChangeKey, HealthChange};
 use crate::{Event, EventKind, Log, Party, World, pop};
 
 /// A change to a ball's motion, right now.
@@ -35,6 +35,9 @@ pub enum Action {
     Change { key: ChangeKey, change: Change },
     /// Breaks one ball (its body row) or the whole thing.
     Break { thing: ThingId, row: Option<u32>, point: Vec2, normal: Vec2, strength: f32 },
+    /// Changes the health of one ball (its body row), of every live ball of the thing (`None`
+    /// on a thing with balls) or of a thing without balls (rules part 4).
+    Health { thing: ThingId, row: Option<u32>, change: HealthChange },
 }
 
 /// A ball a rule holds still.
@@ -73,7 +76,12 @@ impl World {
             false
         });
         let time = self.time();
-        for action in std::mem::take(&mut rules.pending) {
+        // Walked by place, so a health that reaches 0 here can add its Break for this same pass.
+        let mut queue = std::mem::take(&mut rules.pending);
+        let mut next = 0;
+        while next < queue.len() {
+            let action = queue[next].clone();
+            next += 1;
             match action {
                 Action::Motion { thing, row, motion } => {
                     if rules.broken.contains(&thing) {
@@ -135,6 +143,34 @@ impl World {
                         match rules.frozen.iter_mut().find(|f| f.thing == thing && f.row == i as u32) {
                             Some(f) => f.velocity = new_v,
                             None => bodies.velocity[i] = new_v,
+                        }
+                    }
+                }
+                Action::Health { thing, row, change } => {
+                    if rules.broken.contains(&thing) || !rules.health.has(thing) {
+                        continue;
+                    }
+                    let rows: Vec<Option<u32>> = match (row, self.bodies.get(&thing)) {
+                        (Some(r), Some(b)) => {
+                            if (r as usize) < b.len() && b.alive[r as usize] {
+                                vec![Some(r)]
+                            } else {
+                                Vec::new()
+                            }
+                        }
+                        (None, Some(b)) => (0..b.len() as u32).filter(|&r| b.alive[r as usize]).map(Some).collect(),
+                        (_, None) => vec![None],
+                    };
+                    for row in rows {
+                        let point = match (row, self.bodies.get(&thing)) {
+                            (Some(r), Some(b)) => b.position[r as usize],
+                            _ => self.poses.get(&thing).map_or_else(|| self.anchor(thing).position, |p| p.position),
+                        };
+                        let at_zero = rules.health.card(thing).and_then(|c| c.at_zero.clone());
+                        if let Some((_, true)) = rules.health.change(thing, row, change, (point, Vec2::ZERO, None, 0.0))
+                            && let Some(template) = at_zero
+                        {
+                            queue.push(super::aimed(&template, thing, row, point, Vec2::ZERO, 0.0));
                         }
                     }
                 }

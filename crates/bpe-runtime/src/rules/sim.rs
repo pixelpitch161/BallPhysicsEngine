@@ -30,6 +30,9 @@ pub struct StageCx<'a> {
     /// The things a rule broke (the world's own answer, [`World::broken`], reads nothing while
     /// the stage runs).
     pub broken: &'a std::collections::BTreeSet<bpe_core::ThingId>,
+    /// Every thing's health and this step's changes of it (the world's own answer reads nothing
+    /// while the stage runs).
+    pub health: &'a super::Health,
 }
 
 impl StageCx<'_> {

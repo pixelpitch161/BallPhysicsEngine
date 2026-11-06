@@ -33,8 +33,8 @@ pub mod vary;
 
 pub use address::Address;
 pub use animation::{
-    Animation, Ease, Inputs, Key, LightLevels, LightSource, Pulse, PulseSource, SAME_TIME, SoundLevels, SoundSource,
-    Track, pulse_strength,
+    Animation, Ease, HealthLevels, Inputs, Key, LightLevels, LightSource, Pulse, PulseSource, SAME_TIME, SoundLevels,
+    SoundSource, Track, pulse_strength,
 };
 pub use blend::Blend;
 pub use color::{Color, GapBlend, Gradient, HitWave, Mix, Morph, Moves, Stop, hue_turned, mix_colours, mix_linear};

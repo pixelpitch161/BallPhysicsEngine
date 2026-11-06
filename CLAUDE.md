@@ -240,6 +240,23 @@ value from a pristine copy each step so they never compound; physics keys re-pre
 whole looks in `build_frame_sensing`). Dice are `rules::dice` (seed, rule, block, step, subject). Nothing changes
 for a scene without enabled rules (goldens, fingerprint); `tests/golden-rules*.txt` pin `scenes::rule_scenes`.
 
+Part 4 is in (plan `part4.md`): **Health**. A **Health card** (`SlotId::Health`, last in `SlotId::ALL`; kind `health`,
+`bpe-kit/src/modules/health/`: Starting health (varies across balls at launch), Hits take Each hit / By strength /
+Nothing, Least strength, Only hits from (a `Target`), At zero Break / Nothing) goes on balls, emitters and shapes from
+"+ Add slot". The world keeps health in `RulesState.health` (`bpe-runtime/src/rules/health.rs`: `Health`, `Hp` per body
+row, one for a thing without balls; the kit's `HealthSim` turns the card into a `HealthCard`); a scene with a Health card
+and no rule still gets a `RulesState`. The Rules stage first `fill`s new balls' starting health and works out the
+step's hits (`damage`, at zero the card's `at_zero` template `aimed` into `pending`), then runs the rules with
+`StageCx.health`; each change is a `HealthMoment` (cleared after the stage). `Action::Health { thing, row, change }`
+(`HealthChange` Damage/Heal/Set/Refill) applies at the next step's start, a zero Break in the same pass. Blocks
+`when.health` (Drops / Reaches zero / Goes up / Changes), `if.health` (Below/Above/Between/At zero/Full, Points or
+Percent), `do.health` (`bpe-kit/src/rules/health.rs`); Hit firings and Compare carry `health`/`share`/`start`. **Follow
+health** is `PulseSource::Health { thing }` read through `Inputs.health` (`HealthLevels`, `World::health_levels`: a
+thing's share, a group's mean over live balls); the spread **`VaryBy::Health`** reads `BallSpread.hurt` (1 − share,
+`World::hurt`/`hurts`; Balls/Emitter Size through `own_sizes`). The fingerprint hashes Health cards. Editor: Follow health
+▸ (`follow::health_menu`), the Health spread (`VaryCx::healthy`). Goldens `tests/golden-rules-health*.txt`
+(`scenes::health_scenes`). Not yet: part 3's break looks on the card's At zero.
+
 ## Gradients (spec `docs/superpowers/specs/2026-11-06-gradients-design.md`, plans `docs/superpowers/plans/gradients/`)
 
 Part 1 is in (plan `part1.md`): the gradient value (`bpe-core/src/color.rs`) has a **Mix** (`Mix`: Light, the old

@@ -307,11 +307,12 @@ pub fn resize_rows(own_size: &mut Vec<f32>, bodies: &mut Bodies, own: Vec<f32>) 
 }
 
 /// Each body row's own size in `st` as its settings, spreads and the rules' changes to single
-/// balls (`ruled`) say now.
-fn own_sizes(st: &BallsState, bodies: &Bodies, ruled: Option<&Ruled>) -> Vec<f32> {
+/// balls (`ruled`) say now; `hurts` is how much of each row's health is gone (rules part 4).
+fn own_sizes(st: &BallsState, bodies: &Bodies, ruled: Option<&Ruled>, hurts: &[f32]) -> Vec<f32> {
     (0..bodies.len().min(st.rows.size_factor.len()))
         .map(|row| {
-            let size = st.size_at(&st.spread_of(bodies, row));
+            let spread = BallSpread { hurt: hurts.get(row).copied().unwrap_or(0.0), ..st.spread_of(bodies, row) };
+            let size = st.size_at(&spread);
             let size = ruled.map_or(size, |r| r.number(row, size));
             let factor = st.rows.size_factor[row];
             if factor == 1.0 { size } else { size * factor }
@@ -394,6 +395,7 @@ impl ThingSim for BallsSim {
     fn settings_changed(&self, thing: ThingId, resolved: &ResolvedThing, world: &mut World) {
         let settings = BallsSettings::from_params(&resolved.params);
         let ruled = world.ruled(thing, None, "radius");
+        let hurts = world.hurts(thing);
         let Some(st) = world.states.get_mut(&thing) else { return };
         let st = state_mut::<BallsState>(st.as_mut());
         let varies = own_varies(&resolved.params);
@@ -403,7 +405,7 @@ impl ThingSim for BallsSim {
             st.varies = varies;
             st.ruled_size = ruled.is_some();
             if let Some(bodies) = world.bodies.get_mut(&thing) {
-                let own = own_sizes(st, bodies, ruled.as_ref());
+                let own = own_sizes(st, bodies, ruled.as_ref(), &hurts);
                 resize_to(st, bodies, own);
             }
             return;
@@ -433,9 +435,10 @@ impl ThingSim for BallsSim {
             return;
         }
         let ruled = world.ruled(thing, None, "radius");
+        let hurts = world.hurts(thing);
         let (Some(st), Some(bodies)) = (world.states.get_mut(&thing), world.bodies.get_mut(&thing)) else { return };
         let st = state_mut::<BallsState>(st.as_mut());
-        let own = own_sizes(st, bodies, ruled.as_ref());
+        let own = own_sizes(st, bodies, ruled.as_ref(), &hurts);
         resize_to(st, bodies, own);
     }
 
