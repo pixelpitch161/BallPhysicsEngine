@@ -1165,7 +1165,9 @@ mod tests {
         let gradient: &'static SettingDef = Box::leak(Box::new(gradient));
         assert_eq!(def_for(Some(gradient), bands).map(|d| d.label), Some("Bands"));
         assert!(def_for(Some(&bands.def), bands).is_none());
-        assert_eq!(companions_for(gradient).count(), 2, "a gradient that doesn't fill an area: Blend only");
+        // A gradient that doesn't fill an area: Blend and Move, no Shape and no Shape spin.
+        assert!(companions_for(gradient).all(|c| c.tab != ExtraTab::Shape && c.name != "spin"));
+        assert_eq!(companions_for(gradient).filter(|c| c.tab == ExtraTab::Blend).count(), 2);
         assert_eq!(companions_for(&bands.def).count(), 0);
     }
 

@@ -703,9 +703,14 @@ pub(crate) mod tests {
         for fold in ["Show Cycle", "Show Step on the beat", "Show Breathe", "Show Hue spin", "Show Stops wander"] {
             assert!(h.query_by_label(fold).is_some(), "{fold} shows shut");
         }
-        for fold in ["Show Hit wave", "Show Morph", "Show Shape moves"] {
+        for fold in ["Show Hit wave", "Show Morph"] {
             assert!(h.query_by_label(fold).is_some(), "{fold} shows shut");
         }
+        // Shape spin turns a gradient that lays out its own area; this one has no shape.
+        assert!(h.query_by_label("Show Shape moves").is_none());
+        let mut fills = harness_of(fills_def(), three());
+        click(&mut fills, "Colours tab Move");
+        assert!(fills.query_by_label("Show Shape moves").is_some(), "a filling gradient spins");
         assert!(h.query_all_by_label("Cycle speed").next().is_none(), "shut at first");
         click(&mut h, "Show Cycle");
         assert!(h.query_all_by_label("Cycle speed").next().is_some());

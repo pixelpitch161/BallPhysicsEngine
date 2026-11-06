@@ -74,6 +74,7 @@ impl GradientAtlas {
         }
         let row = self.rows.len() as u32;
         self.rows.push(baked);
+        self.waves.push(NO_WAVE);
         self.index.insert(key, row);
         row
     }
