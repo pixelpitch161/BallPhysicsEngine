@@ -645,6 +645,9 @@ fn with_balls<R>(cx: &DrawCx, worn: &Worn, memory: f32, f: impl FnOnce(&Balls) -
         history,
         interval: history.interval(dt),
         newest_ago: (cx.time - newest).max(0.0) as f32,
+        // Only a bake's sample between steps is drawn before the newest sample; a frame on a step
+        // can read a hair before it by rounding, which must change nothing.
+        ahead: if newest - cx.time > 1e-6 { (newest - cx.time) as f32 } else { 0.0 },
         colour: &colour,
         number: &number,
         turned: &turned,

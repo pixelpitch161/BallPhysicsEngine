@@ -4,6 +4,8 @@
 //! into an HDR texture, adds bloom, and writes the result as sRGB-encoded `Rgba8Unorm`, which
 //! egui can show directly and video encoders read as ordinary RGBA bytes.
 
+mod accumulate;
+pub mod bake;
 mod blend;
 #[cfg(test)]
 mod blend_tests;
@@ -54,8 +56,16 @@ pub use masks::{MASK_TILE, MASK_TILE_BYTES, MAX_MASK_TILES, TILE_DISTANCE_REACH,
 pub use programs::{LayeredRun, LookProgram, ProgramStore, in_ball_problem, picture_problem};
 pub use wgpu;
 
-use bpe_runtime::CameraView;
+use bpe_runtime::{CameraView, step_at};
 use bytemuck::{Pod, Zeroable};
+
+/// What [`Renderer::render_scene`] tells [`Renderer::finish`].
+struct Scened {
+    wants_objects: bool,
+    material: bool,
+    moved: bool,
+    timed: bool,
+}
 
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 pub(crate) const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
@@ -352,6 +362,8 @@ pub struct Renderer {
     lit_lights: Option<usize>,
     /// The light pass being drawn (see `Globals::light`): 0 outside the light passes.
     light_mode: u32,
+    /// The bake's running average (lighting part 3), made for the first baked frame.
+    accumulate: Option<accumulate::Accumulate>,
     /// The light passes' globals: the world's and the screen's for mode 1, then for mode 2.
     light_globals: Vec<(wgpu::Buffer, wgpu::BindGroup)>,
 }
@@ -1078,6 +1090,7 @@ impl Renderer {
             light_timer: None,
             lit_lights: None,
             light_mode: 0,
+            accumulate: None,
             light_globals: Vec::new(),
         }
     }
@@ -1151,6 +1164,90 @@ impl Renderer {
     /// and mixed in where its z-order and place put it among the frame's own things (the
     /// overlay's layers among the overlay's things, the same way).
     pub fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame) {
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
+        let scened = self.render_scene(device, queue, &mut encoder, frame);
+        self.finish(device, queue, encoder, frame, scened);
+    }
+
+    /// Draws a baked frame (lighting part 3): every sample's scene, lit, averaged, then the
+    /// picture's effects, bloom and grade once, with the last sample's frame (the frame's own
+    /// moment). Each sample is moved within the pixel by [`bake::jitter`] and drawn at the
+    /// lighting's Bake quality with its own random rays; effects that remember count every sample
+    /// as the last one's moment. One sample (or none baked) is exactly [`Renderer::render`].
+    pub fn render_samples(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, samples: &[Frame]) {
+        let Some(last) = samples.last() else { return };
+        if samples.len() == 1 && last.bake.is_none() {
+            self.render(device, queue, last);
+            return;
+        }
+        let count = samples.len() as u32;
+        let size = (self.targets.width, self.targets.height);
+        self.chain.effect_time = Some(last.time);
+        let mut scened = None;
+        let mut light = None;
+        let mut frames = Vec::with_capacity(samples.len());
+        for (index, sample) in samples.iter().enumerate() {
+            let index = index as u32;
+            let mut f = sample.clone();
+            f.bake = Some(bake::BakeSample { index, count });
+            let [jx, jy] = bake::jitter(index);
+            let px = self.pixel_size(&f) / f.camera.zoom.max(1e-6);
+            let (sin, cos) = f.camera.turn.sin_cos();
+            f.camera.center.x += (jx * cos - jy * sin) * px;
+            f.camera.center.y += (jx * sin + jy * cos) * px;
+            if let Some(light) = f.light.as_mut() {
+                light.settings.more[2] = 4.0;
+                light.settings.dof[3] = light.settings.bake[2].max(1.0);
+            }
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("sample") });
+            let s = self.render_scene(device, queue, &mut encoder, &f);
+            // Effects on the light read the unlit picture and the lit colour beside the picture:
+            // averaged the same way, so they match it at blurred and smoothed edges.
+            light = self.light_pictures(&f, s.moved);
+            scened = Some(s);
+            let acc = self.accumulate.get_or_insert_with(|| accumulate::Accumulate::new(device));
+            acc.add(device, queue, &mut encoder, size, index, 0, &self.targets.hdr);
+            if let Some((unlit, lit)) = &light {
+                acc.add(device, queue, &mut encoder, size, index, 1, unlit);
+                acc.add(device, queue, &mut encoder, size, index, 2, lit);
+            }
+            queue.submit([encoder.finish()]);
+            frames.push(f);
+        }
+        self.chain.effect_time = None;
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("baked") });
+        if let Some(acc) = self.accumulate.as_ref() {
+            acc.put(device, &mut encoder, 0, &self.targets.hdr);
+            if let Some((unlit, lit)) = &light {
+                acc.put(device, &mut encoder, 1, unlit);
+                acc.put(device, &mut encoder, 2, lit);
+            }
+        }
+        let last = frames.last().expect("one at least");
+        self.finish(device, queue, encoder, last, scened.expect("one at least"));
+    }
+
+    /// The pictures effects on the light read beside the picture, once `frame` is drawn: the
+    /// picture before lighting and the lit colour (seen through the Stage camera when `moved`).
+    fn light_pictures(&self, frame: &Frame, moved: bool) -> Option<(wgpu::TextureView, wgpu::TextureView)> {
+        match (frame.light.as_ref(), self.lighting.as_ref().and_then(|l| l.pictures())) {
+            (Some(_), Some(_)) if moved => {
+                let lit = &self.stage_camera.as_ref().expect("moved").seen()[2].1;
+                Some((self.targets.behind_view.clone(), lit.clone()))
+            }
+            (Some(_), Some([(_, lit), _, _])) => Some((self.targets.behind_view.clone(), lit)),
+            _ => None,
+        }
+    }
+
+    /// Draws `frame`'s scene, lit, into the HDR picture: everything before the picture's effects.
+    fn render_scene(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &Frame,
+    ) -> Scened {
         queue.write_buffer(
             &self.globals,
             0,
@@ -1197,7 +1294,6 @@ impl Renderer {
             self.targets.ensure_object(device);
         }
         self.chain.begin_frame();
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
         // Counts the blend composites this frame.
         let mut slot = 0;
         let globals = self.globals_group.clone();
@@ -1209,7 +1305,7 @@ impl Renderer {
         self.draw_scene(
             device,
             queue,
-            &mut encoder,
+            encoder,
             frame,
             staged_overlay,
             &layer_buffers,
@@ -1225,7 +1321,7 @@ impl Renderer {
         if let Some(scene) = frame.light.as_ref() {
             let timer = self.light_timer.get_or_insert_with(|| timing::LightTimer::new(device, queue));
             if let Some(t) = timer {
-                t.start(&mut encoder);
+                t.start(encoder);
             }
             let lighting = self.lighting.get_or_insert_with(|| lighting::Lighting::new(device));
             lighting.ensure(device, self.targets.width, self.targets.height, scene);
@@ -1234,7 +1330,7 @@ impl Renderer {
             // blooms read it), not as the last frame that had some.
             if !scene.glows {
                 drop(begin_pass(
-                    &mut encoder,
+                    encoder,
                     &pictures[2].1,
                     "no light given off",
                     wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
@@ -1257,7 +1353,7 @@ impl Renderer {
                 self.draw_scene(
                     device,
                     queue,
-                    &mut encoder,
+                    encoder,
                     frame,
                     staged_overlay,
                     &layer_buffers,
@@ -1279,7 +1375,7 @@ impl Renderer {
                 self.draw_scene(
                     device,
                     queue,
-                    &mut encoder,
+                    encoder,
                     frame,
                     overlay,
                     &layer_buffers,
@@ -1296,19 +1392,18 @@ impl Renderer {
                 let (world, _) = self.light_globals(device, queue, frame, 4, background_lit, scene);
                 let lighting = self.lighting.as_ref().expect("made above");
                 let view = lighting.background_glow().expect("made for a glowing background");
-                let mut pass =
-                    begin_pass(&mut encoder, &view, "background glow", wgpu::LoadOp::Clear(wgpu::Color::BLACK));
+                let mut pass = begin_pass(encoder, &view, "background glow", wgpu::LoadOp::Clear(wgpu::Color::BLACK));
                 pass.set_bind_group(0, &world, &[]);
                 pass.set_bind_group(1, &self.paint.group, &[]);
                 pass.set_pipeline(&self.background);
                 pass.draw(0..3, 0..1);
             }
-            self.copy_under(&mut encoder);
+            self.copy_under(encoder);
             let lighting = self.lighting.as_mut().expect("made above");
             lighting.run(
                 device,
                 queue,
-                &mut encoder,
+                encoder,
                 frame,
                 scene,
                 self.targets.width,
@@ -1325,7 +1420,7 @@ impl Renderer {
                 pass.ensure(device, self.targets.width, self.targets.height);
                 {
                     let mut background = begin_pass(
-                        &mut encoder,
+                        encoder,
                         pass.background(),
                         "background alone",
                         wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -1338,7 +1433,7 @@ impl Renderer {
                 // Draft takes one ray a pixel; better qualities five at edges.
                 let samples = if scene.settings.more[2] < 0.5 { 1 } else { 5 };
                 let lit_colour = &lighting.pictures().expect("made above")[0].1;
-                pass.run(device, queue, &mut encoder, lighting, &view, samples, &self.targets.hdr, lit_colour);
+                pass.run(device, queue, encoder, lighting, &view, samples, &self.targets.hdr, lit_colour);
                 let [picture, unlit, _] = pass.seen();
                 let extent =
                     wgpu::Extent3d { width: self.targets.width, height: self.targets.height, depth_or_array_layers: 1 };
@@ -1351,14 +1446,29 @@ impl Renderer {
                 moved = true;
             }
             if let Some(Some(t)) = self.light_timer.as_mut() {
-                timed = t.end(&mut encoder);
+                timed = t.end(encoder);
             }
         }
         if moving.is_some()
             && let Some(o) = overlay
         {
-            self.draw_overlay(device, queue, &mut encoder, frame, o, &layer_buffers, &mut slot, &screen_globals);
+            self.draw_overlay(device, queue, encoder, frame, o, &layer_buffers, &mut slot, &screen_globals);
         }
+        self.layer_buffers = layer_buffers;
+        Scened { wants_objects, material, moved, timed }
+    }
+
+    /// The picture's effects, bloom and grade over the HDR picture `render_scene` drew for
+    /// `frame`, into the output.
+    fn finish(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        mut encoder: wgpu::CommandEncoder,
+        frame: &Frame,
+        scened: Scened,
+    ) {
+        let Scened { wants_objects, material, moved, timed } = scened;
         let above = BlendLayer::above;
         let object_view = self.targets.object.as_ref().filter(|_| wants_objects).map(|(_, v)| v.clone());
         // A material drew the layers' own object pictures over the full one: effects on the
@@ -1368,7 +1478,9 @@ impl Renderer {
             let mut pass = begin_pass(&mut encoder, view, "objects", wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
             pass.set_bind_group(0, &self.globals_group, &[]);
             pass.set_bind_group(1, &self.paint.group, &[]);
+            let layer_buffers = std::mem::take(&mut self.layer_buffers);
             self.draw_all_objects(&mut pass, frame, &layer_buffers, true);
+            self.layer_buffers = layer_buffers;
         }
         // Effects that read where things are see them where the moved camera shows them.
         let object_view = match (moved, object_view) {
@@ -1377,16 +1489,8 @@ impl Renderer {
             }
             (_, view) => view,
         };
-        self.layer_buffers = layer_buffers;
         // Effects on the light read the picture before lighting and the lit colour.
-        let light_pictures = match (frame.light.as_ref(), self.lighting.as_ref().and_then(|l| l.pictures())) {
-            (Some(_), Some(_)) if moved => {
-                let lit = &self.stage_camera.as_ref().expect("moved").seen()[2].1;
-                Some((self.targets.behind_view.clone(), lit.clone()))
-            }
-            (Some(_), Some([(_, lit), _, _])) => Some((self.targets.behind_view.clone(), lit)),
-            _ => None,
-        };
+        let light_pictures = self.light_pictures(frame, moved);
         self.chain.set_light(light_pictures);
         self.chain.run(
             device,
@@ -2042,7 +2146,10 @@ impl Targets {
             width,
             height,
             HDR_FORMAT,
-            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            // Drawn into by a bake's average (lighting part 3).
+            wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::RENDER_ATTACHMENT,
         );
         let behind_view = behind.create_view(&Default::default());
         let bloom: Vec<_> = (0..BLOOM_LEVELS)

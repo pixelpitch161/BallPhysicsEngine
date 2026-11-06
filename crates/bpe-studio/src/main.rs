@@ -8,6 +8,7 @@ mod app;
 mod audio_out;
 mod eq_curve;
 mod export_window;
+mod final_frame;
 mod follow;
 mod gradient_bar;
 mod grid;

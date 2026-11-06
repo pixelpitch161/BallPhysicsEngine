@@ -51,6 +51,8 @@ pub struct Panels {
     /// The preview's renderer, made on the first frame with a window.
     pub preview: Option<Preview>,
     pub export: ExportWindow,
+    /// "Preview final frame" (lighting part 3).
+    pub final_frame: crate::final_frame::FinalFrame,
     pub timeline: Timeline,
     pub mixer: Mixer,
 }
@@ -1201,6 +1203,16 @@ impl eframe::App for Studio {
         let base_dir = self.base_dir();
         let settings = self.settings();
         self.panels.export.show(&ctx, &self.scene, &settings, base_dir.as_deref(), &self.kit);
+        let frames = bpe_cli::frame_count(&settings);
+        let mut ask = std::mem::take(&mut self.panels.export.test_frame);
+        if std::mem::take(&mut self.panels.inspector.final_frame_wanted) {
+            ask = Some((self.panels.export.scale, None));
+        }
+        if let Some((scale, bake)) = ask {
+            let ask = crate::final_frame::Ask { time: self.time, scale, bake };
+            self.panels.final_frame.start(&ctx, &self.scene, &self.kit, frames, ask);
+        }
+        self.panels.final_frame.show(&ctx);
         match self.clicked.take() {
             Some(ToolbarClick::New) => self.guard(Pending::New, &ctx),
             Some(ToolbarClick::Open) => self.guard(Pending::Open, &ctx),

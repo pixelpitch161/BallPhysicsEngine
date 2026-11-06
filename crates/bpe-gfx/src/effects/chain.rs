@@ -107,6 +107,10 @@ pub(crate) struct Chain {
     /// uniforms this frame has used.
     lens: Option<LensPass>,
     lens_uniforms: usize,
+    /// While a baked frame's samples are drawn (lighting part 3): the frame's own moment, which
+    /// every sample counts as for what effects remember, so they remember one frame, not each
+    /// sample.
+    pub(crate) effect_time: Option<f32>,
 }
 
 /// The key an effect's text is cached under: FNV-1a of the text.
@@ -217,6 +221,7 @@ impl Chain {
             light: None,
             lens: None,
             lens_uniforms: 0,
+            effect_time: None,
         }
     }
 
@@ -361,17 +366,18 @@ impl Chain {
                 used: true,
             });
             slot.used = true;
-            let again = slot.frames > 0 && slot.last_time == Some(frame.time);
+            let now = self.effect_time.unwrap_or(frame.time);
+            let again = slot.frames > 0 && slot.last_time == Some(now);
             if !again {
                 let fresh = match slot.last_time {
-                    Some(last) => frame.time < last || frame.time - last > MAX_STEP,
+                    Some(last) => now < last || now - last > MAX_STEP,
                     None => true,
                 };
                 slot.dt = match slot.last_time {
-                    Some(last) if !fresh => frame.time - last,
+                    Some(last) if !fresh => now - last,
                     _ => 1.0 / 60.0,
                 };
-                slot.last_time = Some(frame.time);
+                slot.last_time = Some(now);
                 slot.frames = if fresh { 1 } else { slot.frames.saturating_add(1) };
                 std::mem::swap(&mut slot.history, &mut slot.before);
             }

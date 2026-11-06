@@ -21,3 +21,5 @@ tempfile.workspace = true
 [dev-dependencies]
 bpe-kit = { workspace = true, features = ["test-scenes"] }
 bpe-sound = { workspace = true, features = ["test-tone"] }
+glam.workspace = true
+png = "0.18"

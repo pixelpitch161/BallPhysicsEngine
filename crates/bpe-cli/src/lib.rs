@@ -32,6 +32,9 @@ pub struct ExportOptions {
     pub stems: bool,
     /// Also save the notes the shapes played as a MIDI file beside the video.
     pub midi: bool,
+    /// Bake the lighting (the cinema render, lighting part 3): `None` does as the scene's Lighting
+    /// card says (On export); a scene without the card always renders live.
+    pub bake: Option<bool>,
 }
 
 impl ExportOptions {
@@ -46,6 +49,7 @@ impl ExportOptions {
             encoder: Encoder::Auto,
             stems: false,
             midi: false,
+            bake: None,
         }
     }
 }
@@ -270,7 +274,7 @@ fn export_with(
     encoder: Encoder,
     progress: &mut impl FnMut(u32, u32) -> bool,
 ) -> anyhow::Result<()> {
-    let (resolved, video) = video_of(scene, kit)?;
+    let (_, video) = video_of(scene, kit)?;
     let (width, height) = output_size(video.width, video.height, options.scale);
     let fps = video.fps.max(1);
     let mut output = options.output.clone();
@@ -358,33 +362,13 @@ fn export_with(
     let mut renderer = Renderer::new(device, width, height);
     let mut readback = Readback::new(device, width, height, FRAMES_IN_FLIGHT);
     // Drawn from a run that keeps pace with the frames, exactly as the preview plays.
-    let mut world = World::build(scene, &resolved, &kit.sims);
-    let mut log = Log::default();
-    // Settings that follow sound read it from the physics, as the preview does.
-    let follow: Option<std::sync::Arc<dyn bpe_runtime::SoundAt>> = bpe_sound::follows_sound(scene).then(|| {
-        std::sync::Arc::new(bpe_sound::ControlSampler::new(scene, &resolved))
-            as std::sync::Arc<dyn bpe_runtime::SoundAt>
-    });
-    // And settings that sense light read the light probe, as the preview does.
-    let light = bpe_kit::sensing::uses_light(scene).then(|| bpe_kit::sensing::probe(scene, &resolved, follow.clone()));
-    let mut frame = Frame::default();
+    let mut maker = FrameMaker::new(scene, kit);
+    let bake = bake_for(scene, kit, options.bake);
     let mut failed = None;
     for index in 0..total {
         let time = index as f64 / fps as f64;
-        world.advance_to(time, &kit.sims, &mut log);
-        build_frame_sensing(
-            scene,
-            &resolved,
-            &world,
-            &log,
-            time,
-            &kit.draws,
-            follow.as_deref(),
-            light.as_deref(),
-            &mut frame,
-        );
-        frame.cull();
-        renderer.render(device, queue, &frame);
+        let samples = maker.samples(time, fps, bake.as_ref());
+        renderer.render_samples(device, queue, &samples);
         let ready = match readback.push(device, queue, &renderer) {
             Ok(ready) => ready,
             Err(error) => {
@@ -433,6 +417,157 @@ fn export_with(
         bail!("ffmpeg failed ({status}): {}", stderr.join().unwrap_or_default());
     }
     Ok(())
+}
+
+/// How `scene` bakes in a video: `choice` (the export window's or the command line's) or, with
+/// none, the Lighting card's On export. `None` renders live; a scene without a Lighting card
+/// always renders live (there is nothing to bake).
+pub fn bake_for(scene: &Scene, kit: &Kit, choice: Option<bool>) -> Option<bpe_gfx::bake::Bake> {
+    let card = bpe_kit::modules::lighting::lighting_of(scene, &kit.registry)?;
+    let wanted = choice.unwrap_or(card.on_export == bpe_kit::modules::lighting::OnExport::Bake);
+    wanted.then(|| {
+        let mut forced = card.clone();
+        forced.on_export = bpe_kit::modules::lighting::OnExport::Bake;
+        forced.bake().expect("asked to bake")
+    })
+}
+
+/// Builds a scene's frames in order from one run of its physics, as the export draws them: a
+/// frame at a moment, or a baked frame's samples (lighting part 3), each at its own moment
+/// within the shutter.
+pub struct FrameMaker<'a> {
+    scene: &'a Scene,
+    kit: &'a Kit,
+    resolved: bpe_core::Resolved,
+    world: World,
+    log: Log,
+    follow: Option<std::sync::Arc<dyn bpe_runtime::SoundAt>>,
+    light: Option<std::sync::Arc<dyn bpe_runtime::LightAt>>,
+}
+
+impl<'a> FrameMaker<'a> {
+    pub fn new(scene: &'a Scene, kit: &'a Kit) -> Self {
+        let resolved = bpe_kit::resolve_scene(scene, &kit.registry);
+        let world = World::build(scene, &resolved, &kit.sims);
+        // Settings that follow sound read it from the physics, as the preview does.
+        let follow: Option<std::sync::Arc<dyn bpe_runtime::SoundAt>> = bpe_sound::follows_sound(scene).then(|| {
+            std::sync::Arc::new(bpe_sound::ControlSampler::new(scene, &resolved))
+                as std::sync::Arc<dyn bpe_runtime::SoundAt>
+        });
+        // And settings that sense light read the light probe, as the preview does.
+        let light =
+            bpe_kit::sensing::uses_light(scene).then(|| bpe_kit::sensing::probe(scene, &resolved, follow.clone()));
+        FrameMaker { scene, kit, resolved, world, log: Log::default(), follow, light }
+    }
+
+    /// The frame at `time` (never earlier than the last asked for: the physics runs forward).
+    pub fn frame(&mut self, time: f64) -> Frame {
+        self.world.advance_to(time, &self.kit.sims, &mut self.log);
+        self.build(time)
+    }
+
+    fn build(&self, time: f64) -> Frame {
+        let mut frame = Frame::default();
+        build_frame_sensing(
+            self.scene,
+            &self.resolved,
+            &self.world,
+            &self.log,
+            time,
+            &self.kit.draws,
+            self.follow.as_deref(),
+            self.light.as_deref(),
+            &mut frame,
+        );
+        frame.cull();
+        frame
+    }
+
+    /// The frame at `time`, or with `bake` its samples, oldest first (the last at `time`).
+    pub fn samples(&mut self, time: f64, fps: u32, bake: Option<&bpe_gfx::bake::Bake>) -> Vec<Frame> {
+        let Some(bake) = bake else { return vec![self.frame(time)] };
+        let rate = self.world.steps_per_second;
+        let mut frames = Vec::with_capacity(bake.samples.max(1) as usize);
+        for moment in bpe_gfx::bake::moments(time, fps, rate, bake) {
+            // A moment between two steps draws the later step with the balls moved back.
+            let step_time = moment.step as f64 / rate as f64;
+            self.world.advance_to(step_time.max(self.world.time()), &self.kit.sims, &mut self.log);
+            let mut frame = match moment.between {
+                Some(a) if self.world.step == moment.step => {
+                    let between = self.world.set_between(a);
+                    let frame = self.build(moment.time);
+                    self.world.restore_between(between);
+                    frame
+                }
+                _ => self.build(moment.time),
+            };
+            frame.bake = Some(bpe_gfx::bake::BakeSample { index: frames.len() as u32, count: bake.samples.max(1) });
+            frames.push(frame);
+        }
+        frames
+    }
+}
+
+/// Draws the frame at `time` as the export would (`bake` as in [`ExportOptions::bake`]), at
+/// `scale` of the video's size: its RGBA pixels, its size and how long the frame itself took.
+/// Effects that remember (and glow in the dark) need the frames before: as many seconds of them
+/// as the scene remembers are drawn first, unbaked but at the bake's quality, and not timed.
+/// Setting `stop` gives up between frames.
+#[allow(clippy::too_many_arguments)]
+pub fn final_frame(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    scene: &Scene,
+    kit: &Kit,
+    time: f64,
+    scale: f32,
+    bake: Option<bool>,
+    stop: &std::sync::atomic::AtomicBool,
+) -> anyhow::Result<(Vec<u8>, (u32, u32), f32)> {
+    let (_, video) = video_of(scene, kit)?;
+    let (width, height) = output_size(video.width, video.height, scale);
+    let fps = video.fps.max(1);
+    let mut renderer = Renderer::new(device, width, height);
+    let mut maker = FrameMaker::new(scene, kit);
+    let bake = bake_for(scene, kit, bake);
+    let stopped = || stop.load(std::sync::atomic::Ordering::Relaxed);
+    let last = (time * fps as f64).round() as u32;
+    let earliest = ((time - bpe_gfx::effects::MAX_MEMORY as f64).max(0.0) * fps as f64).ceil() as u32;
+    if earliest < last {
+        // How long the scene remembers, read at the first frame it could need.
+        let mut first = maker.frame(earliest as f64 / fps as f64);
+        let memory = first.memory() as f64;
+        if memory > 0.0 {
+            let from = (((time - memory).max(0.0) * fps as f64).ceil() as u32).max(earliest);
+            for index in from..last {
+                if stopped() {
+                    bail!("stopped");
+                }
+                let mut frame =
+                    if index == earliest { std::mem::take(&mut first) } else { maker.frame(index as f64 / fps as f64) };
+                if bake.is_some()
+                    && let Some(light) = frame.light.as_mut()
+                {
+                    // The bake's quality, so the lighting keeps what it remembers into the bake.
+                    light.settings.more[2] = 4.0;
+                }
+                renderer.render(device, queue, &frame);
+            }
+        }
+    }
+    if stopped() {
+        bail!("stopped");
+    }
+    let started = std::time::Instant::now();
+    let samples = maker.samples(last as f64 / fps as f64, fps, bake.as_ref());
+    renderer.render_samples(device, queue, &samples);
+    let mut readback = Readback::new(device, width, height, 1);
+    let mut pixels = readback.push(device, queue, &renderer)?;
+    if pixels.is_none() {
+        pixels = readback.finish(device)?.pop();
+    }
+    let pixels = pixels.context("the frame did not come back from the graphics card")?;
+    Ok((pixels, (width, height), started.elapsed().as_secs_f32()))
 }
 
 /// Looks for ffmpeg on PATH, next to this program, and where common Windows installers put

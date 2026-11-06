@@ -84,6 +84,8 @@ pub struct Inspector {
     /// What each aiming emitter's aim should warn about, as the playback has it; the studio fills
     /// it every frame for the selected emitter, like `rounds`.
     pub aim_checks: BTreeMap<ThingId, bpe_kit::things::emitter::aim::AimCheck>,
+    /// "Preview final frame" was pressed on the Lighting card (the app draws it).
+    pub final_frame_wanted: bool,
 }
 
 /// The Emitter card.
@@ -579,6 +581,17 @@ pub fn show(
                     && !is_folded(inspector, (id, Some(slot)), "Scenes")
                 {
                     crate::light_scenes_panel::show(ui, inspector, scene, reg, time, &mut edits);
+                }
+                if card_now.kind == bpe_kit::modules::lighting::LIGHTING {
+                    ui.add_space(6.0);
+                    let button = ui.button("Preview final frame").on_hover_text(
+                        "Draws the frame at the playhead exactly as the exported video will show it (baked when \
+                         On export is Bake, at the export window's size), and says how long the whole video \
+                         would take.",
+                    );
+                    if button.clicked() {
+                        inspector.final_frame_wanted = true;
+                    }
                 }
             });
         }
@@ -2494,6 +2507,20 @@ mod tests {
         h.get_by_label("Delete").click();
         h.run();
         assert_eq!(names(h.state()), ["Scene 2"]);
+    }
+
+    #[test]
+    fn the_lighting_card_asks_for_a_final_frame() {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        bpe_kit::things::rig::add_rig(&mut scene, &reg, ThingId::ROOT).unwrap();
+        let mut h = harness_of(scene, Some(ThingId::ROOT));
+        assert!(!h.state().inspector.final_frame_wanted);
+        let button = h.get_by_label("Preview final frame");
+        button.scroll_to_me();
+        button.click();
+        h.run();
+        assert!(h.state().inspector.final_frame_wanted, "the app opens the final frame");
     }
 
     fn a_root_with_every_slot() -> Scene {

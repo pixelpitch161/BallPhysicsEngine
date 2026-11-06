@@ -196,6 +196,28 @@ and the picture is the front one exactly. The
 editor's `View.stage` (from `Studio.stage_view`, set when the shot is drawn; the World view clears it) maps the
 pointer and handles through the moved camera. Tests: `bpe-gfx/src/lens_tests.rs`, `bpe-kit/tests/stage_camera_pictures.rs`.
 
+Part 3 is in (plan `docs/superpowers/plans/lighting/part3.md`): the **bake** (cinema render) and **glass caustics**.
+The Lighting card's Quality group gains On export (Same as live / Bake), Samples, Light bounces, Bake reflections,
+Motion blur, Shutter, Noise clean-up, and Glass caustics (`LightingGpu.bake`/`bake_more`; `LightingSettings::bake`,
+`lighting_of`, `bake_of`). A baked frame is `Renderer::render_samples` over the frames `bpe_cli::FrameMaker::samples`
+builds: `bpe_gfx::bake::moments` puts each sample within the shutter (the last on the frame), balls between two steps
+are lerped back toward `previous` (`World::set_between`/`restore_between`, never touching the physics), each sample
+moves the camera within the pixel (`bake::jitter`, Halton 2/3), draws at quality code 4 (field full size, 128 shadow
+steps) with `Frame.bake` set (`lighting.wgsl` `baking()`, PCG `rand`: jittered blurred reflections at any roughness,
+`trace_scene` up to 16 deep, one wavelength a sample through Rainbow split, DOF taps ×4), and `accumulate.rs` averages
+them in Rgba32Float; effects, bloom and grade run once on the average (`EffectChain.effect_time` keeps effect memory
+counting frames). In Stage a bake path-traces the bounce light (`fs_trace`: `TRACE_RAYS` cosine rays a pixel through
+`scene_hit`, each hit lit by `lamps_on`, up to Light bounces; `fs_denoise` à-trous steps 1/2/4 when Noise clean-up is
+on; `fs_trace_add` into `bg_glow`), and the light field then leaves its own Bounce out. **Caustics** (live and baked):
+`lighting::caustic_glass` lists see-through spheres that bend light, `photons_per_pair` sizes the photons by Quality,
+and `vs_caustic`/`fs_caustic` (bind group 3) send each light's photons through each glass ball (two refractions, a
+wavelength each with Rainbow split) onto the wall/floor (Stage) or the plane under the ball (Flat), splatted into the
+direct light before it is copied to `bg_glow`. `bpe_cli::bake_for` (the export window's Live / Bake, `ExportOptions.bake`,
+`--bake`/`--live`) and `final_frame` (warm-up then one baked frame, timed); the editor's **Preview final frame**
+button on the Lighting card and the export window's **Test a frame** open `final_frame.rs`'s window. No hardware ray
+tracing: wgpu's ray queries aren't on every card the exe runs on, and the 2D-plus-spheres scene traces fast enough in
+shaders. `tests/bake_pictures.rs` (bpe-cli); `scenes::bake_demo` is test-only.
+
 ## Crate map
 
 Dependencies go bottom to top:

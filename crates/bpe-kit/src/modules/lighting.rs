@@ -101,6 +101,17 @@ impl Quality {
     }
 }
 
+/// How the video's lighting is worked out (lighting part 3).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum OnExport {
+    /// As the editor draws it, at the Quality above.
+    #[default]
+    SameAsLive,
+    /// The cinema render: every frame drawn many times and averaged, with more light bounces,
+    /// deeper reflections and motion blur. Slower.
+    Bake,
+}
+
 /// How the haze moves (lighting part 4).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
 pub enum HazeMoves {
@@ -399,6 +410,39 @@ pub struct LightingSettings {
     /// How many times a reflection bounces between mirror-like balls before it settles for the sky.
     #[setting(label = "Reflection depth", range(1, 1e9), span(1, 6), group = "Quality")]
     pub reflection_depth: u32,
+    /// How much light glass balls focus into bright spots (caustics) on the wall, the floor or the
+    /// picture behind them: 0 none. Rainbow split splits them into colours.
+    #[setting(label = "Glass caustics", span(0, 2), keyframe, group = "Quality")]
+    pub glass_caustics: f32,
+    /// How the video's lighting is worked out: as live, or baked (the cinema render).
+    #[setting(label = "On export", group = "Quality")]
+    pub on_export: OnExport,
+    /// How many times each frame is drawn and averaged: more is smoother and slower.
+    #[setting(label = "Samples", when = "on_export=bake", range(1, 1e9), span(1, 64), group = "Quality")]
+    pub bake_samples: u32,
+    /// How many times light bounces from lit things onto others (with Bounce light above 0).
+    #[setting(label = "Light bounces", when = "on_export=bake", range(0, 1e9), span(0, 6), group = "Quality")]
+    pub light_bounces: u32,
+    /// How many times a reflection bounces between mirror-like things in the bake.
+    #[setting(label = "Bake reflections", when = "on_export=bake", range(1, 1e9), span(1, 16), group = "Quality")]
+    pub bake_reflections: u32,
+    /// Blurs what moves, as a film camera does.
+    #[setting(label = "Motion blur", when = "on_export=bake", group = "Quality")]
+    pub motion_blur: bool,
+    /// How much of each frame's time the shutter is open: more is a longer blur. At most a whole
+    /// frame (the blur can't reach before the frame before).
+    #[setting(
+        label = "Shutter",
+        when = "on_export=bake and motion_blur",
+        range(0, 1),
+        span(0, 1),
+        unit = "of a frame",
+        group = "Quality"
+    )]
+    pub shutter: f32,
+    /// Smooths the grain of the bake's bounced light, keeping edges sharp.
+    #[setting(label = "Noise clean-up", when = "on_export=bake", group = "Quality")]
+    pub clean_up: bool,
     /// What shows the lighting scenes: Off leaves every light as it is.
     #[setting(label = "Scenes play", group = "Scenes")]
     pub scenes_play: ScenesPlay,
@@ -517,6 +561,14 @@ impl Default for LightingSettings {
             glow_colour: Color::rgb(0x7D, 0xFF, 0x9A),
             quality: Quality::Good,
             reflection_depth: 3,
+            glass_caustics: 1.0,
+            on_export: OnExport::SameAsLive,
+            bake_samples: 16,
+            light_bounces: 2,
+            bake_reflections: 8,
+            motion_blur: true,
+            shutter: 0.5,
+            clean_up: true,
             scenes_play: ScenesPlay::Off,
             show_scene: 1,
             scene_every: 4.0,
@@ -612,8 +664,41 @@ impl LightingSettings {
                 finite(self.dof_blur).max(0.0),
                 self.reflection_depth.max(1) as f32,
             ],
+            bake: [
+                self.bake_samples.max(1) as f32,
+                self.light_bounces as f32,
+                self.bake_reflections.max(1) as f32,
+                if self.motion_blur { finite(self.shutter).clamp(0.0, 1.0) } else { 0.0 },
+            ],
+            bake_more: [
+                f32::from(u8::from(self.on_export == OnExport::Bake)),
+                f32::from(u8::from(self.clean_up)),
+                finite(self.glass_caustics),
+                0.0,
+            ],
         }
     }
+
+    /// How the video bakes, when the card asks for it.
+    pub fn bake(&self) -> Option<bpe_gfx::bake::Bake> {
+        (self.on_export == OnExport::Bake).then(|| bpe_gfx::bake::Bake {
+            samples: self.bake_samples.max(1),
+            shutter: if self.motion_blur && self.shutter.is_finite() { self.shutter.clamp(0.0, 1.0) } else { 0.0 },
+        })
+    }
+}
+
+/// The scene's Lighting card's settings (as set, not keyed), when it has one.
+pub fn lighting_of(scene: &bpe_core::Scene, registry: &bpe_core::Registry) -> Option<LightingSettings> {
+    let resolved = bpe_core::resolve(scene, registry);
+    let root = resolved.things.get(&bpe_core::ThingId::ROOT)?;
+    let card = root.slots.get(&SlotId::Lighting)?;
+    (card.kind == LIGHTING).then(|| LightingSettings::from_params(&card.params))
+}
+
+/// How `scene`'s video bakes: `None` with no Lighting card or On export Same as live.
+pub fn bake_of(scene: &bpe_core::Scene, registry: &bpe_core::Registry) -> Option<bpe_gfx::bake::Bake> {
+    lighting_of(scene, registry)?.bake()
 }
 
 impl ModuleKind for LightingKind {

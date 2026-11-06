@@ -39,6 +39,10 @@ struct Lighting {
     more: vec4<f32>,
     // The field's size in texels, world units per field texel, jump step (fs_jump).
     field: vec4<f32>,
+    // Lighting part 3: this sample's index, how many, 1 when baking, light bounces.
+    sample: vec4<f32>,
+    // The bake's path-traced bounce: Bounce light, three spare.
+    trace: vec4<f32>,
 };
 
 struct LightGpu {
@@ -2003,10 +2007,18 @@ fn shade(spot: Spot, p: vec2<f32>, sf: SurfaceGpu, base: vec3<f32>, here: f32, l
         let room_sky = u.ambient.rgb + vec3<f32>(st.sky_top.w);
         var env = sky(blurred) * room_sky;
         if sf.b.z > 1.5 && !NO_MIRRORS {
-            // A rough mirror keeps the sky: blurred balls would need many rays.
-            let k = 1.0 - smoothstep(0.15, 0.35, rough);
-            if k > 0.0 {
-                env = mix(env, trace_scene(spot.p + n * 0.5, r, SHADE_SPHERE), k);
+            if baking() {
+                // The bake (part 3): one ray a sample, turned by the roughness, at any roughness;
+                // the samples average into a blurred reflection.
+                let jit = vec3<f32>(rand(), rand(), rand()) * 2.0 - vec3<f32>(1.0);
+                let turned = normalize(r + jit * (rough * rough * 1.5));
+                env = trace_scene(spot.p + n * 0.5, select(r, turned, dot(turned, n) > 0.0), SHADE_SPHERE);
+            } else {
+                // A rough mirror keeps the sky: blurred balls would need many rays.
+                let k = 1.0 - smoothstep(0.15, 0.35, rough);
+                if k > 0.0 {
+                    env = mix(env, trace_scene(spot.p + n * 0.5, r, SHADE_SPHERE), k);
+                }
             }
         }
         let fe = f0 + (max(vec3<f32>(1.0 - rough), f0) - f0) * edge;
@@ -2104,9 +2116,9 @@ fn trace_scene(o: vec3<f32>, d: vec3<f32>, skip_first: i32) -> vec3<f32> {
     var carried = vec3<f32>(1.0);
     var found = vec3<f32>(0.0);
     let room_sky = u.ambient.rgb + vec3<f32>(st.sky_top.w);
-    let depth = clamp(i32(st.dof.w), 1, 8);
+    let depth = clamp(i32(st.dof.w), 1, 16);
     let stage = in_stage();
-    for (var bounce = 0; bounce < 8; bounce++) {
+    for (var bounce = 0; bounce < 16; bounce++) {
         if bounce >= depth {
             found += carried * sky(rd) * room_sky;
             break;
@@ -2261,6 +2273,18 @@ fn transmitted(p: vec2<f32>, n: vec3<f32>, h: f32, sf: SurfaceGpu, tint: vec3<f3
     let thick = 2.0 * max(h, 0.0) + 8.0;
     let split = max(sf.c.x, 0.0) * 0.04;
     let frost = max(sf.e.x, 0.0) * (16.0 + max(SHADE_BALL.z, h));
+    if baking() && split > 0.0 {
+        // The bake (part 3): one wavelength a sample, which the samples average into a smooth
+        // rainbow (red bends least).
+        let w = rand() * 2.0 - 1.0;
+        let eta = min(1.0 / (ior * (1.0 + split * w)), 1.0);
+        var d = refract(-v, n, eta);
+        if dot(d, d) < 1e-6 {
+            d = reflect(-v, n);
+        }
+        let q = p + d.xy / max(-d.z, 0.15) * thick;
+        return behind_at(q, frost, turn) * spectral(w) * open_light(q) * tint;
+    }
     var col = vec3<f32>(0.0);
     var middle = p;
     for (var ch = 0; ch < 3; ch++) {
@@ -2606,6 +2630,7 @@ fn mirrored(p: vec2<f32>) -> Mirrored {
 @fragment
 fn fs_mix(in: FsIn) -> @location(0) vec4<f32> {
     let ip = vec2<i32>(in.pos.xy);
+    seed_rng(ip, 1u);
     // Interleaved gradient noise (Jimenez): a different turn of frost's taps at each pixel.
     let turn = 6.2831853 * fract(52.9829189 * fract(dot(in.pos.xy, vec2<f32>(0.06711056, 0.00583715))));
     return lit_at(ip, in.uv, turn);
@@ -2662,9 +2687,11 @@ fn fs_dof(in: FsIn) -> @location(0) vec4<f32> {
     let turn = 6.2831853 * fract(52.9829189 * fract(dot(in.pos.xy, vec2<f32>(0.06711056, 0.00583715))));
     var sum = c.rgb;
     var weights = 1.0;
-    for (var k = 0; k < DOF_TAPS; k++) {
+    // The bake takes more taps: smoother bokeh.
+    let taps = select(DOF_TAPS, 4 * DOF_TAPS, baking());
+    for (var k = 0; k < taps; k++) {
         let a = f32(k) * 2.39996 + turn;
-        let r = own * sqrt((f32(k) + 0.5) / f32(DOF_TAPS));
+        let r = own * sqrt((f32(k) + 0.5) / f32(taps));
         let at = clamp(ip + vec2<i32>(round(vec2<f32>(cos(a), sin(a)) * r)), vec2<i32>(0), size - 1);
         let tc = textureLoad(picture, at, 0).rgb;
         // A tap counts only where its own blur reaches this pixel, so a sharp thing isn't smeared
@@ -2773,4 +2800,460 @@ fn fs_floor(in: FsIn) -> @location(0) vec4<f32> {
     }
     amount *= max(st.more.y, 0.0) * open * refl.a;
     return vec4<f32>(mix(lit.rgb, refl.rgb, clamp(amount, 0.0, 1.0)), lit.a);
+}
+
+// ---------- lighting part 3: the bake ----------
+//
+// A baked frame is drawn several times and averaged (Renderer::render_samples); each sample's
+// light passes get its index in `u.sample`, and these random numbers (only used when baking, so
+// the live picture never changes) differ from sample to sample: blurred reflections, rainbows,
+// the path-traced bounce light (`fs_trace`, Stage) and more caustic photons.
+
+var<private> RNG: u32;
+
+fn baking() -> bool {
+    return u.sample.z > 0.5;
+}
+
+// PCG hash (Jarzynski and Olano).
+fn pcg(v: u32) -> u32 {
+    let state = v * 747796405u + 2891336453u;
+    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+// Starts this pixel's random numbers for this sample (`salt` tells passes apart).
+fn seed_rng(ip: vec2<i32>, salt: u32) {
+    RNG = pcg(u32(ip.x) * 1973u + u32(ip.y) * 9277u + u32(u.sample.x) * 26699u + salt * 7919u);
+}
+
+// A random number, 0 to just under 1.
+fn rand() -> f32 {
+    RNG = pcg(RNG);
+    return f32(RNG >> 8u) / 16777216.0;
+}
+
+// A wavelength's colour for `w` from -1 (red) to 1 (violet); it averages to white over w.
+fn spectral(w: f32) -> vec3<f32> {
+    let r = max(1.0 - abs(w + 0.6) / 0.6, 0.0);
+    let g = max(1.0 - abs(w) / 0.6, 0.0);
+    let b = max(1.0 - abs(w - 0.6) / 0.6, 0.0);
+    return vec3<f32>(r * 3.5294, g * 3.3333, b * 3.5294);
+}
+
+// A direction round unit `n`, more often near it (cosine-weighted).
+fn cosine_dir(n: vec3<f32>) -> vec3<f32> {
+    let u1 = rand();
+    let phi = 6.2831853 * rand();
+    let r = sqrt(u1);
+    let up = select(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(1.0, 0.0, 0.0), abs(n.z) > 0.9);
+    let t = normalize(cross(up, n));
+    let b = cross(n, t);
+    return normalize(t * (r * cos(phi)) + b * (r * sin(phi)) + n * sqrt(max(1.0 - u1, 0.0)));
+}
+
+// What a ray meets: 0 nothing, 1 a ball, 2 the wall, 3 the floor, 4 a shape's front; where, its
+// normal, its colour, the ball (-1 none) and its surface.
+struct Hit {
+    what: i32,
+    q: vec3<f32>,
+    n: vec3<f32>,
+    c: vec3<f32>,
+    ball: i32,
+    sf: SurfaceGpu,
+};
+
+// The first thing a ray from `o` along unit `d` meets (ball `skip` left out), as trace_scene finds
+// it.
+fn scene_hit(o: vec3<f32>, d: vec3<f32>, skip: i32) -> Hit {
+    var h: Hit;
+    h.what = 0;
+    h.ball = -1;
+    let ball = hit_ball(o, d, skip);
+    var t = ball.x;
+    var what = select(0, 1, ball.y >= 0.0);
+    if in_stage() {
+        if d.z < -1e-5 {
+            let tw = (-st.room.y - o.z) / d.z;
+            if tw > 1e-3 && tw < t {
+                t = tw;
+                what = 2;
+            }
+        }
+        if st.floor.x > 0.5 && d.y > 1e-5 {
+            let tf = (floor_y() - o.y) / d.y;
+            if tf > 1e-3 && tf < t && (o.z + d.z * tf) >= -st.room.y {
+                t = tf;
+                what = 3;
+            }
+        }
+        if d.z < -1e-5 && o.z > st.room.z {
+            let ts = (st.room.z - o.z) / d.z;
+            if ts > 1e-3 && ts < t && field_on_slab(o + d * ts) < 0.0 {
+                t = ts;
+                what = 4;
+            }
+        }
+    }
+    if what == 0 {
+        return h;
+    }
+    let q = o + d * t;
+    h.what = what;
+    h.q = q;
+    if what == 1 {
+        let at = u32(ball.y);
+        let sp = spheres[at];
+        h.n = normalize(q - vec3<f32>(sp.a.xy, 0.0));
+        let index = u32(max(sp.c.x, 0.0));
+        h.sf = surfaces[select(0u, index, index < u32(st.more.z))];
+        h.c = sp.b.rgb;
+        if h.n.z > 0.2 {
+            h.c = picture_at(vec3<f32>(q.xy, 0.0));
+        }
+        h.ball = i32(at);
+        return h;
+    }
+    h.n = vec3<f32>(0.0, 0.0, 1.0);
+    h.sf = plane_surface(st.floor.w);
+    if what == 3 {
+        h.n = vec3<f32>(0.0, -1.0, 0.0);
+        h.sf = plane_surface(st.floor.z);
+    } else if what == 4 {
+        let uv = world_to_uv(vec2<f32>(q.x, q.y + q.z * st.room.w));
+        let size = vec2<f32>(textureDimensions(surface));
+        h.sf = surface_of(textureLoad(surface, vec2<i32>(clamp(uv, vec2<f32>(0.0), vec2<f32>(0.999)) * size), 0));
+    }
+    h.c = picture_at(q);
+    return h;
+}
+
+// Light `l` toward 3D point `q`: the unit direction to the lamp, how far (1e5 for the sun) and
+// how much of it arrives (falloff, cone, an ultraviolet light's visible share); lasers none.
+struct Toward {
+    dir: vec3<f32>,
+    dist: f32,
+    amount: f32,
+};
+
+fn light_toward(l: LightGpu, q: vec3<f32>) -> Toward {
+    var out: Toward;
+    out.amount = 0.0;
+    out.dir = vec3<f32>(0.0, 0.0, 1.0);
+    out.dist = 1e5;
+    let kind = l.p0.w;
+    if kind > 4.5 {
+        return out;
+    }
+    if kind > 1.5 && kind < 2.5 {
+        let el_sin = clamp(l.p0.z, -1.0, 1.0);
+        out.dir = normalize(vec3<f32>(-l.p3.xy * sqrt(max(1.0 - el_sin * el_sin, 0.0)), el_sin));
+        out.amount = 1.0;
+    } else {
+        let d = source_point(l, q.xy) - q.xy;
+        let to_lamp = vec3<f32>(d, l.p0.z - q.z);
+        let len3 = length(to_lamp);
+        out.amount = falloff(len3, l.p2.x, l.p2.y);
+        if kind > 0.5 && kind < 1.5 {
+            let dist = length(d);
+            let cosine = select(dot(-d / max(dist, 1e-3), l.p3.xy), 1.0, dist <= 1e-3);
+            let e = clamp((cosine - l.p3.w) / max(l.p3.z - l.p3.w, 1e-6), 0.0, 1.0);
+            out.amount *= e * e * (3.0 - 2.0 * e);
+        }
+        out.dir = select(vec3<f32>(0.0, 0.0, 1.0), to_lamp / len3, len3 > 1e-6);
+        out.dist = len3;
+    }
+    if l.p7.y > 0.5 {
+        out.amount *= max(l.p7.z, 0.0);
+    }
+    return out;
+}
+
+// The lamps' light falling on 3D point `q` facing `n` (no ambient: that is light from everywhere
+// already), each shadowed by the balls when it casts shadows.
+fn lamps_on(q: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    var sum = vec3<f32>(0.0);
+    let count = u32(u.more.w);
+    for (var i = 0u; i < count; i++) {
+        let l = lights[i];
+        let to = light_toward(l, q);
+        let ndl = dot(n, to.dir);
+        if to.amount == 0.0 || ndl <= 0.0 {
+            continue;
+        }
+        var vis = vec3<f32>(1.0);
+        if l.p5.w > 0.5 {
+            let ang = max(l.p2.z / max(to.dist, 1.0), 0.01);
+            vis = sphere_shadow(q + n * 0.5, to.dir, to.dist, ang, l.p6.x);
+        }
+        sum += l.p1.rgb * to.amount * ndl * vis;
+    }
+    return sum;
+}
+
+// How many rays a pixel the bake's bounce light takes each sample.
+const TRACE_RAYS: i32 = 2;
+
+// The bake's bounce light in Stage (part 3): from the point each pixel shows (a ball's surface, a
+// shape's front, the wall or floor), cosine-weighted rays walk up to Light bounces hits, each hit
+// lit by the lamps (with the balls' shadows) and carrying its colour on. The light arriving,
+// times Bounce light; the mix adds it as it adds the background's own light.
+@fragment
+fn fs_trace(in: FsIn) -> @location(0) vec4<f32> {
+    let ip = vec2<i32>(in.pos.xy);
+    seed_rng(ip, 17u);
+    let p = uv_to_world(in.uv);
+    let s = textureLoad(surface, ip, 0);
+    var q: vec3<f32>;
+    var n: vec3<f32>;
+    var skip = -1;
+    if s.a > 0.5 {
+        let sf = surface_of(s);
+        let px = u.view.z;
+        let h = height_at(ip);
+        let hx = height_at(ip + vec2<i32>(1, 0)) - height_at(ip - vec2<i32>(1, 0));
+        let hy = height_at(ip + vec2<i32>(0, 1)) - height_at(ip - vec2<i32>(0, 1));
+        var slope = vec2<f32>(hx, hy) / (2.0 * px);
+        if u.camera.w != 0.0 {
+            slope = rotate_by(slope, u.camera.w);
+        }
+        n = normalize(vec3<f32>(-slope, 1.0));
+        q = thing_point(p, h, sf.b.w > 1.5);
+        if sf.b.w > 0.5 && sf.b.w < 1.5 {
+            skip = ball_at(p);
+        }
+    } else {
+        let spot = stage_spot(p);
+        q = spot.p;
+        n = spot.n;
+    }
+    let bounces = clamp(i32(u.sample.w), 1, 16);
+    var sum = vec3<f32>(0.0);
+    for (var r = 0; r < TRACE_RAYS; r++) {
+        var ro = q + n * 0.75;
+        var nn = n;
+        var carried = vec3<f32>(1.0);
+        var sk = skip;
+        for (var b = 0; b < 16; b++) {
+            if b >= bounces {
+                break;
+            }
+            let hit = scene_hit(ro, cosine_dir(nn), sk);
+            if hit.what == 0 {
+                break;
+            }
+            let c = clamp(hit.c, vec3<f32>(0.0), vec3<f32>(0.95));
+            let metal = clamp(hit.sf.a.y, 0.0, 1.0);
+            sum += carried * c * (lamps_on(hit.q, hit.n) * (1.0 - metal) + vec3<f32>(max(hit.sf.e.z, 0.0)));
+            carried *= c * (1.0 - metal);
+            ro = hit.q + hit.n * 0.75;
+            nn = hit.n;
+            sk = hit.ball;
+        }
+    }
+    let out = sum / f32(TRACE_RAYS) * u.trace.x;
+    return vec4<f32>(clamp(out, vec3<f32>(-6.0e4), vec3<f32>(6.0e4)), 0.0);
+}
+
+fn luma(c: vec3<f32>) -> f32 {
+    return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
+// The bake's noise clean-up (part 3): one à-trous pass over `picture` (the traced light), 5 x 5
+// taps `u.field.w` texels apart, each weighed down where the surface picture changes (cover,
+// surface, height) or the light itself jumps; a step of 0 copies.
+fn denoised(pos: vec2<f32>) -> vec4<f32> {
+    let ip = vec2<i32>(pos);
+    let step = i32(u.field.w);
+    let c0 = textureLoad(picture, ip, 0);
+    if step <= 0 {
+        return vec4<f32>(c0.rgb, 0.0);
+    }
+    let s0 = textureLoad(surface, ip, 0);
+    let code0 = surface_code(s0);
+    let l0 = luma(c0.rgb);
+    let size = vec2<i32>(textureDimensions(picture));
+    let kernel = array<f32, 3>(0.375, 0.25, 0.0625);
+    let height_scale = u.view.z * 3.0 * f32(step) + 1.0;
+    var sum = vec3<f32>(0.0);
+    var weights = 0.0;
+    for (var dy = -2; dy <= 2; dy++) {
+        for (var dx = -2; dx <= 2; dx++) {
+            let at = clamp(ip + vec2<i32>(dx, dy) * step, vec2<i32>(0), size - 1);
+            let c = textureLoad(picture, at, 0).rgb;
+            let sq = textureLoad(surface, at, 0);
+            var w = kernel[abs(dx)] * kernel[abs(dy)];
+            w *= exp(-abs(sq.a - s0.a) * 8.0);
+            w *= select(0.1, 1.0, abs(surface_code(sq) - code0) < 0.5);
+            w *= exp(-abs(sq.g - s0.g) / height_scale);
+            w *= exp(-abs(luma(c) - l0) / (0.5 * abs(l0) + 0.05));
+            sum += c * w;
+            weights += w;
+        }
+    }
+    return vec4<f32>(sum / max(weights, 1e-6), 0.0);
+}
+
+@fragment
+fn fs_denoise(in: FsIn) -> @location(0) vec4<f32> {
+    return denoised(in.pos.xy);
+}
+
+// The last clean-up pass (or the copy), added into the background-light picture.
+@fragment
+fn fs_trace_add(in: FsIn) -> @location(0) vec4<f32> {
+    return denoised(in.pos.xy);
+}
+
+// ---------- caustics (part 3): light focused through glass balls ----------
+
+struct CausticU {
+    // Photons a (light, glass ball) pair, glass balls, lights, 0.
+    counts: vec4<f32>,
+    // World units per output pixel, this sample's turn of the photons, 1 when baking, Glass
+    // caustics.
+    more: vec4<f32>,
+};
+
+struct CausticGlass {
+    // Centre xy, radius, see-through.
+    a: vec4<f32>,
+    // The colour it lets through (normalised, linear rgb), bends light.
+    b: vec4<f32>,
+    // Rainbow split, frost, two spare.
+    c: vec4<f32>,
+};
+
+@group(3) @binding(0) var<uniform> cu: CausticU;
+@group(3) @binding(1) var<storage, read> glass: array<CausticGlass>;
+
+struct CausticOut {
+    @builtin(position) pos: vec4<f32>,
+    // Where in the photon's soft disc (-1 to 1 across).
+    @location(0) local: vec2<f32>,
+    // Its light, already over the disc's area.
+    @location(1) power: vec3<f32>,
+};
+
+// Photon `k`: from its light toward a point of its glass ball's disc (a Fibonacci spiral), bent
+// in and out of the sphere (its own wavelength with Rainbow split), landing on the wall, the floor
+// (Stage) or the plane under the ball (Flat); drawn as a small soft disc where that point shows.
+@vertex
+fn vs_caustic(@builtin(vertex_index) vi: u32, @builtin(instance_index) k: u32) -> CausticOut {
+    var out: CausticOut;
+    out.pos = vec4<f32>(4.0, 4.0, 0.5, 1.0);
+    out.local = vec2<f32>(0.0);
+    out.power = vec3<f32>(0.0);
+    let per = max(u32(cu.counts.x), 1u);
+    let balls = max(u32(cu.counts.y), 1u);
+    let pair = k / per;
+    let j = k % per;
+    let li = pair / balls;
+    let gi = pair % balls;
+    if li >= u32(cu.counts.z) {
+        return out;
+    }
+    let l = lights[li];
+    let g = glass[gi];
+    let c = vec3<f32>(g.a.xy, 0.0);
+    let r = g.a.z;
+    let to = light_toward(l, c);
+    if to.amount == 0.0 || r <= 0.0 {
+        return out;
+    }
+    let sun = to.dist >= 1e5 - 1.0;
+    if !sun && to.dist <= r * 1.02 {
+        return out;
+    }
+    let dir = -to.dir;
+    let up = select(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(1.0, 0.0, 0.0), abs(dir.z) > 0.9);
+    let ax = normalize(cross(dir, up));
+    let ay = cross(dir, ax);
+    let ang = f32(j) * 2.39996323 + cu.more.y;
+    let rad = r * 0.999 * sqrt((f32(j) + 0.5) / f32(per));
+    let aim_at = c + (ax * cos(ang) + ay * sin(ang)) * rad;
+    var o = c - dir * (4.0 * r) + (aim_at - c);
+    var rd = dir;
+    if !sun {
+        o = c + to.dir * to.dist;
+        rd = normalize(aim_at - o);
+    }
+    let oc = o - c;
+    let b = dot(oc, rd);
+    let disc = b * b - (dot(oc, oc) - r * r);
+    if disc < 0.0 {
+        return out;
+    }
+    let p1 = o + rd * (-b - sqrt(disc));
+    let n1 = (p1 - c) / r;
+    // Its wavelength: -1 red to 1 violet, red bending least.
+    RNG = pcg(k * 7919u + u32(cu.more.y * 1000.0));
+    let w = select(0.0, rand() * 2.0 - 1.0, g.c.x > 0.0);
+    let eta = max(g.b.w * (1.0 + max(g.c.x, 0.0) * 0.04 * w), 1.0001);
+    let d2 = refract(rd, n1, 1.0 / eta);
+    if dot(d2, d2) < 1e-6 {
+        return out;
+    }
+    let p2 = p1 + d2 * (-2.0 * dot(p1 - c, d2));
+    let n2 = (p2 - c) / r;
+    let d3 = refract(d2, -n2, eta);
+    if dot(d3, d3) < 1e-6 {
+        return out;
+    }
+    // Where it lands.
+    var t = 1e30;
+    var on_floor = false;
+    if in_stage() {
+        if d3.z < -1e-5 {
+            let tw = (-st.room.y - p2.z) / d3.z;
+            if tw > 0.0 {
+                t = tw;
+            }
+        }
+        if st.floor.x > 0.5 && d3.y > 1e-5 && st.room.w > LEAST_K {
+            let tf = (floor_y() - p2.y) / d3.y;
+            if tf > 0.0 && tf < t && (p2.z + d3.z * tf) >= -st.room.y {
+                t = tf;
+                on_floor = true;
+            }
+        }
+    } else if d3.z < -1e-5 {
+        t = (-r - p2.z) / d3.z;
+    }
+    if t >= 1e29 {
+        return out;
+    }
+    let q = p2 + d3 * t;
+    let px = cu.more.x;
+    let radius = max(2.0 * r * sqrt(3.14159265 / f32(per)), 1.5 * px) * (1.0 + 4.0 * max(g.c.y, 0.0));
+    var power = l.p1.rgb * to.amount * (3.14159265 * r * r / f32(per));
+    power *= clamp(g.a.w, 0.0, 1.0) * 0.92 * g.b.rgb * cu.more.w;
+    if g.c.x > 0.0 {
+        power *= spectral(w);
+    }
+    power *= 3.0 / (3.14159265 * radius * radius);
+    let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u)) * 2.0 - vec2<f32>(1.0);
+    let squash = select(1.0, st.room.w, on_floor);
+    let at = vec2<f32>(q.x, q.y + q.z * st.room.w) + vec2<f32>(corner.x, corner.y * squash) * radius;
+    let uv = world_to_uv(at);
+    out.pos = vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.5, 1.0);
+    out.local = corner;
+    out.power = power;
+    return out;
+}
+
+@fragment
+fn fs_caustic(in: CausticOut) -> @location(0) vec4<f32> {
+    let d = dot(in.local, in.local);
+    if d >= 1.0 {
+        discard;
+    }
+    let s = textureLoad(surface, vec2<i32>(in.pos.xy), 0);
+    // Nothing in front: in Stage anything covering the wall, in Flat a ball (it has height).
+    var open = 1.0 - clamp(s.g * 0.5, 0.0, 1.0);
+    if in_stage() {
+        open = 1.0 - clamp(s.a, 0.0, 1.0);
+    }
+    let k = (1.0 - d) * (1.0 - d);
+    return vec4<f32>(in.power * k * open, 0.0);
 }

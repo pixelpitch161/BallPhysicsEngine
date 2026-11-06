@@ -38,6 +38,10 @@ struct Uniform {
     shadows: [f32; 4],
     more: [f32; 4],
     field: [f32; 4],
+    /// Lighting part 3: this sample's index, how many, 1 when baking, light bounces.
+    sample: [f32; 4],
+    /// The bake's traced bounce: Bounce light, three spare.
+    trace: [f32; 4],
 }
 
 /// What the surfaces and the stage read (see `Stage` in lighting.wgsl, part 2a).
@@ -56,6 +60,68 @@ struct StageUniform {
     /// How many mirror walls, 1 with a behind picture, 1 with the background's own light, 1 in
     /// Stage with a light field.
     counts: [f32; 4],
+}
+
+/// What the caustics read (see `CausticU` in lighting.wgsl, part 3).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+struct CausticUniform {
+    counts: [f32; 4],
+    more: [f32; 4],
+}
+
+/// A glass ball the caustics trace light through (see `CausticGlass` in lighting.wgsl).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct CausticGlass {
+    /// Centre xy, radius, see-through.
+    pub a: [f32; 4],
+    /// The colour it lets through (normalised, linear), bends light.
+    pub b: [f32; 4],
+    /// Rainbow split, frost, two spare.
+    pub c: [f32; 4],
+}
+
+/// The balls light goes through to make caustics: see-through (at least 0.05) and bending light.
+pub fn caustic_glass(scene: &LightScene) -> Vec<CausticGlass> {
+    scene
+        .spheres
+        .iter()
+        .filter_map(|sp| {
+            let see = sp.a[3];
+            let index = sp.c[0].max(0.0) as usize;
+            let sf = scene.surfaces.get(index).copied().unwrap_or(SurfaceGpu::MATTE);
+            let ior = sf.e[3];
+            let finite = sp.a.iter().take(3).all(|v| v.is_finite());
+            if !(finite && see >= 0.05 && ior > 1.0001 && sp.a[2] > 0.0) {
+                return None;
+            }
+            let top = sp.b[0].max(sp.b[1]).max(sp.b[2]).max(1e-3);
+            let tint = [0, 1, 2].map(|k| (sp.b[k] / top).clamp(0.0, 1.0));
+            Some(CausticGlass {
+                a: [sp.a[0], sp.a[1], sp.a[2], see.min(1.0)],
+                b: [tint[0], tint[1], tint[2], ior],
+                c: [sf.c[0].max(0.0), sf.e[0].max(0.0), 0.0, 0.0],
+            })
+        })
+        .collect()
+}
+
+/// How many photons each (light, glass ball) pair sends at a Quality (4: the bake, a sample),
+/// fewer when there are many pairs: at most 2^20 a frame live, 2^23 a sample baking, at least 64
+/// a pair.
+pub fn photons_per_pair(quality: f32, pairs: usize) -> u32 {
+    let (mut per, most) = match quality.round() as i32 {
+        i32::MIN..=0 => (1024u32, 1u64 << 20),
+        1 => (4096, 1 << 20),
+        2 => (16384, 1 << 20),
+        3 => (32768, 1 << 20),
+        _ => (65536, 1 << 23),
+    };
+    while per > 64 && per as u64 * pairs as u64 > most {
+        per /= 2;
+    }
+    per
 }
 
 /// The most cells a sphere grid has along a side.
@@ -202,7 +268,9 @@ pub fn gi_steps(quality: f32) -> u32 {
         i32::MIN..=0 => 8,
         1 => 12,
         2 => 16,
-        _ => 24,
+        3 => 24,
+        // Bake (lighting part 3).
+        _ => 32,
     }
 }
 /// How big the field is against the picture, and how many steps a shadow takes, for a Quality.
@@ -211,7 +279,9 @@ pub fn quality_tier(quality: f32) -> (u32, u32) {
         i32::MIN..=0 => (4, 16),
         1 => (2, 32),
         2 => (2, 64),
-        _ => (1, 96),
+        3 => (1, 96),
+        // Bake (lighting part 3): the field at full size, longer shadow marches.
+        _ => (1, 128),
     }
 }
 
@@ -264,6 +334,8 @@ struct Targets {
     /// frame's memory) and the balls' stirring, made the first time they are drawn.
     extras: Option<[(wgpu::Texture, wgpu::TextureView); 2]>,
     stir: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// The bake's bounce light and its clean-up's second picture (part 3), made when first traced.
+    traced: Option<[(wgpu::Texture, wgpu::TextureView); 2]>,
 }
 
 impl Targets {
@@ -299,6 +371,18 @@ pub(crate) struct Lighting {
     dof: wgpu::RenderPipeline,
     /// Mirror walls (part 2b).
     mirror: wgpu::RenderPipeline,
+    /// The bake's bounce light in Stage, its clean-up and the pass adding it (part 3).
+    trace: wgpu::RenderPipeline,
+    denoise: wgpu::RenderPipeline,
+    trace_add: wgpu::RenderPipeline,
+    /// Caustics (part 3): the photons' pipeline, their group 3 and its parts, an empty group 1.
+    caustic: wgpu::RenderPipeline,
+    caustic_layout: wgpu::BindGroupLayout,
+    empty_group: wgpu::BindGroup,
+    caustic_uniform: wgpu::Buffer,
+    glass: GrowableBuffer,
+    /// The clean-up passes' uniforms: steps 1, 2, 4, and 0 (a plain copy).
+    trace_uniforms: Vec<wgpu::Buffer>,
     sampler: wgpu::Sampler,
     /// Surfaces and the stage (group 2 of the mix and floor passes).
     stage_layout: wgpu::BindGroupLayout,
@@ -422,9 +506,10 @@ impl Lighting {
             },
             count: None,
         };
+        // Uniforms, the lights and their segments are read by the caustics' vertex stage too.
         let uniform = |binding| wgpu::BindGroupLayoutEntry {
             binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
                 has_dynamic_offset: false,
@@ -446,8 +531,8 @@ impl Lighting {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
-                storage(6),
-                storage(7),
+                wgpu::BindGroupLayoutEntry { visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ..storage(6) },
+                wgpu::BindGroupLayoutEntry { visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ..storage(7) },
                 tex(8, false),
                 storage(9),
             ],
@@ -549,6 +634,55 @@ impl Lighting {
                 cache: None,
             })
         };
+        // Caustics (part 3): their own uniform and glass list in group 3, nothing in group 1.
+        let empty_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("nothing"), entries: &[] });
+        let caustic_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("caustics layout"),
+            entries: &[uniform(0), wgpu::BindGroupLayoutEntry { visibility: wgpu::ShaderStages::VERTEX, ..storage(1) }],
+        });
+        let caustic_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("caustics pipeline layout"),
+            bind_group_layouts: &[Some(&layout), Some(&empty_layout), Some(&stage_layout), Some(&caustic_layout)],
+            immediate_size: 0,
+        });
+        let add_all = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
+        let caustic = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("caustics"),
+            layout: Some(&caustic_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_caustic"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_caustic"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: HDR_FORMAT,
+                    blend: Some(add_all),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, ..Default::default() },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("lighting sampler"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -617,6 +751,21 @@ impl Lighting {
             floor: make("glossy floor", "fs_floor", three, &[HDR_FORMAT], None),
             dof: make("depth of field", "fs_dof", three, &[HDR_FORMAT], None),
             mirror: make("mirror walls", "fs_mirror", three, &[HDR_FORMAT], None),
+            trace: make("bounce light", "fs_trace", three, &[HDR_FORMAT], None),
+            denoise: make("bounce clean-up", "fs_denoise", three, &[HDR_FORMAT], None),
+            trace_add: make("bounce light added", "fs_trace_add", three, &[HDR_FORMAT], Some(add_all)),
+            caustic,
+            caustic_layout,
+            empty_group: device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("nothing"),
+                layout: &empty_layout,
+                entries: &[],
+            }),
+            caustic_uniform: uniform_buffer(device, "caustics uniform", std::mem::size_of::<CausticUniform>()),
+            glass: GrowableBuffer::storage("caustic glass"),
+            trace_uniforms: (0..4)
+                .map(|_| uniform_buffer(device, "bounce light uniform", std::mem::size_of::<Uniform>()))
+                .collect(),
             stage_uniform: uniform_buffer(device, "lighting stage uniform", std::mem::size_of::<StageUniform>()),
             stage_layout,
             surfaces: GrowableBuffer::storage("light surfaces"),
@@ -727,6 +876,7 @@ impl Lighting {
             tags: texture(device, "light tags", full, HDR_FORMAT, true),
             extras: None,
             stir: None,
+            traced: None,
             stage: None,
             stage_more: None,
             behind: None,
@@ -812,6 +962,15 @@ impl Lighting {
             return;
         }
         let s = &scene.settings;
+        // Part 3: a baked sample, its bounce light traced in Stage, and caustics.
+        let baking = frame.bake.is_some();
+        let bounce_setting = s.glow[0];
+        let traced = baking && s.stage[0] > 0.5 && bounce_setting != 0.0 && s.bake[1] >= 1.0;
+        let glass = if s.bake_more[2] != 0.0 && !scene.lights.is_empty() { caustic_glass(scene) } else { Vec::new() };
+        let caustics_on = !glass.is_empty();
+        // The background-light picture carries the background's own light, the caustics and the
+        // traced bounce light to the pixels that light themselves (Stage, shiny surfaces).
+        let into_bg = background_glows || caustics_on || traced;
         // A glossy floor mirrors the lit picture: the mix draws into a picture of its own.
         let reflects = s.stage[0] > 0.5 && s.floor[0] > 0.5 && s.floor[2] > 0.5;
         // Depth of field blurs the finished light: one more picture in the chain.
@@ -829,7 +988,7 @@ impl Lighting {
         {
             t.stage_more = Some(texture(device, "lit stage", (t.width, t.height), HDR_FORMAT, false));
         }
-        if background_glows && let Some(t) = self.targets.as_mut().filter(|t| t.bg_glow.is_none()) {
+        if into_bg && let Some(t) = self.targets.as_mut().filter(|t| t.bg_glow.is_none()) {
             t.bg_glow = Some(texture(device, "background light", (t.width, t.height), HDR_FORMAT, true));
         }
         let (_, steps) = quality_tier(s.more[2]);
@@ -845,6 +1004,10 @@ impl Lighting {
             shadows: s.shadows,
             more: [s.more[0], s.more[1], steps as f32, scene.lights.len() as f32],
             field: [fw as f32, fh as f32, world_pixel * divisor as f32, 0.0],
+            sample: frame
+                .bake
+                .map_or([0.0, 1.0, 0.0, 0.0], |b| [b.index as f32, b.count.max(1) as f32, 1.0, s.bake[1].max(0.0)]),
+            trace: [bounce_setting, 0.0, 0.0, 0.0],
         };
         // The jump flood's steps: from half the field's size down to one, then one again.
         let mut jumps = Vec::new();
@@ -855,6 +1018,13 @@ impl Lighting {
         }
         jumps.push(1);
         queue.write_buffer(&self.uniforms[0], 0, bytemuck::bytes_of(&base));
+        if traced {
+            for (b, step) in self.trace_uniforms.iter().zip([1.0, 2.0, 4.0, 0.0]) {
+                let mut u = base;
+                u.field[3] = step;
+                queue.write_buffer(b, 0, bytemuck::bytes_of(&u));
+            }
+        }
         for (i, step) in jumps.iter().enumerate() {
             let mut u = base;
             u.field[3] = *step as f32;
@@ -914,12 +1084,29 @@ impl Lighting {
             if stirring && t.stir.is_none() {
                 t.stir = Some(texture(device, "haze stir", small, GI_FORMAT, false));
             }
+            if traced && t.traced.is_none() {
+                let full = (t.width, t.height);
+                t.traced = Some([
+                    texture(device, "bounce light", full, HDR_FORMAT, false),
+                    texture(device, "bounce light", full, HDR_FORMAT, false),
+                ]);
+            }
         }
 
         // What part 1b draws: the light field (glowing things, bounce light), the bloom, the haze.
         let [bounce, reach, blooms, _] = s.glow;
+        // A Stage bake traces its bounce light: the field then carries only glowing things'. A
+        // bake with no Light bounces has none.
+        let bounce = if traced || (baking && s.bake[1] < 1.0) { 0.0 } else { bounce };
         let field_on = scene.glows || bounce != 0.0;
-        let runs = if field_on && scene.glows && bounce != 0.0 { 2 } else { usize::from(field_on) };
+        // Live, one bounce; baking, Light bounces (each run bounces the one before), at most 16.
+        let bounces = if baking { (s.bake[1].max(0.0) as usize).min(16) } else { 1 };
+        let runs = match () {
+            _ if !field_on => 0,
+            _ if bounce == 0.0 => 1,
+            _ if scene.glows => 1 + bounces,
+            _ => bounces.max(1),
+        };
         let blooms_on = blooms != 0.0;
         // The light in the air is worked out for haze and for smoke that catches beams.
         let haze_on = s.air[..3].iter().any(|c| *c != 0.0) || s.air[3] != 0.0 || scene.smoke;
@@ -975,9 +1162,10 @@ impl Lighting {
                 cascade_uniforms.push(b);
             }
         }
+        let runs_base = 1 + runs.max(2) * MOST_CASCADES as usize;
         let run_uniforms: Vec<wgpu::Buffer> = (0..runs)
             .map(|run| {
-                let b = self.glow_uniform(device, 1 + 2 * MOST_CASCADES as usize + run);
+                let b = self.glow_uniform(device, runs_base + run);
                 let mut u = glow_base;
                 u.cascade[3] = run as f32;
                 queue.write_buffer(&b, 0, bytemuck::bytes_of(&u));
@@ -986,7 +1174,7 @@ impl Lighting {
             .collect();
         let level_uniforms: Vec<wgpu::Buffer> = (1..GLOW_LEVELS as usize)
             .map(|level| {
-                let b = self.glow_uniform(device, 3 + 2 * MOST_CASCADES as usize + level);
+                let b = self.glow_uniform(device, runs_base + runs.max(2) + level);
                 let mut u = glow_base;
                 u.glow[3] = level as f32;
                 queue.write_buffer(&b, 0, bytemuck::bytes_of(&u));
@@ -1025,7 +1213,7 @@ impl Lighting {
             counts: [
                 scene.mirrors.len().min(MOST_MIRRORS) as f32,
                 f32::from(u8::from(has_behind)),
-                f32::from(u8::from(background_glows)),
+                f32::from(u8::from(into_bg)),
                 f32::from(u8::from(stage && field_on)),
             ],
         };
@@ -1035,7 +1223,7 @@ impl Lighting {
         }
         let t = self.targets.as_ref().expect("checked");
         let behind_view = t.behind.as_ref().filter(|_| has_behind).map_or(&t.dummy_colour.1, |b| &b.1);
-        let bg_view = t.bg_glow.as_ref().filter(|_| background_glows).map_or(&t.dummy_colour.1, |b| &b.1);
+        let bg_view = t.bg_glow.as_ref().filter(|_| into_bg).map_or(&t.dummy_colour.1, |b| &b.1);
         let stage_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("lighting stage"),
             layout: &self.stage_layout,
@@ -1164,14 +1352,50 @@ impl Lighting {
 
         // The light from Light things, on surfaces and in the air, added over the background's
         // own light when it gives any.
-        let direct_load = if background_glows { wgpu::LoadOp::Load } else { clear };
-        if let Some((bg, _)) = t.bg_glow.as_ref().filter(|_| background_glows) {
+        // Caustics (part 3): light focused through glass balls, added where it lands, over the
+        // background's own light (or into a cleared picture).
+        if caustics_on {
+            let quality = s.more[2];
+            let lights_n = scene.lights.len();
+            let per = photons_per_pair(quality, lights_n * glass.len());
+            let total = per as u64 * lights_n as u64 * glass.len() as u64;
+            let turn = frame.bake.map_or(0.0, |b| b.index as f32 * 2.399_963);
+            let cu = CausticUniform {
+                counts: [per as f32, glass.len() as f32, lights_n as f32, 0.0],
+                more: [world_pixel, turn, f32::from(u8::from(baking)), s.bake_more[2]],
+            };
+            queue.write_buffer(&self.caustic_uniform, 0, bytemuck::bytes_of(&cu));
+            self.glass.upload(device, queue, bytemuck::cast_slice(&glass));
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("caustics"),
+                layout: &self.caustic_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: self.caustic_uniform.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: buffer(&self.glass) },
+                ],
+            });
+            let load = if background_glows { wgpu::LoadOp::Load } else { clear };
+            let mut p = crate::begin_pass(encoder, &t.direct.1, "caustics", load);
+            p.set_pipeline(&self.caustic);
+            p.set_bind_group(0, &main, &[]);
+            p.set_bind_group(1, &self.empty_group, &[]);
+            p.set_bind_group(2, &stage_group, &[]);
+            p.set_bind_group(3, &group, &[]);
+            p.draw(0..4, 0..total.min(u32::MAX as u64) as u32);
+        }
+        let glows_in_direct = background_glows || caustics_on;
+        let direct_load = if glows_in_direct { wgpu::LoadOp::Load } else { clear };
+        if let Some((bg, bg_v)) = t.bg_glow.as_ref().filter(|_| into_bg) {
             // Kept apart for the stage and shiny surfaces, which light a pixel themselves.
-            encoder.copy_texture_to_texture(
-                t.direct.0.as_image_copy(),
-                bg.as_image_copy(),
-                wgpu::Extent3d { width: t.width.max(1), height: t.height.max(1), depth_or_array_layers: 1 },
-            );
+            if glows_in_direct {
+                encoder.copy_texture_to_texture(
+                    t.direct.0.as_image_copy(),
+                    bg.as_image_copy(),
+                    wgpu::Extent3d { width: t.width.max(1), height: t.height.max(1), depth_or_array_layers: 1 },
+                );
+            } else {
+                drop(crate::begin_pass(encoder, bg_v, "no background light", clear));
+            }
         }
         let g =
             group_in(&self.direct_layout, DIRECT_BINDINGS, &base_glow, &GlowInputs { direct: none, air: none, ..all });
@@ -1262,6 +1486,25 @@ impl Lighting {
             pass(encoder, &[(&extras[memory_to].1, clear)], &self.extras, &[&main, &g], "light extras");
         }
 
+        // The bake's bounce light (part 3, Stage): traced, cleaned up, added to the background light.
+        if traced && let (Some(bg), Some(pics)) = (t.bg_glow.as_ref(), t.traced.as_ref()) {
+            let g = group_in(&self.mix_layout, MIX_BINDINGS, &base_glow, &GlowInputs { above: none, ..all });
+            pass(encoder, &[(&pics[0].1, clear)], &self.trace, &[&main, &g, &stage_group], "bounce light");
+            // Clean-up: steps 1, 2 and 4 (uniforms 0 to 2); without it a plain copy (uniform 3).
+            let steps: &[usize] = if s.bake_more[1] > 0.5 { &[0, 1, 2] } else { &[3] };
+            let mut pic = 0;
+            for (k, &step) in steps.iter().enumerate() {
+                let reads = group_on(&self.trace_uniforms[step], &pics[pic].1, &t.field.1, &t.seeds[from].1);
+                if k + 1 == steps.len() {
+                    let into = [(&bg.1, wgpu::LoadOp::Load)];
+                    pass(encoder, &into, &self.trace_add, &[&reads, &g, &stage_group], "bounce light added");
+                } else {
+                    let into = [(&pics[1 - pic].1, clear)];
+                    pass(encoder, &into, &self.denoise, &[&reads, &g, &stage_group], "bounce clean-up");
+                    pic = 1 - pic;
+                }
+            }
+        }
         // The mix reads the background's own light where the cascades read the one above.
         let g = group_in(&self.mix_layout, MIX_BINDINGS, &base_glow, &GlowInputs { above: bg_view, ..all });
         self.bound = Some([main.clone(), stage_group.clone()]);

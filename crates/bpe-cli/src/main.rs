@@ -22,7 +22,9 @@ Options:
   --encoder NAME   auto (default), cpu, nvidia, amd or intel. auto uses the graphics card's
                    encoder when ffmpeg can, which is much faster, and the CPU otherwise
   --stems          also save each bus and the master as 24-bit WAVs beside the video
-  --midi           also save the notes the shapes played as a MIDI file beside the video";
+  --midi           also save the notes the shapes played as a MIDI file beside the video
+  --bake           bake the lighting (the cinema render), whatever the Lighting card says
+  --live           draw the lighting as the editor does, whatever the Lighting card says";
 
 fn main() {
     if let Err(error) = run() {
@@ -49,6 +51,7 @@ fn run() -> anyhow::Result<()> {
     let mut encoder = Encoder::Auto;
     let mut stems = false;
     let mut midi = false;
+    let mut bake = None;
 
     let mut i = 0;
     let value = |i: &mut usize, flag: &str| -> anyhow::Result<String> {
@@ -60,6 +63,8 @@ fn run() -> anyhow::Result<()> {
             "--new" => new_scene = true,
             "--stems" => stems = true,
             "--midi" => midi = true,
+            "--bake" => bake = Some(true),
+            "--live" => bake = Some(false),
             "--scale" => scale = value(&mut i, "--scale")?.parse().context("--scale needs a number")?,
             "--frames" => frames = Some(value(&mut i, "--frames")?.parse().context("--frames needs a whole number")?),
             "--crf" => crf = value(&mut i, "--crf")?.parse().context("--crf needs a number from 0 to 51")?,
@@ -105,6 +110,7 @@ fn run() -> anyhow::Result<()> {
     options.encoder = encoder;
     options.stems = stems;
     options.midi = midi;
+    options.bake = bake;
     if let Some(ffmpeg) = ffmpeg {
         options.ffmpeg = ffmpeg;
     }

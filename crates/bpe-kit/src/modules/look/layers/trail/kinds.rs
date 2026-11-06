@@ -170,16 +170,20 @@ impl Cut {
 
 /// Ball `ball`'s trail: from `head` (where it is now) back through its history (its samples
 /// and the bounces between them), whose newest sample is `newest_ago` seconds old and whose
-/// samples are `interval` seconds apart, as far as `cut` lets it.
+/// samples are `interval` seconds apart, as far as `cut` lets it. A negative `newest_ago` (a
+/// bake's sample drawn between two steps) leaves out the samples and bounces newer than `head`.
 pub fn path(head: Vec2, history: &History, ball: usize, newest_ago: f32, interval: f32, cut: Cut) -> Path {
     let mut path = Path { points: vec![head], ago: vec![0.0], arc: vec![0.0], corner: vec![false] };
     let time = cut.time();
-    let newest_ago = newest_ago.max(0.0) as f64;
+    let newest_ago = newest_ago as f64;
     // Seconds a step.
     let dt = interval as f64 / history.every() as f64;
     let newest = history.newest_step().unwrap_or(0) as f64;
     for (t, p) in history.trace(ball) {
         let ago = (newest_ago + (newest - t) * dt) as f32;
+        if ago < 0.0 {
+            continue;
+        }
         let (last, last_ago, last_arc) = (path.points[path.len() - 1], path.ago[path.len() - 1], path.length());
         // Samples are taken on whole multiples of `every` steps; bounces are anywhere between.
         let is_corner = t % history.every() as f64 != 0.0;

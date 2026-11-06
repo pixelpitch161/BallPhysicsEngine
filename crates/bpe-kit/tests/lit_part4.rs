@@ -141,12 +141,17 @@ fn a_laser_draws_a_line_along_its_direction_and_nothing_beside_it() {
     set_light(&mut scene, "position", Value::Vec2([-300.0, -300.0]));
     set_light(&mut scene, "direction", n(0.0));
     set_light(&mut scene, "bounces", Value::Int(0));
+    set_light(&mut scene, "colour", Value::Color(Color::rgb(0xff, 0x30, 0x30)));
     let pixels = draw(&mut gpu, &scene, "laser");
     let on = at(&pixels, 0.0, -300.0);
     let beside = at(&pixels, 0.0, -180.0);
     assert!(brightness(on) > brightness(beside) + 80, "on {on:?} beside {beside:?}");
-    // Its colour: the laser's red.
-    assert!(on[0] > on[1] + 40, "{on:?}");
+    // Its colour, red here, round a core so bright it can reach white.
+    let reddest = (-12..=12)
+        .map(|k| at(&pixels, 0.0, -300.0 + k as f32 * 2.0))
+        .max_by_key(|p| p[0] as i32 - p[1] as i32)
+        .unwrap();
+    assert!(reddest[0] as i32 > reddest[1] as i32 + 40, "{on:?}, reddest {reddest:?}");
 }
 
 #[test]
