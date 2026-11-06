@@ -24,6 +24,7 @@ mod look_editor;
 mod mixer;
 mod palettes;
 mod preview;
+mod rules_panel;
 mod selection;
 mod settings;
 mod shape_handles;

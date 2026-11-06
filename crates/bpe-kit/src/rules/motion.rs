@@ -93,7 +93,9 @@ block_kind!(
     "Change motion",
     Do,
     ChangeMotionSettings,
-    "Speeds up, slows, pushes, stops, aims, freezes or moves balls."
+    "Speeds up, slows, pushes, stops, aims, freezes or moves balls.",
+    values = [],
+    from = ["amount", "angle"]
 );
 
 #[derive(Clone, Debug)]

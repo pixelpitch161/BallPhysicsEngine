@@ -14,6 +14,17 @@ enum Icon {
 pub(crate) fn controls(ui: &mut Ui, studio: &mut Studio) {
     ui.horizontal(|ui| {
         ui.set_min_height(40.0);
+        // What the panel below shows: the timeline or the scene's rules.
+        use crate::settings::BottomView;
+        for (view, name, hint) in [
+            (BottomView::Timeline, "Timeline", "Keys, hits and rules over time"),
+            (BottomView::Rules, "Rules", "The scene's rules: what happens when"),
+        ] {
+            if ui.add(style::toggle_button(name, studio.bottom == view)).on_hover_text(hint).clicked() {
+                studio.set_bottom(view);
+            }
+        }
+        ui.add_space(8.0);
         let icon = if studio.playing { Icon::Pause } else { Icon::Play };
         if square_button(ui, icon).on_hover_text("Play or pause (Space)").clicked() {
             studio.set_playing(!studio.playing);

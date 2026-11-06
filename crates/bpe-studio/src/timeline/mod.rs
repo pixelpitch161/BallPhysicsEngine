@@ -115,6 +115,14 @@ impl Ruler {
 pub fn show(ui: &mut Ui, studio: &mut Studio) {
     transport::controls(ui, studio);
     let track = transport::scrub_bar(ui, studio, LABEL_WIDTH + 8.0);
+    if studio.bottom == crate::settings::BottomView::Rules {
+        let outcome = crate::rules_panel::show(ui, studio);
+        studio.separate_edit |= outcome.separate;
+        if let Some(message) = outcome.message {
+            studio.status = message;
+        }
+        return;
+    }
     let mut ruler = Ruler { track, duration: studio.duration().max(0.001), beats: Vec::new() };
     ruler.beats = beat_lines(&ruler, &TempoMap::from_settings(&studio.settings()));
     // Bar numbers along the top of the ruler.
@@ -172,6 +180,9 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
         hits_lane(ui, studio, &ruler);
+        if !studio.scene.rules.is_empty() {
+            rules_lane(ui, studio, &ruler);
+        }
         if groups.is_empty() {
             ui.add_space(6.0);
             let hint = "Right-click a setting and pick Create keyframe. Its lane shows up here under its thing.";
@@ -242,6 +253,46 @@ fn hits_lane(ui: &mut Ui, studio: &Studio, ruler: &Ruler) {
         let x = x as f32;
         let tick = Rect::from_min_max(Pos2::new(x - 1.0, strip.top() + 2.0), Pos2::new(x + 1.0, strip.bottom() - 2.0));
         painter.rect_filled(tick, 0.0, hit_colour(&studio.scene, thing));
+    }
+    playhead(&painter, studio, ruler, rect);
+}
+
+/// The Rules lane, shown while the scene has rules: a tick for every firing of a rule (its last
+/// blocks acting), one per pixel column and rule. Hovering names the rule and the moment.
+fn rules_lane(ui: &mut Ui, studio: &mut Studio, ruler: &Ruler) {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), LANE_HEIGHT), Sense::hover());
+    let name = Rect::from_min_size(rect.min, egui::vec2(LABEL_WIDTH, LANE_HEIGHT));
+    name_cell(ui, name, egui::Label::new(RichText::new("Rules").small().color(style::MUTED)).selectable(false));
+    let strip = strip_of(rect, ruler);
+    let painter = ui.painter_at(rect);
+    paint_beats(&painter, ruler, strip);
+    let rate = studio.playback.world().steps_per_second;
+    let fired = &mut studio.panels.rules.fired;
+    fired.update(studio.revision, studio.playback.log().events(), rate);
+    let mut ticks: BTreeMap<(i32, usize), f64> = BTreeMap::new();
+    for (i, rule) in studio.scene.rules.list.iter().enumerate() {
+        for t in fired.firings(rule) {
+            ticks.entry((ruler.x_of(t).round() as i32, i)).or_insert(t);
+        }
+    }
+    for &(x, _) in ticks.keys() {
+        let x = x as f32;
+        let tick = Rect::from_min_max(Pos2::new(x - 1.0, strip.top() + 2.0), Pos2::new(x + 1.0, strip.bottom() - 2.0));
+        painter.rect_filled(tick, 0.0, style::TEXT);
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::Role::Image, true, format!("Rules lane, {} firings", ticks.len()))
+    });
+    if let Some(p) = response.hover_pos() {
+        let near = ticks
+            .iter()
+            .map(|(&(x, i), &t)| ((x as f32 - p.x).abs(), i, t))
+            .filter(|(d, _, _)| *d <= 4.0)
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        if let Some((_, i, t)) = near {
+            let rule = &studio.scene.rules.list[i].name;
+            response.on_hover_text(format!("{rule} at {}", clock(t)));
+        }
     }
     playhead(&painter, studio, ruler, rect);
 }

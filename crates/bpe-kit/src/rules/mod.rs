@@ -31,6 +31,10 @@ use bpe_runtime::Sims;
 /// Gives a block kind's struct its [`bpe_core::RuleBlockKind`] side from its settings struct.
 macro_rules! block_kind {
     ($kind:ty, $id:literal, $name:literal, $section:ident, $settings:ty, $help:literal) => {
+        $crate::rules::block_kind!($kind, $id, $name, $section, $settings, $help, values = [], from = []);
+    };
+    ($kind:ty, $id:literal, $name:literal, $section:ident, $settings:ty, $help:literal,
+     values = [$($value:literal),*], from = [$($from:literal),*]) => {
         impl bpe_core::RuleBlockKind for $kind {
             fn id(&self) -> &'static str {
                 $id
@@ -46,6 +50,12 @@ macro_rules! block_kind {
             }
             fn settings(&self) -> &'static [bpe_core::SettingDef] {
                 <$settings as bpe_core::Settings>::defs()
+            }
+            fn values(&self) -> &'static [&'static str] {
+                &[$($value),*]
+            }
+            fn firing_keys(&self) -> &'static [&'static str] {
+                &[$($from),*]
             }
         }
     };
