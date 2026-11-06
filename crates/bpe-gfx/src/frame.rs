@@ -872,6 +872,31 @@ pub struct LightScene {
     pub settings: LightingGpu,
     pub lights: Vec<LightGpu>,
     pub segments: Vec<[f32; 4]>,
+    /// What the light pass shows: the lit picture, or (the editor's views) the light alone.
+    pub show: LightShow,
+}
+
+/// What a lit frame shows. Only the editor sets anything but the picture.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum LightShow {
+    /// The lit picture.
+    #[default]
+    Picture,
+    /// The light arriving at each pixel, as it would fall on a white surface.
+    LightOnly,
+    /// How bright that light is, through a heat palette.
+    HeatMap,
+}
+
+impl LightShow {
+    /// Its number in lighting.wgsl.
+    pub fn code(self) -> f32 {
+        match self {
+            Self::Picture => 0.0,
+            Self::LightOnly => 1.0,
+            Self::HeatMap => 2.0,
+        }
+    }
 }
 
 /// The scene's colour grade, run in screen space on the finished, display-ready picture (after

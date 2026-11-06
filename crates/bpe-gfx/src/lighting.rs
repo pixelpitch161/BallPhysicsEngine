@@ -263,7 +263,7 @@ impl Lighting {
         let base = Uniform {
             view: [2.0 / frame.width.max(1) as f32, 2.0 / frame.height.max(1) as f32, world_pixel, frame.time],
             camera: [camera.center.x, camera.center.y, camera.zoom, camera.turn],
-            ambient: [s.ambient[0], s.ambient[1], s.ambient[2], 0.0],
+            ambient: [s.ambient[0], s.ambient[1], s.ambient[2], scene.show.code()],
             shadows: s.shadows,
             more: [s.more[0], s.more[1], steps as f32, scene.lights.len() as f32],
             field: [fw as f32, fh as f32, world_pixel * t.divisor as f32, 0.0],

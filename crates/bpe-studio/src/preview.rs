@@ -3,17 +3,21 @@
 
 use crate::app::{CATCH_UP_BUDGET, Studio};
 use crate::grid::snap_point;
+use crate::lights_panel::{self, LightSource};
 use crate::shape_handles::{self, MenuTarget, Mould};
 use crate::style;
 use bpe_core::{Attach, Registry, Resolved, Scene, Settings, ThingId, Value};
-use bpe_gfx::{Frame, Renderer, build_frame_with, wgpu};
+use bpe_gfx::{Frame, LightShow, Renderer, build_frame_with, wgpu};
 use bpe_kit::BallsSettings;
 use bpe_runtime::{CameraView, Pose, World};
 use eframe::egui::{self, Align2, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, Ui};
 use glam::Vec2;
 
+pub mod light_handles;
 pub mod world_view;
 pub mod zones;
+
+pub use light_handles::LightPart;
 
 pub use world_view::{PreviewMode, WorldNav};
 
@@ -46,6 +50,8 @@ struct Drawn {
     size: (u32, u32),
     /// The World view's own camera and picture size, when it is the one shown.
     look: Option<(CameraView, (u32, u32))>,
+    /// What a lit picture shows, and the soloed lights.
+    light: (LightShow, Vec<LightSource>),
 }
 
 /// Something in the preview that can be dragged.
@@ -73,6 +79,8 @@ pub enum Handle {
     CameraTurn(ThingId),
     /// Set a shape's Distance's Far (true) or Near by its dotted line.
     Zone(ThingId, bpe_core::LayerId, bool),
+    /// A light's lamp, reach, cone, aim, panel corner or strip end.
+    Light(ThingId, LightPart),
 }
 
 impl Handle {
@@ -88,7 +96,8 @@ impl Handle {
             | Handle::CameraMove(id)
             | Handle::CameraZoom(id)
             | Handle::CameraTurn(id)
-            | Handle::Zone(id, _, _) => id,
+            | Handle::Zone(id, _, _)
+            | Handle::Light(id, _) => id,
         }
     }
 
@@ -114,11 +123,13 @@ pub struct Drag {
     /// A rider grabbed by its body: where the pointer was pressed (world pixels) and its ride
     /// offset then. The drag moves the offset by how far the pointer has gone since.
     pub ride: Option<(Vec2, Vec2)>,
+    /// A light's handle: the light as it was when grabbed.
+    pub light: Option<light_handles::LightGrab>,
 }
 
 impl Drag {
     pub fn new(handle: Handle, offset: Vec2) -> Drag {
-        Drag { handle, offset, mould: None, shift: false, ride: None }
+        Drag { handle, offset, mould: None, shift: false, ride: None, light: None }
     }
 }
 
@@ -218,7 +229,17 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     });
     let settings = studio.settings();
     let (video_width, video_height) = (settings.width.max(1), settings.height.max(1));
-    let area = ui.available_rect_before_wrap().shrink(12.0);
+    let mut area = ui.available_rect_before_wrap().shrink(12.0);
+    // A lit scene gets the Show bar under the picture.
+    let lit = studio
+        .scene
+        .card(ThingId::ROOT, bpe_core::SlotId::Lighting)
+        .is_some_and(|c| c.kind == bpe_kit::modules::lighting::LIGHTING);
+    let bar = lit.then(|| {
+        let bar = Rect::from_min_max(egui::pos2(area.left(), area.bottom() - 24.0), area.max);
+        area.max.y -= 32.0;
+        bar
+    });
     let world_mode = studio.preview_mode == PreviewMode::World;
     // The picture's size in screen units, and where it goes on screen.
     let (picture, rect) = if world_mode {
@@ -282,6 +303,15 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     if let Some(done) = studio.aiming() {
         aiming_pill(&ui.painter_at(rect), rect, done);
     }
+    if let Some(bar) = bar {
+        show_bar(ui, bar, studio);
+        if studio.light_show == LightShow::HeatMap {
+            heat_legend(&ui.painter_at(rect), rect);
+        }
+    }
+    if !studio.light_solo.is_empty() {
+        solo_pill(ui, rect, studio, studio.aiming().is_some());
+    }
 
     let camera = if world_mode { studio.world_nav.camera() } else { studio.playback.world().camera };
     let mut view = View { rect, scale: view_scale, camera, world: world_mode };
@@ -324,7 +354,9 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         // Each drag is its own undo step.
         studio.panels.inspector.own_step = true;
         outcome.drag_started = true;
-        outcome.keep_playhead = handle.is_camera() || handle.is_mould() || matches!(handle, Handle::Zone(..));
+        // A light keeps the playhead too: its keys land where it is seen.
+        outcome.keep_playhead =
+            handle.is_camera() || handle.is_mould() || matches!(handle, Handle::Zone(..) | Handle::Light(..));
     }
     if response.drag_stopped() {
         preview.drag = None;
@@ -346,6 +378,11 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
                 step,
                 time,
             );
+            studio.panels.inspector.keyed_edit |= keyed;
+        } else if let (Handle::Light(id, part), Some(grab)) = (drag.handle, drag.light.as_ref()) {
+            let pointer = view.pointer_for(studio, drag.handle, pos);
+            let (time, reg) = (studio.sim_time(), &studio.kit.registry);
+            let keyed = light_handles::apply(&mut studio.scene, reg, id, part, grab, pointer, step, time);
             studio.panels.inspector.keyed_edit |= keyed;
         } else if let Handle::Zone(shape, layer, far) = drag.handle {
             // Near and Far take keys: a keyed one keys at the playhead (and playing pauses).
@@ -395,7 +432,11 @@ fn begin_drag(studio: &Studio, view: &View, handle: Handle, press: Pos2) -> Drag
         _ => None,
     };
     let mould = shape_handles::start(world, handle, at);
-    Drag { mould, ride, ..Drag::new(handle, at - anchor) }
+    let light = match handle {
+        Handle::Light(id, part) => light_handles::grab(studio, id, part, at),
+        _ => None,
+    };
+    Drag { mould, ride, light, ..Drag::new(handle, at - anchor) }
 }
 
 /// The right-click menu on the selected shape: a side's, a corner's or a circle's edge's. What it
@@ -489,11 +530,14 @@ fn draw_picture(
         step: studio.playback.world().step,
         size: renderer.size(),
         look,
+        light: (studio.light_show, studio.light_solo.iter().copied().collect()),
     };
     if drawn.as_ref() != Some(&now) {
+        // Soloed lights: the picture from a copy with the others left out (never the scene's).
+        let solo = lights_panel::soloed(&studio.scene, &studio.resolved, &studio.light_solo);
         build_frame_with(
             &studio.scene,
-            &studio.resolved,
+            solo.as_ref().unwrap_or(&studio.resolved),
             studio.playback.world(),
             studio.playback.log(),
             shown_time,
@@ -510,11 +554,105 @@ fn draw_picture(
             // The grade belongs to the finished video, not to the world seen through a camera.
             frame.grade = Default::default();
         }
+        show_light(frame, studio.light_show);
         frame.cull();
         renderer.render(device, queue, frame);
         *drawn = Some(now);
     }
     catching_up
+}
+
+/// Sets what a lit frame shows. Showing the light alone also leaves out the picture effects,
+/// bloom, exposure and grade, so the light reads as it is.
+fn show_light(frame: &mut Frame, show: LightShow) {
+    let Some(light) = frame.light.as_mut() else { return };
+    light.show = show;
+    if show != LightShow::Picture {
+        frame.effects.retain(|e| e.stage != bpe_gfx::Stage::Picture);
+        frame.bloom = 0.0;
+        frame.exposure = 1.0;
+        frame.grade = Default::default();
+    }
+}
+
+/// The Show bar under a lit picture: the picture, the light alone, or a heat map of it.
+fn show_bar(ui: &mut Ui, bar: Rect, studio: &mut Studio) {
+    let width = 300.0f32.min(bar.width());
+    let at =
+        Rect::from_min_max(egui::pos2(bar.center().x - width / 2.0, bar.top()), egui::pos2(bar.right(), bar.bottom()));
+    let mut row =
+        ui.new_child(egui::UiBuilder::new().max_rect(at).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    row.spacing_mut().item_spacing.x = 2.0;
+    row.label(egui::RichText::new("Show").color(style::MUTED))
+        .on_hover_text("What the preview shows (never the video)");
+    row.add_space(4.0);
+    let shows = [
+        (LightShow::Picture, "Picture", "The lit picture, as the video shows it"),
+        (LightShow::LightOnly, "Light only", "Only the light falling on each spot, as on a white wall"),
+        (
+            LightShow::HeatMap,
+            "Heat map",
+            "How bright the light is: blue dim, green as unlit, red bright, white burnt out",
+        ),
+    ];
+    for (show, name, help) in shows {
+        let on = studio.light_show == show;
+        let b = row.add(style::toggle_button(name, on).min_size(egui::vec2(0.0, 22.0))).on_hover_text(help);
+        if b.clicked() {
+            studio.light_show = show;
+        }
+    }
+}
+
+/// The heat map's key in the picture's bottom-right corner: the colours from no light to burnt
+/// out (the same stops as the light pass's).
+fn heat_legend(painter: &egui::Painter, rect: Rect) {
+    let (w, h) = (150.0, 10.0);
+    let bar = Rect::from_min_size(rect.right_bottom() + egui::vec2(-w - 16.0, -h - 30.0), egui::vec2(w, h));
+    painter.rect_filled(bar.expand2(egui::vec2(8.0, 6.0)).with_max_y(bar.bottom() + 22.0), style::RADIUS, style::PILL);
+    let top = style::HEAT[style::HEAT.len() - 1].0;
+    let mut mesh = egui::Mesh::default();
+    for (k, (at, colour)) in style::HEAT.iter().enumerate() {
+        let x = bar.left() + bar.width() * at / top;
+        mesh.colored_vertex(egui::pos2(x, bar.top()), *colour);
+        mesh.colored_vertex(egui::pos2(x, bar.bottom()), *colour);
+        if k > 0 {
+            let i = (2 * k) as u32;
+            mesh.add_triangle(i - 2, i - 1, i);
+            mesh.add_triangle(i - 1, i + 1, i);
+        }
+    }
+    painter.add(egui::Shape::mesh(mesh));
+    for (at, words) in [(0.0, "0"), (1.0, "1"), (2.0, "2"), (top, "3+")] {
+        let x = bar.left() + bar.width() * at / top;
+        painter.text(
+            egui::pos2(x, bar.bottom() + 3.0),
+            Align2::CENTER_TOP,
+            words,
+            FontId::proportional(10.0),
+            style::TEXT,
+        );
+    }
+}
+
+/// "Solo: Torch, Ambient" in the picture's top-left corner while lights are soloed; a click
+/// ends the solo.
+fn solo_pill(ui: &mut Ui, rect: Rect, studio: &mut Studio, below_aiming: bool) {
+    let names = lights_panel::solo_names(&studio.scene, &studio.kit.registry, &studio.light_solo);
+    if names.is_empty() {
+        return;
+    }
+    let text = format!("Solo: {} (click to end)", names.join(", "));
+    let painter = ui.painter_at(rect);
+    let galley = painter.layout_no_wrap(text, FontId::proportional(13.0), style::TEXT_STRONG);
+    let at = rect.min + egui::vec2(10.0, if below_aiming { 40.0 } else { 10.0 });
+    let back = Rect::from_min_size(at, galley.size() + egui::vec2(16.0, 8.0));
+    let r = ui.interact(back, ui.make_persistent_id("solo pill"), Sense::click());
+    painter.rect_filled(back, style::RADIUS, if r.hovered() { style::RAISED } else { style::PILL });
+    painter.galley(at + egui::vec2(8.0, 4.0), galley, style::TEXT_STRONG);
+    if r.on_hover_text("The preview shows only the soloed lights. Click to see every light again.").clicked() {
+        studio.light_solo.clear();
+    }
 }
 
 /// "Aiming… 37%" in the picture's top-left corner while the background aiming holds it back.
@@ -574,6 +712,10 @@ pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
     {
         return Some(Handle::Aim(*id));
     }
+    // The selected light's handles before the balls: a lamp riding a ball sits on it.
+    if let Some(handle) = light_handles::hit(studio, view, pos, true) {
+        return Some(handle);
+    }
     let mut best: Option<(f32, ThingId)> = None;
     for (id, bodies) in world.bodies.iter() {
         let Some(v) = seen(id) else { continue };
@@ -608,6 +750,10 @@ pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
     // The Sound tab's zone lines come after the balls and the shape's own handles.
     if let Some(zone) = zones::hit(studio, view, pos) {
         return Some(zone);
+    }
+    // The other lights' lamps while the Lights tab is open.
+    if let Some(handle) = light_handles::hit(studio, view, pos, false) {
+        return Some(handle);
     }
     world
         .walls
@@ -716,6 +862,12 @@ pub fn apply_drag(
         }
         // Applied by the preview itself, with the playhead (see `zones::apply`).
         Handle::Zone(..) => {}
+        Handle::Light(id, part) => {
+            return match drag.light.as_ref() {
+                Some(grab) => light_handles::apply(scene, reg, id, part, grab, pointer, step, time),
+                None => false,
+            };
+        }
     }
     false
 }
@@ -835,6 +987,7 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
             );
         }
     }
+    light_handles::draw(&painter, studio, view, active, selected);
 }
 
 /// The most found ways a selected emitter's latest round shows in the preview.

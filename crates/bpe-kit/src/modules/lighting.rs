@@ -73,8 +73,11 @@ pub struct LightingSettings {
     /// The light everywhere, even where no lamp reaches.
     #[setting(label = "Ambient colour", keyframe, group = "Room")]
     pub ambient_colour: Color,
+    /// Whether the light everywhere is on (the Lights tab's M on Ambient).
+    #[setting(label = "Ambient on", group = "Room")]
+    pub ambient_on: bool,
     /// How bright the light everywhere is: 0 is darkness but for the lamps, 1 is as unlit.
-    #[setting(label = "Ambient", span(0, 1), simple, keyframe, group = "Room")]
+    #[setting(label = "Ambient", when = "ambient_on", span(0, 1), simple, keyframe, group = "Room")]
     pub ambient: f32,
     /// How much the background takes the light: 0 leaves it as it is.
     #[setting(label = "Background takes light", span(0, 1), keyframe, group = "Room")]
@@ -174,6 +177,7 @@ impl Default for LightingSettings {
         Self {
             depth: Depth::Flat2D,
             ambient_colour: Color::WHITE,
+            ambient_on: true,
             ambient: 0.25,
             background_lit: 1.0,
             shadow_style: ShadowStyle::Soft,
@@ -200,8 +204,9 @@ impl LightingSettings {
     /// The card as the renderer reads it.
     pub fn gpu(&self) -> LightingGpu {
         let a = self.ambient_colour.to_linear();
+        let ambient = if self.ambient_on { self.ambient } else { 0.0 };
         LightingGpu {
-            ambient: [a[0] * self.ambient, a[1] * self.ambient, a[2] * self.ambient, self.background_lit],
+            ambient: [a[0] * ambient, a[1] * ambient, a[2] * ambient, self.background_lit],
             shadows: [self.shadow_style.code(), self.shadow_softness, self.shadow_length, self.contact],
             more: [self.contact_reach, self.toon_steps.max(1) as f32, self.quality.code(), 0.0],
         }
@@ -226,5 +231,19 @@ impl ModuleKind for LightingKind {
     }
     fn fits(&self, thing_kind: &str) -> bool {
         thing_kind == "scene"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ambient_off_sends_no_ambient_and_keeps_its_strength() {
+        let on = LightingSettings { ambient: 0.4, ..LightingSettings::default() };
+        assert!((on.gpu().ambient[1] - 0.4).abs() < 1e-6);
+        let off = LightingSettings { ambient_on: false, ..on.clone() };
+        assert_eq!(&off.gpu().ambient[..3], &[0.0; 3]);
+        assert_eq!(off.ambient, 0.4, "the strength is kept for when it is on again");
     }
 }

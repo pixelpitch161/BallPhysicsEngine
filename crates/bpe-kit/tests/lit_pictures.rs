@@ -35,8 +35,16 @@ fn frame_of(scene: &Scene, reg: &bpe_kit::Kit, t: f64) -> Frame {
 }
 
 fn draw(gpu: &mut Gpu, scene: &Scene, name: &str) -> Vec<u8> {
+    draw_showing(gpu, scene, name, bpe_gfx::LightShow::Picture)
+}
+
+/// [`draw`] with the light pass showing `show` (the editor's views of the light).
+fn draw_showing(gpu: &mut Gpu, scene: &Scene, name: &str, show: bpe_gfx::LightShow) -> Vec<u8> {
     let kit = kit();
-    let frame = frame_of(scene, &kit, 0.0);
+    let mut frame = frame_of(scene, &kit, 0.0);
+    if let Some(light) = frame.light.as_mut() {
+        light.show = show;
+    }
     gpu.renderer.render(&gpu.device, &gpu.queue, &frame);
     if gpu.renderer.programs_waiting() {
         gpu.renderer.render(&gpu.device, &gpu.queue, &frame);
@@ -114,6 +122,55 @@ fn a_lamp_lights_what_is_near_it_and_the_ball_throws_a_shadow_away() {
     // As far from the lamp (520 px), off to the side and out of the shadow.
     let side = at(&pixels, 216.0, -400.0 + 473.0);
     assert!(brightness(behind) + 30 < brightness(side), "behind {behind:?} beside {side:?}");
+}
+
+#[test]
+fn light_only_shows_the_light_falling_with_its_shadows() {
+    use bpe_gfx::LightShow;
+    let Some(mut gpu) = gpu() else { return };
+    let reg = reg();
+    let mut scene = scenes::lit_room(&reg);
+    let picture = draw(&mut gpu, &scene, "show-picture");
+    let shown = draw_showing(&mut gpu, &scene, "show-picture", LightShow::Picture);
+    assert!(picture == shown, "showing the picture is the picture");
+    let light = draw_showing(&mut gpu, &scene, "show-light", LightShow::LightOnly);
+    assert!(light != picture);
+    let near = at(&light, 0.0, -300.0);
+    let far = at(&light, 400.0, 700.0);
+    assert!(brightness(near) > brightness(far) + 60, "near {near:?} far {far:?}");
+    // Grey: the light is white, whatever the background's colour.
+    assert!(near[0].abs_diff(near[2]) <= 12, "{near:?}");
+    let behind = at(&light, 0.0, 120.0);
+    let side = at(&light, 216.0, -400.0 + 473.0);
+    assert!(brightness(behind) + 30 < brightness(side), "the ball's shadow: behind {behind:?} beside {side:?}");
+    // With the lamp off, only the ambient light: the same grey everywhere.
+    set_light(&mut scene, "strength", Value::Number(0.0));
+    let ambient = draw_showing(&mut gpu, &scene, "show-ambient", LightShow::LightOnly);
+    let (a, b) = (at(&ambient, -300.0, -600.0), at(&ambient, 300.0, 700.0));
+    assert!(brightness(a).abs_diff(brightness(b)) <= 6, "{a:?} {b:?}");
+    assert!(brightness(a) > 100 && brightness(a) < 600, "ambient 0.25 is a mid grey: {a:?}");
+}
+
+#[test]
+fn the_heat_map_runs_from_dark_blue_to_hot() {
+    use bpe_gfx::LightShow;
+    let Some(mut gpu) = gpu() else { return };
+    let reg = reg();
+    let mut scene = scenes::lit_room(&reg);
+    set_lighting(&mut scene, "ambient", Value::Number(0.0));
+    set_light(&mut scene, "reach", Value::Number(500.0));
+    set_light(&mut scene, "strength", Value::Number(4.0));
+    let heat = draw_showing(&mut gpu, &scene, "show-heat", LightShow::HeatMap);
+    let dark = at(&heat, 400.0, 800.0);
+    assert!(brightness(dark) <= 6, "no light is black: {dark:?}");
+    let hot = at(&heat, 30.0, -400.0);
+    assert!(hot[0] > 200 && hot[0] >= hot[1] && hot[0] >= hot[2], "a bright pool is red or white: {hot:?}");
+    // As unlit (light 1) is green, halfway between.
+    let mid = (0..=500)
+        .step_by(10)
+        .map(|d| at(&heat, d as f32, -400.0))
+        .find(|p| p[1] as u32 > p[0] as u32 + 40 && p[1] as u32 > p[2] as u32 + 40);
+    assert!(mid.is_some(), "somewhere in the pool the light is about as unlit: green");
 }
 
 #[test]

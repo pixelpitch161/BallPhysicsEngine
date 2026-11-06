@@ -525,7 +525,7 @@ fn follow_band(ui: &mut Ui, def: &SettingDef, value: &Value, response: &Response
         Value::Int(x) => *x as f64,
         _ => 0.0,
     };
-    let (lo, hi) = def.range.or(def.span).unwrap_or((x.min(x + now.amount), x.max(x + now.amount)));
+    let (lo, hi) = def.span.or(def.range).unwrap_or((x.min(x + now.amount), x.max(x + now.amount)));
     let at = |v: f64| {
         let t = if hi > lo { ((v - lo) / (hi - lo)).clamp(0.0, 1.0) } else { 0.0 };
         rail.left() + rail.width() * t as f32
@@ -847,7 +847,7 @@ fn resettable(response: &Response, value: &mut Value, fallback: &Value) -> bool 
     }
 }
 
-fn suffix(unit: &str) -> String {
+pub fn suffix(unit: &str) -> String {
     if unit.is_empty() { String::new() } else { format!(" {unit}") }
 }
 
@@ -883,7 +883,8 @@ pub fn number_feel(span: f64, integer: bool) -> NumberFeel {
 /// (pixels move by whole pixels, other things by hundredths).
 pub fn setting_feel(def: &SettingDef) -> NumberFeel {
     let integer = def.ty == ValueType::Int;
-    match def.range.or(def.span) {
+    // A slider covers the usual span when there is one, so it moves in the span's steps.
+    match def.span.or(def.range) {
         Some((min, max)) => number_feel(max - min, integer),
         None if def.unit.starts_with("px") => number_feel(400.0, integer),
         None => number_feel(2.0, integer),
@@ -931,6 +932,169 @@ pub fn number_slider<N: egui::emath::Numeric>(
     r
 }
 
+/// How far past its usual span a value is: below it (-1), within it (0) or above it (1).
+pub fn past_span(value: f64, (lo, hi): (f64, f64)) -> i8 {
+    if value < lo.min(hi) {
+        -1
+    } else if value > lo.max(hi) {
+        1
+    } else {
+        0
+    }
+}
+
+/// A slider over a setting's usual `span` whose value can go past it (the lighting spec's "no
+/// limits"): dragging the knob moves the value by how far the pointer goes, at the span's rate,
+/// so it keeps going past either end; a click on the rail jumps there; the box beside it takes
+/// any number. Only the hard `range`, when there is one, clamps. Past the span the knob sits at
+/// that end with a small arrow beyond it, and the box is bright with a light border. Both parts
+/// are named by `name`. Integer settings move and land on whole numbers.
+#[allow(clippy::too_many_arguments)]
+pub fn span_slider(
+    ui: &mut Ui,
+    value: &mut f64,
+    span: (f64, f64),
+    range: Option<(f64, f64)>,
+    feel: NumberFeel,
+    integer: bool,
+    unit: String,
+    name: Named,
+) -> Response {
+    let (lo, hi) = (span.0.min(span.1), span.0.max(span.1));
+    let fit = |v: f64| {
+        let v = if feel.step > 0.0 { (v / feel.step).round() * feel.step } else { v };
+        let v = if integer { v.round() } else { v };
+        match range {
+            Some((a, b)) => v.clamp(a.min(b), a.max(b)),
+            None => v,
+        }
+    };
+    // Room for the number box at its widest within the span, so the row never pushes the panel wider.
+    let widest = format!("{}{:.*}{unit}", if lo < 0.0 { "-" } else { "" }, feel.decimals, lo.abs().max(hi.abs()));
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let number = ui.fonts_mut(|f| f.layout_no_wrap(widest, font, style::TEXT).size().x);
+    let room = number + ui.spacing().button_padding.x * 2.0 + ui.spacing().item_spacing.x + 10.0;
+    let width = (ui.available_width() - room).clamp(48.0, 320.0);
+    let height = ui.spacing().interact_size.y;
+    let (rect, mut rail) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click_and_drag());
+    let before = *value;
+    let rate = (hi - lo) / width.max(1.0) as f64;
+    let start_id = rail.id.with("drag start");
+    if rail.drag_started_by(PointerButton::Primary) {
+        ui.ctx().data_mut(|d| d.insert_temp(start_id, (*value, 0.0f64)));
+    }
+    if rail.dragged_by(PointerButton::Primary) {
+        let fine = if ui.input(|i| i.modifiers.shift) { 0.1 } else { 1.0 };
+        let (start, moved) = ui.ctx().data(|d| d.get_temp::<(f64, f64)>(start_id)).unwrap_or((*value, 0.0));
+        let moved = moved + rail.drag_delta().x as f64 * fine;
+        ui.ctx().data_mut(|d| d.insert_temp(start_id, (start, moved)));
+        *value = fit(start + moved * rate);
+    } else if rail.clicked()
+        && let Some(p) = rail.interact_pointer_pos()
+    {
+        let t = ((p.x - rect.left()) / width.max(1.0)).clamp(0.0, 1.0) as f64;
+        *value = fit(lo + t * (hi - lo));
+    }
+    // Keys nudge it by a step, past the ends too.
+    if rail.has_focus() {
+        let (left, right) =
+            ui.input(|i| (i.key_pressed(egui::Key::ArrowLeft) as i32, i.key_pressed(egui::Key::ArrowRight) as i32));
+        if left != right {
+            *value = fit(*value + (right - left) as f64 * feel.step.max(1e-9));
+        }
+    }
+    if *value != before {
+        rail.mark_changed();
+    }
+    let past = past_span(*value, (lo, hi));
+    let t = if hi > lo { ((*value - lo) / (hi - lo)).clamp(0.0, 1.0) as f32 } else { 0.0 };
+    let painter = ui.painter_at(rect.expand(8.0));
+    let y = rect.center().y;
+    let left = rect.left() + 1.0;
+    let right = rect.right() - 7.0;
+    let x = left + (right - left) * t;
+    let groove = egui::Rect::from_x_y_ranges(left..=right, y - 1.0..=y + 1.0);
+    painter.rect_filled(groove, 0.0, style::LINE);
+    let zero = if lo <= 0.0 && hi >= 0.0 && lo < 0.0 { left + (right - left) * (-lo / (hi - lo)) as f32 } else { left };
+    let filled = egui::Rect::from_x_y_ranges(zero.min(x)..=zero.max(x), y - 1.0..=y + 1.0);
+    painter.rect_filled(filled, 0.0, style::SLIDER_FILL);
+    let hot = rail.hovered() || rail.dragged() || rail.has_focus();
+    let knob = egui::Rect::from_center_size(egui::pos2(x, y), Vec2::new(3.0, if hot { 16.0 } else { 14.0 }));
+    painter.rect_filled(knob, 0.0, style::TEXT_STRONG);
+    if past != 0 {
+        // A small arrow just past the end it has gone beyond.
+        let (tip, back) = if past > 0 { (right + 7.0, right + 2.0) } else { (left - 7.0, left - 2.0) };
+        painter.add(egui::Shape::convex_polygon(
+            vec![egui::pos2(tip, y), egui::pos2(back, y - 4.0), egui::pos2(back, y + 4.0)],
+            style::TEXT_STRONG,
+            egui::Stroke::NONE,
+        ));
+    }
+    let words = format!("{:.*}{unit}", feel.decimals, *value);
+    rail.widget_info(|| egui::WidgetInfo::slider(true, *value, &words));
+    let rail = name.on(ui, rail);
+    // Where the rail is, for a following setting's band.
+    let line = egui::Rect::from_x_y_ranges(left..=right, rect.top()..=rect.bottom());
+    ui.ctx().data_mut(|d| d.insert_temp(rail.id.with("rail"), line));
+    let mut typed = *value;
+    let boxed = ui
+        .scope(|ui| {
+            if past != 0 {
+                let w = &mut ui.visuals_mut().widgets;
+                for state in [&mut w.inactive, &mut w.hovered, &mut w.active] {
+                    state.fg_stroke.color = style::TEXT_STRONG;
+                    state.bg_stroke = egui::Stroke::new(1.0, style::TEXT);
+                }
+            }
+            let mut field =
+                DragValue::new(&mut typed).speed(feel.drag_speed).fixed_decimals(feel.decimals).suffix(unit.clone());
+            if let Some((a, b)) = range {
+                field = field.range(a.min(b)..=a.max(b));
+            }
+            ui.add(field)
+        })
+        .inner;
+    let boxed = name.on(ui, boxed);
+    if boxed.changed() {
+        *value = if integer { typed.round() } else { typed };
+    }
+    if past != 0 {
+        boxed.clone().on_hover_text("Past its usual span");
+    }
+    // The slider's own rail rect, for whoever reads `response.rect`.
+    let mut both = rail.union(boxed.clone());
+    if boxed.changed() {
+        both.mark_changed();
+    }
+    both
+}
+
+/// What names a control for the screen reader (and kittest): the label beside it, or words.
+#[derive(Clone, Copy, Debug)]
+pub enum Named<'a> {
+    By(egui::Id),
+    Words(&'a str),
+}
+
+impl Named<'_> {
+    fn on(self, ui: &Ui, r: Response) -> Response {
+        match self {
+            Named::By(id) => r.labelled_by(id),
+            Named::Words(words) => {
+                let words = words.to_owned();
+                ui.ctx().accesskit_node_builder(r.id, |node| node.set_label(words));
+                r
+            }
+        }
+    }
+}
+
+/// The span slider for a setting's number: over its usual span, clamped only by its hard range.
+fn spanned(ui: &mut Ui, def: &SettingDef, x: &mut f64, span: (f64, f64), unit: String, name: egui::Id) -> Response {
+    let integer = def.ty == ValueType::Int;
+    span_slider(ui, x, span, def.range, setting_feel(def), integer, unit, Named::By(name))
+}
+
 fn widget(
     ui: &mut Ui,
     def: &SettingDef,
@@ -942,15 +1106,22 @@ fn widget(
     let unit = suffix(unit);
     let feel = setting_feel(def);
     match (&def.ty, value) {
-        (ValueType::Number, Value::Number(x)) => match def.range {
-            Some(range) => number_slider(ui, x, range, feel, unit).labelled_by(name),
-            None => ui
+        (ValueType::Number, Value::Number(x)) => match (def.span, def.range) {
+            (Some(span), _) => spanned(ui, def, x, span, unit, name),
+            (None, Some(range)) => number_slider(ui, x, range, feel, unit).labelled_by(name),
+            (None, None) => ui
                 .add(DragValue::new(x).speed(feel.drag_speed).fixed_decimals(feel.decimals).suffix(unit))
                 .labelled_by(name),
         },
-        (ValueType::Int, Value::Int(x)) => match def.range {
-            Some(range) => number_slider(ui, x, range, feel, unit).labelled_by(name),
-            None => ui.add(DragValue::new(x).speed(feel.drag_speed).suffix(unit)).labelled_by(name),
+        (ValueType::Int, Value::Int(x)) => match (def.span, def.range) {
+            (Some(span), _) => {
+                let mut v = *x as f64;
+                let r = spanned(ui, def, &mut v, span, unit, name);
+                *x = v.round() as i64;
+                r
+            }
+            (None, Some(range)) => number_slider(ui, x, range, feel, unit).labelled_by(name),
+            (None, None) => ui.add(DragValue::new(x).speed(feel.drag_speed).suffix(unit)).labelled_by(name),
         },
         (ValueType::Bool, Value::Bool(b)) => style::switch(ui, b).labelled_by(name),
         // In a narrow panel y goes under x.
@@ -1711,5 +1882,72 @@ mod tests {
         }
         let speed = bpe_kit::BallsSettings::defs().iter().find(|d| d.key == "velocity").unwrap();
         assert_eq!(setting_feel(speed).step, 1.0, "a speed without a range moves by its usual span");
+    }
+
+    /// A span slider over 0..4 (hard range `range`) holding `value`, named "Amount".
+    fn span_harness(value: f64, range: Option<(f64, f64)>) -> egui_kittest::Harness<'static, f64> {
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(400.0, 80.0))
+            .with_context_setup(style::apply)
+            .build_ui_state(
+                move |ui, v: &mut f64| {
+                    let feel = number_feel(4.0, false);
+                    span_slider(ui, v, (0.0, 4.0), range, feel, false, String::new(), Named::Words("Amount"));
+                },
+                value,
+            );
+        h.run();
+        h
+    }
+
+    fn drag_rail(h: &mut egui_kittest::Harness<'static, f64>, dx: f32) {
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let rail = h
+            .query_all_by_label("Amount")
+            .find(|n| n.accesskit_node().role() == egui::accesskit::Role::Slider)
+            .unwrap()
+            .rect()
+            .center();
+        let press = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        h.hover_at(rail);
+        h.run();
+        h.event(press(rail, true));
+        h.step();
+        for k in 1..=10 {
+            h.event(egui::Event::PointerMoved(rail + egui::vec2(dx * k as f32 / 10.0, 0.0)));
+            h.step();
+        }
+        h.event(press(rail + egui::vec2(dx, 0.0), false));
+        h.run();
+    }
+
+    #[test]
+    fn a_value_past_its_span_shows_as_it_is_and_drags_keep_going() {
+        assert_eq!(past_span(14.0, (0.0, 4.0)), 1);
+        assert_eq!(past_span(-1.0, (0.0, 4.0)), -1);
+        assert_eq!(past_span(4.0, (0.0, 4.0)), 0);
+        let mut h = span_harness(14.0, None);
+        assert_eq!(*h.state(), 14.0, "drawing never pulls it into the span");
+        // From the middle (2) a long drag right goes past the end at the same rate.
+        *h.state_mut() = 2.0;
+        h.run();
+        drag_rail(&mut h, 600.0);
+        assert!(*h.state() > 8.0, "kept going past 4: {}", h.state());
+        drag_rail(&mut h, -2000.0);
+        assert!(*h.state() < 0.0, "and below 0 the other way: {}", h.state());
+    }
+
+    #[test]
+    fn a_hard_range_still_holds() {
+        let mut h = span_harness(2.0, Some((0.0, 5.0)));
+        drag_rail(&mut h, 2000.0);
+        assert_eq!(*h.state(), 5.0);
+        drag_rail(&mut h, -4000.0);
+        assert_eq!(*h.state(), 0.0);
     }
 }

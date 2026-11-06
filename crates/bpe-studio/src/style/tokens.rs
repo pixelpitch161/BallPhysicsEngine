@@ -63,3 +63,15 @@ pub const LANE_NAME_W: f32 = 120.0;
 pub const RADIUS: u8 = 2;
 /// Tree rows only.
 pub const RADIUS_ROW: u8 = 8;
+
+/// The heat map's colours by how bright the light is (1 is as unlit), dark to burnt out. The
+/// light pass (`heat` in lighting.wgsl) uses the same stops.
+pub const HEAT: [(f32, Color32); 7] = [
+    (0.0, Color32::from_rgb(0x00, 0x00, 0x00)),
+    (0.25, Color32::from_rgb(0x1a, 0x2a, 0x9e)),
+    (0.5, Color32::from_rgb(0x19, 0xb4, 0xe6)),
+    (1.0, Color32::from_rgb(0x3c, 0xcf, 0x4e)),
+    (1.5, Color32::from_rgb(0xf2, 0xd2, 0x4b)),
+    (2.0, Color32::from_rgb(0xff, 0x3b, 0x2f)),
+    (3.0, Color32::from_rgb(0xff, 0xff, 0xff)),
+];
