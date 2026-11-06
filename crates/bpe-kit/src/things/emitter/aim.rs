@@ -16,13 +16,13 @@ use glam::Vec2;
 use super::fire::{direction, first_count, launch_order, slot_step, start_offset};
 use super::foci::index;
 use super::sim::emitter_state;
-use super::{Aim, CantReach, EmitterSettings, KIND};
+use super::{Aim, AimArrive, AimLeave, AimWay, CantReach, EmitterSettings, KIND};
 use crate::modules::bounce::sim::BounceState;
 use crate::modules::motion::sim::MotionState;
 use crate::things::shape::{self, sim::ShapeState};
 
 /// The most steps an aimed ball may fly: two minutes at 240 a second.
-const MOST_STEPS: f64 = 120.0 * 240.0;
+pub const MOST_STEPS: f64 = 120.0 * 240.0;
 /// How far off the line through the target a direction may be and still count as through it,
 /// when nothing pulls the ball across its way.
 const THROUGH: f64 = 0.5;
@@ -501,6 +501,12 @@ pub struct AimCheck {
     pub target_moves: bool,
     /// Aiming through bounces, some wall moves (spins, shrinks, slides): fewer balls find a way.
     pub walls_move: bool,
+    /// Aiming through bounces keeping the balls' own directions, gravity, wind or drag bend
+    /// their paths: few speeds pass through the target, so few balls can meet.
+    pub bends_keep: bool,
+    /// The balls have no time to arrive by (Arrive: As soon as all can): those that can't reach
+    /// can't at all.
+    pub untimed: bool,
     /// How many of the next round's balls can't reach in time, of how many.
     pub cant_reach: u32,
     pub of: u32,
@@ -529,9 +535,12 @@ pub fn check(world: &World, me: ThingId) -> Option<AimCheck> {
         // balls and balls of other sizes aren't. The counts are the latest round's.
         let latest = st.aimed.last();
         let walls_move = world.walls.values().any(|w| w.spin != 0.0 || w.growth != 0.0 || w.velocity != Vec2::ZERO);
+        let keep = s.aim_leave == AimLeave::Together && s.aim_way == AimWay::KeepMine;
         return Some(AimCheck {
             no_target: false,
             walls_move,
+            bends_keep: keep && (pull.accel != Vec2::ZERO || pull.drag > 0.0),
+            untimed: s.aim_arrive == AimArrive::AsSoonAsAllCan,
             in_the_way: pull.varies || hits_balls(world, me) || s.vary_size > 0.0 || st.size_varies(),
             target_moves: aim.track.guessed(),
             cant_reach: latest.map_or(0, |r| r.cant_reach()),
@@ -562,6 +571,8 @@ pub fn check(world: &World, me: ThingId) -> Option<AimCheck> {
         in_the_way,
         target_moves: aim.track.guessed(),
         walls_move: false,
+        bends_keep: false,
+        untimed: false,
         cant_reach,
         of: if balls.is_empty() { 0 } else { n },
         skip: !aim.fire_anyway,
