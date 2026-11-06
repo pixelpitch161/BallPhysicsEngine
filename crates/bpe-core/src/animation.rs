@@ -268,7 +268,14 @@ impl Value {
                     })
                     .collect();
                 let (mix, looped) = if half { (b.mix, b.looped) } else { (a.mix, a.looped) };
-                Value::Gradient(Gradient { stops, mix, looped, grain: a.grain, layout: a.layout.clone() })
+                Value::Gradient(Gradient {
+                    stops,
+                    mix,
+                    looped,
+                    grain: a.grain,
+                    layout: a.layout.clone(),
+                    moves: a.moves.clone(),
+                })
             }
             (Value::Gradient(a), Value::Gradient(_)) if t < 0.5 => Value::Gradient(a.clone()),
             (Value::Gradient(_), Value::Gradient(b)) => Value::Gradient(b.clone()),

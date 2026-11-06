@@ -67,7 +67,39 @@ pub fn load(text: &str, reg: &Registry) -> Result<Scene, LoadError> {
     if let Some(last) = scene.things.keys().next_back() {
         scene.next_thing = scene.next_thing.max(last.0 + 1);
     }
+    clean_rules(&mut scene.rules, reg);
     Ok(scene)
+}
+
+/// Keeps one rule per id and one block per id in a rule, drops links from blocks that aren't
+/// there, keeps the next ids past every id in use, and cleans each known block's settings like a
+/// card's (with their from-the-firing parts). Blocks of unknown kinds keep everything, for the
+/// rule's problem mark.
+fn clean_rules(rules: &mut crate::rules::Rules, reg: &Registry) {
+    let mut seen = std::collections::BTreeSet::new();
+    rules.list.retain(|r| seen.insert(r.id));
+    rules.next_rule = rules.next_rule.max(rules.list.iter().map(|r| r.id.0 + 1).max().unwrap_or(0));
+    for rule in &mut rules.list {
+        let mut seen = std::collections::BTreeSet::new();
+        rule.blocks.retain(|b| seen.insert(b.id));
+        rule.next_block = rule.next_block.max(rule.blocks.iter().map(|b| b.id.0 + 1).max().unwrap_or(0));
+        for b in &mut rule.blocks {
+            let mut once = std::collections::BTreeSet::new();
+            b.inputs.retain(|i| seen.contains(i) && *i != b.id && once.insert(*i));
+            let Some(kind) = reg.block(&b.kind) else { continue };
+            let snapshot = b.params.clone();
+            let get = |k: &str| snapshot.get(k).cloned();
+            let keys: Vec<String> = b.params.0.keys().cloned().collect();
+            for key in keys {
+                let v = b.params.remove(&key).expect("listed above");
+                if let Some(def) = crate::rules::block_def(kind, &get, &key)
+                    && def.ty.accepts(&v)
+                {
+                    b.params.set(&key, def.clamp(v));
+                }
+            }
+        }
+    }
 }
 
 /// The file's `format` number, read without caring about anything else in it. Old files have none.
@@ -217,13 +249,13 @@ mod tests {
             }
         }
         let mut r = testkit::registry();
-        r.add_upgrade(11, rename);
+        r.add_upgrade(12, rename);
         let mut s = Scene::empty(&r);
         let b = testkit::push(&mut s, "balls", ThingId::ROOT);
         let text = save(&s);
-        assert!(text.contains("format: 11"), "{text}");
-        assert_eq!(load(&text, &r).unwrap().things[&b].name, s.things[&b].name, "a format 11 file is left");
-        let old = load(&text.replace("format: 11", "format: 10"), &r).unwrap();
+        assert!(text.contains("format: 12"), "{text}");
+        assert_eq!(load(&text, &r).unwrap().things[&b].name, s.things[&b].name, "a format 12 file is left");
+        let old = load(&text.replace("format: 12", "format: 11"), &r).unwrap();
         assert_eq!(old.things[&b].name, format!("{} upgraded", s.things[&b].name));
         assert_eq!(old.format, Scene::FORMAT);
     }
@@ -237,7 +269,7 @@ mod tests {
 
     #[test]
     fn newer_files_are_refused() {
-        let e = load("(format: 12)", &testkit::registry()).unwrap_err();
+        let e = load("(format: 13)", &testkit::registry()).unwrap_err();
         assert_eq!(e.to_string(), "This scene was made with a newer version of Ball Studio");
     }
 
@@ -320,7 +352,7 @@ mod tests {
         let r = testkit::registry();
         let mut s = Scene::empty(&r);
         testkit::push(&mut s, "balls", ThingId::ROOT);
-        let text = save(&s).replacen("format: 11", "format: 7", 1);
+        let text = save(&s).replacen("format: 12", "format: 7", 1);
         assert!(text.contains("format: 7"));
         assert_eq!(load(&text, &r).unwrap(), s);
     }

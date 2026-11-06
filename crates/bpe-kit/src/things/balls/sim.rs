@@ -2,6 +2,7 @@
 
 use bpe_core::vary::{self, BallSpread, Vary};
 use bpe_core::{Params, ResolvedThing, Settings, Thing, ThingId, Value};
+use bpe_runtime::rules::Ruled;
 use bpe_runtime::{Bodies, Log, Pose, ThingSim, World, state, state_mut};
 use glam::Vec2;
 
@@ -33,6 +34,9 @@ pub struct BallsState {
     pub launch: Vec<f32>,
     /// Each body row's own size: its Size, varied and with its Variety share, before any growth.
     pub own_size: Vec<f32>,
+    /// A rule changed some ball's Size the last time the settings changed, so the sizes are
+    /// worked out again when that change ends.
+    pub ruled_size: bool,
 }
 
 impl BallsState {
@@ -302,11 +306,13 @@ pub fn resize_rows(own_size: &mut Vec<f32>, bodies: &mut Bodies, own: Vec<f32>) 
     *own_size = own;
 }
 
-/// Each body row's own size in `st` as its settings and spreads say now.
-fn own_sizes(st: &BallsState, bodies: &Bodies) -> Vec<f32> {
+/// Each body row's own size in `st` as its settings, spreads and the rules' changes to single
+/// balls (`ruled`) say now.
+fn own_sizes(st: &BallsState, bodies: &Bodies, ruled: Option<&Ruled>) -> Vec<f32> {
     (0..bodies.len().min(st.rows.size_factor.len()))
         .map(|row| {
             let size = st.size_at(&st.spread_of(bodies, row));
+            let size = ruled.map_or(size, |r| r.number(row, size));
             let factor = st.rows.size_factor[row];
             if factor == 1.0 { size } else { size * factor }
         })
@@ -338,6 +344,7 @@ impl ThingSim for BallsSim {
             place: places_across(&places),
             launch,
             own_size: Vec::with_capacity(places.len()),
+            ruled_size: false,
             settings,
             rows: BallRows::default(),
             offsets: places,
@@ -386,15 +393,17 @@ impl ThingSim for BallsSim {
     /// Placement and launch speed only matter at the start, so they stay.
     fn settings_changed(&self, thing: ThingId, resolved: &ResolvedThing, world: &mut World) {
         let settings = BallsSettings::from_params(&resolved.params);
+        let ruled = world.ruled(thing, None, "radius");
         let Some(st) = world.states.get_mut(&thing) else { return };
         let st = state_mut::<BallsState>(st.as_mut());
         let varies = own_varies(&resolved.params);
-        if st.size_varies() || varies.iter().any(|v| v.key == "radius") {
+        if st.size_varies() || varies.iter().any(|v| v.key == "radius") || ruled.is_some() || st.ruled_size {
             // Each ball has a size of its own: worked out again from the new ends.
             st.settings = settings;
             st.varies = varies;
+            st.ruled_size = ruled.is_some();
             if let Some(bodies) = world.bodies.get_mut(&thing) {
-                let own = own_sizes(st, bodies);
+                let own = own_sizes(st, bodies, ruled.as_ref());
                 resize_to(st, bodies, own);
             }
             return;
@@ -423,9 +432,10 @@ impl ThingSim for BallsSim {
         if !st.varies.iter().any(|v| v.key == "radius" && v.by.changes()) {
             return;
         }
+        let ruled = world.ruled(thing, None, "radius");
         let (Some(st), Some(bodies)) = (world.states.get_mut(&thing), world.bodies.get_mut(&thing)) else { return };
         let st = state_mut::<BallsState>(st.as_mut());
-        let own = own_sizes(st, bodies);
+        let own = own_sizes(st, bodies, ruled.as_ref());
         resize_to(st, bodies, own);
     }
 

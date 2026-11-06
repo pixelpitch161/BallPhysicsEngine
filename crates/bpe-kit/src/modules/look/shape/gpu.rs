@@ -81,6 +81,9 @@ pub struct ShapeStack {
     pub body_emit: Option<Emit>,
     /// The Body's Heat glow sub-layers: their records follow the Body's.
     pub body_heat: Vec<crate::modules::look::layers::heat::SubHeat>,
+    /// How long after a hit a gradient of the card still shows its Hit wave, 0 when none has
+    /// one ([`bpe_core::gradient_extras::wave_memory`]).
+    pub wave_memory: f32,
 }
 
 /// The shape as it is drawn, in its own units (see `things::shape::draw::wall_form`).
@@ -138,6 +141,7 @@ impl ShapeStack {
             more: Vec::new(),
             body_emit: None,
             body_heat: Vec::new(),
+            wave_memory: bpe_core::gradient_extras::wave_memory(&slot.params),
         };
         for layer in &slot.layers {
             let p = slot.layer_params(layer.id);
@@ -297,6 +301,7 @@ impl ShapeStack {
         self.drawn.iter().any(|(_, d, subs)| d.writes() && subs.iter().any(|s| s.sub.reads_hits() || s.sub.flares()))
             || self.body_emit.is_some_and(|e| e.flare != 0.0)
             || !self.body_heat.is_empty()
+            || self.wave_memory > 0.0
     }
 
     /// The Heat glow whose heat the shape carries (`hit[3]`): the Body's first, else the first

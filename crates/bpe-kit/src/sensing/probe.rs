@@ -116,6 +116,13 @@ impl Probe {
             };
             self.animation.apply(&mut now, time, &inputs);
         }
+        // What the rules changed, as the frame builder applies it.
+        if let Some(rules) = world.rules().filter(|r| r.changes_picture()) {
+            rules.apply_whole(&mut now, time, |_| true);
+            for id in rules.broken() {
+                now.things.remove(&id);
+            }
+        }
         // Gradients' companions, as the frame builder applies them (light colours can be
         // gradients).
         if bpe_core::gradient_extras::any_in(&now) {
@@ -606,6 +613,18 @@ fn layer_colour(params: &bpe_core::Params) -> [f32; 3] {
         [l[0], l[1], l[2]]
     };
     match params.get("colours").or_else(|| params.get("colour")) {
+        // A moving gradient: the average of its moved colours.
+        Some(Value::Gradient(g)) if !g.moves.is_still() => {
+            let baked = g.bake(16);
+            let mut sum = [0.0f32; 3];
+            let n = baked.len() as f32;
+            for c in &baked {
+                for (o, c) in sum.iter_mut().zip(c) {
+                    *o += c / n;
+                }
+            }
+            sum
+        }
         Some(Value::Gradient(g)) if !g.stops.is_empty() => {
             let n = g.stops.len() as f32;
             let mut sum = [0.0f32; 3];

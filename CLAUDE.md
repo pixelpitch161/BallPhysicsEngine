@@ -220,6 +220,26 @@ button on the Lighting card and the export window's **Test a frame** open `final
 tracing: wgpu's ray queries aren't on every card the exe runs on, and the 2D-plus-spheres scene traces fast enough in
 shaders. `tests/bake_pictures.rs` (bpe-cli); `scenes::bake_demo` is test-only.
 
+## Rules (spec `docs/superpowers/specs/2026-11-06-rules-design.md`, plans `docs/superpowers/plans/rules/`)
+
+Part 1 is in (plan `part1.md`, "As built" at its end): the headless engine core. `Scene.rules` (`bpe-core/src/rules/`:
+`Rules`, `Rule { id, name, enabled, blocks }`, `Block { id, kind, inputs, params }`, `BlockSection` When / If / Logic /
+Do, `Who` That / Other / Group / Thing{ball} / Tag / Kind / Anything as `Value::Who`; edits `add_rule` … `link`,
+`set_block_param`; a number setting `k` may take its value from the firing via `k~from`/`~times`/`~plus`; format 12).
+Every block kind is a plugin: core's `RuleBlockKind` (`Registry::add_block`) and the runtime's `BlockSim`
+(`Sims::add_block`); the kit's 14 are in `bpe-kit/src/rules/` (`when.hit/time/beat`, `if.compare/is/chance/every/
+cooldown/only/between`, `logic`, `do.motion/change/break`). The runtime (`bpe-runtime/src/rules/`) runs the **Rules
+stage** at the end of every step (after the history record): each enabled rule without a problem, in order, Logic
+ticks then Whens fire, firings flow depth first, Do blocks queue `Action`s (at most `MOST_ACTIONS` 4096 a rule a
+step, else `busy_at`), and a `Rule` event (tag 10, `b.item` = `rule_item(rule, block)`) is logged per block that
+fired. The actions apply at the next step's start (`World::apply_rule_actions`, before `animate`): motion changes,
+freezes, **Break** (event tag 11, then Remove for a ball; a whole thing loses its wall and drops out of the order and
+the frame) and setting **changes** (`changes.rs`: Set/Add/Multiply with glide, ease and lasts, folded over the keyed
+value from a pristine copy each step so they never compound; physics keys re-prepare the cards, per-ball keys make
+`Slotted.own` states, Size per ball through `World::ruled` in the Balls/Emitter sims, looks per ball in `Worn`,
+whole looks in `build_frame_sensing`). Dice are `rules::dice` (seed, rule, block, step, subject). Nothing changes
+for a scene without enabled rules (goldens, fingerprint); `tests/golden-rules*.txt` pin `scenes::rule_scenes`.
+
 ## Gradients (spec `docs/superpowers/specs/2026-11-06-gradients-design.md`, plans `docs/superpowers/plans/gradients/`)
 
 Part 1 is in (plan `part1.md`): the gradient value (`bpe-core/src/color.rs`) has a **Mix** (`Mix`: Light, the old
@@ -263,6 +283,44 @@ rows; Free points show as dots in the stop colours on the ball view (`look_edito
 in the preview for a selected shape's layers and the background (`preview/free_points.rs`, `Handle::FreePoint`),
 a drag writing the whole `~points` list. Heavy paint maths has one call site per program (llvmpipe inlines it all).
 
+Part 3 is in (plan `part3.md`): **movement**, the Move tab's companions (`gradient_extras::moves()`, each with its
+fold in `SettingDef.group`): Cycle (`~cycle`, `~cycle_shift`), Step on the beat (`~step_every` beats, `~step_glide`),
+Breathe (`~breathe`, `~breathe_speed`, `~breathe_every`), Hue spin (`~hue_speed`, `~hue_turn`), Stops wander
+(`~wander`, `~wander_speed`, `~wander_seed`), Hit wave (`~wave`, `~wave_width`, `~wave_speed`, `~wave_colour` a
+Color), Morph (`~morph`, `~morph_to` a Gradient companion, which has no companions of its own: `split` refuses a base
+that is a companion) and Shape spin (`~spin`, added onto part 2's `~turn`). `apply_moves(resolved, time)` reads the
+beat from the root's tempo (`gradient_extras::Beat::of`, the same as `beat_at`), moves the stops for Wander
+(`Gradient::wandered`, never past a neighbour) and puts the rest on the draw-time `Gradient.moves` (`Moves`: shift,
+breathe, hue, morph, wave; `#[serde(skip)]`), which `Gradient::sample` honours (slide, an unlooped one wrapping with a
+cut; spread round the middle; `mix_linear` toward Morph's; `hue_turned` in OKLCH), so bakes, bands, CPU colours,
+lights and the probe all see it; `sample_still` is the plain sampling; a one-colour gradient takes its moved colour
+into its stop; `step_stops` gives moved colours; bands bake the moves in. **Hit wave** (`HitWave`: `at`, `apply`,
+`lasts`) travels with the gradient's atlas row: `GradientAtlas::waves` (two texels a row, `wave_texels`, `NO_WAVE`)
+uploaded to the paint bind group's binding 2 (`Rgba32Float`), read by `paint.wgsl::paint_wave` with
+`var<private> paint_hit` (set beside `paint_px` in `shade_layers` and `shade_path` from the instance's hit) in
+`paint_along` (sample → vary → wave → grain); the atlas hash eats moves and waves only when there are any. Stacks
+(`Stack`/`ShapeStack.wave_memory`, `gradient_extras::wave_memory`) ask for hits while a gradient has a wave; on the
+CPU `paint::Inputs.hit_age` (filled by `BallInputs`/`WallInputs`) runs it in `colour_at`. The background, trails,
+particles and lights have no hit, so no wave. The Move tab folds each move (`widgets::group_heading`, open state under
+the bar's id); one-colour gradients still show no tabs.
+
+Part 4 is in (plan `part4.md`, editor only): the **big editor** (`gradient_editor.rs`), a window opened by the
+"Editor" button beside a main gradient row's bar (`gradient_bar_named(.., big)`; drawn by `gradient_tabs::tab_rows`,
+so it lives while its row is drawn): a wide bar (`gradient_bar::bar_in`: its widgets under `bar.with("big")`, the
+selected stop under the row's `bar`, so both select the same stop), Mix chips and Loop, the tools, a table of stops
+(row, colour, hex, at, gap blend menu, gap middle, Remove) with Add colour (`gradient_tools::add_colour`), and
+painted previews on a ball and a ring of 12 by Order; controls are named "{label} editor …". The **tools**
+(`gradient_tools.rs`, a "Tools" row ending the Colours tab and in the window): Flip (`flipped`: `1 − at`, wrapped
+when looped, each new gap the old gap before it mirrored, Ease in ↔ Ease out, middle `1 − m`; exact for middles at
+0.5, an involution; its order vector permutes any `ValueType::Points` companion through `points_after_flip`),
+Spread evenly, Random (`recoloured`: new `palette_gen` colours, places/gaps/alpha kept) and **Pick from picture**
+(`eyedropper.rs`: `start`/`stop`/`target`/`deliver`/`take`, state in egui memory; `preview::pick_colour` turns the
+preview into an eyedropper, a click reads `Renderer::read_output` and delivers `pixel_at`, Esc or right-click stops,
+nothing else in the preview reacts; `tab_rows` puts the colour on the selected stop keeping its alpha; a colour
+untaken after `STALE_PASSES` is dropped). A main gradient row's menu has **Copy gradient with its settings**
+(`widgets::copy_with`, `Copied.extras` by companion name); Paste Value then also writes each carried companion the
+target offers (`companions_pasted`).
+
 ## Crate map
 
 Dependencies go bottom to top:
@@ -294,7 +352,7 @@ Dependencies go bottom to top:
   Brush strokes are a value, `Value::Strokes` (points in ball space, never keyframed). A shape's moulded outline is
   `Value::Path(ShapePath)` (`shape_path.rs`: corners in shape units, x right, y down, middle at 0, size 1, each side
   straight or a cubic with two handles; `even(n)`, `circle()`, `add_point`, `delete_point`, `create_curve`, mirror
-  partners). `Slot.used_ids` keeps a removed layer's id from being given out again (`next_layer_id`). Scene files are format 11 (format 11 added the Lighting card, no upgrade; formats 7 to 9 still load and are upgraded; format 9 Trail and Particles cards become
+  partners). `Slot.used_ids` keeps a removed layer's id from being given out again (`next_layer_id`). Scene files are format 12 (12 added rules and 11 the Lighting card, no upgrade; formats 7 to 9 still load and are upgraded; format 9 Trail and Particles cards become
   Look layers with their keyframes, `add_upgrade(10, cards_to_layers)`). **Around layers** (`LayerSection::Around`)
   sit after the drawn layers and before the reactions: a ball's `layer.trail` and `layer.particles`, a shape's
   `shape.particles`; they take the sub-layers Glow, Outline, Shadow, Recolour, Flash on hit and Colour on hit

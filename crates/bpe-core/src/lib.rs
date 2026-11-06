@@ -21,6 +21,7 @@ pub mod light_scenes;
 pub mod oklab;
 pub mod registry;
 pub mod resolve;
+pub mod rules;
 pub mod save;
 pub mod scene;
 pub mod settings;
@@ -37,7 +38,7 @@ pub use animation::{
     Track, pulse_strength,
 };
 pub use blend::Blend;
-pub use color::{Color, GapBlend, Gradient, Mix, Stop, mix_colours};
+pub use color::{Color, GapBlend, Gradient, HitWave, Mix, Morph, Moves, Stop, hue_turned, mix_colours, mix_linear};
 pub use contract::check_registry;
 pub use edit::EditError;
 pub use gradient_form::{Area, GradientForm, Layout, Repeat, RippleFrom};
@@ -46,6 +47,7 @@ pub use layers::{CopiedLayer, CopiedLook, Layer, LayerId, MAX_SUBS, layered_key,
 pub use light_scenes::{LIGHT_SCENES_KEY, LightingScene, SceneLight};
 pub use registry::{LayerKind, LayerSection, ModuleKind, Registry, ThingKind, layer_def};
 pub use resolve::{Problem, ProblemKind, Resolved, ResolvedLayer, ResolvedSlot, ResolvedThing, resolve};
+pub use rules::{Block, BlockId, BlockSection, Rule, RuleBlockKind, RuleId, Rules, Who};
 pub use save::{LoadError, load, save};
 pub use scene::{Attach, Scene, Slot, SlotStash, Target, Thing, TrackColour, Transform};
 pub use settings::{

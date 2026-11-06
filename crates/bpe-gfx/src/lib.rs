@@ -52,7 +52,7 @@ pub use frame::{
     SphereGpu, Stage, StreakStyle, SurfaceGpu, Takes, ThingDraw, TrailVertex, blend_alpha, build_frame,
     build_frame_sensing, build_frame_with, hit_strength, push_streak, push_streak_colours, push_trail, thing_code,
 };
-pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, PaintGpu};
+pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, NO_WAVE, PaintGpu, wave_texels};
 pub use masks::{MASK_TILE, MASK_TILE_BYTES, MAX_MASK_TILES, TILE_DISTANCE_REACH, tile_distance};
 pub use programs::{LayeredRun, LookProgram, ProgramStore, in_ball_problem, picture_problem};
 pub use wgpu;
@@ -251,6 +251,9 @@ impl GradeMap {
 struct PaintTexture {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
+    /// Each row's Hit wave, two texels a row (`gradients::wave_texels`).
+    waves: wgpu::Texture,
+    waves_view: wgpu::TextureView,
     rows: usize,
     group: wgpu::BindGroup,
     /// The Ripples generation `group` binds (see [`ripples::Ripples::generation`]).
@@ -276,8 +279,19 @@ impl PaintTexture {
             view_formats: &[],
         });
         let view = texture.create_view(&Default::default());
-        let group = Self::group(device, layout, sampler, &view, ripples);
-        Self { texture, view, rows, group, bound: ripples.generation() }
+        let waves = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("gradient waves"),
+            size: wgpu::Extent3d { width: 2, height: rows as u32, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let waves_view = waves.create_view(&Default::default());
+        let group = Self::group(device, layout, sampler, &view, &waves_view, ripples);
+        Self { texture, view, waves, waves_view, rows, group, bound: ripples.generation() }
     }
 
     fn group(
@@ -285,6 +299,7 @@ impl PaintTexture {
         layout: &wgpu::BindGroupLayout,
         sampler: &wgpu::Sampler,
         view: &wgpu::TextureView,
+        waves: &wgpu::TextureView,
         ripples: &ripples::Ripples,
     ) -> wgpu::BindGroup {
         let [a, b, c] = ripples.entries();
@@ -294,6 +309,7 @@ impl PaintTexture {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(view) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(waves) },
                 a,
                 b,
                 c,
@@ -310,7 +326,7 @@ impl PaintTexture {
         ripples: &ripples::Ripples,
     ) {
         if self.bound != ripples.generation() {
-            self.group = Self::group(device, layout, sampler, &self.view, ripples);
+            self.group = Self::group(device, layout, sampler, &self.view, &self.waves_view, ripples);
             self.bound = ripples.generation();
         }
     }
@@ -345,6 +361,12 @@ impl PaintTexture {
             &gradients::half_texels(&atlas.rows()[..rows]),
             wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row_bytes), rows_per_image: None },
             wgpu::Extent3d { width: ATLAS_WIDTH as u32, height: rows as u32, depth_or_array_layers: 1 },
+        );
+        queue.write_texture(
+            self.waves.as_image_copy(),
+            bytemuck::cast_slice(&atlas.waves()[..rows]),
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(2 * 16), rows_per_image: None },
+            wgpu::Extent3d { width: 2, height: rows as u32, depth_or_array_layers: 1 },
         );
     }
 }

@@ -223,16 +223,16 @@ impl Ripples {
         self.generation
     }
 
-    /// The paint bind group's field entries (bindings 2 to 4): the last frame's field, or none.
+    /// The paint bind group's field entries (bindings 3 to 5): the last frame's field, or none.
     pub(crate) fn entries(&self) -> [wgpu::BindGroupEntry<'_>; 3] {
         let (pair, sources) = match (&self.field, self.built) {
             (Some(f), true) => (&f.pairs[f.last], self.sources.buffer.as_ref().unwrap_or(&self.empty_sources)),
             _ => (&self.empty, &self.empty_sources),
         };
         [
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&pair.a) },
-            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&pair.b) },
-            wgpu::BindGroupEntry { binding: 4, resource: sources.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&pair.a) },
+            wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&pair.b) },
+            wgpu::BindGroupEntry { binding: 5, resource: sources.as_entire_binding() },
         ]
     }
 

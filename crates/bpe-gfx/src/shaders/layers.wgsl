@@ -738,6 +738,8 @@ fn shade_layers(in: LayeredOut) -> vec4<f32> {
     paint_px = in.pos.xy;
     paint_world = in.world;
     paint_own = vec3<f32>(in.centre, 0.0);
+    // For the Hit wave (paint.wgsl).
+    paint_hit = in.hit;
     let aa = 1.0 / max(in.radius.x, 0.5);
     layered_ball =
         LayeredBall(

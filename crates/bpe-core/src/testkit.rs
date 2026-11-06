@@ -425,7 +425,55 @@ pub fn registry() -> Registry {
     r.add_module(SoundTestKind);
     r.add_layer(ChainTestKind);
     r.add_layer(ModTestKind);
+    for k in TEST_BLOCKS {
+        r.add_block(k);
+    }
     r
+}
+
+/// The settings of the test rule blocks: a number and a who.
+#[derive(Settings)]
+pub struct TestBlock {
+    #[setting(label = "Amount", range(0, 100))]
+    pub amount: f32,
+    #[setting(label = "Who")]
+    pub who: crate::rules::Who,
+}
+
+impl Default for TestBlock {
+    fn default() -> Self {
+        Self { amount: 1.0, who: crate::rules::Who::That }
+    }
+}
+
+/// A test rule block kind of one section, by id.
+#[derive(Clone, Copy)]
+pub struct TestBlockKind(pub &'static str, pub crate::rules::BlockSection);
+
+/// One test block kind per section: `when.test`, `if.test`, `logic.test`, `do.test`.
+pub const TEST_BLOCKS: [TestBlockKind; 4] = [
+    TestBlockKind("when.test", crate::rules::BlockSection::When),
+    TestBlockKind("if.test", crate::rules::BlockSection::If),
+    TestBlockKind("logic.test", crate::rules::BlockSection::Logic),
+    TestBlockKind("do.test", crate::rules::BlockSection::Do),
+];
+
+impl crate::rules::RuleBlockKind for TestBlockKind {
+    fn id(&self) -> &'static str {
+        self.0
+    }
+    fn name(&self) -> &'static str {
+        self.0
+    }
+    fn help(&self) -> &'static str {
+        "A test block."
+    }
+    fn section(&self) -> crate::rules::BlockSection {
+        self.1
+    }
+    fn settings(&self) -> &'static [SettingDef] {
+        TestBlock::defs()
+    }
 }
 
 /// Adds a bare thing (no slots) under `parent` at the end of the scene's order.

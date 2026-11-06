@@ -32,6 +32,8 @@ pub enum Value {
     Curve(Vec<CurvePoint>),
     /// The Lighting card's lighting scenes. Never keyframed.
     LightScenes(Vec<LightingScene>),
+    /// Who a rule block points at. Never keyframed.
+    Who(crate::rules::Who),
 }
 
 /// What kind of value a setting holds.
@@ -60,6 +62,8 @@ pub enum ValueType {
     Curve,
     /// Lighting scenes; never keyframed.
     LightScenes,
+    /// Who a rule block points at; never keyframed.
+    Who,
 }
 
 impl ValueType {
@@ -74,7 +78,8 @@ impl ValueType {
             | (ValueType::Color, Value::Color(_))
             | (ValueType::Gradient, Value::Gradient(_))
             | (ValueType::Text, Value::Text(_))
-            | (ValueType::Target, Value::Target(_)) => true,
+            | (ValueType::Target, Value::Target(_))
+            | (ValueType::Who, Value::Who(_)) => true,
             (ValueType::Choice(names), Value::Choice(n)) => names.contains(&n.as_str()),
             (ValueType::Strokes, Value::Strokes(s)) => s.is_finite(),
             (ValueType::Points, Value::Points(ps)) => ps.iter().flatten().all(|x| x.is_finite()),

@@ -132,6 +132,7 @@ fn background_span(scene: &bpe_core::Resolved, half_height: f32) -> [f32; 2] {
 #[cfg(test)]
 mod tests {
     use super::{SceneSettings, beat_at};
+    use bpe_core::Settings;
     use bpe_core::{ThingId, Value};
     use bpe_gfx::{Frame, build_frame};
     use bpe_runtime::{Log, World};
@@ -176,6 +177,24 @@ mod tests {
         assert!((b[0] - 0.5).abs() < 1e-6 && (b[1] - 0.625).abs() < 1e-6, "{b:?}");
         assert_eq!((b[2], b[3]), (2.0, 1.0));
         assert_eq!(beat_at(&SceneSettings { tempo: 0.0, ..s }, 1.0), [0.0; 4]);
+    }
+
+    #[test]
+    fn gradient_moves_keep_the_same_beat() {
+        // The gradients' Step on the beat and Breathe read the beat in bpe-core, from the
+        // resolved settings: the same beat as the effects and the timeline.
+        let kit = crate::kit();
+        for (tempo, note) in [(120.0, "4"), (97.3, "8"), (171.0, "2"), (60.0, "16")] {
+            let mut scene = crate::new_scene(&kit.registry);
+            let root = &mut scene.things.get_mut(&ThingId::ROOT).unwrap().params;
+            root.set("tempo", Value::Number(tempo));
+            root.set("time_bottom", Value::Choice(note.into()));
+            let resolved = bpe_core::resolve(&scene, &kit.registry);
+            let settings = SceneSettings::from_params(&resolved.things[&ThingId::ROOT].params);
+            let per_second = beat_at(&settings, 1.0)[2] as f64;
+            let seconds = bpe_core::gradient_extras::Beat::of(&resolved).seconds;
+            assert!((seconds * per_second - 1.0).abs() < 1e-6, "{tempo} {note}: {seconds} vs {per_second}/s");
+        }
     }
 
     #[test]

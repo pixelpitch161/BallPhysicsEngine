@@ -336,6 +336,9 @@ pub struct Scene {
     /// Settings that pulse with the hits.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub pulses: BTreeMap<Address, Pulse>,
+    /// The scene's rules (see [`crate::rules`]): none in a new scene.
+    #[serde(skip_serializing_if = "crate::rules::Rules::is_empty")]
+    pub rules: crate::rules::Rules,
 }
 
 impl Default for Scene {
@@ -348,13 +351,14 @@ impl Default for Scene {
             next_thing: 1,
             tracks: BTreeMap::new(),
             pulses: BTreeMap::new(),
+            rules: crate::rules::Rules::default(),
         }
     }
 }
 
 impl Scene {
     /// The save format this version writes.
-    pub const FORMAT: u32 = 11;
+    pub const FORMAT: u32 = 12;
     /// The oldest format that still opens.
     pub const OLDEST_FORMAT: u32 = 7;
 
