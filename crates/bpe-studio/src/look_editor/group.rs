@@ -183,7 +183,7 @@ fn own_rows(ui: &mut Ui, cx: &LookCx, salt: &str, defs: &[SettingDef], edits: &m
     let own = |key: &str| Address::own(id, key);
     let get = |key: &str| scene.value_at_time(reg, &own(key), time).expect("the kind's own settings all resolve");
     let marks = |key: &str| {
-        let def = defs.iter().find(|d| d.key == key)?;
+        let def = crate::widgets::def_in(defs, key)?;
         Some(mark_for(scene, def, &own(key)))
     };
     let kind = scene.things.get(&id).map(|t| t.kind.clone());

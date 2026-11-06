@@ -14,8 +14,8 @@ struct PaintGpu {
     // place along it out and calls `paint_pattern`), 5 stripes, 6 rings, 7 dots, 8 checker,
     // 9 halves, 10 slices, 11 swirl, 12 face.
     pattern: f32,
-    // 1 picks the nearest baked colour.
-    steps: f32,
+    // Still per-pixel grain, its size in 1/255 steps; 0 none.
+    grain: f32,
     // Degrees, from +x towards +y.
     angle: f32,
     scale: f32,
@@ -34,7 +34,11 @@ const PAINT_NO_VARY: vec4<f32> = vec4<f32>(0.0, 0.0, 1.0, 0.0);
 
 const PAINT_TAU: f32 = 6.28318531;
 // Samples in one row, as ATLAS_WIDTH.
-const PAINT_WIDTH: f32 = 256.0;
+const PAINT_WIDTH: f32 = 1024.0;
+
+// The pixel being painted, for the grain: each fragment entry point that paints sets it from its
+// position first thing. Elsewhere it stays 0 and the grain is one still offset.
+var<private> paint_px: vec2<f32>;
 
 // A paint with no variation read from two vec4s, in field order.
 fn paint_from(a: vec4<f32>, b: vec4<f32>) -> PaintGpu {
@@ -198,7 +202,29 @@ fn paint_mask(p: vec2<f32>, fill: f32, size: f32) -> f32 {
 // The linear-light colour `p` paints `along` its pattern (0 to 1 is one gradient), `time` seconds
 // in: after the start, the scroll and the repeat, turned by the paint's variation.
 fn paint_along(p: PaintGpu, along: f32, time: f32) -> vec4<f32> {
-    return paint_vary(paint_sample(p, along, time), p.vary);
+    return paint_grain(paint_vary(paint_sample(p, along, time), p.vary), p.grain);
+}
+
+// `c` (linear light) with still grain of size `grain` (in 1/255 steps) for this pixel: one value
+// for all three channels, added in sRGB numbers (where 8-bit stair-steps show) and turned back.
+fn paint_grain(c: vec4<f32>, grain: f32) -> vec4<f32> {
+    if grain == 0.0 {
+        return c;
+    }
+    let px = vec2<u32>(vec2<i32>(floor(paint_px)));
+    let h = vary_pcg(px.x ^ vary_pcg(px.y ^ 0x2545f491u));
+    let n = (f32(h >> 8u) / 16777215.0 - 0.5) * abs(grain) / 255.0;
+    let s = paint_to_srgb(max(c.rgb, vec3<f32>(0.0))) + vec3<f32>(n);
+    return vec4<f32>(paint_from_srgb(max(s, vec3<f32>(0.0))), c.a);
+}
+
+// Linear light to sRGB numbers and back, per channel (as Color::to_linear in bpe-core).
+fn paint_to_srgb(c: vec3<f32>) -> vec3<f32> {
+    return select(1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055, c * 12.92, c <= vec3<f32>(0.0031308));
+}
+
+fn paint_from_srgb(s: vec3<f32>) -> vec3<f32> {
+    return select(pow((s + 0.055) / 1.055, vec3<f32>(2.4)), s / 12.92, s <= vec3<f32>(0.04045));
 }
 
 // What the atlas holds `along` `p`, before any variation.
@@ -206,9 +232,6 @@ fn paint_sample(p: PaintGpu, along: f32, time: f32) -> vec4<f32> {
     let t = paint_wrap(along + p.t0 + time * p.scroll, p.repeat);
     let height = textureDimensions(paint_atlas).y;
     let row = min(u32(max(p.row, 0.0)), height - 1u);
-    if p.steps > 0.5 && p.steps < 1.5 {
-        return textureLoad(paint_atlas, vec2<u32>(u32(floor(t * (PAINT_WIDTH - 1.0) + 0.5)), row), 0);
-    }
     // Sampled between the first and last texel centres, so 0 and 1 land on the end colours.
     let u = (t * (PAINT_WIDTH - 1.0) + 0.5) / PAINT_WIDTH;
     let v = (f32(row) + 0.5) / f32(height);

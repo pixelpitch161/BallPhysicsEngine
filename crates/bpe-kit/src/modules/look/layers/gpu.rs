@@ -228,7 +228,7 @@ pub fn sub_record(sub: &SubLayer, cx: &mut SubCx) -> LayerGpu {
                 paint: if gradient {
                     bpe_gfx::PaintGpu {
                         row: cx.atlas.row(&c.colours) as f32,
-                        steps: if c.colours.transition == bpe_core::Transition::Steps { 1.0 } else { 0.0 },
+                        grain: c.colours.grain,
                         ..bpe_gfx::PaintGpu::default()
                     }
                 } else {
@@ -991,7 +991,7 @@ fn own_paint(
         pattern: shape.pattern(),
         angle: if direction.is_finite() { direction } else { 90.0 },
         scale: 1.0,
-        steps: if colours.transition == bpe_core::Transition::Steps { 1.0 } else { 0.0 },
+        grain: colours.grain,
         ..bpe_gfx::PaintGpu::default()
     }
 }

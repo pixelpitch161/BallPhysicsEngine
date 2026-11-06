@@ -136,6 +136,8 @@ fn path_cover(in: PathOut) -> f32 {
 }
 
 fn shade_path(in: PathOut) -> vec4<f32> {
+    // For the gradient grain (paint.wgsl).
+    paint_px = in.pos.xy;
     if in.layers.y > 0u {
         return shade_shape_layers(in.world, in.a, in.b, in.c, in.layers, in.hit);
     }

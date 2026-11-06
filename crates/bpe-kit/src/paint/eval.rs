@@ -2,7 +2,7 @@
 //! follows, its scroll and its repeat), and the colour found there.
 
 use super::{Follow, Paint, PlaceShape, Repeat, Space};
-use bpe_core::{Color, Gradient, Stop, ThingId, Transition};
+use bpe_core::{Color, GapBlend, Gradient, Stop, ThingId};
 use bpe_runtime::{EventKind, Log};
 use glam::Vec2;
 
@@ -73,13 +73,8 @@ pub fn offset(p: &Paint, i: &Inputs) -> f32 {
                 PlaceShape::Round => (pos - p.centre).length() / s,
             }
         }
-        Follow::Order => {
-            if i.count <= 1 {
-                0.0
-            } else {
-                i.index as f32 / (i.count - 1) as f32
-            }
-        }
+        Follow::Order => order_place(i.index, i.count, p.colours.looped),
+        Follow::OrderThereAndBack => there_and_back(i.index, i.count),
         Follow::Speed => i.speed / s,
         Follow::Hits => i.hits as f32 / s,
         Follow::Life => i.life,
@@ -99,6 +94,27 @@ pub fn offset(p: &Paint, i: &Inputs) -> f32 {
     wrap(t, repeat)
 }
 
+/// Where ball `index` of `count` sits along a gradient by Order: the first at the start and the
+/// last at the end, or, on a looped gradient, the last one step before the start again
+/// (`index / count`) so a ring of balls closes without a seam. One ball sits at the start.
+pub fn order_place(index: usize, count: usize, looped: bool) -> f32 {
+    match (count, looped) {
+        (0 | 1, _) => 0.0,
+        (n, true) => index as f32 / n as f32,
+        (n, false) => index as f32 / (n - 1) as f32,
+    }
+}
+
+/// Where ball `index` of `count` sits by There and back: out from the start to the end at the
+/// middle ball and back again, the last ball one step short of the start (`1 - |2·index/count -
+/// 1|`), so a ring's ends meet. One ball sits at the start.
+pub fn there_and_back(index: usize, count: usize) -> f32 {
+    if count <= 1 {
+        return 0.0;
+    }
+    1.0 - (2.0 * index as f32 / count as f32 - 1.0).abs()
+}
+
 /// The colour of stop `k`, white when the gradient has none.
 fn stop_from(p: &Paint, k: usize) -> Color {
     p.colours.stops.get(k).map_or(Color::WHITE, |s| s.color)
@@ -111,24 +127,31 @@ fn stop_colour(p: &Paint, k: usize) -> [f32; 4] {
 
 /// The colour of stop `k - 1` blending into stop `k` as `since_hit` runs to `step_time`; stop 0
 /// until the first hit.
+/// A gradient cut into bands steps through each band's colour once.
 fn step_colour(p: &Paint, hits: u32, since_hit: f32) -> [f32; 4] {
-    let n = p.colours.stops.len().max(1);
+    let stops = p.colours.step_stops();
+    let colour = |k: usize| stops.get(k).map_or(Color::WHITE, |s| s.color);
+    let n = stops.len().max(1);
     let k = hits as usize % n;
     if hits == 0 {
-        return stop_colour(p, 0);
-    }
-    let instant = p.colours.transition == Transition::Steps || p.step_time <= 0.0 || p.step_time.is_nan();
-    let f = if instant { 1.0 } else { finite(since_hit) / p.step_time };
-    if f >= 1.0 {
-        return stop_colour(p, k);
+        return colour(0).to_linear();
     }
     let prev = (hits as usize - 1) % n;
-    if f <= 0.0 {
-        return stop_colour(p, prev);
+    let from = stops.get(prev).copied().unwrap_or(Stop::new(0.0, Color::WHITE));
+    let instant = from.blend == GapBlend::Steps || p.step_time <= 0.0 || p.step_time.is_nan();
+    let f = if instant { 1.0 } else { finite(since_hit) / p.step_time };
+    if f >= 1.0 {
+        return colour(k).to_linear();
     }
+    if f <= 0.0 {
+        return colour(prev).to_linear();
+    }
+    // The gap from the stop before to this one, blending and mixing as the gradient does there.
     let pair = Gradient {
-        stops: vec![Stop { at: 0.0, color: stop_from(p, prev) }, Stop { at: 1.0, color: stop_from(p, k) }],
-        transition: p.colours.transition,
+        stops: vec![Stop { at: 0.0, ..from }, Stop::new(1.0, colour(k))],
+        mix: p.colours.mix,
+        looped: false,
+        grain: 0.0,
     };
     pair.sample(f)
 }
@@ -252,7 +275,7 @@ pub fn hits_on(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bpe_core::{Choice, Color, Gradient, Transition};
+    use bpe_core::{Choice, Color, GapBlend, Gradient, Mix};
     use bpe_runtime::{Event, EventKind, Party};
 
     const RED: Color = Color::rgb(255, 0, 0);
@@ -377,7 +400,9 @@ mod tests {
     #[test]
     fn steps_transition_and_zero_step_time_are_instant() {
         let mut p = three();
-        p.colours.transition = Transition::Steps;
+        for s in &mut p.colours.stops {
+            s.blend = GapBlend::Steps;
+        }
         assert!(near4(colour_at(&p, &Inputs { hits: 1, since_hit: 0.0, ..Inputs::default() }), GREEN.to_linear()));
         let q = Paint { step_time: 0.0, ..three() };
         assert!(near4(colour_at(&q, &Inputs { hits: 1, since_hit: 0.0, ..Inputs::default() }), GREEN.to_linear()));
@@ -464,5 +489,52 @@ mod tests {
             }
         }
         assert_eq!(hits_on(&log, ThingId(1), 4, 1.0, sps)[1], (1, Some((1.0, Some(ThingId(1)), Vec2::ZERO))));
+    }
+
+    #[test]
+    fn order_closes_round_a_looped_gradient() {
+        let looped: Vec<f32> = (0..4).map(|i| order_place(i, 4, true)).collect();
+        assert_eq!(looped, vec![0.0, 0.25, 0.5, 0.75]);
+        let open: Vec<f32> = (0..4).map(|i| order_place(i, 4, false)).collect();
+        assert!(open.iter().zip([0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0]).all(|(a, b)| near(*a, b)));
+        assert_eq!((order_place(0, 1, true), order_place(0, 0, false)), (0.0, 0.0));
+        // Through a paint.
+        let mut p = paint(Follow::Order);
+        p.colours.looped = true;
+        assert!(near(offset(&p, &Inputs { index: 3, count: 4, ..Inputs::default() }), 0.75));
+    }
+
+    #[test]
+    fn there_and_back_goes_out_and_returns() {
+        let five: Vec<f32> = (0..5).map(|i| there_and_back(i, 5)).collect();
+        assert!(five.iter().zip([0.0, 0.4, 0.8, 0.8, 0.4]).all(|(a, b)| near(*a, b)), "{five:?}");
+        let four: Vec<f32> = (0..4).map(|i| there_and_back(i, 4)).collect();
+        assert_eq!(four, vec![0.0, 0.5, 1.0, 0.5]);
+        assert_eq!(there_and_back(0, 1), 0.0);
+        let p = paint(Follow::OrderThereAndBack);
+        assert!(near(offset(&p, &Inputs { index: 2, count: 4, ..Inputs::default() }), 1.0));
+    }
+
+    #[test]
+    fn a_ring_by_order_with_looped_rainbow_has_no_seam() {
+        let rainbow = crate::paint::palettes::built_in().into_iter().find(|p| p.name == "Rainbow").unwrap().colours;
+        let p = Paint { follow: Follow::Order, colours: rainbow.clone(), ..Paint::default() };
+        let colour = |p: &Paint, index| colour_at(p, &Inputs { index, count: 12, ..Inputs::default() });
+        let gap = |a: [f32; 4], b: [f32; 4]| (0..3).map(|k| (a[k] - b[k]).abs()).fold(0.0, f32::max);
+        // The last ball sits next to the first as closely as any two neighbours do.
+        let worst = (0..11).map(|i| gap(colour(&p, i), colour(&p, i + 1))).fold(0.0, f32::max);
+        assert!(gap(colour(&p, 11), colour(&p, 0)) <= worst + 1e-4);
+        // Without Loop the last ball is the very end colour, far from the first.
+        let open = Paint { colours: Gradient { looped: false, ..rainbow }, ..p.clone() };
+        assert!(gap(colour(&open, 11), colour(&open, 0)) > 0.9);
+    }
+
+    #[test]
+    fn step_on_hit_blends_with_the_gaps_mix() {
+        let mut p = three();
+        p.colours.mix = Mix::Even;
+        let mid = colour_at(&p, &Inputs { hits: 1, since_hit: 0.1, ..Inputs::default() });
+        let want = Gradient::spread(&[RED, GREEN], Mix::Even, false).sample(0.5);
+        assert!(near4(mid, want), "{mid:?} vs {want:?}");
     }
 }

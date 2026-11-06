@@ -20,7 +20,7 @@ pub struct BodyLayer {
         label = "Colours",
         prefix = "",
         group = "Colours",
-        follows = "each_ball|place|start|order|speed|hits|step|time|path",
+        follows = "each_ball|place|start|order|order_there_and_back|speed|hits|step|time|path",
         simple
     )]
     pub fill: Paint,

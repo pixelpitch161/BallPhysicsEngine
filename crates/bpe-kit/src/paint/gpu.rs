@@ -1,7 +1,6 @@
 //! Handing what is painted inside a shape to the graphics card: the gradient baked into the
 //! frame's atlas and the pattern's numbers in a [`PaintGpu`].
 
-use bpe_core::Transition;
 use bpe_gfx::{BackgroundPaint, GradientAtlas, PaintGpu};
 use bpe_runtime::CameraView;
 
@@ -35,7 +34,7 @@ const SHADE_ROW: f32 = -2.0;
 /// How `i` paints inside one shape at `time` seconds, its angle turned by its spin. No pattern
 /// paints nothing (row -1). A shade of the shape's own colour bakes nothing and puts the shade
 /// in `t0` (row -2, see [`PaintGpu::row`]); its own gradient takes a row of `atlas`, its repeat
-/// and steps, and `vary`, the instance's colour variation ([`vary_gpu`]).
+/// and grain, and `vary`, the instance's colour variation ([`vary_gpu`]).
 pub fn inside_gpu(i: &InsidePaint, vary: [f32; 4], atlas: &mut GradientAtlas, time: f32) -> PaintGpu {
     let finite = |x: f32| if x.is_finite() { x } else { 0.0 };
     if i.pattern == Pattern::None {
@@ -51,12 +50,9 @@ pub fn inside_gpu(i: &InsidePaint, vary: [f32; 4], atlas: &mut GradientAtlas, ti
     };
     match i.from {
         InsideFrom::ShadeOfOwnColour => PaintGpu { row: SHADE_ROW, t0: finite(i.shade).clamp(-1.0, 1.0), ..shape },
-        InsideFrom::OwnGradient => PaintGpu {
-            row: atlas.row(&i.colours) as f32,
-            steps: if i.colours.transition == Transition::Steps { 1.0 } else { 0.0 },
-            vary,
-            ..shape
-        },
+        InsideFrom::OwnGradient => {
+            PaintGpu { row: atlas.row(&i.colours) as f32, grain: i.colours.grain, vary, ..shape }
+        }
     }
 }
 
@@ -81,7 +77,7 @@ pub fn paint_gpu(p: &Paint, inputs: &Inputs, atlas: &mut GradientAtlas) -> Paint
     PaintGpu {
         row: atlas.row(&p.colours) as f32,
         pattern: PATH_PATTERN,
-        steps: if p.colours.transition == Transition::Steps { 1.0 } else { 0.0 },
+        grain: p.colours.grain,
         scroll: finite(p.scroll),
         repeat: repeat_code(p.repeat),
         vary: vary_gpu(p, inputs.seed, inputs.time),
@@ -95,10 +91,14 @@ pub fn paint_gpu(p: &Paint, inputs: &Inputs, atlas: &mut GradientAtlas) -> Paint
 /// the place is measured on the screen or in the world; the paint's own space is ignored.
 pub fn background_gpu(p: &Paint, inputs: &Inputs, atlas: &mut GradientAtlas) -> BackgroundPaint {
     let finite = |x: f32| if x.is_finite() { x } else { 0.0 };
-    let steps = if p.colours.transition == Transition::Steps { 1.0 } else { 0.0 };
+    let grain = p.colours.grain;
     let row = atlas.row(&p.colours);
+    // Exactly a straight blend of two colours in linear light: the shader mixes it itself.
+    let plain = |s: &bpe_core::Stop| s.blend == bpe_core::GapBlend::Smooth && s.middle == 0.5;
     let ends = match p.colours.stops.as_slice() {
-        [a, b] if a.at == 0.0 && b.at == 1.0 && p.colours.transition == Transition::Smooth => {
+        [a, b]
+            if a.at == 0.0 && b.at == 1.0 && p.colours.mix == bpe_core::Mix::Light && !p.colours.looped && plain(a) =>
+        {
             Some([a.color.to_linear(), b.color.to_linear()])
         }
         _ => None,
@@ -112,24 +112,24 @@ pub fn background_gpu(p: &Paint, inputs: &Inputs, atlas: &mut GradientAtlas) -> 
             scroll: finite(p.scroll),
             repeat: repeat_code(p.repeat),
             mode,
-            steps,
+            grain,
             t0: 0.0,
             ends,
         };
     }
     let t0 = offset(p, inputs);
-    BackgroundPaint { row, place, t0, scroll: 0.0, repeat: repeat_code(p.repeat), mode: 0.0, steps, ends }
+    BackgroundPaint { row, place, t0, scroll: 0.0, repeat: repeat_code(p.repeat), mode: 0.0, grain, ends }
 }
 
 /// `p`'s gradient for a shader that works out the place along it itself (from a speed, a place
 /// or a hash) and calls `paint_along`: its row in `atlas`, moved on by the scroll `time` seconds
-/// in, with its steps and repeat.
+/// in, with its grain and repeat.
 pub fn along_gpu(p: &Paint, time: f32, atlas: &mut GradientAtlas) -> PaintGpu {
     let finite = |x: f32| if x.is_finite() { x } else { 0.0 };
     PaintGpu {
         row: atlas.row(&p.colours) as f32,
         t0: finite(time * p.scroll),
-        steps: if p.colours.transition == Transition::Steps { 1.0 } else { 0.0 },
+        grain: p.colours.grain,
         repeat: repeat_code(p.repeat),
         ..PaintGpu::default()
     }
@@ -212,7 +212,7 @@ mod tests {
                 row: 0.0,
                 t0: 0.0,
                 pattern: 1.0,
-                steps: 0.0,
+                grain: 0.0,
                 angle: 190.0,
                 scale: 2.0,
                 scroll: 0.5,

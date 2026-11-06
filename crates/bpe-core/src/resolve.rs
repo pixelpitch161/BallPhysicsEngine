@@ -141,9 +141,10 @@ pub fn resolve(scene: &Scene, reg: &Registry) -> Resolved {
                             let v = card.params.get(&key).unwrap_or(&d.default).clone();
                             params.set(&key, v);
                         }
-                        // What varies across the balls goes with the layer's values.
+                        // What varies across the balls, and gradients' companions, go with the
+                        // layer's values.
                         for (k, v) in card.params.iter() {
-                            if crate::vary::is_vary_key(k)
+                            if (crate::vary::is_vary_key(k) || crate::gradient_extras::is_companion_key(k))
                                 && crate::split_layered(k).is_some_and(|(l, plain)| {
                                     l == layer.id && crate::layer_def(lkind, &with_defaults, plain).is_some()
                                 })

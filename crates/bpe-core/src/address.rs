@@ -36,6 +36,11 @@ impl Scene {
             let base = Address { key: base.to_owned(), ..a.clone() };
             return crate::vary::def_for(self.def_at(reg, &base), part);
         }
+        // A gradient's companion: its own description, when the gradient is there.
+        if let Some((base, c)) = crate::gradient_extras::split(&a.key) {
+            let base = Address { key: base.to_owned(), ..a.clone() };
+            return crate::gradient_extras::def_for(self.def_at(reg, &base), c);
+        }
         let thing = self.things.get(&a.thing)?;
         let defs = match a.slot {
             None => reg.thing(&thing.kind)?.settings(),

@@ -234,7 +234,7 @@ pub struct ParticlesLayer {
         group = "Colours",
         prefix = "",
         when = "made_of!=mini_balls and source=own",
-        follows = "life|order|place|speed|time"
+        follows = "life|order|order_there_and_back|place|speed|time"
     )]
     pub colour: Paint,
     /// How much they twinkle.
@@ -427,7 +427,7 @@ pub struct ShapeParticlesLayer {
         group = "Colours",
         prefix = "",
         when = "source=own",
-        follows = "life|order|place|speed|time"
+        follows = "life|order|order_there_and_back|place|speed|time"
     )]
     pub colour: Paint,
     #[setting(label = "Twinkle", group = "Colours", range(0, 1), keyframe)]

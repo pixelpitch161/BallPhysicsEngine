@@ -116,6 +116,11 @@ impl Probe {
             };
             self.animation.apply(&mut now, time, &inputs);
         }
+        // Gradients' companions, as the frame builder applies them (light colours can be
+        // gradients).
+        if bpe_core::gradient_extras::any_in(&now) {
+            bpe_core::gradient_extras::apply_moves(&mut now, time);
+        }
         Lamps::of(&self.scene, &self.resolved, &now, world, log, time)
     }
 

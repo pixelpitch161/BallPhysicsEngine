@@ -411,11 +411,13 @@ pub fn blend_demo(reg: &Registry) -> Scene {
 /// and a warm, contrasty grade with a vignette whose Sunset gradient map comes in over the video.
 pub fn graded_sunset(reg: &Registry) -> Scene {
     let hex = |h: u32| Color::rgb((h >> 16) as u8, (h >> 8) as u8, h as u8);
-    let sunset = crate::paint::palettes::built_in()
+    let mut sunset = crate::paint::palettes::built_in()
         .into_iter()
         .find(|p| p.name == "Sunset")
         .expect("Sunset is a built-in palette")
         .colours;
+    // Mixed in light, as the palette was when the scene was made, so its pictures don't move.
+    sunset.mix = bpe_core::Mix::Light;
     let mut b = Builder::new(reg, "Graded sunset");
     let duration = 20.0;
     b.scene_settings(|s| {

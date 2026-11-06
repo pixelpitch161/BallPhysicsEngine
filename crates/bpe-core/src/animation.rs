@@ -255,13 +255,20 @@ impl Value {
             (Value::Vec2(a), Value::Vec2(b)) => Value::Vec2([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]),
             (Value::Color(a), Value::Color(b)) => Value::Color(Color::mix(*a, *b, t)),
             (Value::Gradient(a), Value::Gradient(b)) if a.stops.len() == b.stops.len() => {
+                let half = t >= 0.5;
                 let stops = a
                     .stops
                     .iter()
                     .zip(&b.stops)
-                    .map(|(a, b)| Stop { at: a.at + (b.at - a.at) * t, color: Color::mix(a.color, b.color, t) })
+                    .map(|(sa, sb)| Stop {
+                        at: sa.at + (sb.at - sa.at) * t,
+                        color: Color::mix(sa.color, sb.color, t),
+                        blend: if half { sb.blend } else { sa.blend },
+                        middle: sa.middle + (sb.middle - sa.middle) * t,
+                    })
                     .collect();
-                Value::Gradient(Gradient { stops, transition: if t < 0.5 { a.transition } else { b.transition } })
+                let (mix, looped) = if half { (b.mix, b.looped) } else { (a.mix, a.looped) };
+                Value::Gradient(Gradient { stops, mix, looped, grain: a.grain })
             }
             (Value::Gradient(a), Value::Gradient(_)) if t < 0.5 => Value::Gradient(a.clone()),
             (Value::Gradient(_), Value::Gradient(b)) => Value::Gradient(b.clone()),
@@ -586,7 +593,14 @@ impl Animation {
                     None => Some(&r.params),
                     Some(slot) => r.slots.get(&slot).map(|s| &s.params),
                 };
-                let Some(base) = params.and_then(|p| p.get(&a.key)).cloned() else { continue };
+                // A gradient's companion at its default isn't stored: it starts from that default
+                // when its gradient is there.
+                let companion = || {
+                    let (gradient, _) = crate::gradient_extras::split(&a.key)?;
+                    params?.get(gradient).filter(|v| matches!(v, Value::Gradient(_)))?;
+                    crate::gradient_extras::default_of(&a.key)
+                };
+                let Some(base) = params.and_then(|p| p.get(&a.key)).cloned().or_else(companion) else { continue };
                 targets.push(Target {
                     address: (*a).clone(),
                     thing,
@@ -649,14 +663,14 @@ impl Animation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Transition, resolve, testkit};
+    use crate::{resolve, testkit};
 
     const RED: Color = Color::rgb(255, 0, 0);
     const BLUE: Color = Color::rgb(0, 0, 255);
 
     fn gradient(stops: &[(f32, Color)]) -> Value {
-        let stops = stops.iter().map(|&(at, color)| Stop { at, color }).collect();
-        Value::Gradient(Gradient { stops, transition: Transition::Smooth })
+        let stops = stops.iter().map(|&(at, color)| Stop::new(at, color)).collect();
+        Value::Gradient(Gradient { stops, ..Gradient::default() })
     }
 
     #[test]

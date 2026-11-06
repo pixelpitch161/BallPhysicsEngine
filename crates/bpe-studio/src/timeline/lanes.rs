@@ -89,6 +89,14 @@ fn label_of(scene: &Scene, kit: &Kit, a: &Address) -> String {
     // The far end of a setting that varies across the balls: "Ball · Size (to)".
     let to = matches!(bpe_core::vary::split(&a.key), Some((_, bpe_core::vary::VaryPart::To)));
     let setting = if to { format!("{setting} (to)") } else { setting.to_owned() };
+    // A gradient's companion goes by its gradient: "Ball · Body · Colours bands".
+    let setting = match bpe_core::gradient_extras::split(&a.key) {
+        Some((base, c)) => {
+            let gradient = scene.def_at(&kit.registry, &Address { key: base.to_owned(), ..a.clone() });
+            format!("{} {}", gradient.map_or(base, |d| d.label), c.def.label.to_lowercase())
+        }
+        None => setting,
+    };
     match a.slot {
         None => format!("{thing} · {setting}"),
         Some(slot) if let Some((layer, _)) = bpe_core::split_layered(&a.key) => {
@@ -155,6 +163,19 @@ mod tests {
         let ball = &groups[1].lanes;
         assert!(ball[0].physics && !ball[1].physics, "a ball's size moves the physics; glow doesn't");
         assert!(groups[0].lanes[0].physics && !groups[0].lanes[1].physics);
+    }
+
+    #[test]
+    fn a_gradients_companion_lane_goes_by_its_gradient() {
+        let kit = bpe_kit::kit();
+        let reg = &kit.registry;
+        let mut scene = bpe_kit::new_scene(reg);
+        let bands = Address::own(ThingId::ROOT, "background_colours~bands");
+        scene.set_key(reg, &bands, 1.0, Value::Number(4.0)).unwrap();
+        let groups = groups_for(&scene, &kit);
+        let lane = &groups[0].lanes[0];
+        let gradient = scene.def_at(reg, &Address::own(ThingId::ROOT, "background_colours")).unwrap().label;
+        assert_eq!(lane.short, format!("{gradient} bands"));
     }
 
     #[test]

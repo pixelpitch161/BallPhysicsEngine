@@ -12,7 +12,7 @@ struct Globals {
     post: vec4<f32>,
     // centre xy, zoom, turn
     camera: vec4<f32>,
-    // x: background on screen, y: how its place runs, z: steps, w: 1 to mix the two colours below
+    // x: background on screen, y: how its place runs, z: grain, w: 1 to mix the two colours below
     bg: vec4<f32>,
     bg_from: vec4<f32>,
     bg_to: vec4<f32>,
@@ -154,6 +154,8 @@ fn fs_background(in: BgOut) -> @location(0) vec4<f32> {
 }
 
 fn background_colour(in: BgOut) -> vec4<f32> {
+    // For the gradient grain (paint.wgsl).
+    paint_px = in.pos.xy;
     if g.bg_paint.x < 0.0 {
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
@@ -176,7 +178,7 @@ fn background_colour(in: BgOut) -> vec4<f32> {
     if g.bg.w > 0.5 {
         // A plain blend of two colours, mixed here without the atlas's half floats.
         let t = paint_wrap(along + g.bg_paint.y + g.view.w * g.bg_paint.z, g.bg_paint.w);
-        return vec4<f32>(mix(g.bg_from.rgb, g.bg_to.rgb, t), 1.0);
+        return vec4<f32>(paint_grain(vec4<f32>(mix(g.bg_from.rgb, g.bg_to.rgb, t), 1.0), g.bg.z).rgb, 1.0);
     }
     let p = PaintGpu(g.bg_paint.x, g.bg_paint.y, 0.0, g.bg.z, 0.0, 1.0, g.bg_paint.z, g.bg_paint.w, PAINT_NO_VARY);
     return vec4<f32>(paint_along(p, along, g.view.w).rgb, 1.0);
@@ -379,6 +381,8 @@ fn shade_fill(in: ShapeOut) -> vec4<f32> {
 }
 
 fn shade_shape(in: ShapeOut) -> vec4<f32> {
+    // For the gradient grain (paint.wgsl).
+    paint_px = in.pos.xy;
     if in.c.x > 2.5 {
         return shade_fill(in);
     }
@@ -465,6 +469,8 @@ fn sphere_light(p: vec2<f32>, color: vec3<f32>) -> vec3<f32> {
 
 // What `fs_ball` and `fs_ball_each` draw.
 fn shade_ball(in: BallOut) -> vec4<f32> {
+    // For the gradient grain (paint.wgsl).
+    paint_px = in.pos.xy;
     let r = length(in.local);
     let aa = 1.0 / max(in.radius_px, 0.5);
     let cover = clamp((1.0 - r) / aa + 0.5, 0.0, 1.0);

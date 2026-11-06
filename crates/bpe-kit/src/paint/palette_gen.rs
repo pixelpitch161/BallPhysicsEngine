@@ -19,7 +19,12 @@ pub fn palette(dice: &mut Rng, n: usize) -> Vec<Color> {
 pub(crate) fn sample_palette(g: &bpe_core::Gradient, n: usize) -> Vec<Color> {
     (0..n)
         .map(|i| {
-            let t = if n == 1 { 0.5 } else { i as f32 / (n - 1) as f32 };
+            // A looped gradient's end is its start again, so it spreads `i / n` round it.
+            let t = match n {
+                1 => 0.5,
+                _ if g.looped => i as f32 / n as f32,
+                _ => i as f32 / (n - 1) as f32,
+            };
             Color::from_linear(g.sample(t))
         })
         .collect()

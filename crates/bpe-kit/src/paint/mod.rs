@@ -29,6 +29,8 @@ pub enum Follow {
     Place,
     Start,
     Order,
+    /// Out along the colours by the balls' order and back again, so a ring's ends meet.
+    OrderThereAndBack,
     Speed,
     Hits,
     Life,

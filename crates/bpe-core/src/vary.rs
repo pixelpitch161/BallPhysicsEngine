@@ -400,8 +400,8 @@ pub fn starting_to(def: &SettingDef, value: &Value) -> Value {
         }
         Value::Color(c) => Value::Color(turn(*c)),
         Value::Gradient(g) => Value::Gradient(Gradient {
-            stops: g.stops.iter().map(|s| Stop { at: s.at, color: turn(s.color) }).collect(),
-            transition: g.transition,
+            stops: g.stops.iter().map(|s| Stop { color: turn(s.color), ..*s }).collect(),
+            ..g.clone()
         }),
         other => other.clone(),
     }
@@ -442,7 +442,8 @@ impl crate::Scene {
     /// Whether setting `a` can vary across the balls, and how it is read: as the kind of thing,
     /// card or layer it belongs to says (never a vary key itself, nor a type that can't mix).
     pub fn vary_use(&self, reg: &crate::Registry, a: &crate::Address) -> Option<VaryUse> {
-        if is_vary_key(&a.key) {
+        // A gradient's companion is applied before each ball's mix, so it can't vary.
+        if is_vary_key(&a.key) || crate::gradient_extras::is_companion_key(&a.key) {
             return None;
         }
         let def = self.def_at(reg, a)?;

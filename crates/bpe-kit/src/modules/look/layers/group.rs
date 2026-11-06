@@ -14,8 +14,10 @@ pub enum Spread {
     /// Where each ball starts in the group, along the gradient's angle.
     #[default]
     Place,
-    /// The balls' numbers, first to last.
+    /// The balls' numbers, first to last (round to one before the first on a looped gradient).
     Order,
+    /// The balls' numbers out to the end at the middle ball and back again, so a ring's ends meet.
+    ThereAndBack,
     /// How far each ball starts from the middle of the group.
     CentreOut,
     /// A colour picked at random for each ball.
@@ -100,7 +102,7 @@ pub struct GroupGradient {
     #[setting(label = "Angle", when = "spread=place|launch_angle", span(-180, 180), unit = "°", keyframe)]
     pub angle: f32,
     /// How much of the group the gradient spans, 1 being the whole group.
-    #[setting(label = "Stretch", when = "spread!=order|random|launch_angle", range(0.1, 4), keyframe)]
+    #[setting(label = "Stretch", when = "spread!=order|there_and_back|random|launch_angle", range(0.1, 4), keyframe)]
     pub stretch: f32,
     /// How the colours bunch: evenly, towards the start, towards the end, or towards both.
     #[setting(label = "Easing")]
@@ -215,13 +217,8 @@ pub fn group_t(gr: &GroupGradient, g: &GroupShapeInfo, b: &BallInGroup) -> f32 {
             let extent = (hi - lo).max(1e-3) * span;
             (d - (lo + hi) * 0.5) / extent + 0.5
         }
-        Spread::Order => {
-            if b.count <= 1 {
-                0.0
-            } else {
-                b.number as f32 / (b.count - 1) as f32
-            }
-        }
+        Spread::Order => crate::paint::eval::order_place(b.number as usize, b.count as usize, gr.colours.looped),
+        Spread::ThereAndBack => crate::paint::eval::there_and_back(b.number as usize, b.count as usize),
         Spread::CentreOut => b.offset.distance(g.middle) / (g.furthest.max(1e-3) * span),
         Spread::Random => Rng::new(g.seed as u32, b.number ^ (7 << 24)).unit(),
         Spread::Speed => b.speed / (FULL_SPEED * span),
@@ -234,6 +231,8 @@ pub fn group_t(gr: &GroupGradient, g: &GroupShapeInfo, b: &BallInGroup) -> f32 {
             let from_first = b.round.saturating_sub(1) as f32;
             match b.rounds {
                 RoundSpan::Finite(n) if n <= 1 => 0.0,
+                // A looped gradient goes round: the last round one step before the first again.
+                RoundSpan::Finite(n) if gr.colours.looped => from_first / (n as f32 * span),
                 RoundSpan::Finite(n) => from_first / ((n - 1) as f32 * span),
                 RoundSpan::Endless => {
                     let x = from_first / (ENDLESS_ROUNDS * span);
@@ -349,6 +348,22 @@ mod tests {
         assert_eq!(at(0, RoundSpan::Finite(1)), 0.0, "a Balls group's balls are the first round");
         assert!((at(6, RoundSpan::Endless) - 0.5).abs() < 1e-6);
         assert_eq!(at(11, RoundSpan::Endless), 0.0, "every ten rounds it starts again");
+    }
+
+    #[test]
+    fn a_looped_gradient_closes_the_ring_for_order_and_rounds() {
+        let mut gr = GroupGradient { spread: Spread::Order, ..GroupGradient::default() };
+        gr.colours.looped = true;
+        let g = GroupShapeInfo::default();
+        assert_eq!(group_t(&gr, &g, &ball(9, 10)), 0.9);
+        gr.spread = Spread::Round;
+        let at = |gr: &GroupGradient, round| {
+            group_t(gr, &g, &BallInGroup { round, rounds: RoundSpan::Finite(4), ..BallInGroup::default() })
+        };
+        assert_eq!(at(&gr, 4), 0.75);
+        gr.spread = Spread::ThereAndBack;
+        let there: Vec<f32> = (0..4).map(|n| group_t(&gr, &g, &ball(n, 4))).collect();
+        assert_eq!(there, vec![0.0, 0.5, 1.0, 0.5]);
     }
 
     #[test]

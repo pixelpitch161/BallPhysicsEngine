@@ -153,7 +153,7 @@ fn hash01(seed: u32, step: i64, item: u64) -> f32 {
 /// The rig's colour list, linear: its colours' stops in order.
 pub fn colour_list(colours: &Gradient) -> Vec<[f32; 3]> {
     colours
-        .stops
+        .step_stops()
         .iter()
         .map(|s| {
             let c = s.color.to_linear();

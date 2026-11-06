@@ -10,7 +10,7 @@ struct Globals {
     post: vec4<f32>,
     // centre xy, zoom, turn
     camera: vec4<f32>,
-    // x: background on screen, y: how its place runs, z: steps
+    // x: background on screen, y: how its place runs, z: grain
     bg: vec4<f32>,
     bg_from: vec4<f32>,
     bg_to: vec4<f32>,

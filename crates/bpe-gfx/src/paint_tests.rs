@@ -1,7 +1,7 @@
 //! Picture tests for gradient paint inside shapes, on the software GPU.
 
 use crate::{Frame, LookInstance, PaintGpu, Renderer, ShapeInstance};
-use bpe_core::{Color, Gradient, Stop, Transition};
+use bpe_core::{Color, GapBlend, Gradient, Stop};
 
 /// A device on the first adapter, naming it so a run shows which GPU drew; `None` without one.
 pub(crate) fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
@@ -21,9 +21,10 @@ pub(crate) fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
 }
 
 fn red_blue_steps() -> Gradient {
+    let steps = |at, color| Stop { blend: GapBlend::Steps, ..Stop::new(at, color) };
     Gradient {
-        stops: vec![Stop { at: 0.0, color: Color::rgb(255, 0, 0) }, Stop { at: 1.0, color: Color::rgb(0, 0, 255) }],
-        transition: Transition::Steps,
+        stops: vec![steps(0.0, Color::rgb(255, 0, 0)), steps(1.0, Color::rgb(0, 0, 255))],
+        ..Gradient::default()
     }
 }
 
@@ -41,7 +42,7 @@ fn striped_ball(row: u32) -> LookInstance {
         look: [0.0, 0.0, 1.0, 0.0],
         stretch: [1.0, 0.0, 1.0, 1.0],
         extent: [0.8, 1.0, 0.0, 0.0],
-        paint: PaintGpu { row: row as f32, t0: 0.5, pattern: 5.0, steps: 1.0, scale: 1.0, ..PaintGpu::default() },
+        paint: PaintGpu { row: row as f32, t0: 0.5, pattern: 5.0, scale: 1.0, ..PaintGpu::default() },
     }
 }
 
@@ -95,7 +96,7 @@ fn things_stuck_to_the_screen_paint_from_their_own_atlas() {
 #[test]
 fn ring_path_gradient_goes_round() {
     let mut frame = Frame { bloom: 0.0, ..Frame::default() };
-    let red_blue = Gradient { transition: Transition::Smooth, ..red_blue_steps() };
+    let red_blue = Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)]);
     let row = frame.gradients.row(&red_blue);
     let ring =
         bpe_runtime::Outline::Ring { center: glam::Vec2::ZERO, radius: 400.0, sides: 0, angle: 0.0, thickness: 60.0 };
@@ -128,7 +129,7 @@ fn ring_path_gradient_goes_round() {
 fn an_inside_pattern_paints_across_a_shape() {
     let mut frame = Frame { bloom: 0.0, ..Frame::default() };
     let row = frame.gradients.row(&red_blue_steps());
-    let stripes = PaintGpu { row: row as f32, t0: 0.5, pattern: 5.0, steps: 1.0, ..PaintGpu::default() };
+    let stripes = PaintGpu { row: row as f32, t0: 0.5, pattern: 5.0, ..PaintGpu::default() };
     // A disc 400 across each way, so as big as the striped ball.
     frame.shapes.push(ShapeInstance::disc(glam::Vec2::ZERO, 200.0, [0.0, 1.0, 0.0, 1.0], 0.0).painted(stripes));
     assert_two_halves("paint-shape-stripes", &frame);
@@ -137,7 +138,7 @@ fn an_inside_pattern_paints_across_a_shape() {
 #[test]
 fn box_path_runs_clockwise_from_the_top_left() {
     let mut frame = Frame { bloom: 0.0, ..Frame::default() };
-    let row = frame.gradients.row(&Gradient { transition: Transition::Smooth, ..red_blue_steps() });
+    let row = frame.gradients.row(&Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)]));
     let wall = bpe_runtime::Outline::Box {
         center: glam::Vec2::ZERO,
         half: glam::Vec2::new(400.0, 400.0),
@@ -205,7 +206,7 @@ fn inside_patterns_keep_repeating_whatever_the_start_size_and_scroll() {
             let mut frame = Frame { bloom: 0.0, time, ..Frame::default() };
             let row = frame.gradients.row(&red_blue_steps());
             let mut ball = striped_ball(row);
-            ball.paint = PaintGpu { row: row as f32, t0, pattern, steps: 1.0, scale, scroll, ..PaintGpu::default() };
+            ball.paint = PaintGpu { row: row as f32, t0, pattern, scale, scroll, ..PaintGpu::default() };
             if pattern == 3.0 {
                 ball.paint = PaintGpu { t0: t0 - 0.5 * scale, angle: 180.0, repeat: 2.0, ..ball.paint };
             }
@@ -224,7 +225,7 @@ fn a_path_keeps_going_round_as_it_scrolls() {
     let row = frame.gradients.row(&red_blue_steps());
     let ring =
         bpe_runtime::Outline::Ring { center: glam::Vec2::ZERO, radius: 400.0, sides: 0, angle: 0.0, thickness: 60.0 };
-    let paint = PaintGpu { row: row as f32, pattern: 4.0, steps: 1.0, scroll: 0.37, ..PaintGpu::default() };
+    let paint = PaintGpu { row: row as f32, pattern: 4.0, scroll: 0.37, ..PaintGpu::default() };
     frame.shapes.push(ShapeInstance::outline(&ring, paint, [0.0, 1.0, 0.0, 1.0], 0.0));
     let Some(pixels) = render("paint-path-scrolled", &frame) else { return };
     let (mut red, mut blue) = (0, 0);
@@ -252,7 +253,6 @@ fn turning_a_sweep_half_way_swaps_its_sides() {
             row: row as f32,
             t0: 0.0,
             pattern: 3.0,
-            steps: 1.0,
             angle: angle + 180.0,
             repeat: 2.0,
             ..PaintGpu::default()

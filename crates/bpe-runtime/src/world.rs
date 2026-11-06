@@ -1264,9 +1264,10 @@ impl Hasher {
                 self.bytes(&[5]);
                 for s in &g.stops {
                     self.f32(s.at);
-                    self.bytes(&[s.color.r, s.color.g, s.color.b, s.color.a]);
+                    self.bytes(&[s.color.r, s.color.g, s.color.b, s.color.a, s.blend as u8]);
+                    self.f32(s.middle);
                 }
-                self.bytes(&[g.transition as u8]);
+                self.bytes(&[g.mix as u8, g.looped as u8]);
             }
             Value::Choice(s) | Value::Text(s) => {
                 self.bytes(&[6]);

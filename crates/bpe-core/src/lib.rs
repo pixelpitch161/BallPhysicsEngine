@@ -13,9 +13,11 @@ pub mod blend;
 pub mod color;
 pub mod contract;
 pub mod edit;
+pub mod gradient_extras;
 pub mod ids;
 pub mod layers;
 pub mod light_scenes;
+pub mod oklab;
 pub mod registry;
 pub mod resolve;
 pub mod save;
@@ -34,7 +36,7 @@ pub use animation::{
     Track, pulse_strength,
 };
 pub use blend::Blend;
-pub use color::{Color, Gradient, Stop, Transition};
+pub use color::{Color, GapBlend, Gradient, Mix, Stop, mix_colours};
 pub use contract::check_registry;
 pub use edit::EditError;
 pub use ids::{KindId, SlotId, ThingId};
