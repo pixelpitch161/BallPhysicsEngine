@@ -340,6 +340,15 @@ fn sections_for<'a>(defs: &'a [SettingDef], cx: &GridCx) -> Vec<Section<'a>> {
 /// memory under and the value to edit; true when they changed it.
 type TabRows<'a> = dyn FnMut(&mut Ui, egui::Id, &mut Value) -> bool + 'a;
 
+/// What a gradient's own row has beyond its widget: its tabs, its companions as they read now
+/// (for "Copy gradient with its settings", each by its name) and where a paste puts the
+/// companions it brought.
+struct GradientRow<'r, 't> {
+    tabs: &'r mut TabRows<'t>,
+    companions: &'r dyn Fn() -> Vec<(&'static str, Value)>,
+    pasted: &'r mut Vec<(&'static str, Value)>,
+}
+
 /// One setting's row of a settings grid, with what the user did to it added to `out`. A
 /// gradient of two or more stops gets its tabs in rows under it (`gradient_tabs`).
 pub(crate) fn grid_row(
@@ -354,16 +363,27 @@ pub(crate) fn grid_row(
     let unit = unit_for(def, &|k| Some(get(k)));
     let mut varies = Vec::new();
     let mut companions = GridOutcome::default();
+    let mut pasted = Vec::new();
     let action = {
         let mut tabs = |ui: &mut Ui, bar: egui::Id, value: &mut Value| {
             crate::gradient_tabs::tab_rows(ui, def, value, bar, cx, right, get, &mut companions)
         };
+        let now = || {
+            bpe_core::gradient_extras::companions_for(def)
+                .map(|c| (c.name, get(crate::gradient_tabs::companion_def(def, c).key)))
+                .collect()
+        };
         let gradient = def.ty == ValueType::Gradient
             && !bpe_core::gradient_extras::is_companion_key(def.key)
             && bpe_core::vary::split(def.key).is_none();
-        let tabs: Option<&mut TabRows> = if gradient { Some(&mut tabs) } else { None };
-        setting(ui, def, unit, &mut value, (cx.marks)(def.key), cx, right, &mut varies, tabs)
+        let row = gradient.then_some(GradientRow { tabs: &mut tabs, companions: &now, pasted: &mut pasted });
+        setting(ui, def, unit, &mut value, (cx.marks)(def.key), cx, right, &mut varies, row)
     };
+    for (name, v) in pasted {
+        if let Some(c) = bpe_core::gradient_extras::companion(name) {
+            out.changes.push((crate::gradient_tabs::companion_def(def, c).key, v));
+        }
+    }
     out.changes.extend(companions.changes);
     out.new_keys.extend(companions.new_keys);
     out.follows.extend(companions.follows);
@@ -422,7 +442,7 @@ fn setting(
     cx: &GridCx,
     right: f32,
     varies: &mut Vec<crate::vary::VaryEdit>,
-    tabs: Option<&mut TabRows>,
+    mut grad_row: Option<GradientRow>,
 ) -> RowAction {
     use crate::vary::VaryEdit;
     // Where a gradient's bar and its tabs keep their memory (the selected stop, the open tab):
@@ -460,7 +480,7 @@ fn setting(
                 to_response = Some(b);
                 a
             }
-            _ => widget(ui, def, unit, value, name.id, bar, cx.choices),
+            _ => widget(ui, def, unit, value, name.id, bar, cx.choices, grad_row.is_some()),
         });
         changed |= r.changed();
         r
@@ -500,16 +520,27 @@ fn setting(
             ui.close();
         }
     };
+    let with = grad_row.as_ref().map(|g| g.companions);
     let mut picks =
-        vec![row_menu_following(&name, def, unit, &before, mark, cx.choices, Some(&mut vary_items), follow)];
+        vec![row_menu_following(&name, def, unit, &before, mark, cx.choices, Some(&mut vary_items), follow, with)];
     if !own_clicks {
-        picks.push(row_menu_following(&response, def, unit, &before, mark, cx.choices, Some(&mut vary_items), follow));
+        picks.push(row_menu_following(
+            &response,
+            def,
+            unit,
+            &before,
+            mark,
+            cx.choices,
+            Some(&mut vary_items),
+            follow,
+            with,
+        ));
     }
     varies.extend(vary_pick.take());
     ui.end_row();
     // A gradient's tabs, in rows under it.
-    if let Some(tabs) = tabs
-        && tabs(ui, bar, value)
+    if let Some(row) = grad_row.as_mut()
+        && (row.tabs)(ui, bar, value)
     {
         changed = true;
     }
@@ -530,7 +561,7 @@ fn setting(
                 .inner
             });
             let r = widget_cell(ui, right, |ui| {
-                style::wells(ui, |ui| widget(ui, def, unit, end, to_name.id, bar.with("to"), cx.choices))
+                style::wells(ui, |ui| widget(ui, def, unit, end, to_name.id, bar.with("to"), cx.choices, false))
             });
             if r.changed() {
                 varies.push(VaryEdit::To(end.clone()));
@@ -560,12 +591,31 @@ fn setting(
             MenuPick::Paste(pasted) => {
                 *value = pasted;
                 action = RowAction::Changed;
+                // A gradient copied with its settings brings the ones this row has too.
+                if let Some(row) = grad_row.as_mut()
+                    && let Some(copy) = copied(ui.ctx())
+                {
+                    row.pasted.extend(companions_pasted(def, &copy.extras));
+                }
             }
             MenuPick::CreateKey => action = RowAction::CreateKey,
             MenuPick::Follow(source) => action = RowAction::Follow(source),
         }
     }
     action
+}
+
+/// The companions of `extras` (each by its name, as "Copy gradient with its settings" copied
+/// them) that gradient setting `def` has, each made to fit; the others are left out.
+fn companions_pasted(def: &SettingDef, extras: &[(&'static str, Value)]) -> Vec<(&'static str, Value)> {
+    extras
+        .iter()
+        .filter_map(|(name, v)| {
+            let c = bpe_core::gradient_extras::companions_for(def).find(|c| c.name == *name)?;
+            let v = pasted(&c.def, v)?;
+            Some((c.name, v))
+        })
+        .collect()
 }
 
 /// The band under a following setting's slider: from its value to where the sound takes it at
@@ -606,6 +656,9 @@ pub fn right_button_busy(ui: &Ui) -> bool {
 pub struct Copied {
     pub value: Value,
     pub words: String,
+    /// A gradient copied with its settings: each companion's name and value. Empty for every
+    /// other copy.
+    pub extras: Vec<(&'static str, Value)>,
 }
 
 /// Where the copied value lives: the editor's own clipboard, shared by every card and thing,
@@ -621,7 +674,12 @@ pub fn copied(ctx: &egui::Context) -> Option<Copied> {
 
 /// Puts `value` on the editor's clipboard.
 pub fn copy_value(ctx: &egui::Context, value: Value, words: String) {
-    ctx.data_mut(|d| d.insert_temp(clipboard_id(), Copied { value, words }));
+    copy_with(ctx, value, words, Vec::new());
+}
+
+/// Puts a gradient and its companions (`extras`, each by its name) on the editor's clipboard.
+pub fn copy_with(ctx: &egui::Context, value: Value, words: String, extras: Vec<(&'static str, Value)>) {
+    ctx.data_mut(|d| d.insert_temp(clipboard_id(), Copied { value, words, extras }));
 }
 
 /// What a row's menu asked for.
@@ -647,10 +705,11 @@ fn row_menu(
     choices: &TargetChoices,
     extra: Option<&mut dyn FnMut(&mut Ui)>,
 ) -> MenuPick {
-    row_menu_following(response, def, unit, value, mark, choices, extra, None)
+    row_menu_following(response, def, unit, value, mark, choices, extra, None, None)
 }
 
-/// [`row_menu`] with Follow sound under Create Keyframe, when `follow` is given.
+/// [`row_menu`] with Follow sound under Create Keyframe, when `follow` is given, and "Copy
+/// gradient with its settings" under Copy Value when `with` gives a gradient's companions.
 #[allow(clippy::too_many_arguments)]
 fn row_menu_following(
     response: &Response,
@@ -661,6 +720,7 @@ fn row_menu_following(
     choices: &TargetChoices,
     mut extra: Option<&mut dyn FnMut(&mut Ui)>,
     follow: Option<(&crate::follow::FollowCx, &str)>,
+    with: Option<&dyn Fn() -> Vec<(&'static str, Value)>>,
 ) -> MenuPick {
     let mut pick = MenuPick::Nothing;
     let open = if response.container_secondary_clicked() {
@@ -678,6 +738,14 @@ fn row_menu_following(
         if ui.button("Copy Value").on_hover_text("Copy this setting's value").clicked() {
             copy_value(ui.ctx(), value.clone(), value_words(value, unit, choices));
             ui.close();
+        }
+        if let Some(companions) = with {
+            let help = "Copy the colours with how they blend, lie and move, to paste onto another gradient";
+            if ui.button("Copy gradient with its settings").on_hover_text(help).clicked() {
+                let words = format!("{} with its settings", value_words(value, unit, choices));
+                copy_with(ui.ctx(), value.clone(), words, companions());
+                ui.close();
+            }
         }
         let clip = copied(ui.ctx());
         let text = match &clip {
@@ -1187,6 +1255,7 @@ fn spanned(ui: &mut Ui, def: &SettingDef, x: &mut f64, span: (f64, f64), unit: S
     span_slider(ui, x, span, def.range, setting_feel(def), integer, unit, Named::By(name))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn widget(
     ui: &mut Ui,
     def: &SettingDef,
@@ -1195,6 +1264,7 @@ fn widget(
     name: egui::Id,
     bar: egui::Id,
     choices: &TargetChoices,
+    big: bool,
 ) -> Response {
     let unit = suffix(unit);
     let feel = setting_feel(def);
@@ -1233,7 +1303,7 @@ fn widget(
         (ValueType::Color, Value::Color(c)) => color_button(ui, c).labelled_by(name),
         (ValueType::Gradient, Value::Gradient(g)) => {
             // The bar and its handles carry their own names, after the setting's.
-            gradient_bar_named(ui, bar, g, def.label)
+            gradient_bar_named(ui, bar, g, def.label, big)
         }
         (ValueType::Choice(names), Value::Choice(current)) => {
             let mut response = style::raised(ui, |ui| {
