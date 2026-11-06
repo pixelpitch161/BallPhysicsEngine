@@ -259,6 +259,22 @@ dot named "Problem in <rule>", "too busy at"), blocks named "<Section> <name>" (
 "Add after …", "Add When to <rule>", right-click menus for headers, blocks and lines. The timeline has a Rules lane
 under the Hits lane while the scene has rules (`rules_lane`).
 
+Part 3 is in (plan `part3.md`): **break looks**, drawn only. `do.break`'s Look is Vanish / Fade out (Time) / Pop (Time,
+Swell) / Shatter (Pieces, Spread, Spin, Gravity, Hit shapes, Bounce, Fade after, Fade over; `breaks.rs`: `LookSettings`
+under the same keys, `show_for` gives a `BreakShow { look: Params, lasts }`, lasts 0 for Vanish and for kinds that
+can't show a look (only shape, balls, emitter, light can)). `Action::Break.show` (an `Arc<BreakShow>`); applying it
+keeps `RulesState.remains` (`bpe-runtime/src/rules/remains.rs`: `Remains` by (thing, row or `WHOLE`), with the hit,
+the gravity, a ball's `BallAt` or a shape's taken wall; `remains_of`, `showing`, pruned when over). The physics never
+reads them; the log and goldens are unchanged. `build_frame_sensing` (and the light probe) keep a broken thing while
+`showing`. The kit's `rules/remains/` (`showing` per look, `shatter.rs`: `cut` = a seeded Voronoi of the square round
+what is drawn, sites on the material (`Material`/`Edge`: inside, or a band along the outline), `piece_at` closed form or
+1/120 s steps with `keep_clear` against the world's walls; `draw.rs`: `shatter_shape`, `ball_remains`). Each piece is the
+thing's own instance again, moved and turned, with `PathInstance.clip`/`LayeredInstance.clip` = [first corner in
+`path_points`, count, fade, 0] (vertex attribute 6 / 12; group 2 binding 4 is now seen by the vertex stage, which fits
+a piece's quad to its cell; `clip_keep` in paths.wgsl, used by `shade_path`, `shade_shape_layers`' `keep`,
+`shade_layers` and the object passes; all-zero clip draws as before). A broken light's strength follows its look
+(`remains::whole_now`); a broken emitter's marker goes at once. `tests/break_pictures.rs` checks the pictures.
+
 Part 5 is in (plan `part5.md`, "As built" at its end): **more events and actions**, 13 kit blocks. Whens
 `when.enter` (Enters / Leaves / Either a zone, `rules/events.rs`: each (zone, thing, row) inside set worked out from the
 world at prepare and diffed every stage; a catcher's `Enter` events too), `when.fired` (an emitter's balls, `Spawn`
@@ -292,7 +308,7 @@ health** is `PulseSource::Health { thing }` read through `Inputs.health` (`Healt
 thing's share, a group's mean over live balls); the spread **`VaryBy::Health`** reads `BallSpread.hurt` (1 − share,
 `World::hurt`/`hurts`; Balls/Emitter Size through `own_sizes`). The fingerprint hashes Health cards. Editor: Follow health
 ▸ (`follow::health_menu`), the Health spread (`VaryCx::healthy`). Goldens `tests/golden-rules-health*.txt`
-(`scenes::health_scenes`). Not yet: part 3's break looks on the card's At zero.
+(`scenes::health_scenes`). At zero Break takes part 3's Break looks (the card's `look` … `fade_over`, `look_settings`, the template's `show`).
 
 Part 6 is in (plan `part6.md`): the **spectacle actions** `do.camera` (Shake / Zoom punch: `Action::Kick`, kept in
 `RulesState.kicks` (`Kick`, `MOST_KICKS` 64, weight (1 − age/time)²), added by the camera sim after its own shake and

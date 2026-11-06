@@ -153,7 +153,7 @@ pub const LEAST_START: f64 = 1e-9;
 /// strength of what did it.
 pub fn aimed(template: &Action, thing: ThingId, row: Option<u32>, point: Vec2, normal: Vec2, strength: f32) -> Action {
     match template.clone() {
-        Action::Break { .. } => Action::Break { thing, row, point, normal, strength },
+        Action::Break { show, .. } => Action::Break { thing, row, point, normal, strength, show },
         Action::Motion { motion, .. } => Action::Motion { thing, row, motion },
         Action::Health { change, .. } => Action::Health { thing, row, change },
         other => other,
@@ -443,8 +443,15 @@ mod tests {
 
     #[test]
     fn a_zero_template_is_aimed_at_what_reached_zero() {
-        let template =
-            Action::Break { thing: ThingId::ROOT, row: None, point: Vec2::ZERO, normal: Vec2::ZERO, strength: 0.0 };
+        let show = std::sync::Arc::new(super::super::BreakShow::default());
+        let template = Action::Break {
+            thing: ThingId::ROOT,
+            row: None,
+            point: Vec2::ZERO,
+            normal: Vec2::ZERO,
+            strength: 0.0,
+            show: show.clone(),
+        };
         let a = aimed(&template, ThingId(3), Some(7), Vec2::new(1.0, 2.0), Vec2::Y, 300.0);
         assert_eq!(
             a,
@@ -453,7 +460,8 @@ mod tests {
                 row: Some(7),
                 point: Vec2::new(1.0, 2.0),
                 normal: Vec2::Y,
-                strength: 300.0
+                strength: 300.0,
+                show
             }
         );
     }

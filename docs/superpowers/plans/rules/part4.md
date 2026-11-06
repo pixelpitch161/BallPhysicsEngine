@@ -193,7 +193,7 @@ struct HealthOf { card: HealthCard, balls: bool, hp: Vec<Hp> }
 
 ## Not doing
 
-- The break looks of part 3 on the Health card (the `at_zero` template gets its look when part 3 merges).
+- (Done after all: the break looks of part 3 on the Health card, see As built.)
 - Rules panel faces/summaries for the new blocks (part 2's editor gives every block a face from its settings).
 - Health in the log, keyframes on Health settings, health on sound knobs, a top (most) health.
 
@@ -215,3 +215,6 @@ struct HealthOf { card: HealthCard, balls: bool, hp: Vec<Hp> }
   amounts clamp (−∞ empties, +∞ caps at `f64::MAX`), only NaN is dropped; taking a Health card away drops Follow
   health of that thing (`drop_slot_animation`). At zero Break breaks at the next step's start, so a rule hearing it
   reach zero can't save it (the setting's help says so); pick Nothing and break it from a rule for that.
+- After parts 3, 5 and 6 merged: At zero Break shows part 3's Break looks (the card's own Break look settings, the
+  same keys as the Break block's, into the template's `show`), and a ball split off another keeps its health
+  (`Health::copy_row`, through `RulesState::copy_row`).

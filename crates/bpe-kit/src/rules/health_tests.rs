@@ -459,3 +459,16 @@ fn a_ball_split_off_another_keeps_its_health() {
         assert_eq!((hp.now, hp.start), (4.0, 5.0), "row {row}: the hit took one, the split kept the rest");
     }
 }
+
+#[test]
+fn a_shape_at_zero_goes_with_its_cards_break_look() {
+    let kit = kit();
+    let mut scene = new_scene(&kit.registry);
+    health(&mut scene, &kit.registry, SHAPE, &[("start", n(1.0)), ("look", choice("fade_out")), ("fade_time", n(0.5))]);
+    let (_, log) = run(&scene, &kit, 8.0);
+    let broke = log.events().iter().find(|e| e.kind == EventKind::Break && e.a.thing == SHAPE).unwrap().step;
+    // While it fades (half a second).
+    let (world, _) = run(&scene, &kit, (broke + 10) as f64 / 240.0);
+    let remains = world.rules().unwrap().remains_of(SHAPE, None).expect("it fades out");
+    assert_eq!(remains.show.lasts, 0.5);
+}

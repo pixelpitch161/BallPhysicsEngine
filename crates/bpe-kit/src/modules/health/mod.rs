@@ -6,6 +6,9 @@
 use bpe_core::{Choice, ModuleKind, Params, SettingDef, Settings, SlotId, Target, ThingId, VaryUse};
 use bpe_runtime::rules::{Action, HealthCard, HealthSim, Takes};
 use glam::Vec2;
+use std::sync::Arc;
+
+use crate::rules::breaks::{BreakLook, LookSettings, show_for};
 
 /// The Health card's kind id.
 pub const HEALTH: &str = "health";
@@ -63,10 +66,92 @@ pub struct HealthSettings {
     /// What happens when the health reaches 0.
     #[setting(label = "At zero", simple, group = "Health")]
     pub at_zero: AtZero,
+    /// How it goes when it breaks (the Break block's looks).
+    #[setting(label = "Break look", when = "at_zero=break", group = "Health")]
+    pub look: BreakLook,
+    #[setting(
+        label = "Time",
+        when = "at_zero=break and look=fade_out",
+        range(0, 1e6),
+        span(0, 3),
+        unit = "s",
+        group = "Health"
+    )]
+    pub fade_time: f64,
+    #[setting(
+        label = "Time",
+        when = "at_zero=break and look=pop",
+        range(0, 1e6),
+        span(0, 3),
+        unit = "s",
+        group = "Health"
+    )]
+    pub pop_time: f64,
+    #[setting(
+        label = "Swell",
+        when = "at_zero=break and look=pop",
+        range(0, 1e3),
+        span(1, 4),
+        unit = "×",
+        group = "Health"
+    )]
+    pub swell: f32,
+    #[setting(label = "Pieces", when = "at_zero=break and look=shatter", range(2, 256), span(2, 64), group = "Health")]
+    pub pieces: u32,
+    #[setting(
+        label = "Spread",
+        when = "at_zero=break and look=shatter",
+        range(0, 1e6),
+        span(0, 2000),
+        unit = "px/s",
+        group = "Health"
+    )]
+    pub spread: f32,
+    #[setting(
+        label = "Spin",
+        when = "at_zero=break and look=shatter",
+        range(-1e6, 1e6),
+        span(0, 1440),
+        unit = "°/s",
+        group = "Health"
+    )]
+    pub spin: f32,
+    #[setting(
+        label = "Gravity",
+        when = "at_zero=break and look=shatter",
+        range(-1e3, 1e3),
+        span(0, 3),
+        unit = "×",
+        group = "Health"
+    )]
+    pub gravity: f32,
+    #[setting(label = "Hit shapes", when = "at_zero=break and look=shatter", group = "Health")]
+    pub hit_shapes: bool,
+    #[setting(label = "Bounce", when = "at_zero=break and look=shatter and hit_shapes", range(0, 1), group = "Health")]
+    pub bounce: f32,
+    #[setting(
+        label = "Fade after",
+        when = "at_zero=break and look=shatter",
+        range(0, 1e6),
+        span(0, 5),
+        unit = "s",
+        group = "Health"
+    )]
+    pub fade_after: f64,
+    #[setting(
+        label = "Fade over",
+        when = "at_zero=break and look=shatter",
+        range(0, 1e6),
+        span(0, 3),
+        unit = "s",
+        group = "Health"
+    )]
+    pub fade_over: f64,
 }
 
 impl Default for HealthSettings {
     fn default() -> Self {
+        let l = LookSettings::default();
         HealthSettings {
             start: 3.0,
             takes: HitsTake::EachHit,
@@ -75,6 +160,38 @@ impl Default for HealthSettings {
             least: 0.0,
             from: Target::Anything,
             at_zero: AtZero::Break,
+            look: l.look,
+            fade_time: l.fade_time,
+            pop_time: l.pop_time,
+            swell: l.swell,
+            pieces: l.pieces,
+            spread: l.spread,
+            spin: l.spin,
+            gravity: l.gravity,
+            hit_shapes: l.hit_shapes,
+            bounce: l.bounce,
+            fade_after: l.fade_after,
+            fade_over: l.fade_over,
+        }
+    }
+}
+
+impl HealthSettings {
+    /// Its Break look's settings, as the Break block has them.
+    pub fn look_settings(&self) -> LookSettings {
+        LookSettings {
+            look: self.look,
+            fade_time: self.fade_time,
+            pop_time: self.pop_time,
+            swell: self.swell,
+            pieces: self.pieces,
+            spread: self.spread,
+            spin: self.spin,
+            gravity: self.gravity,
+            hit_shapes: self.hit_shapes,
+            bounce: self.bounce,
+            fade_after: self.fade_after,
+            fade_over: self.fade_over,
         }
     }
 }
@@ -129,7 +246,7 @@ impl HealthSim for HealthCardSim {
                 HitsTake::Nothing => Takes::Nothing,
             },
             least: s.least,
-            from: s.from,
+            from: s.from.clone(),
             at_zero: match s.at_zero {
                 // Aimed at the ball or the shape when it is used.
                 AtZero::Break => Some(Action::Break {
@@ -138,6 +255,8 @@ impl HealthSim for HealthCardSim {
                     point: Vec2::ZERO,
                     normal: Vec2::ZERO,
                     strength: 0.0,
+                    // Every kind a Health card fits shows break looks.
+                    show: Arc::new(show_for(&s.look_settings(), Some(crate::things::shape::KIND))),
                 }),
                 AtZero::Nothing => None,
             },

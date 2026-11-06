@@ -190,6 +190,7 @@ fn shade_shape_layers(
     c: vec4<f32>,
     layers: vec4<u32>,
     hit: vec4<f32>,
+    keep: f32,
 ) -> vec4<f32> {
     layered_shape = LayeredShape(a, b, c, layers, hit);
     // For Ripples (paint.wgsl): measured from everything but the shape itself.
@@ -198,7 +199,11 @@ fn shade_shape_layers(
     let s = shape_at(world);
     let cover = shape_cover_at(s);
     let w = walk_shape(world, s, layers.x, layers.y, layers.w);
-    let out = split_lower_mixed(cover, w, layers.w);
+    var out = split_lower_mixed(cover, w, layers.w);
+    // What a broken shape's look leaves of it (its piece's clip, its fade).
+    if keep < 1.0 {
+        out *= keep;
+    }
     // The emission pass may give off darkness (negative light) where it covers nothing.
     let seen = select(max(out.r, max(out.g, out.b)), max(abs(out.r), max(abs(out.g), abs(out.b))), g.light.x > 2.5);
     if out.a < 1e-4 && seen < 1e-4 {

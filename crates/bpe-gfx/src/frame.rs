@@ -274,6 +274,9 @@ pub struct LayeredInstance {
     /// most 1.5), how many hits it has had, spare: what Flash on hit and Colour on hit sub-layers
     /// read. [`NO_HIT`] for a ball never hit.
     pub hit: [f32; 4],
+    /// The clip a piece of a shattered ball draws through ([`PathInstance::clip`]), its corners
+    /// in the quad's own frame (`local`, radii, before the shape's turn).
+    pub clip: [f32; 4],
 }
 
 impl Default for LayeredInstance {
@@ -291,6 +294,7 @@ impl Default for LayeredInstance {
             group: [0.0; 4],
             place: [0.0; 4],
             hit: NO_HIT,
+            clip: [0.0; 4],
         }
     }
 }
@@ -320,11 +324,15 @@ pub struct PathInstance {
     pub layers: [u32; 4],
     /// Hits on the shape, as [`LayeredInstance::hit`].
     pub hit: [f32; 4],
+    /// What a broken thing's look draws through (rules part 3): the first corner of a convex clip
+    /// in `Frame::path_points` (in the shape's own units), how many (0: no clip), how far it has
+    /// faded (0 shows it whole, 1 not at all), spare. All 0 draws it as ever.
+    pub clip: [f32; 4],
 }
 
 impl Default for PathInstance {
     fn default() -> Self {
-        Self { a: [0.0; 4], b: [0.0; 4], c: [0.0; 4], color: [0.0; 4], layers: [0; 4], hit: NO_HIT }
+        Self { a: [0.0; 4], b: [0.0; 4], c: [0.0; 4], color: [0.0; 4], layers: [0; 4], hit: NO_HIT, clip: [0.0; 4] }
     }
 }
 
@@ -1664,6 +1672,7 @@ impl Frame {
             color,
             layers: [0, 0, PathInstance::NO_PROGRAM, 0],
             hit: NO_HIT,
+            clip: [0.0; 4],
         });
         self.paths.len() - 1
     }
@@ -1690,6 +1699,7 @@ impl Frame {
             color,
             layers: [0, 0, PathInstance::NO_PROGRAM, 0],
             hit: NO_HIT,
+            clip: [0.0; 4],
         });
         self.paths.len() - 1
     }
@@ -2066,8 +2076,11 @@ pub fn build_frame_sensing(
         animation.apply(&mut copy, time, &inputs);
         if let Some(rules) = ruled {
             rules.apply_whole(&mut copy, time, |_| true);
+            // A broken thing whose Break look still plays out stays, for its look to draw.
             for id in rules.broken() {
-                copy.things.remove(&id);
+                if !rules.showing(id, time) {
+                    copy.things.remove(&id);
+                }
             }
         }
         bpe_core::gradient_extras::apply_moves(&mut copy, time);
@@ -2255,7 +2268,7 @@ mod tests {
     fn layer_records_and_layered_instances_fit_the_gpu() {
         assert_eq!(std::mem::size_of::<LayerGpu>() % 16, 0);
         assert_eq!(std::mem::size_of::<LayerGpu>(), 288, "as layers.wgsl lays it out");
-        assert!(std::mem::size_of::<LayeredInstance>() <= 160);
+        assert!(std::mem::size_of::<LayeredInstance>() <= 176);
         assert_eq!(std::mem::size_of::<LayeredInstance>() % 16, 0);
         let mut f = Frame::default();
         f.layered.push(LayeredInstance { misc: [1.0, 7.25, 0.0, 0.0], ..Default::default() });
