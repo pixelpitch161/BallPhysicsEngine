@@ -183,3 +183,11 @@ fn a_light_riding_each_ball_is_one_light_per_ball() {
     let frame = frame_of(&scene, &kit, 0.0);
     assert_eq!(frame.light.as_ref().unwrap().lights.len(), 1 + 6);
 }
+
+/// Writes the lighting demo scene to `BPE_DEMO_SCENE` (for the review video), when set.
+#[test]
+fn write_the_demo_scene() {
+    let Some(path) = std::env::var_os("BPE_DEMO_SCENE") else { return };
+    let reg = reg();
+    std::fs::write(path, bpe_core::save::save(&scenes::lit_demo(&reg))).unwrap();
+}

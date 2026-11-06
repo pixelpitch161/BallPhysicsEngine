@@ -25,7 +25,10 @@ fn a_plain_streak_keeps_its_old_vertices() {
     push_streak(&mut out, &points, 10.0, 0.5, RED, 1.0);
     assert_eq!(out.len(), 12, "two triangles a segment");
     // The head: 10 wide plus a pixel out either side, fully on.
-    assert_eq!(out[0], TrailVertex { position: [0.0, -11.0], edge: [11.0, 10.0], color: RED, style: [0.0, 0.0] });
+    assert_eq!(
+        out[0],
+        TrailVertex { position: [0.0, -11.0], edge: [11.0, 10.0], color: RED, style: [0.0, 0.0], light: [0.0; 2] }
+    );
     assert_eq!(out[1].position, [0.0, 11.0]);
     assert_eq!(out[1].edge, [-11.0, 10.0]);
     // The middle point: three quarters wide and a quarter of the alpha ((1 - 0.5)²).

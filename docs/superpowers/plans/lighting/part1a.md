@@ -50,7 +50,7 @@ merged by the thread itself once tests and the review pass (owner's standing ins
    (default 0). Sub-layers otherwise go with their layer's Lit.
 7. **Height and normals**: in mode 2 a layered ball writes height `radius · roundness · sqrt(1 − (1 + d)²)` (d the
    ball shape's signed distance in ball units, so a circle gives the exact sphere); the light pass takes the normal
-   from the height's slope. Shapes, trails, particles and the background are flat (height 0). Roundness sits in the
+   from the height's slope. Shapes, trails, particles and the background are flat (height 0). Roundness (named **Bulge** in the editor, key `bulge`, because a Body already has a Roundness for its corners) sits in the
    **Body layer's Lighting fold** (the ball's surface) until 2a's Surface section takes it over.
 8. **Lit defaults** (`Kind` in the kit): 1 for Body, Pattern, Outline, Shading, Shader, Trail, Particles, Wavefront, shape
    body, Colour and gradient, shape Outline, shape Shader; 0 for Glow, Shine, shape Glow. **Blocks light** defaults on

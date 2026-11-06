@@ -169,7 +169,7 @@ impl LayerKind for Kind {
     fn dynamic_defs(&self, get: &dyn Fn(&str) -> Option<Value>) -> &'static [SettingDef] {
         (self.dynamic)(get)
     }
-    /// Lit, Blocks light and (on a ball's Body) Roundness, in the layer's Lighting fold.
+    /// Lit, Blocks light and (on a ball's Body) Bulge, in the layer's Lighting fold.
     fn light_defs(&self) -> &'static [SettingDef] {
         lighting::defs_of(self.id)
     }

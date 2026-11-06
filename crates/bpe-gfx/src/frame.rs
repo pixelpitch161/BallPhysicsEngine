@@ -159,7 +159,7 @@ pub struct LayerGpu {
     pub paint: PaintGpu,
     pub extra: [[f32; 4]; 4],
     /// How the layer takes the scene's lights (read only when the scene is lit): its Lit (0 as
-    /// today, 1 fully lit), how much it blocks light, and on a ball's body record its Roundness.
+    /// today, 1 fully lit), how much it blocks light, and on a ball's body record its Bulge.
     pub light: [f32; 4],
 }
 

@@ -1,6 +1,6 @@
 //! How a layer takes the scene's light (lighting spec, part 1a): its **Lit** (0 keeps its own
 //! colour whatever the lamps do, 1 takes their light whole), whether it **Blocks light** (casts
-//! shadows) and, on a ball's Body, its **Roundness** (how much the ball bulges to the light). The
+//! shadows) and, on a ball's Body, its **Bulge** (how much the ball bulges to the light). The
 //! settings sit in each drawn and around layer's "Lighting" fold; they change nothing until the
 //! scene has a Lighting card.
 
@@ -11,7 +11,7 @@ use super::{BODY, GLOW, OUTLINE, PATTERN, SHADER, SHADING, SHINE};
 /// The settings' keys.
 pub const LIT: &str = "lit";
 pub const BLOCKS_LIGHT: &str = "blocks_light";
-pub const ROUNDNESS: &str = "roundness";
+pub const BULGE: &str = "bulge";
 
 /// Lit by the lamps, not blocking them.
 #[derive(Clone, Debug, PartialEq, Settings)]
@@ -78,13 +78,13 @@ pub struct BodyLit {
     #[setting(label = "Blocks light", group = "Lighting")]
     pub blocks_light: bool,
     /// How much the ball bulges to the light: 0 is a flat disc, 1 a ball, more a taller dome.
-    #[setting(label = "Roundness", span(0, 2), keyframe, group = "Lighting")]
-    pub roundness: f32,
+    #[setting(label = "Bulge", span(0, 2), keyframe, group = "Lighting")]
+    pub bulge: f32,
 }
 
 impl Default for BodyLit {
     fn default() -> Self {
-        Self { lit: 1.0, blocks_light: true, roundness: 1.0 }
+        Self { lit: 1.0, blocks_light: true, bulge: 1.0 }
     }
 }
 
@@ -104,7 +104,7 @@ pub fn defs_of(kind: &str) -> &'static [SettingDef] {
 }
 
 /// A layer's Lighting as the renderer reads it ([`bpe_gfx::LayerGpu::light`]): Lit, Blocks light
-/// (0 or 1), Roundness and 0. A layer without the settings is neither lit nor blocking.
+/// (0 or 1), Bulge and 0. A layer without the settings is neither lit nor blocking.
 pub fn of(p: &Params) -> [f32; 4] {
     let number = |key| match p.get(key) {
         Some(Value::Number(v)) => *v as f32,
@@ -112,7 +112,7 @@ pub fn of(p: &Params) -> [f32; 4] {
         Some(Value::Bool(b)) => f32::from(u8::from(*b)),
         _ => 0.0,
     };
-    [number(LIT), number(BLOCKS_LIGHT), number(ROUNDNESS), 0.0]
+    [number(LIT), number(BLOCKS_LIGHT), number(BULGE), 0.0]
 }
 
 #[cfg(test)]
