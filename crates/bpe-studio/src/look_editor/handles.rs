@@ -246,7 +246,9 @@ pub fn show(
     }
     // A dot for each Free point of the layer's gradients, in its stop's colour.
     let get = |k: &str| cx.scene.value_at_time(cx.reg(), &cx.at(layer.id, k), cx.time);
-    for (n, f) in super::free_points::free_on(kind.settings(), &get).iter().enumerate() {
+    let free = super::free_points::free_on(kind.settings(), &get);
+    // A paint measured in the world (following Place or Start) has its dots in the preview only.
+    for (n, f) in free.iter().enumerate().filter(|(_, f)| !f.placed) {
         for (i, (q, colour)) in f.points.iter().enumerate() {
             let at = inside(view.shrink(8.0), map.centre, map.to_view(f.to_ball(*q)));
             let id = ui.make_persistent_id(("free point", cx.id, layer.id.0, n, i));

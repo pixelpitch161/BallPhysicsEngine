@@ -625,7 +625,9 @@ fn apply_in(params: &mut Params) {
         take(&mut found[at].1, c.name, v);
     }
     for (base, f) in found {
-        let bands = f.bands.round().clamp(0.0, MOST_BANDS) as u32;
+        // Free points give each stop a point: bands (two stops a band) would take the wrong ones.
+        let free = f.shaped && f.layout.form == Some(crate::GradientForm::FreePoints);
+        let bands = if free { 0 } else { f.bands.round().clamp(0.0, MOST_BANDS) as u32 };
         for key in [base.clone(), crate::vary::to_key(&base)] {
             if let Some(Value::Gradient(g)) = params.get(&key) {
                 let mut g: Gradient = if bands > 0 { g.banded(bands) } else { g.clone() };

@@ -90,7 +90,7 @@ pub fn beat_at(s: &SceneSettings, time: f64) -> [f32; 4] {
 /// screen the span is the video's `height`; across the world the span and the centre's height
 /// are the world heights the camera shows (its world box, or one shot's height around where it
 /// is set), as the top-to-bottom background always did.
-fn fit_background(mut p: Paint, scene: &bpe_core::Resolved, height: f32, on_screen: bool) -> Paint {
+pub fn fit_background(mut p: Paint, scene: &bpe_core::Resolved, height: f32, on_screen: bool) -> Paint {
     let d = Paint::default();
     let (default_span, default_centre) = (p.span == d.span, p.centre == d.centre);
     if on_screen {

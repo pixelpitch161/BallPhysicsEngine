@@ -19,6 +19,9 @@ pub struct FreeOn {
     centre: Vec2,
     /// Ball radii per form unit.
     size: f32,
+    /// Measured from a paint's Centre in Spans (in the world), not on the ball: the ball view
+    /// shows no dots for it.
+    pub placed: bool,
 }
 
 impl FreeOn {
@@ -62,6 +65,7 @@ pub fn free_on(defs: &'static [SettingDef], get: &dyn Fn(&str) -> Option<Value>)
             continue;
         }
         let layout: Layout = gradient_extras::layout_from(d.key, get);
+        let mut in_world = false;
         let (turn, centre, size) = match d.flags.area {
             // Placed by the gradient's own Turn, Centre and Size.
             Area::Fills(_) => (
@@ -85,6 +89,7 @@ pub fn free_on(defs: &'static [SettingDef], get: &dyn Fn(&str) -> Option<Value>)
                         Some(Value::Vec2(c)) => Vec2::from(c),
                         _ => Vec2::ZERO,
                     };
+                    in_world = true;
                     (angle, centre, number(&format!("{prefix}span"), 1000.0).max(1e-3))
                 } else {
                     (angle, Vec2::ZERO, 1.0 / number(&format!("{prefix}size"), 1.0).max(1e-3))
@@ -95,7 +100,7 @@ pub fn free_on(defs: &'static [SettingDef], get: &dyn Fn(&str) -> Option<Value>)
             .into_iter()
             .map(|(p, c)| (Vec2::from(p), bpe_core::Color::from_linear(c)))
             .collect();
-        out.push(FreeOn { key: d.key, points, turn, centre, size });
+        out.push(FreeOn { key: d.key, points, turn, centre, size, placed: in_world });
     }
     out
 }

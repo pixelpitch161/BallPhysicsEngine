@@ -269,3 +269,13 @@ from Straight. Commit.
 - Picture tests: `bpe-kit/tests/gradient_form_pictures.rs` checks every form on the background against the CPU's
   `area_colour` at a grid of points, and every form inside a ball and on a shape against Straight, rather than
   pinning tile averages (that holds on any GPU).
+- Review fixes: Ripples on the background look the field up in the world even when the background stays on the
+  screen; Bands are left off a gradient laid out as Free points (each stop keeps its point); the ball view shows no
+  dots for a paint measured in the world (Place/Start), the preview does; the background's dots use
+  `fit_background` like the drawing; CPU rounding is `round_ties_even`, as WGSL's `round`; Along the edge starts at
+  the top at the default Turn (90°) on balls and the background, as on shapes.
+- Known limits, left for later: the Shape tab is offered on a Pattern's own colours for the mask patterns and on
+  paints whose current follow isn't a place (the form does nothing there; `Area` is fixed per setting, not per
+  value); the Pattern's dots don't turn with its Spin; a Pattern layer's stored `in_colours~form` default makes
+  `any_in` true, so such scenes copy the resolved scene each frame (pictures unaffected); balls starting on the very
+  same spot skip each other's Ripples for that moment (the skip matches by centre and kind, not owner number).

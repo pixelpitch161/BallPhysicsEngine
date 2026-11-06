@@ -168,7 +168,8 @@ fn paint_form_along(p: PaintGpu, local: vec2<f32>, time: f32) -> f32 {
             return fract(turns) * p.scale;
         }
         case 4u: {
-            return fract(turns + 0.25);
+            // From the top at the default Turn (90°), like the shapes.
+            return fract(turns + 0.5);
         }
         case 5u: {
             return q.x * 0.5;

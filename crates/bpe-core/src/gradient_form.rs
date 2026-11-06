@@ -335,7 +335,7 @@ pub fn pcg(x: u32) -> u32 {
 
 /// The seed setting as the hash takes it.
 fn seed_bits(seed: f32) -> u32 {
-    let s = finite(seed, 0.0).round().clamp(-1e9, 1e9) as i64;
+    let s = finite(seed, 0.0).round_ties_even().clamp(-1e9, 1e9) as i64;
     s as u32
 }
 
@@ -363,7 +363,7 @@ pub fn noise(q: Vec2, seed: u32) -> f32 {
 
 /// Octaves of noise, each twice as fine and half as strong, kept to -0.5 to 0.5.
 pub fn fbm(q: Vec2, octaves: f32, seed: u32) -> f32 {
-    let n = finite(octaves, 3.0).round().clamp(1.0, 8.0) as u32;
+    let n = finite(octaves, 3.0).round_ties_even().clamp(1.0, 8.0) as u32;
     let (mut sum, mut amp, mut total, mut at) = (0.0, 1.0, 0.0, q);
     for i in 0..n {
         sum += amp * noise(at, seed.wrapping_add(i.wrapping_mul(0x68e3_1da4)));
@@ -376,7 +376,7 @@ pub fn fbm(q: Vec2, octaves: f32, seed: u32) -> f32 {
 
 /// How far along a polygon or star of `sides` corners (pointing up) `q` is: 1 on its outline.
 fn polygon(q: Vec2, sides: f32, star: f32) -> f32 {
-    let n = finite(sides, 5.0).round().clamp(3.0, 4096.0);
+    let n = finite(sides, 5.0).round_ties_even().clamp(3.0, 4096.0);
     let step = std::f32::consts::PI / n;
     let inner = (step.cos() * (1.0 - finite(star, 0.0))).max(0.02);
     let theta = q.y.atan2(q.x) + std::f32::consts::FRAC_PI_2;
@@ -433,14 +433,15 @@ pub fn along(form: GradientForm, layout: &Layout, q: Vec2, k: f32, time: f32) ->
         GradientForm::Round | GradientForm::Rings | GradientForm::Ripples => q.length(),
         GradientForm::Sweep => fract(turns) * finite(k, 1.0),
         GradientForm::Stripes => q.x * 0.5,
-        GradientForm::AlongTheEdge => fract(turns + 0.25),
+        // From the top at the default Turn (90°), like the shapes.
+        GradientForm::AlongTheEdge => fract(turns + 0.5),
         GradientForm::Diamond => q.x.abs() + q.y.abs(),
         GradientForm::Polygon => polygon(q, layout.sides, layout.star),
         GradientForm::Spiral => {
-            fract(turns * finite(layout.arms, 1.0).round().max(1.0) + q.length() * finite(layout.twist, 0.0))
+            fract(turns * finite(layout.arms, 1.0).round_ties_even().max(1.0) + q.length() * finite(layout.twist, 0.0))
         }
         GradientForm::Kaleido => {
-            let m = finite(layout.mirrors, 1.0).round().max(1.0);
+            let m = finite(layout.mirrors, 1.0).round_ties_even().max(1.0);
             1.0 - (2.0 * fract(turns * m) - 1.0).abs()
         }
         GradientForm::OffCentre => off_centre(q, layout.focus, layout.stretch, layout.stretch_turn),
@@ -625,10 +626,15 @@ mod tests {
 
     #[test]
     fn along_the_edge_starts_at_the_top_and_goes_clockwise() {
+        // At the default Turn, as a site sees it (y down).
         let l = Layout::default();
-        assert!(near(at(GradientForm::AlongTheEdge, &l, 0.0, -1.0), 0.0));
-        assert!(near(at(GradientForm::AlongTheEdge, &l, 1.0, 0.0), 0.25));
-        assert!(near(at(GradientForm::AlongTheEdge, &l, 0.0, 1.0), 0.5));
+        let seen = |x: f32, y: f32| {
+            let q = turned(Vec2::new(x, y), -defaults::TURN);
+            at(GradientForm::AlongTheEdge, &l, q.x, q.y)
+        };
+        assert!(near(seen(0.0, -1.0), 0.0) || near(seen(0.0, -1.0), 1.0));
+        assert!(near(seen(1.0, 0.0), 0.25));
+        assert!(near(seen(0.0, 1.0), 0.5));
     }
 
     #[test]

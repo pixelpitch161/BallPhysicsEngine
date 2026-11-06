@@ -177,7 +177,8 @@ fn background_colour(in: BgOut) -> vec4<f32> {
                 g.bg_paint.x, g.bg_paint.y, g.bg_shape.x, g.bg.z, g.bg_place.x, 1.0, g.bg_paint.z, g.bg_paint.w,
                 PAINT_NO_VARY, g.bg_form, vec4<f32>(0.0),
             );
-            paint_world = at;
+            // Ripples look the field up in the world, wherever the place is measured.
+            paint_world = screen_to_world(in.world);
             return vec4<f32>(paint_colour(p, d / span, g.view.w, vec4<f32>(0.0, 0.0, 0.0, 1.0)).rgb, 1.0);
         }
         if g.bg.y < 1.5 {

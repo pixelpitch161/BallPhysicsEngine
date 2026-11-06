@@ -59,6 +59,33 @@ fn dots_of(scene: &Scene, reg: &bpe_core::Registry, world: &World, id: ThingId, 
         let Some(kind) = reg.thing(&thing.kind) else { return Vec::new() };
         let get = |k: &str| value(Address::own(id, k));
         let screen = !matches!(get("background_on_screen"), Some(Value::Bool(false)));
+        if free_on(kind.settings(), &get).is_empty() {
+            return Vec::new();
+        }
+        // Placed where the background is painted: a Span and Centre left at their defaults are
+        // fitted to the picture (`fit_background`).
+        let resolved = bpe_kit::resolve_scene(scene, reg);
+        let Some(root) = resolved.things.get(&ThingId::ROOT) else { return Vec::new() };
+        let settings = <bpe_kit::things::scene::SceneSettings as bpe_core::Settings>::from_params(&root.params);
+        let number = |k: &str, or: f32| match get(k) {
+            Some(Value::Number(x)) => x as f32,
+            _ => or,
+        };
+        let centre = match get("background_centre") {
+            Some(Value::Vec2(c)) => Vec2::from(c),
+            _ => Vec2::ZERO,
+        };
+        let raw = bpe_kit::paint::Paint { span: number("background_span", 0.0), centre, ..Default::default() };
+        let raw = bpe_kit::paint::Paint {
+            span: if raw.span > 0.0 { raw.span } else { bpe_kit::paint::Paint::default().span },
+            ..raw
+        };
+        let fitted = bpe_kit::things::scene::draw::fit_background(raw, &resolved, settings.height as f32, screen);
+        let get = |k: &str| match k {
+            "background_span" => Some(Value::Number(fitted.span as f64)),
+            "background_centre" => Some(Value::Vec2(fitted.centre.to_array())),
+            _ => get(k),
+        };
         return free_on(kind.settings(), &get)
             .into_iter()
             .map(|on| Dots { thing: id, slot: SlotId::Look, layer: None, on, frame: None, screen })
