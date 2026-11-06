@@ -14,12 +14,17 @@ mod frame;
 mod grade_tests;
 mod gradients;
 mod lighting;
+pub mod stage_camera;
+mod stage_camera_pass;
+pub use stage_camera::{FillEdges, StageCamera, StageCameraGpu, StageLayout, StageView};
 #[cfg(test)]
 mod lighting_tests;
 mod timing;
 pub use timing::FEATURES as TIMING_FEATURES;
 #[cfg(test)]
 mod layers_tests;
+#[cfg(test)]
+mod lens_tests;
 mod masks;
 #[cfg(test)]
 mod paint_tests;
@@ -336,6 +341,8 @@ pub struct Renderer {
     grade_map: GradeMap,
     /// Lighting's passes and pictures, made the first time a frame is lit.
     lighting: Option<lighting::Lighting>,
+    /// The Stage camera's pass (lighting part 5), made the first time a frame is seen moved.
+    stage_camera: Option<stage_camera_pass::StageCameraPass>,
     /// Times the light passes, when the device can (`None` inside: it can't; tried once).
     light_timer: Option<Option<timing::LightTimer>>,
     /// The last frame's lighting: how many lights it drew, `None` when it wasn't lit.
@@ -1064,6 +1071,7 @@ impl Renderer {
             targets,
             grade_map,
             lighting: None,
+            stage_camera: None,
             light_timer: None,
             lit_lights: None,
             light_mode: 0,
@@ -1191,12 +1199,16 @@ impl Renderer {
         let mut slot = 0;
         let globals = self.globals_group.clone();
         let screen_globals = self.screen_globals_group.clone();
+        // A moved Stage camera swings the stage, not what is stuck to the screen: that is drawn
+        // after the camera pass, over what it saw.
+        let moving = frame.stage_view().filter(|v| v.motion > 0.0);
+        let staged_overlay = if moving.is_some() { None } else { overlay };
         self.draw_scene(
             device,
             queue,
             &mut encoder,
             frame,
-            overlay,
+            staged_overlay,
             &layer_buffers,
             &mut slot,
             (wants_objects, material),
@@ -1206,6 +1218,7 @@ impl Renderer {
         // its own picture, then the light mixed into the HDR picture.
         self.lit_lights = frame.light.as_ref().map(|scene| scene.lights.len());
         let mut timed = false;
+        let mut moved = false;
         if let Some(scene) = frame.light.as_ref() {
             let timer = self.light_timer.get_or_insert_with(|| timing::LightTimer::new(device, queue));
             if let Some(t) = timer {
@@ -1243,7 +1256,7 @@ impl Renderer {
                     queue,
                     &mut encoder,
                     frame,
-                    overlay,
+                    staged_overlay,
                     &layer_buffers,
                     &mut slot,
                     (false, false),
@@ -1278,9 +1291,48 @@ impl Renderer {
                 &self.targets.hdr,
                 scene.settings.background_glows(),
             );
+            // A moved Stage camera sees the lit picture again: the picture, the picture before
+            // lighting and the lit colour are then the moved camera's.
+            if let Some(view) = moving {
+                let lighting = self.lighting.as_ref().expect("made above");
+                let pass =
+                    self.stage_camera.get_or_insert_with(|| stage_camera_pass::StageCameraPass::new(device, lighting));
+                pass.ensure(device, self.targets.width, self.targets.height);
+                {
+                    let mut background = begin_pass(
+                        &mut encoder,
+                        pass.background(),
+                        "background alone",
+                        wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    );
+                    background.set_bind_group(0, &self.globals_group, &[]);
+                    background.set_bind_group(1, &self.paint.group, &[]);
+                    background.set_pipeline(&self.background);
+                    background.draw(0..3, 0..1);
+                }
+                // Draft takes one ray a pixel; better qualities five at edges.
+                let samples = if scene.settings.more[2] < 0.5 { 1 } else { 5 };
+                let lit_colour = &lighting.pictures().expect("made above")[0].1;
+                pass.run(device, queue, &mut encoder, lighting, &view, samples, &self.targets.hdr, lit_colour);
+                let [picture, unlit, _] = pass.seen();
+                let extent =
+                    wgpu::Extent3d { width: self.targets.width, height: self.targets.height, depth_or_array_layers: 1 };
+                encoder.copy_texture_to_texture(
+                    picture.0.as_image_copy(),
+                    self.targets.hdr_texture.as_image_copy(),
+                    extent,
+                );
+                encoder.copy_texture_to_texture(unlit.0.as_image_copy(), self.targets.behind.as_image_copy(), extent);
+                moved = true;
+            }
             if let Some(Some(t)) = self.light_timer.as_mut() {
                 timed = t.end(&mut encoder);
             }
+        }
+        if moving.is_some()
+            && let Some(o) = overlay
+        {
+            self.draw_overlay(device, queue, &mut encoder, frame, o, &layer_buffers, &mut slot, &screen_globals);
         }
         let above = BlendLayer::above;
         let object_view = self.targets.object.as_ref().filter(|_| wants_objects).map(|(_, v)| v.clone());
@@ -1293,9 +1345,20 @@ impl Renderer {
             pass.set_bind_group(1, &self.paint.group, &[]);
             self.draw_all_objects(&mut pass, frame, &layer_buffers, true);
         }
+        // Effects that read where things are see them where the moved camera shows them.
+        let object_view = match (moved, object_view) {
+            (true, Some(front)) => {
+                self.stage_camera.as_mut().and_then(|p| p.see_objects(device, &mut encoder, &front)).or(Some(front))
+            }
+            (_, view) => view,
+        };
         self.layer_buffers = layer_buffers;
         // Effects on the light read the picture before lighting and the lit colour.
         let light_pictures = match (frame.light.as_ref(), self.lighting.as_ref().and_then(|l| l.pictures())) {
+            (Some(_), Some(_)) if moved => {
+                let lit = &self.stage_camera.as_ref().expect("moved").seen()[2].1;
+                Some((self.targets.behind_view.clone(), lit.clone()))
+            }
             (Some(_), Some([(_, lit), _, _])) => Some((self.targets.behind_view.clone(), lit)),
             _ => None,
         };
@@ -1464,32 +1527,49 @@ impl Renderer {
             self.draw_any_layer(device, queue, encoder, frame, i, l, b, &world, slot, objects, material);
         }
         if let Some(o) = overlay {
-            let screen = Through {
-                globals: screen_globals.clone(),
-                paint: self.overlay_paint.group.clone(),
-                world: false,
-                camera: CameraView::default(),
-                each: None,
-            };
-            let buffers = std::mem::take(&mut self.overlay);
-            let hdr = self.targets.hdr.clone();
-            // In the same order as the frame's own: lower z-orders, the overlay's trails and
-            // shapes, the layers behind its balls, its balls and flashes, then the rest.
-            let own = &layer_buffers[frame.layers.len()..];
-            let mut layers = |r: &mut Self, encoder: &mut wgpu::CommandEncoder, which: fn(&BlendLayer) -> bool| {
-                for (l, b) in o.layers.iter().zip(own).filter(|(l, _)| which(l)) {
-                    let through = r.layer_through(device, queue, frame, l, None, &screen);
-                    r.draw_layer(device, queue, encoder, l, b, &through, *slot, None);
-                    *slot += 1;
-                }
-            };
-            layers(self, encoder, |l| l.z < 0);
-            self.draw_things_part(encoder, o, &buffers, &screen, &hdr, false);
-            layers(self, encoder, |l| l.z == 0 && l.behind());
-            self.draw_things_part(encoder, o, &buffers, &screen, &hdr, true);
-            layers(self, encoder, |l| l.z > 0 || (l.z == 0 && !l.behind()));
-            self.overlay = buffers;
+            self.draw_overlay(device, queue, encoder, frame, o, layer_buffers, slot, screen_globals);
         }
+    }
+
+    /// Draws the things stuck to the screen (the overlay frame `o`) into the HDR picture over
+    /// everything else, the overlay's blend layers in their own z-order.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_overlay(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &Frame,
+        o: &Frame,
+        layer_buffers: &[FrameBuffers],
+        slot: &mut usize,
+        screen_globals: &wgpu::BindGroup,
+    ) {
+        let screen = Through {
+            globals: screen_globals.clone(),
+            paint: self.overlay_paint.group.clone(),
+            world: false,
+            camera: CameraView::default(),
+            each: None,
+        };
+        let buffers = std::mem::take(&mut self.overlay);
+        let hdr = self.targets.hdr.clone();
+        // In the same order as the frame's own: lower z-orders, the overlay's trails and
+        // shapes, the layers behind its balls, its balls and flashes, then the rest.
+        let own = &layer_buffers[frame.layers.len()..];
+        let mut layers = |r: &mut Self, encoder: &mut wgpu::CommandEncoder, which: fn(&BlendLayer) -> bool| {
+            for (l, b) in o.layers.iter().zip(own).filter(|(l, _)| which(l)) {
+                let through = r.layer_through(device, queue, frame, l, None, &screen);
+                r.draw_layer(device, queue, encoder, l, b, &through, *slot, None);
+                *slot += 1;
+            }
+        };
+        layers(self, encoder, |l| l.z < 0);
+        self.draw_things_part(encoder, o, &buffers, &screen, &hdr, false);
+        layers(self, encoder, |l| l.z == 0 && l.behind());
+        self.draw_things_part(encoder, o, &buffers, &screen, &hdr, true);
+        layers(self, encoder, |l| l.z > 0 || (l.z == 0 && !l.behind()));
+        self.overlay = buffers;
     }
 
     /// The world's and the screen's globals for light pass `mode` (1 to 4), made the first time.

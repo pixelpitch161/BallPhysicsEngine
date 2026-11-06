@@ -303,6 +303,8 @@ pub(crate) struct Lighting {
     stirs: GrowableBuffer,
     targets: Option<Targets>,
     memory: Memory,
+    /// The last run's bind groups 0 and 2, for the Stage camera pass (lighting part 5).
+    bound: Option<[wgpu::BindGroup; 2]>,
 }
 
 fn texture(
@@ -618,7 +620,20 @@ impl Lighting {
             stirs: GrowableBuffer::storage("haze stirs"),
             targets: None,
             memory: Memory::default(),
+            bound: None,
         }
+    }
+
+    /// The layouts of bind groups 0, 1 and 2 of the light passes (lighting part 5's camera pass
+    /// reads the same groups).
+    /// The light pass's bind group layouts 0 (its pictures) and 2 (the stage).
+    pub(crate) fn layouts(&self) -> [&wgpu::BindGroupLayout; 2] {
+        [&self.layout, &self.stage_layout]
+    }
+
+    /// The last run's bind groups 0 and 2.
+    pub(crate) fn bound(&self) -> Option<&[wgpu::BindGroup; 2]> {
+        self.bound.as_ref()
     }
 
     /// Makes the lighting pictures for a `width` × `height` output lit as `scene` asks, unless
@@ -1171,6 +1186,7 @@ impl Lighting {
         }
 
         let g = group_in(&self.mix_layout, MIX_BINDINGS, &base_glow, &all);
+        self.bound = Some([main.clone(), stage_group.clone()]);
         match t.stage.as_ref().filter(|_| reflects) {
             Some((_, lit)) => {
                 pass(encoder, &[(lit, clear)], &self.mix, &[&main, &g, &stage_group], "light");

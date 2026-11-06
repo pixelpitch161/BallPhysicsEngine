@@ -78,6 +78,7 @@ pub fn draws() -> Draws {
     d.add(BallsDraw);
     d.add(EmitterDraw);
     d.add(things::light::draw::LightDraw);
+    d.add(things::camera::draw::CameraDraw);
     d.add_module(EffectsDraw);
     d
 }

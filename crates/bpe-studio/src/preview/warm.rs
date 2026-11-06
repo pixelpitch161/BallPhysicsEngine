@@ -72,10 +72,8 @@ fn draw_at(
         studio.follow.as_deref().map(|f| f as &dyn bpe_runtime::SoundAt),
         frame,
     );
-    if let Some((camera, (w, h))) = look {
-        frame.set_view(camera, (w, h));
-        frame.overlay = None;
-        frame.grade = Default::default();
+    if let Some((camera, size)) = look {
+        super::world_look(frame, camera, size);
     }
     frame.cull();
     renderer.render(device, queue, frame);

@@ -15,8 +15,9 @@ use super::shading::Space;
 use crate::modules::effects::draw::pack_params;
 use crate::modules::effects::param_defs;
 
-/// What the Effect setting offers: every built-in by id, then own code.
-pub const EFFECTS: [&str; 27] = [
+/// What the Effect setting offers: every built-in by id but the lens effects (which need the whole
+/// picture), then own code.
+pub const EFFECTS: [&str; 28] = [
     "color_cycle",
     "color_split",
     "echo",
@@ -43,6 +44,7 @@ pub const EFFECTS: [&str; 27] = [
     "lava",
     "rainbow_flow",
     "hit_glow",
+    "fringes",
     OWN,
 ];
 
@@ -116,7 +118,7 @@ pub fn defs() -> &'static [SettingDef] {
                 ..def("blend", "Blend", Blend::value_type(), Blend::Normal.to_value())
             },
         ];
-        for b in &BUILTINS {
+        for b in BUILTINS.iter().filter(|b| !b.header().lens.any()) {
             let when: &'static str = Box::leak(format!("effect={}", b.id).into_boxed_str());
             defs.extend(param_defs(b.header(), &format!("{}.", b.id), when, "Effect", false));
         }
@@ -248,7 +250,11 @@ mod tests {
     fn every_builtins_settings_are_listed_under_its_id_and_shown_only_for_it() {
         let defs = defs();
         for b in &BUILTINS {
-            assert!(EFFECTS.contains(&b.id), "{}", b.id);
+            // A lens effect needs the whole picture: it isn't offered inside a ball.
+            assert_eq!(EFFECTS.contains(&b.id), !b.header().lens.any(), "{}", b.id);
+            if b.header().lens.any() {
+                continue;
+            }
             for p in &b.header().params {
                 let key = format!("{}.{}", b.id, p.key);
                 let d = defs.iter().find(|d| d.key == key).unwrap_or_else(|| panic!("{key}"));

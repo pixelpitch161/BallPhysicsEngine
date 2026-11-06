@@ -153,6 +153,31 @@ moments) and keeps each ball's sample per moment. The physics' and the sound eng
 that follow sound read as set there; only the picture's probe hears it). A setting the lighting reads can't follow
 light, spread by it, or follow the sound of a shape with a Light modulator (`FollowShape.hears_light`).
 
+Part 5 is in (plan `docs/superpowers/plans/lighting/part5.md`): **lens effects** and the **Stage camera**. Lens flare
+(`lens_flare`: ghosts through the middle, a halo, a starburst), Lens streaks (`lens_streaks`, anamorphic, kicked by
+hits) and Colour fringes (`fringes`, a radial spectral split that pulses on the beat) are built-in effects of the
+Effects stack. A `// lens: rays soft` header line asks for a pre-pass (`bpe-gfx/src/effects/lens.rs`, `LensPass`): the
+effect's own `fn bright(uv, p)` drawn at half size (`assemble_bright`), then a soft mip chain (`lens_soft(uv, level)`,
+binding 9) and Kawase streaks along `rays`/`ray_turn`/`ray_length` (`lens_rays(uv)`, binding 8; pass n spaces its
+4 taps 4ⁿ texels apart, `ray_passes`); inside a ball both read black (`in_ball.wgsl`). The Camera thing has a
+**Stage camera** group (Stage camera switch, Orbit, Tilt, Height `stage_height`, Lens mm, Turns round `pivot`, Edges
+Zoom in to fill / Stretch); `things/camera/draw.rs::CameraDraw` puts it on `LightScene.camera` in Stage only, and
+`Frame::stage_view` solves it (`bpe-gfx/src/stage_camera.rs`: `StageView::solve`, the rest camera that frames the
+front shot exactly, `plane_at`/`screen_of`, the fill zoom by bisection). After the light passes the renderer re-views
+the lit front picture (`stage_camera_pass.rs`, `shaders/stage_camera.wgsl` pasted after lighting.wgsl, sharing its
+three bind groups through `Lighting::layouts`/`bound`): the background drawn alone tells the bare wall from things,
+a pull–push fills the wall in under them, and each ray finds a ball (the sphere grid), a shape (the field extruded),
+the wall or floor, and the flat things on the picture plane; every hit is coloured where the rest camera saw it
+(`cam_rest_uv`); a first look of one ray a pixel (`fs_cam_view`, a code of what it hit in alpha) is followed by
+four more rays where a neighbour hit something else (`fs_cam_edges`, not in Draft). Shapes come from the slab
+(stepped by the field, the outline found exactly in the full-size surface picture, `cam_blocks`), balls from the
+sphere grid. Picture effects then see the moved picture, its unlit picture and lit colour, the object picture seen
+again (`see_objects`) and the ball list through the camera (`fx_balls`, `StageView::scale_at`); things stuck to the
+screen are drawn after the move (`Renderer::draw_overlay`), unlit. With no move (`motion` 0) the pass is skipped
+and the picture is the front one exactly. The
+editor's `View.stage` (from `Studio.stage_view`, set when the shot is drawn; the World view clears it) maps the
+pointer and handles through the moved camera. Tests: `bpe-gfx/src/lens_tests.rs`, `bpe-kit/tests/stage_camera_pictures.rs`.
+
 ## Crate map
 
 Dependencies go bottom to top:

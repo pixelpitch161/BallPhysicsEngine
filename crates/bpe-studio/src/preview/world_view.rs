@@ -222,7 +222,7 @@ mod tests {
 
     fn world_view(nav: WorldNav) -> View {
         let rect = Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
-        View { rect, scale: 800.0 / 2560.0, camera: nav.camera(), world: true }
+        View { rect, scale: 800.0 / 2560.0, camera: nav.camera(), world: true, stage: None }
     }
 
     #[test]

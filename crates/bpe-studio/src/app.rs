@@ -142,6 +142,9 @@ pub struct Studio {
     pub world_nav: crate::preview::WorldNav,
     /// The world point at the middle of the preview, where new things are added.
     pub view_centre: glam::Vec2,
+    /// The moved Stage camera the preview's picture was last seen through (lighting part 5), so
+    /// the pointer and handles map through it; `None` at rest and in the World view.
+    pub stage_view: Option<bpe_gfx::StageView>,
     /// Remember grid and panel changes in the settings folder (off without a window, in tests).
     persist_settings: bool,
     /// The inspector's width as last saved.
@@ -268,6 +271,7 @@ impl Studio {
             preview_mode: Default::default(),
             world_nav: Default::default(),
             view_centre: glam::Vec2::ZERO,
+            stage_view: None,
             persist_settings: false,
             inspector_width: settings::INSPECTOR_DEFAULT,
             sound_width: settings::SOUND_WIDTH_DEFAULT,

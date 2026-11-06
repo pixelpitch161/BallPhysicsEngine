@@ -169,22 +169,30 @@ pub struct View {
     pub camera: CameraView,
     /// The World view's free canvas, rather than the shot.
     pub world: bool,
+    /// The moved Stage camera the shot is seen through (lighting part 5): points on the picture
+    /// plane map through it.
+    pub stage: Option<bpe_gfx::StageView>,
 }
 
 impl View {
     pub fn to_screen(self, p: Vec2) -> Pos2 {
-        let q = self.camera.to_screen(p);
+        let q = match self.stage {
+            // Behind the moved camera: far off the preview.
+            Some(s) => s.screen_of(p).unwrap_or(Vec2::splat(1e6)),
+            None => self.camera.to_screen(p),
+        };
         self.rect.center() + egui::vec2(q.x, q.y) * self.scale
     }
 
     pub fn to_world(self, p: Pos2) -> Vec2 {
         let d = (p - self.rect.center()) / self.scale;
-        self.camera.to_world(Vec2::new(d.x, d.y))
+        let d = Vec2::new(d.x, d.y);
+        self.stage.and_then(|s| s.plane_at(d)).unwrap_or_else(|| self.camera.to_world(d))
     }
 
     /// Screen points per world pixel.
     pub fn world_scale(&self) -> f32 {
-        self.scale * self.camera.zoom
+        self.scale * self.camera.zoom * self.stage.map_or(1.0, |s| s.fill)
     }
 
     /// The view `id` is seen through. A thing stuck to the screen sits on the picture, where
@@ -194,7 +202,7 @@ impl View {
         if !studio.resolved.things.get(&id).is_some_and(|r| r.screen) {
             return Some(*self);
         }
-        (!self.world).then_some(View { camera: CameraView::default(), ..*self })
+        (!self.world).then_some(View { camera: CameraView::default(), stage: None, ..*self })
     }
 
     /// Where the pointer at `pos` is, in the space of the thing `handle` holds.
@@ -346,7 +354,8 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     }
 
     let camera = if world_mode { studio.world_nav.camera() } else { studio.playback.world().camera };
-    let mut view = View { rect, scale: view_scale, camera, world: world_mode };
+    let stage = if world_mode { None } else { studio.stage_view };
+    let mut view = View { rect, scale: view_scale, camera, world: world_mode, stage };
     if world_mode && navigate(ui, &response, studio, &view) {
         view.camera = studio.world_nav.camera();
         preview.drawn = None;
@@ -582,18 +591,30 @@ fn draw_picture(
         // The World view looks through its own camera at a picture the panel's shape, and
         // things stuck to the screen belong to the video, not the world, so they are left out.
         // Blend layers move with the frame.
-        if let Some((camera, (w, h))) = look {
-            frame.set_view(camera, (w, h));
-            frame.overlay = None;
-            // The grade belongs to the finished video, not to the world seen through a camera.
-            frame.grade = Default::default();
+        if let Some((camera, size)) = look {
+            world_look(frame, camera, size);
         }
         show_light(frame, studio.light_show);
+        if look.is_none() {
+            studio.stage_view = frame.stage_view().filter(|v| v.motion > 0.0);
+        }
         frame.cull();
         renderer.render(device, queue, frame);
         *drawn = Some(now);
     }
     catching_up
+}
+
+/// Makes `frame` the World view's: seen through `camera` at `size`, without what is stuck to the
+/// screen, the grade (it belongs to the finished video) or the Stage camera (the World view looks
+/// at the world itself).
+pub(crate) fn world_look(frame: &mut Frame, camera: CameraView, size: (u32, u32)) {
+    frame.set_view(camera, size);
+    frame.overlay = None;
+    frame.grade = Default::default();
+    if let Some(light) = frame.light.as_mut() {
+        light.camera = None;
+    }
 }
 
 /// Sets what a lit frame shows. Showing the light alone also leaves out the picture effects,
@@ -1172,6 +1193,7 @@ mod tests {
             scale: 0.25,
             camera: CameraView::default(),
             world: false,
+            stage: None,
         };
         assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(0.0, -200.0))), Some(Handle::Body(ThingId(2))));
         assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::new(508.0, 0.0))), Some(Handle::Body(ThingId(1))));
@@ -1200,6 +1222,7 @@ mod tests {
             scale: 0.25,
             camera: CameraView::default(),
             world: false,
+            stage: None,
         };
         let on_far = view.to_screen(Vec2::new(200.0, 0.0));
         assert_ne!(
@@ -1315,6 +1338,7 @@ mod tests {
             scale: 0.25,
             camera: CameraView::default(),
             world: false,
+            stage: None,
         };
         let world = studio.playback.world().clone();
         apply_drag(
@@ -1415,7 +1439,23 @@ mod tests {
             scale: 0.25,
             camera: CameraView::default(),
             world: false,
+            stage: None,
         }
+    }
+
+    #[test]
+    fn a_moved_stage_camera_maps_the_pointer_both_ways() {
+        let layout = bpe_gfx::StageLayout { back: 240.0, k: 0.25, floor: Some(800.0) };
+        let cam = bpe_gfx::StageCamera { orbit: 25.0, tilt: 10.0, ..bpe_gfx::StageCamera::default() };
+        let stage = bpe_gfx::StageView::solve(&cam, &CameraView::default(), Vec2::new(1080.0, 1920.0), layout);
+        let view = View { stage: Some(stage), ..plain_view() };
+        for p in [Vec2::ZERO, Vec2::new(300.0, -500.0), Vec2::new(-200.0, 700.0)] {
+            let back = view.to_world(view.to_screen(p));
+            assert!(back.distance(p) < 0.5, "{p} came back as {back}");
+        }
+        // The swing moves where things show.
+        let p = Vec2::new(300.0, -500.0);
+        assert!(view.to_screen(p).distance(plain_view().to_screen(p)) > 2.0);
     }
 
     fn ride_offset(studio: &Studio, id: ThingId) -> Vec2 {
@@ -1477,7 +1517,7 @@ mod tests {
         studio.after_edit(before);
         let rect = Rect::from_min_size(Pos2::ZERO, vec2(270.0, 480.0));
         let camera = CameraView { center: Vec2::new(4000.0, 0.0), zoom: 2.0, turn: 0.0 };
-        let shot = View { rect, scale: 0.25, camera, world: false };
+        let shot = View { rect, scale: 0.25, camera, world: false, stage: None };
         // Drawn on the picture as if there were no camera.
         let drawn = View { camera: CameraView::default(), ..shot }.to_screen(Vec2::new(100.0, 300.0));
         assert_eq!(hit_test(&studio, &shot, drawn), Some(Handle::Body(ThingId(2))));
@@ -1502,6 +1542,7 @@ mod tests {
             scale: 0.25,
             camera: CameraView::default(),
             world: false,
+            stage: None,
         };
         assert_eq!(hit_test(&studio, &view, view.to_screen(Vec2::ZERO)).map(Handle::thing), None);
     }
@@ -1517,7 +1558,7 @@ mod tests {
             CameraView { center: Vec2::new(500.0, 800.0), zoom: 3.0, turn: 0.6 },
             CameraView { center: Vec2::new(500.0, 800.0), zoom: 0.05, turn: 0.6 },
         ] {
-            let view = View { rect, scale: 0.25, camera, world: false };
+            let view = View { rect, scale: 0.25, camera, world: false, stage: None };
             let at = view.to_screen(Vec2::new(520.0, 790.0));
             // Zoomed far out, the launch arrow's tip sits on the ball too: either grabs it.
             assert_eq!(hit_test(&studio, &view, at).map(Handle::thing), Some(ThingId(2)), "{camera:?}");

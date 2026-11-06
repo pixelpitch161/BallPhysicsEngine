@@ -6,7 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use bytemuck::{Pod, Zeroable};
 
-use super::{MAX_PARAM_FLOATS, assemble, needs_history};
+use super::lens::{LensPass, RaySettings};
+use super::{Lens, MAX_PARAM_FLOATS, assemble, assemble_bright, needs_history};
 use crate::{BlendLayer, EffectCall, Frame, GrowableBuffer, HDR_FORMAT, OBJECT_FORMAT, Stage, Takes};
 
 pub(crate) const MAX_HITS: usize = 16;
@@ -60,6 +61,9 @@ pub(crate) struct Fx {
 struct Compiled {
     pipeline: wgpu::RenderPipeline,
     history: bool,
+    /// A lens effect's pre-pass: its `bright` at half size, what it asks for, and where its
+    /// `rays`, `ray_turn` and `ray_length` settings sit among the call's floats.
+    lens: Option<(wgpu::RenderPipeline, Lens, Option<[usize; 3]>)>,
 }
 
 /// One call's state from frame to frame.
@@ -99,6 +103,10 @@ pub(crate) struct Chain {
     ball_count: usize,
     /// A lit frame's picture before lighting and its lit colour, for effects on the light.
     light: Option<(wgpu::TextureView, wgpu::TextureView)>,
+    /// The lens pre-pass, made the first time an effect asks for it, and how many of its
+    /// uniforms this frame has used.
+    lens: Option<LensPass>,
+    lens_uniforms: usize,
 }
 
 /// The key an effect's text is cached under: FNV-1a of the text.
@@ -171,6 +179,8 @@ impl Chain {
                     },
                     count: None,
                 },
+                texture_entry(8, true),
+                texture_entry(9, true),
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -182,6 +192,8 @@ impl Chain {
             label: Some("effect sampler"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            // Lens Softness between two levels mixes them (the other pictures have one level).
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
         let black = make_texture(device, 1, 1, HDR_FORMAT, "effect black").1;
@@ -203,6 +215,8 @@ impl Chain {
             balls_frame: None,
             ball_count: 0,
             light: None,
+            lens: None,
+            lens_uniforms: 0,
         }
     }
 
@@ -236,6 +250,7 @@ impl Chain {
     pub(crate) fn begin_frame(&mut self) {
         self.used.clear();
         self.used_uniforms = 0;
+        self.lens_uniforms = 0;
         self.light = None;
         self.balls_frame = None;
         for slot in self.slots.values_mut() {
@@ -407,20 +422,53 @@ impl Chain {
                 _ => &self.black,
             };
             let balls = self.balls.buffer.as_ref().expect("uploaded above");
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("effect inputs"),
-                layout: &self.layout,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(source) },
-                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(prev) },
-                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-                    wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&objects) },
-                    wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&unlit) },
-                    wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&lit_colour) },
-                    wgpu::BindGroupEntry { binding: 7, resource: balls.as_entire_binding() },
-                ],
-            });
+            let inputs = |rays: &wgpu::TextureView, soft: &wgpu::TextureView| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("effect inputs"),
+                    layout: &self.layout,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(source) },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(prev) },
+                        wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                        wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&objects) },
+                        wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&unlit) },
+                        wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&lit_colour) },
+                        wgpu::BindGroupEntry { binding: 7, resource: balls.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(rays) },
+                        wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::TextureView(soft) },
+                    ],
+                })
+            };
+            // A lens effect: its bright parts at half size, then their soft levels and streaks,
+            // before the effect itself reads them.
+            let bind_group = match &compiled.lens {
+                Some((bright, lens, keys)) => {
+                    let pass = self.lens.get_or_insert_with(|| LensPass::new(device));
+                    pass.ensure(device, width, height);
+                    {
+                        let black = inputs(&self.black, &self.black);
+                        let mut p = crate::begin_pass(
+                            encoder,
+                            pass.bright_target(),
+                            "lens bright",
+                            wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        );
+                        p.set_pipeline(bright);
+                        p.set_bind_group(0, &black, &[]);
+                        p.draw(0..3, 0..1);
+                    }
+                    let rays = keys.filter(|_| lens.rays).map(|[count, turn, length]| RaySettings {
+                        count: call.params[count],
+                        turn: call.params[turn],
+                        length: call.params[length],
+                    });
+                    pass.run(device, queue, encoder, &mut self.lens_uniforms, rays, lens.soft);
+                    let (rays, soft) = pass.views();
+                    inputs(rays, soft)
+                }
+                None => inputs(&self.black, &self.black),
+            };
             if compiled.history {
                 let (memory_texture, memory_view) = self.memory_scratch.as_ref().expect("made above");
                 {
@@ -515,14 +563,20 @@ pub(crate) fn fx_balls(frame: &Frame) -> Vec<FxBall> {
     let (w, h) = (frame.width.max(1) as f32, frame.height.max(1) as f32);
     // Balls well off the picture are left out: effects walk the list at every pixel.
     let half = (0.5 + ON_SCREEN_MARGIN * h / w, 0.5 + ON_SCREEN_MARGIN);
+    // Through a moved Stage camera the balls are where it shows them.
+    let stage = frame.stage_view().filter(|v| v.motion > 0.0);
     marks
-        .map(|m| {
-            let at = frame.camera.to_screen(glam::Vec2::from(m.center));
-            let radius = m.radius * frame.camera.zoom / h;
-            FxBall {
+        .filter_map(|m| {
+            let centre = glam::Vec2::from(m.center);
+            let (at, scale) = match &stage {
+                Some(s) => (s.screen_of(centre)?, s.scale_at(centre)?),
+                None => (frame.camera.to_screen(centre), frame.camera.zoom),
+            };
+            let radius = m.radius * scale / h;
+            Some(FxBall {
                 at: [at.x / w + 0.5, at.y / h + 0.5, radius, m.seed],
                 colour: [m.color[0], m.color[1], m.color[2], m.hit_age],
-            }
+            })
         })
         .filter(|b| {
             let (x, y, r) = (b.at[0] - 0.5, b.at[1] - 0.5, b.at[2]);
@@ -588,6 +642,9 @@ pub(crate) fn base_uniform(frame: &Frame, width: u32, height: u32) -> Fx {
 fn build(device: &wgpu::Device, layout: &wgpu::PipelineLayout, wgsl: &str) -> Result<Compiled, String> {
     let name = name_of(wgsl);
     let full = assemble(wgsl).map_err(|e| format!("{name}: {e}"))?;
+    let header = super::parse(wgsl).map_err(|e| format!("{name}: {e}"))?;
+    let bright_text =
+        if header.lens.any() { Some(assemble_bright(wgsl).map_err(|e| format!("{name}: {e}"))?) } else { None };
     let target = || wgpu::ColorTargetState { format: HDR_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL };
     let (one, two) = ([Some(target())], [Some(target()), Some(target())]);
     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -616,12 +673,56 @@ fn build(device: &wgpu::Device, layout: &wgpu::PipelineLayout, wgsl: &str) -> Re
         multiview_mask: None,
         cache: None,
     });
+    let lens = bright_text.map(|text| {
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some(&name),
+            source: wgpu::ShaderSource::Wgsl(text.into()),
+        });
+        let bright = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(&name),
+            layout: Some(layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &one,
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        (bright, header.lens, ray_keys(&header))
+    });
     match pollster::block_on(scope.pop()) {
-        None => Ok(Compiled { pipeline, history: needs_history(wgsl) }),
+        None => Ok(Compiled { pipeline, history: needs_history(wgsl), lens }),
         Some(error) => {
             Err(format!("{name}: {}", error.to_string().lines().next().unwrap_or("the GPU refused the shader")))
         }
     }
+}
+
+/// Where a lens effect's `rays`, `ray_turn` and `ray_length` numbers sit among its floats; `None`
+/// when it lacks one of them (it then draws no streaks).
+fn ray_keys(header: &super::Header) -> Option<[usize; 3]> {
+    let at = |key: &str| {
+        let mut offset = 0;
+        for p in &header.params {
+            if p.key == key {
+                return matches!(p.kind, super::ParamKind::Number { .. }).then_some(offset);
+            }
+            offset += p.floats();
+        }
+        None
+    };
+    Some([at("rays")?, at("ray_turn")?, at("ray_length")?])
 }
 
 pub(crate) fn make_texture(

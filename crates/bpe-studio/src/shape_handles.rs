@@ -693,6 +693,7 @@ mod tests {
             scale: 0.25,
             camera: CameraView::default(),
             world: false,
+            stage: None,
         }
     }
 
