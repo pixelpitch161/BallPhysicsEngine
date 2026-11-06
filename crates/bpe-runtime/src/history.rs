@@ -189,6 +189,83 @@ impl History {
         })
     }
 
+    /// Ball `ball`'s samples and corners after the moment `after` (in steps), oldest first: the
+    /// same places as [`History::trace`], the other way round.
+    pub fn trace_after(&self, ball: usize, after: f64) -> impl Iterator<Item = (f64, Vec2)> + '_ {
+        let every = self.every as f64;
+        let (ring, corners) = match (self.balls.get(ball), self.corners.get(ball)) {
+            (Some(r), Some(c)) => (Some(r), Some(c)),
+            _ => (None, None),
+        };
+        let n = ring.map_or(0, VecDeque::len);
+        let oldest = self.last.unwrap_or(0) as f64 - n.saturating_sub(1) as f64 * every;
+        // The first sample after `after`, and the first corner.
+        let first =
+            if after < oldest { 0 } else { (((after - oldest) / every).floor() as usize).saturating_add(1).min(n) };
+        let mut samples = ring
+            .into_iter()
+            .flat_map(move |r| r.range(first..))
+            .enumerate()
+            .map(move |(j, p)| (oldest + (first + j) as f64 * every, *p));
+        let from = corners.map_or(0, |c| c.partition_point(|c| c.0 <= after));
+        let mut corners = corners.into_iter().flat_map(move |c| c.range(from..).copied());
+        let mut next_sample = samples.next();
+        let mut next_corner = corners.next();
+        std::iter::from_fn(move || {
+            loop {
+                match (next_sample, next_corner) {
+                    (Some(s), Some(c)) if c.0 < s.0 => {
+                        next_corner = corners.next();
+                        return Some(c);
+                    }
+                    (Some(s), Some(c)) => {
+                        // A corner on a sample's own moment is the sample.
+                        if c.0 == s.0 {
+                            next_corner = corners.next();
+                        }
+                        next_sample = samples.next();
+                        return Some(s);
+                    }
+                    (Some(s), None) => {
+                        next_sample = samples.next();
+                        return Some(s);
+                    }
+                    // Corners after the newest sample (bounces since it was taken).
+                    (None, Some(c)) => {
+                        next_corner = corners.next();
+                        if n == 0 {
+                            continue;
+                        }
+                        return Some(c);
+                    }
+                    (None, None) => return None,
+                }
+            }
+        })
+    }
+
+    /// Where ball `ball` was at the moment `t` (in steps) exactly, when it has a sample or a
+    /// corner there.
+    pub fn item_at(&self, ball: usize, t: f64) -> Option<Vec2> {
+        let ring = self.balls.get(ball).filter(|r| !r.is_empty())?;
+        let every = self.every as f64;
+        let oldest = self.last.unwrap_or(0) as f64 - (ring.len() - 1) as f64 * every;
+        let i = (t - oldest) / every;
+        if i >= 0.0 && i.fract() == 0.0 && (i as usize) < ring.len() {
+            return Some(ring[i as usize]);
+        }
+        let corners = &self.corners[ball];
+        let k = corners.partition_point(|c| c.0 < t);
+        corners.get(k).filter(|c| c.0 == t).map(|c| c.1)
+    }
+
+    /// Ball `ball`'s oldest sample: (the moment, in steps; where it was).
+    pub fn first(&self, ball: usize) -> Option<(f64, Vec2)> {
+        let ring = self.balls.get(ball).filter(|r| !r.is_empty())?;
+        let oldest = self.last.unwrap_or(0) as f64 - (ring.len() - 1) as f64 * self.every as f64;
+        Some((oldest, ring[0]))
+    }
+
     /// Ball `ball`'s samples, newest first, back to its first.
     pub fn points(&self, ball: usize) -> impl Iterator<Item = Vec2> + '_ {
         self.balls.get(ball).into_iter().flat_map(|r| r.iter().rev().copied())
@@ -407,5 +484,36 @@ mod tests {
         assert_eq!(a.and(b), HistoryWant { seconds: 3.1, forever: true });
         assert_eq!(a.rounded(), 3.25);
         assert_eq!(b.rounded(), 2.0);
+    }
+
+    #[test]
+    fn tracing_after_a_moment_goes_the_other_way_round() {
+        let mut h = History::new(240, HistoryWant { seconds: 2.0, forever: false });
+        h.note(0, 1);
+        for step in 0..=1000u64 {
+            let p = Vec2::new(step as f32, (step % 37) as f32);
+            if step % 9 == 5 {
+                h.corner(0, step as f64 - 0.5, p + Vec2::new(0.25, 3.0));
+            }
+            h.record(step, &[p]);
+        }
+        // A bounce after the newest sample.
+        h.corner(0, 1002.5, Vec2::new(7.0, 7.0));
+        let back: Vec<(f64, Vec2)> = h.trace(0).collect();
+        let mut forth: Vec<(f64, Vec2)> = h.trace_after(0, f64::NEG_INFINITY).collect();
+        forth.reverse();
+        assert_eq!(back, forth);
+        for after in [0.0, 500.0, 503.5, 504.0, 999.0, 1000.0, 1002.5] {
+            let mut tail: Vec<(f64, Vec2)> = h.trace_after(0, after).collect();
+            tail.reverse();
+            let want: Vec<(f64, Vec2)> = back.iter().copied().filter(|i| i.0 > after).collect();
+            assert_eq!(tail, want, "after {after}");
+        }
+        for (t, p) in &back {
+            assert_eq!(h.item_at(0, *t), Some(*p), "at {t}");
+        }
+        assert_eq!(h.item_at(0, 501.25), None);
+        assert_eq!(h.first(0), Some((back.last().unwrap().0, back.last().unwrap().1)));
+        assert_eq!(h.trace_after(1, 0.0).count(), 0);
     }
 }

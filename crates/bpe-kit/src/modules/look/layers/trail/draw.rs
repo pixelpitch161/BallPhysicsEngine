@@ -10,6 +10,7 @@ use bpe_runtime::{Bodies, History};
 use glam::Vec2;
 
 use super::kinds::{self, Cut, Path};
+use super::line;
 use super::{TrailKind, TrailLayer, TrailSource, Twist};
 use crate::modules::look::layers::around::{AroundKind, AroundLayer};
 use crate::modules::look::layers::around_subs::{
@@ -25,8 +26,9 @@ use crate::paint::{Follow, Inputs, Paint, colour_at, seed_of};
 /// video shrunk up to about four times, and the shader softens the edge over one output pixel.
 pub const AA_MARGIN: f32 = 4.0;
 
-/// The most points one trail layer's strips run through in a frame, across all its balls: a
-/// crowd of long Lines shares them out, each keeping its newest.
+/// The most points one trail layer's strips run through in a frame, across all its balls (see
+/// [`strip_budget`]): a crowd of Lines is simplified more coarsely to fit, other trails are cut
+/// to their newest share.
 pub const MOST_STRIP_POINTS: usize = 200_000;
 
 /// Particle shapes (as in sprites.wgsl).
@@ -94,12 +96,6 @@ impl Balls<'_> {
         cut.after_gone(gone, speed)
     }
 
-    /// Whether ball `i` has a trail of `trail` to draw: it is there, or it was caught and its
-    /// trail left behind is not yet run out.
-    fn shows(&self, trail: &TrailLayer, i: usize) -> bool {
-        self.bodies.alive[i] || (self.gone)(i).is_some_and(|g| self.cut(trail, i, Some(g)).is_some())
-    }
-
     /// Ball `i`'s trail as `trail` cuts it, before any wobble; empty for a caught ball's trail
     /// that has run out (see [`Balls::cut`]). A caught ball's still head is left in: see
     /// [`Path::drop_still_head`].
@@ -165,6 +161,80 @@ fn own_colour(cx: &DrawCx, paint: &Paint, path: &Path, k: usize, speed: f32, see
     colour_at(paint, &inputs)
 }
 
+/// One ball's trail to draw: which ball, its own copy of the layer when its settings vary, and
+/// its path.
+struct Drawn {
+    i: usize,
+    own: Option<std::rc::Rc<Vec<AroundLayer>>>,
+    path: Path,
+}
+
+/// The layer and trail ball `own` copy says, or the card's own.
+fn copy_of<'a>(
+    own: &'a Option<std::rc::Rc<Vec<AroundLayer>>>,
+    base: &'a AroundLayer,
+    base_trail: &'a TrailLayer,
+) -> (&'a AroundLayer, &'a TrailLayer) {
+    match own.as_ref().and_then(|o| o.iter().find(|a| a.id == base.id)) {
+        Some(mine @ AroundLayer { kind: AroundKind::Trail(t), .. }) => (mine, &**t),
+        _ => (base, base_trail),
+    }
+}
+
+/// How many strip points a trail layer may draw in a frame: [`MOST_STRIP_POINTS`], shared with
+/// the strips its Shadow, Glow and Outline sub-layers draw again, so the frame never has to cut
+/// any off.
+pub fn strip_budget(subs: &[SubLayer]) -> usize {
+    let again =
+        subs.iter().filter(|s| matches!(s, SubLayer::Shadow(_) | SubLayer::Glow(_) | SubLayer::Outline(_))).count();
+    MOST_STRIP_POINTS / (1 + again)
+}
+
+/// The coarsest a layer's Lines are simplified to fit the budget: at level `l` with `2^l` times
+/// the tolerance and the grid spacing (8: 0.15 px to about 38 px).
+pub const MOST_LEVEL: u32 = 8;
+
+/// Picks the level a layer's Lines are drawn at: the finest whose points fit `budget`, up to
+/// [`MOST_LEVEL`], looking from `start` (where the last frame ended up) so a frame usually works
+/// out only its own level and the one finer. Which it picks doesn't hang on `start` (as long as
+/// a coarser level never has more points than a finer one), so drawing a time again, scrubbing
+/// or exporting draws the same. Gives what `gather` made at that level
+/// and the level.
+fn pick_level<T>(start: u32, budget: usize, mut gather: impl FnMut(u32) -> (T, usize)) -> (T, u32) {
+    let mut level = start.min(MOST_LEVEL);
+    let (mut made, mut total) = gather(level);
+    // The finest level known not to fit.
+    let mut over = None;
+    while total > budget && level < MOST_LEVEL {
+        over = Some(level);
+        // A level usually at most halves the points, so one four times over the budget skips
+        // ahead; the levels skipped are looked at again below.
+        let skip = (total / budget.max(1)).max(1).ilog2().max(1);
+        level = (level + skip).min(MOST_LEVEL);
+        (made, total) = gather(level);
+    }
+    // Finer ones while they fit, down to the one known not to.
+    while level > over.map_or(0, |o| o + 1) {
+        let (finer, finer_total) = gather(level - 1);
+        if finer_total > budget {
+            break;
+        }
+        (made, level) = (finer, level - 1);
+    }
+    (made, level)
+}
+
+/// Cuts each of `drawn` to its newest share of `budget` points when together they are over it:
+/// the last resort, once Lines are as coarse as they go (and for every other kind of trail).
+fn cut_to(drawn: &mut [Drawn], budget: usize) {
+    if drawn.iter().map(|t| t.path.len()).sum::<usize>() > budget {
+        let each = budget / drawn.len().max(1);
+        for t in drawn.iter_mut() {
+            kinds::limit(&mut t.path, each);
+        }
+    }
+}
+
 /// Draws `trail` (the around layer `layer`) for every ball it is worn by, into `frame`.
 pub fn draw(cx: &DrawCx, layer: &AroundLayer, trail: &TrailLayer, balls: &Balls, frame: &mut Frame) {
     if trail.kind == TrailKind::Ghosts || (trail.brightness <= 0.0 && balls.own.is_none()) {
@@ -173,45 +243,101 @@ pub fn draw(cx: &DrawCx, layer: &AroundLayer, trail: &TrailLayer, balls: &Balls,
     let mut pieces = Pieces::default();
     let bodies = balls.bodies;
     let time = cx.time as f32;
-    let wearing = (0..bodies.len()).filter(|&i| balls.shows(trail, i) && layer.applies((balls.number)(i))).count();
-    let points_each = MOST_STRIP_POINTS / wearing.max(1);
     let newest = balls.history.newest_step().unwrap_or(0) / balls.history.every();
+    // How far a Line's points may stray, in the units it is drawn in. The zoom is taken to the
+    // power of two at or below it, so a zooming camera doesn't make the lines start again every
+    // frame.
+    let tol = if cx.resolved.screen {
+        kinds::LINE_TOLERANCE
+    } else {
+        kinds::LINE_TOLERANCE / cx.world.camera.zoom.abs().clamp(1.0 / 64.0, 64.0).log2().floor().exp2()
+    };
     // Dots and puffs share the particles' cap.
     let full = |pieces: &Pieces| pieces.particles[OWN].len() >= MAX_PARTICLES;
     let (base_layer, base_trail) = (layer, trail);
-    for i in 0..bodies.len() {
-        let gone = if bodies.alive[i] { None } else { (balls.gone)(i) };
-        if !(bodies.alive[i] || gone.is_some()) || !base_layer.applies((balls.number)(i)) {
-            continue;
+    let newest_step = balls.history.newest_step().unwrap_or(0);
+    // Seconds a step.
+    let step_dt = balls.interval / balls.history.every() as f32;
+    // Dots and Smoke draw no strips: their paths only place the particles.
+    let budget = if matches!(trail.kind, TrailKind::Dots | TrailKind::Smoke) {
+        MOST_STRIP_POINTS
+    } else {
+        strip_budget(&base_layer.subs)
+    };
+    // Only Lines remember anything between frames.
+    let mut memos = (trail.kind == TrailKind::Line).then(line::memos);
+    // Every ball's path first, so a crowd can share the points out; Lines at `level`.
+    let mut gather = |level: u32| -> (Vec<Drawn>, usize) {
+        let (tol, scale) = (tol * (1u32 << level) as f32, 1u64 << level);
+        let mut drawn = Vec::new();
+        let mut total = 0;
+        for i in 0..bodies.len() {
+            let gone = if bodies.alive[i] { None } else { (balls.gone)(i) };
+            if !(bodies.alive[i] || gone.is_some()) || !base_layer.applies((balls.number)(i)) {
+                continue;
+            }
+            // The ball's own copy of the layer, when its settings vary across the balls.
+            let own = balls.own_layers(i);
+            let (_, trail) = copy_of(&own, base_layer, base_trail);
+            if trail.brightness <= 0.0 || bodies.velocity[i].length() < trail.least_speed {
+                continue;
+            }
+            let waves = (trail.wobble_amount != 0.0).then_some(trail.wobble_waves);
+            let line = trail.kind == TrailKind::Line;
+            let mut path = if line && trail.stays() && !trail.restart {
+                // The whole way since the start, carried on from what earlier frames settled.
+                // The grid is spaced by the time it spans while moving: a caught ball's line
+                // keeps the same points as it stands.
+                let span = balls.history.first(i).map_or(0.0, |(t, _)| {
+                    (newest_step as f64 - t) as f32 * step_dt + balls.newest_ago - gone.unwrap_or(0.0)
+                });
+                let grid = kinds::grid_for(span, balls.interval, waves) * scale;
+                let key = (cx.thing.id, base_layer.id, i, level);
+                let head = bodies.position[i];
+                let (ago, every) = (balls.newest_ago, balls.interval);
+                match memos.as_deref_mut() {
+                    Some(memos) => line::remembered_line(memos, key, balls.history, i, head, ago, every, tol, grid),
+                    None => line::staying_line(&mut None, balls.history, i, head, ago, every, tol, grid),
+                }
+            } else {
+                balls.path(trail, i, gone)
+            };
+            // A caught ball's trail starts where it last moved: the samples since are all one
+            // place.
+            if gone.is_some() {
+                path.drop_still_head();
+            }
+            if path.len() < 2 {
+                continue;
+            }
+            if line && !(trail.stays() && !trail.restart) {
+                // Over the time it spans, as above.
+                let grid = kinds::grid_for(path.reach() - path.ago[0], balls.interval, waves) * scale;
+                path = kinds::simplify(&path, tol, grid, newest, balls.newest_ago, balls.interval);
+            }
+            total += path.len();
+            drawn.push(Drawn { i, own, path });
         }
+        (drawn, total)
+    };
+    let mut drawn = if trail.kind == TrailKind::Line {
+        let key = (cx.thing.id, base_layer.id);
+        let start = line::level_of(key);
+        let (drawn, level) = pick_level(start, budget, &mut gather);
+        line::set_level(key, level);
+        drawn
+    } else {
+        gather(0).0
+    };
+    drop(memos);
+    cut_to(&mut drawn, budget);
+    for Drawn { i, own, mut path, .. } in drawn {
         if full(&pieces) {
             break;
         }
-        // The ball's own copy of the layer, when its settings vary across the balls.
-        let own = balls.own_layers(i);
-        let (layer, trail) = match own.as_ref().and_then(|o| o.iter().find(|a| a.id == base_layer.id)) {
-            Some(mine @ AroundLayer { kind: AroundKind::Trail(t), .. }) => (mine, &**t),
-            _ => (base_layer, base_trail),
-        };
-        if trail.brightness <= 0.0 {
-            continue;
-        }
+        let (layer, trail) = copy_of(&own, base_layer, base_trail);
         let speed = bodies.velocity[i].length();
-        if speed < trail.least_speed {
-            continue;
-        }
-        let mut path = balls.path(trail, i, gone);
-        // A caught ball's trail starts where it last moved: the samples since are all one place.
-        let still = if gone.is_some() { path.drop_still_head() } else { 0 };
-        if path.len() < 2 {
-            continue;
-        }
         let rolled = balls.rolled(i);
-        if trail.kind == TrailKind::Line {
-            // Counted from the newest sample left in it.
-            kinds::thin(&mut path, newest.saturating_sub(still as u64));
-        }
-        kinds::limit(&mut path, points_each);
         if matches!(trail.kind, TrailKind::Streak | TrailKind::Ribbon | TrailKind::Line | TrailKind::Dots) {
             kinds::wobble(&mut path, trail.wobble_amount, trail.wobble_waves, trail.wobble_speed, time);
         }
@@ -859,6 +985,146 @@ mod tests {
         assert!(vertices(&on, 3.0) > 0);
         assert_eq!(vertices(&on, 3.0), vertices(&on, 1.0));
         assert_eq!(vertices(&off, 3.0), 0);
+    }
+
+    /// 1200 balls launched out from a ring, each with a Line that stays, and `f`'s changes.
+    fn crowd_of_lines(f: impl FnOnce(&mut Scene, LayerId)) -> Scene {
+        with_trail(|s, id| {
+            set(s, id, "kind", choice("line"));
+            set(s, id, "forever", Value::Bool(true));
+            let p = &mut s.things.get_mut(&BALL).unwrap().params;
+            p.set("group", Value::Bool(true));
+            p.set("shape", choice("ring"));
+            p.set("count", Value::Int(1200));
+            p.set("ring_radius", Value::Number(420.0));
+            p.set("radius", Value::Number(1.0));
+            p.set("launch", choice("outward"));
+            p.set("velocity", Value::Vec2([700.0, 0.0]));
+            f(s, id);
+        })
+    }
+
+    /// How many of the 1200 balls' first samples have no drawn trail vertex near them.
+    fn starts_missed(frame: &Frame, playback: &Playback) -> usize {
+        let history = &playback.world().history[&BALL];
+        let starts: Vec<glam::Vec2> = (0..1200).map(|i| history.points(i).last().unwrap()).collect();
+        let drawn: Vec<glam::Vec2> =
+            frame.trails.iter().chain(&frame.trails_front).map(|v| glam::Vec2::from(v.position)).collect();
+        assert!(!drawn.is_empty());
+        starts.iter().filter(|s| !drawn.iter().any(|d| d.distance(**s) < 6.0)).count()
+    }
+
+    /// A crowd of Lines that stay all reach back to where their balls started, however many
+    /// balls there are: none is cut short to share out the points.
+    #[test]
+    fn a_crowd_of_lines_that_stay_all_reach_their_start() {
+        let (frame, playback) = frame_at(&crowd_of_lines(|_, _| {}), 12.0);
+        let missing = starts_missed(&frame, &playback);
+        assert_eq!(missing, 0, "{missing} of 1200 lines don't reach their start");
+    }
+
+    /// With a Glow and an Outline drawing each line twice more, the crowd still fits what the
+    /// frame can hold, so the frame's last guard cuts none of it off.
+    #[test]
+    fn a_crowd_of_lines_with_sub_layers_fits_the_frame() {
+        let reg = kit().registry;
+        let scene = crowd_of_lines(|s, id| {
+            s.add_sub_layer(&reg, BALL, SlotId::Look, id, SUB_GLOW).unwrap();
+            s.add_sub_layer(&reg, BALL, SlotId::Look, id, SUB_OUTLINE).unwrap();
+        });
+        let (frame, playback) = frame_at(&scene, 12.0);
+        let vertices = frame.trails.len() + frame.trails_front.len();
+        assert!(vertices <= bpe_gfx::MOST_TRAIL_VERTICES, "{vertices}");
+        assert_eq!(starts_missed(&frame, &playback), 0);
+    }
+
+    /// How long a frame of the crowd takes to build a minute in (run by hand, in release).
+    #[test]
+    #[ignore]
+    fn time_a_crowd_of_staying_lines() {
+        let scene = crowd_of_lines(|_, _| {});
+        let kit = kit();
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let mut playback = Playback::new(&scene, &resolved, kit.sims.clone());
+        let mut frame = Frame::default();
+        for time in [60.0, 60.0, 60.02, 60.04, 59.5, 55.0, 60.06] {
+            playback.seek(time);
+            let start = std::time::Instant::now();
+            build_frame(&scene, &resolved, playback.world(), playback.log(), time, &kit.draws, &mut frame);
+            eprintln!("frame at {time}: {:?}, {} trail vertices", start.elapsed(), frame.trails.len());
+        }
+        assert_eq!(starts_missed(&frame, &playback), 0);
+        // The same as a frame worked out afresh.
+        super::line::memos().clear();
+        let carried = frame.trails.clone();
+        build_frame(&scene, &resolved, playback.world(), playback.log(), 60.06, &kit.draws, &mut frame);
+        assert!(carried == frame.trails);
+    }
+
+    /// The level a crowd's lines are drawn at a minute in, with and without gravity (run by
+    /// hand, in release).
+    #[test]
+    #[ignore]
+    fn levels_of_a_crowd_a_minute_in() {
+        for gravity in [true, false] {
+            let scene = crowd_of_lines(|s, _| {
+                if !gravity {
+                    s.things.get_mut(&ThingId::ROOT).unwrap().params.set("gravity", Value::Vec2([0.0, 0.0]));
+                }
+            });
+            let (frame, playback) = frame_at(&scene, 60.0);
+            let layer = scene.card(BALL, SlotId::Look).unwrap().layers.iter().find(|l| l.kind == TRAIL).unwrap().id;
+            let level = super::line::level_of((BALL, layer));
+            eprintln!("gravity {gravity}: level {level}, {} vertices", frame.trails.len());
+            assert_eq!(starts_missed(&frame, &playback), 0);
+        }
+    }
+
+    /// Lines over the budget are drawn more coarsely until they fit, at the finest level that
+    /// does wherever the search starts; other trails are cut to their newest share.
+    #[test]
+    fn a_crowd_over_the_budget_is_simplified_more_not_cut() {
+        use super::{Drawn, MOST_LEVEL, cut_to, kinds, pick_level};
+        // Points at each level: halving, more or less, as the lines get coarser.
+        let totals = [900_000, 610_000, 400_000, 260_000, 190_000, 120_000, 90_000, 70_000, 60_000];
+        for start in 0..=MOST_LEVEL {
+            let mut asked = Vec::new();
+            let (made, level) = pick_level(start, 200_000, |l| {
+                asked.push(l);
+                (l, totals[l as usize])
+            });
+            assert_eq!((made, level), (4, 4), "from {start}: asked {asked:?}");
+        }
+        // From where it was, it only looks at its own level and the one finer.
+        let mut asked = Vec::new();
+        pick_level(4, 200_000, |l| {
+            asked.push(l);
+            ((), totals[l as usize])
+        });
+        assert_eq!(asked, vec![4, 3]);
+        // Past the coarsest, it stops there.
+        assert_eq!(pick_level(0, 10, |l| ((), totals[l as usize])).1, MOST_LEVEL);
+        // A level that drops far more than half isn't skipped past.
+        let steep = [900_000, 150_000, 100_000, 90_000, 80_000, 70_000, 60_000, 50_000, 40_000];
+        for start in 0..=MOST_LEVEL {
+            assert_eq!(pick_level(start, 200_000, |l| ((), steep[l as usize])).1, 1, "from {start}");
+        }
+        // Cut to their newest share as a last resort.
+        let long = |i: usize| Drawn {
+            i,
+            own: None,
+            path: kinds::Path {
+                points: vec![glam::Vec2::ZERO; 1000],
+                ago: vec![0.0; 1000],
+                arc: vec![0.0; 1000],
+                corner: vec![false; 1000],
+            },
+        };
+        let mut drawn: Vec<Drawn> = (0..100).map(long).collect();
+        cut_to(&mut drawn, 200_000);
+        assert!(drawn.iter().all(|d| d.path.len() == 1000), "under the budget: left alone");
+        cut_to(&mut drawn, 20_000);
+        assert!(drawn.iter().all(|d| d.path.len() == 200));
     }
 
     #[test]

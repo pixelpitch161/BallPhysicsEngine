@@ -219,58 +219,176 @@ pub fn path(head: Vec2, history: &History, ball: usize, newest_ago: f32, interva
     path
 }
 
-/// How many of a path's newest points are always kept whole: four seconds' worth.
-pub const KEEP_WHOLE: usize = 240;
+/// How far, in output pixels, a Line's drawn points may stray from where its ball really went:
+/// well under a pixel, so the simplified line looks the same.
+pub const LINE_TOLERANCE: f32 = 0.15;
 
-/// Drops points of `path` older than [`KEEP_WHOLE`] that a long Line doesn't need: it keeps
-/// every corner (where the way turns more than 10°, as at a bounce) and one sample in 4 (under 30 s
-/// old), 8 (under 60 s) or 16 (older) between them. Which samples those are is counted from the
-/// start of the clip (`newest` is the newest sample's number), so a point kept stays kept as the
-/// ball moves on.
-pub fn thin(path: &mut Path, newest: u64) {
+/// About how many points along a Line are always kept (see [`grid_for`]), so what changes
+/// along it (fade, colours by age) has places to change at.
+pub const GRID_POINTS: usize = 64;
+
+/// The spacing, in samples, of the samples a Line always keeps: the smallest power of two that
+/// leaves at most [`GRID_POINTS`] of them along a line spanning `reach` seconds (from its oldest
+/// point to its newest) with samples `interval` apart (more when it wobbles: 16 a wave). A power of two keeps them
+/// nested: when the line grows to need twice the spacing, every other one goes and the rest
+/// stay where they were.
+pub fn grid_for(reach: f32, interval: f32, wobble_waves: Option<f32>) -> u64 {
+    let samples = if interval > 0.0 { (reach.max(0.0) / interval).ceil() as u64 } else { 0 };
+    let wanted = wobble_waves.map_or(GRID_POINTS as u64, |w| (w.abs() * 16.0).ceil().max(GRID_POINTS as f32) as u64);
+    samples.div_ceil(wanted.max(1)).max(1).next_power_of_two()
+}
+
+/// `path` (newest first) with only the points a line through them needs: from its oldest point
+/// towards the ball, a point is kept where the line leaves a band `tol` wide around the straight
+/// way from the last point kept, or starts coming back along it. Its oldest point, the ball and
+/// every sample whose number (counted from the start of the clip; the newest is `newest`,
+/// `newest_ago` seconds old, the others `interval` apart) is a multiple of `grid` are always
+/// kept. Working from the oldest end and starting again at the always-kept points, what it keeps
+/// of a line's older part stays the same as the line grows. Each kept point keeps its own time
+/// and its place along the real way (`ago`, `arc`).
+pub fn simplify(path: &Path, tol: f32, grid: u64, newest: u64, newest_ago: f32, interval: f32) -> Path {
     let n = path.len();
-    if n <= KEEP_WHOLE + 2 {
-        return;
+    if n <= 2 {
+        return path.clone();
     }
-    let p = &path.points;
-    let corner = |k: usize| match ((p[k - 1] - p[k]).try_normalize(), (p[k] - p[k + 1]).try_normalize()) {
-        (Some(a), Some(b)) => a.dot(b) < 10f32.to_radians().cos(),
-        _ => false,
+    let grid = grid.max(1);
+    // Oldest first: index j is the path's point n - 1 - j.
+    let points: Vec<Vec2> = path.points.iter().rev().copied().collect();
+    let on_grid = |j: usize| {
+        let k = n - 1 - j;
+        if k == 0 || path.corner[k] || interval <= 0.0 {
+            return false;
+        }
+        let back = ((path.ago[k] - newest_ago) / interval).round().max(0.0) as u64;
+        newest.checked_sub(back).is_some_and(|s| s.is_multiple_of(grid))
     };
-    // Each point's sample number back from the newest (bounces between samples have none).
-    let mut back = 0u64;
-    let keep: Vec<bool> = (0..n)
-        .map(|k| {
-            let sample = back;
-            if k > 0 && !path.corner[k] {
-                back += 1;
-            }
-            if k <= KEEP_WHOLE || k + 1 >= n {
-                return true;
-            }
-            // A bounce between samples stays only where it turns.
-            if path.corner[k] {
-                return corner(k);
-            }
-            let ago = path.ago[k];
-            let every = if ago < 30.0 {
-                4
-            } else if ago < 60.0 {
-                8
-            } else {
-                16
-            };
-            newest.saturating_sub(sample).is_multiple_of(every) || corner(k)
-        })
-        .collect();
-    let mut k = 0;
-    path.points.retain(|_| (keep[k], k += 1).0);
-    let mut k = 0;
-    path.ago.retain(|_| (keep[k], k += 1).0);
-    let mut k = 0;
-    path.arc.retain(|_| (keep[k], k += 1).0);
-    let mut k = 0;
-    path.corner.retain(|_| (keep[k], k += 1).0);
+    let mut kept = Vec::with_capacity(n / 4 + 2);
+    let mut fit = Sleeve::new(tol);
+    for (j, q) in points.iter().enumerate() {
+        fit.push(j, *q, j + 1 < n && on_grid(j), &mut kept);
+    }
+    fit.finish(&mut kept);
+    let mut out = Path {
+        points: Vec::with_capacity(kept.len()),
+        ago: Vec::with_capacity(kept.len()),
+        arc: Vec::with_capacity(kept.len()),
+        corner: Vec::with_capacity(kept.len()),
+    };
+    for &j in kept.iter().rev() {
+        let k = n - 1 - j;
+        out.points.push(path.points[k]);
+        out.ago.push(path.ago[k]);
+        out.arc.push(path.arc[k]);
+        out.corner.push(path.corner[k]);
+    }
+    out
+}
+
+/// Picks, from points given oldest first, the ones a line through them needs within `tol`: the
+/// first and last, the ones pushed as fixed, and each that the straight way from the last one
+/// kept can't reach without passing further than `tol` from a point between, or that comes
+/// back towards it. A sleeve fit: each point between narrows the directions the way may leave
+/// in. It goes one point at a time and can be cloned part way, so a line can be fitted once and
+/// carried on from where it stopped: a point it keeps is kept for good.
+#[derive(Clone, Debug)]
+pub struct Sleeve<T: Copy> {
+    tol: f32,
+    /// The last point kept, the way runs from.
+    anchor: Option<Vec2>,
+    /// The point before the one being looked at, kept if the next doesn't fit.
+    last: Option<(T, Vec2)>,
+    /// The directions the way may leave the anchor in, from `lo` round to `hi` (unit), once a
+    /// point far enough from it has narrowed them.
+    lo: Vec2,
+    hi: Vec2,
+    open: bool,
+    /// How far from the anchor the furthest point so far is.
+    far: f32,
+}
+
+impl<T: Copy> Sleeve<T> {
+    pub fn new(tol: f32) -> Self {
+        Self { tol: tol.max(0.0), anchor: None, last: None, lo: Vec2::X, hi: Vec2::X, open: true, far: 0.0 }
+    }
+
+    /// A fit that has just kept a point at `at` (as at a fixed point) and goes on from there.
+    pub fn from_anchor(tol: f32, at: Vec2) -> Self {
+        let mut fit = Self::new(tol);
+        fit.restart(at);
+        fit
+    }
+
+    /// Takes the next point, `item` at `p`; a `fixed` one is kept whatever. Points it keeps for
+    /// good go to `out`.
+    pub fn push(&mut self, item: T, p: Vec2, fixed: bool, out: &mut Vec<T>) {
+        let Some(anchor) = self.anchor else {
+            out.push(item);
+            self.restart(p);
+            return;
+        };
+        if !self.fits(p - anchor)
+            && let Some((last, at)) = self.last.take()
+        {
+            // The point before is needed; the way starts again from it.
+            out.push(last);
+            self.restart(at);
+        }
+        let anchor = self.anchor.unwrap_or(p);
+        self.narrow(p - anchor);
+        self.last = Some((item, p));
+        if fixed {
+            out.push(item);
+            self.restart(p);
+        }
+    }
+
+    /// Keeps the last point taken: the line's end.
+    pub fn finish(mut self, out: &mut Vec<T>) {
+        if let Some((last, _)) = self.last.take() {
+            out.push(last);
+        }
+    }
+
+    fn restart(&mut self, at: Vec2) {
+        self.anchor = Some(at);
+        self.last = None;
+        self.open = true;
+        self.far = 0.0;
+    }
+
+    /// Whether the way from the anchor along `v` passes near every point since the anchor.
+    fn fits(&self, v: Vec2) -> bool {
+        let d = v.length();
+        if d + self.tol < self.far {
+            // Coming back towards the anchor.
+            return false;
+        }
+        d <= self.tol || self.open || (self.lo.perp_dot(v) >= 0.0 && v.perp_dot(self.hi) >= 0.0)
+    }
+
+    /// Narrows the directions to the ones passing within `tol` of the point along `v`.
+    fn narrow(&mut self, v: Vec2) {
+        let d = v.length();
+        self.far = self.far.max(d);
+        if d <= self.tol {
+            return;
+        }
+        let u = v / d;
+        let sin = self.tol / d;
+        let cos = (1.0 - sin * sin).max(0.0).sqrt();
+        let lo = Vec2::new(u.x * cos + u.y * sin, u.y * cos - u.x * sin);
+        let hi = Vec2::new(u.x * cos - u.y * sin, u.y * cos + u.x * sin);
+        if self.open {
+            (self.lo, self.hi, self.open) = (lo, hi, false);
+            return;
+        }
+        if self.lo.perp_dot(lo) > 0.0 {
+            self.lo = lo;
+        }
+        if hi.perp_dot(self.hi) > 0.0 {
+            self.hi = hi;
+        }
+    }
 }
 
 /// Cuts `path` to its newest `most` points (at least two).
@@ -448,29 +566,117 @@ mod tests {
         path(h.points(0).next().unwrap(), &h, 0, 0.0, 1.0 / 60.0, Cut::default())
     }
 
+    /// The distance from `q` to the segment from `a` to `b`.
+    fn off_segment(q: Vec2, a: Vec2, b: Vec2) -> f32 {
+        let ab = b - a;
+        let f = if ab.length_squared() > 0.0 { ((q - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0) } else { 0.0 };
+        q.distance(a + ab * f)
+    }
+
+    /// How far the furthest point of `whole` is from the simplified line `kept` (both newest
+    /// first; each point is matched to the kept points either side of it in time).
+    fn furthest_off(whole: &Path, kept: &Path) -> f32 {
+        let mut worst = 0.0f32;
+        for (q, ago) in whole.points.iter().zip(&whole.ago) {
+            let k = kept.ago.partition_point(|a| a <= ago).clamp(1, kept.len() - 1);
+            worst = worst.max(off_segment(*q, kept.points[k - 1], kept.points[k]));
+        }
+        worst
+    }
+
     #[test]
-    fn a_long_line_keeps_its_newest_and_corners_and_thins_the_rest() {
-        let mut p = long_path(60 * 120);
-        let (n, oldest) = (p.len(), *p.points.last().unwrap());
-        let whole = p.clone();
-        thin(&mut p, 60 * 120 - 1);
-        assert!(p.len() < n / 3, "{} of {n}", p.len());
-        assert_eq!(&p.points[..=KEEP_WHOLE], &whole.points[..=KEEP_WHOLE], "the newest four seconds whole");
-        assert_eq!(*p.points.last().unwrap(), oldest, "it still reaches the start");
-        // Every sharp turn stays.
-        let w = &whole.points;
-        let corners: Vec<Vec2> = (KEEP_WHOLE + 1..w.len() - 1)
-            .filter(|&k| (w[k - 1] - w[k]).normalize().dot((w[k] - w[k + 1]).normalize()) < 0.9)
-            .map(|k| w[k])
-            .collect();
-        assert!(corners.len() > 100, "{}", corners.len());
-        assert!(corners.iter().all(|c| p.points.contains(c)), "corners kept");
-        assert!(p.arc.windows(2).all(|w| w[0] <= w[1]), "still in order");
-        // A frame later the same old points are kept.
-        let mut later = long_path(60 * 120 + 1);
-        thin(&mut later, 60 * 120);
-        let old: Vec<Vec2> = p.points[KEEP_WHOLE + 60..KEEP_WHOLE + 160].to_vec();
-        assert!(old.iter().filter(|q| later.points.contains(q)).count() >= 95, "kept points stay kept");
+    fn a_long_line_simplifies_within_its_tolerance_and_reaches_the_start() {
+        let whole = long_path(60 * 120);
+        let n = whole.len();
+        let grid = grid_for(whole.reach() - whole.ago[0], 1.0 / 60.0, None);
+        assert_eq!(grid, 128, "7200 samples, at most 64 kept on the grid");
+        let p = simplify(&whole, LINE_TOLERANCE, grid, 60 * 120 - 1, 0.0, 1.0 / 60.0);
+        // A round line keeps about one sample in four at this size.
+        assert!(p.len() < n / 2, "{} of {n}", p.len());
+        assert_eq!(p.points[0], whole.points[0], "the ball");
+        assert_eq!(p.points.last(), whole.points.last(), "it still reaches the start");
+        let off = furthest_off(&whole, &p);
+        assert!(off <= 2.0 * LINE_TOLERANCE, "{off}");
+        assert!(p.arc.windows(2).all(|w| w[0] <= w[1]) && p.ago.windows(2).all(|w| w[0] <= w[1]), "in order");
+        // Its grid samples are all there: every 128th sample from the start of the clip.
+        for k in 1..n {
+            let back = (whole.ago[k] * 60.0).round() as u64;
+            if (60 * 120 - 1 - back).is_multiple_of(128) {
+                assert!(p.points.contains(&whole.points[k]), "grid sample {k}");
+            }
+        }
+        // A sample later, the old part is kept the same.
+        let later_whole = long_path(60 * 120 + 1);
+        let later = simplify(&later_whole, LINE_TOLERANCE, grid, 60 * 120, 0.0, 1.0 / 60.0);
+        let old = |p: &Path| -> Vec<Vec2> { (0..p.len()).filter(|&k| p.ago[k] > 5.0).map(|k| p.points[k]).collect() };
+        let (a, b) = (old(&p), old(&later));
+        assert!(a.len() > 20);
+        assert_eq!(a[..a.len() - 2], b[..a.len() - 2], "kept points stay kept");
+    }
+
+    /// Builds a newest-first path through `points` given oldest first, a sample apart.
+    fn through(points: &[Vec2]) -> Path {
+        let n = points.len();
+        let mut p = Path::default();
+        let mut arc = 0.0;
+        for (k, q) in points.iter().rev().enumerate() {
+            if k > 0 {
+                arc += q.distance(p.points[k - 1]);
+            }
+            p.points.push(*q);
+            p.ago.push(k as f32 / 60.0);
+            p.arc.push(arc);
+            p.corner.push(false);
+        }
+        assert_eq!(p.len(), n);
+        p
+    }
+
+    #[test]
+    fn straight_runs_keep_their_ends_and_turns_their_corners() {
+        let straight: Vec<Vec2> = (0..50).map(|x| Vec2::new(x as f32 * 7.0, 0.0)).collect();
+        let p = simplify(&through(&straight), LINE_TOLERANCE, 1 << 20, 49, 0.0, 1.0 / 60.0);
+        assert_eq!(p.points, vec![straight[49], straight[0]]);
+        // Out along x, then up: the corner stays.
+        let mut turn = straight.clone();
+        turn.extend((1..30).map(|y| Vec2::new(343.0, y as f32 * 7.0)));
+        let p = simplify(&through(&turn), LINE_TOLERANCE, 1 << 20, 78, 0.0, 1.0 / 60.0);
+        assert_eq!(p.points, vec![turn[78], turn[49], turn[0]]);
+        // Out and straight back the same way: the far end stays.
+        let mut back = straight.clone();
+        back.extend((1..30).rev().map(|x| Vec2::new(x as f32 * 7.0 + 0.5, 0.0)));
+        let p = simplify(&through(&back), LINE_TOLERANCE, 1 << 20, 78, 0.0, 1.0 / 60.0);
+        assert!(p.points.contains(&straight[49]), "{:?}", p.points);
+        assert!(furthest_off(&through(&back), &p) <= 2.0 * LINE_TOLERANCE);
+    }
+
+    #[test]
+    fn a_random_walk_stays_within_the_tolerance() {
+        let mut q = Vec2::ZERO;
+        let mut points = vec![q];
+        let mut seed = 7u32;
+        for _ in 0..3000 {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let angle = (seed >> 8) as f32 / (1 << 24) as f32 * std::f32::consts::TAU;
+            q += Vec2::from_angle(angle) * if seed.is_multiple_of(5) { 0.05 } else { 3.0 };
+            points.push(q);
+        }
+        let whole = through(&points);
+        for tol in [0.15, 1.0, 5.0] {
+            let p = simplify(&whole, tol, 1 << 20, 3000, 0.0, 1.0 / 60.0);
+            let off = furthest_off(&whole, &p);
+            assert!(off <= 2.0 * tol, "{tol}: {off}");
+        }
+    }
+
+    #[test]
+    fn the_grid_spacing_doubles_as_the_line_grows() {
+        let i = 1.0 / 60.0;
+        assert_eq!(grid_for(0.5, i, None), 1);
+        assert_eq!(grid_for(64.0 * i, i, None), 1);
+        assert_eq!(grid_for(65.0 * i, i, None), 2);
+        assert_eq!(grid_for(60.0, i, None), 64);
+        assert_eq!(grid_for(60.0, i, Some(8.0)), 32, "wobbling: 16 a wave");
     }
 
     #[test]
