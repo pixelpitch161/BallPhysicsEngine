@@ -536,125 +536,66 @@ fn with_no_walls_to_bounce_off_the_search_gives_up_quickly() {
     assert!(started.elapsed().as_secs_f32() < 20.0, "{:?}", started.elapsed());
 }
 
-/// Diagnostic (ignored): a big all-round round, how many get aimed and how many reach unaimed.
-#[test]
-#[ignore]
-fn diagnose_many_balls() {
-    type Set = fn(&mut EmitterSettings);
-    let cases: [(&str, Vec2, Set); 8] = [
-        ("keep, no gravity", Vec2::ZERO, |s| s.aim_way = AimWay::KeepMine),
-        ("keep, gravity", Vec2::new(0.0, 980.0), |s| s.aim_way = AimWay::KeepMine),
-        ("adjust 30, no gravity", Vec2::ZERO, |_| {}),
-        ("adjust 30, catcher 3, gravity", Vec2::new(0.0, 980.0), |_| {}),
-        ("adjust 10, no gravity", Vec2::ZERO, |s| s.aim_turn = 10.0),
-        ("adjust 30, at least 3, no gravity", Vec2::ZERO, |s| s.aim_bounces = 3),
-        ("keep, when needed, after 3 s, no gravity", Vec2::ZERO, |s| {
-            s.aim_way = AimWay::KeepMine;
-            s.aim_leave = AimLeave::WhenNeeded;
-            s.aim_arrive = AimArrive::After;
-            s.arrive_after = 3.0;
-        }),
-        ("adjust 30, gravity", Vec2::new(0.0, 980.0), |_| {}),
-    ];
-    let only = std::env::var("DIAG").ok();
-    for (k, (name, gravity, f)) in cases.into_iter().enumerate() {
-        if only.as_ref().is_some_and(|o| !o.split(',').any(|x| x == k.to_string())) {
-            continue;
-        }
-        let most = 50;
-        let target = Vec2::new(150.0, 120.0);
-        let set = |s: &mut EmitterSettings| {
-            s.count = 500;
-            s.aim_bounces_most = most;
-            f(s);
-        };
-        let (mut scene, me, kit) = bouncing(gravity, Vec2::new(-200.0, 0.0), target, set);
-        if k == 3 {
-            let to = ThingId(st_target(&scene, me));
-            let mut t = EmitterSettings::from_params(&scene.things[&to].params);
-            t.catches = Catches::Remove;
-            t.catch_size = 3.0;
-            scene.things.get_mut(&to).unwrap().params = t.to_params();
-        }
-        if std::env::var_os("UNAIMED").is_some() {
-            let mut sc = scene.clone();
-            let mut e = EmitterSettings::from_params(&sc.things[&me].params);
-            e.aim = Aim::Off;
-            sc.things.get_mut(&me).unwrap().params = e.to_params();
-            let mut world = fired(&sc, &kit);
-            let angles: Vec<f32> = world.bodies[&me].velocity.iter().map(|v| v.to_angle()).collect();
-            let mut log = Log::default();
-            let mut shown = 0;
-            let mut seen = vec![false; 500];
-            for _ in 0..(240 * 10) {
-                world.step(&kit.sims, &mut log);
-                let b = &world.bodies[&me];
-                for i in 0..500 {
-                    let (from, to) = (b.previous[i], b.position[i]);
-                    let d = to - from;
-                    let s = ((target - from).dot(d) / d.length_squared().max(1e-9)).clamp(0.0, 1.0);
-                    if !seen[i] && (from + d * s - target).length() <= 3.0 && shown < 6 {
-                        seen[i] = true;
-                        shown += 1;
-                        eprintln!(
-                            "  unaimed ball {i} angle {} reaches step {} hits {}",
-                            angles[i], world.step, b.hits[i]
-                        );
-                    }
-                }
-            }
-        }
-        let t0 = std::time::Instant::now();
-        let mut world = fired(&scene, &kit);
-        let aims = st(&world, me).aimed.last().cloned().unwrap();
-        let took = t0.elapsed().as_secs_f64();
-        let mut log = Log::default();
-        let near = nearest(&mut world, &kit, &mut log, me, aims.arrive, target);
-        let rows: Vec<usize> = (0..500).filter(|&i| aims.balls[i].is_some()).collect();
-        let reached: Vec<f32> = aims
-            .balls
-            .iter()
-            .enumerate()
-            .filter(|(_, b)| b.as_ref().is_some_and(|b| b.reaches))
-            .map(|(i, _)| rows.iter().position(|&r| r == i).map_or(f32::INFINITY, |r| near[r].0))
-            .collect();
-        let within = reached.iter().filter(|d| **d < ROUGH as f32 + 0.5).count();
-        eprintln!(
-            "{name}: aimed {} of 500, arrive step {} ({:.1}s), took {took:.1}s; really within 3.5 px: {within}",
-            reaching(&aims),
-            aims.arrive,
-            aims.arrive as f64 / 240.0,
-        );
+/// A big round all round from the left of the circle (no gravity) at a target on the right,
+/// with up to 50 bounces, set by `f`: how many are aimed, when they meet and how near each aimed
+/// ball really comes to the target then (with how many bounces), in ball order.
+fn big_round(count: u32, f: impl FnOnce(&mut EmitterSettings)) -> (usize, u64, Vec<(f32, u32)>) {
+    let target = Vec2::new(150.0, 120.0);
+    let (scene, me, kit) = bouncing(Vec2::ZERO, Vec2::new(-200.0, 0.0), target, |s| {
+        s.count = count;
+        s.aim_bounces_most = 50;
+        f(s);
+    });
+    let mut world = fired(&scene, &kit);
+    let aims = st(&world, me).aimed.last().cloned().unwrap();
+    for b in aims.balls.iter().flatten() {
+        assert_eq!(b.leave, 1, "all leave on the round's step");
     }
-}
-
-fn st_target(scene: &Scene, me: ThingId) -> u32 {
-    EmitterSettings::from_params(&scene.things[&me].params).aim_target as u32
-}
-
-#[test]
-#[ignore]
-fn bench_fly() {
-    let (scene, me, kit) = bouncing(Vec2::ZERO, Vec2::new(-200.0, 0.0), Vec2::new(150.0, 120.0), |s| s.count = 500);
-    let world = World::build(&scene, &resolved(&scene, &kit), &kit.sims);
-    let aim = Aimer::of(&world, me, &st(&world, me).settings, 0).unwrap();
-    let base = Lone::new(&world, me, me, 6.0, 0);
-    let p0 = world.poses[&me].position;
-    let t0 = std::time::Instant::now();
-    let mut steps = 0;
-    for i in 0..20 {
-        let f = fly(&base, &aim, p0, Vec2::from_angle(i as f32 * 0.3) * 600.0, 20000, 100000);
-        steps += f.places.len();
-    }
-    let el = t0.elapsed().as_secs_f64();
-    eprintln!("{steps} steps, {:.2} us/step", el * 1e6 / steps as f64);
-    let mut w = base.world.clone();
-    let sims = crate::lone_sims();
-    w.bodies.get_mut(&me).unwrap().push(p0, Vec2::new(600.0, 0.0), 6.0);
     let mut log = Log::default();
+    let near = nearest(&mut world, &kit, &mut log, me, aims.arrive, target);
+    // The balls fired, in ball order (the skipped ones aren't).
+    let fired: Vec<&Option<BallAim>> = aims.balls.iter().filter(|b| b.is_some()).collect();
+    let reached = fired.iter().zip(&near).filter(|(b, _)| b.as_ref().is_some_and(|b| b.reaches)).map(|(_, n)| *n).collect();
+    (reaching(&aims), aims.arrive, reached)
+}
+
+#[test]
+fn a_big_round_turning_each_ball_finds_every_ball_a_way() {
+    // Part 4b aimed 370 of 500 here: only the first three arcs were looked at, and a ball whose
+    // soonest way was much sooner than the round's moment couldn't slow down enough.
+    let (aimed, arrive, near) = big_round(150, |_| {});
+    assert!(aimed >= 147, "{aimed} of 150");
+    assert!(arrive > 240, "the latest takes a while: {arrive}");
+    assert!(near.iter().all(|(d, _)| *d < ROUGH as f32 + 0.5), "{near:?}");
+    assert!(near.iter().all(|(_, hits)| *hits >= 1), "{near:?}");
+}
+
+#[test]
+fn keeping_their_directions_ways_with_many_bounces_count_too() {
+    // Part 4b aimed 6 of 500 balls keeping their directions: it never looked past three arcs.
+    let (aimed, arrive, near) = big_round(120, |s| {
+        s.aim_way = AimWay::KeepMine;
+        s.aim_arrive = AimArrive::After;
+        s.arrive_after = 10.0;
+    });
+    assert_eq!(arrive, 2401);
+    assert!(aimed >= 40, "{aimed} of 120");
+    assert!(near.iter().all(|(d, _)| *d < ROUGH as f32 + 0.5), "{near:?}");
+    assert!(near.iter().any(|(_, hits)| *hits > 4), "some take many bounces: {near:?}");
+}
+
+/// The 500-ball rounds Aedan tried (slow: run by hand).
+#[test]
+#[ignore]
+fn five_hundred_balls() {
     let t0 = std::time::Instant::now();
-    for _ in 0..20000 {
-        w.step(sims, &mut log);
-    }
-    eprintln!("bare: {:.2} us/step", t0.elapsed().as_secs_f64() * 1e6 / 20000.0);
+    let (aimed, arrive, near) = big_round(500, |_| {});
+    eprintln!("turning: {aimed} of 500 at {arrive} in {:.1} s", t0.elapsed().as_secs_f64());
+    assert!(aimed >= 495);
+    assert!(near.iter().all(|(d, _)| *d < ROUGH as f32 + 0.5));
+    let t0 = std::time::Instant::now();
+    let (aimed, arrive, near) = big_round(500, |s| s.aim_way = AimWay::KeepMine);
+    eprintln!("keeping: {aimed} of 500 at {arrive} in {:.1} s", t0.elapsed().as_secs_f64());
+    assert!(aimed >= 60);
+    assert!(near.iter().all(|(d, _)| *d < ROUGH as f32 + 0.5));
 }
