@@ -272,6 +272,9 @@ pub struct LightSettings {
     /// Whose hits make it flare.
     #[setting(label = "Heard from", when = "flare", group = "On hits")]
     pub flare_from: Target,
+    /// How much its light shows in the scene's haze (the Lighting card's Haze): beams.
+    #[setting(label = "Beam in haze", span(0, 4), keyframe, group = "Air")]
+    pub beam: f32,
 }
 
 impl Default for LightSettings {
@@ -309,6 +312,7 @@ impl Default for LightSettings {
             flare: 0.0,
             flare_length: 0.3,
             flare_from: Target::Kind(KindId::from("balls")),
+            beam: 1.0,
         }
     }
 }
@@ -333,6 +337,24 @@ impl LightSettings {
                 [c[0], c[1], c[2]]
             }
             LightColour::Temperature => kelvin_to_linear(self.kelvin),
+        }
+    }
+}
+
+impl LightSettings {
+    /// The light's colour as sRGB bytes, for the editor's colour dot.
+    pub fn display_colour(&self) -> [u8; 3] {
+        match self.colour_from {
+            LightColour::Own => [self.colour.r, self.colour.g, self.colour.b],
+            LightColour::Temperature => {
+                let enc = |c: f32| {
+                    let c = c.clamp(0.0, 1.0);
+                    let s = if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 };
+                    (s * 255.0).round() as u8
+                };
+                let l = kelvin_to_linear(self.kelvin);
+                [enc(l[0]), enc(l[1]), enc(l[2])]
+            }
         }
     }
 }
@@ -428,6 +450,10 @@ mod tests {
         assert!(warm[0] > warm[2] * 3.0, "{warm:?}");
         assert!((day[0] - 1.0).abs() < 0.05 && (day[2] - 1.0).abs() < 0.08, "{day:?}");
         assert!(cold[2] > cold[0], "{cold:?}");
+        let warm = LightSettings { colour_from: LightColour::Temperature, kelvin: 2700.0, ..LightSettings::default() };
+        let dot = warm.display_colour();
+        assert!(dot[0] == 255 && dot[2] < dot[1], "{dot:?}");
+        assert_eq!(LightSettings::default().display_colour(), [0xff, 0xf2, 0xde]);
     }
 
     #[test]

@@ -190,7 +190,9 @@ fn shade_shape_layers(
     let cover = shape_cover_at(s);
     let w = walk_shape(world, s, layers.x, layers.y, layers.w);
     let out = split_lower_mixed(cover, w, layers.w);
-    if out.a < 1e-4 && max(out.r, max(out.g, out.b)) < 1e-4 {
+    // The emission pass may give off darkness (negative light) where it covers nothing.
+    let seen = select(max(out.r, max(out.g, out.b)), max(abs(out.r), max(abs(out.g), abs(out.b))), g.light.x > 2.5);
+    if out.a < 1e-4 && seen < 1e-4 {
         discard;
     }
     return out;

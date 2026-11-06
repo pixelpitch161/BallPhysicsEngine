@@ -109,8 +109,11 @@ pub struct LightingSettings {
     /// The light everywhere, even where no lamp reaches.
     #[setting(label = "Ambient colour", keyframe, group = "Room")]
     pub ambient_colour: Color,
+    /// Whether the light everywhere is on (the Lights tab's M on Ambient).
+    #[setting(label = "Ambient on", group = "Room")]
+    pub ambient_on: bool,
     /// How bright the light everywhere is: 0 is darkness but for the lamps, 1 is as unlit.
-    #[setting(label = "Ambient", span(0, 1), simple, keyframe, group = "Room")]
+    #[setting(label = "Ambient", when = "ambient_on", span(0, 1), simple, keyframe, group = "Room")]
     pub ambient: f32,
     /// How much the background takes the light: 0 leaves it as it is.
     #[setting(label = "Background takes light", span(0, 1), keyframe, group = "Room")]
@@ -189,6 +192,15 @@ pub struct LightingSettings {
     /// How the back wall takes light.
     #[setting(label = "Wall surface", when = "depth=stage", group = "Stage")]
     pub wall_surface: WallSurface,
+    /// How much light lit things that block light bounce onto what is round them.
+    #[setting(label = "Bounce light", span(0, 2), keyframe, group = "Room")]
+    pub bounce: f32,
+    /// How far the light of glowing things (and bounced light) reaches.
+    #[setting(label = "Glow reach", range(0, 1e9), span(0, 4000), unit = "px", keyframe, group = "Room")]
+    pub glow_reach: f32,
+    /// How much the lamps and glowing things spill into a soft bloom (the lamps show as bulbs).
+    #[setting(label = "Light blooms", span(0, 2), keyframe, group = "Room")]
+    pub light_blooms: f32,
     /// How shadows look.
     #[setting(label = "Style", group = "Shadows")]
     pub shadow_style: ShadowStyle,
@@ -215,6 +227,15 @@ pub struct LightingSettings {
     /// How many bands of light a toon picture has.
     #[setting(label = "Toon steps", when = "shadow_style=toon", range(1, 1e9), span(1, 8), group = "Shadows")]
     pub toon_steps: u32,
+    /// How much the air shows the light: beams from the lamps, halos round glowing things.
+    #[setting(label = "Haze", span(0, 2), keyframe, group = "Air")]
+    pub haze: f32,
+    /// The colour the haze takes the light in.
+    #[setting(label = "Haze colour", when = "haze", keyframe, group = "Air")]
+    pub haze_colour: Color,
+    /// How much the haze veils what is behind it.
+    #[setting(label = "Haze dims", when = "haze", span(0, 1), keyframe, group = "Air")]
+    pub haze_dims: f32,
     /// How hard the lighting works, while editing and in the video alike.
     #[setting(label = "Quality", group = "Quality")]
     pub quality: Quality,
@@ -284,6 +305,7 @@ impl Default for LightingSettings {
         Self {
             depth: Depth::Flat,
             ambient_colour: Color::WHITE,
+            ambient_on: true,
             ambient: 0.25,
             background_lit: 1.0,
             sky_light: 0.0,
@@ -298,6 +320,12 @@ impl Default for LightingSettings {
             floor_blur: 0.25,
             floor_reflection: 1.0,
             wall_surface: WallSurface::Matte,
+            bounce: 0.0,
+            glow_reach: 2000.0,
+            light_blooms: 0.0,
+            haze: 0.0,
+            haze_colour: Color::WHITE,
+            haze_dims: 0.0,
             shadow_style: ShadowStyle::Soft,
             shadow_softness: 1.0,
             shadow_length: 2400.0,
@@ -319,10 +347,15 @@ impl Default for LightingSettings {
 }
 
 impl LightingSettings {
-    /// The card as the renderer reads it; `lowest_shape` is the bottom of the lowest shape's
-    /// wall (world y), for a floor under it.
+    /// The card as the renderer reads it (the background's own light is the scene settings',
+    /// filled in by the scene's draw); `lowest_shape` is the bottom of the lowest shape's wall
+    /// (world y), for a floor under it.
     pub fn gpu(&self, lowest_shape: Option<f32>) -> LightingGpu {
         let a = self.ambient_colour.to_linear();
+        let ambient = if self.ambient_on { self.ambient } else { 0.0 };
+        let h = self.haze_colour.to_linear();
+        let finite = |v: f32| if v.is_finite() { v } else { 0.0 };
+        let haze = finite(self.haze);
         let (top, bottom) = (self.sky_top.to_linear(), self.sky_bottom.to_linear());
         let stage = self.depth == Depth::Stage;
         let (floor_kind, floor_y) = match self.floor {
@@ -335,7 +368,7 @@ impl LightingSettings {
         let k = if floor_kind > 0.0 { self.looking_down.clamp(0.0, 89.0).to_radians().tan() } else { 0.0 };
         let back = self.wall_depth.max(0.0);
         LightingGpu {
-            ambient: [a[0] * self.ambient, a[1] * self.ambient, a[2] * self.ambient, self.background_lit],
+            ambient: [a[0] * ambient, a[1] * ambient, a[2] * ambient, self.background_lit],
             shadows: [self.shadow_style.code(), self.shadow_softness, self.shadow_length, self.contact],
             more: [self.contact_reach, self.toon_steps.max(1) as f32, self.quality.code(), 0.0],
             stage: [f32::from(u8::from(stage)), back, self.shape_depth.max(0.0) - back, k],
@@ -355,6 +388,9 @@ impl LightingSettings {
             floor_more: [self.floor_blur, self.floor_reflection, 0.0, 0.0],
             sky_top: [top[0], top[1], top[2], self.sky_light],
             sky_bottom: [bottom[0], bottom[1], bottom[2], 0.0],
+            glow: [finite(self.bounce), finite(self.glow_reach).max(0.0), finite(self.light_blooms), 0.0],
+            air: [h[0] * haze, h[1] * haze, h[2] * haze, if haze != 0.0 { finite(self.haze_dims) } else { 0.0 }],
+            background: [[0.0; 4]; 2],
         }
     }
 }
@@ -403,5 +439,14 @@ mod tests {
         assert_eq!(stage.gpu(None).floor[0], 2.0);
         let none = LightingSettings { floor: Floor::None, ..stage };
         assert_eq!((none.gpu(Some(500.0)).floor[0], none.gpu(Some(500.0)).stage[3]), (0.0, 0.0));
+    }
+
+    #[test]
+    fn ambient_off_sends_no_ambient_and_keeps_its_strength() {
+        let on = LightingSettings { ambient: 0.4, ..LightingSettings::default() };
+        assert!((on.gpu(None).ambient[1] - 0.4).abs() < 1e-6);
+        let off = LightingSettings { ambient_on: false, ..on.clone() };
+        assert_eq!(&off.gpu(None).ambient[..3], &[0.0; 3]);
+        assert_eq!(off.ambient, 0.4, "the strength is kept for when it is on again");
     }
 }

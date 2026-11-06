@@ -29,6 +29,7 @@ pub const GLOW: &str = "shape.glow";
 pub const SHADER: &str = "shape.shader";
 pub const BLEND: &str = "shape.blend";
 pub const SUB_CUT: &str = "shape.sub.cut";
+pub use crate::modules::look::layers::gives_light::SHAPE_SUB_LIGHT as SUB_LIGHT;
 pub const SUB_GLOW: &str = "shape.sub.glow";
 pub const SUB_OUTLINE: &str = "shape.sub.outline";
 pub const SUB_SHADOW: &str = "shape.sub.shadow";
@@ -119,7 +120,7 @@ pub fn kinds() -> Vec<Kind> {
     .collect()
 }
 
-/// A shape's ten sub-layer kinds, in the Add sub-layer menu's order: the balls', with sizes in
+/// A shape's eleven sub-layer kinds, in the Add sub-layer menu's order: the balls', with sizes in
 /// pixels and no brush.
 pub fn sub_kinds() -> Vec<Kind> {
     use crate::modules::look::layers::{ShapeCut, SubFlash, SubHue, SubOutline, SubRecolour, subs as ball};
@@ -150,6 +151,12 @@ pub fn sub_kinds() -> Vec<Kind> {
             "Colour on hit",
             "Its layer's colours turn round the wheel every time a ball hits the shape.",
             SubHue::defs,
+        ),
+        sub(
+            SUB_LIGHT,
+            "Gives off light",
+            crate::modules::look::layers::gives_light::HELP,
+            crate::modules::look::layers::gives_light::GivesLight::defs,
         ),
     ]
 }
@@ -216,8 +223,12 @@ impl LayerKind for ShapeBody {
     fn base(&self) -> bool {
         true
     }
+    /// Gives off light only: the shape itself glowing.
     fn takes_subs(&self) -> bool {
-        false
+        true
+    }
+    fn takes_sub(&self, sub: &str) -> bool {
+        sub == SUB_LIGHT
     }
     fn per_ball(&self) -> bool {
         false
@@ -252,7 +263,8 @@ mod tests {
                 SUB_SHADER,
                 SUB_RECOLOUR,
                 SUB_FLASH,
-                SUB_HUE
+                SUB_HUE,
+                SUB_LIGHT
             ]
         );
         for k in reg.layers_for(CARD).filter(|k| k.section() != LayerSection::Around) {
@@ -260,7 +272,12 @@ mod tests {
             let sub = k.section() == LayerSection::Sub;
             let painted = !sub && !matches!(k.id(), BODY | BLEND);
             assert!(!k.per_ball(), "{}", k.id());
-            assert_eq!(k.takes_subs(), painted, "{}: paint layers take sub-layers", k.id());
+            assert_eq!(
+                k.takes_subs(),
+                painted || k.id() == BODY,
+                "{}: paint layers and the Body take sub-layers",
+                k.id()
+            );
             assert_eq!(k.section() == LayerSection::Drawn, !sub, "{}", k.id());
             assert_eq!(k.repeats(), !matches!(k.id(), BODY | BLEND), "{}", k.id());
             let has = |key: &str| k.settings().iter().any(|d| d.key == key);

@@ -79,7 +79,7 @@ fn SHAPE_WALK(world: vec2<f32>, s: ShapeAt, first: u32, count_in: u32, split: u3
                 piece.light_out += sub_light(piece.c_out, glow_amount, select(outer, whole_out, lower && above), mode);
             }
             if g.light.x > 0.5 {
-                piece = light_piece(piece, ll);
+                piece = light_piece(piece, ll, layered_shape.hit);
             }
             let p_in = clamp(piece.a_in, 0.0, 1.0) * lo;
             let p_out = clamp(piece.a_out, 0.0, 1.0) * lo;

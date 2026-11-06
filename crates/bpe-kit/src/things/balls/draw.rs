@@ -625,6 +625,7 @@ fn draw_ghosts(
     // ball's records with that layer's Lighting.
     if frame.light.is_some() {
         let light = ghosts.first().map_or([0.0; 4], |g| [g.light[0], g.light[1], 0.0, 0.0]);
+        let emit = ghosts.first().and_then(|g| g.emit);
         let mut copies: Vec<(u32, u32)> = Vec::new();
         for g in behind.iter_mut().chain(front.iter_mut()) {
             let first = g.range[0];
@@ -636,6 +637,7 @@ fn draw_ghosts(
                     let mut records = frame.look_layers.get(range).map(<[_]>::to_vec).unwrap_or_default();
                     for r in &mut records {
                         r.light = light;
+                        r.emit = crate::modules::look::layers::gives_light::gpu_steady(emit);
                     }
                     frame.look_layers.extend(records);
                     copies.push((first, to));
@@ -644,7 +646,12 @@ fn draw_ghosts(
             };
             g.range[0] = at;
         }
-        let stamp = |s: &mut bpe_gfx::Particle| s.light = light;
+        let stamp = |s: &mut bpe_gfx::Particle| {
+            s.light = light;
+            if let Some(e) = emit {
+                s.emit = e.at(s.color);
+            }
+        };
         under.iter_mut().chain(over_behind.iter_mut()).chain(over_front.iter_mut()).for_each(stamp);
     }
     frame.layered.extend(behind);

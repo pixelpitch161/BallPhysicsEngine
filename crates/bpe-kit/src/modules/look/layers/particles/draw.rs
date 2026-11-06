@@ -11,7 +11,7 @@ use super::emit::{self, Emission, MAX_PARTICLES};
 use super::sim::{Live, Motion, simulate};
 use super::{MadeOf, ParticleSource, ParticlesLayer};
 use crate::modules::look::layers::around::{AroundKind, AroundLayer};
-use crate::modules::look::layers::around_subs::{Extras, HitInfo, Pieces, coloured, particle_with_extras};
+use crate::modules::look::layers::around_subs::{Extras, HitInfo, OWN, Pieces, coloured, particle_with_extras};
 use crate::modules::look::layers::gpu::Stack;
 use crate::modules::look::layers::trail::AroundPlace;
 use crate::modules::look::layers::trail::draw::Balls;
@@ -118,7 +118,12 @@ fn draw_sprites(src: &Source, emissions: &[Emission], frame: &mut Frame) {
         let own = shade(p, coloured(subs, subs.len(), base, hit), live.alpha);
         let extras =
             Extras { subs, base, s: live.life, fade: live.alpha, unit: (src.unit)(e), hit, outline: 1.0, added: 1.0 };
+        let before = pieces.particles[OWN].len();
         particle_with_extras(sprite(p.made_of, &live, own), &extras, &mut pieces);
+        // Only the particle itself gives off light, not what its sub-layers add round it.
+        if let Some(e) = layer.emit {
+            pieces.particles[OWN][before..].iter_mut().for_each(|s| s.emit = e.at(s.color));
+        }
     });
     pieces.into_frame(frame, src.particles.place == AroundPlace::InFront);
 }
@@ -201,20 +206,21 @@ pub fn draw_balls(
     let pick = |e: &Emission| mine(e.row.and_then(|r| copy_of.get(r).copied()).unwrap_or(0));
     let src = Source { cx, particles, pick: &pick, colour: &colour, hit: &hit, unit: &unit, pull_to: &pull_to };
     if particles.made_of == MadeOf::MiniBalls {
-        draw_mini_balls(&src, &emissions, balls, stack, layer.light, frame);
+        draw_mini_balls(&src, &emissions, balls, stack, (layer.light, layer.emit), frame);
     } else {
         draw_sprites(&src, &emissions, frame);
     }
 }
 
 /// Draws the particles of `emissions` as small balls wearing `stack`, the ball's own look.
-/// They take the light as their particles layer does (`light`), flat, not as the ball's Body.
+/// They take the light as their particles layer does (`light`), flat, not as the ball's Body,
+/// and give off the light it gives (`emit`).
 fn draw_mini_balls(
     src: &Source,
     emissions: &[Emission],
     balls: &Balls,
     stack: &Stack,
-    light: [f32; 4],
+    (light, emit): ([f32; 4], Option<super::super::gives_light::Emit>),
     frame: &mut Frame,
 ) {
     let cx = src.cx;
@@ -223,6 +229,7 @@ fn draw_mini_balls(
     let mut records = stack.records(&mut frame.gradients, &mut frame.mask_tiles, time);
     for r in &mut records {
         r.light = [light[0], light[1], 0.0, 0.0];
+        r.emit = super::super::gives_light::gpu_steady(emit);
     }
     let first = frame.look_layers.len() as u32;
     let count = records.len() as u32;

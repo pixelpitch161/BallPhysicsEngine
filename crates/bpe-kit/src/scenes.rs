@@ -1137,6 +1137,110 @@ pub fn light_show(reg: &Registry) -> Scene {
     scene
 }
 
+/// Lighting part 1b's room: [`lit_room`] darkened (no ambient, its lamp at strength 0) with a
+/// bigger ball in the middle whose Body gives off warm light. Tests switch things on from here.
+pub fn glow_room(reg: &Registry) -> Scene {
+    use crate::modules::look::layers::gives_light::{EmitFrom, GivesLight, SUB_LIGHT};
+    let mut scene = lit_room(reg);
+    scene.name = "Glow room".into();
+    let root = scene.things.get_mut(&ThingId::ROOT).expect("root");
+    let mut s = SceneSettings::from_params(&root.params);
+    s.background = Paint::solid(Color::rgb(0x60, 0x60, 0x60));
+    root.params = s.to_params();
+    let lighting = root.slots.get_mut(&SlotId::Lighting).expect("lit");
+    lighting.params.set("ambient", Value::Number(0.0));
+    let lamp = scene.things.values().find(|t| t.kind == "light").map(|t| t.id).expect("a light");
+    scene.things.get_mut(&lamp).expect("light").params.set("strength", Value::Number(0.0));
+    let ball = scene.things.values().find(|t| t.kind == "balls").map(|t| t.id).expect("a ball");
+    scene.things.get_mut(&ball).expect("ball").params.set("radius", Value::Number(60.0));
+    let body = scene.things[&ball].slots[&SlotId::Look].layers[0].id;
+    let sub = scene.add_sub_layer(reg, ball, SlotId::Look, body, SUB_LIGHT).expect("the Body gives off light");
+    let glow = GivesLight {
+        colour_from: EmitFrom::Own,
+        colour: Color::rgb(0xff, 0xa0, 0x40),
+        strength: 3.0,
+        ..Default::default()
+    };
+    let card = scene.card_mut(ball, SlotId::Look).expect("a look");
+    for (k, v) in glow.to_params().iter() {
+        card.params.set(&bpe_core::layered_key(sub, k), v.clone());
+    }
+    scene
+}
+
+/// Lighting part 1b's demo (its review video): a dark, hazy room in a glowing ring, twelve
+/// balls flung out from the middle that give off light (flaring on hits) and leave glowing
+/// streaks, under a warm spot whose beam shows in the haze, with bounce light and Light blooms.
+/// Not in [`all`].
+pub fn glow_demo(reg: &Registry) -> Scene {
+    use crate::modules::look::layers::gives_light::{EmitFrom, GivesLight, SHAPE_SUB_LIGHT, SUB_LIGHT};
+    use crate::modules::look::layers::trail::TRAIL;
+    use crate::things::light::{LightSettings, LightType};
+    let hex = |h: u32| Color::rgb((h >> 16) as u8, (h >> 8) as u8, h as u8);
+    let mut scene = lit_demo(reg);
+    scene.name = "Glow demo".into();
+    let root = scene.things.get_mut(&ThingId::ROOT).expect("root");
+    let mut s = SceneSettings::from_params(&root.params);
+    s.background = Paint::solid(Color::rgb(0x0c, 0x0d, 0x14));
+    s.bloom = 0.1;
+    root.params = s.to_params();
+    let lighting = root.slots.get_mut(&SlotId::Lighting).expect("lit");
+    for (key, v) in [("ambient", 0.03), ("bounce", 0.6), ("light_blooms", 0.6), ("haze", 0.18), ("haze_dims", 0.1)] {
+        lighting.params.set(key, Value::Number(v));
+    }
+    // Only the spot stays: the balls light the room themselves.
+    let lights: Vec<ThingId> = scene.things.values().filter(|t| t.kind == "light").map(|t| t.id).collect();
+    for id in lights {
+        let spot = LightSettings::from_params(&scene.things[&id].params);
+        if spot.kind != LightType::Spot {
+            scene.things.get_mut(&id).expect("light").params.set("strength", Value::Number(0.0));
+        }
+    }
+    let set_all = |scene: &mut Scene, thing: ThingId, layer: bpe_core::LayerId, params: &Params| {
+        let card = scene.card_mut(thing, SlotId::Look).expect("a look");
+        for (k, v) in params.iter() {
+            card.params.set(&bpe_core::layered_key(layer, k), v.clone());
+        }
+    };
+    // The ring glows a cool blue.
+    let shape = scene.things.values().find(|t| t.kind == "shape").map(|t| t.id).expect("a shape");
+    let body = scene.things[&shape].slots[&SlotId::Look].layers[0].id;
+    let sub = scene.add_sub_layer(reg, shape, SlotId::Look, body, SHAPE_SUB_LIGHT).expect("a shape's Body glows");
+    let ring = GivesLight {
+        colour_from: EmitFrom::Own,
+        colour: Color::rgb(0x50, 0x9c, 0xff),
+        strength: 0.5,
+        flare: 3.0,
+        flare_length: 0.3,
+        ..Default::default()
+    };
+    set_all(&mut scene, shape, sub, &ring.to_params());
+    // The balls glow their own colours and flare on hits, and their streaks glow too.
+    let ball = scene.things.values().find(|t| t.kind == "balls").map(|t| t.id).expect("a ball");
+    let body = scene.things[&ball].slots[&SlotId::Look].layers[0].id;
+    let sub = scene.add_sub_layer(reg, ball, SlotId::Look, body, SUB_LIGHT).expect("a ball's Body glows");
+    let glow = GivesLight { strength: 1.6, flare: 2.5, flare_length: 0.35, ..Default::default() };
+    set_all(&mut scene, ball, sub, &glow.to_params());
+    let trail = scene.add_layer(reg, ball, SlotId::Look, TRAIL).expect("a trail");
+    let streak = TrailLayer {
+        seconds: 0.5,
+        width: 0.7,
+        brightness: 0.8,
+        source: TrailSource::Own,
+        colour: Paint {
+            colours: Gradient::even(&[hex(0xffffff), hex(0xff5ca8), hex(0x8a4dff)]),
+            follow: Follow::Life,
+            ..Paint::default()
+        },
+        ..TrailLayer::default()
+    };
+    set_all(&mut scene, ball, trail, &streak.to_params());
+    let sub = scene.add_sub_layer(reg, ball, SlotId::Look, trail, SUB_LIGHT).expect("a trail glows");
+    let lit_trail = GivesLight { strength: 1.0, ..Default::default() };
+    set_all(&mut scene, ball, sub, &lit_trail.to_params());
+    scene
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{registry, scenes};

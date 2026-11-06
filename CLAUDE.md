@@ -95,6 +95,22 @@ section as painted chips (`inspector.rs::surface_section`, `style/swatch.rs`) wi
 picking a chip writes its preset in the same edit. `scenes::stage_demo` is test-only; `tests/stage_pictures.rs` checks
 the stage pictures.
 
+Part 1c is in: the editor's side. The left panel switches Things / **Lights** / Mixer (`LeftPanel::Lights`,
+`bpe-studio/src/lights_panel/`): the Lighting card's Depth and Quality chips, "+ Point … + Strip" (`light_parent`, shared
+with the tree), and a strip per `LightSource` (`Light`, `Layer` for any layer whose kind is in `GIVES_OFF_LIGHT`
+(`sub.light`, `shape.sub.light`), `Ambient`; `sources` lists them in tree order, each run under its nearest folder or rig (`Group`, a rig's header counting its `fixtures`), riders named by `rig::fixtures::ridden`):
+the Strength fader (the real setting at the playhead through `set_or_key`), **M** (a light's `Thing.enabled`, a layer's
+`enabled`, Ambient's new `ambient_on`) and **S** (`Studio.light_solo`, editor only: `soloed` gives the preview a
+resolved copy without the other lights and with ambient off; a "Solo: …" pill ends it). Light handles
+(`preview/light_handles.rs`, `Handle::Light(id, LightPart)`: Lamp(k), Reach, Cone, Aim, Corner, End) show for the
+selected light, or every light while the Lights tab is open (hit in three passes, `light_handles::Pass`: the selected light's lamps and dots before the balls, its reach ring and cone edges after them, other lamps last); they read `settings_at` (keyed values at the playhead) and
+`light::draw::places_in`/`aim_angle`, drag with `set_or_key` and keep the playhead. **Show** (`Studio.light_show`,
+`bpe_gfx::LightShow` on `LightScene.show`, the light pass's `ambient.w`): Picture / Light only / Heat map (`heat` in
+lighting.wgsl, the same stops as `style::HEAT`), set only by the editor (`preview::show_light` also drops picture effects,
+bloom and grade). Every spanned number setting is a `widgets::span_slider` (relative drags that carry on past the span,
+a box that takes any number, only the hard `range` clamps; past the span: knob at the end, an arrow, a bright boxed
+value). Lights up (linking) and Picked colour moved to part 4.
+
 ## Crate map
 
 Dependencies go bottom to top:
@@ -207,6 +223,22 @@ Dependencies go bottom to top:
   (`Follow::EachBall`, the Body's default). In-ball programs live in a `ProgramStore`; the editor shares one between
   its renderers and builds programs on a background thread (`ProgramStore::in_background`,
   `preview::shared_programs`), exports build them while drawing.
+  **Lighting** (spec `docs/superpowers/specs/2026-11-06-lighting-design.md`, plans `docs/superpowers/plans/lighting/`;
+  `lighting.rs`, `shaders/lighting.wgsl`): a frame with `Frame.light` (`LightScene`) draws the things again in light
+  passes picked by `Globals.light.x`: 1 lit colour (colour × Lit), 2 surface (blocks, height, cover), 3 the light
+  things give off (only when `LightScene.glows`, `Frame::gives_light`), 4 the background's own light alone. Then a
+  jump-flood distance field of blockers, `fs_direct` (each Light thing's light on surfaces and in the air, soft
+  shadows), the **light field** (2D radiance cascades: cascade i has probes 2^i apart, 4^(i+1) directions, rays
+  marched by a second jump flood on `gi_scene` (opaque where something blocks or gives light) and faded over Glow
+  reach; resolved into four ways per texel, `gi_a/b/c`; a texel inside a blocker reads the ways facing out at its
+  nearest open texel so nothing lights itself; Bounce is a second run fed by lit colour × light), haze (air light
+  × Beam in haze, plus the field) and Light blooms (lamp bulbs + emission, 4 mips), mixed by `fs_mix`
+  (`c + (light − 1)·w`, light ≥ 0 per channel). A layer's emission is folded into its record (`LayerGpu.emit`,
+  trails' and particles' `emit`); in mode 3 a Shine/Shading/Shader layer that gives nothing leaves the light under
+  it, and in mode 1 at Lit 0 it leaves the lit share under it. The **Gives off light** sub-layer
+  (`bpe-kit/.../layers/gives_light.rs`, `sub.light`/`shape.sub.light`: Colour from, Strength, Negative, Flare on
+  hit) goes on any drawn or around layer and on a Body (the only sub-layer a Body takes); a layer that gives off
+  light counts as Lit 0. The scene's background has Gives off light settings (`bg_glow*`).
 - `bpe-kit`: **every plugin**, with one folder per thing kind in `src/things/` (balls, camera, folder, scene, shape)
   and one per card kind in `src/modules/` (look, motion, bounce, shader). A ball's Look is
   `look.layers` (`modules/look/layers/`: Body, Pattern, Outline, Shine (its Light is white or its own colours/gradient, `ShineLight`), Glow, Shading, Shader, Blend, the reactions

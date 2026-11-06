@@ -1,6 +1,7 @@
 //! Flat lighting with Matte surfaces draws the picture lighting part 1a drew: the tile averages in
-//! `tests/golden-lit-flat*.txt` were made on main before part 2a (Stage and surfaces) changed the
-//! light pass, on the cloud's software GPU (lavapipe). Each 10 × 10 pixel tile may move by at most
+//! `tests/golden-lit-flat*.txt` were made on main without part 2a (Stage and surfaces; last made
+//! after parts 1b and 1c, which changed Flat pictures themselves), on the cloud's software GPU
+//! (lavapipe). Each 10 × 10 pixel tile may move by at most
 //! 1/255 per channel (part 2a rewrote the pass; the sums may round a hair differently). Another GPU
 //! draws a few bits differently, so there the test only checks that the scenes draw.
 //!

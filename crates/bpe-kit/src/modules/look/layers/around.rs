@@ -27,8 +27,11 @@ pub struct AroundLayer {
     pub subs: Vec<SubLayer>,
     /// The ball numbers that wear it (empty for every ball).
     pub only: Vec<u32>,
-    /// How it takes the scene's light ([`super::lighting::of`]).
+    /// How it takes the scene's light ([`super::lighting::of`]), its Lit taken away when it gives
+    /// off light.
     pub light: [f32; 4],
+    /// The light it gives off (its Gives off light sub-layers), when it gives any.
+    pub emit: Option<super::gives_light::Emit>,
 }
 
 /// Where a frame's trail and particle lists ended before an around layer drew, so what it drew
@@ -41,17 +44,17 @@ impl Drew {
         Drew([frame.trails.len(), frame.trails_front.len(), frame.particles.len(), frame.particles_front.len()])
     }
 
-    /// Gives everything drawn since [`Drew::from`] the Lighting `light`.
+    /// Gives everything drawn since [`Drew::from`] the Lighting `light` (the light it gives off
+    /// is stamped as it is drawn, on the layer's own pieces only: [`super::around_subs::Pieces::give_light`]).
     pub fn light(self, frame: &mut bpe_gfx::Frame, light: [f32; 4]) {
-        if light == [0.0; 4] {
-            return;
-        }
         let [t, tf, p, pf] = self.0;
-        let two = [light[0], light[1]];
-        frame.trails.iter_mut().skip(t).for_each(|v| v.light = two);
-        frame.trails_front.iter_mut().skip(tf).for_each(|v| v.light = two);
-        frame.particles.iter_mut().skip(p).for_each(|s| s.light = [light[0], light[1], 0.0, 0.0]);
-        frame.particles_front.iter_mut().skip(pf).for_each(|s| s.light = [light[0], light[1], 0.0, 0.0]);
+        if light != [0.0; 4] {
+            let two = [light[0], light[1]];
+            frame.trails.iter_mut().skip(t).for_each(|v| v.light = two);
+            frame.trails_front.iter_mut().skip(tf).for_each(|v| v.light = two);
+            frame.particles.iter_mut().skip(p).for_each(|s| s.light = [light[0], light[1], 0.0, 0.0]);
+            frame.particles_front.iter_mut().skip(pf).for_each(|s| s.light = [light[0], light[1], 0.0, 0.0]);
+        }
     }
 }
 
@@ -117,7 +120,12 @@ pub fn around_layers(slot: &ResolvedSlot, shape: bool) -> Vec<AroundLayer> {
             }
         };
         let light = super::lighting::of(&p);
-        out.push(AroundLayer { id: layer.id, kind, subs: Vec::new(), only: layer.only.clone(), light });
+        out.push(AroundLayer { id: layer.id, kind, subs: Vec::new(), only: layer.only.clone(), light, emit: None });
+    }
+    // Gives off light makes its layer a lamp: it shows its own colours, unlit.
+    for a in &mut out {
+        a.emit = super::gives_light::Emit::of_subs(&a.subs);
+        a.light = super::gives_light::unlit_if_lamp(a.light, a.emit);
     }
     out
 }

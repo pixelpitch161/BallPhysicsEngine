@@ -27,7 +27,14 @@ fn a_plain_streak_keeps_its_old_vertices() {
     // The head: 10 wide plus a pixel out either side, fully on.
     assert_eq!(
         out[0],
-        TrailVertex { position: [0.0, -11.0], edge: [11.0, 10.0], color: RED, style: [0.0, 0.0], light: [0.0; 2] }
+        TrailVertex {
+            position: [0.0, -11.0],
+            edge: [11.0, 10.0],
+            color: RED,
+            style: [0.0, 0.0],
+            light: [0.0; 2],
+            emit: [0.0; 4]
+        }
     );
     assert_eq!(out[1].position, [0.0, 11.0]);
     assert_eq!(out[1].edge, [-11.0, 10.0]);

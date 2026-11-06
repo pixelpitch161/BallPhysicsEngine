@@ -58,6 +58,8 @@ pub enum SubLayer {
     Recolour(SubRecolour),
     Flash(SubFlash),
     Hue(SubHue),
+    /// Gives off light: folded into its layer's record, it writes none of its own.
+    Light(super::gives_light::GivesLight),
 }
 
 impl SubLayer {
@@ -74,13 +76,20 @@ impl SubLayer {
             SUB_RECOLOUR => SubLayer::Recolour(SubRecolour::from_params(p)),
             SUB_FLASH => SubLayer::Flash(SubFlash::from_params(p)),
             SUB_HUE => SubLayer::Hue(SubHue::from_params(p)),
+            super::gives_light::SUB_LIGHT => SubLayer::Light(super::gives_light::GivesLight::from_params(p)),
             _ => return None,
         })
     }
 
-    /// Whether it writes a record: all do but a Shader whose own code doesn't read.
+    /// Whether it writes a record: all do but a Shader whose own code doesn't read, and Gives off
+    /// light, whose light its layer's record carries.
     pub fn writes(&self) -> bool {
-        !matches!(self, SubLayer::Shader(sh) if sh.header.is_err())
+        !matches!(self, SubLayer::Shader(sh) if sh.header.is_err()) && !matches!(self, SubLayer::Light(_))
+    }
+
+    /// Whether it gives off light that flares on hits (so the balls' hits are needed).
+    pub fn flares(&self) -> bool {
+        matches!(self, SubLayer::Light(g) if g.flare != 0.0)
     }
 
     /// Whether it reads the thing's hits (Flash on hit, Colour on hit).
@@ -236,6 +245,8 @@ pub fn sub_record(sub: &SubLayer, cx: &mut SubCx) -> LayerGpu {
             amount: [h.turn_per_hit / 360.0, 0.0, 0.0, 0.0],
             ..LayerGpu::ZERO
         },
+        // Never written (see `SubLayer::writes`): its light rides on its layer's record.
+        SubLayer::Light(_) => LayerGpu::ZERO,
     };
     // The codes are fixed above; the shared records keep their own flags.
     LayerGpu { head: [r.head[0], 0, r.head[2], 0], ..r }
@@ -314,6 +325,11 @@ impl DrawnLayer {
     pub fn records(&self) -> usize {
         if self.writes() { 1 + written(&self.subs).count() } else { 0 }
     }
+
+    /// The light its Gives off light sub-layers give off, when it has any.
+    pub fn emit(&self) -> Option<super::gives_light::Emit> {
+        super::gives_light::Emit::of_subs(self.subs.iter().map(|s| &s.sub))
+    }
 }
 
 /// A group layer that writes a record after the ball's own layers, in the group list's order.
@@ -332,6 +348,8 @@ pub struct Stack {
     pub body: BodyLayer,
     /// How the Body takes the scene's light ([`super::lighting::of`]).
     pub body_light: [f32; 4],
+    /// The light the Body gives off (its Gives off light sub-layers), when it gives any.
+    pub body_emit: Option<super::gives_light::Emit>,
     /// The drawn layers above the body, bottom first.
     pub drawn: Vec<DrawnLayer>,
     /// The group gradient, when the look has one shown and it mixes in.
@@ -364,6 +382,7 @@ impl Stack {
                 light[2] = crate::modules::look::surface::of_card(slot).bulge;
                 light
             },
+            body_emit: None,
             drawn: Vec::new(),
             group: None,
             ends: Vec::new(),
@@ -395,10 +414,15 @@ impl Stack {
                 SHADER => push(Drawn::Shader(Box::new(ShaderLayer::from_params(&p)))),
                 // A sub-layer goes with its layer; a hidden layer's don't matter.
                 kind if layer.parent.is_some() => {
-                    if let Some(sub) = SubLayer::of_ball(kind, &p)
-                        && let Some(d) = stack.drawn.iter_mut().find(|d| Some(d.id) == layer.parent)
-                    {
-                        d.subs.push(Sub { id: layer.id, sub });
+                    if let Some(sub) = SubLayer::of_ball(kind, &p) {
+                        if let Some(d) = stack.drawn.iter_mut().find(|d| Some(d.id) == layer.parent) {
+                            d.subs.push(Sub { id: layer.id, sub });
+                        } else if layer.parent == Some(stack.body_id)
+                            && let SubLayer::Light(g) = &sub
+                        {
+                            // The Body takes Gives off light only.
+                            stack.body_emit.get_or_insert_with(Default::default).add(g);
+                        }
                     }
                 }
                 // Blend and the reactions are there at most once; the first counts.
@@ -578,7 +602,8 @@ impl Stack {
             head: [LayerGpu::BODY, 0, grouped(self.body_id), 0],
             amount: [self.body.opacity.clamp(0.0, 1.0), 0.0, 0.0, 0.0],
             paint: body_paint,
-            light: self.body_light,
+            light: super::gives_light::unlit_if_lamp(self.body_light, self.body_emit),
+            emit: super::gives_light::gpu_of(self.body_emit),
             ..LayerGpu::ZERO
         }];
         // Where each layer's record is, by id, for cuts that name a layer.
@@ -638,7 +663,13 @@ impl Stack {
                 _ => 0.0,
             };
             let subs = written(&d.subs).count() as u32;
-            out.push(LayerGpu { head: [r.head[0], r.head[1], r.head[2] | grouped(d.id), subs], light: d.light, ..r });
+            let emit = d.emit();
+            out.push(LayerGpu {
+                head: [r.head[0], r.head[1], r.head[2] | grouped(d.id), subs],
+                light: super::gives_light::unlit_if_lamp(d.light, emit),
+                emit: super::gives_light::gpu_of(emit),
+                ..r
+            });
             let mut cx = SubCx { placed: &placed, angle, sources: &sources, atlas, tiles };
             for s in written(&d.subs) {
                 out.push(sub_record(&s.sub, &mut cx));
@@ -772,7 +803,13 @@ impl Stack {
     /// Whether a shown sub-layer reads the balls' hits (Flash on hit, Colour on hit), so each
     /// ball's instance needs its hit data.
     pub fn needs_hits(&self) -> bool {
-        self.drawn.iter().any(|d| d.writes() && d.subs.iter().any(|s| s.sub.reads_hits()))
+        self.drawn.iter().any(|d| d.writes() && d.subs.iter().any(|s| s.sub.reads_hits() || s.sub.flares()))
+            || self.body_emit.is_some_and(|e| e.flare != 0.0)
+    }
+
+    /// Whether any of its shown layers gives off light (then a lit scene draws what it gives).
+    pub fn gives_light(&self) -> bool {
+        self.body_emit.is_some() || self.drawn.iter().any(|d| d.writes() && d.emit().is_some())
     }
 
     /// How long ago a hit can still show in a Flash sub-layer, in seconds (its light has all but
@@ -782,9 +819,11 @@ impl Stack {
         lengths
             .filter_map(|s| match &s.sub {
                 SubLayer::Flash(f) if f.strength > 0.0 => Some(5.0 * f.length.max(0.0)),
+                SubLayer::Light(g) if g.flare != 0.0 => Some(5.0 * g.flare_length.max(0.0)),
                 _ => None,
             })
             .fold(0.0, f32::max)
+            .max(self.body_emit.filter(|e| e.flare != 0.0).map_or(0.0, |e| 5.0 * e.length))
     }
 
     /// The group shaders, in the group list's order.

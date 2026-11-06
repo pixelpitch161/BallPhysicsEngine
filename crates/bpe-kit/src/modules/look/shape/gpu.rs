@@ -2,6 +2,7 @@
 //! `PathInstance::layers` and the shape records table on `bpe_gfx::LayerGpu`): written once per
 //! shape per frame, bottom first, the Body's first.
 
+use crate::modules::look::layers::gives_light::{Emit, gpu_of, unlit_if_lamp};
 use std::borrow::Cow;
 
 use bpe_core::{Blend, Gradient, LayerId, Params, ResolvedSlot, Settings};
@@ -54,6 +55,7 @@ pub fn shape_sub(kind: &str, p: &Params) -> Option<SubLayer> {
         SUB_RECOLOUR => SubLayer::Recolour(SubRecolour::from_params(p)),
         SUB_FLASH => SubLayer::Flash(SubFlash::from_params(p)),
         SUB_HUE => SubLayer::Hue(SubHue::from_params(p)),
+        super::SUB_LIGHT => SubLayer::Light(crate::modules::look::layers::gives_light::GivesLight::from_params(p)),
         _ => return None,
     })
 }
@@ -69,6 +71,8 @@ pub struct ShapeStack {
     pub blend_at: usize,
     /// How each layer (the Body's first) takes the scene's light ([`crate::modules::look::layers::lighting::of`]).
     pub light: Vec<(LayerId, [f32; 4])>,
+    /// The light the Body gives off (its Gives off light sub-layers), when it gives any.
+    pub body_emit: Option<Emit>,
 }
 
 /// The shape as it is drawn, in its own units (see `things::shape::draw::wall_form`).
@@ -112,7 +116,14 @@ impl ShapeStack {
             return None;
         }
         let body = slot.first_layer(BODY)?;
-        let mut stack = ShapeStack { body_id: body.id, drawn: Vec::new(), blend: None, blend_at: 0, light: Vec::new() };
+        let mut stack = ShapeStack {
+            body_id: body.id,
+            drawn: Vec::new(),
+            blend: None,
+            blend_at: 0,
+            light: Vec::new(),
+            body_emit: None,
+        };
         for layer in &slot.layers {
             let p = slot.layer_params(layer.id);
             let light = crate::modules::look::layers::lighting::of(&p);
@@ -126,10 +137,15 @@ impl ShapeStack {
                 SHADER => ShapeDrawn::Shader(Box::new(ShaderLayer::from_params(&p))),
                 // A sub-layer goes with its layer; a hidden layer's don't matter.
                 kind if layer.parent.is_some() => {
-                    if let Some(sub) = shape_sub(kind, &p)
-                        && let Some((_, _, subs)) = stack.drawn.iter_mut().find(|(id, ..)| Some(*id) == layer.parent)
-                    {
-                        subs.push(Sub { id: layer.id, sub });
+                    if let Some(sub) = shape_sub(kind, &p) {
+                        if let Some((_, _, subs)) = stack.drawn.iter_mut().find(|(id, ..)| Some(*id) == layer.parent) {
+                            subs.push(Sub { id: layer.id, sub });
+                        } else if layer.parent == Some(stack.body_id)
+                            && let SubLayer::Light(g) = &sub
+                        {
+                            // The Body takes Gives off light only.
+                            stack.body_emit.get_or_insert_with(Default::default).add(g);
+                        }
                     }
                     continue;
                 }
@@ -240,7 +256,14 @@ impl ShapeStack {
 
     /// Whether a shown sub-layer reads the shape's hits (Flash on hit, Colour on hit).
     pub fn needs_hits(&self) -> bool {
-        self.drawn.iter().any(|(_, d, subs)| d.writes() && subs.iter().any(|s| s.sub.reads_hits()))
+        self.drawn.iter().any(|(_, d, subs)| d.writes() && subs.iter().any(|s| s.sub.reads_hits() || s.sub.flares()))
+            || self.body_emit.is_some_and(|e| e.flare != 0.0)
+    }
+
+    /// Whether any of its shown layers gives off light.
+    pub fn gives_light(&self) -> bool {
+        self.body_emit.is_some()
+            || self.drawn.iter().any(|(_, d, subs)| d.writes() && Emit::of_subs(subs.iter().map(|s| &s.sub)).is_some())
     }
 
     /// The records the stack draws with, bottom first, its gradients baked into `atlas`. The
@@ -260,7 +283,8 @@ impl ShapeStack {
             head: [LayerGpu::BODY, 0, 0, 0],
             amount: [1.0, 0.0, 0.0, 0.0],
             colour: [1.0, 1.0, 1.0, 1.0],
-            light: self.light_of(self.body_id),
+            light: unlit_if_lamp(self.light_of(self.body_id), self.body_emit),
+            emit: gpu_of(self.body_emit),
             ..LayerGpu::ZERO
         }];
         // Where each layer's record is, by id, for cuts that name a layer.
@@ -304,7 +328,13 @@ impl ShapeStack {
             };
             let at = out.len();
             let count = written(subs).count() as u32;
-            out.push(LayerGpu { head: [r.head[0], r.head[1], r.head[2], count], light: self.light_of(*id), ..r });
+            let emit = Emit::of_subs(subs.iter().map(|s| &s.sub));
+            out.push(LayerGpu {
+                head: [r.head[0], r.head[1], r.head[2], count],
+                light: unlit_if_lamp(self.light_of(*id), emit),
+                emit: gpu_of(emit),
+                ..r
+            });
             let mut cx = SubCx { placed: &placed, angle: 0.0, sources: &sources, atlas, tiles: &mut tiles };
             for s in written(subs) {
                 out.push(sub_record(&s.sub, &mut cx));

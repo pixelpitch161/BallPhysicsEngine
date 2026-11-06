@@ -39,10 +39,10 @@ mod util;
 
 pub use frame::{
     Around, BackgroundPaint, BallInstance, BlendLayer, DrawCx, Draws, EffectCall, FlashInstance, Frame, Grade, HitMark,
-    LayerGpu, LayeredInstance, LightGpu, LightScene, LightingGpu, LookInstance, MAX_LAYERS, MOST_TRAIL_VERTICES,
-    ModuleDraw, NO_HIT, Particle, PathInstance, Place, ShapeInstance, SphereGpu, Stage, StreakStyle, SurfaceGpu,
-    ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_with, hit_strength, push_streak, push_streak_colours,
-    push_trail, thing_code,
+    LayerGpu, LayeredInstance, LightGpu, LightScene, LightShow, LightingGpu, LookInstance, MAX_LAYERS,
+    MOST_TRAIL_VERTICES, ModuleDraw, NO_HIT, Particle, PathInstance, Place, ShapeInstance, SphereGpu, Stage,
+    StreakStyle, SurfaceGpu, ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_with, hit_strength,
+    push_streak, push_streak_colours, push_trail, thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, PaintGpu};
 pub use masks::{MASK_TILE, MASK_TILE_BYTES, MAX_MASK_TILES, TILE_DISTANCE_REACH, tile_distance};
@@ -67,8 +67,9 @@ const BALL_ATTRIBUTES: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
     0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4,
     7 => Float32x4
 ];
-const TRAIL_ATTRIBUTES: [wgpu::VertexAttribute; 5] =
-    wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x2, 4 => Float32x2];
+const TRAIL_ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
+    0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x2, 4 => Float32x2, 5 => Float32x4
+];
 const LOOK_ATTRIBUTES: [wgpu::VertexAttribute; 12] = wgpu::vertex_attr_array![
     0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
     6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4, 10 => Float32x4, 11 => Float32x4
@@ -105,9 +106,12 @@ struct Globals {
     grade: [f32; 4],
     /// The colour grade: tint, vignette, vignette size, gradient map amount.
     grade_more: [f32; 4],
-    /// Lighting: x the light pass (0 the picture as always, 1 lit colour, 2 surface), y how much
-    /// the background takes light, z 1 in Stage (see lighting.wgsl).
+    /// Lighting: x the light pass (0 the picture as always, 1 lit colour, 2 surface, 3 the light
+    /// things give off), y how much the background takes light, z 1 in Stage (see lighting.wgsl).
     light: [f32; 4],
+    /// The light the background gives off (read in pass 3): its own colour times its strength,
+    /// then what its colours are multiplied by (rgb, linear).
+    light_emit: [[f32; 4]; 2],
 }
 
 impl Globals {
@@ -138,6 +142,7 @@ impl Globals {
             grade: [frame.grade.brightness, frame.grade.contrast, frame.grade.saturation, frame.grade.warmth],
             grade_more: [frame.grade.tint, frame.grade.vignette, frame.grade.vignette_size, frame.grade.map_amount],
             light: [0.0; 4],
+            light_emit: [[0.0; 4]; 2],
         }
     }
 }
@@ -497,14 +502,17 @@ pub(crate) fn layers_source(effects: Option<&str>) -> String {
             out.push_str(&shape_named("walk_shape", "shape_cov", ""));
         }
         Some(code) => {
-            out.push_str(&named("walk_plain", "cov_plain", "", ""));
+            // The walks shader layers sample see the things' own colours in the emission pass
+            // (mode 3), so a glowing shader layer gives off its effect of them.
+            let plain = |s: String| s.replace("g.light.x", "plain_mode()");
+            out.push_str(&plain(named("walk_plain", "cov_plain", "", "")));
             out.push_str(&named(
                 "walk_layers",
                 "cov",
                 include_str!("shaders/layers_shader_case.wgsl"),
                 include_str!("shaders/layers_group_shaded.wgsl"),
             ));
-            out.push_str(&shape_named("walk_shape_plain", "shape_cov_plain", ""));
+            out.push_str(&plain(shape_named("walk_shape_plain", "shape_cov_plain", "")));
             out.push_str(&shape_named("walk_shape", "shape_cov", include_str!("shaders/shape_shader_case.wgsl")));
             out.push_str(code);
         }
@@ -1198,11 +1206,24 @@ impl Renderer {
                 t.start(&mut encoder);
             }
             let lighting = self.lighting.get_or_insert_with(|| lighting::Lighting::new(device));
-            lighting.ensure(device, self.targets.width, self.targets.height, scene.settings.more[2]);
+            lighting.ensure(device, self.targets.width, self.targets.height, scene);
             let pictures = lighting.pictures().expect("just made");
-            for (mode, (texture, view)) in [1u32, 2].into_iter().zip(pictures) {
-                let (world, screen) =
-                    self.light_globals(device, queue, frame, mode, scene.settings.ambient[3], scene.settings.stage[0]);
+            // With nothing giving off light its picture is left black (the bounce and the
+            // blooms read it), not as the last frame that had some.
+            if !scene.glows {
+                drop(begin_pass(
+                    &mut encoder,
+                    &pictures[2].1,
+                    "no light given off",
+                    wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                ));
+            }
+            // Lit colour, surface, and (when something gives off light) the light things give off.
+            let modes = [1u32, 2, 3].into_iter().zip(pictures).filter(|(mode, _)| *mode < 3 || scene.glows);
+            // A background that gives off light is a lamp: it doesn't take light.
+            let background_lit = if scene.settings.background_glows() { 0.0 } else { scene.settings.ambient[3] };
+            for (mode, (texture, view)) in modes {
+                let (world, screen) = self.light_globals(device, queue, frame, mode, background_lit, scene);
                 let hdr_texture = std::mem::replace(&mut self.targets.hdr_texture, texture);
                 let hdr = std::mem::replace(&mut self.targets.hdr, view);
                 self.light_mode = mode;
@@ -1221,6 +1242,18 @@ impl Renderer {
                 self.targets.hdr_texture = hdr_texture;
                 self.targets.hdr = hdr;
             }
+            // The background's own light, alone.
+            if scene.settings.background_glows() {
+                let (world, _) = self.light_globals(device, queue, frame, 4, background_lit, scene);
+                let lighting = self.lighting.as_ref().expect("made above");
+                let view = lighting.background_glow().expect("made for a glowing background");
+                let mut pass =
+                    begin_pass(&mut encoder, &view, "background glow", wgpu::LoadOp::Clear(wgpu::Color::BLACK));
+                pass.set_bind_group(0, &world, &[]);
+                pass.set_bind_group(1, &self.paint.group, &[]);
+                pass.set_pipeline(&self.background);
+                pass.draw(0..3, 0..1);
+            }
             self.copy_under(&mut encoder);
             let lighting = self.lighting.as_mut().expect("made above");
             lighting.run(
@@ -1232,6 +1265,7 @@ impl Renderer {
                 self.targets.width,
                 &self.targets.behind_view,
                 &self.targets.hdr,
+                scene.settings.background_glows(),
             );
             if let Some(Some(t)) = self.light_timer.as_mut() {
                 timed = t.end(&mut encoder);
@@ -1427,7 +1461,7 @@ impl Renderer {
         }
     }
 
-    /// The world's and the screen's globals for light pass `mode` (1 or 2), made the first time.
+    /// The world's and the screen's globals for light pass `mode` (1 to 4), made the first time.
     fn light_globals(
         &mut self,
         device: &wgpu::Device,
@@ -1435,9 +1469,9 @@ impl Renderer {
         frame: &Frame,
         mode: u32,
         background_lit: f32,
-        stage: f32,
+        scene: &LightScene,
     ) -> (wgpu::BindGroup, wgpu::BindGroup) {
-        while self.light_globals.len() < 4 {
+        while self.light_globals.len() < 8 {
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("light pass globals"),
                 size: std::mem::size_of::<Globals>() as u64,
@@ -1453,9 +1487,11 @@ impl Renderer {
         }
         let at = 2 * (mode as usize - 1);
         let mut world = Globals::new(frame, &frame.camera, self.targets.width);
-        world.light = [mode as f32, background_lit, stage, 0.0];
+        world.light = [mode as f32, background_lit, scene.settings.stage[0], 0.0];
+        world.light_emit = scene.settings.background;
         let mut screen = Globals::new(frame, &CameraView::default(), self.targets.width);
         screen.light = world.light;
+        screen.light_emit = world.light_emit;
         queue.write_buffer(&self.light_globals[at].0, 0, bytemuck::bytes_of(&world));
         queue.write_buffer(&self.light_globals[at + 1].0, 0, bytemuck::bytes_of(&screen));
         (self.light_globals[at].1.clone(), self.light_globals[at + 1].1.clone())
@@ -1766,7 +1802,13 @@ impl Renderer {
             self.chain.run(device, queue, encoder, Stage::Things, frame, on, &texture, &layer, objects);
         }
         // The surface keeps the most any layer blocks and stands (see lighting.wgsl).
-        let blend = if self.light_mode == 2 { bpe_core::Blend::Lighten } else { l.blend };
+        // The emission keeps what is in front hiding what is behind (added light stays added).
+        let blend = match self.light_mode {
+            2 => bpe_core::Blend::Lighten,
+            3 if l.blend == bpe_core::Blend::Add => bpe_core::Blend::Add,
+            3 => bpe_core::Blend::Normal,
+            _ => l.blend,
+        };
         self.blend.composite(
             device,
             queue,

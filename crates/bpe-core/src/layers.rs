@@ -316,8 +316,8 @@ impl Scene {
     fn check_sub(reg: &Registry, card: &Slot, index: usize, sk: &dyn LayerKind) -> Result<(), EditError> {
         let parent = &card.layers[index];
         let pk = reg.layer(&parent.kind).ok_or(EditError::NotAccepted)?;
+        // A base layer (the Body) takes sub-layers only when its kind says so.
         let refused = !matches!(pk.section(), LayerSection::Drawn | LayerSection::Around)
-            || pk.base()
             || !pk.takes_subs()
             || parent.parent.is_some()
             || sk.section() != LayerSection::Sub
@@ -672,6 +672,10 @@ impl Scene {
         let id = match card.layers.iter().find(|l| l.kind == copied.kind).filter(|_| single) {
             Some(existing) => {
                 let id = existing.id;
+                // The copy's sub-layers take the place of its own (a Body's Gives off light).
+                for sub in subs_of(card, id) {
+                    let _ = self.remove_layer(reg, thing, slot, sub);
+                }
                 for a in self.layer_animation(thing, slot, id) {
                     self.tracks.remove(&a);
                     self.pulses.remove(&a);

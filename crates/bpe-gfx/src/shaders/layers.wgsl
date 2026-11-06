@@ -33,7 +33,16 @@ struct LayerGpu {
     // How it takes light (read in the light passes): Lit, blocks light, the body's bulge, the
     // thing's surface index.
     light: vec4<f32>,
+    // The light it gives off (read in the emission pass, mode 3): own colour times strength and
+    // the flare on hits; what its own colours are multiplied by and the flare's length (s).
+    emit: array<vec4<f32>, 2>,
 };
+
+// The light pass the walks shader layers sample work in: the same, but the things' own colours
+// (mode 0) in the emission pass.
+fn plain_mode() -> f32 {
+    return select(g.light.x, 0.0, g.light.x > 2.5);
+}
 
 // In the light passes (see lighting.wgsl): the height of the ball's surface at this pixel, set
 // as the walk starts (0 for shapes).
@@ -44,13 +53,59 @@ var<private> LIGHT_BALL: bool;
 
 // A layer's piece as the light passes see it: its colours (and a glow layer's light) times its
 // Lit, the light its sub-layers add left out (it never takes light: mode 1); or how much it
-// blocks light and the surface's height, adding no light (mode 2).
-fn light_piece(piece: Piece, l: LayerGpu) -> Piece {
+// blocks light and the surface's height, adding no light (mode 2); or the light it gives off
+// where it covers (mode 3), flaring on hits (`hit`: seconds since the last, its strength). A
+// layer that gives off light shows its own colours: it is a lamp, so it counts as unlit.
+fn light_piece(piece: Piece, l: LayerGpu, hit: vec4<f32>) -> Piece {
     var out = piece;
     out.light_in = vec3<f32>(0.0);
     out.light_out = vec3<f32>(0.0);
+    let emits = any(l.emit[0].xyz != vec3<f32>(0.0)) || any(l.emit[1].xyz != vec3<f32>(0.0));
+    if g.light.x > 2.5 {
+        // A Shine, Shading, Shader or group Shader layer that gives off nothing works over what is
+        // under it, so it leaves the light under it as it is; any other layer hides what is under
+        // it.
+        if !emits && (l.head.x == 3u || l.head.x == 5u || l.head.x == 6u || l.head.x == 9u) {
+            out.a_in = 0.0;
+            out.a_out = 0.0;
+            return out;
+        }
+        var f = 1.0;
+        if l.emit[0].w != 0.0 {
+            f += l.emit[0].w * max(hit.y, 0.0) * exp(-3.0 * max(hit.x, 0.0) / max(l.emit[1].w, 1e-3));
+        }
+        let own = l.emit[0].xyz * f;
+        let tint = l.emit[1].xyz * f;
+        out.c_in = own + piece.c_in * tint;
+        out.c_out = own + piece.c_out * tint;
+        if l.head.x == 4u {
+            // A glow layer's light gives off light by how bright it is.
+            let k_in = max(piece.light_in.r, max(piece.light_in.g, piece.light_in.b));
+            let k_out = max(piece.light_out.r, max(piece.light_out.g, piece.light_out.b));
+            out.light_in = piece.light_in * tint + own * k_in;
+            out.light_out = piece.light_out * tint + own * k_out;
+        }
+        return out;
+    }
     if g.light.x < 1.5 {
-        let lit = l.light.x;
+        let lit = select(l.light.x, 0.0, emits);
+        if l.head.x == 3u {
+            // A Shine's lit share is worked out in the walk (case 3).
+            out.c_in = piece.c_in * max(lit, 1.0);
+            out.c_out = piece.c_out * max(lit, 1.0);
+            return out;
+        }
+        if l.head.x == 5u || l.head.x == 6u || l.head.x == 9u {
+            // A Shading, Shader or group Shader layer reworks the layers under it (here, their lit
+            // share): at Lit 0 it leaves that share as it is, so only what it adds keeps its
+            // colour, and the ball under it still takes the light.
+            let keep = clamp(lit, 0.0, 1.0);
+            out.a_in = piece.a_in * keep;
+            out.a_out = piece.a_out * keep;
+            out.c_in = piece.c_in * max(lit, 1.0);
+            out.c_out = piece.c_out * max(lit, 1.0);
+            return out;
+        }
         out.c_in = piece.c_in * lit;
         out.c_out = piece.c_out * lit;
         if l.head.x == 4u {
@@ -612,7 +667,9 @@ fn shade_layers(in: LayeredOut) -> vec4<f32> {
         out = vec4<f32>(out.rgb * -in.body.a, 0.0);
     }
     out *= clamp(in.misc.x, 0.0, 1.0);
-    if out.a < 1e-4 && max(out.r, max(out.g, out.b)) < 1e-4 {
+    // The emission pass may give off darkness (negative light) where it covers nothing.
+    let seen = select(max(out.r, max(out.g, out.b)), max(abs(out.r), max(abs(out.g), abs(out.b))), g.light.x > 2.5);
+    if out.a < 1e-4 && seen < 1e-4 {
         discard;
     }
     return out;

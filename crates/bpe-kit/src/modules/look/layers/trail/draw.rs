@@ -414,6 +414,7 @@ pub fn draw(cx: &DrawCx, layer: &AroundLayer, trail: &TrailLayer, balls: &Balls,
             TrailKind::Ghosts => {}
         }
     }
+    pieces.give_light(layer.emit);
     pieces.into_frame(frame, base_trail.place == AroundPlace::InFront);
 }
 

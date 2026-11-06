@@ -213,3 +213,14 @@ overnight lighting run, 2026-11-06). A short video and stills go to project file
 - Known gaps for 2b: the oblique view shows the wall k × Back wall above a shape's drawn footprint (shape shadows sit
   that much high); a black Lit 0 layer on a shiny ball takes highlights (the light pass can't tell it from black Lit
   1); penumbras wider than two radii are clipped by the grid's margin.
+
+## Merged with parts 1b and 1c
+
+Part 1b split the light pass into `fs_direct` (lamps on the surface and in the air, into a picture) and `fs_mix`
+(colour + (light − 1) × lit colour, then haze and blooms). 2a now plugs in at `fs_mix`: a pixel whose surface shines
+(`shines`) or any pixel on a Stage is shaded by `surfaced` (part 2a's `shade` for the thing and the wall or floor, the
+light field's light added to the diffuse); every other pixel takes 1b's path untouched. The stage's bindings are
+group 2 of the mix and floor passes. `tests/golden-lit-flat*.txt` were blessed again on main after 1b and 1c (whose
+light changed Flat pictures), so they still pin "2a changes no Flat Matte picture". Known gaps: in Stage the light
+field still sees balls as clear (they don't write the blockers' field), and a background that gives off light is not
+added on Stage or shiny pixels.

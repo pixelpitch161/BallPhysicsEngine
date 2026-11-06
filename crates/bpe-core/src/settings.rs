@@ -89,6 +89,7 @@ pub const SECTION_ORDER: &[&str] = &[
     "Room",
     "Stage",
     "Shadows",
+    "Air",
     "Quality",
     "Scenes",
     "Master",
