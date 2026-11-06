@@ -22,6 +22,9 @@ use crate::modules::look::layers::trail::{TrailLayer, TrailSource};
 use crate::paint::{Follow, InsideFrom, InsidePaint, Paint, Pattern, PlaceShape, Repeat};
 use crate::{BallsSettings, BasicBounce, BasicLook, BasicMotion, SceneSettings, ShapeSettings, Style, new_scene};
 
+mod rule_scenes;
+pub use rule_scenes::{breakable_bricks, rule_scenes};
+
 const SHAPE: ThingId = ThingId(1);
 const BALLS: ThingId = ThingId(2);
 

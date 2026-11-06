@@ -13,6 +13,7 @@ pub mod playback;
 pub mod plugins;
 pub mod pose;
 mod rows;
+pub mod rules;
 pub mod sound;
 #[cfg(test)]
 pub mod testing;
@@ -28,6 +29,9 @@ pub use pairs::{Grid, Pairs, Support, pop};
 pub use playback::Playback;
 pub use plugins::{Limits, ModuleSim, ModuleState, PairRule, SimCx, Sims, ThingSim, ThingState, state, state_mut};
 pub use pose::Pose;
+pub use rules::{
+    Action, BlockSim, Change, ChangeKey, Firing, How, MotionChange, PrepareCx, RulesState, StageCx, Values,
+};
 pub use sound::{LevelsAt, SoundAt, SoundMaker};
 pub use walls::{
     Contact, MAX_SIDES, Outline, Touch, Wall, keep_clear, keep_clear_from, nearest_on_ellipse, on_own_side, reflect,

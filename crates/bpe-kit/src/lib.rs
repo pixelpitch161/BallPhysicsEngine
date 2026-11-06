@@ -6,6 +6,7 @@ mod layer_tests;
 pub mod modules;
 pub mod paint;
 pub mod rng;
+pub mod rules;
 #[cfg(any(test, feature = "test-scenes"))]
 pub mod scenes;
 pub mod sensing;
@@ -57,6 +58,7 @@ pub fn sims() -> Sims {
     s.add_thing(CameraSim);
     s.add_module(BasicMotionSim);
     s.add_module(BasicBounceSim);
+    rules::add_sims(&mut s);
     // Light sensing: worlds whose physics follows light get the probe (none do unless asked).
     s.light = Some(std::sync::Arc::new(sensing::KitLight));
     s
@@ -129,6 +131,7 @@ pub fn registry() -> Registry {
     }
     r.add_layer(OwnEffect);
     sound::register(&mut r);
+    rules::register(&mut r);
     // Format 8 masks open as Cut sub-layers.
     r.add_upgrade(9, modules::look::layers::masks_to_cuts);
     // Trail and Particles cards before format 10 open as layers of the Look.

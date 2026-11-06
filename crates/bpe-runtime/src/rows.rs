@@ -45,6 +45,22 @@ impl Rows {
         })
     }
 
+    /// Whether some setting spreads by speed or hits, so every ball's place moves.
+    pub(crate) fn changes(&self) -> bool {
+        self.changes
+    }
+
+    /// `params` varied for a ball at `spread`: what its own state is prepared from.
+    pub(crate) fn params_at(&self, params: &Params, spread: &BallSpread) -> Params {
+        let ts: Vec<f32> = self
+            .varies
+            .iter()
+            .zip(&self.salts)
+            .map(|(v, &salt)| vary::at_level(vary::level(spread.t(v.by, salt))))
+            .collect();
+        vary::with_varies(params, &self.varies, &ts, &|_| None)
+    }
+
     /// Whether some setting spreads by Light or Shadow: each ball's place is then asked of the
     /// world's light probe.
     pub(crate) fn needs_light(&self) -> bool {

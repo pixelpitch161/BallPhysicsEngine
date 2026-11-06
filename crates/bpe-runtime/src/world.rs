@@ -37,6 +37,8 @@ pub(crate) struct Slotted {
     pub(crate) state: Box<dyn ThingState>,
     /// A state per ball, when the card's settings vary across the balls.
     pub(crate) rows: Option<Rows>,
+    /// The states of the balls (by body row) a rule changed this card for alone.
+    pub(crate) own: BTreeMap<u32, std::sync::Arc<dyn ThingState>>,
 }
 
 impl Slotted {
@@ -47,17 +49,27 @@ impl Slotted {
             params: params.clone(),
             state: sim.prepare(params),
             rows: Rows::of(sim, params),
+            own: BTreeMap::new(),
         }
     }
 
     /// The state body row `row` uses: its own when the card varies across the balls, else the card's.
     pub(crate) fn state_for(&self, row: usize) -> &dyn ThingState {
+        if let Some(own) = self.own.get(&(row as u32)) {
+            return own.as_ref();
+        }
         self.rows.as_ref().and_then(|r| r.state(row)).unwrap_or(self.state.as_ref())
     }
 
-    /// Whether the card varies across the balls.
+    /// Whether the card varies across the balls (by its own spreads, or for balls a rule changed
+    /// it for alone).
     pub(crate) fn varies(&self) -> bool {
-        self.rows.is_some()
+        self.rows.is_some() || !self.own.is_empty()
+    }
+
+    /// The card's own values, its spreads and rules aside: what a lone copy of the world uses.
+    fn plain(&self) -> Slotted {
+        Slotted { rows: None, own: BTreeMap::new(), ..self.clone() }
     }
 }
 
@@ -152,6 +164,8 @@ pub struct World {
     /// when some thing's sim asked for it ([`crate::ThingSim::needs_fingerprint`]). Two worlds
     /// with the same one run alike step for step, so work keyed by it can be shared.
     pub fingerprint: Option<u64>,
+    /// The scene's rules as they run (none without an enabled rule).
+    pub(crate) rules: Option<crate::rules::RulesState>,
     /// Which run this is: fresh for every built world and every copy of one (a snapshot, a test
     /// flight), so a cache keyed by a moment of a run (the light probe's) never mixes two runs
     /// that are at the same step.
@@ -171,6 +185,10 @@ pub struct Card<'a> {
 struct Animated {
     animation: Animation,
     resolved: Resolved,
+    /// The settings as built, before keys and rules, when rules can change settings: a setting a
+    /// rule changed is put back from here before the keys and the rule's changes are worked out
+    /// again, so changes never pile up step after step.
+    pristine: Option<std::sync::Arc<Resolved>>,
 }
 
 /// The scene's tracks and pulses that change how it simulates: those on Motion and Bounce
@@ -224,6 +242,7 @@ impl World {
             light: None,
             pulls: BTreeMap::new(),
             fingerprint: None,
+            rules: None,
             run: RunId::fresh(),
         };
         // Worked out first: a thing may cache work by it while it builds.
@@ -300,7 +319,18 @@ impl World {
             world.light = Some(maker.make(scene, resolved));
         }
         world.refresh_rows(sims, &Log::default());
-        world.animated = animation.zip(at_start).map(|(animation, resolved)| Animated { animation, resolved });
+        world.rules = crate::rules::RulesState::build(scene, resolved, sims);
+        let pristine =
+            world.rules.as_ref().filter(|r| r.changes_settings()).map(|_| std::sync::Arc::new(built_from.clone()));
+        world.animated = match (animation.zip(at_start), pristine) {
+            (Some((animation, resolved)), pristine) => Some(Animated { animation, resolved, pristine }),
+            (None, Some(pristine)) => Some(Animated {
+                animation: Animation::default(),
+                resolved: (*pristine).clone(),
+                pristine: Some(pristine),
+            }),
+            (None, None) => None,
+        };
         if let (Some(maker), Some(a)) = (&sims.sound, &world.animated)
             && follows_sound(scene, &a.animation)
         {
@@ -316,6 +346,22 @@ impl World {
     fn animate(&mut self, sims: &Sims, log: &Log) {
         let Some(mut animated) = self.animated.take() else { return };
         let time = self.time();
+        // What the rules changed: the settings worked out again this step, as they were before.
+        let (rule_keys, dirty) = self.rule_keys(sims, time);
+        let before: Vec<Option<Value>> = rule_keys
+            .iter()
+            .map(|k| crate::rules::params_of(&animated.resolved, k.thing, k.slot).and_then(|p| p.get(&k.key)).cloned())
+            .collect();
+        if let Some(pristine) = animated.pristine.clone() {
+            for k in &rule_keys {
+                let was = crate::rules::params_of(&pristine, k.thing, k.slot).and_then(|p| p.get(&k.key)).cloned();
+                if let (Some(was), Some(params)) =
+                    (was, crate::rules::params_mut(&mut animated.resolved, k.thing, k.slot))
+                {
+                    params.set(&k.key, was);
+                }
+            }
+        }
         {
             let levels = self.sound.as_deref().map(|sound| crate::LevelsAt { sound, world: self, log });
             let lit = self.light.as_deref().map(|light| crate::LightLevelsAt { light, world: self, log });
@@ -326,9 +372,26 @@ impl World {
             };
             animated.animation.apply(&mut animated.resolved, time, &inputs);
         }
+        let mut destinations: Vec<(ThingId, Option<SlotId>)> =
+            animated.animation.destinations().into_iter().map(|(thing, slot, _)| (thing, slot)).collect();
+        if let Some(rules) = &self.rules {
+            let keep = |k: &crate::rules::ChangeKey| self.is_physics(sims, k.thing, k.slot, &k.key);
+            rules.apply_whole(&mut animated.resolved, time, keep);
+            for (k, was) in rule_keys.iter().zip(&before) {
+                let now = crate::rules::params_of(&animated.resolved, k.thing, k.slot).and_then(|p| p.get(&k.key));
+                if now != was.as_ref() || dirty.contains(k) {
+                    destinations.push((k.thing, k.slot));
+                }
+            }
+            destinations.sort();
+        }
         let mut done = BTreeSet::new();
-        for (thing, slot, _) in animated.animation.destinations() {
+        let mut prepared_afresh = BTreeSet::new();
+        for (thing, slot) in destinations {
             if !done.insert((thing, slot)) {
+                continue;
+            }
+            if self.broken(thing) {
                 continue;
             }
             let Some(r) = animated.resolved.things.get(&thing) else { continue };
@@ -343,6 +406,7 @@ impl World {
                         let same = prepared.get(&slot).is_some_and(|p| p.kind == s.kind && p.params == s.params);
                         if !same {
                             prepared.insert(slot, Slotted::new(msim, &s.kind, &s.params));
+                            prepared_afresh.insert((thing, Some(slot)));
                         }
                     }
                 }
@@ -353,7 +417,135 @@ impl World {
                 }
             }
         }
+        if self.rules.is_some() {
+            self.refresh_ball_changes(sims, &animated.resolved, &dirty, &prepared_afresh, time);
+        }
         self.animated = Some(animated);
+    }
+
+    /// The whole-thing physics settings the rules change now or changed until now (to be worked
+    /// out again this step), after dropping the changes that are over; and the settings that
+    /// gained or lost a change since the last step.
+    fn rule_keys(
+        &mut self,
+        sims: &Sims,
+        time: f64,
+    ) -> (Vec<crate::rules::ChangeKey>, BTreeSet<crate::rules::ChangeKey>) {
+        let Some(rules) = &mut self.rules else { return (Vec::new(), BTreeSet::new()) };
+        rules.prune(time);
+        let dirty = rules.take_dirty();
+        let rules = self.rules.as_ref().expect("taken above");
+        let mut keys: BTreeSet<crate::rules::ChangeKey> = rules.whole_keys().cloned().collect();
+        keys.extend(dirty.iter().filter(|k| k.row.is_none()).cloned());
+        let keys = keys.into_iter().filter(|k| self.is_physics(sims, k.thing, k.slot, &k.key)).collect();
+        (keys, dirty)
+    }
+
+    /// Whether a thing's setting (its own, or on its card in `slot`) changes how it simulates:
+    /// every Motion and Bounce setting, and a thing's own settings its sim says do.
+    pub fn is_physics(&self, sims: &Sims, thing: ThingId, slot: Option<SlotId>, key: &str) -> bool {
+        match slot {
+            Some(slot) => SIM_SLOTS.contains(&slot),
+            None => self
+                .kinds
+                .get(&thing)
+                .and_then(|k| sims.thing(k))
+                .is_some_and(|s| s.affects_physics(bpe_core::vary::base_key(key))),
+        }
+    }
+
+    /// Works out again what a rule changed for single balls: each such ball's own Motion and Bounce
+    /// state (for cards whose sims take a state per ball), and the things whose own settings a
+    /// rule changed per ball hear `settings_changed`. Only balls whose changes came, went or move
+    /// now, or all of a card's when the card was prepared afresh.
+    fn refresh_ball_changes(
+        &mut self,
+        sims: &Sims,
+        resolved: &Resolved,
+        dirty: &BTreeSet<crate::rules::ChangeKey>,
+        afresh: &BTreeSet<(ThingId, Option<SlotId>)>,
+        time: f64,
+    ) {
+        let Some(rules) = self.rules.as_ref() else { return };
+        // (thing, slot) -> rows to work out again.
+        let mut todo: BTreeMap<(ThingId, Option<SlotId>), BTreeSet<u32>> = BTreeMap::new();
+        for k in dirty.iter().filter(|k| k.row.is_some()) {
+            todo.entry((k.thing, k.slot)).or_default().insert(k.row.expect("filtered"));
+        }
+        let mut moving: Vec<(ThingId, Option<SlotId>, u32)> = Vec::new();
+        for (thing, prepared) in &self.modules {
+            for (slot, s) in prepared {
+                let rows = rules.ball_rows(*thing, Some(*slot));
+                if rows.is_empty() && s.own.is_empty() {
+                    continue;
+                }
+                let all = afresh.contains(&(*thing, Some(*slot))) || s.rows.as_ref().is_some_and(|r| r.changes());
+                for row in rows {
+                    let moves = rules.ball_keys(*thing, Some(*slot), row).iter().any(|k| rules.moving(k, time));
+                    if all || moves {
+                        moving.push((*thing, Some(*slot), row));
+                    }
+                }
+            }
+        }
+        for (thing, slot, row) in moving {
+            todo.entry((thing, slot)).or_default().insert(row);
+        }
+        // Things' own settings changed per ball.
+        let mut things = BTreeSet::new();
+        for ((thing, slot), _) in todo.iter().filter(|((_, s), _)| s.is_none()) {
+            things.insert((*thing, *slot));
+        }
+        for thing in self.kinds.keys() {
+            let rows = rules.ball_rows(*thing, None);
+            if rows.iter().any(|&row| rules.ball_keys(*thing, None, row).iter().any(|k| rules.moving(k, time))) {
+                things.insert((*thing, None));
+            }
+        }
+        for ((thing, slot), rows) in todo {
+            let Some(slot) = slot else { continue };
+            let Some(s) = self.modules.get(&thing).and_then(|m| m.get(&slot)) else { continue };
+            let Some(sim) = sims.module(&s.kind) else { continue };
+            if !sim.per_ball() {
+                continue;
+            }
+            let mut made = Vec::new();
+            for row in rows {
+                if !self.rules.as_ref().is_some_and(|r| !r.ball_keys(thing, Some(slot), row).is_empty()) {
+                    made.push((row, None));
+                    continue;
+                }
+                let mut params = s.params.clone();
+                if let Some(r) = &s.rows {
+                    let spread = self.ball_spread(sims, thing, row as usize);
+                    params = r.params_at(&params, &spread);
+                }
+                if let Some(rules) = &self.rules {
+                    rules.apply_ball(thing, Some(slot), row, &mut params, time);
+                }
+                made.push((row, Some(std::sync::Arc::from(sim.prepare(&params)))));
+            }
+            let s = self.modules.get_mut(&thing).and_then(|m| m.get_mut(&slot)).expect("found above");
+            for (row, state) in made {
+                match state {
+                    Some(state) => {
+                        s.own.insert(row, state);
+                    }
+                    None => {
+                        s.own.remove(&row);
+                    }
+                }
+            }
+        }
+        for (thing, _) in things {
+            if self.broken(thing) {
+                continue;
+            }
+            let Some(r) = resolved.things.get(&thing) else { continue };
+            if let Some(sim) = sims.thing(&r.kind) {
+                sim.settings_changed(thing, r, self);
+            }
+        }
     }
 
     /// Where a thing sits this step: on its parent when it rides one (one ball of it by the ball's
@@ -476,6 +668,12 @@ impl World {
         Some(Card { kind: &s.kind, state: s.state.as_ref(), varies: s.varies() })
     }
 
+    /// The prepared state of `thing`'s card in `slot` that body row `row` uses: its own when the
+    /// card varies across the balls or a rule changed it for that ball alone.
+    pub fn card_for(&self, thing: ThingId, slot: SlotId, row: usize) -> Option<&dyn ThingState> {
+        Some(self.modules.get(&thing)?.get(&slot)?.state_for(row))
+    }
+
     /// A copy of the world for test-firing a ball: only the things `keep` names are stepped (their
     /// states, walls, cards and keys kept; a card varied across the balls with its own values),
     /// with no history. Every other thing is left out: not
@@ -491,7 +689,8 @@ impl World {
                 things: a.resolved.things.iter().filter(|(id, _)| kept(id)).map(|(id, r)| (*id, r.clone())).collect(),
                 problems: Vec::new(),
             };
-            (!animation.is_empty()).then_some(Animated { animation, resolved })
+            // What the rules did so far stays; nothing more is changed, so nothing is put back.
+            (!animation.is_empty()).then_some(Animated { animation, resolved, pristine: None })
         });
         // A thing riding one ball of a thing left out stays where it is now: its parent's balls
         // are gone, so it would fall back to its own place.
@@ -534,7 +733,7 @@ impl World {
                 .modules
                 .iter()
                 .filter(|(id, _)| kept(id))
-                .map(|(id, m)| (*id, m.iter().map(|(slot, s)| (*slot, Slotted { rows: None, ..s.clone() })).collect()))
+                .map(|(id, m)| (*id, m.iter().map(|(slot, s)| (*slot, s.plain())).collect()))
                 .collect(),
             animated,
             substep: (0, 1),
@@ -542,6 +741,8 @@ impl World {
             light: self.light.clone(),
             pulls: BTreeMap::new(),
             fingerprint: self.fingerprint,
+            // A test flight finds its ways as if no rule acted from now on.
+            rules: None,
             run: RunId::fresh(),
         }
     }
@@ -553,7 +754,7 @@ impl World {
         let lent: Prepared = from
             .modules
             .get(&owner)
-            .map(|m| m.iter().map(|(slot, s)| (*slot, Slotted { rows: None, ..s.clone() })).collect())
+            .map(|m| m.iter().map(|(slot, s)| (*slot, s.plain())).collect())
             .unwrap_or_default();
         if let Some(a) = &mut self.animated {
             a.animation.retain(|thing, slot, _| thing != to || slot.is_none());
@@ -563,6 +764,22 @@ impl World {
         } else {
             self.modules.insert(to, lent);
         }
+    }
+
+    /// The scene's rules as they run, when it has an enabled rule.
+    pub fn rules(&self) -> Option<&crate::rules::RulesState> {
+        self.rules.as_ref()
+    }
+
+    /// Whether a rule broke `thing`.
+    pub fn broken(&self, thing: ThingId) -> bool {
+        self.rules.as_ref().is_some_and(|r| r.is_broken(thing))
+    }
+
+    /// The balls' own changes on one of `thing`'s settings now, for its sim to fold over each
+    /// ball's own value (see [`crate::rules::Ruled`]).
+    pub fn ruled(&self, thing: ThingId, slot: Option<SlotId>, key: &str) -> Option<crate::rules::Ruled> {
+        self.rules.as_ref()?.ruled(thing, slot, key, self.time())
     }
 
     /// The world's light probe, when something physical in its scene follows light.
@@ -686,6 +903,9 @@ impl World {
     /// One step: every stage, in order.
     pub fn step(&mut self, sims: &Sims, log: &mut Log) {
         self.step += 1;
+        let first = log.len();
+        // What the rules did in the last step's Rules stage happens now, before anything moves.
+        self.apply_rule_actions(log);
         self.walls_before.clear();
         self.walls_before.extend(self.walls.iter().map(|(id, w)| (*id, w.outline.clone())));
         self.animate(sims, log);
@@ -750,6 +970,12 @@ impl World {
             if let Some(bodies) = self.bodies.get(id) {
                 history.record(self.step, &bodies.position);
             }
+        }
+        // Rules: what happened this step, and what to do about it at the next one's start.
+        if let Some(mut rules) = self.rules.take() {
+            let events = log.events()[first..].to_vec();
+            rules.run(self, sims, &events, log);
+            self.rules = Some(rules);
         }
     }
 
@@ -1219,6 +1445,25 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
             h.bytes(&maker.fingerprint(scene).to_le_bytes());
         }
     }
+    // Rules change the run: every enabled rule's blocks and links (not names or switched-off ones).
+    if scene.rules.any_enabled() {
+        h.bytes(b"rules");
+        for rule in scene.rules.list.iter().filter(|r| r.enabled) {
+            h.bytes(&rule.id.0.to_le_bytes());
+            for b in &rule.blocks {
+                h.bytes(&b.id.0.to_le_bytes());
+                h.bytes(b.kind.as_bytes());
+                for i in &b.inputs {
+                    h.bytes(&i.0.to_le_bytes());
+                }
+                for (key, value) in b.params.iter() {
+                    h.bytes(key.as_bytes());
+                    h.value(value);
+                }
+                h.bytes(&[0xff]);
+            }
+        }
+    }
     // Physics that follows light moves with what the light probe reads.
     if let Some(maker) = &sims.light
         && needs_light(scene, resolved, sims, physics_animation(scene, resolved, sims).as_ref())
@@ -1309,6 +1554,10 @@ impl Hasher {
                     self.f32(*x);
                     self.f32(*y);
                 }
+            }
+            Value::Who(w) => {
+                self.bytes(&[15]);
+                self.bytes(format!("{w:?}").as_bytes());
             }
             Value::Path(p) => {
                 self.bytes(&[10]);
