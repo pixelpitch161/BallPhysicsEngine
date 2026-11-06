@@ -134,3 +134,57 @@ fn hue_spin_turns_a_single_colour() {
     assert!(r[0] > 200 && r[1] < 40, "{r:?}");
     assert!(t[0] < 120 && t[1] > 120 && t[2] > 120, "half way round from red is cyan-ish: {t:?}");
 }
+
+/// A ball dropped inside a shape, its Body (painted across the ball) a red-to-blue gradient with
+/// a white Hit wave of `strength`.
+fn dropped_ball(kit: &Kit, strength: f64) -> (Scene, ThingId) {
+    let mut scene = new_scene(&kit.registry);
+    set(&mut scene, "bloom", Value::Number(0.0));
+    bpe_kit::add_thing(&mut scene, &kit.registry, "shape", ThingId::ROOT).unwrap();
+    let ball = bpe_kit::add_thing(&mut scene, &kit.registry, "balls", ThingId::ROOT).unwrap();
+    let look = scene.things.get_mut(&ball).unwrap().slots.get_mut(&bpe_core::SlotId::Look).unwrap();
+    let body = look.layers[0].id;
+    let colours = bpe_core::layered_key(body, "colours");
+    look.params.set(&colours, Value::Gradient(Gradient::spread(&[RED, BLUE], Mix::Even, false)));
+    look.params.set(&format!("{colours}~wave"), Value::Number(strength));
+    look.params.set(&format!("{colours}~wave_width"), Value::Number(0.4));
+    look.params.set(&format!("{colours}~wave_speed"), Value::Number(2.0));
+    (scene, ball)
+}
+
+#[test]
+fn a_ball_s_hit_sends_a_wave_along_its_colours() {
+    let Ok((device, queue)) = headless_device() else {
+        eprintln!("no GPU adapter available, skipping");
+        return;
+    };
+    let kit = kit();
+    let (waved, ball) = dropped_ball(&kit, 1.0);
+    let (plain, _) = dropped_ball(&kit, 0.0);
+    // When the ball first hits something.
+    let resolved = bpe_kit::resolve_scene(&waved, &kit.registry);
+    let mut playback = Playback::new(&waved, &resolved, kit.sims.clone());
+    playback.seek(8.0);
+    let rate = playback.world().steps_per_second;
+    let hit = playback
+        .log()
+        .events()
+        .iter()
+        .find(|e| e.kind == bpe_runtime::EventKind::Hit && (e.a.thing == ball || e.b.is_some_and(|b| b.thing == ball)))
+        .map(|e| e.time(rate))
+        .expect("the ball hits the shape");
+    let before = hit - 0.1;
+    assert_eq!(
+        draw(&device, &queue, &kit, &waved, before, "wave-before"),
+        draw(&device, &queue, &kit, &plain, before, "plain-before"),
+        "no wave before the first hit"
+    );
+    // A quarter of a second on, the front is half way across the ball.
+    let after = hit + 0.25;
+    let (w, p) = (
+        draw(&device, &queue, &kit, &waved, after, "wave-after"),
+        draw(&device, &queue, &kit, &plain, after, "plain-after"),
+    );
+    let brighter = w.chunks(4).zip(p.chunks(4)).filter(|(a, b)| a[1] as i32 > b[1] as i32 + 40).count();
+    assert!(brighter > 20, "the white band shows on the ball: {brighter} pixels");
+}

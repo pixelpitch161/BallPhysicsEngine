@@ -569,7 +569,8 @@ impl MovesAt {
             if k < 1.0 {
                 return 0.0;
             }
-            let glide = f.number("step_glide");
+            // A glide longer than a step would start the next step before this one lands.
+            let glide = f.number("step_glide").min(period);
             let g = if glide > 0.0 { ((time - k * period) / glide).clamp(0.0, 1.0) } else { 1.0 };
             k - 1.0 + g * g * (3.0 - 2.0 * g)
         });
@@ -592,7 +593,8 @@ impl MovesAt {
             (to, amount)
         });
         let strength = f.number("wave") as f32;
-        let wave = (strength != 0.0).then(|| HitWave {
+        // Below 0 shows nothing (as 0), on the CPU and the GPU alike.
+        let wave = (strength > 0.0).then(|| HitWave {
             strength,
             width: f.number("wave_width") as f32,
             speed: f.number("wave_speed") as f32,
@@ -796,6 +798,9 @@ mod tests {
         assert!((at(0.55) - 0.5 / 3.0).abs() < 1e-5, "half way through the first glide: {}", at(0.55));
         assert!((at(0.7) - 1.0 / 3.0).abs() < 1e-5);
         assert!((at(1.2) - 2.0 / 3.0).abs() < 1e-5);
+        // A glide longer than a step lands as the next step starts: no jump at the beat.
+        let long = |time| moved_at(&[("step_every", n(1.0)), ("step_glide", n(3.0))], three(), time).moves.shift;
+        assert!((long(0.999) - long(1.0)).abs() < 1e-3, "{} {}", long(0.999), long(1.0));
         let jump = moved_at(&[("step_every", n(2.0)), ("step_glide", n(0.0))], three(), 1.0);
         assert!((jump.moves.shift - 1.0 / 3.0).abs() < 1e-5, "every two beats, no glide");
     }
@@ -831,6 +836,8 @@ mod tests {
         p.set("colours", Value::Gradient(g));
         assert!((wave_memory(&p) - 1.15 / 2.0).abs() < 1e-6);
         assert_eq!(wave_memory(&Params::default()), 0.0);
+        let below = moved_at(&[("wave", n(-1.0))], three(), 0.0);
+        assert!(below.moves.wave.is_none(), "a strength below 0 shows nothing");
     }
 
     #[test]

@@ -81,7 +81,7 @@ pub const NO_WAVE: [[f32; 4]; 2] = [[0.0; 4]; 2];
 pub fn wave_texels(wave: Option<&bpe_core::HitWave>) -> [[f32; 4]; 2] {
     let finite = |x: f32| if x.is_finite() { x } else { 0.0 };
     match wave {
-        Some(w) if w.strength != 0.0 && w.strength.is_finite() => {
+        Some(w) if w.strength > 0.0 && w.strength.is_finite() => {
             [[w.strength, finite(w.width).max(1e-4), finite(w.speed), 1.0], w.colour.to_linear()]
         }
         _ => NO_WAVE,

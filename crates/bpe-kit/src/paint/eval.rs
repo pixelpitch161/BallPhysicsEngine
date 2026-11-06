@@ -118,9 +118,9 @@ pub fn there_and_back(index: usize, count: usize) -> f32 {
     1.0 - (2.0 * index as f32 / count as f32 - 1.0).abs()
 }
 
-/// The colour of stop `k`, white when the gradient has none.
+/// The colour of stop `k` (as the gradient moves), white when the gradient has none.
 fn stop_from(p: &Paint, k: usize) -> Color {
-    p.colours.stops.get(k).map_or(Color::WHITE, |s| s.color)
+    p.colours.step_stops().get(k).map_or(Color::WHITE, |s| s.color)
 }
 
 /// The same in linear light.

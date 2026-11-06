@@ -294,7 +294,7 @@ impl HitWave {
     /// How strongly the wave shows at place `t` `age` seconds after a hit: its strength times a
     /// smooth bump round the front, 0 past `width` from it.
     pub fn at(&self, t: f32, age: f32) -> f32 {
-        if !(age >= 0.0 && age.is_finite() && t.is_finite()) || self.strength == 0.0 || !self.strength.is_finite() {
+        if !(age >= 0.0 && age.is_finite() && t.is_finite()) || !(self.strength > 0.0 && self.strength.is_finite()) {
             return 0.0;
         }
         let width = if self.width.is_finite() { self.width.max(1e-4) } else { 1e-4 };
@@ -681,7 +681,8 @@ impl Gradient {
     /// The gradient with its stops wandering (Stops wander) at `time` seconds: each drifts on
     /// its own, smooth seeded noise at `speed` changes a second, by up to `amount` (1 at most)
     /// of half the gap to its neighbour on the side it drifts to, so no stop ever passes another.
-    /// An end stop of an unlooped gradient drifts only inward. The same at the same time.
+    /// An end stop of an unlooped gradient drifts only inward, and stops sharing a place (a hard
+    /// edge) drift together. The same at the same time.
     pub fn wandered(&self, amount: f32, speed: f32, seed: u32, time: f64) -> Gradient {
         let n = self.stops.len();
         let amount = if amount.is_finite() { amount.clamp(-1.0, 1.0) } else { 0.0 };
@@ -690,25 +691,44 @@ impl Gradient {
         }
         let speed = if speed.is_finite() { speed as f64 } else { 0.0 };
         let x = if time.is_finite() { time * speed } else { 0.0 };
-        let mut out = self.clone();
-        for (i, stop) in out.stops.iter_mut().enumerate() {
-            let at = self.stops[i].at;
-            let drift = amount * wander_noise(seed, i, x);
-            // The gap to the neighbour on the side it drifts to (round through 1 = 0 when looped).
-            let room = if drift > 0.0 {
-                match self.stops.get(i + 1) {
-                    Some(next) => next.at - at,
-                    None if self.looped => self.stops[0].at + 1.0 - at,
-                    None => 0.0,
+        // Stops sharing a place (a hard edge) drift together as one.
+        let mut places: Vec<f32> = Vec::new();
+        let group: Vec<usize> = self
+            .stops
+            .iter()
+            .map(|s| {
+                if places.last() != Some(&s.at) {
+                    places.push(s.at);
                 }
-            } else if i > 0 {
-                at - self.stops[i - 1].at
-            } else if self.looped {
-                at + 1.0 - self.stops[n - 1].at
-            } else {
-                0.0
-            };
-            stop.at = at + drift * 0.5 * room.max(0.0);
+                places.len() - 1
+            })
+            .collect();
+        let m = places.len();
+        let moved: Vec<f32> = (0..m)
+            .map(|j| {
+                let at = places[j];
+                let drift = amount * wander_noise(seed, j, x);
+                // The gap to the neighbour on the side it drifts to (round through 1 = 0 when
+                // looped).
+                let room = if drift > 0.0 {
+                    match places.get(j + 1) {
+                        Some(next) => next - at,
+                        None if self.looped => places[0] + 1.0 - at,
+                        None => 0.0,
+                    }
+                } else if j > 0 {
+                    at - places[j - 1]
+                } else if self.looped {
+                    at + 1.0 - places[m - 1]
+                } else {
+                    0.0
+                };
+                at + drift * 0.5 * room.max(0.0)
+            })
+            .collect();
+        let mut out = self.clone();
+        for (stop, &j) in out.stops.iter_mut().zip(&group) {
+            stop.at = moved[j];
         }
         // A looped gradient's stops may drift through 1 = 0: brought back into 0 to 1 and kept
         // in order round the circle.
@@ -1220,6 +1240,14 @@ mod tests {
                 }
                 assert_eq!(w, g.wandered(1.0, 1.3, k, time), "the same at the same time");
             }
+        }
+        let edge = Gradient {
+            stops: vec![Stop::new(0.0, RED), Stop::new(0.5, RED), Stop::new(0.5, BLUE), Stop::new(1.0, BLUE)],
+            ..Gradient::default()
+        };
+        for step in 0..50 {
+            let w = edge.wandered(1.0, 1.0, 5, step as f64 * 0.3);
+            assert_eq!(w.stops[1].at, w.stops[2].at, "a hard edge stays hard");
         }
         let g = rgb3();
         assert_ne!(g.wandered(0.5, 1.0, 1, 3.3), g.wandered(0.5, 1.0, 1, 4.1), "it moves");

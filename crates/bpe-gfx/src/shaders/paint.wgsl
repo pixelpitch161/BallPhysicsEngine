@@ -226,7 +226,7 @@ fn paint_wave(p: PaintGpu, t: f32, c: vec4<f32>) -> vec4<f32> {
     let height = textureDimensions(paint_waves).y;
     let row = i32(min(u32(p.row), height - 1u));
     let w = textureLoad(paint_waves, vec2<i32>(0, row), 0);
-    if w.w < 0.5 || w.x == 0.0 {
+    if w.w < 0.5 || w.x <= 0.0 {
         return c;
     }
     let age = max(paint_hit.x, 0.0);
