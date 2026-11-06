@@ -76,7 +76,7 @@ fn def(key: &'static str, label: &'static str, ty: ValueType, default: Value) ->
 pub fn defs() -> &'static [SettingDef] {
     static DEFS: OnceLock<Vec<SettingDef>> = OnceLock::new();
     DEFS.get_or_init(|| {
-        let keyed = Flags { keyframe: true, pulse: true, hold: false };
+        let keyed = Flags { keyframe: true, pulse: true, hold: false, area: bpe_core::Area::No };
         let mut defs = vec![
             SettingDef {
                 help: "Which effect paints the layer: one that comes with Ball Studio, or your own code.",
@@ -96,7 +96,7 @@ pub fn defs() -> &'static [SettingDef] {
             SettingDef {
                 help: "How big the effect is drawn: bigger spreads it wider over the ball.",
                 range: Some((0.1, 8.0)),
-                flags: Flags { keyframe: true, pulse: false, hold: false },
+                flags: Flags { keyframe: true, pulse: false, hold: false, area: bpe_core::Area::No },
                 ..def("scale", "Scale", ValueType::Number, Value::Number(1.0))
             },
             SettingDef {

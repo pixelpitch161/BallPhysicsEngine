@@ -331,7 +331,7 @@ mod tests {
                 unit: "",
                 group: "",
                 depth: bpe_core::Depth::Simple,
-                flags: bpe_core::Flags { keyframe: true, pulse: false, hold: false },
+                flags: bpe_core::Flags { keyframe: true, pulse: false, hold: false, area: bpe_core::Area::No },
                 when: "",
             }]
         });

@@ -216,6 +216,10 @@ pub struct Gradient {
     /// [`crate::gradient_extras::apply_moves`] just before drawing; never saved, never edited, and
     /// ignored by [`Gradient::sample`].
     pub grain: f32,
+    /// Draw-time only, like `grain`: the gradient's shape companions (its form and their
+    /// numbers) as they stand this frame, set by [`crate::gradient_extras::apply_moves`]. Never
+    /// saved and ignored by [`Gradient::sample`].
+    pub layout: crate::gradient_form::Layout,
 }
 
 impl Default for Gradient {
@@ -278,7 +282,7 @@ impl<'de> Deserialize<'de> for Gradient {
                 }
                 let hue = matches!(transition, Some(SavedTransition::Hue));
                 let mix = mix.unwrap_or(if hue { Mix::RoundTheWheel } else { Mix::Light });
-                Gradient { stops, mix, looped, grain: 0.0 }.sorted()
+                Gradient { stops, mix, looped, grain: 0.0, layout: Default::default() }.sorted()
             }
         })
     }
@@ -352,7 +356,7 @@ pub fn mix_colours(a: Color, b: Color, u: f32, mix: Mix) -> [f32; 4] {
 impl Gradient {
     /// One colour everywhere.
     pub fn solid(c: Color) -> Self {
-        Self { stops: vec![Stop::new(0.0, c)], mix: Mix::Light, looped: false, grain: 0.0 }
+        Self { stops: vec![Stop::new(0.0, c)], mix: Mix::Light, looped: false, grain: 0.0, layout: Default::default() }
     }
 
     /// The colours spread evenly from 0 to 1, blending smoothly in linear light. No colours is
@@ -366,7 +370,13 @@ impl Gradient {
     pub fn spread(colors: &[Color], mix: Mix, looped: bool) -> Self {
         let mut g = match colors {
             [] => Self::solid(Color::WHITE),
-            _ => Self { stops: colors.iter().map(|&c| Stop::new(0.0, c)).collect(), mix, looped, grain: 0.0 },
+            _ => Self {
+                stops: colors.iter().map(|&c| Stop::new(0.0, c)).collect(),
+                mix,
+                looped,
+                grain: 0.0,
+                layout: Default::default(),
+            },
         };
         if colors.len() > 1 {
             g.mix = mix;
@@ -492,7 +502,7 @@ impl Gradient {
             stops.push(Stop::new(k as f32 * size, color));
             stops.push(Stop::new(if k + 1 == n { 1.0 } else { (k + 1) as f32 * size }, color));
         }
-        Gradient { stops, mix: Mix::Light, looped: self.looped, grain: self.grain }
+        Gradient { stops, mix: Mix::Light, looped: self.looped, grain: self.grain, layout: self.layout.clone() }
     }
 
     /// The stops for reading one colour at a time (stepping a colour on each hit, a light show's
@@ -837,7 +847,7 @@ mod tests {
         g.grain = 3.0;
         let text = ron::to_string(&g).unwrap();
         assert!(!text.contains("grain") && text.contains("mix:Even") && text.contains("looped:true"), "{text}");
-        assert_eq!(ron::from_str::<Gradient>(&text).unwrap(), Gradient { grain: 0.0, ..g });
+        assert_eq!(ron::from_str::<Gradient>(&text).unwrap(), Gradient { grain: 0.0, layout: Default::default(), ..g });
         let plain = ron::to_string(&Gradient::even(&[RED, BLUE])).unwrap();
         assert!(!plain.contains("mix") && !plain.contains("looped") && !plain.contains("blend"), "{plain}");
         let old = |t: &str| {
