@@ -241,3 +241,5 @@ Records, outline points and programs are shared by every piece (written once).
 - Known: pieces that bounce are flown afresh each frame against the walls as they stand then (like particles), so
   with moving walls a bounce can shift between frames; every scene now reads `path_points` in the vertex stage
   (fine on DX12, Vulkan and Metal).
+- Rebased onto the rules editor (part 2) and gradients part 2: the shape's Ripples outline is left out while it is
+  shattered (its outline is in pieces), and `LayeredOut.clip` moved to location 13 beside Ripples' `world`/`centre`.

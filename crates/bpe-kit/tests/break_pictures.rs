@@ -161,25 +161,30 @@ fn a_shattered_square_breaks_into_pieces_that_keep_its_colours_and_fall() {
         "just broken, the pieces are nearly where it was: {c_soon}/{c_whole}"
     );
     assert!((c_later as f32) < 0.6 * c_whole as f32, "later they have flown apart: {c_later}/{c_whole}");
-    // Each piece wears its part of the picture: the left stays red, the right blue.
-    let (mut red_left, mut blue_left, mut blue_right, mut red_right) = (0, 0, 0, 0);
-    for (x, y, p) in pixels_of(&soon) {
-        if y.abs() > 150.0 || x.abs() < 40.0 || x.abs() > 150.0 {
+    // Each piece wears its part of the picture: just broken, where the square was red (or blue)
+    // its pieces still are.
+    let tint = |p: [u8; 4]| {
+        let (r, b) = (p[0] as i32, p[2] as i32);
+        if r > b + 60 {
+            1
+        } else if b > r + 60 {
+            2
+        } else {
+            0
+        }
+    };
+    let (mut same, mut swapped) = (0, 0);
+    for ((x, y, before), (_, _, after)) in pixels_of(&whole).zip(pixels_of(&soon)) {
+        if x.abs() > 150.0 || y.abs() > 150.0 || (x.abs() < 40.0 && y.abs() < 40.0) {
             continue;
         }
-        let (r, b) = (p[0] as i32, p[2] as i32);
-        match (x < 0.0, r > b + 60, b > r + 60) {
-            (true, true, _) => red_left += 1,
-            (true, _, true) => blue_left += 1,
-            (false, _, true) => blue_right += 1,
-            (false, true, _) => red_right += 1,
-            _ => {}
+        match (tint(before), tint(after)) {
+            (0, _) | (_, 0) => {}
+            (a, b) if a == b => same += 1,
+            _ => swapped += 1,
         }
     }
-    assert!(
-        red_left > 10 * blue_left.max(1) && blue_right > 10 * red_right.max(1),
-        "{red_left} {blue_left} {blue_right} {red_right}"
-    );
+    assert!(same > 500 && same > 10 * swapped.max(1), "{same} the same colour, {swapped} not");
     // They fall: the lit pixels' middle is lower later.
     let middle = |pixels: &[u8]| {
         let lit: Vec<f32> = pixels_of(pixels).filter(|(_, _, p)| off(*p, background) > 60).map(|(_, y, _)| y).collect();
