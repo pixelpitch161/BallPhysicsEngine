@@ -92,6 +92,9 @@ pub enum LayerSection {
     Chain,
     Modulator,
     Effect,
+    /// A Particles thing's forces (its Motion card), applied in list order; they move among
+    /// themselves, in no lane.
+    Force,
 }
 
 /// A kind of layer in a card that holds a stack of them (the balls' Look), such as an outline

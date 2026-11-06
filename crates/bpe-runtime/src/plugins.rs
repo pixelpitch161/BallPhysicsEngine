@@ -116,9 +116,17 @@ pub trait ThingSim: Send + Sync + 'static {
     fn settle(&self, _thing: ThingId, _world: &mut World, _dt: f32) {}
     /// The Events stage, last in every step, with the log.
     fn after_step(&self, _thing: ThingId, _world: &mut World, _log: &mut Log) {}
-    /// A keyframe or pulse moved one of the thing's settings while the world runs: re-read
-    /// whatever can change without rebuilding. `resolved` holds the settings as they are now.
+    /// A keyframe or pulse moved one of the thing's settings while the world runs, or a setting of
+    /// one of its Motion or Bounce cards that no module sim steps: re-read whatever can change
+    /// without rebuilding. `resolved` holds the settings (and cards) as they are now.
     fn settings_changed(&self, _thing: ThingId, _resolved: &ResolvedThing, _world: &mut World) {}
+    /// Whether the thing steps with the physics. A thing that says no is decoration stepped beside
+    /// it (a Particles thing that never pushes back): it reads the balls and walls but changes
+    /// nothing any other thing reads, so a world built without it ([`crate::main_part`]) steps every
+    /// ball the same. The fingerprints leave it out, and the editor steps it on a playback of its own.
+    fn in_main(&self, _resolved: &ResolvedThing) -> bool {
+        true
+    }
     /// Whether changing this setting changes the simulation. Visual settings say no, so the
     /// editor keeps playing through them.
     fn affects_physics(&self, _key: &str) -> bool {

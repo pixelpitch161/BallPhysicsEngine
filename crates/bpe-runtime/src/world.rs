@@ -156,6 +156,15 @@ pub struct World {
     /// flight), so a cache keyed by a moment of a run (the light probe's) never mixes two runs
     /// that are at the same step.
     pub run: RunId,
+    /// The built things whose sim steps them beside the physics ([`crate::ThingSim::in_main`] false):
+    /// left out of copies made for test flights ([`World::lone`]).
+    pub beside: BTreeSet<ThingId>,
+}
+
+/// States lent to a world for drawing ([`World::lend_states`]), with what they replaced.
+#[must_use = "give the states back with World::take_back"]
+pub struct Lent {
+    replaced: Vec<(ThingId, Option<Box<dyn ThingState>>)>,
 }
 
 /// A thing's Motion or Bounce card as the world has it: see [`World::card`].
@@ -225,6 +234,7 @@ impl World {
             pulls: BTreeMap::new(),
             fingerprint: None,
             run: RunId::fresh(),
+            beside: BTreeSet::new(),
         };
         // Worked out first: a thing may cache work by it while it builds.
         let wants_fingerprint =
@@ -259,6 +269,9 @@ impl World {
                 if let Some(sim) = sim {
                     sim.build(thing, r, &mut world);
                     world.order.push(*id);
+                    if !sim.in_main(r) {
+                        world.beside.insert(*id);
+                    }
                     if let Some(want) = sim.history(r) {
                         world.keep_history(*id, want);
                     }
@@ -344,6 +357,10 @@ impl World {
                         if !same {
                             prepared.insert(slot, Slotted::new(msim, &s.kind, &s.params));
                         }
+                    } else if let Some(sim) = sims.thing(&r.kind) {
+                        // A card no module sim steps is the thing's own to read (a Particles
+                        // thing's Motion and Meets things cards, with their layers).
+                        sim.settings_changed(thing, r, self);
                     }
                 }
                 None => {
@@ -481,7 +498,10 @@ impl World {
     /// with no history. Every other thing is left out: not
     /// stepped, its balls gone, its keys dropped, its pose left where it is now (a thing riding it
     /// stays put). Kinds, names and tags stay whole, so targets still name what they named.
+    /// Things stepped beside the physics ([`World::beside`]) are always left out.
     pub fn lone(&self, keep: &dyn Fn(ThingId) -> bool) -> World {
+        let keep = |id: ThingId| keep(id) && !self.beside.contains(&id);
+        let keep = &keep;
         let kept = |id: &ThingId| keep(*id);
         let animated = self.animated.as_ref().and_then(|a| {
             let mut animation = a.animation.clone();
@@ -543,6 +563,26 @@ impl World {
             pulls: BTreeMap::new(),
             fingerprint: self.fingerprint,
             run: RunId::fresh(),
+            beside: BTreeSet::new(),
+        }
+    }
+
+    /// Puts `states` in for drawing, by thing (the editor's particle playback lends its Particles
+    /// things' states to the main world, which never built them). Draw-only: [`World::take_back`]
+    /// must put back what they replaced before the world steps again. A state of a thing the world
+    /// didn't build is never stepped.
+    pub fn lend_states(&mut self, states: Vec<(ThingId, Box<dyn ThingState>)>) -> Lent {
+        let replaced = states.into_iter().map(|(id, s)| (id, self.states.insert(id, s))).collect();
+        Lent { replaced }
+    }
+
+    /// Puts back what [`World::lend_states`] replaced.
+    pub fn take_back(&mut self, lent: Lent) {
+        for (id, old) in lent.replaced {
+            match old {
+                Some(s) => self.states.insert(id, s),
+                None => self.states.remove(&id),
+            };
         }
     }
 
@@ -1143,7 +1183,26 @@ pub fn sound_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64
     fingerprint_of(scene, resolved, sims, false)
 }
 
+/// `resolved` without the things stepped beside the physics ([`crate::ThingSim::in_main`] false):
+/// what the editor's main playback, the sound and the aiming build from. A world built from it
+/// steps every ball exactly as one built from the whole scene.
+pub fn main_part<'a>(resolved: &'a Resolved, sims: &Sims) -> std::borrow::Cow<'a, Resolved> {
+    let beside = |r: &bpe_core::ResolvedThing| sims.thing(&r.kind).is_some_and(|s| !s.in_main(r));
+    if !resolved.things.values().any(beside) {
+        return std::borrow::Cow::Borrowed(resolved);
+    }
+    let things = resolved.things.iter().filter(|(_, r)| !beside(r)).map(|(id, r)| (*id, r.clone())).collect();
+    std::borrow::Cow::Owned(Resolved { things, problems: resolved.problems.clone() })
+}
+
+/// Whether some thing of `resolved` is stepped beside the physics.
+pub fn has_beside(resolved: &Resolved, sims: &Sims) -> bool {
+    resolved.things.values().any(|r| sims.thing(&r.kind).is_some_and(|s| !s.in_main(r)))
+}
+
 fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool) -> u64 {
+    // Things stepped beside the physics never change it.
+    let resolved = &*main_part(resolved, sims);
     let mut h = Hasher(HASH_OFFSET);
     for (id, r) in &resolved.things {
         let Some(thing) = scene.things.get(id) else { continue };
@@ -1974,5 +2033,18 @@ mod tests {
         assert_eq!(w.kind(ThingId(99)), None);
         assert!(w.tags(DOTS).contains("red"));
         assert!(w.tags(WALL).is_empty());
+    }
+
+    #[test]
+    fn lent_states_are_there_for_drawing_and_gone_after() {
+        let (scene, resolved, sims) = dots_in_ring(3);
+        let mut w = World::build(&scene, &resolved, &sims);
+        let before: Vec<ThingId> = w.states.keys().copied().collect();
+        let lent = w.lend_states(vec![(ThingId(77), Box::new(5u32) as Box<dyn ThingState>)]);
+        assert_eq!(*crate::state::<u32>(w.states[&ThingId(77)].as_ref()), 5);
+        w.take_back(lent);
+        assert_eq!(w.states.keys().copied().collect::<Vec<_>>(), before);
+        assert!(w.beside.is_empty(), "every test kind steps with the physics");
+        assert!(matches!(main_part(&resolved, &sims), std::borrow::Cow::Borrowed(_)));
     }
 }

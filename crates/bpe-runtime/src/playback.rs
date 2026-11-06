@@ -27,10 +27,18 @@ pub struct Playback {
     /// Snapshots in step order, each with how long the log was at the time.
     checkpoints: Vec<(World, usize)>,
     checkpoint_every: u64,
+    /// Most memory its checkpoints may use.
+    budget: usize,
 }
 
 impl Playback {
     pub fn new(scene: &Scene, resolved: &Resolved, sims: Arc<Sims>) -> Self {
+        Self::with_budget(scene, resolved, sims, CHECKPOINT_BYTES)
+    }
+
+    /// [`Playback::new`] whose checkpoints may use up to `budget` bytes (the editor's particle
+    /// playback keeps more than the main one).
+    pub fn with_budget(scene: &Scene, resolved: &Resolved, sims: Arc<Sims>, budget: usize) -> Self {
         let world = World::build(scene, resolved, &sims);
         let checkpoint_every = (CHECKPOINT_SECONDS * world.steps_per_second.max(1) as f64).ceil() as u64;
         Self {
@@ -39,7 +47,18 @@ impl Playback {
             log: Log::default(),
             sims,
             checkpoint_every: checkpoint_every.max(1),
+            budget,
         }
+    }
+
+    /// Lends `states` to the world for drawing: see [`World::lend_states`].
+    pub fn lend_states(&mut self, states: Vec<(bpe_core::ThingId, Box<dyn crate::ThingState>)>) -> crate::Lent {
+        self.world.lend_states(states)
+    }
+
+    /// Puts back what [`Playback::lend_states`] replaced.
+    pub fn take_back(&mut self, lent: crate::Lent) {
+        self.world.take_back(lent);
     }
 
     pub fn world(&self) -> &World {
@@ -117,6 +136,7 @@ impl Playback {
             sims: self.sims.clone(),
             checkpoints: vec![(world.clone(), *len)],
             checkpoint_every: self.checkpoint_every,
+            budget: self.budget,
         };
         copy.seek(time);
         copy
@@ -130,7 +150,7 @@ impl Playback {
     fn save_checkpoint(&mut self) {
         self.checkpoints.push((self.world.clone(), self.log.len()));
         let bytes: usize = self.checkpoints.iter().map(|(w, _)| w.memory()).sum();
-        if bytes > CHECKPOINT_BYTES && self.checkpoints.len() > 2 {
+        if bytes > self.budget && self.checkpoints.len() > 2 {
             // Keep the first one and every other one after it, and take them half as often.
             self.checkpoint_every *= 2;
             let every = self.checkpoint_every;
