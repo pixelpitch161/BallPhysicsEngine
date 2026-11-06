@@ -304,6 +304,18 @@ Dependencies go bottom to top:
   `scenes.rs` holds the test scenes, compiled only for tests (the `test-scenes` feature, a dev-dependency). They pin
   the old look/motion values with `classic_*` helpers so goldens don't move. Never add built-in or example scenes
   to the program unless the owner asks.
+- **Light shows** (lighting part 6, plan `docs/superpowers/plans/lighting/part6.md`, draw-only): the **Rig** thing
+  (`bpe-kit/src/things/rig/`, kind `rig`, family Lights, no Placement card, no sim; `add_rig` adds four spots) drives
+  every enabled Light under it (`fixtures.rs`: tree order, nested rigs stack, `ridden` skips rigs so a rig inside a
+  Balls group makes its lights ride the balls; `Across::EveryLamp` counts each ball's lamp). `pattern.rs` is pure in
+  time: `Clock` from beats/bars/seconds (`beat_seconds`, the same as `TempoMap`) or heard hits (`hits_heard`, Least
+  gap), `drive` gives a `Drive { strength, colour, turn, sway }` for Still, Chase, Strobe, Sweep, Alternate colours,
+  Random. **Lighting scenes** (`bpe-kit/src/modules/light_scenes.rs`, core `Value::LightScenes`/`LightingScene` in
+  `bpe-core/src/light_scenes.rs`, the Lighting card's `scenes`): snapshots of every Light's and Rig's settings
+  (`capture`, minus `STRUCTURE`), shown Off / On the timeline (`show_scene`, a hold key) / In turn / On hits with a
+  Crossfade (`now(cx)` → `ScenesNow::params`); edits renumber Show scene's keys. `LightDraw::light` applies the scene,
+  then the rigs. `DrawCx.tree` is the saved `Scene` (tree and tracks). Editor: `light_scenes_panel.rs` under the
+  Lighting card's grid (`Edit::LightScene`).
 - `bpe-dsp`: sound building blocks at 48 kHz in 64-frame blocks (`SAMPLE_RATE`, `BLOCK`): dB helpers, a
   `Smoother`, `FlushGuard` (denormals off), polyphase IIR halfband oversamplers (2/4/8×), a 4× true-peak detector,
   the two-stage lookahead `TruePeakLimiter` (3.4 ms) and an EBU R128 `LoudnessMeter`. For the synth: `warp.rs` (the

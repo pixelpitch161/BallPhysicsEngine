@@ -368,8 +368,9 @@ pub fn add_light(
     kind: LightType,
     parent: bpe_core::ThingId,
 ) -> Result<bpe_core::ThingId, bpe_core::EditError> {
-    let rides = scene.things.get(&parent).is_some_and(|p| RIDES.contains(&p.kind.as_str()));
     let id = crate::add_thing(scene, reg, LIGHT, parent)?;
+    // Inside a rig, it rides what the rig sits in.
+    let rides = crate::things::rig::fixtures::rides_anything(scene, id);
     let name = scene.free_name(kind.menu_name());
     let mut settings = LightSettings::of_kind(kind);
     if rides {

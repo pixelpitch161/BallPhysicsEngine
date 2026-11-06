@@ -49,6 +49,8 @@ pub struct Inspector {
     pub renaming_layer: Option<(ThingId, LayerId, String)>,
     /// The rename field takes the keyboard on its next frame.
     pub focus_layer_rename: bool,
+    /// The lighting scene being renamed in place (its place in the list) and the name typed so far.
+    pub renaming_scene: Option<(usize, String)>,
     /// The Look editor's view of the ball.
     pub ball_view: crate::look_editor::BallView,
     /// Whether each Balls thing's look shows on one ball or across its group.
@@ -179,6 +181,8 @@ pub(crate) enum Edit {
     AddSlot(SlotId),
     /// Takes the card off every selected thing whose card in the slot is of the same kind.
     RemoveSlot(SlotId),
+    /// A change to the scene's lighting scenes (the root's Lighting card).
+    LightScene(crate::light_scenes_panel::SceneEdit),
     // The layers of a layered card. These change the primary thing's card only, and select the
     // layer they add.
     AddLayer(SlotId, &'static str),
@@ -438,8 +442,13 @@ pub fn show(
         }
 
         // ---------- placement ----------
-        // The camera's and a light's place is its own Position setting, which can be keyframed.
-        if id != ThingId::ROOT && kind.id() != "camera" && kind.id() != bpe_kit::things::light::LIGHT {
+        // The camera's and a light's place is its own Position setting, which can be keyframed; a
+        // rig only groups lights.
+        if id != ThingId::ROOT
+            && kind.id() != "camera"
+            && kind.id() != bpe_kit::things::light::LIGHT
+            && kind.id() != bpe_kit::things::rig::RIG
+        {
             ui.add_space(6.0);
             card(ui, |ui| {
                 let header = ui.horizontal(|ui| {
@@ -559,6 +568,11 @@ pub fn show(
                     return;
                 }
                 slot_grid(ui, inspector, &cx, slot, &card_now.kind, &mut edits);
+                if card_now.kind == bpe_kit::modules::lighting::LIGHTING
+                    && !is_folded(inspector, (id, Some(slot)), "Scenes")
+                {
+                    crate::light_scenes_panel::show(ui, inspector, scene, reg, time, &mut edits);
+                }
             });
         }
 
@@ -708,6 +722,11 @@ pub fn show(
                     any |= scene.remove_slot(t, slot);
                 }
                 any
+            }
+            Edit::LightScene(e) => {
+                // A rename names its row by its place, which another edit could move.
+                inspector.renaming_scene = None;
+                crate::light_scenes_panel::apply(scene, reg, e, time)
             }
             edit => apply_layer_edit(scene, reg, inspector, id, edit),
         };
@@ -2508,6 +2527,34 @@ mod tests {
     }
 
     /// Scene settings with every slot it can have, so its cards run well past one screen.
+    #[test]
+    fn the_lighting_card_saves_and_deletes_lighting_scenes() {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        bpe_kit::things::rig::add_rig(&mut scene, &reg, ThingId::ROOT).unwrap();
+        let mut h = harness_of(scene, Some(ThingId::ROOT));
+        let names = |s: &State| {
+            bpe_kit::modules::light_scenes::scenes_of(&s.scene).into_iter().map(|s| s.name).collect::<Vec<_>>()
+        };
+        let save = |h: &mut Harness<'_, State>| {
+            let add = h.get_by_label("+ Save the lights as a scene");
+            add.scroll_to_me();
+            add.click();
+            h.run();
+        };
+        save(&mut h);
+        save(&mut h);
+        assert_eq!(names(h.state()), ["Scene 1", "Scene 2"]);
+        assert!(h.query_by_label("2 scenes").is_some(), "the grid row counts them");
+        let menu = h.get_by_label("Scene 1 menu");
+        menu.scroll_to_me();
+        menu.click();
+        h.run();
+        h.get_by_label("Delete").click();
+        h.run();
+        assert_eq!(names(h.state()), ["Scene 2"]);
+    }
+
     fn a_root_with_every_slot() -> Scene {
         let reg = bpe_kit::registry();
         let mut scene = bpe_kit::new_scene(&reg);

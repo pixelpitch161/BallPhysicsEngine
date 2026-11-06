@@ -2,7 +2,9 @@
 //! is lit by its Light things, with soft shadows, flat or on a 3D stage; without it the picture is
 //! exactly as it always was.
 
-use bpe_core::{Choice, Color, ModuleKind, SettingDef, Settings, SlotId};
+use bpe_core::{Choice, Color, KindId, LightingScene, ModuleKind, SettingDef, Settings, SlotId, Target};
+
+use super::light_scenes::{SceneOrder, ScenesPlay};
 use bpe_gfx::LightingGpu;
 
 /// The card kind's id.
@@ -216,6 +218,65 @@ pub struct LightingSettings {
     /// How hard the lighting works, while editing and in the video alike.
     #[setting(label = "Quality", group = "Quality")]
     pub quality: Quality,
+    /// What shows the lighting scenes: Off leaves every light as it is.
+    #[setting(label = "Scenes play", group = "Scenes")]
+    pub scenes_play: ScenesPlay,
+    /// The scene showing: 0 is the lights' own settings. Its keys on the timeline switch scenes.
+    #[setting(
+        label = "Show scene",
+        when = "scenes_play=on_the_timeline",
+        range(0, 1e9),
+        span(0, 8),
+        keyframe,
+        hold,
+        group = "Scenes"
+    )]
+    pub show_scene: i32,
+    /// How many bars each scene shows for.
+    #[setting(
+        label = "Every",
+        when = "scenes_play=in_turn",
+        range(0.001, 1e9),
+        span(0.25, 16),
+        unit = "bars",
+        keyframe,
+        group = "Scenes"
+    )]
+    pub scene_every: f32,
+    /// Whose hits move to the next scene.
+    #[setting(label = "Heard from", when = "scenes_play=on_hits", group = "Scenes")]
+    pub scene_heard: Target,
+    /// Hits closer together than this count once.
+    #[setting(
+        label = "Least gap",
+        when = "scenes_play=on_hits",
+        range(0, 1e9),
+        span(0, 2),
+        unit = "s",
+        keyframe,
+        group = "Scenes"
+    )]
+    pub scene_gap: f32,
+    /// The order scenes come in.
+    #[setting(label = "Order", when = "scenes_play=in_turn or scenes_play=on_hits", group = "Scenes")]
+    pub scene_order: SceneOrder,
+    /// Picks another random run of scenes.
+    #[setting(label = "Seed", when = "scene_order=random", span(0, 100), group = "Scenes")]
+    pub scene_seed: u32,
+    /// How long one scene takes to fade into the next: 0 switches at once.
+    #[setting(
+        label = "Crossfade",
+        when = "scenes_play!=off",
+        range(0, 1e9),
+        span(0, 4),
+        unit = "s",
+        keyframe,
+        group = "Scenes"
+    )]
+    pub scene_fade: f32,
+    /// The lighting scenes: each the settings every light had when it was saved.
+    #[setting(label = "Scenes", group = "Scenes")]
+    pub scenes: Vec<LightingScene>,
 }
 
 impl Default for LightingSettings {
@@ -244,6 +305,15 @@ impl Default for LightingSettings {
             contact_reach: 40.0,
             toon_steps: 3,
             quality: Quality::Good,
+            scenes_play: ScenesPlay::Off,
+            show_scene: 1,
+            scene_every: 4.0,
+            scene_heard: Target::Kind(KindId::from("balls")),
+            scene_gap: 0.25,
+            scene_order: SceneOrder::InOrder,
+            scene_seed: 1,
+            scene_fade: 0.5,
+            scenes: Vec::new(),
         }
     }
 }

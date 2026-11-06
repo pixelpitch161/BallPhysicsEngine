@@ -1038,6 +1038,105 @@ pub fn stage_demo(reg: &Registry) -> Scene {
     scene
 }
 
+/// The light show (lighting part 6's tests and video): a dark room in a white ring, twelve balls
+/// flung out from the middle, a rig of four spots across the top playing a chase from its colour
+/// list, a second rig inside the balls whose lamps (one on each ball) chase ball to ball, and
+/// three lighting scenes shown in turn every bar: the chase, a sweep, then alternating colours on
+/// a strobe. Not in [`all`].
+pub fn light_show(reg: &Registry) -> Scene {
+    use crate::modules::light_scenes::{ScenesPlay, add_scene, put_on_lights};
+    use crate::things::light::{LightSettings, LightType, add_light};
+    use crate::things::rig::{Across, Pattern as Show, RigColours, RigSettings, add_rig};
+    use bpe_core::Choice as _;
+    let mut scene = lit_room(reg);
+    scene.name = "Light show".into();
+    let root = scene.things.get_mut(&ThingId::ROOT).expect("root");
+    let mut s = SceneSettings::from_params(&root.params);
+    s.background = Paint::solid(Color::rgb(0x1c, 0x1e, 0x28));
+    s.bloom = 0.25;
+    root.params = s.to_params();
+    let lighting = root.slots.get_mut(&SlotId::Lighting).expect("lit");
+    lighting.params.set("ambient", Value::Number(0.08));
+    // The room's lamp stays as a faint fill outside the rigs.
+    let fill = scene.things.values().find(|t| t.kind == "light").map(|t| t.id).expect("a light");
+    scene.things.get_mut(&fill).expect("light").params.set("strength", Value::Number(0.4));
+    let shape = scene.things.values().find(|t| t.kind == "shape").map(|t| t.id).expect("a shape");
+    scene.things.get_mut(&shape).expect("shape").params.set("thickness", Value::Number(10.0));
+    let ball = scene.things.values().find(|t| t.kind == "balls").map(|t| t.id).expect("a ball");
+    let mut balls = BallsSettings::from_params(&scene.things[&ball].params);
+    balls.ring(12, 140.0);
+    balls.launch = crate::things::balls::Launch::Outward;
+    balls.velocity = Vec2::new(0.0, -700.0);
+    scene.things.get_mut(&ball).expect("ball").params = balls.to_params();
+
+    // The top rig: four spots chasing in its colours.
+    let top = add_rig(&mut scene, reg, ThingId::ROOT).expect("a rig");
+    for &id in &scene.children(top) {
+        let mut spot = LightSettings::from_params(&scene.things[&id].params);
+        spot.strength = 3.0;
+        spot.cone = 34.0;
+        spot.height = 260.0;
+        spot.size = 30.0;
+        spot.reach = 2600.0;
+        scene.things.get_mut(&id).expect("spot").params = spot.to_params();
+    }
+    let set_rig = |scene: &mut Scene, rig: ThingId, f: &dyn Fn(&mut RigSettings)| {
+        let mut r = RigSettings::from_params(&scene.things[&rig].params);
+        f(&mut r);
+        scene.things.get_mut(&rig).expect("rig").params = r.to_params();
+    };
+    set_rig(&mut scene, top, &|r| {
+        r.colours_from = RigColours::TheList;
+        r.tail = 1.5;
+        r.off_level = 0.05;
+    });
+
+    // The ball rig: a lamp on every ball, chasing ball to ball on half beats.
+    let ball_rig = crate::add_thing(&mut scene, reg, crate::things::rig::RIG, ball).expect("a rig");
+    scene.rename_thing(ball_rig, "Ball rig");
+    let lamp = add_light(&mut scene, reg, LightType::Point, ball_rig).expect("a light");
+    let mut each = LightSettings::from_params(&scene.things[&lamp].params);
+    each.colour = Color::rgb(0xff, 0x5c, 0xa8);
+    each.strength = 1.6;
+    each.reach = 300.0;
+    each.height = 40.0;
+    each.size = 10.0;
+    scene.things.get_mut(&lamp).expect("light").params = each.to_params();
+    set_rig(&mut scene, ball_rig, &|r| {
+        r.across = Across::EveryLamp;
+        r.every_beats = 0.5;
+        r.lit_at_once = 3.0;
+        r.tail = 2.0;
+        r.off_level = 0.15;
+    });
+
+    // Three scenes: the chase, a sweep, then alternating colours with the ball rig strobing.
+    add_scene(&mut scene, reg, 0.0).expect("scene 1");
+    set_rig(&mut scene, top, &|r| {
+        r.pattern = Show::Sweep;
+        r.sweep_angle = 70.0;
+        r.offset = 0.5;
+        r.off_level = 1.0;
+    });
+    add_scene(&mut scene, reg, 0.0).expect("scene 2");
+    set_rig(&mut scene, top, &|r| {
+        r.pattern = Show::AlternateColours;
+        r.every_beats = 0.5;
+    });
+    set_rig(&mut scene, ball_rig, &|r| {
+        r.pattern = Show::Strobe;
+        r.flash_length = 0.3;
+        r.colours_from = RigColours::TheList;
+    });
+    add_scene(&mut scene, reg, 0.0).expect("scene 3");
+    put_on_lights(&mut scene, reg, 0, 0.0).expect("back to scene 1");
+    let card = scene.things.get_mut(&ThingId::ROOT).expect("root").slots.get_mut(&SlotId::Lighting).expect("lit");
+    card.params.set("scenes_play", Value::Choice(ScenesPlay::InTurn.name().into()));
+    card.params.set("scene_every", Value::Number(1.0));
+    card.params.set("scene_fade", Value::Number(0.3));
+    scene
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{registry, scenes};

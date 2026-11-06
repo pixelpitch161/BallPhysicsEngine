@@ -13,6 +13,7 @@ mod gradient_bar;
 mod grid;
 mod history;
 mod inspector;
+mod light_scenes_panel;
 mod look_editor;
 mod mixer;
 mod palettes;
