@@ -102,7 +102,7 @@ Dependencies go bottom to top:
   past starts at the step it was `born` (no padding before its spawn). Between samples it keeps each ball's
   bounce **corners** (`History::corner`: where its centre touched on the way in, noted in the wall pass, and where
   the substep left it, noted after each substep from the log's hits, `World::note_corners`); `trace` merges them
-  with the samples and `place` reads through them, so trails (`Path.corner`) and particles turn where the ball
+  with the samples (`trace_after` oldest first from a moment, `item_at`, `first`) and `place` reads through them, so trails (`Path.corner`) and particles turn where the ball
   really bounced instead of cutting across between two samples. `World::build` starts from the settings as
   keyed at 0 s. A touch is resting, not a hit, below `Limits::resting_along(normal)` (the scene's gravity, or more
   along a ball's own pull, `Limits.press`). `step_at` turns a frame time into its step (editor and export agree).
@@ -172,11 +172,19 @@ Dependencies go bottom to top:
   layer by the shader's group record, code 8) and Shader (`layers/group_shader.rs`: an effect spread across the
   group, record code 9, over the whole ball and optionally a ring around it, or into the Body/chosen layers);
   `layers/trail/` (settings, `kinds.rs` the path maths, `draw.rs` the six kinds: Streak, Ribbon, Ghosts (drawn
-  with the balls, in their own program), Dots, Line, Smoke) and `layers/particles/` (`emit.rs`: emissions found
+  with the balls, in their own program), Dots, Line, Smoke; Lines are simplified within `LINE_TOLERANCE` 0.15 px
+  by a sleeve fit (`kinds::simplify`, `Sleeve`, always keeping a power-of-two grid of samples, `grid_for`), a
+  layer's Lines drawn at the finest **level** (2^l times coarser, `pick_level`, `MOST_LEVEL` 8) whose points fit
+  `strip_budget` (`MOST_STRIP_POINTS` shared with Shadow/Glow/Outline strips); a staying Line is worked out from
+  the history oldest first and **remembered between frames** (`line.rs`: a `Memo` per thing, layer, ball and level,
+  checked against the history, rewound to a grid sample after scrubbing back, the same as worked out afresh), so
+  a crowd's forever Lines all reach their start (plan `docs/superpowers/plans/trails/staying-lines.md`)) and
+  `layers/particles/` (`emit.rs`: emissions found
   again each frame from the log and the balls' history, at most `MAX_PARTICLES` 4000 a layer; `sim.rs`: each
   particle worked out at the moment drawn, closed form or 1/120 s steps for swirl, pull and bounces; `draw.rs`:
   sprites or Mini balls), with `around.rs`/`around_subs.rs` for their sub-layers and `paint/recolour.rs` for
-  the CPU colour subs. Nothing is kept between frames, so scrubbing and export draw the same.
+  the CPU colour subs. Nothing is kept between frames (but the self-checking staying-Line memos, which change
+  nothing drawn), so scrubbing and export draw the same.
   `gpu.rs` turns a stack into records (a ball wearing only some layers gets them at opacity 0, `records_for`) and has `topmost_at` for clicks on the ball; `paint/brush.rs`
   rasterises strokes to tiles). The **Shape** (`things/shape/`, replacing the old Arena) is an outline balls bounce
   off from both sides: `ShapeSettings` (the `BODY_HEADINGS` settings Start from (Polygon, Circle, Ellipse), Sides,
