@@ -1125,7 +1125,8 @@ fn slot_grid(ui: &mut Ui, inspector: &mut Inspector, cx: &OwnCx, slot: SlotId, c
     let folded = |group: &str| shut.contains(group);
     let follow_menu = crate::follow::menu(scene);
     let follow_now = |key: &str| crate::follow::now(scene, &at(key));
-    let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now };
+    let follow_light = |key: &str| crate::follow::can_light(scene, reg, &at(key));
+    let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now, light: &follow_light };
     let vary = crate::vary::VaryCx::of(scene, reg, time, id, &at);
     let grid = GridCx {
         choices: cx.choices,
@@ -1203,7 +1204,8 @@ fn surface_section(
     let applies = |d: &SettingDef| d.applies(Some(&cx.thing.kind), &|k| scene.value_at_time(reg, &at(k), time));
     let follow_menu = crate::follow::menu(scene);
     let follow_now = |key: &str| crate::follow::now(scene, &at(key));
-    let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now };
+    let follow_light = |key: &str| crate::follow::can_light(scene, reg, &at(key));
+    let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now, light: &follow_light };
     let grid = GridCx {
         choices: cx.choices,
         marks: &marks,
@@ -1261,7 +1263,8 @@ fn own_grid(
     let folded = |group: &str| is_folded(inspector, (id, None), group);
     let follow_menu = crate::follow::menu(scene);
     let follow_now = |key: &str| crate::follow::now(scene, &own(key));
-    let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now };
+    let follow_light = |key: &str| crate::follow::can_light(scene, reg, &own(key));
+    let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now, light: &follow_light };
     let vary = crate::vary::VaryCx::of(scene, reg, time, id, &own);
     let grid_cx = GridCx {
         choices: cx.choices,

@@ -39,6 +39,10 @@ impl ModuleSim for BasicMotionSim {
         }
     }
 
+    fn light_pull(&self, st: &dyn ThingState) -> Option<bpe_runtime::LightPull> {
+        state::<MotionState>(st).settings.light_pull()
+    }
+
     fn per_ball(&self) -> bool {
         true
     }

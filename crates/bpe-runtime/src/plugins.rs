@@ -169,6 +169,11 @@ pub trait ModuleSim: Send + Sync + 'static {
         _cx: &SimCx,
     ) {
     }
+    /// How this Motion card's balls are drawn to the lights or pushed from them (Moths and light
+    /// pressure); `None` when they aren't. Read from each ball's own state when it varies.
+    fn light_pull(&self, _state: &dyn ThingState) -> Option<crate::LightPull> {
+        None
+    }
     /// The steady pull, in pixels per second squared, this Motion module puts on its balls
     /// under the scene's `gravity`: what a ball lying on something presses into it with, so a
     /// resting touch is told from a hit. `None` for a module that doesn't pull steadily.
@@ -257,6 +262,8 @@ pub struct Sims {
     modules: BTreeMap<&'static str, Box<dyn ModuleSim>>,
     /// Works out a scene's sound for physics settings that follow it (none: they stay put).
     pub sound: Option<std::sync::Arc<dyn crate::SoundMaker>>,
+    /// Works out a scene's light for physics that follows it (none: it stays put).
+    pub light: Option<std::sync::Arc<dyn crate::LightMaker>>,
 }
 
 impl Sims {

@@ -319,7 +319,8 @@ fn shape_body(ui: &mut Ui, cx: &LookCx, edits: &mut Vec<Edit>) {
     let applies = |d: &SettingDef| d.applies(Some(&thing.kind), &|k| scene.value_at_time(reg, &own(k), time));
     let follow_menu = crate::follow::menu(scene);
     let follow_now = |key: &str| crate::follow::now(scene, &own(key));
-    let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now };
+    let follow_light = |key: &str| crate::follow::can_light(scene, reg, &own(key));
+    let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now, light: &follow_light };
     let grid = GridCx {
         choices: cx.choices,
         marks: &marks,
@@ -350,7 +351,8 @@ fn size_row(ui: &mut Ui, cx: &LookCx, edits: &mut Vec<Edit>) {
     let applies = |_: &SettingDef| true;
     let follow_menu = crate::follow::menu(cx.scene);
     let follow_now = |key: &str| crate::follow::now(cx.scene, &own(key));
-    let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now };
+    let follow_light = |key: &str| crate::follow::can_light(cx.scene, cx.reg(), &own(key));
+    let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now, light: &follow_light };
     let vary = crate::vary::VaryCx::of(cx.scene, cx.reg(), cx.time, cx.id, &own);
     let grid = GridCx {
         choices: cx.choices,
@@ -390,7 +392,8 @@ pub(crate) fn layer_settings(
     let folded = |group: &str| shut.contains(group);
     let follow_menu = crate::follow::menu(scene);
     let follow_now = |key: &str| crate::follow::now(scene, &cx.at(layer, key));
-    let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now };
+    let follow_light = |key: &str| crate::follow::can_light(scene, reg, &cx.at(layer, key));
+    let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now, light: &follow_light };
     let at = |key: &str| cx.at(layer, key);
     let vary = crate::vary::VaryCx::of(scene, reg, time, cx.id, &at);
     let grid = GridCx {

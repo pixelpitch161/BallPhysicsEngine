@@ -1,4 +1,4 @@
-//! The modulators: the row of tiles (ADSR, Distance, LFO and Hit, up to eight of each), the
+//! The modulators: the row of tiles (ADSR, Distance, LFO, Hit and Light, up to eight of each), the
 //! picked one's editor with the knobs it moves, and dragging a tile's handle onto any knob to
 //! modulate it. Knobs show each route reaching them as a ring in the shape's colour.
 
@@ -7,13 +7,14 @@ pub mod drag;
 pub mod hit;
 pub mod lfo;
 pub mod lfo_view;
+pub mod light;
 pub mod routes;
 pub mod row;
 
 use super::{SoundTab, TabCx, TabEdit, adsr_view};
 use crate::style::{self, ModRing};
 use bpe_core::{LayerId, ModRoute, SlotId};
-use bpe_kit::sound::{ADSR, DISTANCE, HIT, LFO, MOD_KINDS};
+use bpe_kit::sound::{ADSR, DISTANCE, HIT, LFO, LIGHT_MOD, MOD_KINDS};
 use bpe_sound::Meters;
 use bpe_sound::modmatrix::{Combine, is_level_key, route_ends};
 use eframe::egui::{RichText, Ui};
@@ -29,7 +30,7 @@ pub struct ModInfo {
     pub on: bool,
 }
 
-/// The card's modulators in row order: the ADSRs, then the Distances, LFOs and Hits, each in
+/// The card's modulators in row order: the ADSRs, then the Distances, LFOs, Hits and Lights, each in
 /// card order.
 pub fn list(cx: &TabCx) -> Vec<ModInfo> {
     let Some(card) = cx.scene.card(cx.id, SlotId::Sound) else { return Vec::new() };
@@ -144,6 +145,7 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx, tab: &mut SoundTab, meters: Option<&Met
         DISTANCE => distance::show(ui, cx, m.id, meters),
         LFO => lfo::show(ui, cx, tab, m.id, meters),
         HIT => hit::show(ui, cx, m.id, meters),
+        LIGHT_MOD => light::show(ui, cx, m.id, meters),
         _ => {}
     }
     routes::show(ui, cx, m.id, &m.name);

@@ -6,7 +6,7 @@
 
 use anyhow::{Context, bail};
 use bpe_core::{Scene, Settings};
-use bpe_gfx::{Frame, Readback, Renderer, build_frame_with, wgpu};
+use bpe_gfx::{Frame, Readback, Renderer, build_frame_sensing, wgpu};
 use bpe_kit::{Kit, SceneSettings};
 use bpe_runtime::{Log, World};
 use std::collections::BTreeMap;
@@ -361,14 +361,28 @@ fn export_with(
     let mut world = World::build(scene, &resolved, &kit.sims);
     let mut log = Log::default();
     // Settings that follow sound read it from the physics, as the preview does.
-    let follow: Option<Box<dyn bpe_runtime::SoundAt>> = bpe_sound::follows_sound(scene)
-        .then(|| Box::new(bpe_sound::ControlSampler::new(scene, &resolved)) as Box<dyn bpe_runtime::SoundAt>);
+    let follow: Option<std::sync::Arc<dyn bpe_runtime::SoundAt>> = bpe_sound::follows_sound(scene).then(|| {
+        std::sync::Arc::new(bpe_sound::ControlSampler::new(scene, &resolved))
+            as std::sync::Arc<dyn bpe_runtime::SoundAt>
+    });
+    // And settings that sense light read the light probe, as the preview does.
+    let light = bpe_kit::sensing::uses_light(scene).then(|| bpe_kit::sensing::probe(scene, &resolved, follow.clone()));
     let mut frame = Frame::default();
     let mut failed = None;
     for index in 0..total {
         let time = index as f64 / fps as f64;
         world.advance_to(time, &kit.sims, &mut log);
-        build_frame_with(scene, &resolved, &world, &log, time, &kit.draws, follow.as_deref(), &mut frame);
+        build_frame_sensing(
+            scene,
+            &resolved,
+            &world,
+            &log,
+            time,
+            &kit.draws,
+            follow.as_deref(),
+            light.as_deref(),
+            &mut frame,
+        );
         frame.cull();
         renderer.render(device, queue, &frame);
         let ready = match readback.push(device, queue, &renderer) {

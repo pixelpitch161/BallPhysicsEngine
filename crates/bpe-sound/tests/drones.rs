@@ -95,6 +95,7 @@ fn run_as(v: &mut ShapeVoice, w: &World, from: u64, n: u64, hits: &[(u64, BlockH
             time: (b * BLOCK as u64) as f64 / 48_000.0,
             tempo: &tempo,
             world: w,
+            log: &bpe_runtime::Log::default(),
             playing,
         };
         let (mut l, mut r) = ([0.0; BLOCK], [0.0; BLOCK]);

@@ -120,6 +120,11 @@ pub struct World {
     substep: (u32, u32),
     /// The scene's sound, when a physics setting follows it.
     sound: Option<std::sync::Arc<dyn crate::SoundAt>>,
+    /// The scene's light probe, when something physical follows light (lighting part 7).
+    light: Option<std::sync::Arc<dyn crate::LightAt>>,
+    /// Each ball's pull from the lights this step (Moths), by thing and body row, in pixels per
+    /// second squared: worked out once a step after Spawn, added in every substep.
+    pulls: BTreeMap<ThingId, Vec<Vec2>>,
     /// The scene's physics fingerprint (the one without the history, [`sound_fingerprint`]'s),
     /// when some thing's sim asked for it ([`crate::ThingSim::needs_fingerprint`]). Two worlds
     /// with the same one run alike step for step, so work keyed by it can be shared.
@@ -189,6 +194,8 @@ impl World {
             modules: BTreeMap::new(),
             animated: None,
             sound: None,
+            light: None,
+            pulls: BTreeMap::new(),
             fingerprint: None,
         };
         // Worked out first: a thing may cache work by it while it builds.
@@ -257,7 +264,14 @@ impl World {
                 sim.after_build(id, &mut world);
             }
         }
-        world.refresh_rows(sims);
+        // Light sensing, only when something physical follows light: the probe is there before
+        // the balls' places in light spreads are first worked out.
+        if let Some(maker) = &sims.light
+            && needs_light(scene, built_from, sims, animation.as_ref())
+        {
+            world.light = Some(maker.make(scene, resolved));
+        }
+        world.refresh_rows(sims, &Log::default());
         world.animated = animation.zip(at_start).map(|(animation, resolved)| Animated { animation, resolved });
         if let (Some(maker), Some(a)) = (&sims.sound, &world.animated)
             && follows_sound(scene, &a.animation)
@@ -276,7 +290,12 @@ impl World {
         let time = self.time();
         {
             let levels = self.sound.as_deref().map(|sound| crate::LevelsAt { sound, world: self, log });
-            let inputs = Inputs { sound: levels.as_ref().map(|l| l as &dyn bpe_core::SoundLevels), ..Inputs::NONE };
+            let lit = self.light.as_deref().map(|light| crate::LightLevelsAt { light, world: self, log });
+            let inputs = Inputs {
+                sound: levels.as_ref().map(|l| l as &dyn bpe_core::SoundLevels),
+                light: lit.as_ref().map(|l| l as &dyn bpe_core::LightLevels),
+                ..Inputs::NONE
+            };
             animated.animation.apply(&mut animated.resolved, time, &inputs);
         }
         let mut done = BTreeSet::new();
@@ -492,6 +511,8 @@ impl World {
             animated,
             substep: (0, 1),
             sound: self.sound.clone(),
+            light: self.light.clone(),
+            pulls: BTreeMap::new(),
             fingerprint: self.fingerprint,
         }
     }
@@ -515,6 +536,11 @@ impl World {
         }
     }
 
+    /// The world's light probe, when something physical in its scene follows light.
+    pub fn light(&self) -> Option<&dyn crate::LightAt> {
+        self.light.as_deref()
+    }
+
     /// Where body row `row` of `thing` sits in the spreads of its varied settings: as its sim
     /// says, else its number of all the rows; with its speed and hits as they are now.
     pub fn ball_spread(&self, sims: &Sims, thing: ThingId, row: usize) -> bpe_core::BallSpread {
@@ -533,18 +559,31 @@ impl World {
 
     /// Gives the balls of every card that varies across them the states for where they sit in its
     /// spreads: balls new since the last time, and every ball when a spread follows speed or hits.
-    fn refresh_rows(&mut self, sims: &Sims) {
+    fn refresh_rows(&mut self, sims: &Sims, log: &Log) {
         let mut todo = Vec::new();
         for (id, prepared) in &self.modules {
             let count = self.bodies.get(id).map_or(0, Bodies::len);
             for (slot, s) in prepared {
-                if let Some(from) = s.rows.as_ref().and_then(|r| r.stale_from(count)) {
-                    todo.push((*id, *slot, from, count));
+                if let Some(rows) = &s.rows
+                    && let Some(from) = rows.stale_from(count)
+                {
+                    todo.push((*id, *slot, from, count, rows.needs_light()));
                 }
             }
         }
-        for (id, slot, from, count) in todo {
-            let spreads: Vec<bpe_core::BallSpread> = (from..count).map(|row| self.ball_spread(sims, id, row)).collect();
+        let time = self.time();
+        for (id, slot, from, count, lit) in todo {
+            let spreads: Vec<bpe_core::BallSpread> = (from..count)
+                .map(|row| {
+                    let mut spread = self.ball_spread(sims, id, row);
+                    // A spread by Light or Shadow asks the probe, as the world is now.
+                    if let (true, Some(light)) = (lit, &self.light) {
+                        let b = light.ball(self, log, id, row, time);
+                        (spread.light, spread.shadow) = (b.light, b.shadow);
+                    }
+                    spread
+                })
+                .collect();
             let Some(s) = self.modules.get_mut(&id).and_then(|m| m.get_mut(&slot)) else { continue };
             let Some(sim) = sims.module(&s.kind) else { continue };
             let Slotted { params, rows, .. } = s;
@@ -552,6 +591,31 @@ impl World {
                 rows.fill(sim, params, from, &spreads);
             }
         }
+    }
+
+    /// Works out every ball's pull from the lights for this step (Moths), from the world as it is
+    /// now: once a step, so a crowd of moths costs one probe reading a ball a step.
+    fn work_out_pulls(&mut self, sims: &Sims, log: &Log) {
+        self.pulls.clear();
+        let Some(light) = self.light.clone() else { return };
+        let time = self.time();
+        let mut pulls = BTreeMap::new();
+        for (id, prepared) in &self.modules {
+            let Some(s) = prepared.get(&SlotId::Motion) else { continue };
+            let Some(sim) = sims.module(&s.kind) else { continue };
+            if sim.light_pull(s.state.as_ref()).is_none() {
+                continue;
+            }
+            let Some(bodies) = self.bodies.get(id) else { continue };
+            let each = (0..bodies.len())
+                .map(|row| match sim.light_pull(s.state_for(row)) {
+                    Some(p) if bodies.alive[row] && !bodies.held[row] => light.pull(self, log, *id, row, time, &p),
+                    _ => Vec2::ZERO,
+                })
+                .collect();
+            pulls.insert(*id, each);
+        }
+        self.pulls = pulls;
     }
 
     /// Steps until `time` seconds have passed.
@@ -580,7 +644,8 @@ impl World {
                 sim.spawn(*id, self, log);
             }
         }
-        self.refresh_rows(sims);
+        self.refresh_rows(sims, log);
+        self.work_out_pulls(sims, log);
 
         // Clamp speeds, remember where everything started and find the fastest ball.
         let mut fastest: f32 = 0.0;
@@ -668,7 +733,7 @@ impl World {
 
     /// Forces from the Motion modules, then Integrate, per body thing.
     fn move_bodies(&mut self, sims: &Sims, dt: f32) {
-        let World { step, steps_per_second, gravity, bodies, modules, seed, .. } = self;
+        let World { step, steps_per_second, gravity, bodies, modules, seed, pulls, .. } = self;
         let gravity = *gravity;
         let seed = *seed;
         let time = *step as f32 / *steps_per_second as f32;
@@ -685,6 +750,14 @@ impl World {
                     }
                 } else {
                     sim.forces_at(s.state.as_ref(), bodies, gravity, dt, &cx);
+                }
+            }
+            // The lights' pull (Moths), worked out at the step's start.
+            if let Some(pull) = pulls.get(id) {
+                for (i, p) in pull.iter().enumerate().take(bodies.len()) {
+                    if bodies.alive[i] && !bodies.held[i] {
+                        bodies.velocity[i] += *p * dt;
+                    }
                 }
             }
             bodies.start.copy_from_slice(&bodies.position);
@@ -973,6 +1046,24 @@ pub(crate) fn press_of(
         .map_or(Vec2::ZERO, |p| p * dt * 4.0)
 }
 
+/// Whether something physical in the scene follows light, so its worlds need the light probe: a
+/// physics setting following light, a Motion or Bounce card whose settings spread by Light or
+/// Shadow, or a Motion card drawing its balls to the lights.
+pub fn needs_light(scene: &Scene, resolved: &Resolved, sims: &Sims, animation: Option<&Animation>) -> bool {
+    let follows = animation.is_some_and(|animation| {
+        animation.addresses().iter().any(|a| scene.pulses.get(*a).is_some_and(|p| p.source.follows_light()))
+    });
+    follows
+        || resolved.things.values().any(|r| {
+            SIM_SLOTS.iter().any(|slot| {
+                let Some(s) = r.slots.get(slot) else { return false };
+                let Some(sim) = sims.module(&s.kind) else { return false };
+                let spreads = bpe_core::vary::varies_in(&s.params).iter().any(|v| v.to.is_some() && v.by.reads_light());
+                spreads || (*slot == SlotId::Motion && sim.light_pull(sim.prepare(&s.params).as_ref()).is_some())
+            })
+        })
+}
+
 /// Whether any of `animation`'s pulses follows sound.
 fn follows_sound(scene: &Scene, animation: &Animation) -> bool {
     animation
@@ -1070,6 +1161,13 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
         {
             h.bytes(&maker.fingerprint(scene).to_le_bytes());
         }
+    }
+    // Physics that follows light moves with what the light probe reads.
+    if let Some(maker) = &sims.light
+        && needs_light(scene, resolved, sims, physics_animation(scene, resolved, sims).as_ref())
+    {
+        h.bytes(b"light");
+        h.bytes(&maker.fingerprint(scene).to_le_bytes());
     }
     h.0
 }
@@ -1334,6 +1432,47 @@ mod tests {
         assert!(p.is_finite() && p.length() < 100.0);
         assert!(w.bodies[&DOTS].velocity[0].length() <= w.limits().ceiling + 1.0);
         assert_eq!(w.limits().ceiling, 16.0 * 64.0 * 240.0);
+    }
+
+    /// A light probe that counts how often it is made.
+    struct CountingLight(std::sync::atomic::AtomicUsize);
+
+    impl crate::LightAt for CountingLight {
+        fn level(&self, _: &World, _: &Log, _: ThingId, _: &bpe_core::LightSource, _: f64) -> f32 {
+            1.0
+        }
+        fn ball(&self, _: &World, _: &Log, _: ThingId, _: usize, _: f64) -> crate::BallLight {
+            crate::BallLight::default()
+        }
+        fn pull(&self, _: &World, _: &Log, _: ThingId, _: usize, _: f64, _: &crate::LightPull) -> Vec2 {
+            Vec2::ZERO
+        }
+    }
+
+    struct CountingMaker(std::sync::Arc<CountingLight>);
+
+    impl crate::LightMaker for CountingMaker {
+        fn make(&self, _: &Scene, _: &Resolved) -> std::sync::Arc<dyn crate::LightAt> {
+            self.0.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.0.clone()
+        }
+        fn fingerprint(&self, _: &Scene) -> u64 {
+            7
+        }
+    }
+
+    #[test]
+    fn a_world_makes_no_light_probe_unless_something_physical_follows_light() {
+        let (scene, resolved, mut sims) = dots_in_ring(3);
+        let counter = std::sync::Arc::new(CountingLight(std::sync::atomic::AtomicUsize::new(0)));
+        let before = fingerprint(&scene, &resolved, &sims);
+        sims.light = Some(std::sync::Arc::new(CountingMaker(counter.clone())));
+        let mut world = World::build(&scene, &resolved, &sims);
+        world.advance_to(0.5, &sims, &mut Log::default());
+        assert!(world.light().is_none());
+        assert_eq!(counter.0.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(fingerprint(&scene, &resolved, &sims), before, "light sensing off: the run is as it was");
+        assert!(!needs_light(&scene, &resolved, &sims, None));
     }
 
     #[test]

@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use bpe_core::{Animation, Blend, Inputs, Resolved, ResolvedThing, Scene, SlotId, Thing, ThingId};
-use bpe_runtime::{CameraView, EventKind, LevelsAt, Log, Outline, SoundAt, World};
+use bpe_runtime::{CameraView, EventKind, LevelsAt, LightAt, LightLevelsAt, Log, Outline, SoundAt, World};
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
 
@@ -1635,6 +1635,9 @@ pub struct DrawCx<'a> {
     pub time: f64,
     /// The scene as saved: its tree (a thing's parent, siblings and order) and its keyframes.
     pub tree: &'a Scene,
+    /// The scene's light probe, when some look follows light (lighting part 7: a ball's place in
+    /// a Light or Shadow spread). Never read by anything that makes light.
+    pub light: Option<&'a dyn LightAt>,
 }
 
 /// How a thing kind draws itself.
@@ -1753,6 +1756,24 @@ pub fn build_frame_with(
     sound: Option<&dyn SoundAt>,
     frame: &mut Frame,
 ) {
+    build_frame_sensing(scene, resolved, world, log, time, draws, sound, None, frame);
+}
+
+/// [`build_frame_with`] with the scene's light probe too, for looks that follow light (Follow
+/// light, Light and Shadow spreads). The lights themselves never follow light: the editor
+/// doesn't offer it on anything that makes light.
+#[allow(clippy::too_many_arguments)]
+pub fn build_frame_sensing(
+    scene: &Scene,
+    resolved: &Resolved,
+    world: &World,
+    log: &Log,
+    time: f64,
+    draws: &Draws,
+    sound: Option<&dyn SoundAt>,
+    light: Option<&dyn LightAt>,
+    frame: &mut Frame,
+) {
     frame.clear();
     let animation = Animation::new(scene, resolved);
     let animated;
@@ -1761,9 +1782,11 @@ pub fn build_frame_with(
     } else {
         let mut copy = resolved.clone();
         let levels = sound.map(|sound| LevelsAt { sound, world, log });
+        let lit = light.map(|light| LightLevelsAt { light, world, log });
         let inputs = Inputs {
             hits: hit_strength(log, time, world.steps_per_second),
             sound: levels.as_ref().map(|l| l as &dyn bpe_core::SoundLevels),
+            light: lit.as_ref().map(|l| l as &dyn bpe_core::LightLevels),
         };
         animation.apply(&mut copy, time, &inputs);
         animated = copy;
@@ -1779,7 +1802,7 @@ pub fn build_frame_with(
             (None, None) => ((Blend::Normal, 1.0), false),
         };
         let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
-        let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, tree: scene };
+        let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, tree: scene, light };
         let z = z_order(thing, r);
         draw_routed_at(target, z, blend, amount, each, d.behind(), |into| d.draw(&cx, into));
         // Only a thing that blends has parts to paint over the blend: into the over layer of its
@@ -1798,7 +1821,7 @@ pub fn build_frame_with(
                 other => (other, around.amount),
             };
             let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
-            let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, tree: scene };
+            let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, tree: scene, light };
             let z = z_order(thing, r);
             draw_routed_at(target, z, blend, amount, false, around.behind, |into| d.draw_around(&cx, index, into));
         }
@@ -1814,7 +1837,7 @@ pub fn build_frame_with(
             }
             let each = Blend::each_from_params(&s.params);
             let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
-            let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, tree: scene };
+            let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, tree: scene, light };
             let z = z_order(thing, r);
             draw_routed_at(target, z, blend, amount, each, false, |into| d.draw(&cx, slot, into));
         }
@@ -1824,7 +1847,8 @@ pub fn build_frame_with(
         for (id, r) in &resolved.things {
             let Some(thing) = scene.things.get(id) else { continue };
             let Some(d) = draws.thing(&r.kind) else { continue };
-            let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, tree: scene };
+            // What makes light never reads the light probe (one-way sensing).
+            let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, tree: scene, light: None };
             d.light(&cx, &mut lit);
         }
         lit.glows = frame.gives_light();

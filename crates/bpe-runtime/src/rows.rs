@@ -45,6 +45,12 @@ impl Rows {
         })
     }
 
+    /// Whether some setting spreads by Light or Shadow: each ball's place is then asked of the
+    /// world's light probe.
+    pub(crate) fn needs_light(&self) -> bool {
+        self.varies.iter().any(|v| v.by.reads_light())
+    }
+
     /// The first row whose state needs working out again, of `count` rows.
     pub(crate) fn stale_from(&self, count: usize) -> Option<usize> {
         let from = if self.changes { 0 } else { self.states.len() };

@@ -190,7 +190,8 @@ fn own_rows(ui: &mut Ui, cx: &LookCx, salt: &str, defs: &[SettingDef], edits: &m
     let applies = |d: &SettingDef| d.applies(kind.as_deref(), &|k| scene.value_at_time(reg, &own(k), time));
     let follow_menu = crate::follow::menu(scene);
     let follow_now = |key: &str| crate::follow::now(scene, &own(key));
-    let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now };
+    let follow_light = |key: &str| crate::follow::can_light(scene, reg, &own(key));
+    let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now, light: &follow_light };
     let grid = GridCx {
         choices: cx.choices,
         marks: &marks,

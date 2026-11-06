@@ -507,7 +507,7 @@ fn setting(
         }
         label_cell(ui, cx.label_width, |_| {});
         widget_cell(ui, right, |ui| {
-            varies.extend(crate::vary::varies_line(ui, def, v, use_, vcx.rounds()));
+            varies.extend(crate::vary::varies_line(ui, def, v, use_, vcx.rounds(), vcx.lit(def)));
         });
         ui.end_row();
     }
@@ -661,7 +661,7 @@ fn row_menu_following(
             ui.close();
         }
         if let Some((f, key)) = follow {
-            follow_items(ui, def, f, (f.now)(key), &mut pick);
+            follow_items(ui, def, f, (f.now)(key), (f.light)(key), &mut pick);
         }
         if let Some(extra) = extra.as_mut() {
             extra(ui);
@@ -671,12 +671,14 @@ fn row_menu_following(
 }
 
 /// Follow sound ▸ (a shape ▸ its modulators and Level; the buses), and Stop following sound
-/// when the setting follows already.
+/// when the setting follows already; then Follow light ▸ (a thing ▸ its light) with a Lighting
+/// card, offered where `light_ok` (the lighting doesn't read the setting).
 fn follow_items(
     ui: &mut Ui,
     def: &SettingDef,
     f: &crate::follow::FollowCx,
     now: Option<crate::follow::Following>,
+    light_ok: bool,
     pick: &mut MenuPick,
 ) {
     use bpe_core::{PulseSource, SoundSource};
@@ -712,7 +714,33 @@ fn follow_items(
         });
         r.response.on_hover_text("Move this setting with a shape's sound").on_disabled_hover_text(why);
     });
-    if now.is_some() && ui.button("Stop following sound").clicked() {
+    let following_light = now.as_ref().is_some_and(|n| matches!(n.source, PulseSource::Light { .. }));
+    if now.is_some() && !following_light && ui.button("Stop following sound").clicked() {
+        *pick = MenuPick::Follow(None);
+        ui.close();
+    }
+    if !f.menu.lit.is_empty() {
+        let may = can && light_ok;
+        let why = if !can { "This setting can't follow light" } else { "The lighting reads this setting" };
+        ui.add_enabled_ui(may, |ui| {
+            let r = ui.menu_button("Follow light", |ui| {
+                for thing in &f.menu.lit {
+                    ui.menu_button(&thing.name, |ui| {
+                        for (part, name) in &thing.parts {
+                            let source = PulseSource::Light { thing: thing.id, source: *part };
+                            let on = now.as_ref().is_some_and(|n| n.source == source);
+                            if ui.add(egui::Button::selectable(on, *name)).clicked() {
+                                *pick = MenuPick::Follow(Some(source));
+                                ui.close();
+                            }
+                        }
+                    });
+                }
+            });
+            r.response.on_hover_text("Move this setting with how lit a thing is").on_disabled_hover_text(why);
+        });
+    }
+    if following_light && ui.button("Stop following light").clicked() {
         *pick = MenuPick::Follow(None);
         ui.close();
     }

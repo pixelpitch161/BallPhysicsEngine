@@ -176,6 +176,8 @@ impl Scene {
             crate::PulseSource::Sound { shape, source } => {
                 matches!(source, crate::SoundSource::Bus(_)) || !removed.contains(&shape)
             }
+            // Following the light on a thing that went stops too.
+            crate::PulseSource::Light { thing, .. } => !removed.contains(&thing),
             crate::PulseSource::Hits => true,
         });
         Ok(removed)

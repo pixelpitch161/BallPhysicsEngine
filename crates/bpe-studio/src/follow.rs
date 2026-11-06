@@ -2,9 +2,15 @@
 //! its modulators or its Level, or a bus. The setting then moves by a quarter of its span with
 //! that part of the sound (a pulse whose source is the sound), shows the range as a band in the
 //! shape's colour, and joins the modulator's list of what it moves.
+//!
+//! Follow light (lighting part 7) sits beside it: Follow light → a thing → how lit it is, its
+//! brightest light, its shadow or In shadow, or a light's strength as it shines. Only in a scene
+//! with a Lighting card, and never on a setting the lighting itself reads (sensing is one-way).
 
 use crate::style;
-use bpe_core::{Address, PulseSource, Scene, SettingDef, Settings, SlotId, SoundSource, ThingId, Value, ValueType};
+use bpe_core::{
+    Address, LightSource, PulseSource, Scene, SettingDef, Settings, SlotId, SoundSource, ThingId, Value, ValueType,
+};
 use bpe_kit::sound::{ADSR, BUSES, MOD_KINDS, MixerSettings, VOICE, VoiceSettings};
 use eframe::egui::Color32;
 
@@ -17,6 +23,16 @@ pub struct FollowMenu {
     pub shapes: Vec<FollowShape>,
     /// The buses that are on: number and name.
     pub buses: Vec<(u8, String)>,
+    /// What a setting can follow the light of (none without a Lighting card).
+    pub lit: Vec<FollowLit>,
+}
+
+/// A thing whose light a setting can follow, and what of it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FollowLit {
+    pub id: ThingId,
+    pub name: String,
+    pub parts: Vec<(LightSource, &'static str)>,
 }
 
 /// One sounding shape and the parts of its sound a setting can follow.
@@ -38,11 +54,48 @@ pub struct Following {
     pub words: String,
 }
 
-/// What the settings grids need for Follow sound: the menu, and what each setting (by key)
-/// follows now.
+/// What the settings grids need for Follow sound and Follow light: the menu, what each setting
+/// (by key) follows now, and whether it may follow light.
 pub struct FollowCx<'a> {
     pub menu: &'a FollowMenu,
     pub now: &'a dyn Fn(&str) -> Option<Following>,
+    pub light: &'a dyn Fn(&str) -> bool,
+}
+
+/// The kinds whose light a setting can follow, and the parts each offers.
+fn lit_parts(kind: &str) -> Option<Vec<(LightSource, &'static str)>> {
+    let things = vec![
+        (LightSource::On, "Light on it"),
+        (LightSource::Brightest, "Brightest light on it"),
+        (LightSource::Shadow, "Shadow on it"),
+        (LightSource::InShadow, "In shadow (a switch)"),
+    ];
+    match kind {
+        "balls" | "emitter" | "shape" => Some(things),
+        "light" => Some(vec![(LightSource::Strength, "Strength as it shines")]),
+        _ => None,
+    }
+}
+
+/// Every thing whose light a setting can follow, in tree order (none without a Lighting card).
+pub fn lit_menu(scene: &Scene) -> Vec<FollowLit> {
+    if !bpe_kit::sensing::has_lighting(scene) {
+        return Vec::new();
+    }
+    scene
+        .order
+        .iter()
+        .filter_map(|id| {
+            let t = scene.things.get(id)?;
+            Some(FollowLit { id: *id, name: t.name.clone(), parts: lit_parts(&t.kind)? })
+        })
+        .collect()
+}
+
+/// Whether the setting at `a` may follow light: the scene has a Lighting card and the lighting
+/// doesn't read the setting.
+pub fn can_light(scene: &Scene, reg: &bpe_core::Registry, a: &Address) -> bool {
+    bpe_kit::sensing::can_follow_light(scene, reg, a)
 }
 
 /// Every shape whose sound is on, with its modulators that are on and its Level, and every bus
@@ -76,11 +129,22 @@ pub fn menu(scene: &Scene) -> FollowMenu {
     } else {
         (1..=BUSES as u8).filter(|&n| mixer.bus(n).on).map(|n| (n, mixer.bus(n).name.clone())).collect()
     };
-    FollowMenu { shapes, buses }
+    FollowMenu { shapes, buses, lit: lit_menu(scene) }
 }
 
-/// What `source` follows, in words: "Shape · ADSR 1", "Shape · Level" or "Bus 1".
+/// What `source` follows, in words: "Shape · ADSR 1", "Shape · Level", "Bus 1" or
+/// "Balls · In shadow".
 pub fn words(scene: &Scene, source: &PulseSource) -> String {
+    if let PulseSource::Light { thing, source } = source {
+        let name = scene.things.get(thing).map_or("?", |t| t.name.as_str());
+        let part = scene
+            .things
+            .get(thing)
+            .and_then(|t| lit_parts(&t.kind))
+            .and_then(|p| p.into_iter().find(|(s, _)| s == source))
+            .map_or(source.name(), |(_, w)| w);
+        return format!("{name} · {part}");
+    }
     let PulseSource::Sound { shape, source } = source else { return "Hits".to_owned() };
     let thing = scene.things.get(shape);
     let name = thing.map_or("?", |t| t.name.as_str());
@@ -101,9 +165,11 @@ fn bus_name(scene: &Scene, n: u8) -> String {
     if name.trim().is_empty() { format!("Bus {n}") } else { name }
 }
 
-/// The colour a setting following `source` shows: the shape's (a bus's: the text colour).
+/// The colour a setting following `source` shows: the shape's or the thing's (a bus's: the text
+/// colour).
 pub fn colour(scene: &Scene, source: &PulseSource) -> Color32 {
     match source {
+        PulseSource::Light { thing, .. } => style::colour_of(scene, *thing),
         PulseSource::Sound { shape, source } if !matches!(source, SoundSource::Bus(_)) => {
             style::colour_of(scene, *shape)
         }
@@ -148,9 +214,10 @@ pub fn set(scene: &mut Scene, reg: &bpe_core::Registry, a: &Address, source: Opt
     }
 }
 
-/// What the setting at `a` follows, when it follows sound.
+/// What the setting at `a` follows, when it follows sound or light.
 pub fn now(scene: &Scene, a: &Address) -> Option<Following> {
-    let pulse = scene.pulses.get(a).filter(|p| matches!(p.source, PulseSource::Sound { .. }))?;
+    let pulse =
+        scene.pulses.get(a).filter(|p| matches!(p.source, PulseSource::Sound { .. } | PulseSource::Light { .. }))?;
     let amount = match pulse.amount {
         Value::Number(x) => x,
         Value::Int(x) => x as f64,
@@ -182,4 +249,30 @@ pub fn followers(
             (a.clone(), format!("{thing} · {setting}"))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bpe_kit::things::light::{LightType, add_light};
+
+    #[test]
+    fn follow_light_is_offered_with_a_lighting_card_and_never_on_what_the_lighting_reads() {
+        let kit = bpe_kit::kit();
+        let mut scene = bpe_kit::new_scene(&kit.registry);
+        assert!(lit_menu(&scene).is_empty(), "no Lighting card: nothing to follow");
+        let light = add_light(&mut scene, &kit.registry, LightType::Point, ThingId::ROOT).unwrap();
+        let lit = lit_menu(&scene);
+        let ball = scene.things.values().find(|t| t.kind == "balls").unwrap().id;
+        assert!(lit.iter().any(|t| t.id == ball && t.parts.iter().any(|(s, _)| *s == LightSource::InShadow)));
+        assert!(lit.iter().any(|t| t.id == light && t.parts == vec![(LightSource::Strength, "Strength as it shines")]));
+        assert!(can_light(&scene, &kit.registry, &Address::own(ball, "radius")));
+        assert!(!can_light(&scene, &kit.registry, &Address::own(light, "strength")), "a light can't follow light");
+        let source = PulseSource::Light { thing: ball, source: LightSource::InShadow };
+        let name = &scene.things[&ball].name;
+        assert_eq!(words(&scene, &source), format!("{name} · In shadow (a switch)"));
+        let a = Address::own(ball, "radius");
+        assert!(set(&mut scene, &kit.registry, &a, Some(source)));
+        assert_eq!(now(&scene, &a).map(|n| n.source), Some(source));
+    }
 }

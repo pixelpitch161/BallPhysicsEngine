@@ -169,6 +169,7 @@ impl EmitterState {
             hits,
             seed: self.settings.seed as u32,
             alone: false,
+            ..BallSpread::default()
         }
     }
 

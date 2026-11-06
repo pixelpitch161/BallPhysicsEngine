@@ -17,13 +17,15 @@ use super::pick::AnyPick;
 use super::slots::{NotesSpec, SlotClock};
 use crate::chain::{Buf, ChainSpec, VoiceChain};
 use crate::modmatrix::{Combine, ModMatrix};
-use crate::mods::{DistanceMod, DistanceParams, HitMod, HitValues, LfoMod, LfoParams, ModCx, Modulator, NoteCx};
+use crate::mods::{
+    DistanceMod, DistanceParams, HitMod, HitValues, LfoMod, LfoParams, LightMod, LightParams, ModCx, Modulator, NoteCx,
+};
 use crate::{BLOCK, BlockCx, BlockHit, VoiceSource};
 use bpe_core::{LayerId, NoteSlot, ShapePath, Target, ThingId, Track};
 use bpe_dsp::{EnvParams, Envelope, Noise, Smoother, SubOsc, SubWaveId, TableSet, UnisonOsc, UnisonParams, db_to_gain};
 use bpe_kit::sound::{
-    DistanceSettings, Follows, GateMode, GateUnit, HitPick, LfoSettings, LfoStart, NoiseColour, PhaseMode, PlayMode,
-    PlayWhen, SILENT_DB, SubOctave, SubWave, Wave,
+    DistanceSettings, Follows, GateMode, GateUnit, HitPick, LfoSettings, LfoStart, LightFollows, LightModSettings,
+    NoiseColour, PhaseMode, PlayMode, PlayWhen, SILENT_DB, SubOctave, SubWave, Wave,
 };
 use bpe_runtime::Party;
 use glam::Vec2;
@@ -67,7 +69,7 @@ const MAX_HELD: usize = 16;
 /// The most modulators of one kind besides the envelopes.
 const MAX_EACH: usize = k::MAX_EACH;
 /// The most modulators routes can come from: every envelope and every other modulator.
-pub const MAX_SOURCES: usize = MAX_ENVS + 3 * MAX_EACH;
+pub const MAX_SOURCES: usize = MAX_ENVS + 4 * MAX_EACH;
 
 /// One oscillator's settings that are not knobs.
 #[derive(Clone, Debug)]
@@ -116,14 +118,36 @@ pub struct HitSpec {
     pub pick: HitPick,
 }
 
-/// The LFO, Distance and Hit layers that run (up to eight of each), and the order every
+/// One Light layer that runs.
+#[derive(Clone, Debug)]
+pub struct LightSpec {
+    pub id: LayerId,
+    pub settings: LightModSettings,
+    /// The balls it hears.
+    pub heard: Arc<Target>,
+}
+
+/// The scene's light probe, which the Light modulators read.
+#[derive(Clone)]
+pub struct Probe(pub Arc<dyn bpe_runtime::LightAt>);
+
+impl std::fmt::Debug for Probe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Probe")
+    }
+}
+
+/// The LFO, Distance, Hit and Light layers that run (up to eight of each), and the order every
 /// modulator but the envelopes runs in each block.
 #[derive(Clone, Debug, Default)]
 pub struct ModsSpec {
     pub lfos: Vec<LfoSpec>,
     pub dists: Vec<DistSpec>,
     pub hits: Vec<HitSpec>,
+    pub lights: Vec<LightSpec>,
     pub order: Vec<LayerId>,
+    /// The light probe, when there are Light layers and the scene has a Lighting card.
+    pub probe: Option<Probe>,
 }
 
 impl ModsSpec {
@@ -133,6 +157,15 @@ impl ModsSpec {
 
     pub(crate) fn dist_per_note(&self, i: usize) -> bool {
         self.dists[i].settings.follows == Follows::EachNotesBall
+    }
+
+    pub(crate) fn light_per_note(&self, i: usize) -> bool {
+        self.lights[i].settings.follows == LightFollows::EachNotesBall
+    }
+
+    /// The probe, as the modulators read it.
+    pub(crate) fn probe(&self) -> Option<&dyn bpe_runtime::LightAt> {
+        self.probe.as_ref().map(|p| &*p.0)
     }
 }
 
@@ -145,6 +178,7 @@ enum Src {
     Lfo(usize),
     Dist(usize),
     Hit(usize),
+    Light(usize),
 }
 
 /// An LFO's settings for a block from the knobs `kv` (keys and routes applied).
@@ -177,6 +211,20 @@ pub(crate) fn dist_params(spec: &DistSpec, i: usize, kv: &[f32]) -> DistancePara
     }
 }
 
+/// A Light's settings for a block from the knobs `kv`.
+pub(crate) fn light_params(spec: &LightSpec, i: usize, kv: &[f32]) -> LightParams {
+    let at = |key: usize| kv[k::light(i, key)];
+    LightParams {
+        dark: at(k::DARK),
+        bright: at(k::BRIGHT),
+        curve: at(k::LIGHT_CURVE) / 100.0,
+        smooth_ms: at(k::LIGHT_SMOOTH),
+        lit_at: at(k::LIT_AT),
+        full_at: at(k::LIGHT_FULL_AT).round().max(1.0),
+        ..LightParams::of(&spec.settings)
+    }
+}
+
 /// Sets Hit modulator `m` (layer `i` of the card's hits) from the knobs `kv`.
 fn set_hit(m: &mut HitMod, spec: &HitSpec, i: usize, kv: &[f32]) {
     let at = |key: usize| kv[k::hit(i, key)];
@@ -191,6 +239,7 @@ fn knob_range(src: Src) -> (usize, usize) {
         Src::Lfo(i) => (k::lfo(i, 0), k::lfo(i, k::LFO_LEN)),
         Src::Dist(i) => (k::dist(i, 0), k::dist(i, k::DIST_LEN)),
         Src::Hit(i) => (k::hit(i, 0), k::hit(i, k::HIT_LEN)),
+        Src::Light(i) => (k::light(i, 0), k::light(i, k::LIGHT_LEN)),
         Src::None => (0, 0),
     }
 }
@@ -272,6 +321,7 @@ struct Note {
     lfo: [LfoMod; MAX_EACH],
     dist: [DistanceMod; MAX_EACH],
     hit: [HitMod; MAX_EACH],
+    light: [LightMod; MAX_EACH],
     /// Every route source's value at the end of the last block, as this note heard it.
     src_prev: [f32; MAX_SOURCES],
 }
@@ -305,6 +355,7 @@ impl Note {
             lfo: std::array::from_fn(|_| LfoMod::new(0)),
             dist: std::array::from_fn(|_| DistanceMod::new(heard.clone())),
             hit: std::array::from_fn(|_| HitMod::default()),
+            light: std::array::from_fn(|_| LightMod::new(heard.clone())),
             src_prev: [0.0; MAX_SOURCES],
         }
     }
@@ -444,12 +495,14 @@ pub struct ShapeVoice {
     lfo_src: [Option<usize>; MAX_EACH],
     dist_src: [Option<usize>; MAX_EACH],
     hit_src: [Option<usize>; MAX_EACH],
+    light_src: [Option<usize>; MAX_EACH],
     /// The modulators besides the envelopes, in the order they run.
     order: Vec<Src>,
     /// The shape's shared modulators (a Free or Restart LFO, a Distance not following each
     /// note's ball).
     lfo: [LfoMod; MAX_EACH],
     dist: [DistanceMod; MAX_EACH],
+    light: [LightMod; MAX_EACH],
     /// The shared sources' values at the end of the block before and this one.
     shared_prev: [f32; MAX_SOURCES],
     shared_now: [f32; MAX_SOURCES],
@@ -487,6 +540,7 @@ impl ShapeVoice {
         let mut source_env = [usize::MAX; MAX_SOURCES];
         let mut src = [Src::None; MAX_SOURCES];
         let (mut lfo_src, mut dist_src, mut hit_src) = ([None; MAX_EACH], [None; MAX_EACH], [None; MAX_EACH]);
+        let mut light_src = [None; MAX_EACH];
         let n_src = spec.matrix.sources().len().min(MAX_SOURCES);
         for (s, id) in spec.matrix.sources().iter().enumerate().take(MAX_SOURCES) {
             let m = &spec.mods;
@@ -502,6 +556,9 @@ impl ShapeVoice {
             } else if let Some(i) = m.hits.iter().position(|x| x.id == *id) {
                 src[s] = Src::Hit(i);
                 hit_src[i] = Some(s);
+            } else if let Some(i) = m.lights.iter().position(|x| x.id == *id) {
+                src[s] = Src::Light(i);
+                light_src[i] = Some(s);
             }
         }
         let order: Vec<Src> = spec
@@ -516,6 +573,7 @@ impl ShapeVoice {
                     .map(Src::Lfo)
                     .or_else(|| m.dists.iter().position(|x| x.id == *id).map(Src::Dist))
                     .or_else(|| m.hits.iter().position(|x| x.id == *id).map(Src::Hit))
+                    .or_else(|| m.lights.iter().position(|x| x.id == *id).map(Src::Light))
             })
             .collect();
         let anything = Arc::new(Target::Anything);
@@ -579,10 +637,14 @@ impl ShapeVoice {
             lfo_src,
             dist_src,
             hit_src,
+            light_src,
             order,
             lfo: std::array::from_fn(|i| LfoMod::new(spec.mods.lfos.get(i).map_or(0, |l| l.seed))),
             dist: std::array::from_fn(|i| {
                 DistanceMod::new(spec.mods.dists.get(i).map_or_else(|| anything.clone(), |d| d.heard.clone()))
+            }),
+            light: std::array::from_fn(|i| {
+                LightMod::new(spec.mods.lights.get(i).map_or_else(|| anything.clone(), |d| d.heard.clone()))
             }),
             shared_prev: [0.0; MAX_SOURCES],
             shared_now: [0.0; MAX_SOURCES],
@@ -678,6 +740,13 @@ impl ShapeVoice {
                 self.dist[i].value()
             });
         }
+        if let Some(i) = m.lights.iter().position(|x| x.id == layer) {
+            return Some(if m.light_per_note(i) {
+                notes().map(|n| self.notes.slots[n].light[i].value()).fold(0.0, f32::max)
+            } else {
+                self.light[i].value()
+            });
+        }
         if let Some(i) = m.hits.iter().position(|x| x.id == layer) {
             return Some(notes().map(|n| self.notes.slots[n].hit[i].value()).fold(0.0, f32::max));
         }
@@ -698,11 +767,19 @@ impl ShapeVoice {
             vals[s] = match self.src[s] {
                 Src::Lfo(i) if !self.spec.mods.lfo_per_note(i) => self.shared_now[s],
                 Src::Dist(i) if !self.spec.mods.dist_per_note(i) => self.shared_now[s],
+                Src::Light(i) if !self.spec.mods.light_per_note(i) => self.shared_now[s],
                 Src::None => 0.0,
                 _ => self.note_max[s],
             };
         }
-        let mcx = ModCx { start_sample: cx.start_sample, tempo: cx.tempo, world: cx.world, shape: self.spec.thing };
+        let mcx = ModCx {
+            start_sample: cx.start_sample,
+            tempo: cx.tempo,
+            world: cx.world,
+            shape: self.spec.thing,
+            log: cx.log,
+            light: self.spec.mods.probe(),
+        };
         let mut kv = [0.0f32; KNOBS];
         for &m in &self.order {
             let (lo, hi) = knob_range(m);
@@ -722,6 +799,15 @@ impl ShapeVoice {
                     self.dist[i].next_block(&mcx);
                     if let Some(s) = self.dist_src[i] {
                         vals[s] = self.dist[i].value();
+                        self.shared_now[s] = vals[s];
+                    }
+                }
+                Src::Light(i) if !self.spec.mods.light_per_note(i) => {
+                    self.spec.matrix.apply_range(&vals, &self.now, &mut kv, lo, hi);
+                    self.light[i].set_params(light_params(&self.spec.mods.lights[i], i, &kv));
+                    self.light[i].next_block(&mcx);
+                    if let Some(s) = self.light_src[i] {
+                        vals[s] = self.light[i].value();
                         self.shared_now[s] = vals[s];
                     }
                 }
@@ -853,6 +939,10 @@ impl ShapeVoice {
                 n.dist[i].set_params(dist_params(&m.dists[i], i, &self.now));
                 n.dist[i].note_on(&ncx);
             }
+            for i in 0..m.lights.len().min(MAX_EACH) {
+                n.light[i].set_params(light_params(&m.lights[i], i, &self.now));
+                n.light[i].note_on(&ncx);
+            }
             self.notes.meta[0].started = sample;
             self.log_note(cx, sample, note, strength);
             return Some(0);
@@ -950,6 +1040,11 @@ impl ShapeVoice {
             n.dist[i].reset();
             n.dist[i].set_params(dist_params(&m.dists[i], i, &self.now));
             n.dist[i].note_on(&ncx);
+        }
+        for i in 0..m.lights.len().min(MAX_EACH) {
+            n.light[i].reset();
+            n.light[i].set_params(light_params(&m.lights[i], i, &self.now));
+            n.light[i].note_on(&ncx);
         }
         for i in 0..m.hits.len().min(MAX_EACH) {
             n.hit[i].reset();
@@ -1295,6 +1390,8 @@ impl ShapeVoice {
         world: &bpe_runtime::World,
     ) {
         let block = BLOCK as u64;
+        // Catching up only picks notes; no modulator reads the light here.
+        let no_log = bpe_runtime::Log::default();
         let mut next = 0;
         let mut start = 0;
         while start < upto {
@@ -1304,7 +1401,7 @@ impl ShapeVoice {
             if next < hits.len() && hits[next].0 < end {
                 self.read_keys(time);
                 self.filter.set(self.now[k::MIN_STRENGTH] / 100.0, self.now[k::RETRIGGER] / 1000.0);
-                let cx = BlockCx { start_sample: start, time, tempo, world, playing: true };
+                let cx = BlockCx { start_sample: start, time, tempo, world, log: &no_log, playing: true };
                 while next < hits.len() && hits[next].0 < end {
                     let (sample, hit) = &hits[next];
                     next += 1;
@@ -1410,6 +1507,7 @@ impl ShapeVoice {
         let per_note = |src: Src| match src {
             Src::Lfo(m) => self.spec.mods.lfo_per_note(m),
             Src::Dist(m) => self.spec.mods.dist_per_note(m),
+            Src::Light(m) => self.spec.mods.light_per_note(m),
             Src::Hit(_) => true,
             _ => false,
         };
@@ -1421,7 +1519,14 @@ impl ShapeVoice {
                 _ => self.shared_now[s],
             };
         }
-        let mcx = ModCx { start_sample: cx.start_sample, tempo: cx.tempo, world: cx.world, shape: self.spec.thing };
+        let mcx = ModCx {
+            start_sample: cx.start_sample,
+            tempo: cx.tempo,
+            world: cx.world,
+            shape: self.spec.thing,
+            log: cx.log,
+            light: self.spec.mods.probe(),
+        };
         for &m in &self.order {
             if !per_note(m) {
                 continue;
@@ -1438,6 +1543,11 @@ impl ShapeVoice {
                     n.dist[j].set_params(dist_params(&self.spec.mods.dists[j], j, &moved));
                     n.dist[j].next_block(&mcx);
                     (n.dist[j].value(), self.dist_src[j])
+                }
+                Src::Light(j) => {
+                    n.light[j].set_params(light_params(&self.spec.mods.lights[j], j, &moved));
+                    n.light[j].next_block(&mcx);
+                    (n.light[j].value(), self.light_src[j])
                 }
                 Src::Hit(j) => {
                     set_hit(&mut n.hit[j], &self.spec.mods.hits[j], j, &moved);
@@ -1781,6 +1891,9 @@ impl VoiceSource for ShapeVoice {
         for m in &mut self.dist {
             m.reset();
         }
+        for m in &mut self.light {
+            m.reset();
+        }
         self.shared_prev = [0.0; MAX_SOURCES];
         self.shared_now = [0.0; MAX_SOURCES];
         self.note_max = [0.0; MAX_SOURCES];
@@ -1827,6 +1940,11 @@ impl VoiceSource for ShapeVoice {
                 self.dist[i].take_over(&old.dist[j]);
             }
         }
+        for (i, d) in self.spec.mods.lights.iter().enumerate() {
+            if let Some(j) = old.spec.mods.lights.iter().position(|o| o.id == d.id) {
+                self.light[i].take_over(&old.light[j]);
+            }
+        }
         // Each source's values, by layer.
         let old_src: Vec<Option<usize>> = self
             .spec
@@ -1854,6 +1972,10 @@ impl VoiceSource for ShapeVoice {
         let hit_from: [Option<usize>; MAX_EACH] = std::array::from_fn(|i| {
             let id = self.spec.mods.hits.get(i)?.id;
             old.spec.mods.hits.iter().position(|o| o.id == id)
+        });
+        let light_from: [Option<usize>; MAX_EACH] = std::array::from_fn(|i| {
+            let id = self.spec.mods.lights.get(i)?.id;
+            old.spec.mods.lights.iter().position(|o| o.id == id)
         });
         self.notes.meta = old.notes.meta;
         let ids: [LayerId; MAX_ENVS] =
@@ -1894,6 +2016,10 @@ impl VoiceSource for ShapeVoice {
                 n.hit[i] = match hit_from[i] {
                     Some(j) => prev.hit[j].clone(),
                     None => HitMod::default(),
+                };
+                n.light[i] = match light_from[i] {
+                    Some(j) => prev.light[j].clone(),
+                    None => new.light[i].clone(),
                 };
             }
             let mut src_prev = [0.0; MAX_SOURCES];
@@ -1959,6 +2085,7 @@ impl VoiceSource for ShapeVoice {
         let m = &self.spec.mods;
         let envs = self.spec.envs.iter().take(MAX_ENVS).map(|e| e.id);
         let others = m.lfos.iter().map(|x| x.id).chain(m.dists.iter().map(|x| x.id)).chain(m.hits.iter().map(|x| x.id));
+        let others = others.chain(m.lights.iter().map(|x| x.id));
         for layer in envs.chain(others) {
             if let Some(v) = self.mod_value(layer) {
                 f(layer, v, self.lfo_position(layer).unwrap_or(f32::NAN));

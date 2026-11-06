@@ -5,7 +5,8 @@
 //! [`ControlSampler`] reads the same voice settings the engine plays ([`shape_specs`]) and the
 //! hits the same [`HitFilter`] lets through, then works each part out in one go at the moment
 //! asked about: an envelope from its note's start ([`bpe_dsp::level_at`]), an LFO from its
-//! start, a Distance from where the balls are now, a Hit from its note's hit. It never renders
+//! start, a Distance from where the balls are now, a Light from the light on them now, a Hit
+//! from its note's hit. It never renders
 //! sound. What it leaves out (smoothing, chords, other modulators moving a modulator's knobs) is
 //! in `docs/superpowers/plans/sound-system/decisions.md`.
 
@@ -14,13 +15,14 @@ use crate::modmatrix::Combine;
 use crate::mods::distance::distance_value;
 use crate::mods::hit::{HitValues, hit_value, hit_values};
 use crate::mods::lfo::lfo_value;
+use crate::mods::light::light_value;
 use crate::patch::shape_specs;
 use crate::voices::HitFilter;
 use crate::voices::alloc::MAX_VOICES;
 use crate::voices::knobs::{self as k, MAX_ENVS, Values};
 use crate::voices::notes::mix;
 use crate::voices::shape::{
-    PLAIN_NOTE_S, SMOOTHED, ShapeSpec, dist_params, env_params_of, knob_gain, lfo_params, params_velocity,
+    PLAIN_NOTE_S, SMOOTHED, ShapeSpec, dist_params, env_params_of, knob_gain, lfo_params, light_params, params_velocity,
 };
 use crate::{BlockHit, SAMPLE_RATE, TempoMap};
 use bpe_core::{Address, LayerId, PulseSource, Resolved, Scene, Settings, SlotId, SoundSource, ThingId, Track};
@@ -109,6 +111,15 @@ pub fn heard_fingerprint(scene: &Scene) -> u64 {
         }
         put(&Address::on(*id, SlotId::Sound, "kind"), &card.kind);
     }
+    // A Light modulator hears the lights (and the balls' looks that block them).
+    let hears_light = scene.things.values().any(|t| {
+        t.slots
+            .get(&SlotId::Sound)
+            .is_some_and(|c| c.layers.iter().any(|l| l.enabled && l.kind == bpe_kit::sound::LIGHT_MOD))
+    });
+    if hears_light {
+        bpe_kit::sensing::fingerprint(scene).hash(&mut h);
+    }
     h.finish()
 }
 
@@ -144,6 +155,7 @@ enum Src {
     Lfo(usize),
     Dist(usize),
     Hit(usize),
+    Light(usize),
 }
 
 /// A hit that plays on a shape.
@@ -178,6 +190,7 @@ struct NoteAt {
 struct Shared {
     lfo: [f32; k::MAX_EACH],
     dist: [f32; k::MAX_EACH],
+    light: [f32; k::MAX_EACH],
 }
 
 /// The knobs of `spec` at `time`: as set, keyed ones from their tracks.
@@ -247,7 +260,7 @@ impl ControlSampler {
                 for (i, s) in self.shapes.iter().enumerate() {
                     if s.spec.bus == *n {
                         s.sync(&mut heard[i], world, log);
-                        sum += s.level(&self.tempo, &heard[i].hits, world, t, time);
+                        sum += s.level(&self.tempo, &heard[i].hits, world, log, t, time);
                     }
                 }
                 sum * db_to_gain(fader)
@@ -257,8 +270,10 @@ impl ControlSampler {
                 let s = &self.shapes[i];
                 s.sync(&mut heard[i], world, log);
                 match source {
-                    SoundSource::Level => s.level(&self.tempo, &heard[i].hits, world, t, time),
-                    SoundSource::Modulator(layer) => s.modulator(&self.tempo, &heard[i].hits, world, *layer, t, time),
+                    SoundSource::Level => s.level(&self.tempo, &heard[i].hits, world, log, t, time),
+                    SoundSource::Modulator(layer) => {
+                        s.modulator(&self.tempo, &heard[i].hits, world, log, *layer, t, time)
+                    }
                     SoundSource::Bus(_) => 0.0,
                 }
             }
@@ -289,6 +304,8 @@ impl Shape {
                     Src::Dist(i)
                 } else if let Some(i) = m.hits.iter().take(k::MAX_EACH).position(|x| x.id == *id) {
                     Src::Hit(i)
+                } else if let Some(i) = m.lights.iter().take(k::MAX_EACH).position(|x| x.id == *id) {
+                    Src::Light(i)
                 } else {
                     Src::None
                 }
@@ -472,7 +489,7 @@ impl Shape {
     }
 
     /// The shared LFOs and Distances at sample `t`.
-    fn shared(&self, tempo: &TempoMap, kv: &Values, hits: &[Accepted], world: &World, t: u64) -> Shared {
+    fn shared(&self, tempo: &TempoMap, kv: &Values, hits: &[Accepted], world: &World, log: &Log, t: u64) -> Shared {
         let m = &self.spec.mods;
         let mut out = Shared::default();
         let last = hits[..hits.partition_point(|h| h.sample <= t)].last().map(|h| h.sample);
@@ -495,6 +512,15 @@ impl Shape {
             let p = dist_params(d, i, kv);
             out.dist[i] = distance_value(&p, &d.heard, world, self.spec.thing, None).unwrap_or(0.0);
         }
+        if let Some(probe) = m.probe() {
+            for (i, l) in m.lights.iter().enumerate().take(k::MAX_EACH) {
+                if m.light_per_note(i) {
+                    continue;
+                }
+                let p = light_params(l, i, kv);
+                out.light[i] = light_value(&p, &l.heard, probe, world, log, self.spec.thing, None).unwrap_or(0.0);
+            }
+        }
         out
     }
 
@@ -515,6 +541,7 @@ impl Shape {
         tempo: &TempoMap,
         kv: &Values,
         world: &World,
+        log: &Log,
         shared: &Shared,
         src: Src,
         n: &NoteAt,
@@ -536,6 +563,14 @@ impl Shape {
                 let ball = n.hit.as_ref().map(|h| h.event.a);
                 ball.and_then(|b| distance_value(&p, &m.dists[i].heard, world, self.spec.thing, Some(b))).unwrap_or(0.0)
             }
+            Src::Light(i) if !m.light_per_note(i) => shared.light[i],
+            Src::Light(i) => {
+                let Some(probe) = m.probe() else { return 0.0 };
+                let p = light_params(&m.lights[i], i, kv);
+                let ball = n.hit.as_ref().map(|h| h.event.a);
+                ball.and_then(|b| light_value(&p, &m.lights[i].heard, probe, world, log, self.spec.thing, Some(b)))
+                    .unwrap_or(0.0)
+            }
             Src::Hit(i) => {
                 let hv = match &n.hit {
                     Some(h) => hit_values(world, self.spec.thing, &h.event, h.seed),
@@ -548,7 +583,17 @@ impl Shape {
     }
 
     /// Modulator `layer`'s value: a shared one's own, a per-note one's largest among the notes.
-    fn modulator(&self, tempo: &TempoMap, hits: &[Accepted], world: &World, layer: LayerId, t: u64, time: f64) -> f32 {
+    #[allow(clippy::too_many_arguments)]
+    fn modulator(
+        &self,
+        tempo: &TempoMap,
+        hits: &[Accepted],
+        world: &World,
+        log: &Log,
+        layer: LayerId,
+        t: u64,
+        time: f64,
+    ) -> f32 {
         let m = &self.spec.mods;
         let src = if let Some(e) = self.spec.envs.iter().take(MAX_ENVS).position(|x| x.id == layer) {
             Src::Env(e)
@@ -558,33 +603,36 @@ impl Shape {
             Src::Dist(i)
         } else if let Some(i) = m.hits.iter().take(k::MAX_EACH).position(|x| x.id == layer) {
             Src::Hit(i)
+        } else if let Some(i) = m.lights.iter().take(k::MAX_EACH).position(|x| x.id == layer) {
+            Src::Light(i)
         } else {
             return 0.0;
         };
         let kv = knobs_at(&self.spec, time);
-        let shared = self.shared(tempo, &kv, hits, world, t);
+        let shared = self.shared(tempo, &kv, hits, world, log, t);
         match src {
             Src::Lfo(i) if !m.lfo_per_note(i) => shared.lfo[i],
             Src::Dist(i) if !m.dist_per_note(i) => shared.dist[i],
+            Src::Light(i) if !m.light_per_note(i) => shared.light[i],
             _ => self
                 .notes(tempo, &kv, hits, world, t)
                 .iter()
-                .map(|n| self.source(tempo, &kv, world, &shared, src, n, t))
+                .map(|n| self.source(tempo, &kv, world, log, &shared, src, n, t))
                 .fold(0.0, f32::max),
         }
     }
 
     /// How loud the shape is: the largest among its notes of its gain knobs (moved by their adding
     /// routes) times their scaling routes (Output's Volume, and the louder oscillator's Gain and Level).
-    fn level(&self, tempo: &TempoMap, hits: &[Accepted], world: &World, t: u64, time: f64) -> f32 {
+    fn level(&self, tempo: &TempoMap, hits: &[Accepted], world: &World, log: &Log, t: u64, time: f64) -> f32 {
         let kv = knobs_at(&self.spec, time);
-        let shared = self.shared(tempo, &kv, hits, world, t);
+        let shared = self.shared(tempo, &kv, hits, world, log, t);
         let matrix = &self.spec.matrix;
         let mut vals = vec![0.0; self.src.len()];
         let mut loudest = 0.0f32;
         for n in self.notes(tempo, &kv, hits, world, t) {
             for (s, src) in self.src.iter().enumerate() {
-                vals[s] = self.source(tempo, &kv, world, &shared, *src, &n, t);
+                vals[s] = self.source(tempo, &kv, world, log, &shared, *src, &n, t);
             }
             let gain = |place: usize| {
                 let p = place as u16;

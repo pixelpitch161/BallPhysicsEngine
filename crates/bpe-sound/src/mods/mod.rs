@@ -1,22 +1,24 @@
 //! The modulators at audio rate: each one gives a value 0..1 once a block, which the voice
 //! spreads across the block and feeds to its routes. ADSR envelopes run sample by sample in
-//! the voice itself; these are the others: [`LfoMod`], [`HitMod`] and [`DistanceMod`].
+//! the voice itself; these are the others: [`LfoMod`], [`HitMod`], [`DistanceMod`] and [`LightMod`].
 //!
 //! Nothing here allocates once built.
 
 pub mod distance;
 pub mod hit;
 pub mod lfo;
+pub mod light;
 pub mod order;
 
 pub use distance::{DistanceMod, DistanceParams};
 pub use hit::{HitMod, HitValues, hit_values};
 pub use lfo::{LfoMod, LfoParams, lfo_rate_hz};
+pub use light::{LightMod, LightParams, light_value};
 pub use order::mod_order;
 
 use crate::TempoMap;
 use bpe_core::ThingId;
-use bpe_runtime::World;
+use bpe_runtime::{LightAt, Log, World};
 
 /// What a modulator reads each block.
 pub struct ModCx<'a> {
@@ -27,6 +29,10 @@ pub struct ModCx<'a> {
     pub world: &'a World,
     /// The shape whose sound it belongs to.
     pub shape: ThingId,
+    /// The events up to the world's step.
+    pub log: &'a Log,
+    /// The scene's light probe, when the sound has a Light modulator and the scene a Lighting card.
+    pub light: Option<&'a dyn LightAt>,
 }
 
 /// A note starting (or, for a modulator shared by the whole shape, a hit on the shape).
