@@ -224,3 +224,9 @@ group 2 of the mix and floor passes. `tests/golden-lit-flat*.txt` were blessed a
 light changed Flat pictures), so they still pin "2a changes no Flat Matte picture". Known gaps: in Stage the light
 field still sees balls as clear (they don't write the blockers' field), and a background that gives off light is not
 added on Stage or shiny pixels.
+
+## Merged with part 8
+
+Part 8 made a Light able to be negative and gave the balls' draw a `light` hook for electric arcs; the balls' one
+`light` now pushes the Stage spheres and surface first, then the arcs. On shaded pixels `with_field` keeps the
+summed light (lamps, room, field) at 0 or more, as 1b's Flat mix does.

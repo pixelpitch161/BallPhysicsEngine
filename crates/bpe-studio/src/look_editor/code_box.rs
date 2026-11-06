@@ -10,6 +10,16 @@ const ROWS: usize = 12;
 
 /// Draws the box for `code` and returns the new code when an edit is kept.
 pub fn show(ui: &mut Ui, salt: impl std::hash::Hash + std::fmt::Debug, code: &str) -> Option<String> {
+    show_checked(ui, salt, code, &problem)
+}
+
+/// [`show`] for code checked by `check` (why it can't run, or `None`).
+pub fn show_checked(
+    ui: &mut Ui,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+    code: &str,
+    check: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
     let id = ui.make_persistent_id(("code box", salt));
     let edit_id = id.with("edit");
     let editing = ui.memory(|m| m.has_focus(edit_id));
@@ -38,7 +48,7 @@ pub fn show(ui: &mut Ui, salt: impl std::hash::Hash + std::fmt::Debug, code: &st
     let kept = (keep || response.lost_focus()) && text != code;
     ui.data_mut(|d| d.insert_temp(id, text.clone()));
     let shown = if kept { text.as_str() } else { code };
-    match problem(shown) {
+    match check(shown) {
         Some(why) => {
             ui.label(RichText::new(format!("Doesn't run: {why}")).small().color(style::TEXT));
         }

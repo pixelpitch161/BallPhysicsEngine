@@ -21,6 +21,7 @@ impl ThingDraw for SceneDraw {
         frame.width = s.width.max(2);
         frame.height = s.height.max(2);
         frame.video = (frame.width, frame.height);
+        frame.beat = beat_at(&s, cx.time);
         let inputs = Inputs { time: cx.time as f32, ..Inputs::default() };
         let background = fit_background(s.background.clone(), cx.scene, frame.height as f32, s.background_on_screen);
         frame.background = background_gpu(&background, &inputs, &mut frame.gradients);
@@ -72,6 +73,18 @@ fn background_glow(s: &SceneSettings) -> [[f32; 4]; 2] {
     [[e.own[0], e.own[1], e.own[2], 0.0], [e.tint[0], e.tint[1], e.tint[2], 0.0]]
 }
 
+/// The beat at `time` for the effects (`Frame::beat`): its phase, the bar's phase, beats a second
+/// and 1, at the scene's tempo from 0 s, as the timeline's grid counts them.
+pub fn beat_at(s: &SceneSettings, time: f64) -> [f32; 4] {
+    if !(s.tempo > 0.0 && s.tempo.is_finite()) {
+        return [0.0; 4];
+    }
+    let beat = 60.0 / s.tempo as f64 * 4.0 / s.time_bottom.beats() as f64;
+    let beats = time.max(0.0) / beat;
+    let bar = beats / s.time_top.max(1) as f64;
+    [beats.fract() as f32, bar.fract() as f32, (1.0 / beat) as f32, 1.0]
+}
+
 /// The background with a span and centre left at their defaults fitted to the picture: on the
 /// screen the span is the video's `height`; across the world the span and the centre's height
 /// are the world heights the camera shows (its world box, or one shot's height around where it
@@ -117,6 +130,7 @@ fn background_span(scene: &bpe_core::Resolved, half_height: f32) -> [f32; 2] {
 
 #[cfg(test)]
 mod tests {
+    use super::{SceneSettings, beat_at};
     use bpe_core::{ThingId, Value};
     use bpe_gfx::{Frame, build_frame};
     use bpe_runtime::{Log, World};
@@ -151,6 +165,16 @@ mod tests {
         let [angle, span, cx, cy] = b.place;
         let a = angle.to_radians();
         (glam::Vec2::new(0.0, y) - glam::Vec2::new(cx, cy)).dot(glam::Vec2::new(a.cos(), a.sin())) / span + 0.5
+    }
+
+    #[test]
+    fn the_beat_counts_from_the_tempo() {
+        let s = SceneSettings { tempo: 120.0, ..SceneSettings::default() };
+        // 120 a minute in 4/4: a beat every half second, a bar every two.
+        let b = beat_at(&s, 1.25);
+        assert!((b[0] - 0.5).abs() < 1e-6 && (b[1] - 0.625).abs() < 1e-6, "{b:?}");
+        assert_eq!((b[2], b[3]), (2.0, 1.0));
+        assert_eq!(beat_at(&SceneSettings { tempo: 0.0, ..s }, 1.0), [0.0; 4]);
     }
 
     #[test]

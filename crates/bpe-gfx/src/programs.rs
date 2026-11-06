@@ -212,6 +212,23 @@ pub fn in_ball_problem(code: &str) -> Option<String> {
     checked_source(&[code]).err()
 }
 
+/// Why an effect's `code` can't run over the picture (the Effects card), in one line: its
+/// header, then its WGSL assembled with the prelude. `None` when it can. No GPU is needed.
+pub fn picture_problem(code: &str) -> Option<String> {
+    let full = match crate::effects::assemble(code) {
+        Ok(full) => full,
+        Err(e) => return Some(e),
+    };
+    let module = match naga::front::wgsl::parse_str(&full) {
+        Ok(m) => m,
+        Err(e) => return Some(first_line(&e.emit_to_string(&full))),
+    };
+    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
+        .validate(&module)
+        .err()
+        .map(|e| first_line(&format!("{}", e.as_inner())))
+}
+
 fn first_line(text: &str) -> String {
     text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("the GPU refused the shader").to_owned()
 }

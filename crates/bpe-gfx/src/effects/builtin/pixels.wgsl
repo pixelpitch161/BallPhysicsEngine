@@ -1,6 +1,6 @@
 // name: Pixels
 // about: Turns the picture into big pixels or glowing LED dots.
-// simple size = 12 [2, 64] int Size of each pixel, in video pixels
+// simple size = 12 [2, 64] hard [1, 1e9] int Size of each pixel, in video pixels (under one means nothing)
 // simple dots = 0 toggle Draw round LED dots instead of squares
 // param gap = 0.15 [0, 0.6] Dark gap between pixels
 

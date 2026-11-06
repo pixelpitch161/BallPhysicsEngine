@@ -1269,6 +1269,16 @@ fn mixed(c: vec3<f32>, w: vec3<f32>, sh: Shaded, sf: SurfaceGpu, share: f32) -> 
     return c + (diffuse - vec3<f32>(1.0)) * w * (1.0 - metal) - w * metal + sh.spec * share;
 }
 
+// Shaded `sh` with the light field's `field` added. Negative light (darkness) takes light away,
+// but the sum of every light stays at 0 or more, as in the Flat mix.
+fn with_field(sh: Shaded, field: vec3<f32>) -> Shaded {
+    var out = sh;
+    out.diffuse = max(sh.diffuse + field, vec3<f32>(0.0));
+    out.through = max(sh.through + field, vec3<f32>(0.0));
+    out.spec = max(sh.spec, vec3<f32>(0.0));
+    return out;
+}
+
 // ---------- the mix ----------
 
 // The lit share of colour `c` that takes highlights: its lit share (a black thing shines whole).
@@ -1312,8 +1322,7 @@ fn surfaced(ip: vec2<i32>, p: vec2<f32>, c: vec3<f32>, w: vec3<f32>, sf: Surface
     var out: Surfaced;
     if !in_stage() {
         var sh = shade(thing, p, sf, c / max(share, 1e-3), here);
-        sh.diffuse += field;
-        sh.through += field;
+        sh = with_field(sh, field);
         out.out = mixed(c, w, sh, sf, share);
         out.diffuse = sh.diffuse;
         return out;
@@ -1327,8 +1336,7 @@ fn surfaced(ip: vec2<i32>, p: vec2<f32>, c: vec3<f32>, w: vec3<f32>, sf: Surface
     var on_stage = Surfaced(vec3<f32>(0.0), vec3<f32>(0.0));
     if cover > 0.02 {
         var sh = shade(thing, p, sf, c / max(share, 1e-3), here);
-        sh.diffuse += field;
-        sh.through += field;
+        sh = with_field(sh, field);
         on_thing = Surfaced(mixed(c, w, sh, sf, share), sh.diffuse);
     }
     if cover < 0.98 {
@@ -1341,8 +1349,7 @@ fn surfaced(ip: vec2<i32>, p: vec2<f32>, c: vec3<f32>, w: vec3<f32>, sf: Surface
         let dz = max(spot.p.z - st.room.z, 0.0);
         let near = select(max(f, 1e-3), length(vec2<f32>(max(f, 0.0), dz)), dz > 0.0);
         var sh = shade(spot, p, plane, c, near);
-        sh.diffuse += field;
-        sh.through += field;
+        sh = with_field(sh, field);
         // The wall and floor take light as much as the background does (its lit share).
         on_stage = Surfaced(mixed(c, w, sh, plane, share), sh.diffuse);
     }

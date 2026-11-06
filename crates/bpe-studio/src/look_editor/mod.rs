@@ -6,6 +6,7 @@ pub mod ball_view;
 mod brush;
 mod clipboard;
 mod code_box;
+pub mod effects;
 pub mod group;
 pub mod group_view;
 mod handles;
