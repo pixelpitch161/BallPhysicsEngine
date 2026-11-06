@@ -525,6 +525,7 @@ mod tests {
             spin: 1.0,
             growth: -shrink,
             velocity: Vec2::ZERO,
+            passes: false,
         };
         let a = shape_emissions(&layer, ThingId(1), Some(&wall(1.0, 1.0)), &log, 240, 1.0, usize::MAX);
         let later = (1.0 - shrink / 240.0).powi(120);
@@ -547,8 +548,14 @@ mod tests {
             bpe_runtime::Outline::Ring { center: Vec2::ZERO, radius: 300.0, sides: 5, angle: 0.0, thickness: 2.0 };
         // The same shape at the same moment, moving one way, then (after a bounce of the ball
         // it rides, or reaching its smallest size) another: what is in the air stays put.
-        let moving =
-            Wall { outline: outline.clone(), solid: false, spin: 0.0, growth: -0.2, velocity: Vec2::new(500.0, 0.0) };
+        let moving = Wall {
+            outline: outline.clone(),
+            solid: false,
+            spin: 0.0,
+            growth: -0.2,
+            velocity: Vec2::new(500.0, 0.0),
+            passes: false,
+        };
         let turned = Wall { growth: 0.0, velocity: Vec2::new(-500.0, 0.0), ..moving.clone() };
         let a = shape_emissions(&layer, ThingId(1), Some(&moving), &log, 240, 1.5, usize::MAX);
         let b = shape_emissions(&layer, ThingId(1), Some(&turned), &log, 240, 1.5, usize::MAX);
@@ -562,7 +569,7 @@ mod tests {
     fn only_the_newest_emissions_up_to_the_cap_are_worked_out() {
         let outline =
             bpe_runtime::Outline::Box { center: Vec2::ZERO, half: Vec2::splat(100.0), angle: 0.0, thickness: 2.0 };
-        let wall = Wall { outline, solid: false, spin: 0.0, growth: 0.0, velocity: Vec2::ZERO };
+        let wall = Wall { outline, solid: false, spin: 0.0, growth: 0.0, velocity: Vec2::ZERO, passes: false };
         let layer = ParticlesLayer { emit: Emit::Steady, rate: 10_000.0, life: 3.0, ..ParticlesLayer::default() };
         let log = Log::default();
         let all = shape_emissions(&layer, ThingId(1), Some(&wall), &log, 240, 5.0, usize::MAX);

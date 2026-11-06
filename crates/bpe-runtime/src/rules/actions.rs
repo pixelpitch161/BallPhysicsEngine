@@ -4,8 +4,8 @@
 use bpe_core::ThingId;
 use glam::Vec2;
 
-use super::{Change, ChangeKey};
-use crate::{Event, EventKind, Log, Party, World, pop};
+use super::{Change, ChangeKey, Firing, MAX_BALLS, MAX_ROWS};
+use crate::{Event, EventKind, Log, NewBall, Party, Sims, World, on_own_side, pop};
 
 /// A change to a ball's motion, right now.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -35,6 +35,27 @@ pub enum Action {
     Change { key: ChangeKey, change: Box<Change> },
     /// Breaks one ball (its body row) or the whole thing.
     Break { thing: ThingId, row: Option<u32>, point: Vec2, normal: Vec2, strength: f32 },
+    /// Splits one ball into `into` balls fanned `spread` radians across its way, going `speed`
+    /// times as fast; `share` shares its area out between them, else each keeps its size.
+    Split { thing: ThingId, row: u32, into: u32, spread: f32, speed: f32, share: bool },
+    /// Adds balls to a thing: each one's place, velocity and size (`None`: the thing's own),
+    /// fanned out from `from`; a ball whose place is across a wall from there starts at `from`.
+    Spawn { thing: ThingId, from: Vec2, balls: Vec<(Vec2, Vec2, Option<f32>)> },
+    /// Asks the thing to fire now (an emitter's round).
+    Fire { thing: ThingId },
+    /// Adds (or removes) a tag on a whole thing, or on one ball (its body row).
+    Tag { thing: ThingId, row: Option<u32>, tag: String, add: bool },
+    /// Changes a named counter.
+    Count { name: String, how: CountHow },
+    /// Sends a signal. Never queued: the stage hears it in its next round.
+    Signal { name: String, firing: Firing },
+}
+
+/// How a Count action changes its counter.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CountHow {
+    Add(f64),
+    Set(f64),
 }
 
 /// A ball a rule holds still.
@@ -54,7 +75,7 @@ pub const WHOLE: u32 = u32::MAX;
 impl World {
     /// Lets go the balls whose freeze is over, then applies the actions queued in the last Rules
     /// stage, in order.
-    pub(crate) fn apply_rule_actions(&mut self, log: &mut Log) {
+    pub(crate) fn apply_rule_actions(&mut self, sims: &Sims, log: &mut Log) {
         let Some(mut rules) = self.rules.take() else { return };
         let step = self.step;
         let rate = self.steps_per_second as f64;
@@ -190,8 +211,162 @@ impl World {
                         }
                     }
                 }
+                Action::Split { thing, row, into, spread, speed, share } => {
+                    if !rules.broken.contains(&thing) {
+                        self.split(sims, &mut rules, thing, row, into, spread, speed, share);
+                    }
+                }
+                Action::Spawn { thing, from, balls } => {
+                    if rules.broken.contains(&thing) {
+                        continue;
+                    }
+                    let Some(sim) = self.kinds.get(&thing).and_then(|k| sims.thing(k)) else { continue };
+                    for (position, velocity, radius) in balls {
+                        if !room_for(self, thing) {
+                            break;
+                        }
+                        if !(position.is_finite() && velocity.is_finite() && radius.is_none_or(f32::is_finite)) {
+                            continue;
+                        }
+                        let radius = radius.map(|r| r.max(0.0));
+                        let position = if self.clear_way(from, position) { position } else { from };
+                        sim.add_ball(thing, self, &NewBall { position, velocity, radius, like: None });
+                    }
+                }
+                Action::Fire { thing } => {
+                    if rules.broken.contains(&thing) {
+                        continue;
+                    }
+                    if let Some(sim) = self.kinds.get(&thing).and_then(|k| sims.thing(k)) {
+                        sim.fire_now(thing, self);
+                    }
+                }
+                Action::Tag { thing, row, tag, add } => {
+                    if rules.broken.contains(&thing) || tag.is_empty() {
+                        continue;
+                    }
+                    match row {
+                        Some(r) => {
+                            let live = self.bodies.get(&thing).is_some_and(|b| b.alive.get(r as usize) == Some(&true));
+                            if add && live {
+                                rules.ball_tags.entry((thing, r)).or_default().insert(tag);
+                            } else if !add && let Some(tags) = rules.ball_tags.get_mut(&(thing, r)) {
+                                tags.remove(&tag);
+                                if tags.is_empty() {
+                                    rules.ball_tags.remove(&(thing, r));
+                                }
+                            }
+                        }
+                        None if add => {
+                            self.tags.entry(thing).or_default().insert(tag);
+                        }
+                        None => {
+                            if let Some(tags) = self.tags.get_mut(&thing) {
+                                tags.remove(&tag);
+                                if tags.is_empty() {
+                                    self.tags.remove(&thing);
+                                }
+                            }
+                        }
+                    }
+                }
+                Action::Count { name, how } => {
+                    let now = rules.counters.get(&name).copied().unwrap_or(0.0);
+                    let new = match how {
+                        CountHow::Add(x) => now + x,
+                        CountHow::Set(x) => x,
+                    };
+                    if new.is_finite() {
+                        rules.counters.insert(name, new);
+                    }
+                }
+                // Heard in the stage that sent it; never queued.
+                Action::Signal { .. } => {}
             }
         }
         self.rules = Some(rules);
     }
+
+    /// Splits ball `row` of `thing` (see [`Action::Split`]): it becomes the middle one of the fan
+    /// and the others are added beside it, inside where it was, through the thing's sim.
+    #[allow(clippy::too_many_arguments)]
+    fn split(
+        &mut self,
+        sims: &Sims,
+        rules: &mut super::RulesState,
+        thing: ThingId,
+        row: u32,
+        into: u32,
+        spread: f32,
+        speed: f32,
+        share: bool,
+    ) {
+        let Some(sim) = self.kinds.get(&thing).and_then(|k| sims.thing(k)) else { return };
+        let Some(bodies) = self.bodies.get(&thing) else { return };
+        let i = row as usize;
+        if i >= bodies.len() || !bodies.alive[i] || into < 2 || !spread.is_finite() || !speed.is_finite() {
+            return;
+        }
+        // How many more balls there is room for.
+        let room = MAX_BALLS.saturating_sub(bodies.alive_count()).min(MAX_ROWS.saturating_sub(bodies.len()));
+        let n = (into as usize).min(room + 1);
+        if n < 2 {
+            return;
+        }
+        let frozen = rules.frozen.iter().position(|f| f.thing == thing && f.row == row);
+        let v = frozen.map_or(bodies.velocity[i], |k| rules.frozen[k].velocity);
+        let (centre, r, hits) = (bodies.position[i], bodies.radius[i], bodies.hits[i]);
+        let dir = if v.length_squared() > 0.0 { v.normalize() } else { Vec2::NEG_Y };
+        let speed = v.length() * speed;
+        let small = if share { r / (n as f32).sqrt() } else { r };
+        let reach = (r - small).max(0.05 * r);
+        let middle = (n - 1) / 2;
+        let ball = |k: usize| {
+            let t = k as f32 / (n - 1) as f32 - 0.5;
+            let way = Vec2::from_angle(spread * t).rotate(dir);
+            let place = centre + dir.perp() * (t * 2.0 * reach);
+            // Never across a wall from where the ball was (a Middle touch runs its centre right
+            // along a wall's line).
+            (if self.clear_way(centre, place) { place } else { centre }, way * speed)
+        };
+        let fan: Vec<(Vec2, Vec2)> = (0..n).map(ball).collect();
+        for (k, (position, velocity)) in fan.into_iter().enumerate() {
+            if !(position.is_finite() && velocity.is_finite()) {
+                continue;
+            }
+            if k == middle {
+                let b = self.bodies.get_mut(&thing).expect("checked");
+                b.position[i] = position;
+                b.previous[i] = position;
+                b.start[i] = position;
+                b.radius[i] = small;
+                match frozen {
+                    Some(f) => rules.frozen[f].velocity = velocity,
+                    None => b.velocity[i] = velocity,
+                }
+                continue;
+            }
+            let new = NewBall { position, velocity, radius: Some(small), like: Some(row) };
+            let Some(child) = sim.add_ball(thing, self, &new) else { return };
+            if let Some(b) = self.bodies.get_mut(&thing)
+                && let Some(h) = b.hits.get_mut(child as usize)
+            {
+                *h = hits;
+            }
+            rules.copy_row(thing, row, child);
+        }
+    }
+}
+
+impl World {
+    /// Whether `to` is on the same side as `from` of every wall balls bounce off: a ball whose
+    /// centre was at `from` may be put at `to`.
+    pub fn clear_way(&self, from: Vec2, to: Vec2) -> bool {
+        to.is_finite() && self.walls.values().all(|w| w.passes || on_own_side(to, from, &w.outline, w))
+    }
+}
+
+/// Whether `thing` may have one more ball: fewer than [`MAX_BALLS`] live and [`MAX_ROWS`] rows.
+fn room_for(world: &World, thing: ThingId) -> bool {
+    world.bodies.get(&thing).is_none_or(|b| b.alive_count() < MAX_BALLS && b.len() < MAX_ROWS)
 }

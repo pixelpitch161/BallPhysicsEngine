@@ -8,9 +8,9 @@ mod changes;
 mod firing;
 mod sim;
 
-pub use actions::{Action, MotionChange, WHOLE};
+pub use actions::{Action, CountHow, MotionChange, WHOLE};
 pub use changes::{Change, ChangeKey, How, apply_to, fold};
-pub use firing::{Firing, Values};
+pub use firing::{Firing, Signal, Values};
 pub use sim::{BlockSim, PrepareCx, StageCx};
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -22,8 +22,14 @@ use crate::{Event, EventKind, Log, Party, Sims, ThingState, World};
 
 /// The most actions one rule may queue in one step; past it the rule stops for that step.
 pub const MOST_ACTIONS: usize = 4096;
-/// The most balls a thing may have (splits and spawns past it are dropped, from part 5).
+/// The most live balls a thing may have: splits and spawns past it are dropped.
 pub const MAX_BALLS: usize = 4096;
+/// The most body rows a thing may have (rows are never removed, so balls that keep splitting and
+/// breaking stop splitting here).
+pub const MAX_ROWS: usize = 16 * MAX_BALLS;
+/// How many rounds signals go round in one stage after the first; signals sent in the last round
+/// are heard at the next step's stage.
+pub const MOST_ROUNDS: usize = 8;
 /// The most subjects a block remembers on its own (per ball counters, Logic memories); the
 /// oldest is forgotten first.
 pub const MOST_REMEMBERED: usize = 4096;
@@ -87,9 +93,14 @@ struct Run<'a> {
     time: f64,
     rule: RuleId,
     broken: &'a BTreeSet<ThingId>,
+    log: &'a Log,
+    counters: &'a BTreeMap<String, f64>,
+    ball_tags: &'a BTreeMap<(ThingId, u32), BTreeSet<String>>,
     /// Blocks that fired this step (by index), with the first firing's subject and point.
     noted: BTreeMap<usize, (Option<Party>, Vec2)>,
     actions: &'a mut Vec<Action>,
+    /// Signals sent, for the next round.
+    signals: &'a mut Vec<Signal>,
     budget: usize,
     busy: bool,
 }
@@ -105,6 +116,9 @@ impl Run<'_> {
             rule: self.rule,
             block,
             broken: self.broken,
+            log: self.log,
+            counters: self.counters,
+            ball_tags: self.ball_tags,
         }
     }
 
@@ -149,7 +163,10 @@ impl Run<'_> {
                             return;
                         }
                         self.budget -= 1;
-                        self.actions.push(a);
+                        match a {
+                            Action::Signal { name, firing } => self.signals.push(Signal { name, firing }),
+                            a => self.actions.push(a),
+                        }
                     }
                 }
             }
@@ -173,11 +190,17 @@ pub struct RulesState {
     pub(crate) frozen: Vec<actions::Frozen>,
     /// Whether some block can change settings.
     changes_settings: bool,
+    /// The named counters (Count), by name.
+    pub(crate) counters: BTreeMap<String, f64>,
+    /// The tags rules gave single balls, by thing and body row.
+    pub(crate) ball_tags: BTreeMap<(ThingId, u32), BTreeSet<String>>,
+    /// Signals sent in the last round of the last stage, heard in this one's first.
+    carried: Vec<Signal>,
 }
 
 impl RulesState {
     /// The scene's enabled rules prepared, or `None` when it has none.
-    pub fn build(scene: &Scene, resolved: &Resolved, sims: &Sims) -> Option<RulesState> {
+    pub fn build(scene: &Scene, resolved: &Resolved, sims: &Sims, world: &World) -> Option<RulesState> {
         let enabled: Vec<&Rule> = scene.rules.list.iter().filter(|r| r.enabled).collect();
         if enabled.is_empty() {
             return None;
@@ -195,7 +218,7 @@ impl RulesState {
             if run.problem.is_none() {
                 for b in &rule.blocks {
                     let sim = sims.block(&b.kind).expect("checked by structure_problem");
-                    let cx = PrepareCx { scene, resolved, sims, rule: rule.id, block: b.id };
+                    let cx = PrepareCx { scene, world, resolved, sims, rule: rule.id, block: b.id };
                     match sim.prepare(&b.params, &cx) {
                         Ok(state) => {
                             changes_settings |= sim.changes_settings(state.as_ref());
@@ -235,56 +258,104 @@ impl RulesState {
             broken: BTreeSet::new(),
             frozen: Vec::new(),
             changes_settings,
+            counters: BTreeMap::new(),
+            ball_tags: BTreeMap::new(),
+            carried: Vec::new(),
         })
     }
 
     /// The Rules stage: every enabled rule without a problem, in list order, reads this step's
-    /// `events` and queues its actions; what fired is logged as `Rule` events.
+    /// `events` and queues its actions; signals sent go round up to [`MOST_ROUNDS`] more times
+    /// (the last round's wait for the next step); what fired is logged as `Rule` events.
     pub(crate) fn run(&mut self, world: &World, sims: &Sims, events: &[Event], log: &mut Log) {
         let step = world.step;
         let time = world.time();
-        let mut fired = Vec::new();
-        let broken = self.broken.clone();
-        for r in &mut self.rules {
-            if r.problem.is_some() {
-                continue;
+        // A ball gone (caught, faded, removed) keeps no tags.
+        let gone =
+            |&(t, r): &(ThingId, u32)| !world.bodies.get(&t).is_some_and(|b| b.alive.get(r as usize) == Some(&true));
+        if self.ball_tags.keys().any(gone) {
+            self.ball_tags.retain(|k, _| !gone(k));
+        }
+        // Read, not changed, while the rules run (their changes are actions): lent out, not copied.
+        let broken = std::mem::take(&mut self.broken);
+        let counters = std::mem::take(&mut self.counters);
+        let ball_tags = std::mem::take(&mut self.ball_tags);
+        let count = self.rules.len();
+        let mut noted: Vec<BTreeMap<usize, (Option<Party>, Vec2)>> = vec![BTreeMap::new(); count];
+        let mut budget = vec![MOST_ACTIONS; count];
+        let mut busy = vec![false; count];
+        let mut heard = std::mem::take(&mut self.carried);
+        let seen: &Log = log;
+        for round in 0..=MOST_ROUNDS {
+            if round > 0 && heard.is_empty() {
+                break;
             }
-            let mut run = Run {
-                world,
-                sims,
-                events,
-                step,
-                time,
-                rule: r.id,
-                broken: &broken,
-                noted: BTreeMap::new(),
-                actions: &mut self.pending,
-                budget: MOST_ACTIONS,
-                busy: false,
-            };
-            for section in [BlockSection::Logic, BlockSection::When] {
-                for i in 0..r.blocks.len() {
-                    if r.blocks[i].section != section || run.busy {
+            let mut sent = Vec::new();
+            for (ri, r) in self.rules.iter_mut().enumerate() {
+                if r.problem.is_some() || busy[ri] {
+                    continue;
+                }
+                let mut run = Run {
+                    world,
+                    sims,
+                    events,
+                    step,
+                    time,
+                    rule: r.id,
+                    broken: &broken,
+                    log: seen,
+                    counters: &counters,
+                    ball_tags: &ball_tags,
+                    noted: std::mem::take(&mut noted[ri]),
+                    actions: &mut self.pending,
+                    signals: &mut sent,
+                    budget: budget[ri],
+                    busy: false,
+                };
+                for pass in 0..3 {
+                    // 0: Logic ticks, 1: When blocks fire (both once a step, in round 0), 2: When
+                    // blocks hear the signals sent in the round before.
+                    if pass < 2 && round > 0 {
                         continue;
                     }
-                    let Some(sim) = sims.block(r.blocks[i].kind) else { continue };
-                    let mut out = Vec::new();
-                    let cx = run.cx(r.blocks[i].id);
-                    let inputs = r.blocks[i].inputs;
-                    match section {
-                        BlockSection::Logic => sim.tick(r.blocks[i].state.as_mut(), inputs, &cx, &mut out),
-                        _ => sim.fire(r.blocks[i].state.as_mut(), &cx, &mut out),
+                    if pass == 2 && heard.is_empty() {
+                        continue;
                     }
-                    for f in out {
-                        run.note(i, &f);
-                        run.deliver(&mut r.blocks, &r.outputs, i, &f);
+                    let section = if pass == 0 { BlockSection::Logic } else { BlockSection::When };
+                    for i in 0..r.blocks.len() {
+                        if r.blocks[i].section != section || run.busy {
+                            continue;
+                        }
+                        let Some(sim) = sims.block(r.blocks[i].kind) else { continue };
+                        let mut out = Vec::new();
+                        let cx = run.cx(r.blocks[i].id);
+                        let inputs = r.blocks[i].inputs;
+                        match pass {
+                            0 => sim.tick(r.blocks[i].state.as_mut(), inputs, &cx, &mut out),
+                            1 => sim.fire(r.blocks[i].state.as_mut(), &cx, &mut out),
+                            _ => sim.hear(r.blocks[i].state.as_mut(), &heard, &cx, &mut out),
+                        }
+                        for f in out {
+                            run.note(i, &f);
+                            run.deliver(&mut r.blocks, &r.outputs, i, &f);
+                        }
                     }
                 }
+                if run.busy {
+                    r.busy_at = Some(step);
+                    busy[ri] = true;
+                }
+                budget[ri] = run.budget;
+                noted[ri] = std::mem::take(&mut run.noted);
             }
-            if run.busy {
-                r.busy_at = Some(step);
-            }
-            for (i, (subject, point)) in std::mem::take(&mut run.noted) {
+            heard = sent;
+        }
+        (self.broken, self.counters, self.ball_tags) = (broken, counters, ball_tags);
+        // Signals sent in the last round wait for the next step.
+        self.carried = heard;
+        let mut fired = Vec::new();
+        for (ri, r) in self.rules.iter().enumerate() {
+            for (i, (subject, point)) in std::mem::take(&mut noted[ri]) {
                 let block = r.blocks[i].id;
                 fired.push(Event {
                     step,
@@ -401,6 +472,40 @@ impl RulesState {
             self.changes.remove(&k);
             self.dirty.insert(k);
         }
+        self.ball_tags.remove(&(thing, row));
+    }
+
+    /// Gives body row `to` of `thing` every change and tag row `from` has of its own (a ball split
+    /// off it).
+    pub(crate) fn copy_row(&mut self, thing: ThingId, from: u32, to: u32) {
+        let copies: Vec<(ChangeKey, Vec<Change>)> = self
+            .changes
+            .iter()
+            .filter(|(k, _)| k.thing == thing && k.row == Some(from))
+            .map(|(k, l)| (ChangeKey { row: Some(to), ..k.clone() }, l.clone()))
+            .collect();
+        for (k, l) in copies {
+            self.dirty.insert(k.clone());
+            self.changes.insert(k, l);
+        }
+        if let Some(tags) = self.ball_tags.get(&(thing, from)).cloned() {
+            self.ball_tags.insert((thing, to), tags);
+        }
+    }
+
+    /// A counter's value (0 for one never set).
+    pub fn counter(&self, name: &str) -> f64 {
+        self.counters.get(name).copied().unwrap_or(0.0)
+    }
+
+    /// Every counter set so far, by name (what the Rules panel lists).
+    pub fn counters(&self) -> &BTreeMap<String, f64> {
+        &self.counters
+    }
+
+    /// The tags rules gave body row `row` of `thing` of its own.
+    pub fn ball_tags(&self, thing: ThingId, row: u32) -> Option<&BTreeSet<String>> {
+        self.ball_tags.get(&(thing, row))
     }
 
     fn row_changes_any_slot(&self, thing: ThingId, row: u32) -> Vec<ChangeKey> {
@@ -411,6 +516,7 @@ impl RulesState {
     pub(crate) fn forget(&mut self, thing: ThingId) {
         self.changes.retain(|k, _| k.thing != thing);
         self.dirty.retain(|k| k.thing != thing);
+        self.ball_tags.retain(|(t, _), _| *t != thing);
     }
 
     /// The settings with a change for the whole thing, in key order.

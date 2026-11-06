@@ -1,14 +1,18 @@
 //! What a rule block plugin gives the runtime: how it reads its settings and what it does in the
 //! Rules stage.
 
-use bpe_core::{BlockId, BlockSection, Params, Resolved, RuleId, Scene};
+use std::collections::{BTreeMap, BTreeSet};
 
-use super::{Action, Firing};
-use crate::{Event, Sims, ThingState, World};
+use bpe_core::{BlockId, BlockSection, Params, Resolved, RuleId, Scene, ThingId};
+
+use super::{Action, Firing, Signal};
+use crate::{Event, Log, Sims, ThingState, World};
 
 /// What a block knows while it reads its settings, as the world is built.
 pub struct PrepareCx<'a> {
     pub scene: &'a Scene,
+    /// The world, built and before any step.
+    pub world: &'a World,
     pub resolved: &'a Resolved,
     pub sims: &'a Sims,
     pub rule: RuleId,
@@ -29,13 +33,30 @@ pub struct StageCx<'a> {
     pub block: BlockId,
     /// The things a rule broke (the world's own answer, [`World::broken`], reads nothing while
     /// the stage runs).
-    pub broken: &'a std::collections::BTreeSet<bpe_core::ThingId>,
+    pub broken: &'a BTreeSet<ThingId>,
+    /// Every event so far (this step's last), for what reads the past: the sound and the light.
+    pub log: &'a Log,
+    /// The counters as they are this step (a Count block's change applies at the next step's
+    /// start).
+    pub counters: &'a BTreeMap<String, f64>,
+    /// The tags rules gave single balls, by thing and body row.
+    pub ball_tags: &'a BTreeMap<(ThingId, u32), BTreeSet<String>>,
 }
 
 impl StageCx<'_> {
     /// Whether a rule broke `thing`.
-    pub fn is_broken(&self, thing: bpe_core::ThingId) -> bool {
+    pub fn is_broken(&self, thing: ThingId) -> bool {
         self.broken.contains(&thing)
+    }
+
+    /// A counter's value now (0 for one never set).
+    pub fn counter(&self, name: &str) -> f64 {
+        self.counters.get(name).copied().unwrap_or(0.0)
+    }
+
+    /// Whether body row `row` of `thing` has `tag` of its own (a rule tagged that ball).
+    pub fn ball_has_tag(&self, thing: ThingId, row: u32, tag: &str) -> bool {
+        self.ball_tags.get(&(thing, row)).is_some_and(|t| t.contains(tag))
     }
 
     /// A number from 0 to 1 for this block, this step and `subject`, the same on every run and
@@ -70,6 +91,9 @@ pub trait BlockSim: Send + Sync + 'static {
         _out: &mut Vec<Firing>,
     ) {
     }
+    /// A When block: the signals sent in the last round of this stage (or carried from the last
+    /// step) that it hears, as firings.
+    fn hear(&self, _state: &mut dyn ThingState, _signals: &[Signal], _cx: &StageCx, _out: &mut Vec<Firing>) {}
     /// A Logic block, once a stage before any When fires: firings whose wait has run out.
     fn tick(&self, _state: &mut dyn ThingState, _inputs: usize, _cx: &StageCx, _out: &mut Vec<Firing>) {}
     /// A Do block: the actions `firing` makes, applied at the next step's start.
@@ -77,6 +101,15 @@ pub trait BlockSim: Send + Sync + 'static {
     /// Whether a prepared block of this kind can change settings (Change setting): the world then
     /// keeps a copy of the settings to change.
     fn changes_settings(&self, _state: &dyn ThingState) -> bool {
+        false
+    }
+    /// Whether a block with these settings reads the scene's sound: the physics fingerprint then
+    /// hashes what the sound reads, so editing it runs the scene again.
+    fn hears_sound(&self, _params: &Params) -> bool {
+        false
+    }
+    /// Whether a block with these settings reads the light (the probe): likewise.
+    fn sees_light(&self, _params: &Params) -> bool {
         false
     }
 }
