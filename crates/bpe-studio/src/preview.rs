@@ -373,6 +373,14 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         world_view::draw_camera(&painter, &studio.scene, &studio.resolved, world, studio.playback.log(), &view, active);
     }
 
+    // Pick from picture: the click picks a colour and does nothing else.
+    if crate::eyedropper::target(ui.ctx()).is_some() {
+        preview.drag = None;
+        pick_colour(ui, &response, rect, &preview.renderer, device, &render_state.queue);
+        studio.panels.preview = Some(preview);
+        return outcome;
+    }
+
     if studio.playing {
         preview.drag = None;
         outcome.clicked = response.clicked();
@@ -454,6 +462,41 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     draw_handles(ui, studio, &view, active, outcome.selected.or(studio.selection.primary));
     studio.panels.preview = Some(preview);
     outcome
+}
+
+/// The eyedropper over the picture at `rect`: a crosshair and a pill saying what to do; a click
+/// reads the drawn picture back and hands the colour under the pointer to the gradient row that
+/// asked; a right-click or Esc stops.
+fn pick_colour(
+    ui: &Ui,
+    response: &egui::Response,
+    rect: Rect,
+    renderer: &Renderer,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+) {
+    let ctx = ui.ctx();
+    pill(&ui.painter_at(rect), rect, "Click the picture to pick a colour (Esc to stop)");
+    if response.hovered() {
+        ctx.set_cursor_icon(CursorIcon::Crosshair);
+    }
+    if response.secondary_clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        crate::eyedropper::stop(ctx);
+        return;
+    }
+    if response.clicked()
+        && let Some(p) = response.interact_pointer_pos()
+    {
+        let uv = (p - rect.min) / rect.size();
+        let picked = renderer
+            .read_output(device, queue)
+            .ok()
+            .and_then(|pixels| crate::eyedropper::pixel_at(&pixels, renderer.size(), egui::vec2(uv.x, uv.y)));
+        match picked {
+            Some(c) => crate::eyedropper::deliver(ctx, c),
+            None => crate::eyedropper::stop(ctx),
+        }
+    }
 }
 
 /// The drag of `handle` pressed at `press` on the screen. A rider keeps its ride offset at the

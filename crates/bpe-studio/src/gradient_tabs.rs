@@ -4,6 +4,9 @@
 //! companions on those tabs. A companion (`bpe_core::gradient_extras`) shows as an ordinary
 //! settings row under its full key (`"colours~bands"`), so its menu, keys, pulses and Follow
 //! sound work like any setting's.
+//!
+//! The Colours tab ends with the tools (`gradient_tools.rs`); the big editor's window
+//! (`gradient_editor.rs`) is drawn from here too, so its Flip can move a value kept per stop.
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
@@ -13,8 +16,9 @@ use bpe_core::{Color, GapBlend, Gradient, Mix, SettingDef, Value, ValueType};
 use eframe::egui::{self, Ui};
 
 use crate::gradient_bar::{select_stop, selected_stop};
-use crate::style;
+use crate::gradient_tools::{ToolsOutcome, points_after_flip};
 use crate::widgets::{GridCx, GridOutcome, color_button, label_cell, widget_cell};
+use crate::{eyedropper, gradient_editor, gradient_tools, style};
 
 /// A tab of the gradient row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,7 +37,7 @@ impl Tab {
 }
 
 /// Every gap blend, with its chip's words.
-const BLENDS: [(GapBlend, &str); 5] = [
+pub(crate) const BLENDS: [(GapBlend, &str); 5] = [
     (GapBlend::Smooth, "Smooth"),
     (GapBlend::Eased, "Eased"),
     (GapBlend::EaseIn, "Ease in"),
@@ -42,7 +46,7 @@ const BLENDS: [(GapBlend, &str); 5] = [
 ];
 
 /// Every mix, with its chip's words and help.
-const MIXES: [(Mix, &str, &str); 5] = [
+pub(crate) const MIXES: [(Mix, &str, &str); 5] = [
     (Mix::Light, "Light", "A straight blend in light: true to how light adds up, can dip grey in the middle"),
     (Mix::Plain, "Plain", "A straight blend of the colours' numbers, like most paint apps"),
     (Mix::Even, "Even", "Brightness changes evenly and the middle never goes muddy"),
@@ -51,12 +55,12 @@ const MIXES: [(Mix, &str, &str); 5] = [
 ];
 
 /// Names the control `r` for the screen reader (and the tests).
-fn name_it(ui: &Ui, r: &egui::Response, name: String) {
+pub(crate) fn name_it(ui: &Ui, r: &egui::Response, name: String) {
     ui.ctx().accesskit_node_builder(r.id, |node| node.set_label(name));
 }
 
 /// A chip, lit when `on`, named `name`. True when clicked.
-fn chip(ui: &mut Ui, text: &str, on: bool, name: String, help: &str) -> bool {
+pub(crate) fn chip(ui: &mut Ui, text: &str, on: bool, name: String, help: &str) -> bool {
     let r = ui.add(style::toggle_button(text, on).min_size(egui::vec2(0.0, 22.0)));
     name_it(ui, &r, name);
     r.on_hover_text(help).clicked()
@@ -106,8 +110,23 @@ pub(crate) fn tab_rows(
     out: &mut GridOutcome,
 ) -> bool {
     let Value::Gradient(g) = value else { return false };
+    let mut changed = false;
+    // A colour picked from the picture goes on the selected stop, which keeps its opacity.
+    if let Some(c) = eyedropper::take(ui.ctx(), bar)
+        && !g.stops.is_empty()
+    {
+        let i = selected_stop(ui.ctx(), bar, g);
+        let c = Color { a: g.stops[i].color.a, ..c };
+        if g.stops[i].color != c {
+            g.stops[i].color = c;
+            changed = true;
+        }
+    }
+    // The big editor, while it is open (it stays up if the stops drop to one).
+    let tools = gradient_editor::window(ui.ctx(), def.label, bar, g);
+    changed |= after_tools(def, tools, get, out);
     if g.stops.len() < 2 {
-        return false;
+        return changed;
     }
     let tabs = tabs_for(def);
     let memory = bar.with("tab");
@@ -128,9 +147,14 @@ pub(crate) fn tab_rows(
     if let Some(i) = tabs.iter().position(|&t| t == tab) {
         ui.data_mut(|d| d.insert_temp(memory, i));
     }
-    let mut changed = false;
     match tab {
-        Tab::Colours => changed |= colours_tab(ui, def, g, bar, cx, right),
+        Tab::Colours => {
+            changed |= colours_tab(ui, def, g, bar, cx, right);
+            row_label(ui, cx, "Tools");
+            let tools = widget_cell(ui, right, |ui| gradient_tools::tools(ui, g, bar, def.label));
+            ui.end_row();
+            changed |= after_tools(def, tools, get, out);
+        }
         Tab::Extra(ExtraTab::Blend) => {
             changed |= mix_rows(ui, def, g, cx, right);
             companion_rows(ui, def, ExtraTab::Blend, cx, right, get, out);
@@ -139,6 +163,20 @@ pub(crate) fn tab_rows(
         Tab::Extra(t) => companion_rows(ui, def, t, cx, right, get, out),
     }
     changed
+}
+
+/// What the tools did, finished: after a Flip, each Points companion of `def` (a point per stop)
+/// follows its stops into their new order, through `out`. True when the gradient changed.
+fn after_tools(def: &SettingDef, tools: ToolsOutcome, get: &dyn Fn(&str) -> Value, out: &mut GridOutcome) -> bool {
+    if let Some(order) = &tools.flip {
+        for c in gradient_extras::companions_for(def).filter(|c| c.def.ty == ValueType::Points) {
+            let key = companion_def(def, c).key;
+            if let Some(v) = points_after_flip(&get(key), order) {
+                out.changes.push((key, v));
+            }
+        }
+    }
+    tools.changed
 }
 
 /// The Colours tab: the selected stop's colour, hex and place, then the gap after it (left out
@@ -157,7 +195,7 @@ fn colours_tab(ui: &mut Ui, def: &SettingDef, g: &mut Gradient, bar: egui::Id, c
                 g.stops[i].color = c;
                 changed = true;
             }
-            changed |= hex_box(ui, name, bar, i, &mut g.stops[i].color);
+            changed |= hex_box(ui, format!("{name} hex"), bar, i, &mut g.stops[i].color);
             let mut at = g.stops[i].at * 100.0;
             let r = ui.add(egui::DragValue::new(&mut at).range(0.0..=100.0).speed(0.25).fixed_decimals(1).suffix("%"));
             name_it(ui, &r, format!("{name} at"));
@@ -210,9 +248,10 @@ fn colours_tab(ui: &mut Ui, def: &SettingDef, g: &mut Gradient, bar: egui::Id, c
     changed
 }
 
-/// The selected stop's hex box: `#rrggbb` or `#rrggbbaa`. Text that isn't a colour leaves the
-/// colour as it is. True when it changed the colour.
-fn hex_box(ui: &mut Ui, name: &str, bar: egui::Id, i: usize, color: &mut Color) -> bool {
+/// Stop `i`'s hex box, named `name`, keeping what is being typed under `bar`: `#rrggbb` or
+/// `#rrggbbaa`. Text that isn't a colour leaves the colour as it is. True when it changed the
+/// colour.
+pub(crate) fn hex_box(ui: &mut Ui, name: String, bar: egui::Id, i: usize, color: &mut Color) -> bool {
     let draft_id = bar.with(("hex", i));
     let edit_id = bar.with(("hex box", i));
     let typing = ui.memory(|m| m.has_focus(edit_id));
@@ -220,7 +259,7 @@ fn hex_box(ui: &mut Ui, name: &str, bar: egui::Id, i: usize, color: &mut Color) 
         if typing { ui.data(|d| d.get_temp(draft_id)) } else { None }.unwrap_or_else(|| color.to_hex());
     let r =
         ui.add(egui::TextEdit::singleline(&mut text).id(edit_id).desired_width(76.0).font(egui::TextStyle::Monospace));
-    name_it(ui, &r, format!("{name} hex"));
+    name_it(ui, &r, name);
     let r = r.on_hover_text("The colour as a hex code: #rrggbb, or #rrggbbaa with its opacity");
     ui.data_mut(|d| d.insert_temp(draft_id, text.clone()));
     if r.changed()
@@ -233,34 +272,43 @@ fn hex_box(ui: &mut Ui, name: &str, bar: egui::Id, i: usize, color: &mut Color) 
     false
 }
 
+/// The Mix chips, named "{name} mix {Mix}". True when the mix changed.
+pub(crate) fn mix_chips(ui: &mut Ui, g: &mut Gradient, name: &str) -> bool {
+    let mut changed = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for (mix, words, help) in MIXES {
+            if chip(ui, words, g.mix == mix, format!("{name} mix {words}"), help) && g.mix != mix {
+                g.mix = mix;
+                changed = true;
+            }
+        }
+    });
+    changed
+}
+
+/// The Loop switch, named "{name} loop". True when it was switched.
+pub(crate) fn loop_switch(ui: &mut Ui, g: &mut Gradient, name: &str) -> bool {
+    let mut on = g.looped;
+    let r = style::switch(ui, &mut on);
+    name_it(ui, &r, format!("{name} loop"));
+    let r = r.on_hover_text("Blend from the last colour back round to the first, so it wraps with no cut");
+    if r.changed() {
+        g.set_looped(on);
+        return true;
+    }
+    false
+}
+
 /// The Blend tab's own rows: Mix and Loop.
 fn mix_rows(ui: &mut Ui, def: &SettingDef, g: &mut Gradient, cx: &GridCx, right: f32) -> bool {
     let name = def.label;
     let mut changed = false;
     row_label(ui, cx, "Mix");
-    widget_cell(ui, right, |ui| {
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            for (mix, words, help) in MIXES {
-                if chip(ui, words, g.mix == mix, format!("{name} mix {words}"), help) && g.mix != mix {
-                    g.mix = mix;
-                    changed = true;
-                }
-            }
-        });
-    });
+    widget_cell(ui, right, |ui| changed |= mix_chips(ui, g, name));
     ui.end_row();
     row_label(ui, cx, "Loop");
-    widget_cell(ui, right, |ui| {
-        let mut on = g.looped;
-        let r = style::switch(ui, &mut on);
-        name_it(ui, &r, format!("{name} loop"));
-        let r = r.on_hover_text("Blend from the last colour back round to the first, so it wraps with no cut");
-        if r.changed() {
-            g.set_looped(on);
-            changed = true;
-        }
-    });
+    widget_cell(ui, right, |ui| changed |= loop_switch(ui, g, name));
     ui.end_row();
     changed
 }
@@ -307,45 +355,58 @@ fn companion_rows(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::widgets::{KeyMark, TargetChoices, settings_grid};
     use bpe_core::Color;
     use egui_kittest::{Harness, kittest::Queryable};
     use std::collections::BTreeMap;
 
-    const RED: Color = Color { r: 255, g: 0, b: 0, a: 255 };
-    const GREEN: Color = Color { r: 0, g: 255, b: 0, a: 255 };
-    const BLUE: Color = Color { r: 0, g: 0, b: 255, a: 255 };
+    pub(crate) const RED: Color = Color { r: 255, g: 0, b: 0, a: 255 };
+    pub(crate) const GREEN: Color = Color { r: 0, g: 255, b: 0, a: 255 };
+    pub(crate) const BLUE: Color = Color { r: 0, g: 0, b: 255, a: 255 };
+
+    fn a_gradient(key: &'static str, label: &'static str) -> SettingDef {
+        SettingDef {
+            key,
+            label,
+            help: "",
+            ty: ValueType::Gradient,
+            default: Value::Gradient(Gradient::default()),
+            range: None,
+            span: None,
+            unit: "",
+            group: "",
+            depth: bpe_core::Depth::Simple,
+            flags: bpe_core::Flags { keyframe: true, pulse: false, hold: false },
+            when: "",
+        }
+    }
 
     fn gradient_def() -> &'static [SettingDef] {
-        static DEFS: LazyLock<Vec<SettingDef>> = LazyLock::new(|| {
-            vec![SettingDef {
-                key: "colours",
-                label: "Colours",
-                help: "",
-                ty: ValueType::Gradient,
-                default: Value::Gradient(Gradient::default()),
-                range: None,
-                span: None,
-                unit: "",
-                group: "",
-                depth: bpe_core::Depth::Simple,
-                flags: bpe_core::Flags { keyframe: true, pulse: false, hold: false },
-                when: "",
-            }]
-        });
+        static DEFS: LazyLock<Vec<SettingDef>> = LazyLock::new(|| vec![a_gradient("colours", "Colours")]);
         &DEFS
     }
 
-    struct State {
-        values: BTreeMap<String, Value>,
-        changes: Vec<(String, Value)>,
+    /// Two gradient settings, "Colours" and "Edge".
+    fn two_gradients() -> &'static [SettingDef] {
+        static DEFS: LazyLock<Vec<SettingDef>> =
+            LazyLock::new(|| vec![a_gradient("colours", "Colours"), a_gradient("edge", "Edge")]);
+        &DEFS
+    }
+
+    pub(crate) struct State {
+        pub(crate) values: BTreeMap<String, Value>,
+        pub(crate) changes: Vec<(String, Value)>,
     }
 
     impl State {
-        fn gradient(&self) -> &Gradient {
-            match &self.values["colours"] {
+        pub(crate) fn gradient(&self) -> &Gradient {
+            self.gradient_at("colours")
+        }
+
+        fn gradient_at(&self, key: &str) -> &Gradient {
+            match &self.values[key] {
                 Value::Gradient(g) => g,
                 _ => panic!(),
             }
@@ -353,12 +414,17 @@ mod tests {
     }
 
     /// One gradient setting in a settings grid; its changes are applied and noted.
-    fn harness(g: Gradient) -> Harness<'static, State> {
+    pub(crate) fn harness(g: Gradient) -> Harness<'static, State> {
         let mut values = BTreeMap::new();
         values.insert("colours".to_owned(), Value::Gradient(g));
+        harness_with(gradient_def(), values)
+    }
+
+    /// The settings `defs` in a settings grid, holding `values`.
+    fn harness_with(defs: &'static [SettingDef], values: BTreeMap<String, Value>) -> Harness<'static, State> {
         let state = State { values, changes: Vec::new() };
         let mut h = Harness::builder()
-            .with_size(egui::vec2(460.0, 700.0))
+            .with_size(egui::vec2(460.0, 900.0))
             .allow_missing_glyphs()
             .with_context_setup(style::apply)
             .build_ui_state(
@@ -380,7 +446,7 @@ mod tests {
                     let get = |k: &str| {
                         values.get(k).cloned().unwrap_or_else(|| gradient_extras::default_of(k).expect("a known key"))
                     };
-                    let out = settings_grid(ui, "g", gradient_def(), get, &cx);
+                    let out = settings_grid(ui, "g", defs, get, &cx);
                     for (k, v) in out.changes {
                         state.values.insert(k.to_owned(), v.clone());
                         state.changes.push((k.to_owned(), v));
@@ -392,11 +458,11 @@ mod tests {
         h
     }
 
-    fn three() -> Gradient {
+    pub(crate) fn three() -> Gradient {
         Gradient::even(&[RED, GREEN, BLUE])
     }
 
-    fn click(h: &mut Harness<'_, State>, label: &str) {
+    pub(crate) fn click(h: &mut Harness<'_, State>, label: &str) {
         h.get_by_label(label).click();
         h.run();
     }
@@ -490,5 +556,86 @@ mod tests {
         h.run();
         let bands = h.state().changes.iter().rev().find(|(k, _)| k == "colours~bands").map(|(_, v)| v.clone());
         assert!(matches!(bands, Some(Value::Number(x)) if x > 20.0), "{:?}", h.state().changes);
+    }
+
+    #[test]
+    fn the_tools_flip_spread_and_roll_the_colours() {
+        let mut start = three();
+        start.stops[1].at = 0.2;
+        start.stops[0].blend = GapBlend::EaseIn;
+        let mut h = harness(start.clone());
+        click(&mut h, "Colours flip");
+        let g = h.state().gradient().clone();
+        assert_eq!(g.stops.iter().map(|s| s.color).collect::<Vec<_>>(), vec![BLUE, GREEN, RED]);
+        assert!((g.stops[1].at - 0.8).abs() < 1e-6);
+        assert_eq!(g.stops[1].blend, GapBlend::EaseOut, "the old first gap, mirrored");
+        click(&mut h, "Colours spread evenly");
+        let ats: Vec<f32> = h.state().gradient().stops.iter().map(|s| s.at).collect();
+        assert_eq!(ats, vec![0.0, 0.5, 1.0]);
+        // Looped, spread evenly goes round the loop.
+        h.state_mut().values.insert("colours".into(), Value::Gradient(Gradient { looped: true, ..start.clone() }));
+        h.run();
+        click(&mut h, "Colours spread evenly");
+        let ats: Vec<f32> = h.state().gradient().stops.iter().map(|s| s.at).collect();
+        assert!(ats.iter().zip([0.0, 1.0 / 3.0, 2.0 / 3.0]).all(|(a, b)| (a - b).abs() < 1e-6), "{ats:?}");
+        let before = h.state().gradient().clone();
+        click(&mut h, "Colours random");
+        let after = h.state().gradient().clone();
+        assert_ne!(after.stops, before.stops, "new colours");
+        for (a, b) in after.stops.iter().zip(&before.stops) {
+            assert_eq!((a.at, a.blend, a.middle, a.color.a), (b.at, b.blend, b.middle, b.color.a));
+        }
+        assert!(after.looped);
+    }
+
+    #[test]
+    fn pick_from_picture_puts_the_picked_colour_on_the_selected_stop() {
+        let mut start = three();
+        start.stops[1].color.a = 100;
+        let mut h = harness(start);
+        click(&mut h, "Colours stop 2");
+        h.key_press(egui::Key::Escape);
+        h.run();
+        click(&mut h, "Colours pick from picture");
+        assert!(eyedropper::target(&h.ctx).is_some(), "picking");
+        eyedropper::deliver(&h.ctx, Color::rgb(10, 20, 30));
+        h.run();
+        let g = h.state().gradient().clone();
+        assert_eq!(g.stops[1].color, Color { r: 10, g: 20, b: 30, a: 100 }, "opacity kept");
+        assert_eq!(g.stops[0].color, RED);
+        assert!(eyedropper::target(&h.ctx).is_none(), "one pick");
+        // Clicking it again while picking stops.
+        click(&mut h, "Colours pick from picture");
+        click(&mut h, "Colours pick from picture");
+        assert!(eyedropper::target(&h.ctx).is_none());
+    }
+
+    #[test]
+    fn a_gradient_copied_with_its_settings_pastes_them_too() {
+        let mut values = BTreeMap::new();
+        values.insert("colours".to_owned(), Value::Gradient(three()));
+        values.insert("colours~bands".to_owned(), Value::Number(5.0));
+        values.insert("edge".to_owned(), Value::Gradient(Gradient::solid(RED)));
+        let mut h = harness_with(two_gradients(), values);
+        h.get_by_label("Colours").click_secondary();
+        h.run();
+        click(&mut h, "Copy gradient with its settings");
+        h.get_by_label("Edge").click_secondary();
+        h.run();
+        click(&mut h, "Paste Value (3 colours with its settings)");
+        assert_eq!(h.state().gradient_at("edge"), &three());
+        assert_eq!(h.state().values.get("edge~bands"), Some(&Value::Number(5.0)), "{:?}", h.state().changes);
+        // A plain Copy Value pastes the colours only.
+        h.state_mut().values.insert("colours~bands".into(), Value::Number(9.0));
+        h.state_mut().values.insert("edge".into(), Value::Gradient(Gradient::solid(BLUE)));
+        h.run();
+        h.get_by_label("Colours").click_secondary();
+        h.run();
+        click(&mut h, "Copy Value");
+        h.get_by_label("Edge").click_secondary();
+        h.run();
+        click(&mut h, "Paste Value (3 colours)");
+        assert_eq!(h.state().gradient_at("edge"), &three());
+        assert_eq!(h.state().values.get("edge~bands"), Some(&Value::Number(5.0)), "left as it was");
     }
 }

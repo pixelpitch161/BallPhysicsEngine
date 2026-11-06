@@ -40,7 +40,7 @@ const LISTS_HEIGHT: f32 = 320.0;
 /// A gradient bar named "Colours". The inspector names each bar after its setting.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn gradient_bar(ui: &mut Ui, id: egui::Id, g: &mut Gradient) -> Response {
-    gradient_bar_named(ui, id, g, "Colours")
+    gradient_bar_named(ui, id, g, "Colours", false)
 }
 
 /// The stop selected on the bar with id `id` (the first until one is picked), within `g`.
@@ -56,9 +56,17 @@ pub fn select_stop(ctx: &egui::Context, id: egui::Id, i: usize) {
 
 /// The gradient bar, its controls named after `name` ("Colours bar", "Colours stop 1",
 /// "Colours middle 1", "Colours palette"). A one-stop gradient shows as a single swatch and a
-/// "+" that adds a second stop, white at the end. The response is marked changed when `g`
-/// changed.
-pub fn gradient_bar_named(ui: &mut Ui, id: egui::Id, g: &mut Gradient, name: &str) -> Response {
+/// "+" that adds a second stop, white at the end. With `big`, a gradient of two or more stops
+/// has an Editor button beside the bar that opens the big editor (`gradient_editor.rs`). The
+/// response is marked changed when `g` changed.
+pub fn gradient_bar_named(ui: &mut Ui, id: egui::Id, g: &mut Gradient, name: &str, big: bool) -> Response {
+    bar_in(ui, id, id, g, name, big)
+}
+
+/// [`gradient_bar_named`] with its controls under `widgets` and the selected stop kept under
+/// `memory`, so a second bar on the same gradient (the big editor's) selects the same stop.
+pub fn bar_in(ui: &mut Ui, widgets: egui::Id, memory: egui::Id, g: &mut Gradient, name: &str, big: bool) -> Response {
+    let id = widgets;
     if g.stops.len() <= 1 {
         return ui.horizontal(|ui| one_colour(ui, id, g, name)).inner;
     }
@@ -82,8 +90,11 @@ pub fn gradient_bar_named(ui: &mut Ui, id: egui::Id, g: &mut Gradient, name: &st
                     let like = before.and_then(|b| g.stops.get(b)).copied();
                     let blend = like.map_or(bpe_core::GapBlend::Smooth, |s| s.blend);
                     g.stops.insert(i, Stop { blend, ..Stop::new(at, color) });
-                    select_stop(ui.ctx(), id, i);
+                    select_stop(ui.ctx(), memory, i);
                     changed = true;
+                }
+                if big {
+                    crate::gradient_editor::open_button(ui, memory, name);
                 }
                 (bar, response)
             })
@@ -98,7 +109,7 @@ pub fn gradient_bar_named(ui: &mut Ui, id: egui::Id, g: &mut Gradient, name: &st
                 strip
             })
             .inner;
-        response |= handles(ui, id, g, bar, strip, name, &mut changed);
+        response |= handles(ui, id, memory, g, bar, strip, name, &mut changed);
         // Air between the handles and the next row.
         ui.add_space(2.0);
         response
@@ -189,7 +200,7 @@ const CHECK_DARK: Color32 = Color32::from_gray(90); // scene colour
 const CHECK_LIGHT: Color32 = Color32::from_gray(150); // scene colour
 
 /// A colour as the bar shows it: see-through over the checkerboard, an additive one solid.
-fn shown(c: Color) -> Color32 {
+pub(crate) fn shown(c: Color) -> Color32 {
     if c.is_additive() {
         Color32::from_rgb(c.r, c.g, c.b) // scene colour
     } else {
@@ -431,10 +442,12 @@ fn handle_id(id: egui::Id, i: usize) -> egui::Id {
 
 /// The handles under the bar, one per stop, and the gaps' diamonds, and what they do. The stop
 /// being dragged is kept in the bar's memory, so it stays the dragged one when the list re-sorts
-/// under it; the selected stop follows its stop the same way.
+/// under it; the selected stop (kept under `memory`) follows its stop the same way.
+#[allow(clippy::too_many_arguments)]
 fn handles(
     ui: &mut Ui,
     id: egui::Id,
+    memory: egui::Id,
     g: &mut Gradient,
     bar: Rect,
     strip: Rect,
@@ -445,7 +458,7 @@ fn handles(
     diamonds(ui, id, g, bar, strip, name, changed);
     let drag_key = id.with("dragging");
     let mut dragging: Option<usize> = ui.data(|d| d.get_temp(drag_key));
-    let mut selected = selected_stop(ui.ctx(), id, g);
+    let mut selected = selected_stop(ui.ctx(), memory, g);
     let pointer = ui.input(|i| i.pointer.interact_pos());
     let far = |p: Option<Pos2>| p.is_some_and(|p| p.y > bar.bottom() + REMOVE_DROP);
     let mut remove = None;
@@ -524,7 +537,7 @@ fn handles(
         }
         *changed = true;
     }
-    select_stop(ui.ctx(), id, selected);
+    select_stop(ui.ctx(), memory, selected);
     ui.data_mut(|d| match dragging {
         Some(j) => {
             d.insert_temp(drag_key, j);
