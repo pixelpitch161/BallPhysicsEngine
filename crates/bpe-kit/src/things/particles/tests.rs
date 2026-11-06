@@ -203,7 +203,13 @@ fn steady_births_come_at_the_rate_and_stop_at_most_particles() {
 #[test]
 fn particles_die_at_the_end_of_their_life() {
     let (mut scene, id) = scene_with(Look::Empty);
-    let source = ParticlesSettings { emit: Emit::OnceAtTheStart, count: 50, life: 1.0, life_spread: 0.0, ..ParticlesSettings::default() };
+    let source = ParticlesSettings {
+        emit: Emit::OnceAtTheStart,
+        count: 50,
+        life: 1.0,
+        life_spread: 0.0,
+        ..ParticlesSettings::default()
+    };
     set_source(&mut scene, id, &source);
     let (world, _, _) = run(&scene, 0.9);
     assert_eq!(particles(&world, id).specks.len(), 50);
@@ -319,7 +325,12 @@ fn riding_each_ball_births_on_the_balls() {
     assert!(!st.specks.is_empty());
     let bodies = &world.bodies[&ball];
     for s in &st.specks {
-        assert!(s.place.distance(bodies.position[0]) < bodies.radius[0] + 30.0, "{:?} vs {:?}", s.place, bodies.position[0]);
+        assert!(
+            s.place.distance(bodies.position[0]) < bodies.radius[0] + 30.0,
+            "{:?} vs {:?}",
+            s.place,
+            bodies.position[0]
+        );
         assert_eq!(s.ball, 1, "it notes its ball");
     }
 }
@@ -342,7 +353,8 @@ fn frame_of(scene: &Scene, time: f64) -> (Frame, usize, ThingId) {
 fn each_layer_draws_every_particle_with_its_sub_layers() {
     let reg = registry();
     let (mut scene, id) = scene_with(Look::Empty);
-    let source = ParticlesSettings { emit: Emit::OnceAtTheStart, count: 64, life: 10.0, ..ParticlesSettings::default() };
+    let source =
+        ParticlesSettings { emit: Emit::OnceAtTheStart, count: 64, life: 10.0, ..ParticlesSettings::default() };
     set_source(&mut scene, id, &source);
     let (frame, n, _) = frame_of(&scene, 0.5);
     assert_eq!(n, 64);
@@ -360,7 +372,8 @@ fn each_layer_draws_every_particle_with_its_sub_layers() {
 fn a_share_and_the_rest_split_the_particles_between_two_layers() {
     let reg = registry();
     let (mut scene, id) = scene_with(Look::Empty);
-    let source = ParticlesSettings { emit: Emit::OnceAtTheStart, count: 400, life: 10.0, ..ParticlesSettings::default() };
+    let source =
+        ParticlesSettings { emit: Emit::OnceAtTheStart, count: 400, life: 10.0, ..ParticlesSettings::default() };
     set_source(&mut scene, id, &source);
     let first = scene.things[&id].slots[&SlotId::Look].layers[0].id;
     let second = scene.add_layer(&reg, id, SlotId::Look, SPRITES).unwrap();

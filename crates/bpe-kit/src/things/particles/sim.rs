@@ -23,7 +23,7 @@ fn read_into(st: &mut ParticlesState, resolved: &ResolvedThing) {
 
 /// Notes how much memory the thing's particles take, for playback budgets.
 fn note_memory(world: &mut World, id: ThingId) {
-    let bytes = world.states.get(&id).and_then(|s| s.as_any().downcast_ref::<ParticlesState>()).map(|s| s.memory());
+    let bytes = world.states.get(&id).and_then(|s| (**s).as_any().downcast_ref::<ParticlesState>()).map(|s| s.memory());
     if let Some(bytes) = bytes {
         world.state_memory.insert(id, bytes);
     }
@@ -80,5 +80,5 @@ impl ThingSim for ParticlesSim {
 
 /// The thing's particles as the world has them now.
 pub fn state_of(world: &World, id: ThingId) -> Option<&ParticlesState> {
-    world.states.get(&id)?.as_any().downcast_ref::<ParticlesState>()
+    (**world.states.get(&id)?).as_any().downcast_ref::<ParticlesState>()
 }

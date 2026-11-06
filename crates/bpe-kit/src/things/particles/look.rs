@@ -300,8 +300,18 @@ pub fn kinds() -> Vec<Kind> {
     };
     let sub = |id, name, help, settings| sub_kind(CARD, id, name, help, settings);
     vec![
-        drawn(SPRITES, "Sprites", "Each particle drawn as a dot, a spark, a star, confetti and more.", SpritesLayer::defs),
-        drawn(STREAKS, "Streaks", "Each particle drawn as a line along the way it goes: longer the faster it goes.", StreaksLayer::defs),
+        drawn(
+            SPRITES,
+            "Sprites",
+            "Each particle drawn as a dot, a spark, a star, confetti and more.",
+            SpritesLayer::defs,
+        ),
+        drawn(
+            STREAKS,
+            "Streaks",
+            "Each particle drawn as a line along the way it goes: longer the faster it goes.",
+            StreaksLayer::defs,
+        ),
         sub(SUB_GLOW, "Glow", "Soft light round its layer's particles.", ShapeSubGlow::defs),
         sub(SUB_OUTLINE, "Outline", "A line round its layer's particles, painted over them.", SubOutline::defs),
         sub(SUB_SHADOW, "Shadow", "A soft offset copy of its layer's particles, under them.", ShapeSubShadow::defs),

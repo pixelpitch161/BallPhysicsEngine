@@ -270,7 +270,8 @@ pub fn meet_walls(s: &mut Speck, walls: &[WallAt], m: &MeetsSettings) {
             continue;
         }
         let mut at = s.place;
-        let Some(contact) = keep_clear_from(&mut at, s.previous, &w.before, s.velocity, SPECK_RADIUS, Touch::Edge, &w.wall)
+        let Some(contact) =
+            keep_clear_from(&mut at, s.previous, &w.before, s.velocity, SPECK_RADIUS, Touch::Edge, &w.wall)
         else {
             continue;
         };

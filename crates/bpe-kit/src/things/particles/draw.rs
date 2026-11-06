@@ -166,7 +166,11 @@ pub fn draw_layer(cx: &DrawCx, st: &ParticlesState, layer: &LookLayer, pieces: &
         let Some(grow) = c.size_curve.at(t) else { continue };
         let age = s.age(now);
         let flicker = 1.0
-            - twinkle * (0.5 + 0.5 * (c.twinkle_speed * std::f32::consts::TAU * age + unit(s.seed, 67) * 6.283).sin());
+            - twinkle
+                * (0.5
+                    + 0.5
+                        * (c.twinkle_speed * std::f32::consts::TAU * age + unit(s.seed, 67) * std::f32::consts::TAU)
+                            .sin());
         let alpha = (c.opacity * c.fade.at(t) * flicker).max(0.0);
         if alpha <= 0.0 {
             continue;

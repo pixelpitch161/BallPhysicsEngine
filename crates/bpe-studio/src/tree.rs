@@ -858,6 +858,8 @@ enum Icon {
     Lamp,
     /// A rig: a bar with lamps hanging from it.
     Rig,
+    /// A Particles thing: a scatter of specks.
+    Specks,
     /// Anything else.
     Diamond,
 }
@@ -872,6 +874,7 @@ fn icon_shape(kind: &str) -> Icon {
         "folder" => Icon::Folder,
         "light" => Icon::Lamp,
         "rig" => Icon::Rig,
+        bpe_kit::things::particles::KIND => Icon::Specks,
         _ => Icon::Diamond,
     }
 }
@@ -920,6 +923,19 @@ fn paint_icon(painter: &egui::Painter, rect: Rect, kind: &str, ink: Color32) {
                 let top = c + Vec2::new(k * r * 0.7, -r * 0.6);
                 let cone = vec![top, top + Vec2::new(-r * 0.3, r * 0.9), top + Vec2::new(r * 0.3, r * 0.9)];
                 painter.add(egui::Shape::convex_polygon(cone, ink, Stroke::NONE));
+            }
+        }
+        Icon::Specks => {
+            let specks = [
+                (-0.6, -0.55, 0.3),
+                (0.45, -0.7, 0.22),
+                (0.05, -0.05, 0.36),
+                (-0.7, 0.45, 0.22),
+                (0.65, 0.35, 0.28),
+                (0.0, 0.8, 0.18),
+            ];
+            for (x, y, size) in specks {
+                painter.circle_filled(c + Vec2::new(x, y) * r, size * r, ink);
             }
         }
         Icon::Diamond => {
@@ -1138,9 +1154,12 @@ mod tests {
         assert_eq!(h.state().scene.things[&empty].parent, Some(ThingId::ROOT));
         // A starting look from its group, inside the selected ball: it rides it.
         h.state_mut().selection.set(ThingId(2));
+        // Room for the group's menu beside the Add thing menu.
+        h.set_size(egui::vec2(900.0, 900.0));
+        h.run();
         h.get_by_label("+ Add thing").click();
         h.run();
-        h.get_by_label("Fire and energy").click();
+        h.get_by_label("Fire and energy").hover();
         h.run();
         h.get_by_label("Fire on a ball").click();
         h.run();

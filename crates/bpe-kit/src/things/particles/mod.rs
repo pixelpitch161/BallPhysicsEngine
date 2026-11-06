@@ -216,15 +216,7 @@ pub struct ParticlesSettings {
     )]
     pub every: f32,
     /// How many each burst, hit or crowd has.
-    #[setting(
-        label = "Count",
-        when = "emit!=steady",
-        range(0, 1e9),
-        span(1, 2000),
-        keyframe,
-        pulse,
-        group = "When"
-    )]
+    #[setting(label = "Count", when = "emit!=steady", range(0, 1e9), span(1, 2000), keyframe, pulse, group = "When")]
     pub count: u32,
     /// Whose balls' hits let particles off.
     #[setting(label = "Who hits", when = "emit=on_hits", group = "When")]
@@ -235,7 +227,15 @@ pub struct ParticlesSettings {
     #[setting(label = "Follow impact", when = "emit=on_hits", group = "When")]
     pub follow_impact: bool,
 
-    #[setting(label = "Life", range(0.001, 1e9), span(0.05, 20), unit = "s", simple, keyframe, group = "Each particle")]
+    #[setting(
+        label = "Life",
+        range(0.001, 1e9),
+        span(0.05, 20),
+        unit = "s",
+        simple,
+        keyframe,
+        group = "Each particle"
+    )]
     pub life: f32,
     #[setting(label = "Life spread", span(0, 1), keyframe, group = "Each particle")]
     pub life_spread: f32,
@@ -249,7 +249,14 @@ pub struct ParticlesSettings {
     #[setting(label = "Angle", when = "heading=a_way", span(-180, 180), unit = "°", keyframe, group = "Each particle")]
     pub angle: f32,
     /// How wide they fan out round their way.
-    #[setting(label = "Spread", when = "heading!=all_round", span(0, 360), unit = "°", keyframe, group = "Each particle")]
+    #[setting(
+        label = "Spread",
+        when = "heading!=all_round",
+        span(0, 360),
+        unit = "°",
+        keyframe,
+        group = "Each particle"
+    )]
     pub spread: f32,
     /// How much of the speed of the ball they come from they take with them.
     #[setting(label = "Takes the parent's speed", span(0, 1), keyframe, group = "Each particle")]

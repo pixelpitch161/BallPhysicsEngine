@@ -490,14 +490,16 @@ fn recipe(look: Look, rides: bool) -> Recipe {
             forces: vec![
                 (GRAVITY, GravityForce { strength: 600.0, ..Default::default() }.to_params()),
                 (DRAG, DragForce { drag: 1.2, ..Default::default() }.to_params()),
-                (
-                    SWAY,
-                    SwayForce { sway: 15.0, flutter: 4.0, flutter_drift: 40.0, ..Default::default() }.to_params(),
-                ),
+                (SWAY, SwayForce { sway: 15.0, flutter: 4.0, flutter_drift: 40.0, ..Default::default() }.to_params()),
             ],
             meets: MeetsSettings::default(),
             layers: vec![sprites(
-                SpritesLayer { made_of: ShapeMadeOf::Confetti, softness: 0.0, colour: rainbow(Follow::Order), ..Default::default() },
+                SpritesLayer {
+                    made_of: ShapeMadeOf::Confetti,
+                    softness: 0.0,
+                    colour: rainbow(Follow::Order),
+                    ..Default::default()
+                },
                 Vec::new(),
             )],
         },

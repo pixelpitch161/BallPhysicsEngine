@@ -233,8 +233,11 @@ impl Forces {
             }
             match f {
                 Force::Gravity(g) => {
-                    let pull =
-                        if g.scene { cx.gravity } else { Vec2::from_angle(fin(g.direction).to_radians()) * fin(g.strength) };
+                    let pull = if g.scene {
+                        cx.gravity
+                    } else {
+                        Vec2::from_angle(fin(g.direction).to_radians()) * fin(g.strength)
+                    };
                     s.velocity += pull * amount * dt;
                 }
                 Force::Wind(w) => {

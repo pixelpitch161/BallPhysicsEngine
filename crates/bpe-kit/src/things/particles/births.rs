@@ -103,7 +103,8 @@ fn balls_of(world: &World, parent: ThingId) -> Vec<(usize, Vec2, Vec2, f32)> {
 /// How many places a riding source has right now (balls ridden one by one; 1 otherwise), for
 /// Steady's rate a ball.
 pub fn riding_count(s: &ParticlesSettings, world: &World, parent: Option<ThingId>) -> usize {
-    if s.from != BornFrom::RidingItsParent || !matches!(s.rides_on, RidesOn::EachBall | RidesOn::TheEdge | RidesOn::Inside)
+    if s.from != BornFrom::RidingItsParent
+        || !matches!(s.rides_on, RidesOn::EachBall | RidesOn::TheEdge | RidesOn::Inside)
     {
         return 1;
     }
@@ -190,13 +191,7 @@ pub fn place_for(s: &ParticlesSettings, cx: &BirthCx, parent: Option<ThingId>, s
                 let centre = wall.outline.center();
                 let velocity = wall.velocity;
                 let points = outline_points(&wall.outline);
-                let place = |at: Vec2, out: Option<Vec2>| Place {
-                    at,
-                    velocity,
-                    out,
-                    impact: 1.0,
-                    ..Place::default()
-                };
+                let place = |at: Vec2, out: Option<Vec2>| Place { at, velocity, out, impact: 1.0, ..Place::default() };
                 return Some(match s.rides_on {
                     RidesOn::TheEdge => match round_points(&points, u1) {
                         Some((at, out)) => place(at, Some(out)),
@@ -296,7 +291,11 @@ pub fn spawn(s: &ParticlesSettings, place: &Place, seed: u32, now: u32) -> Speck
         ball: place.ball,
         flags: 0,
     };
-    if speck.place.is_finite() && speck.velocity.is_finite() { speck } else { Speck { flags: super::state::DEAD, ..speck } }
+    if speck.place.is_finite() && speck.velocity.is_finite() {
+        speck
+    } else {
+        Speck { flags: super::state::DEAD, ..speck }
+    }
 }
 
 /// The seed of the thing's birth number `index`.

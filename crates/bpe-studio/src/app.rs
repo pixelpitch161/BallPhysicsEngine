@@ -1,13 +1,13 @@
 //! The editor's state and frame: files, undo, shortcuts and the panel layout.
 
 use crate::aim_job::AimJob;
-use crate::particle_job::ParticleJob;
 use crate::audio_out::AudioOut;
 use crate::export_window::ExportWindow;
 use crate::grid::{self, Grid};
 use crate::history::{History, UNDO_MERGE};
 use crate::inspector::Inspector;
 use crate::mixer::{self, Mixer};
+use crate::particle_job::ParticleJob;
 use crate::preview::Preview;
 use crate::selection::Selection;
 use crate::settings::ListenSettings;
@@ -425,7 +425,8 @@ impl Studio {
         let particle_print = bpe_runtime::beside_fingerprint(&self.scene, &self.resolved, &self.kit.sims);
         if particle_print != self.particle_print {
             self.particle_print = particle_print;
-            self.particle_job = ParticleJob::start_if_wanted(&self.scene, &self.resolved, self.kit.sims.clone(), self.time);
+            self.particle_job =
+                ParticleJob::start_if_wanted(&self.scene, &self.resolved, self.kit.sims.clone(), self.time);
         }
         self.revision += 1;
         // The sound follows: a physics change starts its world over (no hits from the old

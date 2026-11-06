@@ -40,7 +40,7 @@ impl Snapshot {
         let (mut count, mut step_ms) = (0, 0.0);
         for id in &world.beside {
             if let Some(state) = world.states.get(id) {
-                if let Some(p) = state.as_any().downcast_ref::<ParticlesState>() {
+                if let Some(p) = (**state).as_any().downcast_ref::<ParticlesState>() {
                     count += p.specks.len();
                     step_ms += p.last_ms;
                 }
@@ -168,7 +168,7 @@ mod tests {
         job.follow(1.0);
         let again = wait_for(&job, 1.0);
         let hash = |s: &Snapshot| {
-            let st = s.states[0].1.as_any().downcast_ref::<ParticlesState>().unwrap();
+            let st = (*s.states[0].1).as_any().downcast_ref::<ParticlesState>().unwrap();
             bpe_kit::things::particles::step::hash_of(st)
         };
         assert_eq!(hash(&again), hash(&at_one));

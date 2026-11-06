@@ -1449,7 +1449,8 @@ fn jump_bar(
     // Motion and Bounce share one button, Physics, at the first of them.
     let mut cards = own;
     for s in SlotId::ALL.into_iter().filter(|s| s.in_card_list() && thing.slots.contains_key(s)) {
-        let entry = if in_physics(kind.id(), s) { (Card::Physics, "Physics") } else { (Card::Slot(s), kind.slot_label(s)) };
+        let entry =
+            if in_physics(kind.id(), s) { (Card::Physics, "Physics") } else { (Card::Slot(s), kind.slot_label(s)) };
         if !cards.contains(&entry) {
             cards.push(entry);
         }

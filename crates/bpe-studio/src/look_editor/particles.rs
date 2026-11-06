@@ -129,7 +129,7 @@ mod tests {
     fn the_forces_list_adds_forces_without_touching_the_look() {
         let (mut h, id) = harness();
         assert!(h.query_by_label("Physics").is_none(), "a Particles thing has no Physics card");
-        assert!(h.query_by_label("Meets things").is_some());
+        assert!(h.query_all_by_label("Meets things").next().is_some());
         let look_pick = h.state().inspector.selected_layer.get(&id).copied();
         h.get_by_label("+ Add force").click();
         h.run();
