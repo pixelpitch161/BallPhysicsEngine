@@ -342,8 +342,8 @@ fn fs_light(in: FsIn) -> @location(0) vec4<f32> {
             }
             if kind > 0.5 && kind < 1.5 {
                 // Spot: inside its cone round where it points.
-                let from = select(vec2<f32>(0.0), -d / dist, dist > 1e-3);
-                let cosine = select(dot(from, l.p3.xy), 1.0, dist <= 1e-3);
+                let away = select(vec2<f32>(0.0), -d / dist, dist > 1e-3);
+                let cosine = select(dot(away, l.p3.xy), 1.0, dist <= 1e-3);
                 amount *= smoothstep(l.p3.w, l.p3.z, cosine);
                 if amount == 0.0 {
                     continue;

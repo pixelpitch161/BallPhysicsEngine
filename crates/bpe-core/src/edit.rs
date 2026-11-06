@@ -83,7 +83,7 @@ impl Scene {
     }
 
     /// `base`, or `base` with the next number after the highest one in use ("Balls 2").
-    fn free_name(&self, base: &str) -> String {
+    pub fn free_name(&self, base: &str) -> String {
         let prefix = format!("{base} ");
         let highest = self
             .things

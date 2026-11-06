@@ -34,6 +34,7 @@ fn scenes_without_a_lighting_card_draw_as_they_always_did() {
     let mut renderer = Renderer::new(&device, W, H);
     let mut lines = String::from("# scene\tmoment\thash\n");
     for (name, scene) in scenes::all(&kit.registry) {
+        assert!(!scene.things[&bpe_core::ThingId::ROOT].slots.contains_key(&bpe_core::SlotId::Lighting));
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         let mut playback = Playback::new(&scene, &resolved, kit.sims.clone());
         for t in MOMENTS {

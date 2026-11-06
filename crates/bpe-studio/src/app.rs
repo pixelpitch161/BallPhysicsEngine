@@ -122,6 +122,8 @@ pub struct Studio {
     pub status: String,
     /// What is wrong with a shader module the preview skipped, shown in the status line.
     pub shader_problem: Option<String>,
+    /// The preview's lighting, when it is lit: how many lights and the GPU's time on them (ms).
+    pub lighting: Option<(usize, Option<f32>)>,
     pub confirm: Option<Pending>,
     pub panels: Panels,
     /// The editor's grid over the preview and whether drags snap to it.
@@ -245,6 +247,7 @@ impl Studio {
             history: History::default(),
             status: "Ready.".into(),
             shader_problem: None,
+            lighting: None,
             confirm: None,
             panels: Panels::default(),
             grid: Grid::default(),
@@ -1040,6 +1043,9 @@ impl Studio {
             if self.panels.export.busy() {
                 ui.label(RichText::new("· Exporting…").small().color(style::MUTED));
             }
+            if let Some((lights, ms)) = self.lighting {
+                ui.label(RichText::new(lighting_readout(lights, ms)).small().color(style::MUTED));
+            }
         });
     }
 
@@ -1150,6 +1156,7 @@ impl eframe::App for Studio {
             self.selection.set(id);
         }
         self.shader_problem = outcome.shader_problem;
+        self.lighting = outcome.lighting;
         if outcome.catching_up {
             ctx.request_repaint();
         }
@@ -1230,6 +1237,15 @@ fn aim_job_for(scene: &Scene, resolved: &Resolved, kit: &Kit) -> Option<AimJob> 
 
 fn follow_of(scene: &Scene, resolved: &bpe_core::Resolved) -> Option<std::sync::Arc<bpe_sound::ControlSampler>> {
     bpe_sound::follows_sound(scene).then(|| std::sync::Arc::new(bpe_sound::ControlSampler::new(scene, resolved)))
+}
+
+/// The status line's lighting readout: "· Lighting: 3 lights, 1.8 ms", with a warning past 256
+/// lights (each one costs every pixel a shadow march).
+pub fn lighting_readout(lights: usize, ms: Option<f32>) -> String {
+    let count = if lights == 1 { "1 light".to_owned() } else { format!("{lights} lights") };
+    let time = ms.map(|ms| format!(", {ms:.1} ms")).unwrap_or_default();
+    let warn = if lights > 256 { " (that many lights is slow: try Quality Draft)" } else { "" };
+    format!("· Lighting: {count}{time}{warn}")
 }
 
 #[cfg(test)]

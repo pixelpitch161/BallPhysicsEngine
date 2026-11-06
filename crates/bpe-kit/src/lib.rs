@@ -74,6 +74,7 @@ pub fn draws() -> Draws {
     d.add(ShapeDraw);
     d.add(BallsDraw);
     d.add(EmitterDraw);
+    d.add(things::light::draw::LightDraw);
     for b in &bpe_gfx::effects::BUILTINS {
         d.add_module(EffectDraw(b));
     }
@@ -105,6 +106,7 @@ pub fn registry() -> Registry {
     r.add_thing(EmitterKind);
     r.add_thing(FolderKind);
     r.add_thing(CameraKind);
+    r.add_thing(things::light::LightKind);
     r.add_module(BasicLookKind);
     r.add_module(modules::look::LayersLookKind);
     for k in modules::look::layers::kinds() {
@@ -116,6 +118,7 @@ pub fn registry() -> Registry {
         r.add_layer(k);
     }
     r.add_module(BasicMotionKind);
+    r.add_module(modules::lighting::LightingKind);
     r.add_module(BasicBounceKind);
     for k in modules::shader::kinds() {
         r.add_module(k);

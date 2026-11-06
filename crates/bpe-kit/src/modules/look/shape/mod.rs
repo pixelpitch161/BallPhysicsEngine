@@ -200,6 +200,9 @@ impl LayerKind for ShapeBody {
     fn settings(&self) -> &'static [SettingDef] {
         &[]
     }
+    fn light_defs(&self) -> &'static [SettingDef] {
+        crate::modules::look::layers::lighting::defs_of(BODY)
+    }
     fn section(&self) -> LayerSection {
         LayerSection::Drawn
     }

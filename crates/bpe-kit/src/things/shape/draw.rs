@@ -65,11 +65,13 @@ impl ThingDraw for ShapeDraw {
     fn draw_around(&self, cx: &DrawCx, index: usize, frame: &mut Frame) {
         let Some(layer) = around_of(cx.resolved).into_iter().nth(index) else { return };
         if let AroundKind::Particles(particles) = &layer.kind {
+            let drew = crate::modules::look::layers::around::Drew::from(frame);
             let reads = layer.subs.iter().any(|s| s.reads_hits());
             let hit = if reads { shape_hits(cx) } else { bpe_gfx::NO_HIT };
             let last = (hit[0] < bpe_gfx::NO_HIT[0]).then_some((hit[0], hit[1]));
             let hits = HitInfo { last, hits: hit[2] as u32 };
             crate::modules::look::layers::particles::draw::draw_shape(cx, &layer, particles, hits, frame);
+            drew.light(frame, layer.light);
         }
     }
 }

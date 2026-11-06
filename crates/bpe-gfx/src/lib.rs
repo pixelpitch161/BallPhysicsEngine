@@ -13,9 +13,11 @@ mod frame;
 #[cfg(test)]
 mod grade_tests;
 mod gradients;
+mod lighting;
 #[cfg(test)]
 mod lighting_tests;
-mod lighting;
+mod timing;
+pub use timing::FEATURES as TIMING_FEATURES;
 #[cfg(test)]
 mod layers_tests;
 mod masks;
@@ -37,9 +39,9 @@ mod util;
 
 pub use frame::{
     Around, BackgroundPaint, BallInstance, BlendLayer, DrawCx, Draws, EffectCall, FlashInstance, Frame, Grade, HitMark,
-    LayerGpu, LayeredInstance, LightGpu, LightScene, LightingGpu, LookInstance, MAX_LAYERS, MOST_TRAIL_VERTICES, ModuleDraw, NO_HIT, Particle,
-    PathInstance, Place, ShapeInstance, Stage, StreakStyle, ThingDraw, TrailVertex, blend_alpha, build_frame,
-    build_frame_with, hit_strength, push_streak, push_streak_colours, push_trail, thing_code,
+    LayerGpu, LayeredInstance, LightGpu, LightScene, LightingGpu, LookInstance, MAX_LAYERS, MOST_TRAIL_VERTICES,
+    ModuleDraw, NO_HIT, Particle, PathInstance, Place, ShapeInstance, Stage, StreakStyle, ThingDraw, TrailVertex,
+    blend_alpha, build_frame, build_frame_with, hit_strength, push_streak, push_streak_colours, push_trail, thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, PaintGpu};
 pub use masks::{MASK_TILE, MASK_TILE_BYTES, MAX_MASK_TILES, TILE_DISTANCE_REACH, tile_distance};
@@ -328,6 +330,10 @@ pub struct Renderer {
     grade_map: GradeMap,
     /// Lighting's passes and pictures, made the first time a frame is lit.
     lighting: Option<lighting::Lighting>,
+    /// Times the light passes, when the device can (`None` inside: it can't; tried once).
+    light_timer: Option<Option<timing::LightTimer>>,
+    /// The last frame's lighting: how many lights it drew, `None` when it wasn't lit.
+    lit_lights: Option<usize>,
     /// The light pass being drawn (see `Globals::light`): 0 outside the light passes.
     light_mode: u32,
     /// The light passes' globals: the world's and the screen's for mode 1, then for mode 2.
@@ -1049,6 +1055,8 @@ impl Renderer {
             targets,
             grade_map,
             lighting: None,
+            light_timer: None,
+            lit_lights: None,
             light_mode: 0,
             light_globals: Vec::new(),
         }
@@ -1181,7 +1189,13 @@ impl Renderer {
         );
         // A lit scene: the things again as their lit colour, then as their surface, each into
         // its own picture, then the light mixed into the HDR picture.
+        self.lit_lights = frame.light.as_ref().map(|scene| scene.lights.len());
+        let mut timed = false;
         if let Some(scene) = frame.light.as_ref() {
+            let timer = self.light_timer.get_or_insert_with(|| timing::LightTimer::new(device, queue));
+            if let Some(t) = timer {
+                t.start(&mut encoder);
+            }
             let lighting = self.lighting.get_or_insert_with(|| lighting::Lighting::new(device));
             lighting.ensure(device, self.targets.width, self.targets.height, scene.settings.more[2]);
             let pictures = lighting.pictures().expect("just made");
@@ -1217,6 +1231,9 @@ impl Renderer {
                 &self.targets.behind_view,
                 &self.targets.hdr,
             );
+            if let Some(Some(t)) = self.light_timer.as_mut() {
+                timed = t.end(&mut encoder);
+            }
         }
         let above = BlendLayer::above;
         let object_view = self.targets.object.as_ref().filter(|_| wants_objects).map(|(_, v)| v.clone());
@@ -1274,6 +1291,16 @@ impl Renderer {
             pass.draw(0..3, 0..1);
         }
         queue.submit([encoder.finish()]);
+        if timed && let Some(Some(t)) = &self.light_timer {
+            t.read_after_submit();
+        }
+    }
+
+    /// The last frame's lighting, when it was lit: how many lights it drew and, on a device made
+    /// with [`TIMING_FEATURES`], how long the GPU spent on the light passes lately (ms).
+    pub fn lighting_stats(&self) -> Option<(usize, Option<f32>)> {
+        let ms = self.light_timer.as_ref().and_then(|t| t.as_ref()).and_then(|t| t.last_ms);
+        self.lit_lights.map(|n| (n, ms))
     }
 
     /// Draws the frame's things into the HDR picture: the background, the layers under
@@ -1348,16 +1375,16 @@ impl Renderer {
         // The light passes run no effects: what effects paint counts as unlit.
         if self.light_mode == 0 {
             self.chain.run(
-            device,
-            queue,
-            encoder,
-            Stage::Things,
-            frame,
-            effects::chain::Canvas::Main,
-            &self.targets.hdr_texture,
-            &self.targets.hdr,
-            object_view.as_ref(),
-        );
+                device,
+                queue,
+                encoder,
+                Stage::Things,
+                frame,
+                effects::chain::Canvas::Main,
+                &self.targets.hdr_texture,
+                &self.targets.hdr,
+                object_view.as_ref(),
+            );
         }
         if !frame.flashes.is_empty() || !frame.trails_front.is_empty() || !frame.particles_front.is_empty() {
             let mut pass = begin_pass(encoder, &self.targets.hdr, "flashes", wgpu::LoadOp::Load);
@@ -1718,8 +1745,8 @@ impl Renderer {
         let clear = through.each.map_or(wgpu::Color::TRANSPARENT, each::clear);
         drop(begin_pass(encoder, &layer, "blend layer", wgpu::LoadOp::Clear(clear)));
         self.draw_things(encoder, &l.frame, b, through, &layer);
-        if let Some((frame, index, objects)) = effects
-            .filter(|(frame, index, _)| self.light_mode == 0 && effects::chain::layer_has_effects(frame, *index))
+        if let Some((frame, index, objects)) =
+            effects.filter(|(frame, index, _)| self.light_mode == 0 && effects::chain::layer_has_effects(frame, *index))
         {
             use effects::chain::Chain;
             // A material paints the layer's own things, so the object picture shows only them.

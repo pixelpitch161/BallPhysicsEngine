@@ -28,6 +28,11 @@ impl ThingDraw for SceneDraw {
         frame.exposure = s.exposure;
         frame.time = cx.time as f32;
         frame.background_on_screen = s.background_on_screen;
+        // With a Lighting card the scene is lit; its lights are added after every thing draws.
+        if let Some(card) = cx.resolved.slots.get(&bpe_core::SlotId::Lighting) {
+            let lighting = crate::modules::lighting::LightingSettings::from_params(&card.params);
+            frame.light = Some(bpe_gfx::LightScene { settings: lighting.gpu(), ..Default::default() });
+        }
     }
 }
 

@@ -438,8 +438,8 @@ pub fn show(
         }
 
         // ---------- placement ----------
-        // The camera's place is its own Position setting, which can be keyframed.
-        if id != ThingId::ROOT && kind.id() != "camera" {
+        // The camera's and a light's place is its own Position setting, which can be keyframed.
+        if id != ThingId::ROOT && kind.id() != "camera" && kind.id() != bpe_kit::things::light::LIGHT {
             ui.add_space(6.0);
             card(ui, |ui| {
                 let header = ui.horizontal(|ui| {

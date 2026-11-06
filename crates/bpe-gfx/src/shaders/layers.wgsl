@@ -58,6 +58,12 @@ fn light_piece(piece: Piece, l: LayerGpu) -> Piece {
     let s = vec3<f32>(clamp(l.light.y, 0.0, 1.0), LIGHT_HEIGHT, 0.0);
     out.c_in = s;
     out.c_out = s;
+    // A layer that doesn't block light leaves the surface under it as it is (a shine on a ball
+    // doesn't stop the ball blocking); the body always gives the surface its height.
+    if l.light.y < 0.5 && l.head.x != 0u {
+        out.a_in = 0.0;
+        out.a_out = 0.0;
+    }
     return out;
 }
 

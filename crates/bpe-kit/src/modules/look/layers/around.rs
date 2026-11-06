@@ -27,6 +27,32 @@ pub struct AroundLayer {
     pub subs: Vec<SubLayer>,
     /// The ball numbers that wear it (empty for every ball).
     pub only: Vec<u32>,
+    /// How it takes the scene's light ([`super::lighting::of`]).
+    pub light: [f32; 4],
+}
+
+/// Where a frame's trail and particle lists ended before an around layer drew, so what it drew
+/// can be given its Lighting after ([`Drew::light`]).
+#[derive(Clone, Copy, Debug)]
+pub struct Drew([usize; 4]);
+
+impl Drew {
+    pub fn from(frame: &bpe_gfx::Frame) -> Drew {
+        Drew([frame.trails.len(), frame.trails_front.len(), frame.particles.len(), frame.particles_front.len()])
+    }
+
+    /// Gives everything drawn since [`Drew::from`] the Lighting `light`.
+    pub fn light(self, frame: &mut bpe_gfx::Frame, light: [f32; 4]) {
+        if light == [0.0; 4] {
+            return;
+        }
+        let [t, tf, p, pf] = self.0;
+        let two = [light[0], light[1]];
+        frame.trails.iter_mut().skip(t).for_each(|v| v.light = two);
+        frame.trails_front.iter_mut().skip(tf).for_each(|v| v.light = two);
+        frame.particles.iter_mut().skip(p).for_each(|s| s.light = [light[0], light[1], 0.0, 0.0]);
+        frame.particles_front.iter_mut().skip(pf).for_each(|s| s.light = [light[0], light[1], 0.0, 0.0]);
+    }
 }
 
 impl AroundLayer {
@@ -90,7 +116,8 @@ pub fn around_layers(slot: &ResolvedSlot, shape: bool) -> Vec<AroundLayer> {
                 continue;
             }
         };
-        out.push(AroundLayer { id: layer.id, kind, subs: Vec::new(), only: layer.only.clone() });
+        let light = super::lighting::of(&p);
+        out.push(AroundLayer { id: layer.id, kind, subs: Vec::new(), only: layer.only.clone(), light });
     }
     out
 }

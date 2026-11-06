@@ -186,7 +186,15 @@ pub struct LightSettings {
     #[setting(label = "Sun size", when = "kind=sun", span(0, 20), unit = "°", keyframe, group = "Light")]
     pub sun_size: f32,
     /// How wide the spot's cone is, edge to edge.
-    #[setting(label = "Cone width", when = "kind=spot", range(0, 360), span(1, 180), unit = "°", keyframe, group = "Light")]
+    #[setting(
+        label = "Cone width",
+        when = "kind=spot",
+        range(0, 360),
+        span(1, 180),
+        unit = "°",
+        keyframe,
+        group = "Light"
+    )]
     pub cone: f32,
     /// How soft the cone's edge is.
     #[setting(label = "Cone edge", when = "kind=spot", span(0, 60), unit = "°", keyframe, group = "Light")]
@@ -351,6 +359,32 @@ pub fn kelvin_to_linear(kelvin: f32) -> [f32; 3] {
     [rgb[0] / top, rgb[1] / top, rgb[2] / top]
 }
 
+/// Adds a light of `kind` under `parent`, named for its kind ("Spot light 2"). Inside a Balls,
+/// Emitter or Shape thing it rides on it, right on what it rides; elsewhere it hangs above the
+/// middle. The first light gives the scene its Lighting card.
+pub fn add_light(
+    scene: &mut bpe_core::Scene,
+    reg: &bpe_core::Registry,
+    kind: LightType,
+    parent: bpe_core::ThingId,
+) -> Result<bpe_core::ThingId, bpe_core::EditError> {
+    let rides = scene.things.get(&parent).is_some_and(|p| RIDES.contains(&p.kind.as_str()));
+    let id = crate::add_thing(scene, reg, LIGHT, parent)?;
+    let name = scene.free_name(kind.menu_name());
+    let mut settings = LightSettings::of_kind(kind);
+    if rides {
+        settings.position = Vec2::ZERO;
+    }
+    if let Some(t) = scene.things.get_mut(&id) {
+        t.params = settings.to_params();
+        t.name = name;
+    }
+    Ok(id)
+}
+
+/// The thing kinds a light inside rides on.
+pub const RIDES: [&str; 3] = ["balls", "emitter", "shape"];
+
 impl ThingKind for LightKind {
     fn id(&self) -> &'static str {
         LIGHT
@@ -400,10 +434,7 @@ mod tests {
         for d in LightSettings::defs() {
             if let Some((lo, hi)) = d.range {
                 assert!(
-                    matches!(
-                        d.key,
-                        "reach" | "size" | "width" | "length" | "cone" | "ball_number" | "flare_length"
-                    ),
+                    matches!(d.key, "reach" | "size" | "width" | "length" | "cone" | "ball_number" | "flare_length"),
                     "{} has a hard range {lo}..{hi}",
                     d.key
                 );

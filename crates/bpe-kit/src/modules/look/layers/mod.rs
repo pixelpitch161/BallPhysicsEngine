@@ -16,6 +16,7 @@ pub mod glow;
 pub mod gpu;
 pub mod group;
 pub mod group_shader;
+pub mod lighting;
 pub mod outline;
 pub mod particles;
 pub mod pattern;
@@ -167,6 +168,10 @@ impl LayerKind for Kind {
     }
     fn dynamic_defs(&self, get: &dyn Fn(&str) -> Option<Value>) -> &'static [SettingDef] {
         (self.dynamic)(get)
+    }
+    /// Lit, Blocks light and (on a ball's Body) Roundness, in the layer's Lighting fold.
+    fn light_defs(&self) -> &'static [SettingDef] {
+        lighting::defs_of(self.id)
     }
     /// Only a ball's drawn layers but Blend can be given to some balls of a group.
     fn per_ball(&self) -> bool {

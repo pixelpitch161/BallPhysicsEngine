@@ -196,7 +196,7 @@ impl ThingKind for SceneKind {
         SceneSettings::defs()
     }
     fn slots(&self) -> &'static [SlotId] {
-        &[SlotId::Shader, SlotId::Mixer]
+        &[SlotId::Shader, SlotId::Lighting, SlotId::Mixer]
     }
     fn default_slots(&self) -> &'static [SlotId] {
         &[]

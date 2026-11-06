@@ -850,15 +850,8 @@ pub struct LightGpu {
 }
 
 impl LightGpu {
-    pub const ZERO: LightGpu = LightGpu {
-        p0: [0.0; 4],
-        p1: [0.0; 4],
-        p2: [0.0; 4],
-        p3: [0.0; 4],
-        p4: [0.0; 4],
-        p5: [0.0; 4],
-        p6: [0.0; 4],
-    };
+    pub const ZERO: LightGpu =
+        LightGpu { p0: [0.0; 4], p1: [0.0; 4], p2: [0.0; 4], p3: [0.0; 4], p4: [0.0; 4], p5: [0.0; 4], p6: [0.0; 4] };
 }
 
 /// The scene's Lighting card as the renderer reads it.

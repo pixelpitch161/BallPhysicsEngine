@@ -919,3 +919,22 @@ mod tests {
         }
     }
 }
+
+/// A lit room for the lighting tests (lighting part 1a): a mid-grey background in a white ring,
+/// one pink ball at the middle (drawn at 0 s, before it falls) and one Point light above it. Not in [`all`],
+/// which pins the unlit pictures.
+pub fn lit_room(reg: &Registry) -> Scene {
+    use crate::things::light::{LightType, add_light};
+    let mut scene = new_scene(reg);
+    scene.name = "Lit room".into();
+    let root = scene.things.get_mut(&ThingId::ROOT).expect("root");
+    let mut s = SceneSettings::from_params(&root.params);
+    s.background = Paint::solid(Color::rgb(0x80, 0x80, 0x80));
+    s.bloom = 0.0;
+    root.params = s.to_params();
+    let ball = scene.things.values().find(|t| t.kind == "balls").map(|t| t.id).expect("a ball");
+    scene.things.get_mut(&ball).expect("ball").transform.position = Vec2::ZERO;
+    let light = add_light(&mut scene, reg, LightType::Point, ThingId::ROOT).expect("a light");
+    scene.things.get_mut(&light).expect("light").params.set("position", Value::Vec2([0.0, -400.0]));
+    scene
+}

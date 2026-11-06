@@ -170,6 +170,8 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
     ui.add_space(2.0);
     if kind.base() && shape {
         shape_body(ui, cx, edits);
+        // Then the Body's own Lighting fold.
+        layer_settings(ui, inspector, cx, picked, kind.light_defs(), edits);
         return;
     }
     if kind.base() {
@@ -179,8 +181,15 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
     // Effect and Code.
     let own_rows = layer_rows::show(ui, inspector, cx, card, layer, edits);
     let get = |key: &str| cx.scene.value_at_time(reg, &cx.at(picked, key), cx.time);
-    let defs: Vec<SettingDef> =
-        kind.settings().iter().chain(kind.dynamic_defs(&get)).filter(|d| !own_rows.contains(&d.key)).cloned().collect();
+    // The layer's Lighting fold (Lit, Blocks light, Roundness) comes last.
+    let defs: Vec<SettingDef> = kind
+        .settings()
+        .iter()
+        .chain(kind.dynamic_defs(&get))
+        .chain(kind.light_defs())
+        .filter(|d| !own_rows.contains(&d.key))
+        .cloned()
+        .collect();
     layer_settings(ui, inspector, cx, picked, &defs, edits);
 }
 

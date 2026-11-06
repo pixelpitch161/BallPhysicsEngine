@@ -379,6 +379,7 @@ impl ThingDraw for BallsDraw {
         let Some(worn) = Worn::of(cx) else { return };
         let Some(layer) = own_around(cx.resolved).into_iter().nth(index) else { return };
         let memory = around_memory(cx, &worn, &layer);
+        let drew = crate::modules::look::layers::around::Drew::from(frame);
         match &layer.kind {
             AroundKind::Trail(trail) => {
                 with_balls(cx, &worn, memory, |balls| trail::draw::draw(cx, &layer, trail, balls, frame));
@@ -397,6 +398,7 @@ impl ThingDraw for BallsDraw {
                 });
             }
         }
+        drew.light(frame, layer.light);
     }
 }
 
