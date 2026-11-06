@@ -315,7 +315,7 @@ fn shape_body(ui: &mut Ui, cx: &LookCx, edits: &mut Vec<Edit>) {
     let own = |key: &str| Address::own(cx.id, key);
     let get = |key: &str| scene.value_at_time(reg, &own(key), time).expect("a shape's own settings all resolve");
     let marks = |key: &str| {
-        let def = defs.iter().find(|d| d.key == key)?;
+        let def = crate::widgets::def_in(&defs, key)?;
         Some(mark_for(scene, def, &own(key)))
     };
     let applies = |d: &SettingDef| d.applies(Some(&thing.kind), &|k| scene.value_at_time(reg, &own(k), time));
@@ -385,7 +385,7 @@ pub(crate) fn layer_settings(
     let (scene, reg, time) = (cx.scene, cx.reg(), cx.time);
     let get = |key: &str| scene.value_at_time(reg, &cx.at(layer, key), time).expect("a layer's settings all resolve");
     let marks = |key: &str| {
-        let def = defs.iter().find(|d| d.key == key)?;
+        let def = crate::widgets::def_in(&defs, key)?;
         Some(mark_for(scene, def, &cx.at(layer, key)))
     };
     let kind = scene.things.get(&cx.id).map(|t| t.kind.clone());

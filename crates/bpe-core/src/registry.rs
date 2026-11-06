@@ -162,6 +162,9 @@ pub fn layer_def(
     if let Some((base, part)) = crate::vary::split(key) {
         return crate::vary::def_for(layer_def(kind, get, base), part);
     }
+    if let Some((base, c)) = crate::gradient_extras::split(key) {
+        return crate::gradient_extras::def_for(layer_def(kind, get, base), c);
+    }
     let fixed = kind.settings();
     if let Some(d) = fixed.iter().find(|d| d.key == key) {
         return Some(d);

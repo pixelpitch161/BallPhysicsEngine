@@ -1,6 +1,6 @@
 //! Colours that go with a colour: the new stops for "add matching colours".
 
-use bpe_core::{Color, Gradient, Stop};
+use bpe_core::{Color, Gradient, Mix};
 
 /// A way of choosing colours that go with a base colour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,7 +58,8 @@ pub fn matching(base: Color, h: Harmony) -> Vec<Color> {
 }
 
 /// The gradient's stops replaced by its first colour and the colours that match it, evenly
-/// spaced, with the same transition. Analogous puts the first colour in the middle.
+/// spaced, mixing Even (a new gradient for the owner), keeping its Loop. Analogous puts the first
+/// colour in the middle.
 pub fn add_matching(g: &Gradient, h: Harmony) -> Gradient {
     let base = g.first();
     let mut colours = matching(base, h);
@@ -67,15 +68,12 @@ pub fn add_matching(g: &Gradient, h: Harmony) -> Gradient {
     } else {
         colours.insert(0, base);
     }
-    let last = (colours.len() - 1) as f32;
-    let stops = colours.into_iter().enumerate().map(|(i, color)| Stop { at: i as f32 / last, color }).collect();
-    Gradient { stops, transition: g.transition }
+    Gradient::spread(&colours, Mix::Even, g.looped)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bpe_core::Transition;
 
     const RED: Color = Color::rgb(255, 0, 0);
 
@@ -131,15 +129,17 @@ mod tests {
     }
 
     #[test]
-    fn add_matching_keeps_the_transition() {
-        let mut g = Gradient::even(&[RED, Color::WHITE]);
-        g.transition = Transition::Hue;
+    fn add_matching_mixes_even_and_keeps_the_loop() {
+        let g = Gradient::even(&[RED, Color::WHITE]);
         for h in Harmony::ALL {
             let out = add_matching(&g, h);
-            assert_eq!(out.transition, Transition::Hue);
+            assert_eq!((out.mix, out.looped), (Mix::Even, false));
             assert_eq!(out.stops[0].at, 0.0);
             assert_eq!(out.stops.last().unwrap().at, 1.0);
         }
         assert_eq!(add_matching(&g, Harmony::Triad).stops.len(), 3);
+        let looped = add_matching(&Gradient { looped: true, ..g }, Harmony::Triad);
+        assert!(looped.looped);
+        assert_eq!(looped.stops.iter().map(|s| s.at).collect::<Vec<_>>(), vec![0.0, 1.0 / 3.0, 2.0 / 3.0]);
     }
 }

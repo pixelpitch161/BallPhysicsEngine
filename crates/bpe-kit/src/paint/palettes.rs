@@ -1,6 +1,6 @@
 //! Named gradients that ship with the editor.
 
-use bpe_core::{Color, Gradient, Transition};
+use bpe_core::{Color, Gradient, Mix};
 use serde::{Deserialize, Serialize};
 
 /// A named set of colours.
@@ -41,10 +41,13 @@ pub fn built_in() -> Vec<Palette> {
     table
         .iter()
         .map(|(name, codes)| {
-            let mut colours = Gradient::even(&hex(codes));
-            if *name == "Rainbow" {
-                colours.transition = Transition::Hue;
-            }
+            // New gradients mix Even; the Rainbow goes round the colour wheel and loops, so a ring
+            // of balls coloured by it has no seam between purple and red.
+            let colours = if *name == "Rainbow" {
+                Gradient::spread(&hex(codes), Mix::RoundTheWheel, true)
+            } else {
+                Gradient::spread(&hex(codes), Mix::Even, false)
+            };
             Palette { name: name.to_string(), colours }
         })
         .collect()
@@ -66,8 +69,13 @@ mod tests {
             let n = p.colours.stops.len();
             assert!((3..=6).contains(&n), "{} has {n}", p.name);
             assert_eq!(p.colours.clone().sorted(), p.colours);
-            let want = if p.name == "Rainbow" { Transition::Hue } else { Transition::Smooth };
-            assert_eq!(p.colours.transition, want);
+            let rainbow = p.name == "Rainbow";
+            assert_eq!(p.colours.mix, if rainbow { Mix::RoundTheWheel } else { Mix::Even });
+            assert_eq!(p.colours.looped, rainbow);
+            if rainbow {
+                let at: Vec<f32> = p.colours.stops.iter().map(|s| s.at).collect();
+                assert_eq!(at, (0..6).map(|i| i as f32 / 6.0).collect::<Vec<_>>());
+            }
             assert!(p.colours.stops.iter().all(|s| !s.color.is_additive()));
         }
     }

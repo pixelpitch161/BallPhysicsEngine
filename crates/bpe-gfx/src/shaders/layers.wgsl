@@ -731,6 +731,8 @@ fn ball_layer_sd(l: LayerGpu, d: f32) -> f32 {
 
 // What `fs_layers` and `fs_layers_each` draw: premultiplied colour and coverage.
 fn shade_layers(in: LayeredOut) -> vec4<f32> {
+    // For the gradient grain (paint.wgsl).
+    paint_px = in.pos.xy;
     let aa = 1.0 / max(in.radius.x, 0.5);
     layered_ball =
         LayeredBall(

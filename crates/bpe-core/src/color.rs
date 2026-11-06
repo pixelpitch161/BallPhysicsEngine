@@ -121,40 +121,127 @@ impl Color {
     }
 }
 
-/// One colour sitting at a place along a gradient.
+/// How the colours between two stops are worked out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, Choice)]
+pub enum Mix {
+    /// A straight blend in linear light: even light, can go grey or dim in the middle.
+    #[default]
+    Light,
+    /// A straight blend of the colours' numbers, like most paint apps.
+    Plain,
+    /// A straight blend in OKLab: brightness changes evenly and the middle never goes muddy.
+    Even,
+    /// Round the colour wheel the short way (OKLCH): through the hues between.
+    RoundTheWheel,
+    /// Round the colour wheel the long way (OKLCH): through the other hues.
+    LongWayRound,
+}
+
+/// How one gap between two stops blends from the first colour to the second.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, Choice)]
+pub enum GapBlend {
+    /// A straight blend.
+    #[default]
+    Smooth,
+    /// Lingers at each stop and moves quickly between them.
+    Eased,
+    /// Starts slowly and speeds up.
+    EaseIn,
+    /// Starts quickly and slows down.
+    EaseOut,
+    /// A hard edge at the gap's middle: the first colour holds until there, then the second.
+    Steps,
+}
+
+impl GapBlend {
+    fn is_smooth(&self) -> bool {
+        *self == Self::Smooth
+    }
+}
+
+fn half() -> f32 {
+    0.5
+}
+
+fn is_half(x: &f32) -> bool {
+    *x == 0.5
+}
+
+/// One colour sitting at a place along a gradient, and how the gap after it blends to the next
+/// stop (the last stop's gap is the one back round to the first, used only when the gradient
+/// loops).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Stop {
     /// Where along the gradient, 0 to 1.
     pub at: f32,
     pub color: Color,
+    /// How the gap after this stop blends.
+    #[serde(default, skip_serializing_if = "GapBlend::is_smooth")]
+    pub blend: GapBlend,
+    /// Where in the gap after this stop the halfway colour sits, 0 to 1 (for Steps, where the
+    /// edge falls).
+    #[serde(default = "half", skip_serializing_if = "is_half")]
+    pub middle: f32,
 }
 
-/// How a gradient moves from one stop to the next.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Choice)]
-pub enum Transition {
-    /// A straight blend in linear light.
-    #[default]
+impl Stop {
+    /// A stop whose gap blends smoothly with its halfway colour in the middle.
+    pub const fn new(at: f32, color: Color) -> Self {
+        Self { at, color, blend: GapBlend::Smooth, middle: 0.5 }
+    }
+}
+
+/// How the gradients of older files said every gap blends. Read, never written.
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum SavedTransition {
     Smooth,
-    /// A blend that lingers at each stop and moves quickly between them.
     Eased,
-    /// Hard bands: each colour holds until halfway to the next stop.
     Steps,
-    /// Goes around the colour wheel the short way, so red to magenta passes through rose.
     Hue,
 }
 
-/// Colours at places along 0 to 1, and how they blend. Written in scene files as its stops, or
-/// as a single hex string for a solid colour.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+/// Colours at places along 0 to 1, how each gap between them blends, and how colours mix.
+/// Written in scene files as its stops (with `mix` unless Light and `looped` when on), or as a
+/// single hex string for a solid colour.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Gradient {
     /// In order of `at`. Two stops at the same place make a hard edge there.
     pub stops: Vec<Stop>,
-    pub transition: Transition,
+    pub mix: Mix,
+    /// Loop: the gradient is a circle, the last stop blending back round to the first through
+    /// 1 = 0 with the last stop's gap. `sample` wraps its place.
+    pub looped: bool,
+    /// Draw-time only: the strength of the per-pixel grain the GPU adds where it paints this
+    /// gradient, in 1/255 steps. Copied from the setting's `~grain` companion by
+    /// [`crate::gradient_extras::apply_moves`] just before drawing; never saved, never edited, and
+    /// ignored by [`Gradient::sample`].
+    pub grain: f32,
 }
 
 impl Default for Gradient {
     fn default() -> Self {
         Self::solid(Color::WHITE)
+    }
+}
+
+impl Serialize for Gradient {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        fn is_light(m: &Mix) -> bool {
+            *m == Mix::Light
+        }
+        fn is_false(b: &bool) -> bool {
+            !*b
+        }
+        #[derive(Serialize)]
+        #[serde(rename = "Gradient")]
+        struct Saved<'a> {
+            stops: &'a [Stop],
+            #[serde(skip_serializing_if = "is_light")]
+            mix: Mix,
+            #[serde(skip_serializing_if = "is_false")]
+            looped: bool,
+        }
+        Saved { stops: &self.stops, mix: self.mix, looped: self.looped }.serialize(serializer)
     }
 }
 
@@ -167,12 +254,32 @@ impl<'de> Deserialize<'de> for Gradient {
             Stops {
                 stops: Vec<Stop>,
                 #[serde(default)]
-                transition: Transition,
+                transition: Option<SavedTransition>,
+                #[serde(default)]
+                mix: Option<Mix>,
+                #[serde(default)]
+                looped: bool,
             },
         }
         Ok(match Saved::deserialize(deserializer)? {
             Saved::Solid(c) => Gradient::solid(c),
-            Saved::Stops { stops, transition } => Gradient { stops, transition }.sorted(),
+            Saved::Stops { mut stops, transition, mix, looped } => {
+                // An older file's one transition for the whole gradient becomes each gap's blend,
+                // or Round the wheel for its Hue (which went round the HSV wheel).
+                let blend = match transition {
+                    Some(SavedTransition::Eased) => Some(GapBlend::Eased),
+                    Some(SavedTransition::Steps) => Some(GapBlend::Steps),
+                    _ => None,
+                };
+                if let Some(blend) = blend {
+                    for s in &mut stops {
+                        s.blend = blend;
+                    }
+                }
+                let hue = matches!(transition, Some(SavedTransition::Hue));
+                let mix = mix.unwrap_or(if hue { Mix::RoundTheWheel } else { Mix::Light });
+                Gradient { stops, mix, looped, grain: 0.0 }.sorted()
+            }
         })
     }
 }
@@ -182,23 +289,87 @@ fn lerp4(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
     std::array::from_fn(|k| a[k] + (b[k] - a[k]) * t)
 }
 
+/// The sRGB number (0 to 1, not rounded) of a linear-light channel, and back.
+fn encode(c: f32) -> f32 {
+    if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.max(0.0).powf(1.0 / 2.4) - 0.055 }
+}
+
+fn decode(s: f32) -> f32 {
+    if s <= 0.04045 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
+}
+
+/// Below this OKLCH chroma a colour counts as grey and has no hue of its own.
+const GREY_CHROMA: f32 = 1e-4;
+
+/// `u` of the way from `a` to `b` (linear-light RGBA out) mixed the way `mix` says. Alpha always
+/// blends straight; 0 and 1 give the end colours exactly.
+pub fn mix_colours(a: Color, b: Color, u: f32, mix: Mix) -> [f32; 4] {
+    let (la, lb) = (a.to_linear(), b.to_linear());
+    if u.is_nan() || u <= 0.0 {
+        return la;
+    }
+    if u >= 1.0 {
+        return lb;
+    }
+    let alpha = la[3] + (lb[3] - la[3]) * u;
+    let rgb = |c: [f32; 4]| [c[0], c[1], c[2]];
+    let lerp3 = |x: [f32; 3], y: [f32; 3]| std::array::from_fn::<f32, 3, _>(|k| x[k] + (y[k] - x[k]) * u);
+    let out = match mix {
+        Mix::Light => return lerp4(la, lb, u),
+        Mix::Plain => lerp3(rgb(la).map(encode), rgb(lb).map(encode)).map(decode),
+        Mix::Even => {
+            let lab = lerp3(crate::oklab::linear_to_oklab(rgb(la)), crate::oklab::linear_to_oklab(rgb(lb)));
+            crate::oklab::fit_gamut(crate::oklab::oklab_to_lch(lab))
+        }
+        Mix::RoundTheWheel | Mix::LongWayRound => {
+            use crate::oklab::{linear_to_oklab, oklab_to_lch};
+            let (mut ca, mut cb) = (oklab_to_lch(linear_to_oklab(rgb(la))), oklab_to_lch(linear_to_oklab(rgb(lb))));
+            // A grey end takes the other end's hue, so the blend doesn't swing through others.
+            if ca[1] < GREY_CHROMA {
+                ca[2] = cb[2];
+            }
+            if cb[1] < GREY_CHROMA {
+                cb[2] = ca[2];
+            }
+            let short = (cb[2] - ca[2] + 0.5).rem_euclid(1.0) - 0.5;
+            let turn = match mix {
+                Mix::RoundTheWheel => short,
+                // The other way round: a whole turn less (or more) than the short way.
+                _ if short >= 0.0 => short - 1.0,
+                _ => short + 1.0,
+            };
+            let lch = [ca[0] + (cb[0] - ca[0]) * u, ca[1] + (cb[1] - ca[1]) * u, (ca[2] + turn * u).rem_euclid(1.0)];
+            crate::oklab::fit_gamut(lch)
+        }
+    };
+    [out[0], out[1], out[2], alpha]
+}
+
 impl Gradient {
     /// One colour everywhere.
     pub fn solid(c: Color) -> Self {
-        Self { stops: vec![Stop { at: 0.0, color: c }], transition: Transition::Smooth }
+        Self { stops: vec![Stop::new(0.0, c)], mix: Mix::Light, looped: false, grain: 0.0 }
     }
 
-    /// The colours spread evenly from 0 to 1, blending smoothly. No colours is solid white.
+    /// The colours spread evenly from 0 to 1, blending smoothly in linear light. No colours is
+    /// solid white.
     pub fn even(colors: &[Color]) -> Self {
-        match colors {
+        Self::spread(colors, Mix::Light, false)
+    }
+
+    /// The colours spread evenly, mixed the way `mix` says: from 0 to 1, or at `i/n` when
+    /// `looped` (so the last blends back round to the first). No colours is solid white.
+    pub fn spread(colors: &[Color], mix: Mix, looped: bool) -> Self {
+        let mut g = match colors {
             [] => Self::solid(Color::WHITE),
-            [only] => Self::solid(*only),
-            _ => {
-                let last = (colors.len() - 1) as f32;
-                let stops = colors.iter().enumerate().map(|(i, &color)| Stop { at: i as f32 / last, color }).collect();
-                Self { stops, transition: Transition::Smooth }
-            }
+            _ => Self { stops: colors.iter().map(|&c| Stop::new(0.0, c)).collect(), mix, looped, grain: 0.0 },
+        };
+        if colors.len() > 1 {
+            g.mix = mix;
+            g.looped = looped;
         }
+        g.spread_evenly();
+        g
     }
 
     /// The colour of the first stop.
@@ -206,42 +377,117 @@ impl Gradient {
         self.stops.first().map_or(Color::WHITE, |s| s.color)
     }
 
-    /// The same gradient with its stops in order and inside 0 to 1. No stops is solid white.
+    /// The same gradient with its stops in order and inside 0 to 1, each gap's middle inside 0
+    /// to 1. No stops is solid white.
     pub fn sorted(mut self) -> Self {
         if self.stops.is_empty() {
-            return Self { transition: self.transition, ..Self::solid(Color::WHITE) };
+            return Self { mix: self.mix, looped: self.looped, ..Self::solid(Color::WHITE) };
         }
         for s in &mut self.stops {
             s.at = if s.at.is_finite() { s.at.clamp(0.0, 1.0) } else { 0.0 };
+            s.middle = if s.middle.is_finite() { s.middle.clamp(0.0, 1.0) } else { 0.5 };
         }
         self.stops.sort_by(|a, b| a.at.total_cmp(&b.at));
         self
     }
 
-    /// The linear-light colour at `t` (0 to 1, clamped). The stops are taken to be in order,
-    /// and where two share a place the later one wins from there on.
+    /// Spreads the stops evenly, keeping their order: at `i/n` when the gradient loops, else
+    /// from 0 to 1. One stop sits at 0.
+    pub fn spread_evenly(&mut self) {
+        let n = self.stops.len();
+        let span = if self.looped { n } else { n.saturating_sub(1) }.max(1) as f32;
+        for (i, s) in self.stops.iter_mut().enumerate() {
+            s.at = i as f32 / span;
+        }
+    }
+
+    /// Switches Loop on or off, as the editor's Loop switch does. Switching it on with the last
+    /// stop at the very end spreads the stops to `i/n`, leaving room for the blend back round;
+    /// switching it off with the stops at `i/n` spreads them back from 0 to 1.
+    pub fn set_looped(&mut self, on: bool) {
+        if on == self.looped {
+            return;
+        }
+        let n = self.stops.len();
+        let at_loop_places = n > 1 && self.stops.iter().enumerate().all(|(i, s)| (s.at - i as f32 / n as f32).abs() < 1e-4);
+        let last_at_end = self.stops.last().is_some_and(|s| s.at >= 1.0 - 1e-4);
+        self.looped = on;
+        if n > 1 && ((on && last_at_end) || (!on && at_loop_places)) {
+            self.spread_evenly();
+        }
+    }
+
+    /// The linear-light colour at `t`: clamped to 0 to 1, or wrapped round when the gradient
+    /// loops. The stops are taken to be in order, and where two share a place the later one wins
+    /// from there on.
     pub fn sample(&self, t: f32) -> [f32; 4] {
-        let t = t.clamp(0.0, 1.0);
+        let n = self.stops.len();
+        if n <= 1 {
+            return self.first().to_linear();
+        }
+        if self.looped {
+            let t = if t.is_finite() { t - t.floor() } else { 0.0 };
+            let (first, last) = (&self.stops[0], &self.stops[n - 1]);
+            if t < first.at || t >= last.at {
+                // The gap back round from the last stop to the first, through 1 = 0. It has room
+                // whenever `t` can land in it (with the first at 0 and the last at 1 it can't).
+                let width = first.at + 1.0 - last.at;
+                let gone = if t >= last.at { t - last.at } else { t + 1.0 - last.at };
+                let f = if width > 0.0 { gone / width } else { 0.0 };
+                return self.gap(last, first, f);
+            }
+            return self.inside(t);
+        }
+        let t = if t.is_nan() { 0.0 } else { t.clamp(0.0, 1.0) };
+        self.inside(t)
+    }
+
+    /// The colour at `t` (0 to 1) between the first and last stops' places, or past them.
+    fn inside(&self, t: f32) -> [f32; 4] {
         let Some(i) = self.stops.iter().rposition(|s| s.at <= t) else {
             return self.first().to_linear();
         };
         let Some(next) = self.stops.get(i + 1) else {
             return self.stops[i].color.to_linear();
         };
-        let a = self.stops[i];
-        let f = (t - a.at) / (next.at - a.at);
-        match self.transition {
-            Transition::Smooth => lerp4(a.color.to_linear(), next.color.to_linear(), f),
-            Transition::Eased => lerp4(a.color.to_linear(), next.color.to_linear(), f * f * (3.0 - 2.0 * f)),
-            Transition::Steps => (if f < 0.5 { a.color } else { next.color }).to_linear(),
-            Transition::Hue => {
-                let ((ha, sa, va), (hb, sb, vb)) = (a.color.to_hsv(), next.color.to_hsv());
-                let turn = (hb - ha + 0.5).rem_euclid(1.0) - 0.5;
-                let mut c = Color::from_hsv(ha + turn * f, sa + (sb - sa) * f, va + (vb - va) * f).to_linear();
-                c[3] = a.color.to_linear()[3] + (next.color.to_linear()[3] - a.color.to_linear()[3]) * f;
-                c
-            }
+        let a = &self.stops[i];
+        self.gap(a, next, (t - a.at) / (next.at - a.at))
+    }
+
+    /// The colour `f` (0 to 1) of the way through the gap after stop `a`, to stop `b`: bent so
+    /// the halfway colour sits at `a.middle`, shaped by `a.blend`, then mixed.
+    fn gap(&self, a: &Stop, b: &Stop, f: f32) -> [f32; 4] {
+        let f = if f.is_finite() { f.clamp(0.0, 1.0) } else { 0.0 };
+        let m = if a.middle.is_finite() { a.middle.clamp(0.001, 0.999) } else { 0.5 };
+        if a.blend == GapBlend::Steps {
+            return (if f < m { a.color } else { b.color }).to_linear();
         }
+        // `f^p` with `m^p = 1/2`; the middle at 0.5 leaves `f` exactly as it is.
+        let f = if a.middle == 0.5 { f } else { f.powf(0.5f32.ln() / m.ln()) };
+        let u = match a.blend {
+            GapBlend::Smooth | GapBlend::Steps => f,
+            GapBlend::Eased => f * f * (3.0 - 2.0 * f),
+            GapBlend::EaseIn => f * f,
+            GapBlend::EaseOut => 1.0 - (1.0 - f) * (1.0 - f),
+        };
+        mix_colours(a.color, b.color, u, self.mix)
+    }
+
+    /// The gradient cut into `n` flat bands, each the colour at its band's middle (a looped
+    /// gradient's bands wrap round through its last gap). Two stops a band, each band flat in any
+    /// mix; Loop and grain are kept. 0 bands leaves it as it is.
+    pub fn banded(&self, n: u32) -> Gradient {
+        if n == 0 {
+            return self.clone();
+        }
+        let size = 1.0 / n as f32;
+        let mut stops = Vec::with_capacity(2 * n as usize);
+        for k in 0..n {
+            let color = Color::from_linear(self.sample((k as f32 + 0.5) * size));
+            stops.push(Stop::new(k as f32 * size, color));
+            stops.push(Stop::new(if k + 1 == n { 1.0 } else { (k + 1) as f32 * size }, color));
+        }
+        Gradient { stops, mix: Mix::Light, looped: self.looped, grain: self.grain }
     }
 
     /// `n` evenly spaced samples with the first at 0 and the last at 1, ready for a texture.
@@ -308,6 +554,16 @@ mod tests {
     const BLACK: Color = Color::rgb(0, 0, 0);
     const WHITE: Color = Color::WHITE;
 
+    /// A gradient whose every gap is Steps.
+    fn steps(stops: Vec<Stop>) -> Gradient {
+        let stops = stops.into_iter().map(|s| Stop { blend: GapBlend::Steps, ..s }).collect();
+        Gradient { stops, ..Gradient::default() }
+    }
+
+    fn near4(a: [f32; 4], b: [f32; 4], eps: f32) -> bool {
+        a.iter().zip(&b).all(|(x, y)| (x - y).abs() <= eps)
+    }
+
     #[test]
     fn one_stop_samples_its_colour_everywhere() {
         let c = Color::rgb(200, 30, 90);
@@ -340,10 +596,7 @@ mod tests {
 
     #[test]
     fn stops_move_where_colours_sit() {
-        let g = Gradient {
-            stops: vec![Stop { at: 0.0, color: RED }, Stop { at: 0.8, color: BLUE }],
-            transition: Transition::Smooth,
-        };
+        let g = Gradient { stops: vec![Stop::new(0.0, RED), Stop::new(0.8, BLUE)], ..Gradient::default() };
         assert_eq!(g.sample(0.8), BLUE.to_linear());
         assert_eq!(g.sample(1.0), BLUE.to_linear());
         assert!((g.sample(0.4)[0] - RED.to_linear()[0] * 0.5).abs() < 1e-5);
@@ -351,32 +604,24 @@ mod tests {
 
     #[test]
     fn steps_split_halfway_between_stops() {
-        let g = Gradient {
-            stops: vec![Stop { at: 0.0, color: RED }, Stop { at: 0.6, color: BLUE }],
-            transition: Transition::Steps,
-        };
+        let g = steps(vec![Stop::new(0.0, RED), Stop::new(0.6, BLUE)]);
         assert_eq!(g.sample(0.29), RED.to_linear());
         assert_eq!(g.sample(0.31), BLUE.to_linear());
     }
 
     #[test]
-    fn eased_is_smoothstep_and_hue_goes_the_short_way() {
-        let e = Gradient { transition: Transition::Eased, ..Gradient::even(&[BLACK, WHITE]) };
+    fn eased_is_smoothstep_and_round_the_wheel_goes_the_short_way() {
+        let mut e = Gradient::even(&[BLACK, WHITE]);
+        e.stops[0].blend = GapBlend::Eased;
         assert!((e.sample(0.25)[0] - 0.15625).abs() < 1e-5); // smoothstep(0.25) of linear 0..1
-        let h = Gradient {
-            transition: Transition::Hue,
-            ..Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(255, 0, 255)])
-        };
+        let h = Gradient::spread(&[Color::rgb(255, 0, 0), Color::rgb(255, 0, 255)], Mix::RoundTheWheel, false);
         let mid = Color::from_linear(h.sample(0.5));
-        assert!(mid.r > 200 && mid.b > 100 && mid.g < 10, "red to magenta passes through rose, not green: {mid:?}");
+        assert!(mid.r > 200 && mid.b > 100 && mid.g < 70, "red to magenta passes through rose, not green: {mid:?}");
     }
 
     #[test]
     fn stops_at_the_same_place_make_a_hard_edge() {
-        let g = Gradient {
-            stops: vec![Stop { at: 0.5, color: RED }, Stop { at: 0.5, color: BLUE }],
-            transition: Transition::Smooth,
-        };
+        let g = Gradient { stops: vec![Stop::new(0.5, RED), Stop::new(0.5, BLUE)], ..Gradient::default() };
         assert_eq!(g.sample(0.49), RED.to_linear());
         assert_eq!(g.sample(0.51), BLUE.to_linear());
         assert!(g.sample(0.5).iter().all(|x| x.is_finite()));
@@ -393,13 +638,12 @@ mod tests {
 
     #[test]
     fn sorted_orders_clamps_and_fills_in_white() {
-        let g = Gradient {
-            stops: vec![Stop { at: 1.5, color: BLUE }, Stop { at: -1.0, color: RED }],
-            transition: Transition::Steps,
-        };
+        let mut g = steps(vec![Stop::new(1.5, BLUE), Stop::new(-1.0, RED)]);
+        g.stops[0].middle = f32::NAN;
         let g = g.sorted();
         assert_eq!((g.stops[0].at, g.stops[0].color, g.stops[1].at), (0.0, RED, 1.0));
-        assert_eq!(Gradient { stops: Vec::new(), transition: Transition::Smooth }.sorted(), Gradient::solid(WHITE));
+        assert_eq!(g.stops[1].middle, 0.5, "a middle that isn't a number goes back to the middle");
+        assert_eq!(Gradient { stops: Vec::new(), ..Gradient::default() }.sorted(), Gradient::solid(WHITE));
     }
 
     #[test]
@@ -414,5 +658,146 @@ mod tests {
     fn stops_without_a_transition_read_as_smooth() {
         let text = r##"(stops: [(at: 0.0, color: "#ff0000"), (at: 1.0, color: "#0000ff")])"##;
         assert_eq!(ron::from_str::<Gradient>(text).unwrap(), Gradient::even(&[RED, BLUE]));
+    }
+
+    #[test]
+    fn plain_blends_the_numbers_and_even_blends_the_lightness() {
+        let plain = Gradient::spread(&[BLACK, WHITE], Mix::Plain, false);
+        assert!((encode(plain.sample(0.5)[0]) - 0.5).abs() < 1e-4, "half of sRGB, not of linear light");
+        let even = Gradient::spread(&[BLACK, WHITE], Mix::Even, false);
+        let mid = even.sample(0.5);
+        let lab = crate::oklab::linear_to_oklab([mid[0], mid[1], mid[2]]);
+        assert!((lab[0] - 0.5).abs() < 1e-3, "{lab:?}");
+        // Light is today's blend, exactly.
+        let light = Gradient::even(&[RED, BLUE]);
+        assert_eq!(light.sample(0.25), lerp4(RED.to_linear(), BLUE.to_linear(), 0.25));
+    }
+
+    #[test]
+    fn round_the_wheel_goes_the_short_way_and_the_long_way_the_other() {
+        use crate::oklab::{linear_to_oklab, oklab_to_lch};
+        let hue = |c: [f32; 4]| oklab_to_lch(linear_to_oklab([c[0], c[1], c[2]]))[2];
+        let (hr, hb) = (hue(RED.to_linear()), hue(BLUE.to_linear()));
+        let short = Gradient::spread(&[RED, BLUE], Mix::RoundTheWheel, false).sample(0.5);
+        let long = Gradient::spread(&[RED, BLUE], Mix::LongWayRound, false).sample(0.5);
+        let way = (hb - hr + 0.5).rem_euclid(1.0) - 0.5;
+        let want_short = (hr + way * 0.5).rem_euclid(1.0);
+        let want_long = (hr + (way + if way >= 0.0 { -1.0 } else { 1.0 }) * 0.5).rem_euclid(1.0);
+        let off = |a: f32, b: f32| ((a - b + 0.5).rem_euclid(1.0) - 0.5).abs();
+        assert!(off(hue(short), want_short) < 0.01, "{} vs {want_short}", hue(short));
+        assert!(off(hue(long), want_long) < 0.01, "{} vs {want_long}", hue(long));
+        // Red to blue the short way passes magenta; the long way passes green.
+        let (s, l) = (Color::from_linear(short), Color::from_linear(long));
+        assert!(s.r > s.g && s.b > s.g, "{s:?}");
+        assert!(l.g > l.b && l.g > 30, "{l:?}");
+        for c in [short, long] {
+            assert!(c.iter().all(|x| (0.0..=1.0).contains(x)));
+        }
+    }
+
+    #[test]
+    fn a_grey_end_takes_the_other_ends_hue() {
+        let g = Gradient::spread(&[RED, WHITE], Mix::RoundTheWheel, false);
+        let mid = Color::from_linear(g.sample(0.5));
+        assert!(mid.r > mid.g && mid.r > mid.b && (mid.g as i32 - mid.b as i32).abs() < 30, "a pink: {mid:?}");
+    }
+
+    #[test]
+    fn gap_blends_and_middles() {
+        let mut g = Gradient::even(&[BLACK, WHITE]);
+        g.stops[0].blend = GapBlend::EaseIn;
+        assert!((g.sample(0.5)[0] - 0.25).abs() < 1e-5);
+        g.stops[0].blend = GapBlend::EaseOut;
+        assert!((g.sample(0.5)[0] - 0.75).abs() < 1e-5);
+        g.stops[0].blend = GapBlend::Smooth;
+        g.stops[0].middle = 0.25;
+        assert!((g.sample(0.25)[0] - 0.5).abs() < 1e-5, "the halfway colour sits at the middle");
+        assert!(g.sample(0.1)[0] < 0.5 && g.sample(0.4)[0] > 0.5);
+        g.stops[0].blend = GapBlend::Steps;
+        g.stops[0].middle = 0.3;
+        assert_eq!(g.sample(0.29), BLACK.to_linear());
+        assert_eq!(g.sample(0.3), WHITE.to_linear());
+        // The last stop's gap does nothing when the gradient doesn't loop.
+        let mut g = Gradient::even(&[RED, BLUE]);
+        g.stops[1].blend = GapBlend::Steps;
+        assert_eq!(g.sample(0.5), Gradient::even(&[RED, BLUE]).sample(0.5));
+    }
+
+    #[test]
+    fn a_looped_gradient_wraps_round_through_its_last_gap() {
+        let g = Gradient::spread(&[RED, Color::rgb(0, 255, 0), BLUE], Mix::Light, true);
+        assert_eq!(g.stops.iter().map(|s| s.at).collect::<Vec<_>>(), vec![0.0, 1.0 / 3.0, 2.0 / 3.0]);
+        assert_eq!(g.sample(1.0), g.sample(0.0));
+        assert!(near4(g.sample(1.25), g.sample(0.25), 1e-6));
+        assert!(near4(g.sample(-0.25), g.sample(0.75), 1e-6));
+        // Halfway back round from blue to red.
+        assert!(near4(g.sample(5.0 / 6.0), lerp4(BLUE.to_linear(), RED.to_linear(), 0.5), 1e-5));
+        // The wrap gap takes the last stop's blend.
+        let mut stepped = g.clone();
+        stepped.stops[2].blend = GapBlend::Steps;
+        assert_eq!(stepped.sample(0.8), BLUE.to_linear());
+        assert_eq!(stepped.sample(0.9), RED.to_linear());
+        // With the first stop past 0, the wrap runs across 0.
+        let g = Gradient { stops: vec![Stop::new(0.2, RED), Stop::new(0.6, BLUE)], looped: true, ..Gradient::default() };
+        let mid = lerp4(BLUE.to_linear(), RED.to_linear(), 0.5);
+        assert!(near4(g.sample(0.9), mid, 1e-5), "{:?}", g.sample(0.9));
+        // 0 is 0.4 into the 0.6 wide gap from 0.6 round to 1.2.
+        assert!(near4(g.sample(0.0), lerp4(BLUE.to_linear(), RED.to_linear(), 0.4 / 0.6), 1e-5));
+    }
+
+    #[test]
+    fn bands_are_flat_and_take_their_middles() {
+        let g = Gradient::even(&[BLACK, WHITE]).banded(5);
+        assert_eq!(g.stops.len(), 10);
+        for k in 0..5 {
+            let want = Color::from_linear(Gradient::even(&[BLACK, WHITE]).sample((k as f32 + 0.5) / 5.0)).to_linear();
+            for f in [0.05, 0.5, 0.95] {
+                assert_eq!(g.sample((k as f32 + f) / 5.0), want, "band {k} at {f}");
+            }
+        }
+        assert_eq!(Gradient::even(&[RED, BLUE]).banded(0), Gradient::even(&[RED, BLUE]));
+        // A looped gradient's bands go back round: the last band blends blue back towards red.
+        let looped = Gradient::spread(&[RED, BLUE], Mix::Light, true).banded(4);
+        assert!(looped.looped);
+        let last = Color::from_linear(looped.sample(0.9));
+        assert!(last.r > 0 && last.b > 0, "{last:?}");
+        assert_eq!(looped.sample(0.999), looped.sample(0.9));
+    }
+
+    #[test]
+    fn loop_switch_respaces_only_when_it_has_to() {
+        let mut g = Gradient::even(&[RED, BLUE, WHITE]);
+        g.set_looped(true);
+        assert!(g.looped);
+        assert_eq!(g.stops.iter().map(|s| s.at).collect::<Vec<_>>(), vec![0.0, 1.0 / 3.0, 2.0 / 3.0]);
+        g.set_looped(false);
+        assert_eq!(g.stops.iter().map(|s| s.at).collect::<Vec<_>>(), vec![0.0, 0.5, 1.0]);
+        let mut g = Gradient { stops: vec![Stop::new(0.1, RED), Stop::new(0.7, BLUE)], ..Gradient::default() };
+        g.set_looped(true);
+        assert_eq!(g.stops.iter().map(|s| s.at).collect::<Vec<_>>(), vec![0.1, 0.7], "room already");
+        g.set_looped(false);
+        assert_eq!(g.stops.iter().map(|s| s.at).collect::<Vec<_>>(), vec![0.1, 0.7]);
+    }
+
+    #[test]
+    fn new_fields_save_and_old_transitions_read_as_gap_blends() {
+        let mut g = Gradient::spread(&[RED, BLUE, WHITE], Mix::Even, true);
+        g.stops[1].blend = GapBlend::EaseOut;
+        g.stops[1].middle = 0.3;
+        g.grain = 3.0;
+        let text = ron::to_string(&g).unwrap();
+        assert!(!text.contains("grain") && text.contains("mix:Even") && text.contains("looped:true"), "{text}");
+        assert_eq!(ron::from_str::<Gradient>(&text).unwrap(), Gradient { grain: 0.0, ..g });
+        let plain = ron::to_string(&Gradient::even(&[RED, BLUE])).unwrap();
+        assert!(!plain.contains("mix") && !plain.contains("looped") && !plain.contains("blend"), "{plain}");
+        let old = |t: &str| {
+            let text = format!(r##"(stops: [(at: 0.0, color: "#ff0000"), (at: 1.0, color: "#0000ff")], transition: {t})"##);
+            ron::from_str::<Gradient>(&text).unwrap()
+        };
+        assert_eq!(old("Smooth"), Gradient::even(&[RED, BLUE]));
+        assert!(old("Steps").stops.iter().all(|s| s.blend == GapBlend::Steps));
+        assert!(old("Eased").stops.iter().all(|s| s.blend == GapBlend::Eased));
+        let hue = old("Hue");
+        assert_eq!((hue.mix, hue.stops[0].blend), (Mix::RoundTheWheel, GapBlend::Smooth));
     }
 }

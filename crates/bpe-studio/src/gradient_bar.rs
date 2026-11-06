@@ -1,10 +1,13 @@
 //! The gradient bar: a gradient's colours drawn across the row, with a handle per stop under
-//! it. Click the bar to add a stop there; drag a handle to move its stop, or well below the bar
-//! to take it off; click a handle to change its colour, right-click it to remove it. Beside the
-//! bar, a menu picks how the colours blend from stop to stop, and a Palette menu swaps in a
-//! whole palette, saves this one, rolls a random one or adds colours that go with the first.
+//! it and a diamond in each gap. Click the bar to add a stop there; drag a handle to move its
+//! stop, or well below the bar to take it off; click a handle to select it and change its colour,
+//! right-click it to remove it; drag a diamond to move where its gap's halfway colour sits. A
+//! looped gradient has one more diamond, in the gap back round from the last stop to the first.
+//! Beside the handles, a Palette menu swaps in a whole palette, saves this one, rolls a random one
+//! or adds colours that go with the first. How the colours mix, Loop, each gap's blend and the
+//! gradient's companions are in the tabs under the bar (`gradient_tabs.rs`).
 
-use bpe_core::{Choice, Color, Gradient, Stop, Transition};
+use bpe_core::{Color, Gradient, Mix, Stop};
 use bpe_kit::paint::harmony::{Harmony, add_matching};
 use bpe_kit::paint::palette_gen;
 use bpe_kit::paint::palettes::{Palette, built_in};
@@ -15,18 +18,20 @@ use eframe::egui::{
 
 use crate::palettes;
 use crate::style;
-use crate::widgets::{color_button, picker_color, pretty, scene_color};
+use crate::widgets::{color_button, picker_color, scene_color};
 
 /// How many samples the bar is drawn from.
 const SAMPLES: usize = 256;
 /// The bar's height.
-const BAR_HEIGHT: f32 = 18.0;
+const BAR_HEIGHT: f32 = 22.0;
 /// The strip of handles under the bar.
 const HANDLE_STRIP: f32 = 16.0;
 /// A handle dragged further than this below the bar comes off when let go.
 const REMOVE_DROP: f32 = 30.0;
-/// Room kept beside the bar for the transition menu.
+/// Room kept beside the handles for the Palette menu.
 const MENU_WIDTH: f32 = 72.0;
+/// Half the size of a gap's middle diamond.
+const DIAMOND: f32 = 4.5;
 /// A palette's swatch in the Palette menu.
 const SWATCH: Vec2 = Vec2::new(48.0, 14.0);
 /// The tallest the Palette menu's lists grow before they scroll.
@@ -38,8 +43,19 @@ pub fn gradient_bar(ui: &mut Ui, id: egui::Id, g: &mut Gradient) -> Response {
     gradient_bar_named(ui, id, g, "Colours")
 }
 
+/// The stop selected on the bar with id `id` (the first until one is picked), within `g`.
+pub fn selected_stop(ctx: &egui::Context, id: egui::Id, g: &Gradient) -> usize {
+    let picked: usize = ctx.data(|d| d.get_temp(id.with("selected"))).unwrap_or(0);
+    picked.min(g.stops.len().saturating_sub(1))
+}
+
+/// Selects stop `i` on the bar with id `id`.
+pub fn select_stop(ctx: &egui::Context, id: egui::Id, i: usize) {
+    ctx.data_mut(|d| d.insert_temp(id.with("selected"), i));
+}
+
 /// The gradient bar, its controls named after `name` ("Colours bar", "Colours stop 1",
-/// "Colours transition", "Colours palette"). A one-stop gradient shows as a single swatch and a
+/// "Colours middle 1", "Colours palette"). A one-stop gradient shows as a single swatch and a
 /// "+" that adds a second stop, white at the end. The response is marked changed when `g`
 /// changed.
 pub fn gradient_bar_named(ui: &mut Ui, id: egui::Id, g: &mut Gradient, name: &str) -> Response {
@@ -61,17 +77,18 @@ pub fn gradient_bar_named(ui: &mut Ui, id: egui::Id, g: &mut Gradient, name: &st
                     let at = along(bar, p.x);
                     let color = Color::from_linear(g.sample(at));
                     let i = g.stops.partition_point(|s| s.at <= at);
-                    g.stops.insert(i, Stop { at, color });
-                    changed = true;
-                }
-                if transition_menu(ui, &mut g.transition, name) {
+                    // The new stop's gap blends as the gap it splits did.
+                    let before = i.checked_sub(1).or(g.looped.then(|| g.stops.len() - 1));
+                    let like = before.and_then(|b| g.stops.get(b)).copied();
+                    let blend = like.map_or(bpe_core::GapBlend::Smooth, |s| s.blend);
+                    g.stops.insert(i, Stop { blend, ..Stop::new(at, color) });
+                    select_stop(ui.ctx(), id, i);
                     changed = true;
                 }
                 (bar, response)
             })
             .inner;
-        // The handles, with the Palette menu beside them, under the transition menu: the bar's row
-        // has no room for both menus in a narrow inspector.
+        // The handles and diamonds, with the Palette menu beside them.
         let strip = ui
             .horizontal_top(|ui| {
                 let (strip, _) = ui.allocate_exact_size(Vec2::new(width, HANDLE_STRIP), Sense::hover());
@@ -102,9 +119,11 @@ fn one_colour(ui: &mut Ui, id: egui::Id, g: &mut Gradient, name: &str) -> Respon
     let mut changed = response.changed();
     let add = ui.button("+").on_hover_text("Add a colour, to blend from one to the other");
     add.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Add a colour"));
-    let mut stops = vec![Stop { at: 0.0, color }];
+    let mut stops = vec![Stop::new(0.0, color)];
     if add.clicked() {
-        stops.push(Stop { at: 1.0, color: Color::WHITE });
+        stops.push(Stop::new(1.0, Color::WHITE));
+        // A new gradient mixes Even.
+        g.mix = Mix::Even;
         changed = true;
     }
     if changed {
@@ -175,29 +194,6 @@ fn shown(c: Color) -> Color32 {
         Color32::from_rgb(c.r, c.g, c.b) // scene colour
     } else {
         Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a) // scene colour
-    }
-}
-
-/// The menu picking how the colours blend. True when a new one was picked.
-fn transition_menu(ui: &mut Ui, transition: &mut Transition, name: &str) -> bool {
-    let mut picked = None;
-    let menu = ui.menu_button(pretty(transition.name()), |ui| {
-        for t in Transition::NAMES {
-            if ui.selectable_label(t == &transition.name(), pretty(t)).clicked() {
-                picked = Transition::from_name(t);
-                ui.close();
-            }
-        }
-    });
-    let label = format!("{name} transition");
-    menu.response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label.clone()));
-    menu.response.on_hover_text("How the colours blend from one stop to the next");
-    match picked {
-        Some(t) if t != *transition => {
-            *transition = t;
-            true
-        }
-        _ => false,
     }
 }
 
@@ -301,9 +297,8 @@ fn palette_menu(ui: &mut Ui, id: egui::Id, g: &mut Gradient, name: &str, small: 
         if ui.button("Random palette").on_hover_text("New colours that go together").clicked() {
             let mut dice = Rng::new(palette_gen::fresh_seed(), 0);
             let colours = palette_gen::palette(&mut dice, g.stops.len().max(3));
-            let mut random = Gradient::even(&colours);
-            random.transition = g.transition;
-            action = Some(PaletteAction::Apply(random));
+            // A new gradient: mixing Even, looping as this one does.
+            action = Some(PaletteAction::Apply(Gradient::spread(&colours, Mix::Even, g.looped)));
         }
         ui.menu_button("Add matching colours", |ui| {
             for h in Harmony::ALL {
@@ -373,13 +368,62 @@ fn palette_item(ui: &mut Ui, p: &Palette) -> Response {
     .inner
 }
 
+/// Each gap's stop, where it starts and how wide it is (0 to 1 along the bar): the gap after
+/// stop `i` to stop `i + 1`, then, when the gradient loops, the one back round from the last stop
+/// to the first. Gaps with no width (two stops at one place) are left out.
+fn gaps(g: &Gradient) -> Vec<(usize, f32, f32)> {
+    let n = g.stops.len();
+    let mut out: Vec<(usize, f32, f32)> =
+        (0..n.saturating_sub(1)).map(|i| (i, g.stops[i].at, g.stops[i + 1].at - g.stops[i].at)).collect();
+    if g.looped && n > 1 {
+        out.push((n - 1, g.stops[n - 1].at, g.stops[0].at + 1.0 - g.stops[n - 1].at));
+    }
+    out.retain(|(_, _, width)| *width > 1e-4);
+    out
+}
+
+/// The diamonds in the handle strip, one per gap at its middle; dragging one moves its gap's
+/// middle. The gap back round on a looped gradient measures round through the bar's end.
+fn diamonds(ui: &mut Ui, id: egui::Id, g: &mut Gradient, bar: Rect, strip: Rect, name: &str, changed: &mut bool) {
+    for (i, start, width) in gaps(g) {
+        let x = |m: f32| bar.left() + (start + m * width).rem_euclid(1.0).min(1.0) * bar.width();
+        let middle = g.stops[i].middle;
+        let centre = Pos2::new(x(middle), strip.center().y);
+        let rect = Rect::from_center_size(centre, Vec2::new(DIAMOND * 2.0 + 4.0, HANDLE_STRIP));
+        let r = ui.interact(rect, id.with(("middle", i)), Sense::drag());
+        r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Slider, true, format!("{name} middle {}", i + 1)));
+        if r.dragged()
+            && let Some(p) = r.interact_pointer_pos()
+        {
+            let gone = (along(bar, p.x) - start).rem_euclid(1.0);
+            let m = (gone / width).clamp(0.01, 0.99);
+            if m != middle {
+                g.stops[i].middle = m;
+                *changed = true;
+            }
+        }
+        let lit = r.hovered() || r.dragged();
+        let ink = if lit { style::TEXT } else { style::MUTED };
+        let at = Pos2::new(x(g.stops[i].middle), strip.center().y);
+        let points = vec![
+            at + Vec2::new(0.0, -DIAMOND),
+            at + Vec2::new(DIAMOND, 0.0),
+            at + Vec2::new(0.0, DIAMOND),
+            at + Vec2::new(-DIAMOND, 0.0),
+        ];
+        ui.painter().add(egui::Shape::convex_polygon(points, style::GROUND, Stroke::new(1.2, ink)));
+        r.on_hover_text("Drag to move where this gap's halfway colour sits");
+    }
+}
+
 /// The handle of stop `i`'s id.
 fn handle_id(id: egui::Id, i: usize) -> egui::Id {
     id.with(("stop", i))
 }
 
-/// The handles under the bar, one per stop, and what they do. The stop being dragged is kept in
-/// the bar's memory, so it stays the dragged one when the list re-sorts under it.
+/// The handles under the bar, one per stop, and the gaps' diamonds, and what they do. The stop
+/// being dragged is kept in the bar's memory, so it stays the dragged one when the list re-sorts
+/// under it; the selected stop follows its stop the same way.
 fn handles(
     ui: &mut Ui,
     id: egui::Id,
@@ -389,8 +433,11 @@ fn handles(
     name: &str,
     changed: &mut bool,
 ) -> Response {
+    // The diamonds first, so a stop sitting on one is the one picked up.
+    diamonds(ui, id, g, bar, strip, name, changed);
     let drag_key = id.with("dragging");
     let mut dragging: Option<usize> = ui.data(|d| d.get_temp(drag_key));
+    let mut selected = selected_stop(ui.ctx(), id, g);
     let pointer = ui.input(|i| i.pointer.interact_pos());
     let far = |p: Option<Pos2>| p.is_some_and(|p| p.y > bar.bottom() + REMOVE_DROP);
     let mut remove = None;
@@ -402,9 +449,13 @@ fn handles(
         let r = ui.interact(rect, hid, Sense::click_and_drag());
         r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("{name} stop {}", i + 1)));
         let leaving = dragging == Some(i) && far(pointer);
-        paint_handle(ui.painter(), rect, g.stops[i].color, r.hovered() || r.has_focus(), leaving);
+        let lit = r.hovered() || r.has_focus() || selected == i;
+        paint_handle(ui.painter(), rect, g.stops[i].color, lit, leaving);
         if r.drag_started() {
             dragging = Some(i);
+        }
+        if r.clicked() || r.drag_started() {
+            selected = i;
         }
         // A click opens the colour picker; its popup has its own id, apart from the menu's.
         let mut c = picker_color(g.stops[i].color);
@@ -421,7 +472,7 @@ fn handles(
                 ui.close();
             }
         });
-        let r = r.on_hover_text("Click to change the colour, drag to move it, drag down or right-click to remove");
+        let r = r.on_hover_text("Click to pick and change the colour, drag to move it, drag down or right-click to remove");
         response = Some(match response {
             Some(all) => all | r,
             None => r,
@@ -442,6 +493,7 @@ fn handles(
                 let k = g.stops.partition_point(|s| s.at < at);
                 g.stops.insert(k, stop);
                 dragging = Some(k);
+                selected = k;
                 ui.memory_mut(|m| m.request_focus(handle_id(id, k)));
                 if k != j {
                     ui.ctx().request_repaint();
@@ -458,8 +510,12 @@ fn handles(
         && g.stops.len() > 1
     {
         g.stops.remove(i);
+        if selected > i || selected >= g.stops.len() {
+            selected = selected.saturating_sub(1);
+        }
         *changed = true;
     }
+    select_stop(ui.ctx(), id, selected);
     ui.data_mut(|d| match dragging {
         Some(j) => {
             d.insert_temp(drag_key, j);
@@ -488,7 +544,7 @@ fn paint_handle(painter: &egui::Painter, rect: Rect, color: Color, lit: bool, le
 mod tests {
     use super::gradient_bar;
     use crate::palettes::{self, PaletteStore};
-    use bpe_core::{Color, Gradient, Transition};
+    use bpe_core::{Color, GapBlend, Gradient, Mix};
     use bpe_kit::paint::harmony::{Harmony, add_matching};
     use bpe_kit::paint::palettes::built_in;
     use eframe::egui;
@@ -537,9 +593,13 @@ mod tests {
         h.run();
     }
 
+    /// Red to blue in steps, looped.
     fn red_blue_steps() -> Gradient {
         let mut g = Gradient::even(&[RED, BLUE]);
-        g.transition = Transition::Steps;
+        for s in &mut g.stops {
+            s.blend = GapBlend::Steps;
+        }
+        g.looped = true;
         g
     }
 
@@ -552,7 +612,7 @@ mod tests {
         open_menu(&mut h);
         h.get_by_label("Ocean").click();
         h.run();
-        assert_eq!(*h.state(), ocean(), "stops and transition both come from the palette");
+        assert_eq!(*h.state(), ocean(), "stops, mix and loop all come from the palette");
         assert!(h.query_by_label("Sunset").is_none(), "the menu closes");
     }
 
@@ -581,7 +641,8 @@ mod tests {
         h.run();
         assert_eq!(*h.state(), add_matching(&start, Harmony::Triad));
         assert_eq!(h.state().stops.len(), 3);
-        assert_eq!(h.state().transition, Transition::Steps, "the transition is kept");
+        assert!(h.state().looped, "the loop is kept");
+        assert_eq!(h.state().mix, Mix::Even);
     }
 
     #[test]
@@ -716,8 +777,51 @@ mod tests {
         let g = h.state().clone();
         assert_ne!(g.stops, start.stops);
         assert_eq!(g.stops.len(), 3, "at least three colours");
-        assert_eq!(g.transition, Transition::Steps, "the transition is kept");
+        assert!(g.looped, "the loop is kept");
+        assert_eq!(g.mix, Mix::Even, "a new palette mixes Even");
         assert!(g.stops.iter().all(|s| !s.color.is_additive()));
         assert_eq!(g.clone().sorted(), g);
+    }
+
+    #[test]
+    fn a_click_on_the_bar_adds_a_stop_and_selects_it() {
+        let mut h = harness(Gradient::even(&[RED, BLUE]), None);
+        let bar = h.get_by_label("Colours bar").rect();
+        h.hover_at(bar.center());
+        h.run();
+        h.drag_at(bar.center());
+        h.run();
+        h.drop_at(bar.center());
+        h.run();
+        assert_eq!(h.state().stops.len(), 3);
+        assert!(h.query_by_label("Colours stop 3").is_some());
+    }
+
+    #[test]
+    fn each_gap_has_a_diamond_and_a_looped_one_more() {
+        let h = harness(Gradient::even(&[RED, BLUE, RED]), None);
+        assert!(h.query_by_label("Colours middle 1").is_some());
+        assert!(h.query_by_label("Colours middle 2").is_some());
+        assert!(h.query_by_label("Colours middle 3").is_none());
+        let mut looped = Gradient::spread(&[RED, BLUE, RED], Mix::Even, true);
+        looped.mix = Mix::Light;
+        let h = harness(looped, None);
+        assert!(h.query_by_label("Colours middle 3").is_some(), "the gap back round");
+    }
+
+    #[test]
+    fn dragging_a_diamond_moves_its_gaps_middle() {
+        let mut h = harness(Gradient::even(&[RED, BLUE]), None);
+        let bar = h.get_by_label("Colours bar").rect();
+        let diamond = h.get_by_label("Colours middle 1").rect();
+        h.drag_at(diamond.center());
+        h.run();
+        h.hover_at(egui::pos2(bar.left() + bar.width() * 0.25, diamond.center().y));
+        h.run();
+        h.drop_at(egui::pos2(bar.left() + bar.width() * 0.25, diamond.center().y));
+        h.run();
+        let m = h.state().stops[0].middle;
+        assert!((m - 0.25).abs() < 0.03, "{m}");
+        assert_eq!(h.state().stops.len(), 2, "no stop was added");
     }
 }

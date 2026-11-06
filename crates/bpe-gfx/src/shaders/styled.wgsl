@@ -125,6 +125,8 @@ fn fs_look_object(in: LookOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_look(in: LookOut) -> @location(0) vec4<f32> {
+    // For the gradient grain (paint.wgsl).
+    paint_px = in.pos.xy;
     return shade_look(in);
 }
 

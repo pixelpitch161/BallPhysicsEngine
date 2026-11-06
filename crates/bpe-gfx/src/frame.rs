@@ -183,7 +183,7 @@ impl LayerGpu {
             row: -1.0,
             t0: 0.0,
             pattern: 0.0,
-            steps: 0.0,
+            grain: 0.0,
             angle: 0.0,
             scale: 1.0,
             scroll: 0.0,
@@ -832,8 +832,8 @@ pub struct BackgroundPaint {
     /// 0 paints the colour at `t0` everywhere, 1 works the place out along the direction, 2
     /// outward from the centre.
     pub mode: f32,
-    /// 1 picks the nearest baked colour instead of blending neighbours.
-    pub steps: f32,
+    /// The gradient's grain, in 1/255 steps (see [`crate::PaintGpu::grain`]).
+    pub grain: f32,
     /// A plain two-colour blend (linear light) the shader mixes itself, exactly, instead of
     /// reading the baked row, whose half floats are a hair off for very dark colours.
     pub ends: Option<[[f32; 4]; 2]>,
@@ -848,7 +848,7 @@ impl Default for BackgroundPaint {
             scroll: 0.0,
             repeat: 0.0,
             mode: 0.0,
-            steps: 0.0,
+            grain: 0.0,
             ends: None,
         }
     }
@@ -1938,7 +1938,8 @@ pub fn build_frame_sensing(
     frame.clear();
     let animation = Animation::new(scene, resolved);
     let animated;
-    let resolved = if animation.is_empty() {
+    // Gradients' companions (Bands, Grain) are applied once a frame, after the animation.
+    let resolved = if animation.is_empty() && !bpe_core::gradient_extras::any_in(resolved) {
         resolved
     } else {
         let mut copy = resolved.clone();
@@ -1950,6 +1951,7 @@ pub fn build_frame_sensing(
             light: lit.as_ref().map(|l| l as &dyn bpe_core::LightLevels),
         };
         animation.apply(&mut copy, time, &inputs);
+        bpe_core::gradient_extras::apply_moves(&mut copy, time);
         animated = copy;
         &animated
     };

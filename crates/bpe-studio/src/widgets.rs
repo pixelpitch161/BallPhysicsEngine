@@ -149,6 +149,18 @@ pub struct GridOutcome {
     pub varies: Vec<(&'static str, crate::vary::VaryEdit)>,
 }
 
+/// The description of the setting `key` among `defs`: a companion key (`"colours~bands"`) is
+/// answered through its gradient's description, as the companion's own.
+pub fn def_in<'a>(defs: &'a [SettingDef], key: &str) -> Option<&'a SettingDef> {
+    match bpe_core::gradient_extras::split(key) {
+        Some((base, c)) => {
+            let base = defs.iter().find(|d| d.key == base)?;
+            (base.ty == ValueType::Gradient).then(|| crate::gradient_tabs::companion_def(base, c))
+        }
+        None => defs.iter().find(|d| d.key == key),
+    }
+}
+
 /// `electric_piano` to "Electric piano".
 pub fn pretty(name: &str) -> String {
     let mut text = name.replace('_', " ");
@@ -324,8 +336,9 @@ fn sections_for<'a>(defs: &'a [SettingDef], cx: &GridCx) -> Vec<Section<'a>> {
     sections
 }
 
-/// One setting's row of a settings grid, with what the user did to it added to `out`.
-fn grid_row(
+/// One setting's row of a settings grid, with what the user did to it added to `out`. A
+/// gradient of two or more stops gets its tabs in rows under it (`gradient_tabs`).
+pub(crate) fn grid_row(
     ui: &mut Ui,
     def: &SettingDef,
     get: &dyn Fn(&str) -> Value,
@@ -336,7 +349,22 @@ fn grid_row(
     let mut value = get(def.key);
     let unit = unit_for(def, &|k| Some(get(k)));
     let mut varies = Vec::new();
-    let action = setting(ui, def, unit, &mut value, (cx.marks)(def.key), cx, right, &mut varies);
+    let mut companions = GridOutcome::default();
+    let action = {
+        let mut tabs = |ui: &mut Ui, bar: egui::Id, value: &mut Value| {
+            crate::gradient_tabs::tab_rows(ui, def, value, bar, cx, right, get, &mut companions)
+        };
+        let gradient = def.ty == ValueType::Gradient
+            && !bpe_core::gradient_extras::is_companion_key(def.key)
+            && bpe_core::vary::split(def.key).is_none();
+        let tabs: Option<&mut dyn FnMut(&mut Ui, egui::Id, &mut Value) -> bool> =
+            if gradient { Some(&mut tabs) } else { None };
+        setting(ui, def, unit, &mut value, (cx.marks)(def.key), cx, right, &mut varies, tabs)
+    };
+    out.changes.extend(companions.changes);
+    out.new_keys.extend(companions.new_keys);
+    out.follows.extend(companions.follows);
+    out.varies.extend(companions.varies);
     out.varies.extend(varies.into_iter().map(|v| (def.key, v)));
     match action {
         RowAction::Nothing => {}
@@ -391,8 +419,12 @@ fn setting(
     cx: &GridCx,
     right: f32,
     varies: &mut Vec<crate::vary::VaryEdit>,
+    tabs: Option<&mut dyn FnMut(&mut Ui, egui::Id, &mut Value) -> bool>,
 ) -> RowAction {
     use crate::vary::VaryEdit;
+    // Where a gradient's bar and its tabs keep their memory (the selected stop, the open tab):
+    // under the grid and the setting, so it holds however the rows around it change.
+    let bar = ui.scope_id().with(("gradient bar", def.key));
     let offered = cx.vary.and_then(|v| v.use_of(def).map(|u| (v, u)));
     let now = offered.and_then(|(v, _)| v.now(def.key));
     let mut to = now.as_ref().and_then(|n| n.to.clone());
@@ -425,7 +457,7 @@ fn setting(
                 to_response = Some(b);
                 a
             }
-            _ => widget(ui, def, unit, value, name.id, cx.choices),
+            _ => widget(ui, def, unit, value, name.id, bar, cx.choices),
         });
         changed |= r.changed();
         r
@@ -472,6 +504,12 @@ fn setting(
     }
     varies.extend(vary_pick.take());
     ui.end_row();
+    // A gradient's tabs, in rows under it.
+    if let Some(tabs) = tabs
+        && tabs(ui, bar, value)
+    {
+        changed = true;
+    }
     if let (Some((vcx, use_)), Some(v), Some(end)) = (offered, now.as_ref(), to.as_mut()) {
         let to_mark = vcx.to_mark(def);
         let end_before = end.clone();
@@ -489,7 +527,7 @@ fn setting(
                 .inner
             });
             let r =
-                widget_cell(ui, right, |ui| style::wells(ui, |ui| widget(ui, def, unit, end, to_name.id, cx.choices)));
+                widget_cell(ui, right, |ui| style::wells(ui, |ui| widget(ui, def, unit, end, to_name.id, bar.with("to"), cx.choices)));
             if r.changed() {
                 varies.push(VaryEdit::To(end.clone()));
             }
@@ -1151,6 +1189,7 @@ fn widget(
     unit: &str,
     value: &mut Value,
     name: egui::Id,
+    bar: egui::Id,
     choices: &TargetChoices,
 ) -> Response {
     let unit = suffix(unit);
@@ -1189,9 +1228,8 @@ fn widget(
         }
         (ValueType::Color, Value::Color(c)) => color_button(ui, c).labelled_by(name),
         (ValueType::Gradient, Value::Gradient(g)) => {
-            let id = ui.make_persistent_id(("gradient", def.key));
             // The bar and its handles carry their own names, after the setting's.
-            gradient_bar_named(ui, id, g, def.label)
+            gradient_bar_named(ui, bar, g, def.label)
         }
         (ValueType::Choice(names), Value::Choice(current)) => {
             let mut response = style::raised(ui, |ui| {
@@ -1496,7 +1534,7 @@ mod tests {
             assert_eq!(g.stops.len(), 3, "{g:?}");
             assert!((g.stops[1].at - 0.25).abs() < 0.01, "{g:?}");
             assert_eq!(g.stops[1].color, Color::from_linear(two.sample(g.stops[1].at)), "the sampled colour");
-            assert_eq!(g.transition, two.transition);
+            assert_eq!((g.mix, g.looped), (two.mix, two.looped));
         }
 
         #[test]
@@ -1534,17 +1572,17 @@ mod tests {
             assert!(h.query_by_label_contains("Alpha").is_none(), "a right-click opens no picker");
             h.get_by_label("Remove").click();
             h.run();
-            assert_eq!(h.state().stops, [Stop { at: 0.0, color: RED }]);
+            assert_eq!(h.state().stops, [Stop::new(0.0, RED)]);
             // The last colour has no handle to take off, only its swatch.
             assert!(h.query_by_label("Colours stop 1").is_none());
             assert!(h.query_by_label("Remove").is_none());
             // Dragging the last stop of two off the bar leaves one.
-            h.state_mut().stops.push(Stop { at: 1.0, color: BLUE });
+            h.state_mut().stops.push(Stop::new(1.0, BLUE));
             h.run();
             let bar = bar_rect(&h);
             let from = h.get_by_label("Colours stop 1").rect().center();
             drag(&mut h, from, egui::pos2(from.x, bar.bottom() + 60.0));
-            assert_eq!(h.state().stops, [Stop { at: 1.0, color: BLUE }]);
+            assert_eq!(h.state().stops, [Stop::new(1.0, BLUE)]);
         }
 
         #[test]
@@ -1558,7 +1596,8 @@ mod tests {
             h.run();
             h.get_by_label("Add a colour").click();
             h.run();
-            assert_eq!(h.state().stops, [Stop { at: 0.0, color: RED }, Stop { at: 1.0, color: Color::WHITE }]);
+            assert_eq!(h.state().stops, [Stop::new(0.0, RED), Stop::new(1.0, Color::WHITE)]);
+            assert_eq!(h.state().mix, bpe_core::Mix::Even, "a new gradient mixes Even");
             assert!(h.query_by_label("Colours bar").is_some());
         }
 
@@ -1575,13 +1614,9 @@ mod tests {
         }
 
         #[test]
-        fn the_transition_menu_picks_how_stops_blend() {
-            let mut h = harness(Gradient::even(&[RED, BLUE]));
-            h.get_by_label("Colours transition").click();
-            h.run();
-            h.get_by_label("Steps").click();
-            h.run();
-            assert_eq!(h.state().transition, bpe_core::Transition::Steps);
+        fn there_is_no_transition_menu() {
+            let h = harness(Gradient::even(&[RED, BLUE]));
+            assert!(h.query_by_label("Colours transition").is_none(), "gap blends are in the tabs now");
         }
     }
 
@@ -1603,7 +1638,7 @@ mod tests {
             .build_ui_state(
                 move |ui, state: &mut State| {
                     let marks = |key: &str| {
-                        let def = defs.iter().find(|d| d.key == key)?;
+                        let def = def_in(defs, key)?;
                         def.flags.keyframe.then_some(KeyMark {
                             can_key: true,
                             keyed: keyed && key == "radius",

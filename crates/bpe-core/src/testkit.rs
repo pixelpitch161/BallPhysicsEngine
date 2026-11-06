@@ -263,11 +263,13 @@ pub struct BaseLayer {
     pub size: f32,
     #[setting(label = "Colour", keyframe)]
     pub color: Color,
+    #[setting(label = "Colours", keyframe)]
+    pub colours: crate::Gradient,
 }
 
 impl Default for BaseLayer {
     fn default() -> Self {
-        Self { size: 1.0, color: Color::WHITE }
+        Self { size: 1.0, color: Color::WHITE, colours: crate::Gradient::default() }
     }
 }
 

@@ -152,7 +152,7 @@ impl Globals {
             bg: [
                 if frame.background_on_screen { 1.0 } else { 0.0 },
                 frame.background.mode,
-                frame.background.steps,
+                frame.background.grain,
                 if frame.background.ends.is_some() { 1.0 } else { 0.0 },
             ],
             bg_from: frame.background.ends.map_or([0.0; 4], |e| e[0]),
@@ -188,6 +188,9 @@ struct Targets {
     composite: wgpu::BindGroup,
 }
 
+/// Samples in the grade map's row (post.wgsl reads 256).
+const GRADE_WIDTH: usize = 256;
+
 /// The colour grade's gradient map, baked into one 256×1 row the composite reads. It is always
 /// there, and written only when a frame maps by an amount above 0 with a gradient it does not
 /// hold yet.
@@ -202,7 +205,7 @@ impl GradeMap {
     fn new(device: &wgpu::Device) -> Self {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("grade map"),
-            size: wgpu::Extent3d { width: ATLAS_WIDTH as u32, height: 1, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d { width: GRADE_WIDTH as u32, height: 1, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -219,17 +222,17 @@ impl GradeMap {
         if grade.map_amount <= 0.0 || self.baked.as_ref() == Some(&grade.map) {
             return;
         }
-        let mut row = [[0.0; 4]; ATLAS_WIDTH];
-        row.copy_from_slice(&grade.map.bake(ATLAS_WIDTH));
+        let mut row = [[0.0; 4]; GRADE_WIDTH];
+        row.copy_from_slice(&grade.map.bake(GRADE_WIDTH));
         queue.write_texture(
             self.texture.as_image_copy(),
             &gradients::half_texels(&[row]),
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(ATLAS_WIDTH as u32 * 8),
+                bytes_per_row: Some(GRADE_WIDTH as u32 * 8),
                 rows_per_image: None,
             },
-            wgpu::Extent3d { width: ATLAS_WIDTH as u32, height: 1, depth_or_array_layers: 1 },
+            wgpu::Extent3d { width: GRADE_WIDTH as u32, height: 1, depth_or_array_layers: 1 },
         );
         self.baked = Some(grade.map.clone());
     }

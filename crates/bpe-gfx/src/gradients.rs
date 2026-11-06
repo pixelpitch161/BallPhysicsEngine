@@ -7,7 +7,7 @@ use bpe_core::Gradient;
 use bytemuck::{Pod, Zeroable};
 
 /// Samples in one baked row, the first at 0 and the last at 1.
-pub const ATLAS_WIDTH: usize = 256;
+pub const ATLAS_WIDTH: usize = 1024;
 /// The atlas texture is at least this many rows tall.
 const MIN_HEIGHT: usize = 8;
 
@@ -63,7 +63,8 @@ impl GradientAtlas {
     }
 }
 
-/// FNV-1a over the stops' places and colours and the transition.
+/// FNV-1a over the stops' places, colours, gap blends and middles, the mix and Loop (not the
+/// grain, which doesn't change the baked row).
 fn hash(g: &Gradient) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     let mut eat = |bytes: &[u8]| {
@@ -74,9 +75,10 @@ fn hash(g: &Gradient) -> u64 {
     };
     for s in &g.stops {
         eat(&s.at.to_bits().to_le_bytes());
-        eat(&[s.color.r, s.color.g, s.color.b, s.color.a]);
+        eat(&[s.color.r, s.color.g, s.color.b, s.color.a, s.blend as u8]);
+        eat(&s.middle.to_bits().to_le_bytes());
     }
-    eat(&[g.transition as u8]);
+    eat(&[g.mix as u8, g.looped as u8]);
     h
 }
 
@@ -125,7 +127,7 @@ pub(crate) fn uploaded_rows(len: usize, max: usize) -> usize {
 }
 
 /// The rows as half floats, ready for an `Rgba16Float` texture.
-pub(crate) fn half_texels(rows: &[[[f32; 4]; ATLAS_WIDTH]]) -> Vec<u8> {
+pub(crate) fn half_texels<const W: usize>(rows: &[[[f32; 4]; W]]) -> Vec<u8> {
     rows.iter().flatten().flatten().flat_map(|&c| f16_bits(c).to_le_bytes()).collect()
 }
 
@@ -178,8 +180,9 @@ pub struct PaintGpu {
     /// Stripes, rings and path never run off the gradient's end: Clamp mirrors them. Dots to
     /// face paint their mask (0 or 1) along the gradient, clamped whatever the repeat.
     pub pattern: f32,
-    /// 1 picks the nearest baked colour instead of blending neighbours.
-    pub steps: f32,
+    /// The gradient's grain: still per-pixel noise of this strength in 1/255 steps (its size
+    /// is taken), 0 none. See [`bpe_core::Gradient::grain`].
+    pub grain: f32,
     /// The pattern's turn in degrees, from +x towards +y: where linear and stripes point, where
     /// sweep starts, and how far the masks are turned.
     pub angle: f32,
@@ -205,7 +208,7 @@ impl Default for PaintGpu {
             row: -1.0,
             t0: 0.0,
             pattern: 0.0,
-            steps: 0.0,
+            grain: 0.0,
             angle: 0.0,
             scale: 1.0,
             scroll: 0.0,
@@ -218,23 +221,31 @@ impl Default for PaintGpu {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bpe_core::{Color, Stop, Transition};
+    use bpe_core::{Color, GapBlend, Mix};
 
-    fn two(a: Color, b: Color, transition: Transition) -> Gradient {
-        Gradient { stops: vec![Stop { at: 0.0, color: a }, Stop { at: 1.0, color: b }], transition }
+    fn two(a: Color, b: Color) -> Gradient {
+        Gradient::even(&[a, b])
     }
 
     #[test]
     fn same_gradient_gets_the_same_row() {
         let mut atlas = GradientAtlas::default();
-        let red_blue = two(Color::rgb(255, 0, 0), Color::rgb(0, 0, 255), Transition::Smooth);
+        let red_blue = two(Color::rgb(255, 0, 0), Color::rgb(0, 0, 255));
         let a = atlas.row(&red_blue);
-        let b = atlas.row(&two(Color::rgb(0, 255, 0), Color::rgb(0, 0, 255), Transition::Smooth));
+        let b = atlas.row(&two(Color::rgb(0, 255, 0), Color::rgb(0, 0, 255)));
         assert_eq!((a, b), (0, 1));
         assert_eq!(atlas.row(&red_blue.clone()), a);
-        // The transition is part of the gradient.
-        assert_eq!(atlas.row(&Gradient { transition: Transition::Steps, ..red_blue }), 2);
-        assert_eq!(atlas.len(), 3);
+        // The gap blends, middles, mix and Loop are part of the gradient; the grain isn't.
+        let mut steps = red_blue.clone();
+        steps.stops[0].blend = GapBlend::Steps;
+        assert_eq!(atlas.row(&steps), 2);
+        let mut middle = red_blue.clone();
+        middle.stops[0].middle = 0.3;
+        assert_eq!(atlas.row(&middle), 3);
+        assert_eq!(atlas.row(&Gradient { mix: Mix::Even, ..red_blue.clone() }), 4);
+        assert_eq!(atlas.row(&Gradient { looped: true, ..red_blue.clone() }), 5);
+        assert_eq!(atlas.row(&Gradient { grain: 4.0, ..red_blue }), a);
+        assert_eq!(atlas.len(), 6);
         atlas.clear();
         assert_eq!(atlas.len(), 0);
         assert_eq!(atlas, GradientAtlas::default());
@@ -243,8 +254,8 @@ mod tests {
     #[test]
     fn adopting_a_row_reuses_a_matching_one() {
         let mut from = GradientAtlas::default();
-        let red_blue = two(Color::rgb(255, 0, 0), Color::rgb(0, 0, 255), Transition::Smooth);
-        let green = two(Color::rgb(0, 255, 0), Color::rgb(0, 255, 0), Transition::Smooth);
+        let red_blue = two(Color::rgb(255, 0, 0), Color::rgb(0, 0, 255));
+        let green = two(Color::rgb(0, 255, 0), Color::rgb(0, 255, 0));
         let (rb, g) = (from.row(&red_blue), from.row(&green));
         let mut into = GradientAtlas::default();
         into.row(&green);
@@ -260,7 +271,7 @@ mod tests {
     fn atlas_grows_past_its_first_height() {
         let mut atlas = GradientAtlas::default();
         let gradients: Vec<Gradient> =
-            (0..20).map(|i| two(Color::rgb(i * 10, 0, 0), Color::rgb(0, 0, 255), Transition::Smooth)).collect();
+            (0..20).map(|i| two(Color::rgb(i * 10, 0, 0), Color::rgb(0, 0, 255))).collect();
         let rows: Vec<u32> = gradients.iter().map(|g| atlas.row(g)).collect();
         assert_eq!(rows, (0..20).collect::<Vec<u32>>());
         assert_eq!(atlas.len(), 20);

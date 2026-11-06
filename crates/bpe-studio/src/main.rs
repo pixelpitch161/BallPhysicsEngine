@@ -11,6 +11,7 @@ mod export_window;
 mod final_frame;
 mod follow;
 mod gradient_bar;
+mod gradient_tabs;
 mod grid;
 mod history;
 mod inspector;

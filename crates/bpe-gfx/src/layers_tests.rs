@@ -392,13 +392,13 @@ fn a_solo_layer_shows_its_masks_alone_in_white_and_black() {
 fn grouped_ball(frame: &mut Frame, mode: u32, group_record: bool, grouped_outline: bool) {
     let row = frame.gradients.row(&Gradient {
         stops: vec![
-            bpe_core::Stop { at: 0.0, color: Color::rgb(0, 0, 0) },
-            bpe_core::Stop { at: 0.5, color: Color::rgb(255, 255, 255) },
+            bpe_core::Stop { blend: bpe_core::GapBlend::Steps, ..bpe_core::Stop::new(0.0, Color::rgb(0, 0, 0)) },
+            bpe_core::Stop { blend: bpe_core::GapBlend::Steps, ..bpe_core::Stop::new(0.5, Color::rgb(255, 255, 255)) },
         ],
-        transition: bpe_core::Transition::Steps,
+        ..Gradient::default()
     });
     let stripes = LayerGpu {
-        paint: PaintGpu { row: row as f32, pattern: 1.0, scale: 4.0, repeat: 1.0, steps: 1.0, ..PaintGpu::default() },
+        paint: PaintGpu { row: row as f32, pattern: 1.0, scale: 4.0, repeat: 1.0, ..PaintGpu::default() },
         ..record(LayerGpu::PATTERN, Blend::Normal)
     };
     let mut ring = outline(20.0, 0.0);

@@ -140,6 +140,22 @@ fn clean(params: &mut Params, defs: &'static [SettingDef]) {
             params.set(&key, def.clamp(v));
         }
     }
+    // A gradient's companions stay with it, the same way.
+    let companions: Vec<String> = params
+        .0
+        .keys()
+        .filter(|k| crate::gradient_extras::is_companion_key(k) && crate::split_layered(k).is_none())
+        .cloned()
+        .collect();
+    for key in companions {
+        let (base, c) = crate::gradient_extras::split(&key).expect("filtered above");
+        let v = params.remove(&key).expect("listed above");
+        if let Some(def) = crate::gradient_extras::def_for(defs.iter().find(|d| d.key == base), c)
+            && def.ty.accepts(&v)
+        {
+            params.set(&key, def.clamp(v));
+        }
+    }
 }
 
 #[cfg(test)]

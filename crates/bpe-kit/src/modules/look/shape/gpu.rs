@@ -412,7 +412,7 @@ fn run_paint(colours: &Gradient, flow: f32, atlas: &mut GradientAtlas) -> PaintG
     let flow = if flow.is_finite() { flow } else { 0.0 };
     PaintGpu {
         row: atlas.row(colours) as f32,
-        steps: if colours.transition == bpe_core::Transition::Steps { 1.0 } else { 0.0 },
+        grain: colours.grain,
         scroll: flow,
         repeat: if flow != 0.0 { 1.0 } else { 0.0 },
         ..PaintGpu::default()
