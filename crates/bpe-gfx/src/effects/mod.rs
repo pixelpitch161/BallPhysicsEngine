@@ -20,12 +20,15 @@
 //! values that break the maths (each says why in its effect). A `choice` is packed as the index
 //! of the picked name. A `color` takes three of the sixteen floats the shader gets. `memory`
 //! says how long an effect that reads its earlier frames remembers: a number of seconds, or
-//! `fade <key>`, a setting that keeps that share of the picture every 1/60 s. `stage: things` runs the effect before flashes and
+//! `fade <key>`, a setting that keeps that share of the picture every 1/60 s. `lens: rays soft` (either word or both)
+//! asks for the lens pre-pass (see [`lens`]): the file then also defines `fn bright(uv, p) -> vec3<f32>`, what counts
+//! as a source, and reads the pre-pass through `lens_rays(uv)` and `lens_soft(uv, level)`. `stage: things` runs the effect before flashes and
 //! particles are drawn (materials do); the default runs it over the finished picture. The
 //! module kinds in `bpe-kit` are generated from these headers, and stage 4's node graphs will
 //! compile to the same file shape.
 
 pub mod chain;
+pub mod lens;
 
 use std::sync::OnceLock;
 
@@ -49,6 +52,38 @@ pub struct Header {
     pub stage: Stage,
     pub params: Vec<ParamDef>,
     pub memory: Memory,
+    /// The lens pre-pass it asks for (`// lens:`).
+    pub lens: Lens,
+}
+
+/// The lens pre-pass an effect asks for: streaks from its bright parts (`rays`), a soft mip chain
+/// of them (`soft`), or both. Nothing by default.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Lens {
+    pub rays: bool,
+    pub soft: bool,
+}
+
+impl Lens {
+    pub fn any(self) -> bool {
+        self.rays || self.soft
+    }
+}
+
+/// `rays`, `soft` or both, from a `// lens:` line.
+fn parse_lens(text: &str) -> Result<Lens, String> {
+    let mut lens = Lens::default();
+    for word in text.split(|c: char| c.is_whitespace() || c == ',').filter(|w| !w.is_empty()) {
+        match word {
+            "rays" => lens.rays = true,
+            "soft" => lens.soft = true,
+            other => return Err(format!("the lens line takes `rays` and `soft`, not `{other}`")),
+        }
+    }
+    if !lens.any() {
+        return Err("the lens line needs `rays`, `soft` or both".to_owned());
+    }
+    Ok(lens)
 }
 
 /// How long an effect remembers its earlier frames.
@@ -171,6 +206,7 @@ pub fn parse(wgsl: &str) -> Result<Header, String> {
         stage: Stage::Picture,
         params: Vec::new(),
         memory: Memory::Unsaid,
+        lens: Lens::default(),
     };
     let mut errors = Vec::new();
     for (index, comment) in header_lines(wgsl) {
@@ -201,6 +237,7 @@ pub fn parse(wgsl: &str) -> Result<Header, String> {
             "color" => parse_color(rest).map(|p| header.params.push(p)),
             "choice" => parse_choice(rest).map(|p| header.params.push(p)),
             "memory" => parse_memory(rest).map(|m| header.memory = m),
+            "lens" => parse_lens(rest).map(|l| header.lens = l),
             _ => continue,
         };
         if let Err(error) = outcome {
@@ -225,6 +262,10 @@ pub fn parse(wgsl: &str) -> Result<Header, String> {
     }
     if !wgsl.contains("fn effect(") {
         errors.push("the file must define fn effect(uv: vec2<f32>, p: Params) -> vec3<f32>".to_owned());
+    }
+    if header.lens.any() && !wgsl.contains("fn bright(") {
+        errors
+            .push("an effect with a lens line must define fn bright(uv: vec2<f32>, p: Params) -> vec3<f32>".to_owned());
     }
     if errors.is_empty() { Ok(header) } else { Err(errors.join("\n")) }
 }
@@ -447,6 +488,16 @@ fn blend_maths() -> &'static str {
 /// effect that reads its earlier frames writes two pictures: the picture, and its memory (what
 /// `prev` and `kept` read next frame).
 pub fn assemble(wgsl: &str) -> Result<String, String> {
+    assemble_as(wgsl, false)
+}
+
+/// The shader of a lens effect's pre-pass: the prelude, the file and an entry point that
+/// returns `bright(uv, p)` (kept finite, never below black), for the half-size bright picture.
+pub fn assemble_bright(wgsl: &str) -> Result<String, String> {
+    assemble_as(wgsl, true)
+}
+
+fn assemble_as(wgsl: &str, bright: bool) -> Result<String, String> {
     let header = parse(wgsl)?;
     let memory = needs_history(wgsl);
     let mut head = String::from(PRELUDE);
@@ -479,6 +530,20 @@ pub fn assemble(wgsl: &str) -> Result<String, String> {
         at += p.floats();
     }
     tail.push_str("    return p;\n}\n");
+    if bright {
+        tail.push_str(
+            "
+@fragment
+fn fs_main(in: FsIn) -> @location(0) vec4<f32> {
+    let b = bright(in.uv, unpack());
+    // A NaN gives no light rather than spreading through the streaks.
+    let kept = select(b, vec3<f32>(0.0), b != b);
+    return vec4<f32>(clamp(kept, vec3<f32>(0.0), vec3<f32>(64.0)), 1.0);
+}
+",
+        );
+        return Ok(format!("{head}{wgsl}\n{tail}"));
+    }
     tail.push_str(if memory {
         "
 struct FsOut {
@@ -831,9 +896,9 @@ pub struct Builtin {
     header: OnceLock<Header>,
 }
 
-/// The effects that come with the program: 23 over the picture (the first ten from before the
-/// lighting, then the psychedelic ones), then three materials.
-pub static BUILTINS: [Builtin; 26] = [
+/// The effects that come with the program: 26 over the picture (the first ten from before the
+/// lighting, then the psychedelic ones, then the lens ones of lighting part 5), then three materials.
+pub static BUILTINS: [Builtin; 29] = [
     Builtin::new("color_cycle", include_str!("builtin/color_cycle.wgsl")),
     Builtin::new("color_split", include_str!("builtin/color_split.wgsl")),
     Builtin::new("echo", include_str!("builtin/echo.wgsl")),
@@ -857,6 +922,9 @@ pub static BUILTINS: [Builtin; 26] = [
     Builtin::new("melting", include_str!("builtin/melting.wgsl")),
     Builtin::new("solarize", include_str!("builtin/solarize.wgsl")),
     Builtin::new("gravity_lens", include_str!("builtin/gravity_lens.wgsl")),
+    Builtin::new("lens_flare", include_str!("builtin/lens_flare.wgsl")),
+    Builtin::new("lens_streaks", include_str!("builtin/lens_streaks.wgsl")),
+    Builtin::new("fringes", include_str!("builtin/fringes.wgsl")),
     Builtin::new("lava", include_str!("builtin/lava.wgsl")),
     Builtin::new("rainbow_flow", include_str!("builtin/rainbow_flow.wgsl")),
     Builtin::new("hit_glow", include_str!("builtin/hit_glow.wgsl")),
@@ -964,7 +1032,7 @@ mod tests {
         }
         let things: Vec<&str> = BUILTINS.iter().filter(|b| b.header().stage == Stage::Things).map(|b| b.id).collect();
         assert_eq!(things, ["lava", "rainbow_flow", "hit_glow"]);
-        assert_eq!(BUILTINS.len() - things.len(), 23);
+        assert_eq!(BUILTINS.len() - things.len(), 26);
         assert_eq!(Builtin::find("echo").map(|b| b.id), Some("echo"));
         assert!(Builtin::find("nope").is_none());
         assert!(needs_history(Builtin::find("echo").unwrap().wgsl));

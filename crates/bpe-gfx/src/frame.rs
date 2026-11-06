@@ -1100,6 +1100,9 @@ pub struct LightScene {
     pub surfaces: Vec<SurfaceGpu>,
     /// Every ball as a sphere, for shadows and contact shading in Stage.
     pub spheres: Vec<SphereGpu>,
+    /// The Camera thing's Stage camera, when it is on (lighting part 5): the lit picture is seen
+    /// again from it. Only read in Stage.
+    pub camera: Option<crate::StageCamera>,
 }
 
 impl LightScene {
@@ -1565,6 +1568,25 @@ impl Frame {
                 && o.particles_front.is_empty()
                 && o.layers.is_empty())
         })
+    }
+
+    /// The moved Stage camera this frame is seen through (lighting part 5): a lit frame in Stage
+    /// whose light scene has a camera. `None` leaves the picture as the front shot.
+    pub fn stage_view(&self) -> Option<crate::StageView> {
+        let light = self.light.as_ref()?;
+        let cam = light.camera.as_ref()?;
+        let s = &light.settings;
+        if s.stage[0] < 0.5 {
+            return None;
+        }
+        let size = glam::Vec2::new(self.width.max(1) as f32, self.height.max(1) as f32);
+        let floor = match s.floor[0] {
+            k if k > 1.5 => Some(self.camera.to_world(glam::Vec2::new(0.0, size.y * 0.5)).y),
+            k if k > 0.5 => Some(s.floor[1]),
+            _ => None,
+        };
+        let layout = crate::StageLayout { back: s.stage[1], k: s.stage[3], floor };
+        Some(crate::StageView::solve(cam, &self.camera, size, layout))
     }
 
     /// Looks at the frame through `camera` on a picture `size` world pixels across, its blend

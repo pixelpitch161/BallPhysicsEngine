@@ -14,12 +14,17 @@ mod frame;
 mod grade_tests;
 mod gradients;
 mod lighting;
+pub mod stage_camera;
+mod stage_camera_pass;
+pub use stage_camera::{FillEdges, StageCamera, StageCameraGpu, StageLayout, StageView};
 #[cfg(test)]
 mod lighting_tests;
 mod timing;
 pub use timing::FEATURES as TIMING_FEATURES;
 #[cfg(test)]
 mod layers_tests;
+#[cfg(test)]
+mod lens_tests;
 mod masks;
 #[cfg(test)]
 mod paint_tests;
@@ -336,6 +341,8 @@ pub struct Renderer {
     grade_map: GradeMap,
     /// Lighting's passes and pictures, made the first time a frame is lit.
     lighting: Option<lighting::Lighting>,
+    /// The Stage camera's pass (lighting part 5), made the first time a frame is seen moved.
+    stage_camera: Option<stage_camera_pass::StageCameraPass>,
     /// Times the light passes, when the device can (`None` inside: it can't; tried once).
     light_timer: Option<Option<timing::LightTimer>>,
     /// The last frame's lighting: how many lights it drew, `None` when it wasn't lit.
@@ -1064,6 +1071,7 @@ impl Renderer {
             targets,
             grade_map,
             lighting: None,
+            stage_camera: None,
             light_timer: None,
             lit_lights: None,
             light_mode: 0,
@@ -1206,6 +1214,7 @@ impl Renderer {
         // its own picture, then the light mixed into the HDR picture.
         self.lit_lights = frame.light.as_ref().map(|scene| scene.lights.len());
         let mut timed = false;
+        let mut moved = false;
         if let Some(scene) = frame.light.as_ref() {
             let timer = self.light_timer.get_or_insert_with(|| timing::LightTimer::new(device, queue));
             if let Some(t) = timer {
@@ -1278,6 +1287,40 @@ impl Renderer {
                 &self.targets.hdr,
                 scene.settings.background_glows(),
             );
+            // A moved Stage camera sees the lit picture again: the picture, the picture before
+            // lighting and the lit colour are then the moved camera's.
+            if let Some(view) = frame.stage_view().filter(|v| v.motion > 0.0) {
+                let lighting = self.lighting.as_ref().expect("made above");
+                let pass =
+                    self.stage_camera.get_or_insert_with(|| stage_camera_pass::StageCameraPass::new(device, lighting));
+                pass.ensure(device, self.targets.width, self.targets.height);
+                {
+                    let mut background = begin_pass(
+                        &mut encoder,
+                        pass.background(),
+                        "background alone",
+                        wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    );
+                    background.set_bind_group(0, &self.globals_group, &[]);
+                    background.set_bind_group(1, &self.paint.group, &[]);
+                    background.set_pipeline(&self.background);
+                    background.draw(0..3, 0..1);
+                }
+                // Draft takes one ray a pixel; better qualities five at edges.
+                let samples = if scene.settings.more[2] < 0.5 { 1 } else { 5 };
+                let lit_colour = &lighting.pictures().expect("made above")[0].1;
+                pass.run(device, queue, &mut encoder, lighting, &view, samples, &self.targets.hdr, lit_colour);
+                let [picture, unlit, _] = pass.seen();
+                let extent =
+                    wgpu::Extent3d { width: self.targets.width, height: self.targets.height, depth_or_array_layers: 1 };
+                encoder.copy_texture_to_texture(
+                    picture.0.as_image_copy(),
+                    self.targets.hdr_texture.as_image_copy(),
+                    extent,
+                );
+                encoder.copy_texture_to_texture(unlit.0.as_image_copy(), self.targets.behind.as_image_copy(), extent);
+                moved = true;
+            }
             if let Some(Some(t)) = self.light_timer.as_mut() {
                 timed = t.end(&mut encoder);
             }
@@ -1296,6 +1339,10 @@ impl Renderer {
         self.layer_buffers = layer_buffers;
         // Effects on the light read the picture before lighting and the lit colour.
         let light_pictures = match (frame.light.as_ref(), self.lighting.as_ref().and_then(|l| l.pictures())) {
+            (Some(_), Some(_)) if moved => {
+                let lit = &self.stage_camera.as_ref().expect("moved").seen()[2].1;
+                Some((self.targets.behind_view.clone(), lit.clone()))
+            }
             (Some(_), Some([(_, lit), _, _])) => Some((self.targets.behind_view.clone(), lit)),
             _ => None,
         };

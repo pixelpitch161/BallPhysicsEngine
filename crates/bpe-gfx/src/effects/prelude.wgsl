@@ -67,6 +67,10 @@ struct FxBall {
 @group(0) @binding(5) var unlit_tex: texture_2d<f32>;
 @group(0) @binding(6) var lit_tex: texture_2d<f32>;
 @group(0) @binding(7) var<storage, read> fx_balls: array<FxBall>;
+// The lens pre-pass of an effect with a `// lens:` line (black for any other): the streaks from
+// its bright parts, and those bright parts softened over five levels.
+@group(0) @binding(8) var lens_rays_tex: texture_2d<f32>;
+@group(0) @binding(9) var lens_soft_tex: texture_2d<f32>;
 
 // What the effect keeps at this pixel for its next frame (see keep and kept); below 0 when it
 // keeps nothing.
@@ -355,4 +359,18 @@ fn target_weight(uv: vec2<f32>) -> f32 {
     }
     let o = object_at(uv);
     return select(0.0, o.w, abs(floor(o.z) - fx.apply_to) < 0.5);
+}
+
+// The streaks the lens pre-pass drew from the bright parts (`// lens: rays`), at `uv`.
+fn lens_rays(uv: vec2<f32>) -> vec3<f32> {
+    return textureSampleLevel(lens_rays_tex, samp, uv, 0.0).rgb;
+}
+
+// The bright parts (`// lens: soft`) at `uv`, softened: level 0 is half the picture's size, each
+// level up half as sharp again (up to 4; in between mixes the two).
+fn lens_soft(uv: vec2<f32>, level: f32) -> vec3<f32> {
+    if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) {
+        return vec3<f32>(0.0);
+    }
+    return textureSampleLevel(lens_soft_tex, samp, uv, clamp(level, 0.0, 4.0)).rgb;
 }

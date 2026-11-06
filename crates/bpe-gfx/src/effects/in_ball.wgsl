@@ -177,6 +177,15 @@ fn ball_seed(i: u32) -> f32 {
     return 0.0;
 }
 
+// Nor the lens pictures (lighting part 5): a lens effect inside a ball adds nothing of its own.
+fn lens_rays(uv: vec2<f32>) -> vec3<f32> {
+    return vec3<f32>(0.0);
+}
+
+fn lens_soft(uv: vec2<f32>, level: f32) -> vec3<f32> {
+    return vec3<f32>(0.0);
+}
+
 fn ball_color(i: u32) -> vec3<f32> {
     return vec3<f32>(0.0);
 }
