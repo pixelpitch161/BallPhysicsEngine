@@ -105,9 +105,22 @@ fn every_kind_is_registered_with_settings_under_rule() {
             "do.motion",
             "do.change",
             "do.break",
+            "when.enter",
+            "when.fired",
+            "when.removed",
+            "when.count",
+            "when.level",
+            "when.signal",
+            "if.counter",
+            "do.split",
+            "do.spawn",
+            "do.fire",
+            "do.tag",
+            "do.count",
+            "do.signal",
             "when.health",
             "if.health",
-            "do.health"
+            "do.health",
         ]
     );
     for b in kit.registry.blocks() {

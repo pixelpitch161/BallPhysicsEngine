@@ -142,6 +142,8 @@ pub struct Health {
     pub(crate) moments: Vec<HealthMoment>,
     /// Held as it is: hits take nothing (a test flight's copy, `World::lone`).
     still: bool,
+    /// The health a new ball row takes from the ball it split from, until `fill` gives it.
+    inherited: BTreeMap<(ThingId, u32), Hp>,
 }
 
 /// The least starting health: a card's 0 counts as this.
@@ -170,12 +172,19 @@ impl Health {
             let hp = if balls { Vec::new() } else { vec![Hp { now: card.start_at(None), start: card.start_at(None) }] };
             things.insert(id, HealthOf { card, balls, hp });
         }
-        Health { things, moments: Vec::new(), still: false }
+        Health { things, moments: Vec::new(), still: false, inherited: BTreeMap::new() }
     }
 
     /// A copy whose health stays as it is now: hits take nothing (a test flight's world).
     pub(crate) fn held(&self) -> Health {
-        Health { things: self.things.clone(), moments: Vec::new(), still: true }
+        Health { things: self.things.clone(), moments: Vec::new(), still: true, inherited: self.inherited.clone() }
+    }
+
+    /// Ball row `to` of `thing` (a ball split from row `from`) starts with `from`'s health.
+    pub(crate) fn copy_row(&mut self, thing: ThingId, from: u32, to: u32) {
+        if let Some(hp) = self.things.get(&thing).filter(|h| h.balls).and_then(|_| self.of(thing, Some(from))) {
+            self.inherited.insert((thing, to), hp);
+        }
     }
 
     /// Whether any thing has health.
@@ -209,6 +218,10 @@ impl Health {
         for (id, h) in self.things.iter_mut().filter(|(_, h)| h.balls) {
             let count = world.bodies.get(id).map_or(0, |b| b.len());
             for row in h.hp.len()..count {
+                if let Some(hp) = self.inherited.remove(&(*id, row as u32)) {
+                    h.hp.push(hp);
+                    continue;
+                }
                 let start = match &h.card.start_vary {
                     Some(_) => h.card.start_at(Some(&world.ball_spread(sims, *id, row))),
                     None => h.card.start_at(None),
@@ -240,7 +253,7 @@ impl Health {
         if !h.balls {
             return h.hp.first().map_or(0.0, Hp::share);
         }
-        let Some(b) = world.bodies.get(&thing).filter(|b| b.len() > 0) else { return 1.0 };
+        let Some(b) = world.bodies.get(&thing).filter(|b| !b.is_empty()) else { return 1.0 };
         let (mut sum, mut n) = (0.0f32, 0u32);
         for row in (0..b.len()).filter(|&r| b.alive[r]) {
             sum += h.hp.get(row).map_or(1.0, Hp::share);
@@ -366,7 +379,7 @@ mod tests {
     fn one_thing(start: f64) -> Health {
         let mut things = BTreeMap::new();
         things.insert(ThingId(5), HealthOf { card: card(start), balls: false, hp: vec![Hp { now: start, start }] });
-        Health { things, moments: Vec::new(), still: false }
+        Health { things, moments: Vec::new(), still: false, inherited: BTreeMap::new() }
     }
 
     const AT: (Vec2, Vec2, Option<Party>, f32) = (Vec2::ZERO, Vec2::ZERO, None, 0.0);
@@ -409,7 +422,7 @@ mod tests {
         assert_eq!(start, LEAST_START);
         let mut things = BTreeMap::new();
         things.insert(ThingId(5), HealthOf { card: c, balls: false, hp: vec![Hp { now: start, start }] });
-        let mut h = Health { things, moments: Vec::new(), still: false };
+        let mut h = Health { things, moments: Vec::new(), still: false, inherited: BTreeMap::new() };
         let (_, zero) = h.change(ThingId(5), None, HealthChange::Damage(1.0), AT).unwrap();
         assert!(zero);
     }

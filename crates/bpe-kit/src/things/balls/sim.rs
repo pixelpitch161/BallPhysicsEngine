@@ -3,7 +3,7 @@
 use bpe_core::vary::{self, BallSpread, Vary};
 use bpe_core::{Params, ResolvedThing, Settings, Thing, ThingId, Value};
 use bpe_runtime::rules::Ruled;
-use bpe_runtime::{Bodies, Log, Pose, ThingSim, World, state, state_mut};
+use bpe_runtime::{Bodies, Log, NewBall, Pose, ThingSim, World, state, state_mut};
 use glam::Vec2;
 
 use super::rows::BallRows;
@@ -449,6 +449,58 @@ impl ThingSim for BallsSim {
     /// Colour and turn spread only change how the balls look.
     fn affects_physics(&self, key: &str) -> bool {
         !matches!(key, "vary_colour" | "vary_turn")
+    }
+
+    /// A rule's ball (Split, Spawn balls): a split one takes the ball it came from's number and
+    /// facts; a new one the next number, its Size and the way it goes.
+    fn add_ball(&self, thing: ThingId, world: &mut World, ball: &NewBall) -> Option<u32> {
+        let (Some(st), Some(bodies)) = (world.states.get_mut(&thing), world.bodies.get_mut(&thing)) else {
+            return None;
+        };
+        let st = st.as_any_mut().downcast_mut::<BallsState>()?;
+        let fresh = (next_number(&st.offsets, &st.rows), st.settings.radius);
+        Some(push_rule_ball(&mut st.rows, &mut st.own_size, bodies, ball, fresh))
+    }
+}
+
+/// The number a ball a rule adds to a group takes: after every place and every number so far.
+fn next_number(offsets: &[Vec2], rows: &BallRows) -> u32 {
+    let most = rows.numbers.iter().copied().max().map_or(0, |n| n + 1);
+    most.max(offsets.len() as u32)
+}
+
+/// Pushes a rule's ball into `bodies` and `rows` (with its own size in `own_size`): a split one
+/// (`ball.like`) copies that row's number and facts, a new one takes `fresh`'s number and size.
+/// Its row.
+pub fn push_rule_ball(
+    rows: &mut BallRows,
+    own_size: &mut Vec<f32>,
+    bodies: &mut Bodies,
+    ball: &NewBall,
+    fresh: (u32, f32),
+) -> u32 {
+    let launch = if ball.velocity.length_squared() > 0.0 { ball.velocity.to_angle() } else { 0.0 };
+    match ball.like.map(|r| r as usize).filter(|&r| r < rows.len() && r < bodies.len()) {
+        Some(from) => {
+            let radius = ball.radius.unwrap_or(bodies.radius[from]);
+            let row = bodies.push(ball.position, ball.velocity, radius) as usize;
+            bodies.number[row] = bodies.number[from];
+            let (number, factor, round, place, in_round) =
+                (rows.numbers[from], rows.size_factor[from], rows.round[from], rows.place[from], rows.in_round[from]);
+            rows.push(number, factor, round, rows.launch[from], place, in_round);
+            rows.fade_from[row] = rows.fade_from[from];
+            own_size.push(own_size.get(from).copied().unwrap_or(radius));
+            row as u32
+        }
+        None => {
+            let (number, size) = fresh;
+            let radius = ball.radius.unwrap_or(size);
+            let row = bodies.push(ball.position, ball.velocity, radius) as usize;
+            bodies.number[row] = number;
+            rows.push(number, 1.0, 0, launch, Vec2::ZERO, number);
+            own_size.push(radius);
+            row as u32
+        }
     }
 }
 

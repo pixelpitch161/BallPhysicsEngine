@@ -80,6 +80,9 @@ pub struct Wall {
     pub growth: f32,
     /// How fast the whole wall is moving, in pixels per second, when it rides something.
     pub velocity: Vec2,
+    /// Balls go through it (a zone): it bounces nothing, though everything else (lights, the
+    /// probe, rules' Enters / Leaves) still sees it.
+    pub passes: bool,
 }
 
 /// Where a ball met a wall.
@@ -640,7 +643,7 @@ mod tests {
     use std::f32::consts::FRAC_PI_2;
 
     fn hollow(outline: Outline) -> Wall {
-        Wall { outline, solid: false, spin: 0.0, growth: 0.0, velocity: Vec2::ZERO }
+        Wall { outline, solid: false, spin: 0.0, growth: 0.0, velocity: Vec2::ZERO, passes: false }
     }
 
     fn ring(radius: f32) -> Wall {

@@ -218,7 +218,7 @@ impl BlockSim for Is {
         };
         let Some(party) = party else { return false };
         match s.s.test {
-            IsTest::Matches => matches(cx.world, &s.s.who, party),
+            IsTest::Matches => matches(cx, &s.s.who, party),
             IsTest::BallNumber => {
                 let want = s.number.of(firing).map(|n| n.round());
                 ball_number(cx.world, party).is_some_and(|n| Some(n as f64) == want)

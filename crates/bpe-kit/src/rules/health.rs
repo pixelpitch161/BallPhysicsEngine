@@ -107,7 +107,7 @@ impl BlockSim for WhenHealth {
         let s = state::<WhenHealthSettings>(st);
         for m in cx.health.moments().iter().filter(|m| s.event.fits(m)) {
             let subject = Party { thing: m.thing, item: m.row.unwrap_or(0) };
-            if !matches(cx.world, &s.who, subject) {
+            if !matches(cx, &s.who, subject) {
                 continue;
             }
             let mut values = Values::default();

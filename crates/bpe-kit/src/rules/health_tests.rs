@@ -315,7 +315,7 @@ fn a_physics_setting_can_follow_health() {
     // Taking the Health card away takes Follow health of it too.
     let mut without = scene.clone();
     assert!(without.remove_slot(SHAPE, SlotId::Health));
-    assert!(without.pulses.get(&a).is_none());
+    assert!(!without.pulses.contains_key(&a));
     // It changes the run, so it changes the fingerprint; so does a Health card.
     let resolved = resolve(&scene, &kit.registry);
     let plain = new_scene(&kit.registry);
@@ -432,5 +432,30 @@ fn an_emitters_balls_have_health_each() {
         assert_eq!(b.a.thing, emitter);
         let first_hit = log.events().iter().find(|e| e.kind == EventKind::Hit && e.a == b.a).expect("hit first");
         assert_eq!(b.step, first_hit.step + 1);
+    }
+}
+
+#[test]
+fn a_ball_split_off_another_keeps_its_health() {
+    let kit = kit();
+    let mut scene = new_scene(&kit.registry);
+    health(&mut scene, &kit.registry, BALLS, &[("start", n(5.0)), ("at_zero", choice("nothing"))]);
+    lane(
+        &mut scene,
+        &kit.registry,
+        &[
+            ("when.hit", vec![("who", who(Who::Thing { thing: BALLS, ball: None }))]),
+            ("if.only", vec![("n", Value::Int(1))]),
+            ("do.split", vec![("into", Value::Int(3))]),
+        ],
+    );
+    let (_, log) = run(&scene, &kit, 4.0);
+    let first = hits(&log, BALLS).next().unwrap().step;
+    let (world, _) = run(&scene, &kit, (first + 2) as f64 / 240.0);
+    let bodies = &world.bodies[&BALLS];
+    assert!(bodies.len() >= 3, "it split");
+    for row in 0..bodies.len() as u32 {
+        let hp = world.health(BALLS, Some(row)).unwrap();
+        assert_eq!((hp.now, hp.start), (4.0, 5.0), "row {row}: the hit took one, the split kept the rest");
     }
 }

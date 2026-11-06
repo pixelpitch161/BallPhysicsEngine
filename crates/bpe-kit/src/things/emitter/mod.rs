@@ -90,6 +90,8 @@ pub enum FireWhen {
     Every,
     /// A round each time a wave of balls lands on an emitter.
     WhenAWaveLands,
+    /// Only when a rule's Fire a round asks.
+    ByARule,
 }
 
 /// What happens to earlier rounds' balls when a new round fires.

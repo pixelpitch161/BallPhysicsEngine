@@ -48,6 +48,14 @@ pub struct Firing {
     pub values: Values,
 }
 
+/// A named signal a Send signal block sent, with the firing that reached it: When Signal blocks
+/// hear it in the stage's next round.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Signal {
+    pub name: String,
+    pub firing: Firing,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
