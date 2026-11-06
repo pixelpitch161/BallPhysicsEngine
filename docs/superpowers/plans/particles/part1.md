@@ -50,12 +50,15 @@ Merged only when the owner says "merge"; then the exe is built from main and ins
    `World.beside` notes the built things that aren't in main; `World::lone` drops them (aiming never steps
    decoration). Because a Particles thing writes nothing but its own state (no bodies, walls, poses, events), a world
    with it steps every ball exactly as one without it: a test checks this step for step.
-5. **Cards with prepared states.** `motion.particles` and `meets.particles` get `ModuleSim`s whose `prepare` reads the
-   card into a `Forces` / `Meets` struct (and whose other hooks do nothing: a Particles thing has no bodies). The
-   world then re-prepares them when keys move their settings, so keyframed force settings work for free; the sim
-   reads them through `World::card`. The Source settings are the thing's own: `affects_physics` says true for every
-   key (only so keys reach `settings_changed`; the fingerprint skips the thing anyway), and `settings_changed` copies
-   the new settings into the state.
+5. **The thing reads its own cards** (as built: this replaced a first idea of `ModuleSim`s for the two cards, whose
+   `prepare` can't see the card's layers). `motion.particles` and `meets.particles` have no module sims; the
+   particle sim reads them from its `ResolvedThing` into `Forces` / `MeetsSettings` at build and in
+   `settings_changed`. `World::animate` now calls the thing sim's `settings_changed` for a keyed card setting whose
+   card has no module sim, so keyframed forces and meets work. The Source settings are the thing's own:
+   `affects_physics` says true for every key (only so keys reach `settings_changed`; the fingerprint skips the thing
+   anyway), and `settings_changed` copies the new settings into the state. `beside_fingerprint` hashes what the
+   particle playback is built from (the physics, the beside things' Source and their Motion and Meets cards whole,
+   and their keys), so a particle edit restarts only the particle playback.
 6. **The draw reads the state from `cx.world.states`.** In the editor the main world has no particle states, so the
    preview **lends** the particle playback's latest states to the main world for the frame (`World::lend_states` /
    `World::take_back`, the `set_between` pattern: draw-only, the world never steps while they are lent). A lent
@@ -128,7 +131,7 @@ Merged only when the owner says "merge"; then the exe is built from main and ins
 - `things/particles/step.rs`: `step` (births, the chunked move, deaths and compaction), `run_chunks` with a thread
   count (tests force 1 and many).
 - `things/particles/sim.rs`: `ParticlesSim` (`build`, `after_build`, `after_step`, `settings_changed`, `in_main`),
-  `ForcesSim`, `MeetsSim`.
+  (no module sims: see decision 5).
 - `things/particles/look.rs`: the `look.particles` card, `SpritesLayer`, `StreaksLayer`, the sub-layer kinds.
 - `things/particles/draw.rs`: `ParticlesDraw`.
 - `things/particles/looks.rs`: `Look` (Empty and the part 1 looks), `GROUPS`, `add_particles`.

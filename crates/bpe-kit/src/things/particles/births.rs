@@ -45,8 +45,6 @@ pub struct BirthCx<'a> {
     /// Where the thing itself is, and its turn (radians).
     pub anchor: Vec2,
     pub angle: f32,
-    /// Its own Position, an offset from what it rides.
-    pub offset: Vec2,
 }
 
 /// The middle and half size of what the camera sees at the moment, `margin` added round it.
@@ -159,11 +157,11 @@ pub fn place_for(s: &ParticlesSettings, cx: &BirthCx, parent: Option<ThingId>, s
                     let n = balls.len() as f32;
                     let at = balls.iter().map(|b| b.1).sum::<Vec2>() / n;
                     let v = balls.iter().map(|b| b.2).sum::<Vec2>() / n;
-                    Place { at: at + cx.offset, velocity: v, impact: 1.0, ..Place::default() }
+                    Place { at, velocity: v, impact: 1.0, ..Place::default() }
                 };
                 let pick = balls[(hash(&[seed, 7]) as usize) % balls.len()];
                 let on = |b: (usize, Vec2, Vec2, f32), at: Vec2, out: Option<Vec2>| Place {
-                    at: at + cx.offset,
+                    at,
                     velocity: b.2,
                     out,
                     ball: b.0 as u32 + 1,
@@ -193,7 +191,7 @@ pub fn place_for(s: &ParticlesSettings, cx: &BirthCx, parent: Option<ThingId>, s
                 let velocity = wall.velocity;
                 let points = outline_points(&wall.outline);
                 let place = |at: Vec2, out: Option<Vec2>| Place {
-                    at: at + cx.offset,
+                    at,
                     velocity,
                     out,
                     impact: 1.0,

@@ -58,6 +58,9 @@ enum Action {
     Add(&'static str),
     /// A light of this kind: inside a selected Balls, Emitter or Shape thing it rides on it.
     AddLight(bpe_kit::things::light::LightType),
+    /// A Particles thing with this starting look: inside a selected Balls, Emitter or Shape thing
+    /// it can ride on it.
+    AddParticles(bpe_kit::things::particles::looks::Look),
     /// A folder around this row, or around the whole selection when the row is part of it.
     MakeFolder(ThingId),
     Folder(Vec<ThingId>),
@@ -73,7 +76,7 @@ enum Action {
 }
 
 /// The headings of the "Add thing" menu, in order. Kinds in no family follow Folder.
-const FAMILIES: [&str; 3] = ["Bouncers", "Shapes", "Lights"];
+const FAMILIES: [&str; 4] = ["Bouncers", "Shapes", "Lights", "Particles"];
 
 /// Draws the tree and applies what was clicked. `selection` follows the clicks.
 pub fn show(
@@ -121,6 +124,25 @@ pub fn show(
                                 action = Some(Action::AddLight(lamp));
                                 ui.close();
                             }
+                        }
+                        continue;
+                    }
+                    if kind.id() == bpe_kit::things::particles::KIND {
+                        // Empty, then the starting looks in their groups.
+                        use bpe_kit::things::particles::looks::{GROUPS, Look};
+                        if ui.button("Empty").on_hover_text(Look::Empty.help()).clicked() {
+                            action = Some(Action::AddParticles(Look::Empty));
+                            ui.close();
+                        }
+                        for (group, looks) in GROUPS {
+                            ui.menu_button(group, |ui| {
+                                for &look in looks {
+                                    if ui.button(look.name()).on_hover_text(look.help()).clicked() {
+                                        action = Some(Action::AddParticles(look));
+                                        ui.close();
+                                    }
+                                }
+                            });
                         }
                         continue;
                     }
@@ -296,6 +318,14 @@ pub fn show(
                 out.added = Some(id);
             }
         }
+        Some(Action::AddParticles(look)) => {
+            let parent = particles_parent(scene, selection.primary);
+            if let Ok(id) = bpe_kit::things::particles::looks::add_particles(scene, reg, look, parent) {
+                selection.set(id);
+                out.edited = true;
+                out.added = Some(id);
+            }
+        }
         Some(Action::Folder(ids)) => match scene.make_folder(reg, &ids) {
             Ok(folder) => {
                 selection.set(folder);
@@ -324,6 +354,18 @@ pub fn show(
         },
     }
     out
+}
+
+/// Where a new Particles thing goes: into a selected folder or a thing it can ride (balls, an
+/// emitter, a shape), else beside the selection, else under Scene settings.
+pub fn particles_parent(scene: &Scene, primary: Option<ThingId>) -> ThingId {
+    primary
+        .and_then(|s| scene.things.get(&s))
+        .and_then(|t| {
+            let inside = t.kind == "folder" || bpe_kit::things::particles::RIDES.contains(&t.kind.as_str());
+            if inside { Some(t.id) } else { t.parent }
+        })
+        .unwrap_or(ThingId::ROOT)
 }
 
 /// Moves `id` under `parent`, keeping how it hangs off its parent: the tree's Move into.
@@ -1081,6 +1123,34 @@ mod tests {
         let s = h.state();
         let light = s.selection.primary.unwrap();
         assert_eq!(s.scene.things[&light].parent, Some(rig), "inside the selected rig");
+    }
+
+    #[test]
+    fn particles_are_added_empty_or_with_a_starting_look() {
+        use bpe_kit::things::particles::{BornFrom, KIND, ParticlesSettings};
+        let mut h = harness();
+        h.get_by_label("+ Add thing").click();
+        h.run();
+        h.get_by_label("Empty").click();
+        h.run();
+        let empty = h.state().selection.primary.expect("the new thing is selected");
+        assert_eq!(h.state().scene.things[&empty].kind, KIND);
+        assert_eq!(h.state().scene.things[&empty].parent, Some(ThingId::ROOT));
+        // A starting look from its group, inside the selected ball: it rides it.
+        h.state_mut().selection.set(ThingId(2));
+        h.get_by_label("+ Add thing").click();
+        h.run();
+        h.get_by_label("Fire and energy").click();
+        h.run();
+        h.get_by_label("Fire on a ball").click();
+        h.run();
+        let s = h.state();
+        let fire = s.selection.primary.unwrap();
+        assert_ne!(fire, empty);
+        assert_eq!(s.scene.things[&fire].name, "Fire on a ball");
+        assert_eq!(s.scene.things[&fire].parent, Some(ThingId(2)), "inside the selected ball");
+        let source = <ParticlesSettings as bpe_core::Settings>::from_params(&s.scene.things[&fire].params);
+        assert_eq!(source.from, BornFrom::RidingItsParent);
     }
 
     #[test]

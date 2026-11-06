@@ -65,7 +65,7 @@ pub fn piece(
     if subs.is_empty() {
         return row(ui, inspector, cx, card, layer, picked, edits);
     }
-    let folded = inspector.folded_pieces.contains(&(cx.id, layer.id));
+    let folded = inspector.folded_pieces.contains(&(cx.key(), layer.id));
     let frame = egui::Frame::new()
         .fill(style::GROUND)
         .stroke(Stroke::new(1.0, style::LINE))
@@ -124,7 +124,7 @@ fn sub_drop_target(ui: &mut Ui, cx: &LookCx, parent: LayerId, rows: &[(LayerId, 
     let ctx = ui.ctx().clone();
     let Some(dragged) = egui::DragAndDrop::payload::<DraggedSub>(&ctx) else { return };
     let DraggedSub(thing, of, sub) = *dragged;
-    if thing != cx.id || of != parent {
+    if thing != cx.key() || of != parent {
         return;
     }
     let Some(pointer) = ctx.pointer_latest_pos() else { return };
@@ -213,10 +213,10 @@ pub fn row(
         if thumb_response.clicked() && !ui.input(|i| i.modifiers.alt) {
             // As the name does: a group layer is picked in Group mode's own list.
             let picks = if group { &mut inspector.selected_group_layer } else { &mut inspector.selected_layer };
-            picks.insert(cx.id, layer.id);
+            picks.insert(cx.key(), layer.id);
         }
 
-        let renaming = inspector.renaming_layer.as_ref().is_some_and(|(t, l, _)| *t == cx.id && *l == layer.id);
+        let renaming = inspector.renaming_layer.as_ref().is_some_and(|(t, l, _)| *t == cx.key() && *l == layer.id);
         if renaming {
             rename_field(ui, inspector, cx, layer, edits);
         } else {
@@ -233,21 +233,21 @@ pub fn row(
             let response = ui.add(button);
             if draggable {
                 match layer.parent {
-                    Some(parent) => response.dnd_set_drag_payload(DraggedSub(cx.id, parent, layer.id)),
-                    None => response.dnd_set_drag_payload(Dragged(cx.id, layer.id)),
+                    Some(parent) => response.dnd_set_drag_payload(DraggedSub(cx.key(), parent, layer.id)),
+                    None => response.dnd_set_drag_payload(Dragged(cx.key(), layer.id)),
                 }
             }
-            if subs > 0 && inspector.folded_pieces.contains(&(cx.id, layer.id)) {
+            if subs > 0 && inspector.folded_pieces.contains(&(cx.key(), layer.id)) {
                 let words = if subs == 1 { "1 sub-layer".to_owned() } else { format!("{subs} sub-layers") };
                 ui.label(RichText::new(words).small().color(style::FAINT));
             }
             if response.double_clicked() {
-                inspector.renaming_layer = Some((cx.id, layer.id, layer.name.clone()));
+                inspector.renaming_layer = Some((cx.key(), layer.id, layer.name.clone()));
                 inspector.focus_layer_rename = true;
             } else if response.clicked() && group {
-                inspector.selected_group_layer.insert(cx.id, layer.id);
+                inspector.selected_group_layer.insert(cx.key(), layer.id);
             } else if response.clicked() {
-                inspector.selected_layer.insert(cx.id, layer.id);
+                inspector.selected_layer.insert(cx.key(), layer.id);
             }
             let help = kind.map_or("A layer of a kind that isn't installed", |k| k.help());
             let response = response.on_hover_text(help);
@@ -303,7 +303,7 @@ pub fn row(
 /// keeps the name, Escape drops it, and an empty name goes back to the kind's.
 fn rename_field(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, layer: &Layer, edits: &mut Vec<Edit>) {
     let Some((_, _, text)) = inspector.renaming_layer.as_mut() else { return };
-    let edit_id = ui.make_persistent_id(("rename layer", cx.id, layer.id.0));
+    let edit_id = ui.make_persistent_id(("rename layer", cx.key(), layer.id.0));
     if std::mem::take(&mut inspector.focus_layer_rename) {
         // The whole name is selected, so typing replaces it.
         let mut state = egui::text_edit::TextEditState::default();
@@ -327,7 +327,7 @@ fn rename_field(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, layer: &Lay
 /// The fold arrow of a layer with sub-layers: pointing down while they show, right while they are
 /// folded away. A click folds or opens the box.
 fn fold_arrow(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, layer: &Layer) {
-    let key = (cx.id, layer.id);
+    let key = (cx.key(), layer.id);
     let folded = inspector.folded_pieces.contains(&key);
     let (rect, response) = ui.allocate_exact_size(Vec2::new(10.0, 14.0), Sense::click());
     let name = format!("{} sub-layers of {}", if folded { "Show" } else { "Fold" }, layer.name);
@@ -397,7 +397,7 @@ fn sub_menu(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, card: &Slot, la
     let room = subs_of(card, parent.id).count() < bpe_core::MAX_SUBS;
     ui.set_min_width(170.0);
     if ui.button("Rename").clicked() {
-        inspector.renaming_layer = Some((cx.id, id, layer.name.clone()));
+        inspector.renaming_layer = Some((cx.key(), id, layer.name.clone()));
         inspector.focus_layer_rename = true;
         ui.close();
     }
@@ -555,7 +555,7 @@ pub fn drop_target(ui: &mut Ui, cx: &LookCx, card: &Slot, rows: &[(LayerId, Rect
     let ctx = ui.ctx().clone();
     let Some(dragged) = egui::DragAndDrop::payload::<Dragged>(&ctx) else { return };
     let Dragged(thing, layer) = *dragged;
-    if thing != cx.id || section_of(cx, card, layer) != Some(LayerSection::Drawn) {
+    if thing != cx.key() || section_of(cx, card, layer) != Some(LayerSection::Drawn) {
         return;
     }
     let Some(pointer) = ctx.pointer_latest_pos() else { return };
@@ -614,7 +614,7 @@ pub fn section_drop_target(
     let ctx = ui.ctx().clone();
     let Some(dragged) = egui::DragAndDrop::payload::<Dragged>(&ctx) else { return };
     let Dragged(thing, layer) = *dragged;
-    if thing != cx.id || section_of(cx, card, layer) != Some(section) {
+    if thing != cx.key() || section_of(cx, card, layer) != Some(section) {
         return;
     }
     let Some(pointer) = ctx.pointer_latest_pos() else { return };

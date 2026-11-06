@@ -24,6 +24,7 @@ mod lights_panel;
 mod look_editor;
 mod mixer;
 mod palettes;
+mod particle_job;
 mod preview;
 mod rules_panel;
 mod selection;

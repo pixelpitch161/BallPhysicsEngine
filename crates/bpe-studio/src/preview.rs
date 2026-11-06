@@ -15,6 +15,7 @@ use glam::Vec2;
 
 pub mod free_points;
 pub mod light_handles;
+pub mod particle_handles;
 mod warm;
 pub mod world_view;
 pub mod zones;
@@ -59,6 +60,8 @@ struct Drawn {
     look: Option<(CameraView, (u32, u32))>,
     /// What a lit picture shows, and the soloed lights.
     light: (LightShow, Vec<LightSource>),
+    /// The world step of the particles drawn (the particle playback's), when there are some.
+    particles: Option<u64>,
 }
 
 /// Something in the preview that can be dragged.
@@ -90,6 +93,8 @@ pub enum Handle {
     Light(ThingId, LightPart),
     /// Point `.2` of the `.1`th gradient laid out as Free points that thing `.0` shows.
     FreePoint(ThingId, u8, u8),
+    /// A Particles thing's area corner or edge, or its line's end.
+    Particles(ThingId, particle_handles::ParticlePart),
 }
 
 impl Handle {
@@ -107,7 +112,8 @@ impl Handle {
             | Handle::CameraTurn(id)
             | Handle::Zone(id, _, _)
             | Handle::Light(id, _)
-            | Handle::FreePoint(id, _, _) => id,
+            | Handle::FreePoint(id, _, _)
+            | Handle::Particles(id, _) => id,
         }
     }
 
@@ -342,6 +348,9 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     ui.painter().image(preview.texture, rect, uv, style::UNTINTED);
     if let Some(done) = studio.aiming() {
         aiming_pill(&ui.painter_at(rect), rect, done);
+    } else if let Some(done) = studio.particles_waiting() {
+        pill(&ui.painter_at(rect), rect, &format!("Particles\u{2026} {:.0}%", (done * 100.0).floor()));
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(30));
     } else if let Some(w) = &preview.warm {
         pill(&ui.painter_at(rect), rect, &format!("Warming up effects\u{2026} {:.0}%", (w.done() * 100.0).floor()));
     }
@@ -410,7 +419,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         // A light keeps the playhead too: its keys land where it is seen.
         outcome.keep_playhead = handle.is_camera()
             || handle.is_mould()
-            || matches!(handle, Handle::Zone(..) | Handle::Light(..) | Handle::FreePoint(..));
+            || matches!(handle, Handle::Zone(..) | Handle::Light(..) | Handle::FreePoint(..) | Handle::Particles(..));
     }
     if response.drag_stopped() {
         preview.drag = None;
@@ -629,8 +638,13 @@ fn draw_picture(
     drawn: &mut Option<Drawn>,
     look: Option<(CameraView, (u32, u32))>,
 ) -> bool {
-    // The background aiming holds the playback back until it has aimed the rounds before it.
-    let held = studio.aiming().is_some();
+    // The particle playback follows the playhead on its own thread.
+    if let Some(job) = &studio.particle_job {
+        job.follow(studio.sim_time());
+    }
+    // The background aiming holds the playback back until it has aimed the rounds before it, and
+    // the particle playback until it has worked out the particles.
+    let held = studio.aiming().is_some() || studio.particles_waiting().is_some();
     let catching_up = !studio.playback.seek_within(studio.sim_target(), Some(CATCH_UP_BUDGET)) || held;
     // While catching up, the picture shows the moment the simulation has got to.
     let shown_time = if catching_up { studio.playback.time() } else { studio.sim_time() };
@@ -641,8 +655,13 @@ fn draw_picture(
         size: renderer.size(),
         look,
         light: (studio.light_show, studio.light_solo.iter().copied().collect()),
+        particles: None,
     };
+    let particles = studio.particle_job.as_ref().and_then(|job| job.latest());
+    let now = Drawn { particles: particles.as_ref().map(|p| p.step), ..now };
     if drawn.as_ref() != Some(&now) {
+        // The particles are drawn from the particle playback's world, lent to this one.
+        let lent = particles.map(|p| studio.playback.lend_states(p.states.clone()));
         // Soloed lights: the picture from a copy with the others left out (never the scene's).
         let solo = lights_panel::soloed(&studio.scene, &studio.resolved, &studio.light_solo);
         build_frame_sensing(
@@ -665,6 +684,9 @@ fn draw_picture(
         show_light(frame, studio.light_show);
         if look.is_none() {
             studio.stage_view = frame.stage_view().filter(|v| v.motion > 0.0);
+        }
+        if let Some(lent) = lent {
+            studio.playback.take_back(lent);
         }
         frame.cull();
         renderer.render(device, queue, frame);
@@ -844,6 +866,10 @@ pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
     if let Some(handle) = light_handles::hit(studio, view, pos, light_handles::Pass::Selected) {
         return Some(handle);
     }
+    // The selected Particles thing's dots.
+    if let Some(handle) = particle_handles::hit(studio, view, pos) {
+        return Some(handle);
+    }
     // The selected shape's or background's free gradient points, small and over everything.
     if let Some(handle) = free_points::hit(studio, view, pos) {
         return Some(handle);
@@ -1004,6 +1030,7 @@ pub fn apply_drag(
                 None => false,
             };
         }
+        Handle::Particles(id, part) => return particle_handles::apply(scene, reg, id, part, pointer, time),
     }
     false
 }
@@ -1125,6 +1152,7 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
     }
     light_handles::draw(&painter, studio, view, active, selected);
     free_points::draw(&painter, studio, view, active);
+    particle_handles::draw(&painter, studio, view, active);
 }
 
 /// The most found ways a selected emitter's latest round shows in the preview.

@@ -41,5 +41,5 @@ pub use walls::{
     wall_velocity,
 };
 pub use world::{
-    Between, Card, Lent, RunId, World, fingerprint, has_beside, main_part, needs_light, physics_animation, step_at,
+    Between, Card, Lent, RunId, World, beside_fingerprint, fingerprint, has_beside, main_part, needs_light, physics_animation, step_at,
 };

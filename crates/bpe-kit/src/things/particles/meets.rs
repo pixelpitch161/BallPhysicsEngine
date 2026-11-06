@@ -48,21 +48,21 @@ pub enum AtEdges {
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct MeetsSettings {
     /// How much a passing ball drags particles along with it: 0 not at all, 1 fully.
-    #[setting(label = "Balls push", span(0, 1), simple, keyframe, pulse, group = "Balls")]
+    #[setting(label = "Balls push", span(0, 1), simple, keyframe, pulse, group = "Other balls")]
     pub push: f32,
     /// How far from a ball its push reaches, in ball radii.
-    #[setting(label = "Reach", when = "push", range(0, 1e9), span(1, 6), unit = "×", keyframe, group = "Balls")]
+    #[setting(label = "Reach", when = "push", range(0, 1e9), span(1, 6), unit = "×", keyframe, group = "Other balls")]
     pub reach: f32,
-    #[setting(label = "On touching a ball", simple, group = "Balls")]
+    #[setting(label = "On touching a ball", simple, group = "Other balls")]
     pub at_balls: AtBalls,
-    #[setting(label = "Bounciness", when = "at_balls=bounce_off", span(0, 1), keyframe, group = "Balls")]
+    #[setting(label = "Bounciness", when = "at_balls=bounce_off", span(0, 1), keyframe, group = "Other balls")]
     pub ball_bounce: f32,
-    #[setting(label = "At shapes", simple, group = "Shapes")]
+    #[setting(label = "At shapes", simple, group = "Against shapes")]
     pub at_shapes: AtShapes,
-    #[setting(label = "Bounciness", when = "at_shapes=bounce", span(0, 1), keyframe, group = "Shapes")]
+    #[setting(label = "Bounciness", when = "at_shapes=bounce", span(0, 1), keyframe, group = "Against shapes")]
     pub bounciness: f32,
     /// How much sideways speed a bounce rubs off.
-    #[setting(label = "Friction", when = "at_shapes=bounce", span(0, 1), keyframe, group = "Shapes")]
+    #[setting(label = "Friction", when = "at_shapes=bounce", span(0, 1), keyframe, group = "Against shapes")]
     pub friction: f32,
     #[setting(label = "At the edges", group = "Edges of the picture")]
     pub at_edges: AtEdges,

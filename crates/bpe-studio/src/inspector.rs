@@ -126,9 +126,15 @@ pub enum Card {
 /// The slots whose cards show together as one Physics card, in the order their settings read.
 const PHYSICS: [SlotId; 2] = [SlotId::Motion, SlotId::Bounce];
 
+/// Whether `slot` of a thing of kind `kind` shows in the one Physics card: a Particles thing
+/// shows its Motion (forces) and Meets things as cards of their own.
+fn in_physics(kind: &str, slot: SlotId) -> bool {
+    PHYSICS.contains(&slot) && kind != bpe_kit::things::particles::KIND
+}
+
 /// The slots of [`PHYSICS`] the thing has, in that order.
 fn physics_slots(thing: &bpe_core::Thing) -> Vec<SlotId> {
-    PHYSICS.into_iter().filter(|s| thing.slots.contains_key(s)).collect()
+    PHYSICS.into_iter().filter(|s| thing.slots.contains_key(s) && in_physics(&thing.kind, *s)).collect()
 }
 
 impl Card {
@@ -481,7 +487,7 @@ pub fn show(
         // Motion and Bounce show as one Physics card, where the first of them would be.
         let physics = physics_slots(&thing);
         for slot in SlotId::ALL.into_iter().filter(|s| s.in_card_list()) {
-            if PHYSICS.contains(&slot) {
+            if in_physics(&thing.kind, slot) {
                 if physics.first() == Some(&slot) {
                     ui.add_space(6.0);
                     physics_card(ui, inspector, &cx, kind, resolved, &physics, &mut edits);
@@ -552,6 +558,19 @@ pub fn show(
                     crate::look_editor::effects::show(ui, inspector, &look, &mut edits);
                     return;
                 }
+                // A Particles thing's forces and draw layers.
+                let particles = [bpe_kit::things::particles::forces::CARD, bpe_kit::things::particles::look::CARD];
+                if particles.contains(&card_now.kind.as_str()) {
+                    ui.add_space(4.0);
+                    let look =
+                        crate::look_editor::LookCx { scene, kit, choices: &choices, id, slot, time, label_width: lw };
+                    if slot == SlotId::Motion {
+                        crate::look_editor::particles::show_forces(ui, inspector, &look, &mut edits);
+                    } else {
+                        crate::look_editor::particles::show_look(ui, inspector, &look, &mut edits);
+                    }
+                    return;
+                }
                 if card_now.kind == bpe_kit::modules::look::shape::CARD {
                     ui.add_space(4.0);
                     surface_section(ui, inspector, &cx, slot, false, &mut edits);
@@ -608,7 +627,7 @@ pub fn show(
         // card the kind uses, so each selected thing gets whichever it lacks.
         let mut entries: Vec<(&str, Vec<SlotId>, String)> = Vec::new();
         for &slot in &missing {
-            if !PHYSICS.contains(&slot) {
+            if !in_physics(kind.id(), slot) {
                 let label = kind.slot_label(slot);
                 entries.push((label, vec![slot], format!("Adds {label} to this thing")));
             } else if !entries.iter().any(|(label, ..)| *label == "Physics") {
@@ -839,6 +858,16 @@ fn apply_layer_edit(
     id: ThingId,
     edit: Edit,
 ) -> bool {
+    // The card's own pick ([`crate::look_editor::pick_key`]).
+    let key = match &edit {
+        Edit::AddLayer(slot, ..)
+        | Edit::AddSubLayer(slot, ..)
+        | Edit::DuplicateLayer(slot, ..)
+        | Edit::PasteLayer(slot, ..)
+        | Edit::PasteSubLayer(slot, ..)
+        | Edit::AddLayerFor(slot, ..) => crate::look_editor::pick_key(id, *slot),
+        _ => id,
+    };
     let added = match edit {
         Edit::AddLayer(slot, kind) => scene.add_layer(reg, id, slot, kind).map(Some),
         Edit::RemoveLayer(slot, layer) => scene.remove_layer(reg, id, slot, layer).map(|_| None),
@@ -877,7 +906,7 @@ fn apply_layer_edit(
             if kind.is_some_and(|k| k.section() == bpe_core::LayerSection::Group) {
                 inspector.selected_group_layer.insert(id, layer);
             } else {
-                inspector.selected_layer.insert(id, layer);
+                inspector.selected_layer.insert(key, layer);
             }
             true
         }
@@ -1420,7 +1449,7 @@ fn jump_bar(
     // Motion and Bounce share one button, Physics, at the first of them.
     let mut cards = own;
     for s in SlotId::ALL.into_iter().filter(|s| s.in_card_list() && thing.slots.contains_key(s)) {
-        let entry = if PHYSICS.contains(&s) { (Card::Physics, "Physics") } else { (Card::Slot(s), kind.slot_label(s)) };
+        let entry = if in_physics(kind.id(), s) { (Card::Physics, "Physics") } else { (Card::Slot(s), kind.slot_label(s)) };
         if !cards.contains(&entry) {
             cards.push(entry);
         }

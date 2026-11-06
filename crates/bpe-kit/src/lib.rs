@@ -306,7 +306,7 @@ mod tests {
 
     #[test]
     fn every_addable_thing_has_a_family() {
-        let families = ["Bouncers", "Shapes", "Lights"];
+        let families = ["Bouncers", "Shapes", "Lights", "Particles"];
         let reg = registry();
         for kind in reg.things().filter(|k| !["scene", "folder", "camera"].contains(&k.id())) {
             assert!(families.contains(&kind.family()), "{} has family {}", kind.id(), kind.family());
@@ -430,10 +430,10 @@ mod tests {
     }
 
     #[test]
-    fn the_look_registry_has_a_look_for_balls_one_for_shapes_and_the_old_one() {
+    fn the_look_registry_has_a_look_for_balls_shapes_particles_and_the_old_one() {
         let reg = registry();
         let looks: Vec<&str> = reg.modules_for(SlotId::Look).map(|m| m.id()).collect();
-        assert_eq!(looks, ["look.basic", "look.layers", "look.shape"]);
+        assert_eq!(looks, ["look.basic", "look.layers", "look.particles", "look.shape"]);
         for look in looks {
             assert_eq!(reg.module(look).unwrap().name(), "Look");
         }

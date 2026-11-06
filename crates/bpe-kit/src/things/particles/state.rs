@@ -68,8 +68,6 @@ pub struct ParticlesState {
     pub forces: Forces,
     /// Its Meets things card, as it is now.
     pub meets: MeetsSettings,
-    /// Its own Position: an offset from what it rides.
-    pub offset: Vec2,
     /// Every wall's outline at the last particle step: which side of it a particle is on is
     /// judged against it.
     pub walls_before: BTreeMap<ThingId, Outline>,
@@ -96,7 +94,6 @@ impl ParticlesState {
             settings,
             forces: Forces::default(),
             meets: MeetsSettings::default(),
-            offset: Vec2::ZERO,
             walls_before: BTreeMap::new(),
             specks: Vec::new(),
             step: 0,

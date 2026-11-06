@@ -221,7 +221,6 @@ pub struct ParticlesSettings {
         when = "emit!=steady",
         range(0, 1e9),
         span(1, 2000),
-        simple,
         keyframe,
         pulse,
         group = "When"

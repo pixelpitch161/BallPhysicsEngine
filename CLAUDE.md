@@ -388,6 +388,45 @@ untaken after `STALE_PASSES` is dropped). A main gradient row's menu has **Copy 
 (`widgets::copy_with`, `Copied.extras` by companion name); Paste Value then also writes each carried companion the
 target offers (`companions_pasted`).
 
+## Particles thing (spec `docs/superpowers/specs/2026-11-06-particles-design.md`, plans `docs/superpowers/plans/particles/`)
+
+Part 1 is in (plan `part1.md`): the **engine**. A **Particles** thing (`bpe-kit/src/things/particles/`, kind
+`particles`, family "Particles") makes its own particles, separate from the `layer.particles` Look layer (which stays
+as it is). Its own settings are the **Source** (`ParticlesSettings`: From Whole screen (Edge, Margin: the camera's shot
+bounds) / An area (Rectangle, Circle, Ring) / A point / A line / Riding its parent (Each ball, The middle, Ball number,
+The edge, Inside: the tree parent's balls or wall, `RIDES`); Emit Steady (Rate, a ball when riding each ball) / Bursts /
+On hits (Who hits, Least speed, Follow impact) / Keep a crowd / Once at the start; each particle's Life, Speed,
+Direction, Angle, Spread, Takes the parent's speed, Size, Turn, Spin, their spreads, Seed; Most particles (cap,
+`MOST_EVER`)). Its cards are its own (`ModuleKind::fits`; `motion.basic`/`bounce.basic` don't fit it, and the inspector
+shows them as cards of their own, not the Physics card): **Motion** `motion.particles` (`forces.rs`, force layers in
+the new `LayerSection::Force`: Gravity, Wind, Drag, Swirl, Wander, Rise, Sway and flutter, each with Amount and Only
+for, applied top of the list last), **Meets things** `meets.particles` in the Bounce slot (`meets.rs`: balls push
+(`BallGrid`, at most `MOST_NEAR` 32 a particle) and Pass / Bounce off / Vanish, shapes Pass / Bounce / Stop / Vanish
+through `keep_clear_from` against each wall's outline at the last particle step, the picture's edges Pass / Wrap round /
+Bounce / Vanish) and **Look** `look.particles` (`look.rs`: draw layers Sprites (the `sprites.wgsl` shapes) and Streaks
+(stretched by speed), common Where, Only (All / Younger than / Older than / A share / The rest), Colour from (Own paint
+following life/order/place/speed/time, or the Parent ball's colour), Opacity, Size ×, Size over life, Fade, Twinkle,
+Blend; sub-layers `particles.sub.glow/outline/shadow/recolour/flash/hue` with the shape sub-layers' settings). The
+state (`state.rs`: `ParticlesState`, `Speck`s oldest first) lives in `World.states`, stepped in `after_step` on even
+world steps at 1/120 s (`step.rs`: births, then the move in chunks of `CHUNK` 4096 on `std::thread::scope`, the same
+for any thread count, then a stable `retain`); first births in `after_build`; every birth's dice from
+`seed_of(world seed, thing, birth number, Seed)` (`births.rs`). `World::animate` calls the thing sim's
+`settings_changed` for keys on cards with no module sim, so keyed forces work. The draw (`draw.rs`) draws nothing
+itself and lists each shown Look layer as an `Around` (`draw_around` makes sprites through
+`around_subs::particle_with_extras`); lighting fields stay 0 (part 7). **Decoration only**: `ThingSim::in_main` is
+false, so `World.beside` lists it, `main_part(resolved, sims)` leaves it out, fingerprints hash the main part only,
+and `beside_fingerprint` is what a particle playback is built from. The editor's main playback, the sound engine
+(`Engine::with_patch`) and the aiming thread build from `main_part`; `bpe-studio/src/particle_job.rs` (`ParticleJob`)
+runs the whole scene on its own thread, follows the playhead (`follow`) and publishes `Snapshot`s; the preview lends
+their states to its world while it draws (`World::lend_states`/`take_back`), holds the playback where it is until
+the particles catch up (`Studio::sim_target`, "Particles… N%"), and the status line shows "Particles: N, X ms".
+Export (`bpe-cli`) builds the whole world. `looks.rs`: the Add thing menu's Particles heading (Empty, then
+`GROUPS`: Rain, Snow, Hail, Blossom petals, Sandstorm; Fire on a ball, Spark fountain, Embers and ash; Fireflies,
+Confetti; Rainbow smoke trail, Ink in water), `add_particles` (riding looks ride a Balls/Emitter/Shape parent).
+Editor: `look_editor/particles.rs` (the Forces and Look lists; a Motion card's editor state is keyed apart,
+`look_editor::pick_key`), `preview/particle_handles.rs` (area corner/edges, line end). Scene format 12. Goldens:
+`tests/golden-particles*.txt` (`scenes::particle_scenes`, test-only).
+
 ## Crate map
 
 Dependencies go bottom to top:
