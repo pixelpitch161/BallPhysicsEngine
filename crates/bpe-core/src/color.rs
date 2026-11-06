@@ -324,7 +324,9 @@ pub fn mix_colours(a: Color, b: Color, u: f32, mix: Mix) -> [f32; 4] {
         Mix::RoundTheWheel | Mix::LongWayRound => {
             use crate::oklab::{linear_to_oklab, oklab_to_lch};
             let (mut ca, mut cb) = (oklab_to_lch(linear_to_oklab(rgb(la))), oklab_to_lch(linear_to_oklab(rgb(lb))));
-            // A grey end takes the other end's hue, so the blend doesn't swing through others.
+            // A grey end takes the other end's hue, so the blend doesn't swing through others
+            // (the long way too: a grey has no hue to go round from).
+            let grey = ca[1] < GREY_CHROMA || cb[1] < GREY_CHROMA;
             if ca[1] < GREY_CHROMA {
                 ca[2] = cb[2];
             }
@@ -333,7 +335,9 @@ pub fn mix_colours(a: Color, b: Color, u: f32, mix: Mix) -> [f32; 4] {
             }
             let short = (cb[2] - ca[2] + 0.5).rem_euclid(1.0) - 0.5;
             let turn = match mix {
+                _ if grey => short,
                 Mix::RoundTheWheel => short,
+                // Two colours of one hue go a whole turn round the long way.
                 // The other way round: a whole turn less (or more) than the short way.
                 _ if short >= 0.0 => short - 1.0,
                 _ => short + 1.0,
@@ -409,7 +413,8 @@ impl Gradient {
             return;
         }
         let n = self.stops.len();
-        let at_loop_places = n > 1 && self.stops.iter().enumerate().all(|(i, s)| (s.at - i as f32 / n as f32).abs() < 1e-4);
+        let at_loop_places =
+            n > 1 && self.stops.iter().enumerate().all(|(i, s)| (s.at - i as f32 / n as f32).abs() < 1e-4);
         let last_at_end = self.stops.last().is_some_and(|s| s.at >= 1.0 - 1e-4);
         self.looped = on;
         if n > 1 && ((on && last_at_end) || (!on && at_loop_places)) {
@@ -488,6 +493,27 @@ impl Gradient {
             stops.push(Stop::new(if k + 1 == n { 1.0 } else { (k + 1) as f32 * size }, color));
         }
         Gradient { stops, mix: Mix::Light, looped: self.looped, grain: self.grain }
+    }
+
+    /// The stops for reading one colour at a time (stepping a colour on each hit, a light show's
+    /// colour list): every stop, except that a gradient cut into bands ([`Gradient::banded`],
+    /// each band two stops of one colour) gives each band's stop once.
+    pub fn step_stops(&self) -> std::borrow::Cow<'_, [Stop]> {
+        let n = self.stops.len() / 2;
+        let size = 1.0 / n.max(1) as f32;
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-6;
+        let banded = n >= 1
+            && self.stops.len() == 2 * n
+            && self.stops.chunks(2).enumerate().all(|(k, pair)| {
+                pair[0].color == pair[1].color
+                    && near(pair[0].at, k as f32 * size)
+                    && near(pair[1].at, (k + 1) as f32 * size)
+            });
+        if banded {
+            std::borrow::Cow::Owned(self.stops.iter().step_by(2).copied().collect())
+        } else {
+            std::borrow::Cow::Borrowed(&self.stops)
+        }
     }
 
     /// `n` evenly spaced samples with the first at 0 and the last at 1, ready for a texture.
@@ -700,6 +726,9 @@ mod tests {
         let g = Gradient::spread(&[RED, WHITE], Mix::RoundTheWheel, false);
         let mid = Color::from_linear(g.sample(0.5));
         assert!(mid.r > mid.g && mid.r > mid.b && (mid.g as i32 - mid.b as i32).abs() < 30, "a pink: {mid:?}");
+        // The long way round from a grey is the short way: there is no hue to go round from.
+        let long = Gradient::spread(&[RED, WHITE], Mix::LongWayRound, false);
+        assert_eq!(long.sample(0.3), Gradient { mix: Mix::RoundTheWheel, ..long.clone() }.sample(0.3));
     }
 
     #[test]
@@ -738,11 +767,32 @@ mod tests {
         assert_eq!(stepped.sample(0.8), BLUE.to_linear());
         assert_eq!(stepped.sample(0.9), RED.to_linear());
         // With the first stop past 0, the wrap runs across 0.
-        let g = Gradient { stops: vec![Stop::new(0.2, RED), Stop::new(0.6, BLUE)], looped: true, ..Gradient::default() };
+        let g =
+            Gradient { stops: vec![Stop::new(0.2, RED), Stop::new(0.6, BLUE)], looped: true, ..Gradient::default() };
         let mid = lerp4(BLUE.to_linear(), RED.to_linear(), 0.5);
         assert!(near4(g.sample(0.9), mid, 1e-5), "{:?}", g.sample(0.9));
         // 0 is 0.4 into the 0.6 wide gap from 0.6 round to 1.2.
         assert!(near4(g.sample(0.0), lerp4(BLUE.to_linear(), RED.to_linear(), 0.4 / 0.6), 1e-5));
+    }
+
+    #[test]
+    fn a_banded_gradient_steps_through_each_band_once() {
+        let g = Gradient::even(&[RED, BLUE, BLACK]);
+        assert_eq!(g.step_stops().len(), 3);
+        let b = g.banded(4);
+        let stops = b.step_stops();
+        assert_eq!(stops.len(), 4);
+        assert_eq!(stops[0].color, b.stops[0].color);
+        assert_eq!(stops[3].color, b.stops[7].color);
+        // A hard edge between two colours is two bands of them, one colour each.
+        let edge = Gradient {
+            stops: vec![Stop::new(0.0, RED), Stop::new(0.5, RED), Stop::new(0.5, BLUE), Stop::new(1.0, BLUE)],
+            ..Gradient::default()
+        };
+        assert_eq!(edge.step_stops().iter().map(|s| s.color).collect::<Vec<_>>(), [RED, BLUE]);
+        // Stops of one colour spaced unlike bands each count.
+        let three = Gradient::even(&[RED, RED, RED]);
+        assert_eq!(three.step_stops().len(), 3);
     }
 
     #[test]
@@ -791,7 +841,8 @@ mod tests {
         let plain = ron::to_string(&Gradient::even(&[RED, BLUE])).unwrap();
         assert!(!plain.contains("mix") && !plain.contains("looped") && !plain.contains("blend"), "{plain}");
         let old = |t: &str| {
-            let text = format!(r##"(stops: [(at: 0.0, color: "#ff0000"), (at: 1.0, color: "#0000ff")], transition: {t})"##);
+            let text =
+                format!(r##"(stops: [(at: 0.0, color: "#ff0000"), (at: 1.0, color: "#0000ff")], transition: {t})"##);
             ron::from_str::<Gradient>(&text).unwrap()
         };
         assert_eq!(old("Smooth"), Gradient::even(&[RED, BLUE]));

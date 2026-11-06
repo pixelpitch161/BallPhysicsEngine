@@ -1545,4 +1545,34 @@ mod tests {
             crate::timeline::lanes::lanes_for(&s.scene, &s.kit, BALL).into_iter().map(|l| l.short).collect();
         assert_eq!(lanes, ["Trail · Width"]);
     }
+
+    #[test]
+    fn bands_set_from_the_bodys_gradient_tabs_are_stored_and_keyed_by_name() {
+        let mut h = harness();
+        h.get_by_label("Add a colour").click();
+        h.run();
+        h.get_by_label("Colours tab Blend").click();
+        h.run();
+        let rail = h.query_all_by_label("Bands").find(|n| n.rect().width() > 40.0).unwrap().rect();
+        let end = egui::pos2(rail.right() - 1.0, rail.center().y);
+        h.drag_at(end);
+        h.run();
+        h.drop_at(end);
+        h.run();
+        let body = card(&h, BALL).layers[0].id;
+        let key = layered_key(body, "colours~bands");
+        assert!(
+            matches!(card(&h, BALL).params.get(&key), Some(Value::Number(x)) if *x > 20.0),
+            "{:?}",
+            card(&h, BALL).params
+        );
+        h.get_all_by_role_and_label(Role::Label, "Bands").next().unwrap().click_secondary();
+        h.run();
+        h.get_by_label("Create Keyframe").click();
+        h.run();
+        let s = h.state();
+        let lanes: Vec<String> =
+            crate::timeline::lanes::lanes_for(&s.scene, &s.kit, BALL).into_iter().map(|l| l.short).collect();
+        assert_eq!(lanes, ["Body · Colours bands"]);
+    }
 }

@@ -127,25 +127,28 @@ fn stop_colour(p: &Paint, k: usize) -> [f32; 4] {
 
 /// The colour of stop `k - 1` blending into stop `k` as `since_hit` runs to `step_time`; stop 0
 /// until the first hit.
+/// A gradient cut into bands steps through each band's colour once.
 fn step_colour(p: &Paint, hits: u32, since_hit: f32) -> [f32; 4] {
-    let n = p.colours.stops.len().max(1);
+    let stops = p.colours.step_stops();
+    let colour = |k: usize| stops.get(k).map_or(Color::WHITE, |s| s.color);
+    let n = stops.len().max(1);
     let k = hits as usize % n;
     if hits == 0 {
-        return stop_colour(p, 0);
+        return colour(0).to_linear();
     }
     let prev = (hits as usize - 1) % n;
-    let from = p.colours.stops.get(prev).copied().unwrap_or(Stop::new(0.0, Color::WHITE));
+    let from = stops.get(prev).copied().unwrap_or(Stop::new(0.0, Color::WHITE));
     let instant = from.blend == GapBlend::Steps || p.step_time <= 0.0 || p.step_time.is_nan();
     let f = if instant { 1.0 } else { finite(since_hit) / p.step_time };
     if f >= 1.0 {
-        return stop_colour(p, k);
+        return colour(k).to_linear();
     }
     if f <= 0.0 {
-        return stop_colour(p, prev);
+        return colour(prev).to_linear();
     }
     // The gap from the stop before to this one, blending and mixing as the gradient does there.
     let pair = Gradient {
-        stops: vec![Stop { at: 0.0, ..from }, Stop::new(1.0, stop_from(p, k))],
+        stops: vec![Stop { at: 0.0, ..from }, Stop::new(1.0, colour(k))],
         mix: p.colours.mix,
         looped: false,
         grain: 0.0,

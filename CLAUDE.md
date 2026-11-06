@@ -220,6 +220,28 @@ button on the Lighting card and the export window's **Test a frame** open `final
 tracing: wgpu's ray queries aren't on every card the exe runs on, and the 2D-plus-spheres scene traces fast enough in
 shaders. `tests/bake_pictures.rs` (bpe-cli); `scenes::bake_demo` is test-only.
 
+## Gradients (spec `docs/superpowers/specs/2026-11-06-gradients-design.md`, plans `docs/superpowers/plans/gradients/`)
+
+Part 1 is in (plan `part1.md`): the gradient value (`bpe-core/src/color.rs`) has a **Mix** (`Mix`: Light, the old
+blend in linear light and the default of every settings struct's gradient; Plain, sRGB numbers; Even, OKLab; Round the
+wheel / Long way round, OKLCH hue the short or long way, chroma lowered into sRGB by `oklab::fit_gamut`), each stop a
+**gap blend** for the gap after it (`Stop.blend`: `GapBlend` Smooth / Eased / Ease in / Ease out / Steps, and
+`Stop.middle`, where the halfway colour or the Steps edge sits, a power bend), and **Loop** (`Gradient.looped`: `t` wraps
+with `fract` and the last stop's gap runs back round to the first; `set_looped` respaces a gradient whose last stop sits
+on 1). The old `transition` field is read into gap blends (`SavedTransition`, read only). New gradients made in the
+editor (the "+", palettes, Add matching, Random) mix Even; the Rainbow palette loops Round the wheel. **Companions**
+(`gradient_extras.rs`): every gradient setting `k` (a layer's keeps its prefix) has `"<k>~bands"` (`banded(n)`, 2n
+stops, at most `MOST_BANDS`) and `"<k>~grain"` (`Gradient.grain`, `#[serde(skip)]`, carried to the GPU only) beside it,
+plain numbers that key, pulse and follow sound; `def_at`/`layer_def` answer them, they can't vary across balls, and
+`apply_moves` puts them onto the gradients right after `Animation::apply` (`build_frame_sensing`, the light probe).
+The GPU atlas rows are 1024 wide (`ATLAS_WIDTH`, the grade map stays 256), `PaintGpu.grain` dithers in `paint_along`
+(`paint_px`, set at the top of every fragment entry that paints). `Follow::OrderThereAndBack` and the group gradient's
+`Spread::ThereAndBack`; Order on a looped gradient spreads `i / n` (`eval::order_place`) so a ring has no seam. The
+editor (`gradient_bar.rs`) has a diamond per gap (drag: the middle), a selected stop, and the tabs under the bar
+(`gradient_tabs.rs`: Colours (stop colour, hex, at, gap blend, middle) | Blend (Mix, Loop, Bands, Grain, Every gap),
+Shape and Move once parts 2 and 3 add companions there); companion rows are ordinary grid rows under their full key
+(`companion_def`, `widgets::def_in`), and their timeline lanes read "Colours bands".
+
 ## Crate map
 
 Dependencies go bottom to top:

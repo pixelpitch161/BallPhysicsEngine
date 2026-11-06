@@ -143,7 +143,9 @@ fn number_of(v: &Value) -> f64 {
 /// resolved scene to apply them only then.
 pub fn any_in(resolved: &Resolved) -> bool {
     resolved.things.values().any(|t| {
-        std::iter::once(&t.params).chain(t.slots.values().map(|s| &s.params)).any(|p| p.iter().any(|(k, _)| is_companion_key(k)))
+        std::iter::once(&t.params)
+            .chain(t.slots.values().map(|s| &s.params))
+            .any(|p| p.iter().any(|(k, _)| is_companion_key(k)))
     })
 }
 

@@ -371,7 +371,7 @@ fn palette_item(ui: &mut Ui, p: &Palette) -> Response {
 /// Each gap's stop, where it starts and how wide it is (0 to 1 along the bar): the gap after
 /// stop `i` to stop `i + 1`, then, when the gradient loops, the one back round from the last stop
 /// to the first. Gaps with no width (two stops at one place) are left out.
-fn gaps(g: &Gradient) -> Vec<(usize, f32, f32)> {
+pub fn gaps(g: &Gradient) -> Vec<(usize, f32, f32)> {
     let n = g.stops.len();
     let mut out: Vec<(usize, f32, f32)> =
         (0..n.saturating_sub(1)).map(|i| (i, g.stops[i].at, g.stops[i + 1].at - g.stops[i].at)).collect();
@@ -395,7 +395,15 @@ fn diamonds(ui: &mut Ui, id: egui::Id, g: &mut Gradient, bar: Rect, strip: Rect,
         if r.dragged()
             && let Some(p) = r.interact_pointer_pos()
         {
-            let gone = (along(bar, p.x) - start).rem_euclid(1.0);
+            let at = along(bar, p.x);
+            let gone = if start + width > 1.0 {
+                // The gap back round: measured from its centre either way round, so a pointer
+                // past either end holds the diamond at that end.
+                let centre = start + width * 0.5;
+                width * 0.5 + ((at - centre + 0.5).rem_euclid(1.0) - 0.5)
+            } else {
+                at - start
+            };
             let m = (gone / width).clamp(0.01, 0.99);
             if m != middle {
                 g.stops[i].middle = m;
@@ -472,7 +480,8 @@ fn handles(
                 ui.close();
             }
         });
-        let r = r.on_hover_text("Click to pick and change the colour, drag to move it, drag down or right-click to remove");
+        let r =
+            r.on_hover_text("Click to pick and change the colour, drag to move it, drag down or right-click to remove");
         response = Some(match response {
             Some(all) => all | r,
             None => r,

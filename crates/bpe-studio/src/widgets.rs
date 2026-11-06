@@ -526,8 +526,9 @@ fn setting(
                 })
                 .inner
             });
-            let r =
-                widget_cell(ui, right, |ui| style::wells(ui, |ui| widget(ui, def, unit, end, to_name.id, bar.with("to"), cx.choices)));
+            let r = widget_cell(ui, right, |ui| {
+                style::wells(ui, |ui| widget(ui, def, unit, end, to_name.id, bar.with("to"), cx.choices))
+            });
             if r.changed() {
                 varies.push(VaryEdit::To(end.clone()));
             }

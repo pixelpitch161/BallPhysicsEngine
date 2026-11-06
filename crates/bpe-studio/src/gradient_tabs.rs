@@ -174,7 +174,8 @@ fn colours_tab(ui: &mut Ui, def: &SettingDef, g: &mut Gradient, bar: egui::Id, c
     });
     ui.end_row();
     let i = selected_stop(ui.ctx(), bar, g);
-    if i + 1 == g.stops.len() && !g.looped {
+    // Only a gap with room has a blend to set (none after the last stop unless it loops round).
+    if !crate::gradient_bar::gaps(g).iter().any(|(gap, ..)| *gap == i) {
         return changed;
     }
     row_label(ui, cx, "Gap after");
@@ -215,8 +216,10 @@ fn hex_box(ui: &mut Ui, name: &str, bar: egui::Id, i: usize, color: &mut Color) 
     let draft_id = bar.with(("hex", i));
     let edit_id = bar.with(("hex box", i));
     let typing = ui.memory(|m| m.has_focus(edit_id));
-    let mut text: String = if typing { ui.data(|d| d.get_temp(draft_id)) } else { None }.unwrap_or_else(|| color.to_hex());
-    let r = ui.add(egui::TextEdit::singleline(&mut text).id(edit_id).desired_width(76.0).font(egui::TextStyle::Monospace));
+    let mut text: String =
+        if typing { ui.data(|d| d.get_temp(draft_id)) } else { None }.unwrap_or_else(|| color.to_hex());
+    let r =
+        ui.add(egui::TextEdit::singleline(&mut text).id(edit_id).desired_width(76.0).font(egui::TextStyle::Monospace));
     name_it(ui, &r, format!("{name} hex"));
     let r = r.on_hover_text("The colour as a hex code: #rrggbb, or #rrggbbaa with its opacity");
     ui.data_mut(|d| d.insert_temp(draft_id, text.clone()));

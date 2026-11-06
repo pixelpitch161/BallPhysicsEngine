@@ -50,12 +50,9 @@ pub fn inside_gpu(i: &InsidePaint, vary: [f32; 4], atlas: &mut GradientAtlas, ti
     };
     match i.from {
         InsideFrom::ShadeOfOwnColour => PaintGpu { row: SHADE_ROW, t0: finite(i.shade).clamp(-1.0, 1.0), ..shape },
-        InsideFrom::OwnGradient => PaintGpu {
-            row: atlas.row(&i.colours) as f32,
-            grain: i.colours.grain,
-            vary,
-            ..shape
-        },
+        InsideFrom::OwnGradient => {
+            PaintGpu { row: atlas.row(&i.colours) as f32, grain: i.colours.grain, vary, ..shape }
+        }
     }
 }
 
@@ -99,7 +96,9 @@ pub fn background_gpu(p: &Paint, inputs: &Inputs, atlas: &mut GradientAtlas) -> 
     // Exactly a straight blend of two colours in linear light: the shader mixes it itself.
     let plain = |s: &bpe_core::Stop| s.blend == bpe_core::GapBlend::Smooth && s.middle == 0.5;
     let ends = match p.colours.stops.as_slice() {
-        [a, b] if a.at == 0.0 && b.at == 1.0 && p.colours.mix == bpe_core::Mix::Light && !p.colours.looped && plain(a) => {
+        [a, b]
+            if a.at == 0.0 && b.at == 1.0 && p.colours.mix == bpe_core::Mix::Light && !p.colours.looped && plain(a) =>
+        {
             Some([a.color.to_linear(), b.color.to_linear()])
         }
         _ => None,

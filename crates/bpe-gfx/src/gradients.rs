@@ -270,8 +270,7 @@ mod tests {
     #[test]
     fn atlas_grows_past_its_first_height() {
         let mut atlas = GradientAtlas::default();
-        let gradients: Vec<Gradient> =
-            (0..20).map(|i| two(Color::rgb(i * 10, 0, 0), Color::rgb(0, 0, 255))).collect();
+        let gradients: Vec<Gradient> = (0..20).map(|i| two(Color::rgb(i * 10, 0, 0), Color::rgb(0, 0, 255))).collect();
         let rows: Vec<u32> = gradients.iter().map(|g| atlas.row(g)).collect();
         assert_eq!(rows, (0..20).collect::<Vec<u32>>());
         assert_eq!(atlas.len(), 20);
