@@ -509,8 +509,11 @@ impl<'a> FrameMaker<'a> {
 }
 
 /// Draws the frame at `time` as the export would (`bake` as in [`ExportOptions::bake`]), at
-/// `scale` of the video's size: its RGBA pixels, its size and how long the frame itself took (the warm-up of
-/// the seconds before it, drawn live for effects that remember, left out).
+/// `scale` of the video's size: its RGBA pixels, its size and how long the frame itself took.
+/// Effects that remember (and glow in the dark) need the frames before: as many seconds of them
+/// as the scene remembers are drawn first, unbaked but at the bake's quality, and not timed.
+/// Setting `stop` gives up between frames.
+#[allow(clippy::too_many_arguments)]
 pub fn final_frame(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -519,6 +522,7 @@ pub fn final_frame(
     time: f64,
     scale: f32,
     bake: Option<bool>,
+    stop: &std::sync::atomic::AtomicBool,
 ) -> anyhow::Result<(Vec<u8>, (u32, u32), f32)> {
     let (_, video) = video_of(scene, kit)?;
     let (width, height) = output_size(video.width, video.height, scale);
@@ -526,14 +530,33 @@ pub fn final_frame(
     let mut renderer = Renderer::new(device, width, height);
     let mut maker = FrameMaker::new(scene, kit);
     let bake = bake_for(scene, kit, bake);
-    // Effects that remember (and glow in the dark) need the frames before: the last few seconds
-    // of them are drawn live first, as the editor's warm-up does.
-    let warm = (time - bpe_gfx::effects::MAX_MEMORY as f64).max(0.0);
-    let first = (warm * fps as f64).ceil() as u32;
+    let stopped = || stop.load(std::sync::atomic::Ordering::Relaxed);
     let last = (time * fps as f64).round() as u32;
-    for index in first..last {
-        let frame = maker.frame(index as f64 / fps as f64);
-        renderer.render(device, queue, &frame);
+    let earliest = ((time - bpe_gfx::effects::MAX_MEMORY as f64).max(0.0) * fps as f64).ceil() as u32;
+    if earliest < last {
+        // How long the scene remembers, read at the first frame it could need.
+        let mut first = maker.frame(earliest as f64 / fps as f64);
+        let memory = first.memory() as f64;
+        if memory > 0.0 {
+            let from = (((time - memory).max(0.0) * fps as f64).ceil() as u32).max(earliest);
+            for index in from..last {
+                if stopped() {
+                    bail!("stopped");
+                }
+                let mut frame =
+                    if index == earliest { std::mem::take(&mut first) } else { maker.frame(index as f64 / fps as f64) };
+                if bake.is_some()
+                    && let Some(light) = frame.light.as_mut()
+                {
+                    // The bake's quality, so the lighting keeps what it remembers into the bake.
+                    light.settings.more[2] = 4.0;
+                }
+                renderer.render(device, queue, &frame);
+            }
+        }
+    }
+    if stopped() {
+        bail!("stopped");
     }
     let started = std::time::Instant::now();
     let samples = maker.samples(last as f64 / fps as f64, fps, bake.as_ref());

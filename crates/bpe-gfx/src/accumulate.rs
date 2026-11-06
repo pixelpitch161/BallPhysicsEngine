@@ -1,10 +1,14 @@
-//! The bake's running average (lighting part 3): each sample's HDR picture is folded into a
-//! 32-bit float picture as `a + (x − a) / (i + 1)`, back and forth between two, then put back in
-//! the HDR picture for the effects, bloom and grade (see [`crate::Renderer::render_samples`]).
+//! The bake's running average (lighting part 3): each sample's HDR picture (and, for effects on
+//! the light, its unlit picture and lit colour: the channels) is folded into a 32-bit float
+//! picture as `a + (x − a) / (i + 1)`, back and forth between two, then put back for the effects,
+//! bloom and grade (see [`crate::Renderer::render_samples`]).
 
 use crate::HDR_FORMAT;
 
 const SUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
+
+/// The pictures averaged: the HDR picture, then the unlit picture and the lit colour.
+pub(crate) const CHANNELS: usize = 3;
 
 const SHADER: &str = r#"
 @group(0) @binding(0) var<uniform> k: vec4<f32>;
@@ -38,17 +42,20 @@ fn fs_put(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 /// A sum's texture and its view.
 type Sum = (wgpu::Texture, wgpu::TextureView);
 
+/// Each channel's two sums, back and forth.
+type Sums = [[Sum; 2]; CHANNELS];
+
 pub(crate) struct Accumulate {
     layout: wgpu::BindGroupLayout,
     accumulate: wgpu::RenderPipeline,
     put: wgpu::RenderPipeline,
-    /// The two sums (size, then the pictures), made for the first bake of a size.
-    sums: Option<((u32, u32), [Sum; 2])>,
+    /// Each channel's two sums (size, then the pictures), made for the first bake of a size.
+    sums: Option<((u32, u32), Sums)>,
     /// One weight a sample, grown as needed (each sample is submitted before the next is
     /// written, but a buffer per sample keeps them apart anyway).
     weights: Vec<wgpu::Buffer>,
-    /// Which sum holds the average so far.
-    current: usize,
+    /// Which sum of each channel holds the average so far.
+    current: [usize; CHANNELS],
 }
 
 impl Accumulate {
@@ -122,7 +129,7 @@ impl Accumulate {
             layout,
             sums: None,
             weights: Vec::new(),
-            current: 0,
+            current: [0; CHANNELS],
         }
     }
 
@@ -144,7 +151,7 @@ impl Accumulate {
             let v = t.create_view(&Default::default());
             (t, v)
         };
-        self.sums = Some((size, [make(), make()]));
+        self.sums = Some((size, std::array::from_fn(|_| [make(), make()])));
     }
 
     fn group(
@@ -165,7 +172,8 @@ impl Accumulate {
         })
     }
 
-    /// Folds sample `index` (from 0), drawn into `hdr` (`size`), into the average.
+    /// Folds sample `index` (from 0) of `channel`, drawn into `hdr` (`size`), into its average.
+    #[allow(clippy::too_many_arguments)]
     pub fn add(
         &mut self,
         device: &wgpu::Device,
@@ -173,6 +181,7 @@ impl Accumulate {
         encoder: &mut wgpu::CommandEncoder,
         size: (u32, u32),
         index: u32,
+        channel: usize,
         hdr: &wgpu::TextureView,
     ) {
         self.ensure(device, size);
@@ -187,10 +196,10 @@ impl Accumulate {
         let weight = &self.weights[index as usize];
         queue.write_buffer(weight, 0, bytemuck::cast_slice(&[1.0 / (index + 1) as f32, 0.0, 0.0, 0.0]));
         if index == 0 {
-            self.current = 0;
+            self.current[channel] = 0;
         }
-        let (from, to) = (self.current, 1 - self.current);
-        let sums = &self.sums.as_ref().expect("just made").1;
+        let (from, to) = (self.current[channel], 1 - self.current[channel]);
+        let sums = &self.sums.as_ref().expect("just made").1[channel];
         let group = self.group(device, weight, &sums[from].1, hdr);
         {
             let mut pass =
@@ -199,14 +208,20 @@ impl Accumulate {
             pass.set_bind_group(0, &group, &[]);
             pass.draw(0..3, 0..1);
         }
-        self.current = to;
+        self.current[channel] = to;
     }
 
-    /// Puts the average back into `hdr`.
-    pub fn put(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, hdr: &wgpu::TextureView) {
+    /// Puts `channel`'s average back into `hdr`.
+    pub fn put(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        channel: usize,
+        hdr: &wgpu::TextureView,
+    ) {
         let Some((_, sums)) = self.sums.as_ref() else { return };
         let weight = &self.weights[0];
-        let sum = &sums[self.current].1;
+        let sum = &sums[channel][self.current[channel]].1;
         let group = self.group(device, weight, sum, sum);
         let mut pass = crate::begin_pass(encoder, hdr, "bake average back", wgpu::LoadOp::Clear(wgpu::Color::BLACK));
         pass.set_pipeline(&self.put);

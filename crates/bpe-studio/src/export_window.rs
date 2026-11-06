@@ -22,8 +22,8 @@ pub struct ExportWindow {
     pub(crate) path: Option<PathBuf>,
     /// H.264 quality: lower is sharper and bigger.
     crf: u8,
-    /// Output size as a fraction of the video size.
-    scale: f32,
+    /// Output size as a fraction of the video size (Preview final frame draws at it too).
+    pub(crate) scale: f32,
     encoder: Encoder,
     /// Also save each bus and the master as WAVs beside the video.
     stems: bool,

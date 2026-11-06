@@ -8,6 +8,7 @@ use bpe_core::Scene;
 use bpe_kit::Kit;
 use eframe::egui::{self, RichText};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, channel};
 
 /// What the window was asked for.
@@ -38,17 +39,25 @@ pub struct FinalFrame {
     /// The frames of the video, for the estimate.
     frames: u32,
     working: Option<Receiver<Drawn>>,
+    /// Stops the drawing thread at its next frame: set when the window closes or another frame
+    /// is asked for.
+    stop: Arc<AtomicBool>,
+    /// Whether the frame being drawn bakes, as it was asked.
+    bakes: bool,
     shown: Option<Result<Shown, String>>,
 }
 
 impl FinalFrame {
     /// Starts drawing `ask`'s frame of `scene` (a copy) in the background and opens the window.
     pub fn start(&mut self, ctx: &egui::Context, scene: &Scene, kit: &Arc<Kit>, frames: u32, ask: Ask) {
+        self.stop.store(true, Ordering::Relaxed);
+        self.stop = Arc::new(AtomicBool::new(false));
+        self.bakes = bpe_cli::bake_for(scene, kit, ask.bake).is_some();
         let (sender, receiver) = channel();
-        let (scene, kit, ctx2) = (scene.clone(), kit.clone(), ctx.clone());
+        let (scene, kit, ctx2, stop) = (scene.clone(), kit.clone(), ctx.clone(), self.stop.clone());
         std::thread::spawn(move || {
             let result = bpe_gfx::headless_device().and_then(|(device, queue)| {
-                bpe_cli::final_frame(&device, &queue, &scene, &kit, ask.time, ask.scale, ask.bake)
+                bpe_cli::final_frame(&device, &queue, &scene, &kit, ask.time, ask.scale, ask.bake, &stop)
             });
             let _ = sender.send(result);
             ctx2.request_repaint();
@@ -65,11 +74,11 @@ impl FinalFrame {
         self.working.is_some()
     }
 
-    pub fn show(&mut self, ctx: &egui::Context, scene: &Scene, kit: &Kit) {
+    pub fn show(&mut self, ctx: &egui::Context) {
         if let Some(receiver) = &self.working
             && let Ok(result) = receiver.try_recv()
         {
-            let baked = self.asked.is_some_and(|ask| bpe_cli::bake_for(scene, kit, ask.bake).is_some());
+            let baked = self.bakes;
             self.shown = Some(match result {
                 Ok((pixels, size, seconds)) => {
                     let size_px = [size.0 as usize, size.1 as usize];
@@ -92,6 +101,10 @@ impl FinalFrame {
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| self.contents(ui, ctx));
         self.open = open;
+        if !open && self.working.is_some() {
+            self.stop.store(true, Ordering::Relaxed);
+            self.working = None;
+        }
     }
 
     fn contents(&self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -150,7 +163,7 @@ mod tests {
         assert!(window.open && window.busy());
         let started = std::time::Instant::now();
         while window.busy() && started.elapsed() < std::time::Duration::from_secs(60) {
-            let mut out = ctx.run_ui(Default::default(), |ui| window.show(ui.ctx(), &scene, &kit));
+            let mut out = ctx.run_ui(Default::default(), |ui| window.show(ui.ctx()));
             out.textures_delta.clear();
             std::thread::sleep(std::time::Duration::from_millis(20));
         }

@@ -1206,13 +1206,13 @@ impl eframe::App for Studio {
         let frames = bpe_cli::frame_count(&settings);
         let mut ask = std::mem::take(&mut self.panels.export.test_frame);
         if std::mem::take(&mut self.panels.inspector.final_frame_wanted) {
-            ask = Some((1.0, None));
+            ask = Some((self.panels.export.scale, None));
         }
         if let Some((scale, bake)) = ask {
             let ask = crate::final_frame::Ask { time: self.time, scale, bake };
             self.panels.final_frame.start(&ctx, &self.scene, &self.kit, frames, ask);
         }
-        self.panels.final_frame.show(&ctx, &self.scene, &self.kit);
+        self.panels.final_frame.show(&ctx);
         match self.clicked.take() {
             Some(ToolbarClick::New) => self.guard(Pending::New, &ctx),
             Some(ToolbarClick::Open) => self.guard(Pending::Open, &ctx),

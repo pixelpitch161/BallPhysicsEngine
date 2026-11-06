@@ -1095,8 +1095,9 @@ impl Lighting {
 
         // What part 1b draws: the light field (glowing things, bounce light), the bloom, the haze.
         let [bounce, reach, blooms, _] = s.glow;
-        // A Stage bake traces its bounce light: the field then carries only glowing things'.
-        let bounce = if traced { 0.0 } else { bounce };
+        // A Stage bake traces its bounce light: the field then carries only glowing things'. A
+        // bake with no Light bounces has none.
+        let bounce = if traced || (baking && s.bake[1] < 1.0) { 0.0 } else { bounce };
         let field_on = scene.glows || bounce != 0.0;
         // Live, one bounce; baking, Light bounces (each run bounces the one before), at most 16.
         let bounces = if baking { (s.bake[1].max(0.0) as usize).min(16) } else { 1 };

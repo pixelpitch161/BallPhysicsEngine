@@ -471,6 +471,7 @@ mod tests {
             history,
             interval: 1.0 / 60.0,
             newest_ago: 0.0,
+            ahead: 0.0,
             colour: &colour,
             number: &number,
             turned: &turned,

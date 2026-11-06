@@ -586,7 +586,8 @@ pub fn show(
                     ui.add_space(6.0);
                     let button = ui.button("Preview final frame").on_hover_text(
                         "Draws the frame at the playhead exactly as the exported video will show it (baked when \
-                         On export is Bake), and says how long the whole video would take.",
+                         On export is Bake, at the export window's size), and says how long the whole video \
+                         would take.",
                     );
                     if button.clicked() {
                         inspector.final_frame_wanted = true;

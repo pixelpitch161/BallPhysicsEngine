@@ -303,3 +303,53 @@ fn the_export_bakes_as_the_lighting_card_says_unless_told() {
     let blank = bpe_kit::new_scene(&kit.registry);
     assert_eq!(bpe_cli::bake_for(&blank, &kit, Some(true)), None, "no Lighting card, nothing to bake");
 }
+
+/// Writes the bake demo's scene file for the review video when `BPE_BAKE_DEMO` names a path.
+#[test]
+fn write_the_bake_demo_scene() {
+    let Some(path) = std::env::var_os("BPE_BAKE_DEMO") else { return };
+    std::fs::write(path, bpe_core::save::save(&scenes::bake_demo(&kit().registry))).unwrap();
+}
+
+/// How far the row through world y = 0 from x0 to x1 is from `bg`, summed.
+fn row_difference(pixels: &[u8], x0: f32, x1: f32, bg: [u8; 4]) -> i64 {
+    let mut sum = 0i64;
+    let mut x = x0;
+    while x <= x1 {
+        sum += (brightness(at(pixels, x, 0.0)) - brightness(bg)).abs() as i64;
+        x += 4.0;
+    }
+    sum
+}
+
+/// An effect that remembers counts frames in a bake as it does live, not samples: Echo leaves
+/// the same trail behind a moving ball.
+#[test]
+fn an_echo_baked_leaves_the_trail_it_leaves_live() {
+    let Some(gpu) = gpu() else { return };
+    let kit = kit();
+    let mut scene = room(false, [-300.0, 0.0], 50.0, [600.0, 0.0]);
+    scene.add_slot(&kit.registry, ThingId::ROOT, SlotId::Shader, "effects").unwrap();
+    let echo = scene.add_layer(&kit.registry, ThingId::ROOT, SlotId::Shader, "picture.echo").unwrap();
+    let card = scene.card_mut(ThingId::ROOT, SlotId::Shader).unwrap();
+    card.params.set(&layered_key(echo, "fade"), Value::Number(0.9));
+    let frames = 15u32;
+    let run = |bake: Option<Bake>, name: &str| {
+        let mut renderer = Renderer::new(&gpu.device, W, H);
+        let mut maker = FrameMaker::new(&scene, &kit);
+        for index in 0..=frames {
+            let samples = maker.samples(index as f64 / 30.0, 30, bake.as_ref());
+            renderer.render_samples(&gpu.device, &gpu.queue, &samples);
+        }
+        let pixels = renderer.read_output(&gpu.device, &gpu.queue).unwrap();
+        save(name, &pixels);
+        pixels
+    };
+    let live = run(None, "echo-live");
+    let baked = run(bake(4, 0.0), "echo-baked");
+    // The ball is at x = 0 now; its echoes lie behind it.
+    let bg = at(&live, -500.0, 600.0);
+    let (a, b) = (row_difference(&live, -280.0, -70.0, bg), row_difference(&baked, -280.0, -70.0, bg));
+    assert!(a > 200, "live leaves a trail: {a}");
+    assert!((a - b).abs() as f64 / (a as f64) < 0.25, "live {a}, baked {b}");
+}

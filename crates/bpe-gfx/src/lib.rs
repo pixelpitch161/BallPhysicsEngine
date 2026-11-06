@@ -1184,6 +1184,7 @@ impl Renderer {
         let size = (self.targets.width, self.targets.height);
         self.chain.effect_time = Some(last.time);
         let mut scened = None;
+        let mut light = None;
         let mut frames = Vec::with_capacity(samples.len());
         for (index, sample) in samples.iter().enumerate() {
             let index = index as u32;
@@ -1199,19 +1200,44 @@ impl Renderer {
                 light.settings.dof[3] = light.settings.bake[2].max(1.0);
             }
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("sample") });
-            scened = Some(self.render_scene(device, queue, &mut encoder, &f));
+            let s = self.render_scene(device, queue, &mut encoder, &f);
+            // Effects on the light read the unlit picture and the lit colour beside the picture:
+            // averaged the same way, so they match it at blurred and smoothed edges.
+            light = self.light_pictures(&f, s.moved);
+            scened = Some(s);
             let acc = self.accumulate.get_or_insert_with(|| accumulate::Accumulate::new(device));
-            acc.add(device, queue, &mut encoder, size, index, &self.targets.hdr);
+            acc.add(device, queue, &mut encoder, size, index, 0, &self.targets.hdr);
+            if let Some((unlit, lit)) = &light {
+                acc.add(device, queue, &mut encoder, size, index, 1, unlit);
+                acc.add(device, queue, &mut encoder, size, index, 2, lit);
+            }
             queue.submit([encoder.finish()]);
             frames.push(f);
         }
         self.chain.effect_time = None;
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("baked") });
         if let Some(acc) = self.accumulate.as_ref() {
-            acc.put(device, &mut encoder, &self.targets.hdr);
+            acc.put(device, &mut encoder, 0, &self.targets.hdr);
+            if let Some((unlit, lit)) = &light {
+                acc.put(device, &mut encoder, 1, unlit);
+                acc.put(device, &mut encoder, 2, lit);
+            }
         }
         let last = frames.last().expect("one at least");
         self.finish(device, queue, encoder, last, scened.expect("one at least"));
+    }
+
+    /// The pictures effects on the light read beside the picture, once `frame` is drawn: the
+    /// picture before lighting and the lit colour (seen through the Stage camera when `moved`).
+    fn light_pictures(&self, frame: &Frame, moved: bool) -> Option<(wgpu::TextureView, wgpu::TextureView)> {
+        match (frame.light.as_ref(), self.lighting.as_ref().and_then(|l| l.pictures())) {
+            (Some(_), Some(_)) if moved => {
+                let lit = &self.stage_camera.as_ref().expect("moved").seen()[2].1;
+                Some((self.targets.behind_view.clone(), lit.clone()))
+            }
+            (Some(_), Some([(_, lit), _, _])) => Some((self.targets.behind_view.clone(), lit)),
+            _ => None,
+        }
     }
 
     /// Draws `frame`'s scene, lit, into the HDR picture: everything before the picture's effects.
@@ -1464,14 +1490,7 @@ impl Renderer {
             (_, view) => view,
         };
         // Effects on the light read the picture before lighting and the lit colour.
-        let light_pictures = match (frame.light.as_ref(), self.lighting.as_ref().and_then(|l| l.pictures())) {
-            (Some(_), Some(_)) if moved => {
-                let lit = &self.stage_camera.as_ref().expect("moved").seen()[2].1;
-                Some((self.targets.behind_view.clone(), lit.clone()))
-            }
-            (Some(_), Some([(_, lit), _, _])) => Some((self.targets.behind_view.clone(), lit)),
-            _ => None,
-        };
+        let light_pictures = self.light_pictures(frame, moved);
         self.chain.set_light(light_pictures);
         self.chain.run(
             device,
@@ -2127,7 +2146,10 @@ impl Targets {
             width,
             height,
             HDR_FORMAT,
-            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            // Drawn into by a bake's average (lighting part 3).
+            wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::RENDER_ATTACHMENT,
         );
         let behind_view = behind.create_view(&Default::default());
         let bloom: Vec<_> = (0..BLOOM_LEVELS)

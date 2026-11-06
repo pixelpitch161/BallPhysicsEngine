@@ -43,6 +43,9 @@ pub struct Balls<'a> {
     pub interval: f32,
     /// How old the history's newest sample is, in seconds.
     pub newest_ago: f32,
+    /// How far before the history's newest sample the balls are drawn, in seconds: 0 but in a
+    /// bake's sample between two steps (lighting part 3), whose trails leave out what is newer.
+    pub ahead: f32,
     /// Ball `i`'s colour, linear light (alpha -1 adds its light).
     pub colour: &'a dyn Fn(usize) -> [f32; 4],
     /// Ball `i`'s number in its group.
@@ -101,7 +104,10 @@ impl Balls<'_> {
     /// [`Path::drop_still_head`].
     fn path(&self, trail: &TrailLayer, i: usize, gone: Option<f32>) -> Path {
         match self.cut(trail, i, gone) {
-            Some(cut) => kinds::path(self.bodies.position[i], self.history, i, self.newest_ago, self.interval, cut),
+            Some(cut) => {
+                let ago = self.newest_ago - self.ahead;
+                kinds::path(self.bodies.position[i], self.history, i, ago, self.interval, cut)
+            }
             None => Path::default(),
         }
     }
@@ -659,6 +665,7 @@ mod tests {
             history: &history,
             interval: 1.0 / 60.0,
             newest_ago: 2.0 / 240.0,
+            ahead: 0.0,
             colour: &colour,
             number: &number,
             turned: &turned,
@@ -672,6 +679,45 @@ mod tests {
         let rolled = balls.rolled(0);
         // From the first sample (10 px) to the newest (100 px), then on to the ball.
         assert!((rolled - 95.0).abs() < 1e-3, "{rolled}");
+    }
+
+    /// A bake's sample between two steps draws the ball moved back (lighting part 3): its trail
+    /// starts there and leaves out the newest sample, which is ahead of it.
+    #[test]
+    fn a_ball_drawn_between_steps_has_no_trail_ahead_of_it() {
+        use super::{Balls, TrailLayer};
+        use glam::Vec2;
+        let mut bodies = bpe_runtime::Bodies::default();
+        bodies.push(Vec2::ZERO, Vec2::new(600.0, 0.0), 10.0);
+        let mut history = bpe_runtime::History::new(240, bpe_runtime::HistoryWant { seconds: 2.0, forever: false });
+        history.note(0, 1);
+        for step in 1..=40u64 {
+            bodies.position[0] = Vec2::new(step as f32 * 2.5, 0.0);
+            history.record(step, &bodies.position);
+        }
+        // Half a step before the newest sample (100 px).
+        bodies.position[0] = Vec2::new(98.75, 0.0);
+        let colour = |_: usize| [1.0; 4];
+        let number = |i: usize| i as u32;
+        let turned = |_: usize, _: f32| None;
+        let balls = Balls {
+            bodies: &bodies,
+            history: &history,
+            interval: 1.0 / 60.0,
+            newest_ago: 0.0,
+            ahead: 0.5 / 240.0,
+            colour: &colour,
+            number: &number,
+            turned: &turned,
+            last_hits: &[],
+            own: None,
+            gone: &|_| None,
+        };
+        let path = balls.path(&TrailLayer::default(), 0, None);
+        assert_eq!(path.points[0], Vec2::new(98.75, 0.0));
+        assert!(path.points.iter().all(|p| p.x <= 98.75), "nothing ahead: {:?}", &path.points[..3]);
+        assert!(path.len() > 2, "the rest of the trail is there");
+        assert!(path.ago.windows(2).all(|w| w[1] >= w[0]), "older along the trail");
     }
 
     /// A fast ball's trail turns where the ball bounced: through the very place it touched the
