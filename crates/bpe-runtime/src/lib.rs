@@ -30,7 +30,8 @@ pub use playback::Playback;
 pub use plugins::{Limits, ModuleSim, ModuleState, PairRule, SimCx, Sims, ThingSim, ThingState, state, state_mut};
 pub use pose::Pose;
 pub use rules::{
-    Action, BlockSim, Change, ChangeKey, Firing, How, MotionChange, PrepareCx, RulesState, StageCx, Values,
+    Action, BlockSim, Change, ChangeKey, Firing, How, Kick, MotionChange, PrepareCx, RulesState, SceneOp, StageCx,
+    Values,
 };
 pub use sound::{LevelsAt, SoundAt, SoundMaker};
 pub use walls::{

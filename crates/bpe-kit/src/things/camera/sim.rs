@@ -211,6 +211,22 @@ impl ThingSim for CameraSim {
         } else {
             st.punch = 0.0;
         }
+        // A rule's shakes and zoom punches (rules part 6), each dying away over its own time.
+        if let Some(rules) = world.rules() {
+            let time = world.time();
+            for k in rules.kicks().iter().filter(|k| k.thing == me) {
+                let Some(age) = k.age(time, world.steps_per_second) else { continue };
+                let w = k.weight(age);
+                if k.punch {
+                    view.zoom = (view.zoom * (1.0 + k.amount * w)).max(0.01);
+                } else {
+                    // Each kick its own wobble, so two never move together.
+                    let seed = world.seed ^ me.0 as u64 ^ k.start.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+                    let t = age * k.rate as f64;
+                    view.center += Vec2::new(noise(seed, 3, t), noise(seed, 4, t)) * (k.amount * w);
+                }
+            }
+        }
 
         if s.stay_inside {
             view = clamp_to_box(view, video, &s);

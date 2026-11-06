@@ -104,7 +104,12 @@ fn every_kind_is_registered_with_settings_under_rule() {
             "logic",
             "do.motion",
             "do.change",
-            "do.break"
+            "do.break",
+            "do.camera",
+            "do.slow",
+            "do.flash",
+            "do.light_scene",
+            "do.note"
         ]
     );
     for b in kit.registry.blocks() {

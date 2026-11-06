@@ -157,9 +157,46 @@ pub fn now<'a>(cx: &DrawCx<'a>) -> ScenesNow<'a> {
         let heard = cx.world.matching(target, ThingId::ROOT);
         Some(pattern::hits_heard(cx.log, cx.world.steps_per_second, &heard, cx.time, gap))
     };
-    match pick(&get, scenes.len(), &tempo, keys, cx.time, &hits) {
-        Some((from, to, mix)) => ScenesNow { scenes, from, to, mix },
-        None => ScenesNow::OFF,
+    let card = |time: f64| pick(&get, scenes.len(), &tempo, keys, time, &hits);
+    // A rule's scene (rules part 6) shows from its moment on, crossfading from what showed then.
+    let shown = cx.world.rules().and_then(|r| r.light_scene().copied());
+    let picked = match shown {
+        Some(sh) => {
+            let at = sh.step as f64 / cx.world.steps_per_second.max(1) as f64;
+            let showing = |t: f64| card(t).map_or(0, |(_, to, _)| to);
+            let from = sh.from.map_or_else(|| showing(at), |n| n as usize);
+            match sh.to {
+                Some(to) => {
+                    let fade = match sh.fade {
+                        Some(f) => f as f64,
+                        None => number_of(&get, "scene_fade", 0.0).max(0.0),
+                    };
+                    let mix = if fade <= 0.0 { 1.0 } else { ((cx.time - at) / fade).clamp(0.0, 1.0) as f32 };
+                    Some((from, to as usize, mix))
+                }
+                // Back to the card: what it shows now, crossfading from the rule's scene.
+                None => {
+                    let fade = sh.fade.map_or_else(|| number_of(&get, "scene_fade", 0.0).max(0.0), |f| f as f64);
+                    let mix = if fade <= 0.0 { 1.0 } else { ((cx.time - at) / fade).clamp(0.0, 1.0) as f32 };
+                    let now = card(cx.time);
+                    if mix >= 1.0 { now } else { Some((from, now.map_or(0, |(_, to, _)| to), mix)) }
+                }
+            }
+        }
+        None => card(cx.time),
+    };
+    match picked {
+        Some((from, to, mix)) if !scenes.is_empty() => ScenesNow { scenes, from, to, mix },
+        _ => ScenesNow::OFF,
+    }
+}
+
+/// A number setting of the Lighting card, `or` without it.
+fn number_of(get: &dyn Fn(&str) -> Option<Value>, key: &str, or: f64) -> f64 {
+    match get(key) {
+        Some(Value::Number(x)) => x,
+        Some(Value::Int(x)) => x as f64,
+        _ => or,
     }
 }
 

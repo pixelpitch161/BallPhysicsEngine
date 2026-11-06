@@ -338,7 +338,7 @@ impl Shape {
         // In sample order, as the engine hears them (hits can land out of order within a step).
         let mut new: Vec<(u64, &bpe_runtime::Event)> = events[h.done..]
             .iter()
-            .filter(|e| e.kind == EventKind::Hit && e.b.map(|b| b.thing) == Some(thing))
+            .filter(|e| matches!(e.kind, EventKind::Hit | EventKind::Note) && e.b.map(|b| b.thing) == Some(thing))
             .map(|e| (hit_sample(e, per_step), e))
             .collect();
         new.sort_by_key(|(sample, _)| *sample);
@@ -354,7 +354,12 @@ impl Shape {
             };
             h.filter.set(knob(k::MIN_STRENGTH) / 100.0, knob(k::RETRIGGER) / 1000.0);
             let hit = BlockHit { offset: 0, event: e.clone() };
-            if let Some(strength) = h.filter.accept(&hit, sample, world) {
+            // A rule's note (rules part 6) passes no filter: its velocity is its strength.
+            let accepted = match e.kind {
+                EventKind::Note => Some(if e.speed.is_finite() { e.speed.clamp(0.0, 1.0) } else { 0.0 }),
+                _ => h.filter.accept(&hit, sample, world),
+            };
+            if let Some(strength) = accepted {
                 let ball = e.a;
                 let seed =
                     mix(sample ^ mix(((ball.thing.0 as u64) << 32) | ball.item as u64) ^ ((thing.0 as u64) << 48));

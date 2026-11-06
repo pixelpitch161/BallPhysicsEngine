@@ -7,21 +7,30 @@
 //! - If: [`checks::Compare`], [`checks::Is`], [`checks::Chance`], [`checks::EveryNth`],
 //!   [`checks::Cooldown`], [`checks::OnlyN`], [`checks::BetweenTimes`].
 //! - Logic: [`logic::Logic`].
-//! - Do: [`motion::ChangeMotion`], [`change::ChangeSetting`], [`breaks::Break`].
+//! - Do: [`motion::ChangeMotion`], [`change::ChangeSetting`], [`breaks::Break`]; the spectacle
+//!   actions of part 6 ([`camera::CameraKick`], [`slow::SlowMotion`], [`flash::Flash`],
+//!   [`scene::ShowScene`], [`note::PlayNote`]).
 //!
 //! [`RuleBlockKind`]: bpe_core::RuleBlockKind
 //! [`BlockSim`]: bpe_runtime::BlockSim
 
 pub mod amount;
 pub mod breaks;
+pub mod camera;
 pub mod change;
 pub mod checks;
+pub mod flash;
 pub mod logic;
 pub mod memory;
 pub mod motion;
+pub mod note;
+pub mod scene;
+pub mod slow;
 pub mod when;
 pub mod who;
 
+#[cfg(test)]
+mod spectacle_tests;
 #[cfg(test)]
 mod tests;
 
@@ -78,6 +87,11 @@ pub fn register(r: &mut Registry) {
     r.add_block(motion::ChangeMotion);
     r.add_block(change::ChangeSetting);
     r.add_block(breaks::Break);
+    r.add_block(camera::CameraKick);
+    r.add_block(slow::SlowMotion);
+    r.add_block(flash::Flash);
+    r.add_block(scene::ShowScene);
+    r.add_block(note::PlayNote);
 }
 
 /// Puts every block kind's simulation in the sims.
@@ -96,6 +110,11 @@ pub fn add_sims(s: &mut Sims) {
     s.add_block(motion::ChangeMotion);
     s.add_block(change::ChangeSetting);
     s.add_block(breaks::Break);
+    s.add_block(camera::CameraKick);
+    s.add_block(slow::SlowMotion);
+    s.add_block(flash::Flash);
+    s.add_block(scene::ShowScene);
+    s.add_block(note::PlayNote);
 }
 
 /// The kit's registry, made once for the process: what Change setting reads the scene's setting
