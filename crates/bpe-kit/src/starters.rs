@@ -41,9 +41,9 @@ pub fn add_thing(scene: &mut Scene, reg: &Registry, kind: &str, parent: ThingId)
     for &slot in slots {
         fill_slot(scene, reg, id, slot)?;
     }
-    // The first light lights the scene: it gets its Lighting card, so the light shows.
+    // The first light (or rig) lights the scene: it gets its Lighting card, so the light shows.
     let lit = scene.things.get(&ThingId::ROOT).is_some_and(|r| r.slots.contains_key(&SlotId::Lighting));
-    if kind == crate::things::light::LIGHT && !lit {
+    if (kind == crate::things::light::LIGHT || kind == crate::things::rig::RIG) && !lit {
         scene.add_slot(reg, ThingId::ROOT, SlotId::Lighting, crate::modules::lighting::LIGHTING)?;
     }
     Ok(id)

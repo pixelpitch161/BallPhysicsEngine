@@ -622,7 +622,8 @@ fn spot_only(studio: &Studio, world: &World, id: ThingId) -> bool {
     let kind = studio.scene.things.get(&id).map(|t| t.kind.as_str());
     // An emitter can be grabbed at its middle even with no balls out.
     // A light's place is its own Position setting (its handles come with the Lights tab).
-    let light = kind == Some(bpe_kit::things::light::LIGHT);
+    // A rig only groups lights: it has no place to drag.
+    let light = kind == Some(bpe_kit::things::light::LIGHT) || kind == Some(bpe_kit::things::rig::RIG);
     kind == Some(EMITTER)
         || (!world.bodies.contains_key(&id) && !world.walls.contains_key(&id) && kind != Some("camera") && !light)
 }

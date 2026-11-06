@@ -80,4 +80,17 @@ mod tests {
         assert_eq!((t.beat_seconds(), t.bar_seconds()), (0.25, 1.5));
         assert_eq!(TempoMap::from_settings(&SceneSettings::default()), TempoMap::default());
     }
+
+    #[test]
+    fn light_shows_keep_the_same_beat_as_the_sound() {
+        use bpe_kit::things::scene::TimeBottom;
+        for (tempo, top, bottom) in
+            [(120.0, 4, TimeBottom::Four), (87.5, 7, TimeBottom::Eight), (500.0, 3, TimeBottom::Two)]
+        {
+            let s = SceneSettings { tempo, time_top: top, time_bottom: bottom, ..SceneSettings::default() };
+            let t = TempoMap::from_settings(&s);
+            let (beat, in_bar) = bpe_kit::things::rig::pattern::beat_seconds(&s);
+            assert_eq!((beat, in_bar), (t.beat_seconds(), t.top()), "{tempo} {top}");
+        }
+    }
 }

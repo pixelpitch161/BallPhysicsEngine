@@ -799,6 +799,7 @@ pub fn value_words(value: &Value, unit: &str, choices: &TargetChoices) -> String
         Value::Slots(n) if n.len() == 1 => "1 slot".to_owned(),
         Value::Slots(n) => format!("{} slots", n.len()),
         Value::Curve(c) => format!("{} points", c.len()),
+        Value::LightScenes(l) => scenes_words(l.len()),
     }
 }
 
@@ -1059,7 +1060,20 @@ fn widget(
             let words = if ps.len() == 1 { "1 point".to_owned() } else { format!("{} points", ps.len()) };
             ui.label(RichText::new(words).color(style::MUTED)).labelled_by(name)
         }
+        // Lighting scenes are listed and edited under the Lighting card's settings.
+        (ValueType::LightScenes, Value::LightScenes(list)) => {
+            ui.label(RichText::new(scenes_words(list.len())).color(style::MUTED)).labelled_by(name)
+        }
         _ => ui.label(RichText::new("This setting holds a value of the wrong kind").color(style::TEXT)),
+    }
+}
+
+/// "No scenes", "1 scene", "3 scenes".
+pub fn scenes_words(n: usize) -> String {
+    match n {
+        0 => "No scenes".to_owned(),
+        1 => "1 scene".to_owned(),
+        n => format!("{n} scenes"),
     }
 }
 

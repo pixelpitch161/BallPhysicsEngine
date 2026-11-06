@@ -8,6 +8,7 @@ use bpe_runtime::{EventKind, Outline, World};
 use glam::Vec2;
 
 use super::{AreaShape, LightSettings, LightType, Points, RidesOn, StripAlong};
+use crate::things::rig::pattern::Drive;
 
 pub struct LightDraw;
 
@@ -24,9 +25,14 @@ impl ThingDraw for LightDraw {
     fn draw(&self, _cx: &DrawCx, _frame: &mut Frame) {}
 
     fn light(&self, cx: &DrawCx, scene: &mut LightScene) {
-        let s = LightSettings::from_params(&cx.resolved.params);
-        for spot in places(cx, &s) {
-            push_light(cx, &s, &spot, scene);
+        // The showing lighting scene stands in for the light's own settings, then its rigs play
+        // their patterns on each lamp.
+        let scenes = crate::modules::light_scenes::now(cx);
+        let s = LightSettings::from_params(&scenes.params(cx.resolved.id, &cx.resolved.params));
+        let spots = places(cx, &s);
+        let drives = crate::things::rig::fixtures::drives(cx, &scenes, spots.len());
+        for (spot, drive) in spots.iter().zip(drives) {
+            push_light(cx, &s, spot, &drive, scene);
         }
     }
 }
@@ -46,7 +52,8 @@ pub struct Place {
 /// Where the light shines from at this moment.
 pub fn places(cx: &DrawCx, s: &LightSettings) -> Vec<Place> {
     let own = Place { at: s.position, ..Place::default() };
-    let Some(parent) = cx.thing.parent.filter(|&p| p != ThingId::ROOT) else { return vec![own] };
+    // A rig only groups lights: a light rides what its rig sits in.
+    let Some(parent) = crate::things::rig::fixtures::ridden(cx.tree, cx.resolved.id) else { return vec![own] };
     let world = cx.world;
     if let Some(bodies) = world.bodies.get(&parent) {
         let ball = |row: usize| Place {
@@ -90,16 +97,17 @@ pub fn places(cx: &DrawCx, s: &LightSettings) -> Vec<Place> {
     vec![own]
 }
 
-/// Adds the light at `place` to the scene.
-fn push_light(cx: &DrawCx, s: &LightSettings, place: &Place, scene: &mut LightScene) {
-    let colour = s.linear_colour();
-    let strength = s.strength * (1.0 + s.flare * flare(cx, s, place));
+/// Adds the light at `place` to the scene, as its rigs drive it.
+fn push_light(cx: &DrawCx, s: &LightSettings, place: &Place, drive: &Drive, scene: &mut LightScene) {
+    let colour = drive.colour.unwrap_or_else(|| s.linear_colour());
+    let strength = s.strength * (1.0 + s.flare * flare(cx, s, place)) * drive.strength;
+    let place = &Place { at: place.at + Vec2::new(drive.sway, 0.0), ..*place };
     let angle = match s.points {
         Points::FixedAngle => s.direction.to_radians(),
         Points::WhereItsGoing if place.velocity.length_squared() > 1e-6 => place.velocity.y.atan2(place.velocity.x),
         Points::WhereItsGoing => s.direction.to_radians(),
         Points::Spins => (s.direction + s.spin * cx.time as f32).to_radians(),
-    };
+    } + drive.turn.to_radians();
     let dir = Vec2::from_angle(angle);
     let half_cone = (0.5 * s.cone).to_radians();
     let edge = s.cone_edge.max(0.0).to_radians();

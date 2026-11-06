@@ -1414,6 +1414,8 @@ pub struct DrawCx<'a> {
     pub log: &'a Log,
     /// The moment being drawn, in seconds: the clock of the world, the log and the keyframes.
     pub time: f64,
+    /// The scene as saved: its tree (a thing's parent, siblings and order) and its keyframes.
+    pub tree: &'a Scene,
 }
 
 /// How a thing kind draws itself.
@@ -1558,7 +1560,7 @@ pub fn build_frame_with(
             (None, None) => ((Blend::Normal, 1.0), false),
         };
         let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
-        let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time };
+        let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, tree: scene };
         let z = z_order(thing, r);
         draw_routed_at(target, z, blend, amount, each, d.behind(), |into| d.draw(&cx, into));
         // Only a thing that blends has parts to paint over the blend: into the over layer of its
@@ -1577,7 +1579,7 @@ pub fn build_frame_with(
                 other => (other, around.amount),
             };
             let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
-            let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time };
+            let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, tree: scene };
             let z = z_order(thing, r);
             draw_routed_at(target, z, blend, amount, false, around.behind, |into| d.draw_around(&cx, index, into));
         }
@@ -1593,7 +1595,7 @@ pub fn build_frame_with(
             }
             let each = Blend::each_from_params(&s.params);
             let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
-            let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time };
+            let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, tree: scene };
             let z = z_order(thing, r);
             draw_routed_at(target, z, blend, amount, each, false, |into| d.draw(&cx, slot, into));
         }
@@ -1603,7 +1605,7 @@ pub fn build_frame_with(
         for (id, r) in &resolved.things {
             let Some(thing) = scene.things.get(id) else { continue };
             let Some(d) = draws.thing(&r.kind) else { continue };
-            let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time };
+            let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, tree: scene };
             d.light(&cx, &mut lit);
         }
         frame.light = Some(lit);
