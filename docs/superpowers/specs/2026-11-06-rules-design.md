@@ -109,8 +109,7 @@ pub struct Block {
   and setting it names exists. Edits (`bpe-core/src/rules.rs`): `add_rule`, `remove_rule`, `move_rule`,
   `duplicate_rule`, `rename_rule`, `set_rule_enabled`, `add_block(after)`, `add_when`, `remove_block`, `link`,
   `unlink`, `copy_rule`/`paste_rule`, `copy_block`/`paste_block`. Every one is an undo step.
-- Keyframes may go on block settings (`Address` gains a rule-block form: `{ rule, block, key }` beside the thing
-  form), so a rule's amount can change over the clip. Pulses may not go on block settings.
+- Block settings take no keyframes or pulses (an `Address` names a thing's setting only; section 10).
 
 ### 3.2 Who a block points at: `Who`
 
@@ -162,6 +161,10 @@ enabled rule, so nothing changes for a scene without rules). Each step:
    moments that fall in this step; make firings for every When block that matches; run each through its lane; queue
    the actions the Do blocks produce. Health damage from this step's hits is worked out first (part 4), so "Health
    drops" fires in the same stage.
+
+The stage logs what fired: `EventKind::Rule` (tag 10), at most one per block per step, `a` the firing's subject (the
+root, item 0, when it has none) and `b` = `Party { thing: ThingId::ROOT, item: rule id × 65536 + block id }`. The
+timeline's Rules lane, the "fired N times" counts and the firing rings read these.
 
 Nothing reads the future: a rule sees this step's events and the world as it is after this step. Because actions
 apply at the next step's start, everything a rule does is part of the simulation, cloned in snapshots and identical
@@ -254,7 +257,7 @@ Two kinds of Do block:
   Aim at (a thing or a point, keeping its speed), Freeze for N s (held, like `Bodies.held`), Teleport to (a thing's
   place, a point). Acts on balls only.
 - **Change setting** (`do.change`): **any setting the inspector shows**, on any card or thing: Bounciness, Size, Glow
-  colour, Spin, the scene's Gravity, a light's Strength, a block setting of another rule. Picked through a setting
+  colour, Spin, the scene's Gravity, a light's Strength. Picked through a setting
   menu (thing → card → layer → setting, the same structure as Follow sound's menu). Numbers, colours (Set and a glide
   between colours), switches and choices (Set only) all work.
 
@@ -414,3 +417,5 @@ lands after part 2.
 - No rules inside cards or per thing; no built-in or example rules or scenes in the program.
 - No hardware-specific or GPU-side rule evaluation: rules run on the CPU in the simulation.
 - No backward compatibility work: old files just have no rules.
+- Not for now: keyframes or pulses on block settings, and Change setting aimed at another rule's block (both need an
+  `Address` for block settings; a later part can add it).
