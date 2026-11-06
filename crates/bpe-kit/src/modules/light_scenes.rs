@@ -153,13 +153,57 @@ pub fn now<'a>(cx: &DrawCx<'a>) -> ScenesNow<'a> {
     let get = |key: &str| card.params.get(key).cloned();
     let keys = cx.tree.tracks.get(&show_address()).map(|t| t.keys.as_slice()).unwrap_or_default();
     let tempo = SceneSettings::from_params(&root.params);
-    let hits = |target: &Target, gap: f64| {
+    let hits = |target: &Target, gap: f64, time: f64| {
         let heard = cx.world.matching(target, ThingId::ROOT);
-        Some(pattern::hits_heard(cx.log, cx.world.steps_per_second, &heard, cx.time, gap))
+        Some(pattern::hits_heard(cx.log, cx.world.steps_per_second, &heard, time, gap))
     };
-    match pick(&get, scenes.len(), &tempo, keys, cx.time, &hits) {
-        Some((from, to, mix)) => ScenesNow { scenes, from, to, mix },
-        None => ScenesNow::OFF,
+    // The card as it stood at `time`: Show scene is a hold key, so its keys say what it was then.
+    let card = |time: f64| {
+        let get_at = |key: &str| match keys.iter().rev().find(|k| k.time <= time).or(keys.first()) {
+            Some(k) if key == SHOW_SCENE => Some(k.value.clone()),
+            _ => get(key),
+        };
+        pick(&get_at, scenes.len(), &tempo, keys, time, &hits)
+    };
+    // A rule's scene (rules part 6) shows from its moment on, crossfading from what showed then.
+    let shown = cx.world.rules().and_then(|r| r.light_scene().copied());
+    let picked = match shown {
+        Some(sh) => {
+            let at = sh.step as f64 / cx.world.steps_per_second.max(1) as f64;
+            let showing = |t: f64| card(t).map_or(0, |(_, to, _)| to);
+            let from = sh.from.map_or_else(|| showing(at), |n| n as usize);
+            match sh.to {
+                Some(to) => {
+                    let fade = match sh.fade {
+                        Some(f) => f as f64,
+                        None => number_of(&get, "scene_fade", 0.0).max(0.0),
+                    };
+                    let mix = if fade <= 0.0 { 1.0 } else { ((cx.time - at) / fade).clamp(0.0, 1.0) as f32 };
+                    Some((from, to as usize, mix))
+                }
+                // Back to the card: what it shows now, crossfading from the rule's scene.
+                None => {
+                    let fade = sh.fade.map_or_else(|| number_of(&get, "scene_fade", 0.0).max(0.0), |f| f as f64);
+                    let mix = if fade <= 0.0 { 1.0 } else { ((cx.time - at) / fade).clamp(0.0, 1.0) as f32 };
+                    let now = card(cx.time);
+                    if mix >= 1.0 { now } else { Some((from, now.map_or(0, |(_, to, _)| to), mix)) }
+                }
+            }
+        }
+        None => card(cx.time),
+    };
+    match picked {
+        Some((from, to, mix)) if !scenes.is_empty() => ScenesNow { scenes, from, to, mix },
+        _ => ScenesNow::OFF,
+    }
+}
+
+/// A number setting of the Lighting card, `or` without it.
+fn number_of(get: &dyn Fn(&str) -> Option<Value>, key: &str, or: f64) -> f64 {
+    match get(key) {
+        Some(Value::Number(x)) => x,
+        Some(Value::Int(x)) => x as f64,
+        _ => or,
     }
 }
 
@@ -171,13 +215,16 @@ pub fn words_at(scene: &Scene, reg: &Registry, time: f64) -> Option<String> {
     let keys = scene.tracks.get(&show_address()).map(|t| t.keys.as_slice()).unwrap_or_default();
     let root = scene.things.get(&ThingId::ROOT)?;
     let tempo = SceneSettings::from_params(&root.params);
-    let (from, to, mix) = pick(&get, scenes.len(), &tempo, keys, time, &|_, _| None)?;
+    let (from, to, mix) = pick(&get, scenes.len(), &tempo, keys, time, &|_, _, _| None)?;
     Some(ScenesNow { scenes: &scenes, from, to, mix }.words())
 }
 
 fn show_address() -> Address {
     Address::on(ThingId::ROOT, SlotId::Lighting, SHOW_SCENE)
 }
+
+/// The hits a target heard up to a time, at least a gap apart: (target, gap, time).
+type HeardBy<'a> = dyn Fn(&Target, f64, f64) -> Option<Vec<f64>> + 'a;
 
 /// Which scenes show at `time` from the Lighting card's settings (`get`), as (from, to, mix);
 /// `None` when they are off, there are none, or (`hits` giving `None`) they wait on hits.
@@ -187,7 +234,7 @@ fn pick(
     tempo: &SceneSettings,
     keys: &[bpe_core::Key],
     time: f64,
-    hits: &dyn Fn(&Target, f64) -> Option<Vec<f64>>,
+    hits: &HeardBy,
 ) -> Option<(usize, usize, f32)> {
     let play = get("scenes_play").and_then(|v| ScenesPlay::from_value(&v)).unwrap_or_default();
     if count == 0 || play == ScenesPlay::Off {
@@ -226,7 +273,7 @@ fn pick(
         }
         ScenesPlay::OnHits => {
             let target = get("scene_heard").and_then(|v| Target::from_value(&v)).unwrap_or_default();
-            let hits = hits(&target, number("scene_gap", 0.0).max(0.0))?;
+            let hits = hits(&target, number("scene_gap", 0.0).max(0.0), time)?;
             let k = hits.len() as u64;
             match hits.last() {
                 Some(&at) => (order_at(order, k - 1, count, seed), order_at(order, k, count, seed), at),

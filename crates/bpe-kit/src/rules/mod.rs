@@ -7,7 +7,9 @@
 //! - If: [`checks::Compare`], [`checks::Is`], [`checks::Chance`], [`checks::EveryNth`],
 //!   [`checks::Cooldown`], [`checks::OnlyN`], [`checks::BetweenTimes`].
 //! - Logic: [`logic::Logic`].
-//! - Do: [`motion::ChangeMotion`], [`change::ChangeSetting`], [`breaks::Break`].
+//! - Do: [`motion::ChangeMotion`], [`change::ChangeSetting`], [`breaks::Break`]; the spectacle
+//!   actions of part 6 ([`camera::CameraKick`], [`slow::SlowMotion`], [`flash::Flash`],
+//!   [`scene::ShowScene`], [`note::PlayNote`]).
 //!
 //! Part 5 (plan `docs/superpowers/plans/rules/part5.md`) adds When [`events::Enter`],
 //! [`events::Fired`], [`events::Removed`], [`counts::CountReached`], [`level::CrossesLevel`],
@@ -20,19 +22,26 @@
 pub mod amount;
 pub mod balls;
 pub mod breaks;
+pub mod camera;
 pub mod change;
 pub mod checks;
 pub mod counts;
 pub mod events;
+pub mod flash;
 pub mod level;
 pub mod logic;
 pub mod memory;
 pub mod motion;
+pub mod note;
+pub mod scene;
 pub mod signals;
+pub mod slow;
 pub mod tags;
 pub mod when;
 pub mod who;
 
+#[cfg(test)]
+mod spectacle_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -104,6 +113,11 @@ pub fn register(r: &mut Registry) {
     r.add_block(tags::Tag);
     r.add_block(counts::Count);
     r.add_block(signals::SendSignal);
+    r.add_block(camera::CameraKick);
+    r.add_block(slow::SlowMotion);
+    r.add_block(flash::Flash);
+    r.add_block(scene::ShowScene);
+    r.add_block(note::PlayNote);
 }
 
 /// Puts every block kind's simulation in the sims.
@@ -135,6 +149,11 @@ pub fn add_sims(s: &mut Sims) {
     s.add_block(tags::Tag);
     s.add_block(counts::Count);
     s.add_block(signals::SendSignal);
+    s.add_block(camera::CameraKick);
+    s.add_block(slow::SlowMotion);
+    s.add_block(flash::Flash);
+    s.add_block(scene::ShowScene);
+    s.add_block(note::PlayNote);
 }
 
 /// The kit's registry, made once for the process: what Change setting reads the scene's setting

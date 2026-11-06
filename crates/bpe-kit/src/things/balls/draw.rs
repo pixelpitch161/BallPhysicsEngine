@@ -25,7 +25,7 @@ use crate::things::balls::sim::{colour_turn, look_turn};
 pub struct BallsDraw;
 
 /// The speed at which a flash is at full strength.
-pub(crate) const FULL_FLASH_SPEED: f32 = 600.0;
+pub(crate) const FULL_FLASH_SPEED: f32 = bpe_runtime::rules::FULL_FLASH_SPEED;
 
 /// How strong a hit at `speed` is, for flashes: 1 at [`FULL_FLASH_SPEED`], at most 1.5.
 pub(crate) fn hit_strength(speed: f32) -> f32 {
@@ -51,7 +51,8 @@ fn last_hits_but(cx: &DrawCx, count: usize, memory: f32, skip: &dyn Fn(&Event, u
         // A ball's arrival at a catcher counts as a hit for its reactions.
         let other = match e.kind {
             EventKind::Hit => e.b,
-            EventKind::Enter => None,
+            // A rule's Flash too (rules part 6).
+            EventKind::Enter | EventKind::Flash => None,
             _ => continue,
         };
         let time = e.time(rate);
@@ -279,6 +280,8 @@ struct GroupCx<'a> {
     look: BallsSettings,
     /// The moment drawn, in steps, for fades.
     now: f64,
+    /// The rules and the thing, when a rule has flashed its balls: flashes count as hits.
+    flashes: Option<(&'a bpe_runtime::RulesState, ThingId)>,
 }
 
 impl GroupCx<'_> {
@@ -300,7 +303,8 @@ impl GroupCx<'_> {
     /// How many hits body row `row` has had, its arrivals at catchers counted in.
     fn hits(&self, bodies: &Bodies, row: usize) -> u32 {
         let arrived = self.of.and_then(|g| g.rows.arrivals.get(row).copied()).unwrap_or(0);
-        bodies.hits.get(row).copied().unwrap_or(0) + arrived
+        let flashed = self.flashes.map_or(0, |(r, thing)| r.flashes(thing, row as u32));
+        bodies.hits.get(row).copied().unwrap_or(0) + arrived + flashed
     }
 
     /// How much of body row `row` shows: 1 unless its round is fading out.
@@ -331,7 +335,8 @@ fn group_cx<'a>(stack: &Stack, cx: &DrawCx<'a>) -> GroupCx<'a> {
     let angle = stack.group.as_ref().map_or(0.0, |g| g.angle);
     let look = variety(&cx.thing.kind, &cx.resolved.params);
     let now = cx.time * cx.world.steps_per_second as f64;
-    GroupCx { of, info: GroupShapeInfo::of(places, angle, seed), look, now }
+    let flashes = cx.world.rules().filter(|r| r.flashed(cx.thing.id)).map(|r| (r, cx.thing.id));
+    GroupCx { of, info: GroupShapeInfo::of(places, angle, seed), look, now, flashes }
 }
 
 /// [`ball_colors`] for `stack` and `bodies`; with `seen` false, the body colour the instance
@@ -985,8 +990,9 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, worn: &Worn, part: u32) {
     for e in cx.log.since(since) {
         let hit = match e.kind {
             EventKind::Hit => true,
-            // Arrivals at a catcher flash as hits do, but aren't hits for the scene's effects.
-            EventKind::Enter => false,
+            // Arrivals at a catcher and a rule's flashes flash as hits do, but aren't hits for
+            // the scene's effects.
+            EventKind::Enter | EventKind::Flash => false,
             _ => continue,
         };
         let time = e.time(rate);
