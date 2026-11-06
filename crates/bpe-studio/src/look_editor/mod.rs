@@ -106,8 +106,14 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
     for layer in drawn.iter().rev() {
         let rect = layer_list::piece(ui, inspector, cx, card, layer, picked, edits);
         rows.push((layer.id, rect));
+        // A Gives off light sub-layer writes no record of its own.
         for sub in layer_list::subs_of(card, layer.id) {
-            records += usize::from(layer.enabled && sub.enabled);
+            let light = matches!(
+                sub.kind.as_str(),
+                bpe_kit::modules::look::layers::gives_light::SUB_LIGHT
+                    | bpe_kit::modules::look::layers::gives_light::SHAPE_SUB_LIGHT
+            );
+            records += usize::from(layer.enabled && sub.enabled && !light);
         }
         records += usize::from(layer.enabled);
     }
@@ -1109,17 +1115,30 @@ mod tests {
     }
 
     #[test]
-    fn the_body_blend_and_reactions_offer_no_sub_layers() {
+    fn blend_and_reactions_offer_no_sub_layers_and_the_body_only_gives_off_light() {
         let mut h = harness();
         add(&mut h, "+ Add layer", "Blend");
         add(&mut h, "+ Add reaction", "Flash on hit");
-        for row in ["Body", "Blend", "Flash on hit"] {
+        for row in ["Blend", "Flash on hit"] {
             h.get_by_role_and_label(Role::Button, row).click_secondary();
             h.run();
             assert!(h.get_by_label("Add sub-layer").accesskit_node().is_disabled(), "{row}");
             h.key_press(egui::Key::Escape);
             h.run();
         }
+        h.get_by_role_and_label(Role::Button, "Body").click_secondary();
+        h.run();
+        h.get_by_label("Add sub-layer").click();
+        h.run();
+        assert!(h.query_all_by_role_and_label(Role::Button, "Cut").next().is_none(), "the Body takes no cut");
+        h.get_all_by_role_and_label(Role::Button, "Gives off light").last().unwrap().click();
+        h.run();
+        let body = card(&h, BALL).layers[0].clone();
+        let added = subs(&h, body.id);
+        assert_eq!(
+            added.iter().map(|l| l.kind.as_str()).collect::<Vec<_>>(),
+            [bpe_kit::modules::look::layers::gives_light::SUB_LIGHT]
+        );
     }
 
     #[test]

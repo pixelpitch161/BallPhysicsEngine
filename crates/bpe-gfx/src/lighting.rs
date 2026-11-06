@@ -1,13 +1,23 @@
-//! Lighting in the flat picture (part 1a of the lighting spec): with a Lighting card on the scene
-//! the renderer draws the things twice more (their lit colour and their surface, see
-//! [`crate::Renderer::render`]), then this works out a signed distance field of everything that
-//! blocks light (a jump flood) and adds each light at every pixel, its shadow marched through the
-//! field. Nothing here is made or run for a scene without the card.
+//! Lighting in the flat picture (parts 1a and 1b of the lighting spec): with a Lighting card on
+//! the scene the renderer draws the things again (their lit colour, their surface and, when
+//! something gives off light, that light; see [`crate::Renderer::render`]), then this works out
+//! a signed distance field of everything that blocks light (a jump flood), the light from every
+//! Light thing at each pixel with its shadow marched through the field (and the light in the
+//! haze), the light field (radiance cascades: every glowing thing lights the rest, and lit things
+//! bounce light), the Light blooms, and mixes it all in. Nothing here is made or run for a scene
+//! without the card, and no 1b pass runs when its settings are off.
 
 use bytemuck::{Pod, Zeroable};
 
 use crate::frame::{LightGpu, LightScene};
 use crate::{Frame, GrowableBuffer, HDR_FORMAT};
+
+/// The light field's pictures: what it is made from and what it gives.
+const GI_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// The most cascades the light field uses (the last reaches 87381 field texels).
+const MOST_CASCADES: u32 = 9;
+/// The bloom of the lights: its first picture and this many smaller ones.
+const GLOW_LEVELS: u32 = 4;
 
 const SEED_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 const FIELD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
@@ -26,6 +36,41 @@ struct Uniform {
     field: [f32; 4],
 }
 
+/// What the part 1b passes read (see `Glow` in lighting.wgsl).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+struct GlowUniform {
+    /// The field's size in texels, then its size rounded up for the cascades.
+    size: [f32; 4],
+    /// This cascade, how many there are, steps a ray, which run (0 the first, 1 the bounce's).
+    cascade: [f32; 4],
+    /// Bounce light, glow reach (world units), Light blooms, the bloom level being made.
+    glow: [f32; 4],
+    /// The haze's colour times its amount, how much it dims.
+    air: [f32; 4],
+    /// 1 when there is a light field, 1 when there is a bloom, 1 when there is haze, spare.
+    on: [f32; 4],
+}
+
+/// How many cascades a light field needs to reach `reach` field texels, the first reaching one.
+pub fn cascade_count(reach: f32) -> u32 {
+    let mut n = 1;
+    // Cascade i reaches (4^(i+1) - 1) / 3 texels.
+    while n < MOST_CASCADES && ((4f32.powi(n as i32) - 1.0) / 3.0) < reach {
+        n += 1;
+    }
+    n
+}
+
+/// How many steps a light field ray takes in one cascade, for a Quality.
+pub fn gi_steps(quality: f32) -> u32 {
+    match quality.round() as i32 {
+        i32::MIN..=0 => 8,
+        1 => 12,
+        2 => 16,
+        _ => 24,
+    }
+}
 /// How big the field is against the picture, and how many steps a shadow takes, for a Quality.
 pub fn quality_tier(quality: f32) -> (u32, u32) {
     match quality.round() as i32 {
@@ -44,10 +89,31 @@ struct Targets {
     divisor: u32,
     lit: (wgpu::Texture, wgpu::TextureView),
     surface: (wgpu::Texture, wgpu::TextureView),
-    seeds: [(wgpu::Texture, wgpu::TextureView); 2],
+    /// The light things give off (pass 3).
+    emission: (wgpu::Texture, wgpu::TextureView),
+    /// The light from Light things on the surfaces (and the background's own light), then the
+    /// light in the air.
+    direct: (wgpu::Texture, wgpu::TextureView),
+    air: (wgpu::Texture, wgpu::TextureView),
+    /// The jump flood's pictures: the blockers' pair, then the light field's pair.
+    seeds: [(wgpu::Texture, wgpu::TextureView); 4],
     field: (wgpu::Texture, wgpu::TextureView),
-    /// Bound as the field while the field itself is drawn.
+    /// What the light field is made from (light given off and bounced, how opaque) and how far
+    /// each texel is from something opaque.
+    gi_scene: (wgpu::Texture, wgpu::TextureView),
+    gi_dist: (wgpu::Texture, wgpu::TextureView),
+    /// The light field: the light arriving at each texel from each of four ways (see
+    /// `gi_a` in lighting.wgsl).
+    gi: [(wgpu::Texture, wgpu::TextureView); 3],
+    /// The cascades, made the first time a light field is drawn.
+    cascades: Option<[(wgpu::Texture, wgpu::TextureView); 2]>,
+    /// The field's size rounded up so every cascade's probes tile it.
+    padded: (u32, u32),
+    /// The lights' bloom: a picture with [`GLOW_LEVELS`] levels, a view of each and of them all.
+    glow: (wgpu::Texture, Vec<wgpu::TextureView>, wgpu::TextureView),
+    /// Bound in place of a picture a pass draws into.
     dummy: (wgpu::Texture, wgpu::TextureView),
+    dummy_colour: (wgpu::Texture, wgpu::TextureView),
 }
 
 impl Targets {
@@ -58,13 +124,25 @@ impl Targets {
 
 pub(crate) struct Lighting {
     layout: wgpu::BindGroupLayout,
+    glow_layout: wgpu::BindGroupLayout,
     seed: wgpu::RenderPipeline,
     jump: wgpu::RenderPipeline,
     field: wgpu::RenderPipeline,
-    light: wgpu::RenderPipeline,
+    direct: wgpu::RenderPipeline,
+    gi_scene: wgpu::RenderPipeline,
+    seed_gi: wgpu::RenderPipeline,
+    gi_dist: wgpu::RenderPipeline,
+    cascade: wgpu::RenderPipeline,
+    resolve: wgpu::RenderPipeline,
+    glow_source: wgpu::RenderPipeline,
+    glow_down: wgpu::RenderPipeline,
+    mix: wgpu::RenderPipeline,
     sampler: wgpu::Sampler,
     /// The base uniform, then one per jump flood pass (each with its own step).
     uniforms: Vec<wgpu::Buffer>,
+    /// The 1b passes' uniforms: the base one, then one per cascade of each run, then one per
+    /// bloom level.
+    glow_uniforms: Vec<wgpu::Buffer>,
     lights: GrowableBuffer,
     segments: GrowableBuffer,
     targets: Option<Targets>,
@@ -95,6 +173,27 @@ fn texture(
     (t, v)
 }
 
+fn uniform_buffer(device: &wgpu::Device, label: &'static str, size: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: size as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+/// The 1b passes' pictures as bound to group 1 (see lighting.wgsl), in binding order.
+struct GlowInputs<'a> {
+    emission: &'a wgpu::TextureView,
+    direct: &'a wgpu::TextureView,
+    air: &'a wgpu::TextureView,
+    gi_scene: &'a wgpu::TextureView,
+    gi_dist: &'a wgpu::TextureView,
+    above: &'a wgpu::TextureView,
+    gi: [&'a wgpu::TextureView; 3],
+    glow: &'a wgpu::TextureView,
+}
+
 impl Lighting {
     pub fn new(device: &wgpu::Device) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -121,19 +220,20 @@ impl Lighting {
             },
             count: None,
         };
+        let uniform = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("lighting layout"),
             entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
+                uniform(0),
                 tex(1, true),
                 tex(2, true),
                 tex(3, true),
@@ -149,15 +249,46 @@ impl Lighting {
                 tex(8, false),
             ],
         });
+        let glow_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("lighting 1b layout"),
+            entries: &[
+                uniform(0),
+                tex(1, true),
+                tex(2, true),
+                tex(3, true),
+                tex(4, true),
+                tex(5, true),
+                tex(6, true),
+                tex(7, true),
+                tex(8, true),
+                tex(9, true),
+                tex(10, true),
+            ],
+        });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("lighting pipeline layout"),
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let make = |label: &'static str, entry: &'static str, format: wgpu::TextureFormat| {
+        let glow_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("lighting 1b pipeline layout"),
+            bind_group_layouts: &[Some(&layout), Some(&glow_layout)],
+            immediate_size: 0,
+        });
+        let make = |label: &'static str,
+                    entry: &'static str,
+                    layout: &wgpu::PipelineLayout,
+                    formats: &[wgpu::TextureFormat],
+                    blend: Option<wgpu::BlendState>| {
+            let targets: Vec<_> = formats
+                .iter()
+                .map(|format| {
+                    Some(wgpu::ColorTargetState { format: *format, blend, write_mask: wgpu::ColorWrites::ALL })
+                })
+                .collect();
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
-                layout: Some(&pipeline_layout),
+                layout: Some(layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some("vs_full"),
@@ -167,11 +298,7 @@ impl Lighting {
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
                     entry_point: Some(entry),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
+                    targets: &targets,
                     compilation_options: Default::default(),
                 }),
                 primitive: wgpu::PrimitiveState::default(),
@@ -188,59 +315,134 @@ impl Lighting {
             ..Default::default()
         });
         let uniforms = (0..=MOST_JUMPS)
-            .map(|_| {
-                device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("lighting uniform"),
-                    size: std::mem::size_of::<Uniform>() as u64,
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                })
-            })
+            .map(|_| uniform_buffer(device, "lighting uniform", std::mem::size_of::<Uniform>()))
             .collect();
+        let add = Some(wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent::REPLACE,
+        });
+        let (one, two) = (&pipeline_layout, &glow_pipeline_layout);
         Self {
-            seed: make("light seed", "fs_seed", SEED_FORMAT),
-            jump: make("light jump", "fs_jump", SEED_FORMAT),
-            field: make("light field", "fs_field", FIELD_FORMAT),
-            light: make("light", "fs_light", HDR_FORMAT),
+            seed: make("light seed", "fs_seed", one, &[SEED_FORMAT], None),
+            jump: make("light jump", "fs_jump", one, &[SEED_FORMAT], None),
+            field: make("light field", "fs_field", one, &[FIELD_FORMAT], None),
+            direct: make("direct light", "fs_direct", two, &[HDR_FORMAT, HDR_FORMAT], add),
+            gi_scene: make("light field scene", "fs_gi_scene", two, &[GI_FORMAT], None),
+            seed_gi: make("light field seed", "fs_seed_gi", two, &[SEED_FORMAT], None),
+            gi_dist: make("light field distance", "fs_gi_dist", two, &[FIELD_FORMAT], None),
+            cascade: make("light cascade", "fs_cascade", two, &[GI_FORMAT], None),
+            resolve: make("light field resolve", "fs_gi_resolve", two, &[GI_FORMAT, GI_FORMAT, GI_FORMAT], None),
+            glow_source: make("light bloom source", "fs_glow_source", two, &[GI_FORMAT], None),
+            glow_down: make("light bloom down", "fs_glow_down", two, &[GI_FORMAT], None),
+            mix: make("light", "fs_mix", two, &[HDR_FORMAT], None),
             layout,
+            glow_layout,
             sampler,
             uniforms,
+            glow_uniforms: Vec::new(),
             lights: GrowableBuffer::storage("lights"),
             segments: GrowableBuffer::storage("light segments"),
             targets: None,
         }
     }
 
-    /// Makes the lighting pictures for a `width` × `height` output at `quality`, unless they are
-    /// there already.
-    pub fn ensure(&mut self, device: &wgpu::Device, width: u32, height: u32, quality: f32) {
-        let (divisor, _) = quality_tier(quality);
+    /// Makes the lighting pictures for a `width` × `height` output lit as `scene` asks, unless
+    /// they are there already.
+    pub fn ensure(&mut self, device: &wgpu::Device, width: u32, height: u32, scene: &LightScene) {
+        let (mut divisor, _) = quality_tier(scene.settings.more[2]);
+        // The cascades are twice the (rounded up) field across: keep them within the device's limit.
+        let most = device.limits().max_texture_dimension_2d;
+        let padded = |divisor: u32| {
+            let (w, h) = ((width / divisor).max(1), (height / divisor).max(1));
+            let n = cascade_count(((w * w + h * h) as f32).sqrt());
+            let tile = 1u32 << (n - 1);
+            (w.div_ceil(tile) * tile, h.div_ceil(tile) * tile)
+        };
+        while divisor < 64 && {
+            let (pw, ph) = padded(divisor);
+            2 * pw.max(ph) > most
+        } {
+            divisor *= 2;
+        }
         if self.targets.as_ref().is_some_and(|t| t.width == width && t.height == height && t.divisor == divisor) {
             return;
         }
         let full = (width, height);
         let small = ((width / divisor).max(1), (height / divisor).max(1));
+        let glow = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("light bloom"),
+            // At least 8 texels a side, so every level has one (a tiny draft render).
+            size: wgpu::Extent3d { width: small.0.max(8), height: small.1.max(8), depth_or_array_layers: 1 },
+            mip_level_count: GLOW_LEVELS,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: GI_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let levels = (0..GLOW_LEVELS)
+            .map(|level| {
+                glow.create_view(&wgpu::TextureViewDescriptor {
+                    base_mip_level: level,
+                    mip_level_count: Some(1),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        let all = glow.create_view(&Default::default());
+        let seeds = || texture(device, "light seeds", small, SEED_FORMAT, false);
         self.targets = Some(Targets {
             width,
             height,
             divisor,
             lit: texture(device, "lit colour", full, HDR_FORMAT, true),
             surface: texture(device, "surface", full, HDR_FORMAT, true),
-            seeds: [
-                texture(device, "light seeds", small, SEED_FORMAT, false),
-                texture(device, "light seeds", small, SEED_FORMAT, false),
-            ],
+            emission: texture(device, "light given off", full, HDR_FORMAT, true),
+            direct: texture(device, "direct light", full, HDR_FORMAT, false),
+            air: texture(device, "light in the air", full, HDR_FORMAT, false),
+            seeds: [seeds(), seeds(), seeds(), seeds()],
             field: texture(device, "light field", small, FIELD_FORMAT, false),
+            gi_scene: texture(device, "light field scene", small, GI_FORMAT, false),
+            gi_dist: texture(device, "light field distance", small, FIELD_FORMAT, false),
+            gi: [
+                texture(device, "light field ways a", small, GI_FORMAT, false),
+                texture(device, "light field ways b", small, GI_FORMAT, false),
+                texture(device, "light field ways c", small, GI_FORMAT, false),
+            ],
+            cascades: None,
+            padded: padded(divisor),
+            glow: (glow, levels, all),
             dummy: texture(device, "light field stand-in", (1, 1), FIELD_FORMAT, false),
+            dummy_colour: texture(device, "lighting stand-in", (1, 1), GI_FORMAT, false),
         });
     }
 
-    /// The lit colour and surface pictures (texture, view), made by [`Lighting::ensure`].
-    pub fn pictures(&self) -> Option<[(wgpu::Texture, wgpu::TextureView); 2]> {
-        self.targets.as_ref().map(|t| [t.lit.clone(), t.surface.clone()])
+    /// The lit colour, surface and emission pictures (texture, view), made by
+    /// [`Lighting::ensure`].
+    pub fn pictures(&self) -> Option<[(wgpu::Texture, wgpu::TextureView); 3]> {
+        self.targets.as_ref().map(|t| [t.lit.clone(), t.surface.clone(), t.emission.clone()])
+    }
+
+    /// The picture the background's own light is drawn into, before [`Lighting::run`] adds the
+    /// lamps' light to it.
+    pub fn background_glow(&self) -> Option<wgpu::TextureView> {
+        self.targets.as_ref().map(|t| t.direct.1.clone())
+    }
+
+    /// The 1b uniform at `index`, made the first time.
+    fn glow_uniform(&mut self, device: &wgpu::Device, index: usize) -> wgpu::Buffer {
+        while self.glow_uniforms.len() <= index {
+            self.glow_uniforms.push(uniform_buffer(device, "lighting 1b uniform", std::mem::size_of::<GlowUniform>()));
+        }
+        self.glow_uniforms[index].clone()
     }
 
     /// Lights `frame` (whose things are in `picture`, a copy of the HDR picture) into `out`.
+    /// `background_glows`: the background's own light was drawn into the direct light picture.
     #[allow(clippy::too_many_arguments)]
     pub fn run(
         &mut self,
@@ -252,11 +454,15 @@ impl Lighting {
         output_width: u32,
         picture: &wgpu::TextureView,
         out: &wgpu::TextureView,
+        background_glows: bool,
     ) {
-        let Some(t) = self.targets.as_ref() else { return };
+        if self.targets.is_none() {
+            return;
+        }
         let s = &scene.settings;
         let (_, steps) = quality_tier(s.more[2]);
-        let (fw, fh) = t.field_size();
+        let (fw, fh) = self.targets.as_ref().expect("checked").field_size();
+        let divisor = self.targets.as_ref().expect("checked").divisor;
         let camera = frame.camera;
         let pixel = frame.width as f32 / output_width.max(1) as f32;
         let world_pixel = if camera.zoom == 1.0 { pixel } else { pixel / camera.zoom };
@@ -266,7 +472,7 @@ impl Lighting {
             ambient: [s.ambient[0], s.ambient[1], s.ambient[2], scene.show.code()],
             shadows: s.shadows,
             more: [s.more[0], s.more[1], steps as f32, scene.lights.len() as f32],
-            field: [fw as f32, fh as f32, world_pixel * t.divisor as f32, 0.0],
+            field: [fw as f32, fh as f32, world_pixel * divisor as f32, 0.0],
         };
         // The jump flood's steps: from half the field's size down to one, then one again.
         let mut jumps = Vec::new();
@@ -288,6 +494,64 @@ impl Lighting {
         let segments: &[[f32; 4]] = if scene.segments.is_empty() { &[[0.0; 4]] } else { &scene.segments };
         self.segments.upload(device, queue, bytemuck::cast_slice(segments));
 
+        // What part 1b draws: the light field (glowing things, bounce light), the bloom, the haze.
+        let [bounce, reach, blooms, _] = s.glow;
+        let field_on = scene.glows || bounce != 0.0;
+        let runs = if field_on && scene.glows && bounce != 0.0 { 2 } else { usize::from(field_on) };
+        let blooms_on = blooms != 0.0;
+        let haze_on = s.air[..3].iter().any(|c| *c != 0.0) || s.air[3] != 0.0;
+        if field_on && self.targets.as_ref().is_some_and(|t| t.cascades.is_none()) {
+            let t = self.targets.as_mut().expect("checked");
+            let size = (2 * t.padded.0, 2 * t.padded.1);
+            t.cascades = Some([
+                texture(device, "light cascade", size, GI_FORMAT, false),
+                texture(device, "light cascade", size, GI_FORMAT, false),
+            ]);
+        }
+        let texel_world = world_pixel * divisor as f32;
+        let diagonal = ((fw * fw + fh * fh) as f32).sqrt();
+        let count = cascade_count(if reach > 0.0 { diagonal.min(reach / texel_world.max(1e-6)) } else { 1.0 });
+        let (pw, ph) = self.targets.as_ref().expect("checked").padded;
+        let glow_base = GlowUniform {
+            size: [fw as f32, fh as f32, pw as f32, ph as f32],
+            cascade: [0.0, count as f32, gi_steps(s.more[2]) as f32, 0.0],
+            glow: [bounce, reach, blooms, 0.0],
+            air: s.air,
+            on: [f32::from(u8::from(field_on)), f32::from(u8::from(blooms_on)), f32::from(u8::from(haze_on)), 0.0],
+        };
+        let base_glow = self.glow_uniform(device, 0);
+        queue.write_buffer(&base_glow, 0, bytemuck::bytes_of(&glow_base));
+        let mut cascade_uniforms = Vec::new();
+        for run in 0..runs {
+            for i in 0..count {
+                let b = self.glow_uniform(device, 1 + run * MOST_CASCADES as usize + i as usize);
+                let mut u = glow_base;
+                u.cascade[0] = i as f32;
+                u.cascade[3] = run as f32;
+                queue.write_buffer(&b, 0, bytemuck::bytes_of(&u));
+                cascade_uniforms.push(b);
+            }
+        }
+        let run_uniforms: Vec<wgpu::Buffer> = (0..runs)
+            .map(|run| {
+                let b = self.glow_uniform(device, 1 + 2 * MOST_CASCADES as usize + run);
+                let mut u = glow_base;
+                u.cascade[3] = run as f32;
+                queue.write_buffer(&b, 0, bytemuck::bytes_of(&u));
+                b
+            })
+            .collect();
+        let level_uniforms: Vec<wgpu::Buffer> = (1..GLOW_LEVELS as usize)
+            .map(|level| {
+                let b = self.glow_uniform(device, 3 + 2 * MOST_CASCADES as usize + level);
+                let mut u = glow_base;
+                u.glow[3] = level as f32;
+                queue.write_buffer(&b, 0, bytemuck::bytes_of(&u));
+                b
+            })
+            .collect();
+
+        let t = self.targets.as_ref().expect("checked");
         let group = |uniform: &wgpu::Buffer, field: &wgpu::TextureView, seeds: &wgpu::TextureView| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("lighting"),
@@ -311,29 +575,134 @@ impl Lighting {
                 ],
             })
         };
+        let none = &t.dummy_colour.1;
+        let all = GlowInputs {
+            emission: &t.emission.1,
+            direct: &t.direct.1,
+            air: &t.air.1,
+            gi_scene: &t.gi_scene.1,
+            gi_dist: &t.gi_dist.1,
+            above: none,
+            gi: [&t.gi[0].1, &t.gi[1].1, &t.gi[2].1],
+            glow: &t.glow.2,
+        };
+        let glow_group = |uniform: &wgpu::Buffer, i: &GlowInputs| {
+            let views =
+                [i.emission, i.direct, i.air, i.gi_scene, i.gi_dist, i.above, i.gi[0], i.gi[1], i.gi[2], i.glow];
+            let mut entries = vec![wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() }];
+            entries.extend(views.iter().enumerate().map(|(k, v)| wgpu::BindGroupEntry {
+                binding: k as u32 + 1,
+                resource: wgpu::BindingResource::TextureView(v),
+            }));
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("lighting 1b"),
+                layout: &self.glow_layout,
+                entries: &entries,
+            })
+        };
         let pass = |encoder: &mut wgpu::CommandEncoder,
-                    view: &wgpu::TextureView,
+                    views: &[(&wgpu::TextureView, wgpu::LoadOp<wgpu::Color>)],
                     pipeline: &wgpu::RenderPipeline,
-                    bind: &wgpu::BindGroup,
+                    binds: &[&wgpu::BindGroup],
                     label: &str| {
-            let mut pass = crate::begin_pass(encoder, view, label, wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
+            let attachments: Vec<_> = views
+                .iter()
+                .map(|(view, load)| {
+                    Some(wgpu::RenderPassColorAttachment {
+                        view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations { load: *load, store: wgpu::StoreOp::Store },
+                    })
+                })
+                .collect();
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some(label),
+                color_attachments: &attachments,
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
             pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, bind, &[]);
+            for (k, b) in binds.iter().enumerate() {
+                pass.set_bind_group(k as u32, *b, &[]);
+            }
             pass.draw(0..3, 0..1);
         };
+        let clear = wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT);
         // Seeds into the first picture, then back and forth.
         let seed = group(&self.uniforms[0], &t.field.1, &t.seeds[1].1);
-        pass(encoder, &t.seeds[0].1, &self.seed, &seed, "light seeds");
+        pass(encoder, &[(&t.seeds[0].1, clear)], &self.seed, &[&seed], "light seeds");
         let mut from = 0;
         for i in 0..jumps.len() {
             let to = 1 - from;
             let g = group(&self.uniforms[i + 1], &t.field.1, &t.seeds[from].1);
-            pass(encoder, &t.seeds[to].1, &self.jump, &g, "light jump");
+            pass(encoder, &[(&t.seeds[to].1, clear)], &self.jump, &[&g], "light jump");
             from = to;
         }
         let field = group(&self.uniforms[0], &t.dummy.1, &t.seeds[from].1);
-        pass(encoder, &t.field.1, &self.field, &field, "light field");
-        let light = group(&self.uniforms[0], &t.field.1, &t.seeds[from].1);
-        pass(encoder, out, &self.light, &light, "light");
+        pass(encoder, &[(&t.field.1, clear)], &self.field, &[&field], "light field");
+        // Every pass after this reads the blockers' field and their jump flood (nearest blocker
+        // and nearest open texel).
+        let main = group(&self.uniforms[0], &t.field.1, &t.seeds[from].1);
+
+        // The light from Light things, on surfaces and in the air, added over the background's
+        // own light when it gives any.
+        let direct_load = if background_glows { wgpu::LoadOp::Load } else { clear };
+        let g = glow_group(&base_glow, &GlowInputs { direct: none, air: none, ..all });
+        pass(encoder, &[(&t.direct.1, direct_load), (&t.air.1, clear)], &self.direct, &[&main, &g], "direct light");
+
+        // The light field, once or twice (the second time the first's light bounces too).
+        if let Some(cascades) = t.cascades.as_ref().filter(|_| field_on) {
+            for run in 0..runs {
+                let g = glow_group(&run_uniforms[run], &GlowInputs { gi_scene: none, ..all });
+                pass(encoder, &[(&t.gi_scene.1, clear)], &self.gi_scene, &[&main, &g], "light field scene");
+                if run == 0 {
+                    // How far each texel is from something opaque: a jump flood of its own.
+                    let g = glow_group(&base_glow, &all);
+                    pass(encoder, &[(&t.seeds[2].1, clear)], &self.seed_gi, &[&main, &g], "light field seeds");
+                    let mut from = 2;
+                    for i in 0..jumps.len() {
+                        let to = 5 - from;
+                        let jg = group(&self.uniforms[i + 1], &t.field.1, &t.seeds[from].1);
+                        pass(encoder, &[(&t.seeds[to].1, clear)], &self.jump, &[&jg], "light field jump");
+                        from = to;
+                    }
+                    let sg = group(&self.uniforms[0], &t.field.1, &t.seeds[from].1);
+                    let g = glow_group(&base_glow, &GlowInputs { gi_dist: none, ..all });
+                    pass(encoder, &[(&t.gi_dist.1, clear)], &self.gi_dist, &[&sg, &g], "light field distance");
+                }
+                // The cascades, the farthest first, each merging the one above it.
+                let mut into = 0;
+                for i in (0..count).rev() {
+                    let above = if i + 1 == count { none } else { &cascades[1 - into].1 };
+                    let u = &cascade_uniforms[run * count as usize + i as usize];
+                    let g = glow_group(u, &GlowInputs { above, ..all });
+                    pass(encoder, &[(&cascades[into].1, clear)], &self.cascade, &[&main, &g], "light cascade");
+                    into = 1 - into;
+                }
+                let g = glow_group(
+                    &run_uniforms[run],
+                    &GlowInputs { above: &cascades[1 - into].1, gi: [none, none, none], ..all },
+                );
+                let targets = [(&t.gi[0].1, clear), (&t.gi[1].1, clear), (&t.gi[2].1, clear)];
+                pass(encoder, &targets, &self.resolve, &[&main, &g], "light field resolve");
+            }
+        }
+
+        // The lights' bloom: the lamps and what gives off light, then smaller and smaller.
+        if blooms_on {
+            let levels = &t.glow.1;
+            let g = glow_group(&base_glow, &GlowInputs { glow: none, ..all });
+            pass(encoder, &[(&levels[0], clear)], &self.glow_source, &[&main, &g], "light bloom");
+            for level in 1..GLOW_LEVELS as usize {
+                let g = glow_group(&level_uniforms[level - 1], &GlowInputs { glow: &levels[level - 1], ..all });
+                pass(encoder, &[(&levels[level], clear)], &self.glow_down, &[&main, &g], "light bloom down");
+            }
+        }
+
+        let g = glow_group(&base_glow, &all);
+        pass(encoder, &[(out, clear)], &self.mix, &[&main, &g], "light");
     }
 }

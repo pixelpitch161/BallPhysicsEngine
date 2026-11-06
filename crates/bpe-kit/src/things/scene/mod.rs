@@ -86,6 +86,16 @@ pub struct SceneSettings {
     /// the world instead.
     #[setting(label = "Background stays on screen", group = "Background")]
     pub background_on_screen: bool,
+    /// How much light the background gives off onto everything in front of it (with a Lighting
+    /// card): 0 none. Below 0 it gives darkness.
+    #[setting(label = "Gives off light", span(0, 4), keyframe, pulse, group = "Background")]
+    pub bg_glow: f32,
+    /// Where the background's light gets its colour.
+    #[setting(label = "Its light's colour from", when = "bg_glow", group = "Background")]
+    pub bg_glow_from: crate::modules::look::layers::gives_light::EmitFrom,
+    /// The background's light's colour.
+    #[setting(label = "Its light's colour", when = "bg_glow_from=own", keyframe, group = "Background")]
+    pub bg_glow_colour: Color,
     /// How much bright things bleed light around them.
     #[setting(label = "Bloom", range(0, 1), simple, keyframe, pulse, group = "Picture")]
     pub bloom: f32,
@@ -155,6 +165,9 @@ impl Default for SceneSettings {
             grade_map_amount: 0.0,
             seed: 1,
             background_on_screen: true,
+            bg_glow: 0.0,
+            bg_glow_from: crate::modules::look::layers::gives_light::EmitFrom::ItsColours,
+            bg_glow_colour: Color::WHITE,
             tempo: 120.0,
             time_top: 4,
             time_bottom: TimeBottom::Four,
@@ -241,7 +254,10 @@ mod tests {
                 "Scroll",
                 "Take hit colour",
                 "Step time",
-                "Background stays on screen"
+                "Background stays on screen",
+                "Gives off light",
+                "Its light's colour from",
+                "Its light's colour"
             ]
         );
         assert_eq!(

@@ -12,6 +12,7 @@ pub mod blend;
 pub mod body;
 pub mod cards_to_layers;
 pub mod cut;
+pub mod gives_light;
 pub mod glow;
 pub mod gpu;
 pub mod group;
@@ -163,6 +164,10 @@ impl LayerKind for Kind {
         if self.section == LayerSection::Around {
             return AROUND_SUBS.contains(&sub);
         }
+        // The Body takes only Gives off light: the ball itself glowing.
+        if self.base {
+            return sub == gives_light::SUB_LIGHT;
+        }
         !((self.id == SHADER && sub == SUB_SHADER)
             || (self.id == super::shape::SHADER && sub == super::shape::SUB_SHADER))
     }
@@ -210,7 +215,9 @@ pub use trail::TRAIL;
 
 /// The sub-layers a trail or particles layer takes, on balls and on shapes: those that change its
 /// colours or add a glow, an outline or a shadow round what it draws.
-pub const AROUND_SUBS: [&str; 12] = [
+pub const AROUND_SUBS: [&str; 14] = [
+    gives_light::SUB_LIGHT,
+    gives_light::SHAPE_SUB_LIGHT,
     SUB_GLOW,
     SUB_OUTLINE,
     SUB_SHADOW,
@@ -294,7 +301,8 @@ pub fn kinds() -> Vec<Kind> {
             repeats: false,
             base: true,
             card: CARD,
-            takes_subs: false,
+            // Gives off light only (see `takes_sub`).
+            takes_subs: true,
             settings: BodyLayer::defs,
             dynamic: no_more,
         },
@@ -394,7 +402,7 @@ pub(crate) fn sub_kind(
     }
 }
 
-/// The balls' ten sub-layer kinds, in the Add sub-layer menu's order.
+/// The balls' eleven sub-layer kinds, in the Add sub-layer menu's order.
 pub fn sub_kinds() -> Vec<Kind> {
     use bpe_core::Settings;
     let sub = |id, name, help, settings| sub_kind(CARD, id, name, help, settings);
@@ -419,6 +427,7 @@ pub fn sub_kinds() -> Vec<Kind> {
         sub(SUB_RECOLOUR, "Recolour", "Changes its layer's colours only.", SubRecolour::defs),
         sub(SUB_FLASH, "Flash on hit", "Its layer lights up when the ball is hit.", SubFlash::defs),
         sub(SUB_HUE, "Colour on hit", "Its layer's colours turn round the wheel on every hit.", SubHue::defs),
+        sub(gives_light::SUB_LIGHT, "Gives off light", gives_light::HELP, gives_light::GivesLight::defs),
     ]
 }
 
@@ -498,6 +507,7 @@ mod tests {
                 SUB_RECOLOUR,
                 SUB_FLASH,
                 SUB_HUE,
+                gives_light::SUB_LIGHT,
                 GROUP_GRADIENT,
                 GROUP_SHADER
             ],
@@ -547,9 +557,10 @@ mod tests {
                 "{}: drawn layers, sub-layers and group shaders repeat",
                 k.id()
             );
-            assert_eq!(k.takes_subs(), drawn, "{}: drawn layers but Body and Blend take sub-layers", k.id());
+            let takes = drawn || k.id() == BODY;
+            assert_eq!(k.takes_subs(), takes, "{}: drawn layers and the Body but Blend take sub-layers", k.id());
         }
-        assert_eq!(reg.layers_for(CARD).filter(|k| k.section() == LayerSection::Sub).count(), 10);
+        assert_eq!(reg.layers_for(CARD).filter(|k| k.section() == LayerSection::Sub).count(), 11);
     }
 
     #[test]
@@ -586,7 +597,7 @@ mod tests {
     }
 
     #[test]
-    fn trails_and_particles_take_only_the_six_sub_layers_that_fit_them() {
+    fn trails_and_particles_take_only_the_seven_sub_layers_that_fit_them() {
         let reg = registry();
         let shape = crate::modules::look::shape::CARD;
         for (card, id) in [(CARD, TRAIL), (CARD, PARTICLES), (shape, SHAPE_PARTICLES)] {
@@ -599,9 +610,39 @@ mod tests {
                 .filter(|s| s.section() == LayerSection::Sub && k.takes_sub(s.id()))
                 .map(|s| s.name())
                 .collect();
-            assert_eq!(subs, ["Glow", "Outline", "Shadow", "Recolour", "Flash on hit", "Colour on hit"], "{id}");
+            let want = ["Glow", "Outline", "Shadow", "Recolour", "Flash on hit", "Colour on hit", "Gives off light"];
+            assert_eq!(subs, want, "{id}");
         }
         assert!(reg.layers_for(shape).all(|k| k.id() != TRAIL), "no trails on shapes");
+    }
+
+    #[test]
+    fn the_body_takes_only_gives_off_light_and_it_moves_with_the_body() {
+        use bpe_core::{Scene, SlotId, ThingId};
+        let reg = registry();
+        use crate::modules::look::shape;
+        for (body, light, glow) in
+            [(BODY, gives_light::SUB_LIGHT, SUB_GLOW), (shape::BODY, gives_light::SHAPE_SUB_LIGHT, shape::SUB_GLOW)]
+        {
+            let k = reg.layer(body).unwrap();
+            assert!(k.takes_subs() && k.takes_sub(light) && !k.takes_sub(glow), "{body}");
+        }
+        let mut scene = Scene::empty(&reg);
+        let ball = crate::add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
+        let body = scene.things[&ball].slots[&SlotId::Look].layers[0].id;
+        assert!(scene.add_sub_layer(&reg, ball, SlotId::Look, body, SUB_GLOW).is_err(), "only Gives off light");
+        let sub = scene.add_sub_layer(&reg, ball, SlotId::Look, body, gives_light::SUB_LIGHT).unwrap();
+        let shine = scene.add_layer(&reg, ball, SlotId::Look, SHINE).unwrap();
+        let layers = &scene.things[&ball].slots[&SlotId::Look].layers;
+        let at = |id| layers.iter().position(|l| l.id == id).unwrap();
+        assert_eq!((at(body), at(sub)), (0, 1), "its sub-layer sits right after the Body");
+        assert!(at(shine) > at(sub));
+        let second = scene.add_layer(&reg, ball, SlotId::Look, SHINE).unwrap();
+        assert!(scene.move_layer(&reg, ball, SlotId::Look, second, 0).is_err(), "nothing goes under the Body");
+        scene.move_layer(&reg, ball, SlotId::Look, second, 1).unwrap();
+        let layers = &scene.things[&ball].slots[&SlotId::Look].layers;
+        let at = |id| layers.iter().position(|l| l.id == id).unwrap();
+        assert_eq!((at(body), at(sub), at(second), at(shine)), (0, 1, 2, 3), "the Body's sub-layer stays with it");
     }
 
     #[test]

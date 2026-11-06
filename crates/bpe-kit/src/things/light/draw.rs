@@ -147,6 +147,7 @@ fn push_light(cx: &DrawCx, s: &LightSettings, place: &Place, drive: &Drive, scen
             if s.area_shape == AreaShape::Disc { 1.0 } else { 0.0 },
             s.softness.max(0.0),
         ],
+        p7: [if s.beam.is_finite() { s.beam } else { 0.0 }, 0.0, 0.0, 0.0],
     });
 }
 

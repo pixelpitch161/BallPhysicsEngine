@@ -22,7 +22,7 @@ impl ThingDraw for SceneDraw {
         frame.height = s.height.max(2);
         frame.video = (frame.width, frame.height);
         let inputs = Inputs { time: cx.time as f32, ..Inputs::default() };
-        let background = fit_background(s.background, cx.scene, frame.height as f32, s.background_on_screen);
+        let background = fit_background(s.background.clone(), cx.scene, frame.height as f32, s.background_on_screen);
         frame.background = background_gpu(&background, &inputs, &mut frame.gradients);
         frame.bloom = s.bloom;
         frame.exposure = s.exposure;
@@ -31,9 +31,24 @@ impl ThingDraw for SceneDraw {
         // With a Lighting card the scene is lit; its lights are added after every thing draws.
         if let Some(card) = cx.resolved.slots.get(&bpe_core::SlotId::Lighting) {
             let lighting = crate::modules::lighting::LightingSettings::from_params(&card.params);
-            frame.light = Some(bpe_gfx::LightScene { settings: lighting.gpu(), ..Default::default() });
+            let mut settings = lighting.gpu();
+            settings.background = background_glow(&s);
+            frame.light = Some(bpe_gfx::LightScene { settings, ..Default::default() });
         }
     }
+}
+
+/// The light the background gives off ([`bpe_gfx::LightingGpu::background`]): its own colour
+/// times its strength, and what its colours are multiplied by.
+fn background_glow(s: &SceneSettings) -> [[f32; 4]; 2] {
+    use crate::modules::look::layers::gives_light::{Emit, GivesLight};
+    if s.bg_glow == 0.0 || !s.bg_glow.is_finite() {
+        return [[0.0; 4]; 2];
+    }
+    let g =
+        GivesLight { colour_from: s.bg_glow_from, colour: s.bg_glow_colour, strength: s.bg_glow, ..Default::default() };
+    let e = Emit::of(&g);
+    [[e.own[0], e.own[1], e.own[2], 0.0], [e.tint[0], e.tint[1], e.tint[2], 0.0]]
 }
 
 /// The background with a span and centre left at their defaults fitted to the picture: on the
