@@ -113,7 +113,7 @@ pub fn step(st: &mut ParticlesState, world: &World, log: &Log, threads: usize) {
     let since = world.step.saturating_sub(WORLD_STEPS);
     st.step += 1;
     let anchor = world.anchor(st.id);
-    let cx = BirthCx { world, log, anchor: anchor.position, angle: anchor.angle, offset: st.offset };
+    let cx = BirthCx { world, log, anchor: anchor.position, angle: anchor.angle };
     births::births(st, &cx, since, false);
     let meets = st.meets.clone();
     let grid = meets.reads_balls().then(|| BallGrid::new(balls_in(world), meets.reach.max(1.0)));
@@ -162,7 +162,7 @@ pub fn note_walls(st: &mut ParticlesState, world: &World) {
 pub fn first(st: &mut ParticlesState, world: &World) {
     let anchor = world.anchor(st.id);
     let log = Log::default();
-    let cx = BirthCx { world, log: &log, anchor: anchor.position, angle: anchor.angle, offset: st.offset };
+    let cx = BirthCx { world, log: &log, anchor: anchor.position, angle: anchor.angle };
     births::births(st, &cx, 0, true);
     note_walls(st, world);
 }

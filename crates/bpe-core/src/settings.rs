@@ -83,6 +83,8 @@ pub const SECTION_ORDER: &[&str] = &[
     "Growing",
     "Other balls",
     "Against some things",
+    "Against shapes",
+    "Edges of the picture",
     "Variation",
     "Blending",
     "Surface",

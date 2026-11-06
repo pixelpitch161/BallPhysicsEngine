@@ -37,7 +37,6 @@ impl ThingSim for ParticlesSim {
     fn build(&self, thing: &Thing, resolved: &ResolvedThing, world: &mut World) {
         let mut st = ParticlesState::new(thing.id, thing.parent, ParticlesSettings::default());
         read_into(&mut st, resolved);
-        st.offset = thing.transform.position;
         world.states.insert(thing.id, Box::new(st));
     }
 

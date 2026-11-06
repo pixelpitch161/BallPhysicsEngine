@@ -1577,6 +1577,46 @@ pub fn moth_scenes(reg: &Registry) -> Vec<(String, Scene)> {
     ]
 }
 
+/// The particle goldens' scenes (particles part 1): each test scene with a Particles thing of a
+/// starting look, some riding the balls, some meeting the balls and the circle.
+pub fn particle_scenes(reg: &Registry) -> Vec<(String, Scene)> {
+    use crate::things::particles::looks::{Look, add_particles};
+    use crate::things::particles::meets::{AtBalls, AtShapes, MeetsSettings};
+    let with = |look: Look, ride: bool, edit: &dyn Fn(&mut Scene, ThingId)| {
+        let mut scene = new_scene(reg);
+        let ball = scene.things.values().find(|t| t.kind == "balls").map(|t| t.id).expect("a ball");
+        if ride {
+            let mut balls = BallsSettings::from_params(&scene.things[&ball].params);
+            balls.ring(12, 200.0);
+            scene.things.get_mut(&ball).expect("ball").params = balls.to_params();
+        }
+        let parent = if ride { ball } else { ThingId::ROOT };
+        let id = add_particles(&mut scene, reg, look, parent).expect("particles");
+        edit(&mut scene, id);
+        scene
+    };
+    let bounce = |scene: &mut Scene, id: ThingId| {
+        let card = scene.card_mut(id, SlotId::Bounce).expect("meets");
+        let m = MeetsSettings {
+            at_balls: AtBalls::BounceOff,
+            at_shapes: AtShapes::Bounce,
+            ..MeetsSettings::from_params(&card.params)
+        };
+        card.params = m.to_params();
+    };
+    let none = |_: &mut Scene, _: ThingId| {};
+    vec![
+        ("Rain".into(), with(Look::Rain, false, &none)),
+        ("Snow".into(), with(Look::Snow, false, &none)),
+        ("Spark fountain".into(), with(Look::SparkFountain, false, &bounce)),
+        ("Fire on the balls".into(), with(Look::FireOnABall, true, &none)),
+        ("Confetti".into(), with(Look::Confetti, false, &bounce)),
+        ("Fireflies".into(), with(Look::Fireflies, false, &none)),
+        ("Rainbow smoke".into(), with(Look::RainbowSmokeTrail, true, &none)),
+        ("Ink".into(), with(Look::InkInWater, false, &bounce)),
+    ]
+}
+
 /// [`lit_room`] darkened, its balls a ring of `count` without gravity, their Motion set by `f`.
 fn moth_room(reg: &Registry, count: u32, f: impl FnOnce(&mut BasicMotion)) -> (Scene, ThingId, ThingId) {
     let mut scene = lit_room(reg);

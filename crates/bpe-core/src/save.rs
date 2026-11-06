@@ -217,13 +217,13 @@ mod tests {
             }
         }
         let mut r = testkit::registry();
-        r.add_upgrade(11, rename);
+        r.add_upgrade(12, rename);
         let mut s = Scene::empty(&r);
         let b = testkit::push(&mut s, "balls", ThingId::ROOT);
         let text = save(&s);
-        assert!(text.contains("format: 11"), "{text}");
-        assert_eq!(load(&text, &r).unwrap().things[&b].name, s.things[&b].name, "a format 11 file is left");
-        let old = load(&text.replace("format: 11", "format: 10"), &r).unwrap();
+        assert!(text.contains("format: 12"), "{text}");
+        assert_eq!(load(&text, &r).unwrap().things[&b].name, s.things[&b].name, "a format 12 file is left");
+        let old = load(&text.replace("format: 12", "format: 11"), &r).unwrap();
         assert_eq!(old.things[&b].name, format!("{} upgraded", s.things[&b].name));
         assert_eq!(old.format, Scene::FORMAT);
     }
@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn newer_files_are_refused() {
-        let e = load("(format: 12)", &testkit::registry()).unwrap_err();
+        let e = load("(format: 13)", &testkit::registry()).unwrap_err();
         assert_eq!(e.to_string(), "This scene was made with a newer version of Ball Studio");
     }
 
@@ -320,7 +320,7 @@ mod tests {
         let r = testkit::registry();
         let mut s = Scene::empty(&r);
         testkit::push(&mut s, "balls", ThingId::ROOT);
-        let text = save(&s).replacen("format: 11", "format: 7", 1);
+        let text = save(&s).replacen("format: 12", "format: 7", 1);
         assert!(text.contains("format: 7"));
         assert_eq!(load(&text, &r).unwrap(), s);
     }

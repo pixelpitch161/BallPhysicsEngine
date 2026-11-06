@@ -12,6 +12,7 @@ pub mod group_view;
 mod handles;
 mod layer_list;
 mod layer_rows;
+pub mod particles;
 
 pub use ball_view::BallView;
 pub use clipboard::Clipboard;
@@ -40,7 +41,24 @@ pub struct LookCx<'a> {
     pub label_width: f32,
 }
 
+/// Where the Look editor keeps a card's own state (the picked layer, a rename, folded
+/// sub-layers, a drag) for thing `id`: under the thing, but a Motion card's under a key of its
+/// own. A Particles thing has two layered cards, its Motion (forces) and its Look, whose layer ids
+/// are each the card's own, so a force must never pick, rename or move the Look's layer with the
+/// same id.
+pub fn pick_key(id: ThingId, slot: SlotId) -> ThingId {
+    if slot == SlotId::Motion { ThingId(id.0 | MOTION_KEY) } else { id }
+}
+
+/// The bit that tells a Motion card's state from a Look's.
+const MOTION_KEY: u32 = 1 << 31;
+
 impl LookCx<'_> {
+    /// Where this card's own editor state is kept ([`pick_key`]).
+    pub(crate) fn key(&self) -> ThingId {
+        pick_key(self.id, self.slot)
+    }
+
     pub(crate) fn reg(&self) -> &bpe_core::Registry {
         &self.kit.registry
     }
@@ -153,7 +171,21 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
         }
     }
 
-    // ---------- the picked one's settings ----------
+    picked_settings(ui, inspector, cx, card, picked, shape, edits);
+}
+
+/// The settings of the layer picked in the lists, under a divider and its name (a shape's Body:
+/// the shape's own outline settings).
+pub(crate) fn picked_settings(
+    ui: &mut Ui,
+    inspector: &mut Inspector,
+    cx: &LookCx,
+    card: &bpe_core::Slot,
+    picked: LayerId,
+    shape: bool,
+    edits: &mut Vec<Edit>,
+) {
+    let reg = cx.reg();
     let Some(layer) = card.layer(picked) else { return };
     let Some(kind) = reg.layer(&layer.kind) else {
         ui.label(RichText::new(format!("Its kind \"{}\" isn't installed.", layer.kind)).color(style::TEXT));

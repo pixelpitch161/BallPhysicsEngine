@@ -1200,6 +1200,59 @@ pub fn has_beside(resolved: &Resolved, sims: &Sims) -> bool {
     resolved.things.values().any(|r| sims.thing(&r.kind).is_some_and(|s| !s.in_main(r)))
 }
 
+/// A hash of everything that changes how the things stepped beside the physics run (and the
+/// physics they read), 0 when there are none: the editor's particle playback starts over when it
+/// changes. Their Motion and Bounce cards count whole, as nothing but the thing reads them.
+pub fn beside_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64 {
+    if !has_beside(resolved, sims) {
+        return 0;
+    }
+    let mut h = Hasher(fingerprint_of(scene, resolved, sims, true));
+    for (id, r) in &resolved.things {
+        if !sims.thing(&r.kind).is_some_and(|s| !s.in_main(r)) {
+            continue;
+        }
+        let Some(thing) = scene.things.get(id) else { continue };
+        h.bytes(&id.0.to_le_bytes());
+        h.bytes(r.kind.as_bytes());
+        h.bytes(&thing.parent.map_or(u32::MAX, |p| p.0).to_le_bytes());
+        h.f32(thing.transform.position.x);
+        h.f32(thing.transform.position.y);
+        h.f32(thing.transform.rotation);
+        h.bytes(&[thing.enabled as u8]);
+        for (key, value) in r.params.iter() {
+            h.bytes(key.as_bytes());
+            h.value(value);
+        }
+        for slot in SIM_SLOTS {
+            if let Some(s) = r.slots.get(&slot) {
+                h.bytes(&[slot as u8]);
+                h.bytes(s.kind.as_bytes());
+                h.bytes(format!("{:?}", s.layers).as_bytes());
+                for (key, value) in s.params.iter() {
+                    h.bytes(key.as_bytes());
+                    h.value(value);
+                }
+            }
+        }
+    }
+    // Their keys too.
+    if let Some(animation) = physics_animation(scene, resolved, sims) {
+        for a in animation.addresses() {
+            if resolved.things.get(&a.thing).is_some_and(|r| sims.thing(&r.kind).is_some_and(|s| !s.in_main(r))) {
+                h.bytes(format!("{a:?}").as_bytes());
+                if let Some(track) = scene.tracks.get(a) {
+                    h.bytes(format!("{track:?}").as_bytes());
+                }
+                if let Some(pulse) = scene.pulses.get(a) {
+                    h.bytes(format!("{pulse:?}").as_bytes());
+                }
+            }
+        }
+    }
+    h.0
+}
+
 fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool) -> u64 {
     // Things stepped beside the physics never change it.
     let resolved = &*main_part(resolved, sims);
