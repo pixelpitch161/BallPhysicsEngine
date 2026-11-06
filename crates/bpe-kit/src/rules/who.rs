@@ -1,6 +1,7 @@
 //! Who a block points at, read against the world.
 
 use bpe_core::{ThingId, Who};
+use bpe_runtime::rules::WHOLE;
 use bpe_runtime::{Firing, Party, StageCx, World};
 use glam::Vec2;
 
@@ -17,8 +18,17 @@ pub fn is_ball(world: &World, party: Party) -> bool {
 }
 
 /// In a When block (and If: Is): whether `party` counts as `who`. That, Other and Group count as
-/// anything there.
-pub fn matches(world: &World, who: &Who, party: Party) -> bool {
+/// anything there. A ball has its thing's tags and those a rule gave it alone.
+pub fn matches(cx: &StageCx, who: &Who, party: Party) -> bool {
+    let world = cx.world;
+    match who {
+        Who::Tag(tag) if is_ball(world, party) && cx.ball_has_tag(party.thing, party.item, tag) => true,
+        _ => matches_thing(world, who, party),
+    }
+}
+
+/// [`matches`] by the thing's own tags only (a ball's own tags aren't known here).
+pub fn matches_thing(world: &World, who: &Who, party: Party) -> bool {
     match who {
         Who::That | Who::Other | Who::Group | Who::Anything => true,
         Who::Thing { thing, ball } => {
@@ -55,12 +65,24 @@ pub fn targets(cx: &StageCx, who: &Who, firing: &Firing) -> Vec<Target> {
             .map(|r| (*thing, Some(r as u32)))
             .into_iter()
             .collect(),
-        Who::Tag(_) | Who::Kind(_) | Who::Anything => world
-            .names
-            .keys()
-            .filter(|&&t| t != ThingId::ROOT && matches(world, who, Party { thing: t, item: 0 }))
-            .map(|&t| (t, None))
-            .collect(),
+        Who::Tag(_) | Who::Kind(_) | Who::Anything => {
+            let mut out: Vec<Target> = world
+                .names
+                .keys()
+                .filter(|&&t| t != ThingId::ROOT && matches_thing(world, who, Party { thing: t, item: WHOLE }))
+                .map(|&t| (t, None))
+                .collect();
+            // Balls a rule tagged alone, their thing not tagged.
+            if let Who::Tag(tag) = who {
+                for (&(thing, row), tags) in cx.ball_tags {
+                    let live = world.bodies.get(&thing).is_some_and(|b| b.alive.get(row as usize) == Some(&true));
+                    if live && tags.contains(tag) && !out.contains(&(thing, None)) {
+                        out.push((thing, Some(row)));
+                    }
+                }
+            }
+            out
+        }
     };
     out.into_iter().filter(|(t, _)| world.names.contains_key(t) && !cx.is_broken(*t)).collect()
 }

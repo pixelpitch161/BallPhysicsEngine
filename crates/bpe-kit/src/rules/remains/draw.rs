@@ -17,9 +17,10 @@ use crate::rules::breaks::{BreakLook, LookSettings};
 /// and a little more.
 const MARGIN: f32 = 4.0;
 
-/// Every wall of the world, for pieces to bounce off (a broken shape's is gone already).
+/// Every wall of the world pieces bounce off, as balls do: not a broken shape's (gone already) nor
+/// one that balls pass through.
 pub fn walls_of(world: &bpe_runtime::World) -> Vec<&Wall> {
-    world.walls.values().collect()
+    world.walls.values().filter(|w| !w.passes).collect()
 }
 
 /// Puts `piece`'s cell into `frame.path_points` (going round the positive way), giving the

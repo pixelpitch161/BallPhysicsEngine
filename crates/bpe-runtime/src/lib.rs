@@ -27,11 +27,13 @@ pub use history::{History, HistoryWant};
 pub use light::{BallLight, LightAt, LightLevelsAt, LightMaker, LightPull, level_of};
 pub use pairs::{Grid, Pairs, Support, pop};
 pub use playback::Playback;
-pub use plugins::{Limits, ModuleSim, ModuleState, PairRule, SimCx, Sims, ThingSim, ThingState, state, state_mut};
+pub use plugins::{
+    Limits, ModuleSim, ModuleState, NewBall, PairRule, SimCx, Sims, ThingSim, ThingState, state, state_mut,
+};
 pub use pose::Pose;
 pub use rules::{
-    Action, BallAt, BlockSim, BreakShow, Change, ChangeKey, Firing, How, MotionChange, PrepareCx, Remains, RulesState,
-    StageCx, Values,
+    Action, BallAt, BlockSim, BreakShow, Change, ChangeKey, CountHow, Firing, How, MotionChange, PrepareCx, Remains,
+    RulesState, Signal, StageCx, Values,
 };
 pub use sound::{LevelsAt, SoundAt, SoundMaker};
 pub use walls::{

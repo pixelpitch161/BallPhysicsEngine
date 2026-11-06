@@ -46,7 +46,10 @@ impl Bodies {
 
     /// The row of the ball numbered `number`, if there is one.
     pub fn row_of(&self, number: u32) -> Option<usize> {
-        self.number.iter().position(|&n| n == number)
+        // Balls split by a rule share their number: the first one still there.
+        let mut rows = (0..self.len()).filter(|&i| self.number[i] == number);
+        let first = rows.next()?;
+        if self.alive[first] { Some(first) } else { rows.find(|&i| self.alive[i]).or(Some(first)) }
     }
 
     pub fn len(&self) -> usize {

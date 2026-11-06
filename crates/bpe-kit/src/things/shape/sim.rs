@@ -68,6 +68,7 @@ impl ShapeState {
             spin: anchor.spin + self.settings.spin.to_radians(),
             growth,
             velocity: anchor.velocity,
+            passes: self.settings.passes,
         }
     }
 }

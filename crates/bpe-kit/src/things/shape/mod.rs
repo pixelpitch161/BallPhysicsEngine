@@ -115,6 +115,10 @@ pub struct ShapeSettings {
     /// The shape stops shrinking at this size.
     #[setting(label = "Smallest size", when = "shrink", range(10, 20000), unit = "px")]
     pub min_size: f32,
+    /// Balls go through it instead of bouncing off: a zone a rule can watch them come into and
+    /// leave (Enters / Leaves). Lights, lasers and the rest still see the shape.
+    #[setting(label = "Balls pass through")]
+    pub passes: bool,
 }
 
 impl Default for ShapeSettings {
@@ -132,6 +136,7 @@ impl Default for ShapeSettings {
             spin: 0.0,
             shrink: 0.0,
             min_size: 100.0,
+            passes: false,
         }
     }
 }
