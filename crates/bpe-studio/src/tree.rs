@@ -289,16 +289,7 @@ pub fn show(
         }
         Some(Action::AddLight(lamp)) => {
             // Into a selected thing it can ride, a selected rig or folder, else beside the selection.
-            let parent = selection
-                .primary
-                .and_then(|s| scene.things.get(&s))
-                .and_then(|t| {
-                    let inside = t.kind == "folder"
-                        || t.kind == bpe_kit::things::rig::RIG
-                        || bpe_kit::things::light::RIDES.contains(&t.kind.as_str());
-                    if inside { Some(t.id) } else { t.parent }
-                })
-                .unwrap_or(ThingId::ROOT);
+            let parent = crate::lights_panel::light_parent(scene, selection.primary);
             if let Ok(id) = bpe_kit::things::light::add_light(scene, reg, lamp, parent) {
                 selection.set(id);
                 out.edited = true;

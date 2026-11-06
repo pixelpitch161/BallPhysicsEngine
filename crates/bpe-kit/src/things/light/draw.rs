@@ -51,10 +51,15 @@ pub struct Place {
 
 /// Where the light shines from at this moment.
 pub fn places(cx: &DrawCx, s: &LightSettings) -> Vec<Place> {
-    let own = Place { at: s.position, ..Place::default() };
     // A rig only groups lights: a light rides what its rig sits in.
-    let Some(parent) = crate::things::rig::fixtures::ridden(cx.tree, cx.resolved.id) else { return vec![own] };
-    let world = cx.world;
+    places_in(cx.world, crate::things::rig::fixtures::ridden(cx.tree, cx.resolved.id), s)
+}
+
+/// Where a light riding `parent` (its tree parent, past any rigs) shines from in `world`: its Position, or what it
+/// rides moved by its Position. The editor's handles use this too, so they sit on the light.
+pub fn places_in(world: &World, parent: Option<ThingId>, s: &LightSettings) -> Vec<Place> {
+    let own = Place { at: s.position, ..Place::default() };
+    let Some(parent) = parent.filter(|&p| p != ThingId::ROOT) else { return vec![own] };
     if let Some(bodies) = world.bodies.get(&parent) {
         let ball = |row: usize| Place {
             at: bodies.position[row] + s.position,
@@ -102,13 +107,7 @@ fn push_light(cx: &DrawCx, s: &LightSettings, place: &Place, drive: &Drive, scen
     let colour = drive.colour.unwrap_or_else(|| s.linear_colour());
     let strength = s.strength * (1.0 + s.flare * flare(cx, s, place)) * drive.strength;
     let place = &Place { at: place.at + Vec2::new(drive.sway, 0.0), ..*place };
-    let angle = match s.points {
-        Points::FixedAngle => s.direction.to_radians(),
-        Points::WhereItsGoing if place.velocity.length_squared() > 1e-6 => place.velocity.y.atan2(place.velocity.x),
-        Points::WhereItsGoing => s.direction.to_radians(),
-        Points::Spins => (s.direction + s.spin * cx.time as f32).to_radians(),
-    } + drive.turn.to_radians();
-    let dir = Vec2::from_angle(angle);
+    let dir = Vec2::from_angle(aim_angle(s, place, cx.time) + drive.turn.to_radians());
     let half_cone = (0.5 * s.cone).to_radians();
     let edge = s.cone_edge.max(0.0).to_radians();
     let (cos_inner, cos_outer) = ((half_cone - edge).max(0.0).cos(), half_cone.cos());
@@ -149,6 +148,17 @@ fn push_light(cx: &DrawCx, s: &LightSettings, place: &Place, drive: &Drive, scen
             s.softness.max(0.0),
         ],
     });
+}
+
+/// Which way the light at `place` points at `time`, in radians clockwise from the right: its
+/// Direction, turned by Spin, or the way the ball it rides is going.
+pub fn aim_angle(s: &LightSettings, place: &Place, time: f64) -> f32 {
+    match s.points {
+        Points::FixedAngle => s.direction.to_radians(),
+        Points::WhereItsGoing if place.velocity.length_squared() > 1e-6 => place.velocity.y.atan2(place.velocity.x),
+        Points::WhereItsGoing => s.direction.to_radians(),
+        Points::Spins => (s.direction + s.spin * time as f32).to_radians(),
+    }
 }
 
 /// How much the light flares now, 0 to 1 and more for stacked hits: each hit by what it hears
@@ -258,6 +268,30 @@ mod tests {
         assert_eq!(point_round(&square, 0.125), Vec2::new(5.0, 0.0));
         assert_eq!(point_round(&square, 0.5), Vec2::new(10.0, 10.0));
         assert_eq!(point_round(&square, 1.25), Vec2::new(10.0, 0.0));
+    }
+
+    #[test]
+    fn a_light_points_by_its_direction_its_spin_or_its_ball() {
+        let s = LightSettings { direction: 90.0, spin: 30.0, ..LightSettings::default() };
+        let place = Place { velocity: Vec2::new(-5.0, 0.0), ..Place::default() };
+        let close = |a: f32, b: f32| (a - b.to_radians()).abs() < 1e-5;
+        assert!(close(aim_angle(&s, &place, 2.0), 90.0));
+        let spins = LightSettings { points: Points::Spins, ..s.clone() };
+        assert!(close(aim_angle(&spins, &place, 2.0), 150.0));
+        let going = LightSettings { points: Points::WhereItsGoing, ..s.clone() };
+        assert!(close(aim_angle(&going, &place, 2.0), 180.0));
+        assert!(close(aim_angle(&going, &Place::default(), 2.0), 90.0), "standing still: its Direction");
+    }
+
+    #[test]
+    fn a_light_at_the_root_sits_at_its_position() {
+        let kit = crate::kit();
+        let scene = crate::new_studio_scene(&kit.registry);
+        let world = World::build(&scene, &bpe_core::resolve(&scene, &kit.registry), &kit.sims);
+        let s = LightSettings { position: Vec2::new(3.0, 4.0), ..LightSettings::default() };
+        let at = places_in(&world, Some(ThingId::ROOT), &s);
+        assert_eq!(at.len(), 1);
+        assert_eq!(at[0].at, Vec2::new(3.0, 4.0));
     }
 
     #[test]

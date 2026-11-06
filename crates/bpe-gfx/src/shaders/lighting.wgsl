@@ -15,7 +15,8 @@ struct Lighting {
     view: vec4<f32>,
     // The camera: centre xy, zoom, turn.
     camera: vec4<f32>,
-    // Ambient light (rgb, already times its strength), w unused.
+    // Ambient light (rgb, already times its strength), w what is shown (0 the lit picture, 1 the
+    // light alone, 2 the light as a heat map: the editor's views).
     ambient: vec4<f32>,
     // Shadow style (0 soft, 1 hard, 2 toon, 3 off), softness, length, contact shading.
     shadows: vec4<f32>,
@@ -388,6 +389,45 @@ fn fs_light(in: FsIn) -> @location(0) vec4<f32> {
         let reach = max(u.more.x, 1e-3);
         light *= 1.0 - u.shadows.w * (1.0 - smoothstep(0.0, reach, here));
     }
+    // The editor's views of the light alone.
+    if u.ambient.w > 1.5 {
+        return vec4<f32>(heat(dot(light, vec3<f32>(0.2126, 0.7152, 0.0722))), 1.0);
+    }
+    if u.ambient.w > 0.5 {
+        return vec4<f32>(clamp(light, vec3<f32>(-6.0e4), vec3<f32>(6.0e4)), 1.0);
+    }
     // Kept finite: a huge Strength would overflow the half-float picture to infinity.
     return vec4<f32>(min(c.rgb + (light - vec3<f32>(1.0)) * w, vec3<f32>(6.0e4)), c.a);
+}
+
+fn srgb_decode(c: vec3<f32>) -> vec3<f32> {
+    let lo = c / 12.92;
+    let hi = pow((c + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
+    return select(hi, lo, c <= vec3<f32>(0.04045));
+}
+
+// How bright light `l` is as a heat colour (linear): the stops are style::HEAT's, in sRGB.
+fn heat(l: f32) -> vec3<f32> {
+    if l < 0.0 {
+        // Negative light: violet, deeper the darker.
+        return srgb_decode(mix(vec3<f32>(0.0), vec3<f32>(0.541, 0.302, 1.0), clamp(-l, 0.0, 1.0)));
+    }
+    var at = array<f32, 7>(0.0, 0.25, 0.5, 1.0, 1.5, 2.0, 3.0);
+    var colour = array<vec3<f32>, 7>(
+        vec3<f32>(0.0, 0.0, 0.0),
+        vec3<f32>(0.102, 0.165, 0.620),
+        vec3<f32>(0.098, 0.706, 0.902),
+        vec3<f32>(0.235, 0.812, 0.306),
+        vec3<f32>(0.949, 0.824, 0.294),
+        vec3<f32>(1.0, 0.231, 0.184),
+        vec3<f32>(1.0, 1.0, 1.0),
+    );
+    var out = colour[6];
+    for (var k = 0; k < 6; k++) {
+        if l < at[k + 1] {
+            out = mix(colour[k], colour[k + 1], (l - at[k]) / (at[k + 1] - at[k]));
+            break;
+        }
+    }
+    return srgb_decode(out);
 }

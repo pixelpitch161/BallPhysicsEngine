@@ -14,6 +14,7 @@ mod grid;
 mod history;
 mod inspector;
 mod light_scenes_panel;
+mod lights_panel;
 mod look_editor;
 mod mixer;
 mod palettes;

@@ -55,21 +55,26 @@ pub struct Panels {
     pub mixer: Mixer,
 }
 
-/// What the left panel shows: the things in the scene, or the Mixer.
+/// What the left panel shows: the things in the scene, every light, or the Mixer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LeftPanel {
     #[default]
     Things,
+    Lights,
     Mixer,
 }
 
-/// The two chips on top of the left panel.
+/// The three chips on top of the left panel.
 fn left_switch(ui: &mut egui::Ui, left: &mut LeftPanel) {
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        for (panel, name) in [(LeftPanel::Things, "Things"), (LeftPanel::Mixer, "Mixer")] {
+        // Snug, so the three fit the panel at its narrowest.
+        ui.spacing_mut().item_spacing.x = 2.0;
+        ui.spacing_mut().button_padding.x = 6.0;
+        for (panel, name) in [(LeftPanel::Things, "Things"), (LeftPanel::Lights, "Lights"), (LeftPanel::Mixer, "Mixer")]
+        {
             let hint = match panel {
                 LeftPanel::Things => "The things in the scene",
+                LeftPanel::Lights => "Every light in the scene: strength, mute and solo",
                 LeftPanel::Mixer => "Tempo, the Master and the meters",
             };
             if ui.add(style::toggle_button(name, *left == panel)).on_hover_text(hint).clicked() {
@@ -174,6 +179,10 @@ pub struct Studio {
     pub listen: ListenSettings,
     /// The left panel's face (not saved in the scene).
     pub left: LeftPanel,
+    /// The Lights tab's soloed lights: the editor's alone, never saved or exported.
+    pub light_solo: std::collections::BTreeSet<crate::lights_panel::LightSource>,
+    /// What a lit preview shows: the picture, or the light alone (the editor's alone).
+    pub light_show: bpe_gfx::LightShow,
     /// Wavetables baked in the background when the sound was last built
     /// ([`WaveBank::baked`]); more means it is built again.
     tables_baked: u64,
@@ -274,6 +283,8 @@ impl Studio {
             listen_unsaved: None,
             listen: ListenSettings::default(),
             left: LeftPanel::Things,
+            light_solo: Default::default(),
+            light_show: Default::default(),
             tables_baked: WaveBank::baked(),
         }
     }
@@ -390,6 +401,8 @@ impl Studio {
         self.path = path;
         self.history = History::default();
         self.selection.clear();
+        // Solo is the editor's alone and was the last scene's.
+        self.light_solo.clear();
         self.time = 0.0;
         self.set_playing(false);
         self.recorded = true;
@@ -860,6 +873,20 @@ impl Studio {
                 }
                 self.tree_width = shown.response.rect.width();
                 self.tree_width
+            }
+            LeftPanel::Lights => {
+                let shown = egui::Panel::left("lights")
+                    .default_size(self.tree_width)
+                    .min_size(180.0)
+                    .max_size(640.0)
+                    .resizable(true)
+                    .frame(side_frame().inner_margin(egui::Margin::symmetric(8, 10)))
+                    .show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        left_switch(ui, &mut left);
+                        crate::lights_panel::show(ui, self);
+                    });
+                shown.response.rect.width()
             }
             LeftPanel::Mixer => {
                 let meters = self.sound.as_ref().map(SoundJob::meters);

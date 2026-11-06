@@ -337,6 +337,24 @@ impl LightSettings {
     }
 }
 
+impl LightSettings {
+    /// The light's colour as sRGB bytes, for the editor's colour dot.
+    pub fn display_colour(&self) -> [u8; 3] {
+        match self.colour_from {
+            LightColour::Own => [self.colour.r, self.colour.g, self.colour.b],
+            LightColour::Temperature => {
+                let enc = |c: f32| {
+                    let c = c.clamp(0.0, 1.0);
+                    let s = if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 };
+                    (s * 255.0).round() as u8
+                };
+                let l = kelvin_to_linear(self.kelvin);
+                [enc(l[0]), enc(l[1]), enc(l[2])]
+            }
+        }
+    }
+}
+
 /// A lamp's colour at `kelvin`, linear and with its brightest channel at 1 (Tanner Helland's fit
 /// of the black body, clamped to 1000..40000 K).
 pub fn kelvin_to_linear(kelvin: f32) -> [f32; 3] {
@@ -428,6 +446,10 @@ mod tests {
         assert!(warm[0] > warm[2] * 3.0, "{warm:?}");
         assert!((day[0] - 1.0).abs() < 0.05 && (day[2] - 1.0).abs() < 0.08, "{day:?}");
         assert!(cold[2] > cold[0], "{cold:?}");
+        let warm = LightSettings { colour_from: LightColour::Temperature, kelvin: 2700.0, ..LightSettings::default() };
+        let dot = warm.display_colour();
+        assert!(dot[0] == 255 && dot[2] < dot[1], "{dot:?}");
+        assert_eq!(LightSettings::default().display_colour(), [0xff, 0xf2, 0xde]);
     }
 
     #[test]
