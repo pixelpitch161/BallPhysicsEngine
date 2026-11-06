@@ -36,7 +36,7 @@ pub use animation::{
     Track, pulse_strength,
 };
 pub use blend::Blend;
-pub use color::{Color, GapBlend, Gradient, Mix, Stop, mix_colours};
+pub use color::{Color, GapBlend, Gradient, HitWave, Mix, Morph, Moves, Stop, hue_turned, mix_colours, mix_linear};
 pub use contract::check_registry;
 pub use edit::EditError;
 pub use ids::{KindId, SlotId, ThingId};

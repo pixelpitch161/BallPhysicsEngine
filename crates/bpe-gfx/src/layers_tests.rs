@@ -634,3 +634,37 @@ fn things_stuck_to_the_screen_draw_in_the_same_order_as_the_rest() {
     let raised = middle(1, Place::Front).unwrap();
     assert!(is_red(raised), "a raised one draws over: {raised:?}");
 }
+
+/// A grey pattern painted at the middle of its gradient, which has a red Hit wave running at 2
+/// gradients a second, on a ball last hit `hit` ago.
+fn waved(hit: [f32; 4]) -> Option<[u8; 4]> {
+    let mut frame = one(vec![], PINK, 200.0, 1.45);
+    let wave = bpe_core::HitWave { strength: 1.0, width: 0.2, speed: 2.0, colour: Color::rgb(255, 0, 0) };
+    let grey = Gradient {
+        moves: bpe_core::Moves { wave: Some(wave), ..Default::default() },
+        ..Gradient::solid(Color::rgb(128, 128, 128))
+    };
+    let row = frame.gradients.row(&grey);
+    let pattern = LayerGpu {
+        paint: PaintGpu { row: row as f32, t0: 0.5, ..PaintGpu::default() },
+        ..record(LayerGpu::PATTERN, Blend::Normal)
+    };
+    frame.look_layers = vec![body(), pattern];
+    frame.layered[0].range[1] = 2;
+    frame.layered[0].hit = hit;
+    render_sized(&frame, W, H).map(|px| at(&px, 0.0, 0.0))
+}
+
+#[test]
+fn a_hit_wave_runs_along_the_gradient_from_the_ball_s_last_hit() {
+    let Some(never) = waved(crate::NO_HIT) else { return };
+    assert!(never[0].abs_diff(never[1]) < 3, "never hit: grey {never:?}");
+    // A quarter of a second after the hit the front is half way along: where this ball paints.
+    let on = waved([0.25, 1.0, 1.0, 0.0]).unwrap();
+    assert!(on[0] > 200 && on[1] < 30, "the wave's red: {on:?}");
+    // Before the front gets there and after it has passed, grey again.
+    let before = waved([0.05, 1.0, 1.0, 0.0]).unwrap();
+    let after = waved([2.0, 1.0, 1.0, 0.0]).unwrap();
+    assert_eq!(before, never);
+    assert_eq!(after, never);
+}

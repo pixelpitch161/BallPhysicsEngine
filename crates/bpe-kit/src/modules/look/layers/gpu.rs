@@ -374,6 +374,9 @@ pub struct Stack {
     pub stretch: Option<StretchWhenFast>,
     pub rainbow: Option<ColourOverTime>,
     pub turning: Option<Turning>,
+    /// How long after a hit a gradient of the card still shows its Hit wave, 0 when none has
+    /// one ([`bpe_core::gradient_extras::wave_memory`]).
+    pub wave_memory: f32,
 }
 
 impl Stack {
@@ -405,6 +408,7 @@ impl Stack {
             stretch: None,
             rainbow: None,
             turning: None,
+            wave_memory: bpe_core::gradient_extras::wave_memory(&slot.params),
         };
         for layer in &slot.layers {
             let p = slot.layer_params(layer.id);
@@ -824,6 +828,7 @@ impl Stack {
         self.drawn.iter().any(|d| d.writes() && d.subs.iter().any(|s| s.sub.reads_hits() || s.sub.flares()))
             || self.body_emit.is_some_and(|e| e.flare != 0.0)
             || !self.body_heat.is_empty()
+            || self.wave_memory > 0.0
     }
 
     /// How many records the Body writes: its own and its Heat glows'.
@@ -859,6 +864,7 @@ impl Stack {
             })
             .fold(0.0, f32::max)
             .max(self.body_emit.filter(|e| e.flare != 0.0).map_or(0.0, |e| 5.0 * e.length))
+            .max(self.wave_memory)
     }
 
     /// The group shaders, in the group list's order.
@@ -1204,6 +1210,23 @@ mod tests {
         assert_eq!(stack.record_of(stack.drawn[1].id), Some(5));
         assert_eq!(stack.split(), None);
         assert!(stack.reach(10.0) > SHAPE_REACH + HALO_REACH * 0.4, "the glow on the pattern reaches out");
+    }
+
+    #[test]
+    fn a_hit_wave_on_a_gradient_needs_the_balls_hits() {
+        let reg = registry();
+        let mut s = Scene::empty(&reg);
+        let b = crate::add_thing(&mut s, &reg, "balls", ThingId::ROOT).unwrap();
+        let body = s.things[&b].slots[&SlotId::Look].layers[0].id;
+        let wave = bpe_core::gradient_extras::key(&layered_key(body, "colours"), "wave");
+        s.set_at(&reg, &bpe_core::Address::on(b, SlotId::Look, &wave), Value::Number(1.0)).unwrap();
+        let mut resolved = resolve(&s, &reg);
+        let still = Stack::of(&resolved.things[&b].slots[&SlotId::Look]).unwrap();
+        assert!(!still.needs_hits(), "not until the moves are on the gradients");
+        bpe_core::gradient_extras::apply_moves(&mut resolved, 0.0);
+        let stack = Stack::of(&resolved.things[&b].slots[&SlotId::Look]).unwrap();
+        assert!(stack.needs_hits());
+        assert!((stack.flash_memory() - 1.15 / 2.0).abs() < 1e-6, "as long as the wave takes to pass");
     }
 
     #[test]

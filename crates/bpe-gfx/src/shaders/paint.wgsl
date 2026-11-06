@@ -31,6 +31,9 @@ const PAINT_NO_VARY: vec4<f32> = vec4<f32>(0.0, 0.0, 1.0, 0.0);
 
 @group(PAINT_GROUP) @binding(0) var paint_atlas: texture_2d<f32>;
 @group(PAINT_GROUP) @binding(1) var paint_sampler: sampler;
+// Each atlas row's Hit wave (gradients.rs `wave_texels`): texel 0 strength, width, speed and 1;
+// texel 1 the wave's colour in linear light. All 0 for a gradient without one.
+@group(PAINT_GROUP) @binding(2) var paint_waves: texture_2d<f32>;
 
 const PAINT_TAU: f32 = 6.28318531;
 // Samples in one row, as ATLAS_WIDTH.
@@ -39,6 +42,11 @@ const PAINT_WIDTH: f32 = 1024.0;
 // The pixel being painted, for the grain: each fragment entry point that paints sets it from its
 // position first thing. Elsewhere it stays 0 and the grain is one still offset.
 var<private> paint_px: vec2<f32>;
+
+// The hit of the ball or shape being painted, for the Hit wave: seconds since its last hit, that
+// hit's strength, how many hits so far, its heat. The entry points that draw an instance with a
+// hit set it next to `paint_px`; elsewhere it stays 0 (no hits) and no wave shows.
+var<private> paint_hit: vec4<f32>;
 
 // A paint with no variation read from two vec4s, in field order.
 fn paint_from(a: vec4<f32>, b: vec4<f32>) -> PaintGpu {
@@ -202,7 +210,39 @@ fn paint_mask(p: vec2<f32>, fill: f32, size: f32) -> f32 {
 // The linear-light colour `p` paints `along` its pattern (0 to 1 is one gradient), `time` seconds
 // in: after the start, the scroll and the repeat, turned by the paint's variation.
 fn paint_along(p: PaintGpu, along: f32, time: f32) -> vec4<f32> {
-    return paint_grain(paint_vary(paint_sample(p, along, time), p.vary), p.grain);
+    let t = paint_t(p, along, time);
+    let c = paint_wave(p, t, paint_vary(paint_sample_t(p, t), p.vary));
+    return paint_grain(c, p.grain);
+}
+
+// `c` at place `t` along `p`'s gradient with the gradient's Hit wave on it, run out from the
+// last hit of the instance being painted (`paint_hit`), as bpe_core's `HitWave::apply`: a smooth
+// bump round the front `speed × age` along (from 1 back when the speed is below 0), turning the
+// colour toward the wave's by `strength × bump`, adding light past 1.
+fn paint_wave(p: PaintGpu, t: f32, c: vec4<f32>) -> vec4<f32> {
+    if paint_hit.z < 0.5 || paint_hit.x >= 1e5 || p.row < 0.0 {
+        return c;
+    }
+    let height = textureDimensions(paint_waves).y;
+    let row = i32(min(u32(p.row), height - 1u));
+    let w = textureLoad(paint_waves, vec2<i32>(0, row), 0);
+    if w.w < 0.5 || w.x <= 0.0 {
+        return c;
+    }
+    let age = max(paint_hit.x, 0.0);
+    var front = w.z * age;
+    if w.z < 0.0 {
+        front = 1.0 + w.z * age;
+    }
+    let d = (t - front) / max(w.y, 1e-4);
+    if abs(d) >= 1.0 {
+        return c;
+    }
+    let bump = 1.0 - d * d;
+    let i = w.x * bump * bump;
+    let colour = textureLoad(paint_waves, vec2<i32>(1, row), 0).rgb;
+    let rgb = mix(c.rgb, colour, min(i, 1.0)) + colour * max(i - 1.0, 0.0);
+    return vec4<f32>(rgb, c.a);
 }
 
 // `c` (linear light) with still grain of size `grain` (in 1/255 steps) for this pixel: one value
@@ -229,7 +269,17 @@ fn paint_from_srgb(s: vec3<f32>) -> vec3<f32> {
 
 // What the atlas holds `along` `p`, before any variation.
 fn paint_sample(p: PaintGpu, along: f32, time: f32) -> vec4<f32> {
-    let t = paint_wrap(along + p.t0 + time * p.scroll, p.repeat);
+    return paint_sample_t(p, paint_t(p, along, time));
+}
+
+// The place along `p`'s gradient that `along` its pattern paints, `time` seconds in: after the
+// start, the scroll and the repeat, 0 to 1.
+fn paint_t(p: PaintGpu, along: f32, time: f32) -> f32 {
+    return paint_wrap(along + p.t0 + time * p.scroll, p.repeat);
+}
+
+// What the atlas holds at place `t` (0 to 1) of `p`'s gradient.
+fn paint_sample_t(p: PaintGpu, t: f32) -> vec4<f32> {
     let height = textureDimensions(paint_atlas).y;
     let row = min(u32(max(p.row, 0.0)), height - 1u);
     // Sampled between the first and last texel centres, so 0 and 1 land on the end colours.

@@ -158,10 +158,10 @@ pub(crate) fn tab_rows(
         }
         Tab::Extra(ExtraTab::Blend) => {
             changed |= mix_rows(ui, def, g, cx, right);
-            companion_rows(ui, def, ExtraTab::Blend, cx, right, get, out);
+            companion_rows(ui, def, ExtraTab::Blend, bar, cx, right, get, out);
             changed |= every_gap(ui, def, g, cx, right);
         }
-        Tab::Extra(t) => companion_rows(ui, def, t, cx, right, get, out),
+        Tab::Extra(t) => companion_rows(ui, def, t, bar, cx, right, get, out),
     }
     changed
 }
@@ -339,19 +339,51 @@ fn every_gap(ui: &mut Ui, def: &SettingDef, g: &mut Gradient, cx: &GridCx, right
     changed
 }
 
-/// Each companion of gradient `def` on tab `tab`, as an ordinary settings row.
+/// Each companion of gradient `def` on tab `tab`, as an ordinary settings row; companions with
+/// a `group` (the Move tab's moves) under a fold heading of that name, shut at first, its dot
+/// showing while shut when something inside is set, keyed or pulsing.
+#[allow(clippy::too_many_arguments)]
 fn companion_rows(
     ui: &mut Ui,
     def: &SettingDef,
     tab: ExtraTab,
+    bar: egui::Id,
     cx: &GridCx,
     right: f32,
     get: &dyn Fn(&str) -> Value,
     out: &mut GridOutcome,
 ) {
     debug_assert_eq!(def.ty, ValueType::Gradient);
+    let mut folds: Vec<(&'static str, Vec<&'static Companion>)> = Vec::new();
     for c in gradient_extras::companions_for(def).filter(|c| c.tab == tab) {
-        crate::widgets::grid_row(ui, companion_def(def, c), get, cx, right, out);
+        match folds.iter_mut().find(|(g, _)| *g == c.def.group) {
+            Some((_, cs)) => cs.push(c),
+            None => folds.push((c.def.group, vec![c])),
+        }
+    }
+    for (group, companions) in folds {
+        // The Move tab's moves each fold away under their own heading, all shut at first.
+        if !group.is_empty() {
+            let memory = bar.with(("fold", group));
+            let mut shut = ui.data(|d| d.get_temp::<bool>(memory)).unwrap_or(true);
+            let on = companions.iter().any(|c| {
+                let d = companion_def(def, c);
+                get(d.key) != d.default || (cx.marks)(d.key).is_some_and(|m| m.keyed || m.pulsed)
+            });
+            label_cell(ui, cx.label_width, |ui| {
+                if crate::widgets::group_heading(ui, group, true, shut, shut && on) {
+                    shut = !shut;
+                }
+            });
+            ui.end_row();
+            ui.data_mut(|d| d.insert_temp(memory, shut));
+            if shut {
+                continue;
+            }
+        }
+        for c in companions {
+            crate::widgets::grid_row(ui, companion_def(def, c), get, cx, right, out);
+        }
     }
 }
 
@@ -474,7 +506,7 @@ pub(crate) mod tests {
         assert!(h.query_by_label("Colours tab Colours").is_some());
         assert!(h.query_by_label("Colours tab Blend").is_some());
         assert!(h.query_by_label("Colours tab Shape").is_none(), "nothing on Shape yet");
-        assert!(h.query_by_label("Colours tab Move").is_none());
+        assert!(h.query_by_label("Colours tab Move").is_some());
         assert!(h.query_by_label("Colours hex").is_some(), "Colours is open first");
         click(&mut h, "Colours tab Blend");
         for label in ["Colours mix Even", "Colours loop", "Bands", "Grain", "Colours every gap Steps"] {
@@ -557,6 +589,48 @@ pub(crate) mod tests {
         h.run();
         let bands = h.state().changes.iter().rev().find(|(k, _)| k == "colours~bands").map(|(_, v)| v.clone());
         assert!(matches!(bands, Some(Value::Number(x)) if x > 20.0), "{:?}", h.state().changes);
+    }
+
+    #[test]
+    fn the_move_tab_folds_each_move_away() {
+        let mut h = harness(three());
+        click(&mut h, "Colours tab Move");
+        for fold in ["Show Cycle", "Show Step on the beat", "Show Breathe", "Show Hue spin", "Show Stops wander"] {
+            assert!(h.query_by_label(fold).is_some(), "{fold} shows shut");
+        }
+        for fold in ["Show Hit wave", "Show Morph", "Show Shape moves"] {
+            assert!(h.query_by_label(fold).is_some(), "{fold} shows shut");
+        }
+        assert!(h.query_all_by_label("Cycle speed").next().is_none(), "shut at first");
+        click(&mut h, "Show Cycle");
+        assert!(h.query_all_by_label("Cycle speed").next().is_some());
+        assert!(h.query_all_by_label("Cycle shift").next().is_some());
+        h.run();
+        assert!(h.query_by_label("Hide Cycle").is_some(), "stays open");
+        // A click on the Cycle speed rail's far end (its span ends at 2).
+        let rail = h.query_all_by_label("Cycle speed").find(|n| n.rect().width() > 40.0).unwrap().rect();
+        let end = egui::pos2(rail.right() - 1.0, rail.center().y);
+        h.drag_at(end);
+        h.run();
+        h.drop_at(end);
+        h.run();
+        let speed = h.state().changes.iter().rev().find(|(k, _)| k == "colours~cycle").map(|(_, v)| v.clone());
+        assert!(matches!(speed, Some(Value::Number(x)) if x > 1.5), "{:?}", h.state().changes);
+        // Shut, the fold shows that something inside is set.
+        click(&mut h, "Hide Cycle");
+        assert!(h.query_by_label("Cycle (changed)").is_some());
+        assert!(h.query_by_label("Step on the beat (changed)").is_none());
+    }
+
+    #[test]
+    fn morph_s_gradient_is_a_plain_gradient_row() {
+        let mut h = harness(three());
+        click(&mut h, "Colours tab Move");
+        click(&mut h, "Show Morph");
+        assert!(h.query_all_by_label("Morph amount").next().is_some());
+        assert!(h.query_all_by_label("Morph to").next().is_some());
+        assert!(h.query_by_label("Morph to tab Colours").is_none(), "no tabs of its own");
+        assert_eq!(h.query_all_by_label("Colours tab Colours").count(), 1);
     }
 
     #[test]

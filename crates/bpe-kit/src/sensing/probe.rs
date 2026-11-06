@@ -606,6 +606,18 @@ fn layer_colour(params: &bpe_core::Params) -> [f32; 3] {
         [l[0], l[1], l[2]]
     };
     match params.get("colours").or_else(|| params.get("colour")) {
+        // A moving gradient: the average of its moved colours.
+        Some(Value::Gradient(g)) if !g.moves.is_still() => {
+            let baked = g.bake(16);
+            let mut sum = [0.0f32; 3];
+            let n = baked.len() as f32;
+            for c in &baked {
+                for (o, c) in sum.iter_mut().zip(c) {
+                    *o += c / n;
+                }
+            }
+            sum
+        }
         Some(Value::Gradient(g)) if !g.stops.is_empty() => {
             let n = g.stops.len() as f32;
             let mut sum = [0.0f32; 3];

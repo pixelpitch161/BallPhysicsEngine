@@ -97,7 +97,12 @@ pub fn background_gpu(p: &Paint, inputs: &Inputs, atlas: &mut GradientAtlas) -> 
     let plain = |s: &bpe_core::Stop| s.blend == bpe_core::GapBlend::Smooth && s.middle == 0.5;
     let ends = match p.colours.stops.as_slice() {
         [a, b]
-            if a.at == 0.0 && b.at == 1.0 && p.colours.mix == bpe_core::Mix::Light && !p.colours.looped && plain(a) =>
+            if a.at == 0.0
+                && b.at == 1.0
+                && p.colours.mix == bpe_core::Mix::Light
+                && !p.colours.looped
+                && p.colours.moves.is_still()
+                && plain(a) =>
         {
             Some([a.color.to_linear(), b.color.to_linear()])
         }
