@@ -69,8 +69,9 @@ impl ModuleKind for LayersLookKind {
     fn slot(&self) -> SlotId {
         SlotId::Look
     }
+    /// The Surface section (lighting part 2a); the layers hold the rest.
     fn settings(&self) -> &'static [SettingDef] {
-        &[]
+        super::surface::defs()
     }
     fn fits(&self, thing_kind: &str) -> bool {
         crate::things::balls::rows::has_balls(thing_kind)

@@ -9,7 +9,7 @@
 
 use bytemuck::{Pod, Zeroable};
 
-use crate::frame::{LightGpu, LightScene};
+use crate::frame::{LightGpu, LightScene, SphereGpu, SurfaceGpu};
 use crate::{Frame, GrowableBuffer, HDR_FORMAT};
 
 /// The light field's pictures: what it is made from and what it gives.
@@ -34,6 +34,96 @@ struct Uniform {
     shadows: [f32; 4],
     more: [f32; 4],
     field: [f32; 4],
+}
+
+/// What the surfaces and the stage read (see `Stage` in lighting.wgsl, part 2a).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+struct StageUniform {
+    room: [f32; 4],
+    floor: [f32; 4],
+    more: [f32; 4],
+    sky_top: [f32; 4],
+    sky_bottom: [f32; 4],
+    grid: [f32; 4],
+    grid_size: [f32; 4],
+}
+
+/// The most cells a sphere grid has along a side.
+const MOST_CELLS: f32 = 256.0;
+
+/// A uniform grid over the stage's spheres, built on the CPU each frame: shadow rays and contact
+/// shading look up the spheres near a point by its cell. Each sphere is listed in every cell its
+/// disc reaches, widened by [`SPHERE_MARGIN`] of its own radii so penumbras and contact shading
+/// near a ball find it; a shadow ray walks every cell it crosses.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SphereGrid {
+    /// The grid's corner (world), cell size, the largest radius.
+    pub grid: [f32; 4],
+    /// Cells across, cells down, [`SPHERE_MARGIN`], 0.
+    pub size: [f32; 4],
+    /// Each cell's first item and how many, row by row.
+    pub cells: Vec<[u32; 2]>,
+    /// The spheres' indices, cell by cell.
+    pub items: Vec<u32>,
+}
+
+/// How far past its edge a ball's contact shading reaches, in its radii.
+pub const SPHERE_MARGIN: f32 = 2.0;
+
+impl SphereGrid {
+    pub fn build(spheres: &[SphereGpu]) -> SphereGrid {
+        let live: Vec<(usize, &SphereGpu)> = spheres
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.a.iter().take(3).all(|v| v.is_finite()) && s.a[2] > 0.0)
+            .collect();
+        if live.is_empty() {
+            return SphereGrid {
+                grid: [0.0, 0.0, 1.0, 0.0],
+                size: [1.0, 1.0, 0.0, 0.0],
+                cells: vec![[0, 0]],
+                items: Vec::new(),
+            };
+        }
+        let rmax = live.iter().map(|(_, s)| s.a[2]).fold(0.0f32, f32::max);
+        // Each ball is listed out to its own radius plus SPHERE_MARGIN radii, where its contact
+        // shading reaches; shadow rays walk every cell they cross, so they need no more.
+        let reach_of = |s: &SphereGpu| s.a[2] * (1.0 + SPHERE_MARGIN);
+        let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+        for (_, s) in &live {
+            let reach = reach_of(s);
+            for k in 0..2 {
+                lo[k] = lo[k].min(s.a[k] - reach);
+                hi[k] = hi[k].max(s.a[k] + reach);
+            }
+        }
+        let (w, h) = ((hi[0] - lo[0]).max(1e-3), (hi[1] - lo[1]).max(1e-3));
+        let mean = live.iter().map(|(_, s)| s.a[2]).sum::<f32>() / live.len() as f32;
+        let mut cell = (2.0 * mean).max((w * h / live.len() as f32).sqrt());
+        cell = cell.max(w / MOST_CELLS).max(h / MOST_CELLS);
+        let nx = ((w / cell).ceil() as usize).max(1);
+        let ny = ((h / cell).ceil() as usize).max(1);
+        let cell_of = |v: f32, k: usize, n: usize| (((v - lo[k]) / cell).floor().max(0.0) as usize).min(n - 1);
+        let mut lists: Vec<Vec<u32>> = vec![Vec::new(); nx * ny];
+        for (i, s) in &live {
+            let reach = reach_of(s);
+            let (x0, x1) = (cell_of(s.a[0] - reach, 0, nx), cell_of(s.a[0] + reach, 0, nx));
+            let (y0, y1) = (cell_of(s.a[1] - reach, 1, ny), cell_of(s.a[1] + reach, 1, ny));
+            for y in y0..=y1 {
+                for x in x0..=x1 {
+                    lists[y * nx + x].push(*i as u32);
+                }
+            }
+        }
+        let mut cells = Vec::with_capacity(lists.len());
+        let mut items = Vec::new();
+        for list in lists {
+            cells.push([items.len() as u32, list.len() as u32]);
+            items.extend(list);
+        }
+        SphereGrid { grid: [lo[0], lo[1], cell, rmax], size: [nx as f32, ny as f32, SPHERE_MARGIN, 0.0], cells, items }
+    }
 }
 
 /// What the part 1b passes read (see `Glow` in lighting.wgsl).
@@ -113,6 +203,8 @@ struct Targets {
     glow: (wgpu::Texture, Vec<wgpu::TextureView>, wgpu::TextureView),
     /// Bound in place of a picture a pass draws into.
     dummy: (wgpu::Texture, wgpu::TextureView),
+    /// The light pass's picture when a glossy floor mirrors it afterwards (made when first needed).
+    stage: Option<(wgpu::Texture, wgpu::TextureView)>,
     dummy_colour: (wgpu::Texture, wgpu::TextureView),
 }
 
@@ -137,7 +229,16 @@ pub(crate) struct Lighting {
     glow_source: wgpu::RenderPipeline,
     glow_down: wgpu::RenderPipeline,
     mix: wgpu::RenderPipeline,
+    /// The glossy floor's pass (Stage).
+    floor: wgpu::RenderPipeline,
     sampler: wgpu::Sampler,
+    /// Surfaces and the stage (group 2 of the mix and floor passes).
+    stage_layout: wgpu::BindGroupLayout,
+    stage_uniform: wgpu::Buffer,
+    surfaces: GrowableBuffer,
+    spheres: GrowableBuffer,
+    cells: GrowableBuffer,
+    items: GrowableBuffer,
     /// The base uniform, then one per jump flood pass (each with its own step).
     uniforms: Vec<wgpu::Buffer>,
     /// The 1b passes' uniforms: the base one, then one per cascade of each run, then one per
@@ -275,6 +376,15 @@ impl Lighting {
             bind_group_layouts: &[Some(&layout), Some(&glow_layout)],
             immediate_size: 0,
         });
+        let stage_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("lighting stage layout"),
+            entries: &[uniform(0), storage(1), storage(2), storage(3), storage(4)],
+        });
+        let stage_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("lighting pipeline layout (stage)"),
+            bind_group_layouts: &[Some(&layout), Some(&glow_layout), Some(&stage_layout)],
+            immediate_size: 0,
+        });
         let make = |label: &'static str,
                     entry: &'static str,
                     layout: &wgpu::PipelineLayout,
@@ -325,7 +435,7 @@ impl Lighting {
             },
             alpha: wgpu::BlendComponent::REPLACE,
         });
-        let (one, two) = (&pipeline_layout, &glow_pipeline_layout);
+        let (one, two, three) = (&pipeline_layout, &glow_pipeline_layout, &stage_pipeline_layout);
         Self {
             seed: make("light seed", "fs_seed", one, &[SEED_FORMAT], None),
             jump: make("light jump", "fs_jump", one, &[SEED_FORMAT], None),
@@ -338,7 +448,14 @@ impl Lighting {
             resolve: make("light field resolve", "fs_gi_resolve", two, &[GI_FORMAT, GI_FORMAT, GI_FORMAT], None),
             glow_source: make("light bloom source", "fs_glow_source", two, &[GI_FORMAT], None),
             glow_down: make("light bloom down", "fs_glow_down", two, &[GI_FORMAT], None),
-            mix: make("light", "fs_mix", two, &[HDR_FORMAT], None),
+            mix: make("light", "fs_mix", three, &[HDR_FORMAT], None),
+            floor: make("glossy floor", "fs_floor", three, &[HDR_FORMAT], None),
+            stage_uniform: uniform_buffer(device, "lighting stage uniform", std::mem::size_of::<StageUniform>()),
+            stage_layout,
+            surfaces: GrowableBuffer::storage("light surfaces"),
+            spheres: GrowableBuffer::storage("light spheres"),
+            cells: GrowableBuffer::storage("light sphere cells"),
+            items: GrowableBuffer::storage("light sphere items"),
             layout,
             glow_layout,
             sampler,
@@ -418,6 +535,7 @@ impl Lighting {
             glow: (glow, levels, all),
             dummy: texture(device, "light field stand-in", (1, 1), FIELD_FORMAT, false),
             dummy_colour: texture(device, "lighting stand-in", (1, 1), GI_FORMAT, false),
+            stage: None,
         });
     }
 
@@ -460,6 +578,11 @@ impl Lighting {
             return;
         }
         let s = &scene.settings;
+        // A glossy floor mirrors the lit picture: the mix draws into a picture of its own.
+        let reflects = s.stage[0] > 0.5 && s.floor[0] > 0.5 && s.floor[2] > 0.5;
+        if reflects && let Some(t) = self.targets.as_mut().filter(|t| t.stage.is_none()) {
+            t.stage = Some(texture(device, "lit stage", (t.width, t.height), HDR_FORMAT, false));
+        }
         let (_, steps) = quality_tier(s.more[2]);
         let (fw, fh) = self.targets.as_ref().expect("checked").field_size();
         let divisor = self.targets.as_ref().expect("checked").divisor;
@@ -551,8 +674,52 @@ impl Lighting {
             })
             .collect();
 
+        // Surfaces (0 always the plain sheet) and, in Stage, the spheres and their grid.
+        let mut surfaces = scene.surfaces.clone();
+        if surfaces.is_empty() {
+            surfaces.push(SurfaceGpu::MATTE);
+        }
+        surfaces[0] = SurfaceGpu::MATTE;
+        self.surfaces.upload(device, queue, bytemuck::cast_slice(&surfaces));
+        let stage = s.stage[0] > 0.5;
+        let grid = if stage { SphereGrid::build(&scene.spheres) } else { SphereGrid::build(&[]) };
+        let spheres: &[SphereGpu] =
+            if stage && !scene.spheres.is_empty() { &scene.spheres } else { &[SphereGpu { a: [0.0; 4], b: [0.0; 4] }] };
+        self.spheres.upload(device, queue, bytemuck::cast_slice(spheres));
+        self.cells.upload(device, queue, bytemuck::cast_slice(&grid.cells));
+        let items: &[u32] = if grid.items.is_empty() { &[0] } else { &grid.items };
+        self.items.upload(device, queue, bytemuck::cast_slice(items));
+        let sphere_count = if stage && !grid.items.is_empty() { scene.spheres.len() as f32 } else { 0.0 };
+        let uniform = StageUniform {
+            room: s.stage,
+            floor: s.floor,
+            more: [s.floor_more[0], s.floor_more[1], surfaces.len() as f32, sphere_count],
+            sky_top: s.sky_top,
+            sky_bottom: s.sky_bottom,
+            grid: grid.grid,
+            grid_size: grid.size,
+        };
+        queue.write_buffer(&self.stage_uniform, 0, bytemuck::bytes_of(&uniform));
+        fn buffer(b: &GrowableBuffer) -> wgpu::BindingResource<'_> {
+            b.buffer.as_ref().expect("just uploaded").as_entire_binding()
+        }
+        let stage_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("lighting stage"),
+            layout: &self.stage_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: self.stage_uniform.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: buffer(&self.surfaces) },
+                wgpu::BindGroupEntry { binding: 2, resource: buffer(&self.spheres) },
+                wgpu::BindGroupEntry { binding: 3, resource: buffer(&self.cells) },
+                wgpu::BindGroupEntry { binding: 4, resource: buffer(&self.items) },
+            ],
+        });
+
         let t = self.targets.as_ref().expect("checked");
-        let group = |uniform: &wgpu::Buffer, field: &wgpu::TextureView, seeds: &wgpu::TextureView| {
+        let group_on = |uniform: &wgpu::Buffer,
+                        picture: &wgpu::TextureView,
+                        field: &wgpu::TextureView,
+                        seeds: &wgpu::TextureView| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("lighting"),
                 layout: &self.layout,
@@ -574,6 +741,9 @@ impl Lighting {
                     wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(seeds) },
                 ],
             })
+        };
+        let group = |uniform: &wgpu::Buffer, field: &wgpu::TextureView, seeds: &wgpu::TextureView| {
+            group_on(uniform, picture, field, seeds)
         };
         let none = &t.dummy_colour.1;
         let all = GlowInputs {
@@ -703,6 +873,55 @@ impl Lighting {
         }
 
         let g = glow_group(&base_glow, &all);
-        pass(encoder, &[(out, clear)], &self.mix, &[&main, &g], "light");
+        match t.stage.as_ref().filter(|_| reflects) {
+            Some((_, lit)) => {
+                pass(encoder, &[(lit, clear)], &self.mix, &[&main, &g, &stage_group], "light");
+                let floor = group_on(&self.uniforms[0], lit, &t.field.1, &t.seeds[from].1);
+                pass(encoder, &[(out, clear)], &self.floor, &[&floor, &g, &stage_group], "glossy floor");
+            }
+            None => pass(encoder, &[(out, clear)], &self.mix, &[&main, &g, &stage_group], "light"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod grid_tests {
+    use super::*;
+
+    fn ball(x: f32, y: f32, r: f32) -> SphereGpu {
+        SphereGpu { a: [x, y, r, 0.0], b: [1.0; 4] }
+    }
+
+    #[test]
+    fn an_empty_grid_has_one_empty_cell() {
+        let g = SphereGrid::build(&[]);
+        assert_eq!(g.cells, vec![[0, 0]]);
+        assert!(g.items.is_empty());
+    }
+
+    #[test]
+    fn every_sphere_is_found_from_every_cell_its_widened_disc_reaches() {
+        let balls: Vec<SphereGpu> = (0..200)
+            .map(|i| ball((i * 37 % 900) as f32 - 450.0, (i * 91 % 1600) as f32 - 800.0, 6.0 + (i % 5) as f32))
+            .collect();
+        let g = SphereGrid::build(&balls);
+        let (lo, cell, margin) = ([g.grid[0], g.grid[1]], g.grid[2], g.size[2]);
+        assert_eq!(margin, SPHERE_MARGIN);
+        let (nx, ny) = (g.size[0] as usize, g.size[1] as usize);
+        assert_eq!(g.cells.len(), nx * ny);
+        for (i, b) in balls.iter().enumerate() {
+            // Points round the ball, out to its radius plus the margin, each in a cell listing it.
+            for k in 0..16 {
+                let a = k as f32 * std::f32::consts::TAU / 16.0;
+                let r = b.a[2] * (1.0 + margin) * 0.999;
+                let (x, y) = (b.a[0] + r * a.cos(), b.a[1] + r * a.sin());
+                let cx = (((x - lo[0]) / cell).floor() as usize).min(nx - 1);
+                let cy = (((y - lo[1]) / cell).floor() as usize).min(ny - 1);
+                let [first, n] = g.cells[cy * nx + cx];
+                let list = &g.items[first as usize..(first + n) as usize];
+                assert!(list.contains(&(i as u32)), "ball {i} missing from cell ({cx}, {cy})");
+            }
+        }
+        assert!(nx <= 256 && ny <= 256);
     }
 }

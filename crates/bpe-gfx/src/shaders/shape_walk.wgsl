@@ -26,6 +26,7 @@ fn SHAPE_WALK(world: vec2<f32>, s: ShapeAt, first: u32, count_in: u32, split: u3
     // Where the light of a Shine sub-layer falls, -1 to 1 across the shape's reach.
     let lit_at = s.q / max(layered_shape.c.y, 1e-3);
     LIGHT_HEIGHT = 0.0;
+    LIGHT_BALL = false;
     let cut = split & 0xffffu;
     let upper = cut > 0u && (split & 0x10000u) != 0u;
     let lower = cut > 0u && !upper;

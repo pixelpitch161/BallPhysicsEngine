@@ -5,6 +5,7 @@ mod controls;
 mod fonts;
 mod knob;
 mod meter;
+mod swatch;
 mod tokens;
 mod track;
 
@@ -14,6 +15,7 @@ pub use fonts::{medium, mono, semibold};
 #[allow(unused_imports)]
 pub use knob::{Knob, KnobResponse, ModRing, RingDrag, knob, wheel_notches};
 pub use meter::{level_meter, loudness_graph, loudness_row};
+pub use swatch::surface_swatch;
 pub use tokens::*;
 pub use track::{colour_of, track_color};
 

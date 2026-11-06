@@ -51,6 +51,16 @@ impl ThingDraw for ShapeDraw {
         }
     }
 
+    /// The shape's surface, for a lit frame.
+    fn light(&self, cx: &DrawCx, scene: &mut bpe_gfx::LightScene) {
+        use crate::modules::look::surface;
+        let Some(look) = cx.resolved.slots.get(&SlotId::Look).filter(|l| surface::has_surface(&l.kind)) else {
+            return;
+        };
+        let index = surface::surface_index(cx.scene, cx.thing.id);
+        scene.set_surface(index, surface::of_card(look).gpu(bpe_gfx::SurfaceGpu::SHAPE));
+    }
+
     /// Its Look's particles.
     fn around(&self, resolved: &ResolvedThing) -> Vec<Around> {
         around_of(resolved)
@@ -105,7 +115,12 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
     let records = stack.records(&geometry, &mut frame.gradients);
     let first = frame.look_layers.len() as u32;
     let count = records.len() as u32;
-    frame.look_layers.extend(records);
+    // Every record names the shape's surface (read only by a lit frame's light pass).
+    let surface = crate::modules::look::surface::surface_index(cx.scene, cx.thing.id) as f32;
+    frame.look_layers.extend(records.into_iter().map(|mut r| {
+        r.light[3] = surface;
+        r
+    }));
     // Its Shader layers' program, named once per frame, as balls name theirs.
     let program = stack.program().map_or(PathInstance::NO_PROGRAM, |p| {
         match frame.programs.iter().position(|q| q.key == p.key) {

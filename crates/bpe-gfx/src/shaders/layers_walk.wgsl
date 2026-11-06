@@ -61,6 +61,7 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
     if g.light.x > 1.5 && body_rec.head.x == 0u {
         let round = select(0.0, body_rec.light.z, count_in > 0u);
         let e = 1.0 + min(d, 0.0);
+        LIGHT_BALL = true;
         LIGHT_HEIGHT = layered_ball.radius.y * max(round, 0.0) * sqrt(max(1.0 - e * e, 0.0)) * step(d, 0.0);
     }
     let cut = split & 0xffffu;

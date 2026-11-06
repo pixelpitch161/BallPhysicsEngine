@@ -40,9 +40,9 @@ mod util;
 pub use frame::{
     Around, BackgroundPaint, BallInstance, BallMark, BlendLayer, DrawCx, Draws, EffectCall, FlashInstance, Frame,
     Grade, HitMark, LayerGpu, LayeredInstance, LightGpu, LightScene, LightShow, LightingGpu, LookInstance, MAX_LAYERS,
-    MOST_TRAIL_VERTICES, ModuleDraw, NO_HIT, Particle, PathInstance, Place, ShapeInstance, Stage, StreakStyle, Takes,
-    ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_with, hit_strength, push_streak, push_streak_colours,
-    push_trail, thing_code,
+    MOST_TRAIL_VERTICES, ModuleDraw, NO_HIT, Particle, PathInstance, Place, ShapeInstance, SphereGpu, Stage,
+    StreakStyle, SurfaceGpu, Takes, ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_with, hit_strength,
+    push_streak, push_streak_colours, push_trail, thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, PaintGpu};
 pub use masks::{MASK_TILE, MASK_TILE_BYTES, MAX_MASK_TILES, TILE_DISTANCE_REACH, tile_distance};
@@ -107,7 +107,7 @@ struct Globals {
     /// The colour grade: tint, vignette, vignette size, gradient map amount.
     grade_more: [f32; 4],
     /// Lighting: x the light pass (0 the picture as always, 1 lit colour, 2 surface, 3 the light
-    /// things give off), y how much the background takes light (see lighting.wgsl).
+    /// things give off), y how much the background takes light, z 1 in Stage (see lighting.wgsl).
     light: [f32; 4],
     /// The light the background gives off (read in pass 3): its own colour times its strength,
     /// then what its colours are multiplied by (rgb, linear).
@@ -1498,7 +1498,7 @@ impl Renderer {
         }
         let at = 2 * (mode as usize - 1);
         let mut world = Globals::new(frame, &frame.camera, self.targets.width);
-        world.light = [mode as f32, background_lit, 0.0, 0.0];
+        world.light = [mode as f32, background_lit, scene.settings.stage[0], 0.0];
         world.light_emit = scene.settings.background;
         let mut screen = Globals::new(frame, &CameraView::default(), self.targets.width);
         screen.light = world.light;

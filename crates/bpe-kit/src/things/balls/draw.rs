@@ -414,8 +414,10 @@ impl ThingDraw for BallsDraw {
         drew.light(frame, layer.light);
     }
 
-    /// Electric arcs that light the scene.
+    /// The balls' surface and, for Stage, each ball as a sphere; then electric arcs that light
+    /// the scene.
     fn light(&self, cx: &DrawCx, scene: &mut bpe_gfx::LightScene) {
+        push_ball_light(cx, scene);
         let lighting: Vec<AroundLayer> = own_around(cx.resolved)
             .into_iter()
             .filter(|l| matches!(&l.kind, AroundKind::Arcs(a) if a.lights != 0.0))
@@ -469,6 +471,40 @@ fn arc_moment(cx: &DrawCx) -> ArcMoment {
         crate::things::scene::draw::beat_at(&s, cx.time)
     });
     ArcMoment { time: cx.time as f32, beat: beat.filter(|b| b[3] > 0.0 && b[2] > 0.0).map(|b| (b[0], 1.0 / b[2])) }
+}
+
+/// Adds the balls of the thing `cx` is drawing to a lit frame: its Look's surface at its surface
+/// index, and every ball alive as a sphere (centre, radius, see-through and its Body's colour,
+/// for the light it lets through).
+pub fn push_ball_light(cx: &DrawCx, scene: &mut bpe_gfx::LightScene) {
+    use crate::modules::look::surface;
+    let Some(look) = cx.resolved.slots.get(&SlotId::Look).filter(|l| surface::has_surface(&l.kind)) else { return };
+    let s = surface::of_card(look);
+    let index = surface::surface_index(cx.scene, cx.thing.id);
+    scene.set_surface(index, s.gpu(bpe_gfx::SurfaceGpu::BALL));
+    if scene.settings.stage[0] < 0.5 {
+        return;
+    }
+    let Some(bodies) = cx.world.bodies.get(&cx.thing.id) else { return };
+    let tint = match Stack::of(look) {
+        // A Body that doesn't block light casts no shadow in Stage either.
+        Some(stack) if stack.body_light[1] < 0.5 => return,
+        Some(stack) => {
+            let inputs = crate::paint::Inputs { time: cx.time as f32, ..Default::default() };
+            crate::paint::colour_at(&stack.body.fill, &inputs)
+        }
+        None => [1.0; 4],
+    };
+    let see = s.see_through.clamp(0.0, 1.0);
+    for i in 0..bodies.len() {
+        if !bodies.alive[i] {
+            continue;
+        }
+        let at = bodies.position[i];
+        scene
+            .spheres
+            .push(bpe_gfx::SphereGpu { a: [at.x, at.y, bodies.radius[i], see], b: [tint[0], tint[1], tint[2], 0.0] });
+    }
 }
 
 /// The thing's shown trails and particles, bottom first.
@@ -718,6 +754,8 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, worn: &Worn, part: u32) {
     // Balls given layers of their own wear their own range of records: one range for each
     // stack and set of layers worn, most scenes one range for every ball.
     let mut ranges: HashMap<(usize, Vec<bool>), (u32, u32)> = HashMap::new();
+    // Every record names the thing's surface (read only by a lit frame's light pass).
+    let surface = crate::modules::look::surface::surface_index(cx.scene, id) as f32;
     let mut range_for = |frame: &mut Frame, at: usize, number: u32| -> (u32, u32) {
         let own = &worn.stacks[at];
         let wears: Vec<bool> =
@@ -727,7 +765,10 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, worn: &Worn, part: u32) {
             let first = frame.look_layers.len() as u32;
             let picked = if wears.is_empty() { all.clone() } else { own.records_for(all, |k| wears[k]) };
             let count = picked.len() as u32;
-            frame.look_layers.extend(picked);
+            frame.look_layers.extend(picked.into_iter().map(|mut r| {
+                r.light[3] = surface;
+                r
+            }));
             (first, count)
         })
     };

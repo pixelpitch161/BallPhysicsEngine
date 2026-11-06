@@ -32,11 +32,32 @@ impl ThingDraw for SceneDraw {
         // With a Lighting card the scene is lit; its lights are added after every thing draws.
         if let Some(card) = cx.resolved.slots.get(&bpe_core::SlotId::Lighting) {
             let lighting = crate::modules::lighting::LightingSettings::from_params(&card.params);
-            let mut settings = lighting.gpu();
+            let lowest = lowest_shape(cx.world);
+            let mut settings = lighting.gpu(lowest);
             settings.background = background_glow(&s);
             frame.light = Some(bpe_gfx::LightScene { settings, ..Default::default() });
         }
     }
+}
+
+/// The bottom of the lowest shape's wall (world y, down), for a stage floor under it: its middle
+/// plus its farthest corner from the middle and half its band, so a spinning shape doesn't move
+/// the floor.
+fn lowest_shape(world: &bpe_runtime::World) -> Option<f32> {
+    world
+        .walls
+        .values()
+        .filter_map(|w| {
+            let points = crate::things::light::draw::outline_points(&w.outline);
+            if points.is_empty() {
+                return None;
+            }
+            let middle = points.iter().copied().sum::<glam::Vec2>() / points.len() as f32;
+            let reach = points.iter().map(|p| p.distance(middle)).fold(0.0f32, f32::max);
+            Some(middle.y + reach + 0.5 * w.outline.thickness().max(0.0))
+        })
+        .filter(|y| y.is_finite())
+        .reduce(f32::max)
 }
 
 /// The light the background gives off ([`bpe_gfx::LightingGpu::background`]): its own colour

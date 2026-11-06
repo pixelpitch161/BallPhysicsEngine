@@ -30,7 +30,8 @@ struct LayerGpu {
     paint: PaintGpu,
     // A shader layer's effect settings, packed as its header lists them.
     extra: array<vec4<f32>, 4>,
-    // How it takes light (read in the light passes): Lit, blocks light, the body's roundness.
+    // How it takes light (read in the light passes): Lit, blocks light, the body's bulge, the
+    // thing's surface index.
     light: vec4<f32>,
     // The light it gives off (read in the emission pass, mode 3): own colour times strength and
     // the flare on hits; what its own colours are multiplied by and the flare's length (s).
@@ -46,6 +47,9 @@ fn plain_mode() -> f32 {
 // In the light passes (see lighting.wgsl): the height of the ball's surface at this pixel, set
 // as the walk starts (0 for shapes).
 var<private> LIGHT_HEIGHT: f32;
+// Set by the ball walk: in Stage a ball shadows as a sphere (lighting.wgsl), not in the blockers'
+// field, so its layers block nothing there.
+var<private> LIGHT_BALL: bool;
 
 // A layer's piece as the light passes see it: its colours (and a glow layer's light) times its
 // Lit, the light its sub-layers add left out (it never takes light: mode 1); or how much it
@@ -110,7 +114,9 @@ fn light_piece(piece: Piece, l: LayerGpu, hit: vec4<f32>) -> Piece {
         }
         return out;
     }
-    let s = vec3<f32>(clamp(l.light.y, 0.0, 1.0), LIGHT_HEIGHT, 0.0);
+    // B: the thing's surface index (lighting part 2a).
+    let blocks = select(clamp(l.light.y, 0.0, 1.0), 0.0, LIGHT_BALL && g.light.z > 0.5);
+    let s = vec3<f32>(blocks, LIGHT_HEIGHT, l.light.w);
     out.c_in = s;
     out.c_out = s;
     // A layer that doesn't block light leaves the surface under it as it is (a shine on a ball
