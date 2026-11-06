@@ -476,7 +476,21 @@ fn pick_colour(
     queue: &wgpu::Queue,
 ) {
     let ctx = ui.ctx();
-    pill(&ui.painter_at(rect), rect, "Click the picture to pick a colour (Esc to stop)");
+    // The row that asked has gone (another thing or tab): nothing could take the colour.
+    if !crate::eyedropper::alive(ctx) {
+        crate::eyedropper::stop(ctx);
+        return;
+    }
+    // At the bottom, clear of the pills at the top.
+    let text = "Click the picture to pick a colour (Esc to stop)";
+    let painter = ui.painter_at(rect);
+    let galley = painter.layout_no_wrap(text.to_owned(), FontId::proportional(13.0), style::TEXT_STRONG);
+    let back = Rect::from_min_size(
+        rect.left_bottom() + egui::vec2(10.0, -18.0 - galley.size().y),
+        galley.size() + egui::vec2(16.0, 8.0),
+    );
+    painter.rect_filled(back, style::RADIUS, style::PILL);
+    painter.galley(back.min + egui::vec2(8.0, 4.0), galley, style::TEXT_STRONG);
     if response.hovered() {
         ctx.set_cursor_icon(CursorIcon::Crosshair);
     }

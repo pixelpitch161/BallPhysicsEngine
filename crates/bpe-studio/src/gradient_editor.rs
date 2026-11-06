@@ -157,8 +157,20 @@ fn table(ui: &mut Ui, g: &mut Gradient, bar: egui::Id, name: &str) -> bool {
             let mut at = g.stops[i].at * 100.0;
             let r = ui.add(egui::DragValue::new(&mut at).range(0.0..=100.0).speed(0.25).fixed_decimals(1).suffix("%"));
             name_it(ui, &r, format!("{name} at {k}"));
+            let dragging = r.dragged();
             if r.on_hover_text("Where along the gradient this colour sits").changed() {
-                reorder = Some(Reorder::At(i, (at / 100.0).clamp(0.0, 1.0)));
+                let at = (at / 100.0).clamp(0.0, 1.0);
+                if dragging {
+                    // Mid-drag the box belongs to this row, so the stop stays between its
+                    // neighbours; typing a place moves it past them.
+                    let lo = if i > 0 { g.stops[i - 1].at } else { 0.0 };
+                    let hi = g.stops.get(i + 1).map_or(1.0, |s| s.at);
+                    g.stops[i].at = at.clamp(lo, hi);
+                    changed = true;
+                    touched = true;
+                } else {
+                    reorder = Some(Reorder::At(i, at));
+                }
             }
             if with_gaps.contains(&i) {
                 let blend = g.stops[i].blend;
@@ -347,7 +359,27 @@ mod tests {
         assert_eq!(g.stops.iter().map(|s| s.color).collect::<Vec<_>>(), vec![Color::rgb(255, 255, 0), RED, BLUE]);
         assert!(h.query_by_label("Stop 2").is_some(), "red is still the selected one: {g:?}");
         click(&mut h, "Colours editor remove 3");
-        assert_eq!(h.state().gradient().stops.len(), 2);
+        let colours: Vec<Color> = h.state().gradient().stops.iter().map(|s| s.color).collect();
+        assert_eq!(colours, vec![Color::rgb(255, 255, 0), RED], "blue went");
+    }
+
+    #[test]
+    fn dragging_a_place_keeps_the_stop_between_its_neighbours() {
+        let mut h = harness(three());
+        open(&mut h);
+        let r = h.get_by_label("Colours editor at 1").rect();
+        h.drag_at(r.center());
+        h.run();
+        for x in [40.0, 120.0, 400.0] {
+            h.hover_at(r.center() + egui::vec2(x, 0.0));
+            h.run();
+        }
+        h.drop_at(r.center() + egui::vec2(400.0, 0.0));
+        h.run();
+        let g = h.state().gradient().clone();
+        assert_eq!(g.stops.iter().map(|s| s.color).collect::<Vec<_>>(), vec![RED, GREEN, BLUE], "{g:?}");
+        assert!((g.stops[0].at - 0.5).abs() < 1e-6, "red stops at green: {g:?}");
+        assert_eq!(g.stops[1].at, 0.5, "green never moved");
     }
 
     #[test]

@@ -111,6 +111,7 @@ pub(crate) fn tab_rows(
 ) -> bool {
     let Value::Gradient(g) = value else { return false };
     let mut changed = false;
+    eyedropper::seen(ui.ctx(), bar);
     // A colour picked from the picture goes on the selected stop, which keeps its opacity.
     if let Some(c) = eyedropper::take(ui.ctx(), bar)
         && !g.stops.is_empty()

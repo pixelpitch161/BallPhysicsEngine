@@ -35,10 +35,26 @@ impl ToolsOutcome {
 /// goes to `1 − middle`. Unlooped, the old first stop (now the last) keeps the old last stop's
 /// unused gap, so flipping twice gives the gradient back. Also gives which old stop each new
 /// stop is.
+///
+/// The mirror is exact where each middle sits in the middle; an off-centre middle keeps its
+/// halfway colour at the mirrored place, but the bend either side of it (a power curve) isn't
+/// symmetric, so the colours between move a little.
 pub fn flipped(g: &Gradient) -> (Gradient, Vec<usize>) {
     let n = g.stops.len();
     if n < 2 {
         return (g.clone(), (0..n).collect());
+    }
+    // A looped stop at the very end is one at 0, just before whatever sits there: put it first.
+    let ends = g.stops.iter().rev().take_while(|s| g.looped && s.at >= 1.0).count();
+    if ends > 0 && ends < n {
+        let mut turned = g.clone();
+        turned.stops.rotate_right(ends);
+        for s in &mut turned.stops[..ends] {
+            s.at = 0.0;
+        }
+        let (f, order) = flipped(&turned);
+        // `turned`'s stop k is `g`'s stop (k + n − ends) % n.
+        return (f, order.into_iter().map(|k| (k + n - ends) % n).collect());
     }
     let mirror = |b: GapBlend| match b {
         GapBlend::EaseIn => GapBlend::EaseOut,
@@ -290,6 +306,24 @@ mod tests {
         let (f, _) = flipped(&g);
         assert_eq!(Color::from_linear(f.sample(0.25)), BLUE);
         assert_eq!(Color::from_linear(f.sample(0.75)), RED);
+    }
+
+    #[test]
+    fn a_looped_stop_at_the_end_flips_as_the_one_before_the_start() {
+        // Red at 0, green at 0.5, blue at 1: blue sits just before red round the loop.
+        let mut g = Gradient::spread(&[RED, GREEN, BLUE], Mix::Light, true);
+        g.stops[1].at = 0.5;
+        g.stops[2].at = 1.0;
+        let (f, order) = flipped(&g);
+        assert_eq!(order.len(), 3);
+        for k in 1..100 {
+            let t = k as f32 / 100.0;
+            assert!(close(f.sample(t), g.sample(1.0 - t)), "at {t}: {f:?}");
+        }
+        let mut seen = order.clone();
+        seen.sort();
+        assert_eq!(seen, vec![0, 1, 2], "every old stop once");
+        assert_eq!(f.stops[order.iter().position(|&k| k == 1).unwrap()].color, GREEN);
     }
 
     #[test]

@@ -12,9 +12,10 @@ use eframe::egui;
 /// gone when it came, and it must not land on a stop later.
 pub const STALE_PASSES: u64 = 4;
 
-/// Which row is picking: the id its gradient bar keeps its memory under.
+/// Which row is picking (the id its gradient bar keeps its memory under), and the last pass that
+/// row was drawn in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Picking(egui::Id);
+struct Picking(egui::Id, u64);
 
 /// A colour picked for a row, and the pass it came in.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -35,7 +36,23 @@ fn picked_id() -> egui::Id {
 /// Turns the preview into an eyedropper for the gradient row whose bar keeps its memory under
 /// `target`.
 pub fn start(ctx: &egui::Context, target: egui::Id) {
-    ctx.data_mut(|d| d.insert_temp(picking_id(), Picking(target)));
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data_mut(|d| d.insert_temp(picking_id(), Picking(target, pass)));
+}
+
+/// Notes that the gradient row `target` is drawn this pass, so its picking (if it is picking)
+/// carries on.
+pub fn seen(ctx: &egui::Context, target: egui::Id) {
+    if self::target(ctx) == Some(target) {
+        start(ctx, target);
+    }
+}
+
+/// Whether the row picking was drawn in this pass or the one before. A row gone from the
+/// inspector (another thing selected, another tab) can't take a colour, so its picking ends.
+pub fn alive(ctx: &egui::Context) -> bool {
+    let now = ctx.cumulative_pass_nr();
+    ctx.data(|d| d.get_temp::<Picking>(picking_id())).is_some_and(|p| now.saturating_sub(p.1) <= 1)
 }
 
 /// Stops picking.
@@ -119,13 +136,34 @@ mod tests {
     }
 
     #[test]
+    fn picking_lives_while_its_row_is_drawn() {
+        let ctx = egui::Context::default();
+        let row = egui::Id::unique("row");
+        let pass = |ctx: &egui::Context| {
+            ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+        };
+        start(&ctx, row);
+        assert!(alive(&ctx));
+        for _ in 0..3 {
+            pass(&ctx);
+            seen(&ctx, row);
+            assert!(alive(&ctx), "drawn every pass");
+        }
+        pass(&ctx);
+        pass(&ctx);
+        assert!(!alive(&ctx), "its row has gone");
+        seen(&ctx, egui::Id::unique("other"));
+        assert!(!alive(&ctx), "another row doesn't keep it going");
+    }
+
+    #[test]
     fn a_colour_left_too_long_is_thrown_away() {
         let ctx = egui::Context::default();
         let row = egui::Id::unique("row");
         start(&ctx, row);
         deliver(&ctx, Color::rgb(9, 9, 9));
         for _ in 0..=STALE_PASSES {
-            let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
+            ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
         }
         assert_eq!(take(&ctx, row), None);
     }

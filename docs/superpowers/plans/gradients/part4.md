@@ -53,7 +53,9 @@ nothing they own. Design approved by the owner; no approval stops.
    `1 − t` (wrapped when looped). Each stop goes to `1 − at` (`rem_euclid(1)` when looped, so a stop at 0 stays at
    0); the gap after each new stop is the mirror of the old gap before that stop: blend Ease in ↔ Ease out (others
    unchanged), middle `1 − m`. Unlooped, the first old stop (now last) keeps the old last stop's unused gap, so Flip
-   twice gives the gradient back exactly. The order vector says which old stop each new stop is; a **Points**
+   twice gives the gradient back exactly. A looped stop at 1.0 is first moved to 0, in front, before flipping.
+   While the table's At box is dragged the stop stays between its neighbours (the drag belongs to the row);
+   a typed place re-sorts. The order vector says which old stop each new stop is; a **Points**
    companion (a value per stop, part 2's Free points) whose length matches the stops is permuted by it in the same
    edit (`points_after_flip`). Any `ValueType::Points` companion qualifies, so no part 2 name is assumed.
 7. **Spread evenly**: `Gradient::spread_evenly` (part 1), which honours Loop (`i/n` looped, `i/(n-1)` not).
@@ -101,8 +103,9 @@ nothing they own. Design approved by the owner; no approval stops.
 ## Tests
 
 - `gradient_tools` unit tests: Flip of an unlooped gradient (places, colours, Ease in ↔ Ease out, middles), sampling
-  the flipped gradient at `t` equals the old one at `1 − t` within 1e-4 for gaps of every blend and off-centre
-  middles; looped Flip samples the old at `(−t) mod 1`; Flip twice is the identity (looped and not); the order
+  the flipped gradient at `t` equals the old one at `1 − t` within 1e-4 for gaps of every blend and mix with middles
+  at 0.5 (an off-centre middle keeps its halfway colour mirrored; the power bend either side isn't symmetric, so the
+  mirror there is close, not exact); a looped stop at 1.0 flips as the stop just before 0; looped Flip samples the old at `(−t) mod 1`; Flip twice is the identity (looped and not); the order
   vector; `points_after_flip`; `recoloured` keeps everything but colours (and alpha); Add colour's place and blend.
 - `eyedropper` unit tests: `pixel_at` corners and middle, out-of-range uv; `take` only for the target, once, and not
   when stale; `deliver` ends picking.
