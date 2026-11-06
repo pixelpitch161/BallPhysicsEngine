@@ -866,7 +866,8 @@ fn fs_light(in: FsIn) -> @location(0) vec4<f32> {
             // farther away.
             let f = field_at(spot.p.xy);
             let dz = max(spot.p.z - st.room.z, 0.0);
-            let here = select(f, length(vec2<f32>(max(f, 0.0), dz)), dz > 0.0);
+            // Under a shape (between the wall and its front) the floor is as close to it as can be.
+            let here = select(max(f, 1e-3), length(vec2<f32>(max(f, 0.0), dz)), dz > 0.0);
             on_stage = mixed(c.rgb, w, shade(spot, p, plane, c.rgb, here), plane, lit);
         }
         out = mix(on_stage, on_thing, smoothstep(0.02, 0.98, cover));
