@@ -57,7 +57,8 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
     }
     let base_c = vec4<f32>(body_c, 1.0);
     // The surface's height for the light passes: a sphere at Roundness 1 on a round ball.
-    if g.light.x > 1.5 {
+    // Only a walk from the body sets it: a Shader sub-layer's walk starts at its own layer.
+    if g.light.x > 1.5 && body_rec.head.x == 0u {
         let round = select(0.0, body_rec.light.z, count_in > 0u);
         let e = 1.0 + min(d, 0.0);
         LIGHT_HEIGHT = layered_ball.radius.y * max(round, 0.0) * sqrt(max(1.0 - e * e, 0.0)) * step(d, 0.0);

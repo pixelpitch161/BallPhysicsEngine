@@ -850,76 +850,6 @@ fn riders(reg: &Registry) -> Scene {
     b.finish()
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::{registry, scenes};
-
-    #[test]
-    fn stage_scenes_resolve_and_round_trip() {
-        let reg = registry();
-        let scenes = scenes::all(&reg);
-        assert_eq!(scenes.len(), 18);
-        let in_order: Vec<String> = [
-            scenes::stage2(&reg),
-            scenes::stage3(&reg),
-            scenes::stage5(&reg),
-            vec![
-                ("Colour paints".into(), scenes::colour_demo(&reg)),
-                ("Blend modes".into(), scenes::blend_demo(&reg)),
-                ("Graded sunset".into(), scenes::graded_sunset(&reg)),
-                ("Ellipse focus".into(), scenes::ellipse_focus(&reg)),
-            ],
-            scenes::emitter_scenes(&reg),
-        ]
-        .concat()
-        .into_iter()
-        .map(|(n, _)| n)
-        .collect();
-        let names: Vec<&str> = scenes.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, in_order);
-        assert_eq!(names[..5], ["One ball", "Reel block", "Box drop", "Spinning hexagon", "Shrinking ring"]);
-        assert_eq!(names[5..7], ["Ball pit", "Riders"]);
-        assert_eq!(names[7..12], ["Lava ball", "Confetti drop", "Spark block", "Kaleido hexagon", "Neon ring"]);
-        assert_eq!(names[12..16], ["Colour paints", "Blend modes", "Graded sunset", "Ellipse focus"]);
-        assert_eq!(names[16..], ["Emitter rounds", "Emitter chain"]);
-        for (name, scene) in &scenes {
-            assert_eq!(&scene.name, name);
-            assert!(crate::resolve_scene(scene, &reg).problems.is_empty(), "{name}");
-            let text = bpe_core::save(scene);
-            assert_eq!(&bpe_core::load(&text, &reg).unwrap(), scene, "{name}");
-        }
-    }
-
-    #[test]
-    fn no_test_scene_uses_additive_colours() {
-        use bpe_core::Value;
-        fn additive(v: &Value) -> bool {
-            match v {
-                Value::Color(c) => c.is_additive(),
-                Value::Gradient(g) => g.stops.iter().any(|s| s.color.is_additive()),
-                _ => false,
-            }
-        }
-        let reg = registry();
-        let all = scenes::all(&reg);
-        for (name, scene) in &all {
-            let mut values: Vec<(String, &Value)> = Vec::new();
-            for (id, t) in &scene.things {
-                values.extend(t.params.0.iter().map(|(k, v)| (format!("thing {id:?} {k}"), v)));
-                for (slot, card) in &t.slots {
-                    values.extend(card.params.0.iter().map(|(k, v)| (format!("card {id:?} {slot:?} {k}"), v)));
-                }
-            }
-            for (a, track) in &scene.tracks {
-                values.extend(track.keys.iter().map(|k| (format!("track {a:?}"), &k.value)));
-            }
-            for (at, v) in values {
-                assert!(!additive(v), "{name}: {at} is an additive colour, use Blend Add instead");
-            }
-        }
-    }
-}
-
 /// A lit room for the lighting tests (lighting part 1a): a mid-grey background in a white ring,
 /// one pink ball at the middle (drawn at 0 s, before it falls) and one Point light above it. Not in [`all`],
 /// which pins the unlit pictures.
@@ -994,4 +924,74 @@ pub fn lit_demo(reg: &Registry) -> Scene {
     cool.height = 120.0;
     scene.things.get_mut(&middle).expect("light").params = cool.to_params();
     scene
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{registry, scenes};
+
+    #[test]
+    fn stage_scenes_resolve_and_round_trip() {
+        let reg = registry();
+        let scenes = scenes::all(&reg);
+        assert_eq!(scenes.len(), 18);
+        let in_order: Vec<String> = [
+            scenes::stage2(&reg),
+            scenes::stage3(&reg),
+            scenes::stage5(&reg),
+            vec![
+                ("Colour paints".into(), scenes::colour_demo(&reg)),
+                ("Blend modes".into(), scenes::blend_demo(&reg)),
+                ("Graded sunset".into(), scenes::graded_sunset(&reg)),
+                ("Ellipse focus".into(), scenes::ellipse_focus(&reg)),
+            ],
+            scenes::emitter_scenes(&reg),
+        ]
+        .concat()
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
+        let names: Vec<&str> = scenes.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, in_order);
+        assert_eq!(names[..5], ["One ball", "Reel block", "Box drop", "Spinning hexagon", "Shrinking ring"]);
+        assert_eq!(names[5..7], ["Ball pit", "Riders"]);
+        assert_eq!(names[7..12], ["Lava ball", "Confetti drop", "Spark block", "Kaleido hexagon", "Neon ring"]);
+        assert_eq!(names[12..16], ["Colour paints", "Blend modes", "Graded sunset", "Ellipse focus"]);
+        assert_eq!(names[16..], ["Emitter rounds", "Emitter chain"]);
+        for (name, scene) in &scenes {
+            assert_eq!(&scene.name, name);
+            assert!(crate::resolve_scene(scene, &reg).problems.is_empty(), "{name}");
+            let text = bpe_core::save(scene);
+            assert_eq!(&bpe_core::load(&text, &reg).unwrap(), scene, "{name}");
+        }
+    }
+
+    #[test]
+    fn no_test_scene_uses_additive_colours() {
+        use bpe_core::Value;
+        fn additive(v: &Value) -> bool {
+            match v {
+                Value::Color(c) => c.is_additive(),
+                Value::Gradient(g) => g.stops.iter().any(|s| s.color.is_additive()),
+                _ => false,
+            }
+        }
+        let reg = registry();
+        let all = scenes::all(&reg);
+        for (name, scene) in &all {
+            let mut values: Vec<(String, &Value)> = Vec::new();
+            for (id, t) in &scene.things {
+                values.extend(t.params.0.iter().map(|(k, v)| (format!("thing {id:?} {k}"), v)));
+                for (slot, card) in &t.slots {
+                    values.extend(card.params.0.iter().map(|(k, v)| (format!("card {id:?} {slot:?} {k}"), v)));
+                }
+            }
+            for (a, track) in &scene.tracks {
+                values.extend(track.keys.iter().map(|k| (format!("track {a:?}"), &k.value)));
+            }
+            for (at, v) in values {
+                assert!(!additive(v), "{name}: {at} is an additive colour, use Blend Add instead");
+            }
+        }
+    }
 }

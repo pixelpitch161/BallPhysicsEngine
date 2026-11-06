@@ -582,6 +582,32 @@ fn draw_ghosts(
             }
         });
     }
+    // Ghosts take the light as their trail layer does, flat: each ghost reads a copy of its
+    // ball's records with that layer's Lighting.
+    if frame.light.is_some() {
+        let light = ghosts.first().map_or([0.0; 4], |g| [g.light[0], g.light[1], 0.0, 0.0]);
+        let mut copies: Vec<(u32, u32)> = Vec::new();
+        for g in behind.iter_mut().chain(front.iter_mut()) {
+            let first = g.range[0];
+            let at = match copies.iter().find(|(from, _)| *from == first) {
+                Some((_, to)) => *to,
+                None => {
+                    let to = frame.look_layers.len() as u32;
+                    let range = first as usize..(first + g.range[1]) as usize;
+                    let mut records = frame.look_layers.get(range).map(<[_]>::to_vec).unwrap_or_default();
+                    for r in &mut records {
+                        r.light = light;
+                    }
+                    frame.look_layers.extend(records);
+                    copies.push((first, to));
+                    to
+                }
+            };
+            g.range[0] = at;
+        }
+        let stamp = |s: &mut bpe_gfx::Particle| s.light = light;
+        under.iter_mut().chain(over_behind.iter_mut()).chain(over_front.iter_mut()).for_each(stamp);
+    }
     frame.layered.extend(behind);
     frame.layered.extend(made.iter().map(|(_, b)| *b));
     frame.layered.extend(front);

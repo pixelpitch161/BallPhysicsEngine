@@ -344,13 +344,17 @@ fn fs_light(in: FsIn) -> @location(0) vec4<f32> {
                 // Spot: inside its cone round where it points.
                 let away = select(vec2<f32>(0.0), -d / dist, dist > 1e-3);
                 let cosine = select(dot(away, l.p3.xy), 1.0, dist <= 1e-3);
-                amount *= smoothstep(l.p3.w, l.p3.z, cosine);
+                // smoothstep written out: a cone with no soft edge has both ends the same.
+                let e = clamp((cosine - l.p3.w) / max(l.p3.z - l.p3.w, 1e-6), 0.0, 1.0);
+                amount *= e * e * (3.0 - 2.0 * e);
                 if amount == 0.0 {
                     continue;
                 }
             }
             toward = select(vec2<f32>(0.0), d / dist, dist > 1e-3);
-            dir3 = normalize(vec3<f32>(d, l.p0.z - h));
+            let to_lamp = vec3<f32>(d, l.p0.z - h);
+            let len3 = length(to_lamp);
+            dir3 = select(vec3<f32>(0.0, 0.0, 1.0), to_lamp / len3, len3 > 1e-6);
             angular = max(l.p2.z, 0.0) / max(dist, 1e-3);
         }
         // The picture plane takes the light whole; round surfaces turn to it or away.
@@ -361,7 +365,13 @@ fn fs_light(in: FsIn) -> @location(0) vec4<f32> {
             if style > 0.5 {
                 soft = 0.5 * px / max(dist, 1e-3);
             }
-            let v = visibility(p, toward, dist, soft, u.shadows.z, l.p6.x);
+            // The march stops short of the lamp by its size, a ridden ball's radius and however
+            // deep in a blocker the lamp sits (a strip along a shape's band, a light in a ball).
+            var stop = l.p6.x + max(l.p2.z, 0.0);
+            if kind < 1.5 || kind > 2.5 {
+                stop = max(stop, -field_at(source_point(l, p)));
+            }
+            let v = visibility(p, toward, dist, soft, u.shadows.z, stop);
             tint = mix(vec3<f32>(1.0), l.p5.rgb, clamp((1.0 - v) * l.p2.w, 0.0, 1.0));
         }
         var strength = amount * shade;
@@ -378,5 +388,6 @@ fn fs_light(in: FsIn) -> @location(0) vec4<f32> {
         let reach = max(u.more.x, 1e-3);
         light *= 1.0 - u.shadows.w * (1.0 - smoothstep(0.0, reach, here));
     }
-    return vec4<f32>(c.rgb + (light - vec3<f32>(1.0)) * w, c.a);
+    // Kept finite: a huge Strength would overflow the half-float picture to infinity.
+    return vec4<f32>(min(c.rgb + (light - vec3<f32>(1.0)) * w, vec3<f32>(6.0e4)), c.a);
 }

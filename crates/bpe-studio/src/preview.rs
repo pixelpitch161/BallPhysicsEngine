@@ -621,8 +621,10 @@ pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
 fn spot_only(studio: &Studio, world: &World, id: ThingId) -> bool {
     let kind = studio.scene.things.get(&id).map(|t| t.kind.as_str());
     // An emitter can be grabbed at its middle even with no balls out.
+    // A light's place is its own Position setting (its handles come with the Lights tab).
+    let light = kind == Some(bpe_kit::things::light::LIGHT);
     kind == Some(EMITTER)
-        || (!world.bodies.contains_key(&id) && !world.walls.contains_key(&id) && kind != Some("camera"))
+        || (!world.bodies.contains_key(&id) && !world.walls.contains_key(&id) && kind != Some("camera") && !light)
 }
 
 /// The emitter kind.

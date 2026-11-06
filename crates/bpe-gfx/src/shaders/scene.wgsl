@@ -35,7 +35,10 @@ fn light_flat(c: vec4<f32>, lit: f32, blocks: f32) -> vec4<f32> {
     if g.light.x < 1.5 {
         return vec4<f32>(c.rgb * lit, c.a);
     }
-    return vec4<f32>(clamp(blocks, 0.0, 1.0) * c.a, 0.0, 0.0, c.a);
+    // The surface: only what blocks covers it, so a spark or a trail passing over a ball leaves
+    // the ball's blocking and height under it as they are.
+    let a = clamp(blocks, 0.0, 1.0) * clamp(c.a, 0.0, 1.0);
+    return vec4<f32>(a, 0.0, 0.0, a);
 }
 
 // The camera (centre xy, zoom, turn) turns a world point into screen units; with no camera
