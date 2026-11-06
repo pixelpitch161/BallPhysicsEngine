@@ -5,6 +5,7 @@
 
 pub mod draw;
 pub mod kinds;
+pub mod line;
 
 use bpe_core::{Blend, Choice, Color, Settings};
 
