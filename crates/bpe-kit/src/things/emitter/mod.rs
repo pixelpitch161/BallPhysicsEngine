@@ -112,10 +112,41 @@ pub enum Aim {
     /// Each ball keeps its own direction; how fast it goes and when it leaves are worked out so
     /// it reaches the target at the time.
     KeepMyDirections,
-    /// Each ball keeps its own direction; how fast it goes and when it leaves are found by
-    /// test-firing a lone copy of it, so it reaches the target at the time after bouncing off
-    /// whatever is in the way.
+    /// Found by test-firing a lone copy of each ball, so they all reach the target together
+    /// after bouncing off whatever is in the way.
     ThroughBounces,
+}
+
+/// When balls aimed through bounces reach the target.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum AimArrive {
+    /// The earliest moment every ball that can get there can, none going faster than Speed.
+    #[default]
+    AsSoonAsAllCan,
+    /// Arrive after from when the round fires.
+    After,
+}
+
+/// When balls aimed through bounces leave.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum AimLeave {
+    /// All of a round's balls at once, when it fires.
+    #[default]
+    Together,
+    /// Each when its own way (its own direction, near Speed) takes it there with the others.
+    WhenNeeded,
+}
+
+/// How balls aimed through bounces that leave together are steered.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum AimWay {
+    /// Each ball turns as little as it needs (at most Turn at most) and goes as fast as it
+    /// needs.
+    #[default]
+    AdjustEachBall,
+    /// Each ball keeps its own direction and only its speed changes: they can meet only where
+    /// nothing bends their paths.
+    KeepMine,
 }
 
 /// What happens to an aimed ball that can't reach the target in time.
@@ -316,11 +347,14 @@ pub struct EmitterSettings {
     /// What the balls are aimed at (a thing id): 0 for the other focus of the shape it sits on.
     #[setting(label = "Target", group = "Aim", when = "aim!=off")]
     pub aim_target: i32,
+    /// When balls aimed through bounces reach the target.
+    #[setting(label = "Arrive", group = "Aim", when = "aim=through_bounces")]
+    pub aim_arrive: AimArrive,
     /// How long after a round fires its balls reach the target.
     #[setting(
         label = "Arrive after",
         group = "Aim",
-        when = "aim!=off",
+        when = "aim=straight_in or aim=keep_my_directions or aim=through_bounces and aim_arrive=after",
         range(0.1, 60),
         span(0.1, 10),
         unit = "s",
@@ -334,6 +368,24 @@ pub struct EmitterSettings {
     /// fewest that work win).
     #[setting(label = "Bounces at least", group = "Aim", when = "aim=through_bounces", range(0, 20))]
     pub aim_bounces: u32,
+    /// How many times at most (never fewer than Bounces at least).
+    #[setting(label = "Bounces at most", group = "Aim", when = "aim=through_bounces", range(0, 50))]
+    pub aim_bounces_most: u32,
+    /// When balls aimed through bounces leave.
+    #[setting(label = "Leave", group = "Aim", when = "aim=through_bounces")]
+    pub aim_leave: AimLeave,
+    /// How balls aimed through bounces that leave together are steered.
+    #[setting(label = "Ball directions", group = "Aim", when = "aim=through_bounces and aim_leave=together")]
+    pub aim_way: AimWay,
+    /// The most a ball may turn off its own direction (Adjust each ball).
+    #[setting(
+        label = "Turn at most",
+        group = "Aim",
+        when = "aim=through_bounces and aim_leave=together and aim_way=adjust_each_ball",
+        range(0, 180),
+        unit = "°"
+    )]
+    pub aim_turn: f32,
     /// What happens to a ball that reaches it.
     #[setting(label = "Catches", group = "Catch", simple)]
     pub catches: Catches,
@@ -450,6 +502,11 @@ impl Default for EmitterSettings {
             arrive_after: 2.0,
             cant_reach: CantReach::Skip,
             aim_bounces: 1,
+            aim_bounces_most: 10,
+            aim_arrive: AimArrive::AsSoonAsAllCan,
+            aim_leave: AimLeave::Together,
+            aim_way: AimWay::AdjustEachBall,
+            aim_turn: 30.0,
             catches: Catches::Nothing,
             catch_size: 40.0,
             catch_from: CatchFrom::AnyBalls,

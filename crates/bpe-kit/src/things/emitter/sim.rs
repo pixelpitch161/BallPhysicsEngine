@@ -396,9 +396,13 @@ fn fire_round(st: &mut EmitterState, bodies: &mut Bodies, at: &Moment, log: Opti
             None => Launch { step, round, k, n, arrive: None },
             // Test-firing found when it leaves (or that it doesn't).
             Some(aim) if aim.style == Aim::ThroughBounces => match through.and_then(|r| r.balls.get(k as usize)) {
-                Some(Some(b)) => {
-                    Launch { step: b.leave, round, k, n, arrive: b.reaches.then_some(at.step + aim.arrive) }
-                }
+                Some(Some(b)) => Launch {
+                    step: b.leave,
+                    round,
+                    k,
+                    n,
+                    arrive: b.reaches.then_some(through.map_or(at.step + aim.arrive, |r| r.arrive)),
+                },
                 Some(None) => continue,
                 None => Launch { step: at.step, round, k, n, arrive: None },
             },

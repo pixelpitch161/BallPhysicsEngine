@@ -126,7 +126,13 @@ pub fn aim_lines(check: Option<&AimCheck>) -> Vec<String> {
             (false, true) => "they are skipped",
             (false, false) => "they go anyway",
         };
-        out.push(format!("{} of {} balls can't reach it in time: {what}.", c.cant_reach, c.of));
+        let when = if c.untimed { "" } else { " in time" };
+        out.push(format!("{} of {} balls can't reach it{when}: {what}.", c.cant_reach, c.of));
+    }
+    if c.bends_keep {
+        out.push(
+            "Gravity, wind or drag bend the paths: with Keep mine few balls can meet. Try Adjust each ball.".to_owned(),
+        );
     }
     if c.in_the_way {
         out.push("Something in the way: balls may miss.".to_owned());
@@ -519,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    fn through_bounces_shows_bounces_at_least_and_hides_gap() {
+    fn through_bounces_shows_its_rows_and_hides_gap() {
         let mut h = harness();
         assert_eq!(h.query_all_by_label("Bounces at least").count(), 0, "Aim off: no bounce row");
         assert!(h.query_all_by_label("Gap").next().is_some());
@@ -530,14 +536,53 @@ mod tests {
             s.resolved = resolve(&s.scene, &s.kit.registry);
         }
         h.run();
-        assert!(h.query_all_by_label("Bounces at least").next().is_some());
-        assert!(h.query_all_by_label("Speed").next().is_some(), "Speed is the first try and the tie-break");
-        assert_eq!(h.query_all_by_label("Gap").count(), 0, "each ball sets its own leaving time");
+        for row in ["Bounces at least", "Bounces at most", "Arrive", "Leave", "Ball directions", "Turn at most"] {
+            assert!(h.query_all_by_label(row).next().is_some(), "{row}");
+        }
+        assert!(h.query_all_by_label("Speed").next().is_some(), "Speed is the fastest a ball goes");
+        assert_eq!(h.query_all_by_label("Gap").count(), 0, "the round's balls leave together");
+        assert_eq!(h.query_all_by_label("Arrive after").count(), 0, "as soon as all can: no time to arrive by");
         let id = h.state().emitter;
-        let check = AimCheck { walls_move: true, ..AimCheck::default() };
+        let check = AimCheck {
+            walls_move: true,
+            bends_keep: true,
+            untimed: true,
+            cant_reach: 2,
+            of: 8,
+            skip: true,
+            ..AimCheck::default()
+        };
         h.state_mut().inspector.aim_checks.insert(id, check);
         h.run();
         assert!(h.query_by_label("The walls move: fewer balls find a way through.").is_some());
+        assert!(h.query_by_label("2 of 8 balls can't reach it: they are skipped.").is_some());
+        assert!(
+            h.query_by_label(
+                "Gravity, wind or drag bend the paths: with Keep mine few balls can meet. Try Adjust each ball."
+            )
+            .is_some()
+        );
+        // Keep mine: no turning; After: a time to arrive by.
+        {
+            let s = h.state_mut();
+            let me = s.emitter;
+            let params = &mut s.scene.things.get_mut(&me).unwrap().params;
+            params.set("aim_way", Value::Choice("keep_mine".into()));
+            params.set("aim_arrive", Value::Choice("after".into()));
+            s.resolved = resolve(&s.scene, &s.kit.registry);
+        }
+        h.run();
+        assert_eq!(h.query_all_by_label("Turn at most").count(), 0);
+        assert!(h.query_all_by_label("Arrive after").next().is_some());
+        // Leaving when needed: the balls keep their own directions.
+        {
+            let s = h.state_mut();
+            let me = s.emitter;
+            s.scene.things.get_mut(&me).unwrap().params.set("aim_leave", Value::Choice("when_needed".into()));
+            s.resolved = resolve(&s.scene, &s.kit.registry);
+        }
+        h.run();
+        assert_eq!(h.query_all_by_label("Ball directions").count(), 0);
     }
 
     #[test]
