@@ -232,3 +232,12 @@ Records, outline points and programs are shared by every piece (written once).
 - Tests: runtime `a_break_with_a_look_keeps_its_remains_until_the_look_is_over`; kit `rules/remains/tests.rs` (looks,
   cells, sites, motion, bounces) and five draw tests in `rules/tests.rs`; `tests/break_pictures.rs` (Fade, Pop,
   Shatter of a two-colour square, Shatter of a ball, the same picture however it got there).
+- After the Opus review: pieces start where they are (no `on_its_side`: each site is on its own side of every wall,
+  and `keep_clear` keeps it there); a broken ball's instance is made as it was at the break (its Turning stops, it
+  faces the way it was going, no stretch); the light probe drops every broken thing at once (it is also the physics'
+  probe, and looks are drawn only); `showing` is true while any record of the thing shows (a ball shattered earlier
+  outlives a later whole Vanish); a shape with no layered Look card still fades and shatters (`wear_layers`); cells
+  reach 4 px past what is drawn (`MARGIN`); a break's balls share one cut (`Cuts`), each turned its own seeded way.
+- Known: pieces that bounce are flown afresh each frame against the walls as they stand then (like particles), so
+  with moving walls a bounce can shift between frames; every scene now reads `path_points` in the vertex stage
+  (fine on DX12, Vulkan and Metal).

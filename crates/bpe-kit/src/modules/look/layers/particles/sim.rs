@@ -176,7 +176,7 @@ pub fn simulate(layer: &ParticlesLayer, e: &Emission, k: u32, now: f64, motion: 
 
 /// `p` moved, where needed, to the side of each hollow wall that `from` is on: a shape that
 /// has shrunk or moved since the particle was let off doesn't shut it out.
-pub(crate) fn on_its_side(mut p: Vec2, from: Vec2, radius: f32, walls: &[&Wall]) -> Vec2 {
+fn on_its_side(mut p: Vec2, from: Vec2, radius: f32, walls: &[&Wall]) -> Vec2 {
     for wall in walls {
         if wall.solid || wall.outline.inside(p) == wall.outline.inside(from) {
             continue;

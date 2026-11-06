@@ -142,10 +142,41 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
     }
     let index = push_form(&form, BODY_WHITE, thing_code(cx.thing.id), frame);
     // Ripples measure from its outline (once, not again for the part over its Blend layer).
-    if frame.ripples && part & OVER == 0 {
+    // A shattered shape's outline is in pieces, so it gives no ripples.
+    let shattered = remains.as_ref().is_some_and(|(_, l)| l.look == crate::rules::breaks::BreakLook::Shatter);
+    if frame.ripples && part & OVER == 0 && !shattered {
         let points: Vec<[f32; 2]> = outline_world(&form).iter().map(|p| p.to_array()).collect();
         frame.push_ripple_outline(form.center.to_array(), &points, form.half);
     }
+    wear_layers(cx, look, &form, index, part, frame);
+    let path = &mut frame.paths[index];
+    if let Some((r, l)) = &remains {
+        use crate::rules::remains::{draw, shatter::Edge};
+        match whole {
+            Some(s) => path.clip[2] = 1.0 - s.alpha.clamp(0.0, 1.0),
+            None if l.look == crate::rules::breaks::BreakLook::Shatter => {
+                let edge = match (&form.points, form.ellipse) {
+                    (Some(points), _) => Edge::Points(points),
+                    (None, axes) => Edge::Ellipse(axes.unwrap_or(Vec2::ONE)),
+                };
+                let half = form.half / form.scale.max(1e-3);
+                let walls = draw::walls_of(cx.world);
+                draw::shatter_shape(r, l, cx.thing.id.0, edge, half, index, cx.time, &walls, frame);
+            }
+            None => {}
+        }
+    }
+}
+
+/// Puts the shape's Look layers on its instance at `index` (pushed for `form`).
+fn wear_layers(
+    cx: &DrawCx,
+    look: &bpe_core::ResolvedSlot,
+    form: &WallForm,
+    index: usize,
+    part: u32,
+    frame: &mut Frame,
+) {
     let Some(stack) = ShapeStack::of(look) else { return };
     let geometry =
         Geometry { points: form.points.clone(), ellipse: form.ellipse, half: form.half / form.scale.max(1e-3) };
@@ -183,22 +214,6 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
     path.layers = [first, count, program, part];
     path.c[2] = stack.reach_past();
     path.hit = hit;
-    if let Some((r, l)) = &remains {
-        use crate::rules::remains::{draw, shatter::Edge};
-        match whole {
-            Some(s) => path.clip[2] = 1.0 - s.alpha.clamp(0.0, 1.0),
-            None if l.look == crate::rules::breaks::BreakLook::Shatter => {
-                let edge = match (&form.points, form.ellipse) {
-                    (Some(points), _) => Edge::Points(points),
-                    (None, axes) => Edge::Ellipse(axes.unwrap_or(Vec2::ONE)),
-                };
-                let half = form.half / form.scale.max(1e-3);
-                let walls = draw::walls_of(cx.world);
-                draw::shatter_shape(r, l, cx.thing.id.0, edge, half, index, cx.time, &walls, frame);
-            }
-            None => {}
-        }
-    }
 }
 
 /// The hit data of the shape `cx` is drawing, for its Flash and Colour on hit sub-layers: how long

@@ -119,11 +119,11 @@ impl Probe {
         // What the rules changed, as the frame builder applies it.
         if let Some(rules) = world.rules().filter(|r| r.changes_picture()) {
             rules.apply_whole(&mut now, time, |_| true);
-            // A broken light whose look still plays out stays, as the frame keeps it.
+            // Every broken thing is gone at once here, even while its Break look still plays out
+            // in the picture: the probe is also what the physics senses light with, and break
+            // looks are drawn only.
             for id in rules.broken() {
-                if !rules.showing(id, time) {
-                    now.things.remove(&id);
-                }
+                now.things.remove(&id);
             }
         }
         // Gradients' companions, as the frame builder applies them (light colours can be
