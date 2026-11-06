@@ -217,6 +217,23 @@ impl ShapeStack {
         self.drawn.len()
     }
 
+    /// Where layer `id`'s record is among [`ShapeStack::records`] (its sub-layers' follow it):
+    /// `None` for a layer that writes none or is past [`ShapeStack::kept`].
+    pub fn record_of(&self, id: LayerId) -> Option<usize> {
+        if id == self.body_id {
+            return Some(0);
+        }
+        let mut at = 1;
+        for (layer, d, subs) in &self.drawn[..self.kept()] {
+            let n = records_of(d, subs);
+            if n > 0 && *layer == id {
+                return Some(at);
+            }
+            at += n;
+        }
+        None
+    }
+
     /// How the whole shape mixes with what is behind it: its Blend layer's, Normal without one.
     pub fn whole_blend(&self) -> (Blend, f32, bool) {
         self.blend.as_ref().map_or((Blend::Normal, 1.0, false), |b| (b.blend, b.blend_amount, b.blend_each))

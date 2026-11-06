@@ -1230,7 +1230,8 @@ fn surface_chip(ui: &mut Ui, kind: usize, name: &str, on: bool) -> egui::Respons
     let text = ui.painter().layout_no_wrap(name.to_owned(), font, if on { style::TEXT_STRONG } else { style::TEXT });
     let size = egui::vec2(26.0 + text.size().x + 8.0, 24.0);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
-    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, on, name));
+    // Named as a surface: a Lava surface beside a Lava effect.
+    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, on, format!("{name} surface")));
     let response = response.on_hover_text(format!("Make it {}", name.to_lowercase()));
     let painter = ui.painter();
     if response.hovered() {
@@ -1589,7 +1590,7 @@ mod tests {
     #[test]
     fn a_surface_chip_sets_the_surface_and_its_numbers_in_one_edit() {
         let mut h = harness(Some(ThingId(2)));
-        h.get_by_role_and_label(Role::Button, "Chrome").click();
+        h.get_by_role_and_label(Role::Button, "Chrome surface").click();
         h.run();
         let card = &h.state().scene.things[&ThingId(2)].slots[&SlotId::Look];
         assert_eq!(card.params.get("surface"), Some(&Value::Choice("chrome".into())));

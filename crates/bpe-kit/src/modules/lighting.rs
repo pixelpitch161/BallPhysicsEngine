@@ -234,6 +234,22 @@ pub struct LightingSettings {
     /// How the back wall takes light.
     #[setting(label = "Wall surface", when = "depth=stage", group = "Stage")]
     pub wall_surface: WallSurface,
+    /// Blurs what is nearer or farther than the focus, like a camera lens (Stage).
+    #[setting(label = "Depth of field", when = "depth=stage", group = "Stage")]
+    pub depth_of_field: bool,
+    /// How far toward the camera the sharp depth is: 0 the balls' middles, below 0 toward the wall.
+    #[setting(
+        label = "Focus at",
+        when = "depth=stage and depth_of_field",
+        span(-480, 480),
+        unit = "px",
+        keyframe,
+        group = "Stage"
+    )]
+    pub focus_at: f32,
+    /// How quickly things blur away from the focus.
+    #[setting(label = "Blur", when = "depth=stage and depth_of_field", span(0, 0.2), keyframe, group = "Stage")]
+    pub dof_blur: f32,
     /// How much light lit things that block light bounce onto what is round them.
     #[setting(label = "Bounce light", span(0, 2), keyframe, group = "Room")]
     pub bounce: f32,
@@ -380,6 +396,9 @@ pub struct LightingSettings {
     /// How hard the lighting works, while editing and in the video alike.
     #[setting(label = "Quality", group = "Quality")]
     pub quality: Quality,
+    /// How many times a reflection bounces between mirror-like balls before it settles for the sky.
+    #[setting(label = "Reflection depth", range(1, 1e9), span(1, 6), group = "Quality")]
+    pub reflection_depth: u32,
     /// What shows the lighting scenes: Off leaves every light as it is.
     #[setting(label = "Scenes play", group = "Scenes")]
     pub scenes_play: ScenesPlay,
@@ -461,6 +480,9 @@ impl Default for LightingSettings {
             floor_blur: 0.25,
             floor_reflection: 1.0,
             wall_surface: WallSurface::Matte,
+            depth_of_field: false,
+            focus_at: 0.0,
+            dof_blur: 0.04,
             bounce: 0.0,
             glow_reach: 2000.0,
             light_blooms: 0.0,
@@ -494,6 +516,7 @@ impl Default for LightingSettings {
             glow_from: GlowFrom::GlowColour,
             glow_colour: Color::rgb(0x7D, 0xFF, 0x9A),
             quality: Quality::Good,
+            reflection_depth: 3,
             scenes_play: ScenesPlay::Off,
             show_scene: 1,
             scene_every: 4.0,
@@ -583,6 +606,12 @@ impl LightingSettings {
                 let g = self.glow_colour.to_linear();
                 [g[0], g[1], g[2], if self.glow_from == GlowFrom::TheLight { 1.0 } else { 0.0 }]
             },
+            dof: [
+                f32::from(u8::from(stage && self.depth_of_field && self.dof_blur > 0.0)),
+                finite(self.focus_at),
+                finite(self.dof_blur).max(0.0),
+                self.reflection_depth.max(1) as f32,
+            ],
         }
     }
 }

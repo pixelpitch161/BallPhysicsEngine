@@ -112,7 +112,7 @@ fn stage_room() -> (Scene, f32) {
 }
 
 #[test]
-fn a_stage_frame_has_a_sphere_per_ball_and_a_flat_one_none() {
+fn a_stage_frame_and_a_flat_one_have_a_sphere_per_ball() {
     let (scene, radius) = stage_room();
     assert!(radius > 5.0, "{radius}");
     let lit = frame_of(&scene, 0.0).light.unwrap();
@@ -120,8 +120,9 @@ fn a_stage_frame_has_a_sphere_per_ball_and_a_flat_one_none() {
     assert_eq!(lit.settings.stage[0], 1.0);
     // Two things have a Look: the ball and the shape, surfaces 1 and 2.
     assert!(lit.surfaces.len() >= 3, "{:?}", lit.surfaces);
+    // Flat has its spheres too (part 2b: reflections and glass read them; shadows never do).
     let flat = frame_of(&scenes::lit_room(&reg()), 0.0).light.unwrap();
-    assert!(flat.spheres.is_empty());
+    assert_eq!(flat.spheres.len(), 1);
     assert_eq!(flat.settings.stage[0], 0.0);
 }
 
@@ -218,6 +219,8 @@ fn chrome_mirrors_the_sky_bright_above_and_dark_below() {
     set_lighting(&mut scene, "sky_light", Value::Number(1.0));
     let ball = thing_of(&scene, "balls");
     set_surface(&mut scene, ball, SurfaceKind::Chrome);
+    // The sky alone (part 2b's The scene would show the wall round its rim).
+    scene.card_mut(ball, SlotId::Look).unwrap().params.set("reflects", Value::Choice("a_sky_gradient".into()));
     let pixels = draw(&mut gpu, &scene, "chrome");
     let top = at(&pixels, 0.0, -0.75 * r);
     let bottom = at(&pixels, 0.0, 0.75 * r);

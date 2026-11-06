@@ -447,6 +447,12 @@ pub fn sub_kinds() -> Vec<Kind> {
         sub(SUB_HUE, "Colour on hit", "Its layer's colours turn round the wheel on every hit.", SubHue::defs),
         sub(gives_light::SUB_LIGHT, "Gives off light", gives_light::HELP, gives_light::GivesLight::defs),
         sub(heat::SUB_HEAT, "Heat glow", heat::HELP, heat::SubHeat::defs),
+        sub(
+            crate::modules::look::surface::SUB_SURFACE,
+            "Surface",
+            crate::modules::look::surface::SUB_HELP,
+            crate::modules::look::surface::sub_defs,
+        ),
     ]
 }
 
@@ -530,6 +536,7 @@ mod tests {
                 SUB_HUE,
                 gives_light::SUB_LIGHT,
                 heat::SUB_HEAT,
+                crate::modules::look::surface::SUB_SURFACE,
                 GROUP_GRADIENT,
                 GROUP_SHADER
             ],
@@ -582,7 +589,7 @@ mod tests {
             let takes = drawn || k.id() == BODY;
             assert_eq!(k.takes_subs(), takes, "{}: drawn layers and the Body but Blend take sub-layers", k.id());
         }
-        assert_eq!(reg.layers_for(CARD).filter(|k| k.section() == LayerSection::Sub).count(), 12);
+        assert_eq!(reg.layers_for(CARD).filter(|k| k.section() == LayerSection::Sub).count(), 13);
     }
 
     #[test]

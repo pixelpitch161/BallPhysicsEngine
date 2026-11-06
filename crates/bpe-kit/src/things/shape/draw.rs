@@ -51,14 +51,35 @@ impl ThingDraw for ShapeDraw {
         }
     }
 
-    /// The shape's surface, for a lit frame.
+    /// The shape's surface (and its layers' own), and its outline when it is a mirror, for a lit
+    /// frame.
     fn light(&self, cx: &DrawCx, scene: &mut bpe_gfx::LightScene) {
         use crate::modules::look::surface;
         let Some(look) = cx.resolved.slots.get(&SlotId::Look).filter(|l| surface::has_surface(&l.kind)) else {
             return;
         };
         let index = surface::surface_index(cx.scene, cx.thing.id);
-        scene.set_surface(index, surface::of_card(look).gpu(bpe_gfx::SurfaceGpu::SHAPE));
+        let s = surface::of_card(look);
+        scene.set_surface(index, s.gpu(bpe_gfx::SurfaceGpu::SHAPE));
+        scene.refracts |= s.see_through();
+        surface::Stamps::of(cx.scene, cx.thing.id, look).fill(scene, bpe_gfx::SurfaceGpu::SHAPE);
+        if scene.mirrors.len() < bpe_gfx::MOST_MIRRORS
+            && let Some(wall) = cx.world.walls.get(&cx.thing.id)
+        {
+            let form = wall_form(wall);
+            if let Some(mut mirror) = s.mirror_gpu(form.scale) {
+                let points = outline_world(&form);
+                let first = scene.segments.len();
+                for k in 0..points.len() {
+                    let (a, b) = (points[k], points[(k + 1) % points.len()]);
+                    scene.segments.push([a.x, a.y, b.x, b.y]);
+                }
+                mirror.a[0] = first as f32;
+                mirror.a[1] = (scene.segments.len() - first) as f32;
+                mirror.b[2] = form.half;
+                scene.mirrors.push(mirror);
+            }
+        }
     }
 
     /// Its Look's particles.
@@ -117,12 +138,17 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
     crate::modules::look::layers::lighting::stamp(&mut records, link, frame.light.as_mut());
     let first = frame.look_layers.len() as u32;
     let count = records.len() as u32;
-    // Every record names the shape's surface (read only by a lit frame's light pass).
-    let surface = crate::modules::look::surface::surface_index(cx.scene, cx.thing.id) as f32;
-    frame.look_layers.extend(records.into_iter().map(|mut r| {
-        r.light[3] = surface;
-        r
-    }));
+    // Every record names the shape's surface, or its layer's own (read only by a lit frame's light
+    // passes), and the body carries the Surface's Lens: how much the shape bulges.
+    use crate::modules::look::surface;
+    surface::Stamps::of(cx.scene, cx.thing.id, look).apply(&mut records, |layer| stack.record_of(layer));
+    if surface::has_surface(&look.kind)
+        && let Some(body) = records.first_mut()
+    {
+        let lens = surface::of_card(look).lens;
+        body.light[2] = if lens.is_finite() { lens.max(0.0) } else { 0.0 };
+    }
+    frame.look_layers.extend(records);
     // Its Shader layers' program, named once per frame, as balls name theirs.
     let program = stack.program().map_or(PathInstance::NO_PROGRAM, |p| {
         match frame.programs.iter().position(|q| q.key == p.key) {
@@ -217,6 +243,33 @@ pub fn wall_form(wall: &Wall) -> WallForm {
             ellipse: None,
         },
     }
+}
+
+/// The most corners a mirror wall's outline takes (a circle or an ellipse is cut into this many).
+const MIRROR_POINTS: usize = 128;
+
+/// `form`'s outline in the world, as corners: a circle and an ellipse cut into [`MIRROR_POINTS`].
+fn outline_world(form: &WallForm) -> Vec<Vec2> {
+    let unit: Vec<Vec2> = match (&form.points, form.ellipse) {
+        // Thinned to at most 512 (the most a mirror's outline tests), every step-th corner.
+        (Some(points), _) => points.iter().step_by(points.len().div_ceil(512).max(1)).copied().collect(),
+        (None, axes) => {
+            let axes = axes.unwrap_or(Vec2::ONE);
+            (0..MIRROR_POINTS)
+                .map(|k| {
+                    let a = k as f32 / MIRROR_POINTS as f32 * std::f32::consts::TAU;
+                    Vec2::new(a.cos() * axes.x, a.sin() * axes.y)
+                })
+                .collect()
+        }
+    };
+    let (sin, cos) = form.turn.sin_cos();
+    unit.into_iter()
+        .map(|p| {
+            let q = p * form.scale;
+            form.center + Vec2::new(q.x * cos - q.y * sin, q.x * sin + q.y * cos)
+        })
+        .collect()
 }
 
 /// Adds `form` to `frame` as one plain shape in `color`, giving its index in `frame.paths`.

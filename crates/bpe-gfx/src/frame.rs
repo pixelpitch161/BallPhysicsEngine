@@ -1020,6 +1020,9 @@ pub struct LightingGpu {
     pub sky_top: [f32; 4],
     /// The sky's bottom colour (linear rgb); w spare.
     pub sky_bottom: [f32; 4],
+    /// Depth of field (part 2b, Stage): on (1/0), focus depth (z), blur (px of blur a px of depth
+    /// away gives), and Reflection depth (how many mirror bounces a reflection follows).
+    pub dof: [f32; 4],
 }
 
 /// How a surface takes light (`SurfaceGpu` in lighting.wgsl): an entry of
@@ -1030,9 +1033,16 @@ pub struct LightingGpu {
 pub struct SurfaceGpu {
     /// Roughness, metal, clear coat, see-through.
     pub a: [f32; 4],
-    /// F0 (how much it reflects looked at straight on), toon steps (0 smooth), reflects the sky
-    /// (1) or nothing (0), kind ([`SurfaceGpu::SHEET`], `BALL`, `SHAPE`).
+    /// F0 (how much it reflects looked at straight on), toon steps (0 smooth), what it mirrors (0
+    /// nothing, 1 the sky, 2 the scene), kind ([`SurfaceGpu::SHEET`], `BALL`, `SHAPE`).
     pub b: [f32; 4],
+    /// Part 2b: rainbow split, soak, film, flakes.
+    pub c: [f32; 4],
+    /// Flake size (of a ball's radius), brushing, brush lines (0 spun round the middle, 1 straight),
+    /// brush angle (radians).
+    pub d: [f32; 4],
+    /// Frost, rim, inner glow, bends light (index of refraction).
+    pub e: [f32; 4],
 }
 
 impl SurfaceGpu {
@@ -1041,7 +1051,29 @@ impl SurfaceGpu {
     pub const BALL: f32 = 1.0;
     pub const SHAPE: f32 = 2.0;
     /// A plain sheet: matte, reflecting nothing (index 0 of every table).
-    pub const MATTE: SurfaceGpu = SurfaceGpu { a: [1.0, 0.0, 0.0, 0.0], b: [0.0; 4] };
+    pub const MATTE: SurfaceGpu =
+        SurfaceGpu { a: [1.0, 0.0, 0.0, 0.0], b: [0.0; 4], c: [0.0; 4], d: [0.0; 4], e: [0.0, 0.0, 0.0, 1.0] };
+    /// Added to a record's surface index (`LayerGpu::light[3]`) when the surface is see-through:
+    /// the behind picture leaves such records out (see [`LightScene::refracts`]). Every other
+    /// reader takes the index modulo this (and the glass flag modulo [`SurfaceGpu::OWN_FLAG`]).
+    pub const GLASS_FLAG: f32 = 4096.0;
+    /// Added to a layer's record when the layer wears a surface of its own (a Surface sub-layer):
+    /// it then covers the surface picture inside its thing even when it doesn't block light.
+    pub const OWN_FLAG: f32 = 8192.0;
+}
+
+/// A shape whose outline is a mirror (part 2b's Mirror walls; `MirrorGpu` in lighting.wgsl): its
+/// outline is `count` segments of [`LightScene::segments`] from `first`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct MirrorGpu {
+    /// First segment, how many, which side shows the mirror (1 outside, 2 inside, 3 both),
+    /// strength.
+    pub a: [f32; 4],
+    /// Squeeze, the shape's half-size (world), half its band's thickness (world), 0.
+    pub b: [f32; 4],
+    /// The mirror's tint (linear rgb); w spare.
+    pub c: [f32; 4],
 }
 
 /// A ball as a sphere on the stage (`SphereGpu` in lighting.wgsl).
@@ -1052,6 +1084,8 @@ pub struct SphereGpu {
     pub a: [f32; 4],
     /// The colour of the light it lets through (linear rgb); w spare.
     pub b: [f32; 4],
+    /// Its surface index (part 2b: what a reflection of it takes light as), 0, 0, 0.
+    pub c: [f32; 4],
 }
 
 impl LightingGpu {
@@ -1098,12 +1132,20 @@ pub struct LightScene {
     /// How each surface takes light, by surface index; 0 (and any index never set) is
     /// [`SurfaceGpu::MATTE`].
     pub surfaces: Vec<SurfaceGpu>,
-    /// Every ball as a sphere, for shadows and contact shading in Stage.
+    /// Every ball as a sphere: shadows and contact shading in Stage, reflections in both.
     pub spheres: Vec<SphereGpu>,
     /// The Camera thing's Stage camera, when it is on (lighting part 5): the lit picture is seen
     /// again from it. Only read in Stage.
     pub camera: Option<crate::StageCamera>,
+    /// Shapes whose outline is a mirror (part 2b), at most `MOST_MIRRORS`.
+    pub mirrors: Vec<MirrorGpu>,
+    /// Whether something drawn is see-through (part 2b): the frame is then drawn once more without
+    /// it, the picture glass bends.
+    pub refracts: bool,
 }
+
+/// The most mirror walls a frame takes (the rest are left out).
+pub const MOST_MIRRORS: usize = 16;
 
 impl LightScene {
     /// Whether a light is ultraviolet.

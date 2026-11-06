@@ -155,7 +155,21 @@ fn push_light(
     if s.kind == LightType::Laser {
         let shapes = meets_of(s.at_shapes);
         let balls = meets_of(s.at_balls);
-        let meets = |_thing: ThingId, ball: bool| if ball { balls } else { shapes };
+        // Glass bends the beam through it (lighting part 2b's See-through and Bends light), unless
+        // the beam is to stop there.
+        let meets = |thing: ThingId, ball: bool| {
+            let plain = if ball { balls } else { shapes };
+            let glass = cx
+                .scene
+                .things
+                .get(&thing)
+                .and_then(|t| t.slots.get(&bpe_core::SlotId::Look))
+                .and_then(crate::modules::look::surface::glass_of);
+            match glass {
+                Some(index) if plain != Meets::Stop => Meets::Bend { index },
+                _ => plain,
+            }
+        };
         let empty = laser::Scenery::default();
         let scenery = scenery.unwrap_or(&empty);
         let path = laser::trace(scenery, place.at, dir, s.beam_length.max(0.0), s.bounces, place.ball, &meets);

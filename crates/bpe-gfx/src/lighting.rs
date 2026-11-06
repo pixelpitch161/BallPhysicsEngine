@@ -13,7 +13,7 @@
 
 use bytemuck::{Pod, Zeroable};
 
-use crate::frame::{LightGpu, LightScene, SphereGpu, SurfaceGpu};
+use crate::frame::{LightGpu, LightScene, MOST_MIRRORS, MirrorGpu, SphereGpu, SurfaceGpu};
 use crate::{Frame, GrowableBuffer, HDR_FORMAT};
 
 /// The light field's pictures: what it is made from and what it gives.
@@ -51,6 +51,11 @@ struct StageUniform {
     sky_bottom: [f32; 4],
     grid: [f32; 4],
     grid_size: [f32; 4],
+    /// Part 2b: depth of field (on, focus, blur, Reflection depth).
+    dof: [f32; 4],
+    /// How many mirror walls, 1 with a behind picture, 1 with the background's own light, 1 in
+    /// Stage with a light field.
+    counts: [f32; 4],
 }
 
 /// The most cells a sphere grid has along a side.
@@ -73,7 +78,7 @@ pub struct SphereGrid {
 }
 
 /// How far past its edge a ball's contact shading reaches, in its radii.
-pub const SPHERE_MARGIN: f32 = 2.0;
+pub const SPHERE_MARGIN: f32 = 3.0;
 
 impl SphereGrid {
     pub fn build(spheres: &[SphereGpu]) -> SphereGrid {
@@ -162,7 +167,7 @@ struct GlowUniform {
 /// Lights up), the mix and the extras pass.
 const GLOW_BINDINGS: &[u32] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 const DIRECT_BINDINGS: &[u32] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
-const MIX_BINDINGS: &[u32] = &[2, 3, 7, 8, 9, 10, 11, 12, 13];
+const MIX_BINDINGS: &[u32] = &[2, 3, 6, 7, 8, 9, 10, 11, 12, 13];
 const EXTRAS_BINDINGS: &[u32] = &[2, 6, 7, 8, 9, 14];
 
 /// The longest gap between two frames over which the remembered light carries on; a longer jump
@@ -244,6 +249,12 @@ struct Targets {
     dummy: (wgpu::Texture, wgpu::TextureView),
     /// The light pass's picture when a glossy floor mirrors it afterwards (made when first needed).
     stage: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// A second such picture when depth of field follows the floor (part 2b).
+    stage_more: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// The picture without what is see-through, drawn when glass bends what is behind it.
+    behind: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// The background's own light alone, copied before the lamps' light is added over it.
+    bg_glow: Option<(wgpu::Texture, wgpu::TextureView)>,
     dummy_colour: (wgpu::Texture, wgpu::TextureView),
     /// Part 4: what glows under UV (light pass 5) and the tags (pass 6: what catches beams, link
     /// numbers), full size.
@@ -284,6 +295,10 @@ pub(crate) struct Lighting {
     stir: wgpu::RenderPipeline,
     /// The glossy floor's pass (Stage).
     floor: wgpu::RenderPipeline,
+    /// Depth of field (Stage, part 2b).
+    dof: wgpu::RenderPipeline,
+    /// Mirror walls (part 2b).
+    mirror: wgpu::RenderPipeline,
     sampler: wgpu::Sampler,
     /// Surfaces and the stage (group 2 of the mix and floor passes).
     stage_layout: wgpu::BindGroupLayout,
@@ -292,6 +307,7 @@ pub(crate) struct Lighting {
     spheres: GrowableBuffer,
     cells: GrowableBuffer,
     items: GrowableBuffer,
+    mirrors: GrowableBuffer,
     /// The base uniform, then one per jump flood pass (each with its own step).
     uniforms: Vec<wgpu::Buffer>,
     /// The 1b passes' uniforms: the base one, then one per cascade of each run, then one per
@@ -493,7 +509,7 @@ impl Lighting {
         });
         let stage_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("lighting stage layout"),
-            entries: &[uniform(0), storage(1), storage(2), storage(3), storage(4)],
+            entries: &[uniform(0), storage(1), storage(2), storage(3), storage(4), storage(5), tex(6, true)],
         });
         let stage_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("lighting pipeline layout (stage)"),
@@ -599,12 +615,15 @@ impl Lighting {
             extras: make("light extras", "fs_extras", &extras_pipeline_layout, &[GI_FORMAT], None),
             stir,
             floor: make("glossy floor", "fs_floor", three, &[HDR_FORMAT], None),
+            dof: make("depth of field", "fs_dof", three, &[HDR_FORMAT], None),
+            mirror: make("mirror walls", "fs_mirror", three, &[HDR_FORMAT], None),
             stage_uniform: uniform_buffer(device, "lighting stage uniform", std::mem::size_of::<StageUniform>()),
             stage_layout,
             surfaces: GrowableBuffer::storage("light surfaces"),
             spheres: GrowableBuffer::storage("light spheres"),
             cells: GrowableBuffer::storage("light sphere cells"),
             items: GrowableBuffer::storage("light sphere items"),
+            mirrors: GrowableBuffer::storage("light mirrors"),
             layout,
             glow_layout,
             direct_layout,
@@ -688,7 +707,7 @@ impl Lighting {
             lit: texture(device, "lit colour", full, HDR_FORMAT, true),
             surface: texture(device, "surface", full, HDR_FORMAT, true),
             emission: texture(device, "light given off", full, HDR_FORMAT, true),
-            direct: texture(device, "direct light", full, HDR_FORMAT, false),
+            direct: texture(device, "direct light", full, HDR_FORMAT, true),
             air: texture(device, "light in the air", full, HDR_FORMAT, false),
             seeds: [seeds(), seeds(), seeds(), seeds()],
             field: texture(device, "light field", small, FIELD_FORMAT, false),
@@ -709,6 +728,9 @@ impl Lighting {
             extras: None,
             stir: None,
             stage: None,
+            stage_more: None,
+            behind: None,
+            bg_glow: None,
         });
         // New pictures: nothing is remembered.
         self.memory.last = None;
@@ -750,6 +772,19 @@ impl Lighting {
         self.targets.as_ref().map(|t| t.direct.1.clone())
     }
 
+    /// The picture glass shows (bent) behind it, made when `scene` has see-through things: draw
+    /// the frame into it with what is see-through left out.
+    pub fn behind(&mut self, device: &wgpu::Device, scene: &LightScene) -> Option<(wgpu::Texture, wgpu::TextureView)> {
+        let t = self.targets.as_mut()?;
+        if !scene.refracts {
+            return None;
+        }
+        if t.behind.is_none() {
+            t.behind = Some(texture(device, "behind glass", (t.width, t.height), HDR_FORMAT, true));
+        }
+        t.behind.clone()
+    }
+
     /// The 1b uniform at `index`, made the first time.
     fn glow_uniform(&mut self, device: &wgpu::Device, index: usize) -> wgpu::Buffer {
         while self.glow_uniforms.len() <= index {
@@ -779,8 +814,23 @@ impl Lighting {
         let s = &scene.settings;
         // A glossy floor mirrors the lit picture: the mix draws into a picture of its own.
         let reflects = s.stage[0] > 0.5 && s.floor[0] > 0.5 && s.floor[2] > 0.5;
-        if reflects && let Some(t) = self.targets.as_mut().filter(|t| t.stage.is_none()) {
+        // Depth of field blurs the finished light: one more picture in the chain.
+        let blurs = s.stage[0] > 0.5 && s.dof[0] > 0.5;
+        // Mirror walls show the lit picture again, smoothly sampled: a pass of their own.
+        let mirror_walls = !scene.mirrors.is_empty();
+        let chained = usize::from(reflects) + usize::from(blurs) + usize::from(mirror_walls);
+        if chained > 0
+            && let Some(t) = self.targets.as_mut().filter(|t| t.stage.is_none())
+        {
             t.stage = Some(texture(device, "lit stage", (t.width, t.height), HDR_FORMAT, false));
+        }
+        if chained > 1
+            && let Some(t) = self.targets.as_mut().filter(|t| t.stage_more.is_none())
+        {
+            t.stage_more = Some(texture(device, "lit stage", (t.width, t.height), HDR_FORMAT, false));
+        }
+        if background_glows && let Some(t) = self.targets.as_mut().filter(|t| t.bg_glow.is_none()) {
+            t.bg_glow = Some(texture(device, "background light", (t.width, t.height), HDR_FORMAT, true));
         }
         let (_, steps) = quality_tier(s.more[2]);
         let (fw, fh) = self.targets.as_ref().expect("checked").field_size();
@@ -890,7 +940,12 @@ impl Lighting {
             cascade: [0.0, count as f32, gi_steps(s.more[2]) as f32, 0.0],
             glow: [bounce, reach, blooms, 0.0],
             air: s.air,
-            on: [f32::from(u8::from(field_on)), f32::from(u8::from(blooms_on)), f32::from(u8::from(haze_on)), 0.0],
+            on: [
+                f32::from(u8::from(field_on)),
+                f32::from(u8::from(blooms_on)),
+                f32::from(u8::from(haze_on)),
+                f32::from(u8::from(s.stage[0] > 0.5)),
+            ],
             haze: s.haze,
             haze_more: [s.haze_more[0], s.haze_more[1], if stirring { s.haze_more[2] } else { 0.0 }, 0.0],
             water: s.water,
@@ -947,14 +1002,17 @@ impl Lighting {
         surfaces[0] = SurfaceGpu::MATTE;
         self.surfaces.upload(device, queue, bytemuck::cast_slice(&surfaces));
         let stage = s.stage[0] > 0.5;
-        let grid = if stage { SphereGrid::build(&scene.spheres) } else { SphereGrid::build(&[]) };
-        let spheres: &[SphereGpu] =
-            if stage && !scene.spheres.is_empty() { &scene.spheres } else { &[SphereGpu { a: [0.0; 4], b: [0.0; 4] }] };
+        // Flat reads the spheres too (part 2b: reflections and glass), but never for shadows.
+        let grid = SphereGrid::build(&scene.spheres);
+        let spheres: &[SphereGpu] = if !scene.spheres.is_empty() { &scene.spheres } else { &[SphereGpu::default()] };
         self.spheres.upload(device, queue, bytemuck::cast_slice(spheres));
         self.cells.upload(device, queue, bytemuck::cast_slice(&grid.cells));
         let items: &[u32] = if grid.items.is_empty() { &[0] } else { &grid.items };
         self.items.upload(device, queue, bytemuck::cast_slice(items));
-        let sphere_count = if stage && !grid.items.is_empty() { scene.spheres.len() as f32 } else { 0.0 };
+        let sphere_count = if !grid.items.is_empty() { scene.spheres.len() as f32 } else { 0.0 };
+        let mirrors: &[MirrorGpu] = if scene.mirrors.is_empty() { &[MirrorGpu::default()] } else { &scene.mirrors };
+        self.mirrors.upload(device, queue, bytemuck::cast_slice(mirrors));
+        let has_behind = self.targets.as_ref().is_some_and(|t| t.behind.is_some()) && scene.refracts;
         let uniform = StageUniform {
             room: s.stage,
             floor: s.floor,
@@ -963,11 +1021,21 @@ impl Lighting {
             sky_bottom: s.sky_bottom,
             grid: grid.grid,
             grid_size: grid.size,
+            dof: s.dof,
+            counts: [
+                scene.mirrors.len().min(MOST_MIRRORS) as f32,
+                f32::from(u8::from(has_behind)),
+                f32::from(u8::from(background_glows)),
+                f32::from(u8::from(stage && field_on)),
+            ],
         };
         queue.write_buffer(&self.stage_uniform, 0, bytemuck::bytes_of(&uniform));
         fn buffer(b: &GrowableBuffer) -> wgpu::BindingResource<'_> {
             b.buffer.as_ref().expect("just uploaded").as_entire_binding()
         }
+        let t = self.targets.as_ref().expect("checked");
+        let behind_view = t.behind.as_ref().filter(|_| has_behind).map_or(&t.dummy_colour.1, |b| &b.1);
+        let bg_view = t.bg_glow.as_ref().filter(|_| background_glows).map_or(&t.dummy_colour.1, |b| &b.1);
         let stage_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("lighting stage"),
             layout: &self.stage_layout,
@@ -977,10 +1045,11 @@ impl Lighting {
                 wgpu::BindGroupEntry { binding: 2, resource: buffer(&self.spheres) },
                 wgpu::BindGroupEntry { binding: 3, resource: buffer(&self.cells) },
                 wgpu::BindGroupEntry { binding: 4, resource: buffer(&self.items) },
+                wgpu::BindGroupEntry { binding: 5, resource: buffer(&self.mirrors) },
+                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(behind_view) },
             ],
         });
 
-        let t = self.targets.as_ref().expect("checked");
         let group_on = |uniform: &wgpu::Buffer,
                         picture: &wgpu::TextureView,
                         field: &wgpu::TextureView,
@@ -1096,6 +1165,14 @@ impl Lighting {
         // The light from Light things, on surfaces and in the air, added over the background's
         // own light when it gives any.
         let direct_load = if background_glows { wgpu::LoadOp::Load } else { clear };
+        if let Some((bg, _)) = t.bg_glow.as_ref().filter(|_| background_glows) {
+            // Kept apart for the stage and shiny surfaces, which light a pixel themselves.
+            encoder.copy_texture_to_texture(
+                t.direct.0.as_image_copy(),
+                bg.as_image_copy(),
+                wgpu::Extent3d { width: t.width.max(1), height: t.height.max(1), depth_or_array_layers: 1 },
+            );
+        }
         let g =
             group_in(&self.direct_layout, DIRECT_BINDINGS, &base_glow, &GlowInputs { direct: none, air: none, ..all });
         pass(encoder, &[(&t.direct.1, direct_load), (&t.air.1, clear)], &self.direct, &[&main, &g], "direct light");
@@ -1185,15 +1262,32 @@ impl Lighting {
             pass(encoder, &[(&extras[memory_to].1, clear)], &self.extras, &[&main, &g], "light extras");
         }
 
-        let g = group_in(&self.mix_layout, MIX_BINDINGS, &base_glow, &all);
+        // The mix reads the background's own light where the cascades read the one above.
+        let g = group_in(&self.mix_layout, MIX_BINDINGS, &base_glow, &GlowInputs { above: bg_view, ..all });
         self.bound = Some([main.clone(), stage_group.clone()]);
-        match t.stage.as_ref().filter(|_| reflects) {
-            Some((_, lit)) => {
-                pass(encoder, &[(lit, clear)], &self.mix, &[&main, &g, &stage_group], "light");
-                let floor = group_on(&self.uniforms[0], lit, &t.field.1, &t.seeds[from].1);
-                pass(encoder, &[(out, clear)], &self.floor, &[&floor, &g, &stage_group], "glossy floor");
-            }
-            None => pass(encoder, &[(out, clear)], &self.mix, &[&main, &g, &stage_group], "light"),
+        // The mix, then mirror walls, a glossy floor, then depth of field, each reading the one before.
+        let mut steps: Vec<(&wgpu::RenderPipeline, &str)> = vec![(&self.mix, "light")];
+        if mirror_walls {
+            steps.push((&self.mirror, "mirror walls"));
+        }
+        if reflects {
+            steps.push((&self.floor, "glossy floor"));
+        }
+        if blurs {
+            steps.push((&self.dof, "depth of field"));
+        }
+        let spare: Vec<&wgpu::TextureView> =
+            [t.stage.as_ref(), t.stage_more.as_ref()].into_iter().flatten().map(|p| &p.1).collect();
+        let last = steps.len() - 1;
+        let mut read: Option<&wgpu::TextureView> = None;
+        for (i, (pipeline, label)) in steps.into_iter().enumerate() {
+            let into = if i == last { out } else { spare[i % spare.len().max(1)] };
+            let main_on = match read {
+                Some(lit) => group_on(&self.uniforms[0], lit, &t.field.1, &t.seeds[from].1),
+                None => group(&self.uniforms[0], &t.field.1, &t.seeds[from].1),
+            };
+            pass(encoder, &[(into, clear)], pipeline, &[&main_on, &g, &stage_group], label);
+            read = Some(into);
         }
         if extras_on {
             self.memory.current = memory_to;
@@ -1206,7 +1300,7 @@ mod grid_tests {
     use super::*;
 
     fn ball(x: f32, y: f32, r: f32) -> SphereGpu {
-        SphereGpu { a: [x, y, r, 0.0], b: [1.0; 4] }
+        SphereGpu { a: [x, y, r, 0.0], b: [1.0; 4], c: [0.0; 4] }
     }
 
     #[test]

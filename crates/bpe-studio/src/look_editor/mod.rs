@@ -107,12 +107,14 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
     for layer in drawn.iter().rev() {
         let rect = layer_list::piece(ui, inspector, cx, card, layer, picked, edits);
         rows.push((layer.id, rect));
-        // A Gives off light sub-layer writes no record of its own.
+        // A Gives off light or Surface sub-layer writes no record of its own.
         for sub in layer_list::subs_of(card, layer.id) {
             let light = matches!(
                 sub.kind.as_str(),
                 bpe_kit::modules::look::layers::gives_light::SUB_LIGHT
                     | bpe_kit::modules::look::layers::gives_light::SHAPE_SUB_LIGHT
+                    | bpe_kit::modules::look::surface::SUB_SURFACE
+                    | bpe_kit::modules::look::surface::SHAPE_SUB_SURFACE
             );
             records += usize::from(layer.enabled && sub.enabled && !light);
         }
@@ -409,7 +411,23 @@ pub(crate) fn layer_settings(
     let out = settings_grid(ui, ("layer", cx.id, cx.slot, layer.0), defs, get, &grid);
     crate::inspector::fold_groups(inspector, (cx.id, Some(cx.slot)), &out.folds);
     let slot = cx.slot;
-    edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, layered_key(layer, key), value)));
+    // A Surface sub-layer's Surface sets the numbers under it in the same edit (as the card's
+    // chips do).
+    let surfaces = defs.iter().any(|d| d.key == "surface") && defs.iter().any(|d| d.key == "roughness");
+    for (key, value) in out.changes {
+        let preset = match (&value, surfaces && key == "surface") {
+            (Value::Choice(name), true) => {
+                <bpe_kit::modules::look::surface::SurfaceKind as bpe_core::Choice>::from_name(name)
+            }
+            _ => None,
+        };
+        edits.push(Edit::SetSlot(slot, layered_key(layer, key), value));
+        if let Some(kind) = preset {
+            for (key, value) in bpe_kit::modules::look::surface::preset_values(kind) {
+                edits.push(Edit::SetSlot(slot, layered_key(layer, key), value));
+            }
+        }
+    }
     edits.extend(out.new_keys.into_iter().map(|key| Edit::NewKey(Some(slot), layered_key(layer, key))));
     edits
         .extend(out.follows.into_iter().map(|(key, source)| Edit::Follow(Some(slot), layered_key(layer, key), source)));
