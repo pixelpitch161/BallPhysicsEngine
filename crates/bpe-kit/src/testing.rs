@@ -90,3 +90,12 @@ pub fn set_layer(scene: &mut Scene, thing: ThingId, kind: &str, key: &str, v: Va
     scene.card_mut(thing, SlotId::Look).unwrap().params.set(&bpe_core::layered_key(id, key), v);
     id
 }
+
+/// Adds an effect layer of `kind` to the scene's Effects card, adding the card when it has none.
+pub fn add_effect(scene: &mut Scene, reg: &bpe_core::Registry, kind: &str) -> bpe_core::LayerId {
+    let has = scene.things[&ThingId::ROOT].slots.get(&SlotId::Shader).is_some_and(|c| c.kind == "effects");
+    if !has {
+        scene.add_slot(reg, ThingId::ROOT, SlotId::Shader, "effects").expect("the scene takes Effects");
+    }
+    scene.add_layer(reg, ThingId::ROOT, SlotId::Shader, kind).expect("an effect layer")
+}

@@ -158,6 +158,10 @@ pub struct LightSettings {
     /// How bright it is. Below 0 it takes light away.
     #[setting(label = "Strength", span(0, 4), simple, keyframe, pulse, group = "Light")]
     pub strength: f32,
+    /// Gives darkness instead of light: it takes away as much as it would have added, never
+    /// below black.
+    #[setting(label = "Negative", group = "Light")]
+    pub negative: bool,
     /// How far its light reaches.
     #[setting(
         label = "Reach",
@@ -285,6 +289,7 @@ impl Default for LightSettings {
             colour: Color::rgb(0xff, 0xf2, 0xde),
             kelvin: 4500.0,
             strength: 1.5,
+            negative: false,
             reach: 900.0,
             falloff: Falloff::Real,
             size: 24.0,
@@ -468,5 +473,28 @@ mod tests {
             }
         }
         assert_eq!(LightSettings::of_kind(LightType::Strip).width, 8.0);
+    }
+
+    #[test]
+    fn a_negative_light_pushes_darkness() {
+        use bpe_core::{Settings, ThingId, Value, resolve};
+        let kit = crate::kit();
+        let reg = &kit.registry;
+        let mut scene = crate::new_studio_scene(reg);
+        let id = add_light(&mut scene, reg, LightType::Point, ThingId::ROOT).unwrap();
+        let strength = |scene: &bpe_core::Scene| {
+            let resolved = resolve(scene, reg);
+            let world = bpe_runtime::World::build(scene, &resolved, &kit.sims);
+            let mut frame = bpe_gfx::Frame::default();
+            bpe_gfx::build_frame(scene, &resolved, &world, &bpe_runtime::Log::default(), 0.0, &kit.draws, &mut frame);
+            frame.light.expect("lit").lights[0].p1
+        };
+        let bright = strength(&scene);
+        assert!(bright[0] > 0.0);
+        scene.things.get_mut(&id).unwrap().params.set("negative", Value::Bool(true));
+        let dark = strength(&scene);
+        assert_eq!([dark[0], dark[1], dark[2]], [-bright[0], -bright[1], -bright[2]]);
+        assert!(!LightSettings::default().negative);
+        assert!(LightSettings::defs().iter().any(|d| d.key == "negative"));
     }
 }

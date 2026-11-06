@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use bytemuck::{Pod, Zeroable};
 
 use super::{MAX_PARAM_FLOATS, assemble, needs_history};
-use crate::{BlendLayer, EffectCall, Frame, HDR_FORMAT, OBJECT_FORMAT, Stage};
+use crate::{BlendLayer, EffectCall, Frame, GrowableBuffer, HDR_FORMAT, OBJECT_FORMAT, Stage, Takes};
 
 pub(crate) const MAX_HITS: usize = 16;
 /// How far back effects see hits, in seconds.
@@ -18,6 +18,19 @@ pub(crate) const MAX_STEP: f32 = 0.25;
 const FULL_HIT_SPEED: f32 = 600.0;
 /// Compiled effects kept beyond the ones a frame uses, before unused ones are dropped.
 const KEEP_COMPILED: usize = 64;
+/// The most balls the effects' ball list holds in one frame (the nearest the camera's middle
+/// first are not picked: the first drawn are), for speed: effects loop over it per pixel.
+pub const MAX_FX_BALLS: usize = 1024;
+/// How far off the picture a ball may be and still be in the effects' ball list, in screen heights.
+const ON_SCREEN_MARGIN: f32 = 0.25;
+
+/// One ball of the effects' ball list (`FxBall` in prelude.wgsl).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub(crate) struct FxBall {
+    at: [f32; 4],
+    colour: [f32; 4],
+}
 
 /// Matches `struct Fx` in prelude.wgsl.
 #[repr(C)]
@@ -40,6 +53,8 @@ pub(crate) struct Fx {
     params: [f32; MAX_PARAM_FLOATS],
     hits: [[f32; 4]; MAX_HITS],
     hit_colors: [[f32; 4]; MAX_HITS],
+    takes: [f32; 4],
+    beat: [f32; 4],
 }
 
 struct Compiled {
@@ -49,9 +64,15 @@ struct Compiled {
 
 /// One call's state from frame to frame.
 struct Slot {
+    /// The memory written at `last_time`, and the one from the frame before, which that frame
+    /// read: drawing the same moment again reads it again, so a redraw (an edit while paused)
+    /// gives the same picture instead of feeding the effect back on itself.
     history: Option<(wgpu::Texture, wgpu::TextureView)>,
+    before: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// Frames since it started afresh, counting the one at `last_time`, and that frame's step.
     frames: u32,
     last_time: Option<f32>,
+    dt: f32,
     used: bool,
 }
 
@@ -70,6 +91,14 @@ pub(crate) struct Chain {
     /// Each call's history, per picture it runs on (none: the main one, else a blend layer's).
     slots: BTreeMap<(u64, Option<usize>), Slot>,
     scratch: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// Where effects that remember write their memory before it is copied into their history.
+    memory_scratch: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// The frame's balls for the effects' ball list, uploaded once a frame.
+    balls: GrowableBuffer,
+    balls_frame: Option<f32>,
+    ball_count: usize,
+    /// A lit frame's picture before lighting and its lit colour, for effects on the light.
+    light: Option<(wgpu::TextureView, wgpu::TextureView)>,
 }
 
 /// The key an effect's text is cached under: FNV-1a of the text.
@@ -92,6 +121,11 @@ fn name_of(wgsl: &str) -> String {
 }
 
 impl Chain {
+    /// Drops every call's history (see `Renderer::forget_effect_history`).
+    pub(crate) fn forget_history(&mut self) {
+        self.slots.clear();
+    }
+
     pub(crate) fn new(device: &wgpu::Device) -> Self {
         let texture_entry = |binding, filterable| wgpu::BindGroupLayoutEntry {
             binding,
@@ -125,6 +159,18 @@ impl Chain {
                     count: None,
                 },
                 texture_entry(4, false),
+                texture_entry(5, true),
+                texture_entry(6, true),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -152,7 +198,19 @@ impl Chain {
             used_uniforms: 0,
             slots: BTreeMap::new(),
             scratch: None,
+            memory_scratch: None,
+            balls: GrowableBuffer::storage("effect balls"),
+            balls_frame: None,
+            ball_count: 0,
+            light: None,
         }
+    }
+
+    /// The lit frame's picture before lighting and its lit colour, for the Picture stage's
+    /// effects on the light; `None` on a frame that isn't lit (effects on the light then change
+    /// nothing).
+    pub(crate) fn set_light(&mut self, light: Option<(wgpu::TextureView, wgpu::TextureView)>) {
+        self.light = light;
     }
 
     /// Whether this frame needs the object picture drawn: an effect on one thing, or one that
@@ -178,6 +236,8 @@ impl Chain {
     pub(crate) fn begin_frame(&mut self) {
         self.used.clear();
         self.used_uniforms = 0;
+        self.light = None;
+        self.balls_frame = None;
         for slot in self.slots.values_mut() {
             slot.used = false;
         }
@@ -225,7 +285,10 @@ impl Chain {
         objects: Option<&wgpu::TextureView>,
     ) {
         let mut active = Vec::new();
-        let picked = |e: &&EffectCall| e.stage == stage && e.blend > 0.0 && on.runs(frame, e);
+        let lit = self.light.is_some();
+        let picked = |e: &&EffectCall| {
+            e.stage == stage && e.blend != 0.0 && on.runs(frame, e) && (lit || takes_of(stage, on, e) != Takes::Light)
+        };
         for call in frame.effects.iter().filter(picked) {
             let key = self.compile(device, &call.wgsl);
             if self.compiled.get(&key).is_some_and(|c| c.is_ok()) {
@@ -240,7 +303,27 @@ impl Chain {
             self.scratch = Some(make_texture(device, width, height, HDR_FORMAT, "effect scratch"));
         }
         let objects = objects.unwrap_or(&self.no_objects).clone();
-        let base = base_uniform(frame, width, height);
+        let mut base = base_uniform(frame, width, height);
+        // The ball list, once a frame (it is the same for every picture the chain paints).
+        if self.balls_frame != Some(frame.time) || self.balls.buffer.is_none() {
+            let mut list = fx_balls(frame);
+            self.ball_count = list.len();
+            if list.is_empty() {
+                list.push(FxBall::zeroed());
+            }
+            self.balls.upload(device, queue, bytemuck::cast_slice(&list));
+            self.balls_frame = Some(frame.time);
+        }
+        base.takes[3] = self.ball_count as f32;
+        let (unlit, lit_colour) = match &self.light {
+            Some((u, l)) => (u.clone(), l.clone()),
+            None => (self.black.clone(), self.black.clone()),
+        };
+        let any_memory =
+            active.iter().any(|(_, key)| self.compiled.get(key).is_some_and(|c| c.as_ref().is_ok_and(|c| c.history)));
+        if any_memory && self.memory_scratch.as_ref().is_none_or(|(t, _)| t.width() != width || t.height() != height) {
+            self.memory_scratch = Some(make_texture(device, width, height, HDR_FORMAT, "effect memory"));
+        }
 
         let mut in_scratch = false;
         for (call, key) in active {
@@ -256,44 +339,54 @@ impl Chain {
             };
             let slot = self.slots.entry((call.key, canvas)).or_insert(Slot {
                 history: None,
+                before: None,
                 frames: 0,
                 last_time: None,
+                dt: 1.0 / 60.0,
                 used: true,
             });
             slot.used = true;
-            let fresh = match slot.last_time {
-                Some(last) => frame.time < last || frame.time - last > MAX_STEP,
-                None => true,
-            };
-            let dt = match slot.last_time {
-                Some(last) if !fresh => frame.time - last,
-                _ => 1.0 / 60.0,
-            };
-            slot.last_time = Some(frame.time);
-            if fresh {
-                slot.frames = 0;
+            let again = slot.frames > 0 && slot.last_time == Some(frame.time);
+            if !again {
+                let fresh = match slot.last_time {
+                    Some(last) => frame.time < last || frame.time - last > MAX_STEP,
+                    None => true,
+                };
+                slot.dt = match slot.last_time {
+                    Some(last) if !fresh => frame.time - last,
+                    _ => 1.0 / 60.0,
+                };
+                slot.last_time = Some(frame.time);
+                slot.frames = if fresh { 1 } else { slot.frames.saturating_add(1) };
+                std::mem::swap(&mut slot.history, &mut slot.before);
             }
             if compiled.history {
-                let stale = slot.history.as_ref().is_none_or(|(t, _)| t.width() != width || t.height() != height);
-                if stale {
-                    slot.history = Some(make_texture(device, width, height, HDR_FORMAT, "effect history"));
-                    slot.frames = 0;
+                let size_of =
+                    |h: &Option<(wgpu::Texture, wgpu::TextureView)>| h.as_ref().map(|(t, _)| (t.width(), t.height()));
+                for h in [&mut slot.history, &mut slot.before] {
+                    if size_of(h) != Some((width, height)) {
+                        *h = Some(make_texture(device, width, height, HDR_FORMAT, "effect history"));
+                        slot.frames = 1;
+                    }
                 }
-                if slot.frames == 0 {
-                    clear(encoder, &slot.history.as_ref().expect("made above").1);
+                if slot.frames == 1 {
+                    clear(encoder, &slot.before.as_ref().expect("made above").1);
                 }
             } else {
                 slot.history = None;
+                slot.before = None;
             }
 
             let mut uniform = base;
-            uniform.blend = call.blend.clamp(0.0, 1.0);
-            uniform.frame = slot.frames as f32;
-            uniform.dt = dt;
+            uniform.blend = if call.blend.is_finite() { call.blend } else { 1.0 };
+            uniform.takes[0] = takes_of(stage, on, call).code();
+            uniform.takes[1] = call.glow_above;
+            uniform.takes[2] = call.mode.shader_code() as f32;
+            uniform.frame = (slot.frames - 1) as f32;
+            uniform.dt = slot.dt;
             uniform.params = call.params;
             uniform.apply_to = call.apply_to;
             uniform.in_layer = if matches!(on, Canvas::Layer(_)) { 1.0 } else { 0.0 };
-            slot.frames = slot.frames.saturating_add(1);
             if self.uniforms.len() <= self.used_uniforms {
                 self.uniforms.push(device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("effect uniform"),
@@ -309,10 +402,11 @@ impl Chain {
             let (scratch_texture, scratch_view) = self.scratch.as_ref().expect("made above");
             let (source, target_view, target_texture) =
                 if in_scratch { (scratch_view, hdr_view, hdr) } else { (hdr_view, scratch_view, scratch_texture) };
-            let prev = match (&slot.history, compiled.history) {
+            let prev = match (&slot.before, compiled.history) {
                 (Some((_, view)), true) => view,
                 _ => &self.black,
             };
+            let balls = self.balls.buffer.as_ref().expect("uploaded above");
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("effect inputs"),
                 layout: &self.layout,
@@ -322,20 +416,48 @@ impl Chain {
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(prev) },
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                     wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&objects) },
+                    wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&unlit) },
+                    wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&lit_colour) },
+                    wgpu::BindGroupEntry { binding: 7, resource: balls.as_entire_binding() },
                 ],
             });
-            {
+            if compiled.history {
+                let (memory_texture, memory_view) = self.memory_scratch.as_ref().expect("made above");
+                {
+                    fn attachment(view: &wgpu::TextureView) -> Option<wgpu::RenderPassColorAttachment<'_>> {
+                        Some(wgpu::RenderPassColorAttachment {
+                            view,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })
+                    }
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("effect with memory"),
+                        color_attachments: &[attachment(target_view), attachment(memory_view)],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    pass.set_pipeline(&compiled.pipeline);
+                    pass.set_bind_group(0, &bind_group, &[]);
+                    pass.draw(0..3, 0..1);
+                }
+                if let Some((history, _)) = &slot.history {
+                    copy(encoder, memory_texture, history);
+                }
+            } else {
                 let mut pass =
                     crate::begin_pass(encoder, target_view, "effect", wgpu::LoadOp::Clear(wgpu::Color::BLACK));
                 pass.set_pipeline(&compiled.pipeline);
                 pass.set_bind_group(0, &bind_group, &[]);
                 pass.draw(0..3, 0..1);
             }
-            if compiled.history
-                && let Some((history, _)) = &slot.history
-            {
-                copy(encoder, target_texture, history);
-            }
+            let _ = target_texture;
             in_scratch = !in_scratch;
         }
         if in_scratch {
@@ -372,12 +494,42 @@ pub(crate) fn layer_has_effects(frame: &Frame, index: usize) -> bool {
 
 /// See [`Chain::wants_objects`].
 fn wants_objects(e: &EffectCall) -> bool {
-    e.blend > 0.0 && (e.apply_to > 0.5 || super::needs_objects(&e.wgsl))
+    e.blend != 0.0 && (e.apply_to > 0.5 || super::needs_objects(&e.wgsl))
 }
 
 /// See [`Chain::material`].
 fn is_material(call: &EffectCall) -> bool {
-    call.stage == Stage::Things && call.blend > 0.0 && call.apply_to <= 0.5
+    call.stage == Stage::Things && call.blend != 0.0 && call.apply_to <= 0.5
+}
+
+/// What `call` takes when it runs at `stage` on `on`: what it says at the Picture stage on the
+/// main picture of the whole scene, else the whole picture.
+fn takes_of(stage: Stage, on: Canvas, call: &EffectCall) -> Takes {
+    if stage == Stage::Picture && on == Canvas::Main && call.apply_to <= 0.5 { call.takes } else { Takes::Whole }
+}
+
+/// The frame's balls as the effects see them, through its camera: the frame's own, then those
+/// drawn into its blend layers, at most [`MAX_FX_BALLS`].
+pub(crate) fn fx_balls(frame: &Frame) -> Vec<FxBall> {
+    let marks = frame.ball_marks.iter().chain(frame.layers.iter().flat_map(|l| l.frame.ball_marks.iter()));
+    let (w, h) = (frame.width.max(1) as f32, frame.height.max(1) as f32);
+    // Balls well off the picture are left out: effects walk the list at every pixel.
+    let half = (0.5 + ON_SCREEN_MARGIN * h / w, 0.5 + ON_SCREEN_MARGIN);
+    marks
+        .map(|m| {
+            let at = frame.camera.to_screen(glam::Vec2::from(m.center));
+            let radius = m.radius * frame.camera.zoom / h;
+            FxBall {
+                at: [at.x / w + 0.5, at.y / h + 0.5, radius, m.seed],
+                colour: [m.color[0], m.color[1], m.color[2], m.hit_age],
+            }
+        })
+        .filter(|b| {
+            let (x, y, r) = (b.at[0] - 0.5, b.at[1] - 0.5, b.at[2]);
+            x.abs() - r * h / w <= half.0 && y.abs() - r <= half.1
+        })
+        .take(MAX_FX_BALLS)
+        .collect()
 }
 
 /// See [`Canvas::runs`].
@@ -428,6 +580,7 @@ pub(crate) fn base_uniform(frame: &Frame, width: u32, height: u32) -> Fx {
     base.pulse = 1.0 - (-energy).exp();
     base.audio = [base.pulse, base.pulse, base.pulse, 0.0];
     base.level = base.pulse;
+    base.beat = frame.beat;
     base
 }
 
@@ -435,6 +588,8 @@ pub(crate) fn base_uniform(frame: &Frame, width: u32, height: u32) -> Fx {
 fn build(device: &wgpu::Device, layout: &wgpu::PipelineLayout, wgsl: &str) -> Result<Compiled, String> {
     let name = name_of(wgsl);
     let full = assemble(wgsl).map_err(|e| format!("{name}: {e}"))?;
+    let target = || wgpu::ColorTargetState { format: HDR_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL };
+    let (one, two) = ([Some(target())], [Some(target()), Some(target())]);
     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(&name),
@@ -456,11 +611,7 @@ fn build(device: &wgpu::Device, layout: &wgpu::PipelineLayout, wgsl: &str) -> Re
             module: &module,
             entry_point: Some("fs_main"),
             compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: HDR_FORMAT,
-                blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
+            targets: if needs_history(wgsl) { &two } else { &one },
         }),
         multiview_mask: None,
         cache: None,
@@ -548,7 +699,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn call(wgsl: &'static str, apply_to: f32, stage: Stage) -> EffectCall {
-        EffectCall { key: 1, wgsl: wgsl.into(), params: [0.0; 16], blend: 1.0, apply_to, stage }
+        EffectCall { apply_to, ..EffectCall::new(1, wgsl, stage) }
     }
 
     pub(crate) fn render(frame: &Frame) -> Option<Vec<u8>> {
@@ -583,7 +734,7 @@ pub(crate) mod tests {
         assert_eq!(key_of(GREEN), key_of(GREEN));
         assert_eq!(name_of(GREEN), "Green");
         assert_eq!(name_of("fn effect("), "effect");
-        assert_eq!(std::mem::size_of::<Fx>(), 656);
+        assert_eq!(std::mem::size_of::<Fx>(), 688);
     }
 
     #[test]
@@ -871,22 +1022,12 @@ pub(crate) mod tests {
         let mut frame = two_balls_frame();
         renderer.render(&device, &queue, &frame);
         let plain = renderer.read_output(&device, &queue).unwrap();
-        frame.effects.push(EffectCall {
-            key: 9,
-            wgsl: "// name: Broken\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { return nonsense; }".into(),
-            params: [0.0; 16],
-            blend: 1.0,
-            apply_to: 0.0,
-            stage: Stage::Picture,
-        });
-        frame.effects.push(EffectCall {
-            key: 10,
-            wgsl: "// name: Unfinished\nfn nothing() {}".into(),
-            params: [0.0; 16],
-            blend: 1.0,
-            apply_to: 0.0,
-            stage: Stage::Picture,
-        });
+        frame.effects.push(EffectCall::new(
+            9,
+            "// name: Broken\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { return nonsense; }",
+            Stage::Picture,
+        ));
+        frame.effects.push(EffectCall::new(10, "// name: Unfinished\nfn nothing() {}", Stage::Picture));
         renderer.render(&device, &queue, &frame);
         let problems = renderer.shader_problems();
         assert_eq!(problems.len(), 2, "{problems:?}");
@@ -919,6 +1060,10 @@ pub(crate) mod tests {
         assert_eq!(brightness(&jumped), b0, "a jump starts the echo afresh");
         assert!(brightness(&at(5.0 + 1.0 / 60.0)) > b0);
         assert!(brightness(&at(3.0)) == b0, "going backwards starts afresh too");
+        let once = at(3.0 + 1.0 / 60.0);
+        assert_eq!(at(3.0 + 1.0 / 60.0), once, "drawing the same moment again draws the same picture");
+        assert_eq!(at(3.0 + 1.0 / 60.0), once);
+        assert!(brightness(&at(3.0 + 2.0 / 60.0)) > brightness(&once), "and it carries on from there");
     }
 
     #[test]
@@ -932,6 +1077,16 @@ pub(crate) mod tests {
             b.radius = 100.0;
         }
         base.balls[1].color = [0.25, 0.25, 1.0, 1.0];
+        for (b, seed) in base.balls.clone().iter().zip([0.2, 0.6]) {
+            let c = b.color;
+            base.ball_marks.push(crate::BallMark {
+                center: b.center,
+                radius: b.radius,
+                color: [c[0], c[1], c[2]],
+                seed,
+                hit_age: 0.1,
+            });
+        }
         base.hits.push(HitMark {
             thing: ThingId(2),
             other: Some(ThingId(1)),
@@ -958,12 +1113,9 @@ pub(crate) mod tests {
                 params[1] = 1.05;
             }
             frame.effects.push(EffectCall {
-                key: 1,
-                wgsl: builtin.wgsl.into(),
                 params,
-                blend: 1.0,
                 apply_to: if material { thing_code(ThingId(2)) } else { 0.0 },
-                stage: header.stage,
+                ..EffectCall::new(1, builtin.wgsl, header.stage)
             });
             // Twice, so feedback effects have a previous frame to show.
             render_at(&mut renderer, &mut frame, 2.0);
