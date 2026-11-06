@@ -2536,6 +2536,12 @@ struct Mirrored {
 // whether p is inside, by crossings), the depth past the band's face e, squeezed to
 // e / (1 + squeeze e / S) (on a circle of radius S at squeeze 1, exactly a circle inversion), and
 // the mirrored point that far past the face on the other side.
+// A side's unit normal (to its left, going a to b; every side of one outline the same way round).
+fn side_normal(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+    let d = b - a;
+    return normalize(vec2<f32>(-d.y, d.x) + vec2<f32>(1e-9, 0.0));
+}
+
 fn mirrored(p: vec2<f32>) -> Mirrored {
     var out = Mirrored(p, 0.0, vec3<f32>(1.0));
     var best = 1e30;
@@ -2546,6 +2552,7 @@ fn mirrored(p: vec2<f32>) -> Mirrored {
         let n = min(u32(m.a.y), MOST_MIRROR_SEGMENTS);
         var near = 1e30;
         var q = p;
+        var at = 0u;
         var crossings = 0u;
         for (var k = 0u; k < n; k++) {
             let seg = segments[first + k];
@@ -2556,6 +2563,7 @@ fn mirrored(p: vec2<f32>) -> Mirrored {
             if d < near {
                 near = d;
                 q = c;
+                at = k;
             }
             if (a.y > p.y) != (b.y > p.y) {
                 let x = a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x);
@@ -2573,7 +2581,22 @@ fn mirrored(p: vec2<f32>) -> Mirrored {
         }
         best = near;
         let squeezed = e / (1.0 + max(m.b.x, 0.0) * e / max(m.b.y, 1e-3));
-        out.p = q + (q - p) / near * (m.b.z + squeezed);
+        // The way across is the outline's normal blended between its corners (each corner's the
+        // mean of its two sides'), so a circle cut into sides mirrors as one smooth curve, not a
+        // fan of flat pieces.
+        let seg = segments[first + at];
+        let before = segments[first + (at + n - 1u) % n];
+        let after = segments[first + (at + 1u) % n];
+        let side_n = side_normal(seg.xy, seg.zw);
+        let na = normalize(side_normal(before.xy, before.zw) + side_n + vec2<f32>(1e-9, 0.0));
+        let nb = normalize(side_n + side_normal(after.xy, after.zw) + vec2<f32>(1e-9, 0.0));
+        let ab = seg.zw - seg.xy;
+        let t = clamp(dot(q - seg.xy, ab) / max(dot(ab, ab), 1e-12), 0.0, 1.0);
+        var way = normalize(mix(na, nb, t) + vec2<f32>(1e-9, 0.0));
+        if dot(way, q - p) < 0.0 {
+            way = -way;
+        }
+        out.p = q + way * (m.b.z + squeezed);
         out.k = clamp(m.a.w, 0.0, 1.0);
         out.tint = m.c.rgb;
     }
