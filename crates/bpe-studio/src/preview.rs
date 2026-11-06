@@ -541,7 +541,8 @@ pub fn redraw_when_built(renderer: &Renderer, ctx: &egui::Context) -> bool {
 }
 
 /// Draws the playhead's moment into `renderer`, unless `drawn` says the picture already shows
-/// it. Returns whether the picture is still catching up with the playhead.
+/// it. Returns whether the picture is still catching up with the playhead. Glow in the dark
+/// counts as remembering (`Frame::memory`), so `warm` replays it after a jump like the effects.
 fn draw_picture(
     studio: &mut Studio,
     device: &wgpu::Device,

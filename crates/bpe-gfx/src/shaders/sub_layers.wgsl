@@ -246,9 +246,44 @@ fn sub_recolour(p: Piece, m: LayerGpu) -> Piece {
     return piece_recoloured(p, sub_recolour_one(m, p.c_in), sub_recolour_one(m, p.c_out), m.amount.x);
 }
 
+// A Heat glow's light in the emission pass (lighting part 4), handed to `light_piece`.
+var<private> HEAT_IN: vec3<f32>;
+var<private> HEAT_OUT: vec3<f32>;
+
+// How hot things glow: dark red, orange, yellow, then white (linear), for heat `h` (0 to 1).
+fn heat_colour(h: f32) -> vec3<f32> {
+    let t = clamp(h, 0.0, 1.0) * 3.0;
+    let red = vec3<f32>(0.45, 0.012, 0.0);
+    let orange = vec3<f32>(1.0, 0.16, 0.008);
+    let yellow = vec3<f32>(1.0, 0.6, 0.15);
+    let white = vec3<f32>(1.0, 0.92, 0.82);
+    if t < 1.0 {
+        return mix(red, orange, t);
+    }
+    if t < 2.0 {
+        return mix(orange, yellow, t - 1.0);
+    }
+    return mix(yellow, white, t - 2.0);
+}
+
 // Flash on hit (28): the piece's colours lit for a moment after each hit. `hit` is the thing's
-// hit data: seconds since its last hit, that hit's strength, how many hits.
+// hit data: seconds since its last hit, that hit's strength, how many hits, its heat. With
+// `amount.w` 1 it is a Heat glow (lighting part 4): light added over the piece by its heat (glow
+// `amount.x`, how far up to white it goes `amount.y`), given off as light by `amount.z`.
 fn sub_flash(p: Piece, m: LayerGpu, hit: vec4<f32>) -> Piece {
+    if m.amount.w > 0.5 {
+        let heat = max(hit.w, 0.0);
+        let level = max(m.amount.x, 0.0) * (1.0 - exp(-2.0 * heat));
+        let colour = heat_colour((1.0 - exp(-heat)) * max(m.amount.y, 0.0)) * level;
+        var r = p;
+        r.light_in += colour * clamp(p.a_in, 0.0, 1.0);
+        r.light_out += colour * clamp(p.a_out, 0.0, 1.0);
+        if g.light.x > 2.5 && g.light.x < 3.5 {
+            HEAT_IN += colour * clamp(p.a_in, 0.0, 1.0) * max(m.amount.z, 0.0);
+            HEAT_OUT += colour * clamp(p.a_out, 0.0, 1.0) * max(m.amount.z, 0.0);
+        }
+        return r;
+    }
     let length = max(m.amount.y, 1e-3);
     let impact = select(1.0, max(hit.y, 0.0), m.amount.z > 0.5);
     let level = max(m.amount.x, 0.0) * exp(-3.0 * max(hit.x, 0.0) / length) * impact;

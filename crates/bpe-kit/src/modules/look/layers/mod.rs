@@ -19,6 +19,7 @@ pub mod glow;
 pub mod gpu;
 pub mod group;
 pub mod group_shader;
+pub mod heat;
 pub mod lighting;
 pub mod outline;
 pub mod particles;
@@ -167,9 +168,9 @@ impl LayerKind for Kind {
         if self.section == LayerSection::Around {
             return AROUND_SUBS.contains(&sub);
         }
-        // The Body takes only Gives off light: the ball itself glowing.
+        // The Body takes only Gives off light and Heat glow: the ball itself glowing.
         if self.base {
-            return sub == gives_light::SUB_LIGHT;
+            return sub == gives_light::SUB_LIGHT || sub == heat::SUB_HEAT;
         }
         !((self.id == SHADER && sub == SUB_SHADER)
             || (self.id == super::shape::SHADER && sub == super::shape::SUB_SHADER))
@@ -445,6 +446,7 @@ pub fn sub_kinds() -> Vec<Kind> {
         sub(SUB_FLASH, "Flash on hit", "Its layer lights up when the ball is hit.", SubFlash::defs),
         sub(SUB_HUE, "Colour on hit", "Its layer's colours turn round the wheel on every hit.", SubHue::defs),
         sub(gives_light::SUB_LIGHT, "Gives off light", gives_light::HELP, gives_light::GivesLight::defs),
+        sub(heat::SUB_HEAT, "Heat glow", heat::HELP, heat::SubHeat::defs),
     ]
 }
 
@@ -527,6 +529,7 @@ mod tests {
                 SUB_FLASH,
                 SUB_HUE,
                 gives_light::SUB_LIGHT,
+                heat::SUB_HEAT,
                 GROUP_GRADIENT,
                 GROUP_SHADER
             ],
@@ -579,7 +582,7 @@ mod tests {
             let takes = drawn || k.id() == BODY;
             assert_eq!(k.takes_subs(), takes, "{}: drawn layers and the Body but Blend take sub-layers", k.id());
         }
-        assert_eq!(reg.layers_for(CARD).filter(|k| k.section() == LayerSection::Sub).count(), 11);
+        assert_eq!(reg.layers_for(CARD).filter(|k| k.section() == LayerSection::Sub).count(), 12);
     }
 
     #[test]

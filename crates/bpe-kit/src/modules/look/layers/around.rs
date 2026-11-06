@@ -38,6 +38,8 @@ pub struct AroundLayer {
     pub light: [f32; 4],
     /// The light it gives off (its Gives off light sub-layers), when it gives any.
     pub emit: Option<super::gives_light::Emit>,
+    /// Its UV and how it catches beams ([`super::lighting::extra_of`], no link number yet).
+    pub more: [f32; 4],
 }
 
 /// Where a frame's trail and particle lists ended before an around layer drew, so what it drew
@@ -50,10 +52,18 @@ impl Drew {
         Drew([frame.trails.len(), frame.trails_front.len(), frame.particles.len(), frame.particles_front.len()])
     }
 
-    /// Gives everything drawn since [`Drew::from`] the Lighting `light` (the light it gives off
-    /// is stamped as it is drawn, on the layer's own pieces only: [`super::around_subs::Pieces::give_light`]).
-    pub fn light(self, frame: &mut bpe_gfx::Frame, light: [f32; 4]) {
+    /// Gives everything drawn since [`Drew::from`] `layer`'s Lighting (the light it gives off
+    /// is stamped as it is drawn, on the layer's own pieces only: [`super::around_subs::Pieces::give_light`]),
+    /// and in a lit scene its UV, how it catches beams and its thing's link number.
+    pub fn light(self, frame: &mut bpe_gfx::Frame, layer: &AroundLayer, cx: &bpe_gfx::DrawCx) {
         let [t, tf, p, pf] = self.0;
+        if let Some(more) = layer.more_in(cx, frame.light.as_mut()) {
+            frame.trails.iter_mut().skip(t).for_each(|v| v.extra = more);
+            frame.trails_front.iter_mut().skip(tf).for_each(|v| v.extra = more);
+            frame.particles.iter_mut().skip(p).for_each(|s| s.extra = more);
+            frame.particles_front.iter_mut().skip(pf).for_each(|s| s.extra = more);
+        }
+        let light = layer.light;
         if light != [0.0; 4] {
             let two = [light[0], light[1]];
             frame.trails.iter_mut().skip(t).for_each(|v| v.light = two);
@@ -65,6 +75,17 @@ impl Drew {
 }
 
 impl AroundLayer {
+    /// Its UV, catching beams and link number as its pieces carry them, in a lit scene (`light`
+    /// the frame's lighting, which learns that something glows under UV or catches beams);
+    /// `None` without a Lighting card.
+    pub fn more_in(&self, cx: &bpe_gfx::DrawCx, light: Option<&mut bpe_gfx::LightScene>) -> Option<[f32; 4]> {
+        let light = light?;
+        light.uv |= self.more[0] > 0.0;
+        light.smoke |= self.more[2] > 0.0;
+        let link = crate::things::light::links::number_of(cx.scene, cx.thing.id);
+        Some([self.more[0], self.more[1], self.more[2], link])
+    }
+
     /// Behind the balls or in front of them.
     pub fn place(&self) -> AroundPlace {
         match &self.kind {
@@ -132,7 +153,16 @@ pub fn around_layers(slot: &ResolvedSlot, shape: bool) -> Vec<AroundLayer> {
             }
         };
         let light = super::lighting::of(&p);
-        out.push(AroundLayer { id: layer.id, kind, subs: Vec::new(), only: layer.only.clone(), light, emit: None });
+        let more = super::lighting::extra_of(&p, 0.0, true);
+        out.push(AroundLayer {
+            id: layer.id,
+            kind,
+            subs: Vec::new(),
+            only: layer.only.clone(),
+            light,
+            emit: None,
+            more,
+        });
     }
     // Gives off light makes its layer a lamp: it shows its own colours, unlit.
     for a in &mut out {

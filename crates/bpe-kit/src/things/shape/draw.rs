@@ -81,7 +81,7 @@ impl ThingDraw for ShapeDraw {
             let last = (hit[0] < bpe_gfx::NO_HIT[0]).then_some((hit[0], hit[1]));
             let hits = HitInfo { last, hits: hit[2] as u32 };
             crate::modules::look::layers::particles::draw::draw_shape(cx, &layer, particles, hits, frame);
-            drew.light(frame, layer.light);
+            drew.light(frame, &layer, cx);
         }
     }
 }
@@ -112,7 +112,9 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
     let Some(stack) = ShapeStack::of(look) else { return };
     let geometry =
         Geometry { points: form.points.clone(), ellipse: form.ellipse, half: form.half / form.scale.max(1e-3) };
-    let records = stack.records(&geometry, &mut frame.gradients);
+    let mut records = stack.records(&geometry, &mut frame.gradients);
+    let link = crate::things::light::links::number_of(cx.scene, cx.thing.id);
+    crate::modules::look::layers::lighting::stamp(&mut records, link, frame.light.as_mut());
     let first = frame.look_layers.len() as u32;
     let count = records.len() as u32;
     // Every record names the shape's surface (read only by a lit frame's light pass).
@@ -131,7 +133,10 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
             }
         }
     });
-    let hit = if stack.needs_hits() { shape_hits(cx) } else { bpe_gfx::NO_HIT };
+    let mut hit = if stack.needs_hits() { shape_hits(cx) } else { bpe_gfx::NO_HIT };
+    if let Some(heat) = stack.heat() {
+        hit[3] = crate::modules::look::layers::heat::shape_heat(cx, heat);
+    }
     let path = &mut frame.paths[index];
     path.layers = [first, count, program, part];
     path.c[2] = stack.reach_past();

@@ -33,7 +33,8 @@ fn a_plain_streak_keeps_its_old_vertices() {
             color: RED,
             style: [0.0, 0.0],
             light: [0.0; 2],
-            emit: [0.0; 4]
+            emit: [0.0; 4],
+            extra: [0.0; 4],
         }
     );
     assert_eq!(out[1].position, [0.0, 11.0]);

@@ -6,6 +6,10 @@
 //! haze), the light field (radiance cascades: every glowing thing lights the rest, and lit things
 //! bounce light), the Light blooms, and mixes it all in. Nothing here is made or run for a scene
 //! without the card, and no 1b pass runs when its settings are off.
+//!
+//! Part 4 adds, each only when used: the balls stirring moving haze, the extras picture (the
+//! moving haze's density and the remembered light of glow in the dark, which is kept from frame
+//! to frame), and in the mix smoke, underwater light, UV glow, the memory's glow and laser beams.
 
 use bytemuck::{Pod, Zeroable};
 
@@ -140,6 +144,41 @@ struct GlowUniform {
     air: [f32; 4],
     /// 1 when there is a light field, 1 when there is a bloom, 1 when there is haze, spare.
     on: [f32; 4],
+    /// Part 4: the haze moving, the water, the memory (see `Glow` in lighting.wgsl).
+    haze: [f32; 4],
+    haze_more: [f32; 4],
+    water: [f32; 4],
+    water_colour: [f32; 4],
+    water_depth: [f32; 4],
+    memory: [f32; 4],
+    memory_colour: [f32; 4],
+    memory_step: [f32; 4],
+    last_camera: [f32; 4],
+    more_on: [f32; 4],
+}
+
+/// Which pictures each pass's group 1 binds (besides its uniform), so no pass binds more than
+/// the 16 textures a stage may see: the 1b passes, the direct light (which reads the tags for
+/// Lights up), the mix and the extras pass.
+const GLOW_BINDINGS: &[u32] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+const DIRECT_BINDINGS: &[u32] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+const MIX_BINDINGS: &[u32] = &[2, 3, 7, 8, 9, 10, 11, 12, 13];
+const EXTRAS_BINDINGS: &[u32] = &[2, 6, 7, 8, 9, 14];
+
+/// The longest gap between two frames over which the remembered light carries on; a longer jump
+/// (or one back) starts it again from nothing.
+const MOST_MEMORY_STEP: f32 = 0.5;
+
+/// Glow in the dark's memory between frames.
+#[derive(Default)]
+struct Memory {
+    /// When the last frame that remembered was drawn, and through which camera.
+    last: Option<(f32, [f32; 4])>,
+    /// Which of the two extras pictures holds the memory now.
+    current: usize,
+    /// The memory started again from nothing at a moment after the start (a seek): the editor
+    /// warms it up.
+    cold: bool,
 }
 
 /// How many cascades a light field needs to reach `reach` field texels, the first reaching one.
@@ -206,6 +245,14 @@ struct Targets {
     /// The light pass's picture when a glossy floor mirrors it afterwards (made when first needed).
     stage: Option<(wgpu::Texture, wgpu::TextureView)>,
     dummy_colour: (wgpu::Texture, wgpu::TextureView),
+    /// Part 4: what glows under UV (light pass 5) and the tags (pass 6: what catches beams, link
+    /// numbers), full size.
+    uv: (wgpu::Texture, wgpu::TextureView),
+    tags: (wgpu::Texture, wgpu::TextureView),
+    /// The extras pictures (the memory and the haze's density, field size, two to keep the last
+    /// frame's memory) and the balls' stirring, made the first time they are drawn.
+    extras: Option<[(wgpu::Texture, wgpu::TextureView); 2]>,
+    stir: Option<(wgpu::Texture, wgpu::TextureView)>,
 }
 
 impl Targets {
@@ -217,6 +264,10 @@ impl Targets {
 pub(crate) struct Lighting {
     layout: wgpu::BindGroupLayout,
     glow_layout: wgpu::BindGroupLayout,
+    direct_layout: wgpu::BindGroupLayout,
+    mix_layout: wgpu::BindGroupLayout,
+    extras_layout: wgpu::BindGroupLayout,
+    stir_layout: wgpu::BindGroupLayout,
     seed: wgpu::RenderPipeline,
     jump: wgpu::RenderPipeline,
     field: wgpu::RenderPipeline,
@@ -229,6 +280,8 @@ pub(crate) struct Lighting {
     glow_source: wgpu::RenderPipeline,
     glow_down: wgpu::RenderPipeline,
     mix: wgpu::RenderPipeline,
+    extras: wgpu::RenderPipeline,
+    stir: wgpu::RenderPipeline,
     /// The glossy floor's pass (Stage).
     floor: wgpu::RenderPipeline,
     sampler: wgpu::Sampler,
@@ -246,7 +299,10 @@ pub(crate) struct Lighting {
     glow_uniforms: Vec<wgpu::Buffer>,
     lights: GrowableBuffer,
     segments: GrowableBuffer,
+    links: GrowableBuffer,
+    stirs: GrowableBuffer,
     targets: Option<Targets>,
+    memory: Memory,
 }
 
 fn texture(
@@ -283,7 +339,8 @@ fn uniform_buffer(device: &wgpu::Device, label: &'static str, size: usize) -> wg
     })
 }
 
-/// The 1b passes' pictures as bound to group 1 (see lighting.wgsl), in binding order.
+/// The pictures bound to group 1 (see lighting.wgsl), in binding order.
+#[derive(Clone, Copy)]
 struct GlowInputs<'a> {
     emission: &'a wgpu::TextureView,
     direct: &'a wgpu::TextureView,
@@ -293,6 +350,32 @@ struct GlowInputs<'a> {
     above: &'a wgpu::TextureView,
     gi: [&'a wgpu::TextureView; 3],
     glow: &'a wgpu::TextureView,
+    tags: &'a wgpu::TextureView,
+    uv: &'a wgpu::TextureView,
+    extras: &'a wgpu::TextureView,
+    stir: &'a wgpu::TextureView,
+}
+
+impl<'a> GlowInputs<'a> {
+    /// The picture at group 1 `binding`.
+    fn at(&self, binding: u32) -> &'a wgpu::TextureView {
+        match binding {
+            1 => self.emission,
+            2 => self.direct,
+            3 => self.air,
+            4 => self.gi_scene,
+            5 => self.gi_dist,
+            6 => self.above,
+            7 => self.gi[0],
+            8 => self.gi[1],
+            9 => self.gi[2],
+            10 => self.glow,
+            11 => self.tags,
+            12 => self.uv,
+            13 => self.extras,
+            _ => self.stir,
+        }
+    }
 }
 
 impl Lighting {
@@ -348,22 +431,42 @@ impl Lighting {
                 storage(6),
                 storage(7),
                 tex(8, false),
+                storage(9),
             ],
         });
-        let glow_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("lighting 1b layout"),
+        let group_one = |label: &'static str, bindings: &[u32]| {
+            let mut entries = vec![uniform(0)];
+            entries.extend(bindings.iter().map(|b| tex(*b, true)));
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some(label), entries: &entries })
+        };
+        let glow_layout = group_one("lighting 1b layout", GLOW_BINDINGS);
+        let direct_layout = group_one("direct light layout", DIRECT_BINDINGS);
+        let mix_layout = group_one("light mix layout", MIX_BINDINGS);
+        let extras_layout = group_one("light extras layout", EXTRAS_BINDINGS);
+        // The stirring pass reads the balls in its vertex stage.
+        let stir_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("haze stir layout"),
             entries: &[
-                uniform(0),
-                tex(1, true),
-                tex(2, true),
-                tex(3, true),
-                tex(4, true),
-                tex(5, true),
-                tex(6, true),
-                tex(7, true),
-                tex(8, true),
-                tex(9, true),
-                tex(10, true),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 12,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -371,9 +474,19 @@ impl Lighting {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let glow_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("lighting 1b pipeline layout"),
-            bind_group_layouts: &[Some(&layout), Some(&glow_layout)],
+        let two_groups = |label: &'static str, second: &wgpu::BindGroupLayout| {
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some(label),
+                bind_group_layouts: &[Some(&layout), Some(second)],
+                immediate_size: 0,
+            })
+        };
+        let glow_pipeline_layout = two_groups("lighting 1b pipeline layout", &glow_layout);
+        let direct_pipeline_layout = two_groups("direct light pipeline layout", &direct_layout);
+        let extras_pipeline_layout = two_groups("light extras pipeline layout", &extras_layout);
+        let stir_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("haze stir pipeline layout"),
+            bind_group_layouts: &[Some(&stir_layout)],
             immediate_size: 0,
         });
         let stage_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -382,7 +495,7 @@ impl Lighting {
         });
         let stage_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("lighting pipeline layout (stage)"),
-            bind_group_layouts: &[Some(&layout), Some(&glow_layout), Some(&stage_layout)],
+            bind_group_layouts: &[Some(&layout), Some(&mix_layout), Some(&stage_layout)],
             immediate_size: 0,
         });
         let make = |label: &'static str,
@@ -436,11 +549,43 @@ impl Lighting {
             alpha: wgpu::BlendComponent::REPLACE,
         });
         let (one, two, three) = (&pipeline_layout, &glow_pipeline_layout, &stage_pipeline_layout);
+        let stir = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("haze stir"),
+            layout: Some(&stir_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_stir"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_stir"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: GI_FORMAT,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent::REPLACE,
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, ..Default::default() },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
         Self {
             seed: make("light seed", "fs_seed", one, &[SEED_FORMAT], None),
             jump: make("light jump", "fs_jump", one, &[SEED_FORMAT], None),
             field: make("light field", "fs_field", one, &[FIELD_FORMAT], None),
-            direct: make("direct light", "fs_direct", two, &[HDR_FORMAT, HDR_FORMAT], add),
+            direct: make("direct light", "fs_direct", &direct_pipeline_layout, &[HDR_FORMAT, HDR_FORMAT], add),
             gi_scene: make("light field scene", "fs_gi_scene", two, &[GI_FORMAT], None),
             seed_gi: make("light field seed", "fs_seed_gi", two, &[SEED_FORMAT], None),
             gi_dist: make("light field distance", "fs_gi_dist", two, &[FIELD_FORMAT], None),
@@ -449,6 +594,8 @@ impl Lighting {
             glow_source: make("light bloom source", "fs_glow_source", two, &[GI_FORMAT], None),
             glow_down: make("light bloom down", "fs_glow_down", two, &[GI_FORMAT], None),
             mix: make("light", "fs_mix", three, &[HDR_FORMAT], None),
+            extras: make("light extras", "fs_extras", &extras_pipeline_layout, &[GI_FORMAT], None),
+            stir,
             floor: make("glossy floor", "fs_floor", three, &[HDR_FORMAT], None),
             stage_uniform: uniform_buffer(device, "lighting stage uniform", std::mem::size_of::<StageUniform>()),
             stage_layout,
@@ -458,12 +605,19 @@ impl Lighting {
             items: GrowableBuffer::storage("light sphere items"),
             layout,
             glow_layout,
+            direct_layout,
+            mix_layout,
+            extras_layout,
+            stir_layout,
             sampler,
             uniforms,
             glow_uniforms: Vec::new(),
             lights: GrowableBuffer::storage("lights"),
             segments: GrowableBuffer::storage("light segments"),
+            links: GrowableBuffer::storage("light links"),
+            stirs: GrowableBuffer::storage("haze stirs"),
             targets: None,
+            memory: Memory::default(),
         }
     }
 
@@ -535,14 +689,44 @@ impl Lighting {
             glow: (glow, levels, all),
             dummy: texture(device, "light field stand-in", (1, 1), FIELD_FORMAT, false),
             dummy_colour: texture(device, "lighting stand-in", (1, 1), GI_FORMAT, false),
+            uv: texture(device, "glows under UV", full, HDR_FORMAT, true),
+            tags: texture(device, "light tags", full, HDR_FORMAT, true),
+            extras: None,
+            stir: None,
             stage: None,
         });
+        // New pictures: nothing is remembered.
+        self.memory.last = None;
     }
 
     /// The lit colour, surface and emission pictures (texture, view), made by
     /// [`Lighting::ensure`].
     pub fn pictures(&self) -> Option<[(wgpu::Texture, wgpu::TextureView); 3]> {
         self.targets.as_ref().map(|t| [t.lit.clone(), t.surface.clone(), t.emission.clone()])
+    }
+
+    /// The picture light pass `mode` draws into (1 lit colour, 2 surface, 3 emission, 5 what
+    /// glows under UV, 6 the tags), made by [`Lighting::ensure`].
+    pub fn picture(&self, mode: u32) -> Option<(wgpu::Texture, wgpu::TextureView)> {
+        let t = self.targets.as_ref()?;
+        Some(match mode {
+            1 => t.lit.clone(),
+            2 => t.surface.clone(),
+            3 => t.emission.clone(),
+            5 => t.uv.clone(),
+            _ => t.tags.clone(),
+        })
+    }
+
+    /// Whether the remembered light (glow in the dark) started again from nothing at a moment
+    /// after the start, so it is less than it would be in the video until warmed up.
+    pub fn memory_cold(&self) -> bool {
+        self.memory.cold
+    }
+
+    /// Forgets the remembered light (the scene changed): the next lit frame starts it again.
+    pub fn forget_memory(&mut self) {
+        self.memory.last = None;
     }
 
     /// The picture the background's own light is drawn into, before [`Lighting::run`] adds the
@@ -616,13 +800,64 @@ impl Lighting {
         self.lights.upload(device, queue, bytemuck::cast_slice(lights));
         let segments: &[[f32; 4]] = if scene.segments.is_empty() { &[[0.0; 4]] } else { &scene.segments };
         self.segments.upload(device, queue, bytemuck::cast_slice(segments));
+        let links: &[f32] = if scene.links.is_empty() { &[0.0; 4] } else { &scene.links };
+        self.links.upload(device, queue, bytemuck::cast_slice(links));
+
+        // Part 4: the moving haze (stirred by the balls), the memory, the UV and tags pictures.
+        let haze_moves = s.haze_moves();
+        let stirring = haze_moves && s.haze_more[2] != 0.0 && !scene.stirs.is_empty();
+        let remembers = s.remembers();
+        let extras_on = haze_moves || remembers;
+        let uv_on = scene.needs_uv();
+        let tags_on = scene.needs_tags();
+        let camera_now = [camera.center.x, camera.center.y, camera.zoom, camera.turn];
+        let mut memory_step = [0.0f32; 4];
+        let mut last_camera = camera_now;
+        if remembers {
+            let fade = s.memory[1].max(1e-3);
+            let charge = s.memory[2];
+            match self.memory.last {
+                // Carried on from the last frame (the same frame again changes nothing).
+                Some((last, cam)) if frame.time >= last && frame.time - last <= MOST_MEMORY_STEP => {
+                    let dt = frame.time - last;
+                    memory_step = [(-dt / fade).exp(), (1.0 - (-charge.max(0.0) * dt).exp()).clamp(0.0, 1.0), 1.0, 0.0];
+                    last_camera = cam;
+                    self.memory.cold = false;
+                }
+                // A seek: nothing remembered, cold unless this is the very start.
+                _ => self.memory.cold = frame.time > 1e-4,
+            }
+            if stirring || remembers {
+                self.memory.last = Some((frame.time, camera_now));
+            }
+        } else {
+            self.memory.last = None;
+            self.memory.cold = false;
+        }
+        if stirring {
+            let stirs: Vec<[f32; 4]> = scene.stirs.iter().flat_map(|s| *s).collect();
+            self.stirs.upload(device, queue, bytemuck::cast_slice(&stirs));
+        }
+        if let Some(t) = self.targets.as_mut() {
+            let small = t.field_size();
+            if extras_on && t.extras.is_none() {
+                t.extras = Some([
+                    texture(device, "light extras", small, GI_FORMAT, false),
+                    texture(device, "light extras", small, GI_FORMAT, false),
+                ]);
+            }
+            if stirring && t.stir.is_none() {
+                t.stir = Some(texture(device, "haze stir", small, GI_FORMAT, false));
+            }
+        }
 
         // What part 1b draws: the light field (glowing things, bounce light), the bloom, the haze.
         let [bounce, reach, blooms, _] = s.glow;
         let field_on = scene.glows || bounce != 0.0;
         let runs = if field_on && scene.glows && bounce != 0.0 { 2 } else { usize::from(field_on) };
         let blooms_on = blooms != 0.0;
-        let haze_on = s.air[..3].iter().any(|c| *c != 0.0) || s.air[3] != 0.0;
+        // The light in the air is worked out for haze and for smoke that catches beams.
+        let haze_on = s.air[..3].iter().any(|c| *c != 0.0) || s.air[3] != 0.0 || scene.smoke;
         if field_on && self.targets.as_ref().is_some_and(|t| t.cascades.is_none()) {
             let t = self.targets.as_mut().expect("checked");
             let size = (2 * t.padded.0, 2 * t.padded.1);
@@ -641,6 +876,21 @@ impl Lighting {
             glow: [bounce, reach, blooms, 0.0],
             air: s.air,
             on: [f32::from(u8::from(field_on)), f32::from(u8::from(blooms_on)), f32::from(u8::from(haze_on)), 0.0],
+            haze: s.haze,
+            haze_more: [s.haze_more[0], s.haze_more[1], if stirring { s.haze_more[2] } else { 0.0 }, 0.0],
+            water: s.water,
+            water_colour: s.water_colour,
+            water_depth: s.water_depth,
+            memory: s.memory,
+            memory_colour: s.memory_colour,
+            memory_step,
+            last_camera,
+            more_on: [
+                f32::from(u8::from(uv_on)),
+                f32::from(u8::from(tags_on)),
+                f32::from(u8::from(extras_on)),
+                f32::from(u8::from(haze_moves)),
+            ],
         };
         let base_glow = self.glow_uniform(device, 0);
         queue.write_buffer(&base_glow, 0, bytemuck::bytes_of(&glow_base));
@@ -739,6 +989,10 @@ impl Lighting {
                         resource: self.segments.buffer.as_ref().expect("just uploaded").as_entire_binding(),
                     },
                     wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(seeds) },
+                    wgpu::BindGroupEntry {
+                        binding: 9,
+                        resource: self.links.buffer.as_ref().expect("just uploaded").as_entire_binding(),
+                    },
                 ],
             })
         };
@@ -746,6 +1000,8 @@ impl Lighting {
             group_on(uniform, picture, field, seeds)
         };
         let none = &t.dummy_colour.1;
+        // The memory: last frame's in one extras picture, this frame's drawn into the other.
+        let (memory_from, memory_to) = (self.memory.current, 1 - self.memory.current);
         let all = GlowInputs {
             emission: &t.emission.1,
             direct: &t.direct.1,
@@ -755,21 +1011,26 @@ impl Lighting {
             above: none,
             gi: [&t.gi[0].1, &t.gi[1].1, &t.gi[2].1],
             glow: &t.glow.2,
+            tags: if tags_on { &t.tags.1 } else { none },
+            uv: if uv_on { &t.uv.1 } else { none },
+            extras: t.extras.as_ref().filter(|_| extras_on).map_or(none, |e| &e[memory_to].1),
+            stir: t.stir.as_ref().filter(|_| stirring).map_or(none, |e| &e.1),
         };
-        let glow_group = |uniform: &wgpu::Buffer, i: &GlowInputs| {
-            let views =
-                [i.emission, i.direct, i.air, i.gi_scene, i.gi_dist, i.above, i.gi[0], i.gi[1], i.gi[2], i.glow];
-            let mut entries = vec![wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() }];
-            entries.extend(views.iter().enumerate().map(|(k, v)| wgpu::BindGroupEntry {
-                binding: k as u32 + 1,
-                resource: wgpu::BindingResource::TextureView(v),
-            }));
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("lighting 1b"),
-                layout: &self.glow_layout,
-                entries: &entries,
-            })
-        };
+        let group_in =
+            |layout: &wgpu::BindGroupLayout, bindings: &[u32], uniform: &wgpu::Buffer, i: &GlowInputs| {
+                let mut entries = vec![wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() }];
+                entries.extend(bindings.iter().map(|b| wgpu::BindGroupEntry {
+                    binding: *b,
+                    resource: wgpu::BindingResource::TextureView(i.at(*b)),
+                }));
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("lighting 1b"),
+                    layout,
+                    entries: &entries,
+                })
+            };
+        let glow_group =
+            |uniform: &wgpu::Buffer, i: &GlowInputs| group_in(&self.glow_layout, GLOW_BINDINGS, uniform, i);
         let pass = |encoder: &mut wgpu::CommandEncoder,
                     views: &[(&wgpu::TextureView, wgpu::LoadOp<wgpu::Color>)],
                     pipeline: &wgpu::RenderPipeline,
@@ -820,7 +1081,8 @@ impl Lighting {
         // The light from Light things, on surfaces and in the air, added over the background's
         // own light when it gives any.
         let direct_load = if background_glows { wgpu::LoadOp::Load } else { clear };
-        let g = glow_group(&base_glow, &GlowInputs { direct: none, air: none, ..all });
+        let g =
+            group_in(&self.direct_layout, DIRECT_BINDINGS, &base_glow, &GlowInputs { direct: none, air: none, ..all });
         pass(encoder, &[(&t.direct.1, direct_load), (&t.air.1, clear)], &self.direct, &[&main, &g], "direct light");
 
         // The light field, once or twice (the second time the first's light bounces too).
@@ -872,7 +1134,43 @@ impl Lighting {
             }
         }
 
-        let g = glow_group(&base_glow, &all);
+        // The balls stirring the haze, then the extras: the haze's density and the memory.
+        if stirring && let Some(stir) = t.stir.as_ref() {
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("haze stir"),
+                layout: &self.stir_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: self.uniforms[0].as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 12,
+                        resource: self.stirs.buffer.as_ref().expect("just uploaded").as_entire_binding(),
+                    },
+                ],
+            });
+            let mut p = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("haze stir"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &stir.1,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: clear, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            p.set_pipeline(&self.stir);
+            p.set_bind_group(0, &group, &[]);
+            p.draw(0..4, 0..scene.stirs.len() as u32);
+        }
+        if extras_on && let Some(extras) = t.extras.as_ref() {
+            let inputs = GlowInputs { above: &extras[memory_from].1, extras: none, ..all };
+            let g = group_in(&self.extras_layout, EXTRAS_BINDINGS, &base_glow, &inputs);
+            pass(encoder, &[(&extras[memory_to].1, clear)], &self.extras, &[&main, &g], "light extras");
+        }
+
+        let g = group_in(&self.mix_layout, MIX_BINDINGS, &base_glow, &all);
         match t.stage.as_ref().filter(|_| reflects) {
             Some((_, lit)) => {
                 pass(encoder, &[(lit, clear)], &self.mix, &[&main, &g, &stage_group], "light");
@@ -880,6 +1178,9 @@ impl Lighting {
                 pass(encoder, &[(out, clear)], &self.floor, &[&floor, &g, &stage_group], "glossy floor");
             }
             None => pass(encoder, &[(out, clear)], &self.mix, &[&main, &g, &stage_group], "light"),
+        }
+        if extras_on {
+            self.memory.current = memory_to;
         }
     }
 }

@@ -111,6 +111,25 @@ bloom and grade). Every spanned number setting is a `widgets::span_slider` (rela
 a box that takes any number, only the hard `range` clamps; past the span: knob at the end, an arrow, a bright boxed
 value). Lights up (linking) and Picked colour moved to part 4.
 
+Part 4 is in (plan `docs/superpowers/plans/lighting/part4.md`): two more light passes, 5 the **UV picture** (each
+layer's colour × its UV glow, `LayerGpu.more.x`) and 6 the **tags picture** (R catches beams, G the thing's **link
+number**, A cover); `more` = [UV glow, Only under UV, Catches beams, link], `TrailVertex.extra`/`Particle.extra` the
+same, the background's link `Globals.light.w`; tags are written hard (`hard_tags`: the link whole where cover ≥ 0.5, beams soft); stamped by `layers/lighting.rs::stamp`/`AroundLayer::more_in`, all 0
+without a Lighting card. A layer's Lighting fold gains Under UV (Normal / Glows / Only under UV) and UV glow, around
+layers Catches beams (`AroundLit`, smoke). Lights (`things/light/`): kind **Laser** (code 5, `laser.rs`: `scenery`,
+`trace` against walls as capsules and balls as circles, `Meets` Bounce/Stop/Pass/**Bend** (Snell + total internal
+reflection, the hook for glass in 2b: the `meets` closure in `draw.rs::push_light`; at most `MOST_BOUNCES` 256), segments lit as a strip, `laser_beams` in the mix), **Gobo** (`p8`/`p9`,
+`gobo()` in lighting.wgsl: Stripes, Dots, Window, Leaves, Water caustics, Rings, Clouds), **Flicker** (CPU,
+`draw::flicker`, pure in time and seed), **Ultraviolet** + Visible light (`p7.yz`, UV light into `direct.a`), **Lights
+up** (`links.rs`: `number_of` = 1 + place among resolved things, `named`; `p10`, the `links` buffer; `lights_up` in `fs_direct` and `shade`) and Colour from
+**Picked** (`draw::Picked`: a thing's layer colour, or each ball's own via `ball_colors`). The Lighting card gains
+Haze moves (Still/Drifting/Swirling, an `extras` pass writes density; balls stir it through `LightScene.stirs`, a
+splat pass), **Underwater** (caustics, depth colour, sun rays, in `fs_mix`) and **Glow in the dark** (`extras` RGB:
+the remembered light, two pictures ping-ponged and reprojected through the last camera; a seek or > 0.5 s step is
+`Renderer::memory_cold`; `Frame::memory` counts it (8.3 fades, at most 10 s) so the editor's `preview/warm.rs` replays it after a jump or edit, and `forget_effect_history` forgets it). **Heat glow**
+(`layers/heat.rs`, `sub.heat`/`shape.sub.heat`, also on a Body: `Stack.body_heat`, `body_records`): a Flash record with
+`amount.w` 1; each ball's heat (`ball_heats`, one a ball: the first Heat glow found in its stacks) or the shape's in `hit[3]`; its light goes into pass 3.
+
 Part 7 is in: **light sensing** (plan `docs/superpowers/plans/lighting/part7.md`), optional and one-way: nothing the
 lighting or the probe reads may sense light. The CPU **light probe** (`bpe-kit/src/sensing/`: `probe.rs::Probe`, the
 runtime's `LightAt`/`LightMaker` in `bpe-runtime/src/light.rs`, `Sims.light` = `sensing::KitLight`) builds the same

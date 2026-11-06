@@ -78,6 +78,7 @@ fn SHAPE_WALK(world: vec2<f32>, s: ShapeAt, first: u32, count_in: u32, split: u3
             if ll.head.x == 4u {
                 piece.light_out += sub_light(piece.c_out, glow_amount, select(outer, whole_out, lower && above), mode);
             }
+            piece = uv_hidden(piece, ll);
             if g.light.x > 0.5 {
                 piece = light_piece(piece, ll, layered_shape.hit);
             }

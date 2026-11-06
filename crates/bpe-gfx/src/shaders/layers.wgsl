@@ -36,6 +36,9 @@ struct LayerGpu {
     // The light it gives off (read in the emission pass, mode 3): own colour times strength and
     // the flare on hits; what its own colours are multiplied by and the flare's length (s).
     emit: array<vec4<f32>, 2>,
+    // Lighting part 4: its UV glow, 1 when it shows only under UV light, how much it catches
+    // beams, its thing's link number.
+    more: vec4<f32>,
 };
 
 // The light pass the walks shader layers sample work in: the same, but the things' own colours
@@ -61,6 +64,31 @@ fn light_piece(piece: Piece, l: LayerGpu, hit: vec4<f32>) -> Piece {
     out.light_in = vec3<f32>(0.0);
     out.light_out = vec3<f32>(0.0);
     let emits = any(l.emit[0].xyz != vec3<f32>(0.0)) || any(l.emit[1].xyz != vec3<f32>(0.0));
+    // A Heat glow's light, worked out by its sub-layer in the emission pass.
+    let heat_in = HEAT_IN;
+    let heat_out = HEAT_OUT;
+    HEAT_IN = vec3<f32>(0.0);
+    HEAT_OUT = vec3<f32>(0.0);
+    if g.light.x > 4.5 {
+        // Pass 5, what glows under UV: its colours times its UV glow, else black covering what is
+        // behind; pass 6, the tags: what catches beams and its link number, times its cover. A
+        // Shine, Shading or Shader layer that doesn't glow leaves what is under it.
+        let works_over = l.head.x == 3u || l.head.x == 5u || l.head.x == 6u || l.head.x == 9u;
+        if works_over && (g.light.x > 5.5 || l.more.x == 0.0) {
+            out.a_in = 0.0;
+            out.a_out = 0.0;
+            return out;
+        }
+        if g.light.x < 5.5 {
+            out.c_in = piece.c_in * max(l.more.x, 0.0);
+            out.c_out = piece.c_out * max(l.more.x, 0.0);
+            return out;
+        }
+        let tag = vec3<f32>(max(l.more.z, 0.0), l.more.w, 0.0);
+        out.c_in = tag;
+        out.c_out = tag;
+        return out;
+    }
     if g.light.x > 2.5 {
         // A Shine, Shading, Shader or group Shader layer that gives off nothing works over what is
         // under it, so it leaves the light under it as it is; any other layer hides what is under
@@ -68,6 +96,8 @@ fn light_piece(piece: Piece, l: LayerGpu, hit: vec4<f32>) -> Piece {
         if !emits && (l.head.x == 3u || l.head.x == 5u || l.head.x == 6u || l.head.x == 9u) {
             out.a_in = 0.0;
             out.a_out = 0.0;
+            out.light_in = heat_in;
+            out.light_out = heat_out;
             return out;
         }
         var f = 1.0;
@@ -85,6 +115,8 @@ fn light_piece(piece: Piece, l: LayerGpu, hit: vec4<f32>) -> Piece {
             out.light_in = piece.light_in * tint + own * k_in;
             out.light_out = piece.light_out * tint + own * k_out;
         }
+        out.light_in += heat_in;
+        out.light_out += heat_out;
         return out;
     }
     if g.light.x < 1.5 {
@@ -125,6 +157,22 @@ fn light_piece(piece: Piece, l: LayerGpu, hit: vec4<f32>) -> Piece {
         out.a_in = 0.0;
         out.a_out = 0.0;
     }
+    return out;
+}
+
+// A layer shown only under UV light (lighting part 4) is left out of the picture and every light
+// pass but the UV one.
+fn uv_hidden(piece: Piece, l: LayerGpu) -> Piece {
+    if l.more.y < 0.5 || (g.light.x > 4.5 && g.light.x < 5.5) {
+        return piece;
+    }
+    var out = piece;
+    out.a_in = 0.0;
+    out.a_out = 0.0;
+    out.c_in = vec3<f32>(0.0);
+    out.c_out = vec3<f32>(0.0);
+    out.light_in = vec3<f32>(0.0);
+    out.light_out = vec3<f32>(0.0);
     return out;
 }
 
@@ -672,7 +720,7 @@ fn shade_layers(in: LayeredOut) -> vec4<f32> {
     if out.a < 1e-4 && seen < 1e-4 {
         discard;
     }
-    return out;
+    return hard_tags(out);
 }
 
 @fragment

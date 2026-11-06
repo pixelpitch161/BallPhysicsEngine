@@ -469,6 +469,7 @@ mod tests {
             only: Vec::new(),
             light: [0.0; 4],
             emit: None,
+            more: [0.0; 4],
         };
         draw(&layer, &a, &[ball(-30.0), ball(30.0)], 0.0, &mut frame);
         assert!(!frame.trails.is_empty() && frame.particles.len() == 2, "lines and a fill behind the balls");

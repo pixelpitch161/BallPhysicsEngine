@@ -19,6 +19,11 @@
 // 7. `fs_mix` mixes it in: colour + (light - 1) x lit colour, then the haze and the bloom; a
 //    surface that shines, and anything on a Stage (part 2a), is shaded there by `surfaced`;
 // 8. a Glossy or Mirror floor on a Stage mirrors that picture (`fs_floor`).
+//
+// Part 4 adds, each only when used: `vs_stir`/`fs_stir` (balls stirring moving haze), `fs_extras`
+// (the moving haze's density and the remembered light, glow in the dark), gobos, flicker (on the
+// CPU), Lights up and ultraviolet light in `lamps()`, and in the mix the haze's density, smoke
+// that catches beams, underwater light, UV glow, glow in the dark and laser beams.
 
 struct Lighting {
     // 2 / output width, 2 / output height in screen units, world units per output pixel, time.
@@ -52,8 +57,17 @@ struct LightGpu {
     // How far short of the lamp shadows stop (a ridden ball's radius), the sun's angular size
     // (tan), area shape (0 rectangle, 1 disc), the light's shadow softness.
     p6: vec4<f32>,
-    // How much its light shows in the haze; three spare.
+    // How much its light shows in the haze, 1 when ultraviolet, an ultraviolet light's visible
+    // share, a laser's glow.
     p7: vec4<f32>,
+    // Gobo: kind, size, sharpness, depth.
+    p8: vec4<f32>,
+    // The gobo's turn (cos, sin), its drift (xy, world units).
+    p9: vec4<f32>,
+    // Lights up: mode (0 everything, 1 only, 2 all but), first link, how many, spare.
+    p10: vec4<f32>,
+    // A laser's width, its hit glow, 1 when its beam ends on something, spare.
+    p11: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: Lighting;
@@ -66,6 +80,8 @@ struct LightGpu {
 @group(0) @binding(7) var<storage, read> segments: array<vec4<f32>>;
 // The jump flood's input (fs_jump, fs_field).
 @group(0) @binding(8) var seeds: texture_2d<f32>;
+// The link numbers the lights' Lights up name (part 4).
+@group(0) @binding(9) var<storage, read> links: array<f32>;
 
 struct FsIn {
     @builtin(position) pos: vec4<f32>,
@@ -101,11 +117,16 @@ fn uv_to_world(uv: vec2<f32>) -> vec2<f32> {
 
 // `uv_to_world` backwards.
 fn world_to_uv(p: vec2<f32>) -> vec2<f32> {
-    var d = p - u.camera.xy;
-    if u.camera.w != 0.0 {
-        d = rotate_by(d, -u.camera.w);
+    return world_to_uv_by(p, u.camera);
+}
+
+// `world_to_uv` through `camera` (centre xy, zoom, turn).
+fn world_to_uv_by(p: vec2<f32>, camera: vec4<f32>) -> vec2<f32> {
+    var d = p - camera.xy;
+    if camera.w != 0.0 {
+        d = rotate_by(d, -camera.w);
     }
-    let q = d * u.camera.z;
+    let q = d * camera.z;
     return vec2<f32>(q.x * u.view.x * 0.5 + 0.5, q.y * u.view.y * 0.5 + 0.5);
 }
 
@@ -319,8 +340,30 @@ struct Glow {
     glow: vec4<f32>,
     // The haze's colour times its amount (rgb), how much it dims what is behind it.
     air: vec4<f32>,
-    // 1 with a light field, 1 with a bloom, 1 with haze, spare.
+    // 1 with a light field, 1 with a bloom, 1 with haze (or smoke: the light in the air), spare.
     on: vec4<f32>,
+    // Part 4. The haze moving: how (0 still, 1 drifting, 2 swirling), speed, size, patchiness.
+    haze: vec4<f32>,
+    // Which way it drifts (unit xy), how much balls stir it, spare.
+    haze_more: vec4<f32>,
+    // Underwater: how much, caustics, caustic size, caustic speed.
+    water: vec4<f32>,
+    // The water's colour, sun rays.
+    water_colour: vec4<f32>,
+    // Where the water starts (world y), how deep its colour takes over, spare.
+    water_depth: vec4<f32>,
+    // Glow in the dark: how bright, fade time, charge speed, what remembers (0 the background).
+    memory: vec4<f32>,
+    // The glow's own colour, 1 to glow in the light's own colour.
+    memory_colour: vec4<f32>,
+    // How much the remembered light keeps this frame (e^(-dt/fade)), how far it charges toward
+    // the light now (1 - e^(-charge dt)), 1 when there is a memory from the last frame, spare.
+    memory_step: vec4<f32>,
+    // The last frame's camera: centre xy, zoom, turn (the memory is read where it was).
+    last_camera: vec4<f32>,
+    // 1 with a UV picture, 1 with a tags picture, 1 with the extras picture (moving haze or
+    // memory), 1 when the haze moves.
+    more_on: vec4<f32>,
 };
 
 @group(1) @binding(0) var<uniform> gu: Glow;
@@ -342,6 +385,15 @@ struct Glow {
 @group(1) @binding(9) var gi_c: texture_2d<f32>;
 // The lights' bloom, its levels.
 @group(1) @binding(10) var glow_pic: texture_2d<f32>;
+// Part 4 (each pass's layout lists only what it reads). What catches beams (r) and the thing's
+// link number (g), both times cover (a), from light pass 6.
+@group(1) @binding(11) var tags: texture_2d<f32>;
+// What glows under UV light, from light pass 5.
+@group(1) @binding(12) var uv_pic: texture_2d<f32>;
+// The remembered light (rgb) and the moving haze's density (a), field size.
+@group(1) @binding(13) var extras: texture_2d<f32>;
+// How the balls stir the haze: their velocity (xy) and how near (z), field size.
+@group(1) @binding(14) var stir_pic: texture_2d<f32>;
 
 const PI: f32 = 3.14159265;
 // The light field's light: twice the mean light arriving, so a glowing ball lights its
@@ -353,7 +405,157 @@ const GI_GAIN: f32 = 2.0;
 struct Lamps {
     surface: vec3<f32>,
     air: vec3<f32>,
+    // How much ultraviolet light falls here.
+    uv: f32,
 };
+
+// ---------- part 4: noise, patterns, gobos, links ----------
+
+// A number from 0 to 1 for a whole-number point, the same on every GPU.
+fn hash2i(p: vec2<i32>) -> f32 {
+    var h = bitcast<u32>(p.x) * 0x8da6b343u ^ bitcast<u32>(p.y) * 0xd8163841u;
+    h = (h ^ (h >> 15u)) * 0x2c1b3c6du;
+    h = (h ^ (h >> 12u)) * 0x297a2d39u;
+    h = h ^ (h >> 15u);
+    return f32(h >> 8u) / 16777215.0;
+}
+
+// Smooth value noise, 0 to 1.
+fn value_noise(q: vec2<f32>) -> f32 {
+    let i = vec2<i32>(floor(q));
+    let f = fract(q);
+    let u2 = f * f * (3.0 - 2.0 * f);
+    let a = hash2i(i);
+    let b = hash2i(i + vec2<i32>(1, 0));
+    let c = hash2i(i + vec2<i32>(0, 1));
+    let d = hash2i(i + vec2<i32>(1, 1));
+    return mix(mix(a, b, u2.x), mix(c, d, u2.x), u2.y);
+}
+
+// Four octaves of value noise, 0 to 1.
+fn fbm(q: vec2<f32>) -> f32 {
+    var sum = 0.0;
+    var amp = 0.5;
+    var at = q;
+    for (var k = 0; k < 4; k++) {
+        sum += amp * value_noise(at);
+        at = vec2<f32>(at.x * 1.6 - at.y * 1.2, at.x * 1.2 + at.y * 1.6) + vec2<f32>(3.1, 1.7);
+        amp *= 0.5;
+    }
+    return sum / 0.9375;
+}
+
+// Moving cells' edges: 1 on an edge, 0 deep inside a cell (`t` moves the cells' middles).
+fn cell_edges(q: vec2<f32>, t: f32) -> f32 {
+    let i = floor(q);
+    let f = fract(q);
+    var f1 = 8.0;
+    var f2 = 8.0;
+    for (var y = -1; y <= 1; y++) {
+        for (var x = -1; x <= 1; x++) {
+            let o = vec2<f32>(f32(x), f32(y));
+            let h = hash2i(vec2<i32>(i + o));
+            let h2 = hash2i(vec2<i32>(i + o) + vec2<i32>(17, 59));
+            let mid = o + 0.5 + 0.38 * vec2<f32>(sin(t + 6.2831 * h), cos(0.8 * t + 6.2831 * h2)) - f;
+            let d = dot(mid, mid);
+            if d < f1 {
+                f2 = f1;
+                f1 = d;
+            } else if d < f2 {
+                f2 = d;
+            }
+        }
+    }
+    let e = sqrt(f2) - sqrt(f1);
+    return exp(-e * e * 60.0);
+}
+
+// Water caustics: two layers of moving, bright, net-like lines, about 0 to 1.3.
+fn caustics(q: vec2<f32>, t: f32) -> f32 {
+    return 0.75 * cell_edges(q, t) + 0.55 * cell_edges(q * 1.7 + vec2<f32>(3.1, 7.3), 1.3 * t + 2.0);
+}
+
+// A gobo's pattern at `q` (in gobo sizes), 0 dark to 1 open, before its sharpness.
+fn gobo_pattern(kind: f32, q: vec2<f32>, t: f32) -> f32 {
+    if kind < 1.5 {
+        // Stripes.
+        return 0.5 + 0.5 * cos(6.2831853 * q.x);
+    }
+    if kind < 2.5 {
+        // Dots.
+        let f = fract(q) - 0.5;
+        return clamp(1.0 - 2.4 * length(f), 0.0, 1.0) * 2.0;
+    }
+    if kind < 3.5 {
+        // Window: panes with bars between them.
+        let f = fract(q);
+        let edge = min(min(f.x, 1.0 - f.x), min(f.y, 1.0 - f.y));
+        return clamp(edge * 14.0 - 0.3, 0.0, 1.0);
+    }
+    if kind < 4.5 {
+        // Leaves: dappled, swaying.
+        let sway = vec2<f32>(sin(0.7 * t), cos(0.53 * t)) * 0.12;
+        return fbm(q * 1.3 + sway);
+    }
+    if kind < 5.5 {
+        return caustics(q, t);
+    }
+    if kind < 6.5 {
+        // Rings.
+        return 0.5 + 0.5 * cos(6.2831853 * length(q));
+    }
+    // Clouds.
+    return fbm(q * 0.5 + vec2<f32>(0.05 * t, 0.0));
+}
+
+// How much of light `l` gets past its gobo at world point `p`: 1 with none.
+fn gobo(l: LightGpu, p: vec2<f32>) -> f32 {
+    let kind = l.p8.x;
+    if kind < 0.5 {
+        return 1.0;
+    }
+    // A sun's pattern is laid over the world; a lamp's turns and drifts round the lamp.
+    var d = p - l.p0.xy;
+    if l.p0.w > 1.5 && l.p0.w < 2.5 {
+        d = p;
+    }
+    let c = l.p9.x;
+    let sn = l.p9.y;
+    let local = vec2<f32>(d.x * c + d.y * sn, -d.x * sn + d.y * c) - l.p9.zw;
+    let q = local / max(l.p8.y, 1e-3);
+    let v = gobo_pattern(kind, q, u.view.w);
+    let w = 0.5 * (1.0 - clamp(l.p8.z, 0.0, 1.0)) + 0.02;
+    let open = smoothstep(0.5 - w, 0.5 + w, v);
+    return 1.0 - l.p8.w * (1.0 - open);
+}
+
+// The link number of what covers pixel `ip` (Lights up): 0 for nothing named.
+fn link_here(ip: vec2<i32>) -> f32 {
+    let size = vec2<i32>(textureDimensions(tags));
+    let t = textureLoad(tags, clamp(ip, vec2<i32>(0), size - 1), 0);
+    if t.a < 0.02 {
+        return 0.0;
+    }
+    return round(t.g / t.a);
+}
+
+// Whether light `l` lights up what has link number `here`.
+fn lights_up(l: LightGpu, here: f32) -> bool {
+    let mode = l.p10.x;
+    if mode < 0.5 {
+        return true;
+    }
+    let first = u32(l.p10.y);
+    let n = u32(l.p10.z);
+    var named = false;
+    for (var k = 0u; k < n; k++) {
+        if links[first + k] == here {
+            named = true;
+            break;
+        }
+    }
+    return select(!named, named, mode < 1.5);
+}
 
 // The light from every Light thing at world point `p` (pixel `ip`), on the surface (turned by its
 // normal, banded for toon) and in the air (each light's Beam in haze; no normal).
@@ -371,10 +573,18 @@ fn lamps(p: vec2<f32>, ip: vec2<i32>, with_air: bool) -> Lamps {
     let style = u.shadows.x;
     var total = vec3<f32>(0.0);
     var air = vec3<f32>(0.0);
+    var uv = 0.0;
     let count = u32(u.more.w);
+    // What covers this pixel, for the lights that light up only some things.
+    var here = 0.0;
+    if gu.more_on.y > 0.5 {
+        here = link_here(ip);
+    }
     for (var i = 0u; i < count; i++) {
         let l = lights[i];
         let kind = l.p0.w;
+        // Lights up: the light in the air shows whatever it lights.
+        let on_surface = lights_up(l, here);
         var amount = 1.0;
         var toward = vec2<f32>(0.0);
         var dist = 0.0;
@@ -430,18 +640,30 @@ fn lamps(p: vec2<f32>, ip: vec2<i32>, with_air: bool) -> Lamps {
             let v = visibility(p, toward, dist, soft, u.shadows.z, stop);
             tint = mix(vec3<f32>(1.0), l.p5.rgb, clamp((1.0 - v) * l.p2.w, 0.0, 1.0));
         }
-        var strength = amount * shade;
+        let through = gobo(l, p);
+        var strength = amount * shade * through;
         if style > 1.5 && style < 2.5 {
             // Toon: the light in bands.
             let bands = max(u.more.y, 1.0);
             strength = floor(strength * bands + 0.5) / bands;
         }
-        total += l.p1.rgb * strength * tint;
+        // An ultraviolet light lights only what glows under UV, but for its visible share.
+        var seen = 1.0;
+        if l.p7.y > 0.5 {
+            seen = l.p7.z;
+            if on_surface {
+                uv += dot(l.p1.rgb, vec3<f32>(0.2126, 0.7152, 0.0722)) * amount * through
+                    * dot(tint, vec3<f32>(0.3333));
+            }
+        }
+        if on_surface {
+            total += l.p1.rgb * strength * tint * seen;
+        }
         if with_air {
-            air += l.p1.rgb * amount * tint * l.p7.x;
+            air += l.p1.rgb * amount * through * tint * l.p7.x * seen;
         }
     }
-    return Lamps(total, air);
+    return Lamps(total, air, uv);
 }
 
 struct Two {
@@ -454,7 +676,8 @@ struct Two {
 @fragment
 fn fs_direct(in: FsIn) -> Two {
     let l = lamps(uv_to_world(in.uv), vec2<i32>(in.pos.xy), gu.on.z > 0.5);
-    return Two(vec4<f32>(l.surface, 0.0), vec4<f32>(l.air, 0.0));
+    // The ultraviolet light rides in the alpha (the blend keeps this pass's alpha).
+    return Two(vec4<f32>(l.surface, l.uv), vec4<f32>(l.air, 0.0));
 }
 
 // ---------- the light field ----------
@@ -709,6 +932,111 @@ fn fs_gi_resolve(in: FsIn) -> Three {
     return Three(vec4<f32>(l[0], l[3].r), vec4<f32>(l[1], l[3].g), vec4<f32>(l[2], l[3].b));
 }
 
+// ---------- part 4: haze that moves, light that is remembered ----------
+
+// What stirs the haze: each ball's place and velocity (world), then its radius.
+struct Stir {
+    a: vec4<f32>,
+    b: vec4<f32>,
+};
+
+@group(0) @binding(12) var<storage, read> stirs: array<Stir>;
+
+struct StirOut {
+    @builtin(position) pos: vec4<f32>,
+    // Where in its stirring circle (-1 to 1), its velocity.
+    @location(0) local: vec2<f32>,
+    @location(1) vel: vec2<f32>,
+};
+
+// One ball's stirring circle: three radii and a little more the faster it goes.
+@vertex
+fn vs_stir(@builtin(vertex_index) i: u32, @builtin(instance_index) k: u32) -> StirOut {
+    let s = stirs[k];
+    let corner = vec2<f32>(f32(i & 1u), f32((i >> 1u) & 1u)) * 2.0 - 1.0;
+    let reach = 3.0 * max(s.b.x, 1.0) + 0.15 * length(s.a.zw);
+    let uv = world_to_uv(s.a.xy + corner * reach);
+    var out: StirOut;
+    out.pos = vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0);
+    out.local = corner;
+    out.vel = s.a.zw;
+    return out;
+}
+
+@fragment
+fn fs_stir(in: StirOut) -> @location(0) vec4<f32> {
+    let r2 = dot(in.local, in.local);
+    if r2 >= 1.0 {
+        discard;
+    }
+    let k = (1.0 - r2) * (1.0 - r2);
+    return vec4<f32>(in.vel * k, k, 0.0);
+}
+
+// How thick the moving haze is at world point `p` (about 1 on average): drifting or swirling
+// clouds, carried along by the balls that stir it (`stir`: their velocity and how near).
+fn haze_density(p: vec2<f32>, stir: vec4<f32>) -> f32 {
+    let t = u.view.w;
+    let size = max(gu.haze.z, 1e-3);
+    let speed = gu.haze.y;
+    // The balls carry the haze along behind them, and turn it round them.
+    let push = stir.xy * 0.35 * gu.haze_more.z;
+    var q = (p - push) / size - gu.haze_more.xy * speed * t * 100.0 / size;
+    if gu.haze.x > 1.5 {
+        // Swirling: the cloud bent by a slowly turning field of its own.
+        let w = vec2<f32>(
+            fbm(q * 0.7 + vec2<f32>(0.0, 0.15 * speed * t)),
+            fbm(q * 0.7 + vec2<f32>(5.2, 1.3) - vec2<f32>(0.12 * speed * t, 0.0)),
+        );
+        let turn = stir.z * gu.haze_more.z * 1.2;
+        q += 1.8 * (w - 0.5) + vec2<f32>(-push.y, push.x) / size * turn;
+    }
+    let n = fbm(q);
+    let patchy = clamp(gu.haze.w, 0.0, 1.0);
+    return max(mix(1.0, 2.2 * n * n + 0.2 * n, patchy), 0.0);
+}
+
+// The light that falls on field texel `fp` (world `p`), for glow in the dark: the lamps, what
+// glows, twice the ultraviolet (it charges glowing paint best); no ambient.
+fn charging_light(uv: vec2<f32>, fp: vec2<f32>) -> vec3<f32> {
+    let d = textureSampleLevel(direct_light, samp, uv, 0.0);
+    var l = max(d.rgb, vec3<f32>(0.0)) + vec3<f32>(2.0 * max(d.a, 0.0));
+    if gu.on.x > 0.5 {
+        l += max(field_mean(fp), vec3<f32>(0.0));
+    }
+    return l;
+}
+
+// The extras picture (field size): the remembered light (rgb) and the moving haze's density (a).
+@fragment
+fn fs_extras(in: FsIn) -> @location(0) vec4<f32> {
+    let p = uv_to_world(in.uv);
+    var density = 1.0;
+    if gu.more_on.w > 0.5 {
+        var stir = vec4<f32>(0.0);
+        if gu.haze_more.z != 0.0 {
+            stir = textureSampleLevel(stir_pic, samp, in.uv, 0.0);
+        }
+        density = haze_density(p, stir);
+    }
+    var memory = vec3<f32>(0.0);
+    if gu.memory.x != 0.0 {
+        var old = vec3<f32>(0.0);
+        if gu.memory_step.z > 0.5 {
+            // Where this point was in the last frame's picture.
+            let was = world_to_uv_by(p, gu.last_camera);
+            if all(was >= vec2<f32>(0.0)) && all(was <= vec2<f32>(1.0)) {
+                old = textureSampleLevel(above, samp, was, 0.0).rgb;
+            }
+        }
+        let kept = old * gu.memory_step.x;
+        let now = charging_light(in.uv, in.pos.xy);
+        // Charging never lowers what is remembered.
+        memory = max(kept, mix(kept, now, gu.memory_step.y));
+    }
+    return vec4<f32>(memory, density);
+}
+
 // ---------- the lights' bloom ----------
 
 // The lamps' bulbs (each light at its source, as bright as its light, soft over its size) and
@@ -743,6 +1071,53 @@ fn fs_glow_down(in: FsIn) -> @location(0) vec4<f32> {
         }
     }
     return vec4<f32>(sum / 16.0, 1.0);
+}
+
+// ---------- part 4 in the mix ----------
+
+// The sun's rays down through water: slanted, slowly moving shafts, 0 to 1.
+fn sun_rays(p: vec2<f32>, top: f32, t: f32) -> f32 {
+    let s = p.x + 0.28 * (p.y - top);
+    let a = 0.5 + 0.5 * sin(s / 97.0 + 0.45 * t);
+    let b = 0.5 + 0.5 * sin(s / 41.0 - 0.7 * t + 1.7);
+    let c = 0.5 + 0.5 * sin(s / 173.0 + 0.23 * t + 4.1);
+    return pow(a * b * 0.6 + c * 0.4, 3.0);
+}
+
+// The laser beams at world point `p`: each laser's line (bright in the middle, a soft halo) and a
+// bright spot where it bounces or ends on something.
+fn laser_beams(p: vec2<f32>) -> vec3<f32> {
+    var out = vec3<f32>(0.0);
+    let count = u32(u.more.w);
+    for (var i = 0u; i < count; i++) {
+        let l = lights[i];
+        if l.p0.w < 4.5 {
+            continue;
+        }
+        let first = u32(l.p4.z);
+        let n = u32(l.p4.w);
+        let width = max(l.p11.x, 0.05);
+        var line = 0.0;
+        var spot = 0.0;
+        for (var k = 0u; k < n; k++) {
+            let seg = segments[first + k];
+            let d = distance(p, nearest_on(p, seg.xy, seg.zw));
+            let x = d / width;
+            line = max(line, exp(-x * x) + 0.08 / (1.0 + 0.25 * x * x));
+            // A bounce at the start of every segment after the first; the end when it hit something.
+            let r = 3.0 * width;
+            if k > 0u {
+                let e = distance(p, seg.xy) / r;
+                spot += exp(-e * e);
+            }
+            if k + 1u == n && l.p11.z > 0.5 {
+                let e = distance(p, seg.zw) / r;
+                spot += exp(-e * e);
+            }
+        }
+        out += l.p1.rgb * (l.p7.w * line + l.p11.y * spot);
+    }
+    return out;
 }
 
 // ---------- surfaces and the stage (part 2a) ----------
@@ -1101,7 +1476,8 @@ struct Shaded {
 
 // Lights the point `spot` (world point `p` on the picture) wearing surface `sf`, whose plain
 // colour is `base` (for metal), `here` the blockers' field there.
-fn shade(spot: Spot, p: vec2<f32>, sf: SurfaceGpu, base: vec3<f32>, here: f32) -> Shaded {
+// `link` is the link number of what is there (Lights up): a light that leaves it out gives none.
+fn shade(spot: Spot, p: vec2<f32>, sf: SurfaceGpu, base: vec3<f32>, here: f32, link: f32) -> Shaded {
     let stage = in_stage();
     let px = u.view.z;
     let n = spot.n;
@@ -1121,6 +1497,9 @@ fn shade(spot: Spot, p: vec2<f32>, sf: SurfaceGpu, base: vec3<f32>, here: f32) -
     let count = u32(u.more.w);
     for (var i = 0u; i < count; i++) {
         let l = lights[i];
+        if !lights_up(l, link) {
+            continue;
+        }
         let kind = l.p0.w;
         var amount = 1.0;
         var toward = vec2<f32>(0.0);
@@ -1195,6 +1574,11 @@ fn shade(spot: Spot, p: vec2<f32>, sf: SurfaceGpu, base: vec3<f32>, here: f32) -
                 v = vec3<f32>(visibility(p, toward, dist, soft, u.shadows.z, stop));
             }
             tint = mix(vec3<f32>(1.0), l.p5.rgb, clamp((vec3<f32>(1.0) - v) * l.p2.w, vec3<f32>(0.0), vec3<f32>(1.0)));
+        }
+        // Part 4: its gobo, and an ultraviolet light's visible share only.
+        amount *= gobo(l, spot.p.xy);
+        if l.p7.y > 0.5 {
+            amount *= max(l.p7.z, 0.0);
         }
         var strength = amount * turned;
         if style > 1.5 && style < 2.5 {
@@ -1319,9 +1703,10 @@ fn surfaced(ip: vec2<i32>, p: vec2<f32>, c: vec3<f32>, w: vec3<f32>, sf: Surface
     thing.p = vec3<f32>(p, h);
     thing.n = normalize(vec3<f32>(-slope, 1.0));
     let here = field_at(p);
+    let link = link_here(ip);
     var out: Surfaced;
     if !in_stage() {
-        var sh = shade(thing, p, sf, c / max(share, 1e-3), here);
+        var sh = shade(thing, p, sf, c / max(share, 1e-3), here, link);
         sh = with_field(sh, field);
         out.out = mixed(c, w, sh, sf, share);
         out.diffuse = sh.diffuse;
@@ -1335,7 +1720,7 @@ fn surfaced(ip: vec2<i32>, p: vec2<f32>, c: vec3<f32>, w: vec3<f32>, sf: Surface
     var on_thing = Surfaced(vec3<f32>(0.0), vec3<f32>(0.0));
     var on_stage = Surfaced(vec3<f32>(0.0), vec3<f32>(0.0));
     if cover > 0.02 {
-        var sh = shade(thing, p, sf, c / max(share, 1e-3), here);
+        var sh = shade(thing, p, sf, c / max(share, 1e-3), here, link);
         sh = with_field(sh, field);
         on_thing = Surfaced(mixed(c, w, sh, sf, share), sh.diffuse);
     }
@@ -1348,7 +1733,7 @@ fn surfaced(ip: vec2<i32>, p: vec2<f32>, c: vec3<f32>, w: vec3<f32>, sf: Surface
         let f = field_at(spot.p.xy);
         let dz = max(spot.p.z - st.room.z, 0.0);
         let near = select(max(f, 1e-3), length(vec2<f32>(max(f, 0.0), dz)), dz > 0.0);
-        var sh = shade(spot, p, plane, c, near);
+        var sh = shade(spot, p, plane, c, near, link);
         sh = with_field(sh, field);
         // The wall and floor take light as much as the background does (its lit share).
         on_stage = Surfaced(mixed(c, w, sh, plane, share), sh.diffuse);
@@ -1375,22 +1760,40 @@ fn fs_mix(in: FsIn) -> @location(0) vec4<f32> {
         field = field_light(vec2<i32>(fp), fp, blocks_here);
         field_air = field_mean(in.uv * gu.size.xy);
     }
+    let direct = textureLoad(direct_light, ip, 0);
+    // Underwater: caustics play over the light, and deep down the water's colour takes over.
+    let water = gu.water.x;
+    var under = 0.0;
+    var deep = 0.0;
+    var water_m = vec3<f32>(1.0);
+    if water != 0.0 {
+        let below = p.y - gu.water_depth.x;
+        if below > 0.0 {
+            under = water;
+            deep = 1.0 - exp(-below / max(gu.water_depth.y, 1e-3));
+            let q = (p - vec2<f32>(0.0, gu.water_depth.x)) / max(gu.water.z, 1e-3);
+            let ca = caustics(q, u.view.w * gu.water.w);
+            water_m *= max(1.0 + gu.water.y * under * (ca - 0.35) * (1.0 - 0.7 * deep), 0.0);
+            water_m *= mix(vec3<f32>(1.0), gu.water_colour.rgb, clamp(under * deep, 0.0, 1.0));
+        }
+    }
     let sf = surface_of(textureLoad(surface, ip, 0));
     var light = vec3<f32>(0.0);
     var out = vec3<f32>(0.0);
     if in_stage() || shines(sf) {
         // Part 2a: surfaces that shine, and the stage.
         let done = surfaced(ip, p, c.rgb, w, sf, field);
-        light = done.diffuse;
-        out = done.out;
+        light = done.diffuse * water_m;
+        out = done.out + done.diffuse * (water_m - vec3<f32>(1.0)) * w;
     } else {
-        light = max(u.ambient.rgb + textureLoad(direct_light, ip, 0).rgb + field, vec3<f32>(0.0));
+        light = max(u.ambient.rgb + direct.rgb + field, vec3<f32>(0.0));
         // Contact shading: light dims close to a blocker.
         let here = field_at(p);
         if u.shadows.w != 0.0 && here > 0.0 {
             let reach = max(u.more.x, 1e-3);
             light *= 1.0 - u.shadows.w * (1.0 - smoothstep(0.0, reach, here));
         }
+        light *= water_m;
         out = c.rgb + (light - vec3<f32>(1.0)) * w;
     }
     // The editor's views of the light alone.
@@ -1400,12 +1803,40 @@ fn fs_mix(in: FsIn) -> @location(0) vec4<f32> {
     if u.ambient.w > 0.5 {
         return vec4<f32>(clamp(light, vec3<f32>(-6.0e4), vec3<f32>(6.0e4)), 1.0);
     }
-    if gu.on.z > 0.5 {
-        // The haze: the light in the air, over what it veils.
-        let veil = clamp(gu.air.w, 0.0, 1.0) * min(max(gu.air.r, max(gu.air.g, gu.air.b)), 1.0);
-        let air = max(textureLoad(air_light, ip, 0).rgb + field_air, vec3<f32>(0.0));
-        out = out * (1.0 - veil) + gu.air.rgb * air;
+    var ex = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    if gu.more_on.z > 0.5 {
+        ex = textureSampleLevel(extras, samp, in.uv, 0.0);
     }
+    if gu.on.z > 0.5 {
+        // The haze: the light in the air, over what it veils, as thick as it is here.
+        let density = select(1.0, ex.a, gu.more_on.w > 0.5);
+        let veil = clamp(gu.air.w * density, 0.0, 1.0) * min(max(gu.air.r, max(gu.air.g, gu.air.b)), 1.0);
+        let air = max(textureLoad(air_light, ip, 0).rgb + field_air, vec3<f32>(0.0));
+        out = out * (1.0 - veil) + gu.air.rgb * air * density;
+        if gu.more_on.y > 0.5 {
+            // Smoke that catches beams glows its own colour by the light in the air.
+            let smoke = max(textureLoad(tags, ip, 0).r, 0.0);
+            out += air * smoke * max(c.rgb, vec3<f32>(0.0));
+        }
+    }
+    if under > 0.0 && gu.water_colour.w != 0.0 {
+        // Shafts of sunlight down through the water.
+        out += gu.water_colour.rgb * gu.water_colour.w * under * (1.0 - deep) * sun_rays(p, gu.water_depth.x, u.view.w);
+    }
+    if gu.more_on.x > 0.5 {
+        // What glows under UV, by the ultraviolet light falling on it.
+        out += max(direct.a, 0.0) * max(textureLoad(uv_pic, ip, 0).rgb, vec3<f32>(0.0));
+    }
+    if gu.memory.x != 0.0 {
+        // Glow in the dark: the light remembered, where the background shows (or everywhere).
+        let open = select(1.0 - clamp(textureLoad(surface, ip, 0).a, 0.0, 1.0), 1.0, gu.memory.w > 0.5);
+        var glow = ex.rgb;
+        if gu.memory_colour.w < 0.5 {
+            glow = gu.memory_colour.rgb * dot(ex.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+        }
+        out += glow * gu.memory.x * open;
+    }
+    out += laser_beams(p);
     if gu.on.y > 0.5 {
         let b = 0.35 * textureSampleLevel(glow_pic, samp, in.uv, 0.0).rgb
             + 0.3 * textureSampleLevel(glow_pic, samp, in.uv, 1.0).rgb

@@ -215,6 +215,7 @@ mod light_tests {
             style: [0.0; 2],
             light: [0.0; 2],
             emit: [0.0; 4],
+            extra: [0.0; 4],
         }
     }
 }

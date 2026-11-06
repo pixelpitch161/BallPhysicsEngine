@@ -1251,6 +1251,150 @@ pub fn glow_demo(reg: &Registry) -> Scene {
     scene
 }
 
+/// Lighting part 4's demo (its review video): a dark club in a white ring. A drifting, patchy
+/// haze the balls stir as they fly through; a red laser bouncing round the ring and off the
+/// balls; a warm spot through a window gobo, flickering like a candle; eight balls that heat up
+/// on every hit and glow under the UV lamp riding their middle; and a floor that glows green in
+/// the dark where light has been. Not in [`all`].
+pub fn club_demo(reg: &Registry) -> Scene {
+    use crate::modules::look::layers::heat::{SUB_HEAT, SubHeat};
+    use crate::things::light::{FlickerStyle, Gobo, LightSettings, LightType, RidesOn, add_light};
+    let mut scene = lit_room(reg);
+    scene.name = "Club demo".into();
+    let root = scene.things.get_mut(&ThingId::ROOT).expect("root");
+    let mut s = SceneSettings::from_params(&root.params);
+    s.background = Paint::solid(Color::rgb(0x30, 0x30, 0x36));
+    s.bloom = 0.25;
+    root.params = s.to_params();
+    let lighting = root.slots.get_mut(&SlotId::Lighting).expect("lit");
+    for (key, v) in [
+        ("ambient", Value::Number(0.04)),
+        ("haze", Value::Number(0.3)),
+        ("haze_dims", Value::Number(0.15)),
+        ("haze_moves", Value::Choice("swirling".into())),
+        ("haze_size", Value::Number(260.0)),
+        ("patchiness", Value::Number(0.8)),
+        ("haze_stir", Value::Number(2.0)),
+        ("glow_dark", Value::Number(0.3)),
+        ("glow_fade", Value::Number(2.5)),
+        ("charge", Value::Number(3.0)),
+        ("light_blooms", Value::Number(0.6)),
+    ] {
+        lighting.params.set(key, v);
+    }
+    // The room's lamp becomes a warm spot from the top through a window, flickering.
+    let first = scene.things.values().find(|t| t.kind == "light").map(|t| t.id).expect("a light");
+    let mut spot = LightSettings::of_kind(LightType::Spot);
+    spot.position = Vec2::new(-180.0, -470.0);
+    spot.direction = 70.0;
+    spot.cone = 60.0;
+    spot.cone_edge = 12.0;
+    spot.reach = 1600.0;
+    spot.strength = 2.4;
+    spot.height = 300.0;
+    spot.size = 20.0;
+    spot.beam = 1.2;
+    spot.colour = Color::rgb(0xff, 0xc8, 0x8a);
+    spot.gobo = Gobo::Window;
+    spot.gobo_size = 140.0;
+    spot.gobo_sharpness = 0.8;
+    spot.flicker = 0.35;
+    spot.flicker_style = FlickerStyle::Candle;
+    spot.flicker_speed = 6.0;
+    scene.things.get_mut(&first).expect("light").params = spot.to_params();
+    scene.rename_thing(first, "Window spot");
+    let shape = scene.things.values().find(|t| t.kind == "shape").map(|t| t.id).expect("a shape");
+    scene.things.get_mut(&shape).expect("shape").params.set("thickness", Value::Number(10.0));
+    // Eight balls flung out from the middle.
+    let ball = scene.things.values().find(|t| t.kind == "balls").map(|t| t.id).expect("a ball");
+    let mut balls = BallsSettings::from_params(&scene.things[&ball].params);
+    balls.ring(8, 120.0);
+    balls.launch = crate::things::balls::Launch::Outward;
+    balls.velocity = Vec2::new(0.0, -900.0);
+    scene.things.get_mut(&ball).expect("ball").params = balls.to_params();
+    // Their Body heats on every hit and glows under UV.
+    let card = &scene.things[&ball].slots[&SlotId::Look];
+    let body = card.layers.iter().find(|l| l.kind.as_str() == crate::modules::look::layers::BODY).expect("a Body").id;
+    let card = scene.card_mut(ball, SlotId::Look).expect("a look");
+    card.params.set(&bpe_core::layered_key(body, "under_uv"), Value::Choice("glows".into()));
+    card.params.set(&bpe_core::layered_key(body, "uv_glow"), Value::Number(2.0));
+    let heat = scene.add_sub_layer(reg, ball, SlotId::Look, body, SUB_HEAT).expect("the Body heats");
+    let hot = SubHeat { per_hit: 0.9, cool_down: 1.2, glow: 2.0, ..SubHeat::default() };
+    let card = scene.card_mut(ball, SlotId::Look).expect("a look");
+    for (k, v) in hot.to_params().iter() {
+        card.params.set(&bpe_core::layered_key(heat, k), v.clone());
+    }
+    // A UV lamp riding their middle.
+    let uv = add_light(&mut scene, reg, LightType::Point, ball).expect("a light");
+    let mut black = LightSettings::of_kind(LightType::Point);
+    black.position = Vec2::ZERO;
+    black.rides_on = RidesOn::TheMiddle;
+    black.colour = Color::rgb(0x8a, 0x5c, 0xff);
+    black.strength = 1.6;
+    black.reach = 700.0;
+    black.height = 100.0;
+    black.ultraviolet = true;
+    black.uv_visible = 0.25;
+    scene.things.get_mut(&uv).expect("light").params = black.to_params();
+    scene.rename_thing(uv, "UV lamp");
+    // A laser from the left wall, bouncing round the ring and off the balls.
+    let laser = add_light(&mut scene, reg, LightType::Laser, ThingId::ROOT).expect("a light");
+    let mut beam = LightSettings::of_kind(LightType::Laser);
+    beam.position = Vec2::new(-480.0, 150.0);
+    beam.direction = -12.0;
+    beam.spin = 9.0;
+    beam.points = crate::things::light::Points::Spins;
+    beam.bounces = 12;
+    scene.things.get_mut(&laser).expect("light").params = beam.to_params();
+    scene.rename_thing(laser, "Laser");
+    scene
+}
+
+/// Lighting part 4's underwater demo: a ring under water, rippling caustics and sun rays from
+/// the top, the water's colour taking over deeper down, and balls falling through it. Not in
+/// [`all`].
+pub fn water_demo(reg: &Registry) -> Scene {
+    use crate::things::light::{LightSettings, LightType};
+    let mut scene = lit_room(reg);
+    scene.name = "Water demo".into();
+    let root = scene.things.get_mut(&ThingId::ROOT).expect("root");
+    let mut s = SceneSettings::from_params(&root.params);
+    s.background = Paint::solid(Color::rgb(0x48, 0x78, 0x90));
+    s.bloom = 0.15;
+    root.params = s.to_params();
+    let lighting = root.slots.get_mut(&SlotId::Lighting).expect("lit");
+    for (key, v) in [
+        ("ambient", Value::Number(0.18)),
+        ("underwater", Value::Number(1.0)),
+        ("water_top", Value::Number(-960.0)),
+        ("depth_fade", Value::Number(900.0)),
+        ("caustics", Value::Number(1.0)),
+        ("caustic_size", Value::Number(140.0)),
+        ("sun_rays", Value::Number(0.8)),
+        ("haze", Value::Number(0.35)),
+        ("haze_colour", Value::Color(Color::rgb(0x9a, 0xd8, 0xff))),
+    ] {
+        lighting.params.set(key, v);
+    }
+    let first = scene.things.values().find(|t| t.kind == "light").map(|t| t.id).expect("a light");
+    let mut sun = LightSettings::of_kind(LightType::Sun);
+    sun.direction = 100.0;
+    sun.elevation = 55.0;
+    sun.strength = 0.8;
+    sun.colour = Color::rgb(0xe8, 0xf6, 0xff);
+    // Long sun shadows would streak the whole tank: the caustics and rays carry it.
+    sun.casts = false;
+    scene.things.get_mut(&first).expect("light").params = sun.to_params();
+    scene.rename_thing(first, "Sun");
+    let ball = scene.things.values().find(|t| t.kind == "balls").map(|t| t.id).expect("a ball");
+    let mut balls = BallsSettings::from_params(&scene.things[&ball].params);
+    balls.ring(6, 160.0);
+    balls.launch = crate::things::balls::Launch::Outward;
+    balls.velocity = Vec2::new(0.0, -500.0);
+    scene.things.get_mut(&ball).expect("ball").params = balls.to_params();
+    scene
+}
+
 /// The looks of the effects demo (lighting part 8's video), in the order it shows them.
 pub const EFFECTS_DEMOS: [&str; 12] = [
     "tunnel",

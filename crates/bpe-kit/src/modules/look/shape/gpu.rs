@@ -56,6 +56,9 @@ pub fn shape_sub(kind: &str, p: &Params) -> Option<SubLayer> {
         SUB_FLASH => SubLayer::Flash(SubFlash::from_params(p)),
         SUB_HUE => SubLayer::Hue(SubHue::from_params(p)),
         super::SUB_LIGHT => SubLayer::Light(crate::modules::look::layers::gives_light::GivesLight::from_params(p)),
+        crate::modules::look::layers::heat::SHAPE_SUB_HEAT => {
+            SubLayer::Heat(crate::modules::look::layers::heat::SubHeat::from_params(p))
+        }
         _ => return None,
     })
 }
@@ -71,8 +74,12 @@ pub struct ShapeStack {
     pub blend_at: usize,
     /// How each layer (the Body's first) takes the scene's light ([`crate::modules::look::layers::lighting::of`]).
     pub light: Vec<(LayerId, [f32; 4])>,
+    /// Each layer's UV ([`crate::modules::look::layers::lighting::extra_of`]), where it has any.
+    pub more: Vec<(LayerId, [f32; 4])>,
     /// The light the Body gives off (its Gives off light sub-layers), when it gives any.
     pub body_emit: Option<Emit>,
+    /// The Body's Heat glow sub-layers: their records follow the Body's.
+    pub body_heat: Vec<crate::modules::look::layers::heat::SubHeat>,
 }
 
 /// The shape as it is drawn, in its own units (see `things::shape::draw::wall_form`).
@@ -110,6 +117,11 @@ impl ShapeStack {
         self.light.iter().find(|(l, _)| *l == id).map_or([0.0; 4], |(_, light)| *light)
     }
 
+    /// Layer `id`'s UV ([`crate::modules::look::layers::lighting::extra_of`]).
+    pub fn more_of(&self, id: LayerId) -> [f32; 4] {
+        self.more.iter().find(|(l, _)| *l == id).map_or([0.0; 4], |(_, more)| *more)
+    }
+
     /// The stack of a `look.shape` card; `None` for any other card, or one with no Body.
     pub fn of(slot: &ResolvedSlot) -> Option<ShapeStack> {
         if slot.kind != CARD {
@@ -122,13 +134,19 @@ impl ShapeStack {
             blend: None,
             blend_at: 0,
             light: Vec::new(),
+            more: Vec::new(),
             body_emit: None,
+            body_heat: Vec::new(),
         };
         for layer in &slot.layers {
             let p = slot.layer_params(layer.id);
             let light = crate::modules::look::layers::lighting::of(&p);
             if light != [0.0; 4] {
                 stack.light.push((layer.id, light));
+            }
+            let more = crate::modules::look::layers::lighting::extra_of(&p, 0.0, true);
+            if more != [0.0; 4] {
+                stack.more.push((layer.id, more));
             }
             let drawn = match layer.kind.as_str() {
                 PAINT => ShapeDrawn::Paint(PaintLayer::from_params(&p)),
@@ -140,11 +158,13 @@ impl ShapeStack {
                     if let Some(sub) = shape_sub(kind, &p) {
                         if let Some((_, _, subs)) = stack.drawn.iter_mut().find(|(id, ..)| Some(*id) == layer.parent) {
                             subs.push(Sub { id: layer.id, sub });
-                        } else if layer.parent == Some(stack.body_id)
-                            && let SubLayer::Light(g) = &sub
-                        {
-                            // The Body takes Gives off light only.
-                            stack.body_emit.get_or_insert_with(Default::default).add(g);
+                        } else if layer.parent == Some(stack.body_id) {
+                            // The Body takes Gives off light and Heat glow only.
+                            match sub {
+                                SubLayer::Light(g) => stack.body_emit.get_or_insert_with(Default::default).add(&g),
+                                SubLayer::Heat(h) => stack.body_heat.push(h),
+                                _ => {}
+                            }
                         }
                     }
                     continue;
@@ -179,14 +199,14 @@ impl ShapeStack {
             return None;
         }
         let under: usize = drawn[..at].iter().map(|(_, d, subs)| records_of(d, subs)).sum();
-        Some(1 + under as u32)
+        Some((1 + self.body_heat.len() + under) as u32)
     }
 
     /// How many of `drawn` (from the bottom) have their records written: the walk reads at most
     /// [`MAX_LAYERS`] records, so past that whole layers are left out from the top, never part
     /// of one.
     pub fn kept(&self) -> usize {
-        let room = MAX_LAYERS as usize - 1;
+        let room = (MAX_LAYERS as usize).saturating_sub(1 + self.body_heat.len());
         let mut used = 0;
         for (i, (_, d, subs)) in self.drawn.iter().enumerate() {
             used += records_of(d, subs);
@@ -258,6 +278,18 @@ impl ShapeStack {
     pub fn needs_hits(&self) -> bool {
         self.drawn.iter().any(|(_, d, subs)| d.writes() && subs.iter().any(|s| s.sub.reads_hits() || s.sub.flares()))
             || self.body_emit.is_some_and(|e| e.flare != 0.0)
+            || !self.body_heat.is_empty()
+    }
+
+    /// The Heat glow whose heat the shape carries (`hit[3]`): the Body's first, else the first
+    /// on a drawn layer.
+    pub fn heat(&self) -> Option<&crate::modules::look::layers::heat::SubHeat> {
+        self.body_heat.first().or_else(|| {
+            self.drawn.iter().filter(|(_, d, _)| d.writes()).flat_map(|(_, _, subs)| subs).find_map(|s| match &s.sub {
+                SubLayer::Heat(h) => Some(h),
+                _ => None,
+            })
+        })
     }
 
     /// Whether any of its shown layers gives off light.
@@ -280,13 +312,15 @@ impl ShapeStack {
         };
         let sources = self.effect_sources();
         let mut out = vec![LayerGpu {
-            head: [LayerGpu::BODY, 0, 0, 0],
+            head: [LayerGpu::BODY, 0, 0, self.body_heat.len() as u32],
             amount: [1.0, 0.0, 0.0, 0.0],
             colour: [1.0, 1.0, 1.0, 1.0],
             light: unlit_if_lamp(self.light_of(self.body_id), self.body_emit),
+            more: self.more_of(self.body_id),
             emit: gpu_of(self.body_emit),
             ..LayerGpu::ZERO
         }];
+        out.extend(self.body_heat.iter().map(crate::modules::look::layers::heat::SubHeat::record));
         // Where each layer's record is, by id, for cuts that name a layer.
         let mut placed: Vec<(LayerId, usize)> = vec![(self.body_id, 0)];
         // Shapes have no brush; cuts and shading never add tiles.
@@ -332,6 +366,7 @@ impl ShapeStack {
             out.push(LayerGpu {
                 head: [r.head[0], r.head[1], r.head[2], count],
                 light: unlit_if_lamp(self.light_of(*id), emit),
+                more: self.more_of(*id),
                 emit: gpu_of(emit),
                 ..r
             });

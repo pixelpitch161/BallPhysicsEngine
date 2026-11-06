@@ -258,6 +258,7 @@ mod tests {
             only: Vec::new(),
             light: [0.0; 4],
             emit: None,
+            more: [0.0; 4],
         };
         let mut frame = Frame::default();
         draw(&layer, &w, &f, &mut frame);

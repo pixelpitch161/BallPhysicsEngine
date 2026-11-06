@@ -67,8 +67,8 @@ const BALL_ATTRIBUTES: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
     0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4,
     7 => Float32x4
 ];
-const TRAIL_ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
-    0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x2, 4 => Float32x2, 5 => Float32x4
+const TRAIL_ATTRIBUTES: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
+    0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x2, 4 => Float32x2, 5 => Float32x4, 6 => Float32x4
 ];
 const LOOK_ATTRIBUTES: [wgpu::VertexAttribute; 12] = wgpu::vertex_attr_array![
     0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
@@ -1111,6 +1111,7 @@ impl Renderer {
     /// Forgets what the effects remember of earlier frames: the next frame starts them afresh.
     pub fn forget_effect_history(&mut self) {
         self.chain.forget_history();
+        self.forget_memory();
     }
 
     /// Builds in-ball programs in `store` from now on, shared with every renderer using it (on
@@ -1223,8 +1224,13 @@ impl Renderer {
                     wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                 ));
             }
-            // Lit colour, surface, and (when something gives off light) the light things give off.
-            let modes = [1u32, 2, 3].into_iter().zip(pictures).filter(|(mode, _)| *mode < 3 || scene.glows);
+            // Lit colour, surface, and (when something gives off light) the light things give off;
+            // part 4's what glows under UV and the tags, when asked for.
+            let wanted = [true, true, scene.glows, false, scene.needs_uv(), scene.needs_tags()];
+            let modes: Vec<(u32, (wgpu::Texture, wgpu::TextureView))> = (1u32..=6)
+                .filter(|mode| wanted[*mode as usize - 1])
+                .map(|mode| (mode, lighting.picture(mode).expect("just made")))
+                .collect();
             // A background that gives off light is a lamp: it doesn't take light.
             let background_lit = if scene.settings.background_glows() { 0.0 } else { scene.settings.ambient[3] };
             for (mode, (texture, view)) in modes {
@@ -1340,6 +1346,20 @@ impl Renderer {
         queue.submit([encoder.finish()]);
         if timed && let Some(Some(t)) = &self.light_timer {
             t.read_after_submit();
+        }
+    }
+
+    /// Whether the last lit frame's remembered light (glow in the dark) started again from nothing
+    /// partway through the video (a seek, or after [`Renderer::forget_memory`]), so it shows less
+    /// than the video will: drawing the frames before it in order warms it up.
+    pub fn memory_cold(&self) -> bool {
+        self.lighting.as_ref().is_some_and(|l| l.memory_cold())
+    }
+
+    /// Forgets the remembered light (glow in the dark): the scene changed.
+    pub fn forget_memory(&mut self) {
+        if let Some(l) = self.lighting.as_mut() {
+            l.forget_memory();
         }
     }
 
@@ -1482,7 +1502,7 @@ impl Renderer {
         background_lit: f32,
         scene: &LightScene,
     ) -> (wgpu::BindGroup, wgpu::BindGroup) {
-        while self.light_globals.len() < 8 {
+        while self.light_globals.len() < 12 {
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("light pass globals"),
                 size: std::mem::size_of::<Globals>() as u64,
@@ -1498,7 +1518,7 @@ impl Renderer {
         }
         let at = 2 * (mode as usize - 1);
         let mut world = Globals::new(frame, &frame.camera, self.targets.width);
-        world.light = [mode as f32, background_lit, scene.settings.stage[0], 0.0];
+        world.light = [mode as f32, background_lit, scene.settings.stage[0], scene.background_link];
         world.light_emit = scene.settings.background;
         let mut screen = Globals::new(frame, &CameraView::default(), self.targets.width);
         screen.light = world.light;
@@ -1816,8 +1836,8 @@ impl Renderer {
         // The emission keeps what is in front hiding what is behind (added light stays added).
         let blend = match self.light_mode {
             2 => bpe_core::Blend::Lighten,
-            3 if l.blend == bpe_core::Blend::Add => bpe_core::Blend::Add,
-            3 => bpe_core::Blend::Normal,
+            3 | 5 if l.blend == bpe_core::Blend::Add => bpe_core::Blend::Add,
+            3 | 5 | 6 => bpe_core::Blend::Normal,
             _ => l.blend,
         };
         self.blend.composite(
