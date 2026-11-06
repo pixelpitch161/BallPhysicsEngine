@@ -360,7 +360,7 @@ mod tests {
         let mut h = Harness::builder()
             .with_size(egui::vec2(460.0, 700.0))
             .allow_missing_glyphs()
-            .with_context_setup(|ctx| style::apply(ctx))
+            .with_context_setup(style::apply)
             .build_ui_state(
                 |ui, state: &mut State| {
                     let choices = TargetChoices::default();

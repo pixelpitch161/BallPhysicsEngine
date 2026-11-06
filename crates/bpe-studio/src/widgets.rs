@@ -336,6 +336,10 @@ fn sections_for<'a>(defs: &'a [SettingDef], cx: &GridCx) -> Vec<Section<'a>> {
     sections
 }
 
+/// Rows drawn under a setting's own row (a gradient's tabs), given the id its bar keeps its
+/// memory under and the value to edit; true when they changed it.
+type TabRows<'a> = dyn FnMut(&mut Ui, egui::Id, &mut Value) -> bool + 'a;
+
 /// One setting's row of a settings grid, with what the user did to it added to `out`. A
 /// gradient of two or more stops gets its tabs in rows under it (`gradient_tabs`).
 pub(crate) fn grid_row(
@@ -357,8 +361,7 @@ pub(crate) fn grid_row(
         let gradient = def.ty == ValueType::Gradient
             && !bpe_core::gradient_extras::is_companion_key(def.key)
             && bpe_core::vary::split(def.key).is_none();
-        let tabs: Option<&mut dyn FnMut(&mut Ui, egui::Id, &mut Value) -> bool> =
-            if gradient { Some(&mut tabs) } else { None };
+        let tabs: Option<&mut TabRows> = if gradient { Some(&mut tabs) } else { None };
         setting(ui, def, unit, &mut value, (cx.marks)(def.key), cx, right, &mut varies, tabs)
     };
     out.changes.extend(companions.changes);
@@ -419,7 +422,7 @@ fn setting(
     cx: &GridCx,
     right: f32,
     varies: &mut Vec<crate::vary::VaryEdit>,
-    tabs: Option<&mut dyn FnMut(&mut Ui, egui::Id, &mut Value) -> bool>,
+    tabs: Option<&mut TabRows>,
 ) -> RowAction {
     use crate::vary::VaryEdit;
     // Where a gradient's bar and its tabs keep their memory (the selected stop, the open tab):

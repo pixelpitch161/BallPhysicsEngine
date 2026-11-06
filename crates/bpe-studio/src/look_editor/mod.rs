@@ -385,7 +385,7 @@ pub(crate) fn layer_settings(
     let (scene, reg, time) = (cx.scene, cx.reg(), cx.time);
     let get = |key: &str| scene.value_at_time(reg, &cx.at(layer, key), time).expect("a layer's settings all resolve");
     let marks = |key: &str| {
-        let def = crate::widgets::def_in(&defs, key)?;
+        let def = crate::widgets::def_in(defs, key)?;
         Some(mark_for(scene, def, &cx.at(layer, key)))
     };
     let kind = scene.things.get(&cx.id).map(|t| t.kind.clone());

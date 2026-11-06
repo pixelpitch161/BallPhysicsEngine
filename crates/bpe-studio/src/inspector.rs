@@ -1130,7 +1130,7 @@ fn slot_grid(ui: &mut Ui, inspector: &mut Inspector, cx: &OwnCx, slot: SlotId, c
     let at = |key: &str| Address::on(id, slot, key);
     let get = |key: &str| scene.value_at_time(reg, &at(key), time).expect("a card's settings all resolve");
     let marks = |key: &str| {
-        let def = crate::widgets::def_in(&defs, key)?;
+        let def = crate::widgets::def_in(defs, key)?;
         Some(mark_for(scene, def, &at(key)))
     };
     let applies = |d: &SettingDef| d.applies(Some(&cx.thing.kind), &|k| scene.value_at_time(reg, &at(k), time));
@@ -1271,7 +1271,7 @@ fn own_grid(
     let own = |key: &str| Address { thing: id, slot: None, key: key.into() };
     let get = |key: &str| scene.value_at_time(reg, &own(key), time).expect("the kind's own settings all resolve");
     let marks = |key: &str| {
-        let def = crate::widgets::def_in(&defs, key)?;
+        let def = crate::widgets::def_in(defs, key)?;
         Some(mark_for(scene, def, &own(key)))
     };
     let folded = |group: &str| is_folded(inspector, (id, None), group);
