@@ -7,10 +7,15 @@ use bpe_kit::registry;
 
 /// What is wrong with one set of saved settings: keys no setting has, values the setting can't
 /// hold, and numbers out of range.
-fn bad_keys(params: &Params, defs: &[SettingDef], whose: &str) -> Vec<String> {
+fn bad_keys(params: &Params, defs: &'static [SettingDef], whose: &str) -> Vec<String> {
     let mut out = Vec::new();
     for (key, value) in params.iter() {
-        match defs.iter().find(|d| d.key == key) {
+        // A gradient's companion (`colours~form`) is described by the gradient it belongs to.
+        let companion = || {
+            let (base, c) = bpe_core::gradient_extras::split(key)?;
+            bpe_core::gradient_extras::def_for(defs.iter().find(|d| d.key == base), c)
+        };
+        match defs.iter().find(|d| d.key == key).or_else(companion) {
             None => out.push(format!("{whose}: unknown key `{key}`")),
             Some(d) if !d.ty.accepts(value) => out.push(format!("{whose}: `{key}` can't hold {value:?}")),
             Some(d) if d.clamp(value.clone()) != *value => out.push(format!("{whose}: `{key}` is out of range")),
