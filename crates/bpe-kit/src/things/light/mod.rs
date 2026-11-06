@@ -367,7 +367,7 @@ pub struct LightSettings {
     #[setting(label = "Heard from", when = "flare", group = "On hits")]
     pub flare_from: Target,
     /// How much its light shows in the scene's haze (the Lighting card's Haze): beams.
-    #[setting(label = "Beam in haze", span(0, 4), keyframe, group = "Air")]
+    #[setting(label = "Beam in haze", when = "kind!=laser", span(0, 4), keyframe, group = "Air")]
     pub beam: f32,
     /// How wide the laser's beam is.
     #[setting(

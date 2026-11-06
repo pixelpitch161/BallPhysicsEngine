@@ -1269,13 +1269,13 @@ pub fn club_demo(reg: &Registry) -> Scene {
     let lighting = root.slots.get_mut(&SlotId::Lighting).expect("lit");
     for (key, v) in [
         ("ambient", Value::Number(0.04)),
-        ("haze", Value::Number(0.8)),
+        ("haze", Value::Number(0.3)),
         ("haze_dims", Value::Number(0.15)),
         ("haze_moves", Value::Choice("swirling".into())),
         ("haze_size", Value::Number(260.0)),
         ("patchiness", Value::Number(0.8)),
         ("haze_stir", Value::Number(2.0)),
-        ("glow_dark", Value::Number(0.8)),
+        ("glow_dark", Value::Number(0.3)),
         ("glow_fade", Value::Number(2.5)),
         ("charge", Value::Number(3.0)),
         ("light_blooms", Value::Number(0.6)),
@@ -1359,7 +1359,7 @@ pub fn water_demo(reg: &Registry) -> Scene {
     scene.name = "Water demo".into();
     let root = scene.things.get_mut(&ThingId::ROOT).expect("root");
     let mut s = SceneSettings::from_params(&root.params);
-    s.background = Paint::solid(Color::rgb(0xd8, 0xe4, 0xe8));
+    s.background = Paint::solid(Color::rgb(0x48, 0x78, 0x90));
     s.bloom = 0.15;
     root.params = s.to_params();
     let lighting = root.slots.get_mut(&SlotId::Lighting).expect("lit");
@@ -1367,8 +1367,8 @@ pub fn water_demo(reg: &Registry) -> Scene {
         ("ambient", Value::Number(0.18)),
         ("underwater", Value::Number(1.0)),
         ("water_top", Value::Number(-960.0)),
-        ("depth_fade", Value::Number(1500.0)),
-        ("caustics", Value::Number(1.4)),
+        ("depth_fade", Value::Number(900.0)),
+        ("caustics", Value::Number(1.0)),
         ("caustic_size", Value::Number(140.0)),
         ("sun_rays", Value::Number(0.8)),
         ("haze", Value::Number(0.35)),
@@ -1380,8 +1380,10 @@ pub fn water_demo(reg: &Registry) -> Scene {
     let mut sun = LightSettings::of_kind(LightType::Sun);
     sun.direction = 100.0;
     sun.elevation = 55.0;
-    sun.strength = 1.6;
+    sun.strength = 0.8;
     sun.colour = Color::rgb(0xe8, 0xf6, 0xff);
+    // Long sun shadows would streak the whole tank: the caustics and rays carry it.
+    sun.casts = false;
     scene.things.get_mut(&first).expect("light").params = sun.to_params();
     scene.rename_thing(first, "Sun");
     let ball = scene.things.values().find(|t| t.kind == "balls").map(|t| t.id).expect("a ball");

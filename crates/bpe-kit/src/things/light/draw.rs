@@ -199,7 +199,8 @@ fn push_light(
             s.softness.max(0.0),
         ],
         p7: [
-            if s.beam.is_finite() { s.beam } else { 0.0 },
+            // A laser's beam in the air is its own thin line (Beam glow), not a strip's wide glow.
+            if s.beam.is_finite() && s.kind != LightType::Laser { s.beam } else { 0.0 },
             if s.ultraviolet { 1.0 } else { 0.0 },
             s.uv_visible.max(0.0),
             if s.kind == LightType::Laser { s.laser_glow.max(0.0) } else { 0.0 },
