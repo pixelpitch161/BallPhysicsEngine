@@ -217,7 +217,9 @@ Dependencies go bottom to top:
   keeps the things without balls and a quiet copy of the emitter, `EmitterState::quiet`; Out my way lends the caught
   ball's cards, `World::lend_cards`) from the moment it would set off; `passes` gives the signed miss of the step
   polyline against the target's track, grouped by arc (bounces before); `fly` stops past Bounces at most
-  (`aim_bounces_most`), at rest a second, or after `aim::MOST_STEPS` (2 min). Settings: Arrive (As soon as all can /
+  (`aim_bounces_most`; phase 1 past the `WAYS` arcs it looks for), at rest a second, ten seconds without touching a
+  wall (`QUIET_STEPS`), or after `aim::MOST_STEPS` (2 min); one ball's flights in a pass take at most `BALL_STEPS`
+  (400,000) steps. As soon as all can, no ball goes faster than Speed (`ceiling_of`). Settings: Arrive (As soon as all can /
   After: Arrive after), Bounces at least/most, Leave (Together / When needed), Ball directions (Adjust each ball /
   Keep mine, Leave together only), Turn at most. `aim_shots`: phase 1 `first_ways` per ball (up to `WAYS` 3 arcs;
   Keep mine scans speeds with Illinois brackets, the Edge sawtooth taken within `GOOD` 0.45 px or a ≤ `MOST_TWEAK`

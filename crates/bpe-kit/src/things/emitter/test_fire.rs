@@ -63,6 +63,10 @@ const WAYS: usize = 3;
 pub const PATH_POINTS: usize = 96;
 /// How many times the way is checked again from when it would set off, at most.
 const SETTLE_TRIES: usize = 6;
+/// How many steps without touching a wall end a test flight (ten seconds).
+const QUIET_STEPS: u64 = 2400;
+/// How many steps all of one ball's test flights in one pass may take together.
+const BALL_STEPS: u64 = 400_000;
 /// How many threads a round's balls are aimed on, at most.
 const MOST_THREADS: usize = 8;
 
@@ -280,6 +284,7 @@ fn fly(lone: &Lone, aim: &Aimer, p0: Vec2, v: Vec2, most: u64, most_arc: usize) 
     let mut hits = vec![0u32];
     let mut arcs = vec![0usize];
     let mut still = 0u32;
+    let mut quiet = 0u64;
     let mut last_arc = None;
     let mut arc = 0usize;
     for _ in 0..most {
@@ -298,9 +303,11 @@ fn fly(lone: &Lone, aim: &Aimer, p0: Vec2, v: Vec2, most: u64, most_arc: usize) 
         if arc > most_arc {
             break;
         }
-        // At rest a second: it goes nowhere more.
+        // At rest a second, or ten seconds without touching a wall (it has left them all, or
+        // slides to and fro in a bowl): it goes nowhere new.
         still = if b.velocity[0].length_squared() < 1.0 { still + 1 } else { 0 };
-        if still > 240 {
+        quiet = if h > 0 { 0 } else { quiet + 1 };
+        if still > 240 || quiet > QUIET_STEPS {
             break;
         }
         let previous = *places.last().unwrap_or(&p0);
@@ -380,6 +387,8 @@ struct Search<'a> {
     /// How near a pass must go to count as a way.
     accept: f64,
     left: u32,
+    /// The steps its flights may still take together.
+    steps: u64,
 }
 
 /// A way to try: a flight already through, or a bracket to close in on (flight index, arc).
@@ -391,13 +400,15 @@ enum Try {
 impl Search<'_> {
     fn fly_at(&mut self, speed: f64, tweak: f64, most: u64) -> Option<Flight> {
         // A background run told to stop gives up: its answer is never kept.
-        if self.left == 0 || super::aim_cache::stopped() {
+        if self.left == 0 || self.steps == 0 || super::aim_cache::stopped() {
             self.left = 0;
             return None;
         }
         self.left -= 1;
         let v = Vec2::from_angle(tweak as f32).rotate(self.u) * speed as f32;
-        Some(fly(self.lone, self.aim, self.p0, v, most, self.most_arc))
+        let flight = fly(self.lone, self.aim, self.p0, v, most.min(self.steps), self.most_arc);
+        self.steps = self.steps.saturating_sub(flight.places.len() as u64);
+        Some(flight)
     }
 
     fn fly(&mut self, speed: f64, most: u64) -> Option<Flight> {
@@ -890,12 +901,15 @@ fn search_for<'a>(base: &'a Lone, aim: &'a Aimer, s: &EmitterSettings, shot: Sho
         tweak: 0.0,
         accept: GOOD,
         left: MOST_FLIGHTS,
+        steps: BALL_STEPS,
     }
 }
 
-/// The fastest a ball may go, a hair under the world's own limit.
-fn ceiling_of(aim: &Aimer) -> f64 {
-    aim.ceiling as f64 * 0.999
+/// The fastest a ball may go: a hair under the world's own limit, and arriving as soon as all
+/// can, no faster than Speed (the round's moment is when the last can be there at Speed).
+fn ceiling_of(aim: &Aimer, s: &EmitterSettings) -> f64 {
+    let world = aim.ceiling as f64 * 0.999;
+    if s.aim_arrive == AimArrive::AsSoonAsAllCan { world.min(s.speed.max(1.0) as f64) } else { world }
 }
 
 /// Shot `shot`'s first ways from `base` (standing at the moment the round's balls set off), one
@@ -918,7 +932,9 @@ fn first_ways(
     let setoff = base.moment() as f64;
     let reach = (aim.target_at(setoff + limit.unwrap_or(0.0)) - p0).length().max(1.0) as f64;
     let mut search = search_for(base, aim, s, shot, reach);
-    let ceiling = ceiling_of(aim);
+    // No more arcs are looked for than `WAYS`: flights stop past them.
+    search.most_arc = search.most_arc.min(search.least_arc + WAYS - 1);
+    let ceiling = ceiling_of(aim, s);
     if adjust {
         let speed = search.prefer.min(ceiling);
         let most_turn = (s.aim_turn.max(0.0) as f64).to_radians();
@@ -966,7 +982,7 @@ fn meet(
     let reach = (aim.target_at(base.moment() as f64 + t) - p0).length().max(1.0) as f64;
     let mut search = search_for(base, aim, s, shots[k], reach);
     search.left = SOLVE_FLIGHTS;
-    let ceiling = ceiling_of(aim);
+    let ceiling = ceiling_of(aim, s);
     // How far from the target a way of its own is then.
     let off = |f: &Found| off_at(aim, base.moment(), f, t).unwrap_or(f64::INFINITY);
     // The nearest way found so far that is within [`ROUGH`] but not [`REACH`]: it goes if none
@@ -1125,7 +1141,7 @@ fn settle(
         let (p0, u) = shot.at(&lone);
         let mut again = Search { lone: &lone, p0, u, tweak: found.tweak, ..search };
         let next = again.near(found.arc, found.speed, found.slope, most);
-        search.left = again.left;
+        (search.left, search.steps) = (again.left, again.steps);
         let Some(next) = next else { break };
         found = next;
         found_u = u;
@@ -1168,7 +1184,8 @@ pub fn aim_shots(
     if together {
         return (arrive, together_balls(base, aim, s, (shots, &firsts), t, fire));
     }
-    let balls = in_parallel(shots.len(), |k| match firsts[k].first() {
+    // Each by its soonest way: no later than the round's moment.
+    let balls = in_parallel(shots.len(), |k| match firsts[k].iter().min_by(|a, b| a.e.total_cmp(&b.e)) {
         Some(f) => settle(base, aim, s, shots[k], f.clone(), fire, arrive.round() as u64),
         None => unaimed(aim, s, shots[k].at(base).1, fire),
     });
@@ -1212,40 +1229,46 @@ fn together_balls(
             }
         }
     }
-    let balls: Vec<Option<BallAim>> = ways
+    let balls: Vec<(Option<BallAim>, f64)> = ways
         .iter()
         .zip(shots)
         .map(|(way, shot)| {
             let u = shot.at(base).1;
             match way {
-                Some((_, f)) => {
-                    Some(BallAim { leave: fire, velocity: f.velocity(u), reaches: true, path: thin(&f.places) })
+                Some((d, f)) => {
+                    (Some(BallAim { leave: fire, velocity: f.velocity(u), reaches: true, path: thin(&f.places) }), *d)
                 }
-                None => unaimed(aim, s, u, fire),
+                None => (unaimed(aim, s, u, fire), f64::INFINITY),
             }
         })
         .collect();
-    if adjust { borrow_ways(base, s, shots, balls) } else { balls }
+    if adjust { borrow_ways(base, s, shots, balls) } else { balls.into_iter().map(|(b, _)| b).collect() }
 }
 
 /// Adjusting each ball: a ball that found no way of its own (or only a rough one) takes another
 /// ball's that gets there from where it sets off too, when that needs a turn within Turn at most
 /// (the smallest such): from one place, the ways that get there together are few, so they are
 /// often shared.
-fn borrow_ways(base: &Lone, s: &EmitterSettings, shots: &[Shot], balls: Vec<Option<BallAim>>) -> Vec<Option<BallAim>> {
+fn borrow_ways(
+    base: &Lone,
+    s: &EmitterSettings,
+    shots: &[Shot],
+    balls: Vec<(Option<BallAim>, f64)>,
+) -> Vec<Option<BallAim>> {
     let most_turn = s.aim_turn.max(0.0).to_radians() + 1e-6;
     let at: Vec<(Vec2, Vec2)> = shots.iter().map(|shot| shot.at(base)).collect();
-    let mut out = balls.clone();
+    let mut out: Vec<Option<BallAim>> = balls.iter().map(|(b, _)| b.clone()).collect();
     for (k, ball) in out.iter_mut().enumerate() {
-        if ball.as_ref().is_some_and(|b| b.reaches) {
+        // Within [`REACH`] already: its own stays.
+        if balls[k].1 <= REACH {
             continue;
         }
         let (p0, u) = at[k];
         let lent = balls
             .iter()
             .enumerate()
-            .filter(|(j, _)| (at[*j].0 - p0).length() < 1e-3)
-            .filter_map(|(_, b)| b.as_ref().filter(|b| b.reaches))
+            .filter(|(j, (_, d))| (at[*j].0 - p0).length() < 1e-3 && *d <= REACH)
+            .filter_map(|(_, (b, _))| b.as_ref().filter(|b| b.reaches))
             .map(|b| (u.angle_to(b.velocity).abs(), b))
             .filter(|(turn, _)| *turn <= most_turn)
             .min_by(|a, b| a.0.total_cmp(&b.0));

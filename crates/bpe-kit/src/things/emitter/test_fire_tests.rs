@@ -523,3 +523,15 @@ fn from_a_ring_each_ball_finds_its_own_way_to_be_there_together() {
     assert_eq!(near.len(), aims.balls.iter().flatten().count());
     assert!(near.iter().all(|(d, _)| *d < ROUGH as f32), "{near:?}");
 }
+
+#[test]
+fn with_no_walls_to_bounce_off_the_search_gives_up_quickly() {
+    // Nothing to bounce off and no time limit: each flight stops after ten quiet seconds, not two
+    // minutes, and the balls (no way with a bounce) are skipped.
+    let (mut scene, me, kit) = bouncing(Vec2::ZERO, Vec2::new(-250.0, 0.0), Vec2::new(250.0, 0.0), |s| s.count = 4);
+    scene.remove_thing(SHAPE).unwrap();
+    let started = std::time::Instant::now();
+    let world = fired(&scene, &kit);
+    assert_eq!(world.bodies[&me].alive_count(), 0);
+    assert!(started.elapsed().as_secs_f32() < 20.0, "{:?}", started.elapsed());
+}

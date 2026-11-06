@@ -87,8 +87,11 @@ places can't be reached closer than a few pixels by any speed or turn; a ball 3 
 Leave when needed: phase 1 as Keep mine; T as above (As soon as all can: the latest first way, all leaving at once);
 then each ball's part 4 settle loop towards `A = earliest + T`.
 
-Flights stop early once the ball has bounced more than Bounces at most (`fly(.., most_arc)`): no time limit costs
-nothing more than the bounces asked for.
+Flights stop early once the ball has bounced more than Bounces at most (`fly(.., most_arc)`; phase 1 past the `WAYS`
+arcs it looks for), after a second at rest, or after ten seconds without touching a wall (`QUIET_STEPS`: it left the
+walls, or slides in a bowl); one ball's flights in one pass take at most `BALL_STEPS` (400,000) steps together. As
+soon as all can, no ball goes faster than Speed (`ceiling_of`); with Arrive after they may, up to the world's limit.
+Leave when needed settles each ball along its soonest way.
 
 ## 3. Files
 
