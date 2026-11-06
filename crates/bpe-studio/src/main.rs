@@ -3,6 +3,7 @@
 // No console window behind the editor in Windows release builds.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod aim_job;
 mod app;
 mod audio_out;
 mod eq_curve;

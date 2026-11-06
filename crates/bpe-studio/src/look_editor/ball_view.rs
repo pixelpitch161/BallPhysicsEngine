@@ -111,6 +111,8 @@ pub fn mini_scene(scene: &Scene, kit: &Kit, id: ThingId, ground: Ground) -> Opti
             ("gap", Value::Number(0.0)),
             ("sits_on", Value::Int(0)),
             ("catches", Value::Choice("nothing".into())),
+            // Unaimed: aiming through bounces would test-fire, and fire on the first step.
+            ("aim", Value::Choice("off".into())),
             ("marker", Value::Choice("none".into())),
             ("ripple", Value::Bool(false)),
         ] {

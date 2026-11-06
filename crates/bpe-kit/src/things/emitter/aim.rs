@@ -434,8 +434,8 @@ pub fn next_round(world: &World, me: ThingId, most: usize) -> (Option<Aimer>, Ve
     let Some(st) = emitter_state(world, me) else { return (None, Vec::new()) };
     let s = &st.settings;
     let Some(aim) = Aimer::of(world, me, s, world.step) else { return (None, Vec::new()) };
-    // No round is coming.
-    if !s.emits || st.rounds_left() == 0 {
+    // No round is coming, or (through bounces) it can't be worked out every frame.
+    if !s.emits || st.rounds_left() == 0 || aim.style == Aim::ThroughBounces {
         return (Some(aim), Vec::new());
     }
     let fire = world.step + 1;
@@ -499,6 +499,8 @@ pub struct AimCheck {
     pub in_the_way: bool,
     /// The target goes its own way: the aim follows how it moves now.
     pub target_moves: bool,
+    /// Aiming through bounces, some wall moves (spins, shrinks, slides): fewer balls find a way.
+    pub walls_move: bool,
     /// How many of the next round's balls can't reach in time, of how many.
     pub cant_reach: u32,
     pub of: u32,
@@ -522,6 +524,21 @@ pub fn check(world: &World, me: ThingId) -> Option<AimCheck> {
     let (aim, balls) = next_round(world, me, MOST_CHECKED);
     let Some(aim) = aim else { return Some(AimCheck { no_target: true, ..AimCheck::default() }) };
     let pull = pull_in(world, me);
+    if aim.style == Aim::ThroughBounces {
+        // Walls, drag and wind are in the test flights; other balls, a Motion varied across the
+        // balls and balls of other sizes aren't. The counts are the latest round's.
+        let latest = st.aimed.last();
+        let walls_move = world.walls.values().any(|w| w.spin != 0.0 || w.growth != 0.0 || w.velocity != Vec2::ZERO);
+        return Some(AimCheck {
+            no_target: false,
+            walls_move,
+            in_the_way: pull.varies || hits_balls(world, me) || s.vary_size > 0.0 || st.size_varies(),
+            target_moves: aim.track.guessed(),
+            cant_reach: latest.map_or(0, |r| r.cant_reach()),
+            of: latest.map_or(0, |r| r.balls.len() as u32),
+            skip: !aim.fire_anyway,
+        });
+    }
     let mut in_the_way = pull.drag > 0.0 || pull.varies || hits_balls(world, me);
     if !in_the_way {
         let r = st.biggest_size().max(0.0);
@@ -544,6 +561,7 @@ pub fn check(world: &World, me: ThingId) -> Option<AimCheck> {
         no_target: false,
         in_the_way,
         target_moves: aim.track.guessed(),
+        walls_move: false,
         cant_reach,
         of: if balls.is_empty() { 0 } else { n },
         skip: !aim.fire_anyway,

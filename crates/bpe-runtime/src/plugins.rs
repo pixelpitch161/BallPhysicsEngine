@@ -136,6 +136,12 @@ pub trait ThingSim: Send + Sync + 'static {
     fn ball_spread(&self, _thing: ThingId, _world: &World, _row: usize) -> Option<bpe_core::BallSpread> {
         None
     }
+    /// Whether the thing needs the scene's physics fingerprint while it runs
+    /// ([`World::fingerprint`]): a thing that caches work it can do again by it. Worked out once,
+    /// in [`World::build`], only when some thing asks.
+    fn needs_fingerprint(&self, _resolved: &ResolvedThing) -> bool {
+        false
+    }
 }
 
 /// How a Motion or Bounce module moves and bounces the things that use it.
