@@ -31,9 +31,25 @@ impl ThingDraw for SceneDraw {
         // With a Lighting card the scene is lit; its lights are added after every thing draws.
         if let Some(card) = cx.resolved.slots.get(&bpe_core::SlotId::Lighting) {
             let lighting = crate::modules::lighting::LightingSettings::from_params(&card.params);
-            frame.light = Some(bpe_gfx::LightScene { settings: lighting.gpu(), ..Default::default() });
+            let lowest = lowest_shape(cx.world);
+            frame.light = Some(bpe_gfx::LightScene { settings: lighting.gpu(lowest), ..Default::default() });
         }
     }
+}
+
+/// The bottom of the lowest shape's wall (world y, down), for a stage floor under it: its outline's
+/// lowest point plus half its band.
+fn lowest_shape(world: &bpe_runtime::World) -> Option<f32> {
+    world
+        .walls
+        .values()
+        .map(|w| {
+            let points = crate::things::light::draw::outline_points(&w.outline);
+            let low = points.iter().map(|p| p.y).fold(f32::MIN, f32::max);
+            low + 0.5 * w.outline.thickness().max(0.0)
+        })
+        .filter(|y| y.is_finite() && *y > f32::MIN)
+        .reduce(f32::max)
 }
 
 /// The background with a span and centre left at their defaults fitted to the picture: on the

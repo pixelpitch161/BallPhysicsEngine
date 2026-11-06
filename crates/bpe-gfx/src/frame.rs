@@ -863,6 +863,50 @@ pub struct LightingGpu {
     pub shadows: [f32; 4],
     /// Contact reach, toon steps, quality (0 draft .. 3 ultra), spare.
     pub more: [f32; 4],
+    /// Stage (lighting part 2a): 1 in Stage (0 Flat), the back wall's depth, the shapes' front
+    /// (z, toward the camera), k = tan(looking down) (0 with no floor).
+    pub stage: [f32; 4],
+    /// The floor: kind (0 none, 1 at the world y in `y`, 2 at the picture's bottom), its y, its
+    /// surface (0 matte, 1 glossy, 2 mirror), the wall's surface (0 matte, 1 glossy).
+    pub floor: [f32; 4],
+    /// The floor's blur and reflection; two spare.
+    pub floor_more: [f32; 4],
+    /// The sky's top colour (linear rgb) and Sky light.
+    pub sky_top: [f32; 4],
+    /// The sky's bottom colour (linear rgb); w spare.
+    pub sky_bottom: [f32; 4],
+}
+
+/// How a surface takes light (`SurfaceGpu` in lighting.wgsl): an entry of
+/// [`LightScene::surfaces`], named by the surface index every record of a thing carries in
+/// [`LayerGpu::light`]`[3]`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct SurfaceGpu {
+    /// Roughness, metal, clear coat, see-through.
+    pub a: [f32; 4],
+    /// F0 (how much it reflects looked at straight on), toon steps (0 smooth), reflects the sky
+    /// (1) or nothing (0), kind ([`SurfaceGpu::SHEET`], `BALL`, `SHAPE`).
+    pub b: [f32; 4],
+}
+
+impl SurfaceGpu {
+    /// Trails, particles and anything else with no Surface: matte and flat.
+    pub const SHEET: f32 = 0.0;
+    pub const BALL: f32 = 1.0;
+    pub const SHAPE: f32 = 2.0;
+    /// A plain sheet: matte, reflecting nothing (index 0 of every table).
+    pub const MATTE: SurfaceGpu = SurfaceGpu { a: [1.0, 0.0, 0.0, 0.0], b: [0.0; 4] };
+}
+
+/// A ball as a sphere on the stage (`SphereGpu` in lighting.wgsl).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct SphereGpu {
+    /// Centre xy (world, on the picture plane), radius, see-through.
+    pub a: [f32; 4],
+    /// The colour of the light it lets through (linear rgb); w spare.
+    pub b: [f32; 4],
 }
 
 /// A lit frame's lights: the Lighting card's settings, every light, and the segments strip
@@ -872,6 +916,22 @@ pub struct LightScene {
     pub settings: LightingGpu,
     pub lights: Vec<LightGpu>,
     pub segments: Vec<[f32; 4]>,
+    /// How each surface takes light, by surface index; 0 (and any index never set) is
+    /// [`SurfaceGpu::MATTE`].
+    pub surfaces: Vec<SurfaceGpu>,
+    /// Every ball as a sphere, for shadows and contact shading in Stage.
+    pub spheres: Vec<SphereGpu>,
+}
+
+impl LightScene {
+    /// Sets surface `index`, growing the table with matte sheets.
+    pub fn set_surface(&mut self, index: u32, surface: SurfaceGpu) {
+        let i = index as usize;
+        if self.surfaces.len() <= i {
+            self.surfaces.resize(i + 1, SurfaceGpu::MATTE);
+        }
+        self.surfaces[i] = surface;
+    }
 }
 
 /// The scene's colour grade, run in screen space on the finished, display-ready picture (after

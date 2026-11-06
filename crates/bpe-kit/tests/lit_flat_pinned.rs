@@ -56,7 +56,8 @@ fn flat_matte_lighting_draws_as_part_1a_did() {
     let kit = kit();
     let mut renderer = Renderer::new(&device, W, H);
     let mut lines = String::from("# scene\tmoment\ttiles\n");
-    for (name, scene) in [("lit_room", scenes::lit_room(&kit.registry)), ("lit_demo", scenes::lit_demo(&kit.registry))] {
+    for (name, scene) in [("lit_room", scenes::lit_room(&kit.registry)), ("lit_demo", scenes::lit_demo(&kit.registry))]
+    {
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         let mut playback = Playback::new(&scene, &resolved, kit.sims.clone());
         for t in MOMENTS {

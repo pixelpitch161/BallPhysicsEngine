@@ -40,8 +40,9 @@ mod util;
 pub use frame::{
     Around, BackgroundPaint, BallInstance, BlendLayer, DrawCx, Draws, EffectCall, FlashInstance, Frame, Grade, HitMark,
     LayerGpu, LayeredInstance, LightGpu, LightScene, LightingGpu, LookInstance, MAX_LAYERS, MOST_TRAIL_VERTICES,
-    ModuleDraw, NO_HIT, Particle, PathInstance, Place, ShapeInstance, Stage, StreakStyle, ThingDraw, TrailVertex,
-    blend_alpha, build_frame, build_frame_with, hit_strength, push_streak, push_streak_colours, push_trail, thing_code,
+    ModuleDraw, NO_HIT, Particle, PathInstance, Place, ShapeInstance, SphereGpu, Stage, StreakStyle, SurfaceGpu,
+    ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_with, hit_strength, push_streak, push_streak_colours,
+    push_trail, thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, PaintGpu};
 pub use masks::{MASK_TILE, MASK_TILE_BYTES, MAX_MASK_TILES, TILE_DISTANCE_REACH, tile_distance};
@@ -105,7 +106,7 @@ struct Globals {
     /// The colour grade: tint, vignette, vignette size, gradient map amount.
     grade_more: [f32; 4],
     /// Lighting: x the light pass (0 the picture as always, 1 lit colour, 2 surface), y how much
-    /// the background takes light (see lighting.wgsl).
+    /// the background takes light, z 1 in Stage (see lighting.wgsl).
     light: [f32; 4],
 }
 
@@ -1200,7 +1201,8 @@ impl Renderer {
             lighting.ensure(device, self.targets.width, self.targets.height, scene.settings.more[2]);
             let pictures = lighting.pictures().expect("just made");
             for (mode, (texture, view)) in [1u32, 2].into_iter().zip(pictures) {
-                let (world, screen) = self.light_globals(device, queue, frame, mode, scene.settings.ambient[3]);
+                let (world, screen) =
+                    self.light_globals(device, queue, frame, mode, scene.settings.ambient[3], scene.settings.stage[0]);
                 let hdr_texture = std::mem::replace(&mut self.targets.hdr_texture, texture);
                 let hdr = std::mem::replace(&mut self.targets.hdr, view);
                 self.light_mode = mode;
@@ -1433,6 +1435,7 @@ impl Renderer {
         frame: &Frame,
         mode: u32,
         background_lit: f32,
+        stage: f32,
     ) -> (wgpu::BindGroup, wgpu::BindGroup) {
         while self.light_globals.len() < 4 {
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1450,7 +1453,7 @@ impl Renderer {
         }
         let at = 2 * (mode as usize - 1);
         let mut world = Globals::new(frame, &frame.camera, self.targets.width);
-        world.light = [mode as f32, background_lit, 0.0, 0.0];
+        world.light = [mode as f32, background_lit, stage, 0.0];
         let mut screen = Globals::new(frame, &CameraView::default(), self.targets.width);
         screen.light = world.light;
         queue.write_buffer(&self.light_globals[at].0, 0, bytemuck::bytes_of(&world));

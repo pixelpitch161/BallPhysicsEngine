@@ -358,7 +358,12 @@ impl Stack {
         let mut stack = Stack {
             body_id: body.id,
             body: BodyLayer::from_params(&slot.layer_params(body.id)),
-            body_light: super::lighting::of(&slot.layer_params(body.id)),
+            body_light: {
+                // The Body carries the Look's Bulge (its Surface section) for the ball's height.
+                let mut light = super::lighting::of(&slot.layer_params(body.id));
+                light[2] = crate::modules::look::surface::of_card(slot).bulge;
+                light
+            },
             drawn: Vec::new(),
             group: None,
             ends: Vec::new(),

@@ -928,6 +928,116 @@ pub fn lit_demo(reg: &Registry) -> Scene {
     scene
 }
 
+/// The stage demo (lighting part 2a's video): five balls of five surfaces (Chrome, Glass,
+/// Plastic, Toon, Metal) bouncing in a thick ring on a 3D stage, a glossy floor under the ring, a
+/// warm key light, a cool fill and a magenta light between the balls and the wall. Not in [`all`].
+pub fn stage_demo(reg: &Registry) -> Scene {
+    use crate::modules::look::surface::{SurfaceKind, preset_values};
+    use crate::things::light::{LightSettings, LightType, add_light};
+    use bpe_core::Choice;
+    let hex = |h: u32| Color::rgb((h >> 16) as u8, (h >> 8) as u8, h as u8);
+    let mut b = Builder::new(reg, "Stage demo");
+    b.scene_settings(|s| {
+        s.duration = 10.0;
+        s.gravity = Vec2::new(0.0, 900.0);
+        s.bloom = 0.25;
+        s.background = Paint {
+            colours: Gradient::even(&[hex(0x30333d), hex(0x4a4c56)]),
+            angle: 90.0,
+            span: 1920.0,
+            ..Paint::default()
+        };
+    });
+    b.shape(ShapeSettings::circle(420.0, 28.0));
+    let plain =
+        |colour: Color| BasicLook { fill: Paint::solid(colour), glow: 0.0, style: Style::Flat, ..classic_look() };
+    b.balls("Chrome", Vec2::new(-160.0, -180.0), |s| {
+        s.radius = 52.0;
+        s.velocity = Vec2::new(420.0, -260.0);
+    });
+    b.ball_look(|l| *l = plain(hex(0xdfe3ea)));
+    let others = [
+        ("Glass", hex(0x8fe3ff), Vec2::new(150.0, -120.0), Vec2::new(-360.0, -320.0), 50.0),
+        ("Plastic", hex(0xe8344a), Vec2::new(0.0, 120.0), Vec2::new(300.0, -520.0), 46.0),
+        ("Toon", hex(0xffc83c), Vec2::new(-200.0, 140.0), Vec2::new(-240.0, -420.0), 44.0),
+        ("Metal", hex(0xe2b25a), Vec2::new(200.0, 160.0), Vec2::new(200.0, -600.0), 48.0),
+    ];
+    let mut ids = vec![("Chrome", BALLS)];
+    for (name, colour, at, velocity, radius) in others {
+        let id = b.add(
+            "balls",
+            ThingId::ROOT,
+            name,
+            at,
+            BallsSettings { radius, velocity, ..BallsSettings::default() }.to_params(),
+        );
+        b.own_module(id, "look.basic", plain(colour).to_params());
+        ids.push((name, id));
+    }
+    let mut scene = b.finish();
+    for (name, id) in ids {
+        let kind = match name {
+            "Chrome" => SurfaceKind::Chrome,
+            "Glass" => SurfaceKind::Glass,
+            "Plastic" => SurfaceKind::Plastic,
+            "Toon" => SurfaceKind::Toon,
+            _ => SurfaceKind::Metal,
+        };
+        let card = scene.card_mut(id, SlotId::Look).expect("a look");
+        card.params.set("surface", Value::Choice(kind.name().into()));
+        for (k, v) in preset_values(kind) {
+            card.params.set(k, v);
+        }
+    }
+    let shape = scene.card_mut(SHAPE, SlotId::Look).expect("the shape's look");
+    for (k, v) in preset_values(SurfaceKind::Plastic) {
+        shape.params.set(k, v);
+    }
+    shape.params.set("surface", Value::Choice(SurfaceKind::Plastic.name().into()));
+    let key = add_light(&mut scene, reg, LightType::Point, ThingId::ROOT).expect("a light");
+    let mut warm = LightSettings::of_kind(LightType::Point);
+    warm.position = Vec2::new(-340.0, -640.0);
+    warm.height = 520.0;
+    warm.strength = 2.6;
+    warm.reach = 2800.0;
+    warm.size = 70.0;
+    warm.colour = hex(0xffe0bc);
+    scene.things.get_mut(&key).expect("light").params = warm.to_params();
+    scene.rename_thing(key, "Key light");
+    let fill = add_light(&mut scene, reg, LightType::Point, ThingId::ROOT).expect("a light");
+    let mut cool = LightSettings::of_kind(LightType::Point);
+    cool.position = Vec2::new(440.0, -80.0);
+    cool.height = 280.0;
+    cool.strength = 1.0;
+    cool.reach = 2000.0;
+    cool.size = 40.0;
+    cool.colour = hex(0x8fb8ff);
+    scene.things.get_mut(&fill).expect("light").params = cool.to_params();
+    scene.rename_thing(fill, "Fill light");
+    let rim = add_light(&mut scene, reg, LightType::Point, ThingId::ROOT).expect("a light");
+    let mut back = LightSettings::of_kind(LightType::Point);
+    back.position = Vec2::new(0.0, -260.0);
+    back.height = -150.0;
+    back.strength = 1.6;
+    back.reach = 1100.0;
+    back.size = 30.0;
+    back.colour = hex(0xff4fc8);
+    scene.things.get_mut(&rim).expect("light").params = back.to_params();
+    scene.rename_thing(rim, "Back light");
+    let lighting = scene.card_mut(ThingId::ROOT, SlotId::Lighting).expect("lit");
+    for (k, v) in [
+        ("depth", Value::Choice("stage".into())),
+        ("ambient", Value::Number(0.1)),
+        ("sky_light", Value::Number(0.35)),
+        ("contact", Value::Number(0.7)),
+        ("looking_down", Value::Number(16.0)),
+        ("quality", Value::Choice("high".into())),
+    ] {
+        lighting.params.set(k, v);
+    }
+    scene
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{registry, scenes};
