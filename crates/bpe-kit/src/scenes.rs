@@ -1122,6 +1122,24 @@ pub fn surfaces_demo(reg: &Registry) -> Scene {
     scene
 }
 
+/// The bake demo (lighting part 3's video): the surfaces demo set to bake on export, with light
+/// bouncing off the balls onto the wall and floor and the glass balls' caustics turned up. Not in
+/// [`all`].
+pub fn bake_demo(reg: &Registry) -> Scene {
+    let mut scene = surfaces_demo(reg);
+    scene.name = "Bake demo".into();
+    let lighting = scene.card_mut(ThingId::ROOT, SlotId::Lighting).expect("lit");
+    for (k, v) in [
+        ("on_export", Value::Choice("bake".into())),
+        ("bounce", Value::Number(0.8)),
+        ("glass_caustics", Value::Number(1.5)),
+        ("light_bounces", Value::Number(2.0)),
+    ] {
+        lighting.params.set(k, v);
+    }
+    scene
+}
+
 /// The light show (lighting part 6's tests and video): a dark room in a white ring, twelve balls
 /// flung out from the middle, a rig of four spots across the top playing a chase from its colour
 /// list, a second rig inside the balls whose lamps (one on each ball) chase ball to ball, and

@@ -84,6 +84,12 @@ impl Clone for RunId {
     }
 }
 
+/// The balls' places a [`World::set_between`] moved, to put back.
+#[must_use = "put the balls back with World::restore_between"]
+pub struct Between {
+    saved: Vec<(ThingId, Vec<Vec2>)>,
+}
+
 /// Everything that moves, and what it moves against.
 #[derive(Clone)]
 pub struct World {
@@ -646,6 +652,34 @@ impl World {
         let target = step_at(time, self.steps_per_second);
         while self.step < target {
             self.step(sims, log);
+        }
+    }
+
+    /// Moves every live ball back to `a` of the way through the last step (0 where it was when
+    /// the step began, 1 where it is now), for drawing a moment between two steps (the bake's
+    /// motion blur, lighting part 3). Draw-only: [`World::restore_between`] must put them back
+    /// before the world steps again, so the physics never sees it.
+    pub fn set_between(&mut self, a: f32) -> Between {
+        let a = a.clamp(0.0, 1.0);
+        let mut saved = Vec::with_capacity(self.bodies.len());
+        for (id, bodies) in self.bodies.iter_mut() {
+            saved.push((*id, bodies.position.clone()));
+            for i in 0..bodies.len() {
+                if bodies.alive[i] {
+                    let (from, to) = (bodies.previous[i], bodies.position[i]);
+                    bodies.position[i] = from + (to - from) * a;
+                }
+            }
+        }
+        Between { saved }
+    }
+
+    /// Puts the balls back where [`World::set_between`] found them.
+    pub fn restore_between(&mut self, between: Between) {
+        for (id, positions) in between.saved {
+            if let Some(bodies) = self.bodies.get_mut(&id) {
+                bodies.position = positions;
+            }
         }
     }
 
@@ -1311,6 +1345,33 @@ mod tests {
 
     fn root_setting(key: &str) -> Address {
         Address::own(ThingId::ROOT, key)
+    }
+
+    #[test]
+    fn a_moment_between_steps_is_drawn_and_undone_without_touching_the_physics() {
+        let (scene, resolved, sims) = dots_pair(120.0, Target::Anything);
+        let mut world = World::build(&scene, &resolved, &sims);
+        let mut twin = World::build(&scene, &resolved, &sims);
+        let mut log = Log::default();
+        let mut twin_log = Log::default();
+        world.advance_to(0.1, &sims, &mut log);
+        twin.advance_to(0.1, &sims, &mut twin_log);
+        let before = world.bodies[&DOTS].position.clone();
+        let previous = world.bodies[&DOTS].previous.clone();
+        let between = world.set_between(0.25);
+        for i in 0..before.len() {
+            let want = previous[i] + (before[i] - previous[i]) * 0.25;
+            assert!((world.bodies[&DOTS].position[i] - want).length() < 1e-4);
+        }
+        assert!(before.iter().zip(&previous).any(|(a, b)| a != b), "the balls moved in the step");
+        world.restore_between(between);
+        assert_eq!(world.bodies[&DOTS].position, before, "put back bit for bit");
+        world.advance_to(0.5, &sims, &mut log);
+        twin.advance_to(0.5, &sims, &mut twin_log);
+        for (id, b) in &world.bodies {
+            assert_eq!(b.position, twin.bodies[id].position);
+            assert_eq!(b.velocity, twin.bodies[id].velocity);
+        }
     }
 
     #[test]

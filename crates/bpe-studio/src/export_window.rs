@@ -28,6 +28,11 @@ pub struct ExportWindow {
     /// Also save each bus and the master as WAVs beside the video.
     stems: bool,
     midi: bool,
+    /// Bake the lighting or draw it live (lighting part 3); `None` as the Lighting card's On
+    /// export says.
+    bake: Option<bool>,
+    /// "Test a frame" was pressed: the size and the bake choice (the app opens the final frame).
+    pub test_frame: Option<(f32, Option<bool>)>,
     ffmpeg: Option<PathBuf>,
     gpu: Arc<Mutex<Option<CheckedEncoders>>>,
     /// The ffmpeg a check was started for.
@@ -61,6 +66,8 @@ impl Default for ExportWindow {
             encoder: Encoder::Auto,
             stems: false,
             midi: false,
+            bake: None,
+            test_frame: None,
             ffmpeg: find_ffmpeg(),
             gpu: Arc::default(),
             checking: None,
@@ -148,14 +155,21 @@ impl ExportWindow {
             .show(ctx, |ui| {
                 ui.set_width(460.0);
                 let busy = self.job.is_some();
-                ui.add_enabled_ui(!busy, |ui| self.settings(ui, scene, settings, base_dir));
+                ui.add_enabled_ui(!busy, |ui| self.settings(ui, scene, settings, base_dir, kit));
                 ui.add_space(10.0);
                 self.progress(ui, ctx, scene, settings, base_dir, kit);
             });
         self.open = open;
     }
 
-    fn settings(&mut self, ui: &mut egui::Ui, scene: &Scene, settings: &SceneSettings, base_dir: Option<&Path>) {
+    fn settings(
+        &mut self,
+        ui: &mut egui::Ui,
+        scene: &Scene,
+        settings: &SceneSettings,
+        base_dir: Option<&Path>,
+        kit: &Kit,
+    ) {
         let path = self.output_path(scene, base_dir);
         ui.label(RichText::new("SAVE AS").size(12.0).color(style::MUTED));
         ui.horizontal(|ui| {
@@ -244,6 +258,7 @@ impl ExportWindow {
             });
             ui.end_row();
         });
+        self.lighting(ui, scene, kit);
         ui.add_space(8.0);
         ui.label(RichText::new("SOUND").size(12.0).color(style::MUTED));
         egui::Grid::new("export-sound").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
@@ -379,8 +394,65 @@ impl ExportWindow {
         options.encoder = self.encoder;
         options.stems = self.stems;
         options.midi = self.midi;
+        options.bake = self.bake;
         options
     }
+
+    /// The Lighting row, when the scene has a Lighting card: Live or Bake, what the bake does, and
+    /// Test a frame.
+    fn lighting(&mut self, ui: &mut egui::Ui, scene: &Scene, kit: &Kit) {
+        use bpe_kit::modules::lighting::{OnExport, lighting_of};
+        let Some(card) = lighting_of(scene, &kit.registry) else { return };
+        let card_bakes = card.on_export == OnExport::Bake;
+        ui.add_space(8.0);
+        ui.label(RichText::new("LIGHTING").size(12.0).color(style::MUTED));
+        egui::Grid::new("export-lighting").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+            ui.label("Lighting").on_hover_text(
+                "Live draws each frame as the editor does. Bake draws each frame many times and averages them: \
+                 smoother light and edges, motion blur, light bouncing and glass caustics, but much slower. The \
+                 Lighting card's On export picks which one starts here.",
+            );
+            ui.horizontal(|ui| {
+                let mut bakes = self.bake.unwrap_or(card_bakes);
+                let before = bakes;
+                ui.radio_value(&mut bakes, false, "Live");
+                ui.radio_value(&mut bakes, true, "Bake");
+                if bakes != before {
+                    self.bake = (bakes != card_bakes).then_some(bakes);
+                }
+                if ui
+                    .button("Test a frame")
+                    .on_hover_text("Draws the frame at the playhead as this export will.")
+                    .clicked()
+                {
+                    self.test_frame = Some((self.scale, self.bake));
+                }
+            });
+            ui.end_row();
+            if self.bake.unwrap_or(card_bakes) {
+                ui.label("");
+                ui.label(RichText::new(bake_summary(&card)).small().color(style::MUTED));
+                ui.end_row();
+            }
+        });
+    }
+}
+
+/// One line on what a bake does, from the Lighting card.
+fn bake_summary(card: &bpe_kit::modules::lighting::LightingSettings) -> String {
+    let mut parts = vec![format!("{} samples a pixel", card.bake_samples.max(1))];
+    parts.push(match card.light_bounces {
+        0 => "no light bounces".to_string(),
+        1 => "1 light bounce".to_string(),
+        n => format!("{n} light bounces"),
+    });
+    if card.motion_blur && card.shutter > 0.0 {
+        parts.push(format!("motion blur (shutter {:.2})", card.shutter));
+    }
+    if card.clean_up {
+        parts.push("noise clean-up".into());
+    }
+    parts.join(" · ")
 }
 
 pub fn minutes(seconds: f32) -> String {
@@ -455,6 +527,17 @@ mod tests {
         assert!(!window.options(Path::new("a.mp4"), "ffmpeg".into()).midi, "off by default");
         window.midi = true;
         assert!(window.options(Path::new("a.mp4"), "ffmpeg".into()).midi);
+    }
+
+    #[test]
+    fn the_lighting_choice_reaches_the_export() {
+        let mut window = ExportWindow::default();
+        assert_eq!(window.options(Path::new("a.mp4"), "ffmpeg".into()).bake, None, "as the card says");
+        window.bake = Some(true);
+        assert_eq!(window.options(Path::new("a.mp4"), "ffmpeg".into()).bake, Some(true));
+        let card = bpe_kit::modules::lighting::LightingSettings::default();
+        let summary = bake_summary(&card);
+        assert!(summary.starts_with("16 samples a pixel · 2 light bounces"), "{summary}");
     }
 
     #[test]

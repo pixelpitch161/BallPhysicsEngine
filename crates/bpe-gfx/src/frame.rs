@@ -922,6 +922,8 @@ pub struct Frame {
     /// The beat at this moment: its phase 0 to 1, the bar's phase 0 to 1, beats per second, and
     /// 1 when the scene has a tempo (else all 0). Only the top frame's counts.
     pub beat: [f32; 4],
+    /// Which sample of a baked frame this is (lighting part 3), `None` drawn live.
+    pub bake: Option<crate::bake::BakeSample>,
 }
 
 /// One light as the lighting pass reads it (`LightGpu` in lighting.wgsl).
@@ -1023,6 +1025,11 @@ pub struct LightingGpu {
     /// Depth of field (part 2b, Stage): on (1/0), focus depth (z), blur (px of blur a px of depth
     /// away gives), and Reflection depth (how many mirror bounces a reflection follows).
     pub dof: [f32; 4],
+    /// The bake (part 3): samples a pixel, light bounces, bake reflections, shutter (0 without
+    /// motion blur).
+    pub bake: [f32; 4],
+    /// 1 when the video bakes, 1 with noise clean-up, glass caustics, spare.
+    pub bake_more: [f32; 4],
 }
 
 /// How a surface takes light (`SurfaceGpu` in lighting.wgsl): an entry of
@@ -1350,6 +1357,7 @@ impl Default for Frame {
             light: None,
             ball_marks: Vec::new(),
             beat: [0.0; 4],
+            bake: None,
         }
     }
 }
@@ -1382,6 +1390,7 @@ impl Frame {
         self.light = None;
         self.ball_marks.clear();
         self.beat = [0.0; 4];
+        self.bake = None;
         if let Some(overlay) = &mut self.overlay {
             overlay.clear();
         }
