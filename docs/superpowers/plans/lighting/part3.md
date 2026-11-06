@@ -182,3 +182,14 @@ files `ballphysics/lighting/part3/`. After merging, the exes are built from main
 - No hard limits but Samples ≥ 1, Light bounces ≥ 0, Bake reflections ≥ 1 and Shutter 0..1 (reasons above).
 - No built-in scenes; `bake_demo` is test-only.
 - No new colours outside `style/`.
+
+## As built (changes after review and the demo)
+
+- **Bounced light** (`bake_bounce`: Like live / Traced, `bake_more[3]`), default **Like live**. The demo showed a
+  Stage bake with the path tracer replacing the light field's bounce coming out much darker than the live picture
+  (a flat wall can't light itself, so the traced bounce is far weaker than the field's in-plane spread). Like live
+  keeps the field's bounce exactly as live, so the bake is the live look smoothed; Traced is decisions 6 and 7 as
+  planned, and Light bounces shows only with it.
+- The bake also averages the unlit picture and lit colour (effects that take Light only), Preview final frame warms
+  up only as long as the scene remembers (at the bake's quality) and can be stopped, and a ball drawn between steps
+  leaves out the trail ahead of it (`Balls.ahead`).

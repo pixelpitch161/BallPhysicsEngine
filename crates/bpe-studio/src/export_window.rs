@@ -441,11 +441,13 @@ impl ExportWindow {
 /// One line on what a bake does, from the Lighting card.
 fn bake_summary(card: &bpe_kit::modules::lighting::LightingSettings) -> String {
     let mut parts = vec![format!("{} samples a pixel", card.bake_samples.max(1))];
-    parts.push(match card.light_bounces {
-        0 => "no light bounces".to_string(),
-        1 => "1 light bounce".to_string(),
-        n => format!("{n} light bounces"),
-    });
+    if card.bake_bounce == bpe_kit::modules::lighting::BakeBounce::Traced {
+        parts.push(match card.light_bounces {
+            0 => "no traced bounces".to_string(),
+            1 => "1 traced light bounce".to_string(),
+            n => format!("{n} traced light bounces"),
+        });
+    }
     if card.motion_blur && card.shutter > 0.0 {
         parts.push(format!("motion blur (shutter {:.2})", card.shutter));
     }
@@ -537,7 +539,12 @@ mod tests {
         assert_eq!(window.options(Path::new("a.mp4"), "ffmpeg".into()).bake, Some(true));
         let card = bpe_kit::modules::lighting::LightingSettings::default();
         let summary = bake_summary(&card);
-        assert!(summary.starts_with("16 samples a pixel · 2 light bounces"), "{summary}");
+        assert!(summary.starts_with("16 samples a pixel · motion blur"), "{summary}");
+        let traced = bpe_kit::modules::lighting::LightingSettings {
+            bake_bounce: bpe_kit::modules::lighting::BakeBounce::Traced,
+            ..card
+        };
+        assert!(bake_summary(&traced).contains("2 traced light bounces"));
     }
 
     #[test]

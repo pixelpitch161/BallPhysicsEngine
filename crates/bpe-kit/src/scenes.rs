@@ -1122,9 +1122,8 @@ pub fn surfaces_demo(reg: &Registry) -> Scene {
     scene
 }
 
-/// The bake demo (lighting part 3's video): the surfaces demo set to bake on export, with light
-/// bouncing off the balls onto the wall and floor and the glass balls' caustics turned up. Not in
-/// [`all`].
+/// The bake demo (lighting part 3's video): the surfaces demo set to bake on export, more bounce
+/// light and the glass balls' caustics turned up. Not in [`all`].
 pub fn bake_demo(reg: &Registry) -> Scene {
     let mut scene = surfaces_demo(reg);
     scene.name = "Bake demo".into();

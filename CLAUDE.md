@@ -197,7 +197,8 @@ editor's `View.stage` (from `Studio.stage_view`, set when the shot is drawn; the
 pointer and handles through the moved camera. Tests: `bpe-gfx/src/lens_tests.rs`, `bpe-kit/tests/stage_camera_pictures.rs`.
 
 Part 3 is in (plan `docs/superpowers/plans/lighting/part3.md`): the **bake** (cinema render) and **glass caustics**.
-The Lighting card's Quality group gains On export (Same as live / Bake), Samples, Light bounces, Bake reflections,
+The Lighting card's Quality group gains On export (Same as live / Bake), Samples, Bounced light (Like live / Traced,
+`BakeBounce`, `bake_more[3]`), Light bounces, Bake reflections,
 Motion blur, Shutter, Noise clean-up, and Glass caustics (`LightingGpu.bake`/`bake_more`; `LightingSettings::bake`,
 `lighting_of`, `bake_of`). A baked frame is `Renderer::render_samples` over the frames `bpe_cli::FrameMaker::samples`
 builds: `bpe_gfx::bake::moments` puts each sample within the shutter (the last on the frame), balls between two steps
@@ -206,7 +207,8 @@ moves the camera within the pixel (`bake::jitter`, Halton 2/3), draws at quality
 steps) with `Frame.bake` set (`lighting.wgsl` `baking()`, PCG `rand`: jittered blurred reflections at any roughness,
 `trace_scene` up to 16 deep, one wavelength a sample through Rainbow split, DOF taps ×4), and `accumulate.rs` averages
 them in Rgba32Float; effects, bloom and grade run once on the average (`EffectChain.effect_time` keeps effect memory
-counting frames). In Stage a bake path-traces the bounce light (`fs_trace`: `TRACE_RAYS` cosine rays a pixel through
+counting frames). Bounced light Like live (default) keeps the live light field's bounce so a bake keeps the look; Traced
+runs the field Light bounces times, and in Stage path-traces the bounce light (`fs_trace`: `TRACE_RAYS` cosine rays a pixel through
 `scene_hit`, each hit lit by `lamps_on`, up to Light bounces; `fs_denoise` à-trous steps 1/2/4 when Noise clean-up is
 on; `fs_trace_add` into `bg_glow`), and the light field then leaves its own Bounce out. **Caustics** (live and baked):
 `lighting::caustic_glass` lists see-through spheres that bend light, `photons_per_pair` sizes the photons by Quality,

@@ -282,6 +282,7 @@ fn the_stage_bake_bounces_a_red_balls_light_onto_the_wall() {
     let beside = |pixels: &[u8]| {
         (0..8).map(|k| redness(at(pixels, 190.0 + k as f32 * 8.0, -60.0 + k as f32 * 16.0))).sum::<i32>()
     };
+    set_lighting(&mut scene, "bake_bounce", Value::Choice("traced".into()));
     set_lighting(&mut scene, "bounce", Value::Number(0.0));
     let without = draw(&mut gpu, &scene, 0.0, bake(4, 0.0), "bounce-off");
     set_lighting(&mut scene, "bounce", Value::Number(1.0));
@@ -352,4 +353,19 @@ fn an_echo_baked_leaves_the_trail_it_leaves_live() {
     let (a, b) = (row_difference(&live, -280.0, -70.0, bg), row_difference(&baked, -280.0, -70.0, bg));
     assert!(a > 200, "live leaves a trail: {a}");
     assert!((a - b).abs() as f64 / (a as f64) < 0.25, "live {a}, baked {b}");
+}
+
+/// Bounced light Like live (the default) keeps the live look in Stage: the bake is the live
+/// picture smoothed, not a darker or lighter one.
+#[test]
+fn a_stage_bake_keeps_the_live_bounce_unless_it_traces() {
+    let Some(mut gpu) = gpu() else { return };
+    let mut scene = room(true, [0.0, 0.0], 140.0, [0.0, 0.0]);
+    let ball = thing_of(&scene, "balls");
+    set_colour(&mut scene, ball, Color::rgb(0xff, 0x40, 0x20));
+    set_lighting(&mut scene, "bounce", Value::Number(1.0));
+    let live = draw(&mut gpu, &scene, 0.0, None, "stage-bounce-live");
+    let baked = draw(&mut gpu, &scene, 0.0, bake(4, 0.0), "stage-bounce-baked");
+    let (a, b) = (mean_brightness(&live), mean_brightness(&baked));
+    assert!((a - b).abs() / a < 0.03, "live {a}, baked {b}");
 }

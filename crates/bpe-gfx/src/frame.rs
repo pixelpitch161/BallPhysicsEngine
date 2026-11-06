@@ -1028,7 +1028,7 @@ pub struct LightingGpu {
     /// The bake (part 3): samples a pixel, light bounces, bake reflections, shutter (0 without
     /// motion blur).
     pub bake: [f32; 4],
-    /// 1 when the video bakes, 1 with noise clean-up, glass caustics, spare.
+    /// 1 when the video bakes, 1 with noise clean-up, glass caustics, 1 when the bake traces bounced light.
     pub bake_more: [f32; 4],
 }
 
