@@ -9,13 +9,15 @@
 //! ball has the card's own values), substeps the scene's fastest ball would cause (above 3,840
 //! px/s), a physics setting following sound (it hears no hits here).
 //!
-//! Leaving together (the usual way), a round is aimed in two passes over its balls:
-//! 1. each ball's first ways, one per arc (how many bounces before it passes the target), from
-//!    the fewest allowed up: Keep mine searches the speed along its own direction; Adjust each
-//!    ball searches the turn off its direction at Speed;
-//! 2. the arrival moment `T` is the latest of those first ways (or Arrive after), and each ball
-//!    then finds how to be *at* the target at `T`: Keep mine by its speed alone (possible only
-//!    where nothing bends the paths), Adjust each ball by its speed and turn together.
+//! Leaving together (the usual way), a round is aimed in three passes:
+//! 1. the scan: balls setting off from one place share their test flights; each ball's window of
+//!    directions (±Turn at most; keeping its direction, ±0.3°) is flown to Bounces at most, and
+//!    where two neighbouring flights pass the target on either side on some arc (or one goes
+//!    through) is a lead;
+//! 2. each ball's soonest way: its leads closed in on, soonest first; the arrival moment `T` is
+//!    the latest of them (or Arrive after);
+//! 3. each ball finds how to be *at* the target at `T`: its ways slowed or sped by their time
+//!    over `T` (where nothing bends the paths, the very same way), then speed and turn together.
 //!
 //! Leaving when needed (part 4's way), each ball keeps its direction and a speed near Speed and
 //! leaves when that way takes it there with the others.
@@ -66,8 +68,8 @@ const TIMED_SPEEDS: usize = 8;
 /// The most a lead found going within [`ROUGH`] of the target is turned to take it nearer
 /// (radians: 0.5°).
 const HAIR: f64 = 0.5 * std::f64::consts::PI / 180.0;
-/// How far (a share of the round's moment) when a way passes may move from the nearest speed
-/// tried to a new one and still count as the same run of ways.
+/// How far (a share of the round's moment) when a way passes may be from when the nearest speed
+/// tried would pass, going the same way at the new speed, and still count as the same run of ways.
 const BRANCH: f64 = 0.15;
 /// Ways on one arc whose directions are nearer than this (radians: 0.2°) count as one.
 const SAME_WAY: f64 = 0.2 * std::f64::consts::PI / 180.0;
@@ -92,6 +94,8 @@ const SETTLE_TRIES: usize = 6;
 /// all, or slides to and fro in a bowl (ten seconds at 600 px/s; by distance, so a ball slowed
 /// right down still gets as far).
 const QUIET_DISTANCE: f32 = 6000.0;
+/// And how long (steps: forty seconds), at most: one sliding to and fro in a bowl never gets far.
+const QUIET_STEPS: u64 = 9600;
 /// How many steps all of one ball's test flights in one pass may take together.
 const BALL_STEPS: u64 = 400_000;
 /// How many threads a round's balls are aimed on, at most.
@@ -291,6 +295,7 @@ fn fly(lone: &Lone, aim: &Aimer, p0: Vec2, v: Vec2, most: u64, most_arc: usize) 
     let mut bounces = 0usize;
     let mut still = 0u32;
     let mut quiet = 0f32;
+    let mut quiet_steps = 0u64;
     let mut last_arc = None;
     let mut arc = 0usize;
     for _ in 0..most {
@@ -310,10 +315,12 @@ fn fly(lone: &Lone, aim: &Aimer, p0: Vec2, v: Vec2, most: u64, most_arc: usize) 
             break;
         }
         let previous = *places.last().unwrap_or(&p0);
-        // At rest a second, or [`QUIET_DISTANCE`] without touching a wall: it goes nowhere new.
+        // At rest a second, or [`QUIET_DISTANCE`] or [`QUIET_STEPS`] without touching a wall: it
+        // goes nowhere new.
         still = if b.velocity[0].length_squared() < 1.0 { still + 1 } else { 0 };
         quiet = if h > 0 { 0.0 } else { quiet + (p - previous).length() };
-        if still > 240 || quiet > QUIET_DISTANCE {
+        quiet_steps = if h > 0 { 0 } else { quiet_steps + 1 };
+        if still > 240 || quiet > QUIET_DISTANCE || quiet_steps > QUIET_STEPS {
             break;
         }
         let target = aim.target_at(w.step as f64);
@@ -645,8 +652,8 @@ impl Search<'_> {
         let most = ((t * 1.25) as u64 + 8).min(MOST_STEPS as u64);
         let mut rough: Option<(f64, Found)> = None;
         // Slowed or sped as if its way stayed the same first, then the other way: on a curved
-        // path, slower can be sooner.
-        // Where the paths bend the way changes with the speed: small steps keep to it.
+        // path, slower can be sooner. Where the paths bend the way changes with the speed: small
+        // steps keep to it.
         let whole = if self.aim.bends() { (way.e / t).clamp(1.0 / 1.15, 1.15) } else { way.e / t };
         let plain = whole.clamp(1.0 / 1.15, 1.15);
         let plain = if (plain - 1.0).abs() < 0.02 { 1.02f64.copysign(plain - 1.0) } else { plain };
@@ -665,10 +672,14 @@ impl Search<'_> {
             }
             for _ in 0..10 {
                 let th = self.through(speed, tweak, way.arc, most_turn, most);
-                // Passing far sooner or later than the nearest speed tried is another run of ways
-                // (it went round the other side of something): as if there were none there.
-                let nearest_late = tried.iter().min_by(|a, b| (a.0 - speed).abs().total_cmp(&(b.0 - speed).abs()));
-                let th = th.filter(|f| nearest_late.is_none_or(|&(_, late)| (f.e - t - late).abs() <= BRANCH * t));
+                // Passing far sooner or later than the nearest speed tried would, the same way at
+                // this speed, is another run of ways (it went round the other side of something):
+                // as if there were none there.
+                let nearest = tried.iter().min_by(|a, b| (a.0 - speed).abs().total_cmp(&(b.0 - speed).abs()));
+                let foreseen = nearest.map(|&(s0, late)| (late + t) * s0 / speed);
+                let th = th
+                    .filter(|f| f.tweak.abs() <= most_turn + 1e-9)
+                    .filter(|f| foreseen.is_none_or(|e| (f.e - e).abs() <= BRANCH * t));
                 match th {
                     Some(found) => {
                         let late = found.e - t;
@@ -984,9 +995,13 @@ fn scan(base: &Lone, aim: &Aimer, s: &EmitterSettings, shots: &[Shot], hunt: &Hu
     }
     // (group, direction, speed), each group's by speed then direction.
     let mut jobs: Vec<(usize, f64, f64)> = Vec::new();
+    // How far apart one ball's directions are, in each group: no two flights further apart are
+    // neighbours (with a wide window, the two ends of one ball's are close round the back).
+    let mut spacing: Vec<f64> = Vec::new();
     for (gi, g) in groups.iter().enumerate() {
         let per = SCAN_BUDGET / (g.balls.len() * hunt.speeds.len()).max(1);
         let n = if hunt.window > 0.0 { per.clamp(LEAST_SCAN, BALL_SCAN) | 1 } else { 1 };
+        spacing.push(if n > 1 { 2.0 * hunt.window / (n - 1) as f64 } else { 0.0 });
         let mut angles: Vec<f64> = Vec::with_capacity(n * g.balls.len());
         for &k in &g.balls {
             let own = at[k].1.to_angle() as f64;
@@ -1031,7 +1046,7 @@ fn scan(base: &Lone, aim: &Aimer, s: &EmitterSettings, shots: &[Shot], hunt: &Hu
             // Its neighbour the other way round, the last's the first.
             let j = if i + 1 < end { i + 1 } else { start };
             let gap = wrap(jobs[j].1 - jobs[i].1);
-            if j == i || gap <= 0.0 || gap > 2.0 * hunt.window + 1e-9 {
+            if j == i || gap <= 0.0 || gap > spacing[gi] * (1.0 + 1e-6) + 1e-12 {
                 continue;
             }
             for (arc, p, q, e) in brackets(&flown[i], &flown[j], least_arc, near) {
@@ -1140,12 +1155,13 @@ fn close_lead<'g>(
                 }
             }
         };
+        // Its places thinned for the preview: a ball meeting the others flies its own way again.
         let way = close().map(|found| Way {
             angle: wrap(lead.a.0 + found.tweak),
             speed: found.speed,
             arc: found.arc,
             e: found.e,
-            places: found.places,
+            places: thin(&found.places),
         });
         (way, start - search.steps)
     });
@@ -1171,7 +1187,9 @@ fn soonest(
         if budget == 0 {
             break;
         }
-        if let Some(way) = close_lead(base, aim, s, (g, li), hunt.horizon, &mut budget) {
+        if let Some(way) = close_lead(base, aim, s, (g, li), hunt.horizon, &mut budget)
+            && wrap(way.angle - own).abs() <= hunt.window + 1e-9
+        {
             first = Some(way.clone());
             break;
         }
@@ -1255,6 +1273,10 @@ fn meet(
         }
         let Some(way) = close_lead(base, aim, s, (g, li), hunt.horizon, &mut search.steps) else { continue };
         let found = way.turned(own);
+        // Closing in may have turned it a hair past the ends of its lead.
+        if found.tweak.abs() > hunt.window + 1e-9 {
+            continue;
+        }
         if checked.iter().any(|(_, f)| f.arc == found.arc && (f.tweak - found.tweak).abs() < SAME_WAY) {
             continue;
         }
@@ -1425,7 +1447,7 @@ pub fn aim_shots(
     });
     // Keeping its direction where the paths bend, the speeds scanned may all miss between them:
     // a ball with no way yet searches its own speeds closer (part 4's search), and what it finds
-    // joins its group's leads.
+    // joins its own leads (another ball's were picked already).
     if !adjust && aim.bends() {
         let more = in_parallel(shots.len(), |k| match (group_of[k], &firsts[k].1) {
             (Some(_), None) => own_ways(base, aim, s, shots[k], &hunt, limit),
@@ -1492,7 +1514,10 @@ pub fn aim_shots(
         let way = order
             .iter()
             .take(SOONEST_TRIES)
-            .find_map(|&li| close_lead(base, aim, s, (g, li), hunt.horizon, &mut budget).clone())
+            .find_map(|&li| {
+                let way = close_lead(base, aim, s, (g, li), hunt.horizon, &mut budget).as_ref()?;
+                (wrap(way.angle - owns[k]).abs() <= hunt.window + 1e-9).then(|| way.clone())
+            })
             .or_else(|| firsts[k].1.clone());
         match way {
             Some(way) => settle(base, aim, s, shots[k], way.turned(owns[k]), fire, arrive.round() as u64),

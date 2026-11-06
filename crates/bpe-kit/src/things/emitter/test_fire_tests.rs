@@ -548,14 +548,24 @@ fn big_round(count: u32, f: impl FnOnce(&mut EmitterSettings)) -> (usize, u64, V
     });
     let mut world = fired(&scene, &kit);
     let aims = st(&world, me).aimed.last().cloned().unwrap();
-    for b in aims.balls.iter().flatten() {
+    let s = st(&world, me).settings.clone();
+    let most_turn = match s.aim_way {
+        AimWay::KeepMine => MOST_TWEAK,
+        AimWay::AdjustEachBall => (s.aim_turn as f64).to_radians(),
+    };
+    for (k, b) in aims.balls.iter().enumerate() {
+        let Some(b) = b else { continue };
         assert_eq!(b.leave, 1, "all leave on the round's step");
+        let own = Vec2::from_angle(direction(&s, k as u32, count, 0, world.seed, me.0));
+        let turn = own.angle_to(b.velocity).abs() as f64;
+        assert!(turn <= most_turn + 1e-4, "ball {k} turned {} degrees", turn.to_degrees());
     }
     let mut log = Log::default();
     let near = nearest(&mut world, &kit, &mut log, me, aims.arrive, target);
     // The balls fired, in ball order (the skipped ones aren't).
     let fired: Vec<&Option<BallAim>> = aims.balls.iter().filter(|b| b.is_some()).collect();
-    let reached = fired.iter().zip(&near).filter(|(b, _)| b.as_ref().is_some_and(|b| b.reaches)).map(|(_, n)| *n).collect();
+    let reached =
+        fired.iter().zip(&near).filter(|(b, _)| b.as_ref().is_some_and(|b| b.reaches)).map(|(_, n)| *n).collect();
     (reaching(&aims), aims.arrive, reached)
 }
 
