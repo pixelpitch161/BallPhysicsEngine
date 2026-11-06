@@ -271,8 +271,14 @@ fn rules_lane(ui: &mut Ui, studio: &mut Studio, ruler: &Ruler) {
     fired.update(studio.revision, studio.playback.log().events(), rate);
     let mut ticks: BTreeMap<(i32, usize), f64> = BTreeMap::new();
     for (i, rule) in studio.scene.rules.list.iter().enumerate() {
-        for t in fired.firings(rule) {
-            ticks.entry((ruler.x_of(t).round() as i32, i)).or_insert(t);
+        // In time order, so a column's first firing is kept and the rest skipped cheaply.
+        let mut last = None;
+        for &t in fired.firings(rule).iter() {
+            let x = ruler.x_of(t).round() as i32;
+            if last != Some(x) && (strip.left() - 2.0..=strip.right() + 2.0).contains(&(x as f32)) {
+                ticks.entry((x, i)).or_insert(t);
+            }
+            last = Some(x);
         }
     }
     for &(x, _) in ticks.keys() {

@@ -51,6 +51,8 @@ pub struct RulesPanel {
     link_drag: Option<(RuleId, BlockId)>,
     /// A rule being dragged by its header to another place in the list.
     rule_drag: Option<RuleId>,
+    /// The pass the view was last drawn on: a drag left over from before it was hidden is dropped.
+    drawn_on: u64,
     clipboard_rule: Option<CopiedRule>,
     clipboard_block: Option<CopiedBlock>,
     /// The line a right-click landed near: (rule, from, to).
@@ -180,6 +182,12 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) -> Outcome {
     let reg = &kit.registry;
     let rate = studio.playback.world().steps_per_second;
     panel.fired.update(studio.revision, studio.playback.log().events(), rate);
+    let pass = ui.ctx().cumulative_pass_nr();
+    if pass > panel.drawn_on + 1 {
+        panel.link_drag = None;
+        panel.rule_drag = None;
+    }
+    panel.drawn_on = pass;
     let notes = {
         let state = studio.playback.world().rules();
         RunNotes {
@@ -369,8 +377,10 @@ fn lane(
         None => {
             ui.menu_button("Add When", |ui| {
                 if let Some(kind) = menu::block_menu(ui, reg, true)
-                    && studio.scene.add_when(reg, rule.id, kind).is_ok()
+                    && let Ok(new) = studio.scene.add_when(reg, rule.id, kind)
                 {
+                    panel.picked = Some((rule.id, new));
+                    studio.selection.clear();
                     out.separate = true;
                 }
             });
@@ -435,7 +445,7 @@ fn lane(
 
         // "+": the block menu, for a block after this one.
         let plus = Rect::from_min_size(Pos2::new(r.right() + 8.0, r.bottom() - 18.0), Vec2::splat(18.0));
-        let add = ui.put(plus, egui::Button::new("+").small());
+        let add = ui.place(plus, egui::Button::new("+").small());
         let words = format!("Add after {name}");
         add.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, words.clone()));
         let add = add.on_hover_text("Add a block after this one");
@@ -461,7 +471,7 @@ fn lane(
     let first_rows = lay.places.iter().filter(|p| p.column == 0).count();
     let y = if first_rows == 0 { origin.y } else { origin.y + first_rows as f32 * (BLOCK_H + ROW_GAP) - ROW_GAP + 4.0 };
     let at = Rect::from_min_size(Pos2::new(origin.x, y), Vec2::new(72.0, 18.0));
-    let add_when = ui.put(at, egui::Button::new("+ When").small());
+    let add_when = ui.place(at, egui::Button::new("+ When").small());
     let words = format!("Add When to {}", rule.name);
     add_when.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, words.clone()));
     let add_when = add_when.on_hover_text("Something more this rule listens for, stacked under the others");
@@ -497,6 +507,7 @@ fn block_menu_items(
                 let _ = studio.scene.link(reg, rule.id, i, new);
             }
             panel.picked = Some((rule.id, new));
+            studio.selection.clear();
             out.separate = true;
         }
         ui.close();
@@ -511,6 +522,7 @@ fn block_menu_items(
             && let Ok(new) = studio.scene.paste_block(reg, rule.id, &copied, Some(block))
         {
             panel.picked = Some((rule.id, new));
+            studio.selection.clear();
             out.separate = true;
         }
         ui.close();
@@ -524,6 +536,17 @@ fn block_menu_items(
         }
         ui.close();
     }
+}
+
+/// Starts renaming `rule`, keeping a name being typed for another rule first.
+fn start_renaming(studio: &mut Studio, panel: &mut RulesPanel, rule: &Rule) {
+    if let Some((other, text)) = panel.renaming.take()
+        && other != rule.id
+        && !text.trim().is_empty()
+    {
+        let _ = studio.scene.rename_rule(other, text.trim());
+    }
+    panel.renaming = Some((rule.id, rule.name.clone()));
 }
 
 /// A lane's header: the on switch, the name (renamed in place), how often it fired, its problem
@@ -555,7 +578,7 @@ fn header(
     // The on switch.
     let switch_at = Rect::from_min_size(rect.min + Vec2::new(8.0, 8.0), Vec2::new(30.0, 18.0));
     let mut on = rule.enabled;
-    let switch = ui.put(switch_at, |ui: &mut Ui| style::switch(ui, &mut on));
+    let switch = ui.place(switch_at, |ui: &mut Ui| style::switch(ui, &mut on));
     let on_words = format!("{} on", rule.name);
     switch.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, on, on_words.clone()));
     if switch.on_hover_text("Off, the rule does nothing").changed()
@@ -571,18 +594,24 @@ fn header(
     );
     match panel.renaming.as_mut().filter(|(r, _)| *r == rule.id) {
         Some((_, text)) => {
-            let field = ui.put(name_at, egui::TextEdit::singleline(text).desired_width(name_at.width()));
+            let field = ui.place(name_at, egui::TextEdit::singleline(text).desired_width(name_at.width()));
             let label = format!("Name of {}", rule.name);
             field.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, label.clone()));
             if std::mem::take(&mut panel.focus_rename) {
                 field.request_focus();
             }
             if field.lost_focus() {
-                let name = text.trim().to_owned();
-                if !name.is_empty() && name != rule.name {
-                    let _ = studio.scene.rename_rule(rule.id, &name);
+                // Escape leaves the name as it was.
+                if !ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    let name = text.trim().to_owned();
+                    if !name.is_empty() && name != rule.name {
+                        let _ = studio.scene.rename_rule(rule.id, &name);
+                    }
                 }
                 panel.renaming = None;
+            } else if !field.has_focus() {
+                // Back after the view was switched away: carry on typing.
+                field.request_focus();
             }
         }
         None => {
@@ -594,7 +623,7 @@ fn header(
         }
     }
     if response.double_clicked() {
-        panel.renaming = Some((rule.id, rule.name.clone()));
+        start_renaming(studio, panel, rule);
         panel.focus_rename = true;
     }
 
@@ -630,7 +659,7 @@ fn header(
     let response = response.on_hover_text("Double-click to rename; drag to move the rule; right-click for more");
     response.context_menu(|ui| {
         if ui.button("Rename").clicked() {
-            panel.renaming = Some((rule.id, rule.name.clone()));
+            start_renaming(studio, panel, rule);
             panel.focus_rename = true;
             ui.close();
         }

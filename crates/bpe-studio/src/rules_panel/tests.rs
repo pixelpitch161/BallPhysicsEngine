@@ -245,3 +245,40 @@ fn the_timeline_gets_a_rules_lane_with_the_firings() {
     assert!(h.state().panels.rules.fired.recent(rule, ids[1], 0.3));
     assert!(!h.state().panels.rules.fired.recent(rule, ids[1], 1.0));
 }
+
+#[test]
+fn each_lane_sits_below_the_one_before() {
+    // A branched rule has two rows of blocks; the lane after it starts under both.
+    let mut studio = rules_studio();
+    let kit = studio.kit.clone();
+    let reg = &kit.registry;
+    let (rule, ids) = lane_of(&mut studio, "Branched", &["when.hit", "do.motion"]);
+    let before = studio.scene.clone();
+    studio.scene.add_block(reg, rule, "do.break", Some(ids[0])).unwrap();
+    studio.after_separate_edit(before);
+    lane_of(&mut studio, "Second", &["when.time"]);
+    let h = harness(studio);
+    let lowest = h.get_by_label("Do Break").rect().bottom().max(h.get_by_label("Do Change motion").rect().bottom());
+    let next = h.get_by_label("Rule Second").rect().top();
+    assert!(next >= lowest, "the second lane ({next}) starts under the first's blocks ({lowest})");
+}
+
+#[test]
+fn picking_a_choice_setting_sets_it_to_its_default() {
+    let mut studio = rules_studio();
+    let (rule, ids) = lane_of(&mut studio, "Touch", &["when.hit", "do.change"]);
+    studio.panels.rules.picked = Some((rule, ids[1]));
+    let mut h = harness(studio);
+    h.get_by_label("No setting yet").click();
+    h.run();
+    h.get_by_label("Ball").click();
+    h.run();
+    h.get_by_label("Bounce").click();
+    h.run();
+    h.get_by_label("Touch walls with (whole group)").click();
+    h.run();
+    let block = h.state().scene.rules.rule(rule).unwrap().block(ids[1]).unwrap().clone();
+    let s = ChangeSettingSettings::from_params(&block.params);
+    assert_eq!(s.setting, "touch");
+    assert!(!s.to_choice.is_empty(), "the To shown is the To saved, so the change happens");
+}

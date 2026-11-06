@@ -3,18 +3,26 @@
 
 use bpe_core::{BlockId, Rule, RuleId, ThingId};
 use bpe_runtime::{Event, EventKind};
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 /// A block that fired this long before the playhead (or less) has a ring.
 pub const RING_SECONDS: f64 = 0.15;
 
-/// The times each block fired, worked out again when the log grows or the scene changes.
+/// The times each block fired, read again when the scene changes and only the new events read
+/// while the log grows.
 #[derive(Default)]
 pub struct Fired {
     made_for: Option<(u64, usize)>,
     /// By (rule, block), in time order.
     times: BTreeMap<(RuleId, BlockId), Vec<f64>>,
+    /// Each rule's firings with the end blocks they were worked out for, kept until the times change.
+    ends: RefCell<BTreeMap<RuleId, EndFirings>>,
 }
+
+/// A rule's end blocks and the moments any of them fired.
+type EndFirings = (Vec<BlockId>, Rc<[f64]>);
 
 /// The rule and block a Rule event's `b.item` names (`rule × 65536 + block`).
 pub fn rule_and_block(item: u32) -> (RuleId, BlockId) {
@@ -28,9 +36,17 @@ impl Fired {
         if self.made_for == Some(made_for) {
             return;
         }
+        // The log only grew since the last read (playing on): read the new events alone.
+        let from = match self.made_for {
+            Some((r, n)) if r == revision && n < events.len() => n,
+            _ => {
+                self.times.clear();
+                0
+            }
+        };
         self.made_for = Some(made_for);
-        self.times.clear();
-        for e in events.iter().filter(|e| e.kind == EventKind::Rule) {
+        self.ends.borrow_mut().clear();
+        for e in events[from..].iter().filter(|e| e.kind == EventKind::Rule) {
             let Some(b) = e.b.filter(|b| b.thing == ThingId::ROOT) else { continue };
             self.times.entry(rule_and_block(b.item)).or_default().push(e.time(steps_per_second));
         }
@@ -49,22 +65,24 @@ impl Fired {
 
     /// The moments the rule fired: when any of its end blocks (those leading nowhere) did, each
     /// moment once, in order.
-    pub fn firings(&self, rule: &Rule) -> Vec<f64> {
-        let mut all: Vec<f64> = rule
-            .blocks
-            .iter()
-            .filter(|b| rule.outputs(b.id).is_empty())
-            .flat_map(|b| self.of(rule.id, b.id).iter().copied())
-            .collect();
+    pub fn firings(&self, rule: &Rule) -> Rc<[f64]> {
+        let ends: Vec<BlockId> = rule.blocks.iter().filter(|b| rule.outputs(b.id).is_empty()).map(|b| b.id).collect();
+        if let Some((made, all)) = self.ends.borrow().get(&rule.id)
+            && *made == ends
+        {
+            return all.clone();
+        }
+        let mut all: Vec<f64> = ends.iter().flat_map(|&b| self.of(rule.id, b).iter().copied()).collect();
         all.sort_by(f64::total_cmp);
         all.dedup();
+        let all: Rc<[f64]> = all.into();
+        self.ends.borrow_mut().insert(rule.id, (ends, all.clone()));
         all
     }
 
     /// How many times the rule fired up to `time`.
     pub fn count(&self, rule: &Rule, time: f64) -> usize {
-        let all = self.firings(rule);
-        all.partition_point(|&t| t <= time + 1e-9)
+        self.firings(rule).partition_point(|&t| t <= time + 1e-9)
     }
 }
 
@@ -112,7 +130,7 @@ mod tests {
         ];
         let mut f = Fired::default();
         f.update(0, &events, 240);
-        assert_eq!(f.firings(&rule), vec![1.0, 2.0]);
+        assert_eq!(&*f.firings(&rule), &[1.0, 2.0]);
         assert_eq!(f.count(&rule, 0.5), 0);
         assert_eq!(f.count(&rule, 1.0), 1);
         assert_eq!(f.count(&rule, 5.0), 2);

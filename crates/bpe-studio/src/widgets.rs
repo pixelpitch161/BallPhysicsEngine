@@ -1100,7 +1100,14 @@ pub(crate) fn who_picker(ui: &mut Ui, w: &mut bpe_core::Who, choices: &TargetCho
                 DragValue::new(&mut n)
                     .range(0..=u32::MAX)
                     .speed(0.1)
-                    .custom_formatter(|v, _| if v < 0.5 { "every ball".to_owned() } else { format!("ball {v:.0}") }),
+                    .custom_formatter(|v, _| if v < 0.5 { "every ball".to_owned() } else { format!("ball {v:.0}") })
+                    .custom_parser(|t| {
+                        let t = t.trim().to_lowercase();
+                        if t.starts_with("every") {
+                            return Some(0.0);
+                        }
+                        t.trim_start_matches("ball").trim().parse::<f64>().ok()
+                    }),
             )
             .on_hover_text("One ball of it, by its number; 0 for every ball");
         if number.changed() {

@@ -187,6 +187,7 @@ fn settings(ui: &mut Ui, scene: &Scene, kit: &Kit, rule: &Rule, block_id: BlockI
     let target =
         s.as_ref().and_then(|s| setting_menu::picked_def(scene, kit, &s.who, s.card, s.setting.trim()).map(|(_, d)| d));
     let numeric = target.is_some_and(|t| matches!(t.ty, ValueType::Number | ValueType::Int | ValueType::Vec2));
+    let multiply = matches!(get("how"), Value::Choice(c) if c == "multiply");
     // Change setting's rows: To only as the picked setting's type, How only for numbers.
     let shown: Vec<SettingDef> = defs
         .into_iter()
@@ -196,7 +197,9 @@ fn settings(ui: &mut Ui, scene: &Scene, kit: &Kit, rule: &Rule, block_id: BlockI
             }
             match d.key {
                 "setting" => None,
-                "how" if !numeric => None,
+                "how" | "times" if !numeric => None,
+                // Multiply uses Times, not To.
+                "to_number" | "to_pair" if multiply => None,
                 k if k.starts_with("to_") => change_def(&d, target),
                 _ => Some(d),
             }
@@ -243,6 +246,19 @@ fn settings(ui: &mut Ui, scene: &Scene, kit: &Kit, rule: &Rule, block_id: BlockI
                     if let Some((card, key)) =
                         setting_menu::setting_menu(ui, scene, kit, &s.who, (s.card, s.setting.trim()))
                     {
+                        // The new setting starts at its own default choice, and a setting that
+                        // isn't a number can only be set.
+                        let picked = setting_menu::picked_def(scene, kit, &s.who, card, &key).map(|(_, d)| d);
+                        let to = match picked.map(|d| (&d.ty, &d.default)) {
+                            Some((ValueType::Choice(_), Value::Choice(c))) => c.clone(),
+                            _ => String::new(),
+                        };
+                        let number = picked
+                            .is_some_and(|d| matches!(d.ty, ValueType::Number | ValueType::Int | ValueType::Vec2));
+                        if !number {
+                            out.push(("how".into(), Value::Choice("set".into())));
+                        }
+                        out.push(("to_choice".into(), Value::Text(to)));
                         out.push(("card".into(), setting_menu::card_value(card)));
                         out.push(("setting".into(), Value::Text(key)));
                     }
@@ -307,6 +323,12 @@ fn settings(ui: &mut Ui, scene: &Scene, kit: &Kit, rule: &Rule, block_id: BlockI
                 grid_row(ui, def, &get_shown, &cx, right, &mut o);
             }
             for (key, v) in o.changes {
+                // Compare's Value is one the new Of offers.
+                if compare && key == "of" {
+                    let of_thing = matches!(&v, Value::Choice(c) if c == "a_thing");
+                    let first = if of_thing { THING_VALUES.first() } else { upstream.first() };
+                    out.push(("value".into(), Value::Text(first.copied().unwrap_or_default().to_owned())));
+                }
                 let v = match (key, v) {
                     ("to_choice", Value::Choice(c)) => Value::Text(c),
                     (_, v) => v,

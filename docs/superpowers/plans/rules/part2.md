@@ -199,4 +199,24 @@ selected, or when the block is gone).
 
 ## As built
 
-(filled in at the end)
+- `RuleBlockKind::values()` names what a When's firings carry and `firing_keys()` (planned as `from_keys`, renamed
+  for clippy's `wrong_self_convention`) the number settings that can take a value from the firing; both come from
+  `block_kind!`'s new `values = [..], from = [..]` tail.
+- The lane's own controls (switch, rename field, "+", "+ When") are placed with `Ui::place`, not `Ui::put`, which
+  would move the cursor and let the next lane overlap a lane with more rows than its first column
+  (`each_lane_sits_below_the_one_before`).
+- Picking a setting in Change setting writes its default choice into `to_choice` and sets How to Set for a setting
+  that isn't a number, so the To shown is the To saved and the change happens
+  (`picking_a_choice_setting_sets_it_to_its_default`). Times shows only for numbers; To hides under Multiply.
+- Compare's Value is reset to the first value the new Of offers when Of changes.
+- `Fired` reads only the new events while the log grows under the same revision and keeps each rule's end-block
+  firings (`firings` gives an `Rc<[f64]>`) until the times change; the timeline's Rules lane skips firings in the
+  same pixel column.
+- Renaming: Escape keeps the old name, starting another rename saves the first, and the field takes focus back
+  after the bottom view was switched away. A link or rule drag left over from a frame the view wasn't drawn is
+  dropped (`RulesPanel.drawn_on`).
+- New blocks from Duplicate, Paste block after and the lane's Add When menu are picked (and the thing selection
+  cleared) so the inspector shows them.
+- The who picker's ball number box parses typed text ("ball 3", "every ball", "3").
+- The setting menu offers what the runtime's `setting_infos` accepts, so a setting whose `when` hides it for the
+  thing kind (Bounce's Takes over on a ball) is still listed, as the runtime would change it.
