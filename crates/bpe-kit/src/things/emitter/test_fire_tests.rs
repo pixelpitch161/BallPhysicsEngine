@@ -178,15 +178,15 @@ fn arriving_after_a_time_they_all_meet_then() {
     // Through one bounce at Speed they take a little longer: they slow down and turn.
     let (scene, me, kit) = fan_in_a_circle(|s| {
         s.aim_arrive = AimArrive::After;
-        s.arrive_after = 1.4;
+        s.arrive_after = 1.55;
     });
     let mut world = fired(&scene, &kit);
     let aims = st(&world, me).aimed.last().cloned().unwrap();
-    // Fired on the first step, there 1.4 s later.
-    assert_eq!(aims.arrive, 337);
+    // Fired on the first step, there 1.55 s later.
+    assert_eq!(aims.arrive, 373);
     assert_eq!(reaching(&aims), 6, "{:?}", aims.balls);
     let mut log = Log::default();
-    let near = nearest(&mut world, &kit, &mut log, me, 337, Vec2::new(250.0, 200.0));
+    let near = nearest(&mut world, &kit, &mut log, me, 373, Vec2::new(250.0, 200.0));
     assert_eq!(near.len(), aims.balls.iter().flatten().count());
     assert!(near.iter().all(|(d, _)| *d < ROUGH as f32), "{near:?}");
 }
