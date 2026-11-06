@@ -887,8 +887,8 @@ pub fn lit_demo(reg: &Registry) -> Scene {
     // The room's light becomes a warm spot from above.
     let first = scene.things.values().find(|t| t.kind == "light").map(|t| t.id).expect("a light");
     let mut spot = LightSettings::of_kind(LightType::Spot);
-    spot.position = Vec2::new(0.0, -820.0);
-    spot.cone = 70.0;
+    spot.position = Vec2::new(0.0, -460.0);
+    spot.cone = 90.0;
     spot.cone_edge = 25.0;
     spot.reach = 2200.0;
     spot.strength = 2.2;
@@ -897,6 +897,8 @@ pub fn lit_demo(reg: &Registry) -> Scene {
     spot.colour = Color::rgb(0xff, 0xc8, 0x8a);
     scene.things.get_mut(&first).expect("light").params = spot.to_params();
     scene.rename_thing(first, "Spot light");
+    let shape = scene.things.values().find(|t| t.kind == "shape").map(|t| t.id).expect("a shape");
+    scene.things.get_mut(&shape).expect("shape").params.set("thickness", Value::Number(10.0));
     let ball = scene.things.values().find(|t| t.kind == "balls").map(|t| t.id).expect("a ball");
     let mut balls = BallsSettings::from_params(&scene.things[&ball].params);
     balls.ring(12, 140.0);
