@@ -164,6 +164,12 @@ pub fn sub_kinds() -> Vec<Kind> {
             "Its layer heats up every time a ball hits the shape and glows red to white hot, cooling down between hits.",
             crate::modules::look::layers::heat::SubHeat::defs,
         ),
+        sub(
+            crate::modules::look::surface::SHAPE_SUB_SURFACE,
+            "Surface",
+            crate::modules::look::surface::SUB_HELP,
+            crate::modules::look::surface::sub_defs,
+        ),
     ]
 }
 
@@ -271,7 +277,8 @@ mod tests {
                 SUB_FLASH,
                 SUB_HUE,
                 SUB_LIGHT,
-                crate::modules::look::layers::heat::SHAPE_SUB_HEAT
+                crate::modules::look::layers::heat::SHAPE_SUB_HEAT,
+                crate::modules::look::surface::SHAPE_SUB_SURFACE
             ]
         );
         for k in reg.layers_for(CARD).filter(|k| k.section() != LayerSection::Around) {

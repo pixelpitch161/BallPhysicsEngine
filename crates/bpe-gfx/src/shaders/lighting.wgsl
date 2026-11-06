@@ -302,6 +302,11 @@ fn visibility(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f
         }
         t += max(-d, texel);
     }
+    // Just out of it, the field is still about 0: start a texel and a half on, or the edge of
+    // the pixel's own blocker half-shadows it, in speckles where the exit lands (part 2b).
+    if t > 0.0 {
+        t += 1.5 * texel;
+    }
     let end = min(dist - stop, t + max(reach, 0.0));
     let ang = max(angular, 1e-4);
     var v = 1.0;
@@ -340,7 +345,8 @@ struct Glow {
     glow: vec4<f32>,
     // The haze's colour times its amount (rgb), how much it dims what is behind it.
     air: vec4<f32>,
-    // 1 with a light field, 1 with a bloom, 1 with haze (or smoke: the light in the air), spare.
+    // 1 with a light field, 1 with a bloom, 1 with haze (or smoke: the light in the air), 1 in
+    // Stage (balls block the field, part 2b).
     on: vec4<f32>,
     // Part 4. The haze moving: how (0 still, 1 drifting, 2 swirling), speed, size, patchiness.
     haze: vec4<f32>,
@@ -775,7 +781,14 @@ fn fs_gi_scene(in: FsIn) -> @location(0) vec4<f32> {
         let lw = textureSampleLevel(lit_picture, samp, uv, 0.0).rgb;
         w += clamp(lw, vec3<f32>(0.0), max(c.rgb, vec3<f32>(0.0)));
         light += textureSampleLevel(direct_light, samp, uv, 0.0).rgb;
-        blocks += textureSampleLevel(surface, samp, uv, 0.0).r;
+        let sv = textureSampleLevel(surface, samp, uv, 0.0);
+        var b = sv.r;
+        // In Stage a ball blocks light as a sphere, not in the blockers' field: a quarter marks
+        // it here (part 2b), so the light field stops at balls too.
+        if gu.on.w > 0.5 && b < 0.3 {
+            b = min(b * 4.0, 1.0);
+        }
+        blocks += b;
     }
     w *= 0.25;
     light *= 0.25;
@@ -1147,14 +1160,25 @@ struct Stage {
     grid: vec4<f32>,
     // Cells across, cells down, how far past a sphere its cells reach, w unused.
     grid_size: vec4<f32>,
+    // Part 2b: depth of field on (1/0), focus (z), blur, Reflection depth.
+    dof: vec4<f32>,
+    // How many mirror walls, 1 with a behind picture (glass), 1 with a glowing background's own
+    // light picture, 1 in Stage with a light field (balls block it).
+    counts: vec4<f32>,
 };
 
 struct SurfaceGpu {
     // Roughness, metal, clear coat, see-through.
     a: vec4<f32>,
-    // F0 (how much a straight-on look reflects), toon steps (0 smooth), reflects the sky (1) or
-    // nothing (0), kind (0 sheet, 1 ball, 2 shape).
+    // F0 (how much a straight-on look reflects), toon steps (0 smooth), what it mirrors (0
+    // nothing, 1 the sky, 2 the scene), kind (0 sheet, 1 ball, 2 shape).
     b: vec4<f32>,
+    // Part 2b: rainbow split, soak, film, flakes.
+    c: vec4<f32>,
+    // Flake size (of a ball's radius), brushing, brush lines (0 spun, 1 straight), brush angle.
+    d: vec4<f32>,
+    // Frost, rim, inner glow, bends light (index of refraction).
+    e: vec4<f32>,
 };
 
 struct SphereGpu {
@@ -1162,6 +1186,18 @@ struct SphereGpu {
     a: vec4<f32>,
     // The ball's colour (linear), for the light it lets through; w unused.
     b: vec4<f32>,
+    // Its surface index, three unused.
+    c: vec4<f32>,
+};
+
+struct MirrorGpu {
+    // First segment, how many, which side shows the mirror (1 outside, 2 inside, 3 both),
+    // strength.
+    a: vec4<f32>,
+    // Squeeze, the shape's half-size, half its band's thickness, w unused.
+    b: vec4<f32>,
+    // Tint (linear rgb), w unused.
+    c: vec4<f32>,
 };
 
 @group(2) @binding(0) var<uniform> st: Stage;
@@ -1169,6 +1205,11 @@ struct SphereGpu {
 @group(2) @binding(2) var<storage, read> spheres: array<SphereGpu>;
 @group(2) @binding(3) var<storage, read> cells: array<vec2<u32>>;
 @group(2) @binding(4) var<storage, read> items: array<u32>;
+// Part 2b: mirror walls and the picture without what is see-through (what glass shows, bent). A
+// glowing background's own light is bound in the mix as `above` (which only the cascades read
+// otherwise: a fragment stage takes at most 16 pictures).
+@group(2) @binding(5) var<storage, read> mirrors: array<MirrorGpu>;
+@group(2) @binding(6) var behind: texture_2d<f32>;
 
 // The flattest the floor is ever seen: tan(0.5 degrees), so it always has some area.
 const LEAST_K: f32 = 0.0087;
@@ -1176,6 +1217,23 @@ const LEAST_K: f32 = 0.0087;
 const MOST_IN_CELL: u32 = 96u;
 // How many samples a floor reflection's blur takes.
 const FLOOR_TAPS: i32 = 24;
+// With at most this many balls a ray tests every one (no grid: penumbras of any width).
+const BRUTE_BALLS: u32 = 128u;
+// How many samples frosted glass blurs what is behind it with, and depth of field a pixel with.
+const FROST_TAPS: i32 = 12;
+const DOF_TAPS: i32 = 24;
+// The widest depth of field blur, in output pixels.
+const DOF_MOST: f32 = 32.0;
+// The most segments of a mirror wall's outline tested.
+const MOST_MIRROR_SEGMENTS: u32 = 512u;
+
+// Set while lighting what a reflection or glass sees: no mirror of its own is traced from there.
+var<private> NO_MIRRORS: bool;
+// The ball the shaded point is on: its centre xy and radius (radius 0 for none). Flakes and
+// brushed lines sit in the ball's own frame.
+var<private> SHADE_BALL: vec3<f32>;
+// The sphere the shaded point is on (its index; -1 none): its own reflection skips it.
+var<private> SHADE_SPHERE: i32;
 
 fn in_stage() -> bool {
     return st.room.x > 0.5;
@@ -1202,23 +1260,36 @@ fn sky(d: vec3<f32>) -> vec3<f32> {
     return mix(st.sky_bottom.rgb, st.sky_top.rgb, smoothstep(-0.35, 0.35, -d.y));
 }
 
-// The table entry of the surface on a surface-picture texel.
-fn surface_index(s: vec4<f32>) -> u32 {
+// The surface code on a surface-picture texel: its table index, plus 2048 where a Lit 0 layer
+// dulls it (part 2b); 0 where nothing is.
+fn surface_code(s: vec4<f32>) -> f32 {
     if s.a < 0.02 {
-        return 0u;
+        return 0.0;
     }
     let f = s.b / s.a;
     // Where two things' edges mix, the index is between theirs: no surface rather than a third.
     if abs(f - round(f)) > 0.2 {
-        return 0u;
+        return 0.0;
     }
-    let i = u32(max(round(f), 0.0));
+    return max(round(f), 0.0);
+}
+
+// The table entry of the surface on a surface-picture texel.
+fn surface_index(s: vec4<f32>) -> u32 {
+    let i = u32(surface_code(s) % 2048.0);
     return select(0u, i, i < u32(st.more.z));
 }
 
-// The surface on a surface-picture texel.
+// The surface on a surface-picture texel; dulled by a Lit 0 layer, it keeps only its kind (and
+// takes light as a matte sheet does).
 fn surface_of(s: vec4<f32>) -> SurfaceGpu {
-    return surfaces[surface_index(s)];
+    var sf = surfaces[surface_index(s)];
+    if surface_code(s) >= 2047.5 {
+        let kind = sf.b.w;
+        sf = surfaces[0];
+        sf.b.w = kind;
+    }
+    return sf;
 }
 
 // A surface the stage's own planes wear: Matte, Glossy or (for the floor) Mirror.
@@ -1259,6 +1330,174 @@ fn stage_spot(p: vec2<f32>) -> Spot {
     return out;
 }
 
+// The blockers' field on the shapes' slab at 3D point `q` (part 2b): the slab is sheared so its
+// outline at every depth shows exactly where the shape is drawn (a point (x, y, z) shows at
+// (x, y + z k)), so a shape's foot on the wall, and its shadow there, start at its drawn edge.
+fn field_on_slab(q: vec3<f32>) -> f32 {
+    return field_at(vec2<f32>(q.x, q.y + q.z * st.room.w));
+}
+
+// Where a pixel at world `p` showing a thing is in 3D: a shape's front (sheared as its slab), a
+// ball's surface at its height `h`.
+fn thing_point(p: vec2<f32>, h: f32, shape: bool) -> vec3<f32> {
+    if shape {
+        return vec3<f32>(p.x, p.y - st.room.z * st.room.w, st.room.z + h);
+    }
+    return vec3<f32>(p, h);
+}
+
+// The sphere whose disc holds world point `p` (the nearest middle), -1 for none.
+fn ball_at(p: vec2<f32>) -> i32 {
+    let n = u32(st.more.w);
+    if n == 0u {
+        return -1;
+    }
+    var best = -1;
+    var near = 1e30;
+    if n <= BRUTE_BALLS {
+        for (var k = 0u; k < n; k++) {
+            let sp = spheres[k];
+            let d = length(p - sp.a.xy);
+            if d <= sp.a.z * 1.02 + 0.5 && d < near {
+                near = d;
+                best = i32(k);
+            }
+        }
+        return best;
+    }
+    let cell = st.grid.z;
+    let size = vec2<i32>(st.grid_size.xy);
+    let c = vec2<i32>(floor((p - st.grid.xy) / cell));
+    if any(c < vec2<i32>(0)) || any(c >= size) {
+        return -1;
+    }
+    let range = cells[c.y * size.x + c.x];
+    for (var k = 0u; k < min(range.y, MOST_IN_CELL); k++) {
+        let i = items[range.x + k];
+        let sp = spheres[i];
+        let d = length(p - sp.a.xy);
+        if d <= sp.a.z * 1.02 + 0.5 && d < near {
+            near = d;
+            best = i32(i);
+        }
+    }
+    return best;
+}
+
+// How far along unit `d` from `o` the ray meets sphere `sp` from outside (1e30 for a miss).
+fn ray_sphere(o: vec3<f32>, d: vec3<f32>, sp: SphereGpu) -> f32 {
+    let oc = o - vec3<f32>(sp.a.xy, 0.0);
+    let r = sp.a.z;
+    let b = dot(oc, d);
+    let c = dot(oc, oc) - r * r;
+    if c <= 0.0 {
+        return 1e30;
+    }
+    let h = b * b - c;
+    if h < 0.0 {
+        return 1e30;
+    }
+    let t = -b - sqrt(h);
+    return select(1e30, t, t > 1e-3);
+}
+
+// The first ball a ray from `o` along unit `d` meets (but ball `skip`): its distance (1e30 for
+// none) and index. Every ball with few of them; else the sphere grid, cell by cell, only where the
+// ray is within the biggest ball's reach of the picture plane.
+fn hit_ball(o: vec3<f32>, d: vec3<f32>, skip: i32) -> vec2<f32> {
+    var best = 1e30;
+    var index = -1.0;
+    let n = u32(st.more.w);
+    if n == 0u {
+        return vec2<f32>(best, index);
+    }
+    if n <= BRUTE_BALLS {
+        for (var k = 0u; k < n; k++) {
+            if i32(k) == skip {
+                continue;
+            }
+            let t = ray_sphere(o, d, spheres[k]);
+            if t < best {
+                best = t;
+                index = f32(k);
+            }
+        }
+        return vec2<f32>(best, index);
+    }
+    let reach = st.grid.w;
+    var s0 = 0.0;
+    var s1 = 1e6;
+    if abs(d.z) > 1e-6 {
+        let a = (-reach - o.z) / d.z;
+        let b = (reach - o.z) / d.z;
+        s0 = max(s0, min(a, b));
+        s1 = min(s1, max(a, b));
+    } else if abs(o.z) > reach {
+        return vec2<f32>(best, index);
+    }
+    let cell = st.grid.z;
+    let lo = st.grid.xy;
+    let hi = lo + st.grid_size.xy * cell;
+    for (var axis = 0; axis < 2; axis++) {
+        let oo = o[axis];
+        let dd = d[axis];
+        if abs(dd) > 1e-7 {
+            let a = (lo[axis] - oo) / dd;
+            let b = (hi[axis] - oo) / dd;
+            s0 = max(s0, min(a, b));
+            s1 = min(s1, max(a, b));
+        } else if oo < lo[axis] || oo > hi[axis] {
+            return vec2<f32>(best, index);
+        }
+    }
+    if s1 < s0 {
+        return vec2<f32>(best, index);
+    }
+    let size = vec2<i32>(st.grid_size.xy);
+    let q = o.xy + d.xy * s0;
+    var c = clamp(vec2<i32>(floor((q - lo) / cell)), vec2<i32>(0), size - 1);
+    let go = vec2<i32>(select(-1, 1, d.x >= 0.0), select(-1, 1, d.y >= 0.0));
+    var next = vec2<f32>(1e30);
+    var delta = vec2<f32>(1e30);
+    if abs(d.x) > 1e-7 {
+        next.x = (lo.x + f32(c.x + select(0, 1, d.x > 0.0)) * cell - o.x) / d.x;
+        delta.x = cell / abs(d.x);
+    }
+    if abs(d.y) > 1e-7 {
+        next.y = (lo.y + f32(c.y + select(0, 1, d.y > 0.0)) * cell - o.y) / d.y;
+        delta.y = cell / abs(d.y);
+    }
+    for (var i = 0; i < 1024; i++) {
+        let range = cells[c.y * size.x + c.x];
+        for (var k = 0u; k < min(range.y, MOST_IN_CELL); k++) {
+            let at = items[range.x + k];
+            if i32(at) == skip {
+                continue;
+            }
+            let t = ray_sphere(o, d, spheres[at]);
+            if t < best {
+                best = t;
+                index = f32(at);
+            }
+        }
+        // A ball met in this cell is the nearest once the ray has left the cell.
+        if best <= min(next.x, next.y) || min(next.x, next.y) > s1 {
+            break;
+        }
+        if next.x < next.y {
+            c.x += go.x;
+            next.x += delta.x;
+        } else {
+            c.y += go.y;
+            next.y += delta.y;
+        }
+        if any(c < vec2<i32>(0)) || any(c >= size) {
+            break;
+        }
+    }
+    return vec2<f32>(best, index);
+}
+
 // How much of a light gets to `p` past one sphere, going along unit `l` for `dist`: 1 all of it,
 // the ball's see-through colour where it is fully in the way. `ang` is the lamp's size as seen
 // from `p`.
@@ -1290,6 +1529,14 @@ fn sphere_block(p: vec3<f32>, l: vec3<f32>, dist: f32, ang: f32, sp: SphereGpu) 
 fn sphere_shadow(p: vec3<f32>, l: vec3<f32>, dist: f32, ang: f32, stop: f32) -> vec3<f32> {
     var vis = vec3<f32>(1.0);
     if st.more.w < 0.5 {
+        return vis;
+    }
+    // Few balls: every one, so no penumbra is cut short at a cell's edge.
+    let n = u32(st.more.w);
+    if n <= BRUTE_BALLS {
+        for (var k = 0u; k < n; k++) {
+            vis = min(vis, sphere_block(p, l, dist, ang, spheres[k]));
+        }
         return vis;
     }
     let reach = st.grid.w;
@@ -1385,14 +1632,15 @@ fn sphere_ao(p: vec3<f32>, n: vec3<f32>) -> f32 {
             continue;
         }
         // A ball darkens out to twice its radius from its edge (the grid lists it that far).
-        let near = clamp(1.0 - (len - r) / (st.grid_size.z * r), 0.0, 1.0);
+        let near = clamp(1.0 - (len - r) / (2.0 * r), 0.0, 1.0);
         occ += (r * r) / (len * len) * max(dot(n, d / len), 0.0) * near;
     }
     return clamp(1.0 - occ, 0.0, 1.0);
 }
 
 // How much light gets to `p` past the shapes in Stage: the blockers' field stood up from the wall
-// to the shapes' front, marched along the ray while it is within that depth.
+// to the shapes' front (sheared, see `field_on_slab`), marched along the ray while it is within
+// that depth.
 fn slab_visibility(p: vec3<f32>, l: vec3<f32>, dist: f32, ang: f32, stop: f32) -> f32 {
     let across = length(l.xy);
     let front = st.room.z;
@@ -1418,17 +1666,40 @@ fn slab_visibility(p: vec3<f32>, l: vec3<f32>, dist: f32, ang: f32, stop: f32) -
     if end <= start {
         return 1.0;
     }
-    let a = ang / max(across, 0.05);
+    let a = max(ang / max(across, 0.05), 1e-4);
+    let texel = max(u.field.z, 1e-3);
     var face = 1.0;
     if start > 0.0 {
-        let d = field_at(p.xy + toward * start);
-        face = clamp(0.5 + 0.5 * d / max(start * max(a, 1e-4), max(u.field.z, 1e-3)), 0.0, 1.0);
+        let d = field_on_slab(vec3<f32>(p.xy + toward * start, front));
+        face = clamp(0.5 + 0.5 * d / max(start * a, texel), 0.0, 1.0);
         face = face * face * (3.0 - 2.0 * face);
         if face <= 0.0 {
             return 0.0;
         }
     }
-    return face * visibility(p.xy + toward * start, toward, end - start, a, 1e9, 0.0);
+    let steps = i32(u.more.z);
+    var t = start;
+    // Leave the shape the point is on: a thing doesn't shadow itself.
+    for (var i = 0; i < steps; i++) {
+        let d = field_on_slab(vec3<f32>(p.xy + toward * t, p.z + rise * t));
+        if d >= 0.0 {
+            break;
+        }
+        t += max(-d, texel);
+    }
+    var v = 1.0;
+    for (var i = 0; i < steps; i++) {
+        if t >= end {
+            break;
+        }
+        let d = field_on_slab(vec3<f32>(p.xy + toward * t, p.z + rise * t));
+        v = min(v, clamp(0.5 + 0.5 * d / (max(t - start, texel) * a), 0.0, 1.0));
+        if v <= 0.0 {
+            break;
+        }
+        t += max(abs(d), texel);
+    }
+    return face * v * v * (3.0 - 2.0 * v);
 }
 
 // GGX highlight from a light along `l` (unit), times pi so it sits with the diffuse light (which
@@ -1464,6 +1735,53 @@ fn toon_spot(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, rough: f32, f0: vec3<f32>
     return min(f0 * 8.0, vec3<f32>(1.0)) * on;
 }
 
+// A stretched GGX highlight (Burley's anisotropic one) round unit tangent `t`: `ax` its
+// roughness along `t`, `ay` across it; otherwise as `ggx`.
+fn ggx_aniso(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, t: vec3<f32>, ax: f32, ay: f32, rough: f32, f0: vec3<f32>) -> vec3<f32> {
+    let nl = max(dot(n, l), 0.0);
+    if nl <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let h = normalize(v + l);
+    let b = cross(n, t);
+    let nv = max(dot(n, v), 1e-3);
+    let nh = max(dot(n, h), 0.0);
+    let vh = max(dot(v, h), 0.0);
+    let th = dot(t, h) / ax;
+    let bh = dot(b, h) / ay;
+    let dd = th * th + bh * bh + nh * nh;
+    let d = 1.0 / (PI * ax * ay * dd * dd);
+    let k = (rough + 1.0) * (rough + 1.0) / 8.0;
+    let g = nl / (nl * (1.0 - k) + k) * nv / (nv * (1.0 - k) + k);
+    let f = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - vh, 5.0);
+    return f * (d * g / (4.0 * nv) * PI);
+}
+
+// A number 0..1 that looks random, the same for the same cell.
+fn hash2(c: vec2<f32>) -> f32 {
+    return fract(sin(dot(c, vec2<f32>(127.1, 311.7))) * 43758.5453);
+}
+
+// Where world point `p` is in the frame flakes and brushed lines are cut in: the ball's own (in
+// its radii) on a ball, else world cells of 24 px.
+fn surface_local(p: vec2<f32>) -> vec2<f32> {
+    if SHADE_BALL.z > 0.0 {
+        return (p - SHADE_BALL.xy) / SHADE_BALL.z;
+    }
+    return p / 24.0;
+}
+
+// The colour a thin film of thickness `film` seen at `nv` (cosine to the eye) gives the shine:
+// white with no film.
+fn film_colour(film: f32, nv: f32) -> vec3<f32> {
+    if film <= 0.0 {
+        return vec3<f32>(1.0);
+    }
+    let phase = film * 4.0 * (1.2 - nv);
+    let irid = 0.5 + 0.5 * cos(6.2831853 * (vec3<f32>(phase) + vec3<f32>(0.0, 0.33, 0.67)));
+    return mix(vec3<f32>(1.0), irid * 1.6, clamp(film * 1.5, 0.0, 1.0));
+}
+
 // What a point takes from the lights and the room.
 struct Shaded {
     // Diffuse light (ambient, sky and lamps, with shadows).
@@ -1472,6 +1790,10 @@ struct Shaded {
     spec: vec3<f32>,
     // Light coming through a see-through surface (no turning to the lamp).
     through: vec3<f32>,
+    // Light soaking through from behind (Soak), to be tinted by the colour.
+    soaked: vec3<f32>,
+    // How much it glows from inside here (Inner glow).
+    glow: f32,
 };
 
 // Lights the point `spot` (world point `p` on the picture) wearing surface `sf`, whose plain
@@ -1487,13 +1809,49 @@ fn shade(spot: Spot, p: vec2<f32>, sf: SurfaceGpu, base: vec3<f32>, here: f32, l
     let metal = clamp(sf.a.y, 0.0, 1.0);
     let coat = max(sf.a.z, 0.0);
     let toon = sf.b.y;
-    let f0 = mix(vec3<f32>(max(sf.b.x, 0.0)), clamp(base, vec3<f32>(0.0), vec3<f32>(1.0)), metal);
-    let shiny = metal > 0.0 || sf.b.x > 0.0 || coat > 0.0;
+    let nv0 = max(dot(n, v), 0.0);
+    // Part 2b's numbers: thin film, soak, flakes, brushing.
+    let film = film_colour(max(sf.c.z, 0.0), nv0);
+    let f0 = mix(vec3<f32>(max(sf.b.x, 0.0)), clamp(base, vec3<f32>(0.0), vec3<f32>(1.0)), metal) * film;
+    let soak = clamp(sf.c.y, 0.0, 1.0);
+    let flakes = clamp(sf.c.w, 0.0, 1.0);
+    var flake_n = n;
+    var flake_on = 0.0;
+    if flakes > 0.0 {
+        let cell = floor(surface_local(spot.p.xy) / max(sf.d.x, 0.005));
+        if hash2(cell) < flakes {
+            flake_on = 1.0;
+            let tilt = vec3<f32>(hash2(cell + 7.0), hash2(cell + 3.0), hash2(cell + 11.0)) - vec3<f32>(0.5);
+            flake_n = normalize(n + tilt * 0.7);
+        }
+    }
+    let flake_f0 = mix(vec3<f32>(0.9), clamp(base, vec3<f32>(0.0), vec3<f32>(1.0)), 0.5);
+    let brush = clamp(sf.d.y, 0.0, 1.0);
+    var tangent = vec3<f32>(1.0, 0.0, 0.0);
+    var lines = 1.0;
+    if brush > 0.0 {
+        let local = surface_local(spot.p.xy);
+        var t2 = vec2<f32>(cos(sf.d.w), sin(sf.d.w));
+        var across = dot(local, vec2<f32>(-t2.y, t2.x));
+        if sf.d.z < 0.5 {
+            // Spun: round and round the middle.
+            let r = length(local);
+            t2 = select(vec2<f32>(1.0, 0.0), vec2<f32>(-local.y, local.x) / max(r, 1e-4), r > 1e-4);
+            across = r;
+        }
+        let t3 = vec3<f32>(t2, 0.0);
+        let along = t3 - n * dot(n, t3);
+        tangent = select(vec3<f32>(1.0, 0.0, 0.0), normalize(along), dot(along, along) > 1e-8);
+        lines = 1.0 + 0.3 * brush * (hash2(vec2<f32>(floor(across * 70.0), 1.0)) - 0.5);
+    }
+    let shiny = metal > 0.0 || sf.b.x > 0.0 || coat > 0.0 || flakes > 0.0;
     let style = u.shadows.x;
     var out: Shaded;
     out.diffuse = vec3<f32>(0.0);
     out.spec = vec3<f32>(0.0);
     out.through = vec3<f32>(0.0);
+    out.soaked = vec3<f32>(0.0);
+    out.glow = max(sf.e.z, 0.0) * (0.35 + 0.65 * nv0 * nv0);
     let count = u32(u.more.w);
     for (var i = 0u; i < count; i++) {
         let l = lights[i];
@@ -1551,9 +1909,14 @@ fn shade(spot: Spot, p: vec2<f32>, sf: SurfaceGpu, base: vec3<f32>, here: f32, l
         }
         // Flat: the picture plane takes the light whole and round surfaces turn to it or away.
         // Stage: as a real surface does.
-        var turned = max(1.0 + dot(n, dir3) - dir3.z, 0.0);
+        var cosine = 1.0 + dot(n, dir3) - dir3.z;
         if stage {
-            turned = max(dot(n, dir3), 0.0);
+            cosine = dot(n, dir3);
+        }
+        var turned = max(cosine, 0.0);
+        if soak > 0.0 {
+            // Light soaks round: wrapped past the edge the light falls on.
+            turned = mix(turned, max((cosine + soak) / (1.0 + soak), 0.0), soak);
         }
         var tint = vec3<f32>(1.0);
         if l.p5.w > 0.5 && style < 2.5 && (dist > 1e-3 || stage) {
@@ -1591,17 +1954,30 @@ fn shade(spot: Spot, p: vec2<f32>, sf: SurfaceGpu, base: vec3<f32>, here: f32, l
         }
         out.diffuse += l.p1.rgb * strength * tint;
         out.through += l.p1.rgb * amount * tint;
+        if soak > 0.0 {
+            // From behind, through the thing (its own turning is the only thing in the way).
+            out.soaked += l.p1.rgb * amount * max(-dot(n, dir3), 0.0) * soak;
+        }
         if shiny {
-            var s = vec3<f32>(0.0);
+            var sp = vec3<f32>(0.0);
             if toon > 0.5 {
-                s = toon_spot(n, v, dir3, rough, f0);
+                sp = toon_spot(n, v, dir3, rough, f0);
             } else {
-                s = ggx(n, v, dir3, rough, f0, angular);
+                if brush > 0.0 {
+                    let ax = clamp(rough * rough + 0.5 * max(angular, 0.02), 0.002, 1.0);
+                    let ay = min(ax * (1.0 + 6.0 * brush), 1.0);
+                    sp = ggx_aniso(n, v, dir3, tangent, ax, ay, rough, f0) * lines;
+                } else {
+                    sp = ggx(n, v, dir3, rough, f0, angular);
+                }
                 if coat > 0.0 {
-                    s = s * (1.0 - 0.04 * coat) + ggx(n, v, dir3, 0.05, vec3<f32>(0.04), angular) * coat;
+                    sp = sp * (1.0 - 0.04 * coat) + ggx(n, v, dir3, 0.05, vec3<f32>(0.04), angular) * coat;
+                }
+                if flake_on > 0.0 {
+                    sp += ggx(flake_n, v, dir3, 0.2, flake_f0, angular) * (2.0 * flakes);
                 }
             }
-            out.spec += l.p1.rgb * amount * tint * s;
+            out.spec += l.p1.rgb * amount * tint * sp;
         }
     }
     // The room: ambient and the sky's light from above.
@@ -1611,17 +1987,32 @@ fn shade(spot: Spot, p: vec2<f32>, sf: SurfaceGpu, base: vec3<f32>, here: f32, l
     }
     out.diffuse += room;
     out.through += room;
-    // What a shiny surface mirrors of the room: the sky, blurred by roughness.
+    // Velvet: a soft bright rim from all round.
+    if sf.e.y != 0.0 {
+        // Dimmer where it faces the eye, bright where it turns away (fibres seen side on).
+        let facing = mix(1.0, 0.5 + 0.5 * (1.0 - nv0), clamp(sf.e.y, 0.0, 1.0));
+        out.diffuse = out.diffuse * facing + sf.e.y * pow(1.0 - nv0, 2.0) * out.through;
+    }
+    // Pearl: the film's colours in the light it takes too.
+    out.diffuse *= mix(vec3<f32>(1.0), film, 0.35);
+    // What a shiny surface mirrors: the sky, blurred by roughness, or the scene round it.
     if shiny && sf.b.z > 0.5 {
         let r = reflect(-v, n);
         let blurred = normalize(mix(r, n, rough * rough));
-        let nv = max(dot(n, v), 0.0);
-        let edge = pow(1.0 - nv, 5.0);
-        let env = sky(blurred) * (u.ambient.rgb + vec3<f32>(st.sky_top.w));
+        let edge = pow(1.0 - nv0, 5.0);
+        let room_sky = u.ambient.rgb + vec3<f32>(st.sky_top.w);
+        var env = sky(blurred) * room_sky;
+        if sf.b.z > 1.5 && !NO_MIRRORS {
+            // A rough mirror keeps the sky: blurred balls would need many rays.
+            let k = 1.0 - smoothstep(0.15, 0.35, rough);
+            if k > 0.0 {
+                env = mix(env, trace_scene(spot.p + n * 0.5, r, SHADE_SPHERE), k);
+            }
+        }
         let fe = f0 + (max(vec3<f32>(1.0 - rough), f0) - f0) * edge;
         out.spec += env * fe;
         if coat > 0.0 {
-            out.spec += sky(r) * (u.ambient.rgb + vec3<f32>(st.sky_top.w)) * (0.04 + 0.96 * edge) * coat;
+            out.spec += sky(r) * room_sky * (0.04 + 0.96 * edge) * coat;
         }
     }
     // Contact shading: light dims close to a blocker (and, in Stage, under and beside balls).
@@ -1637,20 +2028,177 @@ fn shade(spot: Spot, p: vec2<f32>, sf: SurfaceGpu, base: vec3<f32>, here: f32, l
         out.diffuse *= keep;
         out.through *= keep;
         out.spec *= keep;
+        out.soaked *= keep;
     }
     return out;
 }
 
+// What a reflection sees of a point `q` facing `n`, seen from along `v` (toward the eye),
+// wearing `sf`, coloured `c`: the lamps without shadows, the room, highlights and (with `env`) the
+// sky's mirror; a mirror that the trace bounces on from leaves that out.
+fn hit_light(q: vec3<f32>, n: vec3<f32>, v: vec3<f32>, sf: SurfaceGpu, c: vec3<f32>, env: bool) -> vec3<f32> {
+    let rough = clamp(sf.a.x, 0.02, 1.0);
+    let metal = clamp(sf.a.y, 0.0, 1.0);
+    let f0 = mix(vec3<f32>(max(sf.b.x, 0.0)), clamp(c, vec3<f32>(0.0), vec3<f32>(1.0)), metal);
+    let shiny = metal > 0.0 || sf.b.x > 0.0;
+    var diffuse = u.ambient.rgb;
+    if st.sky_top.w != 0.0 {
+        diffuse += st.sky_top.w * mix(st.sky_bottom.rgb, st.sky_top.rgb, 0.5 - 0.5 * n.y);
+    }
+    var spec = vec3<f32>(0.0);
+    let count = u32(u.more.w);
+    for (var i = 0u; i < count; i++) {
+        let l = lights[i];
+        let kind = l.p0.w;
+        var amount = 1.0;
+        var dir3 = vec3<f32>(0.0, 0.0, 1.0);
+        if kind > 1.5 && kind < 2.5 {
+            let el_sin = clamp(l.p0.z, -1.0, 1.0);
+            dir3 = normalize(vec3<f32>(-l.p3.xy * sqrt(max(1.0 - el_sin * el_sin, 0.0)), el_sin));
+        } else {
+            let d = source_point(l, q.xy) - q.xy;
+            let to_lamp = vec3<f32>(d, l.p0.z - q.z);
+            let len3 = length(to_lamp);
+            amount = falloff(len3, l.p2.x, l.p2.y);
+            if kind > 0.5 && kind < 1.5 {
+                let dist = length(d);
+                let cosine = select(dot(-d / max(dist, 1e-3), l.p3.xy), 1.0, dist <= 1e-3);
+                let e = clamp((cosine - l.p3.w) / max(l.p3.z - l.p3.w, 1e-6), 0.0, 1.0);
+                amount *= e * e * (3.0 - 2.0 * e);
+            }
+            dir3 = select(vec3<f32>(0.0, 0.0, 1.0), to_lamp / len3, len3 > 1e-6);
+        }
+        if amount == 0.0 {
+            continue;
+        }
+        diffuse += l.p1.rgb * amount * max(dot(n, dir3), 0.0);
+        if shiny {
+            spec += l.p1.rgb * amount * ggx(n, v, dir3, rough, f0, 0.05);
+        }
+    }
+    if env && shiny && sf.b.z > 0.5 {
+        let r = reflect(-v, n);
+        let edge = pow(1.0 - max(dot(n, v), 0.0), 5.0);
+        let fe = f0 + (max(vec3<f32>(1.0 - rough), f0) - f0) * edge;
+        spec += sky(normalize(mix(r, n, rough * rough))) * (u.ambient.rgb + vec3<f32>(st.sky_top.w)) * fe;
+    }
+    return c * max(diffuse, vec3<f32>(0.0)) * (1.0 - metal) + spec + c * max(sf.e.z, 0.0);
+}
+
+// The picture's colour where 3D point `q` shows on screen (black off the picture).
+fn picture_at(q: vec3<f32>) -> vec3<f32> {
+    // Off the picture the wall and floor go on as they are at its edge.
+    let uv = clamp(world_to_uv(vec2<f32>(q.x, q.y + q.z * st.room.w)), vec2<f32>(0.0), vec2<f32>(1.0));
+    return textureSampleLevel(picture, samp, uv, 0.0).rgb;
+}
+
+// What a mirror ray from `o` along unit `d` sees (Reflects: The scene): the balls (sphere `skip`
+// left out: the ray's own), and on a Stage the back wall, the floor and the shapes' fronts; off a
+// mirror-like ball the ray bounces on, up to Reflection depth; past everything the sky. What it
+// meets takes its colour from the picture where it shows (a ball's far side its Body colour) and
+// the light there without shadows.
+fn trace_scene(o: vec3<f32>, d: vec3<f32>, skip_first: i32) -> vec3<f32> {
+    var ro = o;
+    var rd = d;
+    var skip = skip_first;
+    var carried = vec3<f32>(1.0);
+    var found = vec3<f32>(0.0);
+    let room_sky = u.ambient.rgb + vec3<f32>(st.sky_top.w);
+    let depth = clamp(i32(st.dof.w), 1, 8);
+    let stage = in_stage();
+    for (var bounce = 0; bounce < 8; bounce++) {
+        if bounce >= depth {
+            found += carried * sky(rd) * room_sky;
+            break;
+        }
+        let ball = hit_ball(ro, rd, skip);
+        var t = ball.x;
+        // 0 nothing, 1 a ball, 2 the wall, 3 the floor, 4 a shape's front.
+        var what = select(0, 1, ball.y >= 0.0);
+        if stage {
+            if rd.z < -1e-5 {
+                let tw = (-st.room.y - ro.z) / rd.z;
+                if tw > 1e-3 && tw < t {
+                    t = tw;
+                    what = 2;
+                }
+            }
+            if st.floor.x > 0.5 && rd.y > 1e-5 {
+                let tf = (floor_y() - ro.y) / rd.y;
+                if tf > 1e-3 && tf < t && (ro.z + rd.z * tf) >= -st.room.y {
+                    t = tf;
+                    what = 3;
+                }
+            }
+            if rd.z < -1e-5 && ro.z > st.room.z {
+                let ts = (st.room.z - ro.z) / rd.z;
+                if ts > 1e-3 && ts < t && field_on_slab(ro + rd * ts) < 0.0 {
+                    t = ts;
+                    what = 4;
+                }
+            }
+        }
+        if what == 0 {
+            found += carried * sky(rd) * room_sky;
+            break;
+        }
+        let q = ro + rd * t;
+        let v = -rd;
+        if what == 1 {
+            let at = u32(ball.y);
+            let sp = spheres[at];
+            let n = normalize(q - vec3<f32>(sp.a.xy, 0.0));
+            let index = u32(max(sp.c.x, 0.0));
+            let sf = surfaces[select(0u, index, index < u32(st.more.z))];
+            var c = sp.b.rgb;
+            if n.z > 0.2 {
+                c = picture_at(vec3<f32>(q.xy, 0.0));
+            }
+            let mirror = sf.b.z > 1.5 && sf.a.x < 0.35 && (sf.a.y > 0.0 || sf.b.x > 0.0);
+            if mirror && bounce + 1 < depth {
+                // On off this mirror, carrying its Fresnel colour.
+                found += carried * hit_light(q, n, v, sf, c, false);
+                let f0 = mix(vec3<f32>(max(sf.b.x, 0.0)), clamp(c, vec3<f32>(0.0), vec3<f32>(1.0)), clamp(sf.a.y, 0.0, 1.0));
+                let edge = pow(1.0 - max(dot(n, v), 0.0), 5.0);
+                carried *= f0 + (max(vec3<f32>(1.0 - sf.a.x), f0) - f0) * edge;
+                ro = q + n * 0.05;
+                rd = reflect(rd, n);
+                skip = i32(at);
+                continue;
+            }
+            found += carried * hit_light(q, n, v, sf, c, true);
+            break;
+        }
+        var n = vec3<f32>(0.0, 0.0, 1.0);
+        var sf = plane_surface(st.floor.w);
+        if what == 3 {
+            n = vec3<f32>(0.0, -1.0, 0.0);
+            sf = plane_surface(st.floor.z);
+        } else if what == 4 {
+            let uv = world_to_uv(vec2<f32>(q.x, q.y + q.z * st.room.w));
+            let size = vec2<f32>(textureDimensions(surface));
+            sf = surface_of(textureLoad(surface, vec2<i32>(clamp(uv, vec2<f32>(0.0), vec2<f32>(0.999)) * size), 0));
+        }
+        found += carried * hit_light(q, n, v, sf, picture_at(q), true);
+        break;
+    }
+    return found;
+}
+
 // The lit colour of a pixel of colour `c` (lit share `w`) shaded as `sh` with surface `sf`, of
-// which `share` takes highlights.
-fn mixed(c: vec3<f32>, w: vec3<f32>, sh: Shaded, sf: SurfaceGpu, share: f32) -> vec3<f32> {
+// which `share` takes highlights. With `refracts` its see-through share is left to the caller
+// (what glass shows behind it).
+fn mixed(c: vec3<f32>, w: vec3<f32>, sh: Shaded, sf: SurfaceGpu, share: f32, refracts: bool) -> vec3<f32> {
     let metal = clamp(sf.a.y, 0.0, 1.0);
     let see = clamp(sf.a.w, 0.0, 1.0);
     var diffuse = sh.diffuse;
-    if see > 0.0 {
+    if see > 0.0 && !refracts {
         diffuse = sh.diffuse * (1.0 - see) + sh.through * (0.6 * see);
     }
-    return c + (diffuse - vec3<f32>(1.0)) * w * (1.0 - metal) - w * metal + sh.spec * share;
+    var out = c + (diffuse - vec3<f32>(1.0)) * w * (1.0 - metal) - w * metal + sh.spec * share;
+    // Light soaked through from behind, tinted by the colour, and the glow from inside.
+    out += w * (sh.soaked * 0.8 + vec3<f32>(sh.glow));
+    return out;
 }
 
 // Shaded `sh` with the light field's `field` added. Negative light (darkness) takes light away,
@@ -1661,6 +2209,79 @@ fn with_field(sh: Shaded, field: vec3<f32>) -> Shaded {
     out.through = max(sh.through + field, vec3<f32>(0.0));
     out.spec = max(sh.spec, vec3<f32>(0.0));
     return out;
+}
+
+// The light an uncovered pixel at world `q` (on screen) takes: the room, the lamps (Stage: on
+// the wall or floor it shows, with shadows), the light field and a glowing background.
+fn open_light(q: vec2<f32>) -> vec3<f32> {
+    let uv = clamp(world_to_uv(q), vec2<f32>(0.0), vec2<f32>(1.0));
+    var light = vec3<f32>(0.0);
+    if in_stage() {
+        let spot = stage_spot(q);
+        let floor = st.floor.x > 0.5 && spot.n.y < -0.5;
+        let plane = plane_surface(select(st.floor.w, st.floor.z, floor));
+        NO_MIRRORS = true;
+        let size = vec2<f32>(textureDimensions(surface));
+        let link = link_here(vec2<i32>(min(uv * size, size - 1.0)));
+        light = shade(spot, q, plane, vec3<f32>(1.0), field_on_slab(spot.p), link).diffuse;
+        NO_MIRRORS = false;
+        // The background's own light (in Flat the direct light holds it already).
+        if st.counts.z > 0.5 {
+            light += textureSampleLevel(above, samp, uv, 0.0).rgb;
+        }
+    } else {
+        light = u.ambient.rgb + textureSampleLevel(direct_light, samp, uv, 0.0).rgb;
+    }
+    if gu.on.x > 0.5 {
+        light += field_mean(uv * gu.size.xy);
+    }
+    return max(light, vec3<f32>(0.0));
+}
+
+// The behind picture (the scene without what is see-through) at world `q`, blurred over `frost`.
+fn behind_at(q: vec2<f32>, frost: f32, turn: f32) -> vec3<f32> {
+    if frost < 0.5 {
+        return textureSampleLevel(behind, samp, clamp(world_to_uv(q), vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).rgb;
+    }
+    var sum = vec3<f32>(0.0);
+    for (var k = 0; k < FROST_TAPS; k++) {
+        let a = f32(k) * 2.39996 + turn;
+        let o = vec2<f32>(cos(a), sin(a)) * frost * sqrt((f32(k) + 0.5) / f32(FROST_TAPS));
+        sum += textureSampleLevel(behind, samp, clamp(world_to_uv(q + o), vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).rgb;
+    }
+    return sum / f32(FROST_TAPS);
+}
+
+// What a see-through surface `sf` at world `p` (height `h`, facing `n`) shows behind it: the view
+// bent by its Bends light through its thickness (each colour its own way with Rainbow split),
+// blurred by Frost, lit as an open pixel is there, tinted by its colour `tint`.
+fn transmitted(p: vec2<f32>, n: vec3<f32>, h: f32, sf: SurfaceGpu, tint: vec3<f32>, turn: f32) -> vec3<f32> {
+    let v = view_dir();
+    let ior = max(sf.e.w, 1.0);
+    let thick = 2.0 * max(h, 0.0) + 8.0;
+    let split = max(sf.c.x, 0.0) * 0.04;
+    let frost = max(sf.e.x, 0.0) * (16.0 + max(SHADE_BALL.z, h));
+    var col = vec3<f32>(0.0);
+    var middle = p;
+    for (var ch = 0; ch < 3; ch++) {
+        let eta = min(1.0 / (ior * (1.0 + split * f32(ch - 1))), 1.0);
+        var d = refract(-v, n, eta);
+        if dot(d, d) < 1e-6 {
+            d = reflect(-v, n);
+        }
+        let q = p + d.xy / max(-d.z, 0.15) * thick;
+        if ch == 1 {
+            middle = q;
+        }
+        if split <= 0.0 && ch != 1 {
+            continue;
+        }
+        col[ch] = behind_at(q, frost, turn)[ch];
+    }
+    if split <= 0.0 {
+        col = behind_at(middle, frost, turn);
+    }
+    return col * open_light(middle) * tint;
 }
 
 // ---------- the mix ----------
@@ -1676,7 +2297,8 @@ fn shine_share(c: vec3<f32>, w: vec3<f32>) -> f32 {
 
 // Whether surface `sf` takes light other than as a matte sheet does.
 fn shines(sf: SurfaceGpu) -> bool {
-    return sf.b.x > 0.0 || sf.a.y > 0.0 || sf.a.z > 0.0 || sf.a.w > 0.0 || sf.b.y > 0.5;
+    return sf.b.x > 0.0 || sf.a.y > 0.0 || sf.a.z > 0.0 || sf.a.w > 0.0 || sf.b.y > 0.5
+        || sf.c.y > 0.0 || sf.c.z > 0.0 || sf.c.w > 0.0 || sf.e.y > 0.0 || sf.e.z > 0.0;
 }
 
 // Part 2a's light at a pixel: the thing's surface (shiny, or on the stage) and, in Stage, the
@@ -1687,10 +2309,33 @@ struct Surfaced {
     diffuse: vec3<f32>,
 };
 
-fn surfaced(ip: vec2<i32>, p: vec2<f32>, c: vec3<f32>, w: vec3<f32>, sf: SurfaceGpu, field: vec3<f32>) -> Surfaced {
+// The light field's light on a ball in Stage (part 2b: the field sees balls as opaque, so it is
+// read just outside the ball all round, each way weighted by how much the surface faces it).
+fn field_round_ball(ball: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    var sum = vec3<f32>(0.0);
+    var weights = 0.0;
+    let out = ball.z + 2.0 * max(u.field.z, 1e-3);
+    for (var k = 0; k < 8; k++) {
+        let a = f32(k) * 0.7853982;
+        let dir = vec2<f32>(cos(a), sin(a));
+        let q = ball.xy + dir * out;
+        let w = max(dot(n.xy, dir), 0.0) + 0.35 * max(n.z, 0.0) + 1e-3;
+        sum += field_mean(clamp(world_to_uv(q), vec2<f32>(0.0), vec2<f32>(1.0)) * gu.size.xy) * w;
+        weights += w;
+    }
+    return sum / weights;
+}
+
+fn surfaced(ip: vec2<i32>, p: vec2<f32>, c: vec3<f32>, w: vec3<f32>, sf: SurfaceGpu, field_in: vec3<f32>, turn: f32) -> Surfaced {
     let px = u.view.z;
     let s = textureLoad(surface, ip, 0);
     let share = shine_share(c, w);
+    // A glowing background's own light, which 1b adds inside the direct light (part 2b).
+    var bg = vec3<f32>(0.0);
+    if st.counts.z > 0.5 {
+        bg = textureLoad(above, ip, 0).rgb;
+    }
+    let field = field_in + bg;
     // The thing's surface's normal from its height's slope (flat where nothing round is).
     let h = height_at(ip);
     let hx = height_at(ip + vec2<i32>(1, 0)) - height_at(ip - vec2<i32>(1, 0));
@@ -1699,44 +2344,74 @@ fn surfaced(ip: vec2<i32>, p: vec2<f32>, c: vec3<f32>, w: vec3<f32>, sf: Surface
     if u.camera.w != 0.0 {
         slope = rotate_by(slope, u.camera.w);
     }
+    let is_shape = sf.b.w > 1.5;
     var thing: Spot;
     thing.p = vec3<f32>(p, h);
     thing.n = normalize(vec3<f32>(-slope, 1.0));
+    // The ball under the pixel, for flakes, brushed lines and its own reflection.
+    SHADE_SPHERE = -1;
+    SHADE_BALL = vec3<f32>(0.0);
+    if sf.b.w > 0.5 && sf.b.w < 1.5 {
+        SHADE_SPHERE = ball_at(p);
+        if SHADE_SPHERE >= 0 {
+            let sp = spheres[u32(SHADE_SPHERE)];
+            SHADE_BALL = sp.a.xyz;
+        }
+    }
     let here = field_at(p);
     let link = link_here(ip);
+    let base = c / max(share, 1e-3);
+    let see = clamp(sf.a.w, 0.0, 1.0);
+    let refracts = see > 0.0 && st.counts.y > 0.5;
+    let tint = clamp(base / max(max(base.r, max(base.g, base.b)), 1e-3), vec3<f32>(0.0), vec3<f32>(1.0));
     var out: Surfaced;
     if !in_stage() {
-        var sh = shade(thing, p, sf, c / max(share, 1e-3), here, link);
+        var sh = shade(thing, p, sf, base, here, link);
         sh = with_field(sh, field);
-        out.out = mixed(c, w, sh, sf, share);
+        out.out = mixed(c, w, sh, sf, share, refracts);
+        if refracts {
+            let body = mixed(c, w, Shaded(sh.diffuse, vec3<f32>(0.0), sh.through, sh.soaked, sh.glow), sf, share, true);
+            let seen = transmitted(p, thing.n, h, sf, tint, turn);
+            out.out = body * (1.0 - see) + seen * see + sh.spec * share;
+        }
         out.diffuse = sh.diffuse;
         return out;
     }
-    // A shape's front stands at the shapes' depth; a ball's surface at its height.
-    if sf.b.w > 1.5 {
-        thing.p.z = st.room.z;
-    }
+    // A shape's front stands at the shapes' depth (sheared as its slab); a ball's surface at its
+    // height.
+    thing.p = thing_point(p, h, is_shape);
     let cover = clamp(s.a, 0.0, 1.0);
     var on_thing = Surfaced(vec3<f32>(0.0), vec3<f32>(0.0));
     var on_stage = Surfaced(vec3<f32>(0.0), vec3<f32>(0.0));
     if cover > 0.02 {
-        var sh = shade(thing, p, sf, c / max(share, 1e-3), here, link);
-        sh = with_field(sh, field);
-        on_thing = Surfaced(mixed(c, w, sh, sf, share), sh.diffuse);
+        var thing_field = field;
+        if st.counts.w > 0.5 && SHADE_BALL.z > 0.0 {
+            thing_field = field_round_ball(SHADE_BALL, thing.n) + bg;
+        }
+        var sh = shade(thing, p, sf, base, here, link);
+        sh = with_field(sh, thing_field);
+        on_thing = Surfaced(mixed(c, w, sh, sf, share, refracts), sh.diffuse);
+        if refracts {
+            let body = mixed(c, w, Shaded(sh.diffuse, vec3<f32>(0.0), sh.through, sh.soaked, sh.glow), sf, share, true);
+            let seen = transmitted(p, thing.n, h, sf, tint, turn);
+            on_thing.out = body * (1.0 - see) + seen * see + sh.spec * share;
+        }
     }
     if cover < 0.98 {
+        SHADE_SPHERE = -1;
+        SHADE_BALL = vec3<f32>(0.0);
         let spot = stage_spot(p);
         let floor = st.floor.x > 0.5 && spot.n.y < -0.5;
         let plane = plane_surface(select(st.floor.w, st.floor.z, floor));
         // How far the shapes are, for contact shading: the floor in front of them is that much
         // farther away; under a shape (between the wall and its front) it is as close as can be.
-        let f = field_at(spot.p.xy);
+        let f = field_on_slab(spot.p);
         let dz = max(spot.p.z - st.room.z, 0.0);
         let near = select(max(f, 1e-3), length(vec2<f32>(max(f, 0.0), dz)), dz > 0.0);
         var sh = shade(spot, p, plane, c, near, link);
         sh = with_field(sh, field);
         // The wall and floor take light as much as the background does (its lit share).
-        on_stage = Surfaced(mixed(c, w, sh, plane, share), sh.diffuse);
+        on_stage = Surfaced(mixed(c, w, sh, plane, share, false), sh.diffuse);
     }
     let k = smoothstep(0.02, 0.98, cover);
     out.out = mix(on_stage.out, on_thing.out, k);
@@ -1744,21 +2419,22 @@ fn surfaced(ip: vec2<i32>, p: vec2<f32>, c: vec3<f32>, w: vec3<f32>, sf: Surface
     return out;
 }
 
-@fragment
-fn fs_mix(in: FsIn) -> @location(0) vec4<f32> {
-    let ip = vec2<i32>(in.pos.xy);
+// The lit colour at pixel `ip` (screen point `uv`): everything fs_mix does for one pixel.
+fn lit_at(ip: vec2<i32>, uv: vec2<f32>, turn: f32) -> vec4<f32> {
     let c = textureLoad(picture, ip, 0);
     // The lit share of the colour: never more than the colour itself.
     let w = clamp(textureLoad(lit_picture, ip, 0).rgb, vec3<f32>(0.0), max(c.rgb, vec3<f32>(0.0)));
-    let p = uv_to_world(in.uv);
+    let p = uv_to_world(uv);
+    let sv = textureLoad(surface, ip, 0);
     var field = vec3<f32>(0.0);
     var field_air = vec3<f32>(0.0);
     if gu.on.x > 0.5 {
-        let fp = in.uv * gu.size.xy;
-        // Blocked or not as the pixel itself is (a field texel can straddle an edge).
-        let blocks_here = textureLoad(surface, ip, 0).r > 0.5;
+        let fp = uv * gu.size.xy;
+        // Blocked or not as the pixel itself is (a field texel can straddle an edge); in Stage a
+        // ball blocks the field too (part 2b).
+        let blocks_here = sv.r > 0.5 || (st.counts.w > 0.5 && sv.r > 0.12);
         field = field_light(vec2<i32>(fp), fp, blocks_here);
-        field_air = field_mean(in.uv * gu.size.xy);
+        field_air = field_mean(uv * gu.size.xy);
     }
     let direct = textureLoad(direct_light, ip, 0);
     // Underwater: caustics play over the light, and deep down the water's colour takes over.
@@ -1777,12 +2453,12 @@ fn fs_mix(in: FsIn) -> @location(0) vec4<f32> {
             water_m *= mix(vec3<f32>(1.0), gu.water_colour.rgb, clamp(under * deep, 0.0, 1.0));
         }
     }
-    let sf = surface_of(textureLoad(surface, ip, 0));
+    let sf = surface_of(sv);
     var light = vec3<f32>(0.0);
     var out = vec3<f32>(0.0);
     if in_stage() || shines(sf) {
         // Part 2a: surfaces that shine, and the stage.
-        let done = surfaced(ip, p, c.rgb, w, sf, field);
+        let done = surfaced(ip, p, c.rgb, w, sf, field, turn);
         light = done.diffuse * water_m;
         out = done.out + done.diffuse * (water_m - vec3<f32>(1.0)) * w;
     } else {
@@ -1805,7 +2481,7 @@ fn fs_mix(in: FsIn) -> @location(0) vec4<f32> {
     }
     var ex = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     if gu.more_on.z > 0.5 {
-        ex = textureSampleLevel(extras, samp, in.uv, 0.0);
+        ex = textureSampleLevel(extras, samp, uv, 0.0);
     }
     if gu.on.z > 0.5 {
         // The haze: the light in the air, over what it veils, as thick as it is here.
@@ -1838,14 +2514,145 @@ fn fs_mix(in: FsIn) -> @location(0) vec4<f32> {
     }
     out += laser_beams(p);
     if gu.on.y > 0.5 {
-        let b = 0.35 * textureSampleLevel(glow_pic, samp, in.uv, 0.0).rgb
-            + 0.3 * textureSampleLevel(glow_pic, samp, in.uv, 1.0).rgb
-            + 0.2 * textureSampleLevel(glow_pic, samp, in.uv, 2.0).rgb
-            + 0.15 * textureSampleLevel(glow_pic, samp, in.uv, 3.0).rgb;
+        let b = 0.35 * textureSampleLevel(glow_pic, samp, uv, 0.0).rgb
+            + 0.3 * textureSampleLevel(glow_pic, samp, uv, 1.0).rgb
+            + 0.2 * textureSampleLevel(glow_pic, samp, uv, 2.0).rgb
+            + 0.15 * textureSampleLevel(glow_pic, samp, uv, 3.0).rgb;
         out += gu.glow.z * b;
     }
     // Kept finite (a huge Strength would overflow the half-float picture) and never below black.
     return vec4<f32>(clamp(out, vec3<f32>(0.0), vec3<f32>(6.0e4)), c.a);
+}
+
+// Where a mirror wall shows something at world `p` (part 2b): the point it shows, how strongly,
+// tinted how; `k` 0 where no mirror shows.
+struct Mirrored {
+    p: vec2<f32>,
+    k: f32,
+    tint: vec3<f32>,
+};
+
+// The nearest mirror wall on whose mirrored side `p` is: its outline's nearest point q (and
+// whether p is inside, by crossings), the depth past the band's face e, squeezed to
+// e / (1 + squeeze e / S) (on a circle of radius S at squeeze 1, exactly a circle inversion), and
+// the mirrored point that far past the face on the other side.
+fn mirrored(p: vec2<f32>) -> Mirrored {
+    var out = Mirrored(p, 0.0, vec3<f32>(1.0));
+    var best = 1e30;
+    let count = min(u32(st.counts.x), 16u);
+    for (var mi = 0u; mi < count; mi++) {
+        let m = mirrors[mi];
+        let first = u32(m.a.x);
+        let n = min(u32(m.a.y), MOST_MIRROR_SEGMENTS);
+        var near = 1e30;
+        var q = p;
+        var crossings = 0u;
+        for (var k = 0u; k < n; k++) {
+            let seg = segments[first + k];
+            let a = seg.xy;
+            let b = seg.zw;
+            let c = nearest_on(p, a, b);
+            let d = length(p - c);
+            if d < near {
+                near = d;
+                q = c;
+            }
+            if (a.y > p.y) != (b.y > p.y) {
+                let x = a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x);
+                if x > p.x {
+                    crossings += 1u;
+                }
+            }
+        }
+        let inside = (crossings & 1u) == 1u;
+        let side = m.a.z;
+        let wants = (inside && side > 1.5) || (!inside && (side < 1.5 || side > 2.5));
+        let e = near - m.b.z;
+        if !wants || e <= 0.0 || near >= best || near < 1e-4 {
+            continue;
+        }
+        best = near;
+        let squeezed = e / (1.0 + max(m.b.x, 0.0) * e / max(m.b.y, 1e-3));
+        out.p = q + (q - p) / near * (m.b.z + squeezed);
+        out.k = clamp(m.a.w, 0.0, 1.0);
+        out.tint = m.c.rgb;
+    }
+    return out;
+}
+
+@fragment
+fn fs_mix(in: FsIn) -> @location(0) vec4<f32> {
+    let ip = vec2<i32>(in.pos.xy);
+    // Interleaved gradient noise (Jimenez): a different turn of frost's taps at each pixel.
+    let turn = 6.2831853 * fract(52.9829189 * fract(dot(in.pos.xy, vec2<f32>(0.06711056, 0.00583715))));
+    if st.counts.x > 0.5 {
+        let m = mirrored(uv_to_world(in.uv));
+        let uv2 = world_to_uv(m.p);
+        if m.k > 0.0 && all(uv2 >= vec2<f32>(0.0)) && all(uv2 <= vec2<f32>(1.0)) {
+            let size = vec2<f32>(textureDimensions(picture));
+            let ip2 = vec2<i32>(min(uv2 * size, size - 1.0));
+            let seen = lit_at(ip2, uv2, turn);
+            if m.k >= 1.0 {
+                return vec4<f32>(seen.rgb * m.tint, seen.a);
+            }
+            let own = lit_at(ip, in.uv, turn);
+            return vec4<f32>(mix(own.rgb, seen.rgb * m.tint, m.k), own.a);
+        }
+    }
+    return lit_at(ip, in.uv, turn);
+}
+
+// ---------- depth of field (part 2b, Stage) ----------
+
+// How deep (z, toward the camera) the stage is at pixel `ip`: a ball's surface, a shape's front,
+// or the wall or floor it shows.
+fn depth_at(ip: vec2<i32>) -> f32 {
+    let size = vec2<i32>(textureDimensions(surface));
+    let at = clamp(ip, vec2<i32>(0), size - 1);
+    let uv = (vec2<f32>(at) + 0.5) / vec2<f32>(size);
+    let s = textureLoad(surface, at, 0);
+    var z = stage_spot(uv_to_world(uv)).p.z;
+    if s.a > 0.02 {
+        var zt = s.g / s.a;
+        if surface_of(s).b.w > 1.5 {
+            zt += st.room.z;
+        }
+        z = mix(z, zt, smoothstep(0.02, 0.98, s.a));
+    }
+    return z;
+}
+
+// How wide the blur is at depth `z`, in output pixels.
+fn blur_at(z: f32) -> f32 {
+    return min(abs(z - st.dof.y) * st.dof.z / max(u.view.z, 1e-6), DOF_MOST);
+}
+
+@fragment
+fn fs_dof(in: FsIn) -> @location(0) vec4<f32> {
+    let ip = vec2<i32>(in.pos.xy);
+    let c = textureLoad(picture, ip, 0);
+    let own = blur_at(depth_at(ip));
+    if own < 0.5 {
+        return c;
+    }
+    let size = vec2<i32>(textureDimensions(picture));
+    let turn = 6.2831853 * fract(52.9829189 * fract(dot(in.pos.xy, vec2<f32>(0.06711056, 0.00583715))));
+    var sum = c.rgb;
+    var weights = 1.0;
+    for (var k = 0; k < DOF_TAPS; k++) {
+        let a = f32(k) * 2.39996 + turn;
+        let r = own * sqrt((f32(k) + 0.5) / f32(DOF_TAPS));
+        let at = clamp(ip + vec2<i32>(round(vec2<f32>(cos(a), sin(a)) * r)), vec2<i32>(0), size - 1);
+        let tc = textureLoad(picture, at, 0).rgb;
+        // A tap counts only where its own blur reaches this pixel, so a sharp thing isn't smeared
+        // by a blurred one behind it; bright taps count more (round bokeh).
+        let reach = clamp(blur_at(depth_at(at)) - r + 1.0, 0.0, 1.0);
+        let bright = 1.0 + max(dot(tc, vec3<f32>(0.2126, 0.7152, 0.0722)) - 1.0, 0.0);
+        let wt = reach * bright;
+        sum += tc * wt;
+        weights += wt;
+    }
+    return vec4<f32>(sum / weights, c.a);
 }
 
 fn srgb_decode(c: vec3<f32>) -> vec3<f32> {

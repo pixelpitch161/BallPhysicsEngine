@@ -498,9 +498,9 @@ pub fn push_ball_light(cx: &DrawCx, scene: &mut bpe_gfx::LightScene) {
     let s = surface::of_card(look);
     let index = surface::surface_index(cx.scene, cx.thing.id);
     scene.set_surface(index, s.gpu(bpe_gfx::SurfaceGpu::BALL));
-    if scene.settings.stage[0] < 0.5 {
-        return;
-    }
+    scene.refracts |= s.see_through();
+    surface::Stamps::of(cx.scene, cx.thing.id, look).fill(scene, bpe_gfx::SurfaceGpu::BALL);
+    // Balls are spheres in Flat too: what shiny surfaces mirror (only Stage shadows by them).
     let Some(bodies) = cx.world.bodies.get(&cx.thing.id) else { return };
     let tint = match Stack::of(look) {
         // A Body that doesn't block light casts no shadow in Stage either.
@@ -517,9 +517,11 @@ pub fn push_ball_light(cx: &DrawCx, scene: &mut bpe_gfx::LightScene) {
             continue;
         }
         let at = bodies.position[i];
-        scene
-            .spheres
-            .push(bpe_gfx::SphereGpu { a: [at.x, at.y, bodies.radius[i], see], b: [tint[0], tint[1], tint[2], 0.0] });
+        scene.spheres.push(bpe_gfx::SphereGpu {
+            a: [at.x, at.y, bodies.radius[i], see],
+            b: [tint[0], tint[1], tint[2], 0.0],
+            c: [index as f32, 0.0, 0.0, 0.0],
+        });
     }
 }
 
@@ -775,8 +777,10 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, worn: &Worn, part: u32) {
     // Balls given layers of their own wear their own range of records: one range for each
     // stack and set of layers worn, most scenes one range for every ball.
     let mut ranges: HashMap<(usize, Vec<bool>), (u32, u32)> = HashMap::new();
-    // Every record names the thing's surface (read only by a lit frame's light pass).
-    let surface = crate::modules::look::surface::surface_index(cx.scene, id) as f32;
+    // Every record names the thing's surface, or its layer's own (read only by a lit frame's light
+    // passes).
+    let stamps =
+        cx.resolved.slots.get(&SlotId::Look).map(|look| crate::modules::look::surface::Stamps::of(cx.scene, id, look));
     let mut range_for = |frame: &mut Frame, at: usize, number: u32| -> (u32, u32) {
         let own = &worn.stacks[at];
         let wears: Vec<bool> =
@@ -788,12 +792,12 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, worn: &Worn, part: u32) {
                 made
             });
             let first = frame.look_layers.len() as u32;
-            let picked = if wears.is_empty() { all.clone() } else { own.records_for(all, |k| wears[k]) };
+            let mut picked = if wears.is_empty() { all.clone() } else { own.records_for(all, |k| wears[k]) };
             let count = picked.len() as u32;
-            frame.look_layers.extend(picked.into_iter().map(|mut r| {
-                r.light[3] = surface;
-                r
-            }));
+            if let Some(stamps) = &stamps {
+                stamps.apply(&mut picked, |layer| own.record_of(layer));
+            }
+            frame.look_layers.extend(picked);
             (first, count)
         })
     };

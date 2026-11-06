@@ -2,8 +2,8 @@
 //! its direction it meets shapes (each side of an outline a band of the wall's thickness) and
 //! balls (circles), and at each one bounces like off a mirror, stops, passes through, or, for a
 //! surface that answers [`Meets::Bend`], is bent going in and coming out (Snell's law, total
-//! internal reflection). Part 4 never answers `Bend`: it is the hook for glass (part 2b), which
-//! only has to say which things are glass. The path's corners are what the renderer draws and
+//! internal reflection). Glass answers `Bend` (part 2b: `push_light`'s `meets` asks
+//! `surface::glass_of`). The path's corners are what the renderer draws and
 //! lights from, as a strip.
 
 use bpe_core::ThingId;

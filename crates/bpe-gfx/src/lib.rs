@@ -45,9 +45,9 @@ mod util;
 pub use frame::{
     Around, BackgroundPaint, BallInstance, BallMark, BlendLayer, DrawCx, Draws, EffectCall, FlashInstance, Frame,
     Grade, HitMark, LayerGpu, LayeredInstance, LightGpu, LightScene, LightShow, LightingGpu, LookInstance, MAX_LAYERS,
-    MOST_TRAIL_VERTICES, ModuleDraw, NO_HIT, Particle, PathInstance, Place, ShapeInstance, SphereGpu, Stage,
-    StreakStyle, SurfaceGpu, Takes, ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_sensing,
-    build_frame_with, hit_strength, push_streak, push_streak_colours, push_trail, thing_code,
+    MOST_MIRRORS, MOST_TRAIL_VERTICES, MirrorGpu, ModuleDraw, NO_HIT, Particle, PathInstance, Place, ShapeInstance,
+    SphereGpu, Stage, StreakStyle, SurfaceGpu, Takes, ThingDraw, TrailVertex, blend_alpha, build_frame,
+    build_frame_sensing, build_frame_with, hit_strength, push_streak, push_streak_colours, push_trail, thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, PaintGpu};
 pub use masks::{MASK_TILE, MASK_TILE_BYTES, MAX_MASK_TILES, TILE_DISTANCE_REACH, tile_distance};
@@ -61,6 +61,9 @@ pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 pub(crate) const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// The object picture shader effects on things read: own position, thing code, coverage.
 pub(crate) const OBJECT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
+/// The light pass that draws what glass shows behind it (part 2b): no effects, plain blending.
+const BEHIND_PASS: u32 = 7;
+
 const BLOOM_LEVELS: usize = 6;
 
 // Every instance carries its paint (`PaintGpu`) as its last three vec4s.
@@ -1266,6 +1269,28 @@ impl Renderer {
                 self.targets.hdr_texture = hdr_texture;
                 self.targets.hdr = hdr;
             }
+            // What glass shows behind it: the plain picture without what is see-through
+            // (part 2b; `Globals.light.x` -1 makes see-through records draw nothing).
+            if let Some((texture, view)) = self.lighting.as_mut().expect("made above").behind(device, scene) {
+                let (world, screen) = self.light_globals(device, queue, frame, BEHIND_PASS, background_lit, scene);
+                let hdr_texture = std::mem::replace(&mut self.targets.hdr_texture, texture);
+                let hdr = std::mem::replace(&mut self.targets.hdr, view);
+                self.light_mode = BEHIND_PASS;
+                self.draw_scene(
+                    device,
+                    queue,
+                    &mut encoder,
+                    frame,
+                    overlay,
+                    &layer_buffers,
+                    &mut slot,
+                    (false, false),
+                    (&world, &screen),
+                );
+                self.light_mode = 0;
+                self.targets.hdr_texture = hdr_texture;
+                self.targets.hdr = hdr;
+            }
             // The background's own light, alone.
             if scene.settings.background_glows() {
                 let (world, _) = self.light_globals(device, queue, frame, 4, background_lit, scene);
@@ -1572,7 +1597,8 @@ impl Renderer {
         self.overlay = buffers;
     }
 
-    /// The world's and the screen's globals for light pass `mode` (1 to 4), made the first time.
+    /// The world's and the screen's globals for light pass `mode` (1 to 4, or [`BEHIND_PASS`]),
+    /// made the first time.
     fn light_globals(
         &mut self,
         device: &wgpu::Device,
@@ -1582,7 +1608,7 @@ impl Renderer {
         background_lit: f32,
         scene: &LightScene,
     ) -> (wgpu::BindGroup, wgpu::BindGroup) {
-        while self.light_globals.len() < 12 {
+        while self.light_globals.len() < 2 * BEHIND_PASS as usize {
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("light pass globals"),
                 size: std::mem::size_of::<Globals>() as u64,
@@ -1599,6 +1625,10 @@ impl Renderer {
         let at = 2 * (mode as usize - 1);
         let mut world = Globals::new(frame, &frame.camera, self.targets.width);
         world.light = [mode as f32, background_lit, scene.settings.stage[0], scene.background_link];
+        if mode == BEHIND_PASS {
+            // The plain picture, but what is see-through left out (light.x -1, see layers.wgsl).
+            world.light = [-1.0, background_lit, scene.settings.stage[0], 0.0];
+        }
         world.light_emit = scene.settings.background;
         let mut screen = Globals::new(frame, &CameraView::default(), self.targets.width);
         screen.light = world.light;

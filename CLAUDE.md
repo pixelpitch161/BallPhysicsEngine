@@ -95,6 +95,24 @@ section as painted chips (`inspector.rs::surface_section`, `style/swatch.rs`) wi
 picking a chip writes its preset in the same edit. `scenes::stage_demo` is test-only; `tests/stage_pictures.rs` checks
 the stage pictures.
 
+Part 2b is in (plan `docs/superpowers/plans/lighting/part2b.md`, "As built" at its end): **advanced surfaces**
+Jelly, Pearl, Flake, Brushed, Frosted, Velvet, Lava (13 chips; `surface.rs` `Preset`, numbers Rainbow split, Soak,
+Film, Flakes/Flake size, Brushing/Brush lines/angle, Frost, Rim, Inner glow; `SurfaceGpu.c/d/e`), the **Surface
+sub-layer** (`sub.surface`/`shape.sub.surface`, not on a Body: `Stamps` gives the layer and its sub-layers a table
+index after every thing's, `surface::sub_defs` leaves out `WHOLE_THING_ONLY`; the editor writes the preset on pick),
+**Reflects: The scene** (default; `trace_scene` walks spheres, wall, floor and shape fronts up to the Lighting card's
+Reflection depth; spheres are pushed in Flat too, `SphereGpu.c` their surface, never for shadows), **glass**
+(`GLASS_FLAG` 4096 on a see-through record's `light[3]`; the renderer draws a **behind picture** as `BEHIND_PASS`
+with those records left out (`left_behind`) and `transmitted` bends it by Bends light, Rainbow split and Frost;
+a shape's **Lens** is its body record's `light[2]`, a dome height in `shape_walk.wgsl`; `surface::glass_of` is the
+lasers' hook), **mirror walls** on shapes (Mirror wall Off/Outside/Inside/Both sides = where the reflection shows,
+strength, Squeeze (1 on a circle is circle inversion), tint; `MirrorGpu`, `MOST_MIRRORS` 16, `mirrored` in
+fs_mix relights the mirrored pixel through `lit_at`), **depth of field** (Stage: Depth of field, Focus at, Blur;
+`fs_dof` after the floor pass) and 2a's gaps (shapes' sheared slab in shadows and contact, `thing_point`; the light
+field sees Stage balls (`GlowUniform.on.w`, `field_round_ball`); the background's own light on shiny/Stage pixels
+(copied to `bg_glow`, read as `above` in the mix); every sphere tested with ≤ 128 balls, `SPHERE_MARGIN` 3; Lit 0
+layers write surface index 0). `tests/glass_pictures.rs`; `scenes::surfaces_demo` is test-only.
+
 Part 1c is in: the editor's side. The left panel switches Things / **Lights** / Mixer (`LeftPanel::Lights`,
 `bpe-studio/src/lights_panel/`): the Lighting card's Depth and Quality chips, "+ Point … + Strip" (`light_parent`, shared
 with the tree), and a strip per `LightSource` (`Light`, `Layer` for any layer whose kind is in `GIVES_OFF_LIGHT`

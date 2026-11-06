@@ -41,6 +41,21 @@ struct LayerGpu {
     more: vec4<f32>,
 };
 
+// The behind picture (lighting part 2b: the plain picture, `g.light.x` -1) leaves out what is
+// see-through: a record whose surface index carries the glass flag (4096).
+fn left_behind(l: LayerGpu, piece: Piece) -> Piece {
+    var out = piece;
+    if g.light.x < -0.5 && (l.light.w % 8192.0) >= 4095.5 {
+        out.c_in = vec3<f32>(0.0);
+        out.c_out = vec3<f32>(0.0);
+        out.a_in = 0.0;
+        out.a_out = 0.0;
+        out.light_in = vec3<f32>(0.0);
+        out.light_out = vec3<f32>(0.0);
+    }
+    return out;
+}
+
 // The light pass the walks shader layers sample work in: the same, but the things' own colours
 // (mode 0) in the emission pass.
 fn plain_mode() -> f32 {
@@ -53,6 +68,9 @@ var<private> LIGHT_HEIGHT: f32;
 // Set by the ball walk: in Stage a ball shadows as a sphere (lighting.wgsl), not in the blockers'
 // field, so its layers block nothing there.
 var<private> LIGHT_BALL: bool;
+// What the thing's Body blocks (set as the walk passes it, the first record): a layer wearing a
+// surface of its own covers the surface picture inside the thing, blocking as the Body does.
+var<private> LIGHT_BODY_BLOCKS: f32;
 
 // A layer's piece as the light passes see it: its colours (and a glow layer's light) times its
 // Lit, the light its sub-layers add left out (it never takes light: mode 1); or how much it
@@ -146,16 +164,41 @@ fn light_piece(piece: Piece, l: LayerGpu, hit: vec4<f32>) -> Piece {
         }
         return out;
     }
-    // B: the thing's surface index (lighting part 2a).
-    let blocks = select(clamp(l.light.y, 0.0, 1.0), 0.0, LIGHT_BALL && g.light.z > 0.5);
-    let s = vec3<f32>(blocks, LIGHT_HEIGHT, l.light.w);
+    // B: the thing's surface index (lighting part 2a; the record's glass (4096) and own-surface
+    // (8192) flags taken off). A painted layer at Lit 0 takes no light, so it shines nowhere: its
+    // index gains 2048, which reads as its thing's surface without shine (part 2b).
+    var blocks = clamp(l.light.y, 0.0, 1.0);
+    if l.head.x == 0u {
+        LIGHT_BODY_BLOCKS = blocks;
+    }
+    let own = l.light.w >= 8191.5;
+    let paints = l.head.x != 3u && l.head.x != 4u && l.head.x != 5u && l.head.x != 6u && l.head.x != 9u;
+    let dull = l.light.x <= 0.0 && paints && l.head.x != 0u;
+    var index = l.light.w % 4096.0;
+    if dull {
+        index += 2048.0;
+    }
+    // A layer that doesn't block light leaves the surface under it as it is (a shine on a ball
+    // doesn't stop the ball blocking); the body always gives the surface its height. A layer
+    // wearing its own surface, or dulled by Lit 0, still covers it inside the thing, blocking as
+    // the Body does there.
+    let keeps = l.light.y < 0.5 && l.head.x != 0u;
+    if keeps && (own || dull) {
+        blocks = LIGHT_BODY_BLOCKS;
+    }
+    // In Stage a ball blocks as a sphere, not in the blockers' field: a quarter marks it (the
+    // field's seeds take only more than a half; the light field reads it, part 2b).
+    if LIGHT_BALL && g.light.z > 0.5 {
+        blocks *= 0.25;
+    }
+    let s = vec3<f32>(blocks, LIGHT_HEIGHT, index);
     out.c_in = s;
     out.c_out = s;
-    // A layer that doesn't block light leaves the surface under it as it is (a shine on a ball
-    // doesn't stop the ball blocking); the body always gives the surface its height.
-    if l.light.y < 0.5 && l.head.x != 0u {
-        out.a_in = 0.0;
+    if keeps {
         out.a_out = 0.0;
+        if !(own || dull) {
+            out.a_in = 0.0;
+        }
     }
     return out;
 }

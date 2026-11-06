@@ -1048,6 +1048,80 @@ pub fn stage_demo(reg: &Registry) -> Scene {
     scene
 }
 
+/// The surfaces demo (lighting part 2b's video): nine balls of the new surfaces (Glass, Jelly,
+/// Pearl, Flake, Brushed, Frosted, Velvet, Lava, Chrome) bouncing in a ring whose outline is a
+/// mirror wall (the outside shows the inside, squeezed), on a 3D stage with a glossy floor, live
+/// reflections and depth of field, under a warm key light, a cool fill and a magenta back light.
+/// Not in [`all`].
+pub fn surfaces_demo(reg: &Registry) -> Scene {
+    use crate::modules::look::surface::{SurfaceKind, preset_values};
+    use bpe_core::Choice;
+    let hex = |h: u32| Color::rgb((h >> 16) as u8, (h >> 8) as u8, h as u8);
+    let mut scene = stage_demo(reg);
+    scene.name = "Surfaces demo".into();
+    let old: Vec<ThingId> =
+        scene.things.values().filter(|t| t.kind == "balls" && t.id != BALLS).map(|t| t.id).collect();
+    for id in old {
+        scene.remove_thing(id).expect("a ball");
+    }
+    let balls = [
+        ("Glass", SurfaceKind::Glass, hex(0xbfefff), Vec2::new(-160.0, -180.0), Vec2::new(420.0, -260.0), 60.0),
+        ("Jelly", SurfaceKind::Jelly, hex(0x3cd070), Vec2::new(150.0, -140.0), Vec2::new(-360.0, -320.0), 50.0),
+        ("Pearl", SurfaceKind::Pearl, hex(0xf2ece4), Vec2::new(0.0, 120.0), Vec2::new(300.0, -520.0), 48.0),
+        ("Flake", SurfaceKind::Flake, hex(0x2050d8), Vec2::new(-200.0, 140.0), Vec2::new(-240.0, -420.0), 46.0),
+        ("Brushed", SurfaceKind::Brushed, hex(0xd8d4cc), Vec2::new(200.0, 160.0), Vec2::new(200.0, -600.0), 50.0),
+        ("Frosted", SurfaceKind::Frosted, hex(0xe8f4ff), Vec2::new(-60.0, -60.0), Vec2::new(-150.0, 480.0), 52.0),
+        ("Velvet", SurfaceKind::Velvet, hex(0x8a1840), Vec2::new(90.0, 20.0), Vec2::new(380.0, 260.0), 44.0),
+        ("Lava", SurfaceKind::Lava, hex(0xff5a1c), Vec2::new(-100.0, 260.0), Vec2::new(-420.0, 120.0), 42.0),
+        ("Chrome", SurfaceKind::Chrome, hex(0xdfe3ea), Vec2::new(60.0, -280.0), Vec2::new(260.0, 380.0), 50.0),
+    ];
+    let template = scene.things[&BALLS].clone();
+    for (i, (name, kind, colour, at, velocity, radius)) in balls.into_iter().enumerate() {
+        let id = if i == 0 {
+            BALLS
+        } else {
+            let id = crate::add_thing(&mut scene, reg, "balls", ThingId::ROOT).expect("a ball");
+            let t = scene.things.get_mut(&id).expect("ball");
+            t.params = template.params.clone();
+            t.slots.insert(SlotId::Look, template.slots[&SlotId::Look].clone());
+            id
+        };
+        scene.rename_thing(id, name);
+        let t = scene.things.get_mut(&id).expect("ball");
+        let mut s = BallsSettings::from_params(&t.params);
+        s.radius = radius;
+        s.velocity = velocity;
+        t.params = s.to_params();
+        t.transform.position = at;
+        let card = scene.card_mut(id, SlotId::Look).expect("a look");
+        let body = card.layers.iter().find(|l| l.kind == "layer.body").map(|l| l.id).expect("a body");
+        card.params.set(&bpe_core::layered_key(body, "colours"), Value::Gradient(Gradient::even(&[colour, colour])));
+        card.params.set("surface", Value::Choice(kind.name().into()));
+        for (k, v) in preset_values(kind) {
+            card.params.set(k, v);
+        }
+    }
+    let shape = scene.card_mut(SHAPE, SlotId::Look).expect("the shape's look");
+    for (k, v) in [
+        ("mirror", Value::Choice("outside".into())),
+        ("mirror_strength", Value::Number(0.7)),
+        ("squeeze", Value::Number(1.0)),
+    ] {
+        shape.params.set(k, v);
+    }
+    let lighting = scene.card_mut(ThingId::ROOT, SlotId::Lighting).expect("lit");
+    for (k, v) in [
+        ("floor", Value::Choice("at_the_bottom".into())),
+        ("floor_surface", Value::Choice("glossy".into())),
+        ("depth_of_field", Value::Bool(true)),
+        ("focus_at", Value::Number(40.0)),
+        ("dof_blur", Value::Number(0.05)),
+    ] {
+        lighting.params.set(k, v);
+    }
+    scene
+}
+
 /// The light show (lighting part 6's tests and video): a dark room in a white ring, twelve balls
 /// flung out from the middle, a rig of four spots across the top playing a chase from its colour
 /// list, a second rig inside the balls whose lamps (one on each ball) chase ball to ball, and

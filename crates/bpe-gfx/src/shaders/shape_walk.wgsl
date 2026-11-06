@@ -25,7 +25,16 @@ fn SHAPE_WALK(world: vec2<f32>, s: ShapeAt, first: u32, count_in: u32, split: u3
     let fade = shape_reach_fade(s);
     // Where the light of a Shine sub-layer falls, -1 to 1 across the shape's reach.
     let lit_at = s.q / max(layered_shape.c.y, 1e-3);
+    // A shape stands flat, or bulges like a lens by its Surface's Lens (the body's light.z, part
+    // 2b): a half ball's height over its depth inside the outline (in shape units).
     LIGHT_HEIGHT = 0.0;
+    if g.light.x > 1.5 && count_in > 0u {
+        let lens = look_layers[first].light.z;
+        if lens > 0.0 && look_layers[first].head.x == 0u {
+            let t = clamp(-s.sd / scale, 0.0, 1.0);
+            LIGHT_HEIGHT = lens * scale * sqrt(max(1.0 - (1.0 - t) * (1.0 - t), 0.0)) * step(s.sd, 0.0);
+        }
+    }
     LIGHT_BALL = false;
     let cut = split & 0xffffu;
     let upper = cut > 0u && (split & 0x10000u) != 0u;
@@ -82,6 +91,7 @@ fn SHAPE_WALK(world: vec2<f32>, s: ShapeAt, first: u32, count_in: u32, split: u3
             if g.light.x > 0.5 {
                 piece = light_piece(piece, ll, layered_shape.hit);
             }
+            piece = left_behind(ll, piece);
             let p_in = clamp(piece.a_in, 0.0, 1.0) * lo;
             let p_out = clamp(piece.a_out, 0.0, 1.0) * lo;
             SHAPE_COV_IN[lk] = p_in;

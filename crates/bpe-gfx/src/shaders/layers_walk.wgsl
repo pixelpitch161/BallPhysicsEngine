@@ -129,6 +129,7 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
             if g.light.x > 0.5 {
                 piece = light_piece(piece, ll, layered_ball.hit);
             }
+            piece = left_behind(ll, piece);
             let p_in = clamp(piece.a_in, 0.0, 1.0) * lo;
             let p_out = clamp(piece.a_out, 0.0, 1.0) * lo;
             COV_IN[lk] = p_in;
