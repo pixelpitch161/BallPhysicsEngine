@@ -83,7 +83,9 @@ block_kind!(
     "Count reached",
     When,
     CountReachedSettings,
-    "Fires when a thing's hits, its number of balls, or a counter reaches a number."
+    "Fires when a thing's hits, its number of balls, or a counter reaches a number.",
+    values = ["count"],
+    from = []
 );
 
 #[derive(Clone, Debug)]
@@ -196,7 +198,16 @@ impl Default for CounterIsSettings {
     }
 }
 
-block_kind!(CounterIs, "if.counter", "Counter is", If, CounterIsSettings, "Goes on only when a counter passes a test.");
+block_kind!(
+    CounterIs,
+    "if.counter",
+    "Counter is",
+    If,
+    CounterIsSettings,
+    "Goes on only when a counter passes a test.",
+    values = [],
+    from = ["amount", "to"]
+);
 
 #[derive(Clone, Debug)]
 struct CounterIsState {
@@ -273,7 +284,16 @@ impl Default for CountSettings {
     }
 }
 
-block_kind!(Count, "do.count", "Count", Do, CountSettings, "Adds to, sets or resets a counter the whole scene shares.");
+block_kind!(
+    Count,
+    "do.count",
+    "Count",
+    Do,
+    CountSettings,
+    "Adds to, sets or resets a counter the whole scene shares.",
+    values = [],
+    from = ["amount"]
+);
 
 #[derive(Clone, Debug)]
 struct CountDo {

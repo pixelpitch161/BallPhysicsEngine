@@ -55,7 +55,9 @@ block_kind!(
     "Split",
     Do,
     SplitSettings,
-    "Splits a ball into several that fan out, keeping its look and its cards."
+    "Splits a ball into several that fan out, keeping its look and its cards.",
+    values = [],
+    from = ["into", "spread", "speed"]
 );
 
 #[derive(Clone, Debug)]
@@ -198,7 +200,9 @@ block_kind!(
     "Spawn balls",
     Do,
     SpawnSettings,
-    "Adds balls to a Balls thing or an emitter, where the firing happened or at a thing."
+    "Adds balls to a Balls thing or an emitter, where the firing happened or at a thing.",
+    values = [],
+    from = ["count", "angle", "speed", "radius"]
 );
 
 #[derive(Clone, Debug)]

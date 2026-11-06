@@ -100,7 +100,9 @@ block_kind!(
     "Crosses a level",
     When,
     CrossesLevelSettings,
-    "Fires when a ball's speed, size, light or shadow, or a sound, goes over or under a level."
+    "Fires when a ball's speed, size, light or shadow, or a sound, goes over or under a level.",
+    values = ["speed", "size", "hits", "ball", "value"],
+    from = []
 );
 
 #[derive(Clone)]

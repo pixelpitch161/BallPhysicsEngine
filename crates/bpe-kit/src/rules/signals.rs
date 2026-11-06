@@ -62,7 +62,10 @@ block_kind!(
     "Signal",
     When,
     SignalSettings,
-    "Fires when another rule (or this one) sends this signal, with what that rule knew."
+    "Fires when another rule (or this one) sends this signal, with what that rule knew.",
+    // Whatever the sender's firing carried: these are the usual ones.
+    values = ["speed", "size", "hits", "ball", "strength", "time", "count"],
+    from = []
 );
 
 impl BlockSim for HearSignal {

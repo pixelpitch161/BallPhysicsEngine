@@ -53,7 +53,9 @@ block_kind!(
     "Enters / Leaves",
     When,
     EnterSettings,
-    "Fires when a ball comes into a shape (or an emitter's catcher), or leaves a shape."
+    "Fires when a ball comes into a shape (or an emitter's catcher), or leaves a shape.",
+    values = ["speed", "size", "hits", "ball", "way", "round"],
+    from = []
 );
 
 /// A ball in a zone: (zone, the ball's thing, its body row).
@@ -216,7 +218,16 @@ impl Default for FiredSettings {
     }
 }
 
-block_kind!(Fired, "when.fired", "Fired", When, FiredSettings, "Fires when an emitter fires a ball, or a round.");
+block_kind!(
+    Fired,
+    "when.fired",
+    "Fired",
+    When,
+    FiredSettings,
+    "Fires when an emitter fires a ball, or a round.",
+    values = ["speed", "size", "hits", "ball", "round", "balls", "count"],
+    from = []
+);
 
 impl BlockSim for Fired {
     fn kind(&self) -> &'static str {
@@ -315,7 +326,9 @@ block_kind!(
     "Removed / Broken",
     When,
     RemovedSettings,
-    "Fires when a ball is taken out, or a ball or a thing is broken."
+    "Fires when a ball is taken out, or a ball or a thing is broken.",
+    values = ["speed", "size", "hits", "ball", "strength"],
+    from = []
 );
 
 impl BlockSim for Removed {
