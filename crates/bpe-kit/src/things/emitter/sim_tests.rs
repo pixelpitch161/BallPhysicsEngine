@@ -593,3 +593,36 @@ fn an_endless_emitter_s_size_by_number_runs_over_the_balls_fired_so_far() {
     // Three fired so far: the first at Size, the last at the To end.
     assert_eq!(world.bodies[&id].radius, vec![10.0, 15.0, 20.0]);
 }
+
+/// Many balls fired all round from a circle's middle bounce straight back off it together, so
+/// they stay on one circle bounce after bounce, also as the circle shrinks. A new shape and a new
+/// emitter put the wall exactly a whole number of steps away (390 px at 2.5 px a step), where a
+/// bounce that lost what was left of its step after touching made some balls fall a step behind
+/// each time.
+#[test]
+fn balls_fired_all_round_from_a_circle_s_middle_stay_on_one_circle() {
+    for shrink in [0.0, 0.05] {
+        let kit = crate::kit();
+        let mut scene = crate::new_studio_scene(&kit.registry);
+        let shape = crate::add_thing(&mut scene, &kit.registry, "shape", ThingId::ROOT).unwrap();
+        scene.things.get_mut(&shape).unwrap().params.set("shrink", Value::Number(shrink));
+        let id = crate::add_thing(&mut scene, &kit.registry, KIND, ThingId::ROOT).unwrap();
+        scene.things.get_mut(&id).unwrap().params.set("count", Value::Int(1000));
+        let r = resolved(&scene, &kit);
+        let mut world = World::build(&scene, &r, &kit.sims);
+        let mut log = Log::default();
+        let mut worst = 0f32;
+        for quarter in 1..=80 {
+            world.advance_to(quarter as f64 * 0.25, &kit.sims, &mut log);
+            let b = &world.bodies[&id];
+            let far: Vec<f32> = b.position.iter().map(|p| p.length()).collect();
+            let lo = far.iter().copied().fold(f32::MAX, f32::min);
+            let hi = far.iter().copied().fold(f32::MIN, f32::max);
+            worst = worst.max(hi - lo);
+        }
+        let hits = log.events().iter().filter(|e| e.kind == EventKind::Hit).count();
+        assert!(hits >= 1000 * 10, "ten bounces each, shrinking {shrink}");
+        // Only rounding is left: about 0.003 px a second.
+        assert!(worst < 0.1, "shrinking {shrink}: the balls spread {worst} px out of their circle");
+    }
+}

@@ -31,8 +31,12 @@ fn solid_paint_matches_plain_colour() {
     let resolved = bpe_core::resolve(&scene, &kit.registry);
     let mut playback = Playback::new(&scene, &resolved, kit.sims.clone());
     playback.seek(2.0);
+    // The ball where it was when the picture was drawn: bounces have since become exact, which
+    // moved it 0.16 px by 2 s. This test is about how it is painted, not where it is.
+    let mut world = playback.world().clone();
+    world.bodies.values_mut().next().unwrap().position[0] = glam::Vec2::new(248.31012, 324.2088);
     let mut frame = Frame::default();
-    build_frame(&scene, &resolved, playback.world(), playback.log(), 2.0, &kit.draws, &mut frame);
+    build_frame(&scene, &resolved, &world, playback.log(), 2.0, &kit.draws, &mut frame);
     let mut renderer = Renderer::new(&device, W, H);
     renderer.render(&device, &queue, &frame);
     let pixels = renderer.read_output(&device, &queue).unwrap();

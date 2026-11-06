@@ -206,6 +206,74 @@ mod tests {
         }
     }
 
+    /// A ball bouncing off a wall with its edge goes on for the rest of the step after touching,
+    /// so it ends where the exact bounce puts it, not up to a step short.
+    #[test]
+    fn an_edge_bounce_loses_none_of_the_step() {
+        use crate::ShapeSettings;
+        let (mut scene, _, kit) = crate::testing::scene_with_balls("single", |_| {});
+        scene.things.get_mut(&SHAPE).unwrap().params = ShapeSettings::rectangle(700.0, 1100.0, 6.0).to_params();
+        scene.things.get_mut(&SHAPE).unwrap().transform.position = Vec2::ZERO;
+        let balls = crate::BallsSettings { radius: 14.0, velocity: Vec2::new(610.0, 0.0), ..Default::default() };
+        let thing = scene.things.get_mut(&BALLS).unwrap();
+        thing.params = balls.to_params();
+        thing.transform.position = Vec2::ZERO;
+        scene.card_mut(BALLS, SlotId::Motion).unwrap().params.set("gravity_scale", Value::Number(0.0));
+        let resolved = resolve(&scene, &kit.registry);
+        let mut w = World::build(&scene, &resolved, &kit.sims);
+        let mut log = Log::default();
+        w.advance_to(1.0, &kit.sims, &mut log);
+        assert_eq!(log.events().iter().filter(|e| e.kind == EventKind::Hit).count(), 1);
+        // Touching at 350 - 3 - 14 = 333 px, after 610 px of the way: 277 px back.
+        let p = w.bodies[&BALLS].position[0];
+        assert!((p - Vec2::new(333.0 - 277.0, 0.0)).length() < 0.01, "{p}");
+        assert!((w.bodies[&BALLS].velocity[0] - Vec2::new(-610.0, 0.0)).length() < 1e-3);
+    }
+
+    /// Fast balls touching with their edges and bumping into each other under gravity, in a
+    /// hollow box, polygon and ellipse: none ever gets out.
+    #[test]
+    fn an_edge_ball_never_leaves_a_box_a_polygon_or_an_ellipse() {
+        use crate::ShapeSettings;
+        let shapes = [
+            ShapeSettings::rectangle(700.0, 1100.0, 6.0),
+            ShapeSettings::polygon(5, 520.0, 6.0),
+            ShapeSettings::ellipse(700.0, 1100.0, 6.0),
+        ];
+        for shape in shapes {
+            let (mut scene, _, kit) = crate::testing::scene_with_balls("single", |_| {});
+            scene.things.get_mut(&bpe_core::ThingId::ROOT).unwrap().params.set("gravity", Value::Vec2([0.0, 900.0]));
+            scene.things.get_mut(&SHAPE).unwrap().params = shape.to_params();
+            scene.things.get_mut(&SHAPE).unwrap().transform.position = Vec2::ZERO;
+            let mut balls =
+                crate::BallsSettings { radius: 14.0, velocity: Vec2::new(2900.0, 700.0), ..Default::default() };
+            balls.group = true;
+            balls.shape = crate::things::balls::GroupShape::Scatter;
+            balls.count = 120;
+            balls.area = Vec2::new(450.0, 700.0);
+            balls.launch = crate::things::balls::Launch::Random;
+            balls.vary_speed = 0.9;
+            let thing = scene.things.get_mut(&BALLS).unwrap();
+            thing.params = balls.to_params();
+            thing.transform.position = Vec2::ZERO;
+            let card = scene.card_mut(BALLS, SlotId::Bounce).unwrap();
+            card.params.set("top_speed", Value::Number(5000.0));
+            card.params.set("hit_balls", Value::Bool(true));
+            scene.card_mut(BALLS, SlotId::Motion).unwrap().params.set("gravity_scale", Value::Number(1.0));
+            let resolved = resolve(&scene, &kit.registry);
+            let mut w = World::build(&scene, &resolved, &kit.sims);
+            let mut log = Log::default();
+            for k in 1..=100 {
+                w.advance_to(k as f64 * 0.1, &kit.sims, &mut log);
+                let wall = &w.walls[&SHAPE].outline;
+                for p in &w.bodies[&BALLS].position {
+                    assert!(p.is_finite() && wall.inside(*p), "{wall:?}: a ball got out to {p}");
+                }
+            }
+            assert!(log.events().iter().filter(|e| e.kind == EventKind::Hit).count() > 100);
+        }
+    }
+
     #[test]
     fn hit_balls_makes_a_block_collide_and_the_log_names_both_balls() {
         let (mut scene, _, kit) = crate::testing::scene_with_balls("block", |p| {
