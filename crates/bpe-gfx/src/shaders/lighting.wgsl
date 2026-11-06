@@ -350,6 +350,8 @@ const PI: f32 = 3.14159265;
 const LEAST_K: f32 = 0.0087;
 // The most balls a shadow ray tests in one cell of the sphere grid.
 const MOST_IN_CELL: u32 = 96u;
+// How many samples a floor reflection's blur takes.
+const FLOOR_TAPS: i32 = 24;
 
 fn in_stage() -> bool {
     return st.room.x > 0.5;
@@ -853,25 +855,27 @@ fn fs_light(in: FsIn) -> @location(0) vec4<f32> {
 
 // ---------- the glossy floor (Stage, a floor that isn't Matte) ----------
 
-// The lit picture (bound as `picture`) at world point `q`, blurred over `radius` world units;
-// its weight falls to 0 off the picture.
-fn lit_near(q: vec2<f32>, radius: f32) -> vec4<f32> {
+// The lit picture round world point `q`, blurred over `radius`: a Vogel disc of FLOOR_TAPS
+// samples turned by a per-pixel noise `turn`, so a wide blur is soft grain, not copies. With
+// `things` false the things on the picture are left out (the wall mirrors only the wall). Its
+// alpha is how much was found.
+fn lit_near(q: vec2<f32>, radius: f32, turn: f32, things: bool) -> vec4<f32> {
     var sum = vec3<f32>(0.0);
     var weight = 0.0;
-    for (var k = 0; k < 9; k++) {
-        var o = vec2<f32>(0.0);
-        if k > 0 {
-            let a = f32(k) * 2.39996;
-            o = vec2<f32>(cos(a), sin(a)) * radius * sqrt(f32(k) / 8.0);
-        }
+    for (var k = 0; k < FLOOR_TAPS; k++) {
+        let a = f32(k) * 2.39996 + turn;
+        let o = vec2<f32>(cos(a), sin(a)) * radius * sqrt((f32(k) + 0.5) / f32(FLOOR_TAPS));
         let uv = world_to_uv(q + o);
         let inside = clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0));
         let off = length(uv - inside);
-        let wt = clamp(1.0 - off * 20.0, 0.0, 1.0);
+        var wt = clamp(1.0 - off * 20.0, 0.0, 1.0);
+        if !things {
+            wt *= 1.0 - clamp(textureSampleLevel(surface, samp, inside, 0.0).a, 0.0, 1.0);
+        }
         sum += textureSampleLevel(picture, samp, inside, 0.0).rgb * wt;
         weight += wt;
     }
-    return vec4<f32>(sum / max(weight, 1e-4), weight / 9.0);
+    return vec4<f32>(sum / max(weight, 1e-4), clamp(weight / f32(FLOOR_TAPS) * 2.0, 0.0, 1.0));
 }
 
 @fragment
@@ -892,11 +896,13 @@ fn fs_floor(in: FsIn) -> @location(0) vec4<f32> {
     let blur = select(max(st.more.x, 0.0), 0.0, mirror);
     // In front of the picture plane the floor mirrors what stands on it; behind it, the wall.
     var refl = vec4<f32>(0.0);
+    // Interleaved gradient noise (Jimenez): a different turn of the blur's taps at each pixel.
+    let turn = 6.2831853 * fract(52.9829189 * fract(dot(in.pos.xy, vec2<f32>(0.06711056, 0.00583715))));
     let wall_q = vec2<f32>(p.x, 2.0 * seam - p.y);
-    let wall = lit_near(wall_q, blur * (p.y - seam) * 0.5);
+    let wall = lit_near(wall_q, blur * (p.y - seam) * 0.5, turn, false);
     if p.y >= f {
         let q = vec2<f32>(p.x, 2.0 * f - p.y);
-        let near = lit_near(q, blur * (p.y - f) * 0.5);
+        let near = lit_near(q, blur * (p.y - f) * 0.5, turn, true);
         let held = textureSampleLevel(surface, samp, clamp(world_to_uv(q), vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).a;
         refl = mix(wall, near, clamp(held, 0.0, 1.0));
     } else {
