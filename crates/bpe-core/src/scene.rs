@@ -354,7 +354,7 @@ impl Default for Scene {
 
 impl Scene {
     /// The save format this version writes.
-    pub const FORMAT: u32 = 10;
+    pub const FORMAT: u32 = 11;
     /// The oldest format that still opens.
     pub const OLDEST_FORMAT: u32 = 7;
 

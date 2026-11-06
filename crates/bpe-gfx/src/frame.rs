@@ -158,6 +158,9 @@ pub struct LayerGpu {
     pub colour: [f32; 4],
     pub paint: PaintGpu,
     pub extra: [[f32; 4]; 4],
+    /// How the layer takes the scene's lights (read only when the scene is lit): its Lit (0 as
+    /// today, 1 fully lit), how much it blocks light, and on a ball's body record its Roundness.
+    pub light: [f32; 4],
 }
 
 impl LayerGpu {
@@ -180,6 +183,7 @@ impl LayerGpu {
             vary: [0.0, 0.0, 1.0, 0.0],
         },
         extra: [[0.0; 4]; 4],
+        light: [0.0; 4],
     };
     pub const BODY: u32 = 0;
     pub const PATTERN: u32 = 1;
@@ -485,6 +489,8 @@ pub struct TrailVertex {
     pub color: [f32; 4],
     /// How soft its edges are and how much of it shows (see [`StreakStyle`]).
     pub style: [f32; 2],
+    /// Its layer's Lit and how much it blocks light (read only when the scene is lit).
+    pub light: [f32; 2],
 }
 
 /// How a streak's edges look: its own, a soft glow, or only a band along its edge.
@@ -617,6 +623,7 @@ fn strip(
             edge: [reach * sign, width],
             color: color_at(i),
             style: [softness, band],
+            light: [0.0; 2],
         }
     };
     for i in 0..n - 1 {
@@ -644,13 +651,21 @@ pub struct Particle {
     /// Its shape: 0 sparks, 1 smoke, 2 confetti, 3 stars, 4 shards, 5 rings, 6 dots, 7 hearts,
     /// 8 bubbles, 9 streaks; three spare.
     pub shape: [u32; 4],
+    /// Its layer's Lit and how much it blocks light (read only when the scene is lit); two spare.
+    pub light: [f32; 4],
 }
 
 impl Particle {
     /// A particle of `shape` at `at`, turned `angle` radians, `size` pixels (half size), in
     /// `color`, shaded 1, crisp and filled.
     pub fn new(shape: u32, at: Vec2, angle: f32, size: f32, color: [f32; 4]) -> Self {
-        Self { place: [at.x, at.y, angle, size], color, style: [size, 1.0, 0.0, 0.0], shape: [shape, 0, 0, 0] }
+        Self {
+            place: [at.x, at.y, angle, size],
+            color,
+            style: [size, 1.0, 0.0, 0.0],
+            shape: [shape, 0, 0, 0],
+            light: [0.0; 4],
+        }
     }
 
     /// Where it is.
@@ -807,6 +822,63 @@ pub struct Frame {
     pub layers: Vec<BlendLayer>,
     /// The colour grade run over the finished picture. Only the top frame's counts.
     pub grade: Grade,
+    /// The scene's lights, when it has a Lighting card (only the top frame's counts). `None`
+    /// draws the picture exactly as it was before lighting.
+    pub light: Option<LightScene>,
+}
+
+/// One light as the lighting pass reads it (`LightGpu` in lighting.wgsl).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct LightGpu {
+    /// Place xy (world), height above the picture (a sun's: sine of its elevation), kind (0 point,
+    /// 1 spot, 2 sun, 3 area, 4 strip).
+    pub p0: [f32; 4],
+    /// Colour times strength, linear; w spare.
+    pub p1: [f32; 4],
+    /// Reach, falloff (0 real, 1 soft, 2 linear, 3 none), size, shadow strength.
+    pub p2: [f32; 4],
+    /// Direction it points (unit xy), cosine of the cone's inner and outer edge.
+    pub p3: [f32; 4],
+    /// Width, length (area), first segment and how many (strip).
+    pub p4: [f32; 4],
+    /// Shadow colour (linear rgb), 1 when it casts shadows.
+    pub p5: [f32; 4],
+    /// How far short of the lamp shadows stop, the sun's size (tan of its radius), area shape (0
+    /// rectangle, 1 disc), the light's own shadow softness.
+    pub p6: [f32; 4],
+}
+
+impl LightGpu {
+    pub const ZERO: LightGpu = LightGpu {
+        p0: [0.0; 4],
+        p1: [0.0; 4],
+        p2: [0.0; 4],
+        p3: [0.0; 4],
+        p4: [0.0; 4],
+        p5: [0.0; 4],
+        p6: [0.0; 4],
+    };
+}
+
+/// The scene's Lighting card as the renderer reads it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LightingGpu {
+    /// Ambient light (linear rgb times its strength), and how much the background takes light.
+    pub ambient: [f32; 4],
+    /// Shadow style (0 soft, 1 hard, 2 toon, 3 off), softness, length, contact shading.
+    pub shadows: [f32; 4],
+    /// Contact reach, toon steps, quality (0 draft .. 3 ultra), spare.
+    pub more: [f32; 4],
+}
+
+/// A lit frame's lights: the Lighting card's settings, every light, and the segments strip
+/// lights run along (xy to zw, world).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LightScene {
+    pub settings: LightingGpu,
+    pub lights: Vec<LightGpu>,
+    pub segments: Vec<[f32; 4]>,
 }
 
 /// The scene's colour grade, run in screen space on the finished, display-ready picture (after
@@ -960,6 +1032,7 @@ impl Default for Frame {
             video: (1080, 1920),
             layers: Vec::new(),
             grade: Grade::default(),
+            light: None,
         }
     }
 }
@@ -989,6 +1062,7 @@ impl Frame {
         self.camera = CameraView::default();
         self.layers.clear();
         self.grade = Grade::default();
+        self.light = None;
         if let Some(overlay) = &mut self.overlay {
             overlay.clear();
         }
@@ -1376,6 +1450,9 @@ pub trait ThingDraw: Send + Sync + 'static {
     }
     /// Draws the `index`th of what [`ThingDraw::around`] lists.
     fn draw_around(&self, _cx: &DrawCx, _index: usize, _frame: &mut Frame) {}
+    /// Adds the thing's lights to a lit frame's `scene`. Called only when the scene has a
+    /// Lighting card (its draw set [`Frame::light`]), after every thing has drawn itself.
+    fn light(&self, _cx: &DrawCx, _scene: &mut LightScene) {}
 }
 
 /// One of the things a thing draws round itself (a trail, particles), with its own blend.
@@ -1528,6 +1605,16 @@ pub fn build_frame_with(
             draw_routed_at(target, z, blend, amount, each, false, |into| d.draw(&cx, slot, into));
         }
     }
+    // A lit scene's lights, only when its Lighting card set `frame.light`.
+    if let Some(mut lit) = frame.light.take() {
+        for (id, r) in &resolved.things {
+            let Some(thing) = scene.things.get(id) else { continue };
+            let Some(d) = draws.thing(&r.kind) else { continue };
+            let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time };
+            d.light(&cx, &mut lit);
+        }
+        frame.light = Some(lit);
+    }
     frame.sort_layers();
     if let Some(o) = frame.overlay.as_deref_mut() {
         o.sort_layers();
@@ -1644,7 +1731,7 @@ mod tests {
     #[test]
     fn layer_records_and_layered_instances_fit_the_gpu() {
         assert_eq!(std::mem::size_of::<LayerGpu>() % 16, 0);
-        assert_eq!(std::mem::size_of::<LayerGpu>(), 192, "as layers.wgsl lays it out");
+        assert_eq!(std::mem::size_of::<LayerGpu>(), 208, "as layers.wgsl lays it out");
         assert!(std::mem::size_of::<LayeredInstance>() <= 160);
         assert_eq!(std::mem::size_of::<LayeredInstance>() % 16, 0);
         let mut f = Frame::default();

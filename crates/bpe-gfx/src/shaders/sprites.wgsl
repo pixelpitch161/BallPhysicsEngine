@@ -12,9 +12,25 @@ struct Globals {
     bg: vec4<f32>,
     bg_from: vec4<f32>,
     bg_to: vec4<f32>,
+    grade: vec4<f32>,
+    grade_more: vec4<f32>,
+    // Lighting (see lighting.wgsl): x 0 draws the picture as always, 1 each thing's lit colour,
+    // 2 its surface; y how much the background takes light.
+    light: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
+
+// As scene.wgsl's: a sprite in the light passes (see lighting.wgsl).
+fn light_flat(c: vec4<f32>, lit: f32, blocks: f32) -> vec4<f32> {
+    if g.light.x < 0.5 {
+        return c;
+    }
+    if g.light.x < 1.5 {
+        return vec4<f32>(c.rgb * lit, c.a);
+    }
+    return vec4<f32>(clamp(blocks, 0.0, 1.0) * c.a, 0.0, 0.0, c.a);
+}
 
 const SPARKS: u32 = 0u;
 const SMOKE: u32 = 1u;
@@ -35,6 +51,8 @@ struct SpriteIn {
     // x: half length along the turn, y: shade, z: softness 0..1, w: band 0..1
     @location(2) style: vec4<f32>,
     @location(3) shape: vec4<u32>,
+    // Its layer's Lit and how much it blocks light, read in the light passes.
+    @location(4) light: vec4<f32>,
 };
 
 struct SpriteOut {
@@ -46,6 +64,7 @@ struct SpriteOut {
     @location(2) size: vec4<f32>,
     @location(3) @interpolate(flat) kind: u32,
     @location(4) shade: f32,
+    @location(5) @interpolate(flat) light: vec2<f32>,
 };
 
 fn to_screen(p: vec2<f32>) -> vec2<f32> {
@@ -92,6 +111,7 @@ fn vs_sprite(@builtin(vertex_index) vi: u32, v: SpriteIn) -> SpriteOut {
     out.color = v.color;
     out.size = vec4<f32>(reach, size, clamp(v.style.z, 0.0, 1.0), clamp(v.style.w, 0.0, 1.0));
     out.kind = v.shape.x;
+    out.light = v.light.xy;
     out.shade = v.style.y;
     return out;
 }
@@ -195,7 +215,7 @@ fn coverage(in: SpriteOut) -> f32 {
 
 @fragment
 fn fs_sprite(in: SpriteOut) -> @location(0) vec4<f32> {
-    return sprite_colour(in);
+    return light_flat(sprite_colour(in), in.light.x, in.light.y);
 }
 
 // The sprite's premultiplied colour and coverage here.

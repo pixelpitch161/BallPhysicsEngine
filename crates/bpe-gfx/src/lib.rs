@@ -14,6 +14,9 @@ mod frame;
 mod grade_tests;
 mod gradients;
 #[cfg(test)]
+mod lighting_tests;
+mod lighting;
+#[cfg(test)]
 mod layers_tests;
 mod masks;
 #[cfg(test)]
@@ -34,7 +37,7 @@ mod util;
 
 pub use frame::{
     Around, BackgroundPaint, BallInstance, BlendLayer, DrawCx, Draws, EffectCall, FlashInstance, Frame, Grade, HitMark,
-    LayerGpu, LayeredInstance, LookInstance, MAX_LAYERS, MOST_TRAIL_VERTICES, ModuleDraw, NO_HIT, Particle,
+    LayerGpu, LayeredInstance, LightGpu, LightScene, LightingGpu, LookInstance, MAX_LAYERS, MOST_TRAIL_VERTICES, ModuleDraw, NO_HIT, Particle,
     PathInstance, Place, ShapeInstance, Stage, StreakStyle, ThingDraw, TrailVertex, blend_alpha, build_frame,
     build_frame_with, hit_strength, push_streak, push_streak_colours, push_trail, thing_code,
 };
@@ -61,8 +64,8 @@ const BALL_ATTRIBUTES: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
     0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4,
     7 => Float32x4
 ];
-const TRAIL_ATTRIBUTES: [wgpu::VertexAttribute; 4] =
-    wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x2];
+const TRAIL_ATTRIBUTES: [wgpu::VertexAttribute; 5] =
+    wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x2, 4 => Float32x2];
 const LOOK_ATTRIBUTES: [wgpu::VertexAttribute; 12] = wgpu::vertex_attr_array![
     0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
     6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4, 10 => Float32x4, 11 => Float32x4
@@ -99,6 +102,9 @@ struct Globals {
     grade: [f32; 4],
     /// The colour grade: tint, vignette, vignette size, gradient map amount.
     grade_more: [f32; 4],
+    /// Lighting: x the light pass (0 the picture as always, 1 lit colour, 2 surface), y how much
+    /// the background takes light (see lighting.wgsl).
+    light: [f32; 4],
 }
 
 impl Globals {
@@ -128,6 +134,7 @@ impl Globals {
             bg_to: frame.background.ends.map_or([0.0; 4], |e| e[1]),
             grade: [frame.grade.brightness, frame.grade.contrast, frame.grade.saturation, frame.grade.warmth],
             grade_more: [frame.grade.tint, frame.grade.vignette, frame.grade.vignette_size, frame.grade.map_amount],
+            light: [0.0; 4],
         }
     }
 }
@@ -319,6 +326,12 @@ pub struct Renderer {
     overlay_paint: PaintTexture,
     targets: Targets,
     grade_map: GradeMap,
+    /// Lighting's passes and pictures, made the first time a frame is lit.
+    lighting: Option<lighting::Lighting>,
+    /// The light pass being drawn (see `Globals::light`): 0 outside the light passes.
+    light_mode: u32,
+    /// The light passes' globals: the world's and the screen's for mode 1, then for mode 2.
+    light_globals: Vec<(wgpu::Buffer, wgpu::BindGroup)>,
 }
 
 /// The instance lists of one frame (the main one, its overlay or a blend layer) on the GPU.
@@ -1035,6 +1048,9 @@ impl Renderer {
             overlay_paint,
             targets,
             grade_map,
+            lighting: None,
+            light_mode: 0,
+            light_globals: Vec::new(),
         }
     }
 
@@ -1148,106 +1164,62 @@ impl Renderer {
         }
         self.chain.begin_frame();
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
-        let world = Through {
-            globals: self.globals_group.clone(),
-            paint: self.paint.group.clone(),
-            world: true,
-            camera: frame.camera,
-            each: None,
-        };
         // Counts the blend composites this frame.
         let mut slot = 0;
-        {
-            let mut pass =
-                begin_pass(&mut encoder, &self.targets.hdr, "background", wgpu::LoadOp::Clear(wgpu::Color::BLACK));
-            pass.set_bind_group(0, &self.globals_group, &[]);
-            pass.set_bind_group(1, &self.paint.group, &[]);
-            pass.set_pipeline(&self.background);
-            pass.draw(0..3, 0..1);
-        }
-        // Things of a z-order below 0 draw under everything else.
-        for (i, (l, b)) in frame.layers.iter().zip(&layer_buffers).enumerate().filter(|(_, (l, _))| l.z < 0) {
-            self.draw_any_layer(device, queue, &mut encoder, frame, i, l, b, &world, &mut slot, None, false);
-        }
-        {
-            let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "scene", wgpu::LoadOp::Load);
-            pass.set_bind_group(0, &self.globals_group, &[]);
-            pass.set_bind_group(1, &self.paint.group, &[]);
-            self.draw_back(&mut pass, frame, &self.buffers, &world);
-        }
-        // Blended things behind the balls (shapes) mix with what is behind them before the balls
-        // are drawn over them.
-        let behind = |l: &BlendLayer| l.z == 0 && l.behind();
-        for (i, (l, b)) in frame.layers.iter().zip(&layer_buffers).enumerate().filter(|(_, (l, _))| behind(l)) {
-            self.draw_any_layer(device, queue, &mut encoder, frame, i, l, b, &world, &mut slot, None, false);
-        }
-        {
-            let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "balls", wgpu::LoadOp::Load);
-            pass.set_bind_group(0, &self.globals_group, &[]);
-            pass.set_bind_group(1, &self.paint.group, &[]);
-            self.draw_balls(&mut pass, frame, &self.buffers, &world);
-        }
-        // Blended things behind the balls go under the rest; other blended things are drawn
-        // above the rest, so they are on top here too. With a material on the scene, those
-        // above get it on their own layers (see `draw_layer`), so the main picture's leaves them
-        // out and the picture under a blended ball is left alone.
-        let above = BlendLayer::above;
-        if wants_objects {
-            let view = &self.targets.object.as_ref().expect("made above").1;
-            let mut pass = begin_pass(&mut encoder, view, "objects", wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
-            pass.set_bind_group(0, &self.globals_group, &[]);
-            pass.set_bind_group(1, &self.paint.group, &[]);
-            self.draw_all_objects(&mut pass, frame, &layer_buffers, !material);
-        }
-        let object_view = self.targets.object.as_ref().filter(|_| wants_objects).map(|(_, v)| v.clone());
-        self.chain.run(
+        let globals = self.globals_group.clone();
+        let screen_globals = self.screen_globals_group.clone();
+        self.draw_scene(
             device,
             queue,
             &mut encoder,
-            Stage::Things,
             frame,
-            effects::chain::Canvas::Main,
-            &self.targets.hdr_texture,
-            &self.targets.hdr,
-            object_view.as_ref(),
+            overlay,
+            &layer_buffers,
+            &mut slot,
+            (wants_objects, material),
+            (&globals, &screen_globals),
         );
-        if !frame.flashes.is_empty() || !frame.trails_front.is_empty() || !frame.particles_front.is_empty() {
-            let mut pass = begin_pass(&mut encoder, &self.targets.hdr, "flashes", wgpu::LoadOp::Load);
-            pass.set_bind_group(0, &self.globals_group, &[]);
-            self.draw_front(&mut pass, frame, &self.buffers, &world);
+        // A lit scene: the things again as their lit colour, then as their surface, each into
+        // its own picture, then the light mixed into the HDR picture.
+        if let Some(scene) = frame.light.as_ref() {
+            let lighting = self.lighting.get_or_insert_with(|| lighting::Lighting::new(device));
+            lighting.ensure(device, self.targets.width, self.targets.height, scene.settings.more[2]);
+            let pictures = lighting.pictures().expect("just made");
+            for (mode, (texture, view)) in [1u32, 2].into_iter().zip(pictures) {
+                let (world, screen) = self.light_globals(device, queue, frame, mode, scene.settings.ambient[3]);
+                let hdr_texture = std::mem::replace(&mut self.targets.hdr_texture, texture);
+                let hdr = std::mem::replace(&mut self.targets.hdr, view);
+                self.light_mode = mode;
+                self.draw_scene(
+                    device,
+                    queue,
+                    &mut encoder,
+                    frame,
+                    overlay,
+                    &layer_buffers,
+                    &mut slot,
+                    (false, false),
+                    (&world, &screen),
+                );
+                self.light_mode = 0;
+                self.targets.hdr_texture = hdr_texture;
+                self.targets.hdr = hdr;
+            }
+            self.copy_under(&mut encoder);
+            let lighting = self.lighting.as_mut().expect("made above");
+            lighting.run(
+                device,
+                queue,
+                &mut encoder,
+                frame,
+                scene,
+                self.targets.width,
+                &self.targets.behind_view,
+                &self.targets.hdr,
+            );
         }
-        // Then the blended things of z-order 0 and everything of a higher z-order, in order.
-        for (i, (l, b)) in frame.layers.iter().zip(&layer_buffers).enumerate().filter(|(_, (l, _))| above(l)) {
-            let objects = object_view.as_ref();
-            self.draw_any_layer(device, queue, &mut encoder, frame, i, l, b, &world, &mut slot, objects, material);
-        }
-        if let Some(o) = overlay {
-            let screen = Through {
-                globals: self.screen_globals_group.clone(),
-                paint: self.overlay_paint.group.clone(),
-                world: false,
-                camera: CameraView::default(),
-                each: None,
-            };
-            let buffers = std::mem::take(&mut self.overlay);
-            let hdr = self.targets.hdr.clone();
-            // In the same order as the frame's own: lower z-orders, the overlay's trails and
-            // shapes, the layers behind its balls, its balls and flashes, then the rest.
-            let own = &layer_buffers[frame.layers.len()..];
-            let mut layers = |r: &mut Self, encoder: &mut wgpu::CommandEncoder, which: fn(&BlendLayer) -> bool| {
-                for (l, b) in o.layers.iter().zip(own).filter(|(l, _)| which(l)) {
-                    let through = r.layer_through(device, queue, frame, l, None, &screen);
-                    r.draw_layer(device, queue, encoder, l, b, &through, slot, None);
-                    slot += 1;
-                }
-            };
-            layers(self, &mut encoder, |l| l.z < 0);
-            self.draw_things_part(&mut encoder, o, &buffers, &screen, &hdr, false);
-            layers(self, &mut encoder, |l| l.z == 0 && l.behind());
-            self.draw_things_part(&mut encoder, o, &buffers, &screen, &hdr, true);
-            layers(self, &mut encoder, |l| l.z > 0 || (l.z == 0 && !l.behind()));
-            self.overlay = buffers;
-        }
+        let above = BlendLayer::above;
+        let object_view = self.targets.object.as_ref().filter(|_| wants_objects).map(|(_, v)| v.clone());
         // A material drew the layers' own object pictures over the full one: effects on the
         // whole picture see every thing again.
         if material && frame.layers.iter().any(above) && effects::chain::Chain::picture_wants_objects(frame) {
@@ -1302,6 +1274,161 @@ impl Renderer {
             pass.draw(0..3, 0..1);
         }
         queue.submit([encoder.finish()]);
+    }
+
+    /// Draws the frame's things into the HDR picture: the background, the layers under
+    /// everything, trails and shapes, the layers behind the balls, the balls, the effects on
+    /// things, flashes and what is in front, the layers above, then the things stuck to the
+    /// screen. `slot` counts the blend composites. `(wants_objects, material)` are the effects'
+    /// needs (both false in the light passes, which run no effects); `globals` the world's and
+    /// the screen's globals.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_scene(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &Frame,
+        overlay: Option<&Frame>,
+        layer_buffers: &[FrameBuffers],
+        slot: &mut usize,
+        (wants_objects, material): (bool, bool),
+        (globals, screen_globals): (&wgpu::BindGroup, &wgpu::BindGroup),
+    ) {
+        let world = Through {
+            globals: globals.clone(),
+            paint: self.paint.group.clone(),
+            world: true,
+            camera: frame.camera,
+            each: None,
+        };
+        {
+            let mut pass =
+                begin_pass(encoder, &self.targets.hdr, "background", wgpu::LoadOp::Clear(wgpu::Color::BLACK));
+            pass.set_bind_group(0, globals, &[]);
+            pass.set_bind_group(1, &self.paint.group, &[]);
+            pass.set_pipeline(&self.background);
+            pass.draw(0..3, 0..1);
+        }
+        // Things of a z-order below 0 draw under everything else.
+        for (i, (l, b)) in frame.layers.iter().zip(layer_buffers).enumerate().filter(|(_, (l, _))| l.z < 0) {
+            self.draw_any_layer(device, queue, encoder, frame, i, l, b, &world, slot, None, false);
+        }
+        {
+            let mut pass = begin_pass(encoder, &self.targets.hdr, "scene", wgpu::LoadOp::Load);
+            pass.set_bind_group(0, globals, &[]);
+            pass.set_bind_group(1, &self.paint.group, &[]);
+            self.draw_back(&mut pass, frame, &self.buffers, &world);
+        }
+        // Blended things behind the balls (shapes) mix with what is behind them before the balls
+        // are drawn over them.
+        let behind = |l: &BlendLayer| l.z == 0 && l.behind();
+        for (i, (l, b)) in frame.layers.iter().zip(layer_buffers).enumerate().filter(|(_, (l, _))| behind(l)) {
+            self.draw_any_layer(device, queue, encoder, frame, i, l, b, &world, slot, None, false);
+        }
+        {
+            let mut pass = begin_pass(encoder, &self.targets.hdr, "balls", wgpu::LoadOp::Load);
+            pass.set_bind_group(0, globals, &[]);
+            pass.set_bind_group(1, &self.paint.group, &[]);
+            self.draw_balls(&mut pass, frame, &self.buffers, &world);
+        }
+        // Blended things behind the balls go under the rest; other blended things are drawn
+        // above the rest, so they are on top here too. With a material on the scene, those
+        // above get it on their own layers (see `draw_layer`), so the main picture's leaves them
+        // out and the picture under a blended ball is left alone.
+        let above = BlendLayer::above;
+        if wants_objects {
+            let view = &self.targets.object.as_ref().expect("made above").1;
+            let mut pass = begin_pass(encoder, view, "objects", wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
+            pass.set_bind_group(0, globals, &[]);
+            pass.set_bind_group(1, &self.paint.group, &[]);
+            self.draw_all_objects(&mut pass, frame, layer_buffers, !material);
+        }
+        let object_view = self.targets.object.as_ref().filter(|_| wants_objects).map(|(_, v)| v.clone());
+        // The light passes run no effects: what effects paint counts as unlit.
+        if self.light_mode == 0 {
+            self.chain.run(
+            device,
+            queue,
+            encoder,
+            Stage::Things,
+            frame,
+            effects::chain::Canvas::Main,
+            &self.targets.hdr_texture,
+            &self.targets.hdr,
+            object_view.as_ref(),
+        );
+        }
+        if !frame.flashes.is_empty() || !frame.trails_front.is_empty() || !frame.particles_front.is_empty() {
+            let mut pass = begin_pass(encoder, &self.targets.hdr, "flashes", wgpu::LoadOp::Load);
+            pass.set_bind_group(0, globals, &[]);
+            self.draw_front(&mut pass, frame, &self.buffers, &world);
+        }
+        // Then the blended things of z-order 0 and everything of a higher z-order, in order.
+        for (i, (l, b)) in frame.layers.iter().zip(layer_buffers).enumerate().filter(|(_, (l, _))| above(l)) {
+            let objects = object_view.as_ref();
+            self.draw_any_layer(device, queue, encoder, frame, i, l, b, &world, slot, objects, material);
+        }
+        if let Some(o) = overlay {
+            let screen = Through {
+                globals: screen_globals.clone(),
+                paint: self.overlay_paint.group.clone(),
+                world: false,
+                camera: CameraView::default(),
+                each: None,
+            };
+            let buffers = std::mem::take(&mut self.overlay);
+            let hdr = self.targets.hdr.clone();
+            // In the same order as the frame's own: lower z-orders, the overlay's trails and
+            // shapes, the layers behind its balls, its balls and flashes, then the rest.
+            let own = &layer_buffers[frame.layers.len()..];
+            let mut layers = |r: &mut Self, encoder: &mut wgpu::CommandEncoder, which: fn(&BlendLayer) -> bool| {
+                for (l, b) in o.layers.iter().zip(own).filter(|(l, _)| which(l)) {
+                    let through = r.layer_through(device, queue, frame, l, None, &screen);
+                    r.draw_layer(device, queue, encoder, l, b, &through, *slot, None);
+                    *slot += 1;
+                }
+            };
+            layers(self, encoder, |l| l.z < 0);
+            self.draw_things_part(encoder, o, &buffers, &screen, &hdr, false);
+            layers(self, encoder, |l| l.z == 0 && l.behind());
+            self.draw_things_part(encoder, o, &buffers, &screen, &hdr, true);
+            layers(self, encoder, |l| l.z > 0 || (l.z == 0 && !l.behind()));
+            self.overlay = buffers;
+        }
+    }
+
+    /// The world's and the screen's globals for light pass `mode` (1 or 2), made the first time.
+    fn light_globals(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        frame: &Frame,
+        mode: u32,
+        background_lit: f32,
+    ) -> (wgpu::BindGroup, wgpu::BindGroup) {
+        while self.light_globals.len() < 4 {
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("light pass globals"),
+                size: std::mem::size_of::<Globals>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("light pass globals"),
+                layout: &self.globals_layout,
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
+            });
+            self.light_globals.push((buffer, group));
+        }
+        let at = 2 * (mode as usize - 1);
+        let mut world = Globals::new(frame, &frame.camera, self.targets.width);
+        world.light = [mode as f32, background_lit, 0.0, 0.0];
+        let mut screen = Globals::new(frame, &CameraView::default(), self.targets.width);
+        screen.light = world.light;
+        queue.write_buffer(&self.light_globals[at].0, 0, bytemuck::bytes_of(&world));
+        queue.write_buffer(&self.light_globals[at + 1].0, 0, bytemuck::bytes_of(&screen));
+        (self.light_globals[at].1.clone(), self.light_globals[at + 1].1.clone())
     }
 
     /// Copies the HDR picture into `behind`: what a blend layer is mixed with.
@@ -1546,6 +1673,10 @@ impl Renderer {
         index: Option<usize>,
         through: &Through,
     ) -> Through {
+        // The light passes draw every layer's things one over another.
+        if self.light_mode != 0 {
+            return through.clone();
+        }
         let starts_above_nothing = matches!(l.blend, bpe_core::Blend::Multiply | bpe_core::Blend::Darken);
         let has_effects = index.is_some_and(|i| effects::chain::layer_has_effects(frame, i));
         if !(l.each && l.blend.combines_with_itself()) || (starts_above_nothing && has_effects) {
@@ -1587,8 +1718,8 @@ impl Renderer {
         let clear = through.each.map_or(wgpu::Color::TRANSPARENT, each::clear);
         drop(begin_pass(encoder, &layer, "blend layer", wgpu::LoadOp::Clear(clear)));
         self.draw_things(encoder, &l.frame, b, through, &layer);
-        if let Some((frame, index, objects)) =
-            effects.filter(|(frame, index, _)| effects::chain::layer_has_effects(frame, *index))
+        if let Some((frame, index, objects)) = effects
+            .filter(|(frame, index, _)| self.light_mode == 0 && effects::chain::layer_has_effects(frame, *index))
         {
             use effects::chain::Chain;
             // A material paints the layer's own things, so the object picture shows only them.
@@ -1604,12 +1735,14 @@ impl Renderer {
             let objects = own.as_ref().map(|(_, v)| v).or(objects);
             self.chain.run(device, queue, encoder, Stage::Things, frame, on, &texture, &layer, objects);
         }
+        // The surface keeps the most any layer blocks and stands (see lighting.wgsl).
+        let blend = if self.light_mode == 2 { bpe_core::Blend::Lighten } else { l.blend };
         self.blend.composite(
             device,
             queue,
             encoder,
             slot,
-            l.blend,
+            blend,
             l.amount,
             through.each.is_some(),
             l.plain(),

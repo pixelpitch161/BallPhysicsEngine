@@ -16,9 +16,27 @@ struct Globals {
     bg: vec4<f32>,
     bg_from: vec4<f32>,
     bg_to: vec4<f32>,
+    grade: vec4<f32>,
+    grade_more: vec4<f32>,
+    // Lighting (see lighting.wgsl): x 0 draws the picture as always, 1 each thing's lit colour,
+    // 2 its surface; y how much the background takes light.
+    light: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
+
+// What a thing drawn without layers writes, premultiplied `c` in hand: in the light passes its
+// colour times `lit` (mode 1), or how much it blocks light, its height (flat: 0) and its cover
+// (mode 2); `c` itself otherwise.
+fn light_flat(c: vec4<f32>, lit: f32, blocks: f32) -> vec4<f32> {
+    if g.light.x < 0.5 {
+        return c;
+    }
+    if g.light.x < 1.5 {
+        return vec4<f32>(c.rgb * lit, c.a);
+    }
+    return vec4<f32>(clamp(blocks, 0.0, 1.0) * c.a, 0.0, 0.0, c.a);
+}
 
 // The camera (centre xy, zoom, turn) turns a world point into screen units; with no camera
 // (centre 0, zoom 1, turn 0) the point is unchanged, exactly.
@@ -73,6 +91,10 @@ fn screen_to_world(q: vec2<f32>) -> vec2<f32> {
 
 @fragment
 fn fs_background(in: BgOut) -> @location(0) vec4<f32> {
+    return light_flat(background_colour(in), g.light.y, 0.0);
+}
+
+fn background_colour(in: BgOut) -> vec4<f32> {
     if g.bg_paint.x < 0.0 {
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
@@ -440,7 +462,7 @@ fn shade_flash(in: FlashOut) -> vec4<f32> {
 
 @fragment
 fn fs_shape(in: ShapeOut) -> @location(0) vec4<f32> {
-    return shade_shape(in);
+    return light_flat(shade_shape(in), 0.0, 0.0);
 }
 
 // In a layer whose things blend with each other (see each.wgsl).
@@ -451,7 +473,7 @@ fn fs_shape_each(in: ShapeOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_ball(in: BallOut) -> @location(0) vec4<f32> {
-    return shade_ball(in);
+    return light_flat(shade_ball(in), 0.0, 0.0);
 }
 
 // In a layer whose things blend with each other (see each.wgsl).
@@ -462,7 +484,7 @@ fn fs_ball_each(in: BallOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_flash(in: FlashOut) -> @location(0) vec4<f32> {
-    return shade_flash(in);
+    return light_flat(shade_flash(in), 0.0, 0.0);
 }
 
 // In a layer whose things blend with each other (see each.wgsl).

@@ -194,7 +194,7 @@ mod tests {
         };
         scene.tracks.insert(key("seconds"), track(0.2, 1.0));
         scene.tracks.insert(key("taper"), track(1.0, 0.25));
-        let text = bpe_core::save(&scene).replace("format: 10", "format: 9");
+        let text = bpe_core::save(&scene).replace("format: 11", "format: 9");
         (text, ball, shape)
     }
 
@@ -241,7 +241,7 @@ mod tests {
     fn a_format_10_file_is_left_alone() {
         let reg = registry();
         let (text, ball, _) = old_file();
-        let scene = bpe_core::load(&text.replace("format: 9", "format: 10"), &reg).unwrap();
+        let scene = bpe_core::load(&text.replace("format: 9", "format: 11"), &reg).unwrap();
         assert_eq!(scene.things[&ball].slots[&SlotId::Trail].kind, OLD_TRAIL, "kept for resolve to report");
     }
 }

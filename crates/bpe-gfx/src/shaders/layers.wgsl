@@ -30,7 +30,36 @@ struct LayerGpu {
     paint: PaintGpu,
     // A shader layer's effect settings, packed as its header lists them.
     extra: array<vec4<f32>, 4>,
+    // How it takes light (read in the light passes): Lit, blocks light, the body's roundness.
+    light: vec4<f32>,
 };
+
+// In the light passes (see lighting.wgsl): the height of the ball's surface at this pixel, set
+// as the walk starts (0 for shapes).
+var<private> LIGHT_HEIGHT: f32;
+
+// A layer's piece as the light passes see it: its colours (and a glow layer's light) times its
+// Lit, the light its sub-layers add left out (it never takes light: mode 1); or how much it
+// blocks light and the surface's height, adding no light (mode 2).
+fn light_piece(piece: Piece, l: LayerGpu) -> Piece {
+    var out = piece;
+    out.light_in = vec3<f32>(0.0);
+    out.light_out = vec3<f32>(0.0);
+    if g.light.x < 1.5 {
+        let lit = l.light.x;
+        out.c_in = piece.c_in * lit;
+        out.c_out = piece.c_out * lit;
+        if l.head.x == 4u {
+            out.light_in = piece.light_in * lit;
+            out.light_out = piece.light_out * lit;
+        }
+        return out;
+    }
+    let s = vec3<f32>(clamp(l.light.y, 0.0, 1.0), LIGHT_HEIGHT, 0.0);
+    out.c_in = s;
+    out.c_out = s;
+    return out;
+}
 
 @group(2) @binding(0) var<storage, read> look_layers: array<LayerGpu>;
 // Brush strokes, one 128 x 128 tile per layer of the array (see masks.rs): how painted (r) and

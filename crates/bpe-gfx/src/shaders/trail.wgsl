@@ -9,6 +9,8 @@ struct TrailIn {
     // x: softness (0 crisp, 1 soft from the centre line out), y: band (0 filled, else only the
     // outer share of the half width shows)
     @location(3) style: vec2<f32>,
+    // Its layer's Lit and how much it blocks light, read in the light passes.
+    @location(4) light: vec2<f32>,
 };
 
 struct TrailOut {
@@ -16,6 +18,7 @@ struct TrailOut {
     @location(0) edge: vec2<f32>,
     @location(1) color: vec4<f32>,
     @location(2) style: vec2<f32>,
+    @location(3) @interpolate(flat) light: vec2<f32>,
 };
 
 @vertex
@@ -25,6 +28,7 @@ fn vs_trail(v: TrailIn) -> TrailOut {
     out.edge = v.edge;
     out.color = v.color;
     out.style = v.style;
+    out.light = v.light;
     return out;
 }
 
@@ -58,7 +62,7 @@ fn shade_trail(in: TrailOut) -> vec4<f32> {
 
 @fragment
 fn fs_trail(in: TrailOut) -> @location(0) vec4<f32> {
-    return shade_trail(in);
+    return light_flat(shade_trail(in), in.light.x, in.light.y);
 }
 
 // In a layer whose things blend with each other (see each.wgsl).

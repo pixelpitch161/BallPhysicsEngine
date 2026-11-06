@@ -56,6 +56,12 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
         }
     }
     let base_c = vec4<f32>(body_c, 1.0);
+    // The surface's height for the light passes: a sphere at Roundness 1 on a round ball.
+    if g.light.x > 1.5 {
+        let round = select(0.0, body_rec.light.z, count_in > 0u);
+        let e = 1.0 + min(d, 0.0);
+        LIGHT_HEIGHT = layered_ball.radius.y * max(round, 0.0) * sqrt(max(1.0 - e * e, 0.0)) * step(d, 0.0);
+    }
     let cut = split & 0xffffu;
     let upper = cut > 0u && (split & 0x10000u) != 0u;
     let lower = cut > 0u && !upper;
@@ -98,7 +104,8 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
         // ---------- the open piece mixed in, at the next layer or the end ----------
         if open && !sub {
             open = false;
-            let mode = ll.head.y;
+            // The light passes' surface (mode 2) mixes every layer plainly.
+            let mode = select(ll.head.y, 0u, g.light.x > 1.5);
             // The lower part leaves out the layers above the Blend layer, not the group records.
             let above = cut > 0u && lk >= cut && ll.head.x != 8u && ll.head.x != 9u;
             // Showing its cuts alone (the editor's view): white where they let it show, black elsewhere.
@@ -115,6 +122,9 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
             glow_amount *= lo;
             if ll.head.x == 4u {
                 piece.light_out += sub_light(piece.c_out, glow_amount, select(outer, whole_out, lower && above), mode);
+            }
+            if g.light.x > 0.5 {
+                piece = light_piece(piece, ll);
             }
             let p_in = clamp(piece.a_in, 0.0, 1.0) * lo;
             let p_out = clamp(piece.a_out, 0.0, 1.0) * lo;
@@ -282,11 +292,13 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
             }
             //SHADER_CASE
             case 8u: {
-                // The group colour over the whole ball as it stands here.
-                inner = group_over(inner);
-                outer = group_over(outer);
-                top_in = group_over(top_in);
-                top_out = group_over(top_out);
+                // The group colour over the whole ball as it stands here (not over the surface).
+                if g.light.x < 1.5 {
+                    inner = group_over(inner);
+                    outer = group_over(outer);
+                    top_in = group_over(top_in);
+                    top_out = group_over(top_out);
+                }
             }
             case 20u: {
                 if !PIECE_PICTURE {
