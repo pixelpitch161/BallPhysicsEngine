@@ -212,17 +212,28 @@ Dependencies go bottom to top:
   `Track` (a shape focus exactly through Spin/Shrink, else pose + velocity). `fire_round` plans Keep leaving steps,
   `launch_ball` re-aims at launch (`Launch.arrive`); an aimed round at 0 s fires in `after_build`. Out my way aims
   caught balls. `aim::check` (warnings, `Inspector.aim_checks`) and `next_round`/`path_points` (preview paths).
-  **Through bounces** (part 4, plan `docs/superpowers/plans/ball-emitter/part4-test-fired.md`, `emitter/test_fire.rs`):
-  each ball's speed is found by test-firing a lone copy (`Lone`: `World::lone` keeps the things without balls and a
-  quiet copy of the emitter, `EmitterState::quiet`; Out my way lends the caught ball's cards, `World::lend_cards`)
-  from the moment it would set off; `passes` gives the signed miss of the step polyline against the target's track,
-  grouped by arc (bounces before); scan + Illinois brackets on the miss, Edge-bounce sawtooth taken within `GOOD`
-  0.45 px or by turning the direction ≤ `MOST_TWEAK` 0.3°; fewest bounces (≥ `aim_bounces`) then nearest Speed; at
-  most 40 flights to find a way plus 24 to settle when it leaves (moving walls). `aim_round`/`aim_catch` (rounds in
-  parallel, ≤ 8 threads) are cached process-wide in `aim_cache.rs` by (`World.fingerprint`, emitter, round or
-  catch); `EmitterState.aimed` keeps the rounds launching and the latest (`BallAim.path` for the preview). A round
-  at 0 s aimed through bounces fires on the first step (not `after_build`). A catching target ends a flight's arcs at
-  the one it is entered on. A run under `aim_cache::StopWith` whose flag is set gives up and keeps nothing. Its
+  **Through bounces** (part 4, plan `docs/superpowers/plans/ball-emitter/part4-test-fired.md`, reworked in part 4b,
+  `part4b-together.md`; `emitter/test_fire.rs`): ways are found by test-firing a lone copy (`Lone`: `World::lone`
+  keeps the things without balls and a quiet copy of the emitter, `EmitterState::quiet`; Out my way lends the caught
+  ball's cards, `World::lend_cards`) from the moment it would set off; `passes` gives the signed miss of the step
+  polyline against the target's track, grouped by arc (bounces before); `fly` stops past Bounces at most
+  (`aim_bounces_most`), at rest a second, or after `aim::MOST_STEPS` (2 min). Settings: Arrive (As soon as all can /
+  After: Arrive after), Bounces at least/most, Leave (Together / When needed), Ball directions (Adjust each ball /
+  Keep mine, Leave together only), Turn at most. `aim_shots`: phase 1 `first_ways` per ball (up to `WAYS` 3 arcs;
+  Keep mine scans speeds with Illinois brackets, the Edge sawtooth taken within `GOOD` 0.45 px or a ≤ `MOST_TWEAK`
+  0.3° turn; Adjust scans `TURN_SCAN` turns at Speed, `ROUGH` 3 px); T = the latest ball's soonest way (or Arrive
+  after); Together: `together_balls`/`meet` (≤ `SOLVE_FLIGHTS` 60 a ball) puts every ball **at** the target at T
+  (`off_at`, ≤ `REACH` 1 px, else the nearest within `ROUGH`: near a curved wall's focus some places can't be reached
+  closer), all leaving on the firing step: Keep mine by speed alone (`solve_keep`, exact only where nothing bends the
+  paths; `AimCheck.bends_keep` warns), Adjust by `solve_turn` (a secant on speed along the ways through the target
+  on one arc, each speed's turn found by `through`; folds where every way takes as long stop it), other balls' ways
+  from the same place reused as turns, a second pass from the others' answers and `borrow_ways` (from one place the
+  ways that meet are few, so balls often share a path). When needed: part 4's `settle` (each leaves so it arrives at
+  T). `aim_round`/`aim_catch` (rounds in parallel, ≤ 8 threads) are cached process-wide in `aim_cache.rs` by
+  (`World.fingerprint`, emitter, round or catch); `RoundAim.arrive` is the round's moment (`fire_round` gives it to
+  its launches); `EmitterState.aimed` keeps the rounds launching and the latest (`BallAim.path` for the preview). A
+  round at 0 s aimed through bounces fires on the first step (not `after_build`). A catching target ends a flight's
+  arcs at the one it is entered on. A run under `aim_cache::StopWith` whose flag is set gives up and keeps nothing. Its
   marker, flashes and ripples are `draw.rs` (sprites), worked out from its state at the moment drawn. Group
   gradient `Spread` has Round and Launch angle; the around layer **Wavefront** (`layers/wavefront.rs`) draws a
   strip through each round's balls (`trail::draw::strip_with_subs`). Camera Follow "balls" follows emitters too.
