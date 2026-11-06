@@ -142,7 +142,15 @@ pub fn around_layers(slot: &ResolvedSlot, shape: bool) -> Vec<AroundLayer> {
         };
         let light = super::lighting::of(&p);
         let more = super::lighting::extra_of(&p, 0.0, true);
-        out.push(AroundLayer { id: layer.id, kind, subs: Vec::new(), only: layer.only.clone(), light, emit: None, more });
+        out.push(AroundLayer {
+            id: layer.id,
+            kind,
+            subs: Vec::new(),
+            only: layer.only.clone(),
+            light,
+            emit: None,
+            more,
+        });
     }
     // Gives off light makes its layer a lamp: it shows its own colours, unlit.
     for a in &mut out {

@@ -8,7 +8,9 @@ use bpe_runtime::{EventKind, Outline, World};
 use glam::Vec2;
 
 use super::laser::{self, Meets};
-use super::{AreaShape, AtThings, FlickerStyle, LightColour, LightSettings, LightType, LightsUp, Points, RidesOn, StripAlong};
+use super::{
+    AreaShape, AtThings, FlickerStyle, LightColour, LightSettings, LightType, LightsUp, Points, RidesOn, StripAlong,
+};
 use crate::things::rig::pattern::Drive;
 
 pub struct LightDraw;
@@ -237,7 +239,11 @@ pub fn flicker(time: f64, amount: f32, speed: f32, style: FlickerStyle, seed: u3
             if r > 0.83 {
                 let f = (x - k) as f32;
                 // Out for the middle of the beat, with a stutter.
-                if (0.15..0.75).contains(&f) { if hash((x * 7.0).floor() as i64, seed ^ 0x51) > 0.3 { 1.0 } else { 0.4 } } else { 0.0 }
+                if (0.15..0.75).contains(&f) {
+                    if hash((x * 7.0).floor() as i64, seed ^ 0x51) > 0.3 { 1.0 } else { 0.4 }
+                } else {
+                    0.0
+                }
             } else {
                 0.0
             }
@@ -475,6 +481,23 @@ mod tests {
         let at = places_in(&world, Some(ThingId::ROOT), &s);
         assert_eq!(at.len(), 1);
         assert_eq!(at[0].at, Vec2::new(3.0, 4.0));
+    }
+
+    #[test]
+    fn flicker_stays_between_dark_and_full_and_is_pure_in_time() {
+        for style in [FlickerStyle::Candle, FlickerStyle::Faulty, FlickerStyle::Pulse] {
+            let at = |t: f64| flicker(t, 0.7, 8.0, style, 3);
+            let seen: Vec<f32> = (0..400).map(|k| at(k as f64 / 60.0)).collect();
+            assert!(seen.iter().all(|f| (0.0..=1.0).contains(f)), "{style:?}");
+            assert!(seen.iter().any(|f| *f < 0.9), "{style:?} flickers");
+            assert_eq!(seen, (0..400).map(|k| at(k as f64 / 60.0)).collect::<Vec<_>>());
+        }
+        assert_eq!(flicker(1.3, 0.0, 8.0, FlickerStyle::Candle, 3), 1.0, "no flicker: full");
+        assert_ne!(
+            (0..50).map(|k| flicker(k as f64 / 10.0, 1.0, 4.0, FlickerStyle::Candle, 1)).collect::<Vec<_>>(),
+            (0..50).map(|k| flicker(k as f64 / 10.0, 1.0, 4.0, FlickerStyle::Candle, 2)).collect::<Vec<_>>(),
+            "another seed, another flicker"
+        );
     }
 
     #[test]

@@ -304,9 +304,8 @@ mod tests {
     fn glass_bends_a_beam_in_and_out() {
         // Through a glass ball off its middle: bent in, bent out, carrying on beyond.
         let s = Scenery { walls: Vec::new(), balls: vec![(ThingId(3), 0, Vec2::new(0.0, 200.0), 50.0)] };
-        let path = trace(&s, Vec2::new(25.0, 0.0), Vec2::new(0.0, 1.0), 1000.0, 8, None, &|_, _| Meets::Bend {
-            index: 1.5,
-        });
+        let path =
+            trace(&s, Vec2::new(25.0, 0.0), Vec2::new(0.0, 1.0), 1000.0, 8, None, &|_, _| Meets::Bend { index: 1.5 });
         assert_eq!(path.points.len(), 4, "{:?}", path.points);
         let out = (path.points[3] - path.points[2]).normalize();
         assert!(out.x < -0.1, "a glass ball focuses light toward its axis: {out:?}");

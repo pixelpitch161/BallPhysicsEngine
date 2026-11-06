@@ -28,12 +28,8 @@ pub fn named(resolved: &Resolved, world: &World, s: &LightSettings, me: ThingId)
     if s.lights_up == LightsUp::Everything {
         return Vec::new();
     }
-    let mut out: Vec<f32> = world
-        .matching(&s.link_things, me)
-        .into_iter()
-        .map(|id| number_of(resolved, id))
-        .filter(|n| *n > 0.0)
-        .collect();
+    let mut out: Vec<f32> =
+        world.matching(&s.link_things, me).into_iter().map(|id| number_of(resolved, id)).filter(|n| *n > 0.0).collect();
     let background = match s.lights_up {
         LightsUp::OnlyThese => s.link_background,
         _ => !s.link_background,

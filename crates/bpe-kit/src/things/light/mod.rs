@@ -366,7 +366,15 @@ pub struct LightSettings {
     #[setting(label = "Beam in haze", span(0, 4), keyframe, group = "Air")]
     pub beam: f32,
     /// How wide the laser's beam is.
-    #[setting(label = "Beam width", when = "kind=laser", range(0, 1e9), span(0.5, 20), unit = "px", keyframe, group = "Laser")]
+    #[setting(
+        label = "Beam width",
+        when = "kind=laser",
+        range(0, 1e9),
+        span(0.5, 20),
+        unit = "px",
+        keyframe,
+        group = "Laser"
+    )]
     pub laser_width: f32,
     /// How brightly the beam itself shows.
     #[setting(label = "Beam glow", when = "kind=laser", span(0, 4), keyframe, group = "Laser")]
@@ -427,7 +435,14 @@ pub struct LightSettings {
     #[setting(label = "Flicker", span(0, 1), keyframe, group = "Gobo and flicker")]
     pub flicker: f32,
     /// How fast it flickers.
-    #[setting(label = "Flicker speed", when = "flicker", span(0.1, 30), unit = "Hz", keyframe, group = "Gobo and flicker")]
+    #[setting(
+        label = "Flicker speed",
+        when = "flicker",
+        span(0.1, 30),
+        unit = "Hz",
+        keyframe,
+        group = "Gobo and flicker"
+    )]
     pub flicker_speed: f32,
     /// How it flickers.
     #[setting(label = "Flicker style", when = "flicker", group = "Gobo and flicker")]

@@ -241,7 +241,14 @@ pub struct LightingSettings {
     #[setting(label = "What glows", when = "glow_dark", group = "Glow in the dark")]
     pub remembers: Remembers,
     /// How fast light charges the glow up.
-    #[setting(label = "Charge speed", when = "glow_dark", span(0, 20), unit = "×", keyframe, group = "Glow in the dark")]
+    #[setting(
+        label = "Charge speed",
+        when = "glow_dark",
+        span(0, 20),
+        unit = "×",
+        keyframe,
+        group = "Glow in the dark"
+    )]
     pub charge: f32,
     /// How long the glow takes to fade to about a third.
     #[setting(

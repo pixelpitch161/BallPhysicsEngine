@@ -847,15 +847,21 @@ impl Lighting {
             extras: t.extras.as_ref().filter(|_| extras_on).map_or(none, |e| &e[memory_to].1),
             stir: t.stir.as_ref().filter(|_| stirring).map_or(none, |e| &e.1),
         };
-        let group_in = |layout: &wgpu::BindGroupLayout, bindings: &[u32], uniform: &wgpu::Buffer, i: &GlowInputs| {
-            let mut entries = vec![wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() }];
-            entries.extend(bindings.iter().map(|b| wgpu::BindGroupEntry {
-                binding: *b,
-                resource: wgpu::BindingResource::TextureView(i.at(*b)),
-            }));
-            device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("lighting 1b"), layout, entries: &entries })
-        };
-        let glow_group = |uniform: &wgpu::Buffer, i: &GlowInputs| group_in(&self.glow_layout, GLOW_BINDINGS, uniform, i);
+        let group_in =
+            |layout: &wgpu::BindGroupLayout, bindings: &[u32], uniform: &wgpu::Buffer, i: &GlowInputs| {
+                let mut entries = vec![wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() }];
+                entries.extend(bindings.iter().map(|b| wgpu::BindGroupEntry {
+                    binding: *b,
+                    resource: wgpu::BindingResource::TextureView(i.at(*b)),
+                }));
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("lighting 1b"),
+                    layout,
+                    entries: &entries,
+                })
+            };
+        let glow_group =
+            |uniform: &wgpu::Buffer, i: &GlowInputs| group_in(&self.glow_layout, GLOW_BINDINGS, uniform, i);
         let pass = |encoder: &mut wgpu::CommandEncoder,
                     views: &[(&wgpu::TextureView, wgpu::LoadOp<wgpu::Color>)],
                     pipeline: &wgpu::RenderPipeline,
@@ -906,7 +912,8 @@ impl Lighting {
         // The light from Light things, on surfaces and in the air, added over the background's
         // own light when it gives any.
         let direct_load = if background_glows { wgpu::LoadOp::Load } else { clear };
-        let g = group_in(&self.direct_layout, DIRECT_BINDINGS, &base_glow, &GlowInputs { direct: none, air: none, ..all });
+        let g =
+            group_in(&self.direct_layout, DIRECT_BINDINGS, &base_glow, &GlowInputs { direct: none, air: none, ..all });
         pass(encoder, &[(&t.direct.1, direct_load), (&t.air.1, clear)], &self.direct, &[&main, &g], "direct light");
 
         // The light field, once or twice (the second time the first's light bounces too).
