@@ -133,6 +133,14 @@ fn fs_surface(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     // picture (it blocks no light), whole where it covers in the tags.
     let mode = g.light.x;
     if mode > 0.5 {
+        // Light pass 9, the glass picture (glass and light part 3): glass that bends lamp light
+        // is free glass there, its index of refraction over its cover.
+        if mode > 8.5 {
+            if code == GLASS && st.c.z > 1.0001 {
+                return vec4<f32>(st.c.z * shown, 0.0, 0.0, shown);
+            }
+            return vec4<f32>(0.0);
+        }
         // Nothing in the surface or the tint picture (pass 8): it blocks no light.
         if (mode > 1.5 && mode < 2.5) || mode > 7.5 {
             return vec4<f32>(0.0);

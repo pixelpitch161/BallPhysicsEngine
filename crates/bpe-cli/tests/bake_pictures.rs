@@ -369,3 +369,23 @@ fn a_stage_bake_keeps_the_live_bounce_unless_it_traces() {
     let (a, b) = (mean_brightness(&live), mean_brightness(&baked));
     assert!((a - b).abs() / a < 0.03, "live {a}, baked {b}");
 }
+
+/// Glass and light part 3: a glass circle (a shape) bends the lamp's light to a bright line in the
+/// bake as it does live.
+#[test]
+fn a_glass_lens_focuses_in_the_bake() {
+    let Some(mut gpu) = gpu() else { return };
+    let mut scene = room(false, [0.0, 900.0], 20.0, [0.0, 0.0]);
+    set_lighting(&mut scene, "ambient", Value::Number(0.0));
+    let shape = thing_of(&scene, "shape");
+    let lens = bpe_kit::ShapeSettings { fill: bpe_kit::ShapeFill::Filled, ..bpe_kit::ShapeSettings::circle(90.0, 2.0) };
+    scene.things.get_mut(&shape).unwrap().params = lens.to_params();
+    set_surface(&mut scene, shape, SurfaceKind::Glass);
+    let below = ((-60.0, 110.0), (60.0, 600.0));
+    let on = draw(&mut gpu, &scene, 0.0, bake(4, 0.0), "lens");
+    assert!(gpu.renderer.bent_photons() > 0, "the baked samples send photons");
+    set_lighting(&mut scene, "glass_caustics", Value::Number(0.0));
+    let off = draw(&mut gpu, &scene, 0.0, bake(4, 0.0), "lens-off");
+    let (b_on, b_off) = (brightest(&on, below.0, below.1), brightest(&off, below.0, below.1));
+    assert!(b_on > b_off + 60, "with bent light {b_on}, without {b_off}");
+}

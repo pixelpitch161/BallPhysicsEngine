@@ -62,7 +62,30 @@ impl ThingDraw for ShapeDraw {
         let s = surface::of_card(look);
         scene.set_surface(index, s.gpu(bpe_gfx::SurfaceGpu::SHAPE));
         scene.refracts |= s.see_through();
-        surface::Stamps::of(cx.scene, cx.thing.id, look).fill(scene, bpe_gfx::SurfaceGpu::SHAPE);
+        let stamps = surface::Stamps::of(cx.scene, cx.thing.id, look);
+        stamps.fill(scene, bpe_gfx::SurfaceGpu::SHAPE);
+        // Glass that bends lamp light (glass and light part 3): the shape's surface, and each of its
+        // layers' own, as a bender over the shape's box, when its layer (the body for the whole
+        // shape's) blocks light.
+        let blocks = |layer: Option<bpe_core::LayerId>| {
+            layer.is_some_and(|id| {
+                let key = bpe_core::layered_key(id, crate::modules::look::layers::lighting::BLOCKS_LIGHT);
+                matches!(look.params.get(&key), Some(bpe_core::Value::Bool(true)))
+            })
+        };
+        let benders: Vec<u32> = std::iter::once((index, &s, look.layers.first().map(|b| b.id)))
+            .chain(stamps.layers.iter().map(|(layer, i, ls)| (*i, ls, Some(*layer))))
+            .filter(|(_, s, layer)| surface::bends(s) && blocks(*layer))
+            .map(|(i, _, _)| i)
+            .collect();
+        if !benders.is_empty()
+            && let Some(wall) = cx.world.walls.get(&cx.thing.id)
+        {
+            let form = wall_form(wall);
+            if let Some(round) = bpe_gfx::Bender::round(outline_world(&form), form.half + 2.0, 0) {
+                scene.benders.extend(benders.into_iter().map(|index| bpe_gfx::Bender { index, ..round }));
+            }
+        }
         if scene.mirrors.len() < bpe_gfx::MOST_MIRRORS
             && let Some(wall) = cx.world.walls.get(&cx.thing.id)
         {
@@ -571,5 +594,48 @@ mod tests {
         let zs: Vec<(i32, bpe_gfx::Place)> = frame.layers.iter().map(|l| (l.z, l.place)).collect();
         assert_eq!(zs, [(-1, bpe_gfx::Place::Front), (2, bpe_gfx::Place::Back)], "in drawing order");
         assert!(frame.layered.is_empty() && !frame.layers[0].frame.layered.is_empty());
+    }
+
+    /// The lit room's frame with its shape's (and ball's) Look Surface set to `see` See-through
+    /// and `bends` Bends light.
+    fn lit_benders(shape: (f32, f32), ball: (f32, f32)) -> Vec<bpe_gfx::Bender> {
+        use bpe_core::{SlotId, Value};
+        let kit = crate::kit();
+        let mut scene = crate::scenes::lit_room(&kit.registry);
+        let shape_id = scene.things.values().find(|t| t.kind == "shape").map(|t| t.id).expect("a shape");
+        let ball_id = scene.things.values().find(|t| t.kind == "balls").map(|t| t.id).expect("a ball");
+        for (id, (see, bends)) in [(shape_id, shape), (ball_id, ball)] {
+            let look = scene.card_mut(id, SlotId::Look).unwrap();
+            look.params.set("see_through", Value::Number(see.into()));
+            look.params.set("bends_light", Value::Number(bends.into()));
+        }
+        frame_of(&scene).light.expect("a lit frame").benders
+    }
+
+    #[test]
+    fn a_glass_shape_bends_lamp_light_and_a_glass_ball_doesnt() {
+        let benders = lit_benders((0.85, 1.5), (0.85, 1.5));
+        assert_eq!(benders.len(), 1, "the shape only: balls keep the sphere caustics");
+        let b = benders[0];
+        assert!(b.index >= 1, "the shape's surface index");
+        assert!(b.lo[0] < b.hi[0] && b.lo[1] < b.hi[1], "{b:?}");
+        // Matte see-through glass, solid glass and nearly straight glass don't bend.
+        assert!(lit_benders((0.85, 1.0), (0.0, 1.0)).is_empty());
+        assert!(lit_benders((0.0, 1.5), (0.0, 1.0)).is_empty());
+        assert!(lit_benders((0.85, 1.00005), (0.0, 1.0)).is_empty());
+    }
+
+    #[test]
+    fn a_glass_shape_that_doesnt_block_light_doesnt_bend_it() {
+        use bpe_core::{SlotId, Value, layered_key};
+        let kit = crate::kit();
+        let mut scene = crate::scenes::lit_room(&kit.registry);
+        let id = scene.things.values().find(|t| t.kind == "shape").map(|t| t.id).expect("a shape");
+        let body = scene.things[&id].slots[&SlotId::Look].layers[0].id;
+        let look = scene.card_mut(id, SlotId::Look).unwrap();
+        look.params.set("see_through", Value::Number(0.85));
+        look.params.set("bends_light", Value::Number(1.5));
+        look.params.set(&layered_key(body, "blocks_light"), Value::Bool(false));
+        assert!(frame_of(&scene).light.expect("a lit frame").benders.is_empty());
     }
 }

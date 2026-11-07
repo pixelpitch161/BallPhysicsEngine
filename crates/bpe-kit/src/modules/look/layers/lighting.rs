@@ -14,6 +14,7 @@ pub const BLOCKS_LIGHT: &str = "blocks_light";
 pub const UNDER_UV: &str = "under_uv";
 pub const UV_GLOW: &str = "uv_glow";
 pub const CATCHES_BEAMS: &str = "catches_beams";
+pub const BENDS_LIGHT: &str = "bends_light";
 
 /// How a layer looks under ultraviolet light (lighting part 4).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
@@ -53,6 +54,47 @@ pub struct AroundLit {
 impl Default for AroundLit {
     fn default() -> Self {
         Self { lit: 1.0, blocks_light: false, catches_beams: 0.0, under_uv: UnderUv::Normal, uv_glow: 1.5 }
+    }
+}
+
+/// A particles layer's Lighting (glass and light part 3): an around layer's, and how much each
+/// particle bends lamp light passing through it, like a bubble or a glass bead.
+#[derive(Clone, Debug, PartialEq, Settings)]
+pub struct ParticlesLit {
+    /// How much the scene's light changes this layer: 0 keeps its own colour, 1 takes the light
+    /// whole, more takes it harder.
+    #[setting(label = "Lit", span(0, 1), keyframe, group = "Lighting")]
+    pub lit: f32,
+    /// Whether this layer casts shadows.
+    #[setting(label = "Blocks light", group = "Lighting")]
+    pub blocks_light: bool,
+    /// How much it catches the light passing through it like smoke, glowing where a beam crosses it.
+    #[setting(label = "Catches beams", span(0, 2), keyframe, group = "Lighting")]
+    pub catches_beams: f32,
+    /// How the layer looks under ultraviolet light: Normal, Glows (bright in UV light) or Only
+    /// under UV (hidden until UV light falls on it).
+    #[setting(label = "Under UV", group = "Lighting")]
+    pub under_uv: UnderUv,
+    /// How brightly the layer glows where UV light falls on it.
+    #[setting(label = "UV glow", when = "under_uv!=normal", span(0, 4), keyframe, group = "Lighting")]
+    pub uv_glow: f32,
+    /// How much each particle bends lamp light passing through it (its index of refraction), so
+    /// bubbles and beads focus light into bright lines: 1 lets it through straight. Needs the
+    /// Lighting card's Glass caustics, and works best on particles that don't block light.
+    #[setting(label = "Bends light", span(1, 2), keyframe, group = "Lighting")]
+    pub bends_light: f32,
+}
+
+impl Default for ParticlesLit {
+    fn default() -> Self {
+        Self {
+            lit: 1.0,
+            blocks_light: false,
+            catches_beams: 0.0,
+            under_uv: UnderUv::Normal,
+            uv_glow: 1.5,
+            bends_light: 1.0,
+        }
     }
 }
 
@@ -138,7 +180,8 @@ pub fn defs_of(kind: &str) -> &'static [SettingDef] {
     match kind {
         BODY | shape::BODY => Solid::defs(),
         PATTERN | OUTLINE | SHADING | SHADER | shape::PAINT | shape::OUTLINE | shape::SHADER => Lit::defs(),
-        super::trail::TRAIL | super::particles::PARTICLES | super::particles::SHAPE_PARTICLES => AroundLit::defs(),
+        super::trail::TRAIL => AroundLit::defs(),
+        super::particles::PARTICLES | super::particles::SHAPE_PARTICLES => ParticlesLit::defs(),
         super::wavefront::WAVEFRONT => AroundLit::defs(),
         GLOW | SHINE | shape::GLOW => Unlit::defs(),
         _ => &[],
@@ -147,7 +190,9 @@ pub fn defs_of(kind: &str) -> &'static [SettingDef] {
 
 /// A layer's Lighting as the renderer reads it ([`bpe_gfx::LayerGpu::light`]): Lit, Blocks light
 /// (0 or 1), then 0 and 0 (the draw fills in the body's Bulge and the thing's surface index). A
-/// layer without the settings is neither lit nor blocking.
+/// layer without the settings is neither lit nor blocking. A particles layer's Bends light
+/// (glass and light part 3) rides in `[2]` (0 when it doesn't bend), which its sprites carry
+/// (`Particle::light[2]`, [`super::around::Drew::stamp`]).
 pub fn of(p: &Params) -> [f32; 4] {
     let number = |key| match p.get(key) {
         Some(Value::Number(v)) => *v as f32,
@@ -155,7 +200,9 @@ pub fn of(p: &Params) -> [f32; 4] {
         Some(Value::Bool(b)) => f32::from(u8::from(*b)),
         _ => 0.0,
     };
-    [number(LIT), number(BLOCKS_LIGHT), 0.0, 0.0]
+    let bends = number(BENDS_LIGHT);
+    let bends = if bends.is_finite() && bends > bpe_gfx::BENDS_FROM { bends } else { 0.0 };
+    [number(LIT), number(BLOCKS_LIGHT), bends, 0.0]
 }
 
 /// A layer's part 4 lighting as the renderer reads it ([`bpe_gfx::LayerGpu::more`], a trail's or
@@ -219,5 +266,34 @@ mod tests {
         assert_eq!(light("shape.body"), Some([1.0, 1.0, 0.0, 0.0]));
         assert_eq!(light("layer.glow"), Some([0.0; 4]));
         assert_eq!(light("react.flash"), Some([0.0; 4]), "reactions have no Lighting");
+    }
+
+    #[test]
+    fn a_particles_layer_carries_how_much_it_bends_light() {
+        assert!(defs_of(super::super::particles::PARTICLES).iter().any(|d| d.key == BENDS_LIGHT));
+        assert!(!defs_of(super::super::trail::TRAIL).iter().any(|d| d.key == BENDS_LIGHT), "trails don't bend");
+        let mut p = Params::default();
+        p.set(BENDS_LIGHT, Value::Number(1.33));
+        assert!((of(&p)[2] - 1.33).abs() < 1e-6);
+        p.set(BENDS_LIGHT, Value::Number(1.0));
+        assert_eq!(of(&p)[2], 0.0, "1 lets light through straight");
+    }
+
+    #[test]
+    fn a_particles_things_sprites_can_bend_light_but_its_smoke_cant() {
+        use crate::things::particles::look::{SMOKE, SPRITES};
+        let reg = crate::kit().registry;
+        let offers = |kind: &str| reg.layer(kind).unwrap().light_defs().iter().any(|d| d.key == BENDS_LIGHT);
+        assert!(offers(SPRITES));
+        assert!(!offers(SMOKE));
+    }
+
+    #[test]
+    fn a_glass_liquid_carries_how_much_it_bends_lamp_light() {
+        use crate::things::particles::liquid::{LiquidLayer, Surface};
+        let glass = LiquidLayer { surface: Surface::Glass, ..LiquidLayer::default() };
+        assert!((glass.style(1.0).c[2] - 1.33).abs() < 1e-6);
+        let plastic = LiquidLayer { surface: Surface::Plastic, ..LiquidLayer::default() };
+        assert_eq!(plastic.style(1.0).c[2], 0.0);
     }
 }

@@ -218,4 +218,53 @@ Harness as `see_through_shadows.rs` (270 × 480, Light only, linear light). Each
 
 ## As built
 
-(Filled in when the part is done.)
+Built as planned, with these changes found while building:
+
+- **No half-size pictures, no add pass.** `vs_bent`/`fs_bent` splat the legs straight into the full-size direct light
+  and air pictures (two attachments, added) before the background-light copy; `fs_direct` loads both. Simpler, and the
+  photon counts below keep the fill small.
+- **Fewer photons.** Each leg's line is as wide as its neighbours are apart, so far fewer photons give a smooth
+  picture: Draft 4096, Fast 8192, Good 16384, Ultra and a baked sample 32768 a frame (× Bent light rays), at most
+  `MOST_BENT_PHOTONS` 2^17, at least 256 a pair; `BENT_LEGS` is 8 (a pane behind a see-through thing behind glass
+  needs more than 6).
+- **Fans, and widths from neighbours.** With soft shadows a pair's photons leave from up to 16 points across the lamp
+  (`lamp_copies`), each point a fan of at least 256; a leg's half width at each end is 1.5 × how far the same leg of
+  its neighbours in the fan lies from it (`spread_from`; the neighbour counts only when its light and *path key*,
+  a number for the order of things it met, are the same), at least Bent light softness's width and at most 48 times
+  that. Without this, light spread out by a lens showed as separate streaks.
+- **Fresnel.** Each glass edge lets through `1 − F` (exact unpolarised Fresnel, `passes_edge`), so light grazing a
+  lens's rim mostly goes, as it does in life (it showed as bright streaks before), and an edge that hardly changes
+  the index reflects nothing (Schlick's lost light there at a slant; found in review).
+- **A glass's soft edge is open** to a photon (`bender_covering(ip, 0.02)`): its antialiased edge pixels block a
+  little and would otherwise tint the photons that crossed them twice, in stripes.
+- **Shadow colour.** A photon carries Shadow strength × (1 − Shadow colour) of the light, so with a coloured shadow
+  the total is still what part 1 gave.
+- **Sun photons** start a Shadow length (at most 4096) before the box, so what shades the glass on the way is met.
+- **What doesn't block doesn't bend.** A shape (or own-surface layer) whose layer doesn't block light lists no bender.
+- Photons that are outside the box and going away from it stop at once.
+- **Free glass has a picture of its own** (found in review). Marking it in the surface pass wiped out what was under
+  it (a bubble over a wall cut a hole in its shadow) and changed lit pictures with Glass caustics 0. Now light pass 9
+  draws only bending sprites and Glass liquids, only when photons go through free glass (`BentPlan::free_glass`), and
+  `free_glass.wgsl` marks it over a copy of the surface picture where nothing solid is, keeping blocking, height and
+  cover and writing a code into B (`free_glass_of`). The overlay's glass bends nothing.
+- **Review fixes to the photons:** signed neighbour widths, so a focus inside a leg is sharp; the fan's photons take
+  16 wavelengths in turn and a split leg measures its width against its own colour's neighbours, so rainbow rims stay
+  coloured; a photon carries light only as far past its last glass as the direct light counts the glass solid
+  (`carried_past`: Shadow length, or a Stage slab's reach from the lamp's height), its last step clamped to it; with one
+  leg left it bends no more (a cloud of bubbles); in glass or see-through it steps at most a pixel (a field step passed
+  a wall under a bubble); lasers, whose light isn't carried, see bending glass as see-through (`bent_carried`); every
+  pair is carried while the cap allows (fewer photons a pair rather than pairs left out).
+
+Tests: `bpe-kit/tests/bent_light_pictures.rs` (straight glass matches part 1 at Fast and Good for a lamp and a sun,
+a pane lit from the side at up to 76° matches too, free glass leaves a wall's shadow whole and a bending glass liquid
+draws as a plain one with Glass caustics 0, two panes aren't counted twice, a disc focuses ≥ 2.5×, a gentle biconcave lens spreads, rainbow rims, nothing bending
+sends nothing, a Stage lens, a bending sprite focuses, a Glass liquid sends photons and a Plastic one doesn't), the
+bake's `a_glass_lens_focuses_in_the_bake`, unit tests in `bent_light.rs`, `frame.rs` (`free_glass_box`), the shape
+draw (benders) and the layers' Lighting (Sprites bend, Soft smoke doesn't; the liquid's style).
+
+Known limits (decision 12) stand; reflected light at glass edges is dropped (part 4's mirrors can pick it up). Also
+known from review: the legs add into the half-float direct picture (a great many faint legs on one pixel lose a little
+precision); on a Stage the bent light is traced in the picture plane, so with Looking down it doesn't shift with the
+slab's shadow, and it passes Stage balls; Shadow strength above 1 makes the photons a little brighter than the light
+the shadow took; clear bending glass now gives contact shading round it; glass thinner than about 4 pixels takes its
+normals from the field, and a thin outline bends only where its cover passes half (so more at export size).
