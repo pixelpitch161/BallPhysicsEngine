@@ -167,7 +167,12 @@ fn light_piece(piece: Piece, l: LayerGpu, hit: vec4<f32>) -> Piece {
     // B: the thing's surface index (lighting part 2a; the record's glass (4096) and own-surface
     // (8192) flags taken off). A painted layer at Lit 0 takes no light, so it shines nowhere: its
     // index gains 2048, which reads as its thing's surface without shine (part 2b).
+    // How much it blocks: 1 less its Surface's See-through (lighting's see-through blockers, the
+    // kit's `Stamps::apply`); on a Stage whole, whatever its surface.
     var blocks = clamp(l.light.y, 0.0, 1.0);
+    if g.light.z > 0.5 {
+        blocks = select(0.0, 1.0, blocks > 0.0);
+    }
     if l.head.x == 0u {
         LIGHT_BODY_BLOCKS = blocks;
     }
@@ -182,7 +187,7 @@ fn light_piece(piece: Piece, l: LayerGpu, hit: vec4<f32>) -> Piece {
     // doesn't stop the ball blocking); the body always gives the surface its height. A layer
     // wearing its own surface, or dulled by Lit 0, still covers it inside the thing, blocking as
     // the Body does there.
-    let keeps = l.light.y < 0.5 && l.head.x != 0u;
+    let keeps = l.light.y <= 0.0 && l.head.x != 0u;
     if keeps && (own || dull) {
         blocks = LIGHT_BODY_BLOCKS;
     }
@@ -528,6 +533,16 @@ struct Walked {
     outer: vec4<f32>,
 };
 
+// The surface pass's R in Flat (scene.wgsl's `hard_block`): where the thing's outline covers at
+// least HARD_FROM of the pixel, how much its inside blocks, whole across the antialiased edge (so
+// R reads how see-through it is, not how much of the pixel it covers); `r` as mixed elsewhere.
+fn surface_whole(r: f32, w: Walked, cover: f32) -> f32 {
+    if g.light.x < 1.5 || g.light.x > 2.5 || g.light.z > 0.5 || cover < HARD_FROM {
+        return r;
+    }
+    return max(r, w.inner.r);
+}
+
 const LAYERS_TAU: f32 = 6.28318531;
 
 // How painted brush tile `tile` (-1: none) is at ball point `q` (-1 to 1 across its square).
@@ -771,6 +786,7 @@ fn shade_layers(in: LayeredOut) -> vec4<f32> {
     let cover = clamp(-d / aa + 0.5, 0.0, 1.0);
     let w = walk_layers(in.local, in.range.x, in.range.y, in.range.z);
     var out = split_lower_mixed(cover, w, in.range.z);
+    out.r = surface_whole(out.r, w, cover);
     // An additive body colour makes the whole ball add its light.
     if in.body.a < 0.0 {
         out = vec4<f32>(out.rgb * -in.body.a, 0.0);

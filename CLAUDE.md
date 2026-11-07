@@ -72,7 +72,13 @@ radius and how deep in a blocker it sits) and normals from the height: `C + (L �
 whole (plan `lighting/thin-blockers.md`): `fs_seed` keeps a field texel any blocking pixel touches (`foot_blocks`,
 `BLOCK_LEAST` 0.1; 0.3 on a Stage, whose balls mark a quarter) and closes diagonal gaps; `visibility` marches with
 `march`/`confirm` (the picture itself checked where the coarse field says "inside") and, when the middle ray crosses
-a blocker, `LAMP_RAYS` rays across the lamp (union of their clear stretches); `tests/thin_blockers.rs`. No Lighting
+a blocker, `LAMP_RAYS` rays across the lamp (union of their clear stretches); `tests/thin_blockers.rs`. See-through
+blockers let their share through in Flat (plan `lighting/see-through-blockers.md`): the surface picture's R is blocks ×
+opacity with the antialiased edge taken whole (`scene.wgsl::hard_block`, `AA_COVER` from trails, `layers.wgsl::surface_whole`
+for balls and shapes; readers wanting the old value use `cover_block` = min(R, A)), a Surface's See-through is folded into
+`LayerGpu.light[1]` by `surface::Stamps::apply`, the field's G is the nearest blocker's opacity (`blocker_opacity`), and
+`march` walks through a pixel under `SOLID` (0.98), multiplying `Ray.lit`; `visibility` gives `1 − ō(1 − shown)`;
+Stage is unchanged; `tests/see_through_shadows.rs`. No Lighting
 card leaves `Frame.light` `None` and the picture byte-identical (`bpe-kit/tests/unlit_pictures.rs`, hashes made before
 lighting; `tests/lit_pictures.rs` checks lit pictures; `scenes::lit_room`/`lit_demo` are test-only). The status line
 shows "Lighting: N lights, X ms" (`Renderer::lighting_stats`, GPU timestamps via `timing.rs` when the device has

@@ -58,9 +58,31 @@ fn light_flat(c: vec4<f32>, lit: f32, blocks: f32, emit: vec3<f32>, extra: vec4<
         return vec4<f32>(emit * k, c.a);
     }
     // The surface: only what blocks covers it, so a spark or a trail passing over a ball leaves
-    // the ball's blocking and height under it as they are.
+    // the ball's blocking and height under it as they are. R is how much it blocks by how
+    // see-through it is, its antialiased edge taken whole (`hard_block`).
     let a = clamp(blocks, 0.0, 1.0) * clamp(c.a, 0.0, 1.0);
-    return vec4<f32>(a, 0.0, 0.0, a);
+    return vec4<f32>(hard_block(a, AA_COVER), 0.0, 0.0, a);
+}
+
+// How much of the pixel a thing drawn without layers covers by its antialiased edge alone (not
+// by how see-through it is), when it says (a trail does; -1 when unknown): what the surface
+// pass's `hard_block` divides out.
+var<private> AA_COVER: f32 = -1.0;
+
+// The least antialiased cover at which the surface pass (lighting's mode 2) takes a blocker
+// whole: lighting.wgsl's BLOCK_LEAST, below which a pixel doesn't block.
+const HARD_FROM: f32 = 0.1;
+
+// The surface picture's R in Flat (lighting.wgsl): how much the things over the pixel block,
+// by how see-through they are (`blocks` premultiplied by `cover`, the antialiased edge alone,
+// which is divided out where it is at least HARD_FROM), so a pixel half covered by a solid line
+// reads 1 and one under a half see-through wall 0.5. Below HARD_FROM it stays cover-weighted, so
+// which pixels block is as before. A Stage keeps cover-weighted R throughout.
+fn hard_block(blocks: f32, cover: f32) -> f32 {
+    if g.light.z > 0.5 || cover < HARD_FROM {
+        return blocks;
+    }
+    return blocks / cover;
 }
 
 // Light pass 5: what glows under UV light, its colours times its UV glow (black, still covering

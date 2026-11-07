@@ -200,6 +200,7 @@ fn shade_shape_layers(
     let cover = shape_cover_at(s);
     let w = walk_shape(world, s, layers.x, layers.y, layers.w);
     var out = split_lower_mixed(cover, w, layers.w);
+    out.r = surface_whole(out.r, w, cover);
     // What a broken shape's look leaves of it (its piece's clip, its fade).
     if keep < 1.0 {
         out *= keep;
