@@ -22,7 +22,7 @@ var<private> layered_shape: LayeredShape;
 // Where a point is against the shape: `q` in shape units; `sd` the signed distance to the
 // outline's centre line in world pixels (negative inside, even-odd); `edge` the distance to the
 // edge of what the shape covers (its fill, or its band), negative inside it; `along` how far
-// round the outline the nearest point is, 0 to 1 clockwise from point 0 (a circle's or an
+// round the outline the nearest point is (a letter's contour after contour), 0 to 1 clockwise from point 0 (a circle's or an
 // ellipse's top; an ellipse measures it by the angle it is drawn with).
 struct ShapeAt {
     q: vec2<f32>,
@@ -57,8 +57,15 @@ fn shape_at(world: vec2<f32>) -> ShapeAt {
             var total = 0.0;
             var inside = false;
             for (var k = 0u; k < n; k++) {
-                let p0 = path_points[first + k].xy;
-                let p1 = path_points[first + (k + 1u) % n].xy;
+                let pk = path_points[first + k];
+                let p0 = pk.xy;
+                // A letter contour's last point (z 1) closes back to its first, `w` back; a
+                // shape's points close round the whole list.
+                var next = (k + 1u) % n;
+                if pk.z > 0.5 && pk.z < 1.5 {
+                    next = k - u32(pk.w + 0.5);
+                }
+                let p1 = path_points[first + next].xy;
                 let e = p1 - p0;
                 let len = length(e);
                 let h = clamp(dot(q - p0, e) / max(dot(e, e), 1e-12), 0.0, 1.0);
