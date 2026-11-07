@@ -29,6 +29,7 @@ pub const FLAME: &str = "particles.flame";
 pub const SHAPES: &str = "particles.shapes";
 pub const GLITTER: &str = "particles.glitter";
 pub const WEB: &str = "particles.web";
+pub const PILES: &str = "particles.piles";
 pub const SUB_GLOW: &str = "particles.sub.glow";
 pub const SUB_OUTLINE: &str = "particles.sub.outline";
 pub const SUB_SHADOW: &str = "particles.sub.shadow";
@@ -61,6 +62,9 @@ pub enum ColourFrom {
     Own,
     /// The colour of the ball each particle came from (riding balls, or born where one hit).
     ParentBall,
+    /// The colour of the particle each was born from (inside another Particles thing): the
+    /// parent's first layer with colours of its own, as that particle was then.
+    ParentParticle,
 }
 
 /// What More shapes draws each particle as.
@@ -497,6 +501,62 @@ impl WebLayer {
     }
 }
 
+/// Piles: the heaps the particles make (Meets things: Pile up), each drawn as one band.
+#[derive(Clone, Debug, PartialEq, Settings)]
+pub struct PilesLayer {
+    /// Under the balls or over them.
+    #[setting(label = "Where", group = "Which")]
+    pub place: AroundPlace,
+    /// Its colours, by where along the pile, a stop for each column, or when.
+    #[setting(paint, label = "Colours", group = "Colours", prefix = "", follows = "place|order|time")]
+    pub colour: Paint,
+    #[setting(label = "Opacity", group = "Colours", range(0, 1), simple, keyframe, pulse)]
+    pub opacity: f32,
+    /// How soft the sand's top edge is.
+    #[setting(label = "Softness", group = "Piles", range(0, 1), keyframe)]
+    pub softness: f32,
+    #[setting(label = "Blend", group = "Blending")]
+    pub blend: Blend,
+    #[setting(label = "Blend amount", group = "Blending", range(0, 1), keyframe)]
+    pub blend_amount: f32,
+}
+
+impl Default for PilesLayer {
+    fn default() -> Self {
+        Self {
+            place: AroundPlace::Behind,
+            colour: Paint { follow: Follow::Place, ..Paint::solid(Color::rgb(214, 180, 120)) },
+            opacity: 1.0,
+            softness: 0.3,
+            blend: Blend::Normal,
+            blend_amount: 1.0,
+        }
+    }
+}
+
+impl PilesLayer {
+    /// The settings every layer has (those it doesn't have at their defaults).
+    pub fn common(&self) -> Common {
+        Common {
+            place: self.place,
+            only: Only::All,
+            age: 1.0,
+            share: 0.5,
+            colour_from: ColourFrom::Own,
+            colour: self.colour.clone(),
+            opacity: self.opacity,
+            twinkle: 0.0,
+            twinkle_speed: 8.0,
+            size: 1.0,
+            size_curve: SizeOverLife::Even,
+            fade: ParticleFade::None,
+            blend: self.blend,
+            blend_amount: self.blend_amount,
+            detail: FineDetail::default(),
+        }
+    }
+}
+
 /// The settings every Look layer has, read from any kind.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Common {
@@ -520,13 +580,24 @@ pub struct Common {
 /// What a layer draws each particle as.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Drawn {
-    Sprites { made_of: ShapeMadeOf, softness: f32 },
-    Streaks { stretch: f32, least: f32, width: f32 },
+    Sprites {
+        made_of: ShapeMadeOf,
+        softness: f32,
+    },
+    Streaks {
+        stretch: f32,
+        least: f32,
+        width: f32,
+    },
     Smoke(SmokeLayer),
     Flame(FlameLayer),
     Shapes(ShapesLayer),
     Glitter(GlitterLayer),
     Web(WebLayer),
+    /// The thing's piles, not its particles.
+    Piles {
+        softness: f32,
+    },
 }
 
 /// One shown Look layer as the drawing reads it.
@@ -593,6 +664,10 @@ pub fn layers_of(slot: &ResolvedSlot) -> Vec<LookLayer> {
             WEB => {
                 let s = WebLayer::from_params(&p);
                 (Drawn::Web(s.clone()), s.common())
+            }
+            PILES => {
+                let s = PilesLayer::from_params(&p);
+                (Drawn::Piles { softness: s.softness }, s.common())
             }
             kind => {
                 if let Some(parent) = layer.parent
@@ -692,6 +767,12 @@ pub fn kinds() -> Vec<Kind> {
             "Web lines",
             "Lines between particles near each other (and to balls), fading as they draw apart.",
             WebLayer::defs,
+        ),
+        drawn(
+            PILES,
+            "Piles",
+            "The heaps the particles make where they pile up (Meets things: Pile up), drawn as sand.",
+            PilesLayer::defs,
         ),
         sub(SUB_GLOW, "Glow", "Soft light round its layer's particles.", ShapeSubGlow::defs),
         sub(SUB_OUTLINE, "Outline", "A line round its layer's particles, painted over them.", SubOutline::defs),

@@ -1777,17 +1777,19 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
         for tag in &thing.tags {
             h.bytes(tag.as_bytes());
         }
-        // Only modules the processor simulates count, and the cards a thing reads itself (whole:
-        // their layers too).
-        let own_cards = sims.thing(&r.kind).is_some_and(|s| s.own_cards());
+        // Only modules the processor simulates count, and the cards of a thing that reads its own.
+        let owns = sims.thing(&r.kind).is_some_and(|s| s.own_cards());
         for slot in SIM_SLOTS {
             if let Some(s) = r.slots.get(&slot)
-                && (sims.module(&s.kind).is_some() || own_cards)
+                && (owns || sims.module(&s.kind).is_some())
             {
                 h.bytes(&[slot as u8]);
                 h.bytes(s.kind.as_bytes());
-                if own_cards {
-                    h.bytes(format!("{:?}", s.layers).as_bytes());
+                if owns {
+                    // What each layer is and does; not its name.
+                    for l in &s.layers {
+                        h.bytes(format!("{:?}", (l.id, &l.kind, l.parent, &l.only)).as_bytes());
+                    }
                 }
                 for (key, value) in s.params.iter() {
                     h.bytes(key.as_bytes());
@@ -1807,6 +1809,37 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
             for (key, value) in s.params.iter() {
                 h.bytes(key.as_bytes());
                 h.value(value);
+            }
+        }
+    }
+    // A thing in the physics that reads its own cards (two-way particles) may read the air too:
+    // then the air's cards and keys count.
+    if resolved.things.values().any(|r| sims.thing(&r.kind).is_some_and(|s| s.own_cards())) {
+        for (id, r) in &resolved.things {
+            for slot in BESIDE_SLOTS {
+                if let Some(s) = r.slots.get(&slot) {
+                    h.bytes(b"beside card");
+                    h.bytes(&id.0.to_le_bytes());
+                    h.bytes(&[slot as u8]);
+                    h.bytes(s.kind.as_bytes());
+                    for (key, value) in s.params.iter() {
+                        h.bytes(key.as_bytes());
+                        h.value(value);
+                    }
+                }
+            }
+        }
+        if let Some(animation) = physics_animation(scene, resolved, sims) {
+            for a in animation.addresses() {
+                if a.slot.is_some_and(|s| BESIDE_SLOTS.contains(&s)) {
+                    h.bytes(format!("{a:?}").as_bytes());
+                    if let Some(track) = scene.tracks.get(a) {
+                        h.bytes(format!("{track:?}").as_bytes());
+                    }
+                    if let Some(pulse) = scene.pulses.get(a) {
+                        h.bytes(format!("{pulse:?}").as_bytes());
+                    }
+                }
             }
         }
     }

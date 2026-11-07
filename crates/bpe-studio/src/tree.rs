@@ -61,6 +61,8 @@ enum Action {
     /// A Particles thing with this starting look: inside a selected Balls, Emitter or Shape thing
     /// it can ride on it.
     AddParticles(bpe_kit::things::particles::looks::Look),
+    /// An Empty Particles thing inside the selected one, born from its particles.
+    AddFed(ThingId),
     /// A folder around this row, or around the whole selection when the row is part of it.
     MakeFolder(ThingId),
     Folder(Vec<ThingId>),
@@ -133,6 +135,17 @@ pub fn show(
                         if ui.button("Empty").on_hover_text(Look::Empty.help()).clicked() {
                             action = Some(Action::AddParticles(Look::Empty));
                             ui.close();
+                        }
+                        let feeds = selection
+                            .primary
+                            .filter(|&s| bpe_kit::things::particles::looks::can_be_fed(scene, s))
+                            .and_then(|s| scene.things.get(&s));
+                        if let Some(parent) = feeds {
+                            let help = "A new Particles thing inside this one, born where its particles die";
+                            if ui.button(format!("Empty, fed by {}", parent.name)).on_hover_text(help).clicked() {
+                                action = Some(Action::AddFed(parent.id));
+                                ui.close();
+                            }
                         }
                         for (group, looks) in GROUPS {
                             ui.menu_button(group, |ui| {
@@ -321,6 +334,14 @@ pub fn show(
         Some(Action::AddParticles(look)) => {
             let parent = particles_parent(scene, selection.primary);
             if let Ok(id) = bpe_kit::things::particles::looks::add_particles(scene, reg, look, parent) {
+                selection.set(id);
+                out.edited = true;
+                out.added = Some(id);
+            }
+        }
+        Some(Action::AddFed(parent)) => {
+            use bpe_kit::things::particles::looks::{Look, add_particles};
+            if let Ok(id) = add_particles(scene, reg, Look::Empty, parent) {
                 selection.set(id);
                 out.edited = true;
                 out.added = Some(id);
@@ -1194,6 +1215,31 @@ mod tests {
         assert!(names.contains(&"Moiré") && names.contains(&"Moiré 2"));
         let picked = s.selection.primary.unwrap();
         assert_eq!(s.scene.things[&picked].name, "Moiré", "the first grid is selected");
+    }
+
+    #[test]
+    fn a_selected_particles_thing_can_feed_a_new_empty_one() {
+        use bpe_kit::things::particles::{BornFrom, FedWhen, KIND, ParticlesSettings};
+        let mut h = harness();
+        h.set_size(egui::vec2(900.0, 900.0));
+        h.run();
+        h.get_by_label("+ Add thing").click();
+        h.run();
+        h.get_by_label("Empty").click();
+        h.run();
+        let parent = h.state().selection.primary.unwrap();
+        let name = h.state().scene.things[&parent].name.clone();
+        h.get_by_label("+ Add thing").click();
+        h.run();
+        h.get_by_label(&format!("Empty, fed by {name}")).click();
+        h.run();
+        let s = h.state();
+        let fed = s.selection.primary.unwrap();
+        assert_ne!(fed, parent);
+        assert_eq!(s.scene.things[&fed].kind, KIND);
+        assert_eq!(s.scene.things[&fed].parent, Some(parent), "inside the one feeding it");
+        let source = <ParticlesSettings as bpe_core::Settings>::from_params(&s.scene.things[&fed].params);
+        assert_eq!((source.from, source.fed_when), (BornFrom::ItsParentsParticles, FedWhen::Die));
     }
 
     #[test]

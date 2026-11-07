@@ -6,8 +6,8 @@ use bpe_core::{Blend, Color, Params, Settings};
 use glam::Vec2;
 
 use super::forces::{DRAG, DragForce, OnlyFor};
-use super::look::{Only, SpritesLayer, StreaksLayer};
-use super::looks::{LayerRecipe, Look, Recipe, glow, paint, rainbow, sprites, streaks};
+use super::look::{MoreShape, Only, PointAlong, SHAPES, ShapesLayer, SpritesLayer, StreaksLayer};
+use super::looks::{LayerRecipe, Look, Recipe, glow, layer, paint, rainbow, sprites, streaks};
 use super::meets::{AtEdges, MeetsSettings};
 use super::more_forces::{Around, Falloff};
 use super::more_forces::{
@@ -50,6 +50,8 @@ pub(super) fn recipe(look: Look, rides: bool) -> Recipe {
     };
     match look {
         Look::Galaxy => Recipe {
+            position: None,
+            children: Vec::new(),
             source: ParticlesSettings {
                 emit: Emit::KeepACrowd,
                 count: 900,
@@ -104,6 +106,8 @@ pub(super) fn recipe(look: Look, rides: bool) -> Recipe {
             )],
         },
         Look::FlowLines => Recipe {
+            position: None,
+            children: Vec::new(),
             source: ParticlesSettings {
                 emit: Emit::KeepACrowd,
                 count: 4000,
@@ -129,6 +133,8 @@ pub(super) fn recipe(look: Look, rides: bool) -> Recipe {
             )],
         },
         Look::FormAWord => Recipe {
+            position: None,
+            children: Vec::new(),
             source: ParticlesSettings {
                 from: BornFrom::AWordOrPicture,
                 letter_height: 220.0,
@@ -153,6 +159,8 @@ pub(super) fn recipe(look: Look, rides: bool) -> Recipe {
             )],
         },
         Look::Flock => Recipe {
+            position: None,
+            children: Vec::new(),
             source: ParticlesSettings {
                 from: BornFrom::AnArea,
                 area: AreaShape::Rectangle,
@@ -173,12 +181,25 @@ pub(super) fn recipe(look: Look, rides: bool) -> Recipe {
                 (PUSH, PushForce { strength: 3000.0, ball_reach: 5.0, ..Default::default() }.to_params()),
             ],
             meets: MeetsSettings { at_edges: AtEdges::Bounce, edge_margin: -60.0, ..push(0.0, 2.0) },
-            layers: vec![sprites(
-                steady(ShapeMadeOf::Shards, 0.2, paint(&[Color::rgb(200, 244, 255)], Follow::Life)),
+            // Birds that point the way they fly (part 5's More shapes).
+            layers: vec![layer(
+                SHAPES,
+                ShapesLayer {
+                    shape: MoreShape::Birds,
+                    point_along: PointAlong::WayItGoes,
+                    softness: 0.2,
+                    colour: paint(&[Color::rgb(200, 244, 255)], Follow::Life),
+                    fade: ParticleFade::None,
+                    size_curve: SizeOverLife::Even,
+                    ..Default::default()
+                }
+                .to_params(),
                 Vec::new(),
             )],
         },
         Look::Shockwaves => Recipe {
+            position: None,
+            children: Vec::new(),
             source: ParticlesSettings { size: 2.4, size_spread: 0.3, count: 1500, ..still_crowd(d.clone()) },
             forces: vec![
                 (RIPPLE, RippleForce { width: 50.0, strength: 5000.0, ..Default::default() }.to_params()),
@@ -229,6 +250,8 @@ pub(super) fn recipe(look: Look, rides: bool) -> Recipe {
                 )
             };
             Recipe {
+                position: None,
+                children: Vec::new(),
                 source: ParticlesSettings {
                     rate: 240.0,
                     life: 1.8,
@@ -254,6 +277,8 @@ pub(super) fn recipe(look: Look, rides: bool) -> Recipe {
             }
         }
         Look::BlackHole => Recipe {
+            position: None,
+            children: Vec::new(),
             source: ParticlesSettings {
                 from: BornFrom::AnArea,
                 area: AreaShape::Ring,
@@ -307,6 +332,8 @@ pub(super) fn recipe(look: Look, rides: bool) -> Recipe {
             )],
         },
         Look::IronFilings => Recipe {
+            position: None,
+            children: Vec::new(),
             source: ParticlesSettings { jitter: 0.3, size: 2.2, turn_spread: 1.0, ..screen_grid(30.0) },
             forces: vec![
                 (MAGNETIC, MagneticForce { from: FieldFrom::EachBall, pull: 240.0, ..Default::default() }.to_params()),
@@ -319,6 +346,8 @@ pub(super) fn recipe(look: Look, rides: bool) -> Recipe {
             )],
         },
         Look::BeatGrid => Recipe {
+            position: None,
+            children: Vec::new(),
             source: ParticlesSettings { size: 5.0, ..screen_grid(52.0) },
             forces: vec![
                 (PULSE, PulseForce { strength: 260.0, decay: 0.06, ..Default::default() }.to_params()),
@@ -334,6 +363,8 @@ pub(super) fn recipe(look: Look, rides: bool) -> Recipe {
         },
         Look::Moire => moire(false),
         Look::Spirograph => Recipe {
+            position: None,
+            children: Vec::new(),
             source: ParticlesSettings {
                 count: 1500,
                 size: 2.0,
@@ -367,6 +398,8 @@ pub(super) fn recipe(look: Look, rides: bool) -> Recipe {
 fn moire(turning: bool) -> Recipe {
     let colour = if turning { Color::rgb(255, 79, 160) } else { Color::rgb(233, 240, 255) };
     Recipe {
+        position: None,
+        children: Vec::new(),
         source: ParticlesSettings {
             from: BornFrom::AGrid,
             grid_covers: GridCovers::TheScreen,

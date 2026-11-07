@@ -1228,8 +1228,12 @@ impl Studio {
             if let Some((lights, ms)) = self.lighting {
                 ui.label(RichText::new(lighting_readout(lights, ms)).small().color(style::MUTED));
             }
-            if let Some(p) = self.particle_job.as_ref().and_then(|job| job.latest()) {
-                ui.label(RichText::new(particles_readout(p.count, p.step_ms)).small().color(style::MUTED));
+            // Decoration from the particles thread, and two-way particles in the main world.
+            let beside = self.particle_job.as_ref().and_then(|job| job.latest()).map(|p| (p.count, p.step_ms));
+            let main = main_particles(self.playback.world());
+            if beside.is_some() || main.is_some() {
+                let (a, b) = (beside.unwrap_or_default(), main.unwrap_or_default());
+                ui.label(RichText::new(particles_readout(a.0 + b.0, a.1 + b.1)).small().color(style::MUTED));
             }
         });
     }
@@ -1460,6 +1464,21 @@ pub fn lighting_readout(lights: usize, ms: Option<f32>) -> String {
     let time = ms.map(|ms| format!(", {ms:.1} ms")).unwrap_or_default();
     let warn = if lights > 256 { " (that many lights is slow: try Quality Draft)" } else { "" };
     format!("· Lighting: {count}{time}{warn}")
+}
+
+/// How many particles the main world's (two-way) Particles things have and how long their last
+/// step took, or `None` when it has none.
+fn main_particles(world: &bpe_runtime::World) -> Option<(usize, f32)> {
+    use bpe_kit::things::particles::state::ParticlesState;
+    let mut found = None;
+    for state in world.states.values() {
+        if let Some(p) = (**state).as_any().downcast_ref::<ParticlesState>() {
+            let (count, ms) = found.get_or_insert((0, 0.0));
+            *count += p.specks.len();
+            *ms += p.last_ms;
+        }
+    }
+    found
 }
 
 /// The status line's particles readout: "· Particles: 12,400, 1.8 ms" (how long the last

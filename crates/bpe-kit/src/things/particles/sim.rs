@@ -1,9 +1,11 @@
 //! How a Particles thing takes part in the world: it builds its state, makes its first births
 //! when the world is built, and takes a particle step every second world step, last in the step
-//! (after the balls have moved and the log has the step's hits). It never changes anything but its
-//! own state (and the heat it puts into the air), so it is stepped beside the physics (`in_main`
-//! false). A thing that follows or heats the air wakes it (particles part 2) and brings it along
-//! before each of its particle steps.
+//! (after the balls have moved and the log has the step's hits). Unless it is two-way it changes
+//! nothing but its own state (and the heat it puts into the air), so it is stepped beside the
+//! physics (`in_main` false); two-way, it pushes the balls in `forces` and holds them up on its
+//! piles in `settle`. A thing that follows or heats the air wakes it (particles part 2) and brings
+//! it along before each of its particle steps; a thing fed by its parent's particles steps
+//! straight after its parent, reading the moments of that very step.
 
 use bpe_core::{ResolvedThing, Settings, SlotId, Thing, ThingId};
 use bpe_runtime::{Log, ThingSim, ThingState, World, state_mut};
@@ -11,11 +13,11 @@ use bpe_runtime::{Log, ThingSim, ThingState, World, state_mut};
 use crate::air::{Air, AirSpec, air_of, put_air, take_air};
 
 use super::forces::Forces;
-use super::meets::MeetsSettings;
+use super::meets::{AtShapes, MeetsSettings};
 use super::moments::{MomentSound, log_notes};
 use super::state::ParticlesState;
 use super::step;
-use super::{KIND, ParticlesSettings};
+use super::{BornFrom, KIND, ParticlesSettings};
 
 pub struct ParticlesSim;
 
@@ -27,6 +29,11 @@ fn read_into(st: &mut ParticlesState, resolved: &ResolvedThing, video: glam::Vec
     st.meets = MeetsSettings::read(resolved.slots.get(&SlotId::Bounce).map(|s| &s.params));
     st.refresh_spots(video);
     st.sound = MomentSound::of(resolved);
+}
+
+/// The Particles state in a box, if it holds one.
+fn particles_in(b: &dyn ThingState) -> Option<&ParticlesState> {
+    b.as_any().downcast_ref::<ParticlesState>()
 }
 
 /// Notes how much memory the thing's particles take, for playback budgets.
@@ -76,6 +83,34 @@ impl ThingSim for ParticlesSim {
         }
     }
 
+    /// Two-way: the particles' pushes reach the balls, and stuck particles weigh them down.
+    fn forces(&self, id: ThingId, world: &mut World, dt: f32) {
+        if !state_of(world, id)
+            .is_some_and(|st| step::two_way(st) && !st.two_way.pushes.is_empty() | !st.two_way.weigh.is_empty())
+        {
+            return;
+        }
+        let Some(mut boxed) = world.states.remove(&id) else { return };
+        super::two_way::apply(state_mut::<ParticlesState>(boxed.as_mut()), world, dt);
+        world.states.insert(id, boxed);
+    }
+
+    /// Two-way: balls rest on the piles.
+    fn settle(&self, id: ThingId, world: &mut World, dt: f32) {
+        let holds = state_of(world, id).is_some_and(|st| {
+            step::two_way(st)
+                && st.meets.holds_up
+                && st.meets.at_shapes == AtShapes::PileUp
+                && !st.piles.list.is_empty()
+        });
+        if !holds {
+            return;
+        }
+        let Some(mut boxed) = world.states.remove(&id) else { return };
+        super::two_way::hold_up(state_mut::<ParticlesState>(boxed.as_mut()), world, dt);
+        world.states.insert(id, boxed);
+    }
+
     fn settings_changed(&self, id: ThingId, resolved: &ResolvedThing, world: &mut World) {
         let video = world.video;
         // `(**s)`: the boxed state itself, not the box (which is a `ThingState` too).
@@ -91,9 +126,10 @@ impl ThingSim for ParticlesSim {
         true
     }
 
-    /// Decoration: never pushes back on the balls (two-way is part 4).
-    fn in_main(&self, _resolved: &ResolvedThing) -> bool {
-        false
+    /// Decoration, unless two-way is on (and it isn't fed by another Particles thing).
+    fn in_main(&self, resolved: &ResolvedThing) -> bool {
+        let meets = MeetsSettings::read(resolved.slots.get(&SlotId::Bounce).map(|s| &s.params));
+        meets.two_way && ParticlesSettings::from_params(&resolved.params).from != BornFrom::ItsParentsParticles
     }
 
     /// Its sound hears its moments when its Sound card plays some (particles part 7).
@@ -153,17 +189,35 @@ fn catch_up_all(world: &mut World, log: &mut Log, due: u32) {
     let mut air = take_air(world);
     let threads = step::threads();
     let from = taken.iter_mut().map(|(_, b, _)| state_mut::<ParticlesState>(b.as_mut()).step).min().unwrap_or(due);
+    // Each thing keeps the feeds the things it feeds ask for (they step right after it, in tree
+    // order).
+    let wants: Vec<u32> = {
+        let states: Vec<&ParticlesState> = taken.iter().filter_map(|(_, b, _)| particles_in(b.as_ref())).collect();
+        taken.iter().map(|(t, _, _)| step::wants_of(states.iter().copied(), *t)).collect()
+    };
     for k in from..due {
         if let Some(air) = air.as_mut() {
             air.get_mut().catch_up_to(k + 1, world, threads);
         }
-        for (_, boxed, ms) in &mut taken {
+        #[allow(clippy::needless_range_loop)] // `split_at_mut(i)` needs the index.
+        for i in 0..taken.len() {
+            let (before, rest) = taken.split_at_mut(i);
+            let (_, boxed, ms) = &mut rest[0];
             let st = state_mut::<ParticlesState>(boxed.as_mut());
             if st.step != k {
                 continue;
             }
+            // Fed: the parent's state just after the same particle step.
+            let parent = (st.settings.from == BornFrom::ItsParentsParticles)
+                .then_some(st.parent)
+                .flatten()
+                .and_then(|p| before.iter().find(|(t, _, _)| *t == p))
+                .and_then(|(_, b, _)| particles_in(b.as_ref()))
+                .filter(|p| p.step == k + 1);
+            st.wants = wants[i];
             let started = std::time::Instant::now();
-            step::step_in(st, world, log, threads, air.as_ref().map(|a| a.get()).filter(|a| a.awake()));
+            let air_now = air.as_ref().map(|a| a.get()).filter(|a| a.awake());
+            step::step_in(st, world, log, threads, air_now, parent);
             if let Some(air) = air.as_mut().filter(|a| a.get().awake()) {
                 step::put_heat(st, air.get_mut());
             }
