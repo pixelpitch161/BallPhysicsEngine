@@ -127,6 +127,13 @@ pub trait ThingSim: Send + Sync + 'static {
     fn in_main(&self, _resolved: &ResolvedThing) -> bool {
         true
     }
+    /// For a thing stepped beside the physics: a hash of whatever else its stepping reads from its
+    /// settings beyond its own and its Motion and Bounce cards (a Particles thing's Look asking it
+    /// to keep each particle's trail), so a change of it rebuilds the playback it is stepped on.
+    /// 0 when nothing else is read.
+    fn more_fingerprint(&self, _resolved: &ResolvedThing) -> u64 {
+        0
+    }
     /// Whether changing this setting changes the simulation. Visual settings say no, so the
     /// editor keeps playing through them.
     fn affects_physics(&self, _key: &str) -> bool {

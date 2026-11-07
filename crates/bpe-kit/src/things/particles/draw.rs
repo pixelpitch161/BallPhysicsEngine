@@ -1,26 +1,35 @@
 //! Drawing a Particles thing: nothing of its own, then each shown Look layer as an around layer
 //! with a blend of its own (so other blends route through the frame's layers as trails' do),
 //! every particle it draws as a sprite with what its sub-layers add (Soft smoke and Flame as one
-//! soft field the GPU splats and shades, Web lines as lines between them). Particles carry no
-//! lighting yet (their `light`, `emit` and `extra` stay 0).
+//! soft field the GPU splats and shades, Web lines as lines between them, Trails and Marks as
+//! strips and sprites from the state, Liquid as blobs the GPU runs together), then the layer's
+//! Experimental modifiers worked over what it drew. Particles carry no lighting yet (their
+//! `light`, `emit` and `extra` stay 0).
 
 use std::f32::consts::TAU;
 
 use bpe_core::{Blend, ResolvedThing, SlotId, ThingId};
 use bpe_gfx::{
-    Around, DrawCx, FIELD_FLAME, FIELD_HEAT_STOPS, FIELD_SMOKE, Field, FieldLook, Frame, Particle, Splat, ThingDraw,
+    Around, DrawCx, FIELD_FLAME, FIELD_HEAT_STOPS, FIELD_SMOKE, Field, FieldLook, Frame, Liquid, MOST_BLOBS, Particle,
+    Splat, ThingDraw,
 };
 use bpe_runtime::EventKind;
 use glam::Vec2;
 
 use super::KIND;
 use super::births::{signed, unit};
+use super::liquid::LiquidLayer;
 use super::look::{
     ColourFrom, Common, Drawn, FineDetail, FlameLayer, GlitterLayer, LookLayer, MoreShape, Only, PointAlong,
     ShapesLayer, SmokeLayer, WebLayer, layers_of,
 };
+use super::marks::Mark;
+use super::modifiers::{
+    MirrorRound, Modifiers, Tears, glitch, glitch_blobs, glitch_splats, mirror, mirror_blobs, mirror_splats, split_into,
+};
 use super::sim::state_of;
 use super::state::{ParticlesState, Speck};
+use super::trail::draw_one;
 use super::web::{MOST_WEB_LINES, ball_links, links};
 use crate::modules::look::layers::around_subs::{Extras, HitInfo, OWN, Pieces, coloured, particle_with_extras};
 use crate::modules::look::layers::gpu::SubLayer;
@@ -66,6 +75,10 @@ impl ThingDraw for ParticlesDraw {
     fn draw_around(&self, cx: &DrawCx, index: usize, frame: &mut Frame) {
         let Some(layer) = layers(cx.resolved).into_iter().nth(index) else { return };
         let Some(st) = state_of(cx.world, cx.thing.id) else { return };
+        if let Drawn::Liquid(l) = &layer.drawn {
+            frame.liquids.extend(liquid_of(cx, st, &layer, l));
+            return;
+        }
         let mut pieces = Pieces::default();
         let field = draw_layer(cx, st, &layer, &mut pieces);
         pieces.into_frame_with_field(frame, layer.common.place == AroundPlace::InFront, field);
@@ -194,11 +207,16 @@ pub fn seen<'a>(cx: &DrawCx, st: &'a ParticlesState, layer: &LookLayer, hit: Hit
 
 /// Where Fine detail's copy `k` of a particle of half size `size` sits from it at `time`.
 pub fn copy_offset(d: &FineDetail, s: &Speck, k: u32, size: f32, time: f32) -> Vec2 {
-    let v = Vec2::new(signed(s.seed, 300 + k), signed(s.seed, 400 + k)) * d.spread * size;
+    offset_of_seed(d, s.seed, k, size, time)
+}
+
+/// [`copy_offset`] for anything with dice `seed` (a mark keeps its particle's).
+pub fn offset_of_seed(d: &FineDetail, seed: u32, k: u32, size: f32, time: f32) -> Vec2 {
+    let v = Vec2::new(signed(seed, 300 + k), signed(seed, 400 + k)) * d.spread * size;
     if d.shimmer == 0.0 {
         return v;
     }
-    Vec2::from_angle(d.shimmer * time * TAU * signed(s.seed, 500 + k)).rotate(v)
+    Vec2::from_angle(d.shimmer * time * TAU * signed(seed, 500 + k)).rotate(v)
 }
 
 /// The most copies Fine detail draws a layer in all: past it each particle gets fewer.
@@ -222,7 +240,127 @@ fn copied(p: &Particle, by: Vec2, k: f32, fade: f32) -> Particle {
     q
 }
 
-/// Draws `layer`'s particles of `st` into `pieces`; Soft smoke and Flame give their field.
+/// What a layer reads to colour one particle (or one mark).
+pub struct Item {
+    pub place: Vec2,
+    pub velocity: Vec2,
+    pub home: Vec2,
+    pub seed: u32,
+    /// The parent ball it came from (body row + 1), 0 when none.
+    pub ball: u32,
+    /// How far through its life it is, 0 to 1.
+    pub life: f32,
+    /// How old it is, in seconds.
+    pub age: f32,
+}
+
+impl Item {
+    fn of(s: &Speck, now: u32) -> Item {
+        Item {
+            place: s.place,
+            velocity: s.velocity,
+            home: s.home,
+            seed: s.seed,
+            ball: s.ball,
+            life: s.life_at(now),
+            age: s.age(now),
+        }
+    }
+}
+
+/// How much of an item shows by the layer's opacity, fade and twinkle (before Size over life).
+fn alpha_of(c: &Common, it: &Item) -> f32 {
+    let twinkle = c.twinkle.clamp(0.0, 1.0);
+    let tau = std::f32::consts::TAU;
+    let flicker = 1.0 - twinkle * (0.5 + 0.5 * (c.twinkle_speed * tau * it.age + unit(it.seed, 67) * tau).sin());
+    (c.opacity * c.fade.at(it.life) * flicker).max(0.0)
+}
+
+/// An item's own colour from the layer's Colours.
+fn own_colour(cx: &DrawCx, c: &Common, it: &Item) -> [f32; 4] {
+    let inputs = Inputs {
+        // A stop picked once for each particle, for Follow: Order.
+        index: (unit(it.seed, 41) * 1024.0) as usize,
+        count: 1024,
+        place: it.place,
+        place_screen: if cx.resolved.screen { it.place } else { cx.world.camera.to_screen(it.place) },
+        start: it.home,
+        speed: it.velocity.length(),
+        life: it.life,
+        time: cx.time as f32,
+        seed: it.seed,
+        ..Inputs::default()
+    };
+    colour_at(&c.colour, &inputs)
+}
+
+/// Whether a Marks layer draws mark `m` (by age or a share, as Only says).
+fn draws_mark(c: &Common, m: &Mark, now: u32) -> bool {
+    match c.only {
+        Only::All => true,
+        Only::YoungerThan => m.age(now) < c.age,
+        Only::OlderThan => m.age(now) >= c.age,
+        Only::AShare => unit(m.seed, 61) < c.share,
+        Only::TheRest => unit(m.seed, 61) >= c.share,
+    }
+}
+
+/// The longest step a trail is drawn across: longer is a wrap or a leap.
+fn longest_jump(cx: &DrawCx) -> f32 {
+    let (_, half) = super::births::screen(cx.world, 0.0);
+    (half.min_element() * 0.5).max(8.0)
+}
+
+/// The view the drawn places are in: the camera's, or the screen's own for a thing stuck to the
+/// screen (its places are screen places already).
+fn view_of(cx: &DrawCx) -> bpe_runtime::CameraView {
+    if cx.resolved.screen { bpe_runtime::CameraView::default() } else { cx.world.camera }
+}
+
+/// What Mirror turns its copies round, in the places drawn.
+pub fn mirror_centre(cx: &DrawCx, st: &ParticlesState, m: &Modifiers) -> Vec2 {
+    let middle = view_of(cx).center;
+    let seen = |world: Vec2| if cx.resolved.screen { cx.world.camera.to_screen(world) } else { world };
+    match m.round {
+        MirrorRound::TheMiddleOfThePicture => middle,
+        MirrorRound::APoint => m.centre,
+        MirrorRound::TheThingTheyRide => {
+            let Some(parent) = st.parent else { return middle };
+            if let Some(b) = cx.world.bodies.get(&parent) {
+                let alive: Vec<Vec2> = (0..b.len()).filter(|&r| b.alive[r]).map(|r| b.position[r]).collect();
+                if !alive.is_empty() {
+                    return seen(alive.iter().sum::<Vec2>() / alive.len() as f32);
+                }
+            }
+            cx.world.poses.get(&parent).map_or(middle, |p| seen(p.position))
+        }
+    }
+}
+
+/// Mirror and Glitch over everything `layer` drew (and its field's splats, for Soft smoke and
+/// Flame).
+fn finish(cx: &DrawCx, st: &ParticlesState, layer: &LookLayer, pieces: &mut Pieces, field: Option<&mut Field>) {
+    let m = &layer.modifiers;
+    let mut field = field;
+    if m.mirror.ways() > 1 {
+        let centre = mirror_centre(cx, st, m);
+        mirror(pieces, m, centre);
+        if let Some(f) = field.as_deref_mut() {
+            mirror_splats(&mut f.splats, m, centre);
+        }
+    }
+    if m.glitches() {
+        let view = view_of(cx);
+        let tears = Tears::new(m, &view, cx.time, layer.id.0);
+        glitch(pieces, &tears);
+        if let Some(f) = field {
+            glitch_splats(&mut f.splats, &tears);
+        }
+    }
+}
+
+/// Draws `layer`'s particles of `st` into `pieces`; Soft smoke and Flame give their field. Its
+/// modifiers are worked over what it drew.
 pub fn draw_layer(cx: &DrawCx, st: &ParticlesState, layer: &LookLayer, pieces: &mut Pieces) -> Option<Field> {
     let hit = if layer.subs.iter().any(|s| s.reads_hits()) { parent_hits(cx, st.parent) } else { HitInfo::default() };
     let seen = seen(cx, st, layer, hit);
@@ -239,31 +377,149 @@ pub fn draw_layer(cx: &DrawCx, st: &ParticlesState, layer: &LookLayer, pieces: &
         added: 1.0,
     };
     match &layer.drawn {
-        Drawn::Smoke(_) | Drawn::Flame(_) => return Some(field_of(cx, layer, &seen, hit, pieces)),
-        Drawn::Web(w) => {
-            draw_web(cx, layer, w, &seen, hit, pieces);
-            return None;
+        Drawn::Smoke(_) | Drawn::Flame(_) => {
+            let mut field = field_of(cx, layer, &seen, hit, pieces);
+            finish(cx, st, layer, pieces, Some(&mut field));
+            return Some(field);
+        }
+        Drawn::Web(w) => draw_web(cx, layer, w, &seen, hit, pieces),
+        Drawn::Trails(_) | Drawn::Marks(_) => draw_from_state(cx, st, layer, hit, pieces),
+        // Drawn through the frame's liquids (see `liquid_of`).
+        Drawn::Liquid(_) => return None,
+        _ => {
+            let flutters = st.forces.flips();
+            let now_s = st.step as f32 * super::step::DT;
+            let d = capped(c.detail, seen.len());
+            let splits = layer.modifiers.splits();
+            let mut scratch = Pieces::default();
+            for v in &seen {
+                let (own, star) = sprite(&layer.drawn, v.s, v.size, v.colour, flutters, now_s, time);
+                // Colour split draws it (and its copies) apart first, then splits it.
+                let into = if splits { &mut scratch } else { &mut *pieces };
+                particle_with_extras(own, &extras(v, 1.0), into);
+                into.particles[OWN].extend(star);
+                for k in 0..d.copies {
+                    let by = copy_offset(&d, v.s, k, v.size, time);
+                    let (size, opacity) = (d.size.max(0.0), d.opacity.clamp(0.0, 1.0));
+                    particle_with_extras(copied(&own, by, size, opacity), &extras(v, d.opacity), into);
+                    into.particles[OWN].extend(star.map(|s| copied(&s, by, size, opacity)));
+                }
+                if splits {
+                    split_into(&mut scratch, pieces, layer.modifiers.split_of(v.s.velocity));
+                }
+            }
+        }
+    }
+    finish(cx, st, layer, pieces, None);
+    None
+}
+
+/// Draws a Trails or Marks layer, which read the state's trail ring and marks.
+fn draw_from_state(cx: &DrawCx, st: &ParticlesState, layer: &LookLayer, hit: HitInfo, pieces: &mut Pieces) {
+    let c = &layer.common;
+    // The colours of the parent's balls, when a layer takes them.
+    let parent = st.parent.and_then(|p| Some((cx.tree.things.get(&p)?, cx.scene.things.get(&p)?)));
+    let ball_cx = match (c.colour_from, parent) {
+        (ColourFrom::ParentBall, Some((thing, resolved))) => Some(DrawCx { thing, resolved, ..*cx }),
+        _ => None,
+    };
+    let ball_colour = ball_cx.as_ref().and_then(crate::things::balls::draw::ball_colors);
+    let base_of = |it: &Item| match (&ball_colour, it.ball) {
+        (Some(of), b) if b > 0 => of(b as usize - 1),
+        _ => own_colour(cx, c, it),
+    };
+    let now = st.step;
+    let subs = &layer.subs;
+    let splits = layer.modifiers.splits();
+    let time = cx.time as f32;
+    let (copy_size, copy_opacity) = (c.detail.size.max(0.0), c.detail.opacity.clamp(0.0, 1.0));
+    let mut scratch = Pieces::default();
+    // Draws one item through `draw`, split into colours when Colour split asks.
+    let mut put = |pieces: &mut Pieces, velocity: Vec2, draw: &mut dyn FnMut(&mut Pieces)| {
+        if splits {
+            draw(&mut scratch);
+            split_into(&mut scratch, pieces, layer.modifiers.split_of(velocity));
+        } else {
+            draw(pieces);
+        }
+    };
+    match &layer.drawn {
+        Drawn::Trails(t) => {
+            let jump = longest_jump(cx);
+            let d = capped(c.detail, st.specks.len());
+            for (i, s) in st.specks.iter().enumerate() {
+                if !draws(c, s, now) {
+                    continue;
+                }
+                let it = Item::of(s, now);
+                let Some(grow) = c.size_curve.at(it.life) else { continue };
+                let alpha = alpha_of(c, &it);
+                let size = s.size * c.size.max(0.0) * grow;
+                if alpha <= 0.0 || size <= 0.0 {
+                    continue;
+                }
+                let points = st.trail.recent(i, s, now, t.every, t.length);
+                if points.len() < 2 {
+                    continue;
+                }
+                let base = base_of(&it);
+                put(pieces, s.velocity, &mut |p| draw_one(t, c, subs, &points, base, alpha, size, hit, jump, p));
+                // Fine detail: the whole trail again, moved, thinner and fainter.
+                for k in 0..d.copies {
+                    let by = copy_offset(&d, s, k, size, time);
+                    let moved: Vec<Vec2> = points.iter().map(|p| *p + by).collect();
+                    let (a, z) = (alpha * copy_opacity, size * copy_size);
+                    put(pieces, s.velocity, &mut |p| draw_one(t, c, subs, &moved, base, a, z, hit, jump, p));
+                }
+            }
+        }
+        Drawn::Marks(m) => {
+            let why = m.why();
+            // The screen's down, in the world.
+            let down = Vec2::from_angle(cx.world.camera.turn).rotate(Vec2::Y);
+            let d = capped(c.detail, st.marks.len());
+            for mark in &st.marks {
+                if mark.why & why == 0 || !draws_mark(c, mark, now) {
+                    continue;
+                }
+                let age = mark.age(now);
+                let shows = m.shows(age);
+                let life = m.life(age);
+                let it = Item {
+                    place: mark.place,
+                    velocity: mark.velocity,
+                    home: mark.home,
+                    seed: mark.seed,
+                    ball: mark.ball,
+                    life,
+                    age,
+                };
+                let Some(grow) = c.size_curve.at(life) else { continue };
+                let alpha = alpha_of(c, &it) * shows;
+                let size = mark.size * c.size.max(0.0) * grow;
+                if alpha <= 0.0 || size <= 0.0 {
+                    continue;
+                }
+                let base = base_of(&it);
+                let colour = shade(c, coloured(subs, subs.len(), base, hit), alpha);
+                let extras = Extras { subs, base, s: life, fade: alpha, unit: 1.0, hit, outline: 1.0, added: 1.0 };
+                let sprites = super::marks::sprites_of(m, mark, age, size, colour, down);
+                let copy_extras = Extras { fade: alpha * copy_opacity, ..extras };
+                put(pieces, Vec2::ZERO, &mut |p| {
+                    for own in &sprites {
+                        particle_with_extras(*own, &extras, p);
+                    }
+                    for k in 0..d.copies {
+                        let by = offset_of_seed(&d, mark.seed, k, size, time);
+                        for own in &sprites {
+                            particle_with_extras(copied(own, by, copy_size, copy_opacity), &copy_extras, p);
+                        }
+                    }
+                });
+            }
         }
         _ => {}
     }
-    let flutters = st.forces.flips();
-    let now_s = st.step as f32 * super::step::DT;
-    let d = capped(c.detail, seen.len());
-    for v in &seen {
-        let (own, star) = sprite(&layer.drawn, v.s, v.size, v.colour, flutters, now_s, time);
-        particle_with_extras(own, &extras(v, 1.0), pieces);
-        pieces.particles[OWN].extend(star);
-        for k in 0..d.copies {
-            let by = copy_offset(&d, v.s, k, v.size, time);
-            particle_with_extras(
-                copied(&own, by, d.size.max(0.0), d.opacity.clamp(0.0, 1.0)),
-                &extras(v, d.opacity),
-                pieces,
-            );
-            pieces.particles[OWN].extend(star.map(|s| copied(&s, by, d.size.max(0.0), d.opacity.clamp(0.0, 1.0))));
-        }
-    }
-    None
 }
 
 /// The angle a shape points at: its own turn or the way it goes, turned `by` more.
@@ -323,7 +579,7 @@ pub fn sprite(
         Drawn::Shapes(l) => (shape_sprite(l, s, size, colour, now, flutter), None),
         Drawn::Glitter(l) => glitter_sprite(l, s, size, colour, time),
         // Fields and lines are drawn their own way; a plain dot stands in.
-        Drawn::Smoke(_) | Drawn::Flame(_) | Drawn::Web(_) => {
+        Drawn::Smoke(_) | Drawn::Flame(_) | Drawn::Web(_) | Drawn::Trails(_) | Drawn::Marks(_) | Drawn::Liquid(_) => {
             (Particle::new(ShapeMadeOf::Dots.as_ball().code(), s.place, s.turn, size, colour), None)
         }
     }
@@ -549,4 +805,59 @@ fn draw_web(cx: &DrawCx, layer: &LookLayer, w: &WebLayer, seen: &[Seen], hit: Hi
             }
         }
     }
+}
+
+/// The liquid `layer` (whose own settings are `l`) makes of `st`'s particles: a blob each, its
+/// modifiers worked over them.
+pub fn liquid_of(cx: &DrawCx, st: &ParticlesState, layer: &LookLayer, l: &LiquidLayer) -> Option<Liquid> {
+    let c = &layer.common;
+    if c.opacity <= 0.0 {
+        return None;
+    }
+    let parent = st.parent.and_then(|p| Some((cx.tree.things.get(&p)?, cx.scene.things.get(&p)?)));
+    let ball_cx = match (c.colour_from, parent) {
+        (ColourFrom::ParentBall, Some((thing, resolved))) => Some(DrawCx { thing, resolved, ..*cx }),
+        _ => None,
+    };
+    let ball_colour = ball_cx.as_ref().and_then(crate::things::balls::draw::ball_colors);
+    let now = st.step;
+    // Mirror's copies count against the cap too, so every copy shows whole.
+    let most = MOST_BLOBS / layer.modifiers.mirror.ways().max(1) as usize;
+    let d = capped(c.detail, st.specks.len());
+    let time = cx.time as f32;
+    let mut blobs = Vec::new();
+    for s in &st.specks {
+        if !draws(c, s, now) {
+            continue;
+        }
+        let it = Item::of(s, now);
+        let Some(grow) = c.size_curve.at(it.life) else { continue };
+        // The layer's opacity is the surface's; each blob counts as much as it shows.
+        let weight = alpha_of(c, &it) / c.opacity;
+        let size = s.size * c.size.max(0.0) * grow;
+        if weight <= 0.0 || size <= 0.0 {
+            continue;
+        }
+        let base = match (&ball_colour, it.ball) {
+            (Some(of), b) if b > 0 => of(b as usize - 1),
+            _ => own_colour(cx, c, &it),
+        };
+        blobs.push(l.blob(s.place, size, weight, base));
+        for k in 0..d.copies {
+            let by = copy_offset(&d, s, k, size, time);
+            blobs.push(l.blob(s.place + by, size * d.size.max(0.0), weight * d.opacity.clamp(0.0, 1.0), base));
+        }
+        if blobs.len() >= most {
+            blobs.truncate(most);
+            break;
+        }
+    }
+    let m = &layer.modifiers;
+    if m.mirror.ways() > 1 {
+        mirror_blobs(&mut blobs, m, mirror_centre(cx, st, m));
+    }
+    if m.glitches() {
+        glitch_blobs(&mut blobs, &Tears::new(m, &view_of(cx), cx.time, layer.id.0));
+    }
+    (!blobs.is_empty()).then(|| Liquid { blobs, style: l.style(c.opacity), front: c.place == AroundPlace::InFront })
 }

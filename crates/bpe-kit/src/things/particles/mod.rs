@@ -15,14 +15,21 @@ mod air_tests;
 pub mod births;
 pub mod draw;
 pub mod forces;
+pub mod liquid;
 pub mod look;
 pub mod looks;
+pub mod marks;
 pub mod meets;
+pub mod modifiers;
 pub mod sim;
 pub mod state;
 pub mod step;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_part6;
+pub mod trail;
+pub mod wants;
 pub mod web;
 
 use bpe_core::{Choice, SettingDef, Settings, SlotId, Target, ThingKind};

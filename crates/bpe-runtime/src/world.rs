@@ -1543,11 +1543,10 @@ pub fn beside_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u6
     }
     let mut h = Hasher(fingerprint_of(scene, resolved, sims, true));
     for (id, r) in &resolved.things {
-        if !sims.thing(&r.kind).is_some_and(|s| !s.in_main(r)) {
-            continue;
-        }
+        let Some(sim) = sims.thing(&r.kind).filter(|s| !s.in_main(r)) else { continue };
         let Some(thing) = scene.things.get(id) else { continue };
         h.bytes(&id.0.to_le_bytes());
+        h.bytes(&sim.more_fingerprint(r).to_le_bytes());
         h.bytes(r.kind.as_bytes());
         h.bytes(&thing.parent.map_or(u32::MAX, |p| p.0).to_le_bytes());
         h.f32(thing.transform.position.x);

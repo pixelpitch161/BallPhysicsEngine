@@ -253,6 +253,8 @@ macro_rules! look_settings {
     };
 }
 
+pub(crate) use look_settings;
+
 look_settings! {
     /// Sprites: each particle drawn as one of the sprite shapes.
     SpritesLayer {
@@ -516,13 +518,26 @@ pub struct Common {
 /// What a layer draws each particle as.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Drawn {
-    Sprites { made_of: ShapeMadeOf, softness: f32 },
-    Streaks { stretch: f32, least: f32, width: f32 },
+    Sprites {
+        made_of: ShapeMadeOf,
+        softness: f32,
+    },
+    Streaks {
+        stretch: f32,
+        least: f32,
+        width: f32,
+    },
     Smoke(SmokeLayer),
     Flame(FlameLayer),
     Shapes(ShapesLayer),
     Glitter(GlitterLayer),
     Web(WebLayer),
+    /// Each particle's recent path (part 6).
+    Trails(super::trail::TrailsLayer),
+    /// The marks the particles left (part 6).
+    Marks(super::marks::MarksLayer),
+    /// The particles as one blobby surface (part 6).
+    Liquid(super::liquid::LiquidLayer),
 }
 
 /// One shown Look layer as the drawing reads it.
@@ -533,6 +548,8 @@ pub struct LookLayer {
     pub common: Common,
     /// Its shown sub-layers, worked first to last.
     pub subs: Vec<SubLayer>,
+    /// Its Mirror, Colour split and Glitch (part 6).
+    pub modifiers: super::modifiers::Modifiers,
 }
 
 /// A sub-layer of `kind` with its settings `p`, as a ball's (sizes in pixels).
@@ -582,6 +599,21 @@ pub fn layers_of(slot: &ResolvedSlot) -> Vec<LookLayer> {
                 let s = WebLayer::from_params(&p);
                 (Drawn::Web(s.clone()), s.common())
             }
+            super::trail::TRAILS => {
+                let s = super::trail::TrailsLayer::from_params(&p);
+                let common = s.common();
+                (Drawn::Trails(s), common)
+            }
+            super::marks::MARKS => {
+                let s = super::marks::MarksLayer::from_params(&p);
+                let common = s.common();
+                (Drawn::Marks(s), common)
+            }
+            super::liquid::LIQUID => {
+                let s = super::liquid::LiquidLayer::from_params(&p);
+                let common = s.common();
+                (Drawn::Liquid(s), common)
+            }
             kind => {
                 if let Some(parent) = layer.parent
                     && let Some(l) = out.iter_mut().find(|l| l.id == parent)
@@ -591,7 +623,8 @@ pub fn layers_of(slot: &ResolvedSlot) -> Vec<LookLayer> {
                 continue;
             }
         };
-        out.push(LookLayer { id: layer.id, drawn, common, subs: Vec::new() });
+        let modifiers = super::modifiers::Modifiers::from_params(&p);
+        out.push(LookLayer { id: layer.id, drawn, common, subs: Vec::new(), modifiers });
     }
     out
 }
@@ -632,7 +665,13 @@ pub fn kinds() -> Vec<Kind> {
         card: CARD,
         takes_subs: true,
         settings,
-        dynamic: crate::modules::look::layers::no_more,
+        // Every drawn layer has the Experimental fold: Mirror, Colour split, Glitch (part 6).
+        dynamic: super::modifiers::defs,
+    };
+    // A field or a web is drawn as a whole, so it can't split into colours a particle at a time.
+    let whole = |id, name, help, settings| Kind {
+        dynamic: super::modifiers::defs_without_split,
+        ..drawn(id, name, help, settings)
     };
     let sub = |id, name, help, settings| sub_kind(CARD, id, name, help, settings);
     vec![
@@ -648,13 +687,13 @@ pub fn kinds() -> Vec<Kind> {
             "Each particle drawn as a line along the way it goes: longer the faster it goes.",
             StreaksLayer::defs,
         ),
-        drawn(
+        whole(
             SMOKE,
             "Soft smoke",
             "The particles as one soft cloud: thick where many meet, drifting, lit from one side.",
             SmokeLayer::defs,
         ),
-        drawn(FLAME, "Flame", "The particles' heat as flickering flames, coloured from cold to hot.", FlameLayer::defs),
+        whole(FLAME, "Flame", "The particles' heat as flickering flames, coloured from cold to hot.", FlameLayer::defs),
         drawn(
             SHAPES,
             "More shapes",
@@ -662,12 +701,35 @@ pub fn kinds() -> Vec<Kind> {
             ShapesLayer::defs,
         ),
         drawn(GLITTER, "Glitter", "Facets that flash with a star when they turn to the light.", GlitterLayer::defs),
-        drawn(
+        whole(
             WEB,
             "Web lines",
             "Lines between particles near each other (and to balls), fading as they draw apart.",
             WebLayer::defs,
         ),
+        drawn(
+            super::trail::TRAILS,
+            "Trails",
+            "Each particle's recent path drawn as a line behind it, thinning and fading to its tail.",
+            super::trail::TrailsLayer::defs,
+        ),
+        drawn(
+            super::marks::MARKS,
+            "Marks that stay",
+            "Marks left where the particles land (or leave the picture, or die), staying there: paint drips.",
+            super::marks::MarksLayer::defs,
+        ),
+        // A surface takes no sub-layers and doesn't split into colours.
+        Kind {
+            takes_subs: false,
+            dynamic: super::modifiers::defs_without_split,
+            ..drawn(
+                super::liquid::LIQUID,
+                "Liquid",
+                "The particles run together into one smooth, shiny surface: water, goo, liquid metal or glass.",
+                super::liquid::LiquidLayer::defs,
+            )
+        },
         sub(SUB_GLOW, "Glow", "Soft light round its layer's particles.", ShapeSubGlow::defs),
         sub(SUB_OUTLINE, "Outline", "A line round its layer's particles, painted over them.", SubOutline::defs),
         sub(SUB_SHADOW, "Shadow", "A soft offset copy of its layer's particles, under them.", ShapeSubShadow::defs),

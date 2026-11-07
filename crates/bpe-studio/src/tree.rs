@@ -1035,7 +1035,7 @@ mod tests {
             history: crate::history::History::default(),
         };
         let mut h = Harness::builder()
-            .with_size(egui::vec2(260.0, 600.0))
+            .with_size(egui::vec2(260.0, 1200.0))
             // Real frame times, so two quick clicks count as a double-click.
             .with_step_dt(1.0 / 60.0)
             .with_max_steps(120)

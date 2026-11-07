@@ -1015,6 +1015,9 @@ pub struct Frame {
     pub beat: [f32; 4],
     /// Which sample of a baked frame this is (lighting part 3), `None` drawn live.
     pub bake: Option<crate::bake::BakeSample>,
+    /// Liquids (particles part 6): particles run together into a surface, each drawn behind the
+    /// balls (after the trails and sprites behind them) or in front of them (after the flashes).
+    pub liquids: Vec<crate::liquid::Liquid>,
 }
 
 /// One light as the lighting pass reads it (`LightGpu` in lighting.wgsl).
@@ -1454,6 +1457,7 @@ impl Default for Frame {
             ripple_owners: 0,
             beat: [0.0; 4],
             bake: None,
+            liquids: Vec::new(),
         }
     }
 }
@@ -1564,6 +1568,7 @@ impl Frame {
         self.particles_front.clear();
         self.fields.clear();
         self.fields_front.clear();
+        self.liquids.clear();
         self.hits.clear();
         self.effects.clear();
         self.gradients.clear();
@@ -1711,6 +1716,7 @@ impl Frame {
             && self.fields.is_empty()
             && self.fields_front.is_empty()
             && self.layers.is_empty()
+            && self.liquids.is_empty()
     }
 
     /// Adds a shape: a circle of radius `scale` when `points` is None, else the closed outline
@@ -1811,7 +1817,8 @@ impl Frame {
                 && o.particles_front.is_empty()
                 && o.fields.is_empty()
                 && o.fields_front.is_empty()
-                && o.layers.is_empty())
+                && o.layers.is_empty()
+                && o.liquids.is_empty())
         })
     }
 

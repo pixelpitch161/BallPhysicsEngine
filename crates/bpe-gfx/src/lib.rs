@@ -19,6 +19,8 @@ mod frame;
 mod grade_tests;
 mod gradients;
 mod lighting;
+mod liquid;
+pub use liquid::{Liquid, LiquidBlob, LiquidStyle, MOST_BLOBS};
 mod ripples;
 pub mod stage_camera;
 mod stage_camera_pass;
@@ -428,6 +430,8 @@ pub struct Renderer {
     paint: PaintTexture,
     /// What Ripples measure from, built for frames that have them (bound with the atlas).
     ripples: ripples::Ripples,
+    /// Liquids' field and passes (particles part 6), made the first time a frame has one.
+    liquid: Option<liquid::LiquidPass>,
     /// The overlay frame's own gradients: its instances name rows of its own atlas.
     overlay_paint: PaintTexture,
     targets: Targets,
@@ -1145,6 +1149,7 @@ impl Renderer {
             composite_layout,
             paint_layout,
             ripples,
+            liquid: None,
             layers_layout,
             layered_pipeline_layout: layered_pipeline_layout.clone(),
             programs: ProgramStore::default(),
@@ -1377,6 +1382,12 @@ impl Renderer {
             .chain(layers.iter().map(|l| (&l.frame, l.each.then_some(l.blend))));
         self.waiting = self.programs.lock().ensure(device, &self.layered_pipeline_layout, frames);
         self.ripples.prepare(device, queue, encoder, frame);
+        let liquids = liquid::all_in(frame);
+        if !liquids.is_empty() || self.liquid.is_some() {
+            let pass = self.liquid.get_or_insert_with(|| liquid::LiquidPass::new(device, &self.globals_layout));
+            let size = (self.targets.width, self.targets.height);
+            pass.prepare(device, queue, liquids.into_iter(), size, &self.targets.behind_view);
+        }
         self.paint.sync(device, queue, &self.paint_layout, &self.sampler, &frame.gradients, &self.ripples);
         self.paint.bind_ripples(device, &self.paint_layout, &self.sampler, &self.ripples);
         self.grade_map.sync(queue, &frame.grade);
@@ -1713,6 +1724,8 @@ impl Renderer {
             pass.set_bind_group(1, &self.paint.group, &[]);
             self.draw_back(&mut pass, frame, &self.buffers, &world);
         }
+        let hdr = self.targets.hdr.clone();
+        self.draw_liquids(encoder, frame, false, globals, &hdr);
         // Blended things behind the balls (shapes) mix with what is behind them before the balls
         // are drawn over them.
         let behind = |l: &BlendLayer| l.z == 0 && l.behind();
@@ -1762,6 +1775,7 @@ impl Renderer {
             pass.set_bind_group(0, globals, &[]);
             self.draw_front(&mut pass, frame, &self.buffers, &world);
         }
+        self.draw_liquids(encoder, frame, true, globals, &hdr);
         // Then the blended things of z-order 0 and everything of a higher z-order, in order.
         for (i, (l, b)) in frame.layers.iter().zip(layer_buffers).enumerate().filter(|(_, (l, _))| above(l)) {
             let objects = object_view.as_ref();
@@ -2064,14 +2078,38 @@ impl Renderer {
         front: bool,
     ) {
         self.fields.splat(encoder, &through.globals, &b.fields, front);
-        let mut pass = begin_pass(encoder, view, if front { "things in front" } else { "things" }, wgpu::LoadOp::Load);
-        pass.set_bind_group(0, &through.globals, &[]);
-        pass.set_bind_group(1, &through.paint, &[]);
-        if front {
-            self.draw_balls(&mut pass, f, b, through);
-            self.draw_front(&mut pass, f, b, through);
-        } else {
-            self.draw_back(&mut pass, f, b, through);
+        {
+            let label = if front { "things in front" } else { "things" };
+            let mut pass = begin_pass(encoder, view, label, wgpu::LoadOp::Load);
+            pass.set_bind_group(0, &through.globals, &[]);
+            pass.set_bind_group(1, &through.paint, &[]);
+            if front {
+                self.draw_balls(&mut pass, f, b, through);
+                self.draw_front(&mut pass, f, b, through);
+            } else {
+                self.draw_back(&mut pass, f, b, through);
+            }
+        }
+        self.draw_liquids(encoder, f, front, &through.globals, view);
+    }
+
+    /// Draws `f`'s liquids behind the balls (`front` false) or in front of them into `view`,
+    /// through `globals`. A Glass liquid first copies the picture behind it (not in the light
+    /// passes, where it draws flat).
+    fn draw_liquids(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        f: &Frame,
+        front: bool,
+        globals: &wgpu::BindGroup,
+        view: &wgpu::TextureView,
+    ) {
+        let Some(pass) = self.liquid.as_ref() else { return };
+        for l in f.liquids.iter().filter(|l| l.front == front && pass.has(l)) {
+            if l.style.glass() && self.light_mode == 0 {
+                self.copy_under(encoder);
+            }
+            pass.draw(encoder, l, globals, view);
         }
     }
 

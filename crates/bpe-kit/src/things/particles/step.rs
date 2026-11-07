@@ -143,6 +143,7 @@ pub fn step_in(st: &mut ParticlesState, world: &World, log: &Log, threads: usize
     let anchor = world.anchor(st.id);
     let cx = BirthCx { world, log, anchor: anchor.position, angle: anchor.angle };
     births::births(st, &cx, since, false);
+    st.trail.grow(&st.specks);
     let meets = st.meets.clone();
     let grid = meets.reads_balls().then(|| BallGrid::new(balls_in(world), meets.reach.max(1.0)));
     let walls: Vec<WallAt> = if meets.at_shapes == super::meets::AtShapes::Pass {
@@ -173,8 +174,20 @@ pub fn step_in(st: &mut ParticlesState, world: &World, log: &Log, threads: usize
         ceiling: world.limits().ceiling,
     };
     run_chunks(&mut st.specks, threads, &|s| move_one(s, &move_cx));
-    st.specks.retain(|s| s.flags & DEAD == 0);
+    end_step(st);
     note_walls(st, world);
+}
+
+/// After a step's move: the marks it left, then the dead removed (their trail rows with them),
+/// then every particle's place noted in its trail.
+pub fn end_step(st: &mut ParticlesState) {
+    super::marks::collect(st);
+    if st.trail.points > 0 && st.specks.iter().any(|s| s.flags & DEAD != 0) {
+        let keep: Vec<bool> = st.specks.iter().map(|s| s.flags & DEAD == 0).collect();
+        st.trail.keep(&keep);
+    }
+    st.specks.retain(|s| s.flags & DEAD == 0);
+    st.trail.write(&st.specks, st.step);
 }
 
 /// Notes every wall's outline as it is now, for the next step's sides.
@@ -192,6 +205,8 @@ pub fn first(st: &mut ParticlesState, world: &World) {
     let log = Log::default();
     let cx = BirthCx { world, log: &log, anchor: anchor.position, angle: anchor.angle };
     births::births(st, &cx, 0, true);
+    st.trail.grow(&st.specks);
+    st.trail.write(&st.specks, st.step);
     note_walls(st, world);
 }
 
