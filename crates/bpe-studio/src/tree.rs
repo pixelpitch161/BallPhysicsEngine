@@ -63,6 +63,8 @@ enum Action {
     AddParticles(bpe_kit::things::particles::looks::Look),
     /// An Empty Particles thing inside the selected one, born from its particles.
     AddFed(ThingId),
+    /// A Text with this starting look.
+    AddText(bpe_kit::things::text::looks::Look),
     /// A folder around this row, or around the whole selection when the row is part of it.
     MakeFolder(ThingId),
     Folder(Vec<ThingId>),
@@ -78,7 +80,7 @@ enum Action {
 }
 
 /// The headings of the "Add thing" menu, in order. Kinds in no family follow Folder.
-const FAMILIES: [&str; 4] = ["Bouncers", "Shapes", "Lights", "Particles"];
+const FAMILIES: [&str; 5] = ["Bouncers", "Shapes", "Text", "Lights", "Particles"];
 
 /// Draws the tree and applies what was clicked. `selection` follows the clicks.
 pub fn show(
@@ -157,6 +159,23 @@ pub fn show(
                                 }
                             });
                         }
+                        continue;
+                    }
+                    if kind.id() == bpe_kit::things::text::KIND {
+                        // Empty text, then the starting looks.
+                        use bpe_kit::things::text::looks::{LOOKS, Look};
+                        if ui.button(Look::Empty.name()).on_hover_text(Look::Empty.help()).clicked() {
+                            action = Some(Action::AddText(Look::Empty));
+                            ui.close();
+                        }
+                        ui.menu_button("Looks", |ui| {
+                            for look in LOOKS {
+                                if ui.button(look.name()).on_hover_text(look.help()).clicked() {
+                                    action = Some(Action::AddText(look));
+                                    ui.close();
+                                }
+                            }
+                        });
                         continue;
                     }
                     if let Some(a) = button(ui, *kind) {
@@ -334,6 +353,19 @@ pub fn show(
         Some(Action::AddParticles(look)) => {
             let parent = particles_parent(scene, selection.primary);
             if let Ok(id) = bpe_kit::things::particles::looks::add_particles(scene, reg, look, parent) {
+                selection.set(id);
+                out.edited = true;
+                out.added = Some(id);
+            }
+        }
+        Some(Action::AddText(look)) => {
+            // Into a selected folder, beside any other selected thing, or under Scene settings.
+            let parent = selection
+                .primary
+                .and_then(|s| scene.things.get(&s))
+                .and_then(|t| if t.kind == "folder" { Some(t.id) } else { t.parent })
+                .unwrap_or(ThingId::ROOT);
+            if let Ok(id) = bpe_kit::things::text::looks::add_text(scene, reg, look, parent) {
                 selection.set(id);
                 out.edited = true;
                 out.added = Some(id);
@@ -881,6 +913,8 @@ enum Icon {
     Rig,
     /// A Particles thing: a scatter of specks.
     Specks,
+    /// A Text: a capital T.
+    Letter,
     /// Anything else.
     Diamond,
 }
@@ -896,6 +930,7 @@ fn icon_shape(kind: &str) -> Icon {
         "light" => Icon::Lamp,
         "rig" => Icon::Rig,
         bpe_kit::things::particles::KIND => Icon::Specks,
+        bpe_kit::things::text::KIND => Icon::Letter,
         _ => Icon::Diamond,
     }
 }
@@ -958,6 +993,12 @@ fn paint_icon(painter: &egui::Painter, rect: Rect, kind: &str, ink: Color32) {
             for (x, y, size) in specks {
                 painter.circle_filled(c + Vec2::new(x, y) * r, size * r, ink);
             }
+        }
+        Icon::Letter => {
+            let bar = Rect::from_center_size(c + Vec2::new(0.0, -r * 0.8), Vec2::new(r * 2.0, r * 0.45));
+            painter.rect_filled(bar, 0.5, ink);
+            let stem = Rect::from_center_size(c + Vec2::new(0.0, r * 0.15), Vec2::new(r * 0.5, r * 1.75));
+            painter.rect_filled(stem, 0.5, ink);
         }
         Icon::Diamond => {
             let points =
@@ -1164,6 +1205,40 @@ mod tests {
         let s = h.state();
         let light = s.selection.primary.unwrap();
         assert_eq!(s.scene.things[&light].parent, Some(rig), "inside the selected rig");
+    }
+
+    #[test]
+    fn the_add_menu_has_a_text_heading_with_empty_text() {
+        let mut h = harness();
+        h.get_by_label("+ Add thing").click();
+        h.run();
+        let y = |h: &Harness<'_, State>, l: &str| h.get_by_label(l).rect().min.y;
+        assert!(y(&h, "Shapes") < y(&h, "Text") && y(&h, "Text") < y(&h, "Lights"), "between Shapes and Lights");
+        h.get_by_label("Empty text").click();
+        h.run();
+        let s = h.state();
+        let id = s.selection.primary.expect("the new text is selected");
+        assert_eq!(s.scene.things[&id].kind, bpe_kit::things::text::KIND);
+        assert_eq!(s.scene.things[&id].parent, Some(ThingId::ROOT));
+    }
+
+    #[test]
+    fn the_looks_submenu_adds_a_hook_title() {
+        let mut h = harness();
+        h.set_size(egui::vec2(900.0, 1200.0));
+        h.run();
+        h.get_by_label("+ Add thing").click();
+        h.run();
+        h.get_by_label("Looks").hover();
+        h.run();
+        h.get_by_label("Hook title").click();
+        h.run();
+        let s = h.state();
+        let id = s.selection.primary.expect("the new text is selected");
+        assert_eq!(s.scene.things[&id].name, "Hook title");
+        let words =
+            <bpe_kit::things::text::TextSettings as bpe_core::Settings>::from_params(&s.scene.things[&id].params);
+        assert_eq!(words.words, "WAIT FOR\nTHE LAST\nONE…");
     }
 
     #[test]

@@ -218,7 +218,7 @@ fn wear_layers(
 
 /// The hit data of the shape `cx` is drawing, for its Flash and Colour on hit sub-layers: how long
 /// ago its last hit was (by a ball against it), that hit's strength and its hits so far.
-fn shape_hits(cx: &DrawCx) -> [f32; 4] {
+pub(crate) fn shape_hits(cx: &DrawCx) -> [f32; 4] {
     let id = cx.thing.id;
     let rate = cx.world.steps_per_second;
     let mut hit = bpe_gfx::NO_HIT;

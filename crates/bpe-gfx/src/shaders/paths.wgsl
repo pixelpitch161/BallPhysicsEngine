@@ -156,7 +156,8 @@ fn ellipse_signed(q: vec2<f32>, ab: vec2<f32>) -> f32 {
 }
 
 // Distance from the outline in world pixels: negative inside (even-odd, so a self-crossing
-// outline still has an inside).
+// outline still has an inside). A letter's points are several closed contours (see
+// `Frame::push_letter`: z 2 a contour's first point, z 1 its last, w its count less one).
 fn path_signed(in: PathOut) -> f32 {
     let q = path_local(in);
     if in.b.y < 0.5 {
@@ -174,7 +175,13 @@ fn path_signed(in: PathOut) -> f32 {
     var inside = false;
     var prev = path_points[first + n - 1u].xy;
     for (var k = 0u; k < n; k++) {
-        let p = path_points[first + k].xy;
+        let pk = path_points[first + k];
+        // A letter's contour starts here (z 2): its edge in comes from its own last point, `w`
+        // on. A shape's points are all 0 and close round the whole list.
+        if pk.z > 1.5 {
+            prev = path_points[first + k + u32(pk.w + 0.5)].xy;
+        }
+        let p = pk.xy;
         best = min(best, segment_distance(q, prev, p));
         if (p.y > q.y) != (prev.y > q.y) {
             let x = p.x + (q.y - p.y) / (prev.y - p.y) * (prev.x - p.x);

@@ -145,18 +145,22 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
     }
 
     // ---------- Trails and particles ----------
-    ui.add_space(6.0);
-    let add = if shape { "+ Add particles" } else { "+ Add trail or particles" };
-    list_header(ui, cx, card, "Trails and particles", add, LayerSection::Around, edits);
-    if around.is_empty() {
-        let none = if shape { "None yet: add particles." } else { "None yet: add a trail or particles." };
-        ui.label(RichText::new(none).small().color(style::FAINT));
+    // A Text's letters give off no particles (a Particles thing riding it can).
+    let text = cx.scene.things.get(&cx.id).is_some_and(|t| t.kind == bpe_kit::things::text::KIND);
+    if !text {
+        ui.add_space(6.0);
+        let add = if shape { "+ Add particles" } else { "+ Add trail or particles" };
+        list_header(ui, cx, card, "Trails and particles", add, LayerSection::Around, edits);
+        if around.is_empty() {
+            let none = if shape { "None yet: add particles." } else { "None yet: add a trail or particles." };
+            ui.label(RichText::new(none).small().color(style::FAINT));
+        }
+        let mut rows = Vec::new();
+        for layer in around.iter().rev() {
+            rows.push((layer.id, layer_list::piece(ui, inspector, cx, card, layer, picked, edits)));
+        }
+        layer_list::around_drop_target(ui, cx, card, &rows, edits);
     }
-    let mut rows = Vec::new();
-    for layer in around.iter().rev() {
-        rows.push((layer.id, layer_list::piece(ui, inspector, cx, card, layer, picked, edits)));
-    }
-    layer_list::around_drop_target(ui, cx, card, &rows, edits);
 
     // ---------- Reactions ----------
     if !shape {
@@ -337,6 +341,11 @@ fn list_header(
 fn shape_body(ui: &mut Ui, cx: &LookCx, edits: &mut Vec<Edit>) {
     let Some(thing) = cx.scene.things.get(&cx.id) else { return };
     let Some(kind) = cx.reg().thing(&thing.kind) else { return };
+    if thing.kind == bpe_kit::things::text::KIND {
+        let hint = "The words, font and path are in the Words card above.";
+        ui.label(RichText::new(hint).small().color(style::MUTED));
+        return;
+    }
     // Under the Body's title, so no heading repeats it.
     let defs: Vec<SettingDef> = kind
         .settings()

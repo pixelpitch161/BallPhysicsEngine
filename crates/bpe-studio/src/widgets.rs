@@ -23,6 +23,10 @@ pub struct TargetChoices {
     /// That ball's group): true for If and Do blocks, false for When blocks, where they would mean
     /// anything.
     pub relative: bool,
+    /// The fonts the scene keeps, by name (a Text's Font picker lists them first).
+    pub fonts: Vec<String>,
+    /// Those of them that can't be read (damaged).
+    pub unreadable_fonts: Vec<String>,
 }
 
 impl TargetChoices {
@@ -38,7 +42,22 @@ impl TargetChoices {
             .filter(|id| scene.things.get(id).is_some_and(|t| bpe_kit::things::balls::rows::has_balls(&t.kind)))
             .copied()
             .collect();
-        TargetChoices { things, tags: tags.into_iter().collect(), kinds, ball_things, relative: true }
+        let fonts = scene.fonts.keys().cloned().collect();
+        let unreadable_fonts = scene
+            .fonts
+            .iter()
+            .filter(|(name, font)| !bpe_kit::text::fonts::scene_font_reads(name, font))
+            .map(|(name, _)| name.clone())
+            .collect();
+        TargetChoices {
+            things,
+            tags: tags.into_iter().collect(),
+            kinds,
+            ball_things,
+            relative: true,
+            fonts,
+            unreadable_fonts,
+        }
     }
 }
 
@@ -1663,6 +1682,16 @@ fn widget(
             }
             response
         }
+        // A Text's words: any number of lines.
+        (ValueType::Text, Value::Text(text)) if def.unit == "lines" => {
+            ui.add(egui::TextEdit::multiline(text).desired_rows(3).desired_width(f32::INFINITY)).labelled_by(name)
+        }
+        (ValueType::Text, Value::Text(text)) if def.unit == "font" => crate::font_picker::font_row(
+            ui,
+            text,
+            &crate::font_picker::FontCx { scene_fonts: &choices.fonts, unreadable: &choices.unreadable_fonts },
+            name,
+        ),
         (ValueType::Text, Value::Text(text)) => {
             ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY)).labelled_by(name)
         }

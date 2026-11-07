@@ -17,6 +17,8 @@ pub mod air_view;
 pub mod free_points;
 pub mod light_handles;
 pub mod particle_handles;
+pub mod text_handles;
+pub mod text_typing;
 mod warm;
 pub mod world_view;
 pub mod zones;
@@ -96,6 +98,8 @@ pub enum Handle {
     FreePoint(ThingId, u8, u8),
     /// A Particles thing's area corner or edge, or its line's end.
     Particles(ThingId, particle_handles::ParticlePart),
+    /// A Text's Size dot, Wrap bar or Radius ring.
+    Text(ThingId, text_handles::TextPart),
 }
 
 impl Handle {
@@ -114,7 +118,8 @@ impl Handle {
             | Handle::Zone(id, _, _)
             | Handle::Light(id, _)
             | Handle::FreePoint(id, _, _)
-            | Handle::Particles(id, _) => id,
+            | Handle::Particles(id, _)
+            | Handle::Text(id, _) => id,
         }
     }
 
@@ -424,7 +429,10 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         // A light keeps the playhead too: its keys land where it is seen.
         outcome.keep_playhead = handle.is_camera()
             || handle.is_mould()
-            || matches!(handle, Handle::Zone(..) | Handle::Light(..) | Handle::FreePoint(..) | Handle::Particles(..));
+            || matches!(
+                handle,
+                Handle::Zone(..) | Handle::Light(..) | Handle::FreePoint(..) | Handle::Particles(..) | Handle::Text(..)
+            );
     }
     if response.drag_stopped() {
         preview.drag = None;
@@ -476,6 +484,18 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         && let Some(handle) = hovered
     {
         outcome.selected = Some(handle.thing());
+    }
+
+    // A double-click on a Text types into it.
+    if response.double_clicked()
+        && let Some(Handle::Body(id)) = hovered
+        && studio.scene.things.get(&id).is_some_and(|t| t.kind == bpe_kit::things::text::KIND)
+    {
+        preview.drag = None;
+        text_typing::start(studio, id);
+    }
+    if studio.typing.is_some() {
+        text_typing::show(ui, studio, &view);
     }
 
     shape_menu(&response, studio, &view, &mut preview.menu);
@@ -884,6 +904,10 @@ pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
     if let Some(handle) = particle_handles::hit(studio, view, pos) {
         return Some(handle);
     }
+    // The selected Text's size dot, wrap bar and radius ring.
+    if let Some(handle) = text_handles::hit(studio, view, pos) {
+        return Some(handle);
+    }
     // The selected shape's or background's free gradient points, small and over everything.
     if let Some(handle) = free_points::hit(studio, view, pos) {
         return Some(handle);
@@ -930,6 +954,10 @@ pub fn hit_test(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
     // The other lights' lamps while the Lights tab is open.
     if let Some(handle) = light_handles::hit(studio, view, pos, light_handles::Pass::Others) {
         return Some(handle);
+    }
+    // Words, then shapes.
+    if let Some(id) = text_handles::under(studio, view, pos) {
+        return Some(Handle::Body(id));
     }
     world
         .walls
@@ -1045,6 +1073,7 @@ pub fn apply_drag(
             };
         }
         Handle::Particles(id, part) => return particle_handles::apply(scene, reg, world, id, part, pointer, time),
+        Handle::Text(id, part) => return text_handles::apply(scene, reg, world, id, part, pointer, time),
     }
     false
 }
@@ -1167,6 +1196,7 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
     light_handles::draw(&painter, studio, view, active, selected);
     free_points::draw(&painter, studio, view, active);
     particle_handles::draw(&painter, studio, view, active);
+    text_handles::draw(&painter, studio, view, active);
     air_view::draw(&painter, studio, view);
 }
 

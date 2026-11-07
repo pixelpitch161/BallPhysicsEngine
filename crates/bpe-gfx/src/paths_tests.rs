@@ -416,3 +416,128 @@ fn a_gradient_runs_round_an_ellipse_from_its_top() {
     assert!(left[2] > left[0] + 40, "three quarters round, bluer: {left:?}");
     assert!(dark(at(Vec2::ZERO)), "the hole");
 }
+
+// ---- Letters: several contours in one shape (Text part 1) ----
+
+/// A square of half-side `h` about `c`, clockwise.
+fn square_at(c: Vec2, h: f32) -> Vec<Vec2> {
+    square().into_iter().map(|p| c + p * h).collect()
+}
+
+#[test]
+fn a_letter_with_a_hole_leaves_the_hole_empty() {
+    const W: u32 = 1080;
+    const H: u32 = 1920;
+    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+    let mut inner = square_at(Vec2::ZERO, 75.0);
+    inner.reverse();
+    let at = Vec2::new(0.0, -300.0);
+    frame.push_letter(at, 0.0, &[square_at(Vec2::ZERO, 150.0), inner], 2.0, WHITE, 2.0).unwrap();
+    // And the same letter wearing a body record, through the layer walk.
+    let mut inner = square_at(Vec2::ZERO, 75.0);
+    inner.reverse();
+    let worn = Vec2::new(0.0, 300.0);
+    let i = frame.push_letter(worn, 0.0, &[square_at(Vec2::ZERO, 150.0), inner], 2.0, WHITE, 3.0).unwrap();
+    wear(&mut frame, i, vec![body_record()], 0.0);
+    let Some(pixels) = render_sized(&frame, W, H) else { return };
+    save("letter-hole", &pixels, W, H);
+    let px = |p: Vec2| pixel_sized(&pixels, W, H, p);
+    for c in [at, worn] {
+        assert!(dark(px(c + Vec2::new(0.5, 0.5))), "the hole");
+        assert!(bright(px(c + Vec2::new(110.5, 0.5))), "the band");
+        assert!(bright(px(c + Vec2::new(0.5, -110.5))), "the band");
+        assert!(dark(px(c + Vec2::new(160.5, 0.5))), "outside");
+        // Where an edge from one contour to the other would run, the band is whole.
+        for p in [Vec2::new(-112.0, 112.0), Vec2::new(-112.0, -112.0), Vec2::new(-130.0, 130.0)] {
+            assert!(bright(px(c + p)), "no seam at {p}: {:?}", px(c + p));
+        }
+    }
+}
+
+#[test]
+fn two_contours_do_not_join() {
+    const W: u32 = 1080;
+    const H: u32 = 1920;
+    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+    let (a, b) = (square_at(Vec2::new(-250.0, 0.0), 80.0), square_at(Vec2::new(250.0, 0.0), 80.0));
+    let i = frame.push_letter(Vec2::new(0.0, 400.0), 0.0, &[a.clone(), b.clone()], 2.0, WHITE, 2.0).unwrap();
+    wear(&mut frame, i, vec![body_record()], 0.0);
+    frame.push_letter(Vec2::new(0.0, -400.0), 0.0, &[a, b], 2.0, WHITE, 3.0).unwrap();
+    let Some(pixels) = render_sized(&frame, W, H) else { return };
+    let px = |p: Vec2| pixel_sized(&pixels, W, H, p);
+    for y in [400.5, -399.5] {
+        assert!(bright(px(Vec2::new(-250.5, y))) && bright(px(Vec2::new(250.5, y))), "both squares");
+        for x in [0.5, 120.5, -120.5] {
+            assert!(dark(px(Vec2::new(x, y))), "nothing between them at {x}");
+        }
+        // No edge runs from one square's last corner to the other's first: along the top edges' line
+        // between them nothing is drawn.
+        assert!(dark(px(Vec2::new(0.5, y - 80.0))));
+    }
+}
+
+#[test]
+fn a_letter_draws_only_in_its_box() {
+    const W: u32 = 1080;
+    const H: u32 = 1920;
+    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+    let i = frame.push_letter(Vec2::ZERO, 0.0, &[square_at(Vec2::ZERO, 100.0)], 30.0, WHITE, 2.0).unwrap();
+    let glow = LayerGpu {
+        head: [LayerGpu::GLOW, 0, 0, 0],
+        amount: [1.0, 1.0, 0.0, 0.0],
+        p0: [60.0, 0.0, 0.0, 0.0],
+        colour: RED,
+        ..LayerGpu::ZERO
+    };
+    // Its layers reach 130 px past the outline, but its box only 30.
+    wear(&mut frame, i, vec![body_record(), glow], 130.0);
+    let clip = frame.paths[i].clip;
+    assert_eq!(clip[1], 4.0, "a 4-corner clip");
+    let Some(pixels) = render_sized(&frame, W, H) else { return };
+    save("letter-box", &pixels, W, H);
+    let px = |p: Vec2| pixel_sized(&pixels, W, H, p);
+    let near = px(Vec2::new(115.5, 0.5));
+    assert!(near[0] > 60 && near[1] < 40, "the glow inside the box's margin: {near:?}");
+    for p in [Vec2::new(140.5, 0.5), Vec2::new(0.5, 140.5), Vec2::new(140.5, 140.5)] {
+        assert!(dark(px(p)), "nothing past the box: {p}");
+    }
+    assert!(bright(px(Vec2::new(0.5, 0.5))));
+}
+
+#[test]
+fn a_letter_with_nothing_to_draw_pushes_nothing() {
+    let mut frame = Frame::default();
+    assert_eq!(frame.push_letter(Vec2::ZERO, 0.0, &[], 2.0, WHITE, 2.0), None);
+    assert_eq!(frame.push_letter(Vec2::ZERO, 0.0, &[vec![Vec2::ZERO, Vec2::X]], 2.0, WHITE, 2.0), None);
+    assert!(frame.paths.is_empty() && frame.path_points.is_empty());
+    let i = frame.push_letter(Vec2::ONE, 0.5, &[square(), square()], 2.0, WHITE, 2.0).unwrap();
+    let flags: Vec<(f32, f32)> = frame.path_points[..8].iter().map(|p| (p[2], p[3])).collect();
+    assert_eq!(flags, [(2.0, 3.0), (0.0, 0.0), (0.0, 0.0), (1.0, 3.0), (2.0, 3.0), (0.0, 0.0), (0.0, 0.0), (1.0, 3.0)]);
+    assert_eq!(frame.paths[i].b, [0.0, 1.0, 0.0, 8.0]);
+    assert_eq!(frame.paths[i].a, [1.0, 1.0, 0.5, 1.0]);
+}
+
+fn fnv(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x0000_0100_0000_01b3))
+}
+
+/// Shapes draw byte for byte as they did before letters came (the hash was made on the code
+/// before the change).
+#[test]
+fn shapes_draw_as_before() {
+    const W: u32 = 540;
+    const H: u32 = 960;
+    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+    let star: Vec<Vec2> = (0..10)
+        .map(|k| Vec2::from_angle(k as f32 * std::f32::consts::TAU / 10.0) * if k % 2 == 0 { 1.0 } else { 0.45 })
+        .collect();
+    frame.push_path(Vec2::new(-200.0, -400.0), 0.3, 150.0, 6.0, Some(&star), WHITE, 2.0);
+    let i = frame.push_path(Vec2::new(150.0, 100.0), -0.2, 220.0, 0.0, Some(&star), WHITE, 3.0);
+    let paint = red_to_blue(&mut frame, LayerGpu::SHAPE_PAINT, 4.0);
+    wear(&mut frame, i, vec![body_record(), paint], 0.0);
+    let j = frame.push_path(Vec2::new(-150.0, 500.0), 0.0, 120.0, 10.0, Some(&square()), WHITE, 4.0);
+    let paint = red_to_blue(&mut frame, LayerGpu::SHAPE_PAINT, 4.0);
+    wear(&mut frame, j, vec![body_record(), paint], 0.0);
+    let Some(pixels) = render_sized(&frame, W, H) else { return };
+    assert_eq!(format!("{:016x}", fnv(&pixels)), "d8818e8c5f70fe64");
+}

@@ -33,6 +33,10 @@ hound = "3.5"
 midly = "0.5"
 wide = "0.7"
 tempfile = "3"
+# Text: fonts saved in scenes (base64), shaping (rustybuzz) and glyph overlap removal (i_overlay).
+base64 = "0.22"
+rustybuzz = "0.20"
+i_overlay = "9"
 
 [profile.dev.package."*"]
 opt-level = 2

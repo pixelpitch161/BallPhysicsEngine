@@ -290,3 +290,24 @@ fn blank_scene_exports_a_silent_track() {
     assert!(!audio.is_empty() && audio.iter().all(|v| v.abs() < 1e-6), "a silent track");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_scene_with_text_exports_a_frame() {
+    use bpe_core::{Scene, ThingId, Value};
+    let Ok((device, queue)) = headless_device() else { return eprintln!("no GPU adapter available, skipping") };
+    let kit = kit();
+    let mut scene = Scene::empty(&kit.registry);
+    bpe_kit::ensure_camera(&mut scene, &kit.registry);
+    let id = bpe_kit::add_thing(&mut scene, &kit.registry, bpe_kit::things::text::KIND, ThingId::ROOT).unwrap();
+    let t = scene.things.get_mut(&id).unwrap();
+    t.params.set("words", Value::Text("I".into()));
+    t.params.set("size", Value::Number(800.0));
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let (pixels, (w, h), _) = bpe_cli::final_frame(&device, &queue, &scene, &kit, 0.0, 0.25, None, &stop).unwrap();
+    let at = |x: u32, y: u32| {
+        let i = ((y * w + x) * 4) as usize;
+        pixels[i] as u32 + pixels[i + 1] as u32 + pixels[i + 2] as u32
+    };
+    // The white I in the middle, the background at the side.
+    assert!(at(w / 2, h / 2) > at(w / 10, h / 2) + 300, "{} vs {}", at(w / 2, h / 2), at(w / 10, h / 2));
+}

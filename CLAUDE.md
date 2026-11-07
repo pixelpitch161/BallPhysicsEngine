@@ -640,6 +640,45 @@ are on the card (`swarm::put_ready` from `Ready::new`; `StepGpu.middle/parent/ho
 memory. The editor's Look card has the Engine chips (`look_editor/particles.rs::engine_row`). Tests:
 `bpe-gfx/src/swarm/tests.rs`, `bpe-kit/src/things/particles/swarm_tests.rs` (ignored `bench_a_million`).
 
+## Text thing (spec `docs/superpowers/specs/2026-11-07-text-thing-design.md`, plans `docs/superpowers/plans/text/`)
+
+Part 1 is in (plan `part1.md`, "As built" at its end): the **Text** thing (`bpe-kit/src/things/text/`, kind `text`,
+family "Text", `sticks_to_screen` true, slots Look only; its Look card is `look.shape`, whose `fits` takes text, so every
+shape layer and sub-layer works on words). The engine is `bpe-kit/src/text/`: `fonts.rs` (the 52 built-ins `BUILT_IN`
+in seven `FontGroup`s, 55 files in `assets/fonts/text/` with their licences; the folder is the first of `BPE_FONTS`,
+`<exe dir>/fonts`, the repo's `assets/fonts/text` holding `Anton.ttf` (`fonts_dir`); `find`/`find_in` look in the
+scene's fonts first, then the built-ins, else `Found::Fallback` IBM Plex Sans SemiBold (`things::balls::shapes::FONT`)
+with a `problem()` for the Font row; `problem_of` says it without reading the file; `is_font`, `family_name`),
+`layout.rs` (`layout(font, LayoutSpec)` cached: rustybuzz shapes each paragraph, a glyph the font lacks takes no room,
+greedy word wrap that never drops a word, skrifa outlines at the weight's axis place flattened within `TOLERANCE` 0.2
+px, contours merged with i_overlay NonZero so variable fonts' overlaps leave no seam, the Slant sheared; the block's
+middle at 0; `MOST_LETTERS` 4000, `MOST_POINTS` 2048 a letter) and `arrange.rs` (`PathAt` Straight / Circle / Wave
+(shift in waves) / Edge (a closed outline, clockwise, `gap` off its centre line); degenerate paths read as straight).
+Fonts loaded in the editor are kept in the scene (`Scene.fonts`, `bpe-core/src/scene_fonts.rs`: `SceneFont` saved as
+base64, `add_font`/`remove_font`; skipped when empty, so scenes without fonts save as before; still format 12).
+`TextSettings` (`things/text/mod.rs`): Words group (words, font, weight, slant, size = capital height, letter/line
+spacing, align, wrap, case, spin) and Path group (path Straight / Round a circle / Along a wave / Along a shape and
+each one's settings; `along` a `Target`, the first shape it names). `TextSim` keeps only the pose (Spin; no wall yet,
+`affects_physics` only for spin). `text_now(scene, params, world, id, time)` (`TextNow`: pose, layout, placed letters,
+font problem; `bounds`, `to_world`, `to_own`) is the one way the draw and the editor see a Text. `TextDraw` writes the
+Look's records once (like a shape, one set across the whole text) and pushes one `Frame::push_letter` a letter: a
+`PathInstance` whose points hold every contour of the letter, a contour's first point flagged z = `CONTOUR_START` 2
+and its last z = `CONTOUR_END` 1, w = its length − 1 (`path_signed` in paths.wgsl and `shape_at` in
+shape_layers.wgsl wrap within the contour; old shapes keep z = w = 0 and draw byte-identically, pinned by
+`paths_tests::shapes_draw_as_before`), held to its box by a 4-corner `clip`, `c[3]` the whole text's reach so gradients
+run across the text. Six looks (`looks.rs`: `add_text`; Hook title, Spinning word ring, Neon sign, Glass letters,
+Shadow lettering (adds a Point light), Flowing gradient; the lit ones give the scene a Lighting card). Editor: the Add
+thing menu's Text heading ("Empty text", a Looks submenu), a tree icon (a T), the own card titled "Words" with a
+multi-line Words box (unit `lines`) and the **font picker** (unit `font`, `font_picker.rs`: search, Loaded fonts with
+Remove, the groups with each name drawn in its own font through `style::ensure_text_fonts`/`text_family`, Load
+font… leaving a `FontRequest` the inspector turns into `Edit::LoadFont`/`RemoveFont`; a non-font is refused with
+`NOT_A_FONT`), the Body's hint, no particles layers; in the preview `preview/text_handles.rs` (grab by the letters'
+box, the Size dot, the Wrap bar, the Radius ring, all through `set_or_key`) and `preview/text_typing.rs`
+(double-click: a box over the text, its words selected, every key shown at once, one undo step a session through
+`Studio.typing`, ended by Escape or a click away). Tests: `text/` unit tests, `bpe-gfx/src/paths_tests.rs`,
+`bpe-kit/tests/text_pictures.rs`, `bpe-cli/tests/export.rs::a_scene_with_text_exports_a_frame`. **Installing:** the exe
+needs `assets/fonts/text/` copied to a `fonts` folder beside it (else every Text shows in the fallback and says so).
+
 ## Crate map
 
 Dependencies go bottom to top:
@@ -768,8 +807,8 @@ Dependencies go bottom to top:
   (`bpe-kit/.../layers/gives_light.rs`, `sub.light`/`shape.sub.light`: Colour from, Strength, Negative, Flare on
   hit) goes on any drawn or around layer and on a Body (the only sub-layer a Body takes); a layer that gives off
   light counts as Lit 0. The scene's background has Gives off light settings (`bg_glow*`).
-- `bpe-kit`: **every plugin**, with one folder per thing kind in `src/things/` (balls, camera, folder, scene, shape)
-  and one per card kind in `src/modules/` (look, motion, bounce, effects, lighting, light scenes). A ball's Look is
+- `bpe-kit`: **every plugin**, with one folder per thing kind in `src/things/` (balls, camera, folder, scene, shape,
+  text, …), the text engine in `src/text/` (fonts, layout, arrange) and one per card kind in `src/modules/` (look, motion, bounce, effects, lighting, light scenes). A ball's Look is
   `look.layers` (`modules/look/layers/`: Body, Pattern, Outline, Shine (its Light is white or its own colours/gradient, `ShineLight`), Glow, Shading, Shader, Blend, the reactions
   Flash on hit, Colour on hit, Stretch when fast, Colour over time, Turning, the sub-layers, and the group layers Gradient
   (`layers/group.rs`: a colour per ball across the group, mixed into the body on the CPU or into every/chosen
@@ -1100,7 +1139,8 @@ rustup target add x86_64-pc-windows-gnu
 - Lint: `cargo clippy --workspace` and `cargo fmt` (max width 120). `cargo fmt` rewraps lines, so scripted text
   replacements can silently miss. Check that the old text is present first.
 - Windows exe: `cargo build --release --target x86_64-pc-windows-gnu -p bpe-studio` (and `-p bpe-cli` for the
-  renderer). Rename `ball-studio-next.exe` to `ball-studio.exe` when delivering it.
+  renderer). Rename `ball-studio-next.exe` to `ball-studio.exe` when delivering it, and put `assets/fonts/text/`
+  beside it as `fonts\` (the Text thing's fonts).
 - Disk is a fixed allowance and `target/` grows large. Use `CARGO_INCREMENTAL=0` and delete `target/debug` when the
   disk fills.
 - Screenshots: run the release editor under Xvfb at 1440x960 and capture with `import -window root`. When killing

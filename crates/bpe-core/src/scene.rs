@@ -339,6 +339,10 @@ pub struct Scene {
     /// The scene's rules (see [`crate::rules`]): none in a new scene.
     #[serde(skip_serializing_if = "crate::rules::Rules::is_empty")]
     pub rules: crate::rules::Rules,
+    /// Fonts loaded with Load font, by name (Text part 1, see [`crate::scene_fonts`]): none in a
+    /// new scene, and then left out of the saved file.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub fonts: BTreeMap<String, crate::scene_fonts::SceneFont>,
 }
 
 impl Default for Scene {
@@ -352,6 +356,7 @@ impl Default for Scene {
             tracks: BTreeMap::new(),
             pulses: BTreeMap::new(),
             rules: crate::rules::Rules::default(),
+            fonts: BTreeMap::new(),
         }
     }
 }

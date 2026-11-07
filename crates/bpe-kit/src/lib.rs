@@ -15,6 +15,7 @@ pub mod sound;
 pub mod starters;
 #[cfg(test)]
 pub mod testing;
+pub mod text;
 pub mod things;
 
 use std::sync::Arc;
@@ -58,6 +59,7 @@ pub fn sims() -> Sims {
     s.add_thing(FolderSim);
     s.add_thing(CameraSim);
     s.add_thing(things::particles::sim::ParticlesSim);
+    s.add_thing(things::text::TextSim);
     s.add_module(BasicMotionSim);
     s.add_module(BasicBounceSim);
     rules::add_sims(&mut s);
@@ -85,6 +87,7 @@ pub fn draws() -> Draws {
     d.add(things::light::draw::LightDraw);
     d.add(things::camera::draw::CameraDraw);
     d.add(things::particles::draw::ParticlesDraw);
+    d.add(things::text::TextDraw);
     d.add_module(EffectsDraw);
     d
 }
@@ -117,6 +120,7 @@ pub fn registry() -> Registry {
     r.add_thing(things::light::LightKind);
     r.add_thing(things::rig::RigKind);
     r.add_thing(things::particles::ParticlesKind);
+    r.add_thing(things::text::TextKind);
     r.add_module(things::particles::forces::ForcesCard);
     r.add_module(things::particles::meets::MeetsCard);
     r.add_module(things::particles::look::ParticlesLookKind);
@@ -310,7 +314,7 @@ mod tests {
 
     #[test]
     fn every_addable_thing_has_a_family() {
-        let families = ["Bouncers", "Shapes", "Lights", "Particles"];
+        let families = ["Bouncers", "Shapes", "Text", "Lights", "Particles"];
         let reg = registry();
         for kind in reg.things().filter(|k| !["scene", "folder", "camera"].contains(&k.id())) {
             assert!(families.contains(&kind.family()), "{} has family {}", kind.id(), kind.family());

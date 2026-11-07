@@ -9,6 +9,7 @@ fn starter_kind(thing: &str, slot: SlotId) -> Option<&'static str> {
     Some(match slot {
         SlotId::Look if crate::things::balls::rows::has_balls(thing) => crate::modules::look::layers::CARD,
         SlotId::Look if thing == crate::things::shape::KIND => crate::modules::look::shape::CARD,
+        SlotId::Look if thing == crate::things::text::KIND => crate::modules::look::shape::CARD,
         SlotId::Look if thing == crate::things::particles::KIND => crate::things::particles::look::CARD,
         SlotId::Motion if thing == crate::things::particles::KIND => crate::things::particles::forces::CARD,
         SlotId::Bounce if thing == crate::things::particles::KIND => crate::things::particles::meets::CARD,

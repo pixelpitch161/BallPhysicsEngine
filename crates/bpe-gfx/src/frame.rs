@@ -284,6 +284,12 @@ impl Default for LayeredInstance {
     }
 }
 
+/// `Frame::path_points[k].z` of a letter contour's first point ([`Frame::push_letter`]): its `w`
+/// is the contour's point count less one, so the point that closes it is `k + w`.
+pub const CONTOUR_START: f32 = 2.0;
+/// `Frame::path_points[k].z` of a letter contour's last point: `w` back is its first.
+pub const CONTOUR_END: f32 = 1.0;
+
 /// A Shape: a closed outline, a circle or a list of points (`Frame::path_points`) in the shape's
 /// own units, filled or drawn as a band, with a one-pixel soft edge at any zoom. Points are placed
 /// by turning them by `a.z`, scaling them by `a.w` and moving them to `a.xy`.
@@ -1824,6 +1830,65 @@ impl Frame {
             clip: [0.0; 4],
         });
         self.paths.len() - 1
+    }
+
+    /// Adds one letter of a Text (Text part 1): a filled shape at scale 1 (shape units are pixels)
+    /// whose outline is several closed `contours` (holes included, even-odd), turned by `angle`
+    /// about `center`. Each contour's first point is marked [`CONTOUR_START`] and its last
+    /// [`CONTOUR_END`] in `path_points[k].z`, with `w` its point count less one, so the shaders walk
+    /// each contour's own edges (a shape's points keep 0 and close round the whole list as ever).
+    /// The quad covers only the letter's box grown by `margin` px (its band, what its layers reach
+    /// past it): written as the instance's 4-corner `clip`. A letter with no contour of 3 or more
+    /// points draws nothing (`None`).
+    pub fn push_letter(
+        &mut self,
+        center: Vec2,
+        angle: f32,
+        contours: &[Vec<Vec2>],
+        margin: f32,
+        color: [f32; 4],
+        code: f32,
+    ) -> Option<usize> {
+        let first = self.path_points.len();
+        let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+        let mut reach = 0.0f32;
+        for c in contours.iter().filter(|c| c.len() >= 3 && c.iter().all(|p| p.is_finite())) {
+            let last = (c.len() - 1) as f32;
+            for (k, p) in c.iter().enumerate() {
+                let z = if k == 0 {
+                    CONTOUR_START
+                } else if k + 1 == c.len() {
+                    CONTOUR_END
+                } else {
+                    0.0
+                };
+                self.path_points.push([p.x, p.y, z, if z > 0.0 { last } else { 0.0 }]);
+                lo = lo.min(*p);
+                hi = hi.max(*p);
+                reach = reach.max(p.length());
+            }
+        }
+        let count = self.path_points.len() - first;
+        if count == 0 {
+            return None;
+        }
+        let margin = if margin.is_finite() { margin.max(0.0) } else { 0.0 };
+        let (lo, hi) = (lo - Vec2::splat(margin), hi + Vec2::splat(margin));
+        let clip_first = self.path_points.len();
+        // Round the positive way (clockwise on screen), as a convex clip's corners go.
+        for p in [Vec2::new(lo.x, lo.y), Vec2::new(hi.x, lo.y), Vec2::new(hi.x, hi.y), Vec2::new(lo.x, hi.y)] {
+            self.path_points.push([p.x, p.y, 0.0, 0.0]);
+        }
+        self.paths.push(PathInstance {
+            a: [center.x, center.y, angle, 1.0],
+            b: [0.0, 1.0, first as f32, count as f32],
+            c: [code, reach, 0.0, reach],
+            color,
+            layers: [0, 0, PathInstance::NO_PROGRAM, 0],
+            hit: NO_HIT,
+            clip: [clip_first as f32, 4.0, 0.0, 0.0],
+        });
+        Some(self.paths.len() - 1)
     }
 
     /// The frame stuck-to-screen things draw into, made on first use with this frame's size and
