@@ -761,6 +761,13 @@ Dependencies go bottom to top:
   the scene settings has a `Thing.colour` (`TrackColour([u8; 3])`, any colour, saved as `"#rrggbb"` (older files with bare names open with new colours); a new thing gets a random readable one far from the hues in use, `Scene::new_colour`; editor only, never read by physics or export; picked with `style::track_picker` from the tree's tag and row menu, the timeline swatch and the inspector header). Its layout has the tree on the left, the inspector on the right, the preview
   in the middle and the timeline at the bottom. Key files are `app.rs`, `inspector.rs`, `preview.rs`, `timeline/`,
   `widgets.rs` (settings grids and the right-click value menu), `palettes.rs` and `export_window.rs`.
+  **Grid snap** (`grid.rs`, toolbar Grid / Snap / spacing / angle step, saved in `grid-next.txt`): Snap snaps the
+  preview's drags and, through `setting_snap.rs`, inspector settings while dragged (plan
+  `docs/superpowers/plans/2026-11-07-snap-settings.md`): the app `put`s the frame's `SettingSnap` in egui memory,
+  `Snapper::for_unit` reads it by the shown unit (`px` a length: whole squares, eighths under one; a `px` pair or
+  Position/Offset a place; `°`/`deg` an angle step; not the Video size, nor a slider under four steps across,
+  `widgets::setting_snapper`), Alt held is free (so Alt+click resets from the label only), typed numbers stay exact.
+  `NumberFeel.snap` drives `span_slider` and `two_ended`; egui sliders and boxes snap after the fact (`after_drag`).
   Motion and Bounce show as one **Physics** card (`Card::Physics`, `PHYSICS` in `inspector.rs`: one header, Remove,
   "+ Add slot" entry and jump-bar chip; each card's grid inside); the scene still keeps the two cards.
   A selected shape is moulded in the preview (`shape_handles.rs`: corners, sides, bend handles, a circle's edge,

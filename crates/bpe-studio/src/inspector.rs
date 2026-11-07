@@ -2,6 +2,7 @@
 //! one card per slot it has. Every card's settings are the thing's own.
 
 use crate::selection::Selection;
+use crate::setting_snap::Snapper;
 use crate::style;
 use crate::widgets::{
     GridCx, KeyMark, TargetChoices, fold_toggle, grid_label, label_width, settings_grid, settings_like_grid,
@@ -943,6 +944,17 @@ fn placement_rows(
     });
 }
 
+/// A place's x and y boxes, dragged while the grid snaps, land on grid points.
+fn snap_place(ui: &Ui, (x, y): (&egui::Response, &egui::Response), before: glam::Vec2, at: &mut glam::Vec2) {
+    let snap = Snapper::place(ui);
+    for (r, was, now) in [(x, before.x, &mut at.x), (y, before.y, &mut at.y)] {
+        let mut v = *now as f64;
+        if crate::setting_snap::after_drag(ui, r, was as f64, &mut v, snap, false, None) {
+            *now = v as f32;
+        }
+    }
+}
+
 /// Where the thing sits and how it hangs off its parent: Position (for a grouped thing),
 /// Rotation, Attach, and a rider's Offset, Turns with it and Item.
 fn position_rows(ui: &mut Ui, scene: &Scene, thing: &bpe_core::Thing, lw: f32, right: f32, edits: &mut Vec<Edit>) {
@@ -953,8 +965,10 @@ fn position_rows(ui: &mut Ui, scene: &Scene, thing: &bpe_core::Thing, lw: f32, r
         // In a narrow panel y goes under x.
         let moved = widget_cell(ui, right, |ui| {
             ui.horizontal_wrapped(|ui| {
+                let before = t.position;
                 let x = ui.add(DragValue::new(&mut t.position.x).speed(1.0).prefix("x ").suffix(" px"));
                 let y = ui.add(DragValue::new(&mut t.position.y).speed(1.0).prefix("y ").suffix(" px"));
+                snap_place(ui, (&x, &y), before, &mut t.position);
                 x.labelled_by(position.id).changed() || y.labelled_by(position.id).changed()
             })
             .inner
@@ -966,7 +980,13 @@ fn position_rows(ui: &mut Ui, scene: &Scene, thing: &bpe_core::Thing, lw: f32, r
     }
     let rotation = grid_label(ui, lw, "Rotation").on_hover_text("How far it is turned, clockwise");
     let mut degrees = t.rotation.to_degrees();
-    let turned = ui.add(DragValue::new(&mut degrees).speed(1.0).suffix("°")).labelled_by(rotation.id).changed();
+    let before = degrees;
+    let turn = ui.add(DragValue::new(&mut degrees).speed(1.0).suffix("°")).labelled_by(rotation.id);
+    let mut d = degrees as f64;
+    if crate::setting_snap::after_drag(ui, &turn, before as f64, &mut d, Snapper::angle(ui), false, None) {
+        degrees = d as f32;
+    }
+    let turned = turn.changed();
     if turned {
         t.rotation = degrees.to_radians();
         edits.push(Edit::Transform(t));
@@ -996,8 +1016,10 @@ fn position_rows(ui: &mut Ui, scene: &Scene, thing: &bpe_core::Thing, lw: f32, r
         let label = grid_label(ui, lw, "Offset").on_hover_text("Where it sits from its parent, in video pixels");
         let moved = widget_cell(ui, right, |ui| {
             ui.horizontal_wrapped(|ui| {
+                let before = o;
                 let x = ui.add(DragValue::new(&mut o.x).speed(1.0).prefix("x ").suffix(" px"));
                 let y = ui.add(DragValue::new(&mut o.y).speed(1.0).prefix("y ").suffix(" px"));
+                snap_place(ui, (&x, &y), before, &mut o);
                 x.labelled_by(label.id).changed() || y.labelled_by(label.id).changed()
             })
             .inner
@@ -1937,6 +1959,63 @@ mod tests {
         h.get_by_label("Look").click();
         h.run();
         assert!(has_look(&h, ThingId(2)) && has_look(&h, other));
+    }
+
+    /// Drags the first `role` control `label` names by `dx` with the left button.
+    fn drag_by(h: &mut Harness<'_, State>, role: Role, label: &str, dx: f32) {
+        let from = h.get_all_by_role_and_label(role, label).next().unwrap().rect().center();
+        let press = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        h.hover_at(from);
+        h.run();
+        h.event(press(from, true));
+        h.step();
+        for k in 1..=10 {
+            h.event(egui::Event::PointerMoved(from + egui::vec2(dx * k as f32 / 10.0, 0.0)));
+            h.step();
+        }
+        h.event(press(from + egui::vec2(dx, 0.0), false));
+        h.run();
+    }
+
+    #[test]
+    fn with_the_grid_snapping_position_and_rotation_land_on_it() {
+        let kit = bpe_kit::kit();
+        let scene = bpe_kit::new_scene(&kit.registry);
+        let resolved = resolve_scene(&scene, &kit.registry);
+        let mut selection = Selection::default();
+        selection.set(ThingId(2));
+        let state = State { inspector: Inspector::default(), scene, kit, resolved, selection, time: 0.0 };
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(420.0, 4000.0))
+            .with_step_dt(1.0 / 60.0)
+            .with_max_steps(120)
+            .allow_missing_glyphs()
+            .with_context_setup(crate::style::apply)
+            .build_ui_state(
+                |ui, s: &mut State| {
+                    let snap = crate::setting_snap::SettingSnap { length: 60.0, angle: 15.0 };
+                    crate::setting_snap::put(ui.ctx(), Some(snap));
+                    if show(ui, &mut s.inspector, &mut s.scene, &s.kit, &s.resolved, &s.selection, s.time) {
+                        s.resolved = resolve_scene(&s.scene, &s.kit.registry);
+                    }
+                },
+                state,
+            );
+        h.run();
+        let before = h.state().scene.things[&ThingId(2)].transform;
+        drag_by(&mut h, Role::SpinButton, "Position", 80.0);
+        let t = h.state().scene.things[&ThingId(2)].transform;
+        assert_ne!(t.position.x, before.position.x, "it moved");
+        assert_eq!(t.position.x % 60.0, 0.0, "on a grid point: {}", t.position.x);
+        drag_by(&mut h, Role::SpinButton, "Rotation", 50.0);
+        let degrees = h.state().scene.things[&ThingId(2)].transform.rotation.to_degrees();
+        assert!(degrees.abs() > 1.0, "it turned");
+        assert!((degrees / 15.0 - (degrees / 15.0).round()).abs() < 1e-3, "on a 15° step: {degrees}");
     }
 
     #[test]
