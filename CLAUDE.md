@@ -502,11 +502,13 @@ only when that changes. A liquid is `Frame.liquids` (`bpe_gfx::Liquid { blobs, s
 `LiquidPass` splats `LiquidBlob`s additively into a full-size Rgba16Float field (its own bind group: style only) and
 `shaders/liquid.wgsl` `fs_surface` cuts it at Level and shades it (Glass samples the copied-under picture bent by the
 normal), after the scene pass (behind) and after the flashes (front), and in layer frames; light passes draw it as
-covering black (nothing in the surface picture). Every draw layer but Liquid has the **Experimental** fold
-(`modifiers.rs` through `Kind.dynamic`: Mirror 2..12 ways round The middle of the picture / The thing they ride / A
-point, Mirrored copies; Colour split (three added channel copies along the velocity), Glitch (bands torn sideways,
-`Tears`, pure in time)); applied on the CPU to `Pieces` and blobs. Seven looks: Liquid splashes, Flow lines,
-Kaleidoscope, Colour split dust, Liquid metal, Paint drips, Pixel glitch. Tests: `particles/tests_part6.rs`,
+covering black (nothing in the surface picture). Every draw layer has the **Experimental** fold (`modifiers.rs`
+through `Kind.dynamic`: Mirror 2..12 ways round The middle of the picture / The thing they ride / A point, Mirrored
+copies; Colour split (three added channel copies along the velocity; not on Liquid, Soft smoke, Flame or Web lines,
+`defs_without_split`), Glitch (bands torn sideways, `Tears`, pure in time)); applied on the CPU to `Pieces`, blobs and
+field splats (`draw::finish`). Part 5's Fine detail copies trails, marks and blobs too. Six new looks (Liquid
+splashes, Flow lines, Kaleidoscope, Colour split dust, Liquid metal, Paint drips) and part 5's Pixel glitch torn by
+Glitch. Tests: `particles/tests_part6.rs`,
 `tests/liquid_pictures.rs` (GPU).
 
 ## Crate map

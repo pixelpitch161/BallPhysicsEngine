@@ -215,3 +215,8 @@ Changes a second 8, Tear colour split 4 px, Glitch seed 0.
   `more_fingerprint`), so a keyed Look setting no longer re-reads the whole Look every step. Marks' Made of is no
   longer Simple (at most 6 a layer kind). With Wrap round, an edge mark goes where the particle comes back in.
 - The tree's kittest window is 1200 px tall so the Add thing menu's Rig entry is on screen.
+- Rebased onto parts 2 (the air) and 5 (looks 1): every part 5 kind (Soft smoke, Flame, More shapes, Glitter, Web
+  lines) takes the Experimental fold; Soft smoke and Flame have their field's splats mirrored and torn
+  (`modifiers::mirror_splats`/`glitch_splats`) and, with Web lines, no Colour split. Part 5's Fine detail (in every
+  layer's `Common`) also draws copies of trails (the whole trail moved), marks and liquid blobs. Both parts added a
+  "Pixel glitch" look: part 5's pixels on a grid are kept and given part 6's Glitch.
