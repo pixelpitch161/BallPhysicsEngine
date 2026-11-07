@@ -189,6 +189,7 @@ fn kind_word(kind: LightType) -> &'static str {
         LightType::Area => "area",
         LightType::Strip => "strip",
         LightType::Laser => "laser",
+        LightType::Beam => "beam",
     }
 }
 
@@ -354,6 +355,7 @@ fn add_buttons(ui: &mut Ui, studio: &mut Studio, reg: &Registry) {
                 LightType::Area => "+ Area",
                 LightType::Strip => "+ Strip",
                 LightType::Laser => "+ Laser",
+                LightType::Beam => "+ Beam",
             };
             let b = ui.add(egui::Button::new(word).min_size(egui::vec2(0.0, 22.0)));
             let b = b.on_hover_text(format!("Add a {}", lamp.menu_name().to_lowercase()));

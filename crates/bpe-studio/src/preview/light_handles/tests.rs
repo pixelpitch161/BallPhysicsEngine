@@ -171,3 +171,16 @@ fn the_reach_ring_gives_way_to_a_ball_under_it() {
     assert_eq!(hit_test(&studio, &v, v.to_screen(Vec2::new(0.0, -200.0))), Some(Handle::Body(ThingId(2))));
     assert_eq!(hit_test(&studio, &v, v.to_screen(Vec2::new(500.0, 300.0))), Some(Handle::Light(id, LightPart::Reach)));
 }
+
+#[test]
+fn a_beams_width_dot_sets_its_width() {
+    let (mut studio, id) = with_light(LightType::Beam);
+    let v = view();
+    // A beam points down (90°): its band's edges lie left and right of the lamp, 30 px out.
+    let s = get(&studio, id);
+    assert_eq!(s.beam_width, 60.0);
+    let edge = Vec2::new(30.0, 300.0);
+    assert_eq!(hit_test(&studio, &v, v.to_screen(edge)), Some(Handle::Light(id, LightPart::Width(false))));
+    drag(&mut studio, Handle::Light(id, LightPart::Width(false)), edge, Vec2::new(50.0, 320.0));
+    assert_eq!(get(&studio, id).beam_width, 100.0);
+}

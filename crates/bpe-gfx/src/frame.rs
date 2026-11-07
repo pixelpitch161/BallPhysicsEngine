@@ -1009,6 +1009,22 @@ pub struct Frame {
     pub liquids: Vec<crate::liquid::Liquid>,
 }
 
+/// One quad of a Light beam's band (glass and light part 2, `RibbonGpu` in lighting.wgsl): the
+/// stretch between segment `a` of one ray and segment `b` of the next, added over the lit picture.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct RibbonGpu {
+    /// One ray's segment, from xy to zw (world).
+    pub a: [f32; 4],
+    /// The next ray's segment, from xy to zw (world).
+    pub b: [f32; 4],
+    /// Its colour (linear, times strength and glow) and the band's edge softness (0 to 1).
+    pub c: [f32; 4],
+    /// Where across the band each of the two rays is (0 to 1), how far apart they were at the
+    /// lamp (world), spare.
+    pub d: [f32; 4],
+}
+
 /// One light as the lighting pass reads it (`LightGpu` in lighting.wgsl).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
@@ -1240,6 +1256,8 @@ pub struct LightScene {
     /// Whether something drawn is see-through (part 2b): the frame is then drawn once more without
     /// it, the picture glass bends.
     pub refracts: bool,
+    /// Light beams' bands (glass and light part 2), added over the lit picture after the mix.
+    pub ribbons: Vec<RibbonGpu>,
 }
 
 /// The most mirror walls a frame takes (the rest are left out).

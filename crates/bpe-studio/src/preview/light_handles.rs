@@ -38,6 +38,8 @@ pub enum LightPart {
     Corner,
     /// One end of a strip along a line (0 the end it points from, 1 the end it points to).
     End(u8),
+    /// One edge of a light beam's band (false: the edge anticlockwise of its aim): its width.
+    Width(bool),
 }
 
 /// What a light drag started from, so it moves by how far the pointer goes.
@@ -115,6 +117,14 @@ fn dots(l: &Lamp, v: &View) -> Vec<(LightPart, Pos2)> {
     match l.s.kind {
         LightType::Spot | LightType::Sun | LightType::Laser if aims(&l.s) => {
             list.push((LightPart::Aim, v.to_screen(at + dir * out)))
+        }
+        LightType::Beam => {
+            let half = 0.5 * l.s.beam_width.max(0.0);
+            list.push((LightPart::Width(false), v.to_screen(at - side * half)));
+            list.push((LightPart::Width(true), v.to_screen(at + side * half)));
+            if aims(&l.s) {
+                list.push((LightPart::Aim, v.to_screen(at + dir * out)));
+            }
         }
         LightType::Area => {
             let half = Vec2::new(0.5 * l.s.width.max(0.0), 0.5 * l.s.length.max(0.0));
@@ -264,6 +274,10 @@ pub fn apply(
             let d = wrap(degrees(pointer - g.place) - g.spun);
             set(scene, "direction", Value::Number(round(d, 0.1)));
         }
+        LightPart::Width(_) => {
+            let across = (pointer - g.place).dot(Vec2::from_angle(g.aim).perp());
+            set(scene, "beam_width", Value::Number(round(2.0 * across.abs(), 1.0)));
+        }
         LightPart::Corner => {
             let local = Vec2::from_angle(-g.aim).rotate(pointer - g.place);
             set(scene, "width", Value::Number(round(2.0 * local.x.abs(), 1.0)));
@@ -331,6 +345,18 @@ pub fn draw(painter: &egui::Painter, studio: &Studio, view: &View, active: Optio
                 LightType::Sun | LightType::Laser => {
                     let tip = v.to_screen(first.at + dir * (AIM_OUT / scale.max(1e-6)));
                     arrow(painter, centre, tip, line_ink(hot(LightPart::Aim), ink));
+                }
+                LightType::Beam => {
+                    // The aim, and the band's two edges running along it.
+                    let out = AIM_OUT / scale.max(1e-6);
+                    arrow(painter, centre, v.to_screen(first.at + dir * out), line_ink(hot(LightPart::Aim), ink));
+                    let half = 0.5 * l.s.beam_width.max(0.0);
+                    for (edge, sign) in [(false, -1.0f32), (true, 1.0)] {
+                        let from = first.at + dir.perp() * (sign * half);
+                        let on = hot(LightPart::Width(edge));
+                        let stroke = Stroke::new(if on { 2.0 } else { 1.0 }, line_ink(on, ink));
+                        painter.line_segment([v.to_screen(from), v.to_screen(from + dir * out)], stroke);
+                    }
                 }
                 LightType::Area => {
                     let half = Vec2::new(0.5 * l.s.width.max(0.0), 0.5 * l.s.length.max(0.0));
