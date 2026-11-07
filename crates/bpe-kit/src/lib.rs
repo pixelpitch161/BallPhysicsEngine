@@ -59,6 +59,7 @@ pub fn sims() -> Sims {
     s.add_thing(FolderSim);
     s.add_thing(CameraSim);
     s.add_thing(things::particles::sim::ParticlesSim);
+    s.add_thing(things::text::TextSim);
     s.add_module(BasicMotionSim);
     s.add_module(BasicBounceSim);
     rules::add_sims(&mut s);
@@ -86,6 +87,7 @@ pub fn draws() -> Draws {
     d.add(things::light::draw::LightDraw);
     d.add(things::camera::draw::CameraDraw);
     d.add(things::particles::draw::ParticlesDraw);
+    d.add(things::text::TextDraw);
     d.add_module(EffectsDraw);
     d
 }
@@ -118,6 +120,7 @@ pub fn registry() -> Registry {
     r.add_thing(things::light::LightKind);
     r.add_thing(things::rig::RigKind);
     r.add_thing(things::particles::ParticlesKind);
+    r.add_thing(things::text::TextKind);
     r.add_module(things::particles::forces::ForcesCard);
     r.add_module(things::particles::meets::MeetsCard);
     r.add_module(things::particles::look::ParticlesLookKind);

@@ -9,3 +9,4 @@ pub mod particles;
 pub mod rig;
 pub mod scene;
 pub mod shape;
+pub mod text;
