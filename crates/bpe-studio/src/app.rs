@@ -178,6 +178,8 @@ pub struct Studio {
     mixer_opens: u32,
     /// Scrubbing paused the playback; it starts again when the scrub ends.
     pub resume_after_scrub: bool,
+    /// The words of a Text being typed straight into the preview.
+    pub typing: Option<crate::preview::text_typing::Typing>,
     /// This frame's change to the scene is already in the history (undo, open, delete…).
     pub recorded: bool,
     /// This frame's change to the scene is an undo step of its own (a rule or block added,
@@ -312,6 +314,7 @@ impl Studio {
             tree_width: style::TREE_W,
             mixer_opens: 0,
             resume_after_scrub: false,
+            typing: None,
             recorded: false,
             separate_edit: false,
             closing: false,
@@ -444,7 +447,7 @@ impl Studio {
 
     /// Re-resolves after any change. The playback starts over only when the physics changed:
     /// a new colour keeps the balls where they are.
-    fn scene_changed(&mut self) {
+    pub(crate) fn scene_changed(&mut self) {
         self.resolved = resolve_scene(&self.scene, &self.kit.registry);
         let fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
         let rebuilt = fingerprint != self.fingerprint;
