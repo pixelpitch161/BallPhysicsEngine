@@ -184,7 +184,7 @@ pub fn word_spots(text: &str, height: f32, weight: Weight, spacing: f32) -> Vec<
     if shapes.is_empty() || lo.x > hi.x {
         return Vec::new();
     }
-    let step = at_least(spacing, 1.0);
+    let step = lattice_step(hi - lo, spacing);
     let cells = ((hi - lo) / step).floor();
     let middle = (lo + hi) * 0.5;
     let start = middle - cells * step * 0.5;
@@ -229,10 +229,29 @@ pub fn word_spots(text: &str, height: f32, weight: Weight, spacing: f32) -> Vec<
     out
 }
 
+/// The most cells a word's or picture's lattice walks.
+const MOST_CELLS: f64 = 4.0 * MOST_SPOTS as f64;
+
+/// The lattice step over `size` at `spacing`, widened (never narrowed) so the lattice has at
+/// most [`MOST_CELLS`] cells: a huge picture or word can't hang the particles.
+fn lattice_step(size: Vec2, spacing: f32) -> f32 {
+    let step = at_least(spacing, 1.0);
+    let (w, h) = (size.x.clamp(0.0, 1e9) as f64, size.y.clamp(0.0, 1e9) as f64);
+    let cells = |s: f64| (w / s + 1.0) * (h / s + 1.0);
+    if cells(step as f64) <= MOST_CELLS {
+        return step;
+    }
+    // (w/s + 1)(h/s + 1) = N where (N − 1)s² − (w + h)s − wh = 0.
+    let (a, b) = (MOST_CELLS - 1.0, w + h);
+    let s = (b + (b * b + 4.0 * a * w * h).sqrt()) / (2.0 * a);
+    ((s * 1.001) as f32).max(step)
+}
+
 /// A PNG picture's pixels as RGBA, with its size; `None` when it can't be read.
 fn read_png(path: &str) -> Option<(Vec<u8>, usize, usize)> {
     let file = std::fs::File::open(path).ok()?;
-    let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
+    let limits = png::Limits { bytes: MOST_PIXELS * 4 + (16 << 20) };
+    let mut decoder = png::Decoder::new_with_limits(std::io::BufReader::new(file), limits);
     decoder.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = decoder.read_info().ok()?;
     let size = reader.output_buffer_size()?;
@@ -274,7 +293,7 @@ pub fn picture_spots(path: &str, width: f32, uses: Uses, spacing: f32) -> Vec<Ve
     let width = at_least(width, 1.0);
     let scale = width / w as f32;
     let size = Vec2::new(width, h as f32 * scale);
-    let step = at_least(spacing, 1.0);
+    let step = lattice_step(size, spacing);
     let cells = (size / step).floor();
     let start = size * 0.5 - cells * step * 0.5;
     let mut out = Vec::new();

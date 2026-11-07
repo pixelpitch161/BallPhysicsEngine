@@ -210,3 +210,22 @@ Every force (common): Amount 1, Only for (All / Younger than / Older than / **A 
   lines: part 5; Trails: part 6), lighting/sound/rules (part 7).
 - No JPEG pictures (PNG only), no multi-line text, no handle for a force's Point (typed in the force's settings).
 - No change to `layer.particles` / `shape.particles`; no built-in or example scenes; no demo videos.
+
+## As built
+
+- Step 1's runtime test became a kit test (`tests_motion::the_tempo_reaches_the_world_and_restarts_only_the_particles`):
+  the physics fingerprint stays and `beside_fingerprint` moves when the tempo changes.
+- **Pulse on the beat** reads every beat so far (`beats::Beats`: since the latest, gap, count) and sums the older kicks'
+  tails as a geometric series (`more_forces::pulse_share`), so a Decay longer than the gap still gives each kick its
+  whole Strength.
+- A word's or picture's lattice is widened to at most `4 × MOST_SPOTS` cells (`spots::lattice_step`) so a huge Picture
+  width or Letter height can't hang the particles; PNGs decode with a limit that fits `MOST_PIXELS`.
+- A picture's modified time is read when a run starts; a refresh partway through keeps it, so a picture changed on
+  disk shows on the next restart of the particles (any setting change rebuilds them), never partway through a run.
+- Pull / Push toward **Balls nearby** with Reach 0 does nothing (0 "everywhere" is for a single centre).
+- Known and left as they are: a keyed Width/Height on a Spacing grid changes the column count, so place numbers move
+  to other places while it changes; the preview's rectangle-grid outline turns with the thing and Turn but not with
+  Homes turn (the editor's world doesn't step the particles).
+- Kittests: the Motion list adds Pull to / Spring home / Flock; a picture source shows the PNG browse button and a grid
+  its rows; Moiré from the Experimental group adds its two grids (in place of Black hole / Form a word, which the kit
+  tests add and resolve).

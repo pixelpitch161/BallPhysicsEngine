@@ -9,6 +9,7 @@ use bpe_core::{Choice, Settings, Target};
 use glam::Vec2;
 
 use super::BeatEvery;
+use super::beats::Beats;
 use super::births::{signed, unit};
 use super::forces::{OnlyFor, force_settings};
 use super::ready::{ForceReady, Ready};
@@ -447,6 +448,11 @@ fn pull_from(s: &mut Speck, p: &Pulling, centre: Vec2, at: f32, reach: f32, amou
 pub fn pull(s: &mut Speck, p: &Pulling, amount: f32, dt: f32, ready: &Ready, fr: &ForceReady) {
     if p.toward == Toward::BallsNearby {
         let Some(grid) = &ready.balls else { return };
+        // Reach 0 reaches nothing here (0 "everywhere" is for a single centre): the grid only
+        // lists balls near the particle, and only when some force asks for one.
+        if fin(p.ball_reach) <= 0.0 {
+            return;
+        }
         for &i in grid.near(s.place) {
             let b = grid.balls[i as usize];
             pull_from(s, p, b.place, b.radius.max(1.0), fin(p.ball_reach).max(0.0) * b.radius, amount, dt);
@@ -630,11 +636,34 @@ fn kick_share(since: f64, dt: f64, decay: f64) -> f64 {
     f(since) - f(since - dt)
 }
 
+/// How much of every beat's kick so far falls in the `dt` before now: the beats within `dt` one
+/// by one, the older ones' tails summed as a geometric series (each is `e^(−x/d)·(e^(dt/d) − 1)`
+/// at `x` seconds after its beat), so a long Decay still gives each kick its whole Strength.
+pub fn pulse_share(b: &Beats, dt: f64, decay: f64) -> f64 {
+    let mut share = 0.0;
+    let mut m = 0;
+    while m < b.count {
+        let x = b.since + m as f64 * b.every;
+        if x >= dt {
+            break;
+        }
+        share += kick_share(x, dt, decay);
+        m += 1;
+    }
+    if m < b.count && decay > 0.0 && b.every > 0.0 {
+        let x = b.since + m as f64 * b.every;
+        let r = (-b.every / decay).exp();
+        let left = (b.count - m) as f64;
+        let series = if r < 1.0 { (1.0 - r.powf(left)) / (1.0 - r) } else { left };
+        share += ((-(x - dt) / decay).exp() - (-x / decay).exp()) * series;
+    }
+    share
+}
+
 /// Pulse on the beat.
 pub fn pulse(s: &mut Speck, f: &PulseForce, amount: f32, dt: f32, ready: &Ready, fr: &ForceReady) {
-    let ForceReady::Beats(beats) = fr else { return };
-    let decay = fin(f.decay).max(0.0) as f64;
-    let share: f64 = beats.iter().flatten().map(|since| kick_share(*since, dt as f64, decay)).sum();
+    let ForceReady::Beats(Some(beats)) = fr else { return };
+    let share = pulse_share(beats, dt as f64, fin(f.decay).max(0.0) as f64);
     if share == 0.0 {
         return;
     }

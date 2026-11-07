@@ -47,12 +47,12 @@ Iron filings	3	2508	77638f4dbf9916dc
 Iron filings	4	2508	943f02a3714ccaca
 Iron filings	5	2508	239732f714dd3323
 Iron filings	6	2508	eda235eb2d4b3a0c
-Beat grid	1	836	8f210a10a1e56d12
-Beat grid	2	836	8374160506098d14
-Beat grid	3	836	34f04b977e9def56
-Beat grid	4	836	bea0cd6f640a84c8
-Beat grid	5	836	7c96045355ef46f3
-Beat grid	6	836	f8dbee248ef117b2
+Beat grid	1	836	8e23618406883308
+Beat grid	2	836	4535a2e4e792ab8e
+Beat grid	3	836	78dcaf1e7a591b47
+Beat grid	4	836	b27a7181787b0991
+Beat grid	5	836	c6e2881e57b23c78
+Beat grid	6	836	c8293b24c74985d2
 Spirograph	1	1500	7b350f0d82cd0850
 Spirograph	2	1500	5be88044392183a0
 Spirograph	3	1500	357f3be5b2625717

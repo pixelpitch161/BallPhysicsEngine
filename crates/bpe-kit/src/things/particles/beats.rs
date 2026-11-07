@@ -44,11 +44,19 @@ impl Moments {
         (self.up_to(t1) - self.up_to(t0)).clamp(0, u32::MAX as i64) as u32
     }
 
-    /// The latest moment at or before `t`, and the one before it, as seconds since each (`None`
-    /// where there is none).
-    pub fn since_latest(&self, t: f64) -> [Option<f64>; 2] {
+    /// The moments at or before `t`: seconds since the latest, their gap and how many (`None`
+    /// before the first).
+    pub fn beats_at(&self, t: f64) -> Option<Beats> {
         let n = self.up_to(t);
-        let at = |k: i64| (k >= 0).then(|| t - (self.first + k as f64 * self.every));
-        [if n >= 1 { at(n - 1) } else { None }, if n >= 2 { at(n - 2) } else { None }]
+        (n >= 1).then(|| Beats { since: t - (self.first + (n - 1) as f64 * self.every), every: self.every, count: n })
     }
+}
+
+/// The moments up to a time: `since` seconds since the latest, `every` seconds apart, `count`
+/// of them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Beats {
+    pub since: f64,
+    pub every: f64,
+    pub count: i64,
 }

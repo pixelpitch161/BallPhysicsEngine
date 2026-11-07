@@ -118,9 +118,9 @@ fn beat_moments_count_once_each() {
     assert_eq!(m.count_in(0.2, 0.25), 1, "a moment on a step's end counts in that step");
     assert_eq!(m.count_in(0.25, 0.3), 0, "and not again");
     assert_eq!(m.count_in(0.0, 2.0), 4);
-    let since = m.since_latest(1.0);
-    assert!((since[0].unwrap() - 0.25).abs() < 1e-9 && (since[1].unwrap() - 0.75).abs() < 1e-9);
-    assert_eq!(m.since_latest(0.1), [None, None]);
+    let b = m.beats_at(1.0).unwrap();
+    assert!((b.since - 0.25).abs() < 1e-9 && b.count == 2 && b.every == 0.5);
+    assert_eq!(m.beats_at(0.1), None);
 }
 
 // ---- Places ----
@@ -488,16 +488,43 @@ fn a_pulse_gives_its_strength_over_each_beat() {
     // From just after one beat to just before the next.
     for k in 1..=59 {
         let time = k as f64 * DT as f64;
-        let ready = Ready { time, per_force: vec![ForceReady::Beats(moments.since_latest(time))], ..Ready::default() };
+        let ready = Ready { time, per_force: vec![ForceReady::Beats(moments.beats_at(time))], ..Ready::default() };
         Forces { list: vec![Force::Pulse(pulse.clone())] }.apply(&mut s, 0, 1.0, &CX, &ready);
     }
     assert!((s.velocity.y + 300.0).abs() < 1.0, "{}", s.velocity);
     // All at once: on the beat's own step.
     let at_once = PulseForce { decay: 0.0, ..pulse };
     let mut s = speck(Vec2::ZERO, Vec2::ZERO);
-    let ready = Ready { time: 0.5, per_force: vec![ForceReady::Beats(moments.since_latest(0.5))], ..Ready::default() };
+    let ready = Ready { time: 0.5, per_force: vec![ForceReady::Beats(moments.beats_at(0.5))], ..Ready::default() };
     Forces { list: vec![Force::Pulse(at_once)] }.apply(&mut s, 0, 1.0, &CX, &ready);
     assert!((s.velocity.y + 300.0).abs() < 1e-3);
+}
+
+#[test]
+fn a_long_pulse_still_gives_every_kick_its_whole_strength() {
+    // Decay 1 s on beats every 0.5 s: by 10 s, each beat at t_m has given 1 − e^(−(10 − t_m)).
+    let moments = Moments { first: 0.0, every: 0.5 };
+    let mut given = 0.0;
+    for k in 1..=1200 {
+        let b = moments.beats_at(k as f64 * DT as f64).unwrap();
+        given += pulse_share(&b, DT as f64, 1.0);
+    }
+    let end = 1200.0 * DT as f64;
+    let owed: f64 = (0..=20).map(|m| 1.0 - (-(end - m as f64 * 0.5)).exp()).sum();
+    assert!((given - owed).abs() < 1e-6, "{given} against {owed}");
+    // Beats closer together than a step are all counted.
+    let fast = Moments { first: 0.0, every: 0.002 };
+    let b = fast.beats_at(DT as f64).unwrap();
+    let all: f64 = (0..b.count).map(|m| 1.0 - (-(b.since + m as f64 * 0.002) / 0.01_f64).exp()).sum();
+    // Everything before the first step's end came in that step.
+    let first_step = pulse_share(&b, DT as f64, 0.01);
+    assert!((first_step - all).abs() < 1e-9, "{first_step} against {all}");
+}
+
+#[test]
+fn a_huge_picture_or_word_stays_within_the_lattice_cap() {
+    let spots = word_spots("W", 1e8, Weight::SemiBold, 1.0);
+    assert!(!spots.is_empty() && spots.len() <= super::spots::MOST_SPOTS);
 }
 
 #[test]

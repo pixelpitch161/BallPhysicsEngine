@@ -7,7 +7,7 @@ use bpe_core::ThingId;
 use bpe_runtime::{EventKind, Log, World};
 use glam::Vec2;
 
-use super::beats::Moments;
+use super::beats::{Beats, Moments};
 use super::forces::{Force, Forces};
 use super::meets::{BallAt, BallGrid};
 use super::more_forces::Toward;
@@ -39,8 +39,8 @@ pub enum ForceReady {
     /// it is gone (a ball number with no ball).
     Centre(Option<(Vec2, Vec2)>),
     Rings(Vec<Ring>),
-    /// Seconds since the latest beat and the one before.
-    Beats([Option<f64>; 2]),
+    /// The beats so far (`None` before the first).
+    Beats(Option<Beats>),
 }
 
 /// Every particle's place and velocity as the step began, in a uniform grid.
@@ -230,7 +230,7 @@ impl Ready {
             Force::Pull(p) => self.centre(p.toward, p.point, p.ball_number, st, world),
             Force::Push(p) => self.centre(p.toward, p.point, p.ball_number, st, world),
             Force::Spirograph(p) => self.centre(p.round.toward(), p.point, p.ball_number, st, world),
-            Force::Pulse(p) => ForceReady::Beats(Moments::of(world, p.every, p.bars, p.offset).since_latest(self.time)),
+            Force::Pulse(p) => ForceReady::Beats(Moments::of(world, p.every, p.bars, p.offset).beats_at(self.time)),
             Force::Ripple(r) => {
                 let rate = world.steps_per_second.max(1);
                 let lasts = if r.lasts.is_finite() { r.lasts.max(0.01) as f64 } else { 1.0 };

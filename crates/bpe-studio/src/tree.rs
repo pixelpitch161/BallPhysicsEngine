@@ -1126,6 +1126,10 @@ mod tests {
         let mut h = harness();
         h.get_by_label("+ Add thing").click();
         h.run();
+        // The pointer, still on the Add thing button, sits on the last particles group, whose
+        // menu covers Rig: point at another entry first so it closes.
+        h.get_by_label("Balls").hover();
+        h.run();
         h.get_by_label("Rig").click();
         h.run();
         let rig = h.state().selection.primary.expect("the rig is selected");

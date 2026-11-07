@@ -122,7 +122,17 @@ impl ParticlesState {
 
     /// Reads the places again when what they depend on changed (`video` is the video's size).
     pub fn refresh_spots(&mut self, video: Vec2) {
-        let key = super::spots::key_of(&self.settings, video);
+        let mut key = super::spots::key_of(&self.settings, video);
+        // The picture as it was when the run began: a picture changed on disk partway through
+        // doesn't move the places under the particles (a rebuild reads it afresh).
+        if let (
+            super::spots::SpotsKey::Picture { path, modified, .. },
+            super::spots::SpotsKey::Picture { path: was, modified: then, .. },
+        ) = (&mut key, &self.spots_key)
+            && path == was
+        {
+            *modified = *then;
+        }
         if key != self.spots_key {
             self.spots = super::spots::spots_for(&key);
             self.spots_key = key;
