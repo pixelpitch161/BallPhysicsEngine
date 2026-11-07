@@ -40,7 +40,7 @@ struct Uniform {
     field: [f32; 4],
     /// Lighting part 3: this sample's index, how many, 1 when baking, light bounces.
     sample: [f32; 4],
-    /// The bake's traced bounce: Bounce light, three spare.
+    /// The bake's traced bounce: Bounce light, 1 on a Stage (see `fs_seed`), two spare.
     trace: [f32; 4],
 }
 
@@ -1009,7 +1009,7 @@ impl Lighting {
             sample: frame
                 .bake
                 .map_or([0.0, 1.0, 0.0, 0.0], |b| [b.index as f32, b.count.max(1) as f32, 1.0, s.bake[1].max(0.0)]),
-            trace: [bounce_setting, 0.0, 0.0, 0.0],
+            trace: [bounce_setting, if s.stage[0] > 0.5 { 1.0 } else { 0.0 }, 0.0, 0.0],
         };
         // The jump flood's steps: from half the field's size down to one, then one again.
         let mut jumps = Vec::new();

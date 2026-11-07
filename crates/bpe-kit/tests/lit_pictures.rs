@@ -366,12 +366,22 @@ fn bounce_light_spills_a_lit_balls_colour() {
     for (k, v) in b.to_params().iter() {
         card.params.set(&layered_key(body, k), v.clone());
     }
+    // The room's thin white ring blocks no light here: blocking, it bounces the lamp's white light
+    // too (thin lines block light whole since the thin-blockers fix), which isn't what this checks.
+    let shape = scene.things.values().find(|t| t.kind == "shape").map(|t| t.id).unwrap();
+    let ring_body = scene.things[&shape].slots[&SlotId::Look].layers[0].id;
+    scene
+        .card_mut(shape, SlotId::Look)
+        .unwrap()
+        .params
+        .set(&layered_key(ring_body, "blocks_light"), Value::Bool(false));
     let before = draw(&mut gpu, &scene, "bounce-off");
     set_lighting(&mut scene, "bounce", Value::Number(2.0));
     let after = draw(&mut gpu, &scene, "bounce");
     // Beside the ball, near its lit top.
     let (a, b) = (at(&after, 120.0, -60.0), at(&before, 120.0, -60.0));
-    assert!(redness(a) > redness(b) + 8, "bounce {a:?} without {b:?}");
+    // (+11 before the thin-blockers fix; the ball's edge texels now stop the light field too.)
+    assert!(redness(a) > redness(b) + 6, "bounce {a:?} without {b:?}");
 }
 
 #[test]
