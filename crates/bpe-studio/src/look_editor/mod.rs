@@ -1581,6 +1581,23 @@ mod tests {
     }
 
     #[test]
+    fn the_bodys_shape_tab_opens_and_picks_a_form() {
+        // The Body's colours are placed by its paint, so they have no Turn, Centre, Size or
+        // Beyond of their own: the Shape tab once asked for them and crashed the editor.
+        let mut h = harness();
+        h.get_by_label("Add a colour").click();
+        h.run();
+        h.get_by_label("Colours tab Shape").click();
+        h.run();
+        h.get_by_label("Colours shape Spiral").click();
+        h.run();
+        let body = card(&h, BALL).layers[0].id;
+        let key = layered_key(body, "colours~form");
+        assert_eq!(card(&h, BALL).params.get(&key), Some(&Value::Choice("spiral".into())));
+        assert!(label_shown(&h, "Arms"), "the spiral's own settings show");
+    }
+
+    #[test]
     fn bands_set_from_the_bodys_gradient_tabs_are_stored_and_keyed_by_name() {
         let mut h = harness();
         h.get_by_label("Add a colour").click();

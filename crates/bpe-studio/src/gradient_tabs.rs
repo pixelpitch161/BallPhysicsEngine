@@ -187,7 +187,10 @@ fn shape_chips(
     let Some(form_c) = gradient_extras::companion("form") else { return };
     let form_def = companion_def(def, form_c);
     let now = GradientForm::from_value(&get(form_def.key)).unwrap_or_default();
-    let layout = gradient_extras::layout_from(def.key, &|k| Some(get(k)));
+    // Only the companions this gradient offers: a paint's gradient has no Turn, Centre, Size or
+    // Beyond of its own, and asking the inspector for one fails.
+    let offered = |k: &str| gradient_extras::split(k).is_some_and(|(_, c)| gradient_extras::offers(def, c));
+    let layout = gradient_extras::layout_from(def.key, &|k| offered(k).then(|| get(k)));
     row_label(ui, cx, "Shape");
     widget_cell(ui, right, |ui| {
         ui.horizontal_wrapped(|ui| {
@@ -554,8 +557,14 @@ pub(crate) mod tests {
                         vary: None,
                     };
                     let values = state.values.clone();
+                    // As strict as the inspector's: a companion the gradient doesn't offer has no
+                    // value (a paint's gradient has no Turn, Centre, Size or Beyond of its own).
                     let get = |k: &str| {
-                        values.get(k).cloned().unwrap_or_else(|| gradient_extras::default_of(k).expect("a known key"))
+                        values.get(k).cloned().unwrap_or_else(|| {
+                            let (base, c) = gradient_extras::split(k).expect("a known key");
+                            let base = defs.iter().find(|d| d.key == base);
+                            gradient_extras::def_for(base, c).expect("a setting the gradient has").default.clone()
+                        })
                     };
                     let out = settings_grid(ui, "g", defs, get, &cx);
                     for (k, v) in out.changes {
