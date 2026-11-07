@@ -162,7 +162,12 @@ impl LayerKind for Kind {
         // Every drawn layer of a Particles thing's Look is lit like the around layers (particles
         // part 7), whatever its kind.
         if self.card == crate::things::particles::look::CARD && self.section == LayerSection::Drawn {
+            use crate::things::particles::look::{GLITTER, SHAPES, SPRITES, STREAKS};
             use bpe_core::Settings;
+            // Sprites can bend lamp light like bubbles (glass and light part 3).
+            if [SPRITES, STREAKS, SHAPES, GLITTER].contains(&self.id) {
+                return lighting::ParticlesLit::defs();
+            }
             return lighting::AroundLit::defs();
         }
         lighting::defs_of(self.id)

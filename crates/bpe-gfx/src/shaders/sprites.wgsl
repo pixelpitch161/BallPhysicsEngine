@@ -120,7 +120,8 @@ struct SpriteOut {
     @location(4) shade: f32,
     // A bird's flap or a fish's swing, -1 to 1 (`shape.y`, 0 to 65535).
     @location(8) @interpolate(flat) pose: f32,
-    @location(5) @interpolate(flat) light: vec2<f32>,
+    // Lit, blocks light, bends light (its index of refraction; glass and light part 3).
+    @location(5) @interpolate(flat) light: vec3<f32>,
     @location(6) @interpolate(flat) emit: vec3<f32>,
     @location(7) @interpolate(flat) extra: vec4<f32>,
 };
@@ -183,7 +184,7 @@ fn sprite_out(vi: u32, v: SpriteIn) -> SpriteOut {
     out.color = v.color;
     out.size = vec4<f32>(reach, size, clamp(v.style.z, 0.0, 1.0), clamp(v.style.w, 0.0, 1.0));
     out.kind = v.shape.x;
-    out.light = v.light.xy;
+    out.light = v.light.xyz;
     out.emit = v.emit.rgb;
     out.extra = v.extra;
     out.shade = v.style.y;
@@ -396,7 +397,17 @@ fn coverage(in: SpriteOut) -> f32 {
 
 @fragment
 fn fs_sprite(in: SpriteOut) -> @location(0) vec4<f32> {
-    return light_flat(sprite_colour(in), in.light.x, in.light.y, in.emit, in.extra);
+    let c = sprite_colour(in);
+    // Glass and light part 3: light pass 9, the glass picture. A sprite that bends light is free
+    // glass there: its index of refraction over its cover; nothing else draws.
+    if g.light.x > 8.5 {
+        if in.light.z > 1.0001 && in.extra.y < 0.5 {
+            let a = clamp(c.a, 0.0, 1.0);
+            return vec4<f32>(in.light.z * a, 0.0, 0.0, a);
+        }
+        return vec4<f32>(0.0);
+    }
+    return light_flat(c, in.light.x, in.light.y, in.emit, in.extra);
 }
 
 // The sprite's premultiplied colour and coverage here.

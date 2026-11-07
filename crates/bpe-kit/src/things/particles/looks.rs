@@ -347,6 +347,14 @@ pub(super) fn sprites(s: SpritesLayer, subs: Vec<(&'static str, Params)>) -> Lay
     LayerRecipe { kind: SPRITES, params: s.to_params(), subs }
 }
 
+/// `layer` with its Lighting fold's Bends light at `index` (glass and light part 3): its particles
+/// focus lamp light like bubbles, in a lit scene with Glass caustics.
+fn bending(mut layer: LayerRecipe, index: f32) -> LayerRecipe {
+    use crate::modules::look::layers::lighting::BENDS_LIGHT;
+    layer.params.set(BENDS_LIGHT, bpe_core::Value::Number(index as f64));
+    layer
+}
+
 pub(super) fn streaks(s: StreaksLayer, subs: Vec<(&'static str, Params)>) -> LayerRecipe {
     LayerRecipe { kind: STREAKS, params: s.to_params(), subs }
 }
@@ -1361,16 +1369,19 @@ fn recipe(look: Look, rides: bool, fed_by: bool) -> Recipe {
                 (DRAG, DragForce { drag: 0.6, ..Default::default() }.to_params()),
             ],
             MeetsSettings { push: 0.6, at_balls: AtBalls::Pop, ..vanish.clone() },
-            vec![sprites(
-                SpritesLayer {
-                    made_of: ShapeMadeOf::Bubbles,
-                    softness: 0.3,
-                    colour: paint(&[Color::rgb(200, 235, 255)], Follow::Life),
-                    opacity: 0.8,
-                    fade: ParticleFade::None,
-                    ..Default::default()
-                },
-                Vec::new(),
+            vec![bending(
+                sprites(
+                    SpritesLayer {
+                        made_of: ShapeMadeOf::Bubbles,
+                        softness: 0.3,
+                        colour: paint(&[Color::rgb(200, 235, 255)], Follow::Life),
+                        opacity: 0.8,
+                        fade: ParticleFade::None,
+                        ..Default::default()
+                    },
+                    Vec::new(),
+                ),
+                1.33,
             )],
         )
         .feeding(

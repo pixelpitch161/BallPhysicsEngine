@@ -6,6 +6,7 @@
 
 mod accumulate;
 pub mod bake;
+pub mod bent_light;
 mod blend;
 #[cfg(test)]
 mod blend_tests;
@@ -52,12 +53,13 @@ pub mod swarm;
 mod util;
 
 pub use frame::{
-    Around, BackgroundPaint, BallInstance, BallMark, BlendLayer, DrawCx, Draws, EffectCall, FIELD_FLAME,
-    FIELD_HEAT_STOPS, FIELD_SMOKE, Field, FieldLook, FlashInstance, Frame, Grade, HitMark, LayerGpu, LayeredInstance,
-    LightGpu, LightScene, LightShow, LightingGpu, LookInstance, MAX_LAYERS, MOST_MIRRORS, MOST_TRAIL_VERTICES,
-    MirrorGpu, ModuleDraw, NO_HIT, PATH_GLYPH, Particle, PathInstance, Place, RibbonGpu, ShapeInstance, SphereGpu,
-    Splat, Stage, StreakStyle, SurfaceGpu, Takes, ThingDraw, TrailVertex, blend_alpha, build_frame,
-    build_frame_sensing, build_frame_with, hit_strength, push_streak, push_streak_colours, push_trail, thing_code,
+    Around, BENDS_FROM, BackgroundPaint, BallInstance, BallMark, Bender, BlendLayer, DrawCx, Draws, EffectCall,
+    FIELD_FLAME, FIELD_HEAT_STOPS, FIELD_SMOKE, FREE_BENDER, Field, FieldLook, FlashInstance, Frame, Grade, HitMark,
+    LayerGpu, LayeredInstance, LightGpu, LightScene, LightShow, LightingGpu, LookInstance, MAX_LAYERS, MOST_MIRRORS,
+    MOST_TRAIL_VERTICES, MirrorGpu, ModuleDraw, NO_HIT, PATH_GLYPH, Particle, PathInstance, Place, RibbonGpu,
+    ShapeInstance, SphereGpu, Splat, Stage, StreakStyle, SurfaceGpu, Takes, ThingDraw, TrailVertex, blend_alpha,
+    build_frame, build_frame_sensing, build_frame_with, hit_strength, push_streak, push_streak_colours, push_trail,
+    thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, NO_WAVE, PaintGpu, wave_texels};
 pub use masks::{MASK_TILE, MASK_TILE_BYTES, MAX_MASK_TILES, TILE_DISTANCE_REACH, tile_distance};
@@ -85,6 +87,9 @@ const BEHIND_PASS: u32 = 7;
 /// The light pass drawing the tint picture (glass and light part 1, tint.wgsl): how deep each
 /// see-through thing's colour is, read into the blockers' field.
 const TINT_PASS: u32 = 8;
+/// Glass and light part 3: the light pass that draws free glass (particles and glass liquid that
+/// bend lamp light) into the glass picture: index of refraction × cover, cover.
+const GLASS_PASS: u32 = 9;
 
 const BLOOM_LEVELS: usize = 6;
 
@@ -1505,6 +1510,20 @@ impl Renderer {
                 self.targets.hdr_texture = hdr_texture;
                 self.targets.hdr = hdr;
             }
+            // Glass and light part 3: free glass, when photons are sent through it.
+            if bent_light::BentPlan::of(frame, scene).free_glass() {
+                let lighting = self.lighting.as_mut().expect("made above");
+                lighting.make_glass(device);
+                let (texture, view) = lighting.picture(GLASS_PASS).expect("just made");
+                let (world, _) = self.light_globals(device, queue, frame, GLASS_PASS, background_lit, scene);
+                let hdr_texture = std::mem::replace(&mut self.targets.hdr_texture, texture);
+                let hdr = std::mem::replace(&mut self.targets.hdr, view);
+                self.light_mode = GLASS_PASS;
+                self.draw_glass(encoder, frame, &layer_buffers, &world);
+                self.light_mode = 0;
+                self.targets.hdr_texture = hdr_texture;
+                self.targets.hdr = hdr;
+            }
             // What glass shows behind it: the plain picture without what is see-through
             // (part 2b; `Globals.light.x` -1 makes see-through records draw nothing).
             if let Some((texture, view)) = self.lighting.as_mut().expect("made above").behind(device, scene) {
@@ -1704,6 +1723,12 @@ impl Renderer {
         self.ripples.built()
     }
 
+    /// How many photons the last lit frame sent through glass that bends light (glass and light
+    /// part 3; 0 when it sent none or the frame wasn't lit).
+    pub fn bent_photons(&self) -> u32 {
+        self.lighting.as_ref().filter(|_| self.lit_lights.is_some()).map_or(0, |l| l.bent_photons())
+    }
+
     pub fn lighting_stats(&self) -> Option<(usize, Option<f32>)> {
         let ms = self.light_timer.as_ref().and_then(|t| t.as_ref()).and_then(|t| t.last_ms);
         self.lit_lights.map(|n| (n, ms))
@@ -1817,6 +1842,36 @@ impl Renderer {
         }
     }
 
+    /// Light pass 9 (glass and light part 3): the sprites and liquids of the frame and its blend
+    /// layers' frames into the glass picture (the HDR picture's place), where only free glass
+    /// draws (sprites.wgsl, liquid.wgsl). Its own place in the picture doesn't matter: whatever is
+    /// solid over or under it wins when it is marked in the surface picture.
+    fn draw_glass(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &Frame,
+        layer_buffers: &[FrameBuffers],
+        globals: &wgpu::BindGroup,
+    ) {
+        let frames =
+            std::iter::once((frame, &self.buffers)).chain(frame.layers.iter().map(|l| &l.frame).zip(layer_buffers));
+        {
+            let mut pass =
+                begin_pass(encoder, &self.targets.hdr, "free glass", wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
+            pass.set_bind_group(0, globals, &[]);
+            pass.set_bind_group(1, &self.paint.group, &[]);
+            for (f, b) in frames {
+                self.sprites.draw_range(&mut pass, &b.particles, 0..f.particles.len() as u32, None);
+                self.sprites.draw_range(&mut pass, &b.particles_front, 0..f.particles_front.len() as u32, None);
+            }
+        }
+        let hdr = self.targets.hdr.clone();
+        for f in std::iter::once(frame).chain(frame.layers.iter().map(|l| &l.frame)) {
+            self.draw_liquids(encoder, f, false, globals, &hdr);
+            self.draw_liquids(encoder, f, true, globals, &hdr);
+        }
+    }
+
     /// Draws the things stuck to the screen (the overlay frame `o`) into the HDR picture over
     /// everything else, the overlay's blend layers in their own z-order.
     #[allow(clippy::too_many_arguments)]
@@ -1858,8 +1913,8 @@ impl Renderer {
         self.overlay = buffers;
     }
 
-    /// The world's and the screen's globals for light pass `mode` (1 to 6, [`BEHIND_PASS`] or
-    /// [`TINT_PASS`]),
+    /// The world's and the screen's globals for light pass `mode` (1 to 6, [`BEHIND_PASS`],
+    /// [`TINT_PASS`] or [`GLASS_PASS`]),
     /// made the first time.
     fn light_globals(
         &mut self,
@@ -1870,7 +1925,7 @@ impl Renderer {
         background_lit: f32,
         scene: &LightScene,
     ) -> (wgpu::BindGroup, wgpu::BindGroup) {
-        while self.light_globals.len() < 2 * TINT_PASS as usize {
+        while self.light_globals.len() < 2 * GLASS_PASS as usize {
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("light pass globals"),
                 size: std::mem::size_of::<Globals>() as u64,
@@ -2526,6 +2581,19 @@ impl GrowableBuffer {
         }
         queue.write_buffer(self.buffer.as_ref().unwrap(), 0, bytes);
         grown
+    }
+
+    /// Makes sure the buffer holds at least `size` bytes (its contents are the shader's to write).
+    fn reserve(&mut self, device: &wgpu::Device, size: u64) {
+        self.len = size;
+        if self.buffer.as_ref().is_none_or(|b| b.size() < size) {
+            self.buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(self.label),
+                size: size.next_power_of_two().max(1024),
+                usage: self.usage,
+                mapped_at_creation: false,
+            }));
+        }
     }
 
     fn slice(&self) -> wgpu::BufferSlice<'_> {

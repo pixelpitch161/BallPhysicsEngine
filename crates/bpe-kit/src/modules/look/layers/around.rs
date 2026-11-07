@@ -73,8 +73,10 @@ impl Drew {
             let two = [light[0], light[1]];
             frame.trails.iter_mut().skip(t).for_each(|v| v.light = two);
             frame.trails_front.iter_mut().skip(tf).for_each(|v| v.light = two);
-            frame.particles.iter_mut().skip(p).for_each(|s| s.light = [light[0], light[1], 0.0, 0.0]);
-            frame.particles_front.iter_mut().skip(pf).for_each(|s| s.light = [light[0], light[1], 0.0, 0.0]);
+            // Sprites carry how much they bend light too (glass and light part 3); trails don't.
+            let sprite = [light[0], light[1], light[2], 0.0];
+            frame.particles.iter_mut().skip(p).for_each(|s| s.light = sprite);
+            frame.particles_front.iter_mut().skip(pf).for_each(|s| s.light = sprite);
         }
     }
 }

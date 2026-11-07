@@ -672,7 +672,9 @@ pub struct Particle {
     /// Its shape: 0 sparks, 1 smoke, 2 confetti, 3 stars, 4 shards, 5 rings, 6 dots, 7 hearts,
     /// 8 bubbles, 9 streaks; three spare.
     pub shape: [u32; 4],
-    /// Its layer's Lit and how much it blocks light (read only when the scene is lit); two spare.
+    /// Its layer's Lit, how much it blocks light and how much it bends light (its index of
+    /// refraction, glass and light part 3: above 1 it is free glass), read only when the scene is
+    /// lit; one spare.
     pub light: [f32; 4],
     /// The light it gives off, straight linear rgb at full cover (read only in the emission
     /// pass); w spare.
@@ -1139,6 +1141,9 @@ pub struct LightingGpu {
     pub bake: [f32; 4],
     /// 1 when the video bakes, 1 with noise clean-up, glass caustics, 1 when the bake traces bounced light.
     pub bake_more: [f32; 4],
+    /// Glass and light part 3: Bent light rays (a multiplier on the photons), Bent light softness
+    /// (how wide each photon's line is splatted), two spare.
+    pub bent: [f32; 4],
 }
 
 /// How a surface takes light (`SurfaceGpu` in lighting.wgsl): an entry of
@@ -1267,10 +1272,57 @@ pub struct LightScene {
     pub refracts: bool,
     /// Light beams' bands (glass and light part 2), added over the lit picture after the mix.
     pub ribbons: Vec<RibbonGpu>,
+    /// Glass and light part 3: the shapes (and shape layers) whose glass bends lamp light, by
+    /// surface index. Free glass (bending particles, glass liquid) is found in the frame itself
+    /// ([`Frame::free_glass_box`]).
+    pub benders: Vec<Bender>,
 }
 
 /// The most mirror walls a frame takes (the rest are left out).
 pub const MOST_MIRRORS: usize = 16;
+
+/// The bender id of free glass (glass and light part 3): bending particles and glass liquid, which
+/// mark the surface picture with their index of refraction instead of a surface index.
+pub const FREE_BENDER: u32 = 4096;
+
+/// Glass that bends lamp light in a lit frame (glass and light part 3): its box (world, smallest
+/// and largest corner) and its surface index ([`FREE_BENDER`] for free glass). The photon pass
+/// sends each light's photons toward its box.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Bender {
+    pub lo: [f32; 2],
+    pub hi: [f32; 2],
+    pub index: u32,
+}
+
+impl Bender {
+    /// A box round `points` (world), grown by `margin` on every side; `None` with no finite point.
+    pub fn round(points: impl IntoIterator<Item = Vec2>, margin: f32, index: u32) -> Option<Bender> {
+        let mut lo = Vec2::splat(f32::INFINITY);
+        let mut hi = Vec2::splat(f32::NEG_INFINITY);
+        for p in points.into_iter().filter(|p| p.is_finite()) {
+            lo = lo.min(p);
+            hi = hi.max(p);
+        }
+        (lo.x <= hi.x && lo.y <= hi.y).then(|| Bender {
+            lo: (lo - Vec2::splat(margin)).to_array(),
+            hi: (hi + Vec2::splat(margin)).to_array(),
+            index,
+        })
+    }
+
+    /// The smallest box holding both.
+    pub fn union(self, other: Bender) -> Bender {
+        Bender {
+            lo: [self.lo[0].min(other.lo[0]), self.lo[1].min(other.lo[1])],
+            hi: [self.hi[0].max(other.hi[0]), self.hi[1].max(other.hi[1])],
+            index: self.index,
+        }
+    }
+}
+
+/// The least Bends light that bends (glass and light part 3): 1 is straight through.
+pub const BENDS_FROM: f32 = 1.0001;
 
 impl LightScene {
     /// Whether a light is ultraviolet.
@@ -1750,6 +1802,25 @@ impl Frame {
             || self.fields.iter().chain(&self.fields_front).any(|f| f.look.light[1] > 0.0)
             || self.layers.iter().any(|l| l.frame.see_through_blockers())
             || self.overlay.as_deref().is_some_and(Frame::see_through_blockers)
+    }
+
+    /// Glass and light part 3: the box round everything drawn as free glass (particles whose
+    /// layer bends light, `Particle::light[2]` above 1, and Glass liquids that bend light,
+    /// `LiquidStyle::c[2]`), in the frame and its blend layers' frames (not the overlay: what is
+    /// stuck to the screen bends no lamp light), as a [`FREE_BENDER`]; `None` when nothing is.
+    pub fn free_glass_box(&self) -> Option<Bender> {
+        let sprites =
+            self.particles.iter().chain(&self.particles_front).filter(|p| p.light[2] > BENDS_FROM).filter_map(|p| {
+                let reach = p.place[3].abs().max(p.style[0].abs()) * 1.5 + 2.0;
+                Bender::round([p.at()], reach, FREE_BENDER)
+            });
+        let blobs = self.liquids.iter().filter(|l| l.style.glass() && l.style.c[2] > BENDS_FROM).flat_map(|l| {
+            l.blobs.iter().filter_map(|b| {
+                Bender::round([Vec2::new(b.place[0], b.place[1])], b.place[2].abs() * 2.0 + 2.0, FREE_BENDER)
+            })
+        });
+        let inner = self.layers.iter().filter_map(|l| l.frame.free_glass_box());
+        sprites.chain(blobs).chain(inner).reduce(Bender::union)
     }
 
     /// Whether none of the lists the picture is drawn from has anything in them.
@@ -2482,6 +2553,32 @@ pub const MOST_SPRITES: usize = 1_000_000;
 mod tests {
     use super::*;
     use bpe_core::{Address, Ease, Value, resolve, testkit};
+
+    #[test]
+    fn free_glass_is_bending_sprites_and_glass_liquid() {
+        let mut frame = Frame::default();
+        assert_eq!(frame.free_glass_box(), None);
+        let mut bubble = Particle::new(0, Vec2::new(100.0, 50.0), 0.0, 10.0, [1.0; 4]);
+        frame.particles.push(bubble);
+        assert_eq!(frame.free_glass_box(), None, "a sprite that doesn't bend");
+        bubble.light[2] = 1.33;
+        frame.particles.push(bubble);
+        let one = frame.free_glass_box().expect("a bending sprite");
+        assert_eq!(one.index, FREE_BENDER);
+        assert!(one.lo[0] <= 85.0 && one.hi[0] >= 115.0 && one.lo[1] <= 35.0 && one.hi[1] >= 65.0, "{one:?}");
+        let blob = crate::liquid::LiquidBlob { place: [-200.0, 0.0, 20.0, 1.0], colour: [1.0; 4] };
+        let mut style = crate::liquid::LiquidStyle { a: [0.5, 1.0, 1.0, 4.0], ..Default::default() };
+        frame.liquids.push(crate::liquid::Liquid { blobs: vec![blob], style, front: false });
+        assert_eq!(frame.free_glass_box(), Some(one), "a glass liquid with Bends light 1");
+        style.c[2] = 1.33;
+        frame.liquids.push(crate::liquid::Liquid { blobs: vec![blob], style, front: false });
+        let both = frame.free_glass_box().unwrap();
+        assert!(both.lo[0] <= -240.0 && both.hi[0] >= 115.0, "{both:?}");
+        // Inside a blend layer's own frame too.
+        let mut outer = Frame::default();
+        outer.layers.push(BlendLayer { blend: Blend::Add, amount: 1.0, each: false, z: 0, place: Place::Blend, frame });
+        assert_eq!(outer.free_glass_box(), Some(both));
+    }
     use bpe_runtime::{Event, EventKind, Log, Party, Sims, World};
 
     struct FakeScene;

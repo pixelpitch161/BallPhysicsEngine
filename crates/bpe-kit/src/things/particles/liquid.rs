@@ -76,6 +76,11 @@ look_settings! {
         /// How much Glass takes on its colours.
         #[setting(label = "Tint", group = "Liquid", when = "surface=glass", range(0, 1), keyframe)]
         tint: f32 = 0.3,
+        /// How much Glass bends lamp light passing through it (its index of refraction, water
+        /// 1.33), focusing it into bright lines: 1 lets it through straight. Needs the Lighting
+        /// card's Glass caustics.
+        #[setting(label = "Bends light", group = "Liquid", when = "surface=glass", span(1, 2), keyframe)]
+        bends_light: f32 = 1.33,
         /// The sky Chrome and Metal reflect, above.
         #[setting(label = "Sky top", group = "Liquid", when = "surface=chrome|metal|glass|plastic")]
         sky_top: Color = Color::rgb(225, 235, 255),
@@ -98,9 +103,20 @@ impl LiquidLayer {
         LiquidStyle {
             a: [self.level.max(1e-3), self.softness.max(0.0), self.roundness.max(0.0), self.surface.code()],
             b: [self.light_angle.to_radians(), self.shine.clamp(0.0, 1.0), self.bend, self.tint.clamp(0.0, 1.0)],
-            c: [self.rim.clamp(0.0, 1.0), opacity.clamp(0.0, 1.0), 0.0, 0.0],
+            c: [self.rim.clamp(0.0, 1.0), opacity.clamp(0.0, 1.0), self.bends(), 0.0],
             sky_top: sky(self.sky_top),
             sky_bottom: sky(self.sky_bottom),
+        }
+    }
+
+    /// How much it bends lamp light (glass and light part 3): its Bends light when it is Glass and
+    /// bends at all, else 0.
+    pub fn bends(&self) -> f32 {
+        let glass = self.surface == Surface::Glass;
+        if glass && self.bends_light.is_finite() && self.bends_light > bpe_gfx::BENDS_FROM {
+            self.bends_light
+        } else {
+            0.0
         }
     }
 

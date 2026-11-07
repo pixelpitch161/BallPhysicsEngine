@@ -46,6 +46,10 @@ struct Lighting {
     // takes their colour, 1 when the tint picture was drawn (glass and light part 1: the field
     // pass then reads it in `picture`'s place).
     trace: vec4<f32>,
+    // Glass and light part 3: 1 when glass bends lamp light (the photon pass runs), three spare.
+    bent: vec4<f32>,
+    // Which surface indices are glass that bends lamp light: bit i of word i / 32 (2048 bits).
+    bends: array<vec4<u32>, 16>,
 };
 
 struct LightGpu {
@@ -227,6 +231,106 @@ fn cover_block(s: vec4<f32>) -> f32 {
 // through (see-through blockers).
 const SOLID: f32 = 0.98;
 
+// Glass and light part 3: the bender id of free glass (bending particles and glass liquid, which
+// free_glass.wgsl marks in the surface picture's B, see `free_glass_of`).
+const FREE_BENDER: i32 = 4096;
+// The least index of refraction that bends (frame.rs's BENDS_FROM).
+const BENDS_FROM: f32 = 1.0001;
+
+// Whether the light being marched now has its light through bending glass carried by photons
+// (lasers' isn't: the glass is see-through for them, as before part 3).
+var<private> bent_carried: bool = true;
+
+// Free glass on a surface-picture texel: its index of refraction and cover (0 where there is
+// none). free_glass.wgsl writes B = -(1 + 16 q_ior + q_cover), q_ior the index's 64ths above 1
+// (1 to 127), q_cover its cover's 15ths (1 to 15); any other B is 0 or more.
+fn free_glass_of(s: vec4<f32>) -> vec2<f32> {
+    if s.b > -1.5 {
+        return vec2<f32>(1.0, 0.0);
+    }
+    let v = round(-s.b) - 1.0;
+    let qi = floor(v / 16.0);
+    return vec2<f32>(1.0 + qi / 64.0, (v - 16.0 * qi) / 15.0);
+}
+
+// Which bender the picture pixel `ip` is glass of: its surface index (one whose bit is set in
+// `u.bends`), FREE_BENDER for free glass, or -1 (nothing that bends, or no photon pass). A pixel is
+// glass where it is mostly covered and lets some light through.
+fn bender_at(ip: vec2<i32>) -> i32 {
+    return bender_covering(ip, 0.5);
+}
+
+// `bender_at` for a pixel covered at least `least` (a glass's soft edge is still its glass).
+fn bender_covering(ip: vec2<i32>, least: f32) -> i32 {
+    if u.bent.x < 0.5 || ip.x < 0 || !bent_carried {
+        return -1;
+    }
+    let size = vec2<i32>(textureDimensions(surface));
+    if any(ip >= size) || ip.y < 0 {
+        return -1;
+    }
+    let s = textureLoad(surface, ip, 0);
+    if min(s.r, 1.0) >= SOLID {
+        return -1;
+    }
+    let free = free_glass_of(s);
+    if free.y > 0.0 {
+        return select(-1, FREE_BENDER, free.y >= least && free.x > BENDS_FROM);
+    }
+    if s.a < least {
+        return -1;
+    }
+    let f = s.b / s.a;
+    let code = round(f);
+    if abs(f - code) > 0.2 || code < 0.5 {
+        return -1;
+    }
+    let i = u32(code) % 2048u;
+    let word = i / 32u;
+    if ((u.bends[word / 4u][word % 4u] >> (i % 32u)) & 1u) == 0u {
+        return -1;
+    }
+    return i32(i);
+}
+
+// Whether the picture pixel `ip` is glass that bends lamp light (only while the photon pass runs).
+fn bends_at(ip: vec2<i32>) -> bool {
+    return bender_at(ip) >= 0;
+}
+
+// Whether a picture pixel blocks (or bends) enough for a ray to meet it there.
+fn pixel_meets(ip: vec2<i32>) -> bool {
+    return pixel_block(ip) >= BLOCK_LEAST || bends_at(ip);
+}
+
+// Whether the blocker nearest world point `p` (by the blockers' jump flood, bound as `seeds` after
+// the field pass) is glass that bends lamp light: any picture pixel under its field texel bends.
+fn nearest_bends(p: vec2<f32>) -> bool {
+    if u.bent.x < 0.5 {
+        return false;
+    }
+    let uv = world_to_uv(p);
+    let fsize = vec2<i32>(u.field.xy);
+    let fp = clamp(vec2<i32>(uv * u.field.xy), vec2<i32>(0), fsize - 1);
+    let s = textureLoad(seeds, fp, 0);
+    if s.x < 0.0 {
+        return false;
+    }
+    let t = vec2<i32>(s.xy);
+    let size = vec2<i32>(textureDimensions(surface));
+    let scale = vec2<f32>(size) / vec2<f32>(fsize);
+    let lo = vec2<i32>(floor(vec2<f32>(t) * scale));
+    let hi = min(max(vec2<i32>(ceil(vec2<f32>(t + 1) * scale)), lo + 1), size);
+    for (var y = lo.y; y < hi.y; y++) {
+        for (var x = lo.x; x < hi.x; x++) {
+            if bends_at(vec2<i32>(x, y)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 // Glass and light part 1: how much a pixel's colour must hold back of some channel (its colour depth
 // in the tint picture, deepest channel less shallowest) to count as a blocker though it blocks less
 // than BLOCK_LEAST: clear stained glass (See-through 1) still throws its colour.
@@ -266,7 +370,7 @@ fn foot_blocks(t: vec2<i32>) -> bool {
     for (var y = lo.y; y < hi.y; y++) {
         for (var x = lo.x; x < hi.x; x++) {
             let ip = vec2<i32>(x, y);
-            if textureLoad(surface, ip, 0).r >= least || pixel_tints(ip) {
+            if textureLoad(surface, ip, 0).r >= least || pixel_tints(ip) || bends_at(ip) {
                 return true;
             }
         }
@@ -291,7 +395,7 @@ fn foot_most(t: vec2<i32>) -> f32 {
         for (var x = lo.x; x < hi.x; x++) {
             let ip = vec2<i32>(x, y);
             let b = textureLoad(surface, ip, 0).r;
-            if b >= least || pixel_tints(ip) {
+            if b >= least || pixel_tints(ip) || bends_at(ip) {
                 most = max(most, clamp(b, 0.0, 1.0));
             }
         }
@@ -339,7 +443,7 @@ fn foot_tint(t: vec2<i32>) -> FootTint {
     for (var y = lo.y; y < hi.y; y++) {
         for (var x = lo.x; x < hi.x; x++) {
             let ip = vec2<i32>(x, y);
-            if textureLoad(surface, ip, 0).r >= least || pixel_tints(ip) {
+            if textureLoad(surface, ip, 0).r >= least || pixel_tints(ip) || bends_at(ip) {
                 let d = max(textureLoad(picture, ip, 0).rgb, vec3<f32>(0.0));
                 let grey = min(d.r, min(d.g, d.b));
                 out.k += d - vec3<f32>(grey);
@@ -576,7 +680,7 @@ fn confirm(p: vec2<f32>, toward: vec2<f32>, open: f32, t_in: f32, end: f32) -> v
         }
         let q = p + toward * t;
         let at = pixel_of(q);
-        if any(at != own) && pixel_block(at) >= BLOCK_LEAST {
+        if any(at != own) && pixel_meets(at) {
             return vec2<f32>(1.0, t);
         }
         if t > t_in && field_at(q) >= 0.0 {
@@ -611,6 +715,9 @@ fn march(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, s
             let f0 = field_all(p);
             leaves = f0.x < 0.0 && clear_tint(f0.yzw);
         }
+        // On glass that bends (part 3): it lights itself as it is (the photons start where the
+        // light leaves it).
+        leaves = leaves || bends_at(ip);
     }
     if leaves {
         // Leave the blocker the pixel is on: a thing doesn't shadow itself.
@@ -655,9 +762,14 @@ fn march(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, s
         let fd = field_all(q);
         let d = fd.x;
         if glass >= 0.0 {
-            let b = pixel_block(pixel_of(q));
+            let qi = pixel_of(q);
+            let b = pixel_block(qi);
             if b >= BLOCK_LEAST {
                 glass = max(glass, b);
+            }
+            // Glass that bends inside the stretch (part 3): its light comes by photons instead.
+            if bends_at(qi) {
+                glass = 1.0;
             }
             col = min(col, colour_of(fd.yzw));
             if glass < SOLID {
@@ -707,8 +819,11 @@ fn march(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, s
                 cross_at = c.y;
             }
             crossed = true;
-            let b = pixel_block(pixel_of(p + toward * c.y));
-            if stage || b >= SOLID {
+            let met = pixel_of(p + toward * c.y);
+            let b = pixel_block(met);
+            // Glass that bends lamp light (part 3) is solid here: the photon pass carries what it
+            // lets through.
+            if stage || b >= SOLID || bends_at(met) {
                 solid = true;
                 lit = vec3<f32>(0.0);
                 if across {
@@ -1161,7 +1276,10 @@ fn lamps(p: vec2<f32>, ip: vec2<i32>, with_air: bool) -> Lamps {
             if kind < 1.5 || kind > 2.5 {
                 stop = max(stop, -field_at(source_point(l, p)));
             }
+            // Glass that bends light is solid for the lights whose photons carry its light.
+            bent_carried = kind < 4.5;
             let v = visibility(p, toward, dist, soft, u.shadows.z, stop);
+            bent_carried = true;
             tint = mix(vec3<f32>(1.0), l.p5.rgb, clamp((vec3<f32>(1.0) - v) * l.p2.w, vec3<f32>(0.0), vec3<f32>(1.0)));
         }
         let through = gobo(l, p);
@@ -2306,6 +2424,12 @@ fn slab_visibility(p: vec3<f32>, l: vec3<f32>, dist: f32, ang: f32, stop: f32) -
             if v <= 0.0 {
                 break;
             }
+        } else if nearest_bends(vec2<f32>(p.x + toward.x * t, p.y + toward.y * t + (p.z + rise * t) * st.room.w)) {
+            // Glass that bends lamp light (part 3) is solid here: the photons carry its light.
+            v = min(v, raw);
+            if v <= 0.0 {
+                break;
+            }
         } else {
             let b = clamp(fd.yzw, vec3<f32>(0.0), vec3<f32>(1.0));
             see = min(see, vec3<f32>(1.0) - b * (1.0 - smoothed(raw)));
@@ -2544,11 +2668,13 @@ fn shade(spot: Spot, p: vec2<f32>, sf: SurfaceGpu, base: vec3<f32>, here: f32, l
                 stop = max(stop, -field_at(source_point(l, select(p, spot.p.xy, stage))));
             }
             var v = vec3<f32>(1.0);
+            bent_carried = kind < 4.5;
             if stage {
                 v = sphere_shadow(spot.p, dir3, dist3, soft, stop) * slab_visibility(spot.p, dir3, dist3, soft, stop);
             } else {
                 v = visibility(p, toward, dist, soft, u.shadows.z, stop);
             }
+            bent_carried = true;
             tint = mix(vec3<f32>(1.0), l.p5.rgb, clamp((vec3<f32>(1.0) - v) * l.p2.w, vec3<f32>(0.0), vec3<f32>(1.0)));
         }
         // Part 4: its gobo, and an ultraviolet light's visible share only.

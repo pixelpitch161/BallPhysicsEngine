@@ -13,6 +13,7 @@
 
 use bytemuck::{Pod, Zeroable};
 
+use crate::bent_light::{self, BENT_LEGS, BentUniform, Leg};
 use crate::frame::{LightGpu, LightScene, MOST_MIRRORS, MirrorGpu, SphereGpu, SurfaceGpu};
 use crate::{Frame, GrowableBuffer, HDR_FORMAT};
 
@@ -46,6 +47,10 @@ struct Uniform {
     /// The bake's traced bounce: Bounce light, 1 on a Stage (see `fs_seed`), 1 when light through
     /// glass takes its colour, 1 when the tint picture was drawn (glass and light part 1).
     trace: [f32; 4],
+    /// Glass and light part 3: 1 when glass bends lamp light (the photon pass runs), three spare.
+    bent: [f32; 4],
+    /// Which surface indices are glass that bends lamp light ([`bent_light::bend_bits`]).
+    bends: [[u32; 4]; 16],
 }
 
 /// What the surfaces and the stage read (see `Stage` in lighting.wgsl, part 2a).
@@ -337,6 +342,9 @@ struct Targets {
     /// Glass and light part 1: the tint picture (light pass 8, how deep each see-through thing's
     /// colour is), full size, made the first time it is drawn.
     tint: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// Glass and light part 3: free glass (light pass 9, made by [`Lighting::make_glass`]) and the
+    /// copy of the surface picture it is marked over.
+    glass: Option<[(wgpu::Texture, wgpu::TextureView); 2]>,
     /// The extras pictures (the memory and the haze's density, field size, two to keep the last
     /// frame's memory) and the balls' stirring, made the first time they are drawn.
     extras: Option<[(wgpu::Texture, wgpu::TextureView); 2]>,
@@ -392,6 +400,20 @@ pub(crate) struct Lighting {
     empty_group: wgpu::BindGroup,
     caustic_uniform: wgpu::Buffer,
     glass: GrowableBuffer,
+    /// Light bent by glass (glass and light part 3): the photons' compute pipeline and the pipeline
+    /// splatting their legs, the layouts of their groups 3, their uniform, the pairs, the legs and
+    /// how many photons the last run sent.
+    bent: wgpu::ComputePipeline,
+    bent_splat: wgpu::RenderPipeline,
+    bent_layout: wgpu::BindGroupLayout,
+    bent_draw_layout: wgpu::BindGroupLayout,
+    bent_uniform: wgpu::Buffer,
+    bent_pairs: GrowableBuffer,
+    legs: GrowableBuffer,
+    bent_count: u32,
+    /// Marks free glass in the surface picture (`shaders/free_glass.wgsl`) and its layout.
+    free_glass: wgpu::RenderPipeline,
+    free_glass_layout: wgpu::BindGroupLayout,
     /// The clean-up passes' uniforms: steps 1, 2, 4, and 0 (a plain copy).
     trace_uniforms: Vec<wgpu::Buffer>,
     sampler: wgpu::Sampler,
@@ -493,9 +515,11 @@ impl<'a> GlowInputs<'a> {
 
 impl Lighting {
     pub fn new(device: &wgpu::Device) -> Self {
+        // Glass and light part 3's photons share lighting.wgsl's bindings and helpers.
+        let source = [include_str!("shaders/lighting.wgsl"), include_str!("shaders/bent_light.wgsl")].concat();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("lighting shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/lighting.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
         });
         let tex = |binding, filterable| wgpu::BindGroupLayoutEntry {
             binding,
@@ -528,22 +552,25 @@ impl Lighting {
             },
             count: None,
         };
+        // What the photons of light bent by glass read (part 3) is seen by the compute stage too.
+        let all_stages = wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE;
+        let fragment_compute = wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE;
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("lighting layout"),
             entries: &[
-                uniform(0),
+                wgpu::BindGroupLayoutEntry { visibility: all_stages, ..uniform(0) },
                 tex(1, true),
                 tex(2, true),
-                tex(3, true),
-                tex(4, true),
+                wgpu::BindGroupLayoutEntry { visibility: fragment_compute, ..tex(3, true) },
+                wgpu::BindGroupLayoutEntry { visibility: fragment_compute, ..tex(4, true) },
                 wgpu::BindGroupLayoutEntry {
                     binding: 5,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: fragment_compute,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
-                wgpu::BindGroupLayoutEntry { visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ..storage(6) },
-                wgpu::BindGroupLayoutEntry { visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ..storage(7) },
+                wgpu::BindGroupLayoutEntry { visibility: all_stages, ..storage(6) },
+                wgpu::BindGroupLayoutEntry { visibility: all_stages, ..storage(7) },
                 tex(8, false),
                 storage(9),
             ],
@@ -605,7 +632,15 @@ impl Lighting {
         });
         let stage_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("lighting stage layout"),
-            entries: &[uniform(0), storage(1), storage(2), storage(3), storage(4), storage(5), tex(6, true)],
+            entries: &[
+                wgpu::BindGroupLayoutEntry { visibility: all_stages, ..uniform(0) },
+                wgpu::BindGroupLayoutEntry { visibility: fragment_compute, ..storage(1) },
+                storage(2),
+                storage(3),
+                storage(4),
+                storage(5),
+                tex(6, true),
+            ],
         });
         let stage_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("lighting pipeline layout (stage)"),
@@ -741,6 +776,119 @@ impl Lighting {
             multiview_mask: None,
             cache: None,
         });
+        // Light bent by glass (part 3): the photons (group 3: uniform, pairs, legs written) and the
+        // splat of their legs into the direct light and the light in the air (uniform, legs read).
+        let bent_buffer = |binding, visibility, ty| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility,
+            ty: wgpu::BindingType::Buffer { ty, has_dynamic_offset: false, min_binding_size: None },
+            count: None,
+        };
+        let read = wgpu::BufferBindingType::Storage { read_only: true };
+        let bent_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("bent light layout"),
+            entries: &[
+                bent_buffer(4, wgpu::ShaderStages::COMPUTE, wgpu::BufferBindingType::Uniform),
+                bent_buffer(5, wgpu::ShaderStages::COMPUTE, read),
+                bent_buffer(6, wgpu::ShaderStages::COMPUTE, wgpu::BufferBindingType::Storage { read_only: false }),
+            ],
+        });
+        let bent_draw_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("bent light splat layout"),
+            entries: &[
+                bent_buffer(4, wgpu::ShaderStages::VERTEX, wgpu::BufferBindingType::Uniform),
+                bent_buffer(7, wgpu::ShaderStages::VERTEX, read),
+            ],
+        });
+        let bent = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("bent light photons"),
+            layout: Some(&device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("bent light photons layout"),
+                bind_group_layouts: &[Some(&layout), Some(&empty_layout), Some(&stage_layout), Some(&bent_layout)],
+                immediate_size: 0,
+            })),
+            module: &shader,
+            entry_point: Some("cs_bent"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let bent_target = Some(wgpu::ColorTargetState {
+            format: HDR_FORMAT,
+            blend: Some(add_all),
+            write_mask: wgpu::ColorWrites::ALL,
+        });
+        let bent_splat = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("bent light"),
+            layout: Some(&device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("bent light splat layout"),
+                bind_group_layouts: &[Some(&layout), Some(&empty_layout), Some(&empty_layout), Some(&bent_draw_layout)],
+                immediate_size: 0,
+            })),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_bent"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_bent"),
+                targets: &[bent_target.clone(), bent_target],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, ..Default::default() },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let glass_tex = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let free_glass_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("free glass layout"),
+            entries: &[glass_tex(0), glass_tex(1)],
+        });
+        let glass_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("free glass"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/free_glass.wgsl").into()),
+        });
+        let free_glass = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("free glass"),
+            layout: Some(&device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("free glass layout"),
+                bind_group_layouts: &[Some(&free_glass_layout)],
+                immediate_size: 0,
+            })),
+            vertex: wgpu::VertexState {
+                module: &glass_shader,
+                entry_point: Some("vs_glass"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &glass_shader,
+                entry_point: Some("fs_glass"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: HDR_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("lighting sampler"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -824,6 +972,16 @@ impl Lighting {
             }),
             caustic_uniform: uniform_buffer(device, "caustics uniform", std::mem::size_of::<CausticUniform>()),
             glass: GrowableBuffer::storage("caustic glass"),
+            bent,
+            bent_splat,
+            bent_layout,
+            bent_draw_layout,
+            bent_uniform: uniform_buffer(device, "bent light uniform", std::mem::size_of::<BentUniform>()),
+            bent_pairs: GrowableBuffer::storage("bent light pairs"),
+            legs: GrowableBuffer::storage("bent light legs"),
+            bent_count: 0,
+            free_glass,
+            free_glass_layout,
             trace_uniforms: (0..4)
                 .map(|_| uniform_buffer(device, "bounce light uniform", std::mem::size_of::<Uniform>()))
                 .collect(),
@@ -851,6 +1009,12 @@ impl Lighting {
             memory: Memory::default(),
             bound: None,
         }
+    }
+
+    /// How many photons the last lit frame sent through glass that bends light (0 when it sent
+    /// none).
+    pub fn bent_photons(&self) -> u32 {
+        self.bent_count
     }
 
     /// The layouts of bind groups 0, 1 and 2 of the light passes (lighting part 5's camera pass
@@ -936,6 +1100,7 @@ impl Lighting {
             uv: texture(device, "glows under UV", full, HDR_FORMAT, true),
             tags: texture(device, "light tags", full, HDR_FORMAT, true),
             tint: None,
+            glass: None,
             extras: None,
             stir: None,
             traced: None,
@@ -965,6 +1130,7 @@ impl Lighting {
             3 => t.emission.clone(),
             5 => t.uv.clone(),
             8 => t.tint.clone()?,
+            9 => t.glass.as_ref()?[0].clone(),
             _ => t.tags.clone(),
         })
     }
@@ -973,6 +1139,18 @@ impl Lighting {
     pub fn make_tint(&mut self, device: &wgpu::Device) {
         if let Some(t) = self.targets.as_mut().filter(|t| t.tint.is_none()) {
             t.tint = Some(texture(device, "light tint", (t.width, t.height), HDR_FORMAT, true));
+        }
+    }
+
+    /// Makes the glass picture (light pass 9) and the surface picture's copy the first time they
+    /// are wanted (glass and light part 3).
+    pub fn make_glass(&mut self, device: &wgpu::Device) {
+        if let Some(t) = self.targets.as_mut().filter(|t| t.glass.is_none()) {
+            let size = (t.width, t.height);
+            t.glass = Some([
+                texture(device, "free glass", size, HDR_FORMAT, false),
+                texture(device, "surface under free glass", size, HDR_FORMAT, true),
+            ]);
         }
     }
 
@@ -1043,9 +1221,16 @@ impl Lighting {
         let traced = more_bounces && s.stage[0] > 0.5 && bounce_setting != 0.0 && s.bake[1] >= 1.0;
         let glass = if s.bake_more[2] != 0.0 && !scene.lights.is_empty() { caustic_glass(scene) } else { Vec::new() };
         let caustics_on = !glass.is_empty();
-        // The background-light picture carries the background's own light, the caustics and the
-        // traced bounce light to the pixels that light themselves (Stage, shiny surfaces).
-        let into_bg = background_glows || caustics_on || traced;
+        // Glass and light part 3: lamp light bent by glass shapes, liquid and bubbles (Glass
+        // caustics on, shadows not Off): photons for each (light, bender) pair.
+        let plan = bent_light::BentPlan::of(frame, scene);
+        let (pairs, per_pair, bent_run) = (&plan.pairs, plan.per, plan.run);
+        let bent_on = plan.on();
+        self.bent_count = per_pair * bent_run as u32;
+        // The background-light picture carries the background's own light, the caustics, the
+        // bent light and the traced bounce light to the pixels that light themselves (Stage,
+        // shiny surfaces).
+        let into_bg = background_glows || caustics_on || traced || bent_on;
         // A glossy floor mirrors the lit picture: the mix draws into a picture of its own.
         let reflects = s.stage[0] > 0.5 && s.floor[0] > 0.5 && s.floor[2] > 0.5;
         // Depth of field blurs the finished light: one more picture in the chain.
@@ -1088,6 +1273,8 @@ impl Lighting {
                 if s.glass_colour() { 1.0 } else { 0.0 },
                 if tinted { 1.0 } else { 0.0 },
             ],
+            bent: [if bent_on { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
+            bends: if bent_on { bent_light::bend_bits(&plan.benders) } else { [[0; 4]; 16] },
         };
         // The jump flood's steps: from half the field's size down to one, then one again.
         let mut jumps = Vec::new();
@@ -1415,6 +1602,26 @@ impl Lighting {
             pass.draw(0..3, 0..1);
         };
         let clear = wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT);
+        // Glass and light part 3: free glass (drawn by light pass 9) marked in the surface picture
+        // before anything reads it.
+        if plan.free_glass()
+            && let Some([glass, under]) = t.glass.as_ref()
+        {
+            encoder.copy_texture_to_texture(
+                t.surface.0.as_image_copy(),
+                under.0.as_image_copy(),
+                wgpu::Extent3d { width: t.width, height: t.height, depth_or_array_layers: 1 },
+            );
+            let g = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("free glass"),
+                layout: &self.free_glass_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&glass.1) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&under.1) },
+                ],
+            });
+            pass(encoder, &[(&t.surface.1, clear)], &self.free_glass, &[&g], "free glass");
+        }
         // The seed and field passes read the tint picture (glass and light part 1) in the picture's
         // place: clear coloured glass seeds the field too.
         let tint = t.tint.as_ref().filter(|_| tinted).map_or(&t.dummy_colour.1, |p| &p.1);
@@ -1467,8 +1674,76 @@ impl Lighting {
             p.set_bind_group(3, &group, &[]);
             p.draw(0..4, 0..total.min(u32::MAX as u64) as u32);
         }
-        let glows_in_direct = background_glows || caustics_on;
+        // Light bent by glass (part 3): the photons' ways, then their legs splatted into the direct
+        // light (over the background's own light and the caustics) and the light in the air.
+        if bent_on {
+            let photons = per_pair * bent_run as u32;
+            let turn = frame.bake.map_or(0.0, |b| (b.index as f32 * 0.618_034).fract());
+            let half_width = (3.0 * s.bent[1].max(0.0)).max(2.0) * world_pixel;
+            let bu = BentUniform {
+                counts: [per_pair as f32, bent_run as f32, (16 * steps).max(1024) as f32, 0.0],
+                more: [world_pixel, turn, half_width, s.bake_more[2]],
+            };
+            queue.write_buffer(&self.bent_uniform, 0, bytemuck::bytes_of(&bu));
+            self.bent_pairs.upload(device, queue, bytemuck::cast_slice(&pairs[..bent_run]));
+            let leg_count = photons as u64 * BENT_LEGS as u64;
+            self.legs.reserve(device, leg_count * std::mem::size_of::<Leg>() as u64);
+            let ways = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("bent light photons"),
+                layout: &self.bent_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 4, resource: self.bent_uniform.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 5, resource: buffer(&self.bent_pairs) },
+                    wgpu::BindGroupEntry { binding: 6, resource: buffer(&self.legs) },
+                ],
+            });
+            {
+                let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("bent light photons"),
+                    timestamp_writes: None,
+                });
+                cp.set_pipeline(&self.bent);
+                cp.set_bind_group(0, &main, &[]);
+                cp.set_bind_group(1, &self.empty_group, &[]);
+                cp.set_bind_group(2, &stage_group, &[]);
+                cp.set_bind_group(3, &ways, &[]);
+                cp.dispatch_workgroups(photons.div_ceil(64), 1, 1);
+            }
+            let splat = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("bent light splat"),
+                layout: &self.bent_draw_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 4, resource: self.bent_uniform.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 7, resource: buffer(&self.legs) },
+                ],
+            });
+            let load = if background_glows || caustics_on { wgpu::LoadOp::Load } else { clear };
+            let attachments = [(&t.direct.1, load), (&t.air.1, clear)].map(|(view, load)| {
+                Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
+                })
+            });
+            let mut p = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("bent light"),
+                color_attachments: &attachments,
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            p.set_pipeline(&self.bent_splat);
+            p.set_bind_group(0, &main, &[]);
+            p.set_bind_group(1, &self.empty_group, &[]);
+            p.set_bind_group(2, &self.empty_group, &[]);
+            p.set_bind_group(3, &splat, &[]);
+            p.draw(0..4, 0..leg_count.min(u32::MAX as u64) as u32);
+        }
+        let glows_in_direct = background_glows || caustics_on || bent_on;
         let direct_load = if glows_in_direct { wgpu::LoadOp::Load } else { clear };
+        let air_load = if bent_on { wgpu::LoadOp::Load } else { clear };
         if let Some((bg, bg_v)) = t.bg_glow.as_ref().filter(|_| into_bg) {
             // Kept apart for the stage and shiny surfaces, which light a pixel themselves.
             if glows_in_direct {
@@ -1483,7 +1758,7 @@ impl Lighting {
         }
         let g =
             group_in(&self.direct_layout, DIRECT_BINDINGS, &base_glow, &GlowInputs { direct: none, air: none, ..all });
-        pass(encoder, &[(&t.direct.1, direct_load), (&t.air.1, clear)], &self.direct, &[&main, &g], "direct light");
+        pass(encoder, &[(&t.direct.1, direct_load), (&t.air.1, air_load)], &self.direct, &[&main, &g], "direct light");
 
         // The light field, once or twice (the second time the first's light bounces too).
         if let Some(cascades) = t.cascades.as_ref().filter(|_| field_on) {
