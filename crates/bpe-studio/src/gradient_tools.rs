@@ -109,6 +109,19 @@ pub fn random_colours(stops: usize, seed: u32) -> Vec<Color> {
     palette_gen::palette(&mut dice, stops)
 }
 
+/// How many seeds after the first [`rerolled`] tries before giving up.
+const REROLLS: u32 = 16;
+
+/// `g` with new colours from `seed`, trying the seeds after it while the colours would come out
+/// the same as `g`'s own (the Rainbow palette over three looped stops is exactly red, green and
+/// blue), so Random always changes something it can.
+pub fn rerolled(g: &Gradient, seed: u32) -> Gradient {
+    (0..=REROLLS)
+        .map(|k| recoloured(g, &random_colours(g.stops.len(), seed.wrapping_add(k))))
+        .find(|next| next != g)
+        .unwrap_or_else(|| g.clone())
+}
+
 /// Adds a colour halfway along stop `selected`'s gap (or the gap before it when it has none),
 /// coloured as the gradient is there and blending as the gap it splits. A one-stop gradient gets
 /// white at the other end, mixing Even like the bar's "+". Gives the new stop's index.
@@ -170,8 +183,7 @@ pub fn tools(ui: &mut Ui, g: &mut Gradient, memory: egui::Id, name: &str) -> Too
         }
         let help = "New colours that go together, keeping where each colour sits and how it blends";
         if tool(ui, "Random", false, format!("{name} random"), help) {
-            let colours = random_colours(g.stops.len(), palette_gen::fresh_seed());
-            let next = recoloured(g, &colours);
+            let next = rerolled(g, palette_gen::fresh_seed());
             out.changed |= next != *g;
             *g = next;
         }
@@ -349,6 +361,18 @@ mod tests {
             assert_eq!(a.color.a, b.color.a, "opacity kept");
         }
         assert_eq!((r.mix, r.looped), (Mix::Plain, true));
+    }
+
+    #[test]
+    fn random_never_gives_back_the_colours_it_had() {
+        // Red, green and blue round a loop: what the Rainbow palette gives three looped stops.
+        let g = Gradient::spread(&[RED, GREEN, BLUE], Mix::Even, true);
+        let same = (0..5000).find(|&seed| recoloured(&g, &random_colours(3, seed)) == g);
+        let seed = same.expect("some seed rolls the Rainbow");
+        let r = rerolled(&g, seed);
+        assert_ne!(r.stops, g.stops, "seed {seed} rolled again");
+        assert_eq!(r.stops.iter().map(|s| s.at).collect::<Vec<_>>(), g.stops.iter().map(|s| s.at).collect::<Vec<_>>());
+        assert_eq!(rerolled(&g, 7), recoloured(&g, &random_colours(3, 7)), "a seed that changes it is kept");
     }
 
     #[test]
