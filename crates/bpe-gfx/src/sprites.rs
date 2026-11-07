@@ -94,22 +94,22 @@ impl Sprites {
         }
     }
 
-    /// Draws the `count` particles uploaded into `buffer`; the globals must be bound at group 0
-    /// (a layer's own, naming its blend, when its things blend with each other by `each`, for
-    /// which [`Sprites::ensure_each`] made the pipeline).
-    pub(crate) fn draw(
+    /// Draws the particles `range` of those uploaded into `buffer`; the globals must be bound at
+    /// group 0 (a layer's own, naming its blend, when its things blend with each other by `each`,
+    /// for which [`Sprites::ensure_each`] made the pipeline).
+    pub(crate) fn draw_range(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         buffer: &GrowableBuffer,
-        count: u32,
+        range: std::ops::Range<u32>,
         each: Option<Blend>,
     ) {
-        if count == 0 {
+        if range.is_empty() {
             return;
         }
         let pipeline = each.and_then(|b| self.each.get(&b.shader_code())).unwrap_or(&self.pipeline);
         pass.set_pipeline(pipeline);
         pass.set_vertex_buffer(0, buffer.slice());
-        pass.draw(0..4, 0..count);
+        pass.draw(0..4, range);
     }
 }

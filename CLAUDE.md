@@ -456,8 +456,10 @@ to the ambient wind, balls stir, heat lifts, vorticity confinement, semi-Lagrang
 moving with their wall, 20 Jacobi pressure iterations; rows split in fixed bands on threads past `THREADED_CELLS`,
 the same for any thread count. One `Air` per world in `World.states[ThingId::ROOT]` (`air_of`, `take_air`/`put_air`):
 the scene sim puts a sleeping one there with an Air card and re-reads it on Air keys; a Particles thing that follows
-or heats it (or any, with a card) wakes it in `after_build`, and before each particle step `step::catch_up` brings it
-to that step (`Air::catch_up_to`), so every thing reads the same air; heat (`step::put_heat`) goes in after.
+or heats it (or any, with a card) wakes it in `after_build` (a late wake starts still at that step); the first
+Particles thing due a step takes every Particles thing's steps together, one particle step at a time: the air to
+that step (`Air::catch_up_to`), each thing's `step::step_in`, then its heat (`step::put_heat`), so at any Physics
+rate every thing reads the same air. Air keys following sound or light reach only `beside_fingerprint`.
 Off the grid the air is the ambient wind. Forces: **Follow the air** (`force.air`, Grip), Rise's **Heats the air**,
 Wind's **Gust waves** (0 = part 1's maths). `world::BESIDE_SLOTS` (`[Air]`): Air keys are animated, left out of
 the physics fingerprint and hashed by `beside_fingerprint` (an Air edit restarts only the particle playback).
@@ -466,6 +468,25 @@ layer of `force.air`). Editor: the toolbar's **Air** toggle (`Studio.show_air`, 
 `preview/air_view.rs` arrows from the particle job's snapshot (which carries the ROOT air). Looks Dust clouds,
 Thick fog; Sandstorm with gust waves and a haze layer. Goldens gain "Dust in the air", "Smoke heating the air",
 "Sandstorm". What part 8 needs is listed in the plan.
+
+Part 5 is in (plan `part5.md`): **looks 1**, drawing only. New `look.particles` layer kinds: **Soft smoke**
+(`particles.smoke`) and **Flame** (`particles.flame`) are soft **fields**: `bpe_gfx::Field { at, splats, look }` in
+`Frame.fields`/`fields_front` (`Splat`, `FieldLook`: mode `FIELD_SMOKE`/`FIELD_FLAME`, adds, amount, strength, detail,
+shade, light/emit/extra, 32 baked heat stops), splatted additively into a half-size Rgba16Float picture each right before
+the pass that draws its list, then shaded by a full-screen triangle where `at` puts it among the list's sprites
+(`bpe-gfx/src/fields.rs`, `shaders/fields.wgsl` pasted after sprites.wgsl + each.wgsl; `Renderer::draw_sprites` splits
+the sprite runs, `Sprites::draw_range`; `cull` keeps `at` between the same kept sprites). Smoke: density × Thickness ×
+drifting fbm detail, cover 1 − e^(−d), shaded by the slope against Light from, Dark inside; Flame: read through rising noise
+(Bend), heat × detail × flicker → Heat colours, tinted by the layer's Colours. A field layer's Shadow/Glow/Outline subs
+draw per particle (as Smoke sprites, own sprites dropped; `Pieces::into_frame_with_field`). **More shapes**
+(`particles.shapes`, `MoreShape`: sprite codes 10 leaf, 11 petal, 12 flake, 13 needle, 14 bird, 15 fish in sprites.wgsl,
+`Particle.shape[1]` the pose; Pixels are Confetti boxes snapped to Pixel grid; Point along Own turn / Way it goes),
+**Glitter** (`particles.glitter`: code 16 diamond facets, `draw::glint`, a Stars flash), **Web lines** (`particles.web`,
+`things/particles/web.rs`: `links` nearest within Reach, each pair once, `ball_links`; lines are Streaks capsules), and
+every layer's **Fine detail** fold (`copies`, `copy_spread`, `copy_size`, `copy_opacity`, `copy_shimmer`; `FineDetail` in
+`Common`, `draw::copy_offset`). Looks: Glitter, Web of light, Pixel glitch added; Fire on a ball (Flame + embers), Rainbow
+smoke trail, Ink in water (Soft smoke) and Blossom petals (Petals) upgraded. `tests/particle_pictures.rs`,
+`bpe-gfx/src/fields_tests.rs`.
 
 ## Crate map
 

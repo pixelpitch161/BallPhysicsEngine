@@ -23,6 +23,7 @@ pub mod state;
 pub mod step;
 #[cfg(test)]
 mod tests;
+pub mod web;
 
 use bpe_core::{Choice, SettingDef, Settings, SlotId, Target, ThingKind};
 use glam::Vec2;
