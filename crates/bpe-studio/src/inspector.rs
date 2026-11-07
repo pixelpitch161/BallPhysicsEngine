@@ -215,6 +215,11 @@ pub(crate) enum Edit {
     LayerOnly(SlotId, LayerId, Vec<u32>),
     /// A new drawn layer that only these balls of the group wear.
     AddLayerFor(SlotId, &'static str, Vec<u32>),
+    /// A font file the scene keeps, under the name given (or the next free one like it), which
+    /// every selected Text is then set in.
+    LoadFont(String, std::sync::Arc<[u8]>),
+    /// The scene forgets its font of this name.
+    RemoveFont(String),
 }
 
 /// Whether `a` is a part of a vary (its To, spread or easing) on a setting that doesn't vary
@@ -279,6 +284,10 @@ pub fn show(
     let selected = selection.all(scene);
     let choices = TargetChoices::from_scene(scene, reg);
     let mut edits = Vec::new();
+    if thing.kind == bpe_kit::things::text::KIND {
+        // The Font picker draws each name in its own font.
+        style::ensure_text_fonts(ui.ctx(), scene);
+    }
 
     // A shape's (or a Particles thing's) settings or its sound.
     if sounds(&thing.kind) {
@@ -412,7 +421,11 @@ pub fn show(
             card(ui, |ui| {
                 // The kind's name alone: "Balls", "Folder". A shape's outline is under its Look's
                 // Body, so its own card holds the rest.
-                let title = if kind.id() == SHAPE { "Shape settings".to_owned() } else { kind.name().to_owned() };
+                let title = match kind.id() {
+                    SHAPE => "Shape settings".to_owned(),
+                    bpe_kit::things::text::KIND => "Words".to_owned(),
+                    _ => kind.name().to_owned(),
+                };
                 let header = ui.horizontal_wrapped(|ui| {
                     let open = fold_arrow(ui, &mut inspector.collapsed, Card::Thing.fold_key(id), &title);
                     ui.label(RichText::new(&title).font(style::semibold(13.0)));
@@ -668,6 +681,21 @@ pub fn show(
         ui.ctx().request_repaint();
     }
 
+    // Load font and Remove in the Font picker change the scene.
+    match crate::font_picker::take_request(ui.ctx()) {
+        Some(crate::font_picker::FontRequest::Load(bytes, stem)) => {
+            if bpe_kit::text::fonts::is_font(&bytes) {
+                let name = bpe_kit::text::fonts::family_name(&bytes).unwrap_or(stem);
+                crate::font_picker::set_note(ui.ctx(), None);
+                edits.push(Edit::LoadFont(name, bytes.into()));
+            } else {
+                crate::font_picker::set_note(ui.ctx(), Some(crate::font_picker::NOT_A_FONT));
+            }
+        }
+        Some(crate::font_picker::FontRequest::Remove(name)) => edits.push(Edit::RemoveFont(name)),
+        None => {}
+    }
+
     let mut changed = false;
     for edit in edits {
         changed |= match edit {
@@ -697,6 +725,21 @@ pub fn show(
                 }
                 any
             }
+            Edit::LoadFont(name, bytes) => {
+                let name = scene.add_font(&name, bytes);
+                for t in reached(scene, &selected, id, None) {
+                    set_or_key(
+                        scene,
+                        reg,
+                        &Address::own(t, "font"),
+                        Value::Text(name.clone()),
+                        time,
+                        &mut inspector.keyed_edit,
+                    );
+                }
+                true
+            }
+            Edit::RemoveFont(name) => scene.remove_font(&name),
             Edit::SetOwnHere(key, value) => {
                 set_or_key(scene, reg, &Address::own(id, &key), value, time, &mut inspector.keyed_edit)
             }
@@ -2919,5 +2962,111 @@ mod tests {
             let slots = &s.scene.things[&t].slots;
             assert!(slots.contains_key(&SlotId::Motion) && slots.contains_key(&SlotId::Bounce), "{t:?}");
         }
+    }
+
+    /// A blank scene with one Text, selected.
+    fn text_harness() -> (Harness<'static, State>, ThingId) {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        let id = bpe_kit::add_thing(&mut scene, &reg, bpe_kit::things::text::KIND, ThingId::ROOT).unwrap();
+        (harness_of(scene, Some(id)), id)
+    }
+
+    fn text_settings(h: &Harness<'_, State>, id: ThingId) -> bpe_kit::things::text::TextSettings {
+        bpe_kit::things::text::TextSettings::from_params(&h.state().scene.things[&id].params)
+    }
+
+    fn font_file(name: &str) -> Vec<u8> {
+        std::fs::read(bpe_kit::text::fonts::repo_fonts_dir().join(name)).unwrap()
+    }
+
+    #[test]
+    fn typing_in_the_words_box_changes_the_words() {
+        let (mut h, id) = text_harness();
+        let words = h.get_by_role_and_label(Role::MultilineTextInput, "Words");
+        words.click();
+        h.run();
+        h.get_by_role_and_label(Role::MultilineTextInput, "Words").type_text("HELLO\nWORLD");
+        h.run();
+        assert!(text_settings(&h, id).words.ends_with("HELLO\nWORLD"), "{:?}", text_settings(&h, id).words);
+    }
+
+    #[test]
+    fn the_font_picker_lists_every_group_and_picks_a_font() {
+        let (mut h, id) = text_harness();
+        h.get_by_role_and_label(Role::Button, "Font").click();
+        h.run();
+        for group in bpe_kit::text::fonts::FontGroup::ALL {
+            assert!(h.query_all_by_label(group.name()).next().is_some(), "{}", group.name());
+        }
+        assert!(h.query_all_by_label("Bebas Neue").next().is_some());
+        let antons = h.query_all_by_label("Anton").count();
+        h.get_by_label("Search fonts").click();
+        h.run();
+        h.get_by_label("Search fonts").type_text("beb");
+        h.run();
+        assert_eq!(h.query_all_by_label("Anton").count(), antons - 1, "Anton is hidden");
+        h.get_by_role_and_label(Role::Button, "Bebas Neue").click();
+        h.run();
+        assert_eq!(text_settings(&h, id).font, "Bebas Neue");
+    }
+
+    #[test]
+    fn load_font_adds_it_to_the_scene_and_uses_it() {
+        let (mut h, id) = text_harness();
+        let ctx = h.ctx.clone();
+        let bytes = font_file("BebasNeue.ttf");
+        crate::font_picker::request(&ctx, crate::font_picker::FontRequest::Load(bytes, "file".into()));
+        // One frame (one undo step) both keeps the font and sets the text in it.
+        h.step();
+        assert!(h.state().scene.fonts.contains_key("Bebas Neue"), "named by its family");
+        assert_eq!(text_settings(&h, id).font, "Bebas Neue");
+        h.run();
+        // Loaded fonts head the picker, each with Remove.
+        h.get_by_role_and_label(Role::Button, "Font").click();
+        h.run();
+        assert!(h.query_by_label("Loaded").is_some());
+        h.get_by_label("Remove Bebas Neue").click();
+        h.run();
+        assert!(h.state().scene.fonts.is_empty());
+    }
+
+    #[test]
+    fn load_font_refuses_a_file_that_is_not_a_font() {
+        let (mut h, _) = text_harness();
+        let before = h.state().scene.clone();
+        let ctx = h.ctx.clone();
+        crate::font_picker::request(&ctx, crate::font_picker::FontRequest::Load(b"not a font".to_vec(), "x".into()));
+        h.run();
+        assert_eq!(h.state().scene, before, "the scene is unchanged");
+        assert!(h.query_by_label(crate::font_picker::NOT_A_FONT).is_some());
+        let ctx = h.ctx.clone();
+        crate::font_picker::request(&ctx, crate::font_picker::FontRequest::Load(Vec::new(), "empty".into()));
+        h.run();
+        assert_eq!(h.state().scene, before, "nor an empty file");
+    }
+
+    #[test]
+    fn a_missing_font_says_so_on_the_row() {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        let id = bpe_kit::add_thing(&mut scene, &reg, bpe_kit::things::text::KIND, ThingId::ROOT).unwrap();
+        scene.things.get_mut(&id).unwrap().params.set("font", Value::Text("Nope".into()));
+        let h = harness_of(scene, Some(id));
+        assert!(h.query_by_label("Font \"Nope\" not found; showing IBM Plex Sans instead").is_some());
+    }
+
+    #[test]
+    fn the_body_of_a_text_points_at_the_words_card() {
+        let (h, _) = text_harness();
+        assert!(h.query_by_label("The words, font and path are in the Words card above.").is_some());
+        assert!(h.query_all_by_label("Drag corners and sides in the video to mould it.").next().is_none());
+    }
+
+    #[test]
+    fn a_text_cannot_add_a_particles_layer() {
+        let (h, _) = text_harness();
+        assert!(h.query_all_by_label("+ Add particles").next().is_none());
+        assert!(h.query_all_by_label("+ Add layer").next().is_some(), "but paint layers, yes");
     }
 }

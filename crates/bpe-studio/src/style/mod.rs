@@ -10,7 +10,7 @@ mod tokens;
 mod track;
 
 pub use controls::*;
-pub use fonts::{medium, mono, semibold};
+pub use fonts::{ensure_text_fonts, family_ready, medium, mono, semibold, text_family};
 // The knob's rings, response and plain form are for the sound parts after this one.
 #[allow(unused_imports)]
 pub use knob::{Knob, KnobResponse, ModRing, RingDrag, knob, wheel_notches};

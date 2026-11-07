@@ -21,8 +21,14 @@ pub enum Look {
 }
 
 /// The looks the Add thing menu lists under Looks, in order.
-pub const LOOKS: [Look; 6] =
-    [Look::HookTitle, Look::SpinningRing, Look::NeonSign, Look::GlassLetters, Look::ShadowLettering, Look::FlowingGradient];
+pub const LOOKS: [Look; 6] = [
+    Look::HookTitle,
+    Look::SpinningRing,
+    Look::NeonSign,
+    Look::GlassLetters,
+    Look::ShadowLettering,
+    Look::FlowingGradient,
+];
 
 impl Look {
     pub fn name(self) -> &'static str {

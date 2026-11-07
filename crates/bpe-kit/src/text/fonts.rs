@@ -271,6 +271,23 @@ pub fn find(scene_fonts: &BTreeMap<String, SceneFont>, name: &str, weight: f32) 
     find_in(fonts_dir().as_deref(), scene_fonts, name, weight)
 }
 
+/// What the Font row says about the font `name` without reading it: `None` when it is one the
+/// scene keeps (`in_scene`) or a built-in whose file is in the fonts folder, else why the text
+/// shows in the fallback.
+pub fn problem_of(in_scene: bool, name: &str) -> Option<String> {
+    if in_scene {
+        return None;
+    }
+    let missing_file = match built_in(name) {
+        Some(b) => !fonts_dir().is_some_and(|d| d.join(b.file_for(400.0)).is_file()),
+        None => false,
+    };
+    if built_in(name).is_some() && !missing_file {
+        return None;
+    }
+    Found::Fallback { wanted: name.to_string(), font: fallback(), missing_file }.problem()
+}
+
 /// A built-in font's file, read once for the process.
 fn file_font(name: &str, path: &Path) -> Option<Arc<FontData>> {
     static FILES: OnceLock<Mutex<HashMap<PathBuf, Option<Arc<FontData>>>>> = OnceLock::new();
@@ -433,5 +450,15 @@ mod tests {
         assert!(!is_font(b"hello"));
         assert!(!is_font(&[]));
         assert!(!is_font(&anton[..100]), "a cut-off file");
+    }
+
+    #[test]
+    fn the_font_row_problem() {
+        assert_eq!(problem_of(false, "Anton"), None, "the repository's folder has it");
+        assert_eq!(problem_of(true, "Nope"), None, "a font the scene keeps");
+        assert_eq!(
+            problem_of(false, "Nope").as_deref(),
+            Some("Font \"Nope\" not found; showing IBM Plex Sans instead")
+        );
     }
 }

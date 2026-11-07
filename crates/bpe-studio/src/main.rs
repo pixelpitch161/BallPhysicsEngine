@@ -11,6 +11,7 @@ mod export_window;
 mod eyedropper;
 mod final_frame;
 mod follow;
+mod font_picker;
 mod gradient_bar;
 mod gradient_editor;
 mod gradient_form_chips;
