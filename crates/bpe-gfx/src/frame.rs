@@ -205,6 +205,18 @@ impl LayerGpu {
     /// This ball doesn't wear the layer (odd ones out): it is passed over as if it weren't in
     /// the stack, though it keeps its place so record indices hold.
     pub const UNWORN: u32 = 16;
+    /// Glass and light part 1: `head[2]` carries the thing's (or a layer's own Surface's) Tints
+    /// light in bits 16..23 and Deeper when thick in bits 24..31, each in 64ths (see
+    /// [`LayerGpu::tint_bits`]); the flags above stay in the low bits.
+    pub const TINT_SHIFT: u32 = 16;
+    pub const DEEPER_SHIFT: u32 = 24;
+    pub const TINT_BITS: u32 = 0xffff_0000;
+
+    /// Tints light and Deeper when thick packed for `head[2]`: each rounded to 64ths, 0 to 255.
+    pub fn tint_bits(tints: f32, deeper: f32) -> u32 {
+        let pack = |v: f32| if v.is_finite() { (v * 64.0).round().clamp(0.0, 255.0) as u32 } else { 0 };
+        (pack(tints) << Self::TINT_SHIFT) | (pack(deeper) << Self::DEEPER_SHIFT)
+    }
 }
 
 /// The most layers one ball is drawn with; the rest of a longer stack is left out.
@@ -1056,7 +1068,8 @@ pub struct LightingGpu {
     pub ambient: [f32; 4],
     /// Shadow style (0 soft, 1 hard, 2 toon, 3 off), softness, length, contact shading.
     pub shadows: [f32; 4],
-    /// Contact reach, toon steps, quality (0 draft .. 3 ultra), spare.
+    /// Contact reach, toon steps, quality (0 draft .. 3 ultra), 1 when light through see-through
+    /// things takes their colour (Coloured light through glass, glass and light part 1).
     pub more: [f32; 4],
     /// Bounce light, glow reach (world units), Light blooms, spare.
     pub glow: [f32; 4],
@@ -1160,9 +1173,11 @@ pub struct MirrorGpu {
 pub struct SphereGpu {
     /// Centre xy (world, on the picture plane), radius, see-through.
     pub a: [f32; 4],
-    /// The colour of the light it lets through (linear rgb); w spare.
+    /// The colour of the light it lets through (linear rgb), and its Deeper when thick (glass and
+    /// light part 1).
     pub b: [f32; 4],
-    /// Its surface index (part 2b: what a reflection of it takes light as), 0, 0, 0.
+    /// Its surface index (part 2b: what a reflection of it takes light as), its Tints light (glass
+    /// and light part 1), 0, 0.
     pub c: [f32; 4],
 }
 
@@ -1170,6 +1185,11 @@ impl LightingGpu {
     /// Whether the background gives off any light.
     pub fn background_glows(&self) -> bool {
         self.background.iter().any(|e| e[..3].iter().any(|c| *c != 0.0))
+    }
+
+    /// Whether light through see-through things takes their colour (Coloured light through glass).
+    pub fn glass_colour(&self) -> bool {
+        self.more[3] > 0.5
     }
 
     /// Whether the haze moves (drifts or swirls): the extras pass then works out its density.
@@ -1234,6 +1254,13 @@ impl LightScene {
     /// Whether the frame needs its tags picture (smoke, Lights up): drawn in light pass 6.
     pub fn needs_tags(&self) -> bool {
         self.smoke || self.lights.iter().any(|l| l.p10[0] > 0.5)
+    }
+
+    /// Whether `frame` is drawn once more as the tint picture (light pass 8, glass and light part
+    /// 1): light through see-through things takes their colour, something lights the scene and
+    /// something drawn is see-through.
+    pub fn needs_tint(&self, frame: &Frame) -> bool {
+        self.settings.glass_colour() && (!self.lights.is_empty() || self.glows) && frame.see_through_blockers()
     }
 
     /// Whether the frame needs its UV picture: drawn in light pass 5.
@@ -1680,6 +1707,22 @@ impl Frame {
             || self.particles.iter().chain(&self.particles_front).any(|p| on(&p.emit))
             || self.layers.iter().any(|l| l.frame.gives_light())
             || self.overlay.as_deref().is_some_and(Frame::gives_light)
+    }
+
+    /// Whether anything it (or a layer or its overlay) draws blocks light but lets some through
+    /// (glass and light part 1): a record that blocks light at less than 1 or with an opacity
+    /// under 1, a layered ball at an opacity under 1, or any trail, particle or field that blocks
+    /// light (their soft edges let light through). Only then is the tint picture drawn. It may
+    /// answer yes for a frame whose see-through parts end up hidden: that costs only the pass.
+    pub fn see_through_blockers(&self) -> bool {
+        let part = |b: f32| b > 0.0 && b < 1.0;
+        self.look_layers.iter().any(|r| part(r.light[1]) || (r.light[1] > 0.0 && r.amount[0] < 1.0))
+            || self.layered.iter().any(|l| l.misc[0] < 1.0)
+            || self.trails.iter().chain(&self.trails_front).any(|v| v.light[1] > 0.0)
+            || self.particles.iter().chain(&self.particles_front).any(|p| p.light[1] > 0.0)
+            || self.fields.iter().chain(&self.fields_front).any(|f| f.look.light[1] > 0.0)
+            || self.layers.iter().any(|l| l.frame.see_through_blockers())
+            || self.overlay.as_deref().is_some_and(Frame::see_through_blockers)
     }
 
     /// Whether none of the lists the picture is drawn from has anything in them.
@@ -2832,5 +2875,73 @@ mod tests {
         assert_eq!(blend_alpha([1.0, 0.0, 0.0, 0.0]), [1.0, 0.0, 0.0, -1.0]);
         assert_eq!(blend_alpha([0.0, 0.0, 0.0, 0.0]), [0.0; 4]);
         assert_eq!(blend_alpha([0.2, 0.0, 0.0, 1.0]), [0.2, 0.0, 0.0, 1.0]);
+    }
+}
+
+#[cfg(test)]
+mod tint_tests {
+    use super::*;
+
+    #[test]
+    fn tint_bits_pack_into_the_high_bits() {
+        assert_eq!(LayerGpu::tint_bits(1.0, 0.5), (64 << 16) | (32 << 24));
+        assert_eq!(LayerGpu::tint_bits(-1.0, 9.0), 255 << 24);
+        assert_eq!(LayerGpu::tint_bits(f32::NAN, 0.0), 0);
+        for (t, d) in [(1.0, 0.0), (0.3, 0.7), (3.0, 3.0)] {
+            assert_eq!(LayerGpu::tint_bits(t, d) & !LayerGpu::TINT_BITS, 0, "the flags' bits stay free");
+        }
+    }
+
+    fn record(blocks: f32, opacity: f32) -> LayerGpu {
+        let mut r = LayerGpu::ZERO;
+        r.light[1] = blocks;
+        r.amount[0] = opacity;
+        r
+    }
+
+    #[test]
+    fn only_see_through_blockers_ask_for_the_tint_picture() {
+        let mut frame = Frame::default();
+        assert!(!frame.see_through_blockers());
+        frame.look_layers.push(record(1.0, 1.0));
+        frame.look_layers.push(record(0.0, 0.3));
+        assert!(!frame.see_through_blockers(), "solid, or not blocking at all");
+        frame.look_layers.push(record(0.5, 1.0));
+        assert!(frame.see_through_blockers());
+        frame.look_layers.clear();
+        frame.look_layers.push(record(1.0, 0.5));
+        assert!(frame.see_through_blockers(), "a solid record at half opacity");
+        let mut trails = Frame::default();
+        trails.trails.push(TrailVertex { light: [1.0, 0.0], ..Default::default() });
+        assert!(!trails.see_through_blockers(), "a trail that blocks no light");
+        trails.trails.push(TrailVertex { light: [1.0, 1.0], ..Default::default() });
+        assert!(trails.see_through_blockers());
+        let mut layered = Frame::default();
+        let mut inner = Frame::default();
+        inner.particles.push(Particle { light: [1.0, 1.0, 0.0, 0.0], ..Default::default() });
+        layered.layers.push(BlendLayer {
+            blend: bpe_core::Blend::Add,
+            amount: 1.0,
+            each: false,
+            z: 0,
+            place: Place::Front,
+            frame: inner,
+        });
+        assert!(layered.see_through_blockers(), "a blend layer's particle");
+    }
+
+    #[test]
+    fn the_tint_pass_needs_glass_colour_a_light_and_something_see_through() {
+        let mut frame = Frame::default();
+        frame.look_layers.push(LayerGpu { light: [1.0, 0.5, 0.0, 0.0], ..LayerGpu::ZERO });
+        let mut scene = LightScene::default();
+        scene.settings.more[3] = 1.0;
+        assert!(!scene.needs_tint(&frame), "no light");
+        scene.lights.push(LightGpu::default());
+        assert!(scene.needs_tint(&frame));
+        scene.settings.more[3] = 0.0;
+        assert!(!scene.needs_tint(&frame), "Coloured light through glass off");
+        scene.settings.more[3] = 1.0;
+        assert!(!scene.needs_tint(&Frame::default()), "nothing see-through");
     }
 }

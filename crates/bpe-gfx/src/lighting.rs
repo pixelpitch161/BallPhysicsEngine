@@ -25,9 +25,9 @@ const GLOW_LEVELS: u32 = 4;
 
 const SEED_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 const FIELD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
-// The blockers' field: the signed distance and how much the nearest blocker blocks (see-through
-// blockers, lighting.wgsl's `fs_field`).
-const BLOCKER_FIELD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
+// The blockers' field: the signed distance and how much the nearest blocker blocks of each
+// channel (see-through and coloured blockers, lighting.wgsl's `fs_field`).
+const BLOCKER_FIELD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// The most jump flood passes: enough for a field 2^15 texels across.
 const MOST_JUMPS: usize = 16;
 
@@ -43,7 +43,8 @@ struct Uniform {
     field: [f32; 4],
     /// Lighting part 3: this sample's index, how many, 1 when baking, light bounces.
     sample: [f32; 4],
-    /// The bake's traced bounce: Bounce light, 1 on a Stage (see `fs_seed`), two spare.
+    /// The bake's traced bounce: Bounce light, 1 on a Stage (see `fs_seed`), 1 when light through
+    /// glass takes its colour, 1 when the tint picture was drawn (glass and light part 1).
     trace: [f32; 4],
 }
 
@@ -333,6 +334,9 @@ struct Targets {
     /// numbers), full size.
     uv: (wgpu::Texture, wgpu::TextureView),
     tags: (wgpu::Texture, wgpu::TextureView),
+    /// Glass and light part 1: the tint picture (light pass 8, how deep each see-through thing's
+    /// colour is), full size, made the first time it is drawn.
+    tint: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// The extras pictures (the memory and the haze's density, field size, two to keep the last
     /// frame's memory) and the balls' stirring, made the first time they are drawn.
     extras: Option<[(wgpu::Texture, wgpu::TextureView); 2]>,
@@ -877,6 +881,7 @@ impl Lighting {
             dummy_colour: texture(device, "lighting stand-in", (1, 1), GI_FORMAT, false),
             uv: texture(device, "glows under UV", full, HDR_FORMAT, true),
             tags: texture(device, "light tags", full, HDR_FORMAT, true),
+            tint: None,
             extras: None,
             stir: None,
             traced: None,
@@ -896,7 +901,8 @@ impl Lighting {
     }
 
     /// The picture light pass `mode` draws into (1 lit colour, 2 surface, 3 emission, 5 what
-    /// glows under UV, 6 the tags), made by [`Lighting::ensure`].
+    /// glows under UV, 6 the tags, made by [`Lighting::ensure`]; 8 the tint picture, made by
+    /// [`Lighting::make_tint`]).
     pub fn picture(&self, mode: u32) -> Option<(wgpu::Texture, wgpu::TextureView)> {
         let t = self.targets.as_ref()?;
         Some(match mode {
@@ -904,8 +910,16 @@ impl Lighting {
             2 => t.surface.clone(),
             3 => t.emission.clone(),
             5 => t.uv.clone(),
+            8 => t.tint.clone()?,
             _ => t.tags.clone(),
         })
+    }
+
+    /// Makes the tint picture (light pass 8) the first time it is wanted.
+    pub fn make_tint(&mut self, device: &wgpu::Device) {
+        if let Some(t) = self.targets.as_mut().filter(|t| t.tint.is_none()) {
+            t.tint = Some(texture(device, "light tint", (t.width, t.height), HDR_FORMAT, true));
+        }
     }
 
     /// Whether the remembered light (glow in the dark) started again from nothing at a moment
@@ -947,7 +961,8 @@ impl Lighting {
     }
 
     /// Lights `frame` (whose things are in `picture`, a copy of the HDR picture) into `out`.
-    /// `background_glows`: the background's own light was drawn into the direct light picture.
+    /// `background_glows`: the background's own light was drawn into the direct light picture;
+    /// `tinted`: the tint picture was drawn (light pass 8).
     #[allow(clippy::too_many_arguments)]
     pub fn run(
         &mut self,
@@ -960,6 +975,7 @@ impl Lighting {
         picture: &wgpu::TextureView,
         out: &wgpu::TextureView,
         background_glows: bool,
+        tinted: bool,
     ) {
         if self.targets.is_none() {
             return;
@@ -1012,7 +1028,12 @@ impl Lighting {
             sample: frame
                 .bake
                 .map_or([0.0, 1.0, 0.0, 0.0], |b| [b.index as f32, b.count.max(1) as f32, 1.0, s.bake[1].max(0.0)]),
-            trace: [bounce_setting, if s.stage[0] > 0.5 { 1.0 } else { 0.0 }, 0.0, 0.0],
+            trace: [
+                bounce_setting,
+                if s.stage[0] > 0.5 { 1.0 } else { 0.0 },
+                if s.glass_colour() { 1.0 } else { 0.0 },
+                if tinted { 1.0 } else { 0.0 },
+            ],
         };
         // The jump flood's steps: from half the field's size down to one, then one again.
         let mut jumps = Vec::new();
@@ -1340,8 +1361,11 @@ impl Lighting {
             pass.draw(0..3, 0..1);
         };
         let clear = wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT);
+        // The seed and field passes read the tint picture (glass and light part 1) in the picture's
+        // place: clear coloured glass seeds the field too.
+        let tint = t.tint.as_ref().filter(|_| tinted).map_or(&t.dummy_colour.1, |p| &p.1);
         // Seeds into the first picture, then back and forth.
-        let seed = group(&self.uniforms[0], &t.field.1, &t.seeds[1].1);
+        let seed = group_on(&self.uniforms[0], tint, &t.field.1, &t.seeds[1].1);
         pass(encoder, &[(&t.seeds[0].1, clear)], &self.seed, &[&seed], "light seeds");
         let mut from = 0;
         for i in 0..jumps.len() {
@@ -1350,7 +1374,7 @@ impl Lighting {
             pass(encoder, &[(&t.seeds[to].1, clear)], &self.jump, &[&g], "light jump");
             from = to;
         }
-        let field = group(&self.uniforms[0], &t.dummy.1, &t.seeds[from].1);
+        let field = group_on(&self.uniforms[0], tint, &t.dummy.1, &t.seeds[from].1);
         pass(encoder, &[(&t.field.1, clear)], &self.field, &[&field], "light field");
         // Every pass after this reads the blockers' field and their jump flood (nearest blocker
         // and nearest open texel).
@@ -1550,6 +1574,18 @@ mod grid_tests {
 
     fn ball(x: f32, y: f32, r: f32) -> SphereGpu {
         SphereGpu { a: [x, y, r, 0.0], b: [1.0; 4], c: [0.0; 4] }
+    }
+
+    #[test]
+    fn the_tint_pass_and_the_lighting_agree_on_thickness() {
+        let tint = include_str!("shaders/tint.wgsl");
+        let lighting = include_str!("shaders/lighting.wgsl");
+        let value = |text: &str, name: &str| -> f32 {
+            let line = text.lines().find(|l| l.starts_with(&format!("const {name}: f32 = "))).expect(name);
+            line.split('=').nth(1).unwrap().trim().trim_end_matches(';').parse().unwrap()
+        };
+        assert_eq!(value(tint, "THICK"), value(lighting, "THICK_DEPTH"));
+        assert_eq!(value(tint, "TINT_PASS"), crate::TINT_PASS as f32);
     }
 
     #[test]

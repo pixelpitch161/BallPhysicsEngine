@@ -82,6 +82,9 @@ pub(crate) const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Fl
 pub(crate) const OBJECT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 /// The light pass that draws what glass shows behind it (part 2b): no effects, plain blending.
 const BEHIND_PASS: u32 = 7;
+/// The light pass drawing the tint picture (glass and light part 1, tint.wgsl): how deep each
+/// see-through thing's colour is, read into the blockers' field.
+const TINT_PASS: u32 = 8;
 
 const BLOOM_LEVELS: usize = 6;
 
@@ -575,6 +578,7 @@ impl FrameBuffers {
 pub(crate) fn scene_source(effects: Option<&str>) -> String {
     [
         gradients::paint_wgsl(1).as_str(),
+        include_str!("shaders/tint.wgsl"),
         include_str!("shaders/scene.wgsl"),
         include_str!("shaders/object.wgsl"),
         include_str!("shaders/ball_look.wgsl"),
@@ -1468,8 +1472,13 @@ impl Renderer {
             }
             // Lit colour, surface, and (when something gives off light) the light things give off;
             // part 4's what glows under UV and the tags, when asked for.
-            let wanted = [true, true, scene.glows, false, scene.needs_uv(), scene.needs_tags()];
-            let modes: Vec<(u32, (wgpu::Texture, wgpu::TextureView))> = (1u32..=6)
+            // Glass and light part 1: the tint picture, when something see-through colours the light.
+            let tints = scene.needs_tint(frame);
+            if tints {
+                lighting.make_tint(device);
+            }
+            let wanted = [true, true, scene.glows, false, scene.needs_uv(), scene.needs_tags(), false, tints];
+            let modes: Vec<(u32, (wgpu::Texture, wgpu::TextureView))> = (1u32..=TINT_PASS)
                 .filter(|mode| wanted[*mode as usize - 1])
                 .map(|mode| (mode, lighting.picture(mode).expect("just made")))
                 .collect();
@@ -1541,6 +1550,7 @@ impl Renderer {
                 &self.targets.behind_view,
                 &self.targets.hdr,
                 scene.settings.background_glows(),
+                tints,
             );
             // A moved Stage camera sees the lit picture again: the picture, the picture before
             // lighting and the lit colour are then the moved camera's.
@@ -1848,7 +1858,8 @@ impl Renderer {
         self.overlay = buffers;
     }
 
-    /// The world's and the screen's globals for light pass `mode` (1 to 4, or [`BEHIND_PASS`]),
+    /// The world's and the screen's globals for light pass `mode` (1 to 6, [`BEHIND_PASS`] or
+    /// [`TINT_PASS`]),
     /// made the first time.
     fn light_globals(
         &mut self,
@@ -1859,7 +1870,7 @@ impl Renderer {
         background_lit: f32,
         scene: &LightScene,
     ) -> (wgpu::BindGroup, wgpu::BindGroup) {
-        while self.light_globals.len() < 2 * BEHIND_PASS as usize {
+        while self.light_globals.len() < 2 * TINT_PASS as usize {
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("light pass globals"),
                 size: std::mem::size_of::<Globals>() as u64,
@@ -2261,8 +2272,10 @@ impl Renderer {
         }
         // The surface keeps the most any layer blocks and stands (see lighting.wgsl).
         // The emission keeps what is in front hiding what is behind (added light stays added).
+        // The tint picture's depths add up (tint.wgsl).
         let blend = match self.light_mode {
             2 => bpe_core::Blend::Lighten,
+            TINT_PASS => bpe_core::Blend::Add,
             3 | 5 if l.blend == bpe_core::Blend::Add => bpe_core::Blend::Add,
             3 | 5 | 6 => bpe_core::Blend::Normal,
             _ => l.blend,

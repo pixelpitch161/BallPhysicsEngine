@@ -356,7 +356,7 @@ impl Lamps {
                 continue;
             }
             let Some(look) = r.slots.get(&SlotId::Look) else { continue };
-            let look = LookLight::of(look);
+            let look = LookLight::of(look, settings.glass_colour());
             if let Some(b) = world.bodies.get(id) {
                 for row in 0..b.len() {
                     if !b.alive[row] {
@@ -368,6 +368,7 @@ impl Lamps {
                             at: b.position[row],
                             radius: b.radius[row],
                             from: (*id, row as u32),
+                            passes: look.passes,
                         });
                     }
                     let glow = look.glow_of(number);
@@ -396,7 +397,7 @@ impl Lamps {
                     lamps.push(Lamp { gpu, from: None, shape: Some(*id) });
                 }
                 if look.blocks {
-                    blockers.walls.push((*id, sides));
+                    blockers.walls.push((*id, sides, look.passes, wall.solid));
                 }
             }
         }
@@ -476,8 +477,8 @@ impl Lamps {
             };
             let stop = l.p6[0] + l.p2[2].max(0.0);
             let v = self.blockers.visibility(p, toward, dist, soft, self.length, stop, skip, lamp, from);
-            let k = ((1.0 - v) * l.p2[3]).clamp(0.0, 1.0);
-            for (t, c) in tint.iter_mut().zip(&l.p5[..3]) {
+            for ((t, c), v) in tint.iter_mut().zip(&l.p5[..3]).zip(v) {
+                let k = ((1.0 - v) * l.p2[3]).clamp(0.0, 1.0);
                 *t = 1.0 + (c - 1.0) * k;
             }
         }
@@ -564,15 +565,20 @@ const AROUND_KINDS: [&str; 6] = [
 /// What a thing's look says about light: whether it blocks it, and what it gives off.
 struct LookLight {
     blocks: bool,
+    /// What it lets through of each channel where it is in the way (glass and light part 1): its
+    /// See-through share, coloured by its Body (a shape's first Colour and gradient layer) when
+    /// light through glass takes its colour; 0 for a solid thing.
+    passes: [f32; 3],
     /// Each shown Gives off light: the light (linear, times strength) and the balls whose layer
     /// it is on (empty: every ball).
     glows: Vec<([f32; 3], Vec<u32>)>,
 }
 
 impl LookLight {
-    fn of(look: &bpe_core::ResolvedSlot) -> LookLight {
+    fn of(look: &bpe_core::ResolvedSlot, glass_colour: bool) -> LookLight {
         let mut blocks = false;
         let mut glows = Vec::new();
+        let passes = passes_of(look, glass_colour);
         for layer in &look.layers {
             let params = look.layer_params(layer.id);
             if layer.parent.is_none()
@@ -593,7 +599,7 @@ impl LookLight {
             let rgb = [e.own[0] + e.tint[0] * c[0], e.own[1] + e.tint[1] * c[1], e.own[2] + e.tint[2] * c[2]];
             glows.push((rgb, parent.only.clone()));
         }
-        LookLight { blocks, glows }
+        LookLight { blocks, passes, glows }
     }
 
     /// The light ball `number` gives off.
@@ -608,6 +614,39 @@ impl LookLight {
         }
         out
     }
+}
+
+/// What a thing with Look card `look` lets through of each channel where it is in the way: its
+/// See-through share (less where its Body is see-through too: `1 - (1 - see-through) x opacity`),
+/// times, when `glass_colour`, its colour's hue at full brightness by its Tints light.
+fn passes_of(look: &bpe_core::ResolvedSlot, glass_colour: bool) -> [f32; 3] {
+    use crate::modules::look::surface;
+    if !surface::has_surface(&look.kind) {
+        return [0.0; 3];
+    }
+    let card = surface::of_card(look);
+    let see = surface::passes(&card);
+    if see <= 0.0 {
+        return [0.0; 3];
+    }
+    let body = look.layers.first().map(|l| look.layer_params(l.id)).unwrap_or_default();
+    let opacity = match body.get("opacity") {
+        Some(Value::Number(o)) if o.is_finite() => (*o as f32).clamp(0.0, 1.0),
+        _ => 1.0,
+    };
+    let share = 1.0 - (1.0 - see) * opacity;
+    if !glass_colour {
+        return [share; 3];
+    }
+    // A shape's colour is its first Colour and gradient layer's, else its Body's.
+    let paint = look.layers.iter().find(|l| l.parent.is_none() && l.kind == crate::modules::look::shape::PAINT);
+    let colour = layer_colour(&paint.map(|l| look.layer_params(l.id)).unwrap_or(body));
+    let most = colour[0].max(colour[1]).max(colour[2]);
+    let tints = if card.tints.is_finite() { card.tints.clamp(0.0, 1.0) } else { 0.0 } * opacity;
+    colour.map(|c| {
+        let hue = if most > 1e-4 { (c / most).clamp(0.0, 1.0) } else { 1.0 };
+        share * (1.0 + (hue - 1.0) * tints)
+    })
 }
 
 /// A layer's own colour, linear: the middle of its colours, its colour, else white.
@@ -645,19 +684,25 @@ fn layer_colour(params: &bpe_core::Params) -> [f32; 3] {
     }
 }
 
-/// One ball that blocks light.
+/// One ball that blocks light, and what it lets through of each channel (0 solid).
 #[derive(Clone, Copy)]
 struct Ball {
     at: Vec2,
     radius: f32,
     from: (ThingId, u32),
+    passes: [f32; 3],
 }
 
-/// What blocks light: balls in a uniform grid, shapes' outlines as segments.
+/// What blocks light: balls in a uniform grid, shapes' outlines as segments, each with what it
+/// lets through of each channel (0 solid).
+/// A shape that blocks light: its thing, its outline's sides, what it lets through of each channel
+/// and whether it is filled.
+type Wall = (ThingId, Vec<[Vec2; 2]>, [f32; 3], bool);
+
 #[derive(Default)]
 struct Blockers {
     balls: Vec<Ball>,
-    walls: Vec<(ThingId, Vec<[Vec2; 2]>)>,
+    walls: Vec<Wall>,
     grid: Option<Grid>,
 }
 
@@ -720,9 +765,11 @@ impl Blockers {
         self.grid = Some(Grid { origin: lo, cell, size, starts: counts, items });
     }
 
-    /// How much of the light gets from the lamp to `p` along `toward` (1 all, 0 none), the
-    /// shader's `visibility` worked out against circles and segments: a blocker farther than
-    /// `length` from `p`, or within `stop` of the lamp, casts nothing on it.
+    /// How much of the light gets from the lamp to `p` along `toward` (1 all, 0 none) of each
+    /// channel, the shader's `visibility` worked out against circles and segments: a blocker
+    /// farther than `length` from `p`, or within `stop` of the lamp, casts nothing on it. A
+    /// see-through ball in the way lets through what it passes (once, though the grid may meet it
+    /// twice), a see-through shape what it passes (a filled one once, a band each time crossed).
     #[allow(clippy::too_many_arguments)]
     fn visibility(
         &self,
@@ -735,13 +782,18 @@ impl Blockers {
         skip: Skip,
         lamp: &Lamp,
         source: Option<Vec2>,
-    ) -> f32 {
+    ) -> [f32; 3] {
         let end = (dist - stop).min(length);
         if end <= 0.0 {
-            return 1.0;
+            return [1.0; 3];
         }
         let ang = soft.max(1e-4);
         let mut v: f32 = 1.0;
+        let mut through = [1.0f32; 3];
+        let smooth = |v: f32| v * v * (3.0 - 2.0 * v);
+        // The see-through balls met so far (the grid can give a ball twice): each lets its share
+        // through once.
+        let mut met: Vec<(ThingId, u32)> = Vec::new();
         let mut test = |b: &Ball| {
             if Some(b.from) == skip.ball || Some(b.from) == lamp.from {
                 return;
@@ -757,7 +809,19 @@ impl Blockers {
             }
             let miss = (rel - toward * along).length();
             let d = miss - b.radius;
-            v = v.min((0.5 + 0.5 * d / (along.max(1.0) * ang)).clamp(0.0, 1.0));
+            let vb = (0.5 + 0.5 * d / (along.max(1.0) * ang)).clamp(0.0, 1.0);
+            if b.passes.iter().all(|c| *c <= 0.0) {
+                v = v.min(vb);
+            } else {
+                if met.contains(&b.from) {
+                    return;
+                }
+                met.push(b.from);
+                let s = smooth(vb);
+                for (t, c) in through.iter_mut().zip(b.passes) {
+                    *t *= c + (1.0 - c) * s;
+                }
+            }
         };
         match &self.grid {
             Some(grid) => grid.walk(p, toward, end, ang, |i| test(&self.balls[i as usize])),
@@ -768,17 +832,27 @@ impl Blockers {
                 Some(_) => p + toward * end,
                 None => p + toward * end.min(1e6),
             };
-            for (id, sides) in &self.walls {
+            for (id, sides, passes, solid) in &self.walls {
                 if Some(*id) == skip.thing || Some(*id) == lamp.shape {
                     continue;
                 }
-                if sides.iter().any(|s| crosses(p, far, s[0], s[1])) {
+                let crossed = sides.iter().filter(|s| crosses(p, far, s[0], s[1])).count();
+                if crossed == 0 {
+                    continue;
+                }
+                if passes.iter().all(|c| *c <= 0.0) {
                     v = 0.0;
                     break;
                 }
+                // A filled shape is passed through once going in and out; a band each time.
+                let times = if *solid { crossed.div_ceil(2) } else { crossed };
+                for (t, c) in through.iter_mut().zip(passes) {
+                    *t *= c.powi(times as i32);
+                }
             }
         }
-        v * v * (3.0 - 2.0 * v)
+        let shown = smooth(v);
+        through.map(|t| shown * t)
     }
 }
 
@@ -909,7 +983,8 @@ mod tests {
         let mut b = Blockers::default();
         for i in 0..400 {
             let at = Vec2::new(next() * 1000.0 - 500.0, next() * 1600.0 - 800.0);
-            b.balls.push(Ball { at, radius: 4.0 + next() * 30.0, from: (ThingId(2), i) });
+            let passes = if i % 3 == 0 { [0.5, 0.2, 0.1] } else { [0.0; 3] };
+            b.balls.push(Ball { at, radius: 4.0 + next() * 30.0, from: (ThingId(2), i), passes });
         }
         let lamp = Lamp { gpu: glow_lamp(Vec2::ZERO, 0.0, [1.0; 3], 1.0), from: None, shape: None };
         let rays: Vec<(Vec2, Vec2, f32, f32)> = (0..300)
@@ -919,17 +994,23 @@ mod tests {
                 (p, (q - p).normalize(), p.distance(q), 0.002 + next() * 0.05)
             })
             .collect();
-        let each: Vec<f32> = rays
+        let each: Vec<[f32; 3]> = rays
             .iter()
             .map(|r| b.visibility(r.0, r.1, r.2, r.3, 1e9, 0.0, Skip::default(), &lamp, Some(r.0)))
             .collect();
         b.build_grid();
         assert!(b.grid.is_some());
-        let grid: Vec<f32> = rays
+        let grid: Vec<[f32; 3]> = rays
             .iter()
             .map(|r| b.visibility(r.0, r.1, r.2, r.3, 1e9, 0.0, Skip::default(), &lamp, Some(r.0)))
             .collect();
-        assert_eq!(each, grid);
-        assert!(each.iter().any(|v| *v < 0.5) && each.iter().any(|v| *v > 0.99), "a mix of open and blocked rays");
+        // The same, but for the order see-through balls' shares multiply in.
+        for (k, (e, g)) in each.iter().zip(&grid).enumerate() {
+            for c in 0..3 {
+                assert!((e[c] - g[c]).abs() <= 1e-6 * e[c].max(1.0), "ray {k}: {e:?} against {g:?}");
+            }
+        }
+        assert!(each.iter().any(|v| v[0] < 0.5) && each.iter().any(|v| v[0] > 0.99), "a mix of open and blocked rays");
+        assert!(each.iter().any(|v| v[0] > v[2] + 0.1), "some through coloured balls");
     }
 }

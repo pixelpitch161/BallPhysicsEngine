@@ -47,6 +47,10 @@ pub struct Preset {
     pub clear_coat: f32,
     pub bends_light: f32,
     pub see_through: f32,
+    /// Glass and light part 1: how much light through it takes its colour, and how much deeper
+    /// that colour gets where it is thick.
+    pub tints: f32,
+    pub thick_tint: f32,
     pub toon_steps: u32,
     pub rainbow: f32,
     pub soak: f32,
@@ -68,6 +72,8 @@ impl Preset {
             clear_coat,
             bends_light,
             see_through,
+            tints: 1.0,
+            thick_tint: 0.0,
             toon_steps: 0,
             rainbow: 0.0,
             soak: 0.0,
@@ -91,9 +97,9 @@ impl SurfaceKind {
             Self::Plastic => base(0.3, 0.0, 0.0, 1.5, 0.0),
             Self::Chrome => base(0.05, 1.0, 0.0, 1.5, 0.0),
             Self::Metal => base(0.35, 1.0, 0.0, 1.5, 0.0),
-            Self::Glass => Preset { rainbow: 0.3, ..base(0.02, 0.0, 0.6, 1.5, 0.85) },
+            Self::Glass => Preset { rainbow: 0.3, thick_tint: 0.5, ..base(0.02, 0.0, 0.6, 1.5, 0.85) },
             Self::Toon => Preset { toon_steps: 3, ..base(0.35, 0.0, 0.0, 1.5, 0.0) },
-            Self::Jelly => Preset { soak: 0.8, ..base(0.35, 0.0, 0.3, 1.4, 0.35) },
+            Self::Jelly => Preset { soak: 0.8, thick_tint: 0.5, ..base(0.35, 0.0, 0.3, 1.4, 0.35) },
             Self::Pearl => Preset { soak: 0.1, film: 0.55, ..base(0.2, 0.0, 0.6, 1.6, 0.0) },
             Self::Flake => Preset { flakes: 0.7, ..base(0.4, 0.3, 1.0, 1.5, 0.0) },
             Self::Brushed => Preset { brushing: 0.8, ..base(0.3, 1.0, 0.0, 1.5, 0.0) },
@@ -184,6 +190,14 @@ pub struct SurfaceSettings {
     /// How much light goes through it: what is behind shows through, bent.
     #[setting(label = "See-through", span(0, 1), keyframe, group = "Surface")]
     pub see_through: f32,
+    /// How much light passing through it takes its colour: 0 none (a white shadow), 1 all of it
+    /// (red glass throws red light).
+    #[setting(label = "Tints light", when = "see_through", span(0, 1), keyframe, group = "Surface")]
+    pub tints: f32,
+    /// How much deeper the colour of light through it gets where it is thick, like the middle of a
+    /// glass ball.
+    #[setting(label = "Deeper when thick", when = "see_through", span(0, 1), keyframe, group = "Surface")]
+    pub thick_tint: f32,
     /// Light in this many flat bands, like a cartoon: 0 smooth.
     #[setting(label = "Toon steps", range(0, 1e9), span(0, 8), group = "Surface")]
     pub toon_steps: u32,
@@ -271,6 +285,8 @@ impl Default for SurfaceSettings {
             clear_coat: p.clear_coat,
             bends_light: p.bends_light,
             see_through: p.see_through,
+            tints: p.tints,
+            thick_tint: p.thick_tint,
             toon_steps: p.toon_steps,
             rainbow: p.rainbow,
             soak: p.soak,
@@ -305,6 +321,8 @@ pub fn preset_values(kind: SurfaceKind) -> Vec<(&'static str, Value)> {
         ("clear_coat", number(p.clear_coat)),
         ("bends_light", number(p.bends_light)),
         ("see_through", number(p.see_through)),
+        ("tints", number(p.tints)),
+        ("thick_tint", number(p.thick_tint)),
         ("toon_steps", Value::Int(p.toon_steps as i64)),
         ("rainbow", number(p.rainbow)),
         ("soak", number(p.soak)),
@@ -331,6 +349,11 @@ impl SurfaceSettings {
     pub fn f0(&self) -> f32 {
         let n = self.bends_light.max(1.0);
         ((n - 1.0) / (n + 1.0)).powi(2)
+    }
+
+    /// Its Tints light and Deeper when thick as the records carry them (`LayerGpu::tint_bits`).
+    pub fn tint_bits(&self) -> u32 {
+        bpe_gfx::LayerGpu::tint_bits(self.tints, self.thick_tint)
     }
 
     /// Whether it lets light through (and so shows what is behind it).
@@ -454,6 +477,9 @@ pub struct Stamps {
     pub thing: f32,
     /// How much of the light the whole thing's surface lets through (its See-through).
     pub thing_passes: f32,
+    /// The whole thing's Tints light and Deeper when thick, packed (`LayerGpu::tint_bits`; all
+    /// light, none deeper, for a thing with no Surface).
+    pub thing_tint: u32,
     pub layers: Vec<(LayerId, u32, SurfaceSettings)>,
 }
 
@@ -475,9 +501,11 @@ impl Stamps {
         let card = of_card(look);
         let thing = stamp(surface_index(scene, id), &card);
         let thing_passes = if has_surface(&look.kind) { passes(&card) } else { 0.0 };
+        let thing_tint =
+            if has_surface(&look.kind) { card.tint_bits() } else { bpe_gfx::LayerGpu::tint_bits(1.0, 0.0) };
         let own = layer_surfaces(look);
         if own.is_empty() {
-            return Stamps { thing, thing_passes, layers: Vec::new() };
+            return Stamps { thing, thing_passes, thing_tint, layers: Vec::new() };
         }
         let mut n = scene
             .things
@@ -493,7 +521,7 @@ impl Stamps {
             }
         }
         let layers = own.into_iter().enumerate().map(|(k, (layer, s))| (layer, n + 1 + k as u32, s)).collect();
-        Stamps { thing, thing_passes, layers }
+        Stamps { thing, thing_passes, thing_tint, layers }
     }
 
     /// Whether anything stamped is see-through.
@@ -505,11 +533,14 @@ impl Stamps {
     /// (found by `record_of`: its record's place) and its sub-layer records that layer's. How much
     /// a record blocks light (`light[1]`) loses the share its surface lets through, so a
     /// see-through thing casts a lighter shadow in Flat (lighting's see-through blockers plan; a
-    /// Stage takes it as blocking whole).
+    /// Stage takes it as blocking whole). Each record carries its surface's Tints light and Deeper
+    /// when thick too (glass and light part 1, in `head[2]`'s high bits).
     pub fn apply(&self, records: &mut [bpe_gfx::LayerGpu], record_of: impl Fn(LayerId) -> Option<usize>) {
+        use bpe_gfx::LayerGpu;
         let keep = keeps_of(self.thing_passes);
         for r in records.iter_mut() {
             r.light[3] = self.thing;
+            r.head[2] = (r.head[2] & !LayerGpu::TINT_BITS) | self.thing_tint;
         }
         let mut own = vec![false; records.len()];
         for (layer, index, s) in &self.layers {
@@ -521,6 +552,7 @@ impl Stamps {
             for (r, own) in records[at..end].iter_mut().zip(&mut own[at..end]) {
                 r.light[3] = value;
                 r.light[1] *= layer_keep;
+                r.head[2] = (r.head[2] & !LayerGpu::TINT_BITS) | s.tint_bits();
                 *own = true;
             }
         }
@@ -595,6 +627,49 @@ mod tests {
         assert!(p(SurfaceKind::Velvet).rim > 0.0);
         assert!(p(SurfaceKind::Lava).inner_glow > 0.0);
         assert_eq!(SurfaceKind::NAMES.len(), 13);
+    }
+
+    #[test]
+    fn glass_and_jelly_deepen_where_thick_and_every_surface_tints_light() {
+        for kind in SurfaceKind::NAMES.iter().filter_map(|n| SurfaceKind::from_name(n)) {
+            let p = kind.preset();
+            assert_eq!(p.tints, 1.0, "{kind:?}");
+            let deeper = if matches!(kind, SurfaceKind::Glass | SurfaceKind::Jelly) { 0.5 } else { 0.0 };
+            assert_eq!(p.thick_tint, deeper, "{kind:?}");
+        }
+        let d = SurfaceSettings::default();
+        assert_eq!((d.tints, d.thick_tint), (1.0, 0.0));
+    }
+
+    #[test]
+    fn stamps_carry_tints_and_keep_the_flags() {
+        use bpe_gfx::LayerGpu;
+        let reg = crate::kit().registry;
+        let mut scene = crate::scenes::lit_room(&reg);
+        let ball = scene.things.values().find(|t| t.kind == "balls").map(|t| t.id).unwrap();
+        let outline =
+            scene.add_layer(&reg, ball, bpe_core::SlotId::Look, crate::modules::look::layers::OUTLINE).unwrap();
+        let sub = scene.add_sub_layer(&reg, ball, bpe_core::SlotId::Look, outline, SUB_SURFACE).unwrap();
+        let card = scene.card_mut(ball, bpe_core::SlotId::Look).unwrap();
+        card.params.set("see_through", Value::Number(0.8));
+        card.params.set("tints", Value::Number(0.75));
+        card.params.set("thick_tint", Value::Number(0.25));
+        card.params.set(&bpe_core::layered_key(sub, "see_through"), Value::Number(0.9));
+        card.params.set(&bpe_core::layered_key(sub, "tints"), Value::Number(0.5));
+        let resolved = bpe_core::resolve(&scene, &reg);
+        let look = &resolved.things[&ball].slots[&bpe_core::SlotId::Look];
+        let stamps = Stamps::of(&resolved, ball, look);
+        assert_eq!(stamps.thing_tint, LayerGpu::tint_bits(0.75, 0.25));
+        let stack = crate::modules::look::layers::gpu::Stack::of(look).unwrap();
+        let mut records = stack.records(&mut bpe_gfx::GradientAtlas::default(), &mut Vec::new(), 0.0);
+        for r in records.iter_mut() {
+            r.head[2] |= LayerGpu::FLAG | LayerGpu::UNWORN;
+        }
+        stamps.apply(&mut records, |id| stack.record_of(id));
+        let at = stack.record_of(outline).unwrap();
+        assert_eq!(records[0].head[2] & LayerGpu::TINT_BITS, LayerGpu::tint_bits(0.75, 0.25));
+        assert_eq!(records[at].head[2] & LayerGpu::TINT_BITS, LayerGpu::tint_bits(0.5, 0.0));
+        assert!(records.iter().all(|r| r.head[2] & (LayerGpu::FLAG | LayerGpu::UNWORN) != 0));
     }
 
     #[test]

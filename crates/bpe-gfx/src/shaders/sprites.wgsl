@@ -24,6 +24,13 @@ struct Globals {
 // As scene.wgsl's: a sprite in the light passes (see lighting.wgsl).
 fn light_flat(c: vec4<f32>, lit: f32, blocks: f32, emit: vec3<f32>, extra: vec4<f32>) -> vec4<f32> {
     let m = g.light.x;
+    // Light pass 8, the tint picture (tint.wgsl): its colour's depth where it blocks light.
+    if m > 7.5 {
+        if extra.y > 0.5 || c.a <= 1e-5 {
+            return vec4<f32>(0.0);
+        }
+        return tint_out(c.rgb / c.a, min(c.a, 1.0), blocks, 1.0, 0.0);
+    }
     // Light passes 5 (what glows under UV) and 6 (what catches beams, link numbers).
     if m > 4.5 {
         return light_extra(c, extra);

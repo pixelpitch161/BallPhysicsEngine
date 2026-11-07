@@ -133,7 +133,8 @@ fn fs_surface(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     // picture (it blocks no light), whole where it covers in the tags.
     let mode = g.light.x;
     if mode > 0.5 {
-        if mode > 1.5 && mode < 2.5 {
+        // Nothing in the surface or the tint picture (pass 8): it blocks no light.
+        if (mode > 1.5 && mode < 2.5) || mode > 7.5 {
             return vec4<f32>(0.0);
         }
         if mode > 5.5 {
