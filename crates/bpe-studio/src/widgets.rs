@@ -25,6 +25,8 @@ pub struct TargetChoices {
     pub relative: bool,
     /// The fonts the scene keeps, by name (a Text's Font picker lists them first).
     pub fonts: Vec<String>,
+    /// Those of them that can't be read (damaged).
+    pub unreadable_fonts: Vec<String>,
 }
 
 impl TargetChoices {
@@ -41,7 +43,21 @@ impl TargetChoices {
             .copied()
             .collect();
         let fonts = scene.fonts.keys().cloned().collect();
-        TargetChoices { things, tags: tags.into_iter().collect(), kinds, ball_things, relative: true, fonts }
+        let unreadable_fonts = scene
+            .fonts
+            .iter()
+            .filter(|(name, font)| !bpe_kit::text::fonts::scene_font_reads(name, font))
+            .map(|(name, _)| name.clone())
+            .collect();
+        TargetChoices {
+            things,
+            tags: tags.into_iter().collect(),
+            kinds,
+            ball_things,
+            relative: true,
+            fonts,
+            unreadable_fonts,
+        }
     }
 }
 
@@ -1670,9 +1686,12 @@ fn widget(
         (ValueType::Text, Value::Text(text)) if def.unit == "lines" => {
             ui.add(egui::TextEdit::multiline(text).desired_rows(3).desired_width(f32::INFINITY)).labelled_by(name)
         }
-        (ValueType::Text, Value::Text(text)) if def.unit == "font" => {
-            crate::font_picker::font_row(ui, text, &crate::font_picker::FontCx { scene_fonts: &choices.fonts }, name)
-        }
+        (ValueType::Text, Value::Text(text)) if def.unit == "font" => crate::font_picker::font_row(
+            ui,
+            text,
+            &crate::font_picker::FontCx { scene_fonts: &choices.fonts, unreadable: &choices.unreadable_fonts },
+            name,
+        ),
         (ValueType::Text, Value::Text(text)) => {
             ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY)).labelled_by(name)
         }

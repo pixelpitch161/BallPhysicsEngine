@@ -308,11 +308,21 @@ fn scene_font(name: &str, bytes: &Arc<[u8]>) -> Option<Arc<FontData>> {
     type Kept = (Arc<[u8]>, Option<Arc<FontData>>);
     static SCENE: OnceLock<Mutex<HashMap<Key, Kept>>> = OnceLock::new();
     let mut fonts = SCENE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
-    if fonts.len() >= 64 {
-        fonts.clear();
-    }
     let key = (bytes.as_ptr() as usize, bytes.len(), name.to_string());
+    if !fonts.contains_key(&key) {
+        // Fonts no scene holds any more (removed, or a scene closed) go, so their bytes do too.
+        fonts.retain(|_, (b, _)| Arc::strong_count(b) > 1);
+        if fonts.len() >= 64 {
+            fonts.clear();
+        }
+    }
     fonts.entry(key).or_insert_with(|| (bytes.clone(), FontData::new(name, bytes.clone()).map(Arc::new))).1.clone()
+}
+
+/// Whether the scene's font `name` can be read (a damaged one can't, and texts set in it fall
+/// back).
+pub fn scene_font_reads(name: &str, font: &SceneFont) -> bool {
+    scene_font(name, &font.bytes).is_some()
 }
 
 /// Whether `bytes` are a font file (TrueType or OpenType) the text engine can read.

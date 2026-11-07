@@ -23,6 +23,8 @@ pub enum FontRequest {
 pub struct FontCx<'a> {
     /// The fonts the scene keeps, by name.
     pub scene_fonts: &'a [String],
+    /// Those of them that are damaged and can't be read.
+    pub unreadable: &'a [String],
 }
 
 /// What the inspector says when a file given to Load font isn't a font.
@@ -66,7 +68,7 @@ pub fn set_note(ctx: &egui::Context, note: Option<&str>) {
 /// when a font is picked; `name` labels the button.
 pub fn font_row(ui: &mut Ui, value: &mut String, cx: &FontCx, name: egui::Id) -> Response {
     let ctx = ui.ctx().clone();
-    let in_scene = |n: &str| cx.scene_fonts.iter().any(|f| f == n);
+    let in_scene = |n: &str| cx.scene_fonts.iter().any(|f| f == n) && !cx.unreadable.iter().any(|f| f == n);
     let problem = problem_of(in_scene(value), value);
     let note: Option<String> = ctx.data(|d| d.get_temp(note_id()));
     let mut picked: Option<String> = None;

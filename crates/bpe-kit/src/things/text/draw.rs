@@ -76,7 +76,7 @@ pub fn text_now(tree: &Scene, params: &Params, world: &World, id: ThingId, time:
             shift: s.wave_shift + s.wave_speed * time as f32,
             follow: s.follow_slope,
         },
-        TextPath::AlongAShape => match edge_of(world, &s, id, pose) {
+        TextPath::AlongAShape => match edge_of(world, &s, id, pose, on_screen(tree, id)) {
             Some(points) => PathAt::Edge { points, start: s.along_start, gap: s.gap },
             None => PathAt::Straight,
         },
@@ -85,9 +85,15 @@ pub fn text_now(tree: &Scene, params: &Params, world: &World, id: ThingId, time:
     Some(TextNow { pose, layout, placed, font_problem: found.problem() })
 }
 
+/// Whether Text `id` sits on the screen (a Text does unless it is set in the world).
+fn on_screen(tree: &Scene, id: ThingId) -> bool {
+    tree.things.get(&id).is_none_or(|t| t.screen.unwrap_or(true))
+}
+
 /// The edge of the first shape `s.along` names (not the text itself), in the text's own frame
-/// at `pose`, going clockwise from its first corner.
-fn edge_of(world: &World, s: &TextSettings, id: ThingId, pose: Pose) -> Option<Vec<Vec2>> {
+/// at `pose`, going clockwise from its first corner. A text on the `screen` sees the shape where
+/// the camera shows it.
+fn edge_of(world: &World, s: &TextSettings, id: ThingId, pose: Pose, screen: bool) -> Option<Vec<Vec2>> {
     let wall = world.matching(&s.along, id).into_iter().filter(|t| *t != id).find_map(|t| world.walls.get(&t))?;
     let form = wall_form(wall);
     let unit: Vec<Vec2> = match (&form.points, form.ellipse) {
@@ -103,7 +109,12 @@ fn edge_of(world: &World, s: &TextSettings, id: ThingId, pose: Pose) -> Option<V
         }
     };
     let (turn, back) = (Vec2::from_angle(form.turn), Vec2::from_angle(-pose.angle));
-    Some(unit.into_iter().map(|p| back.rotate(form.center + turn.rotate(p * form.scale) - pose.position)).collect())
+    let seen = |p: Vec2| if screen { world.camera.to_screen(p) } else { p };
+    Some(
+        unit.into_iter()
+            .map(|p| back.rotate(seen(form.center + turn.rotate(p * form.scale)) - pose.position))
+            .collect(),
+    )
 }
 
 pub struct TextDraw;

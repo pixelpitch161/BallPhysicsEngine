@@ -38,7 +38,8 @@ pub fn start(studio: &mut Studio, id: ThingId) {
 pub fn show(ui: &mut Ui, studio: &mut Studio, view: &View) {
     let Some(typing) = studio.typing.as_mut() else { return };
     let id = typing.id;
-    if !studio.scene.things.contains_key(&id) {
+    // The text went (deleted, or another scene opened): nothing to type into.
+    if !studio.scene.things.get(&id).is_some_and(|t| t.kind == bpe_kit::things::text::KIND) {
         studio.typing = None;
         return;
     }
@@ -49,7 +50,9 @@ pub fn show(ui: &mut Ui, studio: &mut Studio, view: &View) {
         let (lo, _) = now.bounds()?;
         Some(v.to_screen(now.to_world(lo)))
     });
-    let at = corner.unwrap_or(view.rect.center()).clamp(view.rect.min, view.rect.max - egui::vec2(220.0, 80.0));
+    // Kept on the preview, as far as it has room.
+    let most = (view.rect.max - egui::vec2(220.0, 80.0)).max(view.rect.min);
+    let at = corner.unwrap_or(view.rect.center()).max(view.rect.min).min(most);
     let typing = studio.typing.as_mut().expect("looked up above");
     let first = !typing.focused;
     let area =
@@ -154,6 +157,24 @@ mod tests {
         let studio = h.state_mut();
         assert!(studio.undo());
         assert_eq!(words(studio, id), "TEXT", "one undo brings back the old words");
+    }
+
+    #[test]
+    fn a_small_preview_still_takes_the_box() {
+        let mut studio = Studio::headless();
+        let kit = studio.kit.clone();
+        let id =
+            bpe_kit::add_thing(&mut studio.scene, &kit.registry, bpe_kit::things::text::KIND, ThingId::ROOT).unwrap();
+        studio.scene_changed();
+        start(&mut studio, id);
+        let small = View { rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(120.0, 60.0)), ..view() };
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(300.0, 300.0))
+            .with_max_steps(60)
+            .allow_missing_glyphs()
+            .build_ui_state(move |ui, s: &mut Studio| show(ui, s, &small), studio);
+        h.run();
+        assert!(h.state().typing.is_some());
     }
 
     #[test]

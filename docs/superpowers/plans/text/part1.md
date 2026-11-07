@@ -366,3 +366,9 @@ Everything above is in. Where the build differs from the plan, or settles what i
   circle; Size scales by the corner's distance from the middle; Wrap is twice the pointer's distance on the text's
   own x. Any Text is grabbed by the box round its letters, after the shapes' own handles and before the shapes' walls.
 - The tree has a T icon for a Text (the icon test asks every kind for one).
+- **After the review.** The typing box keeps on a small preview (no clamp past its edges) and ends when another
+  scene is opened (`replace_scene`) or its thing is no longer a Text. Reads from inside puts later lines further out.
+  The Wrap bar never sets 0 (no wrapping). A screen Text Along a shape sees the shape where the camera shows it. A
+  damaged font in a saved scene reads as no font instead of stopping the scene opening, and the Font row says so
+  (`TargetChoices.unreadable_fonts`, `fonts::scene_font_reads`); the scene-font cache lets go of fonts no scene holds.
+  Flowing gradient's Hit wave waits for part 3 (a Text has no wall to be hit yet), so its help doesn't promise it.

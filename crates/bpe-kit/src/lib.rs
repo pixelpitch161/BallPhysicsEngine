@@ -314,7 +314,7 @@ mod tests {
 
     #[test]
     fn every_addable_thing_has_a_family() {
-        let families = ["Bouncers", "Shapes", "Lights", "Particles"];
+        let families = ["Bouncers", "Shapes", "Text", "Lights", "Particles"];
         let reg = registry();
         for kind in reg.things().filter(|k| !["scene", "folder", "camera"].contains(&k.id())) {
             assert!(families.contains(&kind.family()), "{} has family {}", kind.id(), kind.family());

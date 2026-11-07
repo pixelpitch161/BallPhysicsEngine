@@ -30,8 +30,9 @@ impl Serialize for SceneFont {
 impl<'de> Deserialize<'de> for SceneFont {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let text = String::deserialize(d)?;
-        let bytes =
-            base64::engine::general_purpose::STANDARD.decode(text.as_bytes()).map_err(serde::de::Error::custom)?;
+        // A damaged font leaves the rest of the scene to open: it reads as no font (the texts set
+        // in it show the fallback and say so).
+        let bytes = base64::engine::general_purpose::STANDARD.decode(text.as_bytes()).unwrap_or_default();
         Ok(Self { bytes: bytes.into() })
     }
 }
@@ -105,6 +106,12 @@ mod tests {
         assert_eq!(scene.add_font("Mine", bytes(b"three")), "Mine (3)");
         assert_eq!(scene.add_font("  ", bytes(b"four")), "Loaded font");
         assert_eq!(scene.fonts.len(), 4);
+    }
+
+    #[test]
+    fn a_damaged_font_leaves_the_scene_to_open() {
+        let font: SceneFont = ron::from_str("\"not base64 !!\"").unwrap();
+        assert!(font.bytes.is_empty());
     }
 
     #[test]

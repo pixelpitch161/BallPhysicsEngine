@@ -51,7 +51,7 @@ impl Look {
             Look::NeonSign => "Glowing pink tube letters that light up what is around them.",
             Look::GlassLetters => "Clear glass letters that bend what is behind them.",
             Look::ShadowLettering => "Warm letters lit by a lamp, throwing long shadows.",
-            Look::FlowingGradient => "Rainbow colours flowing through the letters, flashing on hits.",
+            Look::FlowingGradient => "Rainbow colours flowing through the letters.",
         }
     }
 

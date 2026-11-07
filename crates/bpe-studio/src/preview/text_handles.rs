@@ -142,7 +142,8 @@ pub fn apply(
                 set(scene, "size", size);
             }
         }
-        TextPart::Wrap => set(scene, "wrap", (2.0 * p.x.abs()).round()),
+        // 0 would mean no wrapping at all.
+        TextPart::Wrap => set(scene, "wrap", (2.0 * p.x.abs()).round().max(1.0)),
         TextPart::Radius => set(scene, "radius", p.length().round().max(1.0)),
     }
     keyed

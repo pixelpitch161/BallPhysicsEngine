@@ -62,8 +62,10 @@ pub fn arrange(layout: &TextLayout, path: &PathAt) -> Vec<Placed> {
                 .letters
                 .iter()
                 .map(|l| {
-                    let r = (radius - line_of(l) * layout.line_step).max(1e-3);
+                    // Each line under the one before: nearer the middle reading from outside,
+                    // further out reading from inside (the tops face the middle).
                     let sign = if inside { -1.0 } else { 1.0 };
+                    let r = (radius - sign * line_of(l) * layout.line_step).max(1e-3);
                     let theta = start + sign * mid(l) / r;
                     let base = Vec2::new(theta.sin(), -theta.cos()) * r;
                     let turn = if inside { theta + PI } else { theta };
@@ -227,6 +229,15 @@ mod tests {
         let r = |k: usize| middle(&l.letters[k], ps[k]).length();
         assert!((r(0) - 300.0).abs() < 0.5);
         assert!((r(2) - (300.0 - l.line_step)).abs() < 0.5, "{} {}", r(2), l.line_step);
+    }
+
+    #[test]
+    fn reading_from_inside_later_lines_go_out() {
+        let l = laid("AB\nCD");
+        let ps = arrange(&l, &PathAt::Circle { radius: 300.0, start: 0.0, inside: true });
+        let r = |k: usize| ps[k].at.length();
+        let (first, last) = (r(0), r(l.letters.len() - 1));
+        assert!(last > first + 0.5 * l.line_step, "the second line sits further out: {first} {last}");
     }
 
     #[test]
