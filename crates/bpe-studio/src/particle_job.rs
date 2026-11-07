@@ -41,6 +41,11 @@ impl Snapshot {
         let world = playback.world();
         let mut states = Vec::new();
         let (mut count, mut step_ms) = (0, 0.0);
+        // The air too, for Show air (and to draw with the particles).
+        let air = world.states.get(&ThingId::ROOT).filter(|s| (***s).as_any().is::<bpe_kit::air::Air>());
+        if let Some(air) = air {
+            states.push((ThingId::ROOT, air.clone()));
+        }
         for id in &world.beside {
             if let Some(state) = world.states.get(id) {
                 if let Some(p) = (**state).as_any().downcast_ref::<ParticlesState>() {

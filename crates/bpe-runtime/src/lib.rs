@@ -41,6 +41,6 @@ pub use walls::{
     wall_velocity,
 };
 pub use world::{
-    Between, Card, Lent, RunId, World, beside_fingerprint, fingerprint, has_beside, main_part, needs_light,
-    physics_animation, step_at,
+    BESIDE_SLOTS, Between, Card, Lent, RunId, World, beside_fingerprint, fingerprint, has_beside, main_part,
+    needs_light, physics_animation, step_at,
 };

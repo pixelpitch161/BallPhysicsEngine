@@ -171,6 +171,9 @@ impl Lone {
     /// stage of step `moment + 1`, or after step `moment`.
     pub fn new(world: &World, me: ThingId, owner: ThingId, radius: f32, moment: u64) -> Lone {
         let mut lone = world.lone(&|id| id == me || !world.bodies.contains_key(&id));
+        // The air is only the particles' (stepped beside the physics): a flight has no use for
+        // its grid, and is cloned many times.
+        drop(crate::air::take_air(&mut lone));
         lone.step = moment;
         if owner != me {
             lone.lend_cards(world, owner, me);

@@ -62,7 +62,9 @@ fn every_look_adds_a_thing_that_resolves_and_makes_particles() {
         assert_eq!(scene.things[&id].kind, KIND);
         assert_eq!(scene.things[&id].name, look.name(), "named after its look");
         let (world, _, _) = run(&scene, 2.0);
-        assert!(!particles(&world, id).specks.is_empty(), "{look:?} made no particles in 2 s");
+        // Looks let off by hits need balls to hit something.
+        let on_hits = ParticlesSettings::from_params(&scene.things[&id].params).emit == Emit::OnHits;
+        assert!(on_hits || !particles(&world, id).specks.is_empty(), "{look:?} made no particles in 2 s");
         // Inside a ball group, the riding looks ride the balls.
         let mut scene = crate::new_scene(&reg);
         let ball = scene.order.iter().copied().find(|t| scene.things[t].kind == "balls").unwrap();

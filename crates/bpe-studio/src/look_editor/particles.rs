@@ -166,4 +166,21 @@ mod tests {
         assert_eq!(card.layers.iter().filter(|l| l.parent == Some(streaks)).count(), 1);
         assert!(h.query_by_label("Glow").is_some(), "the glow is listed under its layer");
     }
+
+    #[test]
+    fn following_the_air_gives_the_scene_its_air_card() {
+        let (mut h, id) = harness();
+        assert!(!h.state().scene.things[&ThingId::ROOT].slots.contains_key(&SlotId::Air));
+        h.get_by_label("+ Add force").click();
+        h.run();
+        h.get_by_label("Follow the air").click();
+        h.run();
+        assert_eq!(kinds(&h, id, SlotId::Motion), [bpe_kit::things::particles::forces::AIR]);
+        assert_eq!(h.state().scene.things[&ThingId::ROOT].slots[&SlotId::Air].kind, bpe_kit::modules::air::AIR);
+        // The scene settings show it, with its wind.
+        h.state_mut().selection.set(ThingId::ROOT);
+        h.run();
+        assert!(h.query_all_by_label("Air").next().is_some());
+        assert!(h.query_all_by_label("Calms down").next().is_some());
+    }
 }

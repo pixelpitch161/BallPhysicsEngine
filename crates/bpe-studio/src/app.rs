@@ -208,6 +208,8 @@ pub struct Studio {
     pub light_solo: std::collections::BTreeSet<crate::lights_panel::LightSource>,
     /// What a lit preview shows: the picture, or the light alone (the editor's alone).
     pub light_show: bpe_gfx::LightShow,
+    /// Show air: faint arrows of the air over the preview (the editor's alone, never in the video).
+    pub show_air: bool,
     /// Wavetables baked in the background when the sound was last built
     /// ([`WaveBank::baked`]); more means it is built again.
     tables_baked: u64,
@@ -320,6 +322,7 @@ impl Studio {
             bottom: settings::BottomView::Timeline,
             light_solo: Default::default(),
             light_show: Default::default(),
+            show_air: false,
             tables_baked: WaveBank::baked(),
         }
     }
@@ -903,6 +906,15 @@ impl Studio {
         }
         style::bar_separator(ui);
         self.grid_controls(ui);
+        if self.particle_job.is_some() {
+            let air = ui.add(style::toggle_button("Air", self.show_air)).on_hover_text(
+                "Show air: faint arrows of which way the air goes at the playhead, for particles that \
+                 follow the air. They never show in the video.",
+            );
+            if air.clicked() {
+                self.show_air = !self.show_air;
+            }
+        }
         style::bar_separator(ui);
         ui.add(egui::TextEdit::singleline(&mut self.scene.name).desired_width(170.0).hint_text("Scene name"))
             .on_hover_text("The scene's name. Exported videos are named after it.");
@@ -1486,6 +1498,36 @@ mod tests {
         std::thread::sleep(Duration::from_millis(30));
         studio.tick();
         assert!(studio.time > 0.02, "the wall clock moves the playhead: {}", studio.time);
+    }
+
+    #[test]
+    fn an_air_edit_restarts_only_the_particles_and_the_toolbar_shows_the_air() {
+        use bpe_kit::things::particles::looks::{Look, add_particles};
+        let mut studio = Studio::headless();
+        let kit = studio.kit.clone();
+        let before = studio.scene.clone();
+        add_particles(&mut studio.scene, &kit.registry, Look::DustClouds, ThingId::ROOT).unwrap();
+        studio.after_edit(before);
+        assert!(studio.particle_job.is_some());
+        studio.sound = Some(SoundJob::recording());
+        let (print, physics) = (studio.particle_print, studio.fingerprint);
+        let before = studio.scene.clone();
+        studio.scene.card_mut(ThingId::ROOT, SlotId::Air).unwrap().params.set("wind_speed", Value::Number(300.0));
+        studio.after_edit(before);
+        assert_eq!(studio.fingerprint, physics, "the balls play on");
+        assert_ne!(studio.particle_print, print, "the particles start again");
+        let sent = studio.sound.as_ref().unwrap().recorded();
+        assert!(!sent.contains(&"rebuild"), "the sound plays on: {sent:?}");
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1500.0, 80.0))
+            .allow_missing_glyphs()
+            .with_context_setup(style::apply)
+            .build_ui_state(|ui, s: &mut Studio| s.toolbar(ui), studio);
+        h.run();
+        assert!(!h.state().show_air);
+        h.get_by_label("Air").click();
+        h.run();
+        assert!(h.state().show_air);
     }
 
     #[test]

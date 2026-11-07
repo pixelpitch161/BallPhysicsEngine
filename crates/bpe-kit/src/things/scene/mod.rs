@@ -209,7 +209,7 @@ impl ThingKind for SceneKind {
         SceneSettings::defs()
     }
     fn slots(&self) -> &'static [SlotId] {
-        &[SlotId::Shader, SlotId::Lighting, SlotId::Mixer]
+        &[SlotId::Shader, SlotId::Lighting, SlotId::Air, SlotId::Mixer]
     }
     fn default_slots(&self) -> &'static [SlotId] {
         &[]
@@ -281,7 +281,7 @@ mod tests {
     fn scene_settings_keep_their_effects_slot_to_themselves() {
         let k = SceneKind;
         assert_eq!(k.name(), "Scene settings");
-        assert_eq!(k.slots(), &[SlotId::Shader, SlotId::Lighting, SlotId::Mixer]);
+        assert_eq!(k.slots(), &[SlotId::Shader, SlotId::Lighting, SlotId::Air, SlotId::Mixer]);
         assert!(k.default_slots().is_empty());
         assert_eq!(k.slot_label(SlotId::Shader), "Effects");
     }

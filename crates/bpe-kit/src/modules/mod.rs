@@ -1,5 +1,6 @@
 //! Module kinds: what fills a thing's slots.
 
+pub mod air;
 pub mod bounce;
 pub mod effects;
 pub mod health;

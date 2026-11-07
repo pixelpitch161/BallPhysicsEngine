@@ -9,6 +9,9 @@
 //! a Particles thing is decoration only: it reads the balls and walls and changes nothing anything
 //! else reads, so it is stepped beside the physics ([`bpe_runtime::ThingSim::in_main`]).
 
+pub mod air;
+#[cfg(test)]
+mod air_tests;
 pub mod births;
 pub mod draw;
 pub mod forces;

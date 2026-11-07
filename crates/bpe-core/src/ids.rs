@@ -36,13 +36,16 @@ pub enum SlotId {
     /// The scene's mixer (the Mixer panel), not shown in the inspector's card list.
     Mixer,
     /// A thing's health (rules part 4): a ball's, a group's balls', an emitter's balls' or a
-    /// shape's. Last, so no other slot's place in [`SlotId::ALL`] moves.
+    /// shape's. After the others, so no other slot's place in [`SlotId::ALL`] moves.
     Health,
+    /// The scene's air (particles part 2, the Air card): only the scene settings have one. Last,
+    /// so no other slot's place in [`SlotId::ALL`] moves.
+    Air,
 }
 
 impl SlotId {
     /// Every slot, in the order the inspector shows them. `slot as usize` indexes this list.
-    pub const ALL: [SlotId; 10] = [
+    pub const ALL: [SlotId; 11] = [
         SlotId::Look,
         SlotId::Trail,
         SlotId::Motion,
@@ -53,6 +56,7 @@ impl SlotId {
         SlotId::Sound,
         SlotId::Mixer,
         SlotId::Health,
+        SlotId::Air,
     ];
 
     /// The name shown in the inspector.
@@ -68,6 +72,7 @@ impl SlotId {
             SlotId::Sound => "Sound",
             SlotId::Mixer => "Mixer",
             SlotId::Health => "Health",
+            SlotId::Air => "Air",
         }
     }
 
@@ -84,8 +89,10 @@ mod tests {
 
     #[test]
     fn sound_and_mixer_slots_are_last_and_hidden() {
-        assert_eq!(SlotId::ALL.len(), 10);
+        assert_eq!(SlotId::ALL.len(), 11);
         assert_eq!(SlotId::ALL[9], SlotId::Health);
+        assert_eq!(SlotId::ALL[10], SlotId::Air);
+        assert!(SlotId::Air.in_card_list());
         assert!(SlotId::Health.in_card_list());
         assert_eq!(SlotId::ALL[7], SlotId::Sound);
         assert_eq!(SlotId::ALL[8], SlotId::Mixer);

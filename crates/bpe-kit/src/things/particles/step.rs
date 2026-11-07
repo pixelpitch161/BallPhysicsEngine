@@ -4,6 +4,8 @@
 //! particles, so any number of threads gives the same particles.
 
 use bpe_runtime::{Log, World};
+
+use crate::air::Air;
 use glam::Vec2;
 
 use super::births::{self, BirthCx};
@@ -27,7 +29,7 @@ pub struct MoveCx<'a> {
     pub grid: Option<&'a BallGrid>,
     pub walls: &'a [WallAt],
     pub edges: Option<Edges>,
-    pub force: ForceCx,
+    pub force: ForceCx<'a>,
     /// The particle step being taken.
     pub now: u32,
     /// The fastest a particle may go.
@@ -114,17 +116,27 @@ pub fn due(world_step: u64, steps_per_second: u32) -> u32 {
     (world_step * STEPS_PER_SECOND / u64::from(steps_per_second.max(1))) as u32
 }
 
-/// Takes the particle steps due after world step `world.step` (whose log is `log`), over
-/// `threads` threads: none, one or several.
-pub fn catch_up(st: &mut ParticlesState, world: &World, log: &Log, threads: usize) {
-    while st.step < due(world.step, world.steps_per_second) {
-        step(st, world, log, threads);
+/// Puts the heat of `st`'s particles that heat the air into it, in particle order.
+pub fn put_heat(st: &ParticlesState, air: &mut Air) {
+    if !st.forces.heats_air() {
+        return;
+    }
+    for s in &st.specks {
+        let heat = st.forces.heat_of(s.age(st.step), DT);
+        if heat > 0.0 {
+            air.add_heat(s.place, heat);
+        }
     }
 }
 
 /// One particle step of `st` in `world`, after world step `world.step` (whose log is `log`),
-/// over `threads` threads. Hits since the last particle step let particles off.
+/// over `threads` threads, with no air. Hits since the last particle step let particles off.
 pub fn step(st: &mut ParticlesState, world: &World, log: &Log, threads: usize) {
+    step_in(st, world, log, threads, None);
+}
+
+/// [`step`] in the world's `air` (awake, at this step), which Follow the air reads.
+pub fn step_in(st: &mut ParticlesState, world: &World, log: &Log, threads: usize, air: Option<&Air>) {
     let since = st.world_step;
     st.world_step = world.step;
     st.step += 1;
@@ -156,7 +168,7 @@ pub fn step(st: &mut ParticlesState, world: &World, log: &Log, threads: usize) {
         grid: grid.as_ref(),
         walls: &walls,
         edges,
-        force: ForceCx { time: world.time() as f32, dt: DT, gravity: world.gravity },
+        force: ForceCx { time: world.time() as f32, dt: DT, gravity: world.gravity, air },
         now: st.step,
         ceiling: world.limits().ceiling,
     };

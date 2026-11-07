@@ -447,6 +447,28 @@ Editor: `look_editor/particles.rs` (the Forces and Look lists; a Motion card's e
 `look_editor::pick_key`), `preview/particle_handles.rs` (area corner/edges, line end). Scene format 12. Goldens:
 `tests/golden-particles*.txt` (`scenes::particle_scenes`, test-only).
 
+Part 2 is in (plan `part2.md`, "As built" at its end): **the air**. The scene's **Air card** (`SlotId::Air`, last in
+`SlotId::ALL`; kind `air`, `bpe-kit/src/modules/air.rs`: Wind, Wind direction, Gusts, Gust every, Gust waves; Calms
+down, Keeps its swirls, Resolution Coarse/Normal/Fine 32/16/8 px, Margin; Balls stir, Stir reach, Shapes block the
+air; Heat rises, Heat fades). The solver is `bpe-kit/src/air.rs` (`Air`, `AirSpec`, `gust_factor`): a world-anchored
+lattice over the camera's shot plus Margin (cells kept when the camera moves, at most `MOST_CELLS`), each step calm
+to the ambient wind, balls stir, heat lifts, vorticity confinement, semi-Lagrangian advection, solid shape cells
+moving with their wall, 20 Jacobi pressure iterations; rows split in fixed bands on threads past `THREADED_CELLS`,
+the same for any thread count. One `Air` per world in `World.states[ThingId::ROOT]` (`air_of`, `take_air`/`put_air`):
+the scene sim puts a sleeping one there with an Air card and re-reads it on Air keys; a Particles thing that follows
+or heats it (or any, with a card) wakes it in `after_build` (a late wake starts still at that step); the first
+Particles thing due a step takes every Particles thing's steps together, one particle step at a time: the air to
+that step (`Air::catch_up_to`), each thing's `step::step_in`, then its heat (`step::put_heat`), so at any Physics
+rate every thing reads the same air. Air keys following sound or light reach only `beside_fingerprint`.
+Off the grid the air is the ambient wind. Forces: **Follow the air** (`force.air`, Grip), Rise's **Heats the air**,
+Wind's **Gust waves** (0 = part 1's maths). `world::BESIDE_SLOTS` (`[Air]`): Air keys are animated, left out of
+the physics fingerprint and hashed by `beside_fingerprint` (an Air edit restarts only the particle playback).
+`things/particles/air.rs::ensure_air_card` (by `add_particles` for looks that follow the air and the editor's Add
+layer of `force.air`). Editor: the toolbar's **Air** toggle (`Studio.show_air`, shown with a particle job) draws
+`preview/air_view.rs` arrows from the particle job's snapshot (which carries the ROOT air). Looks Dust clouds,
+Thick fog; Sandstorm with gust waves and a haze layer. Goldens gain "Dust in the air", "Smoke heating the air",
+"Sandstorm". What part 8 needs is listed in the plan.
+
 Part 5 is in (plan `part5.md`): **looks 1**, drawing only. New `look.particles` layer kinds: **Soft smoke**
 (`particles.smoke`) and **Flame** (`particles.flame`) are soft **fields**: `bpe_gfx::Field { at, splats, look }` in
 `Frame.fields`/`fields_front` (`Splat`, `FieldLook`: mode `FIELD_SMOKE`/`FIELD_FLAME`, adds, amount, strength, detail,
