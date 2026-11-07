@@ -519,7 +519,8 @@ fn setting(
             style::wells(ui, |ui| match (two_ended, to.as_mut()) {
                 (true, Some(end)) => {
                     let range = def.range.or(def.span).unwrap_or((0.0, 1.0));
-                    let feel = setting_feel(def);
+                    let snap = crate::setting_snap::Snapper::for_unit(ui, unit, false);
+                    let feel = setting_feel(def).with_snap(snap);
                     let (a, b) = crate::vary::two_ended(ui, def, (value, end), range, feel, suffix(unit), name.id);
                     to_response = Some(b);
                     a
@@ -1212,6 +1213,20 @@ pub struct NumberFeel {
     pub step: f64,
     pub decimals: usize,
     pub drag_speed: f64,
+    /// Where drags land while the grid's Snap is on: none for a setting that doesn't measure a
+    /// distance or an angle, or while snapping is off or Alt is held.
+    pub snap: Option<crate::setting_snap::Snapper>,
+}
+
+impl NumberFeel {
+    /// This feel snapping drags with `snap`, showing enough decimals for its steps.
+    pub fn with_snap(mut self, snap: Option<crate::setting_snap::Snapper>) -> Self {
+        if let Some(s) = snap {
+            self.decimals = self.decimals.max(s.decimals());
+        }
+        self.snap = snap;
+        self
+    }
 }
 
 /// The feel of a number spanning `span`: the step is the power of ten nearest a two-hundredth of
@@ -1228,7 +1243,7 @@ pub fn number_feel(span: f64, integer: bool) -> NumberFeel {
     }
     let decimals = if integer { 0 } else { (-power).max(0.0) as usize };
     let drag_speed = (span / 400.0).min(1.0).max(step / 4.0);
-    NumberFeel { step, decimals, drag_speed }
+    NumberFeel { step, decimals, drag_speed, snap: None }
 }
 
 /// The feel of a setting's number: from its range, else its usual span, else from its unit
@@ -1281,6 +1296,17 @@ pub fn number_slider<N: egui::emath::Numeric>(
     // Where the rail is, for a following setting's band.
     let rail = egui::Rect::from_min_size(r.rect.min, Vec2::new(width.min(r.rect.width()), r.rect.height()));
     ui.ctx().data_mut(|d| d.insert_temp(r.id.with("rail"), rail));
+    if let Some(snap) = feel.snap
+        && !(min > 0.0 && max / min > 1000.0)
+    {
+        // egui's handle travels the rail inset by its radius (`SliderGeometry::position_range`).
+        let mut inset = rail.height() / 2.5;
+        if let egui::style::HandleShape::Rect { aspect_ratio } = ui.style().visuals.handle_shape {
+            inset *= aspect_ratio;
+        }
+        let x = rail.left() + inset..=rail.right() - inset;
+        snap_ticks(&ui.painter_at(rail.expand(8.0)), snap, (min, max), x, rail.center().y);
+    }
     r
 }
 
@@ -1313,13 +1339,17 @@ pub fn span_slider(
     name: Named,
 ) -> Response {
     let (lo, hi) = (span.0.min(span.1), span.0.max(span.1));
-    let fit = |v: f64| {
-        let v = if feel.step > 0.0 { (v / feel.step).round() * feel.step } else { v };
+    let clamp = |v: f64| {
         let v = if integer { v.round() } else { v };
         match range {
             Some((a, b)) => v.clamp(a.min(b), a.max(b)),
             None => v,
         }
+    };
+    // Drags, clicks and keys land on the slider's steps, or on the grid while it snaps.
+    let fit = |v: f64| match feel.snap {
+        Some(s) => clamp(s.snap(v)),
+        None => clamp(if feel.step > 0.0 { (v / feel.step).round() * feel.step } else { v }),
     };
     // Room for the number box at its widest within the span, so the row never pushes the panel wider.
     let widest = format!("{}{:.*}{unit}", if lo < 0.0 { "-" } else { "" }, feel.decimals, lo.abs().max(hi.abs()));
@@ -1352,7 +1382,11 @@ pub fn span_slider(
         let (left, right) =
             ui.input(|i| (i.key_pressed(egui::Key::ArrowLeft) as i32, i.key_pressed(egui::Key::ArrowRight) as i32));
         if left != right {
-            *value = fit(*value + (right - left) as f64 * feel.step.max(1e-9));
+            let dir = (right - left) as f64;
+            *value = match feel.snap {
+                Some(s) => clamp(s.nudge(*value, dir)),
+                None => fit(*value + dir * feel.step.max(1e-9)),
+            };
         }
     }
     if *value != before {
@@ -1367,6 +1401,9 @@ pub fn span_slider(
     let x = left + (right - left) * t;
     let groove = egui::Rect::from_x_y_ranges(left..=right, y - 1.0..=y + 1.0);
     painter.rect_filled(groove, 0.0, style::LINE);
+    if let Some(s) = feel.snap {
+        snap_ticks(&painter, s, (lo, hi), left..=right, y);
+    }
     let zero = if lo <= 0.0 && hi >= 0.0 && lo < 0.0 { left + (right - left) * (-lo / (hi - lo)) as f32 } else { left };
     let filled = egui::Rect::from_x_y_ranges(zero.min(x)..=zero.max(x), y - 1.0..=y + 1.0);
     painter.rect_filled(filled, 0.0, style::SLIDER_FILL);
@@ -1422,6 +1459,29 @@ pub fn span_slider(
     both
 }
 
+/// Small ticks under a rail from `x` (the span `lo..hi` across it, centre line at `y`) where a
+/// snapping slider's steps are, when they are far enough apart to read.
+fn snap_ticks(
+    painter: &egui::Painter,
+    snap: crate::setting_snap::Snapper,
+    (lo, hi): (f64, f64),
+    x: std::ops::RangeInclusive<f32>,
+    y: f32,
+) {
+    let (left, right) = (*x.start(), *x.end());
+    let Some(gap) = snap.tick_gap(lo, hi, right - left) else { return };
+    if hi <= lo {
+        return;
+    }
+    let mut k = (lo / gap).ceil();
+    while k * gap <= hi {
+        let t = ((k * gap - lo) / (hi - lo)) as f32;
+        let at = left + (right - left) * t;
+        painter.vline(at, y + 3.0..=y + 6.0, egui::Stroke::new(1.0, style::FAINT));
+        k += 1.0;
+    }
+}
+
 /// What names a control for the screen reader (and kittest): the label beside it, or words.
 #[derive(Clone, Copy, Debug)]
 pub enum Named<'a> {
@@ -1443,9 +1503,17 @@ impl Named<'_> {
 }
 
 /// The span slider for a setting's number: over its usual span, clamped only by its hard range.
-fn spanned(ui: &mut Ui, def: &SettingDef, x: &mut f64, span: (f64, f64), unit: String, name: egui::Id) -> Response {
+fn spanned(
+    ui: &mut Ui,
+    def: &SettingDef,
+    x: &mut f64,
+    span: (f64, f64),
+    feel: NumberFeel,
+    unit: String,
+    name: egui::Id,
+) -> Response {
     let integer = def.ty == ValueType::Int;
-    span_slider(ui, x, span, def.range, setting_feel(def), integer, unit, Named::By(name))
+    span_slider(ui, x, span, def.range, feel, integer, unit, Named::By(name))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1459,36 +1527,73 @@ fn widget(
     choices: &TargetChoices,
     big: bool,
 ) -> Response {
+    use crate::setting_snap::{Snapper, after_drag};
+    // Distances and angles land on the grid while it snaps (and Alt isn't held).
+    let snap = Snapper::for_unit(ui, unit, def.ty == ValueType::Vec2);
     let unit = suffix(unit);
-    let feel = setting_feel(def);
+    let feel = setting_feel(def).with_snap(snap);
     match (&def.ty, value) {
         (ValueType::Number, Value::Number(x)) => match (def.span, def.range) {
-            (Some(span), _) => spanned(ui, def, x, span, unit, name),
-            (None, Some(range)) => number_slider(ui, x, range, feel, unit).labelled_by(name),
-            (None, None) => ui
-                .add(DragValue::new(x).speed(feel.drag_speed).fixed_decimals(feel.decimals).suffix(unit))
-                .labelled_by(name),
+            (Some(span), _) => spanned(ui, def, x, span, feel, unit, name),
+            (None, Some(range)) => {
+                let before = *x;
+                let r = number_slider(ui, x, range, feel, unit).labelled_by(name);
+                after_drag(ui, &r, before, x, snap, false, Some(range));
+                r
+            }
+            (None, None) => {
+                let before = *x;
+                let r = ui
+                    .add(DragValue::new(x).speed(feel.drag_speed).fixed_decimals(feel.decimals).suffix(unit))
+                    .labelled_by(name);
+                after_drag(ui, &r, before, x, snap, false, None);
+                r
+            }
         },
         (ValueType::Int, Value::Int(x)) => match (def.span, def.range) {
             (Some(span), _) => {
                 let mut v = *x as f64;
-                let r = spanned(ui, def, &mut v, span, unit, name);
+                let r = spanned(ui, def, &mut v, span, feel, unit, name);
                 *x = v.round() as i64;
                 r
             }
-            (None, Some(range)) => number_slider(ui, x, range, feel, unit).labelled_by(name),
-            (None, None) => ui.add(DragValue::new(x).speed(feel.drag_speed).suffix(unit)).labelled_by(name),
+            (None, Some(range)) => {
+                let before = *x as f64;
+                let r = number_slider(ui, x, range, feel, unit).labelled_by(name);
+                let mut v = *x as f64;
+                if after_drag(ui, &r, before, &mut v, snap, true, Some(range)) {
+                    *x = v as i64;
+                }
+                r
+            }
+            (None, None) => {
+                let before = *x as f64;
+                let r = ui.add(DragValue::new(x).speed(feel.drag_speed).suffix(unit)).labelled_by(name);
+                let mut v = *x as f64;
+                if after_drag(ui, &r, before, &mut v, snap, true, None) {
+                    *x = v as i64;
+                }
+                r
+            }
         },
         (ValueType::Bool, Value::Bool(b)) => style::switch(ui, b).labelled_by(name),
         // In a narrow panel y goes under x.
         (ValueType::Vec2, Value::Vec2(v)) => {
             ui.horizontal_wrapped(|ui| {
                 let (speed, decimals) = (feel.drag_speed, feel.decimals);
+                let before = *v;
                 let x =
                     DragValue::new(&mut v[0]).speed(speed).fixed_decimals(decimals).prefix("x ").suffix(unit.clone());
                 let x = ui.add(x).labelled_by(name);
                 let y = DragValue::new(&mut v[1]).speed(speed).fixed_decimals(decimals).prefix("y ").suffix(unit);
                 let y = ui.add(y).labelled_by(name);
+                // A place lands on grid points while the grid snaps.
+                for (i, r) in [&x, &y].into_iter().enumerate() {
+                    let mut c = v[i] as f64;
+                    if after_drag(ui, r, before[i] as f64, &mut c, snap, false, None) {
+                        v[i] = c as _;
+                    }
+                }
                 x | y
             })
             .inner
@@ -2295,6 +2400,209 @@ mod tests {
         assert!(*h.state() > 8.0, "kept going past 4: {}", h.state());
         drag_rail(&mut h, -2000.0);
         assert!(*h.state() < 0.0, "and below 0 the other way: {}", h.state());
+    }
+
+    /// A slider in `unit` over `span` (hard range `range`) holding `value`, named "Amount", with
+    /// the grid snapping at 60 px and 15°.
+    fn snapping_harness(
+        value: f64,
+        span: (f64, f64),
+        range: Option<(f64, f64)>,
+        unit: &'static str,
+    ) -> egui_kittest::Harness<'static, f64> {
+        use crate::setting_snap::{SettingSnap, Snapper, put};
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(400.0, 80.0))
+            .with_context_setup(style::apply)
+            .build_ui_state(
+                move |ui, v: &mut f64| {
+                    put(ui.ctx(), Some(SettingSnap { length: 60.0, angle: 15.0 }));
+                    let feel = number_feel(span.1 - span.0, false).with_snap(Snapper::for_unit(ui, unit, false));
+                    span_slider(ui, v, span, range, feel, false, suffix(unit), Named::Words("Amount"));
+                },
+                value,
+            );
+        h.run();
+        h
+    }
+
+    /// [`drag_rail`] with `modifiers` held all the way.
+    fn drag_rail_holding(h: &mut egui_kittest::Harness<'static, f64>, dx: f32, modifiers: egui::Modifiers) {
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let rail = h
+            .query_all_by_label("Amount")
+            .find(|n| n.accesskit_node().role() == egui::accesskit::Role::Slider)
+            .unwrap()
+            .rect()
+            .center();
+        let press =
+            |pos, pressed| egui::Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers };
+        h.event(egui::Event::ModifiersChanged(modifiers));
+        h.hover_at(rail);
+        h.run();
+        h.event(press(rail, true));
+        h.step();
+        for k in 1..=10 {
+            h.event(egui::Event::PointerMoved(rail + egui::vec2(dx * k as f32 / 10.0, 0.0)));
+            h.step();
+        }
+        h.event(press(rail + egui::vec2(dx, 0.0), false));
+        h.step();
+        h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+        h.run();
+    }
+
+    fn on_the_grid(v: f64) -> bool {
+        (v / 60.0).fract().abs() < 1e-9 || (v.abs() < 60.0 && (v / 7.5).fract().abs() < 1e-9)
+    }
+
+    #[test]
+    fn a_length_dragged_while_the_grid_snaps_lands_on_it() {
+        for dx in [37.0, 81.0, 123.0, -51.0] {
+            let mut h = snapping_harness(200.0, (0.0, 400.0), None, "px");
+            drag_rail_holding(&mut h, dx, egui::Modifiers::NONE);
+            let v = *h.state();
+            assert!(v != 200.0 || dx.abs() < 10.0, "it moved: {dx} {v}");
+            assert!(on_the_grid(v), "{dx}: {v}");
+        }
+    }
+
+    #[test]
+    fn alt_held_drags_a_length_freely() {
+        let mut h = snapping_harness(200.0, (0.0, 400.0), None, "px");
+        drag_rail_holding(&mut h, 37.0, egui::Modifiers::ALT);
+        let v = *h.state();
+        assert!(!on_the_grid(v), "free with Alt: {v}");
+    }
+
+    #[test]
+    fn angles_land_on_the_angle_step_and_speeds_never_snap() {
+        let mut h = snapping_harness(0.0, (-180.0, 180.0), None, "°");
+        drag_rail_holding(&mut h, 41.0, egui::Modifiers::NONE);
+        let v = *h.state();
+        assert!(v != 0.0 && (v / 15.0).fract().abs() < 1e-9, "on 15° steps: {v}");
+        let mut h = snapping_harness(200.0, (0.0, 400.0), None, "px/s");
+        drag_rail_holding(&mut h, 37.0, egui::Modifiers::NONE);
+        assert!(!on_the_grid(*h.state()), "a speed isn't a distance: {}", h.state());
+    }
+
+    #[test]
+    fn a_snapped_length_still_keeps_its_hard_range() {
+        let mut h = snapping_harness(2.0, (0.5, 400.0), Some((0.5, 400.0)), "px");
+        drag_rail_holding(&mut h, -300.0, egui::Modifiers::NONE);
+        assert_eq!(*h.state(), 0.5, "0 is a step, the range lifts it to 0.5");
+    }
+
+    #[test]
+    fn a_typed_length_stays_exact() {
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let mut h = snapping_harness(200.0, (0.0, 400.0), None, "px");
+        let field = h
+            .query_all_by_label("Amount")
+            .find(|n| n.accesskit_node().role() != egui::accesskit::Role::Slider)
+            .unwrap()
+            .rect()
+            .center();
+        // A double-click opens the number box for typing.
+        h.hover_at(field);
+        h.run();
+        for _ in 0..2 {
+            for pressed in [true, false] {
+                h.event(egui::Event::PointerButton {
+                    pos: field,
+                    button: PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            h.step();
+        }
+        h.run();
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.event(egui::Event::Text("123".into()));
+        h.run();
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(*h.state(), 123.0);
+    }
+
+    /// A setting row's widget for `def` holding `value`, the grid snapping at 60 px and 15°.
+    fn widget_harness(def: SettingDef, value: Value) -> egui_kittest::Harness<'static, Value> {
+        use crate::setting_snap::{SettingSnap, put};
+        let choices = Box::leak(Box::new(TargetChoices::default()));
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(400.0, 80.0))
+            .with_context_setup(style::apply)
+            .build_ui_state(
+                move |ui, v: &mut Value| {
+                    put(ui.ctx(), Some(SettingSnap { length: 60.0, angle: 15.0 }));
+                    let name = ui.label(def.label).id;
+                    let unit = def.unit;
+                    widget(ui, &def, unit, v, name, egui::Id::unique("bar"), choices, false);
+                },
+                value,
+            );
+        h.run();
+        h
+    }
+
+    /// Drags the first control named `name` of role `role` by `dx`.
+    fn drag_named<S>(h: &mut egui_kittest::Harness<'static, S>, name: &str, role: egui::accesskit::Role, dx: f32) {
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let at = h.query_all_by_label(name).find(|n| n.accesskit_node().role() == role).unwrap().rect().center();
+        let press = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        h.hover_at(at);
+        h.run();
+        h.event(press(at, true));
+        h.step();
+        for k in 1..=10 {
+            h.event(egui::Event::PointerMoved(at + egui::vec2(dx * k as f32 / 10.0, 0.0)));
+            h.step();
+        }
+        h.event(press(at + egui::vec2(dx, 0.0), false));
+        h.run();
+    }
+
+    #[test]
+    fn a_ranged_length_and_a_place_land_on_the_grid() {
+        let base = bpe_kit::modules::look::BasicLook::defs()[0].clone();
+        let thick = SettingDef {
+            key: "thickness",
+            label: "Thickness",
+            ty: ValueType::Number,
+            default: Value::Number(100.0),
+            range: Some((0.5, 400.0)),
+            span: None,
+            unit: "px",
+            when: "",
+            ..base.clone()
+        };
+        let mut h = widget_harness(thick, Value::Number(100.0));
+        drag_named(&mut h, "Thickness", egui::accesskit::Role::Slider, 37.0);
+        let Value::Number(v) = *h.state() else { panic!() };
+        assert!(v != 100.0 && on_the_grid(v), "an egui slider snapped after: {v}");
+
+        let at = SettingDef {
+            key: "at",
+            label: "At",
+            ty: ValueType::Vec2,
+            default: Value::Vec2([0.0, 0.0]),
+            range: None,
+            span: None,
+            unit: "px",
+            when: "",
+            ..base
+        };
+        let mut h = widget_harness(at, Value::Vec2([10.0, 0.0]));
+        drag_named(&mut h, "At", egui::accesskit::Role::SpinButton, 90.0);
+        let Value::Vec2([x, y]) = *h.state() else { panic!() };
+        assert!(x != 10.0 && (x / 60.0).fract() == 0.0, "x on a grid point: {x}");
+        assert_eq!(y, 0.0, "y wasn't touched");
     }
 
     #[test]

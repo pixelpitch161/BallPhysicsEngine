@@ -164,8 +164,15 @@ pub fn two_ended(
     let integer = matches!(from, Value::Int(_));
     let decimals = if integer { 0 } else { feel.decimals };
     let snap = |x: f64| {
-        let step = if integer { 1.0 } else { feel.step };
-        let x = if step > 0.0 { (x / step).round() * step } else { x };
+        // On the grid while it snaps, else on the slider's steps.
+        let x = match feel.snap {
+            Some(s) => s.snap(x),
+            None => {
+                let step = if integer { 1.0 } else { feel.step };
+                if step > 0.0 { (x / step).round() * step } else { x }
+            }
+        };
+        let x = if integer { x.round() } else { x };
         x.clamp(lo.min(hi), hi.max(lo))
     };
     let (mut a, mut b) = (number(from), number(to));
@@ -226,8 +233,13 @@ pub fn two_ended(
             let speed = if integer { feel.drag_speed.max(0.05) } else { feel.drag_speed };
             ui.add(egui::DragValue::new(x).speed(speed).fixed_decimals(decimals).suffix(unit.clone()).range(lo..=hi))
         };
+        let (was_a, was_b) = (a, b);
         let mut from_box = boxed(ui, &mut a).labelled_by(name);
         let to_box = boxed(ui, &mut b);
+        // A box dragged lands on the grid too; a typed number is kept as it is.
+        let range = Some((lo, hi));
+        crate::setting_snap::after_drag(ui, &from_box, was_a, &mut a, feel.snap, integer, range);
+        crate::setting_snap::after_drag(ui, &to_box, was_b, &mut b, feel.snap, integer, range);
         let to_name = format!("{} to", def.label);
         to_box.widget_info(|| egui::WidgetInfo::labeled(egui::Role::SpinButton, true, to_name.clone()));
         let to_box = to_box.on_hover_text("The other end: what the last ball (or the far end of the spread) gets");
@@ -238,11 +250,16 @@ pub fn two_ended(
         if moved.1 {
             to_box.mark_changed();
         }
+        // While the grid snaps, what was dragged has landed already and a typed number stays exact.
+        let keep = |x: f64| match feel.snap {
+            Some(_) => if integer { x.round() } else { x }.clamp(lo.min(hi), hi.max(lo)),
+            None => snap(x),
+        };
         if from_box.changed() {
-            *from = like(from, snap(a));
+            *from = like(from, keep(a));
         }
         if to_box.changed() {
-            *to = like(to, snap(b));
+            *to = like(to, keep(b));
         }
         (from_box, to_box)
     })

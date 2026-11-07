@@ -11,6 +11,9 @@ use std::path::Path;
 /// The grid spacing the toolbar allows, in world pixels.
 pub const SPACING: std::ops::RangeInclusive<f32> = 10.0..=400.0;
 
+/// The angle steps the toolbar allows, in degrees.
+pub const ANGLES: std::ops::RangeInclusive<f32> = 1.0..=90.0;
+
 /// Lines closer than this on screen are too dense to help, so every other one is skipped.
 const MIN_LINE_GAP: f32 = 6.0;
 
@@ -20,15 +23,18 @@ const GRID_FILE: &str = "grid-next.txt";
 pub struct Grid {
     /// Draw the grid lines over the preview.
     pub show: bool,
-    /// Drags land on the grid. Works with the lines hidden too.
+    /// Drags land on the grid, in the preview and on the inspector's distance and angle settings.
+    /// Works with the lines hidden too.
     pub snap: bool,
     /// The size of one square, in world pixels.
     pub spacing: f32,
+    /// The step angle settings snap to, in degrees.
+    pub angle: f32,
 }
 
 impl Default for Grid {
     fn default() -> Self {
-        Self { show: false, snap: false, spacing: 60.0 }
+        Self { show: false, snap: false, spacing: 60.0, angle: 15.0 }
     }
 }
 
@@ -36,6 +42,11 @@ impl Grid {
     /// The grid step drags snap to, when snapping is on and not held off (Alt).
     pub fn step(&self, held_off: bool) -> Option<f32> {
         (self.snap && !held_off).then_some(self.spacing)
+    }
+
+    /// What the inspector's settings snap to, when snapping is on (Alt is read by the widgets).
+    pub fn setting_snap(&self) -> Option<crate::setting_snap::SettingSnap> {
+        self.snap.then_some(crate::setting_snap::SettingSnap { length: self.spacing as f64, angle: self.angle as f64 })
     }
 
     /// Draws the lines over the picture: faint squares and stronger lines through the centre.
@@ -87,6 +98,11 @@ impl Grid {
                         grid.spacing = spacing.clamp(*SPACING.start(), *SPACING.end());
                     }
                 }
+                "angle" => {
+                    if let Ok(angle) = value.trim().parse::<f32>() {
+                        grid.angle = angle.clamp(*ANGLES.start(), *ANGLES.end());
+                    }
+                }
                 _ => {}
             }
         }
@@ -103,7 +119,10 @@ impl Grid {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        std::fs::write(path, format!("show={}\nsnap={}\nspacing={}\n", self.show, self.snap, self.spacing))
+        std::fs::write(
+            path,
+            format!("show={}\nsnap={}\nspacing={}\nangle={}\n", self.show, self.snap, self.spacing, self.angle),
+        )
     }
 }
 
@@ -142,6 +161,9 @@ mod tests {
         assert_eq!(grid.step(false), Some(60.0));
         assert_eq!(grid.step(true), None);
         assert_eq!(Grid::default().step(false), None, "snap starts off");
+        assert_eq!(Grid::default().setting_snap(), None, "settings don't snap while Snap is off");
+        let snap = grid.setting_snap().unwrap();
+        assert_eq!((snap.length, snap.angle), (60.0, 15.0));
     }
 
     #[test]
@@ -149,11 +171,14 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ball-studio-grid-{}", std::process::id()));
         let file = dir.join(GRID_FILE);
         assert_eq!(Grid::load_from(&file), None);
-        let grid = Grid { show: true, snap: true, spacing: 45.0 };
+        let grid = Grid { show: true, snap: true, spacing: 45.0, angle: 22.0 };
         grid.save_to(&file).unwrap();
         assert_eq!(Grid::load_from(&file), Some(grid));
         std::fs::write(&file, "spacing=9000\n").unwrap();
         assert_eq!(Grid::load_from(&file).unwrap().spacing, 400.0, "kept in range");
+        assert_eq!(Grid::load_from(&file).unwrap().angle, 15.0, "an older file snaps angles by 15");
+        std::fs::write(&file, "angle=500\n").unwrap();
+        assert_eq!(Grid::load_from(&file).unwrap().angle, 90.0, "kept in range");
         let _ = std::fs::remove_dir_all(dir);
     }
 }
