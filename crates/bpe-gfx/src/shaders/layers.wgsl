@@ -187,7 +187,8 @@ fn light_piece(piece: Piece, l: LayerGpu, hit: vec4<f32>) -> Piece {
         blocks = LIGHT_BODY_BLOCKS;
     }
     // In Stage a ball blocks as a sphere, not in the blockers' field: a quarter marks it (the
-    // field's seeds take only more than a half; the light field reads it, part 2b).
+    // field's seeds take only more than 0.3 on a Stage, lighting.wgsl's `foot_blocks`; the light
+    // field reads it, part 2b).
     if LIGHT_BALL && g.light.z > 0.5 {
         blocks *= 0.25;
     }

@@ -68,7 +68,11 @@ balls take their layer's). The renderer (`bpe-gfx/src/lib.rs::render`, `lighting
 lit frame three times through `draw_scene` (`Globals.light.x`: 0 the picture, 1 each layer's colour × Lit, 2 the
 surface: R blocks, G a ball's height), then a jump-flood signed distance field of the blockers, then each pixel's
 lights with a 2D shadow march (penumbra from the lamp's size, stopping short of the lamp by its size, a ridden ball's
-radius and how deep in a blocker it sits) and normals from the height: `C + (L − 1) × clamp(W, 0, C)`. No Lighting
+radius and how deep in a blocker it sits) and normals from the height: `C + (L − 1) × clamp(W, 0, C)`. Thin blockers block
+whole (plan `lighting/thin-blockers.md`): `fs_seed` keeps a field texel any blocking pixel touches (`foot_blocks`,
+`BLOCK_LEAST` 0.1; 0.3 on a Stage, whose balls mark a quarter) and closes diagonal gaps; `visibility` marches with
+`march`/`confirm` (the picture itself checked where the coarse field says "inside") and, when the middle ray crosses
+a blocker, `LAMP_RAYS` rays across the lamp (union of their clear stretches); `tests/thin_blockers.rs`. No Lighting
 card leaves `Frame.light` `None` and the picture byte-identical (`bpe-kit/tests/unlit_pictures.rs`, hashes made before
 lighting; `tests/lit_pictures.rs` checks lit pictures; `scenes::lit_room`/`lit_demo` are test-only). The status line
 shows "Lighting: N lights, X ms" (`Renderer::lighting_stats`, GPU timestamps via `timing.rs` when the device has
