@@ -166,14 +166,15 @@ impl Ready {
         }
         // The parent's balls and middle.
         let parent = st.parent.filter(|p| *p != ThingId::ROOT);
-        if let Some((p, b)) = parent.and_then(|p| world.bodies.get(&p).map(|b| (p, b))) {
+        if let Some((p_id, b)) = parent.and_then(|p| Some((p, world.bodies.get(&p)?))) {
             ready.parent_balls = (0..b.len())
                 .map(|r| {
                     (b.alive[r] && b.position[r].is_finite()).then(|| BallAt {
                         place: b.position[r],
                         velocity: b.velocity[r],
                         radius: b.radius[r].max(0.0),
-                        thing: p.0,
+                        thing: p_id,
+                        row: r as u32,
                     })
                 })
                 .collect();

@@ -168,7 +168,7 @@ pub trait ThingSim: Send + Sync + 'static {
         None
     }
     /// Whether the thing reads its own Motion and Bounce cards (they have no module sims): when it
-    /// steps with the physics, the fingerprint then hashes them whole.
+    /// steps with the physics, the fingerprint then hashes them whole, layers and all.
     fn own_cards(&self) -> bool {
         false
     }

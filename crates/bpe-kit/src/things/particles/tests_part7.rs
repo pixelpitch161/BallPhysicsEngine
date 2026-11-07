@@ -105,7 +105,7 @@ fn moments_are_the_same_on_any_number_of_threads() {
     for threads in [1, 3, 8] {
         let mut copy = st.clone();
         for _ in 0..30 {
-            super::step::step(&mut copy, &world, &log, threads);
+            super::step::step(&mut copy, &world, &log, threads, None);
         }
         let (moments, counts) = copy.moments_at(copy.moments_step);
         let moments: Vec<_> = moments.iter().map(|m| (m.kind, m.with, m.seed, m.place.x.to_bits())).collect();

@@ -161,6 +161,11 @@ pub fn seen<'a>(cx: &DrawCx, st: &'a ParticlesState, layer: &LookLayer, hit: Hit
         _ => None,
     };
     let ball_colour = ball_cx.as_ref().and_then(crate::things::balls::draw::ball_colors);
+    // The Look of the Particles thing it is fed by, when a layer takes its particles' colours.
+    let kin_layers = match (c.colour_from, parent) {
+        (ColourFrom::ParentParticle, Some((_, resolved))) => layers(resolved),
+        _ => Vec::new(),
+    };
     let now = st.step;
     let twinkle = c.twinkle.clamp(0.0, 1.0);
     for s in &st.specks {
@@ -171,7 +176,7 @@ pub fn seen<'a>(cx: &DrawCx, st: &'a ParticlesState, layer: &LookLayer, hit: Hit
         let Some(grow) = c.size_curve.at(t) else { continue };
         let age = s.age(now);
         let flicker = 1.0 - twinkle * (0.5 + 0.5 * (c.twinkle_speed * TAU * age + unit(s.seed, 67) * TAU).sin());
-        let alpha = (c.opacity * c.fade.at(t) * flicker).max(0.0);
+        let alpha = (c.opacity * c.fade.at(t) * flicker * s.rest_fade(now)).max(0.0);
         if alpha <= 0.0 {
             continue;
         }
@@ -193,6 +198,9 @@ pub fn seen<'a>(cx: &DrawCx, st: &'a ParticlesState, layer: &LookLayer, hit: Hit
         };
         let base = match (&ball_colour, s.ball) {
             (Some(of), b) if b > 0 => of(b as usize - 1),
+            _ if c.colour_from == ColourFrom::ParentParticle => {
+                parent_particle_colour(cx, &kin_layers, s).unwrap_or_else(own)
+            }
             _ => own(),
         };
         let size = s.size * c.size.max(0.0) * grow;
@@ -236,8 +244,79 @@ fn copied(p: &Particle, by: Vec2, k: f32, fade: f32) -> Particle {
     q
 }
 
+/// How wide (half) a pile column's band is: a little over half a column, so they join up.
+const PILE_HALF_WIDTH: f32 = super::piles::COLUMN * 0.6;
+
+/// Draws `st`'s piles for `layer` into `pieces`: each column with sand one upright streak from its
+/// surface to its top.
+pub fn draw_piles(cx: &DrawCx, st: &ParticlesState, layer: &LookLayer, softness: f32, pieces: &mut Pieces) {
+    let c = &layer.common;
+    let alpha = c.opacity.max(0.0);
+    if alpha <= 0.0 {
+        return;
+    }
+    let screen = cx.resolved.screen;
+    let hit = if layer.subs.iter().any(|s| s.reads_hits()) { parent_hits(cx, st.parent) } else { HitInfo::default() };
+    let code = ShapeMadeOf::Streaks.as_ball().code();
+    for pile in &st.piles.list {
+        for (k, &height) in pile.height.iter().enumerate() {
+            if height <= 0.05 {
+                continue;
+            }
+            let i = pile.first + k as i32;
+            let x = super::piles::Pile::x_of(i);
+            let base = pile.base[k];
+            let middle = glam::Vec2::new(x, base - height * 0.5);
+            let inputs = Inputs {
+                index: (i.rem_euclid(1024)) as usize,
+                count: 1024,
+                place: middle,
+                place_screen: if screen { middle } else { cx.world.camera.to_screen(middle) },
+                start: middle,
+                life: 0.5,
+                time: cx.time as f32,
+                seed: i as u32,
+                ..Inputs::default()
+            };
+            let base_colour = colour_at(&c.colour, &inputs);
+            let subs = &layer.subs;
+            let colour = shade(c, coloured(subs, subs.len(), base_colour, hit), alpha);
+            // Upright: from the surface up to the top, the ends rounded off by the width.
+            let half = (height * 0.5 + PILE_HALF_WIDTH * 0.5).max(PILE_HALF_WIDTH);
+            let mut p = Particle::new(code, middle, std::f32::consts::FRAC_PI_2, PILE_HALF_WIDTH, colour);
+            p.style[0] = half;
+            p.style[2] = softness.clamp(0.0, 1.0);
+            let extras =
+                Extras { subs, base: base_colour, s: 0.5, fade: alpha, unit: 1.0, hit, outline: 1.0, added: 1.0 };
+            particle_with_extras(p, &extras, pieces);
+        }
+    }
+}
+
+/// The colour of the parent particle a fed particle `s` was born from: the parent thing's first
+/// Look layer with colours of its own, at that particle's seed and life.
+fn parent_particle_colour(cx: &DrawCx, parent: &[LookLayer], s: &Speck) -> Option<[f32; 4]> {
+    let own = parent.iter().find(|l| l.common.colour_from == ColourFrom::Own)?;
+    let inputs = Inputs {
+        index: (unit(s.kin_seed, 41) * 1024.0) as usize,
+        count: 1024,
+        place: s.place,
+        place_screen: if cx.resolved.screen { s.place } else { cx.world.camera.to_screen(s.place) },
+        start: s.home,
+        life: s.kin_life,
+        time: cx.time as f32,
+        seed: s.kin_seed,
+        ..Inputs::default()
+    };
+    Some(colour_at(&own.common.colour, &inputs))
+}
+
 /// Draws `layer`'s particles of `st` into `pieces`; Soft smoke and Flame give their field.
 pub fn draw_layer(cx: &DrawCx, st: &ParticlesState, layer: &LookLayer, pieces: &mut Pieces) -> Option<Field> {
+    if let Drawn::Piles { softness } = layer.drawn {
+        draw_piles(cx, st, layer, softness, pieces);
+        return None;
+    }
     let hit = if layer.subs.iter().any(|s| s.reads_hits()) { parent_hits(cx, st.parent) } else { HitInfo::default() };
     let seen = seen(cx, st, layer, hit);
     let c = &layer.common;
@@ -337,7 +416,8 @@ pub fn sprite(
         Drawn::Shapes(l) => (shape_sprite(l, s, size, colour, now, flutter), None),
         Drawn::Glitter(l) => glitter_sprite(l, s, size, colour, time),
         // Fields and lines are drawn their own way; a plain dot stands in.
-        Drawn::Smoke(_) | Drawn::Flame(_) | Drawn::Web(_) => {
+        // Piles are drawn column by column (`draw_piles`).
+        Drawn::Smoke(_) | Drawn::Flame(_) | Drawn::Web(_) | Drawn::Piles { .. } => {
             (Particle::new(ShapeMadeOf::Dots.as_ball().code(), s.place, s.turn, size, colour), None)
         }
     }

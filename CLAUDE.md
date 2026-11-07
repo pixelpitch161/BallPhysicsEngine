@@ -469,6 +469,30 @@ layer of `force.air`). Editor: the toolbar's **Air** toggle (`Studio.show_air`, 
 Thick fog; Sandstorm with gust waves and a haze layer. Goldens gain "Dust in the air", "Smoke heating the air",
 "Sandstorm". What part 8 needs is listed in the plan.
 
+Part 4 is in (plan `part4.md`, "As built" at its end): **particles meeting things**. **Feeding**: Born from **Its
+parent's particles** (`BornFrom::ItsParentsParticles`, the tree parent a Particles thing) When they (`FedWhen`) Die /
+Land / Hit a ball / Hit a shape / Hit anything / Pop / Stop rising (Count each) or Every step (Rate a parent particle);
+the parent keeps that step's `feeds` (`feeds.rs`: `Feed`, `FeedKind`, only the kinds its children `wants`,
+`LAND_SPEED`), and in part 2's lock-step particle loop a fed thing steps right after its parent (tree order),
+reading the feeds of that very step, so it sees every one at any Physics rate (`step::wants_of`; fed things are
+always decoration, at most `MOST_FED` births a moment); `births::fed_places`, `Speck.kin_seed/kin_life`, Colour from **Its parent particle** (`ColourFrom::ParentParticle`).
+**Meets things** gains On touching a ball Pop / **Stick** (`STUCK`, `Speck.on/on_row/offset`, rides the ball, falls off
+on a hard landing at Fall off when it lands, `SHAKE_SPEED`, `LOOSE` until it leaves the ball) and At shapes **Settle**
+(`RESTING`, rides a moving shape, `age` stands still, kicked up by a ball faster than `KICK_SPEED`, Fade after
+`SETTLE_FADE`, Most kept) / **Pile up** (`piles.rs`: `Piles`/`Pile` height columns `COLUMN` 2 px wide on still up-facing
+walls and the floor (edges Bounce: `MeetsSettings::floor`), `Surfaces::of`, `add_sand` slides to the Angle of repose
+(`MOST_SLIDES`, `SLIDE_LEAST`), pours off ledges (`spill`), crumbles when its shape moves (`crumble_moved`), cut by balls
+(`cut_by_ball`, sand Thrown up, `throw_sand`, `MOST_THROWN` in one go); touching piles on one surface are joined (`merge_touching`); layer **Piles** `particles.piles` draws one upright
+streak a column). **Two-way** (`two_way.rs`, Meets things' Two-way group: Weight, Pushes / Slows / Holds up / Weighs
+balls): `in_main` is then true, so the thing runs in the main world and counts in the fingerprint (`ThingSim::own_cards`
+makes `fingerprint_of` hash its own Motion/Bounce cards, and then the Air card and its keys too); `TwoWayOut` sums each particle step's momentum per ball in
+chunk order, given once in the thing's `forces`, stuck weight every substep, and `hold_up` (the `settle` hook) rests
+balls on piles (digging in past `DIG_SPEED`). Looks: Fire and smoke (Flame; its Smoke child Soft smoke), Bubbles, Sand that
+piles up, Falling leaves (part 5's Leaves), Waterfall and mist, Liquid splashes, Fireworks, Sticky dust; Thick fog is two-way (slows the balls); part 3's Flock draws part 5's Birds; Rain splashes (`Recipe.children`,
+`add_recipe`).
+Editor: the Add thing menu's "Empty, fed by <name>" while a Particles thing is selected; the status line also counts
+the main world's (two-way) particles. Goldens `tests/golden-particles-meeting*.txt` (`scenes::particle_scenes_meeting`).
+
 Part 5 is in (plan `part5.md`): **looks 1**, drawing only. New `look.particles` layer kinds: **Soft smoke**
 (`particles.smoke`) and **Flame** (`particles.flame`) are soft **fields**: `bpe_gfx::Field { at, splats, look }` in
 `Frame.fields`/`fields_front` (`Splat`, `FieldLook`: mode `FIELD_SMOKE`/`FIELD_FLAME`, adds, amount, strength, detail,

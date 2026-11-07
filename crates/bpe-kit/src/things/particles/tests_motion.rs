@@ -24,25 +24,7 @@ use super::{AreaShape, BeatEvery, BornFrom, Emit, GridBy, GridCovers, Heading, K
 use crate::{kit, registry};
 
 fn speck(place: Vec2, velocity: Vec2) -> Speck {
-    Speck {
-        place,
-        previous: place,
-        velocity,
-        home: place,
-        born: 0,
-        life: 1000.0,
-        size: 2.0,
-        turn: 0.0,
-        spin: 0.0,
-        flip: 0.0,
-        seed: 12345,
-        ball: 0,
-        flags: 0,
-        spot: 0,
-        met: 0,
-        with: [0; 2],
-        impact: [0.0; 2],
-    }
+    Speck { velocity, life: 1000.0, size: 2.0, ..Speck::at(place, 0, 12345) }
 }
 
 const CX: ForceCx<'static> = ForceCx { time: 0.0, dt: DT, gravity: Vec2::ZERO, air: None };
@@ -256,7 +238,7 @@ fn a_crowd_on_a_grid_fills_every_place_and_refills_a_lost_one_there() {
     // One dies: it comes back at its own place.
     let mut st = st.clone();
     let lost = st.specks.remove(5);
-    step::step(&mut st, &world, &log, 1);
+    step::step(&mut st, &world, &log, 1, None);
     assert_eq!(st.specks.len(), 24);
     let back = st.specks.last().unwrap();
     assert_eq!(back.spot, lost.spot);
@@ -366,7 +348,7 @@ fn orbit_pulls_sideways() {
 
 #[test]
 fn its_ball_is_each_particles_own_and_push_goes_the_other_way() {
-    let ball = BallAt { place: Vec2::new(500.0, 0.0), velocity: Vec2::ZERO, radius: 10.0, thing: 0 };
+    let ball = BallAt { place: Vec2::new(500.0, 0.0), velocity: Vec2::ZERO, radius: 10.0, thing: ThingId(0), row: 0 };
     let ready =
         Ready { parent_balls: vec![None, Some(ball)], per_force: vec![ForceReady::Nothing], ..Ready::default() };
     let mut s = speck(Vec2::new(400.0, 0.0), Vec2::ZERO);
@@ -380,7 +362,7 @@ fn its_ball_is_each_particles_own_and_push_goes_the_other_way() {
 
 #[test]
 fn balls_nearby_push_only_within_their_reach() {
-    let ball = BallAt { place: Vec2::ZERO, velocity: Vec2::ZERO, radius: 10.0, thing: 0 };
+    let ball = BallAt { place: Vec2::ZERO, velocity: Vec2::ZERO, radius: 10.0, thing: ThingId(0), row: 0 };
     let ready =
         Ready { balls: Some(BallGrid::new(vec![ball], 4.0)), per_force: vec![ForceReady::Nothing], ..Ready::default() };
     let push = || Force::Push(PushForce { ball_reach: 4.0, ..Default::default() });
@@ -433,7 +415,7 @@ fn a_flock_aligns_holds_its_speed_and_skips_itself() {
 #[test]
 fn a_magnetic_field_lines_needles_up() {
     // A ball moving right: straight above it the field runs left-right.
-    let ball = BallAt { place: Vec2::ZERO, velocity: Vec2::new(100.0, 0.0), radius: 10.0, thing: 0 };
+    let ball = BallAt { place: Vec2::ZERO, velocity: Vec2::new(100.0, 0.0), radius: 10.0, thing: ThingId(0), row: 0 };
     let ready = Ready {
         balls: Some(BallGrid::new(vec![ball], 12.0)),
         per_force: vec![ForceReady::Nothing],
@@ -594,7 +576,7 @@ fn ripples_from_real_hits_and_flocks_are_the_same_on_any_number_of_threads() {
         .map(|threads| {
             let mut copy = st.clone();
             for _ in 0..6 {
-                step::step(&mut copy, &world, &log, threads);
+                step::step(&mut copy, &world, &log, threads, None);
             }
             hash_of(&copy)
         })
