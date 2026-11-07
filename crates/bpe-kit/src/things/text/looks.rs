@@ -71,7 +71,8 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
     let solid = |c: Color| Value::Gradient(Gradient::solid(c));
     // Layers to add, each with its settings and its sub-layers'.
     type Sub = (&'static str, Vec<(&'static str, Value)>);
-    let mut layers: Vec<(&'static str, Vec<(&'static str, Value)>, Vec<Sub>)> = Vec::new();
+    type Layer = (&'static str, Vec<(&'static str, Value)>, Vec<Sub>);
+    let mut layers: Vec<Layer> = Vec::new();
     let mut card: Vec<(&'static str, Value)> = Vec::new();
     match look {
         Look::Empty => {}
@@ -182,7 +183,9 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
     }
     // An Empty text keeps the name a new Text gets; a look is named after itself.
     let name = (look != Look::Empty).then(|| {
-        scene.things.get_mut(&id).map(|t| t.name.clear());
+        if let Some(t) = scene.things.get_mut(&id) {
+            t.name.clear();
+        }
         scene.free_name(look.name())
     });
     if let Some(t) = scene.things.get_mut(&id) {

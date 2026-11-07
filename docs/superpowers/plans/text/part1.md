@@ -332,3 +332,37 @@ Each look (settings not named keep their defaults; layer settings are written th
 - One Opus review of the whole branch before the PR (project rule); fix what it finds.
 - The PR merges itself once checks and review pass (project rule). Installing waits until **all five parts** are merged (project rule), but whoever installs must also copy `assets/fonts/text/` (55 fonts + `licences/`) to `F:\!Ai Stuff\BallPhysicsEngine\bin\fonts\`: `device_commit_files` takes at most 50 files a call, so two calls; strip the exes first (25 MB limit).
 - Update the plan with an "As built" section at its end for whatever differed.
+
+## As built
+
+Everything above is in. Where the build differs from the plan, or settles what it left open:
+
+- **Contour flags.** A contour's first point has z = `CONTOUR_START` (2) and its last z = `CONTOUR_END` (1), both
+  with w = the contour's length − 1, rather than flags on the first point only: `path_signed` walks backwards (it
+  needs the start to find the end) and `shape_at` forwards (it needs the end to find the start). Old shapes keep
+  z = w = 0; `paths_tests::shapes_draw_as_before` pins their picture by a hash made on the old shaders.
+- **Choice labels** come from the variant names: Path is Straight / Round a circle / Along a wave / Along a shape
+  (`when` strings `path=round_a_circle` …); Case is As typed / Capitals / Lower case / Title case.
+- **Wave shift** is in waves (y = h·sin(2π(x/λ + shift))), so 1 is a whole wave and Wave speed is waves a second.
+- **Along a shape** reads the first wall the Target names other than the text itself (default Anything = the first
+  shape); circles and ellipses are cut into 256 points from the top, clockwise. Gap is measured from the outline's
+  centre line. A Text gives no ripple sources (Ripples gradients ignore it) and no particles layers: the Look editor
+  leaves the Trails and particles list out for a Text.
+- **Looks.** A Text's Body has no settings and takes only the light and heat sub-layers, so Hook title's drop shadow
+  sits on its white Paint layer, and Neon sign's dark tube is a dark Paint layer under the pink Outline (which gives
+  off light) and the Glow, rather than a Body at opacity 0.
+- **Load font.** `FontRequest::Load(bytes, file stem)`: the stem names a font whose file gives no family name. A
+  refusal (`font_picker::NOT_A_FONT`) shows under the Font row until a font is picked or loaded. The inspector test
+  checks that one frame both keeps the font and sets the text in it, which is one undo step in the studio.
+  `fonts::problem_of(in_scene, name)` gives the Font row's warning without reading the file.
+- **Editor fonts.** `style::ensure_text_fonts` installs every built-in found on disk and every scene font as egui
+  families once a Text is selected, again when the scene's fonts change; `family_ready` keeps a name in the plain
+  font until its family is there. The font menu stays open while the search box is typed in (CloseOnClickOutside).
+- **Typing.** egui leaves an Area disabled on its first frame (it only sizes it), so the box takes the keyboard on
+  the first frame it can, then ends on Escape or when it loses the keyboard. Each key re-resolves the scene with
+  `Studio::scene_changed` and marks the frame recorded; ending records the session once with
+  `after_separate_edit`.
+- **Handles.** The Size dot and Wrap bar show on Straight (the dot on Along a wave too), the Radius ring on Round a
+  circle; Size scales by the corner's distance from the middle; Wrap is twice the pointer's distance on the text's
+  own x. Any Text is grabbed by the box round its letters, after the shapes' own handles and before the shapes' walls.
+- The tree has a T icon for a Text (the icon test asks every kind for one).

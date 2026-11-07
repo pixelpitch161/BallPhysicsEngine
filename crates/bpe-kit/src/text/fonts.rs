@@ -305,7 +305,8 @@ fn file_font(name: &str, path: &Path) -> Option<Arc<FontData>> {
 /// their address names them).
 fn scene_font(name: &str, bytes: &Arc<[u8]>) -> Option<Arc<FontData>> {
     type Key = (usize, usize, String);
-    static SCENE: OnceLock<Mutex<HashMap<Key, (Arc<[u8]>, Option<Arc<FontData>>)>>> = OnceLock::new();
+    type Kept = (Arc<[u8]>, Option<Arc<FontData>>);
+    static SCENE: OnceLock<Mutex<HashMap<Key, Kept>>> = OnceLock::new();
     let mut fonts = SCENE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
     if fonts.len() >= 64 {
         fonts.clear();
