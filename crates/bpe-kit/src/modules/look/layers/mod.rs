@@ -159,6 +159,12 @@ impl LayerKind for Kind {
     }
     /// Lit, Blocks light and (on a ball's Body) Bulge, in the layer's Lighting fold.
     fn light_defs(&self) -> &'static [SettingDef] {
+        // Every drawn layer of a Particles thing's Look is lit like the around layers (particles
+        // part 7), whatever its kind.
+        if self.card == crate::things::particles::look::CARD && self.section == LayerSection::Drawn {
+            use bpe_core::Settings;
+            return lighting::AroundLit::defs();
+        }
         lighting::defs_of(self.id)
     }
     /// Only a ball's drawn layers but Blend can be given to some balls of a group.

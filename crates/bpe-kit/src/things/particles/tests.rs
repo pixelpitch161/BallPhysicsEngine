@@ -123,7 +123,7 @@ fn particles_never_move_the_balls() {
     let kit = kit();
     let resolved = resolve(&scene, &kit.registry);
     let mut full = World::build(&scene, &resolved, &kit.sims);
-    let mut main = World::build(&scene, &main_part(&resolved, &kit.sims), &kit.sims);
+    let mut main = World::build(&scene, &main_part(&scene, &resolved, &kit.sims), &kit.sims);
     assert!(full.beside.contains(&id) && state_of(&main, id).is_none());
     let (mut a, mut b) = (Log::default(), Log::default());
     full.advance_to(3.0, &kit.sims, &mut a);
@@ -523,6 +523,9 @@ fn glitter_flashes_only_when_a_facet_faces_the_light() {
         ball: 0,
         flags: 0,
         spot: 0,
+        met: 0,
+        with: [0; 2],
+        impact: [0.0; 2],
     };
     let own = super::births::unit(7, 71) * std::f32::consts::TAU;
     s.turn = -own;

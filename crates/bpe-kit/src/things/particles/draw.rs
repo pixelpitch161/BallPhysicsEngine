@@ -1,8 +1,9 @@
 //! Drawing a Particles thing: nothing of its own, then each shown Look layer as an around layer
 //! with a blend of its own (so other blends route through the frame's layers as trails' do),
 //! every particle it draws as a sprite with what its sub-layers add (Soft smoke and Flame as one
-//! soft field the GPU splats and shades, Web lines as lines between them). Particles carry no
-//! lighting yet (their `light`, `emit` and `extra` stay 0).
+//! soft field the GPU splats and shades, Web lines as lines between them). In a lit scene each
+//! layer's sprites and field carry its Lighting (`light`, `extra`) and the light its Gives off
+//! light sub-layers give (`emit`), as a ball's around layers do (part 7).
 
 use std::f32::consts::TAU;
 
@@ -22,6 +23,7 @@ use super::look::{
 use super::sim::state_of;
 use super::state::{ParticlesState, Speck};
 use super::web::{MOST_WEB_LINES, ball_links, links};
+use crate::modules::look::layers::around::{Drew, more_in};
 use crate::modules::look::layers::around_subs::{Extras, HitInfo, OWN, Pieces, coloured, particle_with_extras};
 use crate::modules::look::layers::gpu::SubLayer;
 use crate::modules::look::layers::particles::ShapeMadeOf;
@@ -66,9 +68,21 @@ impl ThingDraw for ParticlesDraw {
     fn draw_around(&self, cx: &DrawCx, index: usize, frame: &mut Frame) {
         let Some(layer) = layers(cx.resolved).into_iter().nth(index) else { return };
         let Some(st) = state_of(cx.world, cx.thing.id) else { return };
+        let drew = Drew::from(frame);
         let mut pieces = Pieces::default();
-        let field = draw_layer(cx, st, &layer, &mut pieces);
+        let mut field = draw_layer(cx, st, &layer, &mut pieces);
+        // What the layer itself drew gives off its light; everything it drew takes its Lighting.
+        pieces.give_light(layer.emit);
+        if let Some(f) = field.as_mut() {
+            f.look.light = [layer.light[0], layer.light[1], 0.0, 0.0];
+            // A field has no one colour: its light is the sub-layer's own and its tint.
+            f.look.emit = layer.emit.map_or([0.0; 4], |e| e.at([1.0; 4]));
+            if let Some(more) = more_in(layer.more, cx, frame.light.as_mut()) {
+                f.look.extra = more;
+            }
+        }
         pieces.into_frame_with_field(frame, layer.common.place == AroundPlace::InFront, field);
+        drew.stamp(frame, layer.light, layer.more, cx);
     }
 }
 

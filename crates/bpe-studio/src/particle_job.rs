@@ -76,7 +76,7 @@ pub struct ParticleJob {
 impl ParticleJob {
     /// Starts one for `scene` when it has things stepped beside the physics, at `time`.
     pub fn start_if_wanted(scene: &Scene, resolved: &Resolved, sims: Arc<Sims>, time: f64) -> Option<ParticleJob> {
-        if !bpe_runtime::has_beside(resolved, &sims) {
+        if !bpe_runtime::has_beside(scene, resolved, &sims) {
             return None;
         }
         let shared = Arc::new(Shared {

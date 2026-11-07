@@ -1428,14 +1428,14 @@ fn file_label(path: &Path) -> String {
 fn aim_job_for(scene: &Scene, resolved: &Resolved, kit: &Kit) -> Option<AimJob> {
     let duration = resolved.things.get(&ThingId::ROOT).map_or(0.0, |r| SceneSettings::from_params(&r.params).duration);
     // Particles never change the aim: the aiming runs the physics alone.
-    let main = bpe_runtime::main_part(resolved, &kit.sims);
+    let main = bpe_runtime::main_part(scene, resolved, &kit.sims);
     AimJob::start_if_wanted(scene, &main, kit.sims.clone(), duration.max(0.0) as f64)
 }
 
 /// The editor's playback of `scene`: the physics alone, without the things stepped beside it
 /// (their own playback is [`ParticleJob`]'s).
 fn main_playback(scene: &Scene, resolved: &Resolved, kit: &Kit) -> Playback {
-    Playback::new(scene, &bpe_runtime::main_part(resolved, &kit.sims), kit.sims.clone())
+    Playback::new(scene, &bpe_runtime::main_part(scene, resolved, &kit.sims), kit.sims.clone())
 }
 
 fn follow_of(scene: &Scene, resolved: &bpe_core::Resolved) -> Option<std::sync::Arc<bpe_sound::ControlSampler>> {

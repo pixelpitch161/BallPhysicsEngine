@@ -38,7 +38,7 @@ fn every_particle_scene_keeps_its_particles() {
         }
         assert_eq!(hash_of(state_of(jumpy.world(), id).unwrap()), *hashes.last().unwrap(), "{name}: seeking");
         // And the balls hit exactly as they do without the particles.
-        let mut alone = Playback::new(&scene, &main_part(&resolved, &kit.sims), kit.sims.clone());
+        let mut alone = Playback::new(&scene, &main_part(&scene, &resolved, &kit.sims), kit.sims.clone());
         alone.seek(SECONDS as f64);
         assert_eq!(alone.log().hash(), playback.log().hash(), "{name}: the particles moved the balls");
     }

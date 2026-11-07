@@ -10,7 +10,9 @@ use bpe_core::{
     Blend, Choice, Color, Gradient, LayerSection, Mix, ModuleKind, ResolvedSlot, SettingDef, Settings, SlotId,
 };
 
+use crate::modules::look::layers::gives_light::{Emit, GivesLight, unlit_if_lamp};
 use crate::modules::look::layers::gpu::SubLayer;
+use crate::modules::look::layers::lighting;
 use crate::modules::look::layers::particles::{ParticleFade, ShapeMadeOf, SizeOverLife};
 use crate::modules::look::layers::subs::{SubFlash, SubHue, SubOutline, SubRecolour};
 use crate::modules::look::layers::trail::AroundPlace;
@@ -33,6 +35,8 @@ pub const SUB_SHADOW: &str = "particles.sub.shadow";
 pub const SUB_RECOLOUR: &str = "particles.sub.recolour";
 pub const SUB_FLASH: &str = "particles.sub.flash";
 pub const SUB_HUE: &str = "particles.sub.hue";
+/// Gives off light (particles part 7): the layer's particles light the scene round them.
+pub const SUB_LIGHT: &str = "particles.sub.light";
 
 /// Which of the thing's particles a layer draws.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
@@ -533,6 +537,13 @@ pub struct LookLayer {
     pub common: Common,
     /// Its shown sub-layers, worked first to last.
     pub subs: Vec<SubLayer>,
+    /// How it takes the scene's light ([`lighting::of`]), its Lit taken away when it gives off
+    /// light (part 7).
+    pub light: [f32; 4],
+    /// Its UV and how it catches beams ([`lighting::extra_of`], no link number yet).
+    pub more: [f32; 4],
+    /// The light it gives off (its Gives off light sub-layers), when it gives any.
+    pub emit: Option<Emit>,
 }
 
 /// A sub-layer of `kind` with its settings `p`, as a ball's (sizes in pixels).
@@ -544,6 +555,7 @@ fn sub_of(kind: &str, p: &bpe_core::Params) -> Option<SubLayer> {
         SUB_RECOLOUR => SubLayer::Recolour(SubRecolour::from_params(p)),
         SUB_FLASH => SubLayer::Flash(SubFlash::from_params(p)),
         SUB_HUE => SubLayer::Hue(SubHue::from_params(p)),
+        SUB_LIGHT => SubLayer::Light(GivesLight::from_params(p)),
         _ => return None,
     })
 }
@@ -591,7 +603,20 @@ pub fn layers_of(slot: &ResolvedSlot) -> Vec<LookLayer> {
                 continue;
             }
         };
-        out.push(LookLayer { id: layer.id, drawn, common, subs: Vec::new() });
+        out.push(LookLayer {
+            id: layer.id,
+            drawn,
+            common,
+            subs: Vec::new(),
+            light: lighting::of(&p),
+            more: lighting::extra_of(&p, 0.0, true),
+            emit: None,
+        });
+    }
+    // Gives off light makes its layer a lamp: it shows its own colours, unlit.
+    for l in &mut out {
+        l.emit = Emit::of_subs(&l.subs);
+        l.light = unlit_if_lamp(l.light, l.emit);
     }
     out
 }
@@ -678,6 +703,12 @@ pub fn kinds() -> Vec<Kind> {
             "Colour on hit",
             "Its layer's colours turn round the wheel every time the thing it rides is hit.",
             SubHue::defs,
+        ),
+        sub(
+            SUB_LIGHT,
+            "Gives off light",
+            "Makes its layer's particles give off light that lights everything round them (with a Lighting card).",
+            GivesLight::defs,
         ),
     ]
 }

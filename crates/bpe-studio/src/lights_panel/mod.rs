@@ -17,8 +17,9 @@ use crate::app::Studio;
 use crate::style;
 
 /// The layer kinds that give off light (lighting part 1b's Gives off light sub-layer on ball and
-/// shape layers). A layer of one of these kinds that the registry knows gets a strip.
-pub const GIVES_OFF_LIGHT: [&str; 2] = ["sub.light", "shape.sub.light"];
+/// shape layers, and on a Particles thing's Look layers). A layer of one of these kinds that the
+/// registry knows gets a strip.
+pub const GIVES_OFF_LIGHT: [&str; 3] = ["sub.light", "shape.sub.light", bpe_kit::things::particles::look::SUB_LIGHT];
 
 /// One source of light, as the Lights tab lists and solos it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

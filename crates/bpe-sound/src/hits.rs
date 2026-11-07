@@ -18,6 +18,12 @@ pub fn hit_sample(event: &Event, samples_per_step: f64) -> u64 {
     (step_start + event.sample_in_step(samples_per_step)).round().max(0.0) as u64
 }
 
+/// Whether events of `kind` reach the voices: hits, the notes rules play and the moments a
+/// Particles thing's sound plays.
+pub fn plays(kind: &EventKind) -> bool {
+    matches!(kind, EventKind::Hit | EventKind::Note | EventKind::Moment)
+}
+
 /// Reads a physics log as it grows and hands out each block's hits.
 #[derive(Clone, Debug)]
 pub struct HitCursor {
@@ -54,8 +60,9 @@ impl HitCursor {
             self.read = events.len();
         }
         for e in &events[self.read..] {
-            // Hits, and the notes rules play (rules part 6), each on its sample.
-            if matches!(e.kind, EventKind::Hit | EventKind::Note) {
+            // Hits, the notes rules play (rules part 6) and particles' moments (particles part 7),
+            // each on its sample.
+            if plays(&e.kind) {
                 let at = hit_sample(e, self.samples_per_step);
                 // Hits come in step order but can land out of order within a step.
                 let i = self.waiting.partition_point(|(s, _)| *s <= at);

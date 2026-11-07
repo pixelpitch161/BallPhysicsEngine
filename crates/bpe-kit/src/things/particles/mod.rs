@@ -20,8 +20,10 @@ pub mod look;
 pub mod looks;
 mod looks_motion;
 pub mod meets;
+pub mod moments;
 pub mod more_forces;
 pub mod ready;
+pub mod rules;
 pub mod sim;
 pub mod spots;
 pub mod state;
@@ -30,6 +32,8 @@ pub mod step;
 mod tests;
 #[cfg(test)]
 mod tests_motion;
+#[cfg(test)]
+mod tests_part7;
 pub mod web;
 
 use bpe_core::{Choice, SettingDef, Settings, SlotId, Target, ThingKind};
@@ -584,8 +588,9 @@ impl ThingKind for ParticlesKind {
     fn settings(&self) -> &'static [SettingDef] {
         ParticlesSettings::defs()
     }
+    /// Its Sound card (particles part 7) is turned on from the Sound tab, like a shape's.
     fn slots(&self) -> &'static [SlotId] {
-        &[SlotId::Motion, SlotId::Bounce, SlotId::Look]
+        &[SlotId::Motion, SlotId::Bounce, SlotId::Look, SlotId::Sound]
     }
     fn default_slots(&self) -> &'static [SlotId] {
         &[SlotId::Motion, SlotId::Bounce, SlotId::Look]

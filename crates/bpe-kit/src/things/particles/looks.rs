@@ -7,11 +7,12 @@ use bpe_core::{Color, EditError, Gradient, Mix, Params, Registry, Scene, Setting
 use super::forces::{AIR, FollowAirForce, WANDER, WIND, WanderForce, WindForce};
 use super::forces::{DRAG, DragForce, GRAVITY, GravityForce, RISE, RiseForce, SWAY, SWIRL, SwayForce, SwirlForce};
 use super::look::{
-    FLAME, FlameLayer, GLITTER, GlitterLayer, MoreShape, Only, SHAPES, SMOKE, SPRITES, STREAKS, SUB_GLOW, ShapesLayer,
-    SmokeLayer, SpritesLayer, StreaksLayer, WEB, WebLayer,
+    FLAME, FlameLayer, GLITTER, GlitterLayer, MoreShape, Only, SHAPES, SMOKE, SPRITES, STREAKS, SUB_GLOW, SUB_LIGHT,
+    ShapesLayer, SmokeLayer, SpritesLayer, StreaksLayer, WEB, WebLayer,
 };
 use super::meets::{AtBalls, AtEdges, AtShapes, MeetsSettings};
 use super::{AreaShape, BornFrom, Edge, Emit, Heading, KIND, ParticlesSettings, RIDES, RidesOn};
+use crate::modules::look::layers::gives_light::GivesLight;
 use crate::modules::look::layers::particles::{ParticleFade, ShapeMadeOf, SizeOverLife};
 use crate::modules::look::shape::ShapeSubGlow;
 use crate::paint::{Follow, Paint};
@@ -226,6 +227,12 @@ pub(super) fn rainbow(follow: Follow) -> Paint {
 
 pub(super) fn glow(size: f32, strength: f32) -> (&'static str, Params) {
     (SUB_GLOW, ShapeSubGlow { size, strength, ..ShapeSubGlow::default() }.to_params())
+}
+
+/// A Gives off light sub-layer of `strength`: the layer lights the scene round it (only with a
+/// Lighting card; without one nothing changes).
+fn light(strength: f32) -> (&'static str, Params) {
+    (SUB_LIGHT, GivesLight { strength, ..GivesLight::default() }.to_params())
 }
 
 pub(super) fn sprites(s: SpritesLayer, subs: Vec<(&'static str, Params)>) -> LayerRecipe {
@@ -477,7 +484,7 @@ fn recipe(look: Look, rides: bool) -> Recipe {
             ],
             meets: MeetsSettings::default(),
             layers: vec![
-                layer(FLAME, FlameLayer::default().to_params(), Vec::new()),
+                layer(FLAME, FlameLayer::default().to_params(), vec![light(1.5)]),
                 // A few of them as embers, bright specks in the flames.
                 sprites(
                     SpritesLayer {
@@ -529,7 +536,7 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                     blend: bpe_core::Blend::Add,
                     ..Default::default()
                 },
-                vec![glow(4.0, 0.5)],
+                vec![glow(4.0, 0.5), light(1.0)],
             )],
         },
         Look::EmbersAndAsh => Recipe {
@@ -563,7 +570,7 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                         blend: bpe_core::Blend::Add,
                         ..Default::default()
                     },
-                    vec![glow(5.0, 0.6)],
+                    vec![glow(5.0, 0.6), light(0.8)],
                 ),
                 sprites(
                     SpritesLayer {
@@ -614,7 +621,7 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                     blend: bpe_core::Blend::Add,
                     ..Default::default()
                 },
-                vec![glow(10.0, 0.7)],
+                vec![glow(10.0, 0.7), light(1.0)],
             )],
         },
         Look::Confetti => Recipe {
