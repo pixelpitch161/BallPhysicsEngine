@@ -39,14 +39,14 @@ Confetti	5	227	7ef6ba4d1b1a197c
 Confetti	6	326	269293064caabad6
 Confetti	7	281	0736757fe4ab6b38
 Confetti	8	234	61453534d7c24c76
-Fireflies	1	40	92ec3e72a09723ee
-Fireflies	2	40	328c9e67f0b9be41
-Fireflies	3	40	90d59aeb28606952
-Fireflies	4	40	45d4df7154a33e9f
-Fireflies	5	40	c72fdce22d1bcda4
-Fireflies	6	40	799cafe68e8bc182
-Fireflies	7	40	49c159c5beab79f9
-Fireflies	8	39	83859db102aa2c28
+Fireflies	1	40	78c6f125c2e8d2b7
+Fireflies	2	40	68b7d0912e56fd3f
+Fireflies	3	40	4900ba195249ca6c
+Fireflies	4	40	cc77ea1bc0905a5d
+Fireflies	5	40	512e0ebabc41facd
+Fireflies	6	40	8dc7487bb31810ce
+Fireflies	7	40	bb9f10b6f3ec09fd
+Fireflies	8	39	81959fdaa6bd83ac
 Rainbow smoke	1	1452	cc1112824292c1a0
 Rainbow smoke	2	2870	34d8e0224f38a660
 Rainbow smoke	3	3580	dd5799016b94fd7f

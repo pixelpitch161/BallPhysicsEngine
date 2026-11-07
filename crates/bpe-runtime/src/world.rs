@@ -137,6 +137,11 @@ pub struct World {
     /// The video's size: how much of the world the shot covers at Zoom 1. The scene's sim sets
     /// it.
     pub video: Vec2,
+    /// Seconds in a beat of the scene's tempo, and beats in a bar; the scene's sim sets them
+    /// (120 beats a minute, four in a bar, without one). Only things stepped beside the physics
+    /// read them (particles born on the beat).
+    pub beat_seconds: f64,
+    pub beats_in_bar: u32,
     /// Bytes each thing's state takes beyond its own struct, for the states that hold a lot
     /// Their sims note it; [`World::memory`] counts it for playback budgets.
     pub state_memory: BTreeMap<ThingId, usize>,
@@ -257,6 +262,8 @@ impl World {
             seed: 0,
             camera: CameraView::default(),
             video: Vec2::new(1080.0, 1920.0),
+            beat_seconds: 0.5,
+            beats_in_bar: 4,
             state_memory: BTreeMap::new(),
             kinds: BTreeMap::new(),
             order: Vec::new(),
@@ -806,6 +813,8 @@ impl World {
             seed: self.seed,
             camera: self.camera,
             video: self.video,
+            beat_seconds: self.beat_seconds,
+            beats_in_bar: self.beats_in_bar,
             state_memory: BTreeMap::new(),
             kinds: self.kinds.clone(),
             order: self.order.iter().copied().filter(kept).collect(),
@@ -1542,6 +1551,17 @@ pub fn beside_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u6
         return 0;
     }
     let mut h = Hasher(fingerprint_of(scene, resolved, sims, true));
+    // What the main things hold that only the beside things read (the tempo).
+    for (id, r) in &resolved.things {
+        let Some(sim) = sims.thing(&r.kind).filter(|s| s.in_main(r)) else { continue };
+        for (key, value) in r.params.iter() {
+            if sim.affects_beside(key) {
+                h.bytes(&id.0.to_le_bytes());
+                h.bytes(key.as_bytes());
+                h.value(value);
+            }
+        }
+    }
     for (id, r) in &resolved.things {
         if !sims.thing(&r.kind).is_some_and(|s| !s.in_main(r)) {
             continue;

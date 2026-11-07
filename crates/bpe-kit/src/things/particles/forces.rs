@@ -1,12 +1,15 @@
 //! A Particles thing's Motion card (`motion.particles`): a list of force layers, applied in list
 //! order every particle step. Each has an Amount (how much of it acts) and an Only for (every
-//! particle, the young ones or the old ones). Part 1's forces: Gravity, Wind, Drag, Swirl, Wander,
-//! Rise, Sway and flutter; part 2's: Follow the air (and Rise heating the air, Wind's gust
-//! waves).
+//! particle, the young ones, the old ones, a share of them or the rest). Part 1's forces: Gravity,
+//! Wind, Drag, Swirl, Wander, Rise, Sway and flutter; part 2's: Follow the air (and Rise heating
+//! the air, Wind's gust waves); part 3's are in `more_forces.rs`.
 
 use bpe_core::{Choice, LayerSection, ModuleKind, ResolvedSlot, SettingDef, Settings, SlotId};
 use glam::Vec2;
 
+use super::more_forces::{self as more, FlockForce, FlowForce, MagneticForce, PullForce, PulseForce, PushForce};
+use super::more_forces::{RippleForce, SpirographForce, SpringForce};
+use super::ready::Ready;
 use super::state::Speck;
 use crate::air::gust_factor;
 use crate::modules::look::layers::Kind;
@@ -33,17 +36,10 @@ pub enum OnlyFor {
     YoungerThan,
     /// Particles older than Age.
     OlderThan,
-}
-
-impl OnlyFor {
-    /// Whether a force acts on a particle `age` seconds old, Age being `at`.
-    pub fn applies(self, age: f32, at: f32) -> bool {
-        match self {
-            OnlyFor::All => true,
-            OnlyFor::YoungerThan => age < at,
-            OnlyFor::OlderThan => age >= at,
-        }
-    }
+    /// A share of the particles (the same ones a Look layer's Only: A share picks).
+    AShare,
+    /// The other particles.
+    TheRest,
 }
 
 macro_rules! force_settings {
@@ -56,18 +52,22 @@ macro_rules! force_settings {
             pub amount: f32,
             #[setting(label = "Only for")]
             pub only: OnlyFor,
-            #[setting(label = "Age", when = "only!=all", range(0, 1e9), span(0, 10), unit = "s", keyframe)]
+            #[setting(label = "Age", when = "only=younger_than|older_than", range(0, 1e9), span(0, 10), unit = "s", keyframe)]
             pub age: f32,
+            /// How many of the particles it acts on (A share), or doesn't (The rest).
+            #[setting(label = "Share", when = "only=a_share|the_rest", range(0, 1), span(0, 1), keyframe)]
+            pub share: f32,
             $($(#[$fmeta])* pub $field: $ty,)*
         }
 
         impl Default for $name {
             fn default() -> Self {
-                Self { amount: 1.0, only: OnlyFor::All, age: 1.0, $($field: $default,)* }
+                Self { amount: 1.0, only: OnlyFor::All, age: 1.0, share: 0.5, $($field: $default,)* }
             }
         }
     };
 }
+pub(crate) use force_settings;
 
 force_settings!(
     /// A steady pull one way.
@@ -194,6 +194,15 @@ pub enum Force {
     Wander(WanderForce),
     Rise(RiseForce),
     Sway(SwayForce),
+    Pull(PullForce),
+    Push(PushForce),
+    Spring(SpringForce),
+    Flock(FlockForce),
+    Magnetic(MagneticForce),
+    Flow(FlowForce),
+    Spirograph(SpirographForce),
+    Pulse(PulseForce),
+    Ripple(RippleForce),
     Air(FollowAirForce),
 }
 
@@ -208,22 +217,56 @@ impl Force {
             WANDER => Force::Wander(WanderForce::from_params(p)),
             RISE => Force::Rise(RiseForce::from_params(p)),
             SWAY => Force::Sway(SwayForce::from_params(p)),
+            more::PULL => Force::Pull(PullForce::from_params(p)),
+            more::PUSH => Force::Push(PushForce::from_params(p)),
+            more::SPRING => Force::Spring(SpringForce::from_params(p)),
+            more::FLOCK => Force::Flock(FlockForce::from_params(p)),
+            more::MAGNETIC => Force::Magnetic(MagneticForce::from_params(p)),
+            more::FLOW => Force::Flow(FlowForce::from_params(p)),
+            more::SPIROGRAPH => Force::Spirograph(SpirographForce::from_params(p)),
+            more::PULSE => Force::Pulse(PulseForce::from_params(p)),
+            more::RIPPLE => Force::Ripple(RippleForce::from_params(p)),
             AIR => Force::Air(FollowAirForce::from_params(p)),
             _ => return None,
         })
     }
 
-    fn common(&self) -> (f32, OnlyFor, f32) {
+    /// Amount, Only for, Age and Share.
+    fn common(&self) -> (f32, OnlyFor, f32, f32) {
         match self {
-            Force::Gravity(f) => (f.amount, f.only, f.age),
-            Force::Wind(f) => (f.amount, f.only, f.age),
-            Force::Drag(f) => (f.amount, f.only, f.age),
-            Force::Swirl(f) => (f.amount, f.only, f.age),
-            Force::Wander(f) => (f.amount, f.only, f.age),
-            Force::Rise(f) => (f.amount, f.only, f.age),
-            Force::Sway(f) => (f.amount, f.only, f.age),
-            Force::Air(f) => (f.amount, f.only, f.age),
+            Force::Gravity(f) => (f.amount, f.only, f.age, f.share),
+            Force::Wind(f) => (f.amount, f.only, f.age, f.share),
+            Force::Drag(f) => (f.amount, f.only, f.age, f.share),
+            Force::Swirl(f) => (f.amount, f.only, f.age, f.share),
+            Force::Wander(f) => (f.amount, f.only, f.age, f.share),
+            Force::Rise(f) => (f.amount, f.only, f.age, f.share),
+            Force::Sway(f) => (f.amount, f.only, f.age, f.share),
+            Force::Pull(f) => (f.amount, f.only, f.age, f.share),
+            Force::Push(f) => (f.amount, f.only, f.age, f.share),
+            Force::Spring(f) => (f.amount, f.only, f.age, f.share),
+            Force::Flock(f) => (f.amount, f.only, f.age, f.share),
+            Force::Magnetic(f) => (f.amount, f.only, f.age, f.share),
+            Force::Flow(f) => (f.amount, f.only, f.age, f.share),
+            Force::Spirograph(f) => (f.amount, f.only, f.age, f.share),
+            Force::Pulse(f) => (f.amount, f.only, f.age, f.share),
+            Force::Ripple(f) => (f.amount, f.only, f.age, f.share),
+            Force::Air(f) => (f.amount, f.only, f.age, f.share),
         }
+    }
+
+    /// Whether it is one of part 3's forces, which read what the step gathered ([`Ready`]).
+    pub fn is_more(&self) -> bool {
+        !matches!(
+            self,
+            Force::Gravity(_)
+                | Force::Wind(_)
+                | Force::Drag(_)
+                | Force::Swirl(_)
+                | Force::Wander(_)
+                | Force::Rise(_)
+                | Force::Sway(_)
+                | Force::Air(_)
+        )
     }
 }
 
@@ -258,16 +301,17 @@ impl Forces {
         Forces { list }
     }
 
-    /// Changes `s`'s velocity (and its flip) by every force, `age` seconds into its life.
-    pub fn apply(&self, s: &mut Speck, age: f32, cx: &ForceCx<'_>) {
+    /// Changes `s`'s velocity (and its flip and turn) by every force, `age` seconds into its life.
+    /// `index` is its place in the step's particles and `ready` what the step gathered.
+    pub fn apply(&self, s: &mut Speck, index: usize, age: f32, cx: &ForceCx<'_>, ready: &Ready) {
         let dt = cx.dt;
-        for f in &self.list {
-            let (amount, only, at) = f.common();
-            let amount = fin(amount);
-            if amount == 0.0 {
-                continue;
+        for (k, f) in self.list.iter().enumerate() {
+            if s.flags & super::state::DEAD != 0 {
+                return;
             }
-            if !only.applies(age, at) {
+            let (amount, only, at, share) = f.common();
+            let amount = fin(amount);
+            if amount == 0.0 || !more::acts_on(only, at, share, s, age) {
                 continue;
             }
             match f {
@@ -318,6 +362,15 @@ impl Forces {
                         s.velocity.x += fin(w.flutter_drift) * s.flip.sin() * amount * dt * 4.0;
                     }
                 }
+                Force::Pull(p) => more::pull(s, &p.into(), amount, dt, ready, ready.of(k)),
+                Force::Push(p) => more::pull(s, &p.into(), amount, dt, ready, ready.of(k)),
+                Force::Spring(p) => more::spring(s, p, amount, dt, ready),
+                Force::Flock(p) => more::flock(s, index, p, amount, dt, ready),
+                Force::Magnetic(p) => more::magnetic(s, p, amount, dt, ready),
+                Force::Flow(p) => more::flow(s, p, amount, dt, ready),
+                Force::Spirograph(p) => more::spirograph(s, p, age, amount, dt, ready, ready.of(k)),
+                Force::Pulse(p) => more::pulse(s, p, amount, dt, ready, ready.of(k)),
+                Force::Ripple(p) => more::ripple(s, p, amount, dt, ready.of(k)),
             }
         }
     }
@@ -334,12 +387,12 @@ impl Forces {
 
     /// The heat particle `s`, `age` seconds old, puts into the air over `dt` (the Rise forces that
     /// heat and act on it).
-    pub fn heat_of(&self, age: f32, dt: f32) -> f32 {
+    pub fn heat_of(&self, s: &Speck, age: f32, dt: f32) -> f32 {
         let mut heat = 0.0;
         for f in &self.list {
             let Force::Rise(r) = f else { continue };
-            let (amount, only, at) = f.common();
-            if r.heats == 0.0 || !only.applies(age, at) {
+            let (amount, only, at, share) = f.common();
+            if r.heats == 0.0 || !more::acts_on(only, at, share, s, age) {
                 continue;
             }
             heat += fin(r.heats).max(0.0) * r.cool(age) * fin(amount).max(0.0) * dt;
@@ -404,6 +457,45 @@ pub fn kinds() -> Vec<Kind> {
             "Follow the air",
             "Carried by the air: the scene's wind, stirred up by the balls and lifted by heat (the Air card).",
             FollowAirForce::defs,
+        ),
+        force(
+            more::PULL,
+            "Pull to",
+            "Pulls the particles towards a place, a ball or the balls near them.",
+            PullForce::defs,
+        ),
+        force(
+            more::PUSH,
+            "Push away from",
+            "Pushes the particles away from a place or a ball: flee, comet tails.",
+            PushForce::defs,
+        ),
+        force(
+            more::SPRING,
+            "Spring home",
+            "Springs each particle back to its home: its place in a word or grid, or where it was born.",
+            SpringForce::defs,
+        ),
+        force(more::FLOCK, "Flock", "The particles fly together like birds or fish.", FlockForce::defs),
+        force(
+            more::MAGNETIC,
+            "Magnetic field",
+            "The particles line up with the balls' magnetic field, like iron filings.",
+            MagneticForce::defs,
+        ),
+        force(
+            more::FLOW,
+            "Flow field",
+            "Carries the particles along a current: noise, a spiral, waves or a vortex.",
+            FlowForce::defs,
+        ),
+        force(more::SPIROGRAPH, "Spirograph", "The particles loop round on spirograph curves.", SpirographForce::defs),
+        force(more::PULSE, "Pulse on the beat", "A kick on every beat or bar of the scene's tempo.", PulseForce::defs),
+        force(
+            more::RIPPLE,
+            "Ripple from hits",
+            "Every hit sends out a ring that pushes the particles as it passes.",
+            RippleForce::defs,
         ),
     ]
 }

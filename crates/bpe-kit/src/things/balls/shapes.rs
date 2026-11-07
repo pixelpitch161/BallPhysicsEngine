@@ -20,7 +20,7 @@ const SPIRAL_SPREAD: f32 = 0.6;
 /// Spiral: added to each ball's number, so the crowded middle opens up.
 const SPIRAL_START: f32 = 1.5;
 /// The font words are spelt in (the editor's own).
-const FONT: &[u8] = include_bytes!("../../../../bpe-studio/assets/fonts/IBMPlexSans-SemiBold.ttf");
+pub(crate) const FONT: &[u8] = include_bytes!("../../../../bpe-studio/assets/fonts/IBMPlexSans-SemiBold.ttf");
 
 /// Where each ball starts, relative to the thing, in the order the balls are numbered: one at
 /// the middle when the group is off, else the group's shape, turned by its Turn.
@@ -269,10 +269,15 @@ pub fn word(text: &str, letter_height: f32, step: f32) -> Vec<Vec2> {
 
 /// The outlines of `text`'s letters as closed polygons (y down), capitals `letter_height` tall.
 fn letter_outlines(text: &str, letter_height: f32) -> Vec<Vec<Vec2>> {
+    letter_outlines_in(FONT, text, letter_height)
+}
+
+/// [`letter_outlines`] in the font `font` (a TrueType file's bytes).
+pub(crate) fn letter_outlines_in(font: &[u8], text: &str, letter_height: f32) -> Vec<Vec<Vec2>> {
     use skrifa::MetadataProvider;
     use skrifa::instance::{LocationRef, Size};
     use skrifa::outline::DrawSettings;
-    let Ok(font) = skrifa::FontRef::new(FONT) else { return Vec::new() };
+    let Ok(font) = skrifa::FontRef::new(font) else { return Vec::new() };
     let unscaled = font.metrics(Size::unscaled(), LocationRef::default());
     let em = unscaled.units_per_em as f32;
     let cap = unscaled.cap_height.filter(|c| *c > 0.0).unwrap_or(0.7 * em);
@@ -326,7 +331,7 @@ fn spell(text: &str, letter_height: f32, step: f32) -> Vec<Vec2> {
 }
 
 /// How many times the outlines wind round `p` (non-zero: inside a letter).
-fn winding(shapes: &[Vec<Vec2>], p: Vec2) -> i32 {
+pub(crate) fn winding(shapes: &[Vec<Vec2>], p: Vec2) -> i32 {
     let mut w = 0;
     for shape in shapes {
         for (i, a) in shape.iter().enumerate() {

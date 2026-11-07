@@ -15,6 +15,8 @@ serde.workspace = true
 anyhow.workspace = true
 # Glyph outlines for the Word group shape (the same version egui already uses).
 skrifa = "0.44"
+# Pictures for the Particles thing's picture source.
+png = "0.18"
 
 [features]
 # The test scenes (and the shape-plus-ball `new_scene`): only tests turn this on, so the program ships
@@ -23,5 +25,4 @@ test-scenes = []
 
 [dev-dependencies]
 bpe-kit = { path = ".", features = ["test-scenes"] }
-png = "0.18"
 ron.workspace = true

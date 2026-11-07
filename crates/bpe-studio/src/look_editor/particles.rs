@@ -69,11 +69,14 @@ fn list(
 mod tests {
     use crate::inspector::Inspector;
     use crate::selection::Selection;
+    use bpe_core::Settings;
     use bpe_core::{Resolved, Scene, SlotId, ThingId, resolve};
     use bpe_kit::Kit;
     use bpe_kit::things::particles::forces::{DRAG, GRAVITY};
     use bpe_kit::things::particles::look::{SPRITES, STREAKS, SUB_GLOW};
     use bpe_kit::things::particles::looks::{Look, add_particles};
+    use bpe_kit::things::particles::more_forces::{FLOCK, PULL, SPRING};
+    use bpe_kit::things::particles::{BornFrom, ParticlesSettings, WordFrom};
     use eframe::egui;
     use egui_kittest::{Harness, kittest::Queryable};
 
@@ -146,6 +149,42 @@ mod tests {
         let key = super::super::pick_key(id, SlotId::Motion);
         let drag = h.state().scene.things[&id].slots[&SlotId::Motion].layers[1].id;
         assert_eq!(h.state().inspector.selected_layer.get(&key), Some(&drag));
+    }
+
+    #[test]
+    fn the_forces_list_offers_part_3_s_forces() {
+        let (mut h, id) = harness();
+        for name in ["Pull to", "Spring home", "Flock"] {
+            h.get_by_label("+ Add force").click();
+            h.run();
+            h.get_by_label(name).click();
+            h.run();
+        }
+        assert_eq!(kinds(&h, id, SlotId::Motion), [PULL, SPRING, FLOCK]);
+        assert!(h.query_all_by_label("Toward").next().is_none(), "the Flock is picked, not the Pull");
+    }
+
+    #[test]
+    fn a_picture_source_has_a_png_picker_and_a_grid_its_rows() {
+        let (mut h, id) = harness();
+        let set = |h: &mut Harness<'static, State>, s: ParticlesSettings| {
+            let st = h.state_mut();
+            st.scene.things.get_mut(&id).unwrap().params = s.to_params();
+            st.resolved = resolve(&st.scene, &st.kit.registry);
+            h.run();
+        };
+        let picture = ParticlesSettings {
+            from: BornFrom::AWordOrPicture,
+            word_from: WordFrom::Picture,
+            ..ParticlesSettings::default()
+        };
+        set(&mut h, picture);
+        assert!(h.query_all_by_label("Browse Picture").next().is_some());
+        assert!(h.query_all_by_label("Text").next().is_none());
+        set(&mut h, ParticlesSettings { from: BornFrom::AGrid, ..ParticlesSettings::default() });
+        assert!(h.query_all_by_label("Covers").next().is_some());
+        assert!(h.query_all_by_label("Spacing").next().is_some());
+        assert!(h.query_all_by_label("Browse Picture").next().is_none());
     }
 
     #[test]

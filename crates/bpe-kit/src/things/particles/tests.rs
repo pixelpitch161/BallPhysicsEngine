@@ -522,6 +522,7 @@ fn glitter_flashes_only_when_a_facet_faces_the_light() {
         seed: 7,
         ball: 0,
         flags: 0,
+        spot: 0,
     };
     let own = super::births::unit(7, 71) * std::f32::consts::TAU;
     s.turn = -own;

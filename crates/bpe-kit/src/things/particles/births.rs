@@ -7,7 +7,8 @@ use bpe_core::ThingId;
 use bpe_runtime::{EventKind, Log, Outline, World};
 use glam::Vec2;
 
-use super::state::{ParticlesState, Speck};
+use super::beats::Moments;
+use super::state::{HomeFrame, ParticlesState, Speck};
 use super::{AreaShape, BornFrom, Edge, Emit, Heading, ParticlesSettings, RidesOn};
 use crate::modules::look::layers::particles::emit::{hash, impact};
 
@@ -26,6 +27,8 @@ pub struct Place {
     pub ball: u32,
     /// How much harder than usual it flies (a hard hit).
     pub impact: f32,
+    /// The word's, picture's or grid's place it is born at (index + 1), 0 when none.
+    pub spot: u32,
 }
 
 /// A number from 0 to 1 from `seed` and `k`.
@@ -45,6 +48,14 @@ pub struct BirthCx<'a> {
     /// Where the thing itself is, and its turn (radians).
     pub anchor: Vec2,
     pub angle: f32,
+    /// Where a word's, picture's or grid's places are now.
+    pub homes: HomeFrame,
+}
+
+/// Where place `spot` (index + 1) of a word, picture or grid is now, as a birth there.
+pub fn spot_place(homes: &HomeFrame, spot: u32) -> Option<Place> {
+    let at = homes.at(spot)?;
+    Some(Place { at, out: (at - homes.centre).try_normalize(), impact: 1.0, spot, ..Place::default() })
 }
 
 /// The middle and half size of what the camera sees at the moment, `margin` added round it.
@@ -167,6 +178,7 @@ pub fn place_for(s: &ParticlesSettings, cx: &BirthCx, parent: Option<ThingId>, s
                     out,
                     ball: b.0 as u32 + 1,
                     impact: 1.0,
+                    spot: 0,
                 };
                 return Some(match s.rides_on {
                     RidesOn::EachBall => on(pick, pick.1, None),
@@ -217,6 +229,13 @@ pub fn place_for(s: &ParticlesSettings, cx: &BirthCx, parent: Option<ThingId>, s
             let _ = u3;
             here(cx.anchor)
         }
+        BornFrom::AWordOrPicture | BornFrom::AGrid => {
+            let n = cx.homes.spots.len();
+            if n == 0 {
+                return None;
+            }
+            return spot_place(&cx.homes, (hash(&[seed, 8]) as usize % n) as u32 + 1);
+        }
     })
 }
 
@@ -245,7 +264,7 @@ pub fn hit_places(s: &ParticlesSettings, st: &ParticlesState, cx: &BirthCx, sinc
         let count = if s.count == 0 { 0 } else { ((s.count as f32 * strength).round() as u32).max(1) };
         let ball = if Some(who.thing) == st.parent { who.item + 1 } else { 0 };
         let out_way = if who == e.a { e.normal } else { -e.normal };
-        let place = Place { at: e.point, velocity, out: out_way.try_normalize(), ball, impact: strength };
+        let place = Place { at: e.point, velocity, out: out_way.try_normalize(), ball, impact: strength, spot: 0 };
         out.push((place, count.min(MOST_AT_ONCE)));
     }
     out
@@ -263,6 +282,7 @@ pub fn spawn(s: &ParticlesSettings, place: &Place, seed: u32, now: u32) -> Speck
         Heading::OffTheBounce => place.out.unwrap_or(fixed),
         Heading::AlongThePath => moving.unwrap_or(fixed),
         Heading::Behind => moving.map(|m| -m).unwrap_or(fixed),
+        Heading::RoundTheMiddle => place.out.map(|o| o.perp()).unwrap_or(fixed),
     };
     let way = if s.heading == Heading::AllRound {
         way
@@ -290,6 +310,7 @@ pub fn spawn(s: &ParticlesSettings, place: &Place, seed: u32, now: u32) -> Speck
         seed,
         ball: place.ball,
         flags: 0,
+        spot: place.spot,
     };
     if speck.place.is_finite() && speck.velocity.is_finite() {
         speck
@@ -303,13 +324,28 @@ pub fn seed_of(world_seed: u64, id: ThingId, index: u64, own: u32) -> u32 {
     hash(&[world_seed as u32, (world_seed >> 32) as u32, id.0, index as u32, (index >> 32) as u32, own])
 }
 
+/// One lot of births.
+enum Batch {
+    /// Count births from the source's own places, picked by each birth's dice.
+    Source(u32),
+    /// Count births at a place (a hit).
+    At(Place, u32),
+    /// One birth at each of these places of a word, picture or grid (index + 1).
+    Spots(Vec<u32>),
+}
+
+/// Whether the source has places of its own (a word, picture or grid) that a crowd fills.
+pub fn has_spots(s: &ParticlesSettings) -> bool {
+    matches!(s.from, BornFrom::AWordOrPicture | BornFrom::AGrid)
+}
+
 /// Makes this step's births into `st`: how many the Source says, from where it says, dropping
 /// those past Most particles. `first` is the build's step (Keep a crowd, Once at the start and the
 /// first burst are born then); `since` is the world step the last particle step ended on.
 pub fn births(st: &mut ParticlesState, cx: &BirthCx, since: u64, first: bool) {
     let s = st.settings.clone();
-    let mut places: Vec<(Option<Place>, u32)> = Vec::new();
-    // `None`: the source's own place, picked from each birth's dice.
+    let mut batches: Vec<Batch> = Vec::new();
+    let spots = cx.homes.spots.len();
     match s.emit {
         Emit::Steady => {
             let n = riding_count(&s, cx.world, st.parent) as f64;
@@ -320,49 +356,100 @@ pub fn births(st: &mut ParticlesState, cx: &BirthCx, since: u64, first: bool) {
             let born = st.carry.floor().min(MOST_AT_ONCE as f64);
             st.carry -= born;
             st.carry = st.carry.min(1.0);
-            places.push((None, born as u32));
+            batches.push(Batch::Source(born as u32));
         }
         Emit::Bursts => {
             if first || st.step >= st.next_burst {
                 let gap = ((s.every.max(0.001) / super::step::DT).round() as u32).max(1);
                 st.next_burst = st.step + gap;
-                places.push((None, s.count.min(MOST_AT_ONCE)));
+                batches.push(Batch::Source(s.count.min(MOST_AT_ONCE)));
             }
         }
         Emit::OnHits => {
             if !first {
-                places.extend(hit_places(&s, st, cx, since).into_iter().map(|(p, n)| (Some(p), n)));
+                batches.extend(hit_places(&s, st, cx, since).into_iter().map(|(p, n)| Batch::At(p, n)));
+            }
+        }
+        // A word's, picture's or grid's crowd fills every place, each death refilled where it was.
+        Emit::KeepACrowd if has_spots(&s) => {
+            let mut taken = vec![false; spots];
+            for sp in &st.specks {
+                if let Some(t) = (sp.spot as usize).checked_sub(1).and_then(|i| taken.get_mut(i)) {
+                    *t = true;
+                }
+            }
+            let free: Vec<u32> = taken.iter().enumerate().filter(|(_, t)| !**t).map(|(i, _)| i as u32 + 1).collect();
+            batches.push(Batch::Spots(free));
+        }
+        Emit::OnceAtTheStart if has_spots(&s) => {
+            if first {
+                batches.push(Batch::Spots((1..=spots as u32).collect()));
             }
         }
         Emit::KeepACrowd => {
             let alive = st.specks.len() as u32;
-            places.push((None, s.count.min(MOST_AT_ONCE).saturating_sub(alive)));
+            batches.push(Batch::Source(s.count.min(MOST_AT_ONCE).saturating_sub(alive)));
         }
         Emit::OnceAtTheStart => {
             if first {
-                places.push((None, s.count.min(MOST_AT_ONCE)));
+                batches.push(Batch::Source(s.count.min(MOST_AT_ONCE)));
             }
+        }
+        Emit::OnTheBeat => {
+            let moments = Moments::of(cx.world, s.beat_every, s.bars, s.beat_offset);
+            let dt = super::step::DT as f64;
+            let now = st.step as f64 * dt;
+            let before = if first { f64::NEG_INFINITY } else { now - dt };
+            let beats = moments.count_in(before, now);
+            batches.push(Batch::Source(s.count.min(MOST_AT_ONCE).saturating_mul(beats).min(MOST_AT_ONCE)));
         }
     }
     let most = s.most.clamp(1, super::MOST_EVER) as usize;
-    for (place, count) in places {
-        for _ in 0..count {
-            let index = st.births;
-            st.births += 1;
-            if st.specks.len() >= most {
-                continue;
-            }
-            let seed = seed_of(cx.world.seed, st.id, index, s.seed);
-            let at = match place {
+    let born = |st: &mut ParticlesState, place: Option<Place>, index: u64| {
+        let seed = seed_of(cx.world.seed, st.id, index, s.seed);
+        let at = match place {
+            Some(p) => p,
+            None => match place_for(&s, cx, st.parent, seed) {
                 Some(p) => p,
-                None => match place_for(&s, cx, st.parent, seed) {
-                    Some(p) => p,
-                    None => continue,
-                },
-            };
-            let speck = spawn(&s, &at, seed, st.step);
-            if speck.flags & super::state::DEAD == 0 {
-                st.specks.push(speck);
+                None => return,
+            },
+        };
+        let speck = spawn(&s, &at, seed, st.step);
+        if speck.flags & super::state::DEAD == 0 {
+            st.specks.push(speck);
+        }
+    };
+    for batch in batches {
+        match batch {
+            Batch::Source(count) | Batch::At(_, count) if count == 0 => {}
+            Batch::Source(count) => {
+                for _ in 0..count {
+                    let index = st.births;
+                    st.births += 1;
+                    if st.specks.len() < most {
+                        born(st, None, index);
+                    }
+                }
+            }
+            Batch::At(place, count) => {
+                for _ in 0..count {
+                    let index = st.births;
+                    st.births += 1;
+                    if st.specks.len() < most {
+                        born(st, Some(place), index);
+                    }
+                }
+            }
+            Batch::Spots(list) => {
+                for spot in list {
+                    // A full crowd stops trying (a huge grid under a small cap).
+                    if st.specks.len() >= most {
+                        break;
+                    }
+                    let index = st.births;
+                    st.births += 1;
+                    born(st, spot_place(&cx.homes, spot), index);
+                }
             }
         }
     }

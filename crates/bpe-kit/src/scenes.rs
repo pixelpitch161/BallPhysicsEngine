@@ -1637,6 +1637,39 @@ pub fn particle_scenes(reg: &Registry) -> Vec<(String, Scene)> {
     ]
 }
 
+/// Particles part 3's scenes: one of each moving or forming look but Moiré (two big grids), in
+/// the test scene, riding looks on a ring of 12 balls.
+pub fn particle_motion_scenes(reg: &Registry) -> Vec<(String, Scene)> {
+    use crate::things::particles::looks::{Look, add_particles};
+    let with = |look: Look| {
+        let mut scene = new_scene(reg);
+        let ball = scene.things.values().find(|t| t.kind == "balls").map(|t| t.id).expect("a ball");
+        let ride = look.rides();
+        if ride {
+            let mut balls = BallsSettings::from_params(&scene.things[&ball].params);
+            balls.ring(12, 200.0);
+            scene.things.get_mut(&ball).expect("ball").params = balls.to_params();
+        }
+        add_particles(&mut scene, reg, look, if ride { ball } else { ThingId::ROOT }).expect("particles");
+        scene
+    };
+    [
+        Look::Galaxy,
+        Look::FlowLines,
+        Look::FormAWord,
+        Look::Flock,
+        Look::Shockwaves,
+        Look::CometTail,
+        Look::BlackHole,
+        Look::IronFilings,
+        Look::BeatGrid,
+        Look::Spirograph,
+    ]
+    .into_iter()
+    .map(|look| (look.name().to_string(), with(look)))
+    .collect()
+}
+
 /// [`lit_room`] darkened, its balls a ring of `count` without gravity, their Motion set by `f`.
 fn moth_room(reg: &Registry, count: u32, f: impl FnOnce(&mut BasicMotion)) -> (Scene, ThingId, ThingId) {
     let mut scene = lit_room(reg);

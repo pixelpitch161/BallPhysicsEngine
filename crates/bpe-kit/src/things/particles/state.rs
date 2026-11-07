@@ -3,6 +3,7 @@
 //! carry it and every replay is the same.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use bpe_core::ThingId;
 use bpe_runtime::Outline;
@@ -39,6 +40,9 @@ pub struct Speck {
     pub ball: u32,
     /// [`DEAD`] once it is to go.
     pub flags: u32,
+    /// The place of a word, picture or grid it was born at (its index + 1), 0 when none: its
+    /// home follows the place as the source moves and turns.
+    pub spot: u32,
 }
 
 /// The particle is to be removed at the end of the step.
@@ -86,6 +90,12 @@ pub struct ParticlesState {
     /// How long the last particle step took, in milliseconds (the editor's status line; never
     /// read by the step).
     pub last_ms: f32,
+    /// A word's, picture's or grid's places, in the thing's own frame (`spots.rs`).
+    pub spots: Arc<Vec<Vec2>>,
+    /// What `spots` were worked out from.
+    pub spots_key: super::spots::SpotsKey,
+    /// How far Homes turn has turned the homes so far, in radians.
+    pub home_turn: f32,
 }
 
 impl ParticlesState {
@@ -104,11 +114,75 @@ impl ParticlesState {
             carry: 0.0,
             next_burst: 0,
             last_ms: 0.0,
+            spots: Arc::new(Vec::new()),
+            spots_key: super::spots::SpotsKey::None,
+            home_turn: 0.0,
+        }
+    }
+
+    /// Reads the places again when what they depend on changed (`video` is the video's size).
+    pub fn refresh_spots(&mut self, video: Vec2) {
+        let mut key = super::spots::key_of(&self.settings, video);
+        // The picture as it was when the run began: a picture changed on disk partway through
+        // doesn't move the places under the particles (a rebuild reads it afresh).
+        if let (
+            super::spots::SpotsKey::Picture { path, modified, .. },
+            super::spots::SpotsKey::Picture { path: was, modified: then, .. },
+        ) = (&mut key, &self.spots_key)
+            && path == was
+        {
+            *modified = *then;
+        }
+        if key != self.spots_key {
+            self.spots = super::spots::spots_for(&key);
+            self.spots_key = key;
         }
     }
 
     /// Bytes its particles take, for playback budgets.
     pub fn memory(&self) -> usize {
         self.specks.capacity() * std::mem::size_of::<Speck>()
+    }
+
+    /// Where the homes are now: their middle and turn (radians), from the thing's place `anchor`
+    /// and turn `angle` (the camera's middle for a grid covering the screen).
+    pub fn home_frame(&self, anchor: Vec2, angle: f32, camera: Vec2) -> HomeFrame {
+        let s = &self.settings;
+        let screen = s.from == super::BornFrom::AGrid && s.grid_covers == super::GridCovers::TheScreen;
+        let (centre, angle) = if screen { (camera, 0.0) } else { (anchor, angle) };
+        let turn = angle + s.line_turn.to_radians() + self.home_turn;
+        HomeFrame {
+            centre,
+            way: Vec2::from_angle(if turn.is_finite() { turn } else { 0.0 }),
+            spots: self.spots.clone(),
+        }
+    }
+}
+
+/// Where a word's, picture's or grid's places are at a moment.
+#[derive(Clone, Debug)]
+pub struct HomeFrame {
+    pub centre: Vec2,
+    /// The turn, as the way the x axis points.
+    pub way: Vec2,
+    pub spots: Arc<Vec<Vec2>>,
+}
+
+impl Default for HomeFrame {
+    fn default() -> Self {
+        HomeFrame { centre: Vec2::ZERO, way: Vec2::X, spots: Arc::new(Vec::new()) }
+    }
+}
+
+impl HomeFrame {
+    /// Place `spot` (index + 1) in the world; `None` for 0 or a place that is gone.
+    pub fn at(&self, spot: u32) -> Option<Vec2> {
+        let p = *self.spots.get((spot as usize).checked_sub(1)?)?;
+        Some(self.centre + self.way.rotate(p))
+    }
+
+    /// Where particle `s` belongs: its place's home, else where it was born.
+    pub fn home_of(&self, s: &Speck) -> Vec2 {
+        self.at(s.spot).unwrap_or(s.home)
     }
 }
