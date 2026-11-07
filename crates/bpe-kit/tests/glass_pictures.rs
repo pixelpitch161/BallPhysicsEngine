@@ -474,6 +474,8 @@ fn a_laser_bends_through_a_glass_ball() {
     set_light(&mut scene, "bounces", Value::Int(2));
     set_light(&mut scene, "at_balls", Value::Choice("pass_through".into()));
     set_light(&mut scene, "at_shapes", Value::Choice("stop".into()));
+    // One colour: Glass's Rainbow split doesn't fan it (glass and light part 2).
+    set_light(&mut scene, "colours", Value::Int(1));
     let end_y = |scene: &Scene| {
         let lit = frame_of(scene, 0.0).light.unwrap();
         let l = lit.lights.iter().find(|l| l.p0[3] == 5.0).expect("a laser");
@@ -488,4 +490,36 @@ fn a_laser_bends_through_a_glass_ball() {
     let (bent, pieces) = end_y(&scene);
     assert!(pieces >= 3.0, "in, through and out: {pieces}");
     assert!((bent - 60.0).abs() > 10.0, "bent to {bent}");
+}
+
+#[test]
+fn a_laser_through_rainbow_glass_splits_into_colours() {
+    let mut scene = room(false, [0.0, 0.0], 160.0);
+    set_light(&mut scene, "kind", Value::Choice("laser".into()));
+    set_light(&mut scene, "position", Value::Vec2([-450.0, 60.0]));
+    set_light(&mut scene, "direction", Value::Number(0.0));
+    set_light(&mut scene, "bounces", Value::Int(4));
+    set_light(&mut scene, "at_shapes", Value::Choice("stop".into()));
+    let ball = thing_of(&scene, "balls");
+    set_surface(&mut scene, ball, SurfaceKind::Prism);
+    let lit = frame_of(&scene, 0.0).light.unwrap();
+    let lasers: Vec<_> = lit.lights.iter().filter(|l| l.p0[3] == 5.0).collect();
+    assert_eq!(lasers.len(), 13, "the white beam to the glass, then 12 colours");
+    let white = lasers[0];
+    for c in 0..3 {
+        let sum: f32 = lasers[1..].iter().map(|l| l.p1[c]).sum();
+        assert!((sum - white.p1[c]).abs() < 1e-4 * white.p1[c].abs().max(1.0), "channel {c}: {sum} vs {}", white.p1[c]);
+    }
+    let split_at = lit.segments[(white.p4[2] + white.p4[3] - 1.0) as usize];
+    for l in &lasers[1..] {
+        let first = lit.segments[l.p4[2] as usize];
+        assert_eq!([first[0], first[1]], [split_at[2], split_at[3]], "each colour starts where the white ends");
+    }
+    let ends: Vec<f32> = lasers[1..].iter().map(|l| lit.segments[(l.p4[2] + l.p4[3] - 1.0) as usize][3]).collect();
+    assert!(ends.first() != ends.last(), "red and violet end apart: {ends:?}");
+    // Colours 1: one laser, as before.
+    set_light(&mut scene, "colours", Value::Int(1));
+    let lit = frame_of(&scene, 0.0).light.unwrap();
+    assert_eq!(lit.lights.iter().filter(|l| l.p0[3] == 5.0).count(), 1);
+    assert!(lit.ribbons.is_empty());
 }

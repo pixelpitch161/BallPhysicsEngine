@@ -20,6 +20,15 @@ const SWATCH_FILM_B: Color32 = Color32::from_rgb(0xa8, 0xdc, 0xd8);
 /// Lava's glow inside its dark crust.
 const SWATCH_LAVA: Color32 = Color32::from_rgb(0xff, 0x7a, 0x1e);
 const SWATCH_LAVA_HOT: Color32 = Color32::from_rgb(0xff, 0xd2, 0x5a);
+/// The Prism's fan of colours, red to violet (glass and light part 2).
+const SWATCH_SPECTRUM: [Color32; 6] = [
+    Color32::from_rgb(0xff, 0x4a, 0x3a),
+    Color32::from_rgb(0xff, 0x9a, 0x2a),
+    Color32::from_rgb(0xf4, 0xe0, 0x3a),
+    Color32::from_rgb(0x4a, 0xd0, 0x6a),
+    Color32::from_rgb(0x3a, 0x8a, 0xff),
+    Color32::from_rgb(0x9a, 0x5a, 0xff),
+];
 
 fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     let m = |x: u8, y: u8| lerp(x as f32..=y as f32, t).round() as u8;
@@ -48,8 +57,8 @@ fn upper_half(centre: Pos2, r: f32, colour: Color32) -> Shape {
 }
 
 /// Paints Surface number `kind` (Matte, Plastic, Chrome, Metal, Glass, Toon, Jelly, Pearl, Flake,
-/// Brushed, Frosted, Velvet, Lava, in the order of `SurfaceKind`) as a ball of radius `r` at
-/// `centre`.
+/// Brushed, Frosted, Velvet, Lava, Prism, in the order of `SurfaceKind`) as a ball of radius `r`
+/// at `centre` (the Prism as a prism splitting a white line into colours).
 pub fn surface_swatch(painter: &Painter, centre: Pos2, r: f32, kind: usize) {
     let shine = |size: f32| painter.circle_filled(centre + Vec2::new(-0.38, -0.42) * r, r * size, SWATCH_SHINE);
     match kind {
@@ -133,10 +142,26 @@ pub fn surface_swatch(painter: &Painter, centre: Pos2, r: f32, kind: usize) {
             painter.circle_stroke(centre, r - 1.0, Stroke::new(2.0, mix(SWATCH_DARK, SWATCH_LIGHT, 0.7)));
         }
         // Lava: a dark crust glowing from inside.
-        _ => {
+        12 => {
             painter.circle_filled(centre, r, SWATCH_GROUND);
             painter.circle_filled(centre, r * 0.72, SWATCH_LAVA);
             painter.circle_filled(centre + Vec2::new(0.1, 0.12) * r, r * 0.35, SWATCH_LAVA_HOT);
+        }
+        // Prism: a glass triangle, a white line in from the left, a fan of colours out to the right.
+        _ => {
+            let (top, left, right) = (
+                centre + Vec2::new(0.0, -0.8) * r,
+                centre + Vec2::new(-0.8, 0.6) * r,
+                centre + Vec2::new(0.8, 0.6) * r,
+            );
+            painter.add(Shape::convex_polygon(vec![top, right, left], SWATCH_GLASS, Stroke::new(1.0, SWATCH_RIM)));
+            let enter = centre + Vec2::new(-0.38, 0.0) * r;
+            painter.line_segment([centre + Vec2::new(-1.0, 0.25) * r, enter], Stroke::new(1.2, SWATCH_SHINE));
+            let leave = centre + Vec2::new(0.4, 0.05) * r;
+            for (k, colour) in SWATCH_SPECTRUM.iter().enumerate() {
+                let to = centre + Vec2::new(1.0, 0.05 + 0.12 * k as f32) * r;
+                painter.line_segment([leave, to], Stroke::new(1.0, *colour));
+            }
         }
     }
 }

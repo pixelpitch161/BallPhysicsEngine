@@ -3867,3 +3867,64 @@ fn fs_caustic(in: CausticOut) -> @location(0) vec4<f32> {
     let k = (1.0 - d) * (1.0 - d);
     return vec4<f32>(in.power * k * open, 0.0);
 }
+
+// ---------- light beams' bands (glass and light part 2) ----------
+//
+// A Light beam is drawn as ribbons: each the stretch between one ray's segment `a` and the next
+// ray's segment `b`, added over the mixed picture. Brighter where the band narrows (a lens
+// focusing it), dimmer where it spreads (a prism's fan), soft at the band's two edges.
+
+struct RibbonGpu {
+    // One ray's segment, xy to zw (world).
+    a: vec4<f32>,
+    // The next ray's segment, xy to zw (world).
+    b: vec4<f32>,
+    // Colour times strength and glow (linear), the band's edge softness (0 to 1).
+    c: vec4<f32>,
+    // Where across the band each ray is (0 to 1), how far apart they were at the lamp, spare.
+    d: vec4<f32>,
+};
+
+@group(3) @binding(2) var<storage, read> ribbons: array<RibbonGpu>;
+
+// How much brighter a ribbon gets where its rays come together, at most.
+const RIBBON_MOST: f32 = 8.0;
+
+struct RibbonOut {
+    @builtin(position) pos: vec4<f32>,
+    // Where across the band, 0 to 1.
+    @location(0) across: f32,
+    @location(1) colour: vec3<f32>,
+    @location(2) @interpolate(flat) soft: f32,
+};
+
+@vertex
+fn vs_ribbon(@builtin(vertex_index) vi: u32, @builtin(instance_index) k: u32) -> RibbonOut {
+    let r = ribbons[k];
+    // A strip of four: a's start, b's start, a's end, b's end.
+    let second = (vi & 1u) == 1u;
+    let far = vi >= 2u;
+    let p = select(select(r.a.xy, r.a.zw, far), select(r.b.xy, r.b.zw, far), second);
+    let width = select(distance(r.a.xy, r.b.xy), distance(r.a.zw, r.b.zw), far);
+    let bright = clamp(r.d.z / max(width, 1e-3), 0.0, RIBBON_MOST);
+    let uv = world_to_uv(p);
+    var out: RibbonOut;
+    out.pos = vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.5, 1.0);
+    out.across = select(r.d.x, r.d.y, second);
+    out.colour = max(r.c.rgb, vec3<f32>(0.0)) * bright;
+    out.soft = clamp(r.c.w, 0.0, 1.0) * 0.5;
+    return out;
+}
+
+@fragment
+fn fs_ribbon(in: RibbonOut) -> @location(0) vec4<f32> {
+    // The editor's views of the light alone show no beams (as `fs_mix` adds no laser lines there).
+    if u.ambient.w > 0.5 {
+        discard;
+    }
+    var edge = 1.0;
+    if in.soft > 1e-4 {
+        edge = smoothstep(0.0, in.soft, in.across) * smoothstep(0.0, in.soft, 1.0 - in.across);
+    }
+    return vec4<f32>(min(in.colour * edge, vec3<f32>(6.0e4)), 0.0);
+}

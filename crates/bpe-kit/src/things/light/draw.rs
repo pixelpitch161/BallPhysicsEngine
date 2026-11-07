@@ -16,6 +16,8 @@ use crate::things::rig::pattern::Drive;
 
 pub struct LightDraw;
 
+/// The most rays a light beam's band is traced with.
+const MOST_RAYS: u32 = 64;
 /// How many points a round outline is cut into for a strip running along it.
 const ROUND_POINTS: usize = 96;
 /// A hit this fast or faster flares a light fully.
@@ -46,7 +48,7 @@ impl ThingDraw for LightDraw {
             [s.lights_up.code(), first, named.len() as f32, 0.0]
         };
         // What a laser's beam meets, worked out once for all its lamps.
-        let scenery = (s.kind == LightType::Laser).then(|| laser::scenery(cx.world));
+        let scenery = s.kind.is_beam().then(|| laser::scenery(cx.world));
         // A broken light dims (and a popped one flares) as its Break look plays out.
         let broken = crate::rules::remains::whole_now(cx).map_or(1.0, |w| w.alpha * w.scale);
         for (spot, mut drive) in spots.iter().zip(drives) {
@@ -147,19 +149,18 @@ fn push_light(
     let place = &Place { at: place.at + Vec2::new(drive.sway, 0.0), ..*place };
     let strength = if s.negative { -strength } else { strength };
     let dir = Vec2::from_angle(aim_angle(s, place, cx.time) + drive.turn.to_radians());
-    let half_cone = (0.5 * s.cone).to_radians();
-    let edge = s.cone_edge.max(0.0).to_radians();
-    let (cos_inner, cos_outer) = ((half_cone - edge).max(0.0).cos(), half_cone.cos());
     let height = if s.kind == LightType::Sun { s.elevation.to_radians().sin() } else { s.height };
     let shadow = s.shadow_colour.to_linear();
     let mut size = s.size.max(0.0);
-    let (mut first, mut count) = (0.0, 0.0);
-    let mut ended_on_hit = 0.0;
-    if s.kind == LightType::Laser {
+    // Each run of segments the light lights from, with its share of the light's colour and
+    // whether it ends on a hit: one for a strip, one a colour for a beam that split (glass and
+    // light part 2), none for a lamp.
+    let mut runs: Vec<([f32; 3], f32, f32, f32)> = Vec::new();
+    if s.kind.is_beam() {
         let shapes = meets_of(s.at_shapes);
         let balls = meets_of(s.at_balls);
         // Glass bends the beam through it (lighting part 2b's See-through and Bends light), unless
-        // the beam is to stop there.
+        // the beam is to stop there; its Rainbow split splits it into colours.
         let meets = |thing: ThingId, ball: bool| {
             let plain = if ball { balls } else { shapes };
             let glass = cx
@@ -169,19 +170,51 @@ fn push_light(
                 .and_then(|t| t.slots.get(&bpe_core::SlotId::Look))
                 .and_then(crate::modules::look::surface::glass_of);
             match glass {
-                Some(index) if plain != Meets::Stop => Meets::Bend { index },
+                Some(g) if plain != Meets::Stop => Meets::Bend { index: g.index, rainbow: g.rainbow },
                 _ => plain,
             }
         };
         let empty = laser::Scenery::default();
         let scenery = scenery.unwrap_or(&empty);
-        let path = laser::trace(scenery, place.at, dir, s.beam_length.max(0.0), s.bounces, place.ball, &meets);
-        first = scene.segments.len() as f32;
-        for pair in path.points.windows(2) {
-            scene.segments.push([pair[0].x, pair[0].y, pair[1].x, pair[1].y]);
+        let length = s.beam_length.max(0.0);
+        let colours = s.colours.clamp(1, laser::MOST_COLOURS);
+        let trace = |from: Vec2, most: usize| {
+            laser::trace_split(scenery, from, dir, length, s.bounces, place.ball, &meets, colours, most)
+        };
+        let middle = trace(place.at, laser::MOST_BEAM_SEGMENTS);
+        let mut push_run = |share: [f32; 3], path: &laser::Path| {
+            if share.iter().all(|c| c.abs() < 1e-6) || path.points.len() < 2 {
+                return;
+            }
+            let first = scene.segments.len() as f32;
+            for pair in path.points.windows(2) {
+                scene.segments.push([pair[0].x, pair[0].y, pair[1].x, pair[1].y]);
+            }
+            let count = (path.points.len() - 1) as f32;
+            runs.push((share, first, count, if path.ended_on_hit { 1.0 } else { 0.0 }));
+        };
+        push_run([1.0; 3], &middle.white);
+        for c in &middle.colours {
+            push_run(c.share, &c.path);
         }
-        count = path.points.len().saturating_sub(1) as f32;
-        ended_on_hit = if path.ended_on_hit { 1.0 } else { 0.0 };
+        if s.kind == LightType::Beam {
+            // The band: rays across it, edge to edge, joined by ribbons.
+            let width = s.beam_width.max(0.0);
+            size += 0.5 * width;
+            let rays = s.rays_across.clamp(2, MOST_RAYS);
+            if width >= 0.5 {
+                let side = dir.perp();
+                let across: Vec<f32> = (0..rays).map(|j| j as f32 / (rays - 1) as f32).collect();
+                let per = laser::MOST_RIBBON_SEGMENTS / rays as usize;
+                let traced: Vec<laser::Split> =
+                    across.iter().map(|u| trace(place.at + side * ((u - 0.5) * width), per)).collect();
+                let glow = strength.max(0.0) * s.laser_glow.max(0.0) * laser::BEAM_SHOW;
+                let shown = [colour[0] * glow, colour[1] * glow, colour[2] * glow];
+                let gap = width / (rays - 1) as f32;
+                let ribbons = laser::ribbons(&traced, &across, gap, shown, s.beam_softness, laser::MOST_RIBBONS);
+                scene.ribbons.extend(ribbons);
+            }
+        }
     }
     if s.kind == LightType::Strip {
         size += 0.5 * s.width.max(0.0);
@@ -192,7 +225,7 @@ fn push_light(
             }
             StripAlong::AShapesOutline => strip_outline(cx.world, s, cx.resolved.id),
         };
-        first = scene.segments.len() as f32;
+        let first = scene.segments.len() as f32;
         let closed = s.strip_along == StripAlong::AShapesOutline;
         let n = points.len();
         let pairs = if closed { n } else { n.saturating_sub(1) };
@@ -200,8 +233,64 @@ fn push_light(
             let (a, b) = (points[k], points[(k + 1) % n]);
             scene.segments.push([a.x, a.y, b.x, b.y]);
         }
-        count = pairs as f32;
+        runs.push(([1.0; 3], first, pairs as f32, 0.0));
     }
+    if !s.kind.is_beam() && s.kind != LightType::Strip {
+        runs.push(([1.0; 3], 0.0, 0.0, 0.0));
+    }
+    // A laser's line is its own Beam width; a light beam draws no line (its band is its glow) and
+    // its hit spots are half the band wide (`laser_beams` makes a spot three times `p11.x`).
+    let (line_width, line_glow) = match s.kind {
+        LightType::Laser => (s.laser_width.max(0.0), s.laser_glow.max(0.0)),
+        LightType::Beam => (s.beam_width.max(0.0) / 6.0, 0.0),
+        _ => (s.laser_width.max(0.0), 0.0),
+    };
+    for (share, first, count, ended_on_hit) in runs {
+        let c = [colour[0] * share[0], colour[1] * share[1], colour[2] * share[2]];
+        push_one(
+            cx,
+            s,
+            place,
+            c,
+            strength,
+            dir,
+            height,
+            size,
+            shadow,
+            links,
+            [first, count],
+            ended_on_hit,
+            line_width,
+            line_glow,
+            scene,
+        );
+    }
+}
+
+/// Pushes one of the light's lights: `colour` its colour (linear, before `strength`), `run` the
+/// first segment and how many it lights from.
+#[allow(clippy::too_many_arguments)]
+fn push_one(
+    cx: &DrawCx,
+    s: &LightSettings,
+    place: &Place,
+    colour: [f32; 3],
+    strength: f32,
+    dir: Vec2,
+    height: f32,
+    size: f32,
+    shadow: [f32; 4],
+    links: [f32; 4],
+    run: [f32; 2],
+    ended_on_hit: f32,
+    line_width: f32,
+    line_glow: f32,
+    scene: &mut LightScene,
+) {
+    let half_cone = (0.5 * s.cone).to_radians();
+    let edge = s.cone_edge.max(0.0).to_radians();
+    let (cos_inner, cos_outer) = ((half_cone - edge).max(0.0).cos(), half_cone.cos());
+    let [first, count] = run;
     scene.lights.push(LightGpu {
         p0: [place.at.x, place.at.y, height, s.kind.code()],
         p1: [colour[0] * strength, colour[1] * strength, colour[2] * strength, 0.0],
@@ -216,16 +305,16 @@ fn push_light(
             s.softness.max(0.0),
         ],
         p7: [
-            // A laser's beam in the air is its own thin line (Beam glow), not a strip's wide glow.
-            if s.beam.is_finite() && s.kind != LightType::Laser { s.beam } else { 0.0 },
+            // A beam in the air is its own line or band (Beam glow), not a strip's wide glow.
+            if s.beam.is_finite() && !s.kind.is_beam() { s.beam } else { 0.0 },
             if s.ultraviolet { 1.0 } else { 0.0 },
             s.uv_visible.max(0.0),
-            if s.kind == LightType::Laser { s.laser_glow.max(0.0) } else { 0.0 },
+            line_glow,
         ],
         p8: [s.gobo.code(), s.gobo_size.max(1e-3), s.gobo_sharpness, s.gobo_depth],
         p9: gobo_turn(s, dir, cx.time),
         p10: links,
-        p11: [s.laser_width.max(0.0), s.hit_glow.max(0.0), ended_on_hit, 0.0],
+        p11: [line_width, s.hit_glow.max(0.0), ended_on_hit, 0.0],
     });
 }
 

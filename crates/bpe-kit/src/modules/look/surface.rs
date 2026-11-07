@@ -37,6 +37,9 @@ pub enum SurfaceKind {
     Velvet,
     /// Lava and heat: glows from inside.
     Lava,
+    /// A prism: clear glass that splits white light into a rainbow (lasers and light beams fan out
+    /// through it).
+    Prism,
 }
 
 /// A Surface's preset numbers.
@@ -106,6 +109,7 @@ impl SurfaceKind {
             Self::Frosted => Preset { frost: 0.5, ..base(0.45, 0.0, 0.0, 1.5, 0.85) },
             Self::Velvet => Preset { rim: 1.2, ..base(1.0, 0.0, 0.0, 1.0, 0.0) },
             Self::Lava => Preset { soak: 0.3, inner_glow: 1.5, ..base(0.6, 0.0, 0.0, 1.5, 0.0) },
+            Self::Prism => Preset { rainbow: 1.0, ..base(0.0, 0.0, 0.0, 1.6, 0.95) },
         }
     }
 }
@@ -573,15 +577,24 @@ impl Stamps {
     }
 }
 
+/// Glass as a laser meets it: its index of refraction and its Rainbow split (how much each colour
+/// bends by its own index, glass and light part 2).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Glass {
+    pub index: f32,
+    pub rainbow: f32,
+}
+
 /// Whether a Look card's Surface is glass a laser bends through (part 4's tracer answers
-/// `Meets::Bend { index }`): its index of refraction when See-through is at least a half and it
-/// bends light at all.
-pub fn glass_of(look: &ResolvedSlot) -> Option<f32> {
+/// `Meets::Bend`): when See-through is at least a half and it bends light at all.
+pub fn glass_of(look: &ResolvedSlot) -> Option<Glass> {
     if !has_surface(&look.kind) {
         return None;
     }
     let s = of_card(look);
-    (s.see_through >= 0.5 && s.bends_light > 1.0 && s.bends_light.is_finite()).then_some(s.bends_light)
+    let rainbow = if s.rainbow.is_finite() { s.rainbow.max(0.0) } else { 0.0 };
+    (s.see_through >= 0.5 && s.bends_light > 1.0 && s.bends_light.is_finite())
+        .then_some(Glass { index: s.bends_light, rainbow })
 }
 
 #[cfg(test)]
@@ -626,7 +639,11 @@ mod tests {
         assert!(p(SurfaceKind::Frosted).frost > 0.0 && p(SurfaceKind::Frosted).see_through > 0.5);
         assert!(p(SurfaceKind::Velvet).rim > 0.0);
         assert!(p(SurfaceKind::Lava).inner_glow > 0.0);
-        assert_eq!(SurfaceKind::NAMES.len(), 13);
+        let prism = p(SurfaceKind::Prism);
+        assert!(
+            prism.rainbow == 1.0 && prism.bends_light == 1.6 && prism.see_through == 0.95 && prism.roughness == 0.0
+        );
+        assert_eq!(SurfaceKind::NAMES.len(), 14);
     }
 
     #[test]
@@ -685,7 +702,7 @@ mod tests {
         for (k, v) in preset_values(SurfaceKind::Glass) {
             card.params.set(k, v);
         }
-        assert_eq!(glass_of(&look(&scene)), Some(1.5));
+        assert_eq!(glass_of(&look(&scene)), Some(Glass { index: 1.5, rainbow: 0.3 }));
         let s = of_card(&look(&scene));
         assert_eq!(stamp(3, &s), 3.0 + SurfaceGpu::GLASS_FLAG);
         assert_eq!(stamp(3, &SurfaceSettings::default()), 3.0);

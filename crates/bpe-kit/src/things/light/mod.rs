@@ -4,7 +4,9 @@
 //! light is drawn only as light: it has no sim and never touches the physics.
 //!
 //! Part 4 adds the Laser (a beam traced through the world, `laser.rs`), gobos and flicker,
-//! ultraviolet light, Lights up (light linking, `links.rs`) and colours picked from a layer.
+//! ultraviolet light, Lights up (light linking, `links.rs`) and colours picked from a layer. Glass
+//! and light part 2 splits beams into colours through glass with Rainbow split and adds the Light
+//! beam, a laser with a width drawn as a band of ribbons.
 
 pub mod draw;
 pub mod laser;
@@ -34,6 +36,8 @@ pub enum LightType {
     Strip,
     /// A thin beam that bounces off shapes and balls.
     Laser,
+    /// A wide beam, like sunlight through a slot: a laser with a width (glass and light part 2).
+    Beam,
 }
 
 impl LightType {
@@ -46,6 +50,7 @@ impl LightType {
             Self::Area => 3.0,
             Self::Strip => 4.0,
             Self::Laser => 5.0,
+            Self::Beam => 6.0,
         }
     }
 
@@ -58,10 +63,17 @@ impl LightType {
             Self::Area => "Area light",
             Self::Strip => "Strip light",
             Self::Laser => "Laser",
+            Self::Beam => "Light beam",
         }
     }
 
-    pub const ALL: [LightType; 6] = [Self::Point, Self::Spot, Self::Sun, Self::Area, Self::Strip, Self::Laser];
+    /// Whether its light is a beam traced through the world (a Laser or a Light beam).
+    pub fn is_beam(self) -> bool {
+        matches!(self, Self::Laser | Self::Beam)
+    }
+
+    pub const ALL: [LightType; 7] =
+        [Self::Point, Self::Spot, Self::Sun, Self::Area, Self::Strip, Self::Laser, Self::Beam];
 }
 
 /// Where the light's colour comes from.
@@ -367,7 +379,7 @@ pub struct LightSettings {
     #[setting(label = "Heard from", when = "flare", group = "On hits")]
     pub flare_from: Target,
     /// How much its light shows in the scene's haze (the Lighting card's Haze): beams.
-    #[setting(label = "Beam in haze", when = "kind!=laser", span(0, 4), keyframe, group = "Air")]
+    #[setting(label = "Beam in haze", when = "kind!=laser|beam", span(0, 4), keyframe, group = "Air")]
     pub beam: f32,
     /// How wide the laser's beam is.
     #[setting(
@@ -377,34 +389,48 @@ pub struct LightSettings {
         span(0.5, 20),
         unit = "px",
         keyframe,
-        group = "Laser"
+        group = "Beam"
     )]
     pub laser_width: f32,
+    /// How wide a light beam is.
+    #[setting(label = "Width", when = "kind=beam", range(0, 1e9), span(0, 200), unit = "px", keyframe, group = "Beam")]
+    pub beam_width: f32,
+    /// How softly a light beam's edges fade: 0 sharp, 1 a soft glow across.
+    #[setting(label = "Edge softness", when = "kind=beam", span(0, 1), keyframe, group = "Beam")]
+    pub beam_softness: f32,
+    /// How many rays a light beam is traced with, edge to edge: more follow curved glass more
+    /// closely.
+    #[setting(label = "Rays across", when = "kind=beam", range(2, 64), span(2, 64), group = "Beam")]
+    pub rays_across: u32,
+    /// How many colours the beam splits into where glass with Rainbow split bends it (at most 64): 1
+    /// keeps it one colour.
+    #[setting(label = "Colours", when = "kind=laser|beam", range(1, 64), span(1, 32), group = "Beam")]
+    pub colours: u32,
     /// How brightly the beam itself shows.
-    #[setting(label = "Beam glow", when = "kind=laser", span(0, 4), keyframe, group = "Laser")]
+    #[setting(label = "Beam glow", when = "kind=laser|beam", span(0, 4), keyframe, group = "Beam")]
     pub laser_glow: f32,
     /// How brightly it shines where it bounces or ends.
-    #[setting(label = "Hit glow", when = "kind=laser", span(0, 4), keyframe, group = "Laser")]
+    #[setting(label = "Hit glow", when = "kind=laser|beam", span(0, 4), keyframe, group = "Beam")]
     pub hit_glow: f32,
     /// How many times it may bounce (at most 256).
-    #[setting(label = "Bounces", when = "kind=laser", range(0, 256), span(0, 32), group = "Laser")]
+    #[setting(label = "Bounces", when = "kind=laser|beam", range(0, 256), span(0, 32), group = "Beam")]
     pub bounces: u32,
     /// How far it reaches in all, bounces and all.
     #[setting(
         label = "Beam length",
-        when = "kind=laser",
+        when = "kind=laser|beam",
         range(0, 1e9),
         span(0, 20000),
         unit = "px",
         keyframe,
-        group = "Laser"
+        group = "Beam"
     )]
     pub beam_length: f32,
     /// What it does at a shape.
-    #[setting(label = "At shapes", when = "kind=laser", group = "Laser")]
+    #[setting(label = "At shapes", when = "kind=laser|beam", group = "Beam")]
     pub at_shapes: AtThings,
     /// What it does at a ball.
-    #[setting(label = "At balls", when = "kind=laser", group = "Laser")]
+    #[setting(label = "At balls", when = "kind=laser|beam", group = "Beam")]
     pub at_balls: AtThings,
     /// A pattern the light shines through.
     #[setting(label = "Gobo", group = "Gobo and flicker")]
@@ -512,6 +538,10 @@ impl Default for LightSettings {
             pick_from: Target::Kind(KindId::from("balls")),
             pick_layer: 1,
             laser_width: 3.0,
+            beam_width: 60.0,
+            beam_softness: 0.35,
+            rays_across: 16,
+            colours: 12,
             laser_glow: 1.0,
             hit_glow: 1.0,
             bounces: 8,
@@ -551,6 +581,15 @@ impl LightSettings {
                 s.reach = 160.0;
                 s.size = 2.0;
                 s.height = 20.0;
+            }
+            LightType::Beam => {
+                s.colour = Color::rgb(0xff, 0xf8, 0xf0);
+                s.strength = 2.0;
+                s.reach = 240.0;
+                s.size = 2.0;
+                s.height = 20.0;
+                s.laser_glow = 0.6;
+                s.hit_glow = 0.6;
             }
             _ => {}
         }
@@ -704,6 +743,9 @@ mod tests {
                             | "bounces"
                             | "beam_length"
                             | "gobo_size"
+                            | "beam_width"
+                            | "rays_across"
+                            | "colours"
                     ),
                     "{} has a hard range {lo}..{hi}",
                     d.key

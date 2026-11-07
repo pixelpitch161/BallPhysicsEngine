@@ -55,9 +55,9 @@ pub use frame::{
     Around, BackgroundPaint, BallInstance, BallMark, BlendLayer, DrawCx, Draws, EffectCall, FIELD_FLAME,
     FIELD_HEAT_STOPS, FIELD_SMOKE, Field, FieldLook, FlashInstance, Frame, Grade, HitMark, LayerGpu, LayeredInstance,
     LightGpu, LightScene, LightShow, LightingGpu, LookInstance, MAX_LAYERS, MOST_MIRRORS, MOST_TRAIL_VERTICES,
-    MirrorGpu, ModuleDraw, NO_HIT, Particle, PathInstance, Place, ShapeInstance, SphereGpu, Splat, Stage, StreakStyle,
-    SurfaceGpu, Takes, ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_sensing, build_frame_with,
-    hit_strength, push_streak, push_streak_colours, push_trail, thing_code,
+    MirrorGpu, ModuleDraw, NO_HIT, Particle, PathInstance, Place, RibbonGpu, ShapeInstance, SphereGpu, Splat, Stage,
+    StreakStyle, SurfaceGpu, Takes, ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_sensing,
+    build_frame_with, hit_strength, push_streak, push_streak_colours, push_trail, thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, NO_WAVE, PaintGpu, wave_texels};
 pub use masks::{MASK_TILE, MASK_TILE_BYTES, MAX_MASK_TILES, TILE_DISTANCE_REACH, tile_distance};

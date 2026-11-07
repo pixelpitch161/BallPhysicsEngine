@@ -21,20 +21,27 @@ pub enum Meets {
     Stop,
     /// It goes straight on.
     Pass,
-    /// It goes in, bent as glass of this index of refraction bends light, and out again.
-    Bend { index: f32 },
+    /// It goes in, bent as glass of this index of refraction bends light, and out again; with a
+    /// Rainbow split above 0 each colour bends by its own index (glass and light part 2).
+    Bend { index: f32, rainbow: f32 },
 }
 
-/// The beam's path: its corners from the lamp on, and whether it ended on something (rather
-/// than running out of length).
+/// What a beam met at a corner of its path: a thing and, for a ball, its row. `None` at the lamp
+/// and where it ran out of length.
+pub type Corner = Option<(ThingId, Option<u32>)>;
+
+/// The beam's path: its corners from the lamp on, what it met at each, and whether it ended on
+/// something (rather than running out of length).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Path {
     pub points: Vec<Vec2>,
+    pub corners: Vec<Corner>,
     pub ended_on_hit: bool,
 }
 
-/// A wall as the tracer sees it: its thing, the sides of its outline, half its band's thickness.
-type Wall = (ThingId, Vec<(Vec2, Vec2)>, f32);
+/// A wall as the tracer sees it: its thing, the sides of its outline, half its band's thickness,
+/// and whether it is filled (a solid: light inside it leaves only through its outer surface).
+type Wall = (ThingId, Vec<(Vec2, Vec2)>, f32, bool);
 
 /// The things a beam can meet, as the tracer sees them at one moment.
 #[derive(Clone, Debug, Default)]
@@ -55,7 +62,7 @@ pub fn scenery(world: &World) -> Scenery {
             continue;
         }
         let sides = (0..n).map(|k| (points[k], points[(k + 1) % n])).collect();
-        walls.push((id, sides, 0.5 * wall.outline.thickness().max(0.0)));
+        walls.push((id, sides, 0.5 * wall.outline.thickness().max(0.0), wall.solid));
     }
     let mut balls = Vec::new();
     for (&id, bodies) in &world.bodies {
@@ -98,12 +105,23 @@ fn circle(from: Vec2, dir: Vec2, centre: Vec2, r: f32, leaving: bool) -> Option<
 }
 
 /// The ray against a band of half thickness `r` round side `a`-`b` (a capsule): where it goes in
-/// (`leaving` false) or comes out, and the outward normal there.
-fn band(from: Vec2, dir: Vec2, a: Vec2, b: Vec2, r: f32, leaving: bool) -> Option<(f32, Vec2)> {
+/// (`leaving` false) or comes out, and the outward normal there. On a filled wall (`fill`: the
+/// side's normal away from the fill, and all the wall's sides) only the band's outer surface
+/// counts: the fill is glass too, so light inside it leaves only where the whole shape ends.
+fn band(
+    from: Vec2,
+    dir: Vec2,
+    a: Vec2,
+    b: Vec2,
+    r: f32,
+    leaving: bool,
+    fill: Option<(Vec2, &[(Vec2, Vec2)])>,
+) -> Option<(f32, Vec2)> {
+    let outward = fill.map(|(out, _)| out);
     let along = b - a;
     let len = along.length();
     if len <= 1e-6 {
-        return circle(from, dir, a, r.max(1e-3), leaving);
+        return if outward.is_some() { None } else { circle(from, dir, a, r.max(1e-3), leaving) };
     }
     let u = along / len;
     let n = Vec2::new(-u.y, u.x);
@@ -116,7 +134,11 @@ fn band(from: Vec2, dir: Vec2, a: Vec2, b: Vec2, r: f32, leaving: bool) -> Optio
         }
     };
     // The two long sides, offset by the band's half thickness.
-    for side in [n, -n] {
+    let sides = match outward {
+        Some(out) => [out, out],
+        None => [n, -n],
+    };
+    for side in sides {
         let o = a + side * r;
         let facing = dir.dot(side);
         // Going in, the ray runs against the side's normal; coming out, with it.
@@ -134,10 +156,36 @@ fn band(from: Vec2, dir: Vec2, a: Vec2, b: Vec2, r: f32, leaving: bool) -> Optio
     }
     // Round ends (a thin line has none: its one line faces whichever way the ray comes from).
     if r > 0.0 {
-        keep(circle(from, dir, a, r, leaving));
-        keep(circle(from, dir, b, r, leaving));
+        for corner in [a, b] {
+            let cand = circle(from, dir, corner, r, leaving);
+            // Leaving a filled shape, a corner's round end counts only where it is the shape's edge.
+            if let (Some((_, sides)), true, Some((t, _))) = (fill, leaving, cand)
+                && in_polygon(from + dir * t, sides)
+            {
+                continue;
+            }
+            keep(cand);
+        }
     }
     best
+}
+
+/// Whether `p` is inside the closed outline made of `sides` (even-odd).
+fn in_polygon(p: Vec2, sides: &[(Vec2, Vec2)]) -> bool {
+    let mut inside = false;
+    for &(a, b) in sides {
+        if (a.y > p.y) != (b.y > p.y) && p.x < a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x) {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
+/// +1 when `sides` run anticlockwise in x-right, y-up terms (their left normals point in), -1
+/// when clockwise: a filled wall's outward normal of side `u` is `turn` times `(u.y, -u.x)`.
+fn turn_of(sides: &[(Vec2, Vec2)]) -> f32 {
+    let area: f32 = sides.iter().map(|(a, b)| a.x * b.y - b.x * a.y).sum();
+    if area >= 0.0 { 1.0 } else { -1.0 }
 }
 
 impl Scenery {
@@ -157,13 +205,18 @@ impl Scenery {
                 best = Some(Hit { t, normal, thing, row });
             }
         };
-        for (thing, sides, r) in &self.walls {
+        for (thing, sides, r, solid) in &self.walls {
             let leaving = inside.is_some_and(|(id, row)| id == *thing && row.is_none());
             if inside.is_some() && !leaving {
                 continue;
             }
+            let turn = if *solid && sides.len() >= 3 { Some(turn_of(sides)) } else { None };
             for &(a, b) in sides {
-                if let Some((t, n)) = band(from, dir, a, b, *r, leaving) {
+                let fill = turn.map(|k| {
+                    let u = (b - a).normalize_or_zero();
+                    (Vec2::new(u.y, -u.x) * k, sides.as_slice())
+                });
+                if let Some((t, n)) = band(from, dir, a, b, *r, leaving, fill) {
                     keep(t, if leaving { -n } else { n }, *thing, None);
                 }
             }
@@ -202,9 +255,188 @@ pub fn refract(dir: Vec2, n: Vec2, from: f32, into: f32) -> Option<Vec2> {
 /// pixel of the light pass looks at, so a runaway count would stall the picture.
 pub const MOST_BOUNCES: u32 = 256;
 
+/// The most segments one light's beam is drawn with, its colours together (glass and light part
+/// 2): past it each colour loses its farthest segments.
+pub const MOST_BEAM_SEGMENTS: usize = 4096;
+
+/// The most colours a beam splits into: each is a light every lit pixel looks at.
+pub const MOST_COLOURS: u32 = 64;
+
+/// How much Rainbow split 1 spreads the index of refraction from red (700 nm) to violet (400 nm):
+/// on Bends light 1.5 the two leave a 60° prism 4° apart.
+pub const DISPERSION: f32 = 0.0462;
+
+/// The index of refraction glass of `index` and Rainbow split `rainbow` has for wavelength `w`
+/// (-1 red, 0 the middle, 1 violet): red bends least. At `w` 0 it is `index` exactly.
+pub fn index_at(index: f32, rainbow: f32, w: f32) -> f32 {
+    if rainbow == 0.0 || w == 0.0 {
+        return index;
+    }
+    (index + rainbow * DISPERSION * 0.5 * w).max(1.0)
+}
+
+/// A wavelength's colour for `w` from -1 (red) to 1 (violet): `lighting.wgsl::spectral`'s three
+/// triangles (before its scale, which the shares divide out).
+pub fn spectral(w: f32) -> [f32; 3] {
+    let hat = |c: f32| (1.0 - (w - c).abs() / 0.6).max(0.0);
+    [hat(-0.6), hat(0.0), hat(0.6)]
+}
+
+/// `n` colours across the spectrum, red first: each one's place `w` (-1 red to 1 violet) and its
+/// share of white light per channel (the shares add to exactly 1 in each channel).
+pub fn spectrum(n: u32) -> Vec<(f32, [f32; 3])> {
+    let n = n.max(1);
+    if n == 1 {
+        return vec![(0.0, [1.0; 3])];
+    }
+    let places: Vec<f32> = (0..n).map(|k| -1.0 + (2 * k + 1) as f32 / n as f32).collect();
+    let raw: Vec<[f32; 3]> = places.iter().map(|&w| spectral(w)).collect();
+    let mut sum = [0.0f32; 3];
+    for r in &raw {
+        for c in 0..3 {
+            sum[c] += r[c];
+        }
+    }
+    places
+        .into_iter()
+        .zip(raw)
+        .map(|(w, r)| (w, [0, 1, 2].map(|c| if sum[c] > 1e-9 { r[c] / sum[c] } else { 1.0 / n as f32 })))
+        .collect()
+}
+
+/// A beam on its way: where it is, which way it goes, how much length and how many bounces it has
+/// used, the glass it is inside (thing, ball row, index) and its path so far.
+#[derive(Clone, Debug)]
+struct Walk {
+    at: Vec2,
+    dir: Vec2,
+    left: f32,
+    turns: u32,
+    inside: Option<(ThingId, Option<u32>, f32)>,
+    points: Vec<Vec2>,
+    corners: Vec<Corner>,
+}
+
+impl Walk {
+    fn path(self, ended_on_hit: bool) -> Path {
+        Path { points: self.points, corners: self.corners, ended_on_hit }
+    }
+}
+
+/// Where a white beam meets glass that splits it: the walk at that point (before it bends in),
+/// the glass's normal there, what it is, and its index and Rainbow split.
+#[derive(Clone, Debug)]
+struct Pending {
+    walk: Walk,
+    normal: Vec2,
+    thing: ThingId,
+    row: Option<u32>,
+    index: f32,
+    rainbow: f32,
+}
+
+impl Pending {
+    /// The walk of colour `w` from the split, bent into the glass with its own index.
+    fn bent(&self, w: f32) -> Walk {
+        let mut walk =
+            Walk { points: vec![self.walk.at], corners: vec![Some((self.thing, self.row))], ..self.walk.clone() };
+        let n = index_at(self.index, self.rainbow, w);
+        match refract(walk.dir, self.normal, 1.0, n) {
+            Some(into) => {
+                walk.inside = Some((self.thing, self.row, n));
+                walk.dir = into;
+            }
+            None => walk.dir = reflect(walk.dir, self.normal),
+        }
+        walk
+    }
+}
+
+/// Walks a beam of wavelength `w` on from `walk` until it ends, runs out of bounces, length or
+/// `most_segments`, or (with `split`) meets glass that splits it, which it hands back unbent.
+#[allow(clippy::too_many_arguments)]
+fn walk_on(
+    scenery: &Scenery,
+    mut walk: Walk,
+    bounces: u32,
+    skip: Option<(ThingId, u32)>,
+    meets: &dyn Fn(ThingId, bool) -> Meets,
+    w: f32,
+    split: bool,
+    most_segments: usize,
+) -> (Path, Option<Pending>) {
+    // A beam passing through things can meet very many: a limit keeps it from looping forever.
+    for _ in 0..(4 * bounces as usize + 4096) {
+        if walk.points.len() > most_segments {
+            return (walk.path(false), None);
+        }
+        let Some(hit) = scenery.nearest(walk.at, walk.dir, walk.left, skip, walk.inside.map(|(t, r, _)| (t, r))) else {
+            let end = walk.at + walk.dir * walk.left;
+            walk.points.push(end);
+            walk.corners.push(None);
+            return (walk.path(false), None);
+        };
+        let point = walk.at + walk.dir * hit.t;
+        walk.left -= hit.t;
+        let answer = meets(hit.thing, hit.row.is_some());
+        if answer == Meets::Pass && walk.inside.is_none() {
+            walk.at = point;
+            continue;
+        }
+        walk.points.push(point);
+        walk.corners.push(Some((hit.thing, hit.row)));
+        if answer == Meets::Stop || walk.turns >= bounces {
+            return (walk.path(true), None);
+        }
+        walk.turns += 1;
+        walk.at = point;
+        walk.dir = match (answer, walk.inside) {
+            (_, Some((_, _, index))) => match refract(walk.dir, hit.normal, index, 1.0) {
+                Some(out) => {
+                    walk.inside = None;
+                    out
+                }
+                None => reflect(walk.dir, hit.normal),
+            },
+            (Meets::Bend { index, rainbow }, None) => {
+                if split && rainbow > 0.0 {
+                    let pending = Pending {
+                        walk: walk.clone(),
+                        normal: hit.normal,
+                        thing: hit.thing,
+                        row: hit.row,
+                        index,
+                        rainbow,
+                    };
+                    return (walk.path(true), Some(pending));
+                }
+                let n = index_at(index, rainbow, w);
+                match refract(walk.dir, hit.normal, 1.0, n) {
+                    Some(into) => {
+                        walk.inside = Some((hit.thing, hit.row, n));
+                        into
+                    }
+                    None => reflect(walk.dir, hit.normal),
+                }
+            }
+            _ => reflect(walk.dir, hit.normal),
+        };
+    }
+    (walk.path(false), None)
+}
+
+/// The start of a beam from `from` along `dir`, or `None` (a path that goes nowhere) when `dir` has
+/// no length.
+fn start(from: Vec2, dir: Vec2, length: f32) -> Result<Walk, Path> {
+    let Some(dir) = dir.try_normalize() else {
+        return Err(Path { points: vec![from, from], corners: vec![None, None], ended_on_hit: false });
+    };
+    Ok(Walk { at: from, dir, left: length.max(0.0), turns: 0, inside: None, points: vec![from], corners: vec![None] })
+}
+
 /// The beam from `from` along `dir` for `length` in all, bouncing at most `bounces` times
 /// (bends count as bounces, and never more than [`MOST_BOUNCES`]), each thing answered by
-/// `meets(thing, is a ball)`.
+/// `meets(thing, is a ball)`. It never splits: glass bends it with its plain index.
 pub fn trace(
     scenery: &Scenery,
     from: Vec2,
@@ -214,51 +446,160 @@ pub fn trace(
     skip: Option<(ThingId, u32)>,
     meets: &dyn Fn(ThingId, bool) -> Meets,
 ) -> Path {
+    trace_wavelength(scenery, from, dir, length, bounces, skip, meets, 0.0)
+}
+
+/// [`trace`] for light of wavelength `w` (-1 red to 1 violet): glass with Rainbow split bends it
+/// by [`index_at`].
+#[allow(clippy::too_many_arguments)]
+pub fn trace_wavelength(
+    scenery: &Scenery,
+    from: Vec2,
+    dir: Vec2,
+    length: f32,
+    bounces: u32,
+    skip: Option<(ThingId, u32)>,
+    meets: &dyn Fn(ThingId, bool) -> Meets,
+    w: f32,
+) -> Path {
+    match start(from, dir, length) {
+        Ok(walk) => walk_on(scenery, walk, bounces.min(MOST_BOUNCES), skip, meets, w, false, usize::MAX).0,
+        Err(path) => path,
+    }
+}
+
+/// One colour of a split beam: its place on the spectrum, its share of the light per channel and
+/// its path from where the beam split.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Colour {
+    pub w: f32,
+    pub share: [f32; 3],
+    pub path: Path,
+}
+
+/// A beam that may have split into colours: the white path from the lamp (to where it split, when
+/// it did) and each colour's path from there, red first.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Split {
+    pub white: Path,
+    pub colours: Vec<Colour>,
+}
+
+/// [`trace`], splitting into `colours` colours at the first glass with Rainbow split it bends into
+/// (glass and light part 2): from there each colour goes its own way. With one colour, or no such
+/// glass, it is [`trace`]'s path exactly. All the paths together have at most `most_segments`
+/// segments (each colour an even share of what the white path leaves).
+#[allow(clippy::too_many_arguments)]
+pub fn trace_split(
+    scenery: &Scenery,
+    from: Vec2,
+    dir: Vec2,
+    length: f32,
+    bounces: u32,
+    skip: Option<(ThingId, u32)>,
+    meets: &dyn Fn(ThingId, bool) -> Meets,
+    colours: u32,
+    most_segments: usize,
+) -> Split {
+    let colours = colours.clamp(1, MOST_COLOURS);
     let bounces = bounces.min(MOST_BOUNCES);
-    let mut points = vec![from];
-    let Some(mut dir) = dir.try_normalize() else { return Path { points: vec![from, from], ended_on_hit: false } };
-    let mut at = from;
-    let mut left = length.max(0.0);
-    let mut turns = 0u32;
-    let mut inside: Option<(ThingId, Option<u32>, f32)> = None;
-    // A beam passing through things can meet very many: a limit keeps it from looping forever.
-    for _ in 0..(4 * bounces as usize + 4096) {
-        let Some(hit) = scenery.nearest(at, dir, left, skip, inside.map(|(t, r, _)| (t, r))) else {
-            points.push(at + dir * left);
-            return Path { points, ended_on_hit: false };
-        };
-        let point = at + dir * hit.t;
-        left -= hit.t;
-        let answer = meets(hit.thing, hit.row.is_some());
-        if answer == Meets::Pass && inside.is_none() {
-            at = point;
+    let walk = match start(from, dir, length) {
+        Ok(walk) => walk,
+        Err(white) => return Split { white, colours: Vec::new() },
+    };
+    let most = most_segments.max(1);
+    let (white, pending) = walk_on(scenery, walk, bounces, skip, meets, 0.0, colours > 1, most);
+    let Some(pending) = pending else { return Split { white, colours: Vec::new() } };
+    let used = white.points.len().saturating_sub(1);
+    let per = (most.saturating_sub(used) / colours as usize).max(1);
+    let colours = spectrum(colours)
+        .into_iter()
+        .map(|(w, share)| {
+            let (path, _) = walk_on(scenery, pending.bent(w), bounces, skip, meets, w, false, per);
+            Colour { w, share, path }
+        })
+        .collect();
+    Split { white, colours }
+}
+
+/// How bright a beam's band shows for its Beam glow: a wide band would drown the picture at a
+/// laser line's brightness.
+pub const BEAM_SHOW: f32 = 0.35;
+
+/// The most ribbons one light's band is drawn with.
+pub const MOST_RIBBONS: usize = 16384;
+
+/// The most segments all of one beam's rays across are traced with, together.
+pub const MOST_RIBBON_SEGMENTS: usize = 32768;
+
+/// A Light beam's band as ribbons (glass and light part 2): between each two neighbouring rays,
+/// segment by segment while they meet the same things, a quad. Over the white parts a ribbon is
+/// `colour` (already times strength and glow); where both rays split at the same glass, each
+/// colour's two paths make ribbons of `colour` times that colour's share. `across` is each ray's
+/// place across the band (0 to 1), `gap` the space between two rays at the lamp. At most `most`.
+pub fn ribbons(
+    rays: &[Split],
+    across: &[f32],
+    gap: f32,
+    colour: [f32; 3],
+    softness: f32,
+    most: usize,
+) -> Vec<bpe_gfx::RibbonGpu> {
+    let mut out = Vec::new();
+    let soft = if softness.is_finite() { softness.clamp(0.0, 1.0) } else { 0.0 };
+    for j in 0..rays.len().saturating_sub(1) {
+        let (a, b) = (&rays[j], &rays[j + 1]);
+        let d = [across[j], across[j + 1], gap, 0.0];
+        let whole = pair(&a.white, &b.white, [colour[0], colour[1], colour[2], soft], d, most, &mut out);
+        let split_together = whole
+            && !a.colours.is_empty()
+            && a.colours.len() == b.colours.len()
+            && a.white.corners.last() == b.white.corners.last();
+        if !split_together {
             continue;
         }
-        points.push(point);
-        if answer == Meets::Stop || turns >= bounces {
-            return Path { points, ended_on_hit: true };
+        for (ca, cb) in a.colours.iter().zip(&b.colours) {
+            let c = [colour[0] * ca.share[0], colour[1] * ca.share[1], colour[2] * ca.share[2]];
+            if c.iter().all(|v| v.abs() < 1e-6) {
+                continue;
+            }
+            pair(&ca.path, &cb.path, [c[0], c[1], c[2], soft], d, most, &mut out);
         }
-        turns += 1;
-        at = point;
-        dir = match (answer, inside) {
-            (_, Some((_, _, index))) => match refract(dir, hit.normal, index, 1.0) {
-                Some(out) => {
-                    inside = None;
-                    out
-                }
-                None => reflect(dir, hit.normal),
-            },
-            (Meets::Bend { index }, None) => match refract(dir, hit.normal, 1.0, index) {
-                Some(into) => {
-                    inside = Some((hit.thing, hit.row, index));
-                    into
-                }
-                None => reflect(dir, hit.normal),
-            },
-            _ => reflect(dir, hit.normal),
-        };
     }
-    Path { points, ended_on_hit: false }
+    out
+}
+
+/// The ribbons between paths `a` and `b`, segment by segment while both have one and each
+/// segment's start met the same thing. Where the two segments end on different things (one ray
+/// meets a shape the other misses) both are cut to the shorter one's length and the ribbon ends
+/// there. True when it walked both to their ends (the same count, ending on the same thing).
+fn pair(a: &Path, b: &Path, c: [f32; 4], d: [f32; 4], most: usize, out: &mut Vec<bpe_gfx::RibbonGpu>) -> bool {
+    let (na, nb) = (a.points.len().saturating_sub(1), b.points.len().saturating_sub(1));
+    for m in 0..na.min(nb) {
+        if m > 0 && a.corners.get(m) != b.corners.get(m) {
+            return false;
+        }
+        if out.len() >= most {
+            return false;
+        }
+        let (a0, mut a1, b0, mut b1) = (a.points[m], a.points[m + 1], b.points[m], b.points[m + 1]);
+        let parting = a.corners.get(m + 1) != b.corners.get(m + 1);
+        if parting {
+            let (la, lb) = (a0.distance(a1), b0.distance(b1));
+            let t = la.min(lb);
+            if la > t {
+                a1 = a0 + (a1 - a0) * (t / la);
+            }
+            if lb > t {
+                b1 = b0 + (b1 - b0) * (t / lb);
+            }
+        }
+        out.push(bpe_gfx::RibbonGpu { a: [a0.x, a0.y, a1.x, a1.y], b: [b0.x, b0.y, b1.x, b1.y], c, d });
+        if parting {
+            return false;
+        }
+    }
+    na == nb
 }
 
 #[cfg(test)]
@@ -266,7 +607,7 @@ mod tests {
     use super::*;
 
     fn wall_scenery(a: Vec2, b: Vec2, half: f32) -> Scenery {
-        Scenery { walls: vec![(ThingId(7), vec![(a, b)], half)], balls: Vec::new() }
+        Scenery { walls: vec![(ThingId(7), vec![(a, b)], half, false)], balls: Vec::new() }
     }
 
     #[test]
@@ -313,13 +654,18 @@ mod tests {
     fn glass_bends_a_beam_in_and_out() {
         // Through a glass ball off its middle: bent in, bent out, carrying on beyond.
         let s = Scenery { walls: Vec::new(), balls: vec![(ThingId(3), 0, Vec2::new(0.0, 200.0), 50.0)] };
-        let path =
-            trace(&s, Vec2::new(25.0, 0.0), Vec2::new(0.0, 1.0), 1000.0, 8, None, &|_, _| Meets::Bend { index: 1.5 });
+        let path = trace(&s, Vec2::new(25.0, 0.0), Vec2::new(0.0, 1.0), 1000.0, 8, None, &|_, _| Meets::Bend {
+            index: 1.5,
+            rainbow: 0.0,
+        });
         assert_eq!(path.points.len(), 4, "{:?}", path.points);
         let out = (path.points[3] - path.points[2]).normalize();
         assert!(out.x < -0.1, "a glass ball focuses light toward its axis: {out:?}");
         // Head on, it goes straight through.
-        let straight = trace(&s, Vec2::ZERO, Vec2::new(0.0, 1.0), 1000.0, 8, None, &|_, _| Meets::Bend { index: 1.5 });
+        let straight = trace(&s, Vec2::ZERO, Vec2::new(0.0, 1.0), 1000.0, 8, None, &|_, _| Meets::Bend {
+            index: 1.5,
+            rainbow: 0.0,
+        });
         assert!((straight.points.last().unwrap().x).abs() < 1e-3);
     }
 
@@ -329,5 +675,178 @@ mod tests {
         let dir = Vec2::new(0.9, 0.1).normalize();
         assert!(refract(dir, n, 1.5, 1.0).is_none(), "past the critical angle");
         assert!(refract(Vec2::new(0.0, 1.0), n, 1.5, 1.0).is_some());
+    }
+    /// An equilateral glass prism, 200 px a side, apex up, filled (`half` its band).
+    fn prism(half: f32) -> Scenery {
+        let (a, b, c) = (Vec2::new(-100.0, 86.6), Vec2::new(100.0, 86.6), Vec2::new(0.0, -86.6));
+        Scenery { walls: vec![(ThingId(9), vec![(a, c), (c, b), (b, a)], half, true)], balls: Vec::new() }
+    }
+
+    fn glass(rainbow: f32) -> impl Fn(ThingId, bool) -> Meets {
+        move |_, _| Meets::Bend { index: 1.5, rainbow }
+    }
+
+    /// The way the last segment of `p` goes, in degrees clockwise from the right.
+    fn way_out(p: &Path) -> f32 {
+        let n = p.points.len();
+        let d = p.points[n - 1] - p.points[n - 2];
+        d.y.atan2(d.x).to_degrees()
+    }
+
+    /// From the left at the least-deviation incidence for index 1.5, aimed at the left face's middle.
+    fn least_deviation() -> (Vec2, Vec2) {
+        let dir = Vec2::from_angle((30.0f32 - 0.75f32.asin().to_degrees()).to_radians());
+        (Vec2::new(-50.0, 0.0) - dir * 300.0, dir)
+    }
+
+    #[test]
+    fn rainbow_split_off_or_one_colour_is_the_plain_path() {
+        let s = prism(2.0);
+        let (from, dir) = least_deviation();
+        let plain = trace(&s, from, dir, 2000.0, 8, None, &glass(1.0));
+        for (rainbow, colours) in [(0.0, 12), (1.0, 1)] {
+            let split = trace_split(&s, from, dir, 2000.0, 8, None, &glass(rainbow), colours, MOST_BEAM_SEGMENTS);
+            assert!(split.colours.is_empty(), "{rainbow} {colours}");
+            if rainbow == 0.0 {
+                assert_eq!(split.white, trace(&s, from, dir, 2000.0, 8, None, &glass(0.0)));
+            } else {
+                assert_eq!(split.white, plain);
+            }
+        }
+        assert_eq!(plain.points.len(), 4, "in, through, out and on: {:?}", plain.points);
+        assert!((way_out(&plain) - 18.59).abs() < 0.05, "least deviation leaves as it came: {}", way_out(&plain));
+    }
+
+    #[test]
+    fn a_prism_splits_white_light_red_least_bent() {
+        let s = prism(0.0);
+        let (from, dir) = least_deviation();
+        let split = trace_split(&s, from, dir, 2000.0, 8, None, &glass(1.0), 12, MOST_BEAM_SEGMENTS);
+        assert_eq!(split.white.points.len(), 2, "white to the prism's face");
+        assert!(split.white.ended_on_hit);
+        assert_eq!(split.colours.len(), 12);
+        let ways: Vec<f32> = split.colours.iter().map(|c| way_out(&c.path)).collect();
+        for (c, w) in split.colours.iter().zip(&ways) {
+            assert_eq!(c.path.points[0], split.white.points[1], "each colour starts where the white ends");
+            assert_eq!(c.path.points.len(), 3, "through and out: {:?}", c.path.points);
+            assert!(w.abs() < 30.0, "{w}");
+        }
+        assert!(ways.windows(2).all(|p| p[1] > p[0]), "red bends least, violet most: {ways:?}");
+        let red = trace_wavelength(&s, from, dir, 2000.0, 8, None, &glass(1.0), -1.0);
+        let violet = trace_wavelength(&s, from, dir, 2000.0, 8, None, &glass(1.0), 1.0);
+        let spread = way_out(&violet) - way_out(&red);
+        assert!((spread - 4.0).abs() < 0.25, "Rainbow split 1 spreads the spectrum 4°: {spread}");
+    }
+
+    #[test]
+    fn each_colour_can_be_all_reflected_inside() {
+        // Straight in at 30° to the left face: red (index about 1.42) leaves through the right face,
+        // violet (about 1.58) meets it past its critical angle and turns back inside.
+        let s = prism(0.0);
+        let split = trace_split(&s, Vec2::new(-300.0, 0.0), Vec2::X, 2000.0, 8, None, &glass(4.0), 12, 4096);
+        let out_right = Vec2::new(0.866, -0.5);
+        let leaves = |c: &Colour| {
+            let p = &c.path.points;
+            (p[2] - p[1]).normalize().dot(out_right) > 0.0
+        };
+        assert!(leaves(&split.colours[0]), "{:?}", split.colours[0].path.points);
+        assert!(!leaves(&split.colours[11]), "{:?}", split.colours[11].path.points);
+    }
+
+    #[test]
+    fn the_segment_cap_holds_between_two_mirrors() {
+        let s = Scenery {
+            walls: vec![
+                (ThingId(1), vec![(Vec2::new(-300.0, -400.0), Vec2::new(-300.0, 400.0))], 0.0, false),
+                (ThingId(2), vec![(Vec2::new(300.0, -400.0), Vec2::new(300.0, 400.0))], 0.0, false),
+                // A glass pane between them, met straight on: every colour goes back and forth for ever.
+                (ThingId(3), vec![(Vec2::new(0.0, -400.0), Vec2::new(0.0, 400.0))], 10.0, false),
+            ],
+            balls: Vec::new(),
+        };
+        let meets = |thing: ThingId, _: bool| {
+            if thing == ThingId(3) { Meets::Bend { index: 1.5, rainbow: 1.0 } } else { Meets::Bounce }
+        };
+        let split = trace_split(&s, Vec2::new(-250.0, 5.0), Vec2::X, 1e9, 256, None, &meets, 32, MOST_BEAM_SEGMENTS);
+        let counts: Vec<usize> = split.colours.iter().map(|c| c.path.points.len() - 1).collect();
+        let total = split.white.points.len() - 1 + counts.iter().sum::<usize>();
+        assert_eq!(counts.len(), 32);
+        assert!(total <= MOST_BEAM_SEGMENTS, "{total}");
+        let (lo, hi) = (counts.iter().min().unwrap(), counts.iter().max().unwrap());
+        assert!(*lo >= 1 && hi - lo <= 1, "{counts:?}");
+        assert!(*lo > 100, "each colour keeps its share: {counts:?}");
+    }
+
+    #[test]
+    fn the_spectrum_adds_to_white() {
+        for n in 1..=MOST_COLOURS {
+            let colours = spectrum(n);
+            assert_eq!(colours.len(), n as usize);
+            for c in 0..3 {
+                let sum: f32 = colours.iter().map(|(_, s)| s[c]).sum();
+                assert!((sum - 1.0).abs() < 1e-5, "{n}: channel {c} adds to {sum}");
+            }
+            if n > 1 {
+                assert!(colours[0].1[0] > colours[0].1[2], "red first");
+                assert!(colours[n as usize - 1].1[2] > colours[n as usize - 1].1[0], "violet last");
+            }
+        }
+    }
+
+    /// `n` rays across a band `width` wide, heading right from x 0.
+    fn band_of(s: &Scenery, n: u32, width: f32, meets: &dyn Fn(ThingId, bool) -> Meets) -> (Vec<Split>, Vec<f32>) {
+        let across: Vec<f32> = (0..n).map(|j| j as f32 / (n - 1) as f32).collect();
+        let rays = across
+            .iter()
+            .map(|u| trace_split(s, Vec2::new(0.0, (u - 0.5) * width), Vec2::X, 1000.0, 8, None, meets, 12, 4096))
+            .collect();
+        (rays, across)
+    }
+
+    #[test]
+    fn a_beam_band_is_rays_across_wide() {
+        let s = Scenery::default();
+        let (rays, across) = band_of(&s, 5, 160.0, &|_, _| Meets::Bounce);
+        let r = ribbons(&rays, &across, 40.0, [1.0; 3], 0.3, MOST_RIBBONS);
+        assert_eq!(r.len(), 4);
+        assert_eq!([r[0].a[1], r[3].b[1]], [-80.0, 80.0]);
+        assert!(r.iter().all(|q| q.a[2] == 1000.0 && q.c == [1.0, 1.0, 1.0, 0.3] && q.d[2] == 40.0));
+    }
+
+    #[test]
+    fn a_beam_ribbon_ends_where_its_rays_part() {
+        let s = Scenery {
+            walls: vec![(ThingId(4), vec![(Vec2::new(200.0, -100.0), Vec2::new(200.0, -20.0))], 0.0, false)],
+            balls: Vec::new(),
+        };
+        let (rays, across) = band_of(&s, 5, 160.0, &|_, _| Meets::Stop);
+        let r = ribbons(&rays, &across, 40.0, [1.0; 3], 0.3, MOST_RIBBONS);
+        assert_eq!(r.len(), 4);
+        for q in &r {
+            let far = q.a[2].max(q.b[2]);
+            if q.d[1] <= 0.5 {
+                assert!(far <= 200.0 + 1e-3, "cut at the wall: {q:?}");
+            } else {
+                assert_eq!(far, 1000.0);
+            }
+        }
+    }
+
+    #[test]
+    fn a_beam_through_a_prism_makes_coloured_ribbons() {
+        let s = prism(0.0);
+        let (from, dir) = least_deviation();
+        let side = dir.perp();
+        let across: Vec<f32> = (0..6).map(|j| j as f32 / 5.0).collect();
+        let rays: Vec<Split> = across
+            .iter()
+            .map(|u| trace_split(&s, from + side * ((u - 0.5) * 40.0), dir, 2000.0, 8, None, &glass(1.0), 12, 4096))
+            .collect();
+        assert!(rays.iter().all(|r| r.colours.len() == 12));
+        let r = ribbons(&rays, &across, 8.0, [2.0; 3], 0.0, MOST_RIBBONS);
+        assert!(r.len() > 5 * 12, "{}", r.len());
+        let shares = spectrum(12);
+        assert!(r.iter().any(|q| q.c[0] == 2.0 * shares[0].1[0] && q.c[2] == 0.0), "a red ribbon");
+        assert!(r.iter().any(|q| q.c[2] == 2.0 * shares[11].1[2] && q.c[0] == 0.0), "a violet ribbon");
     }
 }

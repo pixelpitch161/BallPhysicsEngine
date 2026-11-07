@@ -251,9 +251,24 @@ when thick** (`thick_tint`, 0.5 on Glass and Jelly); the Lighting card's **Colou
 (`glass_colour`, on; `LightingGpu.more[3]`). The light probe tints too (`LookLight.passes`, `Ball.passes`, walls'
 passes; `visibility` → `[f32; 3]`). Off, or Tints light 0, the picture is byte-identical. `tests/coloured_shadows.rs`.
 
-Designed, not built yet: part 2 prism and rainbow beams (laser Colours, the Beam light kind, the Prism chip), part 3 bent
-light through any glass shape (a 2D photon pass), part 4 wild glass (mirrors throw light, Mirror ball, Dichroic, Diamond
-fire, Light pipes, rainbows in rain).
+Part 2 is in (plan `part2.md`, "As built" at its end): **prism and rainbow beams**, CPU tracing plus one GPU pass.
+`laser.rs`: `Meets::Bend { index, rainbow }` (from `surface::glass_of`, now a `Glass { index, rainbow }`), `index_at`
+(`n + rainbow · DISPERSION · w/2`, w −1 red to 1 violet, `DISPERSION` 0.0462 = 4° through a 60° prism at Rainbow split
+1), `spectrum(n)` (the shader's `spectral` hats, shares adding to white per channel), `trace_split` (white to the first
+glass with Rainbow split it bends into, then a path a colour; at most `MOST_BEAM_SEGMENTS` 4096, each colour an even share
+of what is left; `trace` never splits), `Path.corners` (what each point met). Filled walls are solid glass to the tracer
+(`Wall.solid`: only the band's outer surface counts, `turn_of`, `in_polygon`), so a filled shape is a real prism. Lights:
+**Colours** (`colours`, 1..64, default 12, group "Beam", which the laser's settings moved into) and the **Light beam**
+(`LightType::Beam`, code 6, "+ Beam": Width `beam_width`, Edge softness, Rays across): `push_light` pushes one `LightGpu`
+a run (white, then each colour, `push_one`), a beam's middle ray lighting as a laser that draws no line, and its band as
+`LightScene.ribbons` (`bpe_gfx::RibbonGpu`, `laser::ribbons`: neighbouring rays' segments paired while they meet the same
+things, cut where they part; `BEAM_SHOW` 0.35, `MOST_RIBBONS`) drawn by `vs_ribbon`/`fs_ribbon` (group 3 binding 2),
+added into the mix's target right after the mix, brighter where the band narrows. The **Prism** Surface chip (14th:
+See-through 0.95, Bends light 1.6, Rainbow split 1). Beam width handles (`LightPart::Width`). Ribbons stay out of the
+probe. `tests/prism_pictures.rs`.
+
+Designed, not built yet: part 3 bent light through any glass shape (a 2D photon pass), part 4 wild glass (mirrors throw
+light, Mirror ball, Dichroic, Diamond fire, Light pipes, rainbows in rain).
 
 ## Rules (spec `docs/superpowers/specs/2026-11-06-rules-design.md`, plans `docs/superpowers/plans/rules/`)
 

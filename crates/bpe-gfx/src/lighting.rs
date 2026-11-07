@@ -385,6 +385,10 @@ pub(crate) struct Lighting {
     /// Caustics (part 3): the photons' pipeline, their group 3 and its parts, an empty group 1.
     caustic: wgpu::RenderPipeline,
     caustic_layout: wgpu::BindGroupLayout,
+    /// Glass and light part 2: light beams' bands, added after the mix.
+    ribbon: wgpu::RenderPipeline,
+    ribbon_layout: wgpu::BindGroupLayout,
+    ribbons: GrowableBuffer,
     empty_group: wgpu::BindGroup,
     caustic_uniform: wgpu::Buffer,
     glass: GrowableBuffer,
@@ -690,6 +694,53 @@ impl Lighting {
             multiview_mask: None,
             cache: None,
         });
+        // Light beams' bands (glass and light part 2): their ribbons in group 3, groups 1 and 2 empty.
+        let ribbon_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("beam ribbons layout"),
+            entries: &[wgpu::BindGroupLayoutEntry { visibility: wgpu::ShaderStages::VERTEX, ..storage(2) }],
+        });
+        let ribbon_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("beam ribbons pipeline layout"),
+            bind_group_layouts: &[Some(&layout), Some(&empty_layout), Some(&empty_layout), Some(&ribbon_layout)],
+            immediate_size: 0,
+        });
+        let ribbon = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("beam ribbons"),
+            layout: Some(&ribbon_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_ribbon"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_ribbon"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: HDR_FORMAT,
+                    // Added over the picture; its cover (alpha) kept.
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::Zero,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, ..Default::default() },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("lighting sampler"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -763,6 +814,9 @@ impl Lighting {
             trace_add: make("bounce light added", "fs_trace_add", three, &[HDR_FORMAT], Some(add_all)),
             caustic,
             caustic_layout,
+            ribbon,
+            ribbon_layout,
+            ribbons: GrowableBuffer::storage("beam ribbons"),
             empty_group: device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("nothing"),
                 layout: &empty_layout,
@@ -1560,6 +1614,23 @@ impl Lighting {
                 None => group(&self.uniforms[0], &t.field.1, &t.seeds[from].1),
             };
             pass(encoder, &[(into, clear)], pipeline, &[&main_on, &g, &stage_group], label);
+            if i == 0 && !scene.ribbons.is_empty() {
+                // Light beams' bands, over the mixed light (so mirror walls, the floor and depth of
+                // field after it see them too).
+                self.ribbons.upload(device, queue, bytemuck::cast_slice(&scene.ribbons));
+                let ribbons = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("beam ribbons"),
+                    layout: &self.ribbon_layout,
+                    entries: &[wgpu::BindGroupEntry { binding: 2, resource: buffer(&self.ribbons) }],
+                });
+                let mut p = crate::begin_pass(encoder, into, "beam ribbons", wgpu::LoadOp::Load);
+                p.set_pipeline(&self.ribbon);
+                p.set_bind_group(0, &main_on, &[]);
+                p.set_bind_group(1, &self.empty_group, &[]);
+                p.set_bind_group(2, &self.empty_group, &[]);
+                p.set_bind_group(3, &ribbons, &[]);
+                p.draw(0..4, 0..scene.ribbons.len().min(u32::MAX as usize) as u32);
+            }
             read = Some(into);
         }
         if extras_on {
