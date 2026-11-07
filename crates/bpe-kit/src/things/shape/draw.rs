@@ -696,7 +696,7 @@ mod tests {
         let ball_id = scene.things.values().find(|t| t.kind == "balls").map(|t| t.id).expect("a ball");
         for (id, kind) in [(shape_id, shape), (ball_id, ball)] {
             let look = scene.card_mut(id, SlotId::Look).unwrap();
-            look.params.set("surface", Value::Choice(bpe_core::Choice::name(&kind).into()));
+            look.params.set("surface", Value::Choice(bpe_core::Choice::name(kind).into()));
             for (k, v) in crate::modules::look::surface::preset_values(kind) {
                 look.params.set(k, v);
             }

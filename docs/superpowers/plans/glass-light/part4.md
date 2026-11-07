@@ -254,4 +254,15 @@ Harness as `bent_light_pictures.rs` (270 × 480, Light only, linear light).
   what is still travelling after `LAPS` (4) times round comes out evenly, so a pipe gives out exactly what it caught
   (× gain × glow). The corner rule is the physical one: a corner turning by `α` leaks when `α > π/2 − asin(1/n)`, so
   an index that hardly bends leaks at any corner and glass holds its light round 45° corners. Suns aren't caught.
-- Known limits as decision 11.
+- Review fixes: a mirror throws only light coming in (`dot(dir, n) < 0` with `n` outward), so a photon leaving
+  through the mirror's soft edge after a throw goes on its way; a leg with no blur keeps part 3's widths exactly
+  (`vs_bent` widens only when `leg.d` is above 0); Stage mirror balls need shadows not Off and throw only lights
+  that cast shadows (as the 2D pass); a laser puts its light into a pipe once, where it first ends on it; a pipe's
+  glow reaches 4 × Carries, at most `PIPE_REACH` 1200; the rim ring of a tiled ball has exactly Facets tiles; a
+  test checks lighting.wgsl + bent_light.wgsl parse and validate (`the_light_pass_source_is_valid`).
+- The test-only `stage_demo` and `surfaces_demo` scenes use Chrome/Metal/Brushed, so they now throw light (the
+  look the spec asks for); their tests check thresholds and still pass.
+- Known limits as decision 11, and: a ball's throw colour is its Body's paint at the moment (as its sphere's);
+  mirror photons, like glass ones, carry what the shadow dropped (Shadow strength × (1 − Shadow colour)); when the
+  photon cap leaves thrower pairs out, glass photons meeting those mirrors first still stop; a Lit 0 layer over a
+  mirror still counts as the mirror (as part 3's glass); `ball_at` gives the nearest sphere of any thing.

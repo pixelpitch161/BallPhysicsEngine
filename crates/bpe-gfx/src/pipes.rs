@@ -14,8 +14,8 @@ use crate::frame::{LightGpu, LightScene, Pipe};
 pub const PIPE_GAIN: f32 = 4.0;
 /// The most strip lights one pipe glows with.
 pub const MOST_PIPE_PIECES: usize = 32;
-/// How far a pipe's glow reaches (world).
-pub const PIPE_REACH: f32 = 400.0;
+/// The farthest a pipe's glow reaches (world): 4 × Carries, at most this.
+pub const PIPE_REACH: f32 = 1200.0;
 /// How high above the picture a pipe's glow hangs.
 const PIPE_HEIGHT: f32 = 20.0;
 /// How near a laser's end must be to the outline (past half the pipe's width) to go in.
@@ -65,7 +65,7 @@ fn pieces_of(points: &[Vec2], bends: f32) -> Option<Pieces> {
     let m = points.len();
     let sides: Vec<f32> = (0..m).map(|k| points[k].distance(points[(k + 1) % m])).collect();
     let perimeter: f32 = sides.iter().sum();
-    if !(perimeter > 1e-3) {
+    if perimeter.is_nan() || perimeter <= 1e-3 {
         return None;
     }
     // A whole number of pieces a glow strip, so the strips are alike.
@@ -130,11 +130,14 @@ fn taken_in(pipe: &Pipe, pieces: &Pieces, lights: &[LightGpu], segments: &[[f32;
             let first = l.p4[2].max(0.0) as usize;
             let count = l.p4[3].max(0.0) as usize;
             let near = 0.5 * pipe.width.max(0.0) + LASER_NEAR;
+            // Only where it first ends on the pipe: a beam bouncing along inside the pipe, or
+            // passing through it, puts its light in once.
             for s in segments.iter().skip(first).take(count) {
                 let end = Vec2::new(s[2], s[3]);
                 let Some((i, d)) = nearest_piece(pieces, end) else { continue };
                 if d <= near {
                     add(&mut input[i], l.p1, 1.0);
+                    break;
                 }
             }
             continue;
@@ -286,7 +289,8 @@ impl LightScene {
                 }
                 let colour = [0, 1, 2].map(|c| sum[c] * pipe.tint[c].clamp(0.0, 1.0) * gain);
                 if colour.iter().any(|c| *c > 1e-6) {
-                    self.push_pipe_strip(&pieces.ends[start..=end], colour, pipe.width);
+                    let reach = (4.0 * pipe.carries).clamp(1.0, PIPE_REACH);
+                    self.push_pipe_strip(&pieces.ends[start..=end], colour, pipe.width, reach);
                 }
                 start = end;
             }
@@ -294,8 +298,9 @@ impl LightScene {
         self.pipes = pipes;
     }
 
-    /// A strip light along `points` of light `colour`, `width` wide, casting no shadows.
-    fn push_pipe_strip(&mut self, points: &[Vec2], colour: [f32; 3], width: f32) {
+    /// A strip light along `points` of light `colour`, `width` wide, reaching `reach`, casting no
+    /// shadows.
+    fn push_pipe_strip(&mut self, points: &[Vec2], colour: [f32; 3], width: f32, reach: f32) {
         let first = self.segments.len() as f32;
         for pair in points.windows(2) {
             self.segments.push([pair[0].x, pair[0].y, pair[1].x, pair[1].y]);
@@ -305,7 +310,7 @@ impl LightScene {
         self.lights.push(LightGpu {
             p0: [middle.x, middle.y, PIPE_HEIGHT, 4.0],
             p1: [colour[0], colour[1], colour[2], 0.0],
-            p2: [PIPE_REACH, 1.0, 0.5 * width, 0.0],
+            p2: [reach, 1.0, 0.5 * width, 0.0],
             p3: [1.0, 0.0, 1.0, 1.0],
             p4: [width, 0.0, first, (points.len() - 1) as f32],
             ..LightGpu::ZERO
@@ -399,6 +404,15 @@ mod tests {
             assert!(Vec2::new(brightest.p0[0], brightest.p0[1]).distance(Vec2::new(-200.0, 0.0)) < 60.0);
             assert!((total(&glow) / PIPE_GAIN / 3.0 - 1.0).abs() < 0.02, "all of it comes out");
         }
+        // A laser bouncing along the pipe (each bounce ending on it) puts its light in once.
+        let mut scene = LightScene {
+            lights: vec![LightGpu { p4: [2.0, 0.0, 0.0, 3.0], ..laser }],
+            segments: vec![[-400.0, 0.0, -200.0, 0.0], [-200.0, 0.0, 0.0, 200.0], [0.0, 200.0, 200.0, 0.0]],
+            pipes: vec![pipe(ring(200.0, 64), 600.0)],
+            ..Default::default()
+        };
+        scene.light_pipes();
+        assert!((total(&scene.lights[1..]) / PIPE_GAIN / 3.0 - 1.0).abs() < 0.02, "counted once");
         // With a short Carries the far side is much dimmer than with a long one.
         let far = |glow: &[LightGpu]| {
             glow.iter().filter(|l| l.p0[0] > 150.0 && l.p0[1].abs() < 60.0).map(|l| l.p1[0]).sum::<f32>()

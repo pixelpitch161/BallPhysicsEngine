@@ -3099,13 +3099,15 @@ fn facet_normal(n: vec3<f32>, facets: f32, turn: f32) -> vec4<f32> {
     let theta = acos(clamp(n.z, -1.0, 1.0));
     let ring = floor(theta / wide);
     let tc = min((ring + 0.5) * wide, 1.5707963);
-    let count = max(1.0, round(f * sin(tc)));
+    // The rim ring has the Facets tiles the photons see (seen edge on, a ball is a ring of them).
+    let rim = (ring + 1.0) * wide > 1.5707963;
+    let count = select(max(1.0, round(f * sin(tc))), f, rim);
     let phi = atan2(n.y, n.x) - turn;
     let sector = 6.28318531 / count;
     let pc = (floor(phi / sector) + 0.5) * sector + turn;
     let across = select(abs(2.0 * fract(phi / sector) - 1.0), 0.0, count < 1.5);
     // The rim ring's outer edge is the ball's own edge, not a gap.
-    let up = select(abs(2.0 * fract(theta / wide) - 1.0), 0.0, (ring + 1.0) * wide > 1.5707963);
+    let up = select(abs(2.0 * fract(theta / wide) - 1.0), 0.0, rim);
     return vec4<f32>(sin(tc) * cos(pc), sin(tc) * sin(pc), cos(tc), max(across, up));
 }
 
@@ -3936,6 +3938,10 @@ fn vs_caustic(@builtin(vertex_index) vi: u32, @builtin(instance_index) k: u32) -
     }
     let l = lights[li];
     let g = glass[gi];
+    // Part 4a: a mirror throws only the light of lamps that cast shadows (as the 2D photons).
+    if g.c.z > 0.5 && l.p5.w < 0.5 {
+        return out;
+    }
     let c = vec3<f32>(g.a.xy, 0.0);
     let r = g.a.z;
     let to = light_toward(l, c);

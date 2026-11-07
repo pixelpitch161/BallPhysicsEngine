@@ -582,7 +582,30 @@ fn cs_bent(@builtin(global_invocation_id) gid: vec3<u32>) {
             } else if c <= BENT_THROW {
                 // Part 4a: a mirror throws it back.
                 let tid = BENT_THROW - c;
-                if tid != last_tid || s - last_throw > 2.0 * px {
+                // The mirror's normal, outward: a ball's from its sphere, else down the slope of
+                // its cover.
+                let e = thrower_entry(tid);
+                var n = vec2<f32>(0.0, -1.0);
+                var turn = 0.0;
+                var found = false;
+                if e.a.y > 0.5 {
+                    let b = ball_at(q);
+                    if b >= 0 {
+                        let sp = spheres[u32(b)];
+                        let d = q - sp.a.xy;
+                        if dot(d, d) > 1e-8 {
+                            n = normalize(d);
+                            turn = sp.c.z;
+                            found = true;
+                        }
+                    }
+                }
+                if !found {
+                    n = glass_normal(q, tid);
+                }
+                // Only light coming in is thrown (light just thrown, leaving through the mirror's
+                // soft edge, goes on its way).
+                if dot(dir, n) < 0.0 && (tid != last_tid || s - last_throw > 2.0 * px) {
                     if !met {
                         if !throw_pair || tid != own {
                             // Its first glass or mirror is another pair's: that pair carries it.
@@ -591,28 +614,7 @@ fn cs_bent(@builtin(global_invocation_id) gid: vec3<u32>) {
                         met = true;
                         power *= gobo(l, q);
                     }
-                    let e = thrower_entry(tid);
-                    // The mirror's normal: a ball's from its sphere, else down the slope of its
-                    // cover.
-                    var n = vec2<f32>(0.0, -1.0);
-                    var turn = 0.0;
-                    var found = false;
-                    if e.a.y > 0.5 {
-                        let b = ball_at(q);
-                        if b >= 0 {
-                            let sp = spheres[u32(b)];
-                            let d = q - sp.a.xy;
-                            if dot(d, d) > 1e-8 {
-                                n = normalize(d);
-                                turn = sp.c.z;
-                                found = true;
-                            }
-                        }
-                    }
-                    if !found {
-                        n = glass_normal(q, tid);
-                    }
-                    var facing = select(n, -n, dot(dir, n) > 0.0);
+                    var facing = n;
                     var tile = 0;
                     var ends = false;
                     if e.a.z >= 3.0 {
@@ -805,8 +807,11 @@ fn vs_bent(@builtin(vertex_index) vi: u32, @builtin(instance_index) k: u32) -> B
         h = sign(e) * min(abs(e), vec2<f32>(MOST_SPREAD * least));
     }
     // Part 4a: wider where a rough mirror has blurred it (its kernel stays the same light across).
-    let mag = max(abs(h), vec2<f32>(least)) + max(leg.d.xy, vec2<f32>(0.0));
-    h = select(mag, -mag, h < vec2<f32>(0.0));
+    // A leg no mirror blurred keeps part 3's widths exactly.
+    if any(leg.d.xy > vec2<f32>(0.0)) {
+        let mag = max(abs(h), vec2<f32>(least)) + max(leg.d.xy, vec2<f32>(0.0));
+        h = select(mag, -mag, h < vec2<f32>(0.0));
+    }
     let x = f32(vi & 1u);
     let y = f32((vi >> 1u) & 1u) * 2.0 - 1.0;
     let pad = bu.more.x;

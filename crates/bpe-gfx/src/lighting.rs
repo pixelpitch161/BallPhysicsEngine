@@ -93,13 +93,13 @@ pub struct CausticGlass {
 }
 
 /// The balls light goes through to make caustics: see-through (at least 0.05) and bending light,
-/// with Glass caustics on; and on a Stage with Mirror light on, the balls that throw light (glass
-/// and light part 4a).
+/// with Glass caustics on; and on a Stage with Mirror light on and shadows not Off, the balls that
+/// throw light (glass and light part 4a; only lights that cast shadows throw, as in the 2D pass).
 pub fn caustic_glass(scene: &LightScene) -> Vec<CausticGlass> {
     let s = &scene.settings;
     let glass_on = s.bake_more[2] != 0.0;
     // Glass and light part 4a: on a Stage, mirror balls throw their light here too.
-    let mirrors_on = s.stage[0] > 0.5 && s.bent[2] != 0.0 && s.bent[2].is_finite();
+    let mirrors_on = s.stage[0] > 0.5 && s.bent[2] != 0.0 && s.bent[2].is_finite() && s.shadows[0] < 2.5;
     scene
         .spheres
         .iter()

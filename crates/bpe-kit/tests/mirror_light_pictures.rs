@@ -386,22 +386,29 @@ fn a_stage_mirror_ball_throws_spots_on_the_wall() {
     set_light(&mut scene, "height", Value::Number(300.0));
     let on = draw(&mut gpu, &scene, "stage-ball");
     let off = draw(&mut gpu, &ball_throwing(&scene, 0.0), "stage-ball-off");
-    let mut best = 0.0f32;
+    // Spots: places on the wall at least half as bright again as the bare wall.
+    let mut spots = 0;
     let mut y = -900.0f32;
     while y <= 900.0 {
         let mut x = -520.0f32;
         while x <= 520.0 {
             if x.hypot(y) > 120.0 {
                 let (a, b) = (light(&on, x, y), light(&off, x, y));
-                if b > 0.002 {
-                    best = best.max(a / b);
+                if b > 0.002 && a >= 1.5 * b {
+                    spots += 1;
                 }
             }
             x += 12.0;
         }
         y += 12.0;
     }
-    assert!(best >= 1.5, "the wall's spots are {best} times the bare wall");
+    assert!(spots >= 8, "{spots} places on the wall lit by the mirror ball's spots");
+    // Shadows Off: the ball throws nothing.
+    let mut unshadowed = scene.clone();
+    set_lighting(&mut unshadowed, "shadow_style", Value::Choice("off".into()));
+    let a = draw(&mut gpu, &unshadowed, "stage-ball-no-shadows");
+    let b = draw(&mut gpu, &ball_throwing(&unshadowed, 0.0), "stage-ball-no-shadows-off");
+    assert!(a == b, "with shadows Off a mirror ball throws nothing");
 }
 
 /// A hollow ring shape of radius 200 and band 12 that blocks light, round the lamp at the middle.
