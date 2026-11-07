@@ -115,6 +115,16 @@ no golden moves.
 6. `cargo clippy --workspace`, `cargo fmt`, `cargo test -p bpe-studio` (and the workspace in the background).
    Goldens untouched (`git diff --stat` shows no golden file).
 
+## As built (after the review)
+
+- The number box beside a span slider snaps when dragged too (`after_drag` on the box), like every other box.
+- A setting doesn't snap when its slider span couldn't stop at four steps (`Snapper::fits`: a 0.25 to 10 px Aura
+  width or a 0 to 20° sun size stays free), nor the scene's Video Width/Height (`setting_snapper`, group "Video").
+- Alt+click on a setting's widget no longer resets it (Alt now means "drag freely"); Alt+click on the label and a
+  double-click on either still put the default back.
+- Up/Down arrows in a focused egui number box are used by egui itself and move by its own speed; Left/Right on a
+  slider rail snap. Accepted.
+
 ## Things not to do
 
 - Don't snap typed numbers, values drawn but not dragged, or values loaded from a file.

@@ -118,6 +118,13 @@ impl Snapper {
         self.snap(v + dir * gap)
     }
 
+    /// Whether a slider over `span` could stop at four or more of these steps: a length counts
+    /// its eighths under one square.
+    pub fn fits(&self, (a, b): (f64, f64)) -> bool {
+        let finest = if self.measure == Measure::Length { self.step / 8.0 } else { self.step };
+        (b - a).abs() / finest >= 4.0
+    }
+
     /// How many decimals a number box needs to show this snapping's steps exactly (at most 3).
     pub fn decimals(&self) -> usize {
         let finest = if self.measure == Measure::Length { self.step / 8.0 } else { self.step };
@@ -243,6 +250,10 @@ mod tests {
         assert_eq!(length.decimals(), 1, "7.5 shows as it is");
         assert_eq!(Snapper { measure: Measure::Length, step: 80.0 }.decimals(), 0);
         assert_eq!(turn.decimals(), 0);
+        assert!(length.fits((0.5, 200.0)), "a ball's size snaps");
+        assert!(!length.fits((0.25, 10.0)), "a 10 px width would only take 0 and 7.5");
+        assert!(turn.fits((-180.0, 180.0)));
+        assert!(!turn.fits((0.0, 20.0)), "a 20° sun only takes 0 and 15");
     }
 
     #[test]

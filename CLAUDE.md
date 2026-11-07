@@ -765,7 +765,8 @@ Dependencies go bottom to top:
   preview's drags and, through `setting_snap.rs`, inspector settings while dragged (plan
   `docs/superpowers/plans/2026-11-07-snap-settings.md`): the app `put`s the frame's `SettingSnap` in egui memory,
   `Snapper::for_unit` reads it by the shown unit (`px` a length: whole squares, eighths under one; a `px` pair or
-  Position/Offset a place; `°`/`deg` an angle step), Alt held is free, typed numbers stay exact.
+  Position/Offset a place; `°`/`deg` an angle step; not the Video size, nor a slider under four steps across,
+  `widgets::setting_snapper`), Alt held is free (so Alt+click resets from the label only), typed numbers stay exact.
   `NumberFeel.snap` drives `span_slider` and `two_ended`; egui sliders and boxes snap after the fact (`after_drag`).
   Motion and Bounce show as one **Physics** card (`Card::Physics`, `PHYSICS` in `inspector.rs`: one header, Remove,
   "+ Add slot" entry and jump-bar chip; each card's grid inside); the scene still keeps the two cards.

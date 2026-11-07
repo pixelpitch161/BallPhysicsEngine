@@ -519,8 +519,7 @@ fn setting(
             style::wells(ui, |ui| match (two_ended, to.as_mut()) {
                 (true, Some(end)) => {
                     let range = def.range.or(def.span).unwrap_or((0.0, 1.0));
-                    let snap = crate::setting_snap::Snapper::for_unit(ui, unit, false);
-                    let feel = setting_feel(def).with_snap(snap);
+                    let feel = setting_feel(def).with_snap(setting_snapper(ui, def, unit));
                     let (a, b) = crate::vary::two_ended(ui, def, (value, end), range, feel, suffix(unit), name.id);
                     to_response = Some(b);
                     a
@@ -555,7 +554,8 @@ fn setting(
     // A gradient bar's clicks add and pick stops, so only its label resets it.
     let fallback = def.default.clone();
     let gradient = def.ty == ValueType::Gradient;
-    if resettable(&name, value, &fallback) || (!gradient && resettable(&response, value, &fallback)) {
+    // Alt on the widget itself drags freely past the grid, so there only a double-click resets.
+    if resettable(&name, value, &fallback, true) || (!gradient && resettable(&response, value, &fallback, false)) {
         changed = true;
     }
     let follow = cx.follow.map(|f| (f, def.key));
@@ -1177,8 +1177,9 @@ fn label(ui: &mut Ui, text: &str, help: &str, ink: Color32) -> Response {
     if help.is_empty() { response } else { response.on_hover_text(help) }
 }
 
-/// Whether the response was double-clicked or Alt+clicked, which puts a setting back.
-fn reset_clicked(response: &Response) -> bool {
+/// Whether the response was double-clicked or (with `alt_too`) Alt+clicked, which puts a setting
+/// back.
+fn reset_clicked(response: &Response, alt_too: bool) -> bool {
     let primary = egui::PointerButton::Primary;
     // egui counts a double-click that comes soon after a click elsewhere as a triple-click.
     let (alt, clicked, many_clicks) = response.ctx.input(|i| {
@@ -1187,12 +1188,13 @@ fn reset_clicked(response: &Response) -> bool {
     });
     // Sliders only sense drags, so a click on one shows up as a drag that stops where it started.
     let clicked = response.clicked() || (response.drag_stopped() && clicked);
-    (clicked && alt) || (clicked && many_clicks && !response.ctx.text_edit_focused())
+    (clicked && alt && alt_too) || (clicked && many_clicks && !response.ctx.text_edit_focused())
 }
 
-/// Puts `value` back to `fallback` on a double-click or Alt+click. True when it changed.
-fn resettable(response: &Response, value: &mut Value, fallback: &Value) -> bool {
-    if reset_clicked(response) && value != fallback {
+/// Puts `value` back to `fallback` on a double-click or (with `alt_too`) Alt+click. True when it
+/// changed.
+fn resettable(response: &Response, value: &mut Value, fallback: &Value, alt_too: bool) -> bool {
+    if reset_clicked(response, alt_too) && value != fallback {
         *value = fallback.clone();
         true
     } else {
@@ -1445,6 +1447,8 @@ pub fn span_slider(
         })
         .inner;
     let boxed = name.on(ui, boxed);
+    // Dragging the box lands on the grid too; a typed number stays exact.
+    crate::setting_snap::after_drag(ui, &boxed, *value, &mut typed, feel.snap, integer, range);
     if boxed.changed() {
         *value = if integer { typed.round() } else { typed };
     }
@@ -1502,6 +1506,20 @@ impl Named<'_> {
     }
 }
 
+/// How `def`, shown in `unit`, snaps to the grid while dragged right now: never the video's own
+/// size (a size of the picture, not a distance in it), nor a slider that couldn't stop at four
+/// steps across its span (a 0 to 10 px width at a 60 px grid would only take 0 and 7.5).
+fn setting_snapper(ui: &Ui, def: &SettingDef, unit: &str) -> Option<crate::setting_snap::Snapper> {
+    if def.group == "Video" {
+        return None;
+    }
+    let snap = crate::setting_snap::Snapper::for_unit(ui, unit, def.ty == ValueType::Vec2)?;
+    match def.span.or(def.range) {
+        Some((a, b)) if !snap.fits((a, b)) => None,
+        _ => Some(snap),
+    }
+}
+
 /// The span slider for a setting's number: over its usual span, clamped only by its hard range.
 fn spanned(
     ui: &mut Ui,
@@ -1527,9 +1545,9 @@ fn widget(
     choices: &TargetChoices,
     big: bool,
 ) -> Response {
-    use crate::setting_snap::{Snapper, after_drag};
+    use crate::setting_snap::after_drag;
     // Distances and angles land on the grid while it snaps (and Alt isn't held).
-    let snap = Snapper::for_unit(ui, unit, def.ty == ValueType::Vec2);
+    let snap = setting_snapper(ui, def, unit);
     let unit = suffix(unit);
     let feel = setting_feel(def).with_snap(snap);
     match (&def.ty, value) {
@@ -2465,6 +2483,14 @@ mod tests {
             assert!(v != 200.0 || dx.abs() < 10.0, "it moved: {dx} {v}");
             assert!(on_the_grid(v), "{dx}: {v}");
         }
+    }
+
+    #[test]
+    fn dragging_the_number_box_lands_on_the_grid_too() {
+        let mut h = snapping_harness(200.0, (0.0, 400.0), None, "px");
+        drag_named(&mut h, "Amount", egui::accesskit::Role::SpinButton, 90.0);
+        let v = *h.state();
+        assert!(v != 200.0 && on_the_grid(v), "{v}");
     }
 
     #[test]
