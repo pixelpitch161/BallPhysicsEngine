@@ -1639,10 +1639,10 @@ fn widget(
         (ValueType::Text, Value::Text(text)) if def.unit == "picture" => {
             let width = (ui.available_width() - 40.0).max(80.0);
             let mut response = ui.add(egui::TextEdit::singleline(text).desired_width(width)).labelled_by(name);
-            let browse = ui.add(egui::Button::new("…").small()).on_hover_text("Choose a picture (PNG or JPG)");
+            let browse = ui.add(egui::Button::new("…").small()).on_hover_text("Choose a picture (PNG)");
             browse.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Browse {}", def.label)));
             if browse.clicked()
-                && let Some(path) = rfd::FileDialog::new().add_filter("Pictures", &["png", "jpg", "jpeg"]).pick_file()
+                && let Some(path) = rfd::FileDialog::new().add_filter("PNG pictures", &["png"]).pick_file()
             {
                 *text = path.to_string_lossy().into_owned();
                 response.mark_changed();

@@ -12,20 +12,27 @@
 pub mod air;
 #[cfg(test)]
 mod air_tests;
+pub mod beats;
 pub mod births;
 pub mod draw;
 pub mod forces;
 pub mod liquid;
 pub mod look;
 pub mod looks;
+mod looks_motion;
 pub mod marks;
 pub mod meets;
 pub mod modifiers;
+pub mod more_forces;
+pub mod ready;
 pub mod sim;
+pub mod spots;
 pub mod state;
 pub mod step;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_motion;
 #[cfg(test)]
 mod tests_part6;
 pub mod trail;
@@ -55,6 +62,73 @@ pub enum BornFrom {
     ALine,
     /// On what the thing sits in: its balls or its shape.
     RidingItsParent,
+    /// In the letters of a word or the filled parts of a picture: each particle's home is its
+    /// place in it (particles part 3).
+    AWordOrPicture,
+    /// On the points of a grid: each particle's home is its point (particles part 3).
+    AGrid,
+}
+
+/// What a word or picture source is made of.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum WordFrom {
+    #[default]
+    Text,
+    /// A PNG picture.
+    Picture,
+}
+
+/// How heavy a word's letters are (the IBM Plex Sans weights the editor ships).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Choice)]
+pub enum Weight {
+    Regular,
+    Medium,
+    #[default]
+    SemiBold,
+}
+
+/// Which parts of a picture particles fill.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Choice)]
+pub enum Uses {
+    /// Where it isn't see-through.
+    #[default]
+    SolidParts,
+    /// Where it is light.
+    BrightParts,
+    /// Where it is dark.
+    DarkParts,
+}
+
+/// What a grid covers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum GridCovers {
+    /// Everything the camera sees, and Margin round it.
+    #[default]
+    TheScreen,
+    /// Width × Height round the thing's place.
+    ARectangle,
+}
+
+/// How a grid's points are spaced.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Choice)]
+pub enum GridBy {
+    /// Spacing pixels apart.
+    #[default]
+    Spacing,
+    /// Columns × Rows points across what it covers.
+    ColumnsAndRows,
+}
+
+/// How often something happens on the beat.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum BeatEvery {
+    /// Every beat of the scene's tempo.
+    #[default]
+    Beat,
+    /// At the start of every bar.
+    Bar,
+    /// Every few bars.
+    Bars,
 }
 
 /// Which part of the screen Whole screen births come from.
@@ -107,6 +181,8 @@ pub enum Emit {
     KeepACrowd,
     /// Count at the start, and no more.
     OnceAtTheStart,
+    /// Count on every beat, bar or few bars of the scene's tempo (particles part 3).
+    OnTheBeat,
 }
 
 /// The way a new particle flies.
@@ -123,6 +199,9 @@ pub enum Heading {
     AlongThePath,
     /// Back the way the ball it rides came from.
     Behind,
+    /// Sideways round what they come from: round the ball they ride, the middle of an area or a
+    /// word, the hit (particles part 3).
+    RoundTheMiddle,
 }
 
 /// A Particles thing's own settings: its Source.
@@ -133,13 +212,19 @@ pub struct ParticlesSettings {
     #[setting(label = "Edge", when = "from=whole_screen", group = "Where")]
     pub edge: Edge,
     /// How far past the screen's edge particles are born (and live on before they go).
-    #[setting(label = "Margin", when = "from=whole_screen", span(0, 400), unit = "px", group = "Where")]
+    #[setting(
+        label = "Margin",
+        when = "from=whole_screen or from=a_grid and grid_covers=the_screen",
+        span(0, 400),
+        unit = "px",
+        group = "Where"
+    )]
     pub margin: f32,
     #[setting(label = "Area shape", when = "from=an_area", group = "Where")]
     pub area: AreaShape,
     #[setting(
         label = "Width",
-        when = "from=an_area and area=rectangle",
+        when = "from=an_area and area=rectangle or from=a_grid and grid_covers=a_rectangle",
         range(0, 1e9),
         span(0, 2000),
         unit = "px",
@@ -149,7 +234,7 @@ pub struct ParticlesSettings {
     pub width: f32,
     #[setting(
         label = "Height",
-        when = "from=an_area and area=rectangle",
+        when = "from=an_area and area=rectangle or from=a_grid and grid_covers=a_rectangle",
         range(0, 1e9),
         span(0, 2000),
         unit = "px",
@@ -187,8 +272,15 @@ pub struct ParticlesSettings {
         group = "Where"
     )]
     pub length: f32,
-    /// The way the line (or the area) turns, in degrees.
-    #[setting(label = "Turn", when = "from=a_line|an_area", span(-180, 180), unit = "°", keyframe, group = "Where")]
+    /// The way the line (or the area, word or grid) turns, in degrees.
+    #[setting(
+        label = "Turn",
+        when = "from=a_line|an_area|a_word_or_picture|a_grid",
+        span(-180, 180),
+        unit = "°",
+        keyframe,
+        group = "Where"
+    )]
     pub line_turn: f32,
     #[setting(label = "Rides on", when = "from=riding_its_parent", group = "Where")]
     pub rides_on: RidesOn,
@@ -200,6 +292,87 @@ pub struct ParticlesSettings {
         group = "Where"
     )]
     pub ball_number: u32,
+    #[setting(label = "Made of", when = "from=a_word_or_picture", group = "Where")]
+    pub word_from: WordFrom,
+    #[setting(label = "Text", when = "from=a_word_or_picture and word_from=text", group = "Where")]
+    pub text: String,
+    /// How tall the capitals are.
+    #[setting(
+        label = "Letter height",
+        when = "from=a_word_or_picture and word_from=text",
+        range(1, 1e9),
+        span(20, 1000),
+        unit = "px",
+        group = "Where"
+    )]
+    pub letter_height: f32,
+    #[setting(label = "Weight", when = "from=a_word_or_picture and word_from=text", group = "Where")]
+    pub weight: Weight,
+    /// A PNG picture: particles fill its solid, bright or dark parts.
+    #[setting(
+        label = "Picture",
+        when = "from=a_word_or_picture and word_from=picture",
+        unit = "picture",
+        group = "Where"
+    )]
+    pub picture: String,
+    #[setting(
+        label = "Picture width",
+        when = "from=a_word_or_picture and word_from=picture",
+        range(1, 1e9),
+        span(20, 2000),
+        unit = "px",
+        group = "Where"
+    )]
+    pub picture_width: f32,
+    #[setting(label = "Uses", when = "from=a_word_or_picture and word_from=picture", group = "Where")]
+    pub uses: Uses,
+    #[setting(label = "Covers", when = "from=a_grid", group = "Where")]
+    pub grid_covers: GridCovers,
+    #[setting(label = "Grid by", when = "from=a_grid", group = "Where")]
+    pub grid_by: GridBy,
+    #[setting(
+        label = "Columns",
+        when = "from=a_grid and grid_by=columns_and_rows",
+        range(1, 1e6),
+        span(1, 200),
+        group = "Where"
+    )]
+    pub columns: u32,
+    #[setting(
+        label = "Rows",
+        when = "from=a_grid and grid_by=columns_and_rows",
+        range(1, 1e6),
+        span(1, 200),
+        group = "Where"
+    )]
+    pub rows: u32,
+    /// How far apart the places are: one particle every Spacing pixels.
+    #[setting(
+        label = "Spacing",
+        when = "from=a_word_or_picture or from=a_grid and grid_by=spacing",
+        range(1, 1e9),
+        span(2, 100),
+        unit = "px",
+        group = "Where"
+    )]
+    pub spacing: f32,
+    /// How far each grid point is moved off its place, as a share of a cell.
+    #[setting(label = "Jitter", when = "from=a_grid", span(0, 1), group = "Where")]
+    pub jitter: f32,
+    /// Every other row shifted by half a cell (a honeycomb).
+    #[setting(label = "Stagger rows", when = "from=a_grid", group = "Where")]
+    pub stagger: bool,
+    /// How fast the homes turn round the middle.
+    #[setting(
+        label = "Homes turn",
+        when = "from=a_word_or_picture|a_grid",
+        span(-90, 90),
+        unit = "°/s",
+        keyframe,
+        group = "Where"
+    )]
+    pub homes_turn: f32,
 
     #[setting(label = "Emit", simple, group = "When")]
     pub emit: Emit,
@@ -226,9 +399,31 @@ pub struct ParticlesSettings {
         group = "When"
     )]
     pub every: f32,
-    /// How many each burst, hit or crowd has.
-    #[setting(label = "Count", when = "emit!=steady", range(0, 1e9), span(1, 2000), keyframe, pulse, group = "When")]
+    /// How many each burst, hit, beat or crowd has (a word or grid's crowd fills every place).
+    #[setting(
+        label = "Count",
+        when = "emit=bursts|on_hits|on_the_beat or emit=keep_a_crowd|once_at_the_start and from!=a_word_or_picture|a_grid",
+        range(0, 1e9),
+        span(1, 2000),
+        keyframe,
+        pulse,
+        group = "When"
+    )]
     pub count: u32,
+    #[setting(label = "Every", when = "emit=on_the_beat", group = "When")]
+    pub beat_every: BeatEvery,
+    #[setting(
+        label = "Bars",
+        when = "emit=on_the_beat and beat_every=bars",
+        range(1, 1e6),
+        span(1, 16),
+        unit = "bars",
+        group = "When"
+    )]
+    pub bars: u32,
+    /// Starts this many beats in.
+    #[setting(label = "Offset", when = "emit=on_the_beat", range(0, 1e6), span(0, 16), unit = "beats", group = "When")]
+    pub beat_offset: f32,
     /// Whose balls' hits let particles off.
     #[setting(label = "Who hits", when = "emit=on_hits", group = "When")]
     pub who_hits: Target,
@@ -322,10 +517,28 @@ impl Default for ParticlesSettings {
             line_turn: 0.0,
             rides_on: RidesOn::EachBall,
             ball_number: 1,
+            word_from: WordFrom::Text,
+            text: "BOUNCE".into(),
+            letter_height: 240.0,
+            weight: Weight::SemiBold,
+            picture: String::new(),
+            picture_width: 600.0,
+            uses: Uses::SolidParts,
+            grid_covers: GridCovers::TheScreen,
+            grid_by: GridBy::Spacing,
+            columns: 24,
+            rows: 40,
+            spacing: 12.0,
+            jitter: 0.0,
+            stagger: false,
+            homes_turn: 0.0,
             emit: Emit::Steady,
             rate: 60.0,
             every: 1.0,
             count: 30,
+            beat_every: BeatEvery::Beat,
+            bars: 2,
+            beat_offset: 0.0,
             who_hits: Target::Anything,
             least_speed: 0.0,
             follow_impact: true,

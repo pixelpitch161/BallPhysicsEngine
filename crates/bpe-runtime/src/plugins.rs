@@ -1,8 +1,9 @@
 //! What a plugin gives the runtime: how to build a thing into the world, and how a module
 //! moves and bounces the things that use it.
 
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use bpe_core::{Params, ResolvedThing, Target, Thing, ThingId};
 use glam::Vec2;
@@ -11,28 +12,60 @@ use crate::{Bodies, Contact, Log, World, reflect};
 
 /// Anything a plugin keeps per thing or per module while the world runs. Implemented for every
 /// `Clone + Send + Sync + 'static` type.
+///
+/// That includes `Box<dyn ThingState>` and `Arc<dyn ThingState>` themselves (both are `Clone`),
+/// so with this trait in scope `boxed.as_any()` reaches the box's impl before the state's, and
+/// `&boxed` passed as a `&dyn ThingState` makes the box the trait object. The impl therefore
+/// forwards a pointer to the state inside it: every way of asking reaches the state.
 pub trait ThingState: Any + Send + Sync {
     fn clone_box(&self) -> Box<dyn ThingState>;
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
+/// The state `s` points at, when `T` is a pointer to a state rather than a state. The `TypeId`
+/// tests are constant for each `T`, so a real state pays nothing.
+fn pointee<T: Any>(s: &T) -> Option<&dyn ThingState> {
+    if TypeId::of::<T>() == TypeId::of::<Box<dyn ThingState>>() {
+        return (s as &dyn Any).downcast_ref::<Box<dyn ThingState>>().map(|b| &**b);
+    }
+    if TypeId::of::<T>() == TypeId::of::<Arc<dyn ThingState>>() {
+        return (s as &dyn Any).downcast_ref::<Arc<dyn ThingState>>().map(|a| &**a);
+    }
+    None
+}
+
 impl<T: Any + Clone + Send + Sync> ThingState for T {
     fn clone_box(&self) -> Box<dyn ThingState> {
-        Box::new(self.clone())
+        match pointee(self) {
+            Some(inner) => inner.clone_box(),
+            None => Box::new(self.clone()),
+        }
     }
     fn as_any(&self) -> &dyn Any {
-        self
+        match pointee(self) {
+            Some(inner) => inner.as_any(),
+            None => self,
+        }
     }
     fn as_any_mut(&mut self) -> &mut dyn Any {
+        if TypeId::of::<T>() == TypeId::of::<Box<dyn ThingState>>() {
+            let b = (self as &mut dyn Any).downcast_mut::<Box<dyn ThingState>>().unwrap();
+            return (**b).as_any_mut();
+        }
+        if TypeId::of::<T>() == TypeId::of::<Arc<dyn ThingState>>() {
+            let a = (self as &mut dyn Any).downcast_mut::<Arc<dyn ThingState>>().unwrap();
+            let inner = Arc::get_mut(a).expect("a shared plugin state can't be changed");
+            return inner.as_any_mut();
+        }
         self
     }
 }
 
 impl Clone for Box<dyn ThingState> {
     fn clone(&self) -> Self {
-        // Through the reference, not the box: the box is itself a `ThingState` by the blanket
-        // impl, and its `clone_box` would come straight back here.
+        // Straight to the state: the box is itself a `ThingState` by the blanket impl, whose
+        // `clone_box` would only forward here again.
         (**self).clone_box()
     }
 }
@@ -138,6 +171,12 @@ pub trait ThingSim: Send + Sync + 'static {
     /// editor keeps playing through them.
     fn affects_physics(&self, _key: &str) -> bool {
         true
+    }
+    /// Whether changing this setting changes the things stepped beside the physics although it
+    /// isn't physics (the scene's tempo, which particles born on the beat read): the editor's
+    /// particle playback starts over when it changes ([`crate::beside_fingerprint`]).
+    fn affects_beside(&self, _key: &str) -> bool {
+        false
     }
     /// How much of its balls' past the thing wants kept, for its trails and particles; `None`
     /// keeps none. Asked when the world is built, and hashed into the world's fingerprint.
@@ -357,6 +396,38 @@ mod tests {
         let a: Box<dyn ThingState> = Box::new(7u32);
         let b = a.clone();
         assert_eq!(*state::<u32>(b.as_ref()), 7);
+    }
+
+    /// A `Box` or `Arc` of a state is itself a `ThingState` (the blanket impl), so with the
+    /// trait in scope, as here, a call on the pointer reaches the pointer's impl first. It must
+    /// still reach the state inside.
+    #[test]
+    fn a_pointer_to_a_state_is_read_as_the_state() {
+        let mut states: BTreeMap<u32, Box<dyn ThingState>> = BTreeMap::new();
+        states.insert(1, Box::new(7u32));
+        assert_eq!(states.get(&1).and_then(|s| s.as_any().downcast_ref::<u32>()), Some(&7));
+        assert_eq!(states.get_mut(&1).and_then(|s| s.as_any_mut().downcast_mut::<u32>()), Some(&mut 7));
+        let boxed = states.get(&1).unwrap();
+        assert_eq!(*state::<u32>(boxed), 7, "&Box coerced to &dyn");
+        // `as_any` forwards through any boxes, so the clone's own type is checked without it.
+        assert_eq!(Any::type_id(&*boxed.clone_box()), TypeId::of::<u32>(), "a clone is the state, not a box");
+        *state_mut::<u32>(states.get_mut(&1).unwrap()) = 8;
+        assert_eq!(*state::<u32>(states[&1].as_ref()), 8);
+
+        let mut shared: Arc<dyn ThingState> = Arc::new(9u32);
+        assert_eq!(shared.as_any().downcast_ref::<u32>(), Some(&9));
+        assert_eq!(*state::<u32>(&shared), 9, "&Arc coerced to &dyn");
+        assert_eq!(Any::type_id(&*shared.clone_box()), TypeId::of::<u32>(), "a clone is the state, not an Arc");
+        *state_mut::<u32>(&mut shared) = 10;
+        assert_eq!(*state::<u32>(shared.as_ref()), 10);
+    }
+
+    #[test]
+    #[should_panic(expected = "a shared plugin state can't be changed")]
+    fn changing_a_shared_state_through_its_arc_panics() {
+        let mut shared: Arc<dyn ThingState> = Arc::new(9u32);
+        let _other = shared.clone();
+        shared.as_any_mut();
     }
 
     #[test]

@@ -19,12 +19,15 @@ use super::{KIND, ParticlesSettings};
 
 pub struct ParticlesSim;
 
-/// Reads the thing's Source and cards into `st`; with `look`, also what its Look asks the stepping
-/// to keep ([`Wants`]: nothing it reads can be keyed, so a key moving needn't read the Look again).
-fn read_into(st: &mut ParticlesState, resolved: &ResolvedThing, look: bool) {
+/// Reads the thing's Source and cards into `st` (and its places again when they changed; `video`
+/// is the video's size, which a grid covering the screen reads); with `look`, also what its Look
+/// asks the stepping to keep ([`Wants`]: nothing it reads can be keyed, so a key moving needn't
+/// read the Look again).
+fn read_into(st: &mut ParticlesState, resolved: &ResolvedThing, video: glam::Vec2, look: bool) {
     st.settings = ParticlesSettings::from_params(&resolved.params);
     st.forces = Forces::read(resolved.slots.get(&SlotId::Motion));
     st.meets = MeetsSettings::read(resolved.slots.get(&SlotId::Bounce).map(|s| &s.params));
+    st.refresh_spots(video);
     if look {
         st.wants = Wants::read(resolved.slots.get(&SlotId::Look));
     }
@@ -50,7 +53,7 @@ impl ThingSim for ParticlesSim {
 
     fn build(&self, thing: &Thing, resolved: &ResolvedThing, world: &mut World) {
         let mut st = ParticlesState::new(thing.id, thing.parent, ParticlesSettings::default());
-        read_into(&mut st, resolved, true);
+        read_into(&mut st, resolved, world.video, true);
         world.states.insert(thing.id, Box::new(st));
     }
 
@@ -105,9 +108,10 @@ impl ThingSim for ParticlesSim {
     }
 
     fn settings_changed(&self, id: ThingId, resolved: &ResolvedThing, world: &mut World) {
+        let video = world.video;
         // `(**s)`: the boxed state itself, not the box (which is a `ThingState` too).
         if let Some(st) = world.states.get_mut(&id).and_then(|s| (**s).as_any_mut().downcast_mut::<ParticlesState>()) {
-            read_into(st, resolved, false);
+            read_into(st, resolved, video, false);
         }
         wake_air_if_wanted(world, id);
     }

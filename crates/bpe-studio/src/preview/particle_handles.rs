@@ -1,14 +1,15 @@
 //! A selected Particles thing's handles in the preview: where its particles are born, drawn as
 //! its area (a rectangle, circle or ring), its line or its point, with a dot to size the area (a
 //! rectangle's corner, a circle's or ring's edge, a ring's inside) or move a line's end (its
-//! length and turn). Its place drags as any thing's does (the spot in its middle). Every dot keys
+//! length and turn); a grid over a rectangle shows that rectangle and its corner. Its place
+//! drags as any thing's does (the spot in its middle). Every dot keys
 //! at the playhead when the setting has keys.
 
 use super::{Handle, View};
 use crate::app::Studio;
 use crate::style;
 use bpe_core::{Address, Registry, Scene, Settings, ThingId, Value};
-use bpe_kit::things::particles::{AreaShape, BornFrom, KIND, ParticlesSettings};
+use bpe_kit::things::particles::{AreaShape, BornFrom, GridCovers, KIND, ParticlesSettings};
 use bpe_runtime::World;
 use eframe::egui::{self, Color32, Pos2, Shape, Stroke};
 use glam::Vec2;
@@ -63,9 +64,19 @@ fn source(studio: &Studio) -> Option<(ThingId, ParticlesSettings, Vec2, f32)> {
     let id = studio.selection.primary?;
     studio.scene.things.get(&id).filter(|t| t.kind == KIND)?;
     let s = settings_at(&studio.scene, &studio.kit.registry, id, studio.sim_time())?;
-    matches!(s.from, BornFrom::AnArea | BornFrom::ALine | BornFrom::APoint).then_some(())?;
+    (matches!(s.from, BornFrom::AnArea | BornFrom::ALine | BornFrom::APoint) || rectangle_grid(&s)).then_some(())?;
     let (at, turn) = anchor(&studio.scene, studio.playback.world(), id)?;
     Some((id, s, at, turn))
+}
+
+/// Whether its births are a grid over a rectangle of its own (Width × Height).
+fn rectangle_grid(s: &ParticlesSettings) -> bool {
+    s.from == BornFrom::AGrid && s.grid_covers == GridCovers::ARectangle
+}
+
+/// Whether its births fill a rectangle: an area or a grid over one.
+fn rectangle(s: &ParticlesSettings) -> bool {
+    (s.from == BornFrom::AnArea && s.area == AreaShape::Rectangle) || rectangle_grid(s)
 }
 
 /// The way the area's or line's x axis points.
@@ -77,11 +88,12 @@ fn axis(s: &ParticlesSettings, turn: f32) -> Vec2 {
 fn dots(s: &ParticlesSettings, at: Vec2, turn: f32) -> Vec<(ParticlePart, Vec2)> {
     let x = axis(s, turn);
     let y = x.perp();
+    if rectangle(s) {
+        return vec![(ParticlePart::Corner, at + x * 0.5 * s.width.max(0.0) + y * 0.5 * s.height.max(0.0))];
+    }
     match s.from {
         BornFrom::AnArea => match s.area {
-            AreaShape::Rectangle => {
-                vec![(ParticlePart::Corner, at + x * 0.5 * s.width.max(0.0) + y * 0.5 * s.height.max(0.0))]
-            }
+            AreaShape::Rectangle => Vec::new(),
             AreaShape::Circle => vec![(ParticlePart::Radius, at + x * s.radius.max(0.0))],
             AreaShape::Ring => vec![
                 (ParticlePart::Radius, at + x * s.radius.max(0.0)),
@@ -152,14 +164,15 @@ pub fn draw(painter: &egui::Painter, studio: &Studio, view: &View, active: Optio
     let line = |points: Vec<Vec2>| -> Vec<Pos2> { points.into_iter().map(|p| v.to_screen(p)).collect() };
     let round = |r: f32| line((0..=96).map(|i| at + Vec2::from_angle(i as f32 / 96.0 * TAU) * r).collect());
     let stroke = Stroke::new(1.2, ink);
+    if rectangle(&s) {
+        let h = Vec2::new(0.5 * s.width.max(0.0), 0.5 * s.height.max(0.0));
+        let corners = [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0), (1.0, 1.0)];
+        let outline = line(corners.iter().map(|(a, b)| at + x * h.x * *a + y * h.y * *b).collect());
+        painter.add(Shape::dashed_line(&outline, stroke, 6.0, 4.0));
+    }
     match s.from {
         BornFrom::AnArea => match s.area {
-            AreaShape::Rectangle => {
-                let h = Vec2::new(0.5 * s.width.max(0.0), 0.5 * s.height.max(0.0));
-                let corners = [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0), (1.0, 1.0)];
-                let outline = line(corners.iter().map(|(a, b)| at + x * h.x * *a + y * h.y * *b).collect());
-                painter.add(Shape::dashed_line(&outline, stroke, 6.0, 4.0));
-            }
+            AreaShape::Rectangle => {}
             AreaShape::Circle => {
                 painter.add(Shape::dashed_line(&round(s.radius.max(0.0)), stroke, 6.0, 4.0));
             }

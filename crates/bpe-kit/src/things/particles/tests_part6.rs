@@ -430,7 +430,7 @@ fn every_part_6_look_shows_what_it_is_for() {
     let drips = add_particles(&mut scene, &reg, Look::PaintDrips, ball).unwrap();
     let metal = add_particles(&mut scene, &reg, Look::LiquidMetal, ThingId::ROOT).unwrap();
     let splashes = add_particles(&mut scene, &reg, Look::LiquidSplashes, ThingId::ROOT).unwrap();
-    let flow = add_particles(&mut scene, &reg, Look::FlowLines, ThingId::ROOT).unwrap();
+    let flow = add_particles(&mut scene, &reg, Look::LightStreams, ThingId::ROOT).unwrap();
     let (world, log, resolved) = run(&scene, 4.0);
     assert!(!particles(&world, drips).marks.is_empty(), "paint drips leave marks");
     assert!(particles(&world, flow).trail.points > 0, "flow lines keep trails");

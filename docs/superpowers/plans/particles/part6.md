@@ -220,3 +220,4 @@ Changes a second 8, Tear colour split 4 px, Glitch seed 0.
   (`modifiers::mirror_splats`/`glitch_splats`) and, with Web lines, no Colour split. Part 5's Fine detail (in every
   layer's `Common`) also draws copies of trails (the whole trail moved), marks and liquid blobs. Both parts added a
   "Pixel glitch" look: part 5's pixels on a grid are kept and given part 6's Glitch.
+- Merged with part 3 (motion), which has its own "Flow lines": part 6's look of that name is **Light streams**.
