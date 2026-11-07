@@ -412,3 +412,219 @@ fn particles_keep_time_at_any_physics_rate() {
     }
     assert!(counts.windows(2).all(|w| w[0] == w[1]), "as many born at every rate: {counts:?}");
 }
+
+// Part 5: the new Look layers and Fine detail.
+
+/// A blank project with 64 particles living 10 s, the Empty look's own layer hidden and a layer
+/// of `kind` with `params` over it (its id given).
+fn one_layer(kind: &str, params: bpe_core::Params) -> (Scene, ThingId, bpe_core::LayerId) {
+    let reg = registry();
+    let (mut scene, id) = scene_with(Look::Empty);
+    let source =
+        ParticlesSettings { emit: Emit::OnceAtTheStart, count: 64, life: 10.0, ..ParticlesSettings::default() };
+    set_source(&mut scene, id, &source);
+    let first = scene.things[&id].slots[&SlotId::Look].layers[0].id;
+    let layer = scene.add_layer(&reg, id, SlotId::Look, kind).unwrap();
+    let hidden = SpritesLayer { opacity: 0.0, ..SpritesLayer::default() }.to_params();
+    let card = scene.things.get_mut(&id).unwrap().slots.get_mut(&SlotId::Look).unwrap();
+    for (l, p) in [(first, hidden), (layer, params)] {
+        for (k, v) in p.0 {
+            card.params.0.insert(bpe_core::layered_key(l, &k), v);
+        }
+    }
+    (scene, id, layer)
+}
+
+#[test]
+fn soft_smoke_and_flame_are_one_field_with_a_splat_a_particle() {
+    use super::look::{FLAME, FlameLayer, SMOKE, SmokeLayer};
+    for (kind, params) in [(SMOKE, SmokeLayer::default().to_params()), (FLAME, FlameLayer::default().to_params())] {
+        let (scene, _, _) = one_layer(kind, params);
+        let (frame, n, _) = frame_of(&scene, 0.5);
+        assert_eq!(n, 64);
+        assert!(frame.particles.is_empty(), "{kind} draws no sprites of its own");
+        assert_eq!(frame.fields.len(), 1, "{kind}");
+        assert_eq!(frame.fields[0].splats.len(), 64, "{kind}");
+        assert_eq!(frame.fields[0].at, 0);
+        let mode = frame.fields[0].look.kind[0];
+        assert_eq!(mode, if kind == FLAME { bpe_gfx::FIELD_FLAME } else { bpe_gfx::FIELD_SMOKE });
+        assert_eq!(frame.fields[0].look.kind[1], if kind == FLAME { 1.0 } else { 0.0 }, "Flame adds by default");
+    }
+}
+
+#[test]
+fn a_glow_on_smoke_goes_under_its_field_and_fine_detail_adds_splats() {
+    use super::look::{SMOKE, SmokeLayer};
+    let reg = registry();
+    let params = SmokeLayer { copies: 3, ..SmokeLayer::default() }.to_params();
+    let (mut scene, id, layer) = one_layer(SMOKE, params);
+    scene.add_sub_layer(&reg, id, SlotId::Look, layer, SUB_GLOW).unwrap();
+    let (frame, _, _) = frame_of(&scene, 0.5);
+    assert_eq!(frame.fields.len(), 1);
+    assert_eq!(frame.fields[0].splats.len(), 64 * 4, "three copies each");
+    assert_eq!(frame.particles.len(), 64, "a glow each");
+    assert_eq!(frame.fields[0].at, 64, "the field is over its glows");
+    assert!(frame.particles.iter().all(|p| p.color[3] < 0.0), "glows add light");
+}
+
+#[test]
+fn more_shapes_draw_their_codes_and_pixels_sit_on_the_grid() {
+    use super::look::{MoreShape, PointAlong, SHAPES, ShapesLayer};
+    for (shape, code) in
+        [(MoreShape::Leaves, 10), (MoreShape::Birds, 14), (MoreShape::Fish, 15), (MoreShape::Pixels, 2)]
+    {
+        let params = ShapesLayer { shape, grid: 10.0, point_along: PointAlong::WayItGoes, ..ShapesLayer::default() };
+        let (scene, _, _) = one_layer(SHAPES, params.to_params());
+        let (frame, _, _) = frame_of(&scene, 0.5);
+        assert_eq!(frame.particles.len(), 64, "{shape:?}");
+        assert!(frame.particles.iter().all(|p| p.shape[0] == code), "{shape:?}");
+        if shape == MoreShape::Pixels {
+            for p in &frame.particles {
+                let on = |v: f32| ((v / 10.0).round() * 10.0 - v).abs() < 1e-3;
+                assert!(on(p.place[0]) && on(p.place[1]) && p.place[2] == 0.0, "{:?}", p.place);
+            }
+        } else if shape == MoreShape::Leaves {
+            // Pointing the way each goes.
+            let (world, _, _) = run(&scene, 0.5);
+            let st = particles(&world, scene.order.iter().copied().find(|t| scene.things[t].kind == KIND).unwrap());
+            for (p, s) in frame.particles.iter().zip(&st.specks) {
+                let way = s.velocity.y.atan2(s.velocity.x);
+                assert!((p.place[2] - way).abs() < 1e-4, "{} {}", p.place[2], way);
+            }
+        }
+    }
+    // Birds flap: not every bird is in the same pose.
+    let params = ShapesLayer { shape: MoreShape::Birds, ..ShapesLayer::default() };
+    let (scene, _, _) = one_layer(SHAPES, params.to_params());
+    let (frame, _, _) = frame_of(&scene, 0.5);
+    let poses: std::collections::BTreeSet<u32> = frame.particles.iter().map(|p| p.shape[1]).collect();
+    assert!(poses.len() > 10, "{poses:?}");
+}
+
+#[test]
+fn glitter_flashes_only_when_a_facet_faces_the_light() {
+    use super::draw::glint;
+    use super::look::GlitterLayer;
+    let l = GlitterLayer { light_from: 0.0, shimmer: 0.0, sharpness: 24.0, ..GlitterLayer::default() };
+    let mut s = super::state::Speck {
+        place: Vec2::ZERO,
+        previous: Vec2::ZERO,
+        velocity: Vec2::ZERO,
+        home: Vec2::ZERO,
+        born: 0,
+        life: 1.0,
+        size: 3.0,
+        turn: 0.0,
+        spin: 0.0,
+        flip: 0.0,
+        seed: 7,
+        ball: 0,
+        flags: 0,
+    };
+    let own = super::births::unit(7, 71) * std::f32::consts::TAU;
+    s.turn = -own;
+    assert!((glint(&l, &s, 0.0) - 1.0).abs() < 1e-4, "facing the light");
+    s.turn = -own + 0.6;
+    assert!(glint(&l, &s, 0.0) < 0.02, "turned away");
+}
+
+#[test]
+fn glitter_draws_a_facet_each_and_a_star_where_one_flashes() {
+    use super::look::{GLITTER, GlitterLayer};
+    let params = GlitterLayer { sharpness: 2.0, base: 0.3, ..GlitterLayer::default() }.to_params();
+    let (scene, _, _) = one_layer(GLITTER, params);
+    let (frame, _, _) = frame_of(&scene, 0.5);
+    let facets = frame.particles.iter().filter(|p| p.shape[0] == 16).count();
+    let stars = frame.particles.iter().filter(|p| p.shape[0] == 3).count();
+    assert_eq!(facets, 64);
+    assert!(stars > 0 && stars < 64, "{stars}");
+    assert!(frame.particles.iter().filter(|p| p.shape[0] == 3).all(|p| p.color[3] < 0.0), "stars add light");
+}
+
+#[test]
+fn web_lines_join_neighbours_once_never_past_reach() {
+    use super::look::{WEB, WebLayer};
+    let params = WebLayer { reach: 120.0, links: 4, dots: 0.0, fade_power: 0.0, ..WebLayer::default() }.to_params();
+    let (scene, id, _) = one_layer(WEB, params);
+    let (frame, _, _) = frame_of(&scene, 0.5);
+    let (world, _, _) = run(&scene, 0.5);
+    let places: Vec<Vec2> = particles(&world, id).specks.iter().map(|s| s.place).collect();
+    assert!(!frame.particles.is_empty());
+    let mut pairs = std::collections::BTreeSet::new();
+    for p in &frame.particles {
+        assert_eq!(p.shape[0], 9, "lines are streaks");
+        let half = p.style[0];
+        let dir = Vec2::from_angle(p.place[2]);
+        let (a, b) = (Vec2::new(p.place[0], p.place[1]) - dir * half, Vec2::new(p.place[0], p.place[1]) + dir * half);
+        assert!(2.0 * half <= 120.0 + 1e-3, "{half}");
+        let end = |q: Vec2| places.iter().position(|x| x.distance(q) < 1e-2).expect("ends on a particle");
+        let (i, j) = (end(a), end(b));
+        assert!(pairs.insert((i.min(j), i.max(j))), "each pair once");
+    }
+}
+
+#[test]
+fn links_are_nearest_first_and_the_same_in_any_order() {
+    use super::web::links;
+    // Places with no two distances alike (ties go by index, which an order changes).
+    let points: Vec<Vec2> =
+        (0..200).map(|i| Vec2::new(super::births::unit(i, 1) * 700.0, super::births::unit(i, 2) * 800.0)).collect();
+    let a = links(&points, 60.0, 3);
+    assert!(!a.is_empty());
+    assert!(a.iter().all(|&(i, j, d)| i < j && d <= 60.0 && (points[i].distance(points[j]) - d).abs() < 1e-3));
+    // Each point starts at most 3; a point may be joined by more.
+    let set = |l: &[(usize, usize, f32)], at: &[usize]| {
+        let mut s: Vec<(usize, usize)> = l.iter().map(|&(i, j, _)| (at[i].min(at[j]), at[i].max(at[j]))).collect();
+        s.sort();
+        s
+    };
+    let ids: Vec<usize> = (0..200).collect();
+    let mut order: Vec<usize> = (0..200).rev().collect();
+    order.rotate_left(17);
+    let shuffled: Vec<Vec2> = order.iter().map(|&k| points[k]).collect();
+    let b = links(&shuffled, 60.0, 3);
+    assert_eq!(set(&a, &ids), set(&b, &order), "the same lines whatever the order");
+}
+
+#[test]
+fn fine_detail_adds_copies_round_each_particle() {
+    let params = SpritesLayer { copies: 4, copy_spread: 2.0, copy_size: 0.5, ..SpritesLayer::default() }.to_params();
+    let (scene, _, _) = one_layer(SPRITES, params);
+    let (frame, _, _) = frame_of(&scene, 0.5);
+    assert_eq!(frame.particles.len(), 64 * 5);
+    // Each copy is half the size of the particle before it, and within its reach.
+    for group in frame.particles.chunks(5) {
+        let own = group[0];
+        for c in &group[1..] {
+            assert!((c.place[3] - own.place[3] * 0.5).abs() < 1e-4);
+            let d = Vec2::new(c.place[0] - own.place[0], c.place[1] - own.place[1]).length();
+            assert!(d <= own.place[3] * 2.0 * 2f32.sqrt() + 1e-3, "{d}");
+        }
+    }
+}
+
+#[test]
+fn the_part_five_looks_wear_their_layers() {
+    use super::look::{FLAME, GLITTER, SHAPES, SMOKE, WEB};
+    let kinds = |look: Look| {
+        let (scene, id) = scene_with(look);
+        scene.things[&id].slots[&SlotId::Look].layers.iter().map(|l| l.kind.clone()).collect::<Vec<_>>()
+    };
+    assert!(kinds(Look::FireOnABall).contains(&FLAME.to_string()));
+    assert_eq!(kinds(Look::RainbowSmokeTrail)[0], SMOKE);
+    assert_eq!(kinds(Look::InkInWater)[0], SMOKE);
+    assert_eq!(kinds(Look::BlossomPetals)[0], SHAPES);
+    assert_eq!(kinds(Look::Glitter)[0], GLITTER);
+    assert_eq!(kinds(Look::WebOfLight)[0], WEB);
+    assert_eq!(kinds(Look::PixelGlitch)[0], SHAPES);
+}
+
+#[test]
+fn fine_detail_draws_fewer_copies_a_particle_past_its_budget() {
+    use super::draw::{MOST_COPY_SPRITES, capped};
+    use super::look::FineDetail;
+    let d = FineDetail { copies: 64, ..FineDetail::default() };
+    assert_eq!(capped(d, 100).copies, 64);
+    let many = capped(d, 100_000);
+    assert!(many.copies as usize * 100_000 <= MOST_COPY_SPRITES, "{}", many.copies);
+}

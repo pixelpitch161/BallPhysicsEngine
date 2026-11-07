@@ -708,6 +708,68 @@ impl Particle {
     }
 }
 
+/// A field's look: smoke, shaded by its density.
+pub const FIELD_SMOKE: f32 = 0.0;
+/// A field's look: flame, shaded through its heat colours.
+pub const FIELD_FLAME: f32 = 1.0;
+/// How many stops a field's heat colours are baked into.
+pub const FIELD_HEAT_STOPS: usize = 32;
+
+/// One soft blob a [`Field`] is splatted from. Matches `SplatIn` in fields.wgsl.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct Splat {
+    /// Centre (world pixels), radius (world pixels), weight (how much it adds where it is thickest).
+    pub place: [f32; 4],
+    /// Its colour (straight, linear light); w spare.
+    pub color: [f32; 4],
+}
+
+/// How a [`Field`] is shaded where it is drawn. Matches `FieldLook` in fields.wgsl.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+pub struct FieldLook {
+    /// Mode ([`FIELD_SMOKE`], [`FIELD_FLAME`]), adds (1: adds its light and covers nothing),
+    /// amount (0 to 1, times what it shows), strength (smoke's Thickness, flame's Heat).
+    pub kind: [f32; 4],
+    /// Noise detail: amount 0 to 1, size (world pixels), drift x, drift y (world pixels a second).
+    pub detail: [f32; 4],
+    /// Smoke: shading, the way the light comes from (radians), dark inside, 0. Flame: bend
+    /// (world pixels), flicker 0 to 1, flicker speed (per second), brightness.
+    pub shade: [f32; 4],
+    /// As [`Particle::light`], [`Particle::emit`] and [`Particle::extra`] (lighting; 0 for now).
+    pub light: [f32; 4],
+    pub emit: [f32; 4],
+    pub extra: [f32; 4],
+    /// Flame's heat colours from cold to hot (straight, linear, alpha), evenly spaced.
+    pub heat: [[f32; 4]; FIELD_HEAT_STOPS],
+}
+
+impl Default for FieldLook {
+    fn default() -> Self {
+        Self {
+            kind: [FIELD_SMOKE, 0.0, 1.0, 1.0],
+            detail: [0.0, 60.0, 0.0, 0.0],
+            shade: [0.0; 4],
+            light: [0.0; 4],
+            emit: [0.0; 4],
+            extra: [0.0; 4],
+            heat: [[1.0; 4]; FIELD_HEAT_STOPS],
+        }
+    }
+}
+
+/// Particles drawn as one soft field (Soft smoke, Flame): the GPU splats them into a picture at
+/// half size, then shades it where the field sits in its list.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Field {
+    /// How many sprites of the same list (`particles` for `fields`, `particles_front` for
+    /// `fields_front`) are drawn before it.
+    pub at: u32,
+    pub splats: Vec<Splat>,
+    pub look: FieldLook,
+}
+
 /// Where something hit recently, for modules that react to hits: particles, shader pulses.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HitMark {
@@ -908,6 +970,10 @@ pub struct Frame {
     /// things), trails first.
     pub trails_front: Vec<TrailVertex>,
     pub particles_front: Vec<Particle>,
+    /// Soft fields of particles behind the balls and in front of them, each drawn among the
+    /// sprites of `particles` / `particles_front` where its `at` says.
+    pub fields: Vec<Field>,
+    pub fields_front: Vec<Field>,
     /// Recent hits, filled by the things' drawing parts for the modules' ones.
     pub hits: Vec<HitMark>,
     pub effects: Vec<EffectCall>,
@@ -1370,6 +1436,8 @@ impl Default for Frame {
             particles: Vec::new(),
             trails_front: Vec::new(),
             particles_front: Vec::new(),
+            fields: Vec::new(),
+            fields_front: Vec::new(),
             hits: Vec::new(),
             effects: Vec::new(),
             gradients: GradientAtlas::default(),
@@ -1494,6 +1562,8 @@ impl Frame {
         self.particles.clear();
         self.trails_front.clear();
         self.particles_front.clear();
+        self.fields.clear();
+        self.fields_front.clear();
         self.hits.clear();
         self.effects.clear();
         self.gradients.clear();
@@ -1638,6 +1708,8 @@ impl Frame {
             && self.particles.is_empty()
             && self.trails_front.is_empty()
             && self.particles_front.is_empty()
+            && self.fields.is_empty()
+            && self.fields_front.is_empty()
             && self.layers.is_empty()
     }
 
@@ -1737,6 +1809,8 @@ impl Frame {
                 && o.particles.is_empty()
                 && o.trails_front.is_empty()
                 && o.particles_front.is_empty()
+                && o.fields.is_empty()
+                && o.fields_front.is_empty()
                 && o.layers.is_empty())
         })
     }
@@ -1788,6 +1862,14 @@ impl Frame {
         self.trails_front.truncate(vertices);
         self.particles.truncate(sprites);
         self.particles_front.truncate(sprites);
+        for (fields, len) in
+            [(&mut self.fields, self.particles.len()), (&mut self.fields_front, self.particles_front.len())]
+        {
+            for f in fields.iter_mut() {
+                f.at = f.at.min(len as u32);
+                f.splats.truncate(sprites);
+            }
+        }
         if let Some(o) = &mut self.overlay {
             o.fit_lists_to(vertices, sprites);
         }
@@ -1840,12 +1922,46 @@ impl Frame {
         });
         self.flashes.retain(|f| sees(f.center, f.size));
         let reach = |p: &Particle| p.place[3].max(p.style[0]) * (1.0 + p.style[2]) + 4.0;
-        self.particles.retain(|p| sees([p.place[0], p.place[1]], reach(p)));
-        self.particles_front.retain(|p| sees([p.place[0], p.place[1]], reach(p)));
+        let splat = |s: &Splat| sees([s.place[0], s.place[1]], s.place[2] * 1.6 + 4.0);
+        cull_sprites(&mut self.particles, &mut self.fields, |p| sees([p.place[0], p.place[1]], reach(p)), splat);
+        cull_sprites(
+            &mut self.particles_front,
+            &mut self.fields_front,
+            |p| sees([p.place[0], p.place[1]], reach(p)),
+            splat,
+        );
         for l in &mut self.layers {
             l.frame.cull_through(camera, (width, height));
         }
     }
+}
+
+/// Keeps the sprites of `list` that `keep` says and the splats of `fields` that `keep_splat`
+/// says, each field still sitting between the same kept sprites.
+fn cull_sprites(
+    list: &mut Vec<Particle>,
+    fields: &mut [Field],
+    keep: impl Fn(&Particle) -> bool,
+    keep_splat: impl Fn(&Splat) -> bool,
+) {
+    if fields.is_empty() {
+        list.retain(keep);
+        return;
+    }
+    let seen: Vec<bool> = list.iter().map(&keep).collect();
+    let mut kept_before = vec![0u32; seen.len() + 1];
+    for (i, &s) in seen.iter().enumerate() {
+        kept_before[i + 1] = kept_before[i] + u32::from(s);
+    }
+    for f in fields.iter_mut() {
+        f.at = kept_before[(f.at as usize).min(seen.len())];
+        f.splats.retain(&keep_splat);
+    }
+    let mut i = 0;
+    list.retain(|_| {
+        i += 1;
+        seen[i - 1]
+    });
 }
 
 /// The z-order `thing` draws at: its own, within [`Thing::Z_ORDER_RANGE`]; things stuck to the

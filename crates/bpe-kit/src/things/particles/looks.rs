@@ -6,7 +6,10 @@ use bpe_core::{Color, EditError, Gradient, Mix, Params, Registry, Scene, Setting
 
 use super::forces::{DRAG, DragForce, GRAVITY, GravityForce, RISE, RiseForce, SWAY, SWIRL, SwayForce, SwirlForce};
 use super::forces::{WANDER, WIND, WanderForce, WindForce};
-use super::look::{Only, SPRITES, STREAKS, SUB_GLOW, SpritesLayer, StreaksLayer};
+use super::look::{
+    FLAME, FlameLayer, GLITTER, GlitterLayer, MoreShape, Only, SHAPES, SMOKE, SPRITES, STREAKS, SUB_GLOW, ShapesLayer,
+    SmokeLayer, SpritesLayer, StreaksLayer, WEB, WebLayer,
+};
 use super::meets::{AtBalls, AtEdges, AtShapes, MeetsSettings};
 use super::{AreaShape, BornFrom, Edge, Emit, Heading, KIND, ParticlesSettings, RIDES, RidesOn};
 use crate::modules::look::layers::particles::{ParticleFade, ShapeMadeOf, SizeOverLife};
@@ -30,14 +33,17 @@ pub enum Look {
     Confetti,
     RainbowSmokeTrail,
     InkInWater,
+    Glitter,
+    WebOfLight,
+    PixelGlitch,
 }
 
 /// The menu's groups of looks, in order, after Empty.
 pub const GROUPS: [(&str, &[Look]); 4] = [
     ("Weather and nature", &[Look::Rain, Look::Snow, Look::Hail, Look::BlossomPetals, Look::Sandstorm]),
     ("Fire and energy", &[Look::FireOnABall, Look::SparkFountain, Look::EmbersAndAsh]),
-    ("Space and sparkle", &[Look::Fireflies, Look::Confetti]),
-    ("Experimental and psychedelic", &[Look::RainbowSmokeTrail, Look::InkInWater]),
+    ("Space and sparkle", &[Look::Fireflies, Look::Confetti, Look::Glitter]),
+    ("Experimental and psychedelic", &[Look::RainbowSmokeTrail, Look::InkInWater, Look::WebOfLight, Look::PixelGlitch]),
 ];
 
 impl Look {
@@ -62,6 +68,9 @@ impl Look {
             Look::Confetti => "Confetti",
             Look::RainbowSmokeTrail => "Rainbow smoke trail",
             Look::InkInWater => "Ink in water",
+            Look::Glitter => "Glitter",
+            Look::WebOfLight => "Web of light",
+            Look::PixelGlitch => "Pixel glitch",
         }
     }
 
@@ -81,12 +90,15 @@ impl Look {
             Look::Confetti => "Bursts of confetti, flipping over as it falls.",
             Look::RainbowSmokeTrail => "Rainbow smoke left behind each ball (inside a group of balls) or a point.",
             Look::InkInWater => "Clouds of ink swirling out, bursting again and again.",
+            Look::Glitter => "Glitter drifting over the whole picture, its facets flashing as they turn.",
+            Look::WebOfLight => "Drifting points of light joined by lines to their neighbours and the balls.",
+            Look::PixelGlitch => "Square pixels on a grid flying off each ball (inside a group of balls) or a point.",
         }
     }
 
     /// Whether it rides what it sits in when it can.
     fn rides(self) -> bool {
-        matches!(self, Look::Empty | Look::FireOnABall | Look::RainbowSmokeTrail)
+        matches!(self, Look::Empty | Look::FireOnABall | Look::RainbowSmokeTrail | Look::PixelGlitch)
     }
 }
 
@@ -134,6 +146,10 @@ fn sprites(s: SpritesLayer, subs: Vec<(&'static str, Params)>) -> LayerRecipe {
 
 fn streaks(s: StreaksLayer, subs: Vec<(&'static str, Params)>) -> LayerRecipe {
     LayerRecipe { kind: STREAKS, params: s.to_params(), subs }
+}
+
+fn layer(kind: &'static str, params: Params, subs: Vec<(&'static str, Params)>) -> LayerRecipe {
+    LayerRecipe { kind, params, subs }
 }
 
 /// What `look` fills in; `rides` when it sits in something it can ride.
@@ -256,17 +272,19 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                 ),
             ],
             meets: vanish.clone(),
-            layers: vec![sprites(
-                SpritesLayer {
-                    made_of: ShapeMadeOf::Confetti,
-                    softness: 0.4,
+            layers: vec![layer(
+                SHAPES,
+                ShapesLayer {
+                    shape: MoreShape::Petals,
+                    softness: 0.25,
                     colour: paint(
                         &[Color::rgb(255, 196, 214), Color::rgb(255, 150, 190), Color::rgb(255, 236, 242)],
                         Follow::Order,
                     ),
                     fade: ParticleFade::None,
                     ..Default::default()
-                },
+                }
+                .to_params(),
                 Vec::new(),
             )],
         },
@@ -337,24 +355,25 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                 (DRAG, DragForce { drag: 1.5, ..Default::default() }.to_params()),
             ],
             meets: MeetsSettings::default(),
-            layers: vec![sprites(
-                SpritesLayer {
-                    softness: 1.0,
-                    colour: paint(
-                        &[
-                            Color::additive(255, 250, 220),
-                            Color::additive(255, 190, 60),
-                            Color::additive(240, 80, 20),
-                            Color::additive(90, 10, 5),
-                        ],
-                        Follow::Life,
-                    ),
-                    size_curve: SizeOverLife::Shrink,
-                    blend: bpe_core::Blend::Add,
-                    ..Default::default()
-                },
-                vec![glow(6.0, 0.6)],
-            )],
+            layers: vec![
+                layer(FLAME, FlameLayer::default().to_params(), Vec::new()),
+                // A few of them as embers, bright specks in the flames.
+                sprites(
+                    SpritesLayer {
+                        only: Only::AShare,
+                        share: 0.08,
+                        softness: 0.5,
+                        size: 0.25,
+                        colour: paint(&[Color::additive(255, 230, 150), Color::additive(255, 120, 30)], Follow::Life),
+                        twinkle: 0.5,
+                        twinkle_speed: 6.0,
+                        size_curve: SizeOverLife::Even,
+                        blend: bpe_core::Blend::Add,
+                        ..Default::default()
+                    },
+                    vec![glow(4.0, 0.5)],
+                ),
+            ],
         },
         Look::SparkFountain => Recipe {
             source: ParticlesSettings {
@@ -521,15 +540,18 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                 (DRAG, DragForce { drag: 1.0, ..Default::default() }.to_params()),
             ],
             meets: MeetsSettings::default(),
-            layers: vec![sprites(
-                SpritesLayer {
-                    made_of: ShapeMadeOf::Smoke,
-                    softness: 1.0,
+            layers: vec![layer(
+                SMOKE,
+                SmokeLayer {
+                    thickness: 1.2,
+                    puff: 2.2,
                     colour: rainbow(Follow::Time),
-                    opacity: 0.5,
-                    size_curve: SizeOverLife::Grow,
+                    opacity: 0.7,
+                    shading: 0.4,
+                    dark_inside: 0.2,
                     ..Default::default()
-                },
+                }
+                .to_params(),
                 Vec::new(),
             )],
         },
@@ -554,18 +576,126 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                 (GRAVITY, GravityForce { strength: 20.0, ..Default::default() }.to_params()),
             ],
             meets: MeetsSettings::default(),
-            layers: vec![sprites(
-                SpritesLayer {
-                    made_of: ShapeMadeOf::Smoke,
-                    softness: 1.0,
+            layers: vec![layer(
+                SMOKE,
+                SmokeLayer {
+                    thickness: 1.0,
+                    puff: 2.5,
+                    detail: 0.7,
+                    detail_size: 50.0,
+                    drift: 8.0,
+                    shading: 0.2,
+                    dark_inside: 0.6,
                     colour: paint(
                         &[Color::rgb(30, 40, 160), Color::rgb(110, 40, 170), Color::rgb(20, 120, 170)],
                         Follow::Order,
                     ),
-                    opacity: 0.35,
-                    size_curve: SizeOverLife::Grow,
+                    opacity: 0.8,
                     ..Default::default()
-                },
+                }
+                .to_params(),
+                Vec::new(),
+            )],
+        },
+        Look::Glitter => Recipe {
+            source: ParticlesSettings {
+                emit: Emit::KeepACrowd,
+                count: 400,
+                life: 8.0,
+                life_spread: 0.5,
+                speed: 15.0,
+                heading: Heading::AllRound,
+                size: 3.0,
+                size_spread: 0.5,
+                spin: 120.0,
+                spin_spread: 1.0,
+                ..d.clone()
+            },
+            forces: vec![
+                (GRAVITY, GravityForce { strength: 10.0, ..Default::default() }.to_params()),
+                (WANDER, WanderForce { strength: 20.0, turns: 0.5, ..Default::default() }.to_params()),
+                (DRAG, DragForce { drag: 0.5, ..Default::default() }.to_params()),
+            ],
+            meets: MeetsSettings { push: 0.6, ..MeetsSettings::default() },
+            layers: vec![layer(
+                GLITTER,
+                GlitterLayer {
+                    colour: paint(
+                        &[Color::rgb(255, 214, 120), Color::rgb(230, 230, 240), Color::rgb(255, 160, 210)],
+                        Follow::Order,
+                    ),
+                    ..Default::default()
+                }
+                .to_params(),
+                vec![glow(3.0, 0.3)],
+            )],
+        },
+        Look::WebOfLight => Recipe {
+            source: ParticlesSettings {
+                from: BornFrom::AnArea,
+                area: AreaShape::Rectangle,
+                width: 900.0,
+                height: 1500.0,
+                emit: Emit::KeepACrowd,
+                count: 90,
+                life: 12.0,
+                life_spread: 0.4,
+                speed: 30.0,
+                heading: Heading::AllRound,
+                size: 2.5,
+                ..d.clone()
+            },
+            forces: vec![
+                (WANDER, WanderForce { strength: 40.0, turns: 0.4, ..Default::default() }.to_params()),
+                (DRAG, DragForce { drag: 0.4, ..Default::default() }.to_params()),
+            ],
+            meets: MeetsSettings { push: 0.5, at_edges: AtEdges::Bounce, ..MeetsSettings::default() },
+            layers: vec![layer(
+                WEB,
+                WebLayer {
+                    reach: 170.0,
+                    links: 5,
+                    to_balls: true,
+                    colour: paint(&[Color::additive(90, 220, 255), Color::additive(190, 120, 255)], Follow::Order),
+                    fade: ParticleFade::Both,
+                    ..Default::default()
+                }
+                .to_params(),
+                vec![glow(3.0, 0.4)],
+            )],
+        },
+        Look::PixelGlitch => Recipe {
+            source: riding(ParticlesSettings {
+                from: BornFrom::APoint,
+                rate: 160.0,
+                life: 1.2,
+                life_spread: 0.5,
+                speed: 70.0,
+                heading: Heading::AllRound,
+                inherit: 0.2,
+                size: 4.0,
+                size_spread: 0.3,
+                ..d.clone()
+            }),
+            forces: vec![
+                (WANDER, WanderForce { strength: 250.0, turns: 4.0, ..Default::default() }.to_params()),
+                (DRAG, DragForce { drag: 2.0, ..Default::default() }.to_params()),
+            ],
+            meets: MeetsSettings::default(),
+            layers: vec![layer(
+                SHAPES,
+                ShapesLayer {
+                    shape: MoreShape::Pixels,
+                    grid: 8.0,
+                    softness: 0.0,
+                    colour: paint(
+                        &[Color::additive(0, 255, 230), Color::additive(255, 40, 200), Color::additive(120, 255, 60)],
+                        Follow::Order,
+                    ),
+                    blend: bpe_core::Blend::Add,
+                    ..Default::default()
+                }
+                .to_params(),
                 Vec::new(),
             )],
         },

@@ -11,6 +11,9 @@ mod blend;
 mod blend_tests;
 mod each;
 pub mod effects;
+mod fields;
+#[cfg(test)]
+mod fields_tests;
 mod frame;
 #[cfg(test)]
 mod grade_tests;
@@ -46,11 +49,12 @@ mod sub_layers_tests;
 mod util;
 
 pub use frame::{
-    Around, BackgroundPaint, BallInstance, BallMark, BlendLayer, DrawCx, Draws, EffectCall, FlashInstance, Frame,
-    Grade, HitMark, LayerGpu, LayeredInstance, LightGpu, LightScene, LightShow, LightingGpu, LookInstance, MAX_LAYERS,
-    MOST_MIRRORS, MOST_TRAIL_VERTICES, MirrorGpu, ModuleDraw, NO_HIT, Particle, PathInstance, Place, ShapeInstance,
-    SphereGpu, Stage, StreakStyle, SurfaceGpu, Takes, ThingDraw, TrailVertex, blend_alpha, build_frame,
-    build_frame_sensing, build_frame_with, hit_strength, push_streak, push_streak_colours, push_trail, thing_code,
+    Around, BackgroundPaint, BallInstance, BallMark, BlendLayer, DrawCx, Draws, EffectCall, FIELD_FLAME,
+    FIELD_HEAT_STOPS, FIELD_SMOKE, Field, FieldLook, FlashInstance, Frame, Grade, HitMark, LayerGpu, LayeredInstance,
+    LightGpu, LightScene, LightShow, LightingGpu, LookInstance, MAX_LAYERS, MOST_MIRRORS, MOST_TRAIL_VERTICES,
+    MirrorGpu, ModuleDraw, NO_HIT, Particle, PathInstance, Place, ShapeInstance, SphereGpu, Splat, Stage, StreakStyle,
+    SurfaceGpu, Takes, ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_sensing, build_frame_with,
+    hit_strength, push_streak, push_streak_colours, push_trail, thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, NO_WAVE, PaintGpu, wave_texels};
 pub use masks::{MASK_TILE, MASK_TILE_BYTES, MAX_MASK_TILES, TILE_DISTANCE_REACH, tile_distance};
@@ -417,6 +421,7 @@ pub struct Renderer {
     layered_object: wgpu::RenderPipeline,
     chain: effects::chain::Chain,
     sprites: sprites::Sprites,
+    fields: fields::Fields,
     downsample: wgpu::RenderPipeline,
     upsample: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
@@ -466,6 +471,8 @@ struct FrameBuffers {
     particles: GrowableBuffer,
     trails_front: GrowableBuffer,
     particles_front: GrowableBuffer,
+    /// Its soft fields of particles.
+    fields: fields::FrameFields,
 }
 
 impl Default for FrameBuffers {
@@ -486,6 +493,7 @@ impl Default for FrameBuffers {
             particles: GrowableBuffer::new("particles behind"),
             trails_front: GrowableBuffer::new("trail vertices in front"),
             particles_front: GrowableBuffer::new("particles in front"),
+            fields: fields::FrameFields::default(),
         }
     }
 }
@@ -1120,6 +1128,7 @@ impl Renderer {
         let paint = PaintTexture::new(device, &paint_layout, &sampler, first_height, &ripples);
         let overlay_paint = PaintTexture::new(device, &paint_layout, &sampler, first_height, &ripples);
         let sprites = sprites::Sprites::new(device, &globals_layout);
+        let fields = fields::Fields::new(device, &globals_layout);
         Self {
             globals,
             globals_group,
@@ -1156,6 +1165,7 @@ impl Renderer {
             layered_object,
             chain: effects::chain::Chain::new(device),
             sprites,
+            fields,
             downsample,
             upsample,
             composite,
@@ -1351,6 +1361,15 @@ impl Renderer {
         layer_buffers.resize_with(layer_buffers.len().max(layers.len()), FrameBuffers::default);
         for (b, l) in layer_buffers.iter_mut().zip(&layers) {
             b.upload(device, queue, &self.layers_layout, &self.sampler, &fx, &l.frame);
+        }
+        // Their soft fields of particles, at half the output's size.
+        let size = (self.targets.width, self.targets.height);
+        if let Some(o) = overlay {
+            self.overlay.fields.upload(device, queue, &self.fields, o, size);
+        }
+        self.buffers.fields.upload(device, queue, &self.fields, frame, size);
+        for (b, l) in layer_buffers.iter_mut().zip(&layers) {
+            b.fields.upload(device, queue, &self.fields, &l.frame, size);
         }
         // The programs of stacks with shader layers, built the first time a frame names them.
         let frames = std::iter::once((frame, None))
@@ -1687,6 +1706,7 @@ impl Renderer {
         for (i, (l, b)) in frame.layers.iter().zip(layer_buffers).enumerate().filter(|(_, (l, _))| l.z < 0) {
             self.draw_any_layer(device, queue, encoder, frame, i, l, b, &world, slot, None, false);
         }
+        self.fields.splat(encoder, globals, &self.buffers.fields, false);
         {
             let mut pass = begin_pass(encoder, &self.targets.hdr, "scene", wgpu::LoadOp::Load);
             pass.set_bind_group(0, globals, &[]);
@@ -1732,7 +1752,12 @@ impl Renderer {
                 object_view.as_ref(),
             );
         }
-        if !frame.flashes.is_empty() || !frame.trails_front.is_empty() || !frame.particles_front.is_empty() {
+        if !frame.flashes.is_empty()
+            || !frame.trails_front.is_empty()
+            || !frame.particles_front.is_empty()
+            || !frame.fields_front.is_empty()
+        {
+            self.fields.splat(encoder, globals, &self.buffers.fields, true);
             let mut pass = begin_pass(encoder, &self.targets.hdr, "flashes", wgpu::LoadOp::Load);
             pass.set_bind_group(0, globals, &[]);
             self.draw_front(&mut pass, frame, &self.buffers, &world);
@@ -1846,9 +1871,10 @@ impl Renderer {
             pass.set_vertex_buffer(0, b.trails.slice());
             pass.draw(0..f.trails.len() as u32, 0..1);
         }
-        if !f.particles.is_empty() {
-            self.sprites.draw(pass, &b.particles, f.particles.len() as u32, through.each);
-            // The sprites bind only the globals: put the paint back for what follows.
+        if !f.particles.is_empty() || !f.fields.is_empty() {
+            self.draw_sprites(pass, b, f, false, through);
+            // The sprites bind only the globals, the fields their own: put the paint back for
+            // what follows.
             pass.set_bind_group(1, &through.paint, &[]);
         }
         if !f.shapes.is_empty() {
@@ -1938,9 +1964,34 @@ impl Renderer {
             pass.set_vertex_buffer(0, b.trails_front.slice());
             pass.draw(0..f.trails_front.len() as u32, 0..1);
         }
-        if !f.particles_front.is_empty() {
-            self.sprites.draw(pass, &b.particles_front, f.particles_front.len() as u32, through.each);
+        if !f.particles_front.is_empty() || !f.fields_front.is_empty() {
+            self.draw_sprites(pass, b, f, true, through);
         }
+    }
+
+    /// The sprites of `f`'s list behind the balls (`front` false) or in front, with its fields
+    /// shaded among them where each one's `at` says.
+    fn draw_sprites(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        b: &FrameBuffers,
+        f: &Frame,
+        front: bool,
+        through: &Through,
+    ) {
+        let (buffer, count, fields) = if front {
+            (&b.particles_front, f.particles_front.len() as u32, &f.fields_front)
+        } else {
+            (&b.particles, f.particles.len() as u32, &f.fields)
+        };
+        let mut start = 0;
+        for (k, field) in fields.iter().enumerate() {
+            let at = field.at.clamp(start, count);
+            self.sprites.draw_range(pass, buffer, start..at, through.each);
+            start = at;
+            self.fields.composite(pass, &b.fields, front, k, through.each);
+        }
+        self.sprites.draw_range(pass, buffer, start..count, through.each);
     }
 
     /// Where `f`'s shapes, balls and styled balls are, for effects on things.
@@ -2012,6 +2063,7 @@ impl Renderer {
         view: &wgpu::TextureView,
         front: bool,
     ) {
+        self.fields.splat(encoder, &through.globals, &b.fields, front);
         let mut pass = begin_pass(encoder, view, if front { "things in front" } else { "things" }, wgpu::LoadOp::Load);
         pass.set_bind_group(0, &through.globals, &[]);
         pass.set_bind_group(1, &through.paint, &[]);
@@ -2088,6 +2140,9 @@ impl Renderer {
         self.each.ensure(device, l.blend, &l.frame);
         if !l.frame.particles.is_empty() || !l.frame.particles_front.is_empty() {
             self.sprites.ensure_each(device, l.blend);
+        }
+        if !l.frame.fields.is_empty() || !l.frame.fields_front.is_empty() {
+            self.fields.ensure_each(device, l.blend);
         }
         Through { globals: group, each: Some(l.blend), ..through.clone() }
     }
