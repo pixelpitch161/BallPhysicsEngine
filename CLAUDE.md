@@ -447,6 +447,25 @@ Editor: `look_editor/particles.rs` (the Forces and Look lists; a Motion card's e
 `look_editor::pick_key`), `preview/particle_handles.rs` (area corner/edges, line end). Scene format 12. Goldens:
 `tests/golden-particles*.txt` (`scenes::particle_scenes`, test-only).
 
+Part 5 is in (plan `part5.md`): **looks 1**, drawing only. New `look.particles` layer kinds: **Soft smoke**
+(`particles.smoke`) and **Flame** (`particles.flame`) are soft **fields**: `bpe_gfx::Field { at, splats, look }` in
+`Frame.fields`/`fields_front` (`Splat`, `FieldLook`: mode `FIELD_SMOKE`/`FIELD_FLAME`, adds, amount, strength, detail,
+shade, light/emit/extra, 32 baked heat stops), splatted additively into a half-size Rgba16Float picture each right before
+the pass that draws its list, then shaded by a full-screen triangle where `at` puts it among the list's sprites
+(`bpe-gfx/src/fields.rs`, `shaders/fields.wgsl` pasted after sprites.wgsl + each.wgsl; `Renderer::draw_sprites` splits
+the sprite runs, `Sprites::draw_range`; `cull` keeps `at` between the same kept sprites). Smoke: density × Thickness ×
+drifting fbm detail, cover 1 − e^(−d), shaded by the slope against Light from, Dark inside; Flame: read through rising noise
+(Bend), heat × detail × flicker → Heat colours, tinted by the layer's Colours. A field layer's Shadow/Glow/Outline subs
+draw per particle (as Smoke sprites, own sprites dropped; `Pieces::into_frame_with_field`). **More shapes**
+(`particles.shapes`, `MoreShape`: sprite codes 10 leaf, 11 petal, 12 flake, 13 needle, 14 bird, 15 fish in sprites.wgsl,
+`Particle.shape[1]` the pose; Pixels are Confetti boxes snapped to Pixel grid; Point along Own turn / Way it goes),
+**Glitter** (`particles.glitter`: code 16 diamond facets, `draw::glint`, a Stars flash), **Web lines** (`particles.web`,
+`things/particles/web.rs`: `links` nearest within Reach, each pair once, `ball_links`; lines are Streaks capsules), and
+every layer's **Fine detail** fold (`copies`, `copy_spread`, `copy_size`, `copy_opacity`, `copy_shimmer`; `FineDetail` in
+`Common`, `draw::copy_offset`). Looks: Glitter, Web of light, Pixel glitch added; Fire on a ball (Flame + embers), Rainbow
+smoke trail, Ink in water (Soft smoke) and Blossom petals (Petals) upgraded. `tests/particle_pictures.rs`,
+`bpe-gfx/src/fields_tests.rs`.
+
 ## Crate map
 
 Dependencies go bottom to top:

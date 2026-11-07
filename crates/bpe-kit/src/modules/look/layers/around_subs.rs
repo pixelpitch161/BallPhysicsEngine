@@ -40,6 +40,28 @@ impl Pieces {
         }
     }
 
+    /// Puts them into the frame's lists as [`Pieces::into_frame`] does, with `field` (a layer
+    /// drawn as one soft field) where its own sprites would go: over its shadows and glows, under
+    /// its outlines.
+    pub fn into_frame_with_field(self, frame: &mut Frame, front: bool, field: Option<bpe_gfx::Field>) {
+        let Some(mut field) = field else { return self.into_frame(frame, front) };
+        let (strips, particles, fields) = if front {
+            (&mut frame.trails_front, &mut frame.particles_front, &mut frame.fields_front)
+        } else {
+            (&mut frame.trails, &mut frame.particles, &mut frame.fields)
+        };
+        for s in self.strips {
+            strips.extend(s);
+        }
+        let [shadows, glows, own, outlines] = self.particles;
+        particles.extend(shadows);
+        particles.extend(glows);
+        field.at = particles.len() as u32;
+        fields.push(field);
+        particles.extend(own);
+        particles.extend(outlines);
+    }
+
     /// Gives what the layer itself drew (not its sub-layers' shadows, glows and outlines) the
     /// light `emit` it gives off, by each piece's own colour.
     pub fn give_light(&mut self, emit: Option<super::gives_light::Emit>) {

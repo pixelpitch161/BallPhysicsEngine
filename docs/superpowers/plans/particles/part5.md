@@ -173,3 +173,15 @@ Web lines ("Web"): Reach 140 px (span 5..600, hard ≥ 1), Links 6 (span 1..32, 
   no feeding or settling (part 4).
 - No change to `layer.particles` / `shape.particles` or their sprite menu; no sim or state change; no built-in or
   example scenes; no demo videos.
+
+## As built
+
+- Fine detail's keys are `copies`, `copy_spread`, `copy_size`, `copy_opacity`, `copy_shimmer` (Smoke and Flame have their
+  own `detail` and `detail_size`, so the fold's keys can't start with `detail_`).
+- Each layer struct has a `starting` hook the macro's `Default` runs, so Soft smoke, Flame, Glitter and Web lines start
+  with their own Opacity, Blend, Fade and Size over life.
+- Ink in water keeps the Normal blend (Multiply would vanish on the default dark background); Soft smoke with Dark
+  inside gives it the inky look.
+- Web links are the same for any order of particles when no two distances tie; with ties the nearer index wins, so a
+  fixed order (the particles are oldest first) always draws the same lines.
+- A bird pointing the way it goes leans into it (up to about 30°) rather than turning on its side.

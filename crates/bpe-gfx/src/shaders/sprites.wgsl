@@ -77,6 +77,14 @@ const DOTS: u32 = 6u;
 const HEARTS: u32 = 7u;
 const BUBBLES: u32 = 8u;
 const STREAKS: u32 = 9u;
+// Particles part 5's shapes: long ones reach `style.x` along their turn, as streaks do.
+const LEAF: u32 = 10u;
+const PETAL: u32 = 11u;
+const FLAKE: u32 = 12u;
+const NEEDLE: u32 = 13u;
+const BIRD: u32 = 14u;
+const FISH: u32 = 15u;
+const DIAMOND: u32 = 16u;
 
 struct SpriteIn {
     // centre xy (world pixels), turn (radians), half size (pixels)
@@ -103,6 +111,8 @@ struct SpriteOut {
     @location(2) size: vec4<f32>,
     @location(3) @interpolate(flat) kind: u32,
     @location(4) shade: f32,
+    // A bird's flap or a fish's swing, -1 to 1 (`shape.y`, 0 to 65535).
+    @location(8) @interpolate(flat) pose: f32,
     @location(5) @interpolate(flat) light: vec2<f32>,
     @location(6) @interpolate(flat) emit: vec3<f32>,
     @location(7) @interpolate(flat) extra: vec4<f32>,
@@ -137,7 +147,7 @@ fn vs_sprite(@builtin(vertex_index) vi: u32, v: SpriteIn) -> SpriteOut {
     let px = g.view.z;
     let size = max(v.place.w, 0.0);
     var reach = size;
-    if v.shape.x == SPARKS || v.shape.x == STREAKS || v.shape.x == CONFETTI || v.shape.x == SHARDS {
+    if v.shape.x == SPARKS || v.shape.x == STREAKS || v.shape.x == CONFETTI || v.shape.x == SHARDS || v.shape.x >= LEAF {
         reach = max(v.style.x, size);
     }
     // Room for the soft edge and a pixel either side.
@@ -145,7 +155,12 @@ fn vs_sprite(@builtin(vertex_index) vi: u32, v: SpriteIn) -> SpriteOut {
     if v.shape.x == RINGS {
         margin = margin + max(1.2, 0.75 * px) + 2.0;
     }
-    let half = vec2<f32>(reach, size) + vec2<f32>(margin);
+    var across = size;
+    if v.shape.x == BIRD {
+        // Its wing tips rise and fall by as much as half its span.
+        across = max(size, reach * 0.7);
+    }
+    let half = vec2<f32>(reach, across) + vec2<f32>(margin);
     let at = corner * half;
     out.pos = to_clip(v.place.xy + rotate(at, v.place.z));
     out.at = at;
@@ -156,6 +171,7 @@ fn vs_sprite(@builtin(vertex_index) vi: u32, v: SpriteIn) -> SpriteOut {
     out.emit = v.emit.rgb;
     out.extra = v.extra;
     out.shade = v.style.y;
+    out.pose = f32(v.shape.y) / 65535.0 * 2.0 - 1.0;
     return out;
 }
 
@@ -173,6 +189,109 @@ fn heart(p0: vec2<f32>, s: f32) -> f32 {
         d = sqrt(min(a, b)) * sign(p.x - p.y);
     }
     return d * s / 0.9;
+}
+
+// The distance from `p` to the segment from `a` to `b`.
+fn segment(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+    let pa = p - a;
+    let ba = b - a;
+    let h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-8), 0.0, 1.0);
+    return length(pa - ba * h);
+}
+
+// A shape whose half width along x (-reach to reach) is `w`: the distance to its edge, roughly.
+fn widthwise(p: vec2<f32>, reach: f32, w: f32, slope: f32) -> f32 {
+    let r = max(reach, 1e-4);
+    if abs(p.x) >= r {
+        return length(vec2<f32>(abs(p.x) - r, p.y));
+    }
+    return (abs(p.y) - w) / sqrt(1.0 + slope * slope);
+}
+
+// The distance to the edge of a triangle a, b, c (negative inside).
+fn triangle(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, c: vec2<f32>) -> f32 {
+    let e0 = b - a;
+    let e1 = c - b;
+    let e2 = a - c;
+    let v0 = p - a;
+    let v1 = p - b;
+    let v2 = p - c;
+    let pq0 = v0 - e0 * clamp(dot(v0, e0) / dot(e0, e0), 0.0, 1.0);
+    let pq1 = v1 - e1 * clamp(dot(v1, e1) / dot(e1, e1), 0.0, 1.0);
+    let pq2 = v2 - e2 * clamp(dot(v2, e2) / dot(e2, e2), 0.0, 1.0);
+    let s = sign(e0.x * e2.y - e0.y * e2.x);
+    let d = min(
+        min(vec2<f32>(dot(pq0, pq0), s * (v0.x * e0.y - v0.y * e0.x)), vec2<f32>(dot(pq1, pq1), s * (v1.x * e1.y - v1.y * e1.x))),
+        vec2<f32>(dot(pq2, pq2), s * (v2.x * e2.y - v2.y * e2.x))
+    );
+    return -sqrt(d.x) * sign(d.y);
+}
+
+// The distance to the edge of one of part 5's shapes, in pixels, negative inside.
+fn more_shape(kind: u32, p: vec2<f32>, reach: f32, size: f32, pose: f32) -> f32 {
+    let r = max(reach, 1e-4);
+    let lx = clamp(p.x / r, -1.0, 1.0);
+    switch kind {
+        case LEAF: {
+            // Pointed at both ends: its width a parabola along it.
+            let w = size * (1.0 - lx * lx);
+            return widthwise(p, r, w, 2.0 * size * lx / r);
+        }
+        case PETAL: {
+            // Narrow at its base (behind), round at the front with a notch in it.
+            let w = size * sqrt(max(1.0 - lx * lx, 0.0)) * (0.35 + 0.65 * (lx * 0.5 + 0.5));
+            let body = widthwise(p, r, w, size / r);
+            let notch = size * 0.3 - length(p - vec2<f32>(r, 0.0));
+            return max(body, notch);
+        }
+        case FLAKE: {
+            // Six arms with a pair of branches on each, folded into one twelfth of a turn.
+            var a = atan2(p.y, p.x);
+            let sector = 1.0471976;
+            a = abs(a - sector * round(a / sector));
+            let q = length(p) * vec2<f32>(cos(a), sin(a));
+            let thick = max(size * 0.11, 0.6);
+            let arm = segment(q, vec2<f32>(0.0), vec2<f32>(size, 0.0));
+            let b0 = vec2<f32>(size * 0.55, 0.0);
+            let branch = segment(q, b0, b0 + vec2<f32>(0.5, 0.866) * size * 0.32);
+            return min(arm, branch) - thick;
+        }
+        case NEEDLE: {
+            let w = max(size * 0.35, 0.5) * (1.0 - abs(lx));
+            return widthwise(p, r, w, size * 0.35 / r);
+        }
+        case BIRD: {
+            // An upright "m": two bent wings from the body, their tips rising and falling.
+            let q = vec2<f32>(abs(p.x), p.y);
+            let elbow = vec2<f32>(r * 0.48, -r * (0.18 - 0.1 * pose));
+            let tip = vec2<f32>(r, -r * (0.05 + 0.45 * pose));
+            let t = size * 0.22 + 0.4;
+            let wing = min(segment(q, vec2<f32>(0.0, 0.0), elbow), segment(q, elbow, tip)) - t * (1.0 - 0.5 * q.x / r);
+            let body = length(p / vec2<f32>(1.0, 1.6)) - t * 1.4;
+            return min(wing, body);
+        }
+        case FISH: {
+            // A body along it, its tail at the back swinging with the pose.
+            let body = (length(p / vec2<f32>(r * 0.72, size)) - 1.0) * min(r * 0.72, size);
+            let root = vec2<f32>(-r * 0.55, 0.0);
+            let swing = pose * 0.45;
+            let back = vec2<f32>(-r, 0.0) - root;
+            let c = cos(swing);
+            let s = sin(swing);
+            let turned = vec2<f32>(back.x * c - back.y * s, back.x * s + back.y * c);
+            let side = vec2<f32>(-turned.y, turned.x) / max(length(turned), 1e-4) * size * 0.85;
+            let tail = triangle(p, root, root + turned + side, root + turned - side);
+            return min(body, tail);
+        }
+        case DIAMOND: {
+            // A rhombus reaching `reach` along it and `size` across.
+            let q = abs(p) / vec2<f32>(r, max(size, 1e-4));
+            return (q.x + q.y - 1.0) * min(r, size) / sqrt(2.0);
+        }
+        default: {
+            return length(p) - size;
+        }
+    }
 }
 
 // The distance from the sprite's edge, in pixels, negative inside.
@@ -198,6 +317,9 @@ fn edge_distance(in: SpriteOut) -> f32 {
         }
         case HEARTS: {
             return heart(p, size);
+        }
+        case LEAF, PETAL, FLAKE, NEEDLE, BIRD, FISH, DIAMOND: {
+            return more_shape(in.kind, p, reach, size, in.pose);
         }
         default: {
             return length(p) - size;
@@ -268,7 +390,12 @@ fn sprite_colour(in: SpriteOut) -> vec4<f32> {
     if a < 1e-4 {
         discard;
     }
-    let rgb = in.color.rgb * in.shade;
+    var rgb = in.color.rgb * in.shade;
+    if in.kind == LEAF {
+        // A darker vein down its middle.
+        let l = in.at.y / max(in.size.y, 1e-4);
+        rgb = rgb * (1.0 - 0.3 * exp(-60.0 * l * l));
+    }
     if in.color.a < 0.0 {
         // Added light, brighter than the ball colour so it blooms, covering nothing.
         return vec4<f32>(rgb * a * 2.0, 0.0);

@@ -1,18 +1,29 @@
 //! Drawing a Particles thing: nothing of its own, then each shown Look layer as an around layer
 //! with a blend of its own (so other blends route through the frame's layers as trails' do),
-//! every particle it draws as a sprite with what its sub-layers add. Particles carry no
-//! lighting in part 1 (their `light`, `emit` and `extra` stay 0).
+//! every particle it draws as a sprite with what its sub-layers add (Soft smoke and Flame as one
+//! soft field the GPU splats and shades, Web lines as lines between them). Particles carry no
+//! lighting yet (their `light`, `emit` and `extra` stay 0).
+
+use std::f32::consts::TAU;
 
 use bpe_core::{Blend, ResolvedThing, SlotId, ThingId};
-use bpe_gfx::{Around, DrawCx, Frame, Particle, ThingDraw};
+use bpe_gfx::{
+    Around, DrawCx, FIELD_FLAME, FIELD_HEAT_STOPS, FIELD_SMOKE, Field, FieldLook, Frame, Particle, Splat, ThingDraw,
+};
 use bpe_runtime::EventKind;
+use glam::Vec2;
 
 use super::KIND;
-use super::births::unit;
-use super::look::{ColourFrom, Common, Drawn, LookLayer, Only, layers_of};
+use super::births::{signed, unit};
+use super::look::{
+    ColourFrom, Common, Drawn, FineDetail, FlameLayer, GlitterLayer, LookLayer, MoreShape, Only, PointAlong,
+    ShapesLayer, SmokeLayer, WebLayer, layers_of,
+};
 use super::sim::state_of;
 use super::state::{ParticlesState, Speck};
-use crate::modules::look::layers::around_subs::{Extras, HitInfo, Pieces, coloured, particle_with_extras};
+use super::web::{MOST_WEB_LINES, ball_links, links};
+use crate::modules::look::layers::around_subs::{Extras, HitInfo, OWN, Pieces, coloured, particle_with_extras};
+use crate::modules::look::layers::gpu::SubLayer;
 use crate::modules::look::layers::particles::ShapeMadeOf;
 use crate::modules::look::layers::trail::AroundPlace;
 use crate::paint::{Inputs, colour_at};
@@ -56,8 +67,8 @@ impl ThingDraw for ParticlesDraw {
         let Some(layer) = layers(cx.resolved).into_iter().nth(index) else { return };
         let Some(st) = state_of(cx.world, cx.thing.id) else { return };
         let mut pieces = Pieces::default();
-        draw_layer(cx, st, &layer, &mut pieces);
-        pieces.into_frame(frame, layer.common.place == AroundPlace::InFront);
+        let field = draw_layer(cx, st, &layer, &mut pieces);
+        pieces.into_frame_with_field(frame, layer.common.place == AroundPlace::InFront, field);
     }
 }
 
@@ -106,48 +117,29 @@ fn parent_hits(cx: &DrawCx, parent: Option<ThingId>) -> HitInfo {
     info
 }
 
-/// The sprite for particle `s` drawn by `drawn` at `size` (half size), coloured `colour`;
-/// `flutters` when a force flips the particles over.
-pub fn sprite(drawn: &Drawn, s: &Speck, size: f32, colour: [f32; 4], flutters: bool) -> Particle {
-    let speed = s.velocity.length();
-    match *drawn {
-        Drawn::Sprites { made_of, softness } => {
-            let mut p = Particle::new(made_of.as_ball().code(), s.place, s.turn, size, colour);
-            p.style[0] = match made_of {
-                ShapeMadeOf::Sparks => size + speed * 0.03,
-                ShapeMadeOf::Streaks => size * 2.0 + speed * 0.08,
-                ShapeMadeOf::Confetti => size * 1.6,
-                ShapeMadeOf::Shards => size * 1.4,
-                _ => size,
-            };
-            p.style[2] = softness.clamp(0.0, 1.0);
-            // Flutter: a flat thing flipping over shows edge on, and darker on its back.
-            if flutters {
-                let face = s.flip.cos();
-                p.place[3] = size * face.abs().max(0.12);
-                p.style[1] = 0.7 + 0.3 * face;
-            }
-            p
-        }
-        Drawn::Streaks { stretch, least, width } => {
-            let half_width = (size * width).max(0.0);
-            let length = (speed * stretch).max(least).max(0.0);
-            let angle = if speed > 1e-3 { s.velocity.y.atan2(s.velocity.x) } else { s.turn };
-            let mut p = Particle::new(ShapeMadeOf::Streaks.as_ball().code(), s.place, angle, half_width, colour);
-            p.style[0] = (length * 0.5).max(half_width);
-            p
-        }
-    }
+/// One particle as a layer sees it at the moment drawn.
+pub struct Seen<'a> {
+    pub s: &'a Speck,
+    /// How far through its life it is, 0 to 1.
+    pub t: f32,
+    /// How much of it shows: opacity, fade and twinkle.
+    pub alpha: f32,
+    /// Its half size, in pixels.
+    pub size: f32,
+    /// Its colour before the sub-layers (linear light).
+    pub base: [f32; 4],
+    /// Its colour after them, drawn as the layer draws (see [`shade`]).
+    pub colour: [f32; 4],
 }
 
-/// Draws `layer`'s particles of `st` into `pieces`.
-pub fn draw_layer(cx: &DrawCx, st: &ParticlesState, layer: &LookLayer, pieces: &mut Pieces) {
+/// Every particle of `st` that `layer` draws, as it sees them.
+pub fn seen<'a>(cx: &DrawCx, st: &'a ParticlesState, layer: &LookLayer, hit: HitInfo) -> Vec<Seen<'a>> {
     let c = &layer.common;
+    let mut out = Vec::new();
     if c.opacity <= 0.0 {
-        return;
+        return out;
     }
     let screen = cx.resolved.screen;
-    let hit = if layer.subs.iter().any(|s| s.reads_hits()) { parent_hits(cx, st.parent) } else { HitInfo::default() };
     // The colours of the parent's balls, when a layer takes them.
     let parent = st.parent.and_then(|p| Some((cx.tree.things.get(&p)?, cx.scene.things.get(&p)?)));
     let ball_cx = match (c.colour_from, parent) {
@@ -156,7 +148,6 @@ pub fn draw_layer(cx: &DrawCx, st: &ParticlesState, layer: &LookLayer, pieces: &
     };
     let ball_colour = ball_cx.as_ref().and_then(crate::things::balls::draw::ball_colors);
     let now = st.step;
-    let flutters = st.forces.flips();
     let twinkle = c.twinkle.clamp(0.0, 1.0);
     for s in &st.specks {
         if !draws(c, s, now) {
@@ -165,12 +156,7 @@ pub fn draw_layer(cx: &DrawCx, st: &ParticlesState, layer: &LookLayer, pieces: &
         let t = s.life_at(now);
         let Some(grow) = c.size_curve.at(t) else { continue };
         let age = s.age(now);
-        let flicker = 1.0
-            - twinkle
-                * (0.5
-                    + 0.5
-                        * (c.twinkle_speed * std::f32::consts::TAU * age + unit(s.seed, 67) * std::f32::consts::TAU)
-                            .sin());
+        let flicker = 1.0 - twinkle * (0.5 + 0.5 * (c.twinkle_speed * TAU * age + unit(s.seed, 67) * TAU).sin());
         let alpha = (c.opacity * c.fade.at(t) * flicker).max(0.0);
         if alpha <= 0.0 {
             continue;
@@ -201,7 +187,354 @@ pub fn draw_layer(cx: &DrawCx, st: &ParticlesState, layer: &LookLayer, pieces: &
         }
         let subs = &layer.subs;
         let colour = shade(c, coloured(subs, subs.len(), base, hit), alpha);
-        let extras = Extras { subs, base, s: t, fade: alpha, unit: 1.0, hit, outline: 1.0, added: 1.0 };
-        particle_with_extras(sprite(&layer.drawn, s, size, colour, flutters), &extras, pieces);
+        out.push(Seen { s, t, alpha, size, base, colour });
+    }
+    out
+}
+
+/// Where Fine detail's copy `k` of a particle of half size `size` sits from it at `time`.
+pub fn copy_offset(d: &FineDetail, s: &Speck, k: u32, size: f32, time: f32) -> Vec2 {
+    let v = Vec2::new(signed(s.seed, 300 + k), signed(s.seed, 400 + k)) * d.spread * size;
+    if d.shimmer == 0.0 {
+        return v;
+    }
+    Vec2::from_angle(d.shimmer * time * TAU * signed(s.seed, 500 + k)).rotate(v)
+}
+
+/// `p` moved by `by` and sized `k` times, its colour's alpha `fade` times (an added colour's
+/// light too).
+fn copied(p: &Particle, by: Vec2, k: f32, fade: f32) -> Particle {
+    let mut q = *p;
+    q.place[0] += by.x;
+    q.place[1] += by.y;
+    q.place[3] *= k;
+    q.style[0] *= k;
+    q.color[3] *= fade;
+    q
+}
+
+/// Draws `layer`'s particles of `st` into `pieces`; Soft smoke and Flame give their field.
+pub fn draw_layer(cx: &DrawCx, st: &ParticlesState, layer: &LookLayer, pieces: &mut Pieces) -> Option<Field> {
+    let hit = if layer.subs.iter().any(|s| s.reads_hits()) { parent_hits(cx, st.parent) } else { HitInfo::default() };
+    let seen = seen(cx, st, layer, hit);
+    let c = &layer.common;
+    let time = cx.time as f32;
+    let extras = |v: &Seen, fade: f32| Extras {
+        subs: &layer.subs,
+        base: v.base,
+        s: v.t,
+        fade: v.alpha * fade,
+        unit: 1.0,
+        hit,
+        outline: 1.0,
+        added: 1.0,
+    };
+    match &layer.drawn {
+        Drawn::Smoke(_) | Drawn::Flame(_) => return Some(field_of(cx, layer, &seen, hit, pieces)),
+        Drawn::Web(w) => {
+            draw_web(cx, layer, w, &seen, hit, pieces);
+            return None;
+        }
+        _ => {}
+    }
+    let flutters = st.forces.flips();
+    let now_s = st.step as f32 * super::step::DT;
+    let d = c.detail;
+    for v in &seen {
+        let (own, star) = sprite(&layer.drawn, v.s, v.size, v.colour, flutters, now_s, time);
+        particle_with_extras(own, &extras(v, 1.0), pieces);
+        pieces.particles[OWN].extend(star);
+        for k in 0..d.copies {
+            let by = copy_offset(&d, v.s, k, v.size, time);
+            particle_with_extras(
+                copied(&own, by, d.size.max(0.0), d.opacity.clamp(0.0, 1.0)),
+                &extras(v, d.opacity),
+                pieces,
+            );
+            pieces.particles[OWN].extend(star.map(|s| copied(&s, by, d.size.max(0.0), d.opacity.clamp(0.0, 1.0))));
+        }
+    }
+    None
+}
+
+/// The angle a shape points at: its own turn or the way it goes, turned `by` more.
+fn pointing(s: &Speck, along: PointAlong, by: f32) -> f32 {
+    let v = s.velocity;
+    let base = match along {
+        PointAlong::OwnTurn => s.turn,
+        PointAlong::WayItGoes if v.length() > 1e-3 => v.y.atan2(v.x),
+        PointAlong::WayItGoes => s.turn,
+    };
+    base + by.to_radians()
+}
+
+/// The sprite for particle `s` drawn by `drawn` at `size` (half size), coloured `colour`, and a
+/// star over it when glitter flashes; `flutters` when a force flips the particles over. `now` is
+/// the particle step's time and `time` the drawing's, both in seconds.
+pub fn sprite(
+    drawn: &Drawn,
+    s: &Speck,
+    size: f32,
+    colour: [f32; 4],
+    flutters: bool,
+    now: f32,
+    time: f32,
+) -> (Particle, Option<Particle>) {
+    let speed = s.velocity.length();
+    // Flutter: a flat thing flipping over shows edge on, and darker on its back.
+    let flutter = |p: &mut Particle| {
+        if flutters {
+            let face = s.flip.cos();
+            p.place[3] = size * face.abs().max(0.12);
+            p.style[1] = 0.7 + 0.3 * face;
+        }
+    };
+    match drawn {
+        Drawn::Sprites { made_of, softness } => {
+            let mut p = Particle::new(made_of.as_ball().code(), s.place, s.turn, size, colour);
+            p.style[0] = match made_of {
+                ShapeMadeOf::Sparks => size + speed * 0.03,
+                ShapeMadeOf::Streaks => size * 2.0 + speed * 0.08,
+                ShapeMadeOf::Confetti => size * 1.6,
+                ShapeMadeOf::Shards => size * 1.4,
+                _ => size,
+            };
+            p.style[2] = softness.clamp(0.0, 1.0);
+            flutter(&mut p);
+            (p, None)
+        }
+        Drawn::Streaks { stretch, least, width } => {
+            let half_width = (size * width).max(0.0);
+            let length = (speed * stretch).max(*least).max(0.0);
+            let angle = if speed > 1e-3 { s.velocity.y.atan2(s.velocity.x) } else { s.turn };
+            let mut p = Particle::new(ShapeMadeOf::Streaks.as_ball().code(), s.place, angle, half_width, colour);
+            p.style[0] = (length * 0.5).max(half_width);
+            (p, None)
+        }
+        Drawn::Shapes(l) => (shape_sprite(l, s, size, colour, now, flutter), None),
+        Drawn::Glitter(l) => glitter_sprite(l, s, size, colour, time),
+        // Fields and lines are drawn their own way; a plain dot stands in.
+        Drawn::Smoke(_) | Drawn::Flame(_) | Drawn::Web(_) => {
+            (Particle::new(ShapeMadeOf::Dots.as_ball().code(), s.place, s.turn, size, colour), None)
+        }
+    }
+}
+
+/// More shapes' sprite for `s`.
+fn shape_sprite(
+    l: &ShapesLayer,
+    s: &Speck,
+    size: f32,
+    colour: [f32; 4],
+    now: f32,
+    flutter: impl Fn(&mut Particle),
+) -> Particle {
+    let (code, length) = l.shape.code_and_length();
+    if l.shape == MoreShape::Pixels {
+        let place = if l.grid > 0.0 { (s.place / l.grid).round() * l.grid } else { s.place };
+        let mut p = Particle::new(code, place, 0.0, size, colour);
+        p.style[2] = l.softness.clamp(0.0, 1.0);
+        return p;
+    }
+    let angle = match (l.shape, l.point_along) {
+        // A bird seen from the front leans into the way it goes rather than pointing along it.
+        (MoreShape::Birds, PointAlong::WayItGoes) => {
+            let v = s.velocity;
+            0.5 * (v.x / v.length().max(1.0)) + l.turn_by.to_radians()
+        }
+        _ => pointing(s, l.point_along, l.turn_by),
+    };
+    let mut p = Particle::new(code, s.place, angle, size, colour);
+    p.style[0] = if l.shape == MoreShape::Flakes { size } else { size * length * l.length.max(0.0) };
+    p.style[2] = l.softness.clamp(0.0, 1.0);
+    if matches!(l.shape, MoreShape::Birds | MoreShape::Fish) {
+        let age = (now - s.born as f32 * super::step::DT).max(0.0);
+        let pose = (age * l.flap_speed * TAU + unit(s.seed, 73) * TAU).sin();
+        p.shape[1] = ((pose * 0.5 + 0.5).clamp(0.0, 1.0) * 65535.0) as u32;
+    }
+    flutter(&mut p);
+    p
+}
+
+/// How brightly glitter particle `s`'s facet flashes at `time`, 0 to 1.
+pub fn glint(l: &GlitterLayer, s: &Speck, time: f32) -> f32 {
+    let facet = s.turn + unit(s.seed, 71) * TAU + l.shimmer * time * TAU * signed(s.seed, 72);
+    let facing = (facet - l.light_from.to_radians()).cos().max(0.0);
+    facing.powf(l.sharpness.max(1.0))
+}
+
+/// Glitter's facet for `s`, and the star of its flash.
+fn glitter_sprite(l: &GlitterLayer, s: &Speck, size: f32, colour: [f32; 4], time: f32) -> (Particle, Option<Particle>) {
+    let flash = glint(l, s, time);
+    let bright = l.base.clamp(0.0, 1.0) + flash;
+    let lit = [colour[0] * bright, colour[1] * bright, colour[2] * bright, colour[3]];
+    let mut facet = Particle::new(16, s.place, s.turn, size, lit);
+    facet.style[0] = size * 0.75;
+    let star = (flash > 0.02 && l.star > 0.0).then(|| {
+        let f = l.flash_colour.to_linear();
+        let alpha = colour[3].abs() * flash;
+        let mut p = Particle::new(3, s.place, s.turn, size * l.star * flash, [f[0], f[1], f[2], -alpha]);
+        p.style[2] = 0.0;
+        p
+    });
+    (facet, star)
+}
+
+/// The sub-layers that add sprites round a particle of their own (a shadow, a glow, an outline).
+fn adds_round(subs: &[SubLayer]) -> bool {
+    subs.iter().any(|s| matches!(s, SubLayer::Shadow(_) | SubLayer::Glow(_) | SubLayer::Outline(_)))
+}
+
+/// Soft smoke's or Flame's field of `seen`, with what its sub-layers add round each particle in
+/// `pieces` (shadows and glows under it, outlines over it).
+fn field_of(cx: &DrawCx, layer: &LookLayer, seen: &[Seen], hit: HitInfo, pieces: &mut Pieces) -> Field {
+    let c = &layer.common;
+    let time = cx.time as f32;
+    let d = c.detail;
+    let amount = match c.blend {
+        Blend::Normal | Blend::Add => c.blend_amount.clamp(0.0, 1.0),
+        _ => 1.0,
+    };
+    // A layer that adds, or colours with no alpha, add their light.
+    let adds = c.blend == Blend::Add || seen.first().is_some_and(|v| v.colour[3] < 0.0);
+    let (look, puff) = match &layer.drawn {
+        Drawn::Flame(f) => (flame_look(f, adds, amount), f.puff),
+        Drawn::Smoke(s) => (smoke_look(s, adds, amount), s.puff),
+        _ => unreachable!("only smoke and flame are fields"),
+    };
+    let cools = match &layer.drawn {
+        Drawn::Flame(f) => f.cools.clamp(0.0, 1.0),
+        _ => 0.0,
+    };
+    let flame = matches!(layer.drawn, Drawn::Flame(_));
+    let mut splats = Vec::with_capacity(seen.len() * (1 + d.copies as usize));
+    let subs = adds_round(&layer.subs);
+    for v in seen {
+        let tint = coloured(&layer.subs, layer.subs.len(), v.base, hit);
+        let weight =
+            if flame { v.alpha * (1.0 - cools * v.t) } else { v.alpha * if tint[3] > 0.0 { tint[3] } else { 1.0 } };
+        if weight <= 0.0 {
+            continue;
+        }
+        let radius = v.size * puff.max(0.0);
+        let splat =
+            |at: Vec2, r: f32, w: f32| Splat { place: [at.x, at.y, r, w], color: [tint[0], tint[1], tint[2], 0.0] };
+        splats.push(splat(v.s.place, radius, weight));
+        for k in 0..d.copies {
+            let by = copy_offset(&d, v.s, k, v.size, time);
+            splats.push(splat(v.s.place + by, radius * d.size.max(0.0), weight * d.opacity.clamp(0.0, 1.0)));
+        }
+        if subs {
+            // The particle as a soft puff, only for what its sub-layers draw round it.
+            let mut puff_sprite = Particle::new(ShapeMadeOf::Smoke.as_ball().code(), v.s.place, 0.0, radius, v.colour);
+            puff_sprite.style[2] = 1.0;
+            let e = Extras {
+                subs: &layer.subs,
+                base: v.base,
+                s: v.t,
+                fade: v.alpha,
+                unit: 1.0,
+                hit,
+                outline: 1.0,
+                added: 1.0,
+            };
+            particle_with_extras(puff_sprite, &e, pieces);
+        }
+    }
+    // The field stands for what the layer itself draws.
+    pieces.particles[OWN].clear();
+    Field { at: 0, splats, look }
+}
+
+fn smoke_look(s: &SmokeLayer, adds: bool, amount: f32) -> FieldLook {
+    let way = Vec2::from_angle(s.drift_way.to_radians()) * s.drift;
+    FieldLook {
+        kind: [FIELD_SMOKE, if adds { 1.0 } else { 0.0 }, amount, s.thickness.max(0.0)],
+        detail: [s.detail.clamp(0.0, 1.0), s.detail_size.max(1.0), way.x, way.y],
+        shade: [s.shading.clamp(0.0, 1.0), s.light_from.to_radians(), s.dark_inside.clamp(0.0, 1.0), 0.0],
+        ..FieldLook::default()
+    }
+}
+
+fn flame_look(f: &FlameLayer, adds: bool, amount: f32) -> FieldLook {
+    let mut heat = [[0.0; 4]; FIELD_HEAT_STOPS];
+    for (h, c) in heat.iter_mut().zip(f.heat_colours.bake(FIELD_HEAT_STOPS)) {
+        *h = c;
+    }
+    FieldLook {
+        kind: [FIELD_FLAME, if adds { 1.0 } else { 0.0 }, amount, f.heat.max(0.0)],
+        detail: [f.detail.clamp(0.0, 1.0), f.detail_size.max(1.0), 0.0, -f.rise],
+        shade: [f.bend.max(0.0), f.flicker.clamp(0.0, 1.0), f.flicker_speed, f.brightness.max(0.0)],
+        heat,
+        ..FieldLook::default()
+    }
+}
+
+/// Web lines: lines between the particles `seen` within Reach (and to balls), then a dot at each.
+fn draw_web(cx: &DrawCx, layer: &LookLayer, w: &WebLayer, seen: &[Seen], hit: HitInfo, pieces: &mut Pieces) {
+    let c = &layer.common;
+    let places: Vec<Vec2> = seen.iter().map(|v| v.s.place).collect();
+    let reach = w.reach.max(1.0);
+    let half_width = (w.line_width * 0.5).max(0.0);
+    let line_alpha = |d: f32, of: f32| {
+        let near = (1.0 - d / of).clamp(0.0, 1.0);
+        w.line_opacity.clamp(0.0, 1.0) * if w.fade_power > 0.0 { near.powf(w.fade_power) } else { 1.0 }
+    };
+    let line = |a: Vec2, b: Vec2, colour: [f32; 4]| {
+        let along = b - a;
+        let mut p = Particle::new(9, (a + b) * 0.5, along.y.atan2(along.x), half_width, colour);
+        p.style[0] = (along.length() * 0.5).max(half_width);
+        p
+    };
+    let mean =
+        |x: [f32; 4], y: [f32; 4]| [(x[0] + y[0]) * 0.5, (x[1] + y[1]) * 0.5, (x[2] + y[2]) * 0.5, (x[3] + y[3]) * 0.5];
+    let extras = |base: [f32; 4], t: f32, fade: f32| Extras {
+        subs: &layer.subs,
+        base,
+        s: t,
+        fade,
+        unit: 1.0,
+        hit,
+        outline: 1.0,
+        added: 1.0,
+    };
+    if half_width > 0.0 && w.line_opacity > 0.0 {
+        for (i, j, d) in links(&places, reach, w.links as usize) {
+            let (a, b) = (&seen[i], &seen[j]);
+            let k = line_alpha(d, reach);
+            if k <= 0.0 {
+                continue;
+            }
+            let mut colour = mean(a.colour, b.colour);
+            colour[3] *= k;
+            let fade = (a.alpha + b.alpha) * 0.5 * k;
+            particle_with_extras(line(a.s.place, b.s.place, colour), &extras(mean(a.base, b.base), a.t, fade), pieces);
+        }
+        if w.to_balls && w.ball_reach > 0.0 {
+            let balls = super::step::balls_in(cx.world);
+            for (i, edge, gap) in ball_links(&places, &balls, w.ball_reach, MOST_WEB_LINES) {
+                let v = &seen[i];
+                let k = line_alpha(gap, w.ball_reach);
+                if k <= 0.0 {
+                    continue;
+                }
+                let colour = [v.colour[0], v.colour[1], v.colour[2], v.colour[3] * k];
+                particle_with_extras(line(v.s.place, edge, colour), &extras(v.base, v.t, v.alpha * k), pieces);
+            }
+        }
+    }
+    if w.dots > 0.0 {
+        let d = c.detail;
+        let time = cx.time as f32;
+        for v in seen {
+            let size = v.size * w.dots;
+            let dot = Particle::new(ShapeMadeOf::Dots.as_ball().code(), v.s.place, 0.0, size, v.colour);
+            particle_with_extras(dot, &extras(v.base, v.t, v.alpha), pieces);
+            for k in 0..d.copies {
+                let by = copy_offset(&d, v.s, k, size, time);
+                let copy = copied(&dot, by, d.size.max(0.0), d.opacity.clamp(0.0, 1.0));
+                particle_with_extras(copy, &extras(v.base, v.t, v.alpha * d.opacity), pieces);
+            }
+        }
     }
 }
