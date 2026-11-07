@@ -476,3 +476,18 @@ fn a_big_crowd_keeps_shorter_trails_within_the_ring_budget() {
     assert_eq!(st.trail.points, super::trail::MOST_RING_PLACES / 1_000_000);
     assert!(st.trail.points * 1_000_000 <= super::trail::MOST_RING_PLACES);
 }
+
+#[test]
+fn mirror_repeats_a_soft_smoke_field_and_fine_detail_copies_a_liquid() {
+    let (mut scene, id) = falling(10);
+    let mut params = super::look::SmokeLayer::default().to_params();
+    params.0.extend(Modifiers { mirror: Mirror::FourWays, ..Modifiers::default() }.to_params().0);
+    only_layer(&mut scene, id, super::look::SMOKE, params);
+    let frame = frame_of(&scene, 0.5);
+    assert_eq!(frame.fields.iter().map(|f| f.splats.len()).sum::<usize>(), 10 * 4, "every splat four ways");
+    let (mut scene, id) = falling(10);
+    let l = LiquidLayer { copies: 2, ..LiquidLayer::default() };
+    only_layer(&mut scene, id, LIQUID, l.to_params());
+    let frame = frame_of(&scene, 0.5);
+    assert_eq!(frame.liquids[0].blobs.len(), 10 * 3, "a blob and two copies a particle");
+}
