@@ -64,7 +64,9 @@ impl HitFilter {
             return None;
         }
         let ball = e.a;
-        if !world.names(&self.heard_from, self.shape, ball.thing) {
+        // A Particles thing's moments are its own particles': no Heard from (particles part 7).
+        let own = e.kind == bpe_runtime::EventKind::Moment && ball.thing == self.shape;
+        if !own && !world.names(&self.heard_from, self.shape, ball.thing) {
             return None;
         }
         let s = strength(e.speed);

@@ -469,6 +469,30 @@ layer of `force.air`). Editor: the toolbar's **Air** toggle (`Studio.show_air`, 
 Thick fog; Sandstorm with gust waves and a haze layer. Goldens gain "Dust in the air", "Smoke heating the air",
 "Sandstorm". What part 8 needs is listed in the plan.
 
+Part 4 is in (plan `part4.md`, "As built" at its end): **particles meeting things**. **Feeding**: Born from **Its
+parent's particles** (`BornFrom::ItsParentsParticles`, the tree parent a Particles thing) When they (`FedWhen`) Die /
+Land / Hit a ball / Hit a shape / Hit anything / Pop / Stop rising (Count each) or Every step (Rate a parent particle);
+the parent keeps that step's `feeds` (`feeds.rs`: `Feed`, `FeedKind`, only the kinds its children `wants`,
+`LAND_SPEED`), and in part 2's lock-step particle loop a fed thing steps right after its parent (tree order),
+reading the feeds of that very step, so it sees every one at any Physics rate (`step::wants_of`; fed things are
+always decoration, at most `MOST_FED` births a moment); `births::fed_places`, `Speck.kin_seed/kin_life`, Colour from **Its parent particle** (`ColourFrom::ParentParticle`).
+**Meets things** gains On touching a ball Pop / **Stick** (`STUCK`, `Speck.on/on_row/offset`, rides the ball, falls off
+on a hard landing at Fall off when it lands, `SHAKE_SPEED`, `LOOSE` until it leaves the ball) and At shapes **Settle**
+(`RESTING`, rides a moving shape, `age` stands still, kicked up by a ball faster than `KICK_SPEED`, Fade after
+`SETTLE_FADE`, Most kept) / **Pile up** (`piles.rs`: `Piles`/`Pile` height columns `COLUMN` 2 px wide on still up-facing
+walls and the floor (edges Bounce: `MeetsSettings::floor`), `Surfaces::of`, `add_sand` slides to the Angle of repose
+(`MOST_SLIDES`, `SLIDE_LEAST`), pours off ledges (`spill`), crumbles when its shape moves (`crumble_moved`), cut by balls
+(`cut_by_ball`, sand Thrown up, `throw_sand`, `MOST_THROWN` in one go); touching piles on one surface are joined (`merge_touching`); layer **Piles** `particles.piles` draws one upright
+streak a column). **Two-way** (`two_way.rs`, Meets things' Two-way group: Weight, Pushes / Slows / Holds up / Weighs
+balls): `in_main` is then true, so the thing runs in the main world and counts in the fingerprint (`ThingSim::own_cards`
+makes `fingerprint_of` hash its own Motion/Bounce cards, and then the Air card and its keys too); `TwoWayOut` sums each particle step's momentum per ball in
+chunk order, given once in the thing's `forces`, stuck weight every substep, and `hold_up` (the `settle` hook) rests
+balls on piles (digging in past `DIG_SPEED`). Looks: Fire and smoke (Flame; its Smoke child Soft smoke), Bubbles, Sand that
+piles up, Falling leaves (part 5's Leaves), Waterfall and mist, Liquid splashes, Fireworks, Sticky dust; Thick fog is two-way (slows the balls); part 3's Flock draws part 5's Birds; Rain splashes (`Recipe.children`,
+`add_recipe`).
+Editor: the Add thing menu's "Empty, fed by <name>" while a Particles thing is selected; the status line also counts
+the main world's (two-way) particles. Goldens `tests/golden-particles-meeting*.txt` (`scenes::particle_scenes_meeting`).
+
 Part 5 is in (plan `part5.md`): **looks 1**, drawing only. New `look.particles` layer kinds: **Soft smoke**
 (`particles.smoke`) and **Flame** (`particles.flame`) are soft **fields**: `bpe_gfx::Field { at, splats, look }` in
 `Frame.fields`/`fields_front` (`Splat`, `FieldLook`: mode `FIELD_SMOKE`/`FIELD_FLAME`, adds, amount, strength, detail,
@@ -506,8 +530,8 @@ covering black (nothing in the surface picture). Every draw layer has the **Expe
 through `Kind.dynamic`: Mirror 2..12 ways round The middle of the picture / The thing they ride / A point, Mirrored
 copies; Colour split (three added channel copies along the velocity; not on Liquid, Soft smoke, Flame or Web lines,
 `defs_without_split`), Glitch (bands torn sideways, `Tears`, pure in time)); applied on the CPU to `Pieces`, blobs and
-field splats (`draw::finish`). Part 5's Fine detail copies trails, marks and blobs too. Six new looks (Liquid
-splashes, Light streams, Kaleidoscope, Colour split dust, Liquid metal, Paint drips) and part 5's Pixel glitch torn by
+field splats (`draw::finish`). Part 5's Fine detail copies trails, marks and blobs too. Five new looks (Light
+streams, Kaleidoscope, Colour split dust, Liquid metal, Paint drips), part 4's Liquid splashes drawn as a Liquid, and part 5's Pixel glitch torn by
 Glitch. Tests: `particles/tests_part6.rs`,
 `tests/liquid_pictures.rs` (GPU).
 
@@ -529,6 +553,42 @@ dice as the Look's Only). Eleven looks (`looks_motion.rs`): Galaxy round a ball,
 Shockwaves, Comet tail, Black hole, Iron filings, Beat grid, Moiré (two grids, `looks_motion::also`), Spirograph.
 Goldens `tests/golden-particles-motion*.txt` (`scenes::particle_motion_scenes`); the preview shows a rectangle grid's
 corner handle.
+
+Part 7 is in (plan `part7.md`, "As built" at its end): **moments, sound, rules, lighting**. Meeting code marks a
+`Speck` (`met`/`with`/`impact`) and the serial retain turns marks into `Moment`s (`moments.rs`: Hit a ball, Hit a shape,
+Land (once, `LANDED`), Born, Burst; `ParticlesState.moments`/`moment_counts` for world step `moments_step`, at most
+`MOST_MOMENTS`). A Particles thing takes a **Sound card** (`slots()` has `SlotId::Sound`, `VoiceKind::fits`): the
+Moments group of `VoiceSettings` (`moments_*`, `MomentStrength`) picks which play; `log_notes` logs the strongest as
+`EventKind::Moment` (tag 22, `a` = (thing, seed), `b` = (thing, kind code)) within Most a second; `bpe-sound` plays
+them like hits (`hits::plays`, no Heard from for own moments). The sound engine's physics is `heard_part` (main plus
+beside things whose `ThingSim::heard` is some) and `sound_fingerprint` mixes them in. Rules: `when.particles`
+(`particles/rules.rs`, Who / Moment / At least); `BlockSim::keeps` pulls a Particles thing a rule reads into the main
+world (`is_beside(scene, ..)`, `main_part(scene, ..)`), and `ThingSim::own_cards` hashes its cards whole then. Lighting:
+its drawn layers have `AroundLit`'s fold (`Kind::light_defs`), the `particles.sub.light` Gives off light sub-layer
+(listed in the Lights panel), stamped by `Drew::stamp`. Hits pulses on its settings: `ThingSim::pulses_on_hits`,
+`Animation::apply_where` with `bpe_runtime::hit_strength`. Editor: `inspector::sounds`, `sound_tab/moments.rs`.
+Tests: `particles/tests_part7.rs`, `bpe-sound/tests/particle_sound.rs`, `bpe-kit/tests/particle_light_pictures.rs`.
+
+Part 8 is in (plan `part8.md`, "As built" at its end): the **Huge swarm**. The Particles Look card's **Engine** (Exact /
+Huge swarm, `look.rs::Engine`, `LookCardSettings`, `engine_of`; not keyframable) moves a thing's particles on the
+graphics card, up to `MOST_SWARM` 4 000 000, decoration only. The world drives the card: `ParticlesState.swarm`
+(`things/particles/swarm.rs`: `Swarm`, `first`, `step_in`) owns `bpe_gfx::swarm::SwarmBuffers` (two 32-byte halves a
+particle, `SpeckMain`/`SpeckMore`; `Clone` is a copy on the card, so checkpoints and snapshots are still copies). Which
+card: `bpe_gfx::swarm::use_on_this_thread`/`on_this_thread`/`use_for_now` (`SwarmGpu::for_device`, cached); the editor
+names eframe's device in `Studio::new` and `ParticleJob` passes it to its thread, `bpe_cli::export_with`/`final_frame`
+name theirs; no card named = a swarm with no particles. Births are planned on the CPU with the exact engine's dice
+(`births::plan`, `For::Exact`/`Swarm`, `crowd_spares`, `MOST_SWARM_AT_ONCE`); a step is five compute passes in
+`shaders/swarm_step.wgsl` (births, move: forces, balls through `BallGrid::parts`, shapes as segments on a grid, edges,
+air; then a stable integer-prefix compaction, no atomics; `STEP_STILL` places the first births). Drawing reads the
+buffers (`swarm/draw.rs`, `shaders/swarm_draw.wgsl` ending in sprites.wgsl's `sprite_out`): `Frame.swarms`/
+`swarms_front` hold `SwarmRun { at, source, look, balls }` among the sprites (`cull` moves `at`), each an indirect draw
+on the step's count; roles own, glitter star, Shadow, Glow, Outline. Not in a swarm: Soft smoke, Flame, Web lines, Fine
+detail, Recolour/Flash/Colour on hit sub-layers (`draw::swarm_draws`, `swarm_draws_sub`), heating the air, Flock,
+refilling a word/picture/grid crowd (`swarm_moves_by`), part 4's two-way, feeding, Stick/Settle/Pile up (a swarm's
+bounce off / stop) and Piles layer, and part 7's moments, sound and particle lighting (swarm sprites are unlit). Part 3's other forces
+are on the card (`swarm::put_ready` from `Ready::new`; `StepGpu.middle/parent/homes/lists/fballs`, `SpeckMore.spot`). `World.gpu_memory` + `Playback`'s `GPU_CHECKPOINT_BYTES` (2 GB) thin checkpoints by video
+memory. The editor's Look card has the Engine chips (`look_editor/particles.rs::engine_row`). Tests:
+`bpe-gfx/src/swarm/tests.rs`, `bpe-kit/src/things/particles/swarm_tests.rs` (ignored `bench_a_million`).
 
 ## Crate map
 

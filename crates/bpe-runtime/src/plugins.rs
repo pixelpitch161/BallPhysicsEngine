@@ -167,6 +167,23 @@ pub trait ThingSim: Send + Sync + 'static {
     fn more_fingerprint(&self, _resolved: &ResolvedThing) -> u64 {
         0
     }
+    /// For a thing stepped beside the physics: whether the sound hears what it logs (a Particles
+    /// thing whose sound is on logs its moments), with a hash of what of its settings changes what
+    /// it logs. The sound engine's world keeps a heard thing ([`crate::heard_part`]), and
+    /// [`crate::world::sound_fingerprint`] counts it.
+    fn heard(&self, _resolved: &ResolvedThing) -> Option<u64> {
+        None
+    }
+    /// Whether the thing reads its own Motion and Bounce cards (they have no module sims): when it
+    /// steps with the physics, the fingerprint then hashes them whole, layers and all.
+    fn own_cards(&self) -> bool {
+        false
+    }
+    /// Whether the thing's pulses on hits move while the world runs. The physics' never do (the
+    /// world passes them no hits); decoration stepped beside it may (a Particles thing's Rate).
+    fn pulses_on_hits(&self) -> bool {
+        false
+    }
     /// Whether changing this setting changes the simulation. Visual settings say no, so the
     /// editor keeps playing through them.
     fn affects_physics(&self, _key: &str) -> bool {
@@ -176,6 +193,12 @@ pub trait ThingSim: Send + Sync + 'static {
     /// isn't physics (the scene's tempo, which particles born on the beat read): the editor's
     /// particle playback starts over when it changes ([`crate::beside_fingerprint`]).
     fn affects_beside(&self, _key: &str) -> bool {
+        false
+    }
+    /// For a thing stepped beside the physics: whether setting `key` of its card in `slot` (not
+    /// Motion or Bounce, which always count) changes how it steps, so the editor's particle
+    /// playback starts over when it changes (a Particles thing's Look Engine).
+    fn beside_card_key(&self, _slot: bpe_core::SlotId, _key: &str) -> bool {
         false
     }
     /// How much of its balls' past the thing wants kept, for its trails and particles; `None`

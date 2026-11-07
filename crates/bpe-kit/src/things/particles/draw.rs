@@ -3,8 +3,9 @@
 //! every particle it draws as a sprite with what its sub-layers add (Soft smoke and Flame as one
 //! soft field the GPU splats and shades, Web lines as lines between them, Trails and Marks as
 //! strips and sprites from the state, Liquid as blobs the GPU runs together), then the layer's
-//! Experimental modifiers worked over what it drew. Particles carry no lighting yet (their
-//! `light`, `emit` and `extra` stay 0).
+//! Experimental modifiers worked over what it drew. In a lit scene each layer's sprites and field
+//! carry its Lighting (`light`, `extra`) and the light its Gives off light sub-layers give
+//! (`emit`), as a ball's around layers do (part 7); a liquid carries none.
 
 use std::f32::consts::TAU;
 
@@ -31,7 +32,10 @@ use super::sim::state_of;
 use super::state::{ParticlesState, Speck};
 use super::trail::draw_one;
 use super::web::{MOST_WEB_LINES, ball_links, links};
-use crate::modules::look::layers::around_subs::{Extras, HitInfo, OWN, Pieces, coloured, particle_with_extras};
+use crate::modules::look::layers::around::{Drew, more_in};
+use crate::modules::look::layers::around_subs::{
+    Extras, GLOW, HitInfo, OUTLINE, OWN, Pieces, SHADOW, coloured, particle_with_extras,
+};
 use crate::modules::look::layers::gpu::SubLayer;
 use crate::modules::look::layers::particles::ShapeMadeOf;
 use crate::modules::look::layers::trail::AroundPlace;
@@ -75,13 +79,29 @@ impl ThingDraw for ParticlesDraw {
     fn draw_around(&self, cx: &DrawCx, index: usize, frame: &mut Frame) {
         let Some(layer) = layers(cx.resolved).into_iter().nth(index) else { return };
         let Some(st) = state_of(cx.world, cx.thing.id) else { return };
+        if let Some(swarm) = &st.swarm {
+            swarm_runs(cx, st, swarm, &layer, frame);
+            return;
+        }
         if let Drawn::Liquid(l) = &layer.drawn {
             frame.liquids.extend(liquid_of(cx, st, &layer, l));
             return;
         }
+        let drew = Drew::from(frame);
         let mut pieces = Pieces::default();
-        let field = draw_layer(cx, st, &layer, &mut pieces);
+        let mut field = draw_layer(cx, st, &layer, &mut pieces);
+        // What the layer itself drew gives off its light; everything it drew takes its Lighting.
+        pieces.give_light(layer.emit);
+        if let Some(f) = field.as_mut() {
+            f.look.light = [layer.light[0], layer.light[1], 0.0, 0.0];
+            // A field has no one colour: its light is the sub-layer's own and its tint.
+            f.look.emit = layer.emit.map_or([0.0; 4], |e| e.at([1.0; 4]));
+            if let Some(more) = more_in(layer.more, cx, frame.light.as_mut()) {
+                f.look.extra = more;
+            }
+        }
         pieces.into_frame_with_field(frame, layer.common.place == AroundPlace::InFront, field);
+        drew.stamp(frame, layer.light, layer.more, cx);
     }
 }
 
@@ -160,6 +180,11 @@ pub fn seen<'a>(cx: &DrawCx, st: &'a ParticlesState, layer: &LookLayer, hit: Hit
         _ => None,
     };
     let ball_colour = ball_cx.as_ref().and_then(crate::things::balls::draw::ball_colors);
+    // The Look of the Particles thing it is fed by, when a layer takes its particles' colours.
+    let kin_layers = match (c.colour_from, parent) {
+        (ColourFrom::ParentParticle, Some((_, resolved))) => layers(resolved),
+        _ => Vec::new(),
+    };
     let now = st.step;
     let twinkle = c.twinkle.clamp(0.0, 1.0);
     for s in &st.specks {
@@ -170,7 +195,7 @@ pub fn seen<'a>(cx: &DrawCx, st: &'a ParticlesState, layer: &LookLayer, hit: Hit
         let Some(grow) = c.size_curve.at(t) else { continue };
         let age = s.age(now);
         let flicker = 1.0 - twinkle * (0.5 + 0.5 * (c.twinkle_speed * TAU * age + unit(s.seed, 67) * TAU).sin());
-        let alpha = (c.opacity * c.fade.at(t) * flicker).max(0.0);
+        let alpha = (c.opacity * c.fade.at(t) * flicker * s.rest_fade(now)).max(0.0);
         if alpha <= 0.0 {
             continue;
         }
@@ -192,6 +217,9 @@ pub fn seen<'a>(cx: &DrawCx, st: &'a ParticlesState, layer: &LookLayer, hit: Hit
         };
         let base = match (&ball_colour, s.ball) {
             (Some(of), b) if b > 0 => of(b as usize - 1),
+            _ if c.colour_from == ColourFrom::ParentParticle => {
+                parent_particle_colour(cx, &kin_layers, s).unwrap_or_else(own)
+            }
             _ => own(),
         };
         let size = s.size * c.size.max(0.0) * grow;
@@ -240,6 +268,55 @@ fn copied(p: &Particle, by: Vec2, k: f32, fade: f32) -> Particle {
     q
 }
 
+/// How wide (half) a pile column's band is: a little over half a column, so they join up.
+const PILE_HALF_WIDTH: f32 = super::piles::COLUMN * 0.6;
+
+/// Draws `st`'s piles for `layer` into `pieces`: each column with sand one upright streak from its
+/// surface to its top.
+pub fn draw_piles(cx: &DrawCx, st: &ParticlesState, layer: &LookLayer, softness: f32, pieces: &mut Pieces) {
+    let c = &layer.common;
+    let alpha = c.opacity.max(0.0);
+    if alpha <= 0.0 {
+        return;
+    }
+    let screen = cx.resolved.screen;
+    let hit = if layer.subs.iter().any(|s| s.reads_hits()) { parent_hits(cx, st.parent) } else { HitInfo::default() };
+    let code = ShapeMadeOf::Streaks.as_ball().code();
+    for pile in &st.piles.list {
+        for (k, &height) in pile.height.iter().enumerate() {
+            if height <= 0.05 {
+                continue;
+            }
+            let i = pile.first + k as i32;
+            let x = super::piles::Pile::x_of(i);
+            let base = pile.base[k];
+            let middle = glam::Vec2::new(x, base - height * 0.5);
+            let inputs = Inputs {
+                index: (i.rem_euclid(1024)) as usize,
+                count: 1024,
+                place: middle,
+                place_screen: if screen { middle } else { cx.world.camera.to_screen(middle) },
+                start: middle,
+                life: 0.5,
+                time: cx.time as f32,
+                seed: i as u32,
+                ..Inputs::default()
+            };
+            let base_colour = colour_at(&c.colour, &inputs);
+            let subs = &layer.subs;
+            let colour = shade(c, coloured(subs, subs.len(), base_colour, hit), alpha);
+            // Upright: from the surface up to the top, the ends rounded off by the width.
+            let half = (height * 0.5 + PILE_HALF_WIDTH * 0.5).max(PILE_HALF_WIDTH);
+            let mut p = Particle::new(code, middle, std::f32::consts::FRAC_PI_2, PILE_HALF_WIDTH, colour);
+            p.style[0] = half;
+            p.style[2] = softness.clamp(0.0, 1.0);
+            let extras =
+                Extras { subs, base: base_colour, s: 0.5, fade: alpha, unit: 1.0, hit, outline: 1.0, added: 1.0 };
+            particle_with_extras(p, &extras, pieces);
+        }
+    }
+}
+
 /// What a layer reads to colour one particle (or one mark).
 pub struct Item {
     pub place: Vec2,
@@ -252,6 +329,8 @@ pub struct Item {
     pub life: f32,
     /// How old it is, in seconds.
     pub age: f32,
+    /// How far it has faded for resting too long (1: not at all; a mark never fades so).
+    pub rest: f32,
 }
 
 impl Item {
@@ -264,8 +343,27 @@ impl Item {
             ball: s.ball,
             life: s.life_at(now),
             age: s.age(now),
+            rest: s.rest_fade(now),
         }
     }
+}
+
+/// The colour of the parent particle a fed particle `s` was born from: the parent thing's first
+/// Look layer with colours of its own, at that particle's seed and life.
+fn parent_particle_colour(cx: &DrawCx, parent: &[LookLayer], s: &Speck) -> Option<[f32; 4]> {
+    let own = parent.iter().find(|l| l.common.colour_from == ColourFrom::Own)?;
+    let inputs = Inputs {
+        index: (unit(s.kin_seed, 41) * 1024.0) as usize,
+        count: 1024,
+        place: s.place,
+        place_screen: if cx.resolved.screen { s.place } else { cx.world.camera.to_screen(s.place) },
+        start: s.home,
+        life: s.kin_life,
+        time: cx.time as f32,
+        seed: s.kin_seed,
+        ..Inputs::default()
+    };
+    Some(colour_at(&own.common.colour, &inputs))
 }
 
 /// How much of an item shows by the layer's opacity, fade and twinkle (before Size over life).
@@ -273,7 +371,7 @@ fn alpha_of(c: &Common, it: &Item) -> f32 {
     let twinkle = c.twinkle.clamp(0.0, 1.0);
     let tau = std::f32::consts::TAU;
     let flicker = 1.0 - twinkle * (0.5 + 0.5 * (c.twinkle_speed * tau * it.age + unit(it.seed, 67) * tau).sin());
-    (c.opacity * c.fade.at(it.life) * flicker).max(0.0)
+    (c.opacity * c.fade.at(it.life) * flicker * it.rest).max(0.0)
 }
 
 /// An item's own colour from the layer's Colours.
@@ -362,6 +460,11 @@ fn finish(cx: &DrawCx, st: &ParticlesState, layer: &LookLayer, pieces: &mut Piec
 /// Draws `layer`'s particles of `st` into `pieces`; Soft smoke and Flame give their field. Its
 /// modifiers are worked over what it drew.
 pub fn draw_layer(cx: &DrawCx, st: &ParticlesState, layer: &LookLayer, pieces: &mut Pieces) -> Option<Field> {
+    if let Drawn::Piles { softness } = layer.drawn {
+        draw_piles(cx, st, layer, softness, pieces);
+        finish(cx, st, layer, pieces, None);
+        return None;
+    }
     let hit = if layer.subs.iter().any(|s| s.reads_hits()) { parent_hits(cx, st.parent) } else { HitInfo::default() };
     let seen = seen(cx, st, layer, hit);
     let c = &layer.common;
@@ -493,6 +596,7 @@ fn draw_from_state(cx: &DrawCx, st: &ParticlesState, layer: &LookLayer, hit: Hit
                     ball: mark.ball,
                     life,
                     age,
+                    rest: 1.0,
                 };
                 let Some(grow) = c.size_curve.at(life) else { continue };
                 let alpha = alpha_of(c, &it) * shows;
@@ -579,7 +683,14 @@ pub fn sprite(
         Drawn::Shapes(l) => (shape_sprite(l, s, size, colour, now, flutter), None),
         Drawn::Glitter(l) => glitter_sprite(l, s, size, colour, time),
         // Fields and lines are drawn their own way; a plain dot stands in.
-        Drawn::Smoke(_) | Drawn::Flame(_) | Drawn::Web(_) | Drawn::Trails(_) | Drawn::Marks(_) | Drawn::Liquid(_) => {
+        // Piles are drawn column by column (`draw_piles`).
+        Drawn::Smoke(_)
+        | Drawn::Flame(_)
+        | Drawn::Web(_)
+        | Drawn::Trails(_)
+        | Drawn::Marks(_)
+        | Drawn::Liquid(_)
+        | Drawn::Piles { .. } => {
             (Particle::new(ShapeMadeOf::Dots.as_ball().code(), s.place, s.turn, size, colour), None)
         }
     }
@@ -860,4 +971,238 @@ pub fn liquid_of(cx: &DrawCx, st: &ParticlesState, layer: &LookLayer, l: &Liquid
         glitch_blobs(&mut blobs, &Tears::new(m, &view_of(cx), cx.time, layer.id.0));
     }
     (!blobs.is_empty()).then(|| Liquid { blobs, style: l.style(c.opacity), front: c.place == AroundPlace::InFront })
+}
+
+/// Whether a Huge swarm draws layers drawn as `drawn` (Soft smoke, Flame and Web lines need the
+/// particles on the processor).
+pub fn swarm_draws(drawn: &Drawn) -> bool {
+    matches!(drawn, Drawn::Sprites { .. } | Drawn::Streaks { .. } | Drawn::Shapes(_) | Drawn::Glitter(_))
+}
+
+/// Whether a Huge swarm draws sub-layer `sub` (Recolour, Flash on hit and Colour on hit need the
+/// processor).
+pub fn swarm_draws_sub(sub: &SubLayer) -> bool {
+    matches!(sub, SubLayer::Shadow(_) | SubLayer::Glow(_) | SubLayer::Outline(_))
+}
+
+/// `colours` sampled at `N` evenly spaced places.
+fn ramp<const N: usize>(colours: &bpe_core::Gradient) -> [[f32; 4]; N] {
+    std::array::from_fn(|i| colours.sample(i as f32 / (N - 1) as f32))
+}
+
+/// How a swarm's runs draw `layer`, before what each run draws of a particle.
+fn swarm_look(cx: &DrawCx, st: &ParticlesState, layer: &LookLayer) -> Option<bpe_gfx::SwarmLook> {
+    use crate::paint::{Follow, Space};
+    use bpe_core::GradientForm;
+    use bpe_gfx::swarm::draw as sw;
+    let c = &layer.common;
+    let mut look = bpe_gfx::SwarmLook::default();
+    let flags = &mut look.k0[3];
+    if st.forces.flips() {
+        *flags |= sw::FLUTTERS;
+    }
+    if c.blend == Blend::Add {
+        *flags |= sw::ADDS;
+    }
+    if cx.resolved.screen {
+        *flags |= sw::SCREEN;
+    }
+    if c.colour.colours.looped {
+        *flags |= sw::LOOPED;
+    }
+    look.k1 = [
+        st.step,
+        match c.only {
+            Only::All => 0,
+            Only::YoungerThan => 1,
+            Only::OlderThan => 2,
+            Only::AShare => 3,
+            Only::TheRest => 4,
+        },
+        match c.size_curve {
+            crate::modules::look::layers::particles::SizeOverLife::Even => 0,
+            crate::modules::look::layers::particles::SizeOverLife::Grow => 1,
+            crate::modules::look::layers::particles::SizeOverLife::Shrink => 2,
+            crate::modules::look::layers::particles::SizeOverLife::Pop => 3,
+        },
+        match c.fade {
+            crate::modules::look::layers::particles::ParticleFade::In => 0,
+            crate::modules::look::layers::particles::ParticleFade::Out => 1,
+            crate::modules::look::layers::particles::ParticleFade::Both => 2,
+            crate::modules::look::layers::particles::ParticleFade::None => 3,
+        },
+    ];
+    let amount = match c.blend {
+        Blend::Normal | Blend::Add => c.blend_amount.clamp(0.0, 1.0),
+        _ => 1.0,
+    };
+    let now_s = st.step as f32 * super::step::DT;
+    look.t0 = [super::step::DT, cx.time as f32, now_s, c.opacity];
+    look.t1 = [c.age, c.share, c.twinkle, c.twinkle_speed];
+    look.t2 = [c.size, amount, 0.0, 0.0];
+    // Its colours.
+    let p = &c.colour;
+    let straight = p.form() == GradientForm::Straight;
+    let follow = match p.follow {
+        Follow::Life => sw::FOLLOW_LIFE,
+        Follow::Speed => sw::FOLLOW_SPEED,
+        Follow::Order => sw::FOLLOW_ORDER,
+        Follow::Place if straight && p.space == Space::Screen => sw::FOLLOW_SCREEN,
+        Follow::Place if straight => sw::FOLLOW_PLACE,
+        Follow::Start if straight => sw::FOLLOW_START,
+        Follow::Time => sw::FOLLOW_TIME,
+        _ => sw::FOLLOW_FIXED,
+    };
+    let repeat = match p.repeat {
+        crate::paint::Repeat::Clamp => 0,
+        crate::paint::Repeat::Repeat => 1,
+        crate::paint::Repeat::Mirror => 2,
+    };
+    let way = Vec2::from_angle(p.angle.to_radians());
+    look.k2 = [follow, repeat, 0, 0];
+    look.p0 = [p.span, way.x, way.y, p.scroll];
+    look.p1 = [p.centre.x, p.centre.y, 0.0, 0.0];
+    let cam = cx.world.camera;
+    look.cam = [cam.center.x, cam.center.y, cam.turn, cam.zoom];
+    look.c0 = colour_at(p, &Inputs { time: cx.time as f32, ..Inputs::default() });
+    look.ramp = ramp(&p.colours);
+    if c.colour_from == ColourFrom::ParentBall {
+        look.k0[3] |= sw::BALL_COLOURS;
+    }
+    // What it draws each particle as.
+    match &layer.drawn {
+        Drawn::Sprites { made_of, softness } => {
+            let (a, b) = match made_of {
+                ShapeMadeOf::Sparks => (1.0, 0.03),
+                ShapeMadeOf::Streaks => (2.0, 0.08),
+                ShapeMadeOf::Confetti => (1.6, 0.0),
+                ShapeMadeOf::Shards => (1.4, 0.0),
+                _ => (1.0, 0.0),
+            };
+            look.k0[0] = 0;
+            look.k0[1] = made_of.as_ball().code();
+            look.d0 = [a, b, 0.0, 0.0];
+            look.t2[2] = *softness;
+        }
+        Drawn::Streaks { stretch, least, width } => {
+            look.k0[0] = 1;
+            look.k0[1] = ShapeMadeOf::Streaks.as_ball().code();
+            look.d0 = [*stretch, *least, *width, 0.0];
+        }
+        Drawn::Shapes(l) => {
+            let (code, length) = l.shape.code_and_length();
+            look.k0[0] = 2;
+            look.k0[1] = code;
+            look.t2[2] = l.softness;
+            let along = if l.shape == MoreShape::Flakes { 1.0 } else { length * l.length.max(0.0) };
+            look.d0 = [along, l.grid, l.turn_by.to_radians(), l.flap_speed];
+            look.k2[2] = match (l.shape, l.point_along) {
+                (MoreShape::Pixels, _) => 3,
+                (MoreShape::Birds, PointAlong::WayItGoes) => 2,
+                (_, PointAlong::WayItGoes) => 1,
+                (_, PointAlong::OwnTurn) => 0,
+            };
+            if matches!(l.shape, MoreShape::Birds | MoreShape::Fish) {
+                look.k0[3] |= sw::POSE;
+            }
+        }
+        Drawn::Glitter(l) => {
+            look.k0[0] = 3;
+            look.k0[1] = 16;
+            look.d0 = [l.shimmer, l.light_from.to_radians(), l.sharpness, l.base];
+            let f = l.flash_colour.to_linear();
+            look.d1 = [l.star, 0.0, 0.0, 0.0];
+            look.d2 = [f[0], f[1], f[2], 1.0];
+        }
+        Drawn::Smoke(_)
+        | Drawn::Flame(_)
+        | Drawn::Web(_)
+        | Drawn::Piles { .. }
+        | Drawn::Trails(_)
+        | Drawn::Marks(_)
+        | Drawn::Liquid(_) => return None,
+    }
+    Some(look)
+}
+
+/// A Huge swarm's runs for `layer` into `frame`'s list behind or in front of the balls, in the
+/// order the exact engine's pieces go: shadows, glows, its own sprites (and glitter's stars),
+/// outlines.
+fn swarm_runs(cx: &DrawCx, st: &ParticlesState, swarm: &super::swarm::Swarm, layer: &LookLayer, frame: &mut Frame) {
+    use crate::modules::look::layers::around_subs::shadow_offset;
+    use crate::modules::look::layers::outline::OutlineSits;
+    use crate::modules::look::layers::subs::SubColourFrom;
+    use bpe_gfx::swarm::draw as sw;
+    let Some(buffers) = &swarm.buffers else { return };
+    if layer.common.opacity <= 0.0 {
+        return;
+    }
+    let Some(base) = swarm_look(cx, st, layer) else { return };
+    let source = buffers.source();
+    // The parent's ball colours, by row.
+    let balls: std::sync::Arc<[[f32; 4]]> = match (layer.common.colour_from, st.parent) {
+        (ColourFrom::ParentBall, Some(p)) => {
+            let found = cx.tree.things.get(&p).zip(cx.scene.things.get(&p)).and_then(|(thing, resolved)| {
+                let ball_cx = DrawCx { thing, resolved, ..*cx };
+                let of = crate::things::balls::draw::ball_colors(&ball_cx)?;
+                let rows = cx.world.bodies.get(&p).map_or(0, |b| b.len());
+                Some((0..rows).map(of).collect::<Vec<_>>())
+            });
+            found.unwrap_or_default().into()
+        }
+        _ => std::sync::Arc::from(Vec::new()),
+    };
+    let mut runs: [Vec<bpe_gfx::SwarmLook>; 4] = Default::default();
+    for sub in &layer.subs {
+        match sub {
+            SubLayer::Shadow(sh) if sh.opacity > 0.0 => {
+                let c = sh.colour.to_linear();
+                let at = shadow_offset(sh, 1.0);
+                let mut look = base;
+                look.k0[2] = sw::ROLE_SHADOW;
+                look.s0 = [c[0], c[1], c[2], sh.opacity];
+                look.s1 = [at.x, at.y, sh.softness, 0.0];
+                runs[SHADOW].push(look);
+            }
+            SubLayer::Glow(g) if g.strength > 0.0 && g.opacity > 0.0 => {
+                let mut look = base;
+                look.k0[2] = sw::ROLE_GLOW;
+                let own = g.colour_from == SubColourFrom::Own;
+                look.s0 = [g.strength.max(0.0) * g.opacity.clamp(0.0, 1.0), g.size, f32::from(own), 0.0];
+                look.sub_ramp = ramp(&g.colour);
+                runs[GLOW].push(look);
+            }
+            SubLayer::Outline(o) if o.width > 0.0 && o.opacity > 0.0 => {
+                let mut look = base;
+                look.k0[2] = sw::ROLE_OUTLINE;
+                let sits = match o.sits {
+                    OutlineSits::Outside => 0.0,
+                    OutlineSits::Centre => 1.0,
+                    OutlineSits::Inside => 2.0,
+                };
+                let own = o.colour_from == SubColourFrom::Own;
+                look.s0 = [o.width, sits, o.opacity, f32::from(own)];
+                look.sub_ramp = ramp(&o.colour);
+                runs[OUTLINE].push(look);
+            }
+            _ => {}
+        }
+    }
+    runs[OWN].push(base);
+    if matches!(layer.drawn, Drawn::Glitter(_)) {
+        let mut star = base;
+        star.k0[2] = sw::ROLE_STAR;
+        runs[OWN].push(star);
+    }
+    let list = if layer.common.place == AroundPlace::InFront { &frame.particles_front } else { &frame.particles };
+    let at = list.len() as u32;
+    let into = if layer.common.place == AroundPlace::InFront { &mut frame.swarms_front } else { &mut frame.swarms };
+    for look in runs.into_iter().flatten() {
+        into.push(bpe_gfx::SwarmRun {
+            at,
+            source: source.clone(),
+            look: std::sync::Arc::new(look),
+            balls: balls.clone(),
+        });
+    }
 }

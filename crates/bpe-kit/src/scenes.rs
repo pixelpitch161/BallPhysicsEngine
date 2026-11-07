@@ -1670,6 +1670,30 @@ pub fn particle_motion_scenes(reg: &Registry) -> Vec<(String, Scene)> {
     .collect()
 }
 
+/// Part 4's looks, where particles meet things: fed children, Pop, Stick, Settle, piles and
+/// two-way (some move the balls). Each scene is (name, scene, whether the particles may move the
+/// balls).
+pub fn particle_scenes_meeting(reg: &Registry) -> Vec<(String, Scene, bool)> {
+    use crate::things::particles::looks::{Look, add_particles};
+    let with = |look: Look| {
+        let mut scene = new_scene(reg);
+        add_particles(&mut scene, reg, look, ThingId::ROOT).expect("particles");
+        scene
+    };
+    vec![
+        ("Rain splashing".into(), with(Look::Rain), false),
+        ("Fire and smoke".into(), with(Look::FireAndSmoke), false),
+        ("Bubbles".into(), with(Look::Bubbles), false),
+        ("Falling leaves".into(), with(Look::FallingLeaves), false),
+        ("Waterfall and mist".into(), with(Look::WaterfallAndMist), true),
+        ("Liquid splashes".into(), with(Look::LiquidSplashes), false),
+        ("Fireworks".into(), with(Look::Fireworks), false),
+        ("Sand that piles up".into(), with(Look::SandThatPilesUp), true),
+        ("Thick fog".into(), with(Look::ThickFog), true),
+        ("Sticky dust".into(), with(Look::StickyDust), true),
+    ]
+}
+
 /// [`lit_room`] darkened, its balls a ring of `count` without gravity, their Motion set by `f`.
 fn moth_room(reg: &Registry, count: u32, f: impl FnOnce(&mut BasicMotion)) -> (Scene, ThingId, ThingId) {
     let mut scene = lit_room(reg);

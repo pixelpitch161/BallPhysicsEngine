@@ -161,7 +161,7 @@ fn trails_are_the_same_on_any_number_of_threads_and_after_a_seek() {
     for threads in [1, 3, 8] {
         let mut copy = st.clone();
         for _ in 0..5 {
-            step::step(&mut copy, &world, &log, threads);
+            step::step(&mut copy, &world, &log, threads, None);
         }
         rings.push(copy.trail);
     }

@@ -274,6 +274,8 @@ fn export_with(
     encoder: Encoder,
     progress: &mut impl FnMut(u32, u32) -> bool,
 ) -> anyhow::Result<()> {
+    // Huge swarms step on the card the video is drawn with.
+    let _card = bpe_gfx::swarm::use_for_now(Some(bpe_gfx::swarm::SwarmGpu::for_device(device, queue)));
     let (_, video) = video_of(scene, kit)?;
     let (width, height) = output_size(video.width, video.height, options.scale);
     let fps = video.fps.max(1);
@@ -524,6 +526,8 @@ pub fn final_frame(
     bake: Option<bool>,
     stop: &std::sync::atomic::AtomicBool,
 ) -> anyhow::Result<(Vec<u8>, (u32, u32), f32)> {
+    // Huge swarms step on the card the picture is drawn with.
+    let _card = bpe_gfx::swarm::use_for_now(Some(bpe_gfx::swarm::SwarmGpu::for_device(device, queue)));
     let (_, video) = video_of(scene, kit)?;
     let (width, height) = output_size(video.width, video.height, scale);
     let fps = video.fps.max(1);

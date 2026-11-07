@@ -3,7 +3,11 @@
 //! each with an add menu, drag to reorder, the row menus, and under the list the picked layer's
 //! settings. No ball view and no reactions: the particles are seen in the preview.
 
-use bpe_core::{LayerId, LayerSection};
+use bpe_core::{Choice, LayerId, LayerSection, Settings, SlotId, Value};
+use bpe_kit::things::particles::look::{
+    ENGINE_KEY, Engine, FLAME, LookCardSettings, PILES, SMOKE, SUB_FLASH, SUB_HUE, SUB_RECOLOUR, WEB,
+};
+use bpe_kit::things::particles::more_forces::FLOCK;
 use eframe::egui::{RichText, Ui};
 
 use super::{LookCx, layer_list, list_header, picked_settings};
@@ -26,12 +30,55 @@ pub fn show_forces(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &
         return;
     };
     list(ui, inspector, cx, card, picked, LayerSection::Force, edits);
+    let look = cx.scene.things.get(&cx.id).and_then(|t| t.slots.get(&SlotId::Look));
+    let swarm = look.is_some_and(|l| LookCardSettings::from_params(&l.params).engine == Engine::HugeSwarm);
+    if swarm && card.layer(picked).is_some_and(|l| l.kind == FLOCK) {
+        let words = "Not in Huge swarm: a swarm doesn't flock. Switch the Look's Engine to Exact to use it.";
+        ui.label(RichText::new(words).small().color(style::PROBLEM));
+    }
     picked_settings(ui, inspector, cx, card, picked, false, edits);
 }
 
-/// The Look card: its draw layers.
+/// What a Huge swarm leaves out, under the Engine chips.
+const SWARM_LEAVES_OUT: &str = "Huge swarm moves up to 4,000,000 particles on the graphics card, for decoration. It \
+    doesn't draw Soft smoke, Flame, Web lines, Piles, Trails, Marks that stay or Liquid layers, Fine detail, the \
+    Experimental fold, or the Recolour, Flash on hit and Colour on hit sub-layers. It doesn't Flock, push the balls \
+    back (two-way), feed other particles or play their moments; \
+    Stick bounces off, Settle and Pile up stop, Pop vanishes; Rise doesn't heat the air, and a word's, picture's or \
+    grid's crowd isn't refilled.";
+
+/// The Look card's Engine chips: Exact or Huge swarm.
+fn engine_row(ui: &mut Ui, card: &bpe_core::Slot, edits: &mut Vec<Edit>) -> Engine {
+    let engine = LookCardSettings::from_params(&card.params).engine;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Engine").color(style::MUTED));
+        let choices = [
+            (Engine::Exact, "Exact", "Moved on the processor: exactly the same on every computer, up to 1,000,000."),
+            (Engine::HugeSwarm, "Huge swarm", "Moved on the graphics card: up to 4,000,000, for decoration."),
+        ];
+        for (choice, text, help) in choices {
+            if crate::gradient_tabs::chip(ui, text, engine == choice, format!("Engine {text}"), help)
+                && engine != choice
+            {
+                edits.push(Edit::SetSlot(SlotId::Look, ENGINE_KEY.into(), Value::Choice(choice.name().into())));
+            }
+        }
+    });
+    if engine == Engine::HugeSwarm {
+        ui.label(RichText::new(SWARM_LEAVES_OUT).small().color(style::FAINT));
+    }
+    engine
+}
+
+/// Whether a Huge swarm draws a layer of `kind` (a draw layer or a sub-layer).
+fn swarm_draws(kind: &str) -> bool {
+    !matches!(kind, SMOKE | FLAME | WEB | PILES | SUB_RECOLOUR | SUB_FLASH | SUB_HUE)
+}
+
+/// The Look card: its Engine, then its draw layers.
 pub fn show_look(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec<Edit>) {
     let Some(card) = cx.card() else { return };
+    let engine = engine_row(ui, card, edits);
     list_header(ui, cx, card, "Layers", "+ Add layer", LayerSection::Drawn, edits);
     let Some(picked) = picked_on(inspector, cx, card) else {
         let words = "None yet: the particles are there but nothing draws them. Add Sprites or Streaks.";
@@ -39,6 +86,11 @@ pub fn show_look(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mu
         return;
     };
     list(ui, inspector, cx, card, picked, LayerSection::Drawn, edits);
+    let left_out = card.layer(picked).is_some_and(|l| !swarm_draws(&l.kind));
+    if engine == Engine::HugeSwarm && left_out {
+        let words = "Not drawn in Huge swarm: switch the Engine to Exact to see this layer.";
+        ui.label(RichText::new(words).small().color(style::PROBLEM));
+    }
     picked_settings(ui, inspector, cx, card, picked, false, edits);
 }
 
@@ -240,5 +292,25 @@ mod tests {
         assert!(h.query_all_by_label("Blob size").next().is_some(), "the Liquid's settings show");
         assert!(h.query_all_by_label("Experimental").next().is_some(), "with the Experimental fold");
         assert!(h.query_all_by_label("Colour split").next().is_none(), "a liquid has no colour split");
+    }
+
+    #[test]
+    fn the_engine_chips_switch_to_a_huge_swarm_and_say_what_it_leaves_out() {
+        use bpe_core::Settings;
+        use bpe_kit::things::particles::look::{Engine, LookCardSettings};
+        let (mut h, id) = harness();
+        let engine = |h: &Harness<'_, State>| {
+            LookCardSettings::from_params(&h.state().scene.things[&id].slots[&SlotId::Look].params).engine
+        };
+        assert_eq!(engine(&h), Engine::Exact);
+        assert!(h.query_by_label_contains("doesn't draw Soft smoke").is_none(), "nothing left out in Exact");
+        h.get_by_label("Engine Huge swarm").click();
+        h.run();
+        assert_eq!(engine(&h), Engine::HugeSwarm);
+        assert!(h.query_by_label_contains("doesn't draw Soft smoke").is_some());
+        h.get_by_label("Engine Exact").click();
+        h.run();
+        assert_eq!(engine(&h), Engine::Exact);
+        assert!(h.query_by_label_contains("doesn't draw Soft smoke").is_none());
     }
 }

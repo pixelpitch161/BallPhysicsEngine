@@ -221,3 +221,12 @@ Changes a second 8, Tear colour split 4 px, Glitch seed 0.
   layer's `Common`) also draws copies of trails (the whole trail moved), marks and liquid blobs. Both parts added a
   "Pixel glitch" look: part 5's pixels on a grid are kept and given part 6's Glitch.
 - Merged with part 3 (motion), which has its own "Flow lines": part 6's look of that name is **Light streams**.
+- Merged with parts 4 (meets things), 7 (moments, sound, lighting) and 8 (Huge swarm). The state's Look wants are
+  `look_wants` (part 4's `wants` is the feeds its fed children ask for). Marks are collected and the trail ring drops
+  the dead's rows in `step::before_retain`, just before part 7's retain that turns what the particles met into
+  moments; grains part 4 throws up after that get their rows in `note_trails` at the step's end. Part 4's resting
+  fade (`Speck::rest_fade`) fades trails and liquid blobs too. Part 4's **Liquid splashes** look is kept (it settles
+  on shapes) and now draws as a Liquid layer, so there is one look of that name. Part 4's Piles layers take Mirror and
+  Glitch (no Colour split). A Huge swarm draws none of the part 6 layers (the editor's note says so). Two-way
+  particles step in the physics, so the main fingerprint also hashes `more_fingerprint` (it is 0 for every other
+  thing, so goldens don't move). Liquid layers carry no lighting; part 7's lit sprites and fields are unchanged.

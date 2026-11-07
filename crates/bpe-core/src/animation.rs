@@ -670,7 +670,15 @@ impl Animation {
     /// value the scene had when the animation was made), with the pulse added on top. Applying
     /// to the same resolved scene again and again gives the same values as applying once.
     pub fn apply(&self, resolved: &mut Resolved, time: f64, inputs: &Inputs) {
+        self.apply_where(resolved, time, inputs, |_| true);
+    }
+
+    /// [`Animation::apply`] to the things `keep` takes only.
+    pub fn apply_where(&self, resolved: &mut Resolved, time: f64, inputs: &Inputs, keep: impl Fn(ThingId) -> bool) {
         for t in &self.targets {
+            if !keep(t.thing) {
+                continue;
+            }
             let Some(thing) = resolved.things.get_mut(&t.thing) else { continue };
             let params = match t.slot {
                 None => &mut thing.params,

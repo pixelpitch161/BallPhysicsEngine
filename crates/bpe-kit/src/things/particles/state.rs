@@ -38,20 +38,96 @@ pub struct Speck {
     pub seed: u32,
     /// The parent ball it came from (body row + 1), 0 when none.
     pub ball: u32,
-    /// [`DEAD`] once it is to go.
+    /// [`DEAD`], [`RESTING`], [`STUCK`], [`LOOSE`], [`LANDED`].
     pub flags: u32,
     /// The place of a word, picture or grid it was born at (its index + 1), 0 when none: its
     /// home follows the place as the source moves and turns.
     pub spot: u32,
+    /// What it met this step ([`super::moments::MET_BALL`], `MET_SHAPE`, `MET_LAND`), turned into
+    /// moments after the move.
+    pub met: u8,
+    /// The id of the ball's and of the shape's thing it met first this step (0 none), at
+    /// [`super::moments::MET_AT_BALL`] and `MET_AT_SHAPE`.
+    pub with: [u32; 2],
+    /// How fast it went into each, px/s.
+    pub impact: [f32; 2],
+    /// The particle step it came to rest on (stuck to a ball or settled on a shape), 0 while it
+    /// moves. Its age stands still while it rests.
+    pub rest: u32,
+    /// The particle step its resting fade began on, 0 when it isn't fading.
+    pub fade_from: u32,
+    /// What it rests on: the ball's thing or the shape (its id), 0 for the floor.
+    pub on: u32,
+    /// The row of the ball it is stuck to.
+    pub on_row: u32,
+    /// Where on the ball it is stuck, in the ball's radii from its middle.
+    pub offset: Vec2,
+    /// The seed of the parent particle it was born from (a fed thing's), else its own.
+    pub kin_seed: u32,
+    /// How far through its life the parent particle was then, 0 to 1.
+    pub kin_life: f32,
 }
 
 /// The particle is to be removed at the end of the step.
 pub const DEAD: u32 = 1;
+/// It rests: stuck to a ball or settled on a shape (no force moves it).
+pub const RESTING: u32 = 2;
+/// It rests stuck to a ball (else settled on a shape or the floor).
+pub const STUCK: u32 = 4;
+/// Just shaken off a ball: it doesn't stick to one again until it is clear of it.
+pub const LOOSE: u32 = 8;
+/// The particle has landed on a shape: it lands only once (a moment for its sound and rules).
+pub const LANDED: u32 = 16;
 
 impl Speck {
-    /// How old it is at particle step `now`, in seconds.
+    /// A particle at `place`, still, born on particle step `born`, with `seed` and the rest zero.
+    pub fn at(place: Vec2, born: u32, seed: u32) -> Speck {
+        Speck {
+            place,
+            previous: place,
+            velocity: Vec2::ZERO,
+            home: place,
+            born,
+            life: 1.0,
+            size: 1.0,
+            turn: 0.0,
+            spin: 0.0,
+            flip: 0.0,
+            seed,
+            ball: 0,
+            flags: 0,
+            spot: 0,
+            met: 0,
+            with: [0; 2],
+            impact: [0.0; 2],
+            rest: 0,
+            fade_from: 0,
+            on: 0,
+            on_row: 0,
+            offset: Vec2::ZERO,
+            kin_seed: seed,
+            kin_life: 0.0,
+        }
+    }
+
+    /// Whether it rests (stuck or settled).
+    pub fn resting(&self) -> bool {
+        self.flags & RESTING != 0
+    }
+
+    /// How old it is at particle step `now`, in seconds: standing still while it rests.
     pub fn age(&self, now: u32) -> f32 {
-        now.saturating_sub(self.born) as f32 * super::step::DT
+        let until = if self.resting() && self.rest > 0 { self.rest.min(now) } else { now };
+        until.saturating_sub(self.born) as f32 * super::step::DT
+    }
+
+    /// How much of it shows through its resting fade at particle step `now`, 0 to 1.
+    pub fn rest_fade(&self, now: u32) -> f32 {
+        if self.fade_from == 0 {
+            return 1.0;
+        }
+        let gone = now.saturating_sub(self.fade_from) as f32 * super::step::DT;
+        (1.0 - gone / super::step::SETTLE_FADE).clamp(0.0, 1.0)
     }
 
     /// How far through its life it is at particle step `now`, 0 to 1.
@@ -91,7 +167,7 @@ pub struct ParticlesState {
     /// read by the step).
     pub last_ms: f32,
     /// What its Look asks the stepping to keep (part 6).
-    pub wants: super::wants::Wants,
+    pub look_wants: super::wants::Wants,
     /// Each particle's last places, for Trails layers (part 6).
     pub trail: super::trail::TrailRing,
     /// The marks the particles left, oldest first, for Marks layers (part 6).
@@ -102,6 +178,28 @@ pub struct ParticlesState {
     pub spots_key: super::spots::SpotsKey,
     /// How far Homes turn has turned the homes so far, in radians.
     pub home_turn: f32,
+    /// What its particles did in world step [`ParticlesState::moments_step`], at most
+    /// [`super::moments::MOST_MOMENTS`] of them (particles part 7).
+    pub moments: Vec<super::moments::Moment>,
+    /// How many of each kind there were, every one counted.
+    pub moment_counts: [u32; super::moments::MOMENT_KINDS],
+    /// The world step the moments are from.
+    pub moments_step: u64,
+    /// Its Sound card's moments, when its sound plays some.
+    pub sound: Option<super::moments::MomentSound>,
+    /// How many notes its sound may log now (Most notes a second).
+    pub note_budget: f32,
+    /// What its particles did this particle step that its fed children are born from.
+    pub feeds: Vec<super::feeds::Feed>,
+    /// The feeds its fed children ask for ([`super::feeds::FeedKind::bit`]s).
+    pub wants: u32,
+    /// Its piles of particles on shapes and the floor.
+    pub piles: super::piles::Piles,
+    /// What it does to the balls (two-way), worked out at the last particle step.
+    pub two_way: super::two_way::TwoWayOut,
+    /// In a Huge swarm (particles part 8), the particles on the graphics card (and `specks` stays
+    /// empty).
+    pub swarm: Option<super::swarm::Swarm>,
 }
 
 impl ParticlesState {
@@ -120,12 +218,31 @@ impl ParticlesState {
             carry: 0.0,
             next_burst: 0,
             last_ms: 0.0,
-            wants: Default::default(),
+            look_wants: Default::default(),
             trail: Default::default(),
             marks: Vec::new(),
+            feeds: Vec::new(),
+            wants: 0,
+            piles: super::piles::Piles::default(),
+            two_way: super::two_way::TwoWayOut::default(),
             spots: Arc::new(Vec::new()),
             spots_key: super::spots::SpotsKey::None,
             home_turn: 0.0,
+            moments: Vec::new(),
+            moment_counts: [0; super::moments::MOMENT_KINDS],
+            // The first births, made when the world is built, are world step 1's.
+            moments_step: 1,
+            sound: None,
+            note_budget: 1.0,
+            swarm: None,
+        }
+    }
+
+    /// How many particles it has: in a swarm, as the graphics card last said.
+    pub fn count(&self) -> usize {
+        match &self.swarm {
+            Some(s) => s.count_hint() as usize,
+            None => self.specks.len(),
         }
     }
 
@@ -153,6 +270,9 @@ impl ParticlesState {
         self.specks.capacity() * std::mem::size_of::<Speck>()
             + self.trail.memory()
             + self.marks.capacity() * std::mem::size_of::<super::marks::Mark>()
+            + self.moments.capacity() * std::mem::size_of::<super::moments::Moment>()
+            + self.feeds.capacity() * std::mem::size_of::<super::feeds::Feed>()
+            + self.piles.memory()
     }
 
     /// Where the homes are now: their middle and turn (radians), from the thing's place `anchor`

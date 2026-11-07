@@ -8,14 +8,15 @@ use super::forces::{AIR, FollowAirForce, WANDER, WIND, WanderForce, WindForce};
 use super::forces::{DRAG, DragForce, GRAVITY, GravityForce, RISE, RiseForce, SWAY, SWIRL, SwayForce, SwirlForce};
 use super::liquid::{LIQUID, LiquidLayer, Surface};
 use super::look::{
-    FLAME, FlameLayer, GLITTER, GlitterLayer, MoreShape, Only, SHAPES, SMOKE, SPRITES, STREAKS, SUB_GLOW, ShapesLayer,
-    SmokeLayer, SpritesLayer, StreaksLayer, WEB, WebLayer,
+    ColourFrom, FLAME, FlameLayer, GLITTER, GlitterLayer, MoreShape, Only, PILES, PilesLayer, SHAPES, SMOKE, SPRITES,
+    STREAKS, SUB_GLOW, SUB_LIGHT, ShapesLayer, SmokeLayer, SpritesLayer, StreaksLayer, WEB, WebLayer,
 };
 use super::marks::{MARKS, MarksLayer};
 use super::meets::{AtBalls, AtEdges, AtShapes, MeetsSettings};
 use super::modifiers::{Mirror, MirrorRound, Modifiers};
 use super::trail::{TRAILS, TrailsLayer};
-use super::{AreaShape, BornFrom, Edge, Emit, Heading, KIND, ParticlesSettings, RIDES, RidesOn};
+use super::{AreaShape, BornFrom, Edge, Emit, FedWhen, Heading, KIND, ParticlesSettings, RIDES, RidesOn};
+use crate::modules::look::layers::gives_light::GivesLight;
 use crate::modules::look::layers::particles::{ParticleFade, ShapeMadeOf, SizeOverLife};
 use crate::modules::look::shape::ShapeSubGlow;
 use crate::paint::{Follow, Paint};
@@ -42,8 +43,7 @@ pub enum Look {
     ThickFog,
     Glitter,
     WebOfLight,
-    // Part 6.
-    LiquidSplashes,
+    // Part 6 (Liquid splashes is part 4's, drawn as a liquid since part 6).
     LightStreams,
     Kaleidoscope,
     ColourSplitDust,
@@ -62,6 +62,14 @@ pub enum Look {
     BeatGrid,
     Moire,
     Spirograph,
+    FireAndSmoke,
+    Bubbles,
+    SandThatPilesUp,
+    FallingLeaves,
+    WaterfallAndMist,
+    LiquidSplashes,
+    Fireworks,
+    StickyDust,
 }
 
 /// The menu's groups of looks, in order, after Empty.
@@ -75,18 +83,33 @@ pub const GROUPS: [(&str, &[Look]); 4] = [
             Look::BlossomPetals,
             Look::Sandstorm,
             Look::DustClouds,
+            Look::Bubbles,
+            Look::SandThatPilesUp,
             Look::ThickFog,
-            Look::Flock,
+            Look::FallingLeaves,
+            Look::WaterfallAndMist,
             Look::LiquidSplashes,
+            Look::Flock,
         ],
     ),
-    ("Fire and energy", &[Look::FireOnABall, Look::SparkFountain, Look::EmbersAndAsh, Look::Shockwaves]),
+    (
+        "Fire and energy",
+        &[
+            Look::FireOnABall,
+            Look::FireAndSmoke,
+            Look::SparkFountain,
+            Look::EmbersAndAsh,
+            Look::Fireworks,
+            Look::Shockwaves,
+        ],
+    ),
     (
         "Space and sparkle",
         &[
             Look::Fireflies,
             Look::Confetti,
             Look::Glitter,
+            Look::StickyDust,
             Look::Galaxy,
             Look::CometTail,
             Look::BlackHole,
@@ -140,7 +163,6 @@ impl Look {
             Look::ThickFog => "Thick fog",
             Look::Glitter => "Glitter",
             Look::WebOfLight => "Web of light",
-            Look::LiquidSplashes => "Liquid splashes",
             Look::LightStreams => "Light streams",
             Look::Kaleidoscope => "Kaleidoscope",
             Look::ColourSplitDust => "Colour split dust",
@@ -158,6 +180,14 @@ impl Look {
             Look::BeatGrid => "Beat grid",
             Look::Moire => "Moiré",
             Look::Spirograph => "Spirograph",
+            Look::FireAndSmoke => "Fire and smoke",
+            Look::Bubbles => "Bubbles",
+            Look::SandThatPilesUp => "Sand that piles up",
+            Look::FallingLeaves => "Falling leaves",
+            Look::WaterfallAndMist => "Waterfall and mist",
+            Look::LiquidSplashes => "Liquid splashes",
+            Look::Fireworks => "Fireworks",
+            Look::StickyDust => "Sticky dust",
         }
     }
 
@@ -178,13 +208,14 @@ impl Look {
             Look::RainbowSmokeTrail => "Rainbow smoke left behind each ball (inside a group of balls) or a point.",
             Look::InkInWater => "Clouds of ink swirling out, bursting again and again.",
             Look::DustClouds => "Puffs of dust thrown up where balls land, swept along by the air they stir.",
-            Look::ThickFog => "A bank of fog that drifts with the air and swirls round the balls passing through.",
+            Look::ThickFog => {
+                "A bank of fog that drifts with the air, swirls round the balls and slows them as they wade through."
+            }
             Look::Glitter => "Glitter drifting over the whole picture, its facets flashing as they turn.",
             Look::WebOfLight => "Drifting points of light joined by lines to their neighbours and the balls.",
             Look::PixelGlitch => {
                 "Square pixels on a grid flying off each ball (inside a group of balls) or a point, torn by glitches."
             }
-            Look::LiquidSplashes => "Water splashing up where balls hit, running together and pooling on shapes.",
             Look::LightStreams => "Lines of light flowing round the picture in long swirls.",
             Look::Kaleidoscope => "Sparkles round each ball (inside a group of balls), mirrored six ways.",
             Look::ColourSplitDust => "Swirling dust that splits into red, green and blue as it moves.",
@@ -203,7 +234,22 @@ impl Look {
             Look::Spirograph => {
                 "Specks looping round each ball (inside a group of balls) or a point on spirograph curves."
             }
+            Look::FireAndSmoke => "Flames rising from a point, each one leaving a puff of smoke as it dies.",
+            Look::Bubbles => "Bubbles rising from the bottom that pop when a ball touches them.",
+            Look::SandThatPilesUp => "Sand pouring from a point into heaps on the shapes; balls land on the heaps.",
+            Look::FallingLeaves => "Leaves fluttering down and settling, kicked up again by the balls.",
+            Look::WaterfallAndMist => {
+                "A waterfall that splits round the balls, pushing them down, with mist where it hits."
+            }
+            Look::LiquidSplashes => "Water splashing up where balls hit, running together and pooling on shapes.",
+            Look::Fireworks => "Rockets that burst into sparks of their own colour at the top of their climb.",
+            Look::StickyDust => "Dust hanging in the air that sticks to the balls and weighs them down.",
         }
+    }
+
+    /// Whether its particles come only where balls hit (a scene without balls shows none).
+    pub fn needs_hits(self) -> bool {
+        matches!(self, Look::LiquidSplashes)
     }
 
     /// Whether it rides what it sits in when it can.
@@ -236,6 +282,36 @@ pub(super) struct Recipe {
     pub(super) forces: Vec<(&'static str, Params)>,
     pub(super) meets: MeetsSettings,
     pub(super) layers: Vec<LayerRecipe>,
+    /// Where the thing is put, when the look says.
+    pub(super) position: Option<glam::Vec2>,
+    /// Particles things inside it, fed by its particles: their names and looks.
+    pub(super) children: Vec<(&'static str, Recipe)>,
+}
+
+impl Recipe {
+    fn new(
+        source: ParticlesSettings,
+        forces: Vec<(&'static str, Params)>,
+        meets: MeetsSettings,
+        layers: Vec<LayerRecipe>,
+    ) -> Recipe {
+        Recipe { source, forces, meets, layers, position: None, children: Vec::new() }
+    }
+
+    fn at(self, x: f32, y: f32) -> Recipe {
+        Recipe { position: Some(glam::Vec2::new(x, y)), ..self }
+    }
+
+    fn feeding(self, name: &'static str, child: Recipe) -> Recipe {
+        let mut r = self;
+        r.children.push((name, child));
+        r
+    }
+}
+
+/// A fed source: born where its parent's particles do `when`, `count` at a time.
+fn fed(when: FedWhen, count: u32, s: ParticlesSettings) -> ParticlesSettings {
+    ParticlesSettings { from: BornFrom::ItsParentsParticles, fed_when: when, count, ..s }
 }
 
 fn gradient(colors: &[Color]) -> Gradient {
@@ -261,6 +337,12 @@ pub(super) fn glow(size: f32, strength: f32) -> (&'static str, Params) {
     (SUB_GLOW, ShapeSubGlow { size, strength, ..ShapeSubGlow::default() }.to_params())
 }
 
+/// A Gives off light sub-layer of `strength`: the layer lights the scene round it (only with a
+/// Lighting card; without one nothing changes).
+fn light(strength: f32) -> (&'static str, Params) {
+    (SUB_LIGHT, GivesLight { strength, ..GivesLight::default() }.to_params())
+}
+
 pub(super) fn sprites(s: SpritesLayer, subs: Vec<(&'static str, Params)>) -> LayerRecipe {
     LayerRecipe { kind: SPRITES, params: s.to_params(), subs }
 }
@@ -269,7 +351,7 @@ pub(super) fn streaks(s: StreaksLayer, subs: Vec<(&'static str, Params)>) -> Lay
     LayerRecipe { kind: STREAKS, params: s.to_params(), subs }
 }
 
-fn layer(kind: &'static str, params: Params, subs: Vec<(&'static str, Params)>) -> LayerRecipe {
+pub(super) fn layer(kind: &'static str, params: Params, subs: Vec<(&'static str, Params)>) -> LayerRecipe {
     LayerRecipe { kind, params, subs }
 }
 
@@ -293,8 +375,17 @@ fn modified(mut layer: LayerRecipe, m: Modifiers) -> LayerRecipe {
 }
 
 /// What `look` fills in; `rides` when it sits in something it can ride.
-fn recipe(look: Look, rides: bool) -> Recipe {
+fn recipe(look: Look, rides: bool, fed_by: bool) -> Recipe {
     let d = ParticlesSettings::default();
+    // Inside another Particles thing an Empty is born where its parent's particles die.
+    if look == Look::Empty && fed_by {
+        return Recipe::new(
+            fed(FedWhen::Die, 3, ParticlesSettings { life: 0.6, speed: 60.0, heading: Heading::AllRound, ..d }),
+            Vec::new(),
+            MeetsSettings::default(),
+            vec![sprites(SpritesLayer::default(), Vec::new())],
+        );
+    }
     let riding = |s: ParticlesSettings| {
         if rides { ParticlesSettings { from: BornFrom::RidingItsParent, rides_on: RidesOn::EachBall, ..s } } else { s }
     };
@@ -317,6 +408,8 @@ fn recipe(look: Look, rides: bool) -> Recipe {
             forces: Vec::new(),
             meets: MeetsSettings::default(),
             layers: vec![sprites(SpritesLayer::default(), Vec::new())],
+            position: None,
+            children: Vec::new(),
         },
         Look::Rain => Recipe {
             source: ParticlesSettings {
@@ -335,7 +428,12 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                 (GRAVITY, GravityForce { strength: 1200.0, ..Default::default() }.to_params()),
                 (WIND, WindForce { speed: 120.0, grip: 0.5, gusts: 0.3, ..Default::default() }.to_params()),
             ],
-            meets: MeetsSettings { push: 0.8, ..vanish.clone() },
+            meets: MeetsSettings {
+                push: 0.8,
+                at_balls: AtBalls::Vanish,
+                at_shapes: AtShapes::Vanish,
+                ..vanish.clone()
+            },
             layers: vec![streaks(
                 StreaksLayer {
                     stretch: 0.025,
@@ -347,6 +445,8 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                 },
                 Vec::new(),
             )],
+            position: None,
+            children: vec![("Splashes", splashes())],
         },
         Look::Snow => Recipe {
             source: ParticlesSettings {
@@ -370,6 +470,8 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                 SpritesLayer { softness: 0.7, fade: ParticleFade::None, ..Default::default() },
                 Vec::new(),
             )],
+            position: None,
+            children: Vec::new(),
         },
         Look::Hail => Recipe {
             source: ParticlesSettings {
@@ -399,6 +501,8 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                 },
                 Vec::new(),
             )],
+            position: None,
+            children: Vec::new(),
         },
         Look::BlossomPetals => Recipe {
             source: ParticlesSettings {
@@ -438,6 +542,8 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                 .to_params(),
                 Vec::new(),
             )],
+            position: None,
+            children: Vec::new(),
         },
         Look::Sandstorm => Recipe {
             source: ParticlesSettings {
@@ -508,6 +614,8 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                     Vec::new(),
                 ),
             ],
+            position: None,
+            children: Vec::new(),
         },
         Look::FireOnABall => Recipe {
             source: riding(ParticlesSettings {
@@ -529,7 +637,7 @@ fn recipe(look: Look, rides: bool) -> Recipe {
             ],
             meets: MeetsSettings::default(),
             layers: vec![
-                layer(FLAME, FlameLayer::default().to_params(), Vec::new()),
+                layer(FLAME, FlameLayer::default().to_params(), vec![light(1.5)]),
                 // A few of them as embers, bright specks in the flames.
                 sprites(
                     SpritesLayer {
@@ -547,6 +655,8 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                     vec![glow(4.0, 0.5)],
                 ),
             ],
+            position: None,
+            children: Vec::new(),
         },
         Look::SparkFountain => Recipe {
             source: ParticlesSettings {
@@ -581,8 +691,10 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                     blend: bpe_core::Blend::Add,
                     ..Default::default()
                 },
-                vec![glow(4.0, 0.5)],
+                vec![glow(4.0, 0.5), light(1.0)],
             )],
+            position: None,
+            children: Vec::new(),
         },
         Look::EmbersAndAsh => Recipe {
             source: ParticlesSettings {
@@ -615,7 +727,7 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                         blend: bpe_core::Blend::Add,
                         ..Default::default()
                     },
-                    vec![glow(5.0, 0.6)],
+                    vec![glow(5.0, 0.6), light(0.8)],
                 ),
                 sprites(
                     SpritesLayer {
@@ -629,6 +741,8 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                     Vec::new(),
                 ),
             ],
+            position: None,
+            children: Vec::new(),
         },
         Look::Fireflies => Recipe {
             source: ParticlesSettings {
@@ -666,8 +780,10 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                     blend: bpe_core::Blend::Add,
                     ..Default::default()
                 },
-                vec![glow(10.0, 0.7)],
+                vec![glow(10.0, 0.7), light(1.0)],
             )],
+            position: None,
+            children: Vec::new(),
         },
         Look::Confetti => Recipe {
             source: ParticlesSettings {
@@ -700,6 +816,8 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                 },
                 Vec::new(),
             )],
+            position: None,
+            children: Vec::new(),
         },
         Look::RainbowSmokeTrail => Recipe {
             source: riding(ParticlesSettings {
@@ -733,8 +851,12 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                 .to_params(),
                 Vec::new(),
             )],
+            position: None,
+            children: Vec::new(),
         },
         Look::InkInWater => Recipe {
+            position: None,
+            children: Vec::new(),
             source: ParticlesSettings {
                 from: BornFrom::APoint,
                 emit: Emit::Bursts,
@@ -777,6 +899,8 @@ fn recipe(look: Look, rides: bool) -> Recipe {
             )],
         },
         Look::Glitter => Recipe {
+            position: None,
+            children: Vec::new(),
             source: ParticlesSettings {
                 emit: Emit::KeepACrowd,
                 count: 400,
@@ -810,6 +934,8 @@ fn recipe(look: Look, rides: bool) -> Recipe {
             )],
         },
         Look::WebOfLight => Recipe {
+            position: None,
+            children: Vec::new(),
             source: ParticlesSettings {
                 from: BornFrom::AnArea,
                 area: AreaShape::Rectangle,
@@ -843,34 +969,6 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                 vec![glow(3.0, 0.4)],
             )],
         },
-        Look::LiquidSplashes => Recipe {
-            source: ParticlesSettings {
-                from: BornFrom::APoint,
-                emit: Emit::OnHits,
-                count: 40,
-                life: 3.0,
-                life_spread: 0.3,
-                speed: 380.0,
-                speed_spread: 0.5,
-                heading: Heading::OffTheBounce,
-                spread: 70.0,
-                size: 3.0,
-                size_spread: 0.4,
-                ..d.clone()
-            },
-            forces: vec![
-                (GRAVITY, GravityForce { strength: 1000.0, ..Default::default() }.to_params()),
-                (DRAG, DragForce { drag: 0.4, ..Default::default() }.to_params()),
-            ],
-            meets: MeetsSettings { at_shapes: AtShapes::Stop, ..vanish.clone() },
-            layers: vec![liquid(LiquidLayer {
-                blob: 4.5,
-                surface: Surface::Plastic,
-                colour: paint(&[Color::rgb(90, 170, 255), Color::rgb(40, 110, 230)], Follow::Speed),
-                fade: ParticleFade::Out,
-                ..Default::default()
-            })],
-        },
         Look::LightStreams => Recipe {
             source: ParticlesSettings {
                 from: BornFrom::WholeScreen,
@@ -901,6 +999,8 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                 },
                 Vec::new(),
             )],
+            position: None,
+            children: Vec::new(),
         },
         Look::Kaleidoscope => Recipe {
             source: riding(ParticlesSettings {
@@ -940,6 +1040,8 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                     ..Default::default()
                 },
             )],
+            position: None,
+            children: Vec::new(),
         },
         Look::ColourSplitDust => Recipe {
             source: ParticlesSettings {
@@ -972,6 +1074,8 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                 ),
                 Modifiers { split: 0.04, offset: 1.5, ..Default::default() },
             )],
+            position: None,
+            children: Vec::new(),
         },
         Look::LiquidMetal => Recipe {
             source: ParticlesSettings {
@@ -1002,6 +1106,8 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                 fade: ParticleFade::None,
                 ..Default::default()
             })],
+            position: None,
+            children: Vec::new(),
         },
         Look::PaintDrips => Recipe {
             source: riding(ParticlesSettings {
@@ -1058,6 +1164,8 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                     Vec::new(),
                 ),
             ],
+            position: None,
+            children: Vec::new(),
         },
         Look::PixelGlitch => Recipe {
             source: riding(ParticlesSettings {
@@ -1100,8 +1208,12 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                 ),
                 Modifiers { glitch: 0.25, band: 16.0, tear: 50.0, rate: 12.0, tear_split: 5.0, ..Default::default() },
             )],
+            position: None,
+            children: Vec::new(),
         },
         Look::DustClouds => Recipe {
+            position: None,
+            children: Vec::new(),
             source: ParticlesSettings {
                 emit: Emit::OnHits,
                 count: 30,
@@ -1137,6 +1249,8 @@ fn recipe(look: Look, rides: bool) -> Recipe {
             )],
         },
         Look::ThickFog => Recipe {
+            position: None,
+            children: Vec::new(),
             source: ParticlesSettings {
                 from: BornFrom::AnArea,
                 area: AreaShape::Rectangle,
@@ -1157,7 +1271,8 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                 (WANDER, WanderForce { strength: 8.0, turns: 0.3, ..Default::default() }.to_params()),
                 (DRAG, DragForce { drag: 0.6, ..Default::default() }.to_params()),
             ],
-            meets: MeetsSettings { push: 0.3, ..MeetsSettings::default() },
+            // Two-way: the balls wading through it are slowed.
+            meets: MeetsSettings { push: 0.9, reach: 1.5, two_way: true, weight: 0.02, ..MeetsSettings::default() },
             layers: vec![sprites(
                 SpritesLayer {
                     made_of: ShapeMadeOf::Smoke,
@@ -1170,7 +1285,435 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                 Vec::new(),
             )],
         },
+        Look::FireAndSmoke => Recipe::new(
+            ParticlesSettings {
+                from: BornFrom::APoint,
+                rate: 200.0,
+                life: 0.7,
+                life_spread: 0.4,
+                speed: 70.0,
+                heading: Heading::AllRound,
+                size: 8.0,
+                size_spread: 0.5,
+                ..d.clone()
+            },
+            vec![
+                (RISE, RiseForce { strength: 600.0, cools: 0.5, ..Default::default() }.to_params()),
+                (WANDER, WanderForce { strength: 300.0, turns: 3.0, ..Default::default() }.to_params()),
+                (DRAG, DragForce { drag: 1.5, ..Default::default() }.to_params()),
+            ],
+            MeetsSettings::default(),
+            vec![layer(FLAME, FlameLayer::default().to_params(), Vec::new())],
+        )
+        .feeding(
+            "Smoke",
+            Recipe::new(
+                fed(
+                    FedWhen::Die,
+                    1,
+                    ParticlesSettings {
+                        life: 3.0,
+                        life_spread: 0.3,
+                        speed: 20.0,
+                        heading: Heading::AllRound,
+                        inherit: 0.5,
+                        size: 10.0,
+                        size_spread: 0.4,
+                        ..d.clone()
+                    },
+                ),
+                vec![
+                    (RISE, RiseForce { strength: 120.0, ..Default::default() }.to_params()),
+                    (WANDER, WanderForce { strength: 60.0, ..Default::default() }.to_params()),
+                    (SWIRL, SwirlForce { strength: 80.0, size: 140.0, ..Default::default() }.to_params()),
+                    (DRAG, DragForce { drag: 0.8, ..Default::default() }.to_params()),
+                ],
+                MeetsSettings::default(),
+                vec![layer(
+                    SMOKE,
+                    SmokeLayer {
+                        thickness: 1.0,
+                        colour: paint(&[Color::rgb(120, 116, 112), Color::rgb(70, 68, 66)], Follow::Life),
+                        opacity: 0.5,
+                        ..SmokeLayer::default()
+                    }
+                    .to_params(),
+                    Vec::new(),
+                )],
+            ),
+        ),
+        Look::Bubbles => Recipe::new(
+            ParticlesSettings {
+                from: BornFrom::WholeScreen,
+                edge: Edge::Bottom,
+                rate: 12.0,
+                life: 14.0,
+                speed: 40.0,
+                angle: -90.0,
+                spread: 20.0,
+                size: 9.0,
+                size_spread: 0.5,
+                ..d.clone()
+            },
+            vec![
+                (RISE, RiseForce { strength: 60.0, ..Default::default() }.to_params()),
+                (SWAY, SwayForce { sway: 18.0, sway_speed: 0.7, ..Default::default() }.to_params()),
+                (DRAG, DragForce { drag: 0.6, ..Default::default() }.to_params()),
+            ],
+            MeetsSettings { push: 0.6, at_balls: AtBalls::Pop, ..vanish.clone() },
+            vec![sprites(
+                SpritesLayer {
+                    made_of: ShapeMadeOf::Bubbles,
+                    softness: 0.3,
+                    colour: paint(&[Color::rgb(200, 235, 255)], Follow::Life),
+                    opacity: 0.8,
+                    fade: ParticleFade::None,
+                    ..Default::default()
+                },
+                Vec::new(),
+            )],
+        )
+        .feeding(
+            "Pops",
+            Recipe::new(
+                fed(
+                    FedWhen::Pop,
+                    8,
+                    ParticlesSettings { life: 0.25, speed: 140.0, heading: Heading::AllRound, size: 1.2, ..d.clone() },
+                ),
+                vec![(DRAG, DragForce { drag: 3.0, ..Default::default() }.to_params())],
+                MeetsSettings::default(),
+                vec![sprites(
+                    SpritesLayer {
+                        colour: paint(&[Color::additive(230, 245, 255)], Follow::Life),
+                        blend: bpe_core::Blend::Add,
+                        ..Default::default()
+                    },
+                    Vec::new(),
+                )],
+            ),
+        ),
+        Look::SandThatPilesUp => Recipe::new(
+            ParticlesSettings {
+                from: BornFrom::APoint,
+                rate: 300.0,
+                life: 30.0,
+                life_spread: 0.0,
+                speed: 20.0,
+                angle: 90.0,
+                spread: 8.0,
+                size: 1.2,
+                size_spread: 0.3,
+                ..d.clone()
+            },
+            vec![(GRAVITY, GravityForce { strength: 900.0, ..Default::default() }.to_params())],
+            MeetsSettings {
+                push: 0.3,
+                at_shapes: AtShapes::PileUp,
+                at_edges: AtEdges::Bounce,
+                edge_margin: 0.0,
+                grain: 0.35,
+                two_way: true,
+                ..MeetsSettings::default()
+            },
+            vec![
+                LayerRecipe { kind: PILES, params: PilesLayer::default().to_params(), subs: Vec::new() },
+                sprites(
+                    SpritesLayer {
+                        softness: 0.2,
+                        colour: paint(&[Color::rgb(222, 188, 128), Color::rgb(196, 156, 96)], Follow::Order),
+                        fade: ParticleFade::None,
+                        ..Default::default()
+                    },
+                    Vec::new(),
+                ),
+            ],
+        )
+        .at(0.0, -700.0),
+        Look::FallingLeaves => Recipe::new(
+            ParticlesSettings {
+                rate: 6.0,
+                life: 30.0,
+                speed: 40.0,
+                angle: 95.0,
+                spread: 30.0,
+                size: 7.0,
+                size_spread: 0.4,
+                spin: 60.0,
+                spin_spread: 0.8,
+                ..top.clone()
+            },
+            vec![
+                (GRAVITY, GravityForce { strength: 60.0, ..Default::default() }.to_params()),
+                (
+                    SWAY,
+                    SwayForce { sway: 40.0, sway_speed: 0.4, flutter: 1.2, flutter_drift: 50.0, ..Default::default() }
+                        .to_params(),
+                ),
+                (WIND, WindForce { speed: 40.0, grip: 0.4, gusts: 0.6, ..Default::default() }.to_params()),
+                (DRAG, DragForce { drag: 0.4, ..Default::default() }.to_params()),
+            ],
+            MeetsSettings {
+                push: 0.8,
+                reach: 2.5,
+                at_shapes: AtShapes::Settle,
+                fade_after: 12.0,
+                most_kept: 400,
+                at_edges: AtEdges::Bounce,
+                edge_margin: 0.0,
+                ..MeetsSettings::default()
+            },
+            vec![layer(
+                SHAPES,
+                ShapesLayer {
+                    shape: MoreShape::Leaves,
+                    softness: 0.2,
+                    colour: paint(
+                        &[Color::rgb(214, 96, 34), Color::rgb(232, 160, 40), Color::rgb(160, 60, 30)],
+                        Follow::Order,
+                    ),
+                    fade: ParticleFade::None,
+                    ..Default::default()
+                }
+                .to_params(),
+                Vec::new(),
+            )],
+        ),
+        Look::WaterfallAndMist => Recipe::new(
+            ParticlesSettings {
+                from: BornFrom::ALine,
+                length: 420.0,
+                rate: 700.0,
+                life: 3.0,
+                speed: 150.0,
+                angle: 90.0,
+                spread: 3.0,
+                size: 1.6,
+                size_spread: 0.3,
+                ..d.clone()
+            },
+            vec![(GRAVITY, GravityForce { strength: 1300.0, ..Default::default() }.to_params())],
+            MeetsSettings {
+                push: 0.9,
+                reach: 1.3,
+                at_balls: AtBalls::BounceOff,
+                ball_bounce: 0.2,
+                at_shapes: AtShapes::Vanish,
+                two_way: true,
+                weight: 0.5,
+                ..vanish.clone()
+            },
+            vec![streaks(
+                StreaksLayer {
+                    stretch: 0.02,
+                    width: 0.8,
+                    colour: paint(&[Color::rgb(200, 230, 255), Color::rgb(150, 200, 250)], Follow::Order),
+                    opacity: 0.6,
+                    fade: ParticleFade::None,
+                    ..Default::default()
+                },
+                Vec::new(),
+            )],
+        )
+        .at(0.0, -1000.0)
+        .feeding(
+            "Mist",
+            Recipe::new(
+                fed(
+                    FedWhen::HitAnything,
+                    1,
+                    ParticlesSettings {
+                        life: 1.2,
+                        speed: 60.0,
+                        heading: Heading::OffTheBounce,
+                        spread: 160.0,
+                        size: 14.0,
+                        size_spread: 0.5,
+                        ..d.clone()
+                    },
+                ),
+                vec![
+                    (RISE, RiseForce { strength: 40.0, ..Default::default() }.to_params()),
+                    (WANDER, WanderForce { strength: 50.0, ..Default::default() }.to_params()),
+                    (DRAG, DragForce { drag: 2.0, ..Default::default() }.to_params()),
+                ],
+                MeetsSettings::default(),
+                vec![sprites(
+                    SpritesLayer {
+                        made_of: ShapeMadeOf::Smoke,
+                        softness: 1.0,
+                        colour: paint(&[Color::rgb(235, 245, 255)], Follow::Life),
+                        opacity: 0.15,
+                        size_curve: SizeOverLife::Grow,
+                        ..Default::default()
+                    },
+                    Vec::new(),
+                )],
+            ),
+        ),
+        Look::LiquidSplashes => Recipe::new(
+            ParticlesSettings {
+                from: BornFrom::APoint,
+                emit: Emit::OnHits,
+                count: 25,
+                life: 4.0,
+                speed: 350.0,
+                speed_spread: 0.5,
+                heading: Heading::OffTheBounce,
+                spread: 140.0,
+                size: 3.0,
+                size_spread: 0.5,
+                ..d.clone()
+            },
+            vec![
+                (GRAVITY, GravityForce { strength: 1000.0, ..Default::default() }.to_params()),
+                (DRAG, DragForce { drag: 0.3, ..Default::default() }.to_params()),
+            ],
+            MeetsSettings {
+                at_balls: AtBalls::BounceOff,
+                ball_bounce: 0.2,
+                at_shapes: AtShapes::Settle,
+                fade_after: 2.5,
+                ..vanish.clone()
+            },
+            vec![liquid(LiquidLayer {
+                blob: 4.5,
+                surface: Surface::Plastic,
+                colour: paint(&[Color::rgb(90, 170, 255), Color::rgb(40, 110, 230)], Follow::Speed),
+                fade: ParticleFade::None,
+                ..Default::default()
+            })],
+        ),
+        Look::Fireworks => Recipe::new(
+            ParticlesSettings {
+                from: BornFrom::WholeScreen,
+                edge: Edge::Bottom,
+                emit: Emit::Bursts,
+                every: 0.7,
+                count: 1,
+                life: 3.0,
+                speed: 1100.0,
+                speed_spread: 0.15,
+                angle: -90.0,
+                spread: 12.0,
+                size: 1.5,
+                ..d.clone()
+            },
+            vec![
+                (GRAVITY, GravityForce { strength: 600.0, ..Default::default() }.to_params()),
+                (DRAG, DragForce { drag: 0.2, ..Default::default() }.to_params()),
+            ],
+            MeetsSettings::default(),
+            vec![streaks(
+                StreaksLayer { stretch: 0.03, width: 0.8, colour: rainbow(Follow::Order), ..Default::default() },
+                vec![glow(4.0, 0.5)],
+            )],
+        )
+        .feeding(
+            "Bursts",
+            Recipe::new(
+                fed(
+                    FedWhen::StopRising,
+                    90,
+                    ParticlesSettings {
+                        life: 1.6,
+                        life_spread: 0.3,
+                        speed: 260.0,
+                        speed_spread: 0.25,
+                        heading: Heading::AllRound,
+                        size: 1.8,
+                        ..d.clone()
+                    },
+                ),
+                vec![
+                    (GRAVITY, GravityForce { strength: 150.0, ..Default::default() }.to_params()),
+                    (DRAG, DragForce { drag: 1.2, ..Default::default() }.to_params()),
+                ],
+                MeetsSettings::default(),
+                vec![sprites(
+                    SpritesLayer {
+                        made_of: ShapeMadeOf::Sparks,
+                        colour_from: ColourFrom::ParentParticle,
+                        twinkle: 0.3,
+                        blend: bpe_core::Blend::Add,
+                        ..Default::default()
+                    },
+                    vec![glow(5.0, 0.6)],
+                )],
+            ),
+        ),
+        Look::StickyDust => Recipe::new(
+            ParticlesSettings {
+                from: BornFrom::AnArea,
+                area: AreaShape::Rectangle,
+                width: 1000.0,
+                height: 1600.0,
+                emit: Emit::KeepACrowd,
+                count: 500,
+                life: 20.0,
+                life_spread: 0.3,
+                speed: 5.0,
+                heading: Heading::AllRound,
+                size: 1.6,
+                size_spread: 0.5,
+                ..d.clone()
+            },
+            vec![
+                (WANDER, WanderForce { strength: 15.0, turns: 0.3, ..Default::default() }.to_params()),
+                (DRAG, DragForce { drag: 1.0, ..Default::default() }.to_params()),
+            ],
+            MeetsSettings {
+                push: 0.4,
+                at_balls: AtBalls::Stick,
+                fall_off: 0.35,
+                two_way: true,
+                weight: 3.0,
+                slows: false,
+                ..MeetsSettings::default()
+            },
+            vec![sprites(
+                SpritesLayer {
+                    softness: 0.4,
+                    colour: paint(&[Color::rgb(205, 195, 175), Color::rgb(170, 160, 140)], Follow::Order),
+                    opacity: 0.85,
+                    fade: ParticleFade::None,
+                    ..Default::default()
+                },
+                Vec::new(),
+            )],
+        ),
     }
+}
+
+/// Rain's splashes: a few drops thrown off where it hits a ball or a shape.
+fn splashes() -> Recipe {
+    Recipe::new(
+        fed(
+            FedWhen::HitAnything,
+            3,
+            ParticlesSettings {
+                life: 0.35,
+                life_spread: 0.3,
+                speed: 160.0,
+                speed_spread: 0.5,
+                heading: Heading::OffTheBounce,
+                spread: 120.0,
+                size: 1.0,
+                size_spread: 0.3,
+                ..ParticlesSettings::default()
+            },
+        ),
+        vec![(GRAVITY, GravityForce { strength: 1200.0, ..Default::default() }.to_params())],
+        MeetsSettings::default(),
+        vec![sprites(
+            SpritesLayer {
+                colour: paint(&[Color::rgb(200, 222, 255)], Follow::Life),
+                opacity: 0.8,
+                ..Default::default()
+            },
+            Vec::new(),
+        )],
+    )
 }
 
 /// Whether a Particles thing under `parent` can ride it.
@@ -1187,19 +1730,27 @@ fn put_layer(scene: &mut Scene, id: ThingId, slot: SlotId, layer: bpe_core::Laye
     }
 }
 
-/// Adds a Particles thing with `look` under `parent`, named after the look (and, for a look made
-/// of two, the second beside it). The first is given back.
+/// Whether a Particles thing under `parent` is inside another Particles thing (and can be fed).
+pub fn can_be_fed(scene: &Scene, parent: ThingId) -> bool {
+    scene.things.get(&parent).is_some_and(|t| t.kind == KIND)
+}
+
+/// Adds a Particles thing with `look` under `parent`, named after the look, with the fed
+/// Particles things the look has inside it (and, for a look made of two, the second beside it).
+/// The first is given back.
 pub fn add_particles(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) -> Result<ThingId, EditError> {
     let rides = look.rides() && can_ride(scene, parent);
-    let id = add_recipe(scene, reg, look.name(), recipe(look, rides), parent)?;
+    let r = recipe(look, rides, can_be_fed(scene, parent));
+    let id = add_recipe(scene, reg, r, look.name(), parent)?;
     for (name, r) in super::looks_motion::also(look) {
-        add_recipe(scene, reg, name, r, parent)?;
+        add_recipe(scene, reg, r, name, parent)?;
     }
     Ok(id)
 }
 
-/// Adds a Particles thing named `name` filled in by `r` under `parent`.
-fn add_recipe(scene: &mut Scene, reg: &Registry, name: &str, r: Recipe, parent: ThingId) -> Result<ThingId, EditError> {
+/// Adds a Particles thing filled in by `r`, named `name`, under `parent` (and its children
+/// under it).
+fn add_recipe(scene: &mut Scene, reg: &Registry, r: Recipe, name: &str, parent: ThingId) -> Result<ThingId, EditError> {
     let id = crate::add_thing(scene, reg, KIND, parent)?;
     if let Some(t) = scene.things.get_mut(&id) {
         t.name.clear();
@@ -1208,6 +1759,9 @@ fn add_recipe(scene: &mut Scene, reg: &Registry, name: &str, r: Recipe, parent: 
     if let Some(t) = scene.things.get_mut(&id) {
         t.params = r.source.to_params();
         t.name = name;
+        if let Some(at) = r.position {
+            t.transform.position = at;
+        }
     }
     if let Some(card) = scene.things.get_mut(&id).and_then(|t| t.slots.get_mut(&SlotId::Bounce)) {
         card.params = r.meets.to_params();
@@ -1227,6 +1781,9 @@ fn add_recipe(scene: &mut Scene, reg: &Registry, name: &str, r: Recipe, parent: 
             let sub = scene.add_sub_layer(reg, id, SlotId::Look, layer, kind)?;
             put_layer(scene, id, SlotId::Look, sub, params);
         }
+    }
+    for (name, child) in r.children {
+        add_recipe(scene, reg, child, name, id)?;
     }
     Ok(id)
 }

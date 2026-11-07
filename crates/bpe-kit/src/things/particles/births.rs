@@ -14,6 +14,8 @@ use crate::modules::look::layers::particles::emit::{hash, impact};
 
 /// The most particles one moment (a hit, a burst) lets off.
 pub const MOST_AT_ONCE: u32 = 100_000;
+/// The most particles one moment of a parent particle (it died, landed, popped…) lets off.
+pub const MOST_FED: u32 = 1000;
 
 /// A place a particle can be born at.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -29,6 +31,8 @@ pub struct Place {
     pub impact: f32,
     /// The word's, picture's or grid's place it is born at (index + 1), 0 when none.
     pub spot: u32,
+    /// The parent particle it is born from (its seed and how far through its life it was).
+    pub kin: Option<(u32, f32)>,
 }
 
 /// A number from 0 to 1 from `seed` and `k`.
@@ -158,6 +162,8 @@ pub fn place_for(s: &ParticlesSettings, cx: &BirthCx, parent: Option<ThingId>, s
             };
             here(cx.anchor + turn.rotate(local))
         }
+        // Born only from the parent's particles (`fed_places`); on its own, at its place.
+        BornFrom::ItsParentsParticles => here(cx.anchor),
         BornFrom::RidingItsParent => {
             let Some(parent) = parent.filter(|p| *p != ThingId::ROOT) else { return Some(here(cx.anchor)) };
             let balls = balls_of(cx.world, parent);
@@ -179,6 +185,7 @@ pub fn place_for(s: &ParticlesSettings, cx: &BirthCx, parent: Option<ThingId>, s
                     ball: b.0 as u32 + 1,
                     impact: 1.0,
                     spot: 0,
+                    kin: None,
                 };
                 return Some(match s.rides_on {
                     RidesOn::EachBall => on(pick, pick.1, None),
@@ -240,7 +247,13 @@ pub fn place_for(s: &ParticlesSettings, cx: &BirthCx, parent: Option<ThingId>, s
 }
 
 /// The hits since the last particle step that let particles off: their places.
-pub fn hit_places(s: &ParticlesSettings, st: &ParticlesState, cx: &BirthCx, since: u64) -> Vec<(Place, u32)> {
+pub fn hit_places(
+    s: &ParticlesSettings,
+    st: &ParticlesState,
+    cx: &BirthCx,
+    since: u64,
+    at_once: u32,
+) -> Vec<(Place, u32)> {
     let world = cx.world;
     let events = cx.log.events();
     let from = events.partition_point(|e| e.step <= since);
@@ -264,8 +277,9 @@ pub fn hit_places(s: &ParticlesSettings, st: &ParticlesState, cx: &BirthCx, sinc
         let count = if s.count == 0 { 0 } else { ((s.count as f32 * strength).round() as u32).max(1) };
         let ball = if Some(who.thing) == st.parent { who.item + 1 } else { 0 };
         let out_way = if who == e.a { e.normal } else { -e.normal };
-        let place = Place { at: e.point, velocity, out: out_way.try_normalize(), ball, impact: strength, spot: 0 };
-        out.push((place, count.min(MOST_AT_ONCE)));
+        let place =
+            Place { at: e.point, velocity, out: out_way.try_normalize(), ball, impact: strength, spot: 0, kin: None };
+        out.push((place, count.min(at_once)));
     }
     out
 }
@@ -296,21 +310,19 @@ pub fn spawn(s: &ParticlesSettings, place: &Place, seed: u32, now: u32) -> Speck
     if s.spin_both && unit(seed, 17) < 0.5 {
         spin = -spin;
     }
+    let (kin_seed, kin_life) = place.kin.unwrap_or((seed, 0.0));
     let speck = Speck {
-        place: place.at,
-        previous: place.at,
         velocity,
-        home: place.at,
-        born: now,
         life,
         size,
         turn,
         spin,
         flip: unit(seed, 18) * std::f32::consts::TAU,
-        seed,
         ball: place.ball,
-        flags: 0,
         spot: place.spot,
+        kin_seed,
+        kin_life,
+        ..Speck::at(place.at, now, seed)
     };
     if speck.place.is_finite() && speck.velocity.is_finite() {
         speck
@@ -322,6 +334,48 @@ pub fn spawn(s: &ParticlesSettings, place: &Place, seed: u32, now: u32) -> Speck
 /// The seed of the thing's birth number `index`.
 pub fn seed_of(world_seed: u64, id: ThingId, index: u64, own: u32) -> u32 {
     hash(&[world_seed as u32, (world_seed >> 32) as u32, id.0, index as u32, (index >> 32) as u32, own])
+}
+
+/// The places a fed thing's particles are born at this step, from `parent`'s moments (or, Every
+/// step, its particles), with how many at each.
+pub fn fed_places(s: &ParticlesSettings, parent: &ParticlesState, id: ThingId) -> Vec<(Place, u32)> {
+    let mut out = Vec::new();
+    if s.fed_when == super::FedWhen::EveryStep {
+        let rate = s.rate.max(0.0) * super::step::DT;
+        if !rate.is_finite() {
+            return out;
+        }
+        for p in &parent.specks {
+            let n = (rate + unit(hash(&[p.seed, parent.step, id.0]), 91)).floor() as u32;
+            if n > 0 {
+                let place = Place {
+                    at: p.place,
+                    velocity: p.velocity,
+                    out: None,
+                    ball: p.ball,
+                    impact: 1.0,
+                    spot: 0,
+                    kin: Some((p.seed, p.life_at(parent.step))),
+                };
+                out.push((place, n.min(MOST_FED)));
+            }
+        }
+        return out;
+    }
+    let wants = s.fed_when.wants();
+    for m in parent.feeds.iter().filter(|m| m.kind.bit() & wants != 0) {
+        let place = Place {
+            at: m.place,
+            velocity: m.velocity,
+            out: m.normal.try_normalize(),
+            ball: m.ball,
+            impact: 1.0,
+            spot: 0,
+            kin: Some((m.seed, m.life)),
+        };
+        out.push((place, s.count.min(MOST_FED)));
+    }
+    out
 }
 
 /// One lot of births.
@@ -339,72 +393,143 @@ pub fn has_spots(s: &ParticlesSettings) -> bool {
     matches!(s.from, BornFrom::AWordOrPicture | BornFrom::AGrid)
 }
 
+/// Which engine births are planned for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum For {
+    /// The exact engine: births past Most particles are dropped here, Keep a crowd makes up
+    /// exactly what it is short of, and a moment lets off at most [`MOST_AT_ONCE`].
+    Exact,
+    /// A Huge swarm, which doesn't know here how many are alive: the graphics card drops births
+    /// past Most particles, Keep a crowd is given [`crowd_spares`] a step to take what it is short
+    /// of from, and a moment lets off up to [`MOST_SWARM_AT_ONCE`].
+    Swarm,
+}
+
+/// The most particles one moment lets off in a Huge swarm.
+pub const MOST_SWARM_AT_ONCE: u32 = super::MOST_SWARM;
+
+/// How many spare births a Huge swarm keeping a crowd of `crowd` is given each step: enough for
+/// the crowd's deaths in a step at its shortest life, twice over, at least 64, at most the crowd.
+pub fn crowd_spares(s: &ParticlesSettings, crowd: u32) -> u32 {
+    let shortest = (s.life * (1.0 - s.life_spread.abs())).max(1e-3);
+    let deaths = (crowd as f64 * super::step::DT as f64 / shortest as f64).ceil();
+    ((deaths * 2.0).min(u32::MAX as f64) as u32).max(64).min(crowd)
+}
+
+/// A Huge swarm's births this step, oldest first (as [`births`], for `For::Swarm`; its own
+/// particles stay on the graphics card, so `st.specks` is empty here). Every one tried is counted
+/// in `st.births`; no moments are noted.
+pub fn plan(st: &mut ParticlesState, cx: &BirthCx, since: u64, first: bool) -> Vec<Speck> {
+    let kept = std::mem::take(&mut st.specks);
+    births_for(st, cx, since, first, None, For::Swarm);
+    std::mem::replace(&mut st.specks, kept)
+}
+
 /// Makes this step's births into `st`: how many the Source says, from where it says, dropping
 /// those past Most particles. `first` is the build's step (Keep a crowd, Once at the start and the
-/// first burst are born then); `since` is the world step the last particle step ended on.
-pub fn births(st: &mut ParticlesState, cx: &BirthCx, since: u64, first: bool) {
+/// first burst are born then); `since` is the world step the last particle step ended on;
+/// `parent` the Particles thing feeding it, when its particles are born from its parent's.
+pub fn births(st: &mut ParticlesState, cx: &BirthCx, since: u64, first: bool, parent: Option<&ParticlesState>) {
+    births_for(st, cx, since, first, parent, For::Exact);
+}
+
+/// [`births`] for `engine`.
+fn births_for(
+    st: &mut ParticlesState,
+    cx: &BirthCx,
+    since: u64,
+    first: bool,
+    parent: Option<&ParticlesState>,
+    engine: For,
+) {
     let s = st.settings.clone();
+    let at_once = match engine {
+        For::Exact => MOST_AT_ONCE,
+        For::Swarm => MOST_SWARM_AT_ONCE,
+    };
     let mut batches: Vec<Batch> = Vec::new();
     let spots = cx.homes.spots.len();
-    match s.emit {
-        Emit::Steady => {
-            let n = riding_count(&s, cx.world, st.parent) as f64;
-            st.carry += s.rate.max(0.0) as f64 * n * super::step::DT as f64;
-            if !st.carry.is_finite() {
-                st.carry = 0.0;
-            }
-            let born = st.carry.floor().min(MOST_AT_ONCE as f64);
-            st.carry -= born;
-            st.carry = st.carry.min(1.0);
-            batches.push(Batch::Source(born as u32));
+    if s.from == BornFrom::ItsParentsParticles {
+        if let Some(parent) = parent.filter(|_| !first) {
+            batches.extend(fed_places(&s, parent, st.id).into_iter().map(|(p, n)| Batch::At(p, n)));
         }
-        Emit::Bursts => {
-            if first || st.step >= st.next_burst {
-                let gap = ((s.every.max(0.001) / super::step::DT).round() as u32).max(1);
-                st.next_burst = st.step + gap;
-                batches.push(Batch::Source(s.count.min(MOST_AT_ONCE)));
+    } else {
+        match s.emit {
+            Emit::Steady => {
+                let n = riding_count(&s, cx.world, st.parent) as f64;
+                st.carry += s.rate.max(0.0) as f64 * n * super::step::DT as f64;
+                if !st.carry.is_finite() {
+                    st.carry = 0.0;
+                }
+                let born = st.carry.floor().min(at_once as f64);
+                st.carry -= born;
+                st.carry = st.carry.min(1.0);
+                batches.push(Batch::Source(born as u32));
             }
-        }
-        Emit::OnHits => {
-            if !first {
-                batches.extend(hit_places(&s, st, cx, since).into_iter().map(|(p, n)| Batch::At(p, n)));
-            }
-        }
-        // A word's, picture's or grid's crowd fills every place, each death refilled where it was.
-        Emit::KeepACrowd if has_spots(&s) => {
-            let mut taken = vec![false; spots];
-            for sp in &st.specks {
-                if let Some(t) = (sp.spot as usize).checked_sub(1).and_then(|i| taken.get_mut(i)) {
-                    *t = true;
+            Emit::Bursts => {
+                if first || st.step >= st.next_burst {
+                    let gap = ((s.every.max(0.001) / super::step::DT).round() as u32).max(1);
+                    st.next_burst = st.step + gap;
+                    batches.push(Batch::Source(s.count.min(at_once)));
                 }
             }
-            let free: Vec<u32> = taken.iter().enumerate().filter(|(_, t)| !**t).map(|(i, _)| i as u32 + 1).collect();
-            batches.push(Batch::Spots(free));
-        }
-        Emit::OnceAtTheStart if has_spots(&s) => {
-            if first {
-                batches.push(Batch::Spots((1..=spots as u32).collect()));
+            Emit::OnHits => {
+                if !first {
+                    batches.extend(hit_places(&s, st, cx, since, at_once).into_iter().map(|(p, n)| Batch::At(p, n)));
+                }
             }
-        }
-        Emit::KeepACrowd => {
-            let alive = st.specks.len() as u32;
-            batches.push(Batch::Source(s.count.min(MOST_AT_ONCE).saturating_sub(alive)));
-        }
-        Emit::OnceAtTheStart => {
-            if first {
-                batches.push(Batch::Source(s.count.min(MOST_AT_ONCE)));
+            // A swarm doesn't know which places are taken: it fills them all at the start only.
+            Emit::KeepACrowd if has_spots(&s) && engine == For::Swarm => {
+                if first {
+                    batches.push(Batch::Spots((1..=spots as u32).collect()));
+                }
             }
-        }
-        Emit::OnTheBeat => {
-            let moments = Moments::of(cx.world, s.beat_every, s.bars, s.beat_offset);
-            let dt = super::step::DT as f64;
-            let now = st.step as f64 * dt;
-            let before = if first { f64::NEG_INFINITY } else { now - dt };
-            let beats = moments.count_in(before, now);
-            batches.push(Batch::Source(s.count.min(MOST_AT_ONCE).saturating_mul(beats).min(MOST_AT_ONCE)));
+            // A word's, picture's or grid's crowd fills every place, each death refilled where it was.
+            Emit::KeepACrowd if has_spots(&s) => {
+                let mut taken = vec![false; spots];
+                for sp in &st.specks {
+                    if let Some(t) = (sp.spot as usize).checked_sub(1).and_then(|i| taken.get_mut(i)) {
+                        *t = true;
+                    }
+                }
+                let free: Vec<u32> =
+                    taken.iter().enumerate().filter(|(_, t)| !**t).map(|(i, _)| i as u32 + 1).collect();
+                batches.push(Batch::Spots(free));
+            }
+            Emit::OnceAtTheStart if has_spots(&s) => {
+                if first {
+                    batches.push(Batch::Spots((1..=spots as u32).collect()));
+                }
+            }
+            Emit::KeepACrowd => {
+                let crowd = s.count.min(at_once);
+                let n = match engine {
+                    For::Exact => crowd.saturating_sub(st.specks.len() as u32),
+                    For::Swarm if first => crowd,
+                    For::Swarm => crowd_spares(&s, crowd),
+                };
+                batches.push(Batch::Source(n));
+            }
+            Emit::OnceAtTheStart => {
+                if first {
+                    batches.push(Batch::Source(s.count.min(at_once)));
+                }
+            }
+            Emit::OnTheBeat => {
+                let moments = Moments::of(cx.world, s.beat_every, s.bars, s.beat_offset);
+                let dt = super::step::DT as f64;
+                let now = st.step as f64 * dt;
+                let before = if first { f64::NEG_INFINITY } else { now - dt };
+                let beats = moments.count_in(before, now);
+                batches.push(Batch::Source(s.count.min(at_once).saturating_mul(beats).min(at_once)));
+            }
         }
     }
-    let most = s.most.clamp(1, super::MOST_EVER) as usize;
+    // In a swarm (no particles here) at most Most a step: more could never fit on the card.
+    let most = match engine {
+        For::Exact => s.most.clamp(1, super::MOST_EVER),
+        For::Swarm => s.most.clamp(1, MOST_SWARM_AT_ONCE),
+    } as usize;
     let born = |st: &mut ParticlesState, place: Option<Place>, index: u64| {
         let seed = seed_of(cx.world.seed, st.id, index, s.seed);
         let at = match place {
@@ -419,7 +544,17 @@ pub fn births(st: &mut ParticlesState, cx: &BirthCx, since: u64, first: bool) {
             st.specks.push(speck);
         }
     };
+    // Bursts note a Burst each, and a Born for each particle they make (moments, part 7); a fed
+    // thing's births follow its parent's particles, not its Emit.
+    let bursts = engine == For::Exact
+        && s.from != BornFrom::ItsParentsParticles
+        && matches!(s.emit, Emit::Bursts | Emit::OnHits | Emit::OnceAtTheStart | Emit::OnTheBeat);
     for batch in batches {
+        let first_born = st.specks.len();
+        let hit = match &batch {
+            Batch::At(place, _) => Some(*place),
+            _ => None,
+        };
         match batch {
             Batch::Source(count) | Batch::At(_, count) if count == 0 => {}
             Batch::Source(count) => {
@@ -452,5 +587,39 @@ pub fn births(st: &mut ParticlesState, cx: &BirthCx, since: u64, first: bool) {
                 }
             }
         }
+        // A burst all of whose particles the cap refused is no burst.
+        if bursts && st.specks.len() > first_born {
+            note_burst(st, hit.as_ref(), cx.anchor, first_born);
+        }
+    }
+}
+
+/// Notes a burst that made the particles of `st` from `first` on, at `place` (a hit's) or the
+/// source's `anchor`, and a Born for each of them.
+fn note_burst(st: &mut ParticlesState, place: Option<&Place>, anchor: Vec2, first: usize) {
+    use super::moments::{Moment, MomentKind};
+    let born: Vec<Moment> = st.specks[first..]
+        .iter()
+        .map(|p| Moment {
+            kind: MomentKind::Born,
+            place: p.place,
+            velocity: p.velocity,
+            speed: p.velocity.length(),
+            size: p.size,
+            with: None,
+            seed: p.seed,
+        })
+        .collect();
+    st.note_moment(Moment {
+        kind: MomentKind::Burst,
+        place: place.map_or(anchor, |p| p.at),
+        velocity: Vec2::ZERO,
+        speed: place.map_or(0.0, |p| p.velocity.length()),
+        size: born.len() as f32,
+        with: None,
+        seed: born.first().map_or(0, |m| m.seed),
+    });
+    for m in born {
+        st.note_moment(m);
     }
 }

@@ -4,40 +4,13 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use bpe_core::{Animation, Blend, Inputs, Resolved, ResolvedThing, Scene, SlotId, Thing, ThingId};
-use bpe_runtime::{CameraView, EventKind, LevelsAt, LightAt, LightLevelsAt, Log, Outline, SoundAt, World};
+use bpe_runtime::{CameraView, LevelsAt, LightAt, LightLevelsAt, Log, Outline, SoundAt, World};
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
 
 use crate::gradients::{GradientAtlas, PaintGpu};
 
-/// Hits older than this no longer count towards [`hit_strength`].
-const HIT_WINDOW: f64 = 0.3;
-/// A hit's strength fades by e every this many seconds.
-const HIT_FADE: f32 = 0.1;
-/// A hit at this speed (px/s) counts as a full one.
-const FULL_HIT: f32 = 600.0;
-
-/// How hard things are hitting at `time`, 0 to 1, for pulses that follow hits: every hit in the
-/// last 0.3 s counts `min(speed / 600, 1)`, fading with age, and the sum is clamped.
-pub fn hit_strength(log: &Log, time: f64, steps_per_second: u32) -> f32 {
-    let rate = steps_per_second.max(1);
-    let events = log.events();
-    let first_step = ((time - HIT_WINDOW) * rate as f64).ceil().max(0.0) as u64;
-    let last_step = (time * rate as f64 + 1e-6).floor().max(0.0) as u64;
-    let start = events.partition_point(|e| e.step < first_step);
-    let mut sum = 0.0f32;
-    for e in &events[start..] {
-        if e.step > last_step {
-            break;
-        }
-        if e.kind != EventKind::Hit {
-            continue;
-        }
-        let age = (time - e.time(rate)).max(0.0) as f32;
-        sum += (e.speed / FULL_HIT).min(1.0) * (-age / HIT_FADE).exp();
-    }
-    if sum.is_finite() { sum.clamp(0.0, 1.0) } else { 0.0 }
-}
+pub use bpe_runtime::hit_strength;
 
 /// A ball: a lit sphere with a halo.
 #[repr(C)]
@@ -974,6 +947,10 @@ pub struct Frame {
     /// sprites of `particles` / `particles_front` where its `at` says.
     pub fields: Vec<Field>,
     pub fields_front: Vec<Field>,
+    /// Huge swarms (particles part 8) behind the balls and in front of them, each drawn from its
+    /// particle buffers among the sprites of `particles` / `particles_front` where its `at` says.
+    pub swarms: Vec<crate::SwarmRun>,
+    pub swarms_front: Vec<crate::SwarmRun>,
     /// Recent hits, filled by the things' drawing parts for the modules' ones.
     pub hits: Vec<HitMark>,
     pub effects: Vec<EffectCall>,
@@ -1441,6 +1418,8 @@ impl Default for Frame {
             particles_front: Vec::new(),
             fields: Vec::new(),
             fields_front: Vec::new(),
+            swarms: Vec::new(),
+            swarms_front: Vec::new(),
             hits: Vec::new(),
             effects: Vec::new(),
             gradients: GradientAtlas::default(),
@@ -1569,6 +1548,8 @@ impl Frame {
         self.fields.clear();
         self.fields_front.clear();
         self.liquids.clear();
+        self.swarms.clear();
+        self.swarms_front.clear();
         self.hits.clear();
         self.effects.clear();
         self.gradients.clear();
@@ -1715,6 +1696,8 @@ impl Frame {
             && self.particles_front.is_empty()
             && self.fields.is_empty()
             && self.fields_front.is_empty()
+            && self.swarms.is_empty()
+            && self.swarms_front.is_empty()
             && self.layers.is_empty()
             && self.liquids.is_empty()
     }
@@ -1817,6 +1800,8 @@ impl Frame {
                 && o.particles_front.is_empty()
                 && o.fields.is_empty()
                 && o.fields_front.is_empty()
+                && o.swarms.is_empty()
+                && o.swarms_front.is_empty()
                 && o.layers.is_empty()
                 && o.liquids.is_empty())
         })
@@ -1877,6 +1862,13 @@ impl Frame {
                 f.splats.truncate(sprites);
             }
         }
+        for (swarms, len) in
+            [(&mut self.swarms, self.particles.len()), (&mut self.swarms_front, self.particles_front.len())]
+        {
+            for r in swarms.iter_mut() {
+                r.at = r.at.min(len as u32);
+            }
+        }
         if let Some(o) = &mut self.overlay {
             o.fit_lists_to(vertices, sprites);
         }
@@ -1930,10 +1922,17 @@ impl Frame {
         self.flashes.retain(|f| sees(f.center, f.size));
         let reach = |p: &Particle| p.place[3].max(p.style[0]) * (1.0 + p.style[2]) + 4.0;
         let splat = |s: &Splat| sees([s.place[0], s.place[1]], s.place[2] * 1.6 + 4.0);
-        cull_sprites(&mut self.particles, &mut self.fields, |p| sees([p.place[0], p.place[1]], reach(p)), splat);
+        cull_sprites(
+            &mut self.particles,
+            &mut self.fields,
+            &mut self.swarms,
+            |p| sees([p.place[0], p.place[1]], reach(p)),
+            splat,
+        );
         cull_sprites(
             &mut self.particles_front,
             &mut self.fields_front,
+            &mut self.swarms_front,
             |p| sees([p.place[0], p.place[1]], reach(p)),
             splat,
         );
@@ -1944,14 +1943,15 @@ impl Frame {
 }
 
 /// Keeps the sprites of `list` that `keep` says and the splats of `fields` that `keep_splat`
-/// says, each field still sitting between the same kept sprites.
+/// says, each field (and each swarm run of `swarms`) still sitting between the same kept sprites.
 fn cull_sprites(
     list: &mut Vec<Particle>,
     fields: &mut [Field],
+    swarms: &mut [crate::SwarmRun],
     keep: impl Fn(&Particle) -> bool,
     keep_splat: impl Fn(&Splat) -> bool,
 ) {
-    if fields.is_empty() {
+    if fields.is_empty() && swarms.is_empty() {
         list.retain(keep);
         return;
     }
@@ -1963,6 +1963,9 @@ fn cull_sprites(
     for f in fields.iter_mut() {
         f.at = kept_before[(f.at as usize).min(seen.len())];
         f.splats.retain(&keep_splat);
+    }
+    for r in swarms.iter_mut() {
+        r.at = kept_before[(r.at as usize).min(seen.len())];
     }
     let mut i = 0;
     list.retain(|_| {
@@ -2295,7 +2298,7 @@ pub const MOST_SPRITES: usize = 1_000_000;
 mod tests {
     use super::*;
     use bpe_core::{Address, Ease, Value, resolve, testkit};
-    use bpe_runtime::{Event, Log, Party, Sims, World};
+    use bpe_runtime::{Event, EventKind, Log, Party, Sims, World};
 
     struct FakeScene;
     impl ThingDraw for FakeScene {

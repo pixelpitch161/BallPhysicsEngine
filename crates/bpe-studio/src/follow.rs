@@ -122,7 +122,8 @@ pub fn can_light(scene: &Scene, reg: &bpe_core::Registry, a: &Address) -> bool {
 pub fn menu(scene: &Scene) -> FollowMenu {
     let mut shapes = Vec::new();
     for id in &scene.order {
-        let Some(thing) = scene.things.get(id) else { continue };
+        // Shapes only: a Particles thing's sound is heard in the sound's own world, not the editor's.
+        let Some(thing) = scene.things.get(id).filter(|t| t.kind == bpe_kit::things::shape::KIND) else { continue };
         let Some(card) = thing.slots.get(&SlotId::Sound).filter(|c| c.kind == VOICE) else { continue };
         if !VoiceSettings::from_params(&card.params).enabled {
             continue;

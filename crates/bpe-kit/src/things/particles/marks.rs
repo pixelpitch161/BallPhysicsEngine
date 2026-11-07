@@ -82,7 +82,7 @@ impl Mark {
 /// drops the oldest past Most marks and those every layer has finished fading. Clears the
 /// touch flags. Runs after the move and before the dead are removed.
 pub fn collect(st: &mut ParticlesState) {
-    let why = st.wants.marks_why;
+    let why = st.look_wants.marks_why;
     let now = st.step;
     for s in &mut st.specks {
         let touched = s.flags & (TOUCHED_SHAPE | TOUCHED_EDGE);
@@ -108,13 +108,13 @@ pub fn collect(st: &mut ParticlesState) {
 
 /// Drops the oldest marks past Most marks, and those every layer has finished fading.
 pub fn prune(st: &mut ParticlesState) {
-    if st.wants.marks_why == 0 {
+    if st.look_wants.marks_why == 0 {
         st.marks = Vec::new();
         return;
     }
     let now = st.step;
-    let mut gone = st.marks.len().saturating_sub(st.wants.most_marks.max(1));
-    if let Some(last) = st.wants.marks_last {
+    let mut gone = st.marks.len().saturating_sub(st.look_wants.most_marks.max(1));
+    if let Some(last) = st.look_wants.marks_last {
         gone = gone.max(st.marks.iter().take_while(|m| m.age(now) > last).count());
     }
     if gone > 0 {

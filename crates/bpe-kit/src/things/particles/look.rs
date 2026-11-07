@@ -10,7 +10,9 @@ use bpe_core::{
     Blend, Choice, Color, Gradient, LayerSection, Mix, ModuleKind, ResolvedSlot, SettingDef, Settings, SlotId,
 };
 
+use crate::modules::look::layers::gives_light::{Emit, GivesLight, unlit_if_lamp};
 use crate::modules::look::layers::gpu::SubLayer;
+use crate::modules::look::layers::lighting;
 use crate::modules::look::layers::particles::{ParticleFade, ShapeMadeOf, SizeOverLife};
 use crate::modules::look::layers::subs::{SubFlash, SubHue, SubOutline, SubRecolour};
 use crate::modules::look::layers::trail::AroundPlace;
@@ -27,12 +29,44 @@ pub const FLAME: &str = "particles.flame";
 pub const SHAPES: &str = "particles.shapes";
 pub const GLITTER: &str = "particles.glitter";
 pub const WEB: &str = "particles.web";
+pub const PILES: &str = "particles.piles";
 pub const SUB_GLOW: &str = "particles.sub.glow";
 pub const SUB_OUTLINE: &str = "particles.sub.outline";
 pub const SUB_SHADOW: &str = "particles.sub.shadow";
 pub const SUB_RECOLOUR: &str = "particles.sub.recolour";
 pub const SUB_FLASH: &str = "particles.sub.flash";
 pub const SUB_HUE: &str = "particles.sub.hue";
+/// Gives off light (particles part 7): the layer's particles light the scene round them.
+pub const SUB_LIGHT: &str = "particles.sub.light";
+
+/// What moves a Particles thing's particles (particles part 8).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum Engine {
+    /// On the processor, exactly the same on every computer, up to 1 000 000.
+    #[default]
+    Exact,
+    /// On the graphics card, up to 4 000 000: decoration only, and not every look and force.
+    HugeSwarm,
+}
+
+/// The Look card's own settings.
+#[derive(Clone, Debug, Default, PartialEq, Settings)]
+pub struct LookCardSettings {
+    /// Exact moves the particles on the processor; Huge swarm on the graphics card, for many more.
+    #[setting(label = "Engine", group = "Basics")]
+    pub engine: Engine,
+}
+
+/// The Look card's key for its Engine.
+pub const ENGINE_KEY: &str = "engine";
+
+/// The engine the Look card `look` picks (Exact without one).
+pub fn engine_of(look: Option<&ResolvedSlot>) -> Engine {
+    match look {
+        Some(l) if l.kind == CARD => LookCardSettings::from_params(&l.params).engine,
+        _ => Engine::Exact,
+    }
+}
 
 /// Which of the thing's particles a layer draws.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
@@ -57,6 +91,9 @@ pub enum ColourFrom {
     Own,
     /// The colour of the ball each particle came from (riding balls, or born where one hit).
     ParentBall,
+    /// The colour of the particle each was born from (inside another Particles thing): the
+    /// parent's first layer with colours of its own, as that particle was then.
+    ParentParticle,
 }
 
 /// What More shapes draws each particle as.
@@ -495,6 +532,62 @@ impl WebLayer {
     }
 }
 
+/// Piles: the heaps the particles make (Meets things: Pile up), each drawn as one band.
+#[derive(Clone, Debug, PartialEq, Settings)]
+pub struct PilesLayer {
+    /// Under the balls or over them.
+    #[setting(label = "Where", group = "Which")]
+    pub place: AroundPlace,
+    /// Its colours, by where along the pile, a stop for each column, or when.
+    #[setting(paint, label = "Colours", group = "Colours", prefix = "", follows = "place|order|time")]
+    pub colour: Paint,
+    #[setting(label = "Opacity", group = "Colours", range(0, 1), simple, keyframe, pulse)]
+    pub opacity: f32,
+    /// How soft the sand's top edge is.
+    #[setting(label = "Softness", group = "Piles", range(0, 1), keyframe)]
+    pub softness: f32,
+    #[setting(label = "Blend", group = "Blending")]
+    pub blend: Blend,
+    #[setting(label = "Blend amount", group = "Blending", range(0, 1), keyframe)]
+    pub blend_amount: f32,
+}
+
+impl Default for PilesLayer {
+    fn default() -> Self {
+        Self {
+            place: AroundPlace::Behind,
+            colour: Paint { follow: Follow::Place, ..Paint::solid(Color::rgb(214, 180, 120)) },
+            opacity: 1.0,
+            softness: 0.3,
+            blend: Blend::Normal,
+            blend_amount: 1.0,
+        }
+    }
+}
+
+impl PilesLayer {
+    /// The settings every layer has (those it doesn't have at their defaults).
+    pub fn common(&self) -> Common {
+        Common {
+            place: self.place,
+            only: Only::All,
+            age: 1.0,
+            share: 0.5,
+            colour_from: ColourFrom::Own,
+            colour: self.colour.clone(),
+            opacity: self.opacity,
+            twinkle: 0.0,
+            twinkle_speed: 8.0,
+            size: 1.0,
+            size_curve: SizeOverLife::Even,
+            fade: ParticleFade::None,
+            blend: self.blend,
+            blend_amount: self.blend_amount,
+            detail: FineDetail::default(),
+        }
+    }
+}
+
 /// The settings every Look layer has, read from any kind.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Common {
@@ -538,6 +631,10 @@ pub enum Drawn {
     Marks(super::marks::MarksLayer),
     /// The particles as one blobby surface (part 6).
     Liquid(super::liquid::LiquidLayer),
+    /// The thing's piles, not its particles.
+    Piles {
+        softness: f32,
+    },
 }
 
 /// One shown Look layer as the drawing reads it.
@@ -550,6 +647,13 @@ pub struct LookLayer {
     pub subs: Vec<SubLayer>,
     /// Its Mirror, Colour split and Glitch (part 6).
     pub modifiers: super::modifiers::Modifiers,
+    /// How it takes the scene's light ([`lighting::of`]), its Lit taken away when it gives off
+    /// light (part 7).
+    pub light: [f32; 4],
+    /// Its UV and how it catches beams ([`lighting::extra_of`], no link number yet).
+    pub more: [f32; 4],
+    /// The light it gives off (its Gives off light sub-layers), when it gives any.
+    pub emit: Option<Emit>,
 }
 
 /// A sub-layer of `kind` with its settings `p`, as a ball's (sizes in pixels).
@@ -561,6 +665,7 @@ fn sub_of(kind: &str, p: &bpe_core::Params) -> Option<SubLayer> {
         SUB_RECOLOUR => SubLayer::Recolour(SubRecolour::from_params(p)),
         SUB_FLASH => SubLayer::Flash(SubFlash::from_params(p)),
         SUB_HUE => SubLayer::Hue(SubHue::from_params(p)),
+        SUB_LIGHT => SubLayer::Light(GivesLight::from_params(p)),
         _ => return None,
     })
 }
@@ -614,6 +719,10 @@ pub fn layers_of(slot: &ResolvedSlot) -> Vec<LookLayer> {
                 let common = s.common();
                 (Drawn::Liquid(s), common)
             }
+            PILES => {
+                let s = PilesLayer::from_params(&p);
+                (Drawn::Piles { softness: s.softness }, s.common())
+            }
             kind => {
                 if let Some(parent) = layer.parent
                     && let Some(l) = out.iter_mut().find(|l| l.id == parent)
@@ -624,7 +733,21 @@ pub fn layers_of(slot: &ResolvedSlot) -> Vec<LookLayer> {
             }
         };
         let modifiers = super::modifiers::Modifiers::from_params(&p);
-        out.push(LookLayer { id: layer.id, drawn, common, subs: Vec::new(), modifiers });
+        out.push(LookLayer {
+            id: layer.id,
+            drawn,
+            common,
+            subs: Vec::new(),
+            modifiers,
+            light: lighting::of(&p),
+            more: lighting::extra_of(&p, 0.0, true),
+            emit: None,
+        });
+    }
+    // Gives off light makes its layer a lamp: it shows its own colours, unlit.
+    for l in &mut out {
+        l.emit = Emit::of_subs(&l.subs);
+        l.light = unlit_if_lamp(l.light, l.emit);
     }
     out
 }
@@ -646,7 +769,7 @@ impl ModuleKind for ParticlesLookKind {
         SlotId::Look
     }
     fn settings(&self) -> &'static [SettingDef] {
-        &[]
+        LookCardSettings::defs()
     }
     fn fits(&self, thing_kind: &str) -> bool {
         thing_kind == super::KIND
@@ -730,6 +853,12 @@ pub fn kinds() -> Vec<Kind> {
                 super::liquid::LiquidLayer::defs,
             )
         },
+        whole(
+            PILES,
+            "Piles",
+            "The heaps the particles make where they pile up (Meets things: Pile up), drawn as sand.",
+            PilesLayer::defs,
+        ),
         sub(SUB_GLOW, "Glow", "Soft light round its layer's particles.", ShapeSubGlow::defs),
         sub(SUB_OUTLINE, "Outline", "A line round its layer's particles, painted over them.", SubOutline::defs),
         sub(SUB_SHADOW, "Shadow", "A soft offset copy of its layer's particles, under them.", ShapeSubShadow::defs),
@@ -740,6 +869,12 @@ pub fn kinds() -> Vec<Kind> {
             "Colour on hit",
             "Its layer's colours turn round the wheel every time the thing it rides is hit.",
             SubHue::defs,
+        ),
+        sub(
+            SUB_LIGHT,
+            "Gives off light",
+            "Makes its layer's particles give off light that lights everything round them (with a Lighting card).",
+            GivesLight::defs,
         ),
     ]
 }

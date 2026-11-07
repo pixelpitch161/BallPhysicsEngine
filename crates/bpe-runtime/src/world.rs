@@ -145,6 +145,9 @@ pub struct World {
     /// Bytes each thing's state takes beyond its own struct, for the states that hold a lot
     /// Their sims note it; [`World::memory`] counts it for playback budgets.
     pub state_memory: BTreeMap<ThingId, usize>,
+    /// Bytes each thing's state keeps in video memory (a Huge swarm's particles), noted by its
+    /// sim; [`World::gpu_memory`] counts it for playback budgets.
+    pub gpu_memory: BTreeMap<ThingId, usize>,
     /// The kind of every built thing, in id order.
     pub(crate) kinds: BTreeMap<ThingId, String>,
     /// The built things in tree order: parents before children.
@@ -183,9 +186,12 @@ pub struct World {
     /// flight), so a cache keyed by a moment of a run (the light probe's) never mixes two runs
     /// that are at the same step.
     pub run: RunId,
-    /// The built things whose sim steps them beside the physics ([`crate::ThingSim::in_main`] false):
-    /// left out of copies made for test flights ([`World::lone`]).
+    /// The built things stepped beside the physics ([`is_beside`]: their sim's
+    /// [`crate::ThingSim::in_main`] is false and no rule reads them).
     pub beside: BTreeSet<ThingId>,
+    /// The built things whose sim never steps them with the physics, beside it or kept in it by
+    /// a rule that reads them: left out of test flights too.
+    pub decoration: BTreeSet<ThingId>,
 }
 
 /// States lent to a world for drawing ([`World::lend_states`]), with what they replaced.
@@ -265,6 +271,7 @@ impl World {
             beat_seconds: 0.5,
             beats_in_bar: 4,
             state_memory: BTreeMap::new(),
+            gpu_memory: BTreeMap::new(),
             kinds: BTreeMap::new(),
             order: Vec::new(),
             pairs: Pairs::default(),
@@ -281,6 +288,7 @@ impl World {
             pace: 1.0,
             run: RunId::fresh(),
             beside: BTreeSet::new(),
+            decoration: BTreeSet::new(),
         };
         // Worked out first: a thing may cache work by it while it builds.
         let wants_fingerprint =
@@ -303,8 +311,9 @@ impl World {
         // What the world senses for its keys: a world with nothing stepped beside the physics
         // (the editor's main playback) leaves out the keys only those things read, so an Air
         // key following sound or light gives it no sound or light to work out.
-        let sensed =
-            if has_beside(resolved, sims) { animation.clone() } else { animation.as_ref().and_then(main_animation) };
+        // (A rule may keep such a thing in the main playback: it is built, so it senses too.)
+        let decorated = resolved.things.values().any(|r| sims.thing(&r.kind).is_some_and(|s| !s.in_main(r)));
+        let sensed = if decorated { animation.clone() } else { animation.as_ref().and_then(main_animation) };
         // Things that need the walls (none of today's kinds) are built in a second pass, so
         // an arena after them in the tree is there all the same; they come last in `order`. A
         // thing without a sim is still known by kind and tags, so a target can name it.
@@ -322,8 +331,11 @@ impl World {
                 if let Some(sim) = sim {
                     sim.build(thing, r, &mut world);
                     world.order.push(*id);
-                    if !sim.in_main(r) {
+                    if is_beside(scene, sims, *id, r) {
                         world.beside.insert(*id);
+                    }
+                    if !sim.in_main(r) {
+                        world.decoration.insert(*id);
                     }
                     if let Some(want) = sim.history(r) {
                         world.keep_history(*id, want);
@@ -419,7 +431,16 @@ impl World {
                 health: self.health_levels(),
                 ..Inputs::NONE
             };
-            animated.animation.apply(&mut animated.resolved, time, &inputs);
+            // Decoration's pulses on hits move (a Particles thing's Rate); the physics' never do.
+            let kinds = &self.kinds;
+            let pulsed = |t: ThingId| kinds.get(&t).is_some_and(|k| sims.thing(k).is_some_and(|s| s.pulses_on_hits()));
+            if !self.decoration.iter().any(|t| pulsed(*t)) {
+                animated.animation.apply(&mut animated.resolved, time, &inputs);
+            } else {
+                let hits = Inputs { hits: crate::hit_strength(log, time, self.steps_per_second), ..inputs };
+                animated.animation.apply_where(&mut animated.resolved, time, &inputs, |t| !pulsed(t));
+                animated.animation.apply_where(&mut animated.resolved, time, &hits, pulsed);
+            }
         }
         let mut destinations: Vec<(ThingId, Option<SlotId>)> =
             animated.animation.destinations().into_iter().map(|(thing, slot, _)| (thing, slot)).collect();
@@ -735,6 +756,11 @@ impl World {
             + std::mem::size_of::<World>()
     }
 
+    /// Bytes the world keeps in video memory, for playback budgets.
+    pub fn gpu_memory(&self) -> usize {
+        self.gpu_memory.values().sum()
+    }
+
     /// Starts keeping `thing`'s ball positions as `want` asks, so a trail can draw where they
     /// have been. Asked again, it keeps the longer of the two.
     pub fn keep_history(&mut self, thing: ThingId, want: crate::HistoryWant) {
@@ -767,9 +793,12 @@ impl World {
     /// with no history. Every other thing is left out: not
     /// stepped, its balls gone, its keys dropped, its pose left where it is now (a thing riding it
     /// stays put). Kinds, names and tags stay whole, so targets still name what they named.
-    /// Things stepped beside the physics ([`World::beside`]) are always left out.
+    /// Decoration ([`World::decoration`]: things stepped beside the physics, or kept in it by a
+    /// rule that reads them) is always left out.
     pub fn lone(&self, keep: &dyn Fn(ThingId) -> bool) -> World {
-        let keep = |id: ThingId| keep(id) && !self.beside.contains(&id);
+        // Decoration (things whose sim steps beside the physics) never changes a flight, even when
+        // a rule keeps it in this world.
+        let keep = |id: ThingId| keep(id) && !self.decoration.contains(&id);
         let keep = &keep;
         let kept = |id: &ThingId| keep(*id);
         let animated = self.animated.as_ref().and_then(|a| {
@@ -816,6 +845,7 @@ impl World {
             beat_seconds: self.beat_seconds,
             beats_in_bar: self.beats_in_bar,
             state_memory: BTreeMap::new(),
+            gpu_memory: BTreeMap::new(),
             kinds: self.kinds.clone(),
             order: self.order.iter().copied().filter(kept).collect(),
             pairs: Pairs::default(),
@@ -839,6 +869,7 @@ impl World {
             pace: 1.0,
             run: RunId::fresh(),
             beside: BTreeSet::new(),
+            decoration: BTreeSet::new(),
         }
     }
 
@@ -1522,35 +1553,98 @@ pub fn fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64 {
 /// [`fingerprint`] without the balls' history (how much of their past trails and particles
 /// keep): what the sound hears of a run. A longer trail changes the run the editor keeps, not
 /// its hits, so the sound plays on through it.
+/// Things stepped beside the physics that the sound hears ([`crate::ThingSim::heard`]: a Particles
+/// thing whose sound is on) count too: how they run and what of their sound card changes what they
+/// log, so editing their particles runs the sound again while a volume change only patches it.
 pub fn sound_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64 {
-    fingerprint_of(scene, resolved, sims, false)
+    let base = fingerprint_of(scene, resolved, sims, false);
+    let heard = |r: &bpe_core::ResolvedThing| sims.thing(&r.kind).and_then(|s| s.heard(r));
+    if !resolved.things.values().any(|r| heard(r).is_some()) {
+        return base;
+    }
+    let mut h = Hasher(base);
+    h.bytes(b"heard");
+    beside_hash(&mut h, scene, resolved, sims, &|r| heard(r).is_some());
+    // What of its sound card changes what it logs, beside the physics or in it (a rule reads it).
+    for (id, r) in &resolved.things {
+        if let Some(print) = heard(r) {
+            h.bytes(&id.0.to_le_bytes());
+            h.bytes(&print.to_le_bytes());
+        }
+    }
+    h.0
 }
 
-/// `resolved` without the things stepped beside the physics ([`crate::ThingSim::in_main`] false):
-/// what the editor's main playback, the sound and the aiming build from. A world built from it
-/// steps every ball exactly as one built from the whole scene.
-pub fn main_part<'a>(resolved: &'a Resolved, sims: &Sims) -> std::borrow::Cow<'a, Resolved> {
-    let beside = |r: &bpe_core::ResolvedThing| sims.thing(&r.kind).is_some_and(|s| !s.in_main(r));
-    if !resolved.things.values().any(beside) {
+/// Whether thing `id` (resolved as `r`) is stepped beside the physics: its sim says it doesn't
+/// step with it ([`crate::ThingSim::in_main`] false) and no enabled rule reads it
+/// ([`crate::BlockSim::keeps`]: a rule that reads it changes the balls, so it steps with them).
+pub fn is_beside(scene: &Scene, sims: &Sims, id: ThingId, r: &bpe_core::ResolvedThing) -> bool {
+    if !sims.thing(&r.kind).is_some_and(|s| !s.in_main(r)) {
+        return false;
+    }
+    let tags = scene.things.get(&id).map_or(NO_TAGS, |t| &t.tags);
+    !scene
+        .rules
+        .list
+        .iter()
+        .filter(|rule| rule.enabled)
+        .flat_map(|rule| &rule.blocks)
+        .any(|b| sims.block(&b.kind).is_some_and(|s| s.keeps(&b.params, id, &r.kind, tags)))
+}
+
+/// `resolved` without the things `drop` says, borrowed when it drops none.
+fn without<'a>(
+    resolved: &'a Resolved,
+    drop: impl Fn(ThingId, &bpe_core::ResolvedThing) -> bool,
+) -> std::borrow::Cow<'a, Resolved> {
+    if !resolved.things.iter().any(|(id, r)| drop(*id, r)) {
         return std::borrow::Cow::Borrowed(resolved);
     }
-    let things = resolved.things.iter().filter(|(_, r)| !beside(r)).map(|(id, r)| (*id, r.clone())).collect();
+    let things = resolved.things.iter().filter(|(id, r)| !drop(**id, r)).map(|(id, r)| (*id, r.clone())).collect();
     std::borrow::Cow::Owned(Resolved { things, problems: resolved.problems.clone() })
 }
 
+/// `resolved` without the things stepped beside the physics ([`is_beside`]): what the editor's
+/// main playback and the aiming build from. A world built from it steps every ball exactly as one
+/// built from the whole scene.
+pub fn main_part<'a>(scene: &Scene, resolved: &'a Resolved, sims: &Sims) -> std::borrow::Cow<'a, Resolved> {
+    without(resolved, |id, r| is_beside(scene, sims, id, r))
+}
+
+/// [`main_part`] and the things beside it whose events the sound hears ([`crate::ThingSim::heard`]):
+/// what the sound engine's physics builds from.
+pub fn heard_part<'a>(scene: &Scene, resolved: &'a Resolved, sims: &Sims) -> std::borrow::Cow<'a, Resolved> {
+    let heard = |r: &bpe_core::ResolvedThing| sims.thing(&r.kind).is_some_and(|s| s.heard(r).is_some());
+    without(resolved, |id, r| is_beside(scene, sims, id, r) && !heard(r))
+}
+
 /// Whether some thing of `resolved` is stepped beside the physics.
-pub fn has_beside(resolved: &Resolved, sims: &Sims) -> bool {
-    resolved.things.values().any(|r| sims.thing(&r.kind).is_some_and(|s| !s.in_main(r)))
+pub fn has_beside(scene: &Scene, resolved: &Resolved, sims: &Sims) -> bool {
+    resolved.things.iter().any(|(id, r)| is_beside(scene, sims, *id, r))
 }
 
 /// A hash of everything that changes how the things stepped beside the physics run (and the
 /// physics they read), 0 when there are none: the editor's particle playback starts over when it
 /// changes. Their Motion and Bounce cards count whole, as nothing but the thing reads them.
 pub fn beside_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64 {
-    if !has_beside(resolved, sims) {
+    if !has_beside(scene, resolved, sims) {
         return 0;
     }
     let mut h = Hasher(fingerprint_of(scene, resolved, sims, true));
+    beside_hash(&mut h, scene, resolved, sims, &|_| true);
+    h.0
+}
+
+/// Hashes into `h` the things stepped beside the physics that `pick` takes: their settings, place,
+/// parent, Motion and Bounce cards whole, and their keys.
+fn beside_hash(
+    h: &mut Hasher,
+    scene: &Scene,
+    resolved: &Resolved,
+    sims: &Sims,
+    pick: &dyn Fn(&bpe_core::ResolvedThing) -> bool,
+) {
+    let chosen = |id: ThingId, r: &bpe_core::ResolvedThing| is_beside(scene, sims, id, r) && pick(r);
     // What the main things hold that only the beside things read (the tempo).
     for (id, r) in &resolved.things {
         let Some(sim) = sims.thing(&r.kind).filter(|s| s.in_main(r)) else { continue };
@@ -1563,7 +1657,10 @@ pub fn beside_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u6
         }
     }
     for (id, r) in &resolved.things {
-        let Some(sim) = sims.thing(&r.kind).filter(|s| !s.in_main(r)) else { continue };
+        if !chosen(*id, r) {
+            continue;
+        }
+        let sim = sims.thing(&r.kind).expect("a beside thing has a sim");
         let Some(thing) = scene.things.get(id) else { continue };
         h.bytes(&id.0.to_le_bytes());
         h.bytes(&sim.more_fingerprint(r).to_le_bytes());
@@ -1576,6 +1673,13 @@ pub fn beside_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u6
         for (key, value) in r.params.iter() {
             h.bytes(key.as_bytes());
             h.value(value);
+        }
+        for (slot, s) in r.slots.iter().filter(|(slot, _)| !SIM_SLOTS.contains(slot)) {
+            for (key, value) in s.params.iter().filter(|(key, _)| sim.beside_card_key(*slot, key)) {
+                h.bytes(&[*slot as u8]);
+                h.bytes(key.as_bytes());
+                h.value(value);
+            }
         }
         for slot in SIM_SLOTS {
             if let Some(s) = r.slots.get(&slot) {
@@ -1607,7 +1711,7 @@ pub fn beside_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u6
     if let Some(animation) = physics_animation(scene, resolved, sims) {
         let theirs = |a: &bpe_core::Address| {
             a.slot.is_some_and(|s| BESIDE_SLOTS.contains(&s))
-                || resolved.things.get(&a.thing).is_some_and(|r| sims.thing(&r.kind).is_some_and(|s| !s.in_main(r)))
+                || resolved.things.get(&a.thing).is_some_and(|r| chosen(a.thing, r))
         };
         let follows = |light: bool| {
             animation.addresses().iter().filter(|a| theirs(a)).any(|a| {
@@ -1644,12 +1748,11 @@ pub fn beside_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u6
             }
         }
     }
-    h.0
 }
 
 fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool) -> u64 {
     // Things stepped beside the physics never change it.
-    let resolved = &*main_part(resolved, sims);
+    let resolved = &*main_part(scene, resolved, sims);
     let mut h = Hasher(HASH_OFFSET);
     for (id, r) in &resolved.things {
         let Some(thing) = scene.things.get(id) else { continue };
@@ -1693,18 +1796,30 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
         for tag in &thing.tags {
             h.bytes(tag.as_bytes());
         }
-        // Only modules the processor simulates count.
+        // Only modules the processor simulates count, and the cards of a thing that reads its own.
+        let owns = sims.thing(&r.kind).is_some_and(|s| s.own_cards());
         for slot in SIM_SLOTS {
             if let Some(s) = r.slots.get(&slot)
-                && sims.module(&s.kind).is_some()
+                && (owns || sims.module(&s.kind).is_some())
             {
                 h.bytes(&[slot as u8]);
                 h.bytes(s.kind.as_bytes());
+                if owns {
+                    // What each layer is and does; not its name.
+                    for l in &s.layers {
+                        h.bytes(format!("{:?}", (l.id, &l.kind, l.parent, &l.only)).as_bytes());
+                    }
+                }
                 for (key, value) in s.params.iter() {
                     h.bytes(key.as_bytes());
                     h.value(value);
                 }
             }
+        }
+        // What else its stepping keeps (two-way particles' trails and marks), so a change rebuilds it.
+        if let Some(more) = sims.thing(&r.kind).map(|s| s.more_fingerprint(r)).filter(|m| *m != 0) {
+            h.bytes(b"more");
+            h.bytes(&more.to_le_bytes());
         }
     }
     // Health cards change the run (a ball breaks at zero, rules read it): only scenes with one.
@@ -1718,6 +1833,37 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
             for (key, value) in s.params.iter() {
                 h.bytes(key.as_bytes());
                 h.value(value);
+            }
+        }
+    }
+    // A thing in the physics that reads its own cards (two-way particles) may read the air too:
+    // then the air's cards and keys count.
+    if resolved.things.values().any(|r| sims.thing(&r.kind).is_some_and(|s| s.own_cards())) {
+        for (id, r) in &resolved.things {
+            for slot in BESIDE_SLOTS {
+                if let Some(s) = r.slots.get(&slot) {
+                    h.bytes(b"beside card");
+                    h.bytes(&id.0.to_le_bytes());
+                    h.bytes(&[slot as u8]);
+                    h.bytes(s.kind.as_bytes());
+                    for (key, value) in s.params.iter() {
+                        h.bytes(key.as_bytes());
+                        h.value(value);
+                    }
+                }
+            }
+        }
+        if let Some(animation) = physics_animation(scene, resolved, sims) {
+            for a in animation.addresses() {
+                if a.slot.is_some_and(|s| BESIDE_SLOTS.contains(&s)) {
+                    h.bytes(format!("{a:?}").as_bytes());
+                    if let Some(track) = scene.tracks.get(a) {
+                        h.bytes(format!("{track:?}").as_bytes());
+                    }
+                    if let Some(pulse) = scene.pulses.get(a) {
+                        h.bytes(format!("{pulse:?}").as_bytes());
+                    }
+                }
             }
         }
     }
@@ -2563,6 +2709,6 @@ mod tests {
         w.take_back(lent);
         assert_eq!(w.states.keys().copied().collect::<Vec<_>>(), before);
         assert!(w.beside.is_empty(), "every test kind steps with the physics");
-        assert!(matches!(main_part(&resolved, &sims), std::borrow::Cow::Borrowed(_)));
+        assert!(matches!(main_part(&scene, &resolved, &sims), std::borrow::Cow::Borrowed(_)));
     }
 }

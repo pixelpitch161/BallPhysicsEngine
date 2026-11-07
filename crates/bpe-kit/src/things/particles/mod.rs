@@ -15,6 +15,7 @@ mod air_tests;
 pub mod beats;
 pub mod births;
 pub mod draw;
+pub mod feeds;
 pub mod forces;
 pub mod liquid;
 pub mod look;
@@ -23,19 +24,30 @@ mod looks_motion;
 pub mod marks;
 pub mod meets;
 pub mod modifiers;
+pub mod moments;
 pub mod more_forces;
+pub mod piles;
 pub mod ready;
+pub mod rules;
 pub mod sim;
 pub mod spots;
 pub mod state;
 pub mod step;
+pub mod swarm;
+#[cfg(test)]
+mod swarm_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod tests_motion;
 #[cfg(test)]
+mod tests_part4;
+#[cfg(test)]
 mod tests_part6;
+#[cfg(test)]
+mod tests_part7;
 pub mod trail;
+pub mod two_way;
 pub mod wants;
 pub mod web;
 
@@ -67,6 +79,28 @@ pub enum BornFrom {
     AWordOrPicture,
     /// On the points of a grid: each particle's home is its point (particles part 3).
     AGrid,
+    /// From the particles of the Particles thing it sits in: where they die, land, hit or pop.
+    ItsParentsParticles,
+}
+
+/// Which of its parent's particles' moments a fed Particles thing is born from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum FedWhen {
+    /// Where a particle's life runs out.
+    #[default]
+    Die,
+    /// Where one comes to rest on a shape or the floor.
+    Land,
+    HitABall,
+    HitAShape,
+    /// Where one hits a ball or a shape.
+    HitAnything,
+    /// Where one pops on a ball.
+    Pop,
+    /// Where one going up stops rising (a rocket at the top of its climb).
+    StopRising,
+    /// All the time, from every one of them: Rate a particle a second.
+    EveryStep,
 }
 
 /// What a word or picture source is made of.
@@ -374,12 +408,15 @@ pub struct ParticlesSettings {
     )]
     pub homes_turn: f32,
 
-    #[setting(label = "Emit", simple, group = "When")]
+    #[setting(label = "Emit", when = "from!=its_parents_particles", simple, group = "When")]
     pub emit: Emit,
+    /// Which of the parent's particles' moments this thing's particles are born at.
+    #[setting(label = "When they", when = "from=its_parents_particles", group = "When")]
+    pub fed_when: FedWhen,
     /// Particles a second (a ball, when they ride each ball).
     #[setting(
         label = "Rate",
-        when = "emit=steady",
+        when = "from!=its_parents_particles and emit=steady or from=its_parents_particles and fed_when=every_step",
         range(0, 1e9),
         span(0, 2000),
         unit = "per s",
@@ -391,7 +428,7 @@ pub struct ParticlesSettings {
     pub rate: f32,
     #[setting(
         label = "Every",
-        when = "emit=bursts",
+        when = "from!=its_parents_particles and emit=bursts",
         range(0.001, 1e9),
         span(0.05, 10),
         unit = "s",
@@ -399,10 +436,11 @@ pub struct ParticlesSettings {
         group = "When"
     )]
     pub every: f32,
-    /// How many each burst, hit, beat or crowd has (a word or grid's crowd fills every place).
+    /// How many each burst, hit, beat or crowd has (a word or grid's crowd fills every place), or
+    /// each moment of its parent's particles lets off.
     #[setting(
         label = "Count",
-        when = "emit=bursts|on_hits|on_the_beat or emit=keep_a_crowd|once_at_the_start and from!=a_word_or_picture|a_grid",
+        when = "from!=its_parents_particles and emit=bursts|on_hits|on_the_beat or from!=a_word_or_picture|a_grid|its_parents_particles and emit=keep_a_crowd|once_at_the_start or from=its_parents_particles and fed_when!=every_step",
         range(0, 1e9),
         span(1, 2000),
         keyframe,
@@ -410,11 +448,11 @@ pub struct ParticlesSettings {
         group = "When"
     )]
     pub count: u32,
-    #[setting(label = "Every", when = "emit=on_the_beat", group = "When")]
+    #[setting(label = "Every", when = "from!=its_parents_particles and emit=on_the_beat", group = "When")]
     pub beat_every: BeatEvery,
     #[setting(
         label = "Bars",
-        when = "emit=on_the_beat and beat_every=bars",
+        when = "from!=its_parents_particles and emit=on_the_beat and beat_every=bars",
         range(1, 1e6),
         span(1, 16),
         unit = "bars",
@@ -422,15 +460,29 @@ pub struct ParticlesSettings {
     )]
     pub bars: u32,
     /// Starts this many beats in.
-    #[setting(label = "Offset", when = "emit=on_the_beat", range(0, 1e6), span(0, 16), unit = "beats", group = "When")]
+    #[setting(
+        label = "Offset",
+        when = "from!=its_parents_particles and emit=on_the_beat",
+        range(0, 1e6),
+        span(0, 16),
+        unit = "beats",
+        group = "When"
+    )]
     pub beat_offset: f32,
     /// Whose balls' hits let particles off.
-    #[setting(label = "Who hits", when = "emit=on_hits", group = "When")]
+    #[setting(label = "Who hits", when = "from!=its_parents_particles and emit=on_hits", group = "When")]
     pub who_hits: Target,
-    #[setting(label = "Least speed", when = "emit=on_hits", span(0, 2000), unit = "px/s", keyframe, group = "When")]
+    #[setting(
+        label = "Least speed",
+        when = "from!=its_parents_particles and emit=on_hits",
+        span(0, 2000),
+        unit = "px/s",
+        keyframe,
+        group = "When"
+    )]
     pub least_speed: f32,
     /// Harder hits let off more, faster particles.
-    #[setting(label = "Follow impact", when = "emit=on_hits", group = "When")]
+    #[setting(label = "Follow impact", when = "from!=its_parents_particles and emit=on_hits", group = "When")]
     pub follow_impact: bool,
 
     #[setting(
@@ -497,8 +549,9 @@ pub struct ParticlesSettings {
     #[setting(label = "Seed", span(0, 1000), group = "Each particle")]
     pub seed: u32,
 
-    /// When this many are alive, new ones aren't born until some die.
-    #[setting(label = "Most particles", range(1, 1000000), span(1, 200000), group = "Limits")]
+    /// When this many are alive, new ones aren't born until some die (at most 1 000 000, or
+    /// 4 000 000 in a Huge swarm).
+    #[setting(label = "Most particles", range(1, 4000000), span(1, 200000), group = "Limits")]
     pub most: u32,
 }
 
@@ -533,6 +586,7 @@ impl Default for ParticlesSettings {
             stagger: false,
             homes_turn: 0.0,
             emit: Emit::Steady,
+            fed_when: FedWhen::Die,
             rate: 60.0,
             every: 1.0,
             count: 30,
@@ -563,8 +617,10 @@ impl Default for ParticlesSettings {
     }
 }
 
-/// The hard cap on Most particles.
+/// The hard cap on Most particles in the exact engine.
 pub const MOST_EVER: u32 = 1_000_000;
+/// The hard cap on Most particles in a Huge swarm (particles part 8).
+pub const MOST_SWARM: u32 = bpe_gfx::swarm::MOST_SWARM;
 
 impl ParticlesSettings {
     /// The way `angle` (degrees) points.
@@ -591,8 +647,9 @@ impl ThingKind for ParticlesKind {
     fn settings(&self) -> &'static [SettingDef] {
         ParticlesSettings::defs()
     }
+    /// Its Sound card (particles part 7) is turned on from the Sound tab, like a shape's.
     fn slots(&self) -> &'static [SlotId] {
-        &[SlotId::Motion, SlotId::Bounce, SlotId::Look]
+        &[SlotId::Motion, SlotId::Bounce, SlotId::Look, SlotId::Sound]
     }
     fn default_slots(&self) -> &'static [SlotId] {
         &[SlotId::Motion, SlotId::Bounce, SlotId::Look]

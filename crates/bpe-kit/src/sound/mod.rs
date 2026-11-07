@@ -23,8 +23,8 @@ pub use mods::{
 };
 pub use notes::{BeatsOrBars, Change, MAX_SLOTS, NOTE_NAMES, Plays, Root, Scale, SlotOrder, StrumDir};
 pub use voice::{
-    GateMode, GateUnit, NoiseColour, OscSettings, PhaseMode, PlayMode, PlayWhen, SILENT_DB, SubOctave, SubWave, VOICE,
-    VoiceKind, VoiceSettings, WarpMode, Wave, starter_voice,
+    GateMode, GateUnit, MomentStrength, NoiseColour, OscSettings, PhaseMode, PlayMode, PlayWhen, SILENT_DB, SubOctave,
+    SubWave, VOICE, VoiceKind, VoiceSettings, WarpMode, Wave, starter_voice,
 };
 
 use bpe_core::Registry;

@@ -102,10 +102,11 @@ pub enum InspectorTab {
 }
 
 impl Inspector {
-    /// Whether `primary` is a shape showing its Sound tab (the inspector is wide then).
+    /// Whether `primary` is a shape (or a Particles thing) showing its Sound tab (the inspector is
+    /// wide then).
     pub fn sound_open(&self, scene: &Scene, primary: Option<ThingId>) -> bool {
         primary.is_some_and(|id| {
-            scene.things.get(&id).is_some_and(|t| t.kind == SHAPE)
+            scene.things.get(&id).is_some_and(|t| sounds(&t.kind))
                 && self.tab.get(&id).copied().unwrap_or_default() == InspectorTab::Sound
         })
     }
@@ -279,19 +280,23 @@ pub fn show(
     let choices = TargetChoices::from_scene(scene, reg);
     let mut edits = Vec::new();
 
-    // A shape's settings or its sound.
-    if thing.kind == SHAPE {
+    // A shape's (or a Particles thing's) settings or its sound.
+    if sounds(&thing.kind) {
         let mut tab = inspector.tab.get(&id).copied().unwrap_or_default();
+        let chips: [(InspectorTab, &str, &str); 2] = if thing.kind == SHAPE {
+            [
+                (InspectorTab::Settings, "Settings", "The shape's outline, look and how it moves"),
+                (InspectorTab::Sound, "Sound", "The sound the shape makes when balls hit it"),
+            ]
+        } else {
+            [
+                (InspectorTab::Settings, "Settings", "Where the particles come from, how they move and look"),
+                (InspectorTab::Sound, "Sound", "The sound the particles make when they hit things, land or burst"),
+            ]
+        };
         ui.horizontal(|ui| {
             ui.add_space(CARD_MARGIN as f32);
-            crate::look_editor::ball_view::segmented(
-                ui,
-                &mut tab,
-                &[
-                    (InspectorTab::Settings, "Settings", "The shape's outline, look and how it moves"),
-                    (InspectorTab::Sound, "Sound", "The sound the shape makes when balls hit it"),
-                ],
-            );
+            crate::look_editor::ball_view::segmented(ui, &mut tab, &chips);
         });
         ui.add_space(4.0);
         inspector.tab.insert(id, tab);
@@ -786,6 +791,11 @@ pub(crate) fn has_ball_look(kind: &str) -> bool {
 
 /// The kind whose outline settings show under its Look's Body.
 const SHAPE: &str = bpe_kit::things::shape::KIND;
+
+/// Whether things of `kind` have a Sound tab: shapes, and Particles things (particles part 7).
+pub(crate) fn sounds(kind: &str) -> bool {
+    kind == SHAPE || kind == bpe_kit::things::particles::KIND
+}
 
 /// After a shape's own setting `key` was set: a new Sides or Start from starts the outline afresh,
 /// and an emptied outline is taken away rather than kept. In the same edit, so one undo brings

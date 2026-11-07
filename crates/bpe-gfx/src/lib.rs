@@ -48,6 +48,7 @@ pub mod sprites;
 mod sprites_tests;
 #[cfg(test)]
 mod sub_layers_tests;
+pub mod swarm;
 mod util;
 
 pub use frame::{
@@ -61,6 +62,7 @@ pub use frame::{
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, NO_WAVE, PaintGpu, wave_texels};
 pub use masks::{MASK_TILE, MASK_TILE_BYTES, MAX_MASK_TILES, TILE_DISTANCE_REACH, tile_distance};
 pub use programs::{LayeredRun, LookProgram, ProgramStore, in_ball_problem, picture_problem};
+pub use swarm::draw::{SwarmLook, SwarmRun};
 pub use wgpu;
 
 use bpe_runtime::{CameraView, step_at};
@@ -424,6 +426,7 @@ pub struct Renderer {
     chain: effects::chain::Chain,
     sprites: sprites::Sprites,
     fields: fields::Fields,
+    swarms: swarm::draw::SwarmDraw,
     downsample: wgpu::RenderPipeline,
     upsample: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
@@ -477,6 +480,8 @@ struct FrameBuffers {
     particles_front: GrowableBuffer,
     /// Its soft fields of particles.
     fields: fields::FrameFields,
+    /// Its Huge swarms' runs.
+    swarms: swarm::draw::FrameSwarms,
 }
 
 impl Default for FrameBuffers {
@@ -498,6 +503,7 @@ impl Default for FrameBuffers {
             trails_front: GrowableBuffer::new("trail vertices in front"),
             particles_front: GrowableBuffer::new("particles in front"),
             fields: fields::FrameFields::default(),
+            swarms: swarm::draw::FrameSwarms::default(),
         }
     }
 }
@@ -1133,6 +1139,7 @@ impl Renderer {
         let overlay_paint = PaintTexture::new(device, &paint_layout, &sampler, first_height, &ripples);
         let sprites = sprites::Sprites::new(device, &globals_layout);
         let fields = fields::Fields::new(device, &globals_layout);
+        let swarms = swarm::draw::SwarmDraw::new(device, &globals_layout);
         Self {
             globals,
             globals_group,
@@ -1171,6 +1178,7 @@ impl Renderer {
             chain: effects::chain::Chain::new(device),
             sprites,
             fields,
+            swarms,
             downsample,
             upsample,
             composite,
@@ -1375,6 +1383,14 @@ impl Renderer {
         self.buffers.fields.upload(device, queue, &self.fields, frame, size);
         for (b, l) in layer_buffers.iter_mut().zip(&layers) {
             b.fields.upload(device, queue, &self.fields, &l.frame, size);
+        }
+        // Their Huge swarms' runs.
+        if let Some(o) = overlay {
+            self.overlay.swarms.upload(device, queue, &self.swarms, &o.swarms, &o.swarms_front);
+        }
+        self.buffers.swarms.upload(device, queue, &self.swarms, &frame.swarms, &frame.swarms_front);
+        for (b, l) in layer_buffers.iter_mut().zip(&layers) {
+            b.swarms.upload(device, queue, &self.swarms, &l.frame.swarms, &l.frame.swarms_front);
         }
         // The programs of stacks with shader layers, built the first time a frame names them.
         let frames = std::iter::once((frame, None))
@@ -1769,6 +1785,7 @@ impl Renderer {
             || !frame.trails_front.is_empty()
             || !frame.particles_front.is_empty()
             || !frame.fields_front.is_empty()
+            || !frame.swarms_front.is_empty()
         {
             self.fields.splat(encoder, globals, &self.buffers.fields, true);
             let mut pass = begin_pass(encoder, &self.targets.hdr, "flashes", wgpu::LoadOp::Load);
@@ -1885,7 +1902,7 @@ impl Renderer {
             pass.set_vertex_buffer(0, b.trails.slice());
             pass.draw(0..f.trails.len() as u32, 0..1);
         }
-        if !f.particles.is_empty() || !f.fields.is_empty() {
+        if !f.particles.is_empty() || !f.fields.is_empty() || !f.swarms.is_empty() {
             self.draw_sprites(pass, b, f, false, through);
             // The sprites bind only the globals, the fields their own: put the paint back for
             // what follows.
@@ -1978,13 +1995,14 @@ impl Renderer {
             pass.set_vertex_buffer(0, b.trails_front.slice());
             pass.draw(0..f.trails_front.len() as u32, 0..1);
         }
-        if !f.particles_front.is_empty() || !f.fields_front.is_empty() {
+        if !f.particles_front.is_empty() || !f.fields_front.is_empty() || !f.swarms_front.is_empty() {
             self.draw_sprites(pass, b, f, true, through);
         }
     }
 
     /// The sprites of `f`'s list behind the balls (`front` false) or in front, with its fields
-    /// shaded among them where each one's `at` says.
+    /// shaded and its swarms drawn among them where each one's `at` says (a field before a swarm
+    /// at the same place).
     fn draw_sprites(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -1993,17 +2011,25 @@ impl Renderer {
         front: bool,
         through: &Through,
     ) {
-        let (buffer, count, fields) = if front {
-            (&b.particles_front, f.particles_front.len() as u32, &f.fields_front)
+        let (buffer, count, fields, swarms) = if front {
+            (&b.particles_front, f.particles_front.len() as u32, &f.fields_front, &f.swarms_front)
         } else {
-            (&b.particles, f.particles.len() as u32, &f.fields)
+            (&b.particles, f.particles.len() as u32, &f.fields, &f.swarms)
         };
+        // Fields and swarms in the order they sit, a field first where both sit at once.
+        let mut between: Vec<(u32, bool, usize)> = fields.iter().enumerate().map(|(k, x)| (x.at, false, k)).collect();
+        between.extend(swarms.iter().enumerate().map(|(k, x)| (x.at, true, k)));
+        between.sort_by_key(|&(at, swarm, k)| (at, swarm, k));
         let mut start = 0;
-        for (k, field) in fields.iter().enumerate() {
-            let at = field.at.clamp(start, count);
+        for (at, swarm, k) in between {
+            let at = at.clamp(start, count);
             self.sprites.draw_range(pass, buffer, start..at, through.each);
             start = at;
-            self.fields.composite(pass, &b.fields, front, k, through.each);
+            if swarm {
+                self.swarms.draw(pass, &b.swarms, front, k, through.each);
+            } else {
+                self.fields.composite(pass, &b.fields, front, k, through.each);
+            }
         }
         self.sprites.draw_range(pass, buffer, start..count, through.each);
     }
@@ -2178,6 +2204,9 @@ impl Renderer {
         self.each.ensure(device, l.blend, &l.frame);
         if !l.frame.particles.is_empty() || !l.frame.particles_front.is_empty() {
             self.sprites.ensure_each(device, l.blend);
+        }
+        if !l.frame.swarms.is_empty() || !l.frame.swarms_front.is_empty() {
+            self.swarms.ensure_each(device, l.blend);
         }
         if !l.frame.fields.is_empty() || !l.frame.fields_front.is_empty() {
             self.fields.ensure_each(device, l.blend);

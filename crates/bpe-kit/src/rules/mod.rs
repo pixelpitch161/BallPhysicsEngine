@@ -127,6 +127,7 @@ pub fn register(r: &mut Registry) {
     r.add_block(health::WhenHealth);
     r.add_block(health::HealthIs);
     r.add_block(health::ChangeHealth);
+    r.add_block(crate::things::particles::rules::ParticlesWhen);
 }
 
 /// Puts every block kind's simulation in the sims.
@@ -166,6 +167,7 @@ pub fn add_sims(s: &mut Sims) {
     s.add_block(health::WhenHealth);
     s.add_block(health::HealthIs);
     s.add_block(health::ChangeHealth);
+    s.add_block(crate::things::particles::rules::ParticlesWhen);
 }
 
 /// The kit's registry, made once for the process: what Change setting reads the scene's setting

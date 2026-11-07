@@ -56,14 +56,19 @@ impl Drew {
     /// is stamped as it is drawn, on the layer's own pieces only: [`super::around_subs::Pieces::give_light`]),
     /// and in a lit scene its UV, how it catches beams and its thing's link number.
     pub fn light(self, frame: &mut bpe_gfx::Frame, layer: &AroundLayer, cx: &bpe_gfx::DrawCx) {
+        self.stamp(frame, layer.light, layer.more, cx);
+    }
+
+    /// [`Drew::light`] for a layer whose Lighting is `light` ([`super::lighting::of`], a lamp's
+    /// Lit taken away) and `more` ([`super::lighting::extra_of`]): a Particles thing's Look layers.
+    pub fn stamp(self, frame: &mut bpe_gfx::Frame, light: [f32; 4], more: [f32; 4], cx: &bpe_gfx::DrawCx) {
         let [t, tf, p, pf] = self.0;
-        if let Some(more) = layer.more_in(cx, frame.light.as_mut()) {
+        if let Some(more) = more_in(more, cx, frame.light.as_mut()) {
             frame.trails.iter_mut().skip(t).for_each(|v| v.extra = more);
             frame.trails_front.iter_mut().skip(tf).for_each(|v| v.extra = more);
             frame.particles.iter_mut().skip(p).for_each(|s| s.extra = more);
             frame.particles_front.iter_mut().skip(pf).for_each(|s| s.extra = more);
         }
-        let light = layer.light;
         if light != [0.0; 4] {
             let two = [light[0], light[1]];
             frame.trails.iter_mut().skip(t).for_each(|v| v.light = two);
@@ -74,16 +79,23 @@ impl Drew {
     }
 }
 
+/// A layer's UV, catching beams and link number (`more` from [`super::lighting::extra_of`]) as
+/// its pieces carry them in a lit scene (`light` the frame's lighting, which learns that
+/// something glows under UV or catches beams); `None` without a Lighting card.
+pub fn more_in(more: [f32; 4], cx: &bpe_gfx::DrawCx, light: Option<&mut bpe_gfx::LightScene>) -> Option<[f32; 4]> {
+    let light = light?;
+    light.uv |= more[0] > 0.0;
+    light.smoke |= more[2] > 0.0;
+    let link = crate::things::light::links::number_of(cx.scene, cx.thing.id);
+    Some([more[0], more[1], more[2], link])
+}
+
 impl AroundLayer {
     /// Its UV, catching beams and link number as its pieces carry them, in a lit scene (`light`
     /// the frame's lighting, which learns that something glows under UV or catches beams);
     /// `None` without a Lighting card.
     pub fn more_in(&self, cx: &bpe_gfx::DrawCx, light: Option<&mut bpe_gfx::LightScene>) -> Option<[f32; 4]> {
-        let light = light?;
-        light.uv |= self.more[0] > 0.0;
-        light.smoke |= self.more[2] > 0.0;
-        let link = crate::things::light::links::number_of(cx.scene, cx.thing.id);
-        Some([self.more[0], self.more[1], self.more[2], link])
+        more_in(self.more, cx, light)
     }
 
     /// Behind the balls or in front of them.

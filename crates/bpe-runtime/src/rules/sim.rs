@@ -115,4 +115,10 @@ pub trait BlockSim: Send + Sync + 'static {
     fn sees_light(&self, _params: &Params) -> bool {
         false
     }
+    /// Whether a block with these settings reads thing `thing` (of `kind`, with the scene's
+    /// `tags`), whose sim would step it beside the physics: it then steps with the physics, so
+    /// the rule sees it in every world (particles part 7: When Particles).
+    fn keeps(&self, _params: &Params, _thing: ThingId, _kind: &str, _tags: &BTreeSet<String>) -> bool {
+        false
+    }
 }

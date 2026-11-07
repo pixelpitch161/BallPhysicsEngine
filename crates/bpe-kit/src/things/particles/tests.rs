@@ -64,7 +64,10 @@ fn every_look_adds_a_thing_that_resolves_and_makes_particles() {
         let (world, _, _) = run(&scene, 2.0);
         // Looks let off by hits need balls to hit something.
         let on_hits = ParticlesSettings::from_params(&scene.things[&id].params).emit == Emit::OnHits;
-        assert!(on_hits || !particles(&world, id).specks.is_empty(), "{look:?} made no particles in 2 s");
+        assert!(
+            on_hits || look.needs_hits() || !particles(&world, id).specks.is_empty(),
+            "{look:?} made no particles in 2 s"
+        );
         // Inside a ball group, the riding looks ride the balls.
         let mut scene = crate::new_scene(&reg);
         let ball = scene.order.iter().copied().find(|t| scene.things[t].kind == "balls").unwrap();
@@ -123,7 +126,7 @@ fn particles_never_move_the_balls() {
     let kit = kit();
     let resolved = resolve(&scene, &kit.registry);
     let mut full = World::build(&scene, &resolved, &kit.sims);
-    let mut main = World::build(&scene, &main_part(&resolved, &kit.sims), &kit.sims);
+    let mut main = World::build(&scene, &main_part(&scene, &resolved, &kit.sims), &kit.sims);
     assert!(full.beside.contains(&id) && state_of(&main, id).is_none());
     let (mut a, mut b) = (Log::default(), Log::default());
     full.advance_to(3.0, &kit.sims, &mut a);
@@ -153,7 +156,7 @@ fn any_number_of_threads_makes_the_same_particles() {
     for threads in [1, 2, 3, 8] {
         let mut copy = st.clone();
         for _ in 0..10 {
-            step::step(&mut copy, &world, &log, threads);
+            step::step(&mut copy, &world, &log, threads, None);
         }
         hashes.push(hash_of(&copy));
     }
@@ -508,22 +511,7 @@ fn glitter_flashes_only_when_a_facet_faces_the_light() {
     use super::draw::glint;
     use super::look::GlitterLayer;
     let l = GlitterLayer { light_from: 0.0, shimmer: 0.0, sharpness: 24.0, ..GlitterLayer::default() };
-    let mut s = super::state::Speck {
-        place: Vec2::ZERO,
-        previous: Vec2::ZERO,
-        velocity: Vec2::ZERO,
-        home: Vec2::ZERO,
-        born: 0,
-        life: 1.0,
-        size: 3.0,
-        turn: 0.0,
-        spin: 0.0,
-        flip: 0.0,
-        seed: 7,
-        ball: 0,
-        flags: 0,
-        spot: 0,
-    };
+    let mut s = super::state::Speck { life: 1.0, size: 3.0, ..super::state::Speck::at(Vec2::ZERO, 0, 7) };
     let own = super::births::unit(7, 71) * std::f32::consts::TAU;
     s.turn = -own;
     assert!((glint(&l, &s, 0.0) - 1.0).abs() < 1e-4, "facing the light");

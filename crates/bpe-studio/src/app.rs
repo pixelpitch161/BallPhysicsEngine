@@ -219,6 +219,11 @@ impl Studio {
     pub fn new(cc: &eframe::CreationContext, scene_path: Option<PathBuf>) -> Self {
         style::apply(&cc.egui_ctx);
         crate::palettes::install(&cc.egui_ctx, crate::palettes::PaletteStore::open());
+        // Huge swarms (particles part 8) step on the window's own card, so the preview draws them
+        // straight from their buffers.
+        if let Some(rs) = &cc.wgpu_render_state {
+            bpe_gfx::swarm::use_on_this_thread(Some(bpe_gfx::swarm::SwarmGpu::for_device(&rs.device, &rs.queue)));
+        }
         let mut studio = Self::blank();
         studio.grid = Grid::load();
         studio.inspector_width = settings::load_inspector_width();
@@ -1228,8 +1233,12 @@ impl Studio {
             if let Some((lights, ms)) = self.lighting {
                 ui.label(RichText::new(lighting_readout(lights, ms)).small().color(style::MUTED));
             }
-            if let Some(p) = self.particle_job.as_ref().and_then(|job| job.latest()) {
-                ui.label(RichText::new(particles_readout(p.count, p.step_ms)).small().color(style::MUTED));
+            // Decoration from the particles thread, and two-way particles in the main world.
+            let beside = self.particle_job.as_ref().and_then(|job| job.latest()).map(|p| (p.count, p.step_ms));
+            let main = main_particles(self.playback.world());
+            if beside.is_some() || main.is_some() {
+                let (a, b) = (beside.unwrap_or_default(), main.unwrap_or_default());
+                ui.label(RichText::new(particles_readout(a.0 + b.0, a.1 + b.1)).small().color(style::MUTED));
             }
         });
     }
@@ -1428,14 +1437,14 @@ fn file_label(path: &Path) -> String {
 fn aim_job_for(scene: &Scene, resolved: &Resolved, kit: &Kit) -> Option<AimJob> {
     let duration = resolved.things.get(&ThingId::ROOT).map_or(0.0, |r| SceneSettings::from_params(&r.params).duration);
     // Particles never change the aim: the aiming runs the physics alone.
-    let main = bpe_runtime::main_part(resolved, &kit.sims);
+    let main = bpe_runtime::main_part(scene, resolved, &kit.sims);
     AimJob::start_if_wanted(scene, &main, kit.sims.clone(), duration.max(0.0) as f64)
 }
 
 /// The editor's playback of `scene`: the physics alone, without the things stepped beside it
 /// (their own playback is [`ParticleJob`]'s).
 fn main_playback(scene: &Scene, resolved: &Resolved, kit: &Kit) -> Playback {
-    Playback::new(scene, &bpe_runtime::main_part(resolved, &kit.sims), kit.sims.clone())
+    Playback::new(scene, &bpe_runtime::main_part(scene, resolved, &kit.sims), kit.sims.clone())
 }
 
 fn follow_of(scene: &Scene, resolved: &bpe_core::Resolved) -> Option<std::sync::Arc<bpe_sound::ControlSampler>> {
@@ -1460,6 +1469,21 @@ pub fn lighting_readout(lights: usize, ms: Option<f32>) -> String {
     let time = ms.map(|ms| format!(", {ms:.1} ms")).unwrap_or_default();
     let warn = if lights > 256 { " (that many lights is slow: try Quality Draft)" } else { "" };
     format!("· Lighting: {count}{time}{warn}")
+}
+
+/// How many particles the main world's (two-way) Particles things have and how long their last
+/// step took, or `None` when it has none.
+fn main_particles(world: &bpe_runtime::World) -> Option<(usize, f32)> {
+    use bpe_kit::things::particles::state::ParticlesState;
+    let mut found = None;
+    for state in world.states.values() {
+        if let Some(p) = (**state).as_any().downcast_ref::<ParticlesState>() {
+            let (count, ms) = found.get_or_insert((0, 0.0));
+            *count += p.specks.len();
+            *ms += p.last_ms;
+        }
+    }
+    found
 }
 
 /// The status line's particles readout: "· Particles: 12,400, 1.8 ms" (how long the last

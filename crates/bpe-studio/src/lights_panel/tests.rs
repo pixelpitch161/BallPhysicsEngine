@@ -267,3 +267,20 @@ fn opening_another_scene_ends_the_solo() {
     studio.replace_scene(studio.scene.clone(), None);
     assert!(studio.light_solo.is_empty());
 }
+
+#[test]
+fn a_particles_layer_that_gives_off_light_gets_a_strip() {
+    let (mut studio, _) = lit_studio();
+    let reg = &studio.kit.clone().registry;
+    let id = bpe_kit::things::particles::looks::add_particles(
+        &mut studio.scene,
+        reg,
+        bpe_kit::things::particles::looks::Look::Fireflies,
+        ThingId::ROOT,
+    )
+    .unwrap();
+    let list = sources(&studio.scene, reg);
+    let strip = list.iter().find(|s| matches!(s.source, LightSource::Layer(t, _, _) if t == id)).unwrap();
+    assert_eq!(strip.what, "gives off");
+    assert!(strip.strength.is_some(), "its Strength fader is the sub-layer's own");
+}
