@@ -9,6 +9,7 @@ use crate::app::Studio;
 use crate::style;
 use bpe_core::{Address, Registry, Scene, Settings, ThingId, Value};
 use bpe_kit::things::particles::{AreaShape, BornFrom, KIND, ParticlesSettings};
+use bpe_runtime::World;
 use eframe::egui::{self, Color32, Pos2, Shape, Stroke};
 use glam::Vec2;
 use std::f32::consts::TAU;
@@ -44,15 +45,27 @@ fn settings_at(scene: &Scene, reg: &Registry, id: ThingId, time: f64) -> Option<
     Some(ParticlesSettings::from_params(&params))
 }
 
+/// Where Particles thing `id` is and its turn (radians), as its births see it: riding what it is
+/// attached to. The editor's world doesn't step it (it is stepped beside the physics), so its
+/// place is worked out from its parent there.
+fn anchor(scene: &Scene, world: &World, id: ThingId) -> Option<(Vec2, f32)> {
+    let thing = scene.things.get(&id)?;
+    let pose = match thing.parent {
+        Some(parent) => world.anchor_as(parent, thing.attach, &thing.transform),
+        None => bpe_runtime::Pose::from_transform(&thing.transform),
+    };
+    Some((pose.position, pose.angle))
+}
+
 /// The selected Particles thing, its settings, its place and turn (radians), when its births
 /// have a shape to show.
 fn source(studio: &Studio) -> Option<(ThingId, ParticlesSettings, Vec2, f32)> {
     let id = studio.selection.primary?;
-    let thing = studio.scene.things.get(&id).filter(|t| t.kind == KIND)?;
+    studio.scene.things.get(&id).filter(|t| t.kind == KIND)?;
     let s = settings_at(&studio.scene, &studio.kit.registry, id, studio.sim_time())?;
     matches!(s.from, BornFrom::AnArea | BornFrom::ALine | BornFrom::APoint).then_some(())?;
-    let at = super::place_of(&studio.scene, studio.playback.world(), id).unwrap_or(thing.transform.position);
-    Some((id, s, at, thing.transform.rotation))
+    let (at, turn) = anchor(&studio.scene, studio.playback.world(), id)?;
+    Some((id, s, at, turn))
 }
 
 /// The way the area's or line's x axis points.
@@ -92,9 +105,16 @@ pub fn hit(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
 
 /// Applies a drag of `part` of Particles thing `id` to `pointer` (world pixels). Settings with
 /// keys get a key at `time`; true when one did.
-pub fn apply(scene: &mut Scene, reg: &Registry, id: ThingId, part: ParticlePart, pointer: Vec2, time: f64) -> bool {
-    let Some(thing) = scene.things.get(&id) else { return false };
-    let (at, turn) = (thing.transform.position, thing.transform.rotation);
+pub fn apply(
+    scene: &mut Scene,
+    reg: &Registry,
+    world: &World,
+    id: ThingId,
+    part: ParticlePart,
+    pointer: Vec2,
+    time: f64,
+) -> bool {
+    let Some((at, turn)) = anchor(scene, world, id) else { return false };
     let Some(s) = settings_at(scene, reg, id, time) else { return false };
     let mut keyed = false;
     let mut set = |scene: &mut Scene, key: &str, value: f32| {

@@ -13,8 +13,8 @@ use super::state::{DEAD, ParticlesState, Speck};
 
 /// Seconds a particle step lasts.
 pub const DT: f32 = 1.0 / 120.0;
-/// World steps a particle step lasts.
-pub const WORLD_STEPS: u64 = 2;
+/// Particle steps a second.
+pub const STEPS_PER_SECOND: u64 = 120;
 /// Particles a thread works on at a time.
 pub const CHUNK: usize = 4096;
 /// The most threads a step uses.
@@ -107,10 +107,26 @@ pub fn balls_in(world: &World) -> Vec<BallAt> {
     out
 }
 
+/// The particle steps due by the end of world step `world_step`: the world's time × 120, so a
+/// particle lives as long at any Physics rate (at 240 one every second world step, at 60 two a
+/// world step, at 480 one every fourth).
+pub fn due(world_step: u64, steps_per_second: u32) -> u32 {
+    (world_step * STEPS_PER_SECOND / u64::from(steps_per_second.max(1))) as u32
+}
+
+/// Takes the particle steps due after world step `world.step` (whose log is `log`), over
+/// `threads` threads: none, one or several.
+pub fn catch_up(st: &mut ParticlesState, world: &World, log: &Log, threads: usize) {
+    while st.step < due(world.step, world.steps_per_second) {
+        step(st, world, log, threads);
+    }
+}
+
 /// One particle step of `st` in `world`, after world step `world.step` (whose log is `log`),
-/// over `threads` threads.
+/// over `threads` threads. Hits since the last particle step let particles off.
 pub fn step(st: &mut ParticlesState, world: &World, log: &Log, threads: usize) {
-    let since = world.step.saturating_sub(WORLD_STEPS);
+    let since = st.world_step;
+    st.world_step = world.step;
     st.step += 1;
     let anchor = world.anchor(st.id);
     let cx = BirthCx { world, log, anchor: anchor.position, angle: anchor.angle };

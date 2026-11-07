@@ -101,6 +101,10 @@ enum ToolbarClick {
     Export,
 }
 
+/// How far (seconds) the particle playback may be behind the playhead before the preview says
+/// it is waiting for it.
+pub const PARTICLES_BEHIND: f64 = 0.25;
+
 pub struct Studio {
     pub kit: Arc<Kit>,
     pub scene: Scene,
@@ -341,8 +345,21 @@ impl Studio {
     /// While the particle playback is behind, the playback waits where it is for it (or goes
     /// only as far as it has got), so the particles drawn are the balls' own moment.
     pub fn sim_target(&self) -> f64 {
-        let target = self.aim_job.as_ref().map_or(self.sim_time(), |job| job.allowed(self.sim_time()));
-        match self.particle_job.as_ref().map(|job| job.reached()) {
+        self.sim_target_with(self.particle_job.as_ref().map(|job| job.reached()))
+    }
+
+    /// Where the playback may step to now given where the background aiming has got: the
+    /// moment the particle playback is asked for.
+    pub fn aim_target(&self) -> f64 {
+        self.aim_job.as_ref().map_or(self.sim_time(), |job| job.allowed(self.sim_time()))
+    }
+
+    /// [`Studio::sim_target`] with the particle playback at `reached` (`None` without one,
+    /// `Some(None)` before it has published anything): read once a frame, so the moment the
+    /// playback steps to and the particles drawn there come from the same snapshot.
+    pub fn sim_target_with(&self, reached: Option<Option<f64>>) -> f64 {
+        let target = self.aim_target();
+        match reached {
             Some(Some(reached)) if reached < target => {
                 let now = self.playback.time();
                 if now <= reached { reached } else { now.min(target) }
@@ -352,12 +369,22 @@ impl Studio {
         }
     }
 
-    /// How far (0..1) the particle playback has got towards the playhead, while it is behind.
+    /// Whether the particle playback (if any) has published the step the playhead is on.
+    pub fn particles_there(&self) -> bool {
+        let Some(job) = &self.particle_job else { return true };
+        let sps = self.playback.world().steps_per_second;
+        let want = bpe_runtime::step_at(self.aim_target(), sps);
+        job.latest().is_some_and(|s| s.step == want)
+    }
+
+    /// How far (0..1) the particle playback has got towards the playhead, while it is well
+    /// behind ([`PARTICLES_BEHIND`]): it follows the playhead a frame late while playing, which
+    /// is no wait.
     pub fn particles_waiting(&self) -> Option<f32> {
         let job = self.particle_job.as_ref()?;
-        let time = self.sim_time();
+        let time = self.aim_target();
         let reached = job.reached().unwrap_or(0.0);
-        (reached + 1e-9 < time).then(|| (reached / time.max(1e-9)).clamp(0.0, 1.0) as f32)
+        (reached + PARTICLES_BEHIND < time).then(|| (reached / time.max(1e-9)).clamp(0.0, 1.0) as f32)
     }
 
     /// How far (0..1) the background aiming has got towards the playhead, while it holds the

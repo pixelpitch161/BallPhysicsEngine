@@ -211,3 +211,21 @@ Least length 4 px, Width 1.
   sources, On the beat, the other forces (part 3); no other layer kinds, Mirror, Colour split, Glitch, Fine detail
   (parts 5, 6); no lighting fold or Gives off light on particle layers (part 7); no Huge swarm (part 8).
 - No change to `layer.particles` / `shape.particles`; no built-in or example scenes; no demo videos.
+
+## As built
+
+- Particle steps keep time at any Physics rate: `step::due(world step, rate)` = world time × 120, and `catch_up` takes
+  none, one or several steps after a world step (at 240 exactly one every second step, so the goldens are those of
+  the even-step plan). On hits reads the log since the last particle step (`ParticlesState.world_step`).
+- The preview reads the particle job's latest snapshot once a frame, steps the main playback to its moment and lends
+  it only when the steps match; the job follows `Studio::aim_target` so an aiming hold doesn't run it ahead.
+  "Particles… N%" shows only when it is more than `PARTICLES_BEHIND` (0.25 s) behind (while playing it is a frame
+  late, which is no wait). The particle playback has its own 512 MB checkpoint budget.
+- A riding Particles thing's handles sit where it is born: `World::anchor_as` works its place out from its parent in
+  the main world, which doesn't build it.
+- States are read through the box (`(**state).as_any()`): `Box<dyn ThingState>` is a `ThingState` itself, so
+  `as_any` on a `&Box` gives the box.
+- Scene format stays 12 (Rules part 1 took 12 first; particles need no upgrade).
+- Left for later parts: effect warm-up after a jump replays the main playback without particles (`preview/warm.rs`);
+  pulses on hits don't reach particle settings (`World::animate` passes no hits, as for the physics); a snapshot is a
+  full clone of the states (fine to the cap, costly near 1 000 000 particles).

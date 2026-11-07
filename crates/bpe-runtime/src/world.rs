@@ -577,8 +577,16 @@ impl World {
     /// the origin.
     pub fn anchor(&self, thing: ThingId) -> Pose {
         let Some((parent, attach, transform)) = self.attach.get(&thing) else { return Pose::default() };
+        self.anchor_as(*parent, *attach, transform)
+    }
+
+    /// Where a thing under `parent`, attached by `attach` with its own `transform`, would be
+    /// now: [`World::anchor`] for a thing this world doesn't step (one stepped beside it, as the
+    /// editor's preview handles of a Particles thing need).
+    pub fn anchor_as(&self, parent: ThingId, attach: Attach, transform: &Transform) -> Pose {
+        let parent = &parent;
         let own = Pose::from_transform(transform);
-        let Attach::Ride { offset, turn_with_parent, item } = *attach else { return own };
+        let Attach::Ride { offset, turn_with_parent, item } = attach else { return own };
         let parent_pose = match item {
             Some(number) => self.bodies.get(parent).and_then(|b| {
                 let row = b.row_of(number)?;

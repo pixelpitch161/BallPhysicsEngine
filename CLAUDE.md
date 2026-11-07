@@ -407,8 +407,9 @@ Bounce / Vanish) and **Look** `look.particles` (`look.rs`: draw layers Sprites (
 (stretched by speed), common Where, Only (All / Younger than / Older than / A share / The rest), Colour from (Own paint
 following life/order/place/speed/time, or the Parent ball's colour), Opacity, Size ×, Size over life, Fade, Twinkle,
 Blend; sub-layers `particles.sub.glow/outline/shadow/recolour/flash/hue` with the shape sub-layers' settings). The
-state (`state.rs`: `ParticlesState`, `Speck`s oldest first) lives in `World.states`, stepped in `after_step` on even
-world steps at 1/120 s (`step.rs`: births, then the move in chunks of `CHUNK` 4096 on `std::thread::scope`, the same
+state (`state.rs`: `ParticlesState`, `Speck`s oldest first) lives in `World.states`, stepped in `after_step` at 1/120 s
+(`step::catch_up`: the particle steps `due` by the world's time × 120, so lives keep time at any Physics rate; hits
+since `ParticlesState.world_step` let particles off; `step.rs`: births, then the move in chunks of `CHUNK` 4096 on `std::thread::scope`, the same
 for any thread count, then a stable `retain`); first births in `after_build`; every birth's dice from
 `seed_of(world seed, thing, birth number, Seed)` (`births.rs`). `World::animate` calls the thing sim's
 `settings_changed` for keys on cards with no module sim, so keyed forces work. The draw (`draw.rs`) draws nothing
@@ -418,8 +419,10 @@ false, so `World.beside` lists it, `main_part(resolved, sims)` leaves it out, fi
 and `beside_fingerprint` is what a particle playback is built from. The editor's main playback, the sound engine
 (`Engine::with_patch`) and the aiming thread build from `main_part`; `bpe-studio/src/particle_job.rs` (`ParticleJob`)
 runs the whole scene on its own thread, follows the playhead (`follow`) and publishes `Snapshot`s; the preview lends
-their states to its world while it draws (`World::lend_states`/`take_back`), holds the playback where it is until
-the particles catch up (`Studio::sim_target`, "Particles… N%"), and the status line shows "Particles: N, X ms".
+their states to its world while it draws (`World::lend_states`/`take_back`), reads the latest snapshot once a
+frame, steps the playback to its moment (`Studio::sim_target_with`; the job follows `aim_target`) and lends it only
+when its step is the playback's (`particles_there`); "Particles… N%" shows past `PARTICLES_BEHIND` (0.25 s), and a
+riding thing's handles use `World::anchor_as` (the main world doesn't build it). The status line shows "Particles: N, X ms".
 Export (`bpe-cli`) builds the whole world. `looks.rs`: the Add thing menu's Particles heading (Empty, then
 `GROUPS`: Rain, Snow, Hail, Blossom petals, Sandstorm; Fire on a ball, Spark fountain, Embers and ash; Fireflies,
 Confetti; Rainbow smoke trail, Ink in water), `add_particles` (riding looks ride a Balls/Emitter/Shape parent).

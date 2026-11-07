@@ -397,3 +397,18 @@ fn a_share_and_the_rest_split_the_particles_between_two_layers() {
     };
     assert!((60..=140).contains(&first_count), "{first_count}");
 }
+
+#[test]
+fn particles_keep_time_at_any_physics_rate() {
+    let mut counts = Vec::new();
+    for rate in [60u32, 240, 480, 1000] {
+        let (mut scene, id) = scene_with(Look::Snow);
+        scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("steps_per_second", bpe_core::Value::Int(rate as i64));
+        let (world, _, _) = run(&scene, 1.0);
+        assert_eq!(world.steps_per_second, rate);
+        let st = particles(&world, id);
+        assert_eq!(st.step, 120, "a second is 120 particle steps at {rate} per s");
+        counts.push(st.births);
+    }
+    assert!(counts.windows(2).all(|w| w[0] == w[1]), "as many born at every rate: {counts:?}");
+}

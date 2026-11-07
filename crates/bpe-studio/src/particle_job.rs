@@ -15,6 +15,9 @@ use bpe_core::{Resolved, Scene, ThingId};
 use bpe_kit::things::particles::state::ParticlesState;
 use bpe_runtime::{Playback, Sims, ThingState};
 
+/// The particle playback's own checkpoint budget, beside the main playback's.
+const BUDGET: usize = 512 * 1024 * 1024;
+
 /// How long the thread works before publishing what it has.
 const STRETCH: Duration = Duration::from_millis(40);
 
@@ -80,7 +83,7 @@ impl ParticleJob {
         let handle = std::thread::Builder::new()
             .name("particles".into())
             .spawn(move || {
-                let mut playback = Playback::new(&scene, &resolved, sims);
+                let mut playback = Playback::with_budget(&scene, &resolved, sims, BUDGET);
                 let mut published = None;
                 while !theirs.stop.load(Ordering::Relaxed) {
                     let target = f64::from_bits(theirs.target.load(Ordering::Acquire));

@@ -9,7 +9,7 @@ use bpe_runtime::{Log, ThingSim, World, state_mut};
 use super::forces::Forces;
 use super::meets::MeetsSettings;
 use super::state::ParticlesState;
-use super::step::{self, WORLD_STEPS};
+use super::step;
 use super::{KIND, ParticlesSettings};
 
 pub struct ParticlesSim;
@@ -48,13 +48,13 @@ impl ThingSim for ParticlesSim {
     }
 
     fn after_step(&self, id: ThingId, world: &mut World, log: &mut Log) {
-        if !world.step.is_multiple_of(WORLD_STEPS) {
+        if step::due(world.step, world.steps_per_second) <= state_of(world, id).map_or(u32::MAX, |s| s.step) {
             return;
         }
         let Some(mut boxed) = world.states.remove(&id) else { return };
         let started = std::time::Instant::now();
         let st = state_mut::<ParticlesState>(boxed.as_mut());
-        step::step(st, world, log, step::threads());
+        step::catch_up(st, world, log, step::threads());
         st.last_ms = started.elapsed().as_secs_f32() * 1000.0;
         world.states.insert(id, boxed);
         note_memory(world, id);

@@ -336,6 +336,10 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     if warm::busy(&preview) {
         ui.ctx().request_repaint();
     }
+    // Looked at again until the particle playback is where the playhead is.
+    if !studio.particles_there() {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
+    }
     if redraw_when_built(&preview.renderer, ui.ctx()) {
         preview.drawn = None;
     }
@@ -638,16 +642,26 @@ fn draw_picture(
     drawn: &mut Option<Drawn>,
     look: Option<(CameraView, (u32, u32))>,
 ) -> bool {
-    // The particle playback follows the playhead on its own thread.
-    if let Some(job) = &studio.particle_job {
-        job.follow(studio.sim_time());
-    }
+    // The particle playback follows the playhead (as far as the aiming lets the playback go) on
+    // its own thread. Its latest particles are read once: the playback steps to their moment
+    // and they are drawn only there.
+    let particles = studio.particle_job.as_ref().and_then(|job| {
+        job.follow(studio.aim_target());
+        job.latest()
+    });
+    let reached = studio.particle_job.as_ref().map(|_| particles.as_ref().map(|p| p.time));
     // The background aiming holds the playback back until it has aimed the rounds before it, and
     // the particle playback until it has worked out the particles.
     let held = studio.aiming().is_some() || studio.particles_waiting().is_some();
-    let catching_up = !studio.playback.seek_within(studio.sim_target(), Some(CATCH_UP_BUDGET)) || held;
+    let target = studio.sim_target_with(reached);
+    let catching_up = !studio.playback.seek_within(target, Some(CATCH_UP_BUDGET)) || held;
+    // With particles the playback may wait a frame for them: the picture is then its moment.
+    let step = 1.0 / f64::from(studio.playback.world().steps_per_second.max(1));
+    let behind = studio.particle_job.is_some() && studio.playback.time() + step < studio.sim_time();
     // While catching up, the picture shows the moment the simulation has got to.
-    let shown_time = if catching_up { studio.playback.time() } else { studio.sim_time() };
+    let shown_time = if catching_up || behind { studio.playback.time() } else { studio.sim_time() };
+    // Particles from another moment (on their way after an edit or a jump back) aren't drawn.
+    let particles = particles.filter(|p| p.step == studio.playback.world().step);
     let now = Drawn {
         revision: studio.revision,
         time: shown_time,
@@ -657,7 +671,6 @@ fn draw_picture(
         light: (studio.light_show, studio.light_solo.iter().copied().collect()),
         particles: None,
     };
-    let particles = studio.particle_job.as_ref().and_then(|job| job.latest());
     let now = Drawn { particles: particles.as_ref().map(|p| p.step), ..now };
     if drawn.as_ref() != Some(&now) {
         // The particles are drawn from the particle playback's world, lent to this one.
@@ -1030,7 +1043,7 @@ pub fn apply_drag(
                 None => false,
             };
         }
-        Handle::Particles(id, part) => return particle_handles::apply(scene, reg, id, part, pointer, time),
+        Handle::Particles(id, part) => return particle_handles::apply(scene, reg, world, id, part, pointer, time),
     }
     false
 }

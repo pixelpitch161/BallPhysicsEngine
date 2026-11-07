@@ -73,8 +73,10 @@ pub struct ParticlesState {
     pub walls_before: BTreeMap<ThingId, Outline>,
     /// The living particles, oldest first.
     pub specks: Vec<Speck>,
-    /// Particle steps taken: the world's step over 2.
+    /// Particle steps taken: the world's time × 120, whatever the Physics rate.
     pub step: u32,
+    /// The world step the last particle step was taken after (hits since it let particles off).
+    pub world_step: u64,
     /// Births tried so far, every one counted (those dropped at the cap too).
     pub births: u64,
     /// Steady's share of a particle not yet born.
@@ -97,6 +99,7 @@ impl ParticlesState {
             walls_before: BTreeMap::new(),
             specks: Vec::new(),
             step: 0,
+            world_step: 0,
             births: 0,
             carry: 0.0,
             next_burst: 0,
