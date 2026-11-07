@@ -79,6 +79,11 @@ pub(crate) type Prepared = BTreeMap<SlotId, Slotted>;
 /// Which slots the runtime asks a `ModuleSim` about.
 const SIM_SLOTS: [SlotId; 2] = [SlotId::Motion, SlotId::Bounce];
 
+/// The scene's cards that only things stepped beside the physics read (the Air card, which only
+/// Particles things follow): their keys are animated in every world, but they count towards
+/// [`beside_fingerprint`], never the physics fingerprint.
+pub const BESIDE_SLOTS: [SlotId; 1] = [SlotId::Air];
+
 /// A run's number (see [`World::run`]). A copy is a run of its own: cloning gives a fresh one.
 #[derive(Debug, PartialEq, Eq)]
 pub struct RunId(pub u64);
@@ -210,6 +215,9 @@ pub fn physics_animation(scene: &Scene, resolved: &Resolved, sims: &Sims) -> Opt
     let mut animation = Animation::new(scene, resolved);
     animation.retain(|thing, slot, key| match slot {
         Some(SlotId::Motion) | Some(SlotId::Bounce) => true,
+        // Read by the things stepped beside the physics (the air): animated with it, never in the
+        // physics fingerprint.
+        Some(slot) if BESIDE_SLOTS.contains(&slot) => true,
         Some(_) => false,
         None => resolved
             .things
@@ -1549,10 +1557,26 @@ pub fn beside_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u6
             }
         }
     }
-    // Their keys too.
+    // The scene's cards only they read (the air).
+    for (id, r) in &resolved.things {
+        for slot in BESIDE_SLOTS {
+            if let Some(s) = r.slots.get(&slot) {
+                h.bytes(&id.0.to_le_bytes());
+                h.bytes(&[slot as u8]);
+                h.bytes(s.kind.as_bytes());
+                for (key, value) in s.params.iter() {
+                    h.bytes(key.as_bytes());
+                    h.value(value);
+                }
+            }
+        }
+    }
+    // Their keys too, and those cards'.
     if let Some(animation) = physics_animation(scene, resolved, sims) {
         for a in animation.addresses() {
-            if resolved.things.get(&a.thing).is_some_and(|r| sims.thing(&r.kind).is_some_and(|s| !s.in_main(r))) {
+            let theirs = a.slot.is_some_and(|s| BESIDE_SLOTS.contains(&s))
+                || resolved.things.get(&a.thing).is_some_and(|r| sims.thing(&r.kind).is_some_and(|s| !s.in_main(r)));
+            if theirs {
                 h.bytes(format!("{a:?}").as_bytes());
                 if let Some(track) = scene.tracks.get(a) {
                     h.bytes(format!("{track:?}").as_bytes());
@@ -1643,6 +1667,9 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
     // Keyframes and pulses on physics settings: moving a key changes the run.
     if let Some(animation) = physics_animation(scene, resolved, sims) {
         for a in animation.addresses() {
+            if a.slot.is_some_and(|s| BESIDE_SLOTS.contains(&s)) {
+                continue;
+            }
             h.bytes(format!("{a:?}").as_bytes());
             if let Some(track) = scene.tracks.get(a) {
                 h.bytes(format!("{track:?}").as_bytes());

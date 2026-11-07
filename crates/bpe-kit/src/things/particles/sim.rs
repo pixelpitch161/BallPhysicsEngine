@@ -1,10 +1,14 @@
 //! How a Particles thing takes part in the world: it builds its state, makes its first births
 //! when the world is built, and takes a particle step every second world step, last in the step
 //! (after the balls have moved and the log has the step's hits). It never changes anything but its
-//! own state, so it is stepped beside the physics (`in_main` false).
+//! own state (and the heat it puts into the air), so it is stepped beside the physics (`in_main`
+//! false). A thing that follows or heats the air wakes it (particles part 2) and brings it along
+//! before each of its particle steps.
 
 use bpe_core::{ResolvedThing, Settings, SlotId, Thing, ThingId};
 use bpe_runtime::{Log, ThingSim, World, state_mut};
+
+use crate::air::{Air, AirSpec, air_of, put_air, take_air};
 
 use super::forces::Forces;
 use super::meets::MeetsSettings;
@@ -41,6 +45,7 @@ impl ThingSim for ParticlesSim {
     }
 
     fn after_build(&self, id: ThingId, world: &mut World) {
+        wake_air_if_wanted(world, id);
         let Some(mut boxed) = world.states.remove(&id) else { return };
         step::first(state_mut::<ParticlesState>(boxed.as_mut()), world);
         world.states.insert(id, boxed);
@@ -54,8 +59,12 @@ impl ThingSim for ParticlesSim {
         let Some(mut boxed) = world.states.remove(&id) else { return };
         let started = std::time::Instant::now();
         let st = state_mut::<ParticlesState>(boxed.as_mut());
-        step::catch_up(st, world, log, step::threads());
+        let mut air = take_air(world);
+        step::catch_up(st, world, log, step::threads(), air.as_mut().map(|a| a.get_mut()));
         st.last_ms = started.elapsed().as_secs_f32() * 1000.0;
+        if let Some(air) = air {
+            put_air(world, air);
+        }
         world.states.insert(id, boxed);
         note_memory(world, id);
     }
@@ -64,6 +73,7 @@ impl ThingSim for ParticlesSim {
         if let Some(st) = world.states.get_mut(&id).and_then(|s| s.as_any_mut().downcast_mut::<ParticlesState>()) {
             read_into(st, resolved);
         }
+        wake_air_if_wanted(world, id);
     }
 
     /// Every setting changes the particles; the fingerprints leave the thing out anyway (it is
@@ -76,6 +86,30 @@ impl ThingSim for ParticlesSim {
     fn in_main(&self, _resolved: &ResolvedThing) -> bool {
         false
     }
+}
+
+/// Wakes the world's air when thing `id` follows or heats it, or the scene has an Air card (a
+/// sleeping air is there): made with the card's settings, or the defaults without one.
+fn wake_air_if_wanted(world: &mut World, id: ThingId) {
+    let wants = state_of(world, id).is_some_and(|s| s.forces.follows_air() || s.forces.heats_air());
+    let sleeping = air_of(world).is_some_and(|a| !a.awake());
+    if !(wants || sleeping) {
+        return;
+    }
+    let mut air = match take_air(world) {
+        Some(air) => air,
+        None => {
+            world.states.insert(ThingId::ROOT, Box::new(Air::new(AirSpec::default())));
+            take_air(world).expect("just put there")
+        }
+    };
+    if !air.get().awake() {
+        air.get_mut().wake(world);
+        // It starts at the thing's step: nothing has stirred it before.
+        let at = state_of(world, id).map_or(0, |s| s.step);
+        air.get_mut().catch_up_to(at, world, 1);
+    }
+    put_air(world, air);
 }
 
 /// The thing's particles as the world has them now.

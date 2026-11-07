@@ -13,6 +13,7 @@ use bpe_runtime::{CameraView, Pose, World};
 use eframe::egui::{self, Align2, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, Ui};
 use glam::Vec2;
 
+pub mod air_view;
 pub mod free_points;
 pub mod light_handles;
 pub mod particle_handles;
@@ -1166,6 +1167,7 @@ fn draw_handles(ui: &Ui, studio: &Studio, view: &View, active: Option<Handle>, s
     light_handles::draw(&painter, studio, view, active, selected);
     free_points::draw(&painter, studio, view, active);
     particle_handles::draw(&painter, studio, view, active);
+    air_view::draw(&painter, studio, view);
 }
 
 /// The most found ways a selected emitter's latest round shows in the preview.

@@ -4,8 +4,8 @@
 
 use bpe_core::{Color, EditError, Gradient, Mix, Params, Registry, Scene, Settings, SlotId, ThingId, layered_key};
 
+use super::forces::{AIR, FollowAirForce, WANDER, WIND, WanderForce, WindForce};
 use super::forces::{DRAG, DragForce, GRAVITY, GravityForce, RISE, RiseForce, SWAY, SWIRL, SwayForce, SwirlForce};
-use super::forces::{WANDER, WIND, WanderForce, WindForce};
 use super::look::{Only, SPRITES, STREAKS, SUB_GLOW, SpritesLayer, StreaksLayer};
 use super::meets::{AtBalls, AtEdges, AtShapes, MeetsSettings};
 use super::{AreaShape, BornFrom, Edge, Emit, Heading, KIND, ParticlesSettings, RIDES, RidesOn};
@@ -30,11 +30,16 @@ pub enum Look {
     Confetti,
     RainbowSmokeTrail,
     InkInWater,
+    DustClouds,
+    ThickFog,
 }
 
 /// The menu's groups of looks, in order, after Empty.
 pub const GROUPS: [(&str, &[Look]); 4] = [
-    ("Weather and nature", &[Look::Rain, Look::Snow, Look::Hail, Look::BlossomPetals, Look::Sandstorm]),
+    (
+        "Weather and nature",
+        &[Look::Rain, Look::Snow, Look::Hail, Look::BlossomPetals, Look::Sandstorm, Look::DustClouds, Look::ThickFog],
+    ),
     ("Fire and energy", &[Look::FireOnABall, Look::SparkFountain, Look::EmbersAndAsh]),
     ("Space and sparkle", &[Look::Fireflies, Look::Confetti]),
     ("Experimental and psychedelic", &[Look::RainbowSmokeTrail, Look::InkInWater]),
@@ -62,6 +67,8 @@ impl Look {
             Look::Confetti => "Confetti",
             Look::RainbowSmokeTrail => "Rainbow smoke trail",
             Look::InkInWater => "Ink in water",
+            Look::DustClouds => "Dust clouds",
+            Look::ThickFog => "Thick fog",
         }
     }
 
@@ -81,6 +88,8 @@ impl Look {
             Look::Confetti => "Bursts of confetti, flipping over as it falls.",
             Look::RainbowSmokeTrail => "Rainbow smoke left behind each ball (inside a group of balls) or a point.",
             Look::InkInWater => "Clouds of ink swirling out, bursting again and again.",
+            Look::DustClouds => "Puffs of dust thrown up where balls land, swept along by the air they stir.",
+            Look::ThickFog => "A bank of fog that drifts with the air and swirls round the balls passing through.",
         }
     }
 
@@ -287,8 +296,15 @@ fn recipe(look: Look, rides: bool) -> Recipe {
             forces: vec![
                 (
                     WIND,
-                    WindForce { speed: 600.0, grip: 1.5, gusts: 0.6, gust_every: 1.5, ..Default::default() }
-                        .to_params(),
+                    WindForce {
+                        speed: 600.0,
+                        grip: 1.5,
+                        gusts: 0.6,
+                        gust_every: 1.5,
+                        waves: 700.0,
+                        ..Default::default()
+                    }
+                    .to_params(),
                 ),
                 (SWIRL, SwirlForce { strength: 250.0, size: 220.0, drift: 0.0, ..Default::default() }.to_params()),
                 (GRAVITY, GravityForce { strength: 30.0, ..Default::default() }.to_params()),
@@ -312,6 +328,21 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                         colour: paint(&[Color::rgb(230, 190, 130), Color::rgb(180, 130, 80)], Follow::Order),
                         opacity: 0.6,
                         fade: ParticleFade::None,
+                        ..Default::default()
+                    },
+                    Vec::new(),
+                ),
+                // The haze: a few of the grains drawn as big soft puffs.
+                sprites(
+                    SpritesLayer {
+                        made_of: ShapeMadeOf::Smoke,
+                        softness: 1.0,
+                        colour: paint(&[Color::rgb(222, 180, 120)], Follow::Life),
+                        opacity: 0.05,
+                        size: 24.0,
+                        fade: ParticleFade::Both,
+                        only: Only::AShare,
+                        share: 0.15,
                         ..Default::default()
                     },
                     Vec::new(),
@@ -569,6 +600,75 @@ fn recipe(look: Look, rides: bool) -> Recipe {
                 Vec::new(),
             )],
         },
+        Look::DustClouds => Recipe {
+            source: ParticlesSettings {
+                emit: Emit::OnHits,
+                count: 30,
+                least_speed: 80.0,
+                follow_impact: true,
+                life: 2.5,
+                life_spread: 0.4,
+                speed: 160.0,
+                speed_spread: 0.5,
+                heading: Heading::OffTheBounce,
+                spread: 120.0,
+                size: 9.0,
+                size_spread: 0.5,
+                ..d.clone()
+            },
+            forces: vec![
+                (AIR, FollowAirForce { grip: 3.0, ..Default::default() }.to_params()),
+                (DRAG, DragForce { drag: 2.5, ..Default::default() }.to_params()),
+                (SWIRL, SwirlForce { strength: 60.0, size: 100.0, drift: 10.0, ..Default::default() }.to_params()),
+                (GRAVITY, GravityForce { strength: 25.0, ..Default::default() }.to_params()),
+            ],
+            meets: MeetsSettings::default(),
+            layers: vec![sprites(
+                SpritesLayer {
+                    made_of: ShapeMadeOf::Smoke,
+                    softness: 1.0,
+                    colour: paint(&[Color::rgb(196, 170, 130), Color::rgb(150, 128, 100)], Follow::Life),
+                    opacity: 0.45,
+                    size_curve: SizeOverLife::Grow,
+                    ..Default::default()
+                },
+                Vec::new(),
+            )],
+        },
+        Look::ThickFog => Recipe {
+            source: ParticlesSettings {
+                from: BornFrom::AnArea,
+                area: AreaShape::Rectangle,
+                width: 1100.0,
+                height: 700.0,
+                emit: Emit::KeepACrowd,
+                count: 450,
+                life: 9.0,
+                life_spread: 0.3,
+                speed: 8.0,
+                heading: Heading::AllRound,
+                size: 45.0,
+                size_spread: 0.4,
+                ..d.clone()
+            },
+            forces: vec![
+                (AIR, FollowAirForce { grip: 1.5, ..Default::default() }.to_params()),
+                (WANDER, WanderForce { strength: 8.0, turns: 0.3, ..Default::default() }.to_params()),
+                (DRAG, DragForce { drag: 0.6, ..Default::default() }.to_params()),
+            ],
+            meets: MeetsSettings { push: 0.3, ..MeetsSettings::default() },
+            layers: vec![sprites(
+                SpritesLayer {
+                    made_of: ShapeMadeOf::Smoke,
+                    softness: 1.0,
+                    colour: paint(&[Color::rgb(214, 222, 232)], Follow::Life),
+                    opacity: 0.09,
+                    fade: ParticleFade::Both,
+                    ..Default::default()
+                },
+                Vec::new(),
+            )],
+        },
     }
 }
 
@@ -601,6 +701,10 @@ pub fn add_particles(scene: &mut Scene, reg: &Registry, look: Look, parent: Thin
     }
     if let Some(card) = scene.things.get_mut(&id).and_then(|t| t.slots.get_mut(&SlotId::Bounce)) {
         card.params = r.meets.to_params();
+    }
+    // The first thing that follows the air gives the scene its Air card.
+    if r.forces.iter().any(|(kind, _)| super::air::wants_air_card(kind)) {
+        super::air::ensure_air_card(scene, reg)?;
     }
     for (kind, params) in r.forces {
         let layer = scene.add_layer(reg, id, SlotId::Motion, kind)?;

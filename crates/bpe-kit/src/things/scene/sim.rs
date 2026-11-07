@@ -1,4 +1,6 @@
-//! Scene settings in the world: the step rate, gravity, the seed and the video size.
+//! Scene settings in the world: the step rate, gravity, the seed and the video size, and the
+//! air's settings when the scene has an Air card (a sleeping [`crate::air::Air`]: a Particles
+//! thing that reads it wakes it).
 
 use bpe_core::{ResolvedThing, Settings, Thing, ThingId};
 use bpe_runtime::{ThingSim, World};
@@ -18,11 +20,19 @@ impl ThingSim for SceneSim {
         world.gravity = s.gravity;
         world.seed = s.seed as u64;
         world.video = glam::Vec2::new(s.width.max(1) as f32, s.height.max(1) as f32);
+        if let Some(spec) = crate::modules::air::spec_of(resolved) {
+            world.states.insert(ThingId::ROOT, Box::new(crate::air::Air::new(spec)));
+        }
     }
 
-    /// A keyframe moved gravity.
+    /// A keyframe moved gravity, or one of the Air card's settings.
     fn settings_changed(&self, _thing: ThingId, resolved: &ResolvedThing, world: &mut World) {
         world.gravity = SceneSettings::from_params(&resolved.params).gravity;
+        if let (Some(spec), Some(air)) = (crate::modules::air::spec_of(resolved), crate::air::air_mut(world))
+            && air.spec != spec
+        {
+            air.spec = spec;
+        }
     }
 
     /// The video's size counts too: the camera's Stay inside, Slack and Fit all read it.

@@ -870,7 +870,13 @@ fn apply_layer_edit(
         _ => id,
     };
     let added = match edit {
-        Edit::AddLayer(slot, kind) => scene.add_layer(reg, id, slot, kind).map(Some),
+        Edit::AddLayer(slot, kind) => {
+            // The first Follow the air force gives the scene its Air card, so it can be found.
+            if bpe_kit::things::particles::air::wants_air_card(kind) {
+                let _ = bpe_kit::things::particles::air::ensure_air_card(scene, reg);
+            }
+            scene.add_layer(reg, id, slot, kind).map(Some)
+        }
         Edit::RemoveLayer(slot, layer) => scene.remove_layer(reg, id, slot, layer).map(|_| None),
         Edit::AddSubLayer(slot, parent, kind) => scene.add_sub_layer(reg, id, slot, parent, kind).map(Some),
         Edit::MoveSubLayer(slot, layer, to) => scene.move_sub_layer(id, slot, layer, to).map(|_| None),

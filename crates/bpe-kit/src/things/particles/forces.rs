@@ -1,12 +1,14 @@
 //! A Particles thing's Motion card (`motion.particles`): a list of force layers, applied in list
 //! order every particle step. Each has an Amount (how much of it acts) and an Only for (every
 //! particle, the young ones or the old ones). Part 1's forces: Gravity, Wind, Drag, Swirl, Wander,
-//! Rise, Sway and flutter.
+//! Rise, Sway and flutter; part 2's: Follow the air (and Rise heating the air, Wind's gust
+//! waves).
 
 use bpe_core::{Choice, LayerSection, ModuleKind, ResolvedSlot, SettingDef, Settings, SlotId};
 use glam::Vec2;
 
 use super::state::Speck;
+use crate::air::gust_factor;
 use crate::modules::look::layers::Kind;
 use crate::modules::look::layers::particles::emit::hash;
 use crate::modules::look::layers::particles::sim::{curl, noise};
@@ -20,6 +22,7 @@ pub const SWIRL: &str = "force.swirl";
 pub const WANDER: &str = "force.wander";
 pub const RISE: &str = "force.rise";
 pub const SWAY: &str = "force.sway";
+pub const AIR: &str = "force.air";
 
 /// Which particles a force acts on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
@@ -30,6 +33,17 @@ pub enum OnlyFor {
     YoungerThan,
     /// Particles older than Age.
     OlderThan,
+}
+
+impl OnlyFor {
+    /// Whether a force acts on a particle `age` seconds old, Age being `at`.
+    pub fn applies(self, age: f32, at: f32) -> bool {
+        match self {
+            OnlyFor::All => true,
+            OnlyFor::YoungerThan => age < at,
+            OnlyFor::OlderThan => age >= at,
+        }
+    }
 }
 
 macro_rules! force_settings {
@@ -84,6 +98,10 @@ force_settings!(
         gusts: f32 = 0.0,
         #[setting(label = "Gust every", when = "gusts", range(0.01, 1e9), span(0.1, 10), unit = "s", keyframe)]
         gust_every: f32 = 2.0,
+        /// The distance between gusts as they travel across the picture: 0 gusts everywhere at
+        /// once.
+        #[setting(label = "Gust waves", when = "gusts", range(0, 1e9), span(0, 2000), unit = "px", keyframe)]
+        waves: f32 = 0.0,
     }
 );
 
@@ -126,6 +144,10 @@ force_settings!(
         /// How long they take to cool to a third: 0 never cools.
         #[setting(label = "Cools over", range(0, 1e9), span(0, 10), unit = "s", keyframe)]
         cools: f32 = 0.0,
+        /// How much each rising particle warms the air round it (a unit of heat a second), so the
+        /// air rises too and carries particles that follow it.
+        #[setting(label = "Heats the air", range(0, 1e9), span(0, 1), unit = "per s", keyframe)]
+        heats: f32 = 0.0,
     }
 );
 
@@ -145,6 +167,23 @@ force_settings!(
     }
 );
 
+force_settings!(
+    /// Carried by the air: the scene's wind, stirred by the balls and lifted by heat (the Air
+    /// card).
+    FollowAirForce {
+        /// How quickly particles take on the air's speed.
+        #[setting(label = "Grip", range(0, 1e9), span(0, 20), unit = "per s", simple, keyframe, pulse)]
+        grip: f32 = 4.0,
+    }
+);
+
+impl RiseForce {
+    /// How much of its strength is left `age` seconds into a particle's life.
+    pub fn cool(&self, age: f32) -> f32 {
+        if self.cools > 0.0 { (-age / self.cools).exp() } else { 1.0 }
+    }
+}
+
 /// One force as the step uses it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Force {
@@ -155,6 +194,7 @@ pub enum Force {
     Wander(WanderForce),
     Rise(RiseForce),
     Sway(SwayForce),
+    Air(FollowAirForce),
 }
 
 impl Force {
@@ -168,6 +208,7 @@ impl Force {
             WANDER => Force::Wander(WanderForce::from_params(p)),
             RISE => Force::Rise(RiseForce::from_params(p)),
             SWAY => Force::Sway(SwayForce::from_params(p)),
+            AIR => Force::Air(FollowAirForce::from_params(p)),
             _ => return None,
         })
     }
@@ -181,6 +222,7 @@ impl Force {
             Force::Wander(f) => (f.amount, f.only, f.age),
             Force::Rise(f) => (f.amount, f.only, f.age),
             Force::Sway(f) => (f.amount, f.only, f.age),
+            Force::Air(f) => (f.amount, f.only, f.age),
         }
     }
 }
@@ -193,12 +235,14 @@ pub struct Forces {
 
 /// What a force reads besides the particle.
 #[derive(Clone, Copy, Debug)]
-pub struct ForceCx {
+pub struct ForceCx<'a> {
     /// Seconds since the start.
     pub time: f32,
     pub dt: f32,
     /// The scene's gravity.
     pub gravity: Vec2,
+    /// The air, when the world has one awake (Follow the air reads it).
+    pub air: Option<&'a crate::air::Air>,
 }
 
 /// A number that is finite, else 0.
@@ -215,7 +259,7 @@ impl Forces {
     }
 
     /// Changes `s`'s velocity (and its flip) by every force, `age` seconds into its life.
-    pub fn apply(&self, s: &mut Speck, age: f32, cx: &ForceCx) {
+    pub fn apply(&self, s: &mut Speck, age: f32, cx: &ForceCx<'_>) {
         let dt = cx.dt;
         for f in &self.list {
             let (amount, only, at) = f.common();
@@ -223,12 +267,7 @@ impl Forces {
             if amount == 0.0 {
                 continue;
             }
-            let applies = match only {
-                OnlyFor::All => true,
-                OnlyFor::YoungerThan => age < at,
-                OnlyFor::OlderThan => age >= at,
-            };
-            if !applies {
+            if !only.applies(age, at) {
                 continue;
             }
             match f {
@@ -241,13 +280,9 @@ impl Forces {
                     s.velocity += pull * amount * dt;
                 }
                 Force::Wind(w) => {
-                    let gust = if w.gusts != 0.0 {
-                        let phase = cx.time / w.gust_every.max(0.01);
-                        1.0 + fin(w.gusts) * noise(Vec2::new(phase, 3.7))
-                    } else {
-                        1.0
-                    };
-                    let wind = Vec2::from_angle(fin(w.direction).to_radians()) * fin(w.speed) * gust;
+                    let way = Vec2::from_angle(fin(w.direction).to_radians());
+                    let gust = gust_factor(fin(w.gusts), w.gust_every, fin(w.waves), cx.time, s.place, way);
+                    let wind = way * fin(w.speed) * gust;
                     let take = 1.0 - (-fin(w.grip).max(0.0) * amount * dt).exp();
                     s.velocity += (wind - s.velocity) * take;
                 }
@@ -264,8 +299,13 @@ impl Forces {
                     s.velocity += Vec2::from_angle(a) * fin(w.strength) * amount * dt;
                 }
                 Force::Rise(r) => {
-                    let cool = if r.cools > 0.0 { (-age / r.cools).exp() } else { 1.0 };
-                    s.velocity.y -= fin(r.strength) * cool * amount * dt;
+                    s.velocity.y -= fin(r.strength) * r.cool(age) * amount * dt;
+                }
+                Force::Air(a) => {
+                    if let Some(air) = cx.air {
+                        let take = 1.0 - (-fin(a.grip).max(0.0) * amount * dt).exp();
+                        s.velocity += (air.at(s.place) - s.velocity) * take;
+                    }
                 }
                 Force::Sway(w) => {
                     // A sideways sway of Sway pixels either way: its velocity's change this step.
@@ -280,6 +320,31 @@ impl Forces {
                 }
             }
         }
+    }
+
+    /// Whether any force reads the air.
+    pub fn follows_air(&self) -> bool {
+        self.list.iter().any(|f| matches!(f, Force::Air(_)))
+    }
+
+    /// Whether any force warms the air.
+    pub fn heats_air(&self) -> bool {
+        self.list.iter().any(|f| matches!(f, Force::Rise(r) if r.heats != 0.0))
+    }
+
+    /// The heat particle `s`, `age` seconds old, puts into the air over `dt` (the Rise forces that
+    /// heat and act on it).
+    pub fn heat_of(&self, age: f32, dt: f32) -> f32 {
+        let mut heat = 0.0;
+        for f in &self.list {
+            let Force::Rise(r) = f else { continue };
+            let (amount, only, at) = f.common();
+            if r.heats == 0.0 || !only.applies(age, at) {
+                continue;
+            }
+            heat += fin(r.heats).max(0.0) * r.cool(age) * fin(amount).max(0.0) * dt;
+        }
+        heat
     }
 
     /// Whether any force flips particles over (the draw squashes them by it).
@@ -334,5 +399,11 @@ pub fn kinds() -> Vec<Kind> {
         force(WANDER, "Wander", "Each particle wanders off its own way, turning now and then.", WanderForce::defs),
         force(RISE, "Rise", "Heat: the particles rise, less and less as they cool.", RiseForce::defs),
         force(SWAY, "Sway and flutter", "Rocking side to side, and flipping over as they fall.", SwayForce::defs),
+        force(
+            AIR,
+            "Follow the air",
+            "Carried by the air: the scene's wind, stirred up by the balls and lifted by heat (the Air card).",
+            FollowAirForce::defs,
+        ),
     ]
 }
