@@ -546,6 +546,27 @@ its drawn layers have `AroundLit`'s fold (`Kind::light_defs`), the `particles.su
 `Animation::apply_where` with `bpe_runtime::hit_strength`. Editor: `inspector::sounds`, `sound_tab/moments.rs`.
 Tests: `particles/tests_part7.rs`, `bpe-sound/tests/particle_sound.rs`, `bpe-kit/tests/particle_light_pictures.rs`.
 
+Part 8 is in (plan `part8.md`, "As built" at its end): the **Huge swarm**. The Particles Look card's **Engine** (Exact /
+Huge swarm, `look.rs::Engine`, `LookCardSettings`, `engine_of`; not keyframable) moves a thing's particles on the
+graphics card, up to `MOST_SWARM` 4 000 000, decoration only. The world drives the card: `ParticlesState.swarm`
+(`things/particles/swarm.rs`: `Swarm`, `first`, `step_in`) owns `bpe_gfx::swarm::SwarmBuffers` (two 32-byte halves a
+particle, `SpeckMain`/`SpeckMore`; `Clone` is a copy on the card, so checkpoints and snapshots are still copies). Which
+card: `bpe_gfx::swarm::use_on_this_thread`/`on_this_thread`/`use_for_now` (`SwarmGpu::for_device`, cached); the editor
+names eframe's device in `Studio::new` and `ParticleJob` passes it to its thread, `bpe_cli::export_with`/`final_frame`
+name theirs; no card named = a swarm with no particles. Births are planned on the CPU with the exact engine's dice
+(`births::plan`, `For::Exact`/`Swarm`, `crowd_spares`, `MOST_SWARM_AT_ONCE`); a step is five compute passes in
+`shaders/swarm_step.wgsl` (births, move: forces, balls through `BallGrid::parts`, shapes as segments on a grid, edges,
+air; then a stable integer-prefix compaction, no atomics; `STEP_STILL` places the first births). Drawing reads the
+buffers (`swarm/draw.rs`, `shaders/swarm_draw.wgsl` ending in sprites.wgsl's `sprite_out`): `Frame.swarms`/
+`swarms_front` hold `SwarmRun { at, source, look, balls }` among the sprites (`cull` moves `at`), each an indirect draw
+on the step's count; roles own, glitter star, Shadow, Glow, Outline. Not in a swarm: Soft smoke, Flame, Web lines, Fine
+detail, Recolour/Flash/Colour on hit sub-layers (`draw::swarm_draws`, `swarm_draws_sub`), heating the air, Flock,
+refilling a word/picture/grid crowd (`swarm_moves_by`), part 4's two-way, feeding, Stick/Settle/Pile up (a swarm's
+bounce off / stop) and Piles layer, and part 7's moments, sound and particle lighting (swarm sprites are unlit). Part 3's other forces
+are on the card (`swarm::put_ready` from `Ready::new`; `StepGpu.middle/parent/homes/lists/fballs`, `SpeckMore.spot`). `World.gpu_memory` + `Playback`'s `GPU_CHECKPOINT_BYTES` (2 GB) thin checkpoints by video
+memory. The editor's Look card has the Engine chips (`look_editor/particles.rs::engine_row`). Tests:
+`bpe-gfx/src/swarm/tests.rs`, `bpe-kit/src/things/particles/swarm_tests.rs` (ignored `bench_a_million`).
+
 ## Crate map
 
 Dependencies go bottom to top:

@@ -191,6 +191,9 @@ pub struct ParticlesState {
     pub piles: super::piles::Piles,
     /// What it does to the balls (two-way), worked out at the last particle step.
     pub two_way: super::two_way::TwoWayOut,
+    /// In a Huge swarm (particles part 8), the particles on the graphics card (and `specks` stays
+    /// empty).
+    pub swarm: Option<super::swarm::Swarm>,
 }
 
 impl ParticlesState {
@@ -222,6 +225,15 @@ impl ParticlesState {
             moments_step: 1,
             sound: None,
             note_budget: 1.0,
+            swarm: None,
+        }
+    }
+
+    /// How many particles it has: in a swarm, as the graphics card last said.
+    pub fn count(&self) -> usize {
+        match &self.swarm {
+            Some(s) => s.count_hint() as usize,
+            None => self.specks.len(),
         }
     }
 

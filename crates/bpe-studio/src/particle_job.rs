@@ -49,7 +49,7 @@ impl Snapshot {
         for id in &world.beside {
             if let Some(state) = world.states.get(id) {
                 if let Some(p) = (**state).as_any().downcast_ref::<ParticlesState>() {
-                    count += p.specks.len();
+                    count += p.count();
                     step_ms += p.last_ms;
                 }
                 states.push((*id, state.clone()));
@@ -85,9 +85,12 @@ impl ParticleJob {
             latest: Mutex::new(None),
         });
         let (scene, resolved, theirs) = (scene.clone(), resolved.clone(), shared.clone());
+        // Huge swarms step on the card the editor draws with (named on its thread).
+        let card = bpe_gfx::swarm::on_this_thread();
         let handle = std::thread::Builder::new()
             .name("particles".into())
             .spawn(move || {
+                bpe_gfx::swarm::use_on_this_thread(card);
                 let mut playback = Playback::with_budget(&scene, &resolved, sims, BUDGET);
                 let mut published = None;
                 while !theirs.stop.load(Ordering::Relaxed) {

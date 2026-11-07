@@ -13,10 +13,12 @@ use bpe_runtime::{Log, ThingSim, ThingState, World, state_mut};
 use crate::air::{Air, AirSpec, air_of, put_air, take_air};
 
 use super::forces::Forces;
+use super::look::{Engine, engine_of};
 use super::meets::{AtShapes, MeetsSettings};
 use super::moments::{MomentSound, log_notes};
 use super::state::ParticlesState;
 use super::step;
+use super::swarm::{self, Swarm};
 use super::{BornFrom, KIND, ParticlesSettings};
 
 pub struct ParticlesSim;
@@ -36,11 +38,14 @@ fn particles_in(b: &dyn ThingState) -> Option<&ParticlesState> {
     b.as_any().downcast_ref::<ParticlesState>()
 }
 
-/// Notes how much memory the thing's particles take, for playback budgets.
+/// Notes how much memory the thing's particles take (a swarm's in video memory), for playback
+/// budgets.
 fn note_memory(world: &mut World, id: ThingId) {
-    let bytes = world.states.get(&id).and_then(|s| (**s).as_any().downcast_ref::<ParticlesState>()).map(|s| s.memory());
-    if let Some(bytes) = bytes {
-        world.state_memory.insert(id, bytes);
+    let Some(st) = state_of(world, id) else { return };
+    let (bytes, gpu) = (st.memory(), st.swarm.as_ref().map(|s| s.gpu_memory()));
+    world.state_memory.insert(id, bytes);
+    if let Some(gpu) = gpu {
+        world.gpu_memory.insert(id, gpu);
     }
 }
 
@@ -52,13 +57,21 @@ impl ThingSim for ParticlesSim {
     fn build(&self, thing: &Thing, resolved: &ResolvedThing, world: &mut World) {
         let mut st = ParticlesState::new(thing.id, thing.parent, ParticlesSettings::default());
         read_into(&mut st, resolved, world.video);
+        if engine_of(resolved.slots.get(&SlotId::Look)) == Engine::HugeSwarm {
+            st.swarm = Some(Swarm::new());
+        }
         world.states.insert(thing.id, Box::new(st));
     }
 
     fn after_build(&self, id: ThingId, world: &mut World) {
         wake_air_if_wanted(world, id);
         let Some(mut boxed) = world.states.remove(&id) else { return };
-        step::first(state_mut::<ParticlesState>(boxed.as_mut()), world);
+        let st = state_mut::<ParticlesState>(boxed.as_mut());
+        if st.swarm.is_some() {
+            swarm::first(st, world);
+        } else {
+            step::first(st, world);
+        }
         world.states.insert(id, boxed);
         note_memory(world, id);
     }
@@ -126,10 +139,18 @@ impl ThingSim for ParticlesSim {
         true
     }
 
-    /// Decoration, unless two-way is on (and it isn't fed by another Particles thing).
+    /// Decoration, unless two-way is on (and it isn't fed by another Particles thing, nor a Huge
+    /// swarm, which never pushes back).
     fn in_main(&self, resolved: &ResolvedThing) -> bool {
         let meets = MeetsSettings::read(resolved.slots.get(&SlotId::Bounce).map(|s| &s.params));
-        meets.two_way && ParticlesSettings::from_params(&resolved.params).from != BornFrom::ItsParentsParticles
+        meets.two_way
+            && ParticlesSettings::from_params(&resolved.params).from != BornFrom::ItsParentsParticles
+            && engine_of(resolved.slots.get(&SlotId::Look)) == Engine::Exact
+    }
+
+    /// The Look card's Engine picks how the particles step (Exact or Huge swarm).
+    fn beside_card_key(&self, slot: SlotId, key: &str) -> bool {
+        slot == SlotId::Look && key == super::look::ENGINE_KEY
     }
 
     /// Its sound hears its moments when its Sound card plays some (particles part 7).
@@ -217,6 +238,12 @@ fn catch_up_all(world: &mut World, log: &mut Log, due: u32) {
             st.wants = wants[i];
             let started = std::time::Instant::now();
             let air_now = air.as_ref().map(|a| a.get()).filter(|a| a.awake());
+            if st.swarm.is_some() {
+                // A swarm never heats the air, feeds or is fed: its particles stay on the card.
+                swarm::step_in(st, world, log, air_now);
+                *ms += started.elapsed().as_secs_f32() * 1000.0;
+                continue;
+            }
             step::step_in(st, world, log, threads, air_now, parent);
             if let Some(air) = air.as_mut().filter(|a| a.get().awake()) {
                 step::put_heat(st, air.get_mut());

@@ -947,6 +947,10 @@ pub struct Frame {
     /// sprites of `particles` / `particles_front` where its `at` says.
     pub fields: Vec<Field>,
     pub fields_front: Vec<Field>,
+    /// Huge swarms (particles part 8) behind the balls and in front of them, each drawn from its
+    /// particle buffers among the sprites of `particles` / `particles_front` where its `at` says.
+    pub swarms: Vec<crate::SwarmRun>,
+    pub swarms_front: Vec<crate::SwarmRun>,
     /// Recent hits, filled by the things' drawing parts for the modules' ones.
     pub hits: Vec<HitMark>,
     pub effects: Vec<EffectCall>,
@@ -1411,6 +1415,8 @@ impl Default for Frame {
             particles_front: Vec::new(),
             fields: Vec::new(),
             fields_front: Vec::new(),
+            swarms: Vec::new(),
+            swarms_front: Vec::new(),
             hits: Vec::new(),
             effects: Vec::new(),
             gradients: GradientAtlas::default(),
@@ -1537,6 +1543,8 @@ impl Frame {
         self.particles_front.clear();
         self.fields.clear();
         self.fields_front.clear();
+        self.swarms.clear();
+        self.swarms_front.clear();
         self.hits.clear();
         self.effects.clear();
         self.gradients.clear();
@@ -1683,6 +1691,8 @@ impl Frame {
             && self.particles_front.is_empty()
             && self.fields.is_empty()
             && self.fields_front.is_empty()
+            && self.swarms.is_empty()
+            && self.swarms_front.is_empty()
             && self.layers.is_empty()
     }
 
@@ -1784,6 +1794,8 @@ impl Frame {
                 && o.particles_front.is_empty()
                 && o.fields.is_empty()
                 && o.fields_front.is_empty()
+                && o.swarms.is_empty()
+                && o.swarms_front.is_empty()
                 && o.layers.is_empty())
         })
     }
@@ -1843,6 +1855,13 @@ impl Frame {
                 f.splats.truncate(sprites);
             }
         }
+        for (swarms, len) in
+            [(&mut self.swarms, self.particles.len()), (&mut self.swarms_front, self.particles_front.len())]
+        {
+            for r in swarms.iter_mut() {
+                r.at = r.at.min(len as u32);
+            }
+        }
         if let Some(o) = &mut self.overlay {
             o.fit_lists_to(vertices, sprites);
         }
@@ -1896,10 +1915,17 @@ impl Frame {
         self.flashes.retain(|f| sees(f.center, f.size));
         let reach = |p: &Particle| p.place[3].max(p.style[0]) * (1.0 + p.style[2]) + 4.0;
         let splat = |s: &Splat| sees([s.place[0], s.place[1]], s.place[2] * 1.6 + 4.0);
-        cull_sprites(&mut self.particles, &mut self.fields, |p| sees([p.place[0], p.place[1]], reach(p)), splat);
+        cull_sprites(
+            &mut self.particles,
+            &mut self.fields,
+            &mut self.swarms,
+            |p| sees([p.place[0], p.place[1]], reach(p)),
+            splat,
+        );
         cull_sprites(
             &mut self.particles_front,
             &mut self.fields_front,
+            &mut self.swarms_front,
             |p| sees([p.place[0], p.place[1]], reach(p)),
             splat,
         );
@@ -1910,14 +1936,15 @@ impl Frame {
 }
 
 /// Keeps the sprites of `list` that `keep` says and the splats of `fields` that `keep_splat`
-/// says, each field still sitting between the same kept sprites.
+/// says, each field (and each swarm run of `swarms`) still sitting between the same kept sprites.
 fn cull_sprites(
     list: &mut Vec<Particle>,
     fields: &mut [Field],
+    swarms: &mut [crate::SwarmRun],
     keep: impl Fn(&Particle) -> bool,
     keep_splat: impl Fn(&Splat) -> bool,
 ) {
-    if fields.is_empty() {
+    if fields.is_empty() && swarms.is_empty() {
         list.retain(keep);
         return;
     }
@@ -1929,6 +1956,9 @@ fn cull_sprites(
     for f in fields.iter_mut() {
         f.at = kept_before[(f.at as usize).min(seen.len())];
         f.splats.retain(&keep_splat);
+    }
+    for r in swarms.iter_mut() {
+        r.at = kept_before[(r.at as usize).min(seen.len())];
     }
     let mut i = 0;
     list.retain(|_| {

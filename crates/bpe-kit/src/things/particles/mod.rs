@@ -30,6 +30,9 @@ pub mod sim;
 pub mod spots;
 pub mod state;
 pub mod step;
+pub mod swarm;
+#[cfg(test)]
+mod swarm_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -539,8 +542,9 @@ pub struct ParticlesSettings {
     #[setting(label = "Seed", span(0, 1000), group = "Each particle")]
     pub seed: u32,
 
-    /// When this many are alive, new ones aren't born until some die.
-    #[setting(label = "Most particles", range(1, 1000000), span(1, 200000), group = "Limits")]
+    /// When this many are alive, new ones aren't born until some die (at most 1 000 000, or
+    /// 4 000 000 in a Huge swarm).
+    #[setting(label = "Most particles", range(1, 4000000), span(1, 200000), group = "Limits")]
     pub most: u32,
 }
 
@@ -606,8 +610,10 @@ impl Default for ParticlesSettings {
     }
 }
 
-/// The hard cap on Most particles.
+/// The hard cap on Most particles in the exact engine.
 pub const MOST_EVER: u32 = 1_000_000;
+/// The hard cap on Most particles in a Huge swarm (particles part 8).
+pub const MOST_SWARM: u32 = bpe_gfx::swarm::MOST_SWARM;
 
 impl ParticlesSettings {
     /// The way `angle` (degrees) points.

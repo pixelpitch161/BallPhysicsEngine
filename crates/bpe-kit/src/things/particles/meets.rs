@@ -334,6 +334,20 @@ impl BallGrid {
         BallGrid { balls, origin: lo, cell, cols, rows, starts, items, reach }
     }
 
+    /// Its parts, for a Huge swarm's step on the graphics card.
+    pub fn parts(&self) -> GridParts<'_> {
+        GridParts {
+            balls: &self.balls,
+            origin: self.origin,
+            cell: self.cell,
+            cols: self.cols,
+            rows: self.rows,
+            starts: &self.starts,
+            items: &self.items,
+            reach: self.reach,
+        }
+    }
+
     /// The balls whose reach may cover `p`, at most [`MOST_NEAR`], in ball order.
     pub fn near(&self, p: Vec2) -> &[u32] {
         if self.balls.is_empty() || !p.is_finite() {
@@ -347,6 +361,19 @@ impl BallGrid {
         let (a, b) = (self.starts[k] as usize, self.starts[k + 1] as usize);
         &self.items[a..b.min(a + MOST_NEAR)]
     }
+}
+
+/// A [`BallGrid`]'s parts: its balls, the grid's corner, cell size, columns and rows, each cell's
+/// balls as `starts[cell]..starts[cell + 1]` into `items`, and the reach in radii.
+pub struct GridParts<'a> {
+    pub balls: &'a [BallAt],
+    pub origin: Vec2,
+    pub cell: f32,
+    pub cols: usize,
+    pub rows: usize,
+    pub starts: &'a [u32],
+    pub items: &'a [u32],
+    pub reach: f32,
 }
 
 /// Balls push `s` and, on touching, it does what `m` says, keeping moments and two-way pushes in

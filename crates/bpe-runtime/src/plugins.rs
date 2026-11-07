@@ -188,6 +188,12 @@ pub trait ThingSim: Send + Sync + 'static {
     fn affects_beside(&self, _key: &str) -> bool {
         false
     }
+    /// For a thing stepped beside the physics: whether setting `key` of its card in `slot` (not
+    /// Motion or Bounce, which always count) changes how it steps, so the editor's particle
+    /// playback starts over when it changes (a Particles thing's Look Engine).
+    fn beside_card_key(&self, _slot: bpe_core::SlotId, _key: &str) -> bool {
+        false
+    }
     /// How much of its balls' past the thing wants kept, for its trails and particles; `None`
     /// keeps none. Asked when the world is built, and hashed into the world's fingerprint.
     fn history(&self, _resolved: &ResolvedThing) -> Option<crate::HistoryWant> {
