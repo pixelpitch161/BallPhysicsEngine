@@ -449,6 +449,8 @@ pub struct Renderer {
     lit_lights: Option<usize>,
     /// The light pass being drawn (see `Globals::light`): 0 outside the light passes.
     light_mode: u32,
+    /// Whether the light passes draw a Stage (its surface picture keeps no blended cover).
+    light_stage: bool,
     /// The bake's running average (lighting part 3), made for the first baked frame.
     accumulate: Option<accumulate::Accumulate>,
     /// The light passes' globals: the world's and the screen's for mode 1, then for mode 2.
@@ -1191,6 +1193,7 @@ impl Renderer {
             light_timer: None,
             lit_lights: None,
             light_mode: 0,
+            light_stage: false,
             accumulate: None,
             light_globals: Vec::new(),
         }
@@ -1477,6 +1480,7 @@ impl Renderer {
                 let hdr_texture = std::mem::replace(&mut self.targets.hdr_texture, texture);
                 let hdr = std::mem::replace(&mut self.targets.hdr, view);
                 self.light_mode = mode;
+                self.light_stage = scene.settings.stage[0] > 0.5;
                 self.draw_scene(
                     device,
                     queue,
@@ -2272,6 +2276,7 @@ impl Renderer {
             l.amount,
             through.each.is_some(),
             l.plain(),
+            self.light_mode == 2 && !self.light_stage,
             &self.targets.behind_view,
             &layer,
             &self.targets.hdr,

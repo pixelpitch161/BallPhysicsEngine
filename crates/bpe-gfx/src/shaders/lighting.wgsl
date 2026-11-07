@@ -193,6 +193,9 @@ fn pixel_block(ip: vec2<i32>) -> f32 {
 // times opacity, so for one thing this is exactly blocks times cover times opacity; on a Stage R
 // already is, and is never more than A).
 fn cover_block(s: vec4<f32>) -> f32 {
+    if u.trace.y > 0.5 {
+        return s.r;
+    }
     return min(s.r, s.a);
 }
 
@@ -537,9 +540,9 @@ fn march(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, s
             }
             if glass < SOLID {
                 if d < 0.0 || b >= BLOCK_LEAST {
-                    // Still in it: on by how deep in it the field says it is, at least half a pixel
-                    // (an edge pixel always has a step on it).
-                    t += max(-d, 0.5 * px);
+                    // Still in it: half a pixel at a time (so a thin solid line in it or along
+                    // its edge is met), or, deep inside, on by how deep the field says it is.
+                    t += select(0.5 * px, -d - texel, -d > 2.0 * texel);
                     continue;
                 }
                 // Out of it: it lets through what it doesn't block.
@@ -597,7 +600,7 @@ fn march(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, s
         let vk = clamp(0.5 + 0.5 * d / (max(t, texel) * ang), 0.0, 1.0);
         v = min(v, vk);
         let o = select(clamp(fd.y, 0.0, 1.0), 1.0, stage || fd.y >= SOLID);
-        e = min(e, 1.0 - o * (1.0 - smoothed(vk)));
+        e = min(e, select(1.0 - o * (1.0 - smoothed(vk)), smoothed(vk), o >= 1.0));
         if v <= 0.0 {
             break;
         }

@@ -6,7 +6,8 @@
 
 struct Mix {
     // x: the blend's number (Blend::shader_code), y: the amount, 0 to 1, z: 1 when the layer's
-    // things blend with each other, w: 1 for a plain layer, put on as if drawn straight in.
+    // things blend with each other, w: 1 for a plain layer, put on as if drawn straight in, plus
+    // 2 for the lighting's surface picture (its alpha then gains the layer's cover).
     how: vec4<f32>,
 };
 
@@ -25,10 +26,20 @@ fn fs_blend(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let p = vec2<i32>(pos.xy);
     let d = textureLoad(under, p, 0);
     let l = textureLoad(layer, p, 0);
+    var out = mixed(d, l);
+    if mixing.how.w > 1.5 {
+        // The surface picture keeps how much its blockers cover, the layer's over what is under.
+        out.a = d.a + clamp(l.a, 0.0, 1.0) * clamp(mixing.how.y, 0.0, 1.0) * (1.0 - d.a);
+    }
+    return out;
+}
+
+fn mixed(d: vec4<f32>, l: vec4<f32>) -> vec4<f32> {
     let code = u32(mixing.how.x + 0.5);
     let amount = clamp(mixing.how.y, 0.0, 1.0);
     let c = max(l.rgb, vec3<f32>(0.0));
-    if mixing.how.w > 0.5 {
+    let plain = mixing.how.w - select(0.0, 2.0, mixing.how.w > 1.5);
+    if plain > 0.5 {
         // Premultiplied over: light with no coverage adds, as it does drawn straight in.
         return vec4<f32>(d.rgb * (1.0 - clamp(l.a, 0.0, 1.0)) + c, d.a);
     }

@@ -75,8 +75,9 @@ whole (plan `lighting/thin-blockers.md`): `fs_seed` keeps a field texel any bloc
 a blocker, `LAMP_RAYS` rays across the lamp (union of their clear stretches); `tests/thin_blockers.rs`. See-through
 blockers let their share through in Flat (plan `lighting/see-through-blockers.md`): the surface picture's R is blocks ×
 opacity with the antialiased edge taken whole (`scene.wgsl::hard_block`, `AA_COVER` from trails, `layers.wgsl::surface_whole`
-for balls and shapes; readers wanting the old value use `cover_block` = min(R, A)), a Surface's See-through is folded into
-`LayerGpu.light[1]` by `surface::Stamps::apply`, the field's G is the nearest blocker's opacity (`blocker_opacity`), and
+for balls and shapes; readers wanting the old value use `cover_block` = min(R, A), so the blend composite adds the layer's cover to the surface
+picture's alpha in Flat), a Surface's See-through is folded into
+`LayerGpu.light[1]` by `surface::Stamps::apply` (`keeps_of`, never under 1/1024), the field's G is the nearest blocker's opacity (`blocker_opacity`), and
 `march` walks through a pixel under `SOLID` (0.98), multiplying `Ray.lit`; `visibility` gives `1 − ō(1 − shown)`;
 Stage is unchanged; `tests/see_through_shadows.rs`. No Lighting
 card leaves `Frame.light` `None` and the picture byte-identical (`bpe-kit/tests/unlit_pictures.rs`, hashes made before

@@ -81,9 +81,10 @@ on a Stage takes any blocking as whole (so Stage stays exactly as it is).
 
 ### The light field
 
-`fs_gi_scene`'s blocks come from `min(R, A)` (unchanged values) and its "thin" rule (a texel the lighting's field
-blocks counts as opaque) applies only where that blocker is at least half opaque (the field's G), or a half
-see-through fill would turn opaque in the glow light.
+`fs_gi_scene`'s blocks come from `min(R, A)` (unchanged values for opacity) and its "thin" rule (a texel the
+lighting's field blocks counts as opaque) applies only where that blocker is at least half opaque (the field's G),
+or a half see-through fill would turn opaque in the glow light. Glass (See-through over a half) now lets the glow
+and bounce light through as well, as it lets a lamp's light through.
 
 ## Tests (`crates/bpe-kit/tests/see_through_shadows.rs`)
 
@@ -97,9 +98,33 @@ Light only, ambient 0, light measured in linear light against the same scene wit
 6. `thin_blockers.rs` still passes (solid things), and the pinned Flat pictures move only where something
    see-through blocks.
 
+## After the review
+
+An Opus review measured three real problems on the GPU, all fixed:
+
+- **A blended thing shadowed itself.** Things mixed through a blend layer picture (a shape with a Blend layer, a ball
+  split by one, blending trails) reach the surface picture through `blend.wgsl`'s composite, which kept the alpha
+  under it, so `min(R, A)` read 0 and the march started inside the thing's own blocker. The composite now adds the
+  layer's cover to the surface picture's alpha in Flat (`Mix.how.w` + 2, `Renderer.light_stage`), and
+  `cover_block` reads plain R on a Stage. Test: `a_blended_thing_doesnt_shadow_itself`.
+- **Clear glass stopped blocking on a Stage**, and in Flat a layer of clear glass was taken for one that doesn't
+  block. `Stamps::apply` keeps at least 1/1024 of a record's blocking (`keeps_of`). Test:
+  `a_stage_keeps_see_through_blockers_whole`.
+- **A see-through layer over a solid Body hid the Body's blocking** (the surface blends "over", and See-through
+  lowers R but not cover). Inside the thing a layer's blocking is now `1 − (1 − b)(1 − Body's)`.
+- Also: the near-miss estimate is exactly `smoothstep(v)` for solid blockers (`select`), and the walk through a
+  see-through blocker goes half a pixel at a time but where the field says it is more than two texels deep, so a
+  thin solid line in or along it is met.
+
 ## Not in this change
 
 - Coloured shadows (light tinted by the colour it passes through).
 - Stage shapes' slab shadows and the CPU light probe (light sensing) still treat see-through things as solid.
-- An opaque line drawn over a see-through fill can be hopped over inside the fill (the walk steps by the field's
-  depth there).
+- Something solid deep inside a see-through fill (more than two field texels from its edge) can be hopped over.
+- Separate things overlapping: the surface picture keeps the top thing's blocking, so a glass thing drawn over a
+  solid one lets light through the solid one where they overlap (as a thing that doesn't block light already did).
+  Opacity combines properly (its cover drops with it).
+- Where the rays across the lamp cross a mix of see-through and solid things, the share they block is a mean over
+  5 rays (3 at Draft), so such a soft edge comes in small steps.
+- Lines under about 2 pixels whose edge is a layer's own (an Outline sitting outside, pattern stripes, broken
+  pieces, soft trails, sparks) block by their cover there: mostly whole, a little less on their thinnest stretches.

@@ -191,15 +191,21 @@ fn light_piece(piece: Piece, l: LayerGpu, hit: vec4<f32>) -> Piece {
     if keeps && (own || dull) {
         blocks = LIGHT_BODY_BLOCKS;
     }
+    // Inside the thing a layer lies over its Body, which still blocks under it: a see-through
+    // layer lets through only what both let through (a solid one blocks whole either way).
+    var blocks_in = blocks;
+    if l.head.x != 0u && !keeps {
+        blocks_in = 1.0 - (1.0 - blocks) * (1.0 - LIGHT_BODY_BLOCKS);
+    }
     // In Stage a ball blocks as a sphere, not in the blockers' field: a quarter marks it (the
     // field's seeds take only more than 0.3 on a Stage, lighting.wgsl's `foot_blocks`; the light
     // field reads it, part 2b).
     if LIGHT_BALL && g.light.z > 0.5 {
         blocks *= 0.25;
+        blocks_in *= 0.25;
     }
-    let s = vec3<f32>(blocks, LIGHT_HEIGHT, index);
-    out.c_in = s;
-    out.c_out = s;
+    out.c_in = vec3<f32>(blocks_in, LIGHT_HEIGHT, index);
+    out.c_out = vec3<f32>(blocks, LIGHT_HEIGHT, index);
     if keeps {
         out.a_out = 0.0;
         if !(own || dull) {

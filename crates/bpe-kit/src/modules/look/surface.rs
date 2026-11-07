@@ -462,6 +462,14 @@ pub fn passes(s: &SurfaceSettings) -> f32 {
     if s.see_through.is_finite() { s.see_through.clamp(0.0, 1.0) } else { 0.0 }
 }
 
+/// What a record that blocks light keeps of its blocking under a surface letting `passes`
+/// through: never quite 0, so clear glass still counts as a blocking layer (a Stage then takes
+/// it whole, and a layer over the Body isn't taken for one that doesn't block) while in Flat it
+/// is far below what blocks at all and lets all the light through.
+pub fn keeps_of(passes: f32) -> f32 {
+    (1.0 - passes).max(1.0 / 1024.0)
+}
+
 impl Stamps {
     pub fn of(scene: &bpe_core::Resolved, id: ThingId, look: &ResolvedSlot) -> Stamps {
         let card = of_card(look);
@@ -499,7 +507,7 @@ impl Stamps {
     /// see-through thing casts a lighter shadow in Flat (lighting's see-through blockers plan; a
     /// Stage takes it as blocking whole).
     pub fn apply(&self, records: &mut [bpe_gfx::LayerGpu], record_of: impl Fn(LayerId) -> Option<usize>) {
-        let keep = 1.0 - self.thing_passes;
+        let keep = keeps_of(self.thing_passes);
         for r in records.iter_mut() {
             r.light[3] = self.thing;
         }
@@ -509,7 +517,7 @@ impl Stamps {
             let n = 1 + records[at].head[3] as usize;
             let value = stamp(*index, s) + SurfaceGpu::OWN_FLAG;
             let end = (at + n).min(records.len());
-            let layer_keep = 1.0 - passes(s);
+            let layer_keep = keeps_of(passes(s));
             for (r, own) in records[at..end].iter_mut().zip(&mut own[at..end]) {
                 r.light[3] = value;
                 r.light[1] *= layer_keep;

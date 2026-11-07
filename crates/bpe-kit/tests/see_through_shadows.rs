@@ -228,3 +228,43 @@ fn a_see_through_shadow_keeps_a_smooth_soft_edge() {
         }
     }
 }
+
+/// A thing drawn through a blend (a shape with a Blend layer goes through its own layer picture)
+/// is lit on its own pixels as one drawn straight in is: it doesn't shadow itself.
+#[test]
+fn a_blended_thing_doesnt_shadow_itself() {
+    let Some(mut gpu) = gpu() else { return };
+    let reg = reg();
+    for quality in ["draft", "good"] {
+        let plain = room(&reg, wall(600.0), true, 0.0, quality, [0.0, -400.0]);
+        let mut blended = plain.clone();
+        let shape = id_of(&blended, "shape");
+        blended.add_layer(&reg, shape, SlotId::Look, "shape.blend").unwrap();
+        let a = draw(&mut gpu, &plain, "self-plain");
+        let b = draw(&mut gpu, &blended, &format!("self-blended-{quality}"));
+        for x in [-200.0, -50.0, 0.0, 120.0, 250.0] {
+            let (lit, want) = (light(&b, x, 0.0), light(&a, x, 0.0));
+            assert!(want > 0.05, "{quality}: the wall's own pixels are lit at {x}");
+            assert!((lit - want).abs() <= 0.1 * want, "{quality}: blended wall at {x}: {lit} against {want}");
+        }
+    }
+}
+
+/// On a Stage a see-through thing still blocks whole (the Stage's shadows have maths of their own),
+/// clear glass too.
+#[test]
+fn a_stage_keeps_see_through_blockers_whole() {
+    let Some(mut gpu) = gpu() else { return };
+    let reg = reg();
+    let stage = |see: f32| {
+        let mut scene = room(&reg, wall(600.0), true, see, "good", [0.0, -400.0]);
+        let lighting = scene.things.get_mut(&ThingId::ROOT).unwrap().slots.get_mut(&SlotId::Lighting).unwrap();
+        lighting.params.set("depth", Value::Choice("stage".into()));
+        scene
+    };
+    let solid = draw(&mut gpu, &stage(0.0), "stage-solid");
+    for see in [0.5f32, 0.99, 1.0] {
+        let pixels = draw(&mut gpu, &stage(see), &format!("stage-{see}"));
+        assert!(pixels == solid, "see-through {see} draws the Stage as a solid wall does");
+    }
+}
