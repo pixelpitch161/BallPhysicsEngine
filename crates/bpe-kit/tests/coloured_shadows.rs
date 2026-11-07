@@ -193,7 +193,7 @@ fn a_two_colour_pane_throws_both_colours() {
     let mut scene = room(&reg, true, 1.0, "good");
     let id = id_of(&scene, "shape");
     let mut colours = Gradient::solid(Color::rgb(255, 0, 0));
-    colours.stops.push(bpe_core::Stop { at: 1.0, ..colours.stops[0].clone() });
+    colours.stops.push(bpe_core::Stop { at: 1.0, ..colours.stops[0] });
     colours.stops[1].color = Color::rgb(0, 0, 255);
     let layer = paint(&mut scene, &reg, id, colours);
     // Left to right (the default Turn 90 runs top to bottom, through the wall's thickness).

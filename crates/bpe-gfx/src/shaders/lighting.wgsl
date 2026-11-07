@@ -233,9 +233,10 @@ const SOLID: f32 = 0.98;
 const TINT_LEAST: f32 = 0.1;
 
 // Whether picture pixel `ip` is coloured glass the field should hold (only in the seed and field
-// passes, which have the tint picture bound in `picture`'s place, and only when it was drawn).
+// passes, which have the tint picture bound in `picture`'s place, and only when it was drawn): it
+// blocks some light (clear glass blocks 1/1024; a thing that doesn't block light none) and colours it.
 fn pixel_tints(ip: vec2<i32>) -> bool {
-    if u.trace.w < 0.5 || u.trace.y > 0.5 {
+    if u.trace.w < 0.5 || u.trace.y > 0.5 || textureLoad(surface, ip, 0).r <= 0.0 {
         return false;
     }
     let d = textureLoad(picture, ip, 0).rgb;
@@ -606,8 +607,10 @@ fn march(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, s
         let b0 = min(s0.r, 1.0);
         leaves = select(b0 >= BLOCK_LEAST && cover_block(s0) > 0.5 * b0, s0.r > 0.5, stage);
         // On clear coloured glass: it doesn't colour its own light either.
-        let f0 = field_all(p);
-        leaves = leaves || (f0.x < 0.0 && clear_tint(f0.yzw));
+        if !leaves && u.trace.w > 0.5 {
+            let f0 = field_all(p);
+            leaves = f0.x < 0.0 && clear_tint(f0.yzw);
+        }
     }
     if leaves {
         // Leave the blocker the pixel is on: a thing doesn't shadow itself.
@@ -1422,9 +1425,15 @@ fn fs_cascade(in: FsIn) -> @location(0) vec4<f32> {
     var in_glass = false;
     // Longer stretches take more steps; a ray that runs out of them before its stretch ends
     // counts as stopped, so light never leaks through what it didn't reach.
-    let budget = steps + 4 * i32(i) + select(0, steps, tinted);
+    // Steps held short by coloured glass don't count (so where nothing is coloured the light
+    // field is exactly as without the tint picture), within twice the steps.
+    let budget = steps + 4 * i32(i);
+    var used = 0;
     var done = false;
-    for (var k = 0; k < budget; k++) {
+    for (var k = 0; k < budget + select(0, steps, tinted); k++) {
+        if used >= budget {
+            break;
+        }
         if along >= span.y {
             done = true;
             break;
@@ -1447,7 +1456,10 @@ fn fs_cascade(in: FsIn) -> @location(0) vec4<f32> {
                 col = vec3<f32>(1.0);
                 in_glass = false;
             }
-            to_blocker = fb.r / max(texel_world, 1e-6);
+            // Only a coloured blocker holds the steps short.
+            if any(colour_of(fb.yzw) < vec3<f32>(1.0)) {
+                to_blocker = fb.r / max(texel_world, 1e-6);
+            }
         }
         let gap = textureLoad(gi_dist, qi, 0).r;
         if gap < 0.5 {
@@ -1459,8 +1471,12 @@ fn fs_cascade(in: FsIn) -> @location(0) vec4<f32> {
             open = 0.0;
             break;
         }
-        // Tinted, no further than the nearest blocker, so thin glass on the way isn't stepped over.
-        along += min(max(gap - 1.0, 0.75), max(to_blocker, 0.75));
+        // Tinted, no further than the nearest coloured blocker, so thin glass on the way isn't
+        // stepped over.
+        let free = max(gap - 1.0, 0.75);
+        let held = max(to_blocker, 0.75);
+        used += select(1, 0, held < free);
+        along += min(free, held);
     }
     if in_glass {
         trans *= col;
@@ -2096,8 +2112,11 @@ fn sphere_block(p: vec3<f32>, l: vec3<f32>, dist: f32, ang: f32, sp: SphereGpu) 
         // Glass and light part 1: its colour by its Tints light, deeper where the ray passes
         // through more of it (its middle) by its Deeper when thick.
         let f = sqrt(max(1.0 - (m / max(r, 1e-4)) * (m / max(r, 1e-4)), 0.0));
-        let tinted = max(mix(vec3<f32>(1.0), sp.b.rgb, clamp(sp.c.y, 0.0, 1.0)), vec3<f32>(1.0 / 1024.0));
-        through = clamp(sp.a.w, 0.0, 1.0) * pow(tinted, vec3<f32>(1.0 + THICK_DEPTH * max(sp.b.w, 0.0) * f));
+        // Tints light 1 and Deeper when thick 0: exactly the colour, as before part 1.
+        let tinted = mix(vec3<f32>(1.0), sp.b.rgb, clamp(sp.c.y, 0.0, 1.0));
+        let deeper = 1.0 + THICK_DEPTH * max(sp.b.w, 0.0) * f;
+        let deep = pow(max(tinted, vec3<f32>(1.0 / 1024.0)), vec3<f32>(deeper));
+        through = clamp(sp.a.w, 0.0, 1.0) * select(deep, tinted, deeper <= 1.0);
     }
     return mix(through, vec3<f32>(1.0), v * v * (3.0 - 2.0 * v));
 }

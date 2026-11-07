@@ -207,7 +207,7 @@ fn shade_shape_layers(
     }
     // The tint pass: the stack's colour as it tints light, its depth worked out once.
     if tint_pass() {
-        if out.a <= 1e-5 {
+        if out.a <= 1e-5 || TINT_SKIP {
             discard;
         }
         return tint_out(out.rgb / out.a, tint_presence(out.a, cover), TINT_BLOCKS, 1.0, TINT_THICK);

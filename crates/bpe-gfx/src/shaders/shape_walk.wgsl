@@ -43,6 +43,9 @@ fn SHAPE_WALK(world: vec2<f32>, s: ShapeAt, first: u32, count_in: u32, split: u3
     LIGHT_BALL = false;
     let cut = split & 0xffffu;
     let upper = cut > 0u && (split & 0x10000u) != 0u;
+    if upper {
+        TINT_SKIP = true;
+    }
     let lower = cut > 0u && !upper;
     var inner = vec4<f32>(0.0);
     var outer = vec4<f32>(0.0);

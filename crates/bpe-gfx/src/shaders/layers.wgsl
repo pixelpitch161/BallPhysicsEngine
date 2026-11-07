@@ -80,6 +80,9 @@ var<private> LIGHT_BALL: bool;
 // the thing is at this pixel, set as the walk starts.
 var<private> TINT_BLOCKS: f32;
 var<private> TINT_THICK: f32;
+// The upper part of a thing split at a Blend layer: the lower part writes the whole thing's tint
+// (drawing both would count its depth twice), so the layers above the Blend layer don't tint.
+var<private> TINT_SKIP: bool;
 // What the thing's Body blocks (set as the walk passes it, the first record): a layer wearing a
 // surface of its own covers the surface picture inside the thing, blocking as the Body does.
 var<private> LIGHT_BODY_BLOCKS: f32;
@@ -103,7 +106,9 @@ fn light_piece(piece: Piece, l: LayerGpu, hit: vec4<f32>) -> Piece {
         // Pass 8, the tint picture: each layer shows its colour as it tints light (white where
         // its Tints light is 0). One that doesn't block light colours the thing only inside it,
         // as paint on glass does; a Shine, Shading, Shader or Glow that doesn't block leaves what
-        // is under it. The depth is worked out once for the whole thing (`tint_out`).
+        // is under it. The depth is worked out once for the whole thing (`tint_out`), by the
+        // most any of its layers blocks (a Body that doesn't block under an Outline that does).
+        TINT_BLOCKS = max(TINT_BLOCKS, l.light.y);
         if l.light.y <= 0.0 && l.head.x != 0u {
             let works_over = l.head.x == 3u || l.head.x == 4u || l.head.x == 5u || l.head.x == 6u || l.head.x == 9u;
             out.a_out = 0.0;
@@ -496,6 +501,17 @@ fn group_over(acc: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(with_group(acc.rgb / m) * m, acc.a);
 }
 
+// `group_over` for the tint pass (8): the group colour tints the light through the ball only as
+// far as its Tints light `tints` says (the pieces already hold their colour mixed from white by it).
+fn tint_group_over(acc: vec4<f32>, tints: f32) -> vec4<f32> {
+    if acc.a <= 1e-5 {
+        return acc;
+    }
+    let t = clamp(tints, 0.0, 1.0);
+    let c = mix(vec3<f32>(1.0), tint_chroma(with_group(acc.rgb / acc.a)), t);
+    return vec4<f32>(c * acc.a, acc.a);
+}
+
 
 // The colour of layer record `l` painting with paint `paint` (its own colours as a gradient, or a
 // Pattern's) at ball point `p` over `base`, laid out by its form (`paint_colour`); Round on a
@@ -835,7 +851,7 @@ fn shade_layers(in: LayeredOut) -> vec4<f32> {
     // The tint pass: the stack's colour as it tints light, its depth worked out once for the
     // ball; nothing for a ball on a Stage, which tints as a sphere (lighting.wgsl).
     if tint_pass() {
-        if out.a <= 1e-5 || (LIGHT_BALL && g.light.z > 0.5) {
+        if out.a <= 1e-5 || TINT_SKIP || (LIGHT_BALL && g.light.z > 0.5) {
             discard;
         }
         return tint_out(out.rgb / out.a, tint_presence(out.a, cover), TINT_BLOCKS, 1.0, TINT_THICK);

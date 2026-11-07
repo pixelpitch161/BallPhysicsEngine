@@ -70,6 +70,9 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
     }
     let cut = split & 0xffffu;
     let upper = cut > 0u && (split & 0x10000u) != 0u;
+    if upper {
+        TINT_SKIP = true;
+    }
     let lower = cut > 0u && !upper;
 
     var inner = vec4<f32>(0.0);
@@ -322,11 +325,17 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
             case 8u: {
                 // The group colour over the whole ball as it stands here (not over the surface),
                 // and in the tint pass (8), where it tints the light through the ball.
-                if g.light.x < 1.5 || g.light.x > 7.5 {
+                if g.light.x < 1.5 {
                     inner = group_over(inner);
                     outer = group_over(outer);
                     top_in = group_over(top_in);
                     top_out = group_over(top_out);
+                } else if g.light.x > 7.5 {
+                    let t = record_tints(look_layers[first]);
+                    inner = tint_group_over(inner, t);
+                    outer = tint_group_over(outer, t);
+                    top_in = tint_group_over(top_in, t);
+                    top_out = tint_group_over(top_out, t);
                 }
             }
             case 20u: {

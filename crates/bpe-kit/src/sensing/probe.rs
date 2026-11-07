@@ -397,7 +397,7 @@ impl Lamps {
                     lamps.push(Lamp { gpu, from: None, shape: Some(*id) });
                 }
                 if look.blocks {
-                    blockers.walls.push((*id, sides, look.passes));
+                    blockers.walls.push((*id, sides, look.passes, wall.solid));
                 }
             }
         }
@@ -695,10 +695,14 @@ struct Ball {
 
 /// What blocks light: balls in a uniform grid, shapes' outlines as segments, each with what it
 /// lets through of each channel (0 solid).
+/// A shape that blocks light: its thing, its outline's sides, what it lets through of each channel
+/// and whether it is filled.
+type Wall = (ThingId, Vec<[Vec2; 2]>, [f32; 3], bool);
+
 #[derive(Default)]
 struct Blockers {
     balls: Vec<Ball>,
-    walls: Vec<(ThingId, Vec<[Vec2; 2]>, [f32; 3])>,
+    walls: Vec<Wall>,
     grid: Option<Grid>,
 }
 
@@ -764,8 +768,8 @@ impl Blockers {
     /// How much of the light gets from the lamp to `p` along `toward` (1 all, 0 none) of each
     /// channel, the shader's `visibility` worked out against circles and segments: a blocker
     /// farther than `length` from `p`, or within `stop` of the lamp, casts nothing on it. A
-    /// see-through ball in the way lets through what it passes (the least any does: the grid may
-    /// meet a ball twice), a see-through shape's outline crossed what it passes, each time.
+    /// see-through ball in the way lets through what it passes (once, though the grid may meet it
+    /// twice), a see-through shape what it passes (a filled one once, a band each time crossed).
     #[allow(clippy::too_many_arguments)]
     fn visibility(
         &self,
@@ -787,6 +791,9 @@ impl Blockers {
         let mut v: f32 = 1.0;
         let mut through = [1.0f32; 3];
         let smooth = |v: f32| v * v * (3.0 - 2.0 * v);
+        // The see-through balls met so far (the grid can give a ball twice): each lets its share
+        // through once.
+        let mut met: Vec<(ThingId, u32)> = Vec::new();
         let mut test = |b: &Ball| {
             if Some(b.from) == skip.ball || Some(b.from) == lamp.from {
                 return;
@@ -806,9 +813,13 @@ impl Blockers {
             if b.passes.iter().all(|c| *c <= 0.0) {
                 v = v.min(vb);
             } else {
+                if met.contains(&b.from) {
+                    return;
+                }
+                met.push(b.from);
                 let s = smooth(vb);
                 for (t, c) in through.iter_mut().zip(b.passes) {
-                    *t = t.min(c + (1.0 - c) * s);
+                    *t *= c + (1.0 - c) * s;
                 }
             }
         };
@@ -821,7 +832,7 @@ impl Blockers {
                 Some(_) => p + toward * end,
                 None => p + toward * end.min(1e6),
             };
-            for (id, sides, passes) in &self.walls {
+            for (id, sides, passes, solid) in &self.walls {
                 if Some(*id) == skip.thing || Some(*id) == lamp.shape {
                     continue;
                 }
@@ -833,8 +844,10 @@ impl Blockers {
                     v = 0.0;
                     break;
                 }
+                // A filled shape is passed through once going in and out; a band each time.
+                let times = if *solid { crossed.div_ceil(2) } else { crossed };
                 for (t, c) in through.iter_mut().zip(passes) {
-                    *t *= c.powi(crossed as i32);
+                    *t *= c.powi(times as i32);
                 }
             }
         }
@@ -991,7 +1004,12 @@ mod tests {
             .iter()
             .map(|r| b.visibility(r.0, r.1, r.2, r.3, 1e9, 0.0, Skip::default(), &lamp, Some(r.0)))
             .collect();
-        assert_eq!(each, grid);
+        // The same, but for the order see-through balls' shares multiply in.
+        for (k, (e, g)) in each.iter().zip(&grid).enumerate() {
+            for c in 0..3 {
+                assert!((e[c] - g[c]).abs() <= 1e-6 * e[c].max(1.0), "ray {k}: {e:?} against {g:?}");
+            }
+        }
         assert!(each.iter().any(|v| v[0] < 0.5) && each.iter().any(|v| v[0] > 0.99), "a mix of open and blocked rays");
         assert!(each.iter().any(|v| v[0] > v[2] + 0.1), "some through coloured balls");
     }

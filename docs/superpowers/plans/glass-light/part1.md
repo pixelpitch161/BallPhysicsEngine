@@ -288,3 +288,18 @@ Lighting card.
   Coloured light through glass off, the old behaviour.
 - **Tests** in `tests/coloured_shadows.rs` (10). A two-colour pane needs its gradient turned to 0 (left to right): the
   default Turn 90 runs through the wall's thickness, and a ray crossing red then blue rightly comes out dark.
+- **After review.**
+  - The light field holds a ray's steps short only near a *coloured* blocker, and those steps don't count against
+    its budget, so where nothing is coloured (white glass, Tints light 0) it is exactly as without the tint picture.
+  - The tint picture blocks by the most any of the thing's layers blocks (a Body with Blocks light off under an
+    Outline that blocks still shadows on a Stage); `pixel_tints` needs the surface picture to block a little there
+    (clear glass blocks 1/1024), so a thing that doesn't block light never colours it.
+  - The group colour tints by the Body's Tints light (`tint_group_over`).
+  - A thing split at a Blend layer writes its tint from the lower part only (`TINT_SKIP`): the layers above the Blend
+    layer don't tint.
+  - A Stage glass sphere at Tints light 1 and Deeper when thick 0 is exactly its colour, as before.
+  - Probe: a see-through ball lets its share through once however often the grid meets it, and balls in a row
+    multiply; a filled shape is passed once going in and out (a band each crossing).
+  - Known: on a Stage, a thing at Opacity under 1 (and soft particles) now lets its share through where it used to
+    block whole; the probe lets see-through things' share through even with Coloured light through glass off, as the
+    Flat picture has since #145.

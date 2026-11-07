@@ -170,7 +170,7 @@ fn light_through_two_see_through_things_takes_each_share() {
 }
 
 /// A big ball whose Body is drawn at half opacity, between the lamp and the floor: about half the
-/// light behind it.
+/// light behind it (Coloured light through glass off).
 #[test]
 fn a_half_opaque_ball_lets_half_the_light_through() {
     let Some(mut gpu) = gpu() else { return };
@@ -188,6 +188,10 @@ fn a_half_opaque_ball_lets_half_the_light_through() {
             let look = scene.card_mut(ball, SlotId::Look).unwrap();
             look.params.set(&layered_key(body, "blocks_light"), Value::Bool(blocks));
             look.params.set(&layered_key(body, "opacity"), Value::Number(0.5));
+            // The ball is coloured: with Coloured light through glass on, its shadow takes its
+            // colour (`coloured_shadows.rs`); here only how much gets through counts.
+            let lighting = scene.things.get_mut(&ThingId::ROOT).unwrap().slots.get_mut(&SlotId::Lighting).unwrap();
+            lighting.params.set("glass_colour", Value::Bool(false));
             scene
         };
         let open = draw(&mut gpu, &scene(false), "ball-open");
