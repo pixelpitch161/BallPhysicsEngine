@@ -307,6 +307,10 @@ pub struct LightingSettings {
     /// How many bands of light a toon picture has.
     #[setting(label = "Toon steps", when = "shadow_style=toon", range(1, 1e9), span(1, 8), group = "Shadows")]
     pub toon_steps: u32,
+    /// Light through see-through things takes their colour: red glass throws red light,
+    /// stained glass a coloured picture.
+    #[setting(label = "Coloured light through glass", group = "Shadows")]
+    pub glass_colour: bool,
     /// How much the air shows the light: beams from the lamps, halos round glowing things.
     #[setting(label = "Haze", span(0, 2), keyframe, group = "Air")]
     pub haze: f32,
@@ -559,6 +563,7 @@ impl Default for LightingSettings {
             contact: 0.0,
             contact_reach: 40.0,
             toon_steps: 3,
+            glass_colour: true,
             haze_moves: HazeMoves::Still,
             haze_speed: 1.0,
             haze_size: 400.0,
@@ -627,7 +632,12 @@ impl LightingSettings {
         LightingGpu {
             ambient: [a[0] * ambient, a[1] * ambient, a[2] * ambient, self.background_lit],
             shadows: [self.shadow_style.code(), self.shadow_softness, self.shadow_length, self.contact],
-            more: [self.contact_reach, self.toon_steps.max(1) as f32, self.quality.code(), 0.0],
+            more: [
+                self.contact_reach,
+                self.toon_steps.max(1) as f32,
+                self.quality.code(),
+                if self.glass_colour { 1.0 } else { 0.0 },
+            ],
             stage: [f32::from(u8::from(stage)), back, self.shape_depth.max(0.0) - back, k],
             floor: [
                 floor_kind,
@@ -775,5 +785,15 @@ mod tests {
         let off = LightingSettings { ambient_on: false, ..on.clone() };
         assert_eq!(&off.gpu(None).ambient[..3], &[0.0; 3]);
         assert_eq!(off.ambient, 0.4, "the strength is kept for when it is on again");
+    }
+
+    #[test]
+    fn coloured_light_through_glass_is_on_by_default() {
+        let on = LightingSettings::default();
+        assert!(on.glass_colour);
+        assert_eq!(on.gpu(None).more[3], 1.0);
+        assert!(on.gpu(None).glass_colour());
+        let off = LightingSettings { glass_colour: false, ..on };
+        assert_eq!(off.gpu(None).more[3], 0.0);
     }
 }

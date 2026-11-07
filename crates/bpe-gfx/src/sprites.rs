@@ -76,7 +76,13 @@ impl Sprites {
             bind_group_layouts: &[Some(globals_layout)],
             immediate_size: 0,
         });
-        let source = [include_str!("shaders/sprites.wgsl"), include_str!("shaders/each.wgsl"), EACH_ENTRY].concat();
+        let source = [
+            include_str!("shaders/tint.wgsl"),
+            include_str!("shaders/sprites.wgsl"),
+            include_str!("shaders/each.wgsl"),
+            EACH_ENTRY,
+        ]
+        .concat();
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("sprites"),
             source: wgpu::ShaderSource::Wgsl(source.into()),

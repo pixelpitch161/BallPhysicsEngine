@@ -560,6 +560,8 @@ pub fn push_ball_light(cx: &DrawCx, scene: &mut bpe_gfx::LightScene) {
         None => [1.0; 4],
     };
     let see = s.see_through.clamp(0.0, 1.0);
+    // Glass and light part 1: how much its light takes its colour, and deeper where thick.
+    let finite = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
     for i in 0..bodies.len() {
         if !bodies.alive[i] {
             continue;
@@ -567,8 +569,8 @@ pub fn push_ball_light(cx: &DrawCx, scene: &mut bpe_gfx::LightScene) {
         let at = bodies.position[i];
         scene.spheres.push(bpe_gfx::SphereGpu {
             a: [at.x, at.y, bodies.radius[i], see],
-            b: [tint[0], tint[1], tint[2], 0.0],
-            c: [index as f32, 0.0, 0.0, 0.0],
+            b: [tint[0], tint[1], tint[2], finite(s.thick_tint)],
+            c: [index as f32, finite(s.tints), 0.0, 0.0],
         });
     }
 }

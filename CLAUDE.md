@@ -233,10 +233,27 @@ shaders. `tests/bake_pictures.rs` (bpe-cli); `scenes::bake_demo` is test-only.
 
 ## Glass and light (spec `docs/superpowers/specs/2026-11-07-glass-light-design.md`, plans `docs/superpowers/plans/glass-light/`)
 
-Designed, not built yet: part 1 coloured shadows and stained glass (a multiply-blended tint picture, light pass 8, read by
-`march`; Surface Tints light / Deeper when thick; the Lighting card's Coloured light through glass), part 2 prism and
-rainbow beams (laser Colours, the Beam light kind, the Prism chip), part 3 bent light through any glass shape (a 2D photon
-pass), part 4 wild glass (mirrors throw light, Mirror ball, Dichroic, Diamond fire, Light pipes, rainbows in rain).
+Part 1 is in (plan `part1.md`, "As built" at its end): **coloured shadows and stained glass**. Light pass 8, the
+**tint picture** (`TINT_PASS`, `shaders/tint.wgsl`: `tint_out` writes optical depth `−ln(share) + (−ln T)(1 + THICK ·
+thick)` with alpha 0, so premultiplied over adds depths and what passes multiplies; `T = mix(1, chroma, tints ·
+presence)`), drawn by balls (`layers.wgsl` `light_piece`/`shade_layers`, `TINT_BLOCKS`/`TINT_THICK` from the walk),
+shapes (`shape_layers.wgsl`), trails/sprites (`scene.wgsl::light_flat`, `sprites.wgsl`); liquid writes nothing. Made
+only when `LightScene::needs_tint` (Coloured light through glass on, lights or glows, `Frame::see_through_blockers`),
+`Lighting::make_tint`. Only the seed and field passes read it (bound in `picture`'s place): the blockers' field is
+Rgba16Float, R distance, GBA each channel's blocking (`blocker_channels`, `foot_tint`; readers take `opacity_of` = min
+and `colour_of`; on a Stage the grey depth gives the opacity under `TINT_SOLID_DEPTH`); clear glass under `BLOCK_LEAST`
+still seeds where it colours (`pixel_tints`, `TINT_LEAST`, `clear_tint` in `march`). `Ray.lit`/`e`, `visibility`,
+`slab_visibility` (see-through Stage slabs now pass their share) are `vec3`; `sphere_block` tints by a sphere's
+`c[1]` Tints and `b[3]` Deeper; `fs_cascade` multiplies by the glass colour on the way (`Uniform.trace` = [bounce,
+stage, glass colour, tinted]). Records carry Tints light and Deeper when thick in `LayerGpu.head[2]` bits 16..23/24..31
+(64ths, `LayerGpu::tint_bits`, stamped by `surface::Stamps`). Surface gains **Tints light** (`tints`, 1) and **Deeper
+when thick** (`thick_tint`, 0.5 on Glass and Jelly); the Lighting card's **Coloured light through glass**
+(`glass_colour`, on; `LightingGpu.more[3]`). The light probe tints too (`LookLight.passes`, `Ball.passes`, walls'
+passes; `visibility` → `[f32; 3]`). Off, or Tints light 0, the picture is byte-identical. `tests/coloured_shadows.rs`.
+
+Designed, not built yet: part 2 prism and rainbow beams (laser Colours, the Beam light kind, the Prism chip), part 3 bent
+light through any glass shape (a 2D photon pass), part 4 wild glass (mirrors throw light, Mirror ball, Dichroic, Diamond
+fire, Light pipes, rainbows in rain).
 
 ## Rules (spec `docs/superpowers/specs/2026-11-06-rules-design.md`, plans `docs/superpowers/plans/rules/`)
 

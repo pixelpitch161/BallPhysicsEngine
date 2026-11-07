@@ -34,10 +34,18 @@ fn SHAPE_WALK(world: vec2<f32>, s: ShapeAt, first: u32, count_in: u32, split: u3
             let t = clamp(-s.sd / scale, 0.0, 1.0);
             LIGHT_HEIGHT = lens * scale * sqrt(max(1.0 - (1.0 - t) * (1.0 - t), 0.0)) * step(s.sd, 0.0);
         }
+        // The tint pass (tint.wgsl): what the Body blocks, and Deeper when thick by how deep inside
+        // the outline this is (as a half ball's height over its depth).
+        let deep = clamp(-s.sd / scale, 0.0, 1.0);
+        TINT_BLOCKS = look_layers[first].light.y;
+        TINT_THICK = record_deeper(look_layers[first]) * sqrt(max(1.0 - (1.0 - deep) * (1.0 - deep), 0.0));
     }
     LIGHT_BALL = false;
     let cut = split & 0xffffu;
     let upper = cut > 0u && (split & 0x10000u) != 0u;
+    if upper {
+        TINT_SKIP = true;
+    }
     let lower = cut > 0u && !upper;
     var inner = vec4<f32>(0.0);
     var outer = vec4<f32>(0.0);

@@ -78,6 +78,29 @@ fn a_ball_between_the_lamp_and_another_shadows_it() {
     assert!(probe.ball(&world, &log, BALLS, 0, 0.0).shadow < 1e-6);
 }
 
+/// Glass and light part 1: a see-through ball lets its share of the light through, in its colour
+/// when Coloured light through glass is on.
+#[test]
+fn a_see_through_ball_lets_its_share_through_in_its_colour() {
+    let (mut scene, _, kit) = lit("ring", Vec2::new(0.0, -400.0), 0.0);
+    let mut world = world_of(&scene, &kit);
+    let log = Log::default();
+    place(&mut world, &[Vec2::ZERO, Vec2::new(0.0, -150.0)]);
+    let body = scene.things[&BALLS].slots[&SlotId::Look].layers[0].id;
+    let card = scene.card_mut(BALLS, SlotId::Look).unwrap();
+    let red = bpe_core::Gradient::solid(bpe_core::Color::rgb(255, 0, 0));
+    card.params.set(&bpe_core::layered_key(body, "colours"), Value::Gradient(red));
+    let solid = probe_of(&scene, &kit).ball(&world, &log, BALLS, 0, 0.0).shadow;
+    assert!(solid > 0.9, "solid: {solid}");
+    scene.card_mut(BALLS, SlotId::Look).unwrap().params.set("see_through", Value::Number(0.6));
+    let red = probe_of(&scene, &kit).ball(&world, &log, BALLS, 0, 0.0).shadow;
+    let want = 1.0 - 0.6 * probe::luminance([1.0, 0.0, 0.0]);
+    assert!((red - want).abs() < 0.03, "red glass: {red} against {want}");
+    scene.card_mut(ThingId::ROOT, SlotId::Lighting).unwrap().params.set("glass_colour", Value::Bool(false));
+    let white = probe_of(&scene, &kit).ball(&world, &log, BALLS, 0, 0.0).shadow;
+    assert!((white - 0.4).abs() < 0.03, "colour off: {white}");
+}
+
 #[test]
 fn a_crowd_shadows_those_behind_it() {
     // A row of 24 balls in a line pointing at the lamp: every ball but the nearest is shadowed.
