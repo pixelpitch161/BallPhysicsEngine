@@ -232,7 +232,7 @@ impl Force {
     }
 
     /// Amount, Only for, Age and Share.
-    fn common(&self) -> (f32, OnlyFor, f32, f32) {
+    pub fn common(&self) -> (f32, OnlyFor, f32, f32) {
         match self {
             Force::Gravity(f) => (f.amount, f.only, f.age, f.share),
             Force::Wind(f) => (f.amount, f.only, f.age, f.share),

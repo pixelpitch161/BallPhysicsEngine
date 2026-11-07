@@ -145,6 +145,9 @@ pub struct World {
     /// Bytes each thing's state takes beyond its own struct, for the states that hold a lot
     /// Their sims note it; [`World::memory`] counts it for playback budgets.
     pub state_memory: BTreeMap<ThingId, usize>,
+    /// Bytes each thing's state keeps in video memory (a Huge swarm's particles), noted by its
+    /// sim; [`World::gpu_memory`] counts it for playback budgets.
+    pub gpu_memory: BTreeMap<ThingId, usize>,
     /// The kind of every built thing, in id order.
     pub(crate) kinds: BTreeMap<ThingId, String>,
     /// The built things in tree order: parents before children.
@@ -268,6 +271,7 @@ impl World {
             beat_seconds: 0.5,
             beats_in_bar: 4,
             state_memory: BTreeMap::new(),
+            gpu_memory: BTreeMap::new(),
             kinds: BTreeMap::new(),
             order: Vec::new(),
             pairs: Pairs::default(),
@@ -752,6 +756,11 @@ impl World {
             + std::mem::size_of::<World>()
     }
 
+    /// Bytes the world keeps in video memory, for playback budgets.
+    pub fn gpu_memory(&self) -> usize {
+        self.gpu_memory.values().sum()
+    }
+
     /// Starts keeping `thing`'s ball positions as `want` asks, so a trail can draw where they
     /// have been. Asked again, it keeps the longer of the two.
     pub fn keep_history(&mut self, thing: ThingId, want: crate::HistoryWant) {
@@ -836,6 +845,7 @@ impl World {
             beat_seconds: self.beat_seconds,
             beats_in_bar: self.beats_in_bar,
             state_memory: BTreeMap::new(),
+            gpu_memory: BTreeMap::new(),
             kinds: self.kinds.clone(),
             order: self.order.iter().copied().filter(kept).collect(),
             pairs: Pairs::default(),
@@ -1661,6 +1671,14 @@ fn beside_hash(
         for (key, value) in r.params.iter() {
             h.bytes(key.as_bytes());
             h.value(value);
+        }
+        let sim = sims.thing(&r.kind).expect("a beside thing has a sim");
+        for (slot, s) in r.slots.iter().filter(|(slot, _)| !SIM_SLOTS.contains(slot)) {
+            for (key, value) in s.params.iter().filter(|(key, _)| sim.beside_card_key(*slot, key)) {
+                h.bytes(&[*slot as u8]);
+                h.bytes(key.as_bytes());
+                h.value(value);
+            }
         }
         for slot in SIM_SLOTS {
             if let Some(s) = r.slots.get(&slot) {

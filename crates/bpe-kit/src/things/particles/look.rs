@@ -39,6 +39,35 @@ pub const SUB_HUE: &str = "particles.sub.hue";
 /// Gives off light (particles part 7): the layer's particles light the scene round them.
 pub const SUB_LIGHT: &str = "particles.sub.light";
 
+/// What moves a Particles thing's particles (particles part 8).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum Engine {
+    /// On the processor, exactly the same on every computer, up to 1 000 000.
+    #[default]
+    Exact,
+    /// On the graphics card, up to 4 000 000: decoration only, and not every look and force.
+    HugeSwarm,
+}
+
+/// The Look card's own settings.
+#[derive(Clone, Debug, Default, PartialEq, Settings)]
+pub struct LookCardSettings {
+    /// Exact moves the particles on the processor; Huge swarm on the graphics card, for many more.
+    #[setting(label = "Engine", group = "Basics")]
+    pub engine: Engine,
+}
+
+/// The Look card's key for its Engine.
+pub const ENGINE_KEY: &str = "engine";
+
+/// The engine the Look card `look` picks (Exact without one).
+pub fn engine_of(look: Option<&ResolvedSlot>) -> Engine {
+    match look {
+        Some(l) if l.kind == CARD => LookCardSettings::from_params(&l.params).engine,
+        _ => Engine::Exact,
+    }
+}
+
 /// Which of the thing's particles a layer draws.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
 pub enum Only {
@@ -713,7 +742,7 @@ impl ModuleKind for ParticlesLookKind {
         SlotId::Look
     }
     fn settings(&self) -> &'static [SettingDef] {
-        &[]
+        LookCardSettings::defs()
     }
     fn fits(&self, thing_kind: &str) -> bool {
         thing_kind == super::KIND

@@ -15,6 +15,9 @@ const CHECKPOINT_SECONDS: f64 = 0.5;
 /// Most memory the checkpoints of one playback may use. Past this, every other one is dropped
 /// and they are taken half as often.
 const CHECKPOINT_BYTES: usize = 192 << 20;
+/// Most video memory the checkpoints of one playback may use (Huge swarms' particles), thinned
+/// the same way.
+pub const GPU_CHECKPOINT_BYTES: usize = 1 << 30;
 /// How often a budgeted seek looks at the clock.
 const BUDGET_EVERY: u64 = 8;
 
@@ -29,6 +32,8 @@ pub struct Playback {
     checkpoint_every: u64,
     /// Most memory its checkpoints may use.
     budget: usize,
+    /// Most video memory its checkpoints may use.
+    gpu_budget: usize,
 }
 
 impl Playback {
@@ -48,6 +53,7 @@ impl Playback {
             sims,
             checkpoint_every: checkpoint_every.max(1),
             budget,
+            gpu_budget: GPU_CHECKPOINT_BYTES,
         }
     }
 
@@ -137,9 +143,21 @@ impl Playback {
             checkpoints: vec![(world.clone(), *len)],
             checkpoint_every: self.checkpoint_every,
             budget: self.budget,
+            gpu_budget: self.gpu_budget,
         };
         copy.seek(time);
         copy
+    }
+
+    /// Its checkpoints' video memory may use up to `bytes` (tests).
+    pub fn with_gpu_budget(mut self, bytes: usize) -> Self {
+        self.gpu_budget = bytes;
+        self
+    }
+
+    /// How many checkpoints it keeps (tests).
+    pub fn checkpoint_count(&self) -> usize {
+        self.checkpoints.len()
     }
 
     /// Bytes the playback holds: the world, its log and every checkpoint.
@@ -150,7 +168,8 @@ impl Playback {
     fn save_checkpoint(&mut self) {
         self.checkpoints.push((self.world.clone(), self.log.len()));
         let bytes: usize = self.checkpoints.iter().map(|(w, _)| w.memory()).sum();
-        if bytes > self.budget && self.checkpoints.len() > 2 {
+        let gpu: usize = self.checkpoints.iter().map(|(w, _)| w.gpu_memory()).sum();
+        if (bytes > self.budget || gpu > self.gpu_budget) && self.checkpoints.len() > 2 {
             // Keep the first one and every other one after it, and take them half as often.
             self.checkpoint_every *= 2;
             let every = self.checkpoint_every;
@@ -205,6 +224,22 @@ mod tests {
         assert!(!done && p.time() > 0.0 && p.time() < 20.0);
         assert!(p.seek_within(p.time(), Some(Duration::from_millis(20))));
         assert!(p.memory() > 0);
+    }
+
+    #[test]
+    fn video_memory_over_its_budget_thins_the_checkpoints() {
+        let (scene, resolved, sims) = dots_in_ring(5);
+        let sims = Arc::new(sims);
+        let mut plain = Playback::new(&scene, &resolved, sims.clone());
+        plain.seek(10.0);
+        let mut heavy = Playback::new(&scene, &resolved, sims).with_gpu_budget(10 << 20);
+        heavy.world.gpu_memory.insert(DOTS, 1 << 20);
+        heavy.seek(10.0);
+        assert_eq!(heavy.world().gpu_memory(), 1 << 20);
+        assert!(heavy.checkpoint_count() < plain.checkpoint_count(), "thinned");
+        let gpu: usize = heavy.checkpoints.iter().map(|(w, _)| w.gpu_memory()).sum();
+        assert!(gpu <= 10 << 20, "within the budget: {gpu}");
+        assert_eq!(heavy.world().bodies[&DOTS].position, plain.world().bodies[&DOTS].position);
     }
 
     #[test]

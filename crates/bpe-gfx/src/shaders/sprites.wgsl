@@ -142,6 +142,11 @@ fn rotate(p: vec2<f32>, angle: f32) -> vec2<f32> {
 
 @vertex
 fn vs_sprite(@builtin(vertex_index) vi: u32, v: SpriteIn) -> SpriteOut {
+    return sprite_out(vi, v);
+}
+
+// Corner `vi` of sprite `v`'s quad (swarm_draw.wgsl hands its particles here too).
+fn sprite_out(vi: u32, v: SpriteIn) -> SpriteOut {
     var out: SpriteOut;
     let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u)) * 2.0 - 1.0;
     let px = g.view.z;

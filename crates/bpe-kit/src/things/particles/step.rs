@@ -348,7 +348,7 @@ fn shaken_since(world: &World, log: &Log, since: u64) -> BTreeSet<(u32, u32)> {
 /// Whether the thing's particles push back on the balls: two-way on, and not fed by another
 /// Particles thing (fed things are decoration).
 pub fn two_way(st: &ParticlesState) -> bool {
-    st.meets.two_way && st.settings.from != super::BornFrom::ItsParentsParticles
+    st.meets.two_way && st.settings.from != super::BornFrom::ItsParentsParticles && st.swarm.is_none()
 }
 
 /// A grain of sand thrown up (from a pile a ball cut, off a ledge or out of a crumbling pile) as

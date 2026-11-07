@@ -219,6 +219,11 @@ impl Studio {
     pub fn new(cc: &eframe::CreationContext, scene_path: Option<PathBuf>) -> Self {
         style::apply(&cc.egui_ctx);
         crate::palettes::install(&cc.egui_ctx, crate::palettes::PaletteStore::open());
+        // Huge swarms (particles part 8) step on the window's own card, so the preview draws them
+        // straight from their buffers.
+        if let Some(rs) = &cc.wgpu_render_state {
+            bpe_gfx::swarm::use_on_this_thread(Some(bpe_gfx::swarm::SwarmGpu::for_device(&rs.device, &rs.queue)));
+        }
         let mut studio = Self::blank();
         studio.grid = Grid::load();
         studio.inspector_width = settings::load_inspector_width();
