@@ -1612,6 +1612,15 @@ pub fn particle_scenes(reg: &Registry) -> Vec<(String, Scene)> {
         card.params = m.to_params();
     };
     let none = |_: &mut Scene, _: ThingId| {};
+    // Its Rise heats the air, and it follows the air (the Air card added as the editor adds it).
+    let heat = |scene: &mut Scene, id: ThingId| {
+        use crate::things::particles::forces::{AIR, RISE};
+        let card = scene.card_mut(id, SlotId::Motion).expect("motion");
+        let rise = card.layers.iter().find(|l| l.kind == RISE).map(|l| l.id).expect("a rise");
+        card.params.set(&bpe_core::layered_key(rise, "heats"), Value::Number(1.0));
+        scene.add_layer(reg, id, SlotId::Motion, AIR).expect("follow the air");
+        crate::things::particles::air::ensure_air_card(scene, reg).expect("an air card");
+    };
     vec![
         ("Rain".into(), with(Look::Rain, false, &none)),
         ("Snow".into(), with(Look::Snow, false, &none)),
@@ -1621,6 +1630,10 @@ pub fn particle_scenes(reg: &Registry) -> Vec<(String, Scene)> {
         ("Fireflies".into(), with(Look::Fireflies, false, &none)),
         ("Rainbow smoke".into(), with(Look::RainbowSmokeTrail, true, &none)),
         ("Ink".into(), with(Look::InkInWater, false, &bounce)),
+        // Particles part 2: the air.
+        ("Dust in the air".into(), with(Look::DustClouds, false, &none)),
+        ("Smoke heating the air".into(), with(Look::RainbowSmokeTrail, true, &heat)),
+        ("Sandstorm".into(), with(Look::Sandstorm, false, &none)),
     ]
 }
 

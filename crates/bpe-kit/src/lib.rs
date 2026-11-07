@@ -1,6 +1,7 @@
 //! The modular Ball Studio's plugins. Each thing and module kind lives in its own folder with
 //! its settings, its simulation and its drawing side by side.
 
+pub mod air;
 #[cfg(test)]
 mod layer_tests;
 pub mod modules;
@@ -134,6 +135,7 @@ pub fn registry() -> Registry {
     }
     r.add_module(BasicMotionKind);
     r.add_module(modules::lighting::LightingKind);
+    r.add_module(modules::air::AirKind);
     r.add_module(BasicBounceKind);
     r.add_module(modules::health::HealthKind);
     r.add_module(EffectsCard);

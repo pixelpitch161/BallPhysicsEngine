@@ -447,14 +447,55 @@ Editor: `look_editor/particles.rs` (the Forces and Look lists; a Motion card's e
 `look_editor::pick_key`), `preview/particle_handles.rs` (area corner/edges, line end). Scene format 12. Goldens:
 `tests/golden-particles*.txt` (`scenes::particle_scenes`, test-only).
 
+Part 2 is in (plan `part2.md`, "As built" at its end): **the air**. The scene's **Air card** (`SlotId::Air`, last in
+`SlotId::ALL`; kind `air`, `bpe-kit/src/modules/air.rs`: Wind, Wind direction, Gusts, Gust every, Gust waves; Calms
+down, Keeps its swirls, Resolution Coarse/Normal/Fine 32/16/8 px, Margin; Balls stir, Stir reach, Shapes block the
+air; Heat rises, Heat fades). The solver is `bpe-kit/src/air.rs` (`Air`, `AirSpec`, `gust_factor`): a world-anchored
+lattice over the camera's shot plus Margin (cells kept when the camera moves, at most `MOST_CELLS`), each step calm
+to the ambient wind, balls stir, heat lifts, vorticity confinement, semi-Lagrangian advection, solid shape cells
+moving with their wall, 20 Jacobi pressure iterations; rows split in fixed bands on threads past `THREADED_CELLS`,
+the same for any thread count. One `Air` per world in `World.states[ThingId::ROOT]` (`air_of`, `take_air`/`put_air`):
+the scene sim puts a sleeping one there with an Air card and re-reads it on Air keys; a Particles thing that follows
+or heats it (or any, with a card) wakes it in `after_build` (a late wake starts still at that step); the first
+Particles thing due a step takes every Particles thing's steps together, one particle step at a time: the air to
+that step (`Air::catch_up_to`), each thing's `step::step_in`, then its heat (`step::put_heat`), so at any Physics
+rate every thing reads the same air. Air keys following sound or light reach only `beside_fingerprint`.
+Off the grid the air is the ambient wind. Forces: **Follow the air** (`force.air`, Grip), Rise's **Heats the air**,
+Wind's **Gust waves** (0 = part 1's maths). `world::BESIDE_SLOTS` (`[Air]`): Air keys are animated, left out of
+the physics fingerprint and hashed by `beside_fingerprint` (an Air edit restarts only the particle playback).
+`things/particles/air.rs::ensure_air_card` (by `add_particles` for looks that follow the air and the editor's Add
+layer of `force.air`). Editor: the toolbar's **Air** toggle (`Studio.show_air`, shown with a particle job) draws
+`preview/air_view.rs` arrows from the particle job's snapshot (which carries the ROOT air). Looks Dust clouds,
+Thick fog; Sandstorm with gust waves and a haze layer. Goldens gain "Dust in the air", "Smoke heating the air",
+"Sandstorm". What part 8 needs is listed in the plan.
+
+Part 5 is in (plan `part5.md`): **looks 1**, drawing only. New `look.particles` layer kinds: **Soft smoke**
+(`particles.smoke`) and **Flame** (`particles.flame`) are soft **fields**: `bpe_gfx::Field { at, splats, look }` in
+`Frame.fields`/`fields_front` (`Splat`, `FieldLook`: mode `FIELD_SMOKE`/`FIELD_FLAME`, adds, amount, strength, detail,
+shade, light/emit/extra, 32 baked heat stops), splatted additively into a half-size Rgba16Float picture each right before
+the pass that draws its list, then shaded by a full-screen triangle where `at` puts it among the list's sprites
+(`bpe-gfx/src/fields.rs`, `shaders/fields.wgsl` pasted after sprites.wgsl + each.wgsl; `Renderer::draw_sprites` splits
+the sprite runs, `Sprites::draw_range`; `cull` keeps `at` between the same kept sprites). Smoke: density × Thickness ×
+drifting fbm detail, cover 1 − e^(−d), shaded by the slope against Light from, Dark inside; Flame: read through rising noise
+(Bend), heat × detail × flicker → Heat colours, tinted by the layer's Colours. A field layer's Shadow/Glow/Outline subs
+draw per particle (as Smoke sprites, own sprites dropped; `Pieces::into_frame_with_field`). **More shapes**
+(`particles.shapes`, `MoreShape`: sprite codes 10 leaf, 11 petal, 12 flake, 13 needle, 14 bird, 15 fish in sprites.wgsl,
+`Particle.shape[1]` the pose; Pixels are Confetti boxes snapped to Pixel grid; Point along Own turn / Way it goes),
+**Glitter** (`particles.glitter`: code 16 diamond facets, `draw::glint`, a Stars flash), **Web lines** (`particles.web`,
+`things/particles/web.rs`: `links` nearest within Reach, each pair once, `ball_links`; lines are Streaks capsules), and
+every layer's **Fine detail** fold (`copies`, `copy_spread`, `copy_size`, `copy_opacity`, `copy_shimmer`; `FineDetail` in
+`Common`, `draw::copy_offset`). Looks: Glitter, Web of light, Pixel glitch added; Fire on a ball (Flame + embers), Rainbow
+smoke trail, Ink in water (Soft smoke) and Blossom petals (Petals) upgraded. `tests/particle_pictures.rs`,
+`bpe-gfx/src/fields_tests.rs`.
+
 Part 3 is in (plan `part3.md`): **moving and forming**. Sources From **A word or picture** (Text with Letter height and
 Weight, or a PNG Picture with Picture width and Uses Solid / Bright / Dark parts) and **A grid** (Covers The screen or
 A rectangle, by Spacing or Columns and rows, Jitter, Stagger); their places are `spots.rs` (`SpotsKey`, `spots_for`, a
 process-wide cache of `Arc<Vec<Vec2>>`; words by a scanline fill of `balls::shapes::letter_outlines_in`), each
 particle's `Speck.spot` (1-based) names its **home**, which follows the anchor and turns by **Homes turn**
 (`ParticlesState.home_turn`, `HomeFrame`); Keep a crowd / Once at the start fill every free place. Emit **On the beat**
-(`beats.rs::Moments`, Every Beat / Bar / Bars, Offset) reads the tempo from `things::scene::sim::SceneBeat`, a state
-the scene sim keeps at `ThingId::ROOT`; `ThingSim::affects_beside` puts the tempo keys into `beside_fingerprint` so
+(`beats.rs::Moments`, Every Beat / Bar / Bars, Offset) reads the tempo from `World.beat_seconds`/`beats_in_bar` (set by
+the scene sim; `things::scene::sim::beat_of`); `ThingSim::affects_beside` puts the tempo keys into `beside_fingerprint` so
 a tempo edit restarts the particles (not the physics). Heading **Round the middle**. Nine force layers
 (`more_forces.rs`): Pull to / Push away from (Toward Its place, A point, Its ball, Ball number, The middle of its parent,
 Balls nearby; Falloff, Orbit, Swallow), Spring home, Flock (start-of-step `ready::Flockmates` grid, at most

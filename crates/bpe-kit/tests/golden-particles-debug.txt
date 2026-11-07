@@ -63,3 +63,27 @@ Ink	5	710	b5c4c6201deae599
 Ink	6	610	7bf756a5c113dcc7
 Ink	7	499	6e9f6b9872d0d1a5
 Ink	8	800	be0e9d397ccdd764
+Dust in the air	1	0	cbf29ce484222325
+Dust in the air	2	26	a6f72c8dc3abba45
+Dust in the air	3	83	1ae83c87c2b98a46
+Dust in the air	4	95	3aaf108e1079492d
+Dust in the air	5	56	9f00a7c71b384a6f
+Dust in the air	6	50	e868d7e856bc4ae5
+Dust in the air	7	64	8f52c2e3634ffe23
+Dust in the air	8	47	cfa7683893f3e949
+Smoke heating the air	1	1452	3979c990433508d6
+Smoke heating the air	2	2870	b56e23b914ae6a4f
+Smoke heating the air	3	3580	9ce6890882a34f16
+Smoke heating the air	4	3615	9b8bcaaf8688d1d3
+Smoke heating the air	5	3592	bd30a327cf9f8545
+Smoke heating the air	6	3634	cb10ab4d1315e0be
+Smoke heating the air	7	3576	4082cfb9d9d362cf
+Smoke heating the air	8	3616	9219232be4b7d986
+Sandstorm	1	906	9e75c458460b7957
+Sandstorm	2	1771	8678b0c1ef0835c7
+Sandstorm	3	1854	81c71206ec611de0
+Sandstorm	4	1597	fd5fbae50d85318f
+Sandstorm	5	2120	e38beefadce2f08d
+Sandstorm	6	2760	ffd79ed4bcb25275
+Sandstorm	7	1617	57fe94838ba5c05e
+Sandstorm	8	1459	3ea3bcc15b87db03

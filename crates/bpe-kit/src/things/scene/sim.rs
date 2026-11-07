@@ -1,5 +1,7 @@
 //! Scene settings in the world: the step rate, gravity, the seed and the video size, and the
-//! tempo for things born on the beat (a [`SceneBeat`] at the root).
+//! tempo for things born on the beat (`World.beat_seconds`, `World.beats_in_bar`), and the air's
+//! settings when the scene has an Air card (a sleeping [`crate::air::Air`]: a Particles thing that
+//! reads it wakes it).
 
 use bpe_core::{ResolvedThing, Settings, Thing, ThingId};
 use bpe_runtime::{ThingSim, World};
@@ -20,12 +22,20 @@ impl ThingSim for SceneSim {
         world.seed = s.seed as u64;
         world.video = glam::Vec2::new(s.width.max(1) as f32, s.height.max(1) as f32);
         let (beat, per_bar) = crate::things::rig::pattern::beat_seconds(&s);
-        world.states.insert(ThingId::ROOT, Box::new(SceneBeat { beat, per_bar }));
+        (world.beat_seconds, world.beats_in_bar) = (beat, per_bar);
+        if let Some(spec) = crate::modules::air::spec_of(resolved) {
+            world.states.insert(ThingId::ROOT, Box::new(crate::air::Air::new(spec)));
+        }
     }
 
-    /// A keyframe moved gravity.
+    /// A keyframe moved gravity, or one of the Air card's settings.
     fn settings_changed(&self, _thing: ThingId, resolved: &ResolvedThing, world: &mut World) {
         world.gravity = SceneSettings::from_params(&resolved.params).gravity;
+        if let (Some(spec), Some(air)) = (crate::modules::air::spec_of(resolved), crate::air::air_mut(world))
+            && air.spec != spec
+        {
+            air.spec = spec;
+        }
     }
 
     /// The video's size counts too: the camera's Stay inside, Slack and Fit all read it.
@@ -39,8 +49,8 @@ impl ThingSim for SceneSim {
     }
 }
 
-/// The scene's tempo as the world has it, at [`ThingId::ROOT`] in `World.states`: seconds in a
-/// beat and beats in a bar, the same as the sound's `TempoMap`.
+/// The scene's tempo as the world has it: seconds in a beat and beats in a bar, the same as the
+/// sound's `TempoMap`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SceneBeat {
     pub beat: f64,
@@ -54,14 +64,9 @@ impl Default for SceneBeat {
     }
 }
 
-/// The scene's tempo in `world` (the default without a scene thing).
+/// The scene's tempo in `world` (120 beats a minute, four in a bar, without a scene thing).
 pub fn beat_of(world: &World) -> SceneBeat {
-    world
-        .states
-        .get(&ThingId::ROOT)
-        .and_then(|s| (**s).as_any().downcast_ref::<SceneBeat>())
-        .copied()
-        .unwrap_or_default()
+    SceneBeat { beat: world.beat_seconds, per_bar: world.beats_in_bar }
 }
 
 #[cfg(test)]

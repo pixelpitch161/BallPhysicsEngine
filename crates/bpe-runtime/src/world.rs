@@ -79,6 +79,11 @@ pub(crate) type Prepared = BTreeMap<SlotId, Slotted>;
 /// Which slots the runtime asks a `ModuleSim` about.
 const SIM_SLOTS: [SlotId; 2] = [SlotId::Motion, SlotId::Bounce];
 
+/// The scene's cards that only things stepped beside the physics read (the Air card, which only
+/// Particles things follow): their keys are animated in every world, but they count towards
+/// [`beside_fingerprint`], never the physics fingerprint.
+pub const BESIDE_SLOTS: [SlotId; 1] = [SlotId::Air];
+
 /// A run's number (see [`World::run`]). A copy is a run of its own: cloning gives a fresh one.
 #[derive(Debug, PartialEq, Eq)]
 pub struct RunId(pub u64);
@@ -132,6 +137,11 @@ pub struct World {
     /// The video's size: how much of the world the shot covers at Zoom 1. The scene's sim sets
     /// it.
     pub video: Vec2,
+    /// Seconds in a beat of the scene's tempo, and beats in a bar; the scene's sim sets them
+    /// (120 beats a minute, four in a bar, without one). Only things stepped beside the physics
+    /// read them (particles born on the beat).
+    pub beat_seconds: f64,
+    pub beats_in_bar: u32,
     /// Bytes each thing's state takes beyond its own struct, for the states that hold a lot
     /// Their sims note it; [`World::memory`] counts it for playback budgets.
     pub state_memory: BTreeMap<ThingId, usize>,
@@ -210,6 +220,9 @@ pub fn physics_animation(scene: &Scene, resolved: &Resolved, sims: &Sims) -> Opt
     let mut animation = Animation::new(scene, resolved);
     animation.retain(|thing, slot, key| match slot {
         Some(SlotId::Motion) | Some(SlotId::Bounce) => true,
+        // Read by the things stepped beside the physics (the air): animated with it, never in the
+        // physics fingerprint.
+        Some(slot) if BESIDE_SLOTS.contains(&slot) => true,
         Some(_) => false,
         None => resolved
             .things
@@ -218,6 +231,14 @@ pub fn physics_animation(scene: &Scene, resolved: &Resolved, sims: &Sims) -> Opt
             .is_some_and(|s| s.affects_physics(bpe_core::vary::base_key(key))),
     });
     (!animation.is_empty()).then_some(animation)
+}
+
+/// `animation` without the keys on the cards only the things stepped beside the physics read
+/// ([`BESIDE_SLOTS`]): what of it the physics itself reads. `None` when nothing is left.
+fn main_animation(animation: &Animation) -> Option<Animation> {
+    let mut main = animation.clone();
+    main.retain(|_, slot, _| !slot.is_some_and(|s| BESIDE_SLOTS.contains(&s)));
+    (!main.is_empty()).then_some(main)
 }
 
 const NO_TAGS: &BTreeSet<String> = &BTreeSet::new();
@@ -241,6 +262,8 @@ impl World {
             seed: 0,
             camera: CameraView::default(),
             video: Vec2::new(1080.0, 1920.0),
+            beat_seconds: 0.5,
+            beats_in_bar: 4,
             state_memory: BTreeMap::new(),
             kinds: BTreeMap::new(),
             order: Vec::new(),
@@ -277,6 +300,11 @@ impl World {
             at_start
         });
         let built_from = at_start.as_ref().unwrap_or(resolved);
+        // What the world senses for its keys: a world with nothing stepped beside the physics
+        // (the editor's main playback) leaves out the keys only those things read, so an Air
+        // key following sound or light gives it no sound or light to work out.
+        let sensed =
+            if has_beside(resolved, sims) { animation.clone() } else { animation.as_ref().and_then(main_animation) };
         // Things that need the walls (none of today's kinds) are built in a second pass, so
         // an arena after them in the tree is there all the same; they come last in `order`. A
         // thing without a sim is still known by kind and tags, so a target can name it.
@@ -333,7 +361,7 @@ impl World {
         // Light sensing, only when something physical follows light: the probe is there before
         // the balls' places in light spreads are first worked out.
         if let Some(maker) = &sims.light
-            && needs_light(scene, built_from, sims, animation.as_ref())
+            && needs_light(scene, built_from, sims, sensed.as_ref())
         {
             world.light = Some(maker.make(scene, resolved));
         }
@@ -350,8 +378,8 @@ impl World {
             }),
             (None, None) => None,
         };
-        if let (Some(maker), Some(a)) = (&sims.sound, &world.animated)
-            && follows_sound(scene, &a.animation)
+        if let (Some(maker), Some(_), Some(sensed)) = (&sims.sound, &world.animated, &sensed)
+            && follows_sound(scene, sensed)
         {
             world.sound = Some(maker.make(scene, resolved));
         }
@@ -785,6 +813,8 @@ impl World {
             seed: self.seed,
             camera: self.camera,
             video: self.video,
+            beat_seconds: self.beat_seconds,
+            beats_in_bar: self.beats_in_bar,
             state_memory: BTreeMap::new(),
             kinds: self.kinds.clone(),
             order: self.order.iter().copied().filter(kept).collect(),
@@ -1560,10 +1590,51 @@ pub fn beside_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u6
             }
         }
     }
-    // Their keys too.
+    // The scene's cards only they read (the air).
+    for (id, r) in &resolved.things {
+        for slot in BESIDE_SLOTS {
+            if let Some(s) = r.slots.get(&slot) {
+                h.bytes(&id.0.to_le_bytes());
+                h.bytes(&[slot as u8]);
+                h.bytes(s.kind.as_bytes());
+                for (key, value) in s.params.iter() {
+                    h.bytes(key.as_bytes());
+                    h.value(value);
+                }
+            }
+        }
+    }
+    // Their keys too, and those cards', with what of the sound or the light they follow.
     if let Some(animation) = physics_animation(scene, resolved, sims) {
+        let theirs = |a: &bpe_core::Address| {
+            a.slot.is_some_and(|s| BESIDE_SLOTS.contains(&s))
+                || resolved.things.get(&a.thing).is_some_and(|r| sims.thing(&r.kind).is_some_and(|s| !s.in_main(r)))
+        };
+        let follows = |light: bool| {
+            animation.addresses().iter().filter(|a| theirs(a)).any(|a| {
+                scene.pulses.get(*a).is_some_and(|p| {
+                    if light {
+                        p.source.follows_light()
+                    } else {
+                        matches!(p.source, bpe_core::PulseSource::Sound { .. })
+                    }
+                })
+            })
+        };
+        if let Some(maker) = &sims.sound
+            && follows(false)
+        {
+            h.bytes(b"beside hear");
+            h.bytes(&maker.fingerprint(scene).to_le_bytes());
+        }
+        if let Some(maker) = &sims.light
+            && follows(true)
+        {
+            h.bytes(b"beside see");
+            h.bytes(&maker.fingerprint(scene).to_le_bytes());
+        }
         for a in animation.addresses() {
-            if resolved.things.get(&a.thing).is_some_and(|r| sims.thing(&r.kind).is_some_and(|s| !s.in_main(r))) {
+            if theirs(a) {
                 h.bytes(format!("{a:?}").as_bytes());
                 if let Some(track) = scene.tracks.get(a) {
                     h.bytes(format!("{track:?}").as_bytes());
@@ -1651,8 +1722,10 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
             }
         }
     }
-    // Keyframes and pulses on physics settings: moving a key changes the run.
-    if let Some(animation) = physics_animation(scene, resolved, sims) {
+    // Keyframes and pulses on physics settings: moving a key changes the run. Keys on the cards
+    // only the things beside the physics read are theirs ([`beside_fingerprint`]).
+    let animation = physics_animation(scene, resolved, sims).as_ref().and_then(main_animation);
+    if let Some(animation) = &animation {
         for a in animation.addresses() {
             h.bytes(format!("{a:?}").as_bytes());
             if let Some(track) = scene.tracks.get(a) {
@@ -1664,7 +1737,7 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
         }
         // A physics setting that follows sound moves with what of the sound it reads.
         if let Some(maker) = &sims.sound
-            && follows_sound(scene, &animation)
+            && follows_sound(scene, animation)
         {
             h.bytes(&maker.fingerprint(scene).to_le_bytes());
         }
@@ -1712,7 +1785,7 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
     }
     // Physics that follows light moves with what the light probe reads.
     if let Some(maker) = &sims.light
-        && needs_light(scene, resolved, sims, physics_animation(scene, resolved, sims).as_ref())
+        && needs_light(scene, resolved, sims, animation.as_ref())
     {
         h.bytes(b"light");
         h.bytes(&maker.fingerprint(scene).to_le_bytes());

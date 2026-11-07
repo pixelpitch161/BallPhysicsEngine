@@ -42,7 +42,7 @@ fn speck(place: Vec2, velocity: Vec2) -> Speck {
     }
 }
 
-const CX: ForceCx = ForceCx { time: 0.0, dt: DT, gravity: Vec2::ZERO };
+const CX: ForceCx<'static> = ForceCx { time: 0.0, dt: DT, gravity: Vec2::ZERO, air: None };
 
 /// `force` applied to `s` once with `ready`, then `s` moved by its velocity.
 fn once(force: Force, s: &mut Speck, ready: &Ready) {

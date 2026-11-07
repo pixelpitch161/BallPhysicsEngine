@@ -229,3 +229,5 @@ Every force (common): Amount 1, Only for (All / Younger than / Older than / **A 
 - Kittests: the Motion list adds Pull to / Spring home / Flock; a picture source shows the PNG browse button and a grid
   its rows; Moiré from the Experimental group adds its two grids (in place of Black hole / Form a word, which the kit
   tests add and resolve).
+- The tempo lives on the world (`World.beat_seconds`, `World.beats_in_bar`, set by the scene sim) rather than as a
+  state at `ThingId::ROOT`, which part 2's air took.
