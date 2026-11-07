@@ -185,3 +185,10 @@ Web lines ("Web"): Reach 140 px (span 5..600, hard ≥ 1), Links 6 (span 1..32, 
 - Web links are the same for any order of particles when no two distances tie; with ties the nearer index wins, so a
   fixed order (the particles are oldest first) always draws the same lines.
 - A bird pointing the way it goes leans into it (up to about 30°) rather than turning on its side.
+- Review fixes: smoke shading measures its slope per world pixel (the same at any preview size or zoom); whether a
+  field adds is the layer's say (Blend Add, or its own colours all without alpha), never the oldest particle's; a
+  fish's quad has room for its tail; glitter facets are longer than wide; Fine detail draws at most
+  `MOST_COPY_SPRITES` (400 000) copies a layer, fewer a particle past that.
+- Left as is: fields are splatted and shaded over the whole picture in every light pass (a scissor round the splats
+  would save time in big lit scenes); Web lines in a crowd of more than `MOST_LOOKED` within Reach take the first ones
+  found, not the nearest.

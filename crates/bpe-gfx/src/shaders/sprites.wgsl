@@ -160,6 +160,10 @@ fn vs_sprite(@builtin(vertex_index) vi: u32, v: SpriteIn) -> SpriteOut {
         // Its wing tips rise and fall by as much as half its span.
         across = max(size, reach * 0.7);
     }
+    if v.shape.x == FISH {
+        // Its tail reaches past its body's width at full swing.
+        across = size * 1.3;
+    }
     let half = vec2<f32>(reach, across) + vec2<f32>(margin);
     let at = corner * half;
     out.pos = to_clip(v.place.xy + rotate(at, v.place.z));

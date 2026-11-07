@@ -618,3 +618,13 @@ fn the_part_five_looks_wear_their_layers() {
     assert_eq!(kinds(Look::WebOfLight)[0], WEB);
     assert_eq!(kinds(Look::PixelGlitch)[0], SHAPES);
 }
+
+#[test]
+fn fine_detail_draws_fewer_copies_a_particle_past_its_budget() {
+    use super::draw::{MOST_COPY_SPRITES, capped};
+    use super::look::FineDetail;
+    let d = FineDetail { copies: 64, ..FineDetail::default() };
+    assert_eq!(capped(d, 100).copies, 64);
+    let many = capped(d, 100_000);
+    assert!(many.copies as usize * 100_000 <= MOST_COPY_SPRITES, "{}", many.copies);
+}

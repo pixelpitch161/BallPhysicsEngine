@@ -201,6 +201,15 @@ pub fn copy_offset(d: &FineDetail, s: &Speck, k: u32, size: f32, time: f32) -> V
     Vec2::from_angle(d.shimmer * time * TAU * signed(s.seed, 500 + k)).rotate(v)
 }
 
+/// The most copies Fine detail draws a layer in all: past it each particle gets fewer.
+pub const MOST_COPY_SPRITES: usize = 400_000;
+
+/// `d` with no more copies than keep `count` particles' copies within [`MOST_COPY_SPRITES`].
+pub fn capped(d: FineDetail, count: usize) -> FineDetail {
+    let most = (MOST_COPY_SPRITES / count.max(1)).min(u32::MAX as usize) as u32;
+    FineDetail { copies: d.copies.min(most), ..d }
+}
+
 /// `p` moved by `by` and sized `k` times, its colour's alpha `fade` times (an added colour's
 /// light too).
 fn copied(p: &Particle, by: Vec2, k: f32, fade: f32) -> Particle {
@@ -239,7 +248,7 @@ pub fn draw_layer(cx: &DrawCx, st: &ParticlesState, layer: &LookLayer, pieces: &
     }
     let flutters = st.forces.flips();
     let now_s = st.step as f32 * super::step::DT;
-    let d = c.detail;
+    let d = capped(c.detail, seen.len());
     for v in &seen {
         let (own, star) = sprite(&layer.drawn, v.s, v.size, v.colour, flutters, now_s, time);
         particle_with_extras(own, &extras(v, 1.0), pieces);
@@ -368,8 +377,9 @@ fn glitter_sprite(l: &GlitterLayer, s: &Speck, size: f32, colour: [f32; 4], time
     let flash = glint(l, s, time);
     let bright = l.base.clamp(0.0, 1.0) + flash;
     let lit = [colour[0] * bright, colour[1] * bright, colour[2] * bright, colour[3]];
-    let mut facet = Particle::new(16, s.place, s.turn, size, lit);
-    facet.style[0] = size * 0.75;
+    // A diamond a little longer than it is wide.
+    let mut facet = Particle::new(16, s.place, s.turn, size * 0.75, lit);
+    facet.style[0] = size;
     let star = (flash > 0.02 && l.star > 0.0).then(|| {
         let f = l.flash_colour.to_linear();
         let alpha = colour[3].abs() * flash;
@@ -390,13 +400,15 @@ fn adds_round(subs: &[SubLayer]) -> bool {
 fn field_of(cx: &DrawCx, layer: &LookLayer, seen: &[Seen], hit: HitInfo, pieces: &mut Pieces) -> Field {
     let c = &layer.common;
     let time = cx.time as f32;
-    let d = c.detail;
+    let d = capped(c.detail, seen.len());
     let amount = match c.blend {
         Blend::Normal | Blend::Add => c.blend_amount.clamp(0.0, 1.0),
         _ => 1.0,
     };
-    // A layer that adds, or colours with no alpha, add their light.
-    let adds = c.blend == Blend::Add || seen.first().is_some_and(|v| v.colour[3] < 0.0);
+    // A layer that adds, or its own colours all with no alpha, add their light (the layer
+    // decides, so the field never flips with which particle is oldest).
+    let adds = c.blend == Blend::Add
+        || (c.colour_from == ColourFrom::Own && c.colour.colours.stops.iter().all(|s| s.color.a == 0));
     let (look, puff) = match &layer.drawn {
         Drawn::Flame(f) => (flame_look(f, adds, amount), f.puff),
         Drawn::Smoke(s) => (smoke_look(s, adds, amount), s.puff),
@@ -524,7 +536,7 @@ fn draw_web(cx: &DrawCx, layer: &LookLayer, w: &WebLayer, seen: &[Seen], hit: Hi
         }
     }
     if w.dots > 0.0 {
-        let d = c.detail;
+        let d = capped(c.detail, seen.len());
         let time = cx.time as f32;
         for v in seen {
             let size = v.size * w.dots;

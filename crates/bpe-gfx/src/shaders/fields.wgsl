@@ -171,7 +171,9 @@ fn field_colour(in: FieldOut) -> vec4<f32> {
     let gx = field_at(uv + vec2<f32>(texel.x, 0.0)).a - field_at(uv - vec2<f32>(texel.x, 0.0)).a;
     let gy = field_at(uv + vec2<f32>(0.0, texel.y)).a - field_at(uv - vec2<f32>(0.0, texel.y)).a;
     let towards = rotate(vec2<f32>(cos(look.shade.y), sin(look.shade.y)), -g.camera.w);
-    let slope = vec2<f32>(gx, gy) * look.kind.w;
+    // Per world pixel (the samples are two field texels, four output pixels, apart), times 4 px:
+    // the same at any picture size or zoom.
+    let slope = vec2<f32>(gx, gy) / max(g.view.z, 1e-6) * look.kind.w;
     // Lit where the density falls off towards the light, shaded where it rises.
     let facing = clamp(-dot(slope, towards) * 2.0, -1.0, 1.0);
     var shade = 1.0 + clamp(look.shade.x, 0.0, 1.0) * facing * 0.6;
