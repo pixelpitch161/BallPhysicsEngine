@@ -487,6 +487,12 @@ pub struct Stamps {
     pub layers: Vec<(LayerId, u32, SurfaceSettings)>,
 }
 
+/// Whether surface `s` bends lamp light through it (glass and light part 3): it lets through at
+/// least 0.05 and its Bends light is above [`bpe_gfx::BENDS_FROM`].
+pub fn bends(s: &SurfaceSettings) -> bool {
+    passes(s) >= 0.05 && s.bends_light.is_finite() && s.bends_light > bpe_gfx::BENDS_FROM
+}
+
 /// How much of the light surface `s` lets through: its See-through, 0 to 1.
 pub fn passes(s: &SurfaceSettings) -> f32 {
     if s.see_through.is_finite() { s.see_through.clamp(0.0, 1.0) } else { 0.0 }

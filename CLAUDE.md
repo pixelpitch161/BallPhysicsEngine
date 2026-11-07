@@ -267,8 +267,42 @@ added into the mix's target right after the mix, brighter where the band narrows
 See-through 0.95, Bends light 1.6, Rainbow split 1). Beam width handles (`LightPart::Width`). Ribbons stay out of the
 probe. `tests/prism_pictures.rs`.
 
-Designed, not built yet: part 3 bent light through any glass shape (a 2D photon pass), part 4 wild glass (mirrors throw
-light, Mirror ball, Dichroic, Diamond fire, Light pipes, rainbows in rain).
+Part 3 is in (plan `part3.md`, "As built" at its end): **lamp light bent by glass shapes, liquid and bubbles**. A
+*bender* is a Shape whose Surface (or a layer's own) lets through ≥ 0.05 and has Bends light > `BENDS_FROM` 1.0001
+while its layer blocks light (`surface::bends`, pushed by `ShapeDraw::light` as `Bender { lo, hi, index }` into
+`LightScene.benders`), or **free glass**: particle sprites whose Lighting fold's **Bends light** (`ParticlesLit`,
+`Particle.light[2]`; the Bubbles look 1.33) or a Glass Liquid layer's Bends light (`LiquidStyle.c[2]`) bends
+(`Frame::free_glass_box`, id `FREE_BENDER` 4096): only when photons go through it, light pass 9 (`GLASS_PASS`,
+`Renderer::draw_glass`: sprites and liquids alone) draws it into the glass picture (index × cover, cover;
+`Lighting::make_glass`), and `shaders/free_glass.wgsl` marks it over a copy of the surface picture where nothing is solid,
+keeping R/G/A and writing B = −(1 + 16 q_ior + q_cover) (`free_glass_of` in lighting.wgsl; index in 64ths, cover in
+15ths). Balls keep the sphere caustics. `bpe-gfx/src/bent_light.rs`: `BentPlan::of` (lib.rs and `Lighting::run`
+agree on it), `bent_pairs` (light × bender, lights that cast shadows, no lasers, within reach), `bent_budget`/
+`bent_photons` (Draft 4096 … Ultra/bake 32768 a frame × Bent light rays, at most `MOST_BENT_PHOTONS` 2^17, ≥ 256 a pair
+while the cap allows, so every pair is carried), `bend_bits` into `Uniform.bends` (2048 bits; `u.bent.x` turns every new
+branch on, so without benders pictures are byte-identical; `bent_carried` keeps glass see-through for lasers). lighting.wgsl: `bender_at`/`bender_covering`, `bends_at`,
+`nearest_bends` (Stage, through the seeds); bending glass seeds the field and counts as **solid** in `march`/`confirm`/
+`slab_visibility` (a pixel on it leaves it first). `shaders/bent_light.wgsl` (pasted after lighting.wgsl): `cs_bent`
+(a compute pass, group 3: 4 `BentU`, 5 pairs, 6 legs written) sends each pair's photons in fans from up to 16 points
+across the lamp (`lamp_copies`; a sun's from a line before the box), steps by the field, classifies pixels
+(`bent_at`: open, see-through, solid, bender; a glass's soft edge counts as open), refracts with the surface table's
+index (free glass from the picture), Sobel normals over 5 × 5 (`glass_normal`), total internal reflection, exact
+Fresnel loss (`passes_edge`), Frost, Rainbow split (`spectral`, `BENT_COLOURS` 16 wavelengths in turn in a fan), part
+1's tint, gobo at the first glass, steps at most a pixel in glass, and keeps up to `BENT_LEGS` 8 legs (48 bytes: ends,
+path lengths, haze, light, power, path key, + `RAINBOW_KEY` once split) from where it first leaves its pair's glass (a
+photon whose first glass is another bender's is that pair's; with one leg left it bends no more), carrying the light
+only as far past its last glass as the direct light counts it solid (`carried_past`: Shadow length, on a Stage the
+slab's reach). `vs_bent`/`fs_bent` splat each leg into the direct light and the air (before the background-light
+copy; `fs_direct` then loads both): a signed width from how far its fan neighbours' same leg lies (`spread_from`, ×1.5,
+of its own colour once split, at least Bent light softness, at most `MOST_SPREAD` 48 ×; a focus inside a leg is sharp), kernel
+15/(16h)(1 − y²)², × falloff(s) × s for a lamp. Photon power is what the shadow dropped (Shadow strength × (1 − Shadow
+colour)) × Glass caustics. Lighting card: **Bent light rays**, **Bent light softness**. `Renderer::bent_photons()`.
+Tests `bpe-kit/tests/bent_light_pictures.rs`, bake `a_glass_lens_focuses_in_the_bake`. Known limits: no Lights up,
+toon bands or normal turning on bent light; area/strip lights send from one point; the light field and the probe pass
+glass straight.
+
+Designed, not built yet: part 4 wild glass (mirrors throw light, Mirror ball, Dichroic, Diamond fire, Light pipes,
+rainbows in rain).
 
 ## Rules (spec `docs/superpowers/specs/2026-11-06-rules-design.md`, plans `docs/superpowers/plans/rules/`)
 

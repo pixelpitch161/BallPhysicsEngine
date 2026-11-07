@@ -40,7 +40,8 @@ pub struct LiquidStyle {
     /// Light angle (radians, on the screen), shine (0 to 1), bend (world units, Glass), tint
     /// (0 to 1, Glass).
     pub b: [f32; 4],
-    /// Rim light (0 to 1), opacity (0 to 1), zw spare.
+    /// Rim light (0 to 1), opacity (0 to 1), how much Glass bends lamp light (its index of
+    /// refraction, glass and light part 3: above 1 it is free glass), w spare.
     pub c: [f32; 4],
     /// Chrome's sky: top and bottom colours (linear rgb, w spare).
     pub sky_top: [f32; 4],
