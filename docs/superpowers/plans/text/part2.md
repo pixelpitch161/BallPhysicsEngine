@@ -221,3 +221,33 @@ part" (2). Read part 1's plan's "As built" first.
   (part 5).
 - A separate sprite pipeline for the fast lane (the paths pipeline already has the tile atlas bound).
 - Keeping anything between frames for the standings glide (it is worked out from the grid each frame).
+
+## As built
+
+- **Tokens** (`text/live.rs`) as decisions 1 to 5. `has_tokens` and `standings_in` are cheap checks the draw, the sim
+  and the editor share. Words without a `{` skip the parse entirely, so part 1's Texts lay out exactly as before.
+- **Standings history:** `TextSim::history` returns 2 s when the words hold standings (so the world's fingerprint
+  changes and the editor rebuilds), and `TextSim::after_build` (not `build`: the ball things may be built later in the
+  tree) calls `World::keep_history` on every thing with bodies and notes their rows. Without a history covering the
+  moment, `place_ago` works back along the velocity.
+- **Show:** `shows_whole` also needs a still Appear, so a Pop on All at once still pops. The Typewriter move is the
+  same as None per unit (the letter-by-letter timing gives the typing).
+- **Rule text:** Show the next line lays out line n alone (`split('\n').nth(n − 1)`), appearing with the Appear move
+  at `nexts[n − 1]`. The line before goes at once rather than leaving with the Disappear move: both lines laid out at
+  once would sit one above the other, not in the same place. Past the last line nothing shows.
+- **Draw:** `TextAt { tree, scene, params, world, log, id, time }` (`TextAt::new` without the resolved scene and log),
+  `text_copies`, `text_now` (first copy). `TextNow.shown` holds each letter's `LetterMove`; `contours(k)` applies it,
+  `bounds()` covers every placed letter shown or not (so the editor can grab a Text before it appears). One set of
+  layer records covers every copy: drawn letters' outline points, or fast letters' box corners. A fast letter's layers
+  reach at most its tile's reach (`c[2] = min(past, half × TILE_DISTANCE_REACH)`). A glyph with no tile (a space, the
+  atlas full) falls back to its outline.
+- **Overlay atlas:** a screen Text's tiles go into the overlay frame's own `mask_tiles`, which `FrameBuffers::upload`
+  already uploads per frame, so nothing new was needed in the renderer.
+- **Looks:** as Task 7. Labels on balls goes inside the picked thing when it is a Balls group or an Emitter, else the
+  first in the tree, else under what was picked.
+- **Editor:** `words_box.rs` (the layouter marks each `{…}` that reads as a value; the menu is "Insert value", plain
+  text, since the default fonts lack ▸); the Riding group always shows (it only matters inside a ball thing).
+- **Tests:** `text/live.rs`, `text/tiles.rs`, `things/text/{show,draw,looks}.rs` units, `rules/text.rs`;
+  `tests/text_pictures.rs` gains `fast_letters_look_like_drawn_ones` (under 5% of lit pixels differ, at the edges) and
+  `labels_ride_their_balls`; the studio's `insert_value_puts_a_value_in_the_words`,
+  `a_text_shows_its_show_and_riding_rows`, `typing_into_keyed_words_keys_them_at_the_playhead`.

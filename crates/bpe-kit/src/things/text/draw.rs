@@ -737,4 +737,21 @@ mod tests {
         assert_eq!(ps[0].clip[2], 0.0, "the first is in");
         assert!(ps[1].clip[2] > 0.2 && ps[1].clip[2] < 0.8, "the second is half in: {}", ps[1].clip[2]);
     }
+
+    #[test]
+    fn a_rule_moves_a_text_through_its_lines() {
+        let reg = crate::registry();
+        let (mut scene, id) = scene_with("ONE\nTWO");
+        for t in [0.1, 0.2, 0.3] {
+            let rule = scene.add_rule("Next");
+            let when = scene.add_block(&reg, rule, "when.time", None).unwrap();
+            scene.set_block_param(&reg, rule, when, "at", Value::Number(t)).unwrap();
+            let set = scene.add_block(&reg, rule, "do.text", Some(when)).unwrap();
+            scene.set_block_param(&reg, rule, set, "how", Value::Choice("show_the_next_line".into())).unwrap();
+        }
+        assert_eq!(words_of(&scene, id, 0.05), ["ONETWO"], "its own words before the first");
+        assert_eq!(words_of(&scene, id, 0.15), ["ONE"]);
+        assert_eq!(words_of(&scene, id, 0.25), ["TWO"]);
+        assert_eq!(words_of(&scene, id, 0.35), [""], "past the last line nothing shows");
+    }
 }
