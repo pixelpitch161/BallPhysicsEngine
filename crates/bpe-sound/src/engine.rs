@@ -75,7 +75,8 @@ impl Engine {
 
     /// The engine for `scene` playing `patch` (built from the same scene).
     pub fn with_patch(scene: &Scene, resolved: &Resolved, kit: &Kit, patch: SoundPatch) -> Engine {
-        let physics = Playback::new(scene, resolved, kit.sims.clone());
+        // Particles stepped beside the physics make no sound: the engine runs the physics alone.
+        let physics = Playback::new(scene, &bpe_runtime::main_part(resolved, &kit.sims), kit.sims.clone());
         let cursor = HitCursor::new(physics.world().steps_per_second);
         let mut master = Master::new(&patch.master);
         master.set_keys(patch.master_keys);

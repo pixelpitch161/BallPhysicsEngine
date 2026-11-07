@@ -7,6 +7,7 @@ use crate::grid::{self, Grid};
 use crate::history::{History, UNDO_MERGE};
 use crate::inspector::Inspector;
 use crate::mixer::{self, Mixer};
+use crate::particle_job::ParticleJob;
 use crate::preview::Preview;
 use crate::selection::Selection;
 use crate::settings::ListenSettings;
@@ -100,6 +101,10 @@ enum ToolbarClick {
     Export,
 }
 
+/// How far (seconds) the particle playback may be behind the playhead before the preview says
+/// it is waiting for it.
+pub const PARTICLES_BEHIND: f64 = 0.25;
+
 pub struct Studio {
     pub kit: Arc<Kit>,
     pub scene: Scene,
@@ -111,6 +116,11 @@ pub struct Studio {
     /// Aims rounds through bounces ahead of `playback` on its own thread, while some emitter
     /// does; the playback never steps past where it has got.
     pub aim_job: Option<AimJob>,
+    /// Runs the whole scene, particles and all, on its own thread while it has Particles things:
+    /// `playback` runs the physics alone, and the preview draws this one's particles.
+    pub particle_job: Option<ParticleJob>,
+    /// What `particle_job` was built from ([`bpe_runtime::beside_fingerprint`]).
+    pub particle_print: u64,
     /// The physics fingerprint `playback` was built from.
     pub fingerprint: u64,
     /// The part of it the sound hears ([`sound_fingerprint`]): the sound starts its run over
@@ -251,7 +261,9 @@ impl Studio {
         let sound_fingerprint = sound_fingerprint(&scene, &resolved, &kit.sims);
         // Started first, so the playback's own build waits on its work instead of doing it again.
         let aim_job = aim_job_for(&scene, &resolved, &kit);
-        let playback = Playback::new(&scene, &resolved, kit.sims.clone());
+        let playback = main_playback(&scene, &resolved, &kit);
+        let particle_print = bpe_runtime::beside_fingerprint(&scene, &resolved, &kit.sims);
+        let particle_job = ParticleJob::start_if_wanted(&scene, &resolved, kit.sims.clone(), 0.0);
         let follow = follow_of(&scene, &resolved);
         let light_probe = light_probe_of(&scene, &resolved, &follow);
         Self {
@@ -261,6 +273,8 @@ impl Studio {
             path: None,
             playback,
             aim_job,
+            particle_job,
+            particle_print,
             fingerprint,
             sound_fingerprint,
             follow,
@@ -328,8 +342,49 @@ impl Studio {
 
     /// How far the playback may step towards the playhead now: up to where the background
     /// aiming has got, while it runs.
+    /// While the particle playback is behind, the playback waits where it is for it (or goes
+    /// only as far as it has got), so the particles drawn are the balls' own moment.
     pub fn sim_target(&self) -> f64 {
+        self.sim_target_with(self.particle_job.as_ref().map(|job| job.reached()))
+    }
+
+    /// Where the playback may step to now given where the background aiming has got: the
+    /// moment the particle playback is asked for.
+    pub fn aim_target(&self) -> f64 {
         self.aim_job.as_ref().map_or(self.sim_time(), |job| job.allowed(self.sim_time()))
+    }
+
+    /// [`Studio::sim_target`] with the particle playback at `reached` (`None` without one,
+    /// `Some(None)` before it has published anything): read once a frame, so the moment the
+    /// playback steps to and the particles drawn there come from the same snapshot.
+    pub fn sim_target_with(&self, reached: Option<Option<f64>>) -> f64 {
+        let target = self.aim_target();
+        match reached {
+            Some(Some(reached)) if reached < target => {
+                let now = self.playback.time();
+                if now <= reached { reached } else { now.min(target) }
+            }
+            Some(None) => self.playback.time().min(target),
+            _ => target,
+        }
+    }
+
+    /// Whether the particle playback (if any) has published the step the playhead is on.
+    pub fn particles_there(&self) -> bool {
+        let Some(job) = &self.particle_job else { return true };
+        let sps = self.playback.world().steps_per_second;
+        let want = bpe_runtime::step_at(self.aim_target(), sps);
+        job.latest().is_some_and(|s| s.step == want)
+    }
+
+    /// How far (0..1) the particle playback has got towards the playhead, while it is well
+    /// behind ([`PARTICLES_BEHIND`]): it follows the playhead a frame late while playing, which
+    /// is no wait.
+    pub fn particles_waiting(&self) -> Option<f32> {
+        let job = self.particle_job.as_ref()?;
+        let time = self.aim_target();
+        let reached = job.reached().unwrap_or(0.0);
+        (reached + PARTICLES_BEHIND < time).then(|| (reached / time.max(1e-9)).clamp(0.0, 1.0) as f32)
     }
 
     /// How far (0..1) the background aiming has got towards the playhead, while it holds the
@@ -390,9 +445,16 @@ impl Studio {
         if rebuilt {
             self.fingerprint = fingerprint;
             self.aim_job = aim_job_for(&self.scene, &self.resolved, &self.kit);
-            self.playback = Playback::new(&self.scene, &self.resolved, self.kit.sims.clone());
+            self.playback = main_playback(&self.scene, &self.resolved, &self.kit);
         }
         self.time = self.time.min(self.duration());
+        // A particle edit starts the particle playback over, and nothing else.
+        let particle_print = bpe_runtime::beside_fingerprint(&self.scene, &self.resolved, &self.kit.sims);
+        if particle_print != self.particle_print {
+            self.particle_print = particle_print;
+            self.particle_job =
+                ParticleJob::start_if_wanted(&self.scene, &self.resolved, self.kit.sims.clone(), self.time);
+        }
         self.revision += 1;
         // The sound follows: a physics change starts its world over (no hits from the old
         // layout), anything else swaps the settings in where it is. How much of the balls' past
@@ -432,7 +494,9 @@ impl Studio {
         self.fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
         self.sound_fingerprint = sound_fingerprint(&self.scene, &self.resolved, &self.kit.sims);
         self.aim_job = aim_job_for(&self.scene, &self.resolved, &self.kit);
-        self.playback = Playback::new(&self.scene, &self.resolved, self.kit.sims.clone());
+        self.playback = main_playback(&self.scene, &self.resolved, &self.kit);
+        self.particle_print = bpe_runtime::beside_fingerprint(&self.scene, &self.resolved, &self.kit.sims);
+        self.particle_job = ParticleJob::start_if_wanted(&self.scene, &self.resolved, self.kit.sims.clone(), 0.0);
         self.follow = follow_of(&self.scene, &self.resolved);
         self.light_probe = light_probe_of(&self.scene, &self.resolved, &self.follow);
         self.revision += 1;
@@ -1152,6 +1216,9 @@ impl Studio {
             if let Some((lights, ms)) = self.lighting {
                 ui.label(RichText::new(lighting_readout(lights, ms)).small().color(style::MUTED));
             }
+            if let Some(p) = self.particle_job.as_ref().and_then(|job| job.latest()) {
+                ui.label(RichText::new(particles_readout(p.count, p.step_ms)).small().color(style::MUTED));
+            }
         });
     }
 
@@ -1348,7 +1415,15 @@ fn file_label(path: &Path) -> String {
 /// The background aiming `scene` wants, started.
 fn aim_job_for(scene: &Scene, resolved: &Resolved, kit: &Kit) -> Option<AimJob> {
     let duration = resolved.things.get(&ThingId::ROOT).map_or(0.0, |r| SceneSettings::from_params(&r.params).duration);
-    AimJob::start_if_wanted(scene, resolved, kit.sims.clone(), duration.max(0.0) as f64)
+    // Particles never change the aim: the aiming runs the physics alone.
+    let main = bpe_runtime::main_part(resolved, &kit.sims);
+    AimJob::start_if_wanted(scene, &main, kit.sims.clone(), duration.max(0.0) as f64)
+}
+
+/// The editor's playback of `scene`: the physics alone, without the things stepped beside it
+/// (their own playback is [`ParticleJob`]'s).
+fn main_playback(scene: &Scene, resolved: &Resolved, kit: &Kit) -> Playback {
+    Playback::new(scene, &bpe_runtime::main_part(resolved, &kit.sims), kit.sims.clone())
 }
 
 fn follow_of(scene: &Scene, resolved: &bpe_core::Resolved) -> Option<std::sync::Arc<bpe_sound::ControlSampler>> {
@@ -1373,6 +1448,20 @@ pub fn lighting_readout(lights: usize, ms: Option<f32>) -> String {
     let time = ms.map(|ms| format!(", {ms:.1} ms")).unwrap_or_default();
     let warn = if lights > 256 { " (that many lights is slow: try Quality Draft)" } else { "" };
     format!("· Lighting: {count}{time}{warn}")
+}
+
+/// The status line's particles readout: "· Particles: 12,400, 1.8 ms" (how long the last
+/// particle step took).
+pub fn particles_readout(count: usize, ms: f32) -> String {
+    let digits = count.to_string();
+    let mut grouped = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(c);
+    }
+    format!("· Particles: {grouped}, {ms:.1} ms")
 }
 
 #[cfg(test)]
