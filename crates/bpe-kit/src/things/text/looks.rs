@@ -1,11 +1,13 @@
 //! The starting looks a Text can be added with (Text part 1: the spec's #1, #12, #13, #14, #18,
-//! #24). A look only fills settings when it is picked from the Add thing menu; nothing here makes a
+//! #24; part 2: the live ones, Hit counter, Countdown timer, Lyrics on the beat, Labels on balls
+//! and Race leaderboard). A look only fills settings when it is picked from the Add thing menu; nothing here makes a
 //! scene of its own.
 
 use bpe_core::{Color, EditError, Gradient, Registry, Scene, Settings, SlotId, ThingId, Value, layered_key};
 use glam::Vec2;
 
-use super::{KIND, TextPath, TextSettings};
+use super::{KIND, ShowBy, TextMove, TextPath, TextSettings, TimedBy};
+use crate::text::Align;
 use crate::modules::look::shape as look;
 
 /// A Text's starting look.
@@ -18,16 +20,26 @@ pub enum Look {
     GlassLetters,
     ShadowLettering,
     FlowingGradient,
+    HitCounter,
+    CountdownTimer,
+    LyricsOnTheBeat,
+    LabelsOnBalls,
+    RaceLeaderboard,
 }
 
 /// The looks the Add thing menu lists under Looks, in order.
-pub const LOOKS: [Look; 6] = [
+pub const LOOKS: [Look; 11] = [
     Look::HookTitle,
     Look::SpinningRing,
     Look::NeonSign,
     Look::GlassLetters,
     Look::ShadowLettering,
     Look::FlowingGradient,
+    Look::HitCounter,
+    Look::CountdownTimer,
+    Look::LyricsOnTheBeat,
+    Look::LabelsOnBalls,
+    Look::RaceLeaderboard,
 ];
 
 impl Look {
@@ -40,6 +52,11 @@ impl Look {
             Look::GlassLetters => "Glass letters",
             Look::ShadowLettering => "Shadow lettering",
             Look::FlowingGradient => "Flowing gradient",
+            Look::HitCounter => "Hit counter",
+            Look::CountdownTimer => "Countdown timer",
+            Look::LyricsOnTheBeat => "Lyrics on the beat",
+            Look::LabelsOnBalls => "Labels on balls",
+            Look::RaceLeaderboard => "Race leaderboard",
         }
     }
 
@@ -52,6 +69,11 @@ impl Look {
             Look::GlassLetters => "Clear glass letters that bend what is behind them.",
             Look::ShadowLettering => "Warm letters lit by a lamp, throwing long shadows.",
             Look::FlowingGradient => "Rainbow colours flowing through the letters.",
+            Look::HitCounter => "A big number counting every hit, at the top of the screen.",
+            Look::CountdownTimer => "A clock counting down from 30 seconds.",
+            Look::LyricsOnTheBeat => "Lines that pop in one at a time on the beat, then fade.",
+            Look::LabelsOnBalls => "Each ball's number riding on it.",
+            Look::RaceLeaderboard => "The five balls furthest down, their order changing as they race.",
         }
     }
 
@@ -64,7 +86,6 @@ impl Look {
 /// A Text with the `look` filled in, under `parent`; a lit look gives the scene its Lighting card
 /// when it has none, and Shadow lettering adds its lamp beside it.
 pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) -> Result<ThingId, EditError> {
-    let id = crate::add_thing(scene, reg, KIND, parent)?;
     let mut s = TextSettings::default();
     let mut screen = true;
     let mut position = Vec2::ZERO;
@@ -74,12 +95,30 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
     type Layer = (&'static str, Vec<(&'static str, Value)>, Vec<Sub>);
     let mut layers: Vec<Layer> = Vec::new();
     let mut card: Vec<(&'static str, Value)> = Vec::new();
+    let mut parent = parent;
+    // A black outline round white letters, readable over anything.
+    let outlined = |width: f64| -> Layer {
+        (
+            look::OUTLINE,
+            vec![
+                ("width", Value::Number(width)),
+                ("sits", Value::Choice("outside".into())),
+                ("colour_from", Value::Choice("own".into())),
+                ("colour", solid(Color::rgb(0, 0, 0))),
+            ],
+            vec![],
+        )
+    };
     match look {
         Look::Empty => {}
         Look::HookTitle => {
             s.words = "WAIT FOR\nTHE LAST\nONE…".into();
             s.size = 120.0;
             s.line_spacing = 0.95;
+            // Each word pops in after the one before.
+            s.show = ShowBy::WordByWord;
+            s.appear = TextMove::Pop;
+            s.each = 0.12;
             position = Vec2::new(0.0, -620.0);
             let shadow = vec![
                 ("angle", Value::Number(90.0)),
@@ -180,7 +219,62 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
                 vec![],
             ));
         }
+        Look::HitCounter => {
+            s.words = "{hits}".into();
+            s.size = 260.0;
+            position = Vec2::new(0.0, -600.0);
+            layers.push((look::PAINT, vec![("colours", solid(Color::WHITE))], vec![]));
+            layers.push(outlined(10.0));
+        }
+        Look::CountdownTimer => {
+            s.words = "{countdown 30|m:ss}".into();
+            s.font = "Space Mono".into();
+            s.size = 150.0;
+            position = Vec2::new(0.0, -620.0);
+            layers.push((look::PAINT, vec![("colours", solid(Color::WHITE))], vec![]));
+            layers.push(outlined(6.0));
+        }
+        Look::LyricsOnTheBeat => {
+            s.words = "HERE IT COMES\nWATCH IT FALL\nONE MORE TIME\nDROP".into();
+            s.size = 110.0;
+            s.show = ShowBy::LineByLine;
+            s.timed_by = TimedBy::Beats;
+            s.every = 4.0;
+            s.appear = TextMove::Pop;
+            s.disappear = TextMove::Fade;
+            s.stays = 1.8;
+            position = Vec2::new(0.0, -450.0);
+            layers.push((look::PAINT, vec![("colours", solid(Color::WHITE))], vec![]));
+            layers.push(outlined(7.0));
+        }
+        Look::LabelsOnBalls => {
+            s.words = "{ball number}".into();
+            s.size = 36.0;
+            screen = false;
+            // Inside the picked group of balls, else the first there is.
+            let rides = |id: &ThingId| {
+                scene.things.get(id).is_some_and(|t| matches!(t.kind.as_str(), "balls" | "emitter"))
+            };
+            if !rides(&parent)
+                && let Some(first) = scene.order.iter().find(|id| rides(id))
+            {
+                parent = *first;
+            }
+            layers.push((look::PAINT, vec![("colours", solid(Color::WHITE))], vec![]));
+            layers.push(outlined(4.0));
+        }
+        Look::RaceLeaderboard => {
+            s.words = "{standings down 5}".into();
+            s.font = "Space Mono".into();
+            s.size = 42.0;
+            s.align = Align::Left;
+            s.line_spacing = 1.3;
+            position = Vec2::new(-470.0, -760.0);
+            layers.push((look::PAINT, vec![("colours", solid(Color::WHITE))], vec![]));
+            layers.push(outlined(4.0));
+        }
     }
+    let id = crate::add_thing(scene, reg, KIND, parent)?;
     // An Empty text keeps the name a new Text gets; a look is named after itself.
     let name = (look != Look::Empty).then(|| {
         if let Some(t) = scene.things.get_mut(&id) {
@@ -252,13 +346,22 @@ mod tests {
     #[test]
     fn every_look_adds_a_text_that_resolves_cleanly() {
         let kit = crate::kit();
+        let reg = &kit.registry;
         for look in std::iter::once(Look::Empty).chain(LOOKS) {
-            let (scene, _) = added(look);
-            let resolved = resolve(&scene, &kit.registry);
+            // Beside a group of balls (the leaderboard and the labels read them), a moment in.
+            let mut scene = Scene::empty(reg);
+            let balls = crate::add_thing(&mut scene, reg, "balls", ThingId::ROOT).unwrap();
+            let mut b = crate::BallsSettings::from_params(&scene.things[&balls].params);
+            b.ring(4, 200.0);
+            scene.things.get_mut(&balls).unwrap().params = b.to_params();
+            add_text(&mut scene, reg, look, ThingId::ROOT).unwrap();
+            let resolved = resolve(&scene, reg);
             assert!(resolved.problems.is_empty(), "{look:?}: {:?}", resolved.problems);
-            let world = World::build(&scene, &resolved, &kit.sims);
+            let mut world = World::build(&scene, &resolved, &kit.sims);
+            let mut log = Log::default();
+            world.advance_to(1.0, &kit.sims, &mut log);
             let mut frame = Frame::default();
-            build_frame(&scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
+            build_frame(&scene, &resolved, &world, &log, 1.0, &kit.draws, &mut frame);
             let paths = frame.paths.len()
                 + frame.overlay.as_ref().map_or(0, |o| o.paths.len())
                 + frame.layers.iter().map(|l| l.frame.paths.len()).sum::<usize>();
@@ -286,6 +389,11 @@ mod tests {
             (Look::GlassLetters, "GLASS", "Bowlby One", false),
             (Look::ShadowLettering, "SUN", "Anton", false),
             (Look::FlowingGradient, "FLOW", "Anton", true),
+            (Look::HitCounter, "{hits}", "Anton", true),
+            (Look::CountdownTimer, "{countdown 30|m:ss}", "Space Mono", true),
+            (Look::LyricsOnTheBeat, "HERE IT COMES\nWATCH IT FALL\nONE MORE TIME\nDROP", "Anton", true),
+            (Look::LabelsOnBalls, "{ball number}", "Anton", false),
+            (Look::RaceLeaderboard, "{standings down 5}", "Space Mono", true),
         ];
         for (look, words, font, screen) in table {
             let (scene, id) = added(look);
@@ -299,5 +407,24 @@ mod tests {
         assert_eq!((s.path, s.radius, s.spin), (TextPath::RoundACircle, 330.0, 30.0));
         let (scene, id) = added(Look::GlassLetters);
         assert_eq!(scene.card(id, SlotId::Look).unwrap().params.get("surface"), Some(&Value::Choice("glass".into())));
+    }
+
+    #[test]
+    fn the_live_looks_show_and_ride() {
+        let (scene, id) = added(Look::HookTitle);
+        let s = TextSettings::from_params(&scene.things[&id].params);
+        assert_eq!((s.show, s.appear, s.each), (ShowBy::WordByWord, TextMove::Pop, 0.12));
+        let (scene, id) = added(Look::LyricsOnTheBeat);
+        let s = TextSettings::from_params(&scene.things[&id].params);
+        assert_eq!((s.show, s.timed_by, s.every, s.stays), (ShowBy::LineByLine, TimedBy::Beats, 4.0, 1.8));
+        // Labels go inside the first group of balls when none is picked.
+        let reg = crate::registry();
+        let mut scene = Scene::empty(&reg);
+        let balls = crate::add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
+        let id = add_text(&mut scene, &reg, Look::LabelsOnBalls, ThingId::ROOT).unwrap();
+        assert_eq!(scene.things[&id].parent, Some(balls));
+        // With no balls, under what was picked.
+        let (scene, id) = added(Look::LabelsOnBalls);
+        assert_eq!(scene.things[&id].parent, Some(ThingId::ROOT));
     }
 }

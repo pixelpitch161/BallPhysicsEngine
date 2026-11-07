@@ -122,12 +122,16 @@ pub fn layout(font: &FontData, spec: &LayoutSpec) -> Arc<TextLayout> {
     }
     let made = Arc::new(lay_out(font, spec));
     let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
-    if cache.len() >= 256 {
+    if cache.len() >= MOST_LAYOUTS {
         cache.clear();
     }
     cache.insert(key, made.clone());
     made
 }
+
+/// The most layouts kept at once: enough for a label on each of a crowd of balls, each its own
+/// words, and their values changing.
+const MOST_LAYOUTS: usize = 4096;
 
 /// `words` in `case`.
 pub fn cased(words: &str, case: Case) -> String {
