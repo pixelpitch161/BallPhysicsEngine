@@ -116,21 +116,6 @@ pub fn due(world_step: u64, steps_per_second: u32) -> u32 {
     (world_step * STEPS_PER_SECOND / u64::from(steps_per_second.max(1))) as u32
 }
 
-/// Takes the particle steps due after world step `world.step` (whose log is `log`), over
-/// `threads` threads: none, one or several. Before each, the world's `air` (taken out of it) is
-/// brought to that step; after it, the particles that heat the air put their heat in.
-pub fn catch_up(st: &mut ParticlesState, world: &World, log: &Log, threads: usize, mut air: Option<&mut Air>) {
-    while st.step < due(world.step, world.steps_per_second) {
-        if let Some(air) = air.as_deref_mut() {
-            air.catch_up_to(st.step + 1, world, threads);
-        }
-        step_in(st, world, log, threads, air.as_deref().filter(|a| a.awake()));
-        if let Some(air) = air.as_deref_mut().filter(|a| a.awake()) {
-            put_heat(st, air);
-        }
-    }
-}
-
 /// Puts the heat of `st`'s particles that heat the air into it, in particle order.
 pub fn put_heat(st: &ParticlesState, air: &mut Air) {
     if !st.forces.heats_air() {

@@ -169,7 +169,21 @@ particles part is merged. Parts 3 to 7 build in parallel: every shared file is t
 ## As built
 
 - The solver lives in `bpe-kit/src/air.rs` (decision 1 above; the spec said `bpe-runtime`).
-- `step::catch_up(st, world, log, threads, air)` brings the air along; `step::step` (no air) is kept for tests, and
-  `step_in` takes the air. `step::put_heat` puts a thing's heat in after its step.
+- The first Particles thing due a step (`ParticlesSim::after_step`) takes every Particles thing's due steps, all
+  together one particle step at a time in tree order: the air brought to that step, each thing's `step::step_in`
+  with it, then its `step::put_heat`. So at any Physics rate (two particle steps a world step at 60 Hz) every thing
+  reads the air as the others left it at that step; the rest then find themselves up to date. `step::step` (no
+  air) is kept for tests.
+- An air woken mid-run (a key turns on Heats the air) starts still at the thing's step, never run up to it.
+- Keys on the Air card are left out of what the main world senses: `world::main_animation` drops `BESIDE_SLOTS`
+  keys from the physics fingerprint's keys and from its `follows_sound`/`needs_light`, and a world with nothing
+  beside the physics builds no sound or light maker for them; `beside_fingerprint` hashes the sound's or light's
+  fingerprint when an Air key follows it.
+- The grid stops at ±1e8 px (`FARTHEST`) and every ball and wall loop is held to the grid (`Air::on_grid`), so far
+  off or broken places loop over nothing; a cell a solid shape covers keeps no heat.
+- The emitter's test-fired lone copies drop the air (`test_fire::Lone::new`).
+- Found on the way: part 1's `settings_changed` downcast the box, not the state, so keyed forces and settings never
+  reached a Particles thing; fixed (`(**s).as_any_mut()`). The same slip in the emitter's `fire_now` and the
+  shape's `side_of`/`side_on` is left to its own fix.
 - The Air card's groups are new sections in `bpe_core::SECTION_ORDER`: Wind, Air, Balls and shapes, Heat.
 - Part 1's "every look makes particles in 2 s" test lets looks emitted On hits off in the blank project (no balls).

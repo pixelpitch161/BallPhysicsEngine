@@ -25,6 +25,9 @@ use crate::modules::look::layers::particles::sim::noise;
 pub const DT: f32 = 1.0 / 120.0;
 /// The most cells the grid has; a bigger view keeps its middle and reads the ambient wind
 /// beyond.
+/// How far from the world's middle the grid goes at most, px.
+const FARTHEST: Vec2 = Vec2::splat(1e8);
+
 pub const MOST_CELLS: usize = 160_000;
 /// The most heat a cell holds.
 pub const MOST_HEAT: f32 = 1000.0;
@@ -293,7 +296,9 @@ impl Air {
     fn wanted_place(&self, world: &World, cell: f32) -> (IVec2, usize, usize) {
         let margin = fin(self.spec.margin).max(0.0);
         let half = world.camera.shot_bounds_half(world.video) + Vec2::splat(margin);
-        let centre = if world.camera.center.is_finite() { world.camera.center } else { Vec2::ZERO };
+        // Far out of the way, the grid stops at ±1e8 px (its cells still count in an i32).
+        let centre =
+            if world.camera.center.is_finite() { world.camera.center.clamp(-FARTHEST, FARTHEST) } else { Vec2::ZERO };
         let half = if half.is_finite() { half.clamp(Vec2::ONE, Vec2::splat(1e7)) } else { world.video * 0.5 };
         let lo = ((centre - half) / cell).floor();
         let hi = ((centre + half) / cell).ceil();
@@ -308,6 +313,18 @@ impl Air {
             rows = r2;
         }
         (origin, cols, rows)
+    }
+
+    /// Whole cell numbers `at` (counted from the world's middle) as the grid's own, held to one
+    /// cell either side of it, so a ball or wall far off (or gone wrong) loops over nothing.
+    fn on_grid(&self, at: Vec2) -> IVec2 {
+        let lo = Vec2::splat(-1.0);
+        let hi = Vec2::new(self.cols as f32, self.rows as f32);
+        let at = at - self.origin.as_vec2();
+        if at.is_nan() {
+            return IVec2::splat(-1);
+        }
+        at.clamp(lo, hi).as_ivec2()
     }
 
     /// Moves the grid to where the camera is, keeping the cells the old and new places share.
@@ -378,8 +395,8 @@ impl Air {
             let centre = outline.center();
             let band = outline.thickness() * 0.5 + half_cell;
             let reach = outline.reach() + band + self.cell;
-            let lo = ((centre - reach) / self.cell).floor().as_ivec2() - self.origin;
-            let hi = ((centre + reach) / self.cell).ceil().as_ivec2() - self.origin;
+            let lo = self.on_grid(((centre - reach) / self.cell).floor());
+            let hi = self.on_grid(((centre + reach) / self.cell).ceil());
             let (c0, r0) = (lo.x.max(0) as usize, lo.y.max(0) as usize);
             let (c1, r1) = (hi.x.min(self.cols as i32).max(0) as usize, hi.y.min(self.rows as i32).max(0) as usize);
             for r in r0..r1 {
@@ -429,8 +446,8 @@ impl Air {
                     }
                     let v = v.clamp_length_max(ceiling);
                     let reach = radius * reach_of;
-                    let lo = ((p - reach) / h - 0.5).ceil().as_ivec2() - self.origin;
-                    let hi = ((p + reach) / h - 0.5).floor().as_ivec2() - self.origin;
+                    let lo = self.on_grid(((p - reach) / h - 0.5).ceil());
+                    let hi = self.on_grid(((p + reach) / h - 0.5).floor());
                     for r in lo.y.max(0)..=hi.y.min(rows as i32 - 1) {
                         for c in lo.x.max(0)..=hi.x.min(cols as i32 - 1) {
                             let (c, r) = (c as usize, r as usize);
@@ -453,7 +470,12 @@ impl Air {
         let rises = fin(self.spec.rises);
         let fades = (-fin(self.spec.fades).max(0.0) * DT).exp();
         for k in 0..cols * rows {
-            let t = (self.heat[k] + self.pending[k]).clamp(0.0, MOST_HEAT);
+            // No heat goes into a shape: a cell a solid shape covers stays cold.
+            let t = if self.solid.get(k).copied().unwrap_or(false) {
+                0.0
+            } else {
+                (self.heat[k] + self.pending[k]).clamp(0.0, MOST_HEAT)
+            };
             self.pending[k] = 0.0;
             self.vel[k].y -= rises * t * DT;
             self.heat[k] = t * fades;

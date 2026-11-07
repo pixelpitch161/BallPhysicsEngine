@@ -6,7 +6,7 @@
 //! before each of its particle steps.
 
 use bpe_core::{ResolvedThing, Settings, SlotId, Thing, ThingId};
-use bpe_runtime::{Log, ThingSim, World, state_mut};
+use bpe_runtime::{Log, ThingSim, ThingState, World, state_mut};
 
 use crate::air::{Air, AirSpec, air_of, put_air, take_air};
 
@@ -52,25 +52,51 @@ impl ThingSim for ParticlesSim {
         note_memory(world, id);
     }
 
+    /// The first Particles thing due a step takes every Particles thing's due steps, all together
+    /// one particle step at a time in tree order, so at any Physics rate each reads the one air as
+    /// the others left it at that step; the rest then find themselves up to date.
     fn after_step(&self, id: ThingId, world: &mut World, log: &mut Log) {
-        if step::due(world.step, world.steps_per_second) <= state_of(world, id).map_or(u32::MAX, |s| s.step) {
+        let due = step::due(world.step, world.steps_per_second);
+        if due <= state_of(world, id).map_or(u32::MAX, |s| s.step) {
             return;
         }
-        let Some(mut boxed) = world.states.remove(&id) else { return };
-        let started = std::time::Instant::now();
-        let st = state_mut::<ParticlesState>(boxed.as_mut());
+        let ids: Vec<ThingId> =
+            world.order().iter().copied().filter(|t| state_of(world, *t).is_some_and(|s| s.step < due)).collect();
+        let mut taken: Vec<(ThingId, Box<dyn ThingState>, f32)> =
+            ids.iter().filter_map(|t| Some((*t, world.states.remove(t)?, 0.0))).collect();
         let mut air = take_air(world);
-        step::catch_up(st, world, log, step::threads(), air.as_mut().map(|a| a.get_mut()));
-        st.last_ms = started.elapsed().as_secs_f32() * 1000.0;
+        let threads = step::threads();
+        let from = taken.iter_mut().map(|(_, b, _)| state_mut::<ParticlesState>(b.as_mut()).step).min().unwrap_or(due);
+        for k in from..due {
+            if let Some(air) = air.as_mut() {
+                air.get_mut().catch_up_to(k + 1, world, threads);
+            }
+            for (_, boxed, ms) in &mut taken {
+                let st = state_mut::<ParticlesState>(boxed.as_mut());
+                if st.step != k {
+                    continue;
+                }
+                let started = std::time::Instant::now();
+                step::step_in(st, world, log, threads, air.as_ref().map(|a| a.get()).filter(|a| a.awake()));
+                if let Some(air) = air.as_mut().filter(|a| a.get().awake()) {
+                    step::put_heat(st, air.get_mut());
+                }
+                *ms += started.elapsed().as_secs_f32() * 1000.0;
+            }
+        }
         if let Some(air) = air {
             put_air(world, air);
         }
-        world.states.insert(id, boxed);
-        note_memory(world, id);
+        for (t, mut boxed, ms) in taken {
+            state_mut::<ParticlesState>(boxed.as_mut()).last_ms = ms;
+            world.states.insert(t, boxed);
+            note_memory(world, t);
+        }
     }
 
     fn settings_changed(&self, id: ThingId, resolved: &ResolvedThing, world: &mut World) {
-        if let Some(st) = world.states.get_mut(&id).and_then(|s| s.as_any_mut().downcast_mut::<ParticlesState>()) {
+        // `(**s)`: the boxed state itself, not the box (which is a `ThingState` too).
+        if let Some(st) = world.states.get_mut(&id).and_then(|s| (**s).as_any_mut().downcast_mut::<ParticlesState>()) {
             read_into(st, resolved);
         }
         wake_air_if_wanted(world, id);
@@ -104,10 +130,12 @@ fn wake_air_if_wanted(world: &mut World, id: ThingId) {
         }
     };
     if !air.get().awake() {
-        air.get_mut().wake(world);
-        // It starts at the thing's step: nothing has stirred it before.
+        // It starts still at the thing's step: nothing has stirred it before, so there is
+        // nothing to run up to there.
         let at = state_of(world, id).map_or(0, |s| s.step);
-        air.get_mut().catch_up_to(at, world, 1);
+        let air = air.get_mut();
+        air.wake(world);
+        air.step = air.step.max(at);
     }
     put_air(world, air);
 }

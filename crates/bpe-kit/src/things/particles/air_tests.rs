@@ -135,22 +135,48 @@ fn particles_that_heat_the_air_lift_the_ones_that_follow_it() {
 #[test]
 fn every_thing_reads_the_one_air_in_step() {
     let reg = registry();
-    let mut scene = crate::new_scene(&reg);
-    let a = still_crowd(&mut scene, ThingId::ROOT);
-    add_force(&mut scene, a, AIR, &[]);
-    let b = still_crowd(&mut scene, ThingId::ROOT);
-    add_force(&mut scene, b, AIR, &[]);
-    let (world, _, _) = run(&scene, 1.0);
-    let air = air_of(&world).expect("one air");
-    assert_eq!(air.step, particles(&world, a).step);
-    // The two crowds were born alike, so they move alike in the same air.
-    let (pa, pb) = (particles(&world, a), particles(&world, b));
-    let same = pa.specks.iter().zip(&pb.specks).filter(|(x, y)| x.place == y.place).count();
-    assert_eq!(same, 0, "other seeds, other places");
-    // At any Physics rate the air keeps step with the particles.
-    scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("steps_per_second", Value::Int(60));
-    let (world, _, _) = run(&scene, 1.0);
-    assert_eq!(air_of(&world).unwrap().step, 120);
+    // One thing follows the air, another after it warms it; nothing else moves, so the Physics
+    // rate (which only sets how many particle steps come after each world step) changes nothing.
+    let mut scene = crate::new_studio_scene(&reg);
+    let follower = still_crowd(&mut scene, ThingId::ROOT);
+    add_force(&mut scene, follower, AIR, &[]);
+    let heater = still_crowd(&mut scene, ThingId::ROOT);
+    add_force(&mut scene, heater, RISE, &[("strength", Value::Number(0.0)), ("heats", Value::Number(1.0))]);
+    let places = |rate: i64| {
+        let mut scene = scene.clone();
+        scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("steps_per_second", Value::Int(rate));
+        let (world, _, _) = run(&scene, 1.0);
+        let air = air_of(&world).expect("one air");
+        assert_eq!(air.step, 120);
+        assert_eq!((particles(&world, follower).step, particles(&world, heater).step), (120, 120));
+        particles(&world, follower).specks.iter().map(|s| (s.place, s.velocity)).collect::<Vec<_>>()
+    };
+    let at_240 = places(240);
+    assert!(at_240.iter().any(|(_, v)| v.length() > 1.0), "the warmed air moves them");
+    assert_eq!(places(120), at_240);
+    assert_eq!(places(60), at_240, "two particle steps a world step, each in the air of its step");
+}
+
+#[test]
+fn a_thing_that_starts_heating_the_air_late_finds_it_still() {
+    let reg = registry();
+    let mut scene = crate::new_studio_scene(&reg);
+    let id = still_crowd(&mut scene, ThingId::ROOT);
+    // Its Rise starts heating the air at 1 s: the air wakes there, still, with nothing to run
+    // up to.
+    let layer = scene.add_layer(&reg, id, SlotId::Motion, RISE).unwrap();
+    let card = scene.card_mut(id, SlotId::Motion).unwrap();
+    card.params.set(&layered_key(layer, "strength"), Value::Number(0.0));
+    let heats = Address::on(id, SlotId::Motion, &layered_key(layer, "heats"));
+    for (at, v) in [(0.0, 0.0), (0.99, 0.0), (1.0, 1.0)] {
+        scene.set_key(&reg, &heats, at, Value::Number(v)).unwrap();
+    }
+    let (world, _, _) = run(&scene, 0.5);
+    assert!(air_of(&world).is_none_or(|a| !a.awake()), "nothing follows it yet");
+    let (world, _, _) = run(&scene, 1.2);
+    let air = air_of(&world).expect("woken");
+    assert!(air.awake());
+    assert_eq!(air.step, particles(&world, id).step);
 }
 
 #[test]
@@ -200,6 +226,40 @@ fn air_edits_restart_only_the_particles() {
     assert!(air_of(&main).is_some_and(|a| !a.awake()));
     let whole = World::build(&scene, &resolved, &kit.sims);
     assert!(air_of(&whole).is_some_and(|a| a.awake()));
+}
+
+#[test]
+fn an_air_key_following_light_is_only_the_particles_business() {
+    use crate::things::light::{LightType, add_light};
+    let kit = kit();
+    let reg = &kit.registry;
+    let mut scene = crate::new_scene(reg);
+    let id = still_crowd(&mut scene, ThingId::ROOT);
+    add_force(&mut scene, id, AIR, &[]);
+    set_air(&mut scene, |a| a.wind_speed = 50.0);
+    let lamp = add_light(&mut scene, reg, LightType::Point, ThingId::ROOT).unwrap();
+    let prints = |scene: &Scene| {
+        let r = resolve(scene, reg);
+        (fingerprint(scene, &r, &kit.sims), beside_fingerprint(scene, &r, &kit.sims))
+    };
+    let before = prints(&scene);
+    let wind = Address::on(ThingId::ROOT, SlotId::Air, "wind_speed");
+    let source = bpe_core::PulseSource::Light { thing: id, source: bpe_core::LightSource::On };
+    scene.set_pulse(reg, &wind, source, Value::Number(300.0), 0.25).unwrap();
+    let follows = prints(&scene);
+    assert_eq!(follows.0, before.0, "the balls play on");
+    assert_ne!(follows.1, before.1);
+    // Moving the lamp changes what the wind follows: the particles start again, the balls don't.
+    scene.things.get_mut(&lamp).unwrap().params.set("position", Value::Vec2([120.0, -40.0]));
+    let moved = prints(&scene);
+    assert_eq!(moved.0, before.0);
+    assert_ne!(moved.1, follows.1);
+    // The editor's main playback has no light probe to work out for it; the particles' has.
+    let resolved = resolve(&scene, reg);
+    let main = World::build(&scene, &main_part(&resolved, &kit.sims), &kit.sims);
+    assert!(main.light().is_none());
+    let whole = World::build(&scene, &resolved, &kit.sims);
+    assert!(whole.light().is_some());
 }
 
 #[test]
