@@ -17,10 +17,13 @@ pub mod births;
 pub mod draw;
 pub mod feeds;
 pub mod forces;
+pub mod liquid;
 pub mod look;
 pub mod looks;
 mod looks_motion;
+pub mod marks;
 pub mod meets;
+pub mod modifiers;
 pub mod moments;
 pub mod more_forces;
 pub mod piles;
@@ -40,8 +43,12 @@ mod tests_motion;
 #[cfg(test)]
 mod tests_part4;
 #[cfg(test)]
+mod tests_part6;
+#[cfg(test)]
 mod tests_part7;
+pub mod trail;
 pub mod two_way;
+pub mod wants;
 pub mod web;
 
 use bpe_core::{Choice, SettingDef, Settings, SlotId, Target, ThingKind};

@@ -41,8 +41,9 @@ pub fn show_forces(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &
 
 /// What a Huge swarm leaves out, under the Engine chips.
 const SWARM_LEAVES_OUT: &str = "Huge swarm moves up to 4,000,000 particles on the graphics card, for decoration. It \
-    doesn't draw Soft smoke, Flame, Web lines or Piles layers, Fine detail, or the Recolour, Flash on hit and Colour \
-    on hit sub-layers. It doesn't Flock, push the balls back (two-way), feed other particles or play their moments; \
+    doesn't draw Soft smoke, Flame, Web lines, Piles, Trails, Marks that stay or Liquid layers, Fine detail, the \
+    Experimental fold, or the Recolour, Flash on hit and Colour on hit sub-layers. It doesn't Flock, push the balls \
+    back (two-way), feed other particles or play their moments; \
     Stick bounces off, Settle and Pile up stop, Pop vanishes; Rise doesn't heat the air, and a word's, picture's or \
     grid's crowd isn't refilled.";
 
@@ -272,6 +273,25 @@ mod tests {
         h.run();
         assert!(h.query_all_by_label("Air").next().is_some());
         assert!(h.query_all_by_label("Calms down").next().is_some());
+    }
+
+    #[test]
+    fn the_look_list_offers_the_part_6_layers() {
+        use bpe_kit::things::particles::liquid::LIQUID;
+        use bpe_kit::things::particles::marks::MARKS;
+        use bpe_kit::things::particles::trail::TRAILS;
+        let (mut h, id) = harness();
+        for (name, kind) in [("Trails", TRAILS), ("Marks that stay", MARKS), ("Liquid", LIQUID)] {
+            h.get_by_label("+ Add layer").click();
+            h.run();
+            h.get_by_label(name).click();
+            h.run();
+            assert_eq!(kinds(&h, id, SlotId::Look).last().map(String::as_str), Some(kind), "{name} added");
+        }
+        // The picked layer is the Liquid: its own settings, the Experimental fold, no colour split.
+        assert!(h.query_all_by_label("Blob size").next().is_some(), "the Liquid's settings show");
+        assert!(h.query_all_by_label("Experimental").next().is_some(), "with the Experimental fold");
+        assert!(h.query_all_by_label("Colour split").next().is_none(), "a liquid has no colour split");
     }
 
     #[test]

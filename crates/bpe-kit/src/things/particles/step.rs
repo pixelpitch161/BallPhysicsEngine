@@ -479,6 +479,7 @@ pub fn step_in(
         out
     });
     st.piles = piles_now;
+    before_retain(st);
     // The dead go, in order, and what the particles met becomes this step's moments.
     let mut specks = std::mem::take(&mut st.specks);
     specks.retain_mut(|s| {
@@ -555,7 +556,26 @@ pub fn step_in(
     } else {
         super::two_way::TwoWayOut::default()
     };
+    note_trails(st);
     note_walls(st, world);
+}
+
+/// After a step's move and before the dead go: the marks it left, and the dead's trail rows
+/// dropped (every particle born this step given its rows first).
+pub fn before_retain(st: &mut ParticlesState) {
+    super::marks::collect(st);
+    st.trail.grow(&st.specks);
+    if st.trail.points > 0 && st.specks.iter().any(|s| s.flags & DEAD != 0) {
+        let keep: Vec<bool> = st.specks.iter().map(|s| s.flags & DEAD == 0).collect();
+        st.trail.keep(&keep);
+    }
+}
+
+/// At a step's end: every particle's place noted in its trail (grains thrown up since the dead
+/// went given their rows first).
+pub fn note_trails(st: &mut ParticlesState) {
+    st.trail.grow(&st.specks);
+    st.trail.write(&st.specks, st.step);
 }
 
 /// How fast sand a ball going at `v` cuts flies up.
@@ -579,6 +599,7 @@ pub fn first(st: &mut ParticlesState, world: &World) {
     let homes = st.home_frame(anchor.position, anchor.angle, world.camera.center);
     let cx = BirthCx { world, log: &log, anchor: anchor.position, angle: anchor.angle, homes };
     births::births(st, &cx, 0, true, None);
+    note_trails(st);
     note_walls(st, world);
 }
 

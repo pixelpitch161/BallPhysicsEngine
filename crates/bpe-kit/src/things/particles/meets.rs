@@ -533,6 +533,7 @@ pub fn meet_walls(s: &mut Speck, walls: &[WallAt], m: &MeetsSettings, out: &mut 
             return;
         }
         s.place = at;
+        s.flags |= super::marks::TOUCHED_SHAPE;
         let rel = s.velocity - contact.wall_velocity;
         let into = rel.dot(contact.normal);
         let before = s.velocity;
@@ -640,7 +641,7 @@ pub fn meet_edges(s: &mut Speck, e: &Edges, m: &MeetsSettings, out: &mut ChunkOu
         AtEdges::Pass => {}
         AtEdges::Vanish => {
             if s.place.x < lo.x || s.place.y < lo.y || s.place.x > hi.x || s.place.y > hi.y {
-                s.flags |= DEAD;
+                s.flags |= DEAD | super::marks::TOUCHED_EDGE;
             }
         }
         AtEdges::WrapRound => {
@@ -651,6 +652,8 @@ pub fn meet_edges(s: &mut Speck, e: &Edges, m: &MeetsSettings, out: &mut ChunkOu
             // No streak across the picture: it was where it is now.
             if s.place != before {
                 s.previous = s.place - (before - s.previous);
+                // Its mark goes where it comes back in: the edge it is beside now.
+                s.flags |= super::marks::TOUCHED_EDGE;
             }
         }
         AtEdges::Bounce => {
@@ -658,9 +661,11 @@ pub fn meet_edges(s: &mut Speck, e: &Edges, m: &MeetsSettings, out: &mut ChunkOu
                 if s.place[k] < lo[k] {
                     s.place[k] = lo[k] + (lo[k] - s.place[k]).min(hi[k] - lo[k]);
                     s.velocity[k] = s.velocity[k].abs();
+                    s.flags |= super::marks::TOUCHED_EDGE;
                 } else if s.place[k] > hi[k] {
                     s.place[k] = hi[k] - (s.place[k] - hi[k]).min(hi[k] - lo[k]);
                     s.velocity[k] = -s.velocity[k].abs();
+                    s.flags |= super::marks::TOUCHED_EDGE;
                 }
             }
         }

@@ -166,6 +166,12 @@ pub struct ParticlesState {
     /// How long the last particle step took, in milliseconds (the editor's status line; never
     /// read by the step).
     pub last_ms: f32,
+    /// What its Look asks the stepping to keep (part 6).
+    pub look_wants: super::wants::Wants,
+    /// Each particle's last places, for Trails layers (part 6).
+    pub trail: super::trail::TrailRing,
+    /// The marks the particles left, oldest first, for Marks layers (part 6).
+    pub marks: Vec<super::marks::Mark>,
     /// A word's, picture's or grid's places, in the thing's own frame (`spots.rs`).
     pub spots: Arc<Vec<Vec2>>,
     /// What `spots` were worked out from.
@@ -212,6 +218,9 @@ impl ParticlesState {
             carry: 0.0,
             next_burst: 0,
             last_ms: 0.0,
+            look_wants: Default::default(),
+            trail: Default::default(),
+            marks: Vec::new(),
             feeds: Vec::new(),
             wants: 0,
             piles: super::piles::Piles::default(),
@@ -259,6 +268,8 @@ impl ParticlesState {
     /// Bytes its particles take, for playback budgets.
     pub fn memory(&self) -> usize {
         self.specks.capacity() * std::mem::size_of::<Speck>()
+            + self.trail.memory()
+            + self.marks.capacity() * std::mem::size_of::<super::marks::Mark>()
             + self.moments.capacity() * std::mem::size_of::<super::moments::Moment>()
             + self.feeds.capacity() * std::mem::size_of::<super::feeds::Feed>()
             + self.piles.memory()

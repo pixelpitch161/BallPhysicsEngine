@@ -160,6 +160,13 @@ pub trait ThingSim: Send + Sync + 'static {
     fn in_main(&self, _resolved: &ResolvedThing) -> bool {
         true
     }
+    /// For a thing stepped beside the physics: a hash of whatever else its stepping reads from its
+    /// settings beyond its own and its Motion and Bounce cards (a Particles thing's Look asking it
+    /// to keep each particle's trail), so a change of it rebuilds the playback it is stepped on.
+    /// 0 when nothing else is read.
+    fn more_fingerprint(&self, _resolved: &ResolvedThing) -> u64 {
+        0
+    }
     /// For a thing stepped beside the physics: whether the sound hears what it logs (a Particles
     /// thing whose sound is on logs its moments), with a hash of what of its settings changes what
     /// it logs. The sound engine's world keeps a heard thing ([`crate::heard_part`]), and

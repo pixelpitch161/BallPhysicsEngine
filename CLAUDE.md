@@ -511,6 +511,29 @@ every layer's **Fine detail** fold (`copies`, `copy_spread`, `copy_size`, `copy_
 `Common`, `draw::copy_offset`). Looks: Glitter, Web of light, Pixel glitch added; Fire on a ball (Flame + embers), Rainbow
 smoke trail, Ink in water (Soft smoke) and Blossom petals (Petals) upgraded. `tests/particle_pictures.rs`,
 `bpe-gfx/src/fields_tests.rs`.
+Part 6 is in (plan `part6.md`, "As built" at its end): **trails, marks, liquid and the experimental modifiers**, all
+drawn only (goldens unchanged). Look layers `particles.trails` (`trail.rs`: `TrailsLayer` Length, Every, Width,
+Taper, Fade along, Softness; the state's `TrailRing` keeps each particle's last places, slot = particle step %
+points, `grow` on births, `keep` with the retain, `write` after the move; `recent` reads newest first; strips with
+Shadow/Glow/Outline subs, cut at jumps), `particles.marks` ("Marks that stay", `marks.rs`: `Mark`s in
+`ParticlesState.marks`, made in `step::end_step` from the touch flags `meets.rs` sets in `Speck.flags` bits 16..19
+(once per particle a reason: On shapes, On the edges, When they die), `prune` caps at Most marks and drops faded ones;
+drawn as dots with splats and a drip) and `particles.liquid` (`liquid.rs`: `LiquidLayer` Blob size, Level, Edge
+softness, Roundness, Surface Matte/Plastic/Chrome/Metal/Glass/Toon, Light angle, Shine, Bend, Tint, Sky, Rim; no
+sub-layers, no Colour split). The stepping reads only `wants.rs::Wants` (trail points, marks kept) from the Look, and
+`ThingSim::more_fingerprint` (hashed by `beside_fingerprint`, never the main part's) rebuilds the particle playback
+only when that changes. A liquid is `Frame.liquids` (`bpe_gfx::Liquid { blobs, style, front }`): `bpe-gfx/src/liquid.rs`
+`LiquidPass` splats `LiquidBlob`s additively into a full-size Rgba16Float field (its own bind group: style only) and
+`shaders/liquid.wgsl` `fs_surface` cuts it at Level and shades it (Glass samples the copied-under picture bent by the
+normal), after the scene pass (behind) and after the flashes (front), and in layer frames; light passes draw it as
+covering black (nothing in the surface picture). Every draw layer has the **Experimental** fold (`modifiers.rs`
+through `Kind.dynamic`: Mirror 2..12 ways round The middle of the picture / The thing they ride / A point, Mirrored
+copies; Colour split (three added channel copies along the velocity; not on Liquid, Soft smoke, Flame or Web lines,
+`defs_without_split`), Glitch (bands torn sideways, `Tears`, pure in time)); applied on the CPU to `Pieces`, blobs and
+field splats (`draw::finish`). Part 5's Fine detail copies trails, marks and blobs too. Five new looks (Light
+streams, Kaleidoscope, Colour split dust, Liquid metal, Paint drips), part 4's Liquid splashes drawn as a Liquid, and part 5's Pixel glitch torn by
+Glitch. Tests: `particles/tests_part6.rs`,
+`tests/liquid_pictures.rs` (GPU).
 
 Part 3 is in (plan `part3.md`): **moving and forming**. Sources From **A word or picture** (Text with Letter height and
 Weight, or a PNG Picture with Picture width and Uses Solid / Bright / Dark parts) and **A grid** (Covers The screen or

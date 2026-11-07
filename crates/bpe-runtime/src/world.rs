@@ -1660,8 +1660,10 @@ fn beside_hash(
         if !chosen(*id, r) {
             continue;
         }
+        let sim = sims.thing(&r.kind).expect("a beside thing has a sim");
         let Some(thing) = scene.things.get(id) else { continue };
         h.bytes(&id.0.to_le_bytes());
+        h.bytes(&sim.more_fingerprint(r).to_le_bytes());
         h.bytes(r.kind.as_bytes());
         h.bytes(&thing.parent.map_or(u32::MAX, |p| p.0).to_le_bytes());
         h.f32(thing.transform.position.x);
@@ -1672,7 +1674,6 @@ fn beside_hash(
             h.bytes(key.as_bytes());
             h.value(value);
         }
-        let sim = sims.thing(&r.kind).expect("a beside thing has a sim");
         for (slot, s) in r.slots.iter().filter(|(slot, _)| !SIM_SLOTS.contains(slot)) {
             for (key, value) in s.params.iter().filter(|(key, _)| sim.beside_card_key(*slot, key)) {
                 h.bytes(&[*slot as u8]);
@@ -1814,6 +1815,11 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
                     h.value(value);
                 }
             }
+        }
+        // What else its stepping keeps (two-way particles' trails and marks), so a change rebuilds it.
+        if let Some(more) = sims.thing(&r.kind).map(|s| s.more_fingerprint(r)).filter(|m| *m != 0) {
+            h.bytes(b"more");
+            h.bytes(&more.to_le_bytes());
         }
     }
     // Health cards change the run (a ball breaks at zero, rules read it): only scenes with one.
