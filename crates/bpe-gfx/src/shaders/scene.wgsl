@@ -38,6 +38,15 @@ struct Globals {
 // otherwise.
 fn light_flat(c: vec4<f32>, lit: f32, blocks: f32, emit: vec3<f32>, extra: vec4<f32>) -> vec4<f32> {
     let m = g.light.x;
+    // Light pass 8, the tint picture (tint.wgsl): its colour's depth where it blocks light, its
+    // antialiased edge divided out (as `hard_block`).
+    if m > 7.5 {
+        if extra.y > 0.5 || c.a <= 1e-5 {
+            return vec4<f32>(0.0);
+        }
+        let p = select(c.a, c.a / AA_COVER, AA_COVER >= HARD_FROM);
+        return tint_out(c.rgb / c.a, min(p, 1.0), blocks, 1.0, 0.0);
+    }
     // Light passes 5 (what glows under UV) and 6 (what catches beams, link numbers).
     if m > 4.5 {
         return light_extra(c, extra);
@@ -104,7 +113,7 @@ fn light_extra(c: vec4<f32>, extra: vec4<f32>) -> vec4<f32> {
 // the link number is written whole where the thing covers at least half the pixel and not at all
 // elsewhere, so two things' numbers never mix at an edge. Other passes pass `t` through.
 fn hard_tags(t: vec4<f32>) -> vec4<f32> {
-    if g.light.x < 5.5 {
+    if g.light.x < 5.5 || g.light.x > 6.5 {
         return t;
     }
     if t.a < 0.5 {

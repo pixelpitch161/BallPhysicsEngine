@@ -56,6 +56,14 @@ fn left_behind(l: LayerGpu, piece: Piece) -> Piece {
     return out;
 }
 
+// A record's Tints light and Deeper when thick (glass and light part 1; `LayerGpu::tint_bits`).
+fn record_tints(l: LayerGpu) -> f32 {
+    return f32((l.head.z >> 16u) & 255u) / 64.0;
+}
+fn record_deeper(l: LayerGpu) -> f32 {
+    return f32((l.head.z >> 24u) & 255u) / 64.0;
+}
+
 // The light pass the walks shader layers sample work in: the same, but the things' own colours
 // (mode 0) in the emission pass.
 fn plain_mode() -> f32 {
@@ -68,6 +76,10 @@ var<private> LIGHT_HEIGHT: f32;
 // Set by the ball walk: in Stage a ball shadows as a sphere (lighting.wgsl), not in the blockers'
 // field, so its layers block nothing there.
 var<private> LIGHT_BALL: bool;
+// The tint pass (light pass 8): what the thing's Body blocks and Deeper when thick times how thick
+// the thing is at this pixel, set as the walk starts.
+var<private> TINT_BLOCKS: f32;
+var<private> TINT_THICK: f32;
 // What the thing's Body blocks (set as the walk passes it, the first record): a layer wearing a
 // surface of its own covers the surface picture inside the thing, blocking as the Body does.
 var<private> LIGHT_BODY_BLOCKS: f32;
@@ -87,6 +99,24 @@ fn light_piece(piece: Piece, l: LayerGpu, hit: vec4<f32>) -> Piece {
     let heat_out = HEAT_OUT;
     HEAT_IN = vec3<f32>(0.0);
     HEAT_OUT = vec3<f32>(0.0);
+    if tint_pass() {
+        // Pass 8, the tint picture: each layer shows its colour as it tints light (white where
+        // its Tints light is 0). One that doesn't block light colours the thing only inside it,
+        // as paint on glass does; a Shine, Shading, Shader or Glow that doesn't block leaves what
+        // is under it. The depth is worked out once for the whole thing (`tint_out`).
+        if l.light.y <= 0.0 && l.head.x != 0u {
+            let works_over = l.head.x == 3u || l.head.x == 4u || l.head.x == 5u || l.head.x == 6u || l.head.x == 9u;
+            out.a_out = 0.0;
+            if works_over {
+                out.a_in = 0.0;
+                return out;
+            }
+        }
+        let tints = clamp(record_tints(l), 0.0, 1.0);
+        out.c_in = mix(vec3<f32>(1.0), tint_chroma(piece.c_in), tints);
+        out.c_out = mix(vec3<f32>(1.0), tint_chroma(piece.c_out), tints);
+        return out;
+    }
     if g.light.x > 4.5 {
         // Pass 5, what glows under UV: its colours times its UV glow, else black covering what is
         // behind; pass 6, the tags: what catches beams and its link number, times its cover. A
@@ -802,12 +832,26 @@ fn shade_layers(in: LayeredOut) -> vec4<f32> {
     if clips(in.clip) {
         out *= clip_keep(in.local, in.clip, aa);
     }
+    // The tint pass: the stack's colour as it tints light, its depth worked out once for the
+    // ball; nothing for a ball on a Stage, which tints as a sphere (lighting.wgsl).
+    if tint_pass() {
+        if out.a <= 1e-5 || (LIGHT_BALL && g.light.z > 0.5) {
+            discard;
+        }
+        return tint_out(out.rgb / out.a, tint_presence(out.a, cover), TINT_BLOCKS, 1.0, TINT_THICK);
+    }
     // The emission pass may give off darkness (negative light) where it covers nothing.
     let seen = select(max(out.r, max(out.g, out.b)), max(abs(out.r), max(abs(out.g), abs(out.b))), g.light.x > 2.5);
     if out.a < 1e-4 && seen < 1e-4 {
         discard;
     }
     return hard_tags(out);
+}
+
+// How much of a thing is at a pixel for the tint pass: its cover `a` with the antialiased edge
+// `cover` divided out where that covers at least HARD_FROM of the pixel (as `surface_whole`).
+fn tint_presence(a: f32, cover: f32) -> f32 {
+    return clamp(select(a, a / cover, cover >= HARD_FROM), 0.0, 1.0);
 }
 
 @fragment

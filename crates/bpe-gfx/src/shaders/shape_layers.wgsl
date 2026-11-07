@@ -205,6 +205,13 @@ fn shade_shape_layers(
     if keep < 1.0 {
         out *= keep;
     }
+    // The tint pass: the stack's colour as it tints light, its depth worked out once.
+    if tint_pass() {
+        if out.a <= 1e-5 {
+            discard;
+        }
+        return tint_out(out.rgb / out.a, tint_presence(out.a, cover), TINT_BLOCKS, 1.0, TINT_THICK);
+    }
     // The emission pass may give off darkness (negative light) where it covers nothing.
     let seen = select(max(out.r, max(out.g, out.b)), max(abs(out.r), max(abs(out.g), abs(out.b))), g.light.x > 2.5);
     if out.a < 1e-4 && seen < 1e-4 {

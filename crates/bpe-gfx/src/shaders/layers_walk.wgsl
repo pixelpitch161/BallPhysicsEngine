@@ -63,6 +63,10 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
         let e = 1.0 + min(d, 0.0);
         LIGHT_BALL = true;
         LIGHT_HEIGHT = layered_ball.radius.y * max(round, 0.0) * sqrt(max(1.0 - e * e, 0.0)) * step(d, 0.0);
+        // The tint pass (tint.wgsl): what the Body blocks, and Deeper when thick by how thick the
+        // ball is here (a sphere, deepest through its middle).
+        TINT_BLOCKS = body_rec.light.y;
+        TINT_THICK = record_deeper(body_rec) * sqrt(max(1.0 - e * e, 0.0)) * step(d, 0.0);
     }
     let cut = split & 0xffffu;
     let upper = cut > 0u && (split & 0x10000u) != 0u;
@@ -316,8 +320,9 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
             }
             //SHADER_CASE
             case 8u: {
-                // The group colour over the whole ball as it stands here (not over the surface).
-                if g.light.x < 1.5 {
+                // The group colour over the whole ball as it stands here (not over the surface),
+                // and in the tint pass (8), where it tints the light through the ball.
+                if g.light.x < 1.5 || g.light.x > 7.5 {
                     inner = group_over(inner);
                     outer = group_over(outer);
                     top_in = group_over(top_in);

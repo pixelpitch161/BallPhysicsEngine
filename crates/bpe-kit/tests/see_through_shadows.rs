@@ -250,8 +250,9 @@ fn a_blended_thing_doesnt_shadow_itself() {
     }
 }
 
-/// On a Stage a see-through thing still blocks whole (the Stage's shadows have maths of their own),
-/// clear glass too.
+/// On a Stage with Coloured light through glass off, a see-through thing still blocks whole (the
+/// Stage's shadows have maths of their own), clear glass too. With it on (the default) a
+/// see-through shape lets its share through in its colour (`coloured_shadows.rs`).
 #[test]
 fn a_stage_keeps_see_through_blockers_whole() {
     let Some(mut gpu) = gpu() else { return };
@@ -260,6 +261,7 @@ fn a_stage_keeps_see_through_blockers_whole() {
         let mut scene = room(&reg, wall(600.0), true, see, "good", [0.0, -400.0]);
         let lighting = scene.things.get_mut(&ThingId::ROOT).unwrap().slots.get_mut(&SlotId::Lighting).unwrap();
         lighting.params.set("depth", Value::Choice("stage".into()));
+        lighting.params.set("glass_colour", Value::Bool(false));
         scene
     };
     let solid = draw(&mut gpu, &stage(0.0), "stage-solid");

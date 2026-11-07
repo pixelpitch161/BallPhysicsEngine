@@ -80,6 +80,7 @@ fn composite_pipeline(
 impl Fields {
     pub(crate) fn new(device: &wgpu::Device, globals_layout: &wgpu::BindGroupLayout) -> Self {
         let source = [
+            include_str!("shaders/tint.wgsl"),
             include_str!("shaders/sprites.wgsl"),
             include_str!("shaders/each.wgsl"),
             include_str!("shaders/fields.wgsl"),
