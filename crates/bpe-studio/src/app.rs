@@ -1174,11 +1174,11 @@ impl Studio {
         if grid.clicked() {
             self.grid.show = !self.grid.show;
         }
-        if ui
-            .add(style::toggle_button("Snap", self.grid.snap))
-            .on_hover_text("Drags land on the grid: moving, moulding shapes and aiming. Hold Alt to place freely.")
-            .clicked()
-        {
+        let snap = ui.add(style::toggle_button("Snap", self.grid.snap)).on_hover_text(
+            "Drags land on the grid: moving, moulding shapes and aiming in the preview, and distance \
+             and angle settings dragged in the inspector. Hold Alt to drag freely.",
+        );
+        if snap.clicked() {
             self.grid.snap = !self.grid.snap;
         }
         style::wells(ui, |ui| {
@@ -1192,6 +1192,13 @@ impl Studio {
         })
         .labelled_by(grid.id)
         .on_hover_text("The size of one grid square, in video pixels");
+        style::wells(ui, |ui| {
+            ui.add(
+                egui::DragValue::new(&mut self.grid.angle).range(grid::ANGLES).speed(0.2).max_decimals(0).suffix("°"),
+            )
+        })
+        .labelled_by(snap.id)
+        .on_hover_text("The angle step that angle settings snap to");
         if self.grid != before && self.persist_settings {
             self.grid.save();
         }
@@ -1263,6 +1270,8 @@ impl eframe::App for Studio {
             self.confirm = Some(Pending::Close);
         }
         self.tick();
+        // What the inspector's distance and angle settings snap to while dragged this frame.
+        crate::setting_snap::put(&ctx, self.grid.setting_snap());
         if self.panels.inspector.render.is_none() {
             // The Look editor's ball view draws with the window's GPU.
             self.panels.inspector.render = frame.wgpu_render_state().cloned();

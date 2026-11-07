@@ -28,6 +28,7 @@ mod particle_job;
 mod preview;
 mod rules_panel;
 mod selection;
+mod setting_snap;
 mod settings;
 mod shape_handles;
 mod sound_job;
