@@ -25,6 +25,9 @@ const GLOW_LEVELS: u32 = 4;
 
 const SEED_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 const FIELD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
+// The blockers' field: the signed distance and how much the nearest blocker blocks (see-through
+// blockers, lighting.wgsl's `fs_field`).
+const BLOCKER_FIELD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
 /// The most jump flood passes: enough for a field 2^15 texels across.
 const MOST_JUMPS: usize = 16;
 
@@ -736,7 +739,7 @@ impl Lighting {
         Self {
             seed: make("light seed", "fs_seed", one, &[SEED_FORMAT], None),
             jump: make("light jump", "fs_jump", one, &[SEED_FORMAT], None),
-            field: make("light field", "fs_field", one, &[FIELD_FORMAT], None),
+            field: make("light field", "fs_field", one, &[BLOCKER_FIELD_FORMAT], None),
             direct: make("direct light", "fs_direct", &direct_pipeline_layout, &[HDR_FORMAT, HDR_FORMAT], add),
             gi_scene: make("light field scene", "fs_gi_scene", two, &[GI_FORMAT], None),
             seed_gi: make("light field seed", "fs_seed_gi", two, &[SEED_FORMAT], None),
@@ -859,7 +862,7 @@ impl Lighting {
             direct: texture(device, "direct light", full, HDR_FORMAT, true),
             air: texture(device, "light in the air", full, HDR_FORMAT, false),
             seeds: [seeds(), seeds(), seeds(), seeds()],
-            field: texture(device, "light field", small, FIELD_FORMAT, false),
+            field: texture(device, "light field", small, BLOCKER_FIELD_FORMAT, false),
             gi_scene: texture(device, "light field scene", small, GI_FORMAT, false),
             gi_dist: texture(device, "light field distance", small, FIELD_FORMAT, false),
             gi: [

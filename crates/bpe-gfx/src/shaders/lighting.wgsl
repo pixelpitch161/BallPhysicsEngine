@@ -135,6 +135,20 @@ fn world_to_uv_by(p: vec2<f32>, camera: vec4<f32>) -> vec2<f32> {
     return vec2<f32>(q.x * u.view.x * 0.5 + 0.5, q.y * u.view.y * 0.5 + 0.5);
 }
 
+// The signed distance to the nearest blocker at world point `p` (x) and how much that blocker
+// blocks (y, from 0 for something wholly see-through to 1 for something solid); far away off the
+// picture.
+fn field_both(p: vec2<f32>) -> vec2<f32> {
+    let uv = world_to_uv(p);
+    if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) {
+        let inside = clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0));
+        let edge = textureSampleLevel(field, samp, inside, 0.0).rg;
+        let far = length(uv - inside) * 2.0 / max(u.view.x, 1e-6) / max(u.camera.z, 1e-6);
+        return vec2<f32>(max(edge.x, 0.0) + far, edge.y);
+    }
+    return textureSampleLevel(field, samp, uv, 0.0).rg;
+}
+
 // The signed distance to the nearest blocker at world point `p`; far away off the picture.
 fn field_at(p: vec2<f32>) -> f32 {
     let uv = world_to_uv(p);
@@ -163,13 +177,31 @@ fn pixel_of(p: vec2<f32>) -> vec2<i32> {
     return min(vec2<i32>(uv * vec2<f32>(size)), size - 1);
 }
 
-// How much the picture pixel `ip` blocks light (its cover times how much its things block).
+// How much the picture pixel `ip` blocks light. In Flat that is how much its things block by how
+// see-through they are, their antialiased edges taken whole (scene.wgsl's `hard_block`: a pixel
+// half covered by a solid line reads 1, one under a half see-through wall 0.5); on a Stage, their
+// cover times how much they block.
 fn pixel_block(ip: vec2<i32>) -> f32 {
     if ip.x < 0 {
         return 0.0;
     }
-    return textureLoad(surface, ip, 0).r;
+    return min(textureLoad(surface, ip, 0).r, 1.0);
 }
+
+// How much a surface-picture texel `s` blocks weighted by how much of it its blockers cover: the
+// surface's R as it was before see-through blockers (R is then blocks times opacity and A cover
+// times opacity, so for one thing this is exactly blocks times cover times opacity; on a Stage R
+// already is, and is never more than A).
+fn cover_block(s: vec4<f32>) -> f32 {
+    if u.trace.y > 0.5 {
+        return s.r;
+    }
+    return min(s.r, s.a);
+}
+
+// How much a blocking pixel blocks for it to count as solid: less lets the rest of the light
+// through (see-through blockers).
+const SOLID: f32 = 0.98;
 
 // Whether field texel `t` blocks light: any picture pixel under it blocks (the field is smaller
 // than the picture below Ultra, and one sample at its middle would miss a thin line).
@@ -193,6 +225,44 @@ fn foot_blocks(t: vec2<i32>) -> bool {
         }
     }
     return false;
+}
+
+// The most any blocking picture pixel under field texel `t` blocks (0 when none does).
+fn foot_most(t: vec2<i32>) -> f32 {
+    let fsize = vec2<i32>(u.field.xy);
+    if any(t < vec2<i32>(0)) || any(t >= fsize) {
+        return 0.0;
+    }
+    let size = vec2<i32>(textureDimensions(surface));
+    let scale = vec2<f32>(size) / vec2<f32>(fsize);
+    let lo = vec2<i32>(floor(vec2<f32>(t) * scale));
+    let least = select(BLOCK_LEAST, 0.3, u.trace.y > 0.5);
+    let hi = min(max(vec2<i32>(ceil(vec2<f32>(t + 1) * scale)), lo + 1), size);
+    var most = 0.0;
+    for (var y = lo.y; y < hi.y; y++) {
+        for (var x = lo.x; x < hi.x; x++) {
+            let b = textureLoad(surface, vec2<i32>(x, y), 0).r;
+            if b >= least {
+                most = max(most, min(b, 1.0));
+            }
+        }
+    }
+    return most;
+}
+
+// How much the blocker at blocked field texel `t` blocks: its own pixels' most, or (a texel that
+// only closes a diagonal gap has none) its neighbours'. Whole on a Stage, whose march takes every
+// blocker as solid.
+fn blocker_opacity(t: vec2<i32>) -> f32 {
+    if u.trace.y > 0.5 {
+        return 1.0;
+    }
+    var o = foot_most(t);
+    if o > 0.0 {
+        return o;
+    }
+    o = max(max(foot_most(t + vec2<i32>(1, 0)), foot_most(t - vec2<i32>(1, 0))), max(foot_most(t + vec2<i32>(0, 1)), foot_most(t - vec2<i32>(0, 1))));
+    return select(1.0, o, o > 0.0);
 }
 
 @fragment
@@ -255,8 +325,10 @@ fn fs_field(in: FsIn) -> @location(0) vec4<f32> {
     let texel = u.field.z;
     // No blocker anywhere: far from everything.
     if s.x < 0.0 {
-        return vec4<f32>(1e4, 0.0, 0.0, 1.0);
+        return vec4<f32>(1e4, 1.0, 0.0, 1.0);
     }
+    // G: how much the nearest blocker blocks (it is this texel's own inside one).
+    let o = blocker_opacity(vec2<i32>(s.xy));
     let blocked = s.x == here.x && s.y == here.y;
     if blocked {
         // Inside: how far to the nearest open texel, negative (none open: deep inside).
@@ -264,9 +336,9 @@ fn fs_field(in: FsIn) -> @location(0) vec4<f32> {
         if s.z >= 0.0 {
             d = distance(s.zw, here) - 0.5;
         }
-        return vec4<f32>(-d * texel, 0.0, 0.0, 1.0);
+        return vec4<f32>(-d * texel, o, 0.0, 1.0);
     }
-    return vec4<f32>((distance(s.xy, here) - 0.5) * texel, 0.0, 0.0, 1.0);
+    return vec4<f32>((distance(s.xy, here) - 0.5) * texel, o, 0.0, 1.0);
 }
 
 // ---------- the light ----------
@@ -355,6 +427,13 @@ struct Ray {
     crossed: bool,
     // How far along the ray it first crossed a blocker.
     at: f32,
+    // The share of the light the see-through blockers it crossed let through (0 once it crossed a
+    // solid one, 1 when it crossed nothing).
+    lit: f32,
+    // The soft edge of the blockers it passed near, each darkening it only by how much that
+    // blocker blocks: the least `1 - o (1 - smoothstep(v))` over its samples (exactly
+    // smoothstep(v) when every blocker is solid).
+    e: f32,
 };
 
 // How many rays across the lamp, from one edge to the other, the light is worked out from when
@@ -395,12 +474,26 @@ fn confirm(p: vec2<f32>, toward: vec2<f32>, open: f32, t_in: f32, end: f32) -> v
 }
 
 // `visibility` for one ray. `across`: one of the rays across the lamp, which stops as soon as it
-// crosses a blocker (only whether it did and how clear it stayed count).
+// crosses a solid blocker (only whether it did, how clear it stayed and what the see-through ones
+// let through count). A see-through blocker (its pixels blocking less than SOLID) is walked
+// through, keeping the most any pixel on the way blocks, and lets the rest of the light on.
 fn march(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, stop: f32, across: bool) -> Ray {
     let steps = i32(u.more.z);
     let texel = max(u.field.z, 1e-3);
+    let px = max(u.view.z, 1e-3);
+    // A Stage's blockers all block whole (its surface picture is cover-weighted).
+    let stage = u.trace.y > 0.5;
     var t = 0.0;
-    if pixel_block(pixel_of(p)) > 0.5 {
+    let ip = pixel_of(p);
+    var leaves = false;
+    if ip.x >= 0 {
+        // On a blocker that covers more than half the pixel (in Flat R is the blocker's opacity
+        // and A its cover times that).
+        let s0 = textureLoad(surface, ip, 0);
+        let b0 = min(s0.r, 1.0);
+        leaves = select(b0 >= BLOCK_LEAST && cover_block(s0) > 0.5 * b0, s0.r > 0.5, stage);
+    }
+    if leaves {
         // Leave the blocker the pixel is on: a thing doesn't shadow itself.
         for (var i = 0; i < steps; i++) {
             let d = field_at(p + toward * t);
@@ -418,8 +511,13 @@ fn march(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, s
     let end = min(dist - stop, t + max(reach, 0.0));
     let ang = max(angular, 1e-4);
     var v = 1.0;
+    var e = 1.0;
     var clear = 1e4;
     var crossed = false;
+    var solid = false;
+    var lit = 1.0;
+    // Inside a see-through blocker it crossed: the most it blocks so far (-1 outside one).
+    var glass = -1.0;
     // Just past a stretch only the field's coarseness blocked, how near the ray is to that
     // blocker means nothing (the field can't tell within a texel): it counts from a texel away.
     var beside = false;
@@ -432,8 +530,36 @@ fn march(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, s
         if t >= end || used >= steps {
             break;
         }
-        let d = field_at(p + toward * t);
-        if d < 0.0 && !crossed {
+        let q = p + toward * t;
+        let fd = field_both(q);
+        let d = fd.x;
+        if glass >= 0.0 {
+            let b = pixel_block(pixel_of(q));
+            if b >= BLOCK_LEAST {
+                glass = max(glass, b);
+            }
+            if glass < SOLID {
+                if d < 0.0 || b >= BLOCK_LEAST {
+                    // Still in it: half a pixel at a time (so a thin solid line in it or along
+                    // its edge is met), or, deep inside, on by how deep the field says it is.
+                    t += select(0.5 * px, -d - texel, -d > 2.0 * texel);
+                    continue;
+                }
+                // Out of it: it lets through what it doesn't block.
+                lit *= 1.0 - glass;
+                glass = -1.0;
+                open = t;
+                beside = true;
+            } else {
+                // Something solid inside it: the ray crossed a solid blocker here.
+                glass = -1.0;
+                solid = true;
+                lit = 0.0;
+                if across {
+                    return Ray(0.0, 0.0, true, cross_at, 0.0, 0.0);
+                }
+            }
+        } else if d < 0.0 && !solid {
             let c = confirm(p, toward, open, t, end);
             if c.x < 0.5 {
                 // Only the field's coarseness: carry on from past it.
@@ -442,12 +568,23 @@ fn march(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, s
                 beside = true;
                 continue;
             }
-            crossed = true;
-            cross_at = c.y;
-            if across {
-                return Ray(0.0, 0.0, true, c.y);
+            if !crossed {
+                cross_at = c.y;
             }
-            t = c.y;
+            crossed = true;
+            let b = pixel_block(pixel_of(p + toward * c.y));
+            if stage || b >= SOLID {
+                solid = true;
+                lit = 0.0;
+                if across {
+                    return Ray(0.0, 0.0, true, cross_at, 0.0, 0.0);
+                }
+                t = c.y;
+            } else {
+                glass = b;
+                t = c.y + 0.5 * px;
+                continue;
+            }
         }
         if beside && d >= 0.0 && d < texel {
             t += 0.5 * texel;
@@ -460,14 +597,21 @@ fn march(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, s
             open = t;
         }
         clear = min(clear, max(d, 0.0) / max(t, texel));
-        v = min(v, clamp(0.5 + 0.5 * d / (max(t, texel) * ang), 0.0, 1.0));
+        let vk = clamp(0.5 + 0.5 * d / (max(t, texel) * ang), 0.0, 1.0);
+        v = min(v, vk);
+        let o = select(clamp(fd.y, 0.0, 1.0), 1.0, stage || fd.y >= SOLID);
+        e = min(e, select(1.0 - o * (1.0 - smoothed(vk)), smoothed(vk), o >= 1.0));
         if v <= 0.0 {
             break;
         }
         // At most half a texel: a wall one texel thick always has a step inside it.
         t += max(abs(d), 0.5 * texel);
     }
-    return Ray(v, clear, crossed, cross_at);
+    if glass >= 0.0 {
+        // It ran out of steps inside one: what it blocks still counts.
+        lit *= 1.0 - min(glass, 1.0);
+    }
+    return Ray(v, clear, crossed, cross_at, lit, e);
 }
 
 fn smoothed(v: f32) -> f32 {
@@ -486,15 +630,25 @@ fn smoothed(v: f32) -> f32 {
 // thick or a whole shape) shows nothing, one that gets past shows the lamp as far round its point
 // as it stays clear of blockers, and the light is the share of the lamp they show together. Where
 // the middle ray grazes a blocker that is half, as outside it, so the soft edge has no step.
+//
+// See-through blockers (Flat): what the rays that crossed something let through makes up the
+// rest of the lamp, `1 - o (1 - shown)` with `o` the mean of what those rays' blockers block, so
+// behind a half see-through wall half the light gets through, and its soft edge runs from there
+// to all of it (grazing it, `e` is `1 - o/2` as `1 - o (1 - 1/2)` is just inside). Solid blockers
+// only: `o` is 1, as before.
 fn visibility(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, stop: f32) -> f32 {
     let middle = march(p, toward, dist, angular, reach, stop, false);
-    if !middle.crossed || middle.v <= 0.0 {
-        return smoothed(middle.v);
+    if !middle.crossed {
+        return middle.e;
+    }
+    if middle.lit <= 0.0 && middle.v <= 0.0 {
+        return 0.0;
     }
     let ang = max(angular, 1e-4);
-    // Where it crossed, the soft edge is narrower than half a pixel: dark, no more rays needed.
+    // Where it crossed, the soft edge is narrower than half a pixel: what the blockers let
+    // through, no more rays needed.
     if middle.at * ang < 0.5 * u.view.z {
-        return 0.0;
+        return middle.lit;
     }
     // Draft (16 steps) makes do with the lamp's two edges.
     let rays = select(LAMP_RAYS, 3, u.more.z <= 16.0);
@@ -504,6 +658,9 @@ fn visibility(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f
     // that, within the lamp (nothing when it crosses a blocker, as the middle one did).
     var lo: array<f32, LAMP_RAYS>;
     var hi: array<f32, LAMP_RAYS>;
+    // How much the blockers block on the rays that crossed one (the middle one's first).
+    var blocked = 1.0 - middle.lit;
+    var crossings = 1.0;
     for (var k = 0; k < LAMP_RAYS; k++) {
         let off = f32(k) * gap - ang;
         lo[k] = 0.0;
@@ -512,6 +669,10 @@ fn visibility(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f
             continue;
         }
         let r = march(p, normalize(toward + side * off), dist, gap, reach, stop, true);
+        if r.crossed {
+            blocked += 1.0 - r.lit;
+            crossings += 1.0;
+        }
         let c = select(min(r.clear, 2.0 * ang), -1.0, r.crossed);
         lo[k] = max(off - c, -ang);
         hi[k] = min(off + c, ang);
@@ -539,7 +700,9 @@ fn visibility(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f
         }
         hi[pick] = lo[pick];
     }
-    return clamp(shown / (2.0 * ang), 0.0, 1.0);
+    let share = clamp(shown / (2.0 * ang), 0.0, 1.0);
+    let o = blocked / crossings;
+    return select(1.0 - o * (1.0 - share), share, o >= 1.0);
 }
 
 // The height of the surface at pixel `ip` (0 where nothing covers).
@@ -972,6 +1135,12 @@ fn field_light(ip: vec2<i32>, fp: vec2<f32>, blocked: bool) -> vec3<f32> {
     return sum / max(weights, 1e-4);
 }
 
+// How much the blocker nearest field texel `ip` blocks (the lighting's own field's G).
+fn field_opacity(ip: vec2<i32>) -> f32 {
+    let size = vec2<i32>(gu.size.xy);
+    return textureLoad(field, clamp(ip, vec2<i32>(0), size - 1), 0).g;
+}
+
 // Whether field texel `ip` is inside something that blocks light (the lighting's own field).
 fn texel_blocked(ip: vec2<i32>) -> bool {
     let size = vec2<i32>(gu.size.xy);
@@ -1005,7 +1174,7 @@ fn fs_gi_scene(in: FsIn) -> @location(0) vec4<f32> {
         w += wk;
         light += lk;
         let sv = textureSampleLevel(surface, samp, uv, 0.0);
-        var b = sv.r;
+        var b = cover_block(sv);
         // In Stage a ball blocks light as a sphere, not in the blockers' field: a quarter marks
         // it here (part 2b), so the light field stops at balls too.
         if gu.on.w > 0.5 && b < 0.3 {
@@ -1036,7 +1205,8 @@ fn fs_gi_scene(in: FsIn) -> @location(0) vec4<f32> {
     let gives = (ec.a > 0.5 && bright > 1e-4) || (ec.a < 0.05 && bright > 0.02);
     // A line thinner than the texel is opaque where the lighting's own field (which keeps any
     // texel a blocking pixel touches) says so, or the light would leak through it.
-    let thin = blocks < 0.5 && texel_blocked(vec2<i32>(fp));
+    // A see-through blocker less than half opaque stays open, as a wide one does.
+    let thin = blocks < 0.5 && texel_blocked(vec2<i32>(fp)) && field_opacity(vec2<i32>(fp)) >= 0.5;
     let opaque = select(step(0.5, blocks), 1.0, gives || thin);
     if thin {
         // Opaque though it only grazes the texel: it bounces as the blocker it grazes does, or
@@ -2690,7 +2860,8 @@ fn lit_at(ip: vec2<i32>, uv: vec2<f32>, turn: f32) -> vec4<f32> {
         let fp = uv * gu.size.xy;
         // Blocked or not as the pixel itself is (a field texel can straddle an edge); in Stage a
         // ball blocks the field too (part 2b).
-        let blocks_here = sv.r > 0.5 || (st.counts.w > 0.5 && sv.r > 0.12);
+        let cb = cover_block(sv);
+        let blocks_here = cb > 0.5 || (st.counts.w > 0.5 && cb > 0.12);
         field = field_light(vec2<i32>(fp), fp, blocks_here);
         field_air = field_mean(uv * gu.size.xy);
     }

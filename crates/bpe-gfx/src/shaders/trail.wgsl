@@ -47,16 +47,23 @@ fn shade_trail(in: TrailOut) -> vec4<f32> {
     // Streaks thinner than a pixel get dimmer instead of aliasing.
     let thin = min(in.edge.y / (0.5 * px), 1.0);
     var cover = clamp((half_width - abs(in.edge.x)) / px + 0.5, 0.0, 1.0) * thin;
+    // The crisp edge's antialiasing (the surface pass takes a thin solid streak whole): a soft
+    // streak's softness is its own, as a see-through one's would be.
+    var aa = cover;
     let soft = in.style.x;
     if soft > 0.0 {
         // Soft from `soft` of the width in from the edge to as far past it.
         let w = max(px, soft * half_width * 2.0);
         cover = smoothstep(0.0, 1.0, 0.5 - (abs(in.edge.x) - half_width) / w);
+        aa = -1.0;
     }
     if in.style.y > 0.0 {
         // Only the outer band: an outline along the edges.
-        cover = cover * clamp(0.5 + (abs(in.edge.x) - half_width * (1.0 - in.style.y)) / px, 0.0, 1.0);
+        let band = clamp(0.5 + (abs(in.edge.x) - half_width * (1.0 - in.style.y)) / px, 0.0, 1.0);
+        cover = cover * band;
+        aa = select(aa * band, -1.0, aa < 0.0);
     }
+    AA_COVER = aa;
     if cover <= 0.0 {
         discard;
     }

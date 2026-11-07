@@ -452,15 +452,32 @@ pub fn stamp(index: u32, surface: &SurfaceSettings) -> f32 {
 /// thing order then layer order, so the draw and the light hook agree without shared state.
 pub struct Stamps {
     pub thing: f32,
+    /// How much of the light the whole thing's surface lets through (its See-through).
+    pub thing_passes: f32,
     pub layers: Vec<(LayerId, u32, SurfaceSettings)>,
+}
+
+/// How much of the light surface `s` lets through: its See-through, 0 to 1.
+pub fn passes(s: &SurfaceSettings) -> f32 {
+    if s.see_through.is_finite() { s.see_through.clamp(0.0, 1.0) } else { 0.0 }
+}
+
+/// What a record that blocks light keeps of its blocking under a surface letting `passes`
+/// through: never quite 0, so clear glass still counts as a blocking layer (a Stage then takes
+/// it whole, and a layer over the Body isn't taken for one that doesn't block) while in Flat it
+/// is far below what blocks at all and lets all the light through.
+pub fn keeps_of(passes: f32) -> f32 {
+    (1.0 - passes).max(1.0 / 1024.0)
 }
 
 impl Stamps {
     pub fn of(scene: &bpe_core::Resolved, id: ThingId, look: &ResolvedSlot) -> Stamps {
-        let thing = stamp(surface_index(scene, id), &of_card(look));
+        let card = of_card(look);
+        let thing = stamp(surface_index(scene, id), &card);
+        let thing_passes = if has_surface(&look.kind) { passes(&card) } else { 0.0 };
         let own = layer_surfaces(look);
         if own.is_empty() {
-            return Stamps { thing, layers: Vec::new() };
+            return Stamps { thing, thing_passes, layers: Vec::new() };
         }
         let mut n = scene
             .things
@@ -476,7 +493,7 @@ impl Stamps {
             }
         }
         let layers = own.into_iter().enumerate().map(|(k, (layer, s))| (layer, n + 1 + k as u32, s)).collect();
-        Stamps { thing, layers }
+        Stamps { thing, thing_passes, layers }
     }
 
     /// Whether anything stamped is see-through.
@@ -485,18 +502,31 @@ impl Stamps {
     }
 
     /// Stamps `records`: every record the thing's index, then each layer with a surface of its own
-    /// (found by `record_of`: its record's place) and its sub-layer records that layer's.
+    /// (found by `record_of`: its record's place) and its sub-layer records that layer's. How much
+    /// a record blocks light (`light[1]`) loses the share its surface lets through, so a
+    /// see-through thing casts a lighter shadow in Flat (lighting's see-through blockers plan; a
+    /// Stage takes it as blocking whole).
     pub fn apply(&self, records: &mut [bpe_gfx::LayerGpu], record_of: impl Fn(LayerId) -> Option<usize>) {
+        let keep = keeps_of(self.thing_passes);
         for r in records.iter_mut() {
             r.light[3] = self.thing;
         }
+        let mut own = vec![false; records.len()];
         for (layer, index, s) in &self.layers {
             let Some(at) = record_of(*layer).filter(|at| *at < records.len()) else { continue };
             let n = 1 + records[at].head[3] as usize;
             let value = stamp(*index, s) + SurfaceGpu::OWN_FLAG;
             let end = (at + n).min(records.len());
-            for r in records[at..end].iter_mut() {
+            let layer_keep = keeps_of(passes(s));
+            for (r, own) in records[at..end].iter_mut().zip(&mut own[at..end]) {
                 r.light[3] = value;
+                r.light[1] *= layer_keep;
+                *own = true;
+            }
+        }
+        for (r, own) in records.iter_mut().zip(own) {
+            if !own {
+                r.light[1] *= keep;
             }
         }
     }
@@ -610,8 +640,13 @@ mod tests {
         assert!(stamps.see_through());
         let stack = crate::modules::look::layers::gpu::Stack::of(look).unwrap();
         let mut records = stack.records(&mut bpe_gfx::GradientAtlas::default(), &mut Vec::new(), 0.0);
-        stamps.apply(&mut records, |id| stack.record_of(id));
         let at = stack.record_of(outline).unwrap();
+        let blocks = records[at].light[1];
+        let body_blocks = records[0].light[1];
+        stamps.apply(&mut records, |id| stack.record_of(id));
+        // How much a record blocks loses its surface's See-through (the whole thing's is 0 here).
+        assert!((records[at].light[1] - blocks * 0.1).abs() < 1e-6, "{}", records[at].light[1]);
+        assert_eq!(records[0].light[1], body_blocks);
         assert_eq!(records[0].light[3], stamps.thing);
         assert_eq!(records[at].light[3], (things + 1) as f32 + SurfaceGpu::GLASS_FLAG + SurfaceGpu::OWN_FLAG);
         let mut table = bpe_gfx::LightScene::default();
