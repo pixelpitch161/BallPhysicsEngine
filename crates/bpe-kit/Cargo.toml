@@ -17,6 +17,10 @@ anyhow.workspace = true
 skrifa = "0.44"
 # Pictures for the Particles thing's picture source.
 png = "0.18"
+# The Text thing: shaping (kerning, ligatures, weight axes) and merging a glyph's overlapping
+# contours into one clean outline.
+rustybuzz.workspace = true
+i_overlay.workspace = true
 
 [features]
 # The test scenes (and the shape-plus-ball `new_scene`): only tests turn this on, so the program ships

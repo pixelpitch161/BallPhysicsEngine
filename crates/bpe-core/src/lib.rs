@@ -24,6 +24,7 @@ pub mod resolve;
 pub mod rules;
 pub mod save;
 pub mod scene;
+pub mod scene_fonts;
 pub mod settings;
 pub mod shape_path;
 pub mod sound_values;
@@ -50,6 +51,7 @@ pub use resolve::{Problem, ProblemKind, Resolved, ResolvedLayer, ResolvedSlot, R
 pub use rules::{Block, BlockId, BlockSection, Rule, RuleBlockKind, RuleId, Rules, Who};
 pub use save::{LoadError, load, save};
 pub use scene::{Attach, Scene, Slot, SlotStash, Target, Thing, TrackColour, Transform};
+pub use scene_fonts::SceneFont;
 pub use settings::{
     Choice, Depth, FOLDED_SECTIONS, Flags, GroupOpts, SECTION_ORDER, SettingDef, SettingGroup, SettingValue, Settings,
     section_rank,

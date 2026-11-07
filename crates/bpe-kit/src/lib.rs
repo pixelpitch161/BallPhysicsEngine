@@ -15,6 +15,7 @@ pub mod sound;
 pub mod starters;
 #[cfg(test)]
 pub mod testing;
+pub mod text;
 pub mod things;
 
 use std::sync::Arc;
