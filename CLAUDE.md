@@ -231,6 +231,13 @@ button on the Lighting card and the export window's **Test a frame** open `final
 tracing: wgpu's ray queries aren't on every card the exe runs on, and the 2D-plus-spheres scene traces fast enough in
 shaders. `tests/bake_pictures.rs` (bpe-cli); `scenes::bake_demo` is test-only.
 
+## Glass and light (spec `docs/superpowers/specs/2026-11-07-glass-light-design.md`, plans `docs/superpowers/plans/glass-light/`)
+
+Designed, not built yet: part 1 coloured shadows and stained glass (a multiply-blended tint picture, light pass 8, read by
+`march`; Surface Tints light / Deeper when thick; the Lighting card's Coloured light through glass), part 2 prism and
+rainbow beams (laser Colours, the Beam light kind, the Prism chip), part 3 bent light through any glass shape (a 2D photon
+pass), part 4 wild glass (mirrors throw light, Mirror ball, Dichroic, Diamond fire, Light pipes, rainbows in rain).
+
 ## Rules (spec `docs/superpowers/specs/2026-11-06-rules-design.md`, plans `docs/superpowers/plans/rules/`)
 
 Part 1 is in (plan `part1.md`, "As built" at its end): the headless engine core. `Scene.rules` (`bpe-core/src/rules/`:
