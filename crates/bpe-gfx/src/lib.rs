@@ -55,7 +55,7 @@ pub use frame::{
     Around, BackgroundPaint, BallInstance, BallMark, BlendLayer, DrawCx, Draws, EffectCall, FIELD_FLAME,
     FIELD_HEAT_STOPS, FIELD_SMOKE, Field, FieldLook, FlashInstance, Frame, Grade, HitMark, LayerGpu, LayeredInstance,
     LightGpu, LightScene, LightShow, LightingGpu, LookInstance, MAX_LAYERS, MOST_MIRRORS, MOST_TRAIL_VERTICES,
-    MirrorGpu, ModuleDraw, NO_HIT, Particle, PathInstance, Place, RibbonGpu, ShapeInstance, SphereGpu, Splat, Stage,
+    MirrorGpu, ModuleDraw, NO_HIT, PATH_GLYPH, Particle, PathInstance, Place, RibbonGpu, ShapeInstance, SphereGpu, Splat, Stage,
     StreakStyle, SurfaceGpu, Takes, ThingDraw, TrailVertex, blend_alpha, build_frame, build_frame_sensing,
     build_frame_with, hit_strength, push_streak, push_streak_colours, push_trail, thing_code,
 };

@@ -55,12 +55,16 @@ pub struct LayoutSpec<'a> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Letter {
     pub ch: char,
+    /// The font's glyph drawn (several characters can make one, a ligature).
+    pub glyph: u16,
     /// Its place among the drawn letters, from 0.
     pub index: u32,
     /// Its line (wrapped lines count), from 0.
     pub line: u32,
     /// Its word, counted over the whole text, from 0.
     pub word: u32,
+    /// Its paragraph (the line it was typed on, before wrapping), from 0.
+    pub paragraph: u32,
     /// Its pen position on its baseline in the block.
     pub origin: Vec2,
     /// How far the pen moves past it (px, without the letter spacing).
@@ -199,8 +203,9 @@ fn lay_out(font: &FontData, spec: &LayoutSpec) -> TextLayout {
     // Shape each paragraph, then break it into lines between words.
     let mut lines: Vec<Vec<Shaped>> = Vec::new();
     let mut line_words: Vec<Vec<u32>> = Vec::new();
+    let mut line_paragraphs: Vec<u32> = Vec::new();
     let mut word_count = 0u32;
-    for paragraph in words.split('\n') {
+    for (p, paragraph) in words.split('\n').enumerate() {
         let paragraph = paragraph.trim_end_matches('\r');
         let shaped = shape(&face, paragraph, scale, spacing);
         // Words: runs of glyphs that aren't spaces.
@@ -220,6 +225,7 @@ fn lay_out(font: &FontData, spec: &LayoutSpec) -> TextLayout {
         if ws.is_empty() {
             lines.push(Vec::new());
             line_words.push(Vec::new());
+            line_paragraphs.push(p as u32);
             continue;
         }
         // Greedy wrapping on the shaped widths: a word that doesn't fit after the last starts a
@@ -245,6 +251,7 @@ fn lay_out(font: &FontData, spec: &LayoutSpec) -> TextLayout {
             }
             lines.push(line);
             line_words.push(wl);
+            line_paragraphs.push(p as u32);
             first = i;
         }
     }
@@ -256,7 +263,8 @@ fn lay_out(font: &FontData, spec: &LayoutSpec) -> TextLayout {
     let first_baseline = (spec.size - (count.saturating_sub(1)) as f32 * line_step) * 0.5;
 
     let glyphs = sk.outline_glyphs();
-    let mut outlines: HashMap<u16, Option<Vec<Vec<Vec2>>>> = HashMap::new();
+    let mut outlines: HashMap<u16, Option<Arc<Vec<Vec<Vec2>>>>> = HashMap::new();
+    let weight_bits = weight.map_or(0, f32::to_bits);
     let mut letters = Vec::new();
     let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
     'lines: for (n, (line, wl)) in lines.iter().zip(&line_words).enumerate() {
@@ -268,11 +276,18 @@ fn lay_out(font: &FontData, spec: &LayoutSpec) -> TextLayout {
         };
         let baseline = first_baseline + n as f32 * line_step;
         for (g, &word) in line.iter().zip(wl) {
-            let Some(contours) =
-                outlines.entry(g.glyph).or_insert_with(|| outline(&glyphs, g.glyph, &location, scale, shear)).clone()
+            let Some(contours) = outlines
+                .entry(g.glyph)
+                .or_insert_with(|| {
+                    cached_outline((font.id, g.glyph, weight_bits, scale.to_bits(), shear.to_bits()), || {
+                        outline(&glyphs, g.glyph, &location, scale, shear)
+                    })
+                })
+                .clone()
             else {
                 continue;
             };
+            let contours = Vec::clone(&contours);
             let origin = Vec2::new(left + g.x, baseline + g.y);
             let (mut a, mut b) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
             for p in contours.iter().flatten() {
@@ -283,9 +298,11 @@ fn lay_out(font: &FontData, spec: &LayoutSpec) -> TextLayout {
             hi = hi.max(b);
             letters.push(Letter {
                 ch: g.ch,
+                glyph: g.glyph,
                 index: letters.len() as u32,
                 line: n as u32,
                 word,
+                paragraph: line_paragraphs[n],
                 origin,
                 advance: g.advance - spacing,
                 contours,
@@ -301,6 +318,53 @@ fn lay_out(font: &FontData, spec: &LayoutSpec) -> TextLayout {
         (lo, hi) = (Vec2::ZERO, Vec2::ZERO);
     }
     TextLayout { letters, min: lo, max: hi, line_step, lines: count }
+}
+
+/// A glyph's outline at one weight, scale and shear: (font id, glyph, weight bits, scale bits, shear bits).
+type OutlineKey = (u64, u16, u32, u32, u32);
+
+/// Glyph outlines already flattened and merged, kept for the process so words that change every frame
+/// (a timer) only shape again. Cleared when it grows past [`MOST_OUTLINES`].
+fn cached_outline(key: OutlineKey, make: impl FnOnce() -> Option<Vec<Vec<Vec2>>>) -> Option<Arc<Vec<Vec<Vec2>>>> {
+    static CACHE: OnceLock<Mutex<HashMap<OutlineKey, Option<Arc<Vec<Vec<Vec2>>>>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(hit) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return hit.clone();
+    }
+    let made = make().map(Arc::new);
+    let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if cache.len() >= MOST_OUTLINES {
+        cache.clear();
+    }
+    cache.insert(key, made.clone());
+    made
+}
+
+/// The most glyph outlines kept at once.
+const MOST_OUTLINES: usize = 4096;
+
+/// Glyph `glyph` of `font` alone, at `weight` and `slant`, scaled so a capital is `size` px high: its
+/// contours from its pen position (y down), as [`layout`] draws it. `None` for a glyph that draws nothing.
+pub fn glyph_outline(font: &FontData, glyph: u16, weight: f32, slant: f32, size: f32) -> Option<Vec<Vec<Vec2>>> {
+    use skrifa::MetadataProvider;
+    use skrifa::instance::Size;
+    if !(size.is_finite() && size > 0.0) {
+        return None;
+    }
+    let sk = skrifa::FontRef::new(&font.bytes).ok()?;
+    let weight = font.weight_axis.map(|(lo, hi)| weight.clamp(lo, hi));
+    let location = match weight {
+        Some(w) => sk.axes().location([("wght", w)]),
+        None => skrifa::instance::Location::default(),
+    };
+    let metrics = sk.metrics(Size::unscaled(), &location);
+    let em = metrics.units_per_em.max(1) as f32;
+    let cap = metrics.cap_height.filter(|c| *c > 0.0).unwrap_or(0.7 * em);
+    let scale = size / cap;
+    let shear = slant.clamp(-89.0, 89.0).to_radians().tan();
+    let key = (font.id, glyph, weight.map_or(0, f32::to_bits), scale.to_bits(), shear.to_bits());
+    let glyphs = sk.outline_glyphs();
+    cached_outline(key, || outline(&glyphs, glyph, &location, scale, shear)).map(|c| Vec::clone(&c))
 }
 
 /// `text` shaped in `face`: each glyph's place and advance in px (a missing glyph takes no room).
@@ -710,5 +774,29 @@ mod tests {
             assert!(near(p) <= TOLERANCE + 1e-3, "{t}: {}", near(p));
         }
         assert!(line.len() < 200, "not far more points than it needs: {}", line.len());
+    }
+
+    #[test]
+    fn letters_know_their_paragraph_and_glyph() {
+        let f = font("Anton");
+        let mut s = spec("AB CD\nEF", 40.0);
+        s.wrap = 40.0;
+        let l = lay(&f, s);
+        let paragraphs: Vec<u32> = l.letters.iter().map(|l| l.paragraph).collect();
+        let lines: Vec<u32> = l.letters.iter().map(|l| l.line).collect();
+        assert_eq!(paragraphs, [0, 0, 0, 0, 1, 1]);
+        assert_eq!(lines, [0, 0, 1, 1, 2, 2], "wrapped lines count, paragraphs don't");
+        assert!(l.letters.iter().all(|l| l.glyph != 0));
+        assert_eq!(l.letters[0].glyph, lay(&f, spec("A", 10.0)).letters[0].glyph);
+    }
+
+    #[test]
+    fn a_glyph_alone_matches_its_letter() {
+        let f = font("Anton");
+        let l = lay(&f, spec("A", 50.0));
+        let a = &l.letters[0];
+        let alone = glyph_outline(&f, a.glyph, 400.0, 0.0, 50.0).unwrap();
+        assert_eq!(alone, a.contours);
+        assert!(glyph_outline(&f, 0, 400.0, 0.0, 50.0).is_none());
     }
 }

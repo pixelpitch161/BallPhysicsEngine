@@ -95,7 +95,7 @@ fn letter_points(scene: &Scene, id: ThingId) -> Vec<(glam::Vec2, glam::Vec2)> {
     let kit = kit();
     let resolved = bpe_core::resolve(scene, &kit.registry);
     let world = bpe_runtime::World::build(scene, &resolved, &kit.sims);
-    let now = bpe_kit::things::text::text_now(scene, &resolved.things[&id].params, &world, id, 0.0).unwrap();
+    let now = bpe_kit::things::text::text_now(&bpe_kit::things::text::TextAt::new(scene, &resolved.things[&id].params, &world, id, 0.0)).unwrap();
     now.layout.letters.iter().map(|l| (now.to_world((l.min + l.max) * 0.5), now.to_world(l.min))).collect()
 }
 
@@ -112,7 +112,7 @@ fn a_letter_hole_is_empty_on_screen() {
         let kit = kit();
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         let world = bpe_runtime::World::build(&scene, &resolved, &kit.sims);
-        let now = bpe_kit::things::text::text_now(&scene, &resolved.things[&id].params, &world, id, 0.0).unwrap();
+        let now = bpe_kit::things::text::text_now(&bpe_kit::things::text::TextAt::new(&scene, &resolved.things[&id].params, &world, id, 0.0)).unwrap();
         now.bounds().unwrap()
     };
     let stroke_x = lo.x + (hi.x - lo.x) * 0.07;

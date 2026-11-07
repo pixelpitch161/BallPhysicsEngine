@@ -68,6 +68,21 @@ pub enum Action {
     Count { name: String, how: CountHow },
     /// Sends a signal. Never queued: the stage hears it in its next round.
     Signal { name: String, firing: Firing },
+    /// Changes a Text's words (Set text, Text part 2): drawn only.
+    Text { thing: ThingId, op: TextOp },
+}
+
+/// What a Set text action does to a Text's words.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TextOp {
+    /// These words in place of its own.
+    Replace(String),
+    /// A line after its words.
+    AddLine(String),
+    /// Shows its next line alone.
+    NextLine,
+    /// No words.
+    Clear,
 }
 
 /// How a Count action changes its counter.
@@ -434,6 +449,15 @@ impl World {
                 }
                 // Heard in the stage that sent it; never queued.
                 Action::Signal { .. } => {}
+                Action::Text { thing, op } => {
+                    let t = rules.texts.entry(thing).or_default();
+                    match op {
+                        TextOp::Replace(words) => *t = super::RuleText { words: Some(words), ..Default::default() },
+                        TextOp::AddLine(line) => t.added.push(line),
+                        TextOp::NextLine => t.nexts.push(time),
+                        TextOp::Clear => *t = super::RuleText { words: Some(String::new()), ..Default::default() },
+                    }
+                }
             }
         }
         self.rules = Some(rules);

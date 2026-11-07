@@ -289,6 +289,8 @@ impl Default for LayeredInstance {
 pub const CONTOUR_START: f32 = 2.0;
 /// `Frame::path_points[k].z` of a letter contour's last point: `w` back is its first.
 pub const CONTOUR_END: f32 = 1.0;
+/// `PathInstance.b[1]` of a fast letter, whose distance comes from a tile ([`Frame::push_glyph`]).
+pub const PATH_GLYPH: f32 = 3.0;
 
 /// A Shape: a closed outline, a circle or a list of points (`Frame::path_points`) in the shape's
 /// own units, filled or drawn as a band, with a one-pixel soft edge at any zoom. Points are placed
@@ -299,8 +301,9 @@ pub struct PathInstance {
     /// Centre x, y, angle (radians clockwise), scale (world pixels per shape unit).
     pub a: [f32; 4],
     /// Half the band's thickness in world pixels (0 = filled), kind (0 circle, 1 points, 2
-    /// ellipse), the first point in `Frame::path_points` and how many points (an ellipse: its
-    /// half-axes in shape units).
+    /// ellipse, 3 a fast letter read from a tile), the first point in `Frame::path_points` and how
+    /// many points (an ellipse: its half-axes in shape units; a fast letter: its tile record in
+    /// `path_points` and its tile in `Frame::mask_tiles`).
     pub b: [f32; 4],
     /// Thing code, how far the outline reaches from the centre (shape units), how far its layers
     /// reach past its outline (world pixels: an outline outside it, a glow), and how far the
@@ -1882,6 +1885,61 @@ impl Frame {
         self.paths.push(PathInstance {
             a: [center.x, center.y, angle, 1.0],
             b: [0.0, 1.0, first as f32, count as f32],
+            c: [code, reach, 0.0, reach],
+            color,
+            layers: [0, 0, PathInstance::NO_PROGRAM, 0],
+            hit: NO_HIT,
+            clip: [clip_first as f32, 4.0, 0.0, 0.0],
+        });
+        Some(self.paths.len() - 1)
+    }
+
+    /// Where tile `hash` (`bytes`, as [`Frame::mask_tiles`] holds them) is in this frame's tiles,
+    /// adding it if it isn't there yet; `None` past the most a frame holds.
+    pub fn mask_tile(&mut self, hash: u64, bytes: &std::sync::Arc<[u8]>) -> Option<u32> {
+        if let Some(i) = self.mask_tiles.iter().position(|(h, _)| *h == hash) {
+            return Some(i as u32);
+        }
+        if self.mask_tiles.len() >= crate::MAX_MASK_TILES || bytes.len() != crate::MASK_TILE_BYTES {
+            return None;
+        }
+        self.mask_tiles.push((hash, bytes.clone()));
+        Some(self.mask_tiles.len() as u32 - 1)
+    }
+
+    /// A fast letter (Text part 2): a shape at `center` turned `angle` (scale 1) whose distance is
+    /// read from distance tile `tile` of [`Frame::mask_tiles`] instead of an outline ([`PATH_GLYPH`]).
+    /// The tile's middle sits at `tile_at` in the shape's own frame, turned `turn`, `half` px from its
+    /// middle to its sides; the quad covers the tile (its 4-corner `clip`). See paths.wgsl.
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_glyph(
+        &mut self,
+        center: Vec2,
+        angle: f32,
+        tile_at: Vec2,
+        turn: f32,
+        half: f32,
+        tile: u32,
+        color: [f32; 4],
+        code: f32,
+    ) -> Option<usize> {
+        if !(tile_at.is_finite() && turn.is_finite() && half.is_finite() && half > 0.0) {
+            return None;
+        }
+        let record = self.path_points.len();
+        self.path_points.push([tile_at.x, tile_at.y, turn, half]);
+        let clip_first = self.path_points.len();
+        let r = Vec2::from_angle(turn);
+        let mut reach = 0.0f32;
+        // Round the positive way (clockwise on screen), as a convex clip's corners go.
+        for c in [Vec2::new(-1.0, -1.0), Vec2::new(1.0, -1.0), Vec2::new(1.0, 1.0), Vec2::new(-1.0, 1.0)] {
+            let p = tile_at + r.rotate(c * half);
+            reach = reach.max(p.length());
+            self.path_points.push([p.x, p.y, 0.0, 0.0]);
+        }
+        self.paths.push(PathInstance {
+            a: [center.x, center.y, angle, 1.0],
+            b: [0.0, PATH_GLYPH, record as f32, tile as f32],
             c: [code, reach, 0.0, reach],
             color,
             layers: [0, 0, PathInstance::NO_PROGRAM, 0],

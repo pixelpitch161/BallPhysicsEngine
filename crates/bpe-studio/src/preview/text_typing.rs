@@ -45,7 +45,7 @@ pub fn show(ui: &mut Ui, studio: &mut Studio, view: &View) {
     }
     // Over the text's box on the screen, or the middle of the preview when it shows nothing.
     let (reg, world, time) = (&studio.kit.registry, studio.playback.world(), studio.sim_time());
-    let corner = super::text_handles::now_of(&studio.scene, reg, world, id, time).and_then(|(now, _)| {
+    let corner = super::text_handles::now_of(&studio.scene, reg, world, None, id, time).and_then(|(now, _)| {
         let v = view.of(studio, id)?;
         let (lo, _) = now.bounds()?;
         Some(v.to_screen(now.to_world(lo)))

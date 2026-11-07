@@ -126,7 +126,8 @@ fn every_kind_is_registered_with_settings_under_rule() {
             "when.health",
             "if.health",
             "do.health",
-            "when.particles"
+            "when.particles",
+            "do.text"
         ]
     );
     for b in kit.registry.blocks() {
