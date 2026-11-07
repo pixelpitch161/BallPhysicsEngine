@@ -41,6 +41,7 @@ pub mod scene;
 pub mod signals;
 pub mod slow;
 pub mod tags;
+pub mod text;
 pub mod when;
 pub mod who;
 
@@ -128,6 +129,7 @@ pub fn register(r: &mut Registry) {
     r.add_block(health::HealthIs);
     r.add_block(health::ChangeHealth);
     r.add_block(crate::things::particles::rules::ParticlesWhen);
+    r.add_block(text::SetText);
 }
 
 /// Puts every block kind's simulation in the sims.
@@ -168,6 +170,7 @@ pub fn add_sims(s: &mut Sims) {
     s.add_block(health::HealthIs);
     s.add_block(health::ChangeHealth);
     s.add_block(crate::things::particles::rules::ParticlesWhen);
+    s.add_block(text::SetText);
 }
 
 /// The kit's registry, made once for the process: what Change setting reads the scene's setting

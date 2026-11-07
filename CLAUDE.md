@@ -713,6 +713,29 @@ box, the Size dot, the Wrap bar, the Radius ring, all through `set_or_key`) and 
 `bpe-kit/tests/text_pictures.rs`, `bpe-cli/tests/export.rs::a_scene_with_text_exports_a_frame`. **Installing:** the exe
 needs `assets/fonts/text/` copied to a `fonts` folder beside it (else every Text shows in the fallback and says so).
 
+Part 2 is in (plan `docs/superpowers/plans/text/part2.md`, "As built" at its end): **live words**. Values in braces
+(`text/live.rs`: `parse` into `Piece`s, `Token` hits / balls left / time / countdown / beat / bar / counter / health /
+ball number / ball name / standings, each optionally `of <thing name>`, a `|` `Format` (leading zeros, decimals, a clock
+`m:ss`); `fill(pieces, LiveCx)` reads them at the moment drawn, unreadable as `-`; `BallNames::from_colours` names balls
+by the nearest of 13 colour names of `ball_colors`; **standings** rank on a grid of Re-sort time `resort`, each line
+gliding from its old place (`Filled.moves` by `Letter.paragraph`), the past from the balls' history, which `TextSim::
+history`/`after_build` keep 2 s of when the words hold standings). **Show** group (`things/text/show.rs`: Show All at
+once / Letter / Word / Line by line, Appear and Disappear None / Pop / Fade / Slide / Drop / Typewriter, Takes, Timed by
+Seconds / Beats / Hits (Hits of), Starts at, Each takes, Every, Stays for; `appear_times`, `letter_move` → a
+`LetterMove` per letter, its opacity in `clip[2]`). Words keys hold. **Set text** rule block `do.text`
+(`rules/text.rs`: Replace / Add a line / Show the next line / Clear → `Action::Text`/`TextOp`, kept in
+`RulesState.texts` as `RuleText`; Show the next line shows line n alone from `nexts[n−1]`). **Riding**: a Text inside
+a Balls, Emitter or Shape thing sits on it (Riding group: Rides on Each ball / The middle / Ball number), its Position
+the offset; `text_copies(&TextAt)` gives one `TextNow` a ball (`TextNow.ball`, `shown`), `text_now` the first. **Fast
+letters** (Words group, Automatic for riding each ball or standings / Always / Never): a letter is `PathInstance`
+kind 3 (`bpe_gfx::PATH_GLYPH`, `Frame::push_glyph`) reading a glyph distance tile (`text/tiles.rs::tile_for`, 128²
+like a brush tile, cap height `TILE_CAP` 100 px filling `TILE_FILL` of it) from the frame's mask atlas
+(`Frame::mask_tile`; `glyph_signed` in paths.wgsl, the `b.y > 2.5` branch of `shape_at`). Glyph outlines and layouts
+are cached for the process (`layout.rs::cached_outline`, `MOST_LAYOUTS`). Looks Hit counter, Countdown timer, Lyrics on
+the beat, Labels on balls (inside the picked or first group), Race leaderboard; Hook title pops in word by word.
+Editor: the words box (`words_box.rs`: values on `style::TOKEN_BG` chips, **Insert value** menu, `TargetChoices.
+counters`), typing keys at the playhead through `set_or_key`, handles over every copy (`text_handles::copies_of`).
+
 ## Crate map
 
 Dependencies go bottom to top:

@@ -11,7 +11,7 @@ mod remains;
 mod shows;
 mod sim;
 
-pub use actions::{Action, CountHow, MotionChange, WHOLE};
+pub use actions::{Action, CountHow, MotionChange, TextOp, WHOLE};
 pub use changes::{Change, ChangeKey, How, apply_to, fold};
 pub use firing::{Firing, Signal, Values};
 pub use health::{Health, HealthCard, HealthChange, HealthMoment, HealthSim, Hp, Takes, aimed};
@@ -223,6 +223,34 @@ pub struct RulesState {
     pub(crate) flashes: BTreeMap<(ThingId, u32), u32>,
     /// The lighting scene a rule shows, when one does.
     pub(crate) scene: Option<shows::ShownScene>,
+    /// What rules did to Texts' words (Set text), by Text: drawn only.
+    pub(crate) texts: BTreeMap<ThingId, RuleText>,
+}
+
+/// What Set text rules did to one Text's words (Text part 2). Drawn only: nothing physical reads it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RuleText {
+    /// Words in place of the Text's own (Replace; Clear leaves them empty).
+    pub words: Option<String>,
+    /// Lines added after them (Add a line), in order.
+    pub added: Vec<String>,
+    /// The video time of each Show the next line, in order: while there are any, the Text shows line
+    /// `nexts.len()` alone, from the last of them.
+    pub nexts: Vec<f64>,
+}
+
+impl RuleText {
+    /// The words to draw in place of `own` (the Text's own words).
+    pub fn words_for(&self, own: &str) -> String {
+        let mut words = self.words.clone().unwrap_or_else(|| own.to_string());
+        for line in &self.added {
+            if !words.is_empty() {
+                words.push('\n');
+            }
+            words.push_str(line);
+        }
+        words
+    }
 }
 
 impl RulesState {
@@ -296,6 +324,7 @@ impl RulesState {
             lag: 0.0,
             flashes: BTreeMap::new(),
             scene: None,
+            texts: BTreeMap::new(),
         })
     }
 
@@ -323,6 +352,7 @@ impl RulesState {
             lag: 0.0,
             flashes: BTreeMap::new(),
             scene: None,
+            texts: BTreeMap::new(),
         })
     }
 
@@ -651,6 +681,11 @@ impl RulesState {
     /// A counter's value (0 for one never set).
     pub fn counter(&self, name: &str) -> f64 {
         self.counters.get(name).copied().unwrap_or(0.0)
+    }
+
+    /// What Set text rules did to Text `thing`'s words so far, when any did.
+    pub fn text(&self, thing: ThingId) -> Option<&RuleText> {
+        self.texts.get(&thing)
     }
 
     /// Every counter set so far, by name (what the Rules panel lists).

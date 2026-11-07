@@ -7,8 +7,8 @@ use super::{Handle, View};
 use crate::app::Studio;
 use crate::style;
 use bpe_core::{Address, Registry, Scene, Settings, ThingId, Value};
-use bpe_kit::things::text::{KIND, TextNow, TextPath, TextSettings, text_now};
-use bpe_runtime::World;
+use bpe_kit::things::text::{KIND, TextAt, TextNow, TextPath, TextSettings, text_copies};
+use bpe_runtime::{Log, World};
 use eframe::egui::{self, Color32, Pos2, Shape, Stroke};
 use glam::Vec2;
 use std::f32::consts::TAU;
@@ -42,15 +42,56 @@ fn params_at(scene: &Scene, reg: &Registry, id: ThingId, time: f64) -> Option<bp
     Some(params)
 }
 
-/// Text `id` as the preview shows it now, and its settings.
-pub fn now_of(scene: &Scene, reg: &Registry, world: &World, id: ThingId, time: f64) -> Option<(TextNow, TextSettings)> {
+/// What the preview drew with, so a Text's words read the same here: the resolved scene (the balls'
+/// colour names) and the log (hits).
+#[derive(Clone, Copy, Default)]
+pub struct Seen<'a> {
+    pub resolved: Option<&'a bpe_core::Resolved>,
+    pub log: Option<&'a Log>,
+}
+
+impl<'a> Seen<'a> {
+    pub fn of(studio: &'a Studio) -> Self {
+        Seen { resolved: Some(&studio.resolved), log: Some(studio.playback.log()) }
+    }
+}
+
+/// Every copy of Text `id` as the preview shows it now (one a ball for a Text riding each ball),
+/// and its settings. `log` lets a show timed by hits see them.
+pub fn copies_of(
+    scene: &Scene,
+    reg: &Registry,
+    world: &World,
+    seen: Seen,
+    id: ThingId,
+    time: f64,
+) -> Option<(Vec<TextNow>, TextSettings)> {
     let params = params_at(scene, reg, id, time)?;
-    let now = text_now(scene, &params, world, id, time)?;
-    Some((now, TextSettings::from_params(&params)))
+    let at = TextAt { log: seen.log, scene: seen.resolved, ..TextAt::new(scene, &params, world, id, time) };
+    Some((text_copies(&at), TextSettings::from_params(&params)))
+}
+
+/// Text `id` as the preview shows it now (its first copy), and its settings.
+pub fn now_of(
+    scene: &Scene,
+    reg: &Registry,
+    world: &World,
+    seen: Seen,
+    id: ThingId,
+    time: f64,
+) -> Option<(TextNow, TextSettings)> {
+    let (copies, s) = copies_of(scene, reg, world, seen, id, time)?;
+    Some((copies.into_iter().next()?, s))
+}
+
+fn copies(studio: &Studio, id: ThingId) -> Option<(Vec<TextNow>, TextSettings)> {
+    let world = studio.playback.world();
+    copies_of(&studio.scene, &studio.kit.registry, world, Seen::of(studio), id, studio.sim_time())
 }
 
 fn now(studio: &Studio, id: ThingId) -> Option<(TextNow, TextSettings)> {
-    now_of(&studio.scene, &studio.kit.registry, studio.playback.world(), id, studio.sim_time())
+    let (copies, s) = copies(studio, id)?;
+    Some((copies.into_iter().next()?, s))
 }
 
 /// The selected Text, when there is one.
@@ -92,15 +133,17 @@ pub fn hit(studio: &Studio, view: &View, pos: Pos2) -> Option<Handle> {
     None
 }
 
-/// Whether `pos` is on Text `id`'s letters (within the box round them).
+/// Whether `pos` is on Text `id`'s letters (within the box round them), on any of its copies.
 pub fn on_body(studio: &Studio, view: &View, id: ThingId, pos: Pos2) -> bool {
     let Some(v) = view.of(studio, id) else { return false };
-    let Some((now, _)) = now(studio, id) else { return false };
-    let Some((lo, hi)) = now.bounds() else { return false };
-    let p = now.to_own(v.to_world(pos));
+    let Some((copies, _)) = copies(studio, id) else { return false };
     // A little room round thin letters.
     let room = 4.0 / v.world_scale().max(1e-6);
-    p.x >= lo.x - room && p.x <= hi.x + room && p.y >= lo.y - room && p.y <= hi.y + room
+    copies.iter().any(|now| {
+        let Some((lo, hi)) = now.bounds() else { return false };
+        let p = now.to_own(v.to_world(pos));
+        p.x >= lo.x - room && p.x <= hi.x + room && p.y >= lo.y - room && p.y <= hi.y + room
+    })
 }
 
 /// The Text under `pos`, the last drawn first.
@@ -126,7 +169,7 @@ pub fn apply(
     pointer: Vec2,
     time: f64,
 ) -> bool {
-    let Some((now, s)) = now_of(scene, reg, world, id, time) else { return false };
+    let Some((now, s)) = now_of(scene, reg, world, Seen::default(), id, time) else { return false };
     let p = now.to_own(pointer);
     let mut keyed = false;
     let mut set = |scene: &mut Scene, key: &str, value: f32| {
@@ -154,13 +197,17 @@ pub fn apply(
 pub fn draw(painter: &egui::Painter, studio: &Studio, view: &View, active: Option<Handle>) {
     let Some(id) = selected(studio) else { return };
     let Some(v) = view.of(studio, id) else { return };
-    let Some((now, s)) = now(studio, id) else { return };
+    let Some((copies, s)) = copies(studio, id) else { return };
+    let Some(now) = copies.first() else { return };
     let ink = style::colour_of(&studio.scene, id);
     let stroke = Stroke::new(1.2, ink);
     let screen = |p: Vec2| v.to_screen(now.to_world(p));
-    if let Some((lo, hi)) = now.bounds() {
-        let corners = [lo, Vec2::new(hi.x, lo.y), hi, Vec2::new(lo.x, hi.y), lo];
-        painter.add(Shape::dashed_line(&corners.map(screen), stroke, 6.0, 4.0));
+    // A box round every copy; the handles on the first.
+    for c in &copies {
+        if let Some((lo, hi)) = c.bounds() {
+            let corners = [lo, Vec2::new(hi.x, lo.y), hi, Vec2::new(lo.x, hi.y), lo];
+            painter.add(Shape::dashed_line(&corners.map(|p| v.to_screen(c.to_world(p))), stroke, 6.0, 4.0));
+        }
     }
     let on = |part| active == Some(Handle::Text(id, part));
     if s.path == TextPath::RoundACircle {
@@ -169,7 +216,7 @@ pub fn draw(painter: &egui::Painter, studio: &Studio, view: &View, active: Optio
         let width = if on(TextPart::Radius) { 2.5 } else { 1.2 };
         painter.add(Shape::dashed_line(&ring, Stroke::new(width, ink), 6.0, 4.0));
     }
-    for (part, p) in dots(&now, &s) {
+    for (part, p) in dots(now, &s) {
         let fill: Color32 = if on(part) { style::TEXT_STRONG } else { ink };
         let at = screen(p);
         match part {

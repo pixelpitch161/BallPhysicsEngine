@@ -41,6 +41,9 @@ fn shape_at(world: vec2<f32>) -> ShapeAt {
     if s.b.y < 0.5 {
         sd = (length(q) - 1.0) * s.a.w;
         along = fract(atan2(q.x, -q.y) / SHAPE_TAU + 1.0);
+    } else if s.b.y > 2.5 {
+        // A fast letter (Text part 2): its distance from its tile; it has no place along its edge.
+        sd = glyph_signed(q, s.b) * s.a.w;
     } else if s.b.y > 1.5 {
         // An ellipse: round from its own top by the angle it is drawn with.
         let ab = max(s.b.zw, vec2<f32>(1e-6));
@@ -120,7 +123,7 @@ fn shape_from_middle(s: ShapeAt) -> f32 {
     if half > 0.0 {
         return (s.sd + half) / (2.0 * half);
     }
-    if layered_shape.b.y > 1.5 {
+    if layered_shape.b.y > 1.5 && layered_shape.b.y < 2.5 {
         return length(s.q / max(layered_shape.b.zw, vec2<f32>(1e-6)));
     }
     return length(s.q) / max(layered_shape.c.w, 1e-6);

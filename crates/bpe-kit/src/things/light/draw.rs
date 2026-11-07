@@ -542,7 +542,7 @@ fn strip_outline(world: &World, s: &LightSettings, me: ThingId) -> Vec<Vec2> {
 }
 
 /// The middle of an outline.
-fn outline_centre(outline: &Outline) -> Vec2 {
+pub fn outline_centre(outline: &Outline) -> Vec2 {
     match outline {
         Outline::Ring { center, .. }
         | Outline::Box { center, .. }

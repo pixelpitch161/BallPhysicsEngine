@@ -95,7 +95,14 @@ fn letter_points(scene: &Scene, id: ThingId) -> Vec<(glam::Vec2, glam::Vec2)> {
     let kit = kit();
     let resolved = bpe_core::resolve(scene, &kit.registry);
     let world = bpe_runtime::World::build(scene, &resolved, &kit.sims);
-    let now = bpe_kit::things::text::text_now(scene, &resolved.things[&id].params, &world, id, 0.0).unwrap();
+    let now = bpe_kit::things::text::text_now(&bpe_kit::things::text::TextAt::new(
+        scene,
+        &resolved.things[&id].params,
+        &world,
+        id,
+        0.0,
+    ))
+    .unwrap();
     now.layout.letters.iter().map(|l| (now.to_world((l.min + l.max) * 0.5), now.to_world(l.min))).collect()
 }
 
@@ -112,7 +119,14 @@ fn a_letter_hole_is_empty_on_screen() {
         let kit = kit();
         let resolved = bpe_core::resolve(&scene, &kit.registry);
         let world = bpe_runtime::World::build(&scene, &resolved, &kit.sims);
-        let now = bpe_kit::things::text::text_now(&scene, &resolved.things[&id].params, &world, id, 0.0).unwrap();
+        let now = bpe_kit::things::text::text_now(&bpe_kit::things::text::TextAt::new(
+            &scene,
+            &resolved.things[&id].params,
+            &world,
+            id,
+            0.0,
+        ))
+        .unwrap();
         now.bounds().unwrap()
     };
     let stroke_x = lo.x + (hi.x - lo.x) * 0.07;
@@ -188,4 +202,80 @@ fn glass_letters_bend_what_is_behind() {
         })
         .count();
     assert!(differs >= 4, "glass shows the stripes behind it: {differs} of 12 differ");
+}
+
+/// How many pixels of `a` and `b` differ by more than `by` in brightness, and how many are lit in
+/// either.
+fn differing(a: &[u8], b: &[u8], by: u32) -> (usize, usize) {
+    let (mut differ, mut lit) = (0, 0);
+    for (p, q) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
+        let (x, y) = (brightness([p[0], p[1], p[2], p[3]]), brightness([q[0], q[1], q[2], q[3]]));
+        differ += (x.abs_diff(y) > by) as usize;
+        lit += (x.max(y) > 3 * 0x60) as usize;
+    }
+    (differ, lit)
+}
+
+#[test]
+fn fast_letters_look_like_drawn_ones() {
+    let Some(mut gpu) = gpu() else { return };
+    let (mut scene, id) = text_scene("BOG", 300.0, true);
+    let reg = kit().registry;
+    // An outline reaching past the letters too.
+    let outline = scene.add_layer(&reg, id, SlotId::Look, bpe_kit::modules::look::shape::OUTLINE).unwrap();
+    set_look(&mut scene, id, &bpe_core::layered_key(outline, "width"), Value::Number(8.0));
+    let drawn = draw(&mut gpu, &scene, "drawn-letters");
+    scene.things.get_mut(&id).unwrap().params.set("fast", Value::Choice("always".into()));
+    let fast = draw(&mut gpu, &scene, "fast-letters");
+    let (differ, lit) = differing(&drawn, &fast, 3 * 0x60);
+    assert!(lit > 2000, "the letters are drawn: {lit}");
+    assert!(differ * 20 < lit, "fast letters match drawn ones but at their edges: {differ} of {lit}");
+    // The O's hole is empty in both.
+    let (middle, _) = letter_points(&scene, id)[1];
+    assert!(brightness(at(&fast, middle.x, middle.y)) < 3 * 0x30);
+}
+
+#[test]
+fn labels_ride_their_balls() {
+    let Some(mut gpu) = gpu() else { return };
+    let kit = kit();
+    let reg = &kit.registry;
+    let mut scene = Scene::empty(reg);
+    ensure_camera(&mut scene, reg);
+    set_background(&mut scene, Paint::solid(Color::rgb(0x20, 0x20, 0x20)));
+    let balls = bpe_kit::add_thing(&mut scene, reg, "balls", ThingId::ROOT).unwrap();
+    let mut b = bpe_kit::BallsSettings::from_params(&scene.things[&balls].params);
+    b.ring(4, 500.0);
+    b.radius = 60.0;
+    scene.things.get_mut(&balls).unwrap().params = b.to_params();
+    // The balls themselves not drawn: only their labels.
+    scene.things.get_mut(&balls).unwrap().slots.remove(&SlotId::Look);
+    let id = bpe_kit::things::text::looks::add_text(
+        &mut scene,
+        reg,
+        bpe_kit::things::text::looks::Look::LabelsOnBalls,
+        balls,
+    )
+    .unwrap();
+    scene.things.get_mut(&id).unwrap().params.set("size", Value::Number(150.0));
+    let pixels = draw(&mut gpu, &scene, "labels");
+    let resolved = bpe_core::resolve(&scene, reg);
+    let world = bpe_runtime::World::build(&scene, &resolved, &kit.sims);
+    let copies = bpe_kit::things::text::text_copies(&bpe_kit::things::text::TextAt::new(
+        &scene,
+        &resolved.things[&id].params,
+        &world,
+        id,
+        0.0,
+    ));
+    assert_eq!(copies.len(), 4);
+    for c in &copies {
+        // Some white ink round each ball's middle.
+        let p = c.pose.position;
+        let ink = (-6..=6)
+            .flat_map(|i| (-6..=6).map(move |j| (i, j)))
+            .filter(|(i, j)| brightness(at(&pixels, p.x + *i as f32 * 8.0, p.y + *j as f32 * 8.0)) > 3 * 0xc0)
+            .count();
+        assert!(ink > 5, "a label on the ball at {p}: {ink}");
+    }
 }

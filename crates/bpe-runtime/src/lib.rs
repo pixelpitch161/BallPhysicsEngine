@@ -33,7 +33,7 @@ pub use plugins::{
 pub use pose::Pose;
 pub use rules::{
     Action, BallAt, BlockSim, BreakShow, Change, ChangeKey, CountHow, Firing, How, Kick, MotionChange, PrepareCx,
-    Remains, RulesState, SceneOp, Signal, StageCx, Values,
+    Remains, RuleText, RulesState, SceneOp, Signal, StageCx, TextOp, Values,
 };
 pub use sound::{LevelsAt, SoundAt, SoundMaker};
 pub use walls::{

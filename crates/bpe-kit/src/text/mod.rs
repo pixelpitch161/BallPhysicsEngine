@@ -7,6 +7,8 @@
 pub mod arrange;
 pub mod fonts;
 pub mod layout;
+pub mod live;
+pub mod tiles;
 
 pub use arrange::{PathAt, Placed, arrange, placed};
 pub use fonts::{BUILT_IN, BuiltIn, DEFAULT_FONT, FontData, FontGroup, Found, find, find_in, fonts_dir};

@@ -155,6 +155,24 @@ fn ellipse_signed(q: vec2<f32>, ab: vec2<f32>) -> f32 {
     return select(d, -d, dot(level, level) < 1.0);
 }
 
+// How far a fast letter's distance tile reaches past its edge, in tile half widths
+// (masks.rs: TILE_DISTANCE_REACH).
+const GLYPH_TILE_REACH: f32 = 0.25;
+
+// A fast letter's distance from its edge at `q` (Text part 2, kind 3), in the shape's units,
+// negative inside: read from its distance tile (`b.w`, in mask_tiles) through its record in
+// path_points (`b.z`: the tile's middle, turn and half width), and past the tile, from its edge.
+fn glyph_signed(q: vec2<f32>, b: vec4<f32>) -> f32 {
+    let g = path_points[u32(b.z + 0.5)];
+    let half = max(g.w, 1e-6);
+    let t = rotate(q - g.xy, -g.z) / half;
+    let uv = clamp(t * 0.5 + vec2<f32>(0.5), vec2<f32>(0.0), vec2<f32>(1.0));
+    let d = textureSampleLevel(mask_tiles, mask_sampler, uv, i32(b.w + 0.5), 0.0).g;
+    let inside = (d - 0.5) * 2.0 * GLYPH_TILE_REACH;
+    let past = length(max(abs(t) - vec2<f32>(1.0), vec2<f32>(0.0)));
+    return (past - inside) * half;
+}
+
 // Distance from the outline in world pixels: negative inside (even-odd, so a self-crossing
 // outline still has an inside). A letter's points are several closed contours (see
 // `Frame::push_letter`: z 2 a contour's first point, z 1 its last, w its count less one).
@@ -162,6 +180,9 @@ fn path_signed(in: PathOut) -> f32 {
     let q = path_local(in);
     if in.b.y < 0.5 {
         return (length(q) - 1.0) * in.a.w;
+    }
+    if in.b.y > 2.5 {
+        return glyph_signed(q, in.b) * in.a.w;
     }
     if in.b.y > 1.5 {
         return ellipse_signed(q, in.b.zw) * in.a.w;

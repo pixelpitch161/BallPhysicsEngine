@@ -135,6 +135,8 @@ fn check_settings(id: &str, defs: &[SettingDef], fails: &mut Vec<String>) {
                 d.ty,
                 ValueType::Number | ValueType::Int | ValueType::Vec2 | ValueType::Color | ValueType::Gradient
             )
+            // Words that change at their keys (a Text's), held between them.
+            && !(d.ty == ValueType::Text && d.flags.hold)
         {
             fail(d.key, format!("a {:?} setting can't be keyframed", d.ty));
         }
