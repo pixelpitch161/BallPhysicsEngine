@@ -23,13 +23,16 @@ pub trait ThingState: Any + Send + Sync {
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
-/// The state `s` points at, when `T` is a pointer to a state rather than a state.
+/// The state `s` points at, when `T` is a pointer to a state rather than a state. The `TypeId`
+/// tests are constant for each `T`, so a real state pays nothing.
 fn pointee<T: Any>(s: &T) -> Option<&dyn ThingState> {
-    let s = s as &dyn Any;
-    if let Some(b) = s.downcast_ref::<Box<dyn ThingState>>() {
-        return Some(&**b);
+    if TypeId::of::<T>() == TypeId::of::<Box<dyn ThingState>>() {
+        return (s as &dyn Any).downcast_ref::<Box<dyn ThingState>>().map(|b| &**b);
     }
-    s.downcast_ref::<Arc<dyn ThingState>>().map(|a| &**a)
+    if TypeId::of::<T>() == TypeId::of::<Arc<dyn ThingState>>() {
+        return (s as &dyn Any).downcast_ref::<Arc<dyn ThingState>>().map(|a| &**a);
+    }
+    None
 }
 
 impl<T: Any + Clone + Send + Sync> ThingState for T {
@@ -61,8 +64,8 @@ impl<T: Any + Clone + Send + Sync> ThingState for T {
 
 impl Clone for Box<dyn ThingState> {
     fn clone(&self) -> Self {
-        // Through the reference, not the box: the box is itself a `ThingState` by the blanket
-        // impl, and its `clone_box` would come straight back here.
+        // Straight to the state: the box is itself a `ThingState` by the blanket impl, whose
+        // `clone_box` would only forward here again.
         (**self).clone_box()
     }
 }
@@ -393,14 +396,15 @@ mod tests {
         assert_eq!(states.get_mut(&1).and_then(|s| s.as_any_mut().downcast_mut::<u32>()), Some(&mut 7));
         let boxed = states.get(&1).unwrap();
         assert_eq!(*state::<u32>(boxed), 7, "&Box coerced to &dyn");
-        assert_eq!(boxed.clone_box().as_any().downcast_ref::<u32>(), Some(&7), "a clone is the state, not a box");
+        // `as_any` forwards through any boxes, so the clone's own type is checked without it.
+        assert_eq!(Any::type_id(&*boxed.clone_box()), TypeId::of::<u32>(), "a clone is the state, not a box");
         *state_mut::<u32>(states.get_mut(&1).unwrap()) = 8;
         assert_eq!(*state::<u32>(states[&1].as_ref()), 8);
 
         let mut shared: Arc<dyn ThingState> = Arc::new(9u32);
         assert_eq!(shared.as_any().downcast_ref::<u32>(), Some(&9));
         assert_eq!(*state::<u32>(&shared), 9, "&Arc coerced to &dyn");
-        assert_eq!(shared.clone_box().as_any().downcast_ref::<u32>(), Some(&9));
+        assert_eq!(Any::type_id(&*shared.clone_box()), TypeId::of::<u32>(), "a clone is the state, not an Arc");
         *state_mut::<u32>(&mut shared) = 10;
         assert_eq!(*state::<u32>(shared.as_ref()), 10);
     }
