@@ -44,6 +44,8 @@ pub const PATH_LINE: Color32 = Color32::from_rgba_premultiplied(0x3c, 0x3c, 0x3c
 pub const PILL: Color32 = Color32::from_rgba_premultiplied(0x00, 0x00, 0x00, 0xbe);
 /// A picture drawn as it is (no tint).
 pub const UNTINTED: Color32 = Color32::WHITE;
+/// The chip behind a value in a Text's words (`{hits}` …).
+pub const TOKEN_BG: Color32 = Color32::from_rgb(0x2f, 0x3f, 0x5a);
 /// The editor's only red: the mark on a rule with a problem, and its words.
 pub const PROBLEM: Color32 = Color32::from_rgb(0xe5, 0x4b, 0x4b);
 

@@ -27,6 +27,8 @@ pub struct TargetChoices {
     pub fonts: Vec<String>,
     /// Those of them that can't be read (damaged).
     pub unreadable_fonts: Vec<String>,
+    /// Every counter the rules name, sorted (a Text's Insert value ▸ Counter lists them).
+    pub counters: Vec<String>,
 }
 
 impl TargetChoices {
@@ -49,6 +51,16 @@ impl TargetChoices {
             .filter(|(name, font)| !bpe_kit::text::fonts::scene_font_reads(name, font))
             .map(|(name, _)| name.clone())
             .collect();
+        let counters: std::collections::BTreeSet<String> = scene
+            .rules
+            .list
+            .iter()
+            .flat_map(|r| r.blocks.iter())
+            .filter_map(|b| match b.params.get("counter") {
+                Some(bpe_core::Value::Text(c)) if !c.trim().is_empty() => Some(c.trim().to_string()),
+                _ => None,
+            })
+            .collect();
         TargetChoices {
             things,
             tags: tags.into_iter().collect(),
@@ -57,6 +69,7 @@ impl TargetChoices {
             relative: true,
             fonts,
             unreadable_fonts,
+            counters: counters.into_iter().collect(),
         }
     }
 }
@@ -1684,7 +1697,7 @@ fn widget(
         }
         // A Text's words: any number of lines.
         (ValueType::Text, Value::Text(text)) if def.unit == "lines" => {
-            ui.add(egui::TextEdit::multiline(text).desired_rows(3).desired_width(f32::INFINITY)).labelled_by(name)
+            ui.vertical(|ui| crate::words_box::words_box(ui, text, choices, name)).inner
         }
         (ValueType::Text, Value::Text(text)) if def.unit == "font" => crate::font_picker::font_row(
             ui,

@@ -40,6 +40,7 @@ mod transport;
 mod tree;
 mod vary;
 mod widgets;
+mod words_box;
 
 fn main() -> eframe::Result {
     let scene_path = std::env::args().nth(1).map(std::path::PathBuf::from);

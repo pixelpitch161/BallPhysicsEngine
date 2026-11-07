@@ -2992,6 +2992,24 @@ mod tests {
     }
 
     #[test]
+    fn insert_value_puts_a_value_in_the_words() {
+        let (mut h, id) = text_harness();
+        h.get_by_role_and_label(Role::Button, "Insert value").click();
+        h.run();
+        h.get_by_label("Time").click();
+        h.run();
+        assert!(text_settings(&h, id).words.ends_with("{time}"), "{:?}", text_settings(&h, id).words);
+    }
+
+    #[test]
+    fn a_text_shows_its_show_and_riding_rows() {
+        let (h, _) = text_harness();
+        for label in ["Show", "Appear", "Disappear", "Timed by", "Fast letters"] {
+            assert!(h.query_all_by_label(label).next().is_some(), "{label}");
+        }
+    }
+
+    #[test]
     fn the_font_picker_lists_every_group_and_picks_a_font() {
         let (mut h, id) = text_harness();
         h.get_by_role_and_label(Role::Button, "Font").click();

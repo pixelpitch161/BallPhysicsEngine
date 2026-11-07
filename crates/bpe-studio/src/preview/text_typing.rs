@@ -29,7 +29,12 @@ pub fn start(studio: &mut Studio, id: ThingId) {
     let Some(thing) = studio.scene.things.get(&id).filter(|t| t.kind == bpe_kit::things::text::KIND) else {
         return;
     };
-    let words = <bpe_kit::things::text::TextSettings as bpe_core::Settings>::from_params(&thing.params).words;
+    // The words at the playhead when they have keys.
+    let a = bpe_core::Address::own(id, "words");
+    let words = match studio.scene.value_at_time(&studio.kit.registry, &a, studio.time) {
+        Some(Value::Text(w)) if studio.scene.keyed(&a) => w,
+        _ => <bpe_kit::things::text::TextSettings as bpe_core::Settings>::from_params(&thing.params).words,
+    };
     studio.typing = Some(Typing { id, before: studio.scene.clone(), buffer: words, focused: false });
 }
 
@@ -87,9 +92,11 @@ pub fn show(ui: &mut Ui, studio: &mut Studio, view: &View) {
     typing.focused |= response.has_focus();
     if response.changed() {
         let words = typing.buffer.clone();
-        if let Some(thing) = studio.scene.things.get_mut(&id) {
-            thing.params.set("words", Value::Text(words));
-        }
+        // A key at the playhead when the words have keys.
+        let kit = studio.kit.clone();
+        let a = bpe_core::Address::own(id, "words");
+        let mut keyed = false;
+        crate::inspector::set_or_key(&mut studio.scene, &kit.registry, &a, Value::Text(words), studio.time, &mut keyed);
         // Shown at once; the history hears of it when typing ends.
         studio.scene_changed();
         studio.recorded = true;
@@ -157,6 +164,33 @@ mod tests {
         let studio = h.state_mut();
         assert!(studio.undo());
         assert_eq!(words(studio, id), "TEXT", "one undo brings back the old words");
+    }
+
+    #[test]
+    fn typing_into_keyed_words_keys_them_at_the_playhead() {
+        let mut studio = Studio::headless();
+        let kit = studio.kit.clone();
+        let reg = &kit.registry;
+        let id = bpe_kit::add_thing(&mut studio.scene, reg, bpe_kit::things::text::KIND, ThingId::ROOT).unwrap();
+        let a = bpe_core::Address::own(id, "words");
+        studio.scene.set_key(reg, &a, 0.0, Value::Text("ONE".into())).unwrap();
+        studio.scene.set_key(reg, &a, 2.0, Value::Text("TWO".into())).unwrap();
+        studio.time = 2.5;
+        studio.scene_changed();
+        start(&mut studio, id);
+        assert_eq!(studio.typing.as_ref().unwrap().buffer, "TWO", "the words at the playhead");
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(270.0, 480.0))
+            .with_max_steps(60)
+            .allow_missing_glyphs()
+            .with_context_setup(crate::style::apply)
+            .build_ui_state(|ui, s: &mut Studio| show(ui, s, &view()), studio);
+        h.run();
+        h.get_by_label("Type the words").type_text("THREE");
+        h.run();
+        let s = h.state();
+        assert_eq!(s.scene.value_at_time(reg, &a, 2.5), Some(Value::Text("THREE".into())), "a key at 2.5 s");
+        assert_eq!(s.scene.value_at_time(reg, &a, 0.5), Some(Value::Text("ONE".into())), "the first key kept");
     }
 
     #[test]
