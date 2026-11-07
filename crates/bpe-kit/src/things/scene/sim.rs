@@ -1,4 +1,5 @@
-//! Scene settings in the world: the step rate, gravity, the seed and the video size.
+//! Scene settings in the world: the step rate, gravity, the seed and the video size, and the
+//! tempo for things born on the beat (a [`SceneBeat`] at the root).
 
 use bpe_core::{ResolvedThing, Settings, Thing, ThingId};
 use bpe_runtime::{ThingSim, World};
@@ -18,6 +19,8 @@ impl ThingSim for SceneSim {
         world.gravity = s.gravity;
         world.seed = s.seed as u64;
         world.video = glam::Vec2::new(s.width.max(1) as f32, s.height.max(1) as f32);
+        let (beat, per_bar) = crate::things::rig::pattern::beat_seconds(&s);
+        world.states.insert(ThingId::ROOT, Box::new(SceneBeat { beat, per_bar }));
     }
 
     /// A keyframe moved gravity.
@@ -29,6 +32,36 @@ impl ThingSim for SceneSim {
     fn affects_physics(&self, key: &str) -> bool {
         matches!(key, "gravity" | "steps_per_second" | "duration" | "seed" | "width" | "height")
     }
+
+    /// Particles born or pushed on the beat read the tempo.
+    fn affects_beside(&self, key: &str) -> bool {
+        matches!(key, "tempo" | "time_top" | "time_bottom")
+    }
+}
+
+/// The scene's tempo as the world has it, at [`ThingId::ROOT`] in `World.states`: seconds in a
+/// beat and beats in a bar, the same as the sound's `TempoMap`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SceneBeat {
+    pub beat: f64,
+    pub per_bar: u32,
+}
+
+impl Default for SceneBeat {
+    /// 120 beats a minute, four in a bar.
+    fn default() -> Self {
+        SceneBeat { beat: 0.5, per_bar: 4 }
+    }
+}
+
+/// The scene's tempo in `world` (the default without a scene thing).
+pub fn beat_of(world: &World) -> SceneBeat {
+    world
+        .states
+        .get(&ThingId::ROOT)
+        .and_then(|s| (**s).as_any().downcast_ref::<SceneBeat>())
+        .copied()
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

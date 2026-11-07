@@ -9,6 +9,7 @@ use glam::Vec2;
 use super::births::{self, BirthCx};
 use super::forces::{ForceCx, Forces};
 use super::meets::{AtEdges, BallAt, BallGrid, Edges, MeetsSettings, WallAt, meet_balls, meet_edges, meet_walls};
+use super::ready::Ready;
 use super::state::{DEAD, ParticlesState, Speck};
 
 /// Seconds a particle step lasts.
@@ -28,21 +29,27 @@ pub struct MoveCx<'a> {
     pub walls: &'a [WallAt],
     pub edges: Option<Edges>,
     pub force: ForceCx,
+    /// What part 3's forces read.
+    pub ready: &'a Ready,
     /// The particle step being taken.
     pub now: u32,
     /// The fastest a particle may go.
     pub ceiling: f32,
 }
 
-/// Moves one particle one step, marking it dead when its life is over or it vanishes.
-pub fn move_one(s: &mut Speck, cx: &MoveCx) {
+/// Moves one particle (number `index` of the step's) one step, marking it dead when its life is
+/// over or it vanishes.
+pub fn move_one(s: &mut Speck, index: usize, cx: &MoveCx) {
     let age = s.age(cx.now);
     if age >= s.life {
         s.flags |= DEAD;
         return;
     }
     s.previous = s.place;
-    cx.forces.apply(s, age, &cx.force);
+    cx.forces.apply(s, index, age, &cx.force, cx.ready);
+    if s.flags & DEAD != 0 {
+        return;
+    }
     let speed = s.velocity.length();
     if speed > cx.ceiling {
         s.velocity *= cx.ceiling / speed;
@@ -72,22 +79,27 @@ pub fn threads() -> usize {
 
 /// Runs `f` on every particle of `specks`, in chunks of [`CHUNK`] over `threads` threads.
 pub fn run_chunks(specks: &mut [Speck], threads: usize, f: &(dyn Fn(&mut Speck) + Sync)) {
+    run_chunks_indexed(specks, threads, &|_, s| f(s));
+}
+
+/// [`run_chunks`] telling `f` each particle's index.
+pub fn run_chunks_indexed(specks: &mut [Speck], threads: usize, f: &(dyn Fn(usize, &mut Speck) + Sync)) {
     if specks.len() <= CHUNK || threads <= 1 {
-        specks.iter_mut().for_each(f);
+        specks.iter_mut().enumerate().for_each(|(i, s)| f(i, s));
         return;
     }
-    let chunks: Vec<&mut [Speck]> = specks.chunks_mut(CHUNK).collect();
+    let chunks: Vec<(usize, &mut [Speck])> = specks.chunks_mut(CHUNK).enumerate().collect();
     let per = chunks.len().div_ceil(threads);
     std::thread::scope(|scope| {
         let mut left = chunks.into_iter();
         loop {
-            let group: Vec<&mut [Speck]> = left.by_ref().take(per).collect();
+            let group: Vec<(usize, &mut [Speck])> = left.by_ref().take(per).collect();
             if group.is_empty() {
                 break;
             }
             scope.spawn(move || {
-                for chunk in group {
-                    chunk.iter_mut().for_each(f);
+                for (k, chunk) in group {
+                    chunk.iter_mut().enumerate().for_each(|(i, s)| f(k * CHUNK + i, s));
                 }
             });
         }
@@ -128,8 +140,13 @@ pub fn step(st: &mut ParticlesState, world: &World, log: &Log, threads: usize) {
     let since = st.world_step;
     st.world_step = world.step;
     st.step += 1;
+    let turn = st.settings.homes_turn.to_radians() * DT;
+    if turn.is_finite() {
+        st.home_turn = (st.home_turn + turn).rem_euclid(std::f32::consts::TAU);
+    }
     let anchor = world.anchor(st.id);
-    let cx = BirthCx { world, log, anchor: anchor.position, angle: anchor.angle };
+    let homes = st.home_frame(anchor.position, anchor.angle, world.camera.center);
+    let cx = BirthCx { world, log, anchor: anchor.position, angle: anchor.angle, homes: homes.clone() };
     births::births(st, &cx, since, false);
     let meets = st.meets.clone();
     let grid = meets.reads_balls().then(|| BallGrid::new(balls_in(world), meets.reach.max(1.0)));
@@ -150,6 +167,7 @@ pub fn step(st: &mut ParticlesState, world: &World, log: &Log, threads: usize) {
         Edges { centre, half }
     });
     let forces = st.forces.clone();
+    let ready = Ready::new(st, &forces, world, log, homes);
     let move_cx = MoveCx {
         forces: &forces,
         meets: &meets,
@@ -157,10 +175,11 @@ pub fn step(st: &mut ParticlesState, world: &World, log: &Log, threads: usize) {
         walls: &walls,
         edges,
         force: ForceCx { time: world.time() as f32, dt: DT, gravity: world.gravity },
+        ready: &ready,
         now: st.step,
         ceiling: world.limits().ceiling,
     };
-    run_chunks(&mut st.specks, threads, &|s| move_one(s, &move_cx));
+    run_chunks_indexed(&mut st.specks, threads, &|i, s| move_one(s, i, &move_cx));
     st.specks.retain(|s| s.flags & DEAD == 0);
     note_walls(st, world);
 }
@@ -178,7 +197,8 @@ pub fn note_walls(st: &mut ParticlesState, world: &World) {
 pub fn first(st: &mut ParticlesState, world: &World) {
     let anchor = world.anchor(st.id);
     let log = Log::default();
-    let cx = BirthCx { world, log: &log, anchor: anchor.position, angle: anchor.angle };
+    let homes = st.home_frame(anchor.position, anchor.angle, world.camera.center);
+    let cx = BirthCx { world, log: &log, anchor: anchor.position, angle: anchor.angle, homes };
     births::births(st, &cx, 0, true);
     note_walls(st, world);
 }

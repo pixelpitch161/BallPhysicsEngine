@@ -1173,6 +1173,26 @@ mod tests {
     }
 
     #[test]
+    fn moire_adds_its_two_grids_from_the_experimental_group() {
+        use bpe_kit::things::particles::KIND;
+        let mut h = harness();
+        h.set_size(egui::vec2(900.0, 900.0));
+        h.run();
+        h.get_by_label("+ Add thing").click();
+        h.run();
+        h.get_by_label("Experimental and psychedelic").hover();
+        h.run();
+        h.get_by_label("Moiré").click();
+        h.run();
+        let s = h.state();
+        let names: Vec<&str> = s.scene.things.values().filter(|t| t.kind == KIND).map(|t| t.name.as_str()).collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert!(names.contains(&"Moiré") && names.contains(&"Moiré 2"));
+        let picked = s.selection.primary.unwrap();
+        assert_eq!(s.scene.things[&picked].name, "Moiré", "the first grid is selected");
+    }
+
+    #[test]
     fn adding_into_a_selected_folder_puts_the_thing_inside() {
         let mut h = harness();
         let f = add_folder(&mut h);

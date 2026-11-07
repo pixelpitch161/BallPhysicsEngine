@@ -132,6 +132,12 @@ pub trait ThingSim: Send + Sync + 'static {
     fn affects_physics(&self, _key: &str) -> bool {
         true
     }
+    /// Whether changing this setting changes the things stepped beside the physics although it
+    /// isn't physics (the scene's tempo, which particles born on the beat read): the editor's
+    /// particle playback starts over when it changes ([`crate::beside_fingerprint`]).
+    fn affects_beside(&self, _key: &str) -> bool {
+        false
+    }
     /// How much of its balls' past the thing wants kept, for its trails and particles; `None`
     /// keeps none. Asked when the world is built, and hashed into the world's fingerprint.
     fn history(&self, _resolved: &ResolvedThing) -> Option<crate::HistoryWant> {

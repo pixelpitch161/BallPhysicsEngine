@@ -1,0 +1,305 @@
+//! The places ("spots") of a word, picture or grid source (particles part 3): each particle born
+//! at one keeps it as its home. They are worked out in the thing's own frame (middle at 0, x
+//! right, y down), once for each change of what they depend on, and shared (`Arc`) by every copy
+//! of the world; a process-wide cache keeps the latest, so rebuilding a playback doesn't spell a
+//! long word again.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+
+use glam::Vec2;
+
+use super::births::signed;
+use super::{BornFrom, GridBy, GridCovers, MOST_EVER, ParticlesSettings, Uses, Weight, WordFrom};
+use crate::modules::look::layers::particles::emit::hash;
+use crate::things::balls::shapes::{FONT, letter_outlines_in};
+
+/// The most places a source has (the cap on particles): past it the list is cut.
+pub const MOST_SPOTS: usize = MOST_EVER as usize;
+/// The most pixels a picture may have.
+const MOST_PIXELS: usize = 64 << 20;
+/// How many lists of places the cache keeps.
+const CACHED: usize = 16;
+
+const REGULAR: &[u8] = include_bytes!("../../../../bpe-studio/assets/fonts/IBMPlexSans-Regular.ttf");
+const MEDIUM: &[u8] = include_bytes!("../../../../bpe-studio/assets/fonts/IBMPlexSans-Medium.ttf");
+
+/// Everything a source's places depend on (numbers as their bits).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum SpotsKey {
+    /// A source without places.
+    None,
+    Word {
+        text: String,
+        height: u32,
+        weight: Weight,
+        spacing: u32,
+    },
+    Picture {
+        path: String,
+        modified: Option<std::time::SystemTime>,
+        width: u32,
+        uses: Uses,
+        spacing: u32,
+    },
+    Grid {
+        size: [u32; 2],
+        by: GridBy,
+        columns: u32,
+        rows: u32,
+        spacing: u32,
+        jitter: u32,
+        stagger: bool,
+    },
+}
+
+/// What `s`'s places depend on; `video` is the video's size (a grid covering the screen).
+pub fn key_of(s: &ParticlesSettings, video: Vec2) -> SpotsKey {
+    let bits = |x: f32| if x.is_finite() { x.to_bits() } else { 0 };
+    match s.from {
+        BornFrom::AWordOrPicture => match s.word_from {
+            WordFrom::Text => SpotsKey::Word {
+                text: s.text.clone(),
+                height: bits(s.letter_height),
+                weight: s.weight,
+                spacing: bits(s.spacing),
+            },
+            WordFrom::Picture => SpotsKey::Picture {
+                path: s.picture.clone(),
+                modified: std::fs::metadata(&s.picture).and_then(|m| m.modified()).ok(),
+                width: bits(s.picture_width),
+                uses: s.uses,
+                spacing: bits(s.spacing),
+            },
+        },
+        BornFrom::AGrid => {
+            let size = match s.grid_covers {
+                GridCovers::TheScreen => (video + Vec2::splat(2.0 * s.margin)).max(Vec2::ZERO),
+                GridCovers::ARectangle => Vec2::new(s.width, s.height).max(Vec2::ZERO),
+            };
+            SpotsKey::Grid {
+                size: [bits(size.x), bits(size.y)],
+                by: s.grid_by,
+                columns: s.columns,
+                rows: s.rows,
+                spacing: bits(s.spacing),
+                jitter: bits(s.jitter),
+                stagger: s.stagger,
+            }
+        }
+        _ => SpotsKey::None,
+    }
+}
+
+/// The places `key` makes.
+pub fn spots_for(key: &SpotsKey) -> Arc<Vec<Vec2>> {
+    if *key == SpotsKey::None {
+        return Arc::new(Vec::new());
+    }
+    static CACHE: OnceLock<Mutex<HashMap<SpotsKey, Arc<Vec<Vec2>>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(hit) = cache.lock().ok().and_then(|c| c.get(key).cloned()) {
+        return hit;
+    }
+    let f = f32::from_bits;
+    let out = Arc::new(match key {
+        SpotsKey::None => Vec::new(),
+        SpotsKey::Word { text, height, weight, spacing } => word_spots(text, f(*height), *weight, f(*spacing)),
+        SpotsKey::Picture { path, width, uses, spacing, .. } => picture_spots(path, f(*width), *uses, f(*spacing)),
+        SpotsKey::Grid { size, by, columns, rows, spacing, jitter, stagger } => {
+            grid_spots(Vec2::new(f(size[0]), f(size[1])), *by, (*columns, *rows), f(*spacing), f(*jitter), *stagger)
+        }
+    });
+    if let Ok(mut c) = cache.lock() {
+        if c.len() >= CACHED {
+            c.clear();
+        }
+        c.insert(key.clone(), out.clone());
+    }
+    out
+}
+
+/// A finite number at least `least`, else `least`.
+fn at_least(x: f32, least: f32) -> f32 {
+    if x.is_finite() { x.max(least) } else { least }
+}
+
+/// A grid's places across `size` (full width and height), its middle at 0.
+pub fn grid_spots(
+    size: Vec2,
+    by: GridBy,
+    (columns, rows): (u32, u32),
+    spacing: f32,
+    jitter: f32,
+    stagger: bool,
+) -> Vec<Vec2> {
+    let size = Vec2::new(at_least(size.x, 0.0), at_least(size.y, 0.0));
+    let (n, cell) = match by {
+        GridBy::Spacing => {
+            let step = at_least(spacing, 1.0);
+            let n = |w: f32| ((w / step + 1e-4).floor() as u64).max(1);
+            ((n(size.x), n(size.y)), Vec2::splat(step))
+        }
+        GridBy::ColumnsAndRows => {
+            let (c, r) = (columns.max(1) as u64, rows.max(1) as u64);
+            ((c, r), Vec2::new(size.x / c as f32, size.y / r as f32))
+        }
+    };
+    let jitter = if jitter.is_finite() { jitter } else { 0.0 };
+    let mut out = Vec::new();
+    for j in 0..n.1 {
+        for i in 0..n.0 {
+            if out.len() >= MOST_SPOTS {
+                return out;
+            }
+            let mut p =
+                Vec2::new((i as f32 - (n.0 - 1) as f32 * 0.5) * cell.x, (j as f32 - (n.1 - 1) as f32 * 0.5) * cell.y);
+            if stagger && j % 2 == 1 {
+                p.x += cell.x * 0.5;
+            }
+            if jitter != 0.0 {
+                let seed = hash(&[i as u32, j as u32, (i >> 32) as u32, (j >> 32) as u32, 0x917d]);
+                p += Vec2::new(signed(seed, 1), signed(seed, 2)) * cell * 0.5 * jitter;
+            }
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// The places filling `text`'s letters on a square lattice `spacing` apart, capitals `height`
+/// tall, centred on the letters (as the balls' Word shape fills them).
+pub fn word_spots(text: &str, height: f32, weight: Weight, spacing: f32) -> Vec<Vec2> {
+    let font = match weight {
+        Weight::Regular => REGULAR,
+        Weight::Medium => MEDIUM,
+        Weight::SemiBold => FONT,
+    };
+    let shapes = letter_outlines_in(font, text, at_least(height, 1.0));
+    let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+    for p in shapes.iter().flatten() {
+        lo = lo.min(*p);
+        hi = hi.max(*p);
+    }
+    if shapes.is_empty() || lo.x > hi.x {
+        return Vec::new();
+    }
+    let step = at_least(spacing, 1.0);
+    let cells = ((hi - lo) / step).floor();
+    let middle = (lo + hi) * 0.5;
+    let start = middle - cells * step * 0.5;
+    let mut out = Vec::new();
+    let mut crossings: Vec<(f32, i32)> = Vec::new();
+    for j in 0..=cells.y as i64 {
+        let y = start.y + j as f32 * step;
+        // Where each edge crosses the row, and which way (the non-zero winding of `winding`).
+        crossings.clear();
+        for shape in &shapes {
+            for (k, a) in shape.iter().enumerate() {
+                let b = shape[(k + 1) % shape.len()];
+                let up = a.y <= y && b.y > y;
+                let down = b.y <= y && a.y > y;
+                if up || down {
+                    let x = a.x + (y - a.y) / (b.y - a.y) * (b.x - a.x);
+                    crossings.push((x, if up { 1 } else { -1 }));
+                }
+            }
+        }
+        if crossings.is_empty() {
+            continue;
+        }
+        crossings.sort_by(|a, b| a.0.total_cmp(&b.0));
+        // A point's winding is the sum over the crossings to its right.
+        let mut wind: i32 = crossings.iter().map(|c| c.1).sum();
+        let mut next = 0;
+        for i in 0..=cells.x as i64 {
+            let x = start.x + i as f32 * step;
+            while next < crossings.len() && crossings[next].0 <= x {
+                wind -= crossings[next].1;
+                next += 1;
+            }
+            if wind != 0 {
+                out.push(Vec2::new(x, y) - middle);
+                if out.len() >= MOST_SPOTS {
+                    return out;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A PNG picture's pixels as RGBA, with its size; `None` when it can't be read.
+fn read_png(path: &str) -> Option<(Vec<u8>, usize, usize)> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = decoder.read_info().ok()?;
+    let size = reader.output_buffer_size()?;
+    if size > MOST_PIXELS * 4 {
+        return None;
+    }
+    let mut buf = vec![0; size];
+    let info = reader.next_frame(&mut buf).ok()?;
+    let (w, h) = (info.width as usize, info.height as usize);
+    let channels = match info.color_type {
+        png::ColorType::Grayscale => 1,
+        png::ColorType::GrayscaleAlpha => 2,
+        png::ColorType::Rgb => 3,
+        png::ColorType::Rgba => 4,
+        png::ColorType::Indexed => return None,
+    };
+    if w == 0 || h == 0 || buf.len() < w * h * channels {
+        return None;
+    }
+    let mut rgba = Vec::with_capacity(w * h * 4);
+    for px in buf[..w * h * channels].chunks_exact(channels) {
+        rgba.extend_from_slice(&match channels {
+            1 => [px[0], px[0], px[0], 255],
+            2 => [px[0], px[0], px[0], px[1]],
+            3 => [px[0], px[1], px[2], 255],
+            _ => [px[0], px[1], px[2], px[3]],
+        });
+    }
+    Some((rgba, w, h))
+}
+
+/// The places filling the parts `uses` picks of the PNG at `path`, drawn `width` pixels wide,
+/// on a square lattice `spacing` apart, centred. None when the picture can't be read.
+pub fn picture_spots(path: &str, width: f32, uses: Uses, spacing: f32) -> Vec<Vec2> {
+    if path.trim().is_empty() {
+        return Vec::new();
+    }
+    let Some((rgba, w, h)) = read_png(path) else { return Vec::new() };
+    let width = at_least(width, 1.0);
+    let scale = width / w as f32;
+    let size = Vec2::new(width, h as f32 * scale);
+    let step = at_least(spacing, 1.0);
+    let cells = (size / step).floor();
+    let start = size * 0.5 - cells * step * 0.5;
+    let mut out = Vec::new();
+    for j in 0..=cells.y as i64 {
+        for i in 0..=cells.x as i64 {
+            let p = start + Vec2::new(i as f32, j as f32) * step;
+            let (px, py) = ((p.x / scale) as usize, (p.y / scale) as usize);
+            if px >= w || py >= h {
+                continue;
+            }
+            let c = &rgba[(py * w + px) * 4..][..4];
+            let alpha = c[3] as f32 / 255.0;
+            let light = (0.2126 * c[0] as f32 + 0.7152 * c[1] as f32 + 0.0722 * c[2] as f32) / 255.0;
+            let filled = match uses {
+                Uses::SolidParts => alpha >= 0.5,
+                Uses::BrightParts => light * alpha >= 0.5,
+                Uses::DarkParts => (1.0 - light) * alpha >= 0.5,
+            };
+            if filled {
+                out.push(p - size * 0.5);
+                if out.len() >= MOST_SPOTS {
+                    return out;
+                }
+            }
+        }
+    }
+    out
+}

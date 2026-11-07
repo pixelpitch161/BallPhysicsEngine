@@ -1,0 +1,61 @@
+# scene	second	particles	hash
+Galaxy round a ball	1	900	10577a768040740f
+Galaxy round a ball	2	900	70ab329724d90fd5
+Galaxy round a ball	3	900	0050bf2df6047b95
+Galaxy round a ball	4	896	77c99e5e2532f2cf
+Galaxy round a ball	5	898	e0366dcac274f6cc
+Galaxy round a ball	6	899	a414e75de22cf2c7
+Flow lines	1	4000	a8d329a1ed84f564
+Flow lines	2	4000	361aa32ce892fde9
+Flow lines	3	4000	cac6518f5a403ea3
+Flow lines	4	4000	dd7019e6228b6799
+Flow lines	5	3996	aa83e1b41115a10a
+Flow lines	6	3998	c62c711cdbd24e54
+Form a word	1	3586	00d549259eb2c977
+Form a word	2	3586	325569d580168a15
+Form a word	3	3586	230b6408a531296f
+Form a word	4	3586	97c367e43688a095
+Form a word	5	3586	1b541e1aed1ddc70
+Form a word	6	3586	7d3aa32bec03c52b
+Flock	1	180	32d2c25cac9d2bc1
+Flock	2	180	560bf4879dcfaf0f
+Flock	3	180	7e0e96f0145b6d2f
+Flock	4	180	9b664a4923fce965
+Flock	5	180	29cf50c20b1931d4
+Flock	6	180	b4f8ad9bdc745492
+Shockwaves	1	1500	d70fc229279977cb
+Shockwaves	2	1500	d4f657f7c46cb798
+Shockwaves	3	1500	5fe79f4948fed8a0
+Shockwaves	4	1500	6af7ba13522c3110
+Shockwaves	5	1500	83e395b6fa043f19
+Shockwaves	6	1500	248c0adf066b2bb2
+Comet tail	1	2904	4676f5accb1847f6
+Comet tail	2	4936	470d8268b1f23b3b
+Comet tail	3	5197	be039e4d4996e089
+Comet tail	4	5195	ce8e072fb558b22c
+Comet tail	5	5238	98a1150da9d05f19
+Comet tail	6	5164	9312639f8d2e2ed7
+Black hole	1	2500	4902fbbfc860a913
+Black hole	2	2496	538fac614590f8db
+Black hole	3	2499	6833ec4bdeeeabbb
+Black hole	4	2500	fc39d3b8569aa557
+Black hole	5	2492	eb251b29c3d79ed4
+Black hole	6	2498	37a14cb822b1792d
+Iron filings	1	2508	77c35218193efc19
+Iron filings	2	2508	2d0a5fffa7f2d7b1
+Iron filings	3	2508	77638f4dbf9916dc
+Iron filings	4	2508	943f02a3714ccaca
+Iron filings	5	2508	239732f714dd3323
+Iron filings	6	2508	eda235eb2d4b3a0c
+Beat grid	1	836	8f210a10a1e56d12
+Beat grid	2	836	8374160506098d14
+Beat grid	3	836	34f04b977e9def56
+Beat grid	4	836	bea0cd6f640a84c8
+Beat grid	5	836	7c96045355ef46f3
+Beat grid	6	836	f8dbee248ef117b2
+Spirograph	1	1500	7b350f0d82cd0850
+Spirograph	2	1500	5be88044392183a0
+Spirograph	3	1500	357f3be5b2625717
+Spirograph	4	1500	5cdb5e35b43a7f7c
+Spirograph	5	1500	d9cbf22ec58bff99
+Spirograph	6	1500	3a2644dba1bddf0c

@@ -30,14 +30,40 @@ pub enum Look {
     Confetti,
     RainbowSmokeTrail,
     InkInWater,
+    // Part 3 (`looks_motion.rs`).
+    Galaxy,
+    FlowLines,
+    FormAWord,
+    Flock,
+    Shockwaves,
+    CometTail,
+    BlackHole,
+    IronFilings,
+    BeatGrid,
+    Moire,
+    Spirograph,
 }
 
 /// The menu's groups of looks, in order, after Empty.
 pub const GROUPS: [(&str, &[Look]); 4] = [
-    ("Weather and nature", &[Look::Rain, Look::Snow, Look::Hail, Look::BlossomPetals, Look::Sandstorm]),
-    ("Fire and energy", &[Look::FireOnABall, Look::SparkFountain, Look::EmbersAndAsh]),
-    ("Space and sparkle", &[Look::Fireflies, Look::Confetti]),
-    ("Experimental and psychedelic", &[Look::RainbowSmokeTrail, Look::InkInWater]),
+    ("Weather and nature", &[Look::Rain, Look::Snow, Look::Hail, Look::BlossomPetals, Look::Sandstorm, Look::Flock]),
+    ("Fire and energy", &[Look::FireOnABall, Look::SparkFountain, Look::EmbersAndAsh, Look::Shockwaves]),
+    (
+        "Space and sparkle",
+        &[Look::Fireflies, Look::Confetti, Look::Galaxy, Look::CometTail, Look::BlackHole, Look::IronFilings],
+    ),
+    (
+        "Experimental and psychedelic",
+        &[
+            Look::RainbowSmokeTrail,
+            Look::InkInWater,
+            Look::FlowLines,
+            Look::FormAWord,
+            Look::BeatGrid,
+            Look::Moire,
+            Look::Spirograph,
+        ],
+    ),
 ];
 
 impl Look {
@@ -62,6 +88,17 @@ impl Look {
             Look::Confetti => "Confetti",
             Look::RainbowSmokeTrail => "Rainbow smoke trail",
             Look::InkInWater => "Ink in water",
+            Look::Galaxy => "Galaxy round a ball",
+            Look::FlowLines => "Flow lines",
+            Look::FormAWord => "Form a word",
+            Look::Flock => "Flock",
+            Look::Shockwaves => "Shockwaves",
+            Look::CometTail => "Comet tail",
+            Look::BlackHole => "Black hole",
+            Look::IronFilings => "Iron filings",
+            Look::BeatGrid => "Beat grid",
+            Look::Moire => "Moiré",
+            Look::Spirograph => "Spirograph",
         }
     }
 
@@ -81,39 +118,60 @@ impl Look {
             Look::Confetti => "Bursts of confetti, flipping over as it falls.",
             Look::RainbowSmokeTrail => "Rainbow smoke left behind each ball (inside a group of balls) or a point.",
             Look::InkInWater => "Clouds of ink swirling out, bursting again and again.",
+            Look::Galaxy => "Stars orbiting each ball (inside a group of balls) or a point, pulled along as it moves.",
+            Look::FlowLines => "Thousands of specks following an invisible current; the balls stir it.",
+            Look::FormAWord => "Specks holding the shape of a word; the balls blast them apart and they spring back.",
+            Look::Flock => "A flock of birds or a school of fish that swoops together and splits round the balls.",
+            Look::Shockwaves => "Dust hanging in the air that every hit sends a ring through.",
+            Look::CometTail => "A blue gas tail and a golden dust tail blown off each ball by a far-off sun.",
+            Look::BlackHole => "A disc of dust spiralling into a point and swallowed, stretched into streaks.",
+            Look::IronFilings => "A grid of needles lining up with the balls' magnetic field.",
+            Look::BeatGrid => "A grid of dots that jumps on every beat and ripples out from every hit.",
+            Look::Moire => "Two fine grids over each other, one slowly turning and pushed by the balls.",
+            Look::Spirograph => {
+                "Specks looping round each ball (inside a group of balls) or a point on spirograph curves."
+            }
         }
     }
 
     /// Whether it rides what it sits in when it can.
-    fn rides(self) -> bool {
-        matches!(self, Look::Empty | Look::FireOnABall | Look::RainbowSmokeTrail)
+    pub fn rides(self) -> bool {
+        matches!(
+            self,
+            Look::Empty
+                | Look::FireOnABall
+                | Look::RainbowSmokeTrail
+                | Look::Galaxy
+                | Look::CometTail
+                | Look::Spirograph
+        )
     }
 }
 
 /// One Look layer of a recipe, with its sub-layers.
-struct LayerRecipe {
-    kind: &'static str,
-    params: Params,
-    subs: Vec<(&'static str, Params)>,
+pub(super) struct LayerRecipe {
+    pub(super) kind: &'static str,
+    pub(super) params: Params,
+    pub(super) subs: Vec<(&'static str, Params)>,
 }
 
 /// What a look fills in.
-struct Recipe {
-    source: ParticlesSettings,
-    forces: Vec<(&'static str, Params)>,
-    meets: MeetsSettings,
-    layers: Vec<LayerRecipe>,
+pub(super) struct Recipe {
+    pub(super) source: ParticlesSettings,
+    pub(super) forces: Vec<(&'static str, Params)>,
+    pub(super) meets: MeetsSettings,
+    pub(super) layers: Vec<LayerRecipe>,
 }
 
 fn gradient(colors: &[Color]) -> Gradient {
     Gradient::spread(colors, Mix::Even, false)
 }
 
-fn paint(colors: &[Color], follow: Follow) -> Paint {
+pub(super) fn paint(colors: &[Color], follow: Follow) -> Paint {
     Paint { colours: gradient(colors), follow, ..Paint::default() }
 }
 
-fn rainbow(follow: Follow) -> Paint {
+pub(super) fn rainbow(follow: Follow) -> Paint {
     let colours = [
         Color::rgb(255, 60, 60),
         Color::rgb(255, 200, 40),
@@ -124,15 +182,15 @@ fn rainbow(follow: Follow) -> Paint {
     Paint { colours: Gradient::spread(&colours, Mix::RoundTheWheel, true), follow, ..Paint::default() }
 }
 
-fn glow(size: f32, strength: f32) -> (&'static str, Params) {
+pub(super) fn glow(size: f32, strength: f32) -> (&'static str, Params) {
     (SUB_GLOW, ShapeSubGlow { size, strength, ..ShapeSubGlow::default() }.to_params())
 }
 
-fn sprites(s: SpritesLayer, subs: Vec<(&'static str, Params)>) -> LayerRecipe {
+pub(super) fn sprites(s: SpritesLayer, subs: Vec<(&'static str, Params)>) -> LayerRecipe {
     LayerRecipe { kind: SPRITES, params: s.to_params(), subs }
 }
 
-fn streaks(s: StreaksLayer, subs: Vec<(&'static str, Params)>) -> LayerRecipe {
+pub(super) fn streaks(s: StreaksLayer, subs: Vec<(&'static str, Params)>) -> LayerRecipe {
     LayerRecipe { kind: STREAKS, params: s.to_params(), subs }
 }
 
@@ -145,6 +203,17 @@ fn recipe(look: Look, rides: bool) -> Recipe {
     let top = ParticlesSettings { from: BornFrom::WholeScreen, edge: Edge::Top, ..d.clone() };
     let vanish = MeetsSettings { at_edges: AtEdges::Vanish, ..MeetsSettings::default() };
     match look {
+        Look::Galaxy
+        | Look::FlowLines
+        | Look::FormAWord
+        | Look::Flock
+        | Look::Shockwaves
+        | Look::CometTail
+        | Look::BlackHole
+        | Look::IronFilings
+        | Look::BeatGrid
+        | Look::Moire
+        | Look::Spirograph => super::looks_motion::recipe(look, rides),
         Look::Empty => Recipe {
             source: riding(d.clone()),
             forces: Vec::new(),
@@ -456,6 +525,12 @@ fn recipe(look: Look, rides: bool) -> Recipe {
             forces: vec![
                 (WANDER, WanderForce { strength: 60.0, turns: 0.5, ..Default::default() }.to_params()),
                 (DRAG, DragForce { drag: 0.8, ..Default::default() }.to_params()),
+                // They flee the balls (part 3).
+                (
+                    super::more_forces::PUSH,
+                    super::more_forces::PushForce { strength: 1500.0, ball_reach: 5.0, ..Default::default() }
+                        .to_params(),
+                ),
             ],
             meets: MeetsSettings::default(),
             layers: vec![sprites(
@@ -586,15 +661,24 @@ fn put_layer(scene: &mut Scene, id: ThingId, slot: SlotId, layer: bpe_core::Laye
     }
 }
 
-/// Adds a Particles thing with `look` under `parent`, named after the look.
+/// Adds a Particles thing with `look` under `parent`, named after the look (and, for a look made
+/// of two, the second beside it). The first is given back.
 pub fn add_particles(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) -> Result<ThingId, EditError> {
-    let id = crate::add_thing(scene, reg, KIND, parent)?;
     let rides = look.rides() && can_ride(scene, parent);
-    let r = recipe(look, rides);
+    let id = add_recipe(scene, reg, look.name(), recipe(look, rides), parent)?;
+    for (name, r) in super::looks_motion::also(look) {
+        add_recipe(scene, reg, name, r, parent)?;
+    }
+    Ok(id)
+}
+
+/// Adds a Particles thing named `name` filled in by `r` under `parent`.
+fn add_recipe(scene: &mut Scene, reg: &Registry, name: &str, r: Recipe, parent: ThingId) -> Result<ThingId, EditError> {
+    let id = crate::add_thing(scene, reg, KIND, parent)?;
     if let Some(t) = scene.things.get_mut(&id) {
         t.name.clear();
     }
-    let name = scene.free_name(look.name());
+    let name = scene.free_name(name);
     if let Some(t) = scene.things.get_mut(&id) {
         t.params = r.source.to_params();
         t.name = name;

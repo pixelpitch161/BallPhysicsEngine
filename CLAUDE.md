@@ -447,6 +447,25 @@ Editor: `look_editor/particles.rs` (the Forces and Look lists; a Motion card's e
 `look_editor::pick_key`), `preview/particle_handles.rs` (area corner/edges, line end). Scene format 12. Goldens:
 `tests/golden-particles*.txt` (`scenes::particle_scenes`, test-only).
 
+Part 3 is in (plan `part3.md`): **moving and forming**. Sources From **A word or picture** (Text with Letter height and
+Weight, or a PNG Picture with Picture width and Uses Solid / Bright / Dark parts) and **A grid** (Covers The screen or
+A rectangle, by Spacing or Columns and rows, Jitter, Stagger); their places are `spots.rs` (`SpotsKey`, `spots_for`, a
+process-wide cache of `Arc<Vec<Vec2>>`; words by a scanline fill of `balls::shapes::letter_outlines_in`), each
+particle's `Speck.spot` (1-based) names its **home**, which follows the anchor and turns by **Homes turn**
+(`ParticlesState.home_turn`, `HomeFrame`); Keep a crowd / Once at the start fill every free place. Emit **On the beat**
+(`beats.rs::Moments`, Every Beat / Bar / Bars, Offset) reads the tempo from `things::scene::sim::SceneBeat`, a state
+the scene sim keeps at `ThingId::ROOT`; `ThingSim::affects_beside` puts the tempo keys into `beside_fingerprint` so
+a tempo edit restarts the particles (not the physics). Heading **Round the middle**. Nine force layers
+(`more_forces.rs`): Pull to / Push away from (Toward Its place, A point, Its ball, Ball number, The middle of its parent,
+Balls nearby; Falloff, Orbit, Swallow), Spring home, Flock (start-of-step `ready::Flockmates` grid, at most
+`MOST_MATES`), Magnetic field (balls as dipoles; turns needles), Flow field (Noise / Waves / Spiral / Vortex),
+Spirograph, Pulse on the beat, Ripple from hits (rings from the log, `MOST_RINGS`); what they read is gathered once a
+step in `ready.rs::Ready` so any thread count gives the same. Every force's Only for gains A share / The rest (the same
+dice as the Look's Only). Eleven looks (`looks_motion.rs`): Galaxy round a ball, Flow lines, Form a word, Flock,
+Shockwaves, Comet tail, Black hole, Iron filings, Beat grid, Moiré (two grids, `looks_motion::also`), Spirograph.
+Goldens `tests/golden-particles-motion*.txt` (`scenes::particle_motion_scenes`); the preview shows a rectangle grid's
+corner handle.
+
 ## Crate map
 
 Dependencies go bottom to top:

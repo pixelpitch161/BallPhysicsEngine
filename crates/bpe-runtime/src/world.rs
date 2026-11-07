@@ -1521,6 +1521,17 @@ pub fn beside_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u6
         return 0;
     }
     let mut h = Hasher(fingerprint_of(scene, resolved, sims, true));
+    // What the main things hold that only the beside things read (the tempo).
+    for (id, r) in &resolved.things {
+        let Some(sim) = sims.thing(&r.kind).filter(|s| s.in_main(r)) else { continue };
+        for (key, value) in r.params.iter() {
+            if sim.affects_beside(key) {
+                h.bytes(&id.0.to_le_bytes());
+                h.bytes(key.as_bytes());
+                h.value(value);
+            }
+        }
+    }
     for (id, r) in &resolved.things {
         if !sims.thing(&r.kind).is_some_and(|s| !s.in_main(r)) {
             continue;
