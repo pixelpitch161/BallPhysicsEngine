@@ -32,7 +32,12 @@ pub fn token_ranges(words: &str) -> Vec<std::ops::Range<usize>> {
 fn job_of(words: &str, wrap: f32) -> LayoutJob {
     let font = egui::FontId::proportional(13.0);
     let plain = egui::TextFormat { font_id: font.clone(), color: style::TEXT, ..Default::default() };
-    let token = egui::TextFormat { font_id: font, color: style::TEXT_STRONG, background: style::TOKEN_BG, ..Default::default() };
+    let token = egui::TextFormat {
+        font_id: font,
+        color: style::TEXT_STRONG,
+        background: style::TOKEN_BG,
+        ..Default::default()
+    };
     let mut job = LayoutJob::default();
     let mut at = 0;
     for r in token_ranges(words) {
@@ -129,9 +134,13 @@ fn insert_menu(ui: &mut Ui, choices: &TargetChoices, picked: &mut Option<String>
     item(ui, "Ball number", "{ball number}".into(), picked);
     item(ui, "Ball name", "{ball name}".into(), picked);
     ui.menu_button("Standings", |ui| {
-        for (label, by) in
-            [("Furthest down", "down"), ("Most hits", "hits"), ("Health", "health"), ("Size", "size"), ("Speed", "speed")]
-        {
+        for (label, by) in [
+            ("Furthest down", "down"),
+            ("Most hits", "hits"),
+            ("Health", "health"),
+            ("Size", "size"),
+            ("Speed", "speed"),
+        ] {
             item(ui, label, format!("{{standings {by} 5}}"), picked);
         }
     });

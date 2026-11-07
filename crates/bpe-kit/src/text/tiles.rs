@@ -43,7 +43,8 @@ pub fn tile_for(font: &FontData, glyph: u16, weight: f32, slant: f32) -> Option<
     if let Some(hit) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return hit.clone();
     }
-    let made = glyph_outline(font, glyph, weight, slant, TILE_CAP).and_then(|c| tile_of(&c, key_hash(key))).map(Arc::new);
+    let made =
+        glyph_outline(font, glyph, weight, slant, TILE_CAP).and_then(|c| tile_of(&c, key_hash(key))).map(Arc::new);
     let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
     if cache.len() >= 4096 {
         cache.clear();
@@ -151,17 +152,20 @@ mod tests {
             400.0,
         );
         let font = found.font();
-        let l = crate::text::layout(font, &crate::text::LayoutSpec {
-            words: "O",
-            size: 50.0,
-            weight: 400.0,
-            slant: 0.0,
-            letter_spacing: 0.0,
-            line_spacing: 1.0,
-            align: crate::text::Align::Centre,
-            wrap: 0.0,
-            case: crate::text::Case::AsTyped,
-        });
+        let l = crate::text::layout(
+            font,
+            &crate::text::LayoutSpec {
+                words: "O",
+                size: 50.0,
+                weight: 400.0,
+                slant: 0.0,
+                letter_spacing: 0.0,
+                line_spacing: 1.0,
+                align: crate::text::Align::Centre,
+                wrap: 0.0,
+                case: crate::text::Case::AsTyped,
+            },
+        );
         let t = tile_for(font, l.letters[0].glyph, 400.0, 0.0).unwrap();
         let n = bpe_gfx::MASK_TILE;
         let middle = t.bytes[2 * ((n / 2) * n + n / 2)];

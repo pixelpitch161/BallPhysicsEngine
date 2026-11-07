@@ -380,18 +380,8 @@ mod tests {
             "along_start",
             "gap",
         ];
-        let show = [
-            "show",
-            "appear",
-            "disappear",
-            "move_time",
-            "timed_by",
-            "show_start",
-            "each",
-            "every",
-            "hits_of",
-            "stays",
-        ];
+        let show =
+            ["show", "appear", "disappear", "move_time", "timed_by", "show_start", "each", "every", "hits_of", "stays"];
         let defs = TextSettings::defs();
         let keys: Vec<&str> = defs.iter().map(|d| d.key).collect();
         let mut want_keys: Vec<&str> = words[..11].to_vec();

@@ -326,11 +326,13 @@ fn lay_out(font: &FontData, spec: &LayoutSpec) -> TextLayout {
 
 /// A glyph's outline at one weight, scale and shear: (font id, glyph, weight bits, scale bits, shear bits).
 type OutlineKey = (u64, u16, u32, u32, u32);
+/// A glyph's merged contours, shared.
+type Outline = Arc<Vec<Vec<Vec2>>>;
 
 /// Glyph outlines already flattened and merged, kept for the process so words that change every frame
 /// (a timer) only shape again. Cleared when it grows past [`MOST_OUTLINES`].
 fn cached_outline(key: OutlineKey, make: impl FnOnce() -> Option<Vec<Vec<Vec2>>>) -> Option<Arc<Vec<Vec<Vec2>>>> {
-    static CACHE: OnceLock<Mutex<HashMap<OutlineKey, Option<Arc<Vec<Vec<Vec2>>>>>>> = OnceLock::new();
+    static CACHE: OnceLock<Mutex<HashMap<OutlineKey, Option<Outline>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
     if let Some(hit) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return hit.clone();

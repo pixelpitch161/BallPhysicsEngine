@@ -40,7 +40,9 @@ pub fn unit_of(letter: &Letter, by: ShowBy) -> u32 {
 pub fn shows_whole(s: &TextSettings) -> bool {
     s.show == ShowBy::AllAtOnce
         && !moves(s.appear)
-        && s.timed_by == TimedBy::Seconds && s.show_start <= 0.0 && s.stays <= 0.0
+        && s.timed_by == TimedBy::Seconds
+        && s.show_start <= 0.0
+        && s.stays <= 0.0
 }
 
 /// The most hits looked for to time a show.
@@ -138,7 +140,9 @@ fn coming(m: TextMove, t: f32, size: f32) -> LetterMove {
 fn going(m: TextMove, p: f32, size: f32) -> LetterMove {
     let p = p.clamp(0.0, 1.0);
     match m {
-        TextMove::Drop => LetterMove { offset: Vec2::new(0.0, p * p * 1.5 * size), opacity: 1.0 - p, ..LetterMove::WHOLE },
+        TextMove::Drop => {
+            LetterMove { offset: Vec2::new(0.0, p * p * 1.5 * size), opacity: 1.0 - p, ..LetterMove::WHOLE }
+        }
         _ => coming(m, 1.0 - p, size),
     }
 }
@@ -193,11 +197,15 @@ mod tests {
             let start = letter_move(&s, Some(0.0), 0.0, 100.0).unwrap();
             assert!(start.scale < 0.01 || start.opacity < 0.01, "{m:?} starts hidden: {start:?}");
             let end = letter_move(&s, Some(0.0), 0.5, 100.0).unwrap();
-            assert!((end.scale - 1.0).abs() < 1e-4 && end.offset.length() < 1e-3 && end.opacity == 1.0, "{m:?} {end:?}");
+            assert!(
+                (end.scale - 1.0).abs() < 1e-4 && end.offset.length() < 1e-3 && end.opacity == 1.0,
+                "{m:?} {end:?}"
+            );
         }
         // A pop overshoots on the way.
         let s = settings(TextMove::Pop, TextMove::None, 0.0);
-        let peak = (1..50).map(|k| letter_move(&s, Some(0.0), k as f64 / 100.0, 100.0).unwrap().scale).fold(0.0, f32::max);
+        let peak =
+            (1..50).map(|k| letter_move(&s, Some(0.0), k as f64 / 100.0, 100.0).unwrap().scale).fold(0.0, f32::max);
         assert!(peak > 1.05, "{peak}");
         // A drop comes from above, a slide from below.
         let drop = coming(TextMove::Drop, 0.1, 100.0);

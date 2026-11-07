@@ -199,9 +199,10 @@ fn ball_names(at: &TextAt) -> BallNames {
 /// on what it rides (moved by its Position), with the ball each rides.
 fn riding_places(at: &TextAt, s: &TextSettings, screen: bool, own: Pose) -> Vec<(Pose, Option<(ThingId, usize)>)> {
     let Some(thing) = at.tree.things.get(&at.id) else { return vec![(own, None)] };
-    let parent = thing.parent.filter(|p| *p != ThingId::ROOT).filter(|p| {
-        at.tree.things.get(p).is_some_and(|t| crate::things::light::RIDES.contains(&t.kind.as_str()))
-    });
+    let parent = thing
+        .parent
+        .filter(|p| *p != ThingId::ROOT)
+        .filter(|p| at.tree.things.get(p).is_some_and(|t| crate::things::light::RIDES.contains(&t.kind.as_str())));
     let Some(parent) = parent else { return vec![(own, None)] };
     let offset = thing.transform.position;
     let seen = |p: Vec2| if screen { at.world.camera.to_screen(p) } else { p };
@@ -391,7 +392,11 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
     let shown: Vec<Shown> = copies
         .iter()
         .enumerate()
-        .flat_map(|(copy, now)| (0..now.layout.letters.len()).filter(move |&k| now.shown[k].is_some()).map(move |letter| Shown { copy, letter }))
+        .flat_map(|(copy, now)| {
+            (0..now.layout.letters.len())
+                .filter(move |&k| now.shown[k].is_some())
+                .map(move |letter| Shown { copy, letter })
+        })
         .collect();
     // Fast letters lay the gradient over their boxes; drawn ones over their outlines.
     let outlines: Vec<Vec<Vec<Vec2>>> =
@@ -469,7 +474,9 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
             }
             None => {
                 let contours = if fast { now.contours(l.letter) } else { outlines[i].clone() };
-                frame.push_letter(now.pose.position, now.pose.angle, &contours, margin, BODY_WHITE, code).map(|k| (k, past))
+                frame
+                    .push_letter(now.pose.position, now.pose.angle, &contours, margin, BODY_WHITE, code)
+                    .map(|k| (k, past))
             }
         };
         if let Some((k, reach_past)) = index {

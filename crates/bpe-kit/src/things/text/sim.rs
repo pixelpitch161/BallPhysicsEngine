@@ -45,8 +45,7 @@ impl ThingSim for TextSim {
 
     /// With standings, every thing with balls keeps a little of its past.
     fn after_build(&self, thing: ThingId, world: &mut World) {
-        let standings =
-            world.states.get(&thing).is_some_and(|s| bpe_runtime::state::<TextState>(s.as_ref()).standings);
+        let standings = world.states.get(&thing).is_some_and(|s| bpe_runtime::state::<TextState>(s.as_ref()).standings);
         if !standings {
             return;
         }

@@ -222,7 +222,8 @@ fn token_of(inner: &str) -> Option<(Token, Format)> {
         Token::BallNumber
     } else if lower == "ball name" {
         Token::BallName
-    } else if let Some(rest) = lower.strip_prefix("standings ") {
+    } else {
+        let rest = lower.strip_prefix("standings ")?;
         let (spec, of) = match rest.split_once(" of ") {
             Some((s, _)) => {
                 let name = body[body.len() - (rest.len() - s.len() - 4)..].trim();
@@ -236,8 +237,6 @@ fn token_of(inner: &str) -> Option<(Token, Format)> {
             None => (words.join(" "), 5),
         };
         Token::Standings { by: RankBy::of_word(&by)?, rows: rows.clamp(1, MOST_ROWS), of }
-    } else {
-        return None;
     };
     Some((token, format))
 }
@@ -307,7 +306,11 @@ impl BallNames {
 
     /// Names from each ball's colour: `colour_of(thing, row)` (linear), for the live balls of
     /// `things`. Two balls of a thing with the same colour name get their numbers after it.
-    pub fn from_colours(world: &World, things: &[ThingId], colour_of: &dyn Fn(ThingId, usize) -> Option<[f32; 4]>) -> Self {
+    pub fn from_colours(
+        world: &World,
+        things: &[ThingId],
+        colour_of: &dyn Fn(ThingId, usize) -> Option<[f32; 4]>,
+    ) -> Self {
         let mut out = BTreeMap::new();
         for &thing in things {
             let Some(b) = world.bodies.get(&thing) else { continue };
@@ -625,12 +628,9 @@ fn standings(cx: &LiveCx, by: RankBy, rows: u32, of: Option<&str>, format: Forma
                     let d = (b.position[r.row].y - b.start[r.row].y) as f64 / PX_PER_METRE;
                     format!("{}m", format_value(d, format, 1, false))
                 }
-                RankBy::Hits => format_value(
-                    hits[0].get(&(r.thing, r.row)).copied().unwrap_or(0) as f64,
-                    format,
-                    0,
-                    false,
-                ),
+                RankBy::Hits => {
+                    format_value(hits[0].get(&(r.thing, r.row)).copied().unwrap_or(0) as f64, format, 0, false)
+                }
                 RankBy::Health => {
                     format_value(health_of(cx.world, r.thing, Some(r.row)).map_or(0.0, |h| h.0), format, 0, false)
                 }
@@ -713,7 +713,10 @@ mod tests {
             ("{ball number}", Token::BallNumber),
             ("{ball name}", Token::BallName),
             ("{standings down 3}", Token::Standings { by: RankBy::Down, rows: 3, of: None }),
-            ("{standings most hits 4 of Racers}", Token::Standings { by: RankBy::Hits, rows: 4, of: Some("Racers".into()) }),
+            (
+                "{standings most hits 4 of Racers}",
+                Token::Standings { by: RankBy::Hits, rows: 4, of: Some("Racers".into()) },
+            ),
             ("{standings speed}", Token::Standings { by: RankBy::Speed, rows: 5, of: None }),
         ];
         for (words, want) in table {
@@ -743,7 +746,7 @@ mod tests {
     fn formats_write_numbers() {
         let f = |s: &str| Format::parse(s).unwrap();
         assert_eq!(format_value(7.0, f("000"), 0, false), "007");
-        assert_eq!(format_value(3.14159, f("0.00"), 0, false), "3.14");
+        assert_eq!(format_value(4.56789, f("0.00"), 0, false), "4.57");
         assert_eq!(format_value(-2.5, f("00.0"), 0, false), "-02.5");
         assert_eq!(format_value(12.34, Format::default(), 1, false), "12.3");
         assert_eq!(format_value(75.0, f("m:ss"), 0, false), "1:15");

@@ -7,8 +7,8 @@ use bpe_core::{Color, EditError, Gradient, Registry, Scene, Settings, SlotId, Th
 use glam::Vec2;
 
 use super::{KIND, ShowBy, TextMove, TextPath, TextSettings, TimedBy};
-use crate::text::Align;
 use crate::modules::look::shape as look;
+use crate::text::Align;
 
 /// A Text's starting look.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -252,9 +252,8 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             s.size = 36.0;
             screen = false;
             // Inside the picked group of balls, else the first there is.
-            let rides = |id: &ThingId| {
-                scene.things.get(id).is_some_and(|t| matches!(t.kind.as_str(), "balls" | "emitter"))
-            };
+            let rides =
+                |id: &ThingId| scene.things.get(id).is_some_and(|t| matches!(t.kind.as_str(), "balls" | "emitter"));
             if !rides(&parent)
                 && let Some(first) = scene.order.iter().find(|id| rides(id))
             {
