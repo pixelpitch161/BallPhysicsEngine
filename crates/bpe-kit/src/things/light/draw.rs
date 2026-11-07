@@ -161,15 +161,20 @@ fn push_light(
         let balls = meets_of(s.at_balls);
         // Glass bends the beam through it (lighting part 2b's See-through and Bends light), unless
         // the beam is to stop there; its Rainbow split splits it into colours.
+        // Which things are glass, read once (a beam of many rays meets them very often).
+        let mut glass_of = std::collections::HashMap::new();
+        for thing in scenery.iter().flat_map(|s| s.things()) {
+            glass_of.entry(thing).or_insert_with(|| {
+                cx.scene
+                    .things
+                    .get(&thing)
+                    .and_then(|t| t.slots.get(&bpe_core::SlotId::Look))
+                    .and_then(crate::modules::look::surface::glass_of)
+            });
+        }
         let meets = |thing: ThingId, ball: bool| {
             let plain = if ball { balls } else { shapes };
-            let glass = cx
-                .scene
-                .things
-                .get(&thing)
-                .and_then(|t| t.slots.get(&bpe_core::SlotId::Look))
-                .and_then(crate::modules::look::surface::glass_of);
-            match glass {
+            match glass_of.get(&thing).copied().flatten() {
                 Some(g) if plain != Meets::Stop => Meets::Bend { index: g.index, rainbow: g.rainbow },
                 _ => plain,
             }

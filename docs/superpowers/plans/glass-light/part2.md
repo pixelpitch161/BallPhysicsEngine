@@ -172,8 +172,6 @@ Stop on the back wall: the wall isn't glass so the laser stops there). Expected 
   (brightness over the empty background by 30) and roughly white (|R − B| < 25); behind it, on the band's red edge R > B,
   on its violet edge B > R.
 - [ ] `rainbow_split_off_draws_todays_laser`: with Rainbow split 0 the picture is byte-identical to Colours 1.
-- [ ] `no_ribbons_no_pass`: a laser-only scene draws identically with this branch's renderer as with `scene.ribbons`
-  forced empty (sanity that the pass only runs for beams).
 
 ### Task 7: finish
 
@@ -181,3 +179,26 @@ Stop on the back wall: the wall isn't glass so the laser stops there). Expected 
 - [ ] `cargo fmt`, `cargo clippy --workspace`, `cargo test --workspace` (bpe-gfx `--test-threads=2`), goldens in debug and
   release unchanged.
 - [ ] One Opus review of the branch; fix; PR; merge when checks pass; tell the coordinator.
+
+## As built
+
+- **Filled shapes are solid glass to the tracer.** Before, the tracer met every outline as a band (a capsule a side), so a
+  filled glass triangle bent light in and straight back out of each band and never acted as a prism. Now a filled wall
+  (`Wall.solid`) is its bare outline (no band, as balls and the picture see it): light inside it leaves only through the
+  outline's outer side (`band`'s `fill`, `turn_of` for the outward normal). Lasers through filled glass shapes change
+  path (they now really refract through the whole shape); hollow shapes are as before. A lamp inside a filled non-glass
+  shape now escapes it (it used to bounce inside the band).
+- **Corners say how the beam turned.** `Path.corners` holds a `Met { thing, row, side, how: Turned }` (Ended, Reflected,
+  BentIn, BentOut), so ribbons part where neighbouring rays meet different sides of one shape (a band split by a prism's
+  corner) or one colour is all reflected inside while its neighbour leaves.
+- **Ribbon brightness** is the gap at the lamp over the band's width measured across the way the ribbon runs (not the
+  distance between the two end points, which grows where the band meets a wall at a slant).
+- **Ribbon budget**: `MOST_RIBBONS` is shared evenly between the pairs of rays, so a band too busy for all of them keeps
+  its whole width.
+- **Glass lookups** are read once a lamp (a map of the scenery's things to `glass_of`), not on every hit.
+- The planned "no ribbons, no pass" picture test was dropped: the pass is skipped by `scene.ribbons.is_empty()`, and the
+  unchanged-picture tests (`lit_flat_pinned`, `stage_pictures`, `glass_pictures`) cover lasers.
+- **Review notes kept as they are.** Colours defaults to 12 as the spec says, so a laser through the Glass preset
+  (Rainbow split 0.3) now splits into 13 lights (a fan of about 1.2°); set Colours 1 to keep one light. Every colour is a
+  strip light every lit pixel looks at, so a beam riding many balls with many colours is costly. Ribbons are drawn after
+  the light mix, so the lighting's own Light blooms don't catch them (picture effects' bloom does), as with laser lines.

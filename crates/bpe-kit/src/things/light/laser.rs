@@ -26,9 +26,31 @@ pub enum Meets {
     Bend { index: f32, rainbow: f32 },
 }
 
-/// What a beam met at a corner of its path: a thing and, for a ball, its row. `None` at the lamp
-/// and where it ran out of length.
-pub type Corner = Option<(ThingId, Option<u32>)>;
+/// What a beam met at a corner of its path: a thing, for a ball its row, for a wall which side of
+/// its outline, and what the beam did there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Met {
+    pub thing: ThingId,
+    pub row: Option<u32>,
+    pub side: u32,
+    pub how: Turned,
+}
+
+/// What a beam did at a corner of its path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Turned {
+    /// It ended there (stopped, or out of bounces).
+    Ended,
+    /// It bounced off, or was all reflected inside glass.
+    Reflected,
+    /// It went into glass, bent.
+    BentIn,
+    /// It came out of glass, bent.
+    BentOut,
+}
+
+/// What a beam met at a corner of its path. `None` at the lamp and where it ran out of length.
+pub type Corner = Option<Met>;
 
 /// The beam's path: its corners from the lamp on, what it met at each, and whether it ended on
 /// something (rather than running out of length).
@@ -62,7 +84,9 @@ pub fn scenery(world: &World) -> Scenery {
             continue;
         }
         let sides = (0..n).map(|k| (points[k], points[(k + 1) % n])).collect();
-        walls.push((id, sides, 0.5 * wall.outline.thickness().max(0.0), wall.solid));
+        // A filled shape is its outline (as balls and the picture see it), with no band round it.
+        let half = if wall.solid { 0.0 } else { 0.5 * wall.outline.thickness().max(0.0) };
+        walls.push((id, sides, half, wall.solid));
     }
     let mut balls = Vec::new();
     for (&id, bodies) in &world.bodies {
@@ -83,6 +107,8 @@ struct Hit {
     thing: ThingId,
     /// The ball's row, for a ball.
     row: Option<u32>,
+    /// Which side of a wall's outline.
+    side: u32,
 }
 
 /// Rays shorter than this from where they start see nothing (so a bounce doesn't meet the
@@ -189,6 +215,11 @@ fn turn_of(sides: &[(Vec2, Vec2)]) -> f32 {
 }
 
 impl Scenery {
+    /// Every thing it holds, walls first (balls of a group once a ball).
+    pub fn things(&self) -> impl Iterator<Item = ThingId> + '_ {
+        self.walls.iter().map(|w| w.0).chain(self.balls.iter().map(|b| b.0))
+    }
+
     /// The nearest thing the ray meets within `most` (`inside`: the thing it is inside, whose
     /// surface it can only leave), leaving out `skip` (a ball the laser rides).
     fn nearest(
@@ -200,9 +231,9 @@ impl Scenery {
         inside: Option<(ThingId, Option<u32>)>,
     ) -> Option<Hit> {
         let mut best: Option<Hit> = None;
-        let mut keep = |t: f32, normal: Vec2, thing: ThingId, row: Option<u32>| {
+        let mut keep = |t: f32, normal: Vec2, thing: ThingId, row: Option<u32>, side: u32| {
             if t <= most && best.is_none_or(|b| t < b.t) {
-                best = Some(Hit { t, normal, thing, row });
+                best = Some(Hit { t, normal, thing, row, side });
             }
         };
         for (thing, sides, r, solid) in &self.walls {
@@ -211,13 +242,13 @@ impl Scenery {
                 continue;
             }
             let turn = if *solid && sides.len() >= 3 { Some(turn_of(sides)) } else { None };
-            for &(a, b) in sides {
+            for (k_side, &(a, b)) in sides.iter().enumerate() {
                 let fill = turn.map(|k| {
                     let u = (b - a).normalize_or_zero();
                     (Vec2::new(u.y, -u.x) * k, sides.as_slice())
                 });
                 if let Some((t, n)) = band(from, dir, a, b, *r, leaving, fill) {
-                    keep(t, if leaving { -n } else { n }, *thing, None);
+                    keep(t, if leaving { -n } else { n }, *thing, None, k_side as u32);
                 }
             }
         }
@@ -230,7 +261,7 @@ impl Scenery {
                 continue;
             }
             if let Some((t, n)) = circle(from, dir, centre, r, leaving) {
-                keep(t, if leaving { -n } else { n }, thing, Some(row));
+                keep(t, if leaving { -n } else { n }, thing, Some(row), 0);
             }
         }
         best
@@ -329,8 +360,7 @@ impl Walk {
 struct Pending {
     walk: Walk,
     normal: Vec2,
-    thing: ThingId,
-    row: Option<u32>,
+    met: Met,
     index: f32,
     rainbow: f32,
 }
@@ -338,16 +368,20 @@ struct Pending {
 impl Pending {
     /// The walk of colour `w` from the split, bent into the glass with its own index.
     fn bent(&self, w: f32) -> Walk {
-        let mut walk =
-            Walk { points: vec![self.walk.at], corners: vec![Some((self.thing, self.row))], ..self.walk.clone() };
+        let mut walk = Walk { points: vec![self.walk.at], corners: vec![None], ..self.walk.clone() };
         let n = index_at(self.index, self.rainbow, w);
-        match refract(walk.dir, self.normal, 1.0, n) {
+        let how = match refract(walk.dir, self.normal, 1.0, n) {
             Some(into) => {
-                walk.inside = Some((self.thing, self.row, n));
+                walk.inside = Some((self.met.thing, self.met.row, n));
                 walk.dir = into;
+                Turned::BentIn
             }
-            None => walk.dir = reflect(walk.dir, self.normal),
-        }
+            None => {
+                walk.dir = reflect(walk.dir, self.normal);
+                Turned::Reflected
+            }
+        };
+        walk.corners[0] = Some(Met { how, ..self.met });
         walk
     }
 }
@@ -384,43 +418,42 @@ fn walk_on(
             continue;
         }
         walk.points.push(point);
-        walk.corners.push(Some((hit.thing, hit.row)));
+        let met = Met { thing: hit.thing, row: hit.row, side: hit.side, how: Turned::Ended };
+        walk.corners.push(Some(met));
         if answer == Meets::Stop || walk.turns >= bounces {
             return (walk.path(true), None);
         }
         walk.turns += 1;
         walk.at = point;
-        walk.dir = match (answer, walk.inside) {
+        let (dir, how) = match (answer, walk.inside) {
             (_, Some((_, _, index))) => match refract(walk.dir, hit.normal, index, 1.0) {
                 Some(out) => {
                     walk.inside = None;
-                    out
+                    (out, Turned::BentOut)
                 }
-                None => reflect(walk.dir, hit.normal),
+                None => (reflect(walk.dir, hit.normal), Turned::Reflected),
             },
             (Meets::Bend { index, rainbow }, None) => {
                 if split && rainbow > 0.0 {
-                    let pending = Pending {
-                        walk: walk.clone(),
-                        normal: hit.normal,
-                        thing: hit.thing,
-                        row: hit.row,
-                        index,
-                        rainbow,
-                    };
+                    // The white path ends here (as Ended); each colour's starts here, bent its own way.
+                    let pending = Pending { walk: walk.clone(), normal: hit.normal, met, index, rainbow };
                     return (walk.path(true), Some(pending));
                 }
                 let n = index_at(index, rainbow, w);
                 match refract(walk.dir, hit.normal, 1.0, n) {
                     Some(into) => {
                         walk.inside = Some((hit.thing, hit.row, n));
-                        into
+                        (into, Turned::BentIn)
                     }
-                    None => reflect(walk.dir, hit.normal),
+                    None => (reflect(walk.dir, hit.normal), Turned::Reflected),
                 }
             }
-            _ => reflect(walk.dir, hit.normal),
+            _ => (reflect(walk.dir, hit.normal), Turned::Reflected),
         };
+        walk.dir = dir;
+        if let Some(Some(last)) = walk.corners.last_mut() {
+            last.how = how;
+        }
     }
     (walk.path(false), None)
 }
@@ -547,7 +580,11 @@ pub fn ribbons(
 ) -> Vec<bpe_gfx::RibbonGpu> {
     let mut out = Vec::new();
     let soft = if softness.is_finite() { softness.clamp(0.0, 1.0) } else { 0.0 };
+    // Each pair of rays an even share, so a band too busy for them all keeps its whole width.
+    let pairs = rays.len().saturating_sub(1).max(1);
+    let share = (most / pairs).max(1);
     for j in 0..rays.len().saturating_sub(1) {
+        let most = (out.len() + share).min(most);
         let (a, b) = (&rays[j], &rays[j + 1]);
         let d = [across[j], across[j + 1], gap, 0.0];
         let whole = pair(&a.white, &b.white, [colour[0], colour[1], colour[2], soft], d, most, &mut out);
@@ -848,5 +885,23 @@ mod tests {
         let shares = spectrum(12);
         assert!(r.iter().any(|q| q.c[0] == 2.0 * shares[0].1[0] && q.c[2] == 0.0), "a red ribbon");
         assert!(r.iter().any(|q| q.c[2] == 2.0 * shares[11].1[2] && q.c[0] == 0.0), "a violet ribbon");
+    }
+
+    #[test]
+    fn a_band_split_by_a_prisms_corner_parts_there() {
+        // Down onto the apex: the two left rays go into the left face, the two right ones the right.
+        let s = prism(0.0);
+        let across: Vec<f32> = (0..4).map(|j| j as f32 / 3.0).collect();
+        let rays: Vec<Split> = across
+            .iter()
+            .map(|u| {
+                let from = Vec2::new((u - 0.5) * 30.0, -300.0);
+                trace_split(&s, from, Vec2::Y, 1000.0, 8, None, &glass(0.0), 1, 4096)
+            })
+            .collect();
+        let r = ribbons(&rays, &across, 10.0, [1.0; 3], 0.0, MOST_RIBBONS);
+        let middle: Vec<_> = r.iter().filter(|q| q.d[0] == across[1]).collect();
+        assert_eq!(middle.len(), 1, "the middle pair stops at the faces: {middle:?}");
+        assert!(r.iter().filter(|q| q.d[0] == across[0]).count() > 1, "each side's pair goes on through");
     }
 }

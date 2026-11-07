@@ -3905,7 +3905,12 @@ fn vs_ribbon(@builtin(vertex_index) vi: u32, @builtin(instance_index) k: u32) ->
     let second = (vi & 1u) == 1u;
     let far = vi >= 2u;
     let p = select(select(r.a.xy, r.a.zw, far), select(r.b.xy, r.b.zw, far), second);
-    let width = select(distance(r.a.xy, r.b.xy), distance(r.a.zw, r.b.zw), far);
+    // The band's width at this end, measured across the way it runs (not along a wall it meets
+    // at a slant).
+    let way = (r.a.zw - r.a.xy) + (r.b.zw - r.b.xy);
+    let along = select(vec2<f32>(1.0, 0.0), way / max(length(way), 1e-6), dot(way, way) > 1e-12);
+    let gap = select(r.b.xy - r.a.xy, r.b.zw - r.a.zw, far);
+    let width = abs(gap.x * along.y - gap.y * along.x);
     let bright = clamp(r.d.z / max(width, 1e-3), 0.0, RIBBON_MOST);
     let uv = world_to_uv(p);
     var out: RibbonOut;

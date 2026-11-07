@@ -256,8 +256,8 @@ Part 2 is in (plan `part2.md`, "As built" at its end): **prism and rainbow beams
 (`n + rainbow · DISPERSION · w/2`, w −1 red to 1 violet, `DISPERSION` 0.0462 = 4° through a 60° prism at Rainbow split
 1), `spectrum(n)` (the shader's `spectral` hats, shares adding to white per channel), `trace_split` (white to the first
 glass with Rainbow split it bends into, then a path a colour; at most `MOST_BEAM_SEGMENTS` 4096, each colour an even share
-of what is left; `trace` never splits), `Path.corners` (what each point met). Filled walls are solid glass to the tracer
-(`Wall.solid`: only the band's outer surface counts, `turn_of`, `in_polygon`), so a filled shape is a real prism. Lights:
+of what is left; `trace` never splits), `Path.corners` (`Met`: thing, row, side, `Turned`). Filled walls are solid glass to the tracer
+(`Wall.solid`: the bare outline, light inside leaves only through its outer side, `turn_of`), so a filled shape is a real prism. Lights:
 **Colours** (`colours`, 1..64, default 12, group "Beam", which the laser's settings moved into) and the **Light beam**
 (`LightType::Beam`, code 6, "+ Beam": Width `beam_width`, Edge softness, Rays across): `push_light` pushes one `LightGpu`
 a run (white, then each colour, `push_one`), a beam's middle ray lighting as a laser that draws no line, and its band as
