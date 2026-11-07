@@ -80,11 +80,17 @@ struct BentAt {
 // The surface index of the thing that throws light covering picture pixel `ip` (part 4a), -1 for
 // none: at least half covered by a surface whose bit is set.
 fn thrower_at(ip: vec2<i32>) -> i32 {
+    return thrower_covering(ip, 0.5);
+}
+
+// `thrower_at` for a pixel covered at least `least`: a mirror's antialiased edge blocks whole, so
+// a photon meeting it there meets the mirror (wherever the edge falls on the pixels).
+fn thrower_covering(ip: vec2<i32>, least: f32) -> i32 {
     if bu.extra.y < 0.5 {
         return -1;
     }
     let s = textureLoad(surface, ip, 0);
-    if s.a < 0.5 || s.b < 0.0 {
+    if s.a < least || s.b < 0.0 {
         return -1;
     }
     let f = s.b / s.a;
@@ -129,6 +135,12 @@ fn bent_at(q: vec2<f32>, fd: vec4<f32>) -> BentAt {
     if u.trace.y > 0.5 {
         // A Stage's things block whole (its balls, which mark a quarter, are spheres).
         return BentAt(select(BENT_OPEN, BENT_SOLID, b >= 0.3), b);
+    }
+    if b >= BLOCK_LEAST {
+        let edge = thrower_covering(ip, 0.02);
+        if edge >= 0 {
+            return BentAt(BENT_THROW - edge, b);
+        }
     }
     if b >= SOLID {
         return BentAt(BENT_SOLID, b);

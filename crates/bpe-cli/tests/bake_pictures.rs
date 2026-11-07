@@ -283,7 +283,6 @@ fn the_stage_bake_bounces_a_red_balls_light_onto_the_wall() {
         (0..8).map(|k| redness(at(pixels, 190.0 + k as f32 * 8.0, -60.0 + k as f32 * 16.0))).sum::<i32>()
     };
     set_lighting(&mut scene, "bake_bounce", Value::Choice("traced".into()));
-    set_lighting(&mut scene, "bounce", Value::Number(0.0));
     let without = draw(&mut gpu, &scene, 0.0, bake(4, 0.0), "bounce-off");
     set_lighting(&mut scene, "bounce", Value::Number(1.0));
     let with = draw(&mut gpu, &scene, 0.0, bake(4, 0.0), "bounce-on");
@@ -408,11 +407,33 @@ fn a_mirror_throws_light_in_the_bake() {
     set_surface(&mut scene, shape, SurfaceKind::Chrome);
     let on = draw(&mut gpu, &scene, 0.0, bake(4, 0.0), "mirror");
     assert!(gpu.renderer.bent_photons() > 0, "the baked samples send mirror photons");
+    let live_on = draw(&mut gpu, &scene, 0.0, None, "mirror-live");
+    // Each sample moves the camera within the pixel: the mirror throws the same wherever its edge
+    // falls on the pixels (its antialiased edge, which blocks whole, is the mirror too).
+    let mut first = None;
+    for k in 0u32..6 {
+        let kit = kit();
+        let mut maker = FrameMaker::new(&scene, &kit);
+        let mut f = maker.samples(0.0, 30, bake(1, 0.0).as_ref()).pop().unwrap();
+        f.bake = Some(bpe_gfx::bake::BakeSample { index: k, count: 6 });
+        let [jx, jy] = bpe_gfx::bake::jitter(k);
+        f.camera.center.x += jx * 4.0;
+        f.camera.center.y += jy * 4.0;
+        gpu.renderer.render(&gpu.device, &gpu.queue, &f);
+        let one = gpu.renderer.read_output(&gpu.device, &gpu.queue).unwrap();
+        let a = brightness(at(&one, 300.0, -400.0));
+        let b = *first.get_or_insert(a);
+        assert!((a - b).abs() <= 4, "sample {k} alone: {a} against the first's {b}");
+    }
     scene.card_mut(shape, SlotId::Look).unwrap().params.set("throws", Value::Number(0.0));
     let off = draw(&mut gpu, &scene, 0.0, bake(4, 0.0), "mirror-off");
-    // Inside the thrown cone: the lamp's image is at (-300, 360), through the wall's middle.
+    let live_off = draw(&mut gpu, &scene, 0.0, None, "mirror-live-off");
+    // Inside the thrown cone (the lamp's image is at (-300, 360), through the wall's middle) the
+    // bake throws about what the live picture does.
     for (x, y) in [(300.0, -400.0), (200.0, -300.0), (380.0, -560.0)] {
-        let (a, b) = (brightness(at(&on, x, y)), brightness(at(&off, x, y)));
-        assert!(a as f32 >= 1.3 * b as f32 && a > b + 6, "at ({x}, {y}): thrown {a} against {b}");
+        let baked = brightness(at(&on, x, y)) - brightness(at(&off, x, y));
+        let live = brightness(at(&live_on, x, y)) - brightness(at(&live_off, x, y));
+        assert!(live > 20, "at ({x}, {y}): live throws {live}");
+        assert!((baked - live).abs() as f32 <= 0.3 * live as f32, "at ({x}, {y}): baked {baked}, live {live}");
     }
 }
