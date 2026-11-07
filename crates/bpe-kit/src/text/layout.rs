@@ -131,7 +131,7 @@ pub fn layout(font: &FontData, spec: &LayoutSpec) -> Arc<TextLayout> {
 
 /// The most layouts kept at once: enough for a label on each of a crowd of balls, each its own
 /// words, and their values changing.
-const MOST_LAYOUTS: usize = 4096;
+const MOST_LAYOUTS: usize = 1024;
 
 /// `words` in `case`.
 pub fn cased(words: &str, case: Case) -> String {

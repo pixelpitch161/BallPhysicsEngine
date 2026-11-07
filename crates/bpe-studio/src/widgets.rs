@@ -56,9 +56,20 @@ impl TargetChoices {
             .list
             .iter()
             .flat_map(|r| r.blocks.iter())
-            .filter_map(|b| match b.params.get("counter") {
-                Some(bpe_core::Value::Text(c)) if !c.trim().is_empty() => Some(c.trim().to_string()),
-                _ => None,
+            .filter_map(|b| {
+                // The block's own value, else its kind's default, where the kind shows a counter now.
+                let defs = reg.block(&b.kind)?.settings();
+                let get = |k: &str| {
+                    b.params.get(k).cloned().or_else(|| defs.iter().find(|d| d.key == k).map(|d| d.default.clone()))
+                };
+                let def = defs.iter().find(|d| d.key == "counter")?;
+                if !bpe_core::settings::applies(def.when, None, &get) {
+                    return None;
+                }
+                match get("counter") {
+                    Some(bpe_core::Value::Text(c)) if !c.trim().is_empty() => Some(c.trim().to_string()),
+                    _ => None,
+                }
             })
             .collect();
         TargetChoices {

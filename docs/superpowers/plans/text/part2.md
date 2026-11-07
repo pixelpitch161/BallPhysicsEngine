@@ -251,3 +251,12 @@ part" (2). Read part 1's plan's "As built" first.
   `tests/text_pictures.rs` gains `fast_letters_look_like_drawn_ones` (under 5% of lit pixels differ, at the edges) and
   `labels_ride_their_balls`; the studio's `insert_value_puts_a_value_in_the_words`,
   `a_text_shows_its_show_and_riding_rows`, `typing_into_keyed_words_keys_them_at_the_playhead`.
+- **After review:** standings Down measures from each ball's spawn place (`Bodies.spawn`, not `start`, which is the
+  substep's); token words are lower-cased in ASCII only so names in any letters cut cleanly; a tile is at least
+  `TILE_LEAST_HALF` (0.6 × cap) wide so small marks keep their outline; tiles round Weight to a whole number and
+  Slant to half a degree; the layout cache keeps 1024; the units' moments are worked out once for every riding copy;
+  a Text inside a group of balls that isn't there draws nothing; standings keep 2.5 s of history; Insert value ▸
+  Counter lists counters left at their default name; the preview's handles and typing box read the words with the
+  resolved scene and the log, as the picture does (`text_handles::Seen`). Left as they are: a riding Text's offset is
+  its saved Position (as part 1's pose), standings ask for history only when the words at 0 s hold them, and fast
+  letters have no place along the edge.

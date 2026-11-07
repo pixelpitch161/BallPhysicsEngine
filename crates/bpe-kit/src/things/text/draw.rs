@@ -131,6 +131,7 @@ pub fn text_copies(at: &TextAt) -> Vec<TextNow> {
     let reads = pieces.iter().any(|p| matches!(p, Piece::Value(..)));
     let names = if reads && needs_names(&pieces) { ball_names(at) } else { BallNames::default() };
     let own = at.world.poses.get(&at.id).copied().unwrap_or_else(|| at.world.anchor(at.id));
+    let mut times = Vec::new();
     riding_places(at, &s, screen, own)
         .into_iter()
         .map(|(pose, ball)| {
@@ -160,7 +161,7 @@ pub fn text_copies(at: &TextAt) -> Vec<TextNow> {
                     }
                 }
             }
-            let shown = shown_of(at, &s, &layout, rule_line);
+            let shown = shown_of(at, &s, &layout, rule_line, &mut times);
             TextNow { pose, layout, placed, font_problem: found.problem(), shown, ball }
         })
         .collect()
@@ -204,6 +205,11 @@ fn riding_places(at: &TextAt, s: &TextSettings, screen: bool, own: Pose) -> Vec<
         .filter(|p| *p != ThingId::ROOT)
         .filter(|p| at.tree.things.get(p).is_some_and(|t| crate::things::light::RIDES.contains(&t.kind.as_str())));
     let Some(parent) = parent else { return vec![(own, None)] };
+    // A group of balls that isn't there (switched off): no labels.
+    let balls = at.tree.things.get(&parent).is_some_and(|t| matches!(t.kind.as_str(), "balls" | "emitter"));
+    if balls && !at.world.bodies.contains_key(&parent) {
+        return Vec::new();
+    }
     let offset = thing.transform.position;
     let seen = |p: Vec2| if screen { at.world.camera.to_screen(p) } else { p };
     let pose_at = |p: Vec2| Pose { position: seen(p) + offset, ..own };
@@ -235,7 +241,14 @@ fn riding_places(at: &TextAt, s: &TextSettings, screen: bool, own: Pose) -> Vec<
 
 /// How each letter of `layout` shows at `at`'s moment; `rule_line` the moment a rule showed the
 /// line laid out, when one did.
-fn shown_of(at: &TextAt, s: &TextSettings, layout: &TextLayout, rule_line: Option<f64>) -> Vec<Option<LetterMove>> {
+/// `times` keeps the units' moments worked out for an earlier copy (they don't depend on the ball).
+fn shown_of(
+    at: &TextAt,
+    s: &TextSettings,
+    layout: &TextLayout,
+    rule_line: Option<f64>,
+    times: &mut Vec<Option<f64>>,
+) -> Vec<Option<LetterMove>> {
     let n = layout.letters.len();
     if let Some(t) = rule_line {
         let m = letter_move(s, Some(t), at.time, s.size);
@@ -245,7 +258,9 @@ fn shown_of(at: &TextAt, s: &TextSettings, layout: &TextLayout, rule_line: Optio
         return vec![Some(LetterMove::WHOLE); n];
     }
     let units = layout.letters.iter().map(|l| unit_of(l, s.show) as usize + 1).max().unwrap_or(0);
-    let times = appear_times(s, units, at.world, at.log, at.id);
+    if times.len() < units {
+        *times = appear_times(s, units, at.world, at.log, at.id);
+    }
     layout
         .letters
         .iter()
@@ -753,5 +768,54 @@ mod tests {
         assert_eq!(words_of(&scene, id, 0.15), ["ONE"]);
         assert_eq!(words_of(&scene, id, 0.25), ["TWO"]);
         assert_eq!(words_of(&scene, id, 0.35), [""], "past the last line nothing shows");
+    }
+
+    #[test]
+    fn standings_measure_from_where_each_ball_started() {
+        let reg = crate::registry();
+        let mut scene = crate::new_scene(&reg);
+        let balls = crate::add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
+        let mut b = crate::BallsSettings::from_params(&scene.things[&balls].params);
+        b.ring(3, 200.0);
+        scene.things.get_mut(&balls).unwrap().params = b.to_params();
+        let id = crate::add_thing(&mut scene, &reg, KIND, ThingId::ROOT).unwrap();
+        scene.things.get_mut(&id).unwrap().params.set("words", Value::Text("{standings down 3}".into()));
+        let kit = crate::kit();
+        let resolved = resolve(&scene, &kit.registry);
+        let mut world = World::build(&scene, &resolved, &kit.sims);
+        let mut log = Log::default();
+        world.advance_to(1.0, &kit.sims, &mut log);
+        let s = TextSettings::from_params(&resolved.things[&id].params);
+        let filled = live::fill(
+            &live::parse(&s.words),
+            &LiveCx {
+                tree: &scene,
+                world: &world,
+                log: Some(&log),
+                time: 1.0,
+                me: id,
+                ball: None,
+                names: None,
+                resort: s.resort,
+            },
+        );
+        let lines: Vec<&str> = filled.words.lines().collect();
+        assert_eq!(lines.len(), 3, "{:?}", filled.words);
+        // Measured from where each started a second ago, not one substep's worth; best first.
+        let metres: Vec<f64> =
+            lines.iter().map(|l| l.rsplit(' ').next().unwrap().trim_end_matches('m').parse().unwrap()).collect();
+        assert!(metres.iter().any(|m| m.abs() > 0.3), "{:?}", filled.words);
+        assert!(metres.windows(2).all(|w| w[0] >= w[1]), "{:?}", filled.words);
+    }
+
+    #[test]
+    fn keyed_words_change_at_their_keys() {
+        let reg = crate::registry();
+        let (mut scene, id) = scene_with("A");
+        let a = bpe_core::Address::own(id, "words");
+        scene.set_key(&reg, &a, 0.0, Value::Text("A".into())).unwrap();
+        scene.set_key(&reg, &a, 1.0, Value::Text("ABC".into())).unwrap();
+        assert_eq!(paths(&frame_at(&scene, 0.9)).len(), 1, "held until the next key");
+        assert_eq!(paths(&frame_at(&scene, 1.1)).len(), 3);
     }
 }

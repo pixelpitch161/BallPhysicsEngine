@@ -182,7 +182,9 @@ fn token_of(inner: &str) -> Option<(Token, Format)> {
         None => (inner, Format::default()),
     };
     let body = body.split_whitespace().collect::<Vec<_>>().join(" ");
-    let lower = body.to_lowercase();
+    // ASCII lower case only, so byte places in it are the same as in `body` (a name cut out of
+    // `body` at them never splits a letter).
+    let lower = body.to_ascii_lowercase();
     // "<head> of <name>", the name as typed.
     let of = |head: &str| -> Option<Option<String>> {
         if lower == head {
@@ -545,7 +547,7 @@ fn rank(cx: &LiveCx, things: &[ThingId], by: RankBy, ago: f64, hits: &BTreeMap<(
         let Some(b) = cx.world.bodies.get(&thing) else { continue };
         for row in (0..b.len()).filter(|&r| b.alive[r]) {
             let key = match by {
-                RankBy::Down => (place_ago(cx.world, thing, row, ago).y - b.start[row].y) as f64,
+                RankBy::Down => (place_ago(cx.world, thing, row, ago).y - b.spawn[row].y) as f64,
                 RankBy::Hits => hits.get(&(thing, row)).copied().unwrap_or(0) as f64,
                 RankBy::Health => health_of(cx.world, thing, Some(row)).map_or(0.0, |(now, _)| now),
                 RankBy::Size => b.radius[row] as f64,
@@ -625,7 +627,7 @@ fn standings(cx: &LiveCx, by: RankBy, rows: u32, of: Option<&str>, format: Forma
             let b = &cx.world.bodies[&r.thing];
             let value = match by {
                 RankBy::Down => {
-                    let d = (b.position[r.row].y - b.start[r.row].y) as f64 / PX_PER_METRE;
+                    let d = (b.position[r.row].y - b.spawn[r.row].y) as f64 / PX_PER_METRE;
                     format!("{}m", format_value(d, format, 1, false))
                 }
                 RankBy::Hits => {
@@ -693,6 +695,18 @@ mod tests {
             [Piece::Value(t, f)] => (t.clone(), *f),
             other => panic!("{words}: {other:?}"),
         }
+    }
+
+    #[test]
+    fn names_with_any_letters_parse_without_breaking() {
+        // Letters that change length in lower case (Ohm, Kelvin, sharp s) in a name.
+        for words in
+            ["{hits of \u{2126}mega}", "{hits of \u{212a}ing}", "{standings down 3 of \u{1e9e}x}", "{HITS of Zoë}"]
+        {
+            let pieces = parse(words);
+            assert!(matches!(pieces[..], [Piece::Value(..)]), "{words}: {pieces:?}");
+        }
+        assert!(matches!(&parse("{HITS of Zoë}")[..], [Piece::Value(Token::Hits { of: Some(n) }, _)] if n == "Zoë"));
     }
 
     #[test]

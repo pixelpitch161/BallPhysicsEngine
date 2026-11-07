@@ -42,18 +42,32 @@ fn params_at(scene: &Scene, reg: &Registry, id: ThingId, time: f64) -> Option<bp
     Some(params)
 }
 
+/// What the preview drew with, so a Text's words read the same here: the resolved scene (the balls'
+/// colour names) and the log (hits).
+#[derive(Clone, Copy, Default)]
+pub struct Seen<'a> {
+    pub resolved: Option<&'a bpe_core::Resolved>,
+    pub log: Option<&'a Log>,
+}
+
+impl<'a> Seen<'a> {
+    pub fn of(studio: &'a Studio) -> Self {
+        Seen { resolved: Some(&studio.resolved), log: Some(studio.playback.log()) }
+    }
+}
+
 /// Every copy of Text `id` as the preview shows it now (one a ball for a Text riding each ball),
 /// and its settings. `log` lets a show timed by hits see them.
 pub fn copies_of(
     scene: &Scene,
     reg: &Registry,
     world: &World,
-    log: Option<&Log>,
+    seen: Seen,
     id: ThingId,
     time: f64,
 ) -> Option<(Vec<TextNow>, TextSettings)> {
     let params = params_at(scene, reg, id, time)?;
-    let at = TextAt { log, ..TextAt::new(scene, &params, world, id, time) };
+    let at = TextAt { log: seen.log, scene: seen.resolved, ..TextAt::new(scene, &params, world, id, time) };
     Some((text_copies(&at), TextSettings::from_params(&params)))
 }
 
@@ -62,17 +76,17 @@ pub fn now_of(
     scene: &Scene,
     reg: &Registry,
     world: &World,
-    log: Option<&Log>,
+    seen: Seen,
     id: ThingId,
     time: f64,
 ) -> Option<(TextNow, TextSettings)> {
-    let (copies, s) = copies_of(scene, reg, world, log, id, time)?;
+    let (copies, s) = copies_of(scene, reg, world, seen, id, time)?;
     Some((copies.into_iter().next()?, s))
 }
 
 fn copies(studio: &Studio, id: ThingId) -> Option<(Vec<TextNow>, TextSettings)> {
     let world = studio.playback.world();
-    copies_of(&studio.scene, &studio.kit.registry, world, Some(studio.playback.log()), id, studio.sim_time())
+    copies_of(&studio.scene, &studio.kit.registry, world, Seen::of(studio), id, studio.sim_time())
 }
 
 fn now(studio: &Studio, id: ThingId) -> Option<(TextNow, TextSettings)> {
@@ -155,7 +169,7 @@ pub fn apply(
     pointer: Vec2,
     time: f64,
 ) -> bool {
-    let Some((now, s)) = now_of(scene, reg, world, None, id, time) else { return false };
+    let Some((now, s)) = now_of(scene, reg, world, Seen::default(), id, time) else { return false };
     let p = now.to_own(pointer);
     let mut keyed = false;
     let mut set = |scene: &mut Scene, key: &str, value: f32| {

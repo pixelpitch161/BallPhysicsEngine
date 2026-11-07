@@ -50,11 +50,13 @@ pub fn show(ui: &mut Ui, studio: &mut Studio, view: &View) {
     }
     // Over the text's box on the screen, or the middle of the preview when it shows nothing.
     let (reg, world, time) = (&studio.kit.registry, studio.playback.world(), studio.sim_time());
-    let corner = super::text_handles::now_of(&studio.scene, reg, world, None, id, time).and_then(|(now, _)| {
-        let v = view.of(studio, id)?;
-        let (lo, _) = now.bounds()?;
-        Some(v.to_screen(now.to_world(lo)))
-    });
+    let corner =
+        super::text_handles::now_of(&studio.scene, reg, world, super::text_handles::Seen::of(studio), id, time)
+            .and_then(|(now, _)| {
+                let v = view.of(studio, id)?;
+                let (lo, _) = now.bounds()?;
+                Some(v.to_screen(now.to_world(lo)))
+            });
     // Kept on the preview, as far as it has room.
     let most = (view.rect.max - egui::vec2(220.0, 80.0)).max(view.rect.min);
     let at = corner.unwrap_or(view.rect.center()).max(view.rect.min).min(most);

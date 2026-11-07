@@ -20,9 +20,10 @@ pub struct TextState {
     pub standings: bool,
 }
 
-/// How much of the balls' past a Text with standings keeps.
+/// How much of the balls' past a Text with standings keeps: twice the longest Re-sort time and a
+/// little more (a line glides from the ranking one grid step back).
 fn standings_history() -> bpe_runtime::HistoryWant {
-    bpe_runtime::HistoryWant { seconds: 2.0, forever: false }
+    bpe_runtime::HistoryWant { seconds: 2.5, forever: false }
 }
 
 /// Whether a Text with these settings shows standings.

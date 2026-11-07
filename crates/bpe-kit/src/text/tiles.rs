@@ -18,6 +18,10 @@ pub const TILE_CAP: f32 = 100.0;
 /// distance to reach past its edge.
 pub const TILE_FILL: f32 = 0.75;
 
+/// The least half width of a tile, px at [`TILE_CAP`]: small marks (a full stop, a colon) get as
+/// much room for their layers to reach past them as a capital does.
+pub const TILE_LEAST_HALF: f32 = 0.6 * TILE_CAP;
+
 /// One glyph's tile and where it sits: its middle (from the glyph's pen position, y down) and half
 /// its width, in px at [`TILE_CAP`].
 #[derive(Clone, Debug, PartialEq)]
@@ -37,7 +41,10 @@ pub fn reach_share() -> f32 {
 pub fn tile_for(font: &FontData, glyph: u16, weight: f32, slant: f32) -> Option<Arc<GlyphTile>> {
     type Key = (u64, u16, u32, u32);
     static CACHE: OnceLock<Mutex<HashMap<Key, Option<Arc<GlyphTile>>>>> = OnceLock::new();
-    let weight = font.weight_axis.map_or(0.0, |(lo, hi)| weight.clamp(lo, hi));
+    // Rounded (a whole weight, half a degree), so a keyed Weight or Slant makes a few tiles, not
+    // one a frame.
+    let weight = font.weight_axis.map_or(0.0, |(lo, hi)| weight.clamp(lo, hi).round());
+    let slant = (slant * 2.0).round() * 0.5;
     let key = (font.id, glyph, weight.to_bits(), slant.to_bits());
     let cache = CACHE.get_or_init(Default::default);
     if let Some(hit) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
@@ -83,7 +90,7 @@ pub fn tile_of(contours: &[Vec<Vec2>], hash: u64) -> Option<GlyphTile> {
         return None;
     }
     let centre = 0.5 * (lo + hi);
-    let half = ((hi - lo).max_element() * 0.5 / TILE_FILL).max(1e-3);
+    let half = ((hi - lo).max_element() * 0.5 / TILE_FILL).max(TILE_LEAST_HALF);
     let n = bpe_gfx::MASK_TILE;
     let texel = 2.0 * half / n as f32;
     let reach = bpe_gfx::TILE_DISTANCE_REACH * half;
@@ -126,10 +133,14 @@ mod tests {
 
     #[test]
     fn a_square_tile_reads_inside_and_out() {
-        let square = vec![vec![Vec2::new(0.0, 0.0), Vec2::new(30.0, 0.0), Vec2::new(30.0, 30.0), Vec2::new(0.0, 30.0)]];
+        let square =
+            vec![vec![Vec2::new(0.0, 0.0), Vec2::new(120.0, 0.0), Vec2::new(120.0, 120.0), Vec2::new(0.0, 120.0)]];
         let t = tile_of(&square, 1).unwrap();
-        assert_eq!(t.centre, Vec2::splat(15.0));
-        assert!((t.half - 20.0).abs() < 1e-4, "the square fills three quarters of the tile");
+        assert_eq!(t.centre, Vec2::splat(60.0));
+        assert!((t.half - 80.0).abs() < 1e-4, "the square fills three quarters of the tile");
+        // A small mark gets the least half width.
+        let dot = vec![vec![Vec2::ZERO, Vec2::new(10.0, 0.0), Vec2::new(10.0, 10.0), Vec2::new(0.0, 10.0)]];
+        assert_eq!(tile_of(&dot, 2).unwrap().half, TILE_LEAST_HALF);
         let n = bpe_gfx::MASK_TILE;
         let at = |x: usize, y: usize| (t.bytes[2 * (y * n + x)], t.bytes[2 * (y * n + x) + 1]);
         let (cover, d) = at(n / 2, n / 2);
