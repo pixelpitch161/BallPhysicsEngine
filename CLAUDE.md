@@ -507,6 +507,21 @@ Shockwaves, Comet tail, Black hole, Iron filings, Beat grid, Moiré (two grids, 
 Goldens `tests/golden-particles-motion*.txt` (`scenes::particle_motion_scenes`); the preview shows a rectangle grid's
 corner handle.
 
+Part 7 is in (plan `part7.md`, "As built" at its end): **moments, sound, rules, lighting**. Meeting code marks a
+`Speck` (`met`/`with`/`impact`) and the serial retain turns marks into `Moment`s (`moments.rs`: Hit a ball, Hit a shape,
+Land (once, `LANDED`), Born, Burst; `ParticlesState.moments`/`moment_counts` for world step `moments_step`, at most
+`MOST_MOMENTS`). A Particles thing takes a **Sound card** (`slots()` has `SlotId::Sound`, `VoiceKind::fits`): the
+Moments group of `VoiceSettings` (`moments_*`, `MomentStrength`) picks which play; `log_notes` logs the strongest as
+`EventKind::Moment` (tag 22, `a` = (thing, seed), `b` = (thing, kind code)) within Most a second; `bpe-sound` plays
+them like hits (`hits::plays`, no Heard from for own moments). The sound engine's physics is `heard_part` (main plus
+beside things whose `ThingSim::heard` is some) and `sound_fingerprint` mixes them in. Rules: `when.particles`
+(`particles/rules.rs`, Who / Moment / At least); `BlockSim::keeps` pulls a Particles thing a rule reads into the main
+world (`is_beside(scene, ..)`, `main_part(scene, ..)`), and `ThingSim::own_cards` hashes its cards whole then. Lighting:
+its drawn layers have `AroundLit`'s fold (`Kind::light_defs`), the `particles.sub.light` Gives off light sub-layer
+(listed in the Lights panel), stamped by `Drew::stamp`. Hits pulses on its settings: `ThingSim::pulses_on_hits`,
+`Animation::apply_where` with `bpe_runtime::hit_strength`. Editor: `inspector::sounds`, `sound_tab/moments.rs`.
+Tests: `particles/tests_part7.rs`, `bpe-sound/tests/particle_sound.rs`, `bpe-kit/tests/particle_light_pictures.rs`.
+
 ## Crate map
 
 Dependencies go bottom to top:

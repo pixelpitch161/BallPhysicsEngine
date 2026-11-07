@@ -75,8 +75,9 @@ impl Engine {
 
     /// The engine for `scene` playing `patch` (built from the same scene).
     pub fn with_patch(scene: &Scene, resolved: &Resolved, kit: &Kit, patch: SoundPatch) -> Engine {
-        // Particles stepped beside the physics make no sound: the engine runs the physics alone.
-        let physics = Playback::new(scene, &bpe_runtime::main_part(resolved, &kit.sims), kit.sims.clone());
+        // Things stepped beside the physics make no sound, but those whose events it hears (a
+        // Particles thing whose sound is on): the engine runs the physics and those.
+        let physics = Playback::new(scene, &bpe_runtime::heard_part(scene, resolved, &kit.sims), kit.sims.clone());
         let cursor = HitCursor::new(physics.world().steps_per_second);
         let mut master = Master::new(&patch.master);
         master.set_keys(patch.master_keys);
@@ -255,7 +256,7 @@ impl Engine {
             .log()
             .events()
             .iter()
-            .filter(|e| matches!(e.kind, bpe_runtime::EventKind::Hit | bpe_runtime::EventKind::Note))
+            .filter(|e| crate::hits::plays(&e.kind))
             .map(|e| (crate::hits::hit_sample(e, sps), e))
             .filter(|(at, _)| *at < upto)
             .map(|(at, e)| (at, BlockHit { offset: 0, event: e.clone() }))

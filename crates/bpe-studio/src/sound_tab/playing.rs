@@ -40,13 +40,19 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx) {
             cx.knob(ui, "play_retrigger", "Retrigger", &ms)
                 .on_hover_text("A ball hitting again sooner than this plays no new note");
         });
+        // A Particles thing has no outline to be in range of, and hears only its own particles.
+        let particles = super::moments::is_particles(cx);
         ui.horizontal(|ui| {
             ui.label(RichText::new("Plays").small().color(style::MUTED));
-            cx.chips(
-                ui,
-                "play_when",
-                &[(PlayWhen::OnHit, "On hit"), (PlayWhen::Always, "Always"), (PlayWhen::InRange, "In range")],
-            );
+            if particles {
+                cx.chips(ui, "play_when", &[(PlayWhen::OnHit, "On each moment"), (PlayWhen::Always, "Always")]);
+            } else {
+                cx.chips(
+                    ui,
+                    "play_when",
+                    &[(PlayWhen::OnHit, "On hit"), (PlayWhen::Always, "Always"), (PlayWhen::InRange, "In range")],
+                );
+            }
         });
         let when = cx.choice::<PlayWhen>("play_when");
         if when == PlayWhen::InRange {
@@ -68,6 +74,9 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx) {
                     cx.set(&bpe_core::layered_key(id, "sustain"), Value::Number(70.0));
                 }
             });
+        }
+        if particles {
+            return;
         }
         ui.horizontal(|ui| {
             let label = ui.label(RichText::new("Heard from").small().color(style::MUTED));

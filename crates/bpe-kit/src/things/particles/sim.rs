@@ -12,6 +12,7 @@ use crate::air::{Air, AirSpec, air_of, put_air, take_air};
 
 use super::forces::Forces;
 use super::meets::MeetsSettings;
+use super::moments::{MomentSound, log_notes};
 use super::state::ParticlesState;
 use super::step;
 use super::{KIND, ParticlesSettings};
@@ -25,6 +26,7 @@ fn read_into(st: &mut ParticlesState, resolved: &ResolvedThing, video: glam::Vec
     st.forces = Forces::read(resolved.slots.get(&SlotId::Motion));
     st.meets = MeetsSettings::read(resolved.slots.get(&SlotId::Bounce).map(|s| &s.params));
     st.refresh_spots(video);
+    st.sound = MomentSound::of(resolved);
 }
 
 /// Notes how much memory the thing's particles take, for playback budgets.
@@ -59,40 +61,18 @@ impl ThingSim for ParticlesSim {
     /// the others left it at that step; the rest then find themselves up to date.
     fn after_step(&self, id: ThingId, world: &mut World, log: &mut Log) {
         let due = step::due(world.step, world.steps_per_second);
-        if due <= state_of(world, id).map_or(u32::MAX, |s| s.step) {
-            return;
+        if due > state_of(world, id).map_or(u32::MAX, |s| s.step) {
+            catch_up_all(world, log, due);
         }
-        let ids: Vec<ThingId> =
-            world.order().iter().copied().filter(|t| state_of(world, *t).is_some_and(|s| s.step < due)).collect();
-        let mut taken: Vec<(ThingId, Box<dyn ThingState>, f32)> =
-            ids.iter().filter_map(|t| Some((*t, world.states.remove(t)?, 0.0))).collect();
-        let mut air = take_air(world);
-        let threads = step::threads();
-        let from = taken.iter_mut().map(|(_, b, _)| state_mut::<ParticlesState>(b.as_mut()).step).min().unwrap_or(due);
-        for k in from..due {
-            if let Some(air) = air.as_mut() {
-                air.get_mut().catch_up_to(k + 1, world, threads);
+        // A thing whose sound plays its moments logs some every world step its budget allows.
+        if state_of(world, id).is_some_and(|s| s.sound.is_some())
+            && let Some(mut boxed) = world.states.remove(&id)
+        {
+            let st = state_mut::<ParticlesState>(boxed.as_mut());
+            if let Some(sound) = st.sound.clone() {
+                log_notes(st, &sound, world.step, 1.0 / world.steps_per_second.max(1) as f32, log);
             }
-            for (_, boxed, ms) in &mut taken {
-                let st = state_mut::<ParticlesState>(boxed.as_mut());
-                if st.step != k {
-                    continue;
-                }
-                let started = std::time::Instant::now();
-                step::step_in(st, world, log, threads, air.as_ref().map(|a| a.get()).filter(|a| a.awake()));
-                if let Some(air) = air.as_mut().filter(|a| a.get().awake()) {
-                    step::put_heat(st, air.get_mut());
-                }
-                *ms += started.elapsed().as_secs_f32() * 1000.0;
-            }
-        }
-        if let Some(air) = air {
-            put_air(world, air);
-        }
-        for (t, mut boxed, ms) in taken {
-            state_mut::<ParticlesState>(boxed.as_mut()).last_ms = ms;
-            world.states.insert(t, boxed);
-            note_memory(world, t);
+            world.states.insert(id, boxed);
         }
     }
 
@@ -114,6 +94,21 @@ impl ThingSim for ParticlesSim {
     /// Decoration: never pushes back on the balls (two-way is part 4).
     fn in_main(&self, _resolved: &ResolvedThing) -> bool {
         false
+    }
+
+    /// Its sound hears its moments when its Sound card plays some (particles part 7).
+    fn heard(&self, resolved: &ResolvedThing) -> Option<u64> {
+        MomentSound::of(resolved).map(|s| s.hash())
+    }
+
+    /// Its Motion and Meets things cards have no module sims: it reads them itself.
+    fn own_cards(&self) -> bool {
+        true
+    }
+
+    /// Its Rate, Count, forces and pushes may pulse on hits: nothing reads the particles back.
+    fn pulses_on_hits(&self) -> bool {
+        true
     }
 }
 
@@ -146,4 +141,41 @@ fn wake_air_if_wanted(world: &mut World, id: ThingId) {
 /// The thing's particles as the world has them now.
 pub fn state_of(world: &World, id: ThingId) -> Option<&ParticlesState> {
     (**world.states.get(&id)?).as_any().downcast_ref::<ParticlesState>()
+}
+
+/// Every Particles thing's due particle steps, all together one particle step at a time in tree
+/// order (see [`ParticlesSim::after_step`]).
+fn catch_up_all(world: &mut World, log: &mut Log, due: u32) {
+    let ids: Vec<ThingId> =
+        world.order().iter().copied().filter(|t| state_of(world, *t).is_some_and(|s| s.step < due)).collect();
+    let mut taken: Vec<(ThingId, Box<dyn ThingState>, f32)> =
+        ids.iter().filter_map(|t| Some((*t, world.states.remove(t)?, 0.0))).collect();
+    let mut air = take_air(world);
+    let threads = step::threads();
+    let from = taken.iter_mut().map(|(_, b, _)| state_mut::<ParticlesState>(b.as_mut()).step).min().unwrap_or(due);
+    for k in from..due {
+        if let Some(air) = air.as_mut() {
+            air.get_mut().catch_up_to(k + 1, world, threads);
+        }
+        for (_, boxed, ms) in &mut taken {
+            let st = state_mut::<ParticlesState>(boxed.as_mut());
+            if st.step != k {
+                continue;
+            }
+            let started = std::time::Instant::now();
+            step::step_in(st, world, log, threads, air.as_ref().map(|a| a.get()).filter(|a| a.awake()));
+            if let Some(air) = air.as_mut().filter(|a| a.get().awake()) {
+                step::put_heat(st, air.get_mut());
+            }
+            *ms += started.elapsed().as_secs_f32() * 1000.0;
+        }
+    }
+    if let Some(air) = air {
+        put_air(world, air);
+    }
+    for (t, mut boxed, ms) in taken {
+        state_mut::<ParticlesState>(boxed.as_mut()).last_ms = ms;
+        world.states.insert(t, boxed);
+        note_memory(world, t);
+    }
 }

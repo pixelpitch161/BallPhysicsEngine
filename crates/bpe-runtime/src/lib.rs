@@ -22,7 +22,7 @@ pub mod world;
 
 pub use bodies::Bodies;
 pub use camera::CameraView;
-pub use events::{Event, EventKind, Log, Party};
+pub use events::{Event, EventKind, Log, Party, hit_strength};
 pub use history::{History, HistoryWant};
 pub use light::{BallLight, LightAt, LightLevelsAt, LightMaker, LightPull, level_of};
 pub use pairs::{Grid, Pairs, Support, pop};
@@ -41,6 +41,6 @@ pub use walls::{
     wall_velocity,
 };
 pub use world::{
-    BESIDE_SLOTS, Between, Card, Lent, RunId, World, beside_fingerprint, fingerprint, has_beside, main_part,
-    needs_light, physics_animation, step_at,
+    BESIDE_SLOTS, Between, Card, Lent, RunId, World, beside_fingerprint, fingerprint, has_beside, heard_part,
+    is_beside, main_part, needs_light, physics_animation, step_at,
 };

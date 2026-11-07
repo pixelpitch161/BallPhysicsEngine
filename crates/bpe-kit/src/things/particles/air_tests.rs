@@ -222,7 +222,7 @@ fn air_edits_restart_only_the_particles() {
     assert_ne!(keyed.2, card.2);
     // The world the editor plays the balls in has no grid: the air costs nothing there.
     let resolved = resolve(&scene, reg);
-    let main = World::build(&scene, &main_part(&resolved, &kit.sims), &kit.sims);
+    let main = World::build(&scene, &main_part(&scene, &resolved, &kit.sims), &kit.sims);
     assert!(air_of(&main).is_some_and(|a| !a.awake()));
     let whole = World::build(&scene, &resolved, &kit.sims);
     assert!(air_of(&whole).is_some_and(|a| a.awake()));
@@ -256,7 +256,7 @@ fn an_air_key_following_light_is_only_the_particles_business() {
     assert_ne!(moved.1, follows.1);
     // The editor's main playback has no light probe to work out for it; the particles' has.
     let resolved = resolve(&scene, reg);
-    let main = World::build(&scene, &main_part(&resolved, &kit.sims), &kit.sims);
+    let main = World::build(&scene, &main_part(&scene, &resolved, &kit.sims), &kit.sims);
     assert!(main.light().is_none());
     let whole = World::build(&scene, &resolved, &kit.sims);
     assert!(whole.light().is_some());

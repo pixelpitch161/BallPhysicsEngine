@@ -7,7 +7,8 @@ use bpe_core::{Choice, ModuleKind, Params, SettingDef, Settings, SlotId};
 use bpe_runtime::{Outline, Touch, Wall, keep_clear_from};
 use glam::Vec2;
 
-use super::state::{DEAD, Speck};
+use super::moments::{MET_AT_BALL, MET_AT_SHAPE, MET_BALL, MET_LAND, MET_SHAPE};
+use super::state::{DEAD, LANDED, Speck};
 
 /// The card kind.
 pub const CARD: &str = "meets.particles";
@@ -105,6 +106,8 @@ pub struct BallAt {
     pub place: Vec2,
     pub velocity: Vec2,
     pub radius: f32,
+    /// The ball's thing, for the moments (0 when not known).
+    pub thing: u32,
 }
 
 /// The most balls a particle looks at.
@@ -213,16 +216,20 @@ pub fn meet_balls(s: &mut Speck, grid: &BallGrid, m: &MeetsSettings, dt: f32) {
         }
         let touch = b.radius + s.size.max(0.0);
         if d < touch {
+            let n = off.try_normalize().unwrap_or(Vec2::NEG_Y);
+            let rel = s.velocity - b.velocity;
+            let into = rel.dot(n);
             match m.at_balls {
                 AtBalls::Pass => {}
-                AtBalls::Vanish => s.flags |= DEAD,
+                AtBalls::Vanish => {
+                    s.flags |= DEAD;
+                    mark(s, MET_BALL, b.thing, -into);
+                }
                 AtBalls::BounceOff => {
-                    let n = off.try_normalize().unwrap_or(Vec2::NEG_Y);
                     s.place = b.place + n * touch;
-                    let rel = s.velocity - b.velocity;
-                    let into = rel.dot(n);
                     if into < 0.0 {
                         s.velocity = b.velocity + rel - n * into * (1.0 + m.ball_bounce.clamp(0.0, 1.0));
+                        mark(s, MET_BALL, b.thing, -into);
                     }
                 }
             }
@@ -230,12 +237,25 @@ pub fn meet_balls(s: &mut Speck, grid: &BallGrid, m: &MeetsSettings, dt: f32) {
     }
 }
 
+/// Notes that `s` met `what` (a [`MET_BALL`], [`MET_SHAPE`] or [`MET_LAND`] mark) of thing
+/// `thing`, going into it at `speed`: the first ball and the first shape it meets in a step are
+/// the ones its moments tell.
+fn mark(s: &mut Speck, what: u8, thing: u32, speed: f32) {
+    let (k, kin) = if what == MET_BALL { (MET_AT_BALL, MET_BALL) } else { (MET_AT_SHAPE, MET_SHAPE | MET_LAND) };
+    if s.met & kin == 0 {
+        s.with[k] = thing;
+        s.impact[k] = if speed.is_finite() { speed.max(0.0) } else { 0.0 };
+    }
+    s.met |= what;
+}
 /// A wall with a box round everything near it, for skipping walls far from a particle.
 #[derive(Clone, Debug)]
 pub struct WallAt {
     pub wall: Wall,
     /// Its outline as the step began (which side a particle is on is judged against it).
     pub before: Outline,
+    /// The wall's thing, for the moments.
+    pub thing: u32,
     lo: Vec2,
     hi: Vec2,
 }
@@ -247,7 +267,7 @@ impl WallAt {
         let (r0, r1) = (grow(&wall.outline), grow(&before));
         let lo = (c0 - Vec2::splat(r0)).min(c1 - Vec2::splat(r1));
         let hi = (c0 + Vec2::splat(r0)).max(c1 + Vec2::splat(r1));
-        WallAt { wall, before, lo, hi }
+        WallAt { wall, before, thing: 0, lo, hi }
     }
 
     /// Whether a step from `a` to `b` may touch it.
@@ -280,18 +300,28 @@ pub fn meet_walls(s: &mut Speck, walls: &[WallAt], m: &MeetsSettings) {
             return;
         }
         s.place = at;
+        let rel = s.velocity - contact.wall_velocity;
+        let into = rel.dot(contact.normal);
         match m.at_shapes {
             AtShapes::Pass => {}
             AtShapes::Vanish => {
                 s.flags |= DEAD;
+                mark(s, MET_SHAPE, w.thing, -into);
                 return;
             }
             // It stops dead against the wall (moving with it); gravity can still slide it along.
-            AtShapes::Stop => s.velocity = contact.wall_velocity,
+            // It lands the first time only.
+            AtShapes::Stop => {
+                if s.flags & LANDED == 0 {
+                    mark(s, MET_LAND, w.thing, -into);
+                }
+                s.velocity = contact.wall_velocity;
+            }
             AtShapes::Bounce => {
-                let rel = s.velocity - contact.wall_velocity;
                 let n = contact.normal;
-                let into = rel.dot(n);
+                if into < 0.0 {
+                    mark(s, MET_SHAPE, w.thing, -into);
+                }
                 let normal = n * into;
                 let side = (rel - normal) * (1.0 - m.friction.clamp(0.0, 1.0));
                 let out = if into < 0.0 { -normal * m.bounciness.clamp(0.0, 1.0) } else { normal };

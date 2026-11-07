@@ -4,40 +4,13 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use bpe_core::{Animation, Blend, Inputs, Resolved, ResolvedThing, Scene, SlotId, Thing, ThingId};
-use bpe_runtime::{CameraView, EventKind, LevelsAt, LightAt, LightLevelsAt, Log, Outline, SoundAt, World};
+use bpe_runtime::{CameraView, LevelsAt, LightAt, LightLevelsAt, Log, Outline, SoundAt, World};
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
 
 use crate::gradients::{GradientAtlas, PaintGpu};
 
-/// Hits older than this no longer count towards [`hit_strength`].
-const HIT_WINDOW: f64 = 0.3;
-/// A hit's strength fades by e every this many seconds.
-const HIT_FADE: f32 = 0.1;
-/// A hit at this speed (px/s) counts as a full one.
-const FULL_HIT: f32 = 600.0;
-
-/// How hard things are hitting at `time`, 0 to 1, for pulses that follow hits: every hit in the
-/// last 0.3 s counts `min(speed / 600, 1)`, fading with age, and the sum is clamped.
-pub fn hit_strength(log: &Log, time: f64, steps_per_second: u32) -> f32 {
-    let rate = steps_per_second.max(1);
-    let events = log.events();
-    let first_step = ((time - HIT_WINDOW) * rate as f64).ceil().max(0.0) as u64;
-    let last_step = (time * rate as f64 + 1e-6).floor().max(0.0) as u64;
-    let start = events.partition_point(|e| e.step < first_step);
-    let mut sum = 0.0f32;
-    for e in &events[start..] {
-        if e.step > last_step {
-            break;
-        }
-        if e.kind != EventKind::Hit {
-            continue;
-        }
-        let age = (time - e.time(rate)).max(0.0) as f32;
-        sum += (e.speed / FULL_HIT).min(1.0) * (-age / HIT_FADE).exp();
-    }
-    if sum.is_finite() { sum.clamp(0.0, 1.0) } else { 0.0 }
-}
+pub use bpe_runtime::hit_strength;
 
 /// A ball: a lit sphere with a halo.
 #[repr(C)]
@@ -2288,7 +2261,7 @@ pub const MOST_SPRITES: usize = 1_000_000;
 mod tests {
     use super::*;
     use bpe_core::{Address, Ease, Value, resolve, testkit};
-    use bpe_runtime::{Event, Log, Party, Sims, World};
+    use bpe_runtime::{Event, EventKind, Log, Party, Sims, World};
 
     struct FakeScene;
     impl ThingDraw for FakeScene {

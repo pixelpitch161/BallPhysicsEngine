@@ -43,6 +43,12 @@ pub enum EventKind {
     /// note) as the item, `point` where the firing was, `normal.x` the note's length in seconds
     /// (0: as its envelopes) and `speed` its velocity, 0 to 1.
     Note,
+    /// A Particles thing's particle did something its sound plays (particles part 7; only a thing
+    /// whose sound is on logs them, at most its Most notes a second): `a` the thing with the
+    /// particle's seed as the item, `b` the thing with the moment's kind code as the item, `point`
+    /// where, `normal` the way the particle went and `speed` its strength as a hit speed
+    /// (strength × 1500, so the voice's strength reads it back).
+    Moment,
 }
 
 impl EventKind {
@@ -59,6 +65,7 @@ impl EventKind {
             // 12 to 19 are left for the rules' other parts.
             EventKind::Flash => 20,
             EventKind::Note => 21,
+            EventKind::Moment => 22,
         }
     }
 }
@@ -222,6 +229,35 @@ impl Log {
     }
 }
 
+/// Hits older than this no longer count towards [`hit_strength`].
+const HIT_WINDOW: f64 = 0.3;
+/// A hit's strength fades by e every this many seconds.
+const HIT_FADE: f32 = 0.1;
+/// A hit at this speed (px/s) counts as a full one.
+const FULL_HIT: f32 = 600.0;
+
+/// How hard things are hitting at `time`, 0 to 1, for pulses that follow hits: every hit in the
+/// last 0.3 s counts `min(speed / 600, 1)`, fading with age, and the sum is clamped.
+pub fn hit_strength(log: &Log, time: f64, steps_per_second: u32) -> f32 {
+    let rate = steps_per_second.max(1);
+    let events = log.events();
+    let first_step = ((time - HIT_WINDOW) * rate as f64).ceil().max(0.0) as u64;
+    let last_step = (time * rate as f64 + 1e-6).floor().max(0.0) as u64;
+    let start = events.partition_point(|e| e.step < first_step);
+    let mut sum = 0.0f32;
+    for e in &events[start..] {
+        if e.step > last_step {
+            break;
+        }
+        if e.kind != EventKind::Hit {
+            continue;
+        }
+        let age = (time - e.time(rate)).max(0.0) as f32;
+        sum += (e.speed / FULL_HIT).min(1.0) * (-age / HIT_FADE).exp();
+    }
+    if sum.is_finite() { sum.clamp(0.0, 1.0) } else { 0.0 }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,6 +310,7 @@ mod tests {
         assert_eq!(EventKind::Remove.tag(), 2);
         assert_eq!((EventKind::Spawn.tag(), EventKind::Enter.tag()), (8, 9));
         assert_eq!((EventKind::Rule.tag(), EventKind::Break.tag()), (10, 11));
+        assert_eq!((EventKind::Note.tag(), EventKind::Moment.tag()), (21, 22));
     }
 
     #[test]

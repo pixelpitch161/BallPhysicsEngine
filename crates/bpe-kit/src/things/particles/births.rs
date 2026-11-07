@@ -311,6 +311,9 @@ pub fn spawn(s: &ParticlesSettings, place: &Place, seed: u32, now: u32) -> Speck
         ball: place.ball,
         flags: 0,
         spot: place.spot,
+        met: 0,
+        with: [0; 2],
+        impact: [0.0; 2],
     };
     if speck.place.is_finite() && speck.velocity.is_finite() {
         speck
@@ -419,7 +422,14 @@ pub fn births(st: &mut ParticlesState, cx: &BirthCx, since: u64, first: bool) {
             st.specks.push(speck);
         }
     };
+    // Bursts note a Burst each, and a Born for each particle they make (moments, part 7).
+    let bursts = matches!(s.emit, Emit::Bursts | Emit::OnHits | Emit::OnceAtTheStart | Emit::OnTheBeat);
     for batch in batches {
+        let first_born = st.specks.len();
+        let hit = match &batch {
+            Batch::At(place, _) => Some(*place),
+            _ => None,
+        };
         match batch {
             Batch::Source(count) | Batch::At(_, count) if count == 0 => {}
             Batch::Source(count) => {
@@ -452,5 +462,39 @@ pub fn births(st: &mut ParticlesState, cx: &BirthCx, since: u64, first: bool) {
                 }
             }
         }
+        // A burst all of whose particles the cap refused is no burst.
+        if bursts && st.specks.len() > first_born {
+            note_burst(st, hit.as_ref(), cx.anchor, first_born);
+        }
+    }
+}
+
+/// Notes a burst that made the particles of `st` from `first` on, at `place` (a hit's) or the
+/// source's `anchor`, and a Born for each of them.
+fn note_burst(st: &mut ParticlesState, place: Option<&Place>, anchor: Vec2, first: usize) {
+    use super::moments::{Moment, MomentKind};
+    let born: Vec<Moment> = st.specks[first..]
+        .iter()
+        .map(|p| Moment {
+            kind: MomentKind::Born,
+            place: p.place,
+            velocity: p.velocity,
+            speed: p.velocity.length(),
+            size: p.size,
+            with: None,
+            seed: p.seed,
+        })
+        .collect();
+    st.note_moment(Moment {
+        kind: MomentKind::Burst,
+        place: place.map_or(anchor, |p| p.at),
+        velocity: Vec2::ZERO,
+        speed: place.map_or(0.0, |p| p.velocity.length()),
+        size: born.len() as f32,
+        with: None,
+        seed: born.first().map_or(0, |m| m.seed),
+    });
+    for m in born {
+        st.note_moment(m);
     }
 }

@@ -138,6 +138,20 @@ pub enum PlayMode {
     Mono,
 }
 
+/// How loud a Particles thing's moments play (particles part 7).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum MomentStrength {
+    /// Harder the faster the particle went into what it met (1500 px/s is full).
+    #[default]
+    Speed,
+    /// Louder the bigger the particle (6 px across half is full).
+    Size,
+    /// Both: fast and big is loudest.
+    SpeedAndSize,
+    /// Every note as loud.
+    TheSame,
+}
+
 /// When a shape's notes sound.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
 pub enum PlayWhen {
@@ -382,6 +396,27 @@ pub struct VoiceSettings {
     /// The Distance whose range holds the notes, by its layer id ("" for the first).
     #[setting(label = "In range of", group = "Playing", when = "play_when=in_range")]
     pub play_zone: String,
+    /// A Particles thing's sound: its particles hitting a ball play notes.
+    #[setting(label = "Hitting a ball", group = "Playing")]
+    pub moments_hit_ball: bool,
+    /// Its particles hitting a shape play notes.
+    #[setting(label = "Hitting a shape", group = "Playing")]
+    pub moments_hit_shape: bool,
+    /// Its particles landing on a shape (stopping on it) play notes.
+    #[setting(label = "Landing", group = "Playing")]
+    pub moments_land: bool,
+    /// Each particle born in a burst plays a note.
+    #[setting(label = "Being born", group = "Playing")]
+    pub moments_born: bool,
+    /// Each burst plays a note.
+    #[setting(label = "Bursts", group = "Playing")]
+    pub moments_burst: bool,
+    /// The most notes its particles play a second; the strongest are kept.
+    #[setting(label = "Most notes a second", range(1, 2000), unit = "per s", group = "Playing", keyframe)]
+    pub moments_most: f32,
+    /// What makes a particle's note louder.
+    #[setting(label = "Strength from", group = "Playing")]
+    pub moments_strength: MomentStrength,
     /// The notes, slot by slot (part 2 plays slot 1).
     #[setting(label = "Notes", group = "Notes")]
     pub notes_slots: Vec<NoteSlot>,
@@ -478,6 +513,13 @@ impl Default for VoiceSettings {
             play_heard_from: Target::Anything,
             play_when: PlayWhen::OnHit,
             play_zone: String::new(),
+            moments_hit_ball: true,
+            moments_hit_shape: true,
+            moments_land: true,
+            moments_born: false,
+            moments_burst: false,
+            moments_most: 30.0,
+            moments_strength: MomentStrength::Speed,
             notes_slots: vec![NoteSlot { notes: vec![60], order_clicked: Vec::new() }],
             notes_low_octave: 4,
             notes_octaves: 3,
@@ -526,8 +568,9 @@ impl ModuleKind for VoiceKind {
     fn settings(&self) -> &'static [SettingDef] {
         VoiceSettings::defs()
     }
+    /// Shapes play hits; Particles things play their particles' moments (particles part 7).
     fn fits(&self, thing_kind: &str) -> bool {
-        thing_kind == crate::things::shape::KIND
+        thing_kind == crate::things::shape::KIND || thing_kind == crate::things::particles::KIND
     }
 }
 
@@ -641,11 +684,11 @@ mod tests {
     }
 
     #[test]
-    fn voice_card_fits_only_shapes() {
+    fn voice_card_fits_only_shapes_and_particles() {
         let reg = reg();
         let kind = reg.module(VOICE).unwrap();
         assert_eq!(kind.slot(), SlotId::Sound);
-        assert!(kind.fits("shape"));
+        assert!(kind.fits("shape") && kind.fits("particles"));
         for t in ["balls", "camera", "folder", "scene"] {
             assert!(!kind.fits(t), "{t}");
         }

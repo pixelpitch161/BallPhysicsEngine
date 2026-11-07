@@ -111,10 +111,15 @@ pub fn run_chunks_indexed(specks: &mut [Speck], threads: usize, f: &(dyn Fn(usiz
 /// Every alive ball in the world, by thing then row, for the particles to meet.
 pub fn balls_in(world: &World) -> Vec<BallAt> {
     let mut out = Vec::new();
-    for b in world.bodies.values() {
+    for (id, b) in &world.bodies {
         for r in 0..b.len() {
             if b.alive[r] && b.position[r].is_finite() {
-                out.push(BallAt { place: b.position[r], velocity: b.velocity[r], radius: b.radius[r].max(0.0) });
+                out.push(BallAt {
+                    place: b.position[r],
+                    velocity: b.velocity[r],
+                    radius: b.radius[r].max(0.0),
+                    thing: id.0,
+                });
             }
         }
     }
@@ -151,6 +156,7 @@ pub fn step(st: &mut ParticlesState, world: &World, log: &Log, threads: usize) {
 pub fn step_in(st: &mut ParticlesState, world: &World, log: &Log, threads: usize, air: Option<&Air>) {
     let since = st.world_step;
     st.world_step = world.step;
+    st.start_moments(world.step);
     st.step += 1;
     let turn = st.settings.homes_turn.to_radians() * DT;
     if turn.is_finite() {
@@ -170,7 +176,9 @@ pub fn step_in(st: &mut ParticlesState, world: &World, log: &Log, threads: usize
             .iter()
             .map(|(id, w)| {
                 let before = st.walls_before.get(id).cloned().unwrap_or_else(|| w.outline.clone());
-                WallAt::new(w.clone(), before)
+                let mut at = WallAt::new(w.clone(), before);
+                at.thing = id.0;
+                at
             })
             .collect()
     };
@@ -192,7 +200,13 @@ pub fn step_in(st: &mut ParticlesState, world: &World, log: &Log, threads: usize
         ceiling: world.limits().ceiling,
     };
     run_chunks_indexed(&mut st.specks, threads, &|i, s| move_one(s, i, &move_cx));
-    st.specks.retain(|s| s.flags & DEAD == 0);
+    // The dead go, in order, and what the particles met becomes this step's moments.
+    let mut specks = std::mem::take(&mut st.specks);
+    specks.retain_mut(|s| {
+        super::moments::collect(st, s);
+        s.flags & DEAD == 0
+    });
+    st.specks = specks;
     note_walls(st, world);
 }
 

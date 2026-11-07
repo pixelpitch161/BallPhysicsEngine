@@ -9,6 +9,7 @@ pub mod adsr_view;
 pub mod chain_box;
 pub mod keys;
 pub mod mods;
+pub mod moments;
 pub mod notes;
 pub mod osc;
 pub mod output;
@@ -411,11 +412,12 @@ pub fn show(
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.add_space(10.0);
-                    ui.label(
-                        RichText::new("Turn it on and the shape plays a note each time a ball hits it.")
-                            .small()
-                            .color(style::MUTED),
-                    );
+                    let line = if moments::is_particles(&cx) {
+                        "Turn it on and the particles play notes when they hit things, land or burst."
+                    } else {
+                        "Turn it on and the shape plays a note each time a ball hits it."
+                    };
+                    ui.label(RichText::new(line).small().color(style::MUTED));
                 });
                 return;
             }
@@ -470,6 +472,10 @@ fn body(ui: &mut Ui, inspector: &mut Inspector, cx: &mut TabCx) {
     }
     notes::show(ui, cx, &mut inspector.sound.notes, playing, sounding);
     ui.add_space(8.0);
+    if moments::is_particles(cx) {
+        moments::show(ui, cx);
+        ui.add_space(8.0);
+    }
     let level = inspector.meters.as_ref().map_or(f32::NEG_INFINITY, |m| m.take_shape(cx.id.0));
     if level > f32::NEG_INFINITY {
         // Keep the meter moving while the shape sounds.
@@ -677,6 +683,50 @@ pub(crate) mod tests {
         h.get_by_label("Settings").click();
         h.run();
         assert!(h.query_by_role_and_label(Role::CheckBox, "Enable sound").is_none());
+    }
+
+    #[test]
+    fn a_particles_thing_gets_a_sound_tab_with_its_moments() {
+        let mut studio = Studio::headless();
+        let reg = bpe_kit::registry();
+        let id = bpe_kit::things::particles::looks::add_particles(
+            &mut studio.scene,
+            &reg,
+            bpe_kit::things::particles::looks::Look::Empty,
+            ThingId::ROOT,
+        )
+        .unwrap();
+        studio.replace_scene(studio.scene.clone(), None);
+        studio.selection.set(id);
+        studio.panels.inspector.tab.insert(id, InspectorTab::Sound);
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1500.0, 1400.0))
+            .with_step_dt(0.25)
+            .with_max_steps(120)
+            .allow_missing_glyphs()
+            .with_context_setup(style::apply)
+            .build_ui_state(
+                |ui, (studio, width): &mut (Studio, f32)| {
+                    let before = studio.scene.clone();
+                    *width = studio.inspector_panel(ui);
+                    egui::CentralPanel::default().show(ui, |_| {});
+                    studio.after_edit(before);
+                },
+                (studio, 0.0),
+            );
+        h.run();
+        assert!(h.query_by_label("Settings").is_some(), "a Particles thing has the Settings | Sound chips");
+        click_switch(&mut h, "Enable sound");
+        assert!(card(&h, id).is_some(), "the starter patch");
+        assert!(h.query_by_label("Plays when its particles").is_some());
+        assert!(h.query_by_label("In range").is_none(), "no zone for particles");
+        let born = Address::on(id, SlotId::Sound, "moments_born");
+        let reg = bpe_kit::registry();
+        assert_eq!(h.state().0.scene.value_at_time(&reg, &born, 0.0), Some(Value::Bool(false)));
+        h.get_by_role_and_label(Role::CheckBox, "Are born").scroll_to_me();
+        h.run();
+        click_switch(&mut h, "Are born");
+        assert_eq!(h.state().0.scene.value_at_time(&reg, &born, 0.0), Some(Value::Bool(true)));
     }
 
     #[test]

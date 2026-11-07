@@ -38,15 +38,25 @@ pub struct Speck {
     pub seed: u32,
     /// The parent ball it came from (body row + 1), 0 when none.
     pub ball: u32,
-    /// [`DEAD`] once it is to go.
+    /// [`DEAD`] once it is to go, [`LANDED`] once it has landed.
     pub flags: u32,
     /// The place of a word, picture or grid it was born at (its index + 1), 0 when none: its
     /// home follows the place as the source moves and turns.
     pub spot: u32,
+    /// What it met this step ([`super::moments::MET_BALL`], `MET_SHAPE`, `MET_LAND`), turned into
+    /// moments after the move.
+    pub met: u8,
+    /// The id of the ball's and of the shape's thing it met first this step (0 none), at
+    /// [`super::moments::MET_AT_BALL`] and `MET_AT_SHAPE`.
+    pub with: [u32; 2],
+    /// How fast it went into each, px/s.
+    pub impact: [f32; 2],
 }
 
 /// The particle is to be removed at the end of the step.
 pub const DEAD: u32 = 1;
+/// The particle has landed on a shape: it lands only once.
+pub const LANDED: u32 = 2;
 
 impl Speck {
     /// How old it is at particle step `now`, in seconds.
@@ -96,6 +106,17 @@ pub struct ParticlesState {
     pub spots_key: super::spots::SpotsKey,
     /// How far Homes turn has turned the homes so far, in radians.
     pub home_turn: f32,
+    /// What its particles did in world step [`ParticlesState::moments_step`], at most
+    /// [`super::moments::MOST_MOMENTS`] of them (particles part 7).
+    pub moments: Vec<super::moments::Moment>,
+    /// How many of each kind there were, every one counted.
+    pub moment_counts: [u32; super::moments::MOMENT_KINDS],
+    /// The world step the moments are from.
+    pub moments_step: u64,
+    /// Its Sound card's moments, when its sound plays some.
+    pub sound: Option<super::moments::MomentSound>,
+    /// How many notes its sound may log now (Most notes a second).
+    pub note_budget: f32,
 }
 
 impl ParticlesState {
@@ -117,6 +138,12 @@ impl ParticlesState {
             spots: Arc::new(Vec::new()),
             spots_key: super::spots::SpotsKey::None,
             home_turn: 0.0,
+            moments: Vec::new(),
+            moment_counts: [0; super::moments::MOMENT_KINDS],
+            // The first births, made when the world is built, are world step 1's.
+            moments_step: 1,
+            sound: None,
+            note_budget: 1.0,
         }
     }
 
