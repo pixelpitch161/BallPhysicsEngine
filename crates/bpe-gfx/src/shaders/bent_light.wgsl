@@ -19,6 +19,17 @@ const BENT_OPEN: i32 = -1;
 const BENT_OFF: i32 = -2;
 const BENT_SEE: i32 = -3;
 const BENT_SOLID: i32 = -4;
+// Glass and light part 4a: a thing that throws light is `BENT_THROW - its surface index` (every
+// kind at or under this).
+const BENT_THROW: i32 = -16;
+const MOST_THROWERS: u32 = 64u;
+
+struct ThrowerGpu {
+    // Its surface index, 1 for balls, Facets, Facet gaps.
+    a: vec4<f32>,
+    // What it gives back (linear rgb, times Throws light), how fast it blurs (Roughness squared).
+    b: vec4<f32>,
+};
 
 struct BentU {
     // Photons a pair, pairs, the most steps a photon takes, spare.
@@ -26,12 +37,18 @@ struct BentU {
     // World units per output pixel, this sample's turn of the photons, half a photon line's width
     // (world), Glass caustics.
     more: vec4<f32>,
+    // Part 4a: Mirror light, how many things throw light, two spare.
+    extra: vec4<f32>,
+    // Which surface indices throw light (a bit each).
+    throws: array<vec4<u32>, 16>,
+    // The things that throw light.
+    table: array<ThrowerGpu, 64>,
 };
 
 struct BentPair {
     // The bender's box: lo xy, hi xy (world).
     a: vec4<f32>,
-    // Its bender id, the light's index, two spare.
+    // Its bender id (a thrower's surface index), the light's index, 1 for a thrower's pair, spare.
     b: vec4<f32>,
 };
 
@@ -41,8 +58,11 @@ struct Leg {
     // The path length from the light at each end, its share in the haze, the light's index + 1
     // (0: an empty leg).
     b: vec4<f32>,
-    // Its light (linear rgb, before the falloff), spare.
+    // Its light (linear rgb, before the falloff), its path key.
     c: vec4<f32>,
+    // Part 4a: how much a rough mirror has blurred it at each end (world, added to its half
+    // width), two spare.
+    d: vec4<f32>,
 };
 
 @group(3) @binding(4) var<uniform> bu: BentU;
@@ -57,6 +77,40 @@ struct BentAt {
     block: f32,
 };
 
+// The surface index of the thing that throws light covering picture pixel `ip` (part 4a), -1 for
+// none: at least half covered by a surface whose bit is set.
+fn thrower_at(ip: vec2<i32>) -> i32 {
+    if bu.extra.y < 0.5 {
+        return -1;
+    }
+    let s = textureLoad(surface, ip, 0);
+    if s.a < 0.5 || s.b < 0.0 {
+        return -1;
+    }
+    let f = s.b / s.a;
+    let code = round(f);
+    if abs(f - code) > 0.2 || code < 0.5 {
+        return -1;
+    }
+    let i = u32(code) % 2048u;
+    let word = bu.throws[i / 128u][(i / 32u) % 4u];
+    if (word & (1u << (i % 32u))) == 0u {
+        return -1;
+    }
+    return i32(i);
+}
+
+// The table entry of the thing that throws light with surface index `id`.
+fn thrower_entry(id: i32) -> ThrowerGpu {
+    let n = min(u32(bu.extra.y), MOST_THROWERS);
+    for (var k = 0u; k < n; k++) {
+        if i32(bu.table[k].a.x + 0.5) == id {
+            return bu.table[k];
+        }
+    }
+    return ThrowerGpu(vec4<f32>(f32(id), 0.0, 0.0, 0.0), vec4<f32>(0.0));
+}
+
 // What a photon at world point `q` is in (`fd` the field there).
 fn bent_at(q: vec2<f32>, fd: vec4<f32>) -> BentAt {
     let ip = pixel_of(q);
@@ -67,6 +121,10 @@ fn bent_at(q: vec2<f32>, fd: vec4<f32>) -> BentAt {
     let g = bender_at(ip);
     if g >= 0 {
         return BentAt(g, b);
+    }
+    let t = thrower_at(ip);
+    if t >= 0 {
+        return BentAt(BENT_THROW - t, b);
     }
     if u.trace.y > 0.5 {
         // A Stage's things block whole (its balls, which mark a quarter, are spheres).
@@ -187,8 +245,21 @@ fn put_leg(slot: u32, n: u32, a: vec2<f32>, b: vec2<f32>, s0: f32, s1: f32, haze
     if n >= BENT_LEGS || distance(a, b) < 1e-4 || all(power <= vec3<f32>(0.0)) {
         return n;
     }
-    legs_out[slot + n] = Leg(vec4<f32>(a, b), vec4<f32>(s0, s1, haze, f32(light + 1u)), vec4<f32>(power, f32(key)));
+    legs_out[slot + n] = Leg(
+        vec4<f32>(a, b),
+        vec4<f32>(s0, s1, haze, f32(light + 1u)),
+        vec4<f32>(power, f32(key)),
+        vec4<f32>(leg_blur(s0), leg_blur(s1), 0.0, 0.0),
+    );
     return n + 1u;
+}
+
+// Part 4a: how much rough mirrors have blurred a photon's light by path length `s` (world, added to
+// its line's half width): `BLUR.x` at path length `BLUR.y`, growing by `BLUR.z` a unit after.
+var<private> BLUR: vec3<f32>;
+
+fn leg_blur(s: f32) -> f32 {
+    return BLUR.x + max(s - BLUR.y, 0.0) * BLUR.z;
 }
 
 // The share of the light that passes a glass edge from index `n1` into `n2` (Fresnel's, for
@@ -249,12 +320,15 @@ fn cs_bent(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let slot = k * BENT_LEGS;
     for (var i = 0u; i < BENT_LEGS; i++) {
-        legs_out[slot + i] = Leg(vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0));
+        legs_out[slot + i] = Leg(vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0));
     }
+    BLUR = vec3<f32>(0.0);
     let pair = bent_pairs[k / per];
     let j = k % per;
     let li = u32(pair.b.y);
     let own = i32(pair.b.x);
+    // Part 4a: a thrower's pair: its photons are drawn from where they first meet its mirror.
+    let throw_pair = pair.b.z > 0.5;
     let l = lights[li];
     let kind = l.p0.w;
     let sun = kind > 1.5 && kind < 2.5;
@@ -346,7 +420,7 @@ fn cs_bent(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Its light: what the direct light dropped (the shadow's strength, less what the shadow's
     // colour already fills in), an ultraviolet light's visible share, Glass caustics.
     var power = l.p1.rgb * weight * amount * clamp(l.p2.w, 0.0, 1.0)
-        * max(vec3<f32>(1.0) - l.p5.rgb, vec3<f32>(0.0)) * bu.more.w;
+        * max(vec3<f32>(1.0) - l.p5.rgb, vec3<f32>(0.0)) * select(bu.more.w, 1.0, throw_pair);
     if l.p7.y > 0.5 {
         power *= l.p7.z;
     }
@@ -382,6 +456,9 @@ fn cs_bent(@builtin(global_invocation_id) gid: vec3<u32>) {
     var key = 1u;
     var last_exit = 0.0;
     var prev = q;
+    // The mirror it was last thrown off and where (so it isn't thrown off it again as it leaves).
+    var last_tid = -1;
+    var last_throw = -1e30;
     let most = u32(bu.counts.z);
     for (var i = 0u; i < most; i++) {
         if s >= reach || legs >= BENT_LEGS {
@@ -502,10 +579,85 @@ fn cs_bent(@builtin(global_invocation_id) gid: vec3<u32>) {
                 if drawn {
                     break;
                 }
+            } else if c <= BENT_THROW {
+                // Part 4a: a mirror throws it back.
+                let tid = BENT_THROW - c;
+                if tid != last_tid || s - last_throw > 2.0 * px {
+                    if !met {
+                        if !throw_pair || tid != own {
+                            // Its first glass or mirror is another pair's: that pair carries it.
+                            break;
+                        }
+                        met = true;
+                        power *= gobo(l, q);
+                    }
+                    let e = thrower_entry(tid);
+                    // The mirror's normal: a ball's from its sphere, else down the slope of its
+                    // cover.
+                    var n = vec2<f32>(0.0, -1.0);
+                    var turn = 0.0;
+                    var found = false;
+                    if e.a.y > 0.5 {
+                        let b = ball_at(q);
+                        if b >= 0 {
+                            let sp = spheres[u32(b)];
+                            let d = q - sp.a.xy;
+                            if dot(d, d) > 1e-8 {
+                                n = normalize(d);
+                                turn = sp.c.z;
+                                found = true;
+                            }
+                        }
+                    }
+                    if !found {
+                        n = glass_normal(q, tid);
+                    }
+                    var facing = select(n, -n, dot(dir, n) > 0.0);
+                    var tile = 0;
+                    var ends = false;
+                    if e.a.z >= 3.0 {
+                        // A tiled mirror: off the middle of its tile (into a gap: it ends).
+                        let sector = 6.28318531 / e.a.z;
+                        let a = atan2(facing.y, facing.x) - turn;
+                        let k = floor(a / sector);
+                        if e.a.w > 0.0 && abs(2.0 * fract(a / sector) - 1.0) > 1.0 - e.a.w {
+                            ends = true;
+                        }
+                        let ca = (k + 0.5) * sector + turn;
+                        facing = vec2<f32>(cos(ca), sin(ca));
+                        tile = (i32(k) + 1024) % 256;
+                        if dot(dir, facing) >= 0.0 {
+                            ends = true;
+                        }
+                    }
+                    if drawn {
+                        legs = put_leg(slot, legs, leg_from, q, leg_s, s, haze, li, power, leg_key(key, rainbow));
+                    }
+                    if ends || legs >= BENT_LEGS {
+                        drawn = false;
+                        break;
+                    }
+                    key = path_key(path_key(key, 400 + tid), 300 + tile);
+                    BLUR = vec3<f32>(leg_blur(s), s, BLUR.z + max(e.b.w, 0.0));
+                    dir = normalize(reflect(dir, facing));
+                    power *= max(e.b.rgb, vec3<f32>(0.0)) * max(bu.extra.x, 0.0);
+                    drawn = true;
+                    last_tid = tid;
+                    last_throw = s;
+                    leg_from = q;
+                    leg_s = s;
+                    last_exit = s;
+                    // Thrown light is new light: carried as far as the light reaches.
+                    carried = 1e30;
+                    prev = q;
+                    q += dir * (0.25 * px);
+                    s += 0.25 * px;
+                    continue;
+                }
             } else if c >= 0 {
                 // Into glass.
                 if !met {
-                    if c != own {
+                    if c != own || throw_pair {
                         // Its first glass is another bender's: that pair carries it.
                         break;
                     }
@@ -652,6 +804,9 @@ fn vs_bent(@builtin(vertex_index) vi: u32, @builtin(instance_index) k: u32) -> B
         let e = 1.5 * sum / n;
         h = sign(e) * min(abs(e), vec2<f32>(MOST_SPREAD * least));
     }
+    // Part 4a: wider where a rough mirror has blurred it (its kernel stays the same light across).
+    let mag = max(abs(h), vec2<f32>(least)) + max(leg.d.xy, vec2<f32>(0.0));
+    h = select(mag, -mag, h < vec2<f32>(0.0));
     let x = f32(vi & 1u);
     let y = f32((vi >> 1u) & 1u) * 2.0 - 1.0;
     let pad = bu.more.x;

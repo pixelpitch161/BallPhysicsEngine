@@ -237,4 +237,21 @@ Harness as `bent_light_pictures.rs` (270 × 480, Light only, linear light).
 
 ## As built (4a)
 
-(Filled in when 4a is built.)
+- Settings, presets and the 15th chip as decisions 1 to 3. `surface::thing_colour(look)` uses the probe's
+  `layer_colour` (now `pub(crate)`). `WHOLE_THING_ONLY` holds the three pipe keys.
+- The renderer data as decision 4, with `BentUniform.extra` = [Mirror light, thrower count, 0, 0] and the thrower
+  table in the uniform (not a storage buffer: the compute stage already uses all 8). `BentPlan::bending()` says
+  whether any bender pair runs; `u.bent.x` follows it, so a frame with only mirrors leaves the direct pass's
+  bent-light branches off. Bender pairs need Glass caustics, thrower pairs need Mirror light; both need shadows.
+- `cs_bent` as decision 5. Ownership: a thrower pair's photon that meets glass, or another thrower first, stops; a
+  bender pair's photon that meets a mirror before its glass stops; after the first, every mirror reflects. A photon
+  steps a quarter pixel off the mirror after reflecting so it doesn't meet the same tile again.
+- The blur (decision 6) is a private `BLUR` (blur so far, rate) carried along the photon and written per leg end.
+- Tile shading (decision 7): `facet_normal` and `facet_gap` in lighting.wgsl, the grout at 15%.
+- Stage mirror balls (decision 8) go through `caustic_glass`/`vs_caustic`; Glass caustics now gates only the glass
+  entries inside `caustic_glass`, and `CausticU.counts[3]` carries Mirror light.
+- Pipes (decision 9): the piece count is rounded up to a multiple of `MOST_PIPE_PIECES` so a ring's strips are alike;
+  what is still travelling after `LAPS` (4) times round comes out evenly, so a pipe gives out exactly what it caught
+  (× gain × glow). The corner rule is the physical one: a corner turning by `α` leaks when `α > π/2 − asin(1/n)`, so
+  an index that hardly bends leaks at any corner and glass holds its light round 45° corners. Suns aren't caught.
+- Known limits as decision 11.

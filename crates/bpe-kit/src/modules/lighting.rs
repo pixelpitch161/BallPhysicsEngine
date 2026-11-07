@@ -438,6 +438,10 @@ pub struct LightingSettings {
     /// How soft the lines of light bent by glass are.
     #[setting(label = "Bent light softness", when = "glass_caustics", span(0, 4), keyframe, group = "Quality")]
     pub bent_softness: f32,
+    /// How much light mirrors, chrome and mirror balls throw back onto the room (each thing's
+    /// Throws light sets its own): 0 none.
+    #[setting(label = "Mirror light", span(0, 2), keyframe, group = "Quality")]
+    pub mirror_light: f32,
     /// How the video's lighting is worked out: as live, or baked (the cinema render).
     #[setting(label = "On export", group = "Quality")]
     pub on_export: OnExport,
@@ -598,6 +602,7 @@ impl Default for LightingSettings {
             glass_caustics: 1.0,
             bent_rays: 1.0,
             bent_softness: 1.0,
+            mirror_light: 1.0,
             on_export: OnExport::SameAsLive,
             bake_samples: 16,
             bake_bounce: BakeBounce::LikeLive,
@@ -718,7 +723,12 @@ impl LightingSettings {
                 finite(self.glass_caustics),
                 f32::from(u8::from(self.bake_bounce == BakeBounce::Traced)),
             ],
-            bent: [finite(self.bent_rays).max(0.0), finite(self.bent_softness).max(0.0), 0.0, 0.0],
+            bent: [
+                finite(self.bent_rays).max(0.0),
+                finite(self.bent_softness).max(0.0),
+                finite(self.mirror_light).max(0.0),
+                0.0,
+            ],
         }
     }
 
@@ -812,8 +822,8 @@ mod tests {
     #[test]
     fn bent_light_takes_one_ray_and_one_softness_by_default() {
         let on = LightingSettings::default();
-        assert_eq!(on.gpu(None).bent, [1.0, 1.0, 0.0, 0.0]);
-        let more = LightingSettings { bent_rays: 2.5, bent_softness: -1.0, ..on };
+        assert_eq!(on.gpu(None).bent, [1.0, 1.0, 1.0, 0.0], "and Mirror light 1");
+        let more = LightingSettings { bent_rays: 2.5, bent_softness: -1.0, mirror_light: -2.0, ..on };
         assert_eq!(more.gpu(None).bent, [2.5, 0.0, 0.0, 0.0], "never less than nothing");
     }
 }

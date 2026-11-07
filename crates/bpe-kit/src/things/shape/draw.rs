@@ -86,6 +86,51 @@ impl ThingDraw for ShapeDraw {
                 scene.benders.extend(benders.into_iter().map(|index| bpe_gfx::Bender { index, ..round }));
             }
         }
+        // Glass and light part 4a: the shape's surface, and each of its layers' own, that throws
+        // lamp light back like a mirror, when its layer blocks light; and a light pipe.
+        let colour = surface::thing_colour(look);
+        let throwers: Vec<(u32, [f32; 3], &surface::SurfaceSettings)> =
+            std::iter::once((index, &s, look.layers.first().map(|b| b.id), colour))
+                .chain(stamps.layers.iter().map(|(layer, i, ls)| {
+                    (*i, ls, Some(*layer), crate::sensing::probe::layer_colour(&look.layer_params(*layer)))
+                }))
+                .filter(|(_, _, layer, _)| blocks(*layer))
+                .filter_map(|(i, ls, _, c)| ls.throw_of(c).map(|back| (i, back, ls)))
+                .collect();
+        if (!throwers.is_empty() || s.light_pipe)
+            && let Some(wall) = cx.world.walls.get(&cx.thing.id)
+        {
+            let form = wall_form(wall);
+            let outline = outline_world(&form);
+            if let Some(round) = bpe_gfx::Bender::round(outline.iter().copied(), form.half + 2.0, 0) {
+                let finite = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+                for (index, colour, ls) in throwers {
+                    scene.push_thrower(bpe_gfx::Thrower {
+                        lo: round.lo,
+                        hi: round.hi,
+                        index,
+                        colour,
+                        widen: ls.throw_widen(),
+                        facets: finite(ls.facets),
+                        gaps: finite(ls.facet_gaps).min(1.0),
+                        ball: false,
+                    });
+                }
+            }
+            if s.light_pipe {
+                let most = colour[0].max(colour[1]).max(colour[2]);
+                let tint = colour.map(|c| if most > 1e-4 { (c / most).clamp(0.0, 1.0) } else { 1.0 });
+                let finite = |v: f32, or: f32| if v.is_finite() { v } else { or };
+                scene.push_pipe(bpe_gfx::Pipe {
+                    points: outline,
+                    carries: finite(s.pipe_carries, 600.0).max(1.0),
+                    glow: finite(s.pipe_glow, 0.0).max(0.0),
+                    tint,
+                    bends: finite(s.bends_light, 1.5).max(1.0001),
+                    width: 2.0 * form.half,
+                });
+            }
+        }
         if scene.mirrors.len() < bpe_gfx::MOST_MIRRORS
             && let Some(wall) = cx.world.walls.get(&cx.thing.id)
         {
@@ -637,5 +682,62 @@ mod tests {
         look.params.set("bends_light", Value::Number(1.5));
         look.params.set(&layered_key(body, "blocks_light"), Value::Bool(false));
         assert!(frame_of(&scene).light.expect("a lit frame").benders.is_empty());
+    }
+
+    /// The lit room with its shape and ball wearing Surface `shape` and `ball` (their presets).
+    fn lit_with(
+        shape: crate::modules::look::surface::SurfaceKind,
+        ball: crate::modules::look::surface::SurfaceKind,
+    ) -> Scene {
+        use bpe_core::{SlotId, Value};
+        let kit = crate::kit();
+        let mut scene = crate::scenes::lit_room(&kit.registry);
+        let shape_id = scene.things.values().find(|t| t.kind == "shape").map(|t| t.id).expect("a shape");
+        let ball_id = scene.things.values().find(|t| t.kind == "balls").map(|t| t.id).expect("a ball");
+        for (id, kind) in [(shape_id, shape), (ball_id, ball)] {
+            let look = scene.card_mut(id, SlotId::Look).unwrap();
+            look.params.set("surface", Value::Choice(bpe_core::Choice::name(&kind).into()));
+            for (k, v) in crate::modules::look::surface::preset_values(kind) {
+                look.params.set(k, v);
+            }
+        }
+        scene
+    }
+
+    #[test]
+    fn chrome_shapes_and_mirror_balls_throw_light_and_matte_and_glass_dont() {
+        use crate::modules::look::surface::SurfaceKind;
+        let lit = |shape, ball| frame_of(&lit_with(shape, ball)).light.expect("a lit frame");
+        let scene = lit(SurfaceKind::Chrome, SurfaceKind::MirrorBall);
+        assert_eq!(scene.throwers.len(), 2, "{:?}", scene.throwers);
+        let shape = scene.throwers.iter().find(|t| !t.ball).expect("the shape");
+        assert!(shape.index >= 1 && shape.colour.iter().all(|c| *c > 0.5), "{shape:?}");
+        assert!(shape.lo[0] < shape.hi[0] && shape.facets == 0.0);
+        let ball = scene.throwers.iter().find(|t| t.ball).expect("the ball");
+        assert_eq!((ball.facets, ball.gaps), (120.0, 0.12));
+        let sphere = scene.spheres.iter().find(|s| s.c[0] as u32 == ball.index).expect("its sphere");
+        assert!(ball.lo[0] <= sphere.a[0] - sphere.a[2] && ball.hi[1] >= sphere.a[1] + sphere.a[2], "{ball:?}");
+        assert!(lit(SurfaceKind::Matte, SurfaceKind::Glass).throwers.is_empty());
+        assert!(lit(SurfaceKind::Glass, SurfaceKind::Plastic).throwers.is_empty());
+        assert!(lit(SurfaceKind::Chrome, SurfaceKind::Matte).pipes.is_empty(), "no light pipe unless asked");
+    }
+
+    #[test]
+    fn a_light_pipe_lists_its_outline() {
+        use crate::modules::look::surface::SurfaceKind;
+        use bpe_core::{SlotId, Value};
+        let mut scene = lit_with(SurfaceKind::Glass, SurfaceKind::Matte);
+        let id = scene.things.values().find(|t| t.kind == "shape").map(|t| t.id).expect("a shape");
+        let look = scene.card_mut(id, SlotId::Look).unwrap();
+        look.params.set("light_pipe", Value::Bool(true));
+        look.params.set("pipe_carries", Value::Number(300.0));
+        let frame = frame_of(&scene);
+        let lit = frame.light.expect("a lit frame");
+        assert_eq!(lit.pipes.len(), 1);
+        let pipe = &lit.pipes[0];
+        assert!(pipe.points.len() >= 3 && pipe.carries == 300.0 && pipe.bends == 1.5, "{pipe:?}");
+        assert!(pipe.tint.iter().cloned().fold(0.0, f32::max) == 1.0);
+        // The room's lamp is near: the pipe glows with strip lights of its own.
+        assert!(lit.lights.iter().filter(|l| l.p0[3] == 4.0).count() > 0, "pipe glow strips");
     }
 }

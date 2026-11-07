@@ -389,3 +389,30 @@ fn a_glass_lens_focuses_in_the_bake() {
     let (b_on, b_off) = (brightest(&on, below.0, below.1), brightest(&off, below.0, below.1));
     assert!(b_on > b_off + 60, "with bent light {b_on}, without {b_off}");
 }
+
+/// Glass and light part 4a: a chrome wall throws the lamp's light in the bake as it does live.
+#[test]
+fn a_mirror_throws_light_in_the_bake() {
+    let Some(mut gpu) = gpu() else { return };
+    let mut scene = room(false, [0.0, 900.0], 20.0, [0.0, 0.0]);
+    set_lighting(&mut scene, "ambient", Value::Number(0.0));
+    set_light(&mut scene, "position", Value::Vec2([-300.0, -400.0]));
+    let shape = thing_of(&scene, "shape");
+    let wall = bpe_kit::ShapeSettings {
+        fill: bpe_kit::ShapeFill::Filled,
+        ..bpe_kit::ShapeSettings::rectangle(300.0, 40.0, 2.0)
+    };
+    scene.things.get_mut(&shape).unwrap().params = wall.to_params();
+    let body = scene.things[&shape].slots[&SlotId::Look].layers[0].id;
+    scene.card_mut(shape, SlotId::Look).unwrap().params.set(&layered_key(body, "blocks_light"), Value::Bool(true));
+    set_surface(&mut scene, shape, SurfaceKind::Chrome);
+    let on = draw(&mut gpu, &scene, 0.0, bake(4, 0.0), "mirror");
+    assert!(gpu.renderer.bent_photons() > 0, "the baked samples send mirror photons");
+    scene.card_mut(shape, SlotId::Look).unwrap().params.set("throws", Value::Number(0.0));
+    let off = draw(&mut gpu, &scene, 0.0, bake(4, 0.0), "mirror-off");
+    // Inside the thrown cone: the lamp's image is at (-300, 360), through the wall's middle.
+    for (x, y) in [(300.0, -400.0), (200.0, -300.0), (380.0, -560.0)] {
+        let (a, b) = (brightness(at(&on, x, y)), brightness(at(&off, x, y)));
+        assert!(a as f32 >= 1.3 * b as f32 && a > b + 6, "at ({x}, {y}): thrown {a} against {b}");
+    }
+}

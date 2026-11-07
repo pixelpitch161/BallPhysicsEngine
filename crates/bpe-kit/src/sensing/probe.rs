@@ -650,7 +650,7 @@ fn passes_of(look: &bpe_core::ResolvedSlot, glass_colour: bool) -> [f32; 3] {
 }
 
 /// A layer's own colour, linear: the middle of its colours, its colour, else white.
-fn layer_colour(params: &bpe_core::Params) -> [f32; 3] {
+pub(crate) fn layer_colour(params: &bpe_core::Params) -> [f32; 3] {
     let lin = |c: &bpe_core::Color| {
         let l = c.to_linear();
         [l[0], l[1], l[2]]

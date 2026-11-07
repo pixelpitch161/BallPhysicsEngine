@@ -40,6 +40,9 @@ pub enum SurfaceKind {
     /// A prism: clear glass that splits white light into a rainbow (lasers and light beams fan out
     /// through it).
     Prism,
+    /// A mirror ball: chrome made of small flat tiles, throwing spots of light round the room that
+    /// turn as it turns.
+    MirrorBall,
 }
 
 /// A Surface's preset numbers.
@@ -64,6 +67,11 @@ pub struct Preset {
     pub frost: f32,
     pub rim: f32,
     pub inner_glow: f32,
+    /// Glass and light part 4a: how much lamp light it throws back like a mirror, its tiles and
+    /// the gaps between them.
+    pub throws: f32,
+    pub facets: f32,
+    pub facet_gaps: f32,
 }
 
 impl Preset {
@@ -87,6 +95,9 @@ impl Preset {
             frost: 0.0,
             rim: 0.0,
             inner_glow: 0.0,
+            throws: 0.0,
+            facets: 0.0,
+            facet_gaps: 0.0,
         }
     }
 }
@@ -98,18 +109,21 @@ impl SurfaceKind {
         match self {
             Self::Matte => base(1.0, 0.0, 0.0, 1.0, 0.0),
             Self::Plastic => base(0.3, 0.0, 0.0, 1.5, 0.0),
-            Self::Chrome => base(0.05, 1.0, 0.0, 1.5, 0.0),
-            Self::Metal => base(0.35, 1.0, 0.0, 1.5, 0.0),
+            Self::Chrome => Preset { throws: 1.0, ..base(0.05, 1.0, 0.0, 1.5, 0.0) },
+            Self::Metal => Preset { throws: 0.5, ..base(0.35, 1.0, 0.0, 1.5, 0.0) },
             Self::Glass => Preset { rainbow: 0.3, thick_tint: 0.5, ..base(0.02, 0.0, 0.6, 1.5, 0.85) },
             Self::Toon => Preset { toon_steps: 3, ..base(0.35, 0.0, 0.0, 1.5, 0.0) },
             Self::Jelly => Preset { soak: 0.8, thick_tint: 0.5, ..base(0.35, 0.0, 0.3, 1.4, 0.35) },
             Self::Pearl => Preset { soak: 0.1, film: 0.55, ..base(0.2, 0.0, 0.6, 1.6, 0.0) },
             Self::Flake => Preset { flakes: 0.7, ..base(0.4, 0.3, 1.0, 1.5, 0.0) },
-            Self::Brushed => Preset { brushing: 0.8, ..base(0.3, 1.0, 0.0, 1.5, 0.0) },
+            Self::Brushed => Preset { brushing: 0.8, throws: 0.5, ..base(0.3, 1.0, 0.0, 1.5, 0.0) },
             Self::Frosted => Preset { frost: 0.5, ..base(0.45, 0.0, 0.0, 1.5, 0.85) },
             Self::Velvet => Preset { rim: 1.2, ..base(1.0, 0.0, 0.0, 1.0, 0.0) },
             Self::Lava => Preset { soak: 0.3, inner_glow: 1.5, ..base(0.6, 0.0, 0.0, 1.5, 0.0) },
             Self::Prism => Preset { rainbow: 1.0, ..base(0.0, 0.0, 0.0, 1.6, 0.95) },
+            Self::MirrorBall => {
+                Preset { throws: 1.0, facets: 120.0, facet_gaps: 0.12, ..base(0.05, 1.0, 0.0, 1.5, 0.0) }
+            }
         }
     }
 }
@@ -251,6 +265,17 @@ pub struct SurfaceSettings {
     /// What a shiny surface mirrors.
     #[setting(label = "Reflects", group = "Surface")]
     pub reflects: Reflects,
+    /// How much lamp light it throws back onto the room, like a mirror (glass and light part 4a):
+    /// chrome throws sharp spots, rough metal soft ones. A Mirror wall throws light only when this
+    /// is above 0.
+    #[setting(label = "Throws light", span(0, 1), keyframe, group = "Surface")]
+    pub throws: f32,
+    /// Made of this many flat mirror tiles round its middle, like a mirror ball: 0 smooth.
+    #[setting(label = "Facets", span(0, 400), keyframe, group = "Surface")]
+    pub facets: f32,
+    /// How much of each tile is dark gap between the tiles.
+    #[setting(label = "Facet gaps", when = "facets", span(0, 1), keyframe, group = "Surface")]
+    pub facet_gaps: f32,
     /// How much a ball bulges to the light: 0 a flat disc, 1 a ball, more a taller dome.
     #[setting(label = "Bulge", when = "thing!=shape", span(0, 2), keyframe, group = "Surface")]
     pub bulge: f32,
@@ -277,6 +302,24 @@ pub struct SurfaceSettings {
     /// The colour the mirror tints what it shows.
     #[setting(label = "Mirror tint", when = "thing=shape and mirror!=off", keyframe, group = "Surface")]
     pub mirror_tint: Color,
+    /// Makes the shape a light pipe: light from lamps near it, and lasers ending on it, runs along
+    /// its outline and glows out of it, brightest where it went in and at sharp corners.
+    #[setting(label = "Light pipe", when = "thing=shape", group = "Surface")]
+    pub light_pipe: bool,
+    /// How far along the outline the pipe's light carries before it has mostly glowed out.
+    #[setting(
+        label = "Carries",
+        when = "thing=shape and light_pipe",
+        range(1, 1e9),
+        span(1, 2000),
+        unit = "px",
+        keyframe,
+        group = "Surface"
+    )]
+    pub pipe_carries: f32,
+    /// How brightly the pipe glows with the light it carries.
+    #[setting(label = "Pipe glow", when = "thing=shape and light_pipe", span(0, 4), keyframe, group = "Surface")]
+    pub pipe_glow: f32,
 }
 
 impl Default for SurfaceSettings {
@@ -304,12 +347,18 @@ impl Default for SurfaceSettings {
             rim: p.rim,
             inner_glow: p.inner_glow,
             reflects: Reflects::TheScene,
+            throws: p.throws,
+            facets: p.facets,
+            facet_gaps: p.facet_gaps,
             bulge: 1.0,
             lens: 0.0,
             mirror: MirrorSide::Off,
             mirror_strength: 0.85,
             squeeze: 1.0,
             mirror_tint: Color::WHITE,
+            light_pipe: false,
+            pipe_carries: 600.0,
+            pipe_glow: 1.0,
         }
     }
 }
@@ -337,12 +386,16 @@ pub fn preset_values(kind: SurfaceKind) -> Vec<(&'static str, Value)> {
         ("frost", number(p.frost)),
         ("rim", number(p.rim)),
         ("inner_glow", number(p.inner_glow)),
+        ("throws", number(p.throws)),
+        ("facets", number(p.facets)),
+        ("facet_gaps", number(p.facet_gaps)),
     ]
 }
 
 /// Keys of the Surface settings that only the whole thing's Surface section has: a Surface
 /// sub-layer leaves them out (a layer has no height or outline of its own).
-pub const WHOLE_THING_ONLY: [&str; 6] = ["bulge", "lens", "mirror", "mirror_strength", "squeeze", "mirror_tint"];
+pub const WHOLE_THING_ONLY: [&str; 9] =
+    ["bulge", "lens", "mirror", "mirror_strength", "squeeze", "mirror_tint", "light_pipe", "pipe_carries", "pipe_glow"];
 
 impl SurfaceSettings {
     pub fn of(params: &Params) -> Self {
@@ -379,7 +432,36 @@ impl SurfaceSettings {
                 f(self.brush_angle).to_radians(),
             ],
             e: [f(self.frost).max(0.0), f(self.rim), f(self.inner_glow), self.bends_light.max(1.0)],
+            f: [f(self.throws).max(0.0), f(self.facets).max(0.0), f(self.facet_gaps).clamp(0.0, 1.0), 0.0],
         }
+    }
+
+    /// What it throws back of each channel of the lamp light meeting it (glass and light part 4a),
+    /// `colour` its own colour (linear): with a Mirror wall its tint times strength, else
+    /// `mix(F0, colour, Metal)`, times Throws light; `None` when it throws next to nothing (its
+    /// brightest channel under 0.02) or is glass that bends light (glass bends, it doesn't throw).
+    pub fn throw_of(&self, colour: [f32; 3]) -> Option<[f32; 3]> {
+        let f = |v: f32| if v.is_finite() { v } else { 0.0 };
+        let throws = f(self.throws).max(0.0);
+        if throws <= 0.0 || bends(self) {
+            return None;
+        }
+        let back = match self.mirror_gpu(1.0) {
+            Some(m) => [0, 1, 2].map(|k| m.c[k].max(0.0) * m.a[3].max(0.0)),
+            None => {
+                let metal = f(self.metal).clamp(0.0, 1.0);
+                let f0 = self.f0();
+                colour.map(|c| f0 + (f(c).clamp(0.0, 1.0) - f0) * metal)
+            }
+        };
+        let out = back.map(|c| c * throws);
+        (out.iter().copied().fold(0.0, f32::max) >= 0.02).then_some(out)
+    }
+
+    /// How fast what it throws blurs with distance (Roughness squared, part 4a).
+    pub fn throw_widen(&self) -> f32 {
+        let r = if self.roughness.is_finite() { self.roughness.clamp(0.0, 1.0) } else { 1.0 };
+        r * r
     }
 
     /// The shape's mirror wall, when it has one, as the renderer reads it (its outline's segments
@@ -402,6 +484,14 @@ impl SurfaceSettings {
 /// The Surface settings of a Look card (defaults for any setting it doesn't hold).
 pub fn of_card(look: &ResolvedSlot) -> SurfaceSettings {
     SurfaceSettings::from_params(&look.params)
+}
+
+/// A thing's own colour (linear), as the light reads it: a shape's first Colour and gradient
+/// layer's, else its Body's (the middle of its colours).
+pub fn thing_colour(look: &ResolvedSlot) -> [f32; 3] {
+    let body = look.layers.first().map(|l| look.layer_params(l.id)).unwrap_or_default();
+    let paint = look.layers.iter().find(|l| l.parent.is_none() && l.kind == super::shape::PAINT);
+    crate::sensing::probe::layer_colour(&paint.map(|l| look.layer_params(l.id)).unwrap_or(body))
 }
 
 /// The Look card kinds a Surface section belongs on.
@@ -649,7 +739,11 @@ mod tests {
         assert!(
             prism.rainbow == 1.0 && prism.bends_light == 1.6 && prism.see_through == 0.95 && prism.roughness == 0.0
         );
-        assert_eq!(SurfaceKind::NAMES.len(), 14);
+        assert_eq!(SurfaceKind::NAMES.len(), 15);
+        let ball = p(SurfaceKind::MirrorBall);
+        assert_eq!((ball.throws, ball.facets, ball.facet_gaps, ball.metal), (1.0, 120.0, 0.12, 1.0));
+        assert_eq!((p(SurfaceKind::Chrome).throws, p(SurfaceKind::Metal).throws), (1.0, 0.5));
+        assert_eq!(p(SurfaceKind::Matte).throws, 0.0);
     }
 
     #[test]
@@ -788,5 +882,41 @@ mod tests {
         }
         assert_eq!(seen, (1..=seen.len() as u32).collect::<Vec<_>>());
         assert!(seen.len() >= 2, "the room has a ball and a shape");
+    }
+
+    fn with(kind: SurfaceKind) -> SurfaceSettings {
+        let mut p = Params::default();
+        p.set("surface", Value::Choice(kind.name().into()));
+        for (k, v) in preset_values(kind) {
+            p.set(k, v);
+        }
+        SurfaceSettings::of(&p)
+    }
+
+    #[test]
+    fn what_throws_light() {
+        let gold = [1.0, 0.6, 0.1];
+        let chrome = with(SurfaceKind::Chrome).throw_of(gold).expect("chrome throws");
+        assert!((chrome[0] - 1.0).abs() < 1e-6 && (chrome[2] - 0.1).abs() < 1e-6, "{chrome:?}");
+        let metal = with(SurfaceKind::Metal).throw_of([1.0; 3]).unwrap();
+        assert!((metal[0] - 0.5).abs() < 1e-6);
+        assert_eq!(with(SurfaceKind::Matte).throw_of([1.0; 3]), None);
+        let mut glass = with(SurfaceKind::Glass);
+        glass.throws = 1.0;
+        assert_eq!(glass.throw_of([1.0; 3]), None, "glass bends, it doesn't throw");
+        let mut plastic = with(SurfaceKind::Plastic);
+        plastic.throws = 0.5;
+        assert_eq!(plastic.throw_of([1.0; 3]), None, "F0 0.04 at a half throws next to nothing");
+        let mut wall = with(SurfaceKind::Matte);
+        wall.mirror = MirrorSide::Inside;
+        wall.mirror_strength = 0.5;
+        wall.mirror_tint = Color::rgb(255, 0, 0);
+        assert_eq!(wall.throw_of([1.0; 3]), None, "a Mirror wall at Throws light 0");
+        wall.throws = 1.0;
+        let red = wall.throw_of([0.0; 3]).unwrap();
+        assert!((red[0] - 0.5).abs() < 1e-4 && red[1] < 1e-4, "{red:?}");
+        let gpu = with(SurfaceKind::MirrorBall).gpu(SurfaceGpu::BALL);
+        assert_eq!(gpu.f, [1.0, 120.0, 0.12, 0.0]);
+        assert!((with(SurfaceKind::Metal).throw_widen() - 0.1225).abs() < 1e-6);
     }
 }
