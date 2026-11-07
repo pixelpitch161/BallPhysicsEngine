@@ -36,7 +36,7 @@ block_kind!(
     When,
     HitSettings,
     "Fires when a ball hits a shape or another ball.",
-    values = ["strength", "speed", "size", "hits", "ball"],
+    values = ["strength", "speed", "size", "hits", "ball", "health", "share", "start"],
     from = []
 );
 
@@ -80,6 +80,8 @@ impl BlockSim for Hit {
                 let mut values = Values::default();
                 values.set("strength", e.speed as f64);
                 ball_values(cx.world, subject, &mut values);
+                // Its health after this step's hits (worked out before the rules run).
+                super::health::health_values(cx, subject, &mut values);
                 out.push(Firing {
                     step: cx.step,
                     subject: Some(subject),

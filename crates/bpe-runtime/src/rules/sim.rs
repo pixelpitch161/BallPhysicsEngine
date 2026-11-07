@@ -30,6 +30,9 @@ pub struct StageCx<'a> {
     /// Seconds since the start, at the end of this step.
     pub time: f64,
     pub rule: RuleId,
+    /// Every thing's health and this step's changes of it (the world's own answer reads nothing
+    /// while the stage runs).
+    pub health: &'a super::Health,
     pub block: BlockId,
     /// The things a rule broke (the world's own answer, [`World::broken`], reads nothing while
     /// the stage runs).

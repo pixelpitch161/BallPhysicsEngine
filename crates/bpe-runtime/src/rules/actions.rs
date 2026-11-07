@@ -7,7 +7,7 @@ use bpe_core::ThingId;
 use glam::Vec2;
 
 use super::shows::{FULL_FLASH_SPEED, Kick, MOST_KICKS, SceneOp, ShownScene, next_scene};
-use super::{BallAt, BreakShow, Change, ChangeKey, Firing, MAX_BALLS, MAX_ROWS, Remains};
+use super::{BallAt, BreakShow, Change, ChangeKey, Firing, HealthChange, MAX_BALLS, MAX_ROWS, Remains};
 use crate::{Event, EventKind, Log, NewBall, Party, Sims, World, on_own_side, pop};
 
 /// A change to a ball's motion, right now.
@@ -39,6 +39,9 @@ pub enum Action {
     /// Breaks one ball (its body row) or the whole thing, `show` saying how its look plays out
     /// (drawn only; the default is Vanish).
     Break { thing: ThingId, row: Option<u32>, point: Vec2, normal: Vec2, strength: f32, show: Arc<BreakShow> },
+    /// Changes the health of one ball (its body row), of every live ball of the thing (`None`
+    /// on a thing with balls) or of a thing without balls (rules part 4).
+    Health { thing: ThingId, row: Option<u32>, change: HealthChange },
     /// Shakes a camera or punches its zoom (its `start` is set when it applies).
     Kick(Kick),
     /// Changes how fast the simulation runs (a Set on a pace of 1; its `start` is set when it
@@ -113,7 +116,9 @@ impl World {
         rules.prune_remains(time);
         rules.prune_shows(step, self.steps_per_second, time);
         let gravity = self.gravity;
-        for action in std::mem::take(&mut rules.pending) {
+        // Walked as a queue, so a health that reaches 0 here can add its Break for this same pass.
+        let mut queue: std::collections::VecDeque<Action> = std::mem::take(&mut rules.pending).into();
+        while let Some(action) = queue.pop_front() {
             match action {
                 Action::Motion { thing, row, motion } => {
                     if rules.broken.contains(&thing) {
@@ -175,6 +180,34 @@ impl World {
                         match rules.frozen.iter_mut().find(|f| f.thing == thing && f.row == i as u32) {
                             Some(f) => f.velocity = new_v,
                             None => bodies.velocity[i] = new_v,
+                        }
+                    }
+                }
+                Action::Health { thing, row, change } => {
+                    if rules.broken.contains(&thing) || !rules.health.has(thing) {
+                        continue;
+                    }
+                    let rows: Vec<Option<u32>> = match (row, self.bodies.get(&thing)) {
+                        (Some(r), Some(b)) => {
+                            if (r as usize) < b.len() && b.alive[r as usize] {
+                                vec![Some(r)]
+                            } else {
+                                Vec::new()
+                            }
+                        }
+                        (None, Some(b)) => (0..b.len() as u32).filter(|&r| b.alive[r as usize]).map(Some).collect(),
+                        (_, None) => vec![None],
+                    };
+                    for row in rows {
+                        let point = match (row, self.bodies.get(&thing)) {
+                            (Some(r), Some(b)) => b.position[r as usize],
+                            _ => self.poses.get(&thing).map_or_else(|| self.anchor(thing).position, |p| p.position),
+                        };
+                        let at_zero = rules.health.card(thing).and_then(|c| c.at_zero.clone());
+                        if let Some((_, true)) = rules.health.change(thing, row, change, (point, Vec2::ZERO, None, 0.0))
+                            && let Some(template) = at_zero
+                        {
+                            queue.push_back(super::aimed(&template, thing, row, point, Vec2::ZERO, 0.0));
                         }
                     }
                 }

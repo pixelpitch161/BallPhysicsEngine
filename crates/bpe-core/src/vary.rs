@@ -41,12 +41,15 @@ pub enum VaryBy {
     Light,
     /// How much of the light that would reach a ball its shadows take.
     Shadow,
+    /// How much of a ball's health is gone (with a Health card, rules part 4): the setting's own
+    /// value at full health, its To as the health runs out.
+    Health,
 }
 
 impl VaryBy {
     /// Whether a ball's place in this spread changes while it flies (its speed, its hits).
     pub fn changes(self) -> bool {
-        matches!(self, Self::Speed | Self::Hits | Self::Light | Self::Shadow)
+        matches!(self, Self::Speed | Self::Hits | Self::Light | Self::Shadow | Self::Health)
     }
 
     /// Whether a ball's place in this spread is read from the light probe.
@@ -54,16 +57,23 @@ impl VaryBy {
         matches!(self, Self::Light | Self::Shadow)
     }
 
+    /// Whether a ball's place in this spread is read from its health.
+    pub fn reads_health(self) -> bool {
+        self == Self::Health
+    }
+
     /// The spreads offered for a setting read the way `use_` says: one read once at launch
-    /// can't follow the speed, hits or light. Light and Shadow only where `lit` (a card's or a
-    /// layer's setting in a scene with a Lighting card: a thing's own settings are worked out by
-    /// its sim, which has no light probe).
-    pub fn offered(use_: VaryUse, lit: bool) -> impl Iterator<Item = VaryBy> {
+    /// can't follow the speed, hits, light or health. Light and Shadow only where `lit` (a card's
+    /// or a layer's setting in a scene with a Lighting card: a thing's own settings are worked
+    /// out by its sim, which has no light probe); Health only where `health` (the thing has a
+    /// Health card).
+    pub fn offered(use_: VaryUse, lit: bool, health: bool) -> impl Iterator<Item = VaryBy> {
         Self::NAMES
             .iter()
             .filter_map(|n| VaryBy::from_name(n))
             .filter(move |b| use_ == VaryUse::Live || !b.changes())
             .filter(move |b| lit || !b.reads_light())
+            .filter(move |b| health || !b.reads_health())
     }
 }
 
@@ -272,6 +282,8 @@ pub struct BallSpread {
     /// spread reads them: they are asked of the light probe only then).
     pub light: f32,
     pub shadow: f32,
+    /// How much of its health is gone, 0 (full, or no health) to 1 (none left).
+    pub hurt: f32,
     /// The group's seed, for Random.
     pub seed: u32,
     /// A ball on its own (a Balls thing that isn't a group): it has nothing to vary across,
@@ -309,6 +321,7 @@ impl BallSpread {
             VaryBy::Hits => self.hits as f32 / FULL_HITS,
             VaryBy::Light => self.light,
             VaryBy::Shadow => self.shadow,
+            VaryBy::Health => self.hurt,
         };
         if t.is_finite() { t.clamp(0.0, 1.0) } else { 0.0 }
     }
@@ -641,12 +654,24 @@ mod tests {
 
     #[test]
     fn at_launch_settings_leave_out_speed_and_hits() {
-        let live: Vec<_> = VaryBy::offered(VaryUse::Live, false).collect();
+        let live: Vec<_> = VaryBy::offered(VaryUse::Live, false, false).collect();
         assert_eq!(live.len(), 7);
-        let lit: Vec<_> = VaryBy::offered(VaryUse::Live, true).collect();
+        let lit: Vec<_> = VaryBy::offered(VaryUse::Live, true, false).collect();
         assert!(lit.contains(&VaryBy::Light) && lit.contains(&VaryBy::Shadow) && lit.len() == 9);
-        let once: Vec<_> = VaryBy::offered(VaryUse::AtLaunch, true).collect();
+        let once: Vec<_> = VaryBy::offered(VaryUse::AtLaunch, true, true).collect();
         assert!(!once.contains(&VaryBy::Speed) && !once.contains(&VaryBy::Hits) && once.len() == 5);
+        assert!(!once.contains(&VaryBy::Health), "read once at launch: it can't follow health");
+    }
+
+    #[test]
+    fn the_health_spread_is_offered_with_health_and_reads_the_hurt() {
+        assert!(!VaryBy::offered(VaryUse::Live, false, false).any(|b| b == VaryBy::Health));
+        let healthy: Vec<_> = VaryBy::offered(VaryUse::Live, false, true).collect();
+        assert!(healthy.contains(&VaryBy::Health) && healthy.len() == 8);
+        assert!(VaryBy::Health.changes() && VaryBy::Health.reads_health() && !VaryBy::Health.reads_light());
+        let b = BallSpread { hurt: 0.4, count: 3, ..BallSpread::default() };
+        assert_eq!(b.t(VaryBy::Health, 0), 0.4);
+        assert_eq!(BallSpread::default().hurt, 0.0, "a spread made without health sits at full health");
     }
 
     #[test]

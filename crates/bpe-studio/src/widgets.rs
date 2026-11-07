@@ -641,7 +641,7 @@ fn setting(
         }
         label_cell(ui, cx.label_width, |_| {});
         widget_cell(ui, right, |ui| {
-            varies.extend(crate::vary::varies_line(ui, def, v, use_, vcx.rounds(), vcx.lit(def)));
+            varies.extend(crate::vary::varies_line(ui, def, v, use_, vcx.rounds(), vcx.lit(def), vcx.healthy()));
         });
         ui.end_row();
     }
@@ -843,7 +843,8 @@ fn row_menu_following(
 
 /// Follow sound ▸ (a shape ▸ its modulators and Level; the buses), and Stop following sound
 /// when the setting follows already; then Follow light ▸ (a thing ▸ its light) with a Lighting
-/// card, offered where `light_ok` (the lighting doesn't read the setting).
+/// card, offered where `light_ok` (the lighting doesn't read the setting); then Follow health ▸
+/// (a thing with a Health card).
 fn follow_items(
     ui: &mut Ui,
     def: &SettingDef,
@@ -897,7 +898,8 @@ fn follow_items(
         r.response.on_hover_text("Move this setting with a shape's sound").on_disabled_hover_text(why);
     });
     let following_light = now.as_ref().is_some_and(|n| matches!(n.source, PulseSource::Light { .. }));
-    if now.is_some() && !following_light && ui.button("Stop following sound").clicked() {
+    let following_health = now.as_ref().is_some_and(|n| matches!(n.source, PulseSource::Health { .. }));
+    if now.is_some() && !following_light && !following_health && ui.button("Stop following sound").clicked() {
         *pick = MenuPick::Follow(None);
         ui.close();
     }
@@ -923,6 +925,27 @@ fn follow_items(
         });
     }
     if following_light && ui.button("Stop following light").clicked() {
+        *pick = MenuPick::Follow(None);
+        ui.close();
+    }
+    if !f.menu.health.is_empty() {
+        ui.add_enabled_ui(can, |ui| {
+            let r = ui.menu_button("Follow health", |ui| {
+                for (thing, name) in &f.menu.health {
+                    let source = PulseSource::Health { thing: *thing };
+                    let on = now.as_ref().is_some_and(|n| n.source == source);
+                    if ui.add(egui::Button::selectable(on, name)).clicked() {
+                        *pick = MenuPick::Follow(Some(source));
+                        ui.close();
+                    }
+                }
+            });
+            r.response
+                .on_hover_text("Move this setting with how much health a thing has left")
+                .on_disabled_hover_text("This setting can't follow health");
+        });
+    }
+    if following_health && ui.button("Stop following health").clicked() {
         *pick = MenuPick::Follow(None);
         ui.close();
     }

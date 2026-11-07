@@ -10,6 +10,8 @@
 //! - Do: [`motion::ChangeMotion`], [`change::ChangeSetting`], [`breaks::Break`]; the spectacle
 //!   actions of part 6 ([`camera::CameraKick`], [`slow::SlowMotion`], [`flash::Flash`],
 //!   [`scene::ShowScene`], [`note::PlayNote`]).
+//! - Do: [`motion::ChangeMotion`], [`change::ChangeSetting`], [`breaks::Break`].
+//! - Health (part 4): [`health::WhenHealth`], [`health::HealthIs`], [`health::ChangeHealth`].
 //!
 //! Part 5 (plan `docs/superpowers/plans/rules/part5.md`) adds When [`events::Enter`],
 //! [`events::Fired`], [`events::Removed`], [`counts::CountReached`], [`level::CrossesLevel`],
@@ -28,6 +30,7 @@ pub mod checks;
 pub mod counts;
 pub mod events;
 pub mod flash;
+pub mod health;
 pub mod level;
 pub mod logic;
 pub mod memory;
@@ -41,6 +44,8 @@ pub mod tags;
 pub mod when;
 pub mod who;
 
+#[cfg(test)]
+mod health_tests;
 #[cfg(test)]
 mod spectacle_tests;
 #[cfg(test)]
@@ -119,6 +124,9 @@ pub fn register(r: &mut Registry) {
     r.add_block(flash::Flash);
     r.add_block(scene::ShowScene);
     r.add_block(note::PlayNote);
+    r.add_block(health::WhenHealth);
+    r.add_block(health::HealthIs);
+    r.add_block(health::ChangeHealth);
 }
 
 /// Puts every block kind's simulation in the sims.
@@ -155,6 +163,9 @@ pub fn add_sims(s: &mut Sims) {
     s.add_block(flash::Flash);
     s.add_block(scene::ShowScene);
     s.add_block(note::PlayNote);
+    s.add_block(health::WhenHealth);
+    s.add_block(health::HealthIs);
+    s.add_block(health::ChangeHealth);
 }
 
 /// The kit's registry, made once for the process: what Change setting reads the scene's setting

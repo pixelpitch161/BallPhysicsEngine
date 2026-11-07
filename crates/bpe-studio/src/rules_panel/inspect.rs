@@ -17,7 +17,7 @@ use crate::widgets::{
 };
 
 /// The values a Compare reads of a thing (Of: A thing).
-const THING_VALUES: [&str; 5] = ["speed", "size", "hits", "ball", "time"];
+const THING_VALUES: [&str; 8] = ["speed", "size", "hits", "ball", "time", "health", "share", "start"];
 
 /// Every value any When kind's firings carry, in registry order.
 pub fn all_values(reg: &Registry) -> Vec<&'static str> {

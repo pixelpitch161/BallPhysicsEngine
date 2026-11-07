@@ -304,6 +304,10 @@ pub enum PulseSource {
     /// the lights and the world, never by the renderer. A setting that moves the physics reads it
     /// as it was at the end of the previous step.
     Light { thing: ThingId, source: LightSource },
+    /// How much health a thing has left (Follow health, rules part 4): its health ÷ its starting
+    /// health, 0 to 1 (a thing with balls: the mean over its live balls). Kept by the world's
+    /// rules; a setting that moves the physics reads it as the last step left it.
+    Health { thing: ThingId },
 }
 
 /// What of the light on a thing a pulse follows. Each reads 0 to 1.
@@ -357,12 +361,18 @@ impl PulseSource {
             PulseSource::Hits => "Hits",
             PulseSource::Sound { .. } => "Sound",
             PulseSource::Light { .. } => "Light",
+            PulseSource::Health { .. } => "Health",
         }
     }
 
     /// Whether it follows light (Follow light).
     pub fn follows_light(self) -> bool {
         matches!(self, PulseSource::Light { .. })
+    }
+
+    /// Whether it follows a thing's health (Follow health).
+    pub fn follows_health(self) -> bool {
+        matches!(self, PulseSource::Health { .. })
     }
 }
 
@@ -400,6 +410,13 @@ pub trait LightLevels {
     fn level(&self, thing: ThingId, source: &LightSource, time: f64) -> f32;
 }
 
+/// How much health things have left as a picture or the physics reads it (Follow health): each
+/// thing's share of its starting health, 0 to 1. The world's rules keep it.
+pub trait HealthLevels {
+    /// `thing`'s health ÷ its starting health, 0 to 1 (0 for a thing without health).
+    fn share(&self, thing: ThingId) -> f32;
+}
+
 /// Everything a pulse can read at one moment.
 #[derive(Clone, Copy, Default)]
 pub struct Inputs<'a> {
@@ -409,6 +426,8 @@ pub struct Inputs<'a> {
     pub sound: Option<&'a dyn SoundLevels>,
     /// How lit things are, for pulses that follow light (none: they don't move).
     pub light: Option<&'a dyn LightLevels>,
+    /// How much health things have left, for pulses that follow it (none: they don't move).
+    pub health: Option<&'a dyn HealthLevels>,
 }
 
 impl std::fmt::Debug for Inputs<'_> {
@@ -417,12 +436,13 @@ impl std::fmt::Debug for Inputs<'_> {
             .field("hits", &self.hits)
             .field("sound", &self.sound.is_some())
             .field("light", &self.light.is_some())
+            .field("health", &self.health.is_some())
             .finish()
     }
 }
 
 impl Inputs<'static> {
-    pub const NONE: Inputs<'static> = Inputs { hits: 0.0, sound: None, light: None };
+    pub const NONE: Inputs<'static> = Inputs { hits: 0.0, sound: None, light: None, health: None };
 }
 
 /// How strongly `pulse` pushes at `time`, 0 to 1.
@@ -431,6 +451,7 @@ pub fn pulse_strength(pulse: &Pulse, time: f64, inputs: &Inputs) -> f32 {
         PulseSource::Hits => inputs.hits,
         PulseSource::Sound { shape, source } => inputs.sound.map_or(0.0, |sound| sound.level(shape, &source, time)),
         PulseSource::Light { thing, source } => inputs.light.map_or(0.0, |light| light.level(thing, &source, time)),
+        PulseSource::Health { thing } => inputs.health.map_or(0.0, |health| health.share(thing)),
     };
     if s.is_finite() { s.clamp(0.0, 1.0) } else { 0.0 }
 }
@@ -531,9 +552,9 @@ impl Scene {
         amount: Value,
         decay: f32,
     ) -> Result<(), EditError> {
-        // Follow sound and Follow light may move any setting that can take keys; the hits only those that pulse.
+        // Follow sound, light and health may move any setting that can take keys; the hits only those that pulse.
         let def = match source {
-            PulseSource::Sound { .. } | PulseSource::Light { .. } => {
+            PulseSource::Sound { .. } | PulseSource::Light { .. } | PulseSource::Health { .. } => {
                 self.animatable(reg, a, false).or_else(|_| self.animatable(reg, a, true))?
             }
             PulseSource::Hits => self.animatable(reg, a, true)?,

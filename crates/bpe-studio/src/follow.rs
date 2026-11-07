@@ -6,6 +6,9 @@
 //! Follow light (lighting part 7) sits beside it: Follow light → a thing → how lit it is, its
 //! brightest light, its shadow or In shadow, or a light's strength as it shines. Only in a scene
 //! with a Lighting card, and never on a setting the lighting itself reads (sensing is one-way).
+//!
+//! Follow health (rules part 4) too: Follow health → a thing with a Health card. The setting
+//! moves with how much health it has left (all of its balls', on average, for a group).
 
 use crate::style;
 use bpe_core::{
@@ -25,6 +28,8 @@ pub struct FollowMenu {
     pub buses: Vec<(u8, String)>,
     /// What a setting can follow the light of (none without a Lighting card).
     pub lit: Vec<FollowLit>,
+    /// The things with a Health card, by id and name, in tree order.
+    pub health: Vec<(ThingId, String)>,
 }
 
 /// A thing whose light a setting can follow, and what of it.
@@ -95,6 +100,17 @@ pub fn lit_menu(scene: &Scene) -> Vec<FollowLit> {
         .collect()
 }
 
+/// Every thing with a Health card, in tree order: what a setting can follow the health of.
+pub fn health_menu(scene: &Scene) -> Vec<(ThingId, String)> {
+    scene
+        .order
+        .iter()
+        .filter_map(|id| scene.things.get(id))
+        .filter(|t| t.slots.contains_key(&SlotId::Health))
+        .map(|t| (t.id, t.name.clone()))
+        .collect()
+}
+
 /// Whether the setting at `a` may follow light: the scene has a Lighting card and the lighting
 /// doesn't read the setting.
 pub fn can_light(scene: &Scene, reg: &bpe_core::Registry, a: &Address) -> bool {
@@ -133,12 +149,16 @@ pub fn menu(scene: &Scene) -> FollowMenu {
     } else {
         (1..=BUSES as u8).filter(|&n| mixer.bus(n).on).map(|n| (n, mixer.bus(n).name.clone())).collect()
     };
-    FollowMenu { shapes, buses, lit: lit_menu(scene) }
+    FollowMenu { shapes, buses, lit: lit_menu(scene), health: health_menu(scene) }
 }
 
 /// What `source` follows, in words: "Shape · ADSR 1", "Shape · Level", "Bus 1" or
 /// "Balls · In shadow".
 pub fn words(scene: &Scene, source: &PulseSource) -> String {
+    if let PulseSource::Health { thing } = source {
+        let name = scene.things.get(thing).map_or("?", |t| t.name.as_str());
+        return format!("{name} · Health");
+    }
     if let PulseSource::Light { thing, source } = source {
         let name = scene.things.get(thing).map_or("?", |t| t.name.as_str());
         let part = scene
@@ -173,7 +193,7 @@ fn bus_name(scene: &Scene, n: u8) -> String {
 /// colour).
 pub fn colour(scene: &Scene, source: &PulseSource) -> Color32 {
     match source {
-        PulseSource::Light { thing, .. } => style::colour_of(scene, *thing),
+        PulseSource::Light { thing, .. } | PulseSource::Health { thing } => style::colour_of(scene, *thing),
         PulseSource::Sound { shape, source } if !matches!(source, SoundSource::Bus(_)) => {
             style::colour_of(scene, *shape)
         }
@@ -218,10 +238,11 @@ pub fn set(scene: &mut Scene, reg: &bpe_core::Registry, a: &Address, source: Opt
     }
 }
 
-/// What the setting at `a` follows, when it follows sound or light.
+/// What the setting at `a` follows, when it follows sound, light or health.
 pub fn now(scene: &Scene, a: &Address) -> Option<Following> {
-    let pulse =
-        scene.pulses.get(a).filter(|p| matches!(p.source, PulseSource::Sound { .. } | PulseSource::Light { .. }))?;
+    let pulse = scene.pulses.get(a).filter(|p| {
+        matches!(p.source, PulseSource::Sound { .. } | PulseSource::Light { .. } | PulseSource::Health { .. })
+    })?;
     let amount = match pulse.amount {
         Value::Number(x) => x,
         Value::Int(x) => x as f64,
@@ -278,5 +299,24 @@ mod tests {
         let a = Address::own(ball, "radius");
         assert!(set(&mut scene, &kit.registry, &a, Some(source)));
         assert_eq!(now(&scene, &a).map(|n| n.source), Some(source));
+    }
+
+    #[test]
+    fn follow_health_is_offered_for_things_with_a_health_card() {
+        let kit = bpe_kit::kit();
+        let mut scene = bpe_kit::new_scene(&kit.registry);
+        assert!(menu(&scene).health.is_empty(), "no Health card: nothing to follow");
+        let ball = scene.things.values().find(|t| t.kind == "balls").unwrap().id;
+        bpe_kit::fill_slot(&mut scene, &kit.registry, ball, SlotId::Health).unwrap();
+        let name = scene.things[&ball].name.clone();
+        assert_eq!(menu(&scene).health, vec![(ball, name.clone())]);
+        let source = PulseSource::Health { thing: ball };
+        assert_eq!(words(&scene, &source), format!("{name} · Health"));
+        let a = Address::on(ball, SlotId::Bounce, "bounciness");
+        assert!(set(&mut scene, &kit.registry, &a, Some(source)));
+        assert_eq!(now(&scene, &a).map(|n| n.source), Some(source));
+        // Removing the thing stops what followed its health.
+        scene.remove_thing(ball).unwrap();
+        assert!(scene.pulses.values().all(|p| p.source != source));
     }
 }
