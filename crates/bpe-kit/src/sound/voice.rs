@@ -426,13 +426,13 @@ pub struct VoiceSettings {
     #[setting(label = "Bursts", group = "Playing")]
     pub moments_burst: bool,
     /// A Balls or Emitter thing's sound (W10): an emitter firing one of its balls plays a note.
-    #[setting(label = "Being fired", group = "Playing")]
+    #[setting(label = "Balls fired", group = "Playing")]
     pub moments_fire: bool,
     /// One of its balls coming into a catcher plays a note (an emitter: also a ball it catches).
-    #[setting(label = "Being caught", group = "Playing")]
+    #[setting(label = "Balls caught", group = "Playing")]
     pub moments_catch: bool,
     /// One of its balls broken by a rule plays a note.
-    #[setting(label = "Breaking", group = "Playing")]
+    #[setting(label = "Balls broken", group = "Playing")]
     pub moments_break: bool,
     /// The most notes its particles play a second; the strongest are kept.
     #[setting(label = "Most notes a second", range(1, 2000), unit = "per s", group = "Playing", keyframe)]

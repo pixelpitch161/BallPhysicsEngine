@@ -160,7 +160,7 @@ Balls or Emitter thing hears exactly what it heard before.
 - **The card**: `VoiceKind::fits` takes Balls (`things::balls::KIND`, new) and Emitter too
   (`bpe_kit::sound::hears_own_balls(kind)` names the two); both kinds list `SlotId::Sound` (not in their default
   slots). Its balls are what sound. `VoiceSettings` reuses the Particles' `moments_hit_ball` / `moments_hit_shape`
-  (on) and adds `moments_fire`, `moments_catch`, `moments_break` (off).
+  (on) and adds `moments_fire`, `moments_catch`, `moments_break` (off; "Balls fired", "Balls caught", "Balls broken").
 - **Events**: `hits::plays` now also takes `Spawn`, `Enter`, `Break`; `hits::touches` is the old set (Hit, Note,
   Moment), used by a Hits sidechain and the test tone so they don't change. Only heard things' events queue, as
   before.
@@ -176,10 +176,15 @@ Balls or Emitter thing hears exactly what it heard before.
   the shape, so nothing changes there.
 - **The round at 0 s**: an emitter's first round is there from the first frame and no step logs it, so
   `hits::start_fires(scene, world)` makes `Spawn` events (step 0, from the built world's emitter rows) that
-  `HitCursor::start_with` keeps: they wait on sample 0 at the start and after any seek back to 0, and
+  `HitCursor::start_with` keeps: they wait first on sample 0 (round 1) at the start and after any seek back to 0, and
   `Engine::catch_up` counts them first. Not seen by Follow sound or the timeline's slot marks (they read the log).
 - **Follow sound** (`control.rs`) reads every event that `plays` on the voice's thing (a rule's Note only on `b`),
-  through the filter; a Particles voice's moments now count there too, as in the engine.
+  through the filter; a Particles voice's moments now count there too, as in the engine. The editor's Follow sound
+  menu (`bpe-studio/src/follow.rs::menu`) lists Balls and Emitter sounds beside shapes and Texts.
+- A Break a rule makes without a hit behind it (When time, say) carries speed 0, so it plays at strength 0: heard
+  at the defaults, silent once Follow hit is up (it still takes a voice and moves the play order).
+- Not yet: hovering a bus in the Mixer lights only the shapes and Texts that play into it (`preview.rs`, walls), not
+  a Balls or Emitter thing; a Hits sidechain and a rule's Play a note still name shapes and Texts only.
 - `slot_change_times` reads every playing event but Note (the filter keeps the thing's own).
 - **Editor**: `inspector::sounds` takes Balls and Emitter (Settings / Sound chips); `+ Add card` lists only card-list
   slots (Sound and Mixer come from their own tabs). Sound tab: `moments::is_balls`, `show_balls` ("Plays when its

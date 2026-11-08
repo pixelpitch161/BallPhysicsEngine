@@ -55,7 +55,8 @@ pub fn start_fires(scene: &Scene, world: &World) -> Vec<Event> {
                 step: 0,
                 kind: EventKind::Spawn,
                 a: Party { thing: *thing, item: i as u32 },
-                b: Some(Party { thing: *thing, item: 0 }),
+                // The first round (rounds count from 1).
+                b: Some(Party { thing: *thing, item: 1 }),
                 point: position,
                 normal: velocity.normalize_or_zero(),
                 speed: velocity.length(),
@@ -103,9 +104,9 @@ impl HitCursor {
     }
 
     fn wait_for_start(&mut self, heard: &[ThingId]) {
-        let first = self.waiting.partition_point(|(s, _)| *s == 0);
+        // First on sample 0, as on a fresh start (and as `Engine::catch_up` counts them).
         for (k, e) in self.start.iter().filter(|e| is_heard(e, heard)).enumerate() {
-            self.waiting.insert(first + k, (0, e.clone()));
+            self.waiting.insert(k, (0, e.clone()));
         }
     }
 

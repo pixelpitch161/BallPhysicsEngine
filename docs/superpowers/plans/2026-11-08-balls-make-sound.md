@@ -55,8 +55,8 @@ Decisions:
 ### bpe-kit
 
 1. `sound/voice.rs`:
-   - `VoiceSettings`: add `moments_fire` ("Being fired"), `moments_catch` ("Being caught"), `moments_break`
-     ("Breaking"), all `bool`, group Playing, default `false`. Doc comments say Balls/Emitter.
+   - `VoiceSettings`: add `moments_fire` ("Balls fired"), `moments_catch` ("Balls caught"), `moments_break`
+     ("Balls broken"), all `bool`, group Playing, default `false`. Doc comments say Balls/Emitter.
    - `VoiceKind::fits`: also `things::balls::KIND`/`"balls"` and `things::emitter::KIND`. Help: "The thing's
      sound: ...".
    - `pub fn hears_own_balls(thing_kind: &str) -> bool`: Balls or Emitter (the one place the kinds are named).
@@ -139,3 +139,8 @@ Hits sidechain and the test tone on hits, notes and moments; Follow sound now re
 (it read only hits and notes before, unlike the engine). Tests: `crates/bpe-sound/tests/ball_sound.rs` (9 tests),
 `hit_filter.rs::a_balls_sound_sees_a_hit_from_its_own_ball`, the Sound tab's
 `balls_and_emitters_have_a_sound_tab_with_their_balls_moments`.
+
+After the review: the Follow sound menu lists Balls and Emitter sounds; the start's fires wait first on sample 0
+after a seek back too (as on a fresh start and in `catch_up`) and carry round 1; the setting labels read "Balls
+fired", "Balls caught", "Balls broken". Left for later (in the notes): the Mixer's bus hover lighting a ball thing,
+Follow sound and the timeline's slot marks seeing the 0 s fires.
