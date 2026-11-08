@@ -740,8 +740,15 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_ball_shows_no_sound_button() {
-        let h = studio_harness(BALL, false);
+    fn a_ball_shows_settings_and_sound_buttons_but_a_folder_none() {
+        let mut h = studio_harness(BALL, false);
+        assert!(h.query_by_label("Sound").is_some(), "a ball has its own sound (W10)");
+        assert!(h.query_by_label("Settings").is_some());
+        let reg = bpe_kit::registry();
+        let studio = &mut h.state_mut().0;
+        let folder = bpe_kit::add_thing(&mut studio.scene, &reg, "folder", ThingId::ROOT).unwrap();
+        studio.selection.set(folder);
+        h.run();
         assert!(h.query_by_label("Sound").is_none());
         assert!(h.query_by_label("Settings").is_none());
     }
@@ -827,6 +834,8 @@ pub(crate) mod tests {
             assert!(card(&h, id).is_some(), "{kind}: takes a Sound card");
             assert!(h.query_all_by_label("Hit a shape").next().is_some(), "{kind}: its balls' moments");
             assert_eq!(h.query_all_by_label("Are fired").next().is_some(), fired, "{kind}: Are fired");
+            h.get_by_role_and_label(Role::CheckBox, "Break").scroll_to_me();
+            h.run();
             click_switch(&mut h, "Break");
             assert_eq!(card(&h, id).unwrap().params.get("moments_break"), Some(&Value::Bool(true)), "{kind}");
         }

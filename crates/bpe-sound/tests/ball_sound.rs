@@ -2,7 +2,7 @@
 //! ball), an emitter firing them, a catcher taking them, a rule breaking them. Shapes keep
 //! hearing exactly what they heard before.
 
-use bpe_core::{Params, Scene, Settings, SlotId, Target, ThingId, Value};
+use bpe_core::{Params, Scene, Settings, SlotId, SoundSource, Target, ThingId};
 use bpe_kit::sound::{VoiceSettings, starter_voice};
 use bpe_kit::things::emitter::{Catches, Directions, EmitterSettings, StartFrom};
 use bpe_kit::{Kit, add_thing, new_scene, resolve_scene};
@@ -10,7 +10,6 @@ use bpe_runtime::{Event, EventKind, Log, Party, Playback, World};
 use bpe_sound::hits::hit_sample;
 use bpe_sound::patch::shape_voice;
 use bpe_sound::{BLOCK, BlockCx, BlockHit, ControlSampler, Engine, NoteOn, ShapeVoice, TempoMap, VoiceSource};
-use bpe_core::SoundSource;
 use glam::Vec2;
 
 const SHAPE: ThingId = ThingId(1);
@@ -74,7 +73,14 @@ fn notes_for(v: &mut ShapeVoice, world: &World, events: &[Event]) -> Vec<usize> 
     for (i, e) in events.iter().enumerate() {
         // Far apart, so no note is still sounding from the last.
         let start = (i as u64 + 1) * 48_000;
-        let cx = BlockCx { start_sample: start, time: start as f64 / 48_000.0, tempo: &tempo, world, log: &log, playing: true };
+        let cx = BlockCx {
+            start_sample: start,
+            time: start as f64 / 48_000.0,
+            tempo: &tempo,
+            world,
+            log: &log,
+            playing: true,
+        };
         let (mut l, mut r) = ([0.0; BLOCK], [0.0; BLOCK]);
         v.on_block(&cx, &[BlockHit { offset: 0, event: e.clone() }], &mut l, &mut r);
         notes.clear();
@@ -114,10 +120,8 @@ fn hit_a_shape_and_hit_a_ball_choose_what_plays() {
     let kit = bpe_sound::kit();
     let (scene, emitter) = scene_with(&kit, BALLS, |v| v.moments_hit_shape = false);
     let p = world_of(&scene, &kit);
-    let hits = [
-        event(EventKind::Hit, (BALLS, 0), Some((SHAPE, 0))),
-        event(EventKind::Hit, (emitter, 4), Some((BALLS, 0))),
-    ];
+    let hits =
+        [event(EventKind::Hit, (BALLS, 0), Some((SHAPE, 0))), event(EventKind::Hit, (emitter, 4), Some((BALLS, 0)))];
     assert_eq!(notes_for(&mut voice_of(&scene, &kit, BALLS), p.world(), &hits), [0, 1]);
     let (scene, _) = scene_with(&kit, BALLS, |v| v.moments_hit_ball = false);
     assert_eq!(notes_for(&mut voice_of(&scene, &kit, BALLS), p.world(), &hits), [1, 0]);
@@ -205,9 +209,12 @@ fn a_falling_ball_plays_on_each_of_its_hits() {
     let mut p = world_of(&scene, &kit);
     p.seek(3.0);
     let end = 3 * 48_000 - 4_800;
-    let hits = samples(p.log(), end, |e| e.kind == EventKind::Hit && (e.a.thing == BALLS || e.b.is_some_and(|b| b.thing == BALLS)));
+    let hits = samples(p.log(), end, |e| {
+        e.kind == EventKind::Hit && (e.a.thing == BALLS || e.b.is_some_and(|b| b.thing == BALLS))
+    });
     assert!(hits.len() >= 2, "the ball bounces: {hits:?}");
-    let notes: Vec<u64> = played(&scene, &kit, 3.0).into_iter().filter(|(t, s)| *t == BALLS && *s < end).map(|n| n.1).collect();
+    let notes: Vec<u64> =
+        played(&scene, &kit, 3.0).into_iter().filter(|(t, s)| *t == BALLS && *s < end).map(|n| n.1).collect();
     assert_eq!(notes, hits, "a note on each hit's own sample");
 }
 
@@ -297,7 +304,6 @@ fn a_new_balls_card_has_the_new_moments_off() {
     let v = VoiceSettings::default();
     assert!(v.moments_hit_ball && v.moments_hit_shape);
     assert!(!v.moments_fire && !v.moments_catch && !v.moments_break);
-    let _ = Value::Bool(true);
 }
 
 #[test]

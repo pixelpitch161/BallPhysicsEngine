@@ -317,7 +317,11 @@ pub fn show(
         } else if thing.kind == bpe_kit::things::emitter::KIND {
             [
                 (InspectorTab::Settings, "Settings", "What it fires, how its balls look and move, what it catches"),
-                (InspectorTab::Sound, "Sound", "The sound its balls make when they are fired, hit things or are caught"),
+                (
+                    InspectorTab::Sound,
+                    "Sound",
+                    "The sound its balls make when they are fired, hit things or are caught",
+                ),
             ]
         } else if thing.kind == bpe_kit::things::balls::KIND {
             [

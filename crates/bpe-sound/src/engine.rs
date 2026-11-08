@@ -312,12 +312,8 @@ impl Engine {
             return;
         }
         let sps = self.cursor.samples_per_step();
-        let mut hits: Vec<(u64, BlockHit)> = self
-            .cursor
-            .start()
-            .iter()
-            .map(|e| (0, BlockHit { offset: 0, event: e.clone() }))
-            .collect();
+        let mut hits: Vec<(u64, BlockHit)> =
+            self.cursor.start().iter().map(|e| (0, BlockHit { offset: 0, event: e.clone() })).collect();
         hits.extend(
             self.physics
                 .log()
