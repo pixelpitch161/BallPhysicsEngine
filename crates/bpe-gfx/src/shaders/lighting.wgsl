@@ -1879,6 +1879,8 @@ struct SurfaceGpu {
     d: vec4<f32>,
     // Frost, rim, inner glow, bends light (index of refraction).
     e: vec4<f32>,
+    // Glass and light part 4a: throws light, facets (0 smooth), facet gaps, spare.
+    f: vec4<f32>,
 };
 
 struct SphereGpu {
@@ -1886,7 +1888,8 @@ struct SphereGpu {
     a: vec4<f32>,
     // The ball's colour (linear), for the light it lets through; w unused.
     b: vec4<f32>,
-    // Its surface index, three unused.
+    // Its surface index, its Tints light, its turn (radians: a mirror ball's tiles turn with it),
+    // spare.
     c: vec4<f32>,
 };
 
@@ -3085,6 +3088,39 @@ fn field_round_ball(ball: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
     return sum / weights;
 }
 
+// Glass and light part 4a: a mirror ball's tiles, the ball seen from its pole and turned by
+// `turn`: rings 2 pi / `facets` wide from the middle out, each of max(1, round(facets sin θ))
+// tiles (so the rim ring has `facets`, as the photons' tiles). The normal of the tile unit normal
+// `n` (z toward the viewer) falls in, and in w how near the tile's edge it is (0 its middle, 1 its
+// edge).
+fn facet_normal(n: vec3<f32>, facets: f32, turn: f32) -> vec4<f32> {
+    let f = max(facets, 3.0);
+    let wide = 6.28318531 / f;
+    let theta = acos(clamp(n.z, -1.0, 1.0));
+    let ring = floor(theta / wide);
+    let tc = min((ring + 0.5) * wide, 1.5707963);
+    // The rim ring has the Facets tiles the photons see (seen edge on, a ball is a ring of them).
+    let rim = (ring + 1.0) * wide > 1.5707963;
+    let count = select(max(1.0, round(f * sin(tc))), f, rim);
+    let phi = atan2(n.y, n.x) - turn;
+    let sector = 6.28318531 / count;
+    let pc = (floor(phi / sector) + 0.5) * sector + turn;
+    let across = select(abs(2.0 * fract(phi / sector) - 1.0), 0.0, count < 1.5);
+    // The rim ring's outer edge is the ball's own edge, not a gap.
+    let up = select(abs(2.0 * fract(theta / wide) - 1.0), 0.0, rim);
+    return vec4<f32>(sin(tc) * cos(pc), sin(tc) * sin(pc), cos(tc), max(across, up));
+}
+
+// How much of a tile's edge (`edge`, from `facet_normal`) is gap between tiles, of Facet gaps
+// `gaps`: 1 in the gap, 0 on the tile, softened over a little.
+fn facet_gap(edge: f32, gaps: f32) -> f32 {
+    if gaps <= 0.0 {
+        return 0.0;
+    }
+    let g = clamp(gaps, 0.0, 1.0);
+    return smoothstep(1.0 - g - 0.04, 1.0 - g + 0.01, edge);
+}
+
 fn surfaced(ip: vec2<i32>, p: vec2<f32>, c: vec3<f32>, w: vec3<f32>, sf: SurfaceGpu, field_in: vec3<f32>, turn: f32) -> Surfaced {
     let px = u.view.z;
     let s = textureLoad(surface, ip, 0);
@@ -3117,6 +3153,14 @@ fn surfaced(ip: vec2<i32>, p: vec2<f32>, c: vec3<f32>, w: vec3<f32>, sf: Surface
             SHADE_BALL = sp.a.xyz;
         }
     }
+    // A mirror ball (part 4a): each tile a flat mirror facing its own way, dark gaps between.
+    var gap = 0.0;
+    if sf.f.y >= 3.0 && SHADE_SPHERE >= 0 {
+        let tile = facet_normal(thing.n, sf.f.y, spheres[u32(SHADE_SPHERE)].c.z);
+        thing.n = normalize(tile.xyz);
+        gap = facet_gap(tile.w, sf.f.z);
+    }
+    let grout = 1.0 - 0.85 * gap;
     let here = field_at(p);
     let link = link_here(ip);
     let base = c / max(share, 1e-3);
@@ -3133,6 +3177,7 @@ fn surfaced(ip: vec2<i32>, p: vec2<f32>, c: vec3<f32>, w: vec3<f32>, sf: Surface
             let seen = transmitted(p, thing.n, h, sf, tint, turn);
             out.out = body * (1.0 - see) + seen * see + sh.spec * share;
         }
+        out.out *= grout;
         out.diffuse = sh.diffuse;
         return out;
     }
@@ -3155,6 +3200,7 @@ fn surfaced(ip: vec2<i32>, p: vec2<f32>, c: vec3<f32>, w: vec3<f32>, sf: Surface
             let seen = transmitted(p, thing.n, h, sf, tint, turn);
             on_thing.out = body * (1.0 - see) + seen * see + sh.spec * share;
         }
+        on_thing.out *= grout;
     }
     if cover < 0.98 {
         SHADE_SPHERE = -1;
@@ -3844,7 +3890,7 @@ fn fs_trace_add(in: FsIn) -> @location(0) vec4<f32> {
 // ---------- caustics (part 3): light focused through glass balls ----------
 
 struct CausticU {
-    // Photons a (light, glass ball) pair, glass balls, lights, 0.
+    // Photons a (light, glass ball) pair, glass balls, lights, Mirror light (part 4a).
     counts: vec4<f32>,
     // World units per output pixel, this sample's turn of the photons, 1 when baking, Glass
     // caustics.
@@ -3852,11 +3898,12 @@ struct CausticU {
 };
 
 struct CausticGlass {
-    // Centre xy, radius, see-through.
+    // Centre xy, radius, see-through (a mirror: its Facet gaps).
     a: vec4<f32>,
-    // The colour it lets through (normalised, linear rgb), bends light.
+    // The colour it lets through (normalised, linear rgb), bends light (a mirror: what it gives
+    // back, its turn).
     b: vec4<f32>,
-    // Rainbow split, frost, two spare.
+    // Rainbow split, frost, 1 for a mirror ball (part 4a), a mirror's Facets.
     c: vec4<f32>,
 };
 
@@ -3891,6 +3938,10 @@ fn vs_caustic(@builtin(vertex_index) vi: u32, @builtin(instance_index) k: u32) -
     }
     let l = lights[li];
     let g = glass[gi];
+    // Part 4a: a mirror throws only the light of lamps that cast shadows (as the 2D photons).
+    if g.c.z > 0.5 && l.p5.w < 0.5 {
+        return out;
+    }
     let c = vec3<f32>(g.a.xy, 0.0);
     let r = g.a.z;
     let to = light_toward(l, c);
@@ -3922,19 +3973,38 @@ fn vs_caustic(@builtin(vertex_index) vi: u32, @builtin(instance_index) k: u32) -
     }
     let p1 = o + rd * (-b - sqrt(disc));
     let n1 = (p1 - c) / r;
+    let mirror = g.c.z > 0.5;
     // Its wavelength: -1 red to 1 violet, red bending least.
     RNG = pcg(k * 7919u + u32(cu.more.y * 1000.0));
-    let w = select(0.0, rand() * 2.0 - 1.0, g.c.x > 0.0);
-    let eta = max(g.b.w * (1.0 + max(g.c.x, 0.0) * 0.04 * w), 1.0001);
-    let d2 = refract(rd, n1, 1.0 / eta);
-    if dot(d2, d2) < 1e-6 {
-        return out;
-    }
-    let p2 = p1 + d2 * (-2.0 * dot(p1 - c, d2));
-    let n2 = (p2 - c) / r;
-    let d3 = refract(d2, -n2, eta);
-    if dot(d3, d3) < 1e-6 {
-        return out;
+    let w = select(0.0, rand() * 2.0 - 1.0, g.c.x > 0.0 && !mirror);
+    var p2 = p1;
+    var d3 = vec3<f32>(0.0);
+    if mirror {
+        // A mirror ball (part 4a): off the tile it meets (a gap throws nothing).
+        var n = n1;
+        if g.c.w >= 3.0 {
+            let tile = facet_normal(n1, g.c.w, g.b.w);
+            if g.a.w > 0.0 && tile.w > 1.0 - g.a.w {
+                return out;
+            }
+            n = normalize(tile.xyz);
+        }
+        d3 = reflect(rd, n);
+        if dot(d3, n1) <= 0.0 {
+            return out;
+        }
+    } else {
+        let eta = max(g.b.w * (1.0 + max(g.c.x, 0.0) * 0.04 * w), 1.0001);
+        let d2 = refract(rd, n1, 1.0 / eta);
+        if dot(d2, d2) < 1e-6 {
+            return out;
+        }
+        p2 = p1 + d2 * (-2.0 * dot(p1 - c, d2));
+        let n2 = (p2 - c) / r;
+        d3 = refract(d2, -n2, eta);
+        if dot(d3, d3) < 1e-6 {
+            return out;
+        }
     }
     // Where it lands.
     var t = 1e30;
@@ -3963,9 +4033,13 @@ fn vs_caustic(@builtin(vertex_index) vi: u32, @builtin(instance_index) k: u32) -
     let px = cu.more.x;
     let radius = max(2.0 * r * sqrt(3.14159265 / f32(per)), 1.5 * px) * (1.0 + 4.0 * max(g.c.y, 0.0));
     var power = l.p1.rgb * to.amount * (3.14159265 * r * r / f32(per));
-    power *= clamp(g.a.w, 0.0, 1.0) * 0.92 * g.b.rgb * cu.more.w;
-    if g.c.x > 0.0 {
-        power *= spectral(w);
+    if mirror {
+        power *= g.b.rgb * cu.counts.w;
+    } else {
+        power *= clamp(g.a.w, 0.0, 1.0) * 0.92 * g.b.rgb * cu.more.w;
+        if g.c.x > 0.0 {
+            power *= spectral(w);
+        }
     }
     power *= 3.0 / (3.14159265 * radius * radius);
     let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u)) * 2.0 - vec2<f32>(1.0);

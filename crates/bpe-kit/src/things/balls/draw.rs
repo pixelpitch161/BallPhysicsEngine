@@ -550,7 +550,8 @@ pub fn push_ball_light(cx: &DrawCx, scene: &mut bpe_gfx::LightScene) {
     surface::Stamps::of(cx.scene, cx.thing.id, look).fill(scene, bpe_gfx::SurfaceGpu::BALL);
     // Balls are spheres in Flat too: what shiny surfaces mirror (only Stage shadows by them).
     let Some(bodies) = cx.world.bodies.get(&cx.thing.id) else { return };
-    let tint = match Stack::of(look) {
+    let stack = Stack::of(look);
+    let tint = match &stack {
         // A Body that doesn't block light casts no shadow in Stage either.
         Some(stack) if stack.body_light[1] < 0.5 => return,
         Some(stack) => {
@@ -558,6 +559,16 @@ pub fn push_ball_light(cx: &DrawCx, scene: &mut bpe_gfx::LightScene) {
             crate::paint::colour_at(&stack.body.fill, &inputs)
         }
         None => [1.0; 4],
+    };
+    // Glass and light part 4a: each ball's turn (its Turning layer's), which a mirror ball's tiles
+    // turn by.
+    let turning = stack.as_ref().and_then(|s| s.turning.clone());
+    let group =
+        (cx.resolved.kind == "balls").then(|| crate::things::balls::BallsSettings::from_params(&cx.resolved.params));
+    let turn_of = |i: usize| {
+        let Some(t) = &turning else { return 0.0 };
+        let own = group.as_ref().map_or(0.0, |g| crate::things::balls::sim::look_turn(g, bodies.number[i]));
+        (t.turn + t.spin * cx.time as f32 + own).to_radians()
     };
     let see = s.see_through.clamp(0.0, 1.0);
     // Glass and light part 1: how much its light takes its colour, and deeper where thick.
@@ -570,8 +581,27 @@ pub fn push_ball_light(cx: &DrawCx, scene: &mut bpe_gfx::LightScene) {
         scene.spheres.push(bpe_gfx::SphereGpu {
             a: [at.x, at.y, bodies.radius[i], see],
             b: [tint[0], tint[1], tint[2], finite(s.thick_tint)],
-            c: [index as f32, finite(s.tints), 0.0, 0.0],
+            c: [index as f32, finite(s.tints), turn_of(i), 0.0],
         });
+    }
+    // Balls that throw lamp light back like mirrors (part 4a): one thrower round them all.
+    if let Some(colour) = s.throw_of([tint[0], tint[1], tint[2]]) {
+        let discs = (0..bodies.len()).filter(|&i| bodies.alive[i]).flat_map(|i| {
+            let r = glam::Vec2::splat(bodies.radius[i]);
+            [bodies.position[i] - r, bodies.position[i] + r]
+        });
+        if let Some(b) = bpe_gfx::Bender::round(discs, 2.0, index) {
+            scene.push_thrower(bpe_gfx::Thrower {
+                lo: b.lo,
+                hi: b.hi,
+                index,
+                colour,
+                widen: s.throw_widen(),
+                facets: finite(s.facets),
+                gaps: finite(s.facet_gaps).min(1.0),
+                ball: true,
+            });
+        }
     }
 }
 

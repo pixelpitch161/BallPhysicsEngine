@@ -83,16 +83,23 @@ struct CausticUniform {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct CausticGlass {
-    /// Centre xy, radius, see-through.
+    /// Centre xy, radius, see-through (a mirror: its Facet gaps).
     pub a: [f32; 4],
-    /// The colour it lets through (normalised, linear), bends light.
+    /// The colour it lets through (normalised, linear), bends light (a mirror: what it gives back,
+    /// its turn).
     pub b: [f32; 4],
-    /// Rainbow split, frost, two spare.
+    /// Rainbow split, frost, 1 for a mirror (glass and light part 4a), a mirror's Facets.
     pub c: [f32; 4],
 }
 
-/// The balls light goes through to make caustics: see-through (at least 0.05) and bending light.
+/// The balls light goes through to make caustics: see-through (at least 0.05) and bending light,
+/// with Glass caustics on; and on a Stage with Mirror light on and shadows not Off, the balls that
+/// throw light (glass and light part 4a; only lights that cast shadows throw, as in the 2D pass).
 pub fn caustic_glass(scene: &LightScene) -> Vec<CausticGlass> {
+    let s = &scene.settings;
+    let glass_on = s.bake_more[2] != 0.0;
+    // Glass and light part 4a: on a Stage, mirror balls throw their light here too.
+    let mirrors_on = s.stage[0] > 0.5 && s.bent[2] != 0.0 && s.bent[2].is_finite() && s.shadows[0] < 2.5;
     scene
         .spheres
         .iter()
@@ -102,15 +109,25 @@ pub fn caustic_glass(scene: &LightScene) -> Vec<CausticGlass> {
             let sf = scene.surfaces.get(index).copied().unwrap_or(SurfaceGpu::MATTE);
             let ior = sf.e[3];
             let finite = sp.a.iter().take(3).all(|v| v.is_finite());
-            if !(finite && see >= 0.05 && ior > 1.0001 && sp.a[2] > 0.0) {
+            if !(finite && sp.a[2] > 0.0) {
                 return None;
             }
-            let top = sp.b[0].max(sp.b[1]).max(sp.b[2]).max(1e-3);
-            let tint = [0, 1, 2].map(|k| (sp.b[k] / top).clamp(0.0, 1.0));
+            if glass_on && see >= 0.05 && ior > 1.0001 {
+                let top = sp.b[0].max(sp.b[1]).max(sp.b[2]).max(1e-3);
+                let tint = [0, 1, 2].map(|k| (sp.b[k] / top).clamp(0.0, 1.0));
+                return Some(CausticGlass {
+                    a: [sp.a[0], sp.a[1], sp.a[2], see.min(1.0)],
+                    b: [tint[0], tint[1], tint[2], ior],
+                    c: [sf.c[0].max(0.0), sf.e[0].max(0.0), 0.0, 0.0],
+                });
+            }
+            let t = scene.throwers.iter().find(|t| t.ball && t.index as usize == index).filter(|_| mirrors_on)?;
+            let turn = if sp.c[2].is_finite() { sp.c[2] } else { 0.0 };
+            let finite = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
             Some(CausticGlass {
-                a: [sp.a[0], sp.a[1], sp.a[2], see.min(1.0)],
-                b: [tint[0], tint[1], tint[2], ior],
-                c: [sf.c[0].max(0.0), sf.e[0].max(0.0), 0.0, 0.0],
+                a: [sp.a[0], sp.a[1], sp.a[2], finite(t.gaps).min(1.0)],
+                b: [finite(t.colour[0]), finite(t.colour[1]), finite(t.colour[2]), turn],
+                c: [0.0, 0.0, 1.0, finite(t.facets)],
             })
         })
         .collect()
@@ -635,9 +652,12 @@ impl Lighting {
             entries: &[
                 wgpu::BindGroupLayoutEntry { visibility: all_stages, ..uniform(0) },
                 wgpu::BindGroupLayoutEntry { visibility: fragment_compute, ..storage(1) },
-                storage(2),
-                storage(3),
-                storage(4),
+                // The spheres and their grid: a mirror ball's photons (glass and light part 4a) find
+                // its sphere. With the lights, segments, pairs and legs that is the 8 storage
+                // buffers a compute stage may see.
+                wgpu::BindGroupLayoutEntry { visibility: fragment_compute, ..storage(2) },
+                wgpu::BindGroupLayoutEntry { visibility: fragment_compute, ..storage(3) },
+                wgpu::BindGroupLayoutEntry { visibility: fragment_compute, ..storage(4) },
                 storage(5),
                 tex(6, true),
             ],
@@ -1219,7 +1239,7 @@ impl Lighting {
         // Bounced light is as live unless the bake traces it (Bounced light: Traced).
         let more_bounces = baking && s.bake_more[3] > 0.5;
         let traced = more_bounces && s.stage[0] > 0.5 && bounce_setting != 0.0 && s.bake[1] >= 1.0;
-        let glass = if s.bake_more[2] != 0.0 && !scene.lights.is_empty() { caustic_glass(scene) } else { Vec::new() };
+        let glass = if !scene.lights.is_empty() { caustic_glass(scene) } else { Vec::new() };
         let caustics_on = !glass.is_empty();
         // Glass and light part 3: lamp light bent by glass shapes, liquid and bubbles (Glass
         // caustics on, shadows not Off): photons for each (light, bender) pair.
@@ -1273,8 +1293,9 @@ impl Lighting {
                 if s.glass_colour() { 1.0 } else { 0.0 },
                 if tinted { 1.0 } else { 0.0 },
             ],
-            bent: [if bent_on { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
-            bends: if bent_on { bent_light::bend_bits(&plan.benders) } else { [[0; 4]; 16] },
+            // Only glass that bends changes the direct light (mirrors add light, part 4a).
+            bent: [if plan.bending() { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
+            bends: if plan.bending() { bent_light::bend_bits(&plan.benders) } else { [[0; 4]; 16] },
         };
         // The jump flood's steps: from half the field's size down to one, then one again.
         let mut jumps = Vec::new();
@@ -1652,7 +1673,7 @@ impl Lighting {
             let total = per as u64 * lights_n as u64 * glass.len() as u64;
             let turn = frame.bake.map_or(0.0, |b| b.index as f32 * 2.399_963);
             let cu = CausticUniform {
-                counts: [per as f32, glass.len() as f32, lights_n as f32, 0.0],
+                counts: [per as f32, glass.len() as f32, lights_n as f32, s.bent[2]],
                 more: [world_pixel, turn, f32::from(u8::from(baking)), s.bake_more[2]],
             };
             queue.write_buffer(&self.caustic_uniform, 0, bytemuck::bytes_of(&cu));
@@ -1680,9 +1701,13 @@ impl Lighting {
             let photons = per_pair * bent_run as u32;
             let turn = frame.bake.map_or(0.0, |b| (b.index as f32 * 0.618_034).fract());
             let half_width = (3.0 * s.bent[1].max(0.0)).max(2.0) * world_pixel;
+            let (table, throwers) = bent_light::throw_table(&plan.throwers);
             let bu = BentUniform {
                 counts: [per_pair as f32, bent_run as f32, (16 * steps).max(1024) as f32, 0.0],
                 more: [world_pixel, turn, half_width, s.bake_more[2]],
+                extra: [s.bent[2], throwers as f32, 0.0, 0.0],
+                throws: bent_light::throw_bits(&plan.throwers),
+                table,
             };
             queue.write_buffer(&self.bent_uniform, 0, bytemuck::bytes_of(&bu));
             self.bent_pairs.upload(device, queue, bytemuck::cast_slice(&pairs[..bent_run]));

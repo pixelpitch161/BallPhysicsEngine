@@ -57,7 +57,7 @@ fn upper_half(centre: Pos2, r: f32, colour: Color32) -> Shape {
 }
 
 /// Paints Surface number `kind` (Matte, Plastic, Chrome, Metal, Glass, Toon, Jelly, Pearl, Flake,
-/// Brushed, Frosted, Velvet, Lava, Prism, in the order of `SurfaceKind`) as a ball of radius `r`
+/// Brushed, Frosted, Velvet, Lava, Prism, Mirror ball, in the order of `SurfaceKind`) as a ball of radius `r`
 /// at `centre` (the Prism as a prism splitting a white line into colours).
 pub fn surface_swatch(painter: &Painter, centre: Pos2, r: f32, kind: usize) {
     let shine = |size: f32| painter.circle_filled(centre + Vec2::new(-0.38, -0.42) * r, r * size, SWATCH_SHINE);
@@ -146,6 +146,25 @@ pub fn surface_swatch(painter: &Painter, centre: Pos2, r: f32, kind: usize) {
             painter.circle_filled(centre, r, SWATCH_GROUND);
             painter.circle_filled(centre, r * 0.72, SWATCH_LAVA);
             painter.circle_filled(centre + Vec2::new(0.1, 0.12) * r, r * 0.35, SWATCH_LAVA_HOT);
+        }
+        // Mirror ball (glass and light part 4a): a grey ball of small light and dark tiles in rows.
+        14 => {
+            painter.circle_filled(centre, r, SWATCH_GROUND);
+            let rows = 5;
+            for row in 0..rows {
+                let y = ((row as f32 + 0.5) / rows as f32 * 2.0 - 1.0) * r * 0.82;
+                let half = (r * r - y * y).max(0.0).sqrt() * 0.86;
+                let tiles = ((half / r) * 6.0).round().max(1.0) as i32;
+                let side = 1.6 * r / rows as f32;
+                for t in 0..tiles {
+                    let x = ((t as f32 + 0.5) / tiles as f32 * 2.0 - 1.0) * half;
+                    // Lighter up and to the left, toward the lamp.
+                    let lit = (0.6 - 0.35 * (x + y) / r + 0.25 * (((row + t) % 3) as f32 - 1.0)).clamp(0.0, 1.0);
+                    let rect = eframe::egui::Rect::from_center_size(centre + Vec2::new(x, y), Vec2::splat(side * 0.78));
+                    painter.rect_filled(rect, 0.0, mix(SWATCH_DARK, SWATCH_SKY, lit));
+                }
+            }
+            painter.circle_filled(centre + Vec2::new(-0.35, -0.4) * r, r * 0.12, SWATCH_SHINE);
         }
         // Prism: a glass triangle, a white line in from the left, a fan of colours out to the right.
         _ => {

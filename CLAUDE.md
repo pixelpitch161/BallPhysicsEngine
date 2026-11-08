@@ -301,8 +301,30 @@ Tests `bpe-kit/tests/bent_light_pictures.rs`, bake `a_glass_lens_focuses_in_the_
 toon bands or normal turning on bent light; area/strip lights send from one point; the light field and the probe pass
 glass straight.
 
-Designed, not built yet: part 4 wild glass (mirrors throw light, Mirror ball, Dichroic, Diamond fire, Light pipes,
-rainbows in rain).
+Part 4a is in (plan `part4.md`, "As built (4a)" at its end): **mirrors throw light** and **light pipes**. A *thrower*
+is a Shape, or a Balls/Emitter thing (Flat only), whose Surface (or a shape layer's own) has **Throws light** > 0
+(`throws`; Chrome 1, Metal/Brushed 0.5, the new 15th chip **Mirror ball** 1 with **Facets** 120 and **Facet gaps**
+0.12: `facets`, `facet_gaps`, `SurfaceGpu.f` = [throws, facets, gaps, 0]), whose layer blocks light and which doesn't
+bend (`surface::throw_of`: a Mirror wall's tint × strength, else mix(F0, colour, Metal), × Throws light, none under
+0.02; `thing_colour`). Shapes and balls push `bpe_gfx::Thrower`s (box, surface index, colour, `widen` = Roughness²,
+facets, gaps, ball) into `LightScene.throwers` (`MOST_THROWERS` 64); a ball's sphere carries its turn in `SphereGpu.c[2]`.
+The Lighting card's **Mirror light** (`mirror_light`, `LightingGpu.bent[2]`) scales it; 0 sends nothing. `BentPlan`
+makes thrower pairs after bender pairs (`BentPair.b[2]` 1, `thrower_pairs`; Stage drops ball throwers), the bent
+uniform carries `throws` bits and the `ThrowerGpu` table, and `cs_bent` reflects a photon meeting one (`thrower_at`,
+`BENT_THROW` −16 − index; the normal from the sphere or the cover, faceted by Facets, ending in a gap; each photon is
+its first glass's or mirror's pair's), × colour × Mirror light, its blur growing by `widen` along the path
+(`Leg.d`, 64-byte legs, `vs_bent` widens). `u.bent.x` is set only when a bender pair runs (`BentPlan::bending`), so
+mirror-only frames leave the direct pass alone. A faceted ball shows its tiles (`facet_normal`, `facet_gap` in
+`surfaced`: rings from the middle out, gaps dimmed to 15%). On a Stage, mirror balls throw through the sphere caustic
+pass (`caustic_glass` lists them, `CausticGlass.c[2]` 1, `vs_caustic` reflects). **Light pipes** (shapes, whole thing
+only: **Light pipe** `light_pipe`, **Carries** `pipe_carries`, **Pipe glow** `pipe_glow`) push a `Pipe` into
+`LightScene.pipes` (`MOST_PIPES` 16); `bpe-gfx/src/pipes.rs::LightScene::light_pipes` (called in `build_frame_sensing`
+after the light hooks) catches lamps by falloff × cone and lasers ending on the outline, runs the light both ways
+round, fading over Carries and leaking at corners past the critical angle, and pushes at most `MOST_PIPE_PIECES` 32
+shadowless strip lights (`PIPE_GAIN` 4); never in the probe. Tests `bpe-kit/tests/mirror_light_pictures.rs`, bake
+`a_mirror_throws_light_in_the_bake`.
+
+Designed, not built yet: part 4b (Dichroic, Diamond fire, rainbows in rain).
 
 ## Rules (spec `docs/superpowers/specs/2026-11-06-rules-design.md`, plans `docs/superpowers/plans/rules/`)
 

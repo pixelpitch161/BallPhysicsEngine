@@ -1142,7 +1142,8 @@ pub struct LightingGpu {
     /// 1 when the video bakes, 1 with noise clean-up, glass caustics, 1 when the bake traces bounced light.
     pub bake_more: [f32; 4],
     /// Glass and light part 3: Bent light rays (a multiplier on the photons), Bent light softness
-    /// (how wide each photon's line is splatted), two spare.
+    /// (how wide each photon's line is splatted), part 4a's Mirror light (how much the light
+    /// mirrors throw is), one spare.
     pub bent: [f32; 4],
 }
 
@@ -1164,6 +1165,8 @@ pub struct SurfaceGpu {
     pub d: [f32; 4],
     /// Frost, rim, inner glow, bends light (index of refraction).
     pub e: [f32; 4],
+    /// Glass and light part 4a: throws light, facets (0 smooth), facet gaps, 0.
+    pub f: [f32; 4],
 }
 
 impl SurfaceGpu {
@@ -1172,8 +1175,14 @@ impl SurfaceGpu {
     pub const BALL: f32 = 1.0;
     pub const SHAPE: f32 = 2.0;
     /// A plain sheet: matte, reflecting nothing (index 0 of every table).
-    pub const MATTE: SurfaceGpu =
-        SurfaceGpu { a: [1.0, 0.0, 0.0, 0.0], b: [0.0; 4], c: [0.0; 4], d: [0.0; 4], e: [0.0, 0.0, 0.0, 1.0] };
+    pub const MATTE: SurfaceGpu = SurfaceGpu {
+        a: [1.0, 0.0, 0.0, 0.0],
+        b: [0.0; 4],
+        c: [0.0; 4],
+        d: [0.0; 4],
+        e: [0.0, 0.0, 0.0, 1.0],
+        f: [0.0; 4],
+    };
     /// Added to a record's surface index (`LayerGpu::light[3]`) when the surface is see-through:
     /// the behind picture leaves such records out (see [`LightScene::refracts`]). Every other
     /// reader takes the index modulo this (and the glass flag modulo [`SurfaceGpu::OWN_FLAG`]).
@@ -1207,7 +1216,8 @@ pub struct SphereGpu {
     /// light part 1).
     pub b: [f32; 4],
     /// Its surface index (part 2b: what a reflection of it takes light as), its Tints light (glass
-    /// and light part 1), 0, 0.
+    /// and light part 1), its turn (radians, glass and light part 4a: a mirror ball's tiles turn
+    /// with it), 0.
     pub c: [f32; 4],
 }
 
@@ -1276,6 +1286,48 @@ pub struct LightScene {
     /// surface index. Free glass (bending particles, glass liquid) is found in the frame itself
     /// ([`Frame::free_glass_box`]).
     pub benders: Vec<Bender>,
+    /// Glass and light part 4a: the shapes (and shape layers) and ball things whose surface throws
+    /// lamp light back onto the room like a mirror, at most [`MOST_THROWERS`].
+    pub throwers: Vec<Thrower>,
+    /// Glass and light part 4a: shapes that carry light along their outline (light pipes), at most
+    /// [`MOST_PIPES`]; [`LightScene::light_pipes`] turns them into strip lights.
+    pub pipes: Vec<Pipe>,
+}
+
+/// The most things that throw light in a frame (the rest throw none).
+pub const MOST_THROWERS: usize = 64;
+/// The most light pipes in a frame (the rest carry none).
+pub const MOST_PIPES: usize = 16;
+
+/// A thing whose surface throws lamp light back like a mirror (glass and light part 4a): its box
+/// (world), its surface index, what it gives back of each channel of the light meeting it (already
+/// times Throws light), how fast a rough surface blurs what it throws (Roughness squared: the
+/// thrown light's half width grows by this much a unit of path), its Facets (0 smooth), its Facet
+/// gaps, and whether it is balls (whose normals come from their spheres).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Thrower {
+    pub lo: [f32; 2],
+    pub hi: [f32; 2],
+    pub index: u32,
+    pub colour: [f32; 3],
+    pub widen: f32,
+    pub facets: f32,
+    pub gaps: f32,
+    pub ball: bool,
+}
+
+/// A shape that carries light along its outline (glass and light part 4a's light pipes): its
+/// closed outline (world), how far its light carries (world), how brightly it glows, its colour's
+/// hue (linear rgb, its brightest channel 1), its index of refraction (corners sharper than its
+/// critical angle let light out), and the width its glow is drawn with (world).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Pipe {
+    pub points: Vec<Vec2>,
+    pub carries: f32,
+    pub glow: f32,
+    pub tint: [f32; 3],
+    pub bends: f32,
+    pub width: f32,
 }
 
 /// The most mirror walls a frame takes (the rest are left out).
@@ -1345,6 +1397,20 @@ impl LightScene {
     /// Whether the frame needs its UV picture: drawn in light pass 5.
     pub fn needs_uv(&self) -> bool {
         self.uv && self.has_uv_light()
+    }
+
+    /// Adds a thing that throws light, unless the frame has [`MOST_THROWERS`] already.
+    pub fn push_thrower(&mut self, thrower: Thrower) {
+        if self.throwers.len() < MOST_THROWERS {
+            self.throwers.push(thrower);
+        }
+    }
+
+    /// Adds a light pipe, unless the frame has [`MOST_PIPES`] already.
+    pub fn push_pipe(&mut self, pipe: Pipe) {
+        if self.pipes.len() < MOST_PIPES {
+            self.pipes.push(pipe);
+        }
     }
 
     /// Sets surface `index`, growing the table with matte sheets.
@@ -2529,6 +2595,8 @@ pub fn build_frame_sensing(
             let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, tree: scene, light: None };
             d.light(&cx, &mut lit);
         }
+        // Light pipes (glass and light part 4a) carry the light every thing has made.
+        lit.light_pipes();
         lit.glows = frame.gives_light();
         frame.light = Some(lit);
     }
