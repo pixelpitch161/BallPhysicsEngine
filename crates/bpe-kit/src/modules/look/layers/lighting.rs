@@ -15,6 +15,7 @@ pub const UNDER_UV: &str = "under_uv";
 pub const UV_GLOW: &str = "uv_glow";
 pub const CATCHES_BEAMS: &str = "catches_beams";
 pub const BENDS_LIGHT: &str = "bends_light";
+pub const MAKES_RAINBOWS: &str = "makes_rainbows";
 
 /// How a layer looks under ultraviolet light (lighting part 4).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
@@ -49,11 +50,22 @@ pub struct AroundLit {
     /// How brightly the layer glows where UV light falls on it.
     #[setting(label = "UV glow", when = "under_uv!=normal", span(0, 4), keyframe, group = "Lighting")]
     pub uv_glow: f32,
+    /// How much it shows the Lighting card's Rainbow where the light falls on it, like rain in
+    /// sunshine (glass and light part 4b).
+    #[setting(label = "Makes rainbows", span(0, 1), keyframe, group = "Lighting")]
+    pub makes_rainbows: f32,
 }
 
 impl Default for AroundLit {
     fn default() -> Self {
-        Self { lit: 1.0, blocks_light: false, catches_beams: 0.0, under_uv: UnderUv::Normal, uv_glow: 1.5 }
+        Self {
+            lit: 1.0,
+            blocks_light: false,
+            catches_beams: 0.0,
+            under_uv: UnderUv::Normal,
+            uv_glow: 1.5,
+            makes_rainbows: 0.0,
+        }
     }
 }
 
@@ -83,6 +95,10 @@ pub struct ParticlesLit {
     /// Lighting card's Glass caustics, and works best on particles that don't block light.
     #[setting(label = "Bends light", span(1, 2), keyframe, group = "Lighting")]
     pub bends_light: f32,
+    /// How much it shows the Lighting card's Rainbow where the light falls on it, like rain in
+    /// sunshine (glass and light part 4b).
+    #[setting(label = "Makes rainbows", span(0, 1), keyframe, group = "Lighting")]
+    pub makes_rainbows: f32,
 }
 
 impl Default for ParticlesLit {
@@ -94,6 +110,7 @@ impl Default for ParticlesLit {
             under_uv: UnderUv::Normal,
             uv_glow: 1.5,
             bends_light: 1.0,
+            makes_rainbows: 0.0,
         }
     }
 }
@@ -206,8 +223,9 @@ pub fn of(p: &Params) -> [f32; 4] {
 }
 
 /// A layer's part 4 lighting as the renderer reads it ([`bpe_gfx::LayerGpu::more`], a trail's or
-/// particle's `extra`): UV glow (0 for Normal), Only under UV (0 or 1), Catches beams and `link`
-/// (its thing's link number for Lights up). Only under UV hides a layer only in a `lit` scene (one
+/// particle's `extra`): UV glow (0 for Normal), Only under UV (0 or 1), Catches beams (with Makes
+/// rainbows packed in by [`bpe_gfx::pack_tags`], glass and light part 4b) and `link` (its thing's
+/// link number for Lights up). Only under UV hides a layer only in a `lit` scene (one
 /// with a Lighting card), so without the card the layer shows as it always did.
 pub fn extra_of(p: &Params, link: f32, lit: bool) -> [f32; 4] {
     let mode = match p.get(UNDER_UV) {
@@ -222,6 +240,11 @@ pub fn extra_of(p: &Params, link: f32, lit: bool) -> [f32; 4] {
         Some(Value::Number(v)) if v.is_finite() => (*v as f32).max(0.0),
         _ => 0.0,
     };
+    let makes = match p.get(MAKES_RAINBOWS) {
+        Some(Value::Number(v)) if v.is_finite() => *v as f32,
+        _ => 0.0,
+    };
+    let catches = bpe_gfx::pack_tags(catches, makes);
     let (uv, only) = match mode {
         "glows" => (glow, 0.0),
         "only_under_uv" => (glow, if lit { 1.0 } else { 0.0 }),

@@ -7,6 +7,7 @@
 //! lights from, as a strip.
 
 use bpe_core::ThingId;
+use bpe_gfx::dichroic::Dichroic;
 use bpe_runtime::World;
 use glam::Vec2;
 
@@ -22,8 +23,16 @@ pub enum Meets {
     /// It goes straight on.
     Pass,
     /// It goes in, bent as glass of this index of refraction bends light, and out again; with a
-    /// Rainbow split above 0 each colour bends by its own index (glass and light part 2).
-    Bend { index: f32, rainbow: f32 },
+    /// Rainbow split above 0 each colour bends by its own index (glass and light part 2), and
+    /// dichroic glass lets one hue through and throws the opposite one back (part 4b).
+    Bend { index: f32, rainbow: f32, dichroic: Dichroic },
+}
+
+impl Meets {
+    /// Glass of `index` and Rainbow split `rainbow` that isn't dichroic.
+    pub fn bend(index: f32, rainbow: f32) -> Self {
+        Meets::Bend { index, rainbow, dichroic: Dichroic::default() }
+    }
 }
 
 /// What a beam met at a corner of its path: a thing, for a ball its row, for a wall which side of
@@ -355,7 +364,7 @@ impl Walk {
 }
 
 /// Where a white beam meets glass that splits it: the walk at that point (before it bends in),
-/// the glass's normal there, what it is, and its index and Rainbow split.
+/// the glass's normal there, what it is, and its index, Rainbow split and dichroic numbers.
 #[derive(Clone, Debug)]
 struct Pending {
     walk: Walk,
@@ -363,9 +372,23 @@ struct Pending {
     met: Met,
     index: f32,
     rainbow: f32,
+    dichroic: Dichroic,
 }
 
 impl Pending {
+    /// The cosine the beam meets the glass at.
+    fn cos(&self) -> f32 {
+        self.walk.dir.dot(self.normal).abs()
+    }
+
+    /// The walk of what dichroic glass throws back (part 4b), reflected off it.
+    fn reflected(&self) -> Walk {
+        let mut walk = Walk { points: vec![self.walk.at], corners: vec![None], ..self.walk.clone() };
+        walk.dir = reflect(walk.dir, self.normal);
+        walk.corners[0] = Some(Met { how: Turned::Reflected, ..self.met });
+        walk
+    }
+
     /// The walk of colour `w` from the split, bent into the glass with its own index.
     fn bent(&self, w: f32) -> Walk {
         let mut walk = Walk { points: vec![self.walk.at], corners: vec![None], ..self.walk.clone() };
@@ -387,7 +410,8 @@ impl Pending {
 }
 
 /// Walks a beam of wavelength `w` on from `walk` until it ends, runs out of bounces, length or
-/// `most_segments`, or (with `split`) meets glass that splits it, which it hands back unbent.
+/// `most_segments`, or (with `split`) meets glass that splits it, which it hands back unbent: glass
+/// with Rainbow split when `by_colour`, and dichroic glass (part 4b).
 #[allow(clippy::too_many_arguments)]
 fn walk_on(
     scenery: &Scenery,
@@ -397,6 +421,7 @@ fn walk_on(
     meets: &dyn Fn(ThingId, bool) -> Meets,
     w: f32,
     split: bool,
+    by_colour: bool,
     most_segments: usize,
 ) -> (Path, Option<Pending>) {
     // A beam passing through things can meet very many: a limit keeps it from looping forever.
@@ -433,10 +458,11 @@ fn walk_on(
                 }
                 None => (reflect(walk.dir, hit.normal), Turned::Reflected),
             },
-            (Meets::Bend { index, rainbow }, None) => {
-                if split && rainbow > 0.0 {
+            (Meets::Bend { index, rainbow, dichroic }, None) => {
+                if split && ((by_colour && rainbow > 0.0) || dichroic.on()) {
                     // The white path ends here (as Ended); each colour's starts here, bent its own way.
-                    let pending = Pending { walk: walk.clone(), normal: hit.normal, met, index, rainbow };
+                    let rainbow = if by_colour { rainbow } else { 0.0 };
+                    let pending = Pending { walk: walk.clone(), normal: hit.normal, met, index, rainbow, dichroic };
                     return (walk.path(true), Some(pending));
                 }
                 let n = index_at(index, rainbow, w);
@@ -496,18 +522,19 @@ pub fn trace_wavelength(
     w: f32,
 ) -> Path {
     match start(from, dir, length) {
-        Ok(walk) => walk_on(scenery, walk, bounces.min(MOST_BOUNCES), skip, meets, w, false, usize::MAX).0,
+        Ok(walk) => walk_on(scenery, walk, bounces.min(MOST_BOUNCES), skip, meets, w, false, false, usize::MAX).0,
         Err(path) => path,
     }
 }
 
 /// One colour of a split beam: its place on the spectrum, its share of the light per channel and
-/// its path from where the beam split.
+/// its path from where the beam split; `reflected` for what dichroic glass threw back (part 4b).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Colour {
     pub w: f32,
     pub share: [f32; 3],
     pub path: Path,
+    pub reflected: bool,
 }
 
 /// A beam that may have split into colours: the white path from the lamp (to where it split, when
@@ -519,9 +546,11 @@ pub struct Split {
 }
 
 /// [`trace`], splitting into `colours` colours at the first glass with Rainbow split it bends into
-/// (glass and light part 2): from there each colour goes its own way. With one colour, or no such
-/// glass, it is [`trace`]'s path exactly. All the paths together have at most `most_segments`
-/// segments (each colour an even share of what the white path leaves).
+/// (glass and light part 2): from there each colour goes its own way. Dichroic glass (part 4b)
+/// splits it too: what goes in (each colour, or the one white path) takes its hue through, and one
+/// more path, last, is the opposite hue thrown back. With one colour and no dichroic glass, or no
+/// such glass, it is [`trace`]'s path exactly. All the paths together have at most
+/// `most_segments` segments (each path an even share of what the white path leaves).
 #[allow(clippy::too_many_arguments)]
 pub fn trace_split(
     scenery: &Scenery,
@@ -541,18 +570,27 @@ pub fn trace_split(
         Err(white) => return Split { white, colours: Vec::new() },
     };
     let most = most_segments.max(1);
-    let (white, pending) = walk_on(scenery, walk, bounces, skip, meets, 0.0, colours > 1, most);
+    let (white, pending) = walk_on(scenery, walk, bounces, skip, meets, 0.0, true, colours > 1, most);
     let Some(pending) = pending else { return Split { white, colours: Vec::new() } };
     let used = white.points.len().saturating_sub(1);
-    let per = (most.saturating_sub(used) / colours as usize).max(1);
-    let colours = spectrum(colours)
+    let spread = if pending.rainbow > 0.0 { spectrum(colours) } else { spectrum(1) };
+    let dichroic = pending.dichroic.on();
+    let paths = spread.len() + usize::from(dichroic);
+    let per = (most.saturating_sub(used) / paths).max(1);
+    let through = if dichroic { pending.dichroic.through(pending.cos()) } else { [1.0; 3] };
+    let mut out: Vec<Colour> = spread
         .into_iter()
         .map(|(w, share)| {
-            let (path, _) = walk_on(scenery, pending.bent(w), bounces, skip, meets, w, false, per);
-            Colour { w, share, path }
+            let (path, _) = walk_on(scenery, pending.bent(w), bounces, skip, meets, w, false, false, per);
+            let share = [0, 1, 2].map(|c| share[c] * through[c]);
+            Colour { w, share, path, reflected: false }
         })
         .collect();
-    Split { white, colours }
+    if dichroic {
+        let (path, _) = walk_on(scenery, pending.reflected(), bounces, skip, meets, 0.0, false, false, per);
+        out.push(Colour { w: 0.0, share: pending.dichroic.bounced(pending.cos()), path, reflected: true });
+    }
+    Split { white, colours: out }
 }
 
 /// How bright a beam's band shows for its Beam glow: a wide band would drown the picture at a
@@ -691,18 +729,12 @@ mod tests {
     fn glass_bends_a_beam_in_and_out() {
         // Through a glass ball off its middle: bent in, bent out, carrying on beyond.
         let s = Scenery { walls: Vec::new(), balls: vec![(ThingId(3), 0, Vec2::new(0.0, 200.0), 50.0)] };
-        let path = trace(&s, Vec2::new(25.0, 0.0), Vec2::new(0.0, 1.0), 1000.0, 8, None, &|_, _| Meets::Bend {
-            index: 1.5,
-            rainbow: 0.0,
-        });
+        let path = trace(&s, Vec2::new(25.0, 0.0), Vec2::new(0.0, 1.0), 1000.0, 8, None, &|_, _| Meets::bend(1.5, 0.0));
         assert_eq!(path.points.len(), 4, "{:?}", path.points);
         let out = (path.points[3] - path.points[2]).normalize();
         assert!(out.x < -0.1, "a glass ball focuses light toward its axis: {out:?}");
         // Head on, it goes straight through.
-        let straight = trace(&s, Vec2::ZERO, Vec2::new(0.0, 1.0), 1000.0, 8, None, &|_, _| Meets::Bend {
-            index: 1.5,
-            rainbow: 0.0,
-        });
+        let straight = trace(&s, Vec2::ZERO, Vec2::new(0.0, 1.0), 1000.0, 8, None, &|_, _| Meets::bend(1.5, 0.0));
         assert!((straight.points.last().unwrap().x).abs() < 1e-3);
     }
 
@@ -720,7 +752,7 @@ mod tests {
     }
 
     fn glass(rainbow: f32) -> impl Fn(ThingId, bool) -> Meets {
-        move |_, _| Meets::Bend { index: 1.5, rainbow }
+        move |_, _| Meets::bend(1.5, rainbow)
     }
 
     /// The way the last segment of `p` goes, in degrees clockwise from the right.
@@ -802,7 +834,7 @@ mod tests {
             balls: Vec::new(),
         };
         let meets = |thing: ThingId, _: bool| {
-            if thing == ThingId(3) { Meets::Bend { index: 1.5, rainbow: 1.0 } } else { Meets::Bounce }
+            if thing == ThingId(3) { Meets::bend(1.5, 1.0) } else { Meets::Bounce }
         };
         let split = trace_split(&s, Vec2::new(-250.0, 5.0), Vec2::X, 1e9, 256, None, &meets, 32, MOST_BEAM_SEGMENTS);
         let counts: Vec<usize> = split.colours.iter().map(|c| c.path.points.len() - 1).collect();
@@ -903,5 +935,64 @@ mod tests {
         let middle: Vec<_> = r.iter().filter(|q| q.d[0] == across[1]).collect();
         assert_eq!(middle.len(), 1, "the middle pair stops at the faces: {middle:?}");
         assert!(r.iter().filter(|q| q.d[0] == across[0]).count() > 1, "each side's pair goes on through");
+    }
+
+    #[test]
+    fn dichroic_glass_splits_a_beam_into_the_hue_through_and_the_opposite_thrown_back() {
+        // A glass ball head on: the beam goes in, and dichroic glass throws its opposite hue back.
+        let s = Scenery { walls: Vec::new(), balls: vec![(ThingId(3), 0, Vec2::new(0.0, 200.0), 50.0)] };
+        let d = Dichroic { amount: 1.0, shift: 0.0, hue: 0.5 };
+        let meets = move |_, _| Meets::Bend { index: 1.5, rainbow: 0.0, dichroic: d };
+        let split = trace_split(&s, Vec2::new(10.0, 0.0), Vec2::new(0.0, 1.0), 1000.0, 8, None, &meets, 1, 4096);
+        assert_eq!(split.white.points.len(), 2, "white to the glass: {:?}", split.white.points);
+        assert_eq!(split.colours.len(), 2, "what goes through, then what is thrown back");
+        let (through, back) = (&split.colours[0], &split.colours[1]);
+        assert!(!through.reflected && back.reflected);
+        let cos = 0.2f32.mul_add(-0.2, 1.0).sqrt();
+        let near = |a: [f32; 3], b: [f32; 3]| (0..3).all(|c| (a[c] - b[c]).abs() < 1e-4);
+        assert!(near(through.share, d.through(cos)), "{:?}", through.share);
+        assert!(near(back.share, d.bounced(cos)), "{:?}", back.share);
+        for c in 0..3 {
+            assert!((through.share[c] + back.share[c] - 1.0).abs() < 1e-5, "nothing lost");
+        }
+        // Hue 0.5 (cyan) goes through; red bounces off.
+        assert!(through.share[0] < 0.01 && through.share[1] > 0.99 && through.share[2] > 0.99);
+        assert!(back.share[0] > 0.99 && back.share[1] < 0.01);
+        assert_eq!(back.path.corners[0].map(|m| m.how), Some(Turned::Reflected));
+        assert!(back.path.points[1].y < back.path.points[0].y, "thrown back up");
+        // Dichroic 0 is the old path exactly.
+        let plain = trace_split(
+            &s,
+            Vec2::new(10.0, 0.0),
+            Vec2::new(0.0, 1.0),
+            1000.0,
+            8,
+            None,
+            &|_, _| Meets::bend(1.5, 0.0),
+            1,
+            4096,
+        );
+        assert!(plain.colours.is_empty());
+        assert_eq!(
+            plain.white,
+            trace(&s, Vec2::new(10.0, 0.0), Vec2::new(0.0, 1.0), 1000.0, 8, None, &|_, _| { Meets::bend(1.5, 0.0) })
+        );
+    }
+
+    #[test]
+    fn a_dichroic_prism_splits_into_colours_and_one_thrown_back() {
+        let s = Scenery { walls: Vec::new(), balls: vec![(ThingId(3), 0, Vec2::new(0.0, 200.0), 50.0)] };
+        let d = Dichroic { amount: 0.5, shift: 0.2, hue: 0.1 };
+        let meets = move |_, _| Meets::Bend { index: 1.5, rainbow: 1.0, dichroic: d };
+        let split = trace_split(&s, Vec2::new(20.0, 0.0), Vec2::new(0.0, 1.0), 1000.0, 8, None, &meets, 6, 4096);
+        assert_eq!(split.colours.len(), 7);
+        assert!(split.colours[..6].iter().all(|c| !c.reflected) && split.colours[6].reflected);
+        // Every channel: the colours' shares and the thrown back add to 1.
+        for c in 0..3 {
+            let sum: f32 = split.colours.iter().map(|k| k.share[c]).sum();
+            assert!((sum - 1.0).abs() < 1e-4, "channel {c}: {sum}");
+        }
+        let segments: usize = split.colours.iter().map(|c| c.path.points.len() - 1).sum();
+        assert!(segments + split.white.points.len() - 1 <= 4096);
     }
 }

@@ -10,6 +10,7 @@ pub mod bent_light;
 mod blend;
 #[cfg(test)]
 mod blend_tests;
+pub mod dichroic;
 mod each;
 pub mod effects;
 mod fields;
@@ -59,8 +60,8 @@ pub use frame::{
     LayerGpu, LayeredInstance, LightGpu, LightScene, LightShow, LightingGpu, LookInstance, MAX_LAYERS, MOST_MIRRORS,
     MOST_PIPES, MOST_THROWERS, MOST_TRAIL_VERTICES, MirrorGpu, ModuleDraw, NO_HIT, PATH_GLYPH, Particle, PathInstance,
     Pipe, Place, RibbonGpu, ShapeInstance, SphereGpu, Splat, Stage, StreakStyle, SurfaceGpu, Takes, ThingDraw, Thrower,
-    TrailVertex, blend_alpha, build_frame, build_frame_sensing, build_frame_with, hit_strength, push_streak,
-    push_streak_colours, push_trail, thing_code,
+    TrailVertex, blend_alpha, build_frame, build_frame_sensing, build_frame_with, hit_strength, pack_tags, push_streak,
+    push_streak_colours, push_trail, tag_parts, thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, NO_WAVE, PaintGpu, wave_texels};
 pub use masks::{MASK_TILE, MASK_TILE_BYTES, MAX_MASK_TILES, TILE_DISTANCE_REACH, tile_distance};

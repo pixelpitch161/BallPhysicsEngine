@@ -6,6 +6,7 @@ use bpe_core::{Choice, Color, KindId, LightingScene, ModuleKind, SettingDef, Set
 
 use super::light_scenes::{SceneOrder, ScenesPlay};
 use bpe_gfx::LightingGpu;
+use glam::Vec2;
 
 /// The card kind's id.
 pub const LIGHTING: &str = "scene.lighting";
@@ -163,6 +164,16 @@ pub enum GlowFrom {
     GlowColour,
     /// The colour of the light that fell there.
     TheLight,
+}
+
+/// Where the rainbow's middle is (glass and light part 4b).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum RainbowFrom {
+    /// Opposite the brightest sun, as a real rainbow is (straight down with no sun).
+    #[default]
+    OppositeTheSun,
+    /// Where you put it.
+    APoint,
 }
 
 #[derive(Clone, Debug, PartialEq, Settings)]
@@ -386,6 +397,33 @@ pub struct LightingSettings {
     /// How strong the slanting rays of sunlight from the top are.
     #[setting(label = "Sun rays", when = "underwater", span(0, 2), keyframe, group = "Underwater")]
     pub sun_rays: f32,
+    /// How bright the rainbow is where haze or rain catches the light (glass and light part 4b):
+    /// 0 none. Rain shows it when its particles' Makes rainbows is on.
+    #[setting(label = "Rainbow", span(0, 2), keyframe, group = "Rainbow")]
+    pub rainbow: f32,
+    /// Where the rainbow's middle is.
+    #[setting(label = "Rainbow centre", when = "rainbow", group = "Rainbow")]
+    pub rainbow_from: RainbowFrom,
+    /// The rainbow's middle, when you put it.
+    #[setting(label = "Centre", when = "rainbow and rainbow_from=a_point", unit = "px", keyframe, group = "Rainbow")]
+    pub rainbow_centre: Vec2,
+    /// How far the main bow is from its middle.
+    #[setting(
+        label = "Rainbow size",
+        when = "rainbow",
+        range(1, 1e9),
+        span(100, 2000),
+        unit = "px",
+        keyframe,
+        group = "Rainbow"
+    )]
+    pub rainbow_size: f32,
+    /// How bright the fainter second bow outside it is (its colours the other way round).
+    #[setting(label = "Second bow", when = "rainbow", span(0, 1), keyframe, group = "Rainbow")]
+    pub second_bow: f32,
+    /// How much darker the sky is between the two bows.
+    #[setting(label = "Dark band", when = "rainbow", span(0, 1), keyframe, group = "Rainbow")]
+    pub dark_band: f32,
     /// How brightly things glow in the dark after light has fallen on them: 0 never.
     #[setting(label = "Glow in the dark", span(0, 4), keyframe, group = "Glow in the dark")]
     pub glow_dark: f32,
@@ -591,6 +629,12 @@ impl Default for LightingSettings {
             caustic_size: 160.0,
             caustic_speed: 1.0,
             sun_rays: 0.6,
+            rainbow: 0.0,
+            rainbow_from: RainbowFrom::OppositeTheSun,
+            rainbow_centre: Vec2::ZERO,
+            rainbow_size: 700.0,
+            second_bow: 0.4,
+            dark_band: 0.5,
             glow_dark: 0.0,
             remembers: Remembers::Background,
             charge: 4.0,
@@ -727,6 +771,18 @@ impl LightingSettings {
                 finite(self.bent_rays).max(0.0),
                 finite(self.bent_softness).max(0.0),
                 finite(self.mirror_light).max(0.0),
+                0.0,
+            ],
+            rainbow: [
+                finite(self.rainbow).max(0.0),
+                finite(self.rainbow_size).max(1.0),
+                finite(self.second_bow).clamp(0.0, 1.0),
+                finite(self.dark_band).clamp(0.0, 1.0),
+            ],
+            rainbow_at: [
+                finite(self.rainbow_centre.x),
+                finite(self.rainbow_centre.y),
+                f32::from(u8::from(self.rainbow_from == RainbowFrom::APoint)),
                 0.0,
             ],
         }

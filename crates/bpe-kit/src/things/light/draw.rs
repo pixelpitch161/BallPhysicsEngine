@@ -175,7 +175,9 @@ fn push_light(
         let meets = |thing: ThingId, ball: bool| {
             let plain = if ball { balls } else { shapes };
             match glass_of.get(&thing).copied().flatten() {
-                Some(g) if plain != Meets::Stop => Meets::Bend { index: g.index, rainbow: g.rainbow },
+                Some(g) if plain != Meets::Stop => {
+                    Meets::Bend { index: g.index, rainbow: g.rainbow, dichroic: g.dichroic }
+                }
                 _ => plain,
             }
         };

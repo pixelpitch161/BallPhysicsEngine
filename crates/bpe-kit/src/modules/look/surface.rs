@@ -72,6 +72,9 @@ pub struct Preset {
     pub throws: f32,
     pub facets: f32,
     pub facet_gaps: f32,
+    /// Glass and light part 4b: how dichroic it is and its diamond fire (every preset 0).
+    pub dichroic: f32,
+    pub fire: f32,
 }
 
 impl Preset {
@@ -98,6 +101,8 @@ impl Preset {
             throws: 0.0,
             facets: 0.0,
             facet_gaps: 0.0,
+            dichroic: 0.0,
+            fire: 0.0,
         }
     }
 }
@@ -276,6 +281,20 @@ pub struct SurfaceSettings {
     /// How much of each tile is dark gap between the tiles.
     #[setting(label = "Facet gaps", when = "facets", span(0, 1), keyframe, group = "Surface")]
     pub facet_gaps: f32,
+    /// How much it splits light like dichroic glass (glass and light part 4b): one colour goes
+    /// through and the opposite colour bounces off, both changing as you look at it from the side.
+    #[setting(label = "Dichroic", span(0, 1), keyframe, group = "Surface")]
+    pub dichroic: f32,
+    /// How far round the colour wheel its colours turn from straight on to the side.
+    #[setting(label = "Dichroic shift", when = "dichroic", span(-360, 360), unit = "°", keyframe, group = "Surface")]
+    pub dichroic_shift: f32,
+    /// The colour that goes through it straight on (the opposite colour bounces off).
+    #[setting(label = "Dichroic hue", when = "dichroic", span(0, 360), unit = "°", keyframe, group = "Surface")]
+    pub dichroic_hue: f32,
+    /// Diamond fire: its highlights split into rainbow sparks, and balls flash star glints when
+    /// they're hit (in a lit scene).
+    #[setting(label = "Fire", span(0, 1), keyframe, group = "Surface")]
+    pub fire: f32,
     /// How much a ball bulges to the light: 0 a flat disc, 1 a ball, more a taller dome.
     #[setting(label = "Bulge", when = "thing!=shape", span(0, 2), keyframe, group = "Surface")]
     pub bulge: f32,
@@ -350,6 +369,10 @@ impl Default for SurfaceSettings {
             throws: p.throws,
             facets: p.facets,
             facet_gaps: p.facet_gaps,
+            dichroic: p.dichroic,
+            dichroic_shift: 120.0,
+            dichroic_hue: 190.0,
+            fire: p.fire,
             bulge: 1.0,
             lens: 0.0,
             mirror: MirrorSide::Off,
@@ -389,6 +412,8 @@ pub fn preset_values(kind: SurfaceKind) -> Vec<(&'static str, Value)> {
         ("throws", number(p.throws)),
         ("facets", number(p.facets)),
         ("facet_gaps", number(p.facet_gaps)),
+        ("dichroic", number(p.dichroic)),
+        ("fire", number(p.fire)),
     ]
 }
 
@@ -433,7 +458,20 @@ impl SurfaceSettings {
             ],
             e: [f(self.frost).max(0.0), f(self.rim), f(self.inner_glow), self.bends_light.max(1.0)],
             f: [f(self.throws).max(0.0), f(self.facets).max(0.0), f(self.facet_gaps).clamp(0.0, 1.0), 0.0],
+            g: [
+                f(self.dichroic).clamp(0.0, 1.0),
+                f(self.dichroic_shift) / 360.0,
+                f(self.dichroic_hue) / 360.0,
+                f(self.fire).clamp(0.0, 1.0),
+            ],
         }
+    }
+
+    /// Its dichroic numbers as the renderer and the laser tracer read them (part 4b); all 0 when
+    /// it isn't dichroic.
+    pub fn dichroic(&self) -> bpe_gfx::dichroic::Dichroic {
+        let d = bpe_gfx::dichroic::Dichroic::of(self.gpu(SurfaceGpu::BALL).g);
+        if d.on() { d } else { bpe_gfx::dichroic::Dichroic::default() }
     }
 
     /// What it throws back of each channel of the lamp light meeting it (glass and light part 4a),
@@ -679,6 +717,8 @@ impl Stamps {
 pub struct Glass {
     pub index: f32,
     pub rainbow: f32,
+    /// How it splits light like dichroic glass (part 4b; amount 0 when it doesn't).
+    pub dichroic: bpe_gfx::dichroic::Dichroic,
 }
 
 /// Whether a Look card's Surface is glass a laser bends through (part 4's tracer answers
@@ -689,8 +729,11 @@ pub fn glass_of(look: &ResolvedSlot) -> Option<Glass> {
     }
     let s = of_card(look);
     let rainbow = if s.rainbow.is_finite() { s.rainbow.max(0.0) } else { 0.0 };
-    (s.see_through >= 0.5 && s.bends_light > 1.0 && s.bends_light.is_finite())
-        .then_some(Glass { index: s.bends_light, rainbow })
+    (s.see_through >= 0.5 && s.bends_light > 1.0 && s.bends_light.is_finite()).then_some(Glass {
+        index: s.bends_light,
+        rainbow,
+        dichroic: s.dichroic(),
+    })
 }
 
 #[cfg(test)]
@@ -719,7 +762,8 @@ mod tests {
     fn presets_set_every_number_but_the_ways_and_the_whole_things_own() {
         let keys: Vec<&str> = preset_values(SurfaceKind::Glass).into_iter().map(|(k, _)| k).collect();
         for d in SurfaceSettings::defs() {
-            let left_alone = ["surface", "reflects", "brush_lines", "brush_angle"].contains(&d.key)
+            let left_alone = ["surface", "reflects", "brush_lines", "brush_angle", "dichroic_shift", "dichroic_hue"]
+                .contains(&d.key)
                 || WHOLE_THING_ONLY.contains(&d.key);
             assert_eq!(keys.contains(&d.key), !left_alone, "{}", d.key);
         }
@@ -802,7 +846,7 @@ mod tests {
         for (k, v) in preset_values(SurfaceKind::Glass) {
             card.params.set(k, v);
         }
-        assert_eq!(glass_of(&look(&scene)), Some(Glass { index: 1.5, rainbow: 0.3 }));
+        assert_eq!(glass_of(&look(&scene)), Some(Glass { index: 1.5, rainbow: 0.3, dichroic: Default::default() }));
         let s = of_card(&look(&scene));
         assert_eq!(stamp(3, &s), 3.0 + SurfaceGpu::GLASS_FLAG);
         assert_eq!(stamp(3, &SurfaceSettings::default()), 3.0);

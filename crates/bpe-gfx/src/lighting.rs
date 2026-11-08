@@ -47,10 +47,34 @@ struct Uniform {
     /// The bake's traced bounce: Bounce light, 1 on a Stage (see `fs_seed`), 1 when light through
     /// glass takes its colour, 1 when the tint picture was drawn (glass and light part 1).
     trace: [f32; 4],
-    /// Glass and light part 3: 1 when glass bends lamp light (the photon pass runs), three spare.
+    /// Glass and light part 3: 1 when glass bends lamp light (the photon pass runs); part 4b: how
+    /// many entries `dichroic` has; two spare.
     bent: [f32; 4],
     /// Which surface indices are glass that bends lamp light ([`bent_light::bend_bits`]).
     bends: [[u32; 4]; 16],
+    /// Glass and light part 4b: the surfaces that are dichroic, [index, Dichroic, shift, hue]
+    /// ([`dichroic_list`]), for the shadows' march (whose passes don't see the surface table).
+    dichroic: [[f32; 4]; MOST_DICHROIC],
+}
+
+/// The most dichroic surfaces the shadows tint by (glass and light part 4b).
+pub const MOST_DICHROIC: usize = 16;
+
+/// The first [`MOST_DICHROIC`] dichroic surfaces of `surfaces` as `[index, Dichroic, shift, hue]`,
+/// and how many.
+pub fn dichroic_list(surfaces: &[SurfaceGpu]) -> ([[f32; 4]; MOST_DICHROIC], usize) {
+    let mut out = [[0.0; 4]; MOST_DICHROIC];
+    let mut n = 0;
+    for (i, s) in surfaces.iter().enumerate() {
+        if n == MOST_DICHROIC {
+            break;
+        }
+        if s.g[0] > 0.0 && s.g.iter().take(3).all(|v| v.is_finite()) {
+            out[n] = [i as f32, s.g[0].min(1.0), s.g[1], s.g[2]];
+            n += 1;
+        }
+    }
+    (out, n)
 }
 
 /// What the surfaces and the stage read (see `Stage` in lighting.wgsl, part 2a).
@@ -114,7 +138,8 @@ pub fn caustic_glass(scene: &LightScene) -> Vec<CausticGlass> {
             }
             if glass_on && see >= 0.05 && ior > 1.0001 {
                 let top = sp.b[0].max(sp.b[1]).max(sp.b[2]).max(1e-3);
-                let tint = [0, 1, 2].map(|k| (sp.b[k] / top).clamp(0.0, 1.0));
+                let through = crate::dichroic::Dichroic::of(sf.g).through(crate::dichroic::SPHERE_COS);
+                let tint = [0, 1, 2].map(|k| (sp.b[k] / top).clamp(0.0, 1.0) * through[k]);
                 return Some(CausticGlass {
                     a: [sp.a[0], sp.a[1], sp.a[2], see.min(1.0)],
                     b: [tint[0], tint[1], tint[2], ior],
@@ -124,13 +149,48 @@ pub fn caustic_glass(scene: &LightScene) -> Vec<CausticGlass> {
             let t = scene.throwers.iter().find(|t| t.ball && t.index as usize == index).filter(|_| mirrors_on)?;
             let turn = if sp.c[2].is_finite() { sp.c[2] } else { 0.0 };
             let finite = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+            let back = crate::dichroic::Dichroic::of(sf.g).back(crate::dichroic::SPHERE_COS);
             Some(CausticGlass {
                 a: [sp.a[0], sp.a[1], sp.a[2], finite(t.gaps).min(1.0)],
-                b: [finite(t.colour[0]), finite(t.colour[1]), finite(t.colour[2]), turn],
+                b: [finite(t.colour[0]) * back[0], finite(t.colour[1]) * back[1], finite(t.colour[2]) * back[2], turn],
                 c: [0.0, 0.0, 1.0, finite(t.facets)],
             })
         })
         .collect()
+}
+
+/// The Lighting card's rainbow numbers made safe to draw with (glass and light part 4b): none
+/// when Rainbow isn't above 0 or isn't a number, the size at least 1.
+fn rainbow_of(r: &[f32; 4]) -> [f32; 4] {
+    let ok = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+    if !(r[0] > 0.0 && r[0].is_finite()) {
+        return [0.0; 4];
+    }
+    [r[0], ok(r[1]).max(1.0), ok(r[2]), ok(r[3]).min(1.0)]
+}
+
+/// Where the rainbow's middle is (world): where the Lighting card puts it, or opposite the
+/// brightest sun (1.3 bow sizes from `middle`, the camera's, along the way its light goes;
+/// straight down with no sun).
+pub fn rainbow_centre(scene: &LightScene, middle: [f32; 2]) -> [f32; 2] {
+    let s = &scene.settings;
+    if s.rainbow_at[2] > 0.5 && s.rainbow_at[0].is_finite() && s.rainbow_at[1].is_finite() {
+        return [s.rainbow_at[0], s.rainbow_at[1]];
+    }
+    let size = if s.rainbow[1].is_finite() { s.rainbow[1].max(1.0) } else { 1.0 };
+    let mut way = [0.0f32, 1.0];
+    let mut best = 0.0f32;
+    for l in &scene.lights {
+        if l.p0[3] > 1.5 && l.p0[3] < 2.5 {
+            let bright = l.p1[0].max(l.p1[1]).max(l.p1[2]);
+            let len = l.p3[0].hypot(l.p3[1]);
+            if bright > best && len > 1e-6 && len.is_finite() {
+                best = bright;
+                way = [l.p3[0] / len, l.p3[1] / len];
+            }
+        }
+    }
+    [middle[0] + way[0] * 1.3 * size, middle[1] + way[1] * 1.3 * size]
 }
 
 /// How many photons each (light, glass ball) pair sends at a Quality (4: the bake, a sample),
@@ -252,6 +312,10 @@ struct GlowUniform {
     memory_step: [f32; 4],
     last_camera: [f32; 4],
     more_on: [f32; 4],
+    /// Glass and light part 4b: Rainbow, size, Second bow, Dark band.
+    rainbow: [f32; 4],
+    /// The bow's middle (world xy), 1 when it shows in rain (the tags picture's B), spare.
+    rainbow_at: [f32; 4],
 }
 
 /// Which pictures each pass's group 1 binds (besides its uniform), so no pass binds more than
@@ -1277,6 +1341,7 @@ impl Lighting {
         let camera = frame.camera;
         let pixel = frame.width as f32 / output_width.max(1) as f32;
         let world_pixel = if camera.zoom == 1.0 { pixel } else { pixel / camera.zoom };
+        let (dichroic, dichroic_count) = dichroic_list(&scene.surfaces);
         let base = Uniform {
             view: [2.0 / frame.width.max(1) as f32, 2.0 / frame.height.max(1) as f32, world_pixel, frame.time],
             camera: [camera.center.x, camera.center.y, camera.zoom, camera.turn],
@@ -1294,8 +1359,9 @@ impl Lighting {
                 if tinted { 1.0 } else { 0.0 },
             ],
             // Only glass that bends changes the direct light (mirrors add light, part 4a).
-            bent: [if plan.bending() { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
+            bent: [if plan.bending() { 1.0 } else { 0.0 }, dichroic_count as f32, 0.0, 0.0],
             bends: if plan.bending() { bent_light::bend_bits(&plan.benders) } else { [[0; 4]; 16] },
+            dichroic,
         };
         // The jump flood's steps: from half the field's size down to one, then one again.
         let mut jumps = Vec::new();
@@ -1437,6 +1503,11 @@ impl Lighting {
                 f32::from(u8::from(extras_on)),
                 f32::from(u8::from(haze_moves)),
             ],
+            rainbow: rainbow_of(&s.rainbow),
+            rainbow_at: {
+                let [x, y] = rainbow_centre(scene, [frame.camera.center.x, frame.camera.center.y]);
+                [x, y, f32::from(u8::from(scene.rainbows_in_rain() && tags_on)), 0.0]
+            },
         };
         let base_glow = self.glow_uniform(device, 0);
         queue.write_buffer(&base_glow, 0, bytemuck::bytes_of(&glow_base));
@@ -1957,6 +2028,41 @@ mod grid_tests {
         };
         assert_eq!(value(tint, "THICK"), value(lighting, "THICK_DEPTH"));
         assert_eq!(value(tint, "TINT_PASS"), crate::TINT_PASS as f32);
+    }
+
+    #[test]
+    fn the_rainbow_sits_opposite_the_brightest_sun_or_where_it_is_put() {
+        let mut scene = LightScene::default();
+        scene.settings.rainbow = [1.0, 500.0, 0.4, 0.5];
+        // No sun: straight down from the middle.
+        assert_eq!(rainbow_centre(&scene, [10.0, 20.0]), [10.0, 20.0 + 650.0]);
+        let sun = |bright: f32, way: [f32; 2]| LightGpu {
+            p0: [0.0, 0.0, 0.0, 2.0],
+            p1: [bright, bright, bright, 0.0],
+            p3: [way[0], way[1], 0.0, 0.0],
+            ..LightGpu::default()
+        };
+        scene.lights = vec![sun(0.5, [0.0, -1.0]), sun(2.0, [3.0, 4.0])];
+        let c = rainbow_centre(&scene, [0.0, 0.0]);
+        assert!((c[0] - 390.0).abs() < 1e-3 && (c[1] - 520.0).abs() < 1e-3, "{c:?}");
+        scene.settings.rainbow_at = [-100.0, 50.0, 1.0, 0.0];
+        assert_eq!(rainbow_centre(&scene, [0.0, 0.0]), [-100.0, 50.0]);
+        assert_eq!(rainbow_of(&[0.0, 500.0, 0.4, 0.5]), [0.0; 4], "Rainbow 0 draws none");
+        assert_eq!(rainbow_of(&[f32::NAN, 500.0, 0.4, 0.5]), [0.0; 4]);
+        assert_eq!(rainbow_of(&[1.0, 0.0, 2.0, -1.0]), [1.0, 1.0, 2.0, 0.0]);
+    }
+
+    #[test]
+    fn dichroic_surfaces_are_listed_for_the_shadows() {
+        let mut plain = SurfaceGpu::MATTE;
+        let (_, n) = dichroic_list(&[plain; 3]);
+        assert_eq!(n, 0);
+        plain.g = [0.6, 0.25, 0.5, 0.0];
+        let (list, n) = dichroic_list(&[SurfaceGpu::MATTE, SurfaceGpu::MATTE, plain]);
+        assert_eq!(n, 1);
+        assert_eq!(list[0], [2.0, 0.6, 0.25, 0.5]);
+        let (_, n) = dichroic_list(&vec![plain; 40]);
+        assert_eq!(n, MOST_DICHROIC);
     }
 
     #[test]

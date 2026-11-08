@@ -46,10 +46,13 @@ struct Lighting {
     // takes their colour, 1 when the tint picture was drawn (glass and light part 1: the field
     // pass then reads it in `picture`'s place).
     trace: vec4<f32>,
-    // Glass and light part 3: 1 when glass bends lamp light (the photon pass runs), three spare.
+    // Glass and light part 3: 1 when glass bends lamp light (the photon pass runs); part 4b: y how
+    // many entries `dichroic` has; two spare.
     bent: vec4<f32>,
     // Which surface indices are glass that bends lamp light: bit i of word i / 32 (2048 bits).
     bends: array<vec4<u32>, 16>,
+    // Glass and light part 4b: dichroic surfaces, [index, Dichroic, shift, hue] (for the shadows).
+    dichroic: array<vec4<f32>, 16>,
 };
 
 struct LightGpu {
@@ -691,6 +694,41 @@ fn confirm(p: vec2<f32>, toward: vec2<f32>, open: f32, t_in: f32, end: f32) -> v
     return vec2<f32>(0.0, max(t, t_in));
 }
 
+// Glass and light part 4b: what a dichroic see-through blocker the ray going `toward` enters at
+// `q` lets through, per channel (its hue at the angle it meets it, the field's slope its normal);
+// 1 where the surface there isn't dichroic or no surface is.
+fn dichroic_entering(q: vec2<f32>, toward: vec2<f32>) -> vec3<f32> {
+    let n_list = i32(u.bent.y);
+    if n_list <= 0 {
+        return vec3<f32>(1.0);
+    }
+    let ip = pixel_of(q);
+    if ip.x < 0 {
+        return vec3<f32>(1.0);
+    }
+    let code = surface_code(textureLoad(surface, ip, 0));
+    if code < 0.5 || code >= 2047.5 {
+        return vec3<f32>(1.0);
+    }
+    var g = vec4<f32>(0.0);
+    for (var i = 0; i < min(n_list, 16); i++) {
+        if abs(u.dichroic[i].x - code) < 0.5 {
+            g = vec4<f32>(u.dichroic[i].yzw, 0.0);
+            break;
+        }
+    }
+    if g.x <= 0.0 {
+        return vec3<f32>(1.0);
+    }
+    let e = max(u.field.z, u.view.z);
+    let slope = vec2<f32>(
+        field_at(q + vec2<f32>(e, 0.0)) - field_at(q - vec2<f32>(e, 0.0)),
+        field_at(q + vec2<f32>(0.0, e)) - field_at(q - vec2<f32>(0.0, e)),
+    );
+    let cos_t = select(1.0, abs(dot(normalize(slope), toward)), length(slope) > 1e-6);
+    return dichroic_through(g, cos_t);
+}
+
 // `visibility` for one ray. `across`: one of the rays across the lamp, which stops as soon as it
 // crosses a solid blocker (only whether it did, how clear it stayed and what the see-through ones
 // let through count). A see-through blocker (its pixels blocking less than SOLID) is walked
@@ -746,6 +784,8 @@ fn march(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, s
     // colour it tints the light (the deepest the field says on the way through).
     var glass = -1.0;
     var col = vec3<f32>(1.0);
+    // What a dichroic one lets through (part 4b), found where the ray went in.
+    var dich = vec3<f32>(1.0);
     // Just past a stretch only the field's coarseness blocked, how near the ray is to that
     // blocker means nothing (the field can't tell within a texel): it counts from a texel away.
     var beside = false;
@@ -780,9 +820,10 @@ fn march(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, s
                     continue;
                 }
                 // Out of it: it lets through what it doesn't block, in its colour.
-                lit *= (1.0 - glass) * col;
+                lit *= (1.0 - glass) * col * dich;
                 glass = -1.0;
                 col = vec3<f32>(1.0);
+                dich = vec3<f32>(1.0);
                 open = t;
                 beside = true;
             } else {
@@ -805,6 +846,7 @@ fn march(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, s
                 crossed = true;
                 glass = 0.0;
                 col = colour_of(fd.yzw);
+                dich = dichroic_entering(q, toward);
                 t += 0.5 * px;
                 continue;
             }
@@ -833,6 +875,7 @@ fn march(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, s
             } else {
                 glass = b;
                 col = colour_of(field_all(p + toward * c.y).yzw);
+                dich = dichroic_entering(p + toward * c.y, toward);
                 t = c.y + 0.5 * px;
                 continue;
             }
@@ -860,7 +903,7 @@ fn march(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, s
     }
     if glass >= 0.0 {
         // It ran out of steps inside one: what it blocks still counts.
-        lit *= (1.0 - min(glass, 1.0)) * col;
+        lit *= (1.0 - min(glass, 1.0)) * col * dich;
     }
     return Ray(v, clear, crossed, cross_at, lit, e);
 }
@@ -1003,6 +1046,11 @@ struct Glow {
     // 1 with a UV picture, 1 with a tags picture, 1 with the extras picture (moving haze or
     // memory), 1 when the haze moves.
     more_on: vec4<f32>,
+    // Glass and light part 4b: Rainbow (0 none), its size (world: the 42° bow's radius), Second
+    // bow, Dark band.
+    rainbow: vec4<f32>,
+    // The bow's middle (world xy), 1 when rain shows it (the tags picture's B), spare.
+    rainbow_at: vec4<f32>,
 };
 
 @group(1) @binding(0) var<uniform> gu: Glow;
@@ -1881,6 +1929,8 @@ struct SurfaceGpu {
     e: vec4<f32>,
     // Glass and light part 4a: throws light, facets (0 smooth), facet gaps, spare.
     f: vec4<f32>,
+    // Part 4b: Dichroic, Dichroic shift and Dichroic hue (in turns), Fire.
+    g: vec4<f32>,
 };
 
 struct SphereGpu {
@@ -2522,6 +2572,34 @@ fn film_colour(film: f32, nv: f32) -> vec3<f32> {
     return mix(vec3<f32>(1.0), irid * 1.6, clamp(film * 1.5, 0.0, 1.0));
 }
 
+// Glass and light part 4b, dichroic (dichroic.rs's twin): the hue light meeting a surface of
+// dichroic numbers `g` (SurfaceGpu.g: amount, shift and hue in turns) at `cos_t` (to its normal,
+// 1 straight on) takes.
+fn dichroic_hue(g: vec4<f32>, cos_t: f32) -> vec3<f32> {
+    let h = g.z + g.y * (1.0 - clamp(abs(cos_t), 0.0, 1.0));
+    return clamp(abs(fract(vec3<f32>(h) + vec3<f32>(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0) - 1.0, vec3<f32>(0.0),
+        vec3<f32>(1.0));
+}
+
+// What goes through a dichroic surface, per channel (exactly 1 when it isn't dichroic).
+fn dichroic_through(g: vec4<f32>, cos_t: f32) -> vec3<f32> {
+    let d = clamp(g.x, 0.0, 1.0);
+    if d <= 0.0 {
+        return vec3<f32>(1.0);
+    }
+    return mix(vec3<f32>(1.0), dichroic_hue(g, cos_t), d);
+}
+
+// The colour light bounced off a dichroic surface takes: the opposite hue at full strength
+// (exactly 1 when it isn't dichroic).
+fn dichroic_back(g: vec4<f32>, cos_t: f32, share: f32) -> vec3<f32> {
+    let d = clamp(g.x, 0.0, 1.0) * share;
+    if d <= 0.0 {
+        return vec3<f32>(1.0);
+    }
+    return mix(vec3<f32>(1.0), vec3<f32>(1.0) - dichroic_hue(g, cos_t), d);
+}
+
 // What a point takes from the lights and the room.
 struct Shaded {
     // Diffuse light (ambient, sky and lamps, with shadows).
@@ -2552,7 +2630,10 @@ fn shade(spot: Spot, p: vec2<f32>, sf: SurfaceGpu, base: vec3<f32>, here: f32, l
     let nv0 = max(dot(n, v), 0.0);
     // Part 2b's numbers: thin film, soak, flakes, brushing.
     let film = film_colour(max(sf.c.z, 0.0), nv0);
-    let f0 = mix(vec3<f32>(max(sf.b.x, 0.0)), clamp(base, vec3<f32>(0.0), vec3<f32>(1.0)), metal) * film;
+    // Part 4b: a dichroic surface's shine takes the hue opposite what goes through it.
+    let f0 = mix(vec3<f32>(max(sf.b.x, 0.0)), clamp(base, vec3<f32>(0.0), vec3<f32>(1.0)), metal) * film
+        * dichroic_back(sf.g, nv0, 1.0);
+    let fire = clamp(sf.g.w, 0.0, 1.0);
     let soak = clamp(sf.c.y, 0.0, 1.0);
     let flakes = clamp(sf.c.w, 0.0, 1.0);
     var flake_n = n;
@@ -2709,6 +2790,23 @@ fn shade(spot: Spot, p: vec2<f32>, sf: SurfaceGpu, base: vec3<f32>, here: f32, l
                     let ax = clamp(rough * rough + 0.5 * max(angular, 0.02), 0.002, 1.0);
                     let ay = min(ax * (1.0 + 6.0 * brush), 1.0);
                     sp = ggx_aniso(n, v, dir3, tangent, ax, ay, rough, f0) * lines;
+                } else if fire > 0.0 {
+                    // Part 4b, diamond fire: the highlight split into 3 to 7 colours, each bent a
+                    // little its own way across the light.
+                    let plain = ggx(n, v, dir3, rough, f0, angular);
+                    let across = cross(n, dir3);
+                    let t3 = select(vec3<f32>(1.0, 0.0, 0.0), normalize(across), dot(across, across) > 1e-8);
+                    let k = 3u + u32(round(4.0 * fire));
+                    var glints = vec3<f32>(0.0);
+                    var sum = vec3<f32>(0.0);
+                    for (var j = 0u; j < k; j++) {
+                        let w = (f32(j) + 0.5) / f32(k) * 2.0 - 1.0;
+                        let c = spectral(w);
+                        let nj = normalize(n + t3 * (w * 0.12 * fire));
+                        glints += c * ggx(nj, v, dir3, rough, f0, angular);
+                        sum += c;
+                    }
+                    sp = mix(plain, glints / max(sum, vec3<f32>(1e-4)) * (1.0 + 2.0 * fire), fire);
                 } else {
                     sp = ggx(n, v, dir3, rough, f0, angular);
                 }
@@ -2737,6 +2835,12 @@ fn shade(spot: Spot, p: vec2<f32>, sf: SurfaceGpu, base: vec3<f32>, here: f32, l
     }
     // Pearl: the film's colours in the light it takes too.
     out.diffuse *= mix(vec3<f32>(1.0), film, 0.35);
+    // Dichroic (part 4b): a sheen of the opposite hue that turns with the angle to the eye, and
+    // what comes through takes the hue.
+    if sf.g.x > 0.0 {
+        out.diffuse *= dichroic_back(sf.g, nv0, 0.35);
+        out.through *= dichroic_through(sf.g, nv0);
+    }
     // What a shiny surface mirrors: the sky, blurred by roughness, or the scene round it.
     if shiny && sf.b.z > 0.5 {
         let r = reflect(-v, n);
@@ -3174,7 +3278,8 @@ fn surfaced(ip: vec2<i32>, p: vec2<f32>, c: vec3<f32>, w: vec3<f32>, sf: Surface
         out.out = mixed(c, w, sh, sf, share, refracts);
         if refracts {
             let body = mixed(c, w, Shaded(sh.diffuse, vec3<f32>(0.0), sh.through, sh.soaked, sh.glow), sf, share, true);
-            let seen = transmitted(p, thing.n, h, sf, tint, turn);
+            // Part 4b: seen through dichroic glass, the picture behind takes its hue.
+            let seen = transmitted(p, thing.n, h, sf, tint * dichroic_through(sf.g, dot(thing.n, view_dir())), turn);
             out.out = body * (1.0 - see) + seen * see + sh.spec * share;
         }
         out.out *= grout;
@@ -3197,7 +3302,8 @@ fn surfaced(ip: vec2<i32>, p: vec2<f32>, c: vec3<f32>, w: vec3<f32>, sf: Surface
         on_thing = Surfaced(mixed(c, w, sh, sf, share, refracts), sh.diffuse);
         if refracts {
             let body = mixed(c, w, Shaded(sh.diffuse, vec3<f32>(0.0), sh.through, sh.soaked, sh.glow), sf, share, true);
-            let seen = transmitted(p, thing.n, h, sf, tint, turn);
+            // Part 4b: seen through dichroic glass, the picture behind takes its hue.
+            let seen = transmitted(p, thing.n, h, sf, tint * dichroic_through(sf.g, dot(thing.n, view_dir())), turn);
             on_thing.out = body * (1.0 - see) + seen * see + sh.spec * share;
         }
         on_thing.out *= grout;
@@ -3222,6 +3328,44 @@ fn surfaced(ip: vec2<i32>, p: vec2<f32>, c: vec3<f32>, w: vec3<f32>, sf: Surface
     out.out = mix(on_stage.out, on_thing.out, k);
     out.diffuse = mix(on_stage.diffuse, on_thing.diffuse, k);
     return out;
+}
+
+// How many wavelengths the rainbow is summed over.
+const BOW_COLOURS: i32 = 16;
+
+// The rainbow at world `p` (part 4b), per channel, before its strength and the light: the
+// primary bow (40.6° violet to 42.3° red), the sky glowing inside it, the secondary (50.4° red to
+// 53.6° violet, × Second bow × 0.43, a little wider) and Alexander's dark band between, each
+// wavelength coloured by `spectral` and the sum normalised by the colours (so where every
+// wavelength is the same it is white). θ is 42° × the distance to the centre / Rainbow size.
+fn rainbow_bow(p: vec2<f32>) -> vec3<f32> {
+    let size = max(gu.rainbow.y, 1.0);
+    let theta = 42.0 * length(p - gu.rainbow_at.xy) / size;
+    if theta > 75.0 {
+        return vec3<f32>(0.0);
+    }
+    let second = clamp(gu.rainbow.z, 0.0, 1.0) * 0.43;
+    let dark = clamp(gu.rainbow.w, 0.0, 1.0);
+    var sum = vec3<f32>(0.0);
+    var colours = vec3<f32>(0.0);
+    for (var k = 0; k < BOW_COLOURS; k++) {
+        let w = -1.0 + 2.0 * (f32(k) + 0.5) / f32(BOW_COLOURS);
+        let along = 0.5 * (w + 1.0);
+        let tp = 42.3 - 1.7 * along;
+        let ts = 50.4 + 3.2 * along;
+        let dp = (theta - tp) / 0.6;
+        let ds = (theta - ts) / 0.9;
+        let peak = exp(-0.5 * dp * dp) + second * exp(-0.5 * ds * ds);
+        let inside = smoothstep(tp + 0.6, tp - 0.6, theta);
+        let outside = smoothstep(ts - 0.9, ts + 0.9, theta);
+        let near = min(abs(theta - tp), abs(theta - ts));
+        let glow = 0.25 * exp(-near / 12.0)
+            * (inside + (1.0 - dark) * (1.0 - inside) * (1.0 - outside) + second * outside);
+        let c = spectral(w);
+        sum += c * (peak + glow);
+        colours += c;
+    }
+    return sum / max(colours, vec3<f32>(1e-6));
 }
 
 // The lit colour at pixel `ip` (screen point `uv`): everything fs_mix does for one pixel.
@@ -3299,6 +3443,23 @@ fn lit_at(ip: vec2<i32>, uv: vec2<f32>, turn: f32) -> vec4<f32> {
             // Smoke that catches beams glows its own colour by the light in the air.
             let smoke = max(textureLoad(tags, ip, 0).r, 0.0);
             out += air * smoke * max(c.rgb, vec3<f32>(0.0));
+        }
+    }
+    if gu.rainbow.x > 0.0 {
+        // Part 4b: a rainbow where something catches it, the haze or rain that makes rainbows,
+        // as bright as the light falling there.
+        var catches = 0.0;
+        if gu.on.z > 0.5 {
+            let thick = max(gu.air.r, max(gu.air.g, gu.air.b));
+            catches += clamp(thick * select(1.0, ex.a, gu.more_on.w > 0.5), 0.0, 1.0);
+        }
+        if gu.rainbow_at.z > 0.5 {
+            catches += max(textureLoad(tags, ip, 0).b, 0.0);
+        }
+        catches = min(catches, 1.0);
+        if catches > 0.0 {
+            let lamp = min(dot(max(direct.rgb + field, vec3<f32>(0.0)), vec3<f32>(0.2126, 0.7152, 0.0722)), 2.0);
+            out += rainbow_bow(p) * gu.rainbow.x * lamp * catches;
         }
     }
     if under > 0.0 && gu.water_colour.w != 0.0 {

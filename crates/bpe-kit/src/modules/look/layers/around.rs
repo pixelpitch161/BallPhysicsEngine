@@ -87,7 +87,9 @@ impl Drew {
 pub fn more_in(more: [f32; 4], cx: &bpe_gfx::DrawCx, light: Option<&mut bpe_gfx::LightScene>) -> Option<[f32; 4]> {
     let light = light?;
     light.uv |= more[0] > 0.0;
-    light.smoke |= more[2] > 0.0;
+    let (catches, makes) = bpe_gfx::tag_parts(more[2]);
+    light.smoke |= catches > 0.0;
+    light.rain |= makes > 0.0;
     let link = crate::things::light::links::number_of(cx.scene, cx.thing.id);
     Some([more[0], more[1], more[2], link])
 }
