@@ -43,8 +43,17 @@ pub const SUB_LEVEL: usize = 13;
 pub const OSC_LEN: usize = OSC_KEYS.len();
 
 /// The shape's own knobs, after both oscillators.
-pub const SHAPE_KEYS: [&str; 7] =
-    ["play_voices", "play_glide", "play_min_strength", "play_retrigger", "out_volume", "out_pan", "out_follow_hit"];
+pub const SHAPE_KEYS: [&str; 9] = [
+    "play_voices",
+    "play_glide",
+    "play_min_strength",
+    "play_retrigger",
+    "out_volume",
+    "out_pan",
+    "out_follow_hit",
+    "play_full_at",
+    "play_curve",
+];
 pub const VOICES: usize = 2 * OSC_LEN;
 pub const GLIDE: usize = VOICES + 1;
 pub const MIN_STRENGTH: usize = VOICES + 2;
@@ -52,6 +61,8 @@ pub const RETRIGGER: usize = VOICES + 3;
 pub const VOLUME: usize = VOICES + 4;
 pub const OUT_PAN: usize = VOICES + 5;
 pub const FOLLOW_HIT: usize = VOICES + 6;
+pub const STRENGTH_FULL_AT: usize = VOICES + 7;
+pub const STRENGTH_CURVE: usize = VOICES + 8;
 pub const SHAPE_LEN: usize = VOICES + SHAPE_KEYS.len();
 
 /// One envelope's knobs.
@@ -252,7 +263,7 @@ pub const fn chain(layer: usize, k: usize) -> usize {
 /// The knobs' values, by place.
 pub type Values = [f32; KNOBS];
 
-fn number(v: &Value) -> Option<f32> {
+pub(crate) fn number(v: &Value) -> Option<f32> {
     match v {
         Value::Number(x) => Some(*x as f32),
         Value::Int(i) => Some(*i as f32),

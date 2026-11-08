@@ -35,6 +35,7 @@ mod shape_handles;
 mod sound_job;
 mod sound_tab;
 mod style;
+mod thread_priority;
 mod timeline;
 mod transport;
 mod tree;

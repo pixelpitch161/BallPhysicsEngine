@@ -142,6 +142,17 @@ impl BusesSpec {
         });
         BusesSpec { buses }
     }
+
+    /// The shapes the buses' compressors key on by their hits.
+    pub fn hit_keys(&self) -> impl Iterator<Item = ThingId> + '_ {
+        self.buses.iter().flat_map(|b| b.chain.hit_keys())
+    }
+
+    /// How long the buses' effects ring on after a sound, in seconds: every bus's tail added (a
+    /// sound can go through each in turn by the sends).
+    pub fn tail(&self) -> f64 {
+        self.buses.iter().map(|b| b.chain.tail()).sum()
+    }
 }
 
 /// One bus while it plays.

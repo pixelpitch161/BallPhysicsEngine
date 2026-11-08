@@ -13,7 +13,7 @@ pub mod order;
 pub use distance::{DistanceMod, DistanceParams};
 pub use hit::{HitMod, HitValues, hit_values};
 pub use lfo::{LfoMod, LfoParams, lfo_rate_hz};
-pub use light::{LightMod, LightParams, light_value};
+pub use light::{LightMod, LightParams, LightTable, light_value};
 pub use order::mod_order;
 
 use crate::TempoMap;
@@ -33,6 +33,8 @@ pub struct ModCx<'a> {
     pub log: &'a Log,
     /// The scene's light probe, when the sound has a Light modulator and the scene a Lighting card.
     pub light: Option<&'a dyn LightAt>,
+    /// The light on the balls, worked out ahead for the world's step (read before the probe).
+    pub light_table: Option<&'a LightTable>,
 }
 
 /// A note starting (or, for a modulator shared by the whole shape, a hit on the shape).

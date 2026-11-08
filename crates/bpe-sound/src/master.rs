@@ -85,18 +85,23 @@ impl Master {
         self.limiter.gain_reduction_db()
     }
 
-    /// Runs one block in place.
+    /// Runs one block in place: Input, the limiter, Output, with the ceiling last. Output's cut
+    /// comes after the limiter (it lowers the finished sound); its boost goes in before it, so a
+    /// louder Output pushes into the limiter and never past the ceiling. (A peak limiter scales:
+    /// boosting then limiting at the ceiling is limiting lower then boosting.)
     pub fn process(&mut self, l: &mut [f32; BLOCK], r: &mut [f32; BLOCK]) {
-        for (a, b) in l.iter_mut().zip(r.iter_mut()) {
-            let g = self.input.next();
+        let mut cut = [1.0f32; BLOCK];
+        for ((a, b), c) in l.iter_mut().zip(r.iter_mut()).zip(cut.iter_mut()) {
+            let o = self.output.next();
+            let g = self.input.next() * o.max(1.0);
+            *c = o.min(1.0);
             *a *= g;
             *b *= g;
         }
         self.limiter.process(l, r);
-        for (a, b) in l.iter_mut().zip(r.iter_mut()) {
-            let g = self.output.next();
-            *a *= g;
-            *b *= g;
+        for ((a, b), c) in l.iter_mut().zip(r.iter_mut()).zip(cut) {
+            *a *= c;
+            *b *= c;
         }
     }
 }

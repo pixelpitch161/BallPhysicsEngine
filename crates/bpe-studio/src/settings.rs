@@ -119,18 +119,24 @@ pub fn save_sound_width_in(dir: &Path, w: f32) {
 
 const LISTEN: &str = "listening.txt";
 
-/// The editor's own listening: the speaker on or off and its volume. Only what you hear; the
-/// export is not changed.
+/// The editor's own listening: the speaker on or off, its volume and how late the speakers
+/// play (Bluetooth headphones), so the playhead waits for them. Only what you hear; the export
+/// is not changed.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ListenSettings {
     pub on: bool,
     /// 0..1.
     pub volume: f32,
+    /// 0..500 ms.
+    pub speaker_delay_ms: f32,
 }
+
+/// The most speaker delay that can be set, in milliseconds.
+pub const MAX_SPEAKER_DELAY_MS: f32 = 500.0;
 
 impl Default for ListenSettings {
     fn default() -> Self {
-        ListenSettings { on: true, volume: 0.8 }
+        ListenSettings { on: true, volume: 0.8, speaker_delay_ms: 0.0 }
     }
 }
 
@@ -138,7 +144,8 @@ pub fn load_listen() -> ListenSettings {
     settings_dir().map_or_else(ListenSettings::default, |d| load_listen_in(&d))
 }
 
-/// The saved listening settings in `dir` (`on 0.8` or `off 0.5`), or the defaults.
+/// The saved listening settings in `dir` (`on 0.8 120`: on or off, the volume and the speaker
+/// delay in ms, which older files leave out), or the defaults.
 pub fn load_listen_in(dir: &Path) -> ListenSettings {
     let text = std::fs::read_to_string(dir.join(LISTEN)).unwrap_or_default();
     let mut words = text.split_whitespace();
@@ -147,8 +154,10 @@ pub fn load_listen_in(dir: &Path) -> ListenSettings {
         Some("off") => false,
         _ => return ListenSettings::default(),
     };
-    let volume = words.next().and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite());
-    ListenSettings { on, volume: volume.map_or(ListenSettings::default().volume, |v| v.clamp(0.0, 1.0)) }
+    let mut number = || words.next().and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite());
+    let volume = number().map_or(ListenSettings::default().volume, |v| v.clamp(0.0, 1.0));
+    let speaker_delay_ms = number().map_or(0.0, |v| v.clamp(0.0, MAX_SPEAKER_DELAY_MS));
+    ListenSettings { on, volume, speaker_delay_ms }
 }
 
 pub fn save_listen(listen: ListenSettings) {
@@ -160,7 +169,7 @@ pub fn save_listen(listen: ListenSettings) {
 pub fn save_listen_in(dir: &Path, listen: ListenSettings) {
     let _ = std::fs::create_dir_all(dir);
     let word = if listen.on { "on" } else { "off" };
-    let _ = std::fs::write(dir.join(LISTEN), format!("{word} {:.3}", listen.volume));
+    let _ = std::fs::write(dir.join(LISTEN), format!("{word} {:.3} {:.0}", listen.volume, listen.speaker_delay_ms));
 }
 
 const BOTTOM_VIEW: &str = "bottom-view.txt";
@@ -223,9 +232,13 @@ mod tests {
     fn listening_settings_round_trip_and_default_to_on_at_80_percent() {
         let dir = std::env::temp_dir().join(format!("ball-studio-listen-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(load_listen_in(&dir), ListenSettings { on: true, volume: 0.8 });
-        save_listen_in(&dir, ListenSettings { on: false, volume: 0.25 });
-        assert_eq!(load_listen_in(&dir), ListenSettings { on: false, volume: 0.25 });
+        assert_eq!(load_listen_in(&dir), ListenSettings { on: true, volume: 0.8, speaker_delay_ms: 0.0 });
+        let set = ListenSettings { on: false, volume: 0.25, speaker_delay_ms: 180.0 };
+        save_listen_in(&dir, set);
+        assert_eq!(load_listen_in(&dir), set);
+        // A file from before the speaker delay still loads.
+        std::fs::write(dir.join(LISTEN), "on 0.5").unwrap();
+        assert_eq!(load_listen_in(&dir), ListenSettings { on: true, volume: 0.5, speaker_delay_ms: 0.0 });
         let _ = std::fs::remove_dir_all(&dir);
     }
 

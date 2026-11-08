@@ -10,7 +10,7 @@ use crate::voices::knobs;
 use crate::voices::shape::{DistSpec, EnvSpec, HitSpec, LfoSpec, LightSpec, ModsSpec, OscSpec, Probe, ShapeSpec};
 use crate::voices::slots::NotesSpec;
 use crate::{ShapeVoice, TempoMap, VoiceSource};
-use bpe_core::{Address, LayerId, Resolved, ResolvedSlot, Scene, Settings, SlotId, ThingId};
+use bpe_core::{Address, LayerId, Resolved, ResolvedSlot, Scene, Settings, SlotId, ThingId, Value};
 use bpe_dsp::{TableSet, WarpModeId, WaveBank, WaveShape};
 use bpe_kit::sound::{
     ADSR, AdsrSettings, CHAIN_KINDS, ChainEqSettings, DISTANCE, DistanceSettings, DistortionSettings, EQ, FILTER,
@@ -34,6 +34,8 @@ pub struct SoundPatch {
     /// Some wavetable was still baking ([`Tables::Ready`]): those oscillators are silent until
     /// the patch is built again.
     pub pending: bool,
+    /// Where the clip ends (the scene's Duration), for the Master's End fade.
+    pub end: f64,
 }
 
 /// How a patch gets its wavetables.
@@ -376,6 +378,54 @@ fn chain_of(scene: &Scene, id: ThingId, card: &ResolvedSlot, heard: [bool; 2]) -
     (graph, chain)
 }
 
+/// The scene settings a patch reads (the tempo, the width the pans spread over, where the clip
+/// ends for the end fade).
+pub const PATCH_SCENE_KEYS: [&str; 6] = ["tempo", "time_top", "time_bottom", "first_beat", "width", "duration"];
+
+/// A hash of everything [`SoundPatch::build`] reads of the scene and nothing else, so the editor
+/// builds the patch again only when the sound could have changed (not on a colour drag). The
+/// hash is the process's own: never saved.
+pub fn patch_fingerprint(scene: &Scene, resolved: &Resolved) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut put = |what: &dyn std::fmt::Debug| format!("{what:?}").hash(&mut h);
+    let root = resolved.things.get(&ThingId::ROOT);
+    for key in PATCH_SCENE_KEYS {
+        put(&root.and_then(|r| r.params.get(key)));
+    }
+    put(&root.and_then(|r| r.slots.get(&SlotId::Mixer)));
+    put(&scene.card(ThingId::ROOT, SlotId::Mixer));
+    for id in &scene.order {
+        let Some(thing) = scene.things.get(id) else { continue };
+        let card = resolved.things.get(id).and_then(|r| r.slots.get(&SlotId::Sound));
+        let own = thing.slots.get(&SlotId::Sound);
+        // A test tone comes from a tag (the `test-tone` feature).
+        let tones = thing.tags.iter().any(|t| t.starts_with("test-"));
+        if card.is_none() && own.is_none() && !tones {
+            continue;
+        }
+        put(&(id, &thing.kind, thing.enabled, &thing.tags));
+        put(&card);
+        put(&own);
+        // By side reads the shape's outline.
+        if card.is_some_and(|c| matches!(c.params.get("notes_plays"), Some(Value::Choice(p)) if p == "by_side")) {
+            put(&resolved.things.get(id).map(|r| &r.params));
+        }
+    }
+    let sounds = |slot: Option<SlotId>| matches!(slot, Some(SlotId::Sound | SlotId::Mixer));
+    for (a, t) in scene.tracks.iter().filter(|(a, _)| sounds(a.slot)) {
+        put(&(a, t));
+    }
+    for (a, p) in scene.pulses.iter().filter(|(a, _)| sounds(a.slot)) {
+        put(&(a, p));
+    }
+    // Light modulators read the lights through the probe.
+    if bpe_kit::sensing::uses_light(scene) {
+        put(&(bpe_kit::sensing::has_lighting(scene), bpe_kit::sensing::fingerprint(scene)));
+    }
+    h.finish()
+}
+
 impl SoundPatch {
     /// The patch, its wavetables baked if need be.
     pub fn build(scene: &Scene, resolved: &Resolved, kit: &Kit) -> SoundPatch {
@@ -432,11 +482,47 @@ impl SoundPatch {
                 routes.push(ShapeRoute::main_only(bus));
             }
         }
-        SoundPatch { master, master_keys, tempo, voices, routes, buses, pending }
+        SoundPatch { master, master_keys, tempo, voices, routes, buses, pending, end: settings.duration as f64 }
     }
 
     /// Whether anything in it makes sound.
     pub fn is_silent(&self) -> bool {
         self.voices.is_empty()
     }
+
+    /// The things whose hits it can hear, sorted: every voice's thing and every shape a bus
+    /// compressor keys on. The engine queues only their hits.
+    pub fn heard(&self) -> Vec<ThingId> {
+        let mut out: Vec<ThingId> = self.voices.iter().map(|v| v.thing()).chain(self.buses.hit_keys()).collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// How long a seek renders unheard before the point it lands on, in seconds, so every note
+    /// and effect tail that would still be ringing there is: the longest voice's note and the
+    /// buses' effects after it, plus a margin, from [`MIN_WARM_UP`] to [`MAX_WARM_UP`].
+    pub fn warm_up(&self) -> f64 {
+        let voices = self.voices.iter().map(|v| v.warm_up(&self.tempo)).fold(0.0, f64::max);
+        let held = self.voices.iter().any(|v| v.holds());
+        warm_up_of(voices, self.buses.tail(), held)
+    }
+}
+
+/// The least a seek warms up, in seconds.
+pub const MIN_WARM_UP: f64 = 0.5;
+/// The least for a sound that holds notes (a drone, or a gate held until the next hit), whose
+/// notes can have started any time before.
+pub const HELD_WARM_UP: f64 = 4.0;
+/// The most a seek warms up, however long the tails (a frozen reverb never ends).
+pub const MAX_WARM_UP: f64 = 30.0;
+/// Added to the longest tail.
+const WARM_UP_MARGIN: f64 = 0.25;
+
+/// The warm-up for voices whose longest note lasts `voices` seconds into buses ringing `buses`
+/// seconds after it; `held` when a voice holds notes.
+pub fn warm_up_of(voices: f64, buses: f64, held: bool) -> f64 {
+    let floor = if held { HELD_WARM_UP } else { MIN_WARM_UP };
+    let tail = voices + buses + WARM_UP_MARGIN;
+    if tail.is_nan() { MAX_WARM_UP } else { tail.clamp(floor, MAX_WARM_UP) }
 }

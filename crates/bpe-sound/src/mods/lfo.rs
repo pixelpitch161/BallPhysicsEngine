@@ -44,6 +44,12 @@ pub fn lfo_rate_hz(s: &LfoSettings, rate_hz: f64, tempo: &TempoMap) -> f64 {
     if seconds > 0.0 { 1.0 / seconds } else { 0.0 }
 }
 
+/// Where a free-running LFO's cycles count from, in seconds: a synced one lines up with the
+/// scene's first beat, one in Hz with the start of the clip.
+pub fn lfo_origin(s: &LfoSettings, tempo: &TempoMap) -> f64 {
+    if s.sync { tempo.first() } else { 0.0 }
+}
+
 /// An LFO's settings for one block.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LfoParams {
@@ -60,6 +66,8 @@ pub struct LfoParams {
     /// 0..1: how much its corners are rounded.
     pub smooth: f32,
     pub start: LfoStart,
+    /// Where its cycles count from when it runs free, in seconds ([`lfo_origin`]).
+    pub origin: f64,
 }
 
 impl Default for LfoParams {
@@ -74,6 +82,7 @@ impl Default for LfoParams {
             delay: 0.0,
             smooth: 0.0,
             start: LfoStart::Free,
+            origin: 0.0,
         }
     }
 }
@@ -92,6 +101,7 @@ impl LfoParams {
             delay: s.delay as f64,
             smooth: (s.smooth / 100.0).clamp(0.0, 1.0),
             start: s.start,
+            origin: 0.0,
         }
     }
 }
@@ -102,6 +112,9 @@ impl LfoParams {
 pub fn lfo_value(p: &LfoParams, cycles: f64, since: f64, seed: u64) -> f32 {
     let v = if p.once && cycles >= 1.0 {
         wave_end(p.wave, &p.curve, p.phase, seed)
+    } else if p.once && cycles < 0.0 {
+        // Played once from the first beat: it waits at its start until then.
+        wave_at(p.wave, &p.curve, p.phase, seed)
     } else {
         wave_at(p.wave, &p.curve, cycles + p.phase, seed)
     };
@@ -144,7 +157,7 @@ impl LfoMod {
     /// The settings for the next block (rate in Hz as the knob is now, or `rate_hz` when the
     /// rate is in Hz; synced rates come from `tempo`).
     pub fn set(&mut self, s: &LfoSettings, tempo: &TempoMap, rate_hz: f64) {
-        self.p = LfoParams::of(s, lfo_rate_hz(s, rate_hz, tempo));
+        self.p = LfoParams { origin: lfo_origin(s, tempo), ..LfoParams::of(s, lfo_rate_hz(s, rate_hz, tempo)) };
     }
 
     /// A new random seed (a per-note LFO takes one from its note).
@@ -188,10 +201,10 @@ impl Modulator for LfoMod {
             self.started = at.min(end);
             self.cycles = rate * (end - self.started) as f64 / SAMPLE_RATE as f64;
         } else if fresh {
-            // Free runs from the start of the clip: work the phase out from the time, so a seek
-            // lands where playing through would have.
+            // Free runs from the start of the clip (a synced one from the first beat): work the
+            // phase out from the time, so a seek lands where playing through would have.
             self.started = 0;
-            self.cycles = rate * end as f64 / SAMPLE_RATE as f64;
+            self.cycles = rate * end as f64 / SAMPLE_RATE as f64 - rate * self.p.origin;
         } else {
             self.cycles += rate * BLOCK_S;
         }

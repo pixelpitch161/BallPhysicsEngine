@@ -259,7 +259,7 @@ mod tests {
         assert_eq!((s.tempo, s.time_top, s.time_bottom), (120.0, 4, things::scene::TimeBottom::Four));
         assert_eq!(things::scene::TimeBottom::Eight.beats(), 8);
         let defs = SceneSettings::defs();
-        for key in ["tempo", "time_top", "time_bottom"] {
+        for key in ["tempo", "time_top", "time_bottom", "first_beat"] {
             let d = defs.iter().find(|d| d.key == key).unwrap();
             assert_eq!(d.group, "Sound", "{key}");
             assert!(!d.flags.keyframe, "{key} is not keyframed");
@@ -276,6 +276,7 @@ mod tests {
         root.params.set("tempo", Value::Number(93.5));
         root.params.set("time_top", Value::Int(7));
         root.params.set("time_bottom", Value::Choice("8".into()));
+        root.params.set("first_beat", Value::Number(0.4));
         let resolved = resolve(&scene, &kit.registry);
         assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
         assert_eq!(SceneSettings::from_params(&resolved.things[&ThingId::ROOT].params).tempo, 93.5);

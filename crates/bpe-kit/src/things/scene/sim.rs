@@ -23,6 +23,7 @@ impl ThingSim for SceneSim {
         world.video = glam::Vec2::new(s.width.max(1) as f32, s.height.max(1) as f32);
         let (beat, per_bar) = crate::things::rig::pattern::beat_seconds(&s);
         (world.beat_seconds, world.beats_in_bar) = (beat, per_bar);
+        world.first_beat = super::first_beat_seconds(s.first_beat);
         if let Some(spec) = crate::modules::air::spec_of(resolved) {
             world.states.insert(ThingId::ROOT, Box::new(crate::air::Air::new(spec)));
         }
@@ -45,7 +46,7 @@ impl ThingSim for SceneSim {
 
     /// Particles born or pushed on the beat read the tempo.
     fn affects_beside(&self, key: &str) -> bool {
-        matches!(key, "tempo" | "time_top" | "time_bottom")
+        matches!(key, "tempo" | "time_top" | "time_bottom" | "first_beat")
     }
 }
 
@@ -55,18 +56,20 @@ impl ThingSim for SceneSim {
 pub struct SceneBeat {
     pub beat: f64,
     pub per_bar: u32,
+    /// Where the first beat is, in seconds.
+    pub first: f64,
 }
 
 impl Default for SceneBeat {
-    /// 120 beats a minute, four in a bar.
+    /// 120 beats a minute, four in a bar, from 0 s.
     fn default() -> Self {
-        SceneBeat { beat: 0.5, per_bar: 4 }
+        SceneBeat { beat: 0.5, per_bar: 4, first: 0.0 }
     }
 }
 
 /// The scene's tempo in `world` (120 beats a minute, four in a bar, without a scene thing).
 pub fn beat_of(world: &World) -> SceneBeat {
-    SceneBeat { beat: world.beat_seconds, per_bar: world.beats_in_bar }
+    SceneBeat { beat: world.beat_seconds, per_bar: world.beats_in_bar, first: world.first_beat }
 }
 
 #[cfg(test)]

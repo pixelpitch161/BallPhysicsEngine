@@ -74,7 +74,7 @@ pub fn heard_fingerprint(scene: &Scene) -> u64 {
         }
     };
     if let Some(root) = scene.things.get(&ThingId::ROOT) {
-        for key in ["tempo", "time_top", "time_bottom"] {
+        for key in ["tempo", "time_top", "time_bottom", "first_beat"] {
             put(&Address::own(ThingId::ROOT, key), &root.params.get(key));
         }
         if let Some(mixer) = root.slots.get(&SlotId::Mixer) {
@@ -361,7 +361,8 @@ impl Shape {
                     .and_then(|(_, tr)| k::track_value(tr, time))
                     .unwrap_or(self.spec.base[place])
             };
-            h.filter.set(knob(k::MIN_STRENGTH) / 100.0, knob(k::RETRIGGER) / 1000.0);
+            let curve = crate::voices::StrengthCurve::of_knobs(knob(k::STRENGTH_FULL_AT), knob(k::STRENGTH_CURVE));
+            h.filter.set(knob(k::MIN_STRENGTH) / 100.0, knob(k::RETRIGGER) / 1000.0, curve);
             let hit = BlockHit { offset: 0, event: e.clone() };
             // A rule's note (rules part 6) passes no filter: its velocity is its strength.
             let accepted = match e.kind {
@@ -525,7 +526,9 @@ impl Shape {
                 _ => 0,
             };
             let since = seconds(t.saturating_sub(started)) as f64;
-            out.lfo[i] = lfo_value(&p, p.rate_hz.max(0.0) * since, since, l.seed);
+            // Running free, the cycles count from its origin (the first beat when synced).
+            let from = if started == 0 { p.origin } else { 0.0 };
+            out.lfo[i] = lfo_value(&p, p.rate_hz.max(0.0) * (since - from), since, l.seed);
         }
         for (i, d) in m.dists.iter().enumerate().take(k::MAX_EACH) {
             if m.dist_per_note(i) {
@@ -595,11 +598,11 @@ impl Shape {
             }
             Src::Hit(i) => {
                 let hv = match &n.hit {
-                    // A rule's note's strength is its velocity, as the engine has it.
-                    Some(h) if h.event.kind == EventKind::Note => {
+                    // The strength the hit played at (a rule note's is its velocity), as the
+                    // engine has it.
+                    Some(h) => {
                         HitValues { strength: h.strength, ..hit_values(world, self.spec.thing, &h.event, h.seed) }
                     }
-                    Some(h) => hit_values(world, self.spec.thing, &h.event, h.seed),
                     None => HitValues { strength: 1.0, ..HitValues::default() },
                 };
                 let at = |key: usize| kv[k::hit(i, key)];

@@ -266,7 +266,7 @@ impl ExportWindow {
             ui.label(RichText::new("In the video, AAC 320 kbps").color(style::MUTED));
             ui.end_row();
             let label = ui.label("Also save stems").on_hover_text(
-                "One WAV per bus and one of the master (48 kHz, 24-bit), saved next to the video. The buses \
+                "One WAV per bus and one of the master (48 kHz, 32-bit float), saved next to the video. The buses \
                  add up to the mix before the master's limiter.",
             );
             style::switch(ui, &mut self.stems).labelled_by(label.id);

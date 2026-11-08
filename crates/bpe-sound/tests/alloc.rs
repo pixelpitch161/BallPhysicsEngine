@@ -2,7 +2,8 @@
 //! sees every thread.
 
 use bpe_core::{Settings, SlotId};
-use bpe_kit::sound::{SubWave, VoiceSettings, starter_voice};
+use bpe_kit::sound::{LIGHT_MOD, SubWave, VoiceSettings, add_modulator, starter_voice};
+use bpe_kit::things::light::{LightSettings, LightType, add_light};
 use bpe_kit::{kit, new_scene, resolve_scene};
 use bpe_sound::{BLOCK, Engine};
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -244,4 +245,47 @@ fn render_does_not_allocate() {
         heard |= block.iter().any(|&v| v != 0.0);
     }
     assert!(heard, "the buses were heard while counting");
+
+    // A lit scene with a shared Light modulator and one following each note's ball: the light
+    // on the balls is worked out when the physics steps, never in a block.
+    let mut lit = new_scene(reg);
+    bpe_kit::ensure_mixer(&mut lit, reg);
+    let shape = lit.order.iter().copied().find(|id| lit.things[id].kind == "shape").unwrap();
+    lit.things.get_mut(&shape).unwrap().slots.insert(SlotId::Sound, starter_voice(reg));
+    let lamp = add_light(&mut lit, reg, LightType::Point, root).unwrap();
+    let mut s = LightSettings::of_kind(LightType::Point);
+    s.position = glam::Vec2::new(0.0, -150.0);
+    s.reach = 4000.0;
+    lit.things.get_mut(&lamp).unwrap().params = s.to_params();
+    let shared = add_modulator(&mut lit, reg, shape, LIGHT_MOD).unwrap();
+    let own = add_modulator(&mut lit, reg, shape, LIGHT_MOD).unwrap();
+    {
+        let card = lit.card_mut(shape, SlotId::Sound).unwrap();
+        card.params.set(&bpe_core::layered_key(own, "follows"), bpe_core::Value::Choice("each_notes_ball".into()));
+        let mut routes = match card.params.get(bpe_core::ROUTES_KEY) {
+            Some(bpe_core::Value::Routes(r)) => r.clone(),
+            _ => Vec::new(),
+        };
+        routes.push(route(shared, "out_pan"));
+        routes.push(route(own, "a_cents"));
+        card.params.set(bpe_core::ROUTES_KEY, bpe_core::Value::Routes(routes));
+    }
+    let resolved = resolve_scene(&lit, reg);
+    let mut e = Engine::new(&lit, &resolved, &kit);
+    let meters = e.meters();
+    for _ in 0..200 {
+        e.render(&mut block);
+    }
+    let mut heard = false;
+    for _ in 0..1_000 {
+        e.step_physics();
+        ALLOCATIONS.store(0, Ordering::SeqCst);
+        COUNTING.store(true, Ordering::SeqCst);
+        e.render_prepared(&mut block);
+        COUNTING.store(false, Ordering::SeqCst);
+        assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0, "a block with Light modulators allocated");
+        heard |= block.iter().any(|&v| v != 0.0);
+    }
+    assert!(heard, "the lit scene was heard while counting");
+    assert!(meters.mod_value(shape.0, shared).unwrap() > 0.0, "the shared Light hears the lamp");
 }

@@ -99,3 +99,71 @@ fn a_light_modulator_follows_the_lights_in_the_sound_fingerprint() {
         "Follow sound hears the lamp through the Light modulator"
     );
 }
+
+/// A probe that counts the balls asked about.
+struct Counting(std::sync::atomic::AtomicUsize);
+
+impl bpe_runtime::LightAt for Counting {
+    fn level(
+        &self,
+        _: &bpe_runtime::World,
+        _: &bpe_runtime::Log,
+        _: ThingId,
+        _: &bpe_core::LightSource,
+        _: f64,
+    ) -> f32 {
+        0.0
+    }
+    fn ball(
+        &self,
+        _: &bpe_runtime::World,
+        _: &bpe_runtime::Log,
+        _: ThingId,
+        row: usize,
+        _: f64,
+    ) -> bpe_runtime::BallLight {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        bpe_runtime::BallLight { light: 0.1 * row as f32, shadow: 0.0 }
+    }
+    fn pull(
+        &self,
+        _: &bpe_runtime::World,
+        _: &bpe_runtime::Log,
+        _: ThingId,
+        _: usize,
+        _: f64,
+        _: &bpe_runtime::LightPull,
+    ) -> glam::Vec2 {
+        glam::Vec2::ZERO
+    }
+}
+
+#[test]
+fn the_light_on_the_balls_is_worked_out_once_a_step_ahead_of_the_sound() {
+    use bpe_sound::mods::light::{LightParams, LightTable, light_value, light_value_from};
+    use std::sync::atomic::Ordering;
+    let kit = bpe_kit::kit();
+    let scene = new_scene(&kit.registry);
+    let shape = shape_of(&scene);
+    let mut pb = Playback::new(&scene, &resolve_scene(&scene, &kit.registry), kit.sims.clone());
+    pb.seek(1.0);
+    let (world, log) = (pb.world(), pb.log());
+    let balls: usize = world.bodies.values().map(|b| b.alive.iter().filter(|a| **a).count()).sum();
+    assert!(balls > 0);
+    let probe = Counting(Default::default());
+    let mut table = LightTable::default();
+    table.fill(&probe, world, log, |_| true);
+    assert_eq!(probe.0.load(Ordering::Relaxed), balls, "each ball once");
+    table.fill(&probe, world, log, |_| true);
+    assert_eq!(probe.0.load(Ordering::Relaxed), balls, "already for this step");
+    let p = LightParams::default();
+    let anything = bpe_core::Target::default();
+    let from_table = light_value_from(&p, &anything, Some(&table), &probe, world, log, shape, None);
+    assert_eq!(probe.0.load(Ordering::Relaxed), balls, "the sound reads the table, not the probe");
+    assert_eq!(from_table, light_value(&p, &anything, &probe, world, log, shape, None), "and hears the same");
+    // A table from another step isn't read.
+    pb.seek(1.5);
+    probe.0.store(0, Ordering::Relaxed);
+    light_value_from(&p, &anything, Some(&table), &probe, pb.world(), pb.log(), shape, None);
+    assert!(probe.0.load(Ordering::Relaxed) > 0);
+}
