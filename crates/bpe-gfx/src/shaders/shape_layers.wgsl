@@ -167,7 +167,8 @@ fn shape_upright(world: vec2<f32>) -> vec2<f32> {
 // Record `l`'s own colour at `s`: its one colour, or its gradient laid out by its form in the
 // shape's units. A layer of the shape's own (`whole`) runs Straight from edge to edge at its turn
 // (`l.p1`: the direction and the outline's extent along it) and a Colour and gradient layer runs
-// Round from the middle; Round on a layer with a band (`banded`) reads `along`, worked out for it;
+// Round from the middle (a Text's layer over each letter or line: from that one's own middle);
+// Round on a layer with a band (`banded`) reads `along`, worked out for it;
 // Along the edge runs round the outline.
 fn shape_colour(l: LayerGpu, s: ShapeAt, along: f32, banded: bool, whole: bool) -> vec3<f32> {
     if l.paint.row < 0.0 {
@@ -184,7 +185,13 @@ fn shape_colour(l: LayerGpu, s: ShapeAt, along: f32, banded: bool, whole: bool) 
         return paint_along(l.paint, along * k, g.view.w).rgb;
     }
     if code == 2u && whole {
-        return paint_along(l.paint, shape_from_middle(s) * k, g.view.w).rgb;
+        // A Text's layer laid over each letter or line (Text part 4) runs from that one's own
+        // middle (`paint.place.zw`) out to its reach (`p0.z`); shapes leave `p0.z` at 0.
+        var out = shape_from_middle(s);
+        if l.p0.z > 0.0 && layered_shape.b.x <= 0.0 {
+            out = length(s.q - l.paint.place.zw) / l.p0.z;
+        }
+        return paint_along(l.paint, out * k, g.view.w).rgb;
     }
     if code == 4u {
         return paint_pattern(l.paint, s.along, g.view.w).rgb;

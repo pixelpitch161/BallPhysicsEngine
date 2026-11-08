@@ -16,6 +16,7 @@ use super::show::{LetterMove, appear_times, letter_move, shows_whole, unit_of};
 use super::{FastLetters, KIND, TextBalls, TextPath, TextRides, TextSettings};
 use crate::modules::look::shape::ShapeStack;
 use crate::modules::look::shape::gpu::Geometry;
+use crate::modules::look::shape::units::{MOST_UNIT_SETS, UnitLayer, UnitPlace, records_for_unit};
 use crate::rules::breaks::{BreakLook, LookSettings};
 use crate::rules::remains::draw::whole_look;
 use crate::rules::remains::remains_now;
@@ -48,14 +49,35 @@ impl TextNow {
         self.contours_moved(k, m)
     }
 
-    /// Letter `k`'s contours in the text's own frame moved by `m` about its middle.
+    /// Letter `k`'s contours in the text's own frame as placed (before any move).
+    pub fn contours_placed(&self, k: usize) -> Vec<Vec<Vec2>> {
+        placed(&self.layout.letters[k], self.placed[k])
+    }
+
+    /// Letter `k`'s contours in the text's own frame moved by `m` about its middle: scaled and
+    /// stretched in the letter's own frame, turned, then moved (Draw on's trace isn't read here).
     pub fn contours_moved(&self, k: usize, m: LetterMove) -> Vec<Vec<Vec2>> {
         let c = placed(&self.layout.letters[k], self.placed[k]);
-        if m.is_whole() {
+        if (LetterMove { trace: None, ..m }).is_whole() {
             return c;
         }
+        let to = self.mover(k, m);
+        c.into_iter().map(|c| c.into_iter().map(&to).collect()).collect()
+    }
+
+    /// Where a point of letter `k` as placed goes with move `m` (as `contours_moved`).
+    pub fn mover(&self, k: usize, m: LetterMove) -> impl Fn(Vec2) -> Vec2 {
         let mid = self.middle(k);
-        c.into_iter().map(|c| c.into_iter().map(|p| mid + (p - mid) * m.scale + m.offset).collect()).collect()
+        let own = Vec2::from_angle(self.placed[k].turn);
+        let back = Vec2::new(own.x, -own.y);
+        let turn = Vec2::from_angle(m.turn);
+        let size = m.stretch * m.scale;
+        move |p: Vec2| mid + turn.rotate(own.rotate(back.rotate(p - mid) * size)) + m.offset
+    }
+
+    /// Letter `k`'s middle as it shows with move `m`.
+    pub fn middle_moved(&self, k: usize, m: LetterMove) -> Vec2 {
+        self.middle(k) + m.offset
     }
 
     /// The middle of letter `k`'s box in the text's own frame, as placed (before its move).
@@ -107,13 +129,18 @@ pub struct TextAt<'a> {
     pub id: ThingId,
     /// Seconds: the video's clock.
     pub time: f64,
+    /// How far each sound is up at a moment, for a Follow sound move (Text part 4).
+    pub sound: Option<&'a dyn bpe_runtime::SoundAt>,
+    /// The Text's Look card, whose letter moves move its letters (Text part 4); `None` draws
+    /// them as laid out and shown.
+    pub look: Option<&'a bpe_core::ResolvedSlot>,
 }
 
 impl<'a> TextAt<'a> {
     /// Text `id` with settings `params` at `time`, without the log (no hits seen) or the resolved
     /// scene (balls named by number).
     pub fn new(tree: &'a Scene, params: &'a Params, world: &'a World, id: ThingId, time: f64) -> Self {
-        TextAt { tree, scene: None, params, world, log: None, id, time }
+        TextAt { tree, scene: None, params, world, log: None, id, time, sound: None, look: None }
     }
 }
 
@@ -141,6 +168,7 @@ pub fn text_copies(at: &TextAt) -> Vec<TextNow> {
     let names = if reads && needs_names(&pieces) { ball_names(at) } else { BallNames::default() };
     let own = at.world.poses.get(&at.id).copied().unwrap_or_else(|| at.world.anchor(at.id));
     let mut times = Vec::new();
+    let moves = at.look.map(super::moves::moves_of).unwrap_or_default();
     riding_places(at, &s, screen, own)
         .into_iter()
         .map(|(pose, ball)| {
@@ -171,7 +199,9 @@ pub fn text_copies(at: &TextAt) -> Vec<TextNow> {
                 }
             }
             let shown = shown_of(at, &s, &layout, rule_line, &mut times);
-            TextNow { pose, layout, placed, font_problem: found.problem(), shown, ball }
+            let mut now = TextNow { pose, layout, placed, font_problem: found.problem(), shown, ball };
+            super::moves::apply(at, &moves, &mut now);
+            now
         })
         .collect()
 }
@@ -197,6 +227,7 @@ fn ball_names(at: &TextAt) -> BallNames {
             time: at.time,
             tree: at.tree,
             light: None,
+            sound: at.sound,
         };
         let Some(colour) = crate::things::balls::draw::ball_colors(&cx) else { continue };
         let named = BallNames::from_colours(at.world, &[id], &|_, row| Some(colour(row)));
@@ -502,6 +533,82 @@ fn band_half(cx: &DrawCx, s: &TextSettings) -> f32 {
     }
 }
 
+/// The patched records for each of `shown` (as `outlines` lays them) whose units or worn layers
+/// differ from the whole text's: `base` copied once a distinct unit into `layers`, at most
+/// [`MOST_UNIT_SETS`] copies (the rest keep the whole records). Each letter's first record, `None`
+/// for the whole text's.
+fn unit_records(
+    copies: &[TextNow],
+    shown: &[Shown],
+    outlines: &[Vec<Vec<Vec2>>],
+    unit_layers: &[UnitLayer],
+    base: &[bpe_gfx::LayerGpu],
+    layers: &mut Vec<bpe_gfx::LayerGpu>,
+) -> Vec<Option<u32>> {
+    use crate::modules::look::shape::Across;
+    use std::collections::HashMap;
+    let by_letter = unit_layers.iter().any(|u| u.across == Across::EachLetter);
+    let by_line = unit_layers.iter().any(|u| u.across == Across::EachLine);
+    // Each line's points, middle (its box's) by (copy, line).
+    let mut lines: HashMap<(usize, u32), Vec<Vec2>> = HashMap::new();
+    if by_line {
+        for (l, outline) in shown.iter().zip(outlines) {
+            let line = copies[l.copy].layout.letters[l.letter].line;
+            lines.entry((l.copy, line)).or_default().extend(outline.iter().flatten().copied());
+        }
+    }
+    let box_middle = |ps: &[Vec2]| {
+        let (lo, hi) =
+            ps.iter().fold((Vec2::splat(f32::MAX), Vec2::splat(f32::MIN)), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+        if lo.x <= hi.x { 0.5 * (lo + hi) } else { Vec2::ZERO }
+    };
+    let line_middles: HashMap<(usize, u32), Vec2> = lines.iter().map(|(k, ps)| (*k, box_middle(ps))).collect();
+    let mut sets: HashMap<(usize, usize, u32, Vec<bool>), u32> = HashMap::new();
+    shown
+        .iter()
+        .zip(outlines)
+        .map(|(l, outline)| {
+            let now = &copies[l.copy];
+            let number = l.letter as u32;
+            let line = now.layout.letters[l.letter].line;
+            let worn: Vec<bool> = unit_layers.iter().map(|u| u.only.is_empty() || u.only.contains(&number)).collect();
+            let key = (
+                if by_letter { l.copy } else { usize::MAX },
+                if by_letter { l.letter } else { usize::MAX },
+                if by_line { line } else { u32::MAX },
+                worn,
+            );
+            // Every layer worn whole by every letter: the whole text's records.
+            if !by_letter && !by_line && key.3.iter().all(|w| *w) {
+                return None;
+            }
+            let key = if by_line && !by_letter { (l.copy, key.1, key.2, key.3) } else { key };
+            if let Some(first) = sets.get(&key) {
+                return Some(*first);
+            }
+            if sets.len() >= MOST_UNIT_SETS {
+                return None;
+            }
+            let points: Vec<Vec2> = outline.iter().flatten().copied().collect();
+            let letter = UnitPlace {
+                points: &points,
+                middle: now.middle_moved(l.letter, l.moved),
+                turn: now.placed[l.letter].turn + l.moved.turn,
+            };
+            let line_points = lines.get(&(l.copy, line)).map_or(&[][..], |v| v.as_slice());
+            let line_place = UnitPlace {
+                points: line_points,
+                middle: line_middles.get(&(l.copy, line)).copied().unwrap_or(Vec2::ZERO),
+                turn: 0.0,
+            };
+            let first = layers.len() as u32;
+            layers.extend(records_for_unit(base, unit_layers, number, &letter, &line_place));
+            sets.insert(key, first);
+            Some(first)
+        })
+        .collect()
+}
+
 /// Draws the Text: every letter of every copy, wearing its Look's layers whole (`part` 0), or the
 /// layers under or over its Blend layer.
 fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
@@ -515,6 +622,8 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
         log: Some(cx.log),
         id: cx.thing.id,
         time: cx.time,
+        sound: cx.sound,
+        look: Some(look),
     };
     let copies = text_copies(&at);
     let s = TextSettings::from_params(&cx.resolved.params);
@@ -543,13 +652,28 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
         }
     }
     let half = band_half(cx, &s);
-    // Fast letters lay the gradient over their boxes; drawn ones over their outlines.
-    let outlines: Vec<Vec<Vec<Vec2>>> = if fast {
-        Vec::new()
-    } else {
-        shown.iter().map(|l| copies[l.copy].contours_moved(l.letter, l.moved)).collect()
-    };
-    let points: Vec<Vec2> = if fast {
+    // A letter Draw on traces walks its outline; so does one breaking into pieces (its pieces clip
+    // it to their cells).
+    let tiled = |l: &Shown| fast && l.shatter.is_none() && l.moved.trace.is_none();
+    // Each letter's outline as it shows (fast letters' are their moved boxes), laying the gradient.
+    let outlines: Vec<Vec<Vec<Vec2>>> = shown
+        .iter()
+        .map(|l| {
+            let now = &copies[l.copy];
+            if tiled(l) {
+                let (letter, p) = (&now.layout.letters[l.letter], now.placed[l.letter]);
+                let turn = Vec2::from_angle(p.turn);
+                let (a, b) = (letter.min - letter.origin, letter.max - letter.origin);
+                let corners = [a, Vec2::new(b.x, a.y), b, Vec2::new(a.x, b.y)].map(|q| p.at + turn.rotate(q));
+                let to = now.mover(l.letter, l.moved);
+                vec![corners.into_iter().map(to).collect()]
+            } else {
+                now.contours_moved(l.letter, l.moved)
+            }
+        })
+        .collect();
+    // Fast letters lay the gradient over their boxes as laid out (as before letter moves).
+    let points: Vec<Vec2> = if fast && shown.iter().all(|l| l.moved.turn == 0.0 && l.moved.stretch == Vec2::ONE) {
         shown
             .iter()
             .flat_map(|l| {
@@ -582,7 +706,15 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
     }
     let first = frame.look_layers.len() as u32;
     let count = records.len() as u32;
-    frame.look_layers.extend(records);
+    // Layers laid over each letter or line, or worn by only some letters: a patched copy of the
+    // records a unit, each letter naming its own.
+    frame.look_layers.extend_from_slice(&records);
+    let unit_layers = stack.unit_layers(look);
+    let unit_firsts = if unit_layers.is_empty() {
+        Vec::new()
+    } else {
+        unit_records(&copies, &shown, &outlines, &unit_layers, &records, &mut frame.look_layers)
+    };
     let program = stack.program().map_or(PathInstance::NO_PROGRAM, |p| {
         match frame.programs.iter().position(|q| q.key == p.key) {
             Some(i) => i as u32,
@@ -601,50 +733,64 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
     let own_hits =
         if stack.needs_hits() { copies.first().and_then(|c| letter_hits(cx, c.layout.letters.len())) } else { None };
     let past = stack.reach_past();
-    let margin = past + half + 2.0;
     let code = thing_code(cx.thing.id);
     let tile_scale = s.size / tiles::TILE_CAP;
-    // Each pushed instance with its letter, how much of it shows and how far its layers may reach
-    // past it.
-    let mut pushed: Vec<(usize, usize, f32, f32)> = Vec::new();
+    // Each pushed instance with its letter, how much of it shows, how far its layers may reach
+    // past it and half its band.
+    let mut pushed: Vec<(usize, usize, f32, f32, f32)> = Vec::new();
     for (i, l) in shown.iter().enumerate() {
         let now = &copies[l.copy];
         let m = l.moved;
         let letter = &now.layout.letters[l.letter];
-        // A letter breaking into pieces walks its outline (its pieces clip it to their cells).
-        let glyph =
-            (fast && l.shatter.is_none()).then(|| tiles::tile_for(&font, letter.glyph, s.weight, s.slant)).flatten();
+        let glyph = tiled(l).then(|| tiles::tile_for(&font, letter.glyph, s.weight, s.slant)).flatten();
         let tile = glyph.as_ref().and_then(|t| frame.mask_tile(t.hash, &t.bytes).map(|i| (t, i)));
-        let index = match tile {
-            Some((t, index)) => {
-                let p = now.placed[l.letter];
-                let mid = now.middle(l.letter);
-                let centre = p.at + Vec2::from_angle(p.turn).rotate(t.centre * tile_scale);
-                let centre = mid + (centre - mid) * m.scale + m.offset;
-                let half = t.half * tile_scale * m.scale;
-                let reach = half * tiles::reach_share();
-                frame
-                    .push_glyph(now.pose.position, now.pose.angle, centre, p.turn, half, index, BODY_WHITE, code)
-                    .map(|k| (k, past.min(reach)))
+        if let Some((t, index)) = tile {
+            let p = now.placed[l.letter];
+            let centre = now.mover(l.letter, m)(p.at + Vec2::from_angle(p.turn).rotate(t.centre * tile_scale));
+            // A stretched letter reads its tile at the stretch's mean size.
+            let size = m.scale * (m.stretch.x * m.stretch.y).abs().sqrt();
+            let half_tile = t.half * tile_scale * size;
+            let reach = half_tile * tiles::reach_share();
+            let turn = p.turn + m.turn;
+            if let Some(k) =
+                frame.push_glyph(now.pose.position, now.pose.angle, centre, turn, half_tile, index, BODY_WHITE, code)
+            {
+                pushed.push((k, i, m.opacity, past.min(reach), half));
             }
-            None => {
-                let contours = if fast { now.contours_moved(l.letter, m) } else { outlines[i].clone() };
-                frame
-                    .push_letter(now.pose.position, now.pose.angle, &contours, margin, BODY_WHITE, code)
-                    .map(|k| (k, past))
+            continue;
+        }
+        // The pieces it draws as: whole, or Draw on's traced line and its fill.
+        let full = if fast { now.contours_moved(l.letter, m) } else { outlines[i].clone() };
+        let mut pieces: Vec<(Vec<Vec<Vec2>>, f32, f32)> = Vec::new();
+        match m.trace {
+            None => pieces.push((full, half, m.opacity)),
+            Some(tr) if tr.share < 1.0 => {
+                pieces.push((super::moves::traced(&full, tr.share).0, tr.band, m.opacity * tr.band_shown))
             }
-        };
-        if let Some((k, reach_past)) = index {
-            pushed.push((k, i, m.opacity, reach_past));
+            Some(tr) => {
+                if tr.fill > 0.0 {
+                    pieces.push((full.clone(), half, m.opacity * tr.fill));
+                }
+                if tr.band_shown > 0.0 {
+                    pieces.push((full, tr.band, m.opacity * tr.band_shown));
+                }
+            }
+        }
+        for (contours, band, opacity) in pieces {
+            let margin = past + band + 2.0;
+            if let Some(k) = frame.push_letter(now.pose.position, now.pose.angle, &contours, margin, BODY_WHITE, code) {
+                pushed.push((k, i, opacity, past, band));
+            }
         }
     }
     // Layers running from the middle measure out to the whole text's reach.
-    let reach = pushed.iter().map(|&(i, _, _, _)| frame.paths[i].c[1]).fold(0.0, f32::max);
-    for &(i, l, opacity, reach_past) in &pushed {
+    let reach = pushed.iter().map(|&(i, ..)| frame.paths[i].c[1]).fold(0.0, f32::max);
+    for &(i, l, opacity, reach_past, band) in &pushed {
+        let records_first = unit_firsts.get(l).copied().flatten().unwrap_or(first);
         let l = &shown[l];
         let path = &mut frame.paths[i];
-        path.layers = [first, count, program, part];
-        path.b[0] = half;
+        path.layers = [records_first, count, program, part];
+        path.b[0] = band;
         path.c[2] = reach_past;
         path.c[3] = reach;
         path.hit = match own_hits.as_ref().filter(|_| l.copy == 0).and_then(|h| h.get(l.letter)) {
@@ -658,7 +804,7 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
     // Shattering letters become their pieces (after every letter has its records, which each
     // piece keeps).
     let walls = crate::rules::remains::draw::walls_of(cx.world);
-    for &(i, l, _, _) in &pushed {
+    for &(i, l, ..) in &pushed {
         let l = &shown[l];
         let Some((r, look)) = &l.shatter else { continue };
         let now = &copies[l.copy];
@@ -1102,5 +1248,101 @@ mod tests {
         assert!(spread(&late) > spread(&early) + 10.0, "{} {}", spread(&early), spread(&late));
         let cells: Vec<f32> = late[1..].iter().map(|p| p.clip[0]).collect();
         assert!(cells.windows(2).all(|w| w[0] != w[1]));
+    }
+
+    /// "ABCD" in the world with `add` run on its Look card (given the registry and the Text).
+    fn look_with(add: impl FnOnce(&mut Scene, &bpe_core::Registry, ThingId)) -> (Scene, ThingId) {
+        let (mut scene, id) = scene_with("ABCD");
+        scene.things.get_mut(&id).unwrap().screen = Some(false);
+        let reg = crate::registry();
+        add(&mut scene, &reg, id);
+        (scene, id)
+    }
+
+    fn set(scene: &mut Scene, id: ThingId, layer: bpe_core::LayerId, key: &str, v: Value) {
+        scene.card_mut(id, SlotId::Look).unwrap().params.set(&bpe_core::layered_key(layer, key), v);
+    }
+
+    #[test]
+    fn a_letter_being_drawn_on_is_a_band_of_the_pen_and_then_its_fill() {
+        use crate::modules::look::shape::moves::DRAW_ON;
+        let (scene, _) = look_with(|scene, reg, id| {
+            let m = scene.add_layer(reg, id, SlotId::Look, DRAW_ON).unwrap();
+            set(scene, id, m, "takes", Value::Number(4.0));
+            set(scene, id, m, "width", Value::Number(8.0));
+            set(scene, id, m, "then", Value::Choice("lines_and_fill".into()));
+            set(scene, id, m, "fill", Value::Number(0.0));
+        });
+        let whole = frame_at(&scene, 10.0);
+        // Done: each letter its fill and its band.
+        assert_eq!(whole.paths.len(), 8);
+        assert_eq!(whole.paths.iter().filter(|p| p.b[0] == 4.0).count(), 4, "bands half the pen wide");
+        assert!(frame_at(&scene, 2.0).paths.len() < 8);
+        // Early on only the first letter shows, as the part of it traced: fewer points than its
+        // whole band.
+        let early = frame_at(&scene, 0.2);
+        assert_eq!(early.paths.len(), 1);
+        assert_eq!(early.paths[0].b[0], 4.0);
+        let first_band = whole.paths.iter().find(|p| p.b[0] == 4.0).unwrap();
+        assert!(early.paths[0].b[3] < first_band.b[3], "{} {}", early.paths[0].b[3], first_band.b[3]);
+    }
+
+    #[test]
+    fn a_gradient_laid_over_each_letter_gets_a_record_set_a_letter() {
+        use crate::modules::look::shape as look;
+        let (scene, _) = look_with(|scene, reg, id| {
+            let p = scene.add_layer(reg, id, SlotId::Look, look::PAINT).unwrap();
+            let g = bpe_core::Gradient::even(&[bpe_core::Color::WHITE, bpe_core::Color::rgb(255, 0, 0)]);
+            set(scene, id, p, "colours", Value::Gradient(g));
+            set(scene, id, p, "across", Value::Choice("each_letter".into()));
+            set(scene, id, p, "colours~turn", Value::Number(0.0));
+        });
+        let frame = frame_at(&scene, 0.0);
+        assert_eq!(frame.paths.len(), 4);
+        let firsts: Vec<u32> = frame.paths.iter().map(|p| p.layers[0]).collect();
+        assert!(firsts.windows(2).all(|w| w[0] != w[1]), "{firsts:?}");
+        assert_eq!(frame.look_layers.len(), 2 * 5, "the whole text's and one a letter");
+        // Each letter's Straight runs over its own box.
+        for (k, p) in frame.paths.iter().enumerate() {
+            let r = frame.look_layers[p.layers[0] as usize + 1];
+            let width = r.p1[3] - r.p1[2];
+            let whole = frame.look_layers[1].p1[3] - frame.look_layers[1].p1[2];
+            assert!(width > 10.0 && width < 0.5 * whole, "letter {k}: {width} of {whole}");
+        }
+    }
+
+    #[test]
+    fn a_layer_worn_by_some_letters_is_off_on_the_others() {
+        use crate::modules::look::shape as look;
+        let (scene, _) = look_with(|scene, reg, id| {
+            let o = scene.add_layer(reg, id, SlotId::Look, look::OUTLINE).unwrap();
+            scene.set_layer_only(reg, id, SlotId::Look, o, vec![1]).unwrap();
+        });
+        let frame = frame_at(&scene, 0.0);
+        let outline_of = |k: usize| frame.look_layers[frame.paths[k].layers[0] as usize + 1];
+        assert_eq!(outline_of(1).head[2] & bpe_gfx::LayerGpu::UNWORN, 0);
+        for k in [0, 2, 3] {
+            assert_ne!(outline_of(k).head[2] & bpe_gfx::LayerGpu::UNWORN, 0, "letter {k}");
+            assert_eq!(outline_of(k).amount[0], 0.0);
+        }
+        assert_eq!(frame.look_layers.len(), 2 * 2, "the whole text's (worn by letter 1) and one set not worn");
+        assert_eq!(frame.paths[1].layers[0], 0);
+        assert!([0, 2, 3].iter().all(|k| frame.paths[*k].layers[0] == 2));
+    }
+
+    #[test]
+    fn a_spinning_letter_turns_its_outline_and_fast_letters_their_tile() {
+        use crate::modules::look::shape::moves::SPIN;
+        let (mut scene, id) = look_with(|scene, reg, id| {
+            let m = scene.add_layer(reg, id, SlotId::Look, SPIN).unwrap();
+            set(scene, id, m, "speed", Value::Number(90.0));
+        });
+        let still = frame_at(&scene, 0.0);
+        let turned = frame_at(&scene, 1.0);
+        assert_ne!(still.path_points, turned.path_points);
+        scene.things.get_mut(&id).unwrap().params.set("fast", Value::Choice("always".into()));
+        let fast = frame_at(&scene, 1.0);
+        let glyph = fast.paths.iter().find(|p| p.b[1] > 2.5).expect("a glyph");
+        assert!(glyph.clip.iter().all(|c| c.is_finite()));
     }
 }

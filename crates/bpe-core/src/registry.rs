@@ -46,6 +46,11 @@ pub trait ThingKind: Send + Sync + 'static {
     fn vary(&self, _key: &str) -> Option<crate::VaryUse> {
         None
     }
+    /// Whether its Look's layers can be worn by only some of its items by number (`Layer.only`),
+    /// in any section but sub-layers, trails and group layers: a Text's letters.
+    fn layers_by_number(&self) -> bool {
+        false
+    }
 }
 
 /// A kind of card that fills one of a thing's slots, such as a look or one effect. Each thing
@@ -151,6 +156,11 @@ pub trait LayerKind: Send + Sync + 'static {
     /// and, on a ball's Body, Roundness), when it takes them at all. Shown after its own settings.
     fn light_defs(&self) -> &'static [SettingDef] {
         &[]
+    }
+    /// Whether a thing of kind `thing_kind` may have a layer of this kind in its card (a Text's
+    /// letter moves sit in the Look card it shares with shapes, and fit only a Text).
+    fn fits(&self, _thing_kind: &str) -> bool {
+        true
     }
 }
 

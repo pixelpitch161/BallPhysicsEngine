@@ -209,6 +209,25 @@ fn free_name(card: &Slot, base: &str) -> String {
 }
 
 impl Scene {
+    /// Whether thing `thing` may have a layer of `kind` (see [`LayerKind::fits`]).
+    fn fits_thing(&self, thing: ThingId, kind: &dyn LayerKind) -> bool {
+        self.things.get(&thing).is_none_or(|t| kind.fits(&t.kind))
+    }
+
+    /// Whether a layer of `kind` on thing `thing` may be worn by only some of its balls or
+    /// letters (`Layer.only`): a ball's drawn layer that can be, or any layer but the base, a
+    /// sub-layer, a trail and a group layer of a thing whose layers go by number (a Text's).
+    fn wearable(&self, reg: &Registry, thing: ThingId, kind: &dyn LayerKind) -> bool {
+        if kind.base() {
+            return false;
+        }
+        let by_number = self.things.get(&thing).and_then(|t| reg.thing(&t.kind)).is_some_and(|k| k.layers_by_number());
+        if by_number {
+            return matches!(kind.section(), LayerSection::Drawn | LayerSection::Reaction);
+        }
+        kind.section() == LayerSection::Drawn && kind.per_ball()
+    }
+
     fn layer_card(&self, thing: ThingId, slot: SlotId) -> Result<&Slot, EditError> {
         self.things.get(&thing).ok_or(EditError::Missing(thing))?.slots.get(&slot).ok_or(EditError::NoSlot(slot))
     }
@@ -251,7 +270,7 @@ impl Scene {
     ) -> Result<LayerId, EditError> {
         let card = self.layer_card(thing, slot)?;
         let k = reg.layer(kind).ok_or_else(|| EditError::UnknownKind(kind.into()))?;
-        if k.card() != card.kind {
+        if k.card() != card.kind || !self.fits_thing(thing, k) {
             return Err(EditError::NotAccepted);
         }
         if (!k.repeats() || k.base()) && card.layers.iter().any(|l| l.kind == kind) {
@@ -356,7 +375,7 @@ impl Scene {
         let kind = reg.layer(&copied.kind).ok_or_else(|| EditError::UnknownKind(copied.kind.clone()))?;
         let id = self.add_sub_layer(reg, thing, slot, parent, &copied.kind)?;
         self.name_pasted(thing, slot, id, &copied.name);
-        self.fill_pasted(kind, thing, slot, id, copied);
+        self.fill_pasted(reg, kind, thing, slot, id, copied);
         Ok(id)
     }
 
@@ -645,8 +664,8 @@ impl Scene {
         if is_base(reg, card, index) {
             return Err(EditError::BaseLayer);
         }
-        let kind = reg.layer(&card.layers[index].kind);
-        if section_of(reg, &card.layers[index]) != LayerSection::Drawn || kind.is_some_and(|k| !k.per_ball()) {
+        let Some(kind) = reg.layer(&card.layers[index].kind) else { return Err(EditError::NotAccepted) };
+        if !self.wearable(reg, thing, kind) {
             return Err(EditError::NotAccepted);
         }
         only.sort_unstable();
@@ -668,7 +687,7 @@ impl Scene {
     ) -> Result<LayerId, EditError> {
         let card = self.layer_card(thing, slot)?;
         let kind = reg.layer(&copied.kind).ok_or_else(|| EditError::UnknownKind(copied.kind.clone()))?;
-        if kind.card() != card.kind {
+        if kind.card() != card.kind || !self.fits_thing(thing, kind) {
             return Err(EditError::NotAccepted);
         }
         let single = !kind.repeats() || kind.base();
@@ -692,7 +711,7 @@ impl Scene {
                 id
             }
         };
-        self.fill_pasted(kind, thing, slot, id, copied);
+        self.fill_pasted(reg, kind, thing, slot, id, copied);
         // Its sub-layers come with it; those the layer can't carry are left.
         for sub in &copied.subs {
             let _ = self.paste_sub_layer(reg, thing, slot, id, sub);
@@ -702,7 +721,16 @@ impl Scene {
 
     /// Sets layer `id`'s settings from a copy, shows or hides it as it was copied and gives it to
     /// the balls it was given to (the base layer is always shown and every ball's).
-    fn fill_pasted(&mut self, kind: &dyn LayerKind, thing: ThingId, slot: SlotId, id: LayerId, copied: &CopiedLayer) {
+    fn fill_pasted(
+        &mut self,
+        reg: &Registry,
+        kind: &dyn LayerKind,
+        thing: ThingId,
+        slot: SlotId,
+        id: LayerId,
+        copied: &CopiedLayer,
+    ) {
+        let wearable = self.wearable(reg, thing, kind);
         let card = self.layer_card_mut(thing, slot);
         for (k, v) in copied.params.iter() {
             if let Some(v) = fitted_in(kind, &copied.params, k, v) {
@@ -724,11 +752,7 @@ impl Scene {
         }
         if let Some(l) = card.layers.iter_mut().find(|l| l.id == id) {
             l.enabled = copied.enabled || kind.base();
-            l.only = if kind.base() || kind.section() != LayerSection::Drawn || !kind.per_ball() {
-                Vec::new()
-            } else {
-                copied.only.clone()
-            };
+            l.only = if wearable { copied.only.clone() } else { Vec::new() };
         }
     }
 
@@ -752,7 +776,8 @@ impl Scene {
         for l in &copied.layers {
             let at = flat.len();
             let kind = reg.layer(&l.kind).ok_or_else(|| EditError::UnknownKind(l.kind.clone()))?;
-            if kind.section() == LayerSection::Group {
+            // A look copied from a Text pastes onto a shape without its letter moves.
+            if kind.section() == LayerSection::Group || !self.fits_thing(thing, kind) {
                 continue;
             }
             flat.push((l, kind, None));
@@ -763,6 +788,7 @@ impl Scene {
         if flat.iter().any(|(_, k, _)| k.card() != card.kind) {
             return Err(EditError::NotAccepted);
         }
+        let wears: Vec<bool> = flat.iter().map(|(_, k, _)| self.wearable(reg, thing, *k)).collect();
         let kept: Vec<Layer> =
             card.layers.iter().filter(|l| section_of(reg, l) == LayerSection::Group).cloned().collect();
         let taken = |id: LayerId| kept.iter().any(|l| l.id == id);
@@ -822,11 +848,7 @@ impl Scene {
             let id = ids[i];
             let name = if l.name.trim().is_empty() { kind.name().to_owned() } else { l.name.clone() };
             let parent = parent.map(|p| ids[p]);
-            let only = if kind.base() || kind.section() != LayerSection::Drawn || !kind.per_ball() {
-                Vec::new()
-            } else {
-                l.only.clone()
-            };
+            let only = if wears[i] { l.only.clone() } else { Vec::new() };
             let enabled = l.enabled || kind.base();
             card.layers.push(Layer { id, kind: l.kind.clone(), name, enabled, parent, only, lane: l.lane });
             for (k, v) in l.params.iter() {

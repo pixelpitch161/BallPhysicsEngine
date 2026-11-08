@@ -302,7 +302,56 @@ pub(crate) fn letter_outlines_in(font: &[u8], text: &str, letter_height: f32) ->
 
 /// [`word`] without the cache.
 fn spell(text: &str, letter_height: f32, step: f32) -> Vec<Vec2> {
-    let shapes = letter_outlines(text, letter_height);
+    fill_letters(&letter_outlines(text, letter_height), step, true)
+}
+
+/// Settings `s` of balls `me` in `tree` with a Word made of a Text thing read into places
+/// (Text part 4): the lattice fill of that Text's letters as Custom places (none when it names no
+/// Text). Anything else is `s` as it is.
+pub fn with_text_word<'a>(
+    s: &'a BallsSettings,
+    tree: Option<&bpe_core::Scene>,
+    me: bpe_core::ThingId,
+) -> std::borrow::Cow<'a, BallsSettings> {
+    use super::WordFrom;
+    if !(s.group && s.shape == GroupShape::Word && s.made_of == WordFrom::ATextThing) {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let letters = tree
+        .and_then(|tree| {
+            let text = crate::things::text::shape::text_named(tree, &s.word_text, me)?;
+            Some(text_word(tree, text, s.step()))
+        })
+        .unwrap_or_default();
+    std::borrow::Cow::Owned(BallsSettings {
+        shape: GroupShape::Custom,
+        custom: letters.into_iter().map(|p| p.to_array()).collect(),
+        ..s.clone()
+    })
+}
+
+/// The lattice fill, `step` apart, of Text `text`'s letters in `tree`, cached by what they read.
+pub fn text_word(tree: &bpe_core::Scene, text: bpe_core::ThingId, step: f32) -> Vec<Vec2> {
+    type Key = (u64, u32);
+    static CACHE: OnceLock<Mutex<HashMap<Key, Vec<Vec2>>>> = OnceLock::new();
+    let key = (crate::things::text::shape::letters_hash(tree, text), step.to_bits());
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(hit) = cache.lock().ok().and_then(|c| c.get(&key).cloned()) {
+        return hit;
+    }
+    let out = fill_letters(&crate::things::text::shape::letters_of(tree, text), step, false);
+    if let Ok(mut c) = cache.lock() {
+        if c.len() > 64 {
+            c.clear();
+        }
+        c.insert(key, out.clone());
+    }
+    out
+}
+
+/// Balls on a square lattice `step` apart inside `shapes` (closed outlines, non-zero inside),
+/// the lattice centred on them; `centre` moves the places so the letters' box is round 0.
+pub fn fill_letters(shapes: &[Vec<Vec2>], step: f32, centre: bool) -> Vec<Vec2> {
     let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
     for p in shapes.iter().flatten() {
         lo = lo.min(*p);
@@ -319,15 +368,18 @@ fn spell(text: &str, letter_height: f32, step: f32) -> Vec<Vec2> {
     for j in 0..=cells.y as i32 {
         for i in 0..=cells.x as i32 {
             let p = start + Vec2::new(i as f32, j as f32) * step;
-            if winding(&shapes, p) != 0 {
+            if winding(shapes, p) != 0 {
                 out.push(p);
                 if out.len() >= MAX_BALLS {
-                    return centred_on(out, (lo + hi) * 0.5);
+                    break;
                 }
             }
         }
+        if out.len() >= MAX_BALLS {
+            break;
+        }
     }
-    centred_on(out, (lo + hi) * 0.5)
+    if centre { centred_on(out, (lo + hi) * 0.5) } else { out }
 }
 
 /// How many times the outlines wind round `p` (non-zero: inside a letter).

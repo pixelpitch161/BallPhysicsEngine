@@ -162,6 +162,22 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
         layer_list::around_drop_target(ui, cx, card, &rows, edits);
     }
 
+    // ---------- Letter moves (a Text's) ----------
+    if text && shape {
+        ui.add_space(6.0);
+        list_header(ui, cx, card, "Letter moves", "+ Add move", LayerSection::Reaction, edits);
+        if reactions.is_empty() {
+            ui.label(
+                RichText::new("None yet: add one to make the letters wave, jump or draw on.")
+                    .small()
+                    .color(style::FAINT),
+            );
+        }
+        for layer in &reactions {
+            layer_list::row(ui, inspector, cx, card, layer, picked, edits);
+        }
+    }
+
     // ---------- Reactions ----------
     if !shape {
         ui.add_space(6.0);
@@ -228,12 +244,15 @@ pub(crate) fn picked_settings(
     let own_rows = layer_rows::show(ui, inspector, cx, card, layer, edits);
     let get = |key: &str| cx.scene.value_at_time(reg, &cx.at(picked, key), cx.time);
     // The layer's Lighting fold (Lit, Blocks light, Roundness) comes last.
+    // Across is a Text's alone (Text part 4).
+    let text = cx.scene.things.get(&cx.id).is_some_and(|t| t.kind == bpe_kit::things::text::KIND);
     let defs: Vec<SettingDef> = kind
         .settings()
         .iter()
         .chain(kind.dynamic_defs(&get))
         .chain(kind.light_defs())
         .filter(|d| !own_rows.contains(&d.key))
+        .filter(|d| text || !shape || !bpe_kit::modules::look::shape::TEXT_ONLY.contains(&d.key))
         .cloned()
         .collect();
     layer_settings(ui, inspector, cx, picked, &defs, edits);
@@ -309,8 +328,10 @@ fn list_header(
     section: LayerSection,
     edits: &mut Vec<Edit>,
 ) {
+    // Only the kinds that fit the thing: letter moves only on a Text.
+    let thing = cx.scene.things.get(&cx.id).map_or("", |t| t.kind.as_str());
     let addable: Vec<&dyn bpe_core::LayerKind> =
-        cx.reg().layers_for(&card.kind).filter(|k| k.section() == section && !k.base()).collect();
+        cx.reg().layers_for(&card.kind).filter(|k| k.section() == section && !k.base() && k.fits(thing)).collect();
     ui.horizontal(|ui| {
         ui.label(RichText::new(title).font(style::medium(12.0)).color(style::MUTED));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -855,6 +876,74 @@ mod tests {
 
     fn label_shown(h: &Harness<'_, State>, text: &str) -> bool {
         h.query_all_by_label(text).next().is_some()
+    }
+
+    /// The test scene with a Text added and selected.
+    fn text_harness() -> (Harness<'static, State>, ThingId) {
+        let mut h = harness();
+        let s = h.state_mut();
+        let id = bpe_kit::add_thing(&mut s.scene, &s.kit.registry, bpe_kit::things::text::KIND, ThingId::ROOT).unwrap();
+        s.resolved = resolve(&s.scene, &s.kit.registry);
+        s.selection.set(id);
+        h.run();
+        (h, id)
+    }
+
+    #[test]
+    fn a_texts_look_has_letter_moves_worn_by_some_letters() {
+        let (mut h, id) = text_harness();
+        assert!(label_shown(&h, "Letter moves"));
+        add(&mut h, "+ Add move", "Wave");
+        assert!(kinds_of(&h, id).iter().any(|k| k == bpe_kit::modules::look::shape::moves::WAVE));
+        add(&mut h, "+ Add layer", "Colour and gradient");
+        two_colours(&mut h, id);
+        assert!(label_shown(&h, "Across"), "a Text's paint is laid across the whole text, each letter or line");
+        h.get_by_role_and_label(Role::Button, "Wave").click_secondary();
+        h.run();
+        h.get_by_label("Only some letters…").click();
+        h.run();
+        h.get_by_role_and_label(Role::TextInput, "Letters").click();
+        h.run();
+        h.get_by_role_and_label(Role::TextInput, "Letters").type_text("1, 3-4");
+        h.run();
+        h.get_by_role_and_label(Role::Button, "Apply").click();
+        h.run();
+        assert_eq!(layer_named(&h, id, "Wave").only, [0, 2, 3]);
+        assert!(label_shown(&h, "only 3 letters"));
+        row_menu(&mut h, "Wave", "Apply to every letter");
+        assert!(layer_named(&h, id, "Wave").only.is_empty());
+    }
+
+    #[test]
+    fn a_shapes_look_has_no_letter_moves_or_across() {
+        let mut h = shape_harness(|_| {});
+        assert!(!label_shown(&h, "Letter moves"));
+        add(&mut h, "+ Add layer", "Colour and gradient");
+        two_colours(&mut h, SHAPE);
+        assert!(label_shown(&h, "Flow"), "its gradient's rows show");
+        assert!(!label_shown(&h, "Across"));
+    }
+
+    /// Gives `id`'s Colour and gradient layer two colours.
+    fn two_colours(h: &mut Harness<'_, State>, id: ThingId) {
+        let layer = layer_named(h, id, "Colour and gradient").id;
+        let s = h.state_mut();
+        let g = bpe_core::Gradient::even(&[bpe_core::Color::WHITE, bpe_core::Color::rgb(0, 0, 0)]);
+        let key = bpe_core::layered_key(layer, "colours");
+        s.scene.card_mut(id, SlotId::Look).unwrap().params.set(&key, bpe_core::Value::Gradient(g));
+        s.resolved = resolve(&s.scene, &s.kit.registry);
+        h.run();
+    }
+
+    #[test]
+    fn typed_letters_read_from_one() {
+        use layer_list::{letters_words, parse_letters};
+        assert_eq!(parse_letters("1, 3, 5-7"), Some(vec![0, 2, 4, 5, 6]));
+        assert_eq!(parse_letters(""), Some(vec![]));
+        assert_eq!(parse_letters("0"), None);
+        assert_eq!(parse_letters("3-1"), None);
+        assert_eq!(parse_letters("a"), None);
+        assert_eq!(letters_words(&[0, 2, 4, 5, 6]), "1, 3, 5-7");
     }
 
     #[test]

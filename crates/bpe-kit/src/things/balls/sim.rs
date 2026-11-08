@@ -306,6 +306,11 @@ pub fn resize_rows(own_size: &mut Vec<f32>, bodies: &mut Bodies, own: Vec<f32>) 
     *own_size = own;
 }
 
+/// Whether `s` is a group whose Word is made of a Text thing.
+fn word_from_text(s: &BallsSettings) -> bool {
+    s.group && s.shape == super::GroupShape::Word && s.made_of == super::WordFrom::ATextThing
+}
+
 /// Each body row's own size in `st` as its settings, spreads and the rules' changes to single
 /// balls (`ruled`) say now; `hurts` is how much of each row's health is gone (rules part 4).
 fn own_sizes(st: &BallsState, bodies: &Bodies, ruled: Option<&Ruled>, hurts: &[f32]) -> Vec<f32> {
@@ -325,12 +330,28 @@ impl ThingSim for BallsSim {
         "balls"
     }
 
+    /// A Word made of a Text thing reads that Text from the scene (Text part 4).
+    fn reads_tree(&self, resolved: &ResolvedThing) -> bool {
+        word_from_text(&BallsSettings::from_params(&resolved.params))
+    }
+
+    /// The Text a Word is made of: its saved settings and font place the balls.
+    fn fingerprint_more(&self, scene: &bpe_core::Scene, thing: &Thing, resolved: &ResolvedThing) -> u64 {
+        let s = BallsSettings::from_params(&resolved.params);
+        if !word_from_text(&s) {
+            return 0;
+        }
+        crate::things::text::shape::text_named(scene, &s.word_text, thing.id)
+            .map_or(1, |text| crate::things::text::shape::letters_hash(scene, text))
+    }
+
     fn build(&self, thing: &Thing, resolved: &ResolvedThing, world: &mut World) {
         let settings = BallsSettings::from_params(&resolved.params);
         // Riders start where their parent is and move with it; everything else sits where its
         // own transform says.
         let at = world.anchor(thing.id);
-        let places = offsets(&laid_out(&settings, size_to(&resolved.params)));
+        let worded = super::shapes::with_text_word(&settings, world.tree.as_deref(), thing.id);
+        let places = offsets(&laid_out(&worded, size_to(&resolved.params)));
         let order = release_order(&settings, &places);
         let rate = world.steps_per_second;
         let middle = places.iter().copied().sum::<Vec2>() / places.len().max(1) as f32;

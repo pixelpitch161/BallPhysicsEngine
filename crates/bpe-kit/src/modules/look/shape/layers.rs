@@ -1,7 +1,7 @@
 //! The settings of a shape's paint layers: Colour and gradient, Outline and Glow. Blend and
 //! Shader reuse the balls' (see `super::kinds`).
 
-use bpe_core::{Blend, Color, Gradient, Settings};
+use bpe_core::{Blend, Choice, Color, Gradient, Settings};
 
 use crate::modules::look::layers::{ColourFrom, OutlineSits};
 
@@ -9,12 +9,27 @@ use crate::modules::look::layers::{ColourFrom, OutlineSits};
 /// white body at once.
 pub const START_COLOUR: Color = Color::rgb(64, 156, 255);
 
+/// What a Text's layer lays its own colours over (Text part 4); a shape is always one whole.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum Across {
+    /// One gradient across every letter.
+    #[default]
+    WholeText,
+    /// The gradient again on each letter, turning with it.
+    EachLetter,
+    /// The gradient again on each line.
+    EachLine,
+}
+
 /// Colour and gradient: one colour, or a gradient, over the whole shape.
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct PaintLayer {
     /// One colour, or several: they run across the shape as Gradient says.
     #[setting(area, label = "Colours", simple, keyframe)]
     pub colours: Gradient,
+    /// On a Text: the gradient across the whole text, or again on each letter or each line.
+    #[setting(label = "Across", when = "colours")]
+    pub across: Across,
     /// How fast the colours move along the gradient, wrapping round, in times per second.
     #[setting(label = "Flow", when = "colours", span(-2, 2), keyframe)]
     pub flow: f32,
@@ -28,7 +43,13 @@ pub struct PaintLayer {
 
 impl Default for PaintLayer {
     fn default() -> Self {
-        Self { colours: Gradient::solid(START_COLOUR), flow: 0.0, opacity: 1.0, blend: Blend::Normal }
+        Self {
+            colours: Gradient::solid(START_COLOUR),
+            across: Across::WholeText,
+            flow: 0.0,
+            opacity: 1.0,
+            blend: Blend::Normal,
+        }
     }
 }
 
@@ -47,6 +68,9 @@ pub struct ShapeOutline {
     /// The line's own colour, or colours.
     #[setting(area, label = "Colour", when = "colour_from=own", simple, keyframe)]
     pub colour: Gradient,
+    /// On a Text: the gradient across the whole text, or again on each letter or each line.
+    #[setting(label = "Across", when = "colour_from=own and colour")]
+    pub across: Across,
     /// How fast the colours move along the gradient, wrapping round, in times per second.
     #[setting(label = "Flow", when = "colour_from=own and colour", span(-2, 2), keyframe)]
     pub flow: f32,
@@ -65,6 +89,7 @@ impl Default for ShapeOutline {
             sits: OutlineSits::Inside,
             colour_from: ColourFrom::SameAsBody,
             colour: Gradient::solid(Color::WHITE),
+            across: Across::WholeText,
             flow: 0.0,
             opacity: 1.0,
             blend: Blend::Normal,
@@ -87,6 +112,9 @@ pub struct ShapeGlow {
     /// The light's own colour, or colours.
     #[setting(area, label = "Colour", when = "colour_from=own", simple, keyframe)]
     pub colour: Gradient,
+    /// On a Text: the gradient across the whole text, or again on each letter or each line.
+    #[setting(label = "Across", when = "colour_from=own and colour")]
+    pub across: Across,
     /// How fast the colours move along the gradient, wrapping round, in times per second.
     #[setting(label = "Flow", when = "colour_from=own and colour", span(-2, 2), keyframe)]
     pub flow: f32,
@@ -105,6 +133,7 @@ impl Default for ShapeGlow {
             size: 30.0,
             colour_from: ColourFrom::SameAsBody,
             colour: Gradient::solid(Color::WHITE),
+            across: Across::WholeText,
             flow: 0.0,
             opacity: 1.0,
             blend: Blend::Normal,

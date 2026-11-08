@@ -6,14 +6,16 @@
 
 pub mod gpu;
 pub mod layers;
+pub mod moves;
 pub mod subs;
+pub mod units;
 
 use std::sync::OnceLock;
 
 use bpe_core::{LayerKind, LayerSection, ModuleKind, SettingDef, SlotId, Value, ValueType};
 
 pub use gpu::ShapeStack;
-pub use layers::{PaintLayer, ShapeGlow, ShapeOutline};
+pub use layers::{Across, PaintLayer, ShapeGlow, ShapeOutline};
 pub use subs::{ShapeShading, ShapeShadingKind, ShapeShadowMoves, ShapeSpace, ShapeSubGlow, ShapeSubShadow};
 
 use crate::modules::look::layers::{Kind, shader, sub_kind};
@@ -39,6 +41,9 @@ pub const SUB_SHADER: &str = "shape.sub.shader";
 pub const SUB_RECOLOUR: &str = "shape.sub.recolour";
 pub const SUB_FLASH: &str = "shape.sub.flash";
 pub const SUB_HUE: &str = "shape.sub.hue";
+
+/// Layer settings only a Text shows (a shape's editor leaves them out).
+pub const TEXT_ONLY: [&str; 1] = ["across"];
 
 /// The help every shape Shader layer shows.
 pub const SHADER_HELP: &str =
@@ -255,7 +260,7 @@ mod tests {
     #[test]
     fn a_shape_s_look_offers_its_paint_layers_in_order() {
         let reg = registry();
-        let ids: Vec<&str> = reg.layers_for(CARD).map(|k| k.id()).collect();
+        let ids: Vec<&str> = reg.layers_for(CARD).filter(|k| k.fits("shape")).map(|k| k.id()).collect();
         assert_eq!(
             ids,
             [
@@ -281,7 +286,7 @@ mod tests {
                 crate::modules::look::surface::SHAPE_SUB_SURFACE
             ]
         );
-        for k in reg.layers_for(CARD).filter(|k| k.section() != LayerSection::Around) {
+        for k in reg.layers_for(CARD).filter(|k| k.section() != LayerSection::Around && k.fits("shape")) {
             assert_eq!(k.card(), CARD);
             let sub = k.section() == LayerSection::Sub;
             let painted = !sub && !matches!(k.id(), BODY | BLEND);
