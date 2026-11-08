@@ -166,5 +166,6 @@ containers.
   me, other)` asks whether it points at one thing (the camera's hit trigger uses it).
 - A thing with no Look card draws nothing, and a card of an unknown kind is reported and ignored.
 - An edit that should restart the physics, sound or particles only does so if the right fingerprint hook sees it
-  (`ThingSim::affects_physics`, `own_cards`, `fingerprint_more`, `more_fingerprint`, `affects_beside`); a missing one
-  leaves the preview stale.
+  (`ThingSim::key_restarts_physics(_here)`, `steps_own_cards`, `physics_print_extra`, `beside_print_extra`,
+  `key_restarts_beside`, `card_key_restarts_beside`); a missing one leaves the preview stale.
+  `bpe-kit/tests/restarts.rs` changes every setting of every thing kind and catches a missing one.

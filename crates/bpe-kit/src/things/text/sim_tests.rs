@@ -132,10 +132,10 @@ fn spin_turns_the_wall_and_a_words_key_changes_it() {
 #[test]
 fn only_layout_path_and_balls_settings_are_physics() {
     for key in ["words", "font", "size", "path", "radius", "balls", "thickness", "spin"] {
-        assert!(TextSim.affects_physics(key), "{key}");
+        assert!(TextSim.key_restarts_physics(key), "{key}");
     }
     for key in ["show", "appear", "resort", "rides_on", "fast"] {
-        assert!(!TextSim.affects_physics(key), "{key}");
+        assert!(!TextSim.key_restarts_physics(key), "{key}");
     }
 }
 

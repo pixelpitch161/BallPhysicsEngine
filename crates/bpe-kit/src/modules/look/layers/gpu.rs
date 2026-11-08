@@ -24,9 +24,9 @@ use crate::modules::look::basic::{STRETCH_SPEED, facing_degrees, heading, shift_
 use crate::paint::{Follow, InsideFrom, Placing, form_gpu, inside_gpu};
 
 /// How far a ball's shapes reach from its centre, in radii (a triangle's corners, a heart's
-/// lobes); matches SHAPE_REACH in styled.wgsl.
+/// lobes).
 const SHAPE_REACH: f32 = 1.45;
-/// How far past the edge a glow reaches, in its sizes; matches HALO_REACH in styled.wgsl.
+/// How far past the edge a glow reaches, in its sizes.
 const HALO_REACH: f32 = 2.2;
 /// The furthest a stack may reach, in radii, however big its outline: enough for the biggest
 /// glow (Size 4). The shader fades a glow out before the quad's edge.

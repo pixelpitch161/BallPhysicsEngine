@@ -1,7 +1,7 @@
 //! Tests for the trail styles and the particle sprites, on the software GPU.
 
 use crate::pictures::{pixel_sized, render_sized, save};
-use crate::{BallInstance, Frame, Particle, StreakStyle, TrailVertex, push_streak, push_trail};
+use crate::{Frame, Particle, StreakStyle, TrailVertex, push_streak, push_trail};
 use glam::Vec2;
 
 const W: u32 = 540;
@@ -141,13 +141,13 @@ fn front_particles_draw_over_the_balls_and_behind_ones_under() {
     let mut frame = Frame { bloom: 0.0, ..Frame::default() };
     let (under, over) = (Vec2::new(-150.0, 0.0), Vec2::new(150.0, 0.0));
     for c in [under, over] {
-        frame.balls.push(BallInstance { center: c.into(), radius: 60.0, color: BLUE, ..BallInstance::default() });
+        crate::pictures::plain_ball(&mut frame, c, 60.0, BLUE, 0.0);
     }
     frame.particles.push(Particle::new(6, under, 0.0, 20.0, RED));
     frame.particles_front.push(Particle::new(6, over, 0.0, 20.0, RED));
     // Added light in front brightens what is under it without covering it.
     let lit = Vec2::new(0.0, 400.0);
-    frame.balls.push(BallInstance { center: lit.into(), radius: 60.0, color: BLUE, ..BallInstance::default() });
+    crate::pictures::plain_ball(&mut frame, lit, 60.0, BLUE, 0.0);
     frame.particles_front.push(Particle::new(6, lit, 0.0, 20.0, [1.0, 0.0, 0.0, -1.0]));
     let Some(pixels) = render_sized(&frame, W, H) else { return };
     save("sprites_front", &pixels, W, H);

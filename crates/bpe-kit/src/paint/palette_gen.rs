@@ -1,7 +1,7 @@
 //! A colour generator: a few colours that go together, for the gradient bar's "Random palette".
 
-use crate::rng::Rng;
 use bpe_core::Color;
+use bpe_core::dice::Rng;
 
 /// `n` colours that go together. Half the time they are spread along a random built-in palette
 /// (one colour takes its middle); otherwise hues are stepped around the wheel (close, spread,

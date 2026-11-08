@@ -785,17 +785,13 @@ pub fn hue_turned(c: [f32; 4], turns: f32) -> [f32; 4] {
 /// Smooth seeded noise in -1 to 1 for stop `i` at `x`: a value at each whole `x` from a hash of
 /// the seed, the stop and `x`, eased between them. Pure: the same on every machine.
 pub fn wander_noise(seed: u32, i: usize, x: f64) -> f32 {
-    fn pcg(v: u32) -> u32 {
-        let state = v.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
-        let word = ((state >> ((state >> 28) + 4)) ^ state).wrapping_mul(277_803_737);
-        (word >> 22) ^ word
-    }
+    use crate::dice::{pcg32 as pcg, unit24_closed};
     let x = if x.is_finite() { x } else { 0.0 };
     let k = x.floor();
     let f = (x - k) as f32;
     let at = |k: f64| {
         let h = pcg(seed ^ pcg((i as u32).wrapping_mul(0x9e37_79b9) ^ pcg(k as i64 as u32)));
-        (h >> 8) as f32 / 16_777_215.0 * 2.0 - 1.0
+        unit24_closed(h) * 2.0 - 1.0
     };
     let (a, b) = (at(k), at(k + 1.0));
     let e = f * f * (3.0 - 2.0 * f);

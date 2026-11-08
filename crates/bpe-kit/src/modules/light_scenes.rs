@@ -317,10 +317,9 @@ pub fn order_at(order: SceneOrder, k: u64, count: usize, seed: u32) -> usize {
 }
 
 fn mix(seed: u32, step: u64) -> u64 {
-    let mut x = (seed as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ step.wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    x ^= x >> 31;
-    x = x.wrapping_mul(0x94d0_49bb_1331_11eb);
-    x ^ (x >> 29)
+    bpe_core::dice::mix64_short(
+        (seed as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ step.wrapping_mul(0xbf58_476d_1ce4_e5b9),
+    )
 }
 
 // ---------- Editing (each one undo step in the editor) ----------

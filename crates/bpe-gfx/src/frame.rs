@@ -4,52 +4,13 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use bpe_core::{Animation, Blend, Inputs, Resolved, ResolvedThing, Scene, SlotId, Thing, ThingId};
-use bpe_runtime::{CameraView, LevelsAt, LightAt, LightLevelsAt, Log, Outline, SoundAt, World};
+use bpe_runtime::{CameraView, LevelsAt, LightAt, LightLevelsAt, Log, SoundAt, World};
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
 
 use crate::gradients::{GradientAtlas, PaintGpu};
 
 pub use bpe_runtime::hit_strength;
-
-/// A ball: a lit sphere with a halo.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
-pub struct BallInstance {
-    pub center: [f32; 2],
-    pub radius: f32,
-    /// How brightly the halo shines.
-    pub glow: f32,
-    /// Linear light. An additive colour has alpha -1, see [`blend_alpha`].
-    pub color: [f32; 4],
-    /// The thing code plus half the seed (see [`thing_code`]), the seed, then two spare.
-    pub code: [f32; 4],
-    /// A gradient painted inside the lit ball in place of its colour, when its row is not -1.
-    pub paint: PaintGpu,
-}
-
-/// A ball with its own style: a shape, a style, an outline and a halo.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
-pub struct LookInstance {
-    pub center: [f32; 2],
-    pub radius: f32,
-    /// 0 to 1, picks the pattern's own variation.
-    pub seed: f32,
-    /// Linear light; alpha -1 is additive, see [`blend_alpha`].
-    pub color: [f32; 4],
-    pub outline_color: [f32; 4],
-    /// Shape code, style code (0 flat, 1 shiny: lit like a sphere), one spare, roundness.
-    pub form: [f32; 4],
-    /// Outline width in pixels, glow brightness, opacity, angle in radians.
-    pub look: [f32; 4],
-    /// Direction of travel, scale along it, scale across it.
-    pub stretch: [f32; 4],
-    /// Glow size as a fraction of the radius, the thing code, two spare.
-    pub extent: [f32; 4],
-    /// What is painted inside in place of its colour, when its row is not -1.
-    pub paint: PaintGpu,
-}
 
 /// One layer of a ball's stack of layers, as layers.wgsl draws it. A thing's stack is written
 /// once per frame into [`Frame::look_layers`]; each of its balls is a [`LayeredInstance`] naming
@@ -425,140 +386,6 @@ impl PathStyle {
             _ => PathChannel::All,
         };
         PathStyle { channel, hue: ((v / 4) % 1024) as f32 / 1024.0, colourise: (v / 4096) as f32 / 15.0 }
-    }
-}
-
-/// A wall outline, drawn as an instanced quad with a distance function. `c.x` picks the shape:
-/// 0 ring or polygon, 1 box, 2 capsule (a filled rounded line between two points), 3 filled
-/// rounded box clipped to an x range, 4 filled arc band.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
-pub struct ShapeInstance {
-    /// Centre, angle. Filled box (3): the x range's low end in `w`. Arc band (4): `z` is the
-    /// direction of the middle of the band.
-    pub a: [f32; 4],
-    /// Ring: radius, sides. Box: half width, half height, corner radius. Capsule: half length.
-    /// Filled box: half width, half height, corner radius, the x range's high end. Arc band:
-    /// radius, half width, half sweep.
-    pub b: [f32; 4],
-    /// Kind (0 ring or polygon, 1 box, 2 capsule, 3 filled box, 4 arc band), half line width,
-    /// glow strength, thing code.
-    pub c: [f32; 4],
-    /// Linear-light colour. Alpha scales the line, not the glow. Below zero the line is added
-    /// light (see [`blend_alpha`]).
-    pub color: [f32; 4],
-    /// A gradient painted on the line in place of its colour, when its row is not -1: an inside
-    /// pattern across the shape's bounding box, or (pattern 4, Path) along the outline. The glow
-    /// keeps `color`.
-    pub paint: PaintGpu,
-}
-
-impl ShapeInstance {
-    /// A closed wall's outline, painted with `paint` (row -1 for plain `color`).
-    pub fn outline(outline: &Outline, paint: PaintGpu, color: [f32; 4], glow: f32) -> Self {
-        let color = blend_alpha(color);
-        match *outline {
-            Outline::Ring { center, radius, sides, angle, thickness } => Self {
-                a: [center.x, center.y, angle, 0.0],
-                b: [radius, sides as f32, 0.0, 0.0],
-                c: [0.0, thickness * 0.5, glow, 0.0],
-                color,
-                paint,
-            },
-            Outline::Box { center, half, angle, thickness } => Self {
-                a: [center.x, center.y, angle, 0.0],
-                b: [half.x, half.y, 0.0, 0.0],
-                c: [1.0, thickness * 0.5, glow, 0.0],
-                color,
-                paint,
-            },
-            // A free outline, an ellipse or a Text's letters draw through the paths pipeline
-            // ([`PathInstance`]); here it is nothing.
-            Outline::Path { center, angle, .. }
-            | Outline::Ellipse { center, angle, .. }
-            | Outline::Letters { center, angle, .. } => Self {
-                a: [center.x, center.y, angle, 0.0],
-                b: [0.0, 0.0, 0.0, 0.0],
-                c: [0.0, 0.0, 0.0, 0.0],
-                color: [0.0; 4],
-                paint,
-            },
-        }
-    }
-
-    /// A bar with round ends: the line from `from` to `to`, `half_width` thick each side.
-    pub fn capsule(from: glam::Vec2, to: glam::Vec2, half_width: f32, color: [f32; 4], glow: f32) -> Self {
-        let mid = (from + to) * 0.5;
-        let along = to - from;
-        Self {
-            a: [mid.x, mid.y, along.to_angle(), 0.0],
-            b: [along.length() * 0.5, 0.0, 0.0, 0.0],
-            c: [2.0, half_width, glow, 0.0],
-            color: blend_alpha(color),
-            paint: PaintGpu::default(),
-        }
-    }
-
-    /// A filled box of half size `half`, corners rounded by `corner`, shown only where its own x
-    /// (from the centre, before the turn) is within `clip` (use `[-1e9, 1e9]` for all of it).
-    pub fn fill_box(
-        centre: glam::Vec2,
-        angle: f32,
-        half: glam::Vec2,
-        corner: f32,
-        clip: [f32; 2],
-        color: [f32; 4],
-    ) -> Self {
-        Self {
-            a: [centre.x, centre.y, angle, clip[0]],
-            b: [half.x, half.y, corner.min(half.x).min(half.y).max(0.0), clip[1]],
-            c: [3.0, 0.0, 0.0, 0.0],
-            color: blend_alpha(color),
-            paint: PaintGpu::default(),
-        }
-    }
-
-    /// A filled band of a ring: radius `radius`, `half_width` either side of it, centred on the
-    /// direction `mid` (radians, as `angle` turns everything else) and reaching `half_sweep`
-    /// either way (pi or more: the whole ring).
-    pub fn arc_band(
-        centre: glam::Vec2,
-        radius: f32,
-        half_width: f32,
-        mid: f32,
-        half_sweep: f32,
-        color: [f32; 4],
-    ) -> Self {
-        Self {
-            a: [centre.x, centre.y, mid, 0.0],
-            b: [radius, half_width, half_sweep, 0.0],
-            c: [4.0, 0.0, 0.0, 0.0],
-            color: blend_alpha(color),
-            paint: PaintGpu::default(),
-        }
-    }
-
-    /// A filled disc: a ring as thick as it is wide.
-    pub fn disc(center: glam::Vec2, radius: f32, color: [f32; 4], glow: f32) -> Self {
-        Self {
-            a: [center.x, center.y, 0.0, 0.0],
-            b: [radius, 0.0, 0.0, 0.0],
-            c: [0.0, radius, glow, 0.0],
-            color: blend_alpha(color),
-            paint: PaintGpu::default(),
-        }
-    }
-
-    /// Marks the shape as belonging to a thing, so an effect can paint just that thing.
-    pub fn code(mut self, code: f32) -> Self {
-        self.c[3] = code;
-        self
-    }
-
-    /// Paints a gradient on the shape in place of its colour (see [`ShapeInstance::paint`]).
-    pub fn painted(mut self, paint: PaintGpu) -> Self {
-        self.paint = paint;
-        self
     }
 }
 
@@ -1026,14 +853,10 @@ pub struct Frame {
     pub background: BackgroundPaint,
     pub bloom: f32,
     pub exposure: f32,
-    pub shapes: Vec<ShapeInstance>,
-    /// Shapes, drawn right after `shapes`, and the points (xy, two spare) their outlines run
-    /// through.
+    /// Shapes, and the points (xy, two spare) their outlines run through.
     pub paths: Vec<PathInstance>,
     pub path_points: Vec<[f32; 4]>,
-    pub balls: Vec<BallInstance>,
     pub flashes: Vec<FlashInstance>,
-    pub looks: Vec<LookInstance>,
     /// Balls drawn with a stack of layers, and the stacks' records they name.
     pub layered: Vec<LayeredInstance>,
     pub look_layers: Vec<LayerGpu>,
@@ -1701,12 +1524,9 @@ impl Default for Frame {
             background: BackgroundPaint::default(),
             bloom: 0.0,
             exposure: 1.0,
-            shapes: Vec::new(),
             paths: Vec::new(),
             path_points: Vec::new(),
-            balls: Vec::new(),
             flashes: Vec::new(),
-            looks: Vec::new(),
             layered: Vec::new(),
             look_layers: Vec::new(),
             mask_tiles: Vec::new(),
@@ -1830,12 +1650,9 @@ impl Frame {
 impl Frame {
     /// Empties the instance lists and the gradients and keeps the globals.
     pub fn clear(&mut self) {
-        self.shapes.clear();
         self.paths.clear();
         self.path_points.clear();
-        self.balls.clear();
         self.flashes.clear();
-        self.looks.clear();
         self.layered.clear();
         self.look_layers.clear();
         self.mask_tiles.clear();
@@ -1959,14 +1776,10 @@ impl Frame {
     }
 
     /// Whether this frame's own lists (not its layers') draw the thing with `code` (see
-    /// [`thing_code`]) into the object picture: a wall, a ball or a styled ball of it.
+    /// [`thing_code`]) into the object picture: a ball or a shape of it.
     pub(crate) fn draws_thing(&self, code: f32) -> bool {
         let is = |c: f32| (c.floor() - code).abs() < 0.5;
-        self.balls.iter().any(|b| is(b.code[0]))
-            || self.looks.iter().any(|l| is(l.extent[1]))
-            || self.layered.iter().any(|l| is(l.misc[1]))
-            || self.shapes.iter().any(|s| is(s.c[3]))
-            || self.paths.iter().any(|p| is(p.c[0]))
+        self.layered.iter().any(|l| is(l.misc[1])) || self.paths.iter().any(|p| is(p.c[0]))
     }
 
     /// Whether anything it (or a layer or its overlay) draws gives off light: a layer record, a
@@ -2019,11 +1832,8 @@ impl Frame {
 
     /// Whether none of the lists the picture is drawn from has anything in them.
     fn draws_nothing(&self) -> bool {
-        self.shapes.is_empty()
-            && self.paths.is_empty()
-            && self.balls.is_empty()
+        self.paths.is_empty()
             && self.flashes.is_empty()
-            && self.looks.is_empty()
             && self.layered.is_empty()
             && self.trails.is_empty()
             && self.particles.is_empty()
@@ -2237,11 +2047,8 @@ impl Frame {
     /// Whether the overlay has anything to draw.
     pub fn has_overlay(&self) -> bool {
         self.overlay.as_ref().is_some_and(|o| {
-            !(o.shapes.is_empty()
-                && o.paths.is_empty()
-                && o.balls.is_empty()
+            !(o.paths.is_empty()
                 && o.flashes.is_empty()
-                && o.looks.is_empty()
                 && o.layered.is_empty()
                 && o.trails.is_empty()
                 && o.particles.is_empty()
@@ -2340,9 +2147,7 @@ impl Frame {
         }
         let video = Vec2::new(width as f32, height as f32);
         let sees = |c: [f32; 2], r: f32| camera.sees(video, Vec2::from(c), r + CULL_MARGIN);
-        self.balls.retain(|b| sees(b.center, b.radius * 2.0));
         self.paths.retain(|p| sees([p.a[0], p.a[1]], p.reach()));
-        self.looks.retain(|l| sees(l.center, l.radius * 2.0));
         let seen: Vec<bool> = self
             .layered
             .iter()
@@ -2803,7 +2608,12 @@ mod tests {
                 Some(Value::Number(r)) => *r as f32,
                 _ => 0.0,
             };
-            frame.balls.push(BallInstance { center: [1.0, 2.0], radius, color: [1.0; 4], ..BallInstance::default() });
+            frame.layered.push(LayeredInstance {
+                center: [1.0, 2.0],
+                radius,
+                body: [1.0; 4],
+                ..LayeredInstance::default()
+            });
             frame.flashes.push(FlashInstance { center: [0.0; 2], size: 1.0, color: [1.0; 4] });
         }
     }
@@ -2839,10 +2649,10 @@ mod tests {
             build_frame(&scene, &resolved, &world, &Log::default(), 1.5, &draws, &mut frame);
         }
         assert_eq!((frame.width, frame.height, frame.time, frame.bloom), (100, 200, 1.5, 0.5));
-        assert_eq!(frame.balls.len(), 1, "lists are cleared between frames");
-        assert_eq!(frame.balls[0].radius, 9.0);
+        assert_eq!(frame.layered.len(), 1, "lists are cleared between frames");
+        assert_eq!(frame.layered[0].radius, 9.0);
         assert_eq!(frame.flashes.len(), 1);
-        assert!(frame.shapes.is_empty());
+        assert!(frame.paths.is_empty());
         assert!(draws.thing("folder").is_none());
     }
 
@@ -2862,7 +2672,7 @@ mod tests {
         let mut frame = Frame::default();
         let radius_at = |time: f64, frame: &mut Frame| {
             build_frame(&scene, &resolved, &world, &Log::default(), time, &draws, frame);
-            frame.balls[0].radius
+            frame.layered[0].radius
         };
         assert_eq!(radius_at(0.0, &mut frame), 2.0);
         assert!((radius_at(1.0, &mut frame) - 6.0).abs() < 1e-5);
@@ -2949,7 +2759,7 @@ mod tests {
             }
             fn draw(&self, cx: &DrawCx, slot: SlotId, frame: &mut Frame) {
                 assert_eq!(slot, SlotId::Look);
-                assert_eq!(frame.balls.len(), 1, "the things drew first");
+                assert_eq!(frame.layered.len(), 1, "the things drew first");
                 frame.flashes.push(FlashInstance { center: [cx.thing.id.0 as f32, 0.0], ..Default::default() });
             }
         }
@@ -2980,17 +2790,17 @@ mod tests {
         let mut frame = Frame { width: 100, height: 200, time: 1.5, video: (300, 400), ..Frame::default() };
         frame.camera.zoom = 2.0;
         frame.bloom = 0.25;
-        frame.layer_mut(Blend::Normal, 1.0, false).balls.push(BallInstance::default());
-        assert_eq!(frame.balls.len(), 1, "Normal at full amount is the frame itself");
+        frame.layer_mut(Blend::Normal, 1.0, false).layered.push(LayeredInstance::default());
+        assert_eq!(frame.layered.len(), 1, "Normal at full amount is the frame itself");
         assert!(frame.layers.is_empty());
-        frame.layer_mut(Blend::Multiply, 1.0, false).balls.push(BallInstance::default());
-        frame.layer_mut(Blend::Screen, 0.5, false).looks.push(LookInstance::default());
-        frame.layer_mut(Blend::Multiply, 1.0, false).balls.push(BallInstance::default());
-        frame.layer_mut(Blend::Normal, 0.5, false).shapes.push(ShapeInstance::default());
+        frame.layer_mut(Blend::Multiply, 1.0, false).layered.push(LayeredInstance::default());
+        frame.layer_mut(Blend::Screen, 0.5, false).paths.push(PathInstance::default());
+        frame.layer_mut(Blend::Multiply, 1.0, false).layered.push(LayeredInstance::default());
+        frame.layer_mut(Blend::Normal, 0.5, false).paths.push(PathInstance::default());
         let kept: Vec<(Blend, f32)> = frame.layers.iter().map(|l| (l.blend, l.amount)).collect();
         assert_eq!(kept, [(Blend::Multiply, 1.0), (Blend::Screen, 0.5), (Blend::Normal, 0.5)], "first-use order");
         let l = &frame.layers[0].frame;
-        assert_eq!(l.balls.len(), 2, "the same mode and amount share a layer");
+        assert_eq!(l.layered.len(), 2, "the same mode and amount share a layer");
         assert_eq!((l.width, l.height, l.time, l.video), (100, 200, 1.5, (300, 400)));
         assert_eq!((l.camera, l.bloom), (frame.camera, 0.25));
         frame.clear();
@@ -3001,18 +2811,18 @@ mod tests {
     fn each_layers_and_plain_layers_do_not_share() {
         use bpe_core::Blend;
         let mut frame = Frame::default();
-        frame.layer_mut(Blend::Screen, 1.0, true).balls.push(BallInstance::default());
-        frame.layer_mut(Blend::Screen, 1.0, false).balls.push(BallInstance::default());
-        frame.layer_mut(Blend::Screen, 1.0, true).balls.push(BallInstance::default());
+        frame.layer_mut(Blend::Screen, 1.0, true).layered.push(LayeredInstance::default());
+        frame.layer_mut(Blend::Screen, 1.0, false).layered.push(LayeredInstance::default());
+        frame.layer_mut(Blend::Screen, 1.0, true).layered.push(LayeredInstance::default());
         let kept: Vec<(Blend, f32, bool)> = frame.layers.iter().map(|l| (l.blend, l.amount, l.each)).collect();
         assert_eq!(kept, [(Blend::Screen, 1.0, true), (Blend::Screen, 1.0, false)]);
-        assert_eq!(frame.layers[0].frame.balls.len(), 2);
+        assert_eq!(frame.layers[0].frame.layered.len(), 2);
         // A mode that cannot combine with itself drops the switch, and so shares.
-        frame.layer_mut(Blend::Overlay, 1.0, true).balls.push(BallInstance::default());
-        frame.layer_mut(Blend::Overlay, 1.0, false).balls.push(BallInstance::default());
-        assert_eq!((frame.layers.len(), frame.layers[2].each, frame.layers[2].frame.balls.len()), (3, false, 2));
-        frame.layer_mut(Blend::Normal, 1.0, true).balls.push(BallInstance::default());
-        assert_eq!((frame.layers.len(), frame.balls.len()), (3, 1), "Normal at full amount is the frame itself");
+        frame.layer_mut(Blend::Overlay, 1.0, true).layered.push(LayeredInstance::default());
+        frame.layer_mut(Blend::Overlay, 1.0, false).layered.push(LayeredInstance::default());
+        assert_eq!((frame.layers.len(), frame.layers[2].each, frame.layers[2].frame.layered.len()), (3, false, 2));
+        frame.layer_mut(Blend::Normal, 1.0, true).layered.push(LayeredInstance::default());
+        assert_eq!((frame.layers.len(), frame.layered.len()), (3, 1), "Normal at full amount is the frame itself");
     }
 
     #[test]
@@ -3021,14 +2831,14 @@ mod tests {
         let mut frame = Frame::default();
         frame.overlay_mut();
         assert!(!frame.has_overlay());
-        frame.overlay_mut().layer_mut(Blend::Screen, 1.0, false).balls.push(BallInstance::default());
+        frame.overlay_mut().layer_mut(Blend::Screen, 1.0, false).layered.push(LayeredInstance::default());
         assert!(frame.has_overlay(), "a stuck blended thing is something to draw");
         frame.camera.zoom = 4.0;
         let layer = frame.layer_mut(Blend::Multiply, 1.0, false);
-        layer.balls.push(BallInstance { center: [0.0, 0.0], radius: 5.0, ..BallInstance::default() });
-        layer.balls.push(BallInstance { center: [5000.0, 0.0], radius: 5.0, ..BallInstance::default() });
+        layer.layered.push(LayeredInstance { center: [0.0, 0.0], radius: 5.0, ..LayeredInstance::default() });
+        layer.layered.push(LayeredInstance { center: [5000.0, 0.0], radius: 5.0, ..LayeredInstance::default() });
         frame.cull();
-        assert_eq!(frame.layers[0].frame.balls.len(), 1, "what the camera can't see is dropped in layers too");
+        assert_eq!(frame.layers[0].frame.layered.len(), 1, "what the camera can't see is dropped in layers too");
     }
 
     #[test]
@@ -3054,13 +2864,13 @@ mod tests {
         let mut frame = Frame::default();
         frame.camera.zoom = 4.0;
         let layer = frame.layer_mut(Blend::Screen, 1.0, false);
-        layer.balls.push(BallInstance { center: [2000.0, 0.0], radius: 5.0, ..BallInstance::default() });
-        layer.balls.push(BallInstance { center: [90_000.0, 0.0], radius: 5.0, ..BallInstance::default() });
+        layer.layered.push(LayeredInstance { center: [2000.0, 0.0], radius: 5.0, ..LayeredInstance::default() });
+        layer.layered.push(LayeredInstance { center: [90_000.0, 0.0], radius: 5.0, ..LayeredInstance::default() });
         // ...then looked at by the editor's World view, zoomed far out, on a wider picture.
         frame.camera = CameraView { center: Vec2::ZERO, zoom: 0.1, turn: 0.0 };
         (frame.width, frame.height) = (2000, 1000);
         frame.cull();
-        let kept: Vec<[f32; 2]> = frame.layers[0].frame.balls.iter().map(|b| b.center).collect();
+        let kept: Vec<[f32; 2]> = frame.layers[0].frame.layered.iter().map(|b| b.center).collect();
         assert_eq!(kept, [[2000.0, 0.0]], "the layer is culled through the frame's own view");
     }
 
@@ -3068,8 +2878,8 @@ mod tests {
     fn minus_zero_and_zero_amounts_share_a_layer() {
         use bpe_core::Blend;
         let mut frame = Frame::default();
-        frame.layer_mut(Blend::Screen, -0.0, false).balls.push(BallInstance::default());
-        frame.layer_mut(Blend::Screen, 0.0, false).balls.push(BallInstance::default());
+        frame.layer_mut(Blend::Screen, -0.0, false).layered.push(LayeredInstance::default());
+        frame.layer_mut(Blend::Screen, 0.0, false).layered.push(LayeredInstance::default());
         assert_eq!(frame.layers.len(), 1);
         assert_eq!(frame.layers[0].amount.to_bits(), 0.0f32.to_bits());
     }
@@ -3078,8 +2888,8 @@ mod tests {
     fn set_view_moves_the_layers_with_the_frame() {
         use bpe_core::Blend;
         let mut frame = Frame::default();
-        frame.layer_mut(Blend::Screen, 1.0, false).balls.push(BallInstance::default());
-        frame.overlay_mut().layer_mut(Blend::Add, 0.5, false).balls.push(BallInstance::default());
+        frame.layer_mut(Blend::Screen, 1.0, false).layered.push(LayeredInstance::default());
+        frame.overlay_mut().layer_mut(Blend::Add, 0.5, false).layered.push(LayeredInstance::default());
         let camera = CameraView { center: Vec2::new(10.0, 20.0), zoom: 0.5, turn: 0.25 };
         frame.set_view(camera, (300, 200));
         let l = &frame.layers[0].frame;
@@ -3099,7 +2909,8 @@ mod tests {
             let red = bpe_core::Gradient::solid(bpe_core::Color::rgb(255, 0, 0));
             let row = frame.gradients.row(&red);
             let paint = PaintGpu { row: row as f32, ..PaintGpu::default() };
-            frame.balls.push(BallInstance { paint, ..BallInstance::default() });
+            frame.look_layers.push(LayerGpu { paint, ..LayerGpu::ZERO });
+            frame.layered.push(LayeredInstance { range: [0, 1, 0, 0], ..LayeredInstance::default() });
             frame.hits.push(HitMark {
                 thing: cx.thing.id,
                 other: None,
@@ -3165,16 +2976,16 @@ mod tests {
         use bpe_core::{Blend, Color};
         let plain = routed("normal", 1.0, false, false);
         assert!(plain.layers.is_empty());
-        assert_eq!((plain.balls.len(), plain.trails.len()), (1, 1));
+        assert_eq!((plain.layered.len(), plain.trails.len()), (1, 1));
 
         let frame = routed("multiply", 1.0, false, false);
-        assert!(frame.balls.is_empty() && frame.trails.is_empty());
+        assert!(frame.layered.is_empty() && frame.trails.is_empty());
         assert_eq!(frame.layers.len(), 1, "the thing and its module share the layer");
         let layer = &frame.layers[0];
         assert_eq!((layer.blend, layer.amount), (Blend::Multiply, 1.0));
-        assert_eq!((layer.frame.balls.len(), layer.frame.trails.len()), (1, 1));
+        assert_eq!((layer.frame.layered.len(), layer.frame.trails.len()), (1, 1));
         assert!(layer.frame.gradients.is_empty(), "a layer keeps no atlas of its own");
-        let row = layer.frame.balls[0].paint.row as usize;
+        let row = layer.frame.look_layers[0].paint.row as usize;
         assert_eq!(
             frame.gradients.rows()[row][0],
             Color::rgb(255, 0, 0).to_linear(),
@@ -3192,7 +3003,7 @@ mod tests {
         assert_eq!(frame.layers.len(), 1, "the thing and its look's module share the layer");
         let layer = &frame.layers[0];
         assert_eq!((layer.blend, layer.amount, layer.each), (Blend::Multiply, 1.0, true));
-        assert_eq!((layer.frame.balls.len(), layer.frame.trails.len()), (1, 1));
+        assert_eq!((layer.frame.layered.len(), layer.frame.trails.len()), (1, 1));
         assert!(!routed("multiply", 1.0, false, false).layers[0].each, "off by default");
     }
 
@@ -3216,10 +3027,10 @@ mod tests {
         let frame = routed("screen", 0.5, true, false);
         assert!(frame.layers.is_empty());
         let o = frame.overlay.as_deref().unwrap();
-        assert!(o.balls.is_empty());
-        assert_eq!((o.layers.len(), o.layers[0].frame.balls.len()), (1, 1));
+        assert!(o.layered.is_empty());
+        assert_eq!((o.layers.len(), o.layers[0].frame.layered.len()), (1, 1));
         assert!(frame.has_overlay());
-        let row = o.layers[0].frame.balls[0].paint.row as usize;
+        let row = o.layers[0].frame.look_layers[0].paint.row as usize;
         assert!(row < o.gradients.len(), "its row is in the overlay's atlas");
     }
 
@@ -3282,33 +3093,10 @@ mod tests {
     fn thing_codes_start_at_one() {
         assert_eq!(thing_code(ThingId::ROOT), 1.0);
         assert_eq!(thing_code(ThingId(41)), 42.0);
-        assert_eq!(ShapeInstance::default().code(7.0).c[3], 7.0);
-        assert_eq!(std::mem::size_of::<LookInstance>(), 192);
-        assert_eq!(std::mem::size_of::<BallInstance>(), 128);
     }
 
     #[test]
-    fn outlines_and_blending_follow_the_old_renderer() {
-        use bpe_runtime::Outline;
-        let ring =
-            Outline::Ring { center: glam::Vec2::new(1.0, 2.0), radius: 50.0, sides: 6, angle: 0.3, thickness: 4.0 };
-        let s = ShapeInstance::outline(&ring, PaintGpu::default(), [1.0, 0.5, 0.0, 1.0], 0.1);
-        assert_eq!(s.a, [1.0, 2.0, 0.3, 0.0]);
-        assert_eq!(s.b, [50.0, 6.0, 0.0, 0.0]);
-        assert_eq!(s.c, [0.0, 2.0, 0.1, 0.0]);
-        let b = Outline::Box { center: glam::Vec2::ZERO, half: glam::Vec2::new(3.0, 4.0), angle: 0.0, thickness: 2.0 };
-        assert_eq!(ShapeInstance::outline(&b, PaintGpu::default(), [1.0; 4], 0.0).c, [1.0, 1.0, 0.0, 0.0]);
-        let points: std::sync::Arc<[glam::Vec2]> = vec![glam::Vec2::ZERO; 3].into();
-        let p = Outline::Path { center: glam::Vec2::ZERO, angle: 0.1, scale: 30.0, points, thickness: 2.0 };
-        let s = ShapeInstance::outline(&p, PaintGpu::default(), [1.0; 4], 0.0);
-        assert_eq!((s.b, s.color), ([0.0; 4], [0.0; 4]), "free outlines draw elsewhere");
-        let cap = ShapeInstance::capsule(glam::Vec2::new(-10.0, 0.0), glam::Vec2::new(10.0, 0.0), 3.0, [1.0; 4], 0.2);
-        assert_eq!((cap.c[0], cap.c[1], cap.c[2], cap.b[0]), (2.0, 3.0, 0.2, 10.0));
-        assert_eq!(cap.a, [0.0, 0.0, 0.0, 0.0]);
-        let up = ShapeInstance::capsule(glam::Vec2::ZERO, glam::Vec2::new(0.0, 4.0), 1.0, [1.0; 4], 0.0);
-        assert!((up.a[2] - std::f32::consts::FRAC_PI_2).abs() < 1e-6 && up.a[1] == 2.0);
-        let disc = ShapeInstance::disc(glam::Vec2::new(1.0, 2.0), 7.0, [1.0; 4], 0.0);
-        assert_eq!((disc.c[0], disc.c[1], disc.b[0], disc.a[0]), (0.0, 7.0, 7.0, 1.0));
+    fn blend_alpha_marks_additive_colours() {
         assert_eq!(blend_alpha([1.0, 0.0, 0.0, 0.0]), [1.0, 0.0, 0.0, -1.0]);
         assert_eq!(blend_alpha([0.0, 0.0, 0.0, 0.0]), [0.0; 4]);
         assert_eq!(blend_alpha([0.2, 0.0, 0.0, 1.0]), [0.2, 0.0, 0.0, 1.0]);

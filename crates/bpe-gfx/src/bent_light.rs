@@ -329,7 +329,7 @@ mod tests {
         assert!(src.contains(&format!("const BENT_LEGS: u32 = {BENT_LEGS}u;")));
         assert!(src.contains(&format!("const MOST_THROWERS: u32 = {MOST_THROWERS}u;")));
         assert!(src.contains("const BENT_THROW: i32 = -16;"));
-        let lighting = include_str!("shaders/lighting.wgsl");
+        let lighting = crate::LIGHTING_WGSL;
         assert!(lighting.contains(&format!("const FREE_BENDER: i32 = {FREE_BENDER};")));
         assert_eq!(std::mem::size_of::<Leg>(), 64);
         assert_eq!(std::mem::size_of::<BentUniform>(), 48 + 256 + 32 * MOST_THROWERS);
@@ -339,7 +339,7 @@ mod tests {
     /// validates without a GPU.
     #[test]
     fn the_light_pass_source_is_valid() {
-        let source = [include_str!("shaders/lighting.wgsl"), include_str!("shaders/bent_light.wgsl")].concat();
+        let source = [crate::LIGHTING_WGSL, include_str!("shaders/bent_light.wgsl")].concat();
         let module = naga::front::wgsl::parse_str(&source).map_err(|e| e.emit_to_string(&source)).unwrap();
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
             .validate(&module)

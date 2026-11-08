@@ -16,7 +16,7 @@ voice, Sound tab), 3 (oscillator layer chains), 4 (modulators, drones, Follow so
 6 (buses, console-strip Mixer, bus effects, stems and MIDI export).
 
 Rework step 2 (same day) dropped shared modules: every thing owns its settings. A thing's cards (Look,
-Motion, Bounce, Shader) live in `Thing.slots` as `Slot { kind, params, stash }` (balls have no Shader card and shapes none of Motion or Shader: effects on a thing are Shader layers of its Look; only the scene settings keep a Shader card, the picture's Effects; trails and particles are Look layers, and `SlotId::Trail`/`Particles` are kept only so files before format 10 open); nothing is shared,
+Motion, Bounce, Shader) live in `Thing.slots` as `Slot { kind, params, stash }` (balls have no Shader card and shapes none of Motion or Shader: effects on a thing are Shader layers of its Look; only the scene settings keep a Shader card, the picture's Effects; trails and particles are Look layers, and `SlotId::Trail`/`Particles` are kept only for the test scenes' old cards, which `cards_to_layers` turns into Look layers); nothing is shared,
 linked, inherited from a folder or locked, and there is no Library, presets or randomize (dice). Right-clicking a
 setting opens Copy Value / Paste Value (…) / Create Keyframe; there are no keyframe diamonds in the inspector.
 

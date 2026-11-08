@@ -975,7 +975,7 @@ mod tests {
         let mut seed = 12345u32;
         let mut rand = || {
             seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
-            (seed >> 8) as f32 / (1u32 << 24) as f32 * 300.0 - 150.0
+            bpe_core::dice::unit24(seed) * 300.0 - 150.0
         };
         for outline in &outlines {
             // The outline traced finely.
@@ -1020,7 +1020,7 @@ mod tests {
         let mut seed = 777u32;
         let mut rand = |range: f32| {
             seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
-            ((seed >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0) * range
+            (bpe_core::dice::unit24(seed) * 2.0 - 1.0) * range
         };
         for half in [Vec2::new(300.0, 150.0), Vec2::new(150.0, 300.0), Vec2::new(500.0, 40.0), Vec2::new(200.0, 199.0)]
         {
@@ -1113,7 +1113,7 @@ mod tests {
         let mut seed = 99u32;
         let mut rand = || {
             seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
-            (seed >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0
+            bpe_core::dice::unit24(seed) * 2.0 - 1.0
         };
         for _ in 0..1000 {
             let start = Vec2::from_angle(0.3).rotate(Vec2::new(rand() * 900.0, rand() * 0.2));

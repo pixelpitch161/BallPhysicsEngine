@@ -12,6 +12,7 @@ pub mod animation;
 pub mod blend;
 pub mod color;
 pub mod contract;
+pub mod dice;
 pub mod edit;
 pub mod gradient_extras;
 pub mod gradient_form;
