@@ -1,7 +1,7 @@
-//! Opens files from before format 10, when trails and particles were cards of their own: a
-//! thing's Trail card becomes a Streak trail layer and its Particles card an On hit particles
-//! layer, at the end of its Look's "Trails and particles" list, with the same values, keyframes,
-//! pulses and Follow sound.
+//! The test scenes are still written with trails and particles as cards of their own (as they
+//! were before format 10): a thing's Trail card becomes a Streak trail layer and its Particles
+//! card an On hit particles layer, at the end of its Look's "Trails and particles" list, with the
+//! same values, keyframes, pulses and Follow sound. Only tests build it.
 
 use bpe_core::{Address, Layer, LayerId, Params, Scene, SlotId, ThingId, Value, layered_key};
 
@@ -12,7 +12,7 @@ use super::trail::TRAIL;
 pub const OLD_TRAIL: &str = "trail.streak";
 pub const OLD_PARTICLES: &str = "particles.burst";
 
-/// Runs on files below format 10: every thing's Trail and Particles cards become layers of its
+/// Every thing's Trail and Particles cards become layers of its
 /// Look (a Look of another kind, or none, leaves them out), and the cards go.
 pub fn cards_to_layers(scene: &mut Scene) {
     let ids: Vec<ThingId> = scene.things.keys().copied().collect();
@@ -165,9 +165,9 @@ mod tests {
         p
     }
 
-    /// A format 9 file of a ball with a Trail and a Particles card, keyframes on the trail's
-    /// Length and Taper, and a shape with a Particles card.
-    fn old_file() -> (String, ThingId, ThingId) {
+    /// A scene of a ball with a Trail and a Particles card, keyframes on the trail's Length and
+    /// Taper, and a shape with a Particles card.
+    fn old_scene() -> (Scene, ThingId, ThingId) {
         let reg = registry();
         let mut scene = crate::new_studio_scene(&reg);
         let ball = crate::add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
@@ -194,15 +194,14 @@ mod tests {
         };
         scene.tracks.insert(key("seconds"), track(0.2, 1.0));
         scene.tracks.insert(key("taper"), track(1.0, 0.25));
-        let text = bpe_core::save(&scene).replace("format: 12", "format: 9");
-        (text, ball, shape)
+        (scene, ball, shape)
     }
 
     #[test]
-    fn old_trail_and_particle_cards_open_as_layers_with_their_keyframes() {
+    fn old_trail_and_particle_cards_become_layers_with_their_keyframes() {
         let reg = registry();
-        let (text, ball, shape) = old_file();
-        let scene = bpe_core::load(&text, &reg).unwrap();
+        let (mut scene, ball, shape) = old_scene();
+        cards_to_layers(&mut scene);
         let t = &scene.things[&ball];
         assert!(!t.slots.contains_key(&SlotId::Trail) && !t.slots.contains_key(&SlotId::Particles));
         let look = &t.slots[&SlotId::Look];
@@ -232,16 +231,7 @@ mod tests {
             scene.things[&shape].slots[&SlotId::Look].layers.iter().map(|l| l.kind.as_str()).collect();
         assert_eq!(kinds, [crate::modules::look::shape::BODY, SHAPE_PARTICLES]);
         // The new layers are ordinary: they take sub-layers.
-        let mut scene = scene;
         scene.add_sub_layer(&reg, ball, SlotId::Look, trail, SUB_GLOW).unwrap();
         assert!(bpe_core::resolve(&scene, &reg).problems.is_empty());
-    }
-
-    #[test]
-    fn a_format_10_file_is_left_alone() {
-        let reg = registry();
-        let (text, ball, _) = old_file();
-        let scene = bpe_core::load(&text.replace("format: 9", "format: 11"), &reg).unwrap();
-        assert_eq!(scene.things[&ball].slots[&SlotId::Trail].kind, OLD_TRAIL, "kept for resolve to report");
     }
 }

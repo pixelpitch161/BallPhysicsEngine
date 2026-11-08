@@ -79,7 +79,7 @@ walls and the floor (edges Bounce: `MeetsSettings::floor`), `Surfaces::of`, `add
 (`MOST_SLIDES`, `SLIDE_LEAST`), pours off ledges (`spill`), crumbles when its shape moves (`crumble_moved`), cut by balls
 (`cut_by_ball`, sand Thrown up, `throw_sand`, `MOST_THROWN` in one go); touching piles on one surface are joined (`merge_touching`); layer **Piles** `particles.piles` draws one upright
 streak a column). **Two-way** (`two_way.rs`, Meets things' Two-way group: Weight, Pushes / Slows / Holds up / Weighs
-balls): `in_main` is then true, so the thing runs in the main world and counts in the fingerprint (`ThingSim::own_cards`
+balls): `in_main` is then true, so the thing runs in the main world and counts in the fingerprint (`ThingSim::steps_own_cards`
 makes `fingerprint_of` hash its own Motion/Bounce cards, and then the Air card and its keys too); `TwoWayOut` sums each particle step's momentum per ball in
 chunk order, given once in the thing's `forces`, stuck weight every substep, and `hold_up` (the `settle` hook) rests
 balls on piles (digging in past `DIG_SPEED`). Looks: Fire and smoke (Flame; its Smoke child Soft smoke), Bubbles, Sand that
@@ -116,7 +116,7 @@ Shadow/Glow/Outline subs, cut at jumps), `particles.marks` ("Marks that stay", `
 drawn as dots with splats and a drip) and `particles.liquid` (`liquid.rs`: `LiquidLayer` Blob size, Level, Edge
 softness, Roundness, Surface Matte/Plastic/Chrome/Metal/Glass/Toon, Light angle, Shine, Bend, Tint, Sky, Rim; no
 sub-layers, no Colour split). The stepping reads only `wants.rs::Wants` (trail points, marks kept) from the Look, and
-`ThingSim::more_fingerprint` (hashed by `beside_fingerprint`, never the main part's) rebuilds the particle playback
+`ThingSim::beside_print_extra` (hashed by `beside_fingerprint`, never the main part's) rebuilds the particle playback
 only when that changes. A liquid is `Frame.liquids` (`bpe_gfx::Liquid { blobs, style, front }`): `bpe-gfx/src/liquid.rs`
 `LiquidPass` splats `LiquidBlob`s additively into a full-size Rgba16Float field (its own bind group: style only) and
 `shaders/liquid.wgsl` `fs_surface` cuts it at Level and shades it (Glass samples the copied-under picture bent by the
@@ -137,7 +137,7 @@ process-wide cache of `Arc<Vec<Vec2>>`; words by a scanline fill of `balls::shap
 particle's `Speck.spot` (1-based) names its **home**, which follows the anchor and turns by **Homes turn**
 (`ParticlesState.home_turn`, `HomeFrame`); Keep a crowd / Once at the start fill every free place. Emit **On the beat**
 (`beats.rs::Moments`, Every Beat / Bar / Bars, Offset) reads the tempo from `World.beat_seconds`/`beats_in_bar` (set by
-the scene sim; `things::scene::sim::beat_of`); `ThingSim::affects_beside` puts the tempo keys into `beside_fingerprint` so
+the scene sim; `things::scene::sim::beat_of`); `ThingSim::key_restarts_beside` puts the tempo keys into `beside_fingerprint` so
 a tempo edit restarts the particles (not the physics). Heading **Round the middle**. Nine force layers
 (`more_forces.rs`): Pull to / Push away from (Toward Its place, A point, Its ball, Ball number, The middle of its parent,
 Balls nearby; Falloff, Orbit, Swallow), Spring home, Flock (start-of-step `ready::Flockmates` grid, at most
@@ -149,6 +149,11 @@ Shockwaves, Comet tail, Black hole, Iron filings, Beat grid, Moiré (two grids, 
 Goldens `tests/golden-particles-motion*.txt` (`scenes::particle_motion_scenes`); the preview shows a rectangle grid's
 corner handle.
 
+Since the 2026-11-08 clean-up every look's recipe is a small function of its own (`looks.rs::rain()`,
+`looks_motion.rs::galaxy()`, ...), and `recipe()` is one line per look; shared bits are `riding`, `top`, `vanish`,
+`push` and `screen_grid`. The particles' dice are `bpe_core::dice` (`hash`, and `Stream` for the burst and shatter
+pieces).
+
 Part 7 is in (plan `part7.md`, "As built" at its end): **moments, sound, rules, lighting**. Meeting code marks a
 `Speck` (`met`/`with`/`impact`) and the serial retain turns marks into `Moment`s (`moments.rs`: Hit a ball, Hit a shape,
 Land (once, `LANDED`), Born, Burst; `ParticlesState.moments`/`moment_counts` for world step `moments_step`, at most
@@ -158,7 +163,7 @@ Moments group of `VoiceSettings` (`moments_*`, `MomentStrength`) picks which pla
 them like hits (`hits::plays`, no Heard from for own moments). The sound engine's physics is `heard_part` (main plus
 beside things whose `ThingSim::heard` is some) and `sound_fingerprint` mixes them in. Rules: `when.particles`
 (`particles/rules.rs`, Who / Moment / At least); `BlockSim::keeps` pulls a Particles thing a rule reads into the main
-world (`is_beside(scene, ..)`, `main_part(scene, ..)`), and `ThingSim::own_cards` hashes its cards whole then. Lighting:
+world (`is_beside(scene, ..)`, `main_part(scene, ..)`), and `ThingSim::steps_own_cards` hashes its cards whole then. Lighting:
 its drawn layers have `AroundLit`'s fold (`Kind::light_defs`), the `particles.sub.light` Gives off light sub-layer
 (listed in the Lights panel), stamped by `Drew::stamp`. Hits pulses on its settings: `ThingSim::pulses_on_hits`,
 `Animation::apply_where` with `bpe_runtime::hit_strength`. Editor: `inspector::sounds`, `sound_tab/moments.rs`.

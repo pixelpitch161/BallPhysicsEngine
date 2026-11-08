@@ -462,7 +462,6 @@ mod tests {
         assert_eq!(frame.paths.len(), 1);
         assert_eq!((frame.paths[0].b[0], frame.paths[0].b[1], frame.paths[0].a[3]), (0.0, 0.0, 300.0));
         assert!(frame.path_points.is_empty());
-        assert!(frame.shapes.is_empty(), "shapes don't use the old wall pipeline");
     }
 
     #[test]

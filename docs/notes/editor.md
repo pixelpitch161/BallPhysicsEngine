@@ -90,6 +90,55 @@ Moved word for word from CLAUDE.md on 2026-11-08 (workstream W1). Add each finis
   pulse lane says what it follows. `Studio.follow` holds a `ControlSampler` for `build_frame_with` while any
   setting follows sound.
 
+## Responsiveness (W6, 2026-11-08, plan `plans/2026-11-08-editor-responsiveness.md`)
+
+- **One picture recipe.** `preview::compose` builds every preview frame: soloed lights (`lights_panel::soloed`),
+  `follow` and `light_probe`, the World view's camera (`world_look`) and the Show bar (`show_light`). `draw_picture`
+  and the effects' warm-up (`preview/warm.rs::draw_at`) both use it, and the warm-up lends the particle playback's
+  particles to any replayed frame of the same step (in practice the playhead's own, the one swapped in; the replayed
+  frames before it have no particles, since the particle playback only holds the playhead's moment). A warm-up
+  restarts when the light show or the solo changes (`Seen`, `Warmup::light`).
+- **Warm-up budget.** It replays frames for `WARM_BUDGET` (8 ms) per editor frame (at least one) and keeps the spare
+  renderer `SPARE_KEEP` (2 s) after its last use, then drops it (`Shown::spare_used`, `warm::spare_due` asks for the
+  repaint that drops it).
+- **Held edits.** `Studio::hold_runs` is on while a pointer button is held anywhere but on a preview handle
+  (`Preview::dragging`). `scene_changed` always re-resolves and bumps the revision, then `restart_runs` compares the
+  physics, particle and sound fingerprints; held, a change only sets `runs_due` and the preview draws the old run with
+  the new looks. `settle_runs` (end of each frame) restarts them when the button is let go or after `RUNS_REST`
+  (100 ms) without a change. Preview drags restart every frame, so a dragged thing follows the pointer.
+- **Seeking** (`Studio::seek`) only moves the playhead; the preview's `draw_picture` catches the playback up one
+  `CATCH_UP_BUDGET` a frame. Tests use `Studio::catch_up`.
+- **Recording edits.** `Studio::snapshot` is the scene as last recorded: the frame compares the scene with it once
+  (`record_frame`) and copies the scene only when it changed. `after_edit`, undo, redo and `replace_scene` clear it
+  (the next frame copies afresh). A playing frame with no input, nothing flagged and the same revision skips even the
+  compare (`quiet_frame`). `unsaved()` is worked out once per revision (`unsaved_at`).
+- **Undo size.** `History` keeps `Step { scene, bytes }` (`bytes` = the scene's RON length, counted by
+  `history::scene_bytes` without writing the text); past `UNDO_BYTES` (256 MiB) in undo and redo, or `UNDO_LIMIT`
+  steps, the oldest undo steps go, never the newest.
+- **Look card views.** The ball view and the Group view keep a `ball_view::MiniCache`: the small scene is made each
+  frame and compared; it is resolved and hashed (`content_key`) only when it changed, and the ball view keeps the
+  `World` built from it (`build_view_frame_in` sets every ball's place, size, speed, life and hits afresh). Moving
+  and Hit repaint every 33 ms with the window in front, 250 ms behind other windows.
+- **Timeline.** The Hits lane's ticks are `timeline::HitTicks`, read once per hit as the log grows and again from the
+  start only for a new revision, ruler, length or a shorter log. The slot marks follow a growing log at most every
+  200 ms while playing (`SLOT_MARKS_EVERY`).
+- **Particles** are lent to the preview's world without copying: `particle_job::Snapshot::states` holds
+  `Arc<dyn ThingState>` and `Snapshot::lent` boxes the pointer (the runtime reads a boxed `Arc` as the state).
+- **Shaders off the editor's thread.** `bpe_gfx::ProgramStore` also holds the lighting's pipelines
+  (`lighting::LightKit`, with the Stage camera's `stage_camera_pass::StageKit`; `Lighting::with_kit` and
+  `StageCameraPass::with_kit` make the per-renderer buffers and pictures) and the picture effects
+  (`Programs::effect`, `effects::chain::Compiled` behind an `Arc`; `Chain::share`). A background store (the editor's
+  `preview::shared_programs`) builds them on their own threads: a lit frame draws unlit and an effect is left out
+  until ready, and `Renderer::programs_waiting` makes the views draw again in 50 ms. Exports and tests use the
+  default store, which builds at once, so their pictures never change. Every editor view shares one store, so each
+  shader is built once. While typing an effect's code, the call keeps drawing its last text that built until the new
+  one is ready (`Chain::last_built`); finished builds of text no longer asked for are collected each time
+  (`Programs::collect_effects`). A warm-up waits for the preview's shaders and starts over if the spare renderer
+  meets one still building (it shares the preview's own store). A store's pipelines belong to one device: never
+  share a store between devices (test devices give equal ids, so a mix-up isn't caught).
+- **Known limit.** While a slider is held, the preview draws the old run's places with the new looks, so a look that
+  depends on a physics setting (say a size) can look slightly off until you let go.
+
 ## Never lose work, exports and errors (W4, 2026-11-08)
 
 Plan `docs/superpowers/plans/2026-11-08-never-lose-work.md` (findings E1 to E6 and C4 of the improvement review).

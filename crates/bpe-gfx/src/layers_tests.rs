@@ -1,7 +1,7 @@
 //! Picture tests for balls drawn with a stack of layers (layers.wgsl), on the software GPU.
 
 use crate::pictures::{pixel_sized, render_sized, save};
-use crate::{BallInstance, BlendLayer, Frame, LayerGpu, LayeredInstance, PaintGpu, Place};
+use crate::{BlendLayer, Frame, LayerGpu, LayeredInstance, PaintGpu, Place};
 use bpe_core::{Blend, Color, Gradient};
 use glam::Vec2;
 
@@ -184,28 +184,6 @@ fn records_past_the_count_draw_nothing_and_the_same_frame_draws_the_same_bytes()
     assert!(a == b, "only the body is drawn");
     let again = render_sized(&longer, W, H).unwrap();
     assert!(a == again, "drawing is repeatable");
-}
-
-#[test]
-fn a_default_shine_on_a_flat_ball_looks_like_the_classic_shiny_ball() {
-    for colour in [WHITE, PINK] {
-        let mut classic = Frame { bloom: 0.0, ..Frame::default() };
-        classic.balls.push(BallInstance {
-            center: [0.0, 0.0],
-            radius: 200.0,
-            glow: 0.0,
-            color: colour,
-            code: [3.0, 0.3, 0.0, 0.0],
-            paint: PaintGpu::default(),
-        });
-        let layered = one(vec![body(), shine()], colour, 200.0, 1.45);
-        let Some(a) = render_sized(&classic, W, H) else { return };
-        let b = render_sized(&layered, W, H).unwrap();
-        save("layers-shine-classic", &a, W, H);
-        save("layers-shine-layered", &b, W, H);
-        let worst = a.iter().zip(&b).map(|(x, y)| x.abs_diff(*y)).max().unwrap();
-        assert!(worst <= 2, "worst byte difference {worst} for {colour:?}");
-    }
 }
 
 #[test]

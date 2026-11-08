@@ -1,4 +1,4 @@
-// Shapes of styled balls. Appended to scene.wgsl's module, which defines PI and TAU.
+// Ball shapes. Appended to scene.wgsl's module, which defines PI and TAU.
 
 // Shapes are distance functions on a unit-radius ball, y up, tip on top.
 

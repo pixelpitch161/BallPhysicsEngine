@@ -91,8 +91,4 @@ pub trait NotePicker: Send {
 }
 
 /// A well-mixed 64-bit hash of `x`.
-pub fn mix(mut x: u64) -> u64 {
-    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    x ^ (x >> 31)
-}
+pub use bpe_core::dice::splitmix64 as mix;

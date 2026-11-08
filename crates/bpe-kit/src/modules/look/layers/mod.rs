@@ -12,6 +12,7 @@ pub mod around_subs;
 pub mod aura;
 pub mod blend;
 pub mod body;
+#[cfg(any(test, feature = "test-scenes"))]
 pub mod cards_to_layers;
 pub mod cut;
 pub mod gives_light;
@@ -248,8 +249,6 @@ pub(crate) fn around_kind(
         dynamic: no_more,
     }
 }
-/// The kind id masks had before sub-layers (scene format 8): they open as Cut sub-layers.
-pub const OLD_MASK: &str = "layer.mask";
 pub const FLASH: &str = "react.flash";
 pub const HUE: &str = "react.hue";
 pub const STRETCH: &str = "react.stretch";
@@ -471,19 +470,6 @@ pub fn around_history(resolved: &bpe_core::ResolvedThing) -> Option<bpe_runtime:
     want
 }
 
-/// Opens format 8 scenes: every mask becomes a Cut sub-layer with the same settings.
-pub fn masks_to_cuts(scene: &mut bpe_core::Scene) {
-    for thing in scene.things.values_mut() {
-        for card in thing.slots.values_mut() {
-            for layer in &mut card.layers {
-                if layer.kind == OLD_MASK {
-                    layer.kind = SUB_CUT.into();
-                }
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -580,28 +566,6 @@ mod tests {
             assert_eq!(k.takes_subs(), takes, "{}: drawn layers and the Body but Blend take sub-layers", k.id());
         }
         assert_eq!(reg.layers_for(CARD).filter(|k| k.section() == LayerSection::Sub).count(), 13);
-    }
-
-    #[test]
-    fn a_format_8_mask_opens_as_a_cut_with_its_settings() {
-        let reg = registry();
-        let mut scene = crate::new_studio_scene(&reg);
-        let ball = crate::add_thing(&mut scene, &reg, "balls", bpe_core::ThingId::ROOT).unwrap();
-        let slot = bpe_core::SlotId::Look;
-        let outline = scene.add_layer(&reg, ball, slot, OUTLINE).unwrap();
-        let cut = scene.add_sub_layer(&reg, ball, slot, outline, SUB_CUT).unwrap();
-        let size = bpe_core::Address::on(ball, slot, &bpe_core::layered_key(cut, "size"));
-        scene.set_at(&reg, &size, Value::Number(0.25)).unwrap();
-        let text = bpe_core::save(&scene).replace("\"sub.cut\"", "\"layer.mask\"").replace("format: 12", "format: 8");
-        assert!(text.contains("layer.mask"));
-        let back = bpe_core::load(&text, &reg).unwrap();
-        let layer = back.card(ball, slot).unwrap().layer(cut).unwrap();
-        assert_eq!((layer.kind.as_str(), layer.parent), (SUB_CUT, Some(outline)));
-        assert_eq!(back.value_at(&reg, &size), Some(Value::Number(0.25)));
-        // A format 9 file keeps whatever it says.
-        let nine = bpe_core::save(&scene).replace("\"sub.cut\"", "\"layer.mask\"").replace("format: 12", "format: 9");
-        let back = bpe_core::load(&nine, &reg).unwrap();
-        assert_eq!(back.card(ball, slot).unwrap().layer(cut).unwrap().kind, OLD_MASK);
     }
 
     #[test]

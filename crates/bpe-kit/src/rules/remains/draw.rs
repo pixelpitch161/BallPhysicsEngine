@@ -236,7 +236,7 @@ impl BallRemains<'_> {
         let reach = ball.form[3].max(1.0) + MARGIN / radius;
         let bound = reach * std::f32::consts::SQRT_2 * 1.01;
         let own = seed_of(self.thing, self.row, r.step);
-        let spin = Vec2::from_angle((own >> 8) as f32 / (1u32 << 24) as f32 * std::f32::consts::TAU);
+        let spin = Vec2::from_angle(bpe_core::dice::unit24(own) * std::f32::consts::TAU);
         let start = Start {
             centre,
             turn: ball.stretch[1].atan2(ball.stretch[0]),

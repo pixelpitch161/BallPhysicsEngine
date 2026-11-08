@@ -423,10 +423,10 @@ fn marker_settings_dont_touch_the_physics() {
         "vary_colour",
         "leave_trails",
     ] {
-        assert!(!EmitterSim.affects_physics(key), "{key}");
+        assert!(!EmitterSim.key_restarts_physics(key), "{key}");
     }
     for key in ["speed", "count", "catches", "vary_size", "rounds"] {
-        assert!(EmitterSim.affects_physics(key), "{key}");
+        assert!(EmitterSim.key_restarts_physics(key), "{key}");
     }
 }
 

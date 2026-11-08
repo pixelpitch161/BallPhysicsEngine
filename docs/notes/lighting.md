@@ -201,8 +201,8 @@ shaders. `tests/bake_pictures.rs` (bpe-cli); `scenes::bake_demo` is test-only.
   code, its settings from its header through `dynamic_defs`, checked by `bpe_gfx::picture_problem`). Each takes
   Mix (unclamped), Blend, Takes (Whole picture / Light only / Glow only, `TakesChoice`; picture stage only) and Glow
   above, then the header's own settings under plain keys (at most 6 Simple, `with_simple_room`). `EffectsDraw`
-  pushes one `EffectCall` per shown layer. Old `shader.<id>` cards become a one-layer stack on load
-  (`effects/upgrade.rs`, `add_upgrade(u32::MAX, single_effect_to_stack)`). Header lines gain `hard [a, b]`,
+  pushes one `EffectCall` per shown layer. (Old `shader.<id>` cards are no longer upgraded on load; the test
+  scenes build their stacks with `effects/upgrade.rs::stack_of`.) Header lines gain `hard [a, b]`,
   `// choice key = default [a, b, c]` and `// memory: <seconds>` / `// memory: fade <key>` (`memory_seconds`:
   frames until under 1/4096, at most `MAX_MEMORY` 10 s); the prelude gains the ball list (`ball_count`, `ball_uv`,
   `ball_radius`, `ball_color`, `ball_hit`, `ball_seed`, `nearest_ball`, from `Frame.ball_marks`, pushed by the
@@ -214,7 +214,8 @@ shaders. `tests/bake_pictures.rs` (bpe-cli); `scenes::bake_demo` is test-only.
   contour lines of the balls' summed field by marching squares). A Light's **Negative** flips its strength
   (`fs_light` clamps the summed light at 0). The editor's Effects card is `look_editor/effects.rs`; after a jump
   in time, `preview/warm.rs` replays the effects' remembered seconds on a spare renderer
-  (`Playback::rewound`), 6 frames per editor frame, and swaps it in ("Warming up effects… N%").
+  (`Playback::rewound`), as many frames as fit in 8 ms per editor frame, and swaps it in ("Warming up effects…
+  N%"); see `editor.md`, "Responsiveness", for how it builds its frames and when the spare goes.
 
 **Haze With the air (W13)**: `HazeMoves::WithTheAir` (shader code 1, the Drifting clouds) drifts as far as the
 scene's air carried them (`Air.drift`, the ambient wind × dt summed each step by the scene sim) × Speed; Still
