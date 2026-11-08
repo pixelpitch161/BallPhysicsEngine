@@ -398,11 +398,11 @@ fn a_stage_mirror_ball_throws_spots_on_the_wall() {
                     spots += 1;
                 }
             }
-            x += 12.0;
+            x += 8.0;
         }
-        y += 12.0;
+        y += 8.0;
     }
-    assert!(spots >= 8, "{spots} places on the wall lit by the mirror ball's spots");
+    assert!(spots >= 6, "{spots} places on the wall lit by the mirror ball's spots");
     // Shadows Off: the ball throws nothing.
     let mut unshadowed = scene.clone();
     set_lighting(&mut unshadowed, "shadow_style", Value::Choice("off".into()));

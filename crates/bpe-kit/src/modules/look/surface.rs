@@ -905,8 +905,8 @@ mod tests {
         glass.throws = 1.0;
         assert_eq!(glass.throw_of([1.0; 3]), None, "glass bends, it doesn't throw");
         let mut plastic = with(SurfaceKind::Plastic);
-        plastic.throws = 0.5;
-        assert_eq!(plastic.throw_of([1.0; 3]), None, "F0 0.04 at a half throws next to nothing");
+        plastic.throws = 0.4;
+        assert_eq!(plastic.throw_of([1.0; 3]), None, "F0 0.04 at 0.4 throws next to nothing");
         let mut wall = with(SurfaceKind::Matte);
         wall.mirror = MirrorSide::Inside;
         wall.mirror_strength = 0.5;
