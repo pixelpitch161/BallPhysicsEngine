@@ -434,7 +434,9 @@ pub fn master_top(ui: &mut Ui, scene: &mut bpe_core::Scene, kit: &bpe_kit::Kit, 
     }
     for keys in super::master::KNOBS.chunks(2) {
         pair(ui, |ui, i, width| {
-            keyed |= super::master::knob(ui, scene, kit, keys[i], time, width);
+            if let Some(key) = keys.get(i) {
+                keyed |= super::master::knob(ui, scene, kit, key, time, width);
+            }
         });
     }
     keyed

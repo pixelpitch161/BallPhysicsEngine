@@ -140,9 +140,11 @@ const BEAT_MIN_PX: f32 = 4.0;
 const BAR_NUMBER_PX: f32 = 28.0;
 
 /// The bars-and-beats grid for `tempo` over the ruler: every beat, or only bars when beats would
-/// sit closer than 4 px, then only every 2nd, 4th… bar. Bars are numbered from 1.
+/// sit closer than 4 px, then only every 2nd, 4th… bar. Bars are numbered from 1, the first at
+/// the scene's first beat (nothing is drawn before it).
 fn beat_lines(ruler: &Ruler, tempo: &TempoMap) -> Vec<BeatLine> {
     let beat = tempo.beat_seconds();
+    let first = tempo.first();
     let per_bar = tempo.top().max(1);
     if beat.is_nan() || beat <= 0.0 || ruler.duration <= 0.0 {
         return Vec::new();
@@ -158,7 +160,10 @@ fn beat_lines(ruler: &Ruler, tempo: &TempoMap) -> Vec<BeatLine> {
     while bar_px * (number_every as f32) < BAR_NUMBER_PX && number_every < 1 << 20 {
         number_every *= 2;
     }
-    let beats = (ruler.duration / beat + 1e-9).floor() as u64;
+    if first > ruler.duration {
+        return Vec::new();
+    }
+    let beats = ((ruler.duration - first) / beat + 1e-9).floor() as u64;
     let mut lines = Vec::new();
     for n in 0..=beats {
         let is_bar = n.is_multiple_of(per_bar as u64);
@@ -167,7 +172,7 @@ fn beat_lines(ruler: &Ruler, tempo: &TempoMap) -> Vec<BeatLine> {
             continue;
         }
         let number = (is_bar && bar.is_multiple_of(number_every)).then_some(bar + 1);
-        lines.push((ruler.x_of(n as f64 * beat), is_bar, number));
+        lines.push((ruler.x_of(first + n as f64 * beat), is_bar, number));
     }
     lines
 }
@@ -958,8 +963,10 @@ fn repeat_selected(studio: &mut Studio, timeline: &mut Timeline) -> usize {
 /// a few pixels, and onto a beat too while the grid snaps.
 fn snap(studio: &Studio, ruler: &Ruler, x: f32) -> f64 {
     let time = ruler.time_of(x);
-    let beat = TempoMap::from_settings(&studio.settings()).beat_seconds();
-    let beats = (0..=(ruler.duration / beat).floor() as u64).map(move |n| n as f64 * beat).filter(|_| studio.grid.snap);
+    let tempo = TempoMap::from_settings(&studio.settings());
+    let (beat, first) = (tempo.beat_seconds(), tempo.first());
+    let count = ((ruler.duration - first).max(0.0) / beat).floor() as u64;
+    let beats = (0..=count).map(move |n| first + n as f64 * beat).filter(|_| studio.grid.snap);
     let seconds = (0..=ruler.duration.ceil() as u32).map(|s| s as f64).chain(beats);
     let steps_per_second = studio.playback.world().steps_per_second;
     let hits =
@@ -1120,6 +1127,18 @@ mod tests {
         let lines = beat_lines(&r, &TempoMap::new(90.0, 6, 8));
         let bars: Vec<f32> = lines.iter().filter(|l| l.1).map(|l| l.0).collect();
         assert_eq!(bars, [0.0, 200.0, 400.0, 600.0, 800.0]);
+    }
+
+    #[test]
+    fn the_grid_starts_at_the_first_beat() {
+        let r = ruler(800.0, 8.0);
+        let lines = beat_lines(&r, &TempoMap::new(120.0, 4, 4).with_first(1.0));
+        let bars: Vec<f32> = lines.iter().filter(|l| l.1).map(|l| l.0).collect();
+        assert_eq!(bars, [100.0, 300.0, 500.0, 700.0], "bar 1 at 1 s, then every 2 s");
+        assert!(lines.iter().all(|l| l.0 >= 100.0), "nothing before the first beat");
+        let numbers: Vec<u32> = lines.iter().filter_map(|l| l.2).collect();
+        assert_eq!(numbers, [1, 2, 3, 4]);
+        assert!(beat_lines(&r, &TempoMap::new(120.0, 4, 4).with_first(9.0)).is_empty());
     }
 
     #[test]

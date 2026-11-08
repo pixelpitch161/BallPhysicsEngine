@@ -839,6 +839,8 @@ pub fn any_ripples(resolved: &Resolved) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Beat {
     pub seconds: f64,
+    /// Where the first beat is, in seconds (the scene's First beat at).
+    pub first: f64,
 }
 
 impl Beat {
@@ -858,13 +860,19 @@ impl Beat {
             _ => None,
         }
         .unwrap_or(4.0);
-        Beat { seconds: 60.0 / tempo * 4.0 / note }
+        let first = match root.and_then(|p| p.get("first_beat")) {
+            Some(Value::Number(x)) => *x as f32 as f64,
+            Some(Value::Int(x)) => *x as f64,
+            _ => 0.0,
+        };
+        let first = if first.is_finite() { first.clamp(0.0, 600.0) } else { 0.0 };
+        Beat { seconds: 60.0 / tempo * 4.0 / note, first }
     }
 }
 
 impl Default for Beat {
     fn default() -> Self {
-        Beat { seconds: 0.5 }
+        Beat { seconds: 0.5, first: 0.0 }
     }
 }
 
@@ -1024,20 +1032,25 @@ impl MovesAt {
         let every = f.number("step_every");
         let step = (every > 0.0).then(|| {
             let period = (every * beat.seconds).max(1e-6);
-            let k = (time / period).floor();
+            // On the beats, counted from the scene's first beat.
+            let since = time - beat.first;
+            let k = (since / period).floor();
             if k < 1.0 {
                 return 0.0;
             }
             // A glide longer than a step would start the next step before this one lands.
             let glide = f.number("step_glide").min(period);
-            let g = if glide > 0.0 { ((time - k * period) / glide).clamp(0.0, 1.0) } else { 1.0 };
+            let g = if glide > 0.0 { ((since - k * period) / glide).clamp(0.0, 1.0) } else { 1.0 };
             k - 1.0 + g * g * (3.0 - 2.0 * g)
         });
         let amount = f.number("breathe");
         let breathe = if amount != 0.0 {
             let every = f.number("breathe_every");
-            let phase =
-                if every > 0.0 { time / (every * beat.seconds).max(1e-6) } else { time * f.number("breathe_speed") };
+            let phase = if every > 0.0 {
+                (time - beat.first) / (every * beat.seconds).max(1e-6)
+            } else {
+                time * f.number("breathe_speed")
+            };
             fin(amount * (std::f64::consts::TAU * phase.rem_euclid(1.0)).sin()) as f32
         } else {
             0.0

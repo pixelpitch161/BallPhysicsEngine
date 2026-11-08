@@ -191,3 +191,98 @@ fn the_first_voice_of_a_silent_scene_picks_up_where_the_sound_is() {
     assert!(tail.iter().any(|&v| v != 0.0), "the ball hits after 1 s");
     assert!(tail.iter().zip(&after[skip * 2..]).all(|(a, b)| (a - b).abs() < 1e-6));
 }
+
+fn warm_up_of(scene: &Scene, kit: &Kit) -> f64 {
+    Engine::new(scene, &resolve_scene(scene, &kit.registry), kit).warm_up()
+}
+
+/// The new scene with the starter sound on its shape, `edit` made to its card.
+fn voiced(kit: &Kit, edit: impl FnOnce(&mut bpe_core::Slot)) -> Scene {
+    let mut scene = new_scene(&kit.registry);
+    let shape = scene.order.iter().copied().find(|id| scene.things[id].kind == "shape").unwrap();
+    let mut card = bpe_kit::sound::starter_voice(&kit.registry);
+    edit(&mut card);
+    scene.things.get_mut(&shape).unwrap().slots.insert(bpe_core::SlotId::Sound, card);
+    scene
+}
+
+#[test]
+fn the_warm_up_is_sized_to_the_longest_tail() {
+    use bpe_core::{LayerId, Value, layered_key};
+    let kit = kit();
+    // A short blip: the least.
+    let (scene, _) = toned(&kit, "test-tone");
+    assert_eq!(warm_up_of(&scene, &kit), bpe_sound::MIN_WARM_UP);
+    // A 2 s decay and the margin.
+    let (scene, _) = toned(&kit, "test-tone-decay=2");
+    assert!((warm_up_of(&scene, &kit) - 2.25).abs() < 1e-3, "{}", warm_up_of(&scene, &kit));
+    // The starter sound is short; a 10 s release makes it ring 10 s longer.
+    let short = warm_up_of(&voiced(&kit, |_| {}), &kit);
+    assert!(short < 1.5, "the starter sound warms up {short} s");
+    let long = voiced(&kit, |c| c.params.set(&layered_key(LayerId(0), "release"), Value::Number(10_000.0)));
+    let long = warm_up_of(&long, &kit);
+    assert!(long > 10.0 && long < 11.5, "{long}");
+    // A drone may have started any time: at least the held floor.
+    let drone = voiced(&kit, |c| c.params.set("play_when", Value::Choice("always".into())));
+    assert!(warm_up_of(&drone, &kit) >= bpe_sound::HELD_WARM_UP);
+    // A 20 s hall on the bus rings on after the notes.
+    let mut hall = voiced(&kit, |_| {});
+    bpe_kit::ensure_mixer(&mut hall, &kit.registry);
+    let (root, mixer) = (ThingId::ROOT, bpe_core::SlotId::Mixer);
+    let reverb = hall.add_layer_in(&kit.registry, root, mixer, "fx.reverb", Some(0)).unwrap();
+    hall.card_mut(root, mixer).unwrap().params.set(&layered_key(reverb, "decay"), Value::Number(20.0));
+    let w = warm_up_of(&hall, &kit);
+    assert!(w > 20.0 && w < 22.0, "{w}");
+    // Frozen, it never ends: the most.
+    hall.card_mut(root, mixer).unwrap().params.set(&layered_key(reverb, "freeze"), Value::Bool(true));
+    assert_eq!(warm_up_of(&hall, &kit), bpe_sound::MAX_WARM_UP);
+}
+
+#[test]
+fn a_seek_into_a_long_reverb_matches_a_straight_render() {
+    use bpe_core::{Value, layered_key};
+    let kit = kit();
+    let (mut scene, _) = toned(&kit, "test-tone");
+    bpe_kit::ensure_mixer(&mut scene, &kit.registry);
+    let (root, mixer) = (ThingId::ROOT, bpe_core::SlotId::Mixer);
+    let reverb = scene.add_layer_in(&kit.registry, root, mixer, "fx.reverb", Some(0)).unwrap();
+    let card = scene.card_mut(root, mixer).unwrap();
+    card.params.set(&layered_key(reverb, "decay"), Value::Number(6.0));
+    card.params.set(&layered_key(reverb, "mix"), Value::Number(100.0));
+    // Its wobble runs from when it starts: still, it plays the same after a seek.
+    card.params.set(&layered_key(reverb, "modulation"), Value::Number(0.0));
+    let straight = render(&scene, &kit, 12.0);
+    let resolved = resolve_scene(&scene, &kit.registry);
+    let mut e = Engine::new(&scene, &resolved, &kit);
+    assert!(e.warm_up() > 6.0, "{}", e.warm_up());
+    e.seek(9.0);
+    let from = e.sample_position() as usize;
+    let mut block = [0.0f32; BLOCK * 2];
+    let mut sought = Vec::new();
+    while (e.sample_position() as usize) < straight.len() / 2 {
+        e.render(&mut block);
+        sought.extend_from_slice(&block);
+    }
+    let tail = &straight[from * 2..];
+    let loudest = tail.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    assert!(loudest > 1e-3, "the hall rings at 9 s: {loudest}");
+    let worst = tail.iter().zip(&sought).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+    assert!(worst < loudest * 1e-3, "worst difference {} dB under the sound", bpe_dsp::gain_to_db(worst / loudest));
+}
+
+#[test]
+fn a_seek_gives_up_when_asked() {
+    let kit = kit();
+    let (scene, _) = toned(&kit, "test-tone-decay=20");
+    let resolved = resolve_scene(&scene, &kit.registry);
+    let mut e = Engine::new(&scene, &resolved, &kit);
+    let mut asked = 0;
+    let done = e.seek_until(25.0, || {
+        asked += 1;
+        asked > 10
+    });
+    assert!(!done, "it gave up warming up");
+    assert_eq!(e.sample_position(), 25 * 48_000, "but it landed, cold");
+    assert!(e.seek_until(25.0, || false));
+    assert_eq!(e.sample_position(), 25 * 48_000);
+}

@@ -1,5 +1,6 @@
 //! Hits placed on their exact samples.
 
+use bpe_core::ThingId;
 use bpe_runtime::{Event, EventKind, Log};
 use std::collections::VecDeque;
 
@@ -22,6 +23,12 @@ pub fn hit_sample(event: &Event, samples_per_step: f64) -> u64 {
 /// Particles thing's sound plays.
 pub fn plays(kind: &EventKind) -> bool {
     matches!(kind, EventKind::Hit | EventKind::Note | EventKind::Moment)
+}
+
+/// Whether `event` is on (or by) one of the things in `heard` (sorted): only those can sound,
+/// so only those wait in the queue (a crowd's ball-on-ball hits would otherwise fill it).
+pub fn is_heard(event: &Event, heard: &[ThingId]) -> bool {
+    heard.binary_search(&event.a.thing).is_ok() || event.b.is_some_and(|b| heard.binary_search(&b.thing).is_ok())
 }
 
 /// Reads a physics log as it grows and hands out each block's hits.
@@ -53,8 +60,8 @@ impl HitCursor {
         self.waiting.clear();
     }
 
-    /// Takes the hits `log` gained since the last call.
-    pub fn read(&mut self, log: &Log) {
+    /// Takes the hits `log` gained since the last call that are on a thing in `heard` (sorted).
+    pub fn read(&mut self, log: &Log, heard: &[ThingId]) {
         let events = log.events();
         if self.read > events.len() {
             self.read = events.len();
@@ -62,7 +69,7 @@ impl HitCursor {
         for e in &events[self.read..] {
             // Hits, the notes rules play (rules part 6) and particles' moments (particles part 7),
             // each on its sample.
-            if plays(&e.kind) {
+            if plays(&e.kind) && is_heard(e, heard) {
                 let at = hit_sample(e, self.samples_per_step);
                 // Hits come in step order but can land out of order within a step.
                 let i = self.waiting.partition_point(|(s, _)| *s <= at);
@@ -75,14 +82,14 @@ impl HitCursor {
     /// Moves the hits that land before `start + len` into `out` (cleared first), with their
     /// offsets in the block that starts at `start`; any that are already past land at 0.
     /// Starts over at sound sample `from`: the hits in `log` from there on wait, the earlier
-    /// ones are passed over.
-    pub fn seek(&mut self, log: &Log, from: u64) {
+    /// ones are passed over. Only hits on things in `heard` (sorted) wait.
+    pub fn seek(&mut self, log: &Log, from: u64, heard: &[ThingId]) {
         let events = log.events();
         // Step k's hits land in ((k - 1) × sps, k × sps], so steps before this one end earlier.
         let first_step = (from as f64 / self.samples_per_step).floor() as u64;
         self.read = events.partition_point(|e| e.step < first_step);
         self.waiting.clear();
-        self.read(log);
+        self.read(log, heard);
         while self.waiting.front().is_some_and(|(at, _)| *at < from) {
             self.waiting.pop_front();
         }
@@ -103,7 +110,6 @@ impl HitCursor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bpe_core::ThingId;
     use bpe_runtime::Party;
     use glam::Vec2;
 
@@ -129,7 +135,7 @@ mod tests {
         log.push(hit(2, 0.1));
         log.push(hit(2, 0.05));
         let mut c = HitCursor::new(240);
-        c.read(&log);
+        c.read(&log, &[ThingId(1), ThingId(2)]);
         let mut out = Vec::with_capacity(16);
         c.take_block(0, 64, &mut out);
         assert!(out.is_empty());
@@ -137,5 +143,24 @@ mod tests {
         assert_eq!(out.iter().map(|h| h.offset).collect::<Vec<_>>(), [16]);
         c.take_block(128, 128, &mut out);
         assert_eq!(out.iter().map(|h| h.offset).collect::<Vec<_>>(), [82, 92], "sorted by sample");
+    }
+
+    #[test]
+    fn only_hits_on_heard_things_wait() {
+        let mut log = Log::default();
+        log.push(hit(1, 0.4));
+        let mut ball_on_ball = hit(1, 0.5);
+        ball_on_ball.b = Some(Party { thing: ThingId(3), item: 4 });
+        log.push(ball_on_ball);
+        let mut c = HitCursor::new(240);
+        c.read(&log, &[ThingId(1)]);
+        let mut out = Vec::with_capacity(16);
+        c.take_block(0, 1_000, &mut out);
+        assert_eq!(out.len(), 1, "the hit on the heard shape, not the balls between themselves");
+        assert_eq!(out[0].event.b.unwrap().thing, ThingId(1));
+        let mut c = HitCursor::new(240);
+        c.read(&log, &[]);
+        c.take_block(0, 1_000, &mut out);
+        assert!(out.is_empty(), "nothing heard: nothing waits");
     }
 }

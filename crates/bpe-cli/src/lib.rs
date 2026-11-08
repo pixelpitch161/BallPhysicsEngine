@@ -28,7 +28,7 @@ pub struct ExportOptions {
     pub max_frames: Option<u32>,
     /// Which video encoder to use.
     pub encoder: Encoder,
-    /// Also save each bus and the master as 24-bit WAVs beside the video.
+    /// Also save each bus and the master as 32-bit float WAVs beside the video.
     pub stems: bool,
     /// Also save the notes the shapes played as a MIDI file beside the video.
     pub midi: bool,

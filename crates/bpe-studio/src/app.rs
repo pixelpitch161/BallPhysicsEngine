@@ -178,6 +178,9 @@ pub struct Studio {
     /// The part of it the sound hears ([`sound_fingerprint`]): the sound starts its run over
     /// only when this changes.
     pub sound_fingerprint: u64,
+    /// What the sound's settings were built from ([`bpe_sound::patch_fingerprint`]): the patch is
+    /// built again and sent only when this changes (not on a colour drag).
+    pub patch_print: u64,
     /// The scene's sound as the picture reads it, while some setting follows sound.
     pub follow: Option<std::sync::Arc<bpe_sound::ControlSampler>>,
     /// The scene's light as the picture reads it, while something senses light (Follow light, a
@@ -252,6 +255,8 @@ pub struct Studio {
     speakers_wait: Duration,
     /// The sound thread itself stopped (not the speakers): it isn't started again by itself.
     sound_broken: bool,
+    /// The speakers' dropouts already told of in the status line.
+    underruns_seen: u64,
     /// The listening volume changed and is saved once it has rested (not on every frame of a
     /// drag).
     listen_unsaved: Option<Instant>,
@@ -589,6 +594,7 @@ impl Studio {
         let resolved = resolve_scene(&scene, &kit.registry);
         let fingerprint = fingerprint(&scene, &resolved, &kit.sims);
         let sound_fingerprint = sound_fingerprint(&scene, &resolved, &kit.sims);
+        let patch_print = bpe_sound::patch_fingerprint(&scene, &resolved);
         // Started first, so the playback's own build waits on its work instead of doing it again.
         let aim_job = aim_job_for(&scene, &resolved, &kit);
         let playback = main_playback(&scene, &resolved, &kit);
@@ -608,6 +614,7 @@ impl Studio {
             particle_print,
             fingerprint,
             sound_fingerprint,
+            patch_print,
             follow,
             light_probe,
             revision: 0,
@@ -646,6 +653,7 @@ impl Studio {
             speakers_retry: None,
             speakers_wait: SPEAKERS_RETRY,
             sound_broken: false,
+            underruns_seen: 0,
             listen_unsaved: None,
             listen: ListenSettings::default(),
             left: LeftPanel::Things,
@@ -852,13 +860,16 @@ impl Studio {
         // layout), anything else swaps the settings in where it is. How much of the balls' past
         // trails keep is the editor's alone: the sound plays on through it.
         self.sound_fingerprint = heard;
+        let patch_print = bpe_sound::patch_fingerprint(&self.scene, &self.resolved);
+        let patch_changed = patch_print != self.patch_print;
+        self.patch_print = patch_print;
         if let Some(job) = &mut self.sound {
             if sound_rebuilt {
                 job.rebuild(&self.scene, &self.resolved);
                 if self.playing {
                     job.seek(self.time);
                 }
-            } else {
+            } else if patch_changed {
                 job.patch(SoundPatch::build_ready(&self.scene, &self.resolved, &self.kit));
             }
         }
@@ -900,6 +911,7 @@ impl Studio {
         self.resolved = resolve_scene(&self.scene, &self.kit.registry);
         self.fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
         self.sound_fingerprint = sound_fingerprint(&self.scene, &self.resolved, &self.kit.sims);
+        self.patch_print = bpe_sound::patch_fingerprint(&self.scene, &self.resolved);
         self.aim_job = aim_job_for(&self.scene, &self.resolved, &self.kit);
         self.playback = main_playback(&self.scene, &self.resolved, &self.kit);
         self.particle_print = bpe_runtime::beside_fingerprint(&self.scene, &self.resolved, &self.kit.sims);
@@ -1084,7 +1096,7 @@ impl Studio {
         if let Some(job) = &mut self.sound
             && playing != self.playing
         {
-            if playing { job.play(self.time) } else { job.pause() }
+            if playing { job.play(self.time) } else { job.pause(self.time) }
         }
         self.playing = playing;
         self.last_tick = None;
@@ -1176,10 +1188,24 @@ impl Studio {
         self.clear_problem(ProblemKind::Speakers);
     }
 
+    /// Says so in the status line when the sound couldn't keep up with the speakers.
+    fn note_dropouts(&mut self) {
+        let Some(job) = &self.sound else { return };
+        let underruns = job.shared().underruns();
+        if underruns > self.underruns_seen {
+            self.underruns_seen = underruns;
+            self.status = "Sound can't keep up: try fewer voices or effects.".into();
+        } else if underruns < self.underruns_seen {
+            // New speakers count from 0.
+            self.underruns_seen = underruns;
+        }
+    }
+
     fn apply_listen(&self) {
         if let Some(job) = &self.sound {
             job.shared().set_volume(self.listen.volume);
             job.shared().set_muted(!self.listen.on);
+            job.shared().set_speaker_delay_ms(self.listen.speaker_delay_ms);
         }
     }
 
@@ -1190,6 +1216,7 @@ impl Studio {
         let dt = self.last_tick.replace(now).map_or(0.0, |last| (now - last).as_secs_f64().min(0.25));
         self.save_listen_if_rested(Some(now));
         self.keep_speakers(now);
+        self.note_dropouts();
         self.tell_gpu_errors();
         self.tell_export_news();
         if let Some(wait) = self.autosave(now)
@@ -2325,7 +2352,7 @@ mod tests {
     }
 
     #[test]
-    fn a_trail_length_edit_patches_the_sound_and_keeps_it_playing() {
+    fn a_trail_length_edit_keeps_the_sound_playing() {
         let mut studio = Studio::headless();
         let kit = studio.kit.clone();
         let before = studio.scene.clone();
@@ -2344,7 +2371,38 @@ mod tests {
         studio.after_edit(before);
         assert_ne!(studio.fingerprint, physics, "the editor keeps a longer history for the trail");
         let sent = studio.sound.as_ref().unwrap().recorded();
-        assert_eq!(sent, ["seek", "play", "patch"], "the sound plays on");
+        assert_eq!(sent, ["seek", "play"], "the sound plays on, its settings untouched");
+    }
+
+    #[test]
+    fn only_a_sound_edit_builds_the_sound_again() {
+        let mut studio = Studio::headless();
+        let kit = studio.kit.clone();
+        let shape = studio.scene.order.iter().copied().find(|id| studio.scene.things[id].kind == "shape").unwrap();
+        let before = studio.scene.clone();
+        studio
+            .scene
+            .things
+            .get_mut(&shape)
+            .unwrap()
+            .slots
+            .insert(SlotId::Sound, bpe_kit::sound::starter_voice(&kit.registry));
+        studio.after_edit(before);
+        studio.sound = Some(SoundJob::recording());
+        // A picture drag, frame after frame: nothing for the sound.
+        for k in 1..6 {
+            let before = studio.scene.clone();
+            let bloom = Address::own(ThingId::ROOT, "bloom");
+            studio.scene.set_at(&kit.registry, &bloom, Value::Number(k as f64 * 0.1)).unwrap();
+            studio.after_edit(before);
+        }
+        assert!(studio.sound.as_ref().unwrap().recorded().is_empty(), "a picture edit leaves the sound alone");
+        // A sound knob does.
+        let before = studio.scene.clone();
+        let gain = Address::on(shape, SlotId::Sound, "a_gain");
+        studio.scene.set_at(&kit.registry, &gain, Value::Number(-9.0)).unwrap();
+        studio.after_edit(before);
+        assert_eq!(studio.sound.as_ref().unwrap().recorded(), ["patch"]);
     }
 
     #[test]

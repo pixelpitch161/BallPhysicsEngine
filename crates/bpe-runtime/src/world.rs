@@ -142,6 +142,8 @@ pub struct World {
     /// read them (particles born on the beat).
     pub beat_seconds: f64,
     pub beats_in_bar: u32,
+    /// Where the first beat is, in seconds (the scene's First beat at): beats count from there.
+    pub first_beat: f64,
     /// Bytes each thing's state takes beyond its own struct, for the states that hold a lot
     /// Their sims note it; [`World::memory`] counts it for playback budgets.
     pub state_memory: BTreeMap<ThingId, usize>,
@@ -282,6 +284,7 @@ impl World {
             video: Vec2::new(1080.0, 1920.0),
             beat_seconds: 0.5,
             beats_in_bar: 4,
+            first_beat: 0.0,
             state_memory: BTreeMap::new(),
             gpu_memory: BTreeMap::new(),
             kinds: BTreeMap::new(),
@@ -893,6 +896,7 @@ impl World {
             video: self.video,
             beat_seconds: self.beat_seconds,
             beats_in_bar: self.beats_in_bar,
+            first_beat: self.first_beat,
             state_memory: BTreeMap::new(),
             gpu_memory: BTreeMap::new(),
             kinds: self.kinds.clone(),

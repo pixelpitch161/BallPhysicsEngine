@@ -267,9 +267,10 @@ fn pick(
         ScenesPlay::InTurn => {
             let (beat, top) = pattern::beat_seconds(tempo);
             let length = beat * top as f64 * number("scene_every", 4.0).max(1e-3);
-            let k = (time / length).floor().max(0.0) as u64;
+            let from = crate::things::scene::first_beat_seconds(tempo.first_beat);
+            let k = ((time - from) / length).floor().max(0.0) as u64;
             let before = order_at(order, k.saturating_sub(1), count, seed);
-            (before, order_at(order, k, count, seed), k as f64 * length)
+            (before, order_at(order, k, count, seed), if k == 0 { 0.0 } else { from + k as f64 * length })
         }
         ScenesPlay::OnHits => {
             let target = get("scene_heard").and_then(|v| Target::from_value(&v)).unwrap_or_default();

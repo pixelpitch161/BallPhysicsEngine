@@ -425,7 +425,7 @@ fn read(cx: &LiveCx, token: &Token, format: Format) -> String {
             if !(beat.is_finite() && beat > 0.0) {
                 return number(0.0);
             }
-            let beats = (cx.time.max(0.0) / beat + 1e-9).floor() as u64;
+            let beats = ((cx.time - cx.world.first_beat).max(0.0) / beat + 1e-9).floor() as u64;
             let per_bar = cx.world.beats_in_bar.max(1) as u64;
             number(if matches!(token, Token::Beat) { beats % per_bar + 1 } else { beats / per_bar + 1 } as f64)
         }

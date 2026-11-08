@@ -6,8 +6,8 @@
 use crate::chain::{filter_type, shaper_type};
 use crate::hits::BlockHit;
 use crate::lag::Lag;
+use crate::voices::StrengthCurve;
 use crate::voices::knobs::track_value;
-use crate::voices::strength;
 use crate::{BLOCK, FxReading, Meters, TempoMap};
 use bpe_core::Settings;
 use bpe_core::{Address, LayerId, Params, Scene, SettingDef, SlotId, Target, ThingId, Track, Value, layered_key};
@@ -122,6 +122,12 @@ impl Keyed {
                 crate::ruled::number(list, under, time)
             };
         }
+    }
+
+    /// The largest `key` is ever set to: `base`, or one of its keys if larger.
+    pub fn most(&self, key: &str, base: f32) -> f32 {
+        let keys = self.keys.iter().filter(|(k, _)| *k == key).flat_map(|(_, t)| t.keys.iter());
+        keys.filter_map(|k| crate::voices::knobs::number(&k.value)).fold(base, f32::max)
     }
 
     /// `key`'s value now: a rule's change of it, else its keyed value, else `base`.
@@ -428,6 +434,8 @@ enum Fx {
         /// The shape a Hits sidechain listens to; `None` (none chosen, or deleted) listens
         /// to itself.
         shape: Option<ThingId>,
+        /// How that shape's sound turns a hit's speed into its strength.
+        curve: StrengthCurve,
         hits: Box<[(u32, f32); MAX_KEY_HITS]>,
     },
     Delay {
@@ -466,7 +474,11 @@ impl Fx {
                     _ => None,
                 };
                 let hits = Box::new([(0, 0.0); MAX_KEY_HITS]);
-                (Fx::Comp { dsp: Box::default(), set, shape, hits }, MixLaw::Gain)
+                let curve = shape
+                    .and_then(|id| scene.card(id, SlotId::Sound))
+                    .map(|c| bpe_kit::sound::VoiceSettings::from_params(&c.params))
+                    .map_or_else(StrengthCurve::default, |v| StrengthCurve::of_knobs(v.play_full_at, v.play_curve));
+                (Fx::Comp { dsp: Box::default(), set, shape, curve, hits }, MixLaw::Gain)
             }
             fx::LIMITER => {
                 let set = LimiterSettings::from_params(p);
@@ -516,13 +528,16 @@ impl Fx {
         }
     }
 
-    /// Silence, as new; a sweep starts where song time `time` puts it.
-    fn reset(&mut self, time: f64) {
+    /// Silence, as new; a sweep starts where song time `time` puts it (a synced one counting
+    /// from the first beat at `first`).
+    fn reset(&mut self, time: f64, first: f64) {
         match self {
             Fx::Limiter { dsp, .. } => dsp.reset(),
-            Fx::Mod { dsp, rate_hz, .. } => {
+            Fx::Mod { dsp, rate_hz, set } => {
                 dsp.reset();
-                dsp.set_phase((*rate_hz * time).fract());
+                let from = if set.sync { first } else { 0.0 };
+                let cycles = *rate_hz * (time - from);
+                dsp.set_phase(cycles - cycles.floor());
             }
             Fx::Width { dsp, corr, .. } => {
                 dsp.reset();
@@ -660,7 +675,7 @@ impl Fx {
                 }
                 0.0
             }
-            Fx::Comp { dsp, set, shape, hits } => {
+            Fx::Comp { dsp, set, shape, curve, hits } => {
                 let own = cx.bus;
                 match (set.sidechain, shape) {
                     (Sidechain::Bus, _)
@@ -678,7 +693,7 @@ impl Fx {
                                 let s = match h.event.kind {
                                     EventKind::Note if h.event.speed.is_finite() => h.event.speed.clamp(0.0, 1.0),
                                     EventKind::Note => 0.0,
-                                    _ => strength(h.event.speed),
+                                    _ => curve.of(h.event.speed),
                                 };
                                 hits[n] = (h.offset, s);
                                 n += 1;
@@ -806,6 +821,51 @@ impl FxChain {
         self.slots.is_empty()
     }
 
+    /// The shapes its compressors key on by their hits (a Hits sidechain with a shape chosen):
+    /// the engine queues their hits even when they make no sound of their own.
+    pub fn hit_keys(&self) -> impl Iterator<Item = ThingId> + '_ {
+        self.slots.iter().filter_map(|s| match &s.fx {
+            Fx::Comp { set, shape: Some(id), .. } if set.sidechain == Sidechain::Hits => Some(*id),
+            _ => None,
+        })
+    }
+
+    /// How long a sound going into it can still be heard coming out, in seconds, at the longest
+    /// its keys set (a seek warms up this long). A frozen reverb or a delay that feeds back
+    /// fully never ends: `f64::INFINITY`.
+    pub fn tail(&self) -> f64 {
+        let mut tail = 0.0f64;
+        for s in &self.slots {
+            let k = &s.keyed;
+            let t = match &s.fx {
+                Fx::Reverb { set, .. } if set.freeze => f64::INFINITY,
+                Fx::Reverb { set, .. } => {
+                    (k.most("pre_delay", set.pre_delay) as f64 / 1000.0) + k.most("decay", set.decay) as f64
+                }
+                Fx::Delay { set, .. } => {
+                    let time = if set.sync {
+                        note_seconds(set.time_note, set.time_feel, &self.tempo)
+                    } else {
+                        k.most("time_ms", set.time_ms) as f64 / 1000.0
+                    };
+                    let feedback = (k.most("feedback", set.feedback) as f64 / 100.0).clamp(0.0, 1.0);
+                    // Repeats until the echoes are 60 dB down.
+                    let repeats = if feedback >= 0.999 {
+                        f64::INFINITY
+                    } else if feedback <= 1e-3 {
+                        1.0
+                    } else {
+                        1.0 + (1e-3f64).ln() / feedback.ln()
+                    };
+                    time * repeats
+                }
+                _ => 0.0,
+            };
+            tail += t;
+        }
+        tail
+    }
+
     /// The layers in it, in order.
     pub fn layers(&self) -> impl Iterator<Item = LayerId> + '_ {
         self.slots.iter().map(|s| s.id)
@@ -823,7 +883,7 @@ impl FxChain {
     pub fn reset(&mut self, time: f64) {
         self.apply_all(time);
         for s in &mut self.slots {
-            s.fx.reset(time);
+            s.fx.reset(time, self.tempo.first());
             s.dry_lag.reset();
             let (m, o) = (s.mix.target(), s.on.target());
             s.mix.reset(m);
@@ -873,7 +933,7 @@ impl FxChain {
                 continue;
             }
             if s.asleep {
-                s.fx.reset(cx.time);
+                s.fx.reset(cx.time, self.tempo.first());
                 s.asleep = false;
                 s.wake_wait = s.fx.latency();
             }

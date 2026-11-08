@@ -387,6 +387,20 @@ pub struct VoiceSettings {
     /// A ball hitting again sooner than this plays nothing.
     #[setting(label = "Retrigger guard", range(0, 500), unit = "ms", group = "Playing", keyframe)]
     pub play_retrigger: f32,
+    /// A hit this fast or faster plays at full strength; slower ones are softer.
+    #[setting(
+        label = "Full strength at",
+        range(50, 10000),
+        span(100, 5000),
+        unit = "px/s",
+        group = "Playing",
+        keyframe
+    )]
+    pub play_full_at: f32,
+    /// Bends how a hit's speed turns into its strength: above 0 soft hits count for more, below
+    /// 0 only hard hits get loud. 0 is straight.
+    #[setting(label = "Strength curve", range(-100, 100), group = "Playing", keyframe)]
+    pub play_curve: f32,
     /// Which balls' hits play notes.
     #[setting(label = "Heard from", group = "Playing")]
     pub play_heard_from: Target,
@@ -510,6 +524,8 @@ impl Default for VoiceSettings {
             play_glide: 0.0,
             play_min_strength: 0.0,
             play_retrigger: 30.0,
+            play_full_at: 1500.0,
+            play_curve: 0.0,
             play_heard_from: Target::Anything,
             play_when: PlayWhen::OnHit,
             play_zone: String::new(),

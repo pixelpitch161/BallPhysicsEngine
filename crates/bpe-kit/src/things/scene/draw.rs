@@ -78,15 +78,16 @@ fn background_glow(s: &SceneSettings) -> [[f32; 4]; 2] {
 }
 
 /// The beat at `time` for the effects (`Frame::beat`): its phase, the bar's phase, beats a second
-/// and 1, at the scene's tempo from 0 s, as the timeline's grid counts them.
+/// and 1, at the scene's tempo from its first beat, as the timeline's grid counts them (before
+/// the first beat the beats run on backwards).
 pub fn beat_at(s: &SceneSettings, time: f64) -> [f32; 4] {
     if !(s.tempo > 0.0 && s.tempo.is_finite()) {
         return [0.0; 4];
     }
     let beat = 60.0 / s.tempo as f64 * 4.0 / s.time_bottom.beats() as f64;
-    let beats = time.max(0.0) / beat;
+    let beats = (time.max(0.0) - super::first_beat_seconds(s.first_beat)) / beat;
     let bar = beats / s.time_top.max(1) as f64;
-    [beats.fract() as f32, bar.fract() as f32, (1.0 / beat) as f32, 1.0]
+    [beats.rem_euclid(1.0) as f32, bar.rem_euclid(1.0) as f32, (1.0 / beat) as f32, 1.0]
 }
 
 /// The background with a span and centre left at their defaults fitted to the picture: on the

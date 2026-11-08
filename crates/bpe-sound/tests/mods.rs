@@ -34,6 +34,7 @@ fn run(m: &mut dyn Modulator, pb: &Playback, shape: ThingId, from: u64, blocks: 
                 shape,
                 log: pb.log(),
                 light: None,
+                light_table: None,
             };
             m.next_block(&cx);
             m.value()
@@ -76,6 +77,29 @@ fn free_lfo_phase_matches_after_seek() {
     let t = 400.0 * BLOCK as f64 / SAMPLE_RATE as f64;
     let want = bpe_dsp::lfo::shape_at(bpe_dsp::lfo::LfoWave::Triangle, 3.3 * t + 40.0 / 360.0, 9);
     assert!((all[399] - want).abs() < 1e-5, "{} against {want}", all[399]);
+}
+
+#[test]
+fn a_synced_lfo_counts_its_cycles_from_the_first_beat() {
+    let kit = kit();
+    let scene = new_scene(&kit.registry);
+    let shape = shape_of(&scene);
+    let pb = playback(&scene, &kit);
+    let s = LfoSettings { curve: LfoPreset::Triangle.points(), sync: true, ..LfoSettings::default() };
+    let tempo = TempoMap::new(120.0, 4, 4).with_first(0.5);
+    let rate = lfo_rate_hz(&s, 0.0, &tempo);
+    let mut m = LfoMod::new(3);
+    m.set(&s, &tempo, 0.0);
+    let all = run(&mut m, &pb, shape, 0, 400);
+    let t = 400.0 * BLOCK as f64 / SAMPLE_RATE as f64;
+    let want = bpe_dsp::lfo::shape_at(bpe_dsp::lfo::LfoWave::Triangle, rate * (t - 0.5), 3);
+    assert!((all[399] - want).abs() < 1e-5, "{} against {want}", all[399]);
+    // In Hz it doesn't follow the beat.
+    let mut hz = LfoMod::new(3);
+    hz.set(&LfoSettings { sync: false, ..s.clone() }, &tempo, rate);
+    let free = run(&mut hz, &pb, shape, 0, 400);
+    let want = bpe_dsp::lfo::shape_at(bpe_dsp::lfo::LfoWave::Triangle, rate * t, 3);
+    assert!((free[399] - want).abs() < 1e-5, "{} against {want}", free[399]);
 }
 
 #[test]
@@ -281,7 +305,15 @@ fn put(world: &mut bpe_runtime::World, ball: ThingId, i: usize, p: Vec2) {
 fn step_value(m: &mut DistanceMod, world: &bpe_runtime::World, shape: ThingId, block: u64) -> f32 {
     let tempo = TempoMap::default();
     let no_log = bpe_runtime::Log::default();
-    let cx = ModCx { start_sample: block * BLOCK as u64, tempo: &tempo, world, shape, log: &no_log, light: None };
+    let cx = ModCx {
+        start_sample: block * BLOCK as u64,
+        tempo: &tempo,
+        world,
+        shape,
+        log: &no_log,
+        light: None,
+        light_table: None,
+    };
     m.next_block(&cx);
     m.value()
 }

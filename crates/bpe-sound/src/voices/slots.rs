@@ -301,14 +301,19 @@ impl SlotClock {
         if let Some(period) = spec.period_s(tempo, time) {
             // The line the last block ended on (worked out afresh when Every moved, so a keyed
             // Every never fires a burst of changes).
+            // By tempo counts its lines from the scene's first beat; nothing changes before it.
+            let origin = match spec.change {
+                Change::ByTempo => (tempo.first() * SAMPLE_RATE as f64).round() as u64,
+                _ => 0,
+            };
             let before = match self.line {
                 Some((l, p)) if p == period => l,
-                _ if start == 0 => 0,
-                _ => line_at(start - 1, period),
+                _ if start <= origin => 0,
+                _ => line_at(start - 1 - origin, period),
             };
-            let line = line_at(end - 1, period);
+            let line = (end - 1).checked_sub(origin).map_or(0, |s| line_at(s, period));
             for k in before + 1..=line {
-                let at = ((k as f64 * period * SAMPLE_RATE as f64).round() as u64).max(start);
+                let at = (origin + (k as f64 * period * SAMPLE_RATE as f64).round() as u64).max(start);
                 push(Pending { offset: (at - start) as u32, jump: None }, &mut n, &mut self.pending);
             }
             self.line = Some((line, period));
@@ -440,6 +445,8 @@ pub fn slot_changes(
     let accepted: Vec<u64> = if spec.change == Change::ByHits {
         let mut f =
             HitFilter::new(shape, v.play_min_strength / 100.0, v.play_retrigger / 1000.0, v.play_heard_from.clone());
+        let curve = super::StrengthCurve::of_knobs(v.play_full_at, v.play_curve);
+        f.set(v.play_min_strength / 100.0, v.play_retrigger / 1000.0, curve);
         hits.iter().filter(|(at, h)| f.accept(h, *at, world).is_some()).map(|(at, _)| *at).collect()
     } else {
         Vec::new()

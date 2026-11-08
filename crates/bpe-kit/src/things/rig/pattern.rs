@@ -85,7 +85,12 @@ pub fn clock_in_time(s: &RigSettings, scene: &SceneSettings, time: f64) -> Clock
         StepsOn::Bars => beat * top as f64 * s.every_bars.max(1e-3) as f64,
         StepsOn::Seconds | StepsOn::Hits => s.every_seconds.max(1e-3) as f64,
     };
-    let x = time / length;
+    // Beats and bars count from the scene's first beat; seconds from the start.
+    let from = match s.steps_on {
+        StepsOn::Beats | StepsOn::Bars => crate::things::scene::first_beat_seconds(scene.first_beat),
+        StepsOn::Seconds | StepsOn::Hits => 0.0,
+    };
+    let x = (time - from) / length;
     let step = x.floor();
     Clock { step: step as i64, phase: (x - step) as f32 }
 }

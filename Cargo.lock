@@ -336,6 +336,7 @@ dependencies = [
  "ron",
  "rtrb",
  "rubato",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
