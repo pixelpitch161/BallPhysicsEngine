@@ -343,6 +343,10 @@ pub struct Scene {
     /// new scene, and then left out of the saved file.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub fonts: BTreeMap<String, crate::scene_fonts::SceneFont>,
+    /// Pictures picked for a Particles thing's Picture, by name (see [`crate::scene_pictures`]):
+    /// none in a new scene, and then left out of the saved file.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub pictures: BTreeMap<String, crate::scene_pictures::ScenePicture>,
 }
 
 impl Default for Scene {
@@ -357,6 +361,7 @@ impl Default for Scene {
             pulses: BTreeMap::new(),
             rules: crate::rules::Rules::default(),
             fonts: BTreeMap::new(),
+            pictures: BTreeMap::new(),
         }
     }
 }

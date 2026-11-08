@@ -17,7 +17,7 @@ Moved word for word from CLAUDE.md on 2026-11-08 (workstream W1). Add each finis
   `widgets::setting_snapper`), Alt held is free (so Alt+click resets from the label only), typed numbers stay exact.
   `NumberFeel.snap` drives `span_slider` and `two_ended`; egui sliders and boxes snap after the fact (`after_drag`).
   Motion and Bounce show as one **Physics** card (`Card::Physics`, `PHYSICS` in `inspector.rs`: one header, Remove,
-  "+ Add slot" entry and jump-bar chip; each card's grid inside); the scene still keeps the two cards.
+  "+ Add card" entry and jump-bar chip; each card's grid inside); the scene still keeps the two cards.
   A selected shape is moulded in the preview (`shape_handles.rs`: corners, sides, bend handles, a circle's edge,
   Shift mirrors across the shape's middle line, right-click Add point / Create curve / Straighten / Delete point /
   Turn into points); a `look.shape` card shows the Look editor without the ball view or Reactions, and its Body
@@ -185,3 +185,60 @@ Plan `docs/superpowers/plans/2026-11-08-never-lose-work.md` (findings E1 to E6 a
   writing fails before the sound render. Choices (size, compression, encoder by `Encoder::key`, stems, MIDI, ffmpeg)
   are remembered in `export-next.txt` (`ExportWindow::load_in`, written when they change); not the file or Bake.
   `pretend_busy` fakes a running job for tests.
+
+## Editor workflow (W5, 2026-11-08)
+
+Plan `docs/superpowers/plans/2026-11-08-editor-workflow.md` (findings E7 to E14 of the improvement review).
+
+- **Shortcuts** (`app.rs`): `shortcuts` (first in the frame) adds End (to the end) and Left/Right (a video frame;
+  with Shift a beat, from `TempoMap`; `Studio::step`, pauses). `late_shortcuts` runs after the central panel, so a
+  focused text box or the timeline has had the keys first: Ctrl+D (`duplicate_selection`), Ctrl+C / Ctrl+V (also
+  egui's `Event::Copy` / `Event::Paste` / `Event::PasteImage`, which egui-winit sends instead of the keys): the
+  timeline's picked keys first, else things. egui-winit sends Ctrl+V only when the system clipboard holds text or a
+  picture, so every copy here also puts "Ball Studio: Copied …" there (`Studio.copied_note`, sent by
+  `late_shortcuts`); Delete when the left panel isn't Things (the tree takes it itself there). Each is an own undo step
+  (`separate_edit`). The window title is `window_title()` ("Name • – Ball Studio"; Untitled when blank), sent with
+  `ViewportCommand::Title` only when it changes.
+- **Copy, paste, duplicate things** (`bpe-core/src/clip.rs`, `bpe-studio/src/things.rs`): `Scene::copy_things` makes a
+  `ThingClip` of the tops of the selection with everything under them, their tracks, pulses and the fonts and
+  pictures they name; the scene settings and cameras are left out. `paste_things(clip, parent, after)` gives new ids
+  (kept attachments only under the same parent), "X copy" names when taken, new track colours, relinks Target /
+  Who / LightScenes / pulse sources (inside the clip to the copies; outside kept only if the same thing is there
+  by id, kind and name, else Anything, counted in `Pasted.unlinked` and said in the status line) and renames
+  clashing fonts and pictures. `Studio.clipboard` (`Clipboard::{Empty, Things, Keys}`) lasts through New and Open.
+  The tree's row menu has Duplicate, Copy, Paste <what> and Delete with their shortcuts (`Button::shortcut_text`;
+  kittest labels them "Paste Ball Ctrl+V"). Paste goes into a selected folder, beside another selected thing, else
+  under the scene. "+ Add thing" sits at the top of the tree.
+- **Timeline keys** (`timeline/mod.rs`): `Timeline.selected` is a set of `(Address, index)`; click picks one,
+  Shift/Ctrl+click adds or removes, dragging on a lane's empty part draws a box (Shift adds), Escape clears.
+  `picked_at` keeps each picked key's time as the timeline last drew; a key whose index now holds another time (a
+  key added in front of it elsewhere) drops out, and undo/redo clear the selection. Dragging
+  a picked key moves them all (`GroupDrag` keeps the tracks as the drag began; `Scene::move_keys` lays them out
+  again each frame and settles at the end, keys put on others replacing them; never before 0). The key menu's Ease
+  applies to every picked key, plus Copy N keys, Repeat every bar / every 2 bars (copies of the picked keys every
+  bar, or every `floor(span / bar) + 1` bars so the first key's copy never lands on the last key, to the end of the
+  video, at most `MOST_REPEATS`), Delete N keys. Copied keys (`KeyClip`, times from the first)
+  paste at the playhead onto the open thing (the lane menu's "Paste N keys at the playhead", or Ctrl+V), onto the
+  same settings where it has them.
+- **Setting menu** (`widgets.rs::row_menu_following`): Reset to default (<value>) (greyed at the default) and Remove
+  all keyframes (greyed with no keys; `Scene::clear_keys` keeps the value at the playhead). `GridOutcome.cleared` and
+  `ValueMenu::RemoveKeys` carry it; every grid caller adds `Edit::ClearKeys` beside `Edit::NewKey`, and the Mixer,
+  Master, Sound tab and Lights strip knobs call `inspector::clear_keys`. A widget's own double-click no longer
+  resets (it starts typing in a number box); the label's double-click or Alt+click still does.
+- **Pictures in the scene** (`bpe-core/src/scene_pictures.rs`, `picture_picker.rs`): `Scene.pictures` holds PNG bytes
+  by name (base64 in the file, left out when empty; pictures no `picture` setting names are left out on save). The
+  Picture row's "…" reads the file into a `PictureRequest`; the inspector checks the PNG signature, keeps it
+  (`add_picture`, same bytes → same name) and sets every selected thing's Picture. Particles' `SpotsKey::Picture`
+  reads the kept bytes first (an older scene's file path still works); `reads_tree` is true for a picture
+  source so the world keeps the scene for it. A name that is neither kept nor a file
+  shows "Picture not found" in the problem colour.
+- **Empty preview and drops** (`preview.rs`, `drops.rs`): a scene with only its settings and cameras shows a hint in
+  the middle of the preview; files held over the window show "Drop to open it". `Studio::take_drops` (after
+  `late_shortcuts`): a `.ron` opens (asking to save first; the first scene only), a `.ttf` / `.otf` is kept with
+  `add_font` and the selected Texts are set in it, a `.png` is kept and the selected Particles things (else a new
+  one) form it (`from = a_word_or_picture`, `word_from = picture`); anything else is a File problem. egui 0.37's
+  dropped files are `Arc<dyn DroppedFile>` (`path()`, `bytes()`); tests push their own.
+- **Find a setting** (`inspector/find.rs`): a box above the jump bar. While it holds text, the cards and jump bar give
+  way to every setting whose name or section holds every word typed, under its card's title (the thing's own, each plain card's,
+  each layer's "Look · Glow"), with sections blanked so nothing folds away; rows edit, key and follow as in their
+  card. Escape or Clear empties it. "+ Add slot" is now "+ Add card".

@@ -76,7 +76,7 @@ round's carried to the next step (`RulesState.carried`). A shape's **Balls pass 
 Part 4 is in (plan `part4.md`): **Health**. A **Health card** (`SlotId::Health`, last in `SlotId::ALL`; kind `health`,
 `bpe-kit/src/modules/health/`: Starting health (varies across balls at launch), Hits take Each hit / By strength /
 Nothing, Least strength, Only hits from (a `Target`), At zero Break / Nothing) goes on balls, emitters and shapes from
-"+ Add slot". The world keeps health in `RulesState.health` (`bpe-runtime/src/rules/health.rs`: `Health`, `Hp` per body
+"+ Add card". The world keeps health in `RulesState.health` (`bpe-runtime/src/rules/health.rs`: `Health`, `Hp` per body
 row, one for a thing without balls; the kit's `HealthSim` turns the card into a `HealthCard`); a scene with a Health card
 and no rule still gets a `RulesState`. The Rules stage first `fill`s new balls' starting health and works out the
 step's hits (`damage`, at zero the card's `at_zero` template `aimed` into `pending`), then runs the rules with

@@ -109,6 +109,8 @@ pub enum VaryEdit {
     To(Value),
     /// The To end's key at the playhead, holding it as it stands.
     KeyTo,
+    /// Every key of the To end goes.
+    ClearTo,
     By(VaryBy),
     Ease(VaryEase),
 }
@@ -125,6 +127,7 @@ pub(crate) fn edit(slot: Option<SlotId>, key: &str, v: VaryEdit) -> Edit {
         VaryEdit::Stop => Edit::Vary(slot, key.to_owned(), false),
         VaryEdit::To(value) => set(part(VaryPart::To), value),
         VaryEdit::KeyTo => Edit::NewKey(slot, part(VaryPart::To)),
+        VaryEdit::ClearTo => Edit::ClearKeys(slot, part(VaryPart::To)),
         VaryEdit::By(by) => set(part(VaryPart::By), Value::Choice(by.name().into())),
         VaryEdit::Ease(ease) => set(part(VaryPart::Ease), Value::Choice(ease.name().into())),
     }
@@ -367,6 +370,7 @@ mod tests {
         assert!(matches!(edit(look, "3/width", VaryEdit::To(to.clone())),
             Edit::SetSlot(SlotId::Look, k, v) if k == "3/width~to" && v == to));
         assert!(matches!(edit(None, "radius", VaryEdit::KeyTo), Edit::NewKey(None, k) if k == "radius~to"));
+        assert!(matches!(edit(None, "radius", VaryEdit::ClearTo), Edit::ClearKeys(None, k) if k == "radius~to"));
         assert!(matches!(edit(None, "radius", VaryEdit::By(VaryBy::Hits)),
             Edit::SetOwn(k, Value::Choice(c)) if k == "radius~by" && c == "hits"));
         assert!(matches!(edit(look, "3/width", VaryEdit::Ease(VaryEase::EaseBoth)),

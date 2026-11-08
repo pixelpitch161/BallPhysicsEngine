@@ -8,7 +8,7 @@ pub mod lanes;
 use crate::app::{Studio, clock};
 use crate::style;
 use crate::transport;
-use bpe_core::{Address, Ease, PulseSource, ThingId, Value};
+use bpe_core::{Address, Ease, PulseSource, ThingId, Track, Value};
 use bpe_runtime::EventKind;
 use bpe_sound::TempoMap;
 use eframe::egui::{self, Align, Color32, Key, Layout, Modifiers, Pos2, Rect, RichText, Sense, Stroke, Ui, UiBuilder};
@@ -26,16 +26,50 @@ const KEY_SIZE: f32 = 4.5;
 /// What the timeline remembers between frames.
 #[derive(Default)]
 pub struct Timeline {
-    /// The key under the selection: its setting and its index on the track.
-    pub selected: Option<(Address, usize)>,
-    dragging: Option<(Address, usize)>,
+    /// The selected keys: each by its setting and its index on the track. Only keys of the open
+    /// group are ever selected.
+    pub selected: BTreeSet<(Address, usize)>,
+    /// When each selected key was as the timeline last drew: a key whose index now holds a key
+    /// at another time (an undo, or a key added in front of it elsewhere) is no longer selected.
+    picked_at: BTreeMap<(Address, usize), f64>,
+    /// The selected keys being dragged.
+    drag: Option<GroupDrag>,
+    /// A box dragged over empty lane space to select keys: where it started, and whether it adds
+    /// to the selection (Shift or Ctrl held).
+    boxing: Option<(Pos2, bool)>,
     /// The curve editor is open for the selected key.
     curve_open: bool,
+    /// "Paste keys at the playhead" was picked in a lane's menu.
+    paste_asked: bool,
     /// Where each sounding shape's slots change, worked out again when the scene, the run so
     /// far or the clip's length changes.
     slot_marks: SlotMarks,
     /// The Hits lane's ticks, added to as hits arrive.
     hit_ticks: HitTicks,
+}
+
+/// Selected keys being dragged together (W5): their tracks as the drag began, which keys move,
+/// and how far.
+struct GroupDrag {
+    /// When the grabbed key was as the drag began.
+    grab: f64,
+    before: BTreeMap<Address, Track>,
+    picked: Vec<(Address, usize)>,
+    /// How far they have moved so far, in seconds.
+    delta: f64,
+}
+
+impl Timeline {
+    /// The selected key, when exactly one is.
+    pub fn single(&self) -> Option<(Address, usize)> {
+        if self.selected.len() == 1 { self.selected.first().cloned() } else { None }
+    }
+
+    /// Selects this key alone.
+    fn select_only(&mut self, key: (Address, usize)) {
+        self.selected.clear();
+        self.selected.insert(key);
+    }
 }
 
 #[derive(Default)]
@@ -190,17 +224,19 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
     // Only the selected thing's group is open; with nothing selected, the scene settings'.
     let open = studio.selection.primary.unwrap_or(ThingId::ROOT);
     let mut timeline = std::mem::take(&mut studio.panels.timeline);
-    // A selection that points at a key that is gone is no selection.
-    if let Some((a, i)) = &timeline.selected
-        && studio.scene.tracks.get(a).is_none_or(|t| *i >= t.keys.len())
-    {
-        timeline.selected = None;
-        timeline.curve_open = false;
+    // A selected key that is gone is no longer selected, and a key in a folded group is out of
+    // sight, so it isn't either (Delete would remove it unseen).
+    let tracks = &studio.scene.tracks;
+    let picked_at = std::mem::take(&mut timeline.picked_at);
+    timeline.selected.retain(|(a, i)| {
+        let Some(key) = tracks.get(a).and_then(|t| t.keys.get(*i)) else { return false };
+        let same = picked_at.get(&(a.clone(), *i)).is_none_or(|t| t.to_bits() == key.time.to_bits());
+        a.thing == open && same
+    });
+    if timeline.drag.as_ref().is_some_and(|d| d.picked.iter().any(|(a, _)| a.thing != open)) {
+        timeline.drag = None;
     }
-    // A key in a folded group is out of sight, so it is not selected (Delete would remove it unseen).
-    if timeline.selected.as_ref().is_some_and(|(a, _)| a.thing != open) {
-        timeline.selected = None;
-        timeline.dragging = None;
+    if timeline.single().is_none() {
         timeline.curve_open = false;
     }
     let made_for = (studio.revision, studio.playback.log().events().len(), ruler.duration.to_bits());
@@ -230,6 +266,8 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
     }
     let mut picked = None;
     let mut recoloured = None;
+    // Where each key of the open group was drawn, for the selecting box.
+    let mut spots: Vec<(Address, usize, Pos2)> = Vec::new();
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
         hits_lane(ui, studio, &ruler, &mut timeline.hit_ticks);
@@ -261,11 +299,12 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
                 if lane.pulse {
                     pulse_lane(ui, studio, lane, colour, &ruler);
                 } else {
-                    track_lane(ui, studio, &mut timeline, lane, index, colour, &ruler);
+                    track_lane(ui, studio, &mut timeline, lane, index, colour, &ruler, &mut spots);
                 }
                 index += 1;
             }
         }
+        select_box(ui, &mut timeline, &spots);
     });
     if let Some(id) = picked {
         studio.selection.set(id);
@@ -275,17 +314,31 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
     {
         thing.colour = Some(colour);
     }
-    // Delete removes the selected key, and is used up so the tree keeps its thing.
-    if let Some((a, i)) = timeline.selected.clone()
-        && !ui.ctx().text_edit_focused()
-        && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Delete))
+    drag_keys(ui, studio, &mut timeline, &ruler);
+    // Delete removes the selected keys, and is used up so the tree keeps its thing; Escape lets
+    // go of them.
+    let typing = ui.ctx().text_edit_focused();
+    if !timeline.selected.is_empty() && !typing && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Delete))
     {
-        studio.scene.remove_key(&a, i);
-        timeline.selected = None;
+        remove_keys(studio, &timeline.selected);
+        timeline.selected.clear();
         timeline.curve_open = false;
     }
+    if !timeline.selected.is_empty() && !typing && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
+    {
+        timeline.selected.clear();
+    }
     curve_window(ui, studio, &mut timeline);
+    let tracks = &studio.scene.tracks;
+    timeline.picked_at = timeline
+        .selected
+        .iter()
+        .filter_map(|(a, i)| Some(((a.clone(), *i), tracks.get(a)?.keys.get(*i)?.time)))
+        .collect();
     studio.panels.timeline = timeline;
+    if std::mem::take(&mut studio.panels.timeline.paste_asked) {
+        paste_keys(studio);
+    }
 }
 
 /// The Hits lane: a tick per hit at its time, in the colour of the thing that hit.
@@ -489,8 +542,9 @@ fn lane_frame(
     lane: &Lane,
     colour: Option<Color32>,
     ruler: &Ruler,
+    sense: Sense,
 ) -> (Rect, Rect, egui::Response) {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), LANE_HEIGHT), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), LANE_HEIGHT), sense);
     let label_rect =
         Rect::from_min_max(rect.min + egui::vec2(17.0, 0.0), Pos2::new(rect.left() + LABEL_WIDTH, rect.bottom()));
     let label = egui::Label::new(RichText::new(&lane.short).small().color(style::MUTED)).truncate().selectable(false);
@@ -507,8 +561,19 @@ fn lane_frame(
     (rect, strip, response)
 }
 
-/// A keyed setting: a diamond per key. Click selects, drag moves, double-click on empty space
-/// adds a key, right-click eases or deletes.
+/// What a key's right-click menu asked for.
+enum KeyMenu {
+    Ease(Ease),
+    Copy,
+    Repeat,
+    Delete,
+}
+
+/// A keyed setting: a diamond per key. Click selects (Shift or Ctrl: adds or takes away), drag
+/// moves the selected keys, a drag on empty space draws a selecting box, double-click on empty
+/// space adds a key, right-click eases, copies, repeats or deletes. Each key's centre goes in
+/// `spots`.
+#[allow(clippy::too_many_arguments)]
 fn track_lane(
     ui: &mut Ui,
     studio: &mut Studio,
@@ -517,13 +582,14 @@ fn track_lane(
     index: usize,
     colour: Option<Color32>,
     ruler: &Ruler,
+    spots: &mut Vec<(Address, usize, Pos2)>,
 ) {
-    let (rect, strip, response) = lane_frame(ui, studio, lane, colour, ruler);
+    // Dragged on empty space, a lane draws the selecting box.
+    let (rect, strip, response) = lane_frame(ui, studio, lane, colour, ruler, Sense::click_and_drag());
     let a = &lane.address;
     let keys: Vec<(f64, Ease)> =
         studio.scene.tracks.get(a).map(|t| t.keys.iter().map(|k| (k.time, k.ease)).collect()).unwrap_or_default();
-    let mut ease_pick: Option<(usize, Ease, bool)> = None;
-    let mut delete: Option<usize> = None;
+    let mut pick: Option<KeyMenu> = None;
     // A setting that only holds (Jump to slot) has no eases; a jump's key says its slot.
     let hold = studio.scene.def_at(&studio.kit.registry, a).is_some_and(|d| d.flags.hold);
     let jump = a.slot == Some(bpe_core::SlotId::Sound) && a.key == "notes_jump";
@@ -541,9 +607,12 @@ fn track_lane(
                 .collect()
         })
         .unwrap_or_default();
+    let adding = ui.input(|i| i.modifiers.shift || i.modifiers.command);
+    let repeat_words = repeat_words(studio, timeline);
     for (i, (time, ease)) in keys.iter().enumerate() {
         let video = *time;
         let center = Pos2::new(ruler.x_of(video), rect.center().y);
+        spots.push((a.clone(), i, center));
         let key_rect = Rect::from_center_size(center, egui::vec2(14.0, 14.0));
         let key = ui.interact(key_rect, ui.scope_id().with(("key", index, i)), Sense::click_and_drag());
         let slot = slots.get(i).cloned().flatten();
@@ -551,8 +620,9 @@ fn track_lane(
             Some(slot) => format!("Key at {} of {} · {slot}", clock(video), lane.label),
             None => format!("Key at {} of {}", clock(video), lane.label),
         };
-        key.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name.clone()));
-        let selected = timeline.selected.as_ref() == Some(&(a.clone(), i));
+        let this = (a.clone(), i);
+        let selected = timeline.selected.contains(&this);
+        key.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, name.clone()));
         let size = if key.hovered() { KEY_SIZE + 1.0 } else { KEY_SIZE };
         style::paint_diamond(ui.painter(), center, size, selected);
         if let Some(slot) = &slot {
@@ -564,66 +634,94 @@ fn track_lane(
                 style::TEXT,
             );
         }
-        if key.clicked() || key.drag_started() {
-            timeline.selected = Some((a.clone(), i));
+        if key.clicked() {
+            if !adding {
+                timeline.select_only(this.clone());
+            } else if !timeline.selected.remove(&this) {
+                timeline.selected.insert(this.clone());
+            }
         }
         if key.drag_started() {
-            timeline.dragging = Some((a.clone(), i));
+            // A key that isn't selected yet is picked up alone (or joins with Shift or Ctrl).
+            if !selected {
+                if !adding {
+                    timeline.selected.clear();
+                }
+                timeline.selected.insert(this.clone());
+            }
+            let picked: Vec<(Address, usize)> = timeline.selected.iter().cloned().collect();
+            let before =
+                picked.iter().filter_map(|(a, _)| Some((a.clone(), studio.scene.tracks.get(a)?.clone()))).collect();
+            timeline.drag = Some(GroupDrag { grab: video, before, picked, delta: 0.0 });
             studio.set_playing(false);
             // Each drag is its own undo step.
             studio.panels.inspector.own_step = true;
         }
         key.context_menu(|ui| {
-            timeline.selected = Some((a.clone(), i));
+            if !timeline.selected.contains(&this) {
+                timeline.select_only(this.clone());
+            }
+            let many = timeline.selected.len();
             if hold {
                 ui.label(RichText::new("Holds until the next key").small().color(style::MUTED));
             } else {
-                ui.label(RichText::new("Eases into the next key").small().color(style::MUTED));
+                let words = if many > 1 { "Each eases into its next key" } else { "Eases into the next key" };
+                ui.label(RichText::new(words).small().color(style::MUTED));
                 if let Some(picked) = ease::ease_menu(ui, ease) {
-                    ease_pick = Some((i, picked, matches!(picked, Ease::Curve { .. })));
+                    pick = Some(KeyMenu::Ease(picked));
                 }
             }
             ui.separator();
-            if ui.button("Delete key").clicked() {
-                delete = Some(i);
+            let copy = if many > 1 { format!("Copy {many} keys") } else { "Copy key".to_owned() };
+            let copy = ui.add(egui::Button::new(copy).shortcut_text("Ctrl+C"));
+            if copy.on_hover_text("Paste them at the playhead with Ctrl+V").clicked() {
+                pick = Some(KeyMenu::Copy);
+                ui.close();
+            }
+            let help = "Copies of these keys every bar (or every few bars, for keys spread wider) to the end";
+            if ui.button(&repeat_words).on_hover_text(help).clicked() {
+                pick = Some(KeyMenu::Repeat);
+                ui.close();
+            }
+            let delete = if many > 1 { format!("Delete {many} keys") } else { "Delete key".to_owned() };
+            if ui.add(egui::Button::new(delete).shortcut_text("Del")).clicked() {
+                pick = Some(KeyMenu::Delete);
                 ui.close();
             }
         });
         let hover = match &slot {
             Some(slot) => format!("{} · jumps to {slot}\nDrag to move · right-click to delete", clock(video)),
-            None => format!("{} · {}\nDrag to move · right-click for the ease", clock(video), ease.name()),
+            None => format!(
+                "{} · {}\nDrag to move · Shift-click to pick several · right-click for the ease",
+                clock(video),
+                ease.name()
+            ),
         };
         key.on_hover_text(hover);
     }
-    if let Some((i, picked, own)) = ease_pick.filter(|_| !hold) {
-        studio.scene.set_ease(a, i, picked);
-        if own {
-            timeline.curve_open = true;
-        }
-    }
-    if let Some(i) = delete {
-        studio.scene.remove_key(a, i);
-        timeline.selected = None;
-    }
-    // A drag in progress on this lane follows the pointer, snapping to hits and seconds.
-    if let Some((drag_a, i)) = timeline.dragging.clone()
-        && drag_a == *a
-    {
-        let (down, pos) = ui.input(|input| (input.pointer.primary_down(), input.pointer.latest_pos()));
-        if down {
-            if let Some(pos) = pos {
-                let video = snap(studio, ruler, pos.x);
-                if let Some(new_index) = studio.scene.move_key(a, i, video) {
-                    timeline.dragging = Some((a.clone(), new_index));
-                    timeline.selected = Some((a.clone(), new_index));
+    match pick {
+        None => {}
+        Some(KeyMenu::Ease(picked)) => {
+            let own = matches!(picked, Ease::Curve { .. });
+            for (a, i) in timeline.selected.clone() {
+                // Keys that only hold have no eases.
+                if !studio.scene.def_at(&studio.kit.registry, &a).is_some_and(|d| d.flags.hold) {
+                    studio.scene.set_ease(&a, i, picked);
                 }
             }
-        } else {
-            // Put down on another key, it takes that key's place.
-            if let Some(new_index) = studio.scene.settle_key(a, i) {
-                timeline.selected = Some((a.clone(), new_index));
+            if own && timeline.single().is_some() {
+                timeline.curve_open = true;
             }
-            timeline.dragging = None;
+        }
+        Some(KeyMenu::Copy) => {
+            copy_selected(studio, timeline);
+        }
+        Some(KeyMenu::Repeat) => {
+            repeat_selected(studio, timeline);
+        }
+        Some(KeyMenu::Delete) => {
+            remove_keys(studio, &timeline.selected);
+            timeline.selected.clear();
         }
     }
     if response.double_clicked()
@@ -635,12 +733,230 @@ fn track_lane(
         if let Some(value) = studio.scene.value_at_time(reg, a, sim)
             && let Ok(i) = studio.scene.set_key(reg, a, sim, value)
         {
-            timeline.selected = Some((a.clone(), i));
+            timeline.select_only((a.clone(), i));
         }
-    } else if response.clicked() {
-        timeline.selected = None;
+    } else if response.clicked() && !adding {
+        timeline.selected.clear();
     }
-    response.on_hover_text("Double-click to add a key here");
+    if response.drag_started()
+        && let Some(from) = ui.input(|i| i.pointer.press_origin())
+    {
+        timeline.boxing = Some((from, adding));
+    }
+    // Right-click on empty space: paste copied keys at the playhead.
+    let keys_copied = match &studio.clipboard {
+        crate::things::Clipboard::Keys(clip) => Some(clip.keys.len()),
+        _ => None,
+    };
+    let mut paste = false;
+    response.context_menu(|ui| {
+        let words = match keys_copied {
+            Some(1) => "Paste key at the playhead".to_owned(),
+            Some(n) => format!("Paste {n} keys at the playhead"),
+            None => "Paste keys at the playhead".to_owned(),
+        };
+        let button = egui::Button::new(words).shortcut_text("Ctrl+V");
+        if ui.add_enabled(keys_copied.is_some(), button).on_disabled_hover_text("Copy keys first").clicked() {
+            paste = true;
+            ui.close();
+        }
+    });
+    timeline.paste_asked |= paste;
+    response.on_hover_text("Double-click to add a key here · drag to select keys in a box");
+}
+
+/// The selecting box: drawn while it is dragged; let go, every key whose centre is inside it is
+/// selected (with the keys already selected when it started with Shift or Ctrl).
+fn select_box(ui: &Ui, timeline: &mut Timeline, spots: &[(Address, usize, Pos2)]) {
+    let Some((from, adding)) = timeline.boxing else { return };
+    let (down, at) = ui.input(|i| (i.pointer.primary_down(), i.pointer.latest_pos()));
+    let area = Rect::from_two_pos(from, at.unwrap_or(from));
+    if down {
+        let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, ui.scope_id().with("box")));
+        painter.rect_filled(area, 0.0, style::TEXT.gamma_multiply(0.08));
+        painter.rect_stroke(area, 0.0, Stroke::new(1.0, style::TEXT), egui::StrokeKind::Inside);
+        return;
+    }
+    if !adding {
+        timeline.selected.clear();
+    }
+    timeline.selected.extend(spots.iter().filter(|(.., p)| area.contains(*p)).map(|(a, i, _)| (a.clone(), *i)));
+    timeline.boxing = None;
+}
+
+/// A drag of the selected keys in progress: they follow the pointer together (the grabbed one
+/// snapping to hits, seconds and, with the grid, beats), none before the start; let go, each
+/// takes the place of any key it was put down on.
+fn drag_keys(ui: &Ui, studio: &mut Studio, timeline: &mut Timeline, ruler: &Ruler) {
+    let Some(drag) = &mut timeline.drag else { return };
+    let (down, pos) = ui.input(|input| (input.pointer.primary_down(), input.pointer.latest_pos()));
+    if down && let Some(pos) = pos {
+        let earliest = drag
+            .picked
+            .iter()
+            .filter_map(|(a, i)| Some(drag.before.get(a)?.keys.get(*i)?.time))
+            .fold(f64::INFINITY, f64::min);
+        drag.delta = (snap(studio, ruler, pos.x) - drag.grab).max(-earliest.min(drag.grab));
+    }
+    let settle = !down;
+    let now = studio.scene.move_keys(&drag.before, &drag.picked, drag.delta, settle);
+    timeline.selected = now.into_iter().collect();
+    if settle {
+        timeline.drag = None;
+    }
+}
+
+/// Removes the keys `keys` names (the last on each track first, so the others keep their
+/// places).
+fn remove_keys(studio: &mut Studio, keys: &BTreeSet<(Address, usize)>) {
+    for (a, i) in keys.iter().rev() {
+        studio.scene.remove_key(a, *i);
+    }
+}
+
+/// The selected keys, each with its setting, as they are now, earliest first.
+fn selected_keys(studio: &Studio, timeline: &Timeline) -> Vec<(Address, bpe_core::Key)> {
+    let mut keys: Vec<(Address, bpe_core::Key)> = timeline
+        .selected
+        .iter()
+        .filter_map(|(a, i)| Some((a.clone(), studio.scene.tracks.get(a)?.keys.get(*i)?.clone())))
+        .collect();
+    keys.sort_by(|x, y| x.1.time.total_cmp(&y.1.time));
+    keys
+}
+
+/// Copies the selected keys to the clipboard, each by how long after the first it comes. False
+/// with no keys selected.
+fn copy_selected(studio: &mut Studio, timeline: &Timeline) -> bool {
+    let keys = selected_keys(studio, timeline);
+    let Some(first) = keys.first().map(|(_, k)| k.time) else { return false };
+    let n = keys.len();
+    let keys = keys.into_iter().map(|(a, k)| (a, k.time - first, k)).collect();
+    studio.clipboard = crate::things::Clipboard::Keys(crate::things::KeyClip { keys });
+    studio.status = if n == 1 { "Copied 1 key.".to_owned() } else { format!("Copied {n} keys.") };
+    studio.copied_note = Some(format!("Ball Studio: {}", studio.status));
+    true
+}
+
+/// Ctrl+C on the timeline: copies the selected keys. False with none selected (the things are
+/// copied then).
+pub fn copy_keys(studio: &mut Studio) -> bool {
+    let timeline = std::mem::take(&mut studio.panels.timeline);
+    let copied = copy_selected(studio, &timeline);
+    studio.panels.timeline = timeline;
+    copied
+}
+
+/// Ctrl+V with keys copied: each at the playhead plus how long after the first it came, with
+/// its ease. Keys copied from one thing go onto the open thing's same settings when another
+/// thing is open; settings it doesn't have are skipped. The pasted keys are selected, as an
+/// undo step of their own. False when no key landed.
+pub fn paste_keys(studio: &mut Studio) -> bool {
+    let crate::things::Clipboard::Keys(clip) = &studio.clipboard else { return false };
+    let clip = clip.clone();
+    let open = studio.selection.primary.unwrap_or(ThingId::ROOT);
+    let onto = |a: &Address| match clip.thing() {
+        Some(t) if t != open => Address { thing: open, ..a.clone() },
+        _ => a.clone(),
+    };
+    let reg = &studio.kit.registry;
+    let mut landed: Vec<(Address, f64)> = Vec::new();
+    for (a, offset, key) in &clip.keys {
+        let a = onto(a);
+        let time = studio.time + offset;
+        if let Ok(i) = studio.scene.set_key(reg, &a, time, key.value.clone()) {
+            studio.scene.set_ease(&a, i, key.ease);
+            landed.push((a, time));
+        }
+    }
+    let skipped = clip.keys.len() - landed.len();
+    // Found again by time once all are in: a later key on the same track moves the others' places.
+    let selected: BTreeSet<(Address, usize)> = landed
+        .iter()
+        .filter_map(|(a, t)| Some((a.clone(), studio.scene.tracks.get(a)?.key_near(*t, bpe_core::SAME_TIME)?)))
+        .collect();
+    let n = landed.len();
+    let mut words = match n {
+        0 => "No keys pasted".to_owned(),
+        1 => format!("Pasted 1 key at {}", clock(studio.time)),
+        n => format!("Pasted {n} keys at {}", clock(studio.time)),
+    };
+    if skipped > 0 {
+        let name = studio.scene.things.get(&open).map(|t| t.name.clone()).unwrap_or_default();
+        words.push_str(&format!(": {name} doesn't have the settings of {skipped} of them"));
+    }
+    words.push('.');
+    studio.status = words;
+    if n > 0 {
+        studio.panels.timeline.selected = selected;
+        studio.separate_edit = true;
+    }
+    n > 0
+}
+
+/// How often "Repeat" repeats the selected keys, in bars: every bar, or the fewest whole bars
+/// longer than they spread over (keys a whole bar apart repeat every two).
+fn repeat_bars(studio: &Studio, timeline: &Timeline) -> (f64, u32) {
+    let bar = TempoMap::from_settings(&studio.settings()).bar_seconds();
+    let keys = selected_keys(studio, timeline);
+    let span = match (keys.first(), keys.last()) {
+        (Some(a), Some(b)) => b.1.time - a.1.time,
+        _ => 0.0,
+    };
+    // Keys spread over exactly a bar repeat every two, so the first key's copy never lands on
+    // the last key.
+    let bars = if bar > 0.0 && bar.is_finite() { ((span / bar + 1e-6).floor() + 1.0).min(1e6) as u32 } else { 1 };
+    (bar, bars)
+}
+
+/// The Repeat item's words: "Repeat every bar", "Repeat every 2 bars".
+fn repeat_words(studio: &Studio, timeline: &Timeline) -> String {
+    match repeat_bars(studio, timeline).1 {
+        1 => "Repeat every bar".to_owned(),
+        n => format!("Repeat every {n} bars"),
+    }
+}
+
+/// The most copies Repeat makes of each key.
+const MOST_REPEATS: u32 = 4096;
+
+/// Repeats the selected keys every bar (or every few bars, see [`repeat_bars`]) to the end of the
+/// video, replacing keys at the same times, as an undo step of its own. Returns how many keys it
+/// put down.
+fn repeat_selected(studio: &mut Studio, timeline: &mut Timeline) -> usize {
+    let (bar, bars) = repeat_bars(studio, timeline);
+    let period = bar * f64::from(bars);
+    let keys = selected_keys(studio, timeline);
+    if !(period.is_finite() && period > 0.0) || keys.is_empty() {
+        return 0;
+    }
+    let end = studio.duration() + 1e-9;
+    let reg = &studio.kit.registry;
+    let mut made = 0;
+    for n in 1..=MOST_REPEATS {
+        let shift = f64::from(n) * period;
+        if keys[0].1.time + shift > end {
+            break;
+        }
+        for (a, key) in &keys {
+            let time = key.time + shift;
+            if time <= end
+                && let Ok(i) = studio.scene.set_key(reg, a, time, key.value.clone())
+            {
+                studio.scene.set_ease(a, i, key.ease);
+                made += 1;
+            }
+        }
+    }
+    // The originals are found again where they are now.
+    timeline.selected = keys
+        .iter()
+        .filter_map(|(a, k)| Some((a.clone(), studio.scene.tracks.get(a)?.key_near(k.time, bpe_core::SAME_TIME)?)))
+        .collect();
+    let every = if bars == 1 { "every bar".to_owned() } else { format!("every {bars} bars") };
+    studio.status = format!("Repeated {} {every}: {made} keys.", if keys.len() == 1 { "1 key" } else { "the keys" });
+    studio.separate_edit = true;
+    made
 }
 
 /// The time at `x`, pulled onto a hit the run has reached or a whole second when one is within
@@ -664,7 +980,7 @@ fn snap(studio: &Studio, ruler: &Ruler, x: f32) -> f64 {
 
 /// A pulsing setting: its source, how much it moves and how fast the pulse dies away.
 fn pulse_lane(ui: &mut Ui, studio: &mut Studio, lane: &Lane, colour: Option<Color32>, ruler: &Ruler) {
-    let (_rect, strip, _response) = lane_frame(ui, studio, lane, colour, ruler);
+    let (_rect, strip, _response) = lane_frame(ui, studio, lane, colour, ruler, Sense::click());
     let a = &lane.address;
     // A setting following sound says what it follows; its source is picked from its menu.
     let follows = studio
@@ -724,7 +1040,7 @@ fn curve_window(ui: &mut Ui, studio: &mut Studio, timeline: &mut Timeline) {
     if !timeline.curve_open {
         return;
     }
-    let Some((a, i)) = timeline.selected.clone() else {
+    let Some((a, i)) = timeline.single() else {
         timeline.curve_open = false;
         return;
     };
@@ -869,8 +1185,9 @@ mod tests {
         studio.scene.set_key(reg, &size_address(), 2.0, Value::Number(60.0)).unwrap();
         studio.scene.set_key(reg, &gravity, 1.0, Value::Vec2([0.0, 100.0])).unwrap();
         studio.selection.set(ThingId(2));
+        // Tall enough for a key's whole menu.
         let mut h = Harness::builder()
-            .with_size(egui::vec2(1000.0, 300.0))
+            .with_size(egui::vec2(1000.0, 600.0))
             .with_step_dt(1.0 / 60.0)
             .with_max_steps(60)
             .allow_missing_glyphs()
@@ -928,10 +1245,10 @@ mod tests {
         let mut h = harness();
         h.get_by_label("Key at 0:02.00 of Ball · Size").click();
         h.run();
-        assert!(h.state().panels.timeline.selected.is_some());
+        assert!(!h.state().panels.timeline.selected.is_empty());
         h.state_mut().selection.set(ThingId::ROOT);
         h.run();
-        assert_eq!(h.state().panels.timeline.selected, None);
+        assert!(h.state().panels.timeline.selected.is_empty());
         h.key_press(Key::Delete);
         h.run();
         assert!(h.state().scene.tracks.contains_key(&size_address()), "Delete leaves a hidden key alone");
@@ -955,8 +1272,8 @@ mod tests {
         let keys = &h.state().scene.tracks[&size_address()].keys;
         assert_eq!(keys.len(), 1);
         assert!(keys[0].time > 3.0 && keys[0].time < 7.0, "{}", keys[0].time);
-        assert_eq!(h.state().panels.timeline.selected, Some((size_address(), 0)));
-        assert!(h.state().panels.timeline.dragging.is_none());
+        assert_eq!(h.state().panels.timeline.single(), Some((size_address(), 0)));
+        assert!(h.state().panels.timeline.drag.is_none());
     }
 
     #[test]
@@ -974,7 +1291,7 @@ mod tests {
         let keys = &h.state().scene.tracks[&size_address()].keys;
         assert_eq!(keys.len(), 1, "{keys:?}");
         assert_eq!((keys[0].time, &keys[0].value), (4.0, &Value::Number(60.0)), "the moved key wins");
-        assert_eq!(h.state().panels.timeline.selected, Some((size_address(), 0)));
+        assert_eq!(h.state().panels.timeline.single(), Some((size_address(), 0)));
         assert!(h.state().panels.inspector.own_step, "the drag starts an undo step of its own");
     }
 
@@ -983,12 +1300,12 @@ mod tests {
         let mut h = harness();
         h.get_by_label("Key at 0:02.00 of Ball · Size").click();
         h.run();
-        assert_eq!(h.state().panels.timeline.selected, Some((size_address(), 0)));
+        assert_eq!(h.state().panels.timeline.single(), Some((size_address(), 0)));
         h.key_press(Key::Delete);
         h.run();
         assert!(!h.state().scene.tracks.contains_key(&size_address()));
         assert!(h.state().scene.things.contains_key(&ThingId(2)));
-        assert_eq!(h.state().panels.timeline.selected, None);
+        assert!(h.state().panels.timeline.selected.is_empty());
         // The gravity key is still there, in the scene settings' folded group.
         assert!(h.query_by_label("Scene settings lanes").is_some());
         assert_eq!(h.state().scene.tracks.len(), 1);
@@ -1042,6 +1359,177 @@ mod tests {
         assert_eq!(keys.len(), 2, "{keys:?}");
         assert!(keys[1].time > 2.0);
         assert_eq!(keys[1].value, Value::Number(60.0), "the new key holds the value at that time");
+    }
+
+    /// The harness with a second key on the ball's size, at 4 s.
+    fn two_keys() -> Harness<'static, Studio> {
+        let mut h = harness();
+        {
+            let s = h.state_mut();
+            let kit = s.kit.clone();
+            s.scene.set_key(&kit.registry, &size_address(), 4.0, Value::Number(90.0)).unwrap();
+        }
+        h.run();
+        h
+    }
+
+    fn times(h: &Harness<'_, Studio>) -> Vec<f64> {
+        h.state().scene.tracks[&size_address()].keys.iter().map(|k| k.time).collect()
+    }
+
+    #[test]
+    fn shift_click_picks_several_keys_and_dragging_one_moves_them_all() {
+        let mut h = two_keys();
+        h.get_by_label("Key at 0:02.00 of Ball · Size").click();
+        h.run();
+        h.get_by_label("Key at 0:04.00 of Ball · Size").click_modifiers(Modifiers::SHIFT);
+        h.run();
+        assert_eq!(h.state().panels.timeline.selected.len(), 2);
+        // Shift-clicking a selected key takes it out again, and back.
+        h.get_by_label("Key at 0:04.00 of Ball · Size").click_modifiers(Modifiers::SHIFT);
+        h.run();
+        assert_eq!(h.state().panels.timeline.selected.len(), 1);
+        h.get_by_label("Key at 0:04.00 of Ball · Size").click_modifiers(Modifiers::SHIFT);
+        h.run();
+        let from = h.get_by_label("Key at 0:02.00 of Ball · Size").rect().center();
+        press_drag_release(&mut h, from, from + egui::vec2(60.0, 0.0));
+        let t = times(&h);
+        assert_eq!(t.len(), 2, "{t:?}");
+        assert!(t[0] > 2.3, "{t:?}");
+        assert!((t[1] - t[0] - 2.0).abs() < 1e-9, "they keep their distance: {t:?}");
+        assert_eq!(h.state().panels.timeline.selected.len(), 2, "both stay selected");
+        // A plain click picks one alone again.
+        h.get_by_label(&format!("Key at {} of Ball · Size", clock(t[1]))).click();
+        h.run();
+        assert_eq!(h.state().panels.timeline.single(), Some((size_address(), 1)));
+    }
+
+    #[test]
+    fn keys_dragged_left_stop_at_the_start() {
+        let mut h = two_keys();
+        h.state_mut().panels.timeline.selected = BTreeSet::from([(size_address(), 0), (size_address(), 1)]);
+        h.run();
+        let from = h.get_by_label("Key at 0:04.00 of Ball · Size").rect().center();
+        press_drag_release(&mut h, from, from - egui::vec2(800.0, 0.0));
+        assert_eq!(times(&h), [0.0, 2.0], "the earliest stops at 0 and the other keeps its distance");
+    }
+
+    #[test]
+    fn a_box_dragged_over_empty_lane_space_selects_the_keys_in_it() {
+        let mut h = two_keys();
+        let a = h.get_by_label("Key at 0:02.00 of Ball · Size").rect().center();
+        let b = h.get_by_label("Key at 0:04.00 of Ball · Size").rect().center();
+        press_drag_release(&mut h, a - egui::vec2(20.0, 8.0), b + egui::vec2(20.0, 8.0));
+        assert_eq!(h.state().panels.timeline.selected.len(), 2);
+        assert_eq!(times(&h), [2.0, 4.0], "no key moved");
+        // Escape lets go of them.
+        h.key_press(Key::Escape);
+        h.run();
+        assert!(h.state().panels.timeline.selected.is_empty());
+    }
+
+    #[test]
+    fn delete_removes_every_selected_key() {
+        let mut h = two_keys();
+        h.state_mut().panels.timeline.selected = BTreeSet::from([(size_address(), 0), (size_address(), 1)]);
+        h.run();
+        h.key_press(Key::Delete);
+        h.run();
+        assert!(!h.state().scene.tracks.contains_key(&size_address()));
+    }
+
+    #[test]
+    fn copied_keys_paste_at_the_playhead_and_onto_another_thing() {
+        let mut h = two_keys();
+        h.state_mut().panels.timeline.selected = BTreeSet::from([(size_address(), 0), (size_address(), 1)]);
+        h.run();
+        assert!(copy_keys(h.state_mut()));
+        h.state_mut().seek(10.0);
+        assert!(paste_keys(h.state_mut()));
+        h.run();
+        assert_eq!(times(&h), [2.0, 4.0, 10.0, 12.0]);
+        let s = h.state();
+        assert_eq!(s.scene.tracks[&size_address()].keys[2].value, Value::Number(60.0));
+        assert_eq!(s.panels.timeline.selected, BTreeSet::from([(size_address(), 2), (size_address(), 3)]));
+        assert!(s.status.contains("Pasted 2 keys at 0:10.00"), "{}", s.status);
+        assert!(s.separate_edit, "its own undo step");
+        // Onto the shape, which has no Size: nothing lands, and the status line says so.
+        let s = h.state_mut();
+        s.separate_edit = false;
+        s.selection.set(SHAPE);
+        assert!(!paste_keys(s));
+        assert!(s.status.contains("doesn't have the settings of 2 of them"), "{}", s.status);
+        // A copy of the ball takes them onto its own Size.
+        let kit = s.kit.clone();
+        let copy = crate::tree::duplicate(&mut s.scene, &kit.registry, ThingId(2)).unwrap();
+        s.selection.set(copy);
+        s.seek(0.0);
+        assert!(paste_keys(s));
+        let mine: Vec<f64> = s.scene.tracks[&Address::own(copy, "radius")].keys.iter().map(|k| k.time).collect();
+        assert_eq!(mine, [0.0, 2.0, 4.0, 10.0, 12.0], "the copy's own keys and the pasted ones (0 and 2)");
+    }
+
+    #[test]
+    fn repeat_every_bar_fills_to_the_end() {
+        let mut h = harness();
+        h.get_by_label("Key at 0:02.00 of Ball · Size").click_secondary();
+        h.run();
+        // 120 BPM in 4/4: a bar is 2 s; the video is 20 s long.
+        h.get_by_label("Repeat every bar").click();
+        h.run();
+        let t = times(&h);
+        assert_eq!(t, [2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0], "{}", h.state().status);
+        assert!(h.state().separate_edit);
+    }
+
+    #[test]
+    fn keys_spread_over_more_than_a_bar_repeat_every_few_bars() {
+        let mut h = two_keys();
+        {
+            let s = h.state_mut();
+            let kit = s.kit.clone();
+            s.scene.set_key(&kit.registry, &size_address(), 4.5, Value::Number(30.0)).unwrap();
+            s.panels.timeline.selected = BTreeSet::from([(size_address(), 0), (size_address(), 2)]);
+        }
+        h.run();
+        let t = h.state().panels.timeline.single();
+        assert!(t.is_none());
+        h.get_by_label("Key at 0:02.00 of Ball · Size").click_secondary();
+        h.run();
+        // 2 s to 4.5 s is more than a bar: every 2 bars (4 s).
+        h.get_by_label("Repeat every 2 bars").click();
+        h.run();
+        assert_eq!(times(&h), [2.0, 4.0, 4.5, 6.0, 8.5, 10.0, 12.5, 14.0, 16.5, 18.0]);
+    }
+
+    #[test]
+    fn keys_exactly_a_bar_apart_repeat_every_two_bars_keeping_the_pattern() {
+        let mut h = two_keys();
+        h.state_mut().panels.timeline.selected = BTreeSet::from([(size_address(), 0), (size_address(), 1)]);
+        h.run();
+        h.get_by_label("Key at 0:02.00 of Ball · Size").click_secondary();
+        h.run();
+        h.get_by_label("Repeat every 2 bars").click();
+        h.run();
+        let values: Vec<Value> = h.state().scene.tracks[&size_address()].keys.iter().map(|k| k.value.clone()).collect();
+        assert_eq!(times(&h), [2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0]);
+        assert_eq!(values[2], values[0], "the first key's copy");
+        assert_eq!(values[3], values[1], "the second key's copy, not overwritten");
+    }
+
+    #[test]
+    fn a_key_added_in_front_elsewhere_unselects_the_keys_it_moved() {
+        let mut h = two_keys();
+        h.state_mut().panels.timeline.selected = BTreeSet::from([(size_address(), 1)]);
+        h.run();
+        assert_eq!(h.state().panels.timeline.selected.len(), 1);
+        {
+            let s = h.state_mut();
+            let kit = s.kit.clone();
+            s.scene.set_key(&kit.registry, &size_address(), 0.5, Value::Number(10.0)).unwrap();
+        }
+        h.run();
+        assert!(h.state().panels.timeline.selected.is_empty(), "index 1 now holds another key");
     }
 
     const SHAPE: ThingId = ThingId(1);
