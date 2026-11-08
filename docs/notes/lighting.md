@@ -216,3 +216,12 @@ shaders. `tests/bake_pictures.rs` (bpe-cli); `scenes::bake_demo` is test-only.
   in time, `preview/warm.rs` replays the effects' remembered seconds on a spare renderer
   (`Playback::rewound`), as many frames as fit in 8 ms per editor frame, and swaps it in ("Warming up effects…
   N%"); see `editor.md`, "Responsiveness", for how it builds its frames and when the spare goes.
+
+**Haze With the air (W13)**: `HazeMoves::WithTheAir` (shader code 1, the Drifting clouds) drifts as far as the
+scene's air carried them (`Air.drift`, the ambient wind × dt summed each step by the scene sim) × Speed; Still
+without an Air card. `LightingSettings::haze_drift` works the offset out on the CPU for every mode (Drifting and
+Swirling: direction × Speed × 100 px/s × time, as the shader did) and `SceneDraw` puts it in `haze_more.xy`; the
+shader subtracts it (`haze_density`). While the haze moves with the air the scene sim `reads_air`
+(`bpe_runtime::air_read`): every world senses the Air keys and the physics fingerprint counts the Air card and its
+keys, so an Air edit restarts the playback whose air it drifts with (the sound's too, as its fingerprint includes the
+physics'). Haze gusts don't travel as waves.

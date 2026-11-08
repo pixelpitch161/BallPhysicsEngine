@@ -184,3 +184,11 @@ bounce off / stop) and Piles layer, and part 7's moments, sound and particle lig
 are on the card (`swarm::put_ready` from `Ready::new`; `StepGpu.middle/parent/homes/lists/fballs`, `SpeckMore.spot`). `World.gpu_memory` + `Playback`'s `GPU_CHECKPOINT_BYTES` (2 GB) thin checkpoints by video
 memory. The editor's Look card has the Engine chips (`look_editor/particles.rs::engine_row`). Tests:
 `bpe-gfx/src/swarm/tests.rs`, `bpe-kit/src/things/particles/swarm_tests.rs` (ignored `bench_a_million`).
+
+**W13**: while some ball follows the air (`bpe_runtime::air_felt`), a Particles thing whose Rise heats the air
+(`ParticlesSim::heats_air`: Exact engine, a Rise with Heats the air not 0) steps with the physics, not beside, so
+every playback moves the balls alike (`air_tests.rs::heating_particles_step_with_the_balls_that_follow_the_air`).
+Following the air alone never moves a ball, so such a thing stays beside. The Air card's edits then restart the
+physics too. A thing fed by its parent's particles puts no heat in while balls follow the air (its parent may step
+beside; `catch_up_all` skips its `put_heat` when `World.air_felt`). Known gap: a Rise whose Heats the air is 0 but
+keyed above 0 isn't counted.

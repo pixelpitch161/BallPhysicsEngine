@@ -16,6 +16,7 @@ use crate::{BLOCK, BusReading, Meters, TempoMap};
 use bpe_core::{Address, Registry, Scene, SlotId, ThingId, Track};
 use bpe_dsp::{Smoother, db_to_gain, gain_to_db};
 use bpe_kit::sound::{BUSES, BusSettings, MixerSettings, SILENT_DB};
+use bpe_runtime::{ChangeKey, RulesState};
 
 /// How long turning a bus on or off, muting or soloing it fades.
 const SWITCH_MS: f32 = 10.0;
@@ -106,6 +107,8 @@ struct BusKeys {
     fader: Option<Track>,
     pan: Option<Track>,
     sends: [Option<Track>; BUSES],
+    /// Where a rule's change of its Fader, Pan and Send 1..3 is kept (W13); empty: none read.
+    ruled: Vec<ChangeKey>,
 }
 
 /// Everything one bus is built from.
@@ -136,6 +139,10 @@ impl BusesSpec {
                     fader: track(key("fader")),
                     pan: track(key("pan")),
                     sends: std::array::from_fn(|t| track(key(&format!("send{}", t + 1)))),
+                    ruled: ["fader", "pan", "send1", "send2", "send3"]
+                        .iter()
+                        .map(|k| crate::ruled::mixer_key(&key(k)))
+                        .collect(),
                 },
                 chain: FxChain::build(scene, i as u8, reg, tempo),
             }
@@ -183,21 +190,26 @@ impl Bus {
             bus_lags: std::array::from_fn(|_| Lag::new()),
             out_lag: Lag::new(),
         };
-        b.at(0.0, false);
+        b.at(0.0, false, None);
         b.snap();
         b
     }
 
-    /// Heads the smoothers for where the settings and keys are at `time`.
-    fn at(&mut self, time: f64, any_solo: bool) {
-        let key = |t: &Option<Track>, base: f32| t.as_ref().and_then(|t| track_value(t, time)).unwrap_or(base);
+    /// Heads the smoothers for where the settings, keys and the rules' changes (`rules`, W13) are
+    /// at `time`. Never allocates.
+    fn at(&mut self, time: f64, any_solo: bool, rules: Option<&RulesState>) {
+        let ruled = &self.keys.ruled;
+        let key = |t: &Option<Track>, base: f32, k: usize| {
+            let v = t.as_ref().and_then(|t| track_value(t, time)).unwrap_or(base);
+            ruled.get(k).map_or(v, |key| crate::ruled::at(rules, key, v, time))
+        };
         let s = &self.settings;
-        self.fader.set_target(fader_gain(key(&self.keys.fader, s.fader)));
-        self.pan.set_target((key(&self.keys.pan, s.pan) / 100.0).clamp(-1.0, 1.0));
+        self.fader.set_target(fader_gain(key(&self.keys.fader, s.fader, 0)));
+        self.pan.set_target((key(&self.keys.pan, s.pan, 1) / 100.0).clamp(-1.0, 1.0));
         let plays = s.on && !s.mute && (!any_solo || s.solo);
         self.audible.set_target(if plays { 1.0 } else { 0.0 });
         for (t, send) in self.sends.iter_mut().enumerate() {
-            send.set_target(fader_gain(key(&self.keys.sends[t], s.send(t as u8 + 1))));
+            send.set_target(fader_gain(key(&self.keys.sends[t], s.send(t as u8 + 1), 2 + t)));
         }
     }
 
@@ -264,7 +276,7 @@ impl Buses {
             stems: [[[0.0; BLOCK]; 2]; BUSES],
         };
         for bus in &mut buses.buses {
-            bus.at(0.0, any_solo);
+            bus.at(0.0, any_solo, None);
             bus.snap();
             bus.asleep = bus.audible.target() == 0.0;
         }
@@ -308,7 +320,7 @@ impl Buses {
             bus.bus_lags.iter_mut().for_each(Lag::reset);
             bus.out_lag.reset();
             bus.clear_inputs();
-            bus.at(time, self.any_solo);
+            bus.at(time, self.any_solo, None);
             bus.snap();
             bus.asleep = bus.audible.target() == 0.0;
         }
@@ -347,11 +359,12 @@ impl Buses {
         self.last = old.last;
     }
 
-    /// Starts a block: clears what reaches each bus and reads the keys at `time`.
-    pub fn begin(&mut self, time: f64) {
+    /// Starts a block: clears what reaches each bus and reads the keys and the rules' changes
+    /// (`rules`, the engine's physics' own) at `time`.
+    pub fn begin(&mut self, time: f64, rules: Option<&RulesState>) {
         for bus in &mut self.buses {
             bus.clear_inputs();
-            bus.at(time, self.any_solo);
+            bus.at(time, self.any_solo, rules);
         }
     }
 
@@ -391,6 +404,7 @@ impl Buses {
         tempo: &TempoMap,
         hits: &[BlockHit],
         meters: &Meters,
+        rules: Option<&RulesState>,
     ) {
         *master_l = [0.0; BLOCK];
         *master_r = [0.0; BLOCK];
@@ -422,7 +436,7 @@ impl Buses {
                             r[i] += br[i];
                         }
                     }
-                    let cx = FxCx { time, tempo, hits, buses: &self.last, bus: b, meters };
+                    let cx = FxCx { time, tempo, hits, buses: &self.last, bus: b, meters, rules };
                     reduction = bus.chain.process(&mut l, &mut r, &cx);
                     for i in 0..BLOCK {
                         let g = bus.fader.next() * bus.audible.next();
@@ -479,6 +493,8 @@ pub struct ShapeRoute {
     pub main: u8,
     base: [f32; BUSES],
     keys: [Option<Track>; BUSES],
+    /// Where a rule's change of the shape's Send 1..3 is kept (W13); empty: none read.
+    ruled: Vec<ChangeKey>,
     gains: [Smoother; BUSES],
     scratch: [f32; BLOCK],
 }
@@ -486,7 +502,7 @@ pub struct ShapeRoute {
 impl ShapeRoute {
     /// Straight into bus `main` (1..=3), no sends.
     pub fn main_only(main: u8) -> ShapeRoute {
-        Self::new(main, [SILENT_DB; BUSES], [None, None, None])
+        Self::new(main, [SILENT_DB; BUSES], [None, None, None], Vec::new())
     }
 
     /// The route of shape `id` from its voice settings.
@@ -499,18 +515,20 @@ impl ShapeRoute {
             v.out_bus.clamp(1, 3) as u8,
             [v.out_send1, v.out_send2, v.out_send3],
             std::array::from_fn(|i| track(i + 1)),
+            (1..=BUSES).map(|n| crate::ruled::key(id, SlotId::Sound, &format!("out_send{n}"))).collect(),
         )
     }
 
-    fn new(main: u8, base: [f32; BUSES], keys: [Option<Track>; BUSES]) -> ShapeRoute {
+    fn new(main: u8, base: [f32; BUSES], keys: [Option<Track>; BUSES], ruled: Vec<ChangeKey>) -> ShapeRoute {
         let mut r = ShapeRoute {
             main: main.clamp(1, 3),
             base,
             keys,
+            ruled,
             gains: std::array::from_fn(|_| Smoother::new(Smoother::KNOB_MS)),
             scratch: [0.0; BLOCK],
         };
-        r.at(0.0);
+        r.at(0.0, None);
         for g in &mut r.gains {
             let t = g.target();
             g.reset(t);
@@ -518,10 +536,12 @@ impl ShapeRoute {
         r
     }
 
-    /// Heads the sends for where their keys are at `time`.
-    pub fn at(&mut self, time: f64) {
+    /// Heads the sends for where their keys and the rules' changes (`rules`, W13) are at `time`.
+    /// Never allocates.
+    pub fn at(&mut self, time: f64, rules: Option<&RulesState>) {
         for (i, g) in self.gains.iter_mut().enumerate() {
             let db = self.keys[i].as_ref().and_then(|t| track_value(t, time)).unwrap_or(self.base[i]);
+            let db = self.ruled.get(i).map_or(db, |key| crate::ruled::at(rules, key, db, time));
             // A send to the main bus is not offered: it would only double the shape.
             g.set_target(if i + 1 == self.main as usize { 0.0 } else { fader_gain(db) });
         }
@@ -629,11 +649,11 @@ mod tests {
             if b == 0 {
                 x[3] = 0.25;
             }
-            buses.begin(0.0);
+            buses.begin(0.0, None);
             buses.add(1, None, &x, &x);
             buses.add(2, None, &x, &x);
             let (mut l, mut r) = ([0.0; BLOCK], [0.0; BLOCK]);
-            buses.process(&mut l, &mut r, 0.0, &tempo, &[], &meters);
+            buses.process(&mut l, &mut r, 0.0, &tempo, &[], &meters, None);
             out.extend_from_slice(&l);
         }
         let at: Vec<usize> = out.iter().enumerate().filter(|(_, v)| v.abs() > 1e-6).map(|(i, _)| i).collect();

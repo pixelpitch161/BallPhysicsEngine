@@ -134,13 +134,16 @@ pub enum HazeMoves {
     Drifting,
     /// Uneven clouds turning and curling.
     Swirling,
+    /// Uneven clouds carried by the scene's air: the Air card's wind, its gusts and keys (W13).
+    /// Still without an Air card.
+    WithTheAir,
 }
 
 impl HazeMoves {
     pub fn code(self) -> f32 {
         match self {
             Self::Still => 0.0,
-            Self::Drifting => 1.0,
+            Self::Drifting | Self::WithTheAir => 1.0,
             Self::Swirling => 2.0,
         }
     }
@@ -724,10 +727,8 @@ impl LightingSettings {
                 finite(self.haze_size).max(1e-3),
                 finite(self.patchiness),
             ],
-            haze_more: {
-                let d = finite(self.drift_direction).to_radians();
-                [d.cos(), d.sin(), finite(self.haze_stir), 0.0]
-            },
+            // The drift itself is the time's: see `haze_drift`.
+            haze_more: [0.0, 0.0, finite(self.haze_stir), 0.0],
             water: [
                 finite(self.underwater),
                 finite(self.caustics),
@@ -788,6 +789,24 @@ impl LightingSettings {
         }
     }
 
+    /// How far the moving haze has drifted at `time` (seconds), px: Drifting and Swirling along
+    /// Drift direction at Speed × 100 px/s, With the air as far as the air has carried it
+    /// (`air`, [`crate::air::Air::drift`]; none without an Air card) times Speed. The shader moves
+    /// the clouds back by it ([`bpe_gfx::LightingGpu::haze_more`]).
+    pub fn haze_drift(&self, time: f64, air: Option<glam::Vec2>) -> [f32; 2] {
+        let finite = |v: f32| if v.is_finite() { v } else { 0.0 };
+        let speed = finite(self.haze_speed);
+        let at = match self.haze_moves {
+            HazeMoves::Still => glam::Vec2::ZERO,
+            HazeMoves::Drifting | HazeMoves::Swirling => {
+                let d = finite(self.drift_direction).to_radians();
+                glam::Vec2::new(d.cos(), d.sin()) * speed * (time.max(0.0) * 100.0) as f32
+            }
+            HazeMoves::WithTheAir => air.unwrap_or(glam::Vec2::ZERO) * speed,
+        };
+        if at.is_finite() { at.into() } else { [0.0; 2] }
+    }
+
     /// How the video bakes, when the card asks for it.
     pub fn bake(&self) -> Option<bpe_gfx::bake::Bake> {
         (self.on_export == OnExport::Bake).then(|| bpe_gfx::bake::Bake {
@@ -834,6 +853,27 @@ impl ModuleKind for LightingKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn haze_drifts_along_its_direction_or_as_the_air_carried_it() {
+        let still = LightingSettings::default();
+        assert_eq!(still.haze_drift(3.0, Some(glam::Vec2::new(50.0, 0.0))), [0.0, 0.0]);
+        let drifting = LightingSettings {
+            haze_moves: HazeMoves::Drifting,
+            haze_speed: 2.0,
+            drift_direction: 90.0,
+            ..still.clone()
+        };
+        let [x, y] = drifting.haze_drift(1.5, None);
+        assert!(x.abs() < 1e-3 && (y - 300.0).abs() < 1e-3, "down at 200 px/s: {x}, {y}");
+        let swirling = LightingSettings { haze_moves: HazeMoves::Swirling, ..drifting.clone() };
+        assert_eq!(swirling.haze_drift(1.5, None), drifting.haze_drift(1.5, None));
+        let air = LightingSettings { haze_moves: HazeMoves::WithTheAir, haze_speed: 0.5, ..still.clone() };
+        assert_eq!(air.haze_drift(9.0, Some(glam::Vec2::new(400.0, -20.0))), [200.0, -10.0]);
+        assert_eq!(air.haze_drift(9.0, None), [0.0, 0.0], "without an Air card it stays");
+        assert_eq!(air.haze_drift(9.0, Some(glam::Vec2::NAN)), [0.0, 0.0]);
+        assert_eq!(HazeMoves::WithTheAir.code(), HazeMoves::Drifting.code(), "the clouds the shader draws");
+    }
 
     #[test]
     fn flat_leaves_the_stage_off_and_stage_fills_it_in() {
