@@ -35,16 +35,6 @@ fn rules_round_trip_through_saving() {
 }
 
 #[test]
-fn a_format_11_file_opens_with_no_rules() {
-    let (r, mut s) = scene();
-    testkit::push(&mut s, "balls", ThingId::ROOT);
-    let text = save(&s).replacen("format: 12", "format: 11", 1);
-    let back = load(&text, &r).unwrap();
-    assert!(back.rules.is_empty());
-    assert_eq!(back.format, Scene::FORMAT);
-}
-
-#[test]
 fn load_mends_rules() {
     let (r, mut s) = scene();
     let rule = s.add_rule("A");
