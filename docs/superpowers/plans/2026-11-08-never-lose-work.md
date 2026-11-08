@@ -187,4 +187,14 @@ Built as planned, with these differences:
 - Checked in the running editor under Xvfb: an added Balls group was autosaved at once, a `kill -9` left the copy,
   and the next start offered it back; Restore brought the Balls back under "Not saved yet".
 
+- The Opus review found eleven issues, all fixed: the crash slot is emptied on a clean exit; the recovery copy is
+  always cleared when the scene becomes saved (a caught panic could have written one); the crash hook acts only on the
+  editor's own thread and writes through its own `.crash.tmp`; an unopenable lock counts as held and `tidy` skips
+  young locks (and `Session::start` retries its lock); a repeating graphics error counts up in place instead of
+  re-reporting every frame; autosave failures get their own `ProblemKind::Autosave` and clear on the next good write
+  (the worker reports outcomes); saves retry the rename on PermissionDenied; `restore` writes and flushes its own copy
+  before deleting the old one; a copy older than its scene file warns and leads with Discard; the device-lost
+  wording says the work was autosaved; the window no longer wakes every second while unsaved. Tests added for
+  each, including `on_exit`'s keep-or-delete decision, `crash_save`, and the restore dialog's buttons.
+
 Summary in `docs/notes/editor.md` ("Never lose work, exports and errors").

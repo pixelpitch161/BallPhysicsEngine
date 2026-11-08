@@ -9,7 +9,13 @@ use std::path::{Path, PathBuf};
 /// in. With `backup`, the file that was there is copied to [`backup_path`] first. On failure
 /// the file at `path` is untouched and no temporary file is left.
 pub fn write_safely(path: &Path, text: &str, backup: bool) -> std::io::Result<()> {
-    let tmp = sibling(path, ".tmp");
+    write_via(path, text, backup, ".tmp")
+}
+
+/// [`write_safely`] through a temporary file named with `tmp_suffix`, so two writers of the same
+/// file (the autosave and the crash hook) never share one.
+pub fn write_via(path: &Path, text: &str, backup: bool, tmp_suffix: &str) -> std::io::Result<()> {
+    let tmp = sibling(path, tmp_suffix);
     let written = (|| {
         let mut file = std::fs::File::create(&tmp)?;
         file.write_all(text.as_bytes())?;
@@ -19,12 +25,27 @@ pub fn write_safely(path: &Path, text: &str, backup: bool) -> std::io::Result<()
             // A copy, not a rename, so the real file is never missing, even for a moment.
             std::fs::copy(path, backup_path(path))?;
         }
-        std::fs::rename(&tmp, path)
+        swap_in(&tmp, path)
     })();
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
     written
+}
+
+/// Renames `tmp` over `path`, trying again for a moment: on Windows a backup or sync program
+/// (OneDrive, an antivirus, the indexer) can hold the file briefly and the rename is refused.
+fn swap_in(tmp: &Path, path: &Path) -> std::io::Result<()> {
+    let mut tries = 0;
+    loop {
+        match std::fs::rename(tmp, path) {
+            Err(error) if tries < 5 && error.kind() == std::io::ErrorKind::PermissionDenied => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            done => return done,
+        }
+    }
 }
 
 /// Where the version before the last save is kept: `My scene.ron` keeps `My scene (backup).ron`,

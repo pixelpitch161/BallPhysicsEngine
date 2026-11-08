@@ -47,8 +47,10 @@ pub enum ProblemKind {
     File,
     /// Making a video.
     Export,
-    /// Autosave and restoring autosaved work.
+    /// Restoring autosaved work.
     Recovery,
+    /// The autosave itself.
+    Autosave,
 }
 
 /// A failure shown in the status line in the problem colour until it is dismissed (or its source
@@ -77,6 +79,9 @@ pub struct Offer {
     /// The scene's name and how long ago it was saved, for the question.
     pub name: String,
     pub when: String,
+    /// The scene's own file was saved after this copy was made: restoring would bring back
+    /// older work.
+    pub file_newer: bool,
 }
 
 /// Something that would throw away unsaved changes.
@@ -268,8 +273,8 @@ pub struct Studio {
     autosaved: Option<Scene>,
     /// When the autosave last looked; `None` looks at the next frame.
     autosaved_at: Option<Instant>,
-    /// An autosave failure is already in the status line.
-    autosave_failed: bool,
+    /// The scene was unsaved at the last look, so a recovery copy may exist.
+    was_unsaved: bool,
     /// The unsaved scene a crash would save.
     crash_slot: CrashSlot,
     /// When the crash copy was last refreshed.
@@ -389,7 +394,12 @@ impl Studio {
         match loaded {
             Ok(scene) => {
                 let when = recovery::how_long_ago(orphan.saved_at, std::time::SystemTime::now());
-                self.offer = Some(Offer { name: scene.name.clone(), scene, orphan, when });
+                let file_newer = orphan
+                    .original
+                    .as_ref()
+                    .and_then(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+                    .is_some_and(|saved| saved > orphan.saved_at);
+                self.offer = Some(Offer { name: scene.name.clone(), scene, orphan, when, file_newer });
             }
             Err(error) => {
                 orphan.set_aside();
@@ -409,9 +419,17 @@ impl Studio {
             .and_then(|text| bpe_core::load(&text, &self.kit.registry).ok());
         self.replace_scene(offer.scene, original);
         self.saved = self.held(on_disk.unwrap_or_else(|| bpe_kit::new_studio_scene(&self.kit.registry)));
-        offer.orphan.discard();
-        // Into this editor's own autosave at once.
-        self.autosaved_at = None;
+        // Into this editor's own autosave first; the old copy goes only once ours is written.
+        if let Some(session) = &self.recovery {
+            session.write(self.scene.clone(), self.path.clone());
+            session.flush();
+            self.autosaved = Some(self.scene.clone());
+            self.autosaved_at = Some(Instant::now());
+            self.was_unsaved = true;
+            if !matches!(session.outcome(), Some(Err(_))) {
+                offer.orphan.discard();
+            }
+        }
         self.status = format!("Restored your work (saved automatically {}).", offer.when);
     }
 
@@ -447,47 +465,48 @@ impl Studio {
     /// until it wants to look again.
     fn autosave(&mut self, now: Instant) -> Option<Duration> {
         let session = self.recovery.as_ref()?;
-        if let Some(error) = session.failure() {
-            if !self.autosave_failed {
-                self.report(ProblemKind::Recovery, format!("Couldn't autosave your work: {error}"));
-            }
-            self.autosave_failed = true;
+        match session.outcome() {
+            Some(Ok(())) => self.clear_problem(ProblemKind::Autosave),
+            Some(Err(error)) => self.report(ProblemKind::Autosave, format!("Couldn't autosave your work: {error}")),
+            None => {}
         }
         let session = self.recovery.as_ref()?;
         if !self.unsaved() {
-            if self.autosaved.take().is_some() {
+            // A copy may exist even if the autosave didn't write it (a crash copy): always clear.
+            if std::mem::take(&mut self.was_unsaved) {
                 session.clear();
+                self.autosaved = None;
+                *self.crash_slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                self.crash_copied_at = None;
             }
-            *self.crash_slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
-            self.crash_copied_at = None;
             return None;
         }
+        self.was_unsaved = true;
+        let mut wait: Option<Duration> = None;
+        let mut soon = |d: Duration| wait = Some(wait.map_or(d, |w| w.min(d)));
         let since_copy = self.crash_copied_at.map_or(recovery::CRASH_COPY_EVERY, |t| now.duration_since(t));
-        let mut wait = recovery::AUTOSAVE_EVERY;
-        if since_copy >= recovery::CRASH_COPY_EVERY {
+        {
             let mut slot = self.crash_slot.lock().unwrap_or_else(|e| e.into_inner());
-            if slot.as_ref().is_none_or(|c| c.scene != self.scene || c.original != self.path) {
+            let stale = slot.as_ref().is_none_or(|c| c.scene != self.scene || c.original != self.path);
+            if stale && since_copy >= recovery::CRASH_COPY_EVERY {
                 *slot = Some(CrashCopy { scene: self.scene.clone(), original: self.path.clone() });
+                self.crash_copied_at = Some(now);
+            } else if stale {
+                soon(recovery::CRASH_COPY_EVERY - since_copy);
             }
-            self.crash_copied_at = Some(now);
-        } else {
-            wait = wait.min(recovery::CRASH_COPY_EVERY - since_copy);
         }
         let since_save = self.autosaved_at.map_or(recovery::AUTOSAVE_EVERY, |t| now.duration_since(t));
-        if since_save >= recovery::AUTOSAVE_EVERY {
-            if self.autosaved.as_ref() != Some(&self.scene) {
+        if self.autosaved.as_ref() != Some(&self.scene) {
+            if since_save >= recovery::AUTOSAVE_EVERY {
                 session.write(self.scene.clone(), self.path.clone());
                 self.autosaved = Some(self.scene.clone());
-                if self.autosave_failed && self.problem.as_ref().is_some_and(|p| p.kind == ProblemKind::Recovery) {
-                    // Told again if this one fails too.
-                    self.autosave_failed = false;
-                }
+                self.autosaved_at = Some(now);
+            } else {
+                soon(recovery::AUTOSAVE_EVERY - since_save);
             }
-            self.autosaved_at = Some(now);
-        } else {
-            wait = wait.min(recovery::AUTOSAVE_EVERY - since_save);
         }
-        Some(wait)
+        // Nothing waiting to be copied: no need to wake the window.
+        wait
     }
 
     /// Tells the status line what the graphics card complained about since the last frame.
@@ -502,7 +521,8 @@ impl Studio {
             self.autosaved_at = None;
             self.report(
                 ProblemKind::Graphics,
-                "The graphics card stopped responding. Save your work, then close and reopen Ball Studio.",
+                "The graphics card stopped responding. Your unsaved work was autosaved; save it if you can, then \
+                 close and reopen Ball Studio.",
             );
         } else if count > self.gpu_told
             && !self.gpu_lost_told
@@ -510,7 +530,14 @@ impl Studio {
         {
             let line = first.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("unknown").to_string();
             let times = if count > 1 { format!(" ({count} times)") } else { String::new() };
-            self.report(ProblemKind::Graphics, format!("The graphics card reported a problem{times}: {line}"));
+            let text = format!("The graphics card reported a problem{times}: {line}");
+            if self.gpu_told == 0 {
+                // Told once; a complaint that repeats every frame only counts up in place, so it can
+                // be dismissed and never hides another problem.
+                self.report(ProblemKind::Graphics, text);
+            } else if let Some(problem) = self.problem.as_mut().filter(|p| p.kind == ProblemKind::Graphics) {
+                problem.text = text;
+            }
         }
         self.gpu_told = count;
     }
@@ -604,7 +631,7 @@ impl Studio {
             recovery: None,
             autosaved: None,
             autosaved_at: None,
-            autosave_failed: false,
+            was_unsaved: false,
             crash_slot: Arc::default(),
             crash_copied_at: None,
             offer: None,
@@ -1618,18 +1645,32 @@ impl Studio {
     /// "Ball Studio closed unexpectedly. Restore your last work?"
     fn restore_dialog(&mut self, ctx: &egui::Context) {
         let Some(offer) = &self.offer else { return };
-        let (name, when) = (offer.name.clone(), offer.when.clone());
+        let (name, when, file_newer) = (offer.name.clone(), offer.when.clone(), offer.file_newer);
         let mut choice = None;
         egui::Modal::new(egui::Id::unique("restore-work")).show(ctx, |ui| {
             ui.set_width(420.0);
             ui.heading("Ball Studio closed unexpectedly");
             ui.label(format!("Restore your last work on \"{name}\"? It was saved automatically {when}."));
+            if file_newer {
+                ui.label(
+                    RichText::new(
+                        "Its file was saved again after this copy was made, so restoring would bring back older work.",
+                    )
+                    .color(style::PROBLEM),
+                );
+            }
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                if ui.add(style::primary_button("Restore")).clicked() {
+                // The safer choice leads: Discard when the file is newer.
+                let (restore, discard) = if file_newer {
+                    (ui.button("Restore"), ui.add(style::primary_button("Discard")))
+                } else {
+                    (ui.add(style::primary_button("Restore")), ui.button("Discard"))
+                };
+                if restore.clicked() {
                     choice = Some(true);
                 }
-                if ui.button("Discard").clicked() {
+                if discard.clicked() {
                     choice = Some(false);
                 }
             });
@@ -1681,7 +1722,9 @@ impl eframe::App for Studio {
         self.save_listen_if_rested(None);
         self.sound = None;
         // The autosaved copy goes once the work is saved or was thrown away on purpose ("Don't
-        // save"); otherwise it stays, to be offered back at the next start.
+        // save"); otherwise it stays, to be offered back at the next start. A panic on the way out
+        // must not write the copy back either.
+        *self.crash_slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
         if let Some(session) = &self.recovery
             && (self.closing || !self.unsaved())
         {
@@ -2434,12 +2477,12 @@ mod tests {
         studio.autosave(now);
         assert!(!session_file(&studio).exists(), "nothing unsaved, nothing copied");
         studio.scene.name = "Changed".into();
-        assert!(studio.autosave(now).is_some());
+        assert_eq!(studio.autosave(now), None, "everything copied: nothing to wake for");
         assert!(session_file(&studio).exists(), "the first change is copied at once");
         let first = std::fs::read_to_string(session_file(&studio)).unwrap();
         studio.scene.name = "Changed again".into();
-        let wait = studio.autosave(now + Duration::from_secs(5)).unwrap();
-        assert!(wait <= recovery::AUTOSAVE_EVERY, "{wait:?}");
+        let wait = studio.autosave(now + Duration::from_secs(5)).expect("wakes for the next copy");
+        assert!(wait <= recovery::AUTOSAVE_EVERY - Duration::from_secs(5), "{wait:?}");
         assert_eq!(std::fs::read_to_string(session_file(&studio)).unwrap(), first, "not again within the minute");
         studio.autosave(now + recovery::AUTOSAVE_EVERY);
         assert!(std::fs::read_to_string(session_file(&studio)).unwrap().contains("Changed again"), "a minute later");
@@ -2450,6 +2493,126 @@ mod tests {
         studio.autosave(now + recovery::AUTOSAVE_EVERY * 2);
         assert!(!session_file(&studio).exists(), "saved, so the copy goes");
         assert!(studio.crash_slot.lock().unwrap().is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_copy_written_by_a_caught_panic_still_goes_when_the_work_is_saved() {
+        let dir = temp_dir("caught");
+        let mut studio = Studio::blank();
+        studio.start_recovery(&dir.join("recovery"), None);
+        studio.path = Some(dir.join("Mine.ron"));
+        assert!(studio.save(false));
+        let now = Instant::now();
+        studio.scene.name = "Edited".into();
+        studio.autosaved_at = Some(now); // within the minute: the autosave hasn't written it
+        studio.autosave(now);
+        let files = studio.recovery.as_ref().unwrap().files().clone();
+        assert!(recovery::crash_save(&studio.crash_slot, &files), "a panic (caught, say) writes the copy");
+        assert!(session_file(&studio).exists());
+        assert!(studio.save(false));
+        studio.autosave(now);
+        assert!(!session_file(&studio).exists(), "saved, so it goes too");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_clean_exit_keeps_the_copy_only_when_work_was_not_saved_or_thrown_away() {
+        use eframe::App;
+        for (closing, kept) in [(false, true), (true, false)] {
+            let dir = temp_dir(if kept { "exit-kept" } else { "exit-gone" });
+            let mut studio = Studio::blank();
+            studio.start_recovery(&dir, None);
+            studio.scene.name = "Unsaved".into();
+            studio.autosave(Instant::now());
+            let file = session_file(&studio);
+            // `closing` is set by "Don't save"; without it, the editor was closed some other way.
+            studio.closing = closing;
+            studio.on_exit();
+            assert_eq!(file.exists(), kept, "closing: {closing}");
+            assert!(studio.crash_slot.lock().unwrap().is_none(), "a panic on the way out writes nothing");
+            assert_eq!(recovery::orphans(&dir).len(), usize::from(kept));
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn restoring_with_the_dialog_or_discarding_it() {
+        for restore in [true, false] {
+            let dir = temp_dir(if restore { "dialog-restore" } else { "dialog-discard" });
+            let mut crashed = Studio::blank();
+            crashed.start_recovery(&dir, None);
+            crashed.scene.name = "Left behind".into();
+            crashed.autosave(Instant::now());
+            session_file(&crashed);
+            drop(crashed.recovery.take());
+            let mut studio = Studio::blank();
+            studio.start_recovery(&dir, None);
+            let mut h = Harness::builder()
+                .with_size(egui::vec2(1000.0, 600.0))
+                .with_max_steps(20)
+                .allow_missing_glyphs()
+                .with_context_setup(style::apply)
+                .build_ui_state(
+                    |ui, studio: &mut Studio| {
+                        egui::CentralPanel::default().show(ui, |_| {});
+                        let ctx = ui.ctx().clone();
+                        studio.restore_dialog(&ctx);
+                    },
+                    studio,
+                );
+            h.run();
+            assert!(h.query_by_label("Ball Studio closed unexpectedly").is_some());
+            h.get_by_label(if restore { "Restore" } else { "Discard" }).click();
+            h.run();
+            assert!(h.state().offer.is_none());
+            assert_eq!(h.state().scene.name == "Left behind", restore);
+            assert!(h.query_by_label("Ball Studio closed unexpectedly").is_none());
+            assert_eq!(recovery::orphans(&dir), vec![], "the old copy is gone either way");
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn an_older_copy_than_its_file_warns_and_leads_with_discard() {
+        let dir = temp_dir("older");
+        let file = dir.join("Mine.ron");
+        let mut crashed = Studio::blank();
+        crashed.path = Some(file.clone());
+        assert!(crashed.save(false));
+        crashed.start_recovery(&dir.join("recovery"), None);
+        crashed.scene.name = "Older work".into();
+        crashed.autosave(Instant::now());
+        let copy = session_file(&crashed);
+        drop(crashed.recovery.take());
+        let earlier = std::time::SystemTime::now() - Duration::from_secs(3600);
+        std::fs::File::options().write(true).open(&copy).unwrap().set_modified(earlier).unwrap();
+        let mut studio = Studio::blank();
+        studio.start_recovery(&dir.join("recovery"), None);
+        assert!(studio.offer.as_ref().unwrap().file_newer, "the file was saved after the copy");
+        assert_eq!(studio.offer.as_ref().unwrap().when, "1 hour ago");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_autosave_failure_is_told_and_cleared_when_a_later_one_works() {
+        let dir = temp_dir("autosave-fail");
+        let mut studio = Studio::blank();
+        studio.start_recovery(&dir, None);
+        let blocker = crate::files::sibling(&studio.recovery.as_ref().unwrap().files().path, ".tmp");
+        std::fs::create_dir_all(&blocker).unwrap();
+        studio.scene.name = "A".into();
+        let now = Instant::now();
+        studio.autosave(now);
+        session_file(&studio);
+        studio.autosave(now);
+        assert_eq!(studio.problem.as_ref().map(|p| p.kind), Some(ProblemKind::Autosave));
+        std::fs::remove_dir_all(&blocker).unwrap();
+        studio.scene.name = "B".into();
+        studio.autosave(now + recovery::AUTOSAVE_EVERY);
+        session_file(&studio);
+        studio.autosave(now + recovery::AUTOSAVE_EVERY);
+        assert_eq!(studio.problem, None, "it works again");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -2531,9 +2694,21 @@ mod tests {
         let problem = studio.problem.clone().unwrap();
         assert_eq!(problem.kind, ProblemKind::Graphics);
         assert_eq!(problem.text, "The graphics card reported a problem (3 times): Validation Error");
-        studio.problem = None;
+        studio.gpu_errors.lock().unwrap().count = 5;
         studio.tell_gpu_errors();
-        assert_eq!(studio.problem, None, "told once, until more come");
+        assert_eq!(
+            studio.problem.as_ref().unwrap().text,
+            "The graphics card reported a problem (5 times): Validation Error",
+            "counts up in place"
+        );
+        studio.problem = None;
+        studio.gpu_errors.lock().unwrap().count = 9;
+        studio.tell_gpu_errors();
+        assert_eq!(studio.problem, None, "a dismissed complaint stays dismissed however often it repeats");
+        studio.report(ProblemKind::File, "Couldn't save");
+        studio.gpu_errors.lock().unwrap().count = 12;
+        studio.tell_gpu_errors();
+        assert_eq!(studio.problem.as_ref().unwrap().kind, ProblemKind::File, "never hides another problem");
         studio.gpu_errors.lock().unwrap().lost = true;
         studio.tell_gpu_errors();
         assert!(studio.problem.unwrap().text.starts_with("The graphics card stopped responding"));
