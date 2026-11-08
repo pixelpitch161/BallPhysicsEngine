@@ -133,3 +133,31 @@ fn keep_mine_puts_the_ball_s_own_colours_in() {
     let got = card.params.get(&bpe_core::layered_key(outline, "colour")).cloned();
     assert_eq!(got, Some(bpe_core::Value::Gradient(pink)));
 }
+
+#[test]
+fn keep_mine_is_greyed_for_a_look_with_colours_of_its_own() {
+    let mut h = on_looks(BALL);
+    click_tile(&mut h, "Chrome");
+    h.get_by_label("Keep mine").click();
+    h.run();
+    assert_eq!(h.state().0.panels.inspector.looks.colours, Colours::Look, "Chrome has colours of its own");
+    click_tile(&mut h, "Neon ring");
+    h.get_by_label("Keep mine").click();
+    h.run();
+    assert_eq!(h.state().0.panels.inspector.looks.colours, Colours::Mine);
+}
+
+#[test]
+fn each_press_is_an_undo_step_of_its_own() {
+    let mut h = on_looks(BALL);
+    let before = kinds(&h, BALL).len();
+    click_tile(&mut h, "Neon ring");
+    h.get_by_label("Add its layers on top").click();
+    h.run();
+    h.get_by_label("Add its layers on top").click();
+    h.run();
+    assert_eq!(kinds(&h, BALL).len(), before + 4);
+    h.state_mut().0.undo();
+    h.run();
+    assert_eq!(kinds(&h, BALL).len(), before + 2, "one undo takes back one press");
+}

@@ -82,7 +82,8 @@ pub fn show(
     {
         let Inspector { looks: page, render, .. } = &mut *inspector;
         let render = render.as_ref();
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        // Its own scroll place, apart from the Settings tab's.
+        egui::ScrollArea::vertical().id_salt("looks page").auto_shrink([false, false]).show(ui, |ui| {
             ui.add_space(4.0);
             if width < NARROW {
                 ui.horizontal_wrapped(|ui| families(ui, page, w));
@@ -114,14 +115,13 @@ pub fn show(
     let page = &mut inspector.looks;
     // The buttons put on the picked look (the pointer has left the tiles to press them).
     let look = picked(page, w);
-    let colours = colours_for(page, scene, id, look);
     let mut reached = 0;
     let mut layers = 0;
     let mut all: Vec<ThingId> = vec![id];
     all.extend(selected.iter().copied().filter(|t| *t != id));
     for t in all {
         // Each thing keeps its own colours when it has them.
-        let theirs = if colours == Colours::Mine && keeps_mine(scene, t, look) { Colours::Mine } else { Colours::Look };
+        let theirs = colours_for(page, scene, t, look);
         if let Ok(n) = ready_looks::apply(scene, reg, t, look, theirs, how) {
             reached += 1;
             layers = n;
@@ -133,15 +133,22 @@ pub fn show(
     if reached == 0 {
         return false;
     }
+    // Each look put on is an undo step of its own, however soon after another edit.
+    inspector.own_step = true;
     let name = scene.things.get(&id).map_or(String::new(), |t| t.name.clone());
     let words = match (how, reached) {
         (How::Replace, 1) => format!("{name} wears {}. Ctrl+Z undoes it.", look.name),
         (How::Replace, n) => format!("{n} things wear {}. Ctrl+Z undoes it.", look.name),
-        (How::OnTop, 1) => format!("Added {layers} layers of {} to {name}.", look.name),
-        (How::OnTop, n) => format!("Added {layers} layers of {} to {n} things.", look.name),
+        (How::OnTop, 1) => format!("Added {} of {} to {name}. Ctrl+Z undoes it.", layers_words(layers), look.name),
+        (How::OnTop, n) => format!("Added {} of {} to {n} things. Ctrl+Z undoes it.", layers_words(layers), look.name),
     };
     inspector.looks.done = Some((id, words));
     true
+}
+
+/// "1 layer", "3 layers".
+fn layers_words(n: usize) -> String {
+    if n == 1 { "1 layer".to_owned() } else { format!("{n} layers") }
 }
 
 /// The families, All first, each with how many looks it has; a click shows only that family.

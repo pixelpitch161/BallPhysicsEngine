@@ -264,8 +264,12 @@ looks themselves are in `bpe-kit/src/ready_looks/` (`engine.md`).
   (`ball_view::show_dressed`, the small scene dressed with the look) with Still / Moving / Hit; a shape look is
   `ShapeView`, the shape alone on the dark ground with Still / Playing / Hit, framed by the path's `reach`. Use this
   look (Replace) and Add its layers on top (OnTop) put the *picked* look on the primary and every selected thing that
-  can wear it, each with its own colours under Keep mine; one edit, so one Ctrl+Z. Keep mine is greyed for looks with
-  colours of their own and for shapes with no Colour layer.
+  can wear it (`ready_looks::fits`: the kind and a Look card), each with its own colours under Keep mine; each press
+  sets `own_step`, so it is one Ctrl+Z of its own however soon it follows another edit. Keep mine is greyed when no
+  thing reached has colours to keep (looks with colours of their own, shapes with no Colour layer); the buttons are
+  greyed for a thing with no Look card. The page's scroll area has its own id (`"looks page"`, and the Sound tab's
+  `"sound tab"`), so the tabs keep their own scroll places. A tile that can't be drawn is remembered by its key and
+  not tried again every frame.
 - **Add menu** (`tree.rs::with_looks`): Balls, Emitter and Shape are submenus: Plain, the seven favourites with their
   swatch (`Action::AddWithLook` → `ready_looks::add_with_look`), More looks… (`Action::AddForLooks`: a plain one,
   `TreeOutcome.looks`, and the app opens its Looks tab). Tree tests click the kind, then Plain.

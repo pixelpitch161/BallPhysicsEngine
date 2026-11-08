@@ -13,7 +13,7 @@ use std::sync::OnceLock;
 
 use bpe_core::{Color, Gradient, Params, Pulse, Registry};
 
-pub use apply::{Colours, How, add_with_look, apply, own_colours};
+pub use apply::{Colours, How, add_with_look, apply, fits, own_colours};
 
 /// What a look is worn by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

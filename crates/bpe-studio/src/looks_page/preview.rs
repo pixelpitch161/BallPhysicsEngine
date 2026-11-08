@@ -49,7 +49,11 @@ pub fn show(
 
     // Whose colours: the look's, or the thing's own where the look's main colour goes.
     let shown = picked(page, w);
-    let can_keep = keeps_mine(scene, id, shown);
+    // The things the buttons reach: this one and every other selected thing that can wear the look.
+    let mut reach: Vec<ThingId> = vec![id];
+    reach.extend(selected.iter().copied().filter(|t| *t != id));
+    reach.retain(|t| ready_looks::fits(scene, *t, shown));
+    let can_keep = reach.iter().any(|t| keeps_mine(scene, *t, shown));
     ui.horizontal(|ui| {
         ui.label(RichText::new("Colours").small().color(style::MUTED));
         let theirs = page.colours == Colours::Look || !can_keep;
@@ -61,8 +65,10 @@ pub fn show(
         let mine_button = style::toggle_button("Keep mine", mine).frame_when_inactive(mine);
         let why = if !shown.takes_colour {
             format!("{} has colours of its own", shown.name)
-        } else {
+        } else if w == Wears::Shape {
             "This shape has no colours of its own yet: give it a Colour layer first".to_owned()
+        } else {
+            "This look has no colours of its own to keep yet".to_owned()
         };
         let response = ui
             .add_enabled(can_keep, mine_button)
@@ -74,26 +80,33 @@ pub fn show(
     });
     ui.add_space(8.0);
 
-    let wearers = selected.iter().filter(|t| scene.things.get(t).and_then(|t| ready_looks::wears(&t.kind)) == Some(w));
-    let count = wearers.count().max(1);
+    let count = reach.len();
+    let can = count > 0;
     let mut pressed = None;
     let use_it = ui
-        .add(style::primary_button("Use this look").min_size(egui::vec2(ui.available_width(), style::CONTROL_H)))
+        .add_enabled(
+            can,
+            style::primary_button("Use this look").min_size(egui::vec2(ui.available_width(), style::CONTROL_H)),
+        )
         .on_hover_text(format!("{} in place of this look, with its layers to change as you like", shown.name));
     if use_it.clicked() {
         pressed = Some(How::Replace);
     }
     let on_top = ui
-        .add(egui::Button::new("Add its layers on top").min_size(egui::vec2(ui.available_width(), style::CONTROL_H)))
-        .on_hover_text(format!("Keeps this look and adds {}'s layers above it, all but its Body", shown.name));
+        .add_enabled(
+            can,
+            egui::Button::new("Add its layers on top").min_size(egui::vec2(ui.available_width(), style::CONTROL_H)),
+        )
+        .on_hover_text(format!("Keeps this look and adds {}'s layers to it, all but its Body", shown.name));
     if on_top.clicked() {
         pressed = Some(How::OnTop);
     }
     let name = scene.things.get(&id).map_or(String::new(), |t| t.name.clone());
     let words = match &page.done {
         Some((t, words)) if *t == id => words.clone(),
-        _ if count > 1 => format!("Replaces the look of {count} things. Ctrl+Z undoes it."),
-        _ => format!("Replaces {name}'s look. Ctrl+Z undoes it."),
+        _ if !can => "It has no Look card to put a look on: add one from Settings first.".to_owned(),
+        _ if count > 1 => format!("Use this look replaces the look of {count} things. Ctrl+Z undoes either button."),
+        _ => format!("Use this look replaces {name}'s look; the other keeps it. Ctrl+Z undoes either."),
     };
     ui.label(RichText::new(words).small().color(style::MUTED));
     pressed

@@ -387,7 +387,7 @@ pub fn show(
         let mut cx = TabCx { scene, kit, choices, id, time, colour, notes_clip, hot, edits: Vec::new() };
         let card = scene.card(id, SlotId::Sound).filter(|c| c.kind == VOICE);
         let on = card.is_some() && cx.flag("enabled");
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt("sound tab").auto_shrink([false, false]).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.add_space(10.0);
                 let mut ticked = on;
@@ -738,7 +738,8 @@ pub(crate) mod tests {
     fn a_ball_shows_no_sound_button() {
         let h = studio_harness(BALL, false);
         assert!(h.query_by_label("Sound").is_none());
-        assert!(h.query_by_label("Settings").is_none());
+        // A ball has Settings and Looks tabs, but no Sound.
+        assert!(h.query_by_label("Looks").is_some());
     }
 
     #[test]

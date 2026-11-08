@@ -30,6 +30,9 @@ pub struct Thumbs {
     renderer: Option<Renderer>,
     frame: Frame,
     tiles: HashMap<&'static str, Tile>,
+    /// Tiles that couldn't be drawn (the thing has no Look card to wear the look), by what they would show, so
+    /// they aren't tried again every frame.
+    failed: HashMap<&'static str, u64>,
     /// The editor frame being drawn, and how many tiles it has drawn so far.
     pass: u64,
     made: usize,
@@ -81,14 +84,19 @@ impl Thumbs {
         {
             return Some(texture);
         }
+        if self.failed.get(look.id) == Some(&key) {
+            return old.map(|(_, t)| t);
+        }
         if self.made >= PER_FRAME {
             ui.ctx().request_repaint();
             return old.map(|(_, t)| t);
         }
         self.made += 1;
         if !tile_frame(scene, kit, id, look, colours, &mut self.frame) {
+            self.failed.insert(look.id, key);
             return old.map(|(_, t)| t);
         }
+        self.failed.remove(look.id);
         let device = &render.device;
         let renderer = self.renderer.get_or_insert_with(|| {
             let mut renderer = Renderer::new(device, PIXELS, PIXELS);

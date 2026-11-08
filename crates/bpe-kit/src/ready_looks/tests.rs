@@ -198,6 +198,17 @@ fn on_top_keeps_the_stack() {
 }
 
 #[test]
+fn on_top_gives_the_own_body_the_look_s_body_sub_layers() {
+    let (reg, mut scene, id) = added("balls");
+    let n = apply(&mut scene, &reg, id, find_look("heat"), Colours::Look, How::OnTop).unwrap();
+    let card = scene.card(id, SlotId::Look).unwrap();
+    let body = card.layers.iter().find(|x| x.kind == l::BODY).unwrap().id;
+    let subs: Vec<_> = card.layers.iter().filter(|x| x.parent == Some(body)).map(|x| x.kind.clone()).collect();
+    assert_eq!(subs.len(), 1, "the Heat sub-layer lands on the ball's own Body: {subs:?}");
+    assert_eq!(n, 1 + find_look("heat").recipe(None).layers.len() - 1, "every layer and sub-layer is counted");
+}
+
+#[test]
 fn a_pulse_follows_its_layer() {
     let (reg, mut scene, id) = added("balls");
     apply(&mut scene, &reg, id, find_look("pulse"), Colours::Look, How::Replace).unwrap();

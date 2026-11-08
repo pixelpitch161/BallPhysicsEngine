@@ -284,7 +284,8 @@ Colour), each a `ReadyLook` whose `build(main colours) -> Recipe` lists existing
 their changed values (`Settings::to_params`), sub-layers, the card's own values (a Surface) and `RPulse`s. Nothing new
 is drawn or saved: `apply(scene, reg, thing, look, Colours, How)` turns the recipe into a `CopiedLook` and pastes it
 (`Replace`: `Scene::paste_look`, keeping the group layers and the ball Body's `ball_shape`/`roundness`; `OnTop`:
-`paste_layer` for every layer but the Body). Pulses aren't in a `CopiedLook`, so they're put on afterwards by the
+`paste_layer` for every layer but the Body, whose sub-layers (Heat glow, Gives off light) go onto the thing's own
+Body with `paste_sub_layer`). `add_with_look` takes the new thing out again if the look can't go on. Pulses aren't in a `CopiedLook`, so they're put on afterwards by the
 layer's place among the top-level, non-group layers (recipes keep Drawn → Around → Reaction order, a test checks).
 `Colours::Mine` passes the thing's own colours (`own_colours`: a ball's Body colours, a shape's lowest Colour layer's;
 none for a shape without one) as the main colour of looks with `takes_colour`. `add_with_look` adds a thing and

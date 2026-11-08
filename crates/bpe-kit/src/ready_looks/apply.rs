@@ -76,8 +76,8 @@ pub fn copied(recipe: &Recipe) -> CopiedLook {
     CopiedLook { layers, card: recipe.card.clone() }
 }
 
-/// Whether `look` can be worn by `thing`, whose Look card it needs.
-fn fits(scene: &Scene, thing: ThingId, look: &ReadyLook) -> bool {
+/// Whether `look` can be worn by `thing`: a thing of a kind that wears it, with its Look card.
+pub fn fits(scene: &Scene, thing: ThingId, look: &ReadyLook) -> bool {
     let Some(t) = scene.things.get(&thing) else { return false };
     let card = match look.wears {
         Wears::Balls => l::CARD,
@@ -86,7 +86,8 @@ fn fits(scene: &Scene, thing: ThingId, look: &ReadyLook) -> bool {
     wears(&t.kind) == Some(look.wears) && scene.card(thing, SlotId::Look).is_some_and(|c| c.kind == card)
 }
 
-/// Puts `look` on `thing` with `colours`, `how`. Returns how many layers it brought. Refused (and nothing
+/// Puts `look` on `thing` with `colours`, `how`. Returns how many layers it brought (Replace: the look's top-level
+/// layers; On top: every layer and sub-layer added). Refused (and nothing
 /// changes) when the thing can't wear it.
 pub fn apply(
     scene: &mut Scene,
@@ -105,6 +106,8 @@ pub fn apply(
     };
     let recipe = look.recipe(mine.as_ref());
     let mut copy = copied(&recipe);
+    // How many layers On top adds (sub-layers on the thing's own Body counted too).
+    let mut added = 0;
     let ids: Vec<LayerId> = match how {
         How::Replace => {
             // The ball keeps its outline: a square ball stays square.
@@ -127,9 +130,22 @@ pub fn apply(
             card.layers.iter().filter(|x| x.parent.is_none() && !group(&x.kind)).map(|x| x.id).collect()
         }
         How::OnTop => {
+            // The thing keeps its own Body, which takes the look's Body sub-layers (Heat glow, Gives off light).
+            let base = copy.layers[0].clone();
+            let own_body = scene
+                .card(thing, SlotId::Look)
+                .and_then(|c| c.layers.iter().find(|x| x.kind == base.kind && x.parent.is_none()))
+                .map(|x| x.id);
+            if let Some(body) = own_body {
+                for sub in &base.subs {
+                    scene.paste_sub_layer(reg, thing, SlotId::Look, body, sub)?;
+                    added += 1;
+                }
+            }
             let mut ids = vec![LayerId(u32::MAX)];
             for layer in copy.layers.iter().skip(1) {
                 ids.push(scene.paste_layer(reg, thing, SlotId::Look, layer)?);
+                added += 1;
             }
             ids
         }
@@ -142,7 +158,7 @@ pub fn apply(
     }
     Ok(match how {
         How::Replace => recipe.layers.len(),
-        How::OnTop => recipe.layers.len().saturating_sub(1),
+        How::OnTop => added,
     })
 }
 
@@ -155,7 +171,11 @@ pub fn add_with_look(
     look: &ReadyLook,
 ) -> Result<ThingId, EditError> {
     let id = crate::starters::add_thing(scene, reg, kind, parent)?;
-    apply(scene, reg, id, look, Colours::Look, How::Replace)?;
+    if let Err(e) = apply(scene, reg, id, look, Colours::Look, How::Replace) {
+        // Not left half made.
+        let _ = scene.remove_thing(id);
+        return Err(e);
+    }
     Ok(id)
 }
 
