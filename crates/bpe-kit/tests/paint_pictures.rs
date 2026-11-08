@@ -1,7 +1,7 @@
 //! Picture tests for the balls' Colours paint on the software GPU.
 
 use bpe_core::{Color, Gradient, SlotId, ThingId, Value, layered_key};
-use bpe_gfx::{Frame, Renderer, build_frame, headless_device};
+use bpe_gfx::{Frame, Renderer, build_frame, test_device};
 use bpe_kit::{kit, scenes};
 use bpe_runtime::Playback;
 
@@ -22,7 +22,7 @@ fn saved(name: &str) -> Vec<u8> {
 
 #[test]
 fn solid_paint_matches_plain_colour() {
-    let Ok((device, queue)) = headless_device() else {
+    let Ok((device, queue)) = test_device() else {
         eprintln!("no GPU adapter available, skipping");
         return;
     };
@@ -63,7 +63,7 @@ fn solid_paint_matches_plain_colour() {
 
 #[test]
 fn inside_rings_draw_on_classic_balls() {
-    let Ok((device, queue)) = headless_device() else {
+    let Ok((device, queue)) = test_device() else {
         eprintln!("no GPU adapter available, skipping");
         return;
     };

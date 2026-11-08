@@ -1,7 +1,7 @@
 //! Picture tests for the scene's background paint on the software GPU.
 
 use bpe_core::{Color, Gradient, Scene, ThingId, Value};
-use bpe_gfx::{Frame, Renderer, build_frame, headless_device, wgpu};
+use bpe_gfx::{Frame, Renderer, build_frame, test_device, wgpu};
 use bpe_kit::{Kit, kit, new_scene};
 use bpe_runtime::Playback;
 
@@ -48,7 +48,7 @@ fn saved(name: &str) -> Vec<u8> {
 
 #[test]
 fn default_background_matches_old_top_bottom() {
-    let Ok((device, queue)) = headless_device() else {
+    let Ok((device, queue)) = test_device() else {
         eprintln!("no GPU adapter available, skipping");
         return;
     };
@@ -90,7 +90,7 @@ fn the_old_picture_is_not_flat() {
 
 #[test]
 fn the_background_runs_at_any_angle_or_from_the_centre() {
-    let Ok((device, queue)) = headless_device() else {
+    let Ok((device, queue)) = test_device() else {
         eprintln!("no GPU adapter available, skipping");
         return;
     };
@@ -115,7 +115,7 @@ fn the_background_runs_at_any_angle_or_from_the_centre() {
 
 #[test]
 fn the_background_follows_time_and_the_world_when_asked() {
-    let Ok((device, queue)) = headless_device() else {
+    let Ok((device, queue)) = test_device() else {
         eprintln!("no GPU adapter available, skipping");
         return;
     };

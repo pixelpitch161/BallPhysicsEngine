@@ -7,7 +7,7 @@
 use bpe_cli::FrameMaker;
 use bpe_core::{Choice, Color, Gradient, Scene, Settings, SlotId, ThingId, Value, layered_key};
 use bpe_gfx::bake::Bake;
-use bpe_gfx::{Renderer, headless_device};
+use bpe_gfx::{Renderer, test_device};
 use bpe_kit::modules::look::surface::{SurfaceKind, preset_values};
 use bpe_kit::paint::Paint;
 use bpe_kit::{SceneSettings, kit, scenes};
@@ -22,7 +22,7 @@ struct Gpu {
 }
 
 fn gpu() -> Option<Gpu> {
-    let (device, queue) = headless_device().ok()?;
+    let (device, queue) = test_device().ok()?;
     let renderer = Renderer::new(&device, W, H);
     Some(Gpu { device, queue, renderer })
 }

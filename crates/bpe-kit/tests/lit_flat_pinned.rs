@@ -10,7 +10,7 @@
 //! physics, whose trig differs a hair between the two), and only when a change is meant to move
 //! Flat lit pictures.
 
-use bpe_gfx::{Frame, Renderer, build_frame, headless_device};
+use bpe_gfx::{Frame, Renderer, build_frame, test_device};
 use bpe_kit::{kit, scenes};
 use bpe_runtime::Playback;
 
@@ -51,7 +51,7 @@ fn unhex(s: &str) -> Vec<[u8; 4]> {
 
 #[test]
 fn flat_matte_lighting_draws_as_part_1a_did() {
-    let Ok((device, queue)) = headless_device() else {
+    let Ok((device, queue)) = test_device() else {
         eprintln!("no GPU adapter available, skipping");
         return;
     };

@@ -7,7 +7,7 @@
 
 use bpe_core::gradient_form::{Layout, area_colour};
 use bpe_core::{Choice, Color, Gradient, GradientForm, Mix, Scene, SettingValue, SlotId, ThingId, Value, layered_key};
-use bpe_gfx::{Frame, Renderer, build_frame, headless_device, wgpu};
+use bpe_gfx::{Frame, Renderer, build_frame, test_device, wgpu};
 use bpe_kit::{Kit, kit, new_scene};
 use bpe_runtime::Playback;
 use glam::Vec2;
@@ -148,7 +148,7 @@ type MakeScene = fn(&Kit, GradientForm) -> Scene;
 
 #[test]
 fn every_form_draws_on_the_background_balls_and_shapes() {
-    let Ok((device, queue)) = headless_device() else {
+    let Ok((device, queue)) = test_device() else {
         eprintln!("no GPU adapter available, skipping");
         return;
     };

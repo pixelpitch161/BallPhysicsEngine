@@ -238,7 +238,7 @@ mod tests {
 
     #[test]
     fn a_jump_with_a_feedback_effect_warms_up_to_what_a_straight_run_draws() {
-        let Ok(gpu) = bpe_gfx::headless_device() else { return };
+        let Ok(gpu) = bpe_gfx::test_device() else { return };
         let mut studio = Studio::headless();
         let mut scene = studio.scene.clone();
         let reg = &studio.kit.registry;

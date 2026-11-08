@@ -5,7 +5,7 @@
 //! `BPE_SAVE_RENDERS=1` saves the pictures into `target/pictures/stage-*.png`.
 
 use bpe_core::{Choice, Registry, Scene, Settings, SlotId, ThingId, Value};
-use bpe_gfx::{Frame, Renderer, build_frame, headless_device};
+use bpe_gfx::{Frame, Renderer, build_frame, test_device};
 use bpe_kit::modules::look::surface::{SurfaceKind, preset_values};
 use bpe_kit::{kit, scenes};
 use bpe_runtime::Playback;
@@ -20,7 +20,7 @@ struct Gpu {
 }
 
 fn gpu() -> Option<Gpu> {
-    let (device, queue) = headless_device().ok()?;
+    let (device, queue) = test_device().ok()?;
     let renderer = Renderer::new(&device, W, H);
     Some(Gpu { device, queue, renderer })
 }

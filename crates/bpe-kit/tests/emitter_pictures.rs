@@ -1,7 +1,7 @@
 //! Picture tests for the emitter: its marker and a wavefront put light where they should.
 
 use bpe_core::{Scene, Settings, SlotId, ThingId, Value, layered_key};
-use bpe_gfx::{Frame, Renderer, build_frame, headless_device};
+use bpe_gfx::{Frame, Renderer, build_frame, test_device};
 use bpe_kit::things::emitter::{EmitterSettings, KIND, Marker, StartFrom};
 use bpe_kit::{kit, new_scene};
 use bpe_runtime::Playback;
@@ -36,7 +36,7 @@ fn scene_with(s: EmitterSettings) -> (Scene, ThingId) {
 }
 
 fn render(scene: &Scene) -> Option<Vec<u8>> {
-    let Ok((device, queue)) = headless_device() else {
+    let Ok((device, queue)) = test_device() else {
         eprintln!("no GPU adapter available, skipping");
         return None;
     };

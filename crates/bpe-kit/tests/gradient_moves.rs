@@ -6,7 +6,7 @@
 //! `BPE_SAVE_RENDERS=1` saves the pictures into `target/pictures/gradient-moves-*.png`.
 
 use bpe_core::{Color, Gradient, Mix, Moves, Scene, ThingId, Value};
-use bpe_gfx::{Frame, Renderer, build_frame, headless_device, wgpu};
+use bpe_gfx::{Frame, Renderer, build_frame, test_device, wgpu};
 use bpe_kit::{Kit, kit, new_scene};
 use bpe_runtime::Playback;
 
@@ -84,7 +84,7 @@ fn rainbow() -> Gradient {
 
 #[test]
 fn a_cycling_gradient_is_the_same_at_the_same_moment_whatever_was_drawn_before() {
-    let Ok((device, queue)) = headless_device() else {
+    let Ok((device, queue)) = test_device() else {
         eprintln!("no GPU adapter available, skipping");
         return;
     };
@@ -105,7 +105,7 @@ fn a_cycling_gradient_is_the_same_at_the_same_moment_whatever_was_drawn_before()
 
 #[test]
 fn steps_jump_on_the_beat() {
-    let Ok((device, queue)) = headless_device() else {
+    let Ok((device, queue)) = test_device() else {
         eprintln!("no GPU adapter available, skipping");
         return;
     };
@@ -123,7 +123,7 @@ fn steps_jump_on_the_beat() {
 
 #[test]
 fn hue_spin_turns_a_single_colour() {
-    let Ok((device, queue)) = headless_device() else {
+    let Ok((device, queue)) = test_device() else {
         eprintln!("no GPU adapter available, skipping");
         return;
     };
@@ -154,7 +154,7 @@ fn dropped_ball(kit: &Kit, strength: f64) -> (Scene, ThingId) {
 
 #[test]
 fn a_ball_s_hit_sends_a_wave_along_its_colours() {
-    let Ok((device, queue)) = headless_device() else {
+    let Ok((device, queue)) = test_device() else {
         eprintln!("no GPU adapter available, skipping");
         return;
     };

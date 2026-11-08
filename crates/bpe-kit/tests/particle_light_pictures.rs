@@ -5,7 +5,7 @@
 //! `BPE_SAVE_RENDERS=1` saves the pictures into `target/pictures/particles7-*.png`.
 
 use bpe_core::{Scene, Settings, SlotId, ThingId};
-use bpe_gfx::{Frame, Renderer, build_frame, headless_device};
+use bpe_gfx::{Frame, Renderer, build_frame, test_device};
 use bpe_kit::kit;
 use bpe_kit::things::light::{LightType, add_light};
 use bpe_kit::things::particles::look::{SPRITES, SUB_LIGHT};
@@ -44,7 +44,7 @@ fn scene_of(glows: bool) -> Scene {
 }
 
 fn picture(scene: &Scene, name: &str) -> Option<Vec<u8>> {
-    let (device, queue) = headless_device().ok()?;
+    let (device, queue) = test_device().ok()?;
     let mut renderer = Renderer::new(&device, W, H);
     let kit = kit();
     let resolved = bpe_core::resolve(scene, &kit.registry);

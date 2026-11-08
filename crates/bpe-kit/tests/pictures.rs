@@ -1,6 +1,6 @@
 //! Picture tests: every stage scene draws something on the software GPU.
 
-use bpe_gfx::{Frame, Renderer, build_frame, headless_device};
+use bpe_gfx::{Frame, Renderer, build_frame, test_device};
 use bpe_kit::{kit, scenes};
 use bpe_runtime::Playback;
 
@@ -9,7 +9,7 @@ const H: u32 = 480;
 
 #[test]
 fn every_stage_scene_draws_a_picture() {
-    let Ok((device, queue)) = headless_device() else {
+    let Ok((device, queue)) = test_device() else {
         eprintln!("no GPU adapter available, skipping");
         return;
     };
@@ -62,7 +62,7 @@ fn brightest_around(pixels: &[u8], x: u32, y: u32) -> u8 {
 #[test]
 fn a_rectangle_shape_draws_its_sharp_corners_in_plain_white() {
     use bpe_core::Settings;
-    let Ok((device, queue)) = headless_device() else {
+    let Ok((device, queue)) = test_device() else {
         eprintln!("no GPU adapter available, skipping");
         return;
     };

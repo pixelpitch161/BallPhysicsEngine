@@ -4,7 +4,7 @@
 use glam::Vec2;
 
 use crate::effects::{BUILTINS, defaults};
-use crate::{BallInstance, EffectCall, Frame, Renderer, Stage, headless_device};
+use crate::{BallInstance, EffectCall, Frame, Renderer, Stage, test_device};
 
 const W: u32 = 270;
 const H: u32 = 480;
@@ -41,7 +41,7 @@ fn dot(at: Vec2, radius: f32, brightness: f32) -> Frame {
 }
 
 fn render(frame: &Frame) -> Option<Vec<u8>> {
-    let Ok((device, queue)) = headless_device() else {
+    let Ok((device, queue)) = test_device() else {
         eprintln!("no GPU adapter available, skipping");
         return None;
     };

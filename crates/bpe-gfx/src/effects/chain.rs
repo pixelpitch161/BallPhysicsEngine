@@ -767,7 +767,7 @@ fn copy(encoder: &mut wgpu::CommandEncoder, from: &wgpu::Texture, to: &wgpu::Tex
 pub(crate) mod tests {
     use super::*;
     use crate::{
-        BallInstance, EffectCall, FlashInstance, Frame, HitMark, Renderer, ShapeInstance, headless_device, thing_code,
+        BallInstance, EffectCall, FlashInstance, Frame, HitMark, Renderer, ShapeInstance, test_device, thing_code,
     };
     use bpe_core::ThingId;
     use bpe_runtime::Outline;
@@ -810,7 +810,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn render(frame: &Frame) -> Option<Vec<u8>> {
-        let Ok((device, queue)) = headless_device() else {
+        let Ok((device, queue)) = test_device() else {
             eprintln!("no GPU adapter available, skipping");
             return None;
         };
@@ -1102,7 +1102,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_scene_material_keeps_a_history_for_each_picture_it_paints() {
-        let Ok((device, queue)) = headless_device() else { return };
+        let Ok((device, queue)) = test_device() else { return };
         const ECHO: &str = "// name: Echo things\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { return prev(uv) * 0.5 + sample(uv); }\n";
         let mut renderer = Renderer::new(&device, W, H);
         let mut frame = two_balls_frame();
@@ -1124,7 +1124,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_broken_effect_is_skipped_and_reported() {
-        let Ok((device, queue)) = headless_device() else { return };
+        let Ok((device, queue)) = test_device() else { return };
         let mut renderer = Renderer::new(&device, W, H);
         let mut frame = two_balls_frame();
         renderer.render(&device, &queue, &frame);
@@ -1149,7 +1149,7 @@ pub(crate) mod tests {
     #[test]
     fn echo_builds_up_and_restarts_after_a_seek() {
         const ECHO: &str = "// name: Echo test\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { return prev(uv) * 0.9 + sample(uv); }\n";
-        let Ok((device, queue)) = headless_device() else { return };
+        let Ok((device, queue)) = test_device() else { return };
         let mut renderer = Renderer::new(&device, W, H);
         let mut frame = two_balls_frame();
         frame.effects.push(call(ECHO, 0.0, Stage::Picture));
@@ -1176,7 +1176,7 @@ pub(crate) mod tests {
     #[test]
     fn every_builtin_effect_changes_the_picture() {
         use super::super::{BUILTINS, defaults};
-        let Ok((device, queue)) = headless_device() else { return };
+        let Ok((device, queue)) = test_device() else { return };
         let mut renderer = Renderer::new(&device, W, H);
         // Bigger balls, a blue one on the right, and a hit at the left one a tenth of a second ago.
         let mut base = two_balls_frame();

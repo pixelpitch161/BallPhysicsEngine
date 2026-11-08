@@ -5,7 +5,7 @@ use super::*;
 const DT: f32 = 1.0 / 120.0;
 
 fn gpu() -> Option<Arc<SwarmGpu>> {
-    match crate::headless_device() {
+    match crate::test_device() {
         Ok((device, queue)) => Some(SwarmGpu::for_device(&device, &queue)),
         Err(_) => {
             eprintln!("no GPU adapter available, skipping");

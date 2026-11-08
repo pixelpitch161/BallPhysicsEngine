@@ -1,7 +1,7 @@
 //! Picture tests for the camera: the world drawn through it, and things stuck to the screen.
 
 use bpe_core::{Scene, ThingId, Value};
-use bpe_gfx::{Frame, Renderer, build_frame, headless_device, wgpu};
+use bpe_gfx::{Frame, Renderer, build_frame, test_device, wgpu};
 use bpe_kit::{Kit, ensure_camera, kit, new_scene, scenes};
 use bpe_runtime::Playback;
 
@@ -53,7 +53,7 @@ fn middle(points: &[(u32, u32)]) -> (f32, f32) {
 
 #[test]
 fn no_camera_draws_like_before() {
-    let Ok((device, queue)) = headless_device() else {
+    let Ok((device, queue)) = test_device() else {
         eprintln!("no GPU adapter available, skipping");
         return;
     };
@@ -69,7 +69,7 @@ fn no_camera_draws_like_before() {
 
 #[test]
 fn moved_camera_moves_the_ball() {
-    let Ok((device, queue)) = headless_device() else {
+    let Ok((device, queue)) = test_device() else {
         eprintln!("no GPU adapter available, skipping");
         return;
     };
@@ -82,7 +82,7 @@ fn moved_camera_moves_the_ball() {
 
 #[test]
 fn zoom_two_doubles_size() {
-    let Ok((device, queue)) = headless_device() else {
+    let Ok((device, queue)) = test_device() else {
         eprintln!("no GPU adapter available, skipping");
         return;
     };

@@ -21,7 +21,7 @@ use crate::{kit, registry};
 /// The one software GPU every test steps its swarms on, named on the calling thread.
 fn gpu() -> bool {
     static GPU: OnceLock<Option<Arc<SwarmGpu>>> = OnceLock::new();
-    let gpu = GPU.get_or_init(|| bpe_gfx::headless_device().ok().map(|(d, q)| SwarmGpu::for_device(&d, &q)));
+    let gpu = GPU.get_or_init(|| bpe_gfx::test_device().ok().map(|(d, q)| SwarmGpu::for_device(&d, &q)));
     use_on_this_thread(gpu.clone());
     if gpu.is_none() {
         eprintln!("no GPU adapter available, skipping");
