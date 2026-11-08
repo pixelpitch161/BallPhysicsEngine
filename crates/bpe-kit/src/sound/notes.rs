@@ -133,12 +133,18 @@ pub enum Plays {
     ByBall,
     /// Side 1 plays the lowest note, side 2 the next…
     BySide,
+    /// A Text's letter 1 plays the lowest note, letter 2 the next… (Text part 3; a shape is all
+    /// letter 1).
+    ByLetter,
+    /// A Text's letters A to G (either case) play their own note names, in the octave of the
+    /// slot's lowest note (C5 when it is empty); any other letter plays nothing.
+    SpellNotes,
     /// Every note together (or strummed).
     AllAtOnce,
 }
 
 impl Plays {
-    pub const ALL: [Plays; 13] = [
+    pub const ALL: [Plays; 15] = [
         Plays::Random,
         Plays::Shuffle,
         Plays::Up,
@@ -151,6 +157,8 @@ impl Plays {
         Plays::OrderClicked,
         Plays::ByBall,
         Plays::BySide,
+        Plays::ByLetter,
+        Plays::SpellNotes,
         Plays::AllAtOnce,
     ];
 
@@ -168,6 +176,8 @@ impl Plays {
             Plays::OrderClicked => "Order clicked",
             Plays::ByBall => "By ball",
             Plays::BySide => "By side",
+            Plays::ByLetter => "By letter",
+            Plays::SpellNotes => "Spell notes",
             Plays::AllAtOnce => "All at once",
         }
     }

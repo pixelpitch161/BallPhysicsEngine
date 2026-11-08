@@ -779,6 +779,26 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_text_has_its_balls_settings_and_a_sound_tab() {
+        let mut h = studio_harness(SHAPE, false);
+        let reg = bpe_kit::registry();
+        let text = {
+            let studio = &mut h.state_mut().0;
+            let id = bpe_kit::add_thing(&mut studio.scene, &reg, bpe_kit::things::text::KIND, ThingId::ROOT).unwrap();
+            studio.scene.things.get_mut(&id).unwrap().screen = Some(false);
+            studio.selection.set(id);
+            id
+        };
+        h.run();
+        assert!(h.query_all_by_label("Balls").next().is_some(), "the Balls group and row");
+        assert!(h.query_by_label("Sound").is_some(), "the Sound chip");
+        h.state_mut().0.panels.inspector.tab.insert(text, InspectorTab::Sound);
+        h.run();
+        click_switch(&mut h, "Enable sound");
+        assert!(card(&h, text).is_some(), "a Text takes a Sound card");
+    }
+
+    #[test]
     fn copy_and_paste_sound_between_shapes() {
         let mut h = sounding();
         let reg = bpe_kit::registry();

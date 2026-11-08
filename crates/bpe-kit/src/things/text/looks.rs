@@ -1,14 +1,16 @@
 //! The starting looks a Text can be added with (Text part 1: the spec's #1, #12, #13, #14, #18,
 //! #24; part 2: the live ones, Hit counter, Countdown timer, Lyrics on the beat, Labels on balls
-//! and Race leaderboard). A look only fills settings when it is picked from the Add thing menu; nothing here makes a
-//! scene of its own.
+//! and Race leaderboard; part 3: the real-letter ones, Balls inside a word, Bounce off letters, Pour in and fill,
+//! Letters break apart and Letters that play notes, each with its balls beside it). A look only fills settings when
+//! it is picked from the Add thing menu; nothing here makes a scene of its own.
 
 use bpe_core::{Color, EditError, Gradient, Registry, Scene, Settings, SlotId, ThingId, Value, layered_key};
 use glam::Vec2;
 
-use super::{KIND, ShowBy, TextMove, TextPath, TextSettings, TimedBy};
+use super::{KIND, ShowBy, TextBalls, TextMove, TextPath, TextSettings, TimedBy};
 use crate::modules::look::shape as look;
-use crate::text::Align;
+use crate::text::{Align, PathAt, arrange, fonts, layout};
+use crate::things::balls::{BallsSettings, GroupShape, Launch, Release};
 
 /// A Text's starting look.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,10 +27,15 @@ pub enum Look {
     LyricsOnTheBeat,
     LabelsOnBalls,
     RaceLeaderboard,
+    BallsInsideAWord,
+    BounceOffLetters,
+    PourInAndFill,
+    LettersBreakApart,
+    LettersThatPlayNotes,
 }
 
 /// The looks the Add thing menu lists under Looks, in order.
-pub const LOOKS: [Look; 11] = [
+pub const LOOKS: [Look; 16] = [
     Look::HookTitle,
     Look::SpinningRing,
     Look::NeonSign,
@@ -40,6 +47,11 @@ pub const LOOKS: [Look; 11] = [
     Look::LyricsOnTheBeat,
     Look::LabelsOnBalls,
     Look::RaceLeaderboard,
+    Look::BallsInsideAWord,
+    Look::BounceOffLetters,
+    Look::PourInAndFill,
+    Look::LettersBreakApart,
+    Look::LettersThatPlayNotes,
 ];
 
 impl Look {
@@ -57,6 +69,11 @@ impl Look {
             Look::LyricsOnTheBeat => "Lyrics on the beat",
             Look::LabelsOnBalls => "Labels on balls",
             Look::RaceLeaderboard => "Race leaderboard",
+            Look::BallsInsideAWord => "Balls inside a word",
+            Look::BounceOffLetters => "Bounce off letters",
+            Look::PourInAndFill => "Pour in and fill",
+            Look::LettersBreakApart => "Letters break apart",
+            Look::LettersThatPlayNotes => "Letters that play notes",
         }
     }
 
@@ -74,12 +91,73 @@ impl Look {
             Look::LyricsOnTheBeat => "Lines that pop in one at a time on the beat, then fade.",
             Look::LabelsOnBalls => "Each ball's number riding on it.",
             Look::RaceLeaderboard => "The five balls furthest down, their order changing as they race.",
+            Look::BallsInsideAWord => "Hollow letters with a ball bouncing round inside each one.",
+            Look::BounceOffLetters => "Solid letters that a row of balls falls onto and bounces off.",
+            Look::PourInAndFill => "Hollow letters slowly filling up with small balls.",
+            Look::LettersBreakApart => "Each letter takes three hits, then shatters into pieces.",
+            Look::LettersThatPlayNotes => "Balls hit the letters of FACADE, and each letter plays its own note.",
         }
     }
 
     /// Whether the look needs the scene lit.
     fn lit(self) -> bool {
         matches!(self, Look::NeonSign | Look::GlassLetters | Look::ShadowLettering)
+    }
+
+    /// Whether the look adds a group of balls beside its Text (the real-letter looks).
+    pub fn adds_balls(self) -> bool {
+        matches!(
+            self,
+            Look::BallsInsideAWord
+                | Look::BounceOffLetters
+                | Look::PourInAndFill
+                | Look::LettersBreakApart
+                | Look::LettersThatPlayNotes
+        )
+    }
+}
+
+/// The balls a real-letter look adds beside its Text: their settings and where the thing sits.
+struct BallsBeside {
+    settings: BallsSettings,
+    position: Vec2,
+    /// Whether they fall under the scene's gravity (a new ball floats).
+    falls: bool,
+}
+
+/// Text settings `s` laid out on a straight line with the scene's fonts: each letter's inner
+/// point (where a ball fits best inside its stroke, and how far that is from the edge) and its
+/// middle, in the Text's own frame.
+fn letters_of(scene: &Scene, s: &TextSettings) -> (Vec<(Vec2, f32)>, Vec<Vec2>) {
+    let found = fonts::find(&scene.fonts, &s.font, s.weight);
+    let laid = layout(found.font(), &s.layout_spec());
+    let placed = arrange(&laid, &PathAt::Straight);
+    (super::walls::inner_points(&laid, &placed), super::walls::middles(&laid, &placed))
+}
+
+/// The widest a real-letter look's words are laid out: inside the new scene's ring, with room.
+const FIT_WIDTH: f32 = 900.0;
+
+/// `s` with its Size made smaller, when need be, so its words are at most [`FIT_WIDTH`] wide.
+fn fitted(scene: &Scene, mut s: TextSettings) -> TextSettings {
+    let found = fonts::find(&scene.fonts, &s.font, s.weight);
+    let laid = layout(found.font(), &s.layout_spec());
+    let width = laid.max.x - laid.min.x;
+    if width.is_finite() && width > FIT_WIDTH {
+        s.size = (s.size * FIT_WIDTH / width).floor();
+    }
+    s
+}
+
+/// A group of balls starting at `places` (from the group's middle at 0), each `radius`.
+fn custom_balls(places: Vec<[f32; 2]>, radius: f32) -> BallsSettings {
+    BallsSettings {
+        radius,
+        group: true,
+        shape: GroupShape::Custom,
+        count: places.len() as u32,
+        custom: places,
+        ..BallsSettings::default()
     }
 }
 
@@ -96,6 +174,14 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
     let mut layers: Vec<Layer> = Vec::new();
     let mut card: Vec<(&'static str, Value)> = Vec::new();
     let mut parent = parent;
+    let mut balls: Option<BallsBeside> = None;
+    let mut health: Vec<(&'static str, Value)> = Vec::new();
+    let mut sound: Vec<(&'static str, Value)> = Vec::new();
+    // Bright letters that flash white when hit.
+    let flashing = |c: Color| -> Layer {
+        let flash = vec![("colour", Value::Color(Color::WHITE))];
+        (look::PAINT, vec![("colours", Value::Gradient(Gradient::solid(c)))], vec![(look::SUB_FLASH, flash)])
+    };
     // A black outline round white letters, readable over anything.
     let outlined = |width: f64| -> Layer {
         (
@@ -272,6 +358,103 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             layers.push((look::PAINT, vec![("colours", solid(Color::WHITE))], vec![]));
             layers.push(outlined(4.0));
         }
+        Look::BallsInsideAWord => {
+            s.words = "BALLS".into();
+            s.font = "Bowlby One".into();
+            s.size = 360.0;
+            s.balls = TextBalls::BounceInside;
+            s.thickness = 12.0;
+            screen = false;
+            s = fitted(scene, s);
+            let mut g = Gradient::even(&[Color::rgb(0x3d, 0xe8, 0xff), Color::rgb(0xff, 0x4f, 0xd8)]);
+            g.mix = bpe_core::Mix::Even;
+            layers.push((look::PAINT, vec![("colours", Value::Gradient(g))], vec![]));
+            layers.push((look::GLOW, vec![], vec![]));
+            // A ball in each letter, where its stroke is widest, set off a random way.
+            let (inner, _) = letters_of(scene, &s);
+            let fits = inner.iter().map(|(_, d)| *d).fold(f32::INFINITY, f32::min);
+            let radius = (0.5 * fits).clamp(4.0, 16.0);
+            let mut b = custom_balls(inner.iter().map(|(p, _)| p.to_array()).collect(), radius);
+            b.velocity = Vec2::new(260.0, 0.0);
+            b.launch = Launch::Random;
+            balls = Some(BallsBeside { settings: b, position: Vec2::ZERO, falls: false });
+        }
+        Look::BounceOffLetters => {
+            s.words = "BOUNCE".into();
+            s.font = "Archivo Black".into();
+            s.size = 300.0;
+            s.balls = TextBalls::BounceOff;
+            screen = false;
+            s = fitted(scene, s);
+            position = Vec2::new(0.0, 150.0);
+            layers.push(flashing(Color::rgb(0xff, 0xd8, 0x4a)));
+            let mut b =
+                BallsSettings { radius: 18.0, group: true, shape: GroupShape::Line, count: 9, ..Default::default() };
+            b.space = 50.0;
+            b.velocity = Vec2::new(60.0, 0.0);
+            balls = Some(BallsBeside { settings: b, position: Vec2::new(0.0, -250.0), falls: true });
+        }
+        Look::PourInAndFill => {
+            s.words = "FILL".into();
+            s.font = "Bowlby One".into();
+            s.size = 420.0;
+            s.balls = TextBalls::BounceInside;
+            s.thickness = 8.0;
+            screen = false;
+            s = fitted(scene, s);
+            layers.push((look::PAINT, vec![("colours", solid(Color::WHITE))], vec![]));
+            // 60 small balls, let go one by one from each letter's widest place in turn.
+            let (inner, _) = letters_of(scene, &s);
+            let places: Vec<[f32; 2]> =
+                (0..60).filter_map(|k| inner.get(k % inner.len().max(1))).map(|(p, _)| p.to_array()).collect();
+            let mut b = custom_balls(places, 7.0);
+            b.release = Release::OneByOne;
+            b.release_gap = 0.15;
+            b.velocity = Vec2::new(150.0, 0.0);
+            b.launch = Launch::Random;
+            balls = Some(BallsBeside { settings: b, position: Vec2::ZERO, falls: true });
+        }
+        Look::LettersBreakApart => {
+            s.words = "SMASH".into();
+            s.font = "Bungee".into();
+            s.size = 280.0;
+            s.balls = TextBalls::BounceOff;
+            screen = false;
+            s = fitted(scene, s);
+            position = Vec2::new(0.0, 150.0);
+            layers.push(flashing(Color::rgb(0xff, 0x5a, 0x4a)));
+            health = vec![
+                ("start", Value::Number(3.0)),
+                ("at_zero", Value::Choice("break".into())),
+                ("look", Value::Choice("shatter".into())),
+            ];
+            let mut b =
+                BallsSettings { radius: 22.0, group: true, shape: GroupShape::Line, count: 7, ..Default::default() };
+            b.space = 60.0;
+            b.velocity = Vec2::new(120.0, 0.0);
+            balls = Some(BallsBeside { settings: b, position: Vec2::new(0.0, -250.0), falls: true });
+        }
+        Look::LettersThatPlayNotes => {
+            s.words = "FACADE".into();
+            s.font = "Fredoka".into();
+            s.weight = 600.0;
+            s.size = 260.0;
+            s.balls = TextBalls::BounceOff;
+            screen = false;
+            s = fitted(scene, s);
+            position = Vec2::new(0.0, 150.0);
+            layers.push(flashing(Color::rgb(0x7c, 0xf5, 0xa8)));
+            sound = vec![("notes_plays", Value::Choice("spell_notes".into()))];
+            // A ball over each letter, let go one after another so the word plays in order.
+            // Over each letter's widest stroke (an A's middle is its point).
+            let (inner, _) = letters_of(scene, &s);
+            let places = inner.iter().map(|(p, _)| [p.x, 0.0]).collect();
+            let mut b = custom_balls(places, 16.0);
+            b.release = Release::OneByOne;
+            b.release_gap = 0.5;
+            b.velocity = Vec2::ZERO;
+            balls = Some(BallsBeside { settings: b, position: Vec2::new(0.0, -250.0), falls: true });
+        }
     }
     let id = crate::add_thing(scene, reg, KIND, parent)?;
     // An Empty text keeps the name a new Text gets; a look is named after itself.
@@ -306,6 +489,38 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
         let lit = scene.things.get(&ThingId::ROOT).is_some_and(|r| r.slots.contains_key(&SlotId::Lighting));
         if !lit {
             scene.add_slot(reg, ThingId::ROOT, SlotId::Lighting, crate::modules::lighting::LIGHTING)?;
+        }
+    }
+    if !health.is_empty() {
+        crate::fill_slot(scene, reg, id, SlotId::Health)?;
+        if let Some(c) = scene.card_mut(id, SlotId::Health) {
+            for (k, v) in health {
+                c.params.set(k, v);
+            }
+        }
+    }
+    if !sound.is_empty() {
+        let mut card = crate::sound::starter_voice(reg);
+        for (k, v) in sound {
+            card.params.set(k, v);
+        }
+        if let Some(t) = scene.things.get_mut(&id) {
+            t.slots.insert(SlotId::Sound, card);
+        }
+    }
+    if let Some(b) = balls {
+        // Beside the Text.
+        let ball = crate::add_thing(scene, reg, "balls", parent)?;
+        let name = scene.free_name("Balls");
+        if let Some(t) = scene.things.get_mut(&ball) {
+            t.params = b.settings.to_params();
+            t.transform.position = b.position;
+            t.name = name;
+        }
+        if b.falls
+            && let Some(m) = scene.card_mut(ball, SlotId::Motion)
+        {
+            m.params.set("gravity_scale", Value::Number(1.0));
         }
     }
     if look == Look::ShadowLettering {
@@ -393,6 +608,11 @@ mod tests {
             (Look::LyricsOnTheBeat, "HERE IT COMES\nWATCH IT FALL\nONE MORE TIME\nDROP", "Anton", true),
             (Look::LabelsOnBalls, "{ball number}", "Anton", false),
             (Look::RaceLeaderboard, "{standings down 5}", "Space Mono", true),
+            (Look::BallsInsideAWord, "BALLS", "Bowlby One", false),
+            (Look::BounceOffLetters, "BOUNCE", "Archivo Black", false),
+            (Look::PourInAndFill, "FILL", "Bowlby One", false),
+            (Look::LettersBreakApart, "SMASH", "Bungee", false),
+            (Look::LettersThatPlayNotes, "FACADE", "Fredoka", false),
         ];
         for (look, words, font, screen) in table {
             let (scene, id) = added(look);
@@ -425,5 +645,103 @@ mod tests {
         // With no balls, under what was picked.
         let (scene, id) = added(Look::LabelsOnBalls);
         assert_eq!(scene.things[&id].parent, Some(ThingId::ROOT));
+    }
+
+    /// The new scene (its ring and ball) with `look` added, run for `seconds`: the world, its log
+    /// and the Text's and its balls' ids.
+    fn run_look(look: Look, seconds: f64) -> (World, Log, ThingId, ThingId) {
+        let kit = crate::kit();
+        let reg = &kit.registry;
+        let mut scene = crate::new_scene(reg);
+        // The scene's own ball out of the way.
+        let first = scene.order.iter().copied().find(|id| scene.things[id].kind == "balls").unwrap();
+        scene.things.get_mut(&first).unwrap().enabled = false;
+        let id = add_text(&mut scene, reg, look, ThingId::ROOT).unwrap();
+        let balls = scene.order.iter().copied().rfind(|b| scene.things[b].kind == "balls").unwrap();
+        assert_ne!(balls, first, "{look:?} adds its balls");
+        let resolved = resolve(&scene, reg);
+        assert!(resolved.problems.is_empty(), "{look:?}: {:?}", resolved.problems);
+        let mut world = World::build(&scene, &resolved, &kit.sims);
+        let mut log = Log::default();
+        world.advance_to(seconds, &kit.sims, &mut log);
+        (world, log, id, balls)
+    }
+
+    fn letter_hits(log: &Log, id: ThingId) -> Vec<u32> {
+        log.events()
+            .iter()
+            .filter(|e| e.kind == bpe_runtime::EventKind::Hit)
+            .filter_map(|e| e.b.filter(|b| b.thing == id).map(|b| b.item))
+            .collect()
+    }
+
+    #[test]
+    fn the_real_letter_looks_play_out() {
+        for look in LOOKS {
+            assert_eq!(
+                look.adds_balls(),
+                matches!(
+                    look,
+                    Look::BallsInsideAWord
+                        | Look::BounceOffLetters
+                        | Look::PourInAndFill
+                        | Look::LettersBreakApart
+                        | Look::LettersThatPlayNotes
+                )
+            );
+        }
+        // A ball in each letter of BALLS, still inside it after a while, hitting the walls.
+        let (w, log, id, balls) = run_look(Look::BallsInsideAWord, 4.0);
+        let bpe_runtime::Outline::Letters { letters, center, .. } = &w.walls[&id].outline else { panic!() };
+        let b = &w.bodies[&balls];
+        assert_eq!(b.len(), 5);
+        for row in 0..5 {
+            assert!(letters.list[row].inside(b.position[row] - *center), "ball {row} left its letter");
+        }
+        let hits = letter_hits(&log, id);
+        assert!((0..5).all(|k| hits.contains(&k)), "{hits:?}");
+        // Balls fall onto BOUNCE and bounce off it, many letters hit.
+        let (w, log, id, balls) = run_look(Look::BounceOffLetters, 3.0);
+        let mut hit = letter_hits(&log, id);
+        hit.sort();
+        hit.dedup();
+        assert!(hit.len() >= 4, "{hit:?}");
+        assert!(w.bodies[&balls].position.iter().all(|p| p.y < 150.0), "on top, not through");
+        // FILL fills up: 60 balls let go one by one, all inside the letters.
+        let (w, _, id, balls) = run_look(Look::PourInAndFill, 10.0);
+        let bpe_runtime::Outline::Letters { letters, center, .. } = &w.walls[&id].outline else { panic!() };
+        let b = &w.bodies[&balls];
+        assert_eq!(b.len(), 60);
+        let inside = b.position.iter().filter(|p| letters.inside(**p - *center)).count();
+        assert!(inside >= 57, "{inside} of 60 inside");
+        // SMASH's letters break after three hits each.
+        let (w, log, id, _) = run_look(Look::LettersBreakApart, 8.0);
+        let broken = w.parts[&id].alive.iter().filter(|a| !**a).count();
+        assert!(broken >= 1, "{:?}", letter_hits(&log, id));
+        let health = w.rules().unwrap().health();
+        for (k, alive) in w.parts[&id].alive.iter().enumerate() {
+            if *alive {
+                assert!(health.of(id, Some(k as u32)).unwrap().now > 0.0);
+            }
+        }
+        // FACADE: each ball falls onto its own letter, in order.
+        let (_, log, id, _) = run_look(Look::LettersThatPlayNotes, 4.0);
+        let mut first = Vec::new();
+        for k in letter_hits(&log, id) {
+            if !first.contains(&k) {
+                first.push(k);
+            }
+        }
+        assert_eq!(first, [0, 1, 2, 3, 4, 5], "letter by letter");
+    }
+
+    #[test]
+    fn the_notes_look_spells_its_word() {
+        let (scene, id) = added(Look::LettersThatPlayNotes);
+        let card = scene.card(id, SlotId::Sound).expect("a Sound card");
+        assert_eq!(card.params.get("notes_plays"), Some(&Value::Choice("spell_notes".into())));
+        let (scene, id) = added(Look::LettersBreakApart);
+        let card = scene.card(id, SlotId::Health).expect("a Health card");
+        assert_eq!(card.params.get("look"), Some(&Value::Choice("shatter".into())));
     }
 }

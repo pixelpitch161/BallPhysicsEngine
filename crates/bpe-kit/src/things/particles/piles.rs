@@ -102,10 +102,11 @@ impl Piles {
     }
 }
 
-/// The surfaces piles may sit on this step: each still shape's outline points, and the floor.
+/// The surfaces piles may sit on this step: each still wall's outlines (one for a shape, a
+/// Text's every letter contour), and the floor.
 #[derive(Clone, Debug, Default)]
 pub struct Surfaces {
-    pub shapes: BTreeMap<u32, Vec<Vec2>>,
+    pub shapes: BTreeMap<u32, Vec<Vec<Vec2>>>,
     /// The floor's y and its x span, when there is one.
     pub floor: Option<(f32, f32, f32)>,
 }
@@ -117,7 +118,7 @@ impl Surfaces {
             .walls
             .iter()
             .filter(|(_, w)| still(w))
-            .map(|(id, w)| (id.0, crate::things::light::draw::outline_points(&w.outline)))
+            .map(|(id, w)| (id.0, crate::things::light::draw::outline_contours(&w.outline)))
             .collect();
         Surfaces { shapes, floor }
     }
@@ -129,10 +130,9 @@ impl Surfaces {
             let (y, lo, hi) = self.floor?;
             return (x >= lo && x <= hi).then_some(y);
         }
-        let points = self.shapes.get(&key)?;
-        let n = points.len();
         let mut best: Option<f32> = None;
-        for i in 0..n {
+        for (points, i) in self.shapes.get(&key)?.iter().flat_map(|c| (0..c.len()).map(move |i| (c, i))) {
+            let n = points.len();
             let (a, b) = (points[i], points[(i + 1) % n]);
             if (a.x - x) * (b.x - x) > 0.0 || a.x == b.x {
                 continue;

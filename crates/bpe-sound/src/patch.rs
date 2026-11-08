@@ -244,7 +244,10 @@ fn spec_with(
             tempo_top,
             [track("notes_strum"), track("notes_every_seconds"), track("notes_jump")],
         ),
-        side_path: (v.notes_plays == bpe_kit::sound::Plays::BySide).then(|| shape.outline_path()),
+        // Only a shape has sides (a Text's hits read side 0).
+        side_path: (v.notes_plays == bpe_kit::sound::Plays::BySide
+            && scene.things.get(&id).is_some_and(|t| t.kind == bpe_kit::things::shape::KIND))
+        .then(|| shape.outline_path()),
         bus: v.out_bus.clamp(1, 3) as u8,
         base,
         keyed,

@@ -117,6 +117,72 @@ pub fn shatter_shape(
     }
 }
 
+/// A broken letter of a Text (Text part 3): its part number, its outer contour round its middle,
+/// half its band (0 filled) and its middle in the Text's own frame.
+pub struct LetterPiece<'a> {
+    pub part: u32,
+    pub edge: &'a [Vec2],
+    pub half: f32,
+    pub middle: Vec2,
+}
+
+/// A broken letter's Shatter: the letter instance at `index` (centred on its Text, with its
+/// records) becomes its pieces, cut round the letter's middle so they fly from it: the first takes
+/// its place (or, with none showing, it shows nothing), the rest go after it.
+#[allow(clippy::too_many_arguments)]
+pub fn shatter_letter(
+    r: &Remains,
+    look: &LookSettings,
+    thing: u32,
+    letter: &LetterPiece,
+    index: usize,
+    time: f64,
+    walls: &[&Wall],
+    frame: &mut Frame,
+) {
+    let base = frame.paths[index];
+    if letter.edge.len() < 3 {
+        frame.paths[index].clip[2] = 1.0;
+        return;
+    }
+    let (centre, turn) = (Vec2::new(base.a[0], base.a[1]), base.a[2]);
+    let middle = letter.middle;
+    let material = Material { edge: Edge::Points(letter.edge), half: letter.half.max(0.0) };
+    let reach = letter.edge.iter().map(|p| p.length()).fold(0.0, f32::max) + material.half;
+    let bound = reach * 1.01 + base.c[2].max(0.0) + MARGIN;
+    let n = look.pieces.clamp(2, 256);
+    let at = centre + Vec2::from_angle(turn).rotate(middle);
+    let start = Start {
+        centre: at,
+        turn,
+        scale: 1.0,
+        velocity: r.wall.as_ref().map_or(Vec2::ZERO, |w| w.velocity),
+        from: Start::from_of(at, r.point, bound),
+        gravity: r.gravity,
+        radius: (material.area() / (n as f32 * std::f32::consts::PI)).max(0.0).sqrt(),
+        seed: seed_of(thing, letter.part, r.step),
+    };
+    let pieces = pieces_now(r, look, &material, bound, &start, time, walls);
+    if pieces.is_empty() {
+        frame.paths[index].clip[2] = 1.0;
+        return;
+    }
+    for (k, (piece, now, alpha)) in pieces.iter().enumerate() {
+        // The instance's centre is the Text's middle, the letter's middle back from where the
+        // piece puts it, turned the piece's way.
+        let turned = Vec2::from_angle(now.turn);
+        let centre = now.centre(piece.site, 1.0) - turned.rotate(middle);
+        let cell = Piece { site: piece.site + middle, cell: piece.cell.iter().map(|c| *c + middle).collect() };
+        let clip = clip_of(&cell, 1.0 - alpha, frame);
+        let made = PathInstance { a: [centre.x, centre.y, now.turn, 1.0], clip, ..base };
+        if k == 0 {
+            frame.paths[index] = made;
+        } else {
+            frame.paths.push(made);
+        }
+    }
+}
+
 /// Shatter cells already cut this frame, by seed, pieces and bound: every ball of one break
 /// shares its break's cells (each ball turns them its own way).
 #[derive(Default)]

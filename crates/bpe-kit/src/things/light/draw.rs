@@ -547,7 +547,8 @@ pub fn outline_centre(outline: &Outline) -> Vec2 {
         Outline::Ring { center, .. }
         | Outline::Box { center, .. }
         | Outline::Ellipse { center, .. }
-        | Outline::Path { center, .. } => *center,
+        | Outline::Path { center, .. }
+        | Outline::Letters { center, .. } => *center,
     }
 }
 
@@ -570,6 +571,26 @@ pub fn outline_points(outline: &Outline) -> Vec<Vec2> {
             let turn = Vec2::from_angle(*angle);
             points.iter().map(|p| *center + turn.rotate(*p * *scale)).collect()
         }
+        // A Text's letters: its longest contour (what wants one closed list gets one letter's
+        // outline; what wants every side reads `outline_contours`).
+        Outline::Letters { .. } => outline_contours(outline).into_iter().max_by_key(Vec::len).unwrap_or_default(),
+    }
+}
+
+/// Every closed contour of an outline's centre line in the world: one for every outline but a
+/// Text's letters, which give each letter's every contour.
+pub fn outline_contours(outline: &Outline) -> Vec<Vec<Vec2>> {
+    match outline {
+        Outline::Letters { center, angle, letters, .. } => {
+            let turn = Vec2::from_angle(*angle);
+            letters
+                .list
+                .iter()
+                .flat_map(|l| l.contours())
+                .map(|c| c.iter().map(|p| *center + turn.rotate(*p)).collect())
+                .collect()
+        }
+        _ => vec![outline_points(outline)],
     }
 }
 

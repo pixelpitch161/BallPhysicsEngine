@@ -363,6 +363,17 @@ pub fn wall_form(wall: &Wall) -> WallForm {
             points: Some(points.to_vec()),
             ellipse: None,
         },
+        // A Text's letters draw themselves; as one outline they are their longest contour.
+        Outline::Letters { center, angle, letters, .. } => WallForm {
+            center: *center,
+            turn: *angle,
+            scale: 1.0,
+            half,
+            points: Some(
+                letters.list.iter().flat_map(|l| l.contours()).max_by_key(|c| c.len()).unwrap_or_default().to_vec(),
+            ),
+            ellipse: None,
+        },
     }
 }
 

@@ -13,12 +13,16 @@ use bpe_runtime::{Log, Pose, World};
 use glam::Vec2;
 
 use super::show::{LetterMove, appear_times, letter_move, shows_whole, unit_of};
-use super::{FastLetters, KIND, TextPath, TextRides, TextSettings};
+use super::{FastLetters, KIND, TextBalls, TextPath, TextRides, TextSettings};
 use crate::modules::look::shape::ShapeStack;
 use crate::modules::look::shape::gpu::Geometry;
+use crate::rules::breaks::{BreakLook, LookSettings};
+use crate::rules::remains::draw::whole_look;
+use crate::rules::remains::remains_now;
 use crate::text::live::{self, BallNames, Filled, LiveCx, Piece};
 use crate::text::{PathAt, Placed, TextLayout, arrange, fonts, layout, placed, tiles};
 use crate::things::shape::draw::{BODY_WHITE, shape_hits, wall_form};
+use bpe_runtime::Remains;
 
 /// A Text at a moment: where it sits, its letters laid out and placed along its path, how each
 /// shows, and what is wrong with its font, if anything. A Text riding every ball of a group is one
@@ -41,6 +45,11 @@ impl TextNow {
     /// Show move); none when it isn't shown.
     pub fn contours(&self, k: usize) -> Vec<Vec<Vec2>> {
         let Some(m) = self.shown.get(k).copied().flatten() else { return Vec::new() };
+        self.contours_moved(k, m)
+    }
+
+    /// Letter `k`'s contours in the text's own frame moved by `m` about its middle.
+    pub fn contours_moved(&self, k: usize, m: LetterMove) -> Vec<Vec<Vec2>> {
         let c = placed(&self.layout.letters[k], self.placed[k]);
         if m.is_whole() {
             return c;
@@ -297,7 +306,13 @@ fn on_screen(tree: &Scene, id: ThingId) -> bool {
 /// at `pose`, going clockwise from its first corner. A text on the `screen` sees the shape where
 /// the camera shows it.
 fn edge_of(world: &World, s: &TextSettings, id: ThingId, pose: Pose, screen: bool) -> Option<Vec<Vec2>> {
-    let wall = world.matching(&s.along, id).into_iter().filter(|t| *t != id).find_map(|t| world.walls.get(&t))?;
+    // A shape's edge: another Text's letters are no edge to run along.
+    let wall = world
+        .matching(&s.along, id)
+        .into_iter()
+        .filter(|t| *t != id)
+        .filter_map(|t| world.walls.get(&t))
+        .find(|w| !matches!(w.outline, bpe_runtime::Outline::Letters { .. }))?;
     let form = wall_form(wall);
     let unit: Vec<Vec2> = match (&form.points, form.ellipse) {
         (Some(points), _) => points.clone(),
@@ -357,7 +372,31 @@ impl ThingDraw for TextDraw {
         let s = surface::of_card(look);
         scene.set_surface(index, s.gpu(bpe_gfx::SurfaceGpu::SHAPE));
         scene.refracts |= s.see_through();
-        surface::Stamps::of(cx.scene, cx.thing.id, look).fill(scene, bpe_gfx::SurfaceGpu::SHAPE);
+        let stamps = surface::Stamps::of(cx.scene, cx.thing.id, look);
+        stamps.fill(scene, bpe_gfx::SurfaceGpu::SHAPE);
+        // Glass letters of a Text set in the world bend lamp light as a glass shape does (glass and
+        // light part 3): a bender over its letters' box, for its surface and each layer's own,
+        // when that layer (the body for the whole Text's) blocks light.
+        let blocks = |layer: Option<bpe_core::LayerId>| {
+            layer.is_some_and(|id| {
+                let key = bpe_core::layered_key(id, crate::modules::look::layers::lighting::BLOCKS_LIGHT);
+                matches!(look.params.get(&key), Some(bpe_core::Value::Bool(true)))
+            })
+        };
+        let benders: Vec<u32> = std::iter::once((index, &s, look.layers.first().map(|b| b.id)))
+            .chain(stamps.layers.iter().map(|(layer, i, ls)| (*i, ls, Some(*layer))))
+            .filter(|(_, s, layer)| surface::bends(s) && blocks(*layer))
+            .map(|(i, _, _)| i)
+            .collect();
+        if !benders.is_empty()
+            && let Some(wall) = cx.world.walls.get(&cx.thing.id)
+        {
+            let points = crate::things::light::draw::outline_contours(&wall.outline).into_iter().flatten();
+            let half = 0.5 * wall.outline.thickness().max(0.0);
+            if let Some(round) = bpe_gfx::Bender::round(points, half + 2.0, 0) {
+                scene.benders.extend(benders.into_iter().map(|index| bpe_gfx::Bender { index, ..round }));
+            }
+        }
     }
 }
 
@@ -380,10 +419,87 @@ fn fast_letters(s: &TextSettings, copies: &[TextNow]) -> bool {
     }
 }
 
-/// One letter to push: its copy and its index there.
-struct Shown {
+/// One letter to push: its copy and its index there, how it shows now, and its Shatter while it
+/// breaks into pieces.
+struct Shown<'a> {
     copy: usize,
     letter: usize,
+    moved: LetterMove,
+    shatter: Option<(&'a Remains, LookSettings)>,
+}
+
+/// What a rule's Break left of a Text: the whole Text's look while it plays, and which letters are
+/// still standing (a walled Text's parts).
+struct Breaks<'a> {
+    whole: Option<(&'a Remains, LookSettings)>,
+    alive: Option<&'a [bool]>,
+}
+
+/// How one letter shows after a break.
+enum LetterBreak<'a> {
+    Standing,
+    /// Broken, its look over (or Vanish).
+    Gone,
+    Look(&'a Remains, LookSettings),
+}
+
+impl<'a> Breaks<'a> {
+    fn of(cx: &DrawCx<'a>) -> Self {
+        Breaks { whole: remains_now(cx, None), alive: cx.world.parts.get(&cx.thing.id).map(|p| p.alive.as_slice()) }
+    }
+
+    /// How letter `k` of copy `copy` shows: a broken letter (only the first copy is a wall) its
+    /// own look, else the whole Text's.
+    fn letter(&self, cx: &DrawCx<'a>, copy: usize, k: usize) -> LetterBreak<'a> {
+        if copy == 0 && self.alive.is_some_and(|a| a.get(k) == Some(&false)) {
+            return match remains_now(cx, Some(k as u32)) {
+                Some((r, l)) => LetterBreak::Look(r, l),
+                None => LetterBreak::Gone,
+            };
+        }
+        match &self.whole {
+            Some((r, l)) => LetterBreak::Look(r, l.clone()),
+            None => LetterBreak::Standing,
+        }
+    }
+}
+
+/// Each letter's hit data (as `shape_hits`) for the first copy of a Text whose letters are parts:
+/// hits by a ball on that letter and a rule's flashes of it. `None` for a Text without parts,
+/// where every letter shares the Text's.
+fn letter_hits(cx: &DrawCx, letters: usize) -> Option<Vec<[f32; 4]>> {
+    use bpe_runtime::EventKind;
+    let id = cx.thing.id;
+    cx.world.parts.get(&id)?;
+    let rate = cx.world.steps_per_second;
+    let mut hits = vec![bpe_gfx::NO_HIT; letters];
+    for e in cx.log.since(0) {
+        let item = match e.kind {
+            EventKind::Hit => e.b.filter(|b| b.thing == id).map(|b| b.item),
+            EventKind::Flash => (e.a.thing == id).then_some(e.a.item),
+            _ => None,
+        };
+        let Some(item) = item else { continue };
+        let time = e.time(rate);
+        if time > cx.time {
+            break;
+        }
+        if let Some(h) = hits.get_mut(item as usize) {
+            *h = [(cx.time - time) as f32, crate::things::balls::draw::hit_strength(e.speed), h[2] + 1.0, 0.0];
+        }
+    }
+    Some(hits)
+}
+
+/// Half the band a Text's letters draw as: half its Thickness while balls bounce inside its
+/// letters (a walled Text), else 0 (filled).
+fn band_half(cx: &DrawCx, s: &TextSettings) -> f32 {
+    let walled = cx.world.states.get(&cx.thing.id).and_then(|st| st.as_any().downcast_ref::<super::TextState>());
+    if s.balls == TextBalls::BounceInside && walled.is_some_and(|st| st.walled) && s.thickness.is_finite() {
+        0.5 * s.thickness.max(0.0)
+    } else {
+        0.0
+    }
 }
 
 /// Draws the Text: every letter of every copy, wearing its Look's layers whole (`part` 0), or the
@@ -404,18 +520,35 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
     let s = TextSettings::from_params(&cx.resolved.params);
     let fast = fast_letters(&s, &copies);
     let font = fonts::find(&cx.tree.fonts, &s.font, s.weight).font().clone();
-    let shown: Vec<Shown> = copies
-        .iter()
-        .enumerate()
-        .flat_map(|(copy, now)| {
-            (0..now.layout.letters.len())
-                .filter(move |&k| now.shown[k].is_some())
-                .map(move |letter| Shown { copy, letter })
-        })
-        .collect();
+    let breaks = Breaks::of(cx);
+    let mut shown: Vec<Shown> = Vec::new();
+    for (copy, now) in copies.iter().enumerate() {
+        for letter in 0..now.layout.letters.len() {
+            let Some(mut moved) = now.shown[letter] else { continue };
+            let mut shatter = None;
+            match breaks.letter(cx, copy, letter) {
+                LetterBreak::Standing => {}
+                LetterBreak::Gone => continue,
+                LetterBreak::Look(r, l) => match whole_look(r, &l, cx.time) {
+                    // Fade out and Pop: about the letter's middle.
+                    Some(w) => {
+                        moved.scale *= w.scale.max(0.0);
+                        moved.opacity *= w.alpha.clamp(0.0, 1.0);
+                    }
+                    None if l.look == BreakLook::Shatter => shatter = Some((r, l)),
+                    None => continue,
+                },
+            }
+            shown.push(Shown { copy, letter, moved, shatter });
+        }
+    }
+    let half = band_half(cx, &s);
     // Fast letters lay the gradient over their boxes; drawn ones over their outlines.
-    let outlines: Vec<Vec<Vec<Vec2>>> =
-        if fast { Vec::new() } else { shown.iter().map(|l| copies[l.copy].contours(l.letter)).collect() };
+    let outlines: Vec<Vec<Vec<Vec2>>> = if fast {
+        Vec::new()
+    } else {
+        shown.iter().map(|l| copies[l.copy].contours_moved(l.letter, l.moved)).collect()
+    };
     let points: Vec<Vec2> = if fast {
         shown
             .iter()
@@ -435,7 +568,7 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
     }
     // One set of records for the whole text, laid over every letter's points (so a gradient runs
     // across the words).
-    let geometry = Geometry { points: Some(points), ellipse: None, half: 0.0 };
+    let geometry = Geometry { points: Some(points), ellipse: None, half };
     let mut records = stack.records(&geometry, &mut frame.gradients);
     let link = crate::things::light::links::number_of(cx.scene, cx.thing.id);
     crate::modules::look::layers::lighting::stamp(&mut records, link, frame.light.as_mut());
@@ -460,20 +593,27 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
         }
     });
     let mut hit = if stack.needs_hits() { shape_hits(cx) } else { bpe_gfx::NO_HIT };
-    if let Some(heat) = stack.heat() {
-        hit[3] = crate::modules::look::layers::heat::shape_heat(cx, heat);
+    let heat = stack.heat().map(|heat| crate::modules::look::layers::heat::shape_heat(cx, heat));
+    if let Some(heat) = heat {
+        hit[3] = heat;
     }
+    // A walled Text's letters each flash and count their own hits.
+    let own_hits =
+        if stack.needs_hits() { copies.first().and_then(|c| letter_hits(cx, c.layout.letters.len())) } else { None };
     let past = stack.reach_past();
-    let margin = past + 2.0;
+    let margin = past + half + 2.0;
     let code = thing_code(cx.thing.id);
     let tile_scale = s.size / tiles::TILE_CAP;
-    // Each pushed instance with how much of it shows and how far its layers may reach past it.
-    let mut pushed: Vec<(usize, f32, f32)> = Vec::new();
+    // Each pushed instance with its letter, how much of it shows and how far its layers may reach
+    // past it.
+    let mut pushed: Vec<(usize, usize, f32, f32)> = Vec::new();
     for (i, l) in shown.iter().enumerate() {
         let now = &copies[l.copy];
-        let m = now.shown[l.letter].unwrap_or(LetterMove::WHOLE);
+        let m = l.moved;
         let letter = &now.layout.letters[l.letter];
-        let glyph = fast.then(|| tiles::tile_for(&font, letter.glyph, s.weight, s.slant)).flatten();
+        // A letter breaking into pieces walks its outline (its pieces clip it to their cells).
+        let glyph =
+            (fast && l.shatter.is_none()).then(|| tiles::tile_for(&font, letter.glyph, s.weight, s.slant)).flatten();
         let tile = glyph.as_ref().and_then(|t| frame.mask_tile(t.hash, &t.bytes).map(|i| (t, i)));
         let index = match tile {
             Some((t, index)) => {
@@ -488,27 +628,47 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
                     .map(|k| (k, past.min(reach)))
             }
             None => {
-                let contours = if fast { now.contours(l.letter) } else { outlines[i].clone() };
+                let contours = if fast { now.contours_moved(l.letter, m) } else { outlines[i].clone() };
                 frame
                     .push_letter(now.pose.position, now.pose.angle, &contours, margin, BODY_WHITE, code)
                     .map(|k| (k, past))
             }
         };
         if let Some((k, reach_past)) = index {
-            pushed.push((k, m.opacity, reach_past));
+            pushed.push((k, i, m.opacity, reach_past));
         }
     }
     // Layers running from the middle measure out to the whole text's reach.
-    let reach = pushed.iter().map(|&(i, _, _)| frame.paths[i].c[1]).fold(0.0, f32::max);
-    for (i, opacity, reach_past) in pushed {
+    let reach = pushed.iter().map(|&(i, _, _, _)| frame.paths[i].c[1]).fold(0.0, f32::max);
+    for &(i, l, opacity, reach_past) in &pushed {
+        let l = &shown[l];
         let path = &mut frame.paths[i];
         path.layers = [first, count, program, part];
+        path.b[0] = half;
         path.c[2] = reach_past;
         path.c[3] = reach;
-        path.hit = hit;
+        path.hit = match own_hits.as_ref().filter(|_| l.copy == 0).and_then(|h| h.get(l.letter)) {
+            Some(own) => [own[0], own[1], own[2], heat.unwrap_or(own[3])],
+            None => hit,
+        };
         if opacity < 1.0 {
             path.clip[2] = (1.0 - opacity).clamp(0.0, 1.0);
         }
+    }
+    // Shattering letters become their pieces (after every letter has its records, which each
+    // piece keeps).
+    let walls = crate::rules::remains::draw::walls_of(cx.world);
+    for &(i, l, _, _) in &pushed {
+        let l = &shown[l];
+        let Some((r, look)) = &l.shatter else { continue };
+        let now = &copies[l.copy];
+        let middle = now.middle(l.letter);
+        let contours = now.contours_moved(l.letter, l.moved);
+        // The outer contour (the longest) round the letter's middle: what the pieces are made of.
+        let Some(outer) = contours.iter().max_by_key(|c| c.len()) else { continue };
+        let edge: Vec<Vec2> = outer.iter().map(|p| *p - middle).collect();
+        let letter = crate::rules::remains::draw::LetterPiece { part: l.letter as u32, edge: &edge, half, middle };
+        crate::rules::remains::draw::shatter_letter(r, look, cx.thing.id.0, &letter, i, cx.time, &walls, frame);
     }
 }
 
@@ -817,5 +977,130 @@ mod tests {
         scene.set_key(&reg, &a, 1.0, Value::Text("ABC".into())).unwrap();
         assert_eq!(paths(&frame_at(&scene, 0.9)).len(), 1, "held until the next key");
         assert_eq!(paths(&frame_at(&scene, 1.1)).len(), 3);
+    }
+
+    /// The test scene (its ring and ball) with "II" in the world at the middle, balls doing
+    /// `balls` at it, the ball falling onto the second I; and that Text's id.
+    fn walled(balls: &str) -> (Scene, ThingId) {
+        let reg = crate::registry();
+        let make = |ball: Vec2| {
+            let mut scene = crate::new_scene(&reg);
+            let id = crate::add_thing(&mut scene, &reg, KIND, ThingId::ROOT).unwrap();
+            let t = scene.things.get_mut(&id).unwrap();
+            t.screen = Some(false);
+            t.transform.position = Vec2::ZERO;
+            t.params.set("words", Value::Text("II".into()));
+            t.params.set("size", Value::Number(300.0));
+            t.params.set("balls", Value::Choice(balls.into()));
+            let b = scene.things.get_mut(&crate::testing::BALLS).unwrap();
+            b.transform.position = ball;
+            b.params.set("velocity", Value::Vec2([0.0, 0.0]));
+            (scene, id)
+        };
+        let (scene, id) = make(Vec2::ZERO);
+        let kit = crate::kit();
+        let resolved = resolve(&scene, &kit.registry);
+        let world = World::build(&scene, &resolved, &kit.sims);
+        let bpe_runtime::Outline::Letters { letters, .. } = &world.walls[&id].outline else { panic!() };
+        let second = &letters.list[1];
+        make(Vec2::new(0.5 * (second.lo.x + second.hi.x), second.lo.y - 200.0))
+    }
+
+    /// Text `id`'s letters in `frame` (the test scene's ring is a path too).
+    fn letters_of(frame: &Frame, id: ThingId) -> Vec<PathInstance> {
+        paths(frame).into_iter().filter(|p| p.c[0] == thing_code(id)).collect()
+    }
+
+    #[test]
+    fn each_walled_letter_has_its_own_hits() {
+        let (mut scene, id) = walled("bounce_off");
+        let reg = crate::registry();
+        use crate::modules::look::shape::{PAINT, SUB_FLASH};
+        let paint = scene.add_layer(&reg, id, SlotId::Look, PAINT).unwrap();
+        scene.add_sub_layer(&reg, id, SlotId::Look, paint, SUB_FLASH).unwrap();
+        let ps = letters_of(&frame_at(&scene, 2.0), id);
+        assert_eq!(ps.len(), 2);
+        assert_eq!(ps[0].hit, bpe_gfx::NO_HIT, "the first I was never hit");
+        assert!(ps[1].hit[2] >= 1.0 && ps[1].hit[0] < 2.0, "{:?}", ps[1].hit);
+    }
+
+    #[test]
+    fn bounce_inside_letters_draw_as_bands_of_their_thickness() {
+        let (mut scene, id) = walled("bounce_inside");
+        scene.things.get_mut(&id).unwrap().params.set("thickness", Value::Number(16.0));
+        let ps = letters_of(&frame_at(&scene, 0.0), id);
+        assert!(ps.len() == 2 && ps.iter().all(|p| p.b[0] == 8.0), "{:?}", ps.iter().map(|p| p.b).collect::<Vec<_>>());
+        let (scene, id) = walled("bounce_off");
+        assert!(letters_of(&frame_at(&scene, 0.0), id).iter().all(|p| p.b[0] == 0.0), "filled");
+        // A screen Text doesn't bounce, so it stays filled.
+        let (mut scene, id) = walled("bounce_inside");
+        scene.things.get_mut(&id).unwrap().screen = Some(true);
+        let ps = letters_of(&frame_at(&scene, 0.0), id);
+        assert!(ps.len() == 2 && ps.iter().all(|p| p.b[0] == 0.0));
+    }
+
+    /// `walled` with a rule breaking the letter a ball hits, with the look `look` (and its
+    /// settings).
+    fn breaking(look: &str, settings: &[(&str, Value)]) -> (Scene, ThingId) {
+        let reg = crate::registry();
+        let (mut scene, id) = walled("bounce_off");
+        let rule = scene.add_rule("Break");
+        let when = scene.add_block(&reg, rule, "when.hit", None).unwrap();
+        let text = Value::Who(bpe_core::Who::Thing { thing: id, ball: None });
+        scene.set_block_param(&reg, rule, when, "whom", text).unwrap();
+        let brk = scene.add_block(&reg, rule, "do.break", Some(when)).unwrap();
+        scene.set_block_param(&reg, rule, brk, "who", Value::Who(bpe_core::Who::Other)).unwrap();
+        scene.set_block_param(&reg, rule, brk, "look", Value::Choice(look.into())).unwrap();
+        for (k, v) in settings {
+            scene.set_block_param(&reg, rule, brk, k, v.clone()).unwrap();
+        }
+        (scene, id)
+    }
+
+    /// When Text `id`'s letter `part` broke in `scene`, in seconds.
+    fn broke_at(scene: &Scene, id: ThingId) -> f64 {
+        let kit = crate::kit();
+        let resolved = resolve(scene, &kit.registry);
+        let mut world = World::build(scene, &resolved, &kit.sims);
+        let mut log = Log::default();
+        world.advance_to(2.0, &kit.sims, &mut log);
+        let e = log.events().iter().find(|e| e.kind == bpe_runtime::EventKind::Break && e.a.thing == id).unwrap();
+        e.time(world.steps_per_second)
+    }
+
+    #[test]
+    fn a_broken_letter_fades_out_then_is_gone() {
+        let (scene, id) = breaking("fade_out", &[("fade_time", Value::Number(1.0))]);
+        let at = broke_at(&scene, id);
+        let ps = letters_of(&frame_at(&scene, at + 0.5), id);
+        assert_eq!(ps.len(), 2, "still showing");
+        assert_eq!(ps[0].clip[2], 0.0, "the standing letter shows whole");
+        assert!(ps[1].clip[2] > 0.2 && ps[1].clip[2] < 0.8, "{}", ps[1].clip[2]);
+        assert_eq!(letters_of(&frame_at(&scene, at + 1.5), id).len(), 1, "its look is over");
+        let (scene, id) = breaking("vanish", &[]);
+        let at = broke_at(&scene, id);
+        assert_eq!(letters_of(&frame_at(&scene, at + 0.05), id).len(), 1, "Vanish leaves nothing");
+    }
+
+    #[test]
+    fn a_shattered_letter_is_its_pieces_flying_apart() {
+        let (scene, id) = breaking("shatter", &[("pieces", Value::Int(8)), ("fade_after", Value::Number(5.0))]);
+        let at = broke_at(&scene, id);
+        let early = letters_of(&frame_at(&scene, at + 0.02), id);
+        let late = letters_of(&frame_at(&scene, at + 0.5), id);
+        for f in [&early, &late] {
+            assert_eq!(f[0].clip[1], 4.0, "the standing letter keeps its box");
+            assert!(f.len() >= 6, "{}", f.len());
+            assert!(f[1..].iter().all(|p| p.layers == f[0].layers), "every piece wears the letter's look");
+        }
+        // Each piece is clipped to its own cell, and they move apart.
+        let spread = |f: &[PathInstance]| {
+            let ps: Vec<Vec2> = f[1..].iter().map(|p| Vec2::new(p.a[0], p.a[1])).collect();
+            let mid = ps.iter().copied().sum::<Vec2>() / ps.len() as f32;
+            ps.iter().map(|p| p.distance(mid)).sum::<f32>() / ps.len() as f32
+        };
+        assert!(spread(&late) > spread(&early) + 10.0, "{} {}", spread(&early), spread(&late));
+        let cells: Vec<f32> = late[1..].iter().map(|p| p.clip[0]).collect();
+        assert!(cells.windows(2).all(|w| w[0] != w[1]));
     }
 }

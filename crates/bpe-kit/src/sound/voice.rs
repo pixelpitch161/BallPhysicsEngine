@@ -570,7 +570,9 @@ impl ModuleKind for VoiceKind {
     }
     /// Shapes play hits; Particles things play their particles' moments (particles part 7).
     fn fits(&self, thing_kind: &str) -> bool {
-        thing_kind == crate::things::shape::KIND || thing_kind == crate::things::particles::KIND
+        thing_kind == crate::things::shape::KIND
+            || thing_kind == crate::things::particles::KIND
+            || thing_kind == crate::things::text::KIND
     }
 }
 
@@ -658,7 +660,7 @@ mod tests {
         assert_eq!(def("notes_scale").default, Value::Choice("major".into()));
         assert_eq!(def("notes_root").default, Value::Choice("c".into()));
         assert_eq!(Scale::ALL.len(), 12);
-        assert_eq!(Plays::ALL.len(), 13);
+        assert_eq!(Plays::ALL.len(), 15);
         assert_eq!(Root::Fs.label(), "F#");
     }
 

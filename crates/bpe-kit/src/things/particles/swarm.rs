@@ -305,19 +305,22 @@ fn segments(world: &World, before: &std::collections::BTreeMap<ThingId, Outline>
         if w.passes {
             continue;
         }
-        let now = crate::things::light::draw::outline_points(&w.outline);
-        let then = before.get(id).map(crate::things::light::draw::outline_points);
-        let then = then.filter(|t| t.len() == now.len()).unwrap_or_else(|| now.clone());
         let half = if w.solid { 0.0 } else { fin(w.outline.thickness()).max(0.0) * 0.5 };
-        let n = now.len();
-        if n < 2 {
-            continue;
-        }
-        for k in 0..n {
-            let j = (k + 1) % n;
-            let s = Segment { a0: then[k], b0: then[j], a1: now[k], b1: now[j], half };
-            if [s.a0, s.b0, s.a1, s.b1].iter().all(|p| p.is_finite()) && s.half.is_finite() {
-                out.push(s);
+        let nows = crate::things::light::draw::outline_contours(&w.outline);
+        let thens = before.get(id).map(crate::things::light::draw::outline_contours);
+        let same = |t: &Vec<Vec<Vec2>>| t.len() == nows.len() && t.iter().zip(&nows).all(|(a, b)| a.len() == b.len());
+        let thens = thens.filter(same).unwrap_or_else(|| nows.clone());
+        for (now, then) in nows.iter().zip(&thens) {
+            let n = now.len();
+            if n < 2 {
+                continue;
+            }
+            for k in 0..n {
+                let j = (k + 1) % n;
+                let s = Segment { a0: then[k], b0: then[j], a1: now[k], b1: now[j], half };
+                if [s.a0, s.b0, s.a1, s.b1].iter().all(|p| p.is_finite()) && s.half.is_finite() {
+                    out.push(s);
+                }
             }
         }
     }

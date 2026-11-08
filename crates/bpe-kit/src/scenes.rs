@@ -24,6 +24,8 @@ use crate::{BallsSettings, BasicBounce, BasicLook, BasicMotion, SceneSettings, S
 
 mod rule_scenes;
 pub use rule_scenes::{breakable_bricks, health_scenes, rule_scenes};
+mod text_scenes;
+pub use text_scenes::text_scenes;
 
 const SHAPE: ThingId = ThingId(1);
 const BALLS: ThingId = ThingId(2);

@@ -1,0 +1,49 @@
+# scene	second	events	letter hits	standing	hash
+Balls inside a word	1	33	33	11111	b2ff0f47fa35f7e9
+Balls inside a word	2	68	68	11111	65fd2dba863434b7
+Balls inside a word	3	97	97	11111	d6472118eba200f6
+Balls inside a word	4	132	132	11111	882ba6d13eb55e1f
+Balls inside a word	5	173	173	11111	f5fddac146a55d3c
+Balls inside a word	6	208	208	11111	7199ac79997c79c4
+Balls inside a word	7	239	239	11111	e6e051c0535f6e05
+Balls inside a word	8	274	274	11111	f99e00eb47878511
+Bounce off letters	1	0	0	111111	cbf29ce484222325
+Bounce off letters	2	11	9	111111	d7f9095e9479f439
+Bounce off letters	3	17	13	111111	b764337d56f258f1
+Bounce off letters	4	25	19	111111	83f29981ed9da888
+Bounce off letters	5	34	24	111111	06d3dd3fe94f87c0
+Bounce off letters	6	44	31	111111	ce27ccb9b0dde413
+Bounce off letters	7	55	39	111111	74233092ecd8e124
+Bounce off letters	8	65	48	111111	c2eeeeb66235d813
+Pour in and fill	1	5	5	1111	7e368f4e0f996490
+Pour in and fill	2	23	23	1111	ccad11e19ef8c584
+Pour in and fill	3	61	61	1111	526e4a70e0a34609
+Pour in and fill	4	110	110	1111	ab1ab742d9b81fdc
+Pour in and fill	5	172	172	1111	c0d5f395bd5129c4
+Pour in and fill	6	242	242	1111	409c08566c223b87
+Pour in and fill	7	320	320	1111	f19c0af292c82c6f
+Pour in and fill	8	422	422	1111	7383c68128d3d68b
+Letters break apart	1	0	0	11111	cbf29ce484222325
+Letters break apart	2	16	12	10011	3f22391d3289f786
+Letters break apart	3	26	15	00000	a8bb0778d81fc759
+Letters break apart	4	33	15	00000	41dad1737274a352
+Letters break apart	5	42	15	00000	6bf8ae31160369d2
+Letters break apart	6	46	15	00000	d8bd3042a6f1a463
+Letters break apart	7	50	15	00000	e0c9d4e5c877e540
+Letters break apart	8	56	15	00000	3f655be1b1932c95
+Letters that play notes	1	0	0	111111	cbf29ce484222325
+Letters that play notes	2	2	2	111111	f8a100d8e4f0ccec
+Letters that play notes	3	5	4	111111	814ffd688e314074
+Letters that play notes	4	11	9	111111	7d2dfc2c9e7fea13
+Letters that play notes	5	15	13	111111	bb99c8a185066bda
+Letters that play notes	6	22	18	111111	92759752e3127d7c
+Letters that play notes	7	23	19	111111	57598625164e9ca0
+Letters that play notes	8	36	31	111111	35235f007bc0685e
+Spinning word	1	1	0	1111	9e112e2f5efc6a22
+Spinning word	2	2	0	1111	1f03cf9324dde34a
+Spinning word	3	4	0	1111	f8cd95122c6f234b
+Spinning word	4	5	0	1111	4643e21e50a1b484
+Spinning word	5	5	0	1111	4643e21e50a1b484
+Spinning word	6	7	1	1111	5da9ab02157c9dac
+Spinning word	7	10	2	1111	fe1277f0118f3f9f
+Spinning word	8	13	4	1111	905e260bc49b9f13

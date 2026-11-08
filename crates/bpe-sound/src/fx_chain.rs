@@ -29,6 +29,7 @@ use bpe_kit::sound::fx::{
 };
 use bpe_kit::sound::{BUSES, DistortionSettings, FilterSettings, MIXER, Slope};
 use bpe_kit::things::shape::KIND as SHAPE;
+use bpe_kit::things::text::KIND as TEXT;
 use bpe_runtime::EventKind;
 
 /// What an effect can read while it runs one block.
@@ -409,7 +410,9 @@ impl Fx {
             fx::COMPRESSOR => {
                 let set = CompressorSettings::from_params(p);
                 let shape = match set.sc_shape {
-                    Target::Thing(id) if scene.things.get(&id).is_some_and(|t| t.kind == SHAPE) => Some(id),
+                    Target::Thing(id) if scene.things.get(&id).is_some_and(|t| t.kind == SHAPE || t.kind == TEXT) => {
+                        Some(id)
+                    }
                     _ => None,
                 };
                 let hits = Box::new([(0, 0.0); MAX_KEY_HITS]);

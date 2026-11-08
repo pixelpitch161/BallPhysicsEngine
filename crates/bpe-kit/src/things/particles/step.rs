@@ -428,6 +428,8 @@ pub fn step_in(
         world
             .walls
             .iter()
+            // Letters balls pass through are only zones (as in a swarm).
+            .filter(|(_, w)| !(w.passes && matches!(w.outline, bpe_runtime::Outline::Letters { .. })))
             .map(|(id, w)| {
                 let before = st.walls_before.get(id).cloned().unwrap_or_else(|| w.outline.clone());
                 WallAt::new(*id, w.clone(), before)

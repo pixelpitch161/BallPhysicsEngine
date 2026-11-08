@@ -17,6 +17,17 @@ pub fn is_ball(world: &World, party: Party) -> bool {
     world.bodies.get(&party.thing).is_some_and(|b| (party.item as usize) < b.len())
 }
 
+/// Whether `party` is a part of a thing with parts (a Text's letter, Text part 3).
+pub fn is_part(world: &World, party: Party) -> bool {
+    !world.bodies.contains_key(&party.thing)
+        && world.parts.get(&party.thing).is_some_and(|p| (party.item as usize) < p.len())
+}
+
+/// A ball's number, or a part's (a letter's), counted from 1.
+fn row_number(world: &World, party: Party) -> Option<u32> {
+    if is_part(world, party) { Some(party.item + 1) } else { ball_number(world, party) }
+}
+
 /// In a When block (and If: Is): whether `party` counts as `who`. That, Other and Group count as
 /// anything there. A ball has its thing's tags and those a rule gave it alone.
 pub fn matches(cx: &StageCx, who: &Who, party: Party) -> bool {
@@ -32,7 +43,10 @@ pub fn matches_thing(world: &World, who: &Who, party: Party) -> bool {
     match who {
         Who::That | Who::Other | Who::Group | Who::Anything => true,
         Who::Thing { thing, ball } => {
-            party.thing == *thing && ball.is_none_or(|n| is_ball(world, party) && ball_number(world, party) == Some(n))
+            party.thing == *thing
+                && ball.is_none_or(|n| {
+                    (is_ball(world, party) || is_part(world, party)) && row_number(world, party) == Some(n)
+                })
         }
         Who::Tag(tag) => world.tags.get(&party.thing).is_some_and(|t| t.contains(tag)),
         Who::Kind(kind) => world.kind_of(party.thing) == Some(kind.as_str()),
@@ -44,7 +58,7 @@ pub type Target = (ThingId, Option<u32>);
 
 fn side(world: &World, party: Option<Party>) -> Option<Target> {
     let p = party?;
-    Some((p.thing, is_ball(world, p).then_some(p.item)))
+    Some((p.thing, (is_ball(world, p) || is_part(world, p)).then_some(p.item)))
 }
 
 /// In an If or Do block: what `who` names for `firing`. That is the firing's subject (its ball
@@ -58,6 +72,13 @@ pub fn targets(cx: &StageCx, who: &Who, firing: &Firing) -> Vec<Target> {
         Who::Other => side(world, firing.other).into_iter().collect(),
         Who::Group => firing.subject.map(|p| (p.thing, None)).into_iter().collect(),
         Who::Thing { thing, ball: None } => vec![(*thing, None)],
+        Who::Thing { thing, ball: Some(n) } if !world.bodies.contains_key(thing) => world
+            .parts
+            .get(thing)
+            .filter(|p| *n >= 1 && p.is_alive(*n as usize - 1))
+            .map(|_| (*thing, Some(*n - 1)))
+            .into_iter()
+            .collect(),
         Who::Thing { thing, ball: Some(n) } => world
             .bodies
             .get(thing)
@@ -87,9 +108,15 @@ pub fn targets(cx: &StageCx, who: &Who, firing: &Firing) -> Vec<Target> {
     out.into_iter().filter(|(t, _)| world.names.contains_key(t) && !cx.is_broken(*t)).collect()
 }
 
-/// Where a target is: a ball's place; for a thing with balls its first live ball's; else its
-/// pose, else its anchor.
+/// Where a target is: a ball's place; for a thing with balls its first live ball's; a letter's
+/// middle; else its pose, else its anchor.
 pub fn place_of(world: &World, (thing, row): Target) -> Vec2 {
+    if let (Some(p), Some(r)) = (world.parts.get(&thing), row)
+        && !world.bodies.contains_key(&thing)
+        && let Some(at) = p.at.get(r as usize)
+    {
+        return *at;
+    }
     if let Some(b) = world.bodies.get(&thing) {
         if let Some(r) = row.map(|r| r as usize).filter(|&r| r < b.len()) {
             return b.position[r];

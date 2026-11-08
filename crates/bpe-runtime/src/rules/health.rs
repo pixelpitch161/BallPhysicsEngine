@@ -1,5 +1,6 @@
 //! Health (rules part 4, spec section 7): a thing with a Health card keeps a health of its own,
-//! each ball by its body row (a thing without balls, a shape, one for the whole thing). Hits take
+//! each ball by its body row, each part by its number (a Text's letters, Text part 3), and a
+//! thing with neither (a shape) one for the whole thing. Hits take
 //! health away in the Rules stage, before any rule runs; a rule's Change health moves it at the
 //! next step's start. Each change is a [`HealthMoment`] the stage's When Health blocks read; at
 //! zero the card's action (a Break) is queued. All of it is part of the world, cloned with it.
@@ -129,9 +130,9 @@ pub struct HealthMoment {
 #[derive(Clone, Debug)]
 struct HealthOf {
     card: HealthCard,
-    /// Whether it has balls (a health per body row) or is one thing.
+    /// Whether it has rows: balls (a health per body row) or parts (one a part), or is one thing.
     balls: bool,
-    /// Per body row (one for a thing without balls).
+    /// Per body row or part (one for a thing without either).
     hp: Vec<Hp>,
 }
 
@@ -144,6 +145,16 @@ pub struct Health {
     still: bool,
     /// The health a new ball row takes from the ball it split from, until `fill` gives it.
     inherited: BTreeMap<(ThingId, u32), Hp>,
+}
+
+/// How many rows `thing` has (its balls' body rows, else its parts) and whether row k is live;
+/// `None` for a thing with neither.
+fn rows_of(world: &World, thing: ThingId) -> Option<(usize, impl Fn(usize) -> bool + '_)> {
+    if let Some(b) = world.bodies.get(&thing) {
+        return Some((b.len(), Box::new(move |r: usize| b.alive.get(r) == Some(&true)) as Box<dyn Fn(usize) -> bool>));
+    }
+    let p = world.parts.get(&thing)?;
+    Some((p.len(), Box::new(move |r: usize| p.is_alive(r)) as Box<dyn Fn(usize) -> bool>))
 }
 
 /// The least starting health: a card's 0 counts as this.
@@ -168,7 +179,7 @@ impl Health {
             let Some(slot) = resolved.things.get(&id).and_then(|r| r.slots.get(&SlotId::Health)) else { continue };
             let Some(sim) = sims.health(&slot.kind) else { continue };
             let card = sim.prepare(&slot.params);
-            let balls = world.bodies.contains_key(&id);
+            let balls = world.bodies.contains_key(&id) || world.parts.contains_key(&id);
             let hp = if balls { Vec::new() } else { vec![Hp { now: card.start_at(None), start: card.start_at(None) }] };
             things.insert(id, HealthOf { card, balls, hp });
         }
@@ -216,7 +227,7 @@ impl Health {
     /// spread.
     pub(crate) fn fill(&mut self, world: &World, sims: &Sims) {
         for (id, h) in self.things.iter_mut().filter(|(_, h)| h.balls) {
-            let count = world.bodies.get(id).map_or(0, |b| b.len());
+            let count = rows_of(world, *id).map_or(0, |(n, _)| n);
             for row in h.hp.len()..count {
                 if let Some(hp) = self.inherited.remove(&(*id, row as u32)) {
                     h.hp.push(hp);
@@ -253,9 +264,9 @@ impl Health {
         if !h.balls {
             return h.hp.first().map_or(0.0, Hp::share);
         }
-        let Some(b) = world.bodies.get(&thing).filter(|b| !b.is_empty()) else { return 1.0 };
+        let Some((count, alive)) = rows_of(world, thing).filter(|(n, _)| *n > 0) else { return 1.0 };
         let (mut sum, mut n) = (0.0f32, 0u32);
-        for row in (0..b.len()).filter(|&r| b.alive[r]) {
+        for row in (0..count).filter(|&r| alive(r)) {
             sum += h.hp.get(row).map_or(1.0, Hp::share);
             n += 1;
         }
@@ -327,9 +338,9 @@ impl Health {
                     continue;
                 }
                 let row = if h.balls {
-                    let Some(b) = world.bodies.get(&me.thing) else { continue };
+                    let Some((count, alive)) = rows_of(world, me.thing) else { continue };
                     let i = me.item as usize;
-                    if i >= b.len() || !b.alive[i] {
+                    if i >= count || !alive(i) {
                         continue;
                     }
                     Some(me.item)

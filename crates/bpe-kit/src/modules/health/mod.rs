@@ -216,7 +216,7 @@ impl ModuleKind for HealthKind {
         HealthSettings::defs()
     }
     fn fits(&self, thing_kind: &str) -> bool {
-        matches!(thing_kind, "balls" | "emitter" | "shape")
+        matches!(thing_kind, "balls" | "emitter" | "shape" | "text")
     }
     /// Each ball of a group can start with a health of its own, worked out once as it starts.
     fn vary(&self, key: &str) -> Option<VaryUse> {

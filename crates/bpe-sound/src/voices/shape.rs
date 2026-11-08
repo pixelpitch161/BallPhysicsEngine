@@ -1123,11 +1123,23 @@ impl ShapeVoice {
             Some(path) => bpe_kit::things::shape::side_on(cx.world, self.spec.thing, path, hit.event.point),
             None => 0,
         };
+        // The letter of a Text hit (Text part 3): the wall's part; 0 on a shape.
+        // Only a Hit's `b.item` is a letter (a rule note's and a particle moment's say other things).
+        let hit_b = hit.event.b.filter(|_| hit.event.kind == EventKind::Hit);
+        let letter = hit_b.map_or(0, |b| b.item);
+        let letter_char = match (n.plays, hit_b) {
+            (bpe_kit::sound::Plays::SpellNotes, Some(b)) => {
+                bpe_kit::things::text::letter_char(cx.world, b.thing, b.item)
+            }
+            _ => None,
+        };
         let pcx = PickCx {
             slot: notes,
             hit_index: self.slot_hits,
             ball_number,
             side,
+            letter,
+            letter_char,
             seed: mix(((self.spec.thing.0 as u64) << 32) ^ mix(self.slot_turn ^ 0x9A7E)),
             repeat: n.repeat,
             octave_range: n.octave_range,

@@ -13,7 +13,7 @@ use glam::Vec2;
 
 use crate::modules::lighting::{LIGHTING, LightingSettings};
 use crate::modules::look::layers::gives_light::{Emit, GivesLight, SHAPE_SUB_LIGHT, SUB_LIGHT};
-use crate::things::light::draw::{LightDraw, outline_points, places, point_round, shown_settings};
+use crate::things::light::draw::{LightDraw, places, point_round, shown_settings};
 use crate::things::light::{LIGHT, LightSettings};
 
 /// How many points round a shape's outline "Light on" a shape averages.
@@ -26,7 +26,7 @@ const HARD_EDGE: f32 = 0.5;
 const IN_SHADOW: f32 = 0.5;
 
 /// The things whose settings the probe reads besides the lights: their looks block or give light.
-pub const LOOKED: [&str; 3] = ["balls", "emitter", "shape"];
+pub const LOOKED: [&str; 4] = ["balls", "emitter", "shape", crate::things::text::KIND];
 /// The thing kinds whose own settings the probe reads.
 pub const LIGHTING_KINDS: [&str; 2] = [LIGHT, crate::things::rig::RIG];
 
@@ -165,9 +165,12 @@ impl Probe {
             return (0..b.len()).filter_map(|row| self.ball_sample(lamps, world, thing, row)).collect();
         }
         if let Some(wall) = world.walls.get(&thing) {
-            let points = outline_points(&wall.outline);
-            return (0..SHAPE_POINTS)
-                .map(|k| point_round(&points, k as f32 / SHAPE_POINTS as f32))
+            // Round every contour (a Text's letters each get their share; a shape has one).
+            let contours = crate::things::light::draw::outline_contours(&wall.outline);
+            let each = (SHAPE_POINTS / contours.len().max(1)).max(1);
+            return contours
+                .iter()
+                .flat_map(|points| (0..each).map(move |k| point_round(points, k as f32 / each as f32)))
                 .map(|p| lamps.sample(p, Skip { ball: None, thing: Some(thing) }, None))
                 .collect();
         }
@@ -381,12 +384,17 @@ impl Lamps {
                     }
                 }
             } else if let Some(wall) = world.walls.get(id) {
-                let points = outline_points(&wall.outline);
-                let n = points.len();
-                if n < 2 {
+                let sides: Vec<[Vec2; 2]> = crate::things::light::draw::outline_contours(&wall.outline)
+                    .into_iter()
+                    .filter(|c| c.len() >= 2)
+                    .flat_map(|c| {
+                        let n = c.len();
+                        (0..n).map(move |k| [c[k], c[(k + 1) % n]])
+                    })
+                    .collect();
+                if sides.is_empty() {
                     continue;
                 }
-                let sides: Vec<[Vec2; 2]> = (0..n).map(|k| [points[k], points[(k + 1) % n]]).collect();
                 let glow = look.glow_of(0);
                 if luminance(glow).abs() > 1e-9 {
                     let first = segments.len() as f32;

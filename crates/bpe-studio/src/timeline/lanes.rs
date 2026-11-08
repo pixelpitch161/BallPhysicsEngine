@@ -128,8 +128,8 @@ pub fn moves_physics(scene: &Scene, kit: &Kit, a: &Address) -> bool {
         None => scene
             .things
             .get(&a.thing)
-            .and_then(|t| kit.sims.thing(&t.kind))
-            .is_some_and(|sim| sim.affects_physics(&a.key)),
+            .and_then(|t| Some((t, kit.sims.thing(&t.kind)?)))
+            .is_some_and(|(t, sim)| sim.affects_physics_in(scene, t, &a.key)),
         Some(slot) => matches!(slot, SlotId::Motion | SlotId::Bounce),
     }
 }

@@ -192,6 +192,12 @@ pub struct World {
     /// The built things whose sim never steps them with the physics, beside it or kept in it by
     /// a rule that reads them: left out of test flights too.
     pub decoration: BTreeSet<ThingId>,
+    /// The parts of every thing that has some (a Text's letters, Text part 3): what rules name one
+    /// by one, as they name a group's balls.
+    pub parts: BTreeMap<ThingId, crate::Parts>,
+    /// The scene as saved, kept when a built thing's sim reads it ([`crate::ThingSim::reads_tree`]:
+    /// a Text lays its letters out from the scene's fonts and names). Shared by every clone.
+    pub tree: Option<std::sync::Arc<Scene>>,
 }
 
 /// States lent to a world for drawing ([`World::lend_states`]), with what they replaced.
@@ -230,11 +236,11 @@ pub fn physics_animation(scene: &Scene, resolved: &Resolved, sims: &Sims) -> Opt
         // physics fingerprint.
         Some(slot) if BESIDE_SLOTS.contains(&slot) => true,
         Some(_) => false,
-        None => resolved
-            .things
-            .get(&thing)
-            .and_then(|r| sims.thing(&r.kind))
-            .is_some_and(|s| s.affects_physics(bpe_core::vary::base_key(key))),
+        None => match (resolved.things.get(&thing).and_then(|r| sims.thing(&r.kind)), scene.things.get(&thing)) {
+            (Some(s), Some(t)) => s.affects_physics_in(scene, t, bpe_core::vary::base_key(key)),
+            (Some(s), None) => s.affects_physics(bpe_core::vary::base_key(key)),
+            (None, _) => false,
+        },
     });
     (!animation.is_empty()).then_some(animation)
 }
@@ -289,7 +295,12 @@ impl World {
             run: RunId::fresh(),
             beside: BTreeSet::new(),
             decoration: BTreeSet::new(),
+            parts: BTreeMap::new(),
+            tree: None,
         };
+        if resolved.things.values().any(|r| sims.thing(&r.kind).is_some_and(|s| s.reads_tree())) {
+            world.tree = Some(std::sync::Arc::new(scene.clone()));
+        }
         // Worked out first: a thing may cache work by it while it builds.
         let wants_fingerprint =
             resolved.things.values().any(|r| sims.thing(&r.kind).is_some_and(|s| s.needs_fingerprint(r)));
@@ -870,6 +881,8 @@ impl World {
             run: RunId::fresh(),
             beside: BTreeSet::new(),
             decoration: BTreeSet::new(),
+            parts: self.parts.iter().filter(|(id, _)| kept(id)).map(|(id, p)| (*id, p.clone())).collect(),
+            tree: self.tree.clone(),
         }
     }
 
@@ -1386,7 +1399,8 @@ impl World {
                             step,
                             kind: EventKind::Hit,
                             a: Party { thing: *mover, item: i as u32 },
-                            b: Some(Party { thing: *wall_id, item: 0 }),
+                            // The letter of a Text it hit; 0 for every other wall.
+                            b: Some(Party { thing: *wall_id, item: contact.part }),
                             point: contact.point,
                             normal: contact.normal,
                             speed: contact.speed,
@@ -1781,10 +1795,15 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
         }
         if let Some(sim) = sims.thing(&r.kind) {
             for (key, value) in r.params.iter() {
-                if sim.affects_physics(bpe_core::vary::base_key(key)) {
+                if sim.affects_physics_in(scene, thing, bpe_core::vary::base_key(key)) {
                     h.bytes(key.as_bytes());
                     h.value(value);
                 }
+            }
+            let more = sim.fingerprint_more(scene, thing, r);
+            if more != 0 {
+                h.bytes(b"more");
+                h.bytes(&more.to_le_bytes());
             }
         }
         if let Some(want) = sims.thing(&r.kind).and_then(|s| s.history(r)).filter(|_| history) {

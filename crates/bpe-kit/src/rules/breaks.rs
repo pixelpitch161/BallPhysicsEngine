@@ -166,7 +166,14 @@ impl LookSettings {
 /// Whether a thing of `kind` can show a Break look (else it vanishes whatever is picked): shapes,
 /// balls, emitters (their balls) and lights.
 pub fn shows_looks(kind: &str) -> bool {
-    matches!(kind, crate::things::shape::KIND | "balls" | crate::things::emitter::KIND | crate::things::light::LIGHT)
+    matches!(
+        kind,
+        crate::things::shape::KIND
+            | "balls"
+            | crate::things::emitter::KIND
+            | crate::things::light::LIGHT
+            | crate::things::text::KIND
+    )
 }
 
 /// How a break of a thing of `kind` with `look` plays out.

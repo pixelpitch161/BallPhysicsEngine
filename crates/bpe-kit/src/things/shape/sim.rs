@@ -52,6 +52,8 @@ impl ShapeState {
                 points: points.clone(),
                 thickness: *thickness,
             },
+            // A shape's outline is never letters.
+            letters @ Outline::Letters { .. } => letters.clone(),
         }
     }
 

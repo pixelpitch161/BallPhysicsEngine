@@ -10,7 +10,7 @@ use bpe_core::ThingId;
 use bpe_runtime::World;
 use glam::Vec2;
 
-use super::draw::outline_points;
+use super::draw::outline_contours;
 
 /// What a beam does where it meets a thing.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -78,12 +78,18 @@ pub struct Scenery {
 pub fn scenery(world: &World) -> Scenery {
     let mut walls = Vec::new();
     for (&id, wall) in &world.walls {
-        let points = outline_points(&wall.outline);
-        let n = points.len();
-        if n < 2 {
+        // Every contour's sides (a Text's letters have many contours).
+        let sides: Vec<(Vec2, Vec2)> = outline_contours(&wall.outline)
+            .into_iter()
+            .filter(|c| c.len() >= 2)
+            .flat_map(|c| {
+                let n = c.len();
+                (0..n).map(move |k| (c[k], c[(k + 1) % n]))
+            })
+            .collect();
+        if sides.is_empty() {
             continue;
         }
-        let sides = (0..n).map(|k| (points[k], points[(k + 1) % n])).collect();
         // A filled shape is its outline (as balls and the picture see it), with no band round it.
         let half = if wall.solid { 0.0 } else { 0.5 * wall.outline.thickness().max(0.0) };
         walls.push((id, sides, half, wall.solid));

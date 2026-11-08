@@ -117,13 +117,20 @@ pub fn can_light(scene: &Scene, reg: &bpe_core::Registry, a: &Address) -> bool {
     bpe_kit::sensing::can_follow_light(scene, reg, a)
 }
 
-/// Every shape whose sound is on, with its modulators that are on and its Level, and every bus
+/// Every shape (or Text) whose sound is on, with its modulators that are on and its Level, and every bus
 /// that is on (none while no shape makes sound).
 pub fn menu(scene: &Scene) -> FollowMenu {
     let mut shapes = Vec::new();
     for id in &scene.order {
-        // Shapes only: a Particles thing's sound is heard in the sound's own world, not the editor's.
-        let Some(thing) = scene.things.get(id).filter(|t| t.kind == bpe_kit::things::shape::KIND) else { continue };
+        // Shapes and Texts only: a Particles thing's sound is heard in the sound's own world, not
+        // the editor's.
+        let Some(thing) = scene
+            .things
+            .get(id)
+            .filter(|t| t.kind == bpe_kit::things::shape::KIND || t.kind == bpe_kit::things::text::KIND)
+        else {
+            continue;
+        };
         let Some(card) = thing.slots.get(&SlotId::Sound).filter(|c| c.kind == VOICE) else { continue };
         if !VoiceSettings::from_params(&card.params).enabled {
             continue;

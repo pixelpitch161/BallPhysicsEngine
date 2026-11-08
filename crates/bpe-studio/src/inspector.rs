@@ -289,13 +289,18 @@ pub fn show(
         style::ensure_text_fonts(ui.ctx(), scene);
     }
 
-    // A shape's (or a Particles thing's) settings or its sound.
+    // A shape's (or a Particles thing's, or a Text's) settings or its sound.
     if sounds(&thing.kind) {
         let mut tab = inspector.tab.get(&id).copied().unwrap_or_default();
         let chips: [(InspectorTab, &str, &str); 2] = if thing.kind == SHAPE {
             [
                 (InspectorTab::Settings, "Settings", "The shape's outline, look and how it moves"),
                 (InspectorTab::Sound, "Sound", "The sound the shape makes when balls hit it"),
+            ]
+        } else if thing.kind == bpe_kit::things::text::KIND {
+            [
+                (InspectorTab::Settings, "Settings", "The words, their look and what balls do at them"),
+                (InspectorTab::Sound, "Sound", "The sound the letters make when balls hit them"),
             ]
         } else {
             [
@@ -837,7 +842,7 @@ const SHAPE: &str = bpe_kit::things::shape::KIND;
 
 /// Whether things of `kind` have a Sound tab: shapes, and Particles things (particles part 7).
 pub(crate) fn sounds(kind: &str) -> bool {
-    kind == SHAPE || kind == bpe_kit::things::particles::KIND
+    kind == SHAPE || kind == bpe_kit::things::particles::KIND || kind == bpe_kit::things::text::KIND
 }
 
 /// After a shape's own setting `key` was set: a new Sides or Start from starts the outline afresh,

@@ -192,7 +192,12 @@ pub fn shape_picker(ui: &mut Ui, cx: &mut MixCx, def: &SettingDef, label: egui::
         .order
         .iter()
         .filter_map(|id| {
-            cx.scene.things.get(id).filter(|t| t.kind == bpe_kit::things::shape::KIND).map(|t| (*id, t.name.clone()))
+            // Shapes and Texts: what balls hit.
+            cx.scene
+                .things
+                .get(id)
+                .filter(|t| t.kind == bpe_kit::things::shape::KIND || t.kind == bpe_kit::things::text::KIND)
+                .map(|t| (*id, t.name.clone()))
         })
         .collect();
     let shown = now
