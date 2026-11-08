@@ -34,12 +34,55 @@ pub struct Timeline {
     /// Where each sounding shape's slots change, worked out again when the scene, the run so
     /// far or the clip's length changes.
     slot_marks: SlotMarks,
+    /// The Hits lane's ticks, added to as hits arrive.
+    hit_ticks: HitTicks,
 }
 
 #[derive(Default)]
 struct SlotMarks {
     made_for: Option<(u64, usize, u64)>,
     marks: BTreeMap<ThingId, Vec<(f64, usize)>>,
+    /// When they were last worked out: while playing they are worked out again at most every
+    /// [`SLOT_MARKS_EVERY`] as the run grows.
+    at: Option<std::time::Instant>,
+}
+
+/// How often the slot marks follow a run that grows while playing.
+const SLOT_MARKS_EVERY: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// The Hits lane's ticks, one per pixel column and hitter: the log is read once, each hit as it
+/// arrives, and read again from the start only when the run, the ruler or the clip's length
+/// changes (or the run went back).
+#[derive(Default)]
+pub(crate) struct HitTicks {
+    /// The revision, the strip's left and width, the clip's length and the steps a second.
+    made_for: Option<(u64, u32, u32, u64, u32)>,
+    /// How many of the log's events have been read.
+    read: usize,
+    pub(crate) ticks: BTreeSet<(i32, ThingId)>,
+}
+
+impl HitTicks {
+    /// Brings the ticks up to `events`, read with `x_of` for a run at `revision` (`key` the rest
+    /// of what they were made for).
+    pub(crate) fn update(
+        &mut self,
+        revision: u64,
+        key: (u32, u32, u64, u32),
+        events: &[bpe_runtime::Event],
+        x_of: impl Fn(f64) -> f32,
+    ) {
+        let made_for = (revision, key.0, key.1, key.2, key.3);
+        if self.made_for != Some(made_for) || events.len() < self.read {
+            self.made_for = Some(made_for);
+            self.read = 0;
+            self.ticks.clear();
+        }
+        for e in events[self.read..].iter().filter(|e| e.kind == EventKind::Hit) {
+            self.ticks.insert((x_of(e.time(key.3)).round() as i32, e.a.thing));
+        }
+        self.read = events.len();
+    }
 }
 
 /// At most this many slot changes get a name of their own (for screen readers and tests).
@@ -156,7 +199,12 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
         timeline.curve_open = false;
     }
     let made_for = (studio.revision, studio.playback.log().events().len(), ruler.duration.to_bits());
-    if timeline.slot_marks.made_for != Some(made_for) {
+    let marks_for = timeline.slot_marks.made_for;
+    // A new run or length now; a run growing while playing at most every SLOT_MARKS_EVERY.
+    let only_grew = marks_for.is_some_and(|(r, _, d)| (r, d) == (made_for.0, made_for.2));
+    let followed_lately = timeline.slot_marks.at.is_some_and(|t| t.elapsed() < SLOT_MARKS_EVERY);
+    if marks_for != Some(made_for) && !(only_grew && studio.playing && followed_lately) {
+        timeline.slot_marks.at = Some(std::time::Instant::now());
         let (log, world) = (studio.playback.log(), studio.playback.world());
         timeline.slot_marks.marks = groups
             .iter()
@@ -179,7 +227,7 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
     let mut recoloured = None;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
-        hits_lane(ui, studio, &ruler);
+        hits_lane(ui, studio, &ruler, &mut timeline.hit_ticks);
         if !studio.scene.rules.is_empty() {
             rules_lane(ui, studio, &ruler);
         }
@@ -236,7 +284,7 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
 }
 
 /// The Hits lane: a tick per hit at its time, in the colour of the thing that hit.
-fn hits_lane(ui: &mut Ui, studio: &Studio, ruler: &Ruler) {
+fn hits_lane(ui: &mut Ui, studio: &Studio, ruler: &Ruler, hit_ticks: &mut HitTicks) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), LANE_HEIGHT), Sense::hover());
     let name = Rect::from_min_size(rect.min, egui::vec2(LABEL_WIDTH, LANE_HEIGHT));
     name_cell(ui, name, egui::Label::new(RichText::new("Hits").small().color(style::MUTED)).selectable(false));
@@ -245,11 +293,9 @@ fn hits_lane(ui: &mut Ui, studio: &Studio, ruler: &Ruler) {
     paint_beats(&painter, ruler, strip);
     // One tick per pixel column and hitter is enough, however many hits land there.
     let rate = studio.playback.world().steps_per_second;
-    let mut ticks: BTreeSet<(i32, ThingId)> = BTreeSet::new();
-    for e in studio.playback.log().events().iter().filter(|e| e.kind == EventKind::Hit) {
-        ticks.insert((ruler.x_of(e.time(rate)).round() as i32, e.a.thing));
-    }
-    for (x, thing) in ticks {
+    let key = (ruler.track.left().to_bits(), ruler.track.width().to_bits(), ruler.duration.to_bits(), rate);
+    hit_ticks.update(studio.revision, key, studio.playback.log().events(), |t| ruler.x_of(t));
+    for &(x, thing) in &hit_ticks.ticks {
         let x = x as f32;
         let tick = Rect::from_min_max(Pos2::new(x - 1.0, strip.top() + 2.0), Pos2::new(x + 1.0, strip.bottom() - 2.0));
         painter.rect_filled(tick, 0.0, hit_colour(&studio.scene, thing));
@@ -711,6 +757,38 @@ mod tests {
     fn ruler(width: f32, duration: f64) -> Ruler {
         let track = Rect::from_min_size(Pos2::ZERO, egui::vec2(width, 18.0));
         Ruler { track, duration, beats: Vec::new() }
+    }
+
+    #[test]
+    fn hit_ticks_read_each_hit_once_and_start_over_for_another_run() {
+        let hit = |step: u64, thing: u32| bpe_runtime::Event {
+            step,
+            kind: EventKind::Hit,
+            a: bpe_runtime::Party { thing: ThingId(thing), item: 0 },
+            b: None,
+            point: glam::Vec2::ZERO,
+            normal: glam::Vec2::Y,
+            speed: 100.0,
+            at: 0.0,
+        };
+        let events = vec![hit(240, 2), hit(480, 3), hit(720, 2)];
+        let x_of = |t: f64| (t * 100.0) as f32;
+        let key = (0, 0, 0, 240);
+        let mut whole = HitTicks::default();
+        whole.update(1, key, &events, x_of);
+        let mut grown = HitTicks::default();
+        for n in 1..=events.len() {
+            grown.update(1, key, &events[..n], x_of);
+            assert_eq!(grown.read, n, "only the new hits are read");
+        }
+        assert_eq!(grown.ticks, whole.ticks);
+        assert_eq!(whole.ticks.len(), 3);
+        // The run went back: read again from the start.
+        grown.update(1, key, &events[..1], x_of);
+        assert_eq!(grown.ticks.len(), 1);
+        // Another run (an edit): the old ticks go.
+        grown.update(2, key, &[], x_of);
+        assert!(grown.ticks.is_empty());
     }
 
     #[test]

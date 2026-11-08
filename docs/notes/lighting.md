@@ -214,4 +214,5 @@ shaders. `tests/bake_pictures.rs` (bpe-cli); `scenes::bake_demo` is test-only.
   contour lines of the balls' summed field by marching squares). A Light's **Negative** flips its strength
   (`fs_light` clamps the summed light at 0). The editor's Effects card is `look_editor/effects.rs`; after a jump
   in time, `preview/warm.rs` replays the effects' remembered seconds on a spare renderer
-  (`Playback::rewound`), 6 frames per editor frame, and swaps it in ("Warming up effects… N%").
+  (`Playback::rewound`), as many frames as fit in 8 ms per editor frame, and swaps it in ("Warming up effects…
+  N%"); see `editor.md`, "Responsiveness", for how it builds its frames and when the spare goes.

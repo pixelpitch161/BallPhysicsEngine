@@ -4,7 +4,10 @@
 //! kept; one that doesn't build draws its balls with the plain pipeline (which leaves shader
 //! layers out) and keeps its error for the editor. Building one takes about a second, so the
 //! editor builds them on a background thread (its balls draw without their shader layers until
-//! it is ready) and shares one store between its renderers ([`ProgramStore`]).
+//! it is ready) and shares one store between its renderers ([`ProgramStore`]). The store keeps the
+//! lighting's pipelines ([`crate::lighting::LightKit`]) and the picture effects' too, built the
+//! same way: at once for exports and tests, on a background thread for the editor, where a lit
+//! frame draws unlit and an effect is left out until it is ready.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
@@ -15,6 +18,22 @@ use crate::{Frame, HDR_FORMAT, LAYERED_ATTRIBUTES, LayeredInstance, PATH_ATTRIBU
 
 /// The most programs kept; past it, the ones used longest ago go.
 const KEEP_PROGRAMS: usize = 64;
+
+/// The most picture effects kept built; past it, the ones built longest ago go (a renderer keeps
+/// its own copy of the ones it draws with).
+const KEEP_EFFECTS: usize = 64;
+
+/// A picture effect as built: its pipelines, or why it can't be.
+pub(crate) type EffectBuilt = Result<Arc<crate::effects::chain::Compiled>, String>;
+
+/// The lighting's pipelines in a store.
+#[derive(Default)]
+enum LightSlot {
+    #[default]
+    None,
+    Building(Receiver<crate::lighting::LightKit>),
+    Ready(Box<crate::lighting::LightKit>),
+}
 
 /// How many frames back (calls of `ensure`, by any of the renderers sharing a store) a program
 /// counts as in use and is never let go: about five frames of the editor's three views.
@@ -79,6 +98,13 @@ pub(crate) struct Programs {
     last_used: HashMap<u64, u64>,
     /// Programs are built on a background thread rather than while drawing.
     background: bool,
+    /// The lighting's pipelines, once asked for.
+    light: LightSlot,
+    /// The picture effects built, by the key of their text, oldest first in `effects_order`.
+    effects: HashMap<u64, EffectBuilt>,
+    effects_order: std::collections::VecDeque<u64>,
+    /// Picture effects being built on a background thread, by key.
+    effects_pending: HashMap<u64, Receiver<Result<crate::effects::chain::Compiled, String>>>,
 }
 
 /// The built in-ball programs, which renderers on one device can share (see
@@ -100,11 +126,11 @@ impl ProgramStore {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Whether a program is still being built.
+    /// Whether a program, the lighting or a picture effect is still being built.
     pub fn pending(&self) -> bool {
         let mut p = self.lock();
         p.collect();
-        !p.pending.is_empty()
+        !p.pending.is_empty() || !p.effects_pending.is_empty() || matches!(p.light, LightSlot::Building(_))
     }
 
     /// Waits for every program being built.
@@ -113,6 +139,26 @@ impl ProgramStore {
         for (key, rx) in pending {
             let made = rx.recv().unwrap_or_else(|_| Err("the shader build stopped".to_owned()));
             self.lock().made.insert(key, made);
+        }
+        let effects: Vec<_> = self.lock().effects_pending.drain().collect();
+        for (key, rx) in effects {
+            let built = rx.recv().unwrap_or_else(|_| Err("the shader build stopped".to_owned()));
+            self.lock().keep_effect(key, built.map(Arc::new));
+        }
+        let light = std::mem::take(&mut self.lock().light);
+        self.lock().light = match light {
+            LightSlot::Building(rx) => rx.recv().map_or(LightSlot::None, |kit| LightSlot::Ready(Box::new(kit))),
+            other => other,
+        };
+    }
+
+    /// Whether two stores hand out the same lighting pipelines (tests).
+    #[cfg(test)]
+    pub(crate) fn same_light(&self, other: &ProgramStore) -> bool {
+        let (a, b) = (self.lock(), other.lock());
+        match (&a.light, &b.light) {
+            (LightSlot::Ready(x), LightSlot::Ready(y)) => x.same_as(y),
+            _ => false,
         }
     }
 }
@@ -234,6 +280,84 @@ fn first_line(text: &str) -> String {
 }
 
 impl Programs {
+    /// The lighting's pipelines: built now, or in a background store started on a thread and
+    /// `None` until they are ready (the frame then draws unlit).
+    pub(crate) fn light_kit(&mut self, device: &wgpu::Device) -> Option<crate::lighting::LightKit> {
+        if let LightSlot::Building(rx) = &self.light {
+            match rx.try_recv() {
+                Ok(kit) => self.light = LightSlot::Ready(Box::new(kit)),
+                Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+                // The thread stopped: build it here instead.
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.light = LightSlot::None,
+            }
+        }
+        if let LightSlot::Ready(kit) = &self.light {
+            return Some((**kit).clone());
+        }
+        if self.background {
+            let (tx, rx) = channel();
+            let device = device.clone();
+            let spawned = std::thread::Builder::new().name("lighting shader build".into()).spawn(move || {
+                let _ = tx.send(crate::lighting::LightKit::build(&device));
+            });
+            if spawned.is_ok() {
+                self.light = LightSlot::Building(rx);
+                return None;
+            }
+        }
+        let kit = crate::lighting::LightKit::build(device);
+        self.light = LightSlot::Ready(Box::new(kit.clone()));
+        Some(kit)
+    }
+
+    /// The picture effect `wgsl` (keyed `key`) built with `layout`: built now, or in a background
+    /// store started on a thread and `None` until it is ready (the frame then leaves it out).
+    pub(crate) fn effect(
+        &mut self,
+        device: &wgpu::Device,
+        layout: &wgpu::PipelineLayout,
+        key: u64,
+        wgsl: &str,
+    ) -> Option<EffectBuilt> {
+        if let Some(rx) = self.effects_pending.get(&key) {
+            let built = match rx.try_recv() {
+                Ok(built) => built,
+                Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("the shader build stopped".to_owned()),
+            };
+            self.effects_pending.remove(&key);
+            self.keep_effect(key, built.map(Arc::new));
+        }
+        if let Some(built) = self.effects.get(&key) {
+            return Some(built.clone());
+        }
+        if self.background {
+            let (tx, rx) = channel();
+            let (device, layout, text) = (device.clone(), layout.clone(), wgsl.to_owned());
+            let spawned = std::thread::Builder::new().name("effect shader build".into()).spawn(move || {
+                let _ = tx.send(crate::effects::chain::build(&device, &layout, &text));
+            });
+            if spawned.is_ok() {
+                self.effects_pending.insert(key, rx);
+                return None;
+            }
+        }
+        let built = crate::effects::chain::build(device, layout, wgsl).map(Arc::new);
+        self.keep_effect(key, built.clone());
+        Some(built)
+    }
+
+    fn keep_effect(&mut self, key: u64, built: EffectBuilt) {
+        if self.effects.insert(key, built).is_none() {
+            self.effects_order.push_back(key);
+        }
+        while self.effects_order.len() > KEEP_EFFECTS {
+            if let Some(old) = self.effects_order.pop_front() {
+                self.effects.remove(&old);
+            }
+        }
+    }
+
     /// Takes in the programs finished on the background thread.
     fn collect(&mut self) {
         let done: Vec<u64> = self
@@ -358,6 +482,24 @@ impl Programs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_background_store_builds_the_lighting_once_for_every_renderer() {
+        let Ok((device, _)) = crate::test_device() else { return };
+        let store = ProgramStore::in_background();
+        if store.lock().light_kit(&device).is_none() {
+            assert!(store.pending(), "building on its own thread");
+            store.wait();
+        }
+        assert!(!store.pending());
+        let a = store.lock().light_kit(&device).expect("built");
+        let b = store.lock().light_kit(&device).expect("kept");
+        assert!(a.same_as(&b), "every renderer gets the one kit");
+        // A store that builds at once (exports, tests) has its kit straight away: another one.
+        let now = ProgramStore::default();
+        assert!(now.lock().light_kit(&device).is_some());
+        assert!(!now.same_light(&store) && store.same_light(&store));
+    }
 
     #[test]
     fn a_renderer_sharing_the_store_never_drops_a_program_another_one_still_draws_with() {

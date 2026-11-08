@@ -28,8 +28,9 @@ pub struct Snapshot {
     pub step: u64,
     /// The moment, in seconds.
     pub time: f64,
-    /// Each Particles thing's state.
-    pub states: Vec<(ThingId, Box<dyn ThingState>)>,
+    /// Each Particles thing's state, shared: the preview lends these to its world without
+    /// copying the particles again for each picture it draws.
+    pub states: Vec<(ThingId, Arc<dyn ThingState>)>,
     /// How many particles there are in all.
     pub count: usize,
     /// How long their last particle step took, in milliseconds, all things together.
@@ -37,6 +38,13 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    /// Its states as the world holds them, for [`Playback::lend_states`]: each a box around a
+    /// shared pointer (the runtime reads a boxed `Arc<dyn ThingState>` as the state itself), so
+    /// lending copies no particle.
+    pub fn lent(&self) -> Vec<(ThingId, Box<dyn ThingState>)> {
+        self.states.iter().map(|(id, s)| (*id, Box::new(s.clone()) as Box<dyn ThingState>)).collect()
+    }
+
     fn of(playback: &Playback) -> Snapshot {
         let world = playback.world();
         let mut states = Vec::new();
@@ -44,7 +52,7 @@ impl Snapshot {
         // The air too, for Show air (and to draw with the particles).
         let air = world.states.get(&ThingId::ROOT).filter(|s| (***s).as_any().is::<bpe_kit::air::Air>());
         if let Some(air) = air {
-            states.push((ThingId::ROOT, air.clone()));
+            states.push((ThingId::ROOT, Arc::from(air.clone())));
         }
         for id in &world.beside {
             if let Some(state) = world.states.get(id) {
@@ -52,7 +60,7 @@ impl Snapshot {
                     count += p.count();
                     step_ms += p.last_ms;
                 }
-                states.push((*id, state.clone()));
+                states.push((*id, Arc::from(state.clone())));
             }
         }
         Snapshot { step: world.step, time: world.time(), states, count, step_ms }
@@ -183,5 +191,11 @@ mod tests {
             bpe_kit::things::particles::step::hash_of(st)
         };
         assert_eq!(hash(&again), hash(&at_one));
+        // Lending shares the particles: the lent state reads as the particles, and no copy is made.
+        let lent = again.lent();
+        let shared = |s: &Snapshot| Arc::strong_count(&s.states[0].1);
+        assert_eq!(shared(&again), 2, "the lent box points at the snapshot's state");
+        let read = (*lent[0].1).as_any().downcast_ref::<ParticlesState>().expect("reads as the particles");
+        assert_eq!(bpe_kit::things::particles::step::hash_of(read), hash(&again));
     }
 }
