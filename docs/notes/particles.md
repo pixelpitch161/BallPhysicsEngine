@@ -190,6 +190,10 @@ are on the card (`swarm::put_ready` from `Ready::new`; `StepGpu.middle/parent/ho
 memory. The editor's Look card has the Engine chips (`look_editor/particles.rs::engine_row`). Tests:
 `bpe-gfx/src/swarm/tests.rs`, `bpe-kit/src/things/particles/swarm_tests.rs` (ignored `bench_a_million`).
 
+**Look fixes (workstream W3, 2026-11-08).** Rainbow smoke trail colours each puff by its age (`Follow::Life`), so the
+trail is a rainbow, not one slowly cycling colour. Rain's streaks are 1.1 wide (about 2 px; thinner rain faded out
+after phone compression), and the Aura layer's lines default to 2 px.
+
 **W13**: while some ball follows the air (`bpe_runtime::air_felt`), a Particles thing whose Rise heats the air
 (`ParticlesSim::heats_air`: Exact engine, a Rise with Heats the air not 0) steps with the physics, not beside, so
 every playback moves the balls alike (`air_tests.rs::heating_particles_step_with_the_balls_that_follow_the_air`).

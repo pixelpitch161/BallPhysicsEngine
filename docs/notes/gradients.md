@@ -80,3 +80,10 @@ nothing else in the preview reacts; `tab_rows` puts the colour on the selected s
 untaken after `STALE_PASSES` is dropped). A main gradient row's menu has **Copy gradient with its settings**
 (`widgets::copy_with`, `Copied.extras` by companion name); Paste Value then also writes each carried companion the
 target offers (`companions_pasted`).
+
+**Seams (workstream W3, 2026-11-08).** Sweep, Spiral and Along the edge away from a shape wrap round where the last
+colour meets the first: `paint.wgsl::paint_seam` works out how much of the pixel lies across the wrap (the pixel's
+width in turns from `fwidth(q)` and the radius, as `paint_mask` does, since the wrapped value's `fwidth` jumps there)
+and `paint_colour` mixes the far side's colour in through a two-pass loop (one call site of the paint maths). A Loop
+gradient is unchanged (its ends match). The CPU twin `gradient_form::along` keeps the hard seam (editor chips are
+small). Test `gradient_form_pictures::the_sweep_and_spiral_seams_are_smoothed_like_an_edge`.

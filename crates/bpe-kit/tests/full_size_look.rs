@@ -347,7 +347,62 @@ fn demo_shots(reg: &Registry) -> Vec<Shot> {
         at("colour-demo", scenes::colour_demo(reg)),
         at("blend-demo", scenes::blend_demo(reg)),
         at("graded-sunset", scenes::graded_sunset(reg)),
+        at("stage-camera-orbit", stage_camera(reg, 25.0)),
+        at("stage-camera-orbit-far", stage_camera(reg, -40.0)),
+        at("stage-depth-of-field", stage_depth_of_field(reg)),
+        at("gradient-seams", gradient_seams(reg)),
     ]
+}
+
+/// The stage demo seen through its Stage camera moved `orbit` degrees round.
+fn stage_camera(reg: &Registry, orbit: f64) -> Scene {
+    let mut s = scenes::stage_demo(reg);
+    let camera = bpe_kit::ensure_camera(&mut s, reg);
+    let params = &mut s.things.get_mut(&camera).unwrap().params;
+    params.set("stage_camera", Value::Bool(true));
+    params.set("orbit", Value::Number(orbit));
+    s
+}
+
+/// The stage demo with depth of field, focused on the balls: the wall and floor well blurred.
+fn stage_depth_of_field(reg: &Registry) -> Scene {
+    let mut s = scenes::stage_demo(reg);
+    lighting(&mut s, "depth_of_field", Value::Bool(true));
+    lighting(&mut s, "focus_at", Value::Number(40.0));
+    lighting(&mut s, "dof_blur", Value::Number(0.3));
+    s
+}
+
+/// Two big still balls painted inside by a Sweep and a Spiral gradient that doesn't loop, so their last colour meets
+/// their first in a seam (which should be as smooth as any edge).
+fn gradient_seams(reg: &Registry) -> Scene {
+    use bpe_core::{Color, Gradient, Mix, layered_key};
+    let mut s = new_scene(reg);
+    no_gravity(&mut s);
+    first_ball(&mut s, Vec2::new(0.0, -420.0), |b| b.radius = 330.0);
+    let first = first_of(&s, "balls");
+    add_ball(&mut s, reg, Vec2::new(0.0, 420.0), 330.0);
+    let second = s.things.values().filter(|t| t.kind == "balls").map(|t| t.id).max().expect("the copy");
+    let colours = Gradient::spread(
+        &[Color::rgb(240, 80, 120), Color::rgb(250, 200, 80), Color::rgb(160, 60, 250)],
+        Mix::Even,
+        false,
+    );
+    for (ball, form) in [(first, "sweep"), (second, "spiral")] {
+        let layers = &s.card(ball, SlotId::Look).unwrap().layers;
+        let glow = layers.iter().find(|l| l.kind == "layer.glow").map(|l| l.id);
+        if let Some(glow) = glow {
+            s.remove_layer(reg, ball, SlotId::Look, glow).unwrap();
+        }
+        let pattern = s.add_layer(reg, ball, SlotId::Look, "layer.pattern").unwrap();
+        s.move_layer(reg, ball, SlotId::Look, pattern, 1).unwrap();
+        let p = &mut s.card_mut(ball, SlotId::Look).unwrap().params;
+        p.set(&layered_key(pattern, "in_pattern"), Value::Choice("gradient".into()));
+        p.set(&layered_key(pattern, "in_from"), Value::Choice("own_gradient".into()));
+        p.set(&layered_key(pattern, "in_colours"), Value::Gradient(colours.clone()));
+        p.set(&layered_key(pattern, "in_colours~form"), Value::Choice(form.into()));
+    }
+    s
 }
 
 /// The club demo with its haze carried by a gusty Air card wind, and the balls following the air

@@ -22,6 +22,8 @@ mod grade_tests;
 mod gradients;
 mod lighting;
 mod liquid;
+#[cfg(test)]
+mod output_tests;
 pub mod pipes;
 pub use liquid::{Liquid, LiquidBlob, LiquidStyle, MOST_BLOBS};
 mod ripples;

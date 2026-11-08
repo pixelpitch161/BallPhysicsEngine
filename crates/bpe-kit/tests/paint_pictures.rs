@@ -20,6 +20,13 @@ fn saved(name: &str) -> Vec<u8> {
     pixels
 }
 
+/// Whether every channel of the pixel at byte `i` of `before` was below 0.8 (linear), where the old
+/// highlight shoulder started.
+fn below_the_old_shoulder(before: &[u8], i: usize) -> bool {
+    let px = i / 4 * 4;
+    before[px..px + 3].iter().all(|&v| v < 231)
+}
+
 #[test]
 fn solid_paint_matches_plain_colour() {
     let Ok((device, queue)) = test_device() else {
@@ -54,11 +61,14 @@ fn solid_paint_matches_plain_colour() {
         .iter()
         .zip(&before)
         .enumerate()
-        .filter(|(i, _)| off_the_wall(*i))
+        .filter(|(i, _)| off_the_wall(*i) && below_the_old_shoulder(&before, *i))
         .map(|(_, (a, b))| a.abs_diff(*b))
         .max()
         .unwrap();
-    assert!(worst <= 2, "a pixel is {worst}/255 off the picture before Colours");
+    // Plus the final dither's ±1 step (stronger since 2026-11-08). The shine's middle is left out
+    // too: the picture before squeezed every channel past 0.8 toward 1, and since 2026-11-08 the
+    // screen keeps colours up to 1 as they are and burns what is brighter toward white.
+    assert!(worst <= 3, "a pixel is {worst}/255 off the picture before Colours");
 }
 
 #[test]
