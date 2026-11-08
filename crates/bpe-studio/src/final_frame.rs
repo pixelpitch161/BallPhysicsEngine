@@ -56,9 +56,19 @@ impl FinalFrame {
         let (sender, receiver) = channel();
         let (scene, kit, ctx2, stop) = (scene.clone(), kit.clone(), ctx.clone(), self.stop.clone());
         std::thread::spawn(move || {
+            // A complaint from the graphics card fails the frame instead of panicking the thread.
+            let gpu_error: Arc<std::sync::Mutex<Option<String>>> = Arc::default();
             let result = bpe_gfx::headless_device().and_then(|(device, queue)| {
+                let seen = gpu_error.clone();
+                device.on_uncaptured_error(Arc::new(move |error| {
+                    seen.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| error.to_string());
+                }));
                 bpe_cli::final_frame(&device, &queue, &scene, &kit, ask.time, ask.scale, ask.bake, &stop)
             });
+            let result = match gpu_error.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                Some(error) => Err(anyhow::anyhow!("the graphics card reported a problem: {error}")),
+                None => result,
+            };
             let _ = sender.send(result);
             ctx2.request_repaint();
         });
@@ -75,9 +85,15 @@ impl FinalFrame {
     }
 
     pub fn show(&mut self, ctx: &egui::Context) {
-        if let Some(receiver) = &self.working
-            && let Ok(result) = receiver.try_recv()
-        {
+        let ended = self.working.as_ref().and_then(|receiver| match receiver.try_recv() {
+            Ok(result) => Some(result),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            // Its thread stopped without a word (it panicked).
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Some(Err(anyhow::anyhow!("drawing the frame stopped unexpectedly")))
+            }
+        });
+        if let Some(result) = ended {
             let baked = self.bakes;
             self.shown = Some(match result {
                 Ok((pixels, size, seconds)) => {

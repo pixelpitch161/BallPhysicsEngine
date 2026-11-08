@@ -83,6 +83,17 @@ impl Encoder {
         }
     }
 
+    /// The short name [`Encoder::from_name`] reads back: auto, cpu, nvidia, amd or intel.
+    pub fn key(self) -> &'static str {
+        match self {
+            Encoder::Auto => "auto",
+            Encoder::Cpu => "cpu",
+            Encoder::Nvidia => "nvidia",
+            Encoder::Amd => "amd",
+            Encoder::Intel => "intel",
+        }
+    }
+
     pub fn from_name(name: &str) -> Option<Self> {
         Some(match name {
             "auto" => Encoder::Auto,
@@ -651,6 +662,13 @@ fn collect_stderr(child: &mut Child) -> std::thread::JoinHandle<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn encoder_keys_read_back() {
+        for encoder in [Encoder::Auto, Encoder::Cpu, Encoder::Nvidia, Encoder::Amd, Encoder::Intel] {
+            assert_eq!(Encoder::from_name(encoder.key()), Some(encoder));
+        }
+    }
 
     #[test]
     fn only_a_graphics_card_failure_is_tried_again_on_the_cpu() {
