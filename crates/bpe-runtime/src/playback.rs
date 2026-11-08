@@ -14,7 +14,7 @@ use crate::{Event, Log, Sims, World};
 const CHECKPOINT_SECONDS: f64 = 0.5;
 /// Most memory the checkpoints of one playback may use. Past this, every other one is dropped
 /// and they are taken half as often.
-const CHECKPOINT_BYTES: usize = 192 << 20;
+pub const CHECKPOINT_BYTES: usize = 192 << 20;
 /// Most video memory the checkpoints of one playback may use (Huge swarms' particles), thinned
 /// the same way.
 pub const GPU_CHECKPOINT_BYTES: usize = 1 << 30;
@@ -47,6 +47,24 @@ impl Playback {
     /// playback keeps more than the main one).
     pub fn with_budget(scene: &Scene, resolved: &Resolved, sims: Arc<Sims>, budget: usize) -> Self {
         let world = World::build(scene, resolved, &sims);
+        Self::of(world, sims, budget)
+    }
+
+    /// A playback of a world nobody draws ([`World::build_unseen`]: the sound engine's, the
+    /// editor's particle thread's), its checkpoints within `budget` bytes.
+    pub fn unseen(scene: &Scene, resolved: &Resolved, sims: Arc<Sims>, budget: usize) -> Self {
+        let world = World::build_unseen(scene, resolved, &sims);
+        Self::of(world, sims, budget)
+    }
+
+    /// The same playback taking no checkpoints after the first (the start): for a run that only
+    /// goes forward (the export's sound). Seeking back still works, from the start.
+    pub fn forward_only(mut self) -> Self {
+        self.checkpoint_every = u64::MAX;
+        self
+    }
+
+    fn of(world: World, sims: Arc<Sims>, budget: usize) -> Self {
         let checkpoint_every = (CHECKPOINT_SECONDS * world.steps_per_second.max(1) as f64).ceil() as u64;
         Self {
             checkpoints: vec![(world.clone(), 0, world.memory())],
@@ -262,5 +280,23 @@ mod tests {
         assert_eq!(copy.world().bodies[&DOTS].position, fresh.world().bodies[&DOTS].position);
         assert_eq!(copy.log().hash(), fresh.log().hash());
         assert_eq!(p.time(), 3.0, "the playback itself stays where it was");
+    }
+
+    /// A forward-only playback keeps just its start and still gets everywhere a normal one does.
+    #[test]
+    fn a_forward_only_playback_matches_and_can_still_go_back() {
+        let (scene, resolved, sims) = dots_in_ring(20);
+        let sims = Arc::new(sims);
+        let mut normal = Playback::new(&scene, &resolved, sims.clone());
+        let mut forward = Playback::unseen(&scene, &resolved, sims, CHECKPOINT_BYTES).forward_only();
+        normal.seek(4.0);
+        forward.seek(4.0);
+        assert_eq!(forward.checkpoint_count(), 1);
+        assert_eq!(forward.world().bodies[&DOTS].position, normal.world().bodies[&DOTS].position);
+        assert_eq!(forward.log().hash(), normal.log().hash());
+        normal.seek(1.5);
+        forward.seek(1.5);
+        assert_eq!(forward.world().bodies[&DOTS].position, normal.world().bodies[&DOTS].position);
+        assert_eq!(forward.log().hash(), normal.log().hash());
     }
 }

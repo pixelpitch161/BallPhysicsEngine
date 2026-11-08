@@ -31,7 +31,7 @@ pub use letters::{LetterWall, LetterWalls};
 pub use light::{BallLight, LightAt, LightLevelsAt, LightMaker, LightPull, level_of};
 pub use pairs::{Grid, Pairs, Support, pop};
 pub use parts::Parts;
-pub use playback::Playback;
+pub use playback::{CHECKPOINT_BYTES, Playback};
 pub use plugins::{
     Limits, ModuleSim, ModuleState, NewBall, PairRule, SimCx, Sims, ThingSim, ThingState, state, state_mut,
 };

@@ -73,11 +73,21 @@ impl Engine {
         Self::with_patch(scene, resolved, kit, SoundPatch::build(scene, resolved, kit))
     }
 
+    /// The engine for an offline render (the export, tests): it only goes forward, so its
+    /// physics keeps no jump points.
+    pub fn offline(scene: &Scene, resolved: &Resolved, kit: &Kit) -> Engine {
+        let mut engine = Self::new(scene, resolved, kit);
+        engine.physics = engine.physics.forward_only();
+        engine
+    }
+
     /// The engine for `scene` playing `patch` (built from the same scene).
     pub fn with_patch(scene: &Scene, resolved: &Resolved, kit: &Kit, patch: SoundPatch) -> Engine {
         // Things stepped beside the physics make no sound, but those whose events it hears (a
-        // Particles thing whose sound is on): the engine runs the physics and those.
-        let physics = Playback::new(scene, &bpe_runtime::heard_part(scene, resolved, &kit.sims), kit.sims.clone());
+        // Particles thing whose sound is on): the engine runs the physics and those. Nobody draws
+        // its world, so it keeps no trail paths.
+        let heard = bpe_runtime::heard_part(scene, resolved, &kit.sims);
+        let physics = Playback::unseen(scene, &heard, kit.sims.clone(), bpe_runtime::CHECKPOINT_BYTES);
         let cursor = HitCursor::new(physics.world().steps_per_second);
         let mut master = Master::new(&patch.master);
         master.set_keys(patch.master_keys);

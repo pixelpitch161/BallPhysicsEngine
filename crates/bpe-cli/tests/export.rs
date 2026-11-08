@@ -245,6 +245,30 @@ fn a_clip_shorter_than_ten_frames_keeps_its_sound_stems_and_midi() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The sound is worked out beside the frames: cancelling part way stops both and leaves none of
+/// the files the export makes (the video, the stems, the MIDI file).
+#[test]
+fn a_cancelled_export_with_sound_leaves_nothing() {
+    let Some((device, queue)) = ready() else { return };
+    let kit = kit();
+    let mut scene = new_scene(&kit.registry);
+    let shape = scene.order.iter().copied().find(|id| scene.things[id].kind == "shape").unwrap();
+    scene.things.get_mut(&shape).unwrap().tags.insert("test-tone-decay=30".into());
+    let dir = temp_dir("cancel-sound");
+    let out = dir.join("out.mp4");
+    let mut options = ExportOptions::new(&out);
+    options.max_frames = Some(60);
+    options.scale = 0.25;
+    options.encoder = Encoder::Cpu;
+    options.stems = true;
+    options.midi = true;
+    let error = export_video(&device, &queue, &scene, &kit, &options, |done, _| done < 20).unwrap_err();
+    assert!(error.to_string().contains("export cancelled"), "{error:#}");
+    let left: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).collect();
+    assert!(left.is_empty(), "files left behind: {left:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_cancelled_export_leaves_stems_and_midi_it_never_wrote() {
     let Some((device, queue)) = ready() else { return };

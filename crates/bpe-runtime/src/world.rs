@@ -260,6 +260,18 @@ impl World {
     /// and Bounce modules it uses. Modules without a sim are left out; a thing without one
     /// builds nothing, but can still be named by a target.
     pub fn build(scene: &Scene, resolved: &Resolved, sims: &Sims) -> World {
+        Self::build_with(scene, resolved, sims, true)
+    }
+
+    /// [`World::build`] for a world nobody draws (the sound engine's, the editor's particle and
+    /// aiming threads'): it keeps none of the balls' past for trails and particle layers, which
+    /// only drawing reads. What the physics itself reads of it (a Text's standings, which ask in
+    /// their `after_build`) is still kept, and the balls move exactly as in a drawn world.
+    pub fn build_unseen(scene: &Scene, resolved: &Resolved, sims: &Sims) -> World {
+        Self::build_with(scene, resolved, sims, false)
+    }
+
+    fn build_with(scene: &Scene, resolved: &Resolved, sims: &Sims, drawn: bool) -> World {
         let mut world = World {
             step: 0,
             steps_per_second: 240,
@@ -348,7 +360,7 @@ impl World {
                     if !sim.in_main(r) {
                         world.decoration.insert(*id);
                     }
-                    if let Some(want) = sim.history(r) {
+                    if let Some(want) = sim.history(r).filter(|_| drawn) {
                         world.keep_history(*id, want);
                     }
                 }
@@ -2663,6 +2675,25 @@ mod tests {
         bare.advance_to(1.0, &sims, &mut bare_log);
         assert_eq!(bare.bodies, world.bodies);
         assert_eq!(bare_log.events(), log.events());
+    }
+
+    /// A world nobody draws (the sound engine's, the particle thread's) keeps no trail paths and
+    /// steps exactly as a drawn one.
+    #[test]
+    fn an_unseen_world_keeps_no_trail_paths_and_steps_the_same() {
+        let (mut scene, _, sims) = dots_in_ring(12);
+        crate::testing::give(&mut scene, DOTS, SlotId::Trail, "trail.test", &[]);
+        let resolved = resolve(&scene, &reg());
+        let mut drawn = World::build(&scene, &resolved, &sims);
+        let mut unseen = World::build_unseen(&scene, &resolved, &sims);
+        assert!(drawn.history.contains_key(&DOTS));
+        assert!(unseen.history.is_empty());
+        let (mut drawn_log, mut unseen_log) = (Log::default(), Log::default());
+        drawn.advance_to(5.0, &sims, &mut drawn_log);
+        unseen.advance_to(5.0, &sims, &mut unseen_log);
+        assert_eq!(unseen.bodies, drawn.bodies);
+        assert_eq!(unseen_log.hash(), drawn_log.hash());
+        assert!(unseen.memory() < drawn.memory());
     }
 
     /// A fast ball's history runs through every bounce: a trail drawn through it turns where the
