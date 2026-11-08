@@ -2,9 +2,9 @@
 //! Pick from picture, and the stop the big editor's Add colour makes. The Palette menu sits
 //! beside the bar (`gradient_bar.rs`).
 
+use bpe_core::dice::Rng;
 use bpe_core::{Color, GapBlend, Gradient, Mix, Stop, Value};
 use bpe_kit::paint::palette_gen;
-use bpe_kit::rng::Rng;
 use eframe::egui::{self, Ui};
 
 use crate::eyedropper;

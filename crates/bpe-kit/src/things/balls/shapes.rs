@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 use glam::Vec2;
 
 use super::{BallsSettings, GroupShape};
-use crate::rng::Rng;
+use bpe_core::dice::Rng;
 
 /// The most balls a shape places, so a huge word or area can't stall the editor.
 pub const MAX_BALLS: usize = 5000;

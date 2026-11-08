@@ -600,7 +600,7 @@ impl<'a> GlowInputs<'a> {
 impl Lighting {
     pub fn new(device: &wgpu::Device) -> Self {
         // Glass and light part 3's photons share lighting.wgsl's bindings and helpers.
-        let source = [include_str!("shaders/lighting.wgsl"), include_str!("shaders/bent_light.wgsl")].concat();
+        let source = [crate::LIGHTING_WGSL, include_str!("shaders/bent_light.wgsl")].concat();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("lighting shader"),
             source: wgpu::ShaderSource::Wgsl(source.into()),
@@ -2024,7 +2024,7 @@ mod grid_tests {
     #[test]
     fn the_tint_pass_and_the_lighting_agree_on_thickness() {
         let tint = include_str!("shaders/tint.wgsl");
-        let lighting = include_str!("shaders/lighting.wgsl");
+        let lighting = crate::LIGHTING_WGSL;
         let value = |text: &str, name: &str| -> f32 {
             let line = text.lines().find(|l| l.starts_with(&format!("const {name}: f32 = "))).expect(name);
             line.split('=').nth(1).unwrap().trim().trim_end_matches(';').parse().unwrap()

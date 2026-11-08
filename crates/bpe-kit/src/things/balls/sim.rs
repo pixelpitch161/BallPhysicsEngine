@@ -9,7 +9,7 @@ use glam::Vec2;
 use super::rows::BallRows;
 use super::shapes::offsets;
 use super::{BallsSettings, Launch, Release, ReleaseOrder};
-use crate::rng::Rng;
+use bpe_core::dice::Rng;
 
 pub use super::shapes::offsets as group_offsets;
 

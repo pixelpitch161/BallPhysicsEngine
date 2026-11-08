@@ -6,7 +6,6 @@ pub mod air;
 mod layer_tests;
 pub mod modules;
 pub mod paint;
-pub mod rng;
 pub mod rules;
 #[cfg(any(test, feature = "test-scenes"))]
 pub mod scenes;

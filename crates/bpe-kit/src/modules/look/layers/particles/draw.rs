@@ -241,7 +241,7 @@ fn draw_mini_balls(
     living(src, emissions, &walls, |e, k, live| {
         let row = e.row.unwrap_or(0);
         let body = blend_alpha((balls.colour)(row));
-        let seed = (emit::hash(&[e.seed, k, 3]) >> 8) as f32 / (1u32 << 24) as f32;
+        let seed = bpe_core::dice::unit24(emit::hash(&[e.seed, k, 3]));
         let code = thing_code(cx.thing.id) + seed * 0.5;
         let mut ball = stack.instance(
             body,

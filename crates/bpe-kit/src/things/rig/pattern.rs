@@ -136,18 +136,14 @@ fn shuffled(n: usize, seed: u32) -> Vec<usize> {
 
 /// A well-mixed number from a seed, a step and a fixture.
 fn hash(seed: u32, step: i64, item: u64) -> u64 {
-    let mut x =
+    let x =
         (seed as u64) ^ (step as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ item.wrapping_mul(0xc2b2_ae3d_27d4_eb4f);
-    x ^= x >> 30;
-    x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    x ^= x >> 27;
-    x = x.wrapping_mul(0x94d0_49bb_1331_11eb);
-    x ^ (x >> 31)
+    bpe_core::dice::splitmix64(x)
 }
 
 /// A number from 0 up to (not including) 1.
 fn hash01(seed: u32, step: i64, item: u64) -> f32 {
-    (hash(seed, step, item) >> 40) as f32 / (1u64 << 24) as f32
+    bpe_core::dice::unit24_of_64(hash(seed, step, item))
 }
 
 /// The rig's colour list, linear: its colours' stops in order.

@@ -4010,10 +4010,6 @@ fn fs_trace(in: FsIn) -> @location(0) vec4<f32> {
     return vec4<f32>(clamp(out, vec3<f32>(-6.0e4), vec3<f32>(6.0e4)), 0.0);
 }
 
-fn luma(c: vec3<f32>) -> f32 {
-    return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
-}
-
 // The bake's noise clean-up (part 3): one à-trous pass over `picture` (the traced light), 5 x 5
 // taps `u.field.w` texels apart, each weighed down where the surface picture changes (cover,
 // surface, height) or the light itself jumps; a step of 0 copies.

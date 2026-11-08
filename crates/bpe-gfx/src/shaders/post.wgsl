@@ -99,10 +99,6 @@ fn hash(p: vec2<f32>) -> f32 {
     return fract(sin(dot(p, vec2<f32>(12.9898, 78.233))) * 43758.5453);
 }
 
-fn luma(c: vec3<f32>) -> f32 {
-    return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
-}
-
 // The scene's colour grade on display-ready (sRGB-encoded) colours, in this order: gradient
 // map, brightness, contrast, saturation, warmth, tint, vignette; then clamped to 0..1.
 fn grade(colour: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {

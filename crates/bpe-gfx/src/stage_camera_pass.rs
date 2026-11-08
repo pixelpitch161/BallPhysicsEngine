@@ -118,8 +118,7 @@ impl StageCameraPass {
             bind_group_layouts: &[Some(&empty_layout), Some(&empty_layout), Some(&empty_layout), Some(&objects_layout)],
             immediate_size: 0,
         });
-        let source =
-            format!("{}\n{}", include_str!("shaders/lighting.wgsl"), include_str!("shaders/stage_camera.wgsl"));
+        let source = format!("{}\n{}", crate::LIGHTING_WGSL, include_str!("shaders/stage_camera.wgsl"));
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stage camera"),
             source: wgpu::ShaderSource::Wgsl(source.into()),

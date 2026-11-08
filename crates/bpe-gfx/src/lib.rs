@@ -580,6 +580,10 @@ impl FrameBuffers {
     }
 }
 
+/// The lighting passes' shader source: lighting.wgsl with the shared helpers (common.wgsl).
+pub(crate) const LIGHTING_WGSL: &str =
+    concat!(include_str!("shaders/lighting.wgsl"), include_str!("shaders/common.wgsl"));
+
 /// The scene shader: everything the scene's pipelines draw with, its layered balls walking their
 /// stacks as [`layers_source`] says for `effects`.
 pub(crate) fn scene_source(effects: Option<&str>) -> String {
@@ -670,7 +674,9 @@ impl Renderer {
         });
         let post_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("post shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/post.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(include_str!("shaders/post.wgsl"), include_str!("shaders/common.wgsl")).into(),
+            ),
         });
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("globals"),
