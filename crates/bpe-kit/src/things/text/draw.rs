@@ -16,7 +16,7 @@ use super::show::{LetterMove, appear_times, letter_move, shows_whole, unit_of};
 use super::{FastLetters, KIND, TextBalls, TextPath, TextRides, TextSettings};
 use crate::modules::look::shape::ShapeStack;
 use crate::modules::look::shape::gpu::Geometry;
-use crate::modules::look::shape::units::{MOST_UNIT_SETS, UnitLayer, UnitPlace, records_for_unit};
+use crate::modules::look::shape::units::{MOST_UNIT_RECORDS, MOST_UNIT_SETS, UnitLayer, UnitPlace, records_for_unit};
 use crate::rules::breaks::{BreakLook, LookSettings};
 use crate::rules::remains::draw::whole_look;
 use crate::rules::remains::remains_now;
@@ -39,6 +39,8 @@ pub struct TextNow {
     pub shown: Vec<Option<LetterMove>>,
     /// The ball this copy rides (thing, body row).
     pub ball: Option<(ThingId, usize)>,
+    /// Whether letter moves move its letters (a whole-text gradient then lies over them as laid out).
+    pub moving: bool,
 }
 
 impl TextNow {
@@ -72,7 +74,12 @@ impl TextNow {
         let back = Vec2::new(own.x, -own.y);
         let turn = Vec2::from_angle(m.turn);
         let size = m.stretch * m.scale;
-        move |p: Vec2| mid + turn.rotate(own.rotate(back.rotate(p - mid) * size)) + m.offset
+        // Even sizing needs no turn into the letter's own frame (and draws as before part 4).
+        let even = size.x == size.y;
+        move |p: Vec2| {
+            let d = if even { (p - mid) * size } else { own.rotate(back.rotate(p - mid) * size) };
+            mid + turn.rotate(d) + m.offset
+        }
     }
 
     /// Letter `k`'s middle as it shows with move `m`.
@@ -199,7 +206,8 @@ pub fn text_copies(at: &TextAt) -> Vec<TextNow> {
                 }
             }
             let shown = shown_of(at, &s, &layout, rule_line, &mut times);
-            let mut now = TextNow { pose, layout, placed, font_problem: found.problem(), shown, ball };
+            let moving = !moves.is_empty();
+            let mut now = TextNow { pose, layout, placed, font_problem: found.problem(), shown, ball, moving };
             super::moves::apply(at, &moves, &mut now);
             now
         })
@@ -564,6 +572,9 @@ fn unit_records(
     };
     let line_middles: HashMap<(usize, u32), Vec2> = lines.iter().map(|(k, ps)| (*k, box_middle(ps))).collect();
     let mut sets: HashMap<(usize, usize, u32, Vec<bool>), u32> = HashMap::new();
+    // At most MOST_UNIT_SETS sets, and fewer the more records a set has (past it, letters wear
+    // the whole text's).
+    let most_sets = MOST_UNIT_SETS.min((MOST_UNIT_RECORDS / base.len().max(1)).max(64));
     shown
         .iter()
         .zip(outlines)
@@ -586,7 +597,7 @@ fn unit_records(
             if let Some(first) = sets.get(&key) {
                 return Some(*first);
             }
-            if sets.len() >= MOST_UNIT_SETS {
+            if sets.len() >= most_sets {
                 return None;
             }
             let points: Vec<Vec2> = outline.iter().flatten().copied().collect();
@@ -672,8 +683,20 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
             }
         })
         .collect();
-    // Fast letters lay the gradient over their boxes as laid out (as before letter moves).
-    let points: Vec<Vec2> = if fast && shown.iter().all(|l| l.moved.turn == 0.0 && l.moved.stretch == Vec2::ONE) {
+    // Fast letters lay the gradient over their boxes as laid out (as before letter moves); with
+    // letter moves, drawn ones lay it over every letter as laid out, so it stays put while the
+    // letters move through it.
+    let moving = copies.iter().any(|c| c.moving);
+    let points: Vec<Vec2> = if moving && !fast {
+        // Every letter of each copy showing, so letters drawing on or scattering in don't move it.
+        let mut seen: Vec<usize> = shown.iter().map(|l| l.copy).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        seen.iter()
+            .flat_map(|&c| (0..copies[c].layout.letters.len()).map(move |k| (c, k)))
+            .flat_map(|(c, k)| copies[c].contours_placed(k).into_iter().flatten())
+            .collect()
+    } else if fast {
         shown
             .iter()
             .flat_map(|l| {

@@ -155,7 +155,11 @@ fn hits_for(at: &TextAt, m: &HitMove, now: &TextNow) -> Hits {
         (t, _) => Reads::Things(at.world.matching(t, me)),
     };
     out.by_letter = matches!(reads, Reads::Letters);
-    for e in log.events() {
+    // Only hits a hop is still going from matter: back to the last letter's Each letter later, and a hop.
+    let later = if m.which == HitLetters::EveryLetter { finite(m.later, 0.0).max(0.0) as f64 } else { 0.0 };
+    let back = later * now.layout.letters.len() as f64 + finite(m.takes, 0.35).max(0.01) as f64;
+    let from = ((at.time - back) * rate as f64).floor().max(0.0) as u64;
+    for e in log.since(from.saturating_sub(1)) {
         if e.kind != EventKind::Hit {
             continue;
         }
@@ -353,7 +357,8 @@ pub fn apply(at: &TextAt, moves: &[(Move, Vec<u32>)], now: &mut TextNow) {
                             && let Some((shape, source, _)) = follows(at, *layer)
                         {
                             let then = sound.level(at.world, log, shape, source, (t - d).max(0.0));
-                            level += add * (then - now_level);
+                            // As the pulse reads it: 0 to 1.
+                            level += add * (then.clamp(0.0, 1.0) - now_level.clamp(0.0, 1.0));
                         }
                     }
                     let level = level.clamp(0.0, 1.0) * (1.0 - finite(s.own, 0.0).clamp(0.0, 1.0) * dice(s.seed, k, 0));

@@ -103,12 +103,18 @@ fn text_places(cx: &DrawCx, text: ThingId, s: &LightSettings) -> Vec<Place> {
         ..TextAt::new(cx.tree, &r.params, cx.world, text, cx.time)
     };
     let wants_pen = s.rides_on == RidesOn::ThePen || (s.kind != LightType::Point && s.points == Points::AtThePen);
+    // A Text in the world that is a wall of its letters: ridden like any wall (as the editor's handles read it).
+    let walled = cx.world.walls.contains_key(&text);
+    if !wants_pen && (walled || s.rides_on != RidesOn::TheMiddle) {
+        return places_in(cx.world, Some(text), s);
+    }
     let pen = if wants_pen { crate::things::text::moves::pen(&at) } else { None };
     if wants_pen && pen.is_none() {
         return Vec::new();
     }
     let place = match s.rides_on {
         RidesOn::ThePen => pen.map_or(own, |p| Place { at: p + s.position, ..own }),
+        RidesOn::TheMiddle if walled => places_in(cx.world, Some(text), s).into_iter().next().unwrap_or(own),
         RidesOn::TheMiddle => match text_now(&at).and_then(|now| now.bounds().map(|(lo, hi)| (now, 0.5 * (lo + hi)))) {
             Some((now, mid)) => {
                 let screen = cx.tree.things.get(&text).is_none_or(|t| t.screen.unwrap_or(true));
@@ -117,7 +123,7 @@ fn text_places(cx: &DrawCx, text: ThingId, s: &LightSettings) -> Vec<Place> {
             }
             None => own,
         },
-        _ => own,
+        _ => places_in(cx.world, Some(text), s).into_iter().next().unwrap_or(own),
     };
     let aim = if s.points == Points::AtThePen { pen } else { None };
     vec![Place { aim, ..place }]

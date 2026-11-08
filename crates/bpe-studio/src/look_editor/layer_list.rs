@@ -530,7 +530,9 @@ fn menu(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, card: &Slot, layer:
     }
     // A Text's layers and moves can be worn by only some of its letters (Text part 4).
     let text = cx.scene.things.get(&cx.id).is_some_and(|t| t.kind == bpe_kit::things::text::KIND);
-    if text && !base && !around {
+    // Not a Blend layer or a sub-layer: they go with the whole text, or their layer.
+    let wearable = layer.kind != bpe_kit::modules::look::shape::BLEND && layer.parent.is_none();
+    if text && !base && !around && wearable {
         // It stays open while it is typed into.
         let stay =
             egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
@@ -565,7 +567,10 @@ fn menu(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, card: &Slot, layer:
 /// The letters a Text's layer is worn by, typed as "1, 3, 5-7" (counted from 1); Enter applies.
 fn only_letters_box(ui: &mut Ui, cx: &LookCx, layer: &Layer, edits: &mut Vec<Edit>) {
     let key = egui::Id::unique(("only letters", cx.id, layer.id));
-    let mut typed = ui.data_mut(|d| d.get_temp::<String>(key)).unwrap_or_else(|| letters_words(&layer.only));
+    // What was typed while the box stayed open; it starts again from the layer's letters each time it opens.
+    let frame = ui.ctx().cumulative_frame_nr();
+    let kept = ui.data_mut(|d| d.get_temp::<(String, u64)>(key)).filter(|(_, seen)| *seen + 1 >= frame);
+    let mut typed = kept.map_or_else(|| letters_words(&layer.only), |(t, _)| t);
     ui.label(RichText::new("Letters, counted from 1 (like 1, 3, 5-7)").small().color(style::MUTED));
     let label = ui.label("Letters");
     let field = ui.add(egui::TextEdit::singleline(&mut typed).desired_width(150.0)).labelled_by(label.id);
@@ -578,11 +583,11 @@ fn only_letters_box(ui: &mut Ui, cx: &LookCx, layer: &Layer, edits: &mut Vec<Edi
         && let Some(only) = parsed
     {
         edits.push(Edit::LayerOnly(cx.slot, layer.id, only));
-        ui.data_mut(|d| d.remove::<String>(key));
+        ui.data_mut(|d| d.remove::<(String, u64)>(key));
         ui.close();
         return;
     }
-    ui.data_mut(|d| d.insert_temp(key, typed));
+    ui.data_mut(|d| d.insert_temp(key, (typed, frame)));
 }
 
 /// `only` (0-based letters) as typed: 1-based, runs joined with dashes.

@@ -611,6 +611,7 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             t.slots.insert(SlotId::Sound, card);
         }
     }
+    let mut word_balls = None;
     if let Some(b) = balls {
         // Beside the Text.
         let ball = crate::add_thing(scene, reg, "balls", parent)?;
@@ -622,6 +623,7 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             t.transform.position = b.position;
             t.name = name;
         }
+        word_balls = Some(ball);
         if b.falls
             && let Some(m) = scene.card_mut(ball, SlotId::Motion)
         {
@@ -643,9 +645,7 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
                 m.params.set("gravity_scale", Value::Number(1.0));
             }
             // The word's balls and the big one bump into each other.
-            let balls_things = |id: &&ThingId| scene.things[*id].kind == "balls";
-            let word = scene.order.iter().rev().filter(balls_things).take(2).copied().collect::<Vec<_>>();
-            for b in word {
+            for b in word_balls.into_iter().chain([big]) {
                 if let Some(c) = scene.card_mut(b, SlotId::Bounce) {
                     c.params.set("hit_balls", Value::Bool(true));
                 }

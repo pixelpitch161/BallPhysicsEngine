@@ -350,8 +350,9 @@ impl ThingSim for BallsSim {
         // Riders start where their parent is and move with it; everything else sits where its
         // own transform says.
         let at = world.anchor(thing.id);
-        let worded = super::shapes::with_text_word(&settings, world.tree.as_deref(), thing.id);
-        let places = offsets(&laid_out(&worded, size_to(&resolved.params)));
+        // Sized first, so a word filled from a Text is spaced for the largest ball.
+        let sized = laid_out(&settings, size_to(&resolved.params));
+        let places = offsets(&super::shapes::with_text_word(&sized, world.tree.as_deref(), thing.id));
         let order = release_order(&settings, &places);
         let rate = world.steps_per_second;
         let middle = places.iter().copied().sum::<Vec2>() / places.len().max(1) as f32;

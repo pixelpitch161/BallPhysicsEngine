@@ -188,7 +188,7 @@ fn shape_colour(l: LayerGpu, s: ShapeAt, along: f32, banded: bool, whole: bool) 
         // A Text's layer laid over each letter or line (Text part 4) runs from that one's own
         // middle (`paint.place.zw`) out to its reach (`p0.z`); shapes leave `p0.z` at 0.
         var out = shape_from_middle(s);
-        if l.p0.z > 0.0 && layered_shape.b.x <= 0.0 {
+        if l.p0.z > 0.0 {
             out = length(s.q - l.paint.place.zw) / l.p0.z;
         }
         return paint_along(l.paint, out * k, g.view.w).rgb;

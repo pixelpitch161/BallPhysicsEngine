@@ -13,6 +13,9 @@ use super::{Across, ShapeStack};
 /// whole records.
 pub const MOST_UNIT_SETS: usize = 2048;
 
+/// At most this many records in a Text's per-unit sets together (a set is the whole look's).
+pub const MOST_UNIT_RECORDS: usize = 32768;
+
 /// A drawn layer that isn't laid whole or worn by every letter: where its record is, how its own
 /// colours are laid and which letters wear it (empty: all).
 #[derive(Clone, Debug, PartialEq)]

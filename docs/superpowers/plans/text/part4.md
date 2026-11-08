@@ -258,3 +258,21 @@ part" (4). Read parts 1 to 3's "As built" first.
 - **Tests**: `moves_tests.rs` (13), `units.rs` (5), `text/draw.rs` (draw on, each letter, only, spin), `shape.rs`,
   looks `the_part_4_looks_play_out`, `tests/text_pictures.rs::a_gradient_starts_again_on_each_letter`, look_editor
   kittests.
+
+## After review
+
+Fixed: a light inside a walled Text rides its wall again unless it wants the pen or the middle of an unwalled Text
+(`text_places` falls back to `places_in`, as the handles read it); Word made of balls sets Hit balls on its own two
+Balls things; Jump on hit reads only the log's hits a hop can still be going from (`Log::since`); Follow sound's
+per-letter delay reads levels clamped 0..1 as the pulse does; Round across each letter/line also reads the unit's
+middle on band pieces (Draw on's line, Bounce inside); per-unit sets are capped by records too (`MOST_UNIT_RECORDS`
+32768); a Balls word from a Text is spaced for the largest varied ball, and the Group view shows that word; the
+Particles' letters are laid out again only when `letters_hash` changes; `mover` scales evenly without turning into the
+letter's frame (part 3's maths for the Show); with letter moves a whole-text gradient lies over every letter as laid
+out (fast letters always over their laid-out boxes), so it doesn't follow or jump with the moves; the Lights panel puts
+a new light inside a selected Text and names it "on <Text>"; "Only some letters…" starts from the layer's letters each
+time it opens and isn't offered on Blend layers or sub-layers; the light-sensing fingerprint hashes a Text's own
+settings (its pen).
+
+Known limits: `DrawPlan` and the draw each place every letter's contours a frame, and a pen light runs `text_now`
+again; Round on an Outline or Glow (banded records) stays one gradient along the band.

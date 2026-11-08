@@ -78,7 +78,13 @@ impl std::hash::Hash for Letters {
 
 /// What `s`'s places depend on; `video` is the video's size (a grid covering the screen); `tree`
 /// the scene, for a source made of a Text thing, `me` the Particles thing.
-pub fn key_of(s: &ParticlesSettings, video: Vec2, tree: Option<&bpe_core::Scene>, me: bpe_core::ThingId) -> SpotsKey {
+pub fn key_of(
+    s: &ParticlesSettings,
+    video: Vec2,
+    tree: Option<&bpe_core::Scene>,
+    me: bpe_core::ThingId,
+    was: &SpotsKey,
+) -> SpotsKey {
     let bits = |x: f32| if x.is_finite() { x.to_bits() } else { 0 };
     match s.from {
         BornFrom::AWordOrPicture => match s.word_from {
@@ -93,11 +99,13 @@ pub fn key_of(s: &ParticlesSettings, video: Vec2, tree: Option<&bpe_core::Scene>
                 let Some((tree, text)) = tree.and_then(|t| Some((t, text_named(t, &s.text_thing, me)?))) else {
                     return SpotsKey::None;
                 };
-                SpotsKey::TextThing {
-                    hash: letters_hash(tree, text),
-                    spacing: bits(s.spacing),
-                    letters: Letters(Arc::new(letters_of(tree, text))),
-                }
+                let hash = letters_hash(tree, text);
+                // The letters are only laid out again when what they read changed.
+                let letters = match was {
+                    SpotsKey::TextThing { hash: h, letters, .. } if *h == hash => letters.clone(),
+                    _ => Letters(Arc::new(letters_of(tree, text))),
+                };
+                SpotsKey::TextThing { hash, spacing: bits(s.spacing), letters }
             }
             WordFrom::Picture => SpotsKey::Picture {
                 path: s.picture.clone(),
