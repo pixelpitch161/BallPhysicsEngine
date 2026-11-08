@@ -12,6 +12,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Every job runs on Ubuntu 24.04, the cloud containers' system: the goldens hash float results, and the C maths
+# library's sin/cos/exp differ in the last bit between glibc versions (on ubuntu-26.04 one particle golden moves), the
+# same known gap as native Windows. Move the image forward together with a re-bless of the goldens.
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
@@ -20,7 +23,7 @@ env:
 jobs:
   fmt:
     name: Format
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -30,7 +33,7 @@ jobs:
 
   clippy:
     name: Clippy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -43,7 +46,7 @@ jobs:
 
   test:
     name: Tests (debug, software GPU)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -66,7 +69,7 @@ jobs:
 
   release-goldens:
     name: Goldens (release)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
       # LTO and a single codegen unit only make the shipped exe smaller and faster; they can't change a float result
@@ -89,7 +92,7 @@ jobs:
 
   windows:
     name: Windows cross-build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
       CARGO_PROFILE_RELEASE_LTO: "false"

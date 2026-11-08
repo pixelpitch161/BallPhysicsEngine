@@ -34,6 +34,9 @@ move.
   - Rust is pinned by `rust-toolchain.toml` (1.97.0, the containers' version, with clippy, rustfmt and the Windows
     target); every job installs it with `rustup toolchain install`. (The first CI run used floating stable 1.99,
     whose new lints failed clippy on untouched code: a floating toolchain would break the checks on every release.)
+  - Jobs run on `ubuntu-24.04`, not `ubuntu-latest` (now 26.04): goldens hash float results and glibc's maths
+    functions changed in the last bit between 2.39 and 26.04's glibc, which moved the "Sand that piles up" particle
+    golden on the second CI run. 24.04 is what the cloud containers run, where the goldens are blessed.
   - All jobs use `Swatinem/rust-cache` and `CARGO_INCREMENTAL=0`; a `concurrency` group cancels a PR's older runs.
   - Not done: branch protection (a repository setting the owner turns on; threads read the check result before they
     merge instead).

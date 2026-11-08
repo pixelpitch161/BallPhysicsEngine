@@ -141,7 +141,8 @@ The physics is deterministic, and goldens pin it: `crates/bpe-kit/tests/golden*.
 
 Any change that moves balls changes golden lines. Re-bless with `BLESS_GOLDEN=1`, **once in debug and once with
 `--release`**. Then diff against main: only the lines you meant to change may differ. Goldens differ slightly on
-native Windows (libm trig), which is a known gap.
+native Windows (libm trig) and on newer Linux (glibc after 2.39), known gaps: CI runs on Ubuntu 24.04 to match the
+containers.
 
 ## egui / kittest pitfalls
 
