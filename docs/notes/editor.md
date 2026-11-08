@@ -131,4 +131,10 @@ Moved word for word from CLAUDE.md on 2026-11-08 (workstream W1). Add each finis
   `preview::shared_programs`) builds them on their own threads: a lit frame draws unlit and an effect is left out
   until ready, and `Renderer::programs_waiting` makes the views draw again in 50 ms. Exports and tests use the
   default store, which builds at once, so their pictures never change. Every editor view shares one store, so each
-  shader is built once.
+  shader is built once. While typing an effect's code, the call keeps drawing its last text that built until the new
+  one is ready (`Chain::last_built`); finished builds of text no longer asked for are collected each time
+  (`Programs::collect_effects`). A warm-up waits for the preview's shaders and starts over if the spare renderer
+  meets one still building (it shares the preview's own store). A store's pipelines belong to one device: never
+  share a store between devices (test devices give equal ids, so a mix-up isn't caught).
+- **Known limit.** While a slider is held, the preview draws the old run's places with the new looks, so a look that
+  depends on a physics setting (say a size) can look slightly off until you let go.

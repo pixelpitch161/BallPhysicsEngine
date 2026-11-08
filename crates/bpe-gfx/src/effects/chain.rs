@@ -91,8 +91,12 @@ pub(crate) struct Chain {
     /// with every renderer on the device; in the editor on a background thread).
     compiled: BTreeMap<u64, crate::programs::EffectBuilt>,
     store: crate::ProgramStore,
-    /// An effect this frame asked for was still being built, so the frame left it out.
+    /// An effect this frame asked for was still being built, so the frame left it out (or drew
+    /// the call's last built text instead).
     pub(crate) waiting: bool,
+    /// Each call's last text that built, by the call's key: while its new text (code being typed)
+    /// builds, the call draws with this one rather than blinking off.
+    last_built: BTreeMap<u64, u64>,
     /// The effects this frame asked for, for the problem list and for pruning.
     used: BTreeSet<u64>,
     uniforms: Vec<wgpu::Buffer>,
@@ -216,6 +220,7 @@ impl Chain {
             compiled: BTreeMap::new(),
             store: crate::ProgramStore::default(),
             waiting: false,
+            last_built: BTreeMap::new(),
             used: BTreeSet::new(),
             uniforms: Vec::new(),
             used_uniforms: 0,
@@ -279,6 +284,8 @@ impl Chain {
             let used = &self.used;
             self.compiled.retain(|k, _| used.contains(k));
         }
+        let compiled = &self.compiled;
+        self.last_built.retain(|_, k| compiled.contains_key(k));
     }
 
     /// Why effects this frame asked for could not be built, one line each.
@@ -325,8 +332,16 @@ impl Chain {
             e.stage == stage && e.blend != 0.0 && on.runs(frame, e) && (lit || takes_of(stage, on, e) != Takes::Light)
         };
         for call in frame.effects.iter().filter(picked) {
-            let key = self.compile(device, &call.wgsl);
+            let mut key = self.compile(device, &call.wgsl);
+            if !self.compiled.contains_key(&key)
+                && let Some(&last) = self.last_built.get(&call.key)
+            {
+                // Still building: the call's text as it last built, meanwhile.
+                key = last;
+                self.used.insert(key);
+            }
             if self.compiled.get(&key).is_some_and(|c| c.is_ok()) {
+                self.last_built.insert(call.key, key);
                 active.push((call, key));
             }
         }

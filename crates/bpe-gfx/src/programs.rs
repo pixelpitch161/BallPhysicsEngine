@@ -155,6 +155,9 @@ impl ProgramStore {
     /// Whether two stores hand out the same lighting pipelines (tests).
     #[cfg(test)]
     pub(crate) fn same_light(&self, other: &ProgramStore) -> bool {
+        if Arc::ptr_eq(&self.0, &other.0) {
+            return matches!(self.lock().light, LightSlot::Ready(_));
+        }
         let (a, b) = (self.lock(), other.lock());
         match (&a.light, &b.light) {
             (LightSlot::Ready(x), LightSlot::Ready(y)) => x.same_as(y),
@@ -283,18 +286,22 @@ impl Programs {
     /// The lighting's pipelines: built now, or in a background store started on a thread and
     /// `None` until they are ready (the frame then draws unlit).
     pub(crate) fn light_kit(&mut self, device: &wgpu::Device) -> Option<crate::lighting::LightKit> {
+        let mut stopped = false;
         if let LightSlot::Building(rx) = &self.light {
             match rx.try_recv() {
                 Ok(kit) => self.light = LightSlot::Ready(Box::new(kit)),
                 Err(std::sync::mpsc::TryRecvError::Empty) => return None,
-                // The thread stopped: build it here instead.
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.light = LightSlot::None,
+                // The thread stopped: build it here instead, once (not a new thread every frame).
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.light = LightSlot::None;
+                    stopped = true;
+                }
             }
         }
         if let LightSlot::Ready(kit) = &self.light {
             return Some((**kit).clone());
         }
-        if self.background {
+        if self.background && !stopped {
             let (tx, rx) = channel();
             let device = device.clone();
             let spawned = std::thread::Builder::new().name("lighting shader build".into()).spawn(move || {
@@ -319,14 +326,11 @@ impl Programs {
         key: u64,
         wgsl: &str,
     ) -> Option<EffectBuilt> {
-        if let Some(rx) = self.effects_pending.get(&key) {
-            let built = match rx.try_recv() {
-                Ok(built) => built,
-                Err(std::sync::mpsc::TryRecvError::Empty) => return None,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("the shader build stopped".to_owned()),
-            };
-            self.effects_pending.remove(&key);
-            self.keep_effect(key, built.map(Arc::new));
+        // Takes in every build that finished, also those of text no longer asked for (an effect's
+        // code typed on), so none waits in its channel for ever.
+        self.collect_effects();
+        if self.effects_pending.contains_key(&key) {
+            return None;
         }
         if let Some(built) = self.effects.get(&key) {
             return Some(built.clone());
@@ -345,6 +349,23 @@ impl Programs {
         let built = crate::effects::chain::build(device, layout, wgsl).map(Arc::new);
         self.keep_effect(key, built.clone());
         Some(built)
+    }
+
+    /// Takes in the picture effects finished on their threads.
+    fn collect_effects(&mut self) {
+        let done: Vec<(u64, Result<crate::effects::chain::Compiled, String>)> = self
+            .effects_pending
+            .iter()
+            .filter_map(|(k, rx)| match rx.try_recv() {
+                Ok(built) => Some((*k, built)),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some((*k, Err("the shader build stopped".into()))),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            })
+            .collect();
+        for (k, built) in done {
+            self.effects_pending.remove(&k);
+            self.keep_effect(k, built.map(Arc::new));
+        }
     }
 
     fn keep_effect(&mut self, key: u64, built: EffectBuilt) {

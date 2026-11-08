@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use bpe_gfx::{Frame, LightShow, Renderer, wgpu};
 use bpe_runtime::{CameraView, Playback};
 
-use super::{Drawn, Preview, shared_programs};
+use super::{Drawn, Preview};
 use crate::app::Studio;
 use crate::lights_panel::LightSource;
 
@@ -179,8 +179,9 @@ pub fn update(
         preview.warm = None;
     }
     if preview.warm.is_none() {
-        // Wait for the playhead to rest a frame, so scrubbing and dragging don't replay every frame.
-        if !(preview.shown.cold && rested) {
+        // Wait for the playhead to rest a frame, so scrubbing and dragging don't replay every frame,
+        // and for the picture's shaders to be built: a replay without an effect remembers nothing.
+        if !(preview.shown.cold && rested) || preview.renderer.programs_waiting() {
             return false;
         }
         let every = 1.0 / fps(studio);
@@ -199,9 +200,11 @@ pub fn update(
             look,
             light,
         });
+        // It shares the preview's own shader store (the editor's shared one).
+        let store = preview.renderer.programs().clone();
         let spare = preview.spare.get_or_insert_with(|| {
             let mut r = Renderer::new(device, size.0, size.1);
-            r.share_programs(shared_programs());
+            r.share_programs(&store);
             r
         });
         if spare.size() != size {
@@ -215,6 +218,13 @@ pub fn update(
     while warm.at < warm.target - 1e-9 {
         let at = warm.at;
         draw_at(studio, device, queue, spare, &mut warm.frame, &mut warm.playback, at, warm.look);
+        if spare.programs_waiting() {
+            // A shader it draws with is building after all: start again once it is built (the
+            // picture stays cold, so the warm-up starts over).
+            preview.warm = None;
+            preview.shown.spare_used = Some(Instant::now());
+            return false;
+        }
         warm.at = ((at / warm.every).round() + 1.0) * warm.every;
         if started.elapsed() >= WARM_BUDGET {
             break;
