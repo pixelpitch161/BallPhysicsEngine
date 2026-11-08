@@ -110,8 +110,10 @@ A fresh container needs:
 ```sh
 apt-get update && apt-get install -y libasound2-dev pkg-config libudev-dev mesa-vulkan-drivers ffmpeg \
   libxkbcommon-x11-0 libxkbcommon0 xvfb xdotool imagemagick gcc-mingw-w64-x86-64
-rustup target add x86_64-pc-windows-gnu
 ```
+
+- Rust is pinned in `rust-toolchain.toml` (with clippy, rustfmt and the Windows target), so CI and every container
+  build with the same compiler. Moving it forward is its own pull request that fixes any new clippy warnings.
 
 - Tests: `cargo test --workspace` takes several minutes cold, so run it in the background. Run `bpe-gfx`'s own tests
   with `--test-threads=2` or they run out of memory. In `--release`, `bpe-runtime`'s

@@ -31,6 +31,9 @@ move.
   - `windows`: `cargo build --release --target x86_64-pc-windows-gnu -p bpe-studio -p bpe-cli` with MinGW, LTO off
     the same way (it checks the cross-build compiles and links, not the shipped binary). Nothing is uploaded: the exe
     is only built for Aedan when he asks.
+  - Rust is pinned by `rust-toolchain.toml` (1.97.0, the containers' version, with clippy, rustfmt and the Windows
+    target); every job installs it with `rustup toolchain install`. (The first CI run used floating stable 1.99,
+    whose new lints failed clippy on untouched code: a floating toolchain would break the checks on every release.)
   - All jobs use `Swatinem/rust-cache` and `CARGO_INCREMENTAL=0`; a `concurrency` group cancels a PR's older runs.
   - Not done: branch protection (a repository setting the owner turns on; threads read the check result before they
     merge instead).
