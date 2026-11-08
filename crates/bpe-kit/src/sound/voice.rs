@@ -722,12 +722,14 @@ mod tests {
     }
 
     #[test]
-    fn voice_card_fits_only_shapes_and_particles() {
+    fn voice_card_fits_things_that_make_sound() {
         let reg = reg();
         let kind = reg.module(VOICE).unwrap();
         assert_eq!(kind.slot(), SlotId::Sound);
-        assert!(kind.fits("shape") && kind.fits("particles"));
-        for t in ["balls", "camera", "folder", "scene"] {
+        for t in ["shape", "particles", "text", "balls", "emitter"] {
+            assert!(kind.fits(t), "{t}");
+        }
+        for t in ["camera", "folder", "scene", "light", "rig"] {
             assert!(!kind.fits(t), "{t}");
         }
     }
