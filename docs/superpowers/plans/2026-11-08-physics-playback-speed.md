@@ -99,7 +99,7 @@ scene with a very big ball may move. Timings: `cargo test --release -p bpe-kit -
 
 One commit per step, as planned, plus small follow-ups. Differences from the plan:
 
-- Step 2: `Track` is `pub struct` in `bpe-runtime` (its tests need no crate access). `record` keeps its arguments:
+- Step 2: `Track` lives in a private module of `bpe-runtime`. `record` keeps its arguments:
   the skip is "the path is one run at the cap and the ball is at that place", which covers gone balls and resting
   ones without reading `alive`. `pop_front` gives the tail's room back once nothing is stored (else an emitter's
   removed balls kept 64 slots each). `Playback` caches each checkpoint's bytes (summing shared chunks at every
