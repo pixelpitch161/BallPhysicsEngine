@@ -347,7 +347,7 @@ impl Default for DrawOnMove {
     }
 }
 
-/// A letter move's kind.
+/// A letter move's kind (and an experimental effect's, Text part 5: `effects::kinds`).
 pub struct MoveKind {
     pub id: &'static str,
     pub name: &'static str,

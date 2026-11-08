@@ -2,7 +2,8 @@
 //! #24; part 2: the live ones, Hit counter, Countdown timer, Lyrics on the beat, Labels on balls
 //! and Race leaderboard; part 3: the real-letter ones, Balls inside a word, Bounce off letters, Pour in and fill,
 //! Letters break apart and Letters that play notes, each with its balls beside it; part 4: Word made of balls, Particle
-//! word, Laser writing and Text follows sound, and Neon sign's flicker). A look only fills settings when
+//! word, Laser writing and Text follows sound, and Neon sign's flicker; part 5: the experimental
+//! Glitch, Melting text, Kaleidoscope words and Echo stack). A look only fills settings when
 //! it is picked from the Add thing menu; nothing here makes a scene of its own.
 
 use bpe_core::{Color, EditError, Gradient, Registry, Scene, Settings, SlotId, ThingId, Value, layered_key};
@@ -37,10 +38,14 @@ pub enum Look {
     ParticleWord,
     LaserWriting,
     TextFollowsSound,
+    Glitch,
+    MeltingText,
+    KaleidoscopeWords,
+    EchoStack,
 }
 
 /// The looks the Add thing menu lists under Looks, in order.
-pub const LOOKS: [Look; 20] = [
+pub const LOOKS: [Look; 24] = [
     Look::HookTitle,
     Look::SpinningRing,
     Look::NeonSign,
@@ -61,6 +66,10 @@ pub const LOOKS: [Look; 20] = [
     Look::ParticleWord,
     Look::LaserWriting,
     Look::TextFollowsSound,
+    Look::Glitch,
+    Look::MeltingText,
+    Look::KaleidoscopeWords,
+    Look::EchoStack,
 ];
 
 impl Look {
@@ -87,6 +96,10 @@ impl Look {
             Look::ParticleWord => "Particle word",
             Look::LaserWriting => "Laser writing",
             Look::TextFollowsSound => "Text follows sound",
+            Look::Glitch => "Glitch",
+            Look::MeltingText => "Melting text",
+            Look::KaleidoscopeWords => "Kaleidoscope words",
+            Look::EchoStack => "Echo stack",
         }
     }
 
@@ -115,6 +128,12 @@ impl Look {
             Look::ParticleWord => "Specks holding the word GONE; gusts of wind blow it away and it forms again.",
             Look::LaserWriting => "A red laser writes LASER, its glowing pen tracing each letter in turn.",
             Look::TextFollowsSound => "BASS letters that jump and stretch with how loud Bus 1 is, one after another.",
+            Look::Glitch => {
+                "Colour-split letters torn into bands now and then, glitching harder every time a ball hits."
+            }
+            Look::MeltingText => "Letters that slowly drip and stretch down the screen, then start again.",
+            Look::KaleidoscopeWords => "A spinning word mirrored eight ways round the middle of the screen.",
+            Look::EchoStack => "Two dozen coloured copies stacked toward a point that wanders round.",
         }
     }
 
@@ -196,7 +215,7 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
     let mut balls: Option<BallsBeside> = None;
     let mut health: Vec<(&'static str, Value)> = Vec::new();
     let mut sound: Vec<(&'static str, Value)> = Vec::new();
-    // Letter moves to add, each with its settings.
+    // Letter moves and experimental effects to add, each with its settings.
     let mut moves: Vec<(&'static str, Vec<(&'static str, Value)>)> = Vec::new();
     // Bright letters that flash white when hit.
     let flashing = |c: Color| -> Layer {
@@ -538,6 +557,102 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
                 vec![("later", Value::Number(0.05)), ("own", Value::Number(0.3)), ("jump", Value::Number(80.0))],
             ));
         }
+        Look::Glitch => {
+            s.words = "GLITCH".into();
+            s.font = "Bungee".into();
+            s.size = 150.0;
+            layers.push((look::PAINT, vec![("colours", solid(Color::WHITE))], vec![]));
+            use look::effects::{GLITCH, SPLIT};
+            moves.push((SPLIT, vec![("distance", Value::Number(4.0)), ("harder", Value::Number(0.8))]));
+            moves.push((
+                GLITCH,
+                vec![
+                    ("amount", Value::Number(0.12)),
+                    ("band", Value::Number(14.0)),
+                    ("tear", Value::Number(30.0)),
+                    ("tear_split", Value::Number(8.0)),
+                    ("harder", Value::Number(0.8)),
+                ],
+            ));
+        }
+        Look::MeltingText => {
+            s.words = "MELT".into();
+            s.font = "Bowlby One".into();
+            s.size = 220.0;
+            let mut g = Gradient::even(&[Color::rgb(0xff, 0xcf, 0x4a), Color::rgb(0xff, 0x4f, 0x8b)]);
+            g.mix = bpe_core::Mix::Even;
+            layers.push((
+                look::PAINT,
+                vec![
+                    ("colours", Value::Gradient(g)),
+                    ("colours~form", Value::Choice("straight".into())),
+                    ("colours~turn", Value::Number(90.0)),
+                ],
+                vec![],
+            ));
+            moves.push((
+                look::effects::MELT,
+                vec![
+                    ("drip", Value::Number(260.0)),
+                    ("speed", Value::Number(0.2)),
+                    ("start", Value::Number(1.0)),
+                    ("every", Value::Number(9.0)),
+                    ("width", Value::Number(10.0)),
+                ],
+            ));
+        }
+        Look::KaleidoscopeWords => {
+            s.words = "WOW".into();
+            s.font = "Bungee".into();
+            s.size = 80.0;
+            s.spin = 70.0;
+            position = Vec2::new(150.0, 0.0);
+            let rainbow = crate::paint::palettes::built_in()
+                .into_iter()
+                .find(|p| p.name == "Rainbow")
+                .map(|p| p.colours)
+                .unwrap_or_else(|| Gradient::solid(Color::WHITE));
+            layers.push((
+                look::PAINT,
+                vec![
+                    ("colours", Value::Gradient(rainbow)),
+                    ("colours~form", Value::Choice("straight".into())),
+                    ("colours~cycle", Value::Number(0.2)),
+                ],
+                vec![],
+            ));
+            moves.push((
+                look::effects::MIRROR,
+                vec![
+                    ("ways", Value::Int(8)),
+                    ("round", Value::Choice("the_middle_of_the_picture".into())),
+                    ("mirrored", Value::Bool(true)),
+                    ("wedges", Value::Bool(true)),
+                    ("spin", Value::Number(17.0)),
+                ],
+            ));
+        }
+        Look::EchoStack => {
+            s.words = "DEEP".into();
+            s.size = 200.0;
+            layers.push((look::PAINT, vec![("colours", solid(Color::WHITE))], vec![]));
+            layers.push(outlined(5.0));
+            moves.push((
+                look::effects::ECHO,
+                vec![
+                    ("copies", Value::Int(24)),
+                    ("toward", Value::Vec2([0.0, 0.0])),
+                    ("wander", Value::Number(300.0)),
+                    ("wander_speed", Value::Number(0.12)),
+                    ("reach", Value::Number(0.8)),
+                    ("last_size", Value::Number(0.45)),
+                    ("hue", Value::Number(12.0)),
+                    ("hue_spin", Value::Number(40.0)),
+                    ("colourise", Value::Number(1.0)),
+                    ("last_opacity", Value::Number(0.9)),
+                ],
+            ));
+        }
     }
     let id = crate::add_thing(scene, reg, KIND, parent)?;
     // An Empty text keeps the name a new Text gets; a look is named after itself.
@@ -754,6 +869,44 @@ mod tests {
                 continue;
             }
             assert!(paths > 0, "{look:?} draws");
+        }
+    }
+
+    #[test]
+    fn the_part_5_looks_copy_and_reshape_their_letters() {
+        let kit = crate::kit();
+        let reg = &kit.registry;
+        for (look, words, font, at) in [
+            (Look::Glitch, "GLITCH", "Bungee", 0.5),
+            (Look::MeltingText, "MELT", "Bowlby One", 4.0),
+            (Look::KaleidoscopeWords, "WOW", "Bungee", 1.0),
+            (Look::EchoStack, "DEEP", "Anton", 1.0),
+        ] {
+            let (scene, id) = added(look);
+            let s = TextSettings::from_params(&scene.things[&id].params);
+            assert_eq!((s.words.as_str(), s.font.as_str()), (words, font), "{look:?}");
+            assert_eq!(scene.things[&id].screen, Some(true), "{look:?}");
+            let resolved = resolve(&scene, reg);
+            assert!(resolved.problems.is_empty(), "{look:?}: {:?}", resolved.problems);
+            let fx = super::super::fx::Fx::of(&resolved.things[&id].slots[&SlotId::Look]);
+            assert!(!fx.is_empty(), "{look:?} has its effects");
+            let mut world = World::build(&scene, &resolved, &kit.sims);
+            let mut log = Log::default();
+            world.advance_to(at, &kit.sims, &mut log);
+            let mut frame = Frame::default();
+            build_frame(&scene, &resolved, &world, &log, at, &kit.draws, &mut frame);
+            let drawn = frame.overlay.as_ref().map_or(0, |o| o.paths.len());
+            let letters = words.chars().count();
+            if look == Look::MeltingText {
+                assert_eq!(drawn, letters, "melting reshapes the letters, no copies");
+                let o = frame.overlay.as_ref().unwrap();
+                assert!(o.paths.iter().all(|p| p.b[3] > 40.0), "cut finer to drip");
+            } else if look != Look::Glitch {
+                assert!(drawn >= letters * 4, "{look:?}: {drawn} instances for {letters} letters");
+            } else {
+                // Colour split: three a letter at least.
+                assert!(drawn >= letters * 3, "{look:?}: {drawn}");
+            }
         }
     }
 

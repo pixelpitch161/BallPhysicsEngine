@@ -4,6 +4,7 @@
 //! sit the paint layers ([`kinds`]): Colour and gradient, Outline, Glow, Shader and Blend; `gpu.rs`
 //! turns a resolved stack into the records the paths pipeline walks.
 
+pub mod effects;
 pub mod gpu;
 pub mod layers;
 pub mod moves;

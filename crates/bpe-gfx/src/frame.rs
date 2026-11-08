@@ -343,6 +343,89 @@ impl PathInstance {
     pub fn reach(&self) -> f32 {
         self.c[1] * self.a[3] + self.b[0] + self.c[2].max(0.0)
     }
+
+    /// How its colours are changed (Text part 5), from `clip[3]`.
+    pub fn style(&self) -> PathStyle {
+        PathStyle::decode(self.clip[3])
+    }
+
+    /// Changes its colours as `style` says (into `clip[3]`; [`PathStyle::NONE`] draws as ever).
+    pub fn set_style(&mut self, style: PathStyle) {
+        self.clip[3] = style.encode();
+    }
+}
+
+/// Which colour channel a styled instance draws (Text part 5's Colour split): see [`PathStyle`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PathChannel {
+    /// Its whole colour, as ever.
+    #[default]
+    All,
+    /// Its red alone, added as light (covering nothing).
+    RedLight,
+    /// Its green alone, covering what is behind as the whole colour would.
+    GreenCovering,
+    /// Its blue alone, added as light.
+    BlueLight,
+}
+
+impl PathChannel {
+    fn code(self) -> u32 {
+        match self {
+            PathChannel::All => 0,
+            PathChannel::RedLight => 1,
+            PathChannel::GreenCovering => 2,
+            PathChannel::BlueLight => 3,
+        }
+    }
+
+    /// Whether it adds light rather than covering (it must draw after the covering copy).
+    pub fn adds_light(self) -> bool {
+        matches!(self, PathChannel::RedLight | PathChannel::BlueLight)
+    }
+}
+
+/// How a shape instance's colours are changed after its layers are worked out (Text part 5:
+/// Echo's and Mirror's colour turns, Colour split's and Glitch's channels). Carried in
+/// `PathInstance.clip[3]` as `channel + 4·hue_q + 4096·colourise_q` (hue in 1024ths of a turn,
+/// colourise in 15ths), exact in an f32; 0 changes nothing. `paths.wgsl::path_styled` reads it: in
+/// the colour passes the hue turns and the colour moves toward the pure hue, in the picture passes
+/// a channel copy draws only its channel (the red and blue copies adding light, so a green copy
+/// drawn first and red and blue added after give the whole colour back), and in the light passes
+/// that read shapes as blockers the red and blue copies draw nothing and the green one draws whole.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PathStyle {
+    pub channel: PathChannel,
+    /// Turns round the colour wheel, 0 to 1.
+    pub hue: f32,
+    /// How far its colours move toward the pure hue at their brightness, 0 to 1.
+    pub colourise: f32,
+}
+
+impl PathStyle {
+    pub const NONE: PathStyle = PathStyle { channel: PathChannel::All, hue: 0.0, colourise: 0.0 };
+
+    pub fn encode(self) -> f32 {
+        let hue = if self.hue.is_finite() { self.hue.rem_euclid(1.0) } else { 0.0 };
+        let hue_q = ((hue * 1024.0).round() as u32) % 1024;
+        let colourise = if self.colourise.is_finite() { self.colourise.clamp(0.0, 1.0) } else { 0.0 };
+        let colourise_q = (colourise * 15.0).round() as u32;
+        (self.channel.code() + 4 * hue_q + 4096 * colourise_q) as f32
+    }
+
+    pub fn decode(v: f32) -> PathStyle {
+        if !v.is_finite() || v < 0.5 {
+            return PathStyle::NONE;
+        }
+        let v = (v.round() as u32).min(65535);
+        let channel = match v % 4 {
+            1 => PathChannel::RedLight,
+            2 => PathChannel::GreenCovering,
+            3 => PathChannel::BlueLight,
+            _ => PathChannel::All,
+        };
+        PathStyle { channel, hue: ((v / 4) % 1024) as f32 / 1024.0, colourise: (v / 4096) as f32 / 15.0 }
+    }
 }
 
 /// A wall outline, drawn as an instanced quad with a distance function. `c.x` picks the shape:

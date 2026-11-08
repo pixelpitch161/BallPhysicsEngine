@@ -541,3 +541,60 @@ fn shapes_draw_as_before() {
     let Some(pixels) = render_sized(&frame, W, H) else { return };
     assert_eq!(format!("{:016x}", fnv(&pixels)), "d8818e8c5f70fe64");
 }
+
+// ---- Styled instances (Text part 5) ----
+
+#[test]
+fn a_style_survives_the_trip_through_clip_w() {
+    use crate::{PathChannel, PathStyle};
+    assert_eq!(PathInstance::default().style(), PathStyle::NONE);
+    assert_eq!(PathStyle::NONE.encode(), 0.0);
+    for channel in [PathChannel::All, PathChannel::RedLight, PathChannel::GreenCovering, PathChannel::BlueLight] {
+        for (hue, colourise) in [(0.0, 0.0), (0.25, 1.0), (1023.0 / 1024.0, 0.4), (0.5, 1.0 / 15.0)] {
+            let mut p = PathInstance::default();
+            p.set_style(PathStyle { channel, hue, colourise });
+            let back = p.style();
+            assert_eq!(back.channel, channel);
+            assert!((back.hue - hue).abs() < 1e-6, "{hue} -> {}", back.hue);
+            assert!((back.colourise - (colourise * 15.0).round() / 15.0).abs() < 1e-6);
+        }
+    }
+    // A whole turn is no turn; a turn back is the rest of the wheel.
+    let turned = |hue: f32| PathStyle::decode(PathStyle { hue, ..PathStyle::NONE }.encode()).hue;
+    assert_eq!(turned(1.0), 0.0);
+    assert!((turned(-0.25) - 0.75).abs() < 1e-6);
+}
+
+#[test]
+fn channel_copies_add_up_to_white_and_part_into_red_and_blue() {
+    use crate::{PathChannel, PathStyle};
+    const W: u32 = 1080;
+    const H: u32 = 1920;
+    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+    // Three copies of a white square, each drawing one channel: in place (top), and pulled 40 px
+    // apart, red right and blue left (bottom).
+    for (y, apart) in [(-400.0, 0.0), (400.0, 40.0)] {
+        for (channel, dx) in
+            [(PathChannel::GreenCovering, 0.0), (PathChannel::RedLight, apart), (PathChannel::BlueLight, -apart)]
+        {
+            let i = frame.push_path(Vec2::new(dx, y), 0.0, 150.0, 0.0, Some(&square()), WHITE, 2.0);
+            wear(&mut frame, i, vec![body_record()], 0.0);
+            frame.paths[i].set_style(PathStyle { channel, ..PathStyle::NONE });
+        }
+    }
+    // A colour turn: a red square turned a third of the way round the wheel reads green.
+    let i = frame.push_path(Vec2::new(0.0, -800.0), 0.0, 80.0, 0.0, Some(&square()), WHITE, 2.0);
+    wear(&mut frame, i, vec![body_record(), paint_record(RED)], 0.0);
+    frame.paths[i].set_style(PathStyle { hue: 1.0 / 3.0, ..PathStyle::NONE });
+    let Some(pixels) = render_sized(&frame, W, H) else { return };
+    save("channel-split", &pixels, W, H);
+    let px = |p: Vec2| pixel_sized(&pixels, W, H, p);
+    assert!(bright(px(Vec2::new(0.5, -399.5))), "the three copies in place: {:?}", px(Vec2::new(0.5, -399.5)));
+    assert!(bright(px(Vec2::new(0.5, 400.5))), "where all three still overlap");
+    let right = px(Vec2::new(170.5, 400.5));
+    assert!(right[0] > 200 && right[1] < 30 && right[2] < 30, "red past the right edge: {right:?}");
+    let left = px(Vec2::new(-170.5, 400.5));
+    assert!(left[2] > 200 && left[0] < 30 && left[1] < 30, "blue past the left edge: {left:?}");
+    let turned = px(Vec2::new(0.5, -799.5));
+    assert!(turned[1] > 150 && turned[0] < 60 && turned[2] < 60, "red turned to green: {turned:?}");
+}

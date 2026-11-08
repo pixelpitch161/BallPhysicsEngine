@@ -87,7 +87,7 @@ fn hop(u: f64) -> f32 {
 }
 
 /// Smooth seeded wobble from −1 to 1: three sines with seeded phases.
-fn wobble(t: f64, speed: f32, seed: u32, k: usize, axis: i64) -> f32 {
+pub(crate) fn wobble(t: f64, speed: f32, seed: u32, k: usize, axis: i64) -> f32 {
     let f = finite(speed, 0.0).max(0.0) as f64;
     let ph = |n: i64| dice(seed, k, axis * 3 + n) as f64 * std::f64::consts::TAU;
     let s = (std::f64::consts::TAU * f * t + ph(0)).sin()
