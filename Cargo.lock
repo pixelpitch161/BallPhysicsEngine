@@ -314,6 +314,7 @@ dependencies = [
  "glam",
  "hound",
  "midly",
+ "rayon",
 ]
 
 [[package]]
