@@ -170,4 +170,9 @@ the in-memory clipboard already reaches every scene opened in the session.
 
 ## As built
 
-(filled in when the work lands)
+Built as planned; the details are in `docs/notes/editor.md` ("Editor workflow (W5)"). Differences from the plan:
+
+- egui 0.37's dropped files are a trait (`Arc<dyn DroppedFile>`), so drops read `path()` and `bytes()`.
+- The Find box blanks the found settings' sections so a folded section can't hide a result; Placement's position
+  rows and other hand-drawn rows (a Shape's Body, a Look's Surface chips) aren't searched.
+- Remove all keyframes keeps the value the setting has at the playhead (`Scene::clear_keys`).

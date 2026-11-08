@@ -504,6 +504,20 @@ impl Scene {
         Ok(i)
     }
 
+    /// Removes every key of the setting at `a` (editor workflow, W5: Remove all keyframes),
+    /// leaving it at the value it had at `time`. False if it had no keys.
+    pub fn clear_keys(&mut self, reg: &Registry, a: &Address, time: f64) -> bool {
+        if !self.keyed(a) {
+            return false;
+        }
+        let now = self.value_at_time(reg, a, time);
+        self.tracks.remove(a);
+        if let Some(v) = now {
+            let _ = self.set_at(reg, a, v);
+        }
+        true
+    }
+
     /// Removes key `index` of the track at `a`; an emptied track goes too. False if there was
     /// no such key.
     pub fn remove_key(&mut self, a: &Address, index: usize) -> bool {
@@ -917,6 +931,18 @@ mod tests {
         assert_eq!(scene.settle_key(&glow, 1), Some(0));
         assert_eq!(scene.tracks[&glow].keys.len(), 1);
         assert_eq!(scene.tracks[&glow].keys[0].value, key(0.0));
+    }
+
+    #[test]
+    fn clearing_keys_keeps_the_value_at_the_playhead() {
+        let (reg, mut scene, a, _) = scene();
+        let glow = glow_of(a);
+        assert!(!scene.clear_keys(&reg, &glow, 0.0), "no keys to clear");
+        scene.set_key(&reg, &glow, 0.0, key(0.0)).unwrap();
+        scene.set_key(&reg, &glow, 2.0, key(2.0)).unwrap();
+        assert!(scene.clear_keys(&reg, &glow, 1.0));
+        assert!(!scene.keyed(&glow));
+        assert_eq!(scene.value_at_time(&reg, &glow, 5.0), Some(key(1.0)));
     }
 
     #[test]

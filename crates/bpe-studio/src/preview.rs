@@ -374,6 +374,12 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     } else if let Some(w) = &preview.warm {
         pill(&ui.painter_at(rect), rect, &format!("Warming up effects\u{2026} {:.0}%", (w.done() * 100.0).floor()));
     }
+    // Files held over the window, and a scene with nothing in it yet, each get a word in the middle.
+    if ui.ctx().input(|i| !i.raw.hovered_files.is_empty()) {
+        middle_note(&ui.painter_at(rect), rect, DROP_HINT);
+    } else if is_empty_scene(&studio.scene) {
+        middle_note(&ui.painter_at(rect), rect, EMPTY_HINT);
+    }
     if let Some(bar) = bar {
         show_bar(ui, bar, studio);
         if studio.light_show == LightShow::HeatMap {
@@ -864,6 +870,30 @@ fn aiming_pill(painter: &egui::Painter, rect: Rect, done: f32) {
 }
 
 /// `text` in a pill in the picture's top-left corner.
+/// What the preview says over a scene with nothing in it yet.
+pub const EMPTY_HINT: &str = "Nothing here yet.\nAdd a thing with + Add thing at the top of the list,\nor drop a scene, a font or a PNG picture here.";
+/// What the preview says while files are held over the window.
+pub const DROP_HINT: &str = "Drop to open it";
+
+/// Whether the scene has nothing but its settings and cameras in it.
+pub fn is_empty_scene(scene: &Scene) -> bool {
+    scene.things.values().all(|t| t.id == bpe_core::ThingId::ROOT || t.kind == "camera")
+}
+
+/// `text` in a pill in the middle of `rect`.
+fn middle_note(painter: &egui::Painter, rect: Rect, text: &str) {
+    let galley = painter.layout(
+        text.to_owned(),
+        FontId::proportional(14.0),
+        style::TEXT_STRONG,
+        (rect.width() - 40.0).max(80.0),
+    );
+    let size = galley.size() + egui::vec2(24.0, 16.0);
+    let back = Rect::from_center_size(rect.center(), size);
+    painter.rect_filled(back, style::RADIUS, style::PILL);
+    painter.galley(back.min + egui::vec2(12.0, 8.0), galley, style::TEXT_STRONG);
+}
+
 fn pill(painter: &egui::Painter, rect: Rect, text: &str) {
     let text = text.to_owned();
     let galley = painter.layout_no_wrap(text, FontId::proportional(13.0), style::TEXT_STRONG);

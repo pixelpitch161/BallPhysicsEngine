@@ -56,6 +56,8 @@ pub enum TabEdit {
     Set(Address, Value),
     /// A key at the playhead holding the setting's value as it stands.
     NewKey(Address),
+    /// Every key of the setting goes; it keeps the value it has now.
+    ClearKeys(Address),
     Enable,
     Disable,
     CopySound,
@@ -278,6 +280,7 @@ impl TabCx<'_> {
             ValueMenu::Nothing => {}
             ValueMenu::Paste(v) => self.edits.push(TabEdit::Set(a, v)),
             ValueMenu::CreateKey => self.edits.push(TabEdit::NewKey(a)),
+            ValueMenu::RemoveKeys => self.edits.push(TabEdit::ClearKeys(a)),
         }
         if let Some(layer) = chosen {
             mods::add_route(self, layer, key);
@@ -292,6 +295,7 @@ impl TabCx<'_> {
             ValueMenu::Nothing => {}
             ValueMenu::Paste(v) => self.edits.push(TabEdit::Set(a, v)),
             ValueMenu::CreateKey => self.edits.push(TabEdit::NewKey(a)),
+            ValueMenu::RemoveKeys => self.edits.push(TabEdit::ClearKeys(a)),
         }
     }
 
@@ -506,6 +510,7 @@ fn apply(inspector: &mut Inspector, scene: &mut Scene, kit: &Kit, id: ThingId, t
                 Some(v) => scene.set_key(reg, &a, time, v).is_ok(),
                 None => false,
             },
+            TabEdit::ClearKeys(a) => crate::inspector::clear_keys(scene, reg, &a, time),
             TabEdit::Enable => write::enable(scene, reg, id),
             TabEdit::Disable => write::disable(scene, reg, id),
             TabEdit::CopySound => {

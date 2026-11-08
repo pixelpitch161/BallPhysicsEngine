@@ -92,7 +92,7 @@ pub enum Pending {
     Close,
     Open,
     New,
-    /// A recent file from the toolbar's Recent menu.
+    /// A recent file from the toolbar's Recent menu, or a scene dropped on the window.
     OpenPath(PathBuf),
 }
 
@@ -1218,7 +1218,7 @@ impl Studio {
     }
 
     /// Runs `action` now, or asks to save first if there are unsaved changes.
-    fn guard(&mut self, action: Pending, ctx: &egui::Context) {
+    pub(crate) fn guard(&mut self, action: Pending, ctx: &egui::Context) {
         if self.unsaved() {
             self.confirm = Some(action);
         } else {
@@ -2053,6 +2053,7 @@ impl eframe::App for Studio {
             .inner;
         if self.confirm.is_none() && self.offer.is_none() && !self.ask_stop_export {
             self.late_shortcuts(&ctx);
+            self.take_drops(&ctx);
         }
         if outcome.clicked {
             self.set_playing(false);
@@ -3239,6 +3240,7 @@ mod tests {
                     studio.left_panel(ui, &before);
                     egui::CentralPanel::default().show(ui, |_| {});
                     studio.late_shortcuts(&ctx);
+                    studio.take_drops(&ctx);
                     studio.record_frame(before);
                 },
                 studio,
@@ -3290,6 +3292,81 @@ mod tests {
         h.run();
         assert_eq!(h.state().scene.things.len(), rows + 1);
         assert!(thing_named(h.state(), "Ball copy").is_some());
+    }
+
+    /// A file dropped in a test: its name and bytes.
+    #[derive(Debug)]
+    struct TestDrop(PathBuf, Vec<u8>);
+
+    impl egui::DroppedFile for TestDrop {
+        fn path(&self) -> &Path {
+            &self.0
+        }
+        fn bytes(&self) -> Result<Vec<u8>, String> {
+            Ok(self.1.clone())
+        }
+    }
+
+    fn drop_file(h: &mut Harness<'_, Studio>, name: &str, bytes: &[u8]) {
+        let file = Arc::new(TestDrop(PathBuf::from(name), bytes.to_vec()));
+        h.input_mut().dropped_files.push(file);
+        h.run();
+    }
+
+    #[test]
+    fn a_dropped_png_becomes_a_particles_picture_kept_in_the_scene() {
+        let mut h = editor_harness(Studio::headless());
+        let png = b"\x89PNG\r\n\x1a\nrest";
+        drop_file(&mut h, "Logo.png", png);
+        let s = h.state();
+        assert_eq!(&*s.scene.pictures["Logo"].bytes, &png[..]);
+        let id = s.selection.primary.expect("a new Particles thing, selected");
+        let thing = &s.scene.things[&id];
+        assert_eq!(thing.kind, "particles");
+        assert_eq!(thing.params.get("picture"), Some(&Value::Text("Logo".into())));
+        assert_eq!(thing.params.get("word_from"), Some(&Value::Choice("picture".into())));
+        let things = s.scene.things.len();
+        // Dropped again with it selected, the same thing shows it: no second thing, no second copy.
+        drop_file(&mut h, "Logo.png", png);
+        assert_eq!(h.state().scene.things.len(), things);
+        assert_eq!(h.state().scene.pictures.len(), 1);
+        assert!(h.state_mut().undo(), "a drop is an undo step");
+    }
+
+    #[test]
+    fn a_dropped_font_is_kept_and_sets_the_selected_text_in_it() {
+        let mut studio = Studio::headless();
+        let kit = studio.kit.clone();
+        let text = bpe_kit::add_thing(&mut studio.scene, &kit.registry, bpe_kit::things::text::KIND, ThingId::ROOT);
+        let text = text.unwrap();
+        studio.selection.set(text);
+        let mut h = editor_harness(studio);
+        let bytes = std::fs::read(bpe_kit::text::fonts::repo_fonts_dir().join("BebasNeue.ttf")).unwrap();
+        drop_file(&mut h, "BebasNeue.ttf", &bytes);
+        assert!(h.state().scene.fonts.contains_key("Bebas Neue"));
+        assert_eq!(h.state().scene.things[&text].params.get("font"), Some(&Value::Text("Bebas Neue".into())));
+    }
+
+    #[test]
+    fn a_dropped_file_ball_studio_cant_use_is_reported() {
+        let mut h = editor_harness(Studio::headless());
+        let before = h.state().scene.clone();
+        drop_file(&mut h, "song.wav", b"RIFF");
+        assert_eq!(h.state().scene, before);
+        let problem = h.state().problem.as_ref().map(|p| (p.kind, p.text.clone()));
+        assert_eq!(problem, Some((ProblemKind::File, crate::drops::cant_open("song.wav"))));
+        drop_file(&mut h, "fake.png", b"GIF89a");
+        assert_eq!(h.state().scene, before, "a picture that isn't a PNG is refused");
+        assert!(h.state().problem.as_ref().is_some_and(|p| p.text.contains("fake.png")));
+    }
+
+    #[test]
+    fn a_scene_with_only_its_camera_counts_as_empty() {
+        let studio = Studio::headless();
+        assert!(!crate::preview::is_empty_scene(&studio.scene), "the headless scene has a ball");
+        let kit = bpe_kit::kit();
+        let scene = bpe_kit::new_studio_scene(&kit.registry);
+        assert!(crate::preview::is_empty_scene(&scene), "the blank project the editor opens to is");
     }
 
     #[test]

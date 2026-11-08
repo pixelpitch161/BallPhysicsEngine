@@ -6,6 +6,7 @@
 mod aim_job;
 mod app;
 mod audio_out;
+mod drops;
 mod eq_curve;
 mod export_window;
 mod eyedropper;
@@ -27,6 +28,7 @@ mod look_editor;
 mod mixer;
 mod palettes;
 mod particle_job;
+mod picture_picker;
 mod preview;
 mod recovery;
 mod rules_panel;
