@@ -28,8 +28,8 @@ scene with a very big ball may move. Timings: `cargo test --release -p bpe-kit -
 - New `crates/bpe-runtime/src/track.rs`: `pub(crate) struct Track<T: Copy + PartialEq>` with `chunks:
   VecDeque<Arc<[T]>>` (each exactly `CHUNK` = 64), `tail: Vec<T>` (< 64), `skip: usize` (items dropped from the
   front of the stored items), `run: Option<(T, usize)>` (count ≥ 1 of the same item after the stored ones). API:
-  `new`, `len`, `is_empty`, `get(i)`, `front`, `push_back(x)` (equal to the last item: grows the run; else pushes the
-  run out first when it is longer than 1... see code), `pop_front`, `iter()` (double-ended), `iter_from(i)`,
+  `new`, `len`, `is_empty`, `get(i)`, `front`, `push_back(x)` (equal to the run's item: the run grows; else the run
+  is stored item by item and `x` starts a new run), `pop_front`, `iter()` (double-ended), `iter_from(i)`,
   `partition_point(f)`, `is_one_run()` (every item is the run), `memory()` (tail + unshared/shared share of chunks).
   `Clone` (shares chunks), `PartialEq` by items, `Debug`.
 - `history.rs`: `balls: Vec<Track<Vec2>>`, `corners: Vec<Track<(f64, Vec2)>>`; every `VecDeque` use becomes the
@@ -97,4 +97,21 @@ scene with a very big ball may move. Timings: `cargo test --release -p bpe-kit -
 
 ## As built
 
-(filled in at the end)
+One commit per step, as planned, plus small follow-ups. Differences from the plan:
+
+- Step 2: `Track` is `pub struct` in `bpe-runtime` (its tests need no crate access). `record` keeps its arguments:
+  the skip is "the path is one run at the cap and the ball is at that place", which covers gone balls and resting
+  ones without reading `alive`. `pop_front` gives the tail's room back once nothing is stored (else an emitter's
+  removed balls kept 64 slots each). `Playback` caches each checkpoint's bytes (summing shared chunks at every
+  checkpoint was slower than the run).
+- Step 3: `work_out_pulls` skips rows below `gone_below` too.
+- Step 4: `bpe_runtime::CHECKPOINT_BYTES` is public (the sound engine's `Playback::unseen` budget). The export's
+  waiting loop keeps the bar moving while the sound finishes; `draw_video` and `mux` are split out of `export_with`.
+  New tests: an unseen world steps the same and keeps no paths; forward-only playback matches and can go back; a
+  cancelled export with sound leaves no files.
+- Step 5: the pair finding moved into `close_pairs(grid, count, spot, f)` so it can be tested against an
+  all-pairs check; `Grid::runs_in` returns one run per column, or one per occupied cell when the box is wider than
+  there are cells (a huge ball in a sparse grid). No golden moved: no golden scene has a ball 4x the median.
+- Step 6: `Probe.keyed_looks` (things whose Look a key writes) decides which looks are re-read; `Lamps::of` takes
+  a `look_of` closure. Test: one probe asked forward and back matches a fresh probe at every moment.
+- Timings: `docs/notes/engine.md`, "Speed (W7)".
