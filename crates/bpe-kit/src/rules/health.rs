@@ -12,7 +12,8 @@ use super::who::{matches, targets};
 
 /// A party's health, by its ball's row when it is a ball of a thing with balls.
 pub fn health_of(cx: &StageCx, party: Party) -> Option<Hp> {
-    let row = cx.world.bodies.contains_key(&party.thing).then_some(party.item);
+    let rows = cx.world.bodies.contains_key(&party.thing) || cx.world.parts.contains_key(&party.thing);
+    let row = rows.then_some(party.item);
     cx.health.of(party.thing, row)
 }
 
@@ -236,7 +237,9 @@ impl BlockSim for HealthIs {
             HealthOf::AThing => targets(cx, &s.s.who, firing).into_iter().find_map(|(thing, row)| {
                 // A whole thing with balls reads its first live ball.
                 let row = row.or_else(|| {
-                    cx.world.bodies.get(&thing).and_then(|b| b.alive.iter().position(|&a| a)).map(|r| r as u32)
+                    let ball = cx.world.bodies.get(&thing).and_then(|b| b.alive.iter().position(|&a| a));
+                    let letter = || cx.world.parts.get(&thing).and_then(|p| p.alive.iter().position(|&a| a));
+                    ball.or_else(letter).map(|r| r as u32)
                 });
                 cx.health.of(thing, row)
             }),

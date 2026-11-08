@@ -221,10 +221,19 @@ impl NotePicker for ClickedPick {
     }
 }
 
-/// Ball n plays the run's nth note (By ball), or side n the nth (By side, side 1 the lowest).
+/// What picks a note by its place: the ball's number, the side hit, or the letter hit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Who {
+    Ball,
+    Side,
+    Letter,
+}
+
+/// Ball n plays the run's nth note (By ball), side n the nth (By side, side 1 the lowest), or
+/// letter n the nth (By letter).
 #[derive(Clone, Copy, Debug)]
 pub struct WhoPick {
-    pub by_side: bool,
+    pub who: Who,
 }
 
 impl NotePicker for WhoPick {
@@ -233,8 +242,41 @@ impl NotePicker for WhoPick {
         if run.is_empty() {
             return NotePick::default();
         }
-        let who = if self.by_side { cx.side } else { cx.ball_number };
+        let who = match self.who {
+            Who::Ball => cx.ball_number,
+            Who::Side => cx.side,
+            Who::Letter => cx.letter,
+        };
         NotePick::one(run.get(who as usize % run.len()))
+    }
+}
+
+/// The pitch class of a note letter A to G (either case), C 0.
+pub fn note_letter(ch: char) -> Option<u8> {
+    Some(match ch.to_ascii_uppercase() {
+        'C' => 0,
+        'D' => 2,
+        'E' => 4,
+        'F' => 5,
+        'G' => 7,
+        'A' => 9,
+        'B' => 11,
+        _ => return None,
+    })
+}
+
+/// Spell notes: a hit letter A to G plays its own note name in the octave of the slot's lowest
+/// note (C5, MIDI 60, when the slot is empty); any other letter, or a hit on no letter, plays
+/// nothing.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SpellPick;
+
+impl NotePicker for SpellPick {
+    fn pick(&mut self, cx: &PickCx) -> NotePick {
+        let Some(class) = cx.letter_char.and_then(note_letter) else { return NotePick::default() };
+        let lowest = cx.slot.notes.iter().copied().min().unwrap_or(60);
+        let note = lowest - lowest % 12 + class;
+        if note > 127 { NotePick::default() } else { NotePick::one(note) }
     }
 }
 
@@ -274,6 +316,7 @@ pub enum AnyPick {
     Walk(WalkPick),
     Clicked(ClickedPick),
     Who(WhoPick),
+    Spell(SpellPick),
     Chord(ChordPick),
 }
 
@@ -283,8 +326,10 @@ impl AnyPick {
             Plays::Random => AnyPick::Random(RandomPick),
             Plays::RandomWalk => AnyPick::Walk(WalkPick::default()),
             Plays::OrderClicked => AnyPick::Clicked(ClickedPick),
-            Plays::ByBall => AnyPick::Who(WhoPick { by_side: false }),
-            Plays::BySide => AnyPick::Who(WhoPick { by_side: true }),
+            Plays::ByBall => AnyPick::Who(WhoPick { who: Who::Ball }),
+            Plays::BySide => AnyPick::Who(WhoPick { who: Who::Side }),
+            Plays::ByLetter => AnyPick::Who(WhoPick { who: Who::Letter }),
+            Plays::SpellNotes => AnyPick::Spell(SpellPick),
             Plays::AllAtOnce => AnyPick::Chord(ChordPick),
             p => AnyPick::Step(StepPick(p)),
         }
@@ -299,6 +344,7 @@ impl NotePicker for AnyPick {
             AnyPick::Walk(p) => p.pick(cx),
             AnyPick::Clicked(p) => p.pick(cx),
             AnyPick::Who(p) => p.pick(cx),
+            AnyPick::Spell(p) => p.pick(cx),
             AnyPick::Chord(p) => p.pick(cx),
         }
     }

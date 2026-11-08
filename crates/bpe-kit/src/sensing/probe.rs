@@ -26,7 +26,7 @@ const HARD_EDGE: f32 = 0.5;
 const IN_SHADOW: f32 = 0.5;
 
 /// The things whose settings the probe reads besides the lights: their looks block or give light.
-pub const LOOKED: [&str; 3] = ["balls", "emitter", "shape"];
+pub const LOOKED: [&str; 4] = ["balls", "emitter", "shape", crate::things::text::KIND];
 /// The thing kinds whose own settings the probe reads.
 pub const LIGHTING_KINDS: [&str; 2] = [LIGHT, crate::things::rig::RIG];
 
@@ -381,12 +381,17 @@ impl Lamps {
                     }
                 }
             } else if let Some(wall) = world.walls.get(id) {
-                let points = outline_points(&wall.outline);
-                let n = points.len();
-                if n < 2 {
+                let sides: Vec<[Vec2; 2]> = crate::things::light::draw::outline_contours(&wall.outline)
+                    .into_iter()
+                    .filter(|c| c.len() >= 2)
+                    .flat_map(|c| {
+                        let n = c.len();
+                        (0..n).map(move |k| [c[k], c[(k + 1) % n]])
+                    })
+                    .collect();
+                if sides.is_empty() {
                     continue;
                 }
-                let sides: Vec<[Vec2; 2]> = (0..n).map(|k| [points[k], points[(k + 1) % n]]).collect();
                 let glow = look.glow_of(0);
                 if luminance(glow).abs() > 1e-9 {
                     let first = segments.len() as f32;

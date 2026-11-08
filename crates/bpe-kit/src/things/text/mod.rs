@@ -1,15 +1,17 @@
 //! The Text thing (Text part 1, spec `docs/superpowers/specs/2026-11-07-text-thing-design.md`):
 //! words in any of the built-in fonts or a loaded one, laid out straight, round a circle, on a wave
 //! or along a shape's edge, each letter drawn as a shape wearing the Text's `look.shape` card. A
-//! new Text sits on the screen; it has no wall yet (part 3).
+//! new Text sits on the screen. Set in the world, its letters are a wall balls bounce off or stay
+//! inside, each letter a part rules, health and sound tell apart (part 3).
 
 pub mod draw;
 pub mod looks;
 pub mod show;
 pub mod sim;
+pub mod walls;
 
 pub use draw::{TextAt, TextDraw, TextNow, text_copies, text_now};
-pub use sim::{TextSim, TextState};
+pub use sim::{TextSim, TextState, letter_char};
 
 use bpe_core::{Choice, SettingDef, Settings, SlotId, Target, ThingKind};
 
@@ -79,6 +81,19 @@ pub enum TextRides {
     EachBall,
     TheMiddle,
     BallNumber,
+}
+
+/// What balls do at the letters (Text part 3). Only a Text in the world that rides nothing is a
+/// wall.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum TextBalls {
+    /// Balls go through (the letters are still a zone rules see, and lasers meet them).
+    #[default]
+    PassThrough,
+    /// Balls bounce off the solid letters.
+    BounceOff,
+    /// Each letter's outline is a band of Thickness: balls inside a letter stay inside it.
+    BounceInside,
 }
 
 /// When the letters are drawn from distance tiles (quick for crowds of small letters).
@@ -243,6 +258,20 @@ pub struct TextSettings {
     /// The ball it rides, by its number in the group.
     #[setting(label = "Ball number", group = "Riding", when = "rides_on=ball_number", range(1, 1e9), span(1, 100))]
     pub ball_number: u32,
+    /// What balls do at the letters. Only for a Text in the world (Stuck to the screen off) that rides nothing.
+    #[setting(label = "Balls", group = "Balls", simple)]
+    pub balls: TextBalls,
+    /// How thick each letter's outline is: what the balls inside bounce off.
+    #[setting(
+        label = "Thickness",
+        group = "Balls",
+        when = "balls=bounce_inside",
+        span(1, 60),
+        range(0.5, 2000),
+        unit = "px",
+        keyframe
+    )]
+    pub thickness: f32,
 }
 
 impl Default for TextSettings {
@@ -285,6 +314,8 @@ impl Default for TextSettings {
             resort: 0.4,
             rides_on: TextRides::EachBall,
             ball_number: 1,
+            balls: TextBalls::PassThrough,
+            thickness: 10.0,
         }
     }
 }
@@ -313,7 +344,8 @@ impl TextSettings {
 
 pub struct TextKind;
 
-const SLOTS: &[SlotId] = &[SlotId::Look];
+const SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Bounce, SlotId::Sound, SlotId::Health];
+const DEFAULT_SLOTS: &[SlotId] = &[SlotId::Look];
 
 impl ThingKind for TextKind {
     fn id(&self) -> &'static str {
@@ -338,7 +370,7 @@ impl ThingKind for TextKind {
         SLOTS
     }
     fn default_slots(&self) -> &'static [SlotId] {
-        SLOTS
+        DEFAULT_SLOTS
     }
     fn sticks_to_screen(&self) -> bool {
         true
@@ -388,7 +420,7 @@ mod tests {
         want_keys.push("fast");
         want_keys.extend(path);
         want_keys.extend(show);
-        want_keys.extend(["resort", "rides_on", "ball_number"]);
+        want_keys.extend(["resort", "rides_on", "ball_number", "balls", "thickness"]);
         assert_eq!(keys, want_keys);
         for d in defs {
             let want = if words.contains(&d.key) {
@@ -399,6 +431,8 @@ mod tests {
                 "Show"
             } else if d.key == "resort" {
                 "Values"
+            } else if matches!(d.key, "balls" | "thickness") {
+                "Balls"
             } else {
                 "Riding"
             };

@@ -37,6 +37,12 @@ fn golden_lists_per_order() {
     assert_eq!(twelve(Plays::OrderClicked), [67, 60, 64, 67, 60, 64, 67, 60, 64, 67, 60, 64]);
     assert_eq!(run(Plays::ByBall, 6, |cx| cx.ball_number = cx.hit_index as u32 * 2), [60, 67, 64, 60, 67, 64]);
     assert_eq!(run(Plays::BySide, 4, |cx| cx.side = 3 - cx.hit_index as u32), [60, 67, 64, 60]);
+    assert_eq!(run(Plays::ByLetter, 4, |cx| cx.letter = cx.hit_index as u32), [60, 64, 67, 60]);
+    let spelt = |c: Option<char>| run(Plays::SpellNotes, 1, |cx| cx.letter_char = c)[0];
+    assert_eq!(
+        [spelt(Some('A')), spelt(Some('c')), spelt(Some('B')), spelt(Some('H')), spelt(None)],
+        [69, 60, 71, 0, 0]
+    );
     assert_eq!(twelve(Plays::Random), [64, 67, 64, 64, 60, 64, 64, 67, 64, 67, 64, 67]);
     assert_eq!(twelve(Plays::Shuffle), [67, 60, 64, 67, 64, 60, 64, 67, 60, 67, 60, 64]);
     assert_eq!(twelve(Plays::RandomWalk), [60, 64, 60, 64, 60, 64, 67, 64, 60, 64, 60, 64]);
@@ -108,7 +114,8 @@ fn empty_slot_plays_nothing() {
 fn deterministic_after_seek() {
     // Every order but Random walk depends on the step alone: picking hit 7 cold gives what the
     // run gave it.
-    for plays in Plays::ALL.into_iter().filter(|p| *p != Plays::RandomWalk) {
+    // (Spell notes reads only the letter hit, which a plain hit hasn't.)
+    for plays in Plays::ALL.into_iter().filter(|p| !matches!(p, Plays::RandomWalk | Plays::SpellNotes)) {
         let all = twelve(plays);
         let slot = slot();
         let mut fresh = AnyPick::new(plays);

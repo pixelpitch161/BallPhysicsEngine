@@ -12,6 +12,8 @@ use std::sync::Arc;
 use bpe_core::shape_path::{inside_polygon, nearest_on_segment};
 use glam::Vec2;
 
+use crate::letters::LetterWalls;
+
 /// The most corners a ring polygon can have.
 pub const MAX_SIDES: usize = 64;
 
@@ -50,6 +52,15 @@ pub enum Outline {
         angle: f32,
         scale: f32,
         points: Arc<[Vec2]>,
+        thickness: f32,
+    },
+    /// A Text's letters (Text part 3): every contour of every letter in the Text's own frame (pixels,
+    /// y down, its middle at 0), turned by `angle` and placed at `center`. Each letter is a part a
+    /// contact names.
+    Letters {
+        center: Vec2,
+        angle: f32,
+        letters: Arc<LetterWalls>,
         thickness: f32,
     },
 }
@@ -96,6 +107,9 @@ pub struct Contact {
     pub speed: f32,
     /// How fast the wall was moving there.
     pub wall_velocity: Vec2,
+    /// Which part of the wall it touched: a letter of a Text (its part number); 0 for every other
+    /// outline.
+    pub part: u32,
 }
 
 fn dir(angle: f32) -> Vec2 {
@@ -163,6 +177,10 @@ impl Outline {
                 }
                 *center + Vec2::from_angle(*angle).rotate(d * far * *scale)
             }
+            Outline::Letters { center, angle, letters, .. } => {
+                let d = dir(u);
+                *center + Vec2::from_angle(*angle).rotate(d * letters.ray_far(d))
+            }
         }
     }
 
@@ -171,7 +189,8 @@ impl Outline {
             Outline::Ring { center, .. }
             | Outline::Box { center, .. }
             | Outline::Ellipse { center, .. }
-            | Outline::Path { center, .. } => *center,
+            | Outline::Path { center, .. }
+            | Outline::Letters { center, .. } => *center,
         }
     }
 
@@ -180,7 +199,8 @@ impl Outline {
             Outline::Ring { thickness, .. }
             | Outline::Box { thickness, .. }
             | Outline::Ellipse { thickness, .. }
-            | Outline::Path { thickness, .. } => *thickness,
+            | Outline::Path { thickness, .. }
+            | Outline::Letters { thickness, .. } => *thickness,
         }
     }
 
@@ -190,7 +210,8 @@ impl Outline {
             Outline::Ring { angle, .. }
             | Outline::Box { angle, .. }
             | Outline::Ellipse { angle, .. }
-            | Outline::Path { angle, .. } => *angle,
+            | Outline::Path { angle, .. }
+            | Outline::Letters { angle, .. } => *angle,
         }
     }
 
@@ -203,6 +224,7 @@ impl Outline {
             Outline::Path { scale, points, .. } => {
                 points.iter().map(|p| p.length_squared()).fold(0.0, f32::max).sqrt() * *scale
             }
+            Outline::Letters { letters, .. } => letters.reach,
         }
     }
 
@@ -260,6 +282,7 @@ impl Outline {
             Outline::Path { center, angle, scale, points, .. } => {
                 inside_polygon(points, Self::to_shape(*center, *angle, *scale, p))
             }
+            Outline::Letters { center, angle, letters, .. } => letters.inside(own(*center, *angle, p)),
         }
     }
 
@@ -272,6 +295,10 @@ impl Outline {
             Outline::Ellipse { center, half, angle, .. } => {
                 let g = ellipse_level(half, own(center, angle, p));
                 (g < 1.0) == inside && (1.0 - g).abs() * half.x.min(half.y) >= limit
+            }
+            // Outside every letter's box by `limit` is outside every letter and that far from it.
+            Outline::Letters { center, angle, ref letters, .. } => {
+                !inside && letters.clear_of(own(center, angle, p), limit)
             }
             _ => false,
         }
@@ -286,6 +313,25 @@ impl Outline {
 
     /// The nearest point on the centre line and the line's unit normal there (either way round).
     fn nearest_and_line(&self, p: Vec2) -> (Vec2, Vec2) {
+        let (q, line, _) = self.nearest_part(p);
+        (q, line)
+    }
+
+    /// [`Outline::nearest`]'s point and the line's unit normal there (either way round), with the
+    /// part of the outline it is on: a letter's part number, 0 for every other outline.
+    pub fn nearest_part(&self, p: Vec2) -> (Vec2, Vec2, u32) {
+        if let Outline::Letters { center, angle, letters, .. } = self {
+            let turn = Vec2::from_angle(*angle);
+            return match letters.nearest(own(*center, *angle, p)) {
+                Some((q, n, part)) => (*center + turn.rotate(q), turn.rotate(n), part),
+                None => (*center, Vec2::X, 0),
+            };
+        }
+        let (q, line) = self.nearest_and_line_one(p);
+        (q, line, 0)
+    }
+
+    fn nearest_and_line_one(&self, p: Vec2) -> (Vec2, Vec2) {
         match self {
             &Outline::Ring { center, radius, sides: 0..3, angle, .. } => {
                 let d = (p - center).try_normalize().unwrap_or(dir(angle));
@@ -400,11 +446,11 @@ pub fn wall_velocity(point: Vec2, center: Vec2, spin: f32, growth: f32) -> Vec2 
 
 /// The contact at `point` against a wall whose surface normal (towards the ball) is `normal`,
 /// when the ball is moving into it, relative to the wall's own motion.
-fn contact(position: Vec2, velocity: Vec2, radius: f32, outward: Vec2, wall: &Wall) -> Option<Contact> {
+fn contact(position: Vec2, velocity: Vec2, radius: f32, outward: Vec2, wall: &Wall, part: u32) -> Option<Contact> {
     let point = position + outward * radius;
     let wall_velocity = wall.velocity + wall_velocity(point, wall.outline.center(), wall.spin, wall.growth);
     let speed = (velocity - wall_velocity).dot(outward);
-    (speed > 0.0).then_some(Contact { point, normal: -outward, speed, wall_velocity })
+    (speed > 0.0).then_some(Contact { point, normal: -outward, speed, wall_velocity, part })
 }
 
 /// Moves a ball back to its own side of the wall and reports the hardest contact it was moving
@@ -440,7 +486,7 @@ pub fn keep_clear_from(
     };
     if !wall.solid && before.inside(previous) {
         match &wall.outline {
-            Outline::Path { .. } | Outline::Ellipse { .. } => {
+            Outline::Path { .. } | Outline::Ellipse { .. } | Outline::Letters { .. } => {
                 keep_on_side(position, velocity, radius, radius + band, true, wall)
             }
             _ => keep_inside_exact(position, velocity, radius, band, wall),
@@ -483,11 +529,11 @@ pub fn middle_crossing(
         }
     }
     let within = (lo + hi) * 0.5;
-    let (point, line) = wall.outline.nearest_and_line(start.lerp(moved_to, within));
+    let (point, line, part) = wall.outline.nearest_part(start.lerp(moved_to, within));
     let normal = if (start - point).dot(line) >= 0.0 { line } else { -line };
     let wall_velocity = wall.velocity + wall_velocity(point, wall.outline.center(), wall.spin, wall.growth);
     let speed = (velocity - wall_velocity).dot(-normal);
-    (speed > 0.0).then_some((Contact { point, normal, speed, wall_velocity }, within))
+    (speed > 0.0).then_some((Contact { point, normal, speed, wall_velocity, part }, within))
 }
 
 /// Whether `p` is on the side of `wall` a ball whose centre was at `previous` belongs on, judged
@@ -519,10 +565,10 @@ fn keep_on_side(
         return None;
     }
     let mut p = *position;
-    let mut pushed: Option<Vec2> = None;
+    let mut pushed: Option<(Vec2, u32)> = None;
     let mut first: Option<(Vec2, Vec2)> = None;
     for _ in 0..4 {
-        let (near, line) = wall.outline.nearest_and_line(p);
+        let (near, line, part) = wall.outline.nearest_part(p);
         let away = p - near;
         let p_inside = wall.outline.inside(p);
         if p_inside == inside && away.length() >= limit - SETTLED {
@@ -551,11 +597,11 @@ fn keep_on_side(
         }
         first.get_or_insert((side, near));
         p = near + side * limit;
-        pushed = Some(side);
+        pushed = Some((side, part));
     }
-    let side = pushed?;
+    let (side, part) = pushed?;
     *position = p;
-    contact(p, velocity, radius, -side, wall)
+    contact(p, velocity, radius, -side, wall, part)
 }
 
 /// Today's closed-arena collision: moves a ball inside a hollow ring or box back inside. `band` is
@@ -578,7 +624,7 @@ fn keep_inside_exact(position: &mut Vec2, velocity: Vec2, radius: f32, band: f32
             }
             let outward = offset / distance;
             *position = center + outward * inner;
-            contact(*position, velocity, radius, outward, wall)
+            contact(*position, velocity, radius, outward, wall, 0)
         }
         Outline::Ring { center, radius: wall_radius, sides, angle, .. } => {
             let apothem = wall_radius * (PI / sides as f32).cos();
@@ -590,8 +636,8 @@ fn keep_inside_exact(position: &mut Vec2, velocity: Vec2, radius: f32, band: f32
             let planes = [(x, half.x), (-x, half.x), (y, half.y), (-y, half.y)];
             keep_inside_planes(position, velocity, radius, center, planes.into_iter(), thickness, wall)
         }
-        // Free outlines and ellipses go through `keep_on_side`.
-        Outline::Path { .. } | Outline::Ellipse { .. } => None,
+        // Free outlines, ellipses and letters go through `keep_on_side`.
+        Outline::Path { .. } | Outline::Ellipse { .. } | Outline::Letters { .. } => None,
     }
 }
 
@@ -620,7 +666,7 @@ fn keep_inside_planes(
             continue;
         }
         *position -= outward * excess;
-        if let Some(c) = contact(*position, velocity, radius, outward, wall)
+        if let Some(c) = contact(*position, velocity, radius, outward, wall, 0)
             && hardest.is_none_or(|h| c.speed > h.speed)
         {
             hardest = Some(c);

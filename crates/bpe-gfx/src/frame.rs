@@ -389,9 +389,11 @@ impl ShapeInstance {
                 color,
                 paint,
             },
-            // A free outline or an ellipse draws through the paths pipeline ([`PathInstance`]);
-            // here it is nothing.
-            Outline::Path { center, angle, .. } | Outline::Ellipse { center, angle, .. } => Self {
+            // A free outline, an ellipse or a Text's letters draw through the paths pipeline
+            // ([`PathInstance`]); here it is nothing.
+            Outline::Path { center, angle, .. }
+            | Outline::Ellipse { center, angle, .. }
+            | Outline::Letters { center, angle, .. } => Self {
                 a: [center.x, center.y, angle, 0.0],
                 b: [0.0, 0.0, 0.0, 0.0],
                 c: [0.0, 0.0, 0.0, 0.0],

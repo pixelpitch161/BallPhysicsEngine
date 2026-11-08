@@ -7,8 +7,10 @@ pub mod bodies;
 pub mod camera;
 pub mod events;
 pub mod history;
+pub mod letters;
 pub mod light;
 pub mod pairs;
+pub mod parts;
 pub mod playback;
 pub mod plugins;
 pub mod pose;
@@ -24,8 +26,10 @@ pub use bodies::Bodies;
 pub use camera::CameraView;
 pub use events::{Event, EventKind, Log, Party, hit_strength};
 pub use history::{History, HistoryWant};
+pub use letters::{LetterWall, LetterWalls};
 pub use light::{BallLight, LightAt, LightLevelsAt, LightMaker, LightPull, level_of};
 pub use pairs::{Grid, Pairs, Support, pop};
+pub use parts::Parts;
 pub use playback::Playback;
 pub use plugins::{
     Limits, ModuleSim, ModuleState, NewBall, PairRule, SimCx, Sims, ThingSim, ThingState, state, state_mut,

@@ -202,20 +202,33 @@ impl World {
                     if rules.broken.contains(&thing) || !rules.health.has(thing) {
                         continue;
                     }
-                    let rows: Vec<Option<u32>> = match (row, self.bodies.get(&thing)) {
-                        (Some(r), Some(b)) => {
+                    let parts = self.parts.get(&thing);
+                    let rows: Vec<Option<u32>> = match (row, self.bodies.get(&thing), parts) {
+                        (Some(r), Some(b), _) => {
                             if (r as usize) < b.len() && b.alive[r as usize] {
                                 vec![Some(r)]
                             } else {
                                 Vec::new()
                             }
                         }
-                        (None, Some(b)) => (0..b.len() as u32).filter(|&r| b.alive[r as usize]).map(Some).collect(),
-                        (_, None) => vec![None],
+                        (None, Some(b), _) => (0..b.len() as u32).filter(|&r| b.alive[r as usize]).map(Some).collect(),
+                        // A Text's letters, one or every live one.
+                        (Some(r), None, Some(p)) => {
+                            if p.is_alive(r as usize) {
+                                vec![Some(r)]
+                            } else {
+                                Vec::new()
+                            }
+                        }
+                        (None, None, Some(p)) => {
+                            (0..p.len() as u32).filter(|&r| p.is_alive(r as usize)).map(Some).collect()
+                        }
+                        (_, None, None) => vec![None],
                     };
                     for row in rows {
-                        let point = match (row, self.bodies.get(&thing)) {
-                            (Some(r), Some(b)) => b.position[r as usize],
+                        let point = match (row, self.bodies.get(&thing), self.parts.get(&thing)) {
+                            (Some(r), Some(b), _) => b.position[r as usize],
+                            (Some(r), None, Some(p)) => p.at[r as usize],
                             _ => self.poses.get(&thing).map_or_else(|| self.anchor(thing).position, |p| p.position),
                         };
                         let at_zero = rules.health.card(thing).and_then(|c| c.at_zero.clone());
@@ -266,6 +279,20 @@ impl World {
                             for i in rows {
                                 if i < bodies.len() && bodies.alive[i] {
                                     log.push(flash(i as u32, bodies.position[i]));
+                                    *rules.flashes.entry((thing, i as u32)).or_default() += 1;
+                                }
+                            }
+                        }
+                        // A Text's letters, one or every live one (Text part 3).
+                        None if self.parts.contains_key(&thing) => {
+                            let parts = &self.parts[&thing];
+                            let rows: Vec<usize> = match row {
+                                Some(r) => vec![r as usize],
+                                None => (0..parts.len()).collect(),
+                            };
+                            for i in rows {
+                                if parts.is_alive(i) {
+                                    log.push(flash(i as u32, parts.at[i]));
                                     *rules.flashes.entry((thing, i as u32)).or_default() += 1;
                                 }
                             }
@@ -338,6 +365,20 @@ impl World {
                         at: 0.0,
                     };
                     match row {
+                        // One letter of a Text (a part, Text part 3): gone from its wall from the
+                        // next step, its look playing out while the Text draws.
+                        Some(r) if !self.bodies.contains_key(&thing) => {
+                            let Some(parts) = self.parts.get_mut(&thing) else { continue };
+                            if !parts.is_alive(r as usize) {
+                                continue;
+                            }
+                            parts.alive[r as usize] = false;
+                            log.push(event(r));
+                            if show.shows() {
+                                let wall = self.walls.get(&thing).cloned();
+                                rules.remains.insert((thing, r), remains(wall, None));
+                            }
+                        }
                         Some(r) => {
                             let Some(bodies) = self.bodies.get_mut(&thing) else { continue };
                             let i = r as usize;

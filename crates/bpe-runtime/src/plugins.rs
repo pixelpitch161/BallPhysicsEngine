@@ -203,6 +203,18 @@ pub trait ThingSim: Send + Sync + 'static {
     }
     /// How much of its balls' past the thing wants kept, for its trails and particles; `None`
     /// keeps none. Asked when the world is built, and hashed into the world's fingerprint.
+    /// What else of the saved scene changes this thing's physics, beyond its settings: hashed into
+    /// the physics fingerprint when not 0 (a Text's Stuck to the screen, the font it bounces in).
+    fn fingerprint_more(&self, _scene: &bpe_core::Scene, _thing: &Thing, _resolved: &ResolvedThing) -> u64 {
+        0
+    }
+
+    /// Whether this thing's sim reads the saved scene while it steps: the world then keeps a copy
+    /// (`World::tree`).
+    fn reads_tree(&self) -> bool {
+        false
+    }
+
     fn history(&self, _resolved: &ResolvedThing) -> Option<crate::HistoryWant> {
         None
     }

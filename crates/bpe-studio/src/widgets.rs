@@ -19,6 +19,8 @@ pub struct TargetChoices {
     pub kinds: Vec<(String, String)>,
     /// The things with balls (a Balls group or an emitter): a rule's who can name one ball of them.
     pub ball_things: Vec<ThingId>,
+    /// The Texts set in the world (their letters a wall): a rule's who can name one letter of them.
+    pub letter_things: Vec<ThingId>,
     /// A rule block's who picker offers the firing's own parties (That ball, The thing it hit,
     /// That ball's group): true for If and Do blocks, false for When blocks, where they would mean
     /// anything.
@@ -42,6 +44,14 @@ impl TargetChoices {
             .order
             .iter()
             .filter(|id| scene.things.get(id).is_some_and(|t| bpe_kit::things::balls::rows::has_balls(&t.kind)))
+            .copied()
+            .collect();
+        let letter_things = scene
+            .order
+            .iter()
+            .filter(|id| {
+                scene.things.get(id).is_some_and(|t| t.kind == bpe_kit::things::text::KIND && t.screen == Some(false))
+            })
             .copied()
             .collect();
         let fonts = scene.fonts.keys().cloned().collect();
@@ -77,6 +87,7 @@ impl TargetChoices {
             tags: tags.into_iter().collect(),
             kinds,
             ball_things,
+            letter_things,
             relative: true,
             fonts,
             unreadable_fonts,
@@ -1103,6 +1114,9 @@ pub fn who_words(w: &bpe_core::Who, choices: &TargetChoices) -> String {
         Who::That => "That ball".to_owned(),
         Who::Other => "The thing it hit".to_owned(),
         Who::Group => "That ball's group".to_owned(),
+        Who::Thing { thing: id, ball: Some(n) } if choices.letter_things.contains(id) => {
+            format!("{}, letter {n}", thing(id))
+        }
         Who::Thing { thing: id, ball: Some(n) } => format!("{}, ball {n}", thing(id)),
         Who::Thing { thing: id, ball: None } => thing(id),
         Who::Tag(t) => format!("Tagged {t}"),
@@ -1170,26 +1184,28 @@ pub(crate) fn who_picker(ui: &mut Ui, w: &mut bpe_core::Who, choices: &TargetCho
         *w = p;
         response.mark_changed();
     }
-    // One ball of a thing with balls, by its number (0: the whole thing).
+    // One ball of a thing with balls, or one letter of a Text in the world, by its number (0:
+    // the whole thing).
     if let Who::Thing { thing, ball } = w
-        && choices.ball_things.contains(thing)
+        && (choices.ball_things.contains(thing) || choices.letter_things.contains(thing))
     {
+        let one = if choices.letter_things.contains(thing) { "letter" } else { "ball" };
         let mut n = ball.unwrap_or(0);
         let number = ui
             .add(
                 DragValue::new(&mut n)
                     .range(0..=u32::MAX)
                     .speed(0.1)
-                    .custom_formatter(|v, _| if v < 0.5 { "every ball".to_owned() } else { format!("ball {v:.0}") })
+                    .custom_formatter(|v, _| if v < 0.5 { format!("every {one}") } else { format!("{one} {v:.0}") })
                     .custom_parser(|t| {
                         let t = t.trim().to_lowercase();
                         if t.starts_with("every") {
                             return Some(0.0);
                         }
-                        t.trim_start_matches("ball").trim().parse::<f64>().ok()
+                        t.trim_start_matches(one).trim().parse::<f64>().ok()
                     }),
             )
-            .on_hover_text("One ball of it, by its number; 0 for every ball");
+            .on_hover_text(format!("One {one} of it, by its number; 0 for every {one}"));
         if number.changed() {
             *ball = (n > 0).then_some(n);
             response.mark_changed();
@@ -1882,6 +1898,23 @@ mod tests {
         assert_eq!(label_colour(Some(pulsed), track), track);
         assert_eq!(label_colour(Some(KeyMark::default()), track), style::MUTED);
         assert_eq!(label_colour(None, track), style::MUTED);
+    }
+
+    #[test]
+    fn a_rule_names_one_letter_of_a_text_in_the_world() {
+        let kit = bpe_kit::kit();
+        let mut scene = bpe_kit::new_scene(&kit.registry);
+        let text = bpe_kit::add_thing(&mut scene, &kit.registry, bpe_kit::things::text::KIND, ThingId::ROOT).unwrap();
+        scene.rename_thing(text, "Word");
+        let on_screen = TargetChoices::from_scene(&scene, &kit.registry);
+        assert!(on_screen.letter_things.is_empty(), "a screen Text has no letters to name");
+        scene.things.get_mut(&text).unwrap().screen = Some(false);
+        let c = TargetChoices::from_scene(&scene, &kit.registry);
+        assert_eq!(c.letter_things, [text]);
+        let who = bpe_core::Who::Thing { thing: text, ball: Some(2) };
+        assert_eq!(who_words(&who, &c), "Word, letter 2");
+        let ball = bpe_core::Who::Thing { thing: ThingId(2), ball: Some(3) };
+        assert_eq!(who_words(&ball, &c), "Ball, ball 3");
     }
 
     #[test]

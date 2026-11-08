@@ -17,6 +17,10 @@ pub struct PickCx<'a> {
     pub ball_number: u32,
     /// The side of the shape the hit was on, 0 first.
     pub side: u32,
+    /// The letter of a Text the hit was on, 0 first (0 on anything else).
+    pub letter: u32,
+    /// That letter's character, for Spell notes (`None` on anything but a Text's letter).
+    pub letter_char: Option<char>,
     /// A number made from the shape and the slot's turn, the same however playback got there.
     pub seed: u64,
     /// Repeat each: hits each note (or chord) plays for.
@@ -36,6 +40,8 @@ impl<'a> PickCx<'a> {
             hit_index,
             ball_number: 0,
             side: 0,
+            letter: 0,
+            letter_char: None,
             seed: 0,
             repeat: 1,
             octave_range: 0,

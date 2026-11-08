@@ -570,7 +570,9 @@ impl ModuleKind for VoiceKind {
     }
     /// Shapes play hits; Particles things play their particles' moments (particles part 7).
     fn fits(&self, thing_kind: &str) -> bool {
-        thing_kind == crate::things::shape::KIND || thing_kind == crate::things::particles::KIND
+        thing_kind == crate::things::shape::KIND
+            || thing_kind == crate::things::particles::KIND
+            || thing_kind == crate::things::text::KIND
     }
 }
 
