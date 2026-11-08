@@ -89,3 +89,50 @@ Moved word for word from CLAUDE.md on 2026-11-08 (workstream W1). Add each finis
   modulator | Level, the buses, and Stop following sound; a following slider shows a band ("Follows …"); the
   pulse lane says what it follows. `Studio.follow` holds a `ControlSampler` for `build_frame_with` while any
   setting follows sound.
+
+## Never lose work, exports and errors (W4, 2026-11-08)
+
+Plan `docs/superpowers/plans/2026-11-08-never-lose-work.md` (findings E1 to E6 and C4 of the improvement review).
+
+- **Status line problems** (`app.rs`): `Studio.status` is the grey info line; `Studio.problem: Option<Problem>`
+  (`ProblemKind` Speakers, Graphics, File, Export, Recovery, Autosave) shows first in `style::PROBLEM` with a painted dot and a
+  "Dismiss" ×, and stays until dismissed or its own source calls `clear_problem(kind)` (the speakers coming back
+  clears only a Speakers problem; a good save or open clears File). Use `report(kind, text)` for any failure, never
+  `status`. The shader-skipped readout is in the problem colour too.
+- **Safe saves** (`files.rs`): `write_safely(path, text, backup)` writes `<name>.tmp`, `sync_all`s it, copies the old
+  file to `backup_path` (`My scene (backup).ron`, opens from the Open dialog) and renames the temp file over. Used by
+  `Studio::save` and the autosave.
+- **Autosave and recovery** (`recovery.rs`): each windowed editor owns `session-<pid>-<millis>.{ron,path,lock}` in
+  `settings_dir()/recovery/`, holding `.lock` with `File::try_lock` for its life (an unreadable lock counts as
+  held; `tidy` skips locks under 30 s old). `Studio::autosave` (from `tick`, which wakes the window with
+  `request_repaint_after` only while a copy is still owed) sends a clone to the session's worker thread on the first
+  change and then at most every `AUTOSAVE_EVERY` (60 s) while unsaved; the worker reports each write (`outcome`), so
+  an Autosave problem appears on failure and clears on the next success. The files are always cleared when the scene
+  goes from unsaved to saved/opened/new (`was_unsaved`; the crash hook may have written a copy the autosave didn't),
+  and on a clean exit (`on_exit`: when not unsaved or after "Don't save"; it empties the crash slot first). `recovery::orphans` lists
+  sessions whose lock can be taken, newest first; `start_recovery` tidies dead locks and offers the newest orphan
+  in the "Ball Studio closed unexpectedly" modal (Restore / Discard; when the scene's file is newer than the copy it
+  warns and leads with Discard, `Offer.file_newer`); `restore` keeps the original file name, sets `saved` to what
+  that file holds so the unsaved mark is honest, and deletes the old copy only after its own is written and flushed. A copy that won't load is renamed `.ron.broken` and
+  reported. Older orphans wait for later starts. Headless studios (tests) never autosave unless a test calls
+  `start_recovery` with a temporary folder.
+- **Crashes and the graphics card** (C4): `catch_gpu_errors` sets the window device's `on_uncaptured_error` (into
+  `Studio.gpu_errors`; `tell_gpu_errors` reports the first as a Graphics problem and afterwards only counts up in
+  place, so a per-frame complaint can be dismissed and never hides another problem) and a device-lost callback
+  (Destroyed ignored; triggers an immediate autosave). `recovery::install_crash_hook` wraps the panic hook: on the
+  editor's own thread only, `crash_save` `try_lock`s `Studio.crash_slot` (refreshed at most every `CRASH_COPY_EVERY`
+  = 1 s while unsaved), writes the session copy through its own `.crash.tmp` files and `last-crash.txt` in the
+  settings folder, then the default hook runs. `files::write_via` retries the final rename a few times on
+  PermissionDenied (OneDrive or an antivirus holding the file on Windows). The export and Preview final frame
+  threads set their own device's error handler (a complaint stops the job with an error) and a job whose thread
+  disconnects ends as "stopped unexpectedly" instead of looking busy forever.
+- **Export** (`export_window.rs`): `progress_percent`, `take_news` (Saved / Failed / Cancelled, told by
+  `tell_export_news`: "Video saved: x.mp4 (1:02 min)." or an Export problem). The status line shows "· Exporting 40%"
+  (click opens the window). Closing while exporting asks "A video is still exporting (40%). Stop it and close?"
+  (`Studio.ask_stop_export`, `stop_export_dialog`; Stop runs `shutdown` then the usual unsaved question).
+  `explain_export_error` turns raw errors into a plain sentence (file in use, disk full, ffmpeg won't start, no H.264,
+  out of memory, graphics card stopped, no adapter, stopped unexpectedly); the window shows it in the problem colour
+  with a collapsed Details fold (scrolling, selectable log, Copy details). A target file that can't be opened for
+  writing fails before the sound render. Choices (size, compression, encoder by `Encoder::key`, stems, MIDI, ffmpeg)
+  are remembered in `export-next.txt` (`ExportWindow::load_in`, written when they change); not the file or Bake.
+  `pretend_busy` fakes a running job for tests.
