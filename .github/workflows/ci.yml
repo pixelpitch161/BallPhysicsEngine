@@ -87,8 +87,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Physics goldens and pinned pictures
         run: cargo test --release -p bpe-kit --test 'golden*' --test unlit_pictures --test lit_flat_pinned
-      - name: Sound goldens
-        run: cargo test --release -p bpe-sound --test chain --test shape_voice --test mod_matrix
+      - name: Sound goldens (one at a time: shape_voice also times a heavy patch against real time)
+        run: cargo test --release -p bpe-sound --test chain --test shape_voice --test mod_matrix -- --test-threads=1
 
   windows:
     name: Windows cross-build
