@@ -332,7 +332,10 @@ fn peaks(thrown: &[f32]) -> usize {
 fn a_mirror_ball_throws_spots_that_turn_with_it() {
     let Some(mut gpu) = gpu() else { return };
     let reg = reg();
-    let scene = ball_room(&reg, 80.0, 24.0);
+    let mut scene = ball_room(&reg, 80.0, 24.0);
+    // A dimmer lamp: at full strength the floor beside it is brighter than white, which shows
+    // as plain white (since 2026-11-08), so the spots thrown there can't be told apart.
+    set_light(&mut scene, "strength", Value::Number(0.4));
     let off = draw(&mut gpu, &ball_throwing(&scene, 0.0), "ball-off");
     let on = draw(&mut gpu, &scene, "ball");
     assert!(gpu.renderer.bent_photons() > 0, "the mirror ball sends photons");

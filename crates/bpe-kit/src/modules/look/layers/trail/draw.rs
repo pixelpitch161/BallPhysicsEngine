@@ -807,9 +807,10 @@ mod tests {
     fn a_streak_follows_its_length_by_time_or_distance_and_grows_when_fast() {
         let half = trail_frame(2.0, |_, _| {});
         let quarter = trail_frame(2.0, |s, id| set(s, id, "seconds", Value::Number(0.25)));
-        assert!(!half.trails.is_empty() && half.trails.len() % 6 == 0);
-        // Half a second at 60 samples a second: about 31 segments of 6 vertices.
-        assert!(half.trails.len() <= 32 * 6, "{}", half.trails.len());
+        assert!(!half.trails.is_empty() && half.trails.len() % 3 == 0);
+        // Half a second at 60 samples a second: about 31 segments of 6 vertices, and a bounce's
+        // round join (at most 6 + 18).
+        assert!(half.trails.len() <= 32 * 6 + 24, "{}", half.trails.len());
         let ratio = quarter.trails.len() as f32 / half.trails.len() as f32;
         assert!((0.4..0.6).contains(&ratio), "{ratio}");
         let near = trail_frame(2.0, |s, id| {
@@ -928,10 +929,10 @@ mod tests {
             s.things.get_mut(&BALL).unwrap().params.set("velocity", Value::Vec2([1800.0, -600.0]));
         });
         assert!(f.particles.len() > 10, "{}", f.particles.len());
-        // Each puff overlaps the next: no gap wider than a puff is round.
+        // Each puff overlaps the next well: no gap past 1.2 half sizes (they were about 4 apart).
         for w in f.particles.windows(2) {
             let gap = (w[0].at() - w[1].at()).length();
-            assert!(gap <= w[0].place[3].min(w[1].place[3]), "a gap of {gap} between puffs {:?}", w);
+            assert!(gap <= 1.2 * w[0].place[3].min(w[1].place[3]), "a gap of {gap} between puffs {:?}", w);
         }
     }
 

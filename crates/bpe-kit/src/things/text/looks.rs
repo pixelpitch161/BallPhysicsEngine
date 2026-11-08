@@ -944,7 +944,8 @@ mod tests {
                 continue;
             }
             let s = TextSettings::from_params(&t.params);
-            if s.words.trim().is_empty() || s.path != TextPath::Straight {
+            // Live words ({countdown …}) are laid out as they read when drawn.
+            if s.words.trim().is_empty() || s.words.contains('{') || s.path != TextPath::Straight {
                 continue;
             }
             let found = fonts::find(&scene.fonts, &s.font, s.weight);

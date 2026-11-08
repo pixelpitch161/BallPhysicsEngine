@@ -3662,8 +3662,13 @@ fn fs_dof(in: FsIn) -> @location(0) vec4<f32> {
         if soft > 0.0 {
             // Only where everything the copy averaged there blurs as far as this tap: next to
             // something sharp it would bring that thing's colour in.
-            let copy = textureSampleLevel(lit_picture, samp, place / small, 0.0);
-            tc = mix(tc, copy.rgb, soft * clamp(copy.a - r + 1.0, 0.0, 1.0));
+            // The least of the four texels the filtered read blends (a filtered alpha would be their
+            // mean, and let half of a sharp texel's colour through).
+            let uv = place / small;
+            let copy = textureSampleLevel(lit_picture, samp, uv, 0.0).rgb;
+            let near = textureGather(3, lit_picture, samp, uv);
+            let least = min(min(near.x, near.y), min(near.z, near.w));
+            tc = mix(tc, copy, soft * clamp(least - r + 1.0, 0.0, 1.0));
         }
         // A tap counts only where its own blur reaches this pixel, so a sharp thing isn't smeared
         // by a blurred one behind it; bright taps count more (round bokeh).

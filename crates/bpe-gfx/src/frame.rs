@@ -779,9 +779,12 @@ fn strip(
             out.extend_from_slice(&[at(p + u0 * k.reach, -k.reach), middle, at(m, k.reach)]);
             out.extend_from_slice(&[at(p + u1 * k.reach, -k.reach), middle, at(m, k.reach)]);
         }
-        // A fan round the outside, at most 15 degrees a step.
-        let turn = u0.perp_dot(u1).atan2(u0.dot(u1));
-        let steps = ((turn.abs() / 0.26).ceil() as usize).clamp(1, 12);
+        // A fan round the outside, always turning the inside's way (on an exact reversal the turn's
+        // sign is the sign of zero), at most 30 degrees a step (within 0.6 px of round at 20 px
+        // wide). The same count whatever the width, so a trail's sub-layers match it vertex for
+        // vertex, and few, so a bouncy crowd keeps within the trails' budget.
+        let turn = k.inner * u0.angle_to(u1).abs();
+        let steps = ((turn.abs() / 0.53).ceil() as usize).clamp(1, 6);
         let mut last = u0;
         for s in 1..=steps {
             let next = Vec2::from_angle(turn * s as f32 / steps as f32).rotate(u0);
@@ -2843,6 +2846,16 @@ mod tests {
         assert!(!strip_covers(&bounce, Vec2::new(100.0, 115.0)), "but no further than the strip reaches");
         // Every triangle is finite.
         assert!(bounce.iter().all(|v| v.position.iter().chain(&v.edge).all(|x| x.is_finite())));
+        // Straight back the way it came (a ball rolling into a wall): the end is still rounded,
+        // whichever way the sign of zero falls.
+        for back in [Vec2::new(50.0, 0.0), Vec2::new(-50.0, 0.0)] {
+            let mut reverse = Vec::new();
+            let (corner, way) = (Vec2::new(100.0, 0.0) * back.x.signum(), back.x.signum());
+            strip(&mut reverse, &[Vec2::ZERO, corner, back], |_| 10.0, |_| [1.0; 4], style, 1.0);
+            assert!(strip_covers(&reverse, corner + Vec2::new(9.0 * way, 0.0)), "the far end is capped");
+            assert!(strip_covers(&reverse, corner + Vec2::new(6.0 * way, 6.0)), "round, both sides");
+            assert!(strip_covers(&reverse, corner + Vec2::new(6.0 * way, -6.0)), "round, both sides");
+        }
     }
 
     #[test]

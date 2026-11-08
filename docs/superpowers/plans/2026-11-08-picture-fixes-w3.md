@@ -73,7 +73,7 @@ far ball is close to the near ball's colour. Look by eye in a new `stage-camera-
 ### V14 Highlights (new; the taste call)
 `post.wgsl::fs_composite`: below 1.0 the picture is untouched (white is 255, not 247); above, the colour is scaled
 by its brightest channel (hue kept, so glowing crowds don't drift toward lavender) and turned toward white by how far
-over it is (`s = over / (over + 1.5)`, over = peak − 1), so hot highlights still burn to white smoothly. Replaces the
+over it is (the formula is under As built), so hot highlights still burn to white smoothly. Replaces the
 per-channel shoulder from 0.8. Test: unit-ish picture test: a pure white fill reads 255; a saturated blue at 3× reads
 with blue as the largest channel and red/green well below it.
 
@@ -105,8 +105,21 @@ line width 1.5 → 2.0 (`aura.rs` default). Arcs keep their 2.5 core (checked by
   the ring / on the floor: 1.83 / 0.63 without the copy, 1.71 / 0.56 with it (both with the new dither).
 - V13: pushing the read point onto the circle round the covering ball smeared it into radial streaks; it is mirrored
   across that circle instead. The `SphereGpu.c.w` z-order decides which ball is over which.
-- V14: `whiter = over / (over + 1.5)` (the first try, `over² / (over² + 4)`, left near-white lamp-lit surfaces
-  clearly tinted). Lamp-lit white surfaces now show a little of the lamp's colour where they used to clip to white.
+- V14: `whiter = max(white², over / (over + 0.5)) · min(4 (peak − 1), 1)`, with white = the least channel (to 1)
+  and over = brightness (luma) − 1. Tried first, all by the peak: `over² / (over² + 4)` and `over² / (over² + 1.5 over
+  + 1)` left lamp-lit white walls cream and a red ball's shine pink (`lit_pictures`' white-shine and light-only
+  checks); `over / (over + 1.5)` whitened a blue ball's mild highlight too much. Brightness alone (luma) still left
+  the red shine pink, so the least channel counts too. A pool of light past white is plain white now (no shoulder
+  keeps detail in it): `mirror_light_pictures::a_mirror_ball_throws_spots_*` dims its lamp to 0.4 so the spots
+  beside it don't land in white, and `paint_pictures::solid_paint_matches_plain_colour` leaves out the pixels the
+  old shoulder squeezed (any channel past 0.8).
   `glass_pictures::pearl_and_flake_shine_their_own_ways`' flake margin is 4 jumps (48 against 42; was 6), and
-  `paint_tests::linear` no longer undoes a shoulder.
+  `paint_tests::linear` no longer undoes a shoulder; `pictures::TOLERANCE` is 3 (highlights past 0.8 aren't squeezed
+  any more); `paths_tests::shapes_draw_as_before` re-pinned (white is 255); the fringes test's unmoved middle may
+  differ by a dithered step.
+- Review fixes: colours are clamped to 65504 before the roll-off (an infinite glow drew black); the corner fan turns
+  the inside's way on an exact reversal and takes steps for a quarter-pixel error (thin trails need few); the depth of
+  field gate takes the least of the four texels' blur (`textureGather`). Left as known: smoke fill puffs drop at the
+  very end of a trail (mostly faded there); the Stage camera's rim clamp can pull a point back under a big covering
+  ball.
 - V15: Rain 0.7 → 1.1 (2.0 looked like thick dashes at full size), Aura 1.5 → 2.0. Arcs keep 2.5.

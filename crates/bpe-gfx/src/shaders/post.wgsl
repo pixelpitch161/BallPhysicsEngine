@@ -81,16 +81,19 @@ fn fs_upsample(in: FsIn) -> @location(0) vec4<f32> {
 }
 
 // Brighter than the screen can show: up to 1 the colour is untouched (white stays white). Above,
-// it is scaled down by its brightest channel, so its hue is kept (a crowd of glowing balls
-// doesn't drift toward lavender), and turned toward white by how far over it is, so a hot
-// highlight still burns to white, smoothly.
+// it is scaled down by its brightest channel, so its hue is kept, and turned toward white by how
+// much white light is in it (its least channel: a shine on a red ball, a lamp-lit wall burn
+// white) or how far its brightness is past 1 (a hot core burns white). A saturated glow keeps
+// its colour: a crowd of glowing purple balls stays purple instead of washing out to lavender.
 fn roll_off(c: vec3<f32>) -> vec3<f32> {
     let peak = max(c.r, max(c.g, c.b));
     if peak <= 1.0 {
         return c;
     }
-    let over = peak - 1.0;
-    let whiter = over / (over + 1.5);
+    let white = clamp(min(c.r, min(c.g, c.b)), 0.0, 1.0);
+    let over = max(luma(c) - 1.0, 0.0);
+    // Eased in over the first quarter past 1, so nothing jumps where the roll-off starts.
+    let whiter = max(white * white, over / (over + 0.5)) * min((peak - 1.0) * 4.0, 1.0);
     return mix(c / peak, vec3<f32>(1.0), whiter);
 }
 
@@ -148,7 +151,9 @@ fn fs_composite(in: FsIn) -> @location(0) vec4<f32> {
     let hdr = textureSample(src, samp, in.uv).rgb;
     let bloom = textureSample(bloom_tex, samp, in.uv).rgb;
     let c = (hdr + bloom * g.post.x * 0.35) * g.post.y;
-    let mapped = roll_off(max(c, vec3<f32>(0.0)));
+    // Clamped to the half floats' largest first: summed glows can reach infinity, and inf / inf
+    // would draw the hottest spot black.
+    let mapped = roll_off(clamp(c, vec3<f32>(0.0), vec3<f32>(65504.0)));
     // Triangular dither of ±1 step, the same on every channel (two uniform numbers summed): no banding survives the
     // 8-bit output, and no sin() whose precision differs from GPU to GPU.
     let n = dither_noise(vec2<u32>(in.pos.xy), 0u);

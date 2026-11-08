@@ -66,7 +66,8 @@ fn default_background_matches_old_top_bottom() {
         pixels.iter().zip(&before).filter(|(a, b)| a != b).count(),
         pixels.len()
     );
-    assert!(worst <= 1, "the default background is {worst}/255 off the old picture");
+    // Within the final dither's ±1 step (stronger since 2026-11-08) of the rounding.
+    assert!(worst <= 2, "the default background is {worst}/255 off the old picture");
 }
 
 fn px(pixels: &[u8], x: u32, y: u32) -> [u8; 3] {
@@ -104,7 +105,8 @@ fn the_background_runs_at_any_angle_or_from_the_centre() {
     let sideways = draw(&device, &queue, &kit, &scene, 0.0);
     let (left, right) = (px(&sideways, 2, 240), px(&sideways, W - 3, 240));
     assert!(left[0] > left[2] + 60 && right[2] > right[0] + 60, "{left:?} {right:?}");
-    assert_eq!(px(&sideways, 135, 5), px(&sideways, 135, H - 5), "nothing changes top to bottom");
+    let (top, bottom) = (px(&sideways, 135, 5), px(&sideways, 135, H - 5));
+    assert!((0..3).all(|c| top[c].abs_diff(bottom[c]) <= 2), "nothing changes top to bottom: {top:?} {bottom:?}");
     // From the centre outward: red in the middle, blue at the corners.
     set(&mut scene, "background_colours~form", Value::Choice("round".into()));
     set(&mut scene, "background_span", Value::Number(400.0));

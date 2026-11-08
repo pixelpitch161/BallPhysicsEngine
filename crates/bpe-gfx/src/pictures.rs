@@ -124,8 +124,9 @@ fn a_styled_shiny_circle_looks_like_the_classic_ball() {
 /// How far, in output bytes, a styled shiny circle may stray from the classic ball: the two
 /// shade the same, but the rim's antialiased pixels are lit from just past the edge by the
 /// classic ball and from the edge itself by the styled one, and the classic quad cuts the halo
-/// off at 3 radii where the styled one reaches a little further. Both show as at most 2 bytes.
-const TOLERANCE: u8 = 2;
+/// off at 3 radii where the styled one reaches a little further. Both show as at most 2 bytes,
+/// 3 since highlights past 0.8 are no longer squeezed by a shoulder (2026-11-08).
+const TOLERANCE: u8 = 3;
 
 #[test]
 fn a_stretched_ball_reaches_further_along_its_motion() {

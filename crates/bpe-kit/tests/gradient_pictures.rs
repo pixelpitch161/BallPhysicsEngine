@@ -136,7 +136,8 @@ fn bands_cut_the_background_into_flat_colours() {
     let mut runs: Vec<([u8; 3], u32)> = Vec::new();
     for p in row {
         match runs.last_mut() {
-            Some((c, n)) if off(*c, p) <= 1 => *n += 1,
+            // Within the final dither's ±1 step either way.
+            Some((c, n)) if off(*c, p) <= 2 => *n += 1,
             _ => runs.push((p, 1)),
         }
     }
