@@ -37,7 +37,7 @@ pub struct Place {
 
 /// A number from 0 to 1 from `seed` and `k`.
 pub fn unit(seed: u32, k: u32) -> f32 {
-    (hash(&[seed, k]) >> 8) as f32 / (1u32 << 24) as f32
+    bpe_core::dice::unit24(hash(&[seed, k]))
 }
 
 /// A number from −1 to 1 from `seed` and `k`.

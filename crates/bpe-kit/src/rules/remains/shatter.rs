@@ -51,20 +51,11 @@ pub struct Piece {
     pub cell: Vec<Vec2>,
 }
 
+use bpe_core::dice::Stream;
+
 /// Random numbers from one seed.
-struct Rng(u32);
-
-impl Rng {
-    /// 0 to 1.
-    fn unit(&mut self) -> f32 {
-        self.0 = hash(&[self.0, 0x27d4_eb2f]);
-        (self.0 >> 8) as f32 / (1u32 << 24) as f32
-    }
-
-    /// -1 to 1.
-    fn signed(&mut self) -> f32 {
-        self.unit() * 2.0 - 1.0
-    }
+fn stream(seed: u32) -> Stream {
+    Stream::new(seed, 0x27d4_eb2f)
 }
 
 /// The seed of a break: the thing, its body row and the step it broke on.
@@ -110,7 +101,7 @@ fn inside(edge: Edge, p: Vec2) -> bool {
 }
 
 /// A random point of `m`: inside it, or in its band.
-fn sample(m: &Material, rng: &mut Rng) -> Vec2 {
+fn sample(m: &Material, rng: &mut Stream) -> Vec2 {
     if m.half > 0.0 {
         let (at, normal) = along(m.edge, rng.unit());
         return at + normal * (rng.signed() * m.half);
@@ -187,7 +178,7 @@ fn clip(poly: &[Vec2], at: Vec2, toward: Vec2) -> Vec<Vec2> {
 pub fn cut(m: &Material, bound: f32, n: u32, seed: u32) -> Vec<Piece> {
     let n = n.clamp(1, 256) as usize;
     let bound = if bound.is_finite() { bound.max(1e-3) } else { 1.0 };
-    let mut rng = Rng(seed);
+    let mut rng = stream(seed);
     let sites: Vec<Vec2> = (0..n).map(|_| sample(m, &mut rng).clamp(Vec2::splat(-bound), Vec2::splat(bound))).collect();
     let square =
         [Vec2::new(-bound, -bound), Vec2::new(bound, -bound), Vec2::new(bound, bound), Vec2::new(-bound, bound)];
@@ -264,7 +255,7 @@ impl PieceNow {
 /// Piece `k` (`piece`) of a break that started as `start`, `age` seconds after it, bouncing off
 /// `walls` when the look hits shapes.
 pub fn piece_at(piece: &Piece, k: u32, start: &Start, look: &LookSettings, age: f32, walls: &[&Wall]) -> PieceNow {
-    let mut rng = Rng(hash(&[start.seed, k, 0x9ece]));
+    let mut rng = stream(hash(&[start.seed, k, 0x9ece]));
     let p0 = start.world_of(piece.site);
     let away =
         (p0 - start.from).try_normalize().unwrap_or_else(|| Vec2::from_angle(rng.unit() * std::f32::consts::TAU));

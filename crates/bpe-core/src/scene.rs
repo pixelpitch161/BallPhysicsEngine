@@ -364,8 +364,9 @@ impl Default for Scene {
 impl Scene {
     /// The save format this version writes.
     pub const FORMAT: u32 = 12;
-    /// The oldest format that still opens.
-    pub const OLDEST_FORMAT: u32 = 7;
+    /// The oldest format that still opens: there's no keeping old files working until the
+    /// program settles, so only this version's own.
+    pub const OLDEST_FORMAT: u32 = 12;
 
     /// A scene holding only the scene settings. Panics if `reg` has no `"scene"` kind.
     pub fn empty(reg: &Registry) -> Scene {

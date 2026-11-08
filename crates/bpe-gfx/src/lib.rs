@@ -57,13 +57,13 @@ pub mod swarm;
 mod util;
 
 pub use frame::{
-    Around, BENDS_FROM, BackgroundPaint, BallInstance, BallMark, Bender, BlendLayer, DrawCx, Draws, EffectCall,
-    FIELD_FLAME, FIELD_HEAT_STOPS, FIELD_SMOKE, FREE_BENDER, Field, FieldLook, FlashInstance, Frame, Grade, HitMark,
-    LayerGpu, LayeredInstance, LightGpu, LightScene, LightShow, LightingGpu, LookInstance, MAX_LAYERS, MOST_MIRRORS,
-    MOST_PIPES, MOST_THROWERS, MOST_TRAIL_VERTICES, MirrorGpu, ModuleDraw, NO_HIT, PATH_GLYPH, Particle, PathChannel,
-    PathInstance, PathStyle, Pipe, Place, RibbonGpu, ShapeInstance, SphereGpu, Splat, Stage, StreakStyle, SurfaceGpu,
-    Takes, ThingDraw, Thrower, TrailVertex, blend_alpha, build_frame, build_frame_sensing, build_frame_with,
-    hit_strength, pack_tags, push_streak, push_streak_colours, push_trail, tag_parts, thing_code,
+    Around, BENDS_FROM, BackgroundPaint, BallMark, Bender, BlendLayer, DrawCx, Draws, EffectCall, FIELD_FLAME,
+    FIELD_HEAT_STOPS, FIELD_SMOKE, FREE_BENDER, Field, FieldLook, FlashInstance, Frame, Grade, HitMark, LayerGpu,
+    LayeredInstance, LightGpu, LightScene, LightShow, LightingGpu, MAX_LAYERS, MOST_MIRRORS, MOST_PIPES, MOST_THROWERS,
+    MOST_TRAIL_VERTICES, MirrorGpu, ModuleDraw, NO_HIT, PATH_GLYPH, Particle, PathChannel, PathInstance, PathStyle,
+    Pipe, Place, RibbonGpu, SphereGpu, Splat, Stage, StreakStyle, SurfaceGpu, Takes, ThingDraw, Thrower, TrailVertex,
+    blend_alpha, build_frame, build_frame_sensing, build_frame_with, hit_strength, pack_tags, push_streak,
+    push_streak_colours, push_trail, tag_parts, thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, NO_WAVE, PaintGpu, wave_texels};
 pub use masks::{MASK_TILE, MASK_TILE_BYTES, MAX_MASK_TILES, TILE_DISTANCE_REACH, tile_distance};
@@ -97,21 +97,8 @@ const GLASS_PASS: u32 = 9;
 
 const BLOOM_LEVELS: usize = 6;
 
-// Every instance carries its paint (`PaintGpu`) as its last three vec4s.
-const SHAPE_ATTRIBUTES: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
-    0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
-    6 => Float32x4
-];
-const BALL_ATTRIBUTES: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
-    0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4,
-    7 => Float32x4
-];
 const TRAIL_ATTRIBUTES: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
     0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x2, 4 => Float32x2, 5 => Float32x4, 6 => Float32x4
-];
-const LOOK_ATTRIBUTES: [wgpu::VertexAttribute; 12] = wgpu::vertex_attr_array![
-    0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
-    6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4, 10 => Float32x4, 11 => Float32x4
 ];
 pub(crate) const LAYERED_ATTRIBUTES: [wgpu::VertexAttribute; 13] = wgpu::vertex_attr_array![
     0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
@@ -422,18 +409,11 @@ pub struct Renderer {
     sampler: wgpu::Sampler,
     background: wgpu::RenderPipeline,
     trail: wgpu::RenderPipeline,
-    shape: wgpu::RenderPipeline,
-    ball: wgpu::RenderPipeline,
-    look: wgpu::RenderPipeline,
     layered: wgpu::RenderPipeline,
     flash: wgpu::RenderPipeline,
-    /// What is where, for effects on things (see object.wgsl).
-    shape_object: wgpu::RenderPipeline,
     /// Shapes (see paths.wgsl), and where they are for effects on things.
     path: wgpu::RenderPipeline,
     path_object: wgpu::RenderPipeline,
-    ball_object: wgpu::RenderPipeline,
-    look_object: wgpu::RenderPipeline,
     layered_object: wgpu::RenderPipeline,
     chain: effects::chain::Chain,
     sprites: sprites::Sprites,
@@ -472,13 +452,10 @@ pub struct Renderer {
 /// The instance lists of one frame (the main one, its overlay or a blend layer) on the GPU.
 struct FrameBuffers {
     trails: GrowableBuffer,
-    shapes: GrowableBuffer,
     /// Shapes, the points their outlines run through and the bind group reading those, remade
     /// when the buffer grows.
     paths: GrowableBuffer,
     path_points: GrowableBuffer,
-    balls: GrowableBuffer,
-    looks: GrowableBuffer,
     layered: GrowableBuffer,
     /// The layer records the layered balls name, and the bind group reading them, remade when
     /// the buffer grows.
@@ -502,11 +479,8 @@ impl Default for FrameBuffers {
     fn default() -> Self {
         Self {
             trails: GrowableBuffer::new("trail vertices"),
-            shapes: GrowableBuffer::new("shape instances"),
             paths: GrowableBuffer::new("path instances"),
             path_points: GrowableBuffer::storage("path points"),
-            balls: GrowableBuffer::new("ball instances"),
-            looks: GrowableBuffer::new("styled ball instances"),
             layered: GrowableBuffer::new("layered ball instances"),
             look_layers: GrowableBuffer::storage("ball layer records"),
             layers_group: None,
@@ -534,10 +508,7 @@ impl FrameBuffers {
         f: &Frame,
     ) {
         self.trails.upload(device, queue, bytemuck::cast_slice(&f.trails));
-        self.shapes.upload(device, queue, bytemuck::cast_slice(&f.shapes));
         self.paths.upload(device, queue, bytemuck::cast_slice(&f.paths));
-        self.balls.upload(device, queue, bytemuck::cast_slice(&f.balls));
-        self.looks.upload(device, queue, bytemuck::cast_slice(&f.looks));
         self.layered.upload(device, queue, bytemuck::cast_slice(&f.layered));
         // Shapes bind the records too, whether they name any or not.
         if !f.layered.is_empty() || !f.paths.is_empty() {
@@ -582,6 +553,10 @@ impl FrameBuffers {
     }
 }
 
+/// The lighting passes' shader source: lighting.wgsl with the shared helpers (common.wgsl).
+pub(crate) const LIGHTING_WGSL: &str =
+    concat!(include_str!("shaders/lighting.wgsl"), include_str!("shaders/common.wgsl"));
+
 /// The scene shader: everything the scene's pipelines draw with, its layered balls walking their
 /// stacks as [`layers_source`] says for `effects`.
 pub(crate) fn scene_source(effects: Option<&str>) -> String {
@@ -589,9 +564,7 @@ pub(crate) fn scene_source(effects: Option<&str>) -> String {
         gradients::paint_wgsl(1).as_str(),
         include_str!("shaders/tint.wgsl"),
         include_str!("shaders/scene.wgsl"),
-        include_str!("shaders/object.wgsl"),
         include_str!("shaders/ball_look.wgsl"),
-        include_str!("shaders/styled.wgsl"),
         include_str!("shaders/trail.wgsl"),
         include_str!("shaders/each.wgsl"),
         include_str!("shaders/paths.wgsl"),
@@ -672,7 +645,9 @@ impl Renderer {
         });
         let post_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("post shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/post.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(include_str!("shaders/post.wgsl"), include_str!("shaders/common.wgsl")).into(),
+            ),
         });
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("globals"),
@@ -875,17 +850,6 @@ impl Renderer {
             HDR_FORMAT,
             None,
         );
-        let shape = make(
-            "shapes",
-            &scene_pipeline_layout,
-            &scene_shader,
-            "vs_shape",
-            "fs_shape",
-            &[Some(instances(std::mem::size_of::<ShapeInstance>() as u64, &SHAPE_ATTRIBUTES))],
-            TriangleStrip,
-            HDR_FORMAT,
-            Some(premultiplied),
-        );
         let path = make(
             "paths",
             &layered_pipeline_layout,
@@ -908,17 +872,6 @@ impl Renderer {
             OBJECT_FORMAT,
             None,
         );
-        let ball = make(
-            "balls",
-            &scene_pipeline_layout,
-            &scene_shader,
-            "vs_ball",
-            "fs_ball",
-            &[Some(instances(std::mem::size_of::<BallInstance>() as u64, &BALL_ATTRIBUTES))],
-            TriangleStrip,
-            HDR_FORMAT,
-            Some(premultiplied),
-        );
         let trail = make(
             "trails",
             &scene_pipeline_layout,
@@ -931,17 +884,6 @@ impl Renderer {
                 attributes: &TRAIL_ATTRIBUTES,
             })],
             TriangleList,
-            HDR_FORMAT,
-            Some(premultiplied),
-        );
-        let look = make(
-            "styled balls",
-            &scene_pipeline_layout,
-            &scene_shader,
-            "vs_look",
-            "fs_look",
-            &[Some(instances(std::mem::size_of::<LookInstance>() as u64, &LOOK_ATTRIBUTES))],
-            TriangleStrip,
             HDR_FORMAT,
             Some(premultiplied),
         );
@@ -977,39 +919,6 @@ impl Renderer {
             TriangleStrip,
             HDR_FORMAT,
             Some(additive),
-        );
-        let shape_object = make(
-            "shape objects",
-            &scene_pipeline_layout,
-            &scene_shader,
-            "vs_shape",
-            "fs_shape_object",
-            &[Some(instances(std::mem::size_of::<ShapeInstance>() as u64, &SHAPE_ATTRIBUTES))],
-            TriangleStrip,
-            OBJECT_FORMAT,
-            None,
-        );
-        let ball_object = make(
-            "ball objects",
-            &scene_pipeline_layout,
-            &scene_shader,
-            "vs_ball",
-            "fs_ball_object",
-            &[Some(instances(std::mem::size_of::<BallInstance>() as u64, &BALL_ATTRIBUTES))],
-            TriangleStrip,
-            OBJECT_FORMAT,
-            None,
-        );
-        let look_object = make(
-            "styled ball objects",
-            &scene_pipeline_layout,
-            &scene_shader,
-            "vs_look",
-            "fs_look_object",
-            &[Some(instances(std::mem::size_of::<LookInstance>() as u64, &LOOK_ATTRIBUTES))],
-            TriangleStrip,
-            OBJECT_FORMAT,
-            None,
         );
         let downsample = make(
             "bloom down",
@@ -1072,17 +981,6 @@ impl Renderer {
                     ),
                 ),
                 (
-                    Kind::Shape,
-                    recipe(
-                        "vs_shape",
-                        "fs_shape_each",
-                        size_of::<ShapeInstance>(),
-                        Instance,
-                        &SHAPE_ATTRIBUTES,
-                        TriangleStrip,
-                    ),
-                ),
-                (
                     Kind::Path,
                     Recipe {
                         layout: layered_pipeline_layout.clone(),
@@ -1095,28 +993,6 @@ impl Renderer {
                             TriangleStrip,
                         )
                     },
-                ),
-                (
-                    Kind::Ball,
-                    recipe(
-                        "vs_ball",
-                        "fs_ball_each",
-                        size_of::<BallInstance>(),
-                        Instance,
-                        &BALL_ATTRIBUTES,
-                        TriangleStrip,
-                    ),
-                ),
-                (
-                    Kind::Look,
-                    recipe(
-                        "vs_look",
-                        "fs_look_each",
-                        size_of::<LookInstance>(),
-                        Instance,
-                        &LOOK_ATTRIBUTES,
-                        TriangleStrip,
-                    ),
                 ),
                 (
                     Kind::Layered,
@@ -1179,16 +1055,10 @@ impl Renderer {
             sampler,
             background,
             trail,
-            shape,
-            ball,
-            look,
             layered,
             flash,
-            shape_object,
             path,
             path_object,
-            ball_object,
-            look_object,
             layered_object,
             chain: effects::chain::Chain::new(device),
             sprites,
@@ -1259,10 +1129,12 @@ impl Renderer {
     /// the same device), and on a background thread if the store says so.
     pub fn share_programs(&mut self, store: &ProgramStore) {
         self.programs = store.clone();
+        self.chain.share(store);
     }
 
-    /// Whether the last frame drew some balls without their shader layers because their program
-    /// was still building: draw it again soon and they show.
+    /// Whether the last frame left something out because its shaders were still building (in
+    /// a background store): balls without their shader layers, a lit frame drawn unlit, a
+    /// picture effect left out. Draw it again soon and they show.
     pub fn programs_waiting(&self) -> bool {
         self.waiting
     }
@@ -1355,6 +1227,20 @@ impl Renderer {
             (Some(_), Some([(_, lit), _, _])) => Some((self.targets.behind_view.clone(), lit)),
             _ => None,
         }
+    }
+
+    /// Makes the lighting pass from the store's lighting pipelines, unless it is made. False while
+    /// a background store is still building them (the renderer then counts as waiting).
+    fn lighting_ready(&mut self, device: &wgpu::Device) -> bool {
+        if self.lighting.is_some() {
+            return true;
+        }
+        let Some(kit) = self.programs.lock().light_kit(device) else {
+            self.waiting = true;
+            return false;
+        };
+        self.lighting = Some(lighting::Lighting::with_kit(device, &kit));
+        true
     }
 
     /// Draws `frame`'s scene, lit, into the HDR picture: everything before the picture's effects.
@@ -1461,12 +1347,14 @@ impl Renderer {
         self.lit_lights = frame.light.as_ref().map(|scene| scene.lights.len());
         let mut timed = false;
         let mut moved = false;
-        if let Some(scene) = frame.light.as_ref() {
+        // A lit frame whose lighting shaders are still being built is drawn unlit for now.
+        let lit = frame.light.as_ref().filter(|_| self.lighting_ready(device));
+        if let Some(scene) = lit {
             let timer = self.light_timer.get_or_insert_with(|| timing::LightTimer::new(device, queue));
             if let Some(t) = timer {
                 t.start(encoder);
             }
-            let lighting = self.lighting.get_or_insert_with(|| lighting::Lighting::new(device));
+            let lighting = self.lighting.as_mut().expect("ready, checked above");
             lighting.ensure(device, self.targets.width, self.targets.height, scene);
             let pictures = lighting.pictures().expect("just made");
             // With nothing giving off light its picture is left black (the bounce and the
@@ -1579,8 +1467,9 @@ impl Renderer {
             // lighting and the lit colour are then the moved camera's.
             if let Some(view) = moving {
                 let lighting = self.lighting.as_ref().expect("made above");
-                let pass =
-                    self.stage_camera.get_or_insert_with(|| stage_camera_pass::StageCameraPass::new(device, lighting));
+                let pass = self
+                    .stage_camera
+                    .get_or_insert_with(|| stage_camera_pass::StageCameraPass::with_kit(device, lighting.stage_kit()));
                 pass.ensure(device, self.targets.width, self.targets.height);
                 {
                     let mut background = begin_pass(
@@ -1668,6 +1557,7 @@ impl Renderer {
             object_view.as_ref(),
         );
         self.chain.end_frame();
+        self.waiting |= self.chain.waiting;
         for level in 0..BLOOM_LEVELS {
             let mut pass = begin_pass(
                 &mut encoder,
@@ -1982,11 +1872,6 @@ impl Renderer {
             // what follows.
             pass.set_bind_group(1, &through.paint, &[]);
         }
-        if !f.shapes.is_empty() {
-            pass.set_pipeline(self.pipeline(&self.shape, Kind::Shape, through));
-            pass.set_vertex_buffer(0, b.shapes.slice());
-            pass.draw(0..4, 0..f.shapes.len() as u32);
-        }
         if let Some(records) = b.layers_group.as_ref().filter(|_| !f.paths.is_empty()) {
             let plain = self.pipeline(&self.path, Kind::Path, through);
             pass.set_bind_group(2, records, &[]);
@@ -2022,18 +1907,8 @@ impl Renderer {
         }
     }
 
-    /// Balls and styled balls.
+    /// The balls.
     fn draw_balls(&self, pass: &mut wgpu::RenderPass<'_>, f: &Frame, b: &FrameBuffers, through: &Through) {
-        if !f.balls.is_empty() {
-            pass.set_pipeline(self.pipeline(&self.ball, each::Kind::Ball, through));
-            pass.set_vertex_buffer(0, b.balls.slice());
-            pass.draw(0..4, 0..f.balls.len() as u32);
-        }
-        if !f.looks.is_empty() {
-            pass.set_pipeline(self.pipeline(&self.look, each::Kind::Look, through));
-            pass.set_vertex_buffer(0, b.looks.slice());
-            pass.draw(0..4, 0..f.looks.len() as u32);
-        }
         if let Some(group) = b.layers_group.as_ref().filter(|_| !f.layered.is_empty()) {
             let plain = self.pipeline(&self.layered, each::Kind::Layered, through);
             pass.set_bind_group(2, group, &[]);
@@ -2108,7 +1983,6 @@ impl Renderer {
         self.sprites.draw_range(pass, buffer, start..count, through.each);
     }
 
-    /// Where `f`'s shapes, balls and styled balls are, for effects on things.
     /// The frame's object picture: the layers drawn before its own things, its own things, then,
     /// when `above`, the layers drawn after them.
     fn draw_all_objects(&self, pass: &mut wgpu::RenderPass<'_>, frame: &Frame, layers: &[FrameBuffers], above: bool) {
@@ -2122,26 +1996,11 @@ impl Renderer {
     }
 
     fn draw_objects(&self, pass: &mut wgpu::RenderPass<'_>, f: &Frame, b: &FrameBuffers) {
-        if !f.shapes.is_empty() {
-            pass.set_pipeline(&self.shape_object);
-            pass.set_vertex_buffer(0, b.shapes.slice());
-            pass.draw(0..4, 0..f.shapes.len() as u32);
-        }
         if let Some(records) = b.layers_group.as_ref().filter(|_| !f.paths.is_empty()) {
             pass.set_pipeline(&self.path_object);
             pass.set_bind_group(2, records, &[]);
             pass.set_vertex_buffer(0, b.paths.slice());
             pass.draw(0..4, 0..f.paths.len() as u32);
-        }
-        if !f.balls.is_empty() {
-            pass.set_pipeline(&self.ball_object);
-            pass.set_vertex_buffer(0, b.balls.slice());
-            pass.draw(0..4, 0..f.balls.len() as u32);
-        }
-        if !f.looks.is_empty() {
-            pass.set_pipeline(&self.look_object);
-            pass.set_vertex_buffer(0, b.looks.slice());
-            pass.draw(0..4, 0..f.looks.len() as u32);
         }
         if let Some(group) = b.layers_group.as_ref().filter(|_| !f.layered.is_empty()) {
             pass.set_pipeline(&self.layered_object);
@@ -2152,7 +2011,7 @@ impl Renderer {
     }
 
     /// Draws everything in `f` into `view` over what is there, in the usual order: trails,
-    /// shapes, balls, styled balls, flashes and particles. Used for the things stuck to the
+    /// shapes, balls, flashes and particles. Used for the things stuck to the
     /// screen and for each blend layer.
     fn draw_things(
         &self,
@@ -2167,7 +2026,7 @@ impl Renderer {
     }
 
     /// One half of [`Renderer::draw_things`]: the trails and shapes behind (`front` false), or
-    /// the balls, styled balls, flashes and particles in front.
+    /// the balls, flashes and particles in front.
     fn draw_things_part(
         &self,
         encoder: &mut wgpu::CommandEncoder,

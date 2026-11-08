@@ -53,6 +53,13 @@ pub struct Preview {
     shown: warm::Shown,
 }
 
+impl Preview {
+    /// Whether a handle in the picture is being dragged.
+    pub fn dragging(&self) -> bool {
+        self.drag.is_some()
+    }
+}
+
 #[derive(PartialEq)]
 struct Drawn {
     revision: u64,
@@ -341,6 +348,9 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     }
     if warm::busy(&preview) {
         ui.ctx().request_repaint();
+    } else if let Some(due) = warm::spare_due(&preview) {
+        // Looked at again when the kept spare renderer is let go.
+        ui.ctx().request_repaint_after(due);
     }
     // Looked at again until the particle playback is where the playhead is.
     if !studio.particles_there() {
@@ -695,27 +705,8 @@ fn draw_picture(
     let now = Drawn { particles: particles.as_ref().map(|p| p.step), ..now };
     if drawn.as_ref() != Some(&now) {
         // The particles are drawn from the particle playback's world, lent to this one.
-        let lent = particles.map(|p| studio.playback.lend_states(p.states.clone()));
-        // Soloed lights: the picture from a copy with the others left out (never the scene's).
-        let solo = lights_panel::soloed(&studio.scene, &studio.resolved, &studio.light_solo);
-        build_frame_sensing(
-            &studio.scene,
-            solo.as_ref().unwrap_or(&studio.resolved),
-            studio.playback.world(),
-            studio.playback.log(),
-            shown_time,
-            &studio.kit.draws,
-            studio.follow.as_deref().map(|f| f as &dyn bpe_runtime::SoundAt),
-            studio.light_probe.as_deref(),
-            frame,
-        );
-        // The World view looks through its own camera at a picture the panel's shape, and
-        // things stuck to the screen belong to the video, not the world, so they are left out.
-        // Blend layers move with the frame.
-        if let Some((camera, size)) = look {
-            world_look(frame, camera, size);
-        }
-        show_light(frame, studio.light_show);
+        let lent = particles.map(|p| studio.playback.lend_states(p.lent()));
+        compose(studio, studio.playback.world(), studio.playback.log(), shown_time, look, frame);
         if look.is_none() {
             studio.stage_view = frame.stage_view().filter(|v| v.motion > 0.0);
         }
@@ -727,6 +718,39 @@ fn draw_picture(
         *drawn = Some(now);
     }
     catching_up
+}
+
+/// Builds the picture of `world` at `time` as the preview shows it: soloed lights alone (from a
+/// copy with the others left out, never the scene's), the sound and light the picture reads, the
+/// World view's camera and the Show bar's light show. The preview and the effects' warm-up both
+/// build through it, so the picture a warm-up swaps in is the preview's own.
+pub(crate) fn compose(
+    studio: &Studio,
+    world: &World,
+    log: &bpe_runtime::Log,
+    time: f64,
+    look: Option<(CameraView, (u32, u32))>,
+    frame: &mut Frame,
+) {
+    let solo = lights_panel::soloed(&studio.scene, &studio.resolved, &studio.light_solo);
+    build_frame_sensing(
+        &studio.scene,
+        solo.as_ref().unwrap_or(&studio.resolved),
+        world,
+        log,
+        time,
+        &studio.kit.draws,
+        studio.follow.as_deref().map(|f| f as &dyn bpe_runtime::SoundAt),
+        studio.light_probe.as_deref(),
+        frame,
+    );
+    // The World view looks through its own camera at a picture the panel's shape, and things
+    // stuck to the screen belong to the video, not the world, so they are left out. Blend layers
+    // move with the frame.
+    if let Some((camera, size)) = look {
+        world_look(frame, camera, size);
+    }
+    show_light(frame, studio.light_show);
 }
 
 /// Makes `frame` the World view's: seen through `camera` at `size`, without what is stuck to the
@@ -1282,6 +1306,35 @@ mod tests {
             }
         }
         renderer.read_output(&gpu.0, &gpu.1).unwrap()
+    }
+
+    #[test]
+    fn a_lit_picture_waits_for_the_lighting_shaders_then_draws_lit() {
+        let Ok(gpu) = bpe_gfx::test_device() else { return };
+        let mut studio = Studio::headless();
+        let mut scene = studio.scene.clone();
+        let kind = bpe_kit::things::light::LightType::Spot;
+        bpe_kit::things::light::add_light(&mut scene, &studio.kit.registry, kind, ThingId::ROOT).unwrap();
+        studio.replace_scene(scene, None);
+        studio.seek(0.5);
+        // As the editor draws: shaders built on their own thread.
+        let store = bpe_gfx::ProgramStore::in_background();
+        let mut renderer = Renderer::new(&gpu.0, 135, 240);
+        renderer.share_programs(&store);
+        let mut drawn = None;
+        let first = shown(&mut studio, &gpu, &mut renderer, &mut drawn);
+        // As an export draws: built at once.
+        let mut now = Renderer::new(&gpu.0, 135, 240);
+        let lit = shown(&mut studio, &gpu, &mut now, &mut None);
+        if renderer.programs_waiting() {
+            assert_ne!(first, lit, "drawn unlit while the lighting builds");
+            assert!(redraw_when_built(&renderer, &egui::Context::default()), "and drawn again soon");
+        }
+        store.wait();
+        drawn = None;
+        let again = shown(&mut studio, &gpu, &mut renderer, &mut drawn);
+        assert!(!renderer.programs_waiting());
+        assert_eq!(again, lit, "once built, the picture is the export's");
     }
 
     /// Runs one editor frame around `edit` the way the panels do: the tree and the inspector

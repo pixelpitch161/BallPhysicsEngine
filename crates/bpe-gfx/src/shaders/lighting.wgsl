@@ -1744,7 +1744,9 @@ fn haze_density(p: vec2<f32>, stir: vec4<f32>) -> f32 {
     let speed = gu.haze.y;
     // The balls carry the haze along behind them, and turn it round them.
     let push = stir.xy * 0.35 * gu.haze_more.z;
-    var q = (p - push) / size - gu.haze_more.xy * speed * t * 100.0 / size;
+    // `haze_more.xy` is how far the clouds have drifted by now (world units, worked out on the
+    // CPU: along the drift direction at the speed, or as far as the scene's air carried them).
+    var q = (p - push - gu.haze_more.xy) / size;
     if gu.haze.x > 1.5 {
         // Swirling: the cloud bent by a slowly turning field of its own.
         let w = vec2<f32>(
@@ -4049,10 +4051,6 @@ fn fs_trace(in: FsIn) -> @location(0) vec4<f32> {
     }
     let out = sum / f32(TRACE_RAYS) * u.trace.x;
     return vec4<f32>(clamp(out, vec3<f32>(-6.0e4), vec3<f32>(6.0e4)), 0.0);
-}
-
-fn luma(c: vec3<f32>) -> f32 {
-    return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
 }
 
 // The bake's noise clean-up (part 3): one à-trous pass over `picture` (the traced light), 5 x 5

@@ -342,6 +342,7 @@ fn demo_shots(reg: &Registry) -> Vec<Shot> {
         at("light-show", scenes::light_show(reg)),
         at("glow-demo", scenes::glow_demo(reg)),
         at("club-demo", scenes::club_demo(reg)),
+        shot("club-haze-with-the-air", haze_with_the_air(reg), vec![1.0, 1.05, 3.0]),
         at("water-demo", scenes::water_demo(reg)),
         at("colour-demo", scenes::colour_demo(reg)),
         at("blend-demo", scenes::blend_demo(reg)),
@@ -400,6 +401,25 @@ fn gradient_seams(reg: &Registry) -> Scene {
         p.set(&layered_key(pattern, "in_from"), Value::Choice("own_gradient".into()));
         p.set(&layered_key(pattern, "in_colours"), Value::Gradient(colours.clone()));
         p.set(&layered_key(pattern, "in_colours~form"), Value::Choice(form.into()));
+    }
+    s
+}
+
+/// The club demo with its haze carried by a gusty Air card wind, and the balls following the air
+/// (W13): the haze drifts with the wind, the balls with it.
+fn haze_with_the_air(reg: &Registry) -> Scene {
+    let mut s = scenes::club_demo(reg);
+    lighting(&mut s, "haze_moves", Value::Choice("with_the_air".into()));
+    bpe_kit::things::particles::air::ensure_air_card(&mut s, reg).unwrap();
+    let air = s.card_mut(ThingId::ROOT, SlotId::Air).unwrap();
+    for (k, v) in [("wind_speed", 220.0), ("wind_direction", -30.0), ("gusts", 0.6), ("gust_every", 1.5)] {
+        air.params.set(k, Value::Number(v));
+    }
+    let balls: Vec<ThingId> = s.things.values().filter(|t| t.kind == "balls").map(|t| t.id).collect();
+    for b in balls {
+        if let Some(m) = s.card_mut(b, SlotId::Motion) {
+            m.params.set("follow_air", Value::Number(1.5));
+        }
     }
     s
 }

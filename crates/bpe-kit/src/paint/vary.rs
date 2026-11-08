@@ -5,14 +5,8 @@
 
 use super::Paint;
 use bpe_core::ThingId;
+use bpe_core::dice::{pcg32 as pcg, unit24_closed};
 pub use bpe_gfx::NO_VARY;
-
-/// One step of the PCG hash: a well mixed 32-bit value for `x`.
-fn pcg(x: u32) -> u32 {
-    let state = x.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
-    let word = ((state >> ((state >> 28) + 4)) ^ state).wrapping_mul(277_803_737);
-    (word >> 22) ^ word
-}
 
 /// A stable seed for instance `index` of `thing`. Different for every index of one thing.
 pub fn seed_of(thing: ThingId, index: usize) -> u32 {
@@ -24,7 +18,7 @@ pub fn seed_of(thing: ThingId, index: usize) -> u32 {
 /// A value in -1 to 1 for (seed, which of the three values, lattice point).
 fn lattice(seed: u32, k: u32, n: u32) -> f32 {
     let h = pcg(seed ^ pcg(k.wrapping_mul(0x9e37_79b9) ^ pcg(n)));
-    (h >> 8) as f32 / 16_777_215.0 * 2.0 - 1.0
+    unit24_closed(h) * 2.0 - 1.0
 }
 
 /// Value `k` (0, 1 or 2) of an instance, -1 to 1: fixed when `wobble` is 0, else smooth noise

@@ -6,7 +6,6 @@ pub mod air;
 mod layer_tests;
 pub mod modules;
 pub mod paint;
-pub mod rng;
 pub mod rules;
 #[cfg(any(test, feature = "test-scenes"))]
 pub mod scenes;
@@ -66,6 +65,7 @@ pub fn sims() -> Sims {
     s.add_health(modules::health::HealthCardSim);
     // Light sensing: worlds whose physics follows light get the probe (none do unless asked).
     s.light = Some(std::sync::Arc::new(sensing::KitLight));
+    s.air = Some(std::sync::Arc::new(air::KitAir));
     s
 }
 
@@ -155,13 +155,6 @@ pub fn registry() -> Registry {
     r.add_layer(OwnEffect);
     sound::register(&mut r);
     rules::register(&mut r);
-    // Format 8 masks open as Cut sub-layers.
-    r.add_upgrade(9, modules::look::layers::masks_to_cuts);
-    // Trail and Particles cards before format 10 open as layers of the Look.
-    r.add_upgrade(10, modules::look::layers::cards_to_layers::cards_to_layers);
-    // A scene's one Shader card opens as an Effects stack. Every format runs it: it does nothing
-    // to a scene without an old card.
-    r.add_upgrade(u32::MAX, modules::effects::upgrade::single_effect_to_stack);
     r
 }
 

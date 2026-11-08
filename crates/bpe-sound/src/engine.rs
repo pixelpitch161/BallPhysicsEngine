@@ -81,7 +81,7 @@ impl Engine {
         let cursor = HitCursor::new(physics.world().steps_per_second);
         let mut master = Master::new(&patch.master);
         master.set_keys(patch.master_keys);
-        master.at(0.0);
+        master.at(0.0, None);
         master.reset();
         let buses = Buses::new(patch.buses);
         let discard = master.latency() + buses.latency();
@@ -166,11 +166,11 @@ impl Engine {
         self.leaving_routes.clear();
         // The master's keyed gains start where they are at the first block rendered.
         let first = if self.voices.is_empty() { target } else { start };
-        self.master.at(first as f64 / rate);
+        self.master.at(first as f64 / rate, None);
         self.master.reset();
         self.buses.reset(first as f64 / rate);
         for r in &mut self.routes {
-            r.at(first as f64 / rate);
+            r.at(first as f64 / rate, None);
             r.snap();
         }
         self.paused_pos = 0;
@@ -370,7 +370,7 @@ impl Engine {
         self.paused_pos = self.paused_pos.max(self.voice_pos);
         let time = self.out_pos as f64 / SAMPLE_RATE as f64;
         self.run_voices(self.paused_pos, time, false);
-        self.master.at(time);
+        self.master.at(time, self.physics.world().rules());
         self.master.process(&mut self.bus_l, &mut self.bus_r);
         self.paused_pos += BLOCK as u64;
         for i in 0..BLOCK {
@@ -469,7 +469,7 @@ impl Engine {
         self.cursor.take_block(self.voice_pos, BLOCK as u64, &mut self.hits);
         let time = self.voice_pos as f64 / SAMPLE_RATE as f64;
         self.run_voices(self.voice_pos, time, true);
-        self.master.at(time);
+        self.master.at(time, self.physics.world().rules());
         self.master.process(&mut self.bus_l, &mut self.bus_r);
         self.voice_pos += BLOCK as u64;
         let mut stems = [[[0.0f32; BLOCK]; 2]; BUSES];
@@ -511,7 +511,7 @@ impl Engine {
             log: self.physics.log(),
             playing,
         };
-        self.buses.begin(time);
+        self.buses.begin(time, cx.world.rules());
         let voices = self.voices.iter_mut().zip(self.routes.iter_mut());
         let leaving = self.leaving.iter_mut().zip(self.leaving_routes.iter_mut());
         for (v, route) in voices.chain(leaving) {
@@ -525,10 +525,10 @@ impl Engine {
                     self.note_log.push(thing, n);
                 }
             }
-            route.at(time);
+            route.at(time, cx.world.rules());
             route.send(&mut self.buses, &self.voice_l, &self.voice_r);
         }
-        self.buses.process(&mut self.bus_l, &mut self.bus_r, time, &self.tempo, hits, &self.meters);
+        self.buses.process(&mut self.bus_l, &mut self.bus_r, time, &self.tempo, hits, &self.meters, cx.world.rules());
     }
 
     /// Measures the block just handed out (in the buses) and writes the meters.

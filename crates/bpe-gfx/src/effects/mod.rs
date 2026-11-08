@@ -37,7 +37,8 @@ pub use crate::frame::Stage;
 /// How many floats an effect's settings can take together.
 pub const MAX_PARAM_FLOATS: usize = 16;
 
-pub const PRELUDE: &str = include_str!("prelude.wgsl");
+pub const PRELUDE: &str =
+    concat!(include_str!("prelude.wgsl"), include_str!("shared.wgsl"), include_str!("../shaders/common.wgsl"));
 
 /// The longest an effect's memory can be, in seconds: what the editor replays after a seek.
 pub const MAX_MEMORY: f32 = 10.0;
@@ -624,7 +625,8 @@ fn bpe_run(in: FsIn) -> array<vec4<f32>, 2> {
     Ok(format!("{head}{wgsl}\n{tail}"))
 }
 
-pub const IN_BALL: &str = include_str!("in_ball.wgsl");
+pub const IN_BALL: &str =
+    concat!(include_str!("in_ball.wgsl"), include_str!("shared.wgsl"), include_str!("../shaders/common.wgsl"));
 /// What effects call for a Shader layer inside a shape; follows [`IN_BALL`].
 pub const IN_SHAPE: &str = include_str!("in_shape.wgsl");
 

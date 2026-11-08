@@ -6,7 +6,7 @@ use std::f32::consts::TAU;
 use glam::Vec2;
 
 use super::{Directions, EmitterSettings, FireOrder, FireWhen, StartFrom};
-use crate::rng::Rng;
+use bpe_core::dice::Rng;
 
 /// What a random roll is for, so each gets its own stream.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

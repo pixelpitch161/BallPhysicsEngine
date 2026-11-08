@@ -249,69 +249,10 @@ fn background_colour(in: BgOut) -> vec4<f32> {
     return vec4<f32>(paint_along(p, along, g.view.w).rgb, 1.0);
 }
 
-// ---- Walls (instanced quads with a distance function) ----
+// ---- Shared helpers ----
 
 const PI: f32 = 3.14159265;
 const TAU: f32 = 6.28318531;
-// How far a wall's glow reaches, in world pixels.
-const GLOW_REACH: f32 = 36.0;
-
-struct ShapeIn {
-    // Centre xy, angle.
-    @location(0) a: vec4<f32>,
-    // Ring: radius, sides. Box: half size, corner radius. Capsule: half length.
-    @location(1) b: vec4<f32>,
-    // Kind (0 ring/polygon, 1 box, 2 capsule, 3 filled box, 4 filled arc band), half line width,
-    // glow.
-    @location(2) c: vec4<f32>,
-    @location(3) color: vec4<f32>,
-    // The gradient painted on the line, as `PaintGpu`.
-    @location(4) paint_a: vec4<f32>,
-    @location(5) paint_b: vec4<f32>,
-    @location(6) paint_c: vec4<f32>,
-};
-
-struct ShapeOut {
-    @builtin(position) pos: vec4<f32>,
-    @location(0) world: vec2<f32>,
-    @location(1) @interpolate(flat) a: vec4<f32>,
-    @location(2) @interpolate(flat) b: vec4<f32>,
-    @location(3) @interpolate(flat) c: vec4<f32>,
-    @location(4) @interpolate(flat) color: vec4<f32>,
-    @location(5) @interpolate(flat) paint_a: vec4<f32>,
-    @location(6) @interpolate(flat) paint_b: vec4<f32>,
-    @location(7) @interpolate(flat) paint_c: vec4<f32>,
-};
-
-@vertex
-fn vs_shape(@builtin(vertex_index) i: u32, s: ShapeIn) -> ShapeOut {
-    let corner = quad_corner(i);
-    let px = g.view.z;
-    var reach = max(s.c.y, 0.5 * px) + 2.0 * px;
-    if s.c.z > 0.0 {
-        reach += GLOW_REACH;
-    }
-    var extent = s.b.x;
-    if s.c.x > 3.5 {
-        // An arc band reaches its radius plus its half width.
-        extent = s.b.x + s.b.y;
-    } else if s.c.x > 0.5 {
-        // A box's half size, or a capsule's half length (its b.y is 0).
-        extent = length(s.b.xy);
-    }
-    let world = s.a.xy + corner * (extent + reach);
-    var out: ShapeOut;
-    out.pos = to_clip(world);
-    out.world = world;
-    out.a = s.a;
-    out.b = s.b;
-    out.c = s.c;
-    out.color = s.color;
-    out.paint_a = s.paint_a;
-    out.paint_b = s.paint_b;
-    out.paint_c = s.paint_c;
-    return out;
-}
 
 // How much a pixel hides what is behind it. A negative colour alpha is an additive colour: it
 // adds its light and hides nothing.
@@ -331,194 +272,7 @@ fn segment_distance(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
     return length(p - a - ab * t);
 }
 
-// Point on a ring or regular polygon `u` radians clockwise from `angle`, relative to its centre.
-fn outline_point(radius: f32, sides: f32, angle: f32, u: f32) -> vec2<f32> {
-    let d = vec2<f32>(cos(angle + u), sin(angle + u));
-    if sides < 2.5 {
-        return d * radius;
-    }
-    let step = TAU / sides;
-    let side = round(u / step);
-    return d * (radius * cos(PI / sides) / cos(u - side * step));
-}
-
-// Distance from p (relative to the centre) to a ring or polygon outline.
-fn ring_distance(p: vec2<f32>, radius: f32, sides: f32, angle: f32) -> f32 {
-    if sides < 2.5 {
-        return abs(length(p) - radius);
-    }
-    // The nearest side of a regular polygon is the one in p's own sector.
-    let u = atan2(p.y, p.x) - angle;
-    let u_wrapped = u - TAU * floor((u + PI) / TAU);
-    let step = TAU / sides;
-    let side = round(u_wrapped / step);
-    let a = outline_point(radius, sides, angle, (side - 0.5) * step);
-    let b = outline_point(radius, sides, angle, (side + 0.5) * step);
-    return segment_distance(p, a, b);
-}
-
-// Distance from a pixel to a wall's centre line, or to a capsule's spine.
-fn shape_distance(in: ShapeOut) -> f32 {
-    if in.c.x < 0.5 {
-        return ring_distance(in.world - in.a.xy, in.b.x, in.b.y, in.a.z);
-    }
-    let local = rotate(in.world - in.a.xy, -in.a.z);
-    if in.c.x < 1.5 {
-        // A box, its corners rounded by b.z.
-        let corner = in.b.z;
-        let q = abs(local) - (in.b.xy - vec2<f32>(corner));
-        return abs(length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - corner);
-    }
-    // A capsule: the segment along x from -b.x to b.x.
-    return segment_distance(local, vec2<f32>(-in.b.x, 0.0), vec2<f32>(in.b.x, 0.0));
-}
-
-// How far round a shape's line a pixel is, 0 to 1, for a gradient painted along it. A ring or
-// polygon goes clockwise round its centre from its own angle; a box clockwise round its edge from
-// the top-left corner (rounded corners counted as square); a capsule from one end to the other.
-fn shape_path(in: ShapeOut) -> f32 {
-    let local = rotate(in.world - in.a.xy, -in.a.z);
-    if in.c.x < 0.5 {
-        return fract(atan2(local.y, local.x) / TAU);
-    }
-    let half = max(in.b.xy, vec2<f32>(1e-3));
-    if in.c.x < 1.5 {
-        let p = clamp(local, -half, half);
-        let q = abs(local) - half;
-        // The perimeter walked so far: top, right, bottom, left.
-        var walked = 0.0;
-        if q.y >= q.x {
-            if local.y < 0.0 {
-                walked = p.x + half.x;
-            } else {
-                walked = 2.0 * half.x + 2.0 * half.y + (half.x - p.x);
-            }
-        } else if local.x > 0.0 {
-            walked = 2.0 * half.x + (p.y + half.y);
-        } else {
-            walked = 4.0 * half.x + 2.0 * half.y + (half.y - p.y);
-        }
-        return fract(walked / (4.0 * (half.x + half.y)));
-    }
-    return clamp((local.x + in.b.x) / (2.0 * half.x), 0.0, 1.0);
-}
-
-// A pixel's place across a shape's bounding box, -1 to 1 each way, turned with the shape: what
-// an inside pattern paints across.
-fn shape_local(in: ShapeOut) -> vec2<f32> {
-    var half = vec2<f32>(in.b.x);
-    if in.c.x > 1.5 {
-        half = vec2<f32>(in.b.x, 0.0);
-    } else if in.c.x > 0.5 {
-        half = in.b.xy;
-    }
-    half = max(half + vec2<f32>(in.c.y), vec2<f32>(1e-3));
-    return rotate(in.world - in.a.xy, -in.a.z) / half;
-}
-
-// What `fs_shape` and `fs_shape_each` draw.
-// Kinds 3 and 4: filled shapes with no line and no glow, edges a pixel soft.
-// Kind 3 is a box (a: centre, angle, clip low; b: half size, corner, clip high) shown only where
-// its own x is within the clip. Kind 4 is a band of a ring (a: centre, middle direction; b: radius,
-// half width, half sweep).
-fn shade_fill(in: ShapeOut) -> vec4<f32> {
-    let px = g.view.z;
-    let local = rotate(in.world - in.a.xy, -in.a.z);
-    var d = 0.0;
-    if in.c.x < 3.5 {
-        let corner = in.b.z;
-        let q = abs(local) - (in.b.xy - vec2<f32>(corner));
-        d = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - corner;
-        d = max(d, max(in.a.w - local.x, local.x - in.b.w));
-    } else {
-        d = abs(length(local) - in.b.x) - in.b.y;
-        let half_sweep = in.b.z;
-        if half_sweep < 3.14159 {
-            // Past the sweep's two edges, which run out from the centre at +-half_sweep.
-            d = max(d, dot(vec2<f32>(local.x, abs(local.y)), vec2<f32>(-sin(half_sweep), cos(half_sweep))));
-        }
-    }
-    let cover = clamp(0.5 - d / px, 0.0, 1.0) * abs(in.color.a);
-    if cover <= 0.0 {
-        discard;
-    }
-    return vec4<f32>(in.color.rgb * cover, covering(cover, in.color.a));
-}
-
-fn shade_shape(in: ShapeOut) -> vec4<f32> {
-    // For the gradient grain (paint.wgsl).
-    paint_px = in.pos.xy;
-    if in.c.x > 2.5 {
-        return shade_fill(in);
-    }
-    let px = g.view.z;
-    let d = shape_distance(in);
-    let width = in.c.y * 2.0;
-    let half_width = max(in.c.y, 0.5 * px);
-    // Lines thinner than a pixel get dimmer instead of aliasing.
-    let cover = clamp((half_width - d) / px + 0.5, 0.0, 1.0) * min(width / px, 1.0) * abs(in.color.a);
-    let glow = exp(-max(d - half_width, 0.0) / 6.0) * in.c.z;
-    if cover <= 0.0 && glow < 1e-4 {
-        discard;
-    }
-    let paint = paint_from_varied(in.paint_a, in.paint_b, in.paint_c);
-    if !paint_paints(paint) {
-        return vec4<f32>(in.color.rgb * (cover + glow), covering(cover, in.color.a));
-    }
-    // A gradient painted on the line takes the place of its colour; the glow keeps the colour.
-    var line = vec3<f32>(0.0);
-    if paint.pattern > 3.5 && paint.pattern < 4.5 {
-        line = paint_pattern(paint, shape_path(in) * paint.scale, g.view.w).rgb;
-    } else {
-        line = paint_colour(paint, shape_local(in), g.view.w, in.color).rgb;
-    }
-    return vec4<f32>(line * cover + in.color.rgb * glow, covering(cover, in.color.a));
-}
-
-// ---- Balls (instanced quads, shaded like small spheres with a soft halo) ----
-
-const BALL_EXTENT: f32 = 3.0;
-
-struct BallIn {
-    @location(0) center: vec2<f32>,
-    @location(1) radius: f32,
-    @location(2) glow: f32,
-    @location(3) color: vec4<f32>,
-    // The thing code plus half the seed, the seed, two spare.
-    @location(4) code: vec4<f32>,
-    // The gradient painted inside, as `PaintGpu`.
-    @location(5) paint_a: vec4<f32>,
-    @location(6) paint_b: vec4<f32>,
-    @location(7) paint_c: vec4<f32>,
-};
-
-struct BallOut {
-    @builtin(position) pos: vec4<f32>,
-    @location(0) local: vec2<f32>,
-    @location(1) color: vec4<f32>,
-    @location(2) radius_px: f32,
-    @location(3) glow: f32,
-    @location(4) @interpolate(flat) code: vec4<f32>,
-    @location(5) @interpolate(flat) paint_a: vec4<f32>,
-    @location(6) @interpolate(flat) paint_b: vec4<f32>,
-    @location(7) @interpolate(flat) paint_c: vec4<f32>,
-};
-
-@vertex
-fn vs_ball(@builtin(vertex_index) i: u32, b: BallIn) -> BallOut {
-    let corner = quad_corner(i) * BALL_EXTENT;
-    var out: BallOut;
-    out.pos = to_clip(b.center + corner * b.radius);
-    out.local = corner;
-    out.color = b.color;
-    out.radius_px = b.radius / g.view.z;
-    out.glow = b.glow;
-    out.code = b.code;
-    out.paint_a = b.paint_a;
-    out.paint_b = b.paint_b;
-    out.paint_c = b.paint_c;
-    return out;
-}
+// ---- Balls ----
 
 // Shiny sphere lighting for a point `p` on a unit disc, lit from the upper left.
 fn sphere_light(p: vec2<f32>, color: vec3<f32>) -> vec3<f32> {
@@ -530,33 +284,6 @@ fn sphere_light(p: vec2<f32>, color: vec3<f32>) -> vec3<f32> {
     let h = normalize(l + vec3<f32>(0.0, 0.0, 1.0));
     let spec = pow(max(dot(n, h), 0.0), 24.0) * 0.7;
     return color * diffuse + vec3<f32>(spec);
-}
-
-// What `fs_ball` and `fs_ball_each` draw.
-fn shade_ball(in: BallOut) -> vec4<f32> {
-    // For the gradient grain (paint.wgsl).
-    paint_px = in.pos.xy;
-    let r = length(in.local);
-    let aa = 1.0 / max(in.radius_px, 0.5);
-    let cover = clamp((1.0 - r) / aa + 0.5, 0.0, 1.0);
-    var base = in.color.rgb;
-    let paint = paint_from_varied(in.paint_a, in.paint_b, in.paint_c);
-    if paint_paints(paint) {
-        // A gradient painted inside takes the place of the ball's colour; the light stays on top.
-        base = paint_colour(paint, in.local, g.view.w, in.color).rgb;
-    }
-    let lit = sphere_light(in.local, base);
-    let halo_d = max(r - 1.0, 0.0) / 0.8;
-    let halo = in.glow * exp(-halo_d * halo_d) * (1.0 - cover);
-    if cover <= 0.0 && halo < 1e-4 {
-        discard;
-    }
-    if in.color.a < 0.0 {
-        // Additive: the lit ball's light is added at the colour's strength.
-        let k = -in.color.a;
-        return vec4<f32>((lit * cover + in.color.rgb * halo) * k, 0.0);
-    }
-    return vec4<f32>(lit * cover + in.color.rgb * halo, cover);
 }
 
 // ---- Flashes (instanced additive glows, strength in the colour) ----
@@ -588,28 +315,6 @@ fn shade_flash(in: FlashOut) -> vec4<f32> {
     let r2 = dot(in.local, in.local);
     let v = exp(-r2 * 5.0) * (1.0 - smoothstep(0.8, 1.0, sqrt(r2)));
     return vec4<f32>(in.color.rgb * v, 0.0);
-}
-
-@fragment
-fn fs_shape(in: ShapeOut) -> @location(0) vec4<f32> {
-    return light_flat(shade_shape(in), 0.0, 0.0, vec3<f32>(0.0), vec4<f32>(0.0));
-}
-
-// In a layer whose things blend with each other (see each.wgsl).
-@fragment
-fn fs_shape_each(in: ShapeOut) -> @location(0) vec4<f32> {
-    return each_out(shade_shape(in), g.post.w);
-}
-
-@fragment
-fn fs_ball(in: BallOut) -> @location(0) vec4<f32> {
-    return light_flat(shade_ball(in), 0.0, 0.0, vec3<f32>(0.0), vec4<f32>(0.0));
-}
-
-// In a layer whose things blend with each other (see each.wgsl).
-@fragment
-fn fs_ball_each(in: BallOut) -> @location(0) vec4<f32> {
-    return each_out(shade_ball(in), g.post.w);
 }
 
 @fragment

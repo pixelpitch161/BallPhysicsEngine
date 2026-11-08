@@ -42,18 +42,7 @@ pub struct Emission {
 }
 
 /// A number from `parts`, the same every time.
-pub fn hash(parts: &[u32]) -> u32 {
-    let mut x: u32 = 0x9e37_79b9;
-    for &p in parts {
-        x ^= p.wrapping_mul(0x85eb_ca6b);
-        x = x.rotate_left(13).wrapping_mul(0xc2b2_ae35);
-        x ^= x >> 16;
-    }
-    x ^= x >> 15;
-    x = x.wrapping_mul(0x2c1b_3c6d);
-    x ^= x >> 12;
-    x
-}
+pub use bpe_core::dice::hash;
 
 /// How hard a hit at `speed` is, for particles that follow the impact: 0.6 for the softest, 1
 /// at [`FULL_HIT_SPEED`], 1.2 at most (as the old Particles card had it); 1 when they don't.
@@ -272,7 +261,7 @@ pub fn shape_emissions(
                 }
                 total += 1;
                 let seed = hash(&[shape.0, k as u32, (k >> 32) as u32, 11]);
-                let u = (seed >> 8) as f32 / (1u32 << 24) as f32 * std::f32::consts::TAU;
+                let u = bpe_core::dice::unit24(seed) * std::f32::consts::TAU;
                 let here = wall.outline.point(u);
                 // The edge's normal, outward from the middle (the way `point` looks), so the side
                 // a seed picks turns with the shape.

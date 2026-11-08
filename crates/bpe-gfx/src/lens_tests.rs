@@ -4,7 +4,7 @@
 use glam::Vec2;
 
 use crate::effects::{BUILTINS, defaults};
-use crate::{BallInstance, EffectCall, Frame, Renderer, Stage, test_device};
+use crate::{EffectCall, Frame, Renderer, Stage, test_device};
 
 const W: u32 = 270;
 const H: u32 = 480;
@@ -31,12 +31,7 @@ fn call(id: &str, set: &[(&str, f32)]) -> EffectCall {
 /// A black picture with one bright ball.
 fn dot(at: Vec2, radius: f32, brightness: f32) -> Frame {
     let mut frame = Frame { bloom: 0.0, ..Frame::default() };
-    frame.balls.push(BallInstance {
-        center: at.into(),
-        radius,
-        color: [brightness, brightness, brightness, 1.0],
-        ..BallInstance::default()
-    });
+    crate::pictures::plain_ball(&mut frame, at, radius, [brightness, brightness, brightness, 1.0], 0.0);
     frame
 }
 

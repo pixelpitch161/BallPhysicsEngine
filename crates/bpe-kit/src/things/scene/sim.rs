@@ -3,7 +3,7 @@
 //! settings when the scene has an Air card (a sleeping [`crate::air::Air`]: a Particles thing that
 //! reads it wakes it).
 
-use bpe_core::{ResolvedThing, Settings, Thing, ThingId};
+use bpe_core::{ResolvedThing, Settings, SlotId, Thing, ThingId};
 use bpe_runtime::{ThingSim, World};
 
 use super::SceneSettings;
@@ -28,6 +28,29 @@ impl ThingSim for SceneSim {
         }
     }
 
+    /// Haze that moves with the air drifts as far as the playback's air has carried it (W13): the
+    /// Air card and its keys then count in every world, so an edit of them starts the playback
+    /// again and the haze follows the wind as it is now.
+    fn reads_air(&self, resolved: &ResolvedThing) -> bool {
+        use crate::modules::lighting::{HazeMoves, LightingSettings};
+        resolved.slots.contains_key(&SlotId::Air)
+            && resolved
+                .slots
+                .get(&SlotId::Lighting)
+                .is_some_and(|l| LightingSettings::from_params(&l.params).haze_moves == HazeMoves::WithTheAir)
+    }
+
+    /// The wind carries the air on: what moving haze drifts by (W13). Cheap, and never physics.
+    fn after_step(&self, _thing: ThingId, world: &mut World, _log: &mut bpe_runtime::Log) {
+        let (time, dt) = (world.time() as f32, world.sim_dt());
+        if let Some(air) = crate::air::air_mut(world) {
+            let carried = air.spec.ambient(glam::Vec2::ZERO, time) * dt;
+            if carried.is_finite() {
+                air.drift += carried;
+            }
+        }
+    }
+
     /// A keyframe moved gravity, or one of the Air card's settings.
     fn settings_changed(&self, _thing: ThingId, resolved: &ResolvedThing, world: &mut World) {
         world.gravity = SceneSettings::from_params(&resolved.params).gravity;
@@ -39,12 +62,12 @@ impl ThingSim for SceneSim {
     }
 
     /// The video's size counts too: the camera's Stay inside, Slack and Fit all read it.
-    fn affects_physics(&self, key: &str) -> bool {
+    fn key_restarts_physics(&self, key: &str) -> bool {
         matches!(key, "gravity" | "steps_per_second" | "duration" | "seed" | "width" | "height")
     }
 
     /// Particles born or pushed on the beat read the tempo.
-    fn affects_beside(&self, key: &str) -> bool {
+    fn key_restarts_beside(&self, key: &str) -> bool {
         matches!(key, "tempo" | "time_top" | "time_bottom")
     }
 }

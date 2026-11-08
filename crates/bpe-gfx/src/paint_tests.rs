@@ -1,6 +1,6 @@
 //! Picture tests for gradient paint inside shapes, on the software GPU.
 
-use crate::{Frame, LookInstance, PaintGpu, Renderer, ShapeInstance};
+use crate::{Frame, LayerGpu, LayeredInstance, NO_VARY, PaintGpu, Renderer};
 use bpe_core::{Color, GapBlend, Gradient, Stop};
 
 /// A device for the picture tests (see [`crate::test_device`]), naming the adapter so a run shows which GPU drew;
@@ -19,23 +19,47 @@ fn red_blue_steps() -> Gradient {
     }
 }
 
-/// A big green styled ball at the centre painting stripes from atlas row `row`, the middle of
-/// the gradient on its centre line.
-fn striped_ball(row: u32) -> LookInstance {
-    LookInstance {
-        center: [0.0, 0.0],
-        radius: 400.0,
-        seed: 0.0,
-        // Green, so a ball that ignores its paint fails.
-        color: [0.0, 1.0, 0.0, 1.0],
-        outline_color: [0.0; 4],
-        form: [0.0, 0.0, 4.0, 0.0],
-        look: [0.0, 0.0, 1.0, 0.0],
-        stretch: [1.0, 0.0, 1.0, 1.0],
-        extent: [0.8, 1.0, 0.0, 0.0],
-        paint: PaintGpu { row: row as f32, t0: 0.5, pattern: 5.0, scale: 1.0, ..PaintGpu::default() },
-    }
+/// Stripes from atlas row `row`, the middle of the gradient on the ball's centre line.
+fn stripes(row: u32) -> PaintGpu {
+    PaintGpu { row: row as f32, t0: 0.5, pattern: 5.0, scale: 1.0, ..PaintGpu::default() }
 }
+
+/// A ball of `color` at `center` painting `paint` in a Pattern layer over its body, varied by
+/// `vary`.
+fn painted_ball(frame: &mut Frame, center: [f32; 2], radius: f32, color: [f32; 4], paint: PaintGpu, vary: [f32; 4]) {
+    let first = frame.look_layers.len() as u32;
+    let normal = bpe_core::Blend::Normal.shader_code();
+    frame.look_layers.push(LayerGpu {
+        head: [LayerGpu::BODY, normal, 0, 0],
+        amount: [1.0, 0.0, 0.0, 0.0],
+        ..LayerGpu::ZERO
+    });
+    frame.look_layers.push(LayerGpu {
+        head: [LayerGpu::PATTERN, normal, 0, 0],
+        amount: [1.0, 0.0, 0.0, 0.0],
+        paint,
+        ..LayerGpu::ZERO
+    });
+    frame.layered.push(LayeredInstance {
+        center,
+        radius,
+        body: color,
+        stretch: [1.0, 0.0, 1.0, 1.0],
+        form: [0.0, 0.0, 0.0, 1.45],
+        misc: [1.0, 1.0, 0.0, 0.0],
+        vary,
+        range: [first, 2, 0, 0],
+        ..LayeredInstance::default()
+    });
+}
+
+/// A big ball at the centre, `color` its own colour, painting `paint` inside.
+fn look_ball(frame: &mut Frame, color: [f32; 4], paint: PaintGpu) {
+    painted_ball(frame, [0.0, 0.0], 400.0, color, paint, NO_VARY);
+}
+
+/// Green, so a ball that ignores its paint fails.
+const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
 
 const W: u32 = 540;
 const H: u32 = 960;
@@ -69,7 +93,7 @@ fn assert_two_halves(name: &str, frame: &Frame) {
 fn pattern_stripes_paint_two_halves() {
     let mut frame = Frame { bloom: 0.0, ..Frame::default() };
     let row = frame.gradients.row(&red_blue_steps());
-    frame.looks.push(striped_ball(row));
+    look_ball(&mut frame, GREEN, stripes(row));
     assert_two_halves("paint-stripes", &frame);
 }
 
@@ -80,81 +104,8 @@ fn things_stuck_to_the_screen_paint_from_their_own_atlas() {
     frame.gradients.row(&Gradient::solid(Color::rgb(0, 255, 0)));
     let overlay = frame.overlay_mut();
     let row = overlay.gradients.row(&red_blue_steps());
-    overlay.looks.push(striped_ball(row));
+    look_ball(overlay, GREEN, stripes(row));
     assert_two_halves("paint-stripes-overlay", &frame);
-}
-
-#[test]
-fn ring_path_gradient_goes_round() {
-    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
-    let red_blue = Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)]);
-    let row = frame.gradients.row(&red_blue);
-    let ring =
-        bpe_runtime::Outline::Ring { center: glam::Vec2::ZERO, radius: 400.0, sides: 0, angle: 0.0, thickness: 60.0 };
-    // Green, so a wall that ignores its paint fails.
-    let paint = PaintGpu { row: row as f32, pattern: 4.0, ..PaintGpu::default() };
-    frame.shapes.push(ShapeInstance::outline(&ring, paint, [0.0, 1.0, 0.0, 1.0], 0.0));
-    let Some((device, queue)) = gpu() else { return };
-    let mut renderer = Renderer::new(&device, W, H);
-    renderer.render(&device, &queue, &frame);
-    let pixels = renderer.read_output(&device, &queue).unwrap();
-    crate::pictures::save("paint-ring-path", &pixels, W, H);
-    let at = |x: u32, y: u32| {
-        let i = (y * W + x) as usize * 4;
-        [pixels[i], pixels[i + 1], pixels[i + 2]]
-    };
-    // The ring is 200 pixels round on the output. Row H / 2 sits half a pixel below the centre,
-    // just clockwise of angle 0 on the right.
-    let start = at(W / 2 + 200, H / 2);
-    assert!(start[0] > 150 && start[1] < 60 && start[2] < 60, "{start:?}: red at angle 0");
-    let quarter = at(W / 2, H / 2 + 200);
-    assert!(quarter[0] > quarter[2] && quarter[2] > 40 && quarter[1] < 60, "{quarter:?}: mostly red at 90°");
-    let half = at(W / 2 - 200, H / 2);
-    assert!(half[0] > 40 && half[2] > 40 && half[1] < 60, "{half:?}: between red and blue at 180°");
-    assert!(half[0].abs_diff(half[2]) < 40, "{half:?}: half way at 180°");
-    let three_quarters = at(W / 2, H / 2 - 200);
-    assert!(three_quarters[2] > three_quarters[0] && three_quarters[1] < 60, "{three_quarters:?}: mostly blue at 270°");
-}
-
-#[test]
-fn an_inside_pattern_paints_across_a_shape() {
-    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
-    let row = frame.gradients.row(&red_blue_steps());
-    let stripes = PaintGpu { row: row as f32, t0: 0.5, pattern: 5.0, ..PaintGpu::default() };
-    // A disc 400 across each way, so as big as the striped ball.
-    frame.shapes.push(ShapeInstance::disc(glam::Vec2::ZERO, 200.0, [0.0, 1.0, 0.0, 1.0], 0.0).painted(stripes));
-    assert_two_halves("paint-shape-stripes", &frame);
-}
-
-#[test]
-fn box_path_runs_clockwise_from_the_top_left() {
-    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
-    let row = frame.gradients.row(&Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)]));
-    let wall = bpe_runtime::Outline::Box {
-        center: glam::Vec2::ZERO,
-        half: glam::Vec2::new(400.0, 400.0),
-        angle: 0.0,
-        thickness: 40.0,
-    };
-    let paint = PaintGpu { row: row as f32, pattern: 4.0, ..PaintGpu::default() };
-    frame.shapes.push(ShapeInstance::outline(&wall, paint, [0.0, 1.0, 0.0, 1.0], 0.0));
-    let Some((device, queue)) = gpu() else { return };
-    let mut renderer = Renderer::new(&device, W, H);
-    renderer.render(&device, &queue, &frame);
-    let pixels = renderer.read_output(&device, &queue).unwrap();
-    crate::pictures::save("paint-box-path", &pixels, W, H);
-    let at = |x: u32, y: u32| {
-        let i = (y * W + x) as usize * 4;
-        [pixels[i], pixels[i + 1], pixels[i + 2]]
-    };
-    // The box is 200 pixels each way from the centre on the output.
-    let (cx, cy) = (W / 2, H / 2);
-    let near_start = at(cx - 190, cy - 200);
-    assert!(near_start[0] > 150 && near_start[1] < 60 && near_start[2] < 60, "{near_start:?}: red at the top left");
-    let top = at(cx, cy - 200);
-    let bottom = at(cx, cy + 200);
-    assert!(top[0] > top[2] && top[1] < 60, "{top:?}: an eighth of the way round, mostly red");
-    assert!(bottom[2] > bottom[0] && bottom[1] < 60, "{bottom:?}: five eighths of the way round, mostly blue");
 }
 
 /// `frame` drawn on the software GPU and saved as `name`; `None` without a GPU.
@@ -196,12 +147,11 @@ fn inside_patterns_keep_repeating_whatever_the_start_size_and_scroll() {
         for (t0, scale, scroll, time) in [(1.0, 3.0, 0.0, 0.0), (1.0, 3.0, 0.4, 10.0), (0.3, 2.0, 0.7, 10.0)] {
             let mut frame = Frame { bloom: 0.0, time, ..Frame::default() };
             let row = frame.gradients.row(&red_blue_steps());
-            let mut ball = striped_ball(row);
-            ball.paint = PaintGpu { row: row as f32, t0, pattern, scale, scroll, ..PaintGpu::default() };
+            let mut paint = PaintGpu { row: row as f32, t0, pattern, scale, scroll, ..PaintGpu::default() };
             if pattern == 3.0 {
-                ball.paint = PaintGpu { t0: t0 - 0.5 * scale, angle: 180.0, repeat: 2.0, ..ball.paint };
+                paint = PaintGpu { t0: t0 - 0.5 * scale, angle: 180.0, repeat: 2.0, ..paint };
             }
-            frame.looks.push(ball);
+            look_ball(&mut frame, GREEN, paint);
             let name = format!("paint-pattern-{pattern}-{t0}-{scale}-{scroll}");
             let Some(pixels) = render(&name, &frame) else { return };
             let (red, blue) = reds_and_blues(&pixels);
@@ -211,36 +161,14 @@ fn inside_patterns_keep_repeating_whatever_the_start_size_and_scroll() {
 }
 
 #[test]
-fn a_path_keeps_going_round_as_it_scrolls() {
-    let mut frame = Frame { bloom: 0.0, time: 10.0, ..Frame::default() };
-    let row = frame.gradients.row(&red_blue_steps());
-    let ring =
-        bpe_runtime::Outline::Ring { center: glam::Vec2::ZERO, radius: 400.0, sides: 0, angle: 0.0, thickness: 60.0 };
-    let paint = PaintGpu { row: row as f32, pattern: 4.0, scroll: 0.37, ..PaintGpu::default() };
-    frame.shapes.push(ShapeInstance::outline(&ring, paint, [0.0, 1.0, 0.0, 1.0], 0.0));
-    let Some(pixels) = render("paint-path-scrolled", &frame) else { return };
-    let (mut red, mut blue) = (0, 0);
-    for i in 0..64 {
-        let a = i as f32 / 64.0 * std::f32::consts::TAU;
-        let (x, y) = ((W as f32 / 2.0 + 200.0 * a.cos()) as u32, (H as f32 / 2.0 + 200.0 * a.sin()) as u32);
-        let k = (y * W + x) as usize * 4;
-        let p = &pixels[k..k + 3];
-        red += (p[0] > 150 && p[2] < 60) as u32;
-        blue += (p[2] > 150 && p[0] < 60) as u32;
-    }
-    assert!(red > 10 && blue > 10, "both colours still go round the ring: {red} red, {blue} blue");
-}
-
-#[test]
 fn turning_a_sweep_half_way_swaps_its_sides() {
     let mut sides = Vec::new();
     for angle in [90.0, 270.0] {
         let mut frame = Frame { bloom: 0.0, ..Frame::default() };
         let row = frame.gradients.row(&red_blue_steps());
-        let mut ball = striped_ball(row);
         // What `paint_gpu` gives an old sweep at `angle` from 0.5: turned half way, started half a
         // sweep back and mirrored.
-        ball.paint = PaintGpu {
+        let paint = PaintGpu {
             row: row as f32,
             t0: 0.0,
             pattern: 3.0,
@@ -248,7 +176,7 @@ fn turning_a_sweep_half_way_swaps_its_sides() {
             repeat: 2.0,
             ..PaintGpu::default()
         };
-        frame.looks.push(ball);
+        look_ball(&mut frame, GREEN, paint);
         let Some(pixels) = render(&format!("paint-sweep-{angle}"), &frame) else { return };
         let at = |x: u32| {
             let i = ((H / 2) * W + x) as usize * 4;
@@ -271,11 +199,7 @@ fn inside_pattern_varies_per_ball() {
     let row = frame.gradients.row(&red_blue_steps());
     let turns = [0.25, -0.25, -1e-5 / 360.0];
     for (k, turn) in turns.into_iter().enumerate() {
-        let mut ball = striped_ball(row);
-        ball.center = [(k as f32 - 1.0) * 340.0, 0.0];
-        ball.radius = 160.0;
-        ball.paint.vary = [turn, 0.0, 1.0, 0.0];
-        frame.looks.push(ball);
+        painted_ball(&mut frame, [(k as f32 - 1.0) * 340.0, 0.0], 160.0, GREEN, stripes(row), [turn, 0.0, 1.0, 0.0]);
     }
     let Some(pixels) = render("paint-varied-balls", &frame) else { return };
     // Each ball's red half, 40 pixels left of its centre.
@@ -290,8 +214,8 @@ fn inside_pattern_varies_per_ball() {
     assert!(c[0] > 200 && c[1] < 40 && c[2] < 40, "a hair back from red is red: {c:?}");
 
     // No variation: every ball paints the pattern's own red.
-    for ball in &mut frame.looks {
-        ball.paint.vary = crate::NO_VARY;
+    for ball in &mut frame.layered {
+        ball.vary = NO_VARY;
     }
     let Some(plain) = render("paint-unvaried-balls", &frame) else { return };
     let at = |k: usize| {
@@ -300,11 +224,6 @@ fn inside_pattern_varies_per_ball() {
         [plain[i], plain[i + 1], plain[i + 2]]
     };
     assert!((0..3).all(|k| at(k)[0] > 200 && at(k)[1] < 40), "all red: {:?}", [at(0), at(1), at(2)]);
-}
-
-/// A big styled circle at the centre, `color` its own colour, painting `paint` inside.
-fn look_ball(color: [f32; 4], paint: PaintGpu) -> LookInstance {
-    LookInstance { color, paint, ..striped_ball(0) }
 }
 
 /// The linear-light scene colour an output byte shows: sRGB decoded (the post pass leaves
@@ -333,7 +252,7 @@ fn top_and_bottom(pixels: &[u8]) -> ([f32; 3], [f32; 3]) {
 fn inside_linear_shade_runs_from_base_to_darker_top_to_bottom() {
     let mut frame = Frame { bloom: 0.0, ..Frame::default() };
     let shade = PaintGpu { row: -2.0, t0: -1.0, pattern: 1.0, angle: 90.0, ..PaintGpu::default() };
-    frame.looks.push(look_ball([1.0, 0.0, 0.0, 1.0], shade));
+    look_ball(&mut frame, [1.0, 0.0, 0.0, 1.0], shade);
     let Some(pixels) = render("inside-linear-shade", &frame) else { return };
     let (top, bottom) = top_and_bottom(&pixels);
     assert!(near(top, [1.0, 0.0, 0.0], 0.05), "red at the top: {top:?}");
@@ -346,7 +265,7 @@ fn inside_linear_own_gradient_uses_its_stops() {
     let row = frame.gradients.row(&Gradient::even(&[Color::rgb(0, 0, 255), Color::rgb(0, 255, 0)]));
     let own = PaintGpu { row: row as f32, pattern: 1.0, angle: 90.0, ..PaintGpu::default() };
     // Red, so a ball that paints its own colour fails.
-    frame.looks.push(look_ball([1.0, 0.0, 0.0, 1.0], own));
+    look_ball(&mut frame, [1.0, 0.0, 0.0, 1.0], own);
     let Some(pixels) = render("inside-linear-own", &frame) else { return };
     let (top, bottom) = top_and_bottom(&pixels);
     assert!(near(top, [0.0, 0.0, 1.0], 0.05), "blue at the top: {top:?}");
@@ -361,7 +280,9 @@ fn inside_linear_with_one_colour_is_flat() {
     let own = PaintGpu { row: row as f32, pattern: 1.0, angle: 90.0, ..PaintGpu::default() };
     let shade = PaintGpu { row: -2.0, t0: 0.0, pattern: 1.0, angle: 90.0, ..PaintGpu::default() };
     for (name, paint) in [("inside-flat-own", own), ("inside-flat-shade", shade)] {
-        frame.looks = vec![look_ball([base[0], base[1], base[2], 1.0], paint)];
+        frame.layered.clear();
+        frame.look_layers.clear();
+        look_ball(&mut frame, [base[0], base[1], base[2], 1.0], paint);
         let Some(pixels) = render(name, &frame) else { return };
         let middle = linear_at(&pixels, W / 2, H / 2);
         assert!(middle.iter().all(|c| c.is_finite()), "{name}: {middle:?}");
@@ -393,7 +314,7 @@ fn inside_masks_do_not_wrap_whatever_the_repeat() {
             let row = row_of(&mut frame) as f32;
             let (row, t0) = if shade { (-2.0, -1.0) } else { (row, 0.0) };
             let dots = PaintGpu { row, t0, pattern: 7.0, scale: 2.0, repeat, ..PaintGpu::default() };
-            frame.looks.push(look_ball(red, dots));
+            look_ball(&mut frame, red, dots);
             let Some(pixels) = render(&format!("inside-dots-{name}-repeat-{repeat}"), &frame) else { return };
             // The ball's centre is a dot's centre: the gradient's last colour, or the full shade.
             let centre = linear_at(&pixels, W / 2, H / 2);
@@ -406,7 +327,7 @@ fn inside_masks_do_not_wrap_whatever_the_repeat() {
 }
 
 /// How much of the second colour the old Styled look's Dots fill showed at `p` (unit radius,
-/// y down), copied from `pattern(p, 6, size)` in styled.wgsl before the Inside change, with the
+/// y down), copied from `pattern(p, 6, size)` in the old styled.wgsl before the Inside change, with the
 /// softened edge left out: 1 inside a dot, 0 outside, and how far the point is from the edge in
 /// cell units.
 fn old_fill_dots(p: [f32; 2], size: f32) -> (f32, f32) {
@@ -427,7 +348,7 @@ fn inside_dots_mask_matches_the_old_fill_dots() {
     let mut frame = Frame { bloom: 0.0, ..Frame::default() };
     let row = frame.gradients.row(&Gradient::even(&[Color::rgb(255, 0, 0), Color::rgb(0, 0, 255)]));
     let dots = PaintGpu { row: row as f32, pattern: 7.0, scale: 2.0, ..PaintGpu::default() };
-    frame.looks.push(look_ball([0.0, 1.0, 0.0, 1.0], dots));
+    look_ball(&mut frame, [0.0, 1.0, 0.0, 1.0], dots);
     let Some(pixels) = render("inside-dots-as-old-fill-dots", &frame) else { return };
     let (mut inside, mut outside) = (0, 0);
     // The ball is 200 pixels round at the centre of the output, y down.

@@ -31,14 +31,31 @@ pub struct CardItems {
 }
 
 /// The cards a change can be on, in the order the menu lists them.
-const CARDS: [CardChoice; 6] = [
+const CARDS: [CardChoice; 10] = [
     CardChoice::Own,
     CardChoice::Look,
     CardChoice::Motion,
     CardChoice::Bounce,
+    CardChoice::Health,
+    CardChoice::Sound,
     CardChoice::Shader,
     CardChoice::Lighting,
+    CardChoice::Air,
+    CardChoice::Mixer,
 ];
+
+/// The settings of a Sound or Mixer card a rule's change is heard on (the sound reads only those
+/// as it plays); `None` for every other card, whose changeable settings all count.
+fn heard_keys(scene: &Scene, kit: &Kit, thing: ThingId, card: CardChoice) -> Option<Vec<String>> {
+    match card {
+        CardChoice::Sound => {
+            let resolved = bpe_core::resolve(scene, &kit.registry);
+            Some(bpe_sound::voice_rule_keys(scene, &resolved, thing))
+        }
+        CardChoice::Mixer => Some(bpe_sound::mixer_rule_keys(scene, &kit.registry)),
+        _ => None,
+    }
+}
 
 /// Whether a rule can change a setting of this type.
 pub fn changeable(ty: &ValueType) -> bool {
@@ -129,6 +146,21 @@ pub fn cards_of(scene: &Scene, kit: &Kit, thing: ThingId) -> Vec<CardItems> {
                     .collect();
                 (items, layers)
             }
+        };
+        // A Sound or Mixer card lists only what the sound reads as it plays.
+        let (items, layers) = match heard_keys(scene, kit, thing, card) {
+            Some(heard) => {
+                let keep = |items: Vec<Item>| -> Vec<Item> {
+                    items.into_iter().filter(|i| heard.binary_search(&i.key).is_ok()).collect()
+                };
+                let layers = layers
+                    .into_iter()
+                    .map(|(name, items)| (name, keep(items)))
+                    .filter(|(_, items)| !items.is_empty())
+                    .collect();
+                (keep(items), layers)
+            }
+            None => (items, layers),
         };
         if items.is_empty() && layers.is_empty() {
             continue;
@@ -305,5 +337,29 @@ mod tests {
         assert_eq!(setting_words(&scene, &kit, &named, CardChoice::Bounce, "bounciness"), "Bounce · Bounciness");
         assert_eq!(setting_words(&scene, &kit, &named, CardChoice::Bounce, ""), "No setting yet");
         assert!(picked_def(&scene, &kit, &named, CardChoice::Bounce, "no such").is_none());
+    }
+
+    #[test]
+    fn sound_and_mixer_list_only_the_numbers_the_sound_reads_and_the_scene_its_air() {
+        let kit = kit();
+        let reg = &kit.registry;
+        let mut scene = bpe_kit::new_scene(reg);
+        bpe_kit::ensure_mixer(&mut scene, reg);
+        bpe_kit::things::particles::air::ensure_air_card(&mut scene, reg).unwrap();
+        let shape = scene.order.iter().copied().find(|t| scene.things[t].kind == "shape").unwrap();
+        scene.things.get_mut(&shape).unwrap().slots.insert(SlotId::Sound, bpe_kit::sound::starter_voice(reg));
+        let cards = cards_of(&scene, &kit, shape);
+        let sound = find(&cards, CardChoice::Sound);
+        assert!(sound.items.iter().any(|i| i.key == "out_volume"), "Volume is offered");
+        assert!(!sound.items.iter().any(|i| i.key == "a_wave" || i.key == "out_bus"), "the patch's choices aren't");
+        let root = cards_of(&scene, &kit, ThingId::ROOT);
+        assert!(find(&root, CardChoice::Air).items.iter().any(|i| i.key == "wind_speed"), "Air · Wind");
+        let mixer = find(&root, CardChoice::Mixer);
+        assert!(mixer.items.iter().any(|i| i.key == "bus1_fader"), "Mixer · Bus 1 Fader");
+        assert!(!mixer.items.iter().any(|i| i.key == "bus1_on"));
+        // A shape's Health card is listed once it has one.
+        bpe_kit::fill_slot(&mut scene, reg, shape, SlotId::Health).unwrap();
+        let cards = cards_of(&scene, &kit, shape);
+        assert!(find(&cards, CardChoice::Health).items.iter().any(|i| i.key == "least"));
     }
 }

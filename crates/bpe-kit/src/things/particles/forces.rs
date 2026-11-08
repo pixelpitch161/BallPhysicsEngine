@@ -354,7 +354,7 @@ impl Forces {
                 Force::Sway(w) => {
                     // A sideways sway of Sway pixels either way: its velocity's change this step.
                     let omega = std::f32::consts::TAU * fin(w.sway_speed).max(0.0);
-                    let phase0 = (hash(&[s.seed, 0x5a7]) >> 8) as f32 / (1u32 << 24) as f32 * std::f32::consts::TAU;
+                    let phase0 = bpe_core::dice::unit24(hash(&[s.seed, 0x5a7])) * std::f32::consts::TAU;
                     let v = |t: f32| fin(w.sway) * omega * (omega * t + phase0).cos();
                     s.velocity.x += (v(age) - v((age - dt).max(0.0))) * amount;
                     if w.flutter > 0.0 {

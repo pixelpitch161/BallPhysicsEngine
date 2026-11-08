@@ -6,6 +6,7 @@
 //! paint the things instead of the picture and have no Takes.
 
 pub mod draw;
+#[cfg(any(test, feature = "test-scenes"))]
 pub mod upgrade;
 
 use std::collections::HashMap;

@@ -89,3 +89,99 @@ Moved word for word from CLAUDE.md on 2026-11-08 (workstream W1). Add each finis
   modulator | Level, the buses, and Stop following sound; a following slider shows a band ("Follows …"); the
   pulse lane says what it follows. `Studio.follow` holds a `ControlSampler` for `build_frame_with` while any
   setting follows sound.
+
+## Responsiveness (W6, 2026-11-08, plan `plans/2026-11-08-editor-responsiveness.md`)
+
+- **One picture recipe.** `preview::compose` builds every preview frame: soloed lights (`lights_panel::soloed`),
+  `follow` and `light_probe`, the World view's camera (`world_look`) and the Show bar (`show_light`). `draw_picture`
+  and the effects' warm-up (`preview/warm.rs::draw_at`) both use it, and the warm-up lends the particle playback's
+  particles to any replayed frame of the same step (in practice the playhead's own, the one swapped in; the replayed
+  frames before it have no particles, since the particle playback only holds the playhead's moment). A warm-up
+  restarts when the light show or the solo changes (`Seen`, `Warmup::light`).
+- **Warm-up budget.** It replays frames for `WARM_BUDGET` (8 ms) per editor frame (at least one) and keeps the spare
+  renderer `SPARE_KEEP` (2 s) after its last use, then drops it (`Shown::spare_used`, `warm::spare_due` asks for the
+  repaint that drops it).
+- **Held edits.** `Studio::hold_runs` is on while a pointer button is held anywhere but on a preview handle
+  (`Preview::dragging`). `scene_changed` always re-resolves and bumps the revision, then `restart_runs` compares the
+  physics, particle and sound fingerprints; held, a change only sets `runs_due` and the preview draws the old run with
+  the new looks. `settle_runs` (end of each frame) restarts them when the button is let go or after `RUNS_REST`
+  (100 ms) without a change. Preview drags restart every frame, so a dragged thing follows the pointer.
+- **Seeking** (`Studio::seek`) only moves the playhead; the preview's `draw_picture` catches the playback up one
+  `CATCH_UP_BUDGET` a frame. Tests use `Studio::catch_up`.
+- **Recording edits.** `Studio::snapshot` is the scene as last recorded: the frame compares the scene with it once
+  (`record_frame`) and copies the scene only when it changed. `after_edit`, undo, redo and `replace_scene` clear it
+  (the next frame copies afresh). A playing frame with no input, nothing flagged and the same revision skips even the
+  compare (`quiet_frame`). `unsaved()` is worked out once per revision (`unsaved_at`).
+- **Undo size.** `History` keeps `Step { scene, bytes }` (`bytes` = the scene's RON length, counted by
+  `history::scene_bytes` without writing the text); past `UNDO_BYTES` (256 MiB) in undo and redo, or `UNDO_LIMIT`
+  steps, the oldest undo steps go, never the newest.
+- **Look card views.** The ball view and the Group view keep a `ball_view::MiniCache`: the small scene is made each
+  frame and compared; it is resolved and hashed (`content_key`) only when it changed, and the ball view keeps the
+  `World` built from it (`build_view_frame_in` sets every ball's place, size, speed, life and hits afresh). Moving
+  and Hit repaint every 33 ms with the window in front, 250 ms behind other windows.
+- **Timeline.** The Hits lane's ticks are `timeline::HitTicks`, read once per hit as the log grows and again from the
+  start only for a new revision, ruler, length or a shorter log. The slot marks follow a growing log at most every
+  200 ms while playing (`SLOT_MARKS_EVERY`).
+- **Particles** are lent to the preview's world without copying: `particle_job::Snapshot::states` holds
+  `Arc<dyn ThingState>` and `Snapshot::lent` boxes the pointer (the runtime reads a boxed `Arc` as the state).
+- **Shaders off the editor's thread.** `bpe_gfx::ProgramStore` also holds the lighting's pipelines
+  (`lighting::LightKit`, with the Stage camera's `stage_camera_pass::StageKit`; `Lighting::with_kit` and
+  `StageCameraPass::with_kit` make the per-renderer buffers and pictures) and the picture effects
+  (`Programs::effect`, `effects::chain::Compiled` behind an `Arc`; `Chain::share`). A background store (the editor's
+  `preview::shared_programs`) builds them on their own threads: a lit frame draws unlit and an effect is left out
+  until ready, and `Renderer::programs_waiting` makes the views draw again in 50 ms. Exports and tests use the
+  default store, which builds at once, so their pictures never change. Every editor view shares one store, so each
+  shader is built once. While typing an effect's code, the call keeps drawing its last text that built until the new
+  one is ready (`Chain::last_built`); finished builds of text no longer asked for are collected each time
+  (`Programs::collect_effects`). A warm-up waits for the preview's shaders and starts over if the spare renderer
+  meets one still building (it shares the preview's own store). A store's pipelines belong to one device: never
+  share a store between devices (test devices give equal ids, so a mix-up isn't caught).
+- **Known limit.** While a slider is held, the preview draws the old run's places with the new looks, so a look that
+  depends on a physics setting (say a size) can look slightly off until you let go.
+
+## Never lose work, exports and errors (W4, 2026-11-08)
+
+Plan `docs/superpowers/plans/2026-11-08-never-lose-work.md` (findings E1 to E6 and C4 of the improvement review).
+
+- **Status line problems** (`app.rs`): `Studio.status` is the grey info line; `Studio.problem: Option<Problem>`
+  (`ProblemKind` Speakers, Graphics, File, Export, Recovery, Autosave) shows first in `style::PROBLEM` with a painted dot and a
+  "Dismiss" ×, and stays until dismissed or its own source calls `clear_problem(kind)` (the speakers coming back
+  clears only a Speakers problem; a good save or open clears File). Use `report(kind, text)` for any failure, never
+  `status`. The shader-skipped readout is in the problem colour too.
+- **Safe saves** (`files.rs`): `write_safely(path, text, backup)` writes `<name>.tmp`, `sync_all`s it, copies the old
+  file to `backup_path` (`My scene (backup).ron`, opens from the Open dialog) and renames the temp file over. Used by
+  `Studio::save` and the autosave.
+- **Autosave and recovery** (`recovery.rs`): each windowed editor owns `session-<pid>-<millis>.{ron,path,lock}` in
+  `settings_dir()/recovery/`, holding `.lock` with `File::try_lock` for its life (an unreadable lock counts as
+  held; `tidy` skips locks under 30 s old). `Studio::autosave` (from `tick`, which wakes the window with
+  `request_repaint_after` only while a copy is still owed) sends a clone to the session's worker thread on the first
+  change and then at most every `AUTOSAVE_EVERY` (60 s) while unsaved; the worker reports each write (`outcome`), so
+  an Autosave problem appears on failure and clears on the next success. The files are always cleared when the scene
+  goes from unsaved to saved/opened/new (`was_unsaved`; the crash hook may have written a copy the autosave didn't),
+  and on a clean exit (`on_exit`: when not unsaved or after "Don't save"; it empties the crash slot first). `recovery::orphans` lists
+  sessions whose lock can be taken, newest first; `start_recovery` tidies dead locks and offers the newest orphan
+  in the "Ball Studio closed unexpectedly" modal (Restore / Discard; when the scene's file is newer than the copy it
+  warns and leads with Discard, `Offer.file_newer`); `restore` keeps the original file name, sets `saved` to what
+  that file holds so the unsaved mark is honest, and deletes the old copy only after its own is written and flushed. A copy that won't load is renamed `.ron.broken` and
+  reported. Older orphans wait for later starts. Headless studios (tests) never autosave unless a test calls
+  `start_recovery` with a temporary folder.
+- **Crashes and the graphics card** (C4): `catch_gpu_errors` sets the window device's `on_uncaptured_error` (into
+  `Studio.gpu_errors`; `tell_gpu_errors` reports the first as a Graphics problem and afterwards only counts up in
+  place, so a per-frame complaint can be dismissed and never hides another problem) and a device-lost callback
+  (Destroyed ignored; triggers an immediate autosave). `recovery::install_crash_hook` wraps the panic hook: on the
+  editor's own thread only, `crash_save` `try_lock`s `Studio.crash_slot` (refreshed at most every `CRASH_COPY_EVERY`
+  = 1 s while unsaved), writes the session copy through its own `.crash.tmp` files and `last-crash.txt` in the
+  settings folder, then the default hook runs. `files::write_via` retries the final rename a few times on
+  PermissionDenied (OneDrive or an antivirus holding the file on Windows). The export and Preview final frame
+  threads set their own device's error handler (a complaint stops the job with an error) and a job whose thread
+  disconnects ends as "stopped unexpectedly" instead of looking busy forever.
+- **Export** (`export_window.rs`): `progress_percent`, `take_news` (Saved / Failed / Cancelled, told by
+  `tell_export_news`: "Video saved: x.mp4 (1:02 min)." or an Export problem). The status line shows "· Exporting 40%"
+  (click opens the window). Closing while exporting asks "A video is still exporting (40%). Stop it and close?"
+  (`Studio.ask_stop_export`, `stop_export_dialog`; Stop runs `shutdown` then the usual unsaved question).
+  `explain_export_error` turns raw errors into a plain sentence (file in use, disk full, ffmpeg won't start, no H.264,
+  out of memory, graphics card stopped, no adapter, stopped unexpectedly); the window shows it in the problem colour
+  with a collapsed Details fold (scrolling, selectable log, Copy details). A target file that can't be opened for
+  writing fails before the sound render. Choices (size, compression, encoder by `Encoder::key`, stems, MIDI, ffmpeg)
+  are remembered in `export-next.txt` (`ExportWindow::load_in`, written when they change); not the file or Bake.
+  `pretend_busy` fakes a running job for tests.

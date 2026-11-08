@@ -212,7 +212,7 @@ impl ThingSim for TestRoot {
         world.steps_per_second = 240;
         world.gravity = s.gravity;
     }
-    fn affects_physics(&self, key: &str) -> bool {
+    fn key_restarts_physics(&self, key: &str) -> bool {
         key != "tint"
     }
     fn settings_changed(&self, _thing: ThingId, resolved: &ResolvedThing, world: &mut World) {
@@ -301,7 +301,7 @@ impl ThingSim for TestDots {
         let s = TrailSettings::from_params(&t.params);
         Some(crate::HistoryWant { seconds: s.seconds, forever: s.forever })
     }
-    fn affects_physics(&self, key: &str) -> bool {
+    fn key_restarts_physics(&self, key: &str) -> bool {
         key != "tint"
     }
 }

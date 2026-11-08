@@ -117,10 +117,6 @@ fn dither_noise(p: vec2<u32>, k: u32) -> vec3<f32> {
     return vec3<f32>(v >> vec3<u32>(8u)) / 16777216.0;
 }
 
-fn luma(c: vec3<f32>) -> f32 {
-    return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
-}
-
 // The scene's colour grade on display-ready (sRGB-encoded) colours, in this order: gradient
 // map, brightness, contrast, saturation, warmth, tint, vignette; then clamped to 0..1.
 fn grade(colour: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {

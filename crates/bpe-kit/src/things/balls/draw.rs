@@ -82,7 +82,7 @@ fn glint_dice(a: u32, b: u32, c: u32) -> f32 {
     h ^= h >> 12;
     h = h.wrapping_mul(0x297A_2D39);
     h ^= h >> 15;
-    (h >> 8) as f32 / (1u32 << 24) as f32
+    bpe_core::dice::unit24(h)
 }
 
 /// Diamond fire's star glints (glass and light part 4b): in a lit scene, each ball whose surface
@@ -143,7 +143,7 @@ pub fn ball_seed(thing: ThingId, index: usize) -> f32 {
     x ^= x >> 12;
     x = x.wrapping_mul(0x8a7d_9c3b);
     x ^= x >> 16;
-    (x >> 8) as f32 / (1u32 << 24) as f32
+    bpe_core::dice::unit24(x)
 }
 
 /// What each ball of the thing being drawn wears: the Look card's own stack, or, when its
@@ -1225,7 +1225,6 @@ mod tests {
     #[test]
     fn the_classic_ball_draws_its_body_shine_and_glow_through_one_layered_instance() {
         let frame = frame_after(0.0, |_| {});
-        assert!(frame.balls.is_empty() && frame.looks.is_empty(), "the old paths draw no ball");
         assert_eq!(frame.layered.len(), 1);
         let codes: Vec<u32> = ball_records(&frame).iter().map(|l| l.head[0]).collect();
         assert_eq!(codes, [LayerGpu::BODY, LayerGpu::SHINE, LayerGpu::GLOW]);

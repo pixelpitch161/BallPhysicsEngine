@@ -5,8 +5,8 @@
 use bpe_core::{Blend, Choice, Color, Gradient, Settings};
 use glam::Vec2;
 
-use crate::rng::Rng;
 pub use crate::things::balls::rows::RoundSpan;
+use bpe_core::dice::Rng;
 
 /// What spreads the gradient's colours across the group.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
