@@ -78,7 +78,8 @@ impl Default for AuraLayer {
             lines: 3.0,
             flow: 0.6,
             detail: 120.0,
-            width: 1.5,
+            // About 2 px: thinner lines fade out once a phone video is compressed.
+            width: 2.0,
             glow: 4.0,
             fill: 0.2,
             source: TrailSource::Ball,

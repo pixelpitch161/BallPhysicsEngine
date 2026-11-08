@@ -307,12 +307,11 @@ fn look_ball(color: [f32; 4], paint: PaintGpu) -> LookInstance {
     LookInstance { color, paint, ..striped_ball(0) }
 }
 
-/// The linear-light scene colour an output byte shows: sRGB decoded, and the post pass's
-/// highlight shoulder above 0.8 undone.
+/// The linear-light scene colour an output byte shows: sRGB decoded (the post pass leaves
+/// everything up to 1 as it is).
 fn linear(b: u8) -> f32 {
     let c = b as f32 / 255.0;
-    let x = if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
-    if x < 0.8 { x } else { 0.8 - 0.2 * (1.0 - ((x - 0.8) / 0.2).min(0.999)).ln() }
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
 }
 
 /// The linear-light colour at output pixel (`x`, `y`).

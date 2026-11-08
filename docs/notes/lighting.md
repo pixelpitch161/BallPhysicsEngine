@@ -215,3 +215,13 @@ shaders. `tests/bake_pictures.rs` (bpe-cli); `scenes::bake_demo` is test-only.
   (`fs_light` clamps the summed light at 0). The editor's Effects card is `look_editor/effects.rs`; after a jump
   in time, `preview/warm.rs` replays the effects' remembered seconds on a spare renderer
   (`Playback::rewound`), 6 frames per editor frame, and swaps it in ("Warming up effects… N%").
+
+**Picture fixes, workstream W3 (2026-11-08).** Depth of field reads wide blurs from a quarter-size box-filtered copy
+(`fs_dof_small` into `Targets.dof_small`, bound at group 0 binding 2 in place of `lit_picture`, which the pass never
+reads: a new binding would pass the 16 sampled textures a pass may have). Each copy texel keeps the least blur of
+its 4 × 4 pixels in alpha, and a tap blends to the copy (from 6 to 14 px of blur) only where that blur reaches it,
+so something sharp nearby isn't smeared in; wide blurs lose their speckle. The Stage camera keeps a ball's read
+point off every ball drawn over it in the front picture (`stage_camera.wgsl::cam_uncovered`: higher z-order, or the
+same and listed later; `SphereGpu.c.w` carries the thing's z-order), mirrored out across the circle 2 px past that
+ball's edge, so an orbit no longer paints the neighbour's outline across a ball as a dark arc, and intersecting
+balls meet at a clean curve instead of a jagged, fringed one.

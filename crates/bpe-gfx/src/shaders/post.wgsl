@@ -80,12 +80,18 @@ fn fs_upsample(in: FsIn) -> @location(0) vec4<f32> {
     return vec4<f32>(color / 16.0, 1.0);
 }
 
-// Identity below 0.8, then a soft shoulder that rolls highlights off towards white.
-fn shoulder(x: f32) -> f32 {
-    if x < 0.8 {
-        return x;
+// Brighter than the screen can show: up to 1 the colour is untouched (white stays white). Above,
+// it is scaled down by its brightest channel, so its hue is kept (a crowd of glowing balls
+// doesn't drift toward lavender), and turned toward white by how far over it is, so a hot
+// highlight still burns to white, smoothly.
+fn roll_off(c: vec3<f32>) -> vec3<f32> {
+    let peak = max(c.r, max(c.g, c.b));
+    if peak <= 1.0 {
+        return c;
     }
-    return 0.8 + 0.2 * (1.0 - exp(-(x - 0.8) / 0.2));
+    let over = peak - 1.0;
+    let whiter = over / (over + 1.5);
+    return mix(c / peak, vec3<f32>(1.0), whiter);
 }
 
 fn srgb_encode(c: f32) -> f32 {
@@ -95,8 +101,17 @@ fn srgb_encode(c: f32) -> f32 {
     return 1.055 * pow(c, 1.0 / 2.4) - 0.055;
 }
 
-fn hash(p: vec2<f32>) -> f32 {
-    return fract(sin(dot(p, vec2<f32>(12.9898, 78.233))) * 43758.5453);
+// Three independent uniform numbers in 0..1 for pixel `p`, round `k`: a PCG hash.
+fn dither_noise(p: vec2<u32>, k: u32) -> vec3<f32> {
+    var v = vec3<u32>(p.x, p.y, k) * vec3<u32>(1664525u) + vec3<u32>(1013904223u);
+    v.x += v.y * v.z;
+    v.y += v.z * v.x;
+    v.z += v.x * v.y;
+    v = v ^ (v >> vec3<u32>(16u));
+    v.x += v.y * v.z;
+    v.y += v.z * v.x;
+    v.z += v.x * v.y;
+    return vec3<f32>(v >> vec3<u32>(8u)) / 16777216.0;
 }
 
 fn luma(c: vec3<f32>) -> f32 {
@@ -133,17 +148,19 @@ fn fs_composite(in: FsIn) -> @location(0) vec4<f32> {
     let hdr = textureSample(src, samp, in.uv).rgb;
     let bloom = textureSample(bloom_tex, samp, in.uv).rgb;
     let c = (hdr + bloom * g.post.x * 0.35) * g.post.y;
-    // Highlights desaturate towards white, like an overexposed light.
-    let peak = max(c.r, max(c.g, c.b));
-    let over = max(peak - 1.0, 0.0);
-    let toward_white = c + vec3<f32>(over * 0.35);
-    let mapped = vec3<f32>(shoulder(toward_white.r), shoulder(toward_white.g), shoulder(toward_white.b));
-    let dither = (hash(in.pos.xy) - 0.5) / 255.0;
+    let mapped = roll_off(max(c, vec3<f32>(0.0)));
+    // Triangular dither of ±1 step, the same on every channel (two uniform numbers summed): no banding survives the
+    // 8-bit output, and no sin() whose precision differs from GPU to GPU.
+    let n = dither_noise(vec2<u32>(in.pos.xy), 0u);
+    let dither = (n.x + n.y - 1.0) / 255.0;
     // The output texture is plain Rgba8Unorm holding sRGB-encoded values (what egui and video encoders expect).
     var out = vec3<f32>(srgb_encode(mapped.r), srgb_encode(mapped.g), srgb_encode(mapped.b));
     // At its defaults the grade is skipped altogether, so the picture is exactly as without it.
     if g.post.z > 0.5 {
         out = grade(out, in.uv);
     }
-    return vec4<f32>(out.r + dither, out.g + dither, out.b + dither, 1.0);
+    // Pure black and pure white stay exact (no speckle on a black background); the dither fades
+    // in over the first and last step.
+    let room = clamp(min(out, vec3<f32>(1.0) - out) * 255.0, vec3<f32>(0.0), vec3<f32>(1.0));
+    return vec4<f32>(out + dither * room, 1.0);
 }

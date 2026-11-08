@@ -732,13 +732,75 @@ fn strip(
             extra: [0.0; 4],
         }
     };
+    // Sharp corners (bounces) get a join: both segments meet at the inner mitre point (so the
+    // strip doesn't cover the inside of the corner twice) and the outside is filled round (so it
+    // has no notch). Each join triangle's edge values are true distances from one segment's
+    // centre line, so the shader's antialiasing and soft edges carry on across it.
+    let corners: Vec<Option<Corner>> = (0..n)
+        .map(|i| {
+            if i == 0 || i + 1 >= n {
+                return None;
+            }
+            let (d1, d2) = (direction(i - 1)?, direction(i)?);
+            if d1.dot(d2) > 0.5 {
+                return None;
+            }
+            let (n1, n2) = (d1.perp(), d2.perp());
+            let s = if d2.dot(n1) > 0.0 { 1.0 } else { -1.0 };
+            let reach = width_at(i).max(0.0) * (1.0 + softness) + pixel;
+            let denom = 1.0 + n1.dot(n2);
+            let m = (n1 + n2) * (s * reach / denom.max(1e-6));
+            let (before, after) = (points[i].distance(points[i - 1]), points[i + 1].distance(points[i]));
+            let mitre =
+                (denom > 1e-3 && -m.dot(d1) <= before * 0.999 && m.dot(d2) <= after * 0.999).then_some(points[i] + m);
+            Some(Corner { inner: s, mitre, n1, n2, reach })
+        })
+        .collect();
+    let joined = |i: usize, v: TrailVertex, sign: f32| match corners[i] {
+        Some(Corner { inner, mitre: Some(m), .. }) if sign == inner => TrailVertex { position: m.into(), ..v },
+        _ => v,
+    };
     for i in 0..n - 1 {
         let Some(own) = direction(i) else { continue };
         let (s0, s1) = (side_at(i, own), side_at(i + 1, own));
-        let (a, b) = (vertex(i, s0, 1.0), vertex(i, s0, -1.0));
-        let (c, d) = (vertex(i + 1, s1, 1.0), vertex(i + 1, s1, -1.0));
+        let (a, b) = (joined(i, vertex(i, s0, 1.0), 1.0), joined(i, vertex(i, s0, -1.0), -1.0));
+        let (c, d) = (joined(i + 1, vertex(i + 1, s1, 1.0), 1.0), joined(i + 1, vertex(i + 1, s1, -1.0), -1.0));
         out.extend_from_slice(&[a, b, c, b, d, c]);
     }
+    for (i, corner) in corners.iter().enumerate() {
+        let Some(k) = corner else { continue };
+        let p = points[i];
+        let base = vertex(i, k.n1, 1.0);
+        let at = |position: Vec2, x: f32| TrailVertex { position: position.into(), edge: [x, base.edge[1]], ..base };
+        let (u0, u1) = (-k.n1 * k.inner, -k.n2 * k.inner);
+        let middle = at(p, 0.0);
+        if let Some(m) = k.mitre {
+            // The two triangles between each segment's own outer corner, the middle and the mitre.
+            out.extend_from_slice(&[at(p + u0 * k.reach, -k.reach), middle, at(m, k.reach)]);
+            out.extend_from_slice(&[at(p + u1 * k.reach, -k.reach), middle, at(m, k.reach)]);
+        }
+        // A fan round the outside, at most 15 degrees a step.
+        let turn = u0.perp_dot(u1).atan2(u0.dot(u1));
+        let steps = ((turn.abs() / 0.26).ceil() as usize).clamp(1, 12);
+        let mut last = u0;
+        for s in 1..=steps {
+            let next = Vec2::from_angle(turn * s as f32 / steps as f32).rotate(u0);
+            out.extend_from_slice(&[middle, at(p + last * k.reach, k.reach), at(p + next * k.reach, k.reach)]);
+            last = next;
+        }
+    }
+}
+
+/// A sharp corner of a strip (see [`strip`]): which side is inside (+1 or -1 times the side
+/// vectors), where the two inner edges meet (when that falls within both segments), the two
+/// segments' side vectors and how far the strip reaches out there.
+#[derive(Clone, Copy)]
+struct Corner {
+    inner: f32,
+    mitre: Option<Vec2>,
+    n1: Vec2,
+    n2: Vec2,
+    reach: f32,
 }
 
 /// One particle (or a round bit of a trail) as the GPU draws it: the CPU has worked out where it
@@ -1311,7 +1373,8 @@ pub struct SphereGpu {
     pub b: [f32; 4],
     /// Its surface index (part 2b: what a reflection of it takes light as), its Tints light (glass
     /// and light part 1), its turn (radians, glass and light part 4a: a mirror ball's tiles turn
-    /// with it), 0.
+    /// with it), its thing's z-order (balls with a higher one, or the same and listed later, are
+    /// drawn over it).
     pub c: [f32; 4],
 }
 
@@ -2751,6 +2814,36 @@ pub const MOST_SPRITES: usize = 1_000_000;
 mod tests {
     use super::*;
     use bpe_core::{Address, Ease, Value, resolve, testkit};
+
+    /// Whether `p` lies inside one of the strip's triangles.
+    fn strip_covers(out: &[TrailVertex], p: Vec2) -> bool {
+        out.chunks(3).any(|t| {
+            let [a, b, c] = [t[0].position, t[1].position, t[2].position].map(Vec2::from);
+            let side = |u: Vec2, v: Vec2| (v - u).perp_dot(p - u);
+            let (x, y, z) = (side(a, b), side(b, c), side(c, a));
+            (x >= -1e-3 && y >= -1e-3 && z >= -1e-3) || (x <= 1e-3 && y <= 1e-3 && z <= 1e-3)
+        })
+    }
+
+    #[test]
+    fn a_strip_s_sharp_corners_are_round_outside_and_straight_runs_get_nothing_more() {
+        let style = StreakStyle::default();
+        // Straight: two triangles a segment, nothing else.
+        let mut straight = Vec::new();
+        let line = [Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0), Vec2::new(200.0, 0.0)];
+        strip(&mut straight, &line, |_| 10.0, |_| [1.0; 4], style, 1.0);
+        assert_eq!(straight.len(), 12);
+        // A bounce: down to the floor at (100, 100) and back up. Outside the corner, straight below
+        // it, the strip used to leave a square notch.
+        let mut bounce = Vec::new();
+        let v = [Vec2::new(0.0, 0.0), Vec2::new(100.0, 100.0), Vec2::new(200.0, 0.0)];
+        strip(&mut bounce, &v, |_| 10.0, |_| [1.0; 4], style, 1.0);
+        assert!(bounce.len() > 12, "the corner gets a join");
+        assert!(strip_covers(&bounce, Vec2::new(100.0, 109.0)), "the outside of the corner is filled");
+        assert!(!strip_covers(&bounce, Vec2::new(100.0, 115.0)), "but no further than the strip reaches");
+        // Every triangle is finite.
+        assert!(bounce.iter().all(|v| v.position.iter().chain(&v.edge).all(|x| x.is_finite())));
+    }
 
     #[test]
     fn free_glass_is_bending_sprites_and_glass_liquid() {

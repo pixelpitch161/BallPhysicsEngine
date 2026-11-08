@@ -113,3 +113,8 @@ a hit of Hits of (`hit_age`). Colours go through **`PathStyle`** in the spare `P
 light / green covering / blue light, hue turn, colourise; `paths.wgsl::path_styled`, only when non-zero, so shapes
 draw as before). Melt or a flipping Mirror turns fast letters off. Looks Glitch, Melting text, Kaleidoscope words,
 Echo stack (24 looks). Tests `things/text/fx_tests.rs`, `paths_tests` (style), `tests/text_pictures.rs`.
+
+**Look fixes (workstream W3, 2026-11-08).** Labels on balls draws its Text at z-order 1, over the balls. Race
+leaderboard sits at (-200, -760), on screen. Glass letters fits GLASS to the screen (`fitted`) and adds a white
+Point lamp up and to the left, close (-220, -360), so the glass catches highlights instead of looking flat grey.
+Tests `labels_draw_over_their_balls`, `every_look_s_words_fit_on_the_screen`, `the_lit_looks_light_the_scene`.

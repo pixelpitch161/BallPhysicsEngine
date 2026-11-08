@@ -332,6 +332,8 @@ const EXTRAS_BINDINGS: &[u32] = &[2, 6, 7, 8, 9, 14];
 /// The longest gap between two frames over which the remembered light carries on; a longer jump
 /// (or one back) starts it again from nothing.
 const MOST_MEMORY_STEP: f32 = 0.5;
+/// Depth of field's small copy is this many times smaller each way (`DOF_SMALL` in lighting.wgsl).
+const DOF_SMALL: u32 = 4;
 
 /// Glow in the dark's memory between frames.
 #[derive(Default)]
@@ -414,6 +416,8 @@ struct Targets {
     stage: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// A second such picture when depth of field follows the floor (part 2b).
     stage_more: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// Depth of field's quarter-size copy of the picture it blurs (made when first needed).
+    dof_small: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// The picture without what is see-through, drawn when glass bends what is behind it.
     behind: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// The background's own light alone, copied before the lamps' light is added over it.
@@ -468,6 +472,8 @@ pub(crate) struct Lighting {
     floor: wgpu::RenderPipeline,
     /// Depth of field (Stage, part 2b).
     dof: wgpu::RenderPipeline,
+    /// The quarter-size box-filtered copy depth of field reads its wide blurs from.
+    dof_small: wgpu::RenderPipeline,
     /// Mirror walls (part 2b).
     mirror: wgpu::RenderPipeline,
     /// The bake's bounce light in Stage, its clean-up and the pass adding it (part 3).
@@ -1043,6 +1049,7 @@ impl Lighting {
             stir,
             floor: make("glossy floor", "fs_floor", three, &[HDR_FORMAT], None),
             dof: make("depth of field", "fs_dof", three, &[HDR_FORMAT], None),
+            dof_small: make("depth of field copy", "fs_dof_small", three, &[HDR_FORMAT], None),
             mirror: make("mirror walls", "fs_mirror", three, &[HDR_FORMAT], None),
             trace: make("bounce light", "fs_trace", three, &[HDR_FORMAT], None),
             denoise: make("bounce clean-up", "fs_denoise", three, &[HDR_FORMAT], None),
@@ -1193,6 +1200,7 @@ impl Lighting {
             traced: None,
             stage: None,
             stage_more: None,
+            dof_small: None,
             behind: None,
             bg_glow: None,
         });
@@ -1334,6 +1342,10 @@ impl Lighting {
             && let Some(t) = self.targets.as_mut().filter(|t| t.stage_more.is_none())
         {
             t.stage_more = Some(texture(device, "lit stage", (t.width, t.height), HDR_FORMAT, false));
+        }
+        if blurs && let Some(t) = self.targets.as_mut().filter(|t| t.dof_small.is_none()) {
+            let small = (t.width.div_ceil(DOF_SMALL), t.height.div_ceil(DOF_SMALL));
+            t.dof_small = Some(texture(device, "depth of field copy", small, HDR_FORMAT, false));
         }
         if into_bg && let Some(t) = self.targets.as_mut().filter(|t| t.bg_glow.is_none()) {
             t.bg_glow = Some(texture(device, "background light", (t.width, t.height), HDR_FORMAT, true));
@@ -1601,17 +1613,20 @@ impl Lighting {
             ],
         });
 
-        let group_on = |uniform: &wgpu::Buffer,
-                        picture: &wgpu::TextureView,
-                        field: &wgpu::TextureView,
-                        seeds: &wgpu::TextureView| {
+        // `lit` is the lit share of the picture; depth of field, which never reads it, has its small
+        // copy there instead (a new binding would pass the 16 textures a pass may read).
+        let group_with = |uniform: &wgpu::Buffer,
+                          picture: &wgpu::TextureView,
+                          field: &wgpu::TextureView,
+                          seeds: &wgpu::TextureView,
+                          lit: &wgpu::TextureView| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("lighting"),
                 layout: &self.layout,
                 entries: &[
                     wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(picture) },
-                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&t.lit.1) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(lit) },
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&t.surface.1) },
                     wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(field) },
                     wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&self.sampler) },
@@ -1631,6 +1646,11 @@ impl Lighting {
                 ],
             })
         };
+        let group_on =
+            |uniform: &wgpu::Buffer,
+             picture: &wgpu::TextureView,
+             field: &wgpu::TextureView,
+             seeds: &wgpu::TextureView| { group_with(uniform, picture, field, seeds, &t.lit.1) };
         let group = |uniform: &wgpu::Buffer, field: &wgpu::TextureView, seeds: &wgpu::TextureView| {
             group_on(uniform, picture, field, seeds)
         };
@@ -1987,7 +2007,16 @@ impl Lighting {
                 Some(lit) => group_on(&self.uniforms[0], lit, &t.field.1, &t.seeds[from].1),
                 None => group(&self.uniforms[0], &t.field.1, &t.seeds[from].1),
             };
-            pass(encoder, &[(into, clear)], pipeline, &[&main_on, &g, &stage_group], label);
+            match (std::ptr::eq(pipeline, &self.dof), read, t.dof_small.as_ref()) {
+                (true, Some(lit), Some(small)) => {
+                    // Depth of field: first the small copy of what it blurs, then the blur reading it.
+                    let copy = "depth of field copy";
+                    pass(encoder, &[(&small.1, clear)], &self.dof_small, &[&main_on, &g, &stage_group], copy);
+                    let with_copy = group_with(&self.uniforms[0], lit, &t.field.1, &t.seeds[from].1, &small.1);
+                    pass(encoder, &[(into, clear)], pipeline, &[&with_copy, &g, &stage_group], label);
+                }
+                _ => pass(encoder, &[(into, clear)], pipeline, &[&main_on, &g, &stage_group], label),
+            }
             if i == 0 && !scene.ribbons.is_empty() {
                 // Light beams' bands, over the mixed light (so mirror walls, the floor and depth of
                 // field after it see them too).

@@ -231,3 +231,15 @@ Dependencies go bottom to top:
   48 kHz (`AUDIO_ARGS`); a scene without sound gets a silent track. Frames draw with `build_frame_with` and a
   `ControlSampler` when a setting follows sound. `--stems` and `--midi` (`ExportOptions`)
   save the stems and the MIDI file beside the video.
+
+**Picture fixes, workstream W3 (2026-11-08, plan `docs/superpowers/plans/2026-11-08-picture-fixes-w3.md`).** The
+final pass (`post.wgsl::fs_composite`) leaves every colour up to 1 as it is (white is 255; the old per-channel
+shoulder from 0.8 made it 247); above 1, `roll_off` scales the colour by its brightest channel (hue kept, so glowing
+crowds don't drift to lavender) and turns it toward white by `over / (over + 1.5)`. Its dither is a triangular ±1
+step from a PCG hash (`dither_noise`, no `sin`), the same on every channel and faded out over the first and last
+step, so pure black and white stay exact. Strips (`frame.rs::strip`) give every corner sharper than 60° a join: both
+segments meet at the inner mitre point and a fan rounds the outside, so trail bounces have no square notch. Smoke
+trails fill each gap between puffs with up to 8 evenly spaced puffs sharing one puff's cover (`trail/draw.rs`,
+`fill_most` keeps every ball under `MAX_PARTICLES`). Tests: `frame::tests::a_strip_s_sharp_corners_*`,
+`trail::draw::tests::smoke_on_a_fast_ball_*`; full-size shots `gradient-seams`, `stage-camera-orbit(-far)`,
+`stage-depth-of-field` in `full_size_look.rs`.

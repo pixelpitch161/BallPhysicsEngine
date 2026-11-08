@@ -86,6 +86,8 @@ struct LightGpu {
 
 @group(0) @binding(0) var<uniform> u: Lighting;
 @group(0) @binding(1) var picture: texture_2d<f32>;
+// The lit share of the picture; in the depth of field pass, which never reads that, its quarter-size
+// copy of the picture it blurs (`fs_dof_small`).
 @group(0) @binding(2) var lit_picture: texture_2d<f32>;
 @group(0) @binding(3) var surface: texture_2d<f32>;
 @group(0) @binding(4) var field: texture_2d<f32>;
@@ -1939,7 +1941,8 @@ struct SphereGpu {
     // The ball's colour (linear), for the light it lets through; w unused.
     b: vec4<f32>,
     // Its surface index, its Tints light, its turn (radians: a mirror ball's tiles turn with it),
-    // spare.
+    // its thing's z-order (a ball with a higher one, or the same and listed later, is drawn over
+    // it).
     c: vec4<f32>,
 };
 
@@ -1977,6 +1980,8 @@ const FROST_TAPS: i32 = 12;
 const DOF_TAPS: i32 = 24;
 // The widest depth of field blur, in output pixels.
 const DOF_MOST: f32 = 32.0;
+// Depth of field's small copy is this many times smaller each way (`DOF_SMALL` in lighting.rs).
+const DOF_SMALL: f32 = 4.0;
 // The most segments of a mirror wall's outline tested.
 const MOST_MIRROR_SEGMENTS: u32 = 512u;
 
@@ -3644,11 +3649,22 @@ fn fs_dof(in: FsIn) -> @location(0) vec4<f32> {
     var weights = 1.0;
     // The bake takes more taps: smoother bokeh.
     let taps = select(DOF_TAPS, 4 * DOF_TAPS, baking());
+    // A wide blur reads each tap from the small copy, where it is the mean of 4 x 4 pixels: 24
+    // single pixels spread over a wide disc show as speckle. A narrow one reads single pixels.
+    let soft = smoothstep(6.0, 14.0, own);
+    let small = DOF_SMALL * vec2<f32>(textureDimensions(lit_picture));
     for (var k = 0; k < taps; k++) {
         let a = f32(k) * 2.39996 + turn;
         let r = own * sqrt((f32(k) + 0.5) / f32(taps));
-        let at = clamp(ip + vec2<i32>(round(vec2<f32>(cos(a), sin(a)) * r)), vec2<i32>(0), size - 1);
-        let tc = textureLoad(picture, at, 0).rgb;
+        let place = in.pos.xy + vec2<f32>(cos(a), sin(a)) * r;
+        let at = clamp(vec2<i32>(floor(place)), vec2<i32>(0), size - 1);
+        var tc = textureLoad(picture, at, 0).rgb;
+        if soft > 0.0 {
+            // Only where everything the copy averaged there blurs as far as this tap: next to
+            // something sharp it would bring that thing's colour in.
+            let copy = textureSampleLevel(lit_picture, samp, place / small, 0.0);
+            tc = mix(tc, copy.rgb, soft * clamp(copy.a - r + 1.0, 0.0, 1.0));
+        }
         // A tap counts only where its own blur reaches this pixel, so a sharp thing isn't smeared
         // by a blurred one behind it; bright taps count more (round bokeh).
         let reach = clamp(blur_at(depth_at(at)) - r + 1.0, 0.0, 1.0);
@@ -3658,6 +3674,26 @@ fn fs_dof(in: FsIn) -> @location(0) vec4<f32> {
         weights += wt;
     }
     return vec4<f32>(sum / weights, c.a);
+}
+
+// Depth of field's small copy: each texel the mean of the DOF_SMALL x DOF_SMALL pixels under it,
+// from four filtered reads each halfway between two pixels' centres both ways; in alpha, the
+// least blur among those pixels (what reach the mean as a whole has).
+@fragment
+fn fs_dof_small(in: FsIn) -> @location(0) vec4<f32> {
+    let size = vec2<f32>(textureDimensions(picture));
+    let corner = floor(in.pos.xy) * DOF_SMALL;
+    var sum = vec3<f32>(0.0);
+    for (var k = 0; k < 4; k++) {
+        let at = corner + vec2<f32>(f32(k % 2) * 2.0 + 1.0, f32(k / 2) * 2.0 + 1.0);
+        sum += textureSampleLevel(picture, samp, at / size, 0.0).rgb;
+    }
+    var least = DOF_MOST;
+    let n = i32(DOF_SMALL);
+    for (var k = 0; k < n * n; k++) {
+        least = min(least, blur_at(depth_at(vec2<i32>(corner) + vec2<i32>(k % n, k / n))));
+    }
+    return vec4<f32>(sum * 0.25, least);
 }
 
 fn srgb_decode(c: vec3<f32>) -> vec3<f32> {

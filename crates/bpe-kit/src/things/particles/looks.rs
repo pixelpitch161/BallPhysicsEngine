@@ -445,7 +445,8 @@ fn recipe(look: Look, rides: bool, fed_by: bool) -> Recipe {
             layers: vec![streaks(
                 StreaksLayer {
                     stretch: 0.025,
-                    width: 0.7,
+                    // About 2 px across: thinner rain fades out once a phone video is compressed.
+                    width: 1.1,
                     colour: paint(&[Color::rgb(190, 215, 255)], Follow::Life),
                     opacity: 0.7,
                     fade: ParticleFade::None,
@@ -850,7 +851,7 @@ fn recipe(look: Look, rides: bool, fed_by: bool) -> Recipe {
                 SmokeLayer {
                     thickness: 1.2,
                     puff: 2.2,
-                    colour: rainbow(Follow::Time),
+                    colour: rainbow(Follow::Life),
                     opacity: 0.7,
                     shading: 0.4,
                     dark_inside: 0.2,
