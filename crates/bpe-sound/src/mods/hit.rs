@@ -24,7 +24,13 @@ pub struct HitValues {
 
 /// The numbers `hit` on shape `shape` gives (`seed` picks its random number).
 pub fn hit_values(world: &World, shape: ThingId, hit: &Event, seed: u64) -> HitValues {
-    let (place, side, sides) = bpe_kit::things::shape::place_on_edge(world, shape, hit.point).unwrap_or((0.0, 0, 1));
+    // Where on the edge of what was hit: a hit's `b` (on a shape's sound, the shape itself; on a
+    // ball's, W10, what its ball met).
+    let edge = match hit.kind {
+        bpe_runtime::EventKind::Hit => hit.b.map_or(shape, |b| b.thing),
+        _ => shape,
+    };
+    let (place, side, sides) = bpe_kit::things::shape::place_on_edge(world, edge, hit.point).unwrap_or((0.0, 0, 1));
     let ball = hit.a;
     let number = bpe_kit::things::balls::sim::numbers(world, ball.thing)
         .filter(|n| n.len() > 1)

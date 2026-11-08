@@ -108,8 +108,8 @@ pub enum InspectorTab {
 }
 
 impl Inspector {
-    /// Whether `primary` is a shape (or a Particles thing) showing its Sound tab (the inspector is
-    /// wide then).
+    /// Whether `primary` is a thing with sound (a shape, a Text, a Particles, Balls or Emitter
+    /// thing) showing its Sound tab (the inspector is wide then).
     pub fn sound_open(&self, scene: &Scene, primary: Option<ThingId>) -> bool {
         primary.is_some_and(|id| {
             scene.things.get(&id).is_some_and(|t| sounds(&t.kind))
@@ -313,6 +313,20 @@ pub fn show(
             [
                 (InspectorTab::Settings, "Settings", "The words, their look and what balls do at them"),
                 (InspectorTab::Sound, "Sound", "The sound the letters make when balls hit them"),
+            ]
+        } else if thing.kind == bpe_kit::things::emitter::KIND {
+            [
+                (InspectorTab::Settings, "Settings", "What it fires, how its balls look and move, what it catches"),
+                (
+                    InspectorTab::Sound,
+                    "Sound",
+                    "The sound its balls make when they are fired, hit things or are caught",
+                ),
+            ]
+        } else if thing.kind == bpe_kit::things::balls::KIND {
+            [
+                (InspectorTab::Settings, "Settings", "The balls' size, look and how they move"),
+                (InspectorTab::Sound, "Sound", "The sound its balls make when they hit things"),
             ]
         } else {
             [
@@ -664,6 +678,8 @@ pub fn show(
             .slots()
             .iter()
             .copied()
+            // Sound is turned on from the Sound tab, not added as a card.
+            .filter(|s| s.in_card_list())
             .filter(|s| !thing.slots.contains_key(s) && reg.kinds_fitting(*s, kind).next().is_some())
             .collect();
         // Motion and Bounce are one entry, Physics, at the first of them. It adds every Physics
@@ -886,9 +902,13 @@ pub(crate) fn has_ball_look(kind: &str) -> bool {
 /// The kind whose outline settings show under its Look's Body.
 const SHAPE: &str = bpe_kit::things::shape::KIND;
 
-/// Whether things of `kind` have a Sound tab: shapes, and Particles things (particles part 7).
+/// Whether things of `kind` have a Sound tab: shapes, Text, Particles things (particles part 7),
+/// and Balls and Emitters (W10).
 pub(crate) fn sounds(kind: &str) -> bool {
-    kind == SHAPE || kind == bpe_kit::things::particles::KIND || kind == bpe_kit::things::text::KIND
+    kind == SHAPE
+        || kind == bpe_kit::things::particles::KIND
+        || kind == bpe_kit::things::text::KIND
+        || bpe_kit::sound::hears_own_balls(kind)
 }
 
 /// After a shape's own setting `key` was set: a new Sides or Start from starts the outline afresh,
