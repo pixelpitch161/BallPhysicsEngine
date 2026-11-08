@@ -82,10 +82,20 @@ fn the_sound_engines_physics() {
     let scene = trails_scene(120, true);
     let resolved = resolve_scene(&scene, &kit.registry);
     let heard = bpe_runtime::heard_part(&scene, &resolved, &kit.sims);
-    let mut playback = Playback::new(&scene, &heard, kit.sims.clone());
-    println!("the sound engine's physics, 120 balls with a Line that stays:");
-    timed("play 60 s", || playback.seek(60.0));
-    println!("  memory {:.1} MB", playback.memory() as f64 / 1e6);
+    // As the sound engine built it before W7 (a drawn world) and as it does now (unseen; the
+    // export's is also forward only).
+    for (name, mut playback) in [
+        ("drawn", Playback::new(&scene, &heard, kit.sims.clone())),
+        ("unseen", Playback::unseen(&scene, &heard, kit.sims.clone(), bpe_runtime::CHECKPOINT_BYTES)),
+        (
+            "unseen, forward only",
+            Playback::unseen(&scene, &heard, kit.sims.clone(), bpe_runtime::CHECKPOINT_BYTES).forward_only(),
+        ),
+    ] {
+        println!("the sound engine's physics, 120 balls with a Line that stays ({name}):");
+        timed("play 60 s", || playback.seek(60.0));
+        println!("  memory {:.1} MB", playback.memory() as f64 / 1e6);
+    }
 }
 
 /// S14: an endless emitter whose earlier rounds go: how a second of physics costs as the run
