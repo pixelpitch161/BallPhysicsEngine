@@ -62,8 +62,10 @@ pub struct Inspector {
     pub group_view: crate::look_editor::GroupView,
     /// The window's GPU, for the ball view; none in tests.
     pub render: Option<eframe::egui_wgpu::RenderState>,
-    /// Each shape's tab: its settings or its sound.
+    /// Each thing's tab: its settings, its ready-made looks or its sound.
     pub tab: BTreeMap<ThingId, InspectorTab>,
+    /// The Looks tab's own state.
+    pub looks: crate::looks_page::LooksPage,
     /// The Sound tab's own state.
     pub sound: crate::sound_tab::SoundTab,
     /// Keys clicked on a Sound tab's keyboard this frame, for the studio to play: (shape, note).
@@ -99,23 +101,55 @@ mod find;
 #[path = "emitter_card/mod.rs"]
 pub(crate) mod emitter_card;
 
-/// What the inspector shows of a shape.
+/// What the inspector shows of a thing with tabs (a shape, a Balls group, an emitter, a Particles thing, a Text).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum InspectorTab {
     #[default]
     Settings,
+    /// Ready-made looks, on Balls, Emitters and Shapes.
+    Looks,
     Sound,
 }
 
 impl Inspector {
-    /// Whether `primary` is a shape (or a Particles thing) showing its Sound tab (the inspector is
-    /// wide then).
-    pub fn sound_open(&self, scene: &Scene, primary: Option<ThingId>) -> bool {
+    /// Whether `primary` shows its Sound tab or its Looks tab (the inspector is wide then).
+    pub fn wide_open(&self, scene: &Scene, primary: Option<ThingId>) -> bool {
         primary.is_some_and(|id| {
-            scene.things.get(&id).is_some_and(|t| sounds(&t.kind))
-                && self.tab.get(&id).copied().unwrap_or_default() == InspectorTab::Sound
+            scene.things.get(&id).is_some_and(|t| {
+                let tab = self.tab.get(&id).copied().unwrap_or_default();
+                tab == InspectorTab::Sound && sounds(&t.kind)
+                    || tab == InspectorTab::Looks && bpe_kit::ready_looks::wears(&t.kind).is_some()
+            })
         })
     }
+}
+
+/// The tabs of things of `kind`, with their names and what they show; none for a thing without tabs.
+fn tabs(kind: &str) -> Vec<(InspectorTab, &'static str, &'static str)> {
+    let looks = bpe_kit::ready_looks::wears(kind).is_some();
+    let mut out = Vec::new();
+    let settings = match kind {
+        SHAPE => "The shape's outline, look and how it moves",
+        bpe_kit::things::text::KIND => "The words, their look and what balls do at them",
+        bpe_kit::things::particles::KIND => "Where the particles come from, how they move and look",
+        bpe_kit::things::emitter::KIND => "Where the balls come from, how they move and look",
+        _ => "The balls, how they move and look",
+    };
+    if looks || sounds(kind) {
+        out.push((InspectorTab::Settings, "Settings", settings));
+    }
+    if looks {
+        out.push((InspectorTab::Looks, "Looks", "Ready-made looks to start from"));
+    }
+    if sounds(kind) {
+        let sound = match kind {
+            SHAPE => "The sound the shape makes when balls hit it",
+            bpe_kit::things::text::KIND => "The sound the letters make when balls hit them",
+            _ => "The sound the particles make when they hit things, land or burst",
+        };
+        out.push((InspectorTab::Sound, "Sound", sound));
+    }
+    out
 }
 
 /// One of the inspector's cards, as the jump bar names it.
@@ -301,33 +335,23 @@ pub fn show(
         style::ensure_text_fonts(ui.ctx(), scene);
     }
 
-    // A shape's (or a Particles thing's, or a Text's) settings or its sound.
-    if sounds(&thing.kind) {
+    // A thing's settings, its ready-made looks or its sound.
+    let chips = tabs(&thing.kind);
+    if !chips.is_empty() {
         let mut tab = inspector.tab.get(&id).copied().unwrap_or_default();
-        let chips: [(InspectorTab, &str, &str); 2] = if thing.kind == SHAPE {
-            [
-                (InspectorTab::Settings, "Settings", "The shape's outline, look and how it moves"),
-                (InspectorTab::Sound, "Sound", "The sound the shape makes when balls hit it"),
-            ]
-        } else if thing.kind == bpe_kit::things::text::KIND {
-            [
-                (InspectorTab::Settings, "Settings", "The words, their look and what balls do at them"),
-                (InspectorTab::Sound, "Sound", "The sound the letters make when balls hit them"),
-            ]
-        } else {
-            [
-                (InspectorTab::Settings, "Settings", "Where the particles come from, how they move and look"),
-                (InspectorTab::Sound, "Sound", "The sound the particles make when they hit things, land or burst"),
-            ]
-        };
+        if !chips.iter().any(|c| c.0 == tab) {
+            tab = InspectorTab::Settings;
+        }
         ui.horizontal(|ui| {
             ui.add_space(CARD_MARGIN as f32);
             crate::look_editor::ball_view::segmented(ui, &mut tab, &chips);
         });
         ui.add_space(4.0);
         inspector.tab.insert(id, tab);
-        if tab == InspectorTab::Sound {
-            return crate::sound_tab::show(ui, inspector, scene, kit, &choices, id, time);
+        match tab {
+            InspectorTab::Sound => return crate::sound_tab::show(ui, inspector, scene, kit, &choices, id, time),
+            InspectorTab::Looks => return crate::looks_page::show(ui, inspector, scene, kit, &selected, id, time),
+            InspectorTab::Settings => {}
         }
     }
 

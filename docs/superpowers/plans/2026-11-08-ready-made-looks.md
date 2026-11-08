@@ -225,3 +225,18 @@ banding, leaks, and that every look matches its description; tune the recipes un
 - Don't add built-in scenes. The `ready_looks` scene lives only in the full-size look test.
 - Don't change any layer kind's defaults or drawing.
 - Don't add lights or a Lighting card from a look.
+
+## As built (2026-11-08)
+
+- bpe-kit `ready_looks/` as planned (`mod.rs`, `balls.rs`, `shapes.rs`, `apply.rs`, `tests.rs`, 13 tests), plus
+  `tests/ready_look_pictures.rs` (every look draws on the dark ground; no two of a family draw the same picture, about 40 s;
+  the Liquid shader was dropped partly because its in-ball program took about 9 minutes to build on the software GPU)
+  and a
+  "ready" group in `tests/full_size_look.rs` (30 balls still and moving, 18 shapes).
+- bpe-studio: `looks_page/{mod,grid,preview,shape_view,thumbs,tests}.rs`; `inspector.rs::tabs` builds the chips
+  (Settings | Looks for Balls and Emitters, Settings | Looks | Sound for Shapes); `Inspector::wide_open` replaces
+  `sound_open`; `ball_view::show_dressed`; `tree.rs::with_looks` with `Action::AddWithLook` / `AddForLooks` and
+  `TreeOutcome.looks`. Tree tests that added Balls now click the kind and then Plain.
+- Tuned after the full-size check: Hypno's ring size, Glitch gets moving bars under its colour split, Liquid / Aurora /
+  Plasma lose their bending shaders, dark fills for the line looks, a stronger Glass tint, a round Frosted fill.
+- Notes in `docs/notes/editor.md` and `engine.md` ("Ready-made looks").

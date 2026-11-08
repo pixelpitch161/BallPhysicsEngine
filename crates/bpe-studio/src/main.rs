@@ -25,6 +25,7 @@ mod inspector;
 mod light_scenes_panel;
 mod lights_panel;
 mod look_editor;
+mod looks_page;
 mod mixer;
 mod palettes;
 mod particle_job;

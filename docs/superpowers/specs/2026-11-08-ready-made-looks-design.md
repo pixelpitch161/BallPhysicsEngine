@@ -134,3 +134,16 @@ Rules every recipe follows:
 - No looks for Text or Particles here (they already start from their own looks in the Add thing menu).
 - No moving tiles: tiles are still pictures; the preview moves.
 - No look that needs the scene to change (lights, lighting, other things).
+
+## As built (2026-11-08)
+
+Built as designed, with these differences:
+
+- A shape look's tile shows it on a sample solid ellipse (not a rounded box), since a Shape has no box to start from.
+- A shape's Body always draws the shape itself, so there is no see-through "only the edge" fill. Outline, Chalk, Glow
+  ring and Laser fill the shape dark under their line instead, and say so in their descriptions.
+- Heat glows with hits (the Heat sub-layer reads hits), not with speed.
+- Liquid, Aurora and Plasma use moving gradients (Marble and Waves forms that scroll or flow), not the Liquid
+  shaders: those bend the picture and pulled the dark ground in round the edge.
+- The shape preview has Still / Playing / Hit (Playing runs time so flowing colours move); the ball preview is the
+  Look editor's own ball view.

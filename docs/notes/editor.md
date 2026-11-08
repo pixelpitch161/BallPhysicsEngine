@@ -242,3 +242,30 @@ Plan `docs/superpowers/plans/2026-11-08-editor-workflow.md` (findings E7 to E14 
   way to every setting whose name or section holds every word typed, under its card's title (the thing's own, each plain card's,
   each layer's "Look · Glow"), with sections blanked so nothing folds away; rows edit, key and follow as in their
   card. Escape or Clear empties it. "+ Add slot" is now "+ Add card".
+
+## Ready-made looks (E12, 2026-11-08)
+
+Spec `docs/superpowers/specs/2026-11-08-ready-made-looks-design.md`, plan `plans/2026-11-08-ready-made-looks.md`. The
+looks themselves are in `bpe-kit/src/ready_looks/` (`engine.md`).
+
+- **Looks tab** (`looks_page/`): Balls and Emitters get Settings | Looks tabs, Shapes Settings | Looks | Sound
+  (`inspector.rs::tabs`, `InspectorTab::Looks`). `Inspector::wide_open` (was `sound_open`) is true on a Sound or Looks
+  tab, so the inspector takes the Sound tab's wide width. `LooksPage` (in `Inspector.looks`) keeps the family shown,
+  the Find a look words, the look picked per wearer kind (`Wears`), Colours (The look's / Keep mine) and the line under
+  the buttons. Three columns from 600 points wide (families, tiles, preview), else stacked.
+- **Tiles** (`grid.rs`, `thumbs.rs`): a click picks a look; hovering shows it in the preview. Each tile is the look
+  worn by the selected ball itself (a `ball_view::mini_scene` with the look applied, its trail moving when it has one)
+  or, for a shape look, by a sample solid ellipse holding the shape's own Look first. One shared 168 px `Renderer`
+  draws them, at most `PER_FRAME` (4) a frame, and each is copied into a texture of its own; a tile is drawn again
+  only when its key (the thing's kind, Look card, Look keys and pulses, radius, the look and colours) changes, or its
+  shaders were still building. Without a GPU (and until drawn) a tile paints the look's two swatch colours
+  (`grid::swatch`, also used by the add menu).
+- **Preview** (`preview.rs`, `shape_view.rs`): a ball look is the Look editor's ball view
+  (`ball_view::show_dressed`, the small scene dressed with the look) with Still / Moving / Hit; a shape look is
+  `ShapeView`, the shape alone on the dark ground with Still / Playing / Hit, framed by the path's `reach`. Use this
+  look (Replace) and Add its layers on top (OnTop) put the *picked* look on the primary and every selected thing that
+  can wear it, each with its own colours under Keep mine; one edit, so one Ctrl+Z. Keep mine is greyed for looks with
+  colours of their own and for shapes with no Colour layer.
+- **Add menu** (`tree.rs::with_looks`): Balls, Emitter and Shape are submenus: Plain, the seven favourites with their
+  swatch (`Action::AddWithLook` → `ready_looks::add_with_look`), More looks… (`Action::AddForLooks`: a plain one,
+  `TreeOutcome.looks`, and the app opens its Looks tab). Tree tests click the kind, then Plain.
