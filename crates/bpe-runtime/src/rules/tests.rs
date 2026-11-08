@@ -592,3 +592,32 @@ fn a_setting_keeps_at_most_most_changes() {
     assert!(list.len() <= MOST_CHANGES);
     assert_eq!(fold(list, &Value::Number(0.0), 1000.0), Value::Number(500.0), "nothing lost");
 }
+
+/// A Set for good hides what came before it at once, and what it hides goes a little later: the
+/// sound engine, a step behind its physics, still folds it there (W13).
+#[test]
+fn a_set_for_good_hides_what_came_before_and_it_goes_a_little_later() {
+    let (scene, resolved) = (scene_with(vec![push_on_hit(1.0)]).0, dots_in_ring(1).1);
+    let world = World::build(&scene, &resolved, &sims());
+    let mut rules = RulesState::build(&scene, &resolved, &sims(), &world).unwrap();
+    let key = ChangeKey { thing: DOTS, slot: None, row: None, key: "tint".into() };
+    let set = |start: f64, to: f64| Change {
+        how: How::Set,
+        value: Value::Number(to),
+        start,
+        glide: 0.0,
+        ease: bpe_core::Ease::Linear,
+        lasts: None,
+        range: None,
+    };
+    rules.add_change(key.clone(), set(1.0, -60.0));
+    rules.add_change(key.clone(), set(2.0, -60.0));
+    let list = rules.changes_on(&key).to_vec();
+    assert_eq!(list.len(), 2);
+    assert_eq!(fold(&list, &Value::Number(0.0), 1.99), Value::Number(-60.0), "just before the second, the first");
+    assert_eq!(fold(&list, &Value::Number(0.0), 2.0), Value::Number(-60.0));
+    rules.prune(2.05);
+    assert_eq!(rules.changes_on(&key).len(), 2, "kept while the sound may be behind");
+    rules.prune(2.2);
+    assert_eq!(rules.changes_on(&key).len(), 1);
+}

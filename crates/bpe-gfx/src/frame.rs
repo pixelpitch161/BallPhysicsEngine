@@ -1193,7 +1193,8 @@ pub struct LightingGpu {
     /// Part 4, the haze moving: how (0 still, 1 drifting, 2 swirling), speed, size (world units),
     /// patchiness (0 even, 1 in clouds).
     pub haze: [f32; 4],
-    /// Which way it drifts (unit xy), how much balls stir it, spare.
+    /// How far it has drifted (xy, world units: the clouds are read that far back), how much
+    /// balls stir it, spare.
     pub haze_more: [f32; 4],
     /// Underwater: how much (0 not), caustics, caustic size (world units), caustic speed.
     pub water: [f32; 4],

@@ -1,4 +1,5 @@
-//! Gravity, drag and wind on every ball that uses the module.
+//! Gravity, drag and a steady push on every ball that uses the module (the air it follows is the
+//! world's: `bpe_runtime::World` carries such balls along, see `ModuleSim::air_grip`).
 
 use bpe_core::{Params, Settings};
 use bpe_runtime::{Bodies, ModuleSim, SimCx, ThingState, state};
@@ -41,6 +42,14 @@ impl ModuleSim for BasicMotionSim {
 
     fn light_pull(&self, st: &dyn ThingState) -> Option<bpe_runtime::LightPull> {
         state::<MotionState>(st).settings.light_pull()
+    }
+
+    fn air_grip(&self, st: &dyn ThingState) -> f32 {
+        state::<MotionState>(st).settings.air_grip()
+    }
+
+    fn air_key(&self) -> Option<&'static str> {
+        Some(super::FOLLOW_AIR)
     }
 
     fn per_ball(&self) -> bool {

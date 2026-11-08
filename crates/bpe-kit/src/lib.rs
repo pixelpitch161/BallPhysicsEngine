@@ -66,6 +66,7 @@ pub fn sims() -> Sims {
     s.add_health(modules::health::HealthCardSim);
     // Light sensing: worlds whose physics follows light get the probe (none do unless asked).
     s.light = Some(std::sync::Arc::new(sensing::KitLight));
+    s.air = Some(std::sync::Arc::new(air::KitAir));
     s
 }
 
