@@ -276,6 +276,7 @@ dependencies = [
  "glam",
  "i_overlay",
  "png",
+ "rayon",
  "ron",
  "rustybuzz",
  "serde",
