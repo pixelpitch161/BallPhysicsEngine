@@ -182,7 +182,32 @@ fn a_picture_fills_its_solid_bright_or_dark_parts() {
     assert_eq!(bright.len() + dark.len(), solid.len());
     assert!(!bright.is_empty() && !dark.is_empty());
     assert!(picture_spots(&format!("{path}.missing"), 200.0, Uses::SolidParts, 10.0).is_empty());
+    // Kept in the scene (W5), the same picture fills the same places, and the file isn't needed.
+    let bytes = std::fs::read(&path).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
+    let reg = crate::kit().registry;
+    let mut scene = bpe_core::Scene::empty(&reg);
+    let name = scene.add_picture("two", bytes.into());
+    let s = ParticlesSettings {
+        from: BornFrom::AWordOrPicture,
+        word_from: super::WordFrom::Picture,
+        picture: name,
+        picture_width: 200.0,
+        uses: Uses::SolidParts,
+        spacing: 10.0,
+        ..ParticlesSettings::default()
+    };
+    let key = super::spots::key_of(
+        &s,
+        Vec2::new(1080.0, 1920.0),
+        Some(&scene),
+        bpe_core::ThingId(9),
+        &super::spots::SpotsKey::None,
+    );
+    assert!(matches!(&key, super::spots::SpotsKey::Picture { kept: Some(_), .. }), "{key:?}");
+    assert_eq!(*super::spots::spots_for(&key), solid);
+    let missing = super::spots::key_of(&s, Vec2::ZERO, None, bpe_core::ThingId(9), &super::spots::SpotsKey::None);
+    assert!(super::spots::spots_for(&missing).is_empty(), "not in the scene and no such file");
 }
 
 // ---- Births ----
@@ -249,6 +274,33 @@ fn a_crowd_on_a_grid_fills_every_place_and_refills_a_lost_one_there() {
     // A small cap stops the crowd.
     let (scene, id) = scene_of(&ParticlesSettings { most: 10, ..grid_source(5, 5) }, &[]);
     assert_eq!(particles(&run(&scene, 0.2).0, id).specks.len(), 10);
+}
+
+#[test]
+fn a_picture_kept_in_the_scene_forms_particles_in_the_world() {
+    // 2 × 2, all white and opaque.
+    let mut bytes = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut bytes, 2, 2);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header().unwrap().write_image_data(&[255; 16]).unwrap();
+    }
+    let s = ParticlesSettings {
+        from: BornFrom::AWordOrPicture,
+        word_from: super::WordFrom::Picture,
+        picture: "Logo".into(),
+        picture_width: 100.0,
+        spacing: 10.0,
+        emit: Emit::OnceAtTheStart,
+        life: 100.0,
+        speed: 0.0,
+        ..ParticlesSettings::default()
+    };
+    let (mut scene, id) = scene_of(&s, &[]);
+    assert!(particles(&run(&scene, 0.1).0, id).specks.is_empty(), "no picture of that name yet");
+    assert_eq!(scene.add_picture("Logo", bytes.into()), "Logo");
+    assert!(!particles(&run(&scene, 0.1).0, id).specks.is_empty(), "the kept picture forms them");
 }
 
 #[test]

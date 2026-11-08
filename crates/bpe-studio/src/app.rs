@@ -92,7 +92,7 @@ pub enum Pending {
     Close,
     Open,
     New,
-    /// A recent file from the toolbar's Recent menu.
+    /// A recent file from the toolbar's Recent menu, or a scene dropped on the window.
     OpenPath(PathBuf),
 }
 
@@ -309,6 +309,13 @@ pub struct Studio {
     pub ask_stop_export: bool,
     /// The window's context, to wake it for the next autosave.
     repaint: Option<egui::Context>,
+    /// What was copied last, things or timeline keys (kept through New and Open).
+    pub clipboard: crate::things::Clipboard,
+    /// Words put on the system clipboard at the next frame's shortcuts, after a copy here: on
+    /// Windows, Ctrl+V reaches the program only when the system clipboard holds something.
+    pub copied_note: Option<String>,
+    /// The window's title as last sent.
+    title: String,
 }
 
 impl Studio {
@@ -665,6 +672,9 @@ impl Studio {
             gpu_lost_told: false,
             ask_stop_export: false,
             repaint: None,
+            clipboard: Default::default(),
+            copied_note: None,
+            title: String::new(),
         }
     }
 
@@ -913,11 +923,100 @@ impl Studio {
         self.status = "Started a new scene.".into();
     }
 
+    // ---------- copying things (W5) ----------
+
+    /// Copies `ids` (with everything under them) to the clipboard. False when there was nothing
+    /// that can be copied (the scene settings, the camera).
+    pub fn copy_things(&mut self, ids: &[ThingId]) -> bool {
+        let Some(clip) = self.scene.copy_things(&self.kit.registry, ids) else {
+            if !ids.is_empty() {
+                self.status = "The scene settings and the camera can't be copied.".into();
+            }
+            return false;
+        };
+        let clipboard = crate::things::Clipboard::Things(clip);
+        self.status = format!("Copied {}.", clipboard.things_words().unwrap_or_default());
+        self.copied_note = Some(format!("Ball Studio: {}", self.status));
+        self.clipboard = clipboard;
+        true
+    }
+
+    /// Pastes the copied things beside `at` (into it when it is a folder; with `None`, beside the
+    /// selection) and selects them, as an undo step of its own. False with no things copied.
+    pub fn paste_things(&mut self, at: Option<ThingId>) -> bool {
+        let crate::things::Clipboard::Things(clip) = &self.clipboard else { return false };
+        let clip = clip.clone();
+        let (parent, after) = crate::things::paste_place(&self.scene, at.or(self.selection.primary));
+        match self.scene.paste_things(&self.kit.registry, &clip, parent, after) {
+            Ok(pasted) if !pasted.tops.is_empty() => {
+                tree::select_all(&mut self.selection, &pasted.tops);
+                self.status = crate::things::pasted_words(&clip, &pasted);
+                self.separate_edit = true;
+                true
+            }
+            _ => {
+                self.status = "Nothing to paste: this scene has its camera already.".into();
+                false
+            }
+        }
+    }
+
+    /// Duplicates the selected things with everything under them, each copy right after its
+    /// original, and selects the copies, as an undo step of its own.
+    pub fn duplicate_selection(&mut self) -> bool {
+        let ids = self.selection.all(&self.scene);
+        let copies = crate::things::duplicate(&mut self.scene, &self.kit.registry, &ids);
+        if copies.is_empty() {
+            return false;
+        }
+        tree::select_all(&mut self.selection, &copies);
+        self.separate_edit = true;
+        true
+    }
+
+    /// Deletes the selected things (never the scene settings or the camera), as an undo step of
+    /// its own.
+    pub fn delete_selection(&mut self) -> bool {
+        let ids = self.selection.all(&self.scene);
+        let reg = &self.kit.registry;
+        let gone = tree::delete_things(&mut self.panels.tree, &mut self.scene, reg, &mut self.selection, ids);
+        if gone.is_some() {
+            self.separate_edit = true;
+        }
+        gone.is_some()
+    }
+
+    /// Steps the playhead `n` video frames (with `beat`, `n` beats) from the frame (or beat) it
+    /// is on, and pauses.
+    pub fn step(&mut self, n: f64, beat: bool) {
+        let settings = self.settings();
+        let unit = if beat {
+            bpe_sound::TempoMap::from_settings(&settings).beat_seconds()
+        } else {
+            1.0 / f64::from(settings.fps.max(1))
+        };
+        if !(unit.is_finite() && unit > 0.0) {
+            return;
+        }
+        let at = (self.time / unit).round();
+        self.set_playing(false);
+        self.seek((at + n) * unit);
+    }
+
+    /// The window's title: the scene's name, a dot while it has unsaved changes, then the app's.
+    pub fn window_title(&self) -> String {
+        let name = self.scene.name.trim();
+        let name = if name.is_empty() { "Untitled" } else { name };
+        let dot = if self.unsaved() { " •" } else { "" };
+        format!("{name}{dot} – Ball Studio")
+    }
+
     pub fn undo(&mut self) -> bool {
         if !self.history.undo(&mut self.scene) {
             return false;
         }
         self.status = "Undone.".into();
+        self.panels.timeline.selected.clear();
         self.recorded = true;
         self.snapshot = None;
         self.scene_changed();
@@ -929,6 +1028,7 @@ impl Studio {
             return false;
         }
         self.status = "Redone.".into();
+        self.panels.timeline.selected.clear();
         self.recorded = true;
         self.snapshot = None;
         self.scene_changed();
@@ -1125,7 +1225,7 @@ impl Studio {
     }
 
     /// Runs `action` now, or asks to save first if there are unsaved changes.
-    fn guard(&mut self, action: Pending, ctx: &egui::Context) {
+    pub(crate) fn guard(&mut self, action: Pending, ctx: &egui::Context) {
         if self.unsaved() {
             self.confirm = Some(action);
         } else {
@@ -1255,6 +1355,58 @@ impl Studio {
         if ctx.input(|i| i.key_pressed(Key::Home)) {
             self.seek(0.0);
         }
+        if ctx.input(|i| i.key_pressed(Key::End)) {
+            self.set_playing(false);
+            self.seek(self.duration());
+        }
+        // Left and Right step one frame; with Shift, one beat. (Shift first: the plain shortcut
+        // matches with Shift held too.)
+        if pressed(Modifiers::SHIFT, Key::ArrowLeft) {
+            self.step(-1.0, true);
+        } else if pressed(Modifiers::NONE, Key::ArrowLeft) {
+            self.step(-1.0, false);
+        }
+        if pressed(Modifiers::SHIFT, Key::ArrowRight) {
+            self.step(1.0, true);
+        } else if pressed(Modifiers::NONE, Key::ArrowRight) {
+            self.step(1.0, false);
+        }
+    }
+
+    /// The keys that act on what is selected, read after the panels so a panel that used one
+    /// (the timeline's Delete on a selected key) keeps it: Ctrl+D, Ctrl+C, Ctrl+V, and Delete
+    /// from the Lights or Mixer tab (the Things tab's tree reads Delete itself).
+    pub(crate) fn late_shortcuts(&mut self, ctx: &egui::Context) {
+        if let Some(note) = self.copied_note.take() {
+            ctx.copy_text(note);
+        }
+        if ctx.text_edit_focused() || self.confirm.is_some() || self.offer.is_some() || self.ask_stop_export {
+            return;
+        }
+        let pressed = |modifiers, key| ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(modifiers, key)));
+        // egui-winit sends Ctrl+C and Ctrl+V as copy and paste events instead of keys, and Ctrl+V
+        // only when the system clipboard holds text (or a picture): a copy here puts a note there.
+        let event = |f: fn(&egui::Event) -> bool| ctx.input(|i| i.events.iter().any(f));
+        let copy = pressed(Modifiers::COMMAND, Key::C) | event(|e| matches!(e, egui::Event::Copy));
+        let paste = pressed(Modifiers::COMMAND, Key::V)
+            | event(|e| matches!(e, egui::Event::Paste(_) | egui::Event::PasteImage(_)));
+        if pressed(Modifiers::COMMAND, Key::D) {
+            self.duplicate_selection();
+        }
+        if copy && !timeline::copy_keys(self) {
+            let ids = self.selection.all(&self.scene);
+            self.copy_things(&ids);
+        }
+        if paste {
+            match &self.clipboard {
+                crate::things::Clipboard::Keys(_) => _ = timeline::paste_keys(self),
+                crate::things::Clipboard::Things(_) => _ = self.paste_things(None),
+                crate::things::Clipboard::Empty => {}
+            }
+        }
+        if self.left != LeftPanel::Things && pressed(Modifiers::NONE, Key::Delete) {
+            self.delete_selection();
+        }
     }
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
@@ -1381,6 +1533,7 @@ impl Studio {
                     .show(ui, |ui| {
                         ui.set_min_width(ui.available_width());
                         left_switch(ui, &mut left);
+                        self.panels.tree.paste_words = self.clipboard.things_words();
                         tree::show(
                             ui,
                             &mut self.panels.tree,
@@ -1394,6 +1547,17 @@ impl Studio {
                 if let Some(message) = tree.message {
                     self.status = message;
                 }
+                if let Some(ids) = &tree.copy {
+                    self.copy_things(ids);
+                }
+                if let Some(at) = tree.paste {
+                    self.paste_things(Some(at));
+                }
+                if tree.picked {
+                    // A thing picked in the tree is what Ctrl+C copies now, not the timeline's keys.
+                    self.panels.timeline.selected.clear();
+                }
+                self.separate_edit |= tree.separate;
                 if let Some(id) = tree.added {
                     self.place_added(id);
                 }
@@ -1899,6 +2063,10 @@ impl eframe::App for Studio {
             .frame(egui::Frame::new().fill(style::STAGE))
             .show(ui, |ui| preview::show(ui, frame, self))
             .inner;
+        if self.confirm.is_none() && self.offer.is_none() && !self.ask_stop_export {
+            self.late_shortcuts(&ctx);
+            self.take_drops(&ctx);
+        }
         if outcome.clicked {
             self.set_playing(false);
         }
@@ -1956,6 +2124,11 @@ impl eframe::App for Studio {
         }
         if let Some(wait) = self.settle_runs(pointer_down) {
             ctx.request_repaint_after(wait);
+        }
+        let title = self.window_title();
+        if title != self.title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.title = title;
         }
         self.send_auditions();
         self.follow_bakes(&ctx);
@@ -3058,5 +3231,231 @@ mod tests {
         assert!(started.elapsed() < Duration::from_millis(500), "a scrub blocked for {:?}", started.elapsed());
         assert_eq!(studio.time, 20.0);
         assert!(studio.playback.time() < 20.0, "the preview catches the rest up a budget per frame");
+    }
+
+    /// The editor's panels as `ui` lays them out, with its keyboard shortcuts before and after
+    /// them and each frame's change recorded as it records them.
+    fn editor_harness(studio: Studio) -> Harness<'static, Studio> {
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1400.0, 900.0))
+            .with_step_dt(1.0 / 60.0)
+            .with_max_steps(120)
+            .allow_missing_glyphs()
+            .with_context_setup(style::apply)
+            .build_ui_state(
+                |ui, studio: &mut Studio| {
+                    let ctx = ui.ctx().clone();
+                    let before = studio.scene.clone();
+                    studio.recorded = false;
+                    studio.shortcuts(&ctx);
+                    egui::Panel::bottom("timeline").show(ui, |ui| timeline::show(ui, studio));
+                    studio.left_panel(ui, &before);
+                    egui::CentralPanel::default().show(ui, |_| {});
+                    studio.late_shortcuts(&ctx);
+                    studio.take_drops(&ctx);
+                    studio.record_frame(before);
+                },
+                studio,
+            );
+        h.run();
+        h
+    }
+
+    fn thing_named(studio: &Studio, name: &str) -> Option<ThingId> {
+        studio.scene.things.values().find(|t| t.name == name).map(|t| t.id)
+    }
+
+    #[test]
+    fn ctrl_d_duplicates_the_selection_as_its_own_undo_step() {
+        let mut studio = Studio::headless();
+        studio.selection.set(ThingId(2));
+        let mut h = editor_harness(studio);
+        h.key_press_modifiers(Modifiers::COMMAND, Key::D);
+        h.run();
+        let copy = thing_named(h.state(), "Ball copy").expect("a copy");
+        assert_eq!(h.state().selection.primary, Some(copy), "the copy is selected");
+        assert!(h.state_mut().undo());
+        assert!(thing_named(h.state(), "Ball copy").is_none());
+    }
+
+    #[test]
+    fn copied_things_paste_into_a_new_scene() {
+        let mut studio = Studio::headless();
+        studio.selection.set(ThingId(2));
+        let mut h = editor_harness(studio);
+        h.key_press_modifiers(Modifiers::COMMAND, Key::C);
+        h.run();
+        assert_eq!(h.state().status, "Copied Ball.");
+        h.state_mut().new_scene();
+        h.run();
+        assert!(thing_named(h.state(), "Ball").is_none());
+        h.key_press_modifiers(Modifiers::COMMAND, Key::V);
+        h.run();
+        let ball = thing_named(h.state(), "Ball").expect("pasted");
+        assert_eq!(h.state().selection.primary, Some(ball));
+        assert_eq!(h.state().scene.things[&ball].parent, Some(ThingId::ROOT));
+        assert!(h.state().status.starts_with("Pasted Ball."), "{}", h.state().status);
+        assert!(h.state().unsaved());
+        // The row menu pastes too, beside the row picked.
+        let rows = h.state().scene.things.len();
+        h.get_by_label("Ball").click_secondary();
+        h.run();
+        h.get_by_label("Paste Ball Ctrl+V").click();
+        h.run();
+        assert_eq!(h.state().scene.things.len(), rows + 1);
+        assert!(thing_named(h.state(), "Ball copy").is_some());
+    }
+
+    /// A file dropped in a test: its name and bytes.
+    #[derive(Debug)]
+    struct TestDrop(PathBuf, Vec<u8>);
+
+    impl egui::DroppedFile for TestDrop {
+        fn path(&self) -> &Path {
+            &self.0
+        }
+        fn bytes(&self) -> Result<Vec<u8>, String> {
+            Ok(self.1.clone())
+        }
+    }
+
+    fn drop_file(h: &mut Harness<'_, Studio>, name: &str, bytes: &[u8]) {
+        let file = Arc::new(TestDrop(PathBuf::from(name), bytes.to_vec()));
+        h.input_mut().dropped_files.push(file);
+        h.run();
+    }
+
+    #[test]
+    fn a_dropped_png_becomes_a_particles_picture_kept_in_the_scene() {
+        let mut h = editor_harness(Studio::headless());
+        let png = b"\x89PNG\r\n\x1a\nrest";
+        drop_file(&mut h, "Logo.png", png);
+        let s = h.state();
+        assert_eq!(&*s.scene.pictures["Logo"].bytes, &png[..]);
+        let id = s.selection.primary.expect("a new Particles thing, selected");
+        let thing = &s.scene.things[&id];
+        assert_eq!(thing.kind, "particles");
+        assert_eq!(thing.params.get("picture"), Some(&Value::Text("Logo".into())));
+        assert_eq!(thing.params.get("word_from"), Some(&Value::Choice("picture".into())));
+        let things = s.scene.things.len();
+        // Dropped again with it selected, the same thing shows it: no second thing, no second copy.
+        drop_file(&mut h, "Logo.png", png);
+        assert_eq!(h.state().scene.things.len(), things);
+        assert_eq!(h.state().scene.pictures.len(), 1);
+        assert!(h.state_mut().undo(), "a drop is an undo step");
+    }
+
+    #[test]
+    fn a_dropped_font_is_kept_and_sets_the_selected_text_in_it() {
+        let mut studio = Studio::headless();
+        let kit = studio.kit.clone();
+        let text = bpe_kit::add_thing(&mut studio.scene, &kit.registry, bpe_kit::things::text::KIND, ThingId::ROOT);
+        let text = text.unwrap();
+        studio.selection.set(text);
+        let mut h = editor_harness(studio);
+        let bytes = std::fs::read(bpe_kit::text::fonts::repo_fonts_dir().join("BebasNeue.ttf")).unwrap();
+        drop_file(&mut h, "BebasNeue.ttf", &bytes);
+        assert!(h.state().scene.fonts.contains_key("Bebas Neue"));
+        assert_eq!(h.state().scene.things[&text].params.get("font"), Some(&Value::Text("Bebas Neue".into())));
+    }
+
+    #[test]
+    fn a_dropped_file_ball_studio_cant_use_is_reported() {
+        let mut h = editor_harness(Studio::headless());
+        let before = h.state().scene.clone();
+        drop_file(&mut h, "song.wav", b"RIFF");
+        assert_eq!(h.state().scene, before);
+        let problem = h.state().problem.as_ref().map(|p| (p.kind, p.text.clone()));
+        assert_eq!(problem, Some((ProblemKind::File, crate::drops::cant_open("song.wav"))));
+        drop_file(&mut h, "fake.png", b"GIF89a");
+        assert_eq!(h.state().scene, before, "a picture that isn't a PNG is refused");
+        assert!(h.state().problem.as_ref().is_some_and(|p| p.text.contains("fake.png")));
+    }
+
+    #[test]
+    fn a_scene_with_only_its_camera_counts_as_empty() {
+        let studio = Studio::headless();
+        assert!(!crate::preview::is_empty_scene(&studio.scene), "the headless scene has a ball");
+        let kit = bpe_kit::kit();
+        let scene = bpe_kit::new_studio_scene(&kit.registry);
+        assert!(crate::preview::is_empty_scene(&scene), "the blank project the editor opens to is");
+    }
+
+    #[test]
+    fn delete_works_from_the_mixer_tab() {
+        let mut studio = Studio::headless();
+        studio.selection.set(ThingId(2));
+        studio.left = LeftPanel::Mixer;
+        let mut h = editor_harness(studio);
+        h.key_press(Key::Delete);
+        h.run();
+        assert!(!h.state().scene.things.contains_key(&ThingId(2)));
+        assert!(h.state_mut().undo(), "its own undo step");
+        assert!(h.state().scene.things.contains_key(&ThingId(2)));
+    }
+
+    #[test]
+    fn arrows_step_a_frame_or_a_beat_and_end_goes_to_the_end() {
+        let mut studio = Studio::headless();
+        studio.seek(1.0);
+        let mut h = editor_harness(studio);
+        h.key_press(Key::ArrowRight);
+        h.run();
+        assert!((h.state().time - (1.0 + 1.0 / 60.0)).abs() < 1e-9, "{}", h.state().time);
+        h.key_press(Key::ArrowLeft);
+        h.key_press(Key::ArrowLeft);
+        h.run();
+        assert!((h.state().time - (1.0 - 1.0 / 60.0)).abs() < 1e-9, "{}", h.state().time);
+        // A beat is half a second at 120 BPM: from the beat it is nearest.
+        h.key_press_modifiers(Modifiers::SHIFT, Key::ArrowRight);
+        h.run();
+        assert!((h.state().time - 1.5).abs() < 1e-9, "{}", h.state().time);
+        h.key_press(Key::End);
+        h.run();
+        assert_eq!(h.state().time, 20.0);
+        h.key_press(Key::Home);
+        h.run();
+        assert_eq!(h.state().time, 0.0);
+    }
+
+    #[test]
+    fn ctrl_c_and_ctrl_v_copy_the_timelines_keys_when_some_are_picked() {
+        let mut studio = Studio::headless();
+        let size = Address::own(ThingId(2), "radius");
+        studio.scene.set_key(&studio.kit.registry, &size, 2.0, Value::Number(60.0)).unwrap();
+        studio.selection.set(ThingId(2));
+        let mut h = editor_harness(studio);
+        h.get_by_label("Key at 0:02.00 of Ball · Size").click();
+        h.run();
+        h.key_press_modifiers(Modifiers::COMMAND, Key::C);
+        h.run();
+        assert!(matches!(h.state().clipboard, crate::things::Clipboard::Keys(_)));
+        h.state_mut().seek(6.0);
+        h.key_press_modifiers(Modifiers::COMMAND, Key::V);
+        h.run();
+        let times: Vec<f64> = h.state().scene.tracks[&size].keys.iter().map(|k| k.time).collect();
+        assert_eq!(times, [2.0, 6.0]);
+        // Picking a thing in the tree lets go of the keys: Ctrl+C copies the thing.
+        h.get_by_label("Ball").click();
+        h.run();
+        assert!(h.state().panels.timeline.selected.is_empty());
+        h.key_press_modifiers(Modifiers::COMMAND, Key::C);
+        h.run();
+        assert!(matches!(h.state().clipboard, crate::things::Clipboard::Things(_)));
+    }
+
+    #[test]
+    fn the_window_title_names_the_scene_and_marks_unsaved_changes() {
+        let mut studio = Studio::headless();
+        studio.scene.name = "Drop".into();
+        studio.saved = studio.scene.clone();
+        assert_eq!(studio.window_title(), "Drop – Ball Studio");
+        // Each edit moves the revision on, as recording a frame's edit does.
+        studio.scene.name = "Drop 2".into();
+        studio.revision += 1;
+        assert_eq!(studio.window_title(), "Drop 2 • – Ball Studio");
+        studio.scene.name = "  ".into();
+        studio.revision += 1;
+        assert_eq!(studio.window_title(), "Untitled • – Ball Studio");
     }
 }

@@ -5,9 +5,7 @@ use std::collections::BTreeSet;
 
 use crate::selection::Selection;
 use crate::style;
-use bpe_core::{
-    Address, Attach, EditError, Problem, ProblemKind, Registry, Resolved, Scene, Thing, ThingId, TrackColour,
-};
+use bpe_core::{Attach, EditError, Problem, ProblemKind, Registry, Resolved, Scene, Thing, ThingId, TrackColour};
 use bpe_kit::Kit;
 use eframe::egui::{self, Color32, Key, Modifiers, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 
@@ -21,6 +19,9 @@ pub struct Tree {
     focus_rename: bool,
     /// Things whose children are folded away.
     pub collapsed: BTreeSet<ThingId>,
+    /// What the clipboard holds, in a few words ("Balls"), when it holds things: the row menu's
+    /// Paste names it. The studio sets it before drawing.
+    pub paste_words: Option<String>,
 }
 
 #[derive(Default)]
@@ -32,6 +33,15 @@ pub struct TreeOutcome {
     pub message: Option<String>,
     /// The thing the add menu just added.
     pub added: Option<ThingId>,
+    /// Copy was picked in a row's menu: the things to copy (the row, or the whole selection when
+    /// the row is part of it).
+    pub copy: Option<Vec<ThingId>>,
+    /// Paste was picked in this row's menu.
+    pub paste: Option<ThingId>,
+    /// A row was clicked to select it.
+    pub picked: bool,
+    /// This edit is an undo step of its own (Duplicate).
+    pub separate: bool,
 }
 
 /// Where a dragged row is let go over another row.
@@ -52,6 +62,8 @@ enum Action {
     Toggle(ThingId),
     Collapse(ThingId, bool),
     Duplicate(ThingId),
+    Copy(ThingId),
+    Paste(ThingId),
     Delete(Vec<ThingId>),
     /// Delete this row: with everything else selected when the row is part of the selection.
     DeleteRow(ThingId),
@@ -93,111 +105,115 @@ pub fn show(
 ) -> TreeOutcome {
     let reg = &kit.registry;
     let mut action = None;
+    let paste_words = tree.paste_words.clone();
     // The rows drawn, top to bottom, for Shift-clicks.
     let mut visible: Vec<ThingId> = Vec::new();
-    // The add button keeps its place at the bottom; the rows scroll in what is left.
+    // The add button keeps its place at the top and the hint at the bottom; the rows scroll in
+    // what is left.
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
         ui.label(
             RichText::new("Drag rows to reorder · drop on a row to group · hold Alt to ride")
                 .small()
                 .color(style::MUTED),
         );
-        ui.menu_button("+ Add thing", |ui| {
-            ui.set_min_width(160.0);
-            let present = |k: &str| scene.things.values().any(|t| t.kind == k);
-            let kinds: Vec<_> =
-                reg.things().filter(|k| k.id() != "scene" && !(k.single() && present(k.id()))).collect();
-            let button = |ui: &mut Ui, kind: &dyn bpe_core::ThingKind| {
-                let clicked = ui.button(kind.name()).on_hover_text(kind.help()).clicked();
-                if clicked {
-                    ui.close();
-                }
-                clicked.then_some(Action::Add(kind.id()))
-            };
-            for family in FAMILIES {
-                let mut in_family = kinds.iter().filter(|k| k.family() == family).peekable();
-                if in_family.peek().is_none() {
-                    continue;
-                }
-                ui.label(RichText::new(family).small().color(style::MUTED));
-                for kind in in_family {
-                    if kind.id() == bpe_kit::things::light::LIGHT {
-                        // One kind, five lamps: each its own entry.
-                        for lamp in bpe_kit::things::light::LightType::ALL {
-                            if ui.button(lamp.menu_name()).on_hover_text(kind.help()).clicked() {
-                                action = Some(Action::AddLight(lamp));
-                                ui.close();
-                            }
-                        }
+        ui.add_space(4.0);
+        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+            // "+ Add thing" first, where a new scene's eye goes (the rows scroll under it).
+            ui.menu_button("+ Add thing", |ui| {
+                ui.set_min_width(160.0);
+                let present = |k: &str| scene.things.values().any(|t| t.kind == k);
+                let kinds: Vec<_> =
+                    reg.things().filter(|k| k.id() != "scene" && !(k.single() && present(k.id()))).collect();
+                let button = |ui: &mut Ui, kind: &dyn bpe_core::ThingKind| {
+                    let clicked = ui.button(kind.name()).on_hover_text(kind.help()).clicked();
+                    if clicked {
+                        ui.close();
+                    }
+                    clicked.then_some(Action::Add(kind.id()))
+                };
+                for family in FAMILIES {
+                    let mut in_family = kinds.iter().filter(|k| k.family() == family).peekable();
+                    if in_family.peek().is_none() {
                         continue;
                     }
-                    if kind.id() == bpe_kit::things::particles::KIND {
-                        // Empty, then the starting looks in their groups.
-                        use bpe_kit::things::particles::looks::{GROUPS, Look};
-                        if ui.button("Empty").on_hover_text(Look::Empty.help()).clicked() {
-                            action = Some(Action::AddParticles(Look::Empty));
-                            ui.close();
+                    ui.label(RichText::new(family).small().color(style::MUTED));
+                    for kind in in_family {
+                        if kind.id() == bpe_kit::things::light::LIGHT {
+                            // One kind, five lamps: each its own entry.
+                            for lamp in bpe_kit::things::light::LightType::ALL {
+                                if ui.button(lamp.menu_name()).on_hover_text(kind.help()).clicked() {
+                                    action = Some(Action::AddLight(lamp));
+                                    ui.close();
+                                }
+                            }
+                            continue;
                         }
-                        let feeds = selection
-                            .primary
-                            .filter(|&s| bpe_kit::things::particles::looks::can_be_fed(scene, s))
-                            .and_then(|s| scene.things.get(&s));
-                        if let Some(parent) = feeds {
-                            let help = "A new Particles thing inside this one, born where its particles die";
-                            if ui.button(format!("Empty, fed by {}", parent.name)).on_hover_text(help).clicked() {
-                                action = Some(Action::AddFed(parent.id));
+                        if kind.id() == bpe_kit::things::particles::KIND {
+                            // Empty, then the starting looks in their groups.
+                            use bpe_kit::things::particles::looks::{GROUPS, Look};
+                            if ui.button("Empty").on_hover_text(Look::Empty.help()).clicked() {
+                                action = Some(Action::AddParticles(Look::Empty));
                                 ui.close();
                             }
+                            let feeds = selection
+                                .primary
+                                .filter(|&s| bpe_kit::things::particles::looks::can_be_fed(scene, s))
+                                .and_then(|s| scene.things.get(&s));
+                            if let Some(parent) = feeds {
+                                let help = "A new Particles thing inside this one, born where its particles die";
+                                if ui.button(format!("Empty, fed by {}", parent.name)).on_hover_text(help).clicked() {
+                                    action = Some(Action::AddFed(parent.id));
+                                    ui.close();
+                                }
+                            }
+                            for (group, looks) in GROUPS {
+                                ui.menu_button(group, |ui| {
+                                    for &look in looks {
+                                        if ui.button(look.name()).on_hover_text(look.help()).clicked() {
+                                            action = Some(Action::AddParticles(look));
+                                            ui.close();
+                                        }
+                                    }
+                                });
+                            }
+                            continue;
                         }
-                        for (group, looks) in GROUPS {
-                            ui.menu_button(group, |ui| {
-                                for &look in looks {
+                        if kind.id() == bpe_kit::things::text::KIND {
+                            // Empty text, then the starting looks.
+                            use bpe_kit::things::text::looks::{LOOKS, Look};
+                            if ui.button(Look::Empty.name()).on_hover_text(Look::Empty.help()).clicked() {
+                                action = Some(Action::AddText(Look::Empty));
+                                ui.close();
+                            }
+                            ui.menu_button("Looks", |ui| {
+                                for look in LOOKS {
                                     if ui.button(look.name()).on_hover_text(look.help()).clicked() {
-                                        action = Some(Action::AddParticles(look));
+                                        action = Some(Action::AddText(look));
                                         ui.close();
                                     }
                                 }
                             });
+                            continue;
                         }
-                        continue;
-                    }
-                    if kind.id() == bpe_kit::things::text::KIND {
-                        // Empty text, then the starting looks.
-                        use bpe_kit::things::text::looks::{LOOKS, Look};
-                        if ui.button(Look::Empty.name()).on_hover_text(Look::Empty.help()).clicked() {
-                            action = Some(Action::AddText(Look::Empty));
-                            ui.close();
+                        if let Some(a) = button(ui, *kind) {
+                            action = Some(a);
                         }
-                        ui.menu_button("Looks", |ui| {
-                            for look in LOOKS {
-                                if ui.button(look.name()).on_hover_text(look.help()).clicked() {
-                                    action = Some(Action::AddText(look));
-                                    ui.close();
-                                }
-                            }
-                        });
-                        continue;
                     }
+                }
+                ui.separator();
+                let other = |k: &&&dyn bpe_core::ThingKind| !FAMILIES.contains(&k.family());
+                for kind in kinds.iter().filter(other).filter(|k| k.id() == "folder") {
                     if let Some(a) = button(ui, *kind) {
                         action = Some(a);
                     }
                 }
-            }
-            ui.separator();
-            let other = |k: &&&dyn bpe_core::ThingKind| !FAMILIES.contains(&k.family());
-            for kind in kinds.iter().filter(other).filter(|k| k.id() == "folder") {
-                if let Some(a) = button(ui, *kind) {
-                    action = Some(a);
+                for kind in kinds.iter().filter(other).filter(|k| k.id() != "folder") {
+                    if let Some(a) = button(ui, *kind) {
+                        action = Some(a);
+                    }
                 }
-            }
-            for kind in kinds.iter().filter(other).filter(|k| k.id() != "folder") {
-                if let Some(a) = button(ui, *kind) {
-                    action = Some(a);
-                }
-            }
-        });
-        ui.add_space(4.0);
-        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+            });
+            ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let label = ui.label(RichText::new("Filter").small().color(style::MUTED));
                 let edit = egui::TextEdit::singleline(&mut tree.filter)
@@ -227,6 +243,7 @@ pub fn show(
                         problems: &problems,
                         selected: selection.contains(id),
                         single: reg.thing(&thing.kind).is_some_and(|k| k.single()),
+                        paste: paste_words.as_deref(),
                     };
                     let rect = row(ui, tree, scene, thing, &cx, &mut action);
                     rows.push((id, rect));
@@ -257,6 +274,7 @@ pub fn show(
     match action {
         None => {}
         Some(Action::Select(id, modifiers)) => {
+            out.picked = true;
             if modifiers.command {
                 selection.toggle(id);
             } else if modifiers.shift {
@@ -300,25 +318,18 @@ pub fn show(
             }
         }
         Some(Action::Duplicate(id)) => {
-            if let Some(copy) = duplicate(scene, reg, id) {
-                selection.set(copy);
-                out.edited = true;
-            }
+            let copies = crate::things::duplicate(scene, reg, &with_selection(id));
+            select_all(selection, &copies);
+            out.edited |= !copies.is_empty();
+            out.separate |= !copies.is_empty();
         }
+        Some(Action::Copy(id)) => out.copy = Some(with_selection(id)),
+        Some(Action::Paste(id)) => out.paste = Some(id),
         Some(Action::DeleteRow(_)) | Some(Action::MakeFolder(_)) => unreachable!("turned into Delete and Folder"),
         Some(Action::Delete(ids)) => {
-            // Parents first; a child whose parent went is already gone. Nothing holding a
-            // one-per-scene thing (the camera) goes.
-            let ids: Vec<ThingId> = ids.into_iter().filter(|&id| !holds_single(scene, reg, id)).collect();
-            for id in ids {
-                if let Ok(removed) = scene.remove_thing(id) {
-                    selection.remove(&removed);
-                    if tree.renaming.is_some_and(|r| removed.contains(&r)) {
-                        tree.renaming = None;
-                    }
-                    out.removed.get_or_insert(id);
-                    out.edited = true;
-                }
+            if let Some(first) = delete_things(tree, scene, reg, selection, ids) {
+                out.removed = Some(first);
+                out.edited = true;
             }
         }
         Some(Action::Add(kind)) => {
@@ -605,6 +616,8 @@ struct RowCx<'a> {
     selected: bool,
     /// One per scene, such as the camera: it can't be deleted or duplicated.
     single: bool,
+    /// What Paste would paste ("Balls"), with things copied.
+    paste: Option<&'a str>,
 }
 
 /// Draws one row and returns the rectangle it covers: a rounded row with the thing's track colour
@@ -761,14 +774,36 @@ fn name_button(ui: &mut Ui, scene: &Scene, thing: &Thing, cx: &RowCx, action: &m
     } else if response.clicked() {
         *action = Some(Action::Select(id, ui.input(|i| i.modifiers)));
     }
-    response.context_menu(|ui| context_menu(ui, scene, thing, cx.single, action));
+    response.context_menu(|ui| context_menu(ui, scene, thing, cx.single, cx.paste, action));
 }
 
-fn context_menu(ui: &mut Ui, scene: &Scene, thing: &Thing, single: bool, action: &mut Option<Action>) {
+fn context_menu(
+    ui: &mut Ui,
+    scene: &Scene,
+    thing: &Thing,
+    single: bool,
+    paste: Option<&str>,
+    action: &mut Option<Action>,
+) {
     let id = thing.id;
     if ui.button("Rename").clicked() {
         *action = Some(Action::StartRename(id));
         ui.close();
+    }
+    // Paste on the scene settings puts the copy at the top level.
+    let paste_item = |ui: &mut Ui, action: &mut Option<Action>| {
+        let words = paste.map_or("Paste".to_owned(), |w| format!("Paste {w}"));
+        let button = egui::Button::new(words).shortcut_text("Ctrl+V");
+        let help = if thing.kind == "folder" { "Into this folder" } else { "Right after this thing" };
+        let r =
+            ui.add_enabled(paste.is_some(), button).on_hover_text(help).on_disabled_hover_text("Copy a thing first");
+        if r.clicked() {
+            *action = Some(Action::Paste(id));
+            ui.close();
+        }
+    };
+    if id == ThingId::ROOT {
+        paste_item(ui, action);
     }
     if id != ThingId::ROOT {
         // The picker stays open while it is dragged in or typed into.
@@ -780,11 +815,22 @@ fn context_menu(ui: &mut Ui, scene: &Scene, thing: &Thing, single: bool, action:
             }
         });
         ui.separator();
-        if !single && ui.button("Duplicate").clicked() {
-            *action = Some(Action::Duplicate(id));
-            ui.close();
+        if !single {
+            let duplicate = egui::Button::new("Duplicate").shortcut_text("Ctrl+D");
+            if ui.add(duplicate).on_hover_text("A copy with everything under it, right after it").clicked() {
+                *action = Some(Action::Duplicate(id));
+                ui.close();
+            }
+            let copy = egui::Button::new("Copy").shortcut_text("Ctrl+C");
+            let help = "Copy it with everything under it, its keys and the fonts and pictures it uses, to paste \
+                        here or into another scene";
+            if ui.add(copy).on_hover_text(help).clicked() {
+                *action = Some(Action::Copy(id));
+                ui.close();
+            }
         }
-        if !single && ui.button("Delete").clicked() {
+        paste_item(ui, action);
+        if !single && ui.add(egui::Button::new("Delete").shortcut_text("Del")).clicked() {
             *action = Some(Action::DeleteRow(id));
             ui.close();
         }
@@ -1008,8 +1054,13 @@ fn paint_icon(painter: &egui::Painter, rect: Rect, kind: &str, ink: Color32) {
     }
 }
 
-/// A copy of `id` beside it, with the same settings, slots and transform. The scene's defaults
-/// can't be copied.
+/// A copy of `id` with everything under it, right after it (tests' shorthand for
+/// [`crate::things::duplicate`]). The scene settings and the camera can't be copied.
+#[cfg(test)]
+pub fn duplicate(scene: &mut Scene, reg: &Registry, id: ThingId) -> Option<ThingId> {
+    crate::things::duplicate(scene, reg, &[id]).first().copied()
+}
+
 /// Whether `id` or anything under it is a one-per-scene thing, such as the camera.
 fn holds_single(scene: &Scene, reg: &Registry, id: ThingId) -> bool {
     scene.things.values().any(|t| {
@@ -1018,28 +1069,36 @@ fn holds_single(scene: &Scene, reg: &Registry, id: ThingId) -> bool {
     })
 }
 
-pub fn duplicate(scene: &mut Scene, reg: &Registry, id: ThingId) -> Option<ThingId> {
-    let source = scene.things.get(&id)?.clone();
-    let parent = source.parent?;
-    let copy = scene.add_thing(reg, &source.kind, parent).ok()?;
-    let thing = scene.things.get_mut(&copy)?;
-    // Everything is the original's but its id, its name and its own new colour.
-    let name = format!("{} copy", source.name);
-    *thing = bpe_core::Thing { id: copy, name, colour: thing.colour, ..source };
-    // The copy's settings move the way the original's do.
-    let tracks: Vec<_> =
-        scene.tracks.iter().filter(|(a, _)| a.thing == id).map(|(a, t)| (a.clone(), t.clone())).collect();
-    for (a, t) in tracks {
-        scene.tracks.insert(Address { thing: copy, ..a }, t);
+/// Deletes `ids` with everything under them, parents first (a child whose parent went is gone
+/// already). Nothing holding a one-per-scene thing (the camera) goes. Returns the first thing
+/// that went.
+pub fn delete_things(
+    tree: &mut Tree,
+    scene: &mut Scene,
+    reg: &Registry,
+    selection: &mut Selection,
+    ids: Vec<ThingId>,
+) -> Option<ThingId> {
+    let ids: Vec<ThingId> = ids.into_iter().filter(|&id| !holds_single(scene, reg, id)).collect();
+    let mut first = None;
+    for id in ids {
+        if let Ok(removed) = scene.remove_thing(id) {
+            selection.remove(&removed);
+            if tree.renaming.is_some_and(|r| removed.contains(&r)) {
+                tree.renaming = None;
+            }
+            first.get_or_insert(id);
+        }
     }
-    let pulses: Vec<_> =
-        scene.pulses.iter().filter(|(a, _)| a.thing == id).map(|(a, p)| (a.clone(), p.clone())).collect();
-    for (a, p) in pulses {
-        scene.pulses.insert(Address { thing: copy, ..a }, p);
+    first
+}
+
+/// Selects `ids`: the first as the primary, the rest with it.
+pub fn select_all(selection: &mut Selection, ids: &[ThingId]) {
+    if let Some((&first, rest)) = ids.split_first() {
+        selection.set(first);
+        selection.extra.extend(rest.iter().copied());
     }
-    // Right after the original, not at the end of the parent's children.
-    let _ = scene.move_before(copy, next_sibling(scene, id).unwrap_or(copy));
-    Some(copy)
 }
 
 /// The sibling after `id` under the same parent, if any.
@@ -1064,7 +1123,7 @@ pub fn problem_words(p: &Problem) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bpe_core::{Problem, ProblemKind, Resolved, SlotId, Value, resolve};
+    use bpe_core::{Address, Problem, ProblemKind, Resolved, SlotId, Value, resolve};
     use eframe::egui::{self, Key, PointerButton};
     use egui_kittest::{
         Harness,

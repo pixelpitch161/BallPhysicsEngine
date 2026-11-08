@@ -156,6 +156,11 @@ fn fader(ui: &mut Ui, studio: &mut Studio, reg: &Registry, source: &Source) {
                 studio.panels.inspector.own_step = true;
             }
         }
+        ValueMenu::RemoveKeys => {
+            if crate::inspector::clear_keys(&mut studio.scene, reg, &a, time) {
+                studio.panels.inspector.own_step = true;
+            }
+        }
     }
     if keyed {
         studio.panels.inspector.keyed_edit = true;

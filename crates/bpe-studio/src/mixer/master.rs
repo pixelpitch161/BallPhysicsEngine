@@ -70,6 +70,7 @@ fn card_knob(
         ValueMenu::CreateKey => {
             let _ = scene.set_key(reg, &a, time, now);
         }
+        ValueMenu::RemoveKeys => _ = crate::inspector::clear_keys(scene, reg, &a, time),
     }
     keyed
 }
