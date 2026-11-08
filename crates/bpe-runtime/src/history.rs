@@ -6,7 +6,7 @@
 
 use glam::Vec2;
 
-use crate::track::Track;
+use crate::track::{Same, Track};
 
 /// Samples kept per second.
 pub const SAMPLE_RATE: u32 = 60;
@@ -135,8 +135,10 @@ impl History {
             let ring = &mut self.balls[b];
             // A full ring of this very place, with no corner since (a ball gone, or at rest for the
             // whole stretch kept): dropping the oldest and adding it again would change nothing.
-            let unchanged =
-                ring.len() >= self.cap && ring.is_one_run() && ring.front() == Some(p) && self.tips[b].1 == p;
+            let unchanged = ring.len() >= self.cap
+                && ring.is_one_run()
+                && ring.front().is_some_and(|f| f.same(&p))
+                && self.tips[b].1.same(&p);
             if !unchanged {
                 if !ring.is_empty() {
                     self.travelled[b] += (p - self.tips[b].1).length();
@@ -340,7 +342,15 @@ impl History {
     /// Bytes the history takes, for playback budgets.
     /// Parts shared with copies count their share (see [`Track::memory`]).
     pub fn memory(&self) -> usize {
-        self.balls.iter().map(Track::memory).sum::<usize>() + self.corners.iter().map(Track::memory).sum::<usize>()
+        self.memory_beside(None)
+    }
+
+    /// Bytes it takes beside `earlier` (an earlier copy of it): see [`Track::memory_beside`].
+    pub fn memory_beside(&self, earlier: Option<&History>) -> usize {
+        let balls = self.balls.iter().enumerate().map(|(b, t)| t.memory_beside(earlier.and_then(|e| e.balls.get(b))));
+        let corners =
+            self.corners.iter().enumerate().map(|(b, t)| t.memory_beside(earlier.and_then(|e| e.corners.get(b))));
+        balls.sum::<usize>() + corners.sum::<usize>()
     }
 }
 

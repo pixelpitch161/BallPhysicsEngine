@@ -10,6 +10,9 @@ license.workspace = true
 test-tone = []
 
 [dependencies]
+# The engine's own threads for the physics it steps (air and particles run their bands on one), apart from
+# the editor's and the export's.
+rayon = "1"
 bpe-core.workspace = true
 bpe-runtime.workspace = true
 bpe-kit.workspace = true

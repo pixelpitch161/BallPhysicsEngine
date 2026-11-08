@@ -114,4 +114,9 @@ One commit per step, as planned, plus small follow-ups. Differences from the pla
   there are cells (a huge ball in a sparse grid). No golden moved: no golden scene has a ball 4x the median.
 - Step 6: `Probe.keyed_looks` (things whose Look a key writes) decides which looks are re-read; `Lamps::of` takes
   a `look_of` closure. Test: one probe asked forward and back matches a fresh probe at every moment.
+- Review fixes (one Opus review, nothing that changed a result): checkpoint bytes counted beside the one before
+  (`memory_beside`, each shared chunk once) instead of a share by `strong_count`, which could undercount by 2x
+  after thinning; at most 16 big balls (every big pair is checked) and a quick exit when sizes are close; runs
+  compare bit for bit; the export's temp folder beside the video, the bar full only after the mux, a failed mux not
+  retried on the CPU, a panic while drawing stops the sound; the sound engine's physics on its own rayon pool.
 - Timings: `docs/notes/engine.md`, "Speed (W7)".

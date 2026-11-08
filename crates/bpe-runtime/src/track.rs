@@ -10,6 +10,36 @@ use std::sync::Arc;
 /// Items in a frozen chunk.
 pub const CHUNK: usize = 64;
 
+/// The same item, bit for bit: a run never merges 0.0 with -0.0, so a track reads back exactly what
+/// was pushed.
+pub trait Same: Copy {
+    fn same(&self, other: &Self) -> bool;
+}
+
+impl Same for glam::Vec2 {
+    fn same(&self, other: &Self) -> bool {
+        self.x.to_bits() == other.x.to_bits() && self.y.to_bits() == other.y.to_bits()
+    }
+}
+
+impl Same for (f64, glam::Vec2) {
+    fn same(&self, other: &Self) -> bool {
+        self.0.to_bits() == other.0.to_bits() && self.1.same(&other.1)
+    }
+}
+
+impl Same for u32 {
+    fn same(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+
+impl Same for f32 {
+    fn same(&self, other: &Self) -> bool {
+        self.to_bits() == other.to_bits()
+    }
+}
+
 /// A list with cheap copies: frozen shared chunks, an open tail, and a run of one repeated item at
 /// the end.
 #[derive(Clone, Debug)]
@@ -32,7 +62,7 @@ impl<T> Default for Track<T> {
     }
 }
 
-impl<T: Copy + PartialEq> Track<T> {
+impl<T: Same> Track<T> {
     pub fn new() -> Self {
         Self::default()
     }
@@ -74,7 +104,7 @@ impl<T: Copy + PartialEq> Track<T> {
     /// Adds `item` at the end.
     pub fn push_back(&mut self, item: T) {
         match &mut self.run {
-            Some((same, n)) if *same == item => *n += 1,
+            Some((same, n)) if same.same(&item) => *n += 1,
             Some((same, n)) => {
                 let (same, n) = (*same, *n);
                 for _ in 0..n {
@@ -161,20 +191,33 @@ impl<T: Copy + PartialEq> Track<T> {
         lo
     }
 
-    /// Bytes this copy takes: its own tail and its share of every chunk it shares with other
-    /// copies (so the copies of a path together count it once).
+    /// Bytes this copy takes, every chunk counted.
+    #[cfg(test)]
     pub fn memory(&self) -> usize {
+        self.memory_beside(None)
+    }
+
+    /// Bytes this copy takes beside `earlier` (an earlier copy of the same track): the chunks it
+    /// still shares with it are counted there, not here, so a run of copies together counts each
+    /// chunk once.
+    pub fn memory_beside(&self, earlier: Option<&Track<T>>) -> usize {
         let item = std::mem::size_of::<T>();
+        // Chunks only ever leave the front and join the back, so the shared ones are a start of
+        // this copy's: up to where the earlier copy's newest chunk is.
+        let shared = earlier
+            .and_then(|e| e.chunks.back())
+            .and_then(|newest| self.chunks.iter().position(|c| Arc::ptr_eq(c, newest)))
+            .map_or(0, |at| at + 1);
         self.tail.capacity() * item
             + self.chunks.capacity() * std::mem::size_of::<Arc<[T]>>()
-            + self.chunks.iter().map(|c| CHUNK * item / Arc::strong_count(c).max(1)).sum::<usize>()
+            + (self.chunks.len() - shared) * CHUNK * item
     }
 }
 
-impl<T: Copy + PartialEq> PartialEq for Track<T> {
-    /// The same items, however they are stored.
+impl<T: Same> PartialEq for Track<T> {
+    /// The same items, bit for bit, however they are stored.
     fn eq(&self, other: &Self) -> bool {
-        self.len() == other.len() && self.iter().eq(other.iter())
+        self.len() == other.len() && self.iter().zip(other.iter()).all(|(a, b)| a.same(&b))
     }
 }
 
@@ -190,7 +233,7 @@ mod tests {
         *seed
     }
 
-    fn same<T: Copy + PartialEq + std::fmt::Debug>(t: &Track<T>, model: &VecDeque<T>) {
+    fn same<T: Same + PartialEq + std::fmt::Debug>(t: &Track<T>, model: &VecDeque<T>) {
         assert_eq!(t.len(), model.len());
         assert_eq!(t.is_empty(), model.is_empty());
         assert_eq!(t.iter().collect::<Vec<_>>(), model.iter().copied().collect::<Vec<_>>());
@@ -255,9 +298,18 @@ mod tests {
             t.push_back(i);
         }
         let alone = t.memory();
-        let copy = t.clone();
+        let mut copy = t.clone();
         assert_eq!(copy, t);
-        assert!(t.memory() + copy.memory() < alone + alone / 4, "{} + {} vs {alone}", t.memory(), copy.memory());
+        let beside = copy.memory_beside(Some(&t));
+        assert!(beside < alone / 4, "{beside} vs {alone}");
+        // What the later copy adds after it moves on is its own new chunks only.
+        for i in 0..640u32 {
+            copy.pop_front();
+            copy.push_back(5000 + i);
+        }
+        let later = copy.memory_beside(Some(&t));
+        assert!(later >= 9 * CHUNK * 4 && later < 12 * CHUNK * 4 + beside, "{later}");
+        assert_eq!(copy.memory_beside(Some(&Track::new())), copy.memory());
         // The same place over and over takes no more room.
         let before = t.memory();
         for _ in 0..10_000 {
@@ -272,5 +324,10 @@ mod tests {
         }
         assert!(still.is_one_run());
         assert_eq!(still.len(), 500);
+        // 0.0 and -0.0 are different items.
+        let mut signed = Track::new();
+        signed.push_back(0.0f32);
+        signed.push_back(-0.0f32);
+        assert_eq!(signed.get(1).map(f32::to_bits), Some((-0.0f32).to_bits()));
     }
 }

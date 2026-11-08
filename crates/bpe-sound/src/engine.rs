@@ -434,7 +434,8 @@ impl Engine {
         let target = (end as f64 / sps).ceil() as u64;
         if self.physics.world().step < target {
             let rate = self.physics.world().steps_per_second as f64;
-            self.physics.seek((target as f64 + 0.5) / rate);
+            let physics = &mut self.physics;
+            on_own_threads(|| physics.seek((target as f64 + 0.5) / rate));
             self.cursor.read(self.physics.log());
         }
     }
@@ -443,7 +444,8 @@ impl Engine {
     fn sync_physics(&mut self) {
         let steps = self.physics.world().steps_per_second as f64;
         let step = (self.voice_pos as f64 / self.cursor.samples_per_step()).floor();
-        self.physics.seek((step + 0.5) / steps);
+        let physics = &mut self.physics;
+        on_own_threads(|| physics.seek((step + 0.5) / steps));
         self.cursor.seek(self.physics.log(), self.voice_pos);
         self.physics_synced = true;
     }
@@ -563,5 +565,20 @@ impl Engine {
             self.meters.write_hits(i, recent, heard);
         }
         self.meters.clear_shapes_from(self.voices.len());
+    }
+}
+
+/// Runs `work` (the engine's physics) on the sound's own pool of threads: the air and particle
+/// steps it may run spread their bands over the pool they are started on, and the editor's
+/// particle thread and the export keep the shared one busy, which the sound must never wait behind.
+fn on_own_threads<R: Send>(work: impl FnOnce() -> R + Send) -> R {
+    static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
+    let pool = POOL.get_or_init(|| {
+        let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(8);
+        rayon::ThreadPoolBuilder::new().num_threads(threads).thread_name(|i| format!("sound physics {i}")).build().ok()
+    });
+    match pool {
+        Some(pool) => pool.install(work),
+        None => work(),
     }
 }

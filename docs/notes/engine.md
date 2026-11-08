@@ -243,10 +243,10 @@ moved. `crates/bpe-kit/tests/speed_check.rs` holds ignored timing tests (release
 - **Paths in shared chunks** (`bpe-runtime/src/track.rs`): `History` keeps each ball's samples and corners in a
   `Track`, which reads exactly as the `VecDeque` it replaced. Full chunks of 64 items are frozen into `Arc<[T]>`
   shared by every copy of the world, so a jump point copies pointers and the open tail; the same item at the end over
-  and over is one item and a count (a gone or resting ball's path stops growing). `History::record` skips a ball
-  whose whole kept path is one run at the same place. `Track::memory` counts a shared chunk divided by its copies,
-  and `Playback` caches each checkpoint's bytes when it takes it (re-adding them at every checkpoint was slower than
-  the run).
+  and over is one item and a count, compared bit for bit (`Same`), so a gone or resting ball's path stops growing.
+  `History::record` skips a ball whose whole kept path is one run at the same place. `World::memory_beside(earlier)`
+  counts only the chunks not shared with an earlier copy; `Playback` caches each checkpoint's bytes beside the one
+  before it when it takes it (recounted after thinning), so a run of jump points counts each chunk once.
 - **Removed balls cost nothing**: `Bodies.gone_below` (rows below are all removed; a removed ball never comes back)
   moves on in `note_gone` at the start of every step; the step's per-ball loops, the walls stage, the pulls, the
   ball-to-ball gather and the emitter's loops start at `live_rows()`. Rows are never reused (the log, memos, rules
@@ -255,12 +255,17 @@ moved. `crates/bpe-kit/tests/speed_check.rs` holds ignored timing tests (release
   particle layers); Text standings still keep their 2.5 s through `keep_history` in `after_build`. The sound engine,
   the editor's particle thread and its aiming thread use them. `Playback::forward_only` takes no jump point after
   the start (`Engine::offline`, used by `render_sound`/`render_samples`).
-- **Export**: see `bpe-cli` above. The bar is 90% frames and 10% sound, both moving; a sound that fails stops the
-  frames; cancelling stops both and removes every file the export made.
+- **Export**: see `bpe-cli` above. The temp folder is beside the video (`.ball-studio-export-*`, the system's when
+  that can't be written), as the video-only file can be big. The bar is 90% frames and 10% sound, both moving, and
+  full only after the mux; a sound that fails stops the frames; drawing that panics stops the sound; cancelling
+  stops both and removes every file the export made. A failed mux is not retried on the CPU.
+- **The sound's own threads**: the sound engine steps its physics inside its own rayon pool (`on_own_threads` in
+  `engine.rs`), so air or particles it steps never wait behind the editor's particle thread or the export.
 - **One lasting thread pool**: the air step and the particle step run their bands on rayon (`rayon::scope`) instead
   of starting threads per pass; the air's calm, heat, swirls and final clamp run by rows on it too. Band edges
   depend only on the row and thread counts, so any thread count gives the same air.
-- **Big balls apart** (`pairs.rs`, `close_pairs`): when a few balls are over 4x the median radius (at most one in 8),
+- **Big balls apart** (`pairs.rs`, `close_pairs`): when a few balls are over 4x the median radius (at most one in 8
+  and 16 in all; scenes whose largest ball is under 4x the smallest skip the check),
   the grid is sized for the rest and holds only them; each big ball looks up the cells its reach covers
   (`Grid::runs_in`) and the other big balls, and those pairs come after the grid's, in index order. With no big ball
   the pairs are exactly the grid's, as before.
@@ -274,7 +279,7 @@ moved. `crates/bpe-kit/tests/speed_check.rs` holds ignored timing tests (release
 | Fine air (186 x 290), 2 s | 1.8-2.0 s | 1.27 s |
 | 1600 small balls plus one of radius 200, 3 s | 3.0 s | 0.30 s |
 | Endless emitter (200 a second, earlier rounds removed), the second up to 120 s | 41.6 ms, world 28.5 MB | 14.4 ms, 4.3 MB |
-| 120 balls, Line that stays, 120 s: jump points | 31 (thinned), 142 MB | 241, 89 MB |
+| 120 balls, Line that stays, 120 s: jump points | 31 (thinned), 142 MB | 241, 64 MB |
 | ... jumping back | 8-15 ms | under 1 ms |
 | The sound engine's copy of that scene, 60 s | 341 ms, 134 MB | 220-245 ms, 2-3 MB |
 | Moths / light pressure, 5 s | 110 / 95 ms | 59-76 / 47 ms |

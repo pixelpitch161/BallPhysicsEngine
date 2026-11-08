@@ -228,8 +228,10 @@ pub fn frame_count(settings: &SceneSettings) -> u32 {
     (settings.duration.max(0.0) as f64 * settings.fps.max(1) as f64).round().max(1.0) as u32
 }
 
-/// Renders `scene` to an mp4. `progress` is called after every frame with (done, total);
-/// return `false` from it to cancel, which deletes the partial file. If a graphics card
+/// Renders `scene` to an mp4. `progress` is called after every frame with (done, total): frames
+/// done, or with sound the frames' nine tenths and the sound's tenth of `total` together (the
+/// sound is worked out beside the frames). Return `false` from it to cancel, which deletes the
+/// partial file. If a graphics card
 /// encoder fails, the export starts again on the CPU. Gives back the encoder that made it.
 pub fn export_video(
     device: &wgpu::Device,
@@ -255,10 +257,14 @@ const CANCELLED: &str = "export cancelled";
 /// How the sound is encoded: AAC at 320 kbps, 48 kHz.
 pub const AUDIO_ARGS: [&str; 6] = ["-c:a", "aac", "-b:a", "320k", "-ar", "48000"];
 
+/// How a failed pass putting the sound in starts its error.
+const MUX_FAILED: &str = "ffmpeg failed putting the sound in";
+
 /// Whether a failed export is worth trying again on the CPU: only when a graphics card encoder
-/// made the video, and not because it was cancelled.
+/// made the video, and not because it was cancelled or putting the sound in failed.
 fn retry_on_cpu(encoder: Encoder, error: &anyhow::Error) -> bool {
-    encoder != Encoder::Cpu && !error.to_string().contains(CANCELLED)
+    let text = error.to_string();
+    encoder != Encoder::Cpu && !text.contains(CANCELLED) && !text.contains(MUX_FAILED)
 }
 
 /// Frames that can be on their way back from the graphics card at once.
@@ -289,7 +295,14 @@ fn export_with(
     let picture = Picture { width, height, fps, total, encoder };
 
     let has_sound = bpe_sound::has_sound(scene);
-    let temp = tempfile::tempdir().context("a folder for the sound")?;
+    // Beside the video, where there is room for it (the system's temporary folder may be on a
+    // smaller drive); the system's when that folder can't be written.
+    let beside = output.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let temp = tempfile::Builder::new()
+        .prefix(".ball-studio-export-")
+        .tempdir_in(beside)
+        .or_else(|_| tempfile::tempdir())
+        .context("a folder for the sound")?;
     let sound = temp.path().join("sound.wav");
     let extras = bpe_sound::Extras {
         stems: options.stems.then(|| bpe_sound::stem_paths(scene, &output)),
@@ -330,10 +343,11 @@ fn export_with(
     let video_only = temp.path().join("video.mp4");
     let sound_at = AtomicU64::new(0f64.to_bits());
     let cancel = AtomicBool::new(false);
+    // The last step is putting the two together: the bar is full only after it.
     let shown = |frames: u32| {
         let heard = f64::from_bits(sound_at.load(Ordering::Relaxed)).clamp(0.0, 1.0);
         let share = frames as f64 / total as f64 * 0.9 + heard * 0.1;
-        ((share * total as f64).floor() as u32).min(total)
+        ((share * total as f64).floor() as u32).min(total.saturating_sub(1))
     };
     let made = std::thread::scope(|s| -> anyhow::Result<()> {
         let mut job = Some(s.spawn(|| {
@@ -347,6 +361,8 @@ fn export_with(
         };
         let mut heard: Option<anyhow::Result<()>> = None;
         let mut cancelled = false;
+        // Drawing that panics stops the sound too, so the panic isn't held up behind it.
+        let stop_sound = CancelOnDrop(&cancel);
         let drawn = draw_video(device, queue, scene, kit, options, &picture, &video_only, false, |done| {
             // A sound that fails stops the frames.
             if job.as_ref().is_some_and(|j| j.is_finished())
@@ -366,6 +382,7 @@ fn export_with(
         if drawn.is_err() {
             cancel.store(true, Ordering::Relaxed);
         }
+        std::mem::forget(stop_sound);
         // The frames are done: wait for the sound, the bar still moving.
         while job.as_ref().is_some_and(|j| !j.is_finished()) {
             if !cancelled && !progress(shown(total), total) {
@@ -386,12 +403,21 @@ fn export_with(
             (Ok(()), Ok(())) => Ok(()),
         }
     })
-    .and_then(|()| if progress(total, total) { Ok(()) } else { Err(anyhow::anyhow!(CANCELLED)) })
-    .and_then(|()| mux(&options.ffmpeg, &video_only, &sound, &output));
+    .and_then(|()| mux(&options.ffmpeg, &video_only, &sound, &output))
+    .and_then(|()| if progress(total, total) { Ok(()) } else { Err(anyhow::anyhow!(CANCELLED)) });
     if made.is_err() {
         remove_outputs();
     }
     made
+}
+
+/// Sets its flag when dropped (on a panic: it is forgotten when all goes well).
+struct CancelOnDrop<'a>(&'a AtomicBool);
+
+impl Drop for CancelOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
 }
 
 /// The video's size, speed, length in frames and encoder.
@@ -526,7 +552,7 @@ fn mux(ffmpeg: &Path, video: &Path, sound: &Path, output: &Path) -> anyhow::Resu
     command.arg(output);
     let done = spawn(command, ffmpeg)?.wait_with_output()?;
     if !done.status.success() {
-        bail!("ffmpeg failed putting the sound in ({}): {}", done.status, String::from_utf8_lossy(&done.stderr).trim());
+        bail!("{MUX_FAILED} ({}): {}", done.status, String::from_utf8_lossy(&done.stderr).trim());
     }
     Ok(())
 }
@@ -767,5 +793,6 @@ mod tests {
         assert!(!retry_on_cpu(Encoder::Nvidia, &anyhow::anyhow!(CANCELLED)));
         assert!(retry_on_cpu(Encoder::Nvidia, &anyhow::anyhow!("ffmpeg failed")));
         assert!(!retry_on_cpu(Encoder::Cpu, &anyhow::anyhow!("ffmpeg failed")));
+        assert!(!retry_on_cpu(Encoder::Nvidia, &anyhow::anyhow!("{MUX_FAILED} (exit 1): no room")));
     }
 }

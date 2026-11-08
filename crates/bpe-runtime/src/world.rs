@@ -774,8 +774,15 @@ impl World {
     /// Bytes the world takes, for playback budgets. The balls' paths it shares with copies (jump
     /// points) count their share, so the copies together count them once.
     pub fn memory(&self) -> usize {
+        self.memory_beside(None)
+    }
+
+    /// [`World::memory`] beside `earlier` (an earlier copy of this world, a jump point): the ball
+    /// paths it still shares with it are counted there.
+    pub fn memory_beside(&self, earlier: Option<&World>) -> usize {
+        let history = self.history.iter().map(|(id, h)| h.memory_beside(earlier.and_then(|e| e.history.get(id))));
         self.bodies.values().map(Bodies::memory).sum::<usize>()
-            + self.history.values().map(History::memory).sum::<usize>()
+            + history.sum::<usize>()
             + self.state_memory.values().sum::<usize>()
             + std::mem::size_of::<World>()
     }

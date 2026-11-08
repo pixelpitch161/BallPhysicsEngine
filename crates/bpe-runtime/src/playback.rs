@@ -27,9 +27,10 @@ pub struct Playback {
     world: World,
     log: Log,
     sims: Arc<Sims>,
-    /// Snapshots in step order, each with how long the log was at the time and the bytes it was
-    /// counted at when taken (its share of the paths it shares with the others then, see
-    /// [`World::memory`]): adding them up again at every snapshot would take longer than the run.
+    /// Snapshots in step order, each with how long the log was at the time and its bytes beside
+    /// the one before it (the paths they share are counted once, in the earliest, see
+    /// [`World::memory_beside`]): kept, as adding them up again at every snapshot would take
+    /// longer than the run.
     checkpoints: Vec<(World, usize, usize)>,
     checkpoint_every: u64,
     /// Most memory its checkpoints may use.
@@ -152,7 +153,7 @@ impl Playback {
     pub fn rewound(&self, time: f64) -> Playback {
         let target = crate::step_at(time, self.world.steps_per_second);
         let index = self.checkpoints.partition_point(|(w, _, _)| w.step <= target).max(1) - 1;
-        let (world, len, bytes) = &self.checkpoints[index];
+        let (world, len, _) = &self.checkpoints[index];
         let mut log = self.log.clone();
         log.truncate(*len);
         log.truncate_camera(world.step);
@@ -160,7 +161,7 @@ impl Playback {
             world: world.clone(),
             log,
             sims: self.sims.clone(),
-            checkpoints: vec![(world.clone(), *len, *bytes)],
+            checkpoints: vec![(world.clone(), *len, world.memory())],
             checkpoint_every: self.checkpoint_every,
             budget: self.budget,
             gpu_budget: self.gpu_budget,
@@ -182,12 +183,14 @@ impl Playback {
 
     /// Bytes the playback holds: the world, its log and every checkpoint.
     pub fn memory(&self) -> usize {
-        self.world.memory() + self.log.memory() + self.checkpoints.iter().map(|c| c.2).sum::<usize>()
+        self.world.memory_beside(self.checkpoints.last().map(|c| &c.0))
+            + self.log.memory()
+            + self.checkpoints.iter().map(|c| c.2).sum::<usize>()
     }
 
     fn save_checkpoint(&mut self) {
         let copy = self.world.clone();
-        let bytes = copy.memory();
+        let bytes = copy.memory_beside(self.checkpoints.last().map(|c| &c.0));
         self.checkpoints.push((copy, self.log.len(), bytes));
         let bytes: usize = self.checkpoints.iter().map(|c| c.2).sum();
         let gpu: usize = self.checkpoints.iter().map(|(w, _, _)| w.gpu_memory()).sum();
@@ -196,9 +199,10 @@ impl Playback {
             self.checkpoint_every *= 2;
             let every = self.checkpoint_every;
             self.checkpoints.retain(|(w, _, _)| w.step.is_multiple_of(every));
-            // Their shares of what they share have grown: count them again.
-            for c in &mut self.checkpoints {
-                c.2 = c.0.memory();
+            // Each now owns what the dropped ones before it shared with it: count them again.
+            for k in 0..self.checkpoints.len() {
+                let (before, rest) = self.checkpoints.split_at_mut(k);
+                rest[0].2 = rest[0].0.memory_beside(before.last().map(|c| &c.0));
             }
         }
     }

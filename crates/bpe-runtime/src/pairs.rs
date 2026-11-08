@@ -131,8 +131,10 @@ const PAIR_BIAS: f32 = 0.2;
 /// A ball this many times the median radius is big: it meets its neighbours apart from the grid
 /// (W7, S16), so the grid's cells stay sized for the others.
 const BIG_TIMES: f32 = 4.0;
-/// Big balls are handled apart only while there is at most one in this many balls.
+/// Big balls are handled apart only while there is at most one in this many balls...
 const BIG_SHARE: usize = 8;
+/// ... and no more than this many (each pair of big balls is checked, whatever the distance).
+const MOST_BIG: usize = 16;
 
 /// Which two balls a contact is between, `a` first in `(thing, item)` order.
 type PairKey = (ThingId, u32, ThingId, u32);
@@ -514,15 +516,21 @@ fn close_pairs(grid: &mut Grid, count: usize, spot: impl Fn(usize) -> (Vec2, f32
 }
 
 /// The balls (indices, in order) much bigger than most, when there are a few of them: radius over
-/// [`BIG_TIMES`] the median, and no more than one ball in [`BIG_SHARE`]. Empty otherwise.
+/// [`BIG_TIMES`] the median, no more than one ball in [`BIG_SHARE`] and [`MOST_BIG`] in all. Empty
+/// otherwise.
 fn big_balls(count: usize, radius: impl Fn(usize) -> f32) -> Vec<usize> {
     if count < BIG_SHARE {
+        return Vec::new();
+    }
+    // Balls of much the same size (most scenes): nothing to sort out.
+    let (least, most) = (0..count).map(&radius).fold((f32::INFINITY, 0.0f32), |(l, m), r| (l.min(r), m.max(r)));
+    if most <= least * BIG_TIMES {
         return Vec::new();
     }
     let mut radii: Vec<f32> = (0..count).map(&radius).collect();
     let median = *radii.select_nth_unstable_by(count / 2, f32::total_cmp).1;
     let bigs: Vec<usize> = (0..count).filter(|&i| radius(i) > median * BIG_TIMES).collect();
-    if bigs.len() * BIG_SHARE <= count { bigs } else { Vec::new() }
+    if bigs.len() * BIG_SHARE <= count && bigs.len() <= MOST_BIG { bigs } else { Vec::new() }
 }
 
 /// Removes ball `item` of `thing` and logs it.
@@ -639,6 +647,14 @@ mod tests {
             s.1 = 40.0;
         }
         assert!(big_balls(many.len(), |i| many[i].1).is_empty());
+        // More than a handful, even if few beside the rest: the grid takes them all.
+        let mut crowd: Vec<(Vec2, f32)> = (0..2000).map(|i| (Vec2::new(i as f32, 0.0), 4.0)).collect();
+        for s in crowd.iter_mut().step_by(100) {
+            s.1 = 40.0;
+        }
+        assert!(big_balls(crowd.len(), |i| crowd[i].1).is_empty(), "20 big ones, over {MOST_BIG}");
+        crowd.truncate(1500);
+        assert_eq!(big_balls(crowd.len(), |i| crowd[i].1).len(), 15);
     }
 
     #[test]
