@@ -1222,7 +1222,6 @@ mod tests {
     #[test]
     fn the_classic_ball_draws_its_body_shine_and_glow_through_one_layered_instance() {
         let frame = frame_after(0.0, |_| {});
-        assert!(frame.balls.is_empty() && frame.looks.is_empty(), "the old paths draw no ball");
         assert_eq!(frame.layered.len(), 1);
         let codes: Vec<u32> = ball_records(&frame).iter().map(|l| l.head[0]).collect();
         assert_eq!(codes, [LayerGpu::BODY, LayerGpu::SHINE, LayerGpu::GLOW]);

@@ -149,6 +149,11 @@ Shockwaves, Comet tail, Black hole, Iron filings, Beat grid, Moiré (two grids, 
 Goldens `tests/golden-particles-motion*.txt` (`scenes::particle_motion_scenes`); the preview shows a rectangle grid's
 corner handle.
 
+Since the 2026-11-08 clean-up every look's recipe is a small function of its own (`looks.rs::rain()`,
+`looks_motion.rs::galaxy()`, ...), and `recipe()` is one line per look; shared bits are `riding`, `top`, `vanish`,
+`push` and `screen_grid`. The particles' dice are `bpe_core::dice` (`hash`, and `Stream` for the burst and shatter
+pieces).
+
 Part 7 is in (plan `part7.md`, "As built" at its end): **moments, sound, rules, lighting**. Meeting code marks a
 `Speck` (`met`/`with`/`impact`) and the serial retain turns marks into `Moment`s (`moments.rs`: Hit a ball, Hit a shape,
 Land (once, `LANDED`), Born, Burst; `ParticlesState.moments`/`moment_counts` for world step `moments_step`, at most

@@ -27,14 +27,15 @@ Dependencies go bottom to top:
   duplicating, copying or deleting a layer carries its sub-layers (`add_sub_layer`). Ten kinds, `sub.*` on balls and
   `shape.sub.*` on shapes (`layers/subs.rs`, `layers/cut.rs`, `shape/subs.rs`): Cut (the old Mask: From Layer
   below / Layer / Shape / Brush / Light / Dark), Glow, Outline, Shadow, Shading, Shine, Shader, Recolour, Flash on
-  hit and Colour on hit, worked in order over the layer alone. Format 8 masks become cuts on load
-  (`Registry::add_upgrade(9, masks_to_cuts)`). A layer kind can
+  hit and Colour on hit, worked in order over the layer alone. A layer kind can
   add settings from its own values (`LayerKind::dynamic_defs`, read through `layer_def`): a Shader layer's own code.
   Brush strokes are a value, `Value::Strokes` (points in ball space, never keyframed). A shape's moulded outline is
   `Value::Path(ShapePath)` (`shape_path.rs`: corners in shape units, x right, y down, middle at 0, size 1, each side
   straight or a cubic with two handles; `even(n)`, `circle()`, `add_point`, `delete_point`, `create_curve`, mirror
-  partners). `Slot.used_ids` keeps a removed layer's id from being given out again (`next_layer_id`). Scene files are format 12 (12 added rules and 11 the Lighting card, no upgrade; formats 7 to 9 still load and are upgraded; format 9 Trail and Particles cards become
-  Look layers with their keyframes, `add_upgrade(10, cards_to_layers)`). **Around layers** (`LayerSection::Around`)
+  partners). `Slot.used_ids` keeps a removed layer's id from being given out again (`next_layer_id`). Scene files are format 12, and 12 is also the oldest that opens
+  (`OLDEST_FORMAT`): an earlier file gives `LoadError::TooOld` ("made with an earlier version of Ball Studio"), and
+  there is no upgrade code (the registry's `add_upgrade` went in the 2026-11-08 clean-up). The test scenes still
+  build old Trail and Particles cards and turn them into Look layers with `cards_to_layers` (test-scenes only). **Around layers** (`LayerSection::Around`)
   sit after the drawn layers and before the reactions: a ball's `layer.trail` and `layer.particles`, a shape's
   `shape.particles`; they take the sub-layers Glow, Outline, Shadow, Recolour, Flash on hit and Colour on hit
   (`AROUND_SUBS`), and move only among themselves. Sound data: `SlotId::Sound` and
@@ -89,8 +90,11 @@ Dependencies go bottom to top:
   balls' (`Made.shape`, `effects/in_shape.wgsl`; `sample` dispatches on `in_ball.shape`). Paths and layered balls
   share one pipeline layout.
   Balls draw through `shaders/layers.wgsl`, one uber-shader: a thing writes
-  its `LayerGpu` records once a frame (`frame.look_layers`) and one `LayeredInstance` per ball names them. The
-  older `BallInstance`/`LookInstance` pipelines are still in the renderer but nothing in the kit draws with them.
+  its `LayerGpu` records once a frame (`frame.look_layers`) and one `LayeredInstance` per ball names them. These and paths are the
+  only ways a ball or shape is drawn: the old `BallInstance`, `LookInstance` and `ShapeInstance` lists, their
+  pipelines and `styled.wgsl`/`object.wgsl` were removed in the clean-up. A picture test that wants a plain ball
+  uses `pictures::plain_ball` (one Body record); the effect tests' `effects::chain::tests::{put, take}` add or lift
+  a ball with an optional glow.
   The stack walk is `shaders/layers_walk.wgsl`, a template pasted in by `layers_source`. Records cover Shading (5) and
   Shader (6) layers; a layer's sub-layer records (codes 20..29, table on `LayerGpu`) follow its own (whose `head[3]`
   counts them). The walk is one loop over every record (so each costly function has one call site and compiles
@@ -231,3 +235,24 @@ Dependencies go bottom to top:
   48 kHz (`AUDIO_ARGS`); a scene without sound gets a silent track. Frames draw with `build_frame_with` and a
   `ControlSampler` when a setting follows sound. `--stems` and `--midi` (`ExportOptions`)
   save the stems and the MIDI file beside the video.
+
+## Shared dice, shared shader helpers and the restart test (clean-up, 2026-11-08)
+
+- **Dice** (`bpe-core/src/dice.rs`): the seeded hashes every crate shares, pinned by a test: `pcg32`,
+  `lowbias32`, `splitmix64`, `mix64_short`, `hash(&[u32])` (the particles'), the steps to 0..1 (`unit24`,
+  `unit24_of_64`, `unit24_closed`), `Stream` (a salted run of `hash`) and `Rng` (SplitMix64, was `bpe-kit/src/rng.rs`).
+  Each place keeps its own way of mixing its inputs and calls these for the mixing, so the results are bit for bit
+  as before. Hashes that are a formula of their own stay where they are (the rules' FNV dice, the ball seed, a
+  Diamond's glints, the Light's flicker), and `bpe-dsp` keeps its own noise.
+- **Shader helpers**: `effects/shared.wgsl` holds the functions the effect prelude and the in-ball programs both
+  had (`hash21`, `noise`, `fbm`, `hue_shift`, `hsv_to_rgb`, the beat and sound readers, `object_code`, ...), and
+  `shaders/common.wgsl` the ones every pass may use (`luma`, Rec. 709). Each WGSL source that needs them is a
+  `concat!` with them (`effects::PRELUDE`/`IN_BALL`, `LIGHTING_WGSL` for the light passes, the post shader). The
+  three heat colour ramps are different maths and stay apart.
+- **What an edit restarts**: the `ThingSim` hooks are named for the question they answer:
+  `key_restarts_physics`, `key_restarts_physics_here`, `physics_print_extra`, `steps_own_cards` (the physics
+  fingerprint), `key_restarts_beside`, `card_key_restarts_beside`, `beside_print_extra` (the beside one).
+  `bpe-kit/tests/restarts.rs` adds every thing kind to the test start scene (and again with each switch and choice
+  of the scene changed), changes each setting it can (numbers, whole numbers, switches, choices, points, colours,
+  text) one at a time, plays 1.5 s and checks that whatever moved the balls changed the physics fingerprint and
+  whatever moved a beside thing's particles changed the beside fingerprint. About 43,000 changes, some 20 s.
