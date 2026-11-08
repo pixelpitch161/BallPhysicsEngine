@@ -1742,7 +1742,9 @@ fn haze_density(p: vec2<f32>, stir: vec4<f32>) -> f32 {
     let speed = gu.haze.y;
     // The balls carry the haze along behind them, and turn it round them.
     let push = stir.xy * 0.35 * gu.haze_more.z;
-    var q = (p - push) / size - gu.haze_more.xy * speed * t * 100.0 / size;
+    // `haze_more.xy` is how far the clouds have drifted by now (world units, worked out on the
+    // CPU: along the drift direction at the speed, or as far as the scene's air carried them).
+    var q = (p - push - gu.haze_more.xy) / size;
     if gu.haze.x > 1.5 {
         // Swirling: the cloud bent by a slowly turning field of its own.
         let w = vec2<f32>(

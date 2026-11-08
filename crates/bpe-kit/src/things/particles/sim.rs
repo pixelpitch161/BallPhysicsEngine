@@ -171,6 +171,15 @@ impl ThingSim for ParticlesSim {
             && engine_of(resolved.slots.get(&SlotId::Look)) == Engine::Exact
     }
 
+    /// Its Rise forces heat the air (a Huge swarm never does): while balls follow the air, the
+    /// heat moves them, so the thing steps with the physics. A thing fed by its parent's particles
+    /// doesn't count: while balls follow the air it puts in no heat (its parent may be beside).
+    fn heats_air(&self, resolved: &ResolvedThing) -> bool {
+        engine_of(resolved.slots.get(&SlotId::Look)) == Engine::Exact
+            && ParticlesSettings::from_params(&resolved.params).from != BornFrom::ItsParentsParticles
+            && Forces::read(resolved.slots.get(&SlotId::Motion)).heats_air()
+    }
+
     /// The Look card's Engine picks how the particles step (Exact or Huge swarm).
     fn card_key_restarts_beside(&self, slot: SlotId, key: &str) -> bool {
         slot == SlotId::Look && key == super::look::ENGINE_KEY
@@ -288,7 +297,11 @@ fn catch_up_all(world: &mut World, log: &mut Log, due: u32) {
                 continue;
             }
             step::step_in(st, world, log, threads, air_now, parent);
-            if let Some(air) = air.as_mut().filter(|a| a.get().awake()) {
+            // While balls follow the air, a thing fed by its parent's particles puts in no heat:
+            // its parent may step beside the physics, and every playback must move the balls
+            // alike ([`ParticlesSim::heats_air`]).
+            let heats = !(world.air_felt && st.settings.from == BornFrom::ItsParentsParticles);
+            if let Some(air) = air.as_mut().filter(|a| heats && a.get().awake()) {
                 step::put_heat(st, air.get_mut());
             }
             *ms += started.elapsed().as_secs_f32() * 1000.0;

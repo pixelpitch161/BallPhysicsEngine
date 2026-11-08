@@ -472,3 +472,87 @@ fn a_shape_at_zero_goes_with_its_cards_break_look() {
     let remains = world.rules().unwrap().remains_of(SHAPE, None).expect("it fades out");
     assert_eq!(remains.show.lasts, 0.5);
 }
+
+/// A Change setting on `thing`'s card in `card`, at `at` seconds.
+fn change_at(scene: &mut Scene, reg: &Registry, at: f64, thing: ThingId, card: &str, key: &str, to: f64) {
+    let who_it = who(Who::Thing { thing, ball: None });
+    lane(
+        scene,
+        reg,
+        &[
+            ("when.time", vec![("at", n(at))]),
+            (
+                "do.change",
+                vec![
+                    ("who", who_it),
+                    ("card", choice(card)),
+                    ("setting", Value::Text(key.into())),
+                    ("to_number", n(to)),
+                ],
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_rule_raising_least_strength_stops_the_damage() {
+    let kit = kit();
+    let mut scene = new_scene(&kit.registry);
+    health(&mut scene, &kit.registry, SHAPE, &[]);
+    change_at(&mut scene, &kit.registry, 0.0, SHAPE, "health", "least", 1e8);
+    let (world, log) = run(&scene, &kit, 8.0);
+    assert!(hits(&log, SHAPE).count() > 3, "it is hit as before");
+    assert!(!world.broken(SHAPE), "no hit is hard enough now");
+    assert_eq!(world.health(SHAPE, None).map(|h| h.now), Some(3.0));
+}
+
+#[test]
+fn a_rule_changing_starting_health_gives_it_to_the_balls_fired_after() {
+    let kit = kit();
+    let mut scene = new_scene(&kit.registry);
+    let emitter = crate::add_thing(&mut scene, &kit.registry, "emitter", ThingId::ROOT).unwrap();
+    // Its one round fires at 1 s, after the rule.
+    scene.things.get_mut(&emitter).unwrap().params.set("start_delay", n(1.0));
+    health(&mut scene, &kit.registry, emitter, &[("start", n(1.0))]);
+    let (_, log) = run(&scene, &kit, 7.0);
+    assert!(log.events().iter().any(|e| e.kind == EventKind::Break), "with 1 health a hit breaks a ball");
+    change_at(&mut scene, &kit.registry, 0.5, emitter, "health", "start", 1e6);
+    let (world, log) = run(&scene, &kit, 7.0);
+    assert!(world.bodies.get(&emitter).is_some_and(|b| !b.is_empty()), "it fired");
+    assert!(log.events().iter().all(|e| e.kind != EventKind::Break), "every ball starts with plenty");
+    assert_eq!(world.health(emitter, Some(0)).map(|h| h.start), Some(1e6));
+}
+
+#[test]
+fn a_rule_changing_the_wind_moves_the_balls_that_follow_the_air() {
+    let kit = kit();
+    let reg = &kit.registry;
+    let mut scene = new_scene(reg);
+    crate::things::particles::air::ensure_air_card(&mut scene, reg).unwrap();
+    let air = scene.card_mut(ThingId::ROOT, SlotId::Air).unwrap();
+    air.params.set("wind_speed", n(0.0));
+    air.params.set("shapes_block", Value::Bool(false));
+    // The air settles to the new wind quickly, unstirred.
+    air.params.set("calm", n(30.0));
+    air.params.set("stir", n(0.0));
+    let motion = scene.card_mut(BALLS, SlotId::Motion).unwrap();
+    motion.params.set("gravity_scale", n(0.0));
+    motion.params.set("follow_air", n(5.0));
+    scene.things.get_mut(&BALLS).unwrap().params.set("velocity", Value::Vec2([0.0, 0.0]));
+    let (calm, _) = run(&scene, &kit, 1.5);
+    assert!(calm.bodies[&BALLS].velocity[0].length() < 1.0, "no wind, no push");
+    change_at(&mut scene, reg, 0.5, ThingId::ROOT, "air", "wind_speed", 400.0);
+    let (world, _) = run(&scene, &kit, 1.5);
+    assert_eq!(crate::air::air_of(&world).unwrap().spec.wind_speed, 400.0);
+    let v = world.bodies[&BALLS].velocity[0];
+    assert!(v.x > 300.0, "the rule's wind carries it: {v}");
+    // And it replays the same through seeks.
+    let resolved = resolve(&scene, reg);
+    let mut straight = Playback::new(&scene, &resolved, kit.sims.clone());
+    straight.seek(1.5);
+    let mut jumpy = Playback::new(&scene, &resolved, kit.sims.clone());
+    for t in [1.0, 0.25, 1.5] {
+        jumpy.seek(t);
+    }
+    assert_eq!(straight.world().bodies[&BALLS].position, jumpy.world().bodies[&BALLS].position);
+}

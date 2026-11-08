@@ -106,6 +106,11 @@ pub trait BlockSim: Send + Sync + 'static {
     fn changes_settings(&self, _state: &dyn ThingState) -> bool {
         false
     }
+    /// The card (`None`: a thing's own settings) and setting key a block with these settings
+    /// changes, when it changes one (Change setting).
+    fn changes(&self, _params: &Params) -> Option<(Option<bpe_core::SlotId>, String)> {
+        None
+    }
     /// Whether a block with these settings reads the scene's sound: the physics fingerprint then
     /// hashes what the sound reads, so editing it runs the scene again.
     fn hears_sound(&self, _params: &Params) -> bool {

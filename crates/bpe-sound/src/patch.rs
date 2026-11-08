@@ -163,6 +163,19 @@ pub fn shape_specs(scene: &Scene, resolved: &Resolved) -> Vec<ShapeSpec> {
     out
 }
 
+/// Thing `id`'s spec alone, without the light probe (what a rule can reach of its voice; the
+/// editor's menu asks for it as it draws).
+pub(crate) fn spec_of(scene: &Scene, resolved: &Resolved, id: ThingId) -> Option<ShapeSpec> {
+    let settings =
+        resolved.things.get(&ThingId::ROOT).map(|r| SceneSettings::from_params(&r.params)).unwrap_or_default();
+    let thing = resolved.things.get(&id)?;
+    let card = thing.slots.get(&SlotId::Sound)?;
+    let shape = ShapeSettings::from_params(&thing.params);
+    let top = TempoMap::from_settings(&settings).top();
+    let b = Build { index: 0, width: settings.width as f32, shape: &shape, tempo_top: top, light: None };
+    spec_with(scene, id, card, &b, Tables::Skip, &mut false)
+}
+
 fn spec_with(
     scene: &Scene,
     id: ThingId,
@@ -208,6 +221,9 @@ fn spec_with(
     };
     let layout = knobs::layout_all(&ids, &chain_ids, &mod_ids);
     let base = knobs::values(&layout, &|key| card.params.get(key).cloned());
+    let mut knob_keys: Vec<(String, usize)> = layout.iter().map(|(key, _, i)| (key.clone(), *i)).collect();
+    knob_keys.sort();
+    knob_keys.dedup_by(|a, b| a.0 == b.0);
     let keyed = layout
         .iter()
         .filter_map(|(key, _, i)| {
@@ -251,6 +267,7 @@ fn spec_with(
         bus: v.out_bus.clamp(1, 3) as u8,
         base,
         keyed,
+        knob_keys,
         matrix,
         square: if [&v.a, &v.b]
             .iter()
