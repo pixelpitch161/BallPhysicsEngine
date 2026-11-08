@@ -228,7 +228,63 @@ fn path_cover(in: PathOut) -> f32 {
     return clamp((half_width - abs(sd)) / px + 0.5, 0.0, 1.0) * min(in.b.x * 2.0 / px, 1.0);
 }
 
+// The hue `h` (turns) at full strength in linear light: the pure colour a colourised copy takes.
+fn path_rainbow(h: f32) -> vec3<f32> {
+    let k = fract(vec3<f32>(h) + vec3<f32>(1.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - vec3<f32>(3.0);
+    let srgb = clamp(abs(k) - vec3<f32>(1.0), vec3<f32>(0.0), vec3<f32>(1.0));
+    return pow(srgb, vec3<f32>(2.2));
+}
+
+// `c` (premultiplied) turned `h` turns round the grey axis: linear, so it turns covered colour.
+fn path_hue_turn(c: vec3<f32>, h: f32) -> vec3<f32> {
+    let a = h * TAU;
+    let k = vec3<f32>(0.57735027);
+    let cs = cos(a);
+    return max(c * cs + cross(k, c) * sin(a) + k * dot(k, c) * (1.0 - cs), vec3<f32>(0.0));
+}
+
+// A styled instance's colour (Text part 5, `PathStyle` in frame.rs: `style` is `clip.w`, channel +
+// 4 hue + 4096 colourise). Colour passes turn and colourise it; the picture passes keep only its
+// channel (red and blue as added light, green covering); the passes reading shapes as blockers see
+// the green copy whole and the red and blue ones not at all.
+fn path_styled(c: vec4<f32>, style: f32) -> vec4<f32> {
+    let v = u32(style + 0.5);
+    let channel = v % 4u;
+    let hue = f32((v / 4u) % 1024u) / 1024.0;
+    let colourise = f32(v / 4096u) / 15.0;
+    let m = g.light.x;
+    let picture = m < 1.5 || (m > 6.5 && m < 7.5);
+    let colours = picture || (m > 2.5 && m < 3.5);
+    if !picture && (channel == 1u || channel == 3u) {
+        discard;
+    }
+    var out = c;
+    if colours && (hue > 0.0 || colourise > 0.0) {
+        let turned = path_hue_turn(out.rgb, hue);
+        let pure = path_rainbow(hue) * max(out.r, max(out.g, out.b));
+        out = vec4<f32>(mix(turned, pure, colourise), out.a);
+    }
+    if picture {
+        if channel == 1u {
+            out = vec4<f32>(out.r, 0.0, 0.0, 0.0);
+        } else if channel == 2u {
+            out = vec4<f32>(0.0, out.g, 0.0, out.a);
+        } else if channel == 3u {
+            out = vec4<f32>(0.0, 0.0, out.b, 0.0);
+        }
+    }
+    return out;
+}
+
 fn shade_path(in: PathOut) -> vec4<f32> {
+    let c = shade_path_unstyled(in);
+    if in.clip.w > 0.5 {
+        return path_styled(c, in.clip.w);
+    }
+    return c;
+}
+
+fn shade_path_unstyled(in: PathOut) -> vec4<f32> {
     // For the gradient grain (paint.wgsl).
     paint_px = in.pos.xy;
     // For the Hit wave (paint.wgsl).
@@ -272,6 +328,11 @@ fn fs_path_object(in: PathOut) -> @location(0) vec4<f32> {
         cover *= clip_keep(path_local(in), in.clip, g.view.z / max(in.a.w, 1e-6));
     }
     if cover <= 0.0 || in.c.x < 0.5 {
+        discard;
+    }
+    // A Colour split's red and blue copies aren't the thing (Text part 5).
+    let channel = u32(in.clip.w + 0.5) % 4u;
+    if in.clip.w > 0.5 && (channel == 1u || channel == 3u) {
         discard;
     }
     let local = path_local(in) / max(in.c.y, 1e-3);

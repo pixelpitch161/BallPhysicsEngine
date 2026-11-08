@@ -811,6 +811,20 @@ when `p0.z` is set). Balls' Word and Particles' Form a word can be **made of a T
 `text_named`, `letters_of`, `letters_hash`; `reads_tree` + `fingerprint_more`). Looks Word made of balls, Particle
 word, Laser writing, Text follows sound; Neon sign flickers. Editor: Letter moves list, row menu Only some letters….
 
+Part 5 is in (plan `docs/superpowers/plans/text/part5.md`, "As built" at its end): **experimental effects**, drawing
+only. Text-only layers `text.fx.echo|mirror|split|glitch|melt` in `look.shape`'s Reaction section
+(`modules/look/shape/effects.rs`, `EFFECTS`, `is_effect`; the moves' `MoveKind`), listed by the editor under
+**Experimental** apart from Letter moves (`list_header_where`). `things/text/fx.rs`: `Fx::of`; **Melt** cuts each
+letter's contours finer and runs them down the picture by a seeded column drip (`MeltNow`, `melt_contours`, Starts
+again every with a fade) before they are pushed; **Echo**, **Mirror** (ways, round the text's/picture's middle or a
+point, Mirrored copies flip their points, Cut to wedges clips), **Colour split** and **Glitch** (screen bands torn
+sideways, cut through the instances' convex clips: `clip_to`) work on the Text's pushed instances (`apply`, depth
+sorted, coverings before added light, `MOST_FX_INSTANCES`/`MOST_FX_POINTS`), Colour split and Glitch harder after
+a hit of Hits of (`hit_age`). Colours go through **`PathStyle`** in the spare `PathInstance.clip[3]` (channel red
+light / green covering / blue light, hue turn, colourise; `paths.wgsl::path_styled`, only when non-zero, so shapes
+draw as before). Melt or a flipping Mirror turns fast letters off. Looks Glitch, Melting text, Kaleidoscope words,
+Echo stack (24 looks). Tests `things/text/fx_tests.rs`, `paths_tests` (style), `tests/text_pictures.rs`.
+
 ## Crate map
 
 Dependencies go bottom to top:

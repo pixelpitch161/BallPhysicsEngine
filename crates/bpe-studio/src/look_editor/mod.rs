@@ -162,19 +162,32 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
         layer_list::around_drop_target(ui, cx, card, &rows, edits);
     }
 
-    // ---------- Letter moves (a Text's) ----------
+    // ---------- Letter moves and Experimental effects (a Text's) ----------
     if text && shape {
-        ui.add_space(6.0);
-        list_header(ui, cx, card, "Letter moves", "+ Add move", LayerSection::Reaction, edits);
-        if reactions.is_empty() {
-            ui.label(
-                RichText::new("None yet: add one to make the letters wave, jump or draw on.")
-                    .small()
-                    .color(style::FAINT),
-            );
-        }
-        for layer in &reactions {
-            layer_list::row(ui, inspector, cx, card, layer, picked, edits);
+        use bpe_kit::modules::look::shape::effects::is_effect;
+        // Title, add button, what shows while empty, and which kinds it lists.
+        type List = (&'static str, &'static str, &'static str, fn(&str) -> bool);
+        let lists: [List; 2] = [
+            ("Letter moves", "+ Add move", "None yet: add one to make the letters wave, jump or draw on.", |k| {
+                !is_effect(k)
+            }),
+            (
+                "Experimental",
+                "+ Add effect",
+                "None yet: add one to echo, mirror, split, tear or melt the letters.",
+                is_effect,
+            ),
+        ];
+        for (title, add, none, keep) in lists {
+            ui.add_space(6.0);
+            list_header_where(ui, cx, card, title, add, LayerSection::Reaction, &keep, edits);
+            let these: Vec<&&bpe_core::Layer> = reactions.iter().filter(|l| keep(&l.kind)).collect();
+            if these.is_empty() {
+                ui.label(RichText::new(none).small().color(style::FAINT));
+            }
+            for layer in these {
+                layer_list::row(ui, inspector, cx, card, layer, picked, edits);
+            }
         }
     }
 
@@ -328,10 +341,29 @@ fn list_header(
     section: LayerSection,
     edits: &mut Vec<Edit>,
 ) {
+    list_header_where(ui, cx, card, title, add, section, &|_| true, edits);
+}
+
+/// [`list_header`] offering only the kinds `keep` takes (a Text's Reaction section holds its
+/// letter moves and its experimental effects, listed apart).
+#[allow(clippy::too_many_arguments)]
+fn list_header_where(
+    ui: &mut Ui,
+    cx: &LookCx,
+    card: &bpe_core::Slot,
+    title: &str,
+    add: &str,
+    section: LayerSection,
+    keep: &dyn Fn(&str) -> bool,
+    edits: &mut Vec<Edit>,
+) {
     // Only the kinds that fit the thing: letter moves only on a Text.
     let thing = cx.scene.things.get(&cx.id).map_or("", |t| t.kind.as_str());
-    let addable: Vec<&dyn bpe_core::LayerKind> =
-        cx.reg().layers_for(&card.kind).filter(|k| k.section() == section && !k.base() && k.fits(thing)).collect();
+    let addable: Vec<&dyn bpe_core::LayerKind> = cx
+        .reg()
+        .layers_for(&card.kind)
+        .filter(|k| k.section() == section && !k.base() && k.fits(thing) && keep(k.id()))
+        .collect();
     ui.horizontal(|ui| {
         ui.label(RichText::new(title).font(style::medium(12.0)).color(style::MUTED));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -915,9 +947,30 @@ mod tests {
     }
 
     #[test]
+    fn a_texts_look_has_experimental_effects_apart_from_its_moves() {
+        let (mut h, id) = text_harness();
+        assert!(label_shown(&h, "Experimental"));
+        // The moves' menu offers no effects, and the effects' no moves.
+        h.get_by_label("+ Add move").click();
+        h.run();
+        assert!(!label_shown(&h, "Echo") && label_shown(&h, "Wave"));
+        h.get_by_label("+ Add move").click();
+        h.run();
+        add(&mut h, "+ Add effect", "Echo");
+        assert!(kinds_of(&h, id).iter().any(|k| k == bpe_kit::modules::look::shape::effects::ECHO));
+        assert!(!kinds_of(&h, id).iter().any(|k| k == bpe_kit::modules::look::shape::moves::WAVE));
+        // Its settings show when picked (it is, as the newest layer).
+        assert!(label_shown(&h, "Copies") && label_shown(&h, "Toward"));
+        h.get_by_label("+ Add effect").click();
+        h.run();
+        assert!(!label_shown(&h, "Wave") && label_shown(&h, "Melt"));
+    }
+
+    #[test]
     fn a_shapes_look_has_no_letter_moves_or_across() {
         let mut h = shape_harness(|_| {});
         assert!(!label_shown(&h, "Letter moves"));
+        assert!(!label_shown(&h, "Experimental"));
         add(&mut h, "+ Add layer", "Colour and gradient");
         two_colours(&mut h, SHAPE);
         assert!(label_shown(&h, "Flow"), "its gradient's rows show");

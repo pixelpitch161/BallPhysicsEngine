@@ -641,6 +641,9 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
     let fast = fast_letters(&s, &copies);
     let font = fonts::find(&cx.tree.fonts, &s.font, s.weight).font().clone();
     let breaks = Breaks::of(cx);
+    // The experimental effects (Text part 5): Melt reshapes the outlines, the rest work on the
+    // pushed instances at the end.
+    let fx = super::fx::Fx::of(look);
     let mut shown: Vec<Shown> = Vec::new();
     for (copy, now) in copies.iter().enumerate() {
         for letter in 0..now.layout.letters.len() {
@@ -659,13 +662,25 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
                     None => continue,
                 },
             }
+            if !fx.is_empty() {
+                moved.opacity *= fx.opacity(letter as u32, cx.time);
+            }
             shown.push(Shown { copy, letter, moved, shatter });
         }
     }
     let half = band_half(cx, &s);
     // A letter Draw on traces walks its outline; so does one breaking into pieces (its pieces clip
     // it to their cells).
-    let tiled = |l: &Shown| fast && l.shatter.is_none() && l.moved.trace.is_none();
+    // Melted or flipped letters can't read tiles either.
+    let tiled = |l: &Shown| fast && !fx.needs_outlines() && l.shatter.is_none() && l.moved.trace.is_none();
+    // A letter's contours melted by the Melts it wears (the picture's down in its copy's frame).
+    let melted = |l: &Shown, contours: Vec<Vec<Vec2>>| {
+        if !fx.melts() {
+            return contours;
+        }
+        let down = Vec2::from_angle(-copies[l.copy].pose.angle).rotate(Vec2::Y);
+        fx.melt(contours, l.letter as u32, down, cx.time)
+    };
     // Each letter's outline as it shows (fast letters' are their moved boxes), laying the gradient.
     let outlines: Vec<Vec<Vec<Vec2>>> = shown
         .iter()
@@ -679,14 +694,15 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
                 let to = now.mover(l.letter, l.moved);
                 vec![corners.into_iter().map(to).collect()]
             } else {
-                now.contours_moved(l.letter, l.moved)
+                melted(l, now.contours_moved(l.letter, l.moved))
             }
         })
         .collect();
     // Fast letters lay the gradient over their boxes as laid out (as before letter moves); with
     // letter moves, drawn ones lay it over every letter as laid out, so it stays put while the
     // letters move through it.
-    let moving = copies.iter().any(|c| c.moving);
+    // A melting Text's gradient stays put too, rather than stretching with the drips.
+    let moving = copies.iter().any(|c| c.moving) || fx.melts();
     let points: Vec<Vec2> = if moving && !fast {
         // Every letter of each copy showing, so letters drawing on or scattering in don't move it.
         let mut seen: Vec<usize> = shown.iter().map(|l| l.copy).collect();
@@ -761,6 +777,7 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
     // Each pushed instance with its letter, how much of it shows, how far its layers may reach
     // past it and half its band.
     let mut pushed: Vec<(usize, usize, f32, f32, f32)> = Vec::new();
+    let start = frame.paths.len();
     for (i, l) in shown.iter().enumerate() {
         let now = &copies[l.copy];
         let m = l.moved;
@@ -783,7 +800,7 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
             continue;
         }
         // The pieces it draws as: whole, or Draw on's traced line and its fill.
-        let full = if fast { now.contours_moved(l.letter, m) } else { outlines[i].clone() };
+        let full = if fast { melted(l, now.contours_moved(l.letter, m)) } else { outlines[i].clone() };
         let mut pieces: Vec<(Vec<Vec<Vec2>>, f32, f32)> = Vec::new();
         match m.trace {
             None => pieces.push((full, half, m.opacity)),
@@ -827,18 +844,42 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
     // Shattering letters become their pieces (after every letter has its records, which each
     // piece keeps).
     let walls = crate::rules::remains::draw::walls_of(cx.world);
+    // Which shown letter each instance from `start` on draws (pieces too), for the effects.
+    let mut owners: Vec<usize> = vec![usize::MAX; frame.paths.len() - start];
     for &(i, l, ..) in &pushed {
-        let l = &shown[l];
+        if let Some(o) = owners.get_mut(i - start) {
+            *o = l;
+        }
+    }
+    for &(i, l_index, ..) in &pushed {
+        let l = &shown[l_index];
         let Some((r, look)) = &l.shatter else { continue };
         let now = &copies[l.copy];
         let middle = now.middle(l.letter);
-        let contours = now.contours_moved(l.letter, l.moved);
+        let contours = melted(l, now.contours_moved(l.letter, l.moved));
         // The outer contour (the longest) round the letter's middle: what the pieces are made of.
         let Some(outer) = contours.iter().max_by_key(|c| c.len()) else { continue };
         let edge: Vec<Vec2> = outer.iter().map(|p| *p - middle).collect();
         let letter = crate::rules::remains::draw::LetterPiece { part: l.letter as u32, edge: &edge, half, middle };
+        let before = frame.paths.len();
         crate::rules::remains::draw::shatter_letter(r, look, cx.thing.id.0, &letter, i, cx.time, &walls, frame);
+        owners.extend(std::iter::repeat_n(l_index, frame.paths.len() - before));
     }
+    if fx.is_empty() {
+        return;
+    }
+    let owners: Vec<(usize, u32)> =
+        owners.into_iter().map(|o| shown.get(o).map_or((0, u32::MAX), |l| (l.copy, l.letter as u32))).collect();
+    let fx_cx = super::fx::FxCx {
+        time: cx.time,
+        screen: on_screen(cx.tree, cx.thing.id),
+        camera: cx.world.camera,
+        middles: copies.iter().map(|c| c.pose.position).collect(),
+        world: Some(cx.world),
+        log: Some(cx.log),
+        id: cx.thing.id,
+    };
+    super::fx::apply(&fx, &fx_cx, frame, start, &owners);
 }
 
 #[cfg(test)]

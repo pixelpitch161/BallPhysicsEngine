@@ -5,6 +5,9 @@
 //! inside, each letter a part rules, health and sound tell apart (part 3).
 
 pub mod draw;
+pub mod fx;
+#[cfg(test)]
+mod fx_tests;
 pub mod looks;
 pub mod moves;
 pub mod shape;

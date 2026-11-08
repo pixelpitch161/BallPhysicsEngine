@@ -353,3 +353,74 @@ fn a_gradient_starts_again_on_each_letter() {
         assert!(l > 3 * 0x60, "its uprights are far from its middle: {l}");
     }
 }
+
+/// Adds experimental effect `kind` (Text part 5) to Text `id` with `params`.
+fn add_effect(scene: &mut Scene, id: ThingId, kind: &str, params: &[(&str, Value)]) {
+    let reg = kit().registry;
+    let layer = scene.add_layer(&reg, id, SlotId::Look, kind).unwrap();
+    for (k, v) in params {
+        set_look(scene, id, &bpe_core::layered_key(layer, k), v.clone());
+    }
+}
+
+#[test]
+fn colour_split_fringes_a_white_letter_red_and_blue() {
+    use bpe_kit::modules::look::shape::effects::SPLIT;
+    let Some(mut gpu) = gpu() else { return };
+    let (mut scene, id) = text_scene("I", 700.0, true);
+    add_effect(&mut scene, id, SPLIT, &[("distance", Value::Number(40.0))]);
+    let pixels = draw(&mut gpu, &scene, "colour-split");
+    let (middle, lo) = letter_points(&scene, id)[0];
+    let right = 2.0 * middle.x - lo.x;
+    assert!(brightness(at(&pixels, middle.x, middle.y)) > 3 * 0xe0, "white where all three meet");
+    let red = at(&pixels, right + 22.0, middle.y);
+    assert!(red[0] > 0xc0 && red[1] < 0x40 && red[2] < 0x40, "red past the right edge: {red:?}");
+    let blue = at(&pixels, lo.x - 22.0, middle.y);
+    assert!(blue[2] > 0xc0 && blue[0] < 0x40 && blue[1] < 0x40, "blue past the left edge: {blue:?}");
+}
+
+#[test]
+fn mirror_shows_the_word_on_the_far_side_of_the_middle() {
+    use bpe_kit::modules::look::shape::effects::MIRROR;
+    let Some(mut gpu) = gpu() else { return };
+    let (mut scene, id) = text_scene("I", 500.0, true);
+    scene.things.get_mut(&id).unwrap().transform.position = glam::Vec2::new(300.0, 0.0);
+    let (middle, _) = letter_points(&scene, id)[0];
+    let plain = draw(&mut gpu, &scene, "mirror-off");
+    assert!(brightness(at(&plain, -middle.x, middle.y)) < 3 * 0x30);
+    add_effect(
+        &mut scene,
+        id,
+        MIRROR,
+        &[("ways", Value::Int(2)), ("round", Value::Choice("the_middle_of_the_picture".into()))],
+    );
+    let pixels = draw(&mut gpu, &scene, "mirror");
+    assert!(brightness(at(&pixels, middle.x, middle.y)) > 3 * 0xe0, "the letter");
+    assert!(brightness(at(&pixels, -middle.x, -middle.y)) > 3 * 0xe0, "its copy half way round");
+}
+
+#[test]
+fn an_echo_copy_takes_a_colour_of_its_own() {
+    use bpe_kit::modules::look::shape::effects::ECHO;
+    let Some(mut gpu) = gpu() else { return };
+    let (mut scene, id) = text_scene("I", 400.0, true);
+    add_effect(
+        &mut scene,
+        id,
+        ECHO,
+        &[
+            ("copies", Value::Int(1)),
+            ("toward", Value::Vec2([0.0, 600.0])),
+            ("reach", Value::Number(1.0)),
+            ("last_size", Value::Number(1.0)),
+            ("last_opacity", Value::Number(1.0)),
+            ("hue", Value::Number(120.0)),
+            ("colourise", Value::Number(1.0)),
+        ],
+    );
+    let pixels = draw(&mut gpu, &scene, "echo");
+    let (middle, _) = letter_points(&scene, id)[0];
+    assert!(brightness(at(&pixels, middle.x, middle.y)) > 3 * 0xe0, "the letter stays white");
+    let copy = at(&pixels, middle.x, middle.y + 600.0);
+    assert!(copy[1] > 0xc0 && copy[0] < 0x40 && copy[2] < 0x40, "a third of the wheel round: green {copy:?}");
+}
