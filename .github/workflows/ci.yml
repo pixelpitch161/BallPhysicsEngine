@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Rust (the version in rust-toolchain.toml)
         run: rustup toolchain install
       - run: cargo fmt --all --check
@@ -36,20 +36,22 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: System packages
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config libudev-dev
       - name: Rust (the version in rust-toolchain.toml)
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-ubuntu-24.04
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
     name: Tests (debug, software GPU)
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 150
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Free disk space
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
       - name: System packages (Mesa's software Vulkan driver, ffmpeg for the export tests)
@@ -60,12 +62,12 @@ jobs:
       - name: Rust (the version in rust-toolchain.toml)
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      - name: Build the tests
-        run: cargo test --workspace --no-run
-      - name: bpe-gfx tests (two at a time, they need the memory)
-        run: cargo test -p bpe-gfx -- --test-threads=2
-      - name: Every other crate's tests
-        run: cargo test --workspace --exclude bpe-gfx
+        with:
+          prefix-key: v1-ubuntu-24.04
+      - name: Tests
+        # Two at a time: the picture tests on the software driver need the memory. One package selection, so every
+        # crate builds once with one set of features.
+        run: cargo test --workspace --no-fail-fast -- --test-threads=2
 
   release-goldens:
     name: Goldens (release)
@@ -77,7 +79,7 @@ jobs:
       CARGO_PROFILE_RELEASE_LTO: "false"
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: System packages (Mesa's software Vulkan driver for the pinned pictures)
         run: |
           sudo apt-get update
@@ -85,10 +87,13 @@ jobs:
       - name: Rust (the version in rust-toolchain.toml)
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-ubuntu-24.04
       - name: Physics goldens and pinned pictures
         run: cargo test --release -p bpe-kit --test 'golden*' --test unlit_pictures --test lit_flat_pinned
-      - name: Sound goldens (one at a time: shape_voice also times a heavy patch against real time)
-        run: cargo test --release -p bpe-sound --test chain --test shape_voice --test mod_matrix -- --test-threads=1
+      - name: Sound goldens
+        # Only the goldens: the release-only speed checks in these files measure the machine, not the code.
+        run: cargo test --release -p bpe-sound --test chain --test shape_voice --test mod_matrix golden
 
   windows:
     name: Windows cross-build
@@ -98,11 +103,13 @@ jobs:
       CARGO_PROFILE_RELEASE_LTO: "false"
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: MinGW
         run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
       - name: Rust (the version in rust-toolchain.toml)
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-ubuntu-24.04
       - name: Build the editor and the renderer for Windows
         run: cargo build --release --target x86_64-pc-windows-gnu -p bpe-studio -p bpe-cli

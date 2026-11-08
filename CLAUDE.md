@@ -51,7 +51,7 @@ Each area's detailed notes are in `docs/notes/`; its design is in `docs/superpow
 | Area | Notes | Spec / plans |
 | --- | --- | --- |
 | Strip-down, own settings, Vary across balls | `foundations.md` | `plans/2026-11-03-*`, `plans/ball-emitter/part5-vary.md` |
-| Crates in detail (core, runtime, gfx, kit incl. balls, shapes, emitter and aim, cli) | `engine.md` | `specs/2026-11-04-shape-thing-design.md`, `specs/2026-11-05-ball-emitter-design.md`, `plans/ball-emitter/` |
+| Crates in detail (core, runtime, gfx, kit incl. balls, shapes, emitter and aim, cli) | `engine.md` | `specs/2026-11-04-shape-thing-design.md`, `specs/2026-11-05-ball-emitter-design.md`, `plans/2026-11-04-shape-part*.md`, `plans/2026-11-04-physics-card.md`, `plans/ball-emitter/` |
 | Lighting (lights, Flat/Stage, surfaces, sensing, lens, Stage camera, bake, light shows, Effects stack) | `lighting.md` | `specs/2026-11-06-lighting-design.md`, `plans/lighting/` |
 | Glass and light (coloured shadows, prisms, bent light, mirrors, pipes, dichroic, rainbows) | `glass-light.md` | `specs/2026-11-07-glass-light-design.md`, `plans/glass-light/` |
 | Rules (engine, editor, break looks, events, Health, spectacle actions) | `rules.md` | `specs/2026-11-06-rules-design.md`, `plans/rules/` |
@@ -60,7 +60,7 @@ Each area's detailed notes are in `docs/notes/`; its design is in `docs/superpow
 | Text thing (fonts, live words, letter walls, letter moves, effects) | `text.md` | `specs/2026-11-07-text-thing-design.md`, `plans/text/` |
 | Sound (bpe-dsp, bpe-sound: voices, chains, modulators, notes, buses, Follow sound) | `sound.md` | `specs/2026-11-04-sound-system-design.md`, `plans/sound-system/` (decisions log there) |
 | Editor (design system, inspector, Look editor, timeline, Mixer, Sound tab) | `editor.md` | `specs/2026-11-03-design-system-editor-design.md`, `specs/2026-11-03-ball-look-editor-design.md` |
-| Trails and the staying Line | `engine.md` (bpe-kit) | `plans/trails/staying-lines.md`, `plans/2026-11-05-trail-bounce-corners.md` |
+| Sub-layers, trails and particle layers, the staying Line | `engine.md` (bpe-core, bpe-kit) | `specs/2026-11-04-sublayers-trails-physics-design.md`, `plans/2026-11-04-sublayers-part1.md`, `plans/2026-11-04-trail-particle-layers.md`, `plans/2026-11-05-trail-bounce-corners.md`, `plans/trails/staying-lines.md` |
 | Checks, picture tests, this guide | this file | `plans/2026-11-08-safety-nets-lean-guide.md` |
 
 ## Crate map
@@ -115,9 +115,10 @@ apt-get update && apt-get install -y libasound2-dev pkg-config libudev-dev mesa-
 - Rust is pinned in `rust-toolchain.toml` (with clippy, rustfmt and the Windows target), so CI and every container
   build with the same compiler. Moving it forward is its own pull request that fixes any new clippy warnings.
 
-- Tests: `cargo test --workspace` takes several minutes cold, so run it in the background. Run `bpe-gfx`'s own tests
-  with `--test-threads=2` or they run out of memory. In `--release`, `bpe-runtime`'s
-  `pushing_an_earlier_step_panics_in_debug` always fails (it is debug-only).
+- Tests: `cargo test --workspace -- --test-threads=2` (what CI runs; more threads run the picture tests out of
+  memory). A cold run takes about half an hour, so run it in the background. In `--release`, `bpe-runtime`'s
+  `pushing_an_earlier_step_panics_in_debug` always fails (it is debug-only), and a few sound tests check speed
+  against real time, so CI runs only the goldens in release.
 - **Picture tests need a graphics device.** Every test that draws gets it from `bpe_gfx::test_device()`, which fails
   the test when there is none (install `mesa-vulkan-drivers`). Set `BPE_SKIP_GPU_TESTS=1` only to skip them on
   purpose. New picture tests use `test_device()`, never `headless_device()`.

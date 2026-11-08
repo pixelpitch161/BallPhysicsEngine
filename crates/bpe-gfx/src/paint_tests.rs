@@ -3,21 +3,12 @@
 use crate::{Frame, LookInstance, PaintGpu, Renderer, ShapeInstance};
 use bpe_core::{Color, GapBlend, Gradient, Stop};
 
-/// A device on the first adapter, naming it so a run shows which GPU drew; `None` without one.
+/// A device for the picture tests (see [`crate::test_device`]), naming the adapter so a run shows which GPU drew;
+/// `None` only when skipping without a GPU was asked for.
 pub(crate) fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-    let Ok(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        ..Default::default()
-    })) else {
-        eprintln!("no GPU adapter available, skipping");
-        return None;
-    };
-    println!("adapter: {}", adapter.get_info().name);
-    pollster::block_on(
-        adapter.request_device(&wgpu::DeviceDescriptor { label: Some("paint tests"), ..Default::default() }),
-    )
-    .ok()
+    let (device, queue) = crate::test_device().ok()?;
+    println!("adapter: {:?}", device.adapter_info().name);
+    Some((device, queue))
 }
 
 fn red_blue_steps() -> Gradient {
