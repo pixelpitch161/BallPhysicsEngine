@@ -225,6 +225,23 @@ fn glass_of(id: i32, ip: vec2<i32>) -> vec3<f32> {
     return vec3<f32>(max(sf.e.w, BENDS_FROM), max(sf.c.x, 0.0), max(sf.e.x, 0.0));
 }
 
+// Glass and light part 4b: what a dichroic surface `id` lets through of light meeting it going
+// `dir` against `facing` (1 for free glass or a surface that isn't dichroic).
+fn dichroic_into(id: i32, dir: vec2<f32>, facing: vec2<f32>) -> vec3<f32> {
+    if id == FREE_BENDER || id < 0 || u32(id) >= u32(st.more.z) {
+        return vec3<f32>(1.0);
+    }
+    return dichroic_through(surfaces[u32(id)].g, abs(dot(dir, facing)));
+}
+
+// The colour light thrown off mirror `id` takes (part 4b): the opposite hue where it's dichroic.
+fn dichroic_off(id: i32, dir: vec2<f32>, facing: vec2<f32>) -> vec3<f32> {
+    if id < 0 || u32(id) >= u32(st.more.z) {
+        return vec3<f32>(1.0);
+    }
+    return dichroic_back(surfaces[u32(id)].g, abs(dot(dir, facing)), 1.0);
+}
+
 // How soft light `l`'s shadows are: half its lamp's width (a sun's: the tangent of half its
 // angle), 0 unless shadows are soft.
 fn lamp_soft(l: LightGpu) -> f32 {
@@ -531,6 +548,10 @@ fn cs_bent(@builtin(global_invocation_id) gid: vec3<u32>) {
                 // What the glass lets through, in its colour (part 1), less what its edge reflects.
                 power *= (1.0 - clamp(glass_block, 0.0, 1.0)) * glass_col
                     * passes_edge(dir, normalize(bent), facing, eta, next_eta);
+                if c >= 0 {
+                    // Straight into other glass: a dichroic one colours it on the way in.
+                    power *= dichroic_into(c, dir, facing);
+                }
                 dir = frosted(normalize(bent), frost, k, i);
                 if !drawn && medium == own {
                     drawn = true;
@@ -653,6 +674,7 @@ fn cs_bent(@builtin(global_invocation_id) gid: vec3<u32>) {
                     }
                     key = path_key(path_key(key, 400 + tid), 300 + tile);
                     BLUR = vec3<f32>(leg_blur(s), s, BLUR.z + max(e.b.w, 0.0));
+                    power *= dichroic_off(tid, dir, facing);
                     dir = normalize(reflect(dir, facing));
                     power *= max(e.b.rgb, vec3<f32>(0.0)) * max(bu.extra.x, 0.0);
                     drawn = true;
@@ -697,7 +719,8 @@ fn cs_bent(@builtin(global_invocation_id) gid: vec3<u32>) {
                 }
                 key = path_key(key, c);
                 if dot(bent, bent) > 1e-8 {
-                    power *= passes_edge(dir, normalize(bent), facing, eta, next_eta);
+                    power *= passes_edge(dir, normalize(bent), facing, eta, next_eta)
+                        * dichroic_into(c, dir, facing);
                     dir = frosted(normalize(bent), g.z, k, i);
                 }
                 medium = c;

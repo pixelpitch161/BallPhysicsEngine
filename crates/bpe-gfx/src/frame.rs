@@ -1147,6 +1147,12 @@ pub struct LightingGpu {
     /// (how wide each photon's line is splatted), part 4a's Mirror light (how much the light
     /// mirrors throw is), one spare.
     pub bent: [f32; 4],
+    /// Glass and light part 4b, rainbows in rain: Rainbow (0 none), Rainbow size (world units: the
+    /// 42° bow's radius), Second bow, Dark band.
+    pub rainbow: [f32; 4],
+    /// Where the bow's middle is (world xy) and 1 when set by hand (else the renderer puts it
+    /// opposite the brightest sun); one spare.
+    pub rainbow_at: [f32; 4],
 }
 
 /// How a surface takes light (`SurfaceGpu` in lighting.wgsl): an entry of
@@ -1169,6 +1175,8 @@ pub struct SurfaceGpu {
     pub e: [f32; 4],
     /// Glass and light part 4a: throws light, facets (0 smooth), facet gaps, 0.
     pub f: [f32; 4],
+    /// Part 4b: Dichroic, Dichroic shift and Dichroic hue (both in turns), Fire.
+    pub g: [f32; 4],
 }
 
 impl SurfaceGpu {
@@ -1184,6 +1192,7 @@ impl SurfaceGpu {
         d: [0.0; 4],
         e: [0.0, 0.0, 0.0, 1.0],
         f: [0.0; 4],
+        g: [0.0; 4],
     };
     /// Added to a record's surface index (`LayerGpu::light[3]`) when the surface is see-through:
     /// the behind picture leaves such records out (see [`LightScene::refracts`]). Every other
@@ -1262,6 +1271,11 @@ pub struct LightScene {
     pub uv: bool,
     /// Whether any layer catches the light in the air (smoke).
     pub smoke: bool,
+    /// Whether any layer makes rainbows (rain, glass and light part 4b).
+    pub rain: bool,
+    /// The light probe's scene (glass and light part 4b): lasers pass dichroic glass as plain glass,
+    /// so the probe's light stays as before dichroic glass.
+    pub plain_glass: bool,
     /// The things lights light up or leave out (Lights up), by link number; each light names a
     /// run of them (`LightGpu::p10`).
     pub links: Vec<f32>,
@@ -1378,6 +1392,28 @@ impl Bender {
 /// The least Bends light that bends (glass and light part 3): 1 is straight through.
 pub const BENDS_FROM: f32 = 1.0001;
 
+/// A trail's or particle's `extra[2]` (glass and light part 4b): Catches beams alone, exactly, or,
+/// when the layer makes rainbows (`makes` above 0), `−(round(makes × 255) + 256 × round(catches ×
+/// 64))`, a whole number sprites.wgsl's and scene.wgsl's `tag_catch`/`tag_rain` read back.
+pub fn pack_tags(catches: f32, makes: f32) -> f32 {
+    let catches = if catches.is_finite() { catches.max(0.0) } else { 0.0 };
+    let m = if makes.is_finite() { (makes.clamp(0.0, 1.0) * 255.0).round() } else { 0.0 };
+    if m < 1.0 {
+        return catches;
+    }
+    -(m + 256.0 * (catches * 64.0).round().min(65535.0))
+}
+
+/// What [`pack_tags`] packed: Catches beams and Makes rainbows.
+pub fn tag_parts(z: f32) -> (f32, f32) {
+    if z >= 0.0 || !z.is_finite() {
+        return (z.max(0.0), 0.0);
+    }
+    let v = -z;
+    let hi = (v / 256.0).floor();
+    (hi / 64.0, (v - 256.0 * hi) / 255.0)
+}
+
 impl LightScene {
     /// Whether a light is ultraviolet.
     pub fn has_uv_light(&self) -> bool {
@@ -1386,7 +1422,7 @@ impl LightScene {
 
     /// Whether the frame needs its tags picture (smoke, Lights up): drawn in light pass 6.
     pub fn needs_tags(&self) -> bool {
-        self.smoke || self.lights.iter().any(|l| l.p10[0] > 0.5)
+        self.smoke || self.lights.iter().any(|l| l.p10[0] > 0.5) || self.rainbows_in_rain()
     }
 
     /// Whether `frame` is drawn once more as the tint picture (light pass 8, glass and light part
@@ -1394,6 +1430,12 @@ impl LightScene {
     /// something drawn is see-through.
     pub fn needs_tint(&self, frame: &Frame) -> bool {
         self.settings.glass_colour() && (!self.lights.is_empty() || self.glows) && frame.see_through_blockers()
+    }
+
+    /// Whether rain shows a rainbow: Rainbow is on and something makes rainbows (the tags
+    /// picture's B).
+    pub fn rainbows_in_rain(&self) -> bool {
+        self.rain && self.settings.rainbow[0] > 0.0
     }
 
     /// Whether the frame needs its UV picture: drawn in light pass 5.

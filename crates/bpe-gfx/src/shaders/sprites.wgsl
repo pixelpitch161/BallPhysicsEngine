@@ -68,10 +68,29 @@ fn light_extra(c: vec4<f32>, extra: vec4<f32>) -> vec4<f32> {
     }
     let a = clamp(c.a, 0.0, 1.0);
     // As scene.wgsl's hard_tags: beams soft, the link number whole where it covers half or more.
+    // Catches beams and (part 4b, B) how much it makes rainbows, both packed in z (scene.wgsl's
+    // tag_catch/tag_rain).
+    let catch_ = sprite_tag_catch(extra.z) * a;
+    let rain = sprite_tag_rain(extra.z) * a;
     if a < 0.5 {
-        return vec4<f32>(max(extra.z, 0.0) * a, 0.0, 0.0, 0.0);
+        return vec4<f32>(catch_, 0.0, rain, 0.0);
     }
-    return vec4<f32>(max(extra.z, 0.0) * a, extra.w, 0.0, 1.0);
+    return vec4<f32>(catch_, extra.w, rain, 1.0);
+}
+
+fn sprite_tag_catch(z: f32) -> f32 {
+    if z >= 0.0 {
+        return z;
+    }
+    return floor(-z / 256.0) / 64.0;
+}
+
+fn sprite_tag_rain(z: f32) -> f32 {
+    if z >= 0.0 {
+        return 0.0;
+    }
+    let v = -z;
+    return (v - 256.0 * floor(v / 256.0)) / 255.0;
 }
 
 const SPARKS: u32 = 0u;

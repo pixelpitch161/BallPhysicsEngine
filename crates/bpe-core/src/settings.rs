@@ -102,6 +102,7 @@ pub const SECTION_ORDER: &[&str] = &[
     "Balls and shapes",
     "Heat",
     "Underwater",
+    "Rainbow",
     "Glow in the dark",
     "Quality",
     "Scenes",

@@ -154,7 +154,7 @@ fn traced(scene: &Scene, from: Vec2, dir: Vec2) -> laser::Split {
     let scenery = laser::scenery(world);
     let solid: Vec<ThingId> = world.walls.iter().filter(|(_, w)| w.solid).map(|(id, _)| *id).collect();
     let meets = move |thing: ThingId, _: bool| {
-        if solid.contains(&thing) { Meets::Bend { index: INDEX, rainbow: RAINBOW } } else { Meets::Pass }
+        if solid.contains(&thing) { Meets::bend(INDEX, RAINBOW) } else { Meets::Pass }
     };
     laser::trace_split(&scenery, from, dir, 1400.0, 8, None, &meets, 12, laser::MOST_BEAM_SEGMENTS)
 }

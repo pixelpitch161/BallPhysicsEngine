@@ -319,7 +319,7 @@ impl Lamps {
             };
         };
         let settings = LightingSettings::from_params(&card.params).gpu(None);
-        let mut scene_lights = LightScene { settings, ..Default::default() };
+        let mut scene_lights = LightScene { settings, plain_glass: true, ..Default::default() };
         let mut lamps = Vec::new();
         let mut strength = BTreeMap::new();
         let mut places_of = BTreeMap::new();

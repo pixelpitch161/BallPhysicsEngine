@@ -324,7 +324,22 @@ round, fading over Carries and leaking at corners past the critical angle, and p
 shadowless strip lights (`PIPE_GAIN` 4); never in the probe. Tests `bpe-kit/tests/mirror_light_pictures.rs`, bake
 `a_mirror_throws_light_in_the_bake`.
 
-Designed, not built yet: part 4b (Dichroic, Diamond fire, rainbows in rain).
+Part 4b is in (plan `part4.md`, "As built (4b)" at its end): **dichroic glass, diamond fire, rainbows**. Surface
+gains **Dichroic** (`dichroic`), **Dichroic shift**/**hue** (degrees, default 120/190) and **Fire** (`fire`); presets set
+Dichroic and Fire to 0 (`SurfaceGpu.g` = [d, shift/360, hue/360, fire]; `bpe_gfx::dichroic::Dichroic` the Rust twin of
+lighting.wgsl's `dichroic_hue/through/back`: hue `hue + shift (1 − |cos|)`, T = mix(1, hue, d), R = d (1 − hue)). It
+acts in `shade` (F0 and a 0.35 share of the diffuse × the opposite hue, `through` × T), `transmitted`'s tint, Flat
+shadows (`march` × T per see-through stretch through `dichroic_entering`, reading the main `Uniform.dichroic` list of
+16, count `u.bent.y`, since fs_direct has no group 2), photons (`cs_bent` `dichroic_into`/`dichroic_off`), Stage sphere
+caustics (`caustic_glass`, folded at `SPHERE_COS`) and lasers (`Meets::Bend { .., dichroic }`, `trace_split` splits at
+dichroic glass into the colours × T plus `Colour { reflected: true }` × R). Fire: a spectral highlight in `shade` (3 to
+7 wavelengths, tilted normals) and star glints after a hit (`balls/draw.rs::fire_glints`, `GLINT_SECONDS` 0.6, lit
+frames only). The Lighting card's **Rainbow** group (Rainbow, Rainbow centre Opposite the sun / A point, Centre,
+Rainbow size, Second bow, Dark band; `LightingGpu.rainbow/rainbow_at`, `GlowUniform` the same, `lighting::rainbow_centre`)
+draws `rainbow_bow` in `lit_at` × the light there × what catches it: haze thickness plus the tags picture's B, written
+by layers whose Lighting fold has **Makes rainbows** (`makes_rainbows` on AroundLit/ParticlesLit; packed into
+`extra.z` by `bpe_gfx::pack_tags`, read by `tag_catch`/`tag_rain`; `LightScene.rain`). All off: byte-identical.
+`tests/wild_glass_pictures.rs`.
 
 ## Rules (spec `docs/superpowers/specs/2026-11-06-rules-design.md`, plans `docs/superpowers/plans/rules/`)
 

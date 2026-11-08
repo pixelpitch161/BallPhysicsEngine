@@ -137,7 +137,8 @@ fn light_piece(piece: Piece, l: LayerGpu, hit: vec4<f32>) -> Piece {
             out.c_out = piece.c_out * max(l.more.x, 0.0);
             return out;
         }
-        let tag = vec3<f32>(max(l.more.z, 0.0), l.more.w, 0.0);
+        // Catches beams and (part 4b, mini balls) how much it makes rainbows, packed in z.
+        let tag = vec3<f32>(tag_catch(l.more.z), l.more.w, tag_rain(l.more.z));
         out.c_in = tag;
         out.c_out = tag;
         return out;

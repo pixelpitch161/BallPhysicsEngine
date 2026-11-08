@@ -71,6 +71,66 @@ fn last_hits_but(cx: &DrawCx, count: usize, memory: f32, skip: &dyn Fn(&Event, u
     }
     last
 }
+/// How long a ball's star glints from Diamond fire last after a hit (glass and light part 4b).
+pub const GLINT_SECONDS: f32 = 0.6;
+
+/// A number in 0 to 1 from three, the same everywhere.
+fn glint_dice(a: u32, b: u32, c: u32) -> f32 {
+    let mut h = a.wrapping_mul(0x9E37_79B1) ^ b.wrapping_mul(0x85EB_CA77) ^ c.wrapping_mul(0xC2B2_AE3D);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2C1B_3C6D);
+    h ^= h >> 12;
+    h = h.wrapping_mul(0x297A_2D39);
+    h ^= h >> 15;
+    (h >> 8) as f32 / (1u32 << 24) as f32
+}
+
+/// Diamond fire's star glints (glass and light part 4b): in a lit scene, each ball whose surface
+/// has Fire above 0 and was hit in the last [`GLINT_SECONDS`] flashes `1 + round(2 Fire)` stars
+/// round its upper left, where its shine sits, placed by its number and the hit (the same hit
+/// always glints in the same places), fading out, in its colour mixed half to white.
+pub fn fire_glints(cx: &DrawCx, frame: &mut Frame) {
+    use crate::modules::look::surface;
+    // Lit by the scene's Lighting card (not `frame.light`: a ball drawn into a layer frame, for
+    // its Z-order or Blend, has none there).
+    if !cx.tree.things.get(&ThingId::ROOT).is_some_and(|r| r.slots.contains_key(&SlotId::Lighting)) {
+        return;
+    }
+    let Some(look) = cx.resolved.slots.get(&SlotId::Look).filter(|l| surface::has_surface(&l.kind)) else { return };
+    let fire = surface::of_card(look).fire;
+    if !(fire.is_finite() && fire > 0.0) {
+        return;
+    }
+    let fire = fire.min(1.0);
+    let Some(bodies) = cx.world.bodies.get(&cx.thing.id) else { return };
+    let last = last_hits(cx, bodies.len(), GLINT_SECONDS);
+    let colours = ball_colors(cx);
+    let count = 1 + (2.0 * fire).round() as u32;
+    let rate = cx.world.steps_per_second as f64;
+    for (i, &(age, strength)) in last.iter().enumerate() {
+        if age.is_nan() || age >= GLINT_SECONDS || !bodies.alive.get(i).copied().unwrap_or(false) {
+            continue;
+        }
+        let (centre, radius) = (bodies.position[i], bodies.radius[i]);
+        let hit_step = ((cx.time - age as f64) * rate).round() as u32;
+        let c = colours.as_ref().map_or([1.0; 4], |f| f(i));
+        let colour = [0.5 + 0.5 * c[0].max(0.0), 0.5 + 0.5 * c[1].max(0.0), 0.5 + 0.5 * c[2].max(0.0)];
+        let fade = (1.0 - age / GLINT_SECONDS).powi(2);
+        let half = radius * 0.45 * fire * (0.6 + 0.4 * strength.min(1.0));
+        for k in 0..count {
+            let seed = cx.thing.id.0.wrapping_mul(7919) ^ i as u32;
+            let a = std::f32::consts::TAU * (0.5 + 0.25 * glint_dice(seed, hit_step, 2 * k));
+            let r = radius * (0.35 + 0.5 * glint_dice(seed, hit_step, 2 * k + 1));
+            let at = centre + glam::Vec2::from_angle(a) * r;
+            let turn = std::f32::consts::FRAC_PI_4 * glint_dice(seed, hit_step, 100 + k);
+            let alpha = fire * fade;
+            let mut star = bpe_gfx::Particle::new(3, at, turn, half, [colour[0], colour[1], colour[2], -alpha]);
+            star.style[2] = 0.0;
+            frame.particles_front.push(star);
+        }
+    }
+}
+
 /// How far back hits are listed for particles and shaders, in seconds.
 pub const HIT_MEMORY: f64 = 3.0;
 
@@ -401,6 +461,7 @@ impl ThingDraw for BallsDraw {
         let Some(worn) = Worn::of(cx) else { return };
         let part = worn.base().split().unwrap_or(0);
         draw_part(cx, frame, &worn, part);
+        fire_glints(cx, frame);
     }
 
     /// The layers above the Blend layer, painted normally over the blended rest.
@@ -1376,6 +1437,66 @@ mod tests {
         assert_eq!(at(0.0), pink);
         let half = crate::modules::look::basic::shift_linear_hue(pink, 0.5);
         assert_eq!(bpe_core::Color::from_linear(at(1.0)), bpe_core::Color::from_linear(half));
+    }
+
+    #[test]
+    fn diamond_fire_flashes_star_glints_after_a_hit_that_fade() {
+        let (mut scene, _, kit) = crate::testing::one_ball_with_bounce(|_| {});
+        let stars = |frame: &Frame| -> Vec<f32> {
+            frame.particles_front.iter().filter(|p| p.shape[0] == 3 && p.color[3] < 0.0).map(|p| -p.color[3]).collect()
+        };
+        // A hit with no other one on the ball for the glints' time after it.
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let mut playback = bpe_runtime::Playback::new(&scene, &resolved, kit.sims.clone());
+        playback.seek(8.0);
+        let rate = playback.world().steps_per_second;
+        let times: Vec<f64> = playback
+            .log()
+            .events()
+            .iter()
+            .filter(|e| {
+                e.kind == bpe_runtime::EventKind::Hit && (e.a.thing == BALL || e.b.is_some_and(|b| b.thing == BALL))
+            })
+            .map(|e| e.time(rate))
+            .collect();
+        let alone = times
+            .iter()
+            .enumerate()
+            .find(|(k, t)| times.get(k + 1).is_none_or(|n| *n > **t + 0.7) && (*k == 0 || times[k - 1] < **t - 0.7))
+            .map(|(_, t)| *t)
+            .expect("a hit on its own");
+        let frame_at = |scene: &Scene, t: f64| {
+            let resolved = bpe_core::resolve(scene, &kit.registry);
+            let mut playback = bpe_runtime::Playback::new(scene, &resolved, kit.sims.clone());
+            playback.seek(t);
+            let mut frame = Frame::default();
+            build_frame(scene, &resolved, playback.world(), playback.log(), t, &kit.draws, &mut frame);
+            frame
+        };
+        scene.card_mut(BALL, SlotId::Look).unwrap().params.set("fire", bpe_core::Value::Number(1.0));
+        // Unlit, no glints.
+        assert!(stars(&frame_at(&scene, alone + 0.05)).is_empty());
+        crate::things::light::add_light(
+            &mut scene,
+            &kit.registry,
+            crate::things::light::LightType::Point,
+            ThingId::ROOT,
+        )
+        .unwrap();
+        let soon = stars(&frame_at(&scene, alone + 0.05));
+        assert_eq!(soon.len(), 3, "Fire 1 glints three stars");
+        let later = stars(&frame_at(&scene, alone + 0.4));
+        assert_eq!(later.len(), 3);
+        assert!(later[0] < soon[0], "they fade: {later:?} after {soon:?}");
+        assert!(stars(&frame_at(&scene, alone + 0.65)).is_empty(), "gone after {} s", super::GLINT_SECONDS);
+        // The same hit glints in the same places every time it is drawn.
+        let again = frame_at(&scene, alone + 0.05);
+        let first = frame_at(&scene, alone + 0.05);
+        let places = |f: &Frame| f.particles_front.iter().map(|p| p.place).collect::<Vec<_>>();
+        assert_eq!(places(&again), places(&first));
+        // Fire 0: none.
+        scene.card_mut(BALL, SlotId::Look).unwrap().params.set("fire", bpe_core::Value::Number(0.0));
+        assert!(stars(&frame_at(&scene, alone + 0.05)).is_empty());
     }
 
     #[test]

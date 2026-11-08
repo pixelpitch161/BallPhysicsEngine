@@ -106,7 +106,24 @@ fn light_extra(c: vec4<f32>, extra: vec4<f32>) -> vec4<f32> {
         return vec4<f32>(0.0);
     }
     let a = clamp(c.a, 0.0, 1.0);
-    return hard_tags(vec4<f32>(max(extra.z, 0.0) * a, extra.w * a, 0.0, a));
+    return hard_tags(vec4<f32>(tag_catch(extra.z) * a, extra.w * a, tag_rain(extra.z) * a, a));
+}
+
+// A trail's or particle's `extra.z` (glass and light part 4b, frame.rs's `pack_tags`): Catches
+// beams, and how much it makes rainbows, packed as a negative whole number when it does.
+fn tag_catch(z: f32) -> f32 {
+    if z >= 0.0 {
+        return z;
+    }
+    return floor(-z / 256.0) / 64.0;
+}
+
+fn tag_rain(z: f32) -> f32 {
+    if z >= 0.0 {
+        return 0.0;
+    }
+    let v = -z;
+    return (v - 256.0 * floor(v / 256.0)) / 255.0;
 }
 
 // The tags pass's output (`t` premultiplied by cover): what catches beams adds up softly, while
@@ -116,10 +133,11 @@ fn hard_tags(t: vec4<f32>) -> vec4<f32> {
     if g.light.x < 5.5 || g.light.x > 6.5 {
         return t;
     }
+    // B: how much it makes rainbows (part 4b), soft like the beams.
     if t.a < 0.5 {
-        return vec4<f32>(t.r, 0.0, 0.0, 0.0);
+        return vec4<f32>(t.r, 0.0, t.b, 0.0);
     }
-    return vec4<f32>(t.r, t.g / t.a, 0.0, 1.0);
+    return vec4<f32>(t.r, t.g / t.a, t.b, 1.0);
 }
 
 // The camera (centre xy, zoom, turn) turns a world point into screen units; with no camera
