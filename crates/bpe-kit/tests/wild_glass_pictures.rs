@@ -399,3 +399,36 @@ fn rain_that_makes_rainbows_shows_the_bow() {
     let (d, w) = (rgb(&dry, 300.0, -600.0), rgb(&wet, 300.0, -600.0));
     assert!((0..3).all(|c| (w[c] - d[c]).abs() < 0.005), "{w:?} against {d:?}");
 }
+
+#[test]
+fn a_dichroic_mirror_throws_the_opposite_hue() {
+    let Some(mut gpu) = gpu() else { return };
+    let reg = reg();
+    // The glass room's wall made a Chrome mirror 300 wide, lit from (-300, -400).
+    let mut scene = glass_room(&reg, false);
+    set_light(&mut scene, "position", Value::Vec2([-300.0, -400.0]));
+    let id = id_of(&scene, "shape");
+    scene.things.get_mut(&id).unwrap().params =
+        ShapeSettings { fill: ShapeFill::Filled, ..ShapeSettings::rectangle(300.0, 40.0, 2.0) }.to_params();
+    set_surface(&mut scene, id, SurfaceKind::Chrome);
+    let mut off = scene.clone();
+    set_look(&mut off, id, "throws", Value::Number(0.0));
+    let none = draw_as(&mut gpu, &off, "mirror-off", LightShow::LightOnly);
+    let white = draw_as(&mut gpu, &scene, "mirror-white", LightShow::LightOnly);
+    // Cyan goes through, so red is thrown.
+    let red = draw_as(&mut gpu, &dichroic(&scene, "shape", 1.0, 180.0, 0.0), "mirror-red", LightShow::LightOnly);
+    // Places the reflection off the wall's middle reaches (the lamp's image is at (-300, 360)).
+    for (x, y) in [(200.0, -400.0), (300.0, -600.0), (250.0, -500.0)] {
+        let (n, w, r) = (rgb(&none, x, y), rgb(&white, x, y), rgb(&red, x, y));
+        let thrown_white = [w[0] - n[0], w[1] - n[1], w[2] - n[2]];
+        let thrown_red = [r[0] - n[0], r[1] - n[1], r[2] - n[2]];
+        assert!(
+            thrown_white[0] > 0.01 && thrown_white[2] > 0.5 * thrown_white[0],
+            "white thrown at ({x}, {y}): {thrown_white:?}"
+        );
+        assert!(
+            thrown_red[0] > 0.5 * thrown_white[0] && thrown_red[2].abs() < 0.2 * thrown_red[0],
+            "red thrown at ({x}, {y}): {thrown_red:?} against white {thrown_white:?}"
+        );
+    }
+}

@@ -69,7 +69,10 @@ pub fn dichroic_list(surfaces: &[SurfaceGpu]) -> ([[f32; 4]; MOST_DICHROIC], usi
         if n == MOST_DICHROIC {
             break;
         }
-        if s.g[0] > 0.0 && s.g.iter().take(3).all(|v| v.is_finite()) {
+        // Only see-through ones colour a shadow (bending glass is solid to the march: its
+        // photons carry the colour).
+        let bends = s.e[3] > crate::BENDS_FROM && s.e[3].is_finite();
+        if s.g[0] > 0.0 && s.a[3] > 0.0 && !bends && s.g.iter().take(3).all(|v| v.is_finite()) {
             out[n] = [i as f32, s.g[0].min(1.0), s.g[1], s.g[2]];
             n += 1;
         }
@@ -2058,6 +2061,11 @@ mod grid_tests {
         let (_, n) = dichroic_list(&[plain; 3]);
         assert_eq!(n, 0);
         plain.g = [0.6, 0.25, 0.5, 0.0];
+        assert_eq!(dichroic_list(&[plain; 3]).1, 0, "an opaque one colours no shadow");
+        plain.a[3] = 0.5;
+        let mut bending = plain;
+        bending.e[3] = 1.5;
+        assert_eq!(dichroic_list(&[bending; 3]).1, 0, "nor does glass that bends (its photons do)");
         let (list, n) = dichroic_list(&[SurfaceGpu::MATTE, SurfaceGpu::MATTE, plain]);
         assert_eq!(n, 1);
         assert_eq!(list[0], [2.0, 0.6, 0.25, 0.5]);

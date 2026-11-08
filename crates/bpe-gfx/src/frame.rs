@@ -1271,6 +1271,9 @@ pub struct LightScene {
     pub smoke: bool,
     /// Whether any layer makes rainbows (rain, glass and light part 4b).
     pub rain: bool,
+    /// The light probe's scene (glass and light part 4b): lasers pass dichroic glass as plain glass,
+    /// so the probe's light stays as before dichroic glass.
+    pub plain_glass: bool,
     /// The things lights light up or leave out (Lights up), by link number; each light names a
     /// run of them (`LightGpu::p10`).
     pub links: Vec<f32>,

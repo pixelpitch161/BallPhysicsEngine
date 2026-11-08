@@ -383,6 +383,14 @@ Harness as `bent_light_pictures.rs` (270 × 480, Light only, linear light).
   `tests/wild_glass_pictures.rs` (Dichroic 0/Fire 0/Rainbow 0 unchanged, a dichroic wall's blue shadow, bending
   dichroic glass carrying red light, a dichroic ball's red shine, Fire colouring a highlight, the bow red outside
   violet at its size in haze, rain that makes rainbows).
-- Known limits as decision 8, and: lasers don't take a dichroic mirror's colour (only see-through glass is `Bend`);
-  the dichroic list holds 16 surfaces (later ones shadow as plain see-through); free glass (bubbles, liquid) isn't
-  dichroic.
+- Review fixes: star glints ask the scene for its Lighting card (a ball drawn into a layer frame for its Z-order or
+  Blend has no `frame.light`); `shines` counts Dichroic, so a Matte dichroic surface takes its sheen in Flat; the
+  rainbow's outer glow fades out from 60° to the 75° cut; Fire and the plain highlight share one `ggx` call site (the
+  plain one the loop's last); `dichroic_list` takes only see-through surfaces that don't bend; the light probe's
+  `LightScene.plain_glass` makes lasers pass dichroic glass as plain glass (decision 7); a test checks a dichroic
+  mirror throwing the opposite hue; "Rainbow" is a settings section (`SECTION_ORDER`).
+- Known limits as decision 8, and: lasers don't take a dichroic mirror's colour, and dichroic glass that doesn't bend
+  (Bends light 1) doesn't split a laser (only see-through glass that bends is `Bend`); a rainbow-split glass after a
+  dichroic split doesn't split by colour again; the dichroic list holds 16 surfaces (later ones shadow as plain
+  see-through); free glass (bubbles, liquid) isn't dichroic; shapes take no star glints (Fire's spectral highlight
+  only); with Makes rainbows on, Catches beams is kept to 1/64.

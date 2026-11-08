@@ -2790,25 +2790,36 @@ fn shade(spot: Spot, p: vec2<f32>, sf: SurfaceGpu, base: vec3<f32>, here: f32, l
                     let ax = clamp(rough * rough + 0.5 * max(angular, 0.02), 0.002, 1.0);
                     let ay = min(ax * (1.0 + 6.0 * brush), 1.0);
                     sp = ggx_aniso(n, v, dir3, tangent, ax, ay, rough, f0) * lines;
-                } else if fire > 0.0 {
+                } else {
                     // Part 4b, diamond fire: the highlight split into 3 to 7 colours, each bent a
-                    // little its own way across the light.
-                    let plain = ggx(n, v, dir3, rough, f0, angular);
+                    // little its own way across the light, mixed over the plain one (the last of
+                    // the loop, so `ggx` has one call site here; without Fire the loop is it).
+                    let k = select(0u, 3u + u32(round(4.0 * fire)), fire > 0.0);
                     let across = cross(n, dir3);
                     let t3 = select(vec3<f32>(1.0, 0.0, 0.0), normalize(across), dot(across, across) > 1e-8);
-                    let k = 3u + u32(round(4.0 * fire));
+                    var plain = vec3<f32>(0.0);
                     var glints = vec3<f32>(0.0);
                     var sum = vec3<f32>(0.0);
-                    for (var j = 0u; j < k; j++) {
-                        let w = (f32(j) + 0.5) / f32(k) * 2.0 - 1.0;
-                        let c = spectral(w);
-                        let nj = normalize(n + t3 * (w * 0.12 * fire));
-                        glints += c * ggx(nj, v, dir3, rough, f0, angular);
-                        sum += c;
+                    for (var j = 0u; j <= k; j++) {
+                        var nj = n;
+                        var c = vec3<f32>(0.0);
+                        if j < k {
+                            let w = (f32(j) + 0.5) / f32(k) * 2.0 - 1.0;
+                            c = spectral(w);
+                            nj = normalize(n + t3 * (w * 0.12 * fire));
+                        }
+                        let g = ggx(nj, v, dir3, rough, f0, angular);
+                        if j < k {
+                            glints += c * g;
+                            sum += c;
+                        } else {
+                            plain = g;
+                        }
                     }
-                    sp = mix(plain, glints / max(sum, vec3<f32>(1e-4)) * (1.0 + 2.0 * fire), fire);
-                } else {
-                    sp = ggx(n, v, dir3, rough, f0, angular);
+                    sp = plain;
+                    if k > 0u {
+                        sp = mix(plain, glints / max(sum, vec3<f32>(1e-4)) * (1.0 + 2.0 * fire), fire);
+                    }
                 }
                 if coat > 0.0 {
                     sp = sp * (1.0 - 0.04 * coat) + ggx(n, v, dir3, 0.05, vec3<f32>(0.04), angular) * coat;
@@ -3164,7 +3175,7 @@ fn shine_share(c: vec3<f32>, w: vec3<f32>) -> f32 {
 // Whether surface `sf` takes light other than as a matte sheet does.
 fn shines(sf: SurfaceGpu) -> bool {
     return sf.b.x > 0.0 || sf.a.y > 0.0 || sf.a.z > 0.0 || sf.a.w > 0.0 || sf.b.y > 0.5
-        || sf.c.y > 0.0 || sf.c.z > 0.0 || sf.c.w > 0.0 || sf.e.y > 0.0 || sf.e.z > 0.0;
+        || sf.c.y > 0.0 || sf.c.z > 0.0 || sf.c.w > 0.0 || sf.e.y > 0.0 || sf.e.z > 0.0 || sf.g.x > 0.0;
 }
 
 // Part 2a's light at a pixel: the thing's surface (shiny, or on the stage) and, in Stage, the
@@ -3356,10 +3367,11 @@ fn rainbow_bow(p: vec2<f32>) -> vec3<f32> {
         let dp = (theta - tp) / 0.6;
         let ds = (theta - ts) / 0.9;
         let peak = exp(-0.5 * dp * dp) + second * exp(-0.5 * ds * ds);
-        let inside = smoothstep(tp + 0.6, tp - 0.6, theta);
+        let inside = 1.0 - smoothstep(tp - 0.6, tp + 0.6, theta);
         let outside = smoothstep(ts - 0.9, ts + 0.9, theta);
         let near = min(abs(theta - tp), abs(theta - ts));
-        let glow = 0.25 * exp(-near / 12.0)
+        // The glow fades out before the cut at 75°, so there is no edge.
+        let glow = 0.25 * exp(-near / 12.0) * (1.0 - smoothstep(60.0, 75.0, theta))
             * (inside + (1.0 - dark) * (1.0 - inside) * (1.0 - outside) + second * outside);
         let c = spectral(w);
         sum += c * (peak + glow);

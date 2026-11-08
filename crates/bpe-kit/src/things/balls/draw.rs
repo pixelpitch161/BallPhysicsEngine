@@ -85,13 +85,15 @@ fn glint_dice(a: u32, b: u32, c: u32) -> f32 {
     (h >> 8) as f32 / (1u32 << 24) as f32
 }
 
-/// Diamond fire's star glints (glass and light part 4b): in a lit frame, each ball whose surface
+/// Diamond fire's star glints (glass and light part 4b): in a lit scene, each ball whose surface
 /// has Fire above 0 and was hit in the last [`GLINT_SECONDS`] flashes `1 + round(2 Fire)` stars
 /// round its upper left, where its shine sits, placed by its number and the hit (the same hit
 /// always glints in the same places), fading out, in its colour mixed half to white.
 pub fn fire_glints(cx: &DrawCx, frame: &mut Frame) {
     use crate::modules::look::surface;
-    if frame.light.is_none() {
+    // Lit by the scene's Lighting card (not `frame.light`: a ball drawn into a layer frame, for
+    // its Z-order or Blend, has none there).
+    if !cx.tree.things.get(&ThingId::ROOT).is_some_and(|r| r.slots.contains_key(&SlotId::Lighting)) {
         return;
     }
     let Some(look) = cx.resolved.slots.get(&SlotId::Look).filter(|l| surface::has_surface(&l.kind)) else { return };

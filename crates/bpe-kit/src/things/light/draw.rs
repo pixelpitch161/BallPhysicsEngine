@@ -162,6 +162,7 @@ fn push_light(
         // Glass bends the beam through it (lighting part 2b's See-through and Bends light), unless
         // the beam is to stop there; its Rainbow split splits it into colours.
         // Which things are glass, read once (a beam of many rays meets them very often).
+        let plain_glass = scene.plain_glass;
         let mut glass_of = std::collections::HashMap::new();
         for thing in scenery.iter().flat_map(|s| s.things()) {
             glass_of.entry(thing).or_insert_with(|| {
@@ -175,9 +176,12 @@ fn push_light(
         let meets = |thing: ThingId, ball: bool| {
             let plain = if ball { balls } else { shapes };
             match glass_of.get(&thing).copied().flatten() {
-                Some(g) if plain != Meets::Stop => {
-                    Meets::Bend { index: g.index, rainbow: g.rainbow, dichroic: g.dichroic }
-                }
+                // The light probe sees dichroic glass as plain glass (part 4b, one-way).
+                Some(g) if plain != Meets::Stop => Meets::Bend {
+                    index: g.index,
+                    rainbow: g.rainbow,
+                    dichroic: if plain_glass { Default::default() } else { g.dichroic },
+                },
                 _ => plain,
             }
         };
