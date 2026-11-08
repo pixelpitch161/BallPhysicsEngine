@@ -231,3 +231,23 @@ Dependencies go bottom to top:
   48 kHz (`AUDIO_ARGS`); a scene without sound gets a silent track. Frames draw with `build_frame_with` and a
   `ControlSampler` when a setting follows sound. `--stems` and `--midi` (`ExportOptions`)
   save the stems and the MIDI file beside the video.
+
+## One wind (W13)
+
+Balls follow the scene's air: the Motion card's **Follow the air** (`follow_air`, group Air, per s; `BasicMotion::
+air_grip`, `ModuleSim::air_grip`/`air_key`) pulls each ball towards the air's velocity at its place,
+`v += (air − v)·(1 − e^(−grip·dt))`, after the Motion forces and before the Moths pull (`World::move_bodies`). The
+Motion card's Wind is labelled **Steady push** (same key, same maths). The air is the kit's (`bpe-kit/src/air.rs`);
+the runtime reaches it through `Sims.air` (`bpe_runtime::AirSim`, the kit's `KitAir`: wake, catch up, velocities).
+`bpe_runtime::air_felt(scene, sims)` says whether some enabled thing's Motion card follows the air (set, varied from
+0, keyed, pulsed, or the setting of an enabled rule's Change, via `BlockSim::changes`); it is read from the saved
+scene, so every world agrees (`World.air_felt`). Then each world wakes the air at build and, each step,
+`World::work_out_air` catches it up and reads it once per ball into `World.air_at`; `lone` keeps the ROOT state; the
+world senses the full animation (Air keys following sound or light); `fingerprint_of` hashes the Air card and its
+keys (and the full physics animation); a Particles thing whose Rise heats the air is not beside
+(`ThingSim::heats_air`). Nothing changes while no ball feels the air (no golden moved). A ball that stirs the air
+holds back the air round it, so with Balls stir at 1 it reaches about 73 % of the wind in a second
+(`air/follow_tests.rs`). The scene sim adds the ambient wind × dt to `Air.drift` each step (what haze With the air
+drifts by). `bpe_runtime::air_read` is air felt or a thing that `reads_air` (haze With the air): such worlds sense
+the Air keys and the fingerprint counts the Air card. Emitter Aim's test flights (`emitter/test_fire.rs`) have no
+air (a known gap). Tests: `bpe-kit/src/air/follow_tests.rs`.

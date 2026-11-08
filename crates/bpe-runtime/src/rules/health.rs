@@ -218,6 +218,15 @@ impl Health {
         self.things.get(&thing).map(|h| &h.card)
     }
 
+    /// `thing`'s card as a rule changed it (W13): what hits take, Least strength, Only hits from
+    /// and At zero from now on, and the starting health of balls new from now on. Health already
+    /// worked out stays as it is. Nothing for a thing without a Health card.
+    pub(crate) fn set_card(&mut self, thing: ThingId, card: HealthCard) {
+        if let Some(h) = self.things.get_mut(&thing) {
+            h.card = card;
+        }
+    }
+
     /// This stage's changes of health, in the order made.
     pub fn moments(&self) -> &[HealthMoment] {
         &self.moments

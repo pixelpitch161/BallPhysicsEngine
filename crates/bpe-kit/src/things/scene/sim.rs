@@ -3,7 +3,7 @@
 //! settings when the scene has an Air card (a sleeping [`crate::air::Air`]: a Particles thing that
 //! reads it wakes it).
 
-use bpe_core::{ResolvedThing, Settings, Thing, ThingId};
+use bpe_core::{ResolvedThing, Settings, SlotId, Thing, ThingId};
 use bpe_runtime::{ThingSim, World};
 
 use super::SceneSettings;
@@ -25,6 +25,29 @@ impl ThingSim for SceneSim {
         (world.beat_seconds, world.beats_in_bar) = (beat, per_bar);
         if let Some(spec) = crate::modules::air::spec_of(resolved) {
             world.states.insert(ThingId::ROOT, Box::new(crate::air::Air::new(spec)));
+        }
+    }
+
+    /// Haze that moves with the air drifts as far as the playback's air has carried it (W13): the
+    /// Air card and its keys then count in every world, so an edit of them starts the playback
+    /// again and the haze follows the wind as it is now.
+    fn reads_air(&self, resolved: &ResolvedThing) -> bool {
+        use crate::modules::lighting::{HazeMoves, LightingSettings};
+        resolved.slots.contains_key(&SlotId::Air)
+            && resolved
+                .slots
+                .get(&SlotId::Lighting)
+                .is_some_and(|l| LightingSettings::from_params(&l.params).haze_moves == HazeMoves::WithTheAir)
+    }
+
+    /// The wind carries the air on: what moving haze drifts by (W13). Cheap, and never physics.
+    fn after_step(&self, _thing: ThingId, world: &mut World, _log: &mut bpe_runtime::Log) {
+        let (time, dt) = (world.time() as f32, world.sim_dt());
+        if let Some(air) = crate::air::air_mut(world) {
+            let carried = air.spec.ambient(glam::Vec2::ZERO, time) * dt;
+            if carried.is_finite() {
+                air.drift += carried;
+            }
         }
     }
 

@@ -91,3 +91,13 @@ The editor's sound panels are in `editor.md`; the design is `docs/superpowers/sp
   and the world at a moment (`bpe_dsp::level_at` closed-form envelopes) with no audio; `FollowSound` is its
   `SoundMaker` and `bpe_sound::kit()` the kit with it (the editor and the renderer use it, so physics follows
   sound everywhere). `tests/follow.rs` checks it against the engine (`Engine::voice_time`).
+
+**Rule changes (W13)**: `ruled.rs` folds a rule's Change setting on a Sound or Mixer number at the block's time with
+the physics' `Change` maths (`ruled::number`, `at`), from the engine's own physics world (`world.rules()`), with no
+allocation: `ShapeSpec.knob_keys` (sorted at patch build) maps keys to knob places for `voices/shape.rs::rule_knobs`
+(each block, after the keys); `ShapeRoute.ruled` (Sends), `BusKeys.ruled` (Fader, Pan, Sends), `Master.ruled`
+(Input, Output) and `fx_chain::Keyed.ruled` (every keyframed number of a bus effect, `Keyed::due` when a change is
+on) hold their `ChangeKey`s. `ControlSampler` folds the same (`knobs_at`, a bus's fader), so Follow sound hears a
+rule's Volume. `voice_rule_keys`/`mixer_rule_keys` list what a rule reaches (the menu shows only these). Switches,
+choices and the note slots' timing stay as set (the patch is built from them). Tests: `tests/rule_changes.rs`, a
+rules section in `tests/alloc.rs`.
