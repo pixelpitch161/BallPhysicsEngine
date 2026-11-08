@@ -11,7 +11,7 @@ use crate::{
     Address, Color, EditError, Gradient, LayerId, Registry, Resolved, Scene, SettingDef, SlotId, Stop, ThingId, Value,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Keys closer together than this many seconds are the same key.
 pub const SAME_TIME: f64 = 0.004;
@@ -531,6 +531,57 @@ impl Scene {
         (index < track.keys.len()).then(|| track.settle_key(index))
     }
 
+    /// Moves several keys together by `delta` seconds (editor workflow, W5): every track named
+    /// in `picked` is laid out again from how it was in `before` (as a drag started), with its
+    /// picked keys `delta` later (never before 0). With `settle`, any other key within
+    /// [`SAME_TIME`] of a moved one goes, so keys put down on others replace them (as a drag
+    /// ends). Returns the picked keys' new places, in `picked`'s order; a key that isn't in
+    /// `before` is left out.
+    pub fn move_keys(
+        &mut self,
+        before: &BTreeMap<Address, Track>,
+        picked: &[(Address, usize)],
+        delta: f64,
+        settle: bool,
+    ) -> Vec<(Address, usize)> {
+        let mut out: Vec<Option<(Address, usize)>> = vec![None; picked.len()];
+        for (a, was) in before {
+            let mine: Vec<(usize, usize)> = picked
+                .iter()
+                .enumerate()
+                .filter(|(_, (pa, i))| pa == a && *i < was.keys.len())
+                .map(|(n, (_, i))| (n, *i))
+                .collect();
+            if mine.is_empty() {
+                continue;
+            }
+            // (key, which entry of `picked` it is) for the moved ones; the others as they were.
+            let mut keys: Vec<(Key, Option<usize>)> = was
+                .keys
+                .iter()
+                .enumerate()
+                .map(|(i, k)| match mine.iter().find(|(_, mi)| *mi == i) {
+                    Some(&(n, _)) => (Key { time: (k.time + delta).max(0.0), ..k.clone() }, Some(n)),
+                    None => (k.clone(), None),
+                })
+                .collect();
+            if settle {
+                let moved: Vec<f64> = keys.iter().filter(|(_, n)| n.is_some()).map(|(k, _)| k.time).collect();
+                keys.retain(|(k, n)| n.is_some() || moved.iter().all(|t| (k.time - t).abs() > SAME_TIME));
+            }
+            // A stable sort keeps keys at the same time in their old order.
+            keys.sort_by(|x, y| x.0.time.total_cmp(&y.0.time));
+            for (i, (_, n)) in keys.iter().enumerate() {
+                if let Some(n) = n {
+                    out[*n] = Some((a.clone(), i));
+                }
+            }
+            let track = Track { keys: keys.into_iter().map(|(k, _)| k).collect(), range: was.range };
+            self.tracks.insert(a.clone(), track);
+        }
+        out.into_iter().flatten().collect()
+    }
+
     /// Sets how key `index` of the track at `a` eases into the next key.
     pub fn set_ease(&mut self, a: &Address, index: usize, ease: Ease) -> bool {
         match self.tracks.get_mut(a).and_then(|t| t.keys.get_mut(index)) {
@@ -703,6 +754,54 @@ mod tests {
 
     const RED: Color = Color::rgb(255, 0, 0);
     const BLUE: Color = Color::rgb(0, 0, 255);
+
+    fn track(times: &[f64]) -> Track {
+        let keys = times.iter().map(|&t| Key { time: t, value: Value::Number(t), ease: Ease::default() }).collect();
+        Track { keys, range: None }
+    }
+
+    fn times(scene: &Scene, a: &Address) -> Vec<f64> {
+        scene.tracks[a].keys.iter().map(|k| k.time).collect()
+    }
+
+    #[test]
+    fn move_keys_moves_picked_keys_together_across_tracks() {
+        let mut scene = Scene::default();
+        let a = Address::own(ThingId(1), "a");
+        let b = Address::own(ThingId(1), "b");
+        let before = BTreeMap::from([(a.clone(), track(&[0.0, 1.0, 2.0])), (b.clone(), track(&[0.5, 3.0]))]);
+        scene.tracks = before.clone();
+        let picked = [(a.clone(), 0), (b.clone(), 0)];
+        let now = scene.move_keys(&before, &picked, 1.5, false);
+        assert_eq!(times(&scene, &a), [1.0, 1.5, 2.0]);
+        assert_eq!(times(&scene, &b), [2.0, 3.0]);
+        assert_eq!(now, [(a.clone(), 1), (b.clone(), 0)]);
+        // Laid out from `before` each time: moving back undoes the move exactly.
+        let now = scene.move_keys(&before, &picked, 0.0, false);
+        assert_eq!(times(&scene, &a), [0.0, 1.0, 2.0]);
+        assert_eq!(now, picked);
+        // Never before 0.
+        scene.move_keys(&before, &[(a.clone(), 1)], -5.0, false);
+        assert_eq!(times(&scene, &a), [0.0, 0.0, 2.0]);
+    }
+
+    #[test]
+    fn settling_moved_keys_replaces_the_keys_underneath() {
+        let mut scene = Scene::default();
+        let a = Address::own(ThingId(1), "a");
+        let before = BTreeMap::from([(a.clone(), track(&[0.0, 1.0, 2.0, 3.0]))]);
+        scene.tracks = before.clone();
+        // Keys at 0 and 1 moved onto 2 and 3: the old 2 and 3 go.
+        let now = scene.move_keys(&before, &[(a.clone(), 0), (a.clone(), 1)], 2.0, true);
+        assert_eq!(times(&scene, &a), [2.0, 3.0]);
+        let values: Vec<Value> = scene.tracks[&a].keys.iter().map(|k| k.value.clone()).collect();
+        assert_eq!(values, [Value::Number(0.0), Value::Number(1.0)], "the moved keys stay");
+        assert_eq!(now, [(a.clone(), 0), (a.clone(), 1)]);
+        // Unsettled, passing over keys keeps them.
+        scene.tracks = before.clone();
+        scene.move_keys(&before, &[(a.clone(), 0)], 2.0, false);
+        assert_eq!(times(&scene, &a), [1.0, 2.0, 2.0, 3.0]);
+    }
 
     fn gradient(stops: &[(f32, Color)]) -> Value {
         let stops = stops.iter().map(|&(at, color)| Stop::new(at, color)).collect();

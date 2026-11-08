@@ -28,6 +28,9 @@ impl std::error::Error for LoadError {}
 
 /// The scene as pretty RON text.
 pub fn save(scene: &Scene) -> String {
+    // Pictures nothing names any more stay out of the file.
+    let pruned = scene.without_unused_pictures();
+    let scene = pruned.as_ref().unwrap_or(scene);
     ron::ser::to_string_pretty(scene, ron::ser::PrettyConfig::default()).expect("scenes always serialize")
 }
 

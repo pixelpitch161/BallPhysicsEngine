@@ -10,6 +10,7 @@ extern crate self as bpe_core;
 pub mod address;
 pub mod animation;
 pub mod blend;
+pub mod clip;
 pub mod color;
 pub mod contract;
 pub mod edit;
@@ -25,6 +26,7 @@ pub mod rules;
 pub mod save;
 pub mod scene;
 pub mod scene_fonts;
+pub mod scene_pictures;
 pub mod settings;
 pub mod shape_path;
 pub mod sound_values;
@@ -39,6 +41,7 @@ pub use animation::{
     SoundSource, Track, pulse_strength,
 };
 pub use blend::Blend;
+pub use clip::{Pasted, ThingClip};
 pub use color::{Color, GapBlend, Gradient, HitWave, Mix, Morph, Moves, Stop, hue_turned, mix_colours, mix_linear};
 pub use contract::check_registry;
 pub use edit::EditError;
@@ -52,6 +55,7 @@ pub use rules::{Block, BlockId, BlockSection, Rule, RuleBlockKind, RuleId, Rules
 pub use save::{LoadError, load, save};
 pub use scene::{Attach, Scene, Slot, SlotStash, Target, Thing, TrackColour, Transform};
 pub use scene_fonts::SceneFont;
+pub use scene_pictures::{PICTURE_KEY, ScenePicture};
 pub use settings::{
     Choice, Depth, FOLDED_SECTIONS, Flags, GroupOpts, SECTION_ORDER, SettingDef, SettingGroup, SettingValue, Settings,
     section_rank,

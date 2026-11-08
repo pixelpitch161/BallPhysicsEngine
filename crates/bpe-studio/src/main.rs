@@ -37,6 +37,7 @@ mod shape_handles;
 mod sound_job;
 mod sound_tab;
 mod style;
+mod things;
 mod timeline;
 mod transport;
 mod tree;
@@ -53,7 +54,7 @@ fn main() -> eframe::Result {
             .with_min_inner_size([1000.0, 640.0])
             // Opens filling the screen; F11 goes fully fullscreen and back.
             .with_maximized(true)
-            .with_title("Ball Studio Next"),
+            .with_title("Ball Studio"),
         wgpu_options: wgpu_options(),
         ..Default::default()
     };
