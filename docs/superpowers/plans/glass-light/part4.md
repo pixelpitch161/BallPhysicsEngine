@@ -219,21 +219,103 @@ Harness as `bent_light_pictures.rs` (270 × 480, Light only, linear light).
   and release unchanged.
 - [ ] One Opus review; fix; PR; merge when checks pass. Then plan 4b in full (below) and build it.
 
-## 4b outline (planned in full before building)
+## 4b decisions (planned in full after 4a merged)
 
-- **Dichroic** (Surface numbers **Dichroic**, span 0..1, and **Dichroic shift**, span 0..360°): light through it takes
-  a hue that turns with the angle it meets the surface (the field's gradient against the lamp's way in part 1's tint,
-  the photon's angle at each glass edge in part 3, the beam's at each bend in part 2), light bounced off takes the
-  opposite hue (part 2's Bend also sends a reflected beam; mirrors' thrown light from 4a), and the thing's own look
-  gains an angle-shifting sheen like Pearl's.
-- **Diamond fire** (Surface number **Fire**, span 0..1): highlights split into three to seven spectral glints (the
-  specular lobe sampled at a few wavelengths with slightly different bends in `shade`), plus star glints (Glitter's
-  sprite, code 16) on hits, their strength following the hit's age.
-- **Rainbows in rain**: the Lighting card's **Rainbow** group (Rainbow, Rainbow centre (by default the anti-sun point
-  of the brightest Sun), Rainbow size (the 42° bow), Second bow, Dark band), drawn in `fs_mix` where haze or rain
-  catches it; particle layers' Lighting fold gains **Makes rainbows** (the tags picture's free B channel).
-- Tests per the spec: Dichroic 0 changes nothing, at 1 transmitted and reflected hues are opposite; Rainbow 0
-  changes nothing, at 1 the bow's red ring lies outside its violet ring at the set size.
+1. **Dichroic, one rule everywhere** (`bpe_gfx::dichroic`, `bpe-gfx/src/dichroic.rs`, with its WGSL twin
+   `dichroic_hue`/`dichroic_through`/`dichroic_bounced` in lighting.wgsl, pinned against each other by a test). A
+   surface's dichroic numbers are `[d, shift, hue]` (`SurfaceGpu.g` = [Dichroic, Dichroic shift in turns, Dichroic hue in
+   turns, Fire]). Light meeting it at angle θ (cos θ = |dir · normal|, 1 straight on) takes the hue
+   `h(θ) = hue + shift × (1 − cos θ)` (the hue wheel `hue_rgb(h)`: `clamp(|fract(h + k) × 6 − 3| − 1, 0, 1)` for
+   k = 0, 2/3, 1/3); what goes through is `T = mix(1, hue_rgb(h), d)` and what bounces off is `R = d × (1 − hue_rgb(h))`,
+   so T + R = 1 per channel at any d (a filter that splits light, losing none). Dichroic 0 gives T = 1, R = 0 exactly
+   and every code path below multiplies by exactly 1 or is skipped, so nothing changes.
+2. **Settings** (`SurfaceSettings`, Surface group, any preset, every Look card and the Surface sub-layer): **Dichroic**
+   (`dichroic`, span 0..1, keyframe), **Dichroic shift** (`dichroic_shift`, when dichroic, span −360..360 °, keyframe,
+   default 120), **Dichroic hue** (`dichroic_hue`, when dichroic, span 0..360 °, keyframe, default 190: cyan-blue through,
+   amber off, the classic look), **Fire** (`fire`, span 0..1, keyframe). No new chips (the spec adds none). Presets
+   set `dichroic` and `fire` to 0 and leave `dichroic_shift`/`dichroic_hue` alone (like the brush angle).
+3. **Where dichroic acts:**
+   - **The look** (`shade`): the shine's F0 × `mix(1, 1 − hue_rgb(h(nv)), d)` (so the reflections take the opposite
+     hue), the diffuse × `mix(1, 1 − hue_rgb(h(nv)), 0.35 d)` (Pearl's sheen, by the angle to the eye), and the light
+     through it (`through`) × T(nv). In Flat the behind picture seen through glass (`transmitted`'s tint) × T(nv).
+   - **Part 1's coloured shadows** (Flat, `march`): where a ray goes into a see-through blocker it reads that
+     pixel's surface (`surface_of`) and, when its Dichroic is above 0, the blocker's normal from the field's slope
+     there (`field_normal`); the stretch's light × T(θ) when it comes out. (Stage slabs and spheres: a known limit.)
+   - **Part 2's beams** (`laser.rs`): `Meets::Bend` gains `dichroic: [f32; 3]` (d, shift, hue in turns; from
+     `surface::glass_of`). In `trace_split` the first glass a beam bends into with Rainbow split (and Colours > 1) **or**
+     Dichroic above 0 is where it splits: the colours (one, white, when it doesn't split by colour) go in with their
+     shares × T(θ), and, with Dichroic above 0, one more path, the **reflected beam** (`Colour { w: 0, share: R(θ),
+     reflected: true }`), leaves by `reflect` and walks on. `trace` never splits (unchanged). Ribbons pair colours by
+     index as before (the reflected one last).
+   - **Part 3's photons** (`cs_bent`): going into bending glass whose surface has Dichroic above 0, power × T(θ) (θ
+     from the photon's way and the glass normal); free glass has no surface (none).
+   - **4a's thrown light**: a mirror whose surface has Dichroic above 0 throws × `mix(1, 1 − hue_rgb(h(θ)), d)` (its
+     R normalised to its brightest, so a dichroic mirror throws the opposite hue at the same strength), in `cs_bent`
+     and the Stage caustic mirror branch.
+4. **Diamond fire, the look** (`shade`): with Fire above 0 (and not Toon), each lamp's highlight is the GGX lobe sampled
+   at `3 + round(4 × Fire)` wavelengths (3 to 7), each with its normal turned across the light's plane by
+   `w × 0.12 × Fire` (`w` −1 red to 1 violet, the tangent `normalize(cross(n, dir3))`, any other way when
+   degenerate) and coloured by `spectral(w)`, normalised by the sum of the colours; the shine becomes
+   `mix(plain, spectral × (1 + 2 Fire), Fire)`. One loop, one `ggx` call site.
+5. **Diamond fire, star glints** (balls and emitters, drawn on the CPU, `balls/draw.rs::fire_glints`): when the scene
+   is lit (`Frame.light` is set) and a ball's surface has Fire above 0, each ball hit within `GLINT_SECONDS` (0.6 s)
+   adds `1 + round(2 × Fire)` star sprites (Particle shape 3, Glitter's star: added light, negative alpha) round its
+   upper left (where the shine sits), placed by the ball's number and hits so far (so the same hit always glints in the
+   same places), half size `radius × 0.45 × Fire × (0.6 + 0.4 strength)`, alpha `Fire × (1 − age / GLINT_SECONDS)²`,
+   white times the ball's colour mixed half to white, into `Frame.particles_front`. Shapes: their hits' points
+   (`shape_hits`, if they carry a point) glint the same way; if not, shapes have the spectral glints only (a known limit).
+6. **Rainbows in rain** (the Lighting card's **Rainbow** group; `LightingGpu.rainbow` = [Rainbow, Rainbow size
+   (px, the 42° bow's radius), Second bow, Dark band], `LightingGpu.rainbow_at` = [centre x, centre y, 1 when set by
+   hand, 0]):
+   - Settings: **Rainbow** (`rainbow`, span 0..2, keyframe, default 0), **Rainbow centre** (`rainbow_from`: Opposite the
+     sun / A point), **Centre** (`rainbow_centre`, px pair, when a point, keyframe), **Rainbow size** (`rainbow_size`,
+     span 100..2000 px, keyframe, default 700), **Second bow** (`second_bow`, span 0..1, keyframe, default 0.4), **Dark
+     band** (`dark_band`, span 0..1, keyframe, default 0.5).
+   - Opposite the sun: the renderer works the centre out (`lighting.rs::rainbow_centre`): the brightest Sun light's way
+     (`p3.xy`, where its light goes) from the camera's middle, `1.3 × size` along it; with no sun, straight down.
+   - Drawn in the mix (`lit_at`, after the haze): `bow(θ)` with θ = 42° × distance to the centre / size, per channel
+     as the sum over 16 wavelengths of `spectral(w)` × the bow at that wavelength's angle (primary 40.6° violet to
+     42.3° red, a soft peak σ 0.6° and a glow inside it; secondary 50.4° red to 53.6° violet, × Second bow × 0.43;
+     between them × (1 − Dark band)), normalised by the summed colours; × Rainbow × the light there (direct + field, its
+     luminance, at most 2) × what catches it: the haze (`air.w × density` when there is haze) plus the tags picture's
+     B (rain), at most 1.
+   - **Makes rainbows** (`AroundLit`, particle layers and the Particles thing's layers: `makes_rainbows`, span 0..1):
+     packed with Catches beams in `extra.z` = `catches + 2 × round(makes × 255)` (`layers/lighting.rs::stamp`), so with
+     0 it is exactly the old value; sprites.wgsl and trail.wgsl unpack it (`tag_catch`, `tag_rain`) and the tags pass
+     writes `B = makes × cover`. `LightScene.rain` (any record that makes rainbows) and the Rainbow above 0 make the
+     tags picture (`needs_tags`).
+7. **One-way**: none of it reaches the probe, the physics or the sound (the probe's light stays as 4a left it).
+8. **Known limits** (into the As built): dichroic shadows only in Flat; a beam splits once (a dichroic glass after the
+   split, or after a rainbow split, tints nothing more); the light field passes dichroic glass as plain glass;
+   swarm sprites don't make rainbows.
+
+## 4b review focus
+
+1. Dichroic 0, Fire 0 and Rainbow 0 leave every picture byte-identical (pinned tests), the laser paths unchanged
+   (`laser.rs` tests), Makes rainbows 0 leaves `extra.z` as it was.
+2. T + R = 1 for every θ and d; the WGSL and Rust hue wheels agree.
+3. The beam split: segment caps still hold with the reflected path; ribbons still pair.
+4. No new storage buffers in passes already at the limit; uniform layouts match.
+
+## 4b tasks
+
+1. **bpe-gfx data**: `SurfaceGpu.g` (+ WGSL), `dichroic.rs` (+ tests), `LightingGpu.rainbow/rainbow_at`,
+   `GlowUniform.rainbow/rainbow_at` (+ WGSL `Glow`), `LightScene.rain`, `needs_tags`.
+2. **Shaders**: the dichroic helpers; `shade` (look, fire); `transmitted`'s tint; `march`; `cs_bent` (into glass,
+   throw); the caustic mirror; the rainbow in `lit_at`; sprites/trail tag unpacking.
+3. **bpe-kit**: surface settings and `gpu()`, presets, `glass_of` → `Glass { index, rainbow, dichroic }`, `Meets::Bend`
+   dichroic, `trace_split`'s split (+ `Colour.reflected`), `push_light`/ribbons with the reflected path; the Lighting
+   card's Rainbow group; `AroundLit` Makes rainbows and the stamp packing, `LightScene.rain`; fire glints.
+4. **Tests**: `surface.rs` (presets, gpu g), `laser.rs` (`a_dichroic_glass_splits_light_into_opposite_hues`: T + R = 1,
+   hues opposite; Dichroic 0 is the old path), `dichroic.rs` units, `lighting.rs` (rainbow defaults, centre), kit GPU
+   `tests/wild_glass_pictures.rs`: Dichroic 0 byte-identical to before for a glass room and a glass shadow; a dichroic
+   pane's shadow light takes the hue and turns with the angle; a dichroic mirror throws the opposite hue; Fire 0 is
+   byte-identical and Fire 1 splits a highlight into colours; star glints show after a hit and fade; Rainbow 0
+   byte-identical; with haze, the bow's red ring lies outside its violet ring at the set size; rain that makes rainbows
+   shows the bow where it falls and none where it doesn't.
+5. **Editor**: the new numbers fold under the chips; Rainbow group in the Lighting card (no new code expected); swatch
+   unchanged.
+6. **Finish**: CLAUDE.md, As built (4b), fmt, clippy, tests, one Opus review, PR, merge.
 
 ## As built (4a)
 
