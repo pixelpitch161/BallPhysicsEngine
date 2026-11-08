@@ -699,7 +699,8 @@ fn setting(
             match row_menu(r, def, unit, &end_before, Some(to_mark), cx.choices, None) {
                 MenuPick::Paste(pasted) => varies.push(VaryEdit::To(pasted)),
                 MenuPick::CreateKey => varies.push(VaryEdit::KeyTo),
-                MenuPick::Nothing | MenuPick::Follow(_) | MenuPick::RemoveKeys => {}
+                MenuPick::RemoveKeys => varies.push(VaryEdit::ClearTo),
+                MenuPick::Nothing | MenuPick::Follow(_) => {}
             }
         }
         label_cell(ui, cx.label_width, |_| {});

@@ -29,6 +29,9 @@ pub struct Timeline {
     /// The selected keys: each by its setting and its index on the track. Only keys of the open
     /// group are ever selected.
     pub selected: BTreeSet<(Address, usize)>,
+    /// When each selected key was as the timeline last drew: a key whose index now holds a key
+    /// at another time (an undo, or a key added in front of it elsewhere) is no longer selected.
+    picked_at: BTreeMap<(Address, usize), f64>,
     /// The selected keys being dragged.
     drag: Option<GroupDrag>,
     /// A box dragged over empty lane space to select keys: where it started, and whether it adds
@@ -219,7 +222,12 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
     // A selected key that is gone is no longer selected, and a key in a folded group is out of
     // sight, so it isn't either (Delete would remove it unseen).
     let tracks = &studio.scene.tracks;
-    timeline.selected.retain(|(a, i)| a.thing == open && tracks.get(a).is_some_and(|t| *i < t.keys.len()));
+    let picked_at = std::mem::take(&mut timeline.picked_at);
+    timeline.selected.retain(|(a, i)| {
+        let Some(key) = tracks.get(a).and_then(|t| t.keys.get(*i)) else { return false };
+        let same = picked_at.get(&(a.clone(), *i)).is_none_or(|t| t.to_bits() == key.time.to_bits());
+        a.thing == open && same
+    });
     if timeline.drag.as_ref().is_some_and(|d| d.picked.iter().any(|(a, _)| a.thing != open)) {
         timeline.drag = None;
     }
@@ -316,6 +324,12 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
         timeline.selected.clear();
     }
     curve_window(ui, studio, &mut timeline);
+    let tracks = &studio.scene.tracks;
+    timeline.picked_at = timeline
+        .selected
+        .iter()
+        .filter_map(|(a, i)| Some(((a.clone(), *i), tracks.get(a)?.keys.get(*i)?.time)))
+        .collect();
     studio.panels.timeline = timeline;
     if std::mem::take(&mut studio.panels.timeline.paste_asked) {
         paste_keys(studio);
@@ -815,6 +829,7 @@ fn copy_selected(studio: &mut Studio, timeline: &Timeline) -> bool {
     let keys = keys.into_iter().map(|(a, k)| (a, k.time - first, k)).collect();
     studio.clipboard = crate::things::Clipboard::Keys(crate::things::KeyClip { keys });
     studio.status = if n == 1 { "Copied 1 key.".to_owned() } else { format!("Copied {n} keys.") };
+    studio.copied_note = Some(format!("Ball Studio: {}", studio.status));
     true
 }
 
@@ -875,7 +890,7 @@ pub fn paste_keys(studio: &mut Studio) -> bool {
 }
 
 /// How often "Repeat" repeats the selected keys, in bars: every bar, or the fewest whole bars
-/// longer than they spread over.
+/// longer than they spread over (keys a whole bar apart repeat every two).
 fn repeat_bars(studio: &Studio, timeline: &Timeline) -> (f64, u32) {
     let bar = TempoMap::from_settings(&studio.settings()).bar_seconds();
     let keys = selected_keys(studio, timeline);
@@ -883,7 +898,9 @@ fn repeat_bars(studio: &Studio, timeline: &Timeline) -> (f64, u32) {
         (Some(a), Some(b)) => b.1.time - a.1.time,
         _ => 0.0,
     };
-    let bars = if bar > 0.0 && bar.is_finite() { (span / bar - 1e-6).ceil().max(1.0) as u32 } else { 1 };
+    // Keys spread over exactly a bar repeat every two, so the first key's copy never lands on
+    // the last key.
+    let bars = if bar > 0.0 && bar.is_finite() { ((span / bar + 1e-6).floor() + 1.0).min(1e6) as u32 } else { 1 };
     (bar, bars)
 }
 
@@ -1464,6 +1481,36 @@ mod tests {
         h.get_by_label("Repeat every 2 bars").click();
         h.run();
         assert_eq!(times(&h), [2.0, 4.0, 4.5, 6.0, 8.5, 10.0, 12.5, 14.0, 16.5, 18.0]);
+    }
+
+    #[test]
+    fn keys_exactly_a_bar_apart_repeat_every_two_bars_keeping_the_pattern() {
+        let mut h = two_keys();
+        h.state_mut().panels.timeline.selected = BTreeSet::from([(size_address(), 0), (size_address(), 1)]);
+        h.run();
+        h.get_by_label("Key at 0:02.00 of Ball · Size").click_secondary();
+        h.run();
+        h.get_by_label("Repeat every 2 bars").click();
+        h.run();
+        let values: Vec<Value> = h.state().scene.tracks[&size_address()].keys.iter().map(|k| k.value.clone()).collect();
+        assert_eq!(times(&h), [2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0]);
+        assert_eq!(values[2], values[0], "the first key's copy");
+        assert_eq!(values[3], values[1], "the second key's copy, not overwritten");
+    }
+
+    #[test]
+    fn a_key_added_in_front_elsewhere_unselects_the_keys_it_moved() {
+        let mut h = two_keys();
+        h.state_mut().panels.timeline.selected = BTreeSet::from([(size_address(), 1)]);
+        h.run();
+        assert_eq!(h.state().panels.timeline.selected.len(), 1);
+        {
+            let s = h.state_mut();
+            let kit = s.kit.clone();
+            s.scene.set_key(&kit.registry, &size_address(), 0.5, Value::Number(10.0)).unwrap();
+        }
+        h.run();
+        assert!(h.state().panels.timeline.selected.is_empty(), "index 1 now holds another key");
     }
 
     const SHAPE: ThingId = ThingId(1);

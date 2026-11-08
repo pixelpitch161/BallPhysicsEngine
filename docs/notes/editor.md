@@ -193,8 +193,10 @@ Plan `docs/superpowers/plans/2026-11-08-editor-workflow.md` (findings E7 to E14 
 - **Shortcuts** (`app.rs`): `shortcuts` (first in the frame) adds End (to the end) and Left/Right (a video frame;
   with Shift a beat, from `TempoMap`; `Studio::step`, pauses). `late_shortcuts` runs after the central panel, so a
   focused text box or the timeline has had the keys first: Ctrl+D (`duplicate_selection`), Ctrl+C / Ctrl+V (also
-  egui's `Event::Copy` / `Event::Paste`, which egui-winit sends instead): the timeline's picked keys first, else
-  things; Delete when the left panel isn't Things (the tree takes it itself there). Each is an own undo step
+  egui's `Event::Copy` / `Event::Paste` / `Event::PasteImage`, which egui-winit sends instead of the keys): the
+  timeline's picked keys first, else things. egui-winit sends Ctrl+V only when the system clipboard holds text or a
+  picture, so every copy here also puts "Ball Studio: Copied …" there (`Studio.copied_note`, sent by
+  `late_shortcuts`); Delete when the left panel isn't Things (the tree takes it itself there). Each is an own undo step
   (`separate_edit`). The window title is `window_title()` ("Name • – Ball Studio"; Untitled when blank), sent with
   `ViewportCommand::Title` only when it changes.
 - **Copy, paste, duplicate things** (`bpe-core/src/clip.rs`, `bpe-studio/src/things.rs`): `Scene::copy_things` makes a
@@ -208,11 +210,14 @@ Plan `docs/superpowers/plans/2026-11-08-editor-workflow.md` (findings E7 to E14 
   kittest labels them "Paste Ball Ctrl+V"). Paste goes into a selected folder, beside another selected thing, else
   under the scene. "+ Add thing" sits at the top of the tree.
 - **Timeline keys** (`timeline/mod.rs`): `Timeline.selected` is a set of `(Address, index)`; click picks one,
-  Shift/Ctrl+click adds or removes, dragging on a lane's empty part draws a box (Shift adds), Escape clears. Dragging
+  Shift/Ctrl+click adds or removes, dragging on a lane's empty part draws a box (Shift adds), Escape clears.
+  `picked_at` keeps each picked key's time as the timeline last drew; a key whose index now holds another time (a
+  key added in front of it elsewhere) drops out, and undo/redo clear the selection. Dragging
   a picked key moves them all (`GroupDrag` keeps the tracks as the drag began; `Scene::move_keys` lays them out
   again each frame and settles at the end, keys put on others replacing them; never before 0). The key menu's Ease
-  applies to every picked key, plus Copy N keys, Repeat every bar / every 2 bars (copies of the picked keys every bar
-  to the end of the video, at most `MOST_REPEATS`), Delete N keys. Copied keys (`KeyClip`, times from the first)
+  applies to every picked key, plus Copy N keys, Repeat every bar / every 2 bars (copies of the picked keys every
+  bar, or every `floor(span / bar) + 1` bars so the first key's copy never lands on the last key, to the end of the
+  video, at most `MOST_REPEATS`), Delete N keys. Copied keys (`KeyClip`, times from the first)
   paste at the playhead onto the open thing (the lane menu's "Paste N keys at the playhead", or Ctrl+V), onto the
   same settings where it has them.
 - **Setting menu** (`widgets.rs::row_menu_following`): Reset to default (<value>) (greyed at the default) and Remove
@@ -224,7 +229,8 @@ Plan `docs/superpowers/plans/2026-11-08-editor-workflow.md` (findings E7 to E14 
   by name (base64 in the file, left out when empty; pictures no `picture` setting names are left out on save). The
   Picture row's "…" reads the file into a `PictureRequest`; the inspector checks the PNG signature, keeps it
   (`add_picture`, same bytes → same name) and sets every selected thing's Picture. Particles' `SpotsKey::Picture`
-  reads the kept bytes first (an older scene's file path still works). A name that is neither kept nor a file
+  reads the kept bytes first (an older scene's file path still works); `reads_tree` is true for a picture
+  source so the world keeps the scene for it. A name that is neither kept nor a file
   shows "Picture not found" in the problem colour.
 - **Empty preview and drops** (`preview.rs`, `drops.rs`): a scene with only its settings and cameras shows a hint in
   the middle of the preview; files held over the window show "Drop to open it". `Studio::take_drops` (after
@@ -233,6 +239,6 @@ Plan `docs/superpowers/plans/2026-11-08-editor-workflow.md` (findings E7 to E14 
   one) form it (`from = a_word_or_picture`, `word_from = picture`); anything else is a File problem. egui 0.37's
   dropped files are `Arc<dyn DroppedFile>` (`path()`, `bytes()`); tests push their own.
 - **Find a setting** (`inspector/find.rs`): a box above the jump bar. While it holds text, the cards and jump bar give
-  way to every setting whose name or section holds it, under its card's title (the thing's own, each plain card's,
+  way to every setting whose name or section holds every word typed, under its card's title (the thing's own, each plain card's,
   each layer's "Look · Glow"), with sections blanked so nothing folds away; rows edit, key and follow as in their
   card. Escape or Clear empties it. "+ Add slot" is now "+ Add card".

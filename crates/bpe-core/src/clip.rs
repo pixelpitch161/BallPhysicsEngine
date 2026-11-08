@@ -149,6 +149,14 @@ fn values(thing: &Thing) -> impl Iterator<Item = (&String, &Value)> {
     own.chain(cards)
 }
 
+/// `base`, or `"base 2"`, `"base 3"` … when that is taken.
+fn free_among(taken: &BTreeSet<String>, base: &str) -> String {
+    if !taken.contains(base) {
+        return base.to_owned();
+    }
+    (2u64..).map(|n| format!("{base} {n}")).find(|name| !taken.contains(name)).unwrap_or_else(|| base.to_owned())
+}
+
 impl Scene {
     /// Copies `ids` with everything under them. The scene settings, things inside another listed
     /// thing (they come with it) and one-per-scene things such as the camera (with what is under
@@ -157,12 +165,15 @@ impl Scene {
         let single = |id: &ThingId| {
             self.things.get(id).and_then(|t| reg.thing(&t.kind)).is_some_and(|k| k.single()) || *id == ThingId::ROOT
         };
-        let listed: BTreeSet<ThingId> = ids.iter().copied().filter(|id| self.things.contains_key(id)).collect();
+        // The scene settings and one-per-scene things are left out first, so a thing under them
+        // still counts as a top of its own.
+        let listed: BTreeSet<ThingId> =
+            ids.iter().copied().filter(|id| self.things.contains_key(id) && !single(id)).collect();
         let tops: Vec<ThingId> = self
             .order
             .iter()
             .copied()
-            .filter(|id| listed.contains(id) && !single(id))
+            .filter(|id| listed.contains(id))
             .filter(|id| !self.ancestors(*id).iter().any(|a| listed.contains(a)))
             .collect();
         if tops.is_empty() {
@@ -297,7 +308,8 @@ impl Scene {
                 }
             }
         };
-        let names_here: BTreeSet<String> = self.things.values().map(|t| t.name.clone()).collect();
+        // The names taken: the scene's, then each pasted thing's as it goes in.
+        let mut taken: BTreeSet<String> = self.things.values().map(|t| t.name.clone()).collect();
         let mut unlinked = 0;
         let mut tops = Vec::new();
         let mut placed: Vec<Thing> = Vec::new();
@@ -316,9 +328,10 @@ impl Scene {
             } else {
                 thing.parent = source.parent.and_then(|p| ids.get(&p).copied());
             }
-            if names_here.contains(&thing.name) {
-                thing.name = self.free_name(&format!("{} copy", source.name));
+            if taken.contains(&thing.name) {
+                thing.name = free_among(&taken, &format!("{} copy", source.name));
             }
+            taken.insert(thing.name.clone());
             for (k, v) in values_mut(&mut thing) {
                 unlinked += relink(v, &link);
                 rename(k, v);
@@ -508,6 +521,21 @@ mod tests {
         s.paste_things(&reg, &clip, ThingId::ROOT, None).unwrap();
         assert_eq!(s.fonts.len(), fonts);
         assert_eq!(named(&s, "Balls copy"), *s.order.last().unwrap());
+    }
+
+    #[test]
+    fn pasted_things_never_share_a_name() {
+        let reg = testkit::registry();
+        let mut s = Scene::empty(&reg);
+        let one = s.add_thing(&reg, "balls", ThingId::ROOT).unwrap();
+        let two = s.add_thing(&reg, "balls", ThingId::ROOT).unwrap();
+        s.set_thing_name(one, "Balls");
+        s.set_thing_name(two, "Balls copy");
+        let clip = s.copy_things(&reg, &[one, two]).unwrap();
+        s.paste_things(&reg, &clip, ThingId::ROOT, None).unwrap();
+        let names: Vec<&str> = s.order.iter().map(|id| s.things[id].name.as_str()).collect();
+        let unique: BTreeSet<&str> = names.iter().copied().collect();
+        assert_eq!(unique.len(), names.len(), "{names:?}");
     }
 
     #[test]

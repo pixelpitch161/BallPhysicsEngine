@@ -869,7 +869,6 @@ fn aiming_pill(painter: &egui::Painter, rect: Rect, done: f32) {
     pill(painter, rect, &format!("Aiming\u{2026} {:.0}%", (done * 100.0).floor()));
 }
 
-/// `text` in a pill in the picture's top-left corner.
 /// What the preview says over a scene with nothing in it yet.
 pub const EMPTY_HINT: &str = "Nothing here yet.\nAdd a thing with + Add thing at the top of the list,\nor drop a scene, a font or a PNG picture here.";
 /// What the preview says while files are held over the window.
@@ -894,6 +893,7 @@ fn middle_note(painter: &egui::Painter, rect: Rect, text: &str) {
     painter.galley(back.min + egui::vec2(12.0, 8.0), galley, style::TEXT_STRONG);
 }
 
+/// `text` in a pill in the picture's top-left corner.
 fn pill(painter: &egui::Painter, rect: Rect, text: &str) {
     let text = text.to_owned();
     let galley = painter.layout_no_wrap(text, FontId::proportional(13.0), style::TEXT_STRONG);

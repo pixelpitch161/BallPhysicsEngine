@@ -277,6 +277,33 @@ fn a_crowd_on_a_grid_fills_every_place_and_refills_a_lost_one_there() {
 }
 
 #[test]
+fn a_picture_kept_in_the_scene_forms_particles_in_the_world() {
+    // 2 × 2, all white and opaque.
+    let mut bytes = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut bytes, 2, 2);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header().unwrap().write_image_data(&[255; 16]).unwrap();
+    }
+    let s = ParticlesSettings {
+        from: BornFrom::AWordOrPicture,
+        word_from: super::WordFrom::Picture,
+        picture: "Logo".into(),
+        picture_width: 100.0,
+        spacing: 10.0,
+        emit: Emit::OnceAtTheStart,
+        life: 100.0,
+        speed: 0.0,
+        ..ParticlesSettings::default()
+    };
+    let (mut scene, id) = scene_of(&s, &[]);
+    assert!(particles(&run(&scene, 0.1).0, id).specks.is_empty(), "no picture of that name yet");
+    assert_eq!(scene.add_picture("Logo", bytes.into()), "Logo");
+    assert!(!particles(&run(&scene, 0.1).0, id).specks.is_empty(), "the kept picture forms them");
+}
+
+#[test]
 fn a_word_crowd_has_a_particle_at_every_letter_place() {
     let s = ParticlesSettings {
         from: BornFrom::AWordOrPicture,

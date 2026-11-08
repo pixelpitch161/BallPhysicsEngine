@@ -8,11 +8,12 @@ use super::*;
 /// The box's label (and hint).
 pub(super) const FIND: &str = "Find a setting";
 
-/// Whether `def` is found by `query` (already lower case): its name or its section holds it.
+/// Whether `def` is found by `query` (already lower case): every word of it is in the setting's
+/// name or its section.
 pub(super) fn matches(def: &SettingDef, query: &str) -> bool {
-    !query.is_empty()
-        && (def.label.to_lowercase().contains(query)
-            || (!def.group.is_empty() && def.group.to_lowercase().contains(query)))
+    let words = format!("{} {}", def.label, def.group).to_lowercase();
+    let mut typed = query.split_whitespace().peekable();
+    typed.peek().is_some() && typed.all(|w| words.contains(w))
 }
 
 /// The defs `query` finds that apply now, without their sections (so no heading folds one away).
@@ -39,7 +40,8 @@ pub(super) fn find_box(ui: &mut Ui, inspector: &mut Inspector) {
             "Type part of a setting's name to see every setting of this thing that has it, whichever card it is on",
         );
         response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, FIND));
-        if response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        // egui lets go of the box on Escape before the box sees it, so it has just lost focus.
+        if (response.has_focus() || response.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             inspector.find.clear();
         }
         if clear && ui.small_button("Clear").on_hover_text("Show the cards again").clicked() {
@@ -135,5 +137,7 @@ mod tests {
         assert!(matches(&def, "light"));
         assert!(!matches(&def, "size"));
         assert!(!matches(&def, ""), "an empty box finds nothing");
+        assert!(matches(&def, "light glow"), "every word, in any order");
+        assert!(!matches(&def, "glow size"));
     }
 }

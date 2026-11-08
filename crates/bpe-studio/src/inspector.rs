@@ -2059,6 +2059,11 @@ mod tests {
             keyed.iter().any(|a| a.thing == ThingId(2) && a.slot == Some(SlotId::Look) && a.key.ends_with("/strength")),
             "a layer's Strength got a key: {keyed:?}"
         );
+        // Escape empties the box.
+        find(&mut h, "x");
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert!(h.state().inspector.find.is_empty(), "{:?}", h.state().inspector.find);
         // Nothing found says so; Clear brings the cards back.
         h.state_mut().inspector.find = "zzzz".into();
         h.run();

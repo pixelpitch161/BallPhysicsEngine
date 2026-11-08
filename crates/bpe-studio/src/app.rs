@@ -311,6 +311,9 @@ pub struct Studio {
     repaint: Option<egui::Context>,
     /// What was copied last, things or timeline keys (kept through New and Open).
     pub clipboard: crate::things::Clipboard,
+    /// Words put on the system clipboard at the next frame's shortcuts, after a copy here: on
+    /// Windows, Ctrl+V reaches the program only when the system clipboard holds something.
+    pub copied_note: Option<String>,
     /// The window's title as last sent.
     title: String,
 }
@@ -670,6 +673,7 @@ impl Studio {
             ask_stop_export: false,
             repaint: None,
             clipboard: Default::default(),
+            copied_note: None,
             title: String::new(),
         }
     }
@@ -932,6 +936,7 @@ impl Studio {
         };
         let clipboard = crate::things::Clipboard::Things(clip);
         self.status = format!("Copied {}.", clipboard.things_words().unwrap_or_default());
+        self.copied_note = Some(format!("Ball Studio: {}", self.status));
         self.clipboard = clipboard;
         true
     }
@@ -1011,6 +1016,7 @@ impl Studio {
             return false;
         }
         self.status = "Undone.".into();
+        self.panels.timeline.selected.clear();
         self.recorded = true;
         self.snapshot = None;
         self.scene_changed();
@@ -1022,6 +1028,7 @@ impl Studio {
             return false;
         }
         self.status = "Redone.".into();
+        self.panels.timeline.selected.clear();
         self.recorded = true;
         self.snapshot = None;
         self.scene_changed();
@@ -1370,14 +1377,19 @@ impl Studio {
     /// (the timeline's Delete on a selected key) keeps it: Ctrl+D, Ctrl+C, Ctrl+V, and Delete
     /// from the Lights or Mixer tab (the Things tab's tree reads Delete itself).
     pub(crate) fn late_shortcuts(&mut self, ctx: &egui::Context) {
+        if let Some(note) = self.copied_note.take() {
+            ctx.copy_text(note);
+        }
         if ctx.text_edit_focused() || self.confirm.is_some() || self.offer.is_some() || self.ask_stop_export {
             return;
         }
         let pressed = |modifiers, key| ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(modifiers, key)));
-        // egui sends Ctrl+C and Ctrl+V as copy and paste events too.
+        // egui-winit sends Ctrl+C and Ctrl+V as copy and paste events instead of keys, and Ctrl+V
+        // only when the system clipboard holds text (or a picture): a copy here puts a note there.
         let event = |f: fn(&egui::Event) -> bool| ctx.input(|i| i.events.iter().any(f));
         let copy = pressed(Modifiers::COMMAND, Key::C) | event(|e| matches!(e, egui::Event::Copy));
-        let paste = pressed(Modifiers::COMMAND, Key::V) | event(|e| matches!(e, egui::Event::Paste(_)));
+        let paste = pressed(Modifiers::COMMAND, Key::V)
+            | event(|e| matches!(e, egui::Event::Paste(_) | egui::Event::PasteImage(_)));
         if pressed(Modifiers::COMMAND, Key::D) {
             self.duplicate_selection();
         }

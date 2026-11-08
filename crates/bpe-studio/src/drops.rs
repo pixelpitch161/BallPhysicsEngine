@@ -39,6 +39,7 @@ pub fn cant_open(name: &str) -> String {
 impl Studio {
     /// Takes the files dropped on the window this frame.
     pub(crate) fn take_drops(&mut self, ctx: &egui::Context) {
+        // (Not called while a dialog is open: files dropped then are let go.)
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         // One scene opens: the first.
         let mut opened = false;
@@ -100,6 +101,7 @@ impl Studio {
             let parent = crate::things::paste_place(&self.scene, self.selection.primary).0;
             match bpe_kit::add_thing(&mut self.scene, &kit.registry, "particles", parent) {
                 Ok(id) => {
+                    self.place_added(id);
                     self.selection.set(id);
                     things.push(id);
                 }

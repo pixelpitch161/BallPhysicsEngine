@@ -55,6 +55,11 @@ fn made_of_text(s: &ParticlesSettings) -> bool {
     s.from == BornFrom::AWordOrPicture && s.word_from == super::WordFrom::ATextThing
 }
 
+/// Whether its source is a picture (kept in the scene, or an older scene's file).
+fn made_of_picture(s: &ParticlesSettings) -> bool {
+    s.from == BornFrom::AWordOrPicture && s.word_from == super::WordFrom::Picture && !s.picture.is_empty()
+}
+
 /// The Particles state in a box, if it holds one.
 fn particles_in(b: &dyn ThingState) -> Option<&ParticlesState> {
     b.as_any().downcast_ref::<ParticlesState>()
@@ -200,9 +205,11 @@ impl ThingSim for ParticlesSim {
         true
     }
 
-    /// A source made of a Text thing reads that Text from the scene (Text part 4).
+    /// A source made of a Text thing reads that Text from the scene (Text part 4), and one made
+    /// of a picture reads the picture the scene keeps (W5).
     fn reads_tree(&self, resolved: &ResolvedThing) -> bool {
-        made_of_text(&ParticlesSettings::from_params(&resolved.params))
+        let s = ParticlesSettings::from_params(&resolved.params);
+        made_of_text(&s) || made_of_picture(&s)
     }
 
     /// The Text its source is made of: its saved settings and font place the particles.

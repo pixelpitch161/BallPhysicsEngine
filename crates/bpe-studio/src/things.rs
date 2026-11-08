@@ -41,15 +41,15 @@ impl Clipboard {
     }
 }
 
-/// The selected things that aren't inside another selected thing, in tree order.
-pub fn tops(scene: &Scene, ids: &[ThingId]) -> Vec<ThingId> {
-    scene
-        .order
-        .iter()
-        .copied()
-        .filter(|id| ids.contains(id) && *id != ThingId::ROOT)
-        .filter(|id| !scene.ancestors(*id).iter().any(|a| ids.contains(a)))
-        .collect()
+/// The selected things that can be copied (never the scene settings or a one-per-scene thing
+/// such as the camera) and aren't inside another of them, in tree order.
+pub fn tops(scene: &Scene, reg: &Registry, ids: &[ThingId]) -> Vec<ThingId> {
+    let copyable = |id: &ThingId| {
+        *id != ThingId::ROOT
+            && ids.contains(id)
+            && scene.things.get(id).and_then(|t| reg.thing(&t.kind)).is_some_and(|k| !k.single())
+    };
+    scene.order.iter().copied().filter(copyable).filter(|id| !scene.ancestors(*id).iter().any(copyable)).collect()
 }
 
 /// Where a paste goes with `primary` selected: into a selected folder (last in it), beside
@@ -67,7 +67,7 @@ pub fn paste_place(scene: &Scene, primary: Option<ThingId>) -> (ThingId, Option<
 /// right after its original under the same parent. Returns the copies, in order.
 pub fn duplicate(scene: &mut Scene, reg: &Registry, ids: &[ThingId]) -> Vec<ThingId> {
     let mut copies = Vec::new();
-    for top in tops(scene, ids) {
+    for top in tops(scene, reg, ids) {
         let Some(parent) = scene.things.get(&top).and_then(|t| t.parent) else { continue };
         let Some(clip) = scene.copy_things(reg, &[top]) else { continue };
         if let Ok(pasted) = scene.paste_things(reg, &clip, parent, Some(top)) {
@@ -112,8 +112,10 @@ mod tests {
         let balls = bpe_kit::add_thing(&mut scene, reg, "balls", folder).unwrap();
         let shape = bpe_kit::add_thing(&mut scene, reg, "shape", ThingId::ROOT).unwrap();
         let camera = named(&scene, "Camera");
-        // The folder and the ball inside it: the ball comes once, with the folder.
-        let copies = duplicate(&mut scene, reg, &[balls, folder, shape, camera]);
+        // The folder and the ball inside it: the ball comes once, with the folder. The scene
+        // settings picked too (Shift-clicked from the top) don't stop the rest.
+        assert!(scene.copy_things(reg, &[ThingId::ROOT, shape]).is_some(), "copies with the root picked");
+        let copies = duplicate(&mut scene, reg, &[ThingId::ROOT, balls, folder, shape, camera]);
         assert_eq!(copies.len(), 2, "the camera isn't duplicated");
         let folder_copy = copies[0];
         assert_eq!(scene.things[&folder_copy].name, "Folder copy");
