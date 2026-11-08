@@ -98,14 +98,16 @@ fn an_endless_emitter() {
     let mut scene = new_scene(reg);
     scene.remove_thing(the_ball(&scene)).unwrap();
     let emitter = bpe_kit::add_thing(&mut scene, reg, "emitter", ThingId::ROOT).unwrap();
-    let mut s = EmitterSettings::default();
-    s.count = 20;
-    s.fire_when = FireWhen::Every;
-    s.every = 0.1;
-    s.endless = true;
-    s.earlier = Earlier::Remove;
-    s.most_balls = 100_000;
-    s.speed = 500.0;
+    let s = EmitterSettings {
+        count: 20,
+        fire_when: FireWhen::Every,
+        every: 0.1,
+        endless: true,
+        earlier: Earlier::Remove,
+        most_balls: 100_000,
+        speed: 500.0,
+        ..Default::default()
+    };
     scene.things.get_mut(&emitter).unwrap().params = s.to_params();
     scene.add_layer(reg, emitter, SlotId::Look, "layer.trail").unwrap();
     let resolved = resolve_scene(&scene, &kit.registry);
