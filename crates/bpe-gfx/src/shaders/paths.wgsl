@@ -235,12 +235,13 @@ fn path_rainbow(h: f32) -> vec3<f32> {
     return pow(srgb, vec3<f32>(2.2));
 }
 
-// `c` (premultiplied) turned `h` turns round the grey axis: linear, so it turns covered colour.
+// `c` (premultiplied) turned `h` turns round the grey axis: linear, so it turns covered colour
+// (and light a Negative Gives off light takes away; the caller clamps colour at 0).
 fn path_hue_turn(c: vec3<f32>, h: f32) -> vec3<f32> {
     let a = h * TAU;
     let k = vec3<f32>(0.57735027);
     let cs = cos(a);
-    return max(c * cs + cross(k, c) * sin(a) + k * dot(k, c) * (1.0 - cs), vec3<f32>(0.0));
+    return c * cs + cross(k, c) * sin(a) + k * dot(k, c) * (1.0 - cs);
 }
 
 // A styled instance's colour (Text part 5, `PathStyle` in frame.rs: `style` is `clip.w`, channel +
@@ -260,8 +261,16 @@ fn path_styled(c: vec4<f32>, style: f32) -> vec4<f32> {
     }
     var out = c;
     if colours && (hue > 0.0 || colourise > 0.0) {
-        let turned = path_hue_turn(out.rgb, hue);
-        let pure = path_rainbow(hue) * max(out.r, max(out.g, out.b));
+        // Light given off (pass 3) may be negative: it turns as it is, darkness staying darkness.
+        let given = m > 2.5 && m < 3.5;
+        let most = max(out.r, max(out.g, out.b));
+        let least = min(out.r, min(out.g, out.b));
+        let dark = given && most <= 0.0;
+        var turned = path_hue_turn(out.rgb, hue);
+        if !given {
+            turned = max(turned, vec3<f32>(0.0));
+        }
+        let pure = path_rainbow(hue) * select(most, least, dark);
         out = vec4<f32>(mix(turned, pure, colourise), out.a);
     }
     if picture {

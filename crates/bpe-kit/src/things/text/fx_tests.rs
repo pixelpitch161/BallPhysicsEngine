@@ -280,3 +280,58 @@ fn a_melting_text_draws_its_letters_moved_down() {
     };
     assert!(lowest(&ps, &points) > lowest(&plain.0, &plain.1) + 30.0);
 }
+
+#[test]
+fn glitch_past_its_most_bands_keeps_the_rest_of_the_letter_whole() {
+    let (mut scene, id) = scene_with("I");
+    let plain = letters(&frame_with(&scene, 0.0, None));
+    let whole = &plain.1[plain.0[0].clip[0] as usize..][..plain.0[0].clip[1] as usize];
+    // Every band torn, far thinner than the letter: only the first 64 can be cut apart.
+    add(
+        &mut scene,
+        id,
+        GLITCH,
+        &[("amount", Value::Number(1.0)), ("tear_split", Value::Number(0.0)), ("band", Value::Number(1.0))],
+    );
+    let (ps, points) = letters(&frame_with(&scene, 0.0, None));
+    assert_eq!(ps.len(), 64 + 1, "64 torn bands and the rest whole");
+    let pieces: f32 = ps.iter().map(|p| area(&points[p.clip[0] as usize..][..p.clip[1] as usize])).sum();
+    assert!((pieces - area(whole)).abs() < 0.5, "the pieces cover the letter once: {pieces} vs {}", area(whole));
+    let rest = ps.iter().filter(|p| p.a[0] == plain.0[0].a[0]).count();
+    assert!(rest >= 1, "the rest stays where it was");
+}
+
+#[test]
+fn a_mirror_at_no_amount_leaves_the_word_as_it_is() {
+    let (mut scene, id) = scene_with("HI");
+    let plain = letters(&frame_with(&scene, 1.0, None));
+    add(
+        &mut scene,
+        id,
+        MIRROR,
+        &[("amount", Value::Number(0.0)), ("turn", Value::Number(30.0)), ("wedges", Value::Bool(true))],
+    );
+    let (ps, _) = letters(&frame_with(&scene, 1.0, None));
+    assert_eq!(ps, plain.0);
+}
+
+#[test]
+fn smaller_echo_copies_grow_their_boxes_to_hold_the_layers() {
+    let (mut scene, id) = scene_with("I");
+    let plain = letters(&frame_with(&scene, 0.0, None));
+    let box_of = |p: &PathInstance, points: &[[f32; 4]]| {
+        let c = &points[p.clip[0] as usize..][..p.clip[1] as usize];
+        c.iter().fold(f32::MIN, |m, q| m.max(q[0])) - c.iter().fold(f32::MAX, |m, q| m.min(q[0]))
+    };
+    let letter = box_of(&plain.0[0], &plain.1);
+    add(&mut scene, id, ECHO, &[("copies", Value::Int(1)), ("last_size", Value::Number(0.5))]);
+    let (ps, points) = letters(&frame_with(&scene, 0.0, None));
+    assert_eq!(ps.len(), 2);
+    let (copy, own) = (&ps[0], &ps[1]);
+    assert!((copy.a[3] - 0.5 * own.a[3]).abs() < 1e-6);
+    let margin = own.c[2] + own.b[0] + 2.0;
+    // On screen the copy's margin round the letter is as many px as the letter's own.
+    let shown = box_of(copy, &points) * copy.a[3];
+    let expected = (letter - 2.0 * margin) * 0.5 + 2.0 * margin;
+    assert!((shown - expected).abs() < 0.05, "{shown} vs {expected}");
+}

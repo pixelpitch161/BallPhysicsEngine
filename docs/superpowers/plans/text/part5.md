@@ -219,3 +219,28 @@ Read parts 1 to 4's "As built" first.
 - **Editor**: the Experimental list (`list_header_where`), Letter moves listing only moves.
 - **Tests**: `fx_tests.rs` (11), `effects.rs` (1), `paths_tests` (2), `text_pictures` (3), looks
   `the_part_5_looks_copy_and_reshape_their_letters`, kittest `a_texts_look_has_experimental_effects_apart_from_its_moves`.
+
+## After review
+
+One review of the whole part. Fixed:
+
+- **Echo copies' boxes**: a letter's clip is its own box grown by its layers' reach in px, and a copy smaller by `s`
+  shrank that margin too, cutting Glow/Outline flat at the box. A copy whose clip is still the letter's own box
+  (`Inst.boxed`; shattered pieces, wedges and glitch pieces are not) gets a new box grown by
+  `reach·(1/s − 1)` (`grown_box`, s floored at 1/16). Test `smaller_echo_copies_grow_their_boxes_to_hold_the_layers`.
+- **Glitch past `MOST_BANDS`**: the last kept band no longer carries the rest of the letter with its tear; the rest is
+  one more untorn piece. `saturating_add` on the cap. Test `glitch_past_its_most_bands_keeps_the_rest_of_the_letter_whole`.
+- **Budget**: Glitch reserves room for all of an instance's pieces up front or leaves it whole; Mirror keeps the letter
+  uncut when there's no room for its wedge.
+- **Mirror at Amount 0** leaves the word untouched (not turned or cut). Test `a_mirror_at_no_amount_leaves_the_word_as_it_is`.
+- **Clip slivers**: `tidied` drops repeated corners from `cut` and `clip_to` drops pieces with no area (they drew as
+  half-strength hairlines).
+- **Melt's down** follows a turned camera for a world Text.
+- **Hue turn of negative light** (pass 3) is no longer clamped away.
+
+Known limits (left):
+
+- Colour split / tear split copies under a Text Blend layer whose mode blends with each other (Multiply, Darken,
+  Screen) don't add back to the whole colour; Add, Lighten and the plain blend picture are right.
+- The UV picture (pass 5) isn't hue-turned.
+- A Mirrored copy's per-letter Round gradient (Across Each letter) is measured from the unflipped letter's middle.

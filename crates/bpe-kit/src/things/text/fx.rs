@@ -236,6 +236,9 @@ pub struct Inst {
     pub copy: usize,
     pub letter: u32,
     pub depth: i32,
+    /// Whether its clip is still the letter's own box (grown round the letter by its layers'
+    /// reach), which a smaller Echo copy may grow again; cut pieces' clips stay as they are.
+    pub boxed: bool,
 }
 
 /// What the instance effects read.
@@ -367,6 +370,37 @@ fn cut(poly: &[Vec2], n: Vec2, d: f32) -> Vec<Vec2> {
     out
 }
 
+/// `poly` without corners repeated (where a corner sat on a cut, `cut` gives it twice), which
+/// would make a clip edge of no length.
+fn tidied(mut poly: Vec<Vec2>) -> Vec<Vec2> {
+    let span = poly.iter().fold(0.0f32, |m, q| m.max(q.abs().max_element())).max(1.0);
+    let near = 1e-5 * span;
+    poly.dedup_by(|a, b| a.distance(*b) <= near);
+    while poly.len() > 1 && poly[0].distance(poly[poly.len() - 1]) <= near {
+        poly.pop();
+    }
+    poly
+}
+
+/// Instance `p`'s own-box clip grown `by` its own units on every side (`None` without room).
+fn grown_box(frame: &mut Frame, p: &PathInstance, by: f32, budget: &mut Budget) -> Option<PathInstance> {
+    let corners = clip_corners(frame, p);
+    if corners.len() != 4 || !by.is_finite() || by <= 0.0 || !budget.take(0, 4) {
+        return None;
+    }
+    let (lo, hi) =
+        corners.iter().fold((Vec2::splat(f32::MAX), Vec2::splat(f32::MIN)), |(lo, hi), q| (lo.min(*q), hi.max(*q)));
+    let (lo, hi) = (lo - Vec2::splat(by), hi + Vec2::splat(by));
+    let first = frame.path_points.len();
+    // Round the positive way, as `push_letter` and `push_glyph` lay a box's corners.
+    for q in [lo, Vec2::new(hi.x, lo.y), hi, Vec2::new(lo.x, hi.y)] {
+        frame.path_points.push([q.x, q.y, 0.0, 0.0]);
+    }
+    let mut out = *p;
+    out.clip[0] = first as f32;
+    Some(out)
+}
+
 /// Instance `p` cut to the half-planes `planes` (each `n · w ≥ d` in the frame's space): its clip
 /// made smaller and pushed as new corners. `None` when nothing is left (or no room); an instance
 /// without a clip comes back whole.
@@ -377,10 +411,16 @@ fn clip_to(frame: &mut Frame, p: &PathInstance, planes: &[(Vec2, f32)], budget: 
     }
     for &(n, d) in planes {
         let (n, d) = local_half_plane(p, n, d);
-        poly = cut(&poly, n, d);
+        poly = tidied(cut(&poly, n, d));
         if poly.len() < 3 {
             return None;
         }
+    }
+    // A sliver with no room inside would draw as a faint hairline.
+    let twice_area: f32 = (0..poly.len()).map(|k| poly[k].perp_dot(poly[(k + 1) % poly.len()])).sum();
+    let span = poly.iter().fold(0.0f32, |m, q| m.max(q.abs().max_element())).max(1e-6);
+    if twice_area.abs() <= 1e-6 * span * span {
+        return None;
     }
     if !budget.take(0, poly.len()) {
         return None;
@@ -465,7 +505,7 @@ fn flipped(frame: &mut Frame, p: &PathInstance, budget: &mut Budget) -> Option<P
 }
 
 /// Echo: each instance's copies toward the point, behind it.
-fn echo(e: &EchoEffect, only: &[u32], list: &mut Vec<Inst>, cx: &FxCx, budget: &mut Budget) {
+fn echo(e: &EchoEffect, only: &[u32], list: &mut Vec<Inst>, frame: &mut Frame, cx: &FxCx, budget: &mut Budget) {
     let n = e.copies.clamp(1, 64);
     let amount = amount(e.amount);
     if amount <= 0.0 {
@@ -491,6 +531,15 @@ fn echo(e: &EchoEffect, only: &[u32], list: &mut Vec<Inst>, cx: &FxCx, budget: &
                 break 'all;
             }
             let mut p = inst.p;
+            // The layers reach as far in px on a smaller copy, so its own box grows to hold them.
+            if inst.boxed && s < 1.0 {
+                let reach_px = p.c[2].max(0.0) + p.b[0].max(0.0) + 2.0;
+                let unit = if p.a[3].abs() > 1e-6 { p.a[3].abs() } else { 1.0 };
+                let by = reach_px / unit * (1.0 / s.max(1.0 / 16.0) - 1.0);
+                if let Some(q) = grown_box(frame, &p, by, budget) {
+                    p = q;
+                }
+            }
             let centre = m + (Vec2::new(p.a[0], p.a[1]) - m) * s + towards * f * reach;
             p.a = [centre.x, centre.y, p.a[2], p.a[3] * s];
             p.b[0] *= s;
@@ -508,6 +557,10 @@ fn echo(e: &EchoEffect, only: &[u32], list: &mut Vec<Inst>, cx: &FxCx, budget: &
 fn mirror(e: &MirrorEffect, only: &[u32], list: &mut Vec<Inst>, frame: &mut Frame, cx: &FxCx, budget: &mut Budget) {
     let ways = e.ways.clamp(2, 12);
     let amount = amount(e.amount);
+    // At no Amount the word shows as it is (not turned, nor cut to its wedge).
+    if amount <= 0.0 {
+        return;
+    }
     let turn = (finite(e.turn, 0.0) + finite(e.spin, 0.0) * cx.time as f32).to_radians();
     let half = PI / ways as f32;
     let mut out = Vec::with_capacity(list.len());
@@ -522,7 +575,7 @@ fn mirror(e: &MirrorEffect, only: &[u32], list: &mut Vec<Inst>, frame: &mut Fram
             MirrorRound::APoint => e.centre,
         };
         for k in 0..ways {
-            if k > 0 && (amount <= 0.0 || !budget.take(1, 0)) {
+            if k > 0 && !budget.take(1, 0) {
                 break;
             }
             let beta = turn + k as f32 * TAU / ways as f32;
@@ -542,6 +595,11 @@ fn mirror(e: &MirrorEffect, only: &[u32], list: &mut Vec<Inst>, frame: &mut Fram
             if e.wedges {
                 let (u1, u2) = (Vec2::from_angle(beta - half), Vec2::from_angle(beta + half));
                 let (n1, n2) = (Vec2::new(-u1.y, u1.x), Vec2::new(u2.y, -u2.x));
+                // With no room left the letter itself still shows, uncut.
+                if k == 0 && budget.points < clip_corners(frame, &p).len() + 2 {
+                    out.push(Inst { p, ..inst });
+                    continue;
+                }
                 match clip_to(frame, &p, &[(n1, n1.dot(c)), (n2, n2.dot(c))], budget) {
                     Some(q) => p = q,
                     None => continue,
@@ -554,7 +612,7 @@ fn mirror(e: &MirrorEffect, only: &[u32], list: &mut Vec<Inst>, frame: &mut Fram
                     finite(e.colourise, 0.0).clamp(0.0, 1.0),
                 );
             }
-            out.push(Inst { p, ..inst });
+            out.push(Inst { p, boxed: inst.boxed && !e.wedges, ..inst });
         }
     }
     *list = out;
@@ -615,10 +673,21 @@ fn glitch(e: &GlitchEffect, only: &[u32], list: &mut Vec<Inst>, frame: &mut Fram
             out.push(inst);
             continue;
         }
-        let (b0, b1) = ((lo / band).floor() as i64, (hi / band).floor() as i64);
-        let b1 = b1.min(b0 + MOST_BANDS - 1);
+        let (b0, b_last) = ((lo / band).floor() as i64, (hi / band).floor() as i64);
+        // Past MOST_BANDS bands the rest of the instance stays whole, as one more piece.
+        let b1 = b_last.min(b0.saturating_add(MOST_BANDS - 1));
+        let capped = b_last > b1;
         let tears: Vec<Option<f32>> = (b0..=b1).map(torn).collect();
         if tears.iter().all(Option::is_none) {
+            out.push(inst);
+            continue;
+        }
+        // Room for every piece this instance becomes, or it stays whole.
+        let runs = tears.iter().enumerate().filter(|&(k, t)| t.is_some() || k == 0 || tears[k - 1].is_some()).count()
+            + capped as usize;
+        let torn_count = tears.iter().filter(|t| t.is_some()).count();
+        let instances = runs + if tear_split > 0.0 { 2 * torn_count } else { 0 };
+        if instances > budget.instances || runs * (corners.len() + 2) > budget.points {
             out.push(inst);
             continue;
         }
@@ -634,7 +703,7 @@ fn glitch(e: &GlitchEffect, only: &[u32], list: &mut Vec<Inst>, frame: &mut Fram
             if k > 0 {
                 planes.push(at_least(b as f32 * band));
             }
-            if end + 1 < tears.len() {
+            if end + 1 < tears.len() || capped {
                 planes.push(below((b0 + end as i64 + 1) as f32 * band));
             }
             k = end + 1;
@@ -642,6 +711,7 @@ fn glitch(e: &GlitchEffect, only: &[u32], list: &mut Vec<Inst>, frame: &mut Fram
                 break;
             }
             let Some(piece) = clip_to(frame, &inst.p, &planes, budget) else { continue };
+            let inst = Inst { boxed: false, ..inst };
             match by {
                 None => out.push(Inst { p: piece, ..inst }),
                 Some(by) => {
@@ -655,27 +725,33 @@ fn glitch(e: &GlitchEffect, only: &[u32], list: &mut Vec<Inst>, frame: &mut Fram
                 }
             }
         }
+        if capped
+            && budget.take(1, 0)
+            && let Some(piece) = clip_to(frame, &inst.p, &[at_least((b1 + 1) as f32 * band)], budget)
+        {
+            out.push(Inst { p: piece, boxed: false, ..inst });
+        }
     }
     *list = out;
 }
 
 /// Runs the instance effects of `fx` over the Text's instances pushed from `start` on, each
-/// owned by `(copy, letter)` in `owners`, and puts back what they made: copies further back
+/// owned by `(copy, letter, clip still its own box)` in `owners`, and puts back what they made: copies further back
 /// first, and each covering instance before the light added onto it.
-pub fn apply(fx: &Fx, cx: &FxCx, frame: &mut Frame, start: usize, owners: &[(usize, u32)]) {
+pub fn apply(fx: &Fx, cx: &FxCx, frame: &mut Frame, start: usize, owners: &[(usize, u32, bool)]) {
     if !fx.copies() || start >= frame.paths.len() {
         return;
     }
     let mut list: Vec<Inst> = frame
         .paths
         .drain(start..)
-        .zip(owners.iter().copied().chain(std::iter::repeat((0, u32::MAX))))
-        .map(|(p, (copy, letter))| Inst { p, copy, letter, depth: 0 })
+        .zip(owners.iter().copied().chain(std::iter::repeat((0, u32::MAX, false))))
+        .map(|(p, (copy, letter, boxed))| Inst { p, copy, letter, depth: 0, boxed })
         .collect();
     let mut budget = Budget { instances: MOST_FX_INSTANCES.saturating_sub(list.len()), points: MOST_FX_POINTS };
     for (e, only) in &fx.list {
         match e {
-            Effect::Echo(e) => echo(e, only, &mut list, cx, &mut budget),
+            Effect::Echo(e) => echo(e, only, &mut list, frame, cx, &mut budget),
             Effect::Mirror(e) => mirror(e, only, &mut list, frame, cx, &mut budget),
             Effect::Split(e) => colour_split(e, only, &mut list, cx, &mut budget),
             Effect::Glitch(e) => glitch(e, only, &mut list, frame, cx, &mut budget),

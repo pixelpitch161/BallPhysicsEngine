@@ -678,7 +678,9 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
         if !fx.melts() {
             return contours;
         }
-        let down = Vec2::from_angle(-copies[l.copy].pose.angle).rotate(Vec2::Y);
+        // The picture's down in the world: turned with the camera, unless the Text is on the screen.
+        let picture_down = if on_screen(cx.tree, cx.thing.id) { 0.0 } else { cx.world.camera.turn };
+        let down = Vec2::from_angle(picture_down - copies[l.copy].pose.angle).rotate(Vec2::Y);
         fx.melt(contours, l.letter as u32, down, cx.time)
     };
     // Each letter's outline as it shows (fast letters' are their moved boxes), laying the gradient.
@@ -845,10 +847,11 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
     // piece keeps).
     let walls = crate::rules::remains::draw::walls_of(cx.world);
     // Which shown letter each instance from `start` on draws (pieces too), for the effects.
-    let mut owners: Vec<usize> = vec![usize::MAX; frame.paths.len() - start];
+    // Each also says whether its clip is still the letter's own box (a shattered piece's is its cell).
+    let mut owners: Vec<(usize, bool)> = vec![(usize::MAX, false); frame.paths.len() - start];
     for &(i, l, ..) in &pushed {
         if let Some(o) = owners.get_mut(i - start) {
-            *o = l;
+            *o = (l, shown[l].shatter.is_none());
         }
     }
     for &(i, l_index, ..) in &pushed {
@@ -863,13 +866,15 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
         let letter = crate::rules::remains::draw::LetterPiece { part: l.letter as u32, edge: &edge, half, middle };
         let before = frame.paths.len();
         crate::rules::remains::draw::shatter_letter(r, look, cx.thing.id.0, &letter, i, cx.time, &walls, frame);
-        owners.extend(std::iter::repeat_n(l_index, frame.paths.len() - before));
+        owners.extend(std::iter::repeat_n((l_index, false), frame.paths.len() - before));
     }
     if fx.is_empty() {
         return;
     }
-    let owners: Vec<(usize, u32)> =
-        owners.into_iter().map(|o| shown.get(o).map_or((0, u32::MAX), |l| (l.copy, l.letter as u32))).collect();
+    let owners: Vec<(usize, u32, bool)> = owners
+        .into_iter()
+        .map(|(o, boxed)| shown.get(o).map_or((0, u32::MAX, false), |l| (l.copy, l.letter as u32, boxed)))
+        .collect();
     let fx_cx = super::fx::FxCx {
         time: cx.time,
         screen: on_screen(cx.tree, cx.thing.id),
