@@ -174,7 +174,7 @@ pub struct World {
     /// second squared: worked out once a step after Spawn, added in every substep.
     pulls: BTreeMap<ThingId, Vec<Vec2>>,
     /// The scene's physics fingerprint (the one without the history, [`sound_fingerprint`]'s),
-    /// when some thing's sim asked for it ([`crate::ThingSim::needs_fingerprint`]). Two worlds
+    /// when some thing's sim asked for it ([`crate::ThingSim::needs_physics_print`]). Two worlds
     /// with the same one run alike step for step, so work keyed by it can be shared.
     pub fingerprint: Option<u64>,
     /// The scene's rules as they run (none without an enabled rule).
@@ -237,8 +237,8 @@ pub fn physics_animation(scene: &Scene, resolved: &Resolved, sims: &Sims) -> Opt
         Some(slot) if BESIDE_SLOTS.contains(&slot) => true,
         Some(_) => false,
         None => match (resolved.things.get(&thing).and_then(|r| sims.thing(&r.kind)), scene.things.get(&thing)) {
-            (Some(s), Some(t)) => s.affects_physics_in(scene, t, bpe_core::vary::base_key(key)),
-            (Some(s), None) => s.affects_physics(bpe_core::vary::base_key(key)),
+            (Some(s), Some(t)) => s.key_restarts_physics_here(scene, t, bpe_core::vary::base_key(key)),
+            (Some(s), None) => s.key_restarts_physics(bpe_core::vary::base_key(key)),
             (None, _) => false,
         },
     });
@@ -303,7 +303,7 @@ impl World {
         }
         // Worked out first: a thing may cache work by it while it builds.
         let wants_fingerprint =
-            resolved.things.values().any(|r| sims.thing(&r.kind).is_some_and(|s| s.needs_fingerprint(r)));
+            resolved.things.values().any(|r| sims.thing(&r.kind).is_some_and(|s| s.needs_physics_print(r)));
         if wants_fingerprint {
             world.fingerprint = Some(sound_fingerprint(scene, resolved, sims));
         }
@@ -535,7 +535,7 @@ impl World {
                 .kinds
                 .get(&thing)
                 .and_then(|k| sims.thing(k))
-                .is_some_and(|s| s.affects_physics(bpe_core::vary::base_key(key))),
+                .is_some_and(|s| s.key_restarts_physics(bpe_core::vary::base_key(key))),
         }
     }
 
@@ -1663,7 +1663,7 @@ fn beside_hash(
     for (id, r) in &resolved.things {
         let Some(sim) = sims.thing(&r.kind).filter(|s| s.in_main(r)) else { continue };
         for (key, value) in r.params.iter() {
-            if sim.affects_beside(key) {
+            if sim.key_restarts_beside(key) {
                 h.bytes(&id.0.to_le_bytes());
                 h.bytes(key.as_bytes());
                 h.value(value);
@@ -1677,9 +1677,9 @@ fn beside_hash(
         let sim = sims.thing(&r.kind).expect("a beside thing has a sim");
         let Some(thing) = scene.things.get(id) else { continue };
         h.bytes(&id.0.to_le_bytes());
-        h.bytes(&sim.more_fingerprint(r).to_le_bytes());
+        h.bytes(&sim.beside_print_extra(r).to_le_bytes());
         // What else of the saved scene it reads (the Text a Particles thing spells).
-        let more = sim.fingerprint_more(scene, thing, r);
+        let more = sim.physics_print_extra(scene, thing, r);
         if more != 0 {
             h.bytes(&more.to_le_bytes());
         }
@@ -1694,7 +1694,7 @@ fn beside_hash(
             h.value(value);
         }
         for (slot, s) in r.slots.iter().filter(|(slot, _)| !SIM_SLOTS.contains(slot)) {
-            for (key, value) in s.params.iter().filter(|(key, _)| sim.beside_card_key(*slot, key)) {
+            for (key, value) in s.params.iter().filter(|(key, _)| sim.card_key_restarts_beside(*slot, key)) {
                 h.bytes(&[*slot as u8]);
                 h.bytes(key.as_bytes());
                 h.value(value);
@@ -1800,12 +1800,12 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
         }
         if let Some(sim) = sims.thing(&r.kind) {
             for (key, value) in r.params.iter() {
-                if sim.affects_physics_in(scene, thing, bpe_core::vary::base_key(key)) {
+                if sim.key_restarts_physics_here(scene, thing, bpe_core::vary::base_key(key)) {
                     h.bytes(key.as_bytes());
                     h.value(value);
                 }
             }
-            let more = sim.fingerprint_more(scene, thing, r);
+            let more = sim.physics_print_extra(scene, thing, r);
             if more != 0 {
                 h.bytes(b"more");
                 h.bytes(&more.to_le_bytes());
@@ -1821,7 +1821,7 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
             h.bytes(tag.as_bytes());
         }
         // Only modules the processor simulates count, and the cards of a thing that reads its own.
-        let owns = sims.thing(&r.kind).is_some_and(|s| s.own_cards());
+        let owns = sims.thing(&r.kind).is_some_and(|s| s.steps_own_cards());
         for slot in SIM_SLOTS {
             if let Some(s) = r.slots.get(&slot)
                 && (owns || sims.module(&s.kind).is_some())
@@ -1841,7 +1841,7 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
             }
         }
         // What else its stepping keeps (two-way particles' trails and marks), so a change rebuilds it.
-        if let Some(more) = sims.thing(&r.kind).map(|s| s.more_fingerprint(r)).filter(|m| *m != 0) {
+        if let Some(more) = sims.thing(&r.kind).map(|s| s.beside_print_extra(r)).filter(|m| *m != 0) {
             h.bytes(b"more");
             h.bytes(&more.to_le_bytes());
         }
@@ -1862,7 +1862,7 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
     }
     // A thing in the physics that reads its own cards (two-way particles) may read the air too:
     // then the air's cards and keys count.
-    if resolved.things.values().any(|r| sims.thing(&r.kind).is_some_and(|s| s.own_cards())) {
+    if resolved.things.values().any(|r| sims.thing(&r.kind).is_some_and(|s| s.steps_own_cards())) {
         for (id, r) in &resolved.things {
             for slot in BESIDE_SLOTS {
                 if let Some(s) = r.slots.get(&slot) {

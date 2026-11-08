@@ -60,7 +60,7 @@ Dependencies go bottom to top:
   (not moved, bounced or paired, its speed kept at 0: an emitter holding a caught ball before sending it back). Events `Spawn` (tag 8:
   an emitter fired a ball, `b` = (emitter, round)) and `Enter` (tag 9: a ball came into a catcher, `b` = (catcher,
   its round)) sit beside Hit and Remove; every log reader filters by kind. `pairs::pop` is public. `World.fingerprint` is
-  the physics fingerprint worked out at build when a sim asks (`ThingSim::needs_fingerprint`); `World::lone(keep)` copies
+  the physics fingerprint worked out at build when a sim asks (`ThingSim::needs_physics_print`); `World::lone(keep)` copies
   the world with only the kept things, no history; `World::lend_cards` puts one thing's Motion/Bounce on another. `sound_fingerprint` is the
   physics fingerprint without the history part (the editor rebuilds the sound only when it changes). The generic `ThingSim` hooks (spawn, forces,
   settle, after_step) stay for new thing kinds even where no current kind uses them. Walls are **two-sided**:

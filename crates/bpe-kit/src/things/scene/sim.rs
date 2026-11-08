@@ -39,12 +39,12 @@ impl ThingSim for SceneSim {
     }
 
     /// The video's size counts too: the camera's Stay inside, Slack and Fit all read it.
-    fn affects_physics(&self, key: &str) -> bool {
+    fn key_restarts_physics(&self, key: &str) -> bool {
         matches!(key, "gravity" | "steps_per_second" | "duration" | "seed" | "width" | "height")
     }
 
     /// Particles born or pushed on the beat read the tempo.
-    fn affects_beside(&self, key: &str) -> bool {
+    fn key_restarts_beside(&self, key: &str) -> bool {
         matches!(key, "tempo" | "time_top" | "time_bottom")
     }
 }

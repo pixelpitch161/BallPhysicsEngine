@@ -1,6 +1,6 @@
 //! What a Particles thing's stepping reads from its Look (particles part 6): how many past places
 //! its Trails layers need and which marks its Marks layers draw. A change of them rebuilds the
-//! particle playback ([`bpe_runtime::ThingSim::more_fingerprint`]); a change of a colour doesn't.
+//! particle playback ([`bpe_runtime::ThingSim::beside_print_extra`]); a change of a colour doesn't.
 
 use bpe_core::ResolvedSlot;
 

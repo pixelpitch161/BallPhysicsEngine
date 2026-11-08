@@ -294,20 +294,20 @@ impl ThingSim for TextSim {
 
     /// What lays out and places the letters, and what balls do at them; the Show, values' Re-sort
     /// time, riding and Fast letters are drawn only.
-    fn affects_physics(&self, key: &str) -> bool {
+    fn key_restarts_physics(&self, key: &str) -> bool {
         TextSettings::defs().iter().any(|d| d.key == key && matches!(d.group, "Words" | "Path" | "Balls"))
             && key != "fast"
     }
 
     /// Only a Text with a wall has its words, path and balls settings in the physics (a title on
     /// the screen is typed into without restarting the run); its Spin always.
-    fn affects_physics_in(&self, scene: &Scene, thing: &Thing, key: &str) -> bool {
-        key == "spin" || (self.affects_physics(key) && walled_in(scene, thing))
+    fn key_restarts_physics_here(&self, scene: &Scene, thing: &Thing, key: &str) -> bool {
+        key == "spin" || (self.key_restarts_physics(key) && walled_in(scene, thing))
     }
 
     /// For a Text with a wall: that it has one, and a font the scene keeps (loading or removing it
     /// lays the letters out again). 0 for every other Text, as before letters were walls.
-    fn fingerprint_more(&self, scene: &Scene, thing: &Thing, resolved: &ResolvedThing) -> u64 {
+    fn physics_print_extra(&self, scene: &Scene, thing: &Thing, resolved: &ResolvedThing) -> u64 {
         if !walled_in(scene, thing) {
             return 0;
         }
