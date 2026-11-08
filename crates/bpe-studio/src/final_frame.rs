@@ -172,8 +172,14 @@ mod tests {
                 assert_eq!(shown.size, (270, 480));
                 assert!(!shown.baked, "a scene without a Lighting card never bakes");
             }
-            // No graphics card here: the window says so instead.
-            Some(Err(message)) => eprintln!("skipped: {message}"),
+            // No graphics card here: the window says so instead. That only passes when skipping was asked for.
+            Some(Err(message)) => {
+                // Fails here without a device unless skipping was asked for; with one, the error is real.
+                if bpe_gfx::test_device().is_ok() {
+                    panic!("the final frame failed with a graphics device: {message}");
+                }
+                eprintln!("skipped: {message}");
+            }
             None => panic!("nothing came back"),
         }
     }

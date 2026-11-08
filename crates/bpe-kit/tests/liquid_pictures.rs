@@ -5,7 +5,7 @@
 //! `BPE_SAVE_RENDERS=1` saves the pictures into `target/pictures/liquid-*.png`.
 
 use bpe_core::{Choice, Color, Gradient, LayerId, Params, Registry, Scene, Settings, SlotId, ThingId, layered_key};
-use bpe_gfx::{Frame, Renderer, build_frame, headless_device};
+use bpe_gfx::{Frame, Renderer, build_frame, test_device};
 use bpe_kit::paint::Paint;
 use bpe_kit::things::light::{LightType, add_light};
 use bpe_kit::things::particles::liquid::{LIQUID, LiquidLayer, Surface};
@@ -28,7 +28,7 @@ struct Gpu {
 }
 
 fn gpu() -> Option<Gpu> {
-    let (device, queue) = headless_device().ok()?;
+    let (device, queue) = test_device().ok()?;
     let renderer = Renderer::new(&device, W, H);
     Some(Gpu { device, queue, renderer })
 }

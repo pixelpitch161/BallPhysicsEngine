@@ -1,0 +1,115 @@
+# Checks every pull request and every push to main: formatting, lint, all tests on a software graphics driver,
+# the release goldens and the Windows cross-build. See CLAUDE.md, "Working rules".
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Every job runs on Ubuntu 24.04, the cloud containers' system: the goldens hash float results, and the C maths
+# library's sin/cos/exp differ in the last bit between glibc versions (on ubuntu-26.04 one particle golden moves), the
+# same known gap as native Windows. Move the image forward together with a re-bless of the goldens.
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Rust (the version in rust-toolchain.toml)
+        run: rustup toolchain install
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - name: System packages
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config libudev-dev
+      - name: Rust (the version in rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-ubuntu-24.04
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: Tests (debug, software GPU)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v5
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - name: System packages (Mesa's software Vulkan driver, ffmpeg for the export tests)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config libudev-dev mesa-vulkan-drivers ffmpeg \
+            libxkbcommon-x11-0 libxkbcommon0
+      - name: Rust (the version in rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-ubuntu-24.04
+      - name: Tests
+        # Two at a time: the picture tests on the software driver need the memory. One package selection, so every
+        # crate builds once with one set of features.
+        run: cargo test --workspace --no-fail-fast -- --test-threads=2
+
+  release-goldens:
+    name: Goldens (release)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      # LTO and a single codegen unit only make the shipped exe smaller and faster; they can't change a float result
+      # (Rust does no fast-math or float contraction), so the release goldens are checked without them.
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+    steps:
+      - uses: actions/checkout@v5
+      - name: System packages (Mesa's software Vulkan driver for the pinned pictures)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config libudev-dev mesa-vulkan-drivers
+      - name: Rust (the version in rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-ubuntu-24.04
+      - name: Physics goldens and pinned pictures
+        run: cargo test --release -p bpe-kit --test 'golden*' --test unlit_pictures --test lit_flat_pinned
+      - name: Sound goldens
+        # Only the goldens: the release-only speed checks in these files measure the machine, not the code.
+        run: cargo test --release -p bpe-sound --test chain --test shape_voice --test mod_matrix golden
+
+  windows:
+    name: Windows cross-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+    steps:
+      - uses: actions/checkout@v5
+      - name: MinGW
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+      - name: Rust (the version in rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-ubuntu-24.04
+      - name: Build the editor and the renderer for Windows
+        run: cargo build --release --target x86_64-pc-windows-gnu -p bpe-studio -p bpe-cli

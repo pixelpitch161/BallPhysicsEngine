@@ -1,11 +1,11 @@
 //! Picture tests for the stage 5 passes: styled balls, trails and particles, on the software GPU.
 
-use crate::{Frame, LookInstance, PaintGpu, Renderer, headless_device};
+use crate::{Frame, LookInstance, PaintGpu, Renderer, test_device};
 use glam::Vec2;
 
 /// Renders `frame` at `w` by `h`, or `None` without a GPU.
 pub(crate) fn render_sized(frame: &Frame, w: u32, h: u32) -> Option<Vec<u8>> {
-    let Ok((device, queue)) = headless_device() else {
+    let Ok((device, queue)) = test_device() else {
         eprintln!("no GPU adapter available, skipping");
         return None;
     };

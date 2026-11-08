@@ -2713,3 +2713,54 @@ pub fn headless_device() -> anyhow::Result<(wgpu::Device, wgpu::Queue)> {
     )?;
     Ok((device, queue))
 }
+
+/// Set to `1` to let picture tests skip on a machine without a graphics adapter.
+pub const SKIP_GPU_TESTS: &str = "BPE_SKIP_GPU_TESTS";
+
+/// What a test does when no graphics device can be made.
+#[derive(Debug, PartialEq, Eq)]
+pub enum NoGpu {
+    /// Skipping was asked for: the test returns early.
+    Skip,
+    /// The test fails with this message.
+    Fail(String),
+}
+
+/// Decides what a test does without a graphics device: skip only when `skip_asked`, else fail naming the fix.
+pub fn no_gpu(skip_asked: bool, why: &str) -> NoGpu {
+    if skip_asked {
+        NoGpu::Skip
+    } else {
+        NoGpu::Fail(format!(
+            "no graphics device for a picture test ({why}). Install a Vulkan driver (in a Linux container: \
+             apt-get install mesa-vulkan-drivers), or set {SKIP_GPU_TESTS}=1 to skip the picture tests on purpose."
+        ))
+    }
+}
+
+/// The graphics device for a test. Same as [`headless_device`], but without a device the test fails loudly unless
+/// `BPE_SKIP_GPU_TESTS=1` is set, when the error comes back and the test skips. Every test that draws uses this.
+pub fn test_device() -> anyhow::Result<(wgpu::Device, wgpu::Queue)> {
+    match headless_device() {
+        Ok(pair) => Ok(pair),
+        Err(e) => {
+            let skip = std::env::var(SKIP_GPU_TESTS).is_ok_and(|v| v == "1");
+            match no_gpu(skip, &e.to_string()) {
+                NoGpu::Skip => Err(e),
+                NoGpu::Fail(message) => panic!("{message}"),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod test_device_tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_gpu_fails_unless_skipping_was_asked_for() {
+        assert_eq!(no_gpu(true, "none"), NoGpu::Skip);
+        let NoGpu::Fail(message) = no_gpu(false, "no adapter") else { panic!("should fail") };
+        assert!(message.contains("no adapter") && message.contains(SKIP_GPU_TESTS) && message.contains("mesa"));
+    }
+}

@@ -1,0 +1,6 @@
+# The Rust version every build uses (cloud containers, CI and the Windows exe), so a new Rust release can't break the
+# checks by itself. Move it forward on purpose, in its own pull request, fixing any new clippy warnings there.
+[toolchain]
+channel = "1.97.0"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-pc-windows-gnu"]

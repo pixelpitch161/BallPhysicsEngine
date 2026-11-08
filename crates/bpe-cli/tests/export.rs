@@ -1,7 +1,7 @@
 //! Export checks: a short clip has picture and a (silent) sound track; failures leave no file behind.
 
 use bpe_cli::{Encoder, ExportOptions, export_video, find_ffmpeg};
-use bpe_gfx::headless_device;
+use bpe_gfx::test_device;
 use bpe_kit::{kit, new_scene, new_studio_scene};
 use std::path::PathBuf;
 
@@ -13,7 +13,7 @@ fn temp_dir(name: &str) -> PathBuf {
 }
 
 fn ready() -> Option<(bpe_gfx::wgpu::Device, bpe_gfx::wgpu::Queue)> {
-    let Ok(pair) = headless_device() else {
+    let Ok(pair) = test_device() else {
         eprintln!("no GPU adapter available, skipping");
         return None;
     };
@@ -294,7 +294,7 @@ fn blank_scene_exports_a_silent_track() {
 #[test]
 fn a_scene_with_text_exports_a_frame() {
     use bpe_core::{Scene, ThingId, Value};
-    let Ok((device, queue)) = headless_device() else { return eprintln!("no GPU adapter available, skipping") };
+    let Ok((device, queue)) = test_device() else { return eprintln!("no GPU adapter available, skipping") };
     let kit = kit();
     let mut scene = Scene::empty(&kit.registry);
     bpe_kit::ensure_camera(&mut scene, &kit.registry);

@@ -7,7 +7,7 @@
 //! `BPE_SAVE_RENDERS=1` saves the pictures into `target/pictures/gradient-*.png`.
 
 use bpe_core::{Color, Gradient, Mix, Scene, ThingId, Value};
-use bpe_gfx::{Frame, Renderer, build_frame, headless_device, wgpu};
+use bpe_gfx::{Frame, Renderer, build_frame, test_device, wgpu};
 use bpe_kit::{Kit, kit, new_scene};
 use bpe_runtime::Playback;
 
@@ -78,7 +78,7 @@ fn luma(p: [u8; 3]) -> f32 {
 
 #[test]
 fn each_mix_draws_as_the_gradient_samples() {
-    let Ok((device, queue)) = headless_device() else {
+    let Ok((device, queue)) = test_device() else {
         eprintln!("no GPU adapter available, skipping");
         return;
     };
@@ -103,7 +103,7 @@ fn each_mix_draws_as_the_gradient_samples() {
 
 #[test]
 fn a_looped_gradient_has_no_cut_where_it_wraps() {
-    let Ok((device, queue)) = headless_device() else {
+    let Ok((device, queue)) = test_device() else {
         eprintln!("no GPU adapter available, skipping");
         return;
     };
@@ -122,7 +122,7 @@ fn a_looped_gradient_has_no_cut_where_it_wraps() {
 
 #[test]
 fn bands_cut_the_background_into_flat_colours() {
-    let Ok((device, queue)) = headless_device() else {
+    let Ok((device, queue)) = test_device() else {
         eprintln!("no GPU adapter available, skipping");
         return;
     };
@@ -150,7 +150,7 @@ fn bands_cut_the_background_into_flat_colours() {
 
 #[test]
 fn grain_dithers_without_shifting_the_colours() {
-    let Ok((device, queue)) = headless_device() else {
+    let Ok((device, queue)) = test_device() else {
         eprintln!("no GPU adapter available, skipping");
         return;
     };

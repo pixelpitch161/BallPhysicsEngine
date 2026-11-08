@@ -4,7 +4,7 @@ use std::borrow::Cow;
 
 use crate::effects::{Builtin, defaults};
 use crate::pictures::{pixel_sized, save};
-use crate::{Frame, LayerGpu, LayeredInstance, LayeredRun, LookProgram, PaintGpu, Renderer, headless_device};
+use crate::{Frame, LayerGpu, LayeredInstance, LayeredRun, LookProgram, PaintGpu, Renderer, test_device};
 use bpe_core::{Blend, Color, Gradient};
 use glam::Vec2;
 
@@ -82,7 +82,7 @@ fn builtin(id: &str) -> Cow<'static, str> {
 type Drawn = Option<(Vec<u8>, Vec<(u64, String)>)>;
 
 fn draw(frame: &Frame) -> Drawn {
-    let (device, queue) = headless_device().ok()?;
+    let (device, queue) = test_device().ok()?;
     let mut r = Renderer::new(&device, W, H);
     r.render(&device, &queue, frame);
     Some((r.read_output(&device, &queue).unwrap(), r.program_errors()))
@@ -295,7 +295,7 @@ fn a_group_shader_covering_half_the_group_from_the_top_reaches_only_the_top_ball
 fn programs_built_in_the_background_draw_without_the_effect_until_ready_and_are_shared() {
     let plain = frame_with(vec![body()], &[]);
     let lava = frame_with(vec![body(), shader("lava", 0, 1.0)], &[builtin("lava")]);
-    let Ok((device, queue)) = headless_device() else { return };
+    let Ok((device, queue)) = test_device() else { return };
     let store = crate::ProgramStore::in_background();
     let mut r = Renderer::new(&device, W, H);
     r.share_programs(&store);
@@ -423,7 +423,7 @@ const SIDE: &str = "// name: Side\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f
 
 /// `frame` drawn into a `w` by `h` output, its pixel at world point `p`.
 fn pixel_at(frame: &Frame, w: u32, h: u32, p: Vec2) -> Option<[u8; 4]> {
-    let (device, queue) = headless_device().ok()?;
+    let (device, queue) = test_device().ok()?;
     let mut r = Renderer::new(&device, w, h);
     r.render(&device, &queue, frame);
     assert!(r.program_errors().is_empty(), "{:?}", r.program_errors());

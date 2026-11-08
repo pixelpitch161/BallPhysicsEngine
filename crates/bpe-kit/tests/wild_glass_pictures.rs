@@ -9,7 +9,7 @@
 //! `BPE_SAVE_RENDERS=1` saves the pictures into `target/pictures/wild-*.png`.
 
 use bpe_core::{Choice, Color, Gradient, Registry, Scene, Settings, SlotId, ThingId, Value, layered_key};
-use bpe_gfx::{Frame, LightShow, Renderer, build_frame, headless_device};
+use bpe_gfx::{Frame, LightShow, Renderer, build_frame, test_device};
 use bpe_kit::modules::look::surface::{SurfaceKind, preset_values};
 use bpe_kit::things::particles::look::SPRITES;
 use bpe_kit::things::particles::looks::{Look, add_particles};
@@ -28,7 +28,7 @@ struct Gpu {
 }
 
 fn gpu() -> Option<Gpu> {
-    let (device, queue) = headless_device().ok()?;
+    let (device, queue) = test_device().ok()?;
     let renderer = Renderer::new(&device, W, H);
     Some(Gpu { device, queue, renderer })
 }

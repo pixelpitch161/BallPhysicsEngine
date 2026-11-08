@@ -1289,7 +1289,7 @@ mod tests {
     /// end. Then the next frame draws. Returns that picture and a clean render of the edited
     /// scene, which it must match.
     fn edit_then_draw(edit: impl Fn(&mut Scene)) -> Option<(Vec<u8>, Vec<u8>)> {
-        let gpu = bpe_gfx::headless_device().ok()?;
+        let gpu = bpe_gfx::test_device().ok()?;
         let mut studio = Studio::headless();
         studio.seek(1.0);
         let mut renderer = Renderer::new(&gpu.0, 135, 240);

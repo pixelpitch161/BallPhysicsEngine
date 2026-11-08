@@ -5,7 +5,7 @@
 //! `BPE_SAVE_RENDERS=1` saves the pictures into `target/pictures/camera-*.png`.
 
 use bpe_core::{Registry, Scene, SlotId, ThingId, Value};
-use bpe_gfx::{Frame, Renderer, build_frame, headless_device};
+use bpe_gfx::{Frame, Renderer, build_frame, test_device};
 use bpe_kit::{kit, scenes};
 use bpe_runtime::Playback;
 
@@ -19,7 +19,7 @@ struct Gpu {
 }
 
 fn gpu() -> Option<Gpu> {
-    let Ok((device, queue)) = headless_device() else {
+    let Ok((device, queue)) = test_device() else {
         eprintln!("no GPU adapter available, skipping");
         return None;
     };

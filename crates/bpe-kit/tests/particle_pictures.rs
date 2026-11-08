@@ -5,7 +5,7 @@
 //! `BPE_SAVE_RENDERS=1` saves the pictures into `target/pictures/particles-*.png`.
 
 use bpe_core::{Params, Scene, Settings, SlotId, ThingId, layered_key};
-use bpe_gfx::{Frame, Renderer, build_frame, headless_device};
+use bpe_gfx::{Frame, Renderer, build_frame, test_device};
 use bpe_kit::things::particles::look::{
     FLAME, FlameLayer, GLITTER, GlitterLayer, MoreShape, SHAPES, SMOKE, ShapesLayer, SmokeLayer, SpritesLayer, WEB,
     WebLayer,
@@ -25,7 +25,7 @@ struct Gpu {
 }
 
 fn gpu() -> Option<Gpu> {
-    let (device, queue) = headless_device().ok()?;
+    let (device, queue) = test_device().ok()?;
     let renderer = Renderer::new(&device, W, H);
     Some(Gpu { device, queue, renderer })
 }

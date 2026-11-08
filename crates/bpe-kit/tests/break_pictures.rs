@@ -5,7 +5,7 @@
 //! `BPE_SAVE_RENDERS=1` saves the pictures into `target/pictures/break-*.png`.
 
 use bpe_core::{Color, Gradient, Scene, Settings, SlotId, Stop, ThingId, Value, Who, layered_key};
-use bpe_gfx::{Frame, Renderer, build_frame, headless_device};
+use bpe_gfx::{Frame, Renderer, build_frame, test_device};
 use bpe_kit::{ShapeFill, ShapeSettings, add_thing, kit, new_studio_scene};
 use bpe_runtime::Playback;
 
@@ -21,7 +21,7 @@ struct Gpu {
 }
 
 fn gpu() -> Option<Gpu> {
-    let (device, queue) = headless_device().ok()?;
+    let (device, queue) = test_device().ok()?;
     let renderer = Renderer::new(&device, W, H);
     Some(Gpu { device, queue, renderer })
 }

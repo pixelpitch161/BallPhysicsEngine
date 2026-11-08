@@ -497,7 +497,7 @@ mod tests {
 
     #[test]
     fn the_view_draws_a_white_ball_on_the_dark_ground() {
-        let Ok((device, queue)) = bpe_gfx::headless_device() else {
+        let Ok((device, queue)) = bpe_gfx::test_device() else {
             eprintln!("no GPU adapter available, skipping");
             return;
         };
