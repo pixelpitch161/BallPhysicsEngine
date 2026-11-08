@@ -217,3 +217,44 @@ part" (4). Read parts 1 to 3's "As built" first.
 - Moves moving the wall or the parts (drawing only, like the Show); Across on Shader layers or sub-layers.
 - Keys and pulses of a Text read by a word made of balls or particles (its saved settings are read).
 - The experimental folds (part 5: Echo, Mirror, Colour split, Glitch, Melt).
+
+## As built
+
+- **Core/runtime.** `LayerKind::fits(thing_kind)` (default true; `layers::fits_thing`, checked by add/paste/paste_look)
+  keeps letter moves and other Text-only layers off shapes; `ThingKind::layers_by_number` (Text: true) lets a layer's
+  `only` hold 0-based letter numbers (`set_layer_only`). `ThingSim::reads_tree(&self, resolved)` now sees the resolved
+  scene, and `beside_fingerprint` hashes `fingerprint_more` too.
+- **Moves** (`modules/look/shape/moves.rs`, kinds `text.move.wave|beat|hit|flicker|sound|shake|spin|scatter|draw`,
+  section Reaction of `look.shape`, `MOVES`): each with Amount (keyframe, pulse) and its own settings. Drawing reads
+  them in `things/text/moves.rs`: `moves_of(look)` (enabled, with `only`), `apply(at, moves, now)` folds every move
+  into each shown letter's `LetterMove` in list order (offsets add in the letter's frame, turns add, scale and stretch
+  multiply, opacity multiplies, the first Draw on wins). Pure in time: Wave (sine along the text), Jump on the beat
+  (`beat_at`), Jump on hit (`hits_for`: per letter on a walled Text for Me/The hit letter, per ball on a riding copy,
+  else every hit of the target; Later, Decay), Flicker (`light::draw::flicker`), Follow sound (its Level pulse read at
+  each letter's moment through `TextAt.sound`, `DrawCx.sound`), Shake, Spin each letter, Scatter and come back, Draw
+  on (`DrawPlan`: One after another by outline length, or All together; `traced` gives the out-and-back pieces of the
+  traced share and the pen; Lines only / Lines and fill / Fill only). `pen(at)` is the pen in the world. Moves are
+  drawing only: walls, parts and goldens don't move.
+- **Drawing** (`text/draw.rs`): `TextNow::mover`/`contours_moved`/`middle_moved`; a traced letter draws as a band of
+  half the Pen width (`b.x`) over the traced pieces, plus its fill when shown; fast letters (glyph tiles) take the turn
+  and a mean scale; traced and shattered letters never use tiles.
+- **Across / only** (`modules/look/shape/units.rs`): Colours, Outline and Glow (own colours) have **Across** Whole text
+  / Each letter / Each line (`TEXT_ONLY`, hidden on shapes). `unit_records` copies the Text's records once per distinct
+  (letter or line, worn set), at most `MOST_UNIT_SETS` 2048, `lay_over` patching where a gradient lies (Straight: the
+  unit's extent along the turned direction; Round: `place.zw` = the unit's middle and `p0.z` its reach, read by
+  shape_layers.wgsl only when set and the record isn't a band; other forms: the centre and angle moved); a layer a
+  letter doesn't wear is `unworn` (amount 0, `LayerGpu::UNWORN`). Every letter wearing everything uses the whole set.
+- **The pen** (`things/light/`): Rides on **The pen** (`RidesOn::ThePen`) and Points **At the pen**
+  (`Points::AtThePen`, a laser's beam ends there) for a light inside a Text; nothing shows while there is no pen.
+- **Words from a Text** (`things/text/shape.rs`: `text_named`, `letters_of` from the saved settings with values in
+  braces dropped, Along a shape read as Straight, `letters_hash`): Balls' Word **Made of A Text thing**
+  (`WordFrom`, `word_text`; `shapes::with_text_word`, `fill_letters`) and Particles' Form a word **A Text thing**
+  (`text_thing`; `SpotsKey::TextThing`, `refresh_spots`); both `reads_tree` and hash `letters_hash` in
+  `fingerprint_more`.
+- **Looks** (20 now): Word made of balls, Particle word, Laser writing (lit), Text follows sound (Bus 1); Neon sign
+  flickers.
+- **Editor**: the Look editor's **Letter moves** list on a Text (`+ Add move`), the row menu's **Only some letters…**
+  (a box taking "1, 3-5", `parse_letters`, `letters_words`) and Apply to every letter; Across hidden on shapes.
+- **Tests**: `moves_tests.rs` (13), `units.rs` (5), `text/draw.rs` (draw on, each letter, only, spin), `shape.rs`,
+  looks `the_part_4_looks_play_out`, `tests/text_pictures.rs::a_gradient_starts_again_on_each_letter`, look_editor
+  kittests.
