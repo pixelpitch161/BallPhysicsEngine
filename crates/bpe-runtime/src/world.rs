@@ -1613,7 +1613,9 @@ pub fn is_beside(scene: &Scene, sims: &Sims, id: ThingId, r: &bpe_core::Resolved
     // A setting follows its sound (its own, or a bus while the sound hears it): its moments must
     // be in the log Follow sound reads.
     let heard = || sim.heard(r).is_some();
-    let sound_followed = scene.pulses.values().any(|p| match &p.source {
+    // Only a setting of a thing that is on follows anything.
+    let on = |a: &bpe_core::Address| scene.things.get(&a.thing).is_some_and(|t| t.enabled);
+    let sound_followed = scene.pulses.iter().filter(|(a, _)| on(a)).any(|(_, p)| match &p.source {
         bpe_core::PulseSource::Sound { shape, source } => {
             *shape == id || (matches!(source, bpe_core::SoundSource::Bus(_)) && heard())
         }

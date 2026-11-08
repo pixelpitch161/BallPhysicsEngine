@@ -231,3 +231,11 @@ Dependencies go bottom to top:
   48 kHz (`AUDIO_ARGS`); a scene without sound gets a silent track. Frames draw with `build_frame_with` and a
   `ControlSampler` when a setting follows sound. `--stems` and `--midi` (`ExportOptions`)
   save the stems and the MIDI file beside the video.
+
+**Small links (W12, 2026-11-08).** `ThingSim::keeps(scene, me, other)` lets a thing keep another stepping in the main
+world (the camera keeps what it follows); `World::is_beside` reads it with the rules' `BlockSim::keeps` and Sound
+pulses. The camera follows Lights (each lamp, where it shines from at the moment) and Rigs (each lamp of their
+lights) through `world.tree` (`reads_tree`; `fingerprint_more` hashes the followed lights), Particles (their specks)
+and, for Fit all, a shape's or walled Text's whole outline box. `things/point.rs::point_of` is one point of a thing.
+The Balls' typed Word takes a **Font** (`word_font`; the built-in name spells with `FONT` as ever, another font via
+`shapes::typed_font`/`word_in` at SemiBold, read from `world.tree`, hashed by `fingerprint_more`).

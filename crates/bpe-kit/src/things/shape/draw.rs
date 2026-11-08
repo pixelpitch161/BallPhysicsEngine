@@ -229,7 +229,8 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
     if let Some((r, l)) = &remains {
         use crate::rules::remains::{draw, shatter::Edge};
         match whole {
-            Some(s) => path.clip[2] = 1.0 - s.alpha.clamp(0.0, 1.0),
+            // A Break's fade on top of a move's.
+            Some(s) => path.clip[2] = 1.0 - (1.0 - path.clip[2]) * s.alpha.clamp(0.0, 1.0),
             None if l.look == crate::rules::breaks::BreakLook::Shatter => {
                 let edge = match (&form.points, form.ellipse) {
                     (Some(points), _) => Edge::Points(points),

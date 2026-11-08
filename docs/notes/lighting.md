@@ -215,3 +215,12 @@ shaders. `tests/bake_pictures.rs` (bpe-cli); `scenes::bake_demo` is test-only.
   (`fs_light` clamps the summed light at 0). The editor's Effects card is `look_editor/effects.rs`; after a jump
   in time, `preview/warm.rs` replays the effects' remembered seconds on a spare renderer
   (`Playback::rewound`), 6 frames per editor frame, and swaps it in ("Warming up effects… N%").
+
+**Small links (W12, 2026-11-08).** `Points::AtAThing` ("At a thing") with **Aims at** (`aim_at: Target`, default every
+Balls thing) and **Aims at ball** (`aim_ball`, 0 = the middle of the live balls): `light/draw.rs::aim_places` turns each
+lamp to `things::point::point_of` (a ball by number, else the live balls' middle; a wall's outline middle; else the
+pose) of the first thing named, the light left out; nothing there keeps the Direction. `places()` applies it, so the
+light probe and the editor's handles (`preview/light_handles.rs`, the aim handle can't be dragged) see the same aim; a
+laser aimed this way is not cut short (only At the pen is). A rule's **Flash** on a Light, or on a Rig (each of its
+lights, `rig::fixtures::rigs_of`), flares it: `flare()` adds `strength × (1 − age)²` over the Flare length, times
+its Flare (× 1 when Flare is 0); hits still count only when Flare is on. Follow light offers Text things (G6).

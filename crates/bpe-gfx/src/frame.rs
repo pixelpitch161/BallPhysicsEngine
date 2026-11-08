@@ -1799,7 +1799,10 @@ impl Frame {
         let half = if half.is_finite() { half.max(0.0) } else { 0.0 };
         let step = total.div_ceil(MOST_RIPPLE_SEGMENTS).max(1);
         for points in contours {
-            let kept: Vec<[f32; 2]> = points.as_ref().iter().step_by(step).copied().collect();
+            let points = points.as_ref();
+            // A small contour (an i's dot) keeps at least three corners.
+            let step = step.min(points.len() / 3).max(1);
+            let kept: Vec<[f32; 2]> = points.iter().step_by(step).copied().collect();
             for k in 0..kept.len() {
                 if self.ripple_sources.len() >= MOST_RIPPLE_SOURCES {
                     return;

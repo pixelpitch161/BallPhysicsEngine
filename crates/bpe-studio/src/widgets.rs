@@ -1077,7 +1077,6 @@ fn speed_and_angle(ui: &mut Ui, v: &mut [f32; 2], decimals: usize, name: egui::I
     let (len, turned) = speed_angle(*v);
     let mut speed = len;
     let mut angle = if len > 0.0 { turned } else { ui.data(|d| d.get_temp::<f64>(memory)).unwrap_or(0.0) };
-    let before = (speed, angle);
     let response = ui
         .horizontal_wrapped(|ui| {
             let s = DragValue::new(&mut speed).range(0.0..=1e9).speed(2.0).fixed_decimals(decimals).suffix(" px/s");
@@ -1087,7 +1086,7 @@ fn speed_and_angle(ui: &mut Ui, v: &mut [f32; 2], decimals: usize, name: egui::I
             s | a
         })
         .inner;
-    if (speed, angle) != before {
+    if response.changed() && speed.is_finite() && angle.is_finite() {
         let angle = (angle + 180.0).rem_euclid(360.0) - 180.0;
         let (sin, cos) = angle.to_radians().sin_cos();
         *v = [(speed * cos) as f32, (speed * sin) as f32];

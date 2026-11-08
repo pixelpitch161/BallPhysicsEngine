@@ -54,6 +54,8 @@ impl Move {
 pub fn moves_of(look: &ResolvedSlot) -> Vec<(Move, Vec<u32>)> {
     look.layers
         .iter()
+        // Only a move's layer reads its settings (most layers aren't moves, and a shape's Look asks every frame).
+        .filter(|l| [WAVE, BEAT, HIT, FLICKER, SOUND, SHAKE, SPIN, SCATTER, DRAW_ON].contains(&l.kind.as_str()))
         .filter_map(|l| {
             let p = look.layer_params(l.id);
             let m = match l.kind.as_str() {

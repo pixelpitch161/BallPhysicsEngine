@@ -91,3 +91,8 @@ The editor's sound panels are in `editor.md`; the design is `docs/superpowers/sp
   and the world at a moment (`bpe_dsp::level_at` closed-form envelopes) with no audio; `FollowSound` is its
   `SoundMaker` and `bpe_sound::kit()` the kit with it (the editor and the renderer use it, so physics follows
   sound everywhere). `tests/follow.rs` checks it against the engine (`Engine::voice_time`).
+
+**Small links (W12, 2026-11-08).** `ControlSampler` hears every sound event the engine plays (`hits::plays`, so a
+Particles thing's moments too), and a Particles thing whose sound a setting follows steps in the main world. The
+voice's, Health's and the rest's whose-hits setting is labelled **Hits from**; the Distance and Light modulators'
+measuring setting is **Which balls**. Phase units are "°".

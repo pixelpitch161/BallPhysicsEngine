@@ -113,3 +113,15 @@ a hit of Hits of (`hit_age`). Colours go through **`PathStyle`** in the spare `P
 light / green covering / blue light, hue turn, colourise; `paths.wgsl::path_styled`, only when non-zero, so shapes
 draw as before). Melt or a flipping Mirror turns fast letters off. Looks Glitch, Melting text, Kaleidoscope words,
 Echo stack (24 looks). Tests `things/text/fx_tests.rs`, `paths_tests` (style), `tests/text_pictures.rs`.
+
+**Small links (W12, 2026-11-08).** The letter moves are drawing-only effects worked by `moves.rs` through `MoveCx`
+(`of_text`, `of_draw`), `Prepared` and `effect_of`; `shape_move` gives a Shape the same moves as one letter (letter
+0, "Only some letters" ignored, Draw on left out). `look/shape/moves.rs` marks which kinds fit a shape
+(`MoveKind.shapes`: the eight moves yes, Draw on and the effects no); `shape/draw.rs::moved_form` wears the
+`Effect` on the drawn `WallForm` (offset in the picture's frame, turn added, size and stretch about the middle, a
+stretched circle drawn as an ellipse, opacity on `clip[2]` with a Break fade on top). The editor's Look card lists
+them under **Moves**. Each shown letter (not one shattering) is a Ripples owner (`Frame::push_ripple_shape`, its
+contours, counted as a shape) and a `BallMark` in the effects' ball list (middle, half its box diagonal × size,
+`surface::thing_colour`, its own or the Text's last hit): `draw.rs::letters_for_effects`. A screen Text's land in
+the overlay and `Frame::lift_overlay_extras` takes them to the world through the camera. Tests
+`letters_make_ripples_and_join_the_effects_ball_list`, `moves_tests.rs`, `shape/draw.rs` tests.

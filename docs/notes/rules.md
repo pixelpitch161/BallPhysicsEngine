@@ -103,3 +103,9 @@ Show, crossfading from what showed) and `do.note` (`EventKind::Note`, tag 21: `b
 `normal.x` length, `speed` velocity; `HitCursor` places it, `ShapeVoice::rule_note` plays it past the hit filter (a
 drone on its own voice), `catch_up` replays its picks, `ControlSampler` hears it, MIDI records it). Tags 12..19 are left
 for parts 3 to 5. `tests/golden-rules*.txt` gain "Slow motion"; `bpe-sound/tests/rule_notes.rs`.
+
+**Small links (W12, 2026-11-08).** Break looks show on a Particles thing too (`breaks::shows_looks`; the particles
+fade by the look's alpha in `particles/draw.rs::draw_around`), and a Break naming a Particles thing by itself, kind,
+tag or Anything keeps it stepping in the main world (`BlockSim::keeps`), so the editor and export agree. **Flash** on
+a Light or Rig flares the light (see `lighting.md`). Tests in `spectacle_tests.rs`
+(`a_flash_flares_a_light_and_every_light_of_a_rig`, `a_broken_particles_thing_fades_out`).

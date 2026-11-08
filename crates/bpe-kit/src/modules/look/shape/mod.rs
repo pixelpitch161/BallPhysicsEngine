@@ -284,10 +284,20 @@ mod tests {
                 SUB_HUE,
                 SUB_LIGHT,
                 crate::modules::look::layers::heat::SHAPE_SUB_HEAT,
-                crate::modules::look::surface::SHAPE_SUB_SURFACE
+                crate::modules::look::surface::SHAPE_SUB_SURFACE,
+                // The letter moves a shape wears as one letter (W12).
+                moves::WAVE,
+                moves::BEAT,
+                moves::HIT,
+                moves::FLICKER,
+                moves::SOUND,
+                moves::SHAKE,
+                moves::SPIN,
+                moves::SCATTER
             ]
         );
-        for k in reg.layers_for(CARD).filter(|k| k.section() != LayerSection::Around && k.fits("shape")) {
+        let paint = |k: &&dyn bpe_core::LayerKind| k.section() != LayerSection::Around && !k.id().starts_with("text.");
+        for k in reg.layers_for(CARD).filter(|k| k.fits("shape")).filter(paint) {
             assert_eq!(k.card(), CARD);
             let sub = k.section() == LayerSection::Sub;
             let painted = !sub && !matches!(k.id(), BODY | BLEND);

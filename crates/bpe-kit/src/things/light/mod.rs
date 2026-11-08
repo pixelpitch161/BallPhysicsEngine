@@ -758,6 +758,7 @@ mod tests {
                             | "length"
                             | "cone"
                             | "ball_number"
+                            | "aim_ball"
                             | "flare_length"
                             | "pick_layer"
                             | "laser_width"

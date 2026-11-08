@@ -84,10 +84,12 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
             .on_hover_text("Turn Group on for many balls in a shape, released and launched together");
         return;
     }
-    shape_chips(ui, &s, edits);
+    // Where the balls are now (a typed Word in a Text font, or a Text's letters, read from the scene).
+    let placed = |s: &BallsSettings| shapes::offsets(&shapes::with_text_word(s, Some(cx.scene), cx.id));
+    shape_chips(ui, &s, &placed, edits);
     let rest: Vec<SettingDef> = rest.into_iter().filter(|d| d.key != "shape" && d.key != "custom").collect();
     own_rows(ui, cx, "group settings", &rest, edits);
-    shape_note(ui, &s);
+    shape_note(ui, &s, placed(&s).len());
 
     // ---------- Across the group ----------
     if let Some(card) = card {
@@ -243,7 +245,7 @@ fn view_tools(ui: &mut Ui, inspector: &mut Inspector, s: &BallsSettings, edits: 
 }
 
 /// The shape chips, each with a small picture of its dots.
-fn shape_chips(ui: &mut Ui, s: &BallsSettings, edits: &mut Vec<Edit>) {
+fn shape_chips(ui: &mut Ui, s: &BallsSettings, placed: &dyn Fn(&BallsSettings) -> Vec<Vec2>, edits: &mut Vec<Edit>) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
         for &name in GroupShape::NAMES {
@@ -278,7 +280,7 @@ fn shape_chips(ui: &mut Ui, s: &BallsSettings, edits: &mut Vec<Edit>) {
             if response.on_hover_text(format!("Start the balls in a {}", label.to_lowercase())).clicked() && !on {
                 if shape == GroupShape::Custom && s.custom.is_empty() {
                     // Custom starts from the places shown now, before the turn.
-                    let now = shapes::offsets(&BallsSettings { turn: 0.0, ..s.clone() });
+                    let now = placed(&BallsSettings { turn: 0.0, ..s.clone() });
                     edits.push(Edit::SetOwnHere(
                         "custom".into(),
                         Value::Points(now.iter().map(|p| [p.x, p.y]).collect()),
@@ -319,8 +321,7 @@ fn paint_dots(painter: &egui::Painter, rect: Rect, shape: GroupShape, ink: egui:
 }
 
 /// A word on how many balls the shape holds, where that isn't How many.
-fn shape_note(ui: &mut Ui, s: &BallsSettings) {
-    let placed = shapes::offsets(s).len();
+fn shape_note(ui: &mut Ui, s: &BallsSettings, placed: usize) {
     let note = match s.shape {
         GroupShape::Word if s.word.trim().is_empty() || shapes::word(&s.word, s.letter_height, s.step()).is_empty() => {
             "No letters to place".to_owned()

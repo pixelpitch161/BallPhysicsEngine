@@ -9,7 +9,7 @@ Nothing here moves a ball: goldens must not change. Old scene files don't need t
 ## G2. A light can point at a thing
 
 - `Points` gains **At a thing** (`Points::AtAThing`). Two new light settings, shown only for it (and never for a Point
-  light): **Aims at** (`aim_at: Target`, default every Balls thing) and **Ball number** (`aim_ball: u32`, default 1;
+  light): **Aims at** (`aim_at: Target`, default every Balls thing) and **Aims at ball** (`aim_ball: u32`, default 1;
   0 = the middle of the group's live balls).
 - The aim point is the point of the first thing `aim_at` names (in id order, the light itself left out) that has one:
   a thing with balls gives ball `aim_ball` (by its number, when alive) or the middle of its live balls; a wall (shape,

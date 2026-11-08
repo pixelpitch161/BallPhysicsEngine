@@ -89,3 +89,10 @@ Moved word for word from CLAUDE.md on 2026-11-08 (workstream W1). Add each finis
   modulator | Level, the buses, and Stop following sound; a following slider shows a band ("Follows …"); the
   pulse lane says what it follows. `Studio.follow` holds a `ControlSampler` for `build_frame_with` while any
   setting follows sound.
+
+**Small links (W12, 2026-11-08).** Follow light lists Text things; Follow sound lists shapes, Texts and Particles
+with sound, and the buses whenever anything has a voice. `widgets::target_picker` reads like the rules' who picker
+(Anything, Itself, Thing ▸, Tagged ▸, Any ▸) and `target_words` says "Ball", "Tagged walls", "Any Shape". A Vec2 in
+px/s (a ball's Launch, a Gobo drift) shows as **speed** and **angle** (`speed_and_angle`; written back as x/y only
+when changed, a still pair's angle remembered in egui memory), and its words read "500 px/s at -53°". Every angle
+unit is "°" or "°/s" (`tests::angles_say_degrees_one_way`). A shape's Look card has a **Moves** list.

@@ -72,7 +72,8 @@ pub fn follow_point(world: &World, settings: &CameraSettings, me: ThingId) -> Op
             let pose = world.poses.get(&id).copied();
             let at = pose.map_or_else(|| crate::things::light::draw::outline_centre(&wall.outline), |p| p.position);
             let velocity = pose.map_or(wall.velocity, |p| p.velocity);
-            let (low, high) = outline_box(wall).unwrap_or((at, at));
+            // Only Fit all reads the box (the outline is walked once a step).
+            let (low, high) = if settings.fit_all { outline_box(wall).unwrap_or((at, at)) } else { (at, at) };
             add(at, velocity, low, high);
             continue;
         }
@@ -112,21 +113,18 @@ fn outline_box(wall: &bpe_runtime::Wall) -> Option<(Vec2, Vec2)> {
 /// the world doesn't step it.
 fn particles_box(world: &World, id: ThingId) -> Option<(Vec2, Vec2, Vec2, Vec2)> {
     let st = crate::things::particles::sim::particles_in(world.states.get(&id)?.as_ref())?;
-    let live: Vec<&crate::things::particles::state::Speck> = st.specks.iter().filter(|s| s.place.is_finite()).collect();
-    if live.is_empty() {
-        return None;
-    }
     let (mut lo, mut hi) = (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY));
-    let (mut sum, mut vel) = (Vec2::ZERO, Vec2::ZERO);
-    for s in &live {
+    let (mut sum, mut vel, mut count) = (Vec2::ZERO, Vec2::ZERO, 0usize);
+    for s in st.specks.iter().filter(|s| s.place.is_finite()) {
         let r = if s.size.is_finite() { s.size.max(0.0) } else { 0.0 };
         lo = lo.min(s.place - r);
         hi = hi.max(s.place + r);
         sum += s.place;
         vel += if s.velocity.is_finite() { s.velocity } else { Vec2::ZERO };
+        count += 1;
     }
-    let k = live.len() as f32;
-    Some((sum / k, vel / k, lo, hi))
+    let k = count as f32;
+    (count > 0).then(|| (sum / k, vel / k, lo, hi))
 }
 
 /// The Light things a followed Light or Rig shines from: the light itself, or a rig's lights.
@@ -250,7 +248,15 @@ impl ThingSim for CameraSim {
     /// A followed thing stepped beside the physics (a Particles thing) steps in the camera's world.
     fn keeps(&self, scene: &bpe_core::Scene, me: &Thing, other: ThingId) -> bool {
         let s = CameraSettings::from_params(&me.params);
-        s.follow && scene.target_matches(&s.follow_target, me.id, other)
+        // A Huge swarm's particles live on the graphics card and give no point to follow.
+        let swarm =
+            bpe_core::Value::Choice(bpe_core::Choice::name(crate::things::particles::look::Engine::HugeSwarm).into());
+        let huge = scene
+            .things
+            .get(&other)
+            .and_then(|t| t.slots.get(&bpe_core::SlotId::Look))
+            .is_some_and(|l| l.params.get("engine") == Some(&swarm));
+        s.follow && !huge && scene.target_matches(&s.follow_target, me.id, other)
     }
 
     /// Following, it reads followed Lights from the saved scene.

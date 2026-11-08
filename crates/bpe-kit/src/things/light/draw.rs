@@ -632,7 +632,8 @@ fn flare(cx: &DrawCx, s: &LightSettings, place: &Place) -> f32 {
             _ => {}
         }
     }
-    let gain = if s.flare != 0.0 { s.flare } else { 1.0 };
+    // A Flash only ever brightens: by the Flare when it has one, else as Flare 1.
+    let gain = if s.flare > 0.0 { s.flare } else { 1.0 };
     s.flare * hits + gain * flashes
 }
 

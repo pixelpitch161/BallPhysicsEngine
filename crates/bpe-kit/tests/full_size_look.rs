@@ -385,6 +385,70 @@ fn look_shots(reg: &Registry) -> Vec<Shot> {
     out
 }
 
+/// Small links between features (W12): a shape wearing letter moves, a spot aimed at a ball, letters as Ripples
+/// sources, a word of balls and a word of particles in a Text font.
+fn link_shots(reg: &Registry) -> Vec<Shot> {
+    use bpe_core::{Color, Gradient, Mix, layered_key};
+    let mut out = Vec::new();
+    {
+        let mut s = new_scene(reg);
+        let shape = first_of(&s, "shape");
+        for (kind, key, v) in [("text.move.spin", "speed", 40.0), ("text.move.wave", "height", 60.0)] {
+            let id = s.add_layer(reg, shape, SlotId::Look, kind).unwrap();
+            s.card_mut(shape, SlotId::Look).unwrap().params.set(&layered_key(id, key), Value::Number(v));
+        }
+        out.push(shot("links-shape-moves", s, vec![0.5, 0.5 + 1.0 / 60.0]));
+    }
+    {
+        let mut s = room(reg, Vec2::new(200.0, 300.0), 60.0);
+        // Inside the ring, aimed at the first ball (its Direction would point it straight up).
+        let mut p = light(LightType::Spot, Vec2::new(-250.0, -300.0), 10.0, 2.5);
+        p.direction = -90.0;
+        p.cone = 30.0;
+        p.height = 120.0;
+        p.points = bpe_kit::things::light::Points::AtAThing;
+        set_light(&mut s, &p);
+        add_ball(&mut s, reg, Vec2::new(-250.0, 200.0), 30.0);
+        out.push(shot("links-aimed-spot", s, vec![0.0]));
+    }
+    {
+        let mut s = new_scene(reg);
+        let text = add_thing(&mut s, reg, "text", ThingId::ROOT).unwrap();
+        let t = s.things.get_mut(&text).unwrap();
+        t.screen = Some(false);
+        t.params.set("words", Value::Text("RIPPLE".into()));
+        let colours = [Color::rgb(20, 30, 90), Color::rgb(40, 200, 220), Color::rgb(240, 80, 160)];
+        let root = &mut s.things.get_mut(&ThingId::ROOT).unwrap().params;
+        root.set("background_colours", Value::Gradient(Gradient::spread(&colours, Mix::Light, false)));
+        root.set(
+            "background_colours~form",
+            Value::Choice(bpe_core::Choice::name(bpe_core::GradientForm::Ripples).into()),
+        );
+        out.push(shot("links-text-ripples", s, vec![0.5]));
+    }
+    {
+        let mut s = new_scene(reg);
+        first_ball(&mut s, Vec2::new(0.0, -500.0), |b| {
+            b.group = true;
+            b.shape = bpe_kit::things::balls::GroupShape::Word;
+            b.word = "POP".into();
+            b.word_font = "Anton".into();
+            b.radius = 8.0;
+        });
+        no_gravity(&mut s);
+        let id = bpe_kit::things::particles::looks::add_particles(
+            &mut s,
+            reg,
+            bpe_kit::things::particles::looks::Look::FormAWord,
+            ThingId::ROOT,
+        )
+        .unwrap();
+        s.things.get_mut(&id).unwrap().params.set("font", Value::Text("Bungee".into()));
+        out.push(shot("links-word-fonts", s, vec![0.0, 3.0]));
+    }
+    out
+}
+
 fn wanted(name: &str, only: &Option<String>) -> bool {
     only.as_ref().is_none_or(|o| o.split(',').any(|o| !o.is_empty() && name.contains(o)))
 }
@@ -427,7 +491,9 @@ fn render_at_full_size() {
         }
     }
     let groups =
-        [("lighting", lit), ("demos", demo_shots(&reg)), ("families", family_shots(&reg)), ("looks", look_shots(&reg))];
+        [("lighting", lit), ("demos", demo_shots(&reg)), ("families", family_shots(&reg)), ("looks", look_shots(&reg))]
+            .into_iter()
+            .chain([("links", link_shots(&reg))]);
     let mut count = 0;
     for (group, shots) in groups {
         let mut thumbs = Vec::new();

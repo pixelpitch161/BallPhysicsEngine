@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use bpe_core::{Blend, Params, Resolved, ResolvedThing, Scene, Settings, SlotId, ThingId};
-use bpe_gfx::{DrawCx, Frame, PathInstance, ThingDraw, thing_code};
+use bpe_gfx::{DrawCx, Frame, NO_HIT, PathInstance, ThingDraw, thing_code};
 use bpe_runtime::{Log, Pose, World};
 use glam::Vec2;
 
@@ -765,14 +765,15 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
             }
         }
     });
-    let mut hit = if stack.needs_hits() { shape_hits(cx) } else { bpe_gfx::NO_HIT };
+    // The effects' ball list carries each letter's last hit too.
+    let hits = stack.needs_hits() || (part & OVER == 0 && crate::modules::effects::draw::scene_has_effects(cx.scene));
+    let mut hit = if hits { shape_hits(cx) } else { NO_HIT };
     let heat = stack.heat().map(|heat| crate::modules::look::layers::heat::shape_heat(cx, heat));
     if let Some(heat) = heat {
         hit[3] = heat;
     }
     // A walled Text's letters each flash and count their own hits.
-    let own_hits =
-        if stack.needs_hits() { copies.first().and_then(|c| letter_hits(cx, c.layout.letters.len())) } else { None };
+    let own_hits = if hits { copies.first().and_then(|c| letter_hits(cx, c.layout.letters.len())) } else { None };
     let past = stack.reach_past();
     let code = thing_code(cx.thing.id);
     let tile_scale = s.size / tiles::TILE_CAP;
@@ -835,7 +836,9 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
         path.b[0] = band;
         path.c[2] = reach_past;
         path.c[3] = reach;
+        // Only a stack that reacts to hits draws with them (the effects' marks read them apart).
         path.hit = match own_hits.as_ref().filter(|_| l.copy == 0).and_then(|h| h.get(l.letter)) {
+            _ if !stack.needs_hits() => [NO_HIT[0], NO_HIT[1], NO_HIT[2], hit[3]],
             Some(own) => [own[0], own[1], own[2], heat.unwrap_or(own[3])],
             None => hit,
         };
@@ -915,7 +918,7 @@ fn letters_for_effects(
         let (at, turn) = (now.pose.position, Vec2::from_angle(now.pose.angle));
         let place = |p: Vec2| at + turn.rotate(p);
         let middle = place(now.middle_moved(l.letter, l.moved));
-        if frame.ripples {
+        if frame.ripples && frame.ripple_sources.len() < bpe_gfx::MOST_RIPPLE_SOURCES {
             let contours = melted(l, now.contours_moved(l.letter, l.moved));
             let contours: Vec<Vec<[f32; 2]>> =
                 contours.iter().map(|c| c.iter().map(|p| place(*p).to_array()).collect()).collect();
@@ -1000,6 +1003,18 @@ mod tests {
         assert!(frame.ball_marks.iter().all(|m| m.radius > 10.0 && m.hit_age >= 1e5));
         let o = frame.overlay.as_deref().unwrap();
         assert!(o.ripple_sources.is_empty() && o.ball_marks.is_empty(), "lifted out of the overlay");
+
+        // The marks carry the Text's last hit (a rule's Flash of it here), though no layer reacts to hits.
+        let mut flashed = scene.clone();
+        let rule = flashed.add_rule("Flash");
+        let when = flashed.add_block(&reg, rule, "when.time", None).unwrap();
+        flashed.set_block_param(&reg, rule, when, "at", Value::Number(0.1)).unwrap();
+        let flash = flashed.add_block(&reg, rule, "do.flash", Some(when)).unwrap();
+        let who = bpe_core::Who::Thing { thing: screen_text, ball: None };
+        flashed.set_block_param(&reg, rule, flash, "who", Value::Who(who)).unwrap();
+        let ages: Vec<f32> = frame_at(&flashed, 0.3).ball_marks.iter().map(|m| m.hit_age).collect();
+        assert!(ages[..2].iter().all(|a| *a >= 1e5), "{ages:?}");
+        assert!(ages[2..].iter().all(|a| (0.1..0.3).contains(a)), "{ages:?}");
 
         // A screen Text's letters go to the world where they show: through a moved camera.
         let before = frame.camera.center;
