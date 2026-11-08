@@ -418,6 +418,8 @@ pub fn show(
                     ui.add_space(10.0);
                     let line = if moments::is_particles(&cx) {
                         "Turn it on and the particles play notes when they hit things, land or burst."
+                    } else if moments::is_balls(&cx) {
+                        "Turn it on and its balls play a note when they hit things."
                     } else {
                         "Turn it on and the shape plays a note each time a ball hits it."
                     };
@@ -478,6 +480,9 @@ fn body(ui: &mut Ui, inspector: &mut Inspector, cx: &mut TabCx) {
     ui.add_space(8.0);
     if moments::is_particles(cx) {
         moments::show(ui, cx);
+        ui.add_space(8.0);
+    } else if moments::is_balls(cx) {
+        moments::show_balls(ui, cx);
         ui.add_space(8.0);
     }
     let level = inspector.meters.as_ref().map_or(f32::NEG_INFINITY, |m| m.take_shape(cx.id.0));
@@ -801,6 +806,30 @@ pub(crate) mod tests {
         h.run();
         click_switch(&mut h, "Enable sound");
         assert!(card(&h, text).is_some(), "a Text takes a Sound card");
+    }
+
+    #[test]
+    fn balls_and_emitters_have_a_sound_tab_with_their_balls_moments() {
+        let reg = bpe_kit::registry();
+        for (kind, fired) in [(bpe_kit::things::balls::KIND, false), (bpe_kit::things::emitter::KIND, true)] {
+            let mut h = studio_harness(SHAPE, false);
+            let id = {
+                let studio = &mut h.state_mut().0;
+                let id = bpe_kit::add_thing(&mut studio.scene, &reg, kind, ThingId::ROOT).unwrap();
+                studio.selection.set(id);
+                id
+            };
+            h.run();
+            assert!(h.query_by_label("Sound").is_some(), "{kind}: the Sound chip");
+            h.state_mut().0.panels.inspector.tab.insert(id, InspectorTab::Sound);
+            h.run();
+            click_switch(&mut h, "Enable sound");
+            assert!(card(&h, id).is_some(), "{kind}: takes a Sound card");
+            assert!(h.query_all_by_label("Hit a shape").next().is_some(), "{kind}: its balls' moments");
+            assert_eq!(h.query_all_by_label("Are fired").next().is_some(), fired, "{kind}: Are fired");
+            click_switch(&mut h, "Break");
+            assert_eq!(card(&h, id).unwrap().params.get("moments_break"), Some(&Value::Bool(true)), "{kind}");
+        }
     }
 
     #[test]

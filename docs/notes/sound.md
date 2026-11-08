@@ -151,3 +151,40 @@ off at its default.
   (older files still load). The status line says "Sound can't keep up: try fewer voices or effects." when dropouts
   grow. `thread_priority.rs` raises the sound thread and lowers the aiming and particle threads on Windows
   (`windows-sys` `SetThreadPriority`; elsewhere nothing).
+
+## Balls and Emitters make sound (W10, 2026-11-08)
+
+Plan: `docs/superpowers/plans/2026-11-08-balls-make-sound.md`. No golden moves: a scene without a Sound card on a
+Balls or Emitter thing hears exactly what it heard before.
+
+- **The card**: `VoiceKind::fits` takes Balls (`things::balls::KIND`, new) and Emitter too
+  (`bpe_kit::sound::hears_own_balls(kind)` names the two); both kinds list `SlotId::Sound` (not in their default
+  slots). Its balls are what sound. `VoiceSettings` reuses the Particles' `moments_hit_ball` / `moments_hit_shape`
+  (on) and adds `moments_fire`, `moments_catch`, `moments_break` (off).
+- **Events**: `hits::plays` now also takes `Spawn`, `Enter`, `Break`; `hits::touches` is the old set (Hit, Note,
+  Moment), used by a Hits sidechain and the test tone so they don't change. Only heard things' events queue, as
+  before.
+- **Filter** (`voices/hit_filter.rs`): `BallMoments` (`of`, `of_thing`) on `ShapeSpec.balls` and
+  `HitFilter.balls` (`hearing`). `HitFilter::seen` turns a hit round for a ball voice so `a` is its own ball and `b`
+  what that ball met (the normal flipped); `take_hits`, `catch_up`, Follow sound and `slot_changes` read the seen
+  event, so the retrigger guard, By ball, Each note's ball and By letter (`b` a Text) work from its own ball. `accept`
+  (via `hears`): a shape takes only `Hit` and `Moment` with `b` = it (as before); a ball voice takes a `Hit` from its
+  own ball (Hit a ball when `b.thing` is in `world.bodies`, else Hit a shape; Heard from names `b`), `Spawn` with `b`
+  = it, `Enter` with it on either side, `Break` with `a` = it. Fires, catches and breaks go through the same strength
+  curve (launch speed, catch speed, the breaking hit's strength).
+- **Hit modulator**: Place and Side read `b`'s thing for a `Hit` (`mods/hit.rs::hit_values`); on a shape that is
+  the shape, so nothing changes there.
+- **The round at 0 s**: an emitter's first round is there from the first frame and no step logs it, so
+  `hits::start_fires(scene, world)` makes `Spawn` events (step 0, from the built world's emitter rows) that
+  `HitCursor::start_with` keeps: they wait on sample 0 at the start and after any seek back to 0, and
+  `Engine::catch_up` counts them first. Not seen by Follow sound or the timeline's slot marks (they read the log).
+- **Follow sound** (`control.rs`) reads every event that `plays` on the voice's thing (a rule's Note only on `b`),
+  through the filter; a Particles voice's moments now count there too, as in the engine.
+- `slot_change_times` reads every playing event but Note (the filter keeps the thing's own).
+- **Editor**: `inspector::sounds` takes Balls and Emitter (Settings / Sound chips); `+ Add card` lists only card-list
+  slots (Sound and Mixer come from their own tabs). Sound tab: `moments::is_balls`, `show_balls` ("Plays when its
+  balls": Hit a shape, Hit a ball, Are fired (Emitter), Catch / Are caught, Break); Heard from reads "Hits on".
+  Distance on a ball voice measures from the thing's place (Centre; Edge reads nothing), By side plays side 0, as on
+  a Text.
+- Tests: `bpe-sound/tests/ball_sound.rs`, `hit_filter.rs` (`a_balls_sound_sees_a_hit_from_its_own_ball`), the Sound
+  tab's `balls_and_emitters_have_a_sound_tab_with_their_balls_moments`.

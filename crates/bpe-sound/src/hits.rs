@@ -1,7 +1,7 @@
 //! Hits placed on their exact samples.
 
-use bpe_core::ThingId;
-use bpe_runtime::{Event, EventKind, Log};
+use bpe_core::{Scene, ThingId};
+use bpe_runtime::{Event, EventKind, Log, Party, World};
 use std::collections::VecDeque;
 
 /// One hit in the block being rendered.
@@ -19,9 +19,16 @@ pub fn hit_sample(event: &Event, samples_per_step: f64) -> u64 {
     (step_start + event.sample_in_step(samples_per_step)).round().max(0.0) as u64
 }
 
-/// Whether events of `kind` reach the voices: hits, the notes rules play and the moments a
-/// Particles thing's sound plays.
+/// Whether events of `kind` reach the voices: hits, the notes rules play, the moments a
+/// Particles thing's sound plays, and the fires, catches and breaks a Balls or Emitter thing's
+/// sound plays (W10). Each voice's [`crate::voices::HitFilter`] takes only its own kinds.
 pub fn plays(kind: &EventKind) -> bool {
+    touches(kind) || matches!(kind, EventKind::Spawn | EventKind::Enter | EventKind::Break)
+}
+
+/// Whether events of `kind` are touches on a thing: hits, rules' notes and particles' moments
+/// (what a Hits sidechain keys on).
+pub fn touches(kind: &EventKind) -> bool {
     matches!(kind, EventKind::Hit | EventKind::Note | EventKind::Moment)
 }
 
@@ -29,6 +36,34 @@ pub fn plays(kind: &EventKind) -> bool {
 /// so only those wait in the queue (a crowd's ball-on-ball hits would otherwise fill it).
 pub fn is_heard(event: &Event, heard: &[ThingId]) -> bool {
     heard.binary_search(&event.a.thing).is_ok() || event.b.is_some_and(|b| heard.binary_search(&b.thing).is_ok())
+}
+
+/// The balls each emitter of `scene` fires at 0 s, as `Spawn` events on sound sample 0 (W10).
+/// They are there from the first frame, so no step logs them; an emitter's sound that plays
+/// its fires hears them from here. `world` is the scene's world as built.
+pub fn start_fires(scene: &Scene, world: &World) -> Vec<Event> {
+    let mut out = Vec::new();
+    for (thing, b) in &world.bodies {
+        if scene.things.get(thing).is_none_or(|t| t.kind != bpe_kit::things::emitter::KIND) {
+            continue;
+        }
+        for (i, (&position, &velocity)) in b.position.iter().zip(&b.velocity).enumerate() {
+            if !b.alive.get(i).copied().unwrap_or(false) {
+                continue;
+            }
+            out.push(Event {
+                step: 0,
+                kind: EventKind::Spawn,
+                a: Party { thing: *thing, item: i as u32 },
+                b: Some(Party { thing: *thing, item: 0 }),
+                point: position,
+                normal: velocity.normalize_or_zero(),
+                speed: velocity.length(),
+                at: 0.0,
+            });
+        }
+    }
+    out
 }
 
 /// Reads a physics log as it grows and hands out each block's hits.
@@ -39,6 +74,8 @@ pub struct HitCursor {
     read: usize,
     /// Hits read but not yet handed out, by sample.
     waiting: VecDeque<(u64, Event)>,
+    /// What happened before the log starts, on sample 0 ([`start_fires`]).
+    start: Vec<Event>,
 }
 
 impl HitCursor {
@@ -47,6 +84,28 @@ impl HitCursor {
             samples_per_step: crate::SAMPLE_RATE as f64 / steps_per_second.max(1) as f64,
             read: 0,
             waiting: VecDeque::with_capacity(1024),
+            start: Vec::new(),
+        }
+    }
+
+    /// Sets what happened before the log starts (on sample 0). When nothing has been read yet,
+    /// those on things in `heard` (sorted) wait now; a seek back to the start takes them again.
+    pub fn start_with(&mut self, start: Vec<Event>, heard: &[ThingId]) {
+        self.start = start;
+        if self.read == 0 && self.waiting.is_empty() {
+            self.wait_for_start(heard);
+        }
+    }
+
+    /// What happened before the log starts.
+    pub fn start(&self) -> &[Event] {
+        &self.start
+    }
+
+    fn wait_for_start(&mut self, heard: &[ThingId]) {
+        let first = self.waiting.partition_point(|(s, _)| *s == 0);
+        for (k, e) in self.start.iter().filter(|e| is_heard(e, heard)).enumerate() {
+            self.waiting.insert(first + k, (0, e.clone()));
         }
     }
 
@@ -92,6 +151,9 @@ impl HitCursor {
         self.read(log, heard);
         while self.waiting.front().is_some_and(|(at, _)| *at < from) {
             self.waiting.pop_front();
+        }
+        if from == 0 {
+            self.wait_for_start(heard);
         }
     }
 

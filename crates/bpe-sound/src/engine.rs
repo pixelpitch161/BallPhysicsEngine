@@ -99,7 +99,9 @@ impl Engine {
         // Things stepped beside the physics make no sound, but those whose events it hears (a
         // Particles thing whose sound is on): the engine runs the physics and those.
         let physics = Playback::new(scene, &bpe_runtime::heard_part(scene, resolved, &kit.sims), kit.sims.clone());
-        let cursor = HitCursor::new(physics.world().steps_per_second);
+        let mut cursor = HitCursor::new(physics.world().steps_per_second);
+        // An emitter's balls fired at 0 s: no step logs them, but its sound may play them (W10).
+        cursor.start_with(crate::hits::start_fires(scene, physics.world()), &heard);
         let mut master = Master::new(&patch.master);
         master.set_keys(patch.master_keys);
         master.at(0.0, None);
@@ -311,15 +313,22 @@ impl Engine {
         }
         let sps = self.cursor.samples_per_step();
         let mut hits: Vec<(u64, BlockHit)> = self
-            .physics
-            .log()
-            .events()
+            .cursor
+            .start()
             .iter()
-            .filter(|e| crate::hits::plays(&e.kind))
-            .map(|e| (crate::hits::hit_sample(e, sps), e))
-            .filter(|(at, _)| *at < upto)
-            .map(|(at, e)| (at, BlockHit { offset: 0, event: e.clone() }))
+            .map(|e| (0, BlockHit { offset: 0, event: e.clone() }))
             .collect();
+        hits.extend(
+            self.physics
+                .log()
+                .events()
+                .iter()
+                .filter(|e| crate::hits::plays(&e.kind))
+                .map(|e| (crate::hits::hit_sample(e, sps), e))
+                .filter(|(at, _)| *at < upto)
+                .map(|(at, e)| (at, BlockHit { offset: 0, event: e.clone() })),
+        );
+        // Stable: the start's fires stay first on sample 0.
         hits.sort_by_key(|(at, _)| *at);
         let world = self.physics.world();
         for (v, _) in self.voices.iter_mut().zip(these).filter(|(_, on)| **on) {
