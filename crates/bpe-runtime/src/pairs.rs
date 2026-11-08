@@ -239,7 +239,7 @@ pub(crate) fn collide_pairs(
         let (friction, varies) = (rule.friction, s.varies());
         rules.push((*thing, sim, s, rule, bounciness, thing_press));
         let rule = rules.len() - 1;
-        for i in 0..b.len() {
+        for i in b.live_rows() {
             if b.alive[i] && !b.held[i] {
                 largest = largest.max(b.radius[i]);
                 let (bounciness, friction) = if varies {

@@ -25,6 +25,10 @@ pub struct Bodies {
     /// Held still by something (a catcher waiting to send it back out): not moved, not bounced
     /// off walls or other balls, and never caught.
     pub held: Vec<bool>,
+    /// Every row below this one is removed. A removed ball never comes back (nothing sets `alive`
+    /// back to true), so loops over the balls may start here ([`Bodies::live_rows`]): an endless
+    /// emitter whose oldest rounds go stops paying for them. Moved on by [`Bodies::note_gone`].
+    pub gone_below: usize,
 }
 
 impl Bodies {
@@ -42,6 +46,18 @@ impl Bodies {
         self.number.push(row);
         self.held.push(false);
         row
+    }
+
+    /// The rows that may still be alive: from [`Bodies::gone_below`] on.
+    pub fn live_rows(&self) -> std::ops::Range<usize> {
+        self.gone_below.min(self.len())..self.len()
+    }
+
+    /// Moves [`Bodies::gone_below`] past the removed rows at its front.
+    pub fn note_gone(&mut self) {
+        while self.gone_below < self.len() && !self.alive[self.gone_below] {
+            self.gone_below += 1;
+        }
     }
 
     /// The row of the ball numbered `number`, if there is one.
@@ -98,6 +114,13 @@ mod tests {
         assert_eq!((bodies.row_of(7), bodies.row_of(1), bodies.row_of(0)), (Some(0), Some(1), None));
         bodies.alive[1] = false;
         assert_eq!(bodies.alive_count(), 1);
+        bodies.note_gone();
+        assert_eq!(bodies.live_rows(), 0..2, "ball 0 is still there");
+        bodies.alive[0] = false;
+        bodies.note_gone();
+        assert_eq!(bodies.live_rows(), 2..2);
+        bodies.push(Vec2::ZERO, Vec2::ZERO, 1.0);
+        assert_eq!(bodies.live_rows(), 2..3);
         assert!(bodies.memory() >= 2 * (4 * 8 + 4 + 1 + 4));
     }
 }

@@ -4,9 +4,9 @@
 //! ball's **corners**: where it was at the moment it bounced, so a trail turns where the ball
 //! really turned instead of cutting straight across from the sample before to the one after.
 
-use std::collections::VecDeque;
-
 use glam::Vec2;
+
+use crate::track::Track;
 
 /// Samples kept per second.
 pub const SAMPLE_RATE: u32 = 60;
@@ -38,17 +38,19 @@ impl HistoryWant {
 }
 
 /// The recent positions of every ball of a thing, newest last, one list per ball. A ball's list
-/// starts at its first sample after it came, never before.
+/// starts at its first sample after it came, never before. The lists are [`Track`]s: a copy of the
+/// world (a jump point) shares their older parts, and a ball standing still (gone, or at rest) adds
+/// nothing to them but a count.
 #[derive(Clone, Debug, PartialEq)]
 pub struct History {
     /// Steps between samples.
     every: u64,
     /// Samples kept per ball; `usize::MAX` keeps every one.
     cap: usize,
-    balls: Vec<VecDeque<Vec2>>,
+    balls: Vec<Track<Vec2>>,
     /// Where each ball bounced between its samples: (the moment, in steps; where it was), oldest
     /// first, none older than its oldest sample.
-    corners: Vec<VecDeque<(f64, Vec2)>>,
+    corners: Vec<Track<(f64, Vec2)>>,
     /// Each ball's newest place, sample or corner: (the moment, in steps; where it was).
     tips: Vec<(f64, Vec2)>,
     /// How far each ball has gone from its first sample to its newest place (sample or corner).
@@ -123,24 +125,30 @@ impl History {
             return;
         }
         while self.balls.len() < positions.len() {
-            self.balls.push(VecDeque::new());
-            self.corners.push(VecDeque::new());
+            self.balls.push(Track::new());
+            self.corners.push(Track::new());
             self.tips.push((step as f64, Vec2::ZERO));
             self.travelled.push(0.0);
         }
         let now = step as f64;
         for (b, &p) in positions.iter().enumerate() {
             let ring = &mut self.balls[b];
-            if !ring.is_empty() {
-                self.travelled[b] += (p - self.tips[b].1).length();
+            // A full ring of this very place, with no corner since (a ball gone, or at rest for the
+            // whole stretch kept): dropping the oldest and adding it again would change nothing.
+            let unchanged =
+                ring.len() >= self.cap && ring.is_one_run() && ring.front() == Some(p) && self.tips[b].1 == p;
+            if !unchanged {
+                if !ring.is_empty() {
+                    self.travelled[b] += (p - self.tips[b].1).length();
+                }
+                if ring.len() >= self.cap {
+                    ring.pop_front();
+                }
+                ring.push_back(p);
             }
-            if ring.len() >= self.cap {
-                ring.pop_front();
-            }
-            ring.push_back(p);
             self.tips[b] = (now, p);
             // Corners older than the oldest sample are past where any trail reaches.
-            let oldest = now - (ring.len() - 1) as f64 * self.every as f64;
+            let oldest = now - (self.balls[b].len() - 1) as f64 * self.every as f64;
             let corners = &mut self.corners[b];
             while corners.front().is_some_and(|c| c.0 < oldest) {
                 corners.pop_front();
@@ -174,7 +182,7 @@ impl History {
         let last = self.last.unwrap_or(0) as f64;
         let every = self.every as f64;
         let mut samples = self.points(ball).enumerate().map(move |(j, p)| (last - j as f64 * every, p)).peekable();
-        let mut corners = self.corners.get(ball).into_iter().flat_map(|c| c.iter().rev().copied()).peekable();
+        let mut corners = self.corners.get(ball).into_iter().flat_map(|c| c.iter().rev()).peekable();
         std::iter::from_fn(move || match (samples.peek().copied(), corners.peek().copied()) {
             (Some(s), Some(c)) if c.0 > s.0 => corners.next(),
             (Some(s), Some(c)) => {
@@ -197,18 +205,18 @@ impl History {
             (Some(r), Some(c)) => (Some(r), Some(c)),
             _ => (None, None),
         };
-        let n = ring.map_or(0, VecDeque::len);
+        let n = ring.map_or(0, Track::len);
         let oldest = self.last.unwrap_or(0) as f64 - n.saturating_sub(1) as f64 * every;
         // The first sample after `after`, and the first corner.
         let first =
             if after < oldest { 0 } else { (((after - oldest) / every).floor() as usize).saturating_add(1).min(n) };
         let mut samples = ring
             .into_iter()
-            .flat_map(move |r| r.range(first..))
+            .flat_map(move |r| r.iter_from(first))
             .enumerate()
-            .map(move |(j, p)| (oldest + (first + j) as f64 * every, *p));
+            .map(move |(j, p)| (oldest + (first + j) as f64 * every, p));
         let from = corners.map_or(0, |c| c.partition_point(|c| c.0 <= after));
-        let mut corners = corners.into_iter().flat_map(move |c| c.range(from..).copied());
+        let mut corners = corners.into_iter().flat_map(move |c| c.iter_from(from));
         let mut next_sample = samples.next();
         let mut next_corner = corners.next();
         std::iter::from_fn(move || {
@@ -252,7 +260,7 @@ impl History {
         let oldest = self.last.unwrap_or(0) as f64 - (ring.len() - 1) as f64 * every;
         let i = (t - oldest) / every;
         if i >= 0.0 && i.fract() == 0.0 && (i as usize) < ring.len() {
-            return Some(ring[i as usize]);
+            return ring.get(i as usize);
         }
         let corners = &self.corners[ball];
         let k = corners.partition_point(|c| c.0 < t);
@@ -263,12 +271,12 @@ impl History {
     pub fn first(&self, ball: usize) -> Option<(f64, Vec2)> {
         let ring = self.balls.get(ball).filter(|r| !r.is_empty())?;
         let oldest = self.last.unwrap_or(0) as f64 - (ring.len() - 1) as f64 * self.every as f64;
-        Some((oldest, ring[0]))
+        Some((oldest, ring.front()?))
     }
 
     /// Ball `ball`'s samples, newest first, back to its first.
     pub fn points(&self, ball: usize) -> impl Iterator<Item = Vec2> + '_ {
-        self.balls.get(ball).into_iter().flat_map(|r| r.iter().rev().copied())
+        self.balls.get(ball).into_iter().flat_map(|r| r.iter().rev())
     }
 
     /// How far ball `ball` has gone from its first sample to its newest place (a sample or a
@@ -288,27 +296,32 @@ impl History {
         let every = self.every as f64;
         let last = self.last.unwrap_or(0) as f64;
         let oldest = last - (n - 1) as f64 * every;
+        let at = |i: usize| ring.get(i).unwrap_or(Vec2::ZERO);
         if t <= oldest {
-            return Some(ring[0]);
+            return Some(at(0));
         }
         // The two places either side of `t`: a sample, a corner or the head.
         let (mut older, mut newer) = if t >= last {
-            ((last, ring[n - 1]), (head_t.max(last), head))
+            ((last, at(n - 1)), (head_t.max(last), head))
         } else {
             let i = ((t - oldest) / every).floor() as usize;
             let i = i.min(n - 2);
-            ((oldest + i as f64 * every, ring[i]), (oldest + (i + 1) as f64 * every, ring[i + 1]))
+            ((oldest + i as f64 * every, at(i)), (oldest + (i + 1) as f64 * every, at(i + 1)))
         };
         // Corners between them, the nearest each side of `t`.
         let from = corners.partition_point(|c| c.0 <= older.0);
         // (None between when both are the same moment: a corner there is the sample itself.)
         let to = corners.partition_point(|c| c.0 < newer.0).max(from);
         let split = corners.partition_point(|c| c.0 <= t).clamp(from, to);
-        if split > from {
-            older = corners[split - 1];
+        if split > from
+            && let Some(c) = corners.get(split - 1)
+        {
+            older = c;
         }
-        if split < to {
-            newer = corners[split];
+        if split < to
+            && let Some(c) = corners.get(split)
+        {
+            newer = c;
         }
         let span = newer.0 - older.0;
         let f = if span > 0.0 { ((t - older.0) / span).clamp(0.0, 1.0) } else { 1.0 };
@@ -325,9 +338,9 @@ impl History {
     }
 
     /// Bytes the history takes, for playback budgets.
+    /// Parts shared with copies count their share (see [`Track::memory`]).
     pub fn memory(&self) -> usize {
-        self.balls.iter().map(|r| r.capacity() * std::mem::size_of::<Vec2>()).sum::<usize>()
-            + self.corners.iter().map(|c| c.capacity() * std::mem::size_of::<(f64, Vec2)>()).sum::<usize>()
+        self.balls.iter().map(Track::memory).sum::<usize>() + self.corners.iter().map(Track::memory).sum::<usize>()
     }
 }
 

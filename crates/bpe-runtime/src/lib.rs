@@ -19,6 +19,7 @@ pub mod rules;
 pub mod sound;
 #[cfg(test)]
 pub mod testing;
+mod track;
 pub mod walls;
 pub mod world;
 

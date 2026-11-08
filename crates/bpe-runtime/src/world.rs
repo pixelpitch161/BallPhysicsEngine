@@ -759,7 +759,8 @@ impl World {
         self.modules.get(&thing)?.get(&slot).map(|s| (s.kind.as_str(), s.state.as_ref()))
     }
 
-    /// Bytes the world takes, for playback budgets.
+    /// Bytes the world takes, for playback budgets. The balls' paths it shares with copies (jump
+    /// points) count their share, so the copies together count them once.
     pub fn memory(&self) -> usize {
         self.bodies.values().map(Bodies::memory).sum::<usize>()
             + self.history.values().map(History::memory).sum::<usize>()
@@ -1039,8 +1040,9 @@ impl World {
                 continue;
             }
             let Some(bodies) = self.bodies.get(id) else { continue };
+            let gone = bodies.live_rows().start;
             let each = (0..bodies.len())
-                .map(|row| match sim.light_pull(s.state_for(row)) {
+                .map(|row| match (row >= gone).then(|| sim.light_pull(s.state_for(row))).flatten() {
                     Some(p) if bodies.alive[row] && !bodies.held[row] => light.pull(self, log, *id, row, time, &p),
                     _ => Vec2::ZERO,
                 })
@@ -1104,6 +1106,10 @@ impl World {
         // parent moved to.
         let order = self.order.clone();
 
+        // Removed balls at the front of each table are skipped from here on.
+        for bodies in self.bodies.values_mut() {
+            bodies.note_gone();
+        }
         // Spawn: things add what they release this step.
         for id in &order {
             if let Some(sim) = self.kinds.get(id).and_then(|kind| sims.thing(kind)) {
@@ -1116,7 +1122,7 @@ impl World {
         // Clamp speeds, remember where everything started and find the fastest ball.
         let mut fastest: f32 = 0.0;
         for bodies in self.bodies.values_mut() {
-            for i in 0..bodies.len() {
+            for i in bodies.live_rows() {
                 if !bodies.alive[i] {
                     continue;
                 }
@@ -1218,7 +1224,7 @@ impl World {
             {
                 let cx = SimCx { thing: *id, time, seed };
                 if s.varies() {
-                    for i in 0..bodies.len() {
+                    for i in bodies.live_rows() {
                         if bodies.alive[i] {
                             sim.forces_one(s.state_for(i), bodies, i, gravity, dt, &cx);
                         }
@@ -1229,14 +1235,15 @@ impl World {
             }
             // The lights' pull (Moths), worked out at the step's start.
             if let Some(pull) = pulls.get(id) {
-                for (i, p) in pull.iter().enumerate().take(bodies.len()) {
+                for (i, p) in pull.iter().enumerate().take(bodies.len()).skip(bodies.live_rows().start) {
                     if bodies.alive[i] && !bodies.held[i] {
                         bodies.velocity[i] += *p * dt;
                     }
                 }
             }
             bodies.start.copy_from_slice(&bodies.position);
-            for i in 0..bodies.len() {
+            // (A removed ball below `gone_below` that was held kept no speed when it went.)
+            for i in bodies.live_rows() {
                 if bodies.alive[i] && !bodies.held[i] {
                     let v = bodies.velocity[i];
                     bodies.position[i] += v * dt;
@@ -1291,7 +1298,7 @@ impl World {
                 let wall_bounce = modules.get(wall_id).and_then(|m| m.get(&SlotId::Bounce));
                 let decider = decide(sims, wall_bounce, mover_bounce);
                 let special = is_special(own, &matcher, *mover, *wall_id);
-                for i in 0..bodies.len() {
+                for i in bodies.live_rows() {
                     if !bodies.alive[i] || bodies.held[i] {
                         continue;
                     }
@@ -1430,7 +1437,7 @@ impl World {
             }
             for (wall_id, wall) in walls.iter().filter(|(_, w)| !w.passes) {
                 let before = walls_before.get(wall_id).unwrap_or(&wall.outline);
-                for i in 0..bodies.len() {
+                for i in bodies.live_rows() {
                     if bodies.alive[i] {
                         let (previous, velocity) = (bodies.previous[i], bodies.velocity[i]);
                         let at = &mut bodies.position[i];
