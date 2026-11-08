@@ -7,6 +7,21 @@
 //! object picture, when effects read it, is seen again too. Nothing is kept between frames.
 
 use crate::lighting::Lighting;
+
+/// The Stage camera's pipelines and layouts, built once with the lighting's (they read its bind
+/// groups 0 and 2) and shared by every renderer on the device.
+#[derive(Clone)]
+pub(crate) struct StageKit {
+    layout: wgpu::BindGroupLayout,
+    objects_layout: wgpu::BindGroupLayout,
+    empty: wgpu::BindGroup,
+    pub(crate) seed: wgpu::RenderPipeline,
+    pull: wgpu::RenderPipeline,
+    push: wgpu::RenderPipeline,
+    view: wgpu::RenderPipeline,
+    edges: wgpu::RenderPipeline,
+    objects: wgpu::RenderPipeline,
+}
 use crate::{HDR_FORMAT, OBJECT_FORMAT, StageView};
 
 type Picture = (wgpu::Texture, wgpu::TextureView);
@@ -74,8 +89,9 @@ fn texture_entry(binding: u32, filterable: bool) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-impl StageCameraPass {
-    pub(crate) fn new(device: &wgpu::Device, lighting: &Lighting) -> Self {
+impl StageKit {
+    /// Compiles the Stage camera's shader against the lighting's layouts `l0` and `l2`.
+    pub(crate) fn build(device: &wgpu::Device, l0: &wgpu::BindGroupLayout, l2: &wgpu::BindGroupLayout) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("stage camera"),
             entries: &[
@@ -107,7 +123,6 @@ impl StageCameraPass {
             layout: &empty_layout,
             entries: &[],
         });
-        let [l0, l2] = lighting.layouts();
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("stage camera"),
             bind_group_layouts: &[Some(l0), Some(&empty_layout), Some(l2), Some(&layout)],
@@ -149,12 +164,6 @@ impl StageCameraPass {
                 cache: None,
             })
         };
-        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("stage camera"),
-            size: std::mem::size_of::<crate::StageCameraGpu>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
         let pl = &pipeline_layout;
         Self {
             seed: pipeline("fs_cam_seed", pl, &[HDR_FORMAT]),
@@ -163,6 +172,30 @@ impl StageCameraPass {
             view: pipeline("fs_cam_view", pl, &[HDR_FORMAT, HDR_FORMAT, HDR_FORMAT, UV_FORMAT]),
             edges: pipeline("fs_cam_edges", pl, &[HDR_FORMAT]),
             objects: pipeline("fs_cam_objects", &objects_pipeline_layout, &[OBJECT_FORMAT]),
+            layout,
+            objects_layout,
+            empty,
+        }
+    }
+}
+
+impl StageCameraPass {
+    /// A Stage camera pass drawing with `kit`'s pipelines, with its own pictures.
+    pub(crate) fn with_kit(device: &wgpu::Device, kit: &StageKit) -> Self {
+        let StageKit { layout, objects_layout, empty, seed, pull, push, view, edges, objects } = kit.clone();
+        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("stage camera"),
+            size: std::mem::size_of::<crate::StageCameraGpu>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        Self {
+            seed,
+            pull,
+            push,
+            view,
+            edges,
+            objects,
             layout,
             objects_layout,
             empty,

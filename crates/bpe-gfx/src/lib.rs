@@ -1257,10 +1257,12 @@ impl Renderer {
     /// the same device), and on a background thread if the store says so.
     pub fn share_programs(&mut self, store: &ProgramStore) {
         self.programs = store.clone();
+        self.chain.share(store);
     }
 
-    /// Whether the last frame drew some balls without their shader layers because their program
-    /// was still building: draw it again soon and they show.
+    /// Whether the last frame left something out because its shaders were still building (in
+    /// a background store): balls without their shader layers, a lit frame drawn unlit, a
+    /// picture effect left out. Draw it again soon and they show.
     pub fn programs_waiting(&self) -> bool {
         self.waiting
     }
@@ -1353,6 +1355,20 @@ impl Renderer {
             (Some(_), Some([(_, lit), _, _])) => Some((self.targets.behind_view.clone(), lit)),
             _ => None,
         }
+    }
+
+    /// Makes the lighting pass from the store's lighting pipelines, unless it is made. False while
+    /// a background store is still building them (the renderer then counts as waiting).
+    fn lighting_ready(&mut self, device: &wgpu::Device) -> bool {
+        if self.lighting.is_some() {
+            return true;
+        }
+        let Some(kit) = self.programs.lock().light_kit(device) else {
+            self.waiting = true;
+            return false;
+        };
+        self.lighting = Some(lighting::Lighting::with_kit(device, &kit));
+        true
     }
 
     /// Draws `frame`'s scene, lit, into the HDR picture: everything before the picture's effects.
@@ -1459,12 +1475,14 @@ impl Renderer {
         self.lit_lights = frame.light.as_ref().map(|scene| scene.lights.len());
         let mut timed = false;
         let mut moved = false;
-        if let Some(scene) = frame.light.as_ref() {
+        // A lit frame whose lighting shaders are still being built is drawn unlit for now.
+        let lit = frame.light.as_ref().filter(|_| self.lighting_ready(device));
+        if let Some(scene) = lit {
             let timer = self.light_timer.get_or_insert_with(|| timing::LightTimer::new(device, queue));
             if let Some(t) = timer {
                 t.start(encoder);
             }
-            let lighting = self.lighting.get_or_insert_with(|| lighting::Lighting::new(device));
+            let lighting = self.lighting.as_mut().expect("ready, checked above");
             lighting.ensure(device, self.targets.width, self.targets.height, scene);
             let pictures = lighting.pictures().expect("just made");
             // With nothing giving off light its picture is left black (the bounce and the
@@ -1577,8 +1595,9 @@ impl Renderer {
             // lighting and the lit colour are then the moved camera's.
             if let Some(view) = moving {
                 let lighting = self.lighting.as_ref().expect("made above");
-                let pass =
-                    self.stage_camera.get_or_insert_with(|| stage_camera_pass::StageCameraPass::new(device, lighting));
+                let pass = self
+                    .stage_camera
+                    .get_or_insert_with(|| stage_camera_pass::StageCameraPass::with_kit(device, lighting.stage_kit()));
                 pass.ensure(device, self.targets.width, self.targets.height);
                 {
                     let mut background = begin_pass(
@@ -1666,6 +1685,7 @@ impl Renderer {
             object_view.as_ref(),
         );
         self.chain.end_frame();
+        self.waiting |= self.chain.waiting;
         for level in 0..BLOOM_LEVELS {
             let mut pass = begin_pass(
                 &mut encoder,

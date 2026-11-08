@@ -31,6 +31,9 @@ use std::time::{Duration, Instant};
 /// ahead on a huge scene, is worked out over several frames by the preview instead of
 /// freezing the editor.
 pub(crate) const CATCH_UP_BUDGET: Duration = Duration::from_millis(12);
+/// How long a held drag rests before the runs it changed start over (the physics, the
+/// particles, the aiming and the sound): a slider drag rebuilds them when let go or paused on.
+pub(crate) const RUNS_REST: Duration = Duration::from_millis(100);
 /// How often missing speakers are looked for again.
 const SPEAKERS_RETRY: Duration = Duration::from_secs(2);
 /// The longest wait between looks for speakers (each look waits twice the last).
@@ -267,6 +270,21 @@ pub struct Studio {
     /// Wavetables baked in the background when the sound was last built
     /// ([`WaveBank::baked`]); more means it is built again.
     tables_baked: u64,
+    /// The scene as last recorded: each frame's edit is found by comparing with it, so the
+    /// scene isn't copied every frame. `None` after an edit made outside the frame's own
+    /// recording (an undo, an opened file…): the next frame copies the scene afresh.
+    snapshot: Option<Scene>,
+    /// Whether the scene differs from the saved one, as worked out at a revision.
+    unsaved_at: std::cell::Cell<Option<(u64, bool)>>,
+    /// A pointer button is held on something other than the preview's handles (a slider, a
+    /// knob, a key on the timeline): edits that change the physics, the particles or the sound
+    /// keep the runs they have until it is let go or rests ([`RUNS_REST`]).
+    pub hold_runs: bool,
+    /// When a held edit last changed what the runs were built from, while they wait to start over.
+    pub runs_due: Option<Instant>,
+    /// The things the runs were last built with: an edit that adds or removes one never waits,
+    /// so the runs never hold a thing the scene no longer has.
+    runs_things: Vec<ThingId>,
     /// This editor's autosave session (the windowed editor only).
     pub recovery: Option<recovery::Session>,
     /// The scene as last sent to the autosave, while it is unsaved.
@@ -419,6 +437,7 @@ impl Studio {
             .and_then(|text| bpe_core::load(&text, &self.kit.registry).ok());
         self.replace_scene(offer.scene, original);
         self.saved = self.held(on_disk.unwrap_or_else(|| bpe_kit::new_studio_scene(&self.kit.registry)));
+        self.unsaved_at.set(None);
         // Into this editor's own autosave first; the old copy goes only once ours is written.
         if let Some(session) = &self.recovery {
             session.write(self.scene.clone(), self.path.clone());
@@ -570,6 +589,7 @@ impl Studio {
         let particle_job = ParticleJob::start_if_wanted(&scene, &resolved, kit.sims.clone(), 0.0);
         let follow = follow_of(&scene, &resolved);
         let light_probe = light_probe_of(&scene, &resolved, &follow);
+        let runs_things = scene.things.keys().copied().collect();
         Self {
             saved: scene.clone(),
             scene,
@@ -627,6 +647,11 @@ impl Studio {
             light_show: Default::default(),
             show_air: false,
             tables_baked: WaveBank::baked(),
+            snapshot: None,
+            unsaved_at: std::cell::Cell::new(None),
+            hold_runs: false,
+            runs_due: None,
+            runs_things,
             problem: None,
             recovery: None,
             autosaved: None,
@@ -663,6 +688,7 @@ impl Studio {
     /// aiming has got, while it runs.
     /// While the particle playback is behind, the playback waits where it is for it (or goes
     /// only as far as it has got), so the particles drawn are the balls' own moment.
+    #[cfg(test)]
     pub fn sim_target(&self) -> f64 {
         self.sim_target_with(self.particle_job.as_ref().map(|job| job.reached()))
     }
@@ -712,8 +738,17 @@ impl Studio {
         self.aim_job.as_ref().and_then(|job| job.holding(self.sim_time()))
     }
 
+    /// Whether the scene differs from the saved one. Worked out once a revision, not on every
+    /// frame the toolbar is drawn.
     pub fn unsaved(&self) -> bool {
-        self.scene != self.saved
+        if let Some((revision, unsaved)) = self.unsaved_at.get()
+            && revision == self.revision
+        {
+            return unsaved;
+        }
+        let unsaved = self.scene != self.saved;
+        self.unsaved_at.set(Some((self.revision, unsaved)));
+        unsaved
     }
 
     /// Puts a new thing in the middle of whatever the preview is looking at. A thing stuck to
@@ -733,6 +768,7 @@ impl Studio {
 
     /// Records the edit that turned `before` into the scene as it is now, unless nothing
     /// changed, and brings the simulation along.
+    #[cfg(test)]
     pub fn after_edit(&mut self, before: Scene) {
         self.edited(before, false);
     }
@@ -746,6 +782,13 @@ impl Studio {
         if self.scene == before {
             return;
         }
+        self.record_change(before, separate);
+        // Made outside the frame's own recording: the next frame starts from the scene as it is.
+        self.snapshot = None;
+    }
+
+    /// Records the change from `before` (known to differ) and brings the simulation along.
+    fn record_change(&mut self, before: Scene, separate: bool) {
         if std::mem::take(&mut self.panels.inspector.own_step) {
             self.history.end_merging();
         }
@@ -757,29 +800,47 @@ impl Studio {
     /// a new colour keeps the balls where they are.
     pub(crate) fn scene_changed(&mut self) {
         self.resolved = resolve_scene(&self.scene, &self.kit.registry);
-        let fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
-        let rebuilt = fingerprint != self.fingerprint;
         self.follow = follow_of(&self.scene, &self.resolved);
         self.light_probe = light_probe_of(&self.scene, &self.resolved, &self.follow);
+        self.time = self.time.min(self.duration());
+        self.revision += 1;
+        self.restart_runs();
+    }
+
+    /// Starts over the runs the scene as it is now changes: the physics (and its aiming), the
+    /// particle playback, the sound. While [`Studio::hold_runs`] is on they are left as they are
+    /// and noted due ([`Studio::runs_due`]): the preview shows the old run drawn with the new
+    /// looks until the drag is let go or rests ([`Studio::settle_runs`]).
+    fn restart_runs(&mut self) {
+        let fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
+        let particle_print = bpe_runtime::beside_fingerprint(&self.scene, &self.resolved, &self.kit.sims);
+        let heard = sound_fingerprint(&self.scene, &self.resolved, &self.kit.sims);
+        let rebuilt = fingerprint != self.fingerprint;
+        let particles = particle_print != self.particle_print;
+        let sound_rebuilt = heard != self.sound_fingerprint;
+        let same_things = self.scene.things.keys().eq(self.runs_things.iter());
+        if self.hold_runs && same_things && (rebuilt || particles || sound_rebuilt) {
+            self.runs_due = Some(Instant::now());
+            return;
+        }
+        self.runs_due = None;
+        if rebuilt || particles || sound_rebuilt {
+            self.runs_things = self.scene.things.keys().copied().collect();
+        }
         if rebuilt {
             self.fingerprint = fingerprint;
             self.aim_job = aim_job_for(&self.scene, &self.resolved, &self.kit);
             self.playback = main_playback(&self.scene, &self.resolved, &self.kit);
         }
-        self.time = self.time.min(self.duration());
         // A particle edit starts the particle playback over, and nothing else.
-        let particle_print = bpe_runtime::beside_fingerprint(&self.scene, &self.resolved, &self.kit.sims);
-        if particle_print != self.particle_print {
+        if particles {
             self.particle_print = particle_print;
             self.particle_job =
                 ParticleJob::start_if_wanted(&self.scene, &self.resolved, self.kit.sims.clone(), self.time);
         }
-        self.revision += 1;
         // The sound follows: a physics change starts its world over (no hits from the old
         // layout), anything else swaps the settings in where it is. How much of the balls' past
         // trails keep is the editor's alone: the sound plays on through it.
-        let heard = sound_fingerprint(&self.scene, &self.resolved, &self.kit.sims);
-        let sound_rebuilt = heard != self.sound_fingerprint;
         self.sound_fingerprint = heard;
         if let Some(job) = &mut self.sound {
             if sound_rebuilt {
@@ -791,6 +852,21 @@ impl Studio {
                 job.patch(SoundPatch::build_ready(&self.scene, &self.resolved, &self.kit));
             }
         }
+    }
+
+    /// Starts the held runs over once the drag that changed them is let go (`pointer_down`
+    /// false) or has rested [`RUNS_REST`]. Returns how long to look again in, while they wait.
+    pub(crate) fn settle_runs(&mut self, pointer_down: bool) -> Option<Duration> {
+        let since = self.runs_due?;
+        let rested = since.elapsed();
+        if pointer_down && self.hold_runs && rested < RUNS_REST {
+            return Some(RUNS_REST - rested);
+        }
+        let hold = std::mem::replace(&mut self.hold_runs, false);
+        self.restart_runs();
+        self.revision += 1;
+        self.hold_runs = hold && pointer_down;
+        None
     }
 
     pub fn replace_scene(&mut self, mut scene: Scene, path: Option<PathBuf>) {
@@ -821,6 +897,10 @@ impl Studio {
         self.follow = follow_of(&self.scene, &self.resolved);
         self.light_probe = light_probe_of(&self.scene, &self.resolved, &self.follow);
         self.revision += 1;
+        self.snapshot = None;
+        self.runs_due = None;
+        self.runs_things = self.scene.things.keys().copied().collect();
+        self.unsaved_at.set(None);
         // The file chosen to export to was the last scene's.
         self.panels.export.path = None;
         if let Some(job) = &mut self.sound {
@@ -839,6 +919,7 @@ impl Studio {
         }
         self.status = "Undone.".into();
         self.recorded = true;
+        self.snapshot = None;
         self.scene_changed();
         true
     }
@@ -849,6 +930,7 @@ impl Studio {
         }
         self.status = "Redone.".into();
         self.recorded = true;
+        self.snapshot = None;
         self.scene_changed();
         true
     }
@@ -876,16 +958,23 @@ impl Studio {
 
     // ---------- playback ----------
 
-    /// Moves the playhead. The simulation follows within the budget; the preview catches up
-    /// the rest a budget per frame.
+    /// Moves the playhead. The preview catches the simulation up, one budget a frame: seeking
+    /// itself steps nothing, so a scrub spends the frame's catch-up time once, not twice.
     pub fn seek(&mut self, time: f64) {
         self.time = time.clamp(0.0, self.duration());
-        self.playback.seek_within(self.sim_target(), Some(CATCH_UP_BUDGET));
         if self.playing
             && let Some(job) = &mut self.sound
         {
             job.seek(self.time);
         }
+    }
+
+    /// Steps the playback all the way to the playhead (tests; the editor catches up a budget a
+    /// frame in the preview).
+    #[cfg(test)]
+    pub fn catch_up(&mut self) {
+        let target = self.sim_target();
+        self.playback.seek(target);
     }
 
     pub fn set_playing(&mut self, playing: bool) {
@@ -1115,6 +1204,7 @@ impl Studio {
                 settings::remember_scene(&path);
                 self.path = Some(path);
                 self.saved = self.scene.clone();
+                self.unsaved_at.set(None);
                 true
             }
             Err(error) => {
@@ -1458,13 +1548,23 @@ impl Studio {
     /// history already: as its own undo step when it asked to be. A thing selected takes the
     /// inspector back from a rule block.
     pub(crate) fn record_frame(&mut self, before: Scene) {
-        if std::mem::take(&mut self.recorded) {
-            self.separate_edit = false;
-        } else if std::mem::take(&mut self.separate_edit) {
-            self.after_separate_edit(before);
+        let recorded = std::mem::take(&mut self.recorded);
+        let separate = std::mem::take(&mut self.separate_edit);
+        if self.scene == before {
+            self.snapshot = Some(before);
         } else {
-            self.after_edit(before);
+            if !recorded {
+                self.record_change(before, separate);
+            }
+            // Changed in place this frame: whether it is unsaved is worked out afresh.
+            self.unsaved_at.set(None);
+            self.snapshot = Some(self.scene.clone());
         }
+        self.after_frame();
+    }
+
+    /// What every frame does after its edit is recorded.
+    fn after_frame(&mut self) {
         if self.selection.primary.is_some() {
             self.panels.rules.picked = None;
         }
@@ -1754,9 +1854,15 @@ impl eframe::App for Studio {
             // The Look editor's ball view draws with the window's GPU.
             self.panels.inspector.render = frame.wgpu_render_state().cloned();
         }
-        let before = self.scene.clone();
+        // The scene as the frame starts: kept from the last frame's recording, copied only after
+        // an edit.
+        let before = self.snapshot.take().unwrap_or_else(|| self.scene.clone());
         let revision = self.revision;
         self.recorded = false;
+        let (input, pointer_down) = ctx.input(|i| (!i.events.is_empty() || i.pointer.any_down(), i.pointer.any_down()));
+        // A held slider changes the physics many times a second: the runs start over when it
+        // is let go or rests. A drag in the preview moves the things it shows, so it doesn't wait.
+        self.hold_runs = pointer_down && !self.panels.preview.as_ref().is_some_and(Preview::dragging);
         if self.confirm.is_none() && self.offer.is_none() && !self.ask_stop_export {
             self.shortcuts(&ctx);
         }
@@ -1841,7 +1947,16 @@ impl eframe::App for Studio {
         self.stop_export_dialog(&ctx);
         self.restore_dialog(&ctx);
 
-        self.record_frame(before);
+        if quiet_frame(self.playing, input, self.recorded || self.separate_edit, self.revision != revision) {
+            // Playing with nothing pressed or typed: nothing can have edited the scene.
+            self.snapshot = Some(before);
+            self.after_frame();
+        } else {
+            self.record_frame(before);
+        }
+        if let Some(wait) = self.settle_runs(pointer_down) {
+            ctx.request_repaint_after(wait);
+        }
         self.send_auditions();
         self.follow_bakes(&ctx);
         if self.revision != revision {
@@ -1858,6 +1973,12 @@ impl eframe::App for Studio {
             ctx.request_repaint();
         }
     }
+}
+
+/// Whether a frame can skip looking for an edit: playing, with no input this frame, nothing
+/// flagged as edited and the scene's revision unchanged.
+pub(crate) fn quiet_frame(playing: bool, input: bool, flagged: bool, revised: bool) -> bool {
+    playing && !input && !flagged && !revised
 }
 
 /// The toolbar's frame: the panel grey with a soft line under it.
@@ -2476,11 +2597,15 @@ mod tests {
         let now = Instant::now();
         studio.autosave(now);
         assert!(!session_file(&studio).exists(), "nothing unsaved, nothing copied");
+        let before = studio.scene.clone();
         studio.scene.name = "Changed".into();
+        studio.after_edit(before);
         assert_eq!(studio.autosave(now), None, "everything copied: nothing to wake for");
         assert!(session_file(&studio).exists(), "the first change is copied at once");
         let first = std::fs::read_to_string(session_file(&studio)).unwrap();
+        let before = studio.scene.clone();
         studio.scene.name = "Changed again".into();
+        studio.after_edit(before);
         let wait = studio.autosave(now + Duration::from_secs(5)).expect("wakes for the next copy");
         assert!(wait <= recovery::AUTOSAVE_EVERY - Duration::from_secs(5), "{wait:?}");
         assert_eq!(std::fs::read_to_string(session_file(&studio)).unwrap(), first, "not again within the minute");
@@ -2781,9 +2906,73 @@ mod tests {
     }
 
     #[test]
+    fn a_held_physics_edit_keeps_the_run_until_let_go_or_rested() {
+        let mut studio = Studio::headless();
+        let physics = studio.fingerprint;
+        let nudge = |studio: &mut Studio| {
+            let before = studio.scene.clone();
+            studio.scene.things.get_mut(&ThingId(2)).unwrap().transform.position.x += 40.0;
+            studio.after_edit(before);
+        };
+        studio.hold_runs = true;
+        let revision = studio.revision;
+        nudge(&mut studio);
+        assert_eq!(studio.fingerprint, physics, "held: the old run plays on");
+        assert!(studio.runs_due.is_some());
+        assert!(studio.revision > revision, "the picture is drawn again with the new settings");
+        assert!(studio.settle_runs(true).is_some(), "still held and just changed: it waits");
+        assert_eq!(studio.fingerprint, physics);
+        assert!(studio.settle_runs(false).is_none(), "let go");
+        assert_ne!(studio.fingerprint, physics, "the run starts over");
+        assert!(studio.runs_due.is_none());
+        // Held again, then rested on.
+        studio.hold_runs = true;
+        let physics = studio.fingerprint;
+        nudge(&mut studio);
+        assert_eq!(studio.fingerprint, physics);
+        studio.runs_due = Some(Instant::now() - RUNS_REST);
+        assert!(studio.settle_runs(true).is_none());
+        assert_ne!(studio.fingerprint, physics, "a rest starts it over while still held");
+        assert!(studio.hold_runs, "and the drag is still held");
+    }
+
+    #[test]
+    fn a_held_edit_that_adds_or_removes_a_thing_never_waits() {
+        let mut studio = Studio::headless();
+        studio.hold_runs = true;
+        let before = studio.scene.clone();
+        bpe_kit::add_thing(&mut studio.scene, &studio.kit.registry, "balls", ThingId::ROOT).unwrap();
+        let physics = studio.fingerprint;
+        studio.after_edit(before);
+        assert!(studio.runs_due.is_none());
+        assert_ne!(studio.fingerprint, physics, "the runs have every thing the scene has");
+    }
+
+    #[test]
+    fn a_held_look_edit_waits_for_nothing() {
+        let mut studio = Studio::headless();
+        studio.hold_runs = true;
+        let before = studio.scene.clone();
+        let look = Address::on(ThingId(2), SlotId::Look, "2/strength");
+        studio.scene.set_at(&studio.kit.registry, &look, Value::Number(1.0)).unwrap();
+        studio.after_edit(before);
+        assert!(studio.runs_due.is_none(), "a look edit changes no run");
+    }
+
+    #[test]
+    fn only_a_quiet_playing_frame_skips_looking_for_an_edit() {
+        assert!(quiet_frame(true, false, false, false));
+        assert!(!quiet_frame(false, false, false, false), "paused frames always look");
+        assert!(!quiet_frame(true, true, false, false), "a click or key may edit");
+        assert!(!quiet_frame(true, false, true, false));
+        assert!(!quiet_frame(true, false, false, true));
+    }
+
+    #[test]
     fn a_look_edit_keeps_the_playback_and_a_gravity_edit_restarts_it() {
         let mut studio = Studio::headless();
         studio.seek(2.0);
+        studio.catch_up();
         let before = studio.scene.clone();
         // The test ball's Glow layer's Strength.
         let look = Address::on(ThingId(2), SlotId::Look, "2/strength");

@@ -522,6 +522,8 @@ pub(crate) struct Lighting {
     memory: Memory,
     /// The last run's bind groups 0 and 2, for the Stage camera pass (lighting part 5).
     bound: Option<[wgpu::BindGroup; 2]>,
+    /// The Stage camera's pipelines, from the kit this pass was made with.
+    stage: crate::stage_camera_pass::StageKit,
 }
 
 fn texture(
@@ -597,8 +599,64 @@ impl<'a> GlowInputs<'a> {
     }
 }
 
-impl Lighting {
-    pub fn new(device: &wgpu::Device) -> Self {
+/// The lighting's pipelines, their bind group layouts and sampler, and the Stage camera's
+/// ([`crate::stage_camera_pass::StageKit`]): everything a lighting pass draws with that isn't a
+/// picture or a buffer of its own. Building one compiles the lighting shaders, which takes a
+/// moment, so it is built once for a device and shared (see [`crate::ProgramStore`]); in the
+/// editor on a background thread.
+#[derive(Clone)]
+pub(crate) struct LightKit {
+    layout: wgpu::BindGroupLayout,
+    glow_layout: wgpu::BindGroupLayout,
+    direct_layout: wgpu::BindGroupLayout,
+    mix_layout: wgpu::BindGroupLayout,
+    extras_layout: wgpu::BindGroupLayout,
+    stir_layout: wgpu::BindGroupLayout,
+    seed: wgpu::RenderPipeline,
+    jump: wgpu::RenderPipeline,
+    field: wgpu::RenderPipeline,
+    direct: wgpu::RenderPipeline,
+    gi_scene: wgpu::RenderPipeline,
+    seed_gi: wgpu::RenderPipeline,
+    gi_dist: wgpu::RenderPipeline,
+    cascade: wgpu::RenderPipeline,
+    resolve: wgpu::RenderPipeline,
+    glow_source: wgpu::RenderPipeline,
+    glow_down: wgpu::RenderPipeline,
+    mix: wgpu::RenderPipeline,
+    extras: wgpu::RenderPipeline,
+    stir: wgpu::RenderPipeline,
+    floor: wgpu::RenderPipeline,
+    dof: wgpu::RenderPipeline,
+    mirror: wgpu::RenderPipeline,
+    trace: wgpu::RenderPipeline,
+    denoise: wgpu::RenderPipeline,
+    trace_add: wgpu::RenderPipeline,
+    caustic: wgpu::RenderPipeline,
+    caustic_layout: wgpu::BindGroupLayout,
+    ribbon: wgpu::RenderPipeline,
+    ribbon_layout: wgpu::BindGroupLayout,
+    empty_group: wgpu::BindGroup,
+    bent: wgpu::ComputePipeline,
+    bent_splat: wgpu::RenderPipeline,
+    bent_layout: wgpu::BindGroupLayout,
+    bent_draw_layout: wgpu::BindGroupLayout,
+    free_glass: wgpu::RenderPipeline,
+    free_glass_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    stage_layout: wgpu::BindGroupLayout,
+    stage: crate::stage_camera_pass::StageKit,
+}
+
+impl LightKit {
+    /// Whether two kits are the same one, shared (tests).
+    #[cfg(test)]
+    pub(crate) fn same_as(&self, other: &LightKit) -> bool {
+        self.seed == other.seed && self.stage.seed == other.stage.seed
+    }
+
+    /// Compiles the lighting shaders and makes every pipeline.
+    pub(crate) fn build(device: &wgpu::Device) -> Self {
         // Glass and light part 3's photons share lighting.wgsl's bindings and helpers.
         let source = [include_str!("shaders/lighting.wgsl"), include_str!("shaders/bent_light.wgsl")].concat();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -982,9 +1040,6 @@ impl Lighting {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let uniforms = (0..=MOST_JUMPS)
-            .map(|_| uniform_buffer(device, "lighting uniform", std::mem::size_of::<Uniform>()))
-            .collect();
         let add = Some(wgpu::BlendState {
             color: wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::One,
@@ -1026,7 +1081,8 @@ impl Lighting {
             multiview_mask: None,
             cache: None,
         });
-        Self {
+        let stage = crate::stage_camera_pass::StageKit::build(device, &layout, &stage_layout);
+        LightKit {
             seed: make("light seed", "fs_seed", one, &[SEED_FORMAT], None),
             jump: make("light jump", "fs_jump", one, &[SEED_FORMAT], None),
             field: make("light field", "fs_field", one, &[BLOCKER_FIELD_FORMAT], None),
@@ -1051,34 +1107,18 @@ impl Lighting {
             caustic_layout,
             ribbon,
             ribbon_layout,
-            ribbons: GrowableBuffer::storage("beam ribbons"),
             empty_group: device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("nothing"),
                 layout: &empty_layout,
                 entries: &[],
             }),
-            caustic_uniform: uniform_buffer(device, "caustics uniform", std::mem::size_of::<CausticUniform>()),
-            glass: GrowableBuffer::storage("caustic glass"),
             bent,
             bent_splat,
             bent_layout,
             bent_draw_layout,
-            bent_uniform: uniform_buffer(device, "bent light uniform", std::mem::size_of::<BentUniform>()),
-            bent_pairs: GrowableBuffer::storage("bent light pairs"),
-            legs: GrowableBuffer::storage("bent light legs"),
-            bent_count: 0,
             free_glass,
             free_glass_layout,
-            trace_uniforms: (0..4)
-                .map(|_| uniform_buffer(device, "bounce light uniform", std::mem::size_of::<Uniform>()))
-                .collect(),
-            stage_uniform: uniform_buffer(device, "lighting stage uniform", std::mem::size_of::<StageUniform>()),
             stage_layout,
-            surfaces: GrowableBuffer::storage("light surfaces"),
-            spheres: GrowableBuffer::storage("light spheres"),
-            cells: GrowableBuffer::storage("light sphere cells"),
-            items: GrowableBuffer::storage("light sphere items"),
-            mirrors: GrowableBuffer::storage("light mirrors"),
             layout,
             glow_layout,
             direct_layout,
@@ -1086,6 +1126,117 @@ impl Lighting {
             extras_layout,
             stir_layout,
             sampler,
+            stage,
+        }
+    }
+}
+
+impl Lighting {
+    /// A lighting pass drawing with `kit`'s pipelines (built once and shared by every renderer
+    /// on the device), with its own pictures and buffers.
+    pub fn with_kit(device: &wgpu::Device, kit: &LightKit) -> Self {
+        let LightKit {
+            layout,
+            glow_layout,
+            direct_layout,
+            mix_layout,
+            extras_layout,
+            stir_layout,
+            seed,
+            jump,
+            field,
+            direct,
+            gi_scene,
+            seed_gi,
+            gi_dist,
+            cascade,
+            resolve,
+            glow_source,
+            glow_down,
+            mix,
+            extras,
+            stir,
+            floor,
+            dof,
+            mirror,
+            trace,
+            denoise,
+            trace_add,
+            caustic,
+            caustic_layout,
+            ribbon,
+            ribbon_layout,
+            empty_group,
+            bent,
+            bent_splat,
+            bent_layout,
+            bent_draw_layout,
+            free_glass,
+            free_glass_layout,
+            sampler,
+            stage_layout,
+            stage,
+        } = kit.clone();
+        let uniforms = (0..=MOST_JUMPS)
+            .map(|_| uniform_buffer(device, "lighting uniform", std::mem::size_of::<Uniform>()))
+            .collect();
+        Self {
+            layout,
+            glow_layout,
+            direct_layout,
+            mix_layout,
+            extras_layout,
+            stir_layout,
+            seed,
+            jump,
+            field,
+            direct,
+            gi_scene,
+            seed_gi,
+            gi_dist,
+            cascade,
+            resolve,
+            glow_source,
+            glow_down,
+            mix,
+            extras,
+            stir,
+            floor,
+            dof,
+            mirror,
+            trace,
+            denoise,
+            trace_add,
+            caustic,
+            caustic_layout,
+            ribbon,
+            ribbon_layout,
+            empty_group,
+            bent,
+            bent_splat,
+            bent_layout,
+            bent_draw_layout,
+            free_glass,
+            free_glass_layout,
+            sampler,
+            stage_layout,
+            stage,
+            ribbons: GrowableBuffer::storage("beam ribbons"),
+            caustic_uniform: uniform_buffer(device, "caustics uniform", std::mem::size_of::<CausticUniform>()),
+            glass: GrowableBuffer::storage("caustic glass"),
+            bent_uniform: uniform_buffer(device, "bent light uniform", std::mem::size_of::<BentUniform>()),
+            bent_pairs: GrowableBuffer::storage("bent light pairs"),
+            legs: GrowableBuffer::storage("bent light legs"),
+            bent_count: 0,
+            trace_uniforms: (0..4)
+                .map(|_| uniform_buffer(device, "bounce light uniform", std::mem::size_of::<Uniform>()))
+                .collect(),
+            stage_uniform: uniform_buffer(device, "lighting stage uniform", std::mem::size_of::<StageUniform>()),
+            surfaces: GrowableBuffer::storage("light surfaces"),
+            spheres: GrowableBuffer::storage("light spheres"),
+            cells: GrowableBuffer::storage("light sphere cells"),
+            items: GrowableBuffer::storage("light sphere items"),
+            mirrors: GrowableBuffer::storage("light mirrors"),
             uniforms,
             glow_uniforms: Vec::new(),
             lights: GrowableBuffer::storage("lights"),
@@ -1098,17 +1249,15 @@ impl Lighting {
         }
     }
 
+    /// The Stage camera's pipelines, from the kit.
+    pub(crate) fn stage_kit(&self) -> &crate::stage_camera_pass::StageKit {
+        &self.stage
+    }
+
     /// How many photons the last lit frame sent through glass that bends light (0 when it sent
     /// none).
     pub fn bent_photons(&self) -> u32 {
         self.bent_count
-    }
-
-    /// The layouts of bind groups 0, 1 and 2 of the light passes (lighting part 5's camera pass
-    /// reads the same groups).
-    /// The light pass's bind group layouts 0 (its pictures) and 2 (the stage).
-    pub(crate) fn layouts(&self) -> [&wgpu::BindGroupLayout; 2] {
-        [&self.layout, &self.stage_layout]
     }
 
     /// The last run's bind groups 0 and 2.

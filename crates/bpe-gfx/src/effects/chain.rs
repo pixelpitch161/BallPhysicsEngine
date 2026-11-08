@@ -58,7 +58,7 @@ pub(crate) struct Fx {
     beat: [f32; 4],
 }
 
-struct Compiled {
+pub(crate) struct Compiled {
     pipeline: wgpu::RenderPipeline,
     history: bool,
     /// A lens effect's pre-pass: its `bright` at half size, what it asks for, and where its
@@ -87,7 +87,16 @@ pub(crate) struct Chain {
     black: wgpu::TextureView,
     /// Stands in for the object picture when nothing drew one: no things anywhere.
     no_objects: wgpu::TextureView,
-    compiled: BTreeMap<u64, Result<Compiled, String>>,
+    /// The effects this chain has drawn with, from the store (where they are built, shared
+    /// with every renderer on the device; in the editor on a background thread).
+    compiled: BTreeMap<u64, crate::programs::EffectBuilt>,
+    store: crate::ProgramStore,
+    /// An effect this frame asked for was still being built, so the frame left it out (or drew
+    /// the call's last built text instead).
+    pub(crate) waiting: bool,
+    /// Each call's last text that built, by the call's key: while its new text (code being typed)
+    /// builds, the call draws with this one rather than blinking off.
+    last_built: BTreeMap<u64, u64>,
     /// The effects this frame asked for, for the problem list and for pruning.
     used: BTreeSet<u64>,
     uniforms: Vec<wgpu::Buffer>,
@@ -209,6 +218,9 @@ impl Chain {
             black,
             no_objects,
             compiled: BTreeMap::new(),
+            store: crate::ProgramStore::default(),
+            waiting: false,
+            last_built: BTreeMap::new(),
             used: BTreeSet::new(),
             uniforms: Vec::new(),
             used_uniforms: 0,
@@ -254,6 +266,7 @@ impl Chain {
     /// Starts a frame: forgets which effects and uniforms the last one used.
     pub(crate) fn begin_frame(&mut self) {
         self.used.clear();
+        self.waiting = false;
         self.used_uniforms = 0;
         self.lens_uniforms = 0;
         self.light = None;
@@ -271,6 +284,8 @@ impl Chain {
             let used = &self.used;
             self.compiled.retain(|k, _| used.contains(k));
         }
+        let compiled = &self.compiled;
+        self.last_built.retain(|_, k| compiled.contains_key(k));
     }
 
     /// Why effects this frame asked for could not be built, one line each.
@@ -278,12 +293,19 @@ impl Chain {
         self.used.iter().filter_map(|k| self.compiled.get(k)?.as_ref().err().map(String::as_str))
     }
 
+    /// Builds its effects in `store` from now on (see [`crate::Renderer::share_programs`]).
+    pub(crate) fn share(&mut self, store: &crate::ProgramStore) {
+        self.store = store.clone();
+    }
+
     fn compile(&mut self, device: &wgpu::Device, wgsl: &str) -> u64 {
         let key = key_of(wgsl);
         self.used.insert(key);
         if !self.compiled.contains_key(&key) {
-            let result = build(device, &self.pipeline_layout, wgsl);
-            self.compiled.insert(key, result);
+            match self.store.lock().effect(device, &self.pipeline_layout, key, wgsl) {
+                Some(built) => _ = self.compiled.insert(key, built),
+                None => self.waiting = true,
+            }
         }
         key
     }
@@ -310,8 +332,16 @@ impl Chain {
             e.stage == stage && e.blend != 0.0 && on.runs(frame, e) && (lit || takes_of(stage, on, e) != Takes::Light)
         };
         for call in frame.effects.iter().filter(picked) {
-            let key = self.compile(device, &call.wgsl);
+            let mut key = self.compile(device, &call.wgsl);
+            if !self.compiled.contains_key(&key)
+                && let Some(&last) = self.last_built.get(&call.key)
+            {
+                // Still building: the call's text as it last built, meanwhile.
+                key = last;
+                self.used.insert(key);
+            }
             if self.compiled.get(&key).is_some_and(|c| c.is_ok()) {
+                self.last_built.insert(call.key, key);
                 active.push((call, key));
             }
         }
@@ -645,7 +675,7 @@ pub(crate) fn base_uniform(frame: &Frame, width: u32, height: u32) -> Fx {
 }
 
 /// Builds the render pipeline for one effect, or says why it could not be.
-fn build(device: &wgpu::Device, layout: &wgpu::PipelineLayout, wgsl: &str) -> Result<Compiled, String> {
+pub(crate) fn build(device: &wgpu::Device, layout: &wgpu::PipelineLayout, wgsl: &str) -> Result<Compiled, String> {
     let name = name_of(wgsl);
     let full = assemble(wgsl).map_err(|e| format!("{name}: {e}"))?;
     let header = super::parse(wgsl).map_err(|e| format!("{name}: {e}"))?;
@@ -772,6 +802,7 @@ pub(crate) mod tests {
     use bpe_core::ThingId;
     use bpe_runtime::Outline;
     use glam::Vec2;
+    use std::sync::Arc;
 
     pub(crate) const W: u32 = 270;
     pub(crate) const H: u32 = 480;
@@ -842,6 +873,36 @@ pub(crate) mod tests {
         assert_eq!(name_of(GREEN), "Green");
         assert_eq!(name_of("fn effect("), "effect");
         assert_eq!(std::mem::size_of::<Fx>(), 688);
+    }
+
+    #[test]
+    fn a_background_store_leaves_an_effect_out_until_it_is_built_then_shares_it() {
+        let Ok((device, queue)) = test_device() else { return };
+        let store = crate::ProgramStore::in_background();
+        let mut frame = two_balls_frame();
+        frame.effects.push(call(GREEN, 0.0, Stage::Picture));
+        let mut renderer = Renderer::new(&device, W, H);
+        renderer.share_programs(&store);
+        renderer.render(&device, &queue, &frame);
+        let first = renderer.read_output(&device, &queue).unwrap();
+        // Unless the thread was quicker than the frame, the effect was still being built.
+        if renderer.programs_waiting() {
+            assert!(!green(pixel(&first, EMPTY)), "an effect still building is left out");
+        }
+        store.wait();
+        renderer.render(&device, &queue, &frame);
+        let built = renderer.read_output(&device, &queue).unwrap();
+        assert!(!renderer.programs_waiting());
+        assert!(green(pixel(&built, EMPTY)), "once built it draws");
+        // Another renderer on the store draws with it at once: it is built only once.
+        let mut other = Renderer::new(&device, W, H);
+        other.share_programs(&store);
+        other.render(&device, &queue, &frame);
+        assert!(!other.programs_waiting(), "shared: nothing to build again");
+        assert!(green(pixel(&other.read_output(&device, &queue).unwrap(), EMPTY)));
+        let key = key_of(GREEN);
+        let shared = |r: &Renderer| r.chain.compiled.get(&key).and_then(|c| c.as_ref().ok()).cloned();
+        assert!(Arc::ptr_eq(&shared(&renderer).unwrap(), &shared(&other).unwrap()));
     }
 
     #[test]

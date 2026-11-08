@@ -1,6 +1,8 @@
 //! The ball view at the top of the Look editor: the thing's look on one ball, still, moving or
 //! hitting something, on a dark ground or the scene's own. It builds a frame for a small scene
-//! of its own (the ball alone) and never steps the physics.
+//! of its own (the ball alone) and never steps the physics. The small scene is resolved, hashed
+//! and built into a world only when it changes ([`MiniCache`]); each picture after that only
+//! moves the ball, so Moving and Hit cost a frame build a picture, not a world.
 
 use std::hash::{Hash, Hasher};
 
@@ -69,6 +71,45 @@ pub struct BallView {
     /// A layer whose cuts the view shows alone (white where they let it show, black where they
     /// hide it), until Alt-click again or another thing is picked.
     pub solo: Option<(ThingId, bpe_core::LayerId)>,
+    /// The small scene last drawn and what was worked out from it.
+    cache: MiniCache,
+}
+
+/// A view's small scene as last shown, resolved and hashed, and (for the ball view) the world
+/// built from it: worked out again only when the small scene changes, not on every frame.
+#[derive(Default)]
+pub struct MiniCache {
+    mini: Option<Scene>,
+    pub resolved: Resolved,
+    /// [`content_key`] of the small scene.
+    pub content: u64,
+    world: Option<World>,
+    /// How many times it was worked out (tests).
+    #[cfg(test)]
+    pub builds: usize,
+}
+
+impl MiniCache {
+    /// Takes `mini` (of thing `id`) as what the view shows now: resolved and hashed again only
+    /// when it differs from the last one.
+    pub fn update(&mut self, mini: Scene, kit: &Kit, id: ThingId) {
+        if self.mini.as_ref() == Some(&mini) {
+            return;
+        }
+        self.resolved = bpe_core::resolve(&mini, &kit.registry);
+        self.content = content_key(&mini, &self.resolved, id);
+        self.world = None;
+        self.mini = Some(mini);
+        #[cfg(test)]
+        {
+            self.builds += 1;
+        }
+    }
+
+    /// The small scene, once [`MiniCache::update`] has been given one.
+    pub fn mini(&self) -> Option<&Scene> {
+        self.mini.as_ref()
+    }
 }
 
 impl BallView {
@@ -140,6 +181,7 @@ pub fn view_size(radius: f32) -> u32 {
 /// The frame of `mini` (from [`mini_scene`]) for ball `number` of thing `id` (0 for a single
 /// ball) with radius `radius`, at `time` seconds into the scene (`clock` of them into the view's
 /// loop, after `loops` whole loops: in Hit the ball has hit once a loop).
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn build_view_frame(
     mini: &Scene,
@@ -155,6 +197,26 @@ pub fn build_view_frame(
     frame: &mut Frame,
 ) {
     let mut world = World::build(mini, resolved, &kit.sims);
+    build_view_frame_in(&mut world, mini, resolved, kit, id, number, radius, mode, time, clock, loops, frame);
+}
+
+/// [`build_view_frame`] in a `world` already built from `mini`: every ball's place, size, speed,
+/// life and hit count is set afresh, so one world serves every picture of the same small scene.
+#[allow(clippy::too_many_arguments)]
+pub fn build_view_frame_in(
+    world: &mut World,
+    mini: &Scene,
+    resolved: &Resolved,
+    kit: &Kit,
+    id: ThingId,
+    number: u32,
+    radius: f32,
+    mode: ViewMode,
+    time: f64,
+    clock: f64,
+    loops: u32,
+    frame: &mut Frame,
+) {
     let mut log = Log::default();
     let rate = world.steps_per_second;
     // Every ball is let go at once, so a ball's row is its number.
@@ -166,6 +228,9 @@ pub fn build_view_frame(
             bodies.radius[i] = radius;
             bodies.velocity[i] = if mode == ViewMode::Moving { Vec2::new(MOVING_SPEED, 0.0) } else { Vec2::ZERO };
             bodies.alive[i] = i == row;
+            if i < bodies.hits.len() {
+                bodies.hits[i] = 0;
+            }
         }
         if mode == ViewMode::Hit && row < bodies.hits.len() {
             bodies.hits[row] = loops + 1;
@@ -182,7 +247,7 @@ pub fn build_view_frame(
             });
         }
     }
-    build_frame(mini, resolved, &world, &log, time, &kit.draws, frame);
+    build_frame(mini, resolved, world, &log, time, &kit.draws, frame);
     let size = view_size(radius);
     frame.set_view(CameraView::default(), (size, size));
     frame.overlay = None;
@@ -247,7 +312,7 @@ pub fn show(
     {
         card.params.set(key, value);
     }
-    let resolved = bpe_core::resolve(&mini, &kit.registry);
+    view.cache.update(mini, kit, id);
     let radius = match scene.value_at_time(&kit.registry, &Address::own(id, "radius"), time) {
         Some(Value::Number(r)) => r as f32,
         _ => 24.0,
@@ -262,15 +327,19 @@ pub fn show(
     let clock = looped.map_or(0.0, |len| now % len);
     let loops = looped.map_or(0, |len| (now / len) as u32);
     let solo = view.solo.filter(|(t, _)| *t == id).map(|(_, layer)| layer);
-    let key = view_key(&mini, &resolved, id, radius, time, clock, pixels, view.mode, view.ground)
+    let key = frame_key(view.cache.content, radius, time, clock, pixels, view.mode, view.ground)
         ^ solo.map_or(0, |l| (u64::from(l.0) + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15))
         ^ u64::from(number).wrapping_mul(0xc2b2_ae3d_27d4_eb4f);
     // The frame is built without a GPU too, so handles and clicks work everywhere.
     if view.built != Some(key) {
         let at = time + clock;
-        build_view_frame(&mini, &resolved, kit, id, number, radius, view.mode, at, clock, loops, &mut view.frame);
+        let cache = &mut view.cache;
+        let mini = cache.mini.as_ref().expect("given above");
+        let world = cache.world.get_or_insert_with(|| World::build(mini, &cache.resolved, &kit.sims));
+        let (resolved, mode) = (&cache.resolved, view.mode);
+        build_view_frame_in(world, mini, resolved, kit, id, number, radius, mode, at, clock, loops, &mut view.frame);
         if let Some(layer) = solo {
-            show_cuts_alone(&mut view.frame, &resolved, id, layer);
+            show_cuts_alone(&mut view.frame, resolved, id, layer);
         }
         view.built = Some(key);
     }
@@ -318,13 +387,16 @@ pub fn show(
         }
     }
     if looped.is_some() {
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+        // A moving ball needs a new picture about 30 times a second while the window is in
+        // front; behind other windows it slows right down, so an idle editor stays quiet.
+        let wait = if ui.input(|i| i.focused) { 33 } else { 250 };
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(wait));
     }
     let ball = view.frame.layered.first()?;
     let world = view_size(radius) as f32;
     let map = ViewMap { centre: rect.center(), radius: radius * side / world, turn: ball.form[2] };
     let picked = response.interact_pointer_pos().filter(|_| response.clicked()).and_then(|at| {
-        let slot = resolved.things.get(&id)?.slots.get(&SlotId::Look)?;
+        let slot = view.cache.resolved.things.get(&id)?.slots.get(&SlotId::Look)?;
         bpe_kit::modules::look::layers::gpu::Stack::of(slot)?.topmost_at(map.to_ball(at), radius)
     });
     let map = (view.mode != ViewMode::Moving).then_some(map);
@@ -345,6 +417,7 @@ pub fn show_cuts_alone(frame: &mut Frame, resolved: &Resolved, id: ThingId, laye
 /// What the view's picture shows: the ball's settings with their keys and pulses, the scene's
 /// when on its ground, the size, the moment and the view's own choices. The picture is drawn
 /// again only when this changes.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn view_key(
     mini: &Scene,
@@ -357,11 +430,24 @@ pub fn view_key(
     mode: ViewMode,
     ground: Ground,
 ) -> u64 {
+    frame_key(content_key(mini, resolved, id), radius, time, clock, pixels, mode, ground)
+}
+
+/// What a small scene of thing `id` shows, whatever the moment: the thing's settings with their
+/// keys and pulses, and the scene's when on its ground.
+pub fn content_key(mini: &Scene, resolved: &Resolved, id: ThingId) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     format!("{:?}", resolved.things.get(&id)).hash(&mut h);
     format!("{:?}", resolved.things.get(&ThingId::ROOT)).hash(&mut h);
     format!("{:?} {:?}", mini.tracks, mini.pulses).hash(&mut h);
-    (radius.to_bits(), time.to_bits(), clock.to_bits(), pixels, mode, ground).hash(&mut h);
+    h.finish()
+}
+
+/// [`view_key`] from the small scene's [`content_key`] and this picture's own numbers.
+#[allow(clippy::too_many_arguments)]
+pub fn frame_key(content: u64, radius: f32, time: f64, clock: f64, pixels: u32, mode: ViewMode, ground: Ground) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (content, radius.to_bits(), time.to_bits(), clock.to_bits(), pixels, mode, ground).hash(&mut h);
     h.finish()
 }
 
@@ -516,6 +602,60 @@ mod tests {
         assert!(at(50, 50 - 30).iter().all(|&c| c > 230), "the ball reaches 35 % of the way out");
         assert!(at(3, 3).iter().all(|&c| c < 40), "dark in the corner: {:?}", at(3, 3));
         assert!(at(50, 50 - 40).iter().all(|&c| c < 40), "and past the ball: {:?}", at(50, 10));
+    }
+
+    #[test]
+    fn the_small_scene_is_worked_out_again_only_when_it_changes() {
+        let kit = bpe_kit::kit();
+        let reg = &kit.registry;
+        let mut scene = bpe_kit::new_studio_scene(reg);
+        let ball = bpe_kit::add_thing(&mut scene, reg, "balls", ThingId::ROOT).unwrap();
+        let mut cache = MiniCache::default();
+        for _ in 0..3 {
+            cache.update(mini_scene(&scene, &kit, ball, Ground::Dark).unwrap(), &kit, ball);
+        }
+        assert_eq!(cache.builds, 1, "the same small scene every frame is resolved once");
+        let content = cache.content;
+        let colours = Address::on(ball, SlotId::Look, "0/colours");
+        let red = Value::Gradient(bpe_core::Gradient::solid(Color::rgb(255, 0, 0)));
+        scene.set_at(reg, &colours, red).unwrap();
+        cache.update(mini_scene(&scene, &kit, ball, Ground::Dark).unwrap(), &kit, ball);
+        assert_eq!(cache.builds, 2, "a changed look is worked out again");
+        assert_ne!(cache.content, content);
+        // One world serves every picture: two pictures of it match two from fresh worlds.
+        let mini = cache.mini().unwrap().clone();
+        let mut world = World::build(&mini, &cache.resolved, &kit.sims);
+        let (mut a, mut b) = (Frame::default(), Frame::default());
+        build_view_frame_in(
+            &mut world,
+            &mini,
+            &cache.resolved,
+            &kit,
+            ball,
+            0,
+            24.0,
+            ViewMode::Hit,
+            1.0,
+            0.1,
+            2,
+            &mut a,
+        );
+        build_view_frame_in(
+            &mut world,
+            &mini,
+            &cache.resolved,
+            &kit,
+            ball,
+            0,
+            24.0,
+            ViewMode::Still,
+            1.5,
+            0.0,
+            0,
+            &mut a,
+        );
+        build_view_frame(&mini, &cache.resolved, &kit, ball, 0, 24.0, ViewMode::Still, 1.5, 0.0, 0, &mut b);
+        assert_eq!(format!("{:?}", a.layered), format!("{:?}", b.layered), "a reused world draws as a fresh one");
     }
 
     #[test]
