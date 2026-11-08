@@ -3450,9 +3450,12 @@ mod tests {
         studio.scene.name = "Drop".into();
         studio.saved = studio.scene.clone();
         assert_eq!(studio.window_title(), "Drop – Ball Studio");
+        // Each edit moves the revision on, as recording a frame's edit does.
         studio.scene.name = "Drop 2".into();
+        studio.revision += 1;
         assert_eq!(studio.window_title(), "Drop 2 • – Ball Studio");
         studio.scene.name = "  ".into();
+        studio.revision += 1;
         assert_eq!(studio.window_title(), "Untitled • – Ball Studio");
     }
 }
