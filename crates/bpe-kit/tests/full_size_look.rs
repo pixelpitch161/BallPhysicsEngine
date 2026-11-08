@@ -271,6 +271,9 @@ fn lighting_shots(reg: &Registry) -> Vec<Shot> {
         let mut p = light(LightType::Area, Vec2::new(0.0, -450.0), 10.0, 2.0);
         p.width = 200.0;
         p.length = 40.0;
+        // Across the picture (an area light's Direction is where its width runs; 90, down, would poke it out of
+        // the ring).
+        p.direction = 0.0;
         p.height = 120.0;
         set_light(&mut s, &p);
         add_ball(&mut s, reg, Vec2::new(-260.0, -250.0), 25.0);
@@ -328,6 +331,51 @@ fn lighting_shots(reg: &Registry) -> Vec<Shot> {
         lighting(&mut s, "looking_down", Value::Number(16.0));
         out.push(shot("stage-one", s, vec![0.0]));
     }
+    {
+        // A wide area panel right by the ring's top: nothing may leak out past the ring, and the balls' shadows
+        // narrow to a point.
+        let mut s = room(reg, Vec2::new(0.0, -100.0), 60.0);
+        let mut p = light(LightType::Area, Vec2::new(0.0, -420.0), 10.0, 2.0);
+        p.width = 360.0;
+        p.length = 30.0;
+        p.direction = 0.0;
+        p.height = 80.0;
+        set_light(&mut s, &p);
+        add_ball(&mut s, reg, Vec2::new(-220.0, -50.0), 25.0);
+        let mut bar = ShapeSettings::rectangle(160.0, 20.0, 4.0);
+        bar.fill = bpe_kit::things::shape::ShapeFill::Filled;
+        add_shape(&mut s, reg, Vec2::new(150.0, 150.0), bar);
+        lighting(&mut s, "shadow_length", Value::Number(4000.0));
+        out.push(shot("area-wide", s, vec![0.0]));
+    }
+    {
+        // A strip light along a line across the top: shadows from the whole strip, not from its nearest point.
+        let mut s = room(reg, Vec2::new(-60.0, 0.0), 50.0);
+        let mut p = light(LightType::Strip, Vec2::new(0.0, -380.0), 6.0, 2.0);
+        p.length = 500.0;
+        p.width = 8.0;
+        p.direction = 0.0;
+        set_light(&mut s, &p);
+        add_ball(&mut s, reg, Vec2::new(200.0, -150.0), 20.0);
+        add_shape(&mut s, reg, Vec2::new(-150.0, 300.0), ShapeSettings::polygon(6, 70.0, 3.0));
+        lighting(&mut s, "shadow_length", Value::Number(4000.0));
+        out.push(shot("strip", s, vec![0.0]));
+    }
+    {
+        // Thin hollow shapes on a Stage: their shadows on the back wall must be even inside, not striped.
+        let mut s = room(reg, Vec2::new(250.0, 450.0), 40.0);
+        let mut p = light(LightType::Point, Vec2::new(-300.0, -550.0), 20.0, 2.5);
+        p.height = 400.0;
+        p.reach = 3500.0;
+        set_light(&mut s, &p);
+        add_shape(&mut s, reg, Vec2::new(-120.0, -150.0), ShapeSettings::polygon(6, 120.0, 3.0));
+        let mut e = ShapeSettings::ellipse(240.0, 70.0, 4.0);
+        e.turn = 20.0;
+        add_shape(&mut s, reg, Vec2::new(60.0, 150.0), e);
+        lighting(&mut s, "depth", Value::Choice("stage".into()));
+        lighting(&mut s, "looking_down", Value::Number(16.0));
+        out.push(shot("stage-thin", s, vec![0.0]));
+    }
     out
 }
 
@@ -347,7 +395,62 @@ fn demo_shots(reg: &Registry) -> Vec<Shot> {
         at("colour-demo", scenes::colour_demo(reg)),
         at("blend-demo", scenes::blend_demo(reg)),
         at("graded-sunset", scenes::graded_sunset(reg)),
+        at("stage-camera-orbit", stage_camera(reg, 25.0)),
+        at("stage-camera-orbit-far", stage_camera(reg, -40.0)),
+        at("stage-depth-of-field", stage_depth_of_field(reg)),
+        at("gradient-seams", gradient_seams(reg)),
     ]
+}
+
+/// The stage demo seen through its Stage camera moved `orbit` degrees round.
+fn stage_camera(reg: &Registry, orbit: f64) -> Scene {
+    let mut s = scenes::stage_demo(reg);
+    let camera = bpe_kit::ensure_camera(&mut s, reg);
+    let params = &mut s.things.get_mut(&camera).unwrap().params;
+    params.set("stage_camera", Value::Bool(true));
+    params.set("orbit", Value::Number(orbit));
+    s
+}
+
+/// The stage demo with depth of field, focused on the balls: the wall and floor well blurred.
+fn stage_depth_of_field(reg: &Registry) -> Scene {
+    let mut s = scenes::stage_demo(reg);
+    lighting(&mut s, "depth_of_field", Value::Bool(true));
+    lighting(&mut s, "focus_at", Value::Number(40.0));
+    lighting(&mut s, "dof_blur", Value::Number(0.3));
+    s
+}
+
+/// Two big still balls painted inside by a Sweep and a Spiral gradient that doesn't loop, so their last colour meets
+/// their first in a seam (which should be as smooth as any edge).
+fn gradient_seams(reg: &Registry) -> Scene {
+    use bpe_core::{Color, Gradient, Mix, layered_key};
+    let mut s = new_scene(reg);
+    no_gravity(&mut s);
+    first_ball(&mut s, Vec2::new(0.0, -420.0), |b| b.radius = 330.0);
+    let first = first_of(&s, "balls");
+    add_ball(&mut s, reg, Vec2::new(0.0, 420.0), 330.0);
+    let second = s.things.values().filter(|t| t.kind == "balls").map(|t| t.id).max().expect("the copy");
+    let colours = Gradient::spread(
+        &[Color::rgb(240, 80, 120), Color::rgb(250, 200, 80), Color::rgb(160, 60, 250)],
+        Mix::Even,
+        false,
+    );
+    for (ball, form) in [(first, "sweep"), (second, "spiral")] {
+        let layers = &s.card(ball, SlotId::Look).unwrap().layers;
+        let glow = layers.iter().find(|l| l.kind == "layer.glow").map(|l| l.id);
+        if let Some(glow) = glow {
+            s.remove_layer(reg, ball, SlotId::Look, glow).unwrap();
+        }
+        let pattern = s.add_layer(reg, ball, SlotId::Look, "layer.pattern").unwrap();
+        s.move_layer(reg, ball, SlotId::Look, pattern, 1).unwrap();
+        let p = &mut s.card_mut(ball, SlotId::Look).unwrap().params;
+        p.set(&layered_key(pattern, "in_pattern"), Value::Choice("gradient".into()));
+        p.set(&layered_key(pattern, "in_from"), Value::Choice("own_gradient".into()));
+        p.set(&layered_key(pattern, "in_colours"), Value::Gradient(colours.clone()));
+        p.set(&layered_key(pattern, "in_colours~form"), Value::Choice(form.into()));
+    }
+    s
 }
 
 /// The club demo with its haze carried by a gusty Air card wind, and the balls following the air

@@ -22,6 +22,8 @@ mod grade_tests;
 mod gradients;
 mod lighting;
 mod liquid;
+#[cfg(test)]
+mod output_tests;
 pub mod pipes;
 pub use liquid::{Liquid, LiquidBlob, LiquidStyle, MOST_BLOBS};
 mod ripples;
@@ -437,6 +439,9 @@ pub struct Renderer {
     light_timer: Option<Option<timing::LightTimer>>,
     /// The last frame's lighting: how many lights it drew, `None` when it wasn't lit.
     lit_lights: Option<usize>,
+    /// The lighting field is as fine, in the scene, as the video's (`preview_field_like_video`), not the Quality's
+    /// share of this renderer's own size.
+    field_like_video: bool,
     /// The light pass being drawn (see `Globals::light`): 0 outside the light passes.
     light_mode: u32,
     /// Whether the light passes draw a Stage (its surface picture keeps no blended cover).
@@ -1073,6 +1078,7 @@ impl Renderer {
             stage_camera: None,
             light_timer: None,
             lit_lights: None,
+            field_like_video: false,
             light_mode: 0,
             light_stage: false,
             accumulate: None,
@@ -1128,6 +1134,13 @@ impl Renderer {
     pub fn share_programs(&mut self, store: &ProgramStore) {
         self.programs = store.clone();
         self.chain.share(store);
+    }
+
+    /// For the editor's preview, drawn smaller than the video: size the lighting field so a texel covers as much of
+    /// the scene as in the video at the same Quality (`lighting::field_divisor`), so the preview's shadows look like
+    /// the export's. Off (the Quality's share of this renderer's size) for exports and the picture tests.
+    pub fn preview_field_like_video(&mut self, on: bool) {
+        self.field_like_video = on;
     }
 
     /// Whether the last frame left something out because its shaders were still building (in
@@ -1353,7 +1366,8 @@ impl Renderer {
                 t.start(encoder);
             }
             let lighting = self.lighting.as_mut().expect("ready, checked above");
-            lighting.ensure(device, self.targets.width, self.targets.height, scene);
+            let video_width = if self.field_like_video { frame.width } else { self.targets.width };
+            lighting.ensure(device, self.targets.width, self.targets.height, video_width, scene);
             let pictures = lighting.pictures().expect("just made");
             // With nothing giving off light its picture is left black (the bounce and the
             // blooms read it), not as the last frame that had some.

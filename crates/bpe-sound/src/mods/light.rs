@@ -7,7 +7,7 @@ use super::{BLOCK_S, ModCx, Modulator, NoteCx, bend};
 use bpe_core::{Target, ThingId};
 use bpe_dsp::lfo::smooth_coefficient;
 use bpe_kit::sound::{LightFollows, LightModSettings, LightReads};
-use bpe_runtime::{LightAt, Log, Party, World};
+use bpe_runtime::{BallLight, LightAt, Log, Party, World};
 use std::sync::Arc;
 
 /// A Light's settings for one block.
@@ -55,6 +55,57 @@ fn between(v: f32, dark: f32, bright: f32) -> f32 {
     ((v - dark) / (bright - dark)).clamp(0.0, 1.0)
 }
 
+/// The light and shadow on the balls a voice's Light modulators read, worked out at one physics
+/// step. The sound engine fills it after the physics moves ([`crate::VoiceSource::prepare`]),
+/// where working and allocating are allowed, so the sound path only looks the balls up.
+#[derive(Clone, Debug, Default)]
+pub struct LightTable {
+    /// The step it was filled at.
+    at: Option<u64>,
+    /// `(thing, row, light)`, sorted by thing and row.
+    rows: Vec<(ThingId, u32, BallLight)>,
+}
+
+impl LightTable {
+    /// Works out the light on every alive ball of the things `wanted` names, unless it is
+    /// already for the world's step. May allocate.
+    pub fn fill(&mut self, light: &dyn LightAt, world: &World, log: &Log, wanted: impl Fn(ThingId) -> bool) {
+        if self.at == Some(world.step) {
+            return;
+        }
+        self.rows.clear();
+        let time = world.time();
+        // The bodies are in thing order and their rows counted up, so the rows come sorted.
+        for (thing, b) in &world.bodies {
+            if !wanted(*thing) {
+                continue;
+            }
+            for i in 0..b.position.len() {
+                if b.alive.get(i).copied().unwrap_or(false) {
+                    self.rows.push((*thing, i as u32, light.ball(world, log, *thing, i, time)));
+                }
+            }
+        }
+        self.at = Some(world.step);
+    }
+
+    /// Ball `row` of `thing` at `world`'s step (`None` when the table is for another step or
+    /// doesn't have it).
+    pub fn get(&self, world: &World, thing: ThingId, row: usize) -> Option<BallLight> {
+        if self.at != Some(world.step) {
+            return None;
+        }
+        let i = self.rows.binary_search_by(|r| (r.0, r.1).cmp(&(thing, row as u32))).ok()?;
+        Some(self.rows[i].2)
+    }
+
+    /// Forgets it (a seek or a new probe).
+    pub fn clear(&mut self) {
+        self.at = None;
+        self.rows.clear();
+    }
+}
+
 /// The Light's value now, before smoothing: `None` when it follows one ball that is gone (the
 /// value then holds). `ball` is the note's own ball for Each note's own ball.
 #[allow(clippy::too_many_arguments)]
@@ -67,9 +118,26 @@ pub fn light_value(
     shape: ThingId,
     ball: Option<Party>,
 ) -> Option<f32> {
+    light_value_from(p, heard_from, None, light, world, log, shape, ball)
+}
+
+/// [`light_value`], looking each ball up in `table` first (worked out ahead off the sound path),
+/// and asking the probe only for a ball the table doesn't have.
+#[allow(clippy::too_many_arguments)]
+pub fn light_value_from(
+    p: &LightParams,
+    heard_from: &Target,
+    table: Option<&LightTable>,
+    light: &dyn LightAt,
+    world: &World,
+    log: &Log,
+    shape: ThingId,
+    ball: Option<Party>,
+) -> Option<f32> {
     let time = world.time();
     let read = |thing: ThingId, row: usize| {
-        let b = light.ball(world, log, thing, row, time);
+        let b =
+            table.and_then(|t| t.get(world, thing, row)).unwrap_or_else(|| light.ball(world, log, thing, row, time));
         match p.reads {
             LightReads::Light => b.light,
             LightReads::Shadow => b.shadow,
@@ -173,7 +241,16 @@ impl Modulator for LightMod {
         let raw = match self.read {
             Some((at, raw)) if at == step => raw,
             _ => {
-                let raw = light_value(&self.p, &self.heard_from, light, cx.world, cx.log, cx.shape, self.ball);
+                let raw = light_value_from(
+                    &self.p,
+                    &self.heard_from,
+                    cx.light_table,
+                    light,
+                    cx.world,
+                    cx.log,
+                    cx.shape,
+                    self.ball,
+                );
                 self.read = Some((step, raw));
                 raw
             }

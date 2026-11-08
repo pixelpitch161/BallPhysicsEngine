@@ -205,6 +205,7 @@ pub fn update(
         let spare = preview.spare.get_or_insert_with(|| {
             let mut r = Renderer::new(device, size.0, size.1);
             r.share_programs(&store);
+            r.preview_field_like_video(true);
             r
         });
         if spare.size() != size {

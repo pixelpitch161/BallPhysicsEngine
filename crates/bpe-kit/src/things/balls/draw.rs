@@ -632,6 +632,9 @@ pub fn push_ball_light(cx: &DrawCx, scene: &mut bpe_gfx::LightScene) {
         (t.turn + t.spin * cx.time as f32 + own).to_radians()
     };
     let see = s.see_through.clamp(0.0, 1.0);
+    // Its z-order, so the Stage camera knows which balls are drawn over which.
+    let range = bpe_core::Thing::Z_ORDER_RANGE;
+    let z = if cx.resolved.screen { 0 } else { cx.thing.z_order.clamp(*range.start(), *range.end()) } as f32;
     // Glass and light part 1: how much its light takes its colour, and deeper where thick.
     let finite = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
     for i in 0..bodies.len() {
@@ -642,7 +645,7 @@ pub fn push_ball_light(cx: &DrawCx, scene: &mut bpe_gfx::LightScene) {
         scene.spheres.push(bpe_gfx::SphereGpu {
             a: [at.x, at.y, bodies.radius[i], see],
             b: [tint[0], tint[1], tint[2], finite(s.thick_tint)],
-            c: [index as f32, finite(s.tints), turn_of(i), 0.0],
+            c: [index as f32, finite(s.tints), turn_of(i), z],
         });
     }
     // Balls that throw lamp light back like mirrors (part 4a): one thrower round them all.

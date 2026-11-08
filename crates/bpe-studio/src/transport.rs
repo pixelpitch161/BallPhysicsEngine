@@ -1,6 +1,7 @@
 //! Play, pause, the clock, loop, and the ruler to scrub with.
 
 use crate::app::{Studio, clock};
+use crate::settings;
 use crate::style;
 use eframe::egui::{self, Pos2, Rect, RichText, Sense, Stroke, Ui};
 
@@ -109,7 +110,25 @@ fn listening(ui: &mut Ui, studio: &mut Studio) {
     }
     let on = listen.on;
     response.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, on, "Speaker"));
-    response.on_hover_text(if on { "Sound on. Click to mute" } else { "Muted. Click for sound" });
+    response.context_menu(|ui| {
+        let label = ui.label("Speaker delay");
+        ui.add(
+            egui::DragValue::new(&mut listen.speaker_delay_ms)
+                .range(0.0..=settings::MAX_SPEAKER_DELAY_MS)
+                .speed(1.0)
+                .max_decimals(0)
+                .suffix(" ms"),
+        )
+        .labelled_by(label.id)
+        .on_hover_text(
+            "How late your speakers or headphones play (Bluetooth can be 100 to 300 ms): the playhead waits for them",
+        );
+    });
+    response.on_hover_text(if on {
+        "Sound on. Click to mute; right-click for the speaker delay"
+    } else {
+        "Muted. Click for sound; right-click for the speaker delay"
+    });
     ui.spacing_mut().slider_width = 60.0;
     let slider = ui.add_enabled(listen.on, egui::Slider::new(&mut listen.volume, 0.0..=1.0).show_value(false));
     ui.ctx().accesskit_node_builder(slider.id, |node| node.set_label("Listening volume"));

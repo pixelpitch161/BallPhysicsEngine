@@ -260,6 +260,9 @@ pub fn draw(cx: &DrawCx, layer: &AroundLayer, trail: &TrailLayer, balls: &Balls,
     };
     // Dots and puffs share the particles' cap.
     let full = |pieces: &Pieces| pieces.particles[OWN].len() >= MAX_PARTICLES;
+    // How many puffs Smoke may fill a gap with: as many as keep every ball's smoke under the cap.
+    let puffs_each = (trail.seconds.max(0.0) * trail.puffs.max(0.1)).max(1.0);
+    let fill_most = (MAX_PARTICLES as f32 / (bodies.len().max(1) as f32 * puffs_each)).floor().clamp(1.0, 8.0) as usize;
     let (base_layer, base_trail) = (layer, trail);
     let newest_step = balls.history.newest_step().unwrap_or(0);
     // Seconds a step.
@@ -402,7 +405,24 @@ pub fn draw(cx: &DrawCx, layer: &AroundLayer, trail: &TrailLayer, balls: &Balls,
             TrailKind::Smoke => {
                 let reach = path.reach().max(1e-3);
                 let softness = trail.softness.clamp(0.0, 1.0);
+                // A fast ball's puffs are further apart than they are wide, a string of beads:
+                // fill each gap with puffs at fixed shares of it, as many as the ball's path
+                // between the two puffs needs (that path never changes, so neither do they).
+                let every = 1.0 / trail.puffs.max(0.1);
+                let born = (trail.width.max(0.0) * radius).max(0.5);
+                let mut agos = Vec::new();
                 for ago in kinds::puffs(cx.time, trail.puffs, path.reach()) {
+                    let older = ago + every;
+                    let fill = match (older <= path.reach() && ago >= path.ago[0], path.at_ago(ago), path.at_ago(older))
+                    {
+                        (true, Some(a), Some(b)) => {
+                            ((a.distance(b) / (0.6 * born)).ceil() as usize).clamp(1, fill_most)
+                        }
+                        _ => 1,
+                    };
+                    agos.extend((0..fill).map(|j| (ago + every * j as f32 / fill as f32, fill)));
+                }
+                for (ago, fill) in agos {
                     if full(&pieces) {
                         break;
                     }
@@ -414,7 +434,16 @@ pub fn draw(cx: &DrawCx, layer: &AroundLayer, trail: &TrailLayer, balls: &Balls,
                     let k = path.ago.partition_point(|&a| a <= ago).clamp(1, path.len()) - 1;
                     let size = trail.width.max(0.0) * radius * (1.0 + trail.spreads.max(0.0) * ago);
                     let at = at - Vec2::new(0.0, trail.rises * ago);
-                    ball_cx.particle(at, size, ago / reach, base(k), SMOKE, softness, &mut pieces);
+                    // The puffs filling a gap share the one puff's cover between them.
+                    let mut colour = base(k);
+                    if trail.blend == Blend::Add || colour[3] < 0.0 {
+                        for c in &mut colour[..3] {
+                            *c /= fill as f32;
+                        }
+                    } else {
+                        colour[3] = 1.0 - (1.0 - colour[3].min(1.0)).powf(1.0 / fill as f32);
+                    }
+                    ball_cx.particle(at, size, ago / reach, colour, SMOKE, softness, &mut pieces);
                 }
             }
             TrailKind::Ghosts => {}
@@ -778,9 +807,10 @@ mod tests {
     fn a_streak_follows_its_length_by_time_or_distance_and_grows_when_fast() {
         let half = trail_frame(2.0, |_, _| {});
         let quarter = trail_frame(2.0, |s, id| set(s, id, "seconds", Value::Number(0.25)));
-        assert!(!half.trails.is_empty() && half.trails.len() % 6 == 0);
-        // Half a second at 60 samples a second: about 31 segments of 6 vertices.
-        assert!(half.trails.len() <= 32 * 6, "{}", half.trails.len());
+        assert!(!half.trails.is_empty() && half.trails.len() % 3 == 0);
+        // Half a second at 60 samples a second: about 31 segments of 6 vertices, and a bounce's
+        // round join (at most 6 + 18).
+        assert!(half.trails.len() <= 32 * 6 + 24, "{}", half.trails.len());
         let ratio = quarter.trails.len() as f32 / half.trails.len() as f32;
         assert!((0.4..0.6).contains(&ratio), "{ratio}");
         let near = trail_frame(2.0, |s, id| {
@@ -888,6 +918,22 @@ mod tests {
         // Older puffs are bigger and higher than where the ball was.
         let sizes: Vec<f32> = first.particles.iter().map(|p| p.place[3]).collect();
         assert!(sizes.windows(2).all(|w| w[0] <= w[1] + 1e-4), "{sizes:?}");
+    }
+
+    #[test]
+    fn smoke_on_a_fast_ball_is_a_trail_not_a_string_of_beads() {
+        let f = trail_frame(2.0, |s, id| {
+            set(s, id, "kind", choice("smoke"));
+            set(s, id, "spreads", Value::Number(0.0));
+            set(s, id, "rises", Value::Number(0.0));
+            s.things.get_mut(&BALL).unwrap().params.set("velocity", Value::Vec2([1800.0, -600.0]));
+        });
+        assert!(f.particles.len() > 10, "{}", f.particles.len());
+        // Each puff overlaps the next well: no gap past 1.2 half sizes (they were about 4 apart).
+        for w in f.particles.windows(2) {
+            let gap = (w[0].at() - w[1].at()).length();
+            assert!(gap <= 1.2 * w[0].place[3].min(w[1].place[3]), "a gap of {gap} between puffs {:?}", w);
+        }
     }
 
     #[test]

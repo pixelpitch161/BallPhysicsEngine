@@ -202,3 +202,34 @@ fn every_form_draws_on_the_background_balls_and_shapes() {
         }
     }
 }
+
+/// The biggest step in colour between neighbouring pixels round a circle `r` pixels from the picture's middle.
+fn biggest_step_round(pixels: &[u8], r: f32) -> u8 {
+    let n = (std::f32::consts::TAU * r).ceil() as usize;
+    let at = |k: usize| {
+        let a = std::f32::consts::TAU * k as f32 / n as f32;
+        let (x, y) = (W as f32 / 2.0 + r * a.cos(), H as f32 / 2.0 + r * a.sin());
+        px(pixels, x.round() as u32, y.round() as u32)
+    };
+    (0..n).map(|k| off(at(k), at((k + 1) % n))).max().unwrap()
+}
+
+#[test]
+fn the_sweep_and_spiral_seams_are_smoothed_like_an_edge() {
+    let Ok((device, queue)) = test_device() else {
+        eprintln!("no GPU adapter available, skipping");
+        return;
+    };
+    let kit = kit();
+    let mut renderer = Renderer::new(&device, W, H);
+    for form in [GradientForm::Sweep, GradientForm::Spiral] {
+        let pixels = draw(&device, &queue, &mut renderer, &kit, &ball(&kit, form));
+        save(&format!("seam-{}", form.name()), &pixels);
+        // Round the ball, the gradient runs once from red to blue: a hard seam jumps the whole way
+        // between two pixels; a smoothed one takes at least two.
+        let jump = off([220, 40, 40], [40, 60, 220]);
+        let step = biggest_step_round(&pixels, 50.0);
+        eprintln!("{form:?}: biggest step {step} of a {jump} jump");
+        assert!((step as u32) * 10 < (jump as u32) * 7, "{form:?}: a step of {step} of the {jump} jump");
+    }
+}

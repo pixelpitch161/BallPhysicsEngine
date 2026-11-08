@@ -18,7 +18,8 @@ pub struct Moments {
 const EPS: f64 = 1e-9;
 
 impl Moments {
-    /// Every `every` of the tempo in `world` (`bars` for Bars), starting `offset` beats in.
+    /// Every `every` of the tempo in `world` (`bars` for Bars), starting `offset` beats after the
+    /// first beat.
     pub fn of(world: &World, every: BeatEvery, bars: u32, offset: f32) -> Moments {
         let b = beat_of(world);
         let beat = b.beat.max(1e-3);
@@ -28,7 +29,7 @@ impl Moments {
             BeatEvery::Bars => beat * b.per_bar.max(1) as f64 * bars.max(1) as f64,
         };
         let offset = if offset.is_finite() { offset.max(0.0) as f64 } else { 0.0 };
-        Moments { first: offset * beat, every: gap }
+        Moments { first: b.first + offset * beat, every: gap }
     }
 
     /// How many moments at or before `t`.

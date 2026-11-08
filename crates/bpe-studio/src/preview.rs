@@ -300,6 +300,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     let mut preview = studio.panels.preview.take().unwrap_or_else(|| {
         let mut renderer = Renderer::new(device, width, height);
         renderer.share_programs(shared_programs());
+        renderer.preview_field_like_video(true);
         let texture = render_state.renderer.write().register_native_texture(
             device,
             renderer.output_view(),

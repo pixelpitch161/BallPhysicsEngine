@@ -74,7 +74,7 @@ pub fn heard_fingerprint(scene: &Scene) -> u64 {
         }
     };
     if let Some(root) = scene.things.get(&ThingId::ROOT) {
-        for key in ["tempo", "time_top", "time_bottom"] {
+        for key in ["tempo", "time_top", "time_bottom", "first_beat"] {
             put(&Address::own(ThingId::ROOT, key), &root.params.get(key));
         }
         if let Some(mixer) = root.slots.get(&SlotId::Mixer) {
@@ -249,7 +249,7 @@ impl ControlSampler {
         let heard = shapes
             .iter()
             .map(|s| Heard {
-                filter: HitFilter::new(s.spec.thing, 0.0, 0.0, s.spec.heard_from.clone()),
+                filter: HitFilter::new(s.spec.thing, 0.0, 0.0, s.spec.heard_from.clone()).hearing(s.spec.balls),
                 done: 0,
                 last: None,
                 hits: Vec::new(),
@@ -350,10 +350,15 @@ impl Shape {
         }
         let per_step = SAMPLE_RATE as f64 / world.steps_per_second.max(1) as f64;
         let thing = self.spec.thing;
-        // In sample order, as the engine hears them (hits can land out of order within a step).
+        // In sample order, as the engine hears them (hits can land out of order within a step):
+        // a rule's note on this thing, and whatever else reaches the voices (the filter keeps the
+        // thing's own, W10).
         let mut new: Vec<(u64, &bpe_runtime::Event)> = events[h.done..]
             .iter()
-            .filter(|e| matches!(e.kind, EventKind::Hit | EventKind::Note) && e.b.map(|b| b.thing) == Some(thing))
+            .filter(|e| match e.kind {
+                EventKind::Note => e.b.map(|b| b.thing) == Some(thing),
+                _ => crate::hits::plays(&e.kind) && (e.a.thing == thing || e.b.is_some_and(|b| b.thing == thing)),
+            })
             .map(|e| (hit_sample(e, per_step), e))
             .collect();
         new.sort_by_key(|(sample, _)| *sample);
@@ -367,7 +372,13 @@ impl Shape {
                     .and_then(|(_, tr)| k::track_value(tr, time))
                     .unwrap_or(self.spec.base[place])
             };
-            h.filter.set(knob(k::MIN_STRENGTH) / 100.0, knob(k::RETRIGGER) / 1000.0);
+            let curve = crate::voices::StrengthCurve::of_knobs(knob(k::STRENGTH_FULL_AT), knob(k::STRENGTH_CURVE));
+            h.filter.set(knob(k::MIN_STRENGTH) / 100.0, knob(k::RETRIGGER) / 1000.0, curve);
+            // A ball's sound hears the hit from its own ball (W10); a rule's note is as it is.
+            let e = &match e.kind {
+                EventKind::Note => e.clone(),
+                _ => h.filter.seen(e),
+            };
             let hit = BlockHit { offset: 0, event: e.clone() };
             // A rule's note (rules part 6) passes no filter: its velocity is its strength.
             let accepted = match e.kind {
@@ -531,7 +542,9 @@ impl Shape {
                 _ => 0,
             };
             let since = seconds(t.saturating_sub(started)) as f64;
-            out.lfo[i] = lfo_value(&p, p.rate_hz.max(0.0) * since, since, l.seed);
+            // Running free, the cycles count from its origin (the first beat when synced).
+            let from = if started == 0 { p.origin } else { 0.0 };
+            out.lfo[i] = lfo_value(&p, p.rate_hz.max(0.0) * (since - from), since, l.seed);
         }
         for (i, d) in m.dists.iter().enumerate().take(k::MAX_EACH) {
             if m.dist_per_note(i) {
@@ -601,11 +614,11 @@ impl Shape {
             }
             Src::Hit(i) => {
                 let hv = match &n.hit {
-                    // A rule's note's strength is its velocity, as the engine has it.
-                    Some(h) if h.event.kind == EventKind::Note => {
+                    // The strength the hit played at (a rule note's is its velocity), as the
+                    // engine has it.
+                    Some(h) => {
                         HitValues { strength: h.strength, ..hit_values(world, self.spec.thing, &h.event, h.seed) }
                     }
-                    Some(h) => hit_values(world, self.spec.thing, &h.event, h.seed),
                     None => HitValues { strength: 1.0, ..HitValues::default() },
                 };
                 let at = |key: usize| kv[k::hit(i, key)];

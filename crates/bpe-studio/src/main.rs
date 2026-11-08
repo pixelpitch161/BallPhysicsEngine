@@ -41,6 +41,7 @@ mod sound_job;
 mod sound_tab;
 mod style;
 mod things;
+mod thread_priority;
 mod timeline;
 mod transport;
 mod tree;

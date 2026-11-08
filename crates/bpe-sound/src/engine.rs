@@ -13,9 +13,6 @@ use std::sync::Arc;
 
 /// Seconds of one block.
 pub const SAMPLES_PER_BLOCK_TIME: f64 = BLOCK as f64 / SAMPLE_RATE as f64;
-/// Seconds a seek renders silently before the point it lands on, so tails and drones are
-/// already ringing there.
-pub const PRE_ROLL: f64 = 4.0;
 /// Frames the output queue holds: a block, the master's delay and a block to spare.
 const QUEUE: usize = 512;
 /// Most hits one block takes; any more wait for the next block.
@@ -25,6 +22,8 @@ const MAX_BLOCK_HITS: usize = 1024;
 pub struct Engine {
     physics: Playback,
     cursor: HitCursor,
+    /// The things whose hits can sound (sorted): only their hits are queued.
+    heard: Vec<bpe_core::ThingId>,
     hits: Vec<BlockHit>,
     voices: Vec<Box<dyn VoiceSource>>,
     /// Where each voice's sound goes, by the voice's place.
@@ -65,6 +64,26 @@ pub struct Engine {
     physics_synced: bool,
     /// Where hand-played notes are in sound time while stopped (from the playhead on).
     paused_pos: u64,
+    /// Where the clip ends, in seconds (the scene's Duration, or what the export sets), and the
+    /// Master's End fade before it (0 for none).
+    end: f64,
+    end_set: bool,
+    end_fade: f64,
+    /// Seconds a seek renders unheard before where it lands ([`SoundPatch::warm_up`]).
+    warm_up: f64,
+}
+
+/// The End fade's gain at `t` seconds for a clip ending at `end`: 1 until the fade starts, then a
+/// smooth (half-cosine) fall to 0 at the end, and 0 after.
+pub fn end_fade_gain(t: f64, end: f64, fade: f64) -> f32 {
+    if fade <= 0.0 || t < end - fade {
+        return 1.0;
+    }
+    if t >= end {
+        return 0.0;
+    }
+    let x = (end - t) / fade;
+    (0.5 - 0.5 * (std::f64::consts::PI * x).cos()) as f32
 }
 
 impl Engine {
@@ -75,10 +94,14 @@ impl Engine {
 
     /// The engine for `scene` playing `patch` (built from the same scene).
     pub fn with_patch(scene: &Scene, resolved: &Resolved, kit: &Kit, patch: SoundPatch) -> Engine {
+        let heard = patch.heard();
+        let warm_up = patch.warm_up();
         // Things stepped beside the physics make no sound, but those whose events it hears (a
         // Particles thing whose sound is on): the engine runs the physics and those.
         let physics = Playback::new(scene, &bpe_runtime::heard_part(scene, resolved, &kit.sims), kit.sims.clone());
-        let cursor = HitCursor::new(physics.world().steps_per_second);
+        let mut cursor = HitCursor::new(physics.world().steps_per_second);
+        // An emitter's balls fired at 0 s: no step logs them, but its sound may play them (W10).
+        cursor.start_with(crate::hits::start_fires(scene, physics.world()), &heard);
         let mut master = Master::new(&patch.master);
         master.set_keys(patch.master_keys);
         master.at(0.0, None);
@@ -88,6 +111,7 @@ impl Engine {
         Engine {
             physics,
             cursor,
+            heard,
             hits: Vec::with_capacity(MAX_BLOCK_HITS),
             voices: patch.voices,
             routes: patch.routes,
@@ -117,7 +141,24 @@ impl Engine {
             stems_out: [[0.0; BLOCK * 2]; BUSES],
             physics_synced: true,
             paused_pos: 0,
+            end: patch.end,
+            end_set: false,
+            end_fade: patch.master.master_end_fade.max(0.0) as f64,
+            warm_up,
         }
+    }
+
+    /// Seconds a seek renders unheard before the point it lands on, so the tails and drones
+    /// that would be ringing there are: sized to the patch's longest tail.
+    pub fn warm_up(&self) -> f64 {
+        self.warm_up
+    }
+
+    /// Ends the clip at `seconds` (the export's length) for the End fade, instead of the scene's
+    /// Duration.
+    pub fn set_end(&mut self, seconds: f64) {
+        self.end = seconds;
+        self.end_set = true;
     }
 
     /// Output samples rendered so far.
@@ -152,13 +193,29 @@ impl Engine {
     }
 
     /// Goes to `time` (rounded down to a block): every voice and the master start over, the
-    /// physics goes back to [`PRE_ROLL`] seconds earlier and the sound from there to `time` is
-    /// rendered and thrown away, so tails and drones are already ringing at `time`.
+    /// physics goes back [`Engine::warm_up`] seconds earlier and the sound from there to `time`
+    /// is rendered and thrown away, so tails and drones are already ringing at `time`.
     pub fn seek(&mut self, time: f64) {
+        self.seek_until(time, || false);
+    }
+
+    /// [`Engine::seek`], asking `stop` between blocks of the warm-up whether to give up (a newer
+    /// seek or edit came). False when it gave up: it still lands at `time`, but cold (no tails
+    /// ringing, every count caught up), so seek again before it plays for the tails.
+    pub fn seek_until(&mut self, time: f64, stop: impl FnMut() -> bool) -> bool {
+        if self.seek_warming(time, self.warm_up, stop) {
+            return true;
+        }
+        self.seek_warming(time, 0.0, || false);
+        false
+    }
+
+    /// Seeks to `time` warming up `warm_up` seconds before it; false when `stop` said to give up.
+    fn seek_warming(&mut self, time: f64, warm_up: f64, mut stop: impl FnMut() -> bool) -> bool {
         let block = BLOCK as u64;
         let rate = SAMPLE_RATE as f64;
         let target = (time.max(0.0) * rate) as u64 / block * block;
-        let start = ((target as f64 / rate - PRE_ROLL).max(0.0) * rate) as u64 / block * block;
+        let start = ((target as f64 / rate - warm_up).max(0.0) * rate) as u64 / block * block;
         for v in &mut self.voices {
             v.reset();
         }
@@ -183,7 +240,7 @@ impl Engine {
             self.queue_len = 0;
             self.physics_synced = false;
             self.loudness.reset();
-            return;
+            return true;
         }
         for lag in &mut self.stem_lags {
             lag.reset();
@@ -197,9 +254,13 @@ impl Engine {
         self.queue_len = 0;
         let mut scratch = [0.0f32; BLOCK * 2];
         while self.out_pos < target {
+            if stop() {
+                return false;
+            }
             self.render(&mut scratch);
         }
         self.loudness.reset();
+        true
     }
 
     /// Starts or stops noting every note the shapes start, for a MIDI file (the export only:
@@ -251,16 +312,19 @@ impl Engine {
             return;
         }
         let sps = self.cursor.samples_per_step();
-        let mut hits: Vec<(u64, BlockHit)> = self
-            .physics
-            .log()
-            .events()
-            .iter()
-            .filter(|e| crate::hits::plays(&e.kind))
-            .map(|e| (crate::hits::hit_sample(e, sps), e))
-            .filter(|(at, _)| *at < upto)
-            .map(|(at, e)| (at, BlockHit { offset: 0, event: e.clone() }))
-            .collect();
+        let mut hits: Vec<(u64, BlockHit)> =
+            self.cursor.start().iter().map(|e| (0, BlockHit { offset: 0, event: e.clone() })).collect();
+        hits.extend(
+            self.physics
+                .log()
+                .events()
+                .iter()
+                .filter(|e| crate::hits::plays(&e.kind))
+                .map(|e| (crate::hits::hit_sample(e, sps), e))
+                .filter(|(at, _)| *at < upto)
+                .map(|(at, e)| (at, BlockHit { offset: 0, event: e.clone() })),
+        );
+        // Stable: the start's fires stay first on sample 0.
         hits.sort_by_key(|(at, _)| *at);
         let world = self.physics.world();
         for (v, _) in self.voices.iter_mut().zip(these).filter(|(_, on)| **on) {
@@ -275,9 +339,23 @@ impl Engine {
     /// Takes new settings between blocks. A voice of the same thing takes over what the old one
     /// was still playing.
     pub fn swap_patch(&mut self, patch: SoundPatch) {
+        let heard = patch.heard();
+        self.warm_up = patch.warm_up();
         self.master.set(&patch.master);
         self.master.set_keys(patch.master_keys);
+        self.end_fade = patch.master.master_end_fade.max(0.0) as f64;
+        if !self.end_set {
+            self.end = patch.end;
+        }
         self.tempo = patch.tempo;
+        // The hits waiting were picked for the old voices: a new set reads them again from where
+        // the voices are, so a voice new mid-clip hears the hits already read.
+        if heard != self.heard {
+            self.heard = heard;
+            if self.physics_synced {
+                self.cursor.seek(self.physics.log(), self.voice_pos, &self.heard);
+            }
+        }
         let before = self.latency();
         let mut buses = Buses::new(patch.buses);
         buses.adopt(&mut self.buses);
@@ -425,7 +503,17 @@ impl Engine {
         if self.physics.world().step < target {
             let rate = self.physics.world().steps_per_second as f64;
             self.physics.seek((target as f64 + 0.5) / rate);
-            self.cursor.read(self.physics.log());
+            self.cursor.read(self.physics.log(), &self.heard);
+        }
+        self.prepare_voices();
+    }
+
+    /// Lets every voice work out ahead what it reads from the physics now (such as the light on
+    /// the balls), here where the sound path isn't waiting.
+    fn prepare_voices(&mut self) {
+        let (world, log) = (self.physics.world(), self.physics.log());
+        for v in self.voices.iter_mut().chain(self.leaving.iter_mut()) {
+            v.prepare(world, log);
         }
     }
 
@@ -434,7 +522,7 @@ impl Engine {
         let steps = self.physics.world().steps_per_second as f64;
         let step = (self.voice_pos as f64 / self.cursor.samples_per_step()).floor();
         self.physics.seek((step + 0.5) / steps);
-        self.cursor.seek(self.physics.log(), self.voice_pos);
+        self.cursor.seek(self.physics.log(), self.voice_pos, &self.heard);
         self.physics_synced = true;
     }
 
@@ -460,8 +548,32 @@ impl Engine {
             self.bus_r[i] = r;
         }
         self.queue_len -= BLOCK;
+        self.fade_end(out);
         self.out_pos += BLOCK as u64;
         self.meter();
+    }
+
+    /// The End fade over the block about to be handed out (`out`, the meters' copy and the
+    /// stems), from the output's place.
+    fn fade_end(&mut self, out: &mut [f32; BLOCK * 2]) {
+        let rate = SAMPLE_RATE as f64;
+        let first = self.out_pos as f64 / rate;
+        if self.end_fade <= 0.0 || first + BLOCK as f64 / rate < self.end - self.end_fade {
+            return;
+        }
+        for i in 0..BLOCK {
+            let g = end_fade_gain((self.out_pos + i as u64) as f64 / rate, self.end, self.end_fade);
+            out[2 * i] *= g;
+            out[2 * i + 1] *= g;
+            self.bus_l[i] *= g;
+            self.bus_r[i] *= g;
+            if self.record_stems {
+                for stem in &mut self.stems_out {
+                    stem[2 * i] *= g;
+                    stem[2 * i + 1] *= g;
+                }
+            }
+        }
     }
 
     /// One block of sound time through the voices and the master, onto the queue.

@@ -129,7 +129,7 @@ pub fn fingerprint(scene: &Scene) -> u64 {
     };
     // Rigs and lighting scenes keep time by the scene's tempo.
     if let Some(root) = scene.things.get(&ThingId::ROOT) {
-        for key in ["tempo", "time_top", "time_bottom"] {
+        for key in ["tempo", "time_top", "time_bottom", "first_beat"] {
             eat(format!("{key}{:?}", root.params.get(key)).as_bytes());
             if let Some(track) = scene.tracks.get(&Address::own(ThingId::ROOT, key)) {
                 eat(format!("{track:?}").as_bytes());

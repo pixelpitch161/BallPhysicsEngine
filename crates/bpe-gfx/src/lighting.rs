@@ -332,6 +332,8 @@ const EXTRAS_BINDINGS: &[u32] = &[2, 6, 7, 8, 9, 14];
 /// The longest gap between two frames over which the remembered light carries on; a longer jump
 /// (or one back) starts it again from nothing.
 const MOST_MEMORY_STEP: f32 = 0.5;
+/// Depth of field's small copy is this many times smaller each way (`DOF_SMALL` in lighting.wgsl).
+const DOF_SMALL: u32 = 4;
 
 /// Glow in the dark's memory between frames.
 #[derive(Default)]
@@ -378,6 +380,15 @@ pub fn quality_tier(quality: f32) -> (u32, u32) {
     }
 }
 
+/// How many output pixels a lighting field texel covers each way, for a Quality whose field is `tier` times
+/// smaller than the video (`quality_tier`), drawn `width` pixels wide of a video `video_width` wide: a smaller
+/// picture (the editor's preview) gets a finer field, so a field texel covers as much of the scene as in the video
+/// and the preview's shadows look like the video's (or finer, rounding down), never coarser than the Quality says.
+pub fn field_divisor(tier: u32, width: u32, video_width: u32) -> u32 {
+    let scaled = (tier as f32 * width as f32 / video_width.max(1) as f32 + 1e-4).floor() as u32;
+    scaled.clamp(1, tier.max(1))
+}
+
 /// The pictures lighting draws into and reads, made the first time a frame is lit and remade
 /// when the size or the Quality changes.
 struct Targets {
@@ -414,6 +425,8 @@ struct Targets {
     stage: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// A second such picture when depth of field follows the floor (part 2b).
     stage_more: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// Depth of field's quarter-size copy of the picture it blurs (made when first needed).
+    dof_small: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// The picture without what is see-through, drawn when glass bends what is behind it.
     behind: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// The background's own light alone, copied before the lamps' light is added over it.
@@ -468,6 +481,8 @@ pub(crate) struct Lighting {
     floor: wgpu::RenderPipeline,
     /// Depth of field (Stage, part 2b).
     dof: wgpu::RenderPipeline,
+    /// The quarter-size box-filtered copy depth of field reads its wide blurs from.
+    dof_small: wgpu::RenderPipeline,
     /// Mirror walls (part 2b).
     mirror: wgpu::RenderPipeline,
     /// The bake's bounce light in Stage, its clean-up and the pass adding it (part 3).
@@ -628,6 +643,7 @@ pub(crate) struct LightKit {
     stir: wgpu::RenderPipeline,
     floor: wgpu::RenderPipeline,
     dof: wgpu::RenderPipeline,
+    dof_small: wgpu::RenderPipeline,
     mirror: wgpu::RenderPipeline,
     trace: wgpu::RenderPipeline,
     denoise: wgpu::RenderPipeline,
@@ -1099,6 +1115,7 @@ impl LightKit {
             stir,
             floor: make("glossy floor", "fs_floor", three, &[HDR_FORMAT], None),
             dof: make("depth of field", "fs_dof", three, &[HDR_FORMAT], None),
+            dof_small: make("depth of field copy", "fs_dof_small", three, &[HDR_FORMAT], None),
             mirror: make("mirror walls", "fs_mirror", three, &[HDR_FORMAT], None),
             trace: make("bounce light", "fs_trace", three, &[HDR_FORMAT], None),
             denoise: make("bounce clean-up", "fs_denoise", three, &[HDR_FORMAT], None),
@@ -1158,6 +1175,7 @@ impl Lighting {
             stir,
             floor,
             dof,
+            dof_small,
             mirror,
             trace,
             denoise,
@@ -1203,6 +1221,7 @@ impl Lighting {
             stir,
             floor,
             dof,
+            dof_small,
             mirror,
             trace,
             denoise,
@@ -1265,10 +1284,11 @@ impl Lighting {
         self.bound.as_ref()
     }
 
-    /// Makes the lighting pictures for a `width` × `height` output lit as `scene` asks, unless
-    /// they are there already.
-    pub fn ensure(&mut self, device: &wgpu::Device, width: u32, height: u32, scene: &LightScene) {
-        let (mut divisor, _) = quality_tier(scene.settings.more[2]);
+    /// Makes the lighting pictures for a `width` × `height` output of a scene `video_width` world units wide (the
+    /// frame's width) lit as `scene` asks, unless they are there already.
+    pub fn ensure(&mut self, device: &wgpu::Device, width: u32, height: u32, video_width: u32, scene: &LightScene) {
+        let (tier, _) = quality_tier(scene.settings.more[2]);
+        let mut divisor = field_divisor(tier, width, video_width);
         // The cascades are twice the (rounded up) field across: keep them within the device's limit.
         let most = device.limits().max_texture_dimension_2d;
         let padded = |divisor: u32| {
@@ -1342,6 +1362,7 @@ impl Lighting {
             traced: None,
             stage: None,
             stage_more: None,
+            dof_small: None,
             behind: None,
             bg_glow: None,
         });
@@ -1483,6 +1504,10 @@ impl Lighting {
             && let Some(t) = self.targets.as_mut().filter(|t| t.stage_more.is_none())
         {
             t.stage_more = Some(texture(device, "lit stage", (t.width, t.height), HDR_FORMAT, false));
+        }
+        if blurs && let Some(t) = self.targets.as_mut().filter(|t| t.dof_small.is_none()) {
+            let small = (t.width.div_ceil(DOF_SMALL), t.height.div_ceil(DOF_SMALL));
+            t.dof_small = Some(texture(device, "depth of field copy", small, HDR_FORMAT, false));
         }
         if into_bg && let Some(t) = self.targets.as_mut().filter(|t| t.bg_glow.is_none()) {
             t.bg_glow = Some(texture(device, "background light", (t.width, t.height), HDR_FORMAT, true));
@@ -1750,17 +1775,20 @@ impl Lighting {
             ],
         });
 
-        let group_on = |uniform: &wgpu::Buffer,
-                        picture: &wgpu::TextureView,
-                        field: &wgpu::TextureView,
-                        seeds: &wgpu::TextureView| {
+        // `lit` is the lit share of the picture; depth of field, which never reads it, has its small
+        // copy there instead (a new binding would pass the 16 textures a pass may read).
+        let group_with = |uniform: &wgpu::Buffer,
+                          picture: &wgpu::TextureView,
+                          field: &wgpu::TextureView,
+                          seeds: &wgpu::TextureView,
+                          lit: &wgpu::TextureView| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("lighting"),
                 layout: &self.layout,
                 entries: &[
                     wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(picture) },
-                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&t.lit.1) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(lit) },
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&t.surface.1) },
                     wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(field) },
                     wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&self.sampler) },
@@ -1780,6 +1808,11 @@ impl Lighting {
                 ],
             })
         };
+        let group_on =
+            |uniform: &wgpu::Buffer,
+             picture: &wgpu::TextureView,
+             field: &wgpu::TextureView,
+             seeds: &wgpu::TextureView| { group_with(uniform, picture, field, seeds, &t.lit.1) };
         let group = |uniform: &wgpu::Buffer, field: &wgpu::TextureView, seeds: &wgpu::TextureView| {
             group_on(uniform, picture, field, seeds)
         };
@@ -2136,7 +2169,16 @@ impl Lighting {
                 Some(lit) => group_on(&self.uniforms[0], lit, &t.field.1, &t.seeds[from].1),
                 None => group(&self.uniforms[0], &t.field.1, &t.seeds[from].1),
             };
-            pass(encoder, &[(into, clear)], pipeline, &[&main_on, &g, &stage_group], label);
+            match (std::ptr::eq(pipeline, &self.dof), read, t.dof_small.as_ref()) {
+                (true, Some(lit), Some(small)) => {
+                    // Depth of field: first the small copy of what it blurs, then the blur reading it.
+                    let copy = "depth of field copy";
+                    pass(encoder, &[(&small.1, clear)], &self.dof_small, &[&main_on, &g, &stage_group], copy);
+                    let with_copy = group_with(&self.uniforms[0], lit, &t.field.1, &t.seeds[from].1, &small.1);
+                    pass(encoder, &[(into, clear)], pipeline, &[&with_copy, &g, &stage_group], label);
+                }
+                _ => pass(encoder, &[(into, clear)], pipeline, &[&main_on, &g, &stage_group], label),
+            }
             if i == 0 && !scene.ribbons.is_empty() {
                 // Light beams' bands, over the mixed light (so mirror walls, the floor and depth of
                 // field after it see them too).
@@ -2165,6 +2207,25 @@ impl Lighting {
 #[cfg(test)]
 mod grid_tests {
     use super::*;
+
+    #[test]
+    fn a_preview_gets_a_field_as_fine_as_the_video() {
+        // The video itself: the Quality's own divisor (Draft 4, Good 2, Ultra 1).
+        assert_eq!(field_divisor(4, 1080, 1080), 4);
+        assert_eq!(field_divisor(2, 1080, 1080), 2);
+        assert_eq!(field_divisor(1, 1080, 1080), 1);
+        // A half-size preview: half the divisor, so a texel covers the same part of the scene.
+        assert_eq!(field_divisor(4, 540, 1080), 2);
+        assert_eq!(field_divisor(2, 540, 1080), 1);
+        // Smaller still, or bigger than the video: never under 1, never coarser than the Quality.
+        assert_eq!(field_divisor(2, 270, 1080), 1);
+        assert_eq!(field_divisor(2, 2160, 1080), 2);
+        assert_eq!(field_divisor(4, 810, 1080), 3);
+        // In between, the finer: a texel never covers more of the scene than in the video.
+        assert_eq!(field_divisor(4, 700, 1080), 2);
+        assert_eq!(field_divisor(4, 405, 1080), 1);
+        assert_eq!(field_divisor(2, 1000, 1080), 1);
+    }
 
     fn ball(x: f32, y: f32, r: f32) -> SphereGpu {
         SphereGpu { a: [x, y, r, 0.0], b: [1.0; 4], c: [0.0; 4] }

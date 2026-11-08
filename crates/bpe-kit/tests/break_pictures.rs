@@ -127,7 +127,8 @@ fn a_faded_square_is_dimmer_half_way_then_gone() {
             (off(at(&whole, x, y), background), off(at(&half, x, y), background), off(at(&gone, x, y), background));
         assert!(w > 200, "the square shows: {w}");
         assert!(h > 40 && h + 40 < w, "half faded: {h} of {w}");
-        assert!(g <= 2, "then gone: {g}");
+        // (Two pixels each within the final dither's ±1 step, summed over three channels.)
+        assert!(g <= 6, "then gone: {g}");
     }
 }
 
@@ -139,7 +140,7 @@ fn a_popped_square_swells_past_where_it_was() {
     let mid = draw(&mut gpu, &scene, BROKE + 0.4, "pop-mid");
     let outside = (-250.0, 0.0);
     let background = at(&whole, 0.0, 600.0);
-    assert!(off(at(&whole, outside.0, outside.1), background) <= 2, "not there before");
+    assert!(off(at(&whole, outside.0, outside.1), background) <= 6, "not there before");
     assert!(off(at(&mid, outside.0, outside.1), background) > 30, "swelled out past its edge");
 }
 

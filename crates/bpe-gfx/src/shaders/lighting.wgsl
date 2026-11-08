@@ -86,6 +86,8 @@ struct LightGpu {
 
 @group(0) @binding(0) var<uniform> u: Lighting;
 @group(0) @binding(1) var picture: texture_2d<f32>;
+// The lit share of the picture; in the depth of field pass, which never reads that, its quarter-size
+// copy of the picture it blurs (`fs_dof_small`).
 @group(0) @binding(2) var lit_picture: texture_2d<f32>;
 @group(0) @binding(3) var surface: texture_2d<f32>;
 @group(0) @binding(4) var field: texture_2d<f32>;
@@ -381,6 +383,50 @@ fn foot_blocks(t: vec2<i32>) -> bool {
     return false;
 }
 
+// How much of field texel `t` its blockers cover, 0 to 1: the mean of its picture pixels' smooth
+// cover (`cover_block`, antialiased edges counted by how much they cover).
+fn foot_cover(t: vec2<i32>) -> f32 {
+    let fsize = vec2<i32>(u.field.xy);
+    let size = vec2<i32>(textureDimensions(surface));
+    let scale = vec2<f32>(size) / vec2<f32>(fsize);
+    let lo = vec2<i32>(floor(vec2<f32>(t) * scale));
+    let hi = min(max(vec2<i32>(ceil(vec2<f32>(t + 1) * scale)), lo + 1), size);
+    var sum = 0.0;
+    for (var y = lo.y; y < hi.y; y++) {
+        for (var x = lo.x; x < hi.x; x++) {
+            sum += clamp(cover_block(textureLoad(surface, vec2<i32>(x, y), 0)), 0.0, 1.0);
+        }
+    }
+    let n = f32((hi.x - lo.x) * (hi.y - lo.y));
+    return clamp(sum / max(n, 1.0), 0.0, 1.0);
+}
+
+// How much farther a blocker's edge lies than its seed texel's own edge, in texels, seen from the
+// open texel at `here` (the antialiased distance transform's idea). A seed texel blocks whole
+// wherever any of its pixels does, so a ball's edge in the field jumps a texel at a time as it
+// moves (shadow edges that crawl, most on Draft); where the seed is the edge of something thicker
+// than a texel (the texel behind it, away from `here`, is wholly covered), its edge is taken to cut the
+// texel by how much of it the blocker covers, so it slides smoothly. A thin line (nothing behind
+// it) keeps its whole texel, or rays would step past it. Not on Draft (its 16 steps): a texel of
+// 4 × 4 video pixels is too coarse for one cut to say where a round edge is, and measured, it made
+// Draft's edges wobble more (and the preview, whose field matches the video's, must agree). Only
+// for solid blockers: see-through glass's cover is its opacity, not how much of the texel it fills.
+// (The cut is per seed, so where two edge seeds' nearest regions meet the distance can step by up
+// to a texel; looked for at full size, no creases seen.)
+fn edge_inset(seed: vec2<i32>, here: vec2<f32>) -> f32 {
+    if u.more.z <= 16.0 || foot_most(seed) < SOLID {
+        return 0.0;
+    }
+    let g = here - vec2<f32>(seed);
+    let away = select(vec2<i32>(0, i32(sign(g.y))), vec2<i32>(i32(sign(g.x)), 0), abs(g.x) >= abs(g.y));
+    // (Behind it, wholly covered: a thin wall seen past its end has blocking texels behind its end
+    // too, only a sliver of each covered, and cutting its end in stepped its soft shadow edge.)
+    if !foot_blocks(seed - away) || foot_cover(seed - away) < 0.9 {
+        return 0.0;
+    }
+    return 1.0 - foot_cover(seed);
+}
+
 // The most any blocking picture pixel under field texel `t` blocks (-1 when none does; clear
 // coloured glass blocks next to nothing).
 fn foot_most(t: vec2<i32>) -> f32 {
@@ -558,7 +604,7 @@ fn fs_field(in: FsIn) -> @location(0) vec4<f32> {
         }
         return vec4<f32>(-d * texel, b);
     }
-    return vec4<f32>((distance(s.xy, here) - 0.5) * texel, b);
+    return vec4<f32>((distance(s.xy, here) - 0.5 + edge_inset(vec2<i32>(s.xy), here)) * texel, b);
 }
 
 // ---------- the light ----------
@@ -638,6 +684,98 @@ fn source_point(l: LightGpu, p: vec2<f32>) -> vec2<f32> {
     return at;
 }
 
+// The widest a light covers for its shadows, seen from a point: the tangent of a half angle of 1.3.
+const MOST_SEEN: f32 = 3.6;
+
+// How an Area or Strip light looks from a point, for its shadows: the way to the middle of what it
+// covers (`way`), how far that middle is (`dist`), its half width seen from there as an angle
+// (`ang`, the tangent of the half angle; 0 when the point is on the light, which casts no shadow
+// there) and how far short of that middle the march ends (`stop`: at the light's edge, the light's
+// own Size not counted, or however deep in a blocker it sits).
+struct Extended {
+    way: vec2<f32>,
+    dist: f32,
+    ang: f32,
+    stop: f32,
+};
+
+// The light's light comes from its nearest point (`source_point`), but its shadows come from all
+// of it: a wide panel's shadow narrows to a point under a ball smaller than it, and its soft edge
+// widens with distance.
+fn extended_seen(l: LightGpu, p: vec2<f32>) -> Extended {
+    var out = Extended(vec2<f32>(1.0, 0.0), 0.0, 0.0, 0.0);
+    let px = max(u.view.z, 1e-3);
+    if l.p0.w < 3.5 {
+        // Area: aimed at its middle; its half width seen across that way, a rectangle's corners
+        // or a disc's (an ellipse's) edge, over the distance; the march ends at its edge.
+        let d = l.p0.xy - p;
+        let len = length(d);
+        if len < 1e-3 || distance(source_point(l, p), p) < 0.5 * px {
+            return out;
+        }
+        let half = 0.5 * vec2<f32>(max(l.p4.x, 0.0), max(l.p4.y, 0.0));
+        let dir = l.p3.xy;
+        let side = vec2<f32>(-dir.y, dir.x);
+        let way = d / len;
+        let across = vec2<f32>(-way.y, way.x);
+        let w = vec2<f32>(abs(dot(across, dir)), abs(dot(across, side))) * half;
+        var seen = w.x + w.y;
+        // How far from its middle its edge is, going back along `way`.
+        let back = vec2<f32>(abs(dot(way, dir)), abs(dot(way, side)));
+        var edge = min(select(1e9, half.x / back.x, back.x > 1e-5), select(1e9, half.y / back.y, back.y > 1e-5));
+        if l.p6.z > 0.5 {
+            seen = length(w);
+            edge = 1.0 / max(length(back / max(half, vec2<f32>(1e-3))), 1e-6);
+        }
+        edge = min(edge, len);
+        out.way = way;
+        out.dist = len;
+        out.ang = min(seen / len, MOST_SEEN);
+        out.stop = max(l.p6.x + edge + 0.5 * u.view.z, -field_at(l.p0.xy - way * edge));
+        return out;
+    }
+    // Strip: the angles of its segments' ends round the way to its nearest point; aimed at the
+    // strip's point nearest the middle of those (a strip round the point is capped at MOST_SEEN).
+    let c0 = source_point(l, p);
+    let r0 = distance(c0, p);
+    if r0 < max(0.5 * l.p4.x, 0.5 * px) {
+        return out;
+    }
+    let w0 = (c0 - p) / r0;
+    let n0 = vec2<f32>(-w0.y, w0.x);
+    let first = u32(l.p4.z);
+    let n = u32(l.p4.w);
+    var lo = 0.0;
+    var hi = 0.0;
+    for (var k = 0u; k < n; k++) {
+        let sg = segments[first + k];
+        for (var e = 0; e < 2; e++) {
+            let q = select(sg.zw, sg.xy, e == 0) - p;
+            let a = atan2(dot(q, n0), dot(q, w0));
+            lo = min(lo, a);
+            hi = max(hi, a);
+        }
+    }
+    let mid = 0.5 * (lo + hi);
+    let half = min(0.5 * (hi - lo), 1.3);
+    let aim = w0 * cos(mid) + n0 * sin(mid);
+    let c = source_point(l, p + aim * r0);
+    let far = max(distance(c, p), 1e-3);
+    out.way = (c - p) / far;
+    out.dist = far;
+    // (End on, a straight strip is a point: the lamp's Size then makes its soft edge.)
+    out.ang = clamp(tan(half), 1e-4, MOST_SEEN);
+    out.stop = max(l.p6.x + 0.5 * max(l.p4.x, 0.0) + 0.5 * u.view.z, -field_at(c));
+    return out;
+}
+
+// How far short of an Area or Strip light's point a ray across it ends: the light's own place
+// (a ridden ball's radius, a strip's tube), half a pixel, or however deep in a blocker it sits.
+fn extended_stop(l: LightGpu, c: vec2<f32>) -> f32 {
+    let tube = select(0.0, 0.5 * max(l.p4.x, 0.0), l.p0.w > 3.5);
+    return max(l.p6.x + tube + 0.5 * u.view.z, -field_at(c));
+}
+
 // One ray's march toward a light: the signed distance estimate of how much of the light gets
 // through (`v`, before smoothing), how clear of every blocker the ray stays (`clear`: the least
 // distance to one over the distance along the ray, an angle) and whether it crossed one.
@@ -660,6 +798,9 @@ struct Ray {
 // How many rays across the lamp, from one edge to the other, the light is worked out from when
 // the middle one crosses a blocker (odd: the middle one is the ray already marched).
 const LAMP_RAYS: i32 = 5;
+// As many for an Area or Strip light, whose soft edges are wide enough to show the steps between
+// fewer: the most rays across a lamp.
+const MOST_LAMP_RAYS: i32 = 9;
 
 // Where the field says a ray at `t` is inside a blocker: walks the picture itself, half a pixel
 // at a time, from the ray's last sample outside one (`open`; the field's edge can lie up to a
@@ -733,7 +874,12 @@ fn dichroic_entering(q: vec2<f32>, toward: vec2<f32>) -> vec3<f32> {
 // crosses a solid blocker (only whether it did, how clear it stayed and what the see-through ones
 // let through count). A see-through blocker (its pixels blocking less than SOLID) is walked
 // through, keeping the most any pixel on the way blocks, and lets the rest of the light on.
-fn march(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, stop: f32, across: bool) -> Ray {
+//
+// `wide`: the ray ends on an Area or Strip light. Once a sample is clearer of every blocker than
+// the rest of the way is long, nothing can block the rest, and the blockers near it are beside
+// or behind the light (a wall round a wide panel), not in front of it: it stops there, or the
+// soft edge would darken everything near such a wall in contours.
+fn march(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, stop: f32, across: bool, wide: bool) -> Ray {
     let steps = i32(u.more.z);
     let texel = max(u.field.z, 1e-3);
     let px = max(u.view.z, 1e-3);
@@ -773,6 +919,7 @@ fn march(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, s
         }
     }
     let end = min(dist - stop, t + max(reach, 0.0));
+    let fair = (end - t) / f32(max(steps, 1));
     let ang = max(angular, 1e-4);
     var v = 1.0;
     var e = vec3<f32>(1.0);
@@ -792,12 +939,21 @@ fn march(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, s
     var open = t;
     var cross_at = 0.0;
     // Skipping what only the field's coarseness blocked doesn't use up the steps (a ray along a
-    // thin line would run out of them and count the rest of its way as open), within a cap.
+    // thin line would run out of them and count the rest of its way as open), and neither do steps
+    // that only creep past a blocker (closer than two texels: a ray grazing a ball or running along
+    // a thin wall would stop there and count the rest of its way as open, a bright line along every
+    // shadow edge that lies inside another shadow), within a cap.
     var used = 0;
-    for (var i = 0; i < 4 * steps; i++) {
+    // The last sample counted (its distance, -1 when the one before was skipped, and where).
+    var last = -1.0;
+    var last_t = 0.0;
+    // (At least 400 rounds: Draft's 16 steps ran out along a long thin wall a low sun skims.)
+    for (var i = 0; i < max(12 * steps, 400); i++) {
         if t >= end || used >= steps {
             break;
         }
+        let before = last;
+        last = -1.0;
         let q = p + toward * t;
         let fd = field_all(q);
         let d = fd.x;
@@ -886,12 +1042,28 @@ fn march(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, s
             continue;
         }
         beside = false;
-        used += 1;
+        if wide && d >= dist - stop - t {
+            break;
+        }
+        // (Nor do steps shorter than an even share of the way: a ray down a lane between rows of
+        // balls, a few texels from them all the way, would use up Draft's 16 steps halfway.)
+        if abs(d) >= max(2.0 * texel, fair) {
+            used += 1;
+        }
         if d >= 0.0 {
             open = t;
         }
-        clear = min(clear, max(d, 0.0) / max(t, texel));
-        let vk = clamp(0.5 + 0.5 * d / (max(t, texel) * ang), 0.0, 1.0);
+        // The soft edge where the ray came nearest a blocker between this sample and the last
+        // (Aaltonen's estimate), not only at the samples, so where they fall doesn't show.
+        let nearest = nearest_between(d, t, before, last_t);
+        last = d;
+        last_t = t;
+        // How clear it stays: for a wide light from the nearest-between too (its soft edges are its
+        // rays' clear stretches, streaky from the samples alone); for a lamp from the samples (the
+        // nearest-between of a ray just past a thin wall's end is 0 there, a step in its soft edge).
+        let near_clear = select(vec2<f32>(d, t), nearest, wide);
+        clear = min(clear, max(near_clear.x, 0.0) / max(near_clear.y, texel));
+        let vk = clamp(0.5 + 0.5 * nearest.x / (max(nearest.y, texel) * ang), 0.0, 1.0);
         v = min(v, vk);
         let o = select(clamp(fd.yzw, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0), stage || opacity_of(fd.yzw) >= SOLID);
         e = min(e, select(vec3<f32>(1.0) - o * (1.0 - smoothed(vk)), vec3<f32>(smoothed(vk)), o >= vec3<f32>(1.0)));
@@ -908,8 +1080,53 @@ fn march(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, s
     return Ray(v, clear, crossed, cross_at, lit, e);
 }
 
+// How near a blocker a ray came between its last counted sample (`d0` clear at `t0`; `d0` -1 when
+// there is none) and this one (`d` clear at `t`), and where (x: the distance, y: how far along):
+// the two samples' clear circles meet `y` back along the ray, at `sqrt(d² - y²)` from it
+// (Aaltonen's improved soft shadows). Just this sample when the circles don't meet between them.
+fn nearest_between(d: f32, t: f32, d0: f32, t0: f32) -> vec2<f32> {
+    let gone = t - t0;
+    if d > 0.0 && d0 > 0.0 && gone > 1e-4 {
+        let y = (gone * gone + d * d - d0 * d0) / (2.0 * gone);
+        if y > 0.0 && y < gone {
+            return vec2<f32>(sqrt(max(d * d - y * y, 0.0)), max(t - y, 0.0));
+        }
+    }
+    return vec2<f32>(d, t);
+}
+
 fn smoothed(v: f32) -> f32 {
     return v * v * (3.0 - 2.0 * v);
+}
+
+// The share of a lamp `ang` wide (from -ang to ang) that rays across it show together: the
+// length of the union of their stretches `lo[k]` to `hi[k]` (empty where `hi` <= `lo`) over its width.
+fn lamp_share(lo_in: array<f32, MOST_LAMP_RAYS>, hi_in: array<f32, MOST_LAMP_RAYS>, ang: f32) -> f32 {
+    var lo = lo_in;
+    var hi = hi_in;
+    var shown = 0.0;
+    var reached = -ang;
+    for (var k = 0; k < MOST_LAMP_RAYS; k++) {
+        // The stretch that starts first of those left (they are few: look through them all).
+        var pick = -1;
+        var least = 1e9;
+        for (var j = 0; j < MOST_LAMP_RAYS; j++) {
+            if hi[j] > lo[j] && lo[j] < least {
+                least = lo[j];
+                pick = j;
+            }
+        }
+        if pick < 0 {
+            break;
+        }
+        let a = max(lo[pick], reached);
+        if hi[pick] > a {
+            shown += hi[pick] - a;
+            reached = hi[pick];
+        }
+        hi[pick] = lo[pick];
+    }
+    return clamp(shown / (2.0 * ang), 0.0, 1.0);
 }
 
 // How much of the light gets from `target` (or, for a sun, from far along `toward`) to `p`
@@ -931,8 +1148,11 @@ fn smoothed(v: f32) -> f32 {
 // to all of it (grazing it, `e` is `1 - o/2` as `1 - o (1 - 1/2)` is just inside). Solid blockers
 // only: `o` is 1, as before. Per channel (glass and light part 1): a coloured blocker lets through
 // more of its own colour.
-fn visibility(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, stop: f32) -> vec3<f32> {
-    let middle = march(p, toward, dist, angular, reach, stop, false);
+//
+// `src`: an Area or Strip light's index (-1 for any other): its rays across the lamp each end on
+// the light, at its point nearest where they would have ended (`extended_seen` aims the middle one).
+fn visibility(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f32, stop: f32, src: i32) -> vec3<f32> {
+    let middle = march(p, toward, dist, angular, reach, stop, false, src >= 0);
     if !middle.crossed {
         return middle.e;
     }
@@ -945,25 +1165,35 @@ fn visibility(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f
     if middle.at * ang < 0.5 * u.view.z {
         return middle.lit;
     }
-    // Draft (16 steps) makes do with the lamp's two edges.
-    let rays = select(LAMP_RAYS, 3, u.more.z <= 16.0);
+    // Draft (16 steps) makes do with the lamp's two edges; a wide light takes the most.
+    let rays = select(select(LAMP_RAYS, 3, u.more.z <= 16.0), MOST_LAMP_RAYS, src >= 0);
     let gap = 2.0 * ang / f32(rays - 1);
     let side = vec2<f32>(-toward.y, toward.x);
     // What each ray shows of the lamp: from its point less how clear it stays to its point plus
     // that, within the lamp (nothing when it crosses a blocker, as the middle one did).
-    var lo: array<f32, LAMP_RAYS>;
-    var hi: array<f32, LAMP_RAYS>;
+    var lo: array<f32, MOST_LAMP_RAYS>;
+    var hi: array<f32, MOST_LAMP_RAYS>;
     // How much the blockers block on the rays that crossed one (the middle one's first).
     var blocked = vec3<f32>(1.0) - middle.lit;
     var crossings = 1.0;
-    for (var k = 0; k < LAMP_RAYS; k++) {
+    for (var k = 0; k < MOST_LAMP_RAYS; k++) {
         let off = f32(k) * gap - ang;
         lo[k] = 0.0;
         hi[k] = 0.0;
         if k >= rays || k == rays / 2 {
             continue;
         }
-        let r = march(p, normalize(toward + side * off), dist, gap, reach, stop, true);
+        var way = normalize(toward + side * off);
+        var far = dist;
+        var short = stop;
+        if src >= 0 {
+            let l = lights[src];
+            let c = source_point(l, p + toward * dist + side * (off * dist));
+            far = max(distance(c, p), 1e-3);
+            way = (c - p) / far;
+            short = extended_stop(l, c);
+        }
+        let r = march(p, way, far, gap, reach, short, true, src >= 0);
         if r.crossed {
             blocked += vec3<f32>(1.0) - r.lit;
             crossings += 1.0;
@@ -972,30 +1202,7 @@ fn visibility(p: vec2<f32>, toward: vec2<f32>, dist: f32, angular: f32, reach: f
         lo[k] = max(off - c, -ang);
         hi[k] = min(off + c, ang);
     }
-    // The length of their union.
-    var shown = 0.0;
-    var reached = -ang;
-    for (var k = 0; k < LAMP_RAYS; k++) {
-        // The stretch that starts first of those left (they are few: look through them all).
-        var pick = -1;
-        var least = 1e9;
-        for (var j = 0; j < LAMP_RAYS; j++) {
-            if hi[j] > lo[j] && lo[j] < least {
-                least = lo[j];
-                pick = j;
-            }
-        }
-        if pick < 0 {
-            break;
-        }
-        let a = max(lo[pick], reached);
-        if hi[pick] > a {
-            shown += hi[pick] - a;
-            reached = hi[pick];
-        }
-        hi[pick] = lo[pick];
-    }
-    let share = clamp(shown / (2.0 * ang), 0.0, 1.0);
+    let share = lamp_share(lo, hi, ang);
     let o = blocked / crossings;
     return select(vec3<f32>(1.0) - o * (1.0 - share), vec3<f32>(share), o >= vec3<f32>(1.0));
 }
@@ -1324,9 +1531,27 @@ fn lamps(p: vec2<f32>, ip: vec2<i32>, with_air: bool) -> Lamps {
             if kind < 1.5 || kind > 2.5 {
                 stop = max(stop, -field_at(source_point(l, p)));
             }
+            // An Area or Strip light's shadows come from all of it.
+            var s_toward = toward;
+            var s_dist = dist;
+            var src = -1;
+            if kind > 2.5 && kind < 4.5 {
+                let ex = extended_seen(l, p);
+                if ex.ang > 0.0 {
+                    s_toward = ex.way;
+                    s_dist = ex.dist;
+                    src = i32(i);
+                    stop = ex.stop;
+                    if style > 0.5 {
+                        soft = 0.5 * px / ex.dist;
+                    } else {
+                        soft = min(max(ex.ang, angular), MOST_SEEN) * max(u.shadows.y, 0.0) * max(l.p6.w, 0.0);
+                    }
+                }
+            }
             // Glass that bends light is solid for the lights whose photons carry its light.
             bent_carried = kind < 4.5;
-            let v = visibility(p, toward, dist, soft, u.shadows.z, stop);
+            let v = visibility(p, s_toward, s_dist, soft, u.shadows.z, stop, src);
             bent_carried = true;
             tint = mix(vec3<f32>(1.0), l.p5.rgb, clamp((vec3<f32>(1.0) - v) * l.p2.w, vec3<f32>(0.0), vec3<f32>(1.0)));
         }
@@ -1941,7 +2166,8 @@ struct SphereGpu {
     // The ball's colour (linear), for the light it lets through; w unused.
     b: vec4<f32>,
     // Its surface index, its Tints light, its turn (radians: a mirror ball's tiles turn with it),
-    // spare.
+    // its thing's z-order (a ball with a higher one, or the same and listed later, is drawn over
+    // it).
     c: vec4<f32>,
 };
 
@@ -1979,6 +2205,8 @@ const FROST_TAPS: i32 = 12;
 const DOF_TAPS: i32 = 24;
 // The widest depth of field blur, in output pixels.
 const DOF_MOST: f32 = 32.0;
+// Depth of field's small copy is this many times smaller each way (`DOF_SMALL` in lighting.rs).
+const DOF_SMALL: f32 = 4.0;
 // The most segments of a mirror wall's outline tested.
 const MOST_MIRROR_SEGMENTS: u32 = 512u;
 
@@ -2409,20 +2637,36 @@ fn sphere_ao(p: vec3<f32>, n: vec3<f32>) -> f32 {
     return clamp(1.0 - occ, 0.0, 1.0);
 }
 
-// How much light gets to `p` past the shapes in Stage: the blockers' field stood up from the wall
-// to the shapes' front (sheared, see `field_on_slab`), marched along the ray while it is within
-// that depth. Per channel (glass and light part 1): a see-through shape (the field's blocking under
-// 1, drawn when the tint picture is) lets through its share in its colour.
-fn slab_visibility(p: vec3<f32>, l: vec3<f32>, dist: f32, ang: f32, stop: f32) -> vec3<f32> {
-    let across = length(l.xy);
+// One ray of `slab_visibility`: how much of the light gets through past the solid shapes (`v`,
+// before smoothing; `face` the front face's share for a point in front of the shapes), how clear
+// of them it stays (`clear`: the least distance to one over the distance along the ray, an angle
+// like the lamp's), whether it went into a solid one (`crossed`, and how wide the soft edge is
+// there, `edge`, in world units), what the see-through ones let through (`see`) and, where it
+// went into one just below the shapes' front on its way up and out, the share of the lamp that
+// shows over that front (`over`: half at the front, nothing a soft edge's width below it).
+struct SlabRay {
+    v: f32,
+    clear: f32,
+    crossed: bool,
+    edge: f32,
+    see: vec3<f32>,
+    face: vec3<f32>,
+    over: f32,
+};
+
+// One ray of `slab_visibility`: along unit `l` for `dist`, the lamp `ang` wide. `across`: one of
+// the rays across the lamp, which stops as soon as it goes into a solid shape.
+fn slab_march(p: vec3<f32>, l: vec3<f32>, dist: f32, ang: f32, stop: f32, across: bool) -> SlabRay {
+    var out = SlabRay(1.0, 1e4, false, 0.0, vec3<f32>(1.0), vec3<f32>(1.0), 0.0);
+    let flat_len = length(l.xy);
     let front = st.room.z;
     let back = -st.room.y;
-    if across < 1e-5 || (p.z >= front - 0.01 && l.z >= 0.0) {
-        return vec3<f32>(1.0);
+    if flat_len < 1e-5 || (p.z >= front - 0.01 && l.z >= 0.0) {
+        return out;
     }
-    let toward = l.xy / across;
-    let rise = l.z / across;
-    var end = dist * across - max(stop, 0.0);
+    let toward = l.xy / flat_len;
+    let rise = l.z / flat_len;
+    var end = dist * flat_len - max(stop, 0.0);
     if rise > 1e-6 {
         end = min(end, (front - p.z) / rise);
     } else if rise < -1e-6 {
@@ -2436,22 +2680,24 @@ fn slab_visibility(p: vec3<f32>, l: vec3<f32>, dist: f32, ang: f32, stop: f32) -
         start = (front - p.z) / rise;
     }
     if end <= start {
-        return vec3<f32>(1.0);
+        return out;
     }
-    let a = max(ang / max(across, 0.05), 1e-4);
+    let a = max(ang / max(flat_len, 0.05), 1e-4);
     let texel = max(u.field.z, 1e-3);
-    var face = vec3<f32>(1.0);
     if start > 0.0 {
         let fd = field_on_slab_all(vec3<f32>(p.xy + toward * start, front));
         var f = clamp(0.5 + 0.5 * fd.x / max(start * a, texel), 0.0, 1.0);
         f = f * f * (3.0 - 2.0 * f);
         if opacity_of(fd.yzw) >= 1.0 {
-            if f <= 0.0 {
-                return vec3<f32>(0.0);
+            if f <= 0.0 || (across && fd.x < 0.0) {
+                out.v = 0.0;
+                out.crossed = true;
+                out.edge = start * a;
+                return out;
             }
-            face = vec3<f32>(f);
+            out.face = vec3<f32>(f);
         } else {
-            face = vec3<f32>(1.0) - clamp(fd.yzw, vec3<f32>(0.0), vec3<f32>(1.0)) * (1.0 - f);
+            out.face = vec3<f32>(1.0) - clamp(fd.yzw, vec3<f32>(0.0), vec3<f32>(1.0)) * (1.0 - f);
         }
     }
     let steps = i32(u.more.z);
@@ -2464,34 +2710,103 @@ fn slab_visibility(p: vec3<f32>, l: vec3<f32>, dist: f32, ang: f32, stop: f32) -
         }
         t += max(-d, texel);
     }
-    // `v` over solid shapes as always; `see` the least each see-through one lets through.
-    var v = 1.0;
-    var see = vec3<f32>(1.0);
-    for (var i = 0; i < steps; i++) {
-        if t >= end {
+    // As in `march`: creeping past a shape (closer than a texel) doesn't use up the steps, within
+    // a cap, and the soft edge is taken where the ray came nearest a shape between samples.
+    var used = 0;
+    var last = -1.0;
+    var last_t = 0.0;
+    // (Nor do steps shorter than an even share of the way, as in `march`.)
+    let fair = (end - t) / f32(max(steps, 1));
+    for (var i = 0; i < max(8 * steps, 300); i++) {
+        if t >= end || used >= steps {
             break;
         }
         let fd = field_on_slab_all(vec3<f32>(p.xy + toward * t, p.z + rise * t));
         let d = fd.x;
-        let raw = clamp(0.5 + 0.5 * d / (max(t - start, texel) * a), 0.0, 1.0);
-        if opacity_of(fd.yzw) >= 1.0 {
-            v = min(v, raw);
-            if v <= 0.0 {
-                break;
+        let nearest = nearest_between(d, t - start, last, last_t);
+        last = d;
+        last_t = t - start;
+        if abs(d) >= max(texel, fair) {
+            used += 1;
+        }
+        // How far into the soft edge, in lamp half widths from its middle.
+        let k = nearest.x / (max(nearest.y, texel) * a);
+        let raw = clamp(0.5 + 0.5 * k, 0.0, 1.0);
+        let solid = opacity_of(fd.yzw) >= 1.0
+            || nearest_bends(vec2<f32>(p.x + toward.x * t, p.y + toward.y * t + (p.z + rise * t) * st.room.w));
+        if solid {
+            // (Glass that bends lamp light, part 3, is solid here: the photons carry its light.)
+            out.clear = min(out.clear, max(k, 0.0) * ang);
+            if d < 0.0 {
+                // Into a solid shape: deeper than its soft edge, or a thin shape whose middle is
+                // only half its width deep, the light across the lamp tells.
+                if !out.crossed {
+                    out.edge = max(t - start, texel) * a;
+                    if rise > 1e-6 {
+                        let below = front - (p.z + rise * t);
+                        out.over = clamp(0.5 - 0.5 * below / out.edge, 0.0, 1.0);
+                    }
+                }
+                out.crossed = true;
+                if across {
+                    out.v = 0.0;
+                    return out;
+                }
             }
-        } else if nearest_bends(vec2<f32>(p.x + toward.x * t, p.y + toward.y * t + (p.z + rise * t) * st.room.w)) {
-            // Glass that bends lamp light (part 3) is solid here: the photons carry its light.
-            v = min(v, raw);
-            if v <= 0.0 {
+            out.v = min(out.v, raw);
+            if out.v <= 0.0 {
                 break;
             }
         } else {
             let b = clamp(fd.yzw, vec3<f32>(0.0), vec3<f32>(1.0));
-            see = min(see, vec3<f32>(1.0) - b * (1.0 - smoothed(raw)));
+            out.see = min(out.see, vec3<f32>(1.0) - b * (1.0 - smoothed(raw)));
         }
-        t += max(abs(d), texel);
+        // At most half a texel near a shape (as `march`): a whole texel stepped over a thin
+        // wall's slab, and the light got through in stripes.
+        t += max(abs(d), 0.5 * texel);
     }
-    return face * min(vec3<f32>(v * v * (3.0 - 2.0 * v)), see);
+    return out;
+}
+
+// How much light gets to `p` past the shapes in Stage: the blockers' field stood up from the wall
+// to the shapes' front (sheared, see `field_on_slab`), marched along the ray while it is within
+// that depth. Per channel (glass and light part 1): a see-through shape (the field's blocking under
+// 1, drawn when the tint picture is) lets through its share in its colour.
+//
+// As `visibility` in Flat: a ray that goes into a solid shape would let half the light through a
+// thin one (inside it the distance is only half its width deep), so then rays go across the lamp,
+// side to side in the picture, and the light is the share of the lamp they show together.
+fn slab_visibility(p: vec3<f32>, l: vec3<f32>, dist: f32, ang: f32, stop: f32) -> vec3<f32> {
+    let middle = slab_march(p, l, dist, ang, stop, false);
+    let lit = middle.face * middle.see;
+    if !middle.crossed {
+        return middle.face * min(vec3<f32>(smoothed(middle.v)), middle.see);
+    }
+    // Deep in its shadow, or a soft edge narrower than half a pixel where it went in: dark, but
+    // for what shows over the shapes' front.
+    if middle.v <= 0.0 || middle.edge < 0.5 * u.view.z {
+        return vec3<f32>(middle.over) * lit;
+    }
+    let a = max(ang, 1e-4);
+    let rays = select(LAMP_RAYS, 3, u.more.z <= 16.0);
+    let gap = 2.0 * a / f32(rays - 1);
+    let flat_len = length(l.xy);
+    let side = select(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(-l.y, l.x, 0.0) / flat_len, flat_len > 1e-5);
+    var lo: array<f32, MOST_LAMP_RAYS>;
+    var hi: array<f32, MOST_LAMP_RAYS>;
+    for (var k = 0; k < MOST_LAMP_RAYS; k++) {
+        let off = f32(k) * gap - a;
+        lo[k] = 0.0;
+        hi[k] = 0.0;
+        if k >= rays || k == rays / 2 {
+            continue;
+        }
+        let r = slab_march(p, normalize(l + side * off), dist, gap, stop, true);
+        let c = select(min(r.clear, 2.0 * a), -1.0, r.crossed);
+        lo[k] = max(off - c, -a);
+        hi[k] = min(off + c, a);
+    }
+    return vec3<f32>(max(lamp_share(lo, hi, a), middle.over)) * lit;
 }
 
 // GGX highlight from a light along `l` (unit), times pi so it sits with the diffuse light (which
@@ -2753,12 +3068,43 @@ fn shade(spot: Spot, p: vec2<f32>, sf: SurfaceGpu, base: vec3<f32>, here: f32, l
             if kind < 1.5 || kind > 2.5 {
                 stop = max(stop, -field_at(source_point(l, select(p, spot.p.xy, stage))));
             }
+            // An Area or Strip light's shadows come from all of it (as in `lamps`): on a Stage
+            // from the middle of what it covers at its height, as wide as that looks from here.
+            var s_toward = toward;
+            var s_dist = dist;
+            var s_dir3 = dir3;
+            var s_dist3 = dist3;
+            var src = -1;
+            if kind > 2.5 && kind < 4.5 {
+                let seen_from = select(p, spot.p.xy, stage);
+                let ex = extended_seen(l, seen_from);
+                if ex.ang > 0.0 {
+                    let to3 = vec3<f32>(ex.way * ex.dist, l.p0.z - h);
+                    s_dist3 = max(length(to3), 1e-3);
+                    s_dir3 = to3 / s_dist3;
+                    if stage {
+                        // (To its middle, but never into a blocker the light sits in.)
+                        stop = max(l.p6.x + 0.5 * px, -field_at(l.p0.xy));
+                    } else {
+                        stop = ex.stop;
+                        s_toward = ex.way;
+                        s_dist = ex.dist;
+                        src = i32(i);
+                    }
+                    let wide = ex.ang * select(ex.dist, ex.dist * ex.dist / s_dist3, stage) / ex.dist;
+                    if style > 0.5 {
+                        soft = 0.5 * px / max(select(ex.dist, s_dist3, stage), 1e-3);
+                    } else {
+                        soft = min(max(wide, angular), MOST_SEEN) * max(u.shadows.y, 0.0) * max(l.p6.w, 0.0);
+                    }
+                }
+            }
             var v = vec3<f32>(1.0);
             bent_carried = kind < 4.5;
             if stage {
-                v = sphere_shadow(spot.p, dir3, dist3, soft, stop) * slab_visibility(spot.p, dir3, dist3, soft, stop);
+                v = sphere_shadow(spot.p, s_dir3, s_dist3, soft, stop) * slab_visibility(spot.p, s_dir3, s_dist3, soft, stop);
             } else {
-                v = visibility(p, toward, dist, soft, u.shadows.z, stop);
+                v = visibility(p, s_toward, s_dist, soft, u.shadows.z, stop, src);
             }
             bent_carried = true;
             tint = mix(vec3<f32>(1.0), l.p5.rgb, clamp((vec3<f32>(1.0) - v) * l.p2.w, vec3<f32>(0.0), vec3<f32>(1.0)));
@@ -3646,11 +3992,27 @@ fn fs_dof(in: FsIn) -> @location(0) vec4<f32> {
     var weights = 1.0;
     // The bake takes more taps: smoother bokeh.
     let taps = select(DOF_TAPS, 4 * DOF_TAPS, baking());
+    // A wide blur reads each tap from the small copy, where it is the mean of 4 x 4 pixels: 24
+    // single pixels spread over a wide disc show as speckle. A narrow one reads single pixels.
+    let soft = smoothstep(6.0, 14.0, own);
+    let small = DOF_SMALL * vec2<f32>(textureDimensions(lit_picture));
     for (var k = 0; k < taps; k++) {
         let a = f32(k) * 2.39996 + turn;
         let r = own * sqrt((f32(k) + 0.5) / f32(taps));
-        let at = clamp(ip + vec2<i32>(round(vec2<f32>(cos(a), sin(a)) * r)), vec2<i32>(0), size - 1);
-        let tc = textureLoad(picture, at, 0).rgb;
+        let place = in.pos.xy + vec2<f32>(cos(a), sin(a)) * r;
+        let at = clamp(vec2<i32>(floor(place)), vec2<i32>(0), size - 1);
+        var tc = textureLoad(picture, at, 0).rgb;
+        if soft > 0.0 {
+            // Only where everything the copy averaged there blurs as far as this tap: next to
+            // something sharp it would bring that thing's colour in.
+            // The least of the four texels the filtered read blends (a filtered alpha would be their
+            // mean, and let half of a sharp texel's colour through).
+            let uv = place / small;
+            let copy = textureSampleLevel(lit_picture, samp, uv, 0.0).rgb;
+            let near = textureGather(3, lit_picture, samp, uv);
+            let least = min(min(near.x, near.y), min(near.z, near.w));
+            tc = mix(tc, copy, soft * clamp(least - r + 1.0, 0.0, 1.0));
+        }
         // A tap counts only where its own blur reaches this pixel, so a sharp thing isn't smeared
         // by a blurred one behind it; bright taps count more (round bokeh).
         let reach = clamp(blur_at(depth_at(at)) - r + 1.0, 0.0, 1.0);
@@ -3660,6 +4022,26 @@ fn fs_dof(in: FsIn) -> @location(0) vec4<f32> {
         weights += wt;
     }
     return vec4<f32>(sum / weights, c.a);
+}
+
+// Depth of field's small copy: each texel the mean of the DOF_SMALL x DOF_SMALL pixels under it,
+// from four filtered reads each halfway between two pixels' centres both ways; in alpha, the
+// least blur among those pixels (what reach the mean as a whole has).
+@fragment
+fn fs_dof_small(in: FsIn) -> @location(0) vec4<f32> {
+    let size = vec2<f32>(textureDimensions(picture));
+    let corner = floor(in.pos.xy) * DOF_SMALL;
+    var sum = vec3<f32>(0.0);
+    for (var k = 0; k < 4; k++) {
+        let at = corner + vec2<f32>(f32(k % 2) * 2.0 + 1.0, f32(k / 2) * 2.0 + 1.0);
+        sum += textureSampleLevel(picture, samp, at / size, 0.0).rgb;
+    }
+    var least = DOF_MOST;
+    let n = i32(DOF_SMALL);
+    for (var k = 0; k < n * n; k++) {
+        least = min(least, blur_at(depth_at(vec2<i32>(corner) + vec2<i32>(k % n, k / n))));
+    }
+    return vec4<f32>(sum * 0.25, least);
 }
 
 fn srgb_decode(c: vec3<f32>) -> vec3<f32> {

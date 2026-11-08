@@ -1,5 +1,5 @@
 //! The Master: the last stop before the speakers and the export. Input and Output gain,
-//! the true-peak Ceiling and its Release, the level meter, the loudness readouts and the
+//! the true-peak Ceiling and its Release, the End fade, the level meter, the loudness readouts and the
 //! loudness graph with the -14 LUFS mark the apps aim for.
 
 use crate::style::{self, Knob};
@@ -22,6 +22,10 @@ fn db(v: f64) -> String {
 
 fn dbtp(v: f64) -> String {
     format!("{v:.1} dBTP")
+}
+
+fn seconds(v: f64) -> String {
+    if v <= 0.0 { "Off".into() } else { format!("{v:.1} s") }
 }
 
 fn ms(v: f64) -> String {
@@ -76,7 +80,7 @@ fn card_knob(
 }
 
 /// The Master's knobs, in the order the strips show them.
-pub const KNOBS: [&str; 4] = ["master_input", "master_output", "master_ceiling", "master_release"];
+pub const KNOBS: [&str; 5] = ["master_input", "master_output", "master_ceiling", "master_release", "master_end_fade"];
 
 /// The Master's knob for setting `key` (one of [`KNOBS`]), `width` wide. Returns whether a keyed
 /// setting was edited (the studio pauses, so a drag keys one place).
@@ -86,6 +90,7 @@ pub fn knob(ui: &mut Ui, scene: &mut Scene, kit: &Kit, key: &str, time: f64, wid
         "master_output" => card_knob(ui, scene, kit, key, "Output", &db, "dB", true, false, time, width),
         "master_ceiling" => card_knob(ui, scene, kit, key, "Ceiling", &dbtp, "dBTP", false, false, time, width),
         "master_release" => card_knob(ui, scene, kit, key, "Release", &ms, "ms", false, true, time, width),
+        "master_end_fade" => card_knob(ui, scene, kit, key, "End fade", &seconds, "s", false, false, time, width),
         _ => false,
     }
 }

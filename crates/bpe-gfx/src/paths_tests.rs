@@ -539,7 +539,8 @@ fn shapes_draw_as_before() {
     let paint = red_to_blue(&mut frame, LayerGpu::SHAPE_PAINT, 4.0);
     wear(&mut frame, j, vec![body_record(), paint], 0.0);
     let Some(pixels) = render_sized(&frame, W, H) else { return };
-    assert_eq!(format!("{:016x}", fnv(&pixels)), "d8818e8c5f70fe64");
+    // Re-pinned 2026-11-08 (W3): white now comes out 255, not 247, and the final dither changed.
+    assert_eq!(format!("{:016x}", fnv(&pixels)), "f86e5b02bf743a93");
 }
 
 // ---- Styled instances (Text part 5) ----

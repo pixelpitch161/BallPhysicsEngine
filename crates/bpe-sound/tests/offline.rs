@@ -71,3 +71,57 @@ fn cancel_stops_early() {
     assert!(calls < 10, "it stopped soon after: {calls}");
     assert!(!path.exists(), "and left no file");
 }
+
+/// `scene` with the Master's setting `key` at `v`.
+fn with_master(mut scene: Scene, kit: &Kit, key: &str, v: f64) -> Scene {
+    bpe_kit::ensure_mixer(&mut scene, &kit.registry);
+    let card = scene.things.get_mut(&bpe_core::ThingId::ROOT).unwrap().slots.get_mut(&bpe_core::SlotId::Mixer).unwrap();
+    card.params.set(key, bpe_core::Value::Number(v));
+    scene
+}
+
+/// The true peak of interleaved stereo `samples`, in dBTP.
+fn true_peak(samples: &[f32]) -> f32 {
+    let mut meter = bpe_dsp::LoudnessMeter::new();
+    for block in samples.chunks_exact(bpe_sound::BLOCK * 2) {
+        let l: [f32; bpe_sound::BLOCK] = std::array::from_fn(|i| block[2 * i]);
+        let r: [f32; bpe_sound::BLOCK] = std::array::from_fn(|i| block[2 * i + 1]);
+        meter.process(&l, &r);
+    }
+    meter.true_peak_db()
+}
+
+#[test]
+fn turning_output_up_never_passes_the_ceiling() {
+    let kit = kit();
+    let mut scene = new_scene(&kit.registry);
+    let shape = scene.order.iter().copied().find(|id| scene.things[id].kind == "shape").unwrap();
+    scene.things.get_mut(&shape).unwrap().tags.insert("test-tone-decay=1".into());
+    let loud = with_master(with_master(scene.clone(), &kit, "master_input", 18.0), &kit, "master_output", 12.0);
+    let peak = true_peak(&render_samples(&loud, &kit, 4.0));
+    assert!(peak <= -1.0 + 0.1, "the ceiling holds with Output at +12 dB: {peak} dBTP");
+    assert!(peak > -1.5, "and the limiter is working right up to it: {peak}");
+    // Turned down, Output lowers the finished sound as before.
+    let plain = true_peak(&render_samples(&scene, &kit, 4.0));
+    let quiet = true_peak(&render_samples(&with_master(scene, &kit, "master_output", -6.0), &kit, 4.0));
+    assert!((plain - quiet - 6.0).abs() < 0.2, "6 dB down: {plain} then {quiet}");
+}
+
+#[test]
+fn the_end_fade_ends_in_silence() {
+    let kit = kit();
+    let mut scene = new_scene(&kit.registry);
+    let shape = scene.order.iter().copied().find(|id| scene.things[id].kind == "shape").unwrap();
+    // A tone that rings for the whole clip.
+    scene.things.get_mut(&shape).unwrap().tags.insert("test-tone-decay=60".into());
+    let plain = render_samples(&scene, &kit, 4.0);
+    let faded = render_samples(&with_master(scene, &kit, "master_end_fade", 1.0), &kit, 4.0);
+    let frames = plain.len() / 2;
+    let at = |s: f64| (s * 48_000.0) as usize * 2;
+    assert!(plain[at(2.5)..at(3.0)].iter().any(|v| v.abs() > 0.01), "the tone rings at the end");
+    assert!(plain[..at(3.0)].iter().zip(&faded[..at(3.0)]).all(|(a, b)| a == b), "untouched before the fade");
+    let last = faded[(frames - 48) * 2..].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    assert!(last < 1e-3, "silent at the very end: {last}");
+    let mid = |s: &[f32]| s[at(3.4)..at(3.6)].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    assert!(mid(&faded) < mid(&plain) * 0.8 && mid(&faded) > mid(&plain) * 0.2, "half way down the fade");
+}

@@ -51,6 +51,21 @@ fn by_tempo_changes_on_bar_lines() {
 }
 
 #[test]
+fn by_tempo_counts_bars_from_the_first_beat() {
+    let s = spec(|_| {});
+    // First beat at 0.5 s: bar 1 runs 0.5 s to 2.5 s, so the first change is at 2.5 s.
+    let tempo = TempoMap::new(120.0, 4, 4).with_first(0.5);
+    let c = SlotClock::changes_until(&s, 4, 1, &tempo, 3 * BAR + 1, &[]);
+    assert_eq!(c, [(24_000 + BAR, 1), (24_000 + 2 * BAR, 2)]);
+    // By time doesn't follow the beat.
+    let s = spec(|v| {
+        v.notes_change = Change::ByTime;
+        v.notes_every_seconds = 1.0;
+    });
+    assert_eq!(SlotClock::changes_until(&s, 3, 1, &tempo, 2 * 48_000 + 1, &[]), [(48_000, 1), (96_000, 2)]);
+}
+
+#[test]
 fn by_hits_marks_follow_the_hits() {
     let s = spec(|v| {
         v.notes_change = Change::ByHits;

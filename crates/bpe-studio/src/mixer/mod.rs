@@ -225,6 +225,16 @@ fn tempo_row(ui: &mut Ui, scene: &mut Scene, kit: &Kit, time: f64) {
             set_root(scene, kit, "tempo", Value::Number(bpm), time);
         }
         ui.add_space(8.0);
+        let label = ui.label(RichText::new("First beat at").color(style::MUTED));
+        let mut first = root_value(scene, kit, "first_beat", time).as_ref().and_then(number).unwrap_or(0.0);
+        let r = ui
+            .add(egui::DragValue::new(&mut first).range(0.0..=600.0).speed(0.005).max_decimals(3).suffix(" s"))
+            .labelled_by(label.id)
+            .on_hover_text("Where bar 1 starts: the grid, synced LFOs, slot changes and beat moves count from here");
+        if r.changed() {
+            set_root(scene, kit, "first_beat", Value::Number(first), time);
+        }
+        ui.add_space(8.0);
         let label = ui.label(RichText::new("Beats in a bar").color(style::MUTED));
         let mut top = root_value(scene, kit, "time_top", time).as_ref().and_then(number).map_or(4, |v| v as i64);
         let r = ui.add(egui::DragValue::new(&mut top).range(1..=16).speed(0.05)).labelled_by(label.id);
