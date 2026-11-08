@@ -264,7 +264,11 @@ fn one_glass_behind_another_isnt_counted_twice() {
 fn a_convex_lens_focuses_and_a_concave_one_spreads() {
     let Some(mut gpu) = gpu() else { return };
     let reg = reg();
-    let lens = room(&reg, disc(90.0), Vec2::ZERO, 0.95, 1.5, "good");
+    let mut lens = room(&reg, disc(90.0), Vec2::ZERO, 0.95, 1.5, "good");
+    // A dimmer lamp: at full strength the focus is brighter than white, which shows as plain white
+    // (since 2026-11-08), so it can't read as much brighter than the open floor.
+    let lamp = id_of(&lens, "light");
+    lens.things.get_mut(&lamp).unwrap().params.set("strength", Value::Number(0.4));
     let focused = draw(&mut gpu, &lens, "convex");
     let bare = draw(&mut gpu, &open(&lens), "convex-open");
     let (top, at) = brightest(&focused, Vec2::new(-60.0, 100.0), Vec2::new(60.0, 600.0));

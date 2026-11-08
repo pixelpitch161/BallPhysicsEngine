@@ -110,8 +110,8 @@ line width 1.5 → 2.0 (`aura.rs` default). Arcs keep their 2.5 core (checked by
   + 1)` left lamp-lit white walls cream and a red ball's shine pink (`lit_pictures`' white-shine and light-only
   checks); `over / (over + 1.5)` whitened a blue ball's mild highlight too much. Brightness alone (luma) still left
   the red shine pink, so the least channel counts too. A pool of light past white is plain white now (no shoulder
-  keeps detail in it): `mirror_light_pictures::a_mirror_ball_throws_spots_*` dims its lamp to 0.4 so the spots
-  beside it don't land in white, and `paint_pictures::solid_paint_matches_plain_colour` leaves out the pixels the
+  keeps detail in it): `mirror_light_pictures::a_mirror_ball_throws_spots_*` and
+  `bent_light_pictures::a_convex_lens_focuses_*` dim their lamp to 0.4 so the spots and the focus don't land in white, and `paint_pictures::solid_paint_matches_plain_colour` leaves out the pixels the
   old shoulder squeezed (any channel past 0.8).
   `glass_pictures::pearl_and_flake_shine_their_own_ways`' flake margin is 4 jumps (48 against 42; was 6), and
   `paint_tests::linear` no longer undoes a shoulder; `pictures::TOLERANCE` is 3 (highlights past 0.8 aren't squeezed
