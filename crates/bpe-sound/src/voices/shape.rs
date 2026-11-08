@@ -269,6 +269,8 @@ pub struct ShapeSpec {
     pub base: Values,
     /// The knobs with keys, by place.
     pub keyed: Vec<(usize, Track)>,
+    /// Every knob's setting key and place, sorted by key: where a rule's change lands (W13).
+    pub knob_keys: Vec<(String, usize)>,
     pub matrix: ModMatrix,
     /// The band-limited square the subs read (`None` with no sub, or while it bakes).
     pub square: Option<Arc<TableSet>>,
@@ -662,7 +664,7 @@ impl ShapeVoice {
             watched: [0.0; CAPACITY],
             spec,
         };
-        v.read_keys(0.0);
+        v.read_keys(0.0, None);
         v.snap_smoothers();
         v
     }
@@ -825,14 +827,16 @@ impl ShapeVoice {
         }
     }
 
-    /// The knobs at `time`: as set, with keyed ones read from their tracks.
-    fn read_keys(&mut self, time: f64) {
+    /// The knobs at `time`: as set, with keyed ones read from their tracks, then what the rules
+    /// change (`rules`, the engine's physics' own). Never allocates.
+    fn read_keys(&mut self, time: f64, rules: Option<&bpe_runtime::RulesState>) {
         self.now = self.spec.base;
         for (i, track) in &self.spec.keyed {
             if let Some(v) = k::track_value(track, time) {
                 self.now[*i] = v;
             }
         }
+        rule_knobs(&self.spec, rules, time, &mut self.now);
     }
 
     fn targets(&self) -> [f32; 10] {
@@ -1490,7 +1494,7 @@ impl ShapeVoice {
             self.clock.begin_block(start, BLOCK as u32, time, &self.spec.notes, tempo);
             let end = start + block;
             if next < hits.len() && hits[next].0 < end {
-                self.read_keys(time);
+                self.read_keys(time, world.rules());
                 self.filter.set(self.now[k::MIN_STRENGTH] / 100.0, self.now[k::RETRIGGER] / 1000.0, self.curve());
                 let cx = BlockCx { start_sample: start, time, tempo, world, log: &no_log, playing: true };
                 while next < hits.len() && hits[next].0 < end {
@@ -1917,13 +1921,25 @@ fn scale_by_routes(matrix: &ModMatrix, src: &[[f32; BLOCK]; MAX_SOURCES], target
     }
 }
 
+/// `values` (the knobs of `spec`) with the rules' changes on the shape's Sound card at `time`
+/// folded on the knobs they name (W13). Never allocates.
+pub(crate) fn rule_knobs(spec: &ShapeSpec, rules: Option<&bpe_runtime::RulesState>, time: f64, values: &mut k::Values) {
+    let Some(rules) = rules else { return };
+    for (key, list) in rules.whole_changes(spec.thing, Some(bpe_core::SlotId::Sound)) {
+        if let Ok(i) = spec.knob_keys.binary_search_by(|(k, _)| k.as_str().cmp(key)) {
+            let at = spec.knob_keys[i].1;
+            values[at] = crate::ruled::number(list, values[at], time);
+        }
+    }
+}
+
 impl VoiceSource for ShapeVoice {
     fn thing(&self) -> ThingId {
         self.spec.thing
     }
 
     fn on_block(&mut self, cx: &BlockCx, hits: &[BlockHit], out_l: &mut [f32; BLOCK], out_r: &mut [f32; BLOCK]) {
-        self.read_keys(cx.time);
+        self.read_keys(cx.time, cx.world.rules());
         let t = self.targets();
         for (i, s) in self.smooth.iter_mut().enumerate() {
             s.set_target(t[i]);
@@ -1998,7 +2014,7 @@ impl VoiceSource for ShapeVoice {
         self.note_max = [0.0; MAX_SOURCES];
         self.n_auditions = 0;
         self.peak = 0.0;
-        self.read_keys(0.0);
+        self.read_keys(0.0, None);
         self.snap_smoothers();
     }
 

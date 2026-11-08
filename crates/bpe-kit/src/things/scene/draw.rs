@@ -34,6 +34,8 @@ impl ThingDraw for SceneDraw {
             let lighting = crate::modules::lighting::LightingSettings::from_params(&card.params);
             let lowest = lowest_shape(cx.world);
             let mut settings = lighting.gpu(lowest);
+            let carried = crate::air::air_of(cx.world).map(|a| a.drift);
+            [settings.haze_more[0], settings.haze_more[1]] = lighting.haze_drift(cx.time, carried);
             settings.background = background_glow(&s);
             let background_link = crate::things::light::links::number_of(cx.scene, cx.resolved.id);
             frame.light = Some(bpe_gfx::LightScene { settings, background_link, ..Default::default() });

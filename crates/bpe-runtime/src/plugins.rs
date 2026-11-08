@@ -160,6 +160,18 @@ pub trait ThingSim: Send + Sync + 'static {
     fn in_main(&self, _resolved: &ResolvedThing) -> bool {
         true
     }
+    /// Whether the thing puts heat into the scene's air (a Particles thing whose Rise heats it).
+    /// While some ball follows the air ([`crate::air_felt`]) such a thing steps with the physics,
+    /// as the heat moves the balls.
+    fn heats_air(&self, _resolved: &ResolvedThing) -> bool {
+        false
+    }
+    /// Whether the thing reads the scene's Air card in every world, as the balls that follow the
+    /// air do (the scene's haze moving With the air): the world then senses the Air card's keys,
+    /// and the physics fingerprint counts the card ([`crate::air::air_read`]).
+    fn reads_air(&self, _resolved: &ResolvedThing) -> bool {
+        false
+    }
     /// For a thing stepped beside the physics: a hash of whatever else its stepping reads from its
     /// settings beyond its own and its Motion and Bounce cards (a Particles thing's Look asking it
     /// to keep each particle's trail), so a change of it rebuilds the playback it is stepped on.
@@ -291,6 +303,17 @@ pub trait ModuleSim: Send + Sync + 'static {
     fn light_pull(&self, _state: &dyn ThingState) -> Option<crate::LightPull> {
         None
     }
+    /// How quickly this Motion card's balls take on the air's speed where they are, per second
+    /// (Follow the air); 0 when they don't follow it. Read from each ball's own state when it
+    /// varies.
+    fn air_grip(&self, _state: &dyn ThingState) -> f32 {
+        0.0
+    }
+    /// The card's setting that makes its balls follow the air ([`crate::air_felt`] reads it from
+    /// the saved scene); `None` for a module that never does.
+    fn air_key(&self) -> Option<&'static str> {
+        None
+    }
     /// The steady pull, in pixels per second squared, this Motion module puts on its balls
     /// under the scene's `gravity`: what a ball lying on something presses into it with, so a
     /// resting touch is told from a hit. `None` for a module that doesn't pull steadily.
@@ -383,6 +406,8 @@ pub struct Sims {
     pub sound: Option<std::sync::Arc<dyn crate::SoundMaker>>,
     /// Works out a scene's light for physics that follows it (none: it stays put).
     pub light: Option<std::sync::Arc<dyn crate::LightMaker>>,
+    /// The scene's air, for balls that follow it (none: they feel no air).
+    pub air: Option<std::sync::Arc<dyn crate::AirSim>>,
 }
 
 impl Sims {

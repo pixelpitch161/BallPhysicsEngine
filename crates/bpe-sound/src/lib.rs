@@ -19,6 +19,7 @@ pub mod mods;
 pub mod music;
 pub mod offline;
 pub mod patch;
+pub mod ruled;
 pub mod tempo;
 pub mod voice;
 pub mod voices;
@@ -34,6 +35,7 @@ pub use meters::{BusReading, FX_BINS, FX_METERS, FxReading, MeterReading, Meters
 pub use midi::{NoteLog, NoteOn, write_midi};
 pub use offline::{Extras, has_sound, midi_path, render_samples, render_sound, render_to_wav, stem_paths};
 pub use patch::{HELD_WARM_UP, MAX_WARM_UP, MIN_WARM_UP, SoundPatch, Tables, patch_fingerprint, warm_up_of};
+pub use ruled::{mixer_rule_keys, voice_rule_keys};
 pub use tempo::TempoMap;
 pub use voice::{BlockCx, VoiceSource};
 pub use voices::{ShapeVoice, note_hz};

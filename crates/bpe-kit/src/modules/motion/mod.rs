@@ -15,9 +15,15 @@ pub struct BasicMotion {
     /// How quickly the air slows them.
     #[setting(label = "Air drag", range(0, 5), unit = "per s", group = "Motion", simple, keyframe)]
     pub drag: f32,
-    /// A steady push on these, in pixels per second squared.
-    #[setting(label = "Wind", group = "Motion", unit = "px/s²", keyframe, pulse)]
+    /// A steady push on these, in pixels per second squared, like a tilted table. For the
+    /// scene's wind, which swirls round balls and shapes, use Follow the air.
+    #[setting(label = "Steady push", group = "Motion", unit = "px/s²", keyframe, pulse)]
     pub wind: Vec2,
+    /// How quickly these balls take on the air's speed where they are: the Air card's wind with
+    /// its gusts, swirled by the balls moving through it and blocked by shapes. 0 leaves them out
+    /// of the air.
+    #[setting(label = "Follow the air", range(0, 1e9), span(0, 20), unit = "per s", keyframe, pulse, group = "Air")]
+    pub follow_air: f32,
     /// Light sensing (needs a Lighting card): whether the lights draw these balls in, like moths,
     /// or push them away, like light pressure. Off leaves the physics as it always was.
     #[setting(label = "Moths", group = "Light sensing")]
@@ -62,6 +68,7 @@ impl Default for BasicMotion {
             gravity_scale: 0.0,
             drag: 0.0,
             wind: Vec2::ZERO,
+            follow_air: 0.0,
             moths: Moths::Off,
             moth_pull: 1200.0,
             moth_near: 60.0,
@@ -87,6 +94,16 @@ impl BasicMotion {
     }
 }
 
+/// The Motion card's setting that makes its balls follow the scene's air.
+pub const FOLLOW_AIR: &str = "follow_air";
+
+impl BasicMotion {
+    /// How quickly these balls follow the air, per second; 0 when they don't.
+    pub fn air_grip(&self) -> f32 {
+        if self.follow_air.is_finite() && self.follow_air > 0.0 { self.follow_air } else { 0.0 }
+    }
+}
+
 /// Whether a Motion card's settings `params` have Moths on.
 pub fn moths_on(params: &Params) -> bool {
     matches!(params.get("moths"), Some(Value::Choice(n)) if Moths::from_name(n).is_some_and(|m| m != Moths::Off))
@@ -100,7 +117,7 @@ impl ModuleKind for BasicMotionKind {
         "Basic"
     }
     fn help(&self) -> &'static str {
-        "Falls under gravity, is slowed by the air and pushed by the wind."
+        "Falls under gravity, is slowed by the air, and can be pushed steadily or carried by the scene's air."
     }
     fn slot(&self) -> SlotId {
         SlotId::Motion

@@ -162,7 +162,7 @@ pub struct World {
     /// Every built thing's parent, how it hangs off it and its own transform.
     attach: BTreeMap<ThingId, (ThingId, Attach, Transform)>,
     /// Per thing and slot, the module kind and its prepared state (Motion and Bounce).
-    modules: BTreeMap<ThingId, Prepared>,
+    pub(crate) modules: BTreeMap<ThingId, Prepared>,
     /// The keyframes and pulses that move physics settings, with the resolved scene they are
     /// written into step by step. `None` when nothing physical is animated.
     animated: Option<Animated>,
@@ -175,6 +175,12 @@ pub struct World {
     /// Each ball's pull from the lights this step (Moths), by thing and body row, in pixels per
     /// second squared: worked out once a step after Spawn, added in every substep.
     pulls: BTreeMap<ThingId, Vec<Vec2>>,
+    /// Whether some ball follows the scene's air ([`crate::air_felt`]): the air then wakes at the
+    /// build and steps with the physics, at the start of every step.
+    pub air_felt: bool,
+    /// The air each ball that follows it is in this step and how hard it follows (px/s, per s), by
+    /// thing and body row: worked out once a step after Spawn, used in every substep.
+    pub(crate) air_at: BTreeMap<ThingId, Vec<(Vec2, f32)>>,
     /// The scene's physics fingerprint (the one without the history, [`sound_fingerprint`]'s),
     /// when some thing's sim asked for it ([`crate::ThingSim::needs_fingerprint`]). Two worlds
     /// with the same one run alike step for step, so work keyed by it can be shared.
@@ -292,6 +298,8 @@ impl World {
             sound: None,
             light: None,
             pulls: BTreeMap::new(),
+            air_felt: false,
+            air_at: BTreeMap::new(),
             fingerprint: None,
             rules: None,
             pace: 1.0,
@@ -326,8 +334,15 @@ impl World {
         // (the editor's main playback) leaves out the keys only those things read, so an Air
         // key following sound or light gives it no sound or light to work out.
         // (A rule may keep such a thing in the main playback: it is built, so it senses too.)
+        // Balls that follow the air (and haze moving with it) read the Air card's keys in every
+        // world.
+        world.air_felt = crate::air_felt(scene, sims);
         let decorated = resolved.things.values().any(|r| sims.thing(&r.kind).is_some_and(|s| !s.in_main(r)));
-        let sensed = if decorated { animation.clone() } else { animation.as_ref().and_then(main_animation) };
+        let sensed = if decorated || crate::air_read(scene, resolved, sims) {
+            animation.clone()
+        } else {
+            animation.as_ref().and_then(main_animation)
+        };
         // Things that need the walls (none of today's kinds) are built in a second pass, so
         // an arena after them in the tree is there all the same; they come last in `order`. A
         // thing without a sim is still known by kind and tags, so a target can name it.
@@ -383,6 +398,12 @@ impl World {
             if let Some(sim) = world.kinds.get(&id).and_then(|kind| sims.thing(kind)) {
                 sim.after_build(id, &mut world);
             }
+        }
+        // Balls that follow the air find it awake from the start, in every world.
+        if world.air_felt
+            && let Some(air) = sims.air.clone()
+        {
+            air.wake(&mut world);
         }
         // Light sensing, only when something physical follows light: the probe is there before
         // the balls' places in light spreads are first worked out.
@@ -480,6 +501,16 @@ impl World {
             }
             let Some(r) = animated.resolved.things.get(&thing) else { continue };
             match slot {
+                // A rule changed the Health card: the thing's card is read again (each ball keeps
+                // the health it has).
+                Some(SlotId::Health) => {
+                    if let Some(s) = r.slots.get(&SlotId::Health)
+                        && let Some(sim) = sims.health(&s.kind)
+                        && let Some(rules) = self.rules.as_mut()
+                    {
+                        rules.health.set_card(thing, sim.prepare(&s.params));
+                    }
+                }
                 Some(slot) => {
                     if let Some(s) = r.slots.get(&slot)
                         && let Some(msim) = sims.module(&s.kind)
@@ -533,7 +564,8 @@ impl World {
     /// every Motion and Bounce setting, and a thing's own settings its sim says do.
     pub fn is_physics(&self, sims: &Sims, thing: ThingId, slot: Option<SlotId>, key: &str) -> bool {
         match slot {
-            Some(slot) => SIM_SLOTS.contains(&slot),
+            // The air and health a rule changes move the physics too (W13).
+            Some(slot) => SIM_SLOTS.contains(&slot) || BESIDE_SLOTS.contains(&slot) || slot == SlotId::Health,
             None => self
                 .kinds
                 .get(&thing)
@@ -848,7 +880,13 @@ impl World {
             gravity: self.gravity,
             bodies: self.bodies.iter().filter(|(id, _)| kept(id)).map(|(id, b)| (*id, b.clone())).collect(),
             walls: self.walls.iter().filter(|(id, _)| kept(id)).map(|(id, w)| (*id, w.clone())).collect(),
-            states: self.states.iter().filter(|(id, _)| kept(id)).map(|(id, s)| (*id, s.clone())).collect(),
+            // The air goes along while balls follow it (it lives under the scene's id).
+            states: self
+                .states
+                .iter()
+                .filter(|(id, _)| kept(id) || (self.air_felt && **id == ThingId::ROOT))
+                .map(|(id, s)| (*id, s.clone()))
+                .collect(),
             poses: self.poses.clone(),
             names: self.names.clone(),
             tags: self.tags.clone(),
@@ -878,6 +916,8 @@ impl World {
             sound: self.sound.clone(),
             light: self.light.clone(),
             pulls: BTreeMap::new(),
+            air_felt: self.air_felt,
+            air_at: BTreeMap::new(),
             fingerprint: self.fingerprint,
             // A test flight finds its ways as if no rule acted from now on, health staying as it is.
             rules: self.rules.as_ref().and_then(crate::rules::RulesState::lone),
@@ -1116,6 +1156,7 @@ impl World {
         }
         self.refresh_rows(sims, log);
         self.work_out_pulls(sims, log);
+        self.work_out_air(sims);
 
         // Clamp speeds, remember where everything started and find the fastest ball.
         let mut fastest: f32 = 0.0;
@@ -1213,7 +1254,7 @@ impl World {
     /// Forces from the Motion modules, then Integrate, per body thing.
     fn move_bodies(&mut self, sims: &Sims, dt: f32) {
         let time = self.sim_clock();
-        let World { gravity, bodies, modules, seed, pulls, .. } = self;
+        let World { gravity, bodies, modules, seed, pulls, air_at, .. } = self;
         let gravity = *gravity;
         let seed = *seed;
         for (id, bodies) in bodies.iter_mut() {
@@ -1229,6 +1270,16 @@ impl World {
                     }
                 } else {
                     sim.forces_at(s.state.as_ref(), bodies, gravity, dt, &cx);
+                }
+            }
+            // The air (Follow the air), worked out at the step's start.
+            if let Some(air) = air_at.get(id) {
+                for (i, (wind, grip)) in air.iter().enumerate().take(bodies.len()) {
+                    if *grip > 0.0 && bodies.alive[i] && !bodies.held[i] {
+                        let take = 1.0 - (-grip * dt).exp();
+                        let v = bodies.velocity[i];
+                        bodies.velocity[i] = v + (*wind - v) * take;
+                    }
                 }
             }
             // The lights' pull (Moths), worked out at the step's start.
@@ -1597,7 +1648,12 @@ pub fn sound_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64
 /// step with it ([`crate::ThingSim::in_main`] false) and no enabled rule reads it
 /// ([`crate::BlockSim::keeps`]: a rule that reads it changes the balls, so it steps with them).
 pub fn is_beside(scene: &Scene, sims: &Sims, id: ThingId, r: &bpe_core::ResolvedThing) -> bool {
-    if !sims.thing(&r.kind).is_some_and(|s| !s.in_main(r)) {
+    let Some(sim) = sims.thing(&r.kind) else { return false };
+    if sim.in_main(r) {
+        return false;
+    }
+    // Heat moves the air the balls follow: a thing that heats it steps with them.
+    if sim.heats_air(r) && crate::air_felt(scene, sims) {
         return false;
     }
     let tags = scene.things.get(&id).map_or(NO_TAGS, |t| &t.tags);
@@ -1864,9 +1920,11 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
             }
         }
     }
-    // A thing in the physics that reads its own cards (two-way particles) may read the air too:
-    // then the air's cards and keys count.
-    if resolved.things.values().any(|r| sims.thing(&r.kind).is_some_and(|s| s.own_cards())) {
+    // A thing in the physics that reads its own cards (two-way particles) may read the air too,
+    // and balls that follow the air (or haze moving with it) do: then the air's cards and keys
+    // count.
+    let felt = crate::air_read(scene, resolved, sims);
+    if felt || resolved.things.values().any(|r| sims.thing(&r.kind).is_some_and(|s| s.own_cards())) {
         for (id, r) in &resolved.things {
             for slot in BESIDE_SLOTS {
                 if let Some(s) = r.slots.get(&slot) {
@@ -1896,8 +1954,11 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
         }
     }
     // Keyframes and pulses on physics settings: moving a key changes the run. Keys on the cards
-    // only the things beside the physics read are theirs ([`beside_fingerprint`]).
-    let animation = physics_animation(scene, resolved, sims).as_ref().and_then(main_animation);
+    // only the things beside the physics read are theirs ([`beside_fingerprint`]), unless balls
+    // follow the air: then the air's keys (and the sound or light they follow) move the balls.
+    let animation = physics_animation(scene, resolved, sims)
+        .as_ref()
+        .and_then(|a| if felt { Some(a.clone()) } else { main_animation(a) });
     if let Some(animation) = &animation {
         for a in animation.addresses() {
             h.bytes(format!("{a:?}").as_bytes());

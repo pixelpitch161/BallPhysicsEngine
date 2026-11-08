@@ -137,6 +137,8 @@ struct Bus {
     plays: bool,
     fader: f32,
     keyed: Option<Track>,
+    /// Where a rule's change of its fader is kept (W13).
+    ruled: bpe_runtime::ChangeKey,
 }
 
 /// One sounding shape.
@@ -202,14 +204,16 @@ struct Shared {
     light: [f32; k::MAX_EACH],
 }
 
-/// The knobs of `spec` at `time`: as set, keyed ones from their tracks.
-fn knobs_at(spec: &ShapeSpec, time: f64) -> Values {
+/// The knobs of `spec` at `time`: as set, keyed ones from their tracks, then what the rules of
+/// `world` change (as the engine reads them, W13).
+fn knobs_at(spec: &ShapeSpec, time: f64, world: &World) -> Values {
     let mut v = spec.base;
     for (i, track) in &spec.keyed {
         if let Some(x) = k::track_value(track, time) {
             v[*i] = x;
         }
     }
+    crate::voices::shape::rule_knobs(spec, world.rules(), time, &mut v);
     v
 }
 
@@ -238,6 +242,7 @@ impl ControlSampler {
                 plays: b.on && !b.mute && (!any_solo || b.solo),
                 fader: b.fader,
                 keyed: scene.tracks.get(&a).filter(|t| !t.keys.is_empty()).cloned(),
+                ruled: crate::ruled::mixer_key(&a.key),
             }
         });
         let shapes: Vec<Shape> = shape_specs(scene, resolved).into_iter().map(Shape::new).collect();
@@ -265,6 +270,7 @@ impl ControlSampler {
                     return 0.0;
                 }
                 let fader = bus.keyed.as_ref().and_then(|tr| k::track_value(tr, time)).unwrap_or(bus.fader);
+                let fader = crate::ruled::at(world.rules(), &bus.ruled, fader, time);
                 let mut sum = 0.0;
                 for (i, s) in self.shapes.iter().enumerate() {
                     if s.spec.bus == *n {
@@ -637,7 +643,7 @@ impl Shape {
         } else {
             return 0.0;
         };
-        let kv = knobs_at(&self.spec, time);
+        let kv = knobs_at(&self.spec, time, world);
         let shared = self.shared(tempo, &kv, hits, world, log, t);
         match src {
             Src::Lfo(i) if !m.lfo_per_note(i) => shared.lfo[i],
@@ -654,7 +660,7 @@ impl Shape {
     /// How loud the shape is: the largest among its notes of its gain knobs (moved by their adding
     /// routes) times their scaling routes (Output's Volume, and the louder oscillator's Gain and Level).
     fn level(&self, tempo: &TempoMap, hits: &[Accepted], world: &World, log: &Log, t: u64, time: f64) -> f32 {
-        let kv = knobs_at(&self.spec, time);
+        let kv = knobs_at(&self.spec, time, world);
         let shared = self.shared(tempo, &kv, hits, world, log, t);
         let matrix = &self.spec.matrix;
         let mut vals = vec![0.0; self.src.len()];
