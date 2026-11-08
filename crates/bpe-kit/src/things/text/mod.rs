@@ -6,6 +6,8 @@
 
 pub mod draw;
 pub mod looks;
+pub mod moves;
+pub mod shape;
 pub mod show;
 pub mod sim;
 pub mod walls;
@@ -373,6 +375,10 @@ impl ThingKind for TextKind {
         DEFAULT_SLOTS
     }
     fn sticks_to_screen(&self) -> bool {
+        true
+    }
+    /// Its layers and letter moves can be worn by only some letters.
+    fn layers_by_number(&self) -> bool {
         true
     }
 }

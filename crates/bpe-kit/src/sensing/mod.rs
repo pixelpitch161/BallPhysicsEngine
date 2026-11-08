@@ -120,6 +120,8 @@ pub fn fingerprint(scene: &Scene) -> u64 {
             return true;
         }
         match slot {
+            // A Text's own settings place its letters and its Draw on pen, which lights ride.
+            None => t.kind == crate::things::text::KIND,
             Some(SlotId::Lighting) => *id == ThingId::ROOT,
             Some(SlotId::Look) => LOOKED.contains(&t.kind.as_str()),
             _ => false,
@@ -138,6 +140,9 @@ pub fn fingerprint(scene: &Scene) -> u64 {
         let Some(t) = scene.things.get(id) else { continue };
         if LIGHTING_KINDS.contains(&t.kind.as_str()) {
             eat(format!("{id:?}{}{:?}{}{:?}", t.kind, t.parent, t.enabled, t.params).as_bytes());
+        }
+        if t.kind == crate::things::text::KIND {
+            eat(format!("{id:?}{:?}{:?}{:?}", t.params, t.screen, t.transform).as_bytes());
         }
         for (slot, s) in &t.slots {
             if read(id, Some(*slot)) {

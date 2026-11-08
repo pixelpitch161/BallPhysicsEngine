@@ -28,11 +28,17 @@ pub struct ParticlesSim;
 /// is the video's size, which a grid covering the screen reads); with `look`, also what its Look
 /// asks the stepping to keep ([`Wants`]: nothing it reads can be keyed, so a key moving needn't
 /// read the Look again).
-fn read_into(st: &mut ParticlesState, resolved: &ResolvedThing, video: glam::Vec2, look: bool) {
+fn read_into(
+    st: &mut ParticlesState,
+    resolved: &ResolvedThing,
+    video: glam::Vec2,
+    tree: Option<&bpe_core::Scene>,
+    look: bool,
+) {
     st.settings = ParticlesSettings::from_params(&resolved.params);
     st.forces = Forces::read(resolved.slots.get(&SlotId::Motion));
     st.meets = MeetsSettings::read(resolved.slots.get(&SlotId::Bounce).map(|s| &s.params));
-    st.refresh_spots(video);
+    st.refresh_spots(video, tree);
     st.sound = MomentSound::of(resolved);
     if look {
         st.look_wants = Wants::read(resolved.slots.get(&SlotId::Look));
@@ -42,6 +48,11 @@ fn read_into(st: &mut ParticlesState, resolved: &ResolvedThing, video: glam::Vec
     let points = if st.look_wants.trail_points == 0 { 0 } else { st.look_wants.trail_points.min(room.max(2)) };
     st.trail.set_points(points, &st.specks);
     super::marks::prune(st);
+}
+
+/// Whether `s` is born from a Text thing's letters.
+fn made_of_text(s: &ParticlesSettings) -> bool {
+    s.from == BornFrom::AWordOrPicture && s.word_from == super::WordFrom::ATextThing
 }
 
 /// The Particles state in a box, if it holds one.
@@ -67,7 +78,7 @@ impl ThingSim for ParticlesSim {
 
     fn build(&self, thing: &Thing, resolved: &ResolvedThing, world: &mut World) {
         let mut st = ParticlesState::new(thing.id, thing.parent, ParticlesSettings::default());
-        read_into(&mut st, resolved, world.video, true);
+        read_into(&mut st, resolved, world.video, world.tree.as_deref(), true);
         if engine_of(resolved.slots.get(&SlotId::Look)) == Engine::HugeSwarm {
             st.swarm = Some(Swarm::new());
         }
@@ -137,9 +148,10 @@ impl ThingSim for ParticlesSim {
 
     fn settings_changed(&self, id: ThingId, resolved: &ResolvedThing, world: &mut World) {
         let video = world.video;
+        let tree = world.tree.clone();
         // `(**s)`: the boxed state itself, not the box (which is a `ThingState` too).
         if let Some(st) = world.states.get_mut(&id).and_then(|s| (**s).as_any_mut().downcast_mut::<ParticlesState>()) {
-            read_into(st, resolved, video, false);
+            read_into(st, resolved, video, tree.as_deref(), false);
         }
         wake_air_if_wanted(world, id);
     }
@@ -177,6 +189,21 @@ impl ThingSim for ParticlesSim {
     /// Its Rate, Count, forces and pushes may pulse on hits: nothing reads the particles back.
     fn pulses_on_hits(&self) -> bool {
         true
+    }
+
+    /// A source made of a Text thing reads that Text from the scene (Text part 4).
+    fn reads_tree(&self, resolved: &ResolvedThing) -> bool {
+        made_of_text(&ParticlesSettings::from_params(&resolved.params))
+    }
+
+    /// The Text its source is made of: its saved settings and font place the particles.
+    fn fingerprint_more(&self, scene: &bpe_core::Scene, thing: &Thing, resolved: &ResolvedThing) -> u64 {
+        let s = ParticlesSettings::from_params(&resolved.params);
+        if !made_of_text(&s) {
+            return 0;
+        }
+        crate::things::text::shape::text_named(scene, &s.text_thing, thing.id)
+            .map_or(1, |text| crate::things::text::shape::letters_hash(scene, text))
     }
 
     /// What its Look asks the stepping to keep: trails and marks (part 6).

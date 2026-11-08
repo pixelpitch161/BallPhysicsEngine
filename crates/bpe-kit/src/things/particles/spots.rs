@@ -42,6 +42,12 @@ pub enum SpotsKey {
         uses: Uses,
         spacing: u32,
     },
+    /// A Text thing's letters (Text part 4): equal by what they read (`hash`).
+    TextThing {
+        hash: u64,
+        spacing: u32,
+        letters: Letters,
+    },
     Grid {
         size: [u32; 2],
         by: GridBy,
@@ -53,8 +59,32 @@ pub enum SpotsKey {
     },
 }
 
-/// What `s`'s places depend on; `video` is the video's size (a grid covering the screen).
-pub fn key_of(s: &ParticlesSettings, video: Vec2) -> SpotsKey {
+/// A Text thing's letters carried in a [`SpotsKey`]: never compared or hashed (the key's hash
+/// says what they read).
+#[derive(Clone, Debug, Default)]
+pub struct Letters(pub Arc<Vec<Vec<Vec2>>>);
+
+impl PartialEq for Letters {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for Letters {}
+
+impl std::hash::Hash for Letters {
+    fn hash<H: std::hash::Hasher>(&self, _: &mut H) {}
+}
+
+/// What `s`'s places depend on; `video` is the video's size (a grid covering the screen); `tree`
+/// the scene, for a source made of a Text thing, `me` the Particles thing.
+pub fn key_of(
+    s: &ParticlesSettings,
+    video: Vec2,
+    tree: Option<&bpe_core::Scene>,
+    me: bpe_core::ThingId,
+    was: &SpotsKey,
+) -> SpotsKey {
     let bits = |x: f32| if x.is_finite() { x.to_bits() } else { 0 };
     match s.from {
         BornFrom::AWordOrPicture => match s.word_from {
@@ -64,6 +94,19 @@ pub fn key_of(s: &ParticlesSettings, video: Vec2) -> SpotsKey {
                 weight: s.weight,
                 spacing: bits(s.spacing),
             },
+            WordFrom::ATextThing => {
+                use crate::things::text::shape::{letters_hash, letters_of, text_named};
+                let Some((tree, text)) = tree.and_then(|t| Some((t, text_named(t, &s.text_thing, me)?))) else {
+                    return SpotsKey::None;
+                };
+                let hash = letters_hash(tree, text);
+                // The letters are only laid out again when what they read changed.
+                let letters = match was {
+                    SpotsKey::TextThing { hash: h, letters, .. } if *h == hash => letters.clone(),
+                    _ => Letters(Arc::new(letters_of(tree, text))),
+                };
+                SpotsKey::TextThing { hash, spacing: bits(s.spacing), letters }
+            }
             WordFrom::Picture => SpotsKey::Picture {
                 path: s.picture.clone(),
                 modified: std::fs::metadata(&s.picture).and_then(|m| m.modified()).ok(),
@@ -105,6 +148,7 @@ pub fn spots_for(key: &SpotsKey) -> Arc<Vec<Vec2>> {
     let out = Arc::new(match key {
         SpotsKey::None => Vec::new(),
         SpotsKey::Word { text, height, weight, spacing } => word_spots(text, f(*height), *weight, f(*spacing)),
+        SpotsKey::TextThing { spacing, letters, .. } => fill_spots(&letters.0, f(*spacing), false),
         SpotsKey::Picture { path, width, uses, spacing, .. } => picture_spots(path, f(*width), *uses, f(*spacing)),
         SpotsKey::Grid { size, by, columns, rows, spacing, jitter, stagger } => {
             grid_spots(Vec2::new(f(size[0]), f(size[1])), *by, (*columns, *rows), f(*spacing), f(*jitter), *stagger)
@@ -175,7 +219,12 @@ pub fn word_spots(text: &str, height: f32, weight: Weight, spacing: f32) -> Vec<
         Weight::Medium => MEDIUM,
         Weight::SemiBold => FONT,
     };
-    let shapes = letter_outlines_in(font, text, at_least(height, 1.0));
+    fill_spots(&letter_outlines_in(font, text, at_least(height, 1.0)), spacing, true)
+}
+
+/// Places on a lattice `spacing` apart inside `shapes` (closed outlines, non-zero inside), the
+/// lattice centred on them; `centre` moves them so the outlines' box is round 0.
+pub fn fill_spots(shapes: &[Vec<Vec2>], spacing: f32, centre: bool) -> Vec<Vec2> {
     let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
     for p in shapes.iter().flatten() {
         lo = lo.min(*p);
@@ -194,7 +243,7 @@ pub fn word_spots(text: &str, height: f32, weight: Weight, spacing: f32) -> Vec<
         let y = start.y + j as f32 * step;
         // Where each edge crosses the row, and which way (the non-zero winding of `winding`).
         crossings.clear();
-        for shape in &shapes {
+        for shape in shapes {
             for (k, a) in shape.iter().enumerate() {
                 let b = shape[(k + 1) % shape.len()];
                 let up = a.y <= y && b.y > y;
@@ -219,7 +268,7 @@ pub fn word_spots(text: &str, height: f32, weight: Weight, spacing: f32) -> Vec<
                 next += 1;
             }
             if wind != 0 {
-                out.push(Vec2::new(x, y) - middle);
+                out.push(if centre { Vec2::new(x, y) - middle } else { Vec2::new(x, y) });
                 if out.len() >= MOST_SPOTS {
                     return out;
                 }

@@ -287,7 +287,8 @@ pub fn show(
 ) {
     ground_buttons(ui, view);
     let s = cx.settings();
-    let places = places(&bpe_kit::things::balls::sim::laid_out(&s, cx.size_to()));
+    let sized = bpe_kit::things::balls::sim::laid_out(&s, cx.size_to());
+    let places = places(&bpe_kit::things::balls::shapes::with_text_word(&sized, Some(cx.scene), cx.id));
     let side = ui.available_width().clamp(40.0, MAX_SIZE);
     let (rect, response) = ui.allocate_exact_size(egui::vec2(side, side), Sense::click_and_drag());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "Group view"));

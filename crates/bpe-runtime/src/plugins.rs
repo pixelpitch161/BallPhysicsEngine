@@ -213,9 +213,9 @@ pub trait ThingSim: Send + Sync + 'static {
         0
     }
 
-    /// Whether this thing's sim reads the saved scene while it steps: the world then keeps a copy
-    /// (`World::tree`).
-    fn reads_tree(&self) -> bool {
+    /// Whether this thing, with its settings `resolved`, reads the saved scene while it builds or
+    /// steps: the world then keeps a copy (`World::tree`).
+    fn reads_tree(&self, _resolved: &ResolvedThing) -> bool {
         false
     }
 

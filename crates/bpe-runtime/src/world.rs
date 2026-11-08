@@ -298,7 +298,7 @@ impl World {
             parts: BTreeMap::new(),
             tree: None,
         };
-        if resolved.things.values().any(|r| sims.thing(&r.kind).is_some_and(|s| s.reads_tree())) {
+        if resolved.things.values().any(|r| sims.thing(&r.kind).is_some_and(|s| s.reads_tree(r))) {
             world.tree = Some(std::sync::Arc::new(scene.clone()));
         }
         // Worked out first: a thing may cache work by it while it builds.
@@ -1678,6 +1678,11 @@ fn beside_hash(
         let Some(thing) = scene.things.get(id) else { continue };
         h.bytes(&id.0.to_le_bytes());
         h.bytes(&sim.more_fingerprint(r).to_le_bytes());
+        // What else of the saved scene it reads (the Text a Particles thing spells).
+        let more = sim.fingerprint_more(scene, thing, r);
+        if more != 0 {
+            h.bytes(&more.to_le_bytes());
+        }
         h.bytes(r.kind.as_bytes());
         h.bytes(&thing.parent.map_or(u32::MAX, |p| p.0).to_le_bytes());
         h.f32(thing.transform.position.x);

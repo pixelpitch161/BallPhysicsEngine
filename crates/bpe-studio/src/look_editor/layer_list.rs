@@ -528,10 +528,25 @@ fn menu(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, card: &Slot, layer:
         edits.push(Edit::MoveLayer(slot, id, index - 1));
         ui.close();
     }
+    // A Text's layers and moves can be worn by only some of its letters (Text part 4).
+    let text = cx.scene.things.get(&cx.id).is_some_and(|t| t.kind == bpe_kit::things::text::KIND);
+    // Not a Blend layer or a sub-layer: they go with the whole text, or their layer.
+    let wearable = layer.kind != bpe_kit::modules::look::shape::BLEND && layer.parent.is_none();
+    if text && !base && !around && wearable {
+        // It stays open while it is typed into.
+        let stay =
+            egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+        egui::containers::menu::SubMenuButton::new("Only some letters…")
+            .config(stay)
+            .ui(ui, |ui| only_letters_box(ui, cx, layer, edits));
+    }
     if !layer.only.is_empty() {
-        let every = ui
-            .button("Apply to every ball")
-            .on_hover_text("Every ball of the group wears it, not just the picked ones");
+        let (label, help) = if text {
+            ("Apply to every letter", "Every letter wears it, not just the picked ones")
+        } else {
+            ("Apply to every ball", "Every ball of the group wears it, not just the picked ones")
+        };
+        let every = ui.button(label).on_hover_text(help);
         if every.clicked() {
             edits.push(Edit::LayerOnly(slot, id, Vec::new()));
             ui.close();
@@ -547,6 +562,74 @@ fn menu(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, card: &Slot, layer:
         edits.push(Edit::RemoveLayer(slot, id));
         ui.close();
     }
+}
+
+/// The letters a Text's layer is worn by, typed as "1, 3, 5-7" (counted from 1); Enter applies.
+fn only_letters_box(ui: &mut Ui, cx: &LookCx, layer: &Layer, edits: &mut Vec<Edit>) {
+    let key = egui::Id::unique(("only letters", cx.id, layer.id));
+    // What was typed while the box stayed open; it starts again from the layer's letters each time it opens.
+    let frame = ui.ctx().cumulative_frame_nr();
+    let kept = ui.data_mut(|d| d.get_temp::<(String, u64)>(key)).filter(|(_, seen)| *seen + 1 >= frame);
+    let mut typed = kept.map_or_else(|| letters_words(&layer.only), |(t, _)| t);
+    ui.label(RichText::new("Letters, counted from 1 (like 1, 3, 5-7)").small().color(style::MUTED));
+    let label = ui.label("Letters");
+    let field = ui.add(egui::TextEdit::singleline(&mut typed).desired_width(150.0)).labelled_by(label.id);
+    let parsed = parse_letters(&typed);
+    if parsed.is_none() {
+        ui.label(RichText::new("Type numbers from 1, with commas and dashes").small().color(style::PROBLEM));
+    }
+    let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    if (enter || ui.button("Apply").clicked())
+        && let Some(only) = parsed
+    {
+        edits.push(Edit::LayerOnly(cx.slot, layer.id, only));
+        ui.data_mut(|d| d.remove::<(String, u64)>(key));
+        ui.close();
+        return;
+    }
+    ui.data_mut(|d| d.insert_temp(key, (typed, frame)));
+}
+
+/// `only` (0-based letters) as typed: 1-based, runs joined with dashes.
+pub fn letters_words(only: &[u32]) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < only.len() {
+        let start = only[i];
+        let mut end = start;
+        while i + 1 < only.len() && only[i + 1] == end + 1 {
+            end += 1;
+            i += 1;
+        }
+        out.push(if end > start { format!("{}-{}", start + 1, end + 1) } else { (start + 1).to_string() });
+        i += 1;
+    }
+    out.join(", ")
+}
+
+/// The most letters a typed range names.
+const MOST_LETTERS_TYPED: u32 = 4000;
+
+/// "1, 3, 5-7" as 0-based letters, sorted; `None` when it doesn't read; empty for nothing typed
+/// (every letter).
+pub fn parse_letters(typed: &str) -> Option<Vec<u32>> {
+    let mut out = Vec::new();
+    for part in typed.split([',', ' ']).map(str::trim).filter(|p| !p.is_empty()) {
+        let (a, b) = match part.split_once(['-', '–']) {
+            Some((a, b)) => (a.trim().parse::<u32>().ok()?, b.trim().parse::<u32>().ok()?),
+            None => {
+                let n = part.parse::<u32>().ok()?;
+                (n, n)
+            }
+        };
+        if a == 0 || b < a || b > MOST_LETTERS_TYPED {
+            return None;
+        }
+        out.extend((a..=b).map(|n| n - 1));
+    }
+    out.sort_unstable();
+    out.dedup();
+    Some(out)
 }
 
 /// Where a drawn layer dragged over `rows` (top first, the Body last) lands: a line marks the
@@ -647,10 +730,12 @@ pub fn section_drop_target(
 /// "only 3 balls" for a layer only some balls of the group wear.
 fn summary(cx: &LookCx, card: &Slot, layer: &Layer) -> String {
     let words = settings_summary(cx, card, layer);
+    let text = cx.scene.things.get(&cx.id).is_some_and(|t| t.kind == bpe_kit::things::text::KIND);
+    let what = if text { "letter" } else { "ball" };
     match layer.only.len() {
         0 => words,
         n => {
-            let only = if n == 1 { "only 1 ball".to_owned() } else { format!("only {n} balls") };
+            let only = if n == 1 { format!("only 1 {what}") } else { format!("only {n} {what}s") };
             if words.is_empty() { only } else { format!("{only} · {words}") }
         }
     }

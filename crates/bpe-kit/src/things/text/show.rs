@@ -9,17 +9,39 @@ use glam::Vec2;
 use super::{ShowBy, TextMove, TextSettings, TimedBy};
 use crate::text::Letter;
 
-/// How one letter shows at a moment: scaled about its middle, moved, and how much of it shows.
+/// How one letter shows at a moment: scaled about its middle (and stretched in its own frame),
+/// turned, moved (in the text's own frame), how much of it shows, and, while Draw on traces it,
+/// how much of it is traced.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LetterMove {
     pub scale: f32,
     pub offset: Vec2,
     pub opacity: f32,
+    /// Radians, about its middle (Text part 4's letter moves).
+    pub turn: f32,
+    /// Times, along the letter's own across and up, about its middle.
+    pub stretch: Vec2,
+    /// Draw on's trace, while it shows the letter other than whole.
+    pub trace: Option<Trace>,
+}
+
+/// How much of a letter Draw on has traced and how it shows (Text part 4).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Trace {
+    /// The share of its outline traced, 0 to 1 (contours one after another).
+    pub share: f32,
+    /// Half the pen's width, px.
+    pub band: f32,
+    /// How much its fill shows, 0 to 1.
+    pub fill: f32,
+    /// How much the pen's line shows, 0 to 1.
+    pub band_shown: f32,
 }
 
 impl LetterMove {
     /// As laid out.
-    pub const WHOLE: LetterMove = LetterMove { scale: 1.0, offset: Vec2::ZERO, opacity: 1.0 };
+    pub const WHOLE: LetterMove =
+        LetterMove { scale: 1.0, offset: Vec2::ZERO, opacity: 1.0, turn: 0.0, stretch: Vec2::ONE, trace: None };
 
     pub fn is_whole(&self) -> bool {
         *self == Self::WHOLE

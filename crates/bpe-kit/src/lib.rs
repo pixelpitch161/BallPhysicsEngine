@@ -137,6 +137,9 @@ pub fn registry() -> Registry {
     for k in modules::look::shape::kinds() {
         r.add_layer(k);
     }
+    for k in modules::look::shape::moves::kinds() {
+        r.add_layer(k);
+    }
     r.add_module(BasicMotionKind);
     r.add_module(modules::lighting::LightingKind);
     r.add_module(modules::air::AirKind);

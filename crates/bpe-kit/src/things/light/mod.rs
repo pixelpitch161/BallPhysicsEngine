@@ -186,7 +186,7 @@ impl Falloff {
     }
 }
 
-/// What a light inside a Balls, Emitter or Shape thing rides on.
+/// What a light inside a Balls, Emitter, Shape or Text thing rides on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
 pub enum RidesOn {
     /// One light on every ball.
@@ -198,6 +198,8 @@ pub enum RidesOn {
     BallNumber,
     /// A point on the shape's edge.
     APointOnTheEdge,
+    /// Inside a Text: where its Draw on pen is tracing now (nothing while there is none).
+    ThePen,
 }
 
 /// Which way a Spot, Sun, Area or Strip points.
@@ -210,6 +212,9 @@ pub enum Points {
     WhereItsGoing,
     /// Round and round, from the Direction, at Spin speed.
     Spins,
+    /// Inside a Text: at its Draw on pen (a laser or beam stops there; nothing while there is
+    /// no pen).
+    AtThePen,
 }
 
 /// The shape of an Area light.

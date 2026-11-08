@@ -2410,6 +2410,9 @@ pub struct DrawCx<'a> {
     /// The scene's light probe, when some look follows light (lighting part 7: a ball's place in
     /// a Light or Shadow spread). Never read by anything that makes light.
     pub light: Option<&'a dyn LightAt>,
+    /// How far each sound is up at a moment (Follow sound), when some setting follows sound: a
+    /// Text's Follow sound move reads each letter's level at its own moment through it.
+    pub sound: Option<&'a dyn SoundAt>,
 }
 
 /// How a thing kind draws itself.
@@ -2590,7 +2593,7 @@ pub fn build_frame_sensing(
             (None, None) => ((Blend::Normal, 1.0), false),
         };
         let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
-        let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, tree: scene, light };
+        let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, tree: scene, light, sound };
         let z = z_order(thing, r);
         draw_routed_at(target, z, blend, amount, each, d.behind(), |into| d.draw(&cx, into));
         // Only a thing that blends has parts to paint over the blend: into the over layer of its
@@ -2609,7 +2612,7 @@ pub fn build_frame_sensing(
                 other => (other, around.amount),
             };
             let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
-            let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, tree: scene, light };
+            let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, tree: scene, light, sound };
             let z = z_order(thing, r);
             draw_routed_at(target, z, blend, amount, false, around.behind, |into| d.draw_around(&cx, index, into));
         }
@@ -2625,7 +2628,7 @@ pub fn build_frame_sensing(
             }
             let each = Blend::each_from_params(&s.params);
             let target = if r.screen { frame.overlay_mut() } else { &mut *frame };
-            let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, tree: scene, light };
+            let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, tree: scene, light, sound };
             let z = z_order(thing, r);
             draw_routed_at(target, z, blend, amount, each, false, |into| d.draw(&cx, slot, into));
         }
@@ -2636,7 +2639,7 @@ pub fn build_frame_sensing(
             let Some(thing) = scene.things.get(id) else { continue };
             let Some(d) = draws.thing(&r.kind) else { continue };
             // What makes light never reads the light probe (one-way sensing).
-            let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, tree: scene, light: None };
+            let cx = DrawCx { thing, resolved: r, scene: resolved, world, log, time, tree: scene, light: None, sound };
             d.light(&cx, &mut lit);
         }
         // Light pipes (glass and light part 4a) carry the light every thing has made.

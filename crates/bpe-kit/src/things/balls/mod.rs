@@ -5,10 +5,20 @@ pub mod rows;
 pub mod shapes;
 pub mod sim;
 
-use bpe_core::{Choice, SettingDef, Settings, SlotId, ThingKind, VaryUse};
+use bpe_core::{Choice, SettingDef, Settings, SlotId, Target, ThingKind, VaryUse};
 use glam::Vec2;
 
 pub struct BallsKind;
+
+/// What a group's Word is made of (Text part 4).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum WordFrom {
+    /// The letters typed here.
+    #[default]
+    Typed,
+    /// A Text thing's letters, in its font and on its path.
+    ATextThing,
+}
 
 /// The shape a group of balls starts in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
@@ -118,11 +128,23 @@ pub struct BallsSettings {
         unit = "px"
     )]
     pub ring_radius: f32,
+    /// The letters typed here, or a Text thing's letters.
+    #[setting(label = "Made of", group = "Group", when = "group and shape=word")]
+    pub made_of: WordFrom,
+    /// The Text whose letters the balls fill (its first, when this names several).
+    #[setting(label = "Text", group = "Group", when = "group and shape=word and made_of=a_text_thing")]
+    pub word_text: Target,
     /// The letters the balls spell out.
-    #[setting(label = "Word", group = "Group", when = "group and shape=word")]
+    #[setting(label = "Word", group = "Group", when = "group and shape=word and made_of=typed")]
     pub word: String,
     /// How tall the capital letters are.
-    #[setting(label = "Letter height", group = "Group", when = "group and shape=word", range(10, 4000), unit = "px")]
+    #[setting(
+        label = "Letter height",
+        group = "Group",
+        when = "group and shape=word and made_of=typed",
+        range(10, 4000),
+        unit = "px"
+    )]
     pub letter_height: f32,
     /// Picks the scattered places and each ball's variety; another number, another pick.
     #[setting(label = "Seed", group = "Group", when = "group and shape=scatter")]
@@ -186,6 +208,8 @@ impl Default for BallsSettings {
             columns: 6,
             space: 8.0,
             ring_radius: 200.0,
+            made_of: WordFrom::Typed,
+            word_text: Target::Anything,
             word: "BALLS".into(),
             letter_height: 240.0,
             seed: 1,

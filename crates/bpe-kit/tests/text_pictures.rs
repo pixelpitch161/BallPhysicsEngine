@@ -299,3 +299,57 @@ fn bounce_inside_letters_are_hollow_bands() {
     let pixels = draw(&mut gpu, &scene, "bounce-off");
     assert!(brightness(at(&pixels, middle.x, middle.y)) > 3 * 0xe0);
 }
+
+/// "HH" with a black-to-white Colours layer laid out by `form`, Across `across`.
+fn two_letters(form: &str, across: &str) -> (Scene, ThingId) {
+    let (mut scene, id) = text_scene("HH", 500.0, false);
+    let reg = kit().registry;
+    let p = scene.add_layer(&reg, id, SlotId::Look, bpe_kit::modules::look::shape::PAINT).unwrap();
+    let key = |k: &str| bpe_core::layered_key(p, k);
+    set_look(&mut scene, id, &key("colours"), Value::Gradient(Gradient::even(&[Color::rgb(0, 0, 0), Color::WHITE])));
+    set_look(&mut scene, id, &key("colours~form"), Value::Choice(form.into()));
+    set_look(&mut scene, id, &key("colours~turn"), Value::Number(0.0));
+    set_look(&mut scene, id, &key("across"), Value::Choice(across.into()));
+    (scene, id)
+}
+
+#[test]
+fn a_gradient_starts_again_on_each_letter() {
+    // Text part 4: Across Each letter lays the gradient over every letter's own box (or round its
+    // own middle), turning with the letter.
+    let Some(mut gpu) = gpu() else { return };
+    // The left upright of each H, low down, and the right one.
+    let points = |scene: &Scene, id: ThingId| -> Vec<(glam::Vec2, glam::Vec2)> {
+        letter_points(scene, id)
+            .into_iter()
+            .map(|(m, lo)| {
+                let left = glam::Vec2::new(lo.x + 0.08 * 2.0 * (m.x - lo.x), m.y);
+                (left, glam::Vec2::new(2.0 * m.x - left.x, m.y))
+            })
+            .collect()
+    };
+    let (scene, id) = two_letters("straight", "whole_text");
+    let whole = draw(&mut gpu, &scene, "across-whole");
+    let ps = points(&scene, id);
+    let b = |px: &[u8], p: glam::Vec2| brightness(at(px, p.x, p.y));
+    assert!(b(&whole, ps[0].0) < b(&whole, ps[1].0), "one gradient across the text");
+    assert!(b(&whole, ps[1].0) > 3 * 0x50, "{}", b(&whole, ps[1].0));
+    let (scene, id) = two_letters("straight", "each_letter");
+    let each = draw(&mut gpu, &scene, "across-each");
+    let ps = points(&scene, id);
+    for (k, (left, right)) in ps.iter().enumerate() {
+        let (l, r) = (b(&each, *left), b(&each, *right));
+        assert!(l < 3 * 0x60 && r > 3 * 0xb0, "letter {k} runs dark to light: {l} {r}");
+    }
+    let second = ps[1].0;
+    assert!(b(&each, second) + 3 * 0x30 < b(&whole, second), "the second letter starts dark again");
+    // Round: each letter's middle is the first colour.
+    let (scene, id) = two_letters("round", "each_letter");
+    let round = draw(&mut gpu, &scene, "across-each-round");
+    let ps = points(&scene, id);
+    for (k, (left, right)) in ps.iter().enumerate() {
+        let (l, r) = (b(&round, *left), b(&round, *right));
+        assert!((l as i32 - r as i32).abs() < 3 * 0x20, "letter {k} is round its own middle: {l} {r}");
+        assert!(l > 3 * 0x60, "its uprights are far from its middle: {l}");
+    }
+}

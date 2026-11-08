@@ -74,12 +74,59 @@ pub struct Place {
     pub skip: f32,
     /// The ridden ball (thing, row), for its own flare.
     pub ball: Option<(ThingId, u32)>,
+    /// What it points at (Points: At the pen), where it stops.
+    pub aim: Option<Vec2>,
 }
 
 /// Where the light shines from at this moment.
 pub fn places(cx: &DrawCx, s: &LightSettings) -> Vec<Place> {
     // A rig only groups lights: a light rides what its rig sits in.
-    places_in(cx.world, crate::things::rig::fixtures::ridden(cx.tree, cx.resolved.id), s)
+    let parent = crate::things::rig::fixtures::ridden(cx.tree, cx.resolved.id);
+    if let Some(text) = parent.filter(|p| cx.tree.things.get(p).is_some_and(|t| t.kind == crate::things::text::KIND)) {
+        return text_places(cx, text, s);
+    }
+    places_in(cx.world, parent, s)
+}
+
+/// Where a light inside Text `text` shines from (Text part 4): on its Draw on pen, its middle, or
+/// its own Position, aimed at the pen when it points there. Nothing where it needs a pen and there
+/// is none.
+fn text_places(cx: &DrawCx, text: ThingId, s: &LightSettings) -> Vec<Place> {
+    use crate::things::text::draw::{TextAt, text_now};
+    let own = Place { at: s.position, ..Place::default() };
+    let Some(r) = cx.scene.things.get(&text) else { return vec![own] };
+    let at = TextAt {
+        scene: Some(cx.scene),
+        log: Some(cx.log),
+        sound: cx.sound,
+        look: r.slots.get(&bpe_core::SlotId::Look),
+        ..TextAt::new(cx.tree, &r.params, cx.world, text, cx.time)
+    };
+    let wants_pen = s.rides_on == RidesOn::ThePen || (s.kind != LightType::Point && s.points == Points::AtThePen);
+    // A Text in the world that is a wall of its letters: ridden like any wall (as the editor's handles read it).
+    let walled = cx.world.walls.contains_key(&text);
+    if !wants_pen && (walled || s.rides_on != RidesOn::TheMiddle) {
+        return places_in(cx.world, Some(text), s);
+    }
+    let pen = if wants_pen { crate::things::text::moves::pen(&at) } else { None };
+    if wants_pen && pen.is_none() {
+        return Vec::new();
+    }
+    let place = match s.rides_on {
+        RidesOn::ThePen => pen.map_or(own, |p| Place { at: p + s.position, ..own }),
+        RidesOn::TheMiddle if walled => places_in(cx.world, Some(text), s).into_iter().next().unwrap_or(own),
+        RidesOn::TheMiddle => match text_now(&at).and_then(|now| now.bounds().map(|(lo, hi)| (now, 0.5 * (lo + hi)))) {
+            Some((now, mid)) => {
+                let screen = cx.tree.things.get(&text).is_none_or(|t| t.screen.unwrap_or(true));
+                let p = now.to_world(mid);
+                Place { at: if screen { cx.world.camera.to_world(p) } else { p } + s.position, ..own }
+            }
+            None => own,
+        },
+        _ => places_in(cx.world, Some(text), s).into_iter().next().unwrap_or(own),
+    };
+    let aim = if s.points == Points::AtThePen { pen } else { None };
+    vec![Place { aim, ..place }]
 }
 
 /// Where a light riding `parent` (its tree parent, past any rigs) shines from in `world`: its Position, or what it
@@ -93,6 +140,7 @@ pub fn places_in(world: &World, parent: Option<ThingId>, s: &LightSettings) -> V
             velocity: bodies.velocity[row],
             skip: bodies.radius[row],
             ball: Some((parent, row as u32)),
+            aim: None,
         };
         let alive = || (0..bodies.len()).filter(|&r| bodies.alive[r]);
         return match s.rides_on {
@@ -102,7 +150,7 @@ pub fn places_in(world: &World, parent: Option<ThingId>, s: &LightSettings) -> V
                 row.map(ball).into_iter().collect()
             }
             // A ball group has no edge: the middle of its balls.
-            RidesOn::TheMiddle | RidesOn::APointOnTheEdge => {
+            RidesOn::TheMiddle | RidesOn::APointOnTheEdge | RidesOn::ThePen => {
                 let n = alive().count();
                 if n == 0 {
                     return Vec::new();
@@ -187,7 +235,11 @@ fn push_light(
         };
         let empty = laser::Scenery::default();
         let scenery = scenery.unwrap_or(&empty);
-        let length = s.beam_length.max(0.0);
+        // A beam pointing at the pen stops there.
+        let length = match place.aim {
+            Some(a) if s.points == Points::AtThePen => s.beam_length.max(0.0).min(a.distance(place.at)),
+            _ => s.beam_length.max(0.0),
+        };
         let colours = s.colours.clamp(1, laser::MOST_COLOURS);
         let trace = |from: Vec2, most: usize| {
             laser::trace_split(scenery, from, dir, length, s.bounces, place.ball, &meets, colours, most)
@@ -383,7 +435,7 @@ pub fn flicker(time: f64, amount: f32, speed: f32, style: FlickerStyle, seed: u3
 }
 
 /// A number from 0 to 1 for whole number `k` and `seed`.
-fn hash(k: i64, seed: u32) -> f32 {
+pub(crate) fn hash(k: i64, seed: u32) -> f32 {
     let mut h = (k as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (seed as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
     h ^= h >> 31;
     h = h.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -392,7 +444,7 @@ fn hash(k: i64, seed: u32) -> f32 {
 }
 
 /// Value noise from 0 to 1, smooth between whole numbers.
-fn smooth_noise(x: f64, seed: u32) -> f32 {
+pub(crate) fn smooth_noise(x: f64, seed: u32) -> f32 {
     let k = x.floor();
     let f = (x - k) as f32;
     let f = f * f * (3.0 - 2.0 * f);
@@ -473,6 +525,10 @@ pub fn aim_angle(s: &LightSettings, place: &Place, time: f64) -> f32 {
         Points::WhereItsGoing if place.velocity.length_squared() > 1e-6 => place.velocity.y.atan2(place.velocity.x),
         Points::WhereItsGoing => s.direction.to_radians(),
         Points::Spins => (s.direction + s.spin * time as f32).to_radians(),
+        Points::AtThePen => match place.aim.map(|a| a - place.at).filter(|d| d.length_squared() > 1e-6) {
+            Some(d) => d.y.atan2(d.x),
+            None => s.direction.to_radians(),
+        },
     }
 }
 

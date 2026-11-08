@@ -110,6 +110,8 @@ pub enum WordFrom {
     Text,
     /// A PNG picture.
     Picture,
+    /// A Text thing's letters, in its font and on its path (Text part 4).
+    ATextThing,
 }
 
 /// How heavy a word's letters are (the IBM Plex Sans weights the editor ships).
@@ -330,6 +332,9 @@ pub struct ParticlesSettings {
     pub word_from: WordFrom,
     #[setting(label = "Text", when = "from=a_word_or_picture and word_from=text", group = "Where")]
     pub text: String,
+    /// The Text whose letters the particles fill (its first, when this names several).
+    #[setting(label = "Text thing", when = "from=a_word_or_picture and word_from=a_text_thing", group = "Where")]
+    pub text_thing: Target,
     /// How tall the capitals are.
     #[setting(
         label = "Letter height",
@@ -571,6 +576,7 @@ impl Default for ParticlesSettings {
             rides_on: RidesOn::EachBall,
             ball_number: 1,
             word_from: WordFrom::Text,
+            text_thing: Target::Anything,
             text: "BOUNCE".into(),
             letter_height: 240.0,
             weight: Weight::SemiBold,

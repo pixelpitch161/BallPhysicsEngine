@@ -246,9 +246,10 @@ impl ParticlesState {
         }
     }
 
-    /// Reads the places again when what they depend on changed (`video` is the video's size).
-    pub fn refresh_spots(&mut self, video: Vec2) {
-        let mut key = super::spots::key_of(&self.settings, video);
+    /// Reads the places again when what they depend on changed (`video` is the video's size;
+    /// `tree` the scene, for a source made of a Text thing).
+    pub fn refresh_spots(&mut self, video: Vec2, tree: Option<&bpe_core::Scene>) {
+        let mut key = super::spots::key_of(&self.settings, video, tree, self.id, &self.spots_key);
         // The picture as it was when the run began: a picture changed on disk partway through
         // doesn't move the places under the particles (a rebuild reads it afresh).
         if let (

@@ -328,7 +328,7 @@ impl Lamps {
                 continue;
             }
             let Some(thing) = scene.things.get(id) else { continue };
-            let cx = DrawCx { thing, resolved: r, scene: now, world, log, time, tree: scene, light: None };
+            let cx = DrawCx { thing, resolved: r, scene: now, world, log, time, tree: scene, light: None, sound: None };
             let first = scene_lights.lights.len();
             LightDraw.light(&cx, &mut scene_lights);
             // One lamp per place, in the order the light pushed them.

@@ -798,6 +798,19 @@ in and fill, Letters break apart, Letters that play notes (`looks.rs`: `fitted` 
 menu and the compressor's shape picker. Goldens `tests/golden-text*.txt` (`scenes::text_scenes`); tests
 `text/sim_tests.rs`, `tests/text_letters.rs`, `bpe-sound/tests/text_sound.rs`.
 
+Part 4 is in (plan `docs/superpowers/plans/text/part4.md`, "As built" at its end): **letter moves**, drawing only.
+`look.shape` gains Text-only Reaction layers (`LayerKind::fits(thing_kind)`, `modules/look/shape/moves.rs`:
+`text.move.wave|beat|hit|flicker|sound|shake|spin|scatter|draw`), folded into each letter's `LetterMove` (now with
+turn, stretch and a Draw on `Trace`) by `things/text/moves.rs::apply` in list order; Follow sound reads through
+`DrawCx.sound`/`TextAt.sound`; Draw on traces outlines (`traced`, `DrawPlan`) as bands of half the Pen width and
+gives the **pen** (`moves::pen`), which a light inside the Text rides (`RidesOn::ThePen`) or a laser aims at
+(`Points::AtThePen`). Layers on a Text take an `only` of letter numbers (`ThingKind::layers_by_number`) and Colours,
+Outline and Glow an **Across** Whole text / Each letter / Each line (`modules/look/shape/units.rs`: `unit_records`
+copies the records a unit, `lay_over` re-lays the gradient, `unworn`; Round reads a record's own middle `place.zw`
+when `p0.z` is set). Balls' Word and Particles' Form a word can be **made of a Text thing** (`things/text/shape.rs`:
+`text_named`, `letters_of`, `letters_hash`; `reads_tree` + `fingerprint_more`). Looks Word made of balls, Particle
+word, Laser writing, Text follows sound; Neon sign flickers. Editor: Letter moves list, row menu Only some letters….
+
 ## Crate map
 
 Dependencies go bottom to top:

@@ -336,7 +336,7 @@ impl ThingSim for TextSim {
         h
     }
 
-    fn reads_tree(&self) -> bool {
+    fn reads_tree(&self, _resolved: &ResolvedThing) -> bool {
         true
     }
 }
