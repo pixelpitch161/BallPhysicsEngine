@@ -271,6 +271,9 @@ fn lighting_shots(reg: &Registry) -> Vec<Shot> {
         let mut p = light(LightType::Area, Vec2::new(0.0, -450.0), 10.0, 2.0);
         p.width = 200.0;
         p.length = 40.0;
+        // Across the picture (an area light's Direction is where its width runs; 90, down, would poke it out of
+        // the ring).
+        p.direction = 0.0;
         p.height = 120.0;
         set_light(&mut s, &p);
         add_ball(&mut s, reg, Vec2::new(-260.0, -250.0), 25.0);
@@ -327,6 +330,51 @@ fn lighting_shots(reg: &Registry) -> Vec<Shot> {
         lighting(&mut s, "contact", Value::Number(0.5));
         lighting(&mut s, "looking_down", Value::Number(16.0));
         out.push(shot("stage-one", s, vec![0.0]));
+    }
+    {
+        // A wide area panel right by the ring's top: nothing may leak out past the ring, and the balls' shadows
+        // narrow to a point.
+        let mut s = room(reg, Vec2::new(0.0, -100.0), 60.0);
+        let mut p = light(LightType::Area, Vec2::new(0.0, -420.0), 10.0, 2.0);
+        p.width = 360.0;
+        p.length = 30.0;
+        p.direction = 0.0;
+        p.height = 80.0;
+        set_light(&mut s, &p);
+        add_ball(&mut s, reg, Vec2::new(-220.0, -50.0), 25.0);
+        let mut bar = ShapeSettings::rectangle(160.0, 20.0, 4.0);
+        bar.fill = bpe_kit::things::shape::ShapeFill::Filled;
+        add_shape(&mut s, reg, Vec2::new(150.0, 150.0), bar);
+        lighting(&mut s, "shadow_length", Value::Number(4000.0));
+        out.push(shot("area-wide", s, vec![0.0]));
+    }
+    {
+        // A strip light along a line across the top: shadows from the whole strip, not from its nearest point.
+        let mut s = room(reg, Vec2::new(-60.0, 0.0), 50.0);
+        let mut p = light(LightType::Strip, Vec2::new(0.0, -380.0), 6.0, 2.0);
+        p.length = 500.0;
+        p.width = 8.0;
+        p.direction = 0.0;
+        set_light(&mut s, &p);
+        add_ball(&mut s, reg, Vec2::new(200.0, -150.0), 20.0);
+        add_shape(&mut s, reg, Vec2::new(-150.0, 300.0), ShapeSettings::polygon(6, 70.0, 3.0));
+        lighting(&mut s, "shadow_length", Value::Number(4000.0));
+        out.push(shot("strip", s, vec![0.0]));
+    }
+    {
+        // Thin hollow shapes on a Stage: their shadows on the back wall must be even inside, not striped.
+        let mut s = room(reg, Vec2::new(250.0, 450.0), 40.0);
+        let mut p = light(LightType::Point, Vec2::new(-300.0, -550.0), 20.0, 2.5);
+        p.height = 400.0;
+        p.reach = 3500.0;
+        set_light(&mut s, &p);
+        add_shape(&mut s, reg, Vec2::new(-120.0, -150.0), ShapeSettings::polygon(6, 120.0, 3.0));
+        let mut e = ShapeSettings::ellipse(240.0, 70.0, 4.0);
+        e.turn = 20.0;
+        add_shape(&mut s, reg, Vec2::new(60.0, 150.0), e);
+        lighting(&mut s, "depth", Value::Choice("stage".into()));
+        lighting(&mut s, "looking_down", Value::Number(16.0));
+        out.push(shot("stage-thin", s, vec![0.0]));
     }
     out
 }

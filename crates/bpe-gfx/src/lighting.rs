@@ -380,6 +380,15 @@ pub fn quality_tier(quality: f32) -> (u32, u32) {
     }
 }
 
+/// How many output pixels a lighting field texel covers each way, for a Quality whose field is `tier` times
+/// smaller than the video (`quality_tier`), drawn `width` pixels wide of a video `video_width` wide: a smaller
+/// picture (the editor's preview) gets a finer field, so a field texel covers as much of the scene as in the video
+/// and the preview's shadows look like the video's (or finer, rounding down), never coarser than the Quality says.
+pub fn field_divisor(tier: u32, width: u32, video_width: u32) -> u32 {
+    let scaled = (tier as f32 * width as f32 / video_width.max(1) as f32 + 1e-4).floor() as u32;
+    scaled.clamp(1, tier.max(1))
+}
+
 /// The pictures lighting draws into and reads, made the first time a frame is lit and remade
 /// when the size or the Quality changes.
 struct Targets {
@@ -1275,10 +1284,11 @@ impl Lighting {
         self.bound.as_ref()
     }
 
-    /// Makes the lighting pictures for a `width` × `height` output lit as `scene` asks, unless
-    /// they are there already.
-    pub fn ensure(&mut self, device: &wgpu::Device, width: u32, height: u32, scene: &LightScene) {
-        let (mut divisor, _) = quality_tier(scene.settings.more[2]);
+    /// Makes the lighting pictures for a `width` × `height` output of a scene `video_width` world units wide (the
+    /// frame's width) lit as `scene` asks, unless they are there already.
+    pub fn ensure(&mut self, device: &wgpu::Device, width: u32, height: u32, video_width: u32, scene: &LightScene) {
+        let (tier, _) = quality_tier(scene.settings.more[2]);
+        let mut divisor = field_divisor(tier, width, video_width);
         // The cascades are twice the (rounded up) field across: keep them within the device's limit.
         let most = device.limits().max_texture_dimension_2d;
         let padded = |divisor: u32| {
@@ -2197,6 +2207,25 @@ impl Lighting {
 #[cfg(test)]
 mod grid_tests {
     use super::*;
+
+    #[test]
+    fn a_preview_gets_a_field_as_fine_as_the_video() {
+        // The video itself: the Quality's own divisor (Draft 4, Good 2, Ultra 1).
+        assert_eq!(field_divisor(4, 1080, 1080), 4);
+        assert_eq!(field_divisor(2, 1080, 1080), 2);
+        assert_eq!(field_divisor(1, 1080, 1080), 1);
+        // A half-size preview: half the divisor, so a texel covers the same part of the scene.
+        assert_eq!(field_divisor(4, 540, 1080), 2);
+        assert_eq!(field_divisor(2, 540, 1080), 1);
+        // Smaller still, or bigger than the video: never under 1, never coarser than the Quality.
+        assert_eq!(field_divisor(2, 270, 1080), 1);
+        assert_eq!(field_divisor(2, 2160, 1080), 2);
+        assert_eq!(field_divisor(4, 810, 1080), 3);
+        // In between, the finer: a texel never covers more of the scene than in the video.
+        assert_eq!(field_divisor(4, 700, 1080), 2);
+        assert_eq!(field_divisor(4, 405, 1080), 1);
+        assert_eq!(field_divisor(2, 1000, 1080), 1);
+    }
 
     fn ball(x: f32, y: f32, r: f32) -> SphereGpu {
         SphereGpu { a: [x, y, r, 0.0], b: [1.0; 4], c: [0.0; 4] }
