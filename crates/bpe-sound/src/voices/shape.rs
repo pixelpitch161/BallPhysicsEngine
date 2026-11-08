@@ -1124,8 +1124,10 @@ impl ShapeVoice {
             None => 0,
         };
         // The letter of a Text hit (Text part 3): the wall's part; 0 on a shape.
-        let letter = hit.event.b.map_or(0, |b| b.item);
-        let letter_char = match (n.plays, hit.event.b) {
+        // Only a Hit's `b.item` is a letter (a rule note's and a particle moment's say other things).
+        let hit_b = hit.event.b.filter(|_| hit.event.kind == EventKind::Hit);
+        let letter = hit_b.map_or(0, |b| b.item);
+        let letter_char = match (n.plays, hit_b) {
             (bpe_kit::sound::Plays::SpellNotes, Some(b)) => {
                 bpe_kit::things::text::letter_char(cx.world, b.thing, b.item)
             }

@@ -378,6 +378,21 @@ impl World {
                                 let wall = self.walls.get(&thing).cloned();
                                 rules.remains.insert((thing, r), remains(wall, None));
                             }
+                            // It leaves the wall now, before this step's walls are noted as they
+                            // were, so a ball inside it (Bounce inside) isn't pushed into the
+                            // next letter. The Text lays its wall out again to the same.
+                            let empty = match self.walls.get_mut(&thing).map(|w| &mut w.outline) {
+                                Some(crate::Outline::Letters { letters, .. }) => {
+                                    let list: Vec<_> = letters.list.iter().filter(|l| l.part != r).cloned().collect();
+                                    let empty = list.is_empty();
+                                    *letters = std::sync::Arc::new(crate::LetterWalls::new(list));
+                                    empty
+                                }
+                                _ => false,
+                            };
+                            if empty {
+                                self.walls.remove(&thing);
+                            }
                         }
                         Some(r) => {
                             let Some(bodies) = self.bodies.get_mut(&thing) else { continue };

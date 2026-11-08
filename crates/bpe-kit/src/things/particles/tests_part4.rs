@@ -355,8 +355,10 @@ fn a_ball_going_by_kicks_a_settled_particle_up() {
 /// Surfaces of one flat ledge at y 100 from x 0 to 40, and the floor nowhere.
 fn ledge() -> Surfaces {
     let mut s = Surfaces::default();
-    s.shapes
-        .insert(9, vec![Vec2::new(0.0, 100.0), Vec2::new(40.0, 100.0), Vec2::new(40.0, 110.0), Vec2::new(0.0, 110.0)]);
+    s.shapes.insert(
+        9,
+        vec![vec![Vec2::new(0.0, 100.0), Vec2::new(40.0, 100.0), Vec2::new(40.0, 110.0), Vec2::new(0.0, 110.0)]],
+    );
     s
 }
 

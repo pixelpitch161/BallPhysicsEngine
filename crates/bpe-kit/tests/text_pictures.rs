@@ -279,3 +279,23 @@ fn labels_ride_their_balls() {
         assert!(ink > 5, "a label on the ball at {p}: {ink}");
     }
 }
+
+#[test]
+fn bounce_inside_letters_are_hollow_bands() {
+    // Text part 3: letters balls bounce inside draw as bands of their Thickness along the outline.
+    let Some(mut gpu) = gpu() else { return };
+    let (mut scene, id) = text_scene("I", 700.0, false);
+    let t = scene.things.get_mut(&id).unwrap();
+    t.params.set("balls", Value::Choice("bounce_inside".into()));
+    t.params.set("thickness", Value::Number(24.0));
+    let pixels = draw(&mut gpu, &scene, "bounce-inside");
+    let (middle, corner) = letter_points(&scene, id)[0];
+    let inside = at(&pixels, middle.x, middle.y);
+    assert!(brightness(inside) < 3 * 0x30, "the stroke's middle is hollow: {inside:?}");
+    let edge = at(&pixels, corner.x, middle.y);
+    assert!(brightness(edge) > 3 * 0xa0, "its edge is drawn: {edge:?}");
+    // Filled, as balls bounce off.
+    scene.things.get_mut(&id).unwrap().params.set("balls", Value::Choice("bounce_off".into()));
+    let pixels = draw(&mut gpu, &scene, "bounce-off");
+    assert!(brightness(at(&pixels, middle.x, middle.y)) > 3 * 0xe0);
+}

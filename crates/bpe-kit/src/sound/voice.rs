@@ -660,7 +660,7 @@ mod tests {
         assert_eq!(def("notes_scale").default, Value::Choice("major".into()));
         assert_eq!(def("notes_root").default, Value::Choice("c".into()));
         assert_eq!(Scale::ALL.len(), 12);
-        assert_eq!(Plays::ALL.len(), 13);
+        assert_eq!(Plays::ALL.len(), 15);
         assert_eq!(Root::Fs.label(), "F#");
     }
 

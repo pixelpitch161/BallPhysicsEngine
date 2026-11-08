@@ -71,6 +71,16 @@ fn can_be_a_wall(thing: &Thing, world: &World) -> bool {
     !on_screen && !rides
 }
 
+/// [`can_be_a_wall`] read from the saved scene: set in the world, riding nothing.
+pub fn walled_in(scene: &Scene, thing: &Thing) -> bool {
+    let rides = thing
+        .parent
+        .filter(|p| *p != ThingId::ROOT)
+        .and_then(|p| scene.things.get(&p))
+        .is_some_and(|p| crate::things::light::RIDES.contains(&p.kind.as_str()));
+    !thing.screen.unwrap_or(true) && !rides
+}
+
 /// Whether the letters of a Text with settings `s` can move by themselves from step to step (their
 /// values change, a rule sets its words, the wave moves, the shape it runs along moves).
 fn moves_by_itself(s: &TextSettings, world: &World, id: ThingId) -> bool {
@@ -95,6 +105,11 @@ fn laid_out(world: &World, id: ThingId, params: &Params) -> Option<(Arc<TextLayo
     Some((now.layout, now.placed))
 }
 
+/// Which of Text `id`'s letters are there (not broken).
+fn alive_of(world: &World, id: ThingId) -> &[bool] {
+    world.parts.get(&id).map_or(&[], |p| p.alive.as_slice())
+}
+
 /// Makes or moves Text `id`'s wall in `world` (and its parts) as it is now: the letters are laid out
 /// again only when they may have changed (`relay`, or a letter broke); otherwise the wall moves
 /// with the Text's pose.
@@ -106,11 +121,33 @@ fn refresh(id: ThingId, world: &mut World, relay: bool) {
     }
     let s = TextSettings::from_params(&st.params);
     let pose = world.poses.get(&id).copied().unwrap_or_else(|| world.anchor(id));
-    let alive_now: Vec<bool> = world.parts.get(&id).map(|p| p.alive.clone()).unwrap_or_default();
     let relay = relay || st.dirty || st.letters.is_none() || moves_by_itself(&s, world, id);
-    let same_alive = |kept: &WallLetters| {
+    let same_alive = |kept: &WallLetters, alive_now: &[bool]| {
         (0..kept.layout.letters.len()).all(|k| alive_now.get(k).copied().unwrap_or(true) == kept.alive[k])
     };
+    // Nothing about the letters changed: the wall and the parts only move with the pose (every
+    // step, so without copying the letters).
+    if !relay && st.letters.as_ref().is_some_and(|l| same_alive(l, alive_of(world, id))) {
+        let turn = Vec2::from_angle(pose.angle);
+        let middles = &st.letters.as_ref().expect("checked").middles;
+        if let Some(w) = world.walls.get_mut(&id) {
+            if let Outline::Letters { center, angle, .. } = &mut w.outline {
+                *center = pose.position;
+                *angle = pose.angle;
+            }
+            w.spin = pose.spin;
+            w.velocity = pose.velocity;
+        }
+        if let Some(parts) = world.parts.get_mut(&id)
+            && parts.at.len() == middles.len()
+        {
+            for (at, m) in parts.at.iter_mut().zip(middles) {
+                *at = pose.position + turn.rotate(*m);
+            }
+        }
+        return;
+    }
+    let alive_now: Vec<bool> = alive_of(world, id).to_vec();
     let mut letters = st.letters.clone();
     let mut changed = false;
     if relay {
@@ -133,7 +170,7 @@ fn refresh(id: ThingId, world: &mut World, relay: bool) {
     }
     // A letter broke: it leaves the wall.
     if let Some(l) = letters.as_mut()
-        && (changed || !same_alive(l))
+        && (changed || !same_alive(l, &alive_now))
     {
         let n = l.layout.letters.len();
         l.alive = (0..n).map(|k| alive_now.get(k).copied().unwrap_or(true)).collect();
@@ -262,10 +299,20 @@ impl ThingSim for TextSim {
             && key != "fast"
     }
 
-    /// Stuck to the screen (a screen Text has no wall), and a font the scene keeps (loading or
-    /// removing it lays the letters out again).
+    /// Only a Text with a wall has its words, path and balls settings in the physics (a title on
+    /// the screen is typed into without restarting the run); its Spin always.
+    fn affects_physics_in(&self, scene: &Scene, thing: &Thing, key: &str) -> bool {
+        key == "spin" || (self.affects_physics(key) && walled_in(scene, thing))
+    }
+
+    /// For a Text with a wall: that it has one, and a font the scene keeps (loading or removing it
+    /// lays the letters out again). 0 for every other Text, as before letters were walls.
     fn fingerprint_more(&self, scene: &Scene, thing: &Thing, resolved: &ResolvedThing) -> u64 {
-        let font = TextSettings::from_params(&resolved.params).font;
+        if !walled_in(scene, thing) {
+            return 0;
+        }
+        let settings = TextSettings::from_params(&resolved.params);
+        let font = settings.font;
         let mut h = 0xcbf2_9ce4_8422_2325u64;
         let mut eat = |bytes: &[u8]| {
             for b in bytes {
@@ -277,6 +324,14 @@ impl ThingSim for TextSim {
             eat(&(f.bytes.len() as u64).to_le_bytes());
             eat(&f.bytes[..f.bytes.len().min(64)]);
             eat(&f.bytes[f.bytes.len().saturating_sub(64)..]);
+        }
+        // Values may name things (`of <name>`): a rename changes the words the wall is made of.
+        if settings.words.contains('{') {
+            for t in scene.things.values() {
+                eat(&t.id.0.to_le_bytes());
+                eat(t.name.as_bytes());
+                eat(&[0]);
+            }
         }
         h
     }

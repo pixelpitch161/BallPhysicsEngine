@@ -161,14 +161,14 @@ play orders that read the hit letter.
 ## Tasks
 
 ### Task 1: the runtime
-- [ ] `Outline::Letters` and its methods (decision 4), `Contact.part` (decision 5), `Parts` and `World.parts`
+- [x] `Outline::Letters` and its methods (decision 4), `Contact.part` (decision 5), `Parts` and `World.parts`
   (decision 6), `World.tree` and `reads_tree` (16), `fingerprint_more` (15), the Hit's `b.item`.
 - Verify: walls unit tests: a ball outside a solid letter bounces off it and the contact names the letter; a ball
   in an O's hole stays in it; a ball inside a hollow letter's band stays inside it; the box skip gives the same
   nearest point as the full walk; `point`, `reach`, `clear_by`. Every physics golden unchanged (debug).
 
 ### Task 2: the Text's wall
-- [ ] Settings (decision 1), `walls.rs` (layout + placed → `LetterWalls`), the sim (decisions 2, 3, 6, 7):
+- [x] Settings (decision 1), `walls.rs` (layout + placed → `LetterWalls`), the sim (decisions 2, 3, 6, 7):
   `build`, `settings_changed`, `scripted` (rebuild only when the letters, their places or the broken set change;
   otherwise move the outline's centre and angle), `letter_char`.
 - Verify: a ball dropped on a Bounce off word bounces off it and the Hit names the letter; Bounce inside keeps a
@@ -176,45 +176,45 @@ play orders that read the hit letter.
   and a riding Text have no wall; a Spin turns the wall; a Words key changes the wall at its moment.
 
 ### Task 3: rules, health, flash (decisions 7 to 10)
-- [ ] `actions.rs` Break and Flash on parts; `health.rs` rows from parts; `who.rs`; `change.rs`; health `fits`.
+- [x] `actions.rs` Break and Flash on parts; `health.rs` rows from parts; `who.rs`; `change.rs`; health `fits`.
 - Verify: a rule "When hit → Break That's other" breaks only the hit letter (wall gone there, a ball now passes
   where it was, Break item k); Health 2 a letter breaks a letter on its second hit; Flash names one letter;
   `Who::Thing { ball: Some(2) }` on a Text names letter 2; rules goldens unchanged.
 
 ### Task 4: drawing (decisions 9, 13, 14)
-- [ ] Per-letter hit data, Bounce inside bands, broken letters (Fade out, Pop, Shatter, gone after).
+- [x] Per-letter hit data, Bounce inside bands, broken letters (Fade out, Pop, Shatter, gone after).
 - Verify: drawing unit tests (a letter's hit data is its own; a broken letter's instances are its pieces, clipped;
   the band's `b.x`); `tests/text_pictures.rs`: a Bounce inside letter is hollow in the middle of its stroke; a
   shattered letter's pieces move apart.
 
 ### Task 5: sound (decision 11)
-- [ ] `Plays::ByLetter`, `Plays::SpellNotes`, `VoiceKind::fits`, the pickers.
+- [x] `Plays::ByLetter`, `Plays::SpellNotes`, `VoiceKind::fits`, the pickers.
 - Verify: `bpe-sound` unit tests: By letter picks the k-th note; Spell notes plays C for a "C", nothing for an "X",
   the slot's octave; a Text's voice plays on a hit (an engine test with the test-tone feature or the starter
   voice); sound goldens unchanged.
 
 ### Task 6: lighting and the other wall readers (decision 12)
-- [ ] `outline_contours` and the readers; `laser::scenery` contours.
+- [x] `outline_contours` and the readers; `laser::scenery` contours.
 - Verify: a laser through a Glass, Bounce off Text bends (its path turns at the letter); a Text is a Lights up
   target (`links::number_of` and the stamped record); the probe sees a shadow behind a walled Text.
 
 ### Task 7: looks (decision 17)
-- [ ] The five looks in `looks.rs` with `inner_points`; `LOOKS` grows to 16.
+- [x] The five looks in `looks.rs` with `inner_points`; `LOOKS` grows to 16.
 - Verify: every look resolves cleanly; each new look's settings; in "Balls inside a word" each ball starts inside
   its letter's stroke (the wall says inside); "Letters break apart" breaks a letter within 20 s; "Letters that
   play notes" has Spell notes.
 
 ### Task 8: editor (decision 18)
-- [ ] Who picker letters, Sound tab chips for a Text, follow menu, mixer shape picker.
+- [x] Who picker letters, Sound tab chips for a Text, follow menu, mixer shape picker.
 - Verify: kittest: a Text's inspector shows the Balls rows and the Sound chip; the who picker reads "letter 2".
 
 ### Task 9: goldens and finish
-- [ ] `scenes::text_scenes` (test-only): balls in a hollow word, balls off a solid word, a letter breaking by
+- [x] `scenes::text_scenes` (test-only): balls in a hollow word, balls off a solid word, a letter breaking by
   health; `tests/golden-text*.txt` blessed in debug and release; every other golden unchanged (diff against main).
-- [ ] `cargo fmt`, `cargo clippy --workspace`, tests crate by crate (bpe-gfx `--test-threads=2`, deleting test
+- [x] `cargo fmt`, `cargo clippy --workspace`, tests crate by crate (bpe-gfx `--test-threads=2`, deleting test
   executables between crates).
-- [ ] CLAUDE.md paragraph; this plan's "As built".
-- [ ] One Opus review, fixes, PR, merge.
+- [x] CLAUDE.md paragraph; this plan's "As built".
+- [x] One Opus review, fixes, PR, merge.
 
 ## Not doing (this part)
 
@@ -222,3 +222,45 @@ play orders that read the hit letter.
 - Walls for screen Texts or riding Texts; walls that follow the Show (decision 3).
 - A Bounce card of its own for letters: the Bounce card on a Text works as on a shape (the hit thing's Bounce).
 - Splitting, spawning, freezing or tagging a single letter.
+
+## As built
+
+- **Runtime, wall, rules, health:** as Tasks 1 to 3. The wall is made only for a Text set in the world that rides
+  nothing (`sim.rs::can_be_a_wall`); `TextState` keeps `walled`, the `WallLetters` (layout, places, which letters
+  were alive, the walls, each letter's middle) and each letter's character (`chars`, read by `letter_char` without
+  allocating). The letters are laid out again only when the settings changed, a letter broke, or the words can move
+  by themselves (values, a rule's text, a moving wave, a shape path); otherwise the outline only takes the new pose.
+  `breaks::shows_looks` takes text, so a broken letter's Fade out / Pop / Shatter keeps its remains.
+- **Drawing:** each letter's hits are its own (`draw.rs::letter_hits`, the log's hits by `b` = (text, k) and flashes
+  by `a`), made only when the Text has parts. Bounce inside letters are drawn as bands of the Thickness (`band_half`,
+  `PathInstance.b[0]`) and only while the Text is walled. A broken letter always walks its outline (no glyph tile);
+  Fade out and Pop scale and fade it through its `LetterMove`; Shatter draws `remains::draw::shatter_letter` pieces
+  cut round the letter's middle, each piece's convex cell replacing the letter's 4-corner box clip. No GPU shatter
+  picture test: the unit tests check the pieces' clips and that they move apart.
+- **Sound:** as Task 5 (`pick.rs`: `Who` Ball / Side / Letter, `SpellPick`, `note_letter`). By side reads sides only
+  on a shape (`patch.rs` makes the side path only for shapes). The compressor's sidechain key and the mixer's shape
+  picker take Texts.
+- **Lighting:** as Task 6, plus glass Texts push benders (`TextDraw::light`, `Bender::round` of every contour), and
+  the probe's `LOOKED` list takes text. A laser bends through a glass letter only when its At shapes isn't Stop.
+- **Looks:** as Task 7, with what they needed to read well in the 9:16 shot: the words are `fitted` to `FIT_WIDTH`
+  900 px; the balls of the falling looks sit at y −250 above the words and get Gravity 1 (new balls have none);
+  Balls inside a word is a cyan to pink gradient with a glow; Letters that play notes drops one ball over each
+  letter's inner point (an A's apex would split it). The balls are added beside the Text (`BallsBeside`,
+  `custom_balls`); Health comes through `fill_slot`, the voice through `starter_voice` with Plays Spell notes.
+- **Goldens:** `scenes::text_scenes` holds the five looks and a Spinning word (`tests/golden_text.rs`: 8 s, a line a
+  second with events, letter hits, standing letters and a hash, and a seek check).
+- **Editor:** as Task 8 (`TargetChoices.letter_things` are Texts set in the world; the number box reads "every
+  letter" / "letter N").
+- **After review:** only a Text with a wall has its Words, Path and Balls settings in the physics animation and the
+  fingerprint (`ThingSim::affects_physics_in`, `sim.rs::walled_in`; Spin always), and `fingerprint_more` is 0 for
+  every other Text, so typing into a title on the screen no longer restarts the run or the sound. A broken letter
+  leaves the wall in the Break action itself (`rules/actions.rs`), before the step notes its walls as they were, so a
+  ball inside it (Bounce inside) is let go instead of pushed into the next letter. Sand piles on every letter
+  (`piles::Surfaces` keeps every contour), the light probe samples round every letter, Exact particles pass letters
+  balls pass through (as a swarm does), a rule note or a particle moment plays letter 1 under By letter (only a Hit's
+  `b.item` is a letter), a Text whose words hold values hashes the things' names (`of <name>`), and a walled Text whose
+  letters didn't change only moves its wall and parts each step (no copying). Left as they are: the wall lays words
+  out without the log or resolved scene, so `{ball name}` and standings by name read "Ball N" in the wall (a ranking
+  in the world is drawn right but bounces off the plain names); a Strip light along a Text runs along one letter; a
+  walled Text with no letters when the world is built keeps one health for the whole Text; Other = a letter tags
+  nothing (`do.tag` tags balls or things).

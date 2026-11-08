@@ -201,8 +201,12 @@ pub trait ThingSim: Send + Sync + 'static {
     fn beside_card_key(&self, _slot: bpe_core::SlotId, _key: &str) -> bool {
         false
     }
-    /// How much of its balls' past the thing wants kept, for its trails and particles; `None`
-    /// keeps none. Asked when the world is built, and hashed into the world's fingerprint.
+    /// Whether setting `key` of this thing, where it sits in `scene`, changes the simulation: what
+    /// the physics animates and the fingerprint hashes. [`ThingSim::affects_physics`] unless the
+    /// thing's place says otherwise (a Text on the screen has no wall, so its words aren't physics).
+    fn affects_physics_in(&self, _scene: &bpe_core::Scene, _thing: &Thing, key: &str) -> bool {
+        self.affects_physics(key)
+    }
     /// What else of the saved scene changes this thing's physics, beyond its settings: hashed into
     /// the physics fingerprint when not 0 (a Text's Stuck to the screen, the font it bounces in).
     fn fingerprint_more(&self, _scene: &bpe_core::Scene, _thing: &Thing, _resolved: &ResolvedThing) -> u64 {
@@ -215,6 +219,8 @@ pub trait ThingSim: Send + Sync + 'static {
         false
     }
 
+    /// How much of its balls' past the thing wants kept, for its trails and particles; `None`
+    /// keeps none. Asked when the world is built, and hashed into the world's fingerprint.
     fn history(&self, _resolved: &ResolvedThing) -> Option<crate::HistoryWant> {
         None
     }

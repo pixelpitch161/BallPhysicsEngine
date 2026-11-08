@@ -228,3 +228,56 @@ fn a_rule_names_a_letter_by_number_and_flashes_one() {
     assert_eq!(flashes, [0, 2], "a broken letter doesn't flash; the whole Text flashes each live letter");
     assert_eq!(w.parts[&id].alive, [true, false, true]);
 }
+
+#[test]
+fn a_ball_passing_through_comes_into_the_letters() {
+    // The ball falls through an I it passes: no hit, but Enters fires.
+    let (scene, _) = with_text("I", "pass_through", Vec2::ZERO);
+    let (w, _) = run(&scene, 0.0);
+    let id = *w.parts.keys().next().unwrap();
+    let Outline::Letters { letters, .. } = &w.walls[&id].outline else { panic!() };
+    let x = 0.5 * (letters.lo.x + letters.hi.x);
+    let (mut scene, id) = with_text("I", "pass_through", Vec2::new(x, letters.lo.y - 150.0));
+    let zone = Value::Who(bpe_core::Who::Thing { thing: id, ball: None });
+    rule(
+        &mut scene,
+        &[("when.enter", vec![("zone", zone)]), ("do.flash", vec![("who", Value::Who(bpe_core::Who::That))])],
+    );
+    let (_, log) = run(&scene, 2.0);
+    assert!(hits_on(&log, id).is_empty());
+    assert!(log.events().iter().any(|e| e.kind == EventKind::Flash && e.a.thing == BALLS), "it came in");
+}
+
+#[test]
+fn a_title_on_the_screen_is_not_physics() {
+    let kit = kit();
+    let print = |scene: &Scene| bpe_runtime::fingerprint(scene, &resolve(scene, &kit.registry), &kit.sims);
+    for (screen, physics) in [(true, false), (false, true)] {
+        let (mut scene, id) = with_text("HOOK", "bounce_off", Vec2::ZERO);
+        scene.things.get_mut(&id).unwrap().screen = Some(screen);
+        let before = print(&scene);
+        scene.things.get_mut(&id).unwrap().params.set("words", Value::Text("HOOKS".into()));
+        assert_eq!(print(&scene) != before, physics, "screen {screen}");
+    }
+}
+
+#[test]
+fn a_ball_inside_a_letter_that_breaks_is_let_go() {
+    // The ball sits in the first I's stroke; the I breaks. It falls free, not pushed into the second I.
+    let (scene, _) = with_text("II", "bounce_inside", Vec2::ZERO);
+    let (w, _) = run(&scene, 0.0);
+    let id = *w.parts.keys().next().unwrap();
+    let Outline::Letters { letters, .. } = &w.walls[&id].outline else { panic!() };
+    let first = &letters.list[0];
+    let start = 0.5 * (first.lo + first.hi);
+    assert!(first.inside(start));
+    let (mut scene, id) = with_text("II", "bounce_inside", start);
+    scene.things.get_mut(&BALLS).unwrap().params.set("radius", Value::Number(4.0));
+    let first = Value::Who(bpe_core::Who::Thing { thing: id, ball: Some(1) });
+    rule(&mut scene, &[("when.time", vec![("at", Value::Number(0.1))]), ("do.break", vec![("who", first)])]);
+    let (w, log) = run(&scene, 1.0);
+    assert_eq!(breaks(&log, id), [0]);
+    assert!(hits_on(&log, id).is_empty(), "{:?}", hits_on(&log, id));
+    let p = w.bodies[&BALLS].position[0];
+    assert!((p.x - start.x).abs() < 1.0 && p.y > start.y, "it falls straight out of where it was: {p} (from {start})");
+}

@@ -758,6 +758,31 @@ the beat, Labels on balls (inside the picked or first group), Race leaderboard; 
 Editor: the words box (`words_box.rs`: values on `style::TOKEN_BG` chips, **Insert value** menu, `TargetChoices.
 counters`), typing keys at the playhead through `set_or_key`, handles over every copy (`text_handles::copies_of`).
 
+Part 3 is in (plan `docs/superpowers/plans/text/part3.md`, "As built" at its end): **real letters**. A Text set in the
+world that rides nothing (`sim.rs::can_be_a_wall`) is a wall of its letters: the Words card's **Balls** group
+(`TextBalls` Pass through / Bounce off / Bounce inside, Thickness) makes `Outline::Letters { center, angle, letters:
+Arc<LetterWalls>, thickness }` (`bpe-runtime/src/letters.rs`: `LetterWall` a letter's contours and box, even-odd
+`inside`, box-skipping `nearest`; solid for Bounce off, a band for Bounce inside, `passes` for Pass through), laid out
+from `text_now`'s first copy (the scene through `World.tree`, set when a sim's `reads_tree`; Show is drawing only),
+rebuilt only when the layout, places or broken set change (`TextState`, `WallLetters`). Each letter is a **part**
+(`World.parts`, `bpe-runtime/src/parts.rs`: alive, middles): `Contact.part` names the letter touched, the Hit's
+`b.item` is it (0 for every other wall, so goldens hold); `do.break` with a row on a thing with parts breaks one
+letter (it leaves the wall; remains `(text, k)`), `do.flash` flashes one or every live letter, Health keeps a row a
+letter (`rules/health.rs::rows_of`), `who.rs` names letter n (`is_part`); `breaks::shows_looks` takes text.
+Only a walled Text's Words/Path/Balls settings are physics (`ThingSim::affects_physics_in`, `walled_in`; Spin always), and `fingerprint_more` hashes its scene font's bytes (and the things' names when its words hold values). Drawing (`text/draw.rs`): each
+letter its own hit data (`letter_hits`), Bounce inside letters as bands (`b.x` half the Thickness, `band_half`), a
+broken letter its look (Fade out/Pop through its `LetterMove`, Shatter as `remains::draw::shatter_letter` pieces cut
+round its middle; nothing after). Sound: the Sound card fits a Text; `Plays::ByLetter` (`WhoPick { who:
+Who::Letter }`) and `Plays::SpellNotes` (`SpellPick`: A–G in the octave of the slot's lowest note, C5 when empty;
+`PickCx.letter/letter_char`, `things::text::letter_char`); By side reads sides only on a shape. Lighting: walls'
+readers take every contour (`light::draw::outline_contours`: lasers, the probe (`LOOKED` has text), swarm segments,
+the lowest shape), glass Texts push benders (`TextDraw::light`). Looks Balls inside a word, Bounce off letters, Pour
+in and fill, Letters break apart, Letters that play notes (`looks.rs`: `fitted` keeps the words within `FIT_WIDTH`
+900 px, `letters_of` → `walls::inner_points`/`middles`, the balls added beside, falling ones with Gravity 1). Editor:
+`TargetChoices.letter_things` ("letter N" in the who picker), the Sound chip for a Text, Texts in the Follow sound
+menu and the compressor's shape picker. Goldens `tests/golden-text*.txt` (`scenes::text_scenes`); tests
+`text/sim_tests.rs`, `tests/text_letters.rs`, `bpe-sound/tests/text_sound.rs`.
+
 ## Crate map
 
 Dependencies go bottom to top:

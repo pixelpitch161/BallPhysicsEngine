@@ -13,7 +13,7 @@ use glam::Vec2;
 
 use crate::modules::lighting::{LIGHTING, LightingSettings};
 use crate::modules::look::layers::gives_light::{Emit, GivesLight, SHAPE_SUB_LIGHT, SUB_LIGHT};
-use crate::things::light::draw::{LightDraw, outline_points, places, point_round, shown_settings};
+use crate::things::light::draw::{LightDraw, places, point_round, shown_settings};
 use crate::things::light::{LIGHT, LightSettings};
 
 /// How many points round a shape's outline "Light on" a shape averages.
@@ -165,9 +165,12 @@ impl Probe {
             return (0..b.len()).filter_map(|row| self.ball_sample(lamps, world, thing, row)).collect();
         }
         if let Some(wall) = world.walls.get(&thing) {
-            let points = outline_points(&wall.outline);
-            return (0..SHAPE_POINTS)
-                .map(|k| point_round(&points, k as f32 / SHAPE_POINTS as f32))
+            // Round every contour (a Text's letters each get their share; a shape has one).
+            let contours = crate::things::light::draw::outline_contours(&wall.outline);
+            let each = (SHAPE_POINTS / contours.len().max(1)).max(1);
+            return contours
+                .iter()
+                .flat_map(|points| (0..each).map(move |k| point_round(points, k as f32 / each as f32)))
                 .map(|p| lamps.sample(p, Skip { ball: None, thing: Some(thing) }, None))
                 .collect();
         }

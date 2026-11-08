@@ -236,11 +236,11 @@ pub fn physics_animation(scene: &Scene, resolved: &Resolved, sims: &Sims) -> Opt
         // physics fingerprint.
         Some(slot) if BESIDE_SLOTS.contains(&slot) => true,
         Some(_) => false,
-        None => resolved
-            .things
-            .get(&thing)
-            .and_then(|r| sims.thing(&r.kind))
-            .is_some_and(|s| s.affects_physics(bpe_core::vary::base_key(key))),
+        None => match (resolved.things.get(&thing).and_then(|r| sims.thing(&r.kind)), scene.things.get(&thing)) {
+            (Some(s), Some(t)) => s.affects_physics_in(scene, t, bpe_core::vary::base_key(key)),
+            (Some(s), None) => s.affects_physics(bpe_core::vary::base_key(key)),
+            (None, _) => false,
+        },
     });
     (!animation.is_empty()).then_some(animation)
 }
@@ -1795,7 +1795,7 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
         }
         if let Some(sim) = sims.thing(&r.kind) {
             for (key, value) in r.params.iter() {
-                if sim.affects_physics(bpe_core::vary::base_key(key)) {
+                if sim.affects_physics_in(scene, thing, bpe_core::vary::base_key(key)) {
                     h.bytes(key.as_bytes());
                     h.value(value);
                 }
