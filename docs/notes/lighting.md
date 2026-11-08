@@ -235,3 +235,33 @@ shader subtracts it (`haze_density`). While the haze moves with the air the scen
 (`bpe_runtime::air_read`): every world senses the Air keys and the physics fingerprint counts the Air card and its
 keys, so an Air edit restarts the playback whose air it drifts with (the sound's too, as its fingerprint includes the
 physics'). Haze gusts don't travel as waves.
+
+**Shadow quality** (review W2, 2026-11-08, plan `docs/superpowers/plans/lighting/shadow-quality.md`, test
+`bpe-kit/tests/shadow_quality.rs`, look shots `area-wide`, `strip`, `stage-thin` in `full_size_look.rs`). All in
+`lighting.wgsl` but V5. **V1**: `march` counts a step toward the Quality's steps only when the ray is at least two
+texels from every blocker and moves at least an even share of the way (`fair`: way / steps), so creeping past a
+ball, along a thin wall or down a lane between rows of balls no longer runs out of steps and leaks, within
+`max(12 × steps, 400)` rounds (`slab_march` the same, a texel, `max(8 × steps, 300)`). So the Quality's steps no
+longer end a march early; a ray runs to its end or the cap (the Quality now sets the field's fineness, the rays
+across a lamp and the cap). Draft costs more per creeping ray than before; the soft edge (and, for Area and Strip lights, `clear`) uses `nearest_between` (Aaltonen's estimate: where the ray
+came nearest between two samples). **V2**: Area and Strip lights' shadows come from all of the light
+(`extended_seen`: the way to the middle of what it covers, its half width seen as `ang` (at most `MOST_SEEN`), the
+march ending at its edge, not its Size short of its nearest point); `visibility(.., src)` aims each ray across the
+lamp at the light's point nearest where it would end (`extended_stop`), takes `MOST_LAMP_RAYS` (9) of them, and a
+`wide` march stops once a sample is clearer than the rest of the way is long (walls round the light no longer
+darken everything in contours). `shade` does the same in Flat; on a Stage it aims `sphere_shadow`/`slab_visibility`
+at the middle at the light's height. The light's amount still comes from its nearest point; the light probe and the
+bake's traced bounce still use the nearest point. **V3**: `slab_visibility` is `slab_march` per ray plus Flat's
+rays across the lamp (`lamp_share`, shared with `visibility`) when the middle ray goes into a solid shape;
+no picture check on a Stage (one, `slab_confirm`, was tried: on small pictures it let dotted lines of light through
+thin walls); `SlabRay.over` lets light over the shapes' front. **V4**:
+`fs_field` adds `edge_inset` outside blockers (the seed texel cut by how much its blockers cover, `foot_cover`, only
+where the texel behind it is wholly covered, only for solid blockers and not on Draft, gated by its steps so preview and
+video agree): shadow edges move about 2.5× more evenly on Ultra and 1.7× on Good; Draft is left as it was (it made
+its 4-pixel texels worse).
+Still open: the texel steps of a thin shape's contact shadow right beside it on a Stage. **V5**:
+`Renderer::preview_field_like_video(true)` (the editor's preview and its warm-up spare; `shadow_quality.rs` too)
+sizes the field by the frame's world width (`lighting.rs::field_divisor`, rounding down: never coarser in the scene
+than the video's), so a 540-wide preview at Good gets divisor 1. Exports and the other picture tests keep the
+Quality's share of the renderer's size (at 270 × 480 a coarser field than any export, which keeps the thin-line
+code covered).
