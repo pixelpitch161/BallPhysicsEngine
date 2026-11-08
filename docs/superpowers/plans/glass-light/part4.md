@@ -348,3 +348,41 @@ Harness as `bent_light_pictures.rs` (270 × 480, Light only, linear light).
   mirror photons, like glass ones, carry what the shadow dropped (Shadow strength × (1 − Shadow colour)); when the
   photon cap leaves thrower pairs out, glass photons meeting those mirrors first still stop; a Lit 0 layer over a
   mirror still counts as the mirror (as part 3's glass); `ball_at` gives the nearest sphere of any thing.
+
+## As built (4b)
+
+- Data as decisions 1 to 6: `SurfaceGpu.g` = [Dichroic, shift/360, hue/360, Fire]; `bpe_gfx::dichroic` (`Dichroic`,
+  `hue_rgb`, `through`, `bounced`, `back`, `SPHERE_COS`) is the Rust twin of lighting.wgsl's `dichroic_hue`,
+  `dichroic_through` and `dichroic_back` (a test pins the wheel's text). `SurfaceSettings::dichroic()` is all 0 when
+  the surface isn't dichroic; `Glass` (lasers) carries it.
+- **Shadows** (`march`, Flat): fs_direct has no group 2, so the main lighting `Uniform` carries the first
+  `MOST_DICHROIC` (16) dichroic surfaces as `dichroic` ([index, Dichroic, shift, hue], `lighting::dichroic_list`) with
+  their count in `u.bent.y`; `dichroic_entering` reads the surface code under the point where a ray goes into a
+  see-through stretch and the normal from the field's slope, and the stretch's light is × T when it comes out (or
+  runs out of steps). No dichroic surface: the count is 0 and the function returns 1 at once.
+- **Photons** (`cs_bent`): `dichroic_into` × T going into bending glass (and straight from glass into other glass),
+  `dichroic_off` × `mix(1, 1 − hue, d)` on a mirror throw. **Stage sphere caustics**: `caustic_glass` folds T (glass) or
+  the throw colour (mirror balls) in on the CPU at `SPHERE_COS` (2/3, the mean |cos| over a sphere's face).
+- **Lasers**: `Meets::Bend { index, rainbow, dichroic }` (`Meets::bend(index, rainbow)` for plain glass);
+  `walk_on(.., split, by_colour, ..)`; `trace_split` splits at the first glass with Rainbow split (Colours > 1) or
+  Dichroic: the colours (or one white path) × T, then the reflected `Colour { reflected: true }` with share R; each
+  path an even share of the segments left.
+- **Fire** as decision 4 in `shade`; **star glints** as decision 5 in `balls/draw.rs::fire_glints` (called from the
+  balls' `draw`, so emitters too), placed by a hash of the thing, the row and the hit's step.
+- **Rainbow** as decision 6: `rainbow_bow(p)` in lighting.wgsl (16 wavelengths, `BOW_COLOURS`), added in `lit_at`
+  after the haze. The haze catches it by its thickness (the strongest channel of Haze × Haze colour, times the
+  drifting density), not `air.w` (that is Haze dims, 0 by default). `GlowUniform.rainbow_at.z` is 1 when rain makes
+  rainbows and the tags picture is drawn.
+- **Makes rainbows** deviates from decision 6's packing: Catches beams' span goes to 2 (and isn't a hard range), so
+  `catches + 2 × makes` couldn't be told apart. `bpe_gfx::pack_tags` keeps `extra.z` = Catches beams exactly when
+  Makes rainbows is 0, else `−(round(makes × 255) + 256 × round(catches × 64))`; `tag_catch`/`tag_rain` in scene.wgsl
+  (used by trails and layers.wgsl, whose mini-ball records carry it too) and `sprite_tag_catch`/`sprite_tag_rain` in
+  sprites.wgsl read it back; `around::more_in` sets `LightScene.smoke` and `.rain` from the parts.
+- Tests: `bpe-gfx` `dichroic::tests` (wheel, T + R = 1, packing), `lighting::grid_tests` (rainbow centre, dichroic
+  list); `bpe-kit` laser tests (dichroic split, a dichroic prism), `diamond_fire_flashes_star_glints_after_a_hit_that_fade`,
+  `tests/wild_glass_pictures.rs` (Dichroic 0/Fire 0/Rainbow 0 unchanged, a dichroic wall's blue shadow, bending
+  dichroic glass carrying red light, a dichroic ball's red shine, Fire colouring a highlight, the bow red outside
+  violet at its size in haze, rain that makes rainbows).
+- Known limits as decision 8, and: lasers don't take a dichroic mirror's colour (only see-through glass is `Bend`);
+  the dichroic list holds 16 surfaces (later ones shadow as plain see-through); free glass (bubbles, liquid) isn't
+  dichroic.
