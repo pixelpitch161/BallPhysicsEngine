@@ -291,7 +291,7 @@ pub struct DistanceSettings {
     #[setting(label = "Full at", range(1, 64), keyframe, when = "follows=how_many")]
     pub full_at: i32,
     /// Which balls count.
-    #[setting(label = "Heard from")]
+    #[setting(label = "Which balls")]
     pub heard_from: Target,
 }
 
@@ -369,7 +369,7 @@ pub struct LightModSettings {
     #[setting(label = "Full at", range(1, 1e9), span(1, 64), keyframe, when = "follows=how_many_lit")]
     pub full_at: i32,
     /// Which balls count.
-    #[setting(label = "Heard from")]
+    #[setting(label = "Which balls")]
     pub heard_from: Target,
 }
 
@@ -418,7 +418,7 @@ pub struct LfoSettings {
     #[setting(label = "Feel", when = "sync")]
     pub rate_feel: NoteFeel,
     /// Where in the wave it starts.
-    #[setting(label = "Phase", range(0, 360), unit = "deg", keyframe)]
+    #[setting(label = "Phase", range(0, 360), unit = "°", keyframe)]
     pub phase: f32,
     /// How long it takes to grow to full, after Delay.
     #[setting(label = "Fade in", range(0, 10), unit = "s", keyframe)]

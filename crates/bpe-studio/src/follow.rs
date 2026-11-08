@@ -79,7 +79,7 @@ fn lit_parts(kind: &str) -> Option<Vec<(LightSource, &'static str)>> {
         (LightSource::InShadow, "In shadow (a switch)"),
     ];
     match kind {
-        "balls" | "emitter" | "shape" => Some(things),
+        "balls" | "emitter" | "shape" | bpe_kit::things::text::KIND => Some(things),
         "light" => Some(vec![(LightSource::Strength, "Strength as it shines")]),
         _ => None,
     }
@@ -117,17 +117,16 @@ pub fn can_light(scene: &Scene, reg: &bpe_core::Registry, a: &Address) -> bool {
     bpe_kit::sensing::can_follow_light(scene, reg, a)
 }
 
-/// Every shape (or Text) whose sound is on, with its modulators that are on and its Level, and every bus
-/// that is on (none while no shape makes sound).
+/// Every shape, Text or Particles thing whose sound is on, with its modulators that are on and its
+/// Level, and every bus that is on (none while nothing makes sound).
 pub fn menu(scene: &Scene) -> FollowMenu {
+    use bpe_kit::things::{particles, shape, text};
     let mut shapes = Vec::new();
     for id in &scene.order {
-        // Shapes and Texts only: a Particles thing's sound is heard in the sound's own world, not
-        // the editor's.
-        let Some(thing) = scene
-            .things
-            .get(id)
-            .filter(|t| t.kind == bpe_kit::things::shape::KIND || t.kind == bpe_kit::things::text::KIND)
+        // A Particles thing whose sound a setting follows steps with the physics, so its moments
+        // are heard (W12).
+        let Some(thing) =
+            scene.things.get(id).filter(|t| [shape::KIND, text::KIND, particles::KIND].contains(&t.kind.as_str()))
         else {
             continue;
         };
@@ -151,7 +150,7 @@ pub fn menu(scene: &Scene) -> FollowMenu {
         .and_then(|r| r.slots.get(&SlotId::Mixer))
         .map(|s| MixerSettings::from_params(&s.params))
         .unwrap_or_default();
-    // A bus is only worth following when some shape plays into one.
+    // A bus is only worth following when something plays into one.
     let buses = if shapes.is_empty() {
         Vec::new()
     } else {
@@ -307,6 +306,35 @@ mod tests {
         let a = Address::own(ball, "radius");
         assert!(set(&mut scene, &kit.registry, &a, Some(source)));
         assert_eq!(now(&scene, &a).map(|n| n.source), Some(source));
+    }
+
+    #[test]
+    fn follow_light_offers_text_and_follow_sound_offers_particles() {
+        let kit = bpe_kit::kit();
+        let mut scene = bpe_kit::new_scene(&kit.registry);
+        add_light(&mut scene, &kit.registry, LightType::Point, ThingId::ROOT).unwrap();
+        let text = bpe_kit::add_thing(&mut scene, &kit.registry, bpe_kit::things::text::KIND, ThingId::ROOT).unwrap();
+        let lit = lit_menu(&scene);
+        let parts = &lit.iter().find(|t| t.id == text).expect("a Text's light can be followed").parts;
+        assert_eq!(parts.len(), 4, "{parts:?}");
+        // A Particles thing whose sound is on, and the buses with it alone making sound.
+        use bpe_kit::things::particles::looks::{Look, add_particles};
+        let p = add_particles(&mut scene, &kit.registry, Look::SparkFountain, ThingId::ROOT).unwrap();
+        assert!(menu(&scene).shapes.iter().all(|s| s.id != p), "no sound card yet");
+        bpe_kit::fill_slot(&mut scene, &kit.registry, p, SlotId::Sound).unwrap();
+        let card = scene.card_mut(p, SlotId::Sound).unwrap();
+        card.params.set("enabled", Value::Bool(true));
+        let m = menu(&scene);
+        let shape = m.shapes.iter().find(|s| s.id == p).expect("its sound can be followed");
+        assert!(shape.parts.iter().any(|(s, _)| *s == SoundSource::Level));
+        let mixer = scene
+            .things
+            .get(&ThingId::ROOT)
+            .and_then(|r| r.slots.get(&SlotId::Mixer))
+            .map(|s| MixerSettings::from_params(&s.params))
+            .unwrap_or_default();
+        let on: Vec<u8> = (1..=BUSES as u8).filter(|&n| mixer.bus(n).on).collect();
+        assert_eq!(m.buses.iter().map(|(n, _)| *n).collect::<Vec<_>>(), on);
     }
 
     #[test]

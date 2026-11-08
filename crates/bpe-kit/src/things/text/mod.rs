@@ -144,7 +144,7 @@ pub struct TextSettings {
     #[setting(label = "Case", group = "Words")]
     pub case: Case,
     /// How fast the whole text turns, clockwise.
-    #[setting(label = "Spin", group = "Words", range(-360, 360), unit = "deg/s", keyframe)]
+    #[setting(label = "Spin", group = "Words", range(-360, 360), unit = "°/s", keyframe)]
     pub spin: f32,
     /// Draw the letters from distance tiles: much quicker for crowds of small letters, but a glow or
     /// outline can reach only a sixth of a letter's size past it.
@@ -248,7 +248,7 @@ pub struct TextSettings {
     )]
     pub every: f32,
     /// The thing whose hits show the next one (a hit with it on either side).
-    #[setting(label = "Hits of", group = "Show", when = "timed_by=hits")]
+    #[setting(label = "Hits from", group = "Show", when = "timed_by=hits")]
     pub hits_of: Target,
     /// How long each stays before it goes (0: it stays).
     #[setting(label = "Stays for", group = "Show", span(0, 10), range(0, 100000), unit = "s")]

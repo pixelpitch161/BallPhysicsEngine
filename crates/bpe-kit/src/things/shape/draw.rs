@@ -202,6 +202,11 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
         return;
     };
     let mut form = wall_form(wall);
+    // Its letter moves (W12), drawing only: the wall stays where it is.
+    let moved = shape_moves(cx, look);
+    if let Some(m) = &moved {
+        form = moved_form(&form, m);
+    }
     let whole = remains.as_ref().and_then(|(r, l)| crate::rules::remains::draw::whole_look(r, l, cx.time));
     if let Some(s) = whole {
         // Pop swells it about its middle.
@@ -218,6 +223,9 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
     }
     wear_layers(cx, look, &form, index, part, frame);
     let path = &mut frame.paths[index];
+    if let Some(m) = &moved {
+        path.clip[2] = 1.0 - (1.0 - path.clip[2]) * m.opacity.clamp(0.0, 1.0);
+    }
     if let Some((r, l)) = &remains {
         use crate::rules::remains::{draw, shatter::Edge};
         match whole {
@@ -234,6 +242,47 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
             None => {}
         }
     }
+}
+
+/// What the shape's Look's letter moves do to it now (W12): `None` without any.
+fn shape_moves(cx: &DrawCx, look: &bpe_core::ResolvedSlot) -> Option<crate::things::text::moves::Effect> {
+    use crate::things::text::moves::{MoveCx, moves_of, shape_move};
+    if look.kind != crate::modules::look::shape::CARD {
+        return None;
+    }
+    let moves = moves_of(look);
+    if moves.is_empty() {
+        return None;
+    }
+    shape_move(&MoveCx::of_draw(cx), &moves)
+}
+
+/// `form` as letter move `m` shows it: moved in the picture, turned, sized about its middle and
+/// stretched in its own frame (a circle becomes an ellipse). Its opacity is the caller's.
+pub(crate) fn moved_form(form: &WallForm, m: &crate::things::text::moves::Effect) -> WallForm {
+    let finite = |v: f32, or: f32| if v.is_finite() { v } else { or };
+    let size = finite(m.scale, 1.0).max(0.0);
+    let stretch = Vec2::new(finite(m.stretch.x, 1.0).max(0.0), finite(m.stretch.y, 1.0).max(0.0));
+    let mut out = WallForm {
+        center: form.center + Vec2::new(finite(m.offset.x, 0.0), finite(m.offset.y, 0.0)),
+        turn: form.turn + finite(m.turn, 0.0),
+        scale: form.scale * size,
+        half: form.half * size,
+        points: form.points.clone(),
+        ellipse: form.ellipse,
+    };
+    if stretch != Vec2::ONE {
+        match &mut out.points {
+            Some(points) => points.iter_mut().for_each(|p| *p *= stretch),
+            None => {
+                let axes = form.ellipse.unwrap_or(Vec2::ONE) * stretch;
+                let most = axes.x.max(axes.y).max(1e-6);
+                out.ellipse = Some(axes / most);
+                out.scale *= most;
+            }
+        }
+    }
+    out
 }
 
 /// Puts the shape's Look layers on its instance at `index` (pushed for `form`).
@@ -435,6 +484,51 @@ mod tests {
         let (mut scene, _, _) = scene_with_balls("single", |_| {});
         scene.things.get_mut(&SHAPE).unwrap().params = settings.to_params();
         scene
+    }
+
+    fn frame_at(scene: &Scene, time: f64) -> (Frame, World) {
+        let kit = crate::kit();
+        let resolved = bpe_core::resolve(scene, &kit.registry);
+        assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
+        let world = World::build(scene, &resolved, &kit.sims);
+        let mut frame = Frame::default();
+        build_frame(scene, &resolved, &world, &Log::default(), time, &kit.draws, &mut frame);
+        (frame, world)
+    }
+
+    #[test]
+    fn a_shape_wears_letter_moves_as_one_letter_drawing_only() {
+        use crate::modules::look::shape::moves::{FLICKER, WAVE};
+        use bpe_core::Value;
+        let mut scene = with(ShapeSettings::polygon(6, 300.0, 8.0));
+        scene.things.get_mut(&SHAPE).unwrap().transform.position = Vec2::new(30.0, 40.0);
+        let (still, _) = frame_at(&scene, 0.5);
+        crate::testing::set_layer(&mut scene, SHAPE, WAVE, "height", Value::Number(50.0));
+        // A quarter of a wave in at 0.5 s (speed 0.5): all the way up.
+        let (frame, world) = frame_at(&scene, 0.5);
+        let p = frame.paths[0];
+        assert!((p.a[0] - 30.0).abs() < 1e-3 && (p.a[1] - (40.0 - 50.0)).abs() < 1e-2, "{:?}", p.a);
+        assert_eq!(p.a[3], still.paths[0].a[3], "the same size");
+        let wall = wall_form(&world.walls[&SHAPE]);
+        assert_eq!(wall.center, Vec2::new(30.0, 40.0), "the wall stays put");
+        // A Flicker fades the whole shape.
+        let mut dim = scene.clone();
+        crate::testing::set_layer(&mut dim, SHAPE, FLICKER, "amount", Value::Number(1.0));
+        let faded = (0..40).map(|k| frame_at(&dim, k as f64 * 0.05).0.paths[0].clip[2]).fold(0.0f32, f32::max);
+        assert!(faded > 0.05, "flickering fades it now and then: {faded}");
+    }
+
+    #[test]
+    fn a_stretched_circle_becomes_an_ellipse() {
+        use crate::things::text::moves::Effect;
+        let form = WallForm { center: Vec2::ZERO, turn: 0.0, scale: 100.0, half: 4.0, points: None, ellipse: None };
+        let m = Effect { stretch: Vec2::new(0.5, 2.0), scale: 1.5, ..Effect::NONE };
+        let out = moved_form(&form, &m);
+        assert_eq!(out.ellipse, Some(Vec2::new(0.25, 1.0)));
+        assert!((out.scale - 300.0).abs() < 1e-3 && (out.half - 6.0).abs() < 1e-5, "{out:?}");
+        let square = WallForm { points: Some(vec![Vec2::new(1.0, 1.0)]), ..form };
+        assert_eq!(moved_form(&square, &m).points, Some(vec![Vec2::new(0.5, 2.0)]));
+        assert_eq!(moved_form(&form, &Effect::NONE), form, "no move, no change");
     }
 
     #[test]

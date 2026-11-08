@@ -34,6 +34,8 @@ pub enum SpotsKey {
         height: u32,
         weight: Weight,
         spacing: u32,
+        /// A font other than the built-in one (W12), `None` for the built-in IBM Plex Sans.
+        font: Option<WordFont>,
     },
     Picture {
         path: String,
@@ -57,6 +59,56 @@ pub enum SpotsKey {
         jitter: u32,
         stagger: bool,
     },
+}
+
+/// A Text font a word is spelt in, carried in a [`SpotsKey`]: equal and hashed by its name and
+/// its file's hash.
+#[derive(Clone, Debug)]
+pub struct WordFont {
+    pub name: String,
+    pub data: Arc<crate::text::fonts::FontData>,
+}
+
+impl PartialEq for WordFont {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.data.id == other.data.id
+    }
+}
+
+impl Eq for WordFont {}
+
+impl std::hash::Hash for WordFont {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        (&self.name, self.data.id).hash(h);
+    }
+}
+
+impl Weight {
+    /// Its number, as fonts count weights.
+    pub fn number(self) -> f32 {
+        match self {
+            Weight::Regular => 400.0,
+            Weight::Medium => 500.0,
+            Weight::SemiBold => 600.0,
+        }
+    }
+}
+
+/// The font `s` spells its text in, when it isn't the built-in one: looked up among the Text
+/// fonts in `tree` (the scene's own first), or kept from `was` when it names the same font.
+pub fn word_font(s: &ParticlesSettings, tree: Option<&bpe_core::Scene>, was: &SpotsKey) -> Option<WordFont> {
+    if s.font == crate::text::fonts::FALLBACK_NAME {
+        return None;
+    }
+    if let SpotsKey::Word { font: Some(f), weight, .. } = was
+        && f.name == s.font
+        && *weight == s.weight
+    {
+        return Some(f.clone());
+    }
+    let fonts = tree.map(|t| &t.fonts)?;
+    let data = crate::text::fonts::find(fonts, &s.font, s.weight.number()).font().clone();
+    Some(WordFont { name: s.font.clone(), data })
 }
 
 /// A Text thing's letters carried in a [`SpotsKey`]: never compared or hashed (the key's hash
@@ -93,6 +145,7 @@ pub fn key_of(
                 height: bits(s.letter_height),
                 weight: s.weight,
                 spacing: bits(s.spacing),
+                font: word_font(s, tree, was),
             },
             WordFrom::ATextThing => {
                 use crate::things::text::shape::{letters_hash, letters_of, text_named};
@@ -147,7 +200,12 @@ pub fn spots_for(key: &SpotsKey) -> Arc<Vec<Vec2>> {
     let f = f32::from_bits;
     let out = Arc::new(match key {
         SpotsKey::None => Vec::new(),
-        SpotsKey::Word { text, height, weight, spacing } => word_spots(text, f(*height), *weight, f(*spacing)),
+        SpotsKey::Word { text, height, spacing, font: Some(font), .. } => {
+            fill_spots(&letter_outlines_in(&font.data.bytes, text, at_least(f(*height), 1.0)), f(*spacing), true)
+        }
+        SpotsKey::Word { text, height, weight, spacing, font: None } => {
+            word_spots(text, f(*height), *weight, f(*spacing))
+        }
         SpotsKey::TextThing { spacing, letters, .. } => fill_spots(&letters.0, f(*spacing), false),
         SpotsKey::Picture { path, width, uses, spacing, .. } => picture_spots(path, f(*width), *uses, f(*spacing)),
         SpotsKey::Grid { size, by, columns, rows, spacing, jitter, stagger } => {

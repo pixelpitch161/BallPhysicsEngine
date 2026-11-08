@@ -120,7 +120,7 @@ pub struct BasicLook {
     #[setting(label = "Rainbow", when = "thing=balls", range(-2, 2), unit = "turns/s", group = "Light", keyframe)]
     pub rainbow: f32,
     /// Every hit turns the colour this far round the colour wheel.
-    #[setting(label = "Hue shift per hit", when = "thing=balls", range(-180, 180), unit = "deg", group = "Light", keyframe)]
+    #[setting(label = "Hue shift per hit", when = "thing=balls", range(-180, 180), unit = "°", group = "Light", keyframe)]
     pub hue_per_hit: f32,
     /// How bright the flash on each hit is.
     #[setting(label = "Flash", when = "thing=balls", range(0, 3), group = "Light", keyframe)]

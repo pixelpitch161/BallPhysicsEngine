@@ -96,19 +96,20 @@ impl TargetChoices {
     }
 }
 
-/// A target in plain words: "Anything", "Itself", "Thing: Ball", "Tag: walls", "Kind: Arena".
+/// A target in plain words, as a rule's who reads: "Anything", "Itself", "Ball", "Tagged walls",
+/// "Any Shape".
 pub fn target_words(t: &Target, choices: &TargetChoices) -> String {
     match t {
         Target::Anything => "Anything".to_owned(),
         Target::Me => "Itself".to_owned(),
         Target::Thing(id) => match choices.things.iter().find(|(t, _)| t == id) {
-            Some((_, name)) => format!("Thing: {name}"),
-            None => format!("Thing: missing (id {})", id.0),
+            Some((_, name)) => name.clone(),
+            None => format!("A missing thing (id {})", id.0),
         },
-        Target::Tag(tag) => format!("Tag: {tag}"),
+        Target::Tag(tag) => format!("Tagged {tag}"),
         Target::Kind(kind) => {
             let name = choices.kinds.iter().find(|(id, _)| id == kind).map(|(_, n)| n.as_str()).unwrap_or(kind);
-            format!("Kind: {name}")
+            format!("Any {name}")
         }
     }
 }
@@ -1059,6 +1060,42 @@ fn pasted(def: &SettingDef, copied: &Value) -> Option<Value> {
     def.ty.accepts(&value).then(|| def.clamp(value))
 }
 
+/// The unit of a velocity: a pair in it shows as a speed and an angle.
+const VELOCITY: &str = "px/s";
+
+/// A velocity's speed (px/s) and angle (degrees, 0 to the right, 90 down).
+fn speed_angle(v: [f32; 2]) -> (f64, f64) {
+    let (x, y) = (f64::from(v[0]), f64::from(v[1]));
+    (x.hypot(y), y.atan2(x).to_degrees())
+}
+
+/// A velocity as a speed and an angle (W12), as the Emitter and Particles set theirs. It is still
+/// saved as x/y, written only when one of the two is changed, so an untouched pair keeps its exact
+/// numbers. The angle of a still pair is remembered while it is still.
+fn speed_and_angle(ui: &mut Ui, v: &mut [f32; 2], decimals: usize, name: egui::Id) -> Response {
+    let memory = name.with("still angle");
+    let (len, turned) = speed_angle(*v);
+    let mut speed = len;
+    let mut angle = if len > 0.0 { turned } else { ui.data(|d| d.get_temp::<f64>(memory)).unwrap_or(0.0) };
+    let before = (speed, angle);
+    let response = ui
+        .horizontal_wrapped(|ui| {
+            let s = DragValue::new(&mut speed).range(0.0..=1e9).speed(2.0).fixed_decimals(decimals).suffix(" px/s");
+            let s = ui.add(s).on_hover_text("How fast").labelled_by(name);
+            let a = DragValue::new(&mut angle).speed(0.5).fixed_decimals(0).prefix("at ").suffix("°");
+            let a = ui.add(a).on_hover_text("Which way: 0° is right, 90° down, -90° up").labelled_by(name);
+            s | a
+        })
+        .inner;
+    if (speed, angle) != before {
+        let angle = (angle + 180.0).rem_euclid(360.0) - 180.0;
+        let (sin, cos) = angle.to_radians().sin_cos();
+        *v = [(speed * cos) as f32, (speed * sin) as f32];
+        ui.data_mut(|d| d.insert_temp(memory, angle));
+    }
+    response
+}
+
 /// A value in a few words for the menu's Paste Value: a number with its unit, a colour as hex,
 /// a choice as its words, On or Off, a gradient's colours.
 pub fn value_words(value: &Value, unit: &str, choices: &TargetChoices) -> String {
@@ -1078,6 +1115,10 @@ pub fn value_words(value: &Value, unit: &str, choices: &TargetChoices) -> String
         Value::Number(x) => format!("{}{}", number(*x), suffix(unit)),
         Value::Int(i) => format!("{i}{}", suffix(unit)),
         Value::Bool(b) => if *b { "On" } else { "Off" }.to_owned(),
+        Value::Vec2(v) if unit == VELOCITY => {
+            let (speed, angle) = speed_angle(*v);
+            format!("{} px/s at {}°", number(speed.round()), number(angle.round()))
+        }
         Value::Vec2([x, y]) => format!("{}, {}{}", number(f64::from(*x)), number(f64::from(*y)), suffix(unit)),
         Value::Color(c) => hex(c),
         Value::Gradient(g) => match g.stops.as_slice() {
@@ -1607,9 +1648,11 @@ fn widget(
     use crate::setting_snap::after_drag;
     // Distances and angles land on the grid while it snaps (and Alt isn't held).
     let snap = setting_snapper(ui, def, unit);
+    let velocity = unit == VELOCITY;
     let unit = suffix(unit);
     let feel = setting_feel(def).with_snap(snap);
     match (&def.ty, value) {
+        (ValueType::Vec2, Value::Vec2(v)) if velocity => speed_and_angle(ui, v, feel.decimals, name),
         (ValueType::Number, Value::Number(x)) => match (def.span, def.range) {
             (Some(span), _) => spanned(ui, def, x, span, feel, unit, name),
             (None, Some(range)) => {
@@ -1820,10 +1863,10 @@ pub(crate) fn target_picker(ui: &mut Ui, t: &mut Target, choices: &TargetChoices
             }
         });
         if choices.tags.is_empty() {
-            ui.add_enabled(false, egui::Button::new("Tag"))
+            ui.add_enabled(false, egui::Button::new("Tagged"))
                 .on_disabled_hover_text("No tags yet. Give things tags in their header.");
         } else {
-            ui.menu_button("Tag", |ui| {
+            ui.menu_button("Tagged", |ui| {
                 for tag in &choices.tags {
                     if ui.selectable_label(matches!(t, Target::Tag(x) if x == tag), tag).clicked() {
                         picked = Some(Target::Tag(tag.clone()));
@@ -1832,7 +1875,7 @@ pub(crate) fn target_picker(ui: &mut Ui, t: &mut Target, choices: &TargetChoices
                 }
             });
         }
-        ui.menu_button("Kind", |ui| {
+        ui.menu_button("Any", |ui| {
             for (id, name) in &choices.kinds {
                 if ui.selectable_label(matches!(t, Target::Kind(x) if x == id), name).clicked() {
                     picked = Some(Target::Kind(id.clone()));
@@ -1925,11 +1968,11 @@ mod tests {
         let c = TargetChoices::from_scene(&scene, &kit.registry);
         assert_eq!(target_words(&Target::Anything, &c), "Anything");
         assert_eq!(target_words(&Target::Me, &c), "Itself");
-        assert_eq!(target_words(&Target::Thing(ThingId(2)), &c), "Thing: Ball");
-        assert_eq!(target_words(&Target::Thing(ThingId(9)), &c), "Thing: missing (id 9)");
-        assert_eq!(target_words(&Target::Tag("walls".into()), &c), "Tag: walls");
-        assert_eq!(target_words(&Target::Kind("shape".into()), &c), "Kind: Shape");
-        assert_eq!(target_words(&Target::Kind("blob".into()), &c), "Kind: blob");
+        assert_eq!(target_words(&Target::Thing(ThingId(2)), &c), "Ball");
+        assert_eq!(target_words(&Target::Thing(ThingId(9)), &c), "A missing thing (id 9)");
+        assert_eq!(target_words(&Target::Tag("walls".into()), &c), "Tagged walls");
+        assert_eq!(target_words(&Target::Kind("shape".into()), &c), "Any Shape");
+        assert_eq!(target_words(&Target::Kind("blob".into()), &c), "Any blob");
         assert_eq!(c.tags, vec!["walls".to_owned()]);
         assert!(c.kinds.iter().all(|(id, _)| id != "scene"));
         assert_eq!(c.things[0], (ThingId::ROOT, "Scene settings".to_owned()));
@@ -2246,6 +2289,7 @@ mod tests {
         assert_eq!(value_words(&Value::Int(3), "", &c), "3");
         assert_eq!(value_words(&Value::Bool(false), "", &c), "Off");
         assert_eq!(value_words(&Value::Vec2([0.0, 980.0]), "px/s²", &c), "0, 980 px/s²");
+        assert_eq!(value_words(&Value::Vec2([300.0, -400.0]), "px/s", &c), "500 px/s at -53°");
         assert_eq!(value_words(&Value::Color(Color::rgb(0xff, 0x80, 0x00)), "", &c), "#FF8000");
         let g = bpe_core::Gradient::even(&[Color::WHITE, Color::rgb(0, 0, 0), Color::WHITE]);
         assert_eq!(value_words(&Value::Gradient(g), "", &c), "3 colours");
@@ -2715,6 +2759,30 @@ mod tests {
         let Value::Vec2([x, y]) = *h.state() else { panic!() };
         assert!(x != 10.0 && (x / 60.0).fract() == 0.0, "x on a grid point: {x}");
         assert_eq!(y, 0.0, "y wasn't touched");
+    }
+
+    #[test]
+    fn a_velocity_shows_as_speed_and_angle() {
+        let launch = SettingDef {
+            key: "velocity",
+            label: "Launch",
+            ty: ValueType::Vec2,
+            default: Value::Vec2([0.0, 0.0]),
+            range: None,
+            span: None,
+            unit: "px/s",
+            when: "",
+            ..bpe_kit::modules::look::BasicLook::defs()[0].clone()
+        };
+        let mut h = widget_harness(launch, Value::Vec2([300.0, -200.0]));
+        h.run();
+        assert_eq!(*h.state(), Value::Vec2([300.0, -200.0]), "untouched, it keeps its exact x and y");
+        drag_named(&mut h, "Launch", egui::accesskit::Role::SpinButton, 60.0);
+        let Value::Vec2([x, y]) = *h.state() else { panic!() };
+        let (speed, angle) = speed_angle([x, y]);
+        assert!(speed > 361.0, "faster: {speed}");
+        let was = (-200.0f64).atan2(300.0).to_degrees();
+        assert!((angle - was).abs() < 1e-3, "the same way: {angle} {was}");
     }
 
     #[test]

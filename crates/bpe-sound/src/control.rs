@@ -347,7 +347,7 @@ impl Shape {
         // In sample order, as the engine hears them (hits can land out of order within a step).
         let mut new: Vec<(u64, &bpe_runtime::Event)> = events[h.done..]
             .iter()
-            .filter(|e| matches!(e.kind, EventKind::Hit | EventKind::Note) && e.b.map(|b| b.thing) == Some(thing))
+            .filter(|e| crate::hits::plays(&e.kind) && e.b.map(|b| b.thing) == Some(thing))
             .map(|e| (hit_sample(e, per_step), e))
             .collect();
         new.sort_by_key(|(sample, _)| *sample);

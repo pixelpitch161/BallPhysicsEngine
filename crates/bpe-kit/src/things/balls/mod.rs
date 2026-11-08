@@ -137,6 +137,9 @@ pub struct BallsSettings {
     /// The letters the balls spell out.
     #[setting(label = "Word", group = "Group", when = "group and shape=word and made_of=typed")]
     pub word: String,
+    /// The font the word is spelt in (the Text fonts, at its SemiBold weight).
+    #[setting(label = "Font", group = "Group", when = "group and shape=word and made_of=typed", unit = "font")]
+    pub word_font: String,
     /// How tall the capital letters are.
     #[setting(
         label = "Letter height",
@@ -211,6 +214,7 @@ impl Default for BallsSettings {
             made_of: WordFrom::Typed,
             word_text: Target::Anything,
             word: "BALLS".into(),
+            word_font: crate::text::fonts::FALLBACK_NAME.into(),
             letter_height: 240.0,
             seed: 1,
             area: Vec2::new(600.0, 600.0),

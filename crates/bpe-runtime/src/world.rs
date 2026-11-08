@@ -1590,20 +1590,36 @@ pub fn sound_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64
 }
 
 /// Whether thing `id` (resolved as `r`) is stepped beside the physics: its sim says it doesn't
-/// step with it ([`crate::ThingSim::in_main`] false) and no enabled rule reads it
-/// ([`crate::BlockSim::keeps`]: a rule that reads it changes the balls, so it steps with them).
+/// step with it ([`crate::ThingSim::in_main`] false), no enabled rule reads it
+/// ([`crate::BlockSim::keeps`]: a rule that reads it changes the balls, so it steps with them), no
+/// other thing reads it as it steps ([`crate::ThingSim::keeps`]: a camera following it) and no
+/// setting follows its sound (W12).
 pub fn is_beside(scene: &Scene, sims: &Sims, id: ThingId, r: &bpe_core::ResolvedThing) -> bool {
-    if !sims.thing(&r.kind).is_some_and(|s| !s.in_main(r)) {
-        return false;
-    }
+    let Some(sim) = sims.thing(&r.kind).filter(|s| !s.in_main(r)) else { return false };
     let tags = scene.things.get(&id).map_or(NO_TAGS, |t| &t.tags);
-    !scene
+    let read_by_a_rule = scene
         .rules
         .list
         .iter()
         .filter(|rule| rule.enabled)
         .flat_map(|rule| &rule.blocks)
-        .any(|b| sims.block(&b.kind).is_some_and(|s| s.keeps(&b.params, id, &r.kind, tags)))
+        .any(|b| sims.block(&b.kind).is_some_and(|s| s.keeps(&b.params, id, &r.kind, tags)));
+    // Another thing reads it as it steps (a camera following it).
+    let read_by_a_thing = scene
+        .things
+        .values()
+        .filter(|t| t.enabled && t.id != id)
+        .any(|t| sims.thing(&t.kind).is_some_and(|s| s.keeps(scene, t, id)));
+    // A setting follows its sound (its own, or a bus while the sound hears it): its moments must
+    // be in the log Follow sound reads.
+    let heard = || sim.heard(r).is_some();
+    let sound_followed = scene.pulses.values().any(|p| match &p.source {
+        bpe_core::PulseSource::Sound { shape, source } => {
+            *shape == id || (matches!(source, bpe_core::SoundSource::Bus(_)) && heard())
+        }
+        _ => false,
+    });
+    !(read_by_a_rule || read_by_a_thing || sound_followed)
 }
 
 /// `resolved` without the things `drop` says, borrowed when it drops none.

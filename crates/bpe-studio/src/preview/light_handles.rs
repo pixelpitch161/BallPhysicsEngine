@@ -8,7 +8,7 @@ use crate::app::{LeftPanel, Studio};
 use crate::grid::snap_point;
 use crate::style;
 use bpe_core::{Address, Registry, Scene, Settings, ThingId, Value};
-use bpe_kit::things::light::draw::{Place, aim_angle, places_in};
+use bpe_kit::things::light::draw::{Place, aim_angle, aim_places, places_in};
 use bpe_kit::things::light::{AreaShape, LIGHT, LightSettings, LightType, Points, StripAlong};
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Shape, Stroke};
 use glam::Vec2;
@@ -95,15 +95,17 @@ fn lamp(studio: &Studio, id: ThingId) -> Option<Lamp> {
     let time = studio.sim_time();
     let s = settings_at(&studio.scene, &studio.kit.registry, id, time)?;
     let parent = bpe_kit::things::rig::fixtures::ridden(&studio.scene, id);
-    let places = places_in(studio.playback.world(), parent, &s);
+    let world = studio.playback.world();
+    let mut places = places_in(world, parent, &s);
+    aim_places(world, &s, id, &mut places);
     let aim = places.first().map_or(s.direction.to_radians(), |p| aim_angle(&s, p, time));
     Some(Lamp { s, places, aim })
 }
 
-/// Whether the light's aim can be dragged: not when it follows the ball it rides, and a point
-/// light points nowhere.
+/// Whether the light's aim can be dragged: not when it follows the ball it rides, its pen or a
+/// thing, and a point light points nowhere.
 fn aims(s: &LightSettings) -> bool {
-    s.kind != LightType::Point && s.points != Points::WhereItsGoing
+    s.kind != LightType::Point && !matches!(s.points, Points::WhereItsGoing | Points::AtThePen | Points::AtAThing)
 }
 
 /// The screen points of each handle of `l`'s first place, in grab order (dots first).

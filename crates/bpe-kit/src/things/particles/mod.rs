@@ -345,6 +345,10 @@ pub struct ParticlesSettings {
         group = "Where"
     )]
     pub letter_height: f32,
+    /// The font the text is spelt in (the Text fonts). The built-in IBM Plex Sans comes in the
+    /// three weights; another font is read at the weight nearest Weight's.
+    #[setting(label = "Font", when = "from=a_word_or_picture and word_from=text", unit = "font", group = "Where")]
+    pub font: String,
     #[setting(label = "Weight", when = "from=a_word_or_picture and word_from=text", group = "Where")]
     pub weight: Weight,
     /// A PNG picture: particles fill its solid, bright or dark parts.
@@ -475,7 +479,7 @@ pub struct ParticlesSettings {
     )]
     pub beat_offset: f32,
     /// Whose balls' hits let particles off.
-    #[setting(label = "Who hits", when = "from!=its_parents_particles and emit=on_hits", group = "When")]
+    #[setting(label = "Hits from", when = "from!=its_parents_particles and emit=on_hits", group = "When")]
     pub who_hits: Target,
     #[setting(
         label = "Least speed",
@@ -580,6 +584,7 @@ impl Default for ParticlesSettings {
             text: "BOUNCE".into(),
             letter_height: 240.0,
             weight: Weight::SemiBold,
+            font: crate::text::fonts::FALLBACK_NAME.into(),
             picture: String::new(),
             picture_width: 600.0,
             uses: Uses::SolidParts,

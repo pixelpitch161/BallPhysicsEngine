@@ -79,7 +79,7 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx) {
             return;
         }
         ui.horizontal(|ui| {
-            let label = ui.label(RichText::new("Heard from").small().color(style::MUTED));
+            let label = ui.label(RichText::new("Hits from").small().color(style::MUTED));
             let mut target = match cx.get("play_heard_from") {
                 Value::Target(t) => t,
                 _ => bpe_core::Target::Anything,

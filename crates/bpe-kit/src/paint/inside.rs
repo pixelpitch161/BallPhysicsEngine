@@ -183,7 +183,7 @@ impl SettingGroup for InsidePaint {
                 "",
                 false,
             ),
-            num("angle", "Angle", "The angle of the pattern, in degrees.", d.angle, shown, (-180.0, 180.0), "deg"),
+            num("angle", "Angle", "The angle of the pattern, in degrees.", d.angle, shown, (-180.0, 180.0), "°"),
             num(
                 "spin",
                 "Spin",
@@ -191,7 +191,7 @@ impl SettingGroup for InsidePaint {
                 d.spin,
                 shown,
                 (-720.0, 720.0),
-                "deg/s",
+                "°/s",
             ),
             num(
                 "size",

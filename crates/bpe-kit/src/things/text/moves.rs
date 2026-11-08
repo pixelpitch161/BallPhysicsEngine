@@ -5,8 +5,10 @@
 
 use std::f32::consts::TAU;
 
-use bpe_core::{Address, LayerId, PulseSource, ResolvedSlot, Settings, SlotId, Target, Value, layered_key};
-use bpe_runtime::EventKind;
+use bpe_core::{
+    Address, LayerId, PulseSource, ResolvedSlot, Scene, Settings, SlotId, Target, ThingId, Value, layered_key,
+};
+use bpe_runtime::{EventKind, Log, SoundAt, World};
 use glam::Vec2;
 
 use super::draw::{TextAt, TextNow};
@@ -106,18 +108,24 @@ fn ease_in_out(t: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// What one move does to one letter, in the letter's own frame.
-#[derive(Clone, Copy, Debug)]
-struct Effect {
-    offset: Vec2,
-    turn: f32,
-    scale: f32,
-    stretch: Vec2,
-    opacity: f32,
+/// What a move does to one letter, in the letter's own frame (or to a whole shape, which wears the
+/// moves as one letter).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Effect {
+    /// How far it moves (a letter's: in its own frame; a shape's: in the picture's).
+    pub offset: Vec2,
+    /// Radians, clockwise.
+    pub turn: f32,
+    /// How much bigger it grows about its middle.
+    pub scale: f32,
+    /// How much wider and taller, in its own frame.
+    pub stretch: Vec2,
+    /// How much of it shows, 0 to 1.
+    pub opacity: f32,
 }
 
 impl Effect {
-    const NONE: Effect = Effect { offset: Vec2::ZERO, turn: 0.0, scale: 1.0, stretch: Vec2::ONE, opacity: 1.0 };
+    pub const NONE: Effect = Effect { offset: Vec2::ZERO, turn: 0.0, scale: 1.0, stretch: Vec2::ONE, opacity: 1.0 };
 
     /// This much of it: 0 does nothing, 1 all of it.
     fn times(self, a: f32) -> Effect {
@@ -139,32 +147,59 @@ struct Hits {
     by_letter: bool,
 }
 
-fn hits_for(at: &TextAt, m: &HitMove, now: &TextNow) -> Hits {
+/// What the moves of a Text or a shape read at the moment drawn.
+#[derive(Clone, Copy)]
+pub struct MoveCx<'a> {
+    /// The scene as saved (its pulses: what a Follow sound move follows).
+    pub tree: &'a Scene,
+    pub world: &'a World,
+    pub log: Option<&'a Log>,
+    pub sound: Option<&'a dyn SoundAt>,
+    /// The thing wearing the moves.
+    pub id: ThingId,
+    /// Seconds: the video's clock.
+    pub time: f64,
+}
+
+impl<'a> MoveCx<'a> {
+    /// What a Text's moves read.
+    pub fn of_text(at: &TextAt<'a>) -> Self {
+        MoveCx { tree: at.tree, world: at.world, log: at.log, sound: at.sound, id: at.id, time: at.time }
+    }
+
+    /// What the moves of the thing `cx` draws read.
+    pub fn of_draw(cx: &bpe_gfx::DrawCx<'a>) -> Self {
+        MoveCx { tree: cx.tree, world: cx.world, log: Some(cx.log), sound: cx.sound, id: cx.thing.id, time: cx.time }
+    }
+}
+
+/// The hits Jump on hit `m` reads for a copy riding `ball` (or none) with `letters` letters.
+fn hits_for(cx: &MoveCx, m: &HitMove, ball: Option<(ThingId, usize)>, letters: usize) -> Hits {
     let mut out = Hits { times: Vec::new(), by_letter: false };
-    let Some(log) = at.log else { return out };
-    let rate = at.world.steps_per_second.max(1);
-    let me = at.id;
+    let Some(log) = cx.log else { return out };
+    let rate = cx.world.steps_per_second.max(1);
+    let me = cx.id;
     enum Reads {
         Letters,
         Ball(bpe_core::ThingId, u32),
         Things(Vec<bpe_core::ThingId>),
     }
-    let reads = match (&m.hits_of, now.ball) {
+    let reads = match (&m.hits_of, ball) {
         (Target::Me, Some((thing, row))) => Reads::Ball(thing, row as u32),
-        (Target::Me, None) if at.world.parts.contains_key(&me) && m.which == HitLetters::TheHitLetter => Reads::Letters,
-        (t, _) => Reads::Things(at.world.matching(t, me)),
+        (Target::Me, None) if cx.world.parts.contains_key(&me) && m.which == HitLetters::TheHitLetter => Reads::Letters,
+        (t, _) => Reads::Things(cx.world.matching(t, me)),
     };
     out.by_letter = matches!(reads, Reads::Letters);
     // Only hits a hop is still going from matter: back to the last letter's Each letter later, and a hop.
     let later = if m.which == HitLetters::EveryLetter { finite(m.later, 0.0).max(0.0) as f64 } else { 0.0 };
-    let back = later * now.layout.letters.len() as f64 + finite(m.takes, 0.35).max(0.01) as f64;
-    let from = ((at.time - back) * rate as f64).floor().max(0.0) as u64;
+    let back = later * letters as f64 + finite(m.takes, 0.35).max(0.01) as f64;
+    let from = ((cx.time - back) * rate as f64).floor().max(0.0) as u64;
     for e in log.since(from.saturating_sub(1)) {
         if e.kind != EventKind::Hit {
             continue;
         }
         let t = e.time(rate);
-        if t > at.time {
+        if t > cx.time {
             break;
         }
         let hit = match &reads {
@@ -186,9 +221,9 @@ fn hits_for(at: &TextAt, m: &HitMove, now: &TextNow) -> Hits {
 
 /// The Follow sound reading for a Sound move: the shape and part its Level follows and how much
 /// the pulse adds, when it follows sound and the Text has a reader.
-fn follows<'a>(at: &TextAt<'a>, layer: LayerId) -> Option<(bpe_core::ThingId, &'a bpe_core::SoundSource, f32)> {
-    let addr = Address { thing: at.id, slot: Some(SlotId::Look), key: layered_key(layer, "level") };
-    let pulse = at.tree.pulses.get(&addr)?;
+fn follows<'a>(cx: &MoveCx<'a>, layer: LayerId) -> Option<(bpe_core::ThingId, &'a bpe_core::SoundSource, f32)> {
+    let addr = Address { thing: cx.id, slot: Some(SlotId::Look), key: layered_key(layer, "level") };
+    let pulse = cx.tree.pulses.get(&addr)?;
     let PulseSource::Sound { shape, source } = &pulse.source else { return None };
     let Value::Number(amount) = pulse.amount else { return None };
     Some((*shape, source, amount as f32))
@@ -268,28 +303,150 @@ fn trace_of(m: &DrawOnMove, plan: &DrawPlan, k: usize, time: f64, amount: f32) -
     Some(Trace { share, band: 0.5 * finite(m.width, 6.0).max(0.1), fill, band_shown })
 }
 
+/// What the moves read once a copy: each Jump on hit's hits and each Follow sound's pulse and
+/// level now, by the move's place in the list.
+struct Prepared {
+    hits: Vec<Option<Hits>>,
+    sounds: Vec<Option<(f32, f32)>>,
+}
+
+impl Prepared {
+    fn of(cx: &MoveCx, moves: &[(Move, Vec<u32>)], ball: Option<(ThingId, usize)>, letters: usize) -> Prepared {
+        let hits = moves
+            .iter()
+            .map(|(m, _)| if let Move::Hit(h) = m { Some(hits_for(cx, h, ball, letters)) } else { None })
+            .collect();
+        let sounds = moves
+            .iter()
+            .map(|(m, _)| {
+                let Move::Sound(_, layer) = m else { return None };
+                let (shape, source, add) = follows(cx, *layer)?;
+                let (sound, log) = (cx.sound?, cx.log?);
+                Some((add, sound.level(cx.world, log, shape, source, cx.time)))
+            })
+            .collect();
+        Prepared { hits, sounds }
+    }
+}
+
+/// What move `m` (number `i` in the list) does to letter `k` at full amount; Draw on does nothing
+/// here (it traces, see [`apply`]).
+fn effect_of(cx: &MoveCx, m: &Move, i: usize, k: usize, prepared: &Prepared) -> Effect {
+    let t = cx.time;
+    let beat = cx.world.beat_seconds;
+    let kf = k as f32;
+    match m {
+        Move::Wave(w) => {
+            let letters = finite(w.letters, 8.0).max(0.1);
+            let phase = TAU * (finite(w.speed, 0.5) * t as f32 - kf / letters);
+            Effect {
+                offset: Vec2::new(0.0, -finite(w.height, 30.0) * phase.sin()),
+                turn: finite(w.tilt, 0.0).to_radians() * phase.cos(),
+                ..Effect::NONE
+            }
+        }
+        Move::Beat(b) => {
+            let every = finite(b.every, 1.0).max(0.01) as f64 * beat;
+            let u = t - k as f64 * finite(b.later, 0.0).max(0.0) as f64;
+            let j = if every > 0.0 && every.is_finite() && u >= 0.0 {
+                let since = u - (u / every).floor() * every;
+                hop(since / finite(b.takes, 0.3).max(0.01) as f64)
+            } else {
+                0.0
+            };
+            let squash = finite(b.squash, 0.3).clamp(0.0, 1.0) * j;
+            Effect {
+                offset: Vec2::new(0.0, -finite(b.height, 40.0) * j),
+                stretch: Vec2::new(1.0 / (1.0 + 0.5 * squash), 1.0 + 0.5 * squash),
+                ..Effect::NONE
+            }
+        }
+        Move::Hit(h) => {
+            let Some(hits) = prepared.hits[i].as_ref() else { return Effect::NONE };
+            let later = if h.which == HitLetters::EveryLetter { finite(h.later, 0.0).max(0.0) } else { 0.0 };
+            let seen = t - k as f64 * later as f64;
+            let last = hits
+                .times
+                .iter()
+                .rev()
+                .filter(|(at, _)| *at <= seen)
+                .find(|(_, letter)| !hits.by_letter || *letter == Some(k as u32));
+            let j = last.map_or(0.0, |(at, _)| hop((seen - at) / finite(h.takes, 0.35).max(0.01) as f64));
+            Effect { offset: Vec2::new(0.0, -finite(h.height, 50.0) * j), ..Effect::NONE }
+        }
+        Move::Flicker(f) => {
+            let seed = if f.together { f.seed } else { f.seed.wrapping_add(k as u32) };
+            // Flicker's own Amount is its depth.
+            let o = flicker(t, 1.0, finite(f.speed, 8.0), f.style, seed);
+            Effect { opacity: o.clamp(0.0, 1.0), ..Effect::NONE }
+        }
+        Move::Sound(s, layer) => {
+            let mut level = finite(s.level, 0.0);
+            if let (Some((add, now_level)), Some(sound), Some(log)) = (prepared.sounds[i], cx.sound, cx.log) {
+                let d = k as f64 * finite(s.later, 0.0).max(0.0) as f64;
+                if d > 0.0
+                    && let Some((shape, source, _)) = follows(cx, *layer)
+                {
+                    let then = sound.level(cx.world, log, shape, source, (t - d).max(0.0));
+                    // As the pulse reads it: 0 to 1.
+                    level += add * (then.clamp(0.0, 1.0) - now_level.clamp(0.0, 1.0));
+                }
+            }
+            let level = level.clamp(0.0, 1.0) * (1.0 - finite(s.own, 0.0).clamp(0.0, 1.0) * dice(s.seed, k, 0));
+            let grow = 1.0 + finite(s.grow, 0.0) * level;
+            Effect {
+                offset: Vec2::new(0.0, -finite(s.jump, 60.0) * level),
+                scale: grow.max(0.0),
+                stretch: Vec2::new(1.0, (1.0 + finite(s.stretch, 0.0) * level).max(0.0)),
+                ..Effect::NONE
+            }
+        }
+        Move::Shake(s) => {
+            let (speed, seed) = (finite(s.speed, 12.0), s.seed);
+            let d = finite(s.distance, 6.0);
+            Effect {
+                offset: Vec2::new(wobble(t, speed, seed, k, 0), wobble(t, speed, seed, k, 1)) * d,
+                turn: finite(s.turn, 4.0).to_radians() * wobble(t, speed, seed, k, 2),
+                ..Effect::NONE
+            }
+        }
+        Move::Spin(s) => {
+            let (speed, later, swing) = (finite(s.speed, 90.0), finite(s.later, 0.0), finite(s.swing, 0.0));
+            let turn = if swing > 0.0 {
+                let phase = TAU * speed / 360.0 * t as f32 + (later * kf).to_radians();
+                swing.to_radians() * phase.sin()
+            } else {
+                ((speed * t as f32 + later * kf) % 360.0).to_radians()
+            };
+            Effect { turn, ..Effect::NONE }
+        }
+        Move::Scatter(s) => {
+            let out = scatter_share(s, t);
+            let way = dice(s.seed, k, 0) * TAU;
+            let far = finite(s.distance, 400.0) * (0.5 + 0.5 * dice(s.seed, k, 1));
+            Effect {
+                offset: Vec2::from_angle(way) * far * out,
+                turn: finite(s.turn, 180.0).to_radians() * (2.0 * dice(s.seed, k, 2) - 1.0) * out,
+                opacity: 1.0 - finite(s.fade, 0.0).clamp(0.0, 1.0) * out,
+                ..Effect::NONE
+            }
+        }
+        Move::DrawOn(_) => Effect::NONE,
+    }
+}
+
 /// Folds `moves` into every shown letter of `now` at `at`'s moment.
 pub fn apply(at: &TextAt, moves: &[(Move, Vec<u32>)], now: &mut TextNow) {
     if moves.is_empty() {
         return;
     }
+    let cx = MoveCx::of_text(at);
     let t = at.time;
-    let beat = at.world.beat_seconds;
     let n = now.layout.letters.len();
     // Worked out once a copy.
-    let hits: Vec<Option<Hits>> =
-        moves.iter().map(|(m, _)| if let Move::Hit(h) = m { Some(hits_for(at, h, now)) } else { None }).collect();
+    let prepared = Prepared::of(&cx, moves, now.ball, n);
     let plans: Vec<Option<DrawPlan>> =
         moves.iter().map(|(m, _)| if let Move::DrawOn(d) = m { Some(DrawPlan::of(d, now)) } else { None }).collect();
-    let sounds: Vec<Option<(f32, f32)>> = moves
-        .iter()
-        .map(|(m, _)| {
-            let Move::Sound(_, layer) = m else { return None };
-            let (shape, source, add) = follows(at, *layer)?;
-            let (sound, log) = (at.sound?, at.log?);
-            Some((add, sound.level(at.world, log, shape, source, t)))
-        })
-        .collect();
     for k in 0..n {
         let Some(mut lm) = now.shown[k] else { continue };
         let turn_of_letter = now.placed[k].turn;
@@ -303,120 +460,22 @@ pub fn apply(at: &TextAt, moves: &[(Move, Vec<u32>)], now: &mut TextNow) {
             if a <= 0.0 {
                 continue;
             }
-            let kf = k as f32;
-            let e = match m {
-                Move::Wave(w) => {
-                    let letters = finite(w.letters, 8.0).max(0.1);
-                    let phase = TAU * (finite(w.speed, 0.5) * t as f32 - kf / letters);
-                    Effect {
-                        offset: Vec2::new(0.0, -finite(w.height, 30.0) * phase.sin()),
-                        turn: finite(w.tilt, 0.0).to_radians() * phase.cos(),
-                        ..Effect::NONE
-                    }
-                }
-                Move::Beat(b) => {
-                    let every = finite(b.every, 1.0).max(0.01) as f64 * beat;
-                    let u = t - k as f64 * finite(b.later, 0.0).max(0.0) as f64;
-                    let j = if every > 0.0 && every.is_finite() && u >= 0.0 {
-                        let since = u - (u / every).floor() * every;
-                        hop(since / finite(b.takes, 0.3).max(0.01) as f64)
-                    } else {
-                        0.0
-                    };
-                    let squash = finite(b.squash, 0.3).clamp(0.0, 1.0) * j;
-                    Effect {
-                        offset: Vec2::new(0.0, -finite(b.height, 40.0) * j),
-                        stretch: Vec2::new(1.0 / (1.0 + 0.5 * squash), 1.0 + 0.5 * squash),
-                        ..Effect::NONE
-                    }
-                }
-                Move::Hit(h) => {
-                    let hits = hits[i].as_ref().expect("worked out above");
-                    let later = if h.which == HitLetters::EveryLetter { finite(h.later, 0.0).max(0.0) } else { 0.0 };
-                    let seen = t - k as f64 * later as f64;
-                    let last = hits
-                        .times
-                        .iter()
-                        .rev()
-                        .filter(|(at, _)| *at <= seen)
-                        .find(|(_, letter)| !hits.by_letter || *letter == Some(k as u32));
-                    let j = last.map_or(0.0, |(at, _)| hop((seen - at) / finite(h.takes, 0.35).max(0.01) as f64));
-                    Effect { offset: Vec2::new(0.0, -finite(h.height, 50.0) * j), ..Effect::NONE }
-                }
-                Move::Flicker(f) => {
-                    let seed = if f.together { f.seed } else { f.seed.wrapping_add(k as u32) };
-                    // Flicker's own Amount is its depth.
-                    let o = flicker(t, 1.0, finite(f.speed, 8.0), f.style, seed);
-                    Effect { opacity: o.clamp(0.0, 1.0), ..Effect::NONE }
-                }
-                Move::Sound(s, layer) => {
-                    let mut level = finite(s.level, 0.0);
-                    if let (Some((add, now_level)), Some(sound), Some(log)) = (sounds[i], at.sound, at.log) {
-                        let d = k as f64 * finite(s.later, 0.0).max(0.0) as f64;
-                        if d > 0.0
-                            && let Some((shape, source, _)) = follows(at, *layer)
-                        {
-                            let then = sound.level(at.world, log, shape, source, (t - d).max(0.0));
-                            // As the pulse reads it: 0 to 1.
-                            level += add * (then.clamp(0.0, 1.0) - now_level.clamp(0.0, 1.0));
-                        }
-                    }
-                    let level = level.clamp(0.0, 1.0) * (1.0 - finite(s.own, 0.0).clamp(0.0, 1.0) * dice(s.seed, k, 0));
-                    let grow = 1.0 + finite(s.grow, 0.0) * level;
-                    Effect {
-                        offset: Vec2::new(0.0, -finite(s.jump, 60.0) * level),
-                        scale: grow.max(0.0),
-                        stretch: Vec2::new(1.0, (1.0 + finite(s.stretch, 0.0) * level).max(0.0)),
-                        ..Effect::NONE
-                    }
-                }
-                Move::Shake(s) => {
-                    let (speed, seed) = (finite(s.speed, 12.0), s.seed);
-                    let d = finite(s.distance, 6.0);
-                    Effect {
-                        offset: Vec2::new(wobble(t, speed, seed, k, 0), wobble(t, speed, seed, k, 1)) * d,
-                        turn: finite(s.turn, 4.0).to_radians() * wobble(t, speed, seed, k, 2),
-                        ..Effect::NONE
-                    }
-                }
-                Move::Spin(s) => {
-                    let (speed, later, swing) = (finite(s.speed, 90.0), finite(s.later, 0.0), finite(s.swing, 0.0));
-                    let turn = if swing > 0.0 {
-                        let phase = TAU * speed / 360.0 * t as f32 + (later * kf).to_radians();
-                        swing.to_radians() * phase.sin()
-                    } else {
-                        ((speed * t as f32 + later * kf) % 360.0).to_radians()
-                    };
-                    Effect { turn, ..Effect::NONE }
-                }
-                Move::Scatter(s) => {
-                    let out = scatter_share(s, t);
-                    let way = dice(s.seed, k, 0) * TAU;
-                    let far = finite(s.distance, 400.0) * (0.5 + 0.5 * dice(s.seed, k, 1));
-                    Effect {
-                        offset: Vec2::from_angle(way) * far * out,
-                        turn: finite(s.turn, 180.0).to_radians() * (2.0 * dice(s.seed, k, 2) - 1.0) * out,
-                        opacity: 1.0 - finite(s.fade, 0.0).clamp(0.0, 1.0) * out,
-                        ..Effect::NONE
-                    }
-                }
-                Move::DrawOn(d) => {
-                    // The first Draw on wins.
-                    if traced {
-                        continue;
-                    }
-                    traced = true;
-                    let plan = plans[i].as_ref().expect("worked out above");
-                    match trace_of(d, plan, k, t, a) {
-                        None => hidden = true,
-                        // Done and filled in with no line left: the letter as it is.
-                        Some(tr) if tr.share >= 1.0 && tr.fill >= 1.0 && tr.band_shown <= 0.0 => {}
-                        Some(tr) => lm.trace = Some(tr),
-                    }
+            if let Move::DrawOn(d) = m {
+                // The first Draw on wins.
+                if traced {
                     continue;
                 }
-            };
-            let e = e.times(a);
+                traced = true;
+                let plan = plans[i].as_ref().expect("worked out above");
+                match trace_of(d, plan, k, t, a) {
+                    None => hidden = true,
+                    // Done and filled in with no line left: the letter as it is.
+                    Some(tr) if tr.share >= 1.0 && tr.fill >= 1.0 && tr.band_shown <= 0.0 => {}
+                    Some(tr) => lm.trace = Some(tr),
+                }
+                continue;
+            }
+            let e = effect_of(&cx, m, i, k, &prepared).times(a);
             lm.offset += Vec2::from_angle(turn_of_letter).rotate(e.offset);
             lm.turn += e.turn;
             lm.scale *= e.scale;
@@ -425,6 +484,33 @@ pub fn apply(at: &TextAt, moves: &[(Move, Vec<u32>)], now: &mut TextNow) {
         }
         now.shown[k] = if hidden { None } else { Some(lm) };
     }
+}
+
+/// What `moves` (a Shape's Look's) do to the whole shape at `cx`'s moment: the shape wears them as
+/// one letter, number 0, whatever letters a move is limited to, and Draw on (a Text's alone) does
+/// nothing. `None` when no move is worn.
+pub fn shape_move(cx: &MoveCx, moves: &[(Move, Vec<u32>)]) -> Option<Effect> {
+    let worn: Vec<(usize, &Move, f32)> = moves
+        .iter()
+        .enumerate()
+        .filter(|(_, (m, _))| !matches!(m, Move::DrawOn(_)))
+        .map(|(i, (m, _))| (i, m, m.amount()))
+        .filter(|(_, _, a)| *a > 0.0)
+        .collect();
+    if worn.is_empty() {
+        return None;
+    }
+    let prepared = Prepared::of(cx, moves, None, 1);
+    let mut out = Effect::NONE;
+    for (i, m, a) in worn {
+        let e = effect_of(cx, m, i, 0, &prepared).times(a);
+        out.offset += e.offset;
+        out.turn += e.turn;
+        out.scale *= e.scale;
+        out.stretch *= e.stretch;
+        out.opacity *= e.opacity;
+    }
+    Some(out)
 }
 
 /// How far out Scatter has the letters at `t`, 0 home to 1 furthest.

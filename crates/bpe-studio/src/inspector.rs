@@ -2294,7 +2294,7 @@ mod tests {
         // The picker is a button named by its row, reading "Anything" until something is picked.
         h.get_by_role_and_label(Role::Button, "Which balls").click();
         h.run();
-        h.get_by_role_and_label(Role::Button, "Kind").click();
+        h.get_by_role_and_label(Role::Button, "Any").click();
         h.run();
         // The kind, not the ball's own Shape setting.
         h.get_all_by_role_and_label(Role::Button, "Shape").last().unwrap().click();
@@ -2330,7 +2330,7 @@ mod tests {
         h.run();
         // The header's Ball / Group switch is named Ball too.
         assert_eq!(h.query_all_by_label("Ball").count(), 2, "the ball is offered by name");
-        h.get_by_label("Tag").hover();
+        h.get_by_label("Tagged").hover();
         h.run();
         h.get_by_label("bouncers").click();
         h.run();

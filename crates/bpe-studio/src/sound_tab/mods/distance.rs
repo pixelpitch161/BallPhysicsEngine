@@ -58,7 +58,7 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx, layer: LayerId, meters: Option<&Meters>
         );
     });
     ui.horizontal(|ui| {
-        let label = ui.label(RichText::new("Heard from").small().color(style::MUTED));
+        let label = ui.label(RichText::new("Which balls").small().color(style::MUTED));
         let mut target = match cx.get(&key("heard_from")) {
             Value::Target(t) => t,
             _ => bpe_core::Target::Anything,

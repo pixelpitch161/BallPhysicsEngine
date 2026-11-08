@@ -55,8 +55,15 @@ fn made_of_text(s: &ParticlesSettings) -> bool {
     s.from == BornFrom::AWordOrPicture && s.word_from == super::WordFrom::ATextThing
 }
 
+/// Whether its source is typed text in a font other than the built-in one.
+fn typed_in_a_font(s: &ParticlesSettings) -> bool {
+    s.from == BornFrom::AWordOrPicture
+        && s.word_from == super::WordFrom::Text
+        && s.font != crate::text::fonts::FALLBACK_NAME
+}
+
 /// The Particles state in a box, if it holds one.
-fn particles_in(b: &dyn ThingState) -> Option<&ParticlesState> {
+pub(crate) fn particles_in(b: &dyn ThingState) -> Option<&ParticlesState> {
     b.as_any().downcast_ref::<ParticlesState>()
 }
 
@@ -193,12 +200,19 @@ impl ThingSim for ParticlesSim {
 
     /// A source made of a Text thing reads that Text from the scene (Text part 4).
     fn reads_tree(&self, resolved: &ResolvedThing) -> bool {
-        made_of_text(&ParticlesSettings::from_params(&resolved.params))
+        let s = ParticlesSettings::from_params(&resolved.params);
+        made_of_text(&s) || typed_in_a_font(&s)
     }
 
-    /// The Text its source is made of: its saved settings and font place the particles.
+    /// The Text its source is made of: its saved settings and font place the particles. Typed
+    /// text in another font: that font's file (a font loaded into the scene can change under its
+    /// name).
     fn fingerprint_more(&self, scene: &bpe_core::Scene, thing: &Thing, resolved: &ResolvedThing) -> u64 {
         let s = ParticlesSettings::from_params(&resolved.params);
+        if typed_in_a_font(&s) {
+            let none = super::spots::SpotsKey::None;
+            return super::spots::word_font(&s, Some(scene), &none).map_or(0, |f| f.data.id);
+        }
         if !made_of_text(&s) {
             return 0;
         }

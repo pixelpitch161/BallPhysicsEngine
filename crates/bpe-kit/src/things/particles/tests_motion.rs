@@ -158,6 +158,30 @@ fn a_word_fills_its_letters_exactly() {
 }
 
 #[test]
+fn a_typed_word_can_take_a_text_font() {
+    use super::spots::{SpotsKey, key_of, spots_for};
+    let scene = crate::new_scene(&crate::registry());
+    let mut s = ParticlesSettings {
+        from: super::BornFrom::AWordOrPicture,
+        word_from: super::WordFrom::Text,
+        text: "OK".into(),
+        letter_height: 120.0,
+        spacing: 4.0,
+        ..ParticlesSettings::default()
+    };
+    let video = Vec2::new(1080.0, 1920.0);
+    let plex = key_of(&s, video, Some(&scene), ThingId(9), &SpotsKey::None);
+    assert!(matches!(&plex, SpotsKey::Word { font: None, .. }), "the built-in font as before");
+    assert_eq!(*spots_for(&plex), word_spots("OK", 120.0, Weight::SemiBold, 4.0));
+    s.font = "Anton".into();
+    let anton = key_of(&s, video, Some(&scene), ThingId(9), &plex);
+    assert!(matches!(&anton, SpotsKey::Word { font: Some(f), .. } if f.data.name == "Anton"), "{anton:?}");
+    assert_eq!(key_of(&s, video, Some(&scene), ThingId(9), &anton), anton, "kept while it names the same font");
+    let spelt = spots_for(&anton);
+    assert!(spelt.len() > 200 && *spelt != *spots_for(&plex), "Anton's letters are another shape");
+}
+
+#[test]
 fn a_picture_fills_its_solid_bright_or_dark_parts() {
     let dir = std::env::temp_dir().join(format!("bpe-particles-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

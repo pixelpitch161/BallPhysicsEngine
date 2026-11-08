@@ -1,5 +1,6 @@
 //! Do: Flash (rules part 6). Fires who's Flash on hit and Colour on hit layers as if hit, without
-//! a hit: the physics, the sound and everything else that reacts to hits don't notice.
+//! a hit: the physics, the sound and everything else that reacts to hits don't notice. A light, or each light of a
+//! rig, flares by the Flash's strength (`things::light::draw::flare`).
 
 use bpe_core::{BlockSection, Params, Settings, ThingId, Who};
 use bpe_runtime::{Action, BlockSim, Firing, PrepareCx, StageCx, ThingState, state};
@@ -31,7 +32,8 @@ block_kind!(
     "Flash",
     Do,
     FlashSettings,
-    "Fires the Flash on hit and Colour on hit layers of a ball or a thing as if it was hit.",
+    "Fires the Flash on hit and Colour on hit layers of a ball or a thing as if it was hit; a light (or each light of a \
+     rig) flares.",
     values = [],
     from = ["strength"]
 );

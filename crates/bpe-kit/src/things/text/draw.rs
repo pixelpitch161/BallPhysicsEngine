@@ -843,6 +843,9 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
             path.clip[2] = (1.0 - opacity).clamp(0.0, 1.0);
         }
     }
+    if part & OVER == 0 {
+        letters_for_effects(cx, frame, (&copies, &shown, half), look, (&own_hits, hit), &melted);
+    }
     // Shattering letters become their pieces (after every letter has its records, which each
     // piece keeps).
     let walls = crate::rules::remains::draw::walls_of(cx.world);
@@ -887,6 +890,56 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
     super::fx::apply(&fx, &fx_cx, frame, start, &owners);
 }
 
+/// A letter's contours as its Melts reshape them.
+type Melted<'a> = dyn Fn(&Shown, Vec<Vec<Vec2>>) -> Vec<Vec<Vec2>> + 'a;
+
+/// Each shown letter (a shattering one is in pieces, so it is left out) as the scene's effects
+/// and Ripples see it (W12): a Ripples owner made of its contours, and a round mark in the
+/// effects' ball list at its middle, as big as its box, in the Text's colour, with its last hit.
+/// Points are where the letter shows: a screen Text's go to the world when the overlay lifts.
+fn letters_for_effects(
+    cx: &DrawCx,
+    frame: &mut Frame,
+    (copies, shown, half): (&[TextNow], &[Shown], f32),
+    look: &bpe_core::ResolvedSlot,
+    (own_hits, hit): (&Option<Vec<[f32; 4]>>, [f32; 4]),
+    melted: &Melted,
+) {
+    let effects = crate::modules::effects::draw::scene_has_effects(cx.scene);
+    if !frame.ripples && !effects {
+        return;
+    }
+    let colour = crate::modules::look::surface::thing_colour(look);
+    for l in shown.iter().filter(|l| l.shatter.is_none() && l.moved.opacity > 0.0) {
+        let now = &copies[l.copy];
+        let (at, turn) = (now.pose.position, Vec2::from_angle(now.pose.angle));
+        let place = |p: Vec2| at + turn.rotate(p);
+        let middle = place(now.middle_moved(l.letter, l.moved));
+        if frame.ripples {
+            let contours = melted(l, now.contours_moved(l.letter, l.moved));
+            let contours: Vec<Vec<[f32; 2]>> =
+                contours.iter().map(|c| c.iter().map(|p| place(*p).to_array()).collect()).collect();
+            frame.push_ripple_shape(middle.to_array(), &contours, half);
+        }
+        if effects {
+            let letter = &now.layout.letters[l.letter];
+            let size = l.moved.scale.abs() * l.moved.stretch.abs().max_element();
+            let hit_age = match own_hits.as_ref().filter(|_| l.copy == 0).and_then(|h| h.get(l.letter)) {
+                Some(own) => own[0],
+                None => hit[0],
+            };
+            let count = now.layout.letters.len();
+            frame.ball_marks.push(bpe_gfx::BallMark {
+                center: middle.to_array(),
+                radius: 0.5 * (letter.max - letter.min).length() * size,
+                color: colour,
+                seed: crate::things::balls::draw::ball_seed(cx.thing.id, l.copy * count + l.letter),
+                hit_age,
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -917,6 +970,49 @@ mod tests {
     /// The letters' paths: the screen's, or the world's for a text in the world.
     fn paths(frame: &Frame) -> Vec<PathInstance> {
         frame.paths.iter().chain(frame.overlay.iter().flat_map(|o| o.paths.iter())).copied().collect()
+    }
+
+    #[test]
+    fn letters_make_ripples_and_join_the_effects_ball_list() {
+        let reg = crate::registry();
+        let (mut scene, world_text) = scene_with("HI");
+        scene.things.get_mut(&world_text).unwrap().screen = Some(false);
+        let screen_text = crate::add_thing(&mut scene, &reg, KIND, ThingId::ROOT).unwrap();
+        scene.things.get_mut(&screen_text).unwrap().params.set("words", Value::Text("OK!".into()));
+        let frame = frame_at(&scene, 0.0);
+        assert!(frame.ripple_sources.is_empty() && frame.ball_marks.is_empty(), "nothing asks for them");
+
+        let root = &mut scene.things.get_mut(&ThingId::ROOT).unwrap().params;
+        root.set(
+            "background_colours~form",
+            Value::Choice(bpe_core::Choice::name(bpe_core::GradientForm::Ripples).into()),
+        );
+        scene.add_slot(&reg, ThingId::ROOT, SlotId::Shader, crate::modules::effects::EFFECTS).unwrap();
+        scene.add_layer(&reg, ThingId::ROOT, SlotId::Shader, "picture.echo").unwrap();
+        let frame = frame_at(&scene, 0.0);
+        assert!(frame.ripples);
+        // One owner a letter: H, I, O, K and ! (its two contours one owner).
+        let mut owners: Vec<u32> = frame.ripple_sources.iter().map(|s| s.b[1] as u32).collect();
+        owners.dedup();
+        assert_eq!(owners.len(), 5, "{owners:?}");
+        assert!(frame.ripple_sources.iter().all(|s| s.b[2] == 1.0), "counted as a shape");
+        assert_eq!(frame.ball_marks.len(), 5);
+        assert!(frame.ball_marks.iter().all(|m| m.radius > 10.0 && m.hit_age >= 1e5));
+        let o = frame.overlay.as_deref().unwrap();
+        assert!(o.ripple_sources.is_empty() && o.ball_marks.is_empty(), "lifted out of the overlay");
+
+        // A screen Text's letters go to the world where they show: through a moved camera.
+        let before = frame.camera.center;
+        let cam = crate::ensure_camera(&mut scene, &reg);
+        let at = before + Vec2::new(400.0, -300.0);
+        scene.things.get_mut(&cam).unwrap().params.set("position", Value::Vec2([at.x, at.y]));
+        let moved = frame_at(&scene, 0.0);
+        assert_eq!(moved.camera.center, before + Vec2::new(400.0, -300.0));
+        for (k, (a, b)) in frame.ball_marks.iter().zip(&moved.ball_marks).enumerate() {
+            let d = Vec2::from(b.center) - Vec2::from(a.center);
+            let want = if k < 2 { Vec2::ZERO } else { Vec2::new(400.0, -300.0) };
+            assert!((d - want).length() < 1e-2, "letter {k}: {d}");
+        }
     }
 
     #[test]

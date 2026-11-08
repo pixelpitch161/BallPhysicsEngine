@@ -327,7 +327,7 @@ force_settings!(
 force_settings!(
     /// Every hit sends out a ring that pushes particles as it passes.
     RippleForce {
-        #[setting(label = "Who hits")]
+        #[setting(label = "Hits from")]
         who_hits: Target = Target::Anything,
         #[setting(label = "Least speed", span(0, 2000), unit = "px/s", keyframe)]
         least_speed: f32 = 0.0,

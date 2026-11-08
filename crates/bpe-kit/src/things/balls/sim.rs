@@ -311,6 +311,14 @@ fn word_from_text(s: &BallsSettings) -> bool {
     s.group && s.shape == super::GroupShape::Word && s.made_of == super::WordFrom::ATextThing
 }
 
+/// Whether the balls spell a typed Word in a font other than the built-in one.
+fn typed_in_a_font(s: &BallsSettings) -> bool {
+    s.group
+        && s.shape == super::GroupShape::Word
+        && s.made_of == super::WordFrom::Typed
+        && s.word_font != crate::text::fonts::FALLBACK_NAME
+}
+
 /// Each body row's own size in `st` as its settings, spreads and the rules' changes to single
 /// balls (`ruled`) say now; `hurts` is how much of each row's health is gone (rules part 4).
 fn own_sizes(st: &BallsState, bodies: &Bodies, ruled: Option<&Ruled>, hurts: &[f32]) -> Vec<f32> {
@@ -332,12 +340,17 @@ impl ThingSim for BallsSim {
 
     /// A Word made of a Text thing reads that Text from the scene (Text part 4).
     fn reads_tree(&self, resolved: &ResolvedThing) -> bool {
-        word_from_text(&BallsSettings::from_params(&resolved.params))
+        let s = BallsSettings::from_params(&resolved.params);
+        word_from_text(&s) || typed_in_a_font(&s)
     }
 
-    /// The Text a Word is made of: its saved settings and font place the balls.
+    /// The Text a Word is made of: its saved settings and font place the balls. A typed Word in
+    /// another font: that font's file (a font loaded into the scene can change under its name).
     fn fingerprint_more(&self, scene: &bpe_core::Scene, thing: &Thing, resolved: &ResolvedThing) -> u64 {
         let s = BallsSettings::from_params(&resolved.params);
+        if typed_in_a_font(&s) {
+            return super::shapes::typed_font(&s, Some(scene)).map_or(0, |f| f.id);
+        }
         if !word_from_text(&s) {
             return 0;
         }

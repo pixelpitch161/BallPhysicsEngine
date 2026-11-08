@@ -263,6 +263,77 @@ fn a_rule_shows_lighting_scenes_and_hands_back_to_the_card() {
     assert!((s[4] - 1.0).abs() < 0.05, "next after none is scene 1: {s:?}");
 }
 
+#[test]
+fn a_flash_flares_a_light_and_every_light_of_a_rig() {
+    let kit = kit();
+    let reg = &kit.registry;
+    // The brightest channel of light `k` pushed at `t`.
+    let shine = |scene: &Scene, t: f64, k: usize| {
+        let resolved = resolve(scene, reg);
+        let mut playback = Playback::new(scene, &resolved, kit.sims.clone());
+        playback.seek(t);
+        let mut frame = Frame::default();
+        build_frame(scene, &resolved, playback.world(), playback.log(), t, &kit.draws, &mut frame);
+        frame.light.expect("lit").lights[k].p1.iter().copied().fold(0.0, f32::max)
+    };
+    let mut scene = crate::scenes::lit_room(reg);
+    let light = scene.things.values().find(|t| t.kind == "light").unwrap().id;
+    let lit = Who::Thing { thing: light, ball: None };
+    lane(&mut scene, reg, &[at(0.5), ("do.flash", vec![("who", who(lit))])]);
+    let before = shine(&scene, 0.4, 0);
+    let flash = shine(&scene, 0.5 + 1.0 / 240.0, 0);
+    let after = shine(&scene, 1.2, 0);
+    // Flare 0: a full Flash doubles it, dying away over the Flare length (0.3 s).
+    assert!((flash / before - 2.0).abs() < 0.1, "{before} {flash}");
+    assert!((after - before).abs() < 1e-4, "{before} {after}");
+
+    // On a rig: each of its lights.
+    let mut scene = crate::scenes::lit_room(reg);
+    let rig = crate::add_thing(&mut scene, reg, crate::things::rig::RIG, bpe_core::ThingId::ROOT).unwrap();
+    let lights: Vec<_> = scene.things.values().filter(|t| t.kind == "light").map(|t| t.id).collect();
+    for l in &lights {
+        scene.set_parent(*l, rig, bpe_core::Attach::default()).unwrap();
+    }
+    let all = Who::Thing { thing: rig, ball: None };
+    lane(&mut scene, reg, &[at(0.5), ("do.flash", vec![("who", who(all))])]);
+    for k in 0..lights.len() {
+        let (before, flash) = (shine(&scene, 0.4, k), shine(&scene, 0.5 + 1.0 / 240.0, k));
+        assert!(flash > before * 1.5, "light {k}: {before} {flash}");
+    }
+}
+
+#[test]
+fn a_broken_particles_thing_fades_out() {
+    use crate::rules::breaks::shows_looks;
+    use crate::things::particles::looks::{Look, add_particles};
+    assert!(shows_looks(crate::things::particles::KIND));
+    let kit = kit();
+    let reg = &kit.registry;
+    let mut plain = new_scene(reg);
+    let id = add_particles(&mut plain, reg, Look::SparkFountain, bpe_core::ThingId::ROOT).unwrap();
+    let mut broken = plain.clone();
+    let it = Who::Thing { thing: id, ball: None };
+    let fade = vec![("who", who(it)), ("look", choice("fade_out")), ("fade_time", n(1.0))];
+    lane(&mut broken, reg, &[at(1.0), ("do.break", fade)]);
+    let resolved = resolve(&broken, reg);
+    assert!(!bpe_runtime::is_beside(&broken, &kit.sims, id, &resolved.things[&id]), "a Break that names it keeps it");
+    // How much the sparks show at `t`, summed.
+    let shown = |scene: &Scene, t: f64| {
+        let resolved = resolve(scene, reg);
+        let mut playback = Playback::new(scene, &resolved, kit.sims.clone());
+        playback.seek(t);
+        let mut frame = Frame::default();
+        build_frame(scene, &resolved, playback.world(), playback.log(), t, &kit.draws, &mut frame);
+        frame.particles.iter().chain(&frame.particles_front).map(|p| p.color[3].abs()).sum::<f32>()
+    };
+    let whole = shown(&plain, 1.5);
+    assert!(whole > 0.0, "sparks to see");
+    assert!((shown(&broken, 0.95) - shown(&plain, 0.95)).abs() < 1e-3 * whole, "whole before the break");
+    let half = shown(&broken, 1.5);
+    assert!((half / whole - 0.5).abs() < 0.1, "half way: {whole} then {half}");
+    assert_eq!(shown(&broken, 2.2), 0.0, "gone once the look is over");
+}
+
 // --- Play a note --------------------------------------------------------------------------
 
 #[test]

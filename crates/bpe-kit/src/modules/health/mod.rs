@@ -61,7 +61,7 @@ pub struct HealthSettings {
     )]
     pub least: f32,
     /// Only hits from these take health.
-    #[setting(label = "Only hits from", when = "takes!=nothing", group = "Health")]
+    #[setting(label = "Hits from", when = "takes!=nothing", group = "Health")]
     pub from: Target,
     /// What happens when the health reaches 0.
     #[setting(label = "At zero", simple, group = "Health")]

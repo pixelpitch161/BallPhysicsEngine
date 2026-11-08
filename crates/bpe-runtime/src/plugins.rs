@@ -160,6 +160,12 @@ pub trait ThingSim: Send + Sync + 'static {
     fn in_main(&self, _resolved: &ResolvedThing) -> bool {
         true
     }
+    /// Whether this thing (`me`, as saved in `scene`) reads thing `other` while it steps, so that
+    /// `other`, were it stepped beside the physics, must step in the main world instead (a camera
+    /// following a Particles thing). Read by [`crate::is_beside`].
+    fn keeps(&self, _scene: &bpe_core::Scene, _me: &Thing, _other: ThingId) -> bool {
+        false
+    }
     /// For a thing stepped beside the physics: a hash of whatever else its stepping reads from its
     /// settings beyond its own and its Motion and Bounce cards (a Particles thing's Look asking it
     /// to keep each particle's trail), so a change of it rebuilds the playback it is stepped on.
