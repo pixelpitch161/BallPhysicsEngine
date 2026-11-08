@@ -166,5 +166,6 @@ mod tests {
             let x = r.range(-3.0, 5.0);
             assert!((-3.0..5.0).contains(&x), "{x}");
         }
+        assert_eq!(Rng::new(1, 1).range(2.0, 2.0), 2.0);
     }
 }

@@ -126,3 +126,20 @@ against a run on main).
 `docs/notes/engine.md` gets an "as built" paragraph (the new hook names, `bpe_core::dice`, `common.wgsl`, the
 restarts test, format 12 as the oldest), `docs/notes/particles.md` the looks layout and hook names; CLAUDE.md's
 pitfall line about the hooks gets the new names.
+
+## As built
+
+- **C10** as planned: each look's recipe is its own function; a script compared every old arm with its new
+  function after normalising and found them identical.
+- **C11** as planned, plus a job with Particles riding the start scene's balls (each of their switches and
+  choices changed in turn). The sweep found no missing hook, so no hook changed; a deliberate break was caught.
+- **C6**: `fmix32` wasn't needed (the particles' `hash` is the one MurmurHash-style fold in use), and
+  `bpe-kit/src/rng.rs` was deleted rather than kept as a re-export: every user now names `bpe_core::dice::Rng`.
+  The shader helpers are `effects/shared.wgsl` (what the prelude and the in-ball programs both had) and
+  `shaders/common.wgsl` (`luma`). Goldens unchanged.
+- **C5**: formats below 12 are refused (`LoadError::TooOld`); `cards_to_layers` and `effects/upgrade.rs::stack_of`
+  stay for the test scenes only. The old ball, look and shape paths are gone with their shaders; picture tests
+  moved to the layered path and paths. Tests of the old wall outlines' gradients went with them (paths have their
+  own); the shapes test is now `pictures::every_ball_shape_draws_its_own_outline`. Two comparisons against the
+  classic shiny ball had nothing left to compare with and were dropped. In `every_builtin_effect_changes_the_picture`
+  ball A is now brighter than white, since a plain layered body has no highlight for Lens flare to catch.

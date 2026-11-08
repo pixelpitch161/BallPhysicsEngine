@@ -63,6 +63,66 @@ pub(crate) fn plain_ball(frame: &mut Frame, center: Vec2, radius: f32, color: [f
 }
 
 #[test]
+fn every_ball_shape_draws_its_own_outline() {
+    // The eight shapes (0 circle, 1 square, 2 triangle, 3 diamond, 4 hexagon, 5 star, 6 heart,
+    // 7 donut) in a 2 by 4 grid, red on the dark background, 50 pixels round on the output.
+    const W: u32 = 540;
+    const H: u32 = 960;
+    let centre =
+        |k: usize| Vec2::new(if k.is_multiple_of(2) { -270.0 } else { 270.0 }, -720.0 + 480.0 * (k / 2) as f32);
+    let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+    for k in 0..8 {
+        plain_ball(&mut frame, centre(k), 100.0, [1.0, 0.0, 0.0, 1.0], 0.0);
+        frame.layered[k].form = [k as f32, 0.0, 0.0, 1.45];
+    }
+    let Some(pixels) = render_sized(&frame, W, H) else { return };
+    save("ball-shapes", &pixels, W, H);
+    let red = |at: Vec2| pixel_sized(&pixels, W, H, at)[0] > 128;
+    let covered: Vec<usize> = (0..8)
+        .map(|k| {
+            let mut n = 0;
+            for y in (-150..=150).step_by(2) {
+                for x in (-150..=150).step_by(2) {
+                    n += red(centre(k) + Vec2::new(x as f32, y as f32)) as usize;
+                }
+            }
+            n
+        })
+        .collect();
+    for k in 0..8 {
+        assert!(covered[k] > 1000 && covered[k] < 151 * 151, "shape {k} covers {}: {covered:?}", covered[k]);
+        for j in 0..k {
+            assert!(covered[j].abs_diff(covered[k]) > 40, "shapes {j} and {k} look alike: {covered:?}");
+        }
+        assert_eq!(red(centre(k)), k != 7, "shape {k}: the middle (only the donut has a hole)");
+    }
+    let r = 100.0;
+    assert!(!red(centre(0) + Vec2::splat(0.8 * r)) && red(centre(1) + Vec2::splat(0.75 * r)), "the square's corner");
+    assert!(red(centre(7) + Vec2::new(0.72 * r, 0.0)), "the donut's ring");
+    assert!(!red(centre(2) + Vec2::new(0.8 * r, -0.8 * r)), "the triangle narrows to its top corner");
+
+    // An outline 8 pixels wide outside the square, in white.
+    let mut outlined = Frame { bloom: 0.0, ..Frame::default() };
+    plain_ball(&mut outlined, Vec2::ZERO, 100.0, [1.0, 0.0, 0.0, 1.0], 0.0);
+    outlined.look_layers.push(LayerGpu {
+        head: [LayerGpu::OUTLINE, bpe_core::Blend::Normal.shader_code(), 0, 0],
+        amount: [1.0, 0.0, 0.0, 0.0],
+        p0: [8.0, 2.0, 0.0, 0.0],
+        colour: [1.0; 4],
+        ..LayerGpu::ZERO
+    });
+    outlined.layered[0].form = [1.0, 0.0, 0.0, 1.45];
+    outlined.layered[0].range[1] = 2;
+    let Some(pixels) = render_sized(&outlined, W, H) else { return };
+    save("ball-shape-outline", &pixels, W, H);
+    // Just outside the square's side (0.84 radii), and inside it.
+    let edge = pixel_sized(&pixels, W, H, Vec2::new(0.84 * r + 6.0, 0.0));
+    let inside = pixel_sized(&pixels, W, H, Vec2::new(0.6 * r, 0.0));
+    assert!(edge[0] > 200 && edge[1] > 200 && edge[2] > 200, "the outline is white: {edge:?}");
+    assert!(inside[0] > 128 && inside[1] < 40, "the body is still red inside: {inside:?}");
+}
+
+#[test]
 fn a_stretched_ball_reaches_further_along_its_motion() {
     const W: u32 = 270;
     const H: u32 = 480;

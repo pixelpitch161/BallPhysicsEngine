@@ -192,6 +192,24 @@ fn every_setting_that_changes_a_run_restarts_it() {
         }
         jobs.push((start, id, kind.to_string()));
     }
+    // Particles riding the start scene's balls (born on each ball, its edge or inside), with each
+    // of their own switches and choices changed in turn.
+    let mut riding = bpe_kit::new_scene(reg);
+    let balls = riding.order.iter().copied().find(|t| riding.things[t].kind == "balls").expect("the start ball");
+    let id = bpe_kit::add_thing(&mut riding, reg, "particles", balls).expect("particles under the balls");
+    riding = with(&riding, id, Place::Own, "from", Value::Choice("riding_its_parent".into()));
+    for (place, key, def) in settings_of(&riding, reg, id) {
+        if matches!(def.ty, ValueType::Bool | ValueType::Choice(_))
+            && let Some(v) = changed(def, &value_at(&riding, id, place, &key, def))
+        {
+            jobs.push((
+                with(&riding, id, place, &key, v.clone()),
+                id,
+                format!("riding particles ({place:?} {key} = {v:?})"),
+            ));
+        }
+    }
+    jobs.push((riding, id, "riding particles".to_string()));
     // Spread over a few threads: the whole sweep is some 40,000 short runs.
     let next = std::sync::atomic::AtomicUsize::new(0);
     let threads = std::thread::available_parallelism().map_or(2, |n| n.get().min(4));
