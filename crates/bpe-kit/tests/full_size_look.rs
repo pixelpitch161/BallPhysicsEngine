@@ -400,6 +400,8 @@ fn demo_shots(reg: &Registry) -> Vec<Shot> {
         at("grading-colour", grading_colour(reg)),
         at("grading-detail", grading_detail(reg)),
         shot("grading-masks", grading_masks(reg), vec![1.0, 2.5]),
+        shot("grading-things", grading_things(reg), vec![1.0, 2.5]),
+        at("grading-stage-follow", grading_stage_follow(reg)),
         at("stage-camera-orbit", stage_camera(reg, 25.0)),
         at("stage-camera-orbit-far", stage_camera(reg, -40.0)),
         at("stage-depth-of-field", stage_depth_of_field(reg)),
@@ -599,6 +601,90 @@ fn grading_masks(reg: &Registry) -> Scene {
     for (key, v) in [("y", n(200.0)), ("width", n(900.0)), ("height", n(1300.0)), ("feather", n(80.0))] {
         params.set(&bpe_core::layered_key(part, key), v);
     }
+    scene
+}
+
+/// A mask after the others whose first part is `first` with `part`'s settings, and whose Basic
+/// panel has `basic`'s.
+fn mask_with(
+    scene: &mut Scene,
+    reg: &Registry,
+    first: &str,
+    part: &[(&str, Value)],
+    basic: &[(&str, Value)],
+) -> bpe_core::LayerId {
+    use bpe_kit::modules::grade;
+    let mask = grade::add_mask(scene, reg, first).expect("a mask");
+    let card = scene.card(ThingId::ROOT, SlotId::Grade).expect("made with the mask");
+    let (p, b) = (grade::parts_of(card, mask)[0].id, grade::panels_of(card, mask)[0].id);
+    let params = &mut scene.card_mut(ThingId::ROOT, SlotId::Grade).expect("made above").params;
+    for (id, settings) in [(p, part), (b, basic)] {
+        for (key, v) in settings {
+            params.set(&bpe_core::layered_key(id, key), v.clone());
+        }
+    }
+    mask
+}
+
+/// The lit demo with Things masks and a Brush (colour grading part 5): the balls brighter and
+/// warmer, grown out to take in their glow; the background where no thing is cooler and darker;
+/// a soft painted swoosh across the middle more colourful. Look at the edges of the balls' masks
+/// (no jagged steps, no gap where a ball overlaps a shape) and the brush's soft edge (no banding).
+fn grading_things(reg: &Registry) -> Scene {
+    use bpe_kit::modules::grade;
+    let mut scene = scenes::lit_demo(reg);
+    let n = Value::Number;
+    let choice = |s: &str| Value::Choice(s.into());
+    mask_with(
+        &mut scene,
+        reg,
+        grade::THINGS,
+        &[("only", choice("balls")), ("expand", n(14.0)), ("feather", n(40.0))],
+        &[("exposure", n(0.8)), ("temp", n(40.0)), ("saturation", n(30.0))],
+    );
+    mask_with(
+        &mut scene,
+        reg,
+        grade::THINGS,
+        &[("only", choice("background"))],
+        &[("exposure", n(-0.7)), ("temp", n(-40.0)), ("saturation", n(-30.0))],
+    );
+    let swoosh = bpe_core::Stroke {
+        points: (0..=40)
+            .map(|i| {
+                let t = i as f32 / 40.0;
+                [-450.0 + 900.0 * t, 250.0 * (t * std::f32::consts::PI * 2.0).sin()]
+            })
+            .collect(),
+        size: 140.0,
+        softness: 0.8,
+        strength: 0.8,
+        ..Default::default()
+    };
+    let strokes = Value::Strokes(bpe_core::Strokes { list: vec![swoosh] });
+    mask_with(&mut scene, reg, grade::BRUSH, &[("strokes", strokes)], &[("saturation", n(60.0)), ("tint", n(30.0))]);
+    scene
+}
+
+/// The Stage camera swung round with a radial mask on every ball: each mask sits on its ball as
+/// the moved camera shows it (part 4's drift, fixed in part 5).
+fn grading_stage_follow(reg: &Registry) -> Scene {
+    use bpe_kit::modules::grade;
+    let mut scene = stage_camera(reg, 25.0);
+    let n = Value::Number;
+    mask_with(
+        &mut scene,
+        reg,
+        grade::RADIAL,
+        &[
+            ("place", Value::Choice("on_every_ball".into())),
+            ("grows", Value::Bool(true)),
+            ("width", n(60.0)),
+            ("height", n(60.0)),
+            ("feather", n(10.0)),
+        ],
+        &[("exposure", n(2.0)), ("temp", n(80.0))],
+    );
     scene
 }
 

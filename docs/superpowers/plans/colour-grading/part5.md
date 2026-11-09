@@ -193,3 +193,17 @@ their balls.
 - Don't keyframe strokes; don't save brush A/B/Erase settings in the scene.
 - Don't add scopes, the targeted adjustment tool, snapshots or grade files (part 6).
 - Don't let a grade key restart physics, sound or particles.
+
+## As built
+
+Built as planned, with these differences (`docs/notes/grading.md` "Part 5 as built" has the whole of it):
+
+- The silhouette pass lives in `bpe-gfx/src/renderer/silhouettes.rs` (shaders `silhouette_select.wgsl`,
+  `silhouette_scene.wgsl`, `silhouette_sprite.wgsl`, `silhouette_jfa.wgsl`), not `silhouettes.rs` at the crate root.
+- The stuck-to-screen overlay's things draw into a picture of their own, laid over the world's in the seed pass,
+  so under the moved Stage camera only the world's silhouette is read through the camera's uv (the overlay is
+  never swung by it, as in the picture itself).
+- Swarms draw into the silhouette between the sprites where they sit, as the picture draws them.
+- The brush grid's lanes are read as the whole numbers they are (`u32(x)`): adding a half first rounded a lane of
+  three full bytes (2^24 − 1) up to 2^24, which read as no paint (caught by the picture test).
+- The brush grid cache keeps 64 grids (paint levels 32).
