@@ -37,6 +37,18 @@ const OP_GRAIN: u32 = 15u;
 const OP_GRADIENT_MAP: u32 = 16u;
 
 const MAP_SAMPLES: u32 = 256u;
+
+// A mask's parts (grade/mod.rs PART_*, COMBINE_*).
+const PART_LINEAR: u32 = 1u;
+const PART_RADIAL: u32 = 2u;
+const PART_COLOUR: u32 = 3u;
+const PART_LUMINANCE: u32 = 4u;
+const COMBINE_SUBTRACT: u32 = 1u;
+const COMBINE_INTERSECT: u32 = 2u;
+const MAX_BALLS: u32 = 4096u;
+// The most copies of one gradient a pixel looks at (grade/mod.rs `MAX_SCAN`): hundreds of big
+// gradients over one row would otherwise make a frame slow enough to lose the GPU.
+const MAX_SCAN: u32 = 512u;
 // The blur of the pyramid's mips read through the B-spline: about 1.9 · 2^k output pixels for
 // mip k (measured on an impulse; mip 0 is 1.76).
 const PYR_SIGMA: f32 = 1.9;
@@ -259,6 +271,8 @@ struct GradeAt {
 struct GradeOut {
     colour: vec3<f32>,
     kept: vec3<f32>,
+    // How much the mask the editor's overlay shows covers here (0 without one).
+    overlay: f32,
 };
 
 // A tone-space colour with its tone luma moved by `delta` (grade/maths.rs `lift`).
@@ -432,12 +446,162 @@ fn grade_map(at: u32, amount: f32, c: vec3<f32>) -> vec3<f32> {
     return mix(c, m, amount);
 }
 
-// Segment `seg` of the grade over one linear colour (and the colour a weaker mask started from)
-// at `here`.
-fn run_grade(colour: vec3<f32>, kept: vec3<f32>, here: GradeAt, seg: u32) -> GradeOut {
+// Point `(x, y)` of a gradient at place `q` ([at x, at y, turn, scale]), on the screen.
+fn grade_placed(q: vec4<f32>, x: f32, y: f32) -> vec2<f32> {
+    let s = sin(q.z);
+    let co = cos(q.z);
+    let v = vec2<f32>(x, y) * q.w;
+    return q.xy + vec2<f32>(v.x * co - v.y * s, v.x * s + v.y * co);
+}
+
+// One copy of a Linear Gradient (see grade/maths.rs `linear_cover`). n: [x, y, angle, feather].
+fn grade_linear_one(n: vec4<f32>, q: vec4<f32>, p: vec2<f32>, px: f32) -> f32 {
+    let c = grade_placed(q, n.x, n.y);
+    let a = n.z + q.z;
+    let f = max(n.w * q.w, px);
+    let t = dot(p - c, vec2<f32>(cos(a), sin(a))) / f + 0.5;
+    return 1.0 - grade_smooth(0.0, 1.0, t);
+}
+
+// One copy of a Radial Gradient (see grade/maths.rs `radial_cover`). n0: [x, y, half width, half
+// height], n1: [angle, roundness, feather, 0].
+fn grade_radial_one(n0: vec4<f32>, n1: vec4<f32>, q: vec4<f32>, p: vec2<f32>, px: f32) -> f32 {
+    let c = grade_placed(q, n0.x, n0.y);
+    let a = n1.x + q.z;
+    let s = sin(a);
+    let co = cos(a);
+    let d = p - c;
+    let local = vec2<f32>(d.x * co + d.y * s, -d.x * s + d.y * co);
+    let half = n0.zw * q.w;
+    let short = min(half.x, half.y);
+    let qq = mix(local / half, local / short, max(n1.y, 0.0));
+    if max(abs(qq.x), abs(qq.y)) > 1.0 {
+        return 0.0;
+    }
+    let e = 2.0 - 6.0 * min(n1.y, 0.0);
+    let dist = pow(pow(max(abs(qq.x), 1e-7), e) + pow(max(abs(qq.y), 1e-7), e), 1.0 / e);
+    let inner = min(1.0 - n1.z, 1.0 - px / short);
+    return 1.0 - grade_smooth(inner, 1.0, dist);
+}
+
+// A gradient's copies from word `at` ([count, reach, 0, 0], then one place a word, sorted down
+// the screen), joined with Add: only those whose row is within reach of the pixel's are looked at.
+fn grade_copies(kind: u32, n0: vec4<f32>, n1: vec4<f32>, at: u32, p: vec2<f32>, px: f32) -> f32 {
+    let head = grade_prog[at];
+    let count = min(u32(head.x), MAX_BALLS);
+    let reach = head.y;
+    var lo = 0u;
+    if reach >= 0.0 {
+        var hi = count;
+        let want = p.y - reach;
+        while lo < hi {
+            let mid = (lo + hi) / 2u;
+            if grade_prog[at + 1u + mid].y < want {
+                lo = mid + 1u;
+            } else {
+                hi = mid;
+            }
+        }
+    }
+    var best = 0.0;
+    let end = min(count, lo + MAX_SCAN);
+    for (var k = lo; k < end; k++) {
+        let q = grade_prog[at + 1u + k];
+        if reach >= 0.0 && q.y > p.y + reach {
+            break;
+        }
+        if kind == PART_LINEAR {
+            best = max(best, grade_linear_one(n0, q, p, px));
+        } else {
+            best = max(best, grade_radial_one(n0, n1, q, p, px));
+        }
+    }
+    return best;
+}
+
+// A Colour Range on linear `c` (see grade/maths.rs `colour_range_cover`): its nearest pick.
+fn grade_colour_range(d: u32, c: vec3<f32>) -> f32 {
+    let head = grade_prog[d];
+    var lin = c;
+    if max(c.r, max(c.g, c.b)) > 1.0 {
+        lin = roll_off(c);
+    }
+    let lab = lin_to_oklab(lin);
+    var near = 1e9;
+    for (var k = 0u; k < u32(head.x); k++) {
+        let off = lab - grade_prog[d + 1u + k].xyz;
+        near = min(near, length(vec3<f32>(0.5 * off.x, off.y, off.z)));
+    }
+    if near > 1e8 {
+        return 0.0;
+    }
+    return 1.0 - grade_smooth(head.y, head.z, near);
+}
+
+// A Luminance Range on linear `c` (see grade/maths.rs `luminance_cover`). n: [low, high, fade, 0].
+fn grade_luminance(n: vec4<f32>, c: vec3<f32>) -> f32 {
+    let y = clamp(luma(tone3(roll_off(max(c, vec3<f32>(0.0))))), 0.0, 1.0);
+    return grade_smooth(n.x - n.z, n.x, y) * (1.0 - grade_smooth(n.y, n.y + n.z, y));
+}
+
+// One part of kind `kind` whose words start at `d`, at screen point `p`, over the colour the mask
+// started from.
+fn grade_part(kind: u32, d: u32, c: vec3<f32>, p: vec2<f32>, px: f32) -> f32 {
+    if kind == PART_LINEAR {
+        return grade_copies(kind, grade_prog[d], vec4<f32>(0.0), d + 1u, p, px);
+    }
+    if kind == PART_RADIAL {
+        return grade_copies(kind, grade_prog[d], grade_prog[d + 1u], d + 2u, p, px);
+    }
+    if kind == PART_COLOUR {
+        return grade_colour_range(d, c);
+    }
+    if kind == PART_LUMINANCE {
+        return grade_luminance(grade_prog[d], c);
+    }
+    return 0.0;
+}
+
+// How much the mask whose area words start at `at` covers `here` (see grade/maths.rs
+// `area_cover`), `c` the linear colour it started from.
+fn grade_cover(at: u32, c: vec3<f32>, here: GradeAt) -> f32 {
+    let head = grade_prog[at];
+    let n = u32(head.x);
+    let unit = 1.0 / max(here.scale, 1e-4);
+    // Screen units: pixels of the video from the picture's middle, y down.
+    let p = (here.uv - 0.5) * here.size * unit;
+    var cov = 0.0;
+    var w = at + 1u;
+    for (var i = 0u; i < n; i++) {
+        let ph = grade_prog[w];
+        var v = grade_part(u32(ph.x), w + 1u, c, p, unit);
+        if ph.z > 0.5 {
+            v = 1.0 - v;
+        }
+        if i == 0u {
+            cov = v;
+        } else if u32(ph.y) == COMBINE_SUBTRACT {
+            cov = cov * (1.0 - v);
+        } else if u32(ph.y) == COMBINE_INTERSECT {
+            cov = cov * v;
+        } else {
+            cov = max(cov, v);
+        }
+        w += max(u32(ph.w), 1u);
+    }
+    if head.y > 0.5 && n > 0u {
+        cov = 1.0 - cov;
+    }
+    return clamp(cov, 0.0, 1.0);
+}
+
+// Segment `seg` of the grade over one linear colour (and the colour a weaker mask started from,
+// and the overlay so far) at `here`.
+fn run_grade(colour: vec3<f32>, kept: vec3<f32>, overlay: f32, here: GradeAt, seg: u32) -> GradeOut {
     var result: GradeOut;
     result.colour = colour;
     result.kept = kept;
+    result.overlay = overlay;
     // Left of the editor's split the picture is shown as it was.
     if here.uv.x < grade_prog[0].y {
         return result;
@@ -490,7 +654,16 @@ fn run_grade(colour: vec3<f32>, kept: vec3<f32>, here: GradeAt, seg: u32) -> Gra
         } else if op == OP_BEGIN {
             saved = c;
         } else if op == OP_END {
-            c = mix(saved, c, h.w);
+            // A mask over part of the picture mixes back by its coverage, worked out from the
+            // colour it started from.
+            var cover = 1.0;
+            if u32(h.z) > 1u {
+                cover = grade_cover(at + 1u, saved, here);
+                if grade_prog[at + 1u].z > 0.5 {
+                    result.overlay = cover;
+                }
+            }
+            c = mix(saved, c, h.w * cover);
         }
         at += max(u32(h.z), 1u);
     }

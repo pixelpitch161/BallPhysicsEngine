@@ -8,7 +8,13 @@
 //! - [`OP_CURVE`] (tone): the slope at 0 per channel, then [`CURVE_SAMPLES`] offsets from the
 //!   straight line per channel, sample `i` at `u = i / CURVE_SAMPLES`, `p = u / (1 − u)`.
 //! - [`OP_CHROMA`] (Oklab): `[vibrance, saturation, 0, 0]` (−1..1).
-//! - [`OP_BEGIN`] / [`OP_END`] (linear): a mask weaker than full; `extra` of the end is its amount.
+//! - [`OP_BEGIN`] / [`OP_END`] (linear): a mask weaker than full or over part of the picture;
+//!   `extra` of the end is its amount. For a mask with an area the end's words are `[parts,
+//!   invert, overlay, 0]` then each part `[kind, combine, invert, words]` and its words:
+//!   [`PART_LINEAR`] `[x, y, angle, feather]` then copies; [`PART_RADIAL`] `[x, y, half width,
+//!   half height]`, `[angle, roundness, feather, 0]` then copies; [`PART_COLOUR`] `[picks, inner,
+//!   outer, 0]` then a pick a word (Oklab); [`PART_LUMINANCE`] `[low, high, fade, 0]`. Copies are
+//!   `[count, reach, 0, 0]` then `[at x, at y, turn, scale]` each, sorted by `at y`.
 //! - [`OP_HUE`] (Oklab): the HSL panel, [`HUE_SAMPLES`] samples over the hue of `[turn, saturation,
 //!   luminance, 0]` (see `maths::hsl_row`).
 //! - [`OP_POINT`] (Oklab): Point Colour; `extra` is the number of picks, three words each (see
@@ -27,8 +33,8 @@
 use super::maths::{self, ToneCurves};
 use super::*;
 use crate::frame::{
-    GradeBasic, GradeCalibration, GradeColourGrading, GradeDetail, GradeEffects, GradeHsl, GradeMask, GradePanel,
-    GradePointColour, GradeStack, GradeToneCurve,
+    GradeArea, GradeBasic, GradeCalibration, GradeColourGrading, GradeCombine, GradeDetail, GradeEffects, GradeHsl,
+    GradeMask, GradePanel, GradePlace, GradePointColour, GradeShape, GradeStack, GradeToneCurve,
 };
 
 /// The compiled grade.
@@ -220,14 +226,19 @@ impl Builder {
 
     fn mask(&mut self, m: &GradeMask) {
         let amount = if m.amount.is_finite() { m.amount.clamp(0.0, 1.0) } else { 0.0 };
-        if amount <= 0.0 || m.panels.iter().all(GradePanel::is_identity) {
+        let works = amount > 0.0 && !m.panels.iter().all(GradePanel::is_identity);
+        let overlay = m.overlay && m.area.is_some();
+        if !works && !overlay {
             return;
         }
-        let weak = amount < 1.0;
+        // A mask over part of the picture always mixes back by its coverage; the Whole picture
+        // only when it is weaker than full.
+        let weak = amount < 1.0 || m.area.is_some();
         if weak {
             self.step(OP_BEGIN, SPACE_LINEAR, 0.0, []);
         }
-        for panel in &m.panels {
+        let panels: &[GradePanel] = if works { &m.panels } else { &[] };
+        for panel in panels {
             match panel {
                 GradePanel::Basic(b) => self.basic(b),
                 GradePanel::ToneCurve(t) => self.tone_curve(t),
@@ -240,9 +251,76 @@ impl Builder {
             }
         }
         if weak {
-            self.step(OP_END, SPACE_LINEAR, amount, []);
+            let words = m.area.as_ref().map(|a| cover_words(a, overlay)).unwrap_or_default();
+            self.step(OP_END, SPACE_LINEAR, amount, words);
         }
     }
+}
+
+/// `OP_END`'s words for a mask's area: `[parts, invert, overlay, 0]`, then each part `[kind,
+/// combine, invert, words]` and its own words (see the module's notes).
+fn cover_words(area: &GradeArea, overlay: bool) -> Vec<[f32; 4]> {
+    let flag = |b: bool| if b { 1.0 } else { 0.0 };
+    let mut out = vec![[area.parts.len() as f32, flag(area.invert), flag(overlay), 0.0]];
+    for part in &area.parts {
+        let (kind, data) = part_words(&part.shape);
+        let combine = match part.combine {
+            GradeCombine::Add => COMBINE_ADD,
+            GradeCombine::Subtract => COMBINE_SUBTRACT,
+            GradeCombine::Intersect => COMBINE_INTERSECT,
+        };
+        out.push([kind as f32, combine as f32, flag(part.invert), (data.len() + 1) as f32]);
+        out.extend(data);
+    }
+    out
+}
+
+fn f4(v: [f64; 4]) -> [f32; 4] {
+    v.map(|x| x as f32)
+}
+
+/// A part's kind and words.
+fn part_words(shape: &GradeShape) -> (u32, Vec<[f32; 4]>) {
+    match shape {
+        GradeShape::Linear(l) => {
+            let n = maths::linear_numbers(l);
+            let mut data = vec![f4(n)];
+            data.extend(copies(&l.places, -1.0));
+            (PART_LINEAR, data)
+        }
+        GradeShape::Radial(r) => {
+            let n = maths::radial_numbers(r);
+            let [[x, y, hw, hh], _] = n;
+            let reach = (x.hypot(y) + hw.hypot(hh)) as f32;
+            let mut data = vec![f4(n[0]), f4(n[1])];
+            data.extend(copies(&r.places, reach));
+            (PART_RADIAL, data)
+        }
+        GradeShape::ColourRange(r) => {
+            let picks = maths::range_picks(r);
+            let [inner, outer] = maths::range_widths(r.refine);
+            let mut data = vec![[picks.len() as f32, inner as f32, outer as f32, 0.0]];
+            data.extend(picks.iter().map(|p| [p[0] as f32, p[1] as f32, p[2] as f32, 0.0]));
+            (PART_COLOUR, data)
+        }
+        GradeShape::LuminanceRange(l) => {
+            let [low, high, fade] = maths::luminance_numbers(l);
+            (PART_LUMINANCE, vec![[low as f32, high as f32, fade as f32, 0.0]])
+        }
+    }
+}
+
+/// A gradient's copies: `[count, reach, 0, 0]` then `[at x, at y, turn, scale]` each, sorted down
+/// the screen so the shader finds those near a pixel's row. `reach` (−1: everywhere) is how far
+/// a copy's shape gets from its place at scale 1, and the word holds it at the largest scale.
+fn copies(places: &[GradePlace], reach: f32) -> Vec<[f32; 4]> {
+    let mut ok: Vec<&GradePlace> = places.iter().filter(|p| maths::place_ok(p)).take(MAX_BALLS).collect();
+    ok.sort_by(|a, b| a.at[1].total_cmp(&b.at[1]));
+    let biggest = ok.iter().map(|p| p.scale).fold(0.0f32, f32::max);
+    let reach = if reach < 0.0 { -1.0 } else { reach * biggest + 2.0 };
+    std::iter::once([ok.len() as f32, reach, 0.0, 0.0])
+        .chain(ok.iter().map(|p| [p.at[0], p.at[1], p.turn, p.scale]))
+        .collect()
 }
 
 /// The step of the slope at 0 worked out from.

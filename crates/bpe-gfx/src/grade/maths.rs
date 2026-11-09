@@ -857,3 +857,168 @@ pub fn gradient_map(c: [f64; 3], row: &[[f64; 3]], amount: f64) -> [f64; 3] {
     let m = [0, 1, 2].map(|k| (row[i][k] + (row[i + 1][k] - row[i][k]) * f) * over);
     [0, 1, 2].map(|k| c[k] + (m[k] - c[k]) * amount)
 }
+
+// ---- Part 4: masks (the coverage of a mask's parts; `shaders/grade.wgsl` twins) ----
+
+use crate::frame::{
+    GradeArea, GradeColourRange, GradeCombine, GradeLinear, GradeLuminanceRange, GradePlace, GradeRadial, GradeShape,
+};
+
+fn finite_or(v: f32, or: f32) -> f64 {
+    if v.is_finite() { v as f64 } else { or as f64 }
+}
+
+/// A Linear Gradient's numbers as the shader reads them: `[x, y, angle in radians, feather]`, a
+/// number that isn't one taken as its default and the feather at least 1.
+pub fn linear_numbers(l: &GradeLinear) -> [f64; 4] {
+    [
+        finite_or(l.x, 0.0),
+        finite_or(l.y, 0.0),
+        finite_or(l.angle, 90.0).to_radians(),
+        finite_or(l.feather, 400.0).max(1.0),
+    ]
+}
+
+/// A Radial Gradient's numbers as the shader reads them: `[x, y, half width, half height]` and
+/// `[angle in radians, roundness −1..1, feather 0..1, 0]`.
+pub fn radial_numbers(r: &GradeRadial) -> [[f64; 4]; 2] {
+    [
+        [
+            finite_or(r.x, 0.0),
+            finite_or(r.y, 0.0),
+            0.5 * finite_or(r.width, 500.0).max(1.0),
+            0.5 * finite_or(r.height, 500.0).max(1.0),
+        ],
+        [
+            finite_or(r.angle, 0.0).to_radians(),
+            (finite_or(r.roundness, 0.0) / 100.0).clamp(-1.0, 1.0),
+            (finite_or(r.feather, 50.0) / 100.0).clamp(0.0, 1.0),
+            0.0,
+        ],
+    ]
+}
+
+/// Whether a place can be drawn at (finite, a size over 0).
+pub fn place_ok(p: &GradePlace) -> bool {
+    p.at.iter().all(|v| v.is_finite()) && p.turn.is_finite() && p.scale.is_finite() && p.scale > 0.0
+}
+
+/// Point `(x, y)` of a gradient at place `p`, on the screen.
+fn placed(p: &GradePlace, x: f64, y: f64) -> [f64; 2] {
+    let (s, c) = (p.turn as f64).sin_cos();
+    let (x, y) = (x * p.scale as f64, y * p.scale as f64);
+    [p.at[0] as f64 + x * c - y * s, p.at[1] as f64 + x * s + y * c]
+}
+
+/// One copy of a Linear Gradient at `place`, at screen point `p`; `px` is one output pixel in
+/// screen units (the feather is never sharper).
+pub fn linear_cover(n: [f64; 4], place: &GradePlace, p: [f64; 2], px: f64) -> f64 {
+    let [x, y, angle, feather] = n;
+    let c = placed(place, x, y);
+    let (s, co) = (angle + place.turn as f64).sin_cos();
+    let f = (feather * place.scale as f64).max(px);
+    let t = ((p[0] - c[0]) * co + (p[1] - c[1]) * s) / f + 0.5;
+    1.0 - smoothstep(0.0, 1.0, t)
+}
+
+/// One copy of a Radial Gradient at `place`, at screen point `p` (see [`linear_cover`]).
+pub fn radial_cover(n: [[f64; 4]; 2], place: &GradePlace, p: [f64; 2], px: f64) -> f64 {
+    let [[x, y, hw, hh], [angle, round, feather, _]] = n;
+    let c = placed(place, x, y);
+    let (s, co) = (angle + place.turn as f64).sin_cos();
+    let d = [p[0] - c[0], p[1] - c[1]];
+    let local = [d[0] * co + d[1] * s, -d[0] * s + d[1] * co];
+    let scale = place.scale as f64;
+    let half = [hw * scale, hh * scale];
+    let short = half[0].min(half[1]);
+    let r = round.max(0.0);
+    let q = [0, 1].map(|i| local[i] / half[i] * (1.0 - r) + local[i] / short * r);
+    if q[0].abs().max(q[1].abs()) > 1.0 {
+        return 0.0;
+    }
+    let e = 2.0 - 6.0 * round.min(0.0);
+    let dist = (q[0].abs().max(1e-7).powf(e) + q[1].abs().max(1e-7).powf(e)).powf(1.0 / e);
+    let inner = (1.0 - feather).min(1.0 - px / short);
+    1.0 - smoothstep(inner, 1.0, dist)
+}
+
+/// A Colour Range's widths for Refine (0..100): full coverage within `inner` of a pick (Oklab
+/// distance, lightness counted half), none past `outer`.
+pub fn range_widths(refine: f32) -> [f64; 2] {
+    let t = (finite_or(refine, 50.0) / 100.0).clamp(0.0, 1.0);
+    let outer = 0.03 + 0.25 * t.powf(1.3);
+    [0.35 * outer, outer]
+}
+
+/// A Colour Range's picks in Oklab.
+pub fn range_picks(r: &GradeColourRange) -> Vec<[f64; 3]> {
+    r.picks.iter().filter(|c| c.iter().all(|v| v.is_finite())).map(|c| oklab(c.map(|v| (v as f64).max(0.0)))).collect()
+}
+
+/// How much a Colour Range covers the linear colour `c`: its nearest pick decides.
+pub fn colour_range_cover(c: [f64; 3], picks: &[[f64; 3]], [inner, outer]: [f64; 2]) -> f64 {
+    // Past white is matched as the screen shows it, as Point Colour does.
+    let lab = if c[0].max(c[1]).max(c[2]) > 1.0 { oklab(roll_off(c)) } else { oklab(c) };
+    let d = picks
+        .iter()
+        .map(|p| ((0.5 * (lab[0] - p[0])).powi(2) + (lab[1] - p[1]).powi(2) + (lab[2] - p[2]).powi(2)).sqrt())
+        .fold(f64::INFINITY, f64::min);
+    if d.is_finite() { 1.0 - smoothstep(inner, outer, d) } else { 0.0 }
+}
+
+/// A Luminance Range's numbers: `[low, high, fade]` in 0..1, low under high.
+pub fn luminance_numbers(l: &GradeLuminanceRange) -> [f64; 3] {
+    let a = (finite_or(l.low, 50.0) / 100.0).clamp(0.0, 1.0);
+    let b = (finite_or(l.high, 100.0) / 100.0).clamp(0.0, 1.0);
+    let fade = (0.3 * finite_or(l.smoothness, 50.0) / 100.0).clamp(1.0 / 512.0, 0.3);
+    [a.min(b), a.max(b), fade]
+}
+
+/// The brightness a Luminance Range reads: the tone luma of the colour as the screen shows it.
+pub fn shown_luma(c: [f64; 3]) -> f64 {
+    let shown = roll_off(c.map(|v| v.max(0.0)));
+    luminance(shown.map(tone)).clamp(0.0, 1.0)
+}
+
+/// How much a Luminance Range covers the linear colour `c`.
+pub fn luminance_cover(c: [f64; 3], [low, high, fade]: [f64; 3]) -> f64 {
+    let y = shown_luma(c);
+    smoothstep(low - fade, low, y) * (1.0 - smoothstep(high, high + fade, y))
+}
+
+/// Coverage `cov` so far joined by a part's `v`.
+pub fn combine(cov: f64, v: f64, how: GradeCombine) -> f64 {
+    match how {
+        GradeCombine::Add => cov.max(v),
+        GradeCombine::Subtract => cov * (1.0 - v),
+        GradeCombine::Intersect => cov * v,
+    }
+}
+
+/// How much one part covers screen point `p` with colour `c` (the linear colour the mask starts
+/// from), before its Invert. Copies of a gradient join with Add; no place covers nothing.
+pub fn part_cover(shape: &GradeShape, c: [f64; 3], p: [f64; 2], px: f64) -> f64 {
+    let most = |places: &[GradePlace], f: &dyn Fn(&GradePlace) -> f64| {
+        places.iter().filter(|q| place_ok(q)).take(crate::grade::MAX_BALLS).map(f).fold(0.0, f64::max)
+    };
+    match shape {
+        GradeShape::Linear(l) => most(&l.places, &|q| linear_cover(linear_numbers(l), q, p, px)),
+        GradeShape::Radial(r) => most(&r.places, &|q| radial_cover(radial_numbers(r), q, p, px)),
+        GradeShape::ColourRange(r) => colour_range_cover(c, &range_picks(r), range_widths(r.refine)),
+        GradeShape::LuminanceRange(l) => luminance_cover(c, luminance_numbers(l)),
+    }
+}
+
+/// How much a mask's area covers screen point `p` (pixels of the video from the middle, y down)
+/// with colour `c`; `px` is one output pixel in those units. No part covers nothing.
+pub fn area_cover(area: &GradeArea, c: [f64; 3], p: [f64; 2], px: f64) -> f64 {
+    let mut cov = 0.0;
+    for (i, part) in area.parts.iter().enumerate() {
+        let mut v = part_cover(&part.shape, c, p, px);
+        if part.invert {
+            v = 1.0 - v;
+        }
+        cov = if i == 0 { v } else { combine(cov, v, part.combine) };
+    }
+    if area.invert && !area.parts.is_empty() { 1.0 - cov } else { cov }
+}

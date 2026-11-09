@@ -83,7 +83,10 @@ fn draw_at(
     playback.seek(time);
     let particles = studio.particle_job.as_ref().and_then(|job| job.latest());
     let lent = particles.filter(|p| p.step == playback.world().step).map(|p| playback.lend_states(p.lent()));
+    // The handles read the grade the preview shows, not a warm-up moment's.
+    let shown = studio.grade.shown.take();
     super::compose(studio, playback.world(), playback.log(), time, look, frame);
+    studio.grade.shown.replace(shown);
     if let Some(lent) = lent {
         playback.take_back(lent);
     }

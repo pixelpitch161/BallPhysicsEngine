@@ -148,9 +148,11 @@ fn graded(in: GradeIn, first: vec3<f32>) -> GradeOut {
     let pix = vec2<i32>(in.pos.xy);
     let here = GradeAt(in.uv, pix, size, scale);
     if in.seg == 0u {
-        return run_grade(first, first, here, 0u);
+        return run_grade(first, first, 0.0, here, 0u);
     }
-    return run_grade(textureLoad(grade_in, pix, 0).rgb, textureLoad(grade_kept_in, pix, 0).rgb, here, in.seg);
+    // The kept colour's alpha carries the editor's mask overlay from pass to pass.
+    let kept = textureLoad(grade_kept_in, pix, 0);
+    return run_grade(textureLoad(grade_in, pix, 0).rgb, kept.rgb, kept.a, here, in.seg);
 }
 
 struct GradePassOut {
@@ -169,7 +171,7 @@ fn fs_grade_pass(in: GradeIn) -> GradePassOut {
     let colour = clamp(o.colour, -most, most);
     // Its tone luma rides in alpha, for Sharpening's neighbours.
     out.colour = vec4<f32>(colour, luma(tone3(colour)));
-    out.kept = vec4<f32>(clamp(o.kept, -most, most), 1.0);
+    out.kept = vec4<f32>(clamp(o.kept, -most, most), clamp(o.overlay, 0.0, 1.0));
     return out;
 }
 
@@ -229,10 +231,16 @@ fn fs_composite(in: GradeIn) -> @location(0) vec4<f32> {
     // The colour grade works on the linear picture, light above white kept, before the roll-off
     // squeezes it into the screen's range. With no grade it is skipped altogether, so the picture
     // is exactly as without it. A grade of several passes ran its earlier ones before this.
+    var overlay = 0.0;
     if g.post.z > 0.5 {
-        lin = clamp(graded(in, lin).colour, vec3<f32>(0.0), vec3<f32>(65504.0));
+        let o = graded(in, lin);
+        lin = clamp(o.colour, vec3<f32>(0.0), vec3<f32>(65504.0));
+        overlay = clamp(o.overlay, 0.0, 1.0);
     }
-    let mapped = roll_off(lin);
+    var mapped = roll_off(lin);
+    // The editor's red mask overlay (O), where the mask it shows covers: mixed after the roll-off,
+    // so it shows on bright light too.
+    mapped = mix(mapped, vec3<f32>(1.0, 0.02, 0.02), 0.5 * overlay);
     // Triangular dither of ±1 step, the same on every channel (two uniform numbers summed): no banding survives the
     // 8-bit output, and no sin() whose precision differs from GPU to GPU.
     let n = dither_noise(vec2<u32>(in.pos.xy), 0u);

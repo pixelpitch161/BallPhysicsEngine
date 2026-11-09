@@ -1,7 +1,8 @@
-//! Grade mode's panel column: the Whole picture's panels in the order they work, each with a
-//! header (fold, name, on/off, dragged to a new place; right-click for Reset panel, Move up or
-//! down, Remove and Reset order) over its settings, and Add panel for another (a copy is "Tone
-//! Curve 2"). The colour panels' bodies are in `colour.rs`.
+//! Grade mode's panel column: the selected mask (the Whole picture, or a mask with its Amount and
+//! parts, `parts.rs`), then its panels in the order they work, each with a header (fold, name,
+//! on/off, dragged to a new place; right-click for Reset panel, Move up or down, Remove and Reset
+//! order) over its settings, and Add panel for another (a copy is "Tone Curve 2"). The colour
+//! panels' bodies are in `colour.rs`.
 
 use super::cx::{GradeCx, GradeEdit, card_or_start, full_key};
 use super::{Channel, GradeMode};
@@ -23,14 +24,23 @@ pub fn column(ui: &mut Ui, studio: &mut Studio) {
         let Studio { scene, kit, grade: mode, .. } = &mut *studio;
         let card = card_or_start(scene, &start);
         let gx = GradeCx { scene, kit, card, time };
-        let Some(whole) = grade::whole_of(card) else { return };
-        let panels: Vec<&Layer> = grade::panels_of(card, whole);
-        title_row(ui, &gx, &mut edits);
+        let Some(mask) = mode.mask_of(card) else { return };
+        let Some(mask_layer) = card.layer(mask) else { return };
+        let panels: Vec<&Layer> = grade::panels_of(card, mask);
+        title_row(ui, &gx, mask_layer, &mut edits);
         ui.add_space(4.0);
+        if mask_layer.kind == grade::MASK {
+            grid(ui, &gx, mask, grade::MaskSettings::defs(), None, &mut edits);
+            ui.add_space(6.0);
+            super::parts::section(ui, mode, &gx, mask, &mut edits);
+            ui.add_space(6.0);
+            ui.label(RichText::new("Panels").font(style::semibold(13.0)));
+            ui.add_space(4.0);
+        }
         let can_remove = panels.len() > 1;
         let mut headers = Vec::new();
         for (index, layer) in panels.iter().enumerate() {
-            let place = Place { index, count: panels.len(), can_remove };
+            let place = Place { mask, index, count: panels.len(), can_remove };
             let header = panel(ui, mode, &gx, layer, place, &mut edits);
             headers.push((layer.id, header));
         }
@@ -40,10 +50,10 @@ pub fn column(ui: &mut Ui, studio: &mut Studio) {
     super::apply(studio, edits);
 }
 
-/// "Whole picture" and Add panel.
-fn title_row(ui: &mut Ui, gx: &GradeCx, edits: &mut Vec<GradeEdit>) {
+/// The mask's name ("Whole picture") and Add panel.
+fn title_row(ui: &mut Ui, gx: &GradeCx, mask: &Layer, edits: &mut Vec<GradeEdit>) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Whole picture").font(style::semibold(14.0)));
+        ui.label(RichText::new(&mask.name).font(style::semibold(14.0)));
         if !gx.on() {
             ui.label(RichText::new("(grade off)").small().color(style::MUTED));
         }
@@ -52,7 +62,7 @@ fn title_row(ui: &mut Ui, gx: &GradeCx, edits: &mut Vec<GradeEdit>) {
                 for kind in PANEL_ORDER {
                     let name = gx.kit.registry.layer(kind).map_or(kind, |k| k.name());
                     if ui.button(name).clicked() {
-                        edits.push(GradeEdit::AddPanel(kind));
+                        edits.push(GradeEdit::AddPanel(mask.id, kind));
                         ui.close();
                     }
                 }
@@ -66,6 +76,7 @@ fn title_row(ui: &mut Ui, gx: &GradeCx, edits: &mut Vec<GradeEdit>) {
 /// Where a panel is among its mask's panels.
 #[derive(Clone, Copy)]
 struct Place {
+    mask: LayerId,
     index: usize,
     count: usize,
     can_remove: bool,
@@ -116,7 +127,7 @@ fn panel(
                     "The panel is off. Turn it on to use it again."
                 });
                 if switch.changed() {
-                    edits.push(GradeEdit::EnablePanel(id, on));
+                    edits.push(GradeEdit::Enable(id, on));
                 }
                 grip(ui);
             });
@@ -186,14 +197,14 @@ fn menu(ui: &mut Ui, id: LayerId, place: Place, edits: &mut Vec<GradeEdit>) {
     }
     let remove = ui
         .add_enabled(place.can_remove, egui::Button::new("Remove panel"))
-        .on_disabled_hover_text("The picture keeps at least one panel");
+        .on_disabled_hover_text("A mask keeps at least one panel");
     if remove.clicked() {
         edits.push(GradeEdit::RemovePanel(id));
         ui.close();
     }
     ui.separator();
     if ui.button("Reset order").on_hover_text("The panels back in Lightroom's order").clicked() {
-        edits.push(GradeEdit::ResetOrder);
+        edits.push(GradeEdit::ResetOrder(place.mask));
         ui.close();
     }
 }

@@ -188,7 +188,7 @@ fn dragging_a_header_changes_when_its_panel_works() {
     assert_eq!(names(&h.state().scene), first_two("Tone Curve", "Basic"));
     let card = h.state().scene.card(ThingId::ROOT, SlotId::Grade).unwrap();
     let resolved = bpe_core::resolve(&h.state().scene, &h.state().kit.registry);
-    let stack = grade::stack(resolved.things[&ThingId::ROOT].slots.get(&SlotId::Grade));
+    let stack = grade::stack(resolved.things[&ThingId::ROOT].slots.get(&SlotId::Grade), None);
     assert!(matches!(stack.masks[0].panels[0], bpe_gfx::GradePanel::ToneCurve(_)), "{card:?}");
 }
 
@@ -251,6 +251,7 @@ fn before_and_split_change_only_the_preview_s_grade() {
         masks: vec![bpe_gfx::GradeMask {
             amount: 1.0,
             panels: vec![bpe_gfx::GradePanel::Basic(bpe_gfx::GradeBasic { exposure: 1.0, ..Default::default() })],
+            ..Default::default()
         }],
         split: None,
     };
@@ -275,7 +276,7 @@ fn the_masks_list_has_the_whole_picture_and_its_eye_turns_the_grade_off() {
         .with_size(egui::vec2(280.0, 600.0))
         .allow_missing_glyphs()
         .with_context_setup(style::apply)
-        .build_ui_state(|ui, s: &mut Studio| masks(ui, s), graded_studio());
+        .build_ui_state(|ui, s: &mut Studio| masks::column(ui, s), graded_studio());
     h.run();
     assert!(h.query_all_by_label("Whole picture").next().is_some());
     assert!(h.query_all_by_label("1 panel changed").next().is_some());
@@ -468,7 +469,7 @@ fn pick_fills_the_first_free_slot_and_remove_gives_it_up() {
     assert!(h.query_all_by_role_and_label(Role::Button, "Colour 1").next().is_some(), "its swatch");
     assert_eq!(sliders(&h, "Range"), 1, "its sliders");
     let resolved = bpe_core::resolve(&h.state().scene, &h.state().kit.registry);
-    let stack = grade::stack(resolved.things[&ThingId::ROOT].slots.get(&SlotId::Grade));
+    let stack = grade::stack(resolved.things[&ThingId::ROOT].slots.get(&SlotId::Grade), None);
     assert!(stack.is_identity(), "a pick that moves nothing changes nothing");
     // Its keys and pulses go with it.
     let hue = cx::at(&format!("{panel}/pick1_hue"));
@@ -530,6 +531,178 @@ fn detail_and_effects_show_their_settings_and_a_drag_sharpens_less_widely() {
     h.run();
     assert_eq!(number(&h, "Detail", "radius"), 0.5);
     let resolved = bpe_core::resolve(&h.state().scene, &h.state().kit.registry);
-    let stack = grade::stack(resolved.things[&ThingId::ROOT].slots.get(&SlotId::Grade));
+    let stack = grade::stack(resolved.things[&ThingId::ROOT].slots.get(&SlotId::Grade), None);
     assert!(stack.masks[0].panels.iter().any(|p| matches!(p, bpe_gfx::GradePanel::Detail(d) if d.radius == 0.5)));
+}
+
+// --- Part 4: masks -------------------------------------------------------------------------
+
+fn masks_harness(studio: Studio) -> Harness<'static, Studio> {
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(280.0, 900.0))
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(120)
+        .allow_missing_glyphs()
+        .with_context_setup(style::apply)
+        .build_ui_state(|ui, s: &mut Studio| masks::column(ui, s), studio);
+    h.run();
+    h
+}
+
+fn card(scene: &Scene) -> &bpe_core::Slot {
+    scene.card(ThingId::ROOT, SlotId::Grade).unwrap()
+}
+
+/// The masks' names, in order.
+fn mask_names(scene: &Scene) -> Vec<String> {
+    grade::masks_of(card(scene)).iter().map(|l| l.name.clone()).collect()
+}
+
+/// A studio with a Radial Gradient mask, selected.
+fn masked_studio() -> (Studio, bpe_core::LayerId) {
+    let mut studio = Studio::headless();
+    apply(&mut studio, vec![cx::GradeEdit::AddMask(grade::RADIAL)]);
+    let mask = studio.grade.mask.expect("the new mask is selected");
+    (studio, mask)
+}
+
+/// The topmost button labelled `name` (a menu's item sits over what is under it).
+fn top_button(h: &Harness<'_, Studio>, name: &str) -> Pos2 {
+    h.query_all_by_role_and_label(Role::Button, name)
+        .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .unwrap_or_else(|| panic!("no {name} button"))
+        .rect()
+        .center()
+}
+
+fn click_at(h: &mut Harness<'_, Studio>, at: Pos2) {
+    h.hover_at(at);
+    h.run();
+    press(h, at, true, egui::PointerButton::Primary);
+    h.step();
+    press(h, at, false, egui::PointerButton::Primary);
+    h.run();
+}
+
+#[test]
+fn add_mask_makes_a_mask_with_its_part_and_a_basic_panel_and_selects_it() {
+    let mut h = masks_harness(Studio::headless());
+    h.get_by_label("Add mask").click();
+    h.run();
+    pick(&mut h, "Radial Gradient");
+    let scene = &h.state().scene;
+    let masks = grade::masks_of(card(scene));
+    assert_eq!(masks.len(), 1);
+    let mask = masks[0].id;
+    assert_eq!(h.state().grade.mask, Some(mask), "selected");
+    let parts = grade::parts_of(card(scene), mask);
+    assert_eq!(parts.iter().map(|p| p.kind.as_str()).collect::<Vec<_>>(), [grade::RADIAL]);
+    let panels = grade::panels_of(card(scene), mask);
+    assert_eq!(panels.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["Basic"]);
+    let name = masks[0].name.clone();
+    assert!(h.query_all_by_label(&format!("{name} shown")).next().is_some(), "its eye");
+    // The eye hides it (the layer is switched off, its settings kept).
+    h.get_by_label(&format!("{name} shown")).click();
+    h.run();
+    assert!(!grade::masks_of(card(&h.state().scene))[0].enabled);
+}
+
+#[test]
+fn the_mask_menu_renames_duplicates_moves_and_deletes() {
+    let (mut studio, first) = masked_studio();
+    apply(&mut studio, vec![cx::GradeEdit::AddMask(grade::LINEAR)]);
+    let mut h = masks_harness(studio);
+    let names = mask_names(&h.state().scene);
+    assert_eq!(names.len(), 2);
+    // Rename types in place; Enter keeps it.
+    let at = top_button(&h, &names[0]);
+    right_click(&mut h, at);
+    pick(&mut h, "Rename");
+    assert_eq!(h.state().grade.renaming.as_ref().map(|r| r.0), Some(first));
+    h.state_mut().grade.renaming = Some((first, "Sun".into()));
+    h.run();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert_eq!(mask_names(&h.state().scene)[0], "Sun");
+    // Move down puts it after the other.
+    let at = top_button(&h, "Sun");
+    right_click(&mut h, at);
+    pick(&mut h, "Move down");
+    assert_eq!(mask_names(&h.state().scene), [names[1].clone(), "Sun".into()]);
+    // Duplicate copies it just after, with its part and panel, and selects the copy.
+    let at = top_button(&h, "Sun");
+    right_click(&mut h, at);
+    pick(&mut h, "Duplicate");
+    let scene = &h.state().scene;
+    let masks = grade::masks_of(card(scene));
+    assert_eq!(masks.len(), 3);
+    let copy = masks[2].id;
+    assert_eq!(h.state().grade.mask, Some(copy));
+    assert_eq!(grade::parts_of(card(scene), copy).len(), 1);
+    assert_eq!(grade::panels_of(card(scene), copy).len(), 1);
+    // Delete takes it with its parts and panels.
+    let name = masks[2].name.clone();
+    let at = h
+        .query_all_by_role_and_label(Role::Button, &name)
+        .max_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .unwrap()
+        .rect()
+        .center();
+    right_click(&mut h, at);
+    pick(&mut h, "Delete");
+    let card = card(&h.state().scene);
+    assert_eq!(grade::masks_of(card).len(), 2);
+    assert!(card.layers.iter().all(|l| l.id != copy && l.parent != Some(copy)), "its parts and panels went");
+    assert_eq!(h.state().grade.mask, None, "the Whole picture shows");
+}
+
+#[test]
+fn a_masks_column_shows_its_parts_and_add_part_joins_another() {
+    let (studio, mask) = masked_studio();
+    let mut h = harness_with(studio);
+    assert!(h.query_all_by_label("Parts").next().is_some());
+    assert!(h.query_all_by_role_and_label(Role::Slider, "Amount").next().is_some(), "the mask's Amount");
+    assert!(h.query_all_by_label("Radial Gradient").next().is_some(), "the part's box");
+    assert!(h.query_all_by_role_and_label(Role::Slider, "Width").next().is_some());
+    assert!(h.query_all_by_role_and_label(Role::Button, "Add").next().is_none(), "the first part has no Combine chip");
+    assert!(h.query_all_by_label("Basic").next().is_some(), "its panel");
+    // Add part, Subtract, Linear Gradient.
+    h.get_by_label("Add part").click();
+    h.run();
+    let at = top_button(&h, "Subtract");
+    click_at(&mut h, at);
+    let at = top_button(&h, "Linear Gradient");
+    click_at(&mut h, at);
+    let scene = &h.state().scene;
+    let parts = grade::parts_of(card(scene), mask);
+    assert_eq!(parts.len(), 2);
+    assert_eq!(parts[1].kind, grade::LINEAR);
+    let combine = card(scene).params.get(&format!("{}/combine", parts[1].id)).cloned();
+    assert_eq!(combine, Some(Value::Choice("subtract".into())));
+    // The second part's header shows how it joins.
+    assert!(h.query_all_by_role_and_label(Role::Button, "Subtract").next().is_some());
+    // A click on its name shows its handles.
+    let linear = parts[1].id;
+    let at = top_button(&h, "Linear Gradient");
+    click_at(&mut h, at);
+    assert_eq!(h.state().grade.part.get(&mask), Some(&linear));
+}
+
+#[test]
+fn the_overlay_shows_only_on_the_selected_mask() {
+    let (mut studio, mask) = masked_studio();
+    apply(&mut studio, vec![cx::GradeEdit::AddMask(grade::LINEAR)]);
+    studio.grade.mask = Some(mask);
+    let resolved = bpe_core::resolve(&studio.scene, &studio.kit.registry);
+    let stack = grade::stack(resolved.things[&ThingId::ROOT].slots.get(&SlotId::Grade), None);
+    assert_eq!(stack.masks.len(), 3, "the Whole picture and two masks");
+    let mut shown = stack.clone();
+    studio.grade.show_on(&mut shown);
+    assert_eq!(shown, stack, "no overlay until O");
+    studio.grade.overlay = true;
+    let mut shown = stack.clone();
+    studio.grade.show_on(&mut shown);
+    let overlays: Vec<(u32, bool)> = shown.masks.iter().map(|m| (m.id, m.overlay)).collect();
+    assert_eq!(overlays.iter().filter(|(_, o)| *o).collect::<Vec<_>>(), [&(mask.0, true)]);
+    assert_eq!(*studio.grade.shown.borrow(), stack, "the handles read the stack as drawn");
 }

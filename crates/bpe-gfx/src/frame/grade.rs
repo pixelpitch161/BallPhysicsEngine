@@ -18,23 +18,150 @@ pub struct GradeStack {
 impl GradeStack {
     /// Whether the grade changes nothing: no panel of any mask does anything.
     pub fn is_identity(&self) -> bool {
-        // A NaN amount counts as none.
-        self.masks.iter().all(|m| m.amount.is_nan() || m.amount <= 0.0 || m.panels.iter().all(GradePanel::is_identity))
+        self.masks.iter().all(|m| !m.does_something())
     }
 }
 
-/// One mask of the grade (part 1: only the Whole picture) and its panels in processing order.
+/// One mask of the grade (the Whole picture, or a mask over part of it) and its panels in
+/// processing order.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GradeMask {
     /// 0..1: how strongly its panels work.
     pub amount: f32,
+    /// Where it works: `None` for the Whole picture (everywhere), else its parts.
+    pub area: Option<GradeArea>,
     pub panels: Vec<GradePanel>,
+    /// The editor's red overlay (O) shows where this mask covers. Never set for an export.
+    pub overlay: bool,
+    /// The mask's layer id on the Grade card, for the editor (overlay, handles).
+    pub id: u32,
 }
 
 impl Default for GradeMask {
     fn default() -> Self {
-        Self { amount: 1.0, panels: Vec::new() }
+        Self { amount: 1.0, area: None, panels: Vec::new(), overlay: false, id: 0 }
     }
+}
+
+impl GradeMask {
+    /// Whether it changes the picture: its panels do something at an Amount over 0, or it shows
+    /// its overlay. A NaN amount counts as none.
+    pub fn does_something(&self) -> bool {
+        let works = !self.amount.is_nan() && self.amount > 0.0 && !self.panels.iter().all(GradePanel::is_identity);
+        works || (self.overlay && self.area.is_some())
+    }
+}
+
+/// Where a mask works: its parts combined in order, then inverted when asked.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GradeArea {
+    pub parts: Vec<GradePart>,
+    pub invert: bool,
+}
+
+/// How a part joins the parts before it (Lightroom's mask components). The first part is always
+/// taken as it is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GradeCombine {
+    /// Where it covers, or the others do (the greater coverage).
+    #[default]
+    Add,
+    /// Where the others cover and it doesn't.
+    Subtract,
+    /// Where both it and the others cover.
+    Intersect,
+}
+
+/// One part of a mask.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GradePart {
+    pub combine: GradeCombine,
+    /// Covers where it otherwise wouldn't.
+    pub invert: bool,
+    pub shape: GradeShape,
+    /// The part's layer id on the Grade card, for the editor's handles.
+    pub id: u32,
+}
+
+/// What a part covers.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GradeShape {
+    Linear(GradeLinear),
+    Radial(GradeRadial),
+    ColourRange(GradeColourRange),
+    LuminanceRange(GradeLuminanceRange),
+}
+
+/// Where a gradient sits, in screen units (pixels of the video from the picture's middle, y down,
+/// as `CameraView::to_screen`): its middle is `at + rotate((x, y) · scale, turn)`, its sizes are
+/// times `scale` and its angle plus `turn`. On the screen it is [`GradePlace::SCREEN`]; in the
+/// world, or on a thing or ball, the scene's draw works it out through the camera.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GradePlace {
+    pub at: [f32; 2],
+    /// Radians, clockwise on screen.
+    pub turn: f32,
+    pub scale: f32,
+}
+
+impl GradePlace {
+    pub const SCREEN: GradePlace = GradePlace { at: [0.0, 0.0], turn: 0.0, scale: 1.0 };
+
+    /// Where the point `(x, y)` of a gradient placed here is on the screen.
+    pub fn point(&self, x: f32, y: f32) -> [f32; 2] {
+        let (s, c) = self.turn.sin_cos();
+        let (x, y) = (x * self.scale, y * self.scale);
+        [self.at[0] + x * c - y * s, self.at[1] + x * s + y * c]
+    }
+}
+
+/// A Linear Gradient: full effect on one side of a line, none on the other, fading over Feather.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GradeLinear {
+    /// Its middle line's middle, in its place's units.
+    pub x: f32,
+    pub y: f32,
+    /// Degrees clockwise from the right: the way the effect fades out.
+    pub angle: f32,
+    /// The distance between the full-effect line and the no-effect line.
+    pub feather: f32,
+    /// One copy at each place (one for the screen, the world, a thing or a ball; one a ball for
+    /// every ball). None covers nothing.
+    pub places: Vec<GradePlace>,
+}
+
+/// A Radial Gradient: an ellipse covered inside, fading out towards its edge.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GradeRadial {
+    pub x: f32,
+    pub y: f32,
+    /// The whole ellipse's width and height.
+    pub width: f32,
+    pub height: f32,
+    /// Degrees clockwise.
+    pub angle: f32,
+    /// −100 (a rounder rectangle) .. 100 (a circle on the short side).
+    pub roundness: f32,
+    /// 0..100: how far in from the edge the fade starts.
+    pub feather: f32,
+    pub places: Vec<GradePlace>,
+}
+
+/// A Colour Range: the colours near up to five picks.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GradeColourRange {
+    /// The picked colours, in linear light.
+    pub picks: Vec<[f32; 3]>,
+    /// 0..100: how far from a pick a colour may be and still be covered.
+    pub refine: f32,
+}
+
+/// A Luminance Range: the brightnesses between Low and High (0..100), fading out over Smoothness.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GradeLuminanceRange {
+    pub low: f32,
+    pub high: f32,
+    pub smoothness: f32,
 }
 
 /// One panel of a mask, with its numbers in Lightroom's units.

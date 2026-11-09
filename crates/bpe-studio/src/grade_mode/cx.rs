@@ -93,19 +93,36 @@ pub enum GradeEdit {
     ClearKeys(String),
     /// The setting follows sound, light or health, or stops with `None`.
     Follow(String, Option<PulseSource>),
-    /// A new panel of `kind` at the end of the Whole picture's panels.
-    AddPanel(&'static str),
+    /// A new panel of `kind` at the end of mask `.0`'s panels (the Whole picture's too).
+    AddPanel(LayerId, &'static str),
     RemovePanel(LayerId),
-    /// A panel to place `to` among the Whole picture's panels (0 works first).
+    /// A panel to place `to` among its mask's panels (0 works first).
     MovePanel(LayerId, usize),
-    /// Every setting of a panel back to its default: its values, keys and pulses go.
+    /// Every setting of a panel (or part) back to its default: its values, keys and pulses go.
     ResetPanel(LayerId),
-    /// The panels back in Lightroom's order.
-    ResetOrder,
-    /// A panel switched on or off.
-    EnablePanel(LayerId, bool),
+    /// Mask `.0`'s panels back in Lightroom's order.
+    ResetOrder(LayerId),
+    /// A panel, part or mask switched on or off (a mask's eye).
+    Enable(LayerId, bool),
     /// A Point Colour panel's pick in slot `.1` (0..8) given up: every value, key and pulse of it goes.
     RemovePick(LayerId, usize),
+    /// A new mask after the others, with one part of this kind and a Basic panel.
+    AddMask(&'static str),
+    /// A mask with its parts and panels, gone.
+    RemoveMask(LayerId),
+    /// A mask to place `to` among the masks after the Whole picture (0 works first).
+    MoveMask(LayerId, usize),
+    /// A copy of a mask (its parts, panels, keys and pulses) just after it.
+    DuplicateMask(LayerId),
+    /// A mask (or part or panel) named anew; blank gives back its kind's name.
+    Rename(LayerId, String),
+    /// A new part of `.1` after mask `.0`'s parts, joined by `.2`.
+    AddPart(LayerId, &'static str, grade::Combine),
+    RemovePart(LayerId),
+    /// A part to place `to` among its mask's parts.
+    MovePart(LayerId, usize),
+    /// A Colour Range's pick in slot `.1` (0..5) given up.
+    RemoveRangePick(LayerId, usize),
 }
 
 /// What applying the edits did.
@@ -114,6 +131,8 @@ pub struct Applied {
     pub changed: bool,
     /// A setting with keys was keyed at the playhead (the editor pauses).
     pub keyed: bool,
+    /// The mask a new mask or copy made, to select.
+    pub added: Option<LayerId>,
 }
 
 /// Applies `edits` to the scene, giving it its Grade card first.
@@ -125,7 +144,6 @@ pub fn apply(scene: &mut Scene, kit: &Kit, time: f64, edits: Vec<GradeEdit>) -> 
         return out;
     }
     grade::ensure_grade(scene, reg);
-    let whole = scene.card(root, slot).and_then(grade::whole_of);
     for edit in edits {
         out.changed |= match edit {
             GradeEdit::Set(key, v) => match write(scene, reg, &at(&key), v, time) {
@@ -142,20 +160,58 @@ pub fn apply(scene: &mut Scene, kit: &Kit, time: f64, edits: Vec<GradeEdit>) -> 
             },
             GradeEdit::ClearKeys(key) => crate::inspector::clear_keys(scene, reg, &at(&key), time),
             GradeEdit::Follow(key, source) => crate::follow::set(scene, reg, &at(&key), source),
-            GradeEdit::AddPanel(kind) => whole.is_some_and(|w| grade::add_panel(scene, reg, w, kind).is_ok()),
+            GradeEdit::AddPanel(mask, kind) => grade::add_panel(scene, reg, mask, kind).is_ok(),
             GradeEdit::RemovePanel(id) => {
                 let allowed = scene.card(root, slot).is_some_and(|c| grade::can_remove_panel(c, id));
                 allowed && scene.remove_layer(reg, root, slot, id).is_ok()
             }
-            GradeEdit::MovePanel(id, to) => {
+            GradeEdit::MovePanel(id, to) | GradeEdit::MovePart(id, to) => {
                 let before = scene.card(root, slot).map(|c| c.layers.clone());
                 scene.move_sub_layer_in(reg, root, slot, id, to).is_ok()
                     && scene.card(root, slot).map(|c| &c.layers) != before.as_ref()
             }
             GradeEdit::ResetPanel(id) => reset_panel(scene, id),
             GradeEdit::RemovePick(id, slot) => clear(scene, &format!("{id}/{}", grade::pick_prefix(slot)), None),
-            GradeEdit::ResetOrder => whole.is_some_and(|w| grade::reset_order(scene, reg, w)),
-            GradeEdit::EnablePanel(id, on) => scene.set_layer_enabled(reg, root, slot, id, on).is_ok(),
+            GradeEdit::RemoveRangePick(id, slot) => {
+                let used = clear(scene, &format!("{id}/{}", grade::masks::range_key(slot, "used")), None);
+                clear(scene, &format!("{id}/{}", grade::masks::range_key(slot, "colour")), None) || used
+            }
+            GradeEdit::ResetOrder(mask) => grade::reset_order(scene, reg, mask),
+            GradeEdit::Enable(id, on) => scene.set_layer_enabled(reg, root, slot, id, on).is_ok(),
+            GradeEdit::AddMask(kind) => match grade::add_mask(scene, reg, kind) {
+                Ok(id) => {
+                    out.added = Some(id);
+                    true
+                }
+                Err(_) => false,
+            },
+            GradeEdit::RemoveMask(id) => {
+                let ours = scene.card(root, slot).and_then(|c| c.layer(id)).is_some_and(|l| l.kind == grade::MASK);
+                ours && scene.remove_layer(reg, root, slot, id).is_ok()
+            }
+            GradeEdit::RemovePart(id) => {
+                let kind = scene.card(root, slot).and_then(|c| c.layer(id)).map(|l| l.kind.clone());
+                let ours = kind.is_some_and(|k| grade::PART_KINDS.contains(&k.as_str()));
+                ours && scene.remove_layer(reg, root, slot, id).is_ok()
+            }
+            GradeEdit::MoveMask(id, to) => {
+                let before = scene.card(root, slot).map(|c| c.layers.clone());
+                scene.move_layer(reg, root, slot, id, to + 1).is_ok()
+                    && scene.card(root, slot).map(|c| &c.layers) != before.as_ref()
+            }
+            GradeEdit::DuplicateMask(id) => match scene.duplicate_layer(reg, root, slot, id) {
+                Ok(copy) => {
+                    out.added = Some(copy);
+                    true
+                }
+                Err(_) => false,
+            },
+            GradeEdit::Rename(id, name) => {
+                let before = scene.card(root, slot).and_then(|c| c.layer(id)).map(|l| l.name.clone());
+                scene.rename_layer(reg, root, slot, id, &name).is_ok()
+                    && scene.card(root, slot).and_then(|c| c.layer(id)).map(|l| l.name.clone()) != before
+            }
+            GradeEdit::AddPart(mask, kind, combine) => grade::add_part(scene, reg, mask, kind, combine).is_ok(),
         };
     }
     out
