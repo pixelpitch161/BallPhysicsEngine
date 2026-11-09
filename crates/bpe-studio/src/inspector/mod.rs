@@ -1,5 +1,12 @@
 //! The inspector: the selected thing's header, how it hangs in the tree, its kind's settings and
 //! one card per slot it has. Every card's settings are the thing's own.
+//!
+//! [`show`] draws it top to bottom, each part from its own file: `header.rs` (name, kind, eye,
+//! tags), `find.rs` (Find a setting), `own.rs` (the kind's own card), `placement.rs`,
+//! `slots.rs` (one card per slot, with `physics.rs` and `surface.rs`), `emitter_card/` and
+//! `add_card.rs`. What the cards ask for is gathered as [`Edit`]s and applied after the drawing
+//! (`edits.rs`). This file holds the inspector's state and what the cards share (folding, card
+//! frames and headers).
 
 use crate::selection::Selection;
 use crate::setting_snap::Snapper;
@@ -102,15 +109,19 @@ pub(crate) mod emitter_card;
 mod find;
 mod header;
 mod own;
+mod physics;
 mod placement;
 mod slots;
+mod surface;
 #[cfg(test)]
 mod tests;
 
 use edits::*;
 pub(crate) use edits::{Edit, clear_keys, set_or_key};
 use own::*;
+use physics::*;
 use slots::*;
+use surface::*;
 
 /// What the inspector shows of a thing with tabs (a shape, a Balls group, an emitter, a Particles thing, a Text).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

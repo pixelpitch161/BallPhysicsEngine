@@ -37,7 +37,7 @@ same: there's no backward compatibility until the owner is happy with the softwa
 - **Physics** is a fixed 240 Hz staged step loop (`bpe-runtime`) and is deterministic: goldens pin it. Things that
   only decorate (most Particles things) run beside the main world (`World.beside`, `main_part`), so an edit to them
   restarts only their own playback. Fingerprints decide what an edit restarts (physics, sound, particles).
-- **Drawing**: things draw into a `Frame` (`bpe-gfx/src/frame.rs`) and the renderer draws it: balls through one
+- **Drawing**: things draw into a `Frame` (`bpe-gfx/src/frame/`) and the renderer draws it: balls through one
   layered uber-shader, shapes and text through paths, trails as strips, particles as sprites, then lighting passes,
   effects, bloom and grade. A frame with no Lighting card is byte-identical to before lighting existed.
 - Scene files are format 12 (`save.rs`). Never add built-in or example scenes to the program unless the owner asks;
@@ -61,6 +61,7 @@ Each area's detailed notes are in `docs/notes/`; its design is in `docs/superpow
 | Sound (bpe-dsp, bpe-sound: voices, chains, modulators, notes, buses, Follow sound) | `sound.md` | `specs/2026-11-04-sound-system-design.md`, `plans/sound-system/` (decisions log there) |
 | Editor (design system, inspector, Look editor, timeline, Mixer, Sound tab) | `editor.md` | `specs/2026-11-03-design-system-editor-design.md`, `specs/2026-11-03-ball-look-editor-design.md` |
 | Sub-layers, trails and particle layers, the staying Line | `engine.md` (bpe-core, bpe-kit) | `specs/2026-11-04-sublayers-trails-physics-design.md`, `plans/2026-11-04-sublayers-part1.md`, `plans/2026-11-04-trail-particle-layers.md`, `plans/2026-11-05-trail-bounce-corners.md`, `plans/trails/staying-lines.md` |
+| Where each file is (split folders, old file names, where colour grading goes) | `file-map.md` | `plans/2026-11-09-split-giant-files.md` |
 | Checks, picture tests, this guide | this file | `plans/2026-11-08-safety-nets-lean-guide.md` |
 
 ## Crate map
@@ -74,8 +75,9 @@ Dependencies go bottom to top. `docs/notes/engine.md`, `sound.md` and `editor.md
   registry, rules data.
 - `bpe-runtime`: the world, the 240 Hz staged step loop, collisions (`pairs.rs`, `walls.rs`, two-sided walls), the
   camera, the event log, history (trails' past), playback and snapshots, sound/light/health inputs, the rules stage.
-- `bpe-gfx`: the renderer: frames, the layered ball shader and in-ball programs, paths for shapes and text,
-  trails, sprites, fields, liquid, swarm, lighting (`lighting.rs`, `shaders/lighting.wgsl`), effects, bake.
+- `bpe-gfx`: the renderer: frames (`frame/`), the renderer itself (`renderer/`), the layered ball shader and in-ball
+  programs, paths for shapes and text, trails, sprites, fields, liquid, swarm, lighting (`lighting/`,
+  `shaders/lighting/`, pass names in `light_pass.rs`), effects, bake.
 - `bpe-kit`: every plugin: one folder per thing kind in `src/things/`, per card kind in `src/modules/`, rule blocks
   in `src/rules/`, the text engine in `src/text/`, paint and gradients in `src/paint/`, starting cards in
   `starters.rs`, test scenes in `scenes.rs`.

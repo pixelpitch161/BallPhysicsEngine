@@ -2,6 +2,10 @@
 
 Moved word for word from CLAUDE.md on 2026-11-08 (workstream W1). Add each finished part's "as built" summary here, not in CLAUDE.md.
 
+**File map:** on 2026-11-09 (W17) the big files became folders (`lighting/`, `shaders/lighting/`, `frame/`,
+`renderer/`, `world/`, `app/`, `inspector/`, `widgets/`). Older notes below may name the old files; `file-map.md` says
+where each one is now.
+
 Part 1a is in (#106). **Light** things (`bpe-kit/src/things/light/`: `LightKind`, family "Lights", no cards; the
 Add thing menu offers Point, Spot, Sun, Area and Strip light through `add_light`, which also gives the scene its
 **Lighting** card `scene.lighting` (`modules/lighting.rs`, `SlotId::Lighting`) when it has none). A light's place is
@@ -13,7 +17,7 @@ shared Rides on is `bpe-kit/src/riding.rs`, see `engine.md`, W14). `LightDraw::l
 into `LightGpu`s and strip segments. Every drawn and around layer has a "Lighting" fold (`LayerKind::light_defs`,
 `layers/lighting.rs`: `lit`, `blocks_light`, and `bulge` on a ball's Body, the spec's Roundness); records carry it in
 `LayerGpu.light`, `TrailVertex.light`, `Particle.light` (`around::Drew` stamps trails and particles; ghosts and mini
-balls take their layer's). The renderer (`bpe-gfx/src/lib.rs::render`, `lighting.rs`, `shaders/lighting.wgsl`) draws a
+balls take their layer's). The renderer (`bpe-gfx/src/renderer/scene.rs::render`, `lighting/`, `shaders/lighting/`) draws a
 lit frame three times through `draw_scene` (`Globals.light.x`: 0 the picture, 1 each layer's colour × Lit, 2 the
 surface: R blocks, G a ball's height), then a jump-flood signed distance field of the blockers, then each pixel's
 lights with a 2D shadow march (penumbra from the lamp's size, stopping short of the lamp by its size, a ridden ball's
@@ -317,3 +321,13 @@ light probe and the editor's handles (`preview/light_handles.rs`, the aim handle
 laser aimed this way is not cut short (only At the pen is). A rule's **Flash** on a Light, or on a Rig (each of its
 lights, `rig::fixtures::rigs_of`), flares it: `flare()` adds `strength × (1 − age)²` over the Flare length, times
 its Flare (× 1 when Flare is 0); hits still count only when Flare is on. Follow light offers Text things (G6).
+
+**Split and pass names (W17, 2026-11-09).** The lighting shader is `bpe-gfx/src/shaders/lighting/`, one file per pass
+(`bindings`, `field`, `shadows`, `direct`, `light_field`, `haze_bloom`, `stage`, `shade`, `mix`, `dof_floor`,
+`bake`, `caustics`), joined back into the same text by `LIGHTING_WGSL` in `lib.rs`; a new function goes in the file of
+its pass, after anything it uses. The Rust side is `bpe-gfx/src/lighting/` (`run.rs` is one frame's lighting in
+order: `RunPlan`, uploads, then field, direct, glow, bounce and mix passes; `kit.rs` builds the pipelines). Light-pass
+numbers have names: `light_pass::{PICTURE, LIT, SURFACE, EMISSION, BACKGROUND, UV, TAGS, BEHIND, TINT, GLASS}` in Rust
+and `PASS_*` plus `light_pass(g.light.x)` in WGSL (`shaders/light_passes.wgsl`, joined into every shader that reads
+the pass). The shaders see Behind as -1; the test `the_shaders_name_the_same_passes` keeps both lists equal. A new
+pass gets a name in both places, never a bare number.

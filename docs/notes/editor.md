@@ -2,13 +2,17 @@
 
 Moved word for word from CLAUDE.md on 2026-11-08 (workstream W1). Add each finished part's "as built" summary here, not in CLAUDE.md.
 
+**File map:** on 2026-11-09 (W17) the big files became folders (`lighting/`, `shaders/lighting/`, `frame/`,
+`renderer/`, `world/`, `app/`, `inspector/`, `widgets/`). Older notes below may name the old files; `file-map.md` says
+where each one is now.
+
 - `bpe-studio`: the egui 0.37 editor. Its look is the Ball Studio Design System (spec
   `docs/superpowers/specs/2026-11-03-design-system-editor-design.md`): `style/` holds every token, the IBM Plex
   fonts (`assets/fonts/`), track colours and drawn controls (switch, track picker, key diamonds). No other editor
   file may make up a colour (a test checks; a real scene colour line ends in `// scene colour`). Every thing but
   the scene settings has a `Thing.colour` (`TrackColour([u8; 3])`, any colour, saved as `"#rrggbb"` (older files with bare names open with new colours); a new thing gets a random readable one far from the hues in use, `Scene::new_colour`; editor only, never read by physics or export; picked with `style::track_picker` from the tree's tag and row menu, the timeline swatch and the inspector header). Its layout has the tree on the left, the inspector on the right, the preview
-  in the middle and the timeline at the bottom. Key files are `app.rs`, `inspector.rs`, `preview.rs`, `timeline/`,
-  `widgets.rs` (settings grids and the right-click value menu), `palettes.rs` and `export_window.rs`.
+  in the middle and the timeline at the bottom. Key files are `app/`, `inspector/`, `preview.rs`, `timeline/`,
+  `widgets/` (settings grids and the right-click value menu), `palettes.rs` and `export_window.rs`.
   **Grid snap** (`grid.rs`, toolbar Grid / Snap / spacing / angle step, saved in `grid-next.txt`): Snap snaps the
   preview's drags and, through `setting_snap.rs`, inspector settings while dragged (plan
   `docs/superpowers/plans/2026-11-07-snap-settings.md`): the app `put`s the frame's `SettingSnap` in egui memory,
@@ -16,7 +20,7 @@ Moved word for word from CLAUDE.md on 2026-11-08 (workstream W1). Add each finis
   Position/Offset a place; `°`/`deg` an angle step; not the Video size, nor a slider under four steps across,
   `widgets::setting_snapper`), Alt held is free (so Alt+click resets from the label only), typed numbers stay exact.
   `NumberFeel.snap` drives `span_slider` and `two_ended`; egui sliders and boxes snap after the fact (`after_drag`).
-  Motion and Bounce show as one **Physics** card (`Card::Physics`, `PHYSICS` in `inspector.rs`: one header, Remove,
+  Motion and Bounce show as one **Physics** card (`Card::Physics`, `PHYSICS` in `inspector/mod.rs`: one header, Remove,
   "+ Add card" entry and jump-bar chip; each card's grid inside); the scene still keeps the two cards.
   A selected shape is moulded in the preview (`shape_handles.rs`: corners, sides, bend handles, a circle's edge,
   Shift mirrors across the shape's middle line, right-click Add point / Create curve / Straighten / Delete point /
@@ -34,7 +38,7 @@ Moved word for word from CLAUDE.md on 2026-11-08 (workstream W1). Add each finis
   and the gradient's line drag there; balls can be picked for layers of their own), the shape chips and group
   settings, Across the group (the group layers: gradient and shaders) and folds for Variety, Release, Launch and
   Odd ones out. Those settings are left off the Balls card itself (`GROUP_HEADINGS`). An emitter's own card is the
-  Emitter card (`emitter_card/`, a child module of `inspector.rs`): chips Emit | Catch | Marker, the mini view
+  Emitter card (`inspector/emitter_card/`): chips Emit | Catch | Marker, the mini view
   (`mini_view.rs`: rays, drag the square to aim, fan edges, ray ends for speed), the rounds strip (`strip.rs`, from
   `Inspector.rounds`, which the app fills from the playback) and the Sits on menu; its Look has the Ball / Group
   switch, Group mode showing one round laid out (`ViewCx::settings` stands it in as a custom group). In the
