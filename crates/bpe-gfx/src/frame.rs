@@ -3059,7 +3059,7 @@ mod tests {
         scene.add_slot(&reg, balls, SlotId::Look, "look.plain").unwrap();
 
         let mut resolved = resolve(&scene, &reg);
-        let r = resolved.things.get_mut(&balls).unwrap();
+        let r = std::sync::Arc::make_mut(resolved.things.get_mut(&balls).unwrap());
         r.screen = screen;
         let params = &mut r.slots.get_mut(&SlotId::Look).unwrap().params;
         params.set("blend", Value::Choice(blend.into()));
@@ -3157,7 +3157,11 @@ mod tests {
         scene.add_slot(&reg, balls, SlotId::Look, "look.plain").unwrap();
 
         let mut resolved = resolve(&scene, &reg);
-        let params = &mut resolved.things.get_mut(&balls).unwrap().slots.get_mut(&SlotId::Look).unwrap().params;
+        let params = &mut std::sync::Arc::make_mut(resolved.things.get_mut(&balls).unwrap())
+            .slots
+            .get_mut(&SlotId::Look)
+            .unwrap()
+            .params;
         params.set("blend", Value::Choice("darken".into()));
         let world = World::build(&scene, &resolved, &Sims::default());
         let mut draws = Draws::default();

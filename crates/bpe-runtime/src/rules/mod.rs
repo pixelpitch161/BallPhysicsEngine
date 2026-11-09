@@ -846,7 +846,7 @@ impl Ruled {
 
 /// The params of `thing`'s own settings (`slot` none) or of its card in `slot`.
 pub(crate) fn params_mut(resolved: &mut Resolved, thing: ThingId, slot: Option<SlotId>) -> Option<&mut Params> {
-    let r = resolved.things.get_mut(&thing)?;
+    let r = std::sync::Arc::make_mut(resolved.things.get_mut(&thing)?);
     match slot {
         None => Some(&mut r.params),
         Some(slot) => r.slots.get_mut(&slot).map(|s| &mut s.params),

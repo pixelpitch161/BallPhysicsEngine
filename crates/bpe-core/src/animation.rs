@@ -745,6 +745,8 @@ impl Animation {
                 continue;
             }
             let Some(thing) = resolved.things.get_mut(&t.thing) else { continue };
+            // Only the things that animate are copied out of a shared scene (review S22).
+            let thing = std::sync::Arc::make_mut(thing);
             let params = match t.slot {
                 None => &mut thing.params,
                 Some(slot) => match thing.slots.get_mut(&slot) {

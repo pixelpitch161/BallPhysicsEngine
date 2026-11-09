@@ -401,7 +401,7 @@ fn a_key_on_size_resizes_its_balls() {
     let (scene, id, kit) = scene_with(Vec2::ZERO, |_| {});
     let r = resolved(&scene, &kit);
     let mut world = World::build(&scene, &r, &kit.sims);
-    let mut later = r.things[&id].clone();
+    let mut later = (*r.things[&id]).clone();
     later.params.set("radius", bpe_core::Value::Number(12.0));
     EmitterSim.settings_changed(id, &later, &mut world);
     assert!(world.bodies[&id].radius.iter().all(|&r| r == 12.0));

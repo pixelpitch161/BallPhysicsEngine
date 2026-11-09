@@ -427,3 +427,34 @@ fn ripples_run_out_from_a_ball_and_only_frames_with_ripples_build_their_field() 
     renderer.render(&device, &queue, &Frame { bloom: 0.0, ..Frame::default() });
     assert!(!renderer.ripples_built());
 }
+
+/// Review S21: the renderer uploads only the atlas rows that changed since its last frame. A
+/// renderer that drew other gradients in the same rows (and more rows than now) draws the next
+/// frame exactly as a fresh one does.
+#[test]
+fn rows_kept_between_frames_draw_as_a_fresh_renderer_does() {
+    let Some((device, queue)) = gpu() else { return };
+    let solid = |c: Color| Gradient { stops: vec![Stop::new(0.0, c), Stop::new(1.0, c)], ..Gradient::default() };
+    let frame_of = |gradients: &[Gradient]| {
+        let mut frame = Frame { bloom: 0.0, ..Frame::default() };
+        let rows: Vec<u32> = gradients.iter().map(|g| frame.gradients.row(g)).collect();
+        for (i, row) in rows.into_iter().enumerate() {
+            let x = -200.0 + 200.0 * i as f32;
+            painted_ball(&mut frame, [x, 0.0], 90.0, GREEN, stripes(row), NO_VARY);
+        }
+        frame
+    };
+    let first = frame_of(&[red_blue_steps(), solid(Color::rgb(255, 255, 0)), solid(Color::rgb(0, 255, 255))]);
+    let second = frame_of(&[solid(Color::rgb(255, 0, 255)), red_blue_steps()]);
+    let mut kept = Renderer::new(&device, W, H);
+    kept.render(&device, &queue, &first);
+    kept.render(&device, &queue, &second);
+    let again = kept.read_output(&device, &queue).unwrap();
+    let mut fresh = Renderer::new(&device, W, H);
+    fresh.render(&device, &queue, &second);
+    let expected = fresh.read_output(&device, &queue).unwrap();
+    assert!(again == expected, "the kept renderer drew the second frame differently");
+    // And the same frame again uploads nothing new and still draws the same.
+    kept.render(&device, &queue, &second);
+    assert!(kept.read_output(&device, &queue).unwrap() == expected);
+}

@@ -61,3 +61,56 @@ fn an_overbright_colour_keeps_its_hue_and_burns_toward_white() {
     let q = hot[(N * N / 2 + N / 2) as usize];
     assert!(q[0] > p[0] + 40 && q[1] > p[1] + 40, "hotter is whiter: {p:?} then {q:?}");
 }
+
+/// Review S23: the export's video colours worked out on the graphics card are the CPU's
+/// (`yuv::yuv_of_rgba`) of the same RGBA picture, within one 8-bit step, for both layouts and for
+/// sizes whose rows aren't a whole number of copy rows.
+#[test]
+fn video_colours_from_the_card_match_the_cpus() {
+    use crate::Readback;
+    use crate::yuv::{PixelLayout, yuv_of_rgba};
+    let Some((device, queue)) = gpu() else { return };
+    for (w, h) in [(64u32, 48u32), (62, 34)] {
+        let frame = Frame {
+            width: w,
+            height: h,
+            video: (w, h),
+            bloom: 0.0,
+            background: BackgroundPaint {
+                row: 0,
+                ends: Some([[1.0, 0.1, 0.0, 1.0], [0.0, 0.3, 1.0, 1.0]]),
+                mode: 0.0,
+                ..BackgroundPaint::default()
+            },
+            ..Frame::default()
+        };
+        let mut renderer = Renderer::new(&device, w, h);
+        renderer.render(&device, &queue, &frame);
+        let rgba = renderer.read_output(&device, &queue).unwrap();
+        for layout in [PixelLayout::Yuv420p, PixelLayout::Nv12] {
+            let mut readback = Readback::with_layout(&device, w, h, 2, layout);
+            assert_eq!(readback.layout(), layout);
+            let mut got = readback.push(&device, &queue, &renderer).unwrap();
+            if got.is_none() {
+                got = readback.finish(&device).unwrap().pop();
+            }
+            let got = got.expect("a frame");
+            let want = yuv_of_rgba(&rgba, w, h, layout);
+            assert_eq!(got.len(), (w * h * 3 / 2) as usize);
+            assert_eq!(got.len(), want.len());
+            let worst = got.iter().zip(&want).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+            assert!(worst <= 1, "{layout:?} {w}x{h}: off by {worst}");
+            // Not all one colour: the planes really carry the picture.
+            assert!(want.iter().any(|&v| v != want[0]));
+        }
+    }
+}
+
+#[test]
+fn odd_sizes_come_back_as_rgba() {
+    use crate::yuv::PixelLayout;
+    assert!(!PixelLayout::Yuv420p.fits(63, 48));
+    assert!(PixelLayout::Rgba.fits(63, 47));
+    let Some((device, _)) = gpu() else { return };
+    assert_eq!(crate::Readback::with_layout(&device, 63, 48, 1, PixelLayout::Nv12).layout(), PixelLayout::Rgba);
+}
