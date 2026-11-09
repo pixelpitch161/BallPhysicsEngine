@@ -262,15 +262,55 @@ fn a_move_worn_by_some_letters_moves_only_those_and_a_hidden_one_nothing() {
 }
 
 #[test]
-fn moves_fit_only_a_text() {
+fn moves_fit_a_text_and_most_fit_a_shape() {
     let reg = crate::registry();
     let mut scene = Scene::empty(&reg);
     let shape = crate::add_thing(&mut scene, &reg, crate::things::shape::KIND, ThingId::ROOT).unwrap();
-    assert_eq!(scene.add_layer(&reg, shape, SlotId::Look, look::moves::WAVE), Err(bpe_core::EditError::NotAccepted));
+    // A shape wears the moves of one piece (W12), not Draw on or the experimental effects.
+    for kind in look::moves::kinds().iter().map(|k| k.id).filter(|k| *k != look::moves::DRAW_ON) {
+        assert!(scene.add_layer(&reg, shape, SlotId::Look, kind).is_ok(), "{kind}");
+    }
+    assert_eq!(scene.add_layer(&reg, shape, SlotId::Look, look::moves::DRAW_ON), Err(bpe_core::EditError::NotAccepted));
+    for kind in look::effects::kinds().iter().map(|k| k.id) {
+        assert_eq!(scene.add_layer(&reg, shape, SlotId::Look, kind), Err(bpe_core::EditError::NotAccepted), "{kind}");
+    }
+    let balls = crate::add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
+    assert_eq!(scene.add_layer(&reg, balls, SlotId::Look, look::moves::WAVE), Err(bpe_core::EditError::NotAccepted));
     let paint = scene.add_layer(&reg, shape, SlotId::Look, look::PAINT).unwrap();
     assert_eq!(scene.set_layer_only(&reg, shape, SlotId::Look, paint, vec![1]), Err(bpe_core::EditError::NotAccepted));
     let (mut scene, id, _) = text_with(&[]);
     let paint = scene.add_layer(&reg, id, SlotId::Look, look::PAINT).unwrap();
     scene.set_layer_only(&reg, id, SlotId::Look, paint, vec![2, 0]).unwrap();
     assert_eq!(scene.things[&id].slots[&SlotId::Look].layers.iter().find(|l| l.id == paint).unwrap().only, [0, 2]);
+}
+
+#[test]
+fn a_shape_hops_on_its_own_hits_as_one_letter() {
+    let reg = crate::registry();
+    let kit = crate::kit();
+    let mut scene = Scene::empty(&reg);
+    let shape = crate::add_thing(&mut scene, &reg, crate::things::shape::KIND, ThingId::ROOT).unwrap();
+    let layer = scene.add_layer(&reg, shape, SlotId::Look, look::moves::HIT).unwrap();
+    let card = scene.card_mut(shape, SlotId::Look).unwrap();
+    card.params.set(&layered_key(layer, "takes"), n(0.4));
+    card.params.set(&layered_key(layer, "height"), n(50.0));
+    let resolved = resolve(&scene, &kit.registry);
+    let world = World::build(&scene, &resolved, &kit.sims);
+    let rate = world.steps_per_second as f64;
+    let mut log = Log::default();
+    log.push(hit_on(shape, 0, 120));
+    let hit_at = hit_on(shape, 0, 120).time(world.steps_per_second);
+    let moves = moves_of(&resolved.things[&shape].slots[&SlotId::Look]);
+    let at = |time: f64| {
+        let cx = MoveCx { tree: &scene, world: &world, log: Some(&log), sound: None, id: shape, time };
+        shape_move(&cx, &moves).expect("a move is worn")
+    };
+    // Half way through the hop: at its top.
+    let top = at(hit_at + 0.2);
+    assert!((top.offset.y + 50.0).abs() < 0.5, "{top:?}");
+    assert_eq!(at(hit_at - 1.0 / rate).offset, Vec2::ZERO, "not before the hit");
+    assert_eq!(at(hit_at + 0.5).offset, Vec2::ZERO, "the hop is over");
+    // No moves: nothing.
+    let cx = MoveCx { tree: &scene, world: &world, log: Some(&log), sound: None, id: shape, time: 1.0 };
+    assert_eq!(shape_move(&cx, &[]), None);
 }

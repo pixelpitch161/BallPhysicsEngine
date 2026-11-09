@@ -93,7 +93,7 @@ pub struct HitMove {
     #[setting(label = "Amount", range(0, 1), simple, keyframe, pulse)]
     pub amount: f32,
     /// Whose hits: Me is the Text's own letters (or, riding balls, each copy's ball).
-    #[setting(label = "Hits of", simple)]
+    #[setting(label = "Hits from", simple)]
     pub hits_of: Target,
     /// How high each hop goes.
     #[setting(label = "Height", span(0, 200), unit = "px", simple, keyframe)]
@@ -217,7 +217,7 @@ pub struct SpinMove {
     #[setting(label = "Amount", range(0, 1), simple, keyframe, pulse)]
     pub amount: f32,
     /// How fast each letter turns, clockwise.
-    #[setting(label = "Speed", span(-720, 720), unit = "deg/s", simple, keyframe)]
+    #[setting(label = "Speed", span(-720, 720), unit = "°/s", simple, keyframe)]
     pub speed: f32,
     /// How much further round each letter is than the one before.
     #[setting(label = "Each letter later", span(0, 90), unit = "°", keyframe)]
@@ -353,6 +353,8 @@ pub struct MoveKind {
     pub name: &'static str,
     pub help: &'static str,
     pub settings: fn() -> &'static [SettingDef],
+    /// A shape can wear it too, as one letter (W12).
+    pub shapes: bool,
 }
 
 impl LayerKind for MoveKind {
@@ -383,34 +385,51 @@ impl LayerKind for MoveKind {
     fn per_ball(&self) -> bool {
         false
     }
-    /// Only a Text has letters to move.
+    /// A Text's letters move; a shape wears the moves that make sense for one piece.
     fn fits(&self, thing_kind: &str) -> bool {
-        thing_kind == crate::things::text::KIND
+        thing_kind == crate::things::text::KIND || (self.shapes && thing_kind == crate::things::shape::KIND)
     }
 }
 
 /// Every move kind, in the add menu's order.
 pub fn kinds() -> Vec<MoveKind> {
-    let k = |id, name, help, settings| MoveKind { id, name, help, settings };
+    let k = |id, name, help, settings| MoveKind { id, name, help, settings, shapes: true };
     vec![
-        k(WAVE, "Wave", "The letters ride up and down a wave running along them.", WaveMove::defs),
-        k(BEAT, "Jump on the beat", "Every letter hops on the scene's beats, one after another.", BeatMove::defs),
-        k(HIT, "Jump on hit", "Letters hop when a ball hits them, or when a thing is hit.", HitMove::defs),
-        k(FLICKER, "Flicker", "Letters dim and come back like a buzzing neon tube.", FlickerMove::defs),
+        k(WAVE, "Wave", "The letters (or the shape) ride up and down a wave running along them.", WaveMove::defs),
+        k(
+            BEAT,
+            "Jump on the beat",
+            "Every letter (or the shape) hops on the scene's beats, one after another.",
+            BeatMove::defs,
+        ),
+        k(
+            HIT,
+            "Jump on hit",
+            "Letters (or the shape) hop when a ball hits them, or when a thing is hit.",
+            HitMove::defs,
+        ),
+        k(FLICKER, "Flicker", "Letters (or the shape) dim and come back like a buzzing neon tube.", FlickerMove::defs),
         k(
             SOUND,
             "Follow sound",
-            "Letters jump and stretch with how loud a sound is: right-click Level to pick what it follows.",
+            "Letters (or the shape) jump and stretch with how loud a sound is: right-click Level to pick what it \
+             follows.",
             SoundMove::defs,
         ),
-        k(SHAKE, "Shake", "Each letter trembles on its own.", ShakeMove::defs),
-        k(SPIN, "Spin each letter", "Every letter turns about its own middle.", SpinMove::defs),
-        k(SCATTER, "Scatter and come back", "The letters fly apart, then fly home again.", ScatterMove::defs),
+        k(SHAKE, "Shake", "Each letter (or the shape) trembles on its own.", ShakeMove::defs),
+        k(SPIN, "Spin each letter", "Every letter (or the shape) turns about its own middle.", SpinMove::defs),
         k(
-            DRAW_ON,
-            "Draw on",
-            "A pen traces each letter's outline in; then the lines stay or the letter fills.",
-            DrawOnMove::defs,
+            SCATTER,
+            "Scatter and come back",
+            "The letters (or the shape) fly apart, then fly home again.",
+            ScatterMove::defs,
         ),
+        MoveKind {
+            id: DRAW_ON,
+            name: "Draw on",
+            help: "A pen traces each letter's outline in; then the lines stay or the letter fills.",
+            settings: DrawOnMove::defs,
+            shapes: false,
+        },
     ]
 }

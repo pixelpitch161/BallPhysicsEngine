@@ -26,7 +26,7 @@ impl Default for FlashOnHit {
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct ColourOnHit {
     /// How far round the colour wheel each hit turns the colour.
-    #[setting(label = "Turn per hit", range(-180, 180), unit = "deg", simple, keyframe)]
+    #[setting(label = "Turn per hit", range(-180, 180), unit = "°", simple, keyframe)]
     pub hue_per_hit: f32,
 }
 

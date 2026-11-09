@@ -79,8 +79,15 @@ impl ThingDraw for ParticlesDraw {
     }
 
     fn draw_around(&self, cx: &DrawCx, index: usize, frame: &mut Frame) {
-        let Some(layer) = layers(cx.resolved).into_iter().nth(index) else { return };
+        let Some(mut layer) = layers(cx.resolved).into_iter().nth(index) else { return };
         let Some(st) = state_of(cx.world, cx.thing.id) else { return };
+        // A broken Particles thing fades as its Break look plays out (W12).
+        if let Some(whole) = crate::rules::remains::whole_now(cx) {
+            layer.common.opacity *= whole.alpha.clamp(0.0, 1.0);
+            if layer.common.opacity <= 0.0 {
+                return;
+            }
+        }
         if let Some(swarm) = &st.swarm {
             swarm_runs(cx, st, swarm, &layer, frame);
             return;

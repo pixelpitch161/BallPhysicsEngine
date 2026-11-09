@@ -74,18 +74,45 @@ pub struct Place {
     pub skip: f32,
     /// The ridden ball (thing, row), for its own flare.
     pub ball: Option<(ThingId, u32)>,
-    /// What it points at (Points: At the pen), where it stops.
+    /// What it points at (Points: At the pen, where a beam stops, or At a thing).
     pub aim: Option<Vec2>,
 }
 
-/// Where the light shines from at this moment.
+/// Where the light shines from at this moment, each place aimed at its thing when it points at one.
 pub fn places(cx: &DrawCx, s: &LightSettings) -> Vec<Place> {
     // A rig only groups lights: a light rides what its rig sits in.
     let parent = crate::things::rig::fixtures::ridden(cx.tree, cx.resolved.id);
-    if let Some(text) = parent.filter(|p| cx.tree.things.get(p).is_some_and(|t| t.kind == crate::things::text::KIND)) {
-        return text_places(cx, text, s);
+    let mut out = if let Some(text) =
+        parent.filter(|p| cx.tree.things.get(p).is_some_and(|t| t.kind == crate::things::text::KIND))
+    {
+        text_places(cx, text, s)
+    } else {
+        places_in(cx.world, parent, s)
+    };
+    aim_places(cx.world, s, cx.resolved.id, &mut out);
+    out
+}
+
+/// What the light `me` points at when it points At a thing: the point of the first thing its Aims
+/// at names that has one (itself left out). `None` otherwise, or when nothing named is there.
+pub fn aim_at(world: &World, s: &LightSettings, me: ThingId) -> Option<Vec2> {
+    if s.points != Points::AtAThing || s.kind == LightType::Point {
+        return None;
     }
-    places_in(cx.world, parent, s)
+    world
+        .matching(&s.aim_at, me)
+        .into_iter()
+        .filter(|&id| id != me)
+        .find_map(|id| crate::things::point::point_of(world, id, s.aim_ball))
+}
+
+/// Aims every place of the light `me` at its thing, when it points at one.
+pub fn aim_places(world: &World, s: &LightSettings, me: ThingId, places: &mut [Place]) {
+    if let Some(at) = aim_at(world, s, me) {
+        for p in places {
+            p.aim = Some(at);
+        }
+    }
 }
 
 /// Where a light inside Text `text` shines from (Text part 4): on its Draw on pen, its middle, or
@@ -191,7 +218,7 @@ fn push_light(
 ) {
     let colour = colour.unwrap_or_else(|| s.linear_colour());
     let strength = s.strength
-        * (1.0 + s.flare * flare(cx, s, place))
+        * (1.0 + flare(cx, s, place))
         * drive.strength
         * flicker(cx.time, s.flicker, s.flicker_speed, s.flicker_style, s.flicker_seed);
     let place = &Place { at: place.at + Vec2::new(drive.sway, 0.0), ..*place };
@@ -518,17 +545,19 @@ fn layer_colour(resolved: &bpe_core::ResolvedThing, number: u32) -> Option<[f32;
 }
 
 /// Which way the light at `place` points at `time`, in radians clockwise from the right: its
-/// Direction, turned by Spin, or the way the ball it rides is going.
+/// Direction, turned by Spin, the way the ball it rides is going, or at its pen or thing.
 pub fn aim_angle(s: &LightSettings, place: &Place, time: f64) -> f32 {
     match s.points {
         Points::FixedAngle => s.direction.to_radians(),
         Points::WhereItsGoing if place.velocity.length_squared() > 1e-6 => place.velocity.y.atan2(place.velocity.x),
         Points::WhereItsGoing => s.direction.to_radians(),
         Points::Spins => (s.direction + s.spin * time as f32).to_radians(),
-        Points::AtThePen => match place.aim.map(|a| a - place.at).filter(|d| d.length_squared() > 1e-6) {
-            Some(d) => d.y.atan2(d.x),
-            None => s.direction.to_radians(),
-        },
+        Points::AtThePen | Points::AtAThing => {
+            match place.aim.map(|a| a - place.at).filter(|d| d.length_squared() > 1e-6) {
+                Some(d) => d.y.atan2(d.x),
+                None => s.direction.to_radians(),
+            }
+        }
     }
 }
 
@@ -561,36 +590,51 @@ pub fn push_strip(scene: &mut LightScene, points: &[Vec2], colour: [f32; 3], rea
 /// How high above the picture a strip light from [`push_strip`] hangs.
 const ARC_HEIGHT: f32 = 60.0;
 
-/// How much the light flares now, 0 to 1 and more for stacked hits: each hit by what it hears
-/// (its own ball, when it rides one) flares it by its strength, fading over Flare length.
+/// How much the light flares now, on top of its strength (1 doubles it): its Flare times the hits
+/// it hears, each dying away over its Flare length; plus a rule's Flash on it or on a rig it is in
+/// (W12), each as strong as its Strength says, times its Flare (or once, when Flare is 0).
 fn flare(cx: &DrawCx, s: &LightSettings, place: &Place) -> f32 {
-    if s.flare == 0.0 {
-        return 0.0;
-    }
     let world = cx.world;
     let rate = world.steps_per_second.max(1);
     let length = s.flare_length.max(1e-3) as f64;
     let first = ((cx.time - length) * rate as f64).ceil().max(0.0) as u64;
     let last = (cx.time * rate as f64 + 1e-6).floor().max(0.0) as u64 + 1;
-    let heard = if place.ball.is_none() { world.matching(&s.flare_from, cx.resolved.id) } else { Vec::new() };
-    let mut sum = 0.0f32;
+    let me = cx.resolved.id;
+    let hits_heard = s.flare != 0.0;
+    let heard = if hits_heard && place.ball.is_none() { world.matching(&s.flare_from, me) } else { Vec::new() };
+    let mut rigs: Option<Vec<ThingId>> = None;
+    let (mut hits, mut flashes) = (0.0f32, 0.0f32);
     for e in cx.log.between(first, last) {
-        if e.kind != EventKind::Hit {
-            continue;
-        }
-        let by = match place.ball {
-            Some((thing, row)) => {
-                (e.a.thing == thing && e.a.item == row) || e.b.is_some_and(|b| b.thing == thing && b.item == row)
-            }
-            None => heard.contains(&e.a.thing),
-        };
-        if !by {
-            continue;
-        }
         let age = ((cx.time - e.time(rate)) / length).clamp(0.0, 1.0) as f32;
-        sum += (e.speed / FULL_HIT).min(1.0) * (1.0 - age) * (1.0 - age);
+        let fade = (1.0 - age) * (1.0 - age);
+        match e.kind {
+            EventKind::Hit if hits_heard => {
+                let by = match place.ball {
+                    Some((thing, row)) => {
+                        (e.a.thing == thing && e.a.item == row)
+                            || e.b.is_some_and(|b| b.thing == thing && b.item == row)
+                    }
+                    None => heard.contains(&e.a.thing),
+                };
+                if by {
+                    hits += (e.speed / FULL_HIT).min(1.0) * fade;
+                }
+            }
+            EventKind::Flash => {
+                let on_me = e.a.thing == me
+                    || rigs
+                        .get_or_insert_with(|| crate::things::rig::fixtures::rigs_of(cx.tree, me))
+                        .contains(&e.a.thing);
+                if on_me && e.speed.is_finite() {
+                    flashes += (e.speed / bpe_runtime::rules::FULL_FLASH_SPEED).max(0.0) * fade;
+                }
+            }
+            _ => {}
+        }
     }
-    sum
+    // A Flash only ever brightens: by the Flare when it has one, else as Flare 1.
+    let gain = if s.flare > 0.0 { s.flare } else { 1.0 };
+    s.flare * hits + gain * flashes
 }
 
 /// The outline a strip runs along: the first thing its Shape setting names that is a wall.
@@ -702,6 +746,47 @@ mod tests {
         let going = LightSettings { points: Points::WhereItsGoing, ..s.clone() };
         assert!(close(aim_angle(&going, &place, 2.0), 180.0));
         assert!(close(aim_angle(&going, &Place::default(), 2.0), 90.0), "standing still: its Direction");
+    }
+
+    #[test]
+    fn a_light_points_at_a_thing_or_one_of_its_balls() {
+        use crate::testing::{BALLS, SHAPE, scene_with_balls};
+        let (scene, resolved, kit) = scene_with_balls("ring", |_| {});
+        let mut world = World::build(&scene, &resolved, &kit.sims);
+        let me = ThingId(99);
+        let s = LightSettings {
+            kind: LightType::Spot,
+            points: Points::AtAThing,
+            aim_at: bpe_core::Target::Thing(BALLS),
+            aim_ball: 2,
+            ..LightSettings::default()
+        };
+        let b = world.bodies.get_mut(&BALLS).unwrap();
+        let row = b.row_of(1).unwrap();
+        b.position[row] = Vec2::new(100.0, 100.0);
+        assert_eq!(aim_at(&world, &s, me), Some(Vec2::new(100.0, 100.0)), "ball number 2");
+        let mut places = vec![Place::default()];
+        aim_places(&world, &s, me, &mut places);
+        let close = |a: f32, b: f32| (a - b.to_radians()).abs() < 1e-5;
+        assert!(close(aim_angle(&s, &places[0], 0.0), 45.0), "{}", aim_angle(&s, &places[0], 0.0).to_degrees());
+        // 0: the middle of the live balls.
+        let b = &world.bodies[&BALLS];
+        let middle = (0..b.len()).map(|r| b.position[r]).sum::<Vec2>() / b.len() as f32;
+        let mid = LightSettings { aim_ball: 0, ..s.clone() };
+        assert!(aim_at(&world, &mid, me).unwrap().distance(middle) < 1e-3);
+        // A shape: its outline's middle.
+        let at_shape = LightSettings { aim_at: bpe_core::Target::Thing(SHAPE), ..s.clone() };
+        let centre = outline_centre(&world.walls[&SHAPE].outline);
+        assert_eq!(aim_at(&world, &at_shape, me), Some(centre));
+        // Nothing named there: its Direction; a point light, or another Points, aims nowhere.
+        let gone = LightSettings { aim_at: bpe_core::Target::Thing(ThingId(77)), direction: 30.0, ..s.clone() };
+        assert_eq!(aim_at(&world, &gone, me), None);
+        assert!(close(aim_angle(&gone, &Place::default(), 0.0), 30.0));
+        assert_eq!(aim_at(&world, &LightSettings { kind: LightType::Point, ..s.clone() }, me), None);
+        assert_eq!(aim_at(&world, &LightSettings { points: Points::FixedAngle, ..s.clone() }, me), None);
+        // Every ball gone: no point.
+        world.bodies.get_mut(&BALLS).unwrap().alive.iter_mut().for_each(|a| *a = false);
+        assert_eq!(aim_at(&world, &s, me), None);
     }
 
     #[test]

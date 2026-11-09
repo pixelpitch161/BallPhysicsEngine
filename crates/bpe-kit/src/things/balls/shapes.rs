@@ -300,6 +300,44 @@ pub(crate) fn letter_outlines_in(font: &[u8], text: &str, letter_height: f32) ->
     pen.shapes
 }
 
+/// The weight a typed Word's font is read at: SemiBold, as the built-in font is.
+pub const WORD_WEIGHT: f32 = 600.0;
+
+/// The font a typed Word of settings `s` is spelt in, when it isn't the built-in one: looked up
+/// among the Text fonts (the scene's own first). `None` for the built-in name (which spells as
+/// ever, [`word`]) or anything that isn't a typed Word.
+pub fn typed_font(
+    s: &BallsSettings,
+    tree: Option<&bpe_core::Scene>,
+) -> Option<std::sync::Arc<crate::text::fonts::FontData>> {
+    use super::WordFrom;
+    let typed = s.group && s.shape == GroupShape::Word && s.made_of == WordFrom::Typed;
+    if !typed || s.word_font == crate::text::fonts::FALLBACK_NAME {
+        return None;
+    }
+    let fonts = tree.map(|t| &t.fonts)?;
+    Some(crate::text::fonts::find(fonts, &s.word_font, WORD_WEIGHT).font().clone())
+}
+
+/// [`word`] in `font`, cached by the font's bytes.
+pub fn word_in(font: &crate::text::fonts::FontData, text: &str, letter_height: f32, step: f32) -> Vec<Vec2> {
+    type Key = (u64, String, u32, u32);
+    static CACHE: OnceLock<Mutex<HashMap<Key, Vec<Vec2>>>> = OnceLock::new();
+    let key = (font.id, text.to_owned(), letter_height.to_bits(), step.to_bits());
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(hit) = cache.lock().ok().and_then(|c| c.get(&key).cloned()) {
+        return hit;
+    }
+    let out = fill_letters(&letter_outlines_in(&font.bytes, text, letter_height), step, true);
+    if let Ok(mut c) = cache.lock() {
+        if c.len() > 64 {
+            c.clear();
+        }
+        c.insert(key, out.clone());
+    }
+    out
+}
+
 /// [`word`] without the cache.
 fn spell(text: &str, letter_height: f32, step: f32) -> Vec<Vec2> {
     fill_letters(&letter_outlines(text, letter_height), step, true)
@@ -314,6 +352,13 @@ pub fn with_text_word<'a>(
     me: bpe_core::ThingId,
 ) -> std::borrow::Cow<'a, BallsSettings> {
     use super::WordFrom;
+    if let Some(font) = typed_font(s, tree) {
+        return std::borrow::Cow::Owned(BallsSettings {
+            shape: GroupShape::Custom,
+            custom: word_in(&font, &s.word, s.letter_height, s.step()).into_iter().map(|p| p.to_array()).collect(),
+            ..s.clone()
+        });
+    }
     if !(s.group && s.shape == GroupShape::Word && s.made_of == WordFrom::ATextThing) {
         return std::borrow::Cow::Borrowed(s);
     }
@@ -704,6 +749,28 @@ mod tests {
         }));
         assert!(balls.len() > 3 * i.len(), "BALLS has more to fill than I");
         assert_eq!(offsets(&settings(GroupShape::Word, |s| s.word = "   ".into())), [Vec2::ZERO], "no letters");
+    }
+
+    #[test]
+    fn a_typed_word_can_take_a_text_font() {
+        let scene = crate::new_scene(&crate::registry());
+        let plex = settings(GroupShape::Word, |s| {
+            s.word = "AB".into();
+            s.radius = 5.0;
+            s.space = 0.0;
+        });
+        // The built-in name spells as ever, with or without the scene.
+        assert!(matches!(with_text_word(&plex, Some(&scene), bpe_core::ThingId(2)), std::borrow::Cow::Borrowed(_)));
+        let anton = BallsSettings { word_font: "Anton".into(), ..plex.clone() };
+        let found = typed_font(&anton, Some(&scene)).expect("another font");
+        assert_eq!(found.name, "Anton", "the fonts folder is in the repository");
+        let spelt = offsets(&with_text_word(&anton, Some(&scene), bpe_core::ThingId(2)));
+        assert!(spelt.len() > 5);
+        assert_ne!(spelt, offsets(&plex), "Anton's letters are another shape");
+        let (lo, hi) = bounds(&spelt);
+        assert!((hi.y - lo.y - 240.0).abs() <= 20.0, "still the letter height: {}", hi.y - lo.y);
+        // Without the scene (nothing to look fonts up in) it spells in the built-in font.
+        assert_eq!(offsets(&with_text_word(&anton, None, bpe_core::ThingId(2))), offsets(&plex));
     }
 
     #[test]

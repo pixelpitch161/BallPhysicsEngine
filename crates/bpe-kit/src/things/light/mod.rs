@@ -215,6 +215,8 @@ pub enum Points {
     /// Inside a Text: at its Draw on pen (a laser or beam stops there; nothing while there is
     /// no pen).
     AtThePen,
+    /// At a thing, or one of its balls by number.
+    AtAThing,
 }
 
 /// The shape of an Area light.
@@ -350,6 +352,18 @@ pub struct LightSettings {
     /// How fast it turns round when it spins.
     #[setting(label = "Spin", when = "kind!=point and points=spins", span(-360, 360), unit = "°/s", keyframe, group = "Light")]
     pub spin: f32,
+    /// What it points at: the first thing this names that is there.
+    #[setting(label = "Aims at", when = "kind!=point and points=at_a_thing", group = "Light")]
+    pub aim_at: Target,
+    /// Which of its balls, by number: 0 aims at the middle of the balls.
+    #[setting(
+        label = "Aims at ball",
+        when = "kind!=point and points=at_a_thing",
+        range(0, 1e9),
+        span(0, 100),
+        group = "Light"
+    )]
+    pub aim_ball: u32,
     /// Where it is: in the world, or, riding a thing, from the ball or point it rides.
     #[setting(label = "Position", unit = "px", keyframe, group = "Place")]
     pub position: Vec2,
@@ -381,7 +395,7 @@ pub struct LightSettings {
     #[setting(label = "Flare length", when = "flare", range(0.001, 1e9), span(0.02, 2), unit = "s", group = "On hits")]
     pub flare_length: f32,
     /// Whose hits make it flare.
-    #[setting(label = "Heard from", when = "flare", group = "On hits")]
+    #[setting(label = "Hits from", when = "flare", group = "On hits")]
     pub flare_from: Target,
     /// How much its light shows in the scene's haze (the Lighting card's Haze): beams.
     #[setting(label = "Beam in haze", when = "kind!=laser|beam", span(0, 4), keyframe, group = "Air")]
@@ -528,6 +542,8 @@ impl Default for LightSettings {
             direction: 90.0,
             points: Points::FixedAngle,
             spin: 45.0,
+            aim_at: Target::Kind(KindId::from("balls")),
+            aim_ball: 1,
             position: Vec2::new(0.0, -300.0),
             rides_on: RidesOn::EachBall,
             ball_number: 1,
@@ -742,6 +758,7 @@ mod tests {
                             | "length"
                             | "cone"
                             | "ball_number"
+                            | "aim_ball"
                             | "flare_length"
                             | "pick_layer"
                             | "laser_width"

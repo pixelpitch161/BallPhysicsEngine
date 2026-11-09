@@ -191,6 +191,21 @@ pub fn show(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec
         }
     }
 
+    // ---------- Moves (a shape's: the letter moves it wears as one piece, W12) ----------
+    if shape && !text {
+        use bpe_kit::modules::look::shape::effects::is_effect;
+        ui.add_space(6.0);
+        list_header_where(ui, cx, card, "Moves", "+ Add move", LayerSection::Reaction, &|k: &str| !is_effect(k), edits);
+        if reactions.is_empty() {
+            ui.label(
+                RichText::new("None yet: add one to make the shape wave, jump or shake.").small().color(style::FAINT),
+            );
+        }
+        for layer in &reactions {
+            layer_list::row(ui, inspector, cx, card, layer, picked, edits);
+        }
+    }
+
     // ---------- Reactions ----------
     if !shape {
         ui.add_space(6.0);

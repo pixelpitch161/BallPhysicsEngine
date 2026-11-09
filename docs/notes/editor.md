@@ -301,3 +301,10 @@ Plan `docs/superpowers/plans/2026-11-08-producer-features.md`; the engine side i
 - Tests: `osc.rs` `sample_shows_its_panel_and_says_when_the_sample_is_missing`, `sound_tab`
   `save_and_load_sound_and_import_midi_are_offered`, `write.rs` (load sample, save/load across scenes with a rename,
   copy across scenes, import MIDI By tempo and as keys), `mixer/backing.rs`, the drop tests in `app.rs`.
+
+**Small links (W12, 2026-11-08).** Follow light lists Text things; Follow sound lists shapes, Texts and Particles
+with sound, and the buses whenever anything has a voice. `widgets::target_picker` reads like the rules' who picker
+(Anything, Itself, Thing ▸, Tagged ▸, Any ▸) and `target_words` says "Ball", "Tagged walls", "Any Shape". A Vec2 in
+px/s (a ball's Launch, a Gobo drift) shows as **speed** and **angle** (`speed_and_angle`; written back as x/y only
+when changed, a still pair's angle remembered in egui memory), and its words read "500 px/s at -53°". Every angle
+unit is "°" or "°/s" (`tests::angles_say_degrees_one_way`). A shape's Look card has a **Moves** list.

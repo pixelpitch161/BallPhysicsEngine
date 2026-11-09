@@ -107,7 +107,7 @@ pub struct ShapeSettings {
     #[setting(label = "Corners", group = "Body", when = "start=polygon")]
     pub path: ShapePath,
     /// How fast the shape turns, clockwise.
-    #[setting(label = "Spin", range(-360, 360), unit = "deg/s", simple, keyframe)]
+    #[setting(label = "Spin", range(-360, 360), unit = "°/s", simple, keyframe)]
     pub spin: f32,
     /// How much of its size the shape loses each second.
     #[setting(label = "Shrink", range(0, 1), unit = "per s", keyframe)]

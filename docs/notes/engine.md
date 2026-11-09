@@ -311,6 +311,14 @@ dresses it. `favourites(kind)` feeds the add menu. Tests in `ready_looks/tests.r
 Emitter and a Shape with both colour choices and resolve them without problems, and check every stored key is a real
 setting.
 
+**Small links (W12, 2026-11-08).** `ThingSim::keeps(scene, me, other)` lets a thing keep another stepping in the main
+world (the camera keeps what it follows); `World::is_beside` reads it with the rules' `BlockSim::keeps` and Sound
+pulses. The camera follows Lights (each lamp, where it shines from at the moment) and Rigs (each lamp of their
+lights) through `world.tree` (`reads_tree`; `physics_print_extra` hashes the followed lights), Particles (their specks)
+and, for Fit all, a shape's or walled Text's whole outline box. `things/point.rs::point_of` is one point of a thing.
+The Balls' typed Word takes a **Font** (`word_font`; the built-in name spells with `FONT` as ever, another font via
+`shapes::typed_font`/`word_in` at SemiBold, read from `world.tree`, hashed by `physics_print_extra`).
+
 ## Speed (W7, 2026-11-08)
 
 Spec `docs/superpowers/specs/2026-11-08-physics-playback-speed-design.md`, plan

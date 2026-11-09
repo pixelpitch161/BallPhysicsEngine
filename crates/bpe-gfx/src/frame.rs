@@ -1674,23 +1674,35 @@ impl Frame {
     /// a thing centred at `centre`, as Ripples sources: at most [`MOST_RIPPLE_SEGMENTS`]
     /// segments, every few corners when it has more.
     pub fn push_ripple_outline(&mut self, centre: [f32; 2], points: &[[f32; 2]], half: f32) {
-        if !self.ripples || points.is_empty() {
+        self.push_ripple_shape(centre, std::slice::from_ref(&points), half);
+    }
+
+    /// Several closed outlines (a letter's contours) as one Ripples owner centred at `centre`:
+    /// at most [`MOST_RIPPLE_SEGMENTS`] segments across them, every few corners when they have more.
+    pub fn push_ripple_shape<P: AsRef<[[f32; 2]]>>(&mut self, centre: [f32; 2], contours: &[P], half: f32) {
+        let total: usize = contours.iter().map(|c| c.as_ref().len()).sum();
+        if !self.ripples || total == 0 {
             return;
         }
         let owner = self.ripple_owner() as f32;
         let half = if half.is_finite() { half.max(0.0) } else { 0.0 };
-        let step = points.len().div_ceil(MOST_RIPPLE_SEGMENTS).max(1);
-        let kept: Vec<[f32; 2]> = points.iter().step_by(step).copied().collect();
-        for k in 0..kept.len() {
-            if self.ripple_sources.len() >= MOST_RIPPLE_SOURCES {
-                return;
+        let step = total.div_ceil(MOST_RIPPLE_SEGMENTS).max(1);
+        for points in contours {
+            let points = points.as_ref();
+            // A small contour (an i's dot) keeps at least three corners.
+            let step = step.min(points.len() / 3).max(1);
+            let kept: Vec<[f32; 2]> = points.iter().step_by(step).copied().collect();
+            for k in 0..kept.len() {
+                if self.ripple_sources.len() >= MOST_RIPPLE_SOURCES {
+                    return;
+                }
+                let (p, q) = (kept[k], kept[(k + 1) % kept.len()]);
+                self.ripple_sources.push(RippleSource {
+                    a: [p[0], p[1], q[0], q[1]],
+                    b: [half, owner, 1.0, 0.0],
+                    c: [centre[0], centre[1], 0.0, 0.0],
+                });
             }
-            let (p, q) = (kept[k], kept[(k + 1) % kept.len()]);
-            self.ripple_sources.push(RippleSource {
-                a: [p[0], p[1], q[0], q[1]],
-                b: [half, owner, 1.0, 0.0],
-                c: [centre[0], centre[1], 0.0, 0.0],
-            });
         }
     }
 
@@ -2097,20 +2109,46 @@ impl Frame {
     /// moment.
     pub fn overlay_mut(&mut self) -> &mut Frame {
         let (width, height, time, video) = (self.width, self.height, self.time, self.video);
+        let ripples = self.ripples;
         let overlay = self.overlay.get_or_insert_with(Box::default);
         (overlay.width, overlay.height, overlay.time, overlay.video) = (width, height, time, video);
+        overlay.ripples = ripples;
         overlay
     }
 
     /// Moves the overlay's shader effects and hit marks into this frame: those of stuck things
-    /// work on the whole picture like everyone else's. A layer left with nothing to draw is
-    /// dropped.
+    /// work on the whole picture like everyone else's. So do its Ripples sources and the marks
+    /// in the effects' ball list (its blend layers' too), taken from the screen to the world
+    /// where they show through this frame's camera. A layer left with nothing to draw is dropped.
     pub fn lift_overlay_extras(&mut self) {
+        let camera = self.camera;
         let Some(o) = self.overlay.as_deref_mut() else { return };
         let (effects, hits) = (std::mem::take(&mut o.effects), std::mem::take(&mut o.hits));
+        let mut sources = Vec::new();
+        let mut owners = self.ripple_owners as f32;
+        o.gather_ripple_sources(&mut sources, &mut owners);
+        let mut marks = std::mem::take(&mut o.ball_marks);
+        for l in &mut o.layers {
+            marks.append(&mut l.frame.ball_marks);
+            l.frame.ripple_sources.clear();
+            l.frame.ripple_owners = 0;
+        }
+        (o.ripple_sources, o.ripple_owners) = (Vec::new(), 0);
         o.layers.retain(|l| !l.frame.draws_nothing());
         self.effects.extend(effects);
         self.hits.extend(hits);
+        let world = |x: f32, y: f32| camera.to_world(Vec2::new(x, y)).to_array();
+        let zoom = if camera.zoom.is_finite() && camera.zoom > 0.0 { camera.zoom } else { 1.0 };
+        for s in &mut sources {
+            let (p, q, c) = (world(s.a[0], s.a[1]), world(s.a[2], s.a[3]), world(s.c[0], s.c[1]));
+            (s.a, s.b[0], s.c) = ([p[0], p[1], q[0], q[1]], s.b[0] / zoom, [c[0], c[1], s.c[2], s.c[3]]);
+        }
+        self.ripple_sources.extend(sources);
+        self.ripple_owners = owners as u32;
+        for mut m in marks {
+            (m.center, m.radius) = (world(m.center[0], m.center[1]), m.radius / zoom);
+            self.ball_marks.push(m);
+        }
     }
 
     /// Whether the overlay has anything to draw.

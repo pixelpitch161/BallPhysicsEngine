@@ -169,7 +169,7 @@ pub struct SplitEffect {
     #[setting(label = "Harder on hits", range(0, 1), keyframe)]
     pub harder: f32,
     /// Whose hits.
-    #[setting(label = "Hits of", when = "harder")]
+    #[setting(label = "Hits from", when = "harder")]
     pub hits_of: Target,
     /// How long it takes to settle after a hit.
     #[setting(label = "Settles over", when = "harder", span(0.05, 2), range(0.01, 60), unit = "s")]
@@ -218,7 +218,7 @@ pub struct GlitchEffect {
     #[setting(label = "Harder on hits", range(0, 1), keyframe)]
     pub harder: f32,
     /// Whose hits.
-    #[setting(label = "Hits of", when = "harder")]
+    #[setting(label = "Hits from", when = "harder")]
     pub hits_of: Target,
     /// How long it takes to settle after a hit.
     #[setting(label = "Settles over", when = "harder", span(0.05, 2), range(0.01, 60), unit = "s")]
@@ -278,7 +278,8 @@ impl Default for MeltEffect {
 
 /// Every effect kind, in the add menu's order.
 pub fn kinds() -> Vec<MoveKind> {
-    let k = |id, name, help, settings: fn() -> &'static [SettingDef]| MoveKind { id, name, help, settings };
+    let k =
+        |id, name, help, settings: fn() -> &'static [SettingDef]| MoveKind { id, name, help, settings, shapes: false };
     vec![
         k(
             ECHO,

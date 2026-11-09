@@ -160,6 +160,12 @@ pub trait ThingSim: Send + Sync + 'static {
     fn in_main(&self, _resolved: &ResolvedThing) -> bool {
         true
     }
+    /// Whether this thing (`me`, as saved in `scene`) reads thing `other` while it steps, so that
+    /// `other`, were it stepped beside the physics, must step in the main world instead (a camera
+    /// following a Particles thing). Read by [`crate::is_beside`].
+    fn keeps(&self, _scene: &bpe_core::Scene, _me: &Thing, _other: ThingId) -> bool {
+        false
+    }
     /// Whether the thing puts heat into the scene's air (a Particles thing whose Rise heats it).
     /// While some ball follows the air ([`crate::air_felt`]) such a thing steps with the physics,
     /// as the heat moves the balls.

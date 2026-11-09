@@ -153,7 +153,7 @@ impl HitFilter {
             }
             return match e.kind {
                 EventKind::Hit => world.names(&self.heard_from, me, e.a.thing),
-                // A Particles thing's moments are its own particles': no Heard from (particles
+                // A Particles thing's moments are its own particles': no Hits from (particles
                 // part 7). Another thing's moment on it is heard as a hit is.
                 EventKind::Moment => e.a.thing == me || world.names(&self.heard_from, me, e.a.thing),
                 _ => false,

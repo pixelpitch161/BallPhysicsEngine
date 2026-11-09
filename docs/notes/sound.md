@@ -234,3 +234,8 @@ sound files hears exactly what it heard before.
 - Tests: `bpe-dsp` sampler unit tests; `bpe-sound/tests/sampler.rs` (root, follow off, missing, loop, backing at,
   negative start, level, off, seek), the FLAC/MP3/OGG/AIFF fixtures in `tests/data/`, `midi_import` unit tests,
   `alloc.rs` (sample voices and a backing track allocate nothing).
+
+**Small links (W12, 2026-11-08).** `ControlSampler` hears every sound event the engine plays (`hits::plays`, so a
+Particles thing's moments too), and a Particles thing whose sound a setting follows steps in the main world. The
+voice's, Health's and the rest's whose-hits setting is labelled **Hits from**; the Distance and Light modulators'
+measuring setting is **Which balls**. Phase units are "°".

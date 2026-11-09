@@ -116,3 +116,9 @@ narrows it to `bpe_sound::voice_rule_keys` / `mixer_rule_keys`. A Set for good n
 when added: `prune` drops what it hides `HIDDEN_KEPT` (0.1 s) after it is fully in, as the sound engine reads the
 changes a step behind its physics (the values are the same: a Set fully in gives its value whatever came before). Tests: `rules/health_tests.rs` (Least strength,
 Starting health, the wind), `bpe-sound/tests/rule_changes.rs`.
+
+**Small links (W12, 2026-11-08).** Break looks show on a Particles thing too (`breaks::shows_looks`; the particles
+fade by the look's alpha in `particles/draw.rs::draw_around`), and a Break naming a Particles thing by itself, kind,
+tag or Anything keeps it stepping in the main world (`BlockSim::keeps`), so the editor and export agree. **Flash** on
+a Light or Rig flares the light (see `lighting.md`). Tests in `spectacle_tests.rs`
+(`a_flash_flares_a_light_and_every_light_of_a_rig`, `a_broken_particles_thing_fades_out`).

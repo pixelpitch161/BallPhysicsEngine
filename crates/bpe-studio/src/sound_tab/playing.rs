@@ -92,7 +92,7 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx) {
         let (heard, help) = if super::moments::is_balls(cx) {
             ("Hits on", "Its balls play only when they hit these")
         } else {
-            ("Heard from", "Only hits from these balls play")
+            ("Hits from", "Only hits from these balls play")
         };
         ui.horizontal(|ui| {
             let label = ui.label(RichText::new(heard).small().color(style::MUTED)).on_hover_text(help);

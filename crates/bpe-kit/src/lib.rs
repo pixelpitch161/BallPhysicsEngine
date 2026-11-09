@@ -347,6 +347,20 @@ mod tests {
     }
 
     #[test]
+    fn angles_say_degrees_one_way() {
+        let reg = registry();
+        let defs = reg
+            .things()
+            .flat_map(|k| k.settings())
+            .chain(reg.modules().flat_map(|k| k.settings()))
+            .chain(reg.layers().flat_map(|k| k.settings()))
+            .chain(reg.blocks().flat_map(|k| k.settings()));
+        for d in defs {
+            assert!(!d.unit.contains("deg"), "{} says {:?}: angles are in ° and °/s", d.key, d.unit);
+        }
+    }
+
+    #[test]
     fn the_look_card_reads_in_section_order() {
         let reg = registry();
         let defs = defs_of(&reg, "look.basic");

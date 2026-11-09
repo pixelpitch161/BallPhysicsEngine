@@ -164,7 +164,7 @@ impl LookSettings {
 }
 
 /// Whether a thing of `kind` can show a Break look (else it vanishes whatever is picked): shapes,
-/// balls, emitters (their balls) and lights.
+/// balls, emitters (their balls), lights, Texts and Particles things (which fade, W12).
 pub fn shows_looks(kind: &str) -> bool {
     matches!(
         kind,
@@ -173,6 +173,7 @@ pub fn shows_looks(kind: &str) -> bool {
             | crate::things::emitter::KIND
             | crate::things::light::LIGHT
             | crate::things::text::KIND
+            | crate::things::particles::KIND
     )
 }
 
@@ -224,6 +225,22 @@ impl BlockSim for Break {
         }
         Ok(Box::new(s))
     }
+    /// A Particles thing it may break steps with the physics, so its Break look is known wherever
+    /// the rule runs (W12): one its Who names by id, kind or tag, or any for Anything.
+    fn keeps(&self, params: &Params, thing: ThingId, kind: &str, tags: &std::collections::BTreeSet<String>) -> bool {
+        if kind != crate::things::particles::KIND {
+            return false;
+        }
+        match BreakSettings::from_params(params).who {
+            Who::Thing { thing: named, .. } => named == thing,
+            Who::Kind(k) => k.as_str() == kind,
+            Who::Tag(tag) => tags.contains(&tag),
+            Who::Anything => true,
+            // That, Other and Group are what a firing names: never a Particles thing.
+            Who::That | Who::Other | Who::Group => false,
+        }
+    }
+
     fn act(&self, st: &mut dyn ThingState, firing: &Firing, cx: &StageCx, out: &mut Vec<Action>) {
         let s = state::<BreakSettings>(st);
         let mut each: Vec<(ThingId, Option<u32>)> = Vec::new();

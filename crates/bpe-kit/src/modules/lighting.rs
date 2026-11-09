@@ -547,7 +547,7 @@ pub struct LightingSettings {
     )]
     pub scene_every: f32,
     /// Whose hits move to the next scene.
-    #[setting(label = "Heard from", when = "scenes_play=on_hits", group = "Scenes")]
+    #[setting(label = "Hits from", when = "scenes_play=on_hits", group = "Scenes")]
     pub scene_heard: Target,
     /// Hits closer together than this count once.
     #[setting(

@@ -202,3 +202,12 @@ Following the air alone never moves a ball, so such a thing stays beside. The Ai
 physics too. A thing fed by its parent's particles puts no heat in while balls follow the air (its parent may step
 beside; `catch_up_all` skips its `put_heat` when `World.air_felt`). Known gap: a Rise whose Heats the air is 0 but
 keyed above 0 isn't counted.
+
+**Small links (W12, 2026-11-08).** A Particles thing steps in the main world (not beside) when the camera follows
+it, a Break rule names it, or a setting follows its sound (its own Level or modulators, or a bus it is heard on):
+`World::is_beside` asks each sim's new `ThingSim::keeps` and the Sound pulses. Fade out / Pop / Shatter fade a broken
+one. Typed text takes a **Font** (`font`, the Text fonts; the built-in IBM Plex Sans keeps its three Weight files,
+another font is read at the weight nearest Weight's): `spots::word_font` puts it in `SpotsKey::Word.font`
+(`WordFont`, equal by name and file hash, kept from the last key while it names the same font); the sim's
+`reads_tree` and `physics_print_extra` see it. The camera's Follow can name it (the middle of its live specks, Fit all
+keeps every speck); a Huge swarm gives no point.

@@ -138,7 +138,7 @@ pub struct RigSettings {
     )]
     pub every_hits: u32,
     /// Whose hits move the pattern on.
-    #[setting(label = "Heard from", when = "steps_on=hits", group = "Pattern")]
+    #[setting(label = "Hits from", when = "steps_on=hits", group = "Pattern")]
     pub heard_from: Target,
     /// Hits closer together than this count once.
     #[setting(

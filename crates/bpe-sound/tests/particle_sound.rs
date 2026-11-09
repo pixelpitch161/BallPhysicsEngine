@@ -83,3 +83,41 @@ fn particles_play_their_moments_and_are_silent_without_a_sound_card() {
     let close = after.iter().zip(straight).all(|(a, b)| (a - b).abs() < 1e-3);
     assert!(close, "a seek hears the same notes");
 }
+
+/// W12: a setting that follows a Particles thing's sound keeps it stepping with the physics, so
+/// Follow sound hears its moments as the engine plays them.
+#[test]
+fn follow_sound_hears_a_particles_things_moments() {
+    use bpe_core::{Address, PulseSource, SoundSource};
+    use bpe_runtime::{Log, World};
+    let kit = bpe_sound::kit();
+    let (mut scene, id) = scene_of(&kit.registry, true);
+    let resolved = resolve_scene(&scene, &kit.registry);
+    assert!(bpe_runtime::is_beside(&scene, &kit.sims, id, &resolved.things[&id]), "unfollowed: beside");
+    // A shape's spin follows the particles' Level.
+    let shape = scene.order.iter().copied().find(|t| scene.things[t].kind == "shape").unwrap();
+    let a = Address::own(shape, "spin");
+    let source = PulseSource::Sound { shape: id, source: SoundSource::Level };
+    scene.set_pulse(&kit.registry, &a, source, bpe_core::Value::Number(10.0), 0.25).unwrap();
+    let resolved = resolve_scene(&scene, &kit.registry);
+    assert!(!bpe_runtime::is_beside(&scene, &kit.sims, id, &resolved.things[&id]), "followed: in the main world");
+    // Through a bus too, while the particles are heard.
+    let mut by_bus = scene.clone();
+    by_bus.remove_pulse(&a);
+    let other = PulseSource::Sound { shape, source: SoundSource::Bus(1) };
+    by_bus.set_pulse(&kit.registry, &a, other, bpe_core::Value::Number(10.0), 0.25).unwrap();
+    let r = resolve_scene(&by_bus, &kit.registry);
+    assert!(!bpe_runtime::is_beside(&by_bus, &kit.sims, id, &r.things[&id]), "a bus it plays into: kept");
+
+    let main = bpe_runtime::main_part(&scene, &resolved, &kit.sims);
+    let mut world = World::build(&scene, &main, &kit.sims);
+    let mut log = Log::default();
+    let sampler = bpe_sound::ControlSampler::new(&scene, &resolved);
+    let mut most: f32 = 0.0;
+    for k in 1..=40 {
+        let t = k as f64 * 0.05;
+        world.advance_to(t, &kit.sims, &mut log);
+        most = most.max(sampler.value(&world, &log, id, &SoundSource::Level, t));
+    }
+    assert!(most > 0.05, "the moments play its Level: {most}");
+}

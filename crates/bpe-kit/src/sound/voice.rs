@@ -243,7 +243,7 @@ pub struct OscSettings {
     #[setting(label = "Cents", range(-100, 100), unit = "ct", keyframe)]
     pub cents: f32,
     /// Where in the wave each note starts.
-    #[setting(label = "Phase", range(0, 360), unit = "deg", keyframe, when = "wave!=sample")]
+    #[setting(label = "Phase", range(0, 360), unit = "°", keyframe, when = "wave!=sample")]
     pub phase: f32,
     /// Restart the wave at Phase on every note, or let it run free.
     #[setting(label = "Phase mode", when = "wave!=sample")]
@@ -466,7 +466,7 @@ pub struct VoiceSettings {
     #[setting(label = "Strength curve", range(-100, 100), group = "Playing", keyframe)]
     pub play_curve: f32,
     /// Which balls' hits play notes.
-    #[setting(label = "Heard from", group = "Playing")]
+    #[setting(label = "Hits from", group = "Playing")]
     pub play_heard_from: Target,
     /// When the notes sound: on each hit, always (held), or while a ball is in range.
     #[setting(label = "Plays", group = "Playing")]

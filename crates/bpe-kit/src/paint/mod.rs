@@ -238,7 +238,7 @@ impl SettingGroup for Paint {
                 on(&format!(" and {f}=each_ball|place|start")),
             ),
             (-180.0, 180.0),
-            "deg",
+            "°",
             true,
         ));
         let mut centre = def(
@@ -336,7 +336,7 @@ impl SettingGroup for Paint {
                 "How far each one's hue turns from the colours, in degrees either way.",
                 d.vary_hue,
                 (0.0, 180.0),
-                "deg",
+                "°",
             );
             vary(
                 "vary_sat",
