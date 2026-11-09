@@ -1231,7 +1231,10 @@ fn scene_settings_shows_a_card_per_group() {
         last = top;
     }
     let tops: Vec<Card> = h.state().inspector.card_tops.iter().map(|(c, _)| *c).collect();
-    assert_eq!(tops, bpe_kit::ROOT_CARDS.map(Card::Section), "the cards in order, and nothing else");
+    // Then the Grade summary (colour grading), edited in Grade mode.
+    let mut want: Vec<Card> = bpe_kit::ROOT_CARDS.map(Card::Section).to_vec();
+    want.push(Card::Section("Grade"));
+    assert_eq!(tops, want, "the cards in order, and nothing else");
     assert!(h.query_by_label("Hide Scene settings").is_none(), "no single Scene settings card");
 }
 
