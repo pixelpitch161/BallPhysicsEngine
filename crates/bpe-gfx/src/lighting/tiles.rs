@@ -164,6 +164,7 @@ impl LightTiles {
     }
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
 

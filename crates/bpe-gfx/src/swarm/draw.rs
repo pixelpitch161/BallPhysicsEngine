@@ -171,6 +171,7 @@ impl SwarmDraw {
             immediate_size: 0,
         });
         let source = [
+            crate::light_pass::WGSL,
             include_str!("../shaders/tint.wgsl"),
             include_str!("../shaders/sprites.wgsl"),
             include_str!("../shaders/each.wgsl"),
