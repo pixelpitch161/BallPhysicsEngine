@@ -2,7 +2,7 @@
 
 Lightroom-style colour grading of the finished picture, edited in the editor's **Grade mode**. Spec:
 `docs/superpowers/specs/2026-11-09-colour-grading-design.md` (approved 2026-11-09, six parts). Plans:
-`docs/superpowers/plans/colour-grading/`. Part 1 is built; parts 2 to 6 add panels, area steps, masks, the
+`docs/superpowers/plans/colour-grading/`. Parts 1 and 2 are built; parts 3 to 6 add area steps, masks, the
 remaining panels and scopes.
 
 ## Part 1 as built (the grade itself)
@@ -92,3 +92,75 @@ remaining panels and scopes.
 
 - Full-size look scenes `grading-basic` (lit demo, strong Basic) and `grading-curves` (colour demo through the Tone
   Curve). Every other scene renders byte-identical to before.
+
+## Part 2 as built (Colour)
+
+Plan: `docs/superpowers/plans/colour-grading/part2.md` (every maths choice is stated there).
+
+### Panels (bpe-kit `modules/grade/`)
+
+- `PANEL_ORDER` is Basic, Tone Curve, **HSL / Colour** (`grade.hsl`), **Point Colour** (`grade.point_colour`),
+  **Colour Grading** (`grade.colour_grading`), **Calibration** (`grade.calibration`); part 3 puts Detail and
+  Effects before Calibration. The starting card has one of each (Basic 1, Tone Curve 2, ...).
+- Point Colour is its own panel (Lightroom shows it as a tab of HSL / Colour), so it has its own place in the
+  order. Its eight picks are fixed slots `pick1_` .. `pick8_` (`PointPick`, a `paint`-prefixed setting group
+  like the equalizer's bands): `on`, `colour` (never keyed), `hue`, `saturation`, `luminance`, `range` (50).
+- `hsl.rs`: `<band>_hue|saturation|luminance` for red .. magenta (groups Hue, Saturation, Luminance; labels are the
+  band names). `colour_grading.rs`: `<region>_hue` (0..360°), `_saturation` (0..100), `_luminance` for shadows,
+  midtones, highlights, global, then `blending` (50) and `balance`. `calibration.rs`: `shadows_tint` and each
+  primary's `_hue` and `_saturation`. Every number keyframes and pulses.
+
+### GPU (bpe-gfx)
+
+- `frame/grade.rs`: `GradePanel::{Hsl, PointColour, ColourGrading, Calibration}` with `GradeHsl`,
+  `GradePointColour`/`GradePick` (colour in linear light), `GradeColourGrading`/`GradeWheel`, `GradeCalibration`;
+  at their defaults they add no steps.
+- New ops in the same interpreter (no new pipeline): `OP_HUE` (Oklab: a 360-sample row over the Oklab hue of
+  `[turn, saturation, luminance, 0]`), `OP_POINT` (Oklab: `extra` picks, three words each: the pick in Oklab, its
+  shifts, one over its widths), `OP_WHEELS` (Oklab: `[pivot, overlap, global log2 gain, 0]` then `[Δa, Δb, ΔL, 0]`
+  per region), `OP_DARK_TINT` (linear: the gain on the darks). Calibration's primaries are an `OP_MATRIX`.
+- Maths (`grade/maths.rs`, CPU twins of the shader, tested in `grade/tests.rs`):
+  - HSL bands centre on the Oklab hues of Lightroom's HSV band hues (29°, 53°, 110°, 143°, 195°, 264°, 294°,
+    328°); neighbours share a hue by a smoothstep that leaves each band the hues within 15% of the way to the next
+    (`BAND_FLAT`), so the weights add to 1. Hue ±100 turns 0.75 of the way to the neighbour; Saturation scales
+    chroma by `1 + s`; Luminance scales L by `2^(0.8·l·min(C/0.08, 1))` (greys never move).
+  - Point Colour weight: `1 − smoothstep(0.35, 1, d)` with d the lightness, chroma and hue (`ΔH = 2√(C·Cp)
+    sin(Δh/2)`) distances over widths that grow with Range; weights from the panel's input, shifts applied in
+    slot order (hue ±40°). A colour brighter than white is compared at white's lightness (`tamed`), since
+    the eyedropper picks the finished 8-bit picture.
+  - Colour Grading: regions by Oklab lightness around a pivot (18% grey's L, moved by Balance), overlap from
+    Blending; tints are Oklab (a, b) offsets in the direction of the wheel hue's colour (0 red, 120 green, 240
+    blue), times `min(L/0.25, 1)` so black stays black; region luminance adds to L, Global's scales it.
+  - Calibration: each primary's hue (±30°) and chroma (×(1 + 0.6s)) moved in Oklab, the columns scaled so white
+    maps to white (greys never move). Shadows Tint is a luminance-keeping magenta/green gain faded out by 18%
+    luminance.
+- Picture tests (`grade/pictures_tests.rs`): HSL Blue −100 saturation greys a blue patch and keeps a red one; the
+  GPU matches the maths on seven colours for every colour panel (within 2/255); defaults byte-identical; order
+  matters (Calibration then HSL differs from HSL then Calibration).
+
+### Editor (bpe-studio)
+
+- `grade_mode/colour.rs`: the bodies. HSL / Colour has Lightroom's tabs Hue / Saturation / Luminance / All
+  (`GradeMode::hsl_view`, not saved). Point Colour: the used picks as swatches (click to show one), **Pick** (the
+  preview becomes the eyedropper, `eyedropper.rs`; the picked colour fills the first free slot), **Remove**
+  (`GradeEdit::RemovePick` clears that slot's values, keys and pulses); then the selected pick's sliders.
+  Colour Grading: chips 3-way / Shadows / Midtones / Highlights / Global (`GradeMode::wheel_view`); 3-way shows
+  three wheels and their luminance sliders, one region a big wheel with its Hue, Saturation and Luminance; then
+  Blending and Balance. Calibration: its sliders.
+- `grade_mode/wheel.rs`: the colour wheel (a mesh in video colours; angle = hue anticlockwise from red at the
+  right, distance = saturation). A drag puts the puck under the pointer; with Shift it moves a tenth as far; a
+  click jumps; a double-click resets. kittest name `"<Region> wheel"` (role Slider).
+- Coloured rails: `GridCx.rails` (`widgets/mod.rs`) gives a number setting a colour strip under its rail
+  (`setting.rs::colour_strip`, drawn into a shape placed before the row so it sits under the knob). Basic's Temp
+  and Tint, HSL, Point Colour, Colour Grading and Calibration use it; every other grid passes `None`. Colours come
+  from `style::video` / `style::video_bytes` (the video owns colour).
+- The preview's eyedropper works in Grade mode too (it picks the picture as shown, so Before picks the ungraded
+  colour).
+- Timeline lanes name a setting's group when its label appears more than once in its layer ("HSL / Colour ·
+  Saturation · Blue"); unique labels are unchanged ("Basic · Vibrance").
+
+### Checks
+
+- Full-size look scene `grading-colour` (the colour demo through all four colour panels). Every other scene renders
+  byte-identical to before.
+- `restarts.rs::grade_settings_restart_nothing` checks well over 90 grade settings.

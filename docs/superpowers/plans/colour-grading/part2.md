@@ -196,3 +196,19 @@ Balance).
    scene but the new `grading-colour` byte-identical to main (`cmp`), and `grading-colour`'s pictures and crops
    looked at (banding in hue transitions, odd hue flips near greys, clipping); one Opus review; PR; CI green; merge.
 5. Handover note for part 3 in the project files (`ballphysics/colour-grading/part2-handover.md`).
+
+## As built
+
+Built as planned (summary in `docs/notes/grading.md`, "Part 2 as built"). Where it differs:
+
+- HSL bands keep the hues within 15% of the way to their neighbours to themselves (`maths::BAND_FLAT`) before they
+  share, so a blue a little off the band's centre is greyed in full by Blue −100 (a plain smoothstep from centre
+  to centre left a fifth of its colour).
+- Point Colour matches a colour brighter than white by its colour scaled back to white's lightness
+  (`maths::tamed`), because the eyedropper picks the finished picture: a glow that shows as orange is matched by an
+  orange pick. Picks are 8-bit colours; with After shown they include what later panels did, so the hint says to
+  pick with Before (\\) for the colour as it came.
+- The wheel puts the puck under the pointer while dragging (the drag threshold would otherwise leave it behind);
+  with Shift held it moves a tenth as far from where it was.
+- A full Point Colour panel stops the eyedropper, so a picked colour is never dropped.
+- While picking in Grade mode, the Split line still shows.

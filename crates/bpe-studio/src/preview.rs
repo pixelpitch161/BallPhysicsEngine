@@ -432,6 +432,9 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     // Colour picks from the picture as it is shown).
     if crate::eyedropper::target(ui.ctx()).is_some() {
         preview.drag = None;
+        if grading {
+            split_line(ui, &response, rect, studio);
+        }
         pick_colour(ui, &response, rect, &preview.renderer, device, &render_state.queue);
         studio.panels.preview = Some(preview);
         return outcome;

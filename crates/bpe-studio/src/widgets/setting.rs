@@ -231,8 +231,6 @@ pub(super) fn companions_pasted(def: &SettingDef, extras: &[(&'static str, Value
         .collect()
 }
 
-/// The band under a following setting's slider: from its value to where the sound takes it at
-/// full level, in the colour of what it follows, named "Follows <what>" for the screen reader.
 /// `colours` evenly spread from left to right across `rect`, blended between.
 pub fn colour_strip(rect: egui::Rect, colours: &[Color32]) -> egui::Shape {
     let mut mesh = egui::Mesh::default();
@@ -259,6 +257,8 @@ pub fn colour_strip(rect: egui::Rect, colours: &[Color32]) -> egui::Shape {
     egui::Shape::mesh(mesh)
 }
 
+/// The band under a following setting's slider: from its value to where the sound takes it at
+/// full level, in the colour of what it follows, named "Follows <what>" for the screen reader.
 pub(super) fn follow_band(
     ui: &mut Ui,
     def: &SettingDef,

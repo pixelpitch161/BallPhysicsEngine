@@ -162,7 +162,12 @@ fn grade_smooth(a: f32, b: f32, x: f32) -> f32 {
 // Point Colour (see grade/maths.rs `point_colour`): `n` picks of three words from `at + 1`, every
 // weight from the colour as it came.
 fn grade_point(at: u32, n: u32, lab: vec3<f32>) -> vec3<f32> {
-    let lch = grade_lch(lab);
+    // Brighter than white is matched as the colour it shows as (grade/maths.rs `tamed`).
+    var tamed = lab;
+    if lab.x > 1.0 {
+        tamed = lab / lab.x;
+    }
+    let lch = grade_lch(tamed);
     var out = lab;
     for (var k = 0u; k < n; k++) {
         let p = at + 1u + 3u * k;

@@ -272,8 +272,11 @@ fn a_long_stack_grows_the_program_s_buffer() {
 use crate::frame::{GradeCalibration, GradeColourGrading, GradeHsl, GradePick, GradePointColour, GradeWheel};
 use crate::grade::maths;
 
-/// The colours the colour panels are checked on (linear light, under white).
-const SWATCHES: [[f32; 3]; 7] = [
+/// The colours the colour panels are checked on (linear light).
+const SWATCHES: [[f32; 3]; 9] = [
+    // Brighter than white (the roll-off squeezes both sides alike) and a hue just under 360°.
+    [1.8, 0.4, 0.1],
+    [0.5, 0.05, 0.15],
     [0.6, 0.05, 0.03],
     [0.7, 0.35, 0.02],
     [0.05, 0.4, 0.08],

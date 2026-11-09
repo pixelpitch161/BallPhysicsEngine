@@ -140,8 +140,12 @@ pub fn point_colour(ui: &mut Ui, mode: &mut GradeMode, gx: &GradeCx, id: LayerId
     let target = pick_target(id);
     let ctx = ui.ctx().clone();
     crate::eyedropper::seen(&ctx, target);
-    if let Some(c) = crate::eyedropper::take(&ctx, target)
-        && let Some(slot) = free
+    // A full panel takes no more colours (Pick is off then too).
+    if free.is_none() && crate::eyedropper::target(&ctx) == Some(target) {
+        crate::eyedropper::stop(&ctx);
+    }
+    if let Some(slot) = free
+        && let Some(c) = crate::eyedropper::take(&ctx, target)
     {
         edits.push(GradeEdit::Set(full_key(Some(id), &pick_key(slot, "on")), Value::Bool(true)));
         edits.push(GradeEdit::Set(full_key(Some(id), &pick_key(slot, "colour")), Value::Color(Color { a: 255, ..c })));

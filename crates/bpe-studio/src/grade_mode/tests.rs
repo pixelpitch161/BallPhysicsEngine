@@ -464,10 +464,29 @@ fn pick_fills_the_first_free_slot_and_remove_gives_it_up() {
     let resolved = bpe_core::resolve(&h.state().scene, &h.state().kit.registry);
     let stack = grade::stack(resolved.things[&ThingId::ROOT].slots.get(&SlotId::Grade));
     assert!(stack.is_identity(), "a pick that moves nothing changes nothing");
+    // Its keys and pulses go with it.
+    let hue = cx::at(&format!("{panel}/pick1_hue"));
+    let sat = cx::at(&format!("{panel}/pick1_saturation"));
+    {
+        let Studio { scene, kit, .. } = h.state_mut();
+        scene.set_key(&kit.registry, &hue, 0.0, Value::Number(20.0)).unwrap();
+        crate::follow::set(scene, &kit.registry, &sat, Some(bpe_core::PulseSource::default()));
+    }
+    assert!(h.state().scene.pulses.contains_key(&sat));
+    h.run();
     h.get_by_role_and_label(Role::Button, "Remove").click();
     h.run();
     assert_eq!(value(&h, "Point Colour", "pick1_on"), None);
     assert_eq!(value(&h, "Point Colour", "pick1_colour"), None);
+    assert!(!h.state().scene.tracks.contains_key(&hue) && !h.state().scene.pulses.contains_key(&sat));
+    // The next pick takes slot 1 again; a second one goes in slot 2.
+    for (i, c) in [bpe_core::Color::rgb(200, 40, 40), bpe_core::Color::rgb(40, 200, 40)].into_iter().enumerate() {
+        h.get_by_role_and_label(Role::Button, "Pick").click();
+        h.run();
+        crate::eyedropper::deliver(&h.ctx, c);
+        h.run();
+        assert_eq!(value(&h, "Point Colour", &format!("pick{}_colour", i + 1)), Some(Value::Color(c)));
+    }
 }
 
 #[test]

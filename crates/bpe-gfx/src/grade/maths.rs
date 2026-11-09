@@ -614,9 +614,16 @@ pub fn pick_words(p: &GradePick) -> Option<PickWords> {
     })
 }
 
+/// An Oklab colour brighter than white scaled back to white's lightness, keeping its hue and how
+/// colourful it is for its brightness: a glow is matched by the colour it shows as on screen
+/// (which the eyedropper picks), not by how far above white it is.
+pub fn tamed(lab: [f64; 3]) -> [f64; 3] {
+    if lab[0] > 1.0 { lab.map(|v| v / lab[0]) } else { lab }
+}
+
 /// How much pick `p` takes the Oklab colour `lab` (1 on the pick, 0 far from it).
 pub fn pick_weight(lab: [f64; 3], p: &PickWords) -> f64 {
-    let [l, c, h] = lch(lab);
+    let [l, c, h] = lch(tamed(lab));
     let [lp, cp, hp] = lch(p.lab);
     let dh = 2.0 * (c * cp).sqrt() * ((h - hp) / 2.0).sin();
     let d = (((l - lp) * p.inv[0]).powi(2) + ((c - cp) * p.inv[1]).powi(2) + (dh * p.inv[2]).powi(2)).sqrt();

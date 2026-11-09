@@ -514,3 +514,12 @@ fn shadows_tint_makes_darks_magenta_at_their_brightness_and_leaves_white() {
     let both = GradeCalibration { shadows_tint: -20.0, red_hue: 5.0, ..Default::default() };
     assert_eq!(steps_of(GradePanel::Calibration(both)), 2);
 }
+
+#[test]
+fn a_pick_takes_a_glow_that_shows_as_its_colour() {
+    // A glow far above white shows as about its colour divided by its brightest channel.
+    let glow = [4.0, 0.6, 0.2];
+    let shown = [1.0, 0.15, 0.05];
+    let p = pick_words(&GradePick { saturation: -50.0, ..pick(shown.map(|v| v as f32)) }).unwrap();
+    assert!(pick_weight(oklab(glow), &p) > 0.8, "{}", pick_weight(oklab(glow), &p));
+}
