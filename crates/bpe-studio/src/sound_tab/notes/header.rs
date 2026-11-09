@@ -1,9 +1,9 @@
 //! The Notes header: Notes, the key (Root and Scale), Chord presets, and the keyboard's range
-//! with − and + and < and > to move it an octave lower or higher.
+//! with − and + and < and > to move it an octave lower or higher, and Import MIDI….
 
 use super::{LOW, NotesState, OCTAVES, choice_menu, key, octaves, presets_menu};
 use crate::sound_tab::keys::note_name;
-use crate::sound_tab::{TabCx, name_it};
+use crate::sound_tab::{TabCx, TabEdit, name_it};
 use crate::style;
 use bpe_core::Value;
 use bpe_kit::sound::{Root, Scale};
@@ -25,6 +25,7 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx, state: &mut NotesState) -> Option<(Root
             picked = Some((root, s));
         }
         presets_menu::show(ui, cx, state);
+        import_midi_button(ui, cx);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // Right to left: Higher, Lower, +, −, then the range.
             let (low, n) = octaves(cx);
@@ -61,4 +62,36 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx, state: &mut NotesState) -> Option<(Root
         });
     });
     picked
+}
+
+/// Import MIDI…: a MIDI file's chords into the slots, its tempo into the scene.
+fn import_midi_button(ui: &mut Ui, cx: &mut TabCx) {
+    let r = ui.button("Import MIDI…").on_hover_text(
+        "Each chord in a MIDI file becomes a slot, and its tempo and time signature come across. Slots change \
+         follows the file: By tempo when every chord is as long, otherwise a Jump to slot key at each chord",
+    );
+    name_it(ui, &r, "Import MIDI");
+    if !r.clicked() {
+        return;
+    }
+    let Some(path) =
+        rfd::FileDialog::new().set_title("Import MIDI").add_filter("MIDI files", &["mid", "midi"]).pick_file()
+    else {
+        return;
+    };
+    match read_midi(&path) {
+        Ok((file, import)) => {
+            cx.edits.push(TabEdit::OwnStep);
+            cx.edits.push(TabEdit::ImportMidi { file, import: Box::new(import) });
+        }
+        Err(text) => cx.edits.push(TabEdit::Note { text, problem: true }),
+    }
+}
+
+/// Reads a MIDI file into slots, or says why it can't.
+pub fn read_midi(path: &std::path::Path) -> Result<(String, bpe_sound::music::MidiImport), String> {
+    let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let bytes = std::fs::read(path).map_err(|e| format!("Couldn't read {file}: {e}"))?;
+    let import = bpe_sound::music::midi_import::import(&bytes).map_err(|e| format!("{file}: {e}"))?;
+    Ok((file, import))
 }

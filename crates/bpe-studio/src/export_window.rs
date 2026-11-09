@@ -8,7 +8,7 @@ use bpe_kit::{Kit, SceneSettings};
 use eframe::egui::{self, RichText};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -38,8 +38,55 @@ pub struct ExportWindow {
     /// The ffmpeg a check was started for.
     checking: Option<PathBuf>,
     job: Option<Job>,
-    finished: Option<Result<Finished, String>>,
+    finished: Option<Result<Finished, Failure>>,
+    /// How the last export ended, for the editor's status line: taken once.
+    news: Option<ExportNews>,
+    /// The settings folder the choices are remembered in; `None` (tests) remembers nothing.
+    remember_in: Option<PathBuf>,
+    /// The choices as last written there.
+    remembered: Option<Remembered>,
 }
+
+/// How an export ended, for the status line.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExportNews {
+    Saved { name: String, seconds: f32 },
+    Failed { headline: String },
+    Cancelled,
+}
+
+/// Why an export didn't make a video.
+#[derive(Clone, Debug, PartialEq)]
+enum Failure {
+    Cancelled,
+    Failed(Explained),
+}
+
+/// A failed export in plain words, with the technical detail behind it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Explained {
+    pub headline: String,
+    pub details: String,
+}
+
+/// The export choices remembered between runs (not the file, which is the scene's, nor the
+/// Bake choice, which overrides one scene's Lighting card).
+#[derive(Clone, Debug, PartialEq)]
+struct Remembered {
+    scale: f32,
+    crf: u8,
+    encoder: Encoder,
+    stems: bool,
+    midi: bool,
+    ffmpeg: Option<PathBuf>,
+}
+
+/// The file in the settings folder the export choices are remembered in.
+const EXPORT_CHOICES: &str = "export-next.txt";
+/// The sizes the window offers.
+const SCALES: [f32; 3] = [1.0, 0.5, 0.25];
+/// The compression the slider allows.
+const CRF: std::ops::RangeInclusive<u8> = 14..=28;
 
 struct Finished {
     path: PathBuf,
@@ -73,6 +120,9 @@ impl Default for ExportWindow {
             checking: None,
             job: None,
             finished: None,
+            news: None,
+            remember_in: None,
+            remembered: None,
         }
     }
 }
@@ -105,6 +155,122 @@ impl ExportWindow {
         self.job.is_some()
     }
 
+    /// How far the running export has got, 0 to 100.
+    pub fn progress_percent(&self) -> Option<u32> {
+        let job = self.job.as_ref()?;
+        let (done, total) = (job.done.load(Ordering::Relaxed), job.total.load(Ordering::Relaxed).max(1));
+        Some((done as u64 * 100 / total as u64).min(100) as u32)
+    }
+
+    /// Makes the window look mid-export at `done` of `total` frames, for tests; the job ends when
+    /// the returned sender sends or is dropped.
+    #[cfg(test)]
+    pub(crate) fn pretend_busy(&mut self, done: u32, total: u32) -> std::sync::mpsc::Sender<anyhow::Result<Encoder>> {
+        let (sender, receiver) = channel();
+        self.job = Some(Job {
+            path: PathBuf::from("pretend.mp4"),
+            done: Arc::new(AtomicU32::new(done)),
+            total: Arc::new(AtomicU32::new(total)),
+            cancel: Arc::default(),
+            receiver,
+            started: Instant::now(),
+        });
+        sender
+    }
+
+    /// How the last export ended, once.
+    pub fn take_news(&mut self) -> Option<ExportNews> {
+        self.news.take()
+    }
+
+    /// The window with the choices remembered in the settings folder `dir`, remembering any
+    /// change there from now on.
+    pub fn load_in(dir: &Path) -> Self {
+        let mut window = Self::default();
+        let text = std::fs::read_to_string(dir.join(EXPORT_CHOICES)).unwrap_or_default();
+        window.apply_remembered(&text);
+        window.remember_in = Some(dir.to_path_buf());
+        window.remembered = Some(window.remembered_now());
+        window
+    }
+
+    /// Takes the choices in a remembered file's `key=value` lines; anything odd is left as it is.
+    fn apply_remembered(&mut self, text: &str) {
+        for line in text.lines() {
+            let Some((key, value)) = line.split_once('=') else { continue };
+            let value = value.trim();
+            match key.trim() {
+                "scale" => {
+                    if let Ok(scale) = value.parse::<f32>()
+                        && let Some(&known) = SCALES.iter().find(|s| (**s - scale).abs() < 1e-3)
+                    {
+                        self.scale = known;
+                    }
+                }
+                "crf" => {
+                    if let Ok(crf) = value.parse::<u8>() {
+                        self.crf = crf.clamp(*CRF.start(), *CRF.end());
+                    }
+                }
+                "encoder" => {
+                    if let Some(encoder) = Encoder::from_name(value) {
+                        self.encoder = encoder;
+                    }
+                }
+                "stems" => self.stems = value == "true",
+                "midi" => self.midi = value == "true",
+                // A remembered ffmpeg that has gone is looked for again.
+                "ffmpeg" if !value.is_empty() && Path::new(value).is_file() => self.ffmpeg = Some(value.into()),
+                _ => {}
+            }
+        }
+    }
+
+    fn remembered_now(&self) -> Remembered {
+        Remembered {
+            scale: self.scale,
+            crf: self.crf,
+            encoder: self.encoder,
+            stems: self.stems,
+            midi: self.midi,
+            ffmpeg: self.ffmpeg.clone(),
+        }
+    }
+
+    /// Writes the choices to the settings folder when they changed since last written.
+    fn remember_if_changed(&mut self) {
+        let Some(dir) = &self.remember_in else { return };
+        let now = self.remembered_now();
+        if self.remembered.as_ref() == Some(&now) {
+            return;
+        }
+        let ffmpeg = now.ffmpeg.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
+        let text = format!(
+            "scale={}\ncrf={}\nencoder={}\nstems={}\nmidi={}\nffmpeg={ffmpeg}\n",
+            now.scale,
+            now.crf,
+            now.encoder.key(),
+            now.stems,
+            now.midi
+        );
+        let _ = std::fs::create_dir_all(dir);
+        let _ = std::fs::write(dir.join(EXPORT_CHOICES), text);
+        self.remembered = Some(now);
+    }
+
+    /// Records how a job ended, for the window and the status line.
+    fn finish(&mut self, ended: Result<Finished, Failure>) {
+        self.news = Some(match &ended {
+            Ok(done) => ExportNews::Saved {
+                name: done.path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+                seconds: done.seconds,
+            },
+            Err(Failure::Cancelled) => ExportNews::Cancelled,
+            Err(Failure::Failed(why)) => ExportNews::Failed { headline: why.headline.clone() },
+        });
+        self.finished = Some(ended);
+    }
+
     /// Stops a running export before the editor closes, so no half-written file is left.
     pub fn shutdown(&mut self) {
         if let Some(job) = self.job.take() {
@@ -129,17 +295,24 @@ impl ExportWindow {
         base_dir: Option<&Path>,
         kit: &Arc<Kit>,
     ) {
-        if let Some(job) = &self.job
-            && let Ok(result) = job.receiver.try_recv()
-        {
-            self.finished = Some(match result {
-                Ok(encoder) => {
-                    Ok(Finished { path: job.path.clone(), seconds: job.started.elapsed().as_secs_f32(), encoder })
-                }
-                Err(_) if job.cancel.load(Ordering::Relaxed) => Err("Export cancelled.".into()),
-                Err(error) => Err(format!("{error:#}")),
-            });
-            self.job = None;
+        if let Some(job) = &self.job {
+            let result = match job.receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Empty) => None,
+                // Its thread stopped without a word (it panicked).
+                Err(TryRecvError::Disconnected) => Some(Err(anyhow::anyhow!(STOPPED_UNEXPECTEDLY))),
+            };
+            if let Some(result) = result {
+                let ended = match result {
+                    Ok(encoder) => {
+                        Ok(Finished { path: job.path.clone(), seconds: job.started.elapsed().as_secs_f32(), encoder })
+                    }
+                    Err(_) if job.cancel.load(Ordering::Relaxed) => Err(Failure::Cancelled),
+                    Err(error) => Err(Failure::Failed(explain_export_error(&format!("{error:#}")))),
+                };
+                self.job = None;
+                self.finish(ended);
+            }
         }
         if !self.open {
             return;
@@ -160,6 +333,7 @@ impl ExportWindow {
                 self.progress(ui, ctx, scene, settings, base_dir, kit);
             });
         self.open = open;
+        self.remember_if_changed();
     }
 
     fn settings(
@@ -201,7 +375,7 @@ impl ExportWindow {
         egui::Grid::new("export-settings").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
             ui.label("Size").on_hover_text("A smaller draft exports much faster, for checking timing.");
             ui.horizontal(|ui| {
-                for (scale, name) in [(1.0, "Full"), (0.5, "Half"), (0.25, "Quarter")] {
+                for (scale, name) in SCALES.into_iter().zip(["Full", "Half", "Quarter"]) {
                     ui.radio_value(&mut self.scale, scale, name);
                 }
                 let (w, h) = output_size(settings.width.max(1), settings.height.max(1), self.scale);
@@ -211,7 +385,7 @@ impl ExportWindow {
             let compression = ui
                 .label("Compression")
                 .on_hover_text("14 is the sharpest and biggest, 18 looks lossless, 28 is small and soft.");
-            ui.add(egui::Slider::new(&mut self.crf, 14..=28)).labelled_by(compression.id);
+            ui.add(egui::Slider::new(&mut self.crf, CRF)).labelled_by(compression.id);
             ui.end_row();
             ui.label("Length");
             let frames = frame_count(settings);
@@ -266,7 +440,7 @@ impl ExportWindow {
             ui.label(RichText::new("In the video, AAC 320 kbps").color(style::MUTED));
             ui.end_row();
             let label = ui.label("Also save stems").on_hover_text(
-                "One WAV per bus and one of the master (48 kHz, 24-bit), saved next to the video. The buses \
+                "One WAV per bus and one of the master (48 kHz, 32-bit float), saved next to the video. The buses \
                  add up to the mix before the master's limiter.",
             );
             style::switch(ui, &mut self.stems).labelled_by(label.id);
@@ -336,9 +510,14 @@ impl ExportWindow {
                     }
                 });
             }
-            Some(Err(message)) => {
+            Some(Err(Failure::Cancelled)) => {
                 ui.add_space(6.0);
-                ui.label(RichText::new(message).color(style::TEXT));
+                ui.label(RichText::new("Export cancelled.").color(style::MUTED));
+            }
+            Some(Err(Failure::Failed(why))) => {
+                ui.add_space(6.0);
+                ui.label(RichText::new(&why.headline).color(style::PROBLEM));
+                failure_details(ui, &why.details);
             }
             None => {}
         }
@@ -357,6 +536,16 @@ impl ExportWindow {
         if let Some(folder) = path.parent() {
             let _ = std::fs::create_dir_all(folder);
         }
+        // A video open in a player can't be replaced: say so now, not after the sound is made.
+        if path.exists()
+            && let Err(error) = std::fs::OpenOptions::new().append(true).open(&path)
+        {
+            self.finish(Err(Failure::Failed(explain_export_error(&format!(
+                "can't write {}: {error}",
+                path.display()
+            )))));
+            return;
+        }
         let options = self.options(&path, ffmpeg);
         let (scene, kit, ctx) = (scene.clone(), kit.clone(), ctx.clone());
         let (done, total, cancel) = (
@@ -367,14 +556,25 @@ impl ExportWindow {
         let (sender, receiver) = channel();
         let (d, t, c) = (done.clone(), total.clone(), cancel.clone());
         std::thread::spawn(move || {
+            // A complaint from the graphics card stops the export with it, instead of panicking.
+            let gpu_error: Arc<Mutex<Option<String>>> = Arc::default();
             let result = bpe_gfx::headless_device().and_then(|(device, queue)| {
+                let seen = gpu_error.clone();
+                device.on_uncaptured_error(Arc::new(move |error| {
+                    seen.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| error.to_string());
+                }));
                 export_video(&device, &queue, &scene, &kit, &options, |frame, frames| {
                     d.store(frame, Ordering::Relaxed);
                     t.store(frames, Ordering::Relaxed);
                     ctx.request_repaint();
-                    !c.load(Ordering::Relaxed)
+                    !c.load(Ordering::Relaxed) && gpu_error.lock().is_ok_and(|e| e.is_none())
                 })
             });
+            let gpu_error = gpu_error.lock().unwrap_or_else(|e| e.into_inner()).take();
+            let result = match gpu_error {
+                Some(error) => Err(anyhow::anyhow!("the graphics card reported a problem: {error}")),
+                None => result,
+            };
             let _ = sender.send(result);
             ctx.request_repaint();
         });
@@ -455,6 +655,58 @@ fn bake_summary(card: &bpe_kit::modules::lighting::LightingSettings) -> String {
         parts.push("noise clean-up".into());
     }
     parts.join(" · ")
+}
+
+/// What a job whose thread stopped without a word says.
+const STOPPED_UNEXPECTEDLY: &str = "the export stopped unexpectedly";
+
+/// A failed export's error in plain words: what to do about it, with the raw text as details.
+pub fn explain_export_error(raw: &str) -> Explained {
+    let text = raw.to_lowercase();
+    let any = |words: &[&str]| words.iter().any(|w| text.contains(w));
+    let headline = if any(&["could not start ffmpeg"]) {
+        "Ball Studio couldn't start ffmpeg. Point to ffmpeg.exe again with Choose…"
+    } else if any(&["no space left", "disk full", "not enough space", "there is not enough space"]) {
+        "The disk is full. Free some space, or save the video on another drive with Change…"
+    } else if any(&[
+        "permission denied",
+        "access is denied",
+        "being used by another process",
+        "resource busy",
+        "os error 32",
+        "can't write",
+    ]) {
+        "Ball Studio couldn't write the video. If it's open in a player, close it and try again; otherwise \
+         choose another folder with Change…"
+    } else if any(&["unknown encoder", "encoder not found", "no such encoder"]) {
+        "This copy of ffmpeg can't make H.264 videos. Install a full build of ffmpeg, then point to it with Choose…"
+    } else if any(&["out of memory", "outofmemory"]) {
+        "The graphics card ran out of memory. Try Half size, or Live lighting instead of Bake."
+    } else if any(&["did not come back from the graphics card", "device lost", "graphics card reported"]) {
+        "The graphics card stopped while drawing the video. Try again; if it keeps happening, restart Ball Studio."
+    } else if any(&["adapter"]) {
+        "Ball Studio couldn't find a graphics card to draw the video with."
+    } else if any(&[STOPPED_UNEXPECTEDLY]) {
+        "The export stopped unexpectedly. Try again; if it keeps happening, restart Ball Studio."
+    } else {
+        "Something went wrong while making the video."
+    };
+    Explained { headline: headline.into(), details: raw.trim().to_string() }
+}
+
+/// The technical detail of a failure, folded away: a scrolling, selectable log and a copy button.
+fn failure_details(ui: &mut egui::Ui, details: &str) {
+    if details.is_empty() {
+        return;
+    }
+    egui::CollapsingHeader::new(RichText::new("Details").small()).id_salt("export-failure-details").show(ui, |ui| {
+        egui::ScrollArea::vertical().max_height(160.0).auto_shrink([false, true]).show(ui, |ui| {
+            ui.add(egui::Label::new(RichText::new(details).small().monospace().color(style::MUTED)).selectable(true));
+        });
+        if ui.button("Copy details").clicked() {
+            ui.ctx().copy_text(details.to_string());
+        }
+    });
 }
 
 pub fn minutes(seconds: f32) -> String {
@@ -549,6 +801,92 @@ mod tests {
             ..card
         };
         assert!(bake_summary(&traced).contains("2 traced light bounces"));
+    }
+
+    #[test]
+    fn export_failures_read_as_plain_advice_with_the_log_kept() {
+        let cases = [
+            (
+                "ffmpeg failed (exit status: 1): Error opening output file C:/v/a.mp4: Permission denied",
+                "open in a player",
+            ),
+            ("can't write C:/v/a.mp4: being used by another process. (os error 32)", "open in a player"),
+            ("ffmpeg failed: No space left on device", "disk is full"),
+            ("could not start ffmpeg (C:/ff/ffmpeg.exe). Install ffmpeg", "start ffmpeg"),
+            ("ffmpeg failed: Unknown encoder 'libx264'", "can't make H.264"),
+            ("Out of memory while allocating a buffer", "ran out of memory"),
+            ("the frame did not come back from the graphics card", "stopped while drawing"),
+            ("the graphics card reported a problem: Validation Error", "stopped while drawing"),
+            ("no suitable adapter found", "find a graphics card"),
+            (STOPPED_UNEXPECTEDLY, "stopped unexpectedly"),
+            ("something odd", "Something went wrong"),
+        ];
+        for (raw, expected) in cases {
+            let explained = explain_export_error(raw);
+            assert!(explained.headline.contains(expected), "{raw:?} gave {:?}", explained.headline);
+            assert_eq!(explained.details, raw, "the log stays behind Details");
+        }
+    }
+
+    #[test]
+    fn export_choices_are_remembered_and_odd_lines_ignored() {
+        let dir = std::env::temp_dir().join(format!("ball-studio-export-choices-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let fresh = ExportWindow::load_in(&dir);
+        assert_eq!((fresh.scale, fresh.crf, fresh.encoder), (1.0, 18, Encoder::Auto), "the defaults");
+        let mut window = fresh;
+        window.scale = 0.5;
+        window.crf = 22;
+        window.encoder = Encoder::Cpu;
+        window.stems = true;
+        window.midi = true;
+        let ffmpeg = dir.join("ffmpeg.exe");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&ffmpeg, "").unwrap();
+        window.ffmpeg = Some(ffmpeg.clone());
+        window.remember_if_changed();
+        let back = ExportWindow::load_in(&dir);
+        assert_eq!(back.remembered_now(), window.remembered_now());
+        std::fs::remove_file(&ffmpeg).unwrap();
+        assert_ne!(ExportWindow::load_in(&dir).ffmpeg, Some(ffmpeg), "an ffmpeg that has gone is looked for again");
+        std::fs::write(dir.join(EXPORT_CHOICES), "scale=0.3\ncrf=99\nencoder=potato\nnonsense\n").unwrap();
+        let odd = ExportWindow::load_in(&dir);
+        assert_eq!((odd.scale, odd.crf, odd.encoder), (1.0, 28, Encoder::Auto));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_window_without_a_settings_folder_remembers_nothing() {
+        let mut window = ExportWindow { crf: 20, ..Default::default() };
+        window.remember_if_changed();
+        assert_eq!(window.remembered, None);
+    }
+
+    #[test]
+    fn a_job_whose_thread_stopped_ends_as_a_failure_with_news() {
+        let mut window = ExportWindow::default();
+        let (sender, receiver) = channel();
+        drop(sender);
+        window.job = Some(Job {
+            path: PathBuf::from("a.mp4"),
+            done: Arc::new(AtomicU32::new(3)),
+            total: Arc::new(AtomicU32::new(12)),
+            cancel: Arc::default(),
+            receiver,
+            started: Instant::now(),
+        });
+        assert_eq!(window.progress_percent(), Some(25));
+        let kit = Arc::new(bpe_kit::kit());
+        let scene = bpe_kit::new_scene(&kit.registry);
+        let resolved = bpe_core::resolve(&scene, &kit.registry);
+        let settings = SceneSettings::from_params(&resolved.things[&ThingId::ROOT].params);
+        window.show(&egui::Context::default(), &scene, &settings, None, &kit);
+        assert!(!window.busy(), "no longer looks busy forever");
+        match window.take_news() {
+            Some(ExportNews::Failed { headline }) => assert!(headline.contains("stopped unexpectedly"), "{headline}"),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(window.take_news(), None, "told once");
     }
 
     #[test]

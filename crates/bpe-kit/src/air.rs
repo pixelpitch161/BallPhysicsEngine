@@ -153,6 +153,10 @@ pub struct Air {
     solid_vel: Vec<Vec2>,
     /// What `solid` was worked out from: the walls' outlines and spins, and the grid's place.
     mask_of: Option<MaskKey>,
+    /// How far the wind has carried the air since the start, px: the ambient wind summed over
+    /// every world step, gusts and keys and all (the scene sim adds to it, awake or asleep). Moving
+    /// haze drifts by it (Haze moves With the air, W13).
+    pub drift: Vec2,
 }
 
 /// What a solid mask was worked out from.
@@ -181,6 +185,7 @@ impl Air {
             solid: Vec::new(),
             solid_vel: Vec::new(),
             mask_of: None,
+            drift: Vec2::ZERO,
         }
     }
 
@@ -762,6 +767,42 @@ pub fn put_air(world: &mut World, air: TakenAir) {
     world.states.insert(ThingId::ROOT, air.0);
 }
 
+/// The air as the physics reads it (W13): balls that follow the air find it awake from the start
+/// and brought to each step before the forces, every world alike. The particles' own catch-up then
+/// finds it there already.
+pub struct KitAir;
+
+impl bpe_runtime::AirSim for KitAir {
+    fn wake(&self, world: &mut World) {
+        let mut air = match take_air(world) {
+            Some(air) => air,
+            None => {
+                world.states.insert(ThingId::ROOT, Box::new(Air::new(AirSpec::default())));
+                take_air(world).expect("just put there")
+            }
+        };
+        if !air.get().awake() {
+            let at = crate::things::particles::step::due(world.step, world.steps_per_second);
+            let a = air.get_mut();
+            a.wake(world);
+            a.step = a.step.max(at);
+        }
+        put_air(world, air);
+    }
+
+    fn catch_up(&self, world: &mut World) {
+        let Some(mut air) = take_air(world) else { return };
+        let due = crate::things::particles::step::due(world.step, world.steps_per_second);
+        air.get_mut().catch_up_to(due, world, crate::things::particles::step::threads());
+        put_air(world, air);
+    }
+
+    fn velocities(&self, world: &World, points: &[Vec2]) -> Option<Vec<Vec2>> {
+        let air = air_of(world)?;
+        Some(points.iter().map(|p| air.at(*p)).collect())
+    }
+}
+
 /// The cells of the air in a map by lattice place, for tests.
 #[cfg(test)]
 pub(crate) fn by_place(air: &Air) -> std::collections::BTreeMap<(i32, i32), Vec2> {
@@ -776,3 +817,6 @@ pub(crate) fn by_place(air: &Air) -> std::collections::BTreeMap<(i32, i32), Vec2
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod follow_tests;

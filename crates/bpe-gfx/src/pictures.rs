@@ -1,6 +1,6 @@
-//! Picture tests for the stage 5 passes: styled balls, trails and particles, on the software GPU.
+//! Picture test helpers, and tests of stretched balls and trails, on the software GPU.
 
-use crate::{Frame, LookInstance, PaintGpu, Renderer, test_device};
+use crate::{Frame, LayerGpu, LayeredInstance, Renderer, test_device};
 use glam::Vec2;
 
 /// Renders `frame` at `w` by `h`, or `None` without a GPU.
@@ -37,132 +37,120 @@ pub(crate) fn save(name: &str, pixels: &[u8], w: u32, h: u32) {
     std::fs::write(dir.join(format!("{name}.ppm")), out).unwrap();
 }
 
-const PINK: [f32; 4] = [1.0, 0.1046, 0.3813, 1.0];
-const CYAN: [f32; 4] = [0.01, 0.6, 1.0, 1.0];
-
-fn look(center: Vec2, radius: f32) -> LookInstance {
-    LookInstance {
+/// A plain ball on the layered path: one Body record of `color` (linear; alpha -1 adds its light)
+/// at `center`, the thing code `code`, pushed into `frame` (its own records, so it works in a
+/// blend layer's frame too).
+pub(crate) fn plain_ball(frame: &mut Frame, center: Vec2, radius: f32, color: [f32; 4], code: f32) {
+    let first = frame.look_layers.len() as u32;
+    frame.look_layers.push(LayerGpu {
+        head: [LayerGpu::BODY, bpe_core::Blend::Normal.shader_code(), 0, 0],
+        amount: [1.0, 0.0, 0.0, 0.0],
+        ..LayerGpu::ZERO
+    });
+    frame.layered.push(LayeredInstance {
         center: center.into(),
         radius,
         seed: 0.3,
-        color: PINK,
-        outline_color: CYAN,
-        form: [0.0, 0.0, 4.0, 0.15],
-        look: [0.0, 0.0, 1.0, 0.0],
+        body: color,
         stretch: [1.0, 0.0, 1.0, 1.0],
-        extent: [0.8, 3.0, 0.0, 0.0],
-        paint: PaintGpu::default(),
-    }
+        form: [0.0, 0.15, 0.0, 1.45],
+        misc: [1.0, code, 0.0, 0.0],
+        vary: crate::NO_VARY,
+        range: [first, 1, 0, 0],
+        hit: crate::NO_HIT,
+        ..LayeredInstance::default()
+    });
 }
 
 #[test]
-fn every_shape_and_style_draws_a_styled_ball() {
+fn every_ball_shape_draws_its_own_outline() {
+    // The eight shapes (0 circle, 1 square, 2 triangle, 3 diamond, 4 hexagon, 5 star, 6 heart,
+    // 7 donut) in a 2 by 4 grid, red on the dark background, 50 pixels round on the output.
     const W: u32 = 540;
     const H: u32 = 960;
+    let centre =
+        |k: usize| Vec2::new(if k.is_multiple_of(2) { -270.0 } else { 270.0 }, -720.0 + 480.0 * (k / 2) as f32);
     let mut frame = Frame { bloom: 0.0, ..Frame::default() };
-    let at = |i: usize| Vec2::new(-405.0 + (i % 4) as f32 * 270.0, -800.0 + (i / 4) as f32 * 230.0);
-    for shape in 0..8 {
-        let mut l = look(at(shape), 80.0);
-        l.form[0] = shape as f32;
-        l.look[0] = 4.0;
-        frame.looks.push(l);
-    }
-    for style in 0..2 {
-        let mut l = look(at(8 + style), 80.0);
-        l.form[1] = style as f32;
-        l.look[1] = 0.3;
-        frame.looks.push(l);
+    for k in 0..8 {
+        plain_ball(&mut frame, centre(k), 100.0, [1.0, 0.0, 0.0, 1.0], 0.0);
+        frame.layered[k].form = [k as f32, 0.0, 0.0, 1.45];
     }
     let Some(pixels) = render_sized(&frame, W, H) else { return };
-    save("ball-styles", &pixels, W, H);
-    for (i, l) in frame.looks.iter().enumerate() {
-        let p = pixel_sized(&pixels, W, H, Vec2::from(l.center) + Vec2::new(0.0, 30.0));
-        if i == 7 {
-            assert!(p[0] < 60, "the donut should have a hole: {p:?}");
-            continue;
+    save("ball-shapes", &pixels, W, H);
+    let red = |at: Vec2| pixel_sized(&pixels, W, H, at)[0] > 128;
+    let covered: Vec<usize> = (0..8)
+        .map(|k| {
+            let mut n = 0;
+            for y in (-150..=150).step_by(2) {
+                for x in (-150..=150).step_by(2) {
+                    n += red(centre(k) + Vec2::new(x as f32, y as f32)) as usize;
+                }
+            }
+            n
+        })
+        .collect();
+    for k in 0..8 {
+        assert!(covered[k] > 1000 && covered[k] < 151 * 151, "shape {k} covers {}: {covered:?}", covered[k]);
+        for j in 0..k {
+            assert!(covered[j].abs_diff(covered[k]) > 40, "shapes {j} and {k} look alike: {covered:?}");
         }
-        assert!(p[0] > 120 || p[2] > 120, "ball {i} (shape {}, style {}) is missing: {p:?}", l.form[0], l.form[1]);
+        assert_eq!(red(centre(k)), k != 7, "shape {k}: the middle (only the donut has a hole)");
     }
-    let corner = Vec2::new(58.0, 58.0);
-    let square = pixel_sized(&pixels, W, H, at(1) + corner);
-    let circle = pixel_sized(&pixels, W, H, at(0) + corner);
-    assert!(square[0] > 120 || square[2] > 120, "the square has corners: {square:?}");
-    assert!(circle[0] < 60 && circle[2] < 60, "the circle has none: {circle:?}");
-    // The outline shows just inside the edge, in cyan.
-    let edge = pixel_sized(&pixels, W, H, at(0) + Vec2::new(0.0, 77.0));
-    assert!(edge[2] > 150 && edge[1] > 100 && edge[0] < 100, "{edge:?}");
-}
+    let r = 100.0;
+    assert!(!red(centre(0) + Vec2::splat(0.8 * r)) && red(centre(1) + Vec2::splat(0.75 * r)), "the square's corner");
+    assert!(red(centre(7) + Vec2::new(0.72 * r, 0.0)), "the donut's ring");
+    assert!(!red(centre(2) + Vec2::new(0.8 * r, -0.8 * r)), "the triangle narrows to its top corner");
 
-#[test]
-fn a_styled_shiny_circle_looks_like_the_classic_ball() {
-    use crate::BallInstance;
-    const W: u32 = 540;
-    const H: u32 = 960;
-    let (center, radius, glow) = (Vec2::new(0.0, 0.0), 200.0, 0.3);
-    let mut classic = Frame { bloom: 0.0, ..Frame::default() };
-    classic.balls.push(BallInstance {
-        center: center.into(),
-        radius,
-        glow,
-        color: PINK,
-        code: [3.0, 0.3, 0.0, 0.0],
-        paint: PaintGpu::default(),
+    // An outline 8 pixels wide outside the square, in white.
+    let mut outlined = Frame { bloom: 0.0, ..Frame::default() };
+    plain_ball(&mut outlined, Vec2::ZERO, 100.0, [1.0, 0.0, 0.0, 1.0], 0.0);
+    outlined.look_layers.push(LayerGpu {
+        head: [LayerGpu::OUTLINE, bpe_core::Blend::Normal.shader_code(), 0, 0],
+        amount: [1.0, 0.0, 0.0, 0.0],
+        p0: [8.0, 2.0, 0.0, 0.0],
+        colour: [1.0; 4],
+        ..LayerGpu::ZERO
     });
-    let mut styled = Frame { bloom: 0.0, ..Frame::default() };
-    let mut l = look(center, radius);
-    l.form[1] = 1.0;
-    l.look[1] = glow;
-    styled.looks.push(l);
-    let Some(a) = render_sized(&classic, W, H) else { return };
-    let b = render_sized(&styled, W, H).unwrap();
-    save("shiny-classic", &a, W, H);
-    save("shiny-styled", &b, W, H);
-    let worst = a.iter().zip(&b).map(|(x, y)| x.abs_diff(*y)).max().unwrap();
-    assert!(worst <= TOLERANCE, "worst byte difference {worst}");
+    outlined.layered[0].form = [1.0, 0.0, 0.0, 1.45];
+    outlined.layered[0].range[1] = 2;
+    let Some(pixels) = render_sized(&outlined, W, H) else { return };
+    save("ball-shape-outline", &pixels, W, H);
+    // Just outside the square's side (0.84 radii), and inside it.
+    let edge = pixel_sized(&pixels, W, H, Vec2::new(0.84 * r + 6.0, 0.0));
+    let inside = pixel_sized(&pixels, W, H, Vec2::new(0.6 * r, 0.0));
+    assert!(edge[0] > 200 && edge[1] > 200 && edge[2] > 200, "the outline is white: {edge:?}");
+    assert!(inside[0] > 128 && inside[1] < 40, "the body is still red inside: {inside:?}");
 }
-
-/// How far, in output bytes, a styled shiny circle may stray from the classic ball: the two
-/// shade the same, but the rim's antialiased pixels are lit from just past the edge by the
-/// classic ball and from the edge itself by the styled one, and the classic quad cuts the halo
-/// off at 3 radii where the styled one reaches a little further. Both show as at most 2 bytes.
-const TOLERANCE: u8 = 2;
 
 #[test]
 fn a_stretched_ball_reaches_further_along_its_motion() {
     const W: u32 = 270;
     const H: u32 = 480;
     let mut frame = Frame { bloom: 0.0, ..Frame::default() };
-    let mut l = look(Vec2::ZERO, 80.0);
-    l.stretch = [1.0, 0.0, 1.6, 0.8];
-    frame.looks.push(l);
+    plain_ball(&mut frame, Vec2::ZERO, 80.0, [1.0, 0.1046, 0.3813, 1.0], 3.0);
+    frame.layered[0].stretch = [1.0, 0.0, 1.6, 0.8];
+    frame.layered[0].form[3] = 2.0;
     let Some(pixels) = render_sized(&frame, W, H) else { return };
     let along = pixel_sized(&pixels, W, H, Vec2::new(112.0, 0.0));
     let across = pixel_sized(&pixels, W, H, Vec2::new(0.0, 112.0));
     assert!(along[0] > 120, "{along:?}");
     assert!(across[0] < 40, "{across:?}");
-    // An additive styled ball adds light and covers nothing: the output alpha stays opaque
-    // and the colour shows.
-    frame.looks[0].color = [1.0, 0.1, 0.4, -1.0];
+    // An additive ball adds light and covers nothing: the output alpha stays opaque and the
+    // colour shows.
+    frame.layered[0].body = [1.0, 0.1, 0.4, -1.0];
     let pixels = render_sized(&frame, W, H).unwrap();
     assert!(pixel_sized(&pixels, W, H, Vec2::ZERO)[0] > 120);
 }
 
 #[test]
 fn a_streak_fades_to_its_tail_and_sits_behind_the_balls() {
-    use crate::{BallInstance, push_streak};
+    use crate::push_streak;
     const W: u32 = 270;
     const H: u32 = 480;
     let mut frame = Frame { bloom: 0.0, ..Frame::default() };
     let points: Vec<Vec2> = (0..=10).map(|i| Vec2::new(0.0, -40.0 * i as f32)).collect();
     push_streak(&mut frame.trails, &points, 24.0, 1.0, [1.0, 0.0, 0.0, -1.0], 4.0);
-    frame.balls.push(BallInstance {
-        center: [0.0, 0.0],
-        radius: 60.0,
-        glow: 0.0,
-        color: [0.0, 0.0, 1.0, 1.0],
-        code: [0.0; 4],
-        paint: crate::PaintGpu::default(),
-    });
+    plain_ball(&mut frame, Vec2::ZERO, 60.0, [0.0, 0.0, 1.0, 1.0], 0.0);
     let Some(pixels) = render_sized(&frame, W, H) else { return };
     save("streak", &pixels, W, H);
     let head = pixel_sized(&pixels, W, H, Vec2::new(0.0, -80.0));

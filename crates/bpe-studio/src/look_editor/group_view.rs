@@ -16,7 +16,7 @@ use eframe::{egui, egui_wgpu, wgpu};
 use egui::{Color32, Pos2, Rect, Response, RichText, Sense, Stroke, Ui};
 use glam::Vec2;
 
-use super::ball_view::{Ground, mini_scene};
+use super::ball_view::{Ground, MiniCache, mini_scene};
 use crate::inspector::Edit;
 use crate::style;
 
@@ -56,6 +56,8 @@ pub struct GroupView {
     /// The world point at the view's middle and how much of the world it shows across, kept
     /// still while something is dragged so the view doesn't rescale under the pointer.
     fit: Option<(Vec2, f32)>,
+    /// The small scene last drawn, resolved and hashed only when it changes.
+    cache: MiniCache,
 }
 
 impl GroupView {
@@ -327,7 +329,7 @@ fn picture(
         return;
     };
     let Some(mini) = group_scene(cx.scene, cx.kit, cx.id, view.ground) else { return };
-    let resolved = bpe_core::resolve(&mini, &cx.kit.registry);
+    view.cache.update(mini, cx.kit, cx.id);
     let pixels = (rect.width() * ui.ctx().pixels_per_point()).round().max(2.0) as u32;
     let device = &render.device;
     let (renderer, texture) = view.renderer.get_or_insert_with(|| {
@@ -348,13 +350,13 @@ fn picture(
         view.drawn = None;
     }
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    format!("{:?}", resolved.things.get(&cx.id)).hash(&mut h);
-    format!("{:?}", resolved.things.get(&ThingId::ROOT)).hash(&mut h);
-    format!("{:?} {:?}", mini.tracks, mini.pulses).hash(&mut h);
+    view.cache.content.hash(&mut h);
     (cx.time.to_bits(), pixels, view.ground, centre.x.to_bits(), centre.y.to_bits(), size.to_bits()).hash(&mut h);
     let key = h.finish();
-    if view.drawn != Some(key) {
-        build_group_frame(&mini, &resolved, cx.kit, cx.time, centre, size, &mut view.frame);
+    if view.drawn != Some(key)
+        && let Some(mini) = view.cache.mini()
+    {
+        build_group_frame(mini, &view.cache.resolved, cx.kit, cx.time, centre, size, &mut view.frame);
         renderer.render(device, &render.queue, &view.frame);
         view.drawn = Some(key);
     }

@@ -55,6 +55,11 @@ fn made_of_text(s: &ParticlesSettings) -> bool {
     s.from == BornFrom::AWordOrPicture && s.word_from == super::WordFrom::ATextThing
 }
 
+/// Whether its source is a picture (kept in the scene, or an older scene's file).
+fn made_of_picture(s: &ParticlesSettings) -> bool {
+    s.from == BornFrom::AWordOrPicture && s.word_from == super::WordFrom::Picture && !s.picture.is_empty()
+}
+
 /// Whether its source is typed text in a font other than the built-in one.
 fn typed_in_a_font(s: &ParticlesSettings) -> bool {
     s.from == BornFrom::AWordOrPicture
@@ -165,7 +170,7 @@ impl ThingSim for ParticlesSim {
 
     /// Every setting changes the particles; the fingerprints leave the thing out anyway (it is
     /// stepped beside the physics), so saying yes only lets keys reach `settings_changed`.
-    fn affects_physics(&self, _key: &str) -> bool {
+    fn key_restarts_physics(&self, _key: &str) -> bool {
         true
     }
 
@@ -178,8 +183,17 @@ impl ThingSim for ParticlesSim {
             && engine_of(resolved.slots.get(&SlotId::Look)) == Engine::Exact
     }
 
+    /// Its Rise forces heat the air (a Huge swarm never does): while balls follow the air, the
+    /// heat moves them, so the thing steps with the physics. A thing fed by its parent's particles
+    /// doesn't count: while balls follow the air it puts in no heat (its parent may be beside).
+    fn heats_air(&self, resolved: &ResolvedThing) -> bool {
+        engine_of(resolved.slots.get(&SlotId::Look)) == Engine::Exact
+            && ParticlesSettings::from_params(&resolved.params).from != BornFrom::ItsParentsParticles
+            && Forces::read(resolved.slots.get(&SlotId::Motion)).heats_air()
+    }
+
     /// The Look card's Engine picks how the particles step (Exact or Huge swarm).
-    fn beside_card_key(&self, slot: SlotId, key: &str) -> bool {
+    fn card_key_restarts_beside(&self, slot: SlotId, key: &str) -> bool {
         slot == SlotId::Look && key == super::look::ENGINE_KEY
     }
 
@@ -189,7 +203,7 @@ impl ThingSim for ParticlesSim {
     }
 
     /// Its Motion and Meets things cards have no module sims: it reads them itself.
-    fn own_cards(&self) -> bool {
+    fn steps_own_cards(&self) -> bool {
         true
     }
 
@@ -198,16 +212,17 @@ impl ThingSim for ParticlesSim {
         true
     }
 
-    /// A source made of a Text thing reads that Text from the scene (Text part 4).
+    /// A source made of a Text thing reads that Text from the scene (Text part 4), and one made
+    /// of a picture reads the picture the scene keeps (W5).
     fn reads_tree(&self, resolved: &ResolvedThing) -> bool {
         let s = ParticlesSettings::from_params(&resolved.params);
-        made_of_text(&s) || typed_in_a_font(&s)
+        made_of_text(&s) || made_of_picture(&s) || typed_in_a_font(&s)
     }
 
     /// The Text its source is made of: its saved settings and font place the particles. Typed
     /// text in another font: that font's file (a font loaded into the scene can change under its
     /// name).
-    fn fingerprint_more(&self, scene: &bpe_core::Scene, thing: &Thing, resolved: &ResolvedThing) -> u64 {
+    fn physics_print_extra(&self, scene: &bpe_core::Scene, thing: &Thing, resolved: &ResolvedThing) -> u64 {
         let s = ParticlesSettings::from_params(&resolved.params);
         if typed_in_a_font(&s) {
             let none = super::spots::SpotsKey::None;
@@ -221,7 +236,7 @@ impl ThingSim for ParticlesSim {
     }
 
     /// What its Look asks the stepping to keep: trails and marks (part 6).
-    fn more_fingerprint(&self, resolved: &ResolvedThing) -> u64 {
+    fn beside_print_extra(&self, resolved: &ResolvedThing) -> u64 {
         Wants::read(resolved.slots.get(&SlotId::Look)).hash()
     }
 }
@@ -302,7 +317,11 @@ fn catch_up_all(world: &mut World, log: &mut Log, due: u32) {
                 continue;
             }
             step::step_in(st, world, log, threads, air_now, parent);
-            if let Some(air) = air.as_mut().filter(|a| a.get().awake()) {
+            // While balls follow the air, a thing fed by its parent's particles puts in no heat:
+            // its parent may step beside the physics, and every playback must move the balls
+            // alike ([`ParticlesSim::heats_air`]).
+            let heats = !(world.air_felt && st.settings.from == BornFrom::ItsParentsParticles);
+            if let Some(air) = air.as_mut().filter(|a| heats && a.get().awake()) {
                 step::put_heat(st, air.get_mut());
             }
             *ms += started.elapsed().as_secs_f32() * 1000.0;

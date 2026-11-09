@@ -1,6 +1,8 @@
 //! Working out every thing's effective settings: its kind's defaults with its own changes on
 //! top, for the thing itself and for each of its own cards. Nothing is passed down the tree.
 
+use std::sync::Arc;
+
 use crate::{KindId, LayerId, Params, Registry, Scene, SettingDef, SlotId, Target, ThingId, Value, layered_key};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -82,8 +84,9 @@ pub struct Problem {
 /// The whole scene worked out.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Resolved {
-    /// Every enabled thing of a known kind.
-    pub things: BTreeMap<ThingId, ResolvedThing>,
+    /// Every enabled thing of a known kind. Shared (review S22): a copy of the scene shares every
+    /// thing it doesn't change, and changing one (`Arc::make_mut`) copies only that one.
+    pub things: BTreeMap<ThingId, Arc<ResolvedThing>>,
     /// In thing order, then slot order.
     pub problems: Vec<Problem>,
 }
@@ -183,7 +186,7 @@ pub fn resolve(scene: &Scene, reg: &Registry) -> Resolved {
                 }
             }
         }
-        out.things.insert(id, resolved);
+        out.things.insert(id, Arc::new(resolved));
     }
     out
 }

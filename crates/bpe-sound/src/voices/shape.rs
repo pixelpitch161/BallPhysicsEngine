@@ -10,7 +10,7 @@
 #![allow(clippy::needless_range_loop)]
 
 use super::alloc::{CAPACITY, MAX_VOICES, STEAL_MS, Voices};
-use super::hit_filter::HitFilter;
+use super::hit_filter::{HitFilter, StrengthCurve};
 use super::knobs::{self as k, KNOBS, MAX_ENVS, Values};
 use super::notes::{NotePicker, PickCx, mix};
 use super::pick::AnyPick;
@@ -22,7 +22,10 @@ use crate::mods::{
 };
 use crate::{BLOCK, BlockCx, BlockHit, VoiceSource};
 use bpe_core::{LayerId, NoteSlot, ShapePath, Target, ThingId, Track};
-use bpe_dsp::{EnvParams, Envelope, Noise, Smoother, SubOsc, SubWaveId, TableSet, UnisonOsc, UnisonParams, db_to_gain};
+use bpe_dsp::{
+    EnvParams, Envelope, Noise, SampleData, SamplerParams, SamplerVoice, Smoother, SubOsc, SubWaveId, TableSet,
+    UnisonOsc, UnisonParams, db_to_gain,
+};
 use bpe_kit::sound::{
     DistanceSettings, Follows, GateMode, GateUnit, HitPick, LfoSettings, LfoStart, LightFollows, LightModSettings,
     NoiseColour, PhaseMode, PlayMode, PlayWhen, SILENT_DB, SubOctave, SubWave, Wave,
@@ -81,8 +84,14 @@ pub struct OscSpec {
     pub phase_mode: PhaseMode,
     pub sub: SubWave,
     pub sub_octave: SubOctave,
-    /// The wave's tables (none for Noise or an oscillator that is off).
+    /// The wave's tables (none for Noise, a Sample or an oscillator that is off).
     pub table: Option<Arc<TableSet>>,
+    /// A Sample oscillator's sound (none while it is missing, unreadable or decoding: silent), how
+    /// it plays, the note it was recorded at and whether notes repitch it.
+    pub sample: Option<Arc<SampleData>>,
+    pub sampler: SamplerParams,
+    pub sample_root: f32,
+    pub sample_follow: bool,
 }
 
 /// One envelope layer's settings that are not knobs.
@@ -196,6 +205,7 @@ pub(crate) fn lfo_params(spec: &LfoSpec, i: usize, kv: &[f32], tempo: &crate::Te
         delay: at(k::LFO_DELAY).max(0.0) as f64,
         smooth: (at(k::LFO_SMOOTH) / 100.0).clamp(0.0, 1.0),
         start: spec.settings.start,
+        origin: crate::mods::lfo::lfo_origin(&spec.settings, tempo),
     }
 }
 
@@ -258,6 +268,8 @@ pub struct ShapeSpec {
     /// The Distance (its place in `mods.dists`) whose range holds the notes, for In range.
     pub zone: Option<usize>,
     pub heard_from: bpe_core::Target,
+    /// On a Balls or Emitter thing (W10): it hears its own balls, these moments of them.
+    pub balls: Option<super::BallMoments>,
     pub slots: Vec<NoteSlot>,
     /// How hits pick notes and how the slots take turns.
     pub notes: NotesSpec,
@@ -268,6 +280,8 @@ pub struct ShapeSpec {
     pub base: Values,
     /// The knobs with keys, by place.
     pub keyed: Vec<(usize, Track)>,
+    /// Every knob's setting key and place, sorted by key: where a rule's change lands (W13).
+    pub knob_keys: Vec<(String, usize)>,
     pub matrix: ModMatrix,
     /// The band-limited square the subs read (`None` with no sub, or while it bakes).
     pub square: Option<Arc<TableSet>>,
@@ -294,6 +308,8 @@ struct Note {
     osc: [UnisonOsc; 2],
     sub: [SubOsc; 2],
     noise: [Noise; 2],
+    /// Each oscillator's place in its sample (a Sample oscillator).
+    samp: [SamplerVoice; 2],
     chain: VoiceChain,
     env: [Envelope; MAX_ENVS],
     env_ids: [LayerId; MAX_ENVS],
@@ -336,6 +352,7 @@ impl Note {
             osc: [UnisonOsc::new(), UnisonOsc::new()],
             sub: [SubOsc::default(), SubOsc::default()],
             noise: [Noise::new(0), Noise::new(1)],
+            samp: [SamplerVoice::default(); 2],
             chain: VoiceChain::new(chain),
             env: std::array::from_fn(|_| Envelope::new()),
             env_ids: [LayerId(u32::MAX); MAX_ENVS],
@@ -443,6 +460,8 @@ pub fn note_hz(pitch: f32) -> f32 {
 /// A shape's voice.
 pub struct ShapeVoice {
     spec: ShapeSpec,
+    /// The light on the balls its Light modulators read, worked out once a physics step.
+    light_table: crate::mods::LightTable,
     filter: HitFilter,
     picker: AnyPick,
     clock: SlotClock,
@@ -538,7 +557,8 @@ impl ShapeVoice {
             now[k::MIN_STRENGTH] / 100.0,
             now[k::RETRIGGER] / 1000.0,
             spec.heard_from.clone(),
-        );
+        )
+        .hearing(spec.balls);
         // By source: the envelope it is (usize::MAX for other modulators).
         let mut source_env = [usize::MAX; MAX_SOURCES];
         let mut src = [Src::None; MAX_SOURCES];
@@ -596,6 +616,7 @@ impl ShapeVoice {
             }
         }
         let mut v = ShapeVoice {
+            light_table: crate::mods::LightTable::default(),
             filter,
             picker: AnyPick::new(spec.notes.plays),
             clock: SlotClock::new(spec.slots.len(), super::slots::clock_seed(spec.thing)),
@@ -658,7 +679,7 @@ impl ShapeVoice {
             watched: [0.0; CAPACITY],
             spec,
         };
-        v.read_keys(0.0);
+        v.read_keys(0.0, None);
         v.snap_smoothers();
         v
     }
@@ -783,6 +804,7 @@ impl ShapeVoice {
             shape: self.spec.thing,
             log: cx.log,
             light: self.spec.mods.probe(),
+            light_table: Some(&self.light_table),
         };
         let mut kv = [0.0f32; KNOBS];
         for &m in &self.order {
@@ -820,14 +842,16 @@ impl ShapeVoice {
         }
     }
 
-    /// The knobs at `time`: as set, with keyed ones read from their tracks.
-    fn read_keys(&mut self, time: f64) {
+    /// The knobs at `time`: as set, with keyed ones read from their tracks, then what the rules
+    /// change (`rules`, the engine's physics' own). Never allocates.
+    fn read_keys(&mut self, time: f64, rules: Option<&bpe_runtime::RulesState>) {
         self.now = self.spec.base;
         for (i, track) in &self.spec.keyed {
             if let Some(v) = k::track_value(track, time) {
                 self.now[*i] = v;
             }
         }
+        rule_knobs(&self.spec, rules, time, &mut self.now);
     }
 
     fn targets(&self) -> [f32; 10] {
@@ -1011,6 +1035,9 @@ impl ShapeVoice {
             if !osc_on[o] {
                 continue;
             }
+            if let Some(data) = &self.spec.osc[o].sample {
+                n.samp[o].note_on(data, &self.spec.osc[o].sampler, at);
+            }
             n.osc[o].prepare(mix(seed.wrapping_add(17 * (o as u64 + 1))));
             n.osc[o].set(&unison[o]);
             n.osc[o].note_on();
@@ -1154,7 +1181,7 @@ impl ShapeVoice {
     /// Every hit on this shape that plays, and the auditions, start their notes. The slot
     /// changes landing in the block come before the hits on their samples.
     fn take_hits(&mut self, cx: &BlockCx, hits: &[BlockHit]) {
-        self.filter.set(self.now[k::MIN_STRENGTH] / 100.0, self.now[k::RETRIGGER] / 1000.0);
+        self.filter.set(self.now[k::MIN_STRENGTH] / 100.0, self.now[k::RETRIGGER] / 1000.0, self.curve());
         self.clock.begin_block(cx.start_sample, BLOCK as u32, cx.time, &self.spec.notes, cx.tempo);
         self.start_strums(cx);
         for hit in hits {
@@ -1165,6 +1192,8 @@ impl ShapeVoice {
                 self.rule_note(cx, at, sample, hit);
                 continue;
             }
+            // A ball's sound hears the hit from its own ball (W10); a shape's as it is.
+            let hit = &BlockHit { offset: hit.offset, event: self.filter.seen(&hit.event) };
             let Some(strength) = self.filter.accept(hit, sample, cx.world) else { continue };
             let ball = hit.event.a;
             let seed = mix(sample
@@ -1422,12 +1451,18 @@ impl ShapeVoice {
     }
 
     /// The numbers an accepted hit gives the Hit modulators (worked out only when there are
-    /// any).
+    /// any). Its strength is the one the hit played at (the sound's strength curve, or a rule
+    /// note's velocity).
     fn hit_values_of(&self, cx: &BlockCx, hit: &BlockHit, seed: u64, strength: f32) -> HitValues {
         if self.spec.mods.hits.is_empty() {
             return HitValues { strength, ..HitValues::default() };
         }
-        crate::mods::hit_values(cx.world, self.spec.thing, &hit.event, seed)
+        HitValues { strength, ..crate::mods::hit_values(cx.world, self.spec.thing, &hit.event, seed) }
+    }
+
+    /// How hits' speeds become strengths now (Full strength at, Strength curve).
+    fn curve(&self) -> StrengthCurve {
+        StrengthCurve::of_knobs(self.now[k::STRENGTH_FULL_AT], self.now[k::STRENGTH_CURVE])
     }
 
     /// A hit (or a key clicked) restarts the shape's Restart-on-hit LFOs.
@@ -1479,8 +1514,8 @@ impl ShapeVoice {
             self.clock.begin_block(start, BLOCK as u32, time, &self.spec.notes, tempo);
             let end = start + block;
             if next < hits.len() && hits[next].0 < end {
-                self.read_keys(time);
-                self.filter.set(self.now[k::MIN_STRENGTH] / 100.0, self.now[k::RETRIGGER] / 1000.0);
+                self.read_keys(time, world.rules());
+                self.filter.set(self.now[k::MIN_STRENGTH] / 100.0, self.now[k::RETRIGGER] / 1000.0, self.curve());
                 let cx = BlockCx { start_sample: start, time, tempo, world, log: &no_log, playing: true };
                 while next < hits.len() && hits[next].0 < end {
                     let (sample, hit) = &hits[next];
@@ -1494,6 +1529,7 @@ impl ShapeVoice {
                         }
                         continue;
                     }
+                    let hit = &BlockHit { offset: hit.offset, event: self.filter.seen(&hit.event) };
                     if self.filter.accept(hit, *sample, world).is_none() {
                         continue;
                     }
@@ -1613,6 +1649,7 @@ impl ShapeVoice {
             shape: self.spec.thing,
             log: cx.log,
             light: self.spec.mods.probe(),
+            light_table: Some(&self.light_table),
         };
         for &m in &self.order {
             if !per_note(m) {
@@ -1710,7 +1747,16 @@ impl ShapeVoice {
             let [lane_l, lane_r] = &mut sc.lanes[o];
             *lane_l = [0.0; BLOCK];
             *lane_r = [0.0; BLOCK];
-            if spec.wave == Wave::Noise {
+            if spec.wave == Wave::Sample {
+                if let Some(data) = &spec.sample {
+                    // Repitched from its root by the note (Follow notes), else only by Octave,
+                    // Semi and Cents.
+                    let semis_from_root =
+                        if spec.sample_follow { pitch[o] - spec.sample_root } else { pitch[o] - n.pitch };
+                    let step = (2.0f64).powf(semis_from_root as f64 / 12.0);
+                    n.samp[o].render(data, &spec.sampler, step, &sc.gain, lane_l, lane_r);
+                }
+            } else if spec.wave == Wave::Noise {
                 let pink = spec.noise == NoiseColour::Pink;
                 for s in 0..BLOCK {
                     let v = if pink { n.noise[o].pink() } else { n.noise[o].white() } * sc.gain[s];
@@ -1905,13 +1951,25 @@ fn scale_by_routes(matrix: &ModMatrix, src: &[[f32; BLOCK]; MAX_SOURCES], target
     }
 }
 
+/// `values` (the knobs of `spec`) with the rules' changes on the shape's Sound card at `time`
+/// folded on the knobs they name (W13). Never allocates.
+pub(crate) fn rule_knobs(spec: &ShapeSpec, rules: Option<&bpe_runtime::RulesState>, time: f64, values: &mut k::Values) {
+    let Some(rules) = rules else { return };
+    for (key, list) in rules.whole_changes(spec.thing, Some(bpe_core::SlotId::Sound)) {
+        if let Ok(i) = spec.knob_keys.binary_search_by(|(k, _)| k.as_str().cmp(key)) {
+            let at = spec.knob_keys[i].1;
+            values[at] = crate::ruled::number(list, values[at], time);
+        }
+    }
+}
+
 impl VoiceSource for ShapeVoice {
     fn thing(&self) -> ThingId {
         self.spec.thing
     }
 
     fn on_block(&mut self, cx: &BlockCx, hits: &[BlockHit], out_l: &mut [f32; BLOCK], out_r: &mut [f32; BLOCK]) {
-        self.read_keys(cx.time);
+        self.read_keys(cx.time, cx.world.rules());
         let t = self.targets();
         for (i, s) in self.smooth.iter_mut().enumerate() {
             s.set_target(t[i]);
@@ -1986,7 +2044,7 @@ impl VoiceSource for ShapeVoice {
         self.note_max = [0.0; MAX_SOURCES];
         self.n_auditions = 0;
         self.peak = 0.0;
-        self.read_keys(0.0);
+        self.read_keys(0.0, None);
         self.snap_smoothers();
     }
 
@@ -2152,6 +2210,45 @@ impl VoiceSource for ShapeVoice {
 
     fn catch_up(&mut self, hits: &[(u64, BlockHit)], upto: u64, tempo: &crate::TempoMap, world: &bpe_runtime::World) {
         ShapeVoice::catch_up(self, hits, upto, tempo, world);
+    }
+
+    fn warm_up(&self, tempo: &crate::TempoMap) -> f64 {
+        let s = &self.spec;
+        // The largest a knob is set to, its keys counted.
+        let most = |i: usize| {
+            let keys = s.keyed.iter().filter(|(k, _)| *k == i).flat_map(|(_, t)| t.keys.iter());
+            keys.filter_map(|k| super::knobs::number(&k.value)).fold(s.base[i], f32::max).max(0.0) as f64
+        };
+        let mut tail = 0.0f64;
+        for (e, env) in s.envs.iter().enumerate().take(MAX_ENVS) {
+            let seconds = |key: usize| most(k::env(e, key)) / 1000.0;
+            let gate = match (env.gate_mode, env.gate_unit) {
+                (GateMode::UntilNextHit, _) => 0.0,
+                (GateMode::Fixed, GateUnit::Ms) => seconds(k::GATE_MS),
+                (GateMode::Fixed, GateUnit::Beats) => most(k::env(e, k::GATE_BEATS)) * tempo.beat_seconds(),
+            };
+            let rise = seconds(k::ATTACK) + seconds(k::HOLD) + seconds(k::DECAY);
+            tail = tail.max(seconds(k::DELAY) + gate.max(rise) + seconds(k::RELEASE));
+        }
+        // A strum spreads a chord's notes out over up to 200 ms.
+        tail + 0.2
+    }
+
+    fn holds(&self) -> bool {
+        self.spec.play_when != PlayWhen::OnHit || self.spec.envs.iter().any(|e| e.gate_mode == GateMode::UntilNextHit)
+    }
+
+    fn prepare(&mut self, world: &bpe_runtime::World, log: &bpe_runtime::Log) {
+        let m = &self.spec.mods;
+        let Some(probe) = m.probe() else { return };
+        if m.lights.is_empty() {
+            return;
+        }
+        // A Light following each note's ball reads whichever ball hits: every ball, then.
+        let every = (0..m.lights.len()).any(|i| m.light_per_note(i));
+        let shape = self.spec.thing;
+        self.light_table
+            .fill(probe, world, log, |thing| every || m.lights.iter().any(|l| world.names(&l.heard, shape, thing)));
     }
 
     fn level(&self) -> f32 {

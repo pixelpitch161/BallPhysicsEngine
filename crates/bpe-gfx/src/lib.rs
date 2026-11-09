@@ -22,6 +22,8 @@ mod grade_tests;
 mod gradients;
 mod lighting;
 mod liquid;
+#[cfg(test)]
+mod output_tests;
 pub mod pipes;
 pub use liquid::{Liquid, LiquidBlob, LiquidStyle, MOST_BLOBS};
 mod ripples;
@@ -31,6 +33,7 @@ pub use stage_camera::{FillEdges, StageCamera, StageCameraGpu, StageLayout, Stag
 #[cfg(test)]
 mod lighting_tests;
 mod timing;
+pub use lighting::TILED_FROM as LIGHTS_TILED_FROM;
 pub use timing::FEATURES as TIMING_FEATURES;
 #[cfg(test)]
 mod layers_tests;
@@ -53,15 +56,16 @@ mod sprites_tests;
 mod sub_layers_tests;
 pub mod swarm;
 mod util;
+pub mod yuv;
 
 pub use frame::{
-    Around, BENDS_FROM, BackgroundPaint, BallInstance, BallMark, Bender, BlendLayer, DrawCx, Draws, EffectCall,
-    FIELD_FLAME, FIELD_HEAT_STOPS, FIELD_SMOKE, FREE_BENDER, Field, FieldLook, FlashInstance, Frame, Grade, HitMark,
-    LayerGpu, LayeredInstance, LightGpu, LightScene, LightShow, LightingGpu, LookInstance, MAX_LAYERS, MOST_MIRRORS,
-    MOST_PIPES, MOST_RIPPLE_SOURCES, MOST_THROWERS, MOST_TRAIL_VERTICES, MirrorGpu, ModuleDraw, NO_HIT, PATH_GLYPH,
-    Particle, PathChannel, PathInstance, PathStyle, Pipe, Place, RibbonGpu, ShapeInstance, SphereGpu, Splat, Stage,
-    StreakStyle, SurfaceGpu, Takes, ThingDraw, Thrower, TrailVertex, blend_alpha, build_frame, build_frame_sensing,
-    build_frame_with, hit_strength, pack_tags, push_streak, push_streak_colours, push_trail, tag_parts, thing_code,
+    Around, BENDS_FROM, BackgroundPaint, BallMark, Bender, BlendLayer, DrawCx, Draws, EffectCall, FIELD_FLAME,
+    FIELD_HEAT_STOPS, FIELD_SMOKE, FREE_BENDER, Field, FieldLook, FlashInstance, Frame, Grade, HitMark, LayerGpu,
+    LayeredInstance, LightGpu, LightScene, LightShow, LightingGpu, MAX_LAYERS, MOST_MIRRORS, MOST_PIPES,
+    MOST_RIPPLE_SOURCES, MOST_THROWERS, MOST_TRAIL_VERTICES, MirrorGpu, ModuleDraw, NO_HIT, PATH_GLYPH, Particle,
+    PathChannel, PathInstance, PathStyle, Pipe, Place, RibbonGpu, SphereGpu, Splat, Stage, StreakStyle, SurfaceGpu,
+    Takes, ThingDraw, Thrower, TrailVertex, blend_alpha, build_frame, build_frame_sensing, build_frame_with,
+    hit_strength, pack_tags, push_streak, push_streak_colours, push_trail, tag_parts, thing_code,
 };
 pub use gradients::{ATLAS_WIDTH, GradientAtlas, NO_VARY, NO_WAVE, PaintGpu, wave_texels};
 pub use masks::{MASK_TILE, MASK_TILE_BYTES, MAX_MASK_TILES, TILE_DISTANCE_REACH, tile_distance};
@@ -95,21 +99,8 @@ const GLASS_PASS: u32 = 9;
 
 const BLOOM_LEVELS: usize = 6;
 
-// Every instance carries its paint (`PaintGpu`) as its last three vec4s.
-const SHAPE_ATTRIBUTES: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
-    0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
-    6 => Float32x4
-];
-const BALL_ATTRIBUTES: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
-    0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4,
-    7 => Float32x4
-];
 const TRAIL_ATTRIBUTES: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
     0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x2, 4 => Float32x2, 5 => Float32x4, 6 => Float32x4
-];
-const LOOK_ATTRIBUTES: [wgpu::VertexAttribute; 12] = wgpu::vertex_attr_array![
-    0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
-    6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4, 10 => Float32x4, 11 => Float32x4
 ];
 pub(crate) const LAYERED_ATTRIBUTES: [wgpu::VertexAttribute; 13] = wgpu::vertex_attr_array![
     0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
@@ -277,6 +268,9 @@ struct PaintTexture {
     group: wgpu::BindGroup,
     /// The Ripples generation `group` binds (see [`ripples::Ripples::generation`]).
     bound: u64,
+    /// What each row of the texture holds ([`GradientAtlas::keys`]): a row is uploaded again only
+    /// when the frame's atlas holds something else there (review S21).
+    uploaded: Vec<u64>,
 }
 
 impl PaintTexture {
@@ -310,7 +304,7 @@ impl PaintTexture {
         });
         let waves_view = waves.create_view(&Default::default());
         let group = Self::group(device, layout, sampler, &view, &waves_view, ripples);
-        Self { texture, view, waves, waves_view, rows, group, bound: ripples.generation() }
+        Self { texture, view, waves, waves_view, rows, group, bound: ripples.generation(), uploaded: Vec::new() }
     }
 
     fn group(
@@ -374,19 +368,45 @@ impl PaintTexture {
         if rows == 0 {
             return;
         }
+        let keys = &atlas.keys()[..rows];
         let row_bytes = (ATLAS_WIDTH * 4 * 2) as u32;
-        queue.write_texture(
-            self.texture.as_image_copy(),
-            &gradients::half_texels(&atlas.rows()[..rows]),
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row_bytes), rows_per_image: None },
-            wgpu::Extent3d { width: ATLAS_WIDTH as u32, height: rows as u32, depth_or_array_layers: 1 },
-        );
-        queue.write_texture(
-            self.waves.as_image_copy(),
-            bytemuck::cast_slice(&atlas.waves()[..rows]),
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(2 * 16), rows_per_image: None },
-            wgpu::Extent3d { width: 2, height: rows as u32, depth_or_array_layers: 1 },
-        );
+        // Each run of rows that changed, uploaded on its own.
+        let mut r = 0;
+        while r < rows {
+            if self.uploaded.get(r) == Some(&keys[r]) {
+                r += 1;
+                continue;
+            }
+            let start = r;
+            while r < rows && self.uploaded.get(r) != Some(&keys[r]) {
+                r += 1;
+            }
+            fn origin(texture: &wgpu::Texture, row: usize) -> wgpu::TexelCopyTextureInfo<'_> {
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: 0, y: row as u32, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                }
+            }
+            let n = (r - start) as u32;
+            queue.write_texture(
+                origin(&self.texture, start),
+                &gradients::half_texels(&atlas.rows()[start..r]),
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row_bytes), rows_per_image: None },
+                wgpu::Extent3d { width: ATLAS_WIDTH as u32, height: n, depth_or_array_layers: 1 },
+            );
+            queue.write_texture(
+                origin(&self.waves, start),
+                bytemuck::cast_slice(&atlas.waves()[start..r]),
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(2 * 16), rows_per_image: None },
+                wgpu::Extent3d { width: 2, height: n, depth_or_array_layers: 1 },
+            );
+        }
+        if self.uploaded.len() < rows {
+            self.uploaded.resize(rows, 0);
+        }
+        self.uploaded[..rows].copy_from_slice(keys);
     }
 }
 
@@ -420,18 +440,11 @@ pub struct Renderer {
     sampler: wgpu::Sampler,
     background: wgpu::RenderPipeline,
     trail: wgpu::RenderPipeline,
-    shape: wgpu::RenderPipeline,
-    ball: wgpu::RenderPipeline,
-    look: wgpu::RenderPipeline,
     layered: wgpu::RenderPipeline,
     flash: wgpu::RenderPipeline,
-    /// What is where, for effects on things (see object.wgsl).
-    shape_object: wgpu::RenderPipeline,
     /// Shapes (see paths.wgsl), and where they are for effects on things.
     path: wgpu::RenderPipeline,
     path_object: wgpu::RenderPipeline,
-    ball_object: wgpu::RenderPipeline,
-    look_object: wgpu::RenderPipeline,
     layered_object: wgpu::RenderPipeline,
     chain: effects::chain::Chain,
     sprites: sprites::Sprites,
@@ -457,6 +470,13 @@ pub struct Renderer {
     light_timer: Option<Option<timing::LightTimer>>,
     /// The last frame's lighting: how many lights it drew, `None` when it wasn't lit.
     lit_lights: Option<usize>,
+    /// The lighting field is as fine, in the scene, as the video's (`preview_field_like_video`), not the Quality's
+    /// share of this renderer's own size.
+    field_like_video: bool,
+    /// Whether the lighting lists each tile's lights (review S19, [`Renderer::set_light_tiles`]).
+    light_tiles: bool,
+    /// The bloom picture the composite reads is black (bloom 0 skipped its chain, review S24).
+    bloom_black: bool,
     /// The light pass being drawn (see `Globals::light`): 0 outside the light passes.
     light_mode: u32,
     /// Whether the light passes draw a Stage (its surface picture keeps no blended cover).
@@ -470,13 +490,10 @@ pub struct Renderer {
 /// The instance lists of one frame (the main one, its overlay or a blend layer) on the GPU.
 struct FrameBuffers {
     trails: GrowableBuffer,
-    shapes: GrowableBuffer,
     /// Shapes, the points their outlines run through and the bind group reading those, remade
     /// when the buffer grows.
     paths: GrowableBuffer,
     path_points: GrowableBuffer,
-    balls: GrowableBuffer,
-    looks: GrowableBuffer,
     layered: GrowableBuffer,
     /// The layer records the layered balls name, and the bind group reading them, remade when
     /// the buffer grows.
@@ -500,11 +517,8 @@ impl Default for FrameBuffers {
     fn default() -> Self {
         Self {
             trails: GrowableBuffer::new("trail vertices"),
-            shapes: GrowableBuffer::new("shape instances"),
             paths: GrowableBuffer::new("path instances"),
             path_points: GrowableBuffer::storage("path points"),
-            balls: GrowableBuffer::new("ball instances"),
-            looks: GrowableBuffer::new("styled ball instances"),
             layered: GrowableBuffer::new("layered ball instances"),
             look_layers: GrowableBuffer::storage("ball layer records"),
             layers_group: None,
@@ -532,10 +546,7 @@ impl FrameBuffers {
         f: &Frame,
     ) {
         self.trails.upload(device, queue, bytemuck::cast_slice(&f.trails));
-        self.shapes.upload(device, queue, bytemuck::cast_slice(&f.shapes));
         self.paths.upload(device, queue, bytemuck::cast_slice(&f.paths));
-        self.balls.upload(device, queue, bytemuck::cast_slice(&f.balls));
-        self.looks.upload(device, queue, bytemuck::cast_slice(&f.looks));
         self.layered.upload(device, queue, bytemuck::cast_slice(&f.layered));
         // Shapes bind the records too, whether they name any or not.
         if !f.layered.is_empty() || !f.paths.is_empty() {
@@ -580,6 +591,10 @@ impl FrameBuffers {
     }
 }
 
+/// The lighting passes' shader source: lighting.wgsl with the shared helpers (common.wgsl).
+pub(crate) const LIGHTING_WGSL: &str =
+    concat!(include_str!("shaders/lighting.wgsl"), include_str!("shaders/common.wgsl"));
+
 /// The scene shader: everything the scene's pipelines draw with, its layered balls walking their
 /// stacks as [`layers_source`] says for `effects`.
 pub(crate) fn scene_source(effects: Option<&str>) -> String {
@@ -587,9 +602,7 @@ pub(crate) fn scene_source(effects: Option<&str>) -> String {
         gradients::paint_wgsl(1).as_str(),
         include_str!("shaders/tint.wgsl"),
         include_str!("shaders/scene.wgsl"),
-        include_str!("shaders/object.wgsl"),
         include_str!("shaders/ball_look.wgsl"),
-        include_str!("shaders/styled.wgsl"),
         include_str!("shaders/trail.wgsl"),
         include_str!("shaders/each.wgsl"),
         include_str!("shaders/paths.wgsl"),
@@ -670,7 +683,9 @@ impl Renderer {
         });
         let post_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("post shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/post.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(include_str!("shaders/post.wgsl"), include_str!("shaders/common.wgsl")).into(),
+            ),
         });
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("globals"),
@@ -873,17 +888,6 @@ impl Renderer {
             HDR_FORMAT,
             None,
         );
-        let shape = make(
-            "shapes",
-            &scene_pipeline_layout,
-            &scene_shader,
-            "vs_shape",
-            "fs_shape",
-            &[Some(instances(std::mem::size_of::<ShapeInstance>() as u64, &SHAPE_ATTRIBUTES))],
-            TriangleStrip,
-            HDR_FORMAT,
-            Some(premultiplied),
-        );
         let path = make(
             "paths",
             &layered_pipeline_layout,
@@ -906,17 +910,6 @@ impl Renderer {
             OBJECT_FORMAT,
             None,
         );
-        let ball = make(
-            "balls",
-            &scene_pipeline_layout,
-            &scene_shader,
-            "vs_ball",
-            "fs_ball",
-            &[Some(instances(std::mem::size_of::<BallInstance>() as u64, &BALL_ATTRIBUTES))],
-            TriangleStrip,
-            HDR_FORMAT,
-            Some(premultiplied),
-        );
         let trail = make(
             "trails",
             &scene_pipeline_layout,
@@ -929,17 +922,6 @@ impl Renderer {
                 attributes: &TRAIL_ATTRIBUTES,
             })],
             TriangleList,
-            HDR_FORMAT,
-            Some(premultiplied),
-        );
-        let look = make(
-            "styled balls",
-            &scene_pipeline_layout,
-            &scene_shader,
-            "vs_look",
-            "fs_look",
-            &[Some(instances(std::mem::size_of::<LookInstance>() as u64, &LOOK_ATTRIBUTES))],
-            TriangleStrip,
             HDR_FORMAT,
             Some(premultiplied),
         );
@@ -975,39 +957,6 @@ impl Renderer {
             TriangleStrip,
             HDR_FORMAT,
             Some(additive),
-        );
-        let shape_object = make(
-            "shape objects",
-            &scene_pipeline_layout,
-            &scene_shader,
-            "vs_shape",
-            "fs_shape_object",
-            &[Some(instances(std::mem::size_of::<ShapeInstance>() as u64, &SHAPE_ATTRIBUTES))],
-            TriangleStrip,
-            OBJECT_FORMAT,
-            None,
-        );
-        let ball_object = make(
-            "ball objects",
-            &scene_pipeline_layout,
-            &scene_shader,
-            "vs_ball",
-            "fs_ball_object",
-            &[Some(instances(std::mem::size_of::<BallInstance>() as u64, &BALL_ATTRIBUTES))],
-            TriangleStrip,
-            OBJECT_FORMAT,
-            None,
-        );
-        let look_object = make(
-            "styled ball objects",
-            &scene_pipeline_layout,
-            &scene_shader,
-            "vs_look",
-            "fs_look_object",
-            &[Some(instances(std::mem::size_of::<LookInstance>() as u64, &LOOK_ATTRIBUTES))],
-            TriangleStrip,
-            OBJECT_FORMAT,
-            None,
         );
         let downsample = make(
             "bloom down",
@@ -1070,17 +1019,6 @@ impl Renderer {
                     ),
                 ),
                 (
-                    Kind::Shape,
-                    recipe(
-                        "vs_shape",
-                        "fs_shape_each",
-                        size_of::<ShapeInstance>(),
-                        Instance,
-                        &SHAPE_ATTRIBUTES,
-                        TriangleStrip,
-                    ),
-                ),
-                (
                     Kind::Path,
                     Recipe {
                         layout: layered_pipeline_layout.clone(),
@@ -1093,28 +1031,6 @@ impl Renderer {
                             TriangleStrip,
                         )
                     },
-                ),
-                (
-                    Kind::Ball,
-                    recipe(
-                        "vs_ball",
-                        "fs_ball_each",
-                        size_of::<BallInstance>(),
-                        Instance,
-                        &BALL_ATTRIBUTES,
-                        TriangleStrip,
-                    ),
-                ),
-                (
-                    Kind::Look,
-                    recipe(
-                        "vs_look",
-                        "fs_look_each",
-                        size_of::<LookInstance>(),
-                        Instance,
-                        &LOOK_ATTRIBUTES,
-                        TriangleStrip,
-                    ),
                 ),
                 (
                     Kind::Layered,
@@ -1177,16 +1093,10 @@ impl Renderer {
             sampler,
             background,
             trail,
-            shape,
-            ball,
-            look,
             layered,
             flash,
-            shape_object,
             path,
             path_object,
-            ball_object,
-            look_object,
             layered_object,
             chain: effects::chain::Chain::new(device),
             sprites,
@@ -1203,6 +1113,9 @@ impl Renderer {
             stage_camera: None,
             light_timer: None,
             lit_lights: None,
+            field_like_video: false,
+            light_tiles: true,
+            bloom_black: false,
             light_mode: 0,
             light_stage: false,
             accumulate: None,
@@ -1257,10 +1170,19 @@ impl Renderer {
     /// the same device), and on a background thread if the store says so.
     pub fn share_programs(&mut self, store: &ProgramStore) {
         self.programs = store.clone();
+        self.chain.share(store);
     }
 
-    /// Whether the last frame drew some balls without their shader layers because their program
-    /// was still building: draw it again soon and they show.
+    /// For the editor's preview, drawn smaller than the video: size the lighting field so a texel covers as much of
+    /// the scene as in the video at the same Quality (`lighting::field_divisor`), so the preview's shadows look like
+    /// the export's. Off (the Quality's share of this renderer's size) for exports and the picture tests.
+    pub fn preview_field_like_video(&mut self, on: bool) {
+        self.field_like_video = on;
+    }
+
+    /// Whether the last frame left something out because its shaders were still building (in
+    /// a background store): balls without their shader layers, a lit frame drawn unlit, a
+    /// picture effect left out. Draw it again soon and they show.
     pub fn programs_waiting(&self) -> bool {
         self.waiting
     }
@@ -1353,6 +1275,20 @@ impl Renderer {
             (Some(_), Some([(_, lit), _, _])) => Some((self.targets.behind_view.clone(), lit)),
             _ => None,
         }
+    }
+
+    /// Makes the lighting pass from the store's lighting pipelines, unless it is made. False while
+    /// a background store is still building them (the renderer then counts as waiting).
+    fn lighting_ready(&mut self, device: &wgpu::Device) -> bool {
+        if self.lighting.is_some() {
+            return true;
+        }
+        let Some(kit) = self.programs.lock().light_kit(device) else {
+            self.waiting = true;
+            return false;
+        };
+        self.lighting = Some(lighting::Lighting::with_kit(device, &kit));
+        true
     }
 
     /// Draws `frame`'s scene, lit, into the HDR picture: everything before the picture's effects.
@@ -1459,13 +1395,17 @@ impl Renderer {
         self.lit_lights = frame.light.as_ref().map(|scene| scene.lights.len());
         let mut timed = false;
         let mut moved = false;
-        if let Some(scene) = frame.light.as_ref() {
+        // A lit frame whose lighting shaders are still being built is drawn unlit for now.
+        let lit = frame.light.as_ref().filter(|_| self.lighting_ready(device));
+        if let Some(scene) = lit {
             let timer = self.light_timer.get_or_insert_with(|| timing::LightTimer::new(device, queue));
             if let Some(t) = timer {
                 t.start(encoder);
             }
-            let lighting = self.lighting.get_or_insert_with(|| lighting::Lighting::new(device));
-            lighting.ensure(device, self.targets.width, self.targets.height, scene);
+            let lighting = self.lighting.as_mut().expect("ready, checked above");
+            let video_width = if self.field_like_video { frame.width } else { self.targets.width };
+            lighting.ensure(device, self.targets.width, self.targets.height, video_width, scene);
+            lighting.tiles_on = self.light_tiles;
             let pictures = lighting.pictures().expect("just made");
             // With nothing giving off light its picture is left black (the bounce and the
             // blooms read it), not as the last frame that had some.
@@ -1484,6 +1424,7 @@ impl Renderer {
             if tints {
                 lighting.make_tint(device);
             }
+            lighting.keep_uv_and_tags(device, scene.needs_uv(), scene.needs_tags());
             let wanted = [true, true, scene.glows, false, scene.needs_uv(), scene.needs_tags(), false, tints];
             let modes: Vec<(u32, (wgpu::Texture, wgpu::TextureView))> = (1u32..=TINT_PASS)
                 .filter(|mode| wanted[*mode as usize - 1])
@@ -1577,8 +1518,9 @@ impl Renderer {
             // lighting and the lit colour are then the moved camera's.
             if let Some(view) = moving {
                 let lighting = self.lighting.as_ref().expect("made above");
-                let pass =
-                    self.stage_camera.get_or_insert_with(|| stage_camera_pass::StageCameraPass::new(device, lighting));
+                let pass = self
+                    .stage_camera
+                    .get_or_insert_with(|| stage_camera_pass::StageCameraPass::with_kit(device, lighting.stage_kit()));
                 pass.ensure(device, self.targets.width, self.targets.height);
                 {
                     let mut background = begin_pass(
@@ -1666,24 +1608,33 @@ impl Renderer {
             object_view.as_ref(),
         );
         self.chain.end_frame();
-        for level in 0..BLOOM_LEVELS {
-            let mut pass = begin_pass(
-                &mut encoder,
-                &self.targets.bloom[level],
-                "bloom down",
-                wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-            );
-            pass.set_pipeline(&self.downsample);
-            pass.set_bind_group(0, &self.globals_group, &[]);
-            pass.set_bind_group(1, &self.targets.down_sources[level], &[]);
-            pass.draw(0..3, 0..1);
-        }
-        for level in (0..BLOOM_LEVELS - 1).rev() {
-            let mut pass = begin_pass(&mut encoder, &self.targets.bloom[level], "bloom up", wgpu::LoadOp::Load);
-            pass.set_pipeline(&self.upsample);
-            pass.set_bind_group(0, &self.globals_group, &[]);
-            pass.set_bind_group(1, &self.targets.up_sources[level], &[]);
-            pass.draw(0..3, 0..1);
+        self.waiting |= self.chain.waiting;
+        // Bloom at 0 adds nothing (review S24): its chain is skipped, and the picture the
+        // composite reads it from is left black (0 × black is 0, as 0 × any finite bloom was).
+        if frame.bloom != 0.0 {
+            for level in 0..BLOOM_LEVELS {
+                let mut pass = begin_pass(
+                    &mut encoder,
+                    &self.targets.bloom[level],
+                    "bloom down",
+                    wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                );
+                pass.set_pipeline(&self.downsample);
+                pass.set_bind_group(0, &self.globals_group, &[]);
+                pass.set_bind_group(1, &self.targets.down_sources[level], &[]);
+                pass.draw(0..3, 0..1);
+            }
+            for level in (0..BLOOM_LEVELS - 1).rev() {
+                let mut pass = begin_pass(&mut encoder, &self.targets.bloom[level], "bloom up", wgpu::LoadOp::Load);
+                pass.set_pipeline(&self.upsample);
+                pass.set_bind_group(0, &self.globals_group, &[]);
+                pass.set_bind_group(1, &self.targets.up_sources[level], &[]);
+                pass.draw(0..3, 0..1);
+            }
+            self.bloom_black = false;
+        } else if !self.bloom_black {
+            drop(begin_pass(&mut encoder, &self.targets.bloom[0], "no bloom", wgpu::LoadOp::Clear(wgpu::Color::BLACK)));
+            self.bloom_black = true;
         }
         {
             let mut pass = begin_pass(
@@ -1729,6 +1680,17 @@ impl Renderer {
     /// part 3; 0 when it sent none or the frame wasn't lit).
     pub fn bent_photons(&self) -> u32 {
         self.lighting.as_ref().filter(|_| self.lit_lights.is_some()).map_or(0, |l| l.bent_photons())
+    }
+
+    /// Whether each pixel takes only the lights its tile lists (review S19; on unless a test turns
+    /// it off to check the lists change nothing). The next lit frame follows it.
+    pub fn set_light_tiles(&mut self, on: bool) {
+        self.light_tiles = on;
+    }
+
+    /// How many bind groups the lighting has made (review S24: it keeps them between frames; for tests).
+    pub fn lighting_binds_made(&self) -> usize {
+        self.lighting.as_ref().map_or(0, |l| l.binds_made())
     }
 
     pub fn lighting_stats(&self) -> Option<(usize, Option<f32>)> {
@@ -1980,11 +1942,6 @@ impl Renderer {
             // what follows.
             pass.set_bind_group(1, &through.paint, &[]);
         }
-        if !f.shapes.is_empty() {
-            pass.set_pipeline(self.pipeline(&self.shape, Kind::Shape, through));
-            pass.set_vertex_buffer(0, b.shapes.slice());
-            pass.draw(0..4, 0..f.shapes.len() as u32);
-        }
         if let Some(records) = b.layers_group.as_ref().filter(|_| !f.paths.is_empty()) {
             let plain = self.pipeline(&self.path, Kind::Path, through);
             pass.set_bind_group(2, records, &[]);
@@ -2020,18 +1977,8 @@ impl Renderer {
         }
     }
 
-    /// Balls and styled balls.
+    /// The balls.
     fn draw_balls(&self, pass: &mut wgpu::RenderPass<'_>, f: &Frame, b: &FrameBuffers, through: &Through) {
-        if !f.balls.is_empty() {
-            pass.set_pipeline(self.pipeline(&self.ball, each::Kind::Ball, through));
-            pass.set_vertex_buffer(0, b.balls.slice());
-            pass.draw(0..4, 0..f.balls.len() as u32);
-        }
-        if !f.looks.is_empty() {
-            pass.set_pipeline(self.pipeline(&self.look, each::Kind::Look, through));
-            pass.set_vertex_buffer(0, b.looks.slice());
-            pass.draw(0..4, 0..f.looks.len() as u32);
-        }
         if let Some(group) = b.layers_group.as_ref().filter(|_| !f.layered.is_empty()) {
             let plain = self.pipeline(&self.layered, each::Kind::Layered, through);
             pass.set_bind_group(2, group, &[]);
@@ -2106,7 +2053,6 @@ impl Renderer {
         self.sprites.draw_range(pass, buffer, start..count, through.each);
     }
 
-    /// Where `f`'s shapes, balls and styled balls are, for effects on things.
     /// The frame's object picture: the layers drawn before its own things, its own things, then,
     /// when `above`, the layers drawn after them.
     fn draw_all_objects(&self, pass: &mut wgpu::RenderPass<'_>, frame: &Frame, layers: &[FrameBuffers], above: bool) {
@@ -2120,26 +2066,11 @@ impl Renderer {
     }
 
     fn draw_objects(&self, pass: &mut wgpu::RenderPass<'_>, f: &Frame, b: &FrameBuffers) {
-        if !f.shapes.is_empty() {
-            pass.set_pipeline(&self.shape_object);
-            pass.set_vertex_buffer(0, b.shapes.slice());
-            pass.draw(0..4, 0..f.shapes.len() as u32);
-        }
         if let Some(records) = b.layers_group.as_ref().filter(|_| !f.paths.is_empty()) {
             pass.set_pipeline(&self.path_object);
             pass.set_bind_group(2, records, &[]);
             pass.set_vertex_buffer(0, b.paths.slice());
             pass.draw(0..4, 0..f.paths.len() as u32);
-        }
-        if !f.balls.is_empty() {
-            pass.set_pipeline(&self.ball_object);
-            pass.set_vertex_buffer(0, b.balls.slice());
-            pass.draw(0..4, 0..f.balls.len() as u32);
-        }
-        if !f.looks.is_empty() {
-            pass.set_pipeline(&self.look_object);
-            pass.set_vertex_buffer(0, b.looks.slice());
-            pass.draw(0..4, 0..f.looks.len() as u32);
         }
         if let Some(group) = b.layers_group.as_ref().filter(|_| !f.layered.is_empty()) {
             pass.set_pipeline(&self.layered_object);
@@ -2150,7 +2081,7 @@ impl Renderer {
     }
 
     /// Draws everything in `f` into `view` over what is there, in the usual order: trails,
-    /// shapes, balls, styled balls, flashes and particles. Used for the things stuck to the
+    /// shapes, balls, flashes and particles. Used for the things stuck to the
     /// screen and for each blend layer.
     fn draw_things(
         &self,
@@ -2165,7 +2096,7 @@ impl Renderer {
     }
 
     /// One half of [`Renderer::draw_things`]: the trails and shapes behind (`front` false), or
-    /// the balls, styled balls, flashes and particles in front.
+    /// the balls, flashes and particles in front.
     fn draw_things_part(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -2605,13 +2536,18 @@ impl GrowableBuffer {
 
 /// Copies finished frames back to the CPU a few frames behind the drawing, so the graphics card
 /// draws the next frame while the last one is being read and encoded. Frames come back in the
-/// order they were drawn, as tightly packed RGBA bytes (sRGB-encoded).
+/// order they were drawn, tightly packed: RGBA bytes (sRGB-encoded), or as video colours worked out
+/// on the card ([`Readback::with_layout`], review S23).
 pub struct Readback {
     slots: Vec<ReadbackSlot>,
     next: usize,
     width: u32,
     height: u32,
-    padded_row: usize,
+    layout: yuv::PixelLayout,
+    /// Each plane in the buffer: where it starts, its padded row, its row, its height.
+    planes: Vec<(u64, u32, u32, u32)>,
+    /// The conversion to video colours (none for RGBA).
+    video: Option<yuv::VideoPlanes>,
 }
 
 struct ReadbackSlot {
@@ -2621,21 +2557,42 @@ struct ReadbackSlot {
 }
 
 impl Readback {
-    /// `depth` frames can be in flight at once.
+    /// `depth` frames can be in flight at once, as RGBA.
     pub fn new(device: &wgpu::Device, width: u32, height: u32, depth: usize) -> Self {
-        let padded_row = (width as usize * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
+        Self::with_layout(device, width, height, depth, yuv::PixelLayout::Rgba)
+    }
+
+    /// `depth` frames can be in flight at once, given back as `layout` (RGBA when the size doesn't
+    /// fit it: see [`yuv::PixelLayout::fits`]).
+    pub fn with_layout(device: &wgpu::Device, width: u32, height: u32, depth: usize, layout: yuv::PixelLayout) -> Self {
+        let layout = if layout.fits(width, height) { layout } else { yuv::PixelLayout::Rgba };
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
+        let mut planes = Vec::new();
+        let mut size = 0u64;
+        for (w, h, bytes) in layout.planes(width, height) {
+            let row = (w * bytes) as usize;
+            let padded = row.next_multiple_of(align);
+            planes.push((size, padded as u32, row as u32, h));
+            size = (size + (padded * h as usize) as u64).next_multiple_of(align as u64);
+        }
         let slots = (0..depth.max(1))
             .map(|_| ReadbackSlot {
                 buffer: device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("readback"),
-                    size: (padded_row * height as usize) as u64,
+                    size: size.max(4),
                     usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                     mapped_at_creation: false,
                 }),
                 pending: None,
             })
             .collect();
-        Self { slots, next: 0, width, height, padded_row }
+        let video = (layout != yuv::PixelLayout::Rgba).then(|| yuv::VideoPlanes::new(device, layout, width, height));
+        Self { slots, next: 0, width, height, layout, planes, video }
+    }
+
+    /// How the frames come back.
+    pub fn layout(&self) -> yuv::PixelLayout {
+        self.layout
     }
 
     /// Starts copying the renderer's current output. If all slots are busy, the oldest frame is
@@ -2649,20 +2606,29 @@ impl Readback {
         anyhow::ensure!(renderer.size() == (self.width, self.height), "readback size doesn't match the renderer");
         let index = self.next;
         let oldest = self.take(device, index)?;
-        let slot = &mut self.slots[index];
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("readback") });
-        encoder.copy_texture_to_buffer(
-            renderer.output_texture().as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &slot.buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(self.padded_row as u32),
-                    rows_per_image: Some(self.height),
+        let sources: Vec<&wgpu::Texture> = match self.video.as_mut() {
+            Some(video) => {
+                video.convert(device, &mut encoder, renderer.output_view());
+                video.textures.iter().collect()
+            }
+            None => vec![renderer.output_texture()],
+        };
+        let slot = &mut self.slots[index];
+        for (texture, &(offset, padded, _, h)) in sources.into_iter().zip(&self.planes) {
+            encoder.copy_texture_to_buffer(
+                texture.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &slot.buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset,
+                        bytes_per_row: Some(padded),
+                        rows_per_image: Some(h),
+                    },
                 },
-            },
-            wgpu::Extent3d { width: self.width, height: self.height, depth_or_array_layers: 1 },
-        );
+                wgpu::Extent3d { width: texture.width(), height: h, depth_or_array_layers: 1 },
+            );
+        }
         let submission = queue.submit([encoder.finish()]);
         let (sender, receiver) = std::sync::mpsc::channel();
         slot.buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
@@ -2688,12 +2654,15 @@ impl Readback {
         let Some((submission, receiver)) = slot.pending.take() else { return Ok(None) };
         device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: None })?;
         receiver.recv()??;
-        let row = self.width as usize * 4;
-        let mut pixels = Vec::with_capacity(row * self.height as usize);
+        let total: usize = self.planes.iter().map(|&(_, _, row, h)| row as usize * h as usize).sum();
+        let mut pixels = Vec::with_capacity(total);
         {
             let mapped = slot.buffer.slice(..).get_mapped_range()?;
-            for chunk in mapped.chunks(self.padded_row) {
-                pixels.extend_from_slice(&chunk[..row]);
+            for &(offset, padded, row, h) in &self.planes {
+                let plane = &mapped[offset as usize..offset as usize + padded as usize * h as usize];
+                for chunk in plane.chunks(padded as usize) {
+                    pixels.extend_from_slice(&chunk[..row as usize]);
+                }
             }
         }
         slot.buffer.unmap();

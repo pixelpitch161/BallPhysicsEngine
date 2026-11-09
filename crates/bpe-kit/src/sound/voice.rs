@@ -28,10 +28,12 @@ pub enum Wave {
     Saw,
     Square,
     Noise,
+    /// A sound file played back (W11): the oscillator's Sample.
+    Sample,
 }
 
 impl Wave {
-    pub const ALL: [Wave; 5] = [Wave::Sine, Wave::Triangle, Wave::Saw, Wave::Square, Wave::Noise];
+    pub const ALL: [Wave; 6] = [Wave::Sine, Wave::Triangle, Wave::Saw, Wave::Square, Wave::Noise, Wave::Sample];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -40,6 +42,31 @@ impl Wave {
             Wave::Saw => "Saw",
             Wave::Square => "Square",
             Wave::Noise => "Noise",
+            Wave::Sample => "Sample",
+        }
+    }
+}
+
+/// How a sample goes on past its loop (W11).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum SampleLoop {
+    /// Plays once.
+    #[default]
+    Off,
+    /// From Loop end back to Loop start, over and over.
+    Forward,
+    /// Back and forth between Loop start and Loop end.
+    PingPong,
+}
+
+impl SampleLoop {
+    pub const ALL: [SampleLoop; 3] = [SampleLoop::Off, SampleLoop::Forward, SampleLoop::PingPong];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SampleLoop::Off => "Off",
+            SampleLoop::Forward => "Forward",
+            SampleLoop::PingPong => "Ping-pong",
         }
     }
 }
@@ -195,10 +222,10 @@ pub struct OscSettings {
     #[setting(label = "Noise", when = "wave=noise")]
     pub noise: NoiseColour,
     /// How Warp bends the wave.
-    #[setting(label = "Warp mode", when = "wave!=noise")]
+    #[setting(label = "Warp mode", when = "wave!=noise and wave!=sample")]
     pub warp_mode: WarpMode,
     /// How far the wave is bent.
-    #[setting(label = "Warp", range(0, 100), unit = "%", keyframe, when = "wave!=noise")]
+    #[setting(label = "Warp", range(0, 100), unit = "%", keyframe, when = "wave!=noise and wave!=sample")]
     pub warp: f32,
     /// The level going into the oscillator's layers (it drives them).
     #[setting(label = "Gain", range(-60, 12), unit = "dB", keyframe)]
@@ -216,38 +243,66 @@ pub struct OscSettings {
     #[setting(label = "Cents", range(-100, 100), unit = "ct", keyframe)]
     pub cents: f32,
     /// Where in the wave each note starts.
-    #[setting(label = "Phase", range(0, 360), unit = "°", keyframe)]
+    #[setting(label = "Phase", range(0, 360), unit = "°", keyframe, when = "wave!=sample")]
     pub phase: f32,
     /// Restart the wave at Phase on every note, or let it run free.
-    #[setting(label = "Phase mode")]
+    #[setting(label = "Phase mode", when = "wave!=sample")]
     pub phase_mode: PhaseMode,
     /// How many copies of the wave play together, slightly detuned.
-    #[setting(label = "Unison", range(1, 16), keyframe, when = "wave!=noise")]
+    #[setting(label = "Unison", range(1, 16), keyframe, when = "wave!=noise and wave!=sample")]
     pub unison: i32,
     /// How far apart the unison copies are tuned.
-    #[setting(label = "Detune", range(0, 100), unit = "ct", keyframe, when = "wave!=noise")]
+    #[setting(label = "Detune", range(0, 100), unit = "ct", keyframe, when = "wave!=noise and wave!=sample")]
     pub detune: f32,
     /// How wide the unison copies spread across left and right.
-    #[setting(label = "Spread", range(0, 100), unit = "%", keyframe, when = "wave!=noise")]
+    #[setting(label = "Spread", range(0, 100), unit = "%", keyframe, when = "wave!=noise and wave!=sample")]
     pub spread: f32,
     /// The middle copy against the others.
-    #[setting(label = "Blend", range(0, 100), unit = "%", keyframe, when = "wave!=noise")]
+    #[setting(label = "Blend", range(0, 100), unit = "%", keyframe, when = "wave!=noise and wave!=sample")]
     pub blend: f32,
     /// How far each unison copy's start is shuffled.
-    #[setting(label = "Random phase", range(0, 100), unit = "%", keyframe, when = "wave!=noise")]
+    #[setting(label = "Random phase", range(0, 100), unit = "%", keyframe, when = "wave!=noise and wave!=sample")]
     pub random_phase: f32,
     /// Left or right.
     #[setting(label = "Pan", range(-100, 100), keyframe)]
     pub pan: f32,
     /// A plain wave an octave or two below.
-    #[setting(label = "Sub", when = "wave!=noise")]
+    #[setting(label = "Sub", when = "wave!=noise and wave!=sample")]
     pub sub: SubWave,
     /// One or two octaves down.
-    #[setting(label = "Sub octave", when = "wave!=noise and sub!=off")]
+    #[setting(label = "Sub octave", when = "wave!=noise and wave!=sample and sub!=off")]
     pub sub_octave: SubOctave,
     /// How loud the sub is.
-    #[setting(label = "Sub level", range(-60, 12), unit = "dB", keyframe, when = "wave!=noise and sub!=off")]
+    #[setting(label = "Sub level", range(-60, 12), unit = "dB", keyframe, when = "wave!=noise and wave!=sample and sub!=off")]
     pub sub_level: f32,
+    /// The sound file it plays (W11): the name of one the scene keeps.
+    #[setting(label = "Sample", when = "wave=sample")]
+    pub sample: String,
+    /// The note the sample sounds at as recorded (C5 is 60).
+    #[setting(label = "Root note", range(0, 127), when = "wave=sample")]
+    pub sample_root: i32,
+    /// Each note plays the sample at its own pitch; off, every note plays it as recorded (drums).
+    #[setting(label = "Follow notes", when = "wave=sample")]
+    pub sample_follow: bool,
+    /// Where in the sample each note starts.
+    #[setting(label = "Start", range(0, 100), unit = "%", when = "wave=sample")]
+    pub sample_start: f32,
+    /// How a note goes on past its loop.
+    #[setting(label = "Loop", when = "wave=sample")]
+    pub sample_loop: SampleLoop,
+    /// Where the loop starts.
+    #[setting(label = "Loop start", range(0, 100), unit = "%", when = "wave=sample and sample_loop!=off")]
+    pub sample_loop_start: f32,
+    /// Where the loop ends.
+    #[setting(label = "Loop end", range(0, 100), unit = "%", when = "wave=sample and sample_loop!=off")]
+    pub sample_loop_end: f32,
+    /// How long before Loop end the sound crossfades into the stretch before Loop start, so the
+    /// loop doesn't click.
+    #[setting(label = "Loop fade", range(0, 1000), unit = "ms", when = "wave=sample and sample_loop=forward")]
+    pub sample_loop_fade: f32,
+    /// Plays the sample back to front.
+    #[setting(label = "Reverse", when = "wave=sample")]
+    pub sample_reverse: bool,
 }
 
 impl Default for OscSettings {
@@ -274,6 +329,15 @@ impl Default for OscSettings {
             sub: SubWave::Off,
             sub_octave: SubOctave::One,
             sub_level: -6.0,
+            sample: String::new(),
+            sample_root: 60,
+            sample_follow: true,
+            sample_start: 0.0,
+            sample_loop: SampleLoop::Off,
+            sample_loop_start: 0.0,
+            sample_loop_end: 100.0,
+            sample_loop_fade: 0.0,
+            sample_reverse: false,
         }
     }
 }
@@ -387,6 +451,20 @@ pub struct VoiceSettings {
     /// A ball hitting again sooner than this plays nothing.
     #[setting(label = "Retrigger guard", range(0, 500), unit = "ms", group = "Playing", keyframe)]
     pub play_retrigger: f32,
+    /// A hit this fast or faster plays at full strength; slower ones are softer.
+    #[setting(
+        label = "Full strength at",
+        range(50, 10000),
+        span(100, 5000),
+        unit = "px/s",
+        group = "Playing",
+        keyframe
+    )]
+    pub play_full_at: f32,
+    /// Bends how a hit's speed turns into its strength: above 0 soft hits count for more, below
+    /// 0 only hard hits get loud. 0 is straight.
+    #[setting(label = "Strength curve", range(-100, 100), group = "Playing", keyframe)]
+    pub play_curve: f32,
     /// Which balls' hits play notes.
     #[setting(label = "Hits from", group = "Playing")]
     pub play_heard_from: Target,
@@ -411,6 +489,15 @@ pub struct VoiceSettings {
     /// Each burst plays a note.
     #[setting(label = "Bursts", group = "Playing")]
     pub moments_burst: bool,
+    /// A Balls or Emitter thing's sound (W10): an emitter firing one of its balls plays a note.
+    #[setting(label = "Balls fired", group = "Playing")]
+    pub moments_fire: bool,
+    /// One of its balls coming into a catcher plays a note (an emitter: also a ball it catches).
+    #[setting(label = "Balls caught", group = "Playing")]
+    pub moments_catch: bool,
+    /// One of its balls broken by a rule plays a note.
+    #[setting(label = "Balls broken", group = "Playing")]
+    pub moments_break: bool,
     /// The most notes its particles play a second; the strongest are kept.
     #[setting(label = "Most notes a second", range(1, 2000), unit = "per s", group = "Playing", keyframe)]
     pub moments_most: f32,
@@ -510,6 +597,8 @@ impl Default for VoiceSettings {
             play_glide: 0.0,
             play_min_strength: 0.0,
             play_retrigger: 30.0,
+            play_full_at: 1500.0,
+            play_curve: 0.0,
             play_heard_from: Target::Anything,
             play_when: PlayWhen::OnHit,
             play_zone: String::new(),
@@ -518,6 +607,9 @@ impl Default for VoiceSettings {
             moments_land: true,
             moments_born: false,
             moments_burst: false,
+            moments_fire: false,
+            moments_catch: false,
+            moments_break: false,
             moments_most: 30.0,
             moments_strength: MomentStrength::Speed,
             notes_slots: vec![NoteSlot { notes: vec![60], order_clicked: Vec::new() }],
@@ -560,7 +652,7 @@ impl ModuleKind for VoiceKind {
         "Sound"
     }
     fn help(&self) -> &'static str {
-        "The shape's sound: two oscillators, envelopes and the notes its hits play."
+        "The thing's sound: two oscillators, envelopes and the notes its hits play."
     }
     fn slot(&self) -> SlotId {
         SlotId::Sound
@@ -568,12 +660,20 @@ impl ModuleKind for VoiceKind {
     fn settings(&self) -> &'static [SettingDef] {
         VoiceSettings::defs()
     }
-    /// Shapes play hits; Particles things play their particles' moments (particles part 7).
+    /// Shapes play hits; Particles things play their particles' moments (particles part 7);
+    /// Balls and Emitters play their own balls' hits, fires, catches and breaks (W10).
     fn fits(&self, thing_kind: &str) -> bool {
         thing_kind == crate::things::shape::KIND
             || thing_kind == crate::things::particles::KIND
             || thing_kind == crate::things::text::KIND
+            || hears_own_balls(thing_kind)
     }
+}
+
+/// Whether a thing of `thing_kind` has balls of its own whose hits and moments its sound plays
+/// (Balls and Emitters, W10), rather than the hits of balls on it.
+pub fn hears_own_balls(thing_kind: &str) -> bool {
+    thing_kind == crate::things::balls::KIND || thing_kind == crate::things::emitter::KIND
 }
 
 /// The card "Enable sound" adds: Osc A Triangle, Osc B off, ADSR 1 on Osc A Gain (ADSR 2,
@@ -686,12 +786,14 @@ mod tests {
     }
 
     #[test]
-    fn voice_card_fits_only_shapes_and_particles() {
+    fn voice_card_fits_things_that_make_sound() {
         let reg = reg();
         let kind = reg.module(VOICE).unwrap();
         assert_eq!(kind.slot(), SlotId::Sound);
-        assert!(kind.fits("shape") && kind.fits("particles"));
-        for t in ["balls", "camera", "folder", "scene"] {
+        for t in ["shape", "particles", "text", "balls", "emitter"] {
+            assert!(kind.fits(t), "{t}");
+        }
+        for t in ["camera", "folder", "scene", "light", "rig"] {
             assert!(!kind.fits(t), "{t}");
         }
     }
@@ -712,9 +814,10 @@ mod tests {
         let noise = defs.iter().find(|d| d.key == "a_noise").unwrap();
         assert_eq!(noise.when, "a_wave=noise");
         let sub = defs.iter().find(|d| d.key == "b_sub_level").unwrap();
-        assert_eq!(sub.when, "b_wave!=noise and b_sub!=off");
-        // Every number knob takes keys.
-        for d in defs.iter().filter(|d| matches!(d.default, Value::Number(_))) {
+        assert_eq!(sub.when, "b_wave!=noise and b_wave!=sample and b_sub!=off");
+        // Every number knob takes keys (a sample's place settings are read once, when the sound
+        // is built).
+        for d in defs.iter().filter(|d| matches!(d.default, Value::Number(_)) && !d.key.contains("sample_")) {
             assert!(d.flags.keyframe, "{}", d.key);
         }
         for d in AdsrSettings::defs().iter().filter(|d| matches!(d.default, Value::Number(_))) {

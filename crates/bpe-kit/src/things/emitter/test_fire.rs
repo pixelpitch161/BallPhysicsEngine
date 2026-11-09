@@ -171,8 +171,9 @@ impl Lone {
     /// stage of step `moment + 1`, or after step `moment`.
     pub fn new(world: &World, me: ThingId, owner: ThingId, radius: f32, moment: u64) -> Lone {
         let mut lone = world.lone(&|id| id == me || !world.bodies.contains_key(&id));
-        // The air is only the particles' (stepped beside the physics): a flight has no use for
-        // its grid, and is cloned many times.
+        // A test flight has no air: it is cloned many times, and stepping the air for each would
+        // cost far more than the flight. So Aim plans flights as if balls that follow the air
+        // were in still air (a known gap, W13); without such balls the air is only the particles'.
         drop(crate::air::take_air(&mut lone));
         lone.step = moment;
         if owner != me {

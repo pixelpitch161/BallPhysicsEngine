@@ -301,14 +301,19 @@ impl SlotClock {
         if let Some(period) = spec.period_s(tempo, time) {
             // The line the last block ended on (worked out afresh when Every moved, so a keyed
             // Every never fires a burst of changes).
+            // By tempo counts its lines from the scene's first beat; nothing changes before it.
+            let origin = match spec.change {
+                Change::ByTempo => (tempo.first() * SAMPLE_RATE as f64).round() as u64,
+                _ => 0,
+            };
             let before = match self.line {
                 Some((l, p)) if p == period => l,
-                _ if start == 0 => 0,
-                _ => line_at(start - 1, period),
+                _ if start <= origin => 0,
+                _ => line_at(start - 1 - origin, period),
             };
-            let line = line_at(end - 1, period);
+            let line = (end - 1).checked_sub(origin).map_or(0, |s| line_at(s, period));
             for k in before + 1..=line {
-                let at = ((k as f64 * period * SAMPLE_RATE as f64).round() as u64).max(start);
+                let at = (origin + (k as f64 * period * SAMPLE_RATE as f64).round() as u64).max(start);
                 push(Pending { offset: (at - start) as u32, jump: None }, &mut n, &mut self.pending);
             }
             self.line = Some((line, period));
@@ -438,9 +443,19 @@ pub fn slot_changes(
         [track("notes_strum"), track("notes_every_seconds"), track("notes_jump")],
     );
     let accepted: Vec<u64> = if spec.change == Change::ByHits {
+        let balls = scene.things.get(&shape).and_then(|t| super::BallMoments::of_thing(&t.kind, &v));
         let mut f =
-            HitFilter::new(shape, v.play_min_strength / 100.0, v.play_retrigger / 1000.0, v.play_heard_from.clone());
-        hits.iter().filter(|(at, h)| f.accept(h, *at, world).is_some()).map(|(at, _)| *at).collect()
+            HitFilter::new(shape, v.play_min_strength / 100.0, v.play_retrigger / 1000.0, v.play_heard_from.clone())
+                .hearing(balls);
+        let curve = super::StrengthCurve::of_knobs(v.play_full_at, v.play_curve);
+        f.set(v.play_min_strength / 100.0, v.play_retrigger / 1000.0, curve);
+        hits.iter()
+            .filter(|(at, h)| {
+                let h = BlockHit { offset: h.offset, event: f.seen(&h.event) };
+                f.accept(&h, *at, world).is_some()
+            })
+            .map(|(at, _)| *at)
+            .collect()
     } else {
         Vec::new()
     };
@@ -460,7 +475,9 @@ pub fn slot_change_times(
     let mut hits: Vec<(u64, BlockHit)> = log
         .events()
         .iter()
-        .filter(|e| e.kind == bpe_runtime::EventKind::Hit)
+        // Every event a voice can play but a rule's note (which moves no slot); the filter keeps
+        // the thing's own.
+        .filter(|e| crate::hits::plays(&e.kind) && e.kind != bpe_runtime::EventKind::Note)
         .map(|e| (crate::hits::hit_sample(e, per_step), BlockHit { offset: 0, event: e.clone() }))
         .collect();
     hits.sort_by_key(|(at, _)| *at);

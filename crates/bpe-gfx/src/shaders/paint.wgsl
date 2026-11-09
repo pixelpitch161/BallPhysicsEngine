@@ -140,11 +140,65 @@ fn paint_colour(p: PaintGpu, local: vec2<f32>, time: f32, base: vec4<f32>) -> ve
             q.repeat = paint_mirrored(p.repeat);
         }
     }
-    if paint_is_shade(p) {
-        let t = paint_wrap(along + time * p.scroll, q.repeat);
-        return vec4<f32>(mix(base.rgb, paint_shaded(base, p.t0).rgb, t), base.a);
+    // Where a form wraps round, part of this pixel may lie across the seam: its colour there is
+    // mixed in, so the seam is as smooth as any other edge. A loop, so the paint maths has one
+    // call site.
+    let seam = paint_seam(p, local, along);
+    var out = vec4<f32>(0.0);
+    let looks = select(1, 2, seam.x > 0.0);
+    for (var i = 0; i < looks; i++) {
+        let at = select(along, seam.y, i == 1);
+        let share = select(1.0 - seam.x, seam.x, i == 1);
+        if paint_is_shade(p) {
+            let t = paint_wrap(at + time * p.scroll, q.repeat);
+            out += share * vec4<f32>(mix(base.rgb, paint_shaded(base, p.t0).rgb, t), base.a);
+        } else {
+            out += share * paint_along(q, at, time);
+        }
     }
-    return paint_along(q, along, time);
+    return out;
+}
+
+// For the forms that wrap round (3 Sweep, 4 along the edge away from a shape, 15 Spiral): how much
+// of this pixel lies across the seam where the last colour meets the first (0 to 1/2), and the
+// place along on the far side (the middle of the part across). `along` is the form's own place.
+// The pixel's width is worked out from `local`, as `paint_mask` does, because the wrapped value's
+// `fwidth` jumps at the seam. Uses `fwidth`: fragment code only.
+fn paint_seam(p: PaintGpu, local: vec2<f32>, along: f32) -> vec2<f32> {
+    let code = u32(p.pattern + 0.5);
+    if code != 3u && code != 4u && code != 15u {
+        return vec2<f32>(0.0);
+    }
+    let q = paint_q(p, local);
+    let r = length(q);
+    let step = length(fwidth(q));
+    // The form's place in turns before it wraps (`u`), how far one pixel spans of it (`w`) and
+    // how far along the gradient one whole turn of it is (`jump`).
+    var u = atan2(q.y, q.x) / PAINT_TAU;
+    var w = step / max(r, 1e-6) / PAINT_TAU;
+    var jump = 1.0;
+    if code == 3u {
+        jump = p.scale;
+    } else if code == 4u {
+        u += 0.5;
+    } else {
+        let arms = max(round(p.form.x), 1.0);
+        u = u * arms + r * p.form.y;
+        w = w * arms + step * abs(p.form.y);
+    }
+    let f = fract(u);
+    w = max(w, 1e-6);
+    // Just past the seam (f near 0) the rest of the pixel is at the end; just before it (f near
+    // 1), at the start.
+    let past = 0.5 - f / w;
+    if f < 0.5 && past > 0.0 {
+        return vec2<f32>(min(past, 0.5), jump * (1.0 - 0.5 * clamp(0.5 * w - f, 0.0, 1.0)));
+    }
+    let before = 0.5 - (1.0 - f) / w;
+    if f >= 0.5 && before > 0.0 {
+        return vec2<f32>(min(before, 0.5), jump * 0.5 * clamp(0.5 * w - (1.0 - f), 0.0, 1.0));
+    }
+    return vec2<f32>(0.0, along);
 }
 
 // Whether form `code` runs back and forth on Clamp (it never reaches an end of its own).

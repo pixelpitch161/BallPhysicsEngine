@@ -4,7 +4,10 @@
 //! whole picture cuts the field at its level into a surface, works a normal out from the field's
 //! slope near the edge, and shades it as its surface says (Matte, Plastic, Chrome, Metal, Glass
 //! bending the picture behind it, Toon), mixing it over what is there. A frame without a liquid
-//! makes nothing here.
+//! makes nothing here. In a lit scene a liquid can instead be shaded by the real lights (W15,
+//! [`LiquidStyle::real`]): it draws its plain colour, and its colour × Lit, its height (the same
+//! rounded edge) and its Surface's table index into the light passes, for the lighting mix to
+//! shade as it does a ball.
 
 use std::collections::BTreeMap;
 
@@ -40,20 +43,31 @@ pub struct LiquidStyle {
     /// Light angle (radians, on the screen), shine (0 to 1), bend (world units, Glass), tint
     /// (0 to 1, Glass).
     pub b: [f32; 4],
-    /// Rim light (0 to 1), opacity (0 to 1), how much Glass bends lamp light (its index of
+    /// Rim light (0 to 1), opacity (0 to 1), how much it bends lamp light (its index of
     /// refraction, glass and light part 3: above 1 it is free glass), w spare.
     pub c: [f32; 4],
     /// Chrome's sky: top and bottom colours (linear rgb, w spare).
     pub sky_top: [f32; 4],
     pub sky_bottom: [f32; 4],
+    /// Shaded by the real lights (W15): its Lit (0: its own pretend light, the rest of `d` unread),
+    /// its surface stamp (table index plus [`crate::SurfaceGpu::GLASS_FLAG`] when see-through),
+    /// how much it blocks light (0 to 1), its thing's link number (pass 6, for lights that light up
+    /// only some things).
+    pub d: [f32; 4],
 }
 
 impl LiquidStyle {
     pub const GLASS: f32 = 4.0;
 
-    /// Whether it reads the picture behind it.
+    /// Whether it reads the picture behind it (its pretend Glass: lit by the real lights, the
+    /// lighting mix shows what is behind it).
     pub fn glass(&self) -> bool {
-        (self.a[3] - Self::GLASS).abs() < 0.5
+        !self.real() && (self.a[3] - Self::GLASS).abs() < 0.5
+    }
+
+    /// Whether the real lights shade it (W15).
+    pub fn real(&self) -> bool {
+        self.d[0] > 0.0
     }
 }
 
@@ -125,7 +139,8 @@ impl LiquidPass {
             bind_group_layouts: &[Some(globals_layout), Some(&splat_layout)],
             immediate_size: 0,
         });
-        let module = util::shader(device, "liquid", &[include_str!("shaders/liquid.wgsl")]);
+        let module =
+            util::shader(device, "liquid", &[include_str!("shaders/tint.wgsl"), include_str!("shaders/liquid.wgsl")]);
         let add = wgpu::BlendComponent {
             src_factor: wgpu::BlendFactor::One,
             dst_factor: wgpu::BlendFactor::One,

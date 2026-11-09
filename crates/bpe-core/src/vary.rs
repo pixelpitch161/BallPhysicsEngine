@@ -314,8 +314,8 @@ impl BallSpread {
             VaryBy::LaunchAngle => self.launch,
             VaryBy::Place => self.place,
             VaryBy::Random => {
-                (mix32(mix32(self.seed ^ 0x5bd1_e995) ^ self.number.wrapping_mul(0x9e37_79b9) ^ salt) >> 8) as f32
-                    / (1u32 << 24) as f32
+                use crate::dice::{lowbias32, unit24};
+                unit24(lowbias32(lowbias32(self.seed ^ 0x5bd1_e995) ^ self.number.wrapping_mul(0x9e37_79b9) ^ salt))
             }
             VaryBy::Speed => self.speed / FULL_SPEED,
             VaryBy::Hits => self.hits as f32 / FULL_HITS,
@@ -334,14 +334,6 @@ pub fn launch_turn(direction: glam::Vec2) -> f32 {
     }
     let deg = direction.y.atan2(direction.x).to_degrees();
     (deg.rem_euclid(360.0) / 360.0).clamp(0.0, 1.0)
-}
-
-fn mix32(mut x: u32) -> u32 {
-    x ^= x >> 16;
-    x = x.wrapping_mul(0x7feb_352d);
-    x ^= x >> 15;
-    x = x.wrapping_mul(0x846c_a68b);
-    x ^ (x >> 16)
 }
 
 /// A key's own number for Random (FNV-1a).

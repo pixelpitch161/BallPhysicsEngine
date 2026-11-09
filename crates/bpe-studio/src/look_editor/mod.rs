@@ -446,6 +446,7 @@ fn shape_body(ui: &mut Ui, cx: &LookCx, edits: &mut Vec<Edit>) {
     let out = settings_grid(ui, ("shape body", cx.id), &defs, get, &grid);
     edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetOwn(key.into(), value)));
     edits.extend(out.new_keys.into_iter().map(|key| Edit::NewKey(None, key.into())));
+    edits.extend(out.cleared.into_iter().map(|key| Edit::ClearKeys(None, key.into())));
     edits.extend(out.follows.into_iter().map(|(key, source)| Edit::Follow(None, key.into(), source)));
     ui.add_space(4.0);
     ui.label(RichText::new("Drag corners and sides in the video to mould it.").small().color(style::MUTED));
@@ -479,6 +480,7 @@ fn size_row(ui: &mut Ui, cx: &LookCx, edits: &mut Vec<Edit>) {
     let out = settings_grid(ui, ("look size", cx.id), std::slice::from_ref(&def), get, &grid);
     edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetOwn(key.into(), value)));
     edits.extend(out.new_keys.into_iter().map(|key| Edit::NewKey(None, key.into())));
+    edits.extend(out.cleared.into_iter().map(|key| Edit::ClearKeys(None, key.into())));
     edits.extend(out.follows.into_iter().map(|(key, source)| Edit::Follow(None, key.into(), source)));
     edits.extend(out.varies.into_iter().map(|(key, v)| crate::vary::edit(None, key, v)));
 }
@@ -539,6 +541,7 @@ pub(crate) fn layer_settings(
         }
     }
     edits.extend(out.new_keys.into_iter().map(|key| Edit::NewKey(Some(slot), layered_key(layer, key))));
+    edits.extend(out.cleared.into_iter().map(|key| Edit::ClearKeys(Some(slot), layered_key(layer, key))));
     edits
         .extend(out.follows.into_iter().map(|(key, source)| Edit::Follow(Some(slot), layered_key(layer, key), source)));
     edits.extend(out.varies.into_iter().map(|(key, v)| crate::vary::edit(Some(slot), &layered_key(layer, key), v)));

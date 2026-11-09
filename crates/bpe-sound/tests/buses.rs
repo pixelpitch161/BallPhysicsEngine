@@ -166,7 +166,7 @@ fn stems_sum_to_the_mix_before_the_limiter() {
     let off =
         mix.iter().enumerate().fold(0.0f32, |m, (i, v)| m.max((v - stems[0][i] - stems[1][i] - stems[2][i]).abs()));
     assert!(off < 1e-6, "{off}");
-    // Written to 24-bit files, they still add up to within the files' steps.
+    // Written to float files, they still add up.
     let dir = std::env::temp_dir().join(format!("bpe-stems-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let video = dir.join("clip.mp4");
@@ -176,12 +176,16 @@ fn stems_sum_to_the_mix_before_the_limiter() {
     bpe_sound::render_sound(&scene, &kit, &dir.join("clip.wav"), SECONDS, &extras, |_| true).unwrap();
     let read = |p: &std::path::Path| -> Vec<f32> {
         let mut r = hound::WavReader::open(p).unwrap();
-        assert_eq!((r.spec().bits_per_sample, r.spec().sample_rate, r.spec().channels), (24, 48_000, 2));
-        r.samples::<i32>().map(|s| s.unwrap() as f32 / 8_388_607.0).collect()
+        let spec = r.spec();
+        assert_eq!(
+            (spec.bits_per_sample, spec.sample_format, spec.sample_rate, spec.channels),
+            (32, hound::SampleFormat::Float, 48_000, 2)
+        );
+        r.samples::<f32>().map(|s| s.unwrap()).collect()
     };
     let files: Vec<Vec<f32>> = buses.iter().map(|p| read(p)).collect();
     let m = read(&master);
-    let step = 1.5 / 8_388_607.0 * 4.0;
+    let step = 1e-6;
     let off =
         m.iter().enumerate().fold(0.0f32, |acc, (i, v)| acc.max((v - files.iter().map(|f| f[i]).sum::<f32>()).abs()));
     assert!(off < step, "{off}");

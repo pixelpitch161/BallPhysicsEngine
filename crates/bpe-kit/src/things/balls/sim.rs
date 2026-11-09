@@ -9,7 +9,7 @@ use glam::Vec2;
 use super::rows::BallRows;
 use super::shapes::offsets;
 use super::{BallsSettings, Launch, Release, ReleaseOrder};
-use crate::rng::Rng;
+use bpe_core::dice::Rng;
 
 pub use super::shapes::offsets as group_offsets;
 
@@ -346,7 +346,7 @@ impl ThingSim for BallsSim {
 
     /// The Text a Word is made of: its saved settings and font place the balls. A typed Word in
     /// another font: that font's file (a font loaded into the scene can change under its name).
-    fn fingerprint_more(&self, scene: &bpe_core::Scene, thing: &Thing, resolved: &ResolvedThing) -> u64 {
+    fn physics_print_extra(&self, scene: &bpe_core::Scene, thing: &Thing, resolved: &ResolvedThing) -> u64 {
         let s = BallsSettings::from_params(&resolved.params);
         if typed_in_a_font(&s) {
             return super::shapes::typed_font(&s, Some(scene)).map_or(0, |f| f.id);
@@ -482,7 +482,7 @@ impl ThingSim for BallsSim {
     }
 
     /// Colour and turn spread only change how the balls look.
-    fn affects_physics(&self, key: &str) -> bool {
+    fn key_restarts_physics(&self, key: &str) -> bool {
         !matches!(key, "vary_colour" | "vary_turn")
     }
 

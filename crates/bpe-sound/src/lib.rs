@@ -3,6 +3,7 @@
 //! and renders blocks of [`BLOCK`] stereo samples at [`SAMPLE_RATE`]. The editor and the export
 //! call the same [`Engine::render`]; nothing else makes sound.
 
+pub mod audio;
 pub mod buses;
 pub mod chain;
 pub mod chain_graph;
@@ -19,21 +20,24 @@ pub mod mods;
 pub mod music;
 pub mod offline;
 pub mod patch;
+pub mod ruled;
 pub mod tempo;
 pub mod voice;
 pub mod voices;
 mod wav;
 
+pub use audio::SampleBank;
 pub use bpe_dsp::{BLOCK, SAMPLE_RATE};
 pub use buses::{BusesSpec, ShapeRoute, sends, would_loop};
 pub use control::{ControlSampler, FollowSound, follows_sound};
-pub use engine::{Engine, PRE_ROLL, SAMPLES_PER_BLOCK_TIME};
+pub use engine::{Engine, SAMPLES_PER_BLOCK_TIME};
 pub use hits::{BlockHit, HitCursor};
 pub use master::{Master, MasterKeys};
 pub use meters::{BusReading, FX_BINS, FX_METERS, FxReading, MeterReading, Meters};
 pub use midi::{NoteLog, NoteOn, write_midi};
 pub use offline::{Extras, has_sound, midi_path, render_samples, render_sound, render_to_wav, stem_paths};
-pub use patch::{SoundPatch, Tables};
+pub use patch::{Backing, HELD_WARM_UP, MAX_WARM_UP, MIN_WARM_UP, SoundPatch, Tables, patch_fingerprint, warm_up_of};
+pub use ruled::{mixer_rule_keys, voice_rule_keys};
 pub use tempo::TempoMap;
 pub use voice::{BlockCx, VoiceSource};
 pub use voices::{ShapeVoice, note_hz};

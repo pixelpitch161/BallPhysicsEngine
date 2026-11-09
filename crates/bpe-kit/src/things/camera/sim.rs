@@ -196,11 +196,8 @@ fn followed_lights_hash(scene: &bpe_core::Scene, me: ThingId, s: &CameraSettings
 /// Smooth noise in -1..1 at `t`, the same for the same seed and salt.
 fn noise(seed: u64, salt: u64, t: f64) -> f32 {
     let at = |i: i64| {
-        let mut h = seed ^ salt.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ (i as u64).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        h ^= h >> 31;
-        h = h.wrapping_mul(0x94d0_49bb_1331_11eb);
-        h ^= h >> 29;
-        (h >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0
+        let h = seed ^ salt.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ (i as u64).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        bpe_core::dice::unit24_of_64(bpe_core::dice::mix64_short(h)) * 2.0 - 1.0
     };
     let i = t.floor();
     let f = (t - i) as f32;
@@ -264,7 +261,7 @@ impl ThingSim for CameraSim {
         CameraSettings::from_params(&resolved.params).follow
     }
 
-    fn fingerprint_more(&self, scene: &bpe_core::Scene, thing: &Thing, resolved: &ResolvedThing) -> u64 {
+    fn physics_print_extra(&self, scene: &bpe_core::Scene, thing: &Thing, resolved: &ResolvedThing) -> u64 {
         followed_lights_hash(scene, thing.id, &CameraSettings::from_params(&resolved.params))
     }
 

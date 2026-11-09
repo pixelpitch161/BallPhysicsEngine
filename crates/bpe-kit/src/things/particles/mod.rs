@@ -46,6 +46,8 @@ mod tests_part4;
 mod tests_part6;
 #[cfg(test)]
 mod tests_part7;
+#[cfg(test)]
+mod tests_real_light;
 pub mod trail;
 pub mod two_way;
 pub mod wants;

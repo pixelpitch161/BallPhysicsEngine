@@ -467,7 +467,7 @@ pub(crate) fn hash(k: i64, seed: u32) -> f32 {
     h ^= h >> 31;
     h = h.wrapping_mul(0xBF58_476D_1CE4_E5B9);
     h ^= h >> 29;
-    (h >> 40) as f32 / (1u64 << 24) as f32
+    bpe_core::dice::unit24_of_64(h)
 }
 
 /// Value noise from 0 to 1, smooth between whole numbers.

@@ -147,13 +147,13 @@ Built as planned, in one pull request. Differences and additions:
   Rig flares each of its lights (`rig::fixtures::rigs_of`).
 - G3: the moves were refactored into `MoveCx` / `Prepared` / `effect_of` so Text and Shape share them;
   `MoveKind.shapes` says which fit a shape.
-- G5: the camera reads Lights and Rigs from `world.tree` (`reads_tree`) and hashes them in `fingerprint_more`; the
+- G5: the camera reads Lights and Rigs from `world.tree` (`reads_tree`) and hashes them in `physics_print_extra` (renamed from `fingerprint_more` on main); the
   new `ThingSim::keeps` hook is how it (and the Break rule, through `BlockSim::keeps`) keeps a Particles thing in the
   main world.
 - G12: a screen Text's ripple sources and marks go to the world in `Frame::lift_overlay_extras` (the overlay now
   gets the frame's `ripples` flag), which also lifts a screen shape's ripple outline.
 - G14: the Balls' word font is read at SemiBold (600) and spells through `shapes::typed_font`/`word_in`; Particles'
-  through `SpotsKey::Word.font` (`WordFont`). Both restart on a font change via `fingerprint_more`.
+  through `SpotsKey::Word.font` (`WordFont`). Both restart on a font change via `physics_print_extra` (renamed from `fingerprint_more` on main).
 - The full-size look check has a new "links" group (`links-shape-moves`, `links-aimed-spot`, `links-text-ripples`,
   `links-word-fonts`).
 - As-built notes: `docs/notes/{lighting,text,rules,particles,sound,editor,engine}.md`.

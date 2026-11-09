@@ -244,6 +244,8 @@ struct BeatState {
     moments: Moments,
     beat: f64,
     per_bar: u32,
+    /// Where the scene's first beat is: the bars and beats count from there.
+    first_beat: f64,
 }
 
 impl BlockSim for Beat {
@@ -263,17 +265,19 @@ impl BlockSim for Beat {
             BeatEvery::Bar => beat * per_bar as f64,
             BeatEvery::Bars => beat * per_bar as f64 * s.bars.max(1) as f64,
         };
+        let first_beat = crate::things::scene::first_beat_seconds(scene.first_beat);
         Ok(Box::new(BeatState {
-            moments: Moments { first: s.offset.max(0.0) * beat, every: Some(every), until: None, next: 0 },
+            moments: Moments { first: first_beat + s.offset.max(0.0) * beat, every: Some(every), until: None, next: 0 },
             beat,
             per_bar,
+            first_beat,
         }))
     }
     fn fire(&self, st: &mut dyn ThingState, cx: &StageCx, out: &mut Vec<Firing>) {
         let b = state_mut::<BeatState>(st);
-        let (beat, per_bar) = (b.beat, b.per_bar as u64);
+        let (beat, per_bar, first_beat) = (b.beat, b.per_bar as u64, b.first_beat);
         for (k, m) in b.moments.due(cx.step, cx.world.steps_per_second) {
-            let index = (m / beat + 1e-6).floor().max(0.0) as u64;
+            let index = ((m - first_beat) / beat + 1e-6).floor().max(0.0) as u64;
             let mut values = Values::default();
             values.set("time", m);
             values.set("count", (k + 1) as f64);

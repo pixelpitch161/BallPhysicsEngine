@@ -10,6 +10,7 @@
 
 use glam::Vec2;
 
+use crate::dice::{pcg32, unit24_closed};
 use crate::{Choice, Gradient, Mix};
 
 /// How a gradient lays its colours out over an area.
@@ -326,13 +327,6 @@ pub fn turned(q: Vec2, degrees: f32) -> Vec2 {
     Vec2::from_angle(finite(degrees, 0.0).to_radians()).rotate(q)
 }
 
-/// One step of the 32-bit PCG hash (as `vary_pcg` in paint.wgsl).
-pub fn pcg(x: u32) -> u32 {
-    let state = x.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
-    let word = ((state >> ((state >> 28) + 4)) ^ state).wrapping_mul(277_803_737);
-    (word >> 22) ^ word
-}
-
 /// The seed setting as the hash takes it.
 fn seed_bits(seed: f32) -> u32 {
     let s = finite(seed, 0.0).round_ties_even().clamp(-1e9, 1e9) as i64;
@@ -341,8 +335,8 @@ fn seed_bits(seed: f32) -> u32 {
 
 /// A value in -0.5 to 0.5 at lattice point (x, y) for `seed`.
 fn lattice(x: i32, y: i32, seed: u32) -> f32 {
-    let h = pcg(seed ^ pcg((x as u32) ^ pcg(y as u32 ^ 0x9e37_79b9)));
-    (h >> 8) as f32 / 16_777_215.0 - 0.5
+    let h = pcg32(seed ^ pcg32((x as u32) ^ pcg32(y as u32 ^ 0x9e37_79b9)));
+    unit24_closed(h) - 0.5
 }
 
 /// Smooth value noise at `q`, -0.5 to 0.5.

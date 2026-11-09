@@ -1,7 +1,7 @@
 //! Picture tests for the scene's colour grade, on the software GPU.
 
 use crate::paint_tests::gpu;
-use crate::{BackgroundPaint, BallInstance, Frame, Grade, Renderer};
+use crate::{BackgroundPaint, Frame, Grade, Renderer};
 use bpe_core::{Color, Gradient};
 
 const N: u32 = 64;
@@ -61,13 +61,7 @@ fn centre(p: &[u8]) -> [i32; 3] {
 #[test]
 fn grade_at_defaults_is_byte_identical() {
     let mut frame = two_tone(0.02, 0.6);
-    frame.balls.push(BallInstance {
-        center: [5.0, -3.0],
-        radius: 12.0,
-        glow: 1.0,
-        color: [0.9, 0.3, 0.1, 1.0],
-        ..BallInstance::default()
-    });
+    crate::pictures::plain_ball(&mut frame, glam::Vec2::new(5.0, -3.0), 12.0, [0.9, 0.3, 0.1, 1.0], 0.0);
     frame.bloom = 0.4;
     let Some(plain) = draw(&frame) else { return };
     // Every value at its default, a map that only counts once its amount is above 0, and the

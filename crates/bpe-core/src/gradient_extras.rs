@@ -839,6 +839,8 @@ pub fn any_ripples(resolved: &Resolved) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Beat {
     pub seconds: f64,
+    /// Where the first beat is, in seconds (the scene's First beat at).
+    pub first: f64,
 }
 
 impl Beat {
@@ -858,13 +860,19 @@ impl Beat {
             _ => None,
         }
         .unwrap_or(4.0);
-        Beat { seconds: 60.0 / tempo * 4.0 / note }
+        let first = match root.and_then(|p| p.get("first_beat")) {
+            Some(Value::Number(x)) => *x as f32 as f64,
+            Some(Value::Int(x)) => *x as f64,
+            _ => 0.0,
+        };
+        let first = if first.is_finite() { first.clamp(0.0, 600.0) } else { 0.0 };
+        Beat { seconds: 60.0 / tempo * 4.0 / note, first }
     }
 }
 
 impl Default for Beat {
     fn default() -> Self {
-        Beat { seconds: 0.5 }
+        Beat { seconds: 0.5, first: 0.0 }
     }
 }
 
@@ -881,6 +889,12 @@ pub fn apply_moves(resolved: &mut Resolved, time: f64) {
     let beat = Beat::of(resolved);
     let time = if time.is_finite() { time } else { 0.0 };
     for t in resolved.things.values_mut() {
+        // Only a thing with companions changes, so only it is copied out of a shared scene.
+        let has = |p: &Params| p.iter().any(|(k, _)| split(k).is_some());
+        if !(has(&t.params) || t.slots.values().any(|s| has(&s.params))) {
+            continue;
+        }
+        let t = std::sync::Arc::make_mut(t);
         apply_in(&mut t.params, time, beat);
         for s in t.slots.values_mut() {
             apply_in(&mut s.params, time, beat);
@@ -1024,20 +1038,25 @@ impl MovesAt {
         let every = f.number("step_every");
         let step = (every > 0.0).then(|| {
             let period = (every * beat.seconds).max(1e-6);
-            let k = (time / period).floor();
+            // On the beats, counted from the scene's first beat.
+            let since = time - beat.first;
+            let k = (since / period).floor();
             if k < 1.0 {
                 return 0.0;
             }
             // A glide longer than a step would start the next step before this one lands.
             let glide = f.number("step_glide").min(period);
-            let g = if glide > 0.0 { ((time - k * period) / glide).clamp(0.0, 1.0) } else { 1.0 };
+            let g = if glide > 0.0 { ((since - k * period) / glide).clamp(0.0, 1.0) } else { 1.0 };
             k - 1.0 + g * g * (3.0 - 2.0 * g)
         });
         let amount = f.number("breathe");
         let breathe = if amount != 0.0 {
             let every = f.number("breathe_every");
-            let phase =
-                if every > 0.0 { time / (every * beat.seconds).max(1e-6) } else { time * f.number("breathe_speed") };
+            let phase = if every > 0.0 {
+                (time - beat.first) / (every * beat.seconds).max(1e-6)
+            } else {
+                time * f.number("breathe_speed")
+            };
             fin(amount * (std::f64::consts::TAU * phase.rem_euclid(1.0)).sin()) as f32
         } else {
             0.0
@@ -1245,7 +1264,7 @@ mod tests {
             screen: false,
         };
         t.params.set("bg_colours~form", Value::Choice("ripples".into()));
-        r.things.insert(crate::ThingId::ROOT, t);
+        r.things.insert(crate::ThingId::ROOT, std::sync::Arc::new(t));
         assert!(any_ripples(&r));
     }
 
@@ -1473,7 +1492,7 @@ mod tests {
         let s = Scene::empty(&r);
         let mut resolved = crate::resolve(&s, &r);
         assert_eq!(Beat::of(&resolved).seconds, 0.5, "120 BPM in quarters when nothing says");
-        let root = &mut resolved.things.get_mut(&ThingId::ROOT).unwrap().params;
+        let root = &mut std::sync::Arc::make_mut(resolved.things.get_mut(&ThingId::ROOT).unwrap()).params;
         root.set("tempo", n(90.0));
         root.set("time_bottom", Value::Choice("8".into()));
         assert!((Beat::of(&resolved).seconds - 60.0 / 90.0 * 0.5).abs() < 1e-12);

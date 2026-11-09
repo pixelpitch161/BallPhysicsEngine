@@ -12,7 +12,9 @@ Dependencies go bottom to top:
 - `bpe-core`: the data model. Things sit in a tree (`scene.rs`), each with its own params and its own cards in
   `slots`. Also values, colours/gradients, blend modes, animation (keyframes and pulses on hits), save/load
   (`save.rs`), edits (`edit.rs`: `add_slot`, `remove_slot`, `set_slot_kind`) and **resolve** (`resolve.rs`: each
-  card's defaults under the thing's own values). A setting's `Address` is `{ thing, slot, key }`.
+  card's defaults under the thing's own values; `Resolved.things` holds `Arc<ResolvedThing>`, and whatever changes a
+  thing per frame, keyframes, pulses, gradient moves, rules, copies it with `Arc::make_mut`, so only the things that
+  animate are copied, review S22). A setting's `Address` is `{ thing, slot, key }`.
   `registry.rs` holds the plugin registry. `ModuleKind` is the trait for a card kind (the name is historical).
   A card can hold **layers** (`layers.rs`, `Slot.layers`): each `Layer { id, kind, name, enabled, only }` is of a
   `LayerKind` whose `LayerSection` is Drawn, Reaction or Group, kept in that order in the Vec (index 0 is the base
@@ -27,14 +29,15 @@ Dependencies go bottom to top:
   duplicating, copying or deleting a layer carries its sub-layers (`add_sub_layer`). Ten kinds, `sub.*` on balls and
   `shape.sub.*` on shapes (`layers/subs.rs`, `layers/cut.rs`, `shape/subs.rs`): Cut (the old Mask: From Layer
   below / Layer / Shape / Brush / Light / Dark), Glow, Outline, Shadow, Shading, Shine, Shader, Recolour, Flash on
-  hit and Colour on hit, worked in order over the layer alone. Format 8 masks become cuts on load
-  (`Registry::add_upgrade(9, masks_to_cuts)`). A layer kind can
+  hit and Colour on hit, worked in order over the layer alone. A layer kind can
   add settings from its own values (`LayerKind::dynamic_defs`, read through `layer_def`): a Shader layer's own code.
   Brush strokes are a value, `Value::Strokes` (points in ball space, never keyframed). A shape's moulded outline is
   `Value::Path(ShapePath)` (`shape_path.rs`: corners in shape units, x right, y down, middle at 0, size 1, each side
   straight or a cubic with two handles; `even(n)`, `circle()`, `add_point`, `delete_point`, `create_curve`, mirror
-  partners). `Slot.used_ids` keeps a removed layer's id from being given out again (`next_layer_id`). Scene files are format 12 (12 added rules and 11 the Lighting card, no upgrade; formats 7 to 9 still load and are upgraded; format 9 Trail and Particles cards become
-  Look layers with their keyframes, `add_upgrade(10, cards_to_layers)`). **Around layers** (`LayerSection::Around`)
+  partners). `Slot.used_ids` keeps a removed layer's id from being given out again (`next_layer_id`). Scene files are format 12, and 12 is also the oldest that opens
+  (`OLDEST_FORMAT`): an earlier file gives `LoadError::TooOld` ("made with an earlier version of Ball Studio"), and
+  there is no upgrade code (the registry's `add_upgrade` went in the 2026-11-08 clean-up). The test scenes still
+  build old Trail and Particles cards and turn them into Look layers with `cards_to_layers` (test-scenes only). **Around layers** (`LayerSection::Around`)
   sit after the drawn layers and before the reactions: a ball's `layer.trail` and `layer.particles`, a shape's
   `shape.particles`; they take the sub-layers Glow, Outline, Shadow, Recolour, Flash on hit and Colour on hit
   (`AROUND_SUBS`), and move only among themselves. Sound data: `SlotId::Sound` and
@@ -60,7 +63,7 @@ Dependencies go bottom to top:
   (not moved, bounced or paired, its speed kept at 0: an emitter holding a caught ball before sending it back). Events `Spawn` (tag 8:
   an emitter fired a ball, `b` = (emitter, round)) and `Enter` (tag 9: a ball came into a catcher, `b` = (catcher,
   its round)) sit beside Hit and Remove; every log reader filters by kind. `pairs::pop` is public. `World.fingerprint` is
-  the physics fingerprint worked out at build when a sim asks (`ThingSim::needs_fingerprint`); `World::lone(keep)` copies
+  the physics fingerprint worked out at build when a sim asks (`ThingSim::needs_physics_print`); `World::lone(keep)` copies
   the world with only the kept things, no history; `World::lend_cards` puts one thing's Motion/Bounce on another. `sound_fingerprint` is the
   physics fingerprint without the history part (the editor rebuilds the sound only when it changes). The generic `ThingSim` hooks (spawn, forces,
   settle, after_step) stay for new thing kinds even where no current kind uses them. Walls are **two-sided**:
@@ -89,8 +92,11 @@ Dependencies go bottom to top:
   balls' (`Made.shape`, `effects/in_shape.wgsl`; `sample` dispatches on `in_ball.shape`). Paths and layered balls
   share one pipeline layout.
   Balls draw through `shaders/layers.wgsl`, one uber-shader: a thing writes
-  its `LayerGpu` records once a frame (`frame.look_layers`) and one `LayeredInstance` per ball names them. The
-  older `BallInstance`/`LookInstance` pipelines are still in the renderer but nothing in the kit draws with them.
+  its `LayerGpu` records once a frame (`frame.look_layers`) and one `LayeredInstance` per ball names them. These and paths are the
+  only ways a ball or shape is drawn: the old `BallInstance`, `LookInstance` and `ShapeInstance` lists, their
+  pipelines and `styled.wgsl`/`object.wgsl` were removed in the clean-up. A picture test that wants a plain ball
+  uses `pictures::plain_ball` (one Body record); the effect tests' `effects::chain::tests::{put, take}` add or lift
+  a ball with an optional glow.
   The stack walk is `shaders/layers_walk.wgsl`, a template pasted in by `layers_source`. Records cover Shading (5) and
   Shader (6) layers; a layer's sub-layer records (codes 20..29, table on `LayerGpu`) follow its own (whose `head[3]`
   counts them). The walk is one loop over every record (so each costly function has one call site and compiles
@@ -231,11 +237,83 @@ Dependencies go bottom to top:
   48 kHz (`AUDIO_ARGS`); a scene without sound gets a silent track. Frames draw with `build_frame_with` and a
   `ControlSampler` when a setting follows sound. `--stems` and `--midi` (`ExportOptions`)
   save the stems and the MIDI file beside the video.
+  Frames go to ffmpeg as BT.709 TV-range 4:2:0 planes worked out on the graphics card (`bpe_gfx::yuv`,
+  `Readback::with_layout`; `yuv420p` for x264 and NVENC, `nv12` for AMF and Quick Sync, `Encoder::layout`), not RGBA
+  (review S23, `docs/superpowers/plans/lighting/picture-speed.md`).
+
+**Picture fixes, workstream W3 (2026-11-08, plan `docs/superpowers/plans/2026-11-08-picture-fixes-w3.md`).** The
+final pass (`post.wgsl::fs_composite`) leaves every colour up to 1 as it is (white is 255; the old per-channel
+shoulder from 0.8 made it 247); above 1, `roll_off` scales the colour by its brightest channel (hue kept, so glowing
+crowds don't drift to lavender) and turns it toward white by the more of its white light (least channel, squared) and `over / (over + 0.5)` (over = brightness past 1), eased in over the first quarter past 1: shines and lamp-lit walls burn white, saturated glows keep their colour. Neutral colours past 1 show as plain white (no shoulder). Its dither is a triangular ±1
+step from a PCG hash (`dither_noise`, no `sin`), the same on every channel and faded out over the first and last
+step, so pure black and white stay exact. Strips (`frame.rs::strip`) give every corner sharper than 60° a join: both
+segments meet at the inner mitre point and a fan rounds the outside, so trail bounces have no square notch. Smoke
+trails fill each gap between puffs with up to 8 evenly spaced puffs sharing one puff's cover (`trail/draw.rs`,
+`fill_most` keeps every ball under `MAX_PARTICLES`). Tests: `frame::tests::a_strip_s_sharp_corners_*`,
+`trail::draw::tests::smoke_on_a_fast_ball_*`; full-size shots `gradient-seams`, `stage-camera-orbit(-far)`,
+`stage-depth-of-field` in `full_size_look.rs`.
+
+## One wind (W13)
+
+Balls follow the scene's air: the Motion card's **Follow the air** (`follow_air`, group Air, per s; `BasicMotion::
+air_grip`, `ModuleSim::air_grip`/`air_key`) pulls each ball towards the air's velocity at its place,
+`v += (air − v)·(1 − e^(−grip·dt))`, after the Motion forces and before the Moths pull (`World::move_bodies`). The
+Motion card's Wind is labelled **Steady push** (same key, same maths). The air is the kit's (`bpe-kit/src/air.rs`);
+the runtime reaches it through `Sims.air` (`bpe_runtime::AirSim`, the kit's `KitAir`: wake, catch up, velocities).
+`bpe_runtime::air_felt(scene, sims)` says whether some enabled thing's Motion card follows the air (set, varied from
+0, keyed, pulsed, or the setting of an enabled rule's Change, via `BlockSim::changes`); it is read from the saved
+scene, so every world agrees (`World.air_felt`). Then each world wakes the air at build and, each step,
+`World::work_out_air` catches it up and reads it once per ball into `World.air_at`; `lone` keeps the ROOT state; the
+world senses the full animation (Air keys following sound or light); `fingerprint_of` hashes the Air card and its
+keys (and the full physics animation); a Particles thing whose Rise heats the air is not beside
+(`ThingSim::heats_air`). Nothing changes while no ball feels the air (no golden moved). A ball that stirs the air
+holds back the air round it, so with Balls stir at 1 it reaches about 73 % of the wind in a second
+(`air/follow_tests.rs`). The scene sim adds the ambient wind × dt to `Air.drift` each step (what haze With the air
+drifts by). `bpe_runtime::air_read` is air felt or a thing that `reads_air` (haze With the air): such worlds sense
+the Air keys and the fingerprint counts the Air card. Emitter Aim's test flights (`emitter/test_fire.rs`) have no
+air (a known gap). Tests: `bpe-kit/src/air/follow_tests.rs`.
+
+## Shared dice, shared shader helpers and the restart test (clean-up, 2026-11-08)
+
+- **Dice** (`bpe-core/src/dice.rs`): the seeded hashes every crate shares, pinned by a test: `pcg32`,
+  `lowbias32`, `splitmix64`, `mix64_short`, `hash(&[u32])` (the particles'), the steps to 0..1 (`unit24`,
+  `unit24_of_64`, `unit24_closed`), `Stream` (a salted run of `hash`) and `Rng` (SplitMix64, was `bpe-kit/src/rng.rs`).
+  Each place keeps its own way of mixing its inputs and calls these for the mixing, so the results are bit for bit
+  as before. Hashes that are a formula of their own stay where they are (the rules' FNV dice, the ball seed, a
+  Diamond's glints, the Light's flicker), and `bpe-dsp` keeps its own noise.
+- **Shader helpers**: `effects/shared.wgsl` holds the functions the effect prelude and the in-ball programs both
+  had (`hash21`, `noise`, `fbm`, `hue_shift`, `hsv_to_rgb`, the beat and sound readers, `object_code`, ...), and
+  `shaders/common.wgsl` the ones every pass may use (`luma`, Rec. 709). Each WGSL source that needs them is a
+  `concat!` with them (`effects::PRELUDE`/`IN_BALL`, `LIGHTING_WGSL` for the light passes, the post shader). The
+  three heat colour ramps are different maths and stay apart.
+- **What an edit restarts**: the `ThingSim` hooks are named for the question they answer:
+  `key_restarts_physics`, `key_restarts_physics_here`, `physics_print_extra`, `steps_own_cards` (the physics
+  fingerprint), `key_restarts_beside`, `card_key_restarts_beside`, `beside_print_extra` (the beside one).
+  `bpe-kit/tests/restarts.rs` adds every thing kind to the test start scene (and again with each switch and choice
+  of the scene changed), changes each setting it can (numbers, whole numbers, switches, choices, points, colours,
+  text) one at a time, plays 1.5 s and checks that whatever moved the balls changed the physics fingerprint and
+  whatever moved a beside thing's particles changed the beside fingerprint. About 43,000 changes, some 20 s.
+
+## Ready-made looks (E12, 2026-11-08)
+
+`bpe-kit/src/ready_looks/`: 30 ball looks (Clean, Shiny, Neon, Fire, Trippy) and 18 shape looks (Clean, Glow,
+Colour), each a `ReadyLook` whose `build(main colours) -> Recipe` lists existing layer kinds bottom first with only
+their changed values (`Settings::to_params`), sub-layers, the card's own values (a Surface) and `RPulse`s. Nothing new
+is drawn or saved: `apply(scene, reg, thing, look, Colours, How)` turns the recipe into a `CopiedLook` and pastes it
+(`Replace`: `Scene::paste_look`, keeping the group layers and the ball Body's `ball_shape`/`roundness`; `OnTop`:
+`paste_layer` for every layer but the Body, whose sub-layers (Heat glow, Gives off light) go onto the thing's own
+Body with `paste_sub_layer`). `add_with_look` takes the new thing out again if the look can't go on. Pulses aren't in a `CopiedLook`, so they're put on afterwards by the
+layer's place among the top-level, non-group layers (recipes keep Drawn → Around → Reaction order, a test checks).
+`Colours::Mine` passes the thing's own colours (`own_colours`: a ball's Body colours, a shape's lowest Colour layer's;
+none for a shape without one) as the main colour of looks with `takes_colour`. `add_with_look` adds a thing and
+dresses it. `favourites(kind)` feeds the add menu. Tests in `ready_looks/tests.rs` paste every look on Balls, an
+Emitter and a Shape with both colour choices and resolve them without problems, and check every stored key is a real
+setting.
 
 **Small links (W12, 2026-11-08).** `ThingSim::keeps(scene, me, other)` lets a thing keep another stepping in the main
 world (the camera keeps what it follows); `World::is_beside` reads it with the rules' `BlockSim::keeps` and Sound
 pulses. The camera follows Lights (each lamp, where it shines from at the moment) and Rigs (each lamp of their
-lights) through `world.tree` (`reads_tree`; `fingerprint_more` hashes the followed lights), Particles (their specks)
+lights) through `world.tree` (`reads_tree`; `physics_print_extra` hashes the followed lights), Particles (their specks)
 and, for Fit all, a shape's or walled Text's whole outline box. `things/point.rs::point_of` is one point of a thing.
 The Balls' typed Word takes a **Font** (`word_font`; the built-in name spells with `FONT` as ever, another font via
-`shapes::typed_font`/`word_in` at SemiBold, read from `world.tree`, hashed by `fingerprint_more`).
+`shapes::typed_font`/`word_in` at SemiBold, read from `world.tree`, hashed by `physics_print_extra`).

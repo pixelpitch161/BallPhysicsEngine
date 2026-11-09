@@ -117,17 +117,18 @@ pub fn can_light(scene: &Scene, reg: &bpe_core::Registry, a: &Address) -> bool {
     bpe_kit::sensing::can_follow_light(scene, reg, a)
 }
 
-/// Every shape, Text or Particles thing whose sound is on, with its modulators that are on and its
+/// Every shape, Text, Balls, Emitter or Particles thing whose sound is on, with its modulators that are on and its
 /// Level, and every bus that is on (none while nothing makes sound).
 pub fn menu(scene: &Scene) -> FollowMenu {
     use bpe_kit::things::{particles, shape, text};
     let mut shapes = Vec::new();
     for id in &scene.order {
-        // A Particles thing whose sound a setting follows steps with the physics, so its moments
-        // are heard (W12).
-        let Some(thing) =
-            scene.things.get(id).filter(|t| [shape::KIND, text::KIND, particles::KIND].contains(&t.kind.as_str()))
-        else {
+        // Shapes, Texts, Balls and Emitters (W10), and Particles: a Particles thing whose sound a
+        // setting follows steps with the physics, so its moments are heard (W12).
+        let Some(thing) = scene.things.get(id).filter(|t| {
+            [shape::KIND, text::KIND, particles::KIND].contains(&t.kind.as_str())
+                || bpe_kit::sound::hears_own_balls(&t.kind)
+        }) else {
             continue;
         };
         let Some(card) = thing.slots.get(&SlotId::Sound).filter(|c| c.kind == VOICE) else { continue };
@@ -354,5 +355,20 @@ mod tests {
         // Removing the thing stops what followed its health.
         scene.remove_thing(ball).unwrap();
         assert!(scene.pulses.values().all(|p| p.source != source));
+    }
+
+    #[test]
+    fn a_balls_sound_can_be_followed() {
+        let kit = bpe_kit::kit();
+        let mut scene = bpe_kit::new_scene(&kit.registry);
+        assert!(menu(&scene).shapes.is_empty() && menu(&scene).buses.is_empty(), "nothing sounds yet");
+        let ball = scene.things.values().find(|t| t.kind == "balls").unwrap().id;
+        let card = bpe_kit::sound::starter_voice(&kit.registry);
+        scene.things.get_mut(&ball).unwrap().slots.insert(SlotId::Sound, card);
+        bpe_kit::ensure_mixer(&mut scene, &kit.registry);
+        let m = menu(&scene);
+        let theirs = m.shapes.iter().find(|s| s.id == ball).expect("the balls' sound is offered (W10)");
+        assert!(theirs.parts.iter().any(|(s, _)| *s == SoundSource::Level));
+        assert!(!m.buses.is_empty(), "and the buses it plays into");
     }
 }

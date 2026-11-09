@@ -2,27 +2,39 @@
 
 use bpe_kit::SceneSettings;
 
-/// One fixed tempo and time signature.
+/// One fixed tempo and time signature, its first beat at `first` seconds.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TempoMap {
     bpm: f64,
     top: u32,
     bottom: u32,
+    first: f64,
 }
 
 impl Default for TempoMap {
     fn default() -> Self {
-        Self { bpm: 120.0, top: 4, bottom: 4 }
+        Self { bpm: 120.0, top: 4, bottom: 4, first: 0.0 }
     }
 }
 
 impl TempoMap {
     pub fn new(bpm: f64, top: u32, bottom: u32) -> Self {
-        Self { bpm: bpm.clamp(20.0, 300.0), top: top.clamp(1, 16), bottom: bottom.clamp(1, 64) }
+        Self { bpm: bpm.clamp(20.0, 300.0), top: top.clamp(1, 16), bottom: bottom.clamp(1, 64), first: 0.0 }
+    }
+
+    /// The same tempo with its first beat (the first bar line) at `seconds`.
+    pub fn with_first(self, seconds: f64) -> Self {
+        Self { first: bpe_kit::things::scene::first_beat_seconds(seconds as f32), ..self }
     }
 
     pub fn from_settings(s: &SceneSettings) -> Self {
-        Self::new(s.tempo as f64, s.time_top, s.time_bottom.beats())
+        Self::new(s.tempo as f64, s.time_top, s.time_bottom.beats()).with_first(s.first_beat as f64)
+    }
+
+    /// Where the first beat (and the first bar) is, in seconds: the beats and bars count from
+    /// there.
+    pub fn first(&self) -> f64 {
+        self.first
     }
 
     pub fn bpm(&self) -> f64 {
@@ -49,14 +61,15 @@ impl TempoMap {
         self.beat_seconds() * self.top as f64
     }
 
-    /// Beats since the start at `time` seconds (0 at the start, fractional between beats).
+    /// Beats since the first beat at `time` seconds (0 there, fractional between beats,
+    /// below 0 before it).
     pub fn beat_at(&self, time: f64) -> f64 {
-        time / self.beat_seconds()
+        (time - self.first) / self.beat_seconds()
     }
 
-    /// Bars since the start at `time` seconds.
+    /// Bars since the first beat at `time` seconds.
     pub fn bar_at(&self, time: f64) -> f64 {
-        time / self.bar_seconds()
+        (time - self.first) / self.bar_seconds()
     }
 
     /// How long `beats` beats last, in seconds.
@@ -79,6 +92,10 @@ mod tests {
         let t = TempoMap::new(120.0, 6, 8);
         assert_eq!((t.beat_seconds(), t.bar_seconds()), (0.25, 1.5));
         assert_eq!(TempoMap::from_settings(&SceneSettings::default()), TempoMap::default());
+        let t = TempoMap::new(120.0, 4, 4).with_first(0.75);
+        assert_eq!((t.first(), t.beat_at(0.75), t.beat_at(1.75), t.bar_at(2.75)), (0.75, 0.0, 2.0, 1.0));
+        assert_eq!(t.beat_at(0.25), -1.0, "before the first beat the beats count back");
+        assert_eq!(t.beat_seconds(), 0.5, "the tempo is the same");
     }
 
     #[test]

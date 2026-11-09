@@ -1,5 +1,6 @@
 //! How hits play notes: Poly or Mono, how many notes at once, Glide (Mono), the softest hit
-//! that plays, the retrigger guard and which balls are heard.
+//! that plays, the retrigger guard, how a hit's speed becomes its strength and which balls are
+//! heard.
 
 use super::{TabCx, panel};
 use crate::style;
@@ -14,6 +15,10 @@ fn plain(v: f64) -> String {
 
 fn ms(v: f64) -> String {
     format!("{v:.0} ms")
+}
+
+fn speed(v: f64) -> String {
+    format!("{v:.0} px/s")
 }
 
 fn percent(v: f64) -> String {
@@ -36,9 +41,14 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx) {
                 cx.knob(ui, "play_glide", "Glide", &ms).on_hover_text("How long a new note slides from the last one");
             }
             cx.knob(ui, "play_min_strength", "Min strength", &percent)
-                .on_hover_text("Softer hits than this play nothing. 100 % is a hit at 1500 px/s.");
+                .on_hover_text("Softer hits than this play nothing. 100 % is a hit at Full strength speed.");
             cx.knob(ui, "play_retrigger", "Retrigger", &ms)
                 .on_hover_text("A ball hitting again sooner than this plays no new note");
+            cx.knob(ui, "play_full_at", "Full at", &speed)
+                .on_hover_text("A hit this fast or faster plays at full strength; slower ones are softer");
+            cx.knob(ui, "play_curve", "Curve", &plain).on_hover_text(
+                "Bends how a hit's speed turns into its strength: up makes soft hits louder, down keeps them quiet",
+            );
         });
         // A Particles thing has no outline to be in range of, and hears only its own particles.
         let particles = super::moments::is_particles(cx);
@@ -78,8 +88,14 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx) {
         if particles {
             return;
         }
+        // A ball's sound hears its own balls: what they must hit to play (W10).
+        let (heard, help) = if super::moments::is_balls(cx) {
+            ("Hits on", "Its balls play only when they hit these")
+        } else {
+            ("Hits from", "Only hits from these balls play")
+        };
         ui.horizontal(|ui| {
-            let label = ui.label(RichText::new("Hits from").small().color(style::MUTED));
+            let label = ui.label(RichText::new(heard).small().color(style::MUTED)).on_hover_text(help);
             let mut target = match cx.get("play_heard_from") {
                 Value::Target(t) => t,
                 _ => bpe_core::Target::Anything,

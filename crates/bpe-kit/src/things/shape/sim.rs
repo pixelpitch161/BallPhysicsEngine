@@ -493,7 +493,7 @@ mod tests {
     #[test]
     fn every_setting_affects_the_physics() {
         for d in ShapeSettings::defs() {
-            assert!(ShapeSim.affects_physics(d.key), "{}", d.key);
+            assert!(ShapeSim.key_restarts_physics(d.key), "{}", d.key);
         }
     }
 

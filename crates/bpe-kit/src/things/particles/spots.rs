@@ -40,6 +40,9 @@ pub enum SpotsKey {
     Picture {
         path: String,
         modified: Option<std::time::SystemTime>,
+        /// The picture kept in the scene under the name `path`, when it is there (W5): read from
+        /// these bytes instead of a file.
+        kept: Option<PictureBytes>,
         width: u32,
         uses: Uses,
         spacing: u32,
@@ -111,6 +114,25 @@ pub fn word_font(s: &ParticlesSettings, tree: Option<&bpe_core::Scene>, was: &Sp
     Some(WordFont { name: s.font.clone(), data })
 }
 
+/// A picture's bytes carried in a [`SpotsKey`]: equal and hashed by where they live and how many
+/// there are, so comparing keys never reads them (every copy of a scene shares them).
+#[derive(Clone, Debug)]
+pub struct PictureBytes(pub Arc<[u8]>);
+
+impl PartialEq for PictureBytes {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for PictureBytes {}
+
+impl std::hash::Hash for PictureBytes {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        (self.0.as_ptr() as usize, self.0.len()).hash(h);
+    }
+}
+
 /// A Text thing's letters carried in a [`SpotsKey`]: never compared or hashed (the key's hash
 /// says what they read).
 #[derive(Clone, Debug, Default)]
@@ -160,13 +182,22 @@ pub fn key_of(
                 };
                 SpotsKey::TextThing { hash, spacing: bits(s.spacing), letters }
             }
-            WordFrom::Picture => SpotsKey::Picture {
-                path: s.picture.clone(),
-                modified: std::fs::metadata(&s.picture).and_then(|m| m.modified()).ok(),
-                width: bits(s.picture_width),
-                uses: s.uses,
-                spacing: bits(s.spacing),
-            },
+            WordFrom::Picture => {
+                let kept = tree.and_then(|t| t.pictures.get(&s.picture)).map(|p| PictureBytes(p.bytes.clone()));
+                // A picture kept in the scene has no file to watch.
+                let modified = match kept {
+                    Some(_) => None,
+                    None => std::fs::metadata(&s.picture).and_then(|m| m.modified()).ok(),
+                };
+                SpotsKey::Picture {
+                    path: s.picture.clone(),
+                    modified,
+                    kept,
+                    width: bits(s.picture_width),
+                    uses: s.uses,
+                    spacing: bits(s.spacing),
+                }
+            }
         },
         BornFrom::AGrid => {
             let size = match s.grid_covers {
@@ -207,6 +238,9 @@ pub fn spots_for(key: &SpotsKey) -> Arc<Vec<Vec2>> {
             word_spots(text, f(*height), *weight, f(*spacing))
         }
         SpotsKey::TextThing { spacing, letters, .. } => fill_spots(&letters.0, f(*spacing), false),
+        SpotsKey::Picture { kept: Some(bytes), width, uses, spacing, .. } => {
+            picture_spots_in(read_png_from(std::io::Cursor::new(&bytes.0[..])), f(*width), *uses, f(*spacing))
+        }
         SpotsKey::Picture { path, width, uses, spacing, .. } => picture_spots(path, f(*width), *uses, f(*spacing)),
         SpotsKey::Grid { size, by, columns, rows, spacing, jitter, stagger } => {
             grid_spots(Vec2::new(f(size[0]), f(size[1])), *by, (*columns, *rows), f(*spacing), f(*jitter), *stagger)
@@ -357,8 +391,13 @@ fn lattice_step(size: Vec2, spacing: f32) -> f32 {
 /// A PNG picture's pixels as RGBA, with its size; `None` when it can't be read.
 fn read_png(path: &str) -> Option<(Vec<u8>, usize, usize)> {
     let file = std::fs::File::open(path).ok()?;
+    read_png_from(std::io::BufReader::new(file))
+}
+
+/// [`read_png`] from any reader: a file, or bytes kept in the scene.
+fn read_png_from<R: std::io::BufRead + std::io::Seek>(from: R) -> Option<(Vec<u8>, usize, usize)> {
     let limits = png::Limits { bytes: MOST_PIXELS * 4 + (16 << 20) };
-    let mut decoder = png::Decoder::new_with_limits(std::io::BufReader::new(file), limits);
+    let mut decoder = png::Decoder::new_with_limits(from, limits);
     decoder.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = decoder.read_info().ok()?;
     let size = reader.output_buffer_size()?;
@@ -396,7 +435,13 @@ pub fn picture_spots(path: &str, width: f32, uses: Uses, spacing: f32) -> Vec<Ve
     if path.trim().is_empty() {
         return Vec::new();
     }
-    let Some((rgba, w, h)) = read_png(path) else { return Vec::new() };
+    picture_spots_in(read_png(path), width, uses, spacing)
+}
+
+/// The places filling the parts `uses` picks of a picture read as RGBA (`None`: it couldn't be
+/// read), as [`picture_spots`] lays them out.
+pub fn picture_spots_in(picture: Option<(Vec<u8>, usize, usize)>, width: f32, uses: Uses, spacing: f32) -> Vec<Vec2> {
+    let Some((rgba, w, h)) = picture else { return Vec::new() };
     let width = at_least(width, 1.0);
     let scale = width / w as f32;
     let size = Vec2::new(width, h as f32 * scale);

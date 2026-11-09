@@ -284,3 +284,18 @@ fn a_particles_layer_that_gives_off_light_gets_a_strip() {
     assert_eq!(strip.what, "gives off");
     assert!(strip.strength.is_some(), "its Strength fader is the sub-layer's own");
 }
+
+#[test]
+fn many_lights_show_a_warning_on_the_lights_tab() {
+    assert_eq!(many_lights_warning(crate::app::MANY_LIGHTS), None);
+    let words = many_lights_warning(crate::app::MANY_LIGHTS + 1).expect("a warning");
+    assert!(words.starts_with(&format!("{} lights are lit.", crate::app::MANY_LIGHTS + 1)), "{words}");
+    let (mut studio, _) = lit_studio();
+    studio.lighting = Some((120, None));
+    let mut h = harness(studio);
+    h.run();
+    assert!(h.query_by_label_contains("120 lights are lit.").is_some());
+    h.state_mut().lighting = Some((3, None));
+    h.run();
+    assert!(h.query_by_label_contains("lights are lit.").is_none());
+}

@@ -27,6 +27,14 @@ pub enum CardChoice {
     Shader,
     /// The scene's Lighting card.
     Lighting,
+    /// A Health card (rules part 4).
+    Health,
+    /// The scene's Air card.
+    Air,
+    /// A Sound card: the numbers its sound reads as it plays.
+    Sound,
+    /// The scene's Mixer card: its buses, effects and Master.
+    Mixer,
 }
 
 impl CardChoice {
@@ -38,6 +46,10 @@ impl CardChoice {
             CardChoice::Bounce => Some(SlotId::Bounce),
             CardChoice::Shader => Some(SlotId::Shader),
             CardChoice::Lighting => Some(SlotId::Lighting),
+            CardChoice::Health => Some(SlotId::Health),
+            CardChoice::Air => Some(SlotId::Air),
+            CardChoice::Sound => Some(SlotId::Sound),
+            CardChoice::Mixer => Some(SlotId::Mixer),
         }
     }
 }
@@ -175,6 +187,19 @@ struct ChangeState {
     times: Amount,
 }
 
+/// Whether a rule's change of setting `def` on `slot` is heard: the sound reads its Sound and
+/// Mixer cards' numbers that take keys once a block, and nothing else of them as it plays (the
+/// patch is built from the rest). Every other card's settings say yes. The editor's menu narrows
+/// this to the numbers the sound engine really reads (`bpe_sound::voice_rule_keys`).
+pub fn sound_reads(slot: Option<SlotId>, def: &bpe_core::SettingDef) -> bool {
+    match slot {
+        Some(SlotId::Sound | SlotId::Mixer) => {
+            def.flags.keyframe && !def.flags.hold && matches!(def.ty, ValueType::Number | ValueType::Int)
+        }
+        _ => true,
+    }
+}
+
 /// The setting `key` on `slot` of every thing in the scene that has it.
 pub fn setting_infos(cx: &PrepareCx, slot: Option<SlotId>, key: &str) -> BTreeMap<ThingId, SettingInfo> {
     let reg = super::kit_registry();
@@ -193,7 +218,7 @@ pub fn setting_infos(cx: &PrepareCx, slot: Option<SlotId>, key: &str) -> BTreeMa
                 | ValueType::Gradient
                 | ValueType::Choice(_)
         );
-        if !changeable {
+        if !changeable || !sound_reads(slot, def) {
             continue;
         }
         let live = cx.scene.vary_use(reg, &a) == Some(VaryUse::Live);
@@ -296,5 +321,11 @@ impl BlockSim for ChangeSetting {
 
     fn changes_settings(&self, _state: &dyn ThingState) -> bool {
         true
+    }
+
+    fn changes(&self, params: &Params) -> Option<(Option<SlotId>, String)> {
+        let s = ChangeSettingSettings::from_params(params);
+        let key = s.setting.trim();
+        (!key.is_empty()).then(|| (s.card.slot(), key.to_owned()))
     }
 }

@@ -31,6 +31,8 @@ pub struct TargetChoices {
     pub unreadable_fonts: Vec<String>,
     /// Every counter the rules name, sorted (a Text's Insert value ▸ Counter lists them).
     pub counters: Vec<String>,
+    /// The pictures the scene keeps, by name (a Particles thing's Picture row checks them).
+    pub pictures: Vec<String>,
 }
 
 impl TargetChoices {
@@ -92,6 +94,7 @@ impl TargetChoices {
             fonts,
             unreadable_fonts,
             counters: counters.into_iter().collect(),
+            pictures: scene.pictures.keys().cloned().collect(),
         }
     }
 }
@@ -208,6 +211,8 @@ pub struct GridOutcome {
     /// The settings whose menu's Create Keyframe was picked: a key at the playhead holding the
     /// value as it stands.
     pub new_keys: Vec<&'static str>,
+    /// The settings whose menu's Remove all keyframes was picked.
+    pub cleared: Vec<&'static str>,
     /// Groups folded shut (true) or opened from their heading's arrow.
     pub folds: Vec<(&'static str, bool)>,
     /// Settings that start following sound (or stop, with `None`) from their menu.
@@ -470,6 +475,7 @@ pub(crate) fn grid_row_with(
     }
     out.changes.extend(companions.changes);
     out.new_keys.extend(companions.new_keys);
+    out.cleared.extend(companions.cleared);
     out.follows.extend(companions.follows);
     out.varies.extend(companions.varies);
     out.varies.extend(varies.into_iter().map(|v| (def.key, v)));
@@ -490,6 +496,7 @@ pub(crate) fn grid_row_with(
         RowAction::Nothing => {}
         RowAction::Changed => out.changes.push((def.key, value)),
         RowAction::CreateKey => out.new_keys.push(def.key),
+        RowAction::RemoveKeys => out.cleared.push(def.key),
         RowAction::Follow(source) => out.follows.push((def.key, source)),
     }
 }
@@ -502,6 +509,8 @@ pub enum RowAction {
     Changed,
     /// A key at the playhead, holding the value as it stands.
     CreateKey,
+    /// Every key of the setting goes.
+    RemoveKeys,
     /// Follow this part of the sound (or stop following, with `None`).
     Follow(Option<bpe_core::PulseSource>),
 }
@@ -606,11 +615,10 @@ fn setting(
         *value = before.clone();
         changed = false;
     }
-    // A gradient bar's clicks add and pick stops, so only its label resets it.
+    // Only the label resets (double-click or Alt+click), and the menu's Reset to default: a
+    // double-click on a number box starts typing into it, and on a gradient bar adds a stop.
     let fallback = def.default.clone();
-    let gradient = def.ty == ValueType::Gradient;
-    // Alt on the widget itself drags freely past the grid, so there only a double-click resets.
-    if resettable(&name, value, &fallback, true) || (!gradient && resettable(&response, value, &fallback, false)) {
+    if resettable(&name, value, &fallback, true) {
         changed = true;
     }
     let follow = cx.follow.map(|f| (f, def.key));
@@ -692,6 +700,7 @@ fn setting(
             match row_menu(r, def, unit, &end_before, Some(to_mark), cx.choices, None) {
                 MenuPick::Paste(pasted) => varies.push(VaryEdit::To(pasted)),
                 MenuPick::CreateKey => varies.push(VaryEdit::KeyTo),
+                MenuPick::RemoveKeys => varies.push(VaryEdit::ClearTo),
                 MenuPick::Nothing | MenuPick::Follow(_) => {}
             }
         }
@@ -716,6 +725,7 @@ fn setting(
                 }
             }
             MenuPick::CreateKey => action = RowAction::CreateKey,
+            MenuPick::RemoveKeys => action = RowAction::RemoveKeys,
             MenuPick::Follow(source) => action = RowAction::Follow(source),
         }
     }
@@ -803,9 +813,10 @@ pub fn copy_with(ctx: &egui::Context, value: Value, words: String, extras: Vec<(
 #[derive(Clone, Debug, PartialEq)]
 enum MenuPick {
     Nothing,
-    /// The copied value, made to fit the setting.
+    /// The copied value, made to fit the setting, or its default (Reset to default).
     Paste(Value),
     CreateKey,
+    RemoveKeys,
     /// Follow sound ▸ …, or Stop following sound (`None`).
     Follow(Option<bpe_core::PulseSource>),
 }
@@ -878,6 +889,16 @@ fn row_menu_following(
             pick = MenuPick::Paste(v);
             ui.close();
         }
+        let default = &def.default;
+        let reset = format!("Reset to default ({})", value_words(default, unit, choices));
+        let reset = ui
+            .add_enabled(value != default, egui::Button::new(reset))
+            .on_hover_text("Put this setting back as it starts (also: double-click its name)")
+            .on_disabled_hover_text("It is at its default already");
+        if reset.clicked() {
+            pick = MenuPick::Paste(default.clone());
+            ui.close();
+        }
         let can_key = mark.is_some_and(|m| m.can_key);
         let key = ui
             .add_enabled(can_key, egui::Button::new("Create Keyframe"))
@@ -885,6 +906,15 @@ fn row_menu_following(
             .on_disabled_hover_text("This setting can't have keyframes");
         if key.clicked() {
             pick = MenuPick::CreateKey;
+            ui.close();
+        }
+        let keyed = mark.is_some_and(|m| m.keyed);
+        let clear = ui
+            .add_enabled(keyed, egui::Button::new("Remove all keyframes"))
+            .on_hover_text("Every key of this setting goes; it keeps the value it has at the playhead")
+            .on_disabled_hover_text("This setting has no keyframes");
+        if clear.clicked() {
+            pick = MenuPick::RemoveKeys;
             ui.close();
         }
         if let Some((f, key)) = follow {
@@ -1011,12 +1041,14 @@ fn follow_items(
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ValueMenu {
     Nothing,
+    /// A pasted value, or the default (Reset to default).
     Paste(Value),
     CreateKey,
+    RemoveKeys,
 }
 
-/// The same right-click menu as a settings row's (Copy Value, Paste Value, Create Keyframe), on
-/// any control.
+/// The same right-click menu as a settings row's (Copy Value, Paste Value, Reset to default,
+/// Create Keyframe, Remove all keyframes), on any control.
 pub(crate) fn value_menu(
     response: &Response,
     def: &SettingDef,
@@ -1042,6 +1074,7 @@ pub(crate) fn value_menu_with(
         MenuPick::Nothing | MenuPick::Follow(_) => ValueMenu::Nothing,
         MenuPick::Paste(v) => ValueMenu::Paste(v),
         MenuPick::CreateKey => ValueMenu::CreateKey,
+        MenuPick::RemoveKeys => ValueMenu::RemoveKeys,
     }
 }
 
@@ -1738,17 +1771,7 @@ fn widget(
             response.response.labelled_by(name)
         }
         (ValueType::Text, Value::Text(text)) if def.unit == "picture" => {
-            let width = (ui.available_width() - 40.0).max(80.0);
-            let mut response = ui.add(egui::TextEdit::singleline(text).desired_width(width)).labelled_by(name);
-            let browse = ui.add(egui::Button::new("…").small()).on_hover_text("Choose a picture (PNG)");
-            browse.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Browse {}", def.label)));
-            if browse.clicked()
-                && let Some(path) = rfd::FileDialog::new().add_filter("PNG pictures", &["png"]).pick_file()
-            {
-                *text = path.to_string_lossy().into_owned();
-                response.mark_changed();
-            }
-            response
+            crate::picture_picker::picture_row(ui, text, &choices.pictures, def.label, name)
         }
         (ValueType::Text, Value::Text(text)) if def.unit == "file" => {
             // Leave room for the browse button, or the row grows past the panel.

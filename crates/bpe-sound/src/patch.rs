@@ -10,12 +10,12 @@ use crate::voices::knobs;
 use crate::voices::shape::{DistSpec, EnvSpec, HitSpec, LfoSpec, LightSpec, ModsSpec, OscSpec, Probe, ShapeSpec};
 use crate::voices::slots::NotesSpec;
 use crate::{ShapeVoice, TempoMap, VoiceSource};
-use bpe_core::{Address, LayerId, Resolved, ResolvedSlot, Scene, Settings, SlotId, ThingId};
-use bpe_dsp::{TableSet, WarpModeId, WaveBank, WaveShape};
+use bpe_core::{Address, LayerId, Resolved, ResolvedSlot, Scene, Settings, SlotId, ThingId, Value};
+use bpe_dsp::{LoopMode, SampleData, SamplerParams, TableSet, WarpModeId, WaveBank, WaveShape};
 use bpe_kit::sound::{
     ADSR, AdsrSettings, CHAIN_KINDS, ChainEqSettings, DISTANCE, DistanceSettings, DistortionSettings, EQ, FILTER,
     FilterSettings, HIT, HitSettings, LFO, LIGHT_MOD, LfoSettings, LightModSettings, MODULATION, MixerSettings,
-    ModulationSettings, OscSettings, Slope, VOICE, VoiceSettings, Wave,
+    ModulationSettings, OscSettings, SampleLoop, Slope, VOICE, VoiceSettings, Wave,
 };
 use bpe_kit::things::shape::ShapeSettings;
 use bpe_kit::{Kit, SceneSettings};
@@ -34,6 +34,48 @@ pub struct SoundPatch {
     /// Some wavetable was still baking ([`Tables::Ready`]): those oscillators are silent until
     /// the patch is built again.
     pub pending: bool,
+    /// Where the clip ends (the scene's Duration), for the Master's End fade.
+    pub end: f64,
+    /// The Mixer's backing track, when it has one that is on and decoded (W11).
+    pub backing: Option<Backing>,
+}
+
+/// A backing track ready to play: the song, the sound-time sample its first frame plays on, and
+/// its level.
+#[derive(Clone, Debug)]
+pub struct Backing {
+    pub audio: Arc<SampleData>,
+    pub start: i64,
+    pub gain: f32,
+}
+
+impl Backing {
+    /// The backing track named by the Mixer settings `m`, when it is on and the scene keeps it.
+    pub fn of(scene: &Scene, m: &MixerSettings, tables: Tables, pending: &mut bool) -> Option<Backing> {
+        if !m.backing_on || m.backing.is_empty() {
+            return None;
+        }
+        let audio = tables.sample(scene, &m.backing, pending)?;
+        let start = (m.backing_at as f64 * crate::SAMPLE_RATE as f64).round() as i64;
+        Some(Backing { audio, start, gain: bpe_dsp::db_to_gain(m.backing_level) })
+    }
+
+    /// Adds the song's block starting at sound-time sample `at` to `l`/`r`. Never allocates.
+    pub fn add(&self, at: u64, l: &mut [f32; crate::BLOCK], r: &mut [f32; crate::BLOCK]) {
+        let first = at as i64 - self.start;
+        let frames = self.audio.frames() as i64;
+        if first >= frames || first + crate::BLOCK as i64 <= 0 {
+            return;
+        }
+        let (sl, sr) = self.audio.channels();
+        for i in 0..crate::BLOCK {
+            let j = first + i as i64;
+            if (0..frames).contains(&j) {
+                l[i] += sl[j as usize] * self.gain;
+                r[i] += sr[j as usize] * self.gain;
+            }
+        }
+    }
 }
 
 /// How a patch gets its wavetables.
@@ -60,6 +102,24 @@ impl Tables {
             Tables::Skip => None,
         }
     }
+
+    /// The decoded sound file the scene keeps as `name` (W11), the same way: decoded there and
+    /// then, only if ready (else it starts decoding and the patch is pending), or none. A missing
+    /// or unreadable file is none and never pending.
+    pub(crate) fn sample(self, scene: &Scene, name: &str, pending: &mut bool) -> Option<Arc<SampleData>> {
+        let bytes = &scene.audio.get(name)?.bytes;
+        match self {
+            Tables::Bake => crate::SampleBank::get(bytes).ok(),
+            Tables::Ready => match crate::SampleBank::ready(bytes) {
+                Some(d) => d.ok(),
+                None => {
+                    *pending = true;
+                    None
+                }
+            },
+            Tables::Skip => None,
+        }
+    }
 }
 
 /// The table a wave reads, for a tabled wave that plays (`runs`: it is on, or the other
@@ -73,13 +133,35 @@ fn table_of(o: &OscSettings, runs: bool, tables: Tables, pending: &mut bool) -> 
         Wave::Triangle => WaveShape::Triangle,
         Wave::Saw => WaveShape::Saw,
         Wave::Square => WaveShape::Square,
-        Wave::Noise => return None,
+        Wave::Noise | Wave::Sample => return None,
     };
     tables.get(wave, WarpModeId::from_index(o.warp_mode.index()), pending)
 }
 
-fn osc_spec(o: &OscSettings, runs: bool, tables: Tables, pending: &mut bool) -> OscSpec {
+/// How a sample oscillator plays its sample.
+pub(crate) fn sampler_params(o: &OscSettings) -> SamplerParams {
+    let frames_per_ms = crate::SAMPLE_RATE as f64 / 1000.0;
+    SamplerParams {
+        start: o.sample_start as f64 / 100.0,
+        loop_mode: match o.sample_loop {
+            SampleLoop::Off => LoopMode::Off,
+            SampleLoop::Forward => LoopMode::Forward,
+            SampleLoop::PingPong => LoopMode::PingPong,
+        },
+        loop_start: o.sample_loop_start as f64 / 100.0,
+        loop_end: o.sample_loop_end as f64 / 100.0,
+        fade_frames: o.sample_loop_fade.max(0.0) as f64 * frames_per_ms,
+        reverse: o.sample_reverse,
+    }
+}
+
+fn osc_spec(scene: &Scene, o: &OscSettings, runs: bool, tables: Tables, pending: &mut bool) -> OscSpec {
+    let sample = if runs && o.wave == Wave::Sample { tables.sample(scene, &o.sample, pending) } else { None };
     OscSpec {
+        sampler: sampler_params(o),
+        sample_root: o.sample_root.clamp(0, 127) as f32,
+        sample_follow: o.sample_follow,
+        sample,
         on: o.on,
         wave: o.wave,
         noise: o.noise,
@@ -163,6 +245,19 @@ pub fn shape_specs(scene: &Scene, resolved: &Resolved) -> Vec<ShapeSpec> {
     out
 }
 
+/// Thing `id`'s spec alone, without the light probe (what a rule can reach of its voice; the
+/// editor's menu asks for it as it draws).
+pub(crate) fn spec_of(scene: &Scene, resolved: &Resolved, id: ThingId) -> Option<ShapeSpec> {
+    let settings =
+        resolved.things.get(&ThingId::ROOT).map(|r| SceneSettings::from_params(&r.params)).unwrap_or_default();
+    let thing = resolved.things.get(&id)?;
+    let card = thing.slots.get(&SlotId::Sound)?;
+    let shape = ShapeSettings::from_params(&thing.params);
+    let top = TempoMap::from_settings(&settings).top();
+    let b = Build { index: 0, width: settings.width as f32, shape: &shape, tempo_top: top, light: None };
+    spec_with(scene, id, card, &b, Tables::Skip, &mut false)
+}
+
 fn spec_with(
     scene: &Scene,
     id: ThingId,
@@ -208,6 +303,9 @@ fn spec_with(
     };
     let layout = knobs::layout_all(&ids, &chain_ids, &mod_ids);
     let base = knobs::values(&layout, &|key| card.params.get(key).cloned());
+    let mut knob_keys: Vec<(String, usize)> = layout.iter().map(|(key, _, i)| (key.clone(), *i)).collect();
+    knob_keys.sort();
+    knob_keys.dedup_by(|a, b| a.0 == b.0);
     let keyed = layout
         .iter()
         .filter_map(|(key, _, i)| {
@@ -230,14 +328,15 @@ fn spec_with(
         thing: id,
         index,
         osc: [
-            osc_spec(&v.a, v.a.on || chain.raw_needed[0], tables, pending),
-            osc_spec(&v.b, v.b.on || chain.raw_needed[1], tables, pending),
+            osc_spec(scene, &v.a, v.a.on || chain.raw_needed[0], tables, pending),
+            osc_spec(scene, &v.b, v.b.on || chain.raw_needed[1], tables, pending),
         ],
         envs,
         play_mode: v.play_mode,
         play_when: v.play_when,
         zone: zone_of(&v, &mods),
         heard_from: v.play_heard_from.clone(),
+        balls: scene.things.get(&id).and_then(|t| crate::voices::BallMoments::of_thing(&t.kind, &v)),
         slots: v.notes_slots.clone(),
         notes: NotesSpec::from_settings(
             &v,
@@ -251,6 +350,7 @@ fn spec_with(
         bus: v.out_bus.clamp(1, 3) as u8,
         base,
         keyed,
+        knob_keys,
         matrix,
         square: if [&v.a, &v.b]
             .iter()
@@ -376,6 +476,58 @@ fn chain_of(scene: &Scene, id: ThingId, card: &ResolvedSlot, heard: [bool; 2]) -
     (graph, chain)
 }
 
+/// The scene settings a patch reads (the tempo, the width the pans spread over, where the clip
+/// ends for the end fade).
+pub const PATCH_SCENE_KEYS: [&str; 6] = ["tempo", "time_top", "time_bottom", "first_beat", "width", "duration"];
+
+/// A hash of everything [`SoundPatch::build`] reads of the scene and nothing else, so the editor
+/// builds the patch again only when the sound could have changed (not on a colour drag). The
+/// hash is the process's own: never saved.
+pub fn patch_fingerprint(scene: &Scene, resolved: &Resolved) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut put = |what: &dyn std::fmt::Debug| format!("{what:?}").hash(&mut h);
+    let root = resolved.things.get(&ThingId::ROOT);
+    for key in PATCH_SCENE_KEYS {
+        put(&root.and_then(|r| r.params.get(key)));
+    }
+    put(&root.and_then(|r| r.slots.get(&SlotId::Mixer)));
+    put(&scene.card(ThingId::ROOT, SlotId::Mixer));
+    for id in &scene.order {
+        let Some(thing) = scene.things.get(id) else { continue };
+        let card = resolved.things.get(id).and_then(|r| r.slots.get(&SlotId::Sound));
+        let own = thing.slots.get(&SlotId::Sound);
+        // A test tone comes from a tag (the `test-tone` feature).
+        let tones = thing.tags.iter().any(|t| t.starts_with("test-"));
+        if card.is_none() && own.is_none() && !tones {
+            continue;
+        }
+        put(&(id, &thing.kind, thing.enabled, &thing.tags));
+        put(&card);
+        put(&own);
+        // By side reads the shape's outline.
+        if card.is_some_and(|c| matches!(c.params.get("notes_plays"), Some(Value::Choice(p)) if p == "by_side")) {
+            put(&resolved.things.get(id).map(|r| &r.params));
+        }
+    }
+    let sounds = |slot: Option<SlotId>| matches!(slot, Some(SlotId::Sound | SlotId::Mixer));
+    for (a, t) in scene.tracks.iter().filter(|(a, _)| sounds(a.slot)) {
+        put(&(a, t));
+    }
+    for (a, p) in scene.pulses.iter().filter(|(a, _)| sounds(a.slot)) {
+        put(&(a, p));
+    }
+    // Samples and the backing track are named by the settings above; the bytes under a name.
+    for (name, a) in &scene.audio {
+        put(&(name, a.bytes.len(), Arc::as_ptr(&a.bytes) as *const u8 as usize));
+    }
+    // Light modulators read the lights through the probe.
+    if bpe_kit::sensing::uses_light(scene) {
+        put(&(bpe_kit::sensing::has_lighting(scene), bpe_kit::sensing::fingerprint(scene)));
+    }
+    h.finish()
+}
+
 impl SoundPatch {
     /// The patch, its wavetables baked if need be.
     pub fn build(scene: &Scene, resolved: &Resolved, kit: &Kit) -> SoundPatch {
@@ -432,11 +584,58 @@ impl SoundPatch {
                 routes.push(ShapeRoute::main_only(bus));
             }
         }
-        SoundPatch { master, master_keys, tempo, voices, routes, buses, pending }
+        let backing = Backing::of(scene, &master, tables, &mut pending);
+        SoundPatch {
+            master,
+            master_keys,
+            tempo,
+            voices,
+            routes,
+            buses,
+            pending,
+            end: settings.duration as f64,
+            backing,
+        }
     }
 
     /// Whether anything in it makes sound.
     pub fn is_silent(&self) -> bool {
-        self.voices.is_empty()
+        self.voices.is_empty() && self.backing.is_none()
     }
+
+    /// The things whose hits it can hear, sorted: every voice's thing and every shape a bus
+    /// compressor keys on. The engine queues only their hits.
+    pub fn heard(&self) -> Vec<ThingId> {
+        let mut out: Vec<ThingId> = self.voices.iter().map(|v| v.thing()).chain(self.buses.hit_keys()).collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// How long a seek renders unheard before the point it lands on, in seconds, so every note
+    /// and effect tail that would still be ringing there is: the longest voice's note and the
+    /// buses' effects after it, plus a margin, from [`MIN_WARM_UP`] to [`MAX_WARM_UP`].
+    pub fn warm_up(&self) -> f64 {
+        let voices = self.voices.iter().map(|v| v.warm_up(&self.tempo)).fold(0.0, f64::max);
+        let held = self.voices.iter().any(|v| v.holds());
+        warm_up_of(voices, self.buses.tail(), held)
+    }
+}
+
+/// The least a seek warms up, in seconds.
+pub const MIN_WARM_UP: f64 = 0.5;
+/// The least for a sound that holds notes (a drone, or a gate held until the next hit), whose
+/// notes can have started any time before.
+pub const HELD_WARM_UP: f64 = 4.0;
+/// The most a seek warms up, however long the tails (a frozen reverb never ends).
+pub const MAX_WARM_UP: f64 = 30.0;
+/// Added to the longest tail.
+const WARM_UP_MARGIN: f64 = 0.25;
+
+/// The warm-up for voices whose longest note lasts `voices` seconds into buses ringing `buses`
+/// seconds after it; `held` when a voice holds notes.
+pub fn warm_up_of(voices: f64, buses: f64, held: bool) -> f64 {
+    let floor = if held { HELD_WARM_UP } else { MIN_WARM_UP };
+    let tail = voices + buses + WARM_UP_MARGIN;
+    if tail.is_nan() { MAX_WARM_UP } else { tail.clamp(floor, MAX_WARM_UP) }
 }

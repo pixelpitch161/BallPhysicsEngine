@@ -86,8 +86,10 @@ pub fn appear_times(s: &TextSettings, count: usize, world: &World, log: Option<&
                 return vec![Some(start); count];
             }
             let every = if s.every.is_finite() && s.every > 0.0 { s.every as f64 } else { 1.0 };
-            let first = (start / beat - 1e-9).ceil();
-            (0..count).map(|k| Some((first + k as f64 * every) * beat)).collect()
+            // On the beats, which count from the scene's first beat.
+            let from = world.first_beat;
+            let first = ((start - from) / beat - 1e-9).ceil();
+            (0..count).map(|k| Some(from + (first + k as f64 * every) * beat)).collect()
         }
         TimedBy::Hits => {
             let mut out = vec![None; count];

@@ -401,7 +401,7 @@ fn a_key_on_size_resizes_its_balls() {
     let (scene, id, kit) = scene_with(Vec2::ZERO, |_| {});
     let r = resolved(&scene, &kit);
     let mut world = World::build(&scene, &r, &kit.sims);
-    let mut later = r.things[&id].clone();
+    let mut later = (*r.things[&id]).clone();
     later.params.set("radius", bpe_core::Value::Number(12.0));
     EmitterSim.settings_changed(id, &later, &mut world);
     assert!(world.bodies[&id].radius.iter().all(|&r| r == 12.0));
@@ -423,10 +423,10 @@ fn marker_settings_dont_touch_the_physics() {
         "vary_colour",
         "leave_trails",
     ] {
-        assert!(!EmitterSim.affects_physics(key), "{key}");
+        assert!(!EmitterSim.key_restarts_physics(key), "{key}");
     }
     for key in ["speed", "count", "catches", "vary_size", "rounds"] {
-        assert!(EmitterSim.affects_physics(key), "{key}");
+        assert!(EmitterSim.key_restarts_physics(key), "{key}");
     }
 }
 

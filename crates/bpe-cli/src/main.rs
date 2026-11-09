@@ -21,7 +21,7 @@ Options:
   --ffmpeg PATH    ffmpeg executable (default: found automatically)
   --encoder NAME   auto (default), cpu, nvidia, amd or intel. auto uses the graphics card's
                    encoder when ffmpeg can, which is much faster, and the CPU otherwise
-  --stems          also save each bus and the master as 24-bit WAVs beside the video
+  --stems          also save each bus and the master as 32-bit float WAVs beside the video
   --midi           also save the notes the shapes played as a MIDI file beside the video
   --bake           bake the lighting (the cinema render), whatever the Lighting card says
   --live           draw the lighting as the editor does, whatever the Lighting card says";

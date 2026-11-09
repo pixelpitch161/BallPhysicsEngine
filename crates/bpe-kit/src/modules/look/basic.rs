@@ -2,10 +2,7 @@
 //! colour), a pattern inside each one, an outline, a halo and a flash where it hits. Other
 //! things wear the same look and read only its colours, its inside pattern and its glow.
 
-use std::f32::consts::FRAC_PI_2;
-
 use bpe_core::{Blend, Choice, Color, ModuleKind, SettingDef, Settings, SlotId};
-use bpe_gfx::{LookInstance, PaintGpu, blend_alpha};
 use glam::Vec2;
 
 use crate::paint::{InsideFrom, InsidePaint, Paint};
@@ -51,7 +48,7 @@ pub enum Style {
 }
 
 impl Style {
-    /// The style's number in styled.wgsl's `form.y`: 0 one even colour, 1 lit like a sphere.
+    /// The style's number: 0 one even colour, 1 lit like a sphere.
     pub fn code(self) -> f32 {
         match self {
             Self::Flat => 0.0,
@@ -299,70 +296,6 @@ pub(crate) fn shift_linear_hue(color: [f32; 4], turn: f32) -> [f32; 4] {
     [shifted[0], shifted[1], shifted[2], color[3]]
 }
 
-/// The colours one styled ball is painted with, in linear light: its fill, its outline, and
-/// what is painted inside it (row -1 for nothing).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct BallColours {
-    pub fill: [f32; 4],
-    pub outline: [f32; 4],
-    pub paint: PaintGpu,
-}
-
-impl BallColours {
-    /// `fill`, with the look's outline in its first colour and nothing painted inside.
-    pub fn plain(look: &BasicLook, fill: [f32; 4]) -> Self {
-        Self { fill, outline: look.outline_paint.colours.first().to_linear(), paint: PaintGpu::default() }
-    }
-}
-
-/// One styled ball at `time` seconds in `colours`: `code` is its thing code and `seed` its own
-/// number.
-#[allow(clippy::too_many_arguments)]
-pub fn instance(
-    look: &BasicLook,
-    colours: BallColours,
-    center: Vec2,
-    velocity: Vec2,
-    radius: f32,
-    time: f32,
-    code: f32,
-    seed: f32,
-) -> LookInstance {
-    let mut color = colours.fill;
-    if look.rainbow != 0.0 {
-        color = shift_linear_hue(color, look.rainbow * time);
-    }
-    let speed = velocity.length();
-    let heading = heading(velocity);
-    // Fast balls stretch along their path and thin out across it, keeping about the same area.
-    let amount = look.stretch.clamp(0.0, 1.0) * (speed / STRETCH_SPEED).min(1.5);
-    let along = 1.0 + amount;
-    let across = 1.0 / along.sqrt();
-    let turns = look.faces_motion();
-    let stretches = amount > 1e-4 || turns;
-    let dir = if stretches { heading } else { Vec2::X };
-    let mut angle = (look.turn + look.spin * time).to_radians();
-    if turns {
-        // Shapes point up at no turn; a quarter turn points them along the motion.
-        angle += FRAC_PI_2;
-    } else if stretches {
-        // Keep the shape and pattern still on screen while the quad lines up with the motion.
-        angle -= heading.to_angle();
-    }
-    LookInstance {
-        center: center.into(),
-        radius,
-        seed,
-        color: blend_alpha(color),
-        outline_color: blend_alpha(colours.outline),
-        form: [look.ball_shape.code(), look.style.code(), 0.0, look.roundness.clamp(0.0, 1.0)],
-        look: [look.outline.max(0.0), look.glow.max(0.0), look.opacity.clamp(0.0, 1.0), angle],
-        stretch: [dir.x, dir.y, along, across],
-        extent: [look.glow_size.max(0.05), code, 0.0, 0.0],
-        paint: colours.paint,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,55 +361,8 @@ mod tests {
     }
 
     #[test]
-    fn a_fast_ball_stretches_along_its_motion() {
-        let look = BasicLook { stretch: 1.0, ..BasicLook::default() };
-        let still = instance(&look, BallColours::plain(&look, [1.0; 4]), Vec2::ZERO, Vec2::ZERO, 20.0, 0.0, 3.0, 0.5);
-        assert_eq!(still.stretch, [1.0, 0.0, 1.0, 1.0]);
-        assert_eq!(still.extent, [0.8, 3.0, 0.0, 0.0]);
-        assert_eq!(still.seed, 0.5);
-        let fast = instance(
-            &look,
-            BallColours::plain(&look, [1.0; 4]),
-            Vec2::ZERO,
-            Vec2::new(0.0, STRETCH_SPEED),
-            20.0,
-            0.0,
-            3.0,
-            0.5,
-        );
-        assert_eq!(fast.stretch[..2], [0.0, 1.0]);
-        assert!((fast.stretch[2] - 2.0).abs() < 1e-6);
-        assert!((fast.stretch[3] - 1.0 / 2f32.sqrt()).abs() < 1e-6);
-        // The pattern stays still on screen: the quad turned a quarter turn, the pattern turns
-        // back.
-        assert!((fast.look[3] + FRAC_PI_2).abs() < 1e-6);
-        // Facing the motion points the shape's tip along the way it goes instead.
+    fn facing_and_turning_the_motion_turn_the_pattern_as_they_should() {
         let facing = BasicLook { face_motion: true, ball_shape: BallShape::Star, ..BasicLook::default() };
-        let faced = instance(
-            &facing,
-            BallColours::plain(&facing, [1.0; 4]),
-            Vec2::ZERO,
-            Vec2::new(0.0, 10.0),
-            20.0,
-            0.0,
-            3.0,
-            0.5,
-        );
-        assert_eq!(faced.stretch, [0.0, 1.0, 1.0, 1.0]);
-        assert!((faced.look[3] - FRAC_PI_2).abs() < 1e-6);
-        // A circle has no tip: a hidden Face motion turns nothing.
-        let circle = BasicLook { ball_shape: BallShape::Circle, ..facing.clone() };
-        let still = instance(
-            &circle,
-            BallColours::plain(&circle, [1.0; 4]),
-            Vec2::ZERO,
-            Vec2::new(0.0, 10.0),
-            20.0,
-            0.0,
-            3.0,
-            0.5,
-        );
-        assert_eq!((still.stretch, still.look[3]), ([1.0, 0.0, 1.0, 1.0], 0.0));
         // Facing the motion turns the shape, not the pattern inside: the paint turns back.
         let down = Vec2::new(0.0, 10.0);
         assert!((facing.inside_turn_on_shape(down) + 180.0).abs() < 1e-4);
@@ -486,8 +372,6 @@ mod tests {
         turning.inside.turns = true;
         assert!((turning.inside_turn(down, 0.0) - 180.0).abs() < 1e-4);
         assert!((turning.inside_turn_on_shape(down) - 180.0).abs() < 1e-4);
-        let shape = instance(&turning, BallColours::plain(&turning, [1.0; 4]), Vec2::ZERO, down, 20.0, 0.0, 3.0, 0.5);
-        assert_eq!((shape.stretch, shape.look[3]), ([1.0, 0.0, 1.0, 1.0], 0.0), "the shape stays put");
         let both = BasicLook { face_motion: true, ball_shape: BallShape::Star, ..turning };
         assert!(both.inside_turn_on_shape(down).abs() < 1e-4, "the pattern turns with the shape");
         assert_eq!(BasicLook { turn: 30.0, spin: 10.0, ..BasicLook::default() }.inside_turn(Vec2::X, 2.0), 50.0);
@@ -514,31 +398,8 @@ mod tests {
     }
 
     #[test]
-    fn the_rainbow_turns_the_colours_with_time_and_shapes_keep_their_codes() {
-        let look = BasicLook { rainbow: 0.5, ball_shape: BallShape::Star, style: Style::Shiny, ..BasicLook::default() };
-        let red = Color::rgb(255, 0, 0).to_linear();
-        let at0 = instance(&look, BallColours::plain(&look, red), Vec2::ZERO, Vec2::ZERO, 20.0, 0.0, 3.0, 0.0);
-        let at1 = instance(&look, BallColours::plain(&look, red), Vec2::ZERO, Vec2::ZERO, 20.0, 1.0, 3.0, 0.0);
-        assert_eq!(at0.color, red);
-        // Half a turn around the wheel from red is cyan.
-        assert_eq!(Color::from_linear(at1.color), Color::rgb(0, 255, 255));
-        assert_eq!(at0.form[..2], [5.0, 1.0]);
-        for (style, code) in [(Style::Flat, 0.0), (Style::Shiny, 1.0)] {
-            let l = BasicLook { style, ..look.clone() };
-            let i = instance(&l, BallColours::plain(&l, red), Vec2::ZERO, Vec2::ZERO, 20.0, 0.0, 3.0, 0.0);
-            assert_eq!(i.form[1], code, "{style:?}");
-        }
-        // An additive colour keeps its mark.
-        let add = instance(
-            &BasicLook::default(),
-            BallColours::plain(&BasicLook::default(), [1.0, 0.0, 0.0, 0.0]),
-            Vec2::ZERO,
-            Vec2::ZERO,
-            20.0,
-            0.0,
-            3.0,
-            0.0,
-        );
-        assert_eq!(add.color[3], -1.0);
+    fn shapes_and_styles_keep_their_codes() {
+        assert_eq!(BallShape::Star.code(), 5.0);
+        assert_eq!((Style::Flat.code(), Style::Shiny.code()), (0.0, 1.0));
     }
 }

@@ -50,6 +50,11 @@ struct Uniform {
     /// Glass and light part 3: 1 when glass bends lamp light (the photon pass runs); part 4b: how
     /// many entries `dichroic` has; two spare.
     bent: [f32; 4],
+    /// Review S19: the light tiles ([`LightTiles::uniform`]): tiles per unit of uv across and
+    /// down, how many across and down (0: no lists).
+    tiles: [f32; 4],
+    /// Where the tiles' heads start in the links buffer; three spare.
+    tile_list: [f32; 4],
     /// Which surface indices are glass that bends lamp light ([`bent_light::bend_bits`]).
     bends: [[u32; 4]; 16],
     /// Glass and light part 4b: the surfaces that are dichroic, [index, Dichroic, shift, hue]
@@ -59,6 +64,250 @@ struct Uniform {
 
 /// The most dichroic surfaces the shadows tint by (glass and light part 4b).
 pub const MOST_DICHROIC: usize = 16;
+
+/// Bind groups kept between frames (review S24): [`Lighting::run`] binds the same buffers and
+/// pictures frame after frame, so each group is made once and found again by what it binds. Each
+/// frame starts by dropping the groups the last frame didn't use ([`BindCache::sweep`]: a buffer
+/// that grew is a new buffer, and the groups binding the old one would keep it alive); also emptied
+/// when the pictures are made again and when it holds [`MOST_KEPT_BINDS`].
+#[derive(Default)]
+struct BindCache {
+    /// Each group and whether it was used since the last sweep.
+    groups: std::sync::Mutex<std::collections::HashMap<BindKey, (wgpu::BindGroup, bool)>>,
+    /// How many groups it has made (for tests).
+    made: std::sync::atomic::AtomicUsize,
+}
+
+const MOST_KEPT_BINDS: usize = 256;
+
+/// What a bind group binds: its layout and each entry's binding and resource.
+#[derive(PartialEq, Eq, Hash)]
+struct BindKey {
+    layout: wgpu::BindGroupLayout,
+    entries: Vec<(u32, Bound)>,
+}
+
+#[derive(PartialEq, Eq, Hash)]
+enum Bound {
+    Buffer(wgpu::Buffer, u64, Option<u64>),
+    View(wgpu::TextureView),
+    Sampler(wgpu::Sampler),
+    /// Anything else (arrays): never kept.
+    Other,
+}
+
+impl BindCache {
+    /// The bind group `desc` describes, made the first time.
+    fn get(&self, device: &wgpu::Device, desc: &wgpu::BindGroupDescriptor) -> wgpu::BindGroup {
+        let entries: Vec<(u32, Bound)> = desc
+            .entries
+            .iter()
+            .map(|e| {
+                let bound = match &e.resource {
+                    wgpu::BindingResource::Buffer(b) => {
+                        Bound::Buffer(b.buffer.clone(), b.offset, b.size.map(std::num::NonZeroU64::get))
+                    }
+                    wgpu::BindingResource::TextureView(v) => Bound::View((*v).clone()),
+                    wgpu::BindingResource::Sampler(s) => Bound::Sampler((*s).clone()),
+                    _ => Bound::Other,
+                };
+                (e.binding, bound)
+            })
+            .collect();
+        if entries.iter().any(|(_, b)| *b == Bound::Other) {
+            return device.create_bind_group(desc);
+        }
+        let key = BindKey { layout: desc.layout.clone(), entries };
+        let mut groups = self.groups.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((g, used)) = groups.get_mut(&key) {
+            *used = true;
+            return g.clone();
+        }
+        if groups.len() >= MOST_KEPT_BINDS {
+            groups.clear();
+        }
+        let g = device.create_bind_group(desc);
+        self.made.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        groups.insert(key, (g.clone(), true));
+        g
+    }
+
+    /// Drops the groups not used since the last sweep (and what only they kept alive).
+    fn sweep(&self) {
+        let mut groups = self.groups.lock().unwrap_or_else(|e| e.into_inner());
+        groups.retain(|_, (_, used)| std::mem::replace(used, false));
+    }
+
+    fn clear(&self) {
+        self.groups.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+
+    fn made(&self) -> usize {
+        self.made.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// The side of a light tile in the lighting's pixels (review S19).
+pub const LIGHT_TILE: u32 = 32;
+/// Fewer lights than this are all taken by every pixel: a list per tile isn't worth it.
+pub const TILED_FROM: usize = 8;
+/// The most light-tile entries a frame lists (past it every pixel takes every light again).
+const MOST_TILE_ENTRIES: usize = 1 << 22;
+/// How far past a light's reach (pixels) its tiles reach: the GPU finds a point's tile in f32.
+const TILE_MARGIN: f32 = 2.0;
+
+/// Which lights may reach each tile of the picture (review S19): every pixel in a tile then walks
+/// only its tile's list, in light order, so the light it sums is exactly as before. Appended to
+/// the links buffer after the Lights up links, as f32 (exact up to 2^24): a head per tile (where
+/// its list starts, how long it is), then the lists.
+#[derive(Debug, Default, PartialEq)]
+pub struct LightTiles {
+    /// Tiles across and down (0 when there are none).
+    pub across: u32,
+    pub down: u32,
+    /// The heads, then the lists, each index counted from the start of the links buffer, which
+    /// holds `links` entries before them.
+    pub entries: Vec<f32>,
+    /// The pictures' size over a tile's: tiles per unit of uv.
+    pub scale: [f32; 2],
+}
+
+impl LightTiles {
+    /// The lists for `lights` (and their strip `segments`) seen through `camera` (centre xy, zoom,
+    /// turn) on a picture `size` pixels big that shows `frame` world units (across, down) at zoom 1;
+    /// `links` entries come before them in the buffer. None (every pixel takes every light) with
+    /// fewer than [`TILED_FROM`] lights or too many entries.
+    pub fn build(
+        lights: &[LightGpu],
+        segments: &[[f32; 4]],
+        camera: [f32; 4],
+        size: (u32, u32),
+        frame: (f32, f32),
+        links: usize,
+    ) -> Option<LightTiles> {
+        if lights.len() < TILED_FROM || size.0 == 0 || size.1 == 0 || !(frame.0 > 0.0 && frame.1 > 0.0) {
+            return None;
+        }
+        let across = size.0.div_ceil(LIGHT_TILE);
+        let down = size.1.div_ceil(LIGHT_TILE);
+        let tiles = (across * down) as usize;
+        // Pixels a world unit across and down (the zoom included; `world_to_uv` in lighting.wgsl) and
+        // the picture's middle, in pixels. A radius takes the larger.
+        let scale = [size.0 as f32 / frame.0 * camera[2], size.1 as f32 / frame.1 * camera[2]];
+        let most = scale[0].abs().max(scale[1].abs());
+        let half = [size.0 as f32 * 0.5, size.1 as f32 * 0.5];
+        let (sin, cos) = (-camera[3]).sin_cos();
+        let to_pixel = |p: [f32; 2]| {
+            let d = [p[0] - camera[0], p[1] - camera[1]];
+            let d = if camera[3] != 0.0 { [d[0] * cos - d[1] * sin, d[0] * sin + d[1] * cos] } else { d };
+            [d[0] * scale[0] + half[0], d[1] * scale[1] + half[1]]
+        };
+        let tile = LIGHT_TILE as f32;
+        let mut lists: Vec<Vec<u32>> = vec![Vec::new(); tiles];
+        for (i, l) in lights.iter().enumerate() {
+            let kind = l.p0[3];
+            let i = i as u32;
+            if kind > 1.5 && kind < 2.5 {
+                // A sun reaches everywhere.
+                for list in &mut lists {
+                    list.push(i);
+                }
+                continue;
+            }
+            let reach = l.p2[0];
+            if reach.is_nan() || reach <= 0.0 {
+                // No reach: it lights nothing (`falloff`).
+                continue;
+            }
+            // Circles (world centre, radius) that hold every point it can light.
+            let mut circles: Vec<([f32; 2], f32)> = Vec::new();
+            let at = [l.p0[0], l.p0[1]];
+            if kind > 2.5 && kind < 3.5 {
+                let (w, h) = (0.5 * l.p4[0].max(0.0), 0.5 * l.p4[1].max(0.0));
+                circles.push((at, reach + (w * w + h * h).sqrt()));
+            } else if kind > 3.5 && l.p4[3] >= 1.0 {
+                let first = l.p4[2].max(0.0) as usize;
+                let n = l.p4[3] as usize;
+                if first.saturating_add(n) > segments.len() {
+                    // Its segments aren't all there: the shader reads stand-ins, so every tile.
+                    for list in &mut lists {
+                        list.push(i);
+                    }
+                    continue;
+                }
+                for s in segments.iter().skip(first).take(n) {
+                    let mid = [(s[0] + s[2]) * 0.5, (s[1] + s[3]) * 0.5];
+                    let half_len = 0.5 * ((s[2] - s[0]).powi(2) + (s[3] - s[1]).powi(2)).sqrt();
+                    circles.push((mid, reach + half_len));
+                }
+                if circles.is_empty() {
+                    circles.push((at, reach));
+                }
+            } else {
+                circles.push((at, reach));
+            }
+            for (centre, radius) in circles {
+                let c = to_pixel(centre);
+                let r = radius * most + TILE_MARGIN;
+                if !(c[0].is_finite() && c[1].is_finite() && r.is_finite()) {
+                    // Anything odd: listed everywhere, as before the lists.
+                    for list in &mut lists {
+                        if list.last() != Some(&i) {
+                            list.push(i);
+                        }
+                    }
+                    continue;
+                }
+                let x0 = ((c[0] - r) / tile).floor().max(0.0);
+                let y0 = ((c[1] - r) / tile).floor().max(0.0);
+                let x1 = ((c[0] + r) / tile).floor().min(across as f32 - 1.0);
+                let y1 = ((c[1] + r) / tile).floor().min(down as f32 - 1.0);
+                if x1 < x0 || y1 < y0 {
+                    continue;
+                }
+                for ty in y0 as u32..=y1 as u32 {
+                    for tx in x0 as u32..=x1 as u32 {
+                        // The nearest point of the tile to the circle's middle.
+                        let nx = c[0].clamp(tx as f32 * tile, (tx + 1) as f32 * tile);
+                        let ny = c[1].clamp(ty as f32 * tile, (ty + 1) as f32 * tile);
+                        if (nx - c[0]).powi(2) + (ny - c[1]).powi(2) > r * r {
+                            continue;
+                        }
+                        let list = &mut lists[(ty * across + tx) as usize];
+                        // A strip's circles overlap: each light once a tile.
+                        if list.last() != Some(&i) {
+                            list.push(i);
+                        }
+                    }
+                }
+            }
+        }
+        let listed: usize = lists.iter().map(Vec::len).sum();
+        if 2 * tiles + listed > MOST_TILE_ENTRIES {
+            return None;
+        }
+        let mut entries = Vec::with_capacity(2 * tiles + listed);
+        let mut start = links + 2 * tiles;
+        for list in &lists {
+            entries.push(start as f32);
+            entries.push(list.len() as f32);
+            start += list.len();
+        }
+        for list in &lists {
+            entries.extend(list.iter().map(|&i| i as f32));
+        }
+        let scale = [size.0 as f32 / tile, size.1 as f32 / tile];
+        Some(LightTiles { across, down, entries, scale })
+    }
+
+    /// The uniform's `tiles` and `tile_list` for `links` entries before the heads.
+    fn uniform(tiles: Option<&LightTiles>, links: usize) -> ([f32; 4], [f32; 4]) {
+        match tiles {
+            Some(t) => ([t.scale[0], t.scale[1], t.across as f32, t.down as f32], [links as f32, 0.0, 0.0, 0.0]),
+            None => ([0.0; 4], [0.0; 4]),
+        }
+    }
+}
 
 /// The first [`MOST_DICHROIC`] dichroic surfaces of `surfaces` as `[index, Dichroic, shift, hue]`,
 /// and how many.
@@ -332,6 +581,8 @@ const EXTRAS_BINDINGS: &[u32] = &[2, 6, 7, 8, 9, 14];
 /// The longest gap between two frames over which the remembered light carries on; a longer jump
 /// (or one back) starts it again from nothing.
 const MOST_MEMORY_STEP: f32 = 0.5;
+/// Depth of field's small copy is this many times smaller each way (`DOF_SMALL` in lighting.wgsl).
+const DOF_SMALL: u32 = 4;
 
 /// Glow in the dark's memory between frames.
 #[derive(Default)]
@@ -378,6 +629,15 @@ pub fn quality_tier(quality: f32) -> (u32, u32) {
     }
 }
 
+/// How many output pixels a lighting field texel covers each way, for a Quality whose field is `tier` times
+/// smaller than the video (`quality_tier`), drawn `width` pixels wide of a video `video_width` wide: a smaller
+/// picture (the editor's preview) gets a finer field, so a field texel covers as much of the scene as in the video
+/// and the preview's shadows look like the video's (or finer, rounding down), never coarser than the Quality says.
+pub fn field_divisor(tier: u32, width: u32, video_width: u32) -> u32 {
+    let scaled = (tier as f32 * width as f32 / video_width.max(1) as f32 + 1e-4).floor() as u32;
+    scaled.clamp(1, tier.max(1))
+}
+
 /// The pictures lighting draws into and reads, made the first time a frame is lit and remade
 /// when the size or the Quality changes.
 struct Targets {
@@ -414,15 +674,18 @@ struct Targets {
     stage: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// A second such picture when depth of field follows the floor (part 2b).
     stage_more: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// Depth of field's quarter-size copy of the picture it blurs (made when first needed).
+    dof_small: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// The picture without what is see-through, drawn when glass bends what is behind it.
     behind: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// The background's own light alone, copied before the lamps' light is added over it.
     bg_glow: Option<(wgpu::Texture, wgpu::TextureView)>,
     dummy_colour: (wgpu::Texture, wgpu::TextureView),
     /// Part 4: what glows under UV (light pass 5) and the tags (pass 6: what catches beams, link
-    /// numbers), full size.
-    uv: (wgpu::Texture, wgpu::TextureView),
-    tags: (wgpu::Texture, wgpu::TextureView),
+    /// numbers), full size; made only while a frame draws them ([`Lighting::keep_uv_and_tags`],
+    /// review S24).
+    uv: Option<(wgpu::Texture, wgpu::TextureView)>,
+    tags: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// Glass and light part 1: the tint picture (light pass 8, how deep each see-through thing's
     /// colour is), full size, made the first time it is drawn.
     tint: Option<(wgpu::Texture, wgpu::TextureView)>,
@@ -468,6 +731,8 @@ pub(crate) struct Lighting {
     floor: wgpu::RenderPipeline,
     /// Depth of field (Stage, part 2b).
     dof: wgpu::RenderPipeline,
+    /// The quarter-size box-filtered copy depth of field reads its wide blurs from.
+    dof_small: wgpu::RenderPipeline,
     /// Mirror walls (part 2b).
     mirror: wgpu::RenderPipeline,
     /// The bake's bounce light in Stage, its clean-up and the pass adding it (part 3).
@@ -520,8 +785,14 @@ pub(crate) struct Lighting {
     stirs: GrowableBuffer,
     targets: Option<Targets>,
     memory: Memory,
+    /// The bind groups [`Lighting::run`] makes, kept between frames (review S24).
+    binds: BindCache,
+    /// Whether pixels take only their tile's lights (review S19; off only to check the lists).
+    pub(crate) tiles_on: bool,
     /// The last run's bind groups 0 and 2, for the Stage camera pass (lighting part 5).
     bound: Option<[wgpu::BindGroup; 2]>,
+    /// The Stage camera's pipelines, from the kit this pass was made with.
+    stage: crate::stage_camera_pass::StageKit,
 }
 
 fn texture(
@@ -597,10 +868,67 @@ impl<'a> GlowInputs<'a> {
     }
 }
 
-impl Lighting {
-    pub fn new(device: &wgpu::Device) -> Self {
+/// The lighting's pipelines, their bind group layouts and sampler, and the Stage camera's
+/// ([`crate::stage_camera_pass::StageKit`]): everything a lighting pass draws with that isn't a
+/// picture or a buffer of its own. Building one compiles the lighting shaders, which takes a
+/// moment, so it is built once for a device and shared (see [`crate::ProgramStore`]); in the
+/// editor on a background thread.
+#[derive(Clone)]
+pub(crate) struct LightKit {
+    layout: wgpu::BindGroupLayout,
+    glow_layout: wgpu::BindGroupLayout,
+    direct_layout: wgpu::BindGroupLayout,
+    mix_layout: wgpu::BindGroupLayout,
+    extras_layout: wgpu::BindGroupLayout,
+    stir_layout: wgpu::BindGroupLayout,
+    seed: wgpu::RenderPipeline,
+    jump: wgpu::RenderPipeline,
+    field: wgpu::RenderPipeline,
+    direct: wgpu::RenderPipeline,
+    gi_scene: wgpu::RenderPipeline,
+    seed_gi: wgpu::RenderPipeline,
+    gi_dist: wgpu::RenderPipeline,
+    cascade: wgpu::RenderPipeline,
+    resolve: wgpu::RenderPipeline,
+    glow_source: wgpu::RenderPipeline,
+    glow_down: wgpu::RenderPipeline,
+    mix: wgpu::RenderPipeline,
+    extras: wgpu::RenderPipeline,
+    stir: wgpu::RenderPipeline,
+    floor: wgpu::RenderPipeline,
+    dof: wgpu::RenderPipeline,
+    dof_small: wgpu::RenderPipeline,
+    mirror: wgpu::RenderPipeline,
+    trace: wgpu::RenderPipeline,
+    denoise: wgpu::RenderPipeline,
+    trace_add: wgpu::RenderPipeline,
+    caustic: wgpu::RenderPipeline,
+    caustic_layout: wgpu::BindGroupLayout,
+    ribbon: wgpu::RenderPipeline,
+    ribbon_layout: wgpu::BindGroupLayout,
+    empty_group: wgpu::BindGroup,
+    bent: wgpu::ComputePipeline,
+    bent_splat: wgpu::RenderPipeline,
+    bent_layout: wgpu::BindGroupLayout,
+    bent_draw_layout: wgpu::BindGroupLayout,
+    free_glass: wgpu::RenderPipeline,
+    free_glass_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    stage_layout: wgpu::BindGroupLayout,
+    stage: crate::stage_camera_pass::StageKit,
+}
+
+impl LightKit {
+    /// Whether two kits are the same one, shared (tests).
+    #[cfg(test)]
+    pub(crate) fn same_as(&self, other: &LightKit) -> bool {
+        self.seed == other.seed && self.stage.seed == other.stage.seed
+    }
+
+    /// Compiles the lighting shaders and makes every pipeline.
+    pub(crate) fn build(device: &wgpu::Device) -> Self {
         // Glass and light part 3's photons share lighting.wgsl's bindings and helpers.
-        let source = [include_str!("shaders/lighting.wgsl"), include_str!("shaders/bent_light.wgsl")].concat();
+        let source = [crate::LIGHTING_WGSL, include_str!("shaders/bent_light.wgsl")].concat();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("lighting shader"),
             source: wgpu::ShaderSource::Wgsl(source.into()),
@@ -982,9 +1310,6 @@ impl Lighting {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let uniforms = (0..=MOST_JUMPS)
-            .map(|_| uniform_buffer(device, "lighting uniform", std::mem::size_of::<Uniform>()))
-            .collect();
         let add = Some(wgpu::BlendState {
             color: wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::One,
@@ -1026,7 +1351,8 @@ impl Lighting {
             multiview_mask: None,
             cache: None,
         });
-        Self {
+        let stage = crate::stage_camera_pass::StageKit::build(device, &layout, &stage_layout);
+        LightKit {
             seed: make("light seed", "fs_seed", one, &[SEED_FORMAT], None),
             jump: make("light jump", "fs_jump", one, &[SEED_FORMAT], None),
             field: make("light field", "fs_field", one, &[BLOCKER_FIELD_FORMAT], None),
@@ -1043,6 +1369,7 @@ impl Lighting {
             stir,
             floor: make("glossy floor", "fs_floor", three, &[HDR_FORMAT], None),
             dof: make("depth of field", "fs_dof", three, &[HDR_FORMAT], None),
+            dof_small: make("depth of field copy", "fs_dof_small", three, &[HDR_FORMAT], None),
             mirror: make("mirror walls", "fs_mirror", three, &[HDR_FORMAT], None),
             trace: make("bounce light", "fs_trace", three, &[HDR_FORMAT], None),
             denoise: make("bounce clean-up", "fs_denoise", three, &[HDR_FORMAT], None),
@@ -1051,34 +1378,18 @@ impl Lighting {
             caustic_layout,
             ribbon,
             ribbon_layout,
-            ribbons: GrowableBuffer::storage("beam ribbons"),
             empty_group: device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("nothing"),
                 layout: &empty_layout,
                 entries: &[],
             }),
-            caustic_uniform: uniform_buffer(device, "caustics uniform", std::mem::size_of::<CausticUniform>()),
-            glass: GrowableBuffer::storage("caustic glass"),
             bent,
             bent_splat,
             bent_layout,
             bent_draw_layout,
-            bent_uniform: uniform_buffer(device, "bent light uniform", std::mem::size_of::<BentUniform>()),
-            bent_pairs: GrowableBuffer::storage("bent light pairs"),
-            legs: GrowableBuffer::storage("bent light legs"),
-            bent_count: 0,
             free_glass,
             free_glass_layout,
-            trace_uniforms: (0..4)
-                .map(|_| uniform_buffer(device, "bounce light uniform", std::mem::size_of::<Uniform>()))
-                .collect(),
-            stage_uniform: uniform_buffer(device, "lighting stage uniform", std::mem::size_of::<StageUniform>()),
             stage_layout,
-            surfaces: GrowableBuffer::storage("light surfaces"),
-            spheres: GrowableBuffer::storage("light spheres"),
-            cells: GrowableBuffer::storage("light sphere cells"),
-            items: GrowableBuffer::storage("light sphere items"),
-            mirrors: GrowableBuffer::storage("light mirrors"),
             layout,
             glow_layout,
             direct_layout,
@@ -1086,6 +1397,119 @@ impl Lighting {
             extras_layout,
             stir_layout,
             sampler,
+            stage,
+        }
+    }
+}
+
+impl Lighting {
+    /// A lighting pass drawing with `kit`'s pipelines (built once and shared by every renderer
+    /// on the device), with its own pictures and buffers.
+    pub fn with_kit(device: &wgpu::Device, kit: &LightKit) -> Self {
+        let LightKit {
+            layout,
+            glow_layout,
+            direct_layout,
+            mix_layout,
+            extras_layout,
+            stir_layout,
+            seed,
+            jump,
+            field,
+            direct,
+            gi_scene,
+            seed_gi,
+            gi_dist,
+            cascade,
+            resolve,
+            glow_source,
+            glow_down,
+            mix,
+            extras,
+            stir,
+            floor,
+            dof,
+            dof_small,
+            mirror,
+            trace,
+            denoise,
+            trace_add,
+            caustic,
+            caustic_layout,
+            ribbon,
+            ribbon_layout,
+            empty_group,
+            bent,
+            bent_splat,
+            bent_layout,
+            bent_draw_layout,
+            free_glass,
+            free_glass_layout,
+            sampler,
+            stage_layout,
+            stage,
+        } = kit.clone();
+        let uniforms = (0..=MOST_JUMPS)
+            .map(|_| uniform_buffer(device, "lighting uniform", std::mem::size_of::<Uniform>()))
+            .collect();
+        Self {
+            layout,
+            glow_layout,
+            direct_layout,
+            mix_layout,
+            extras_layout,
+            stir_layout,
+            seed,
+            jump,
+            field,
+            direct,
+            gi_scene,
+            seed_gi,
+            gi_dist,
+            cascade,
+            resolve,
+            glow_source,
+            glow_down,
+            mix,
+            extras,
+            stir,
+            floor,
+            dof,
+            dof_small,
+            mirror,
+            trace,
+            denoise,
+            trace_add,
+            caustic,
+            caustic_layout,
+            ribbon,
+            ribbon_layout,
+            empty_group,
+            bent,
+            bent_splat,
+            bent_layout,
+            bent_draw_layout,
+            free_glass,
+            free_glass_layout,
+            sampler,
+            stage_layout,
+            stage,
+            ribbons: GrowableBuffer::storage("beam ribbons"),
+            caustic_uniform: uniform_buffer(device, "caustics uniform", std::mem::size_of::<CausticUniform>()),
+            glass: GrowableBuffer::storage("caustic glass"),
+            bent_uniform: uniform_buffer(device, "bent light uniform", std::mem::size_of::<BentUniform>()),
+            bent_pairs: GrowableBuffer::storage("bent light pairs"),
+            legs: GrowableBuffer::storage("bent light legs"),
+            bent_count: 0,
+            trace_uniforms: (0..4)
+                .map(|_| uniform_buffer(device, "bounce light uniform", std::mem::size_of::<Uniform>()))
+                .collect(),
+            stage_uniform: uniform_buffer(device, "lighting stage uniform", std::mem::size_of::<StageUniform>()),
+            surfaces: GrowableBuffer::storage("light surfaces"),
+            spheres: GrowableBuffer::storage("light spheres"),
+            cells: GrowableBuffer::storage("light sphere cells"),
+            items: GrowableBuffer::storage("light sphere items"),
+            mirrors: GrowableBuffer::storage("light mirrors"),
             uniforms,
             glow_uniforms: Vec::new(),
             lights: GrowableBuffer::storage("lights"),
@@ -1094,8 +1518,15 @@ impl Lighting {
             stirs: GrowableBuffer::storage("haze stirs"),
             targets: None,
             memory: Memory::default(),
+            binds: BindCache::default(),
+            tiles_on: true,
             bound: None,
         }
+    }
+
+    /// The Stage camera's pipelines, from the kit.
+    pub(crate) fn stage_kit(&self) -> &crate::stage_camera_pass::StageKit {
+        &self.stage
     }
 
     /// How many photons the last lit frame sent through glass that bends light (0 when it sent
@@ -1104,22 +1535,16 @@ impl Lighting {
         self.bent_count
     }
 
-    /// The layouts of bind groups 0, 1 and 2 of the light passes (lighting part 5's camera pass
-    /// reads the same groups).
-    /// The light pass's bind group layouts 0 (its pictures) and 2 (the stage).
-    pub(crate) fn layouts(&self) -> [&wgpu::BindGroupLayout; 2] {
-        [&self.layout, &self.stage_layout]
-    }
-
     /// The last run's bind groups 0 and 2.
     pub(crate) fn bound(&self) -> Option<&[wgpu::BindGroup; 2]> {
         self.bound.as_ref()
     }
 
-    /// Makes the lighting pictures for a `width` × `height` output lit as `scene` asks, unless
-    /// they are there already.
-    pub fn ensure(&mut self, device: &wgpu::Device, width: u32, height: u32, scene: &LightScene) {
-        let (mut divisor, _) = quality_tier(scene.settings.more[2]);
+    /// Makes the lighting pictures for a `width` × `height` output of a scene `video_width` world units wide (the
+    /// frame's width) lit as `scene` asks, unless they are there already.
+    pub fn ensure(&mut self, device: &wgpu::Device, width: u32, height: u32, video_width: u32, scene: &LightScene) {
+        let (tier, _) = quality_tier(scene.settings.more[2]);
+        let mut divisor = field_divisor(tier, width, video_width);
         // The cascades are twice the (rounded up) field across: keep them within the device's limit.
         let most = device.limits().max_texture_dimension_2d;
         let padded = |divisor: u32| {
@@ -1184,8 +1609,8 @@ impl Lighting {
             glow: (glow, levels, all),
             dummy: texture(device, "light field stand-in", (1, 1), FIELD_FORMAT, false),
             dummy_colour: texture(device, "lighting stand-in", (1, 1), GI_FORMAT, false),
-            uv: texture(device, "glows under UV", full, HDR_FORMAT, true),
-            tags: texture(device, "light tags", full, HDR_FORMAT, true),
+            uv: None,
+            tags: None,
             tint: None,
             glass: None,
             extras: None,
@@ -1193,11 +1618,13 @@ impl Lighting {
             traced: None,
             stage: None,
             stage_more: None,
+            dof_small: None,
             behind: None,
             bg_glow: None,
         });
-        // New pictures: nothing is remembered.
+        // New pictures: nothing is remembered, and no group binds them yet.
         self.memory.last = None;
+        self.binds.clear();
     }
 
     /// The lit colour, surface and emission pictures (texture, view), made by
@@ -1215,11 +1642,29 @@ impl Lighting {
             1 => t.lit.clone(),
             2 => t.surface.clone(),
             3 => t.emission.clone(),
-            5 => t.uv.clone(),
+            5 => t.uv.clone()?,
             8 => t.tint.clone()?,
             9 => t.glass.as_ref()?[0].clone(),
-            _ => t.tags.clone(),
+            _ => t.tags.clone()?,
         })
+    }
+
+    /// Makes the UV picture (light pass 5) and the tags picture (pass 6) when this frame draws them,
+    /// and lets them go when it doesn't (review S24: two full-size pictures most scenes never use).
+    pub fn keep_uv_and_tags(&mut self, device: &wgpu::Device, uv: bool, tags: bool) {
+        let Some(t) = self.targets.as_mut() else { return };
+        let size = (t.width, t.height);
+        let changed = uv != t.uv.is_some() || tags != t.tags.is_some();
+        if uv != t.uv.is_some() {
+            t.uv = uv.then(|| texture(device, "glows under UV", size, HDR_FORMAT, true));
+        }
+        if tags != t.tags.is_some() {
+            t.tags = tags.then(|| texture(device, "light tags", size, HDR_FORMAT, true));
+        }
+        if changed {
+            // Groups binding a picture let go of would keep it.
+            self.binds.clear();
+        }
     }
 
     /// Makes the tint picture (light pass 8) the first time it is wanted.
@@ -1269,6 +1714,12 @@ impl Lighting {
             t.behind = Some(texture(device, "behind glass", (t.width, t.height), HDR_FORMAT, true));
         }
         t.behind.clone()
+    }
+
+    /// How many bind groups the lighting has made (review S24; a test checks a frame like the last
+    /// makes none).
+    pub(crate) fn binds_made(&self) -> usize {
+        self.binds.made()
     }
 
     /// The 1b uniform at `index`, made the first time.
@@ -1335,6 +1786,10 @@ impl Lighting {
         {
             t.stage_more = Some(texture(device, "lit stage", (t.width, t.height), HDR_FORMAT, false));
         }
+        if blurs && let Some(t) = self.targets.as_mut().filter(|t| t.dof_small.is_none()) {
+            let small = (t.width.div_ceil(DOF_SMALL), t.height.div_ceil(DOF_SMALL));
+            t.dof_small = Some(texture(device, "depth of field copy", small, HDR_FORMAT, false));
+        }
         if into_bg && let Some(t) = self.targets.as_mut().filter(|t| t.bg_glow.is_none()) {
             t.bg_glow = Some(texture(device, "background light", (t.width, t.height), HDR_FORMAT, true));
         }
@@ -1345,6 +1800,22 @@ impl Lighting {
         let pixel = frame.width as f32 / output_width.max(1) as f32;
         let world_pixel = if camera.zoom == 1.0 { pixel } else { pixel / camera.zoom };
         let (dichroic, dichroic_count) = dichroic_list(&scene.surfaces);
+        // Review S19: which lights each tile of the picture may take.
+        let links_len = scene.links.len().max(4);
+        let light_tiles = if !self.tiles_on {
+            None
+        } else {
+            let t = self.targets.as_ref().expect("checked");
+            LightTiles::build(
+                &scene.lights,
+                &scene.segments,
+                [camera.center.x, camera.center.y, camera.zoom, camera.turn],
+                (t.width, t.height),
+                (frame.width as f32, frame.height as f32),
+                links_len,
+            )
+        };
+        let (tiles, tile_list) = LightTiles::uniform(light_tiles.as_ref(), links_len);
         let base = Uniform {
             view: [2.0 / frame.width.max(1) as f32, 2.0 / frame.height.max(1) as f32, world_pixel, frame.time],
             camera: [camera.center.x, camera.center.y, camera.zoom, camera.turn],
@@ -1363,6 +1834,8 @@ impl Lighting {
             ],
             // Only glass that bends changes the direct light (mirrors add light, part 4a).
             bent: [if plan.bending() { 1.0 } else { 0.0 }, dichroic_count as f32, 0.0, 0.0],
+            tiles,
+            tile_list,
             bends: if plan.bending() { bent_light::bend_bits(&plan.benders) } else { [[0; 4]; 16] },
             dichroic,
         };
@@ -1392,8 +1865,13 @@ impl Lighting {
         self.lights.upload(device, queue, bytemuck::cast_slice(lights));
         let segments: &[[f32; 4]] = if scene.segments.is_empty() { &[[0.0; 4]] } else { &scene.segments };
         self.segments.upload(device, queue, bytemuck::cast_slice(segments));
-        let links: &[f32] = if scene.links.is_empty() { &[0.0; 4] } else { &scene.links };
-        self.links.upload(device, queue, bytemuck::cast_slice(links));
+        // The Lights up links (at least 4 entries), then the light tiles.
+        let mut links = scene.links.clone();
+        links.resize(links_len, 0.0);
+        if let Some(t) = &light_tiles {
+            links.extend_from_slice(&t.entries);
+        }
+        self.links.upload(device, queue, bytemuck::cast_slice(&links));
 
         // Part 4: the moving haze (stirred by the balls), the memory, the UV and tags pictures.
         let haze_moves = s.haze_moves();
@@ -1587,50 +2065,66 @@ impl Lighting {
         let t = self.targets.as_ref().expect("checked");
         let behind_view = t.behind.as_ref().filter(|_| has_behind).map_or(&t.dummy_colour.1, |b| &b.1);
         let bg_view = t.bg_glow.as_ref().filter(|_| into_bg).map_or(&t.dummy_colour.1, |b| &b.1);
-        let stage_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("lighting stage"),
-            layout: &self.stage_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.stage_uniform.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: buffer(&self.surfaces) },
-                wgpu::BindGroupEntry { binding: 2, resource: buffer(&self.spheres) },
-                wgpu::BindGroupEntry { binding: 3, resource: buffer(&self.cells) },
-                wgpu::BindGroupEntry { binding: 4, resource: buffer(&self.items) },
-                wgpu::BindGroupEntry { binding: 5, resource: buffer(&self.mirrors) },
-                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(behind_view) },
-            ],
-        });
-
-        let group_on = |uniform: &wgpu::Buffer,
-                        picture: &wgpu::TextureView,
-                        field: &wgpu::TextureView,
-                        seeds: &wgpu::TextureView| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("lighting"),
-                layout: &self.layout,
+        let binds = &self.binds;
+        binds.sweep();
+        let stage_group = binds.get(
+            device,
+            &wgpu::BindGroupDescriptor {
+                label: Some("lighting stage"),
+                layout: &self.stage_layout,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(picture) },
-                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&t.lit.1) },
-                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&t.surface.1) },
-                    wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(field) },
-                    wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-                    wgpu::BindGroupEntry {
-                        binding: 6,
-                        resource: self.lights.buffer.as_ref().expect("just uploaded").as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 7,
-                        resource: self.segments.buffer.as_ref().expect("just uploaded").as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(seeds) },
-                    wgpu::BindGroupEntry {
-                        binding: 9,
-                        resource: self.links.buffer.as_ref().expect("just uploaded").as_entire_binding(),
-                    },
+                    wgpu::BindGroupEntry { binding: 0, resource: self.stage_uniform.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: buffer(&self.surfaces) },
+                    wgpu::BindGroupEntry { binding: 2, resource: buffer(&self.spheres) },
+                    wgpu::BindGroupEntry { binding: 3, resource: buffer(&self.cells) },
+                    wgpu::BindGroupEntry { binding: 4, resource: buffer(&self.items) },
+                    wgpu::BindGroupEntry { binding: 5, resource: buffer(&self.mirrors) },
+                    wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(behind_view) },
                 ],
-            })
+            },
+        );
+
+        // `lit` is the lit share of the picture; depth of field, which never reads it, has its small
+        // copy there instead (a new binding would pass the 16 textures a pass may read).
+        let group_with = |uniform: &wgpu::Buffer,
+                          picture: &wgpu::TextureView,
+                          field: &wgpu::TextureView,
+                          seeds: &wgpu::TextureView,
+                          lit: &wgpu::TextureView| {
+            binds.get(
+                device,
+                &wgpu::BindGroupDescriptor {
+                    label: Some("lighting"),
+                    layout: &self.layout,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(picture) },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(lit) },
+                        wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&t.surface.1) },
+                        wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(field) },
+                        wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                        wgpu::BindGroupEntry {
+                            binding: 6,
+                            resource: self.lights.buffer.as_ref().expect("just uploaded").as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 7,
+                            resource: self.segments.buffer.as_ref().expect("just uploaded").as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(seeds) },
+                        wgpu::BindGroupEntry {
+                            binding: 9,
+                            resource: self.links.buffer.as_ref().expect("just uploaded").as_entire_binding(),
+                        },
+                    ],
+                },
+            )
         };
+        let group_on =
+            |uniform: &wgpu::Buffer,
+             picture: &wgpu::TextureView,
+             field: &wgpu::TextureView,
+             seeds: &wgpu::TextureView| { group_with(uniform, picture, field, seeds, &t.lit.1) };
         let group = |uniform: &wgpu::Buffer, field: &wgpu::TextureView, seeds: &wgpu::TextureView| {
             group_on(uniform, picture, field, seeds)
         };
@@ -1646,8 +2140,8 @@ impl Lighting {
             above: none,
             gi: [&t.gi[0].1, &t.gi[1].1, &t.gi[2].1],
             glow: &t.glow.2,
-            tags: if tags_on { &t.tags.1 } else { none },
-            uv: if uv_on { &t.uv.1 } else { none },
+            tags: t.tags.as_ref().filter(|_| tags_on).map_or(none, |p| &p.1),
+            uv: t.uv.as_ref().filter(|_| uv_on).map_or(none, |p| &p.1),
             extras: t.extras.as_ref().filter(|_| extras_on).map_or(none, |e| &e[memory_to].1),
             stir: t.stir.as_ref().filter(|_| stirring).map_or(none, |e| &e.1),
         };
@@ -1658,11 +2152,7 @@ impl Lighting {
                     binding: *b,
                     resource: wgpu::BindingResource::TextureView(i.at(*b)),
                 }));
-                device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("lighting 1b"),
-                    layout,
-                    entries: &entries,
-                })
+                binds.get(device, &wgpu::BindGroupDescriptor { label: Some("lighting 1b"), layout, entries: &entries })
             };
         let glow_group =
             |uniform: &wgpu::Buffer, i: &GlowInputs| group_in(&self.glow_layout, GLOW_BINDINGS, uniform, i);
@@ -1707,14 +2197,17 @@ impl Lighting {
                 under.0.as_image_copy(),
                 wgpu::Extent3d { width: t.width, height: t.height, depth_or_array_layers: 1 },
             );
-            let g = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("free glass"),
-                layout: &self.free_glass_layout,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&glass.1) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&under.1) },
-                ],
-            });
+            let g = binds.get(
+                device,
+                &wgpu::BindGroupDescriptor {
+                    label: Some("free glass"),
+                    layout: &self.free_glass_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&glass.1) },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&under.1) },
+                    ],
+                },
+            );
             pass(encoder, &[(&t.surface.1, clear)], &self.free_glass, &[&g], "free glass");
         }
         // The seed and field passes read the tint picture (glass and light part 1) in the picture's
@@ -1752,14 +2245,17 @@ impl Lighting {
             };
             queue.write_buffer(&self.caustic_uniform, 0, bytemuck::bytes_of(&cu));
             self.glass.upload(device, queue, bytemuck::cast_slice(&glass));
-            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("caustics"),
-                layout: &self.caustic_layout,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: self.caustic_uniform.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: buffer(&self.glass) },
-                ],
-            });
+            let group = binds.get(
+                device,
+                &wgpu::BindGroupDescriptor {
+                    label: Some("caustics"),
+                    layout: &self.caustic_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: self.caustic_uniform.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: buffer(&self.glass) },
+                    ],
+                },
+            );
             let load = if background_glows { wgpu::LoadOp::Load } else { clear };
             let mut p = crate::begin_pass(encoder, &t.direct.1, "caustics", load);
             p.set_pipeline(&self.caustic);
@@ -1787,15 +2283,18 @@ impl Lighting {
             self.bent_pairs.upload(device, queue, bytemuck::cast_slice(&pairs[..bent_run]));
             let leg_count = photons as u64 * BENT_LEGS as u64;
             self.legs.reserve(device, leg_count * std::mem::size_of::<Leg>() as u64);
-            let ways = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("bent light photons"),
-                layout: &self.bent_layout,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 4, resource: self.bent_uniform.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 5, resource: buffer(&self.bent_pairs) },
-                    wgpu::BindGroupEntry { binding: 6, resource: buffer(&self.legs) },
-                ],
-            });
+            let ways = binds.get(
+                device,
+                &wgpu::BindGroupDescriptor {
+                    label: Some("bent light photons"),
+                    layout: &self.bent_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 4, resource: self.bent_uniform.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 5, resource: buffer(&self.bent_pairs) },
+                        wgpu::BindGroupEntry { binding: 6, resource: buffer(&self.legs) },
+                    ],
+                },
+            );
             {
                 let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label: Some("bent light photons"),
@@ -1808,14 +2307,17 @@ impl Lighting {
                 cp.set_bind_group(3, &ways, &[]);
                 cp.dispatch_workgroups(photons.div_ceil(64), 1, 1);
             }
-            let splat = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("bent light splat"),
-                layout: &self.bent_draw_layout,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 4, resource: self.bent_uniform.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 7, resource: buffer(&self.legs) },
-                ],
-            });
+            let splat = binds.get(
+                device,
+                &wgpu::BindGroupDescriptor {
+                    label: Some("bent light splat"),
+                    layout: &self.bent_draw_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 4, resource: self.bent_uniform.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 7, resource: buffer(&self.legs) },
+                    ],
+                },
+            );
             let load = if background_glows || caustics_on { wgpu::LoadOp::Load } else { clear };
             let attachments = [(&t.direct.1, load), (&t.air.1, clear)].map(|(view, load)| {
                 Some(wgpu::RenderPassColorAttachment {
@@ -1910,17 +2412,20 @@ impl Lighting {
 
         // The balls stirring the haze, then the extras: the haze's density and the memory.
         if stirring && let Some(stir) = t.stir.as_ref() {
-            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("haze stir"),
-                layout: &self.stir_layout,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: self.uniforms[0].as_entire_binding() },
-                    wgpu::BindGroupEntry {
-                        binding: 12,
-                        resource: self.stirs.buffer.as_ref().expect("just uploaded").as_entire_binding(),
-                    },
-                ],
-            });
+            let group = binds.get(
+                device,
+                &wgpu::BindGroupDescriptor {
+                    label: Some("haze stir"),
+                    layout: &self.stir_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: self.uniforms[0].as_entire_binding() },
+                        wgpu::BindGroupEntry {
+                            binding: 12,
+                            resource: self.stirs.buffer.as_ref().expect("just uploaded").as_entire_binding(),
+                        },
+                    ],
+                },
+            );
             let mut p = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("haze stir"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1987,16 +2492,28 @@ impl Lighting {
                 Some(lit) => group_on(&self.uniforms[0], lit, &t.field.1, &t.seeds[from].1),
                 None => group(&self.uniforms[0], &t.field.1, &t.seeds[from].1),
             };
-            pass(encoder, &[(into, clear)], pipeline, &[&main_on, &g, &stage_group], label);
+            match (std::ptr::eq(pipeline, &self.dof), read, t.dof_small.as_ref()) {
+                (true, Some(lit), Some(small)) => {
+                    // Depth of field: first the small copy of what it blurs, then the blur reading it.
+                    let copy = "depth of field copy";
+                    pass(encoder, &[(&small.1, clear)], &self.dof_small, &[&main_on, &g, &stage_group], copy);
+                    let with_copy = group_with(&self.uniforms[0], lit, &t.field.1, &t.seeds[from].1, &small.1);
+                    pass(encoder, &[(into, clear)], pipeline, &[&with_copy, &g, &stage_group], label);
+                }
+                _ => pass(encoder, &[(into, clear)], pipeline, &[&main_on, &g, &stage_group], label),
+            }
             if i == 0 && !scene.ribbons.is_empty() {
                 // Light beams' bands, over the mixed light (so mirror walls, the floor and depth of
                 // field after it see them too).
                 self.ribbons.upload(device, queue, bytemuck::cast_slice(&scene.ribbons));
-                let ribbons = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("beam ribbons"),
-                    layout: &self.ribbon_layout,
-                    entries: &[wgpu::BindGroupEntry { binding: 2, resource: buffer(&self.ribbons) }],
-                });
+                let ribbons = binds.get(
+                    device,
+                    &wgpu::BindGroupDescriptor {
+                        label: Some("beam ribbons"),
+                        layout: &self.ribbon_layout,
+                        entries: &[wgpu::BindGroupEntry { binding: 2, resource: buffer(&self.ribbons) }],
+                    },
+                );
                 let mut p = crate::begin_pass(encoder, into, "beam ribbons", wgpu::LoadOp::Load);
                 p.set_pipeline(&self.ribbon);
                 p.set_bind_group(0, &main_on, &[]);
@@ -2017,6 +2534,25 @@ impl Lighting {
 mod grid_tests {
     use super::*;
 
+    #[test]
+    fn a_preview_gets_a_field_as_fine_as_the_video() {
+        // The video itself: the Quality's own divisor (Draft 4, Good 2, Ultra 1).
+        assert_eq!(field_divisor(4, 1080, 1080), 4);
+        assert_eq!(field_divisor(2, 1080, 1080), 2);
+        assert_eq!(field_divisor(1, 1080, 1080), 1);
+        // A half-size preview: half the divisor, so a texel covers the same part of the scene.
+        assert_eq!(field_divisor(4, 540, 1080), 2);
+        assert_eq!(field_divisor(2, 540, 1080), 1);
+        // Smaller still, or bigger than the video: never under 1, never coarser than the Quality.
+        assert_eq!(field_divisor(2, 270, 1080), 1);
+        assert_eq!(field_divisor(2, 2160, 1080), 2);
+        assert_eq!(field_divisor(4, 810, 1080), 3);
+        // In between, the finer: a texel never covers more of the scene than in the video.
+        assert_eq!(field_divisor(4, 700, 1080), 2);
+        assert_eq!(field_divisor(4, 405, 1080), 1);
+        assert_eq!(field_divisor(2, 1000, 1080), 1);
+    }
+
     fn ball(x: f32, y: f32, r: f32) -> SphereGpu {
         SphereGpu { a: [x, y, r, 0.0], b: [1.0; 4], c: [0.0; 4] }
     }
@@ -2024,7 +2560,7 @@ mod grid_tests {
     #[test]
     fn the_tint_pass_and_the_lighting_agree_on_thickness() {
         let tint = include_str!("shaders/tint.wgsl");
-        let lighting = include_str!("shaders/lighting.wgsl");
+        let lighting = crate::LIGHTING_WGSL;
         let value = |text: &str, name: &str| -> f32 {
             let line = text.lines().find(|l| l.starts_with(&format!("const {name}: f32 = "))).expect(name);
             line.split('=').nth(1).unwrap().trim().trim_end_matches(';').parse().unwrap()
@@ -2104,5 +2640,77 @@ mod grid_tests {
             }
         }
         assert!(nx <= 256 && ny <= 256);
+    }
+}
+
+#[cfg(test)]
+mod tile_tests {
+    use super::*;
+
+    fn point(x: f32, y: f32, reach: f32) -> LightGpu {
+        LightGpu { p0: [x, y, 50.0, 0.0], p2: [reach, 0.0, 0.0, 1.0], ..LightGpu::default() }
+    }
+
+    /// The lists of a 1080 x 1920 world seen whole on a 270 x 480 picture.
+    fn lists_of(lights: &[LightGpu], camera: [f32; 4]) -> (LightTiles, Vec<Vec<u32>>) {
+        let tiles = LightTiles::build(lights, &[], camera, (270, 480), (1080.0, 1920.0), 4).expect("tiled");
+        let n = (tiles.across * tiles.down) as usize;
+        let lists = (0..n)
+            .map(|t| {
+                let (start, len) = (tiles.entries[2 * t] as usize - 4, tiles.entries[2 * t + 1] as usize);
+                tiles.entries[start..start + len].iter().map(|&i| i as u32).collect()
+            })
+            .collect();
+        (tiles, lists)
+    }
+
+    #[test]
+    fn few_lights_are_not_tiled() {
+        let lights = vec![point(0.0, 0.0, 100.0); TILED_FROM - 1];
+        assert!(LightTiles::build(&lights, &[], [0.0, 0.0, 1.0, 0.0], (270, 480), (1080.0, 1920.0), 0).is_none());
+    }
+
+    #[test]
+    fn each_tile_lists_the_lights_that_reach_it_in_order() {
+        let mut lights: Vec<LightGpu> =
+            (0..TILED_FROM).map(|i| point(-400.0 + 100.0 * i as f32, -600.0, 60.0)).collect();
+        // A sun, a light with no reach, and one far off the picture.
+        lights.push(LightGpu { p0: [0.0, 0.0, 0.5, 2.0], ..LightGpu::default() });
+        lights.push(point(0.0, 0.0, 0.0));
+        lights.push(point(5000.0, 0.0, 100.0));
+        let sun = TILED_FROM as u32;
+        let (tiles, lists) = lists_of(&lights, [0.0, 0.0, 1.0, 0.0]);
+        assert_eq!((tiles.across, tiles.down), (270u32.div_ceil(LIGHT_TILE), 480u32.div_ceil(LIGHT_TILE)));
+        for (t, list) in lists.iter().enumerate() {
+            assert!(list.windows(2).all(|w| w[0] < w[1]), "tile {t}: {list:?}");
+            assert!(list.contains(&sun), "the sun is in every tile");
+            assert!(!list.contains(&(sun + 1)) && !list.contains(&(sun + 2)));
+        }
+        // The tile under each lamp lists it; one well away from all of them lists only the sun.
+        let tile_at = |x: f32, y: f32| {
+            let (px, py) = ((x / 1080.0 + 0.5) * 270.0, (y / 1920.0 + 0.5) * 480.0);
+            (py as u32 / LIGHT_TILE * tiles.across + px as u32 / LIGHT_TILE) as usize
+        };
+        for (i, l) in lights.iter().take(TILED_FROM).enumerate() {
+            assert!(lists[tile_at(l.p0[0], l.p0[1])].contains(&(i as u32)));
+        }
+        assert_eq!(lists[tile_at(0.0, 600.0)], vec![sun]);
+    }
+
+    #[test]
+    fn a_turned_and_zoomed_camera_moves_the_lists_with_it() {
+        let lights: Vec<LightGpu> = (0..TILED_FROM).map(|_| point(300.0, 0.0, 40.0)).collect();
+        // Turned a quarter, the lamp to the camera's right shows above or below the middle, not
+        // beside it; zoomed in twice, it is twice as far from the middle.
+        let (tiles, lists) = lists_of(&lights, [0.0, 0.0, 2.0, std::f32::consts::FRAC_PI_2]);
+        let lit: Vec<usize> = (0..lists.len()).filter(|&t| !lists[t].is_empty()).collect();
+        assert!(!lit.is_empty());
+        let middle_x = tiles.across as f32 * 0.5;
+        for t in lit {
+            let (tx, ty) = (t as u32 % tiles.across, t as u32 / tiles.across);
+            assert!((tx as f32 + 0.5 - middle_x).abs() < 2.0, "tile {tx},{ty} is beside the middle");
+            let dy = (ty as f32 + 0.5) * LIGHT_TILE as f32 - 240.0;
+            assert!((dy.abs() - 300.0 * 2.0 / 4.0).abs() < 2.0 * LIGHT_TILE as f32, "tile {tx},{ty}");
+        }
     }
 }

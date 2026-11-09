@@ -166,11 +166,24 @@ pub trait ThingSim: Send + Sync + 'static {
     fn keeps(&self, _scene: &bpe_core::Scene, _me: &Thing, _other: ThingId) -> bool {
         false
     }
-    /// For a thing stepped beside the physics: a hash of whatever else its stepping reads from its
-    /// settings beyond its own and its Motion and Bounce cards (a Particles thing's Look asking it
-    /// to keep each particle's trail), so a change of it rebuilds the playback it is stepped on.
-    /// 0 when nothing else is read.
-    fn more_fingerprint(&self, _resolved: &ResolvedThing) -> u64 {
+    /// Whether the thing puts heat into the scene's air (a Particles thing whose Rise heats it).
+    /// While some ball follows the air ([`crate::air_felt`]) such a thing steps with the physics,
+    /// as the heat moves the balls.
+    fn heats_air(&self, _resolved: &ResolvedThing) -> bool {
+        false
+    }
+    /// Whether the thing reads the scene's Air card in every world, as the balls that follow the
+    /// air do (the scene's haze moving With the air): the world then senses the Air card's keys,
+    /// and the physics fingerprint counts the card ([`crate::air::air_read`]).
+    fn reads_air(&self, _resolved: &ResolvedThing) -> bool {
+        false
+    }
+    /// What else of its settings restarts a thing stepped beside the physics? A hash of whatever
+    /// its stepping reads beyond its own settings and its Motion and Bounce cards (a Particles
+    /// thing's Look asking it to keep each particle's trail); 0 when nothing else is read. Feeds
+    /// [`crate::beside_fingerprint`] (and [`crate::fingerprint`] for a thing in the physics), so a
+    /// change of it rebuilds the playback the thing is stepped on.
+    fn beside_print_extra(&self, _resolved: &ResolvedThing) -> u64 {
         0
     }
     /// For a thing stepped beside the physics: whether the sound hears what it logs (a Particles
@@ -180,9 +193,9 @@ pub trait ThingSim: Send + Sync + 'static {
     fn heard(&self, _resolved: &ResolvedThing) -> Option<u64> {
         None
     }
-    /// Whether the thing reads its own Motion and Bounce cards (they have no module sims): when it
-    /// steps with the physics, the fingerprint then hashes them whole, layers and all.
-    fn own_cards(&self) -> bool {
+    /// Does the thing step its own Motion and Bounce cards (they have no module sims)? When it
+    /// steps with the physics, [`crate::fingerprint`] then hashes them whole, layers and all.
+    fn steps_own_cards(&self) -> bool {
         false
     }
     /// Whether the thing's pulses on hits move while the world runs. The physics' never do (the
@@ -190,32 +203,35 @@ pub trait ThingSim: Send + Sync + 'static {
     fn pulses_on_hits(&self) -> bool {
         false
     }
-    /// Whether changing this setting changes the simulation. Visual settings say no, so the
-    /// editor keeps playing through them.
-    fn affects_physics(&self, _key: &str) -> bool {
+    /// Does changing the thing's own setting `key` restart the physics? Feeds
+    /// [`crate::fingerprint`] (through [`ThingSim::key_restarts_physics_here`]). Visual settings
+    /// say no, so the editor keeps playing through them.
+    fn key_restarts_physics(&self, _key: &str) -> bool {
         true
     }
-    /// Whether changing this setting changes the things stepped beside the physics although it
-    /// isn't physics (the scene's tempo, which particles born on the beat read): the editor's
-    /// particle playback starts over when it changes ([`crate::beside_fingerprint`]).
-    fn affects_beside(&self, _key: &str) -> bool {
+    /// Does changing this thing's setting `key`, though it isn't physics, restart the things
+    /// stepped beside the physics (the scene's tempo, which particles born on the beat read)?
+    /// Feeds [`crate::beside_fingerprint`]: the editor's particle playback starts over.
+    fn key_restarts_beside(&self, _key: &str) -> bool {
         false
     }
-    /// For a thing stepped beside the physics: whether setting `key` of its card in `slot` (not
-    /// Motion or Bounce, which always count) changes how it steps, so the editor's particle
-    /// playback starts over when it changes (a Particles thing's Look Engine).
-    fn beside_card_key(&self, _slot: bpe_core::SlotId, _key: &str) -> bool {
+    /// Does changing setting `key` of its card in `slot` restart a thing stepped beside the
+    /// physics (Motion and Bounce always do)? A Particles thing's Look Engine does. Feeds
+    /// [`crate::beside_fingerprint`]: the editor's particle playback starts over.
+    fn card_key_restarts_beside(&self, _slot: bpe_core::SlotId, _key: &str) -> bool {
         false
     }
-    /// Whether setting `key` of this thing, where it sits in `scene`, changes the simulation: what
-    /// the physics animates and the fingerprint hashes. [`ThingSim::affects_physics`] unless the
-    /// thing's place says otherwise (a Text on the screen has no wall, so its words aren't physics).
-    fn affects_physics_in(&self, _scene: &bpe_core::Scene, _thing: &Thing, key: &str) -> bool {
-        self.affects_physics(key)
+    /// Does changing setting `key` of this thing, where it sits in `scene`, restart the physics?
+    /// What the physics animates and [`crate::fingerprint`] hashes; the timeline asks it too.
+    /// [`ThingSim::key_restarts_physics`] unless the thing's place says otherwise (a Text on the
+    /// screen has no wall, so its words aren't physics).
+    fn key_restarts_physics_here(&self, _scene: &bpe_core::Scene, _thing: &Thing, key: &str) -> bool {
+        self.key_restarts_physics(key)
     }
-    /// What else of the saved scene changes this thing's physics, beyond its settings: hashed into
-    /// the physics fingerprint when not 0 (a Text's Stuck to the screen, the font it bounces in).
-    fn fingerprint_more(&self, _scene: &bpe_core::Scene, _thing: &Thing, _resolved: &ResolvedThing) -> u64 {
+    /// What else of the saved scene restarts this thing's physics, beyond its settings? A hash,
+    /// put into [`crate::fingerprint`] (and [`crate::beside_fingerprint`] for a thing stepped
+    /// beside the physics) when not 0: a Text's Stuck to the screen, the font it bounces in.
+    fn physics_print_extra(&self, _scene: &bpe_core::Scene, _thing: &Thing, _resolved: &ResolvedThing) -> u64 {
         0
     }
 
@@ -237,10 +253,10 @@ pub trait ThingSim: Send + Sync + 'static {
     fn ball_spread(&self, _thing: ThingId, _world: &World, _row: usize) -> Option<bpe_core::BallSpread> {
         None
     }
-    /// Whether the thing needs the scene's physics fingerprint while it runs
-    /// ([`World::fingerprint`]): a thing that caches work it can do again by it. Worked out once,
-    /// in [`World::build`], only when some thing asks.
-    fn needs_fingerprint(&self, _resolved: &ResolvedThing) -> bool {
+    /// Does the thing need the scene's physics fingerprint while it runs ([`World::fingerprint`])?
+    /// A thing that caches work it can do again by it says yes. Worked out once, in
+    /// [`World::build`], only when some thing asks.
+    fn needs_physics_print(&self, _resolved: &ResolvedThing) -> bool {
         false
     }
     /// A rule adds `ball` to the thing (Split, Spawn balls): its body row is pushed and whatever
@@ -295,6 +311,17 @@ pub trait ModuleSim: Send + Sync + 'static {
     /// How this Motion card's balls are drawn to the lights or pushed from them (Moths and light
     /// pressure); `None` when they aren't. Read from each ball's own state when it varies.
     fn light_pull(&self, _state: &dyn ThingState) -> Option<crate::LightPull> {
+        None
+    }
+    /// How quickly this Motion card's balls take on the air's speed where they are, per second
+    /// (Follow the air); 0 when they don't follow it. Read from each ball's own state when it
+    /// varies.
+    fn air_grip(&self, _state: &dyn ThingState) -> f32 {
+        0.0
+    }
+    /// The card's setting that makes its balls follow the air ([`crate::air_felt`] reads it from
+    /// the saved scene); `None` for a module that never does.
+    fn air_key(&self) -> Option<&'static str> {
         None
     }
     /// The steady pull, in pixels per second squared, this Motion module puts on its balls
@@ -389,6 +416,8 @@ pub struct Sims {
     pub sound: Option<std::sync::Arc<dyn crate::SoundMaker>>,
     /// Works out a scene's light for physics that follows it (none: it stays put).
     pub light: Option<std::sync::Arc<dyn crate::LightMaker>>,
+    /// The scene's air, for balls that follow it (none: they feel no air).
+    pub air: Option<std::sync::Arc<dyn crate::AirSim>>,
 }
 
 impl Sims {

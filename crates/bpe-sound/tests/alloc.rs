@@ -2,7 +2,8 @@
 //! sees every thread.
 
 use bpe_core::{Settings, SlotId};
-use bpe_kit::sound::{SubWave, VoiceSettings, starter_voice};
+use bpe_kit::sound::{LIGHT_MOD, SubWave, VoiceSettings, add_modulator, starter_voice};
+use bpe_kit::things::light::{LightSettings, LightType, add_light};
 use bpe_kit::{kit, new_scene, resolve_scene};
 use bpe_sound::{BLOCK, Engine};
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -244,4 +245,138 @@ fn render_does_not_allocate() {
         heard |= block.iter().any(|&v| v != 0.0);
     }
     assert!(heard, "the buses were heard while counting");
+
+    // Rules changing a knob, a bus fader, a bus effect's number and the Master as it plays,
+    // gliding there over three seconds (W13): folded in each block without allocating.
+    let rule = scene.add_rule("Changes");
+    let when = scene.add_block(reg, rule, "when.time", None).unwrap();
+    scene.set_block_param(reg, rule, when, "at", bpe_core::Value::Number(0.5)).unwrap();
+    let mut last = when;
+    for (thing, card, key, to) in [
+        (shape, "sound", "a_gain".to_owned(), -12.0),
+        (shape, "sound", "out_send2".to_owned(), -6.0),
+        (root, "mixer", "bus1_fader".to_owned(), -12.0),
+        (root, "mixer", bpe_core::layered_key(delay, "time_ms"), 300.0),
+        (root, "mixer", "master_output".to_owned(), -2.0),
+    ] {
+        let change = scene.add_block(reg, rule, "do.change", Some(last)).unwrap();
+        for (k, v) in [
+            ("who", bpe_core::Value::Who(bpe_core::Who::Thing { thing, ball: None })),
+            ("card", bpe_core::Value::Choice(card.into())),
+            ("setting", bpe_core::Value::Text(key)),
+            ("to_number", bpe_core::Value::Number(to)),
+            ("glide", bpe_core::Value::Number(3.0)),
+        ] {
+            scene.set_block_param(reg, rule, change, k, v).unwrap();
+        }
+        last = change;
+    }
+    let resolved = resolve_scene(&scene, reg);
+    let mut e = Engine::new(&scene, &resolved, &kit);
+    for _ in 0..200 {
+        e.render(&mut block);
+    }
+    let mut heard = false;
+    for _ in 0..1_500 {
+        e.step_physics();
+        ALLOCATIONS.store(0, Ordering::SeqCst);
+        COUNTING.store(true, Ordering::SeqCst);
+        e.render_prepared(&mut block);
+        COUNTING.store(false, Ordering::SeqCst);
+        assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0, "a block with rule changes allocated");
+        assert!(block.iter().all(|v| v.is_finite()));
+        heard |= block.iter().any(|&v| v != 0.0);
+    }
+    assert!(heard, "the changed sound was heard while counting");
+
+    // A lit scene with a shared Light modulator and one following each note's ball: the light
+    // on the balls is worked out when the physics steps, never in a block.
+    let mut lit = new_scene(reg);
+    bpe_kit::ensure_mixer(&mut lit, reg);
+    let shape = lit.order.iter().copied().find(|id| lit.things[id].kind == "shape").unwrap();
+    lit.things.get_mut(&shape).unwrap().slots.insert(SlotId::Sound, starter_voice(reg));
+    let lamp = add_light(&mut lit, reg, LightType::Point, root).unwrap();
+    let mut s = LightSettings::of_kind(LightType::Point);
+    s.position = glam::Vec2::new(0.0, -150.0);
+    s.reach = 4000.0;
+    lit.things.get_mut(&lamp).unwrap().params = s.to_params();
+    let shared = add_modulator(&mut lit, reg, shape, LIGHT_MOD).unwrap();
+    let own = add_modulator(&mut lit, reg, shape, LIGHT_MOD).unwrap();
+    {
+        let card = lit.card_mut(shape, SlotId::Sound).unwrap();
+        card.params.set(&bpe_core::layered_key(own, "follows"), bpe_core::Value::Choice("each_notes_ball".into()));
+        let mut routes = match card.params.get(bpe_core::ROUTES_KEY) {
+            Some(bpe_core::Value::Routes(r)) => r.clone(),
+            _ => Vec::new(),
+        };
+        routes.push(route(shared, "out_pan"));
+        routes.push(route(own, "a_cents"));
+        card.params.set(bpe_core::ROUTES_KEY, bpe_core::Value::Routes(routes));
+    }
+    let resolved = resolve_scene(&lit, reg);
+    let mut e = Engine::new(&lit, &resolved, &kit);
+    let meters = e.meters();
+    for _ in 0..200 {
+        e.render(&mut block);
+    }
+    let mut heard = false;
+    for _ in 0..1_000 {
+        e.step_physics();
+        ALLOCATIONS.store(0, Ordering::SeqCst);
+        COUNTING.store(true, Ordering::SeqCst);
+        e.render_prepared(&mut block);
+        COUNTING.store(false, Ordering::SeqCst);
+        assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0, "a block with Light modulators allocated");
+        heard |= block.iter().any(|&v| v != 0.0);
+    }
+    assert!(heard, "the lit scene was heard while counting");
+    assert!(meters.mod_value(shape.0, shared).unwrap() > 0.0, "the shared Light hears the lamp");
+
+    // Sample oscillators (W11): Osc A looping forward with a fade, Osc B ping-pong in reverse
+    // from partway in, chords of them, and a backing track under the mix.
+    let mut sampled = new_scene(reg);
+    bpe_kit::ensure_mixer(&mut sampled, reg);
+    let tone = sampled.add_audio("Tone", bpe_sound::audio::sine_wav(330.0, 0.5, 44_100, 2));
+    let song = sampled.add_audio("Song", bpe_sound::audio::sine_wav(110.0, 3.0, 48_000, 2));
+    let shape = sampled.order.iter().copied().find(|id| sampled.things[id].kind == "shape").unwrap();
+    let mut card = starter_voice(reg);
+    let mut v = VoiceSettings::from_params(&card.params);
+    v.a.wave = bpe_kit::sound::Wave::Sample;
+    v.a.sample = tone.clone();
+    v.a.sample_loop = bpe_kit::sound::SampleLoop::Forward;
+    v.a.sample_loop_start = 20.0;
+    v.a.sample_loop_end = 80.0;
+    v.a.sample_loop_fade = 30.0;
+    v.b.on = true;
+    v.b.wave = bpe_kit::sound::Wave::Sample;
+    v.b.sample = tone;
+    v.b.sample_loop = bpe_kit::sound::SampleLoop::PingPong;
+    v.b.sample_reverse = true;
+    v.b.sample_start = 40.0;
+    v.notes_slots = vec![bpe_core::NoteSlot { notes: vec![48, 60, 67, 79], order_clicked: vec![] }];
+    v.notes_plays = bpe_kit::sound::Plays::AllAtOnce;
+    card.params = v.to_params();
+    sampled.things.get_mut(&shape).unwrap().slots.insert(SlotId::Sound, card);
+    {
+        let card = sampled.card_mut(root, mixer).unwrap();
+        card.params.set("backing", bpe_core::Value::Text(song));
+        card.params.set("backing_at", bpe_core::Value::Number(0.2));
+    }
+    let resolved = resolve_scene(&sampled, reg);
+    let mut e = Engine::new(&sampled, &resolved, &kit);
+    for _ in 0..200 {
+        e.render(&mut block);
+    }
+    let mut heard = false;
+    for _ in 0..1_000 {
+        e.step_physics();
+        ALLOCATIONS.store(0, Ordering::SeqCst);
+        COUNTING.store(true, Ordering::SeqCst);
+        e.render_prepared(&mut block);
+        COUNTING.store(false, Ordering::SeqCst);
+        assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0, "a block with samples and a backing track allocated");
+        assert!(block.iter().all(|v| v.is_finite()));
+        heard |= block.iter().any(|&v| v != 0.0);
+    }
+    assert!(heard, "the samples and the song were heard while counting");
 }

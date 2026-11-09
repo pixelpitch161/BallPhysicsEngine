@@ -27,6 +27,9 @@ rfd.workspace = true
 anyhow.workspace = true
 glam.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Threading"] }
+
 [dev-dependencies]
 bpe-kit = { workspace = true, features = ["test-scenes"] }
 egui_kittest = "0.37"

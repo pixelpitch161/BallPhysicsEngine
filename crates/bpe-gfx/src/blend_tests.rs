@@ -1,7 +1,7 @@
 //! Picture tests for blend layers and their composite, on the software GPU.
 
 use crate::paint_tests::gpu;
-use crate::{BackgroundPaint, BallInstance, BlendLayer, Frame, Place, Renderer, TrailVertex};
+use crate::{BackgroundPaint, BlendLayer, Frame, Place, Renderer, TrailVertex};
 use bpe_core::Blend;
 
 const N: u32 = 64;
@@ -252,13 +252,13 @@ fn with_each(mut frame: Frame, blend: Blend, amount: f32, each: bool, layer: Fra
     frame
 }
 
-/// Plain lit balls (no halo) of colour `c` at each of `centres`, in a layer frame.
+/// Plain balls of colour `c` at each of `centres`, in a layer frame.
 fn balls(centres: &[[f32; 2]], radius: f32, c: [f32; 3]) -> Frame {
-    let balls = centres
-        .iter()
-        .map(|&center| BallInstance { center, radius, glow: 0.0, color: [c[0], c[1], c[2], 1.0], ..Default::default() })
-        .collect();
-    Frame { balls, ..flat([0.0; 3]) }
+    let mut frame = flat([0.0; 3]);
+    for &center in centres {
+        crate::pictures::plain_ball(&mut frame, center.into(), radius, [c[0], c[1], c[2], 1.0], 0.0);
+    }
+    frame
 }
 
 fn sum(p: [u8; 4]) -> i32 {
@@ -372,15 +372,14 @@ fn the_switch_on_a_mode_that_cannot_combine_changes_nothing() {
 
 #[test]
 fn every_kind_of_thing_can_blend_with_each_other() {
-    use crate::{FlashInstance, LookInstance, ShapeInstance};
+    use crate::FlashInstance;
     let Some((device, queue)) = gpu() else { return };
     let mut renderer = Renderer::new(&device, N, N);
     let plain = render(&mut renderer, &device, &queue, &flat(D));
     for blend in ALL.into_iter().filter(|b| b.combines_with_itself()) {
         let mut layer = balls(&[[0.0, 0.0]], 6.0, S);
         layer.trails = square(4.0, [S[0], S[1], S[2], 1.0]);
-        layer.shapes.push(ShapeInstance::disc(glam::Vec2::ZERO, 5.0, [S[0], S[1], S[2], 1.0], 0.0));
-        layer.looks.push(LookInstance { radius: 5.0, color: [S[0], S[1], S[2], 1.0], ..LookInstance::default() });
+        layer.push_path(glam::Vec2::ZERO, 0.0, 5.0, 0.0, None, [S[0], S[1], S[2], 1.0], 0.0);
         layer.flashes.push(FlashInstance { center: [0.0; 2], size: 4.0, color: [0.1, 0.1, 0.1, 1.0] });
         let frame = with_each(flat(D), blend, 1.0, true, layer);
         let pixels = render(&mut renderer, &device, &queue, &frame);

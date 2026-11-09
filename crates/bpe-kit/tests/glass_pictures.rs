@@ -344,7 +344,9 @@ fn pearl_and_flake_shine_their_own_ways() {
     set_surface(&mut scene, ball, SurfaceKind::Flake);
     let flake = measure(&draw(&mut gpu, &scene, "flake"));
     assert!(pearl.0 > plastic.0 + 20, "pearl {pearl:?} plastic {plastic:?}");
-    assert!(flake.1 > plastic.1 + 6, "flake {flake:?} plastic {plastic:?}");
+    // Since highlights keep their hue past white (2026-11-08) the flakes' glints and the plastic's
+    // highlight both reach white: 48 jumps to 42 on the software GPU.
+    assert!(flake.1 > plastic.1 + 4, "flake {flake:?} plastic {plastic:?}");
 }
 
 #[test]

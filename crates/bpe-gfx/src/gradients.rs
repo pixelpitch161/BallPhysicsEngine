@@ -19,6 +19,43 @@ pub struct GradientAtlas {
     waves: Vec<[[f32; 4]; 2]>,
     /// Each gradient's hash to its row.
     index: BTreeMap<u64, u32>,
+    /// What each row holds, as a hash of its gradient (or of its texels, for adopted rows): the
+    /// renderer uploads only the rows whose key changed since the last frame (review S21).
+    keys: Vec<u64>,
+}
+
+/// Baked gradients kept between frames (review S21): a frame's atlas is built anew, but a gradient
+/// that doesn't change isn't baked again. Kept per thread (the editor's picture, its warm-up and
+/// the export each build frames on their own), and emptied when it holds [`MOST_KEPT_BAKES`].
+const MOST_KEPT_BAKES: usize = 512;
+
+thread_local! {
+    static BAKED: std::cell::RefCell<std::collections::HashMap<u64, Box<[[f32; 4]; ATLAS_WIDTH]>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// `g` baked into a row, from [`BAKED`] when it was baked before (`key` is its hash).
+fn baked_row(key: u64, g: &Gradient) -> [[f32; 4]; ATLAS_WIDTH] {
+    BAKED.with(|kept| {
+        let mut kept = kept.borrow_mut();
+        if let Some(row) = kept.get(&key) {
+            return **row;
+        }
+        let mut baked = [[0.0; 4]; ATLAS_WIDTH];
+        baked.copy_from_slice(&g.bake(ATLAS_WIDTH));
+        if kept.len() >= MOST_KEPT_BAKES {
+            kept.clear();
+        }
+        kept.insert(key, Box::new(baked));
+        baked
+    })
+}
+
+/// A hash of a row's texels (an adopted row's key), kept apart from the gradients' hashes.
+fn texels_key(row: &[[f32; 4]; ATLAS_WIDTH]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325 ^ 0xad0;
+    eat(&mut h, bytemuck::cast_slice(row.as_slice()));
+    h.rotate_left(29) ^ 0x00ad_0b7e_d000_0001
 }
 
 impl GradientAtlas {
@@ -28,11 +65,10 @@ impl GradientAtlas {
         if let Some(&row) = self.index.get(&key) {
             return row;
         }
-        let mut baked = [[0.0; 4]; ATLAS_WIDTH];
-        baked.copy_from_slice(&g.bake(ATLAS_WIDTH));
         let row = self.rows.len() as u32;
-        self.rows.push(baked);
+        self.rows.push(baked_row(key, g));
         self.waves.push(wave_texels(g.moves.wave.as_ref()));
+        self.keys.push(key);
         self.index.insert(key, row);
         row
     }
@@ -45,6 +81,7 @@ impl GradientAtlas {
         }
         self.rows.push(*baked);
         self.waves.push(NO_WAVE);
+        self.keys.push(texels_key(baked));
         (self.rows.len() - 1) as u32
     }
 
@@ -75,6 +112,7 @@ impl GradientAtlas {
         let row = self.rows.len() as u32;
         self.rows.push(baked);
         self.waves.push(NO_WAVE);
+        self.keys.push(key);
         self.index.insert(key, row);
         row
     }
@@ -91,6 +129,13 @@ impl GradientAtlas {
         self.rows.clear();
         self.waves.clear();
         self.index.clear();
+        self.keys.clear();
+    }
+
+    /// What each row holds (see `keys`), in the rows' order: rows with the same key hold the same
+    /// texels and wave.
+    pub fn keys(&self) -> &[u64] {
+        &self.keys
     }
 
     /// The baked rows in order, linear light.

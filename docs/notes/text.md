@@ -19,7 +19,7 @@ base64, `add_font`/`remove_font`; skipped when empty, so scenes without fonts sa
 `TextSettings` (`things/text/mod.rs`): Words group (words, font, weight, slant, size = capital height, letter/line
 spacing, align, wrap, case, spin) and Path group (path Straight / Round a circle / Along a wave / Along a shape and
 each one's settings; `along` a `Target`, the first shape it names). `TextSim` keeps only the pose (Spin; no wall yet,
-`affects_physics` only for spin). `text_now(scene, params, world, id, time)` (`TextNow`: pose, layout, placed letters,
+`key_restarts_physics` only for spin). `text_now(scene, params, world, id, time)` (`TextNow`: pose, layout, placed letters,
 font problem; `bounds`, `to_world`, `to_own`) is the one way the draw and the editor see a Text. `TextDraw` writes the
 Look's records once (like a shape, one set across the whole text) and pushes one `Frame::push_letter` a letter: a
 `PathInstance` whose points hold every contour of the letter, a contour's first point flagged z = `CONTOUR_START` 2
@@ -73,7 +73,7 @@ rebuilt only when the layout, places or broken set change (`TextState`, `WallLet
 `b.item` is it (0 for every other wall, so goldens hold); `do.break` with a row on a thing with parts breaks one
 letter (it leaves the wall; remains `(text, k)`), `do.flash` flashes one or every live letter, Health keeps a row a
 letter (`rules/health.rs::rows_of`), `who.rs` names letter n (`is_part`); `breaks::shows_looks` takes text.
-Only a walled Text's Words/Path/Balls settings are physics (`ThingSim::affects_physics_in`, `walled_in`; Spin always), and `fingerprint_more` hashes its scene font's bytes (and the things' names when its words hold values). Drawing (`text/draw.rs`): each
+Only a walled Text's Words/Path/Balls settings are physics (`ThingSim::key_restarts_physics_here`, `walled_in`; Spin always), and `physics_print_extra` hashes its scene font's bytes (and the things' names when its words hold values). Drawing (`text/draw.rs`): each
 letter its own hit data (`letter_hits`), Bounce inside letters as bands (`b.x` half the Thickness, `band_half`), a
 broken letter its look (Fade out/Pop through its `LetterMove`, Shatter as `remains::draw::shatter_letter` pieces cut
 round its middle; nothing after). Sound: the Sound card fits a Text; `Plays::ByLetter` (`WhoPick { who:
@@ -97,7 +97,7 @@ gives the **pen** (`moves::pen`), which a light inside the Text rides (`RidesOn:
 Outline and Glow an **Across** Whole text / Each letter / Each line (`modules/look/shape/units.rs`: `unit_records`
 copies the records a unit, `lay_over` re-lays the gradient, `unworn`; Round reads a record's own middle `place.zw`
 when `p0.z` is set). Balls' Word and Particles' Form a word can be **made of a Text thing** (`things/text/shape.rs`:
-`text_named`, `letters_of`, `letters_hash`; `reads_tree` + `fingerprint_more`). Looks Word made of balls, Particle
+`text_named`, `letters_of`, `letters_hash`; `reads_tree` + `physics_print_extra`). Looks Word made of balls, Particle
 word, Laser writing, Text follows sound; Neon sign flickers. Editor: Letter moves list, row menu Only some letters….
 
 Part 5 is in (plan `docs/superpowers/plans/text/part5.md`, "As built" at its end): **experimental effects**, drawing
@@ -113,6 +113,11 @@ a hit of Hits of (`hit_age`). Colours go through **`PathStyle`** in the spare `P
 light / green covering / blue light, hue turn, colourise; `paths.wgsl::path_styled`, only when non-zero, so shapes
 draw as before). Melt or a flipping Mirror turns fast letters off. Looks Glitch, Melting text, Kaleidoscope words,
 Echo stack (24 looks). Tests `things/text/fx_tests.rs`, `paths_tests` (style), `tests/text_pictures.rs`.
+
+**Look fixes (workstream W3, 2026-11-08).** Labels on balls draws its Text at z-order 1, over the balls. Race
+leaderboard sits at (-200, -760), on screen. Glass letters fits GLASS to the screen (`fitted`) and adds a white
+Point lamp up and to the left, close (-220, -360), so the glass catches highlights instead of looking flat grey.
+Tests `labels_draw_over_their_balls`, `every_look_s_words_fit_on_the_screen`, `the_lit_looks_light_the_scene`.
 
 **Small links (W12, 2026-11-08).** The letter moves are drawing-only effects worked by `moves.rs` through `MoveCx`
 (`of_text`, `of_draw`), `Prepared` and `effect_of`; `shape_move` gives a Shape the same moves as one letter (letter

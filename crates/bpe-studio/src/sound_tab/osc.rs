@@ -86,7 +86,7 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx, which: Osc, tab: &mut super::SoundTab) 
             let name = RichText::new(which.name()).font(style::semibold(13.0));
             ui.label(if on { name } else { name.color(style::MUTED) });
             let wave: Wave = cx.choice(&key("wave"));
-            if wave != Wave::Noise {
+            if wave != Wave::Noise && wave != Wave::Sample {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     warp_mode_menu(ui, cx, which);
                 });
@@ -105,8 +105,14 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx, which: Osc, tab: &mut super::SoundTab) 
                 (Wave::Saw, "Saw"),
                 (Wave::Square, "Square"),
                 (Wave::Noise, "Noise"),
+                (Wave::Sample, "Sample"),
             ],
         );
+        if wave == Wave::Sample {
+            super::sample_panel::show(ui, cx, which, tab);
+            super::chain_box::show(ui, cx, which.lane(), tab);
+            return;
+        }
         if wave == Wave::Noise {
             cx.chips(ui, &key("noise"), &[(NoiseColour::White, "White"), (NoiseColour::Pink, "Pink")]);
         }
@@ -260,6 +266,36 @@ mod tests {
         assert!(h.query_by_label("White").is_some());
         assert!(h.query_by_label("Pink").is_some());
         assert!(h.query_by_label("Osc A warp mode").is_none(), "noise has no Warp");
+    }
+
+    #[test]
+    fn sample_shows_its_panel_and_says_when_the_sample_is_missing() {
+        let mut h = sounding();
+        h.get_all_by_label("Sample").next().unwrap().click();
+        h.run();
+        let a = Address::on(SHAPE, SlotId::Sound, "a_wave");
+        let reg = bpe_kit::registry();
+        assert_eq!(h.state().0.scene.value_at_time(&reg, &a, 0.0), Some(Value::Choice("sample".into())));
+        assert!(h.query_by_label("Load Osc A sample").is_some());
+        assert!(h.query_by_label("No sample loaded").is_some());
+        assert!(h.query_by_label("Osc A warp mode").is_none(), "a sample has no Warp");
+        for name in ["Root", "Start"] {
+            assert!(h.query_all_by_role_and_label(Role::Slider, name).next().is_some(), "{name}");
+        }
+        assert!(h.query_all_by_role_and_label(Role::Slider, "Loop fade").next().is_none(), "the loop is off");
+        // A sample the scene doesn't keep says so.
+        let at = Address::on(SHAPE, SlotId::Sound, "a_sample");
+        h.state_mut().0.scene.set_at(&reg, &at, Value::Text("Gone".into())).unwrap();
+        h.run();
+        assert!(h.query_by_label(super::super::sample_panel::NOT_FOUND).is_some());
+        // A kept one is read in the background and drawn.
+        let studio = &mut h.state_mut().0;
+        let name = studio.scene.add_audio("Tone", bpe_sound::audio::sine_wav(220.0, 0.2, 48_000, 1));
+        studio.scene.set_at(&reg, &at, Value::Text(name)).unwrap();
+        h.run();
+        assert!(h.query_by_label("Tone").is_some());
+        assert!(h.query_by_label(super::super::sample_panel::NOT_FOUND).is_none());
+        assert!(h.query_by_label("Osc A sample").is_some(), "the waveform");
     }
 
     #[test]

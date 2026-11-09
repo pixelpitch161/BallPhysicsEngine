@@ -53,20 +53,11 @@ pub struct Motion<'a> {
     pub pull_to: Option<&'a dyn Fn(f64) -> Option<Vec2>>,
 }
 
+use bpe_core::dice::Stream;
+
 /// Random numbers from one seed.
-struct Rng(u32);
-
-impl Rng {
-    /// 0 to 1.
-    fn unit(&mut self) -> f32 {
-        self.0 = hash(&[self.0, 0x5bd1_e995]);
-        (self.0 >> 8) as f32 / (1u32 << 24) as f32
-    }
-
-    /// -1 to 1.
-    fn signed(&mut self) -> f32 {
-        self.unit() * 2.0 - 1.0
-    }
+fn stream(seed: u32) -> Stream {
+    Stream::new(seed, 0x5bd1_e995)
 }
 
 /// Smooth value noise, -1 to 1, varying over one unit.
@@ -85,7 +76,7 @@ pub fn noise(p: Vec2) -> f32 {
 }
 
 /// The way particles of `layer` from `e` fly, before their spread.
-fn heading(layer: &ParticlesLayer, e: &Emission, rng: &mut Rng) -> Vec2 {
+fn heading(layer: &ParticlesLayer, e: &Emission, rng: &mut Stream) -> Vec2 {
     let moving = e.velocity.try_normalize();
     match layer.direction {
         Direction::OffTheBounce => e.normal.try_normalize().unwrap_or(Vec2::NEG_Y),
@@ -106,7 +97,7 @@ pub fn simulate(layer: &ParticlesLayer, e: &Emission, k: u32, now: f64, motion: 
     }
     let t = age / life;
     let grow = layer.size_curve.at(t)?;
-    let mut rng = Rng(hash(&[e.seed, k, 0xa11ce]));
+    let mut rng = stream(hash(&[e.seed, k, 0xa11ce]));
     let mut way = heading(layer, e, &mut rng);
     if layer.direction != Direction::AllRound {
         let turn = rng.signed() * 0.5 * layer.spread.clamp(0.0, 360.0).to_radians();

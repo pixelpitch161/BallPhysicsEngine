@@ -3,7 +3,7 @@
 //! settings when the scene has an Air card (a sleeping [`crate::air::Air`]: a Particles thing that
 //! reads it wakes it).
 
-use bpe_core::{ResolvedThing, Settings, Thing, ThingId};
+use bpe_core::{ResolvedThing, Settings, SlotId, Thing, ThingId};
 use bpe_runtime::{ThingSim, World};
 
 use super::SceneSettings;
@@ -23,8 +23,32 @@ impl ThingSim for SceneSim {
         world.video = glam::Vec2::new(s.width.max(1) as f32, s.height.max(1) as f32);
         let (beat, per_bar) = crate::things::rig::pattern::beat_seconds(&s);
         (world.beat_seconds, world.beats_in_bar) = (beat, per_bar);
+        world.first_beat = super::first_beat_seconds(s.first_beat);
         if let Some(spec) = crate::modules::air::spec_of(resolved) {
             world.states.insert(ThingId::ROOT, Box::new(crate::air::Air::new(spec)));
+        }
+    }
+
+    /// Haze that moves with the air drifts as far as the playback's air has carried it (W13): the
+    /// Air card and its keys then count in every world, so an edit of them starts the playback
+    /// again and the haze follows the wind as it is now.
+    fn reads_air(&self, resolved: &ResolvedThing) -> bool {
+        use crate::modules::lighting::{HazeMoves, LightingSettings};
+        resolved.slots.contains_key(&SlotId::Air)
+            && resolved
+                .slots
+                .get(&SlotId::Lighting)
+                .is_some_and(|l| LightingSettings::from_params(&l.params).haze_moves == HazeMoves::WithTheAir)
+    }
+
+    /// The wind carries the air on: what moving haze drifts by (W13). Cheap, and never physics.
+    fn after_step(&self, _thing: ThingId, world: &mut World, _log: &mut bpe_runtime::Log) {
+        let (time, dt) = (world.time() as f32, world.sim_dt());
+        if let Some(air) = crate::air::air_mut(world) {
+            let carried = air.spec.ambient(glam::Vec2::ZERO, time) * dt;
+            if carried.is_finite() {
+                air.drift += carried;
+            }
         }
     }
 
@@ -39,13 +63,13 @@ impl ThingSim for SceneSim {
     }
 
     /// The video's size counts too: the camera's Stay inside, Slack and Fit all read it.
-    fn affects_physics(&self, key: &str) -> bool {
+    fn key_restarts_physics(&self, key: &str) -> bool {
         matches!(key, "gravity" | "steps_per_second" | "duration" | "seed" | "width" | "height")
     }
 
     /// Particles born or pushed on the beat read the tempo.
-    fn affects_beside(&self, key: &str) -> bool {
-        matches!(key, "tempo" | "time_top" | "time_bottom")
+    fn key_restarts_beside(&self, key: &str) -> bool {
+        matches!(key, "tempo" | "time_top" | "time_bottom" | "first_beat")
     }
 }
 
@@ -55,18 +79,20 @@ impl ThingSim for SceneSim {
 pub struct SceneBeat {
     pub beat: f64,
     pub per_bar: u32,
+    /// Where the first beat is, in seconds.
+    pub first: f64,
 }
 
 impl Default for SceneBeat {
-    /// 120 beats a minute, four in a bar.
+    /// 120 beats a minute, four in a bar, from 0 s.
     fn default() -> Self {
-        SceneBeat { beat: 0.5, per_bar: 4 }
+        SceneBeat { beat: 0.5, per_bar: 4, first: 0.0 }
     }
 }
 
 /// The scene's tempo in `world` (120 beats a minute, four in a bar, without a scene thing).
 pub fn beat_of(world: &World) -> SceneBeat {
-    SceneBeat { beat: world.beat_seconds, per_bar: world.beats_in_bar }
+    SceneBeat { beat: world.beat_seconds, per_bar: world.beats_in_bar, first: world.first_beat }
 }
 
 #[cfg(test)]

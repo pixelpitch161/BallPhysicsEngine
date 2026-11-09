@@ -6,8 +6,8 @@
 use crate::chain::{filter_type, shaper_type};
 use crate::hits::BlockHit;
 use crate::lag::Lag;
+use crate::voices::StrengthCurve;
 use crate::voices::knobs::track_value;
-use crate::voices::strength;
 use crate::{BLOCK, FxReading, Meters, TempoMap};
 use bpe_core::Settings;
 use bpe_core::{Address, LayerId, Params, Scene, SettingDef, SlotId, Target, ThingId, Track, Value, layered_key};
@@ -30,7 +30,7 @@ use bpe_kit::sound::fx::{
 use bpe_kit::sound::{BUSES, DistortionSettings, FilterSettings, MIXER, Slope};
 use bpe_kit::things::shape::KIND as SHAPE;
 use bpe_kit::things::text::KIND as TEXT;
-use bpe_runtime::EventKind;
+use bpe_runtime::{ChangeKey, EventKind, RulesState};
 
 /// What an effect can read while it runs one block.
 pub struct FxCx<'a> {
@@ -44,18 +44,27 @@ pub struct FxCx<'a> {
     /// The bus running (0..2).
     pub bus: usize,
     pub meters: &'a Meters,
+    /// The rules as the engine's physics has them, for their changes of the effects (W13).
+    pub rules: Option<&'a RulesState>,
 }
 
-/// The number settings of one effect that have keys, read once a block.
+/// The number settings of one effect that have keys, or that a rule changes, read once a block.
 #[derive(Clone, Default)]
 pub struct Keyed {
     keys: Vec<(&'static str, Track)>,
     now: Vec<f32>,
+    /// Every number of the effect that takes keys: its key, where a rule's change of it is kept,
+    /// and its value as set (W13).
+    ruled: Vec<(&'static str, ChangeKey, f32)>,
+    /// Their values with the rules' changes now (NaN: no change on it).
+    ruled_now: Vec<f32>,
+    /// Some value in `ruled_now` is a rule's.
+    any_ruled: bool,
 }
 
 impl Keyed {
-    /// The keyed settings of layer `id` (of the mixer card) among `defs`.
-    fn of(scene: &Scene, id: LayerId, defs: &'static [SettingDef]) -> Keyed {
+    /// The keyed settings of layer `id` (of the mixer card) among `defs`, set as `params`.
+    fn of(scene: &Scene, id: LayerId, defs: &'static [SettingDef], params: &Params) -> Keyed {
         let keys: Vec<(&'static str, Track)> = defs
             .iter()
             .filter(|d| d.flags.keyframe)
@@ -65,22 +74,69 @@ impl Keyed {
             })
             .collect();
         let now = vec![f32::NAN; keys.len()];
-        Keyed { keys, now }
+        let ruled: Vec<(&'static str, ChangeKey, f32)> = defs
+            .iter()
+            .filter(|d| d.flags.keyframe)
+            .filter_map(|d| {
+                let base = match params.get(d.key) {
+                    Some(Value::Number(x)) => *x as f32,
+                    Some(Value::Int(x)) => *x as f32,
+                    _ => return None,
+                };
+                Some((d.key, crate::ruled::mixer_key(&layered_key(id, d.key)), base))
+            })
+            .collect();
+        let ruled_now = vec![f32::NAN; ruled.len()];
+        Keyed { keys, now, ruled, ruled_now, any_ruled: false }
     }
 
     pub fn is_empty(&self) -> bool {
         self.keys.is_empty()
     }
 
-    /// Reads every key at `time`. Never allocates.
-    fn at(&mut self, time: f64) {
+    /// Whether the effect's settings have to be read this block: they have keys, a rule changes
+    /// the mixer, or a rule's change was there last block (it may just have ended).
+    fn due(&self, rules: Option<&RulesState>) -> bool {
+        !self.keys.is_empty()
+            || self.any_ruled
+            || (!self.ruled.is_empty()
+                && rules.is_some_and(|r| r.has_whole_changes(ThingId::ROOT, Some(SlotId::Mixer))))
+    }
+
+    /// Reads every key and every rule's change (`rules`) at `time`. Never allocates.
+    fn at(&mut self, time: f64, rules: Option<&RulesState>) {
         for (i, (_, t)) in self.keys.iter().enumerate() {
             self.now[i] = track_value(t, time).unwrap_or(f32::NAN);
         }
+        self.any_ruled = false;
+        let on_mixer = rules.filter(|r| r.has_whole_changes(ThingId::ROOT, Some(SlotId::Mixer)));
+        for i in 0..self.ruled.len() {
+            let (key, change_key, base) = &self.ruled[i];
+            let list = on_mixer.map_or(&[][..], |r| r.changes_on(change_key));
+            self.ruled_now[i] = if list.is_empty() {
+                f32::NAN
+            } else {
+                let keyed = self.keys.iter().position(|(k, _)| k == key).map(|j| self.now[j]);
+                let under = keyed.filter(|v| v.is_finite()).unwrap_or(*base);
+                self.any_ruled = true;
+                crate::ruled::number(list, under, time)
+            };
+        }
     }
 
-    /// `key`'s keyed value now, or `base` when it has no keys.
+    /// The largest `key` is ever set to: `base`, or one of its keys if larger.
+    pub fn most(&self, key: &str, base: f32) -> f32 {
+        let keys = self.keys.iter().filter(|(k, _)| *k == key).flat_map(|(_, t)| t.keys.iter());
+        keys.filter_map(|k| crate::voices::knobs::number(&k.value)).fold(base, f32::max)
+    }
+
+    /// `key`'s value now: a rule's change of it, else its keyed value, else `base`.
     pub fn get(&self, key: &str, base: f32) -> f32 {
+        if let Some(i) = self.ruled.iter().position(|(k, _, _)| *k == key)
+            && self.ruled_now[i].is_finite()
+        {
+            return self.ruled_now[i];
+        }
         match self.keys.iter().position(|(k, _)| *k == key) {
             Some(i) if self.now[i].is_finite() => self.now[i],
             _ => base,
@@ -378,6 +434,8 @@ enum Fx {
         /// The shape a Hits sidechain listens to; `None` (none chosen, or deleted) listens
         /// to itself.
         shape: Option<ThingId>,
+        /// How that shape's sound turns a hit's speed into its strength.
+        curve: StrengthCurve,
         hits: Box<[(u32, f32); MAX_KEY_HITS]>,
     },
     Delay {
@@ -416,7 +474,11 @@ impl Fx {
                     _ => None,
                 };
                 let hits = Box::new([(0, 0.0); MAX_KEY_HITS]);
-                (Fx::Comp { dsp: Box::default(), set, shape, hits }, MixLaw::Gain)
+                let curve = shape
+                    .and_then(|id| scene.card(id, SlotId::Sound))
+                    .map(|c| bpe_kit::sound::VoiceSettings::from_params(&c.params))
+                    .map_or_else(StrengthCurve::default, |v| StrengthCurve::of_knobs(v.play_full_at, v.play_curve));
+                (Fx::Comp { dsp: Box::default(), set, shape, curve, hits }, MixLaw::Gain)
             }
             fx::LIMITER => {
                 let set = LimiterSettings::from_params(p);
@@ -466,13 +528,16 @@ impl Fx {
         }
     }
 
-    /// Silence, as new; a sweep starts where song time `time` puts it.
-    fn reset(&mut self, time: f64) {
+    /// Silence, as new; a sweep starts where song time `time` puts it (a synced one counting
+    /// from the first beat at `first`).
+    fn reset(&mut self, time: f64, first: f64) {
         match self {
             Fx::Limiter { dsp, .. } => dsp.reset(),
-            Fx::Mod { dsp, rate_hz, .. } => {
+            Fx::Mod { dsp, rate_hz, set } => {
                 dsp.reset();
-                dsp.set_phase((*rate_hz * time).fract());
+                let from = if set.sync { first } else { 0.0 };
+                let cycles = *rate_hz * (time - from);
+                dsp.set_phase(cycles - cycles.floor());
             }
             Fx::Width { dsp, corr, .. } => {
                 dsp.reset();
@@ -610,7 +675,7 @@ impl Fx {
                 }
                 0.0
             }
-            Fx::Comp { dsp, set, shape, hits } => {
+            Fx::Comp { dsp, set, shape, curve, hits } => {
                 let own = cx.bus;
                 match (set.sidechain, shape) {
                     (Sidechain::Bus, _)
@@ -622,13 +687,14 @@ impl Fx {
                     (Sidechain::Hits, Some(shape)) => {
                         let mut n = 0;
                         for h in cx.hits {
-                            let on_shape = h.event.a.thing == *shape || h.event.b.is_some_and(|b| b.thing == *shape);
+                            let on_shape = crate::hits::touches(&h.event.kind)
+                                && (h.event.a.thing == *shape || h.event.b.is_some_and(|b| b.thing == *shape));
                             if on_shape && n < MAX_KEY_HITS {
                                 // A rule's note (rules part 6) keys by its velocity.
                                 let s = match h.event.kind {
                                     EventKind::Note if h.event.speed.is_finite() => h.event.speed.clamp(0.0, 1.0),
                                     EventKind::Note => 0.0,
-                                    _ => strength(h.event.speed),
+                                    _ => curve.of(h.event.speed),
                                 };
                                 hits[n] = (h.offset, s);
                                 n += 1;
@@ -731,7 +797,7 @@ impl FxChain {
                 kind: layer.kind.clone(),
                 fx,
                 law,
-                keyed: Keyed::of(scene, layer.id, defs),
+                keyed: Keyed::of(scene, layer.id, defs, &p),
                 mix_base,
                 mix,
                 on,
@@ -756,6 +822,51 @@ impl FxChain {
         self.slots.is_empty()
     }
 
+    /// The shapes its compressors key on by their hits (a Hits sidechain with a shape chosen):
+    /// the engine queues their hits even when they make no sound of their own.
+    pub fn hit_keys(&self) -> impl Iterator<Item = ThingId> + '_ {
+        self.slots.iter().filter_map(|s| match &s.fx {
+            Fx::Comp { set, shape: Some(id), .. } if set.sidechain == Sidechain::Hits => Some(*id),
+            _ => None,
+        })
+    }
+
+    /// How long a sound going into it can still be heard coming out, in seconds, at the longest
+    /// its keys set (a seek warms up this long). A frozen reverb or a delay that feeds back
+    /// fully never ends: `f64::INFINITY`.
+    pub fn tail(&self) -> f64 {
+        let mut tail = 0.0f64;
+        for s in &self.slots {
+            let k = &s.keyed;
+            let t = match &s.fx {
+                Fx::Reverb { set, .. } if set.freeze => f64::INFINITY,
+                Fx::Reverb { set, .. } => {
+                    (k.most("pre_delay", set.pre_delay) as f64 / 1000.0) + k.most("decay", set.decay) as f64
+                }
+                Fx::Delay { set, .. } => {
+                    let time = if set.sync {
+                        note_seconds(set.time_note, set.time_feel, &self.tempo)
+                    } else {
+                        k.most("time_ms", set.time_ms) as f64 / 1000.0
+                    };
+                    let feedback = (k.most("feedback", set.feedback) as f64 / 100.0).clamp(0.0, 1.0);
+                    // Repeats until the echoes are 60 dB down.
+                    let repeats = if feedback >= 0.999 {
+                        f64::INFINITY
+                    } else if feedback <= 1e-3 {
+                        1.0
+                    } else {
+                        1.0 + (1e-3f64).ln() / feedback.ln()
+                    };
+                    time * repeats
+                }
+                _ => 0.0,
+            };
+            tail += t;
+        }
+        tail
+    }
+
     /// The layers in it, in order.
     pub fn layers(&self) -> impl Iterator<Item = LayerId> + '_ {
         self.slots.iter().map(|s| s.id)
@@ -763,7 +874,7 @@ impl FxChain {
 
     fn apply_all(&mut self, time: f64) {
         for s in &mut self.slots {
-            s.keyed.at(time);
+            s.keyed.at(time, None);
             s.fx.apply(&s.keyed, &self.tempo);
             s.mix.set_target(s.keyed.get("mix", s.mix_base * 100.0) / 100.0);
         }
@@ -773,7 +884,7 @@ impl FxChain {
     pub fn reset(&mut self, time: f64) {
         self.apply_all(time);
         for s in &mut self.slots {
-            s.fx.reset(time);
+            s.fx.reset(time, self.tempo.first());
             s.dry_lag.reset();
             let (m, o) = (s.mix.target(), s.on.target());
             s.mix.reset(m);
@@ -810,8 +921,8 @@ impl FxChain {
         let mut reduction = 0.0f32;
         self.time = cx.time;
         for s in &mut self.slots {
-            if !s.keyed.is_empty() {
-                s.keyed.at(cx.time);
+            if s.keyed.due(cx.rules) {
+                s.keyed.at(cx.time, cx.rules);
                 s.fx.apply(&s.keyed, cx.tempo);
                 s.mix.set_target(s.keyed.get("mix", s.mix_base * 100.0) / 100.0);
             }
@@ -823,7 +934,7 @@ impl FxChain {
                 continue;
             }
             if s.asleep {
-                s.fx.reset(cx.time);
+                s.fx.reset(cx.time, self.tempo.first());
                 s.asleep = false;
                 s.wake_wait = s.fx.latency();
             }
@@ -897,6 +1008,7 @@ mod tests {
                 buses: &buses,
                 bus: 0,
                 meters: &meters,
+                rules: None,
             };
             chain.process(&mut l, &mut r, &cx);
             out.extend(l.iter().zip(&r).map(|(a, b)| (*a, *b)));
@@ -968,7 +1080,7 @@ mod tests {
                 r[0] = 1.0;
             }
             let time = b as f64 * BLOCK as f64 / 48_000.0;
-            let cx = FxCx { time, tempo, hits: &[], buses: &buses, bus: 0, meters: &meters };
+            let cx = FxCx { time, tempo, hits: &[], buses: &buses, bus: 0, meters: &meters, rules: None };
             chain.process(&mut l, &mut r, &cx);
             out.extend_from_slice(&l);
         }

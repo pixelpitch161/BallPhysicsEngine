@@ -200,7 +200,7 @@ fn custom_balls(places: Vec<[f32; 2]>, radius: f32) -> BallsSettings {
 }
 
 /// A Text with the `look` filled in, under `parent`; a lit look gives the scene its Lighting card
-/// when it has none, and Shadow lettering adds its lamp beside it.
+/// when it has none, and Shadow lettering and Glass letters add a lamp beside it.
 pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) -> Result<ThingId, EditError> {
     let mut s = TextSettings::default();
     let mut screen = true;
@@ -310,6 +310,7 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             s.font = "Bowlby One".into();
             s.size = 220.0;
             screen = false;
+            s = fitted(scene, s);
             use crate::modules::look::surface::{SurfaceKind, preset_values};
             use bpe_core::Choice;
             card.push(("surface", Value::Choice(SurfaceKind::Glass.name().into())));
@@ -399,7 +400,8 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             s.size = 42.0;
             s.align = Align::Left;
             s.line_spacing = 1.3;
-            position = Vec2::new(-470.0, -760.0);
+            // The block is centred on its place: its left edge about 40 px in from the screen's.
+            position = Vec2::new(-200.0, -760.0);
             layers.push((look::PAINT, vec![("colours", solid(Color::WHITE))], vec![]));
             layers.push(outlined(4.0));
         }
@@ -669,6 +671,10 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
         }
         t.screen = Some(screen);
         t.transform.position = position;
+        // Labels ride on their balls: drawn over them, not hidden under them.
+        if look == Look::LabelsOnBalls {
+            t.z_order = 1;
+        }
     }
     for (kind, params, subs) in layers {
         let layer = scene.add_layer(reg, id, SlotId::Look, kind)?;
@@ -807,12 +813,20 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
         }
         _ => {}
     }
-    if look == Look::ShadowLettering {
+    // A lamp up and to the left: Shadow lettering's casts the long shadow; Glass letters' gives the
+    // glass its highlights and coloured shadow (without one it looks flat grey).
+    if look == Look::ShadowLettering || look == Look::GlassLetters {
         use crate::things::light::{LightType, add_light};
         let lamp = add_light(scene, reg, LightType::Point, parent)?;
+        // The glass's lamp is close, so its highlights are big and bright.
+        let (colour, off) = if look == Look::GlassLetters {
+            (Color::WHITE, Vec2::new(-220.0, -360.0))
+        } else {
+            (Color::rgb(0xff, 0xe8, 0xc8), Vec2::new(-300.0, -700.0))
+        };
         if let Some(l) = scene.things.get_mut(&lamp) {
-            l.params.set("position", Value::Vec2([position.x - 300.0, position.y - 700.0]));
-            l.params.set("colour", Value::Color(Color::rgb(0xff, 0xe8, 0xc8)));
+            l.params.set("position", Value::Vec2([position.x + off.x, position.y + off.y]));
+            l.params.set("colour", Value::Color(colour));
         }
     }
     Ok(id)
@@ -911,6 +925,37 @@ mod tests {
     }
 
     #[test]
+    fn labels_draw_over_their_balls() {
+        let reg = crate::registry();
+        let mut scene = Scene::empty(&reg);
+        let balls = crate::add_thing(&mut scene, &reg, "balls", ThingId::ROOT).unwrap();
+        let id = add_text(&mut scene, &reg, Look::LabelsOnBalls, ThingId::ROOT).unwrap();
+        let (labels, under) = (scene.things[&id].z_order, scene.things[&balls].z_order);
+        assert!(labels > under, "labels {labels} over balls {under}");
+    }
+
+    #[test]
+    fn every_look_s_words_fit_on_the_screen() {
+        // The screen is 1080 wide, its middle at 0; words laid out round their place.
+        for look in LOOKS {
+            let (scene, id) = added(look);
+            let Some(t) = scene.things.get(&id) else { continue };
+            if t.kind != KIND || !t.slots.contains_key(&SlotId::Look) {
+                continue;
+            }
+            let s = TextSettings::from_params(&t.params);
+            // Live words ({countdown …}) are laid out as they read when drawn.
+            if s.words.trim().is_empty() || s.words.contains('{') || s.path != TextPath::Straight {
+                continue;
+            }
+            let found = fonts::find(&scene.fonts, &s.font, s.weight);
+            let laid = layout(found.font(), &s.layout_spec());
+            let (left, right) = (t.transform.position.x + laid.min.x, t.transform.position.x + laid.max.x);
+            assert!(left >= -540.0 && right <= 540.0, "{look:?} runs off the screen: {left} to {right}");
+        }
+    }
+
+    #[test]
     fn the_lit_looks_light_the_scene() {
         for look in LOOKS {
             let (scene, _) = added(look);
@@ -918,7 +963,7 @@ mod tests {
             assert_eq!(lit, look.lit(), "{look:?}");
             let lights = scene.things.values().filter(|t| t.kind == crate::things::light::LIGHT).count();
             let want = match look {
-                Look::ShadowLettering => 1,
+                Look::ShadowLettering | Look::GlassLetters => 1,
                 Look::LaserWriting => 2,
                 _ => 0,
             };

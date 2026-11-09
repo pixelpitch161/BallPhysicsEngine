@@ -14,6 +14,7 @@ pub mod notes;
 pub mod osc;
 pub mod output;
 pub mod playing;
+pub mod sample_panel;
 pub mod strip;
 pub mod strip_views;
 pub mod wave_view;
@@ -47,6 +48,17 @@ pub struct SoundTab {
     pub lfo_tool: mods::lfo_view::Tool,
     /// Each EQ layer's picked, dragged and right-clicked band.
     pub eq: std::collections::BTreeMap<(ThingId, bpe_core::LayerId), crate::eq_curve::Pick>,
+    /// What the tab last said about a file (a sample, a saved sound, a MIDI file).
+    pub note: Option<TabNote>,
+}
+
+/// A line the Sound tab shows about the last file it read or wrote, under Enable sound.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TabNote {
+    pub thing: ThingId,
+    pub text: String,
+    /// Something went wrong (shown in the problem colour).
+    pub problem: bool,
 }
 
 /// A change the tab asks for, applied once it is drawn.
@@ -56,6 +68,8 @@ pub enum TabEdit {
     Set(Address, Value),
     /// A key at the playhead holding the setting's value as it stands.
     NewKey(Address),
+    /// Every key of the setting goes; it keeps the value it has now.
+    ClearKeys(Address),
     Enable,
     Disable,
     CopySound,
@@ -93,6 +107,26 @@ pub enum TabEdit {
     /// The edits made with this one are an undo step of their own (a preset, a key change, a
     /// row's edit), never merged with a knob turned just before.
     OwnStep,
+    /// A sound file chosen for an oscillator's Sample (`key` is `a_sample` or `b_sample`): the
+    /// scene keeps it and the oscillator plays it (W11).
+    LoadSample {
+        key: String,
+        file: sample_panel::LoadedFile,
+    },
+    /// Save sound…: the card to the `.ballsound` file the user picked.
+    SaveSound(std::path::PathBuf),
+    /// Load sound…: the `.ballsound` file the user picked, in place of the card.
+    LoadSound(std::path::PathBuf),
+    /// A MIDI file's chords into the slots, its tempo into the scene (W11).
+    ImportMidi {
+        file: String,
+        import: Box<bpe_sound::music::MidiImport>,
+    },
+    /// A line for the tab to show about a file.
+    Note {
+        text: String,
+        problem: bool,
+    },
 }
 
 /// What drawing the tab reads, and the edits it gathers.
@@ -278,6 +312,7 @@ impl TabCx<'_> {
             ValueMenu::Nothing => {}
             ValueMenu::Paste(v) => self.edits.push(TabEdit::Set(a, v)),
             ValueMenu::CreateKey => self.edits.push(TabEdit::NewKey(a)),
+            ValueMenu::RemoveKeys => self.edits.push(TabEdit::ClearKeys(a)),
         }
         if let Some(layer) = chosen {
             mods::add_route(self, layer, key);
@@ -292,6 +327,7 @@ impl TabCx<'_> {
             ValueMenu::Nothing => {}
             ValueMenu::Paste(v) => self.edits.push(TabEdit::Set(a, v)),
             ValueMenu::CreateKey => self.edits.push(TabEdit::NewKey(a)),
+            ValueMenu::RemoveKeys => self.edits.push(TabEdit::ClearKeys(a)),
         }
     }
 
@@ -383,7 +419,7 @@ pub fn show(
         let mut cx = TabCx { scene, kit, choices, id, time, colour, notes_clip, hot, edits: Vec::new() };
         let card = scene.card(id, SlotId::Sound).filter(|c| c.kind == VOICE);
         let on = card.is_some() && cx.flag("enabled");
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt("sound tab").auto_shrink([false, false]).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.add_space(10.0);
                 let mut ticked = on;
@@ -394,6 +430,27 @@ pub fn show(
                 if ticked != on {
                     cx.edits.push(if ticked { TabEdit::Enable } else { TabEdit::Disable });
                 }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(10.0);
+                    if card.is_some() {
+                        let save = ui.button("Save sound…").on_hover_text(
+                            "Save this sound (its oscillators, layers, modulators, notes and samples) as a file to \
+                             load on anything",
+                        );
+                        if save.clicked()
+                            && let Some(path) = pick_save_path(cx.scene, id)
+                        {
+                            cx.edits.push(TabEdit::SaveSound(path));
+                        }
+                    }
+                    let load = ui.button("Load sound…").on_hover_text("Load a saved sound in place of this one");
+                    if load.clicked()
+                        && let Some(path) = pick_load_path()
+                    {
+                        cx.edits.push(TabEdit::OwnStep);
+                        cx.edits.push(TabEdit::LoadSound(path));
+                    }
+                });
                 r.context_menu(|ui| {
                     if ui.add_enabled(card.is_some(), egui::Button::new("Copy sound")).clicked() {
                         cx.edits.push(TabEdit::CopySound);
@@ -406,14 +463,37 @@ pub fn show(
                         cx.edits.push(TabEdit::PasteSound);
                         ui.close();
                     }
+                    ui.separator();
+                    if ui.add_enabled(card.is_some(), egui::Button::new("Save sound…")).clicked() {
+                        ui.close();
+                        if let Some(path) = pick_save_path(cx.scene, id) {
+                            cx.edits.push(TabEdit::SaveSound(path));
+                        }
+                    }
+                    if ui.button("Load sound…").clicked() {
+                        ui.close();
+                        if let Some(path) = pick_load_path() {
+                            cx.edits.push(TabEdit::OwnStep);
+                            cx.edits.push(TabEdit::LoadSound(path));
+                        }
+                    }
                 });
             });
+            if let Some(note) = inspector.sound.note.as_ref().filter(|n| n.thing == id) {
+                ui.horizontal(|ui| {
+                    ui.add_space(10.0);
+                    let colour = if note.problem { style::PROBLEM } else { style::MUTED };
+                    ui.label(RichText::new(&note.text).small().color(colour));
+                });
+            }
             if card.is_none() {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.add_space(10.0);
                     let line = if moments::is_particles(&cx) {
                         "Turn it on and the particles play notes when they hit things, land or burst."
+                    } else if moments::is_balls(&cx) {
+                        "Turn it on and its balls play a note when they hit things."
                     } else {
                         "Turn it on and the shape plays a note each time a ball hits it."
                     };
@@ -475,6 +555,9 @@ fn body(ui: &mut Ui, inspector: &mut Inspector, cx: &mut TabCx) {
     if moments::is_particles(cx) {
         moments::show(ui, cx);
         ui.add_space(8.0);
+    } else if moments::is_balls(cx) {
+        moments::show_balls(ui, cx);
+        ui.add_space(8.0);
     }
     let level = inspector.meters.as_ref().map_or(f32::NEG_INFINITY, |m| m.take_shape(cx.id.0));
     if level > f32::NEG_INFINITY {
@@ -485,6 +568,29 @@ fn body(ui: &mut Ui, inspector: &mut Inspector, cx: &mut TabCx) {
         playing::show(&mut cols[0], cx);
         output::show(&mut cols[1], cx, level);
     });
+}
+
+/// Where to save the thing's sound: a file picker, named after the thing.
+fn pick_save_path(scene: &Scene, id: ThingId) -> Option<std::path::PathBuf> {
+    let name = scene.things.get(&id).map(|t| t.name.clone()).unwrap_or_default();
+    rfd::FileDialog::new()
+        .set_title("Save sound")
+        .add_filter("Ball Studio sound", &[write::SOUND_EXTENSION])
+        .set_file_name(format!("{}.{}", crate::export_window::safe_file_name(&name), write::SOUND_EXTENSION))
+        .save_file()
+}
+
+/// A saved sound to load: a file picker.
+fn pick_load_path() -> Option<std::path::PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("Load sound")
+        .add_filter("Ball Studio sound", &[write::SOUND_EXTENSION])
+        .pick_file()
+}
+
+/// A path's file name, for a note.
+fn file_name(path: &std::path::Path) -> String {
+    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
 /// Applies the tab's edits. True when the scene changed.
@@ -506,16 +612,47 @@ fn apply(inspector: &mut Inspector, scene: &mut Scene, kit: &Kit, id: ThingId, t
                 Some(v) => scene.set_key(reg, &a, time, v).is_ok(),
                 None => false,
             },
+            TabEdit::ClearKeys(a) => crate::inspector::clear_keys(scene, reg, &a, time),
             TabEdit::Enable => write::enable(scene, reg, id),
             TabEdit::Disable => write::disable(scene, reg, id),
             TabEdit::CopySound => {
-                inspector.clipboard.sound = write::copy(scene, id);
+                inspector.clipboard.sound = write::copy_clip(scene, id);
                 false
             }
             TabEdit::PasteSound => match inspector.clipboard.sound.clone() {
-                Some(card) => write::paste(scene, reg, id, &card),
+                Some(clip) => write::paste_clip(scene, reg, id, &clip),
                 None => false,
             },
+            TabEdit::LoadSample { key, file } => write::load_sample(scene, reg, id, &key, &file, time),
+            TabEdit::SaveSound(path) => {
+                let (text, problem) = match write::save_sound(scene, id, &path) {
+                    Ok(()) => (format!("Saved {}.", file_name(&path)), false),
+                    Err(e) => (e, true),
+                };
+                inspector.sound.note = Some(TabNote { thing: id, text, problem });
+                false
+            }
+            TabEdit::LoadSound(path) => match write::load_sound(scene, reg, id, &path) {
+                Ok(()) => {
+                    inspector.sound.note =
+                        Some(TabNote { thing: id, text: format!("Loaded {}.", file_name(&path)), problem: false });
+                    true
+                }
+                Err(text) => {
+                    inspector.sound.note = Some(TabNote { thing: id, text, problem: true });
+                    false
+                }
+            },
+            TabEdit::ImportMidi { file, import } => {
+                let said = write::import_midi(scene, reg, id, &import, time);
+                inspector.sound.note =
+                    Some(TabNote { thing: id, text: format!("{said} from {file}."), problem: false });
+                true
+            }
+            TabEdit::Note { text, problem } => {
+                inspector.sound.note = Some(TabNote { thing: id, text, problem });
+                false
+            }
             TabEdit::Audition(note) => {
                 inspector.auditions.push((id, note));
                 false
@@ -730,10 +867,18 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_ball_shows_no_sound_button() {
-        let h = studio_harness(BALL, false);
+    fn a_ball_shows_settings_and_sound_buttons_but_a_folder_none() {
+        let mut h = studio_harness(BALL, false);
+        assert!(h.query_by_label("Sound").is_some(), "a ball has its own sound (W10)");
+        assert!(h.query_by_label("Settings").is_some());
+        assert!(h.query_by_label("Looks").is_some(), "and its ready-made looks");
+        let reg = bpe_kit::registry();
+        let studio = &mut h.state_mut().0;
+        let folder = bpe_kit::add_thing(&mut studio.scene, &reg, "folder", ThingId::ROOT).unwrap();
+        studio.selection.set(folder);
+        h.run();
         assert!(h.query_by_label("Sound").is_none());
-        assert!(h.query_by_label("Settings").is_none());
+        assert!(h.query_by_label("Looks").is_none(), "a folder has no tabs");
     }
 
     #[test]
@@ -799,6 +944,32 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn balls_and_emitters_have_a_sound_tab_with_their_balls_moments() {
+        let reg = bpe_kit::registry();
+        for (kind, fired) in [(bpe_kit::things::balls::KIND, false), (bpe_kit::things::emitter::KIND, true)] {
+            let mut h = studio_harness(SHAPE, false);
+            let id = {
+                let studio = &mut h.state_mut().0;
+                let id = bpe_kit::add_thing(&mut studio.scene, &reg, kind, ThingId::ROOT).unwrap();
+                studio.selection.set(id);
+                id
+            };
+            h.run();
+            assert!(h.query_by_label("Sound").is_some(), "{kind}: the Sound chip");
+            h.state_mut().0.panels.inspector.tab.insert(id, InspectorTab::Sound);
+            h.run();
+            click_switch(&mut h, "Enable sound");
+            assert!(card(&h, id).is_some(), "{kind}: takes a Sound card");
+            assert!(h.query_all_by_label("Hit a shape").next().is_some(), "{kind}: its balls' moments");
+            assert_eq!(h.query_all_by_label("Are fired").next().is_some(), fired, "{kind}: Are fired");
+            h.get_by_role_and_label(Role::CheckBox, "Break").scroll_to_me();
+            h.run();
+            click_switch(&mut h, "Break");
+            assert_eq!(card(&h, id).unwrap().params.get("moments_break"), Some(&Value::Bool(true)), "{kind}");
+        }
+    }
+
+    #[test]
     fn copy_and_paste_sound_between_shapes() {
         let mut h = sounding();
         let reg = bpe_kit::registry();
@@ -832,6 +1003,25 @@ pub(crate) mod tests {
             }
             other => panic!("no routes: {other:?}"),
         }
+    }
+
+    #[test]
+    fn save_and_load_sound_and_import_midi_are_offered() {
+        let mut h = studio_harness(SHAPE, true);
+        assert!(h.query_by_label("Save sound…").is_none(), "nothing to save yet");
+        assert!(h.query_by_label("Load sound…").is_some());
+        click_switch(&mut h, "Enable sound");
+        assert!(h.query_by_label("Save sound…").is_some());
+        assert!(h.query_by_label("Import MIDI").is_some());
+        // A note about a file shows under Enable sound, on its own thing only.
+        h.state_mut().0.panels.inspector.sound.note =
+            Some(TabNote { thing: SHAPE, text: "Imported 4 chords into 2 slots from a.mid.".into(), problem: false });
+        h.run();
+        assert!(h.query_by_label("Imported 4 chords into 2 slots from a.mid.").is_some());
+        h.state_mut().0.panels.inspector.sound.note =
+            Some(TabNote { thing: BALL, text: "Other".into(), problem: true });
+        h.run();
+        assert!(h.query_by_label("Other").is_none());
     }
 
     #[test]
