@@ -71,9 +71,18 @@ unchanged (colour × Lit).
 
 - **Lit 0** keeps the pretend look in a lit scene (the meaning of Lit 0 everywhere: keeps its own colour).
 - **A Liquid in front of balls** covers their surface where it covers them (it is in front); behind them it is covered.
-- **Smoke drawn in front of a ball that blocks light** now covers the ball's blocking where the smoke is thick (one
-  blend can't keep R and change G), so that ball's shadow lightens a little under thick front smoke. Smoke behind balls
-  (the usual case) is unaffected. Known and accepted.
+- **Smoke drawn in front of the balls, or adding its light**, keeps its own light (review): front smoke's cover in
+  the surface picture would take over the surface of every ball and shape under it (a Chrome ball under it would go
+  matte), and adding smoke covers nothing to stand up in. Smoke behind the balls (the default) stands up for the
+  lamps. Smoke behind other smoke or behind a liquid drawn behind still covers that one's surface where it is thick.
+- **Glass liquid bends lamp light only when it blocks light**, as a glass shape does (before, a pretend Glass liquid
+  always did, as free glass). At Lit 0 it is the old free glass again.
+- **Blocks light at Lit 0** casts no shadow (the pretend look writes nothing into the surface picture, as before).
+- **Lights up**: a lit liquid carries its thing's link number, so a lamp lighting up only some things lights it or
+  leaves it as it does a ball.
+- **Coloured shadows**: a lit liquid that blocks light writes its colour's depth into the tint picture as a sprite does,
+  so a see-through liquid colours its shadow and its shadow stays when something else turns the tint picture on.
+- **Throws light and Facets** are left out of a liquid's Surface numbers (no thrower, no tiles on a sheet).
 - **Mirror ball's tiles, Flakes and Brushed** sit in a ball's frame; on a liquid (a sheet) tiles do nothing and flakes
   and brushing read the liquid in screen space. Fine.
 - **Stage**: a lit liquid or smoke pixel is a sheet standing at its height in front of the picture plane, not the
@@ -85,7 +94,7 @@ unchanged (colour × Lit).
 ## Not in scope
 
 Flame (it gives off its own look), Catches beams / Under UV / Makes rainbows on Liquid (it writes covering black in
-those passes as before), coloured shadows from see-through liquid (the tint pass), lit Web lines and Marks.
+those passes as before), lit Web lines and Marks.
 
 ## Checks
 

@@ -1875,6 +1875,7 @@ impl Frame {
             || self.trails.iter().chain(&self.trails_front).any(|v| v.light[1] > 0.0)
             || self.particles.iter().chain(&self.particles_front).any(|p| p.light[1] > 0.0)
             || self.fields.iter().chain(&self.fields_front).any(|f| f.look.light[1] > 0.0)
+            || self.liquids.iter().any(|l| l.style.real() && part(l.style.d[2]))
             || self.layers.iter().any(|l| l.frame.see_through_blockers())
             || self.overlay.as_deref().is_some_and(Frame::see_through_blockers)
     }

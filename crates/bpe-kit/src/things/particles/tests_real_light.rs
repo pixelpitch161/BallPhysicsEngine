@@ -5,7 +5,7 @@ use bpe_core::{LayerId, Params, Scene, Settings, SlotId, ThingId, Value, layered
 use bpe_gfx::{Frame, SurfaceGpu, build_frame};
 use bpe_runtime::Playback;
 
-use super::liquid::{LIQUID, LiquidLayer, RealLight, params_of, pretend_code, surface_index};
+use super::liquid::{LIQUID, LiquidLayer, NOT_ON_A_LIQUID, RealLight, params_of, pretend_code, surface_index};
 use super::look::{SMOKE, SmokeLayer};
 use super::looks::{Look, add_particles};
 use super::{BornFrom, Emit, ParticlesSettings};
@@ -64,12 +64,13 @@ fn a_liquid_wears_a_balls_surface_starting_as_plastic() {
         kind.settings().iter().chain(kind.dynamic_defs(&get)).chain(kind.light_defs()).map(|d| d.key).collect();
     // The Surface's numbers are named by no other setting of the layer.
     for d in surface::sub_defs() {
-        assert_eq!(all.iter().filter(|k| **k == d.key).count(), 1, "{} once", d.key);
+        let want = usize::from(!NOT_ON_A_LIQUID.contains(&d.key));
+        assert_eq!(all.iter().filter(|k| **k == d.key).count(), want, "{}", d.key);
     }
     let defs = kind.settings();
     let surface = defs.iter().position(|d| d.key == "surface").expect("a Surface");
     assert_eq!(defs[surface + 1].key, "roughness", "its numbers right under it");
-    for (key, value) in preset_values(SurfaceKind::Plastic) {
+    for (key, value) in preset_values(SurfaceKind::Plastic).into_iter().filter(|(k, _)| !NOT_ON_A_LIQUID.contains(k)) {
         let d = defs.iter().find(|d| d.key == key).unwrap_or_else(|| panic!("{key}"));
         assert_eq!(d.default, value, "{key} starts as Plastic's");
     }
@@ -142,6 +143,8 @@ fn without_lighting_a_liquid_keeps_its_own_light_and_with_it_takes_the_real_ligh
     let index = surface_index(&resolved, id, layer).unwrap();
     assert_eq!(style.d[1], index as f32 + SurfaceGpu::GLASS_FLAG, "its index, see-through");
     assert_eq!(style.d[2], 0.0, "it blocks no light until asked");
+    let link = crate::things::light::links::number_of(&resolved, id);
+    assert!(link > 0.0 && style.d[3] == link, "its link number for Lights up: {:?}", style.d);
     assert_eq!(style.c[2], 0.0, "it bends lamp light through its surface, not as free glass");
     let scene_lights = lit.light.as_ref().expect("a lit frame");
     let s = SurfaceSettings::from_params(&params_of(&glass));
@@ -173,8 +176,8 @@ fn a_liquid_style_says_what_the_shader_reads() {
     let pretend = l.style(0.8, &s, None);
     assert_eq!(pretend.a[3], 1.0, "Pearl's own light is Plastic's");
     assert_eq!(pretend.c, [0.7, 0.8, 0.0, 0.0]);
-    let real = l.style(0.8, &s, Some(RealLight { lit: 1.5, stamp: 7.0, blocks: 2.0 }));
-    assert_eq!(real.d, [1.5, 7.0, 1.0, 0.0]);
+    let real = l.style(0.8, &s, Some(RealLight { lit: 1.5, stamp: 7.0, blocks: 2.0, link: 3.0 }));
+    assert_eq!(real.d, [1.5, 7.0, 1.0, 3.0]);
     assert_eq!(real.c[2], 0.0, "Pearl lets no light through, so bends none");
 }
 
@@ -193,4 +196,14 @@ fn smoke_stands_up_for_the_real_lights_only_in_a_lit_scene() {
     let card = scene.things.get_mut(&id).unwrap().slots.get_mut(&SlotId::Look).unwrap();
     card.params.set(&layered_key(layer, "lit"), Value::Number(0.0));
     assert_eq!(frame_of(&scene, 0.2).fields[0].look.shade[3], 0.0, "Lit 0: its own light");
+    // In front of the balls, or adding its light, it keeps its own light too.
+    let card = scene.things.get_mut(&id).unwrap().slots.get_mut(&SlotId::Look).unwrap();
+    card.params.set(&layered_key(layer, "lit"), Value::Number(1.0));
+    card.params.set(&layered_key(layer, "place"), Value::Choice("in_front".into()));
+    let front = frame_of(&scene, 0.2);
+    assert_eq!(front.fields_front[0].look.shade[3], 0.0, "in front: its own light");
+    let card = scene.things.get_mut(&id).unwrap().slots.get_mut(&SlotId::Look).unwrap();
+    card.params.set(&layered_key(layer, "place"), Value::Choice("behind".into()));
+    card.params.set(&layered_key(layer, "blend"), Value::Choice("add".into()));
+    assert_eq!(frame_of(&scene, 0.2).fields[0].look.shade[3], 0.0, "adding: its own light");
 }

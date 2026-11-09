@@ -96,12 +96,17 @@ look_settings! {
     }
 }
 
+/// The Surface numbers a liquid leaves out: it throws no lamp light back (no thrower) and has no
+/// tiles (a ball's only).
+pub const NOT_ON_A_LIQUID: [&str; 3] = ["throws", "facets", "facet_gaps"];
+
 /// The Liquid layer kind's settings: [`LiquidLayer`]'s with the Surface's numbers (as a Surface
-/// sub-layer has them) right after its Surface, starting as Plastic's.
+/// sub-layer has them, but [`NOT_ON_A_LIQUID`]) right after its Surface, starting as Plastic's.
 pub fn defs() -> &'static [SettingDef] {
     static DEFS: LazyLock<Vec<SettingDef>> = LazyLock::new(|| {
         let plastic = surface::preset_values(SurfaceKind::Plastic);
-        let numbers = surface::sub_defs().iter().filter(|d| d.key != "surface").map(|d| {
+        let wears = |d: &&SettingDef| d.key != "surface" && !NOT_ON_A_LIQUID.contains(&d.key);
+        let numbers = surface::sub_defs().iter().filter(wears).map(|d| {
             let mut d = d.clone();
             if let Some((_, v)) = plastic.iter().find(|(k, _)| *k == d.key) {
                 d.default = v.clone();
@@ -148,12 +153,14 @@ pub fn surface_index(scene: &Resolved, id: ThingId, layer: LayerId) -> Option<u3
 }
 
 /// How a liquid takes the real lights of a lit scene (W15): its layer's Lit (above 0), its
-/// surface stamp ([`surface::stamp`]) and how much it blocks light.
+/// surface stamp ([`surface::stamp`]), how much it blocks light and its thing's link number
+/// (`links::number_of`, for lights that light up only some things).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RealLight {
     pub lit: f32,
     pub stamp: f32,
     pub blocks: f32,
+    pub link: f32,
 }
 
 impl LiquidLayer {
@@ -174,7 +181,7 @@ impl LiquidLayer {
             c: [self.own_rim.clamp(0.0, 1.0), opacity.clamp(0.0, 1.0), bends, 0.0],
             sky_top: sky(self.sky_top),
             sky_bottom: sky(self.sky_bottom),
-            d: real.map_or([0.0; 4], |r| [r.lit.max(0.0), r.stamp, r.blocks.clamp(0.0, 1.0), 0.0]),
+            d: real.map_or([0.0; 4], |r| [r.lit.max(0.0), r.stamp, r.blocks.clamp(0.0, 1.0), r.link]),
         }
     }
 

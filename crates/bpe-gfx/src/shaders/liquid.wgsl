@@ -220,10 +220,14 @@ fn fs_surface(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 // lighting mix lights and shades it as it does a ball.
 fn real_lit(colour: vec3<f32>, shown: f32, inside: f32, unit: f32, mode: f32) -> vec4<f32> {
     if mode > 0.5 {
-        // Neither free glass (its glass bends lamp light through its surface, as a shape's does)
-        // nor tint.
-        if mode > 7.5 {
+        // Nothing in the glass picture (its glass bends lamp light through its surface, as a
+        // shape's does); in the tint picture (pass 8) its colour's depth where it blocks light,
+        // as a sprite's (tint.wgsl).
+        if mode > 8.5 {
             return vec4<f32>(0.0);
+        }
+        if mode > 7.5 {
+            return tint_out(colour, shown, st.d.z, 1.0, 0.0);
         }
         if mode < 1.5 {
             return vec4<f32>(max(colour, vec3<f32>(0.0)) * st.d.x * shown, shown);
@@ -243,7 +247,8 @@ fn real_lit(colour: vec3<f32>, shown: f32, inside: f32, unit: f32, mode: f32) ->
             return vec4<f32>(blocks, h, index, 1.0) * shown;
         }
         if mode > 5.5 {
-            return select(vec4<f32>(0.0), vec4<f32>(0.0, 0.0, 0.0, 1.0), shown >= 0.5);
+            // The tags: whole where it covers half or more, with its thing's link number.
+            return select(vec4<f32>(0.0), vec4<f32>(0.0, st.d.w, 0.0, 1.0), shown >= 0.5);
         }
         return vec4<f32>(0.0, 0.0, 0.0, shown);
     }

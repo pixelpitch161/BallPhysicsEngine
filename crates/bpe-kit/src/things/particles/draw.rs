@@ -96,10 +96,15 @@ impl ThingDraw for ParticlesDraw {
         pieces.give_light(layer.emit);
         if let Some(f) = field.as_mut() {
             f.look.light = [layer.light[0], layer.light[1], 0.0, 0.0];
-            // Smoke in a lit scene stands up by its density, so the real lights shade it (W15).
+            // Smoke in a lit scene stands up by its density, so the real lights shade it (W15):
+            // smoke that covers (not adding its light, which covers nothing to stand up in) and
+            // is drawn behind the balls (in front, its cover would take over the surface of every
+            // ball and shape under it, so it keeps its own light).
             if let Drawn::Smoke(s) = &layer.drawn
                 && lit_scene(cx)
                 && layer.light[0] > 0.0
+                && f.look.kind[1] < 0.5
+                && layer.common.place == AroundPlace::Behind
             {
                 f.look.shade[3] = SMOKE_RELIEF * s.shading.clamp(0.0, 1.0);
             }
@@ -1020,7 +1025,8 @@ pub fn liquid_of(cx: &DrawCx, st: &ParticlesState, layer: &LookLayer, l: &Liquid
         use crate::modules::look::surface;
         let index = super::liquid::surface_index(cx.scene, cx.thing.id, layer.id).unwrap_or(0);
         let blocks = if layer.light[1] > 0.0 { surface::keeps_of(surface::passes(&s)) } else { 0.0 };
-        RealLight { lit: layer.light[0], stamp: surface::stamp(index, &s), blocks }
+        let link = crate::things::light::links::number_of(cx.scene, cx.thing.id);
+        RealLight { lit: layer.light[0], stamp: surface::stamp(index, &s), blocks, link }
     });
     let style = l.style(c.opacity, &s, real);
     (!blobs.is_empty()).then(|| Liquid { blobs, style, front: c.place == AroundPlace::InFront })

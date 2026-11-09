@@ -91,3 +91,8 @@ Surface bends light (as a glass shape needs Blocks light to bend lamp light). `F
 liquids by `c.z` alone. The tests went into `tests_real_light.rs` (6) and `tests/lit_liquid_pictures.rs` (7);
 `bent_light_pictures.rs`'s glass liquid now blocks light. `full_size_look.rs` gained `lit-liquid-smoke`. Notes:
 `docs/notes/lighting.md` ("Liquid and Soft smoke lit by the real lights") and `docs/notes/particles.md` part 6.
+
+After the review: the real pass 8 writes `tint_out` (a liquid's shadow vanished on a Stage when anything else turned
+the tint picture on) and `see_through_blockers` counts liquids; pass 6 writes the link number (`d.w`); smoke stands
+up only Behind and not Add (front smoke turned the surfaces under it matte; adding smoke went flat); Throws light,
+Facets and Facet gaps are left out of the liquid's numbers.

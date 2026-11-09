@@ -51,7 +51,8 @@ pub struct LiquidStyle {
     pub sky_bottom: [f32; 4],
     /// Shaded by the real lights (W15): its Lit (0: its own pretend light, the rest of `d` unread),
     /// its surface stamp (table index plus [`crate::SurfaceGpu::GLASS_FLAG`] when see-through),
-    /// how much it blocks light (0 to 1), w spare.
+    /// how much it blocks light (0 to 1), its thing's link number (pass 6, for lights that light up
+    /// only some things).
     pub d: [f32; 4],
 }
 
@@ -138,7 +139,8 @@ impl LiquidPass {
             bind_group_layouts: &[Some(globals_layout), Some(&splat_layout)],
             immediate_size: 0,
         });
-        let module = util::shader(device, "liquid", &[include_str!("shaders/liquid.wgsl")]);
+        let module =
+            util::shader(device, "liquid", &[include_str!("shaders/tint.wgsl"), include_str!("shaders/liquid.wgsl")]);
         let add = wgpu::BlendComponent {
             src_factor: wgpu::BlendFactor::One,
             dst_factor: wgpu::BlendFactor::One,

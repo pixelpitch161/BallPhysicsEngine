@@ -282,8 +282,12 @@ Liquid layer of every Particles Look takes a surface index after every thing's a
 (`surface::taken`, `liquid::surface_index`, thing then layer order, shown or not); the Particles `light` hook puts
 `gpu(SurfaceGpu::SHEET)` there, sets `refracts` for see-through kinds and, for a real-lit liquid that blocks light
 and whose Surface bends light, a `Bender::round` box round its blobs with its index (free glass in pass 9 would
-overwrite the index in the surface picture, so the mix would not see glass). Soft smoke in a lit scene (Lit above 0)
-gets `FieldLook.shade.w = SMOKE_RELIEF (40 world px) × Shading`: `fields.wgsl` drops its pretend facing and writes
-its density as a height into the surface picture, so the lamps light the side facing them. Known gap: smoke drawn in
-front of a ball that blocks light thins the ball's shadow where it covers it (its surface write replaces the ball's).
-Unlit pictures are unchanged; goldens don't move.
+overwrite the index in the surface picture, so the mix would not see glass). A real liquid writes its colour's depth
+in the tint picture (`tint_out`, so `liquid.wgsl` is built after `tint.wgsl`; `Frame::see_through_blockers` counts a
+liquid that blocks part of the light) and its link number (`LiquidStyle.d.w`, `links::number_of`) in the tags. Its
+Surface numbers leave out `liquid::NOT_ON_A_LIQUID` (Throws light, Facets, Facet gaps). Soft smoke in a lit scene
+(Lit above 0) that covers (not Add) and is drawn Behind gets `FieldLook.shade.w = SMOKE_RELIEF (40 world px) ×
+Shading`: `fields.wgsl` drops its pretend facing and writes its density as a height into the surface picture, so the
+lamps light the side facing them. Smoke in front keeps its own light: its cover would take over the surface index of
+every ball and shape under it (the premultiplied blend leaves a fraction, read as matte). Unlit pictures are
+unchanged; goldens don't move.
