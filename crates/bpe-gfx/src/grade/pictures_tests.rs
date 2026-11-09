@@ -768,6 +768,42 @@ fn every_ball_copies_grade_round_each_place_and_not_between() {
 }
 
 #[test]
+fn turned_and_scaled_copies_are_found_by_their_reach_on_the_gpu() {
+    // A wide flat ellipse, turned a quarter and doubled at one place: a tall one 12 wide and 40 high.
+    let v = 0.18;
+    let tall = GradePlace { at: [12.0, 0.0], turn: std::f32::consts::FRAC_PI_2, scale: 2.0 };
+    let small = GradePlace { at: [-12.0, -20.0], ..GradePlace::SCREEN };
+    let shape = GradeShape::Radial(GradeRadial {
+        x: 0.0,
+        y: 0.0,
+        width: 40.0,
+        height: 6.0,
+        angle: 0.0,
+        roundness: 0.0,
+        feather: 0.0,
+        places: vec![tall, small],
+    });
+    let area = GradeArea { parts: vec![add(shape.clone())], invert: false };
+    let Some(p) = draw(&graded(grey(v as f32), mask_of(vec![add(shape)], 1.0))) else { return };
+    let (lit, dark) = ([byte(2.0 * v); 3], [byte(v); 3]);
+    assert!(close(at(&p, 44, 48), lit, 2), "far down the tall one: {:?}", at(&p, 44, 48));
+    assert!(close(at(&p, 52, 32), dark, 2), "beside it: {:?}", at(&p, 52, 32));
+    assert!(close(at(&p, 20, 12), lit, 2), "the small one: {:?}", at(&p, 20, 12));
+    // The CPU twin agrees.
+    let cpu = |x: f64, y: f64| crate::grade::maths::area_cover(&area, [v; 3], [x - 32.0, y - 32.0], 1.0);
+    assert!(cpu(44.5, 48.5) > 0.99 && cpu(52.5, 32.5) < 0.01);
+}
+
+#[test]
+fn an_inverted_part_covers_outside_on_the_gpu() {
+    let v = 0.18;
+    let part = GradePart { invert: true, ..add(radial(0.0, 0.0, 30.0, 0.0)) };
+    let Some(p) = draw(&graded(grey(v as f32), mask_of(vec![part], 1.0))) else { return };
+    assert!(close(centre(&p), [byte(v); 3], 2), "inside kept: {:?}", centre(&p));
+    assert!(close(at(&p, 2, 2), [byte(2.0 * v); 3], 2), "outside graded: {:?}", at(&p, 2, 2));
+}
+
+#[test]
 fn a_mask_with_an_area_step_inside_still_covers_only_its_part() {
     let frame = grey(0.18);
     let Some(plain) = draw(&frame) else { return };

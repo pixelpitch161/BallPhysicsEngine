@@ -46,6 +46,9 @@ const PART_LUMINANCE: u32 = 4u;
 const COMBINE_SUBTRACT: u32 = 1u;
 const COMBINE_INTERSECT: u32 = 2u;
 const MAX_BALLS: u32 = 4096u;
+// The most copies of one gradient a pixel looks at (grade/mod.rs `MAX_SCAN`): hundreds of big
+// gradients over one row would otherwise make a frame slow enough to lose the GPU.
+const MAX_SCAN: u32 = 512u;
 // The blur of the pyramid's mips read through the B-spline: about 1.9 · 2^k output pixels for
 // mip k (measured on an impulse; mip 0 is 1.76).
 const PYR_SIGMA: f32 = 1.9;
@@ -501,7 +504,8 @@ fn grade_copies(kind: u32, n0: vec4<f32>, n1: vec4<f32>, at: u32, p: vec2<f32>, 
         }
     }
     var best = 0.0;
-    for (var k = lo; k < count; k++) {
+    let end = min(count, lo + MAX_SCAN);
+    for (var k = lo; k < end; k++) {
         let q = grade_prog[at + 1u + k];
         if reach >= 0.0 && q.y > p.y + reach {
             break;

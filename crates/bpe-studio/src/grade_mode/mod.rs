@@ -150,6 +150,8 @@ pub struct GradeMode {
     pub part: BTreeMap<LayerId, LayerId>,
     /// The red overlay (O) over where the selected mask covers.
     pub overlay: bool,
+    /// A colour is being picked from the picture (the overlay stays off meanwhile).
+    pub picking: bool,
     /// The mask whose name is being typed, and what is typed so far.
     pub renaming: Option<(LayerId, String)>,
     /// The mask whose row is being dragged to a new place.
@@ -184,6 +186,7 @@ impl Default for GradeMode {
             mask: None,
             part: BTreeMap::new(),
             overlay: false,
+            picking: false,
             renaming: None,
             mask_drag: None,
             mask_rows: Vec::new(),
@@ -217,11 +220,16 @@ impl GradeMode {
         self.compare = if self.compare == Compare::Split { Compare::After } else { Compare::Split };
     }
 
+    /// Whether the overlay is drawn: on, and no colour being picked from the picture.
+    pub fn overlay_shown(&self) -> bool {
+        self.overlay && !self.picking
+    }
+
     /// The preview's grade as Grade mode shows it: cleared for Before, split for Split.
     pub fn show_on(&self, grade: &mut bpe_gfx::GradeStack) {
         self.shown.replace(grade.clone());
         // The overlay shows the selected mask (only a mask over part of the picture has one).
-        if self.overlay
+        if self.overlay_shown()
             && let Some(mask) = self.mask
             && let Some(m) = grade.masks.iter_mut().find(|m| m.id == mask.0 && m.area.is_some())
         {

@@ -185,8 +185,13 @@ pub fn apply(scene: &mut Scene, kit: &Kit, time: f64, edits: Vec<GradeEdit>) -> 
                 }
                 Err(_) => false,
             },
-            GradeEdit::RemoveMask(id) | GradeEdit::RemovePart(id) => {
-                let ours = scene.card(root, slot).and_then(|c| c.layer(id)).is_some_and(|l| l.kind != grade::WHOLE);
+            GradeEdit::RemoveMask(id) => {
+                let ours = scene.card(root, slot).and_then(|c| c.layer(id)).is_some_and(|l| l.kind == grade::MASK);
+                ours && scene.remove_layer(reg, root, slot, id).is_ok()
+            }
+            GradeEdit::RemovePart(id) => {
+                let kind = scene.card(root, slot).and_then(|c| c.layer(id)).map(|l| l.kind.clone());
+                let ours = kind.is_some_and(|k| grade::PART_KINDS.contains(&k.as_str()));
                 ours && scene.remove_layer(reg, root, slot, id).is_ok()
             }
             GradeEdit::MoveMask(id, to) => {

@@ -47,6 +47,10 @@ pub struct Grab {
     /// The part as it was when the drag started.
     pub shape: Shape,
     pub place: GradePlace,
+    /// How far each setting as drawn was from its own value (keyframes in, pulses not) at the
+    /// press: what following sound, light or health added, taken off what the drag writes so the
+    /// pulse isn't baked in.
+    pub pulsed: Vec<(&'static str, f32)>,
 }
 
 /// A gradient with handles.
@@ -205,7 +209,29 @@ pub fn hit(shape: &Shape, place: &GradePlace, p: [f32; 2], px: f32) -> Option<Ha
     }
 }
 
-/// The settings a drag of `grab` to screen point `p` asks for.
+/// A gradient's numbers by setting key, as drawn.
+fn numbers(shape: &Shape) -> Vec<(&'static str, f32)> {
+    match shape {
+        Shape::Linear(l) => vec![("x", l.x), ("y", l.y), ("angle", l.angle), ("feather", l.feather)],
+        Shape::Radial(r) => {
+            vec![("x", r.x), ("y", r.y), ("angle", r.angle), ("width", r.width), ("height", r.height)]
+        }
+    }
+}
+
+/// The settings a drag of `grab` to screen point `p` writes: [`dragged`], less what pulses added.
+pub fn written(grab: &Grab, p: [f32; 2]) -> Vec<(&'static str, f32)> {
+    dragged(grab, p)
+        .into_iter()
+        .map(|(key, v)| {
+            let pulse = grab.pulsed.iter().find(|(k, _)| *k == key).map_or(0.0, |(_, d)| *d);
+            let v = if key == "angle" { wrapped(v - pulse) } else { v - pulse };
+            (key, v)
+        })
+        .collect()
+}
+
+/// The settings a drag of `grab` to screen point `p` asks for (as drawn).
 pub fn dragged(grab: &Grab, p: [f32; 2]) -> Vec<(&'static str, f32)> {
     let place = &grab.place;
     match (&grab.shape, grab.handle) {
@@ -271,7 +297,21 @@ pub fn preview(ui: &mut Ui, response: &egui::Response, rect: Rect, view_scale: f
         && let Some(handle) = hit(&shape, &place, units(press), px)
     {
         let at = units(press);
-        studio.grade.handle = Some(Grab { part, handle, press: at, last: at, shape: shape.clone(), place });
+        let time = studio.sim_time();
+        let own = |key: &str| {
+            let value =
+                studio.scene.value_at_time(&studio.kit.registry, &super::cx::at(&full_key(Some(part), key)), time);
+            match value {
+                Some(Value::Number(v)) => Some(v as f32),
+                _ => None,
+            }
+        };
+        let pulsed = numbers(&shape)
+            .into_iter()
+            .filter_map(|(key, drawn)| own(key).map(|v| (key, drawn - v)))
+            .filter(|(_, d)| d.abs() > 1e-4)
+            .collect();
+        studio.grade.handle = Some(Grab { part, handle, press: at, last: at, shape: shape.clone(), place, pulsed });
         // Each drag is its own undo step.
         studio.panels.inspector.own_step = true;
     }
@@ -280,7 +320,7 @@ pub fn preview(ui: &mut Ui, response: &egui::Response, rect: Rect, view_scale: f
             && p != grab.last
         {
             grab.last = p;
-            let edits = dragged(grab, p)
+            let edits = written(grab, p)
                 .into_iter()
                 .map(|(key, v)| GradeEdit::Set(full_key(Some(part), key), Value::Number(v as f64)))
                 .collect();
@@ -369,7 +409,7 @@ mod tests {
     }
 
     fn grab(shape: Shape, place: GradePlace, handle: Handle, press: [f32; 2]) -> Grab {
-        Grab { part: LayerId(9), handle, press, last: press, shape, place }
+        Grab { part: LayerId(9), handle, press, last: press, shape, place, pulsed: Vec::new() }
     }
 
     fn close(a: f32, b: f32) -> bool {
@@ -461,5 +501,15 @@ mod tests {
         assert_eq!(handle_part(&card(), &BTreeMap::from([(mask, linear)]), mask), Some(linear));
         let luminance = grade::parts_of(&card(), mask)[0].id;
         assert_eq!(handle_part(&card(), &BTreeMap::from([(mask, luminance)]), mask), Some(radial));
+    }
+
+    #[test]
+    fn a_drag_keeps_what_following_sound_adds_out_of_the_setting() {
+        // Drawn at x 130 because sound adds 30 to its own 100: the pin dragged 10 right writes 110.
+        let mut g =
+            grab(Shape::Radial(GradeRadial { x: 130.0, ..radial() }), GradePlace::SCREEN, Handle::Move, [130.0, -50.0]);
+        g.pulsed = vec![("x", 30.0)];
+        let out = written(&g, [140.0, -50.0]);
+        assert!(close(out[0].1, 110.0) && close(out[1].1, -50.0), "{out:?}");
     }
 }

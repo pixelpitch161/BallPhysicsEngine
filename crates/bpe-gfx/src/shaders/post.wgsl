@@ -231,13 +231,16 @@ fn fs_composite(in: GradeIn) -> @location(0) vec4<f32> {
     // The colour grade works on the linear picture, light above white kept, before the roll-off
     // squeezes it into the screen's range. With no grade it is skipped altogether, so the picture
     // is exactly as without it. A grade of several passes ran its earlier ones before this.
+    var overlay = 0.0;
     if g.post.z > 0.5 {
         let o = graded(in, lin);
         lin = clamp(o.colour, vec3<f32>(0.0), vec3<f32>(65504.0));
-        // The editor's red mask overlay (O), where the mask it shows covers.
-        lin = mix(lin, vec3<f32>(1.0, 0.02, 0.02), 0.5 * clamp(o.overlay, 0.0, 1.0));
+        overlay = clamp(o.overlay, 0.0, 1.0);
     }
-    let mapped = roll_off(lin);
+    var mapped = roll_off(lin);
+    // The editor's red mask overlay (O), where the mask it shows covers: mixed after the roll-off,
+    // so it shows on bright light too.
+    mapped = mix(mapped, vec3<f32>(1.0, 0.02, 0.02), 0.5 * overlay);
     // Triangular dither of ±1 step, the same on every channel (two uniform numbers summed): no banding survives the
     // 8-bit output, and no sin() whose precision differs from GPU to GPU.
     let n = dither_noise(vec2<u32>(in.pos.xy), 0u);

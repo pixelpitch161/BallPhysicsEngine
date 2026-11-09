@@ -337,6 +337,9 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         preview.drawn = None;
     }
 
+    // While a colour is picked from the picture the overlay stays off, so the pick (and the
+    // Histogram) read the picture itself.
+    studio.grade.picking = crate::eyedropper::target(ui.ctx()).is_some();
     let drawn_before = preview.drawn.as_ref().map(|d| (d.revision, d.time.to_bits(), d.step, d.grade));
     let catching_up = draw_picture(
         studio,
@@ -738,8 +741,9 @@ fn draw_picture(
         look,
         light: (studio.light_show, studio.light_solo.iter().copied().collect()),
         particles: None,
-        grade: (studio.mode == crate::grade_mode::EditorMode::Grade)
-            .then(|| (studio.grade.compare, studio.grade.split.to_bits(), studio.grade.overlay, studio.grade.mask)),
+        grade: (studio.mode == crate::grade_mode::EditorMode::Grade).then(|| {
+            (studio.grade.compare, studio.grade.split.to_bits(), studio.grade.overlay_shown(), studio.grade.mask)
+        }),
     };
     let now = Drawn { particles: particles.as_ref().map(|p| p.step), ..now };
     if drawn.as_ref() != Some(&now) {

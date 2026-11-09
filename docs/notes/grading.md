@@ -253,7 +253,10 @@ Plan: `docs/superpowers/plans/colour-grading/part4.md` (decisions 1 to 19 hold e
   (default every Balls group), `ball` (1..), `turns`, `grows`. `places(world, ..)` turns them into `GradePlace`s
   (screen units through `world.camera`): a thing's middle is the camera's `follow_point`; a ball's turn is its
   direction of travel; Grows scales by radius / 24; every ball gives one copy per live ball, at most 4096.
-  `follow_note` gives a mask row's note ("Thing not found", "First 4096 of N balls only").
+  `follow_note` gives a mask row's note ("Thing not found", "First 4096 of N balls only"). A gradient with no
+  place (nothing to follow, no balls yet) is left out of the area like a hidden part, so it covers nothing even
+  inverted.
+- Panels and parts are named per mask (`name_among_siblings`): "Basic", "Basic 2", past any name a delete left.
 - `stack(card, world)` builds one `GradeMask` per shown top-level layer (the Whole picture with no area), its
   `amount`, `area` (`masks::area`) and `id` (the layer's id). The scene's draw passes `Some(cx.world)`.
 
@@ -267,11 +270,14 @@ Plan: `docs/superpowers/plans/colour-grading/part4.md` (decisions 1 to 19 hold e
   Whole picture's `OP_END` stays wordless, so parts 1 to 3 grades compile to the same words.
 - **Copies** of a following gradient ride in the program: `[count, reach, 0, 0]` then `[at.x, at.y, turn, scale]`
   each, sorted by `at.y`; the shader (`grade_copies`) binary-searches the rows within `reach` of the pixel (reach −1
-  for a linear, which reaches everywhere).
+  for a linear, which reaches everywhere). A pixel looks at most at `MAX_SCAN` (512) copies of one gradient, so
+  hundreds of big gradients over one row can't make a frame slow enough to lose the GPU.
 - Coverage is worked out at `OP_END` from the saved colour (`OP_BEGIN`'s, which rides through area passes in
   `kept`), so range parts read the picture as graded so far; `END` mixes by `amount × coverage`.
 - **Overlay** (`GradeMask.overlay`, set only by the editor): `run_grade` returns that mask's coverage, passes keep
-  it in `kept`'s alpha, and the composite mixes in `(1, 0.02, 0.02)` at `0.5 × coverage` after the grade.
+  it in `kept`'s alpha, and the composite mixes in `(1, 0.02, 0.02)` at `0.5 × coverage` after the roll-off (so it
+  shows on light past white). It is off while a colour is picked from the picture (`GradeMode.picking`), so picks
+  and the Histogram read the picture itself.
 - CPU twins in `grade/maths.rs`: `linear_cover`, `radial_cover` (roundness as the vignette), `colour_range_cover`
   (Oklab, lightness counted half, `range_widths`), `luminance_cover`, `combine`, `part_cover`, `area_cover`.
 
@@ -289,8 +295,11 @@ Plan: `docs/superpowers/plans/colour-grading/part4.md` (decisions 1 to 19 hold e
 - `handles.rs`: on the preview, the selected mask's picked (or first) gradient on its first place, from
   `GradeMode.shown` (the stack as last drawn, a `RefCell` set while the frame is built). Linear: its three lines, a
   pin, a turn dot; an outer line sets Feather, the middle line moves it. Radial: its edge and where the fade starts,
-  a pin, four size dots, a turn dot. A drag works from the part as it was at the press; each drag is one undo step;
+  a pin, four size dots, a turn dot. A drag works from the part as it was at the press, less what following
+  sound or light added there (`Grab.pulsed`), so a pulse isn't baked in; each drag is one undo step;
   values go through `GradeEdit::Set` (keyed at the playhead when keyed). Split's line takes the press first.
+- Known gap: following gradients are placed through the flat camera (`world.camera`), so under the Stage camera's
+  perspective they drift off the balls.
 - **O** toggles the overlay (Grade mode, nothing focused); `show_on` sets it on the selected mask only. The
   preview's `Drawn` key holds the overlay and the selected mask.
 - `GradeEdit` works per mask: `AddPanel(mask, kind)`, `ResetOrder(mask)`, `Enable(layer, on)`, and `AddMask`,

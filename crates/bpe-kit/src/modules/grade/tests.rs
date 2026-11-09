@@ -372,3 +372,38 @@ fn a_ball_s_turn_is_the_way_it_is_going() {
     let still = places(Some(&world), Placed::OnOneBall, &balls, 1, false, false);
     assert_eq!(still[0].turn, 0.0);
 }
+
+#[test]
+fn a_gradient_with_nowhere_to_be_is_left_out_so_it_covers_nothing_even_inverted() {
+    let (kit, mut scene) = graded();
+    let reg = &kit.registry;
+    let mask = add_mask(&mut scene, reg, RADIAL).unwrap();
+    let part = parts_of(card(&scene), mask)[0].id;
+    let params = &mut scene.card_mut(ThingId::ROOT, SlotId::Grade).unwrap().params;
+    params.set(&bpe_core::layered_key(part, "place"), Value::Choice("on_a_thing".into()));
+    params.set(&bpe_core::layered_key(part, "target"), Value::Target(Target::Thing(ThingId(999))));
+    params.set(&bpe_core::layered_key(part, "invert"), Value::Bool(true));
+    params.set(&bpe_core::layered_key(mask, "invert"), Value::Bool(true));
+    let s = stack_of(&kit, &scene);
+    let area = s.masks[1].area.as_ref().unwrap();
+    assert!(area.parts.is_empty(), "{area:?}");
+    assert_eq!(bpe_gfx::grade::maths::area_cover(area, [0.5; 3], [0.0, 0.0], 1.0), 0.0);
+}
+
+#[test]
+fn a_mask_s_panels_count_from_their_own_first_and_never_share_a_name() {
+    let (kit, mut scene) = graded();
+    let reg = &kit.registry;
+    let mask = add_mask(&mut scene, reg, LINEAR).unwrap();
+    let names = |scene: &Scene| panels_of(card(scene), mask).iter().map(|l| l.name.clone()).collect::<Vec<_>>();
+    assert_eq!(names(&scene), ["Basic"], "not numbered after the Whole picture's Basic");
+    add_panel(&mut scene, reg, mask, BASIC).unwrap();
+    let third = add_panel(&mut scene, reg, mask, BASIC).unwrap();
+    assert_eq!(names(&scene), ["Basic", "Basic 2", "Basic 3"]);
+    let second = panels_of(card(&scene), mask)[1].id;
+    scene.remove_layer(reg, ThingId::ROOT, SlotId::Grade, second).unwrap();
+    add_panel(&mut scene, reg, mask, BASIC).unwrap();
+    assert_eq!(names(&scene), ["Basic", "Basic 3", "Basic 4"]);
+    assert!(card(&scene).layer(third).is_some());
+    assert_eq!(parts_of(card(&scene), mask)[0].name, "Linear Gradient");
+}

@@ -201,4 +201,9 @@ Built as planned; the summary is "Part 4 as built" in `docs/notes/grading.md`. W
   under the pointer for a plain ellipse and scales in proportion when rounder.
 - **Renaming** asks for focus only when it opens (asking every frame would take it back from Enter), with a small
   "Name" label for the field.
+- **After the review**: the overlay is mixed after the roll-off (it showed as white on bright light) and is off
+  while a colour is picked; a pixel looks at most at 512 copies of a gradient (`MAX_SCAN`); a gradient with no
+  place is left out (so Invert doesn't make it cover everything); a handle drag takes off what pulses added; the
+  Combine chip shows on parts after a shown one; names never repeat after a delete; the warm-up keeps the
+  handles' stack. Known gap: following gradients don't follow the Stage camera's perspective.
 - The overlay is never set for an export: only `GradeMode::show_on` sets it, on the editor's preview.

@@ -31,7 +31,9 @@ pub fn section(ui: &mut Ui, mode: &mut GradeMode, gx: &GradeCx, mask: LayerId, e
     }
     let handles = super::handles::handle_part(gx.card, &mode.part, mask);
     for (index, layer) in parts.iter().enumerate() {
-        part_box(ui, mode, gx, mask, layer, (index, parts.len()), handles == Some(layer.id), edits);
+        // Only a part after a shown one joins anything (the first shown part is taken as it is).
+        let joins = parts[..index].iter().any(|l| l.enabled);
+        part_box(ui, mode, gx, mask, layer, (index, parts.len(), joins), handles == Some(layer.id), edits);
     }
 }
 
@@ -72,7 +74,7 @@ fn part_box(
     gx: &GradeCx,
     mask: LayerId,
     layer: &Layer,
-    (index, count): (usize, usize),
+    (index, count, joins): (usize, usize, bool),
     handles: bool,
     edits: &mut Vec<GradeEdit>,
 ) {
@@ -103,7 +105,7 @@ fn part_box(
                     if switch.on_hover_text("Off, the part is left out (its settings are kept)").changed() {
                         edits.push(GradeEdit::Enable(id, on));
                     }
-                    if index > 0 {
+                    if joins {
                         combine_menu(ui, gx, id, edits);
                     }
                 });

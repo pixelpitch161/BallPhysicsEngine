@@ -78,7 +78,13 @@ pub const COMBINE_INTERSECT: u32 = 2;
 
 /// At most this many copies of one gradient (a copy a ball for every ball); the rest are left out.
 pub const MAX_BALLS: usize = 4096;
+/// The most copies of one gradient a pixel looks at, from the first within reach of its row
+/// down (the shader's `MAX_SCAN`): past it a pixel misses copies further down, which only
+/// hundreds of big gradients over one row reach. It keeps a frame from taking so long the GPU is
+/// lost. The CPU twin (`maths::part_cover`) looks at every copy.
+pub const MAX_SCAN: usize = 512;
 
-/// The editor's mask overlay: this red (linear light) mixed in by half the coverage.
+/// The editor's mask overlay: this red mixed in by half the coverage, after the roll-off (so it
+/// shows on light past white too).
 pub const OVERLAY_RED: [f32; 3] = [1.0, 0.02, 0.02];
 pub const OVERLAY_MIX: f32 = 0.5;

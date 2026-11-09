@@ -630,7 +630,9 @@ pub fn follow_note(world: &World, kind: &str, params: &Params) -> Option<String>
     }
 }
 
-/// Mask `mask`'s area in the resolved card: its shown parts in order, placed through `world`.
+/// Mask `mask`'s area in the resolved card: its shown parts in order, placed through `world`. A
+/// gradient with nowhere to be (what it follows isn't there, or no balls yet) is left out, as a
+/// hidden part is, so it covers nothing even inverted; a mask left with no parts covers nothing.
 pub fn area(card: &ResolvedSlot, mask: LayerId, world: Option<&World>, invert: bool) -> GradeArea {
     let parts = card
         .layers
@@ -642,6 +644,9 @@ pub fn area(card: &ResolvedSlot, mask: LayerId, world: Option<&World>, invert: b
                 LINEAR => {
                     let s = LinearPart::from_params(&params);
                     let places = places(world, s.place, &s.target, s.ball, s.turns, s.grows);
+                    if places.is_empty() {
+                        return None;
+                    }
                     let shape =
                         GradeShape::Linear(GradeLinear { x: s.x, y: s.y, angle: s.angle, feather: s.feather, places });
                     (s.combine, s.invert, shape)
@@ -649,6 +654,9 @@ pub fn area(card: &ResolvedSlot, mask: LayerId, world: Option<&World>, invert: b
                 RADIAL => {
                     let s = RadialPart::from_params(&params);
                     let places = places(world, s.place, &s.target, s.ball, s.turns, s.grows);
+                    if places.is_empty() {
+                        return None;
+                    }
                     let shape = GradeShape::Radial(GradeRadial {
                         x: s.x,
                         y: s.y,

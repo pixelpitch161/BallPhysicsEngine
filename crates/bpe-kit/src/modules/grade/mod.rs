@@ -292,8 +292,15 @@ pub(crate) fn name_among_siblings(scene: &mut Scene, reg: &Registry, id: LayerId
     let Some(layer) = card.layer(id) else { return };
     let (kind, parent) = (layer.kind.clone(), layer.parent);
     let Some(name) = reg.layer(&kind).map(|k| k.name().to_owned()) else { return };
-    let same = card.layers.iter().filter(|l| l.parent == parent && l.kind == kind).count();
-    let name = if same > 1 { format!("{name} {same}") } else { name };
+    let siblings: Vec<&str> =
+        card.layers.iter().filter(|l| l.parent == parent && l.id != id).map(|l| l.name.as_str()).collect();
+    let numbered = |n: usize| if n > 1 { format!("{name} {n}") } else { name.clone() };
+    // Numbered after the others of its kind, past any name already taken (one left after a delete).
+    let mut n = card.layers.iter().filter(|l| l.parent == parent && l.kind == kind).count();
+    while siblings.contains(&numbered(n).as_str()) {
+        n += 1;
+    }
+    let name = numbered(n);
     if let Some(layer) = card.layers.iter_mut().find(|l| l.id == id) {
         layer.name = name;
     }

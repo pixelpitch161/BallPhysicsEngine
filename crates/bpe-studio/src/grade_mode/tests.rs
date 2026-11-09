@@ -664,7 +664,7 @@ fn a_masks_column_shows_its_parts_and_add_part_joins_another() {
     assert!(h.query_all_by_role_and_label(Role::Slider, "Amount").next().is_some(), "the mask's Amount");
     assert!(h.query_all_by_label("Radial Gradient").next().is_some(), "the part's box");
     assert!(h.query_all_by_role_and_label(Role::Slider, "Width").next().is_some());
-    assert!(h.query_all_by_label("Combine").next().is_none(), "the first part has no Combine");
+    assert!(h.query_all_by_role_and_label(Role::Button, "Add").next().is_none(), "the first part has no Combine chip");
     assert!(h.query_all_by_label("Basic").next().is_some(), "its panel");
     // Add part, Subtract, Linear Gradient.
     h.get_by_label("Add part").click();
