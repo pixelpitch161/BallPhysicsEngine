@@ -837,7 +837,8 @@ pub fn vignette(c: [f64; 3], v: f64, amount: f64, h: f64, local_luma: f64) -> [f
         c.map(|x| x * gain)
     } else {
         let t = amount * v;
-        c.map(|x| untone(tone(x) + (1.0 - tone(x)) * t))
+        // Past white stays where it is.
+        c.map(|x| untone(tone(x) + (1.0 - tone(x)).max(0.0) * t))
     }
 }
 

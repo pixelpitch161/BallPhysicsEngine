@@ -191,28 +191,32 @@ Plan: `docs/superpowers/plans/colour-grading/part3.md` (every number is stated t
   **pair** (colour and kept colour, so a weaker mask's starting colour survives a split), ping-ponged; the
   composite runs the last segment from the last pair. The segment number is the draw's instance (`vs_grade`). Pass
   0 starts from `(hdr + bloom) × exposure` like the composite. Between passes values stay within f16 (negatives
-  kept, NaN black). Pipelines and pictures are made the first time a frame has area steps.
+  kept, NaN black). Pipelines and pictures are made the first time a frame has area steps. Left of the editor's
+  Split line the picture passes through the f16 pairs too, so with area steps it can differ from Before by a level.
 - **The pyramid**: before a segment that needs it, its input is downsampled into one half-size texture of up to 8
   mips (`fs_grade_down0` makes tone-space colour with the least channel's tone in alpha; `fs_grade_down` the rest,
-  bloom's 13-tap filter). `grade_blur` reads a σ through a cubic B-spline between two mips (mip k ≈ σ 1.2·2^k
-  output pixels), below mip 0 mixing in the pixel itself.
+  bloom's 13-tap filter). `grade_blur` reads a σ through a cubic B-spline between two mips (mip k ≈ σ 1.9·2^k
+  output pixels, measured on an impulse), below mip 0 mixing in the pixel itself.
 - **Video pixels**: every blur size and the grain's cell are in pixels of the scene's video and turned into output
   pixels by `output height / video height`, so a small preview looks like the export scaled down.
 - Maths (`grade/maths.rs` twins, tests in `grade/tests.rs`):
   - Texture, Clarity and Sharpening move the tone luma through `lift` (keeps a bright colour's channel ratios,
     an even shift near black), held back by `soft_limit` (tanh). Texture: blurs σ 2 vs 8 video px, ×1.2, limit 0.1.
     Clarity: the pixel vs σ 40, ×0.9, limit 0.15, weighted to midtones (`clarity_weight`). Sharpening: the
-    pixel's luma vs a Gaussian of Radius (taps to `ceil(2σ)`, at most 6, `textureLoad`), ×amount/100, limit
-    `0.02 + 0.5·(detail/100)²`.
+    pixel's luma vs a Gaussian of Radius (σ at most 3 output pixels, taps to `ceil(2σ)`, reading the tone luma
+    each pass writes in its colour's alpha), ×amount/100, limit `0.02 + 0.5·(detail/100)²`. `soft_limit`'s
+    argument is clamped to ±10 (tanh from exp is NaN on some back ends).
   - Dehaze +: veil = least of the pixel's own least channel and the σ 80 blurred dark channel, capped 0.8;
     `v = 0.75·d·veil`; `(c − v)/(1 − v)` (white stays white). −: a light fog (0.55..1 by the local brightness)
     mixed in by 0.6·|d|.
   - Vignette: `p = (uv − 0.5)·2`, roundness + blends to a circle on the short side, − a superellipse (rounder
     rectangle); middle `0.35 + 0.9·midpoint`, width `0.02 + feather`; − darkens like exposure, Highlights keep
-    places whose σ 6 surround is bright (`smoothstep(0.3, 1)`); + lightens towards white in tone space.
+    places whose σ 6 surround is bright (`smoothstep(0.3, 1)`); + lightens towards white in tone space (past
+    white is left alone).
   - Grain (`OP_GRAIN` 15, linear): monochrome quintic value noise from the composite's PCG hash, seeded by the
     frame's time bits (`Globals.view.w`), so no per-frame upload and the same frame always matches; cell
-    `1 + 3·size` video px; roughness adds a finer octave and coarse clumping; `c·2^(1.2·a·n) + 0.0015·a·n`.
+    `1 + 3·size` video px; roughness adds a finer octave and coarse clumping; `c·2^(1.2·a·n) + 0.0015·a·n`, with
+    `n` scaled by the cell's size in output pixels when under one (a small preview isn't grainier than the export).
   - Gradient map (`OP_GRADIENT_MAP` 16, tone): 256 baked colours in tone space picked by the tone luma (scaled by
     the luma when past white), mixed by Amount.
 - Picture tests (`grade/pictures_tests.rs`): defaults byte-identical; a pass split keeps point steps within 1/255;

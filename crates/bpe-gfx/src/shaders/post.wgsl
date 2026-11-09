@@ -158,14 +158,17 @@ struct GradePassOut {
     @location(1) kept: vec4<f32>,
 };
 
-// A grade pass before the last: its colour and kept colour, in what half floats hold.
+// A grade pass before the last: its colour (tone luma in alpha) and kept colour, in what half
+// floats hold.
 @fragment
 fn fs_grade_pass(in: GradeIn) -> GradePassOut {
     let first = composite_input(in.uv);
     let o = graded(in, first);
     let most = vec3<f32>(65504.0);
     var out: GradePassOut;
-    out.colour = vec4<f32>(clamp(o.colour, -most, most), 1.0);
+    let colour = clamp(o.colour, -most, most);
+    // Its tone luma rides in alpha, for Sharpening's neighbours.
+    out.colour = vec4<f32>(colour, luma(tone3(colour)));
     out.kept = vec4<f32>(clamp(o.kept, -most, most), 1.0);
     return out;
 }

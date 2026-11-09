@@ -37,8 +37,9 @@ const OP_GRAIN: u32 = 15u;
 const OP_GRADIENT_MAP: u32 = 16u;
 
 const MAP_SAMPLES: u32 = 256u;
-// The blur of mip 0 of the pyramid, in output pixels; each mip after doubles it.
-const PYR_SIGMA: f32 = 1.2;
+// The blur of the pyramid's mips read through the B-spline: about 1.9 · 2^k output pixels for
+// mip k (measured on an impulse; mip 0 is 1.76).
+const PYR_SIGMA: f32 = 1.9;
 // Lift's softening near black (grade/maths.rs LIFT_SOFT).
 const LIFT_SOFT: f32 = 0.05;
 
@@ -268,7 +269,8 @@ fn grade_lift(c: vec3<f32>, delta: f32) -> vec3<f32> {
 }
 
 fn grade_soft(d: f32, limit: f32) -> f32 {
-    return limit * tanh(d / limit);
+    // Clamped first: some back ends work tanh out from exp, and inf / inf is not a number.
+    return limit * tanh(clamp(d / limit, -10.0, 10.0));
 }
 
 // Mip `level` of the pyramid at `uv` through a cubic B-spline (four bilinear taps), so the
@@ -310,19 +312,21 @@ fn grade_blur(uv: vec2<f32>, sigma: f32, own: vec4<f32>) -> vec4<f32> {
     return mix(a, grade_bspline(uv, u32(l0) + 1u), l - l0);
 }
 
+// The pass input at the pixel as the pyramid holds it (clamped as its first level is).
 fn grade_own(src: vec3<f32>) -> vec4<f32> {
-    let p = tone3(src);
+    let p = tone3(clamp(src, vec3<f32>(-64.0), vec3<f32>(64.0)));
     return vec4<f32>(p, least(p));
 }
 
-// Sharpening (Detail): the input's tone luma against a Gaussian round it, held under the Detail
-// limit, added to `c` (tone space). d: [gain, limit, radius in video pixels, 0].
-fn grade_sharpen(c: vec3<f32>, src: vec3<f32>, d: vec4<f32>, at: GradeAt) -> vec3<f32> {
-    let s = d.z * at.scale;
+// Sharpening (Detail): the input's tone luma (the pass wrote it in alpha) against a Gaussian
+// round it, held under the Detail limit, added to `c` (tone space). d: [gain, limit, radius in
+// video pixels, 0]. The blur is kept to 3 output pixels, so its taps reach 2σ.
+fn grade_sharpen(c: vec3<f32>, d: vec4<f32>, at: GradeAt) -> vec3<f32> {
+    let s = min(d.z * at.scale, 3.0);
     if s < 0.05 {
         return c;
     }
-    let k = i32(min(ceil(2.0 * s), 6.0));
+    let k = i32(ceil(2.0 * s));
     let last = vec2<i32>(textureDimensions(grade_in)) - vec2<i32>(1);
     var sum = 0.0;
     var weights = 0.0;
@@ -330,11 +334,11 @@ fn grade_sharpen(c: vec3<f32>, src: vec3<f32>, d: vec4<f32>, at: GradeAt) -> vec
         for (var dx = -k; dx <= k; dx++) {
             let q = clamp(at.pix + vec2<i32>(dx, dy), vec2<i32>(0), last);
             let w = exp(-f32(dx * dx + dy * dy) / (2.0 * s * s));
-            sum += w * luma(tone3(textureLoad(grade_in, q, 0).rgb));
+            sum += w * textureLoad(grade_in, q, 0).a;
             weights += w;
         }
     }
-    let diff = luma(tone3(src)) - sum / weights;
+    let diff = textureLoad(grade_in, at.pix, 0).a - sum / weights;
     return grade_lift(c, d.x * grade_soft(diff, d.y));
 }
 
@@ -384,7 +388,8 @@ fn grade_vignette(c: vec3<f32>, src: vec3<f32>, w: vec4<f32>, more: vec4<f32>, a
         return c * max(1.0 + w.x * v * (1.0 - keep), 0.0);
     }
     let t = tone3(c);
-    let lifted = t + (vec3<f32>(1.0) - t) * (w.x * v);
+    // Past white stays where it is.
+    let lifted = t + max(vec3<f32>(1.0) - t, vec3<f32>(0.0)) * (w.x * v);
     return vec3<f32>(untone1(lifted.r), untone1(lifted.g), untone1(lifted.b));
 }
 
@@ -410,7 +415,8 @@ fn grade_grain(c: vec3<f32>, d: vec4<f32>, at: GradeAt) -> vec3<f32> {
     let n1 = grade_noise(p, seed ^ 0x68bc21ebu);
     let n2 = grade_noise(p * 2.1 + 17.3, seed ^ 0x02e5be93u);
     let n3 = grade_noise(p * 0.37 + 5.1, seed ^ 0x967a889bu);
-    let n = (n1 + 0.6 * r * n2) * (1.0 + 0.8 * r * n3) / (1.0 + 0.6 * r);
+    // A grain smaller than an output pixel would average out in the export scaled down: weaker.
+    let n = (n1 + 0.6 * r * n2) * (1.0 + 0.8 * r * n3) / (1.0 + 0.6 * r) * min(d.y * at.scale, 1.0);
     return max(c * exp2(1.2 * d.x * n) + vec3<f32>(0.0015 * d.x * n), vec3<f32>(0.0));
 }
 
@@ -465,7 +471,7 @@ fn run_grade(colour: vec3<f32>, kept: vec3<f32>, here: GradeAt, seg: u32) -> Gra
         } else if op == OP_DARK_TINT {
             c = grade_dark_tint(grade_prog[at + 1u].xyz, c);
         } else if op == OP_SHARPEN {
-            c = grade_sharpen(c, colour, grade_prog[at + 1u], here);
+            c = grade_sharpen(c, grade_prog[at + 1u], here);
         } else if op == OP_TEXTURE {
             c = grade_texture(c, colour, grade_prog[at + 1u], here);
         } else if op == OP_CLARITY {

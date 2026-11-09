@@ -511,11 +511,12 @@ fn a_lane_whose_label_its_panel_shares_names_its_group() {
 fn detail_and_effects_show_their_settings_and_a_drag_sharpens_less_widely() {
     // Tall enough that the Detail panel is on screen.
     let mut h = harness_sized(Studio::headless(), 6000.0);
-    for name in ["Texture", "Clarity", "Dehaze", "Radius", "Midpoint", "Roundness", "Feather", "Highlights", "Size"] {
-        assert!(sliders(&h, name) >= 1, "no {name} slider");
+    for name in ["Texture", "Clarity", "Dehaze", "Radius", "Midpoint", "Roundness", "Feather", "Size"] {
+        assert_eq!(sliders(&h, name), 1, "{name}");
     }
-    // Detail's, the vignette's, the grain's and the gradient map's.
-    assert!(sliders(&h, "Amount") >= 4, "{}", sliders(&h, "Amount"));
+    // Only Detail and Effects have an Amount: Detail's, the vignette's, the grain's and the
+    // gradient map's.
+    assert_eq!(sliders(&h, "Amount"), 4);
     assert!(h.query_all_by_label("Gradient").next().is_some(), "the gradient map's row");
     // A drag on Radius to the left end makes the card with the narrowest sharpening.
     let rect = h.get_all_by_role_and_label(Role::Slider, "Radius").next().unwrap().rect();

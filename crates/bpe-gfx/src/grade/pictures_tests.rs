@@ -585,19 +585,16 @@ fn the_gradient_map_recolours_a_grey_by_its_brightness() {
 }
 
 #[test]
-fn two_area_passes_each_build_their_pyramid() {
-    // Clarity, then a point step, then Clarity again: two pyramids, three passes.
-    let frame = ball_on(0.1, 0.3, 14.0);
-    let clarity = GradeBasic { clarity: 60.0, ..GradeBasic::default() };
-    let twice = panels(vec![
-        GradePanel::Basic(clarity.clone()),
-        GradePanel::Basic(GradeBasic { exposure: 0.2, ..GradeBasic::default() }),
-        GradePanel::Basic(clarity),
-    ]);
+fn two_area_passes_each_build_their_pyramid_from_their_own_input() {
+    // Clarity does nothing to a flat picture if its pyramid is of the picture it grades: so on a
+    // flat grey, Clarity, Exposure −2, Clarity must be Exposure −2 alone (a pyramid left over from
+    // the brighter first pass would darken it further).
+    let clarity = GradePanel::Basic(GradeBasic { clarity: 100.0, ..GradeBasic::default() });
+    let darker = GradePanel::Basic(GradeBasic { exposure: -2.0, ..GradeBasic::default() });
+    let twice = panels(vec![clarity.clone(), darker.clone(), clarity]);
     let p = crate::grade::compile(&twice);
     assert_eq!(p.segments.iter().filter(|s| s.pyramid).count(), 2);
-    let Some(plain) = draw(&frame) else { return };
-    let graded = draw(&graded(frame, twice)).unwrap();
-    let gap = |p: &[u8]| centre(p)[1] - at(p, 3, 3)[1];
-    assert!(gap(&graded) > gap(&plain) + 6);
+    let Some(got) = draw(&graded(grey(0.3), twice)) else { return };
+    let want = draw(&graded(grey(0.3), panels(vec![darker]))).unwrap();
+    assert!(all_close(&got, &want, 1), "{:?} vs {:?}", centre(&got), centre(&want));
 }

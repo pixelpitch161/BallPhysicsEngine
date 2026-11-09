@@ -175,3 +175,18 @@ handover `ballphysics/colour-grading/part2-handover.md` in the project files.
    crops looked at (halos at edges, blockiness in the blurs, grain look, vignette banding); one Opus review; PR; CI
    green; merge.
 5. Handover for part 4 in the project files (`ballphysics/colour-grading/part3-handover.md`).
+
+## As built
+
+Built as planned (summary in `docs/notes/grading.md`, "Part 3 as built"). Where it differs, mostly from the review:
+
+- The pyramid's blur per mip, measured on an impulse through the 13-tap downsample and the B-spline, is σ ≈
+  1.9 · 2^k output pixels (mip 0 1.76), not 1.2 · 2^k: `PYR_SIGMA` is 1.9, so the blur sizes are the stated ones.
+- Sharpening's σ is kept to 3 output pixels (its taps reach 2σ), and it reads the tone luma each pass writes in its
+  colour's alpha instead of toning 169 neighbours.
+- `soft_limit` clamps its argument to ±10 before `tanh` (NaN on back ends that work tanh out from exp); the pixel's
+  own tone colour is clamped to ±64 like the pyramid's first level.
+- The lightening vignette leaves light past white where it is (it pulled it down to white).
+- Grain smaller than an output pixel is weakened by its size in output pixels, so a small preview isn't grainier
+  than the export scaled down.
+- Left of the Split line, with area steps, the picture passes through the f16 pairs (within a level of Before).
