@@ -555,3 +555,44 @@ fn every_effects_demo_look_builds() {
         assert!(scene.name.ends_with(look));
     }
 }
+
+/// Review S19 and S24: with many lights each screen tile takes only the lights that reach it, and
+/// the picture is the same, byte for byte, as when every pixel takes every light, on Flat and on
+/// Stage, with each kind of light in the scene. A frame like the last makes no new bind groups.
+#[test]
+fn tiled_lights_draw_the_same_picture_as_every_light_everywhere() {
+    let Some(mut gpu) = gpu() else { return };
+    let reg = reg();
+    let mut scene = scenes::lit_room(&reg);
+    let ball = ball_of(&scene);
+    let mut balls = bpe_kit::BallsSettings::from_params(&scene.things[&ball].params);
+    balls.ring(24, 320.0);
+    balls.radius = 14.0;
+    scene.things.get_mut(&ball).unwrap().params = balls.to_params();
+    let each = add_light(&mut scene, &reg, LightType::Point, ball).unwrap();
+    scene.things.get_mut(&each).unwrap().params.set("reach", Value::Number(110.0));
+    for kind in [LightType::Spot, LightType::Sun, LightType::Area, LightType::Strip, LightType::Laser] {
+        add_light(&mut scene, &reg, kind, ThingId::ROOT).unwrap();
+    }
+    let kit = kit();
+    let lights = frame_of(&scene, &kit, 0.0).light.as_ref().unwrap().lights.len();
+    assert!(lights >= bpe_gfx::LIGHTS_TILED_FROM, "{lights} lights");
+    for depth in ["flat", "stage"] {
+        set_lighting(&mut scene, "depth", Value::Choice(depth.into()));
+        gpu.renderer.set_light_tiles(false);
+        let every = draw(&mut gpu, &scene, &format!("every-light-{depth}"));
+        gpu.renderer.set_light_tiles(true);
+        let tiled = draw(&mut gpu, &scene, &format!("tiled-lights-{depth}"));
+        let differ = every.iter().zip(&tiled).filter(|(a, b)| a != b).count();
+        assert_eq!(differ, 0, "{depth}: {differ} bytes differ");
+        // Lit at all: not one flat colour.
+        assert!(tiled.chunks(4).any(|p| p != &tiled[..4]));
+        // Drawn again (the groups only the tiles-off frame used are dropped), and again: the same
+        // groups, none new.
+        draw(&mut gpu, &scene, &format!("tiled-lights-{depth}"));
+        let made = gpu.renderer.lighting_binds_made();
+        assert!(made > 0);
+        draw(&mut gpu, &scene, &format!("tiled-lights-{depth}"));
+        assert_eq!(gpu.renderer.lighting_binds_made(), made, "{depth}: a frame like the last made new bind groups");
+    }
+}

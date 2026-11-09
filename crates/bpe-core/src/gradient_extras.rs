@@ -889,6 +889,12 @@ pub fn apply_moves(resolved: &mut Resolved, time: f64) {
     let beat = Beat::of(resolved);
     let time = if time.is_finite() { time } else { 0.0 };
     for t in resolved.things.values_mut() {
+        // Only a thing with companions changes, so only it is copied out of a shared scene.
+        let has = |p: &Params| p.iter().any(|(k, _)| split(k).is_some());
+        if !(has(&t.params) || t.slots.values().any(|s| has(&s.params))) {
+            continue;
+        }
+        let t = std::sync::Arc::make_mut(t);
         apply_in(&mut t.params, time, beat);
         for s in t.slots.values_mut() {
             apply_in(&mut s.params, time, beat);
@@ -1258,7 +1264,7 @@ mod tests {
             screen: false,
         };
         t.params.set("bg_colours~form", Value::Choice("ripples".into()));
-        r.things.insert(crate::ThingId::ROOT, t);
+        r.things.insert(crate::ThingId::ROOT, std::sync::Arc::new(t));
         assert!(any_ripples(&r));
     }
 
@@ -1486,7 +1492,7 @@ mod tests {
         let s = Scene::empty(&r);
         let mut resolved = crate::resolve(&s, &r);
         assert_eq!(Beat::of(&resolved).seconds, 0.5, "120 BPM in quarters when nothing says");
-        let root = &mut resolved.things.get_mut(&ThingId::ROOT).unwrap().params;
+        let root = &mut std::sync::Arc::make_mut(resolved.things.get_mut(&ThingId::ROOT).unwrap()).params;
         root.set("tempo", n(90.0));
         root.set("time_bottom", Value::Choice("8".into()));
         assert!((Beat::of(&resolved).seconds - 60.0 / 90.0 * 0.5).abs() < 1e-12);

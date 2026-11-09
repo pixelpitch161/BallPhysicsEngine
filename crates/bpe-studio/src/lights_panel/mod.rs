@@ -209,14 +209,20 @@ pub fn soloed(scene: &Scene, resolved: &Resolved, solo: &BTreeSet<LightSource>) 
     let mut out = resolved.clone();
     out.things.retain(|id, r| r.kind != LIGHT || solo.contains(&LightSource::Light(*id)));
     for (id, r) in out.things.iter_mut() {
-        for (slot, card) in r.slots.iter_mut() {
+        if !r.slots.values().any(|c| c.layers.iter().any(|l| GIVES_OFF_LIGHT.contains(&l.kind.as_str()))) {
+            continue;
+        }
+        for (slot, card) in std::sync::Arc::make_mut(r).slots.iter_mut() {
             card.layers.retain(|l| {
                 !GIVES_OFF_LIGHT.contains(&l.kind.as_str()) || solo.contains(&LightSource::Layer(*id, *slot, l.id))
             });
         }
     }
     if !solo.contains(&LightSource::Ambient)
-        && let Some(card) = out.things.get_mut(&ThingId::ROOT).and_then(|r| r.slots.get_mut(&SlotId::Lighting))
+        && let Some(card) = out
+            .things
+            .get_mut(&ThingId::ROOT)
+            .and_then(|r| std::sync::Arc::make_mut(r).slots.get_mut(&SlotId::Lighting))
     {
         // Not a keyframable setting, so the picture's keys can't turn it back on.
         card.params.set("ambient_on", Value::Bool(false));
@@ -262,6 +268,10 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
         if lit {
             card_chips(ui, studio, reg, "depth", "Depth");
             card_chips(ui, studio, reg, "quality", "Quality");
+            if let Some(words) = studio.lighting.and_then(|(lights, _)| many_lights_warning(lights)) {
+                ui.add_space(4.0);
+                ui.add(egui::Label::new(RichText::new(words).small().color(style::PROBLEM)).wrap());
+            }
         } else {
             ui.label(
                 RichText::new("The picture isn't lit. Add Lighting, or a light, to light it.").color(style::MUTED),
@@ -295,6 +305,18 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
             ui.add_space(4.0);
         }
     });
+}
+
+/// The Lights tab's warning when the last frame lit more than [`crate::app::MANY_LIGHTS`] lights
+/// (review S19): a light riding each ball of a big group is one light a ball.
+pub fn many_lights_warning(lights: usize) -> Option<String> {
+    (lights > crate::app::MANY_LIGHTS).then(|| {
+        format!(
+            "{lights} lights are lit. Each one works out shadows for every pixel it reaches, so this many can \
+             slow the picture. A smaller Reach, fewer lights (a light on each ball of a big group is one a ball), \
+             Shadows off on some lights or Quality Draft all help."
+        )
+    })
 }
 
 /// A folder's or rig's name over its strips; a click selects it (a rig's pattern is in its

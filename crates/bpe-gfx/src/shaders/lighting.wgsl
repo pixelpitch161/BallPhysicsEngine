@@ -49,6 +49,13 @@ struct Lighting {
     // Glass and light part 3: 1 when glass bends lamp light (the photon pass runs); part 4b: y how
     // many entries `dichroic` has; two spare.
     bent: vec4<f32>,
+    // Review S19, the lights each tile of the picture lists (`lights_near`): tiles across and down per
+    // unit of uv (the pictures' size over the tile's), how many tiles across and down (0 across: no
+    // lists, every pixel takes every light).
+    tiles: vec4<f32>,
+    // Where the tiles' heads start in `links` (two numbers a tile: where its list starts in `links`
+    // and how long it is); three spare.
+    tile_list: vec4<f32>,
     // Which surface indices are glass that bends lamp light: bit i of word i / 32 (2048 bits).
     bends: array<vec4<u32>, 16>,
     // Glass and light part 4b: dichroic surfaces, [index, Dichroic, shift, hue] (for the shadows).
@@ -1451,9 +1458,41 @@ fn lights_up(l: LightGpu, here: f32) -> bool {
     return select(!named, named, mode < 1.5);
 }
 
+// The lights that may reach world point `q` (review S19): the run of `links` listing them, in order,
+// for the picture tile `q` is in; every light (`listed` false) where there are no lists or `q` is off
+// the picture. A light missing from a tile's list gives nothing anywhere in the tile (the CPU's
+// `light_tiles` keeps every light whose reach touches it, the sun always), so the sums are the same.
+struct LightRun {
+    first: u32,
+    count: u32,
+    listed: bool,
+};
+
+fn lights_near(q: vec2<f32>) -> LightRun {
+    let every = LightRun(0u, u32(u.more.w), false);
+    if u.tiles.z < 0.5 {
+        return every;
+    }
+    let t = floor(world_to_uv(q) * u.tiles.xy);
+    if !(t.x >= 0.0 && t.y >= 0.0 && t.x < u.tiles.z && t.y < u.tiles.w) {
+        return every;
+    }
+    let head = u32(u.tile_list.x) + 2u * (u32(t.y) * u32(u.tiles.z) + u32(t.x));
+    return LightRun(u32(links[head]), u32(links[head + 1u]), true);
+}
+
+// The `k`th light of `run`.
+fn light_in(run: LightRun, k: u32) -> u32 {
+    return select(k, u32(links[run.first + k]), run.listed);
+}
+
 // The light from every Light thing at world point `p` (pixel `ip`), on the surface (turned by its
 // normal, banded for toon) and in the air (each light's Beam in haze; no normal).
-fn lamps(p: vec2<f32>, ip: vec2<i32>, with_air: bool) -> Lamps {
+// `surface_wanted`: whether anything reads the light on the surface (`Lamps.surface`): on a Stage
+// every pixel lights itself in the mix (`surfaced`), so only the bounce, glow in the dark and
+// rainbows read it there. `uv_wanted`: whether anything reads the ultraviolet light. A light
+// none of them (nor the haze, `with_air`) takes is skipped before its shadow march (review S20).
+fn lamps(p: vec2<f32>, ip: vec2<i32>, with_air: bool, surface_wanted: bool, uv_wanted: bool) -> Lamps {
     let px = u.view.z;
     // The surface's normal from its height's slope (flat where nothing round is).
     let h = height_at(ip);
@@ -1468,17 +1507,24 @@ fn lamps(p: vec2<f32>, ip: vec2<i32>, with_air: bool) -> Lamps {
     var total = vec3<f32>(0.0);
     var air = vec3<f32>(0.0);
     var uv = 0.0;
-    let count = u32(u.more.w);
+    let near = lights_near(p);
     // What covers this pixel, for the lights that light up only some things.
     var here = 0.0;
     if gu.more_on.y > 0.5 {
         here = link_here(ip);
     }
-    for (var i = 0u; i < count; i++) {
+    for (var k = 0u; k < near.count; k++) {
+        let i = light_in(near, k);
         let l = lights[i];
         let kind = l.p0.w;
         // Lights up: the light in the air shows whatever it lights.
         let on_surface = lights_up(l, here);
+        let wanted_on_surface = surface_wanted && on_surface;
+        let wanted_uv = uv_wanted && on_surface && l.p7.y > 0.5;
+        let wanted_air = with_air && l.p7.x != 0.0;
+        if !(wanted_on_surface || wanted_uv || wanted_air) {
+            continue;
+        }
         var amount = 1.0;
         var toward = vec2<f32>(0.0);
         var dist = 0.0;
@@ -1590,7 +1636,11 @@ struct Two {
 // gives any), and the light in the air for the haze.
 @fragment
 fn fs_direct(in: FsIn) -> Two {
-    let l = lamps(uv_to_world(in.uv), vec2<i32>(in.pos.xy), gu.on.z > 0.5);
+    // On a Stage the mix lights every pixel itself; the bounce (light field), glow in the dark and
+    // rainbows still read this light. Glow in the dark reads the ultraviolet light too.
+    let surface_wanted = u.trace.y < 0.5 || gu.glow.x != 0.0 || gu.memory.x != 0.0 || gu.rainbow.x > 0.0;
+    let uv_wanted = gu.more_on.x > 0.5 || gu.memory.x != 0.0;
+    let l = lamps(uv_to_world(in.uv), vec2<i32>(in.pos.xy), gu.on.z > 0.5, surface_wanted, uv_wanted);
     // The ultraviolet light rides in the alpha (the blend keeps this pass's alpha).
     return Two(vec4<f32>(l.surface, l.uv), vec4<f32>(l.air, 0.0));
 }
@@ -2990,8 +3040,9 @@ fn shade(spot: Spot, p: vec2<f32>, sf: SurfaceGpu, base: vec3<f32>, here: f32, l
     out.through = vec3<f32>(0.0);
     out.soaked = vec3<f32>(0.0);
     out.glow = max(sf.e.z, 0.0) * (0.35 + 0.65 * nv0 * nv0);
-    let count = u32(u.more.w);
-    for (var i = 0u; i < count; i++) {
+    let near = lights_near(spot.p.xy);
+    for (var k = 0u; k < near.count; k++) {
+        let i = light_in(near, k);
         let l = lights[i];
         if !lights_up(l, link) {
             continue;
@@ -3259,8 +3310,9 @@ fn hit_light(q: vec3<f32>, n: vec3<f32>, v: vec3<f32>, sf: SurfaceGpu, c: vec3<f
         diffuse += st.sky_top.w * mix(st.sky_bottom.rgb, st.sky_top.rgb, 0.5 - 0.5 * n.y);
     }
     var spec = vec3<f32>(0.0);
-    let count = u32(u.more.w);
-    for (var i = 0u; i < count; i++) {
+    let near = lights_near(q.xy);
+    for (var k = 0u; k < near.count; k++) {
+        let i = light_in(near, k);
         let l = lights[i];
         let kind = l.p0.w;
         var amount = 1.0;
@@ -4312,8 +4364,9 @@ fn light_toward(l: LightGpu, q: vec3<f32>) -> Toward {
 // already), each shadowed by the balls when it casts shadows.
 fn lamps_on(q: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
     var sum = vec3<f32>(0.0);
-    let count = u32(u.more.w);
-    for (var i = 0u; i < count; i++) {
+    let near = lights_near(q.xy);
+    for (var k = 0u; k < near.count; k++) {
+        let i = light_in(near, k);
         let l = lights[i];
         let to = light_toward(l, q);
         let ndl = dot(n, to.dir);

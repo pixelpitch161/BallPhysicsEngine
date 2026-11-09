@@ -2246,12 +2246,16 @@ fn light_probe_of(
     bpe_kit::sensing::uses_light(scene).then(|| bpe_kit::sensing::probe(scene, resolved, sound))
 }
 
-/// The status line's lighting readout: "· Lighting: 3 lights, 1.8 ms", with a warning past 256
-/// lights (each one costs every pixel a shadow march).
+/// Past this many lights in a frame the editor warns that they can slow the picture (review S19):
+/// each costs every pixel it reaches a shadow march.
+pub const MANY_LIGHTS: usize = 64;
+
+/// The status line's lighting readout: "· Lighting: 3 lights, 1.8 ms", with a warning past
+/// [`MANY_LIGHTS`].
 pub fn lighting_readout(lights: usize, ms: Option<f32>) -> String {
     let count = if lights == 1 { "1 light".to_owned() } else { format!("{lights} lights") };
     let time = ms.map(|ms| format!(", {ms:.1} ms")).unwrap_or_default();
-    let warn = if lights > 256 { " (that many lights is slow: try Quality Draft)" } else { "" };
+    let warn = if lights > MANY_LIGHTS { " (that many lights is slow: see the Lights tab)" } else { "" };
     format!("· Lighting: {count}{time}{warn}")
 }
 

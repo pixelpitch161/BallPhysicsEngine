@@ -6,6 +6,7 @@
 
 use anyhow::{Context, bail};
 use bpe_core::{Scene, Settings};
+use bpe_gfx::yuv::PixelLayout;
 use bpe_gfx::{Frame, Readback, Renderer, build_frame_sensing, wgpu};
 use bpe_kit::{Kit, SceneSettings};
 use bpe_runtime::{Log, World};
@@ -103,6 +104,15 @@ impl Encoder {
             "intel" | "qsv" => Encoder::Intel,
             _ => return None,
         })
+    }
+
+    /// The pixel format this encoder takes, as the export hands it the frames (`-pix_fmt` in
+    /// [`Encoder::args`]): planar for x264 and NVENC, nv12 for AMF and Quick Sync.
+    pub fn layout(self) -> PixelLayout {
+        match self {
+            Encoder::Auto | Encoder::Cpu | Encoder::Nvidia => PixelLayout::Yuv420p,
+            Encoder::Amd | Encoder::Intel => PixelLayout::Nv12,
+        }
     }
 
     /// ffmpeg arguments for this encoder at x264-style quality `crf` and speed `preset`.
@@ -334,9 +344,17 @@ fn export_with(
     // Frame `index` (from 0) done, as the progress bar counts it.
     let shown = |index: u32| sound_share + ((index + 1) as u64 * (total - sound_share) as u64 / total as u64) as u32;
 
+    // The frames come back as the encoder's own video colours, worked out on the graphics card
+    // (review S23); RGBA (converted by ffmpeg) only for a size 4:2:0 can't take.
+    let layout = encoder.layout();
+    let layout = if layout.fits(width, height) { layout } else { PixelLayout::Rgba };
     let mut ffmpeg = Command::new(&options.ffmpeg);
     ffmpeg.args(["-hide_banner", "-loglevel", "error", "-y"]);
-    ffmpeg.args(["-f", "rawvideo", "-pix_fmt", "rgba", "-s", &format!("{width}x{height}"), "-r", &fps.to_string()]);
+    ffmpeg.args(["-f", "rawvideo", "-pix_fmt", layout.ffmpeg_name(), "-s", &format!("{width}x{height}")]);
+    ffmpeg.args(["-r", &fps.to_string()]);
+    if layout != PixelLayout::Rgba {
+        ffmpeg.args(["-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]);
+    }
     ffmpeg.args(["-i", "-"]);
     if has_sound {
         ffmpeg.arg("-i").arg(&sound);
@@ -345,7 +363,9 @@ fn export_with(
         ffmpeg.args(["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]);
     }
     ffmpeg.args(["-map", "0:v", "-map", "1:a"]);
-    ffmpeg.args(["-vf", "scale=out_color_matrix=bt709:out_range=tv"]);
+    if layout == PixelLayout::Rgba {
+        ffmpeg.args(["-vf", "scale=out_color_matrix=bt709:out_range=tv"]);
+    }
     ffmpeg.args(encoder.args(options.crf, &options.preset));
     ffmpeg.args(["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]);
     ffmpeg.args(AUDIO_ARGS);
@@ -373,7 +393,7 @@ fn export_with(
     };
 
     let mut renderer = Renderer::new(device, width, height);
-    let mut readback = Readback::new(device, width, height, FRAMES_IN_FLIGHT);
+    let mut readback = Readback::with_layout(device, width, height, FRAMES_IN_FLIGHT, layout);
     // Drawn from a run that keeps pace with the frames, exactly as the preview plays.
     let mut maker = FrameMaker::new(scene, kit);
     let bake = bake_for(scene, kit, options.bake);

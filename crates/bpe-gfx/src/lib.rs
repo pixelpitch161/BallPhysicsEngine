@@ -33,6 +33,7 @@ pub use stage_camera::{FillEdges, StageCamera, StageCameraGpu, StageLayout, Stag
 #[cfg(test)]
 mod lighting_tests;
 mod timing;
+pub use lighting::TILED_FROM as LIGHTS_TILED_FROM;
 pub use timing::FEATURES as TIMING_FEATURES;
 #[cfg(test)]
 mod layers_tests;
@@ -55,6 +56,7 @@ mod sprites_tests;
 mod sub_layers_tests;
 pub mod swarm;
 mod util;
+pub mod yuv;
 
 pub use frame::{
     Around, BENDS_FROM, BackgroundPaint, BallMark, Bender, BlendLayer, DrawCx, Draws, EffectCall, FIELD_FLAME,
@@ -266,6 +268,9 @@ struct PaintTexture {
     group: wgpu::BindGroup,
     /// The Ripples generation `group` binds (see [`ripples::Ripples::generation`]).
     bound: u64,
+    /// What each row of the texture holds ([`GradientAtlas::keys`]): a row is uploaded again only
+    /// when the frame's atlas holds something else there (review S21).
+    uploaded: Vec<u64>,
 }
 
 impl PaintTexture {
@@ -299,7 +304,7 @@ impl PaintTexture {
         });
         let waves_view = waves.create_view(&Default::default());
         let group = Self::group(device, layout, sampler, &view, &waves_view, ripples);
-        Self { texture, view, waves, waves_view, rows, group, bound: ripples.generation() }
+        Self { texture, view, waves, waves_view, rows, group, bound: ripples.generation(), uploaded: Vec::new() }
     }
 
     fn group(
@@ -363,19 +368,45 @@ impl PaintTexture {
         if rows == 0 {
             return;
         }
+        let keys = &atlas.keys()[..rows];
         let row_bytes = (ATLAS_WIDTH * 4 * 2) as u32;
-        queue.write_texture(
-            self.texture.as_image_copy(),
-            &gradients::half_texels(&atlas.rows()[..rows]),
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row_bytes), rows_per_image: None },
-            wgpu::Extent3d { width: ATLAS_WIDTH as u32, height: rows as u32, depth_or_array_layers: 1 },
-        );
-        queue.write_texture(
-            self.waves.as_image_copy(),
-            bytemuck::cast_slice(&atlas.waves()[..rows]),
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(2 * 16), rows_per_image: None },
-            wgpu::Extent3d { width: 2, height: rows as u32, depth_or_array_layers: 1 },
-        );
+        // Each run of rows that changed, uploaded on its own.
+        let mut r = 0;
+        while r < rows {
+            if self.uploaded.get(r) == Some(&keys[r]) {
+                r += 1;
+                continue;
+            }
+            let start = r;
+            while r < rows && self.uploaded.get(r) != Some(&keys[r]) {
+                r += 1;
+            }
+            fn origin(texture: &wgpu::Texture, row: usize) -> wgpu::TexelCopyTextureInfo<'_> {
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: 0, y: row as u32, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                }
+            }
+            let n = (r - start) as u32;
+            queue.write_texture(
+                origin(&self.texture, start),
+                &gradients::half_texels(&atlas.rows()[start..r]),
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row_bytes), rows_per_image: None },
+                wgpu::Extent3d { width: ATLAS_WIDTH as u32, height: n, depth_or_array_layers: 1 },
+            );
+            queue.write_texture(
+                origin(&self.waves, start),
+                bytemuck::cast_slice(&atlas.waves()[start..r]),
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(2 * 16), rows_per_image: None },
+                wgpu::Extent3d { width: 2, height: n, depth_or_array_layers: 1 },
+            );
+        }
+        if self.uploaded.len() < rows {
+            self.uploaded.resize(rows, 0);
+        }
+        self.uploaded[..rows].copy_from_slice(keys);
     }
 }
 
@@ -442,6 +473,10 @@ pub struct Renderer {
     /// The lighting field is as fine, in the scene, as the video's (`preview_field_like_video`), not the Quality's
     /// share of this renderer's own size.
     field_like_video: bool,
+    /// Whether the lighting lists each tile's lights (review S19, [`Renderer::set_light_tiles`]).
+    light_tiles: bool,
+    /// The bloom picture the composite reads is black (bloom 0 skipped its chain, review S24).
+    bloom_black: bool,
     /// The light pass being drawn (see `Globals::light`): 0 outside the light passes.
     light_mode: u32,
     /// Whether the light passes draw a Stage (its surface picture keeps no blended cover).
@@ -1079,6 +1114,8 @@ impl Renderer {
             light_timer: None,
             lit_lights: None,
             field_like_video: false,
+            light_tiles: true,
+            bloom_black: false,
             light_mode: 0,
             light_stage: false,
             accumulate: None,
@@ -1368,6 +1405,7 @@ impl Renderer {
             let lighting = self.lighting.as_mut().expect("ready, checked above");
             let video_width = if self.field_like_video { frame.width } else { self.targets.width };
             lighting.ensure(device, self.targets.width, self.targets.height, video_width, scene);
+            lighting.tiles_on = self.light_tiles;
             let pictures = lighting.pictures().expect("just made");
             // With nothing giving off light its picture is left black (the bounce and the
             // blooms read it), not as the last frame that had some.
@@ -1386,6 +1424,7 @@ impl Renderer {
             if tints {
                 lighting.make_tint(device);
             }
+            lighting.keep_uv_and_tags(device, scene.needs_uv(), scene.needs_tags());
             let wanted = [true, true, scene.glows, false, scene.needs_uv(), scene.needs_tags(), false, tints];
             let modes: Vec<(u32, (wgpu::Texture, wgpu::TextureView))> = (1u32..=TINT_PASS)
                 .filter(|mode| wanted[*mode as usize - 1])
@@ -1570,24 +1609,32 @@ impl Renderer {
         );
         self.chain.end_frame();
         self.waiting |= self.chain.waiting;
-        for level in 0..BLOOM_LEVELS {
-            let mut pass = begin_pass(
-                &mut encoder,
-                &self.targets.bloom[level],
-                "bloom down",
-                wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-            );
-            pass.set_pipeline(&self.downsample);
-            pass.set_bind_group(0, &self.globals_group, &[]);
-            pass.set_bind_group(1, &self.targets.down_sources[level], &[]);
-            pass.draw(0..3, 0..1);
-        }
-        for level in (0..BLOOM_LEVELS - 1).rev() {
-            let mut pass = begin_pass(&mut encoder, &self.targets.bloom[level], "bloom up", wgpu::LoadOp::Load);
-            pass.set_pipeline(&self.upsample);
-            pass.set_bind_group(0, &self.globals_group, &[]);
-            pass.set_bind_group(1, &self.targets.up_sources[level], &[]);
-            pass.draw(0..3, 0..1);
+        // Bloom at 0 adds nothing (review S24): its chain is skipped, and the picture the
+        // composite reads it from is left black (0 × black is 0, as 0 × any finite bloom was).
+        if frame.bloom != 0.0 {
+            for level in 0..BLOOM_LEVELS {
+                let mut pass = begin_pass(
+                    &mut encoder,
+                    &self.targets.bloom[level],
+                    "bloom down",
+                    wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                );
+                pass.set_pipeline(&self.downsample);
+                pass.set_bind_group(0, &self.globals_group, &[]);
+                pass.set_bind_group(1, &self.targets.down_sources[level], &[]);
+                pass.draw(0..3, 0..1);
+            }
+            for level in (0..BLOOM_LEVELS - 1).rev() {
+                let mut pass = begin_pass(&mut encoder, &self.targets.bloom[level], "bloom up", wgpu::LoadOp::Load);
+                pass.set_pipeline(&self.upsample);
+                pass.set_bind_group(0, &self.globals_group, &[]);
+                pass.set_bind_group(1, &self.targets.up_sources[level], &[]);
+                pass.draw(0..3, 0..1);
+            }
+            self.bloom_black = false;
+        } else if !self.bloom_black {
+            drop(begin_pass(&mut encoder, &self.targets.bloom[0], "no bloom", wgpu::LoadOp::Clear(wgpu::Color::BLACK)));
+            self.bloom_black = true;
         }
         {
             let mut pass = begin_pass(
@@ -1633,6 +1680,17 @@ impl Renderer {
     /// part 3; 0 when it sent none or the frame wasn't lit).
     pub fn bent_photons(&self) -> u32 {
         self.lighting.as_ref().filter(|_| self.lit_lights.is_some()).map_or(0, |l| l.bent_photons())
+    }
+
+    /// Whether each pixel takes only the lights its tile lists (review S19; on unless a test turns
+    /// it off to check the lists change nothing). The next lit frame follows it.
+    pub fn set_light_tiles(&mut self, on: bool) {
+        self.light_tiles = on;
+    }
+
+    /// How many bind groups the lighting has made (review S24: it keeps them between frames; for tests).
+    pub fn lighting_binds_made(&self) -> usize {
+        self.lighting.as_ref().map_or(0, |l| l.binds_made())
     }
 
     pub fn lighting_stats(&self) -> Option<(usize, Option<f32>)> {
@@ -2478,13 +2536,18 @@ impl GrowableBuffer {
 
 /// Copies finished frames back to the CPU a few frames behind the drawing, so the graphics card
 /// draws the next frame while the last one is being read and encoded. Frames come back in the
-/// order they were drawn, as tightly packed RGBA bytes (sRGB-encoded).
+/// order they were drawn, tightly packed: RGBA bytes (sRGB-encoded), or as video colours worked out
+/// on the card ([`Readback::with_layout`], review S23).
 pub struct Readback {
     slots: Vec<ReadbackSlot>,
     next: usize,
     width: u32,
     height: u32,
-    padded_row: usize,
+    layout: yuv::PixelLayout,
+    /// Each plane in the buffer: where it starts, its padded row, its row, its height.
+    planes: Vec<(u64, u32, u32, u32)>,
+    /// The conversion to video colours (none for RGBA).
+    video: Option<yuv::VideoPlanes>,
 }
 
 struct ReadbackSlot {
@@ -2494,21 +2557,42 @@ struct ReadbackSlot {
 }
 
 impl Readback {
-    /// `depth` frames can be in flight at once.
+    /// `depth` frames can be in flight at once, as RGBA.
     pub fn new(device: &wgpu::Device, width: u32, height: u32, depth: usize) -> Self {
-        let padded_row = (width as usize * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
+        Self::with_layout(device, width, height, depth, yuv::PixelLayout::Rgba)
+    }
+
+    /// `depth` frames can be in flight at once, given back as `layout` (RGBA when the size doesn't
+    /// fit it: see [`yuv::PixelLayout::fits`]).
+    pub fn with_layout(device: &wgpu::Device, width: u32, height: u32, depth: usize, layout: yuv::PixelLayout) -> Self {
+        let layout = if layout.fits(width, height) { layout } else { yuv::PixelLayout::Rgba };
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
+        let mut planes = Vec::new();
+        let mut size = 0u64;
+        for (w, h, bytes) in layout.planes(width, height) {
+            let row = (w * bytes) as usize;
+            let padded = row.next_multiple_of(align);
+            planes.push((size, padded as u32, row as u32, h));
+            size = (size + (padded * h as usize) as u64).next_multiple_of(align as u64);
+        }
         let slots = (0..depth.max(1))
             .map(|_| ReadbackSlot {
                 buffer: device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("readback"),
-                    size: (padded_row * height as usize) as u64,
+                    size: size.max(4),
                     usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                     mapped_at_creation: false,
                 }),
                 pending: None,
             })
             .collect();
-        Self { slots, next: 0, width, height, padded_row }
+        let video = (layout != yuv::PixelLayout::Rgba).then(|| yuv::VideoPlanes::new(device, layout, width, height));
+        Self { slots, next: 0, width, height, layout, planes, video }
+    }
+
+    /// How the frames come back.
+    pub fn layout(&self) -> yuv::PixelLayout {
+        self.layout
     }
 
     /// Starts copying the renderer's current output. If all slots are busy, the oldest frame is
@@ -2522,20 +2606,29 @@ impl Readback {
         anyhow::ensure!(renderer.size() == (self.width, self.height), "readback size doesn't match the renderer");
         let index = self.next;
         let oldest = self.take(device, index)?;
-        let slot = &mut self.slots[index];
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("readback") });
-        encoder.copy_texture_to_buffer(
-            renderer.output_texture().as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &slot.buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(self.padded_row as u32),
-                    rows_per_image: Some(self.height),
+        let sources: Vec<&wgpu::Texture> = match self.video.as_mut() {
+            Some(video) => {
+                video.convert(device, &mut encoder, renderer.output_view());
+                video.textures.iter().collect()
+            }
+            None => vec![renderer.output_texture()],
+        };
+        let slot = &mut self.slots[index];
+        for (texture, &(offset, padded, _, h)) in sources.into_iter().zip(&self.planes) {
+            encoder.copy_texture_to_buffer(
+                texture.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &slot.buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset,
+                        bytes_per_row: Some(padded),
+                        rows_per_image: Some(h),
+                    },
                 },
-            },
-            wgpu::Extent3d { width: self.width, height: self.height, depth_or_array_layers: 1 },
-        );
+                wgpu::Extent3d { width: texture.width(), height: h, depth_or_array_layers: 1 },
+            );
+        }
         let submission = queue.submit([encoder.finish()]);
         let (sender, receiver) = std::sync::mpsc::channel();
         slot.buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
@@ -2561,12 +2654,15 @@ impl Readback {
         let Some((submission, receiver)) = slot.pending.take() else { return Ok(None) };
         device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: None })?;
         receiver.recv()??;
-        let row = self.width as usize * 4;
-        let mut pixels = Vec::with_capacity(row * self.height as usize);
+        let total: usize = self.planes.iter().map(|&(_, _, row, h)| row as usize * h as usize).sum();
+        let mut pixels = Vec::with_capacity(total);
         {
             let mapped = slot.buffer.slice(..).get_mapped_range()?;
-            for chunk in mapped.chunks(self.padded_row) {
-                pixels.extend_from_slice(&chunk[..row]);
+            for &(offset, padded, row, h) in &self.planes {
+                let plane = &mapped[offset as usize..offset as usize + padded as usize * h as usize];
+                for chunk in plane.chunks(padded as usize) {
+                    pixels.extend_from_slice(&chunk[..row as usize]);
+                }
             }
         }
         slot.buffer.unmap();
