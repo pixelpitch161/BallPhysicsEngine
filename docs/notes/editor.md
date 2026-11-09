@@ -273,3 +273,31 @@ looks themselves are in `bpe-kit/src/ready_looks/` (`engine.md`).
 - **Add menu** (`tree.rs::with_looks`): Balls, Emitter and Shape are submenus: Plain, the seven favourites with their
   swatch (`Action::AddWithLook` → `ready_looks::add_with_look`), More looks… (`Action::AddForLooks`: a plain one,
   `TreeOutcome.looks`, and the app opens its Looks tab). Tree tests click the kind, then Plain.
+
+## Producer features (W11, 2026-11-08)
+
+Plan `docs/superpowers/plans/2026-11-08-producer-features.md`; the engine side is in `sound.md`.
+
+- **Sample panel** (`sound_tab/sample_panel.rs`): the Sample chip on Osc A or B shows the sample's name and Load…
+  (`pick_sound_file`, `read_sound_file` probes it; a problem goes to the tab's note), "Sample not found" or the file's
+  read error, "Reading the sound file…" while it decodes, the waveform from the peaks with Start (a line) and the loop
+  (a shaded span, reversed with Reverse), the knobs (Gain, Level, Octave, Semi, Cents, Pan; Root, Start, Loop
+  start/end, Loop fade), Loop chips and the Follow notes and Reverse switches. `TabEdit::LoadSample` →
+  `write::load_sample` keeps the file and sets Root from a note in its name.
+- **Save sound… / Load sound…** (Enable sound row, right side, and its right-click menu): `write::save_sound` /
+  `load_sound` (`.ballsound`, through `files::write_safely`); a sound loaded or pasted brings its sound files, renamed
+  on a clash (`copy_clip` / `paste_clip`; the inspector's sound clipboard is a `SoundClip`). What happened shows as a
+  `TabNote` under Enable sound, on that thing only.
+- **Import MIDI…** (Notes header, `notes/header.rs::read_midi`): `TabEdit::ImportMidi` → `write::import_midi` writes
+  the slots, keyboard range, the scene's tempo and time signature and Slots change (or clears and sets Jump to slot
+  keys from First beat at), and the note says how many chords went into how many slots, what was left out and
+  whether the tempo changes in the file. One undo step.
+- **Backing track row** (`mixer/backing.rs`, under the tempo row): Load song…, the name and length, ×, On, Starts at,
+  Level, and a problem line. `set_backing` is shared with drops: a dropped WAV, FLAC, MP3, OGG or AIFF becomes the
+  backing track (`drops.rs::drop_song`).
+- **Song lane** (`timeline/mod.rs::song_lane`, under Hits while there is a backing track): the song's waveform where
+  it plays, dimmed while off.
+- `app.rs::follow_bakes` also follows `SampleBank::decoded()` / `busy()`.
+- Tests: `osc.rs` `sample_shows_its_panel_and_says_when_the_sample_is_missing`, `sound_tab`
+  `save_and_load_sound_and_import_midi_are_offered`, `write.rs` (load sample, save/load across scenes with a rename,
+  copy across scenes, import MIDI By tempo and as keys), `mixer/backing.rs`, the drop tests in `app.rs`.

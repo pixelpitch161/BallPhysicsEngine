@@ -22,7 +22,10 @@ use crate::mods::{
 };
 use crate::{BLOCK, BlockCx, BlockHit, VoiceSource};
 use bpe_core::{LayerId, NoteSlot, ShapePath, Target, ThingId, Track};
-use bpe_dsp::{EnvParams, Envelope, Noise, Smoother, SubOsc, SubWaveId, TableSet, UnisonOsc, UnisonParams, db_to_gain};
+use bpe_dsp::{
+    EnvParams, Envelope, Noise, SampleData, SamplerParams, SamplerVoice, Smoother, SubOsc, SubWaveId, TableSet,
+    UnisonOsc, UnisonParams, db_to_gain,
+};
 use bpe_kit::sound::{
     DistanceSettings, Follows, GateMode, GateUnit, HitPick, LfoSettings, LfoStart, LightFollows, LightModSettings,
     NoiseColour, PhaseMode, PlayMode, PlayWhen, SILENT_DB, SubOctave, SubWave, Wave,
@@ -81,8 +84,14 @@ pub struct OscSpec {
     pub phase_mode: PhaseMode,
     pub sub: SubWave,
     pub sub_octave: SubOctave,
-    /// The wave's tables (none for Noise or an oscillator that is off).
+    /// The wave's tables (none for Noise, a Sample or an oscillator that is off).
     pub table: Option<Arc<TableSet>>,
+    /// A Sample oscillator's sound (none while it is missing, unreadable or decoding: silent), how
+    /// it plays, the note it was recorded at and whether notes repitch it.
+    pub sample: Option<Arc<SampleData>>,
+    pub sampler: SamplerParams,
+    pub sample_root: f32,
+    pub sample_follow: bool,
 }
 
 /// One envelope layer's settings that are not knobs.
@@ -299,6 +308,8 @@ struct Note {
     osc: [UnisonOsc; 2],
     sub: [SubOsc; 2],
     noise: [Noise; 2],
+    /// Each oscillator's place in its sample (a Sample oscillator).
+    samp: [SamplerVoice; 2],
     chain: VoiceChain,
     env: [Envelope; MAX_ENVS],
     env_ids: [LayerId; MAX_ENVS],
@@ -341,6 +352,7 @@ impl Note {
             osc: [UnisonOsc::new(), UnisonOsc::new()],
             sub: [SubOsc::default(), SubOsc::default()],
             noise: [Noise::new(0), Noise::new(1)],
+            samp: [SamplerVoice::default(); 2],
             chain: VoiceChain::new(chain),
             env: std::array::from_fn(|_| Envelope::new()),
             env_ids: [LayerId(u32::MAX); MAX_ENVS],
@@ -1022,6 +1034,9 @@ impl ShapeVoice {
             n.noise[o].seed(mix(seed ^ (o as u64 + 1)));
             if !osc_on[o] {
                 continue;
+            }
+            if let Some(data) = &self.spec.osc[o].sample {
+                n.samp[o].note_on(data, &self.spec.osc[o].sampler, at);
             }
             n.osc[o].prepare(mix(seed.wrapping_add(17 * (o as u64 + 1))));
             n.osc[o].set(&unison[o]);
@@ -1732,7 +1747,16 @@ impl ShapeVoice {
             let [lane_l, lane_r] = &mut sc.lanes[o];
             *lane_l = [0.0; BLOCK];
             *lane_r = [0.0; BLOCK];
-            if spec.wave == Wave::Noise {
+            if spec.wave == Wave::Sample {
+                if let Some(data) = &spec.sample {
+                    // Repitched from its root by the note (Follow notes), else only by Octave,
+                    // Semi and Cents.
+                    let semis_from_root =
+                        if spec.sample_follow { pitch[o] - spec.sample_root } else { pitch[o] - n.pitch };
+                    let step = (2.0f64).powf(semis_from_root as f64 / 12.0);
+                    n.samp[o].render(data, &spec.sampler, step, &sc.gain, lane_l, lane_r);
+                }
+            } else if spec.wave == Wave::Noise {
                 let pink = spec.noise == NoiseColour::Pink;
                 for s in 0..BLOCK {
                     let v = if pink { n.noise[o].pink() } else { n.noise[o].white() } * sc.gain[s];

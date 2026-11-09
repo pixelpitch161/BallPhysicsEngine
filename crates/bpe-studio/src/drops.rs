@@ -1,7 +1,8 @@
 //! Files dropped onto the window (editor workflow, W5): a scene opens (asking to save first), a
 //! font is kept in the scene and the selected Texts are set in it, and a PNG is kept in the
-//! scene as a Particles picture (the selected Particles things form it, or a new one does).
-//! Anything else is reported in the status line.
+//! scene as a Particles picture (the selected Particles things form it, or a new one does), and a
+//! sound file (WAV, FLAC, MP3, OGG, AIFF) becomes the Mixer's backing track (W11). Anything else
+//! is reported in the status line.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -17,6 +18,7 @@ pub enum Dropped {
     Scene,
     Font,
     Picture,
+    Sound,
     Other,
 }
 
@@ -27,13 +29,16 @@ pub fn what(name: &str) -> Dropped {
         Some("ron") => Dropped::Scene,
         Some("ttf" | "otf") => Dropped::Font,
         Some("png") => Dropped::Picture,
+        Some(e) if bpe_sound::audio::EXTENSIONS.contains(&e) => Dropped::Sound,
         _ => Dropped::Other,
     }
 }
 
 /// The status line's words for a file Ball Studio can't take.
 pub fn cant_open(name: &str) -> String {
-    format!("Ball Studio can't open {name}: drop a scene (.ron), a font (.ttf, .otf) or a PNG picture.")
+    format!(
+        "Ball Studio can't open {name}: drop a scene (.ron), a font (.ttf, .otf), a PNG picture or a song (WAV, FLAC, MP3, OGG, AIFF)."
+    )
 }
 
 impl Studio {
@@ -58,6 +63,12 @@ impl Studio {
                 Dropped::Scene => {}
                 Dropped::Font => self.drop_font(&name, bytes()),
                 Dropped::Picture => self.drop_picture(&name, bytes()),
+                Dropped::Sound
+                    if std::fs::metadata(&path).is_ok_and(|m| m.len() > bpe_sound::audio::MAX_FILE_BYTES as u64) =>
+                {
+                    self.report(ProblemKind::File, format!("{name} is too big (over 200 MB)."));
+                }
+                Dropped::Sound => self.drop_song(&name, bytes()),
                 Dropped::Other => self.report(ProblemKind::File, cant_open(&name)),
             }
         }
@@ -117,6 +128,21 @@ impl Studio {
         self.separate_edit = true;
     }
 
+    /// Keeps the song in the scene as the Mixer's backing track.
+    pub(crate) fn drop_song(&mut self, name: &str, bytes: Arc<[u8]>) {
+        if bpe_sound::audio::probe(&bytes).is_err() {
+            self.report(ProblemKind::File, format!("{name} {}", bpe_sound::audio::NOT_A_SOUND));
+            return;
+        }
+        let file = crate::sound_tab::sample_panel::LoadedFile { file: name.to_owned(), bytes };
+        let kit = self.kit.clone();
+        if crate::mixer::backing::set_backing(&mut self.scene, &kit, &file) {
+            let song = crate::mixer::backing::backing_name(&self.scene, &kit);
+            self.status = format!("Added {song} as the backing track: set where it starts in the Mixer.");
+            self.separate_edit = true;
+        }
+    }
+
     /// The selected things of `kind`.
     fn selected_of(&self, kind: &str) -> Vec<ThingId> {
         let all = self.selection.all(&self.scene);
@@ -141,8 +167,11 @@ mod tests {
         assert_eq!(what("Anton.ttf"), Dropped::Font);
         assert_eq!(what("Font.OTF"), Dropped::Font);
         assert_eq!(what("logo.png"), Dropped::Picture);
-        assert_eq!(what("song.wav"), Dropped::Other);
+        assert_eq!(what("song.wav"), Dropped::Sound);
+        assert_eq!(what("Song.MP3"), Dropped::Sound);
+        assert_eq!(what("loop.flac"), Dropped::Sound);
+        assert_eq!(what("notes.txt"), Dropped::Other);
         assert_eq!(what("no extension"), Dropped::Other);
-        assert!(cant_open("song.wav").contains("song.wav"));
+        assert!(cant_open("notes.txt").contains("notes.txt"));
     }
 }

@@ -13,6 +13,8 @@ use crate::{
 
 /// The setting key that names a font (a Text thing's Font).
 const FONT_KEY: &str = "font";
+/// What the sound files' names are gathered under (they are named by several keys).
+const AUDIO: &str = "audio";
 
 /// Things copied out of a scene, ready to paste into any scene.
 #[derive(Clone, Debug, PartialEq)]
@@ -27,6 +29,8 @@ pub struct ThingClip {
     /// The fonts and pictures their settings name.
     pub fonts: BTreeMap<String, SceneFont>,
     pub pictures: BTreeMap<String, ScenePicture>,
+    /// The sound files their settings name (samples, a backing track).
+    pub audio: BTreeMap<String, crate::SceneAudio>,
     /// Each thing not copied that a copied setting points at: its kind and name, so a paste
     /// keeps the link only where it finds the same thing.
     pub outside: BTreeMap<ThingId, (KindId, String)>,
@@ -207,6 +211,11 @@ impl Scene {
                     texts.entry(name).or_default().insert(t.clone());
                 }
             }
+            if crate::is_audio_key(key)
+                && let Value::Text(t) = v
+            {
+                texts.entry(AUDIO).or_default().insert(t.clone());
+            }
         };
         for thing in &things {
             for (k, v) in values(thing) {
@@ -231,7 +240,8 @@ impl Scene {
             named(FONT_KEY).into_iter().filter_map(|n| Some((n.clone(), self.fonts.get(&n)?.clone()))).collect();
         let pictures =
             named(PICTURE_KEY).into_iter().filter_map(|n| Some((n.clone(), self.pictures.get(&n)?.clone()))).collect();
-        Some(ThingClip { things, tops, tracks, pulses, fonts, pictures, outside })
+        let audio = named(AUDIO).into_iter().filter_map(|n| Some((n.clone(), self.audio.get(&n)?.clone()))).collect();
+        Some(ThingClip { things, tops, tracks, pulses, fonts, pictures, audio, outside })
     }
 
     /// Puts a copy of `clip` under `parent`, right after `after` when that is one of `parent`'s
@@ -287,6 +297,9 @@ impl Scene {
                 }
             }
         }
+        for (name, used) in self.bring_audio(&clip.audio) {
+            renamed.insert((AUDIO, name), used);
+        }
         let here = |id: ThingId| -> bool {
             clip.outside
                 .get(&id)
@@ -306,6 +319,12 @@ impl Scene {
                 {
                     *t = new.clone();
                 }
+            }
+            if crate::is_audio_key(key)
+                && let Value::Text(t) = v
+                && let Some(new) = renamed.get(&(AUDIO, t.clone()))
+            {
+                *t = new.clone();
             }
         };
         // The names taken: the scene's, then each pasted thing's as it goes in.
@@ -497,6 +516,21 @@ mod tests {
         other.things.get_mut(&outside).unwrap().name = "Someone else".into();
         let pasted = other.paste_things(&reg, &clip, ThingId::ROOT, None).unwrap();
         assert_eq!(pasted.unlinked, 1);
+    }
+
+    #[test]
+    fn sound_files_come_along_and_are_renamed_on_a_clash() {
+        let (reg, mut s, [_, a, _, _]) = scene();
+        let kick = s.add_audio("Kick", Arc::from(&b"kick one"[..]));
+        s.things.get_mut(&a).unwrap().params.set("a_sample", Value::Text(kick));
+        let clip = s.copy_things(&reg, &[a]).unwrap();
+        assert_eq!(clip.audio.len(), 1);
+        let mut other = Scene::empty(&reg);
+        other.add_audio("Kick", Arc::from(&b"another kick"[..]));
+        let pasted = other.paste_things(&reg, &clip, ThingId::ROOT, None).unwrap();
+        let t = &other.things[&pasted.tops[0]];
+        assert_eq!(t.params.get("a_sample"), Some(&Value::Text("Kick (2)".into())));
+        assert_eq!(&*other.audio["Kick (2)"].bytes, b"kick one");
     }
 
     #[test]

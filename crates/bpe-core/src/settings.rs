@@ -107,6 +107,7 @@ pub const SECTION_ORDER: &[&str] = &[
     "Quality",
     "Scenes",
     "Master",
+    "Backing track",
     "Bus 1",
     "Bus 2",
     "Bus 3",

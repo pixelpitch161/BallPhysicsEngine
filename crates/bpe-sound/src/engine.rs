@@ -71,6 +71,8 @@ pub struct Engine {
     end_fade: f64,
     /// Seconds a seek renders unheard before where it lands ([`SoundPatch::warm_up`]).
     warm_up: f64,
+    /// The Mixer's backing track, added to the mix before the master at the voices' time.
+    backing: Option<crate::patch::Backing>,
 }
 
 /// The End fade's gain at `t` seconds for a clip ending at `end`: 1 until the fade starts, then a
@@ -145,6 +147,7 @@ impl Engine {
             end_set: false,
             end_fade: patch.master.master_end_fade.max(0.0) as f64,
             warm_up,
+            backing: patch.backing,
         }
     }
 
@@ -348,6 +351,7 @@ impl Engine {
             self.end = patch.end;
         }
         self.tempo = patch.tempo;
+        self.backing = patch.backing;
         // The hits waiting were picked for the old voices: a new set reads them again from where
         // the voices are, so a voice new mid-clip hears the hits already read.
         if heard != self.heard {
@@ -581,6 +585,9 @@ impl Engine {
         self.cursor.take_block(self.voice_pos, BLOCK as u64, &mut self.hits);
         let time = self.voice_pos as f64 / SAMPLE_RATE as f64;
         self.run_voices(self.voice_pos, time, true);
+        if let Some(b) = &self.backing {
+            b.add(self.voice_pos, &mut self.bus_l, &mut self.bus_r);
+        }
         self.master.at(time, self.physics.world().rules());
         self.master.process(&mut self.bus_l, &mut self.bus_r);
         self.voice_pos += BLOCK as u64;

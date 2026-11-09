@@ -21,14 +21,21 @@ pub fn largest_chunk_bytes() -> usize {
     LARGEST_CHUNK.load(Ordering::Relaxed)
 }
 
-/// Whether anything in the scene makes sound: an enabled thing with a sound card that is on.
+/// Whether anything in the scene makes sound: an enabled thing with a sound card that is on, or
+/// a backing track that is on and kept in the scene.
 pub fn has_sound(scene: &Scene) -> bool {
-    scene.things.values().filter(|t| t.enabled).any(|t| {
-        let card = t.slots.get(&SlotId::Sound).is_some_and(|c| c.params.get("enabled") != Some(&Value::Bool(false)));
-        #[cfg(feature = "test-tone")]
-        let card = card || t.tags.iter().any(|tag| tag.starts_with("test-tone"));
-        card
-    })
+    let backing = scene
+        .card(bpe_core::ThingId::ROOT, SlotId::Mixer)
+        .map(|c| MixerSettings::from_params(&c.params))
+        .is_some_and(|m| m.backing_on && scene.audio.contains_key(&m.backing));
+    backing
+        || scene.things.values().filter(|t| t.enabled).any(|t| {
+            let card =
+                t.slots.get(&SlotId::Sound).is_some_and(|c| c.params.get("enabled") != Some(&Value::Bool(false)));
+            #[cfg(feature = "test-tone")]
+            let card = card || t.tags.iter().any(|tag| tag.starts_with("test-tone"));
+            card
+        })
 }
 
 /// Frames in `seconds` of sound.
