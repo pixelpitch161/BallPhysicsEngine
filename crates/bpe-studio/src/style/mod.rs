@@ -190,9 +190,14 @@ mod tests {
                     }
                     continue;
                 }
+                // Tests may build whatever colours they like: test files (`tests.rs`, `*_tests.rs`) and a
+                // file's own test module are skipped.
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if name == "tests.rs" || name.ends_with("_tests.rs") {
+                    continue;
+                }
                 let text = std::fs::read_to_string(&path).unwrap();
-                // Tests may build whatever colours they like.
-                let code = text.split("#[cfg(test)]").next().unwrap_or("");
+                let code = text.split("#[cfg(test)]\nmod tests {").next().unwrap_or("");
                 for (i, line) in code.lines().enumerate() {
                     if banned.iter().any(|b| line.contains(b)) && !line.contains("// scene colour") {
                         found.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));

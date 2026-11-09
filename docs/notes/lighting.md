@@ -66,7 +66,7 @@ sub-layer** (`sub.surface`/`shape.sub.surface`, not on a Body: `Stamps` gives th
 index after every thing's, `surface::sub_defs` leaves out `WHOLE_THING_ONLY`; the editor writes the preset on pick),
 **Reflects: The scene** (default; `trace_scene` walks spheres, wall, floor and shape fronts up to the Lighting card's
 Reflection depth; spheres are pushed in Flat too, `SphereGpu.c` their surface, never for shadows), **glass**
-(`GLASS_FLAG` 4096 on a see-through record's `light[3]`, `OWN_FLAG` 8192 on a layer with its own Surface sub-layer; the renderer draws a **behind picture** as `BEHIND_PASS`
+(`GLASS_FLAG` 4096 on a see-through record's `light[3]`, `OWN_FLAG` 8192 on a layer with its own Surface sub-layer; the renderer draws a **behind picture** as `light_pass::BEHIND`
 with those records left out (`left_behind`) and `transmitted` bends it by Bends light, Rainbow split and Frost;
 a shape's **Lens** is its body record's `light[2]`, a dome height in `shape_walk.wgsl`; `surface::glass_of` is the
 lasers' hook), **mirror walls** on shapes (Mirror wall Off/Outside/Inside/Both sides = where the reflection shows,

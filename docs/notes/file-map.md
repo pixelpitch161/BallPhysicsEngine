@@ -3,7 +3,8 @@
 Where each part of the code lives, after the 2026-11-09 split of the giant files (W17, plan
 `docs/superpowers/plans/2026-11-09-split-giant-files.md`). A big file became a folder: its `mod.rs` keeps the types
 and what the parts share, and each child file does one job. Every old path still works (`bpe_gfx::Frame`,
-`crate::inspector::show`, `crate::frame::LightGpu`, …) because each `mod.rs` re-exports its children.
+`crate::inspector::show`, `crate::frame::LightGpu`, …) because each `mod.rs` re-exports what its children used to
+export.
 
 Each folder's `mod.rs` starts with a short map of its own files; this page is the overview.
 
@@ -27,7 +28,7 @@ Each folder's `mod.rs` starts with a short map of its own files; this page is th
 | `renderer/targets.rs`, `grade.rs`, `paint.rs` | The renderer's pictures (HDR, bloom levels, object and layer pictures); the grade's lookup texture (`GradeMap`); the paint texture |
 | `readback.rs` | `Readback`: frames back to the CPU for export (RGBA or video colours) |
 | `light_pass.rs` + `shaders/light_passes.wgsl` | The light-pass numbers by name (`PICTURE`, `LIT`, `SURFACE`, `EMISSION`, `BACKGROUND`, `UV`, `TAGS`, `BEHIND`, `TINT`, `GLASS`); shaders test `light_pass(g.light.x) == PASS_LIT` and so on. A test keeps the two lists equal |
-| `lighting/` | The lighting passes. `mod.rs`: `Lighting` and its uniform; `kit.rs`: pipelines and layouts (`LightKit`); `run.rs`: one frame's lighting in order (plan, upload, passes); `passes.rs`: each pass's encoding; `targets.rs`: its pictures and quality tiers; `glass.rs`: dichroic, caustic and stage uniforms; `binds.rs`: the bind group cache; `tiles.rs`: light tiles |
+| `lighting/` | The lighting passes. `mod.rs`: `Lighting` and its uniform; `kit.rs`: pipelines and layouts (`LightKit`); `run.rs`: one frame's lighting in order (plan, upload, passes); `passes.rs`: each pass's encoding; `targets.rs`: its pictures and quality tiers; `glass.rs`: dichroic, caustic and stage uniforms, the rainbow, `SphereGrid`, `photons_per_pair`; `binds.rs`: the bind group cache; `tiles.rs`: light tiles |
 | `shaders/lighting/` | The lighting shader, one file per pass, joined in this order by `LIGHTING_WGSL`: `bindings`, `field`, `shadows`, `direct`, `light_field`, `haze_bloom`, `stage`, `shade`, `mix`, `dof_floor`, `bake`, `caustics` (then `common.wgsl`) |
 | `shaders/post.wgsl` | Bloom and the composite (`fs_composite`: exposure, roll-off, sRGB, the grade, dither) |
 | `effects/` | The Effects stack (`chain.rs`), lens effects, built-in effects |

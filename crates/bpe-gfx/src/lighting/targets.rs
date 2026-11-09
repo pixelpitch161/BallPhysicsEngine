@@ -172,6 +172,7 @@ impl Targets {
     }
 }
 
+/// The pictures bound to group 1 (see the lighting shader's bindings), in binding order.
 #[derive(Clone, Copy)]
 pub(super) struct GlowInputs<'a> {
     pub(super) emission: &'a wgpu::TextureView,
