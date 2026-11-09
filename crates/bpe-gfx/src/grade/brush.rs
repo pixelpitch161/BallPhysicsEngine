@@ -153,18 +153,20 @@ fn paint(level: &mut [f32], g: &Layout, s: &Stroke) {
 /// The paint levels of `strokes` laid out as `g`, kept for the most recent few sets (see the
 /// module's notes).
 fn levels(strokes: &Strokes, g: &Layout) -> Arc<[f32]> {
-    type Kept = HashMap<u64, (Layout, Arc<[f32]>)>;
-    static LEVELS: OnceLock<Mutex<Kept>> = OnceLock::new();
+    type Levels = Recent<(Layout, Arc<[f32]>)>;
+    static LEVELS: OnceLock<Mutex<Levels>> = OnceLock::new();
     let lock = || LEVELS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
     let hash = strokes.hash64();
-    if let Some((at, l)) = lock().get(&hash)
-        && at == g
+    if let Some((at, l)) = lock().get(hash)
+        && at == *g
     {
-        return l.clone();
+        return l;
     }
+    // A stroke being painted adds itself to strokes kept a moment ago: start from those (looking
+    // them up keeps them, so a long stroke never loses them).
     let start = strokes.list.split_last().and_then(|(_, before)| {
         let before = Strokes { list: before.to_vec() };
-        lock().get(&before.hash64()).filter(|(at, _)| at == g).map(|(_, l)| l.clone())
+        lock().get(before.hash64()).filter(|(at, _)| at == g).map(|(_, l)| l)
     });
     let mut level: Vec<f32> = match start {
         Some(l) => {
@@ -182,30 +184,58 @@ fn levels(strokes: &Strokes, g: &Layout) -> Arc<[f32]> {
     };
     level.iter_mut().for_each(|v| *v = v.clamp(0.0, 1.0));
     let level: Arc<[f32]> = level.into();
-    let mut kept = lock();
-    if kept.len() >= 32 {
-        kept.clear();
-    }
-    kept.insert(hash, (*g, level.clone()));
+    lock().put(hash, (*g, level.clone()), KEPT_LEVELS);
     level
 }
 
-/// `strokes` as a grid, or `None` when they paint nothing. Kept by the strokes' hash.
+/// How many sets of paint levels (up to 4 MB each) and grids (up to 1 MB) are kept.
+const KEPT_LEVELS: usize = 16;
+const KEPT_GRIDS: usize = 32;
+
+/// Values kept by hash, the least recently used going first when full.
+struct Recent<V> {
+    kept: HashMap<u64, (u64, V)>,
+    tick: u64,
+}
+
+impl<V> Default for Recent<V> {
+    fn default() -> Self {
+        Self { kept: HashMap::new(), tick: 0 }
+    }
+}
+
+impl<V: Clone> Recent<V> {
+    fn get(&mut self, hash: u64) -> Option<V> {
+        self.tick += 1;
+        let tick = self.tick;
+        self.kept.get_mut(&hash).map(|(used, v)| {
+            *used = tick;
+            v.clone()
+        })
+    }
+
+    fn put(&mut self, hash: u64, v: V, most: usize) {
+        while self.kept.len() >= most.max(1) {
+            let Some(oldest) = self.kept.iter().min_by_key(|(_, (used, _))| *used).map(|(k, _)| *k) else { break };
+            self.kept.remove(&oldest);
+        }
+        self.tick += 1;
+        self.kept.insert(hash, (self.tick, v));
+    }
+}
+
+/// The grid of `strokes` (`None` for no paint), kept for the most recent sets.
 pub fn grid(strokes: &Strokes) -> Option<Arc<BrushGrid>> {
-    static MADE: OnceLock<Mutex<HashMap<u64, Arc<BrushGrid>>>> = OnceLock::new();
+    static MADE: OnceLock<Mutex<Recent<Arc<BrushGrid>>>> = OnceLock::new();
     let lock = || MADE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
     let g = layout(strokes)?;
     let hash = strokes.hash64();
-    if let Some(made) = lock().get(&hash).filter(|m| m.origin == g.origin && m.texel == g.texel && m.size == g.size) {
-        return Some(made.clone());
+    if let Some(made) = lock().get(hash).filter(|m| m.origin == g.origin && m.texel == g.texel && m.size == g.size) {
+        return Some(made);
     }
     let paint: Arc<[u8]> = levels(strokes, &g).iter().map(|v| (v * 255.0).round() as u8).collect();
     let made = Arc::new(BrushGrid { origin: g.origin, texel: g.texel, size: g.size, paint });
-    let mut kept = lock();
-    if kept.len() >= 64 {
-        kept.clear();
-    }
-    kept.insert(hash, made.clone());
+    lock().put(hash, made.clone(), KEPT_GRIDS);
     Some(made)
 }
 
@@ -311,5 +341,21 @@ mod tests {
         let words = small.words();
         assert_eq!(words, vec![[(1 + 2 * 256 + 3 * 65536) as f32, (4 + 255 * 256) as f32, 0.0, 0.0]]);
         assert!((small.reach() - 10.0f32.hypot(2.0)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn the_caches_keep_what_is_looked_up_and_drop_the_least_recently_used() {
+        let mut r: Recent<u32> = Recent::default();
+        r.put(1, 10, 3);
+        r.put(2, 20, 3);
+        r.put(3, 30, 3);
+        // A long stroke looks up what it started from every frame: it is never the one dropped.
+        for k in 4..40 {
+            assert_eq!(r.get(1), Some(10));
+            r.put(k, k as u32, 3);
+        }
+        assert_eq!(r.get(1), Some(10));
+        assert_eq!(r.kept.len(), 3);
+        assert_eq!(r.get(2), None, "dropped long ago");
     }
 }

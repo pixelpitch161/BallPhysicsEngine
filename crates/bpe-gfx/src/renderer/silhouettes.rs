@@ -49,6 +49,8 @@ struct Pictures {
     from_seeds: [wgpu::BindGroup; 2],
     field: wgpu::TextureView,
     field_layers: Vec<wgpu::TextureView>,
+    /// Reading the silhouettes, and the uv it was made with (`None` the stand-in).
+    from_silhouette: Option<(Option<wgpu::TextureView>, wgpu::BindGroup)>,
 }
 
 /// The selection snippet with its group set.
@@ -436,7 +438,7 @@ impl Silhouettes {
             })
             .collect();
         let from_seeds = [0, 1].map(|i| self.flood_group(device, &seeds[i], &self.no_uv, &self.no_uv));
-        Pictures { size, layers, silhouette, top, seeds, from_seeds, field, field_layers }
+        Pictures { size, layers, silhouette, top, seeds, from_seeds, field, field_layers, from_silhouette: None }
     }
 
     fn flood_group(
@@ -468,7 +470,7 @@ impl Silhouettes {
     /// Floods selection `index`'s silhouette (`plan` its steps) into its layer of the field;
     /// `uv` is the moved Stage camera's (the stand-in otherwise).
     fn flood(
-        &self,
+        &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         index: usize,
@@ -476,8 +478,14 @@ impl Silhouettes {
         uv: Option<&wgpu::TextureView>,
     ) {
         let p = self.pictures.as_ref().expect("prepared");
+        let fresh = p.from_silhouette.as_ref().is_none_or(|(made, _)| made.as_ref() != uv);
+        if fresh {
+            let group = self.flood_group(device, &p.silhouette, uv.unwrap_or(&self.no_uv), &p.top);
+            self.pictures.as_mut().expect("prepared").from_silhouette = Some((uv.cloned(), group));
+        }
+        let p = self.pictures.as_ref().expect("prepared");
+        let from_silhouette = &p.from_silhouette.as_ref().expect("made above").1;
         let offset = |pass: usize| ((index * MOST_PASSES as usize + pass) as u64 * STRIDE) as u32;
-        let from_silhouette = self.flood_group(device, &p.silhouette, uv.unwrap_or(&self.no_uv), &p.top);
         let run = |encoder: &mut wgpu::CommandEncoder,
                    pipeline: &wgpu::RenderPipeline,
                    group: &wgpu::BindGroup,
@@ -488,7 +496,7 @@ impl Silhouettes {
             rp.set_bind_group(0, group, &[offset(pass)]);
             rp.draw(0..3, 0..1);
         };
-        run(encoder, &self.seed, &from_silhouette, 0, &p.seeds[0]);
+        run(encoder, &self.seed, from_silhouette, 0, &p.seeds[0]);
         let mut at = 0;
         for n in 0..plan.len() {
             run(encoder, &self.step, &p.from_seeds[at], 1 + n, &p.seeds[1 - at]);
@@ -541,7 +549,8 @@ impl Renderer {
             self.swarms.ensure_silhouette(device, &self.globals_layout, sil.select_layout());
         }
         let size = (self.targets.width, self.targets.height);
-        let scale = self.targets.height as f32 / frame.video.1.max(1) as f32;
+        // Output pixels a scene unit, as the grade reads it (`post.wgsl`: size.y · view.y / 2).
+        let scale = self.targets.height as f32 / frame.height.max(1) as f32;
         let uv = if moved { self.stage_camera.as_ref().and_then(|s| s.uv_view()).cloned() } else { None };
         let plans = sil.prepare(device, queue, &selections, size, scale, uv.is_some());
         let layer_buffers = std::mem::take(&mut self.layer_buffers);

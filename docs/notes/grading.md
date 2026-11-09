@@ -328,7 +328,7 @@ Plan: `docs/superpowers/plans/colour-grading/part5.md` (decisions 1 to 20 hold e
   (video px from where it sits, as the gradients' X / Y). A brush with no place (nothing to follow) is left out.
 - **Things** (`grade.part.things`, `ThingsPart`): `combine`, `invert`, `only` (`ThingsOnly`: Balls (balls and
   emitters), Shapes, Text, Particles, Background, One thing), `target` (One thing's), `expand` and `feather` (video
-  px, 0..1e4, span 0..200, keyframe, pulse). `ThingsPart::things(world)` gives the sorted thing codes
+  px, 0..1000 each, span 0..200, keyframe, pulse; together they reach at most `MOST_REACH` 2000). `ThingsPart::things(world)` gives the sorted thing codes
   (`thing_code(id)` as whole numbers), `None` with `background` for Background, or nothing at all when One thing
   names nothing there (the part is then left out and its row says "Thing not found"). A kind with no things now
   covers nothing (inverted, everything).
@@ -344,7 +344,7 @@ Plan: `docs/superpowers/plans/colour-grading/part5.md` (decisions 1 to 20 hold e
   `GradeShape::Brush(GradeBrush { strokes, places })`, `GradePlace.world`, `MOST_REACH`.
 - **The brush grid** (`grade/brush.rs`): strokes rasterised on the CPU into 8-bit paint over their box (points ±
   size, snapped out to 64), one texel per `max(2, longest side / 1024)` units, each stroke laid on by `lay`.
-  Cached by the strokes' hash (64 grids; paint levels 32, a set adding one stroke to a cached one starts from it).
+  Cached by the strokes' hash (32 grids, 16 paint-level sets, least recently used out; a set adding one stroke to a cached one starts from it).
   Program words (`PART_BRUSH` 6): `[x0, y0, 1 / texel, 0]`, `[w, h, grid word, 0]`, the copies (reach = the
   furthest grid corner), then the grid, three bytes a lane as a whole number (`b0 + 256 b1 + 65536 b2`, read
   exactly, never bit-cast), twelve texels a word. Sampled bilinearly, 0 outside, copies joined by the most. No
@@ -401,4 +401,11 @@ Plan: `docs/superpowers/plans/colour-grading/part5.md` (decisions 1 to 20 hold e
   `grading-stage-follow` (a mask on every ball under the swung Stage camera). `grade_settings_restart_nothing`
   adds a Brush and a Things part and checks at least 150 settings.
 - Known limits: past eight different thing lists a Things part covers nothing; fields and liquids aren't in a
-  Particles thing's silhouette.
+  Particles thing's silhouette; a ball counts whole at any opacity above 0 (as effects find things), so a nearly
+  see-through ball still hides what is behind it in a Things mask; One thing pointed at a Folder covers nothing
+  (a folder draws nothing; its children aren't followed); a baked frame's silhouettes come from its last sample;
+  `see_through` runs whenever the Stage camera has moved, so in the first editor frames of a swung camera, before
+  the lighting shaders are built and the picture is still flat, following masks sit off for a moment.
+- The brush caches (`grade/brush.rs`) keep 16 sets of paint levels and 32 grids, dropping the least recently used;
+  a stroke being painted looks up the strokes before it every frame, so they stay kept and each frame paints only
+  the new stroke.

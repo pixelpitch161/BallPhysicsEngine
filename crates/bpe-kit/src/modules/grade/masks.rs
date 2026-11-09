@@ -437,10 +437,10 @@ pub struct ThingsPart {
     #[setting(label = "Which thing", when = "only=one_thing", group = "Things")]
     pub target: Target,
     /// Grows the covered part out round the things by this far (to take in their glow).
-    #[setting(label = "Expand", range(0, 1e4), span(0, 200), unit = "px", keyframe, pulse, group = "Things")]
+    #[setting(label = "Expand", range(0, 1000), span(0, 200), unit = "px", keyframe, pulse, group = "Things")]
     pub expand: f32,
     /// Fades out over this far past the grown edge.
-    #[setting(label = "Feather", range(0, 1e4), span(0, 200), unit = "px", keyframe, pulse, group = "Things")]
+    #[setting(label = "Feather", range(0, 1000), span(0, 200), unit = "px", keyframe, pulse, group = "Things")]
     pub feather: f32,
 }
 

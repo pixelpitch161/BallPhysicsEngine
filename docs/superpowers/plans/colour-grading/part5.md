@@ -206,4 +206,7 @@ Built as planned, with these differences (`docs/notes/grading.md` "Part 5 as bui
 - Swarms draw into the silhouette between the sprites where they sit, as the picture draws them.
 - The brush grid's lanes are read as the whole numbers they are (`u32(x)`): adding a half first rounded a lane of
   three full bytes (2^24 − 1) up to 2^24, which read as no paint (caught by the picture test).
-- The brush grid cache keeps 64 grids (paint levels 32).
+- The brush caches keep 16 paint-level sets and 32 grids, least recently used first out (the review found that
+  clearing a full cache lost the strokes a long stroke starts from, so every frame repainted them all).
+- Expand and Feather go to 1000 px each (`MOST_REACH` 2000 together), not 10 000.
+- The flood's scale is output height over `frame.height`, as the grade reads it.
