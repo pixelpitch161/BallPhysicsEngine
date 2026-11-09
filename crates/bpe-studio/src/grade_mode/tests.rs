@@ -270,3 +270,38 @@ fn a_dropped_header_lands_between_the_others() {
     assert_eq!(panels::drop_index(&headers, a, 250.0), 2);
     assert_eq!(panels::drop_index(&headers, b, 50.0), 1, "back where it was");
 }
+
+#[test]
+fn grade_mode_s_timeline_keeps_only_the_grade_s_lanes() {
+    let studio = graded_studio();
+    let mut scene = studio.scene.clone();
+    let exposure = bpe_core::Address::own(ThingId::ROOT, "exposure");
+    scene.set_key(&studio.kit.registry, &exposure, 0.0, Value::Number(1.0)).unwrap();
+    let mut groups = crate::timeline::lanes::groups_for(&scene, &studio.kit);
+    assert!(groups.iter().flat_map(|g| &g.lanes).any(|l| l.address == exposure));
+    crate::timeline::grade_lanes_only(&mut groups);
+    let lanes: Vec<_> = groups.iter().flat_map(|g| &g.lanes).collect();
+    assert_eq!(lanes.len(), 1, "{lanes:?}");
+    assert_eq!(lanes[0].address.slot, Some(SlotId::Grade));
+    assert_eq!(lanes[0].short, "Basic · Vibrance");
+}
+
+#[test]
+fn choosing_point_is_no_change_and_reset_panel_keeps_it() {
+    let mut studio = Studio::headless();
+    grade::ensure_grade(&mut studio.scene, &studio.kit.registry);
+    let curve = panel_id(&studio.scene, "Tone Curve");
+    let edits = vec![cx::GradeEdit::Set(format!("{curve}/mode"), Value::Choice("point".into()))];
+    apply(&mut studio, edits);
+    let start = studio.grade.start(&studio.kit.registry);
+    let card = cx::card_or_start(&studio.scene, &start);
+    let gx = cx::GradeCx { scene: &studio.scene, kit: &studio.kit, card, time: 0.0 };
+    assert!(!gx.changed(curve));
+    apply(
+        &mut studio,
+        vec![cx::GradeEdit::Set(format!("{curve}/darks"), Value::Number(20.0)), cx::GradeEdit::ResetPanel(curve)],
+    );
+    let card = studio.scene.card(ThingId::ROOT, SlotId::Grade).unwrap();
+    assert_eq!(card.params.get(&format!("{curve}/mode")), Some(&Value::Choice("point".into())));
+    assert_eq!(card.params.get(&format!("{curve}/darks")), None);
+}

@@ -103,6 +103,10 @@ fn grade_curve(at: u32, p: f32, ch: u32) -> f32 {
 // Vibrance and Saturation on an Oklab colour (see grade/maths.rs `chroma_scale`).
 fn grade_chroma(lab: vec3<f32>, vibrance: f32, saturation: f32) -> vec3<f32> {
     let c = length(lab.yz);
+    // A grey (black too) has no hue to read; atan2(0, 0) may not be a number on every card.
+    if c < 1e-7 {
+        return lab;
+    }
     let dull = clamp(1.0 - (c / 0.25) * (c / 0.25), 0.0, 1.0);
     let hue = atan2(lab.z, lab.y);
     let tau = 6.2831853;
@@ -150,5 +154,7 @@ fn run_grade(colour: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
         }
         at += max(u32(h.z), 1u);
     }
-    return grade_space(c, space, SPACE_LINEAR);
+    let out = grade_space(c, space, SPACE_LINEAR);
+    // Anything that came out not a number is black, never a speck of garbage.
+    return select(out, vec3<f32>(0.0), out != out);
 }

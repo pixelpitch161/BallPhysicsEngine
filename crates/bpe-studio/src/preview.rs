@@ -347,10 +347,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         &mut preview.drawn,
         look,
     );
-    if grading {
-        let redrawn = preview.drawn.as_ref().map(|d| (d.revision, d.time.to_bits(), d.step, d.grade)) != drawn_before;
-        count_histogram(studio, &mut preview.renderer, device, &render_state.queue, redrawn, ui.ctx());
-    }
+    let mut redrawn = preview.drawn.as_ref().map(|d| (d.revision, d.time.to_bits(), d.step, d.grade)) != drawn_before;
     if warm::update(&mut preview, studio, device, &render_state.queue, catching_up, look) {
         // The warm renderer took the cold one's place: the picture shows its output now.
         render_state.renderer.write().update_egui_texture_from_wgpu_texture(
@@ -359,6 +356,11 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
             wgpu::FilterMode::Linear,
             preview.texture,
         );
+        redrawn = true;
+    }
+    if grading {
+        // After the warm-up's swap, so the renderer counted is the one shown.
+        count_histogram(studio, &mut preview.renderer, device, &render_state.queue, redrawn, ui.ctx());
     }
     if warm::busy(&preview) {
         ui.ctx().request_repaint();
@@ -429,7 +431,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     // Grade mode only looks: no handles, no picking; Split has its line.
     if grading {
         preview.drag = None;
-        split_line(ui, &response, rect, studio, &mut preview.drawn);
+        split_line(ui, &response, rect, studio);
         studio.panels.preview = Some(preview);
         return outcome;
     }
@@ -825,20 +827,22 @@ fn count_histogram(
 ) {
     if let Some(bins) = renderer.histogram(device) {
         studio.grade.bins = Some(bins);
-        studio.grade.counting = false;
     }
-    if (redrawn || studio.grade.bins.is_none()) && !studio.grade.counting {
+    // A picture drawn since the last count is counted once that count is in. The renderer itself
+    // knows whether a count is on its way (a swapped-in renderer, or a failed read, has none).
+    studio.grade.recount |= redrawn || studio.grade.bins.is_none();
+    if studio.grade.recount && !renderer.histogram_pending() {
         renderer.request_histogram(device, queue);
-        studio.grade.counting = true;
+        studio.grade.recount = false;
     }
-    if studio.grade.counting {
+    if renderer.histogram_pending() {
         // Looked at again soon: the counts come back without anything else asking for a frame.
         ctx.request_repaint_after(std::time::Duration::from_millis(16));
     }
 }
 
 /// The Split view's line across the picture at `rect`: white, dragged left and right.
-fn split_line(ui: &mut Ui, response: &egui::Response, rect: Rect, studio: &mut Studio, drawn: &mut Option<Drawn>) {
+fn split_line(ui: &mut Ui, response: &egui::Response, rect: Rect, studio: &mut Studio) {
     if studio.grade.compare != crate::grade_mode::Compare::Split {
         return;
     }
@@ -848,11 +852,11 @@ fn split_line(ui: &mut Ui, response: &egui::Response, rect: Rect, studio: &mut S
     if response.drag_started() && ui.input(|i| i.pointer.press_origin()).is_some_and(|p| grab.contains(p)) {
         studio.grade.split_drag = true;
     }
+    // The preview draws again by itself when the line moves: `Drawn` holds where it is.
     if studio.grade.split_drag
         && let Some(p) = response.interact_pointer_pos()
     {
         studio.grade.split = ((p.x - rect.left()) / rect.width().max(1.0)).clamp(0.0, 1.0);
-        *drawn = None;
     }
     if response.drag_stopped() {
         studio.grade.split_drag = false;

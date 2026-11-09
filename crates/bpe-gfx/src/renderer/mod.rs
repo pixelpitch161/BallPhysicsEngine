@@ -505,6 +505,11 @@ impl Renderer {
         }
     }
 
+    /// Whether a Histogram count is on its way (asked for and not yet taken).
+    pub fn histogram_pending(&self) -> bool {
+        self.histogram.as_ref().is_some_and(|h| h.busy())
+    }
+
     /// The Histogram's latest counts, once the GPU has them (looks without waiting).
     pub fn histogram(&mut self, device: &wgpu::Device) -> Option<Box<crate::grade::HistogramBins>> {
         let histogram = self.histogram.as_mut()?;

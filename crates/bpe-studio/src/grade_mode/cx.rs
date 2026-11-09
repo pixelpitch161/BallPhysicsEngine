@@ -54,10 +54,12 @@ impl GradeCx<'_> {
     }
 
     /// Whether panel `layer` holds any value, key or pulse of its own (not all at its defaults).
+    /// The Tone Curve's Parametric / Point choice is only which curve shows, so it doesn't count.
     pub fn changed(&self, layer: LayerId) -> bool {
         let prefix = format!("{layer}/");
         let set = self.card.params.0.iter().any(|(k, v)| {
-            k.strip_prefix(&prefix).is_some_and(|key| self.def(Some(layer), key).is_none_or(|d| d.default != *v))
+            k.strip_prefix(&prefix)
+                .is_some_and(|key| key != VIEW_KEY && self.def(Some(layer), key).is_none_or(|d| d.default != *v))
         });
         let animated = self
             .scene
@@ -68,6 +70,9 @@ impl GradeCx<'_> {
         set || animated
     }
 }
+
+/// The Tone Curve's setting saying which curve shows: kept by Reset panel, not counted as a change.
+pub const VIEW_KEY: &str = "mode";
 
 /// `"<layer>/<key>"`, or `key` for the card's own.
 pub fn full_key(layer: Option<LayerId>, key: &str) -> String {
@@ -153,7 +158,8 @@ pub fn apply(scene: &mut Scene, kit: &Kit, time: f64, edits: Vec<GradeEdit>) -> 
     out
 }
 
-/// Takes every value, key and pulse of panel `id` off the Grade card. True when any was there.
+/// Takes every value, key and pulse of panel `id` off the Grade card (a Tone Curve keeps which
+/// curve shows). True when any was there.
 fn reset_panel(scene: &mut Scene, id: LayerId) -> bool {
     let prefix = format!("{id}/");
     let mine = |a: &Address| a.thing == ThingId::ROOT && a.slot == Some(SlotId::Grade) && a.key.starts_with(&prefix);
@@ -163,7 +169,8 @@ fn reset_panel(scene: &mut Scene, id: LayerId) -> bool {
     let mut changed = scene.tracks.len() != tracks || scene.pulses.len() != pulses;
     if let Some(card) = scene.card_mut(ThingId::ROOT, SlotId::Grade) {
         let count = card.params.0.len();
-        card.params.0.retain(|k, _| !k.starts_with(&prefix));
+        let view = format!("{prefix}{VIEW_KEY}");
+        card.params.0.retain(|k, _| !k.starts_with(&prefix) || *k == view);
         changed |= card.params.0.len() != count;
     }
     changed

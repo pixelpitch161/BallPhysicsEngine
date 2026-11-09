@@ -38,7 +38,7 @@ pub const PANEL_ORDER: [&str; 2] = [BASIC, TONE_CURVE];
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct GradeCard {
     /// Off, the grade is skipped and every setting kept (Lightroom's switch for the whole edit).
-    #[setting(label = "Grade on")]
+    #[setting(label = "Grade on", group = "Basics")]
     pub on: bool,
 }
 

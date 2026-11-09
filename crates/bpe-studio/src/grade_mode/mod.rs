@@ -93,8 +93,8 @@ pub struct GradeMode {
     pub curve_drag: Option<(LayerId, Channel, usize)>,
     /// The Histogram's latest counts.
     pub bins: Option<Box<bpe_gfx::grade::HistogramBins>>,
-    /// A count was asked of the GPU and hasn't come back.
-    pub counting: bool,
+    /// The picture changed since the last count was asked for: count again when that one is in.
+    pub recount: bool,
     /// The card the column shows before the scene has one.
     start: Option<Slot>,
 }
@@ -111,7 +111,7 @@ impl Default for GradeMode {
             headers: Vec::new(),
             curve_drag: None,
             bins: None,
-            counting: false,
+            recount: false,
             start: None,
         }
     }

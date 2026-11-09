@@ -196,4 +196,16 @@ goes").
 
 ## As built
 
-(filled in when the part lands)
+Built as planned (summary in `docs/notes/grading.md`). Where it differs:
+
+- `move_sub_layer` was kept as it was; the new `Scene::move_sub_layer_in(reg, …)` moves a sub-layer among its
+  siblings of the same section (the grade uses it; the Look editor's callers are unchanged).
+- The contract (`bpe-core/src/contract.rs`) allows a base layer of section `Mask` as well as `Drawn`.
+- `EditorMode` and Grade mode's state (`GradeMode`) live in `bpe-studio/src/grade_mode/mod.rs`, not `settings.rs`
+  (nothing of them is saved).
+- The Histogram sits in Grade mode's left column under the masks, as in the approved mockup (layout B), not under
+  the picture. The preview's corner switch is After / Before / Split.
+- A panel's header has Move up and Move down in its right-click menu besides dragging.
+- The full-size look check has two grading scenes, `grading-basic` (lit demo through a strong Basic) and
+  `grading-curves` (colour demo through the Tone Curve).
+- The Graded sunset test scene's `track` and `own` builder helpers went (nothing else used them).

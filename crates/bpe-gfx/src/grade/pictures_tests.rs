@@ -228,3 +228,40 @@ fn the_histogram_counts_every_pixel_of_a_flat_picture_by_its_colour() {
     let _ = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
     assert!(renderer.histogram(&device).is_some());
 }
+
+#[test]
+fn black_through_saturation_then_a_curve_that_lifts_blacks_is_lifted() {
+    let lift = GradeToneCurve {
+        rgb: vec![CurvePoint::new(0.0, 0.3, 0.0), CurvePoint::new(1.0, 1.0, 0.0)],
+        ..GradeToneCurve::default()
+    };
+    let stack = panels(vec![
+        GradePanel::Basic(GradeBasic { saturation: 40.0, vibrance: 30.0, ..GradeBasic::default() }),
+        GradePanel::ToneCurve(lift),
+    ]);
+    let Some(lifted) = draw(&graded(grey(0.0), stack)) else { return };
+    let c = centre(&lifted);
+    // tone 0.3 is about 77 of 255.
+    assert!(c.iter().all(|&v| (70..=84).contains(&v)), "{c:?}");
+}
+
+#[test]
+fn a_long_stack_grows_the_program_s_buffer() {
+    // Five curves each lifting a little: more words than the buffer starts with.
+    let step = || GradeToneCurve { lights: 10.0, darks: 10.0, ..GradeToneCurve::default() };
+    let one = panels(vec![GradePanel::ToneCurve(step())]);
+    let five = panels((0..5).map(|_| GradePanel::ToneCurve(step())).collect());
+    let Some(a) = draw(&graded(grey(0.1), one)) else { return };
+    let (device, queue) = crate::test_device().unwrap();
+    let mut renderer = Renderer::new(&device, N, N);
+    renderer.render(&device, &queue, &graded(grey(0.1), panels(vec![])));
+    renderer.render(&device, &queue, &graded(grey(0.1), five));
+    let b = renderer.read_output(&device, &queue).unwrap();
+    assert!(centre(&b)[0] > centre(&a)[0] + 10, "{:?} vs {:?}", centre(&b), centre(&a));
+    assert!(!renderer.histogram_pending());
+    renderer.request_histogram(&device, &queue);
+    assert!(renderer.histogram_pending(), "asked for");
+    let _ = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+    assert!(renderer.histogram(&device).is_some());
+    assert!(!renderer.histogram_pending(), "taken");
+}

@@ -92,21 +92,24 @@ impl Studio {
         let copy = pressed(Modifiers::COMMAND, Key::C) | event(|e| matches!(e, egui::Event::Copy));
         let paste = pressed(Modifiers::COMMAND, Key::V)
             | event(|e| matches!(e, egui::Event::Paste(_) | egui::Event::PasteImage(_)));
-        if pressed(Modifiers::COMMAND, Key::D) {
+        // Grade mode shows no things: only the timeline's keys are copied there, and nothing is
+        // pasted (keys could land on settings it doesn't show).
+        let building = self.mode == crate::grade_mode::EditorMode::Build;
+        if building && pressed(Modifiers::COMMAND, Key::D) {
             self.duplicate_selection();
         }
-        if copy && !timeline::copy_keys(self) {
+        if copy && !timeline::copy_keys(self) && building {
             let ids = self.selection.all(&self.scene);
             self.copy_things(&ids);
         }
-        if paste {
+        if paste && building {
             match &self.clipboard {
                 crate::things::Clipboard::Keys(_) => _ = timeline::paste_keys(self),
                 crate::things::Clipboard::Things(_) => _ = self.paste_things(None),
                 crate::things::Clipboard::Empty => {}
             }
         }
-        if self.left != LeftPanel::Things && pressed(Modifiers::NONE, Key::Delete) {
+        if building && self.left != LeftPanel::Things && pressed(Modifiers::NONE, Key::Delete) {
             self.delete_selection();
         }
     }

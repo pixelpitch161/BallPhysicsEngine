@@ -236,9 +236,11 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
     timeline.selected.retain(|(a, i)| {
         let Some(key) = tracks.get(a).and_then(|t| t.keys.get(*i)) else { return false };
         let same = picked_at.get(&(a.clone(), *i)).is_none_or(|t| t.to_bits() == key.time.to_bits());
-        a.thing == open && same
+        // In Grade mode only the grade's keys show, so only they stay selected.
+        a.thing == open && same && (!grading || a.slot == Some(bpe_core::SlotId::Grade))
     });
-    if timeline.drag.as_ref().is_some_and(|d| d.picked.iter().any(|(a, _)| a.thing != open)) {
+    let hidden = |a: &Address| a.thing != open || (grading && a.slot != Some(bpe_core::SlotId::Grade));
+    if timeline.drag.as_ref().is_some_and(|d| d.picked.iter().any(|(a, _)| hidden(a))) {
         timeline.drag = None;
     }
     if timeline.single().is_none() {
