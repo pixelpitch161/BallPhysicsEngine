@@ -73,7 +73,8 @@ struct Drawn {
     /// The world step of the particles drawn (the particle playback's), when there are some.
     particles: Option<u64>,
     /// Grade mode's compare view, Split line, overlay and selected mask, in Grade mode.
-    grade: Option<(crate::grade_mode::Compare, u32, bool, Option<LayerId>)>,
+    /// The stroke being painted's points so far, too.
+    grade: Option<(crate::grade_mode::Compare, u32, bool, Option<LayerId>, Option<usize>)>,
 }
 
 /// Something in the preview that can be dragged.
@@ -742,7 +743,14 @@ fn draw_picture(
         light: (studio.light_show, studio.light_solo.iter().copied().collect()),
         particles: None,
         grade: (studio.mode == crate::grade_mode::EditorMode::Grade).then(|| {
-            (studio.grade.compare, studio.grade.split.to_bits(), studio.grade.overlay_shown(), studio.grade.mask)
+            let painting = studio.grade.painting.as_ref().map(|p| p.stroke.points.len());
+            (
+                studio.grade.compare,
+                studio.grade.split.to_bits(),
+                studio.grade.overlay_shown(),
+                studio.grade.mask,
+                painting,
+            )
         }),
     };
     let now = Drawn { particles: particles.as_ref().map(|p| p.step), ..now };

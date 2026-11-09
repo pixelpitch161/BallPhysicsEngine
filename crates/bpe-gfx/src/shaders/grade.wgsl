@@ -499,7 +499,8 @@ fn grade_brush_texel(g: u32, size: vec2<f32>, x: i32, y: i32) -> f32 {
     let i = u32(y) * u32(size.x) + u32(x);
     let lane = (i / 3u) % 4u;
     let word = grade_prog[g + i / 12u];
-    let packed = u32(word[lane] + 0.5);
+    // A whole number below 2^24, exact as it is (adding a half would round 2^24 - 1 up to 2^24).
+    let packed = u32(max(word[lane], 0.0));
     return f32((packed >> (8u * (i % 3u))) & 255u) / 255.0;
 }
 

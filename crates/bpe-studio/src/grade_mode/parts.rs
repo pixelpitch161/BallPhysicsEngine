@@ -1,7 +1,8 @@
 //! A mask's parts in Grade mode's right column: each part's box (fold, name, how it joins the
 //! parts above it, on/off; right-click for Reset part, Move up or down and Remove part) over its
 //! settings, and Add part (Add, Subtract or Intersect, then a kind). A click on a gradient's
-//! name shows its handles on the preview. A Colour Range shows its picked colours with Pick and
+//! name shows its handles on the preview (a Brush's, its brush, with brushes A, B and Erase in its
+//! box). A Colour Range shows its picked colours with Pick and
 //! Remove (the eyedropper, as Point Colour).
 
 use super::GradeMode;
@@ -11,8 +12,8 @@ use super::panels::grid;
 use crate::style;
 use bpe_core::{Choice, Color, Layer, LayerId, SettingDef, Settings, Value};
 use bpe_kit::modules::grade::{
-    self, COLOUR_RANGE, ColourRangePart, Combine, LINEAR, LUMINANCE_RANGE, LinearPart, LuminanceRangePart, PART_KINDS,
-    RADIAL, RadialPart, masks::RANGE_PICKS, masks::range_key,
+    self, BRUSH, BrushPart, COLOUR_RANGE, ColourRangePart, Combine, LINEAR, LUMINANCE_RANGE, LinearPart,
+    LuminanceRangePart, PART_KINDS, RADIAL, RadialPart, THINGS, ThingsPart, masks::RANGE_PICKS, masks::range_key,
 };
 use eframe::egui::{self, RichText, Sense, Stroke, Ui};
 
@@ -62,6 +63,8 @@ fn defs_of(kind: &str) -> &'static [SettingDef] {
         RADIAL => RadialPart::defs(),
         COLOUR_RANGE => ColourRangePart::defs(),
         LUMINANCE_RANGE => LuminanceRangePart::defs(),
+        BRUSH => BrushPart::defs(),
+        THINGS => ThingsPart::defs(),
         _ => &[],
     }
 }
@@ -112,7 +115,9 @@ fn part_box(
                 name
             })
             .inner;
-        let name = name.on_hover_text(if layer.kind == LINEAR || layer.kind == RADIAL {
+        let name = name.on_hover_text(if layer.kind == BRUSH {
+            "Click to paint it on the picture. Right-click for more."
+        } else if super::handles::has_handles(&layer.kind) {
             "Click to show its handles on the picture. Right-click for more."
         } else {
             "Right-click for more."
@@ -176,8 +181,17 @@ fn body(ui: &mut Ui, mode: &mut GradeMode, gx: &GradeCx, layer: &Layer, edits: &
     if layer.kind == COLOUR_RANGE {
         picks(ui, mode, gx, id, edits);
     }
+    if layer.kind == BRUSH {
+        let strokes = match gx.get(Some(id), "strokes") {
+            Value::Strokes(s) => s,
+            _ => Default::default(),
+        };
+        super::brush::bar(ui, mode, id, &strokes, edits);
+    }
     let hidden = |d: &&SettingDef| {
-        d.key == "combine" || (layer.kind == COLOUR_RANGE && (d.key.starts_with("used") || d.key.starts_with("colour")))
+        d.key == "combine"
+            || (layer.kind == COLOUR_RANGE && (d.key.starts_with("used") || d.key.starts_with("colour")))
+            || (layer.kind == BRUSH && d.key == "strokes")
     };
     let defs: Vec<SettingDef> = defs_of(&layer.kind).iter().filter(|d| !hidden(d)).cloned().collect();
     grid(ui, gx, id, &defs, None, edits);

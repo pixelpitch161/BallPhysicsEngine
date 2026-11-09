@@ -473,7 +473,9 @@ impl ThingsPart {
         let ids: Vec<ThingId> = match (world, self.only) {
             (None, _) => Vec::new(),
             (Some(w), ThingsOnly::OneThing) => w.matching(&self.target, ThingId::ROOT),
-            (Some(w), _) => kinds.iter().flat_map(|k| w.matching(&Target::Kind(KindId::from(*k)), ThingId::ROOT)).collect(),
+            (Some(w), _) => {
+                kinds.iter().flat_map(|k| w.matching(&Target::Kind(KindId::from(*k)), ThingId::ROOT)).collect()
+            }
         };
         if self.only == ThingsOnly::OneThing && ids.is_empty() {
             return None;
@@ -829,7 +831,8 @@ pub fn area(card: &ResolvedSlot, mask: LayerId, world: Option<&World>, invert: b
                 THINGS => {
                     let s = ThingsPart::from_params(&params);
                     let (things, background) = s.things(world)?;
-                    let shape = GradeShape::Things(GradeThings { things, background, expand: s.expand, feather: s.feather });
+                    let shape =
+                        GradeShape::Things(GradeThings { things, background, expand: s.expand, feather: s.feather });
                     (s.combine, s.invert, shape)
                 }
                 COLOUR_RANGE => {

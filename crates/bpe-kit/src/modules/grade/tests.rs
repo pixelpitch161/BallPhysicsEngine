@@ -407,3 +407,58 @@ fn a_mask_s_panels_count_from_their_own_first_and_never_share_a_name() {
     assert!(card(&scene).layer(third).is_some());
     assert_eq!(parts_of(card(&scene), mask)[0].name, "Linear Gradient");
 }
+
+#[test]
+fn a_things_part_names_its_things_by_their_codes() {
+    let (_kit, _scene, world) = world_with_balls();
+    let code = bpe_gfx::thing_code(crate::testing::BALLS) as u32;
+    let part = |only| ThingsPart { only, ..ThingsPart::default() };
+    assert_eq!(part(ThingsOnly::Balls).things(Some(&world)), Some((Some(vec![code]), false)));
+    let shapes = part(ThingsOnly::Shapes).things(Some(&world)).unwrap().0.unwrap();
+    assert!(!shapes.contains(&code), "{shapes:?}");
+    assert_eq!(part(ThingsOnly::Text).things(Some(&world)), Some((Some(vec![]), false)), "none there");
+    assert_eq!(part(ThingsOnly::Background).things(Some(&world)), Some((None, true)));
+    let one = |target| ThingsPart { only: ThingsOnly::OneThing, target, ..ThingsPart::default() };
+    assert_eq!(one(Target::Thing(crate::testing::BALLS)).things(Some(&world)), Some((Some(vec![code]), false)));
+    assert_eq!(one(Target::Thing(ThingId(999))).things(Some(&world)), None, "left out");
+    let mut p = bpe_core::Params::default();
+    p.set("only", Value::Choice("one_thing".into()));
+    p.set("target", Value::Target(Target::Thing(ThingId(999))));
+    assert_eq!(follow_note(&world, THINGS, &p).as_deref(), Some("Thing not found"));
+    p.set("target", Value::Target(Target::Thing(crate::testing::BALLS)));
+    assert_eq!(follow_note(&world, THINGS, &p), None);
+}
+
+#[test]
+fn brush_and_things_parts_reach_the_stack() {
+    let (kit, mut scene) = graded();
+    let reg = &kit.registry;
+    let mask = add_mask(&mut scene, reg, BRUSH).unwrap();
+    let brush = parts_of(card(&scene), mask)[0].id;
+    let things = add_part(&mut scene, reg, mask, THINGS, Combine::Intersect).unwrap();
+    let dot = bpe_core::Stroke { points: vec![[0.0, 0.0]], size: 30.0, strength: 1.0, ..Default::default() };
+    let params = &mut scene.card_mut(ThingId::ROOT, SlotId::Grade).unwrap().params;
+    params.set(&bpe_core::layered_key(brush, "strokes"), Value::Strokes(bpe_core::Strokes { list: vec![dot.clone()] }));
+    params.set(&bpe_core::layered_key(things, "only"), Value::Choice("background".into()));
+    params.set(&bpe_core::layered_key(things, "expand"), Value::Number(12.0));
+    let s = stack_of(&kit, &scene);
+    let area = s.masks[1].area.as_ref().unwrap();
+    assert_eq!(area.parts.len(), 2);
+    match &area.parts[0].shape {
+        GradeShape::Brush(b) => {
+            assert_eq!(b.strokes.list, [dot]);
+            assert_eq!(b.places, [GradePlace::SCREEN]);
+        }
+        other => panic!("{other:?}"),
+    }
+    match &area.parts[1].shape {
+        GradeShape::Things(t) => assert!(t.things.is_none() && t.background && t.expand == 12.0),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(area.parts[1].combine, GradeCombine::Intersect);
+    // A new Brush mask has nothing painted: it covers nothing.
+    let fresh = add_mask(&mut scene, reg, BRUSH).unwrap();
+    let s = stack_of(&kit, &scene);
+    let m = s.masks.iter().find(|m| m.id == fresh.0).unwrap();
+    assert_eq!(bpe_gfx::grade::maths::area_cover(m.area.as_ref().unwrap(), [0.5; 3], [0.0, 0.0], 1.0), 0.0);
+}

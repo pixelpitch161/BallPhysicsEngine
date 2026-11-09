@@ -6,7 +6,7 @@
 //!
 //! - `cx.rs`: reading the card and applying edits; `panels.rs`: the panel column;
 //! - `masks.rs`: the masks list; `parts.rs`: a mask's parts; `handles.rs`: a gradient's handles
-//!   on the preview;
+//!   on the preview; `brush.rs`: painting a Brush part on the preview;
 //! - `curve.rs`: the Tone Curve's graph; `scopes.rs`: the Histogram;
 //! - `colour.rs`: the colour panels' bodies (HSL / Colour, Point Colour, Colour Grading,
 //!   Calibration) and their coloured rails; `wheel.rs`: Colour Grading's colour wheel.
@@ -19,6 +19,7 @@ use bpe_core::{LayerId, Slot};
 use eframe::egui::{self, Ui};
 use std::collections::{BTreeMap, BTreeSet};
 
+pub mod brush;
 pub mod colour;
 pub mod curve;
 pub mod cx;
@@ -160,6 +161,10 @@ pub struct GradeMode {
     pub mask_rows: Vec<(LayerId, egui::Rect)>,
     /// The handle being dragged on the preview.
     pub handle: Option<handles::Grab>,
+    /// Brushes A, B and Erase.
+    pub brushes: brush::Brushes,
+    /// The brush stroke being painted on the preview.
+    pub painting: Option<brush::Painting>,
     /// The preview's last grade before Before or Split changed it: where the gradients are (set
     /// while the picture is built, which only reads the studio).
     pub shown: std::cell::RefCell<bpe_gfx::GradeStack>,
@@ -191,6 +196,8 @@ impl Default for GradeMode {
             mask_drag: None,
             mask_rows: Vec::new(),
             handle: None,
+            brushes: Default::default(),
+            painting: None,
             shown: Default::default(),
             start: None,
         }
@@ -227,6 +234,10 @@ impl GradeMode {
 
     /// The preview's grade as Grade mode shows it: cleared for Before, split for Split.
     pub fn show_on(&self, grade: &mut bpe_gfx::GradeStack) {
+        // The stroke being painted shows before it is kept.
+        if let Some(p) = &self.painting {
+            brush::show_painting(p, grade);
+        }
         self.shown.replace(grade.clone());
         // The overlay shows the selected mask (only a mask over part of the picture has one).
         if self.overlay_shown()

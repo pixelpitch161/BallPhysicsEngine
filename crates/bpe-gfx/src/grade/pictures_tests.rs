@@ -830,3 +830,173 @@ fn the_overlay_rides_through_a_pass_split() {
     let c = centre(&p);
     assert!(c[0] > c[1] + 40, "the overlay survives the split: {c:?}");
 }
+
+// ---------------------------------------------------------------------------------------------
+// Part 5: Things masks and the Brush.
+
+use crate::frame::{GradeBrush, GradeThings};
+
+/// A Things part covering `things` (`None`: every thing), grown and faded by `expand` and
+/// `feather`.
+fn things(things: Option<Vec<u32>>, background: bool, expand: f32, feather: f32) -> GradeShape {
+    GradeShape::Things(GradeThings { things, background, expand, feather })
+}
+
+/// A grey `v` picture with grey `v` balls (code, x, y, radius), drawn in order.
+fn balls_on(v: f64, balls: &[(f32, f32, f32, f32)]) -> Frame {
+    let v = v as f32;
+    let mut f = grey(v);
+    for &(code, x, y, r) in balls {
+        crate::pictures::plain_ball(&mut f, glam::Vec2::new(x, y), r, [v, v, v, 1.0], code);
+    }
+    f
+}
+
+#[test]
+fn a_things_mask_grades_the_chosen_ball_and_not_another_or_the_background() {
+    let v = 0.18;
+    let frame = balls_on(v, &[(1.0, -14.0, 0.0, 8.0), (2.0, 14.0, 0.0, 8.0)]);
+    let Some(p) = draw(&graded(frame, mask_of(vec![add(things(Some(vec![1]), false, 0.0, 0.0))], 1.0))) else {
+        return;
+    };
+    let (lit, dark) = ([byte(2.0 * v); 3], [byte(v); 3]);
+    assert!(close(at(&p, 18, 32), lit, 2), "the chosen ball: {:?}", at(&p, 18, 32));
+    assert!(close(at(&p, 46, 32), dark, 2), "the other ball: {:?}", at(&p, 46, 32));
+    assert!(close(at(&p, 32, 32), dark, 2) && close(at(&p, 18, 12), dark, 2), "the background");
+}
+
+#[test]
+fn a_thing_in_front_hides_the_chosen_ball_under_it() {
+    let v = 0.18;
+    // Ball 2 is drawn after ball 1, over its right side.
+    let frame = balls_on(v, &[(1.0, 0.0, 0.0, 12.0), (2.0, 8.0, 0.0, 8.0)]);
+    let Some(p) = draw(&graded(frame, mask_of(vec![add(things(Some(vec![1]), false, 0.0, 0.0))], 1.0))) else {
+        return;
+    };
+    assert!(close(at(&p, 25, 32), [byte(2.0 * v); 3], 2), "what shows of it: {:?}", at(&p, 25, 32));
+    assert!(close(at(&p, 40, 32), [byte(v); 3], 2), "the ball in front: {:?}", at(&p, 40, 32));
+}
+
+#[test]
+fn expand_and_feather_reach_past_the_ball_as_the_maths_says() {
+    let v = 0.18;
+    let frame = balls_on(v, &[(1.0, 0.0, 0.0, 8.0)]);
+    let (expand, feather) = (4.0, 8.0);
+    let Some(p) = draw(&graded(frame, mask_of(vec![add(things(Some(vec![1]), false, expand, feather))], 1.0))) else {
+        return;
+    };
+    // Along the row through its middle: the ball's edge is 8 px right of the middle.
+    for x in 41..N {
+        let centre_x = x as f64 + 0.5 - 32.0;
+        // How far the pixel is from the nearest pixel at least half covered (the edge's pixel).
+        let d = (centre_x - 7.5).max(0.0);
+        let cover = maths::things_cover(0.0, d, expand as f64, feather as f64, 1.0, false);
+        let want = byte(v as f64 * (1.0 + cover));
+        let got = at(&p, x, 32)[1];
+        assert!((got - want).abs() <= 3, "x {x}: {got} wants {want}");
+    }
+    assert!(close(at(&p, 42, 32), [byte(2.0 * v); 3], 2), "within Expand: full");
+    assert!(close(at(&p, 60, 32), [byte(v); 3], 1), "past Expand and Feather: none");
+}
+
+#[test]
+fn background_covers_where_no_thing_is_and_inverted_the_things() {
+    let v = 0.18;
+    let frame = balls_on(v, &[(1.0, -14.0, 0.0, 8.0), (2.0, 14.0, 0.0, 8.0)]);
+    let (lit, dark) = ([byte(2.0 * v); 3], [byte(v); 3]);
+    let Some(p) = draw(&graded(frame.clone(), mask_of(vec![add(things(None, true, 0.0, 0.0))], 1.0))) else {
+        return;
+    };
+    assert!(close(at(&p, 18, 32), dark, 2) && close(at(&p, 46, 32), dark, 2), "no ball");
+    assert!(close(at(&p, 32, 8), lit, 2), "the background");
+    let inverted = GradePart { invert: true, ..add(things(None, true, 0.0, 0.0)) };
+    let p = draw(&graded(frame, mask_of(vec![inverted], 1.0))).unwrap();
+    assert!(close(at(&p, 18, 32), lit, 2) && close(at(&p, 46, 32), lit, 2) && close(at(&p, 32, 8), dark, 2));
+}
+
+#[test]
+fn a_particles_things_own_sprites_are_in_its_silhouette() {
+    let v = 0.18;
+    let c = [v as f32, v as f32, v as f32, 1.0];
+    let mut frame = grey(v as f32);
+    let mut dot = crate::Particle::new(6, glam::Vec2::new(-12.0, 0.0), 0.0, 6.0, c);
+    dot.shape[2] = 7;
+    // The same sprite without a code (a glow or shadow) isn't.
+    let other = crate::Particle::new(6, glam::Vec2::new(12.0, 0.0), 0.0, 6.0, c);
+    frame.particles = vec![dot, other];
+    let Some(p) = draw(&graded(frame, mask_of(vec![add(things(Some(vec![7]), false, 0.0, 0.0))], 1.0))) else {
+        return;
+    };
+    assert!(close(at(&p, 20, 32), [byte(2.0 * v); 3], 3), "its sprite: {:?}", at(&p, 20, 32));
+    assert!(close(at(&p, 44, 32), [byte(v); 3], 1), "no thing's sprite: {:?}", at(&p, 44, 32));
+}
+
+#[test]
+fn a_grade_without_things_parts_draws_no_silhouettes_and_with_one_it_does() {
+    let Ok((device, queue)) = crate::test_device() else { return };
+    let mut renderer = Renderer::new(&device, N, N);
+    let frame = balls_on(0.18, &[(1.0, 0.0, 0.0, 8.0)]);
+    renderer.render(&device, &queue, &graded(frame.clone(), mask_of(vec![add(radial(0.0, 0.0, 30.0, 0.0))], 1.0)));
+    assert!(renderer.silhouettes.is_none());
+    // A Things part naming no thing covers nothing and draws none either.
+    renderer.render(
+        &device,
+        &queue,
+        &graded(frame.clone(), mask_of(vec![add(things(Some(vec![]), false, 0.0, 0.0))], 1.0)),
+    );
+    assert!(renderer.silhouettes.is_none());
+    renderer.render(&device, &queue, &graded(frame, mask_of(vec![add(things(Some(vec![1]), false, 0.0, 0.0))], 1.0)));
+    assert!(renderer.silhouettes.is_some());
+}
+
+/// A brush part of `strokes` at `places`.
+fn brush(strokes: Vec<bpe_core::Stroke>, places: Vec<GradePlace>) -> GradeShape {
+    GradeShape::Brush(GradeBrush { strokes: bpe_core::Strokes { list: strokes }, places })
+}
+
+fn stroke(points: Vec<[f32; 2]>, size: f32, softness: f32) -> bpe_core::Stroke {
+    bpe_core::Stroke { points, size, softness, strength: 1.0, ..Default::default() }
+}
+
+#[test]
+fn a_brush_stroke_on_the_gpu_matches_its_maths() {
+    let v = 0.18;
+    let shape = brush(vec![stroke(vec![[-16.0, 0.0], [16.0, 4.0]], 8.0, 0.6)], vec![GradePlace::SCREEN]);
+    let area = GradeArea { parts: vec![add(shape.clone())], invert: false };
+    let Some(p) = draw(&graded(grey(v as f32), mask_of(vec![add(shape)], 1.0))) else { return };
+    for y in [26, 30, 32, 34, 38] {
+        for x in 0..N {
+            let cover = maths::area_cover(&area, [v; 3], [x as f64 + 0.5 - 32.0, y as f64 + 0.5 - 32.0], 1.0);
+            let want = byte(v * (1.0 + cover));
+            let got = at(&p, x, y)[1];
+            assert!((got - want).abs() <= 2, "({x}, {y}): {got} wants {want}");
+        }
+    }
+    assert!(close(at(&p, 32, 34), [byte(2.0 * v); 3], 2), "its middle is full");
+    assert!(close(at(&p, 32, 10), [byte(v); 3], 1), "away from it nothing");
+}
+
+#[test]
+fn erasing_and_density_change_what_a_brush_covers() {
+    let v = 0.18;
+    let paint = stroke(vec![[-20.0, 0.0], [20.0, 0.0]], 10.0, 0.0);
+    let erase = bpe_core::Stroke { erase: true, ..stroke(vec![[0.0, -12.0], [0.0, 12.0]], 4.0, 0.0) };
+    let shape = brush(vec![paint.clone(), erase], vec![GradePlace::SCREEN]);
+    let Some(p) = draw(&graded(grey(v as f32), mask_of(vec![add(shape)], 1.0))) else { return };
+    assert!(close(at(&p, 20, 32), [byte(2.0 * v); 3], 2), "painted");
+    assert!(close(at(&p, 32, 32), [byte(v); 3], 2), "erased: {:?}", at(&p, 32, 32));
+    let half = brush(vec![bpe_core::Stroke { density: 0.5, ..paint }], vec![GradePlace::SCREEN]);
+    let p = draw(&graded(grey(v as f32), mask_of(vec![add(half)], 1.0))).unwrap();
+    assert!(close(at(&p, 20, 32), [byte(1.5 * v); 3], 2), "half density: {:?}", at(&p, 20, 32));
+}
+
+#[test]
+fn a_brush_on_every_ball_paints_round_each() {
+    let v = 0.18;
+    let dot = stroke(vec![[0.0, 0.0]], 5.0, 0.0);
+    let places = [[-16.0, -16.0], [16.0, 8.0]].map(|at| GradePlace { at, ..GradePlace::SCREEN });
+    let shape = brush(vec![dot], places.to_vec());
+    let Some(p) = draw(&graded(grey(v as f32), mask_of(vec![add(shape)], 1.0))) else { return };
+    assert!(close(at(&p, 16, 16), [byte(2.0 * v); 3], 2) && close(at(&p, 48, 40), [byte(2.0 * v); 3], 2));
+    assert!(close(at(&p, 32, 32), [byte(v); 3], 1));
+}
