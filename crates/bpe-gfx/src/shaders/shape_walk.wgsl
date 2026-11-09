@@ -28,7 +28,7 @@ fn SHAPE_WALK(world: vec2<f32>, s: ShapeAt, first: u32, count_in: u32, split: u3
     // A shape stands flat, or bulges like a lens by its Surface's Lens (the body's light.z, part
     // 2b): a half ball's height over its depth inside the outline (in shape units).
     LIGHT_HEIGHT = 0.0;
-    if g.light.x > 1.5 && count_in > 0u {
+    if light_pass(g.light.x) >= PASS_SURFACE && count_in > 0u {
         let lens = look_layers[first].light.z;
         if lens > 0.0 && look_layers[first].head.x == 0u {
             let t = clamp(-s.sd / scale, 0.0, 1.0);
@@ -83,7 +83,7 @@ fn SHAPE_WALK(world: vec2<f32>, s: ShapeAt, first: u32, count_in: u32, split: u3
         if open && !sub {
             open = false;
             // The light passes' surface (mode 2) mixes every layer plainly.
-            let mode = select(ll.head.y, 0u, g.light.x > 1.5);
+            let mode = select(ll.head.y, 0u, light_pass(g.light.x) >= PASS_SURFACE);
             let above = cut > 0u && lk >= cut;
             // The layer's opacity, applied once to the piece and everything its sub-layers added
             // (a sub-layer's picture shows the layer whole). A glow layer's light is made here,
@@ -96,7 +96,7 @@ fn SHAPE_WALK(world: vec2<f32>, s: ShapeAt, first: u32, count_in: u32, split: u3
                 piece.light_out += sub_light(piece.c_out, glow_amount, select(outer, whole_out, lower && above), mode);
             }
             piece = uv_hidden(piece, ll);
-            if g.light.x > 0.5 {
+            if light_pass(g.light.x) >= PASS_LIT {
                 piece = light_piece(piece, ll, layered_shape.hit);
             }
             piece = left_behind(ll, piece);

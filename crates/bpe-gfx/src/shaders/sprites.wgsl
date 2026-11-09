@@ -14,38 +14,39 @@ struct Globals {
     bg_to: vec4<f32>,
     grade: vec4<f32>,
     grade_more: vec4<f32>,
-    // Lighting (see lighting.wgsl): x 0 draws the picture as always, 1 each thing's lit colour,
+    // Lighting (see the lighting shader, `shaders/lighting/`; light_passes.wgsl names the passes): x 0 draws the
+    // picture as always, 1 each thing's lit colour,
     // 2 its surface; y how much the background takes light.
     light: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
 
-// As scene.wgsl's: a sprite in the light passes (see lighting.wgsl).
+// As scene.wgsl's: a sprite in the light passes (see the lighting shader, `shaders/lighting/`).
 fn light_flat(c: vec4<f32>, lit: f32, blocks: f32, emit: vec3<f32>, extra: vec4<f32>) -> vec4<f32> {
-    let m = g.light.x;
+    let m = light_pass(g.light.x);
     // Light pass 8, the tint picture (tint.wgsl): its colour's depth where it blocks light.
-    if m > 7.5 {
+    if m >= PASS_TINT {
         if extra.y > 0.5 || c.a <= 1e-5 {
             return vec4<f32>(0.0);
         }
         return tint_out(c.rgb / c.a, min(c.a, 1.0), blocks, 1.0, 0.0);
     }
     // Light passes 5 (what glows under UV) and 6 (what catches beams, link numbers).
-    if m > 4.5 {
+    if m >= PASS_UV {
         return light_extra(c, extra);
     }
     // Shown only under UV light: nothing in the picture or the other light passes.
     if extra.y > 0.5 {
         return vec4<f32>(0.0);
     }
-    if m < 0.5 {
+    if m <= PASS_PICTURE {
         return c;
     }
-    if m < 1.5 {
+    if m <= PASS_LIT {
         return vec4<f32>(c.rgb * lit, c.a);
     }
-    if m > 2.5 {
+    if m >= PASS_EMISSION {
         // The light it gives off, where it covers (light covering nothing by how bright it is).
         let k = select(c.a, max(c.r, max(c.g, c.b)), c.a <= 0.0);
         return vec4<f32>(emit * k, c.a);
@@ -60,7 +61,7 @@ fn light_flat(c: vec4<f32>, lit: f32, blocks: f32, emit: vec3<f32>, extra: vec4<
 // what is behind, when it doesn't glow). Pass 6: how much it catches beams and its thing's link
 // number, both times its cover.
 fn light_extra(c: vec4<f32>, extra: vec4<f32>) -> vec4<f32> {
-    if g.light.x < 5.5 {
+    if light_pass(g.light.x) <= PASS_UV {
         return vec4<f32>(c.rgb * max(extra.x, 0.0), c.a);
     }
     if extra.y > 0.5 {
@@ -419,7 +420,7 @@ fn fs_sprite(in: SpriteOut) -> @location(0) vec4<f32> {
     let c = sprite_colour(in);
     // Glass and light part 3: light pass 9, the glass picture. A sprite that bends light is free
     // glass there: its index of refraction over its cover; nothing else draws.
-    if g.light.x > 8.5 {
+    if light_pass(g.light.x) >= PASS_GLASS {
         if in.light.z > 1.0001 && in.extra.y < 0.5 {
             let a = clamp(c.a, 0.0, 1.0);
             return vec4<f32>(in.light.z * a, 0.0, 0.0, a);

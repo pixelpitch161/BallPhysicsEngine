@@ -2,7 +2,7 @@
 //! `docs/superpowers/plans/glass-light/part3.md`): photons leave each light toward each bender
 //! (a glass shape's box, or the box round every bit of free glass), are bent in and out of the
 //! glass on the graphics card (`cs_bent` in `shaders/bent_light.wgsl`, pasted after
-//! lighting.wgsl), and each stretch of a photon's way after it first leaves glass (a *leg*) is
+//! the lighting shader), and each stretch of a photon's way after it first leaves glass (a *leg*) is
 //! splatted as a soft line into the direct light and the light in the air. The direct light
 //! counts glass that bends as solid, so the photons carry exactly the light it lets through.
 
@@ -12,7 +12,7 @@ use crate::frame::{Bender, LightGpu, LightScene, MOST_THROWERS, Thrower};
 
 /// The most photons a frame sends (all pairs together).
 pub const MOST_BENT_PHOTONS: u32 = 1 << 17;
-/// The legs a photon keeps at most (each a stretch between two bends); lighting.wgsl's
+/// The legs a photon keeps at most (each a stretch between two bends); the lighting shader's
 /// `BENT_LEGS` is the same.
 pub const BENT_LEGS: u32 = 8;
 /// The fewest photons a (light, bender) pair sends.
@@ -149,7 +149,7 @@ impl BentPlan {
     }
 
     /// Whether any glass that bends sends photons (the direct light then counts it as solid:
-    /// lighting.wgsl's `u.bent.x`).
+    /// the lighting shader's `u.bent.x`).
     pub fn bending(&self) -> bool {
         self.pairs[..self.run].iter().any(|p| p.b[2] < 0.5)
     }
@@ -240,7 +240,7 @@ pub fn throw_table(throwers: &[Thrower]) -> ([ThrowerGpu; MOST_THROWERS], u32) {
     (table, throwers.len().min(MOST_THROWERS) as u32)
 }
 
-/// The bits lighting.wgsl's `bender_at` reads: bit `i % 32` of word `i / 32` for every bender's
+/// The bits the lighting shader's `bender_at` reads: bit `i % 32` of word `i / 32` for every bender's
 /// surface index `i` under 2048 (0, the plain sheet, never; free glass needs no bit).
 pub fn bend_bits(benders: &[Bender]) -> [[u32; 4]; 16] {
     let mut bits = [[0u32; 4]; 16];
@@ -335,7 +335,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<BentUniform>(), 48 + 256 + 32 * MOST_THROWERS);
     }
 
-    /// The light pass's source (lighting.wgsl with bent_light.wgsl pasted after it) parses and
+    /// The light pass's source (the lighting shader with bent_light.wgsl pasted after it) parses and
     /// validates without a GPU.
     #[test]
     fn the_light_pass_source_is_valid() {

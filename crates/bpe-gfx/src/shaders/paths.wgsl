@@ -253,16 +253,17 @@ fn path_styled(c: vec4<f32>, style: f32) -> vec4<f32> {
     let channel = v % 4u;
     let hue = f32((v / 4u) % 1024u) / 1024.0;
     let colourise = f32(v / 4096u) / 15.0;
-    let m = g.light.x;
-    let picture = m < 1.5 || (m > 6.5 && m < 7.5);
-    let colours = picture || (m > 2.5 && m < 3.5);
+    let m = light_pass(g.light.x);
+    // (The picture behind glass, PASS_BEHIND, is below PASS_LIT too.)
+    let picture = m <= PASS_LIT;
+    let colours = picture || m == PASS_EMISSION;
     if !picture && (channel == 1u || channel == 3u) {
         discard;
     }
     var out = c;
     if colours && (hue > 0.0 || colourise > 0.0) {
         // Light given off (pass 3) may be negative: it turns as it is, darkness staying darkness.
-        let given = m > 2.5 && m < 3.5;
+        let given = m == PASS_EMISSION;
         let most = max(out.r, max(out.g, out.b));
         let least = min(out.r, min(out.g, out.b));
         let dark = given && most <= 0.0;

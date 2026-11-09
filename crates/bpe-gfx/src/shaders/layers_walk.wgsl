@@ -58,7 +58,7 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
     let base_c = vec4<f32>(body_c, 1.0);
     // The surface's height for the light passes: a sphere at Roundness 1 on a round ball.
     // Only a walk from the body sets it: a Shader sub-layer's walk starts at its own layer.
-    if g.light.x > 1.5 && body_rec.head.x == 0u {
+    if light_pass(g.light.x) >= PASS_SURFACE && body_rec.head.x == 0u {
         let round = select(0.0, body_rec.light.z, count_in > 0u);
         let e = 1.0 + min(d, 0.0);
         LIGHT_BALL = true;
@@ -114,7 +114,7 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
         if open && !sub {
             open = false;
             // The light passes' surface (mode 2) mixes every layer plainly.
-            let mode = select(ll.head.y, 0u, g.light.x > 1.5);
+            let mode = select(ll.head.y, 0u, light_pass(g.light.x) >= PASS_SURFACE);
             // The lower part leaves out the layers above the Blend layer, not the group records.
             let above = cut > 0u && lk >= cut && ll.head.x != 8u && ll.head.x != 9u;
             // Showing its cuts alone (the editor's view): white where they let it show, black elsewhere.
@@ -133,7 +133,7 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
                 piece.light_out += sub_light(piece.c_out, glow_amount, select(outer, whole_out, lower && above), mode);
             }
             piece = uv_hidden(piece, ll);
-            if g.light.x > 0.5 {
+            if light_pass(g.light.x) >= PASS_LIT {
                 piece = light_piece(piece, ll, layered_ball.hit);
             }
             piece = left_behind(ll, piece);
@@ -293,7 +293,7 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
                 } else {
                     c = mix(under, lit_in, strength);
                     a_in = opacity;
-                    if g.light.x > 0.5 && g.light.x < 1.5 {
+                    if light_pass(g.light.x) == PASS_LIT {
                         // The lit share (`under` is the lit share of the layers under it): what
                         // the shine leaves of them takes the light; how far it turns them white
                         // keeps its colour as far as the layer's Lit is below 1.
@@ -325,12 +325,12 @@ fn WALK(local: vec2<f32>, first: u32, count_in: u32, split: u32) -> Walked {
             case 8u: {
                 // The group colour over the whole ball as it stands here (not over the surface),
                 // and in the tint pass (8), where it tints the light through the ball.
-                if g.light.x < 1.5 {
+                if light_pass(g.light.x) <= PASS_LIT {
                     inner = group_over(inner);
                     outer = group_over(outer);
                     top_in = group_over(top_in);
                     top_out = group_over(top_out);
-                } else if g.light.x > 7.5 {
+                } else if light_pass(g.light.x) >= PASS_TINT {
                     let t = record_tints(look_layers[first]);
                     inner = tint_group_over(inner, t);
                     outer = tint_group_over(outer, t);

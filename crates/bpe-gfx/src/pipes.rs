@@ -23,7 +23,7 @@ const LASER_NEAR: f32 = 6.0;
 /// How many times round a pipe light is followed before what is left comes out evenly.
 const LAPS: usize = 4;
 
-/// The light a lamp gives at distance `d` against its reach (lighting.wgsl's `falloff`).
+/// The light a lamp gives at distance `d` against its reach (the lighting shader's `falloff`).
 pub fn falloff(d: f32, reach: f32, kind: f32) -> f32 {
     if reach <= 0.0 {
         return 0.0;
@@ -187,7 +187,7 @@ fn distance_to_segment(p: Vec2, a: Vec2, b: Vec2) -> f32 {
     p.distance(a + ab * t)
 }
 
-/// Where light `l` comes from for a point `p` (lighting.wgsl's `source_point`, areas as their
+/// Where light `l` comes from for a point `p` (the lighting shader's `source_point`, areas as their
 /// middle).
 fn source_point(l: &LightGpu, p: Vec2, segments: &[[f32; 4]]) -> Vec2 {
     let at = Vec2::new(l.p0[0], l.p0[1]);

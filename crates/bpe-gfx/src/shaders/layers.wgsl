@@ -45,7 +45,7 @@ struct LayerGpu {
 // see-through: a record whose surface index carries the glass flag (4096).
 fn left_behind(l: LayerGpu, piece: Piece) -> Piece {
     var out = piece;
-    if g.light.x < -0.5 && (l.light.w % 8192.0) >= 4095.5 {
+    if light_pass(g.light.x) <= PASS_BEHIND && (l.light.w % 8192.0) >= 4095.5 {
         out.c_in = vec3<f32>(0.0);
         out.c_out = vec3<f32>(0.0);
         out.a_in = 0.0;
@@ -67,13 +67,13 @@ fn record_deeper(l: LayerGpu) -> f32 {
 // The light pass the walks shader layers sample work in: the same, but the things' own colours
 // (mode 0) in the emission pass.
 fn plain_mode() -> f32 {
-    return select(g.light.x, 0.0, g.light.x > 2.5);
+    return select(g.light.x, 0.0, light_pass(g.light.x) >= PASS_EMISSION);
 }
 
-// In the light passes (see lighting.wgsl): the height of the ball's surface at this pixel, set
+// In the light passes (see the lighting shader, `shaders/lighting/`): the height of the ball's surface at this pixel, set
 // as the walk starts (0 for shapes).
 var<private> LIGHT_HEIGHT: f32;
-// Set by the ball walk: in Stage a ball shadows as a sphere (lighting.wgsl), not in the blockers'
+// Set by the ball walk: in Stage a ball shadows as a sphere (the lighting shader), not in the blockers'
 // field, so its layers block nothing there.
 var<private> LIGHT_BALL: bool;
 // The tint pass (light pass 8): what the thing's Body blocks and Deeper when thick times how thick
@@ -122,17 +122,17 @@ fn light_piece(piece: Piece, l: LayerGpu, hit: vec4<f32>) -> Piece {
         out.c_out = mix(vec3<f32>(1.0), tint_chroma(piece.c_out), tints);
         return out;
     }
-    if g.light.x > 4.5 {
+    if light_pass(g.light.x) >= PASS_UV {
         // Pass 5, what glows under UV: its colours times its UV glow, else black covering what is
         // behind; pass 6, the tags: what catches beams and its link number, times its cover. A
         // Shine, Shading or Shader layer that doesn't glow leaves what is under it.
         let works_over = l.head.x == 3u || l.head.x == 5u || l.head.x == 6u || l.head.x == 9u;
-        if works_over && (g.light.x > 5.5 || l.more.x == 0.0) {
+        if works_over && (light_pass(g.light.x) >= PASS_TAGS || l.more.x == 0.0) {
             out.a_in = 0.0;
             out.a_out = 0.0;
             return out;
         }
-        if g.light.x < 5.5 {
+        if light_pass(g.light.x) <= PASS_UV {
             out.c_in = piece.c_in * max(l.more.x, 0.0);
             out.c_out = piece.c_out * max(l.more.x, 0.0);
             return out;
@@ -143,7 +143,7 @@ fn light_piece(piece: Piece, l: LayerGpu, hit: vec4<f32>) -> Piece {
         out.c_out = tag;
         return out;
     }
-    if g.light.x > 2.5 {
+    if light_pass(g.light.x) >= PASS_EMISSION {
         // A Shine, Shading, Shader or group Shader layer that gives off nothing works over what is
         // under it, so it leaves the light under it as it is; any other layer hides what is under
         // it.
@@ -173,7 +173,7 @@ fn light_piece(piece: Piece, l: LayerGpu, hit: vec4<f32>) -> Piece {
         out.light_out += heat_out;
         return out;
     }
-    if g.light.x < 1.5 {
+    if light_pass(g.light.x) <= PASS_LIT {
         let lit = select(l.light.x, 0.0, emits);
         if l.head.x == 3u {
             // A Shine's lit share is worked out in the walk (case 3).
@@ -234,7 +234,7 @@ fn light_piece(piece: Piece, l: LayerGpu, hit: vec4<f32>) -> Piece {
         blocks_in = 1.0 - (1.0 - blocks) * (1.0 - LIGHT_BODY_BLOCKS);
     }
     // In Stage a ball blocks as a sphere, not in the blockers' field: a quarter marks it (the
-    // field's seeds take only more than 0.3 on a Stage, lighting.wgsl's `foot_blocks`; the light
+    // field's seeds take only more than 0.3 on a Stage, the lighting shader's `foot_blocks`; the light
     // field reads it, part 2b).
     if LIGHT_BALL && g.light.z > 0.5 {
         blocks *= 0.25;
@@ -254,7 +254,7 @@ fn light_piece(piece: Piece, l: LayerGpu, hit: vec4<f32>) -> Piece {
 // A layer shown only under UV light (lighting part 4) is left out of the picture and every light
 // pass but the UV one.
 fn uv_hidden(piece: Piece, l: LayerGpu) -> Piece {
-    if l.more.y < 0.5 || (g.light.x > 4.5 && g.light.x < 5.5) {
+    if l.more.y < 0.5 || (light_pass(g.light.x) == PASS_UV) {
         return piece;
     }
     var out = piece;
@@ -590,7 +590,7 @@ struct Walked {
 // least HARD_FROM of the pixel, how much its inside blocks, whole across the antialiased edge (so
 // R reads how see-through it is, not how much of the pixel it covers); `r` as mixed elsewhere.
 fn surface_whole(r: f32, w: Walked, cover: f32) -> f32 {
-    if g.light.x < 1.5 || g.light.x > 2.5 || g.light.z > 0.5 || cover < HARD_FROM {
+    if light_pass(g.light.x) != PASS_SURFACE || g.light.z > 0.5 || cover < HARD_FROM {
         return r;
     }
     return max(r, w.inner.r);
@@ -850,7 +850,7 @@ fn shade_layers(in: LayeredOut) -> vec4<f32> {
         out *= clip_keep(in.local, in.clip, aa);
     }
     // The tint pass: the stack's colour as it tints light, its depth worked out once for the
-    // ball; nothing for a ball on a Stage, which tints as a sphere (lighting.wgsl).
+    // ball; nothing for a ball on a Stage, which tints as a sphere (the lighting shader).
     if tint_pass() {
         if out.a <= 1e-5 || TINT_SKIP || (LIGHT_BALL && g.light.z > 0.5) {
             discard;
@@ -858,7 +858,7 @@ fn shade_layers(in: LayeredOut) -> vec4<f32> {
         return tint_out(out.rgb / out.a, tint_presence(out.a, cover), TINT_BLOCKS, 1.0, TINT_THICK);
     }
     // The emission pass may give off darkness (negative light) where it covers nothing.
-    let seen = select(max(out.r, max(out.g, out.b)), max(abs(out.r), max(abs(out.g), abs(out.b))), g.light.x > 2.5);
+    let seen = select(max(out.r, max(out.g, out.b)), max(abs(out.r), max(abs(out.g), abs(out.b))), light_pass(g.light.x) >= PASS_EMISSION);
     if out.a < 1e-4 && seen < 1e-4 {
         discard;
     }

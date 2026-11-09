@@ -194,8 +194,8 @@ fn fs_field(in: FieldOut) -> @location(0) vec4<f32> {
     let c = field_colour(in);
     // Smoke the real lights shade (W15): in the surface picture it stands up by its cover, so the
     // lighting mix turns each puff's side to the lights; a matte sheet (surface 0).
-    let m = g.light.x;
-    if look.kind.x < 0.5 && look.shade.w > 0.0 && look.extra.y < 0.5 && m > 1.5 && m < 2.5 {
+    let m = light_pass(g.light.x);
+    if look.kind.x < 0.5 && look.shade.w > 0.0 && look.extra.y < 0.5 && m == PASS_SURFACE {
         let a = clamp(c.a, 0.0, 1.0);
         var blocks = clamp(look.light.y, 0.0, 1.0);
         if g.light.z > 0.5 {

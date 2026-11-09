@@ -139,8 +139,11 @@ impl LiquidPass {
             bind_group_layouts: &[Some(globals_layout), Some(&splat_layout)],
             immediate_size: 0,
         });
-        let module =
-            util::shader(device, "liquid", &[include_str!("shaders/tint.wgsl"), include_str!("shaders/liquid.wgsl")]);
+        let module = util::shader(
+            device,
+            "liquid",
+            &[crate::light_pass::WGSL, include_str!("shaders/tint.wgsl"), include_str!("shaders/liquid.wgsl")],
+        );
         let add = wgpu::BlendComponent {
             src_factor: wgpu::BlendFactor::One,
             dst_factor: wgpu::BlendFactor::One,

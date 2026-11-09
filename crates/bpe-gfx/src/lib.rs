@@ -20,6 +20,7 @@ mod frame;
 #[cfg(test)]
 mod grade_tests;
 mod gradients;
+mod light_pass;
 mod lighting;
 mod liquid;
 #[cfg(test)]
@@ -88,14 +89,6 @@ pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 pub(crate) const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// The object picture shader effects on things read: own position, thing code, coverage.
 pub(crate) const OBJECT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
-/// The light pass that draws what glass shows behind it (part 2b): no effects, plain blending.
-const BEHIND_PASS: u32 = 7;
-/// The light pass drawing the tint picture (glass and light part 1, tint.wgsl): how deep each
-/// see-through thing's colour is, read into the blockers' field.
-const TINT_PASS: u32 = 8;
-/// Glass and light part 3: the light pass that draws free glass (particles and glass liquid that
-/// bend lamp light) into the glass picture: index of refraction × cover, cover.
-const GLASS_PASS: u32 = 9;
 
 const BLOOM_LEVELS: usize = 6;
 
@@ -136,7 +129,7 @@ struct Globals {
     /// The colour grade: tint, vignette, vignette size, gradient map amount.
     grade_more: [f32; 4],
     /// Lighting: x the light pass (0 the picture as always, 1 lit colour, 2 surface, 3 the light
-    /// things give off), y how much the background takes light, z 1 in Stage (see lighting.wgsl).
+    /// things give off), y how much the background takes light, z 1 in Stage (see the lighting shader).
     light: [f32; 4],
     /// The light the background gives off (read in pass 3): its own colour times its strength,
     /// then what its colours are multiplied by (rgb, linear).
@@ -591,15 +584,42 @@ impl FrameBuffers {
     }
 }
 
-/// The lighting passes' shader source: lighting.wgsl with the shared helpers (common.wgsl).
-pub(crate) const LIGHTING_WGSL: &str =
-    concat!(include_str!("shaders/lighting.wgsl"), include_str!("shaders/common.wgsl"));
+/// The lighting passes' shader source: the files in `shaders/lighting/`, one per pass, in this
+/// order (later files use what earlier ones declare), then the shared helpers (common.wgsl).
+/// - `bindings`: the `Lighting` uniform, the lights, every binding, the full-screen triangle;
+/// - `field`: where things are, the jump flood and the blockers' field (`fs_seed`, `fs_jump`, `fs_field`);
+/// - `shadows`: falloff, light shapes and the shadow march (`march`, `visibility`);
+/// - `direct`: the light from Light things: gobos, links, tiles, `lamps`, `fs_direct`;
+/// - `light_field`: the light field (radiance cascades, `fs_gi_*`, `fs_cascade`);
+/// - `haze_bloom`: moving haze and the memory (`fs_stir`, `fs_extras`), the lights' bloom, sun rays and lasers;
+/// - `stage`: surfaces and the Stage: spheres, the slab march, sphere shadows;
+/// - `shade`: highlights, films, dichroic, `shade`, `trace_scene`, light through glass;
+/// - `mix`: the mix (`surfaced`, the rainbow, `lit_at`, `fs_mix`) and mirror walls (`fs_mirror`);
+/// - `dof_floor`: depth of field and the glossy floor;
+/// - `bake`: the bake's traced bounce light and its clean-up;
+/// - `caustics`: caustics through glass balls and the light beams' bands.
+pub(crate) const LIGHTING_WGSL: &str = concat!(
+    include_str!("shaders/lighting/bindings.wgsl"),
+    include_str!("shaders/lighting/field.wgsl"),
+    include_str!("shaders/lighting/shadows.wgsl"),
+    include_str!("shaders/lighting/direct.wgsl"),
+    include_str!("shaders/lighting/light_field.wgsl"),
+    include_str!("shaders/lighting/haze_bloom.wgsl"),
+    include_str!("shaders/lighting/stage.wgsl"),
+    include_str!("shaders/lighting/shade.wgsl"),
+    include_str!("shaders/lighting/mix.wgsl"),
+    include_str!("shaders/lighting/dof_floor.wgsl"),
+    include_str!("shaders/lighting/bake.wgsl"),
+    include_str!("shaders/lighting/caustics.wgsl"),
+    include_str!("shaders/common.wgsl"),
+);
 
 /// The scene shader: everything the scene's pipelines draw with, its layered balls walking their
 /// stacks as [`layers_source`] says for `effects`.
 pub(crate) fn scene_source(effects: Option<&str>) -> String {
     [
         gradients::paint_wgsl(1).as_str(),
+        light_pass::WGSL,
         include_str!("shaders/tint.wgsl"),
         include_str!("shaders/scene.wgsl"),
         include_str!("shaders/ball_look.wgsl"),
@@ -1116,7 +1136,7 @@ impl Renderer {
             field_like_video: false,
             light_tiles: true,
             bloom_black: false,
-            light_mode: 0,
+            light_mode: light_pass::PICTURE,
             light_stage: false,
             accumulate: None,
             light_globals: Vec::new(),
@@ -1425,8 +1445,9 @@ impl Renderer {
                 lighting.make_tint(device);
             }
             lighting.keep_uv_and_tags(device, scene.needs_uv(), scene.needs_tags());
+            // Passes LIT to TINT; BACKGROUND and BEHIND are drawn on their own below.
             let wanted = [true, true, scene.glows, false, scene.needs_uv(), scene.needs_tags(), false, tints];
-            let modes: Vec<(u32, (wgpu::Texture, wgpu::TextureView))> = (1u32..=TINT_PASS)
+            let modes: Vec<(u32, (wgpu::Texture, wgpu::TextureView))> = (light_pass::LIT..=light_pass::TINT)
                 .filter(|mode| wanted[*mode as usize - 1])
                 .map(|mode| (mode, lighting.picture(mode).expect("just made")))
                 .collect();
@@ -1449,7 +1470,7 @@ impl Renderer {
                     (false, false),
                     (&world, &screen),
                 );
-                self.light_mode = 0;
+                self.light_mode = light_pass::PICTURE;
                 self.targets.hdr_texture = hdr_texture;
                 self.targets.hdr = hdr;
             }
@@ -1457,23 +1478,24 @@ impl Renderer {
             if bent_light::BentPlan::of(frame, scene).free_glass() {
                 let lighting = self.lighting.as_mut().expect("made above");
                 lighting.make_glass(device);
-                let (texture, view) = lighting.picture(GLASS_PASS).expect("just made");
-                let (world, _) = self.light_globals(device, queue, frame, GLASS_PASS, background_lit, scene);
+                let (texture, view) = lighting.picture(light_pass::GLASS).expect("just made");
+                let (world, _) = self.light_globals(device, queue, frame, light_pass::GLASS, background_lit, scene);
                 let hdr_texture = std::mem::replace(&mut self.targets.hdr_texture, texture);
                 let hdr = std::mem::replace(&mut self.targets.hdr, view);
-                self.light_mode = GLASS_PASS;
+                self.light_mode = light_pass::GLASS;
                 self.draw_glass(encoder, frame, &layer_buffers, &world);
-                self.light_mode = 0;
+                self.light_mode = light_pass::PICTURE;
                 self.targets.hdr_texture = hdr_texture;
                 self.targets.hdr = hdr;
             }
             // What glass shows behind it: the plain picture without what is see-through
             // (part 2b; `Globals.light.x` -1 makes see-through records draw nothing).
             if let Some((texture, view)) = self.lighting.as_mut().expect("made above").behind(device, scene) {
-                let (world, screen) = self.light_globals(device, queue, frame, BEHIND_PASS, background_lit, scene);
+                let (world, screen) =
+                    self.light_globals(device, queue, frame, light_pass::BEHIND, background_lit, scene);
                 let hdr_texture = std::mem::replace(&mut self.targets.hdr_texture, texture);
                 let hdr = std::mem::replace(&mut self.targets.hdr, view);
-                self.light_mode = BEHIND_PASS;
+                self.light_mode = light_pass::BEHIND;
                 self.draw_scene(
                     device,
                     queue,
@@ -1485,13 +1507,14 @@ impl Renderer {
                     (false, false),
                     (&world, &screen),
                 );
-                self.light_mode = 0;
+                self.light_mode = light_pass::PICTURE;
                 self.targets.hdr_texture = hdr_texture;
                 self.targets.hdr = hdr;
             }
             // The background's own light, alone.
             if scene.settings.background_glows() {
-                let (world, _) = self.light_globals(device, queue, frame, 4, background_lit, scene);
+                let (world, _) =
+                    self.light_globals(device, queue, frame, light_pass::BACKGROUND, background_lit, scene);
                 let lighting = self.lighting.as_ref().expect("made above");
                 let view = lighting.background_glow().expect("made for a glowing background");
                 let mut pass = begin_pass(encoder, &view, "background glow", wgpu::LoadOp::Clear(wgpu::Color::BLACK));
@@ -1771,7 +1794,7 @@ impl Renderer {
         }
         let object_view = self.targets.object.as_ref().filter(|_| wants_objects).map(|(_, v)| v.clone());
         // The light passes run no effects: what effects paint counts as unlit.
-        if self.light_mode == 0 {
+        if self.light_mode == light_pass::PICTURE {
             self.chain.run(
                 device,
                 queue,
@@ -1877,8 +1900,8 @@ impl Renderer {
         self.overlay = buffers;
     }
 
-    /// The world's and the screen's globals for light pass `mode` (1 to 6, [`BEHIND_PASS`],
-    /// [`TINT_PASS`] or [`GLASS_PASS`]),
+    /// The world's and the screen's globals for light pass `mode` (1 to 6, [`light_pass::BEHIND`],
+    /// [`light_pass::TINT`] or [`light_pass::GLASS`]),
     /// made the first time.
     fn light_globals(
         &mut self,
@@ -1889,7 +1912,7 @@ impl Renderer {
         background_lit: f32,
         scene: &LightScene,
     ) -> (wgpu::BindGroup, wgpu::BindGroup) {
-        while self.light_globals.len() < 2 * GLASS_PASS as usize {
+        while self.light_globals.len() < 2 * light_pass::GLASS as usize {
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("light pass globals"),
                 size: std::mem::size_of::<Globals>() as u64,
@@ -1906,7 +1929,7 @@ impl Renderer {
         let at = 2 * (mode as usize - 1);
         let mut world = Globals::new(frame, &frame.camera, self.targets.width);
         world.light = [mode as f32, background_lit, scene.settings.stage[0], scene.background_link];
-        if mode == BEHIND_PASS {
+        if mode == light_pass::BEHIND {
             // The plain picture, but what is see-through left out (light.x -1, see layers.wgsl).
             world.light = [-1.0, background_lit, scene.settings.stage[0], 0.0];
         }
@@ -2135,7 +2158,7 @@ impl Renderer {
     ) {
         let Some(pass) = self.liquid.as_ref() else { return };
         for l in f.liquids.iter().filter(|l| l.front == front && pass.has(l)) {
-            if l.style.glass() && self.light_mode == 0 {
+            if l.style.glass() && self.light_mode == light_pass::PICTURE {
                 self.copy_under(encoder);
             }
             pass.draw(encoder, l, globals, view);
@@ -2191,7 +2214,7 @@ impl Renderer {
         through: &Through,
     ) -> Through {
         // The light passes draw every layer's things one over another.
-        if self.light_mode != 0 {
+        if self.light_mode != light_pass::PICTURE {
             return through.clone();
         }
         let starts_above_nothing = matches!(l.blend, bpe_core::Blend::Multiply | bpe_core::Blend::Darken);
@@ -2241,9 +2264,9 @@ impl Renderer {
         let clear = through.each.map_or(wgpu::Color::TRANSPARENT, each::clear);
         drop(begin_pass(encoder, &layer, "blend layer", wgpu::LoadOp::Clear(clear)));
         self.draw_things(encoder, &l.frame, b, through, &layer);
-        if let Some((frame, index, objects)) =
-            effects.filter(|(frame, index, _)| self.light_mode == 0 && effects::chain::layer_has_effects(frame, *index))
-        {
+        if let Some((frame, index, objects)) = effects.filter(|(frame, index, _)| {
+            self.light_mode == light_pass::PICTURE && effects::chain::layer_has_effects(frame, *index)
+        }) {
             use effects::chain::Chain;
             // A material paints the layer's own things, so the object picture shows only them.
             let own = self.targets.object.clone().filter(|_| Chain::material(frame) && Chain::wants_objects(frame));
@@ -2258,14 +2281,14 @@ impl Renderer {
             let objects = own.as_ref().map(|(_, v)| v).or(objects);
             self.chain.run(device, queue, encoder, Stage::Things, frame, on, &texture, &layer, objects);
         }
-        // The surface keeps the most any layer blocks and stands (see lighting.wgsl).
+        // The surface keeps the most any layer blocks and stands (see the lighting shader).
         // The emission keeps what is in front hiding what is behind (added light stays added).
         // The tint picture's depths add up (tint.wgsl).
         let blend = match self.light_mode {
-            2 => bpe_core::Blend::Lighten,
-            TINT_PASS => bpe_core::Blend::Add,
-            3 | 5 if l.blend == bpe_core::Blend::Add => bpe_core::Blend::Add,
-            3 | 5 | 6 => bpe_core::Blend::Normal,
+            light_pass::SURFACE => bpe_core::Blend::Lighten,
+            light_pass::TINT => bpe_core::Blend::Add,
+            light_pass::EMISSION | light_pass::UV if l.blend == bpe_core::Blend::Add => bpe_core::Blend::Add,
+            light_pass::EMISSION | light_pass::UV | light_pass::TAGS => bpe_core::Blend::Normal,
             _ => l.blend,
         };
         self.blend.composite(
@@ -2277,7 +2300,7 @@ impl Renderer {
             l.amount,
             through.each.is_some(),
             l.plain(),
-            self.light_mode == 2 && !self.light_stage,
+            self.light_mode == light_pass::SURFACE && !self.light_stage,
             &self.targets.behind_view,
             &layer,
             &self.targets.hdr,

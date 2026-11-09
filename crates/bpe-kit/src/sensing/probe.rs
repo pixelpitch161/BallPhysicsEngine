@@ -511,7 +511,7 @@ impl Lamps {
         s
     }
 
-    /// Lamp `lamp`'s light at `p`, as `lighting.wgsl::lamps` works it out on a flat surface.
+    /// Lamp `lamp`'s light at `p`, as the lighting shader's `lamps` works it out on a flat surface.
     fn one(&self, lamp: &Lamp, p: Vec2, skip: Skip) -> Option<One> {
         let l = &lamp.gpu;
         let kind = l.p0[3];
@@ -571,7 +571,7 @@ impl Lamps {
     }
 
     /// Where lamp `l`'s light comes from for `p`: the lamp, or the nearest point of an area or
-    /// a strip (`lighting.wgsl::source_point`).
+    /// a strip (the lighting shader's `source_point`).
     fn source_point(&self, l: &LightGpu, p: Vec2) -> Vec2 {
         let kind = l.p0[3];
         let at = Vec2::new(l.p0[0], l.p0[1]);
@@ -998,7 +998,7 @@ impl Grid {
     }
 }
 
-/// How a light fades with distance `d` against its reach (`lighting.wgsl::falloff`).
+/// How a light fades with distance `d` against its reach (the lighting shader's `falloff`).
 fn falloff(d: f32, reach: f32, kind: f32) -> f32 {
     if reach <= 0.0 {
         return 0.0;

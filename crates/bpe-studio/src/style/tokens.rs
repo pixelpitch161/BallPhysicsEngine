@@ -69,7 +69,7 @@ pub const RADIUS: u8 = 2;
 pub const RADIUS_ROW: u8 = 8;
 
 /// The heat map's colours by how bright the light is (1 is as unlit), dark to burnt out. The
-/// light pass (`heat` in lighting.wgsl) uses the same stops.
+/// light pass (`heat` in the lighting shader) uses the same stops.
 pub const HEAT: [(f32, Color32); 7] = [
     (0.0, Color32::from_rgb(0x00, 0x00, 0x00)),
     (0.25, Color32::from_rgb(0x1a, 0x2a, 0x9e)),

@@ -995,7 +995,7 @@ pub struct Frame {
     pub liquids: Vec<crate::liquid::Liquid>,
 }
 
-/// One quad of a Light beam's band (glass and light part 2, `RibbonGpu` in lighting.wgsl): the
+/// One quad of a Light beam's band (glass and light part 2, `RibbonGpu` in the lighting shader): the
 /// stretch between segment `a` of one ray and segment `b` of the next, added over the lit picture.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
@@ -1011,7 +1011,7 @@ pub struct RibbonGpu {
     pub d: [f32; 4],
 }
 
-/// One light as the lighting pass reads it (`LightGpu` in lighting.wgsl).
+/// One light as the lighting pass reads it (`LightGpu` in the lighting shader).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct LightGpu {
@@ -1129,7 +1129,7 @@ pub struct LightingGpu {
     pub rainbow_at: [f32; 4],
 }
 
-/// How a surface takes light (`SurfaceGpu` in lighting.wgsl): an entry of
+/// How a surface takes light (`SurfaceGpu` in the lighting shader): an entry of
 /// [`LightScene::surfaces`], named by the surface index every record of a thing carries in
 /// [`LayerGpu::light`]`[3]`.
 #[repr(C)]
@@ -1177,7 +1177,7 @@ impl SurfaceGpu {
     pub const OWN_FLAG: f32 = 8192.0;
 }
 
-/// A shape whose outline is a mirror (part 2b's Mirror walls; `MirrorGpu` in lighting.wgsl): its
+/// A shape whose outline is a mirror (part 2b's Mirror walls; `MirrorGpu` in the lighting shader): its
 /// outline is `count` segments of [`LightScene::segments`] from `first`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
@@ -1191,7 +1191,7 @@ pub struct MirrorGpu {
     pub c: [f32; 4],
 }
 
-/// A ball as a sphere on the stage (`SphereGpu` in lighting.wgsl).
+/// A ball as a sphere on the stage (`SphereGpu` in the lighting shader).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct SphereGpu {
@@ -1455,7 +1455,7 @@ pub enum LightShow {
 }
 
 impl LightShow {
-    /// Its number in lighting.wgsl.
+    /// Its number in the lighting shader.
     pub fn code(self) -> f32 {
         match self {
             Self::Picture => 0.0,
