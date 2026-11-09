@@ -6,7 +6,7 @@ use bpe_core::{Color, EditError, Gradient, Mix, Params, Registry, Scene, Setting
 
 use super::forces::{AIR, FollowAirForce, WANDER, WIND, WanderForce, WindForce};
 use super::forces::{DRAG, DragForce, GRAVITY, GravityForce, RISE, RiseForce, SWAY, SWIRL, SwayForce, SwirlForce};
-use super::liquid::{LIQUID, LiquidLayer, Surface};
+use super::liquid::{LIQUID, LiquidLayer, params_of};
 use super::look::{
     ColourFrom, FLAME, FlameLayer, GLITTER, GlitterLayer, MoreShape, Only, PILES, PilesLayer, SHAPES, SMOKE, SPRITES,
     STREAKS, SUB_GLOW, SUB_LIGHT, ShapesLayer, SmokeLayer, SpritesLayer, StreaksLayer, WEB, WebLayer,
@@ -19,6 +19,7 @@ use super::{AreaShape, BornFrom, Edge, Emit, FedWhen, Heading, KIND, ParticlesSe
 use crate::modules::look::layers::gives_light::GivesLight;
 use crate::modules::look::layers::particles::{ParticleFade, ShapeMadeOf, SizeOverLife};
 use crate::modules::look::shape::ShapeSubGlow;
+use crate::modules::look::surface::SurfaceKind;
 use crate::paint::{Follow, Paint};
 
 /// A starting look.
@@ -373,7 +374,7 @@ fn marks(s: MarksLayer, subs: Vec<(&'static str, Params)>) -> LayerRecipe {
 }
 
 fn liquid(s: LiquidLayer) -> LayerRecipe {
-    LayerRecipe { kind: LIQUID, params: s.to_params(), subs: Vec::new() }
+    LayerRecipe { kind: LIQUID, params: params_of(&s), subs: Vec::new() }
 }
 
 /// `layer` with the modifiers `m` too.
@@ -1212,7 +1213,7 @@ fn liquid_metal() -> Recipe {
             blob: 3.5,
             level: 0.45,
             roundness: 18.0,
-            surface: Surface::Chrome,
+            surface: SurfaceKind::Chrome,
             shine: 0.8,
             colour: paint(&[Color::rgb(200, 205, 215)], Follow::Life),
             fade: ParticleFade::None,
@@ -1731,7 +1732,7 @@ fn liquid_splashes() -> Recipe {
         },
         vec![liquid(LiquidLayer {
             blob: 4.5,
-            surface: Surface::Plastic,
+            surface: SurfaceKind::Plastic,
             colour: paint(&[Color::rgb(90, 170, 255), Color::rgb(40, 110, 230)], Follow::Speed),
             fade: ParticleFade::None,
             ..Default::default()

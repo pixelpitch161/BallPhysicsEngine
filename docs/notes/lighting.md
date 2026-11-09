@@ -279,3 +279,29 @@ something animates. **S24**: no bloom chain at bloom 0, bind groups kept between
 pictures only while used (`keep_uv_and_tags`). S23 (export colours on the card) is in `engine.md` under `bpe-cli`.
 S18 (one pass for the scene's light pictures) skipped by Aedan: under a tenth of a lit frame. On lavapipe at
 540 x 960: Stage 545 to 292 ms, shiny surfaces 715 to 432 ms, 120 lights on a Stage 1505 to 1058 ms.
+
+**Liquid and Soft smoke lit by the real lights** (review W15 / G11, 2026-11-09, spec
+`docs/superpowers/specs/2026-11-08-liquid-smoke-real-light-design.md`, plan
+`docs/superpowers/plans/lighting/liquid-smoke-real-light.md`, tests `bpe-kit/src/things/particles/tests_real_light.rs`
+and `bpe-kit/tests/lit_liquid_pictures.rs`, look shot `lit-liquid-smoke`). The Liquid layer lost its own 6-way
+Surface: `LiquidLayer.surface` is the shared 15-chip `SurfaceKind` (default Plastic) and its numbers are the Surface
+sub-layer's (`liquid::defs()` inserts `surface::sub_defs()` after it, Plastic's values as defaults; `params_of` adds a
+kind's preset values, as the editor's pick writes them). Light angle, Shine, Rim light (key `own_rim`), Bend, Tint and
+the Sky colours sit in a "Without lighting" fold: with no Lighting card, or at Lit 0, the old pretend light draws
+(`pretend_code` maps the 15 kinds onto its 6 codes). With one, `LiquidStyle.d = [lit, stamp, blocks, 0]` and
+`liquid.wgsl::real_lit` writes the light passes as a ball's layers do: picture plain colour, pass 1 colour × Lit,
+pass 2 (blocks, height, index) with the height a quarter-circle rim of Roundness (the pretend normal's shape),
+nothing in tint (8) or the glass picture (9), and see-through kinds left out of the behind-glass picture (−1). Each
+Liquid layer of every Particles Look takes a surface index after every thing's and Surface sub-layer's
+(`surface::taken`, `liquid::surface_index`, thing then layer order, shown or not); the Particles `light` hook puts
+`gpu(SurfaceGpu::SHEET)` there, sets `refracts` for see-through kinds and, for a real-lit liquid that blocks light
+and whose Surface bends light, a `Bender::round` box round its blobs with its index (free glass in pass 9 would
+overwrite the index in the surface picture, so the mix would not see glass). A real liquid writes its colour's depth
+in the tint picture (`tint_out`, so `liquid.wgsl` is built after `tint.wgsl`; `Frame::see_through_blockers` counts a
+liquid that blocks part of the light) and its link number (`LiquidStyle.d.w`, `links::number_of`) in the tags. Its
+Surface numbers leave out `liquid::NOT_ON_A_LIQUID` (Throws light, Facets, Facet gaps). Soft smoke in a lit scene
+(Lit above 0) that covers (not Add) and is drawn Behind gets `FieldLook.shade.w = SMOKE_RELIEF (40 world px) ×
+Shading`: `fields.wgsl` drops its pretend facing and writes its density as a height into the surface picture, so the
+lamps light the side facing them. Smoke in front keeps its own light: its cover would take over the surface index of
+every ball and shape under it (the premultiplied blend leaves a fraction, read as matte). Unlit pictures are
+unchanged; goldens don't move.

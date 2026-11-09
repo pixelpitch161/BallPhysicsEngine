@@ -554,6 +554,18 @@ pub fn surface_index(scene: &bpe_core::Resolved, id: ThingId) -> u32 {
     0
 }
 
+/// How many surface table indices the scene's things and their Surface sub-layers take (from 1):
+/// what wears a surface outside a Look card with a Surface section (a Particles thing's Liquid,
+/// W15) is numbered after them.
+pub fn taken(scene: &bpe_core::Resolved) -> u32 {
+    scene
+        .things
+        .values()
+        .filter_map(|t| t.slots.get(&bpe_core::SlotId::Look).filter(|l| has_surface(&l.kind)))
+        .map(|l| 1 + layer_surfaces(l).len() as u32)
+        .sum()
+}
+
 /// The Surface section's settings (for the inspector's Look card).
 pub fn defs() -> &'static [SettingDef] {
     SurfaceSettings::defs()
