@@ -306,8 +306,8 @@ fn segments(world: &World, before: &std::collections::BTreeMap<ThingId, Outline>
             continue;
         }
         let half = if w.solid { 0.0 } else { fin(w.outline.thickness()).max(0.0) * 0.5 };
-        let nows = crate::things::light::draw::outline_contours(&w.outline);
-        let thens = before.get(id).map(crate::things::light::draw::outline_contours);
+        let nows = crate::outline::contours(&w.outline);
+        let thens = before.get(id).map(crate::outline::contours);
         let same = |t: &Vec<Vec<Vec2>>| t.len() == nows.len() && t.iter().zip(&nows).all(|(a, b)| a.len() == b.len());
         let thens = thens.filter(same).unwrap_or_else(|| nows.clone());
         for (now, then) in nows.iter().zip(&thens) {
@@ -532,7 +532,8 @@ pub fn first(st: &mut ParticlesState, world: &World) {
     let anchor = world.anchor(st.id);
     let log = Log::default();
     let homes = st.home_frame(anchor.position, anchor.angle, world.camera.center);
-    let cx = BirthCx { world, log: &log, anchor: anchor.position, angle: anchor.angle, homes };
+    let cx =
+        BirthCx { world, log: &log, anchor: anchor.position, angle: anchor.angle, homes, text: Default::default() };
     let born = births::plan(st, &cx, 0, true);
     let mut step = step_head(st, world);
     step.more[2] |= STEP_STILL;
@@ -554,7 +555,14 @@ pub fn step_in(st: &mut ParticlesState, world: &World, log: &Log, air: Option<&A
     }
     let anchor = world.anchor(st.id);
     let homes = st.home_frame(anchor.position, anchor.angle, world.camera.center);
-    let cx = BirthCx { world, log, anchor: anchor.position, angle: anchor.angle, homes: homes.clone() };
+    let cx = BirthCx {
+        world,
+        log,
+        anchor: anchor.position,
+        angle: anchor.angle,
+        homes: homes.clone(),
+        text: Default::default(),
+    };
     // With no card there are no particles: nothing to plan.
     if st.swarm.as_ref().is_none_or(|s| s.buffers.is_none()) {
         note_walls(st, world);

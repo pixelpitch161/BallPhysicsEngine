@@ -56,11 +56,10 @@ pub mod web;
 use bpe_core::{Choice, SettingDef, Settings, SlotId, Target, ThingKind};
 use glam::Vec2;
 
+pub use crate::riding::RidesOn;
+
 /// The thing kind's id.
 pub const KIND: &str = "particles";
-
-/// The thing kinds a Particles thing inside can ride.
-pub const RIDES: [&str; 3] = ["balls", "emitter", "shape"];
 
 /// Where particles are born.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
@@ -187,22 +186,6 @@ pub enum AreaShape {
     Rectangle,
     Circle,
     Ring,
-}
-
-/// What part of its parent a riding source is born on.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
-pub enum RidesOn {
-    /// Every ball.
-    #[default]
-    EachBall,
-    /// The middle of the balls, or of the shape.
-    TheMiddle,
-    /// One ball, by its number.
-    BallNumber,
-    /// Each ball's rim, or the shape's outline.
-    TheEdge,
-    /// Inside each ball, or inside the shape.
-    Inside,
 }
 
 /// When particles are born.
@@ -669,6 +652,9 @@ impl ThingKind for ParticlesKind {
     }
     fn family(&self) -> &'static str {
         "Particles"
+    }
+    fn offers(&self, scene: &bpe_core::Scene, thing: bpe_core::ThingId, key: &str, choice: &str) -> bool {
+        key != "rides_on" || crate::riding::offers(scene, thing, choice)
     }
     fn slot_label(&self, slot: SlotId) -> &'static str {
         match slot {

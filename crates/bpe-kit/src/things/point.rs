@@ -22,7 +22,7 @@ pub fn point_of(world: &World, id: ThingId, ball: u32) -> Option<Vec2> {
         return Some(alive.iter().map(|&r| b.position[r]).sum::<Vec2>() / alive.len() as f32);
     }
     if let Some(wall) = world.walls.get(&id) {
-        return Some(crate::things::light::draw::outline_centre(&wall.outline));
+        return Some(crate::outline::centre(&wall.outline));
     }
     world.poses.get(&id).map(|p| p.position)
 }

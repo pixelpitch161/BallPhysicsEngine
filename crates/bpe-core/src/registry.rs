@@ -51,6 +51,12 @@ pub trait ThingKind: Send + Sync + 'static {
     fn layers_by_number(&self) -> bool {
         false
     }
+    /// Whether thing `thing` of `scene` (one of these) is offered choice `choice` (its saved name)
+    /// of its own setting `key`, for the editor's dropdown: a choice that makes no sense where the
+    /// thing is (riding the edge of something that has none) is left out. Every choice by default.
+    fn offers(&self, _scene: &crate::Scene, _thing: crate::ThingId, _key: &str, _choice: &str) -> bool {
+        true
+    }
 }
 
 /// A kind of card that fills one of a thing's slots, such as a look or one effect. Each thing

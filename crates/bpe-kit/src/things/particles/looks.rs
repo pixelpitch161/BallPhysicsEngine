@@ -15,7 +15,7 @@ use super::marks::{MARKS, MarksLayer};
 use super::meets::{AtBalls, AtEdges, AtShapes, MeetsSettings};
 use super::modifiers::{Mirror, MirrorRound, Modifiers};
 use super::trail::{TRAILS, TrailsLayer};
-use super::{AreaShape, BornFrom, Edge, Emit, FedWhen, Heading, KIND, ParticlesSettings, RIDES, RidesOn};
+use super::{AreaShape, BornFrom, Edge, Emit, FedWhen, Heading, KIND, ParticlesSettings, RidesOn};
 use crate::modules::look::layers::gives_light::GivesLight;
 use crate::modules::look::layers::particles::{ParticleFade, ShapeMadeOf, SizeOverLife};
 use crate::modules::look::shape::ShapeSubGlow;
@@ -1877,7 +1877,7 @@ fn splashes() -> Recipe {
 
 /// Whether a Particles thing under `parent` can ride it.
 pub fn can_ride(scene: &Scene, parent: ThingId) -> bool {
-    scene.things.get(&parent).is_some_and(|t| RIDES.contains(&t.kind.as_str()))
+    scene.things.get(&parent).is_some_and(|t| crate::riding::can_ride(KIND, &t.kind))
 }
 
 /// Writes `params` into layer `layer` of `id`'s card `slot`.
@@ -1922,6 +1922,7 @@ fn add_recipe(scene: &mut Scene, reg: &Registry, r: Recipe, name: &str, parent: 
             t.transform.position = at;
         }
     }
+    crate::riding::fit_choice(scene, id);
     if let Some(card) = scene.things.get_mut(&id).and_then(|t| t.slots.get_mut(&SlotId::Bounce)) {
         card.params = r.meets.to_params();
     }

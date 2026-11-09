@@ -6,8 +6,9 @@ Part 1a is in (#106). **Light** things (`bpe-kit/src/things/light/`: `LightKind`
 Add thing menu offers Point, Spot, Sun, Area and Strip light through `add_light`, which also gives the scene its
 **Lighting** card `scene.lighting` (`modules/lighting.rs`, `SlotId::Lighting`) when it has none). A light's place is
 its own keyframable Position (the Placement card is hidden for lights, and the preview's placement ring leaves them
-out); inside a Balls, Emitter or Shape thing (`RIDES`) it rides it, read from the tree parent: Each ball, The middle,
-Ball number (1-based), A point on the edge (`draw.rs::places`, `outline_points`, `point_round`). `LightDraw::light`
+out); inside a Balls, Emitter, Shape or Text thing (`riding::RIDDEN`) it rides it, read from the tree parent: Each ball, The middle,
+Ball number (1-based), The edge (Round the edge), and in a Text Each letter and The pen (`draw.rs::places`, `places_in`; the
+shared Rides on is `bpe-kit/src/riding.rs`, see `engine.md`, W14). `LightDraw::light`
 (the `ThingDraw::light` hook, called after every thing draws when the scene draw set `Frame.light`) turns settings
 into `LightGpu`s and strip segments. Every drawn and around layer has a "Lighting" fold (`LayerKind::light_defs`,
 `layers/lighting.rs`: `lit`, `blocks_light`, and `bulge` on a ball's Body, the spec's Roundness); records carry it in

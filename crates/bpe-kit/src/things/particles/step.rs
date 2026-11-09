@@ -420,7 +420,14 @@ pub fn step_in(
     st.feeds.clear();
     let anchor = world.anchor(st.id);
     let homes = st.home_frame(anchor.position, anchor.angle, world.camera.center);
-    let cx = BirthCx { world, log, anchor: anchor.position, angle: anchor.angle, homes: homes.clone() };
+    let cx = BirthCx {
+        world,
+        log,
+        anchor: anchor.position,
+        angle: anchor.angle,
+        homes: homes.clone(),
+        text: Default::default(),
+    };
     births::births(st, &cx, since, false, parent);
     let meets = st.meets.clone();
     let grid = meets.reads_balls().then(|| BallGrid::new(balls_in(world), meets.reach.max(1.0)));
@@ -601,7 +608,8 @@ pub fn first(st: &mut ParticlesState, world: &World) {
     let anchor = world.anchor(st.id);
     let log = Log::default();
     let homes = st.home_frame(anchor.position, anchor.angle, world.camera.center);
-    let cx = BirthCx { world, log: &log, anchor: anchor.position, angle: anchor.angle, homes };
+    let cx =
+        BirthCx { world, log: &log, anchor: anchor.position, angle: anchor.angle, homes, text: Default::default() };
     births::births(st, &cx, 0, true, None);
     note_trails(st);
     note_walls(st, world);

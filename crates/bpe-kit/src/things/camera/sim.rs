@@ -70,7 +70,7 @@ pub fn follow_point(world: &World, settings: &CameraSettings, me: ThingId) -> Op
         }
         if let Some(wall) = world.walls.get(&id) {
             let pose = world.poses.get(&id).copied();
-            let at = pose.map_or_else(|| crate::things::light::draw::outline_centre(&wall.outline), |p| p.position);
+            let at = pose.map_or_else(|| crate::outline::centre(&wall.outline), |p| p.position);
             let velocity = pose.map_or(wall.velocity, |p| p.velocity);
             // Only Fit all reads the box (the outline is walked once a step).
             let (low, high) = if settings.fit_all { outline_box(wall).unwrap_or((at, at)) } else { (at, at) };
@@ -101,7 +101,7 @@ pub fn follow_point(world: &World, settings: &CameraSettings, me: ThingId) -> Op
 fn outline_box(wall: &bpe_runtime::Wall) -> Option<(Vec2, Vec2)> {
     let band = if wall.solid { 0.0 } else { (wall.outline.thickness() * 0.5).max(0.0) };
     let (mut lo, mut hi) = (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY));
-    for p in crate::things::light::draw::outline_contours(&wall.outline).iter().flatten() {
+    for p in crate::outline::contours(&wall.outline).iter().flatten() {
         lo = lo.min(*p);
         hi = hi.max(*p);
     }
@@ -542,7 +542,7 @@ mod tests {
         let resolved = resolve(&scene, &kit.registry);
         let (world, _) = run(&scene, &resolved, &kit, 3.0);
         let wall = &world.walls[&shape];
-        for p in crate::things::light::draw::outline_contours(&wall.outline).iter().flatten() {
+        for p in crate::outline::contours(&wall.outline).iter().flatten() {
             assert!(world.camera.sees(video(), *p, 0.0), "{p:?} {:?}", world.camera);
         }
     }

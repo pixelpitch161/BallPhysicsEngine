@@ -20,6 +20,7 @@ pub use sim::{TextSim, TextState, letter_char};
 
 use bpe_core::{Choice, SettingDef, Settings, SlotId, Target, ThingKind};
 
+pub use crate::riding::RidesOn;
 use crate::text::{Align, Case, LayoutSpec};
 
 /// The kind id.
@@ -76,16 +77,6 @@ pub enum TimedBy {
     Beats,
     /// One on each hit of a thing.
     Hits,
-}
-
-/// What a Text inside a group of balls, an emitter or a shape rides on.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
-pub enum TextRides {
-    /// A copy on every ball.
-    #[default]
-    EachBall,
-    TheMiddle,
-    BallNumber,
 }
 
 /// What balls do at the letters (Text part 3). Only a Text in the world that rides nothing is a
@@ -259,10 +250,14 @@ pub struct TextSettings {
     /// Inside a group of balls, an emitter or a shape: what it rides on. Its Position is then how far
     /// from it.
     #[setting(label = "Rides on", group = "Riding")]
-    pub rides_on: TextRides,
+    pub rides_on: RidesOn,
     /// The ball it rides, by its number in the group.
     #[setting(label = "Ball number", group = "Riding", when = "rides_on=ball_number", range(1, 1e9), span(1, 100))]
     pub ball_number: u32,
+    /// Where round the edge it sits (each ball's rim, the shape's outline), from 0 (the top) to 1
+    /// (all the way round, clockwise).
+    #[setting(label = "Round the edge", group = "Riding", when = "rides_on=the_edge", span(0, 1), keyframe)]
+    pub edge_at: f32,
     /// What balls do at the letters. Only for a Text in the world (Stuck to the screen off) that rides nothing.
     #[setting(label = "Balls", group = "Balls", simple)]
     pub balls: TextBalls,
@@ -317,7 +312,8 @@ impl Default for TextSettings {
             hits_of: Target::Anything,
             stays: 0.0,
             resort: 0.4,
-            rides_on: TextRides::EachBall,
+            rides_on: RidesOn::EachBall,
+            edge_at: 0.0,
             ball_number: 1,
             balls: TextBalls::PassThrough,
             thickness: 10.0,
@@ -358,6 +354,9 @@ impl ThingKind for TextKind {
     }
     fn family(&self) -> &'static str {
         "Text"
+    }
+    fn offers(&self, scene: &bpe_core::Scene, thing: bpe_core::ThingId, key: &str, choice: &str) -> bool {
+        key != "rides_on" || crate::riding::offers(scene, thing, choice)
     }
     fn name(&self) -> &'static str {
         "Text"
@@ -429,7 +428,7 @@ mod tests {
         want_keys.push("fast");
         want_keys.extend(path);
         want_keys.extend(show);
-        want_keys.extend(["resort", "rides_on", "ball_number", "balls", "thickness"]);
+        want_keys.extend(["resort", "rides_on", "ball_number", "edge_at", "balls", "thickness"]);
         assert_eq!(keys, want_keys);
         for d in defs {
             let want = if words.contains(&d.key) {

@@ -6,7 +6,7 @@ Part 1 is in (plan `part1.md`): the **engine**. A **Particles** thing (`bpe-kit/
 `particles`, family "Particles") makes its own particles, separate from the `layer.particles` Look layer (which stays
 as it is). Its own settings are the **Source** (`ParticlesSettings`: From Whole screen (Edge, Margin: the camera's shot
 bounds) / An area (Rectangle, Circle, Ring) / A point / A line / Riding its parent (Each ball, The middle, Ball number,
-The edge, Inside: the tree parent's balls or wall, `RIDES`); Emit Steady (Rate, a ball when riding each ball) / Bursts /
+The edge, Inside, and on a Text Each letter and The pen: the tree parent's balls, wall or letters, `riding::RIDDEN`; W14 in `engine.md`); Emit Steady (Rate, a ball when riding each ball) / Bursts /
 On hits (Who hits, Least speed, Follow impact) / Keep a crowd / Once at the start; each particle's Life, Speed,
 Direction, Angle, Spread, Takes the parent's speed, Size, Turn, Spin, their spreads, Seed; Most particles (cap,
 `MOST_EVER`)). Its cards are its own (`ModuleKind::fits`; `motion.basic`/`bounce.basic` don't fit it, and the inspector

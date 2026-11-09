@@ -1204,14 +1204,33 @@ fn position_rows(ui: &mut Ui, scene: &Scene, thing: &bpe_core::Thing, lw: f32, r
         let mut picked = item;
         let mut item_changed = false;
         if thing.parent.and_then(|p| scene.things.get(&p)).is_some_and(|p| p.kind == "balls") {
-            let label =
-                grid_label(ui, lw, "Item").on_hover_text("Ride one ball of the parent: its number, or -1 for all");
-            let mut n: i64 = item.map_or(-1, |i| i as i64);
-            if ui.add(DragValue::new(&mut n).range(-1..=9999)).labelled_by(label.id).changed() {
-                picked = (n >= 0).then_some(n as u32);
-                item_changed = true;
-            }
+            // The same words as every other thing that rides balls: one ball, by its number from 1
+            // (kept as the ball's number from 0).
+            grid_label(ui, lw, "Rides on").on_hover_text("The whole group, or one of its balls");
+            widget_cell(ui, right, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let whole = ui.add(egui::Button::selectable(item.is_none(), "The whole group"));
+                    if whole.clicked() && item.is_some() {
+                        picked = None;
+                        item_changed = true;
+                    }
+                    let one = ui.add(egui::Button::selectable(item.is_some(), "One ball"));
+                    if one.clicked() && item.is_none() {
+                        picked = Some(0);
+                        item_changed = true;
+                    }
+                });
+            });
             ui.end_row();
+            if let Some(i) = item {
+                let label = grid_label(ui, lw, "Ball number").on_hover_text("Which ball it rides, counted from 1");
+                let mut n: u64 = i as u64 + 1;
+                if ui.add(DragValue::new(&mut n).range(1..=10000)).labelled_by(label.id).changed() {
+                    picked = Some(n.saturating_sub(1) as u32);
+                    item_changed = true;
+                }
+                ui.end_row();
+            }
         }
         if moved || turned || item_changed {
             edits.push(Edit::Attach(Attach::Ride { offset: o, turn_with_parent: turns, item: picked }));
@@ -1362,6 +1381,7 @@ fn slot_grid_of(
         track: style::colour_of(scene, id),
         follow: Some(&follow),
         vary: vary.as_ref(),
+        offers: None,
     };
     let out = settings_grid(ui, grid_id, defs, get, &grid);
     fold_groups(inspector, (id, Some(slot)), &out.folds);
@@ -1441,6 +1461,7 @@ fn surface_section(
         track: style::colour_of(scene, id),
         follow: Some(&follow),
         vary: None,
+        offers: None,
     };
     let out = settings_grid(ui, ("surface", id, slot), &defs, get, &grid);
     edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key.into(), value)));
@@ -1494,6 +1515,9 @@ fn own_grid(
     let follow_light = |key: &str| crate::follow::can_light(scene, reg, &own(key));
     let follow = crate::follow::FollowCx { menu: &follow_menu, now: &follow_now, light: &follow_light };
     let vary = crate::vary::VaryCx::of(scene, reg, time, id, &own);
+    // The kind leaves out choices that make no sense where the thing is (riding a shape's balls).
+    let kind = reg.thing(&cx.thing.kind);
+    let offers = |d: &SettingDef, choice: &str| kind.is_none_or(|k| k.offers(scene, id, d.key, choice));
     let grid_cx = GridCx {
         choices: cx.choices,
         marks: &marks,
@@ -1503,6 +1527,7 @@ fn own_grid(
         track: style::colour_of(scene, id),
         follow: Some(&follow),
         vary: vary.as_ref(),
+        offers: Some(&offers),
     };
     let out = settings_grid(ui, grid, defs, get, &grid_cx);
     fold_groups(inspector, (id, None), &out.folds);
@@ -2470,12 +2495,33 @@ mod tests {
             s.scene.things[&ThingId(2)].attach
         );
         assert!(h.query_all_by_label("Offset").next().is_some() && h.query_all_by_label("Position").next().is_none());
-        assert!(h.query_all_by_label("Item").next().is_none(), "a shape has no balls to ride");
+        assert!(h.query_all_by_label("One ball").next().is_none(), "a shape has no balls to ride");
         h.get_by_label("Grouped").click();
         h.run();
         let s = h.state();
         assert_eq!(s.scene.things[&ThingId(2)].attach, Attach::Group);
         assert_eq!(s.scene.things[&ThingId(2)].transform.position, Vec2::new(0.0, -200.0));
+    }
+
+    #[test]
+    fn a_rider_on_balls_rides_the_group_or_one_ball_counted_from_one() {
+        // The shape rides the balls (as the Placement card's Attach rows set it).
+        let mut scene = bpe_kit::new_scene(&bpe_kit::registry());
+        let ride = Attach::Ride { offset: Vec2::ZERO, turn_with_parent: true, item: None };
+        scene.set_parent(ThingId(1), ThingId(2), ride).unwrap();
+        let mut h = harness_of(scene, Some(ThingId(1)));
+        assert!(h.query_all_by_label("Ball number").next().is_none(), "the whole group: no number");
+        h.get_by_label("One ball").click();
+        h.run();
+        let item = |h: &Harness<'static, State>| match h.state().scene.things[&ThingId(1)].attach {
+            Attach::Ride { item, .. } => item,
+            Attach::Group => panic!("still riding"),
+        };
+        assert_eq!(item(&h), Some(0), "ball number 1 is the first ball");
+        assert!(h.query_all_by_label("Ball number").next().is_some());
+        h.get_by_label("The whole group").click();
+        h.run();
+        assert_eq!(item(&h), None);
     }
 
     #[test]

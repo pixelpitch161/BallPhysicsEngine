@@ -13,7 +13,7 @@ use glam::Vec2;
 
 use crate::modules::lighting::{LIGHTING, LightingSettings};
 use crate::modules::look::layers::gives_light::{Emit, GivesLight, SHAPE_SUB_LIGHT, SUB_LIGHT};
-use crate::things::light::draw::{LightDraw, places, point_round, shown_settings};
+use crate::things::light::draw::{LightDraw, places, shown_settings};
 use crate::things::light::{LIGHT, LightSettings};
 
 /// How many points round a shape's outline "Light on" a shape averages.
@@ -221,11 +221,14 @@ impl Probe {
         }
         if let Some(wall) = world.walls.get(&thing) {
             // Round every contour (a Text's letters each get their share; a shape has one).
-            let contours = crate::things::light::draw::outline_contours(&wall.outline);
+            let contours = crate::outline::contours(&wall.outline);
             let each = (SHAPE_POINTS / contours.len().max(1)).max(1);
             return contours
                 .iter()
-                .flat_map(|points| (0..each).map(move |k| point_round(points, k as f32 / each as f32)))
+                .flat_map(|points| {
+                    let at = move |k: usize| crate::outline::round_one(points, k as f32 / each as f32);
+                    (0..each).map(move |k| at(k).map_or(Vec2::ZERO, |(p, _)| p))
+                })
                 .map(|p| lamps.sample(p, Skip { ball: None, thing: Some(thing) }, None))
                 .collect();
         }
@@ -449,7 +452,7 @@ impl Lamps {
                     }
                 }
             } else if let Some(wall) = world.walls.get(id) {
-                let sides: Vec<[Vec2; 2]> = crate::things::light::draw::outline_contours(&wall.outline)
+                let sides: Vec<[Vec2; 2]> = crate::outline::contours(&wall.outline)
                     .into_iter()
                     .filter(|c| c.len() >= 2)
                     .flat_map(|c| {

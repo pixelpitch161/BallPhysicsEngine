@@ -51,8 +51,7 @@ fn lowest_shape(world: &bpe_runtime::World) -> Option<f32> {
         .walls
         .values()
         .filter_map(|w| {
-            let points: Vec<glam::Vec2> =
-                crate::things::light::draw::outline_contours(&w.outline).into_iter().flatten().collect();
+            let points: Vec<glam::Vec2> = crate::outline::contours(&w.outline).into_iter().flatten().collect();
             if points.is_empty() {
                 return None;
             }

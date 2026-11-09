@@ -7,7 +7,8 @@ use bpe_gfx::DrawCx;
 use super::pattern::{self, Clock, Drive};
 use super::{Across, RIG, RigSettings, StepsOn};
 use crate::modules::light_scenes::ScenesNow;
-use crate::things::light::{LIGHT, LightSettings, RIDES, draw::places};
+use crate::riding::RIDDEN;
+use crate::things::light::{LIGHT, LightSettings, draw::places};
 use crate::things::scene::SceneSettings;
 
 /// Whether `id` is a rig.
@@ -26,9 +27,9 @@ pub fn ridden(tree: &Scene, id: ThingId) -> Option<ThingId> {
     tree.ancestors(id).into_iter().find(|&a| !is_rig(tree, a)).filter(|&a| a != ThingId::ROOT)
 }
 
-/// Whether the light `id` rides a Balls, Emitter or Shape thing.
+/// Whether the light `id` rides a Balls, Emitter, Shape or Text thing.
 pub fn rides_anything(tree: &Scene, id: ThingId) -> bool {
-    ridden(tree, id).and_then(|p| tree.things.get(&p)).is_some_and(|p| RIDES.contains(&p.kind.as_str()))
+    ridden(tree, id).and_then(|p| tree.things.get(&p)).is_some_and(|p| RIDDEN.contains(&p.kind.as_str()))
 }
 
 /// The lights a rig drives: every enabled Light thing under it, in tree order.

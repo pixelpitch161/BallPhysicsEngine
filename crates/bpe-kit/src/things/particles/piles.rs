@@ -118,7 +118,7 @@ impl Surfaces {
             .walls
             .iter()
             .filter(|(_, w)| still(w))
-            .map(|(id, w)| (id.0, crate::things::light::draw::outline_contours(&w.outline)))
+            .map(|(id, w)| (id.0, crate::outline::contours(&w.outline)))
             .collect();
         Surfaces { shapes, floor }
     }

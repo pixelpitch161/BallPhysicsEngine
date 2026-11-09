@@ -15,6 +15,8 @@ pub mod links;
 use bpe_core::{Choice, Color, KindId, SettingDef, Settings, SlotId, Target, ThingKind};
 use glam::Vec2;
 
+pub use crate::riding::RidesOn;
+
 /// The thing kind's id.
 pub const LIGHT: &str = "light";
 
@@ -186,22 +188,6 @@ impl Falloff {
     }
 }
 
-/// What a light inside a Balls, Emitter, Shape or Text thing rides on.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
-pub enum RidesOn {
-    /// One light on every ball.
-    #[default]
-    EachBall,
-    /// The middle of the group, or of the shape.
-    TheMiddle,
-    /// One ball, by its number.
-    BallNumber,
-    /// A point on the shape's edge.
-    APointOnTheEdge,
-    /// Inside a Text: where its Draw on pen is tracing now (nothing while there is none).
-    ThePen,
-}
-
 /// Which way a Spot, Sun, Area or Strip points.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
 pub enum Points {
@@ -367,14 +353,15 @@ pub struct LightSettings {
     /// Where it is: in the world, or, riding a thing, from the ball or point it rides.
     #[setting(label = "Position", unit = "px", keyframe, group = "Place")]
     pub position: Vec2,
-    /// Inside a Balls, Emitter or Shape thing: what it rides on.
+    /// Inside a Balls, Emitter, Shape or Text thing: what it rides on.
     #[setting(label = "Rides on", group = "Place")]
     pub rides_on: RidesOn,
     /// The ball it rides, by its number in the group.
     #[setting(label = "Ball number", when = "rides_on=ball_number", range(1, 1e9), span(1, 100), group = "Place")]
     pub ball_number: u32,
-    /// Where round the shape's edge it rides, from 0 (its top) to 1 (all the way round).
-    #[setting(label = "Round the edge", when = "rides_on=a_point_on_the_edge", span(0, 1), keyframe, group = "Place")]
+    /// Where round the edge it rides (each ball's rim, the shape's outline or the letters'), from 0
+    /// (the top) to 1 (all the way round, clockwise).
+    #[setting(label = "Round the edge", when = "rides_on=the_edge", span(0, 1), keyframe, group = "Place")]
     pub edge_at: f32,
     /// Whether things that block light throw shadows from it.
     #[setting(label = "Casts shadows", group = "Shadows")]
@@ -671,7 +658,7 @@ pub fn kelvin_to_linear(kelvin: f32) -> [f32; 3] {
 }
 
 /// Adds a light of `kind` under `parent`, named for its kind ("Spot light 2"). Inside a Balls,
-/// Emitter or Shape thing it rides on it, right on what it rides; elsewhere it hangs above the
+/// Emitter, Shape or Text thing it rides on it, right on what it rides; elsewhere it hangs above the
 /// middle. The first light gives the scene its Lighting card.
 pub fn add_light(
     scene: &mut bpe_core::Scene,
@@ -691,11 +678,9 @@ pub fn add_light(
         t.params = settings.to_params();
         t.name = name;
     }
+    crate::riding::fit_choice(scene, id);
     Ok(id)
 }
-
-/// The thing kinds a light inside rides on.
-pub const RIDES: [&str; 3] = ["balls", "emitter", "shape"];
 
 impl ThingKind for LightKind {
     fn id(&self) -> &'static str {
@@ -722,6 +707,10 @@ impl ThingKind for LightKind {
     fn family(&self) -> &'static str {
         "Lights"
     }
+    fn offers(&self, scene: &bpe_core::Scene, thing: bpe_core::ThingId, key: &str, choice: &str) -> bool {
+        key != "rides_on" || crate::riding::offers(scene, thing, choice)
+    }
+
     fn can_stick_to_screen(&self) -> bool {
         false
     }

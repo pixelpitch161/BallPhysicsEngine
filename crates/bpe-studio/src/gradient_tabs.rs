@@ -555,6 +555,7 @@ pub(crate) mod tests {
                         track: style::TEXT,
                         follow: None,
                         vary: None,
+                        offers: None,
                     };
                     let values = state.values.clone();
                     // As strict as the inspector's: a companion the gradient doesn't offer has no

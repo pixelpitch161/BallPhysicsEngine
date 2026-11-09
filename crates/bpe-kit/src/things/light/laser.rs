@@ -11,7 +11,7 @@ use bpe_gfx::dichroic::Dichroic;
 use bpe_runtime::World;
 use glam::Vec2;
 
-use super::draw::outline_contours;
+use crate::outline::contours as outline_contours;
 
 /// What a beam does where it meets a thing.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -213,13 +213,7 @@ fn band(
 
 /// Whether `p` is inside the closed outline made of `sides` (even-odd).
 fn in_polygon(p: Vec2, sides: &[(Vec2, Vec2)]) -> bool {
-    let mut inside = false;
-    for &(a, b) in sides {
-        if (a.y > p.y) != (b.y > p.y) && p.x < a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x) {
-            inside = !inside;
-        }
-    }
-    inside
+    sides.iter().filter(|&&(a, b)| bpe_core::shape_path::crosses(a, b, p)).count() % 2 == 1
 }
 
 /// +1 when `sides` run anticlockwise in x-right, y-up terms (their left normals point in), -1

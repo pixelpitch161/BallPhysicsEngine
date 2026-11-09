@@ -588,12 +588,18 @@ pub fn traced(contours: &[Vec<Vec2>], share: f32) -> (Vec<Vec<Vec2>>, Option<Vec
 pub fn pen(at: &TextAt) -> Option<Vec2> {
     let now = super::draw::text_now(at)?;
     let screen = at.tree.things.get(&at.id).is_none_or(|t| t.screen.unwrap_or(true));
+    let p = now.to_world(pen_of(&now)?);
+    Some(if screen { at.world.camera.to_world(p) } else { p })
+}
+
+/// Where the Draw on pen of the Text showing as `now` is, in its own frame: the first letter still
+/// being traced. `None` while none is.
+pub fn pen_of(now: &super::TextNow) -> Option<Vec2> {
     (0..now.layout.letters.len()).find_map(|k| {
         let m = now.shown[k]?;
         let tr = m.trace.filter(|tr| tr.share < 1.0)?;
         let (_, p) = traced(&now.contours_moved(k, LetterMove { trace: None, ..m }), tr.share);
-        let p = now.to_world(p?);
-        Some(if screen { at.world.camera.to_world(p) } else { p })
+        p
     })
 }
 
