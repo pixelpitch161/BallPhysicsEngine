@@ -420,7 +420,7 @@ impl Studio {
             }
             ui.label(RichText::new(&self.status).small().color(style::MUTED));
             if self.mode == crate::grade_mode::EditorMode::Grade {
-                let hint = "· Grade mode: \\ shows Before, Y splits the picture, D goes back to Build";
+                let hint = "· Grade mode: \\ shows Before, Y splits the picture, O shows where the mask covers, D goes back to Build";
                 ui.label(RichText::new(hint).small().color(style::FAINT));
             }
             if let Some(problem) = &self.shader_problem {

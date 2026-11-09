@@ -1,9 +1,12 @@
 //! Grade mode (colour grading, `docs/notes/grading.md`): the editor's second face, for the
 //! scene's Grade card. Build | Grade in the toolbar (or D) switches. In Grade mode the left
-//! column lists the masks (part 1: the Whole picture) and the Histogram, the right column the
-//! mask's panels in the order they work, and the preview compares After, Before and Split.
+//! column lists the masks (the Whole picture, then the masks) and the Histogram, the right column
+//! the selected mask's parts and panels in the order they work, and the preview compares After,
+//! Before and Split, with the selected gradient's handles and the mask overlay (O).
 //!
 //! - `cx.rs`: reading the card and applying edits; `panels.rs`: the panel column;
+//! - `masks.rs`: the masks list; `parts.rs`: a mask's parts; `handles.rs`: a gradient's handles
+//!   on the preview;
 //! - `curve.rs`: the Tone Curve's graph; `scopes.rs`: the Histogram;
 //! - `colour.rs`: the colour panels' bodies (HSL / Colour, Point Colour, Colour Grading,
 //!   Calibration) and their coloured rails; `wheel.rs`: Colour Grading's colour wheel.
@@ -13,13 +16,16 @@
 use crate::app::Studio;
 use crate::style;
 use bpe_core::{LayerId, Slot};
-use eframe::egui::{self, RichText, Ui};
+use eframe::egui::{self, Ui};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub mod colour;
 pub mod curve;
 pub mod cx;
+pub mod handles;
+pub mod masks;
 pub mod panels;
+pub mod parts;
 pub mod scopes;
 #[cfg(test)]
 mod tests;
@@ -138,6 +144,23 @@ pub struct GradeMode {
     pub wheel_view: BTreeMap<LayerId, WheelView>,
     /// The pick each Point Colour panel shows (its slot, 0..8).
     pub pick: BTreeMap<LayerId, usize>,
+    /// The mask the right column shows (`None` the Whole picture).
+    pub mask: Option<LayerId>,
+    /// The part of each mask whose handles the preview shows.
+    pub part: BTreeMap<LayerId, LayerId>,
+    /// The red overlay (O) over where the selected mask covers.
+    pub overlay: bool,
+    /// The mask whose name is being typed, and what is typed so far.
+    pub renaming: Option<(LayerId, String)>,
+    /// The mask whose row is being dragged to a new place.
+    pub mask_drag: Option<LayerId>,
+    /// Where each mask's row was drawn last frame, in order, for dragging.
+    pub mask_rows: Vec<(LayerId, egui::Rect)>,
+    /// The handle being dragged on the preview.
+    pub handle: Option<handles::Grab>,
+    /// The preview's last grade before Before or Split changed it: where the gradients are (set
+    /// while the picture is built, which only reads the studio).
+    pub shown: std::cell::RefCell<bpe_gfx::GradeStack>,
     /// The card the column shows before the scene has one.
     start: Option<Slot>,
 }
@@ -158,12 +181,27 @@ impl Default for GradeMode {
             hsl_view: BTreeMap::new(),
             wheel_view: BTreeMap::new(),
             pick: BTreeMap::new(),
+            mask: None,
+            part: BTreeMap::new(),
+            overlay: false,
+            renaming: None,
+            mask_drag: None,
+            mask_rows: Vec::new(),
+            handle: None,
+            shown: Default::default(),
             start: None,
         }
     }
 }
 
 impl GradeMode {
+    /// The mask the right column shows on `card`: the selected one while it is there, else the
+    /// Whole picture.
+    pub fn mask_of(&self, card: &Slot) -> Option<LayerId> {
+        let masks = bpe_kit::modules::grade::masks_of(card);
+        self.mask.filter(|m| masks.iter().any(|l| l.id == *m)).or_else(|| bpe_kit::modules::grade::whole_of(card))
+    }
+
     /// The starting card (`bpe_kit::modules::grade::starting_card`), made once.
     pub fn start(&mut self, reg: &bpe_core::Registry) -> Slot {
         self.start.get_or_insert_with(|| bpe_kit::modules::grade::starting_card(reg)).clone()
@@ -181,6 +219,14 @@ impl GradeMode {
 
     /// The preview's grade as Grade mode shows it: cleared for Before, split for Split.
     pub fn show_on(&self, grade: &mut bpe_gfx::GradeStack) {
+        self.shown.replace(grade.clone());
+        // The overlay shows the selected mask (only a mask over part of the picture has one).
+        if self.overlay
+            && let Some(mask) = self.mask
+            && let Some(m) = grade.masks.iter_mut().find(|m| m.id == mask.0 && m.area.is_some())
+        {
+            m.overlay = true;
+        }
         match self.compare {
             Compare::After => {}
             Compare::Before => *grade = Default::default(),
@@ -221,61 +267,8 @@ pub fn left(ui: &mut Ui, studio: &mut Studio) {
         .frame(crate::app::side_frame().inner_margin(egui::Margin::symmetric(10, 10)))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            masks(ui, studio);
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| masks::column(ui, studio));
         });
-}
-
-/// The masks list and the Histogram.
-pub fn masks(ui: &mut Ui, studio: &mut Studio) {
-    ui.label(RichText::new("Masks").font(style::semibold(13.0)));
-    ui.add_space(4.0);
-    let start = studio.grade.start(&studio.kit.registry);
-    let card = cx::card_or_start(&studio.scene, &start);
-    let gx = cx::GradeCx { scene: &studio.scene, kit: &studio.kit, card, time: studio.sim_time() };
-    let on = gx.on();
-    let panels = bpe_kit::modules::grade::whole_of(card)
-        .map(|w| bpe_kit::modules::grade::panels_of(card, w).iter().filter(|p| gx.changed(p.id)).count())
-        .unwrap_or(0);
-    let mut edits = Vec::new();
-    let row = egui::Frame::new()
-        .fill(style::SELECTED)
-        .corner_radius(style::RADIUS)
-        .inner_margin(egui::Margin::symmetric(8, 5));
-    row.show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            let ink = if on { style::TEXT } else { style::FAINT };
-            let name = ui.label(RichText::new("Whole picture").color(ink));
-            name.on_hover_text("The grade of the whole picture. Masks for parts of it come with a later update.");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let (rect, response) = ui.allocate_exact_size(egui::vec2(18.0, 16.0), egui::Sense::click());
-                response.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, on, "Grade on"));
-                let ink = if response.hovered() { style::TEXT } else { style::MUTED };
-                crate::tree::paint_eye(ui.painter(), rect, on, ink);
-                let response = response.on_hover_text(if on {
-                    "The grade is on. Click to see the picture without it (every setting is kept)."
-                } else {
-                    "The grade is off: the video has no grade. Click to turn it on."
-                });
-                if response.clicked() {
-                    edits.push(cx::GradeEdit::Set("on".into(), bpe_core::Value::Bool(!on)));
-                }
-                let count = if panels == 1 { "1 panel changed".to_owned() } else { format!("{panels} panels changed") };
-                ui.label(RichText::new(count).small().color(style::MUTED));
-            });
-        });
-    });
-    ui.add_space(14.0);
-    ui.label(RichText::new("Histogram").font(style::semibold(13.0)));
-    ui.add_space(4.0);
-    scopes::histogram(ui, studio.grade.bins.as_deref());
-    ui.add_space(4.0);
-    ui.label(
-        RichText::new("The finished picture's red, green, blue and brightness, darks on the left.")
-            .small()
-            .color(style::FAINT),
-    );
-    apply(studio, edits);
 }
 
 /// The right column in Grade mode: the Whole picture's panels.
@@ -299,5 +292,8 @@ pub fn apply(studio: &mut Studio, edits: Vec<cx::GradeEdit>) {
     let applied = cx::apply(&mut studio.scene, &studio.kit, time, edits);
     if applied.keyed {
         studio.panels.inspector.keyed_edit = true;
+    }
+    if let Some(mask) = applied.added {
+        studio.grade.mask = Some(mask);
     }
 }

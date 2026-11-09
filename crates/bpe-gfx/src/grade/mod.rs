@@ -65,3 +65,20 @@ pub const TEXTURE_COARSE: f32 = 8.0;
 pub const CLARITY_BLUR: f32 = 40.0;
 pub const DEHAZE_BLUR: f32 = 80.0;
 pub const VIGNETTE_BLUR: f32 = 6.0;
+
+/// A mask's part kinds and how parts join, as `OP_END`'s words name them (part 4; the same
+/// numbers in `shaders/grade.wgsl`).
+pub const PART_LINEAR: u32 = 1;
+pub const PART_RADIAL: u32 = 2;
+pub const PART_COLOUR: u32 = 3;
+pub const PART_LUMINANCE: u32 = 4;
+pub const COMBINE_ADD: u32 = 0;
+pub const COMBINE_SUBTRACT: u32 = 1;
+pub const COMBINE_INTERSECT: u32 = 2;
+
+/// At most this many copies of one gradient (a copy a ball for every ball); the rest are left out.
+pub const MAX_BALLS: usize = 4096;
+
+/// The editor's mask overlay: this red (linear light) mixed in by half the coverage.
+pub const OVERLAY_RED: [f32; 3] = [1.0, 0.02, 0.02];
+pub const OVERLAY_MIX: f32 = 0.5;

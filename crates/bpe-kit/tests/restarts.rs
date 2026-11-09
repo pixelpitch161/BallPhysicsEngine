@@ -251,6 +251,12 @@ fn grade_settings_restart_nothing() {
     let mut base = bpe_kit::new_scene(reg);
     bpe_kit::add_thing(&mut base, reg, "particles", ThingId::ROOT).expect("particles");
     bpe_kit::modules::grade::ensure_grade(&mut base, reg);
+    // A mask with a part of every kind, so their settings are changed too.
+    use bpe_kit::modules::grade::{self as grade, Combine};
+    let mask = grade::add_mask(&mut base, reg, grade::RADIAL).expect("a mask");
+    for kind in [grade::LINEAR, grade::COLOUR_RANGE, grade::LUMINANCE_RANGE] {
+        grade::add_part(&mut base, reg, mask, kind, Combine::Add).expect("a part");
+    }
     let prints = |scene: &Scene| {
         let resolved = bpe_kit::resolve_scene(scene, reg);
         (
@@ -269,5 +275,5 @@ fn grade_settings_restart_nothing() {
         assert_eq!(prints(&with(&base, ThingId::ROOT, place, &key, v)), before, "{key}");
         checked += 1;
     }
-    assert!(checked >= 110, "only {checked} grade settings changed");
+    assert!(checked >= 140, "only {checked} grade settings changed");
 }

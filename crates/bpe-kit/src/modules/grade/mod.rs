@@ -2,8 +2,9 @@
 //! panels in a real processing order, edited in the editor's Grade mode.
 //!
 //! The card's layers are its masks (`LayerSection::Mask`): the Whole picture first (the base
-//! layer, always there), later the masks (part 4). A mask's panels (`LayerSection::Panel`) are its
-//! sub-layers, in the order they work; a panel kind may be added more than once.
+//! layer, always there), then the masks (`masks.rs`). A mask's parts (`LayerSection::MaskPart`)
+//! and then its panels (`LayerSection::Panel`) are its sub-layers, in the order they work; a panel
+//! kind may be added more than once.
 //!
 //! - `basic.rs`: the Basic panel; `tone_curve.rs`: the Tone Curve panel;
 //! - `hsl.rs`: HSL / Colour; `point_colour.rs`: Point Colour; `colour_grading.rs`: Colour Grading's
@@ -23,6 +24,7 @@ pub mod colour_grading;
 pub mod detail;
 pub mod effects;
 pub mod hsl;
+pub mod masks;
 pub mod point_colour;
 #[cfg(test)]
 mod tests;
@@ -34,6 +36,10 @@ pub use colour_grading::ColourGradingPanel;
 pub use detail::DetailPanel;
 pub use effects::EffectsPanel;
 pub use hsl::HslPanel;
+pub use masks::{
+    COLOUR_RANGE, ColourRangePart, Combine, LINEAR, LUMINANCE_RANGE, LinearPart, LuminanceRangePart, MASK,
+    MaskSettings, PART_KINDS, Placed, RADIAL, RadialPart, add_mask, add_part, masks_of, parts_of,
+};
 pub use point_colour::{PICKS, PointColourPanel, PointPick, pick_prefix};
 pub use tone_curve::{CURVE_KEYS, CurveMode, ToneCurvePanel};
 
@@ -224,7 +230,11 @@ pub fn panel_kinds() -> [PanelKind; 8] {
 pub fn register(r: &mut Registry) {
     r.add_module(GradeCardKind);
     r.add_layer(WholeKind);
+    r.add_layer(masks::MaskKind);
     for k in panel_kinds() {
+        r.add_layer(k);
+    }
+    for k in masks::part_kinds() {
         r.add_layer(k);
     }
 }
@@ -269,7 +279,24 @@ pub fn panels_of(card: &Slot, mask: LayerId) -> Vec<&Layer> {
 /// 2"), giving the scene its card first. Returns the new panel.
 pub fn add_panel(scene: &mut Scene, reg: &Registry, mask: LayerId, kind: &str) -> Result<LayerId, EditError> {
     ensure_grade(scene, reg);
-    scene.add_sub_layer(reg, ThingId::ROOT, SlotId::Grade, mask, kind)
+    let id = scene.add_sub_layer(reg, ThingId::ROOT, SlotId::Grade, mask, kind)?;
+    name_among_siblings(scene, reg, id);
+    Ok(id)
+}
+
+/// Names sub-layer `id` of the Grade card after its kind, numbered among its mask's own
+/// sub-layers of that kind ("Basic", "Tone Curve 2"), so each mask's panels and parts count from
+/// their own first and not from every mask's.
+pub(crate) fn name_among_siblings(scene: &mut Scene, reg: &Registry, id: LayerId) {
+    let Some(card) = scene.card_mut(ThingId::ROOT, SlotId::Grade) else { return };
+    let Some(layer) = card.layer(id) else { return };
+    let (kind, parent) = (layer.kind.clone(), layer.parent);
+    let Some(name) = reg.layer(&kind).map(|k| k.name().to_owned()) else { return };
+    let same = card.layers.iter().filter(|l| l.parent == parent && l.kind == kind).count();
+    let name = if same > 1 { format!("{name} {same}") } else { name };
+    if let Some(layer) = card.layers.iter_mut().find(|l| l.id == id) {
+        layer.name = name;
+    }
 }
 
 /// Whether panel `panel` may be removed: a mask keeps at least one panel.
@@ -295,9 +322,10 @@ pub fn reset_order(scene: &mut Scene, reg: &Registry, mask: LayerId) -> bool {
     true
 }
 
-/// The resolved Grade card as the frame's stack: its shown masks and their shown panels in order,
-/// every number at the frame's moment. Empty when the card is off or missing.
-pub fn stack(card: Option<&ResolvedSlot>) -> bpe_gfx::GradeStack {
+/// The resolved Grade card as the frame's stack: its shown masks (the Whole picture first) and
+/// their shown parts and panels in order, every number at the frame's moment, gradients placed
+/// through `world`'s camera. Empty when the card is off or missing.
+pub fn stack(card: Option<&ResolvedSlot>, world: Option<&bpe_runtime::World>) -> bpe_gfx::GradeStack {
     let Some(card) = card.filter(|c| c.kind == GRADE) else { return bpe_gfx::GradeStack::default() };
     if !GradeCard::from_params(&card.params).on {
         return bpe_gfx::GradeStack::default();
@@ -305,35 +333,34 @@ pub fn stack(card: Option<&ResolvedSlot>) -> bpe_gfx::GradeStack {
     let masks = card
         .layers
         .iter()
-        .filter(|l| l.kind == WHOLE)
+        .filter(|l| l.parent.is_none() && (l.kind == WHOLE || l.kind == MASK))
         .map(|mask| {
-            let panels = card
-                .layers
-                .iter()
-                .filter(|l| l.parent == Some(mask.id))
-                .filter_map(|l| {
-                    let params = card.layer_params(l.id);
-                    match l.kind.as_str() {
-                        BASIC => Some(bpe_gfx::GradePanel::Basic(BasicPanel::from_params(&params).gpu())),
-                        TONE_CURVE => Some(bpe_gfx::GradePanel::ToneCurve(ToneCurvePanel::from_params(&params).gpu())),
-                        HSL => Some(bpe_gfx::GradePanel::Hsl(HslPanel::from_params(&params).gpu())),
-                        POINT_COLOUR => {
-                            Some(bpe_gfx::GradePanel::PointColour(PointColourPanel::from_params(&params).gpu()))
-                        }
-                        COLOUR_GRADING => {
-                            Some(bpe_gfx::GradePanel::ColourGrading(ColourGradingPanel::from_params(&params).gpu()))
-                        }
-                        DETAIL => Some(bpe_gfx::GradePanel::Detail(DetailPanel::from_params(&params).gpu())),
-                        EFFECTS => Some(bpe_gfx::GradePanel::Effects(EffectsPanel::from_params(&params).gpu())),
-                        CALIBRATION => {
-                            Some(bpe_gfx::GradePanel::Calibration(CalibrationPanel::from_params(&params).gpu()))
-                        }
-                        _ => None,
-                    }
-                })
-                .collect();
-            bpe_gfx::GradeMask { amount: 1.0, panels }
+            let panels =
+                card.layers.iter().filter(|l| l.parent == Some(mask.id)).filter_map(|l| panel_gpu(card, l)).collect();
+            if mask.kind == WHOLE {
+                return bpe_gfx::GradeMask { panels, id: mask.id.0, ..Default::default() };
+            }
+            let s = MaskSettings::from_params(&card.layer_params(mask.id));
+            let amount = if s.amount.is_finite() { (s.amount / 100.0).clamp(0.0, 1.0) } else { 0.0 };
+            let area = masks::area(card, mask.id, world, s.invert);
+            bpe_gfx::GradeMask { amount, area: Some(area), panels, overlay: false, id: mask.id.0 }
         })
         .collect();
     bpe_gfx::GradeStack { masks, split: None }
+}
+
+/// A panel layer as the frame carries it (`None` for a layer that isn't a panel).
+fn panel_gpu(card: &ResolvedSlot, l: &bpe_core::ResolvedLayer) -> Option<bpe_gfx::GradePanel> {
+    let params = card.layer_params(l.id);
+    Some(match l.kind.as_str() {
+        BASIC => bpe_gfx::GradePanel::Basic(BasicPanel::from_params(&params).gpu()),
+        TONE_CURVE => bpe_gfx::GradePanel::ToneCurve(ToneCurvePanel::from_params(&params).gpu()),
+        HSL => bpe_gfx::GradePanel::Hsl(HslPanel::from_params(&params).gpu()),
+        POINT_COLOUR => bpe_gfx::GradePanel::PointColour(PointColourPanel::from_params(&params).gpu()),
+        COLOUR_GRADING => bpe_gfx::GradePanel::ColourGrading(ColourGradingPanel::from_params(&params).gpu()),
+        DETAIL => bpe_gfx::GradePanel::Detail(DetailPanel::from_params(&params).gpu()),
+        EFFECTS => bpe_gfx::GradePanel::Effects(EffectsPanel::from_params(&params).gpu()),
+        CALIBRATION => bpe_gfx::GradePanel::Calibration(CalibrationPanel::from_params(&params).gpu()),
+        _ => return None,
+    })
 }

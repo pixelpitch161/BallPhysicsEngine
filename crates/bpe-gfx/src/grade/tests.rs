@@ -185,7 +185,10 @@ fn vibrance_moves_dull_colours_more_than_bright_ones_and_saturation_all_alike() 
 }
 
 fn basic(b: GradeBasic) -> GradeStack {
-    GradeStack { masks: vec![GradeMask { amount: 1.0, panels: vec![GradePanel::Basic(b)] }], split: None }
+    GradeStack {
+        masks: vec![GradeMask { amount: 1.0, panels: vec![GradePanel::Basic(b)], ..GradeMask::default() }],
+        split: None,
+    }
 }
 
 #[test]
@@ -204,6 +207,7 @@ fn a_panel_at_its_defaults_compiles_to_nothing() {
                     ..GradeToneCurve::default()
                 }),
             ],
+            ..GradeMask::default()
         }],
         split: None,
     };
@@ -302,7 +306,11 @@ fn near3(a: [f64; 3], b: [f64; 3], by: f64) -> bool {
 }
 
 fn steps_of(panel: GradePanel) -> u32 {
-    compile(&GradeStack { masks: vec![GradeMask { amount: 1.0, panels: vec![panel] }], split: None }).steps
+    compile(&GradeStack {
+        masks: vec![GradeMask { amount: 1.0, panels: vec![panel], ..GradeMask::default() }],
+        split: None,
+    })
+    .steps
 }
 
 #[test]
@@ -534,7 +542,7 @@ fn a_pick_takes_a_glow_that_shows_as_its_colour() {
 use crate::frame::{GradeDetail, GradeEffects};
 
 fn program(panels: Vec<GradePanel>) -> Program {
-    compile(&GradeStack { masks: vec![GradeMask { amount: 1.0, panels }], split: None })
+    compile(&GradeStack { masks: vec![GradeMask { amount: 1.0, panels, ..GradeMask::default() }], split: None })
 }
 
 /// Each segment's ops, in order.
@@ -717,4 +725,199 @@ fn the_gradient_map_runs_from_its_first_colour_to_its_last() {
     // Brighter than white stays bright; amount 0 leaves the colour.
     assert!(gradient_map([2.0; 3], &row, 1.0)[0] > 1.9);
     assert_eq!(gradient_map([0.3, 0.2, 0.1], &row, 0.0), [0.3, 0.2, 0.1]);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Part 4: masks.
+
+use crate::frame::{
+    GradeArea, GradeColourRange, GradeCombine, GradeLinear, GradeLuminanceRange, GradePart, GradePlace, GradeRadial,
+    GradeShape,
+};
+
+fn radial_at(x: f32, y: f32, size: f32) -> GradeRadial {
+    GradeRadial {
+        x,
+        y,
+        width: size,
+        height: size,
+        angle: 0.0,
+        roundness: 0.0,
+        feather: 0.0,
+        places: vec![GradePlace::SCREEN],
+    }
+}
+
+fn part(shape: GradeShape, combine: GradeCombine) -> GradePart {
+    GradePart { combine, invert: false, shape, id: 0 }
+}
+
+#[test]
+fn a_linear_gradient_fades_out_across_its_feather_the_way_it_points() {
+    // Pointing down (90°): full effect above, none below, half on its middle line.
+    let l = GradeLinear { x: 0.0, y: 100.0, angle: 90.0, feather: 200.0, places: vec![GradePlace::SCREEN] };
+    let n = linear_numbers(&l);
+    let at = |y: f64| linear_cover(n, &GradePlace::SCREEN, [37.0, y], 1.0);
+    assert!((at(100.0) - 0.5).abs() < 1e-9);
+    assert_eq!(at(-1.0), 1.0);
+    assert_eq!(at(201.0), 0.0);
+    assert!(at(50.0) > at(150.0));
+    // Turned by its place a quarter turn clockwise, it points left.
+    let turned = GradePlace { turn: std::f32::consts::FRAC_PI_2, ..GradePlace::SCREEN };
+    let n = linear_numbers(&GradeLinear { y: 0.0, ..l });
+    assert!(linear_cover(n, &turned, [150.0, 0.0], 1.0) > 0.99);
+    assert!(linear_cover(n, &turned, [-150.0, 0.0], 1.0) < 0.01);
+}
+
+#[test]
+fn a_radial_gradient_covers_inside_and_fades_over_its_feather() {
+    let r = GradeRadial { feather: 50.0, ..radial_at(10.0, -20.0, 200.0) };
+    let n = radial_numbers(&r);
+    let at = |x: f64, y: f64| radial_cover(n, &GradePlace::SCREEN, [x, y], 1.0);
+    assert_eq!(at(10.0, -20.0), 1.0);
+    assert_eq!(at(10.0 + 40.0, -20.0), 1.0, "inside the feather's start");
+    assert!((at(10.0 + 75.0, -20.0) - 0.5).abs() < 1e-9, "half-way across the feather");
+    assert_eq!(at(10.0 + 101.0, -20.0), 0.0);
+    // Roundness 100 makes a wide ellipse a circle on its short side.
+    let wide = GradeRadial { width: 400.0, height: 100.0, roundness: 100.0, ..radial_at(0.0, 0.0, 0.0) };
+    let n = radial_numbers(&wide);
+    assert_eq!(radial_cover(n, &GradePlace::SCREEN, [100.0, 0.0], 1.0), 0.0);
+    assert_eq!(radial_cover(n, &GradePlace::SCREEN, [40.0, 0.0], 1.0), 1.0);
+    // At a place: offset turned and scaled with it, sizes scaled.
+    let place = GradePlace { at: [100.0, 50.0], turn: std::f32::consts::FRAC_PI_2, scale: 2.0 };
+    let n = radial_numbers(&radial_at(10.0, 0.0, 20.0));
+    assert_eq!(radial_cover(n, &place, [100.0, 70.0], 1.0), 1.0, "its middle moved down by 2 × 10");
+    assert!(radial_cover(n, &place, [100.0, 70.0 + 19.0], 1.0) > 0.0, "radius 2 × 10");
+    assert_eq!(radial_cover(n, &place, [100.0, 70.0 + 21.0], 1.0), 0.0);
+}
+
+#[test]
+fn parts_join_by_add_subtract_and_intersect_and_invert() {
+    assert_eq!(combine(0.25, 0.5, GradeCombine::Add), 0.5);
+    assert_eq!(combine(0.5, 0.25, GradeCombine::Subtract), 0.375);
+    assert_eq!(combine(0.5, 0.5, GradeCombine::Intersect), 0.25);
+    let left = GradeShape::Radial(radial_at(-50.0, 0.0, 80.0));
+    let right = GradeShape::Radial(radial_at(50.0, 0.0, 80.0));
+    let middle = GradeShape::Radial(radial_at(0.0, 0.0, 80.0));
+    let grey = [0.2; 3];
+    let cover =
+        |parts: Vec<GradePart>, invert: bool, x: f64| area_cover(&GradeArea { parts, invert }, grey, [x, 0.0], 1.0);
+    let add = vec![part(left.clone(), GradeCombine::Add), part(right.clone(), GradeCombine::Add)];
+    assert_eq!(
+        [cover(add.clone(), false, -50.0), cover(add.clone(), false, 50.0), cover(add, false, 0.0)],
+        [1.0, 1.0, 0.0]
+    );
+    let sub = vec![part(middle.clone(), GradeCombine::Add), part(right.clone(), GradeCombine::Subtract)];
+    assert_eq!([cover(sub.clone(), false, -30.0), cover(sub, false, 30.0)], [1.0, 0.0]);
+    let both = vec![part(middle.clone(), GradeCombine::Add), part(right, GradeCombine::Intersect)];
+    assert_eq!([cover(both.clone(), false, -30.0), cover(both.clone(), false, 30.0)], [0.0, 1.0]);
+    assert_eq!(cover(both, true, -30.0), 1.0, "the mask's Invert");
+    // The first part's Combine is never read; a part's Invert covers its outside.
+    let first = vec![GradePart { invert: true, ..part(middle, GradeCombine::Subtract) }];
+    assert_eq!([cover(first.clone(), false, 0.0), cover(first, false, 100.0)], [0.0, 1.0]);
+    assert_eq!(cover(Vec::new(), true, 0.0), 0.0, "no part covers nothing, inverted or not");
+    // A gradient with no place (its thing is gone) covers nothing.
+    let gone = GradeShape::Radial(GradeRadial { places: Vec::new(), ..radial_at(0.0, 0.0, 80.0) });
+    assert_eq!(cover(vec![part(gone, GradeCombine::Add)], false, 0.0), 0.0);
+}
+
+#[test]
+fn copies_of_a_gradient_join_with_add() {
+    let places = [[-100.0, 0.0], [0.0, 30.0], [100.0, -10.0]].map(|at| GradePlace { at, ..GradePlace::SCREEN });
+    let shape = GradeShape::Radial(GradeRadial { places: places.to_vec(), ..radial_at(0.0, 0.0, 20.0) });
+    for [x, y] in [[-100.0, 0.0], [0.0, 30.0], [100.0, -10.0]] {
+        assert_eq!(part_cover(&shape, [0.2; 3], [x, y], 1.0), 1.0);
+    }
+    assert_eq!(part_cover(&shape, [0.2; 3], [50.0, 0.0], 1.0), 0.0);
+}
+
+#[test]
+fn a_luminance_range_takes_the_brightnesses_between_its_ends() {
+    let l = luminance_numbers(&GradeLuminanceRange { low: 60.0, high: 100.0, smoothness: 0.0 });
+    assert_eq!(luminance_cover([0.9; 3], l), 1.0);
+    assert_eq!(luminance_cover([0.05; 3], l), 0.0);
+    assert_eq!(luminance_cover([5.0; 3], l), 1.0, "past white reads as white");
+    // Low and High kept in order, smoothness widening the fade.
+    let swapped = luminance_numbers(&GradeLuminanceRange { low: 40.0, high: 10.0, smoothness: 100.0 });
+    assert_eq!([swapped[0], swapped[1], swapped[2]], [0.1, 0.4, 0.3]);
+    let y = shown_luma([0.18; 3]);
+    assert!((y - tone(0.18)).abs() < 1e-9);
+}
+
+#[test]
+fn a_colour_range_covers_colours_near_its_picks() {
+    let red = [0.6, 0.04, 0.03];
+    let r = GradeColourRange { picks: vec![[0.6, 0.04, 0.03], [0.05, 0.6, 0.05]], refine: 50.0 };
+    let (picks, widths) = (range_picks(&r), range_widths(r.refine));
+    assert_eq!(colour_range_cover(red, &picks, widths), 1.0);
+    assert_eq!(colour_range_cover([0.03, 0.08, 0.6], &picks, widths), 0.0, "blue is far from both");
+    assert!(colour_range_cover([0.55, 0.06, 0.03], &picks, widths) > 0.9, "a near red");
+    // More Refine takes in more.
+    let near = [0.45, 0.12, 0.03];
+    assert!(
+        colour_range_cover(near, &picks, range_widths(100.0)) > colour_range_cover(near, &picks, range_widths(0.0))
+    );
+    assert_eq!(colour_range_cover(red, &[], widths), 0.0, "no pick covers nothing");
+}
+
+/// Where the program's last `OP_END` step starts, walking the steps.
+fn last_end(p: &Program) -> usize {
+    let mut at = p.segments[0].first as usize;
+    let mut end = None;
+    for _ in 0..p.steps {
+        if p.words[at][0] == OP_END as f32 {
+            end = Some(at);
+        }
+        at += p.words[at][2] as usize;
+    }
+    end.expect("an end")
+}
+
+/// A mask over part of the picture.
+fn masked(parts: Vec<GradePart>, panels: Vec<GradePanel>) -> GradeStack {
+    GradeStack {
+        masks: vec![GradeMask {
+            amount: 1.0,
+            area: Some(GradeArea { parts, invert: false }),
+            panels,
+            ..GradeMask::default()
+        }],
+        split: None,
+    }
+}
+
+#[test]
+fn a_mask_compiles_its_parts_into_its_end_and_the_whole_picture_compiles_as_before() {
+    let exposure = || vec![GradePanel::Basic(GradeBasic { exposure: 1.0, ..GradeBasic::default() })];
+    let whole = compile(&GradeStack {
+        masks: vec![GradeMask { amount: 1.0, panels: exposure(), ..GradeMask::default() }],
+        split: None,
+    });
+    assert_eq!(whole.steps, 1, "no begin or end for the Whole picture at full amount");
+    let mask = masked(vec![part(GradeShape::Radial(radial_at(0.0, 0.0, 40.0)), GradeCombine::Add)], exposure());
+    let p = compile(&mask);
+    assert_eq!(p.steps, 3, "begin, the matrix, end");
+    let end = last_end(&p);
+    assert_eq!(p.words[end + 1], [1.0, 0.0, 0.0, 0.0], "one part, not inverted, no overlay");
+    assert_eq!(p.words[end + 2], [PART_RADIAL as f32, 0.0, 0.0, 5.0]);
+    assert_eq!(p.words[end + 5], [1.0, 20.0f32.hypot(20.0) + 2.0, 0.0, 0.0], "one copy and its reach");
+    // Nothing to do and no overlay compiles to nothing; with the overlay it compiles.
+    let mut quiet = masked(mask.masks[0].area.clone().unwrap().parts, Vec::new());
+    assert!(quiet.is_identity() && compile(&quiet).is_empty());
+    quiet.masks[0].overlay = true;
+    assert!(!quiet.is_identity() && compile(&quiet).steps == 2);
+}
+
+#[test]
+fn copies_are_sorted_down_the_screen() {
+    let places = [[0.0, 30.0], [0.0, -10.0], [5.0, 10.0]].map(|at| GradePlace { at, ..GradePlace::SCREEN }).to_vec();
+    let linear = GradeShape::Linear(GradeLinear { x: 0.0, y: 0.0, angle: 0.0, feather: 10.0, places });
+    let p = compile(&masked(
+        vec![part(linear, GradeCombine::Add)],
+        vec![GradePanel::Basic(GradeBasic { exposure: 1.0, ..GradeBasic::default() })],
+    ));
+    let end = last_end(&p);
+    let copies = &p.words[end + 4..end + 8];
+    assert_eq!(copies[0][..2], [3.0, -1.0], "three copies; a linear reaches everywhere");
+    assert_eq!(copies[1..].iter().map(|w| w[1]).collect::<Vec<_>>(), vec![-10.0, 10.0, 30.0]);
 }

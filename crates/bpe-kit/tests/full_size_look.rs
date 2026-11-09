@@ -399,6 +399,7 @@ fn demo_shots(reg: &Registry) -> Vec<Shot> {
         at("grading-curves", grading_curves(reg)),
         at("grading-colour", grading_colour(reg)),
         at("grading-detail", grading_detail(reg)),
+        shot("grading-masks", grading_masks(reg), vec![1.0, 2.5]),
         at("stage-camera-orbit", stage_camera(reg, 25.0)),
         at("stage-camera-orbit-far", stage_camera(reg, -40.0)),
         at("stage-depth-of-field", stage_depth_of_field(reg)),
@@ -544,6 +545,59 @@ fn grading_detail(reg: &Registry) -> Scene {
     let params = &mut scene.card_mut(ThingId::ROOT, SlotId::Grade).expect("made above").params;
     for (panel, key, v) in settings {
         params.set(&bpe_core::layered_key(panels[panel], key), v);
+    }
+    scene
+}
+
+/// The lit demo through masks: a glow on every ball (a Radial Gradient following each, growing
+/// with it), a darker, cooler top (a Linear Gradient), and warmer highlights only inside a soft
+/// oval in the middle (a Luminance Range intersected with a Radial Gradient). Look for hard
+/// edges at the feathers, seams between ball copies and banding in the fades.
+fn grading_masks(reg: &Registry) -> Scene {
+    use bpe_kit::modules::grade;
+    let mut scene = scenes::lit_demo(reg);
+    let n = Value::Number;
+    let choice = |s: &str| Value::Choice(s.into());
+    let masked = |scene: &mut Scene, first: &str, part: &[(&str, Value)], basic: &[(&str, Value)]| {
+        let mask = grade::add_mask(scene, reg, first).expect("a mask");
+        let card = scene.card(ThingId::ROOT, SlotId::Grade).expect("made with the mask");
+        let (p, b) = (grade::parts_of(card, mask)[0].id, grade::panels_of(card, mask)[0].id);
+        let params = &mut scene.card_mut(ThingId::ROOT, SlotId::Grade).expect("made above").params;
+        for (id, settings) in [(p, part), (b, basic)] {
+            for (key, v) in settings {
+                params.set(&bpe_core::layered_key(id, key), v.clone());
+            }
+        }
+        mask
+    };
+    masked(
+        &mut scene,
+        grade::RADIAL,
+        &[
+            ("place", choice("on_every_ball")),
+            ("grows", Value::Bool(true)),
+            ("width", n(150.0)),
+            ("height", n(150.0)),
+            ("feather", n(70.0)),
+        ],
+        &[("exposure", n(1.2)), ("temp", n(30.0)), ("saturation", n(40.0))],
+    );
+    masked(
+        &mut scene,
+        grade::LINEAR,
+        &[("y", n(-500.0)), ("angle", n(80.0)), ("feather", n(700.0))],
+        &[("exposure", n(-1.0)), ("temp", n(-40.0))],
+    );
+    let oval = masked(
+        &mut scene,
+        grade::LUMINANCE_RANGE,
+        &[("low", n(45.0)), ("high", n(100.0)), ("smoothness", n(60.0))],
+        &[("temp", n(60.0)), ("tint", n(20.0)), ("exposure", n(0.3))],
+    );
+    let part = grade::add_part(&mut scene, reg, oval, grade::RADIAL, grade::Combine::Intersect).expect("a part");
+    let params = &mut scene.card_mut(ThingId::ROOT, SlotId::Grade).expect("made above").params;
+    for (key, v) in [("y", n(200.0)), ("width", n(900.0)), ("height", n(1300.0)), ("feather", n(80.0))] {
+        params.set(&bpe_core::layered_key(part, key), v);
     }
     scene
 }

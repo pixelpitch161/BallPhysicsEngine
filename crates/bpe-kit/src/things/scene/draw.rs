@@ -17,7 +17,7 @@ impl ThingDraw for SceneDraw {
 
     fn draw(&self, cx: &DrawCx, frame: &mut Frame) {
         let s = SceneSettings::from_params(&cx.resolved.params);
-        frame.grade = crate::modules::grade::stack(cx.resolved.slots.get(&bpe_core::SlotId::Grade));
+        frame.grade = crate::modules::grade::stack(cx.resolved.slots.get(&bpe_core::SlotId::Grade), Some(cx.world));
         frame.width = s.width.max(2);
         frame.height = s.height.max(2);
         frame.video = (frame.width, frame.height);

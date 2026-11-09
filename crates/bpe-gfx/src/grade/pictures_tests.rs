@@ -37,7 +37,7 @@ fn grey(v: f32) -> Frame {
 }
 
 fn panels(panels: Vec<GradePanel>) -> GradeStack {
-    GradeStack { masks: vec![GradeMask { amount: 1.0, panels }], split: None }
+    GradeStack { masks: vec![GradeMask { amount: 1.0, panels, ..GradeMask::default() }], split: None }
 }
 
 fn basic(b: GradeBasic) -> GradeStack {
@@ -597,4 +597,200 @@ fn two_area_passes_each_build_their_pyramid_from_their_own_input() {
     let Some(got) = draw(&graded(grey(0.3), twice)) else { return };
     let want = draw(&graded(grey(0.3), panels(vec![darker]))).unwrap();
     assert!(all_close(&got, &want, 1), "{:?} vs {:?}", centre(&got), centre(&want));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Part 4: masks.
+
+use crate::frame::{
+    GradeArea, GradeCombine, GradeLinear, GradeLuminanceRange, GradePart, GradePlace, GradeRadial, GradeShape,
+};
+
+fn radial(x: f32, y: f32, size: f32, feather: f32) -> GradeShape {
+    GradeShape::Radial(GradeRadial {
+        x,
+        y,
+        width: size,
+        height: size,
+        angle: 0.0,
+        roundness: 0.0,
+        feather,
+        places: vec![GradePlace::SCREEN],
+    })
+}
+
+fn add(shape: GradeShape) -> GradePart {
+    GradePart { combine: GradeCombine::Add, invert: false, shape, id: 0 }
+}
+
+fn exposed() -> Vec<GradePanel> {
+    vec![GradePanel::Basic(GradeBasic { exposure: 1.0, ..GradeBasic::default() })]
+}
+
+/// A mask of `parts` raising the exposure a stop at `amount`.
+fn mask_of(parts: Vec<GradePart>, amount: f32) -> GradeStack {
+    GradeStack {
+        masks: vec![GradeMask {
+            amount,
+            area: Some(GradeArea { parts, invert: false }),
+            panels: exposed(),
+            ..GradeMask::default()
+        }],
+        split: None,
+    }
+}
+
+/// Pixel `(x, y)`'s middle in screen units (the 64 × 64 video's middle at 0).
+fn screen(x: u32, y: u32) -> [f64; 2] {
+    [x as f64 + 0.5 - N as f64 / 2.0, y as f64 + 0.5 - N as f64 / 2.0]
+}
+
+/// The byte a grey of linear `v` shows as.
+fn byte(v: f64) -> i32 {
+    (crate::grade::maths::tone(crate::grade::maths::roll_off([v; 3])[0]) * 255.0).round() as i32
+}
+
+#[test]
+fn a_radial_mask_grades_its_inside_as_the_maths_says() {
+    let v = 0.18;
+    let stack = mask_of(vec![add(radial(4.0, -2.0, 30.0, 60.0))], 1.0);
+    let Some(p) = draw(&graded(grey(v as f32), stack.clone())) else { return };
+    let area = stack.masks[0].area.clone().unwrap();
+    for y in [30, 31] {
+        for x in 0..N {
+            let k = crate::grade::maths::area_cover(&area, [v; 3], screen(x, y), 1.0);
+            let want = byte(v * (1.0 + k));
+            assert!((at(&p, x, y)[1] - want).abs() <= 2, "({x}, {y}): {} vs {want} (coverage {k})", at(&p, x, y)[1]);
+        }
+    }
+    assert!(close(at(&p, 1, 1), [byte(v); 3], 1), "outside untouched");
+}
+
+#[test]
+fn a_linear_mask_is_half_way_on_its_middle_line() {
+    let v = 0.18;
+    let linear = GradeShape::Linear(GradeLinear {
+        x: 0.0,
+        y: 0.0,
+        angle: 90.0,
+        feather: 32.0,
+        places: vec![GradePlace::SCREEN],
+    });
+    let Some(p) = draw(&graded(grey(v as f32), mask_of(vec![add(linear)], 1.0))) else { return };
+    assert!(close(at(&p, 10, 2), [byte(2.0 * v); 3], 2), "full above: {:?}", at(&p, 10, 2));
+    assert!(close(at(&p, 10, 61), [byte(v); 3], 2), "none below: {:?}", at(&p, 10, 61));
+    let middle = at(&p, 10, 32)[1];
+    assert!((middle - byte(1.5 * v)).abs() <= 3, "half-way: {middle}");
+}
+
+#[test]
+fn add_subtract_and_intersect_cover_where_they_should_on_the_gpu() {
+    let v = 0.18;
+    let (lit, dark) = ([byte(2.0 * v); 3], [byte(v); 3]);
+    let left = radial(-12.0, 0.0, 24.0, 0.0);
+    let right = radial(12.0, 0.0, 24.0, 0.0);
+    let middle = radial(0.0, 0.0, 40.0, 0.0);
+    let with = |b: GradeShape, how| vec![add(middle.clone()), GradePart { combine: how, ..add(b) }];
+    let Some(sum) = draw(&graded(grey(v as f32), mask_of(vec![add(left.clone()), add(right.clone())], 1.0))) else {
+        return;
+    };
+    assert!(close(at(&sum, 20, 32), lit, 2) && close(at(&sum, 44, 32), lit, 2) && close(at(&sum, 32, 10), dark, 2));
+    let sub = draw(&graded(grey(v as f32), mask_of(with(right.clone(), GradeCombine::Subtract), 1.0))).unwrap();
+    assert!(close(at(&sum, 20, 32), lit, 2) && close(at(&sub, 44, 32), dark, 2), "{:?}", at(&sub, 44, 32));
+    let both = draw(&graded(grey(v as f32), mask_of(with(right, GradeCombine::Intersect), 1.0))).unwrap();
+    assert!(close(at(&both, 20, 32), dark, 2) && close(at(&both, 44, 32), lit, 2), "{:?}", at(&both, 20, 32));
+}
+
+#[test]
+fn a_mask_at_amount_0_changes_nothing_and_its_overlay_shows_only_red() {
+    let frame = ball_on(0.1, 0.6, 10.0);
+    let Some(plain) = draw(&frame) else { return };
+    let mut stack = mask_of(vec![add(radial(0.0, 0.0, 30.0, 0.0))], 0.0);
+    assert!(stack.is_identity());
+    assert!(plain == draw(&graded(frame.clone(), stack.clone())).unwrap());
+    stack.masks[0].overlay = true;
+    let shown = draw(&graded(frame, stack)).unwrap();
+    let c = centre(&shown);
+    assert!(c[0] > c[1] + 40 && c[0] > c[2] + 40, "red over the mask: {c:?}");
+    assert!(close(at(&shown, 1, 1), at(&plain, 1, 1), 1), "untouched outside");
+}
+
+#[test]
+fn a_luminance_range_brightens_only_the_bright_part_of_a_ramp() {
+    let ramp = two_tone([0.01; 3], [0.8; 3]);
+    let Some(plain) = draw(&ramp) else { return };
+    let range = GradeShape::LuminanceRange(GradeLuminanceRange { low: 70.0, high: 100.0, smoothness: 10.0 });
+    let p = draw(&graded(ramp, mask_of(vec![add(range)], 1.0))).unwrap();
+    assert!(close(at(&p, 10, 2), at(&plain, 10, 2), 1), "dark top kept");
+    assert!(at(&p, 10, 61)[1] > at(&plain, 10, 61)[1] + 20, "bright bottom raised");
+}
+
+#[test]
+fn a_colour_range_takes_the_picked_colour_and_not_another() {
+    let red = [0.6, 0.04, 0.03];
+    let range = GradeShape::ColourRange(crate::frame::GradeColourRange { picks: vec![red], refine: 30.0 });
+    let stack = GradeStack {
+        masks: vec![GradeMask {
+            amount: 1.0,
+            area: Some(GradeArea { parts: vec![add(range)], invert: false }),
+            panels: vec![GradePanel::Basic(GradeBasic { saturation: -100.0, ..GradeBasic::default() })],
+            ..GradeMask::default()
+        }],
+        split: None,
+    };
+    let Some(r) = draw(&graded(flat(red), stack.clone())) else { return };
+    let r = centre(&r);
+    assert!((r[0] - r[1]).abs() <= 2, "red greyed: {r:?}");
+    let blue = flat([0.03, 0.08, 0.6]);
+    let b = draw(&graded(blue.clone(), stack)).unwrap();
+    assert!(close(centre(&b), centre(&draw(&blue).unwrap()), 1), "blue kept");
+}
+
+#[test]
+fn every_ball_copies_grade_round_each_place_and_not_between() {
+    let v = 0.18;
+    let places = [[-16.0, -16.0], [16.0, 0.0], [-8.0, 20.0]].map(|at| GradePlace { at, ..GradePlace::SCREEN });
+    let shape = GradeShape::Radial(GradeRadial {
+        x: 0.0,
+        y: 0.0,
+        width: 10.0,
+        height: 10.0,
+        angle: 0.0,
+        roundness: 0.0,
+        feather: 0.0,
+        places: places.to_vec(),
+    });
+    let Some(p) = draw(&graded(grey(v as f32), mask_of(vec![add(shape)], 1.0))) else { return };
+    for [x, y] in [[16, 16], [48, 32], [24, 52]] {
+        assert!(close(at(&p, x, y), [byte(2.0 * v); 3], 2), "({x}, {y}) {:?}", at(&p, x, y));
+    }
+    assert!(close(at(&p, 32, 32), [byte(v); 3], 1));
+}
+
+#[test]
+fn a_mask_with_an_area_step_inside_still_covers_only_its_part() {
+    let frame = grey(0.18);
+    let Some(plain) = draw(&frame) else { return };
+    let mut stack = mask_of(vec![add(radial(0.0, 0.0, 30.0, 0.0))], 1.0);
+    stack.masks[0].panels.push(GradePanel::Basic(GradeBasic { dehaze: 60.0, ..GradeBasic::default() }));
+    stack.masks[0].panels.push(GradePanel::Basic(GradeBasic { exposure: 0.5, ..GradeBasic::default() }));
+    assert!(crate::grade::compile(&stack).segments.len() == 2, "split by Dehaze");
+    let p = draw(&graded(frame, stack)).unwrap();
+    assert!(close(at(&p, 1, 1), at(&plain, 1, 1), 1), "outside kept across the split");
+    assert!(centre(&p)[1] > centre(&plain)[1] + 20, "inside graded: {:?}", centre(&p));
+}
+
+#[test]
+fn the_overlay_rides_through_a_pass_split() {
+    let mut stack = mask_of(vec![add(radial(0.0, 0.0, 30.0, 0.0))], 0.0);
+    stack.masks[0].overlay = true;
+    // A Whole picture after the mask with an area step splits the program after the mask's end.
+    stack.masks.push(GradeMask {
+        panels: vec![GradePanel::Basic(GradeBasic { dehaze: 40.0, ..GradeBasic::default() })],
+        ..GradeMask::default()
+    });
+    assert!(crate::grade::compile(&stack).segments.len() == 2);
+    let Some(p) = draw(&graded(grey(0.18), stack)) else { return };
+    let c = centre(&p);
+    assert!(c[0] > c[1] + 40, "the overlay survives the split: {c:?}");
 }

@@ -6,7 +6,7 @@ use crate::grid::snap_point;
 use crate::lights_panel::{self, LightSource};
 use crate::shape_handles::{self, MenuTarget, Mould};
 use crate::style;
-use bpe_core::{Attach, Registry, Resolved, Scene, Settings, ThingId, Value};
+use bpe_core::{Attach, LayerId, Registry, Resolved, Scene, Settings, ThingId, Value};
 use bpe_gfx::{Frame, LightShow, Renderer, build_frame_sensing, wgpu};
 use bpe_kit::BallsSettings;
 use bpe_runtime::{CameraView, Pose, World};
@@ -72,8 +72,8 @@ struct Drawn {
     light: (LightShow, Vec<LightSource>),
     /// The world step of the particles drawn (the particle playback's), when there are some.
     particles: Option<u64>,
-    /// Grade mode's compare view and Split line, in Grade mode.
-    grade: Option<(crate::grade_mode::Compare, u32)>,
+    /// Grade mode's compare view, Split line, overlay and selected mask, in Grade mode.
+    grade: Option<(crate::grade_mode::Compare, u32, bool, Option<LayerId>)>,
 }
 
 /// Something in the preview that can be dragged.
@@ -440,10 +440,13 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         return outcome;
     }
 
-    // Grade mode only looks: no handles; Split has its line.
+    // Grade mode: Split has its line, the selected mask's gradient its handles.
     if grading {
         preview.drag = None;
         split_line(ui, &response, rect, studio);
+        if !studio.grade.split_drag {
+            crate::grade_mode::handles::preview(ui, &response, rect, view_scale, studio);
+        }
         studio.panels.preview = Some(preview);
         return outcome;
     }
@@ -736,7 +739,7 @@ fn draw_picture(
         light: (studio.light_show, studio.light_solo.iter().copied().collect()),
         particles: None,
         grade: (studio.mode == crate::grade_mode::EditorMode::Grade)
-            .then(|| (studio.grade.compare, studio.grade.split.to_bits())),
+            .then(|| (studio.grade.compare, studio.grade.split.to_bits(), studio.grade.overlay, studio.grade.mask)),
     };
     let now = Drawn { particles: particles.as_ref().map(|p| p.step), ..now };
     if drawn.as_ref() != Some(&now) {

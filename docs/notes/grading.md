@@ -2,8 +2,8 @@
 
 Lightroom-style colour grading of the finished picture, edited in the editor's **Grade mode**. Spec:
 `docs/superpowers/specs/2026-11-09-colour-grading-design.md` (approved 2026-11-09, six parts). Plans:
-`docs/superpowers/plans/colour-grading/`. Parts 1 to 3 are built; parts 4 to 6 add masks, the grading tools and
-scopes.
+`docs/superpowers/plans/colour-grading/`. Parts 1 to 4 are built; parts 5 and 6 add the rest of the masks (Things,
+Brush), the grading tools and scopes.
 
 ## Part 1 as built (the grade itself)
 
@@ -236,3 +236,73 @@ Plan: `docs/superpowers/plans/colour-grading/part3.md` (every number is stated t
   vignette with Highlights, grain and a light gradient map). `grading-colour` indexes Calibration as panel 7.
   Every other scene renders byte-identical to before.
 - `restarts.rs::grade_settings_restart_nothing` checks at least 110 grade settings.
+
+## Part 4 as built (masks, first half)
+
+Plan: `docs/superpowers/plans/colour-grading/part4.md` (decisions 1 to 19 hold every number).
+
+### Data (bpe-kit `modules/grade/masks.rs`)
+
+- **A mask** is a `grade.mask` layer after the Whole picture (`MaskSettings`: `amount` 0..100, `invert`); its eye is
+  `Layer.enabled`. **Parts** are its `MaskPart` sub-layers, before its panels: `grade.part.linear`,
+  `grade.part.radial`, `grade.part.colour_range`, `grade.part.luminance_range`. Every part has `combine` (`Combine`
+  Add / Subtract / Intersect; the first shown part always counts as Add) and `invert`.
+- `add_mask(scene, reg, kind)` makes a mask with one part of `kind` and a Basic panel, last; `add_part(scene, reg,
+  mask, kind, combine)` adds a part after the mask's parts. `masks_of`, `parts_of` list them.
+- **Placed** (`Placed`): On the screen, In the world, On a thing, On one ball, On every ball, with `target`
+  (default every Balls group), `ball` (1..), `turns`, `grows`. `places(world, ..)` turns them into `GradePlace`s
+  (screen units through `world.camera`): a thing's middle is the camera's `follow_point`; a ball's turn is its
+  direction of travel; Grows scales by radius / 24; every ball gives one copy per live ball, at most 4096.
+  `follow_note` gives a mask row's note ("Thing not found", "First 4096 of N balls only").
+- `stack(card, world)` builds one `GradeMask` per shown top-level layer (the Whole picture with no area), its
+  `amount`, `area` (`masks::area`) and `id` (the layer's id). The scene's draw passes `Some(cx.world)`.
+
+### GPU (bpe-gfx)
+
+- `frame/grade.rs`: `GradeMask { amount, area, panels, overlay, id }` (`Default`: amount 1, no area), `GradeArea {
+  parts, invert }`, `GradePart`, `GradeCombine`, `GradeShape` (Linear, Radial, ColourRange, LuminanceRange),
+  `GradePlace { at, turn, scale }` (`point(x, y)`).
+- **No new op.** A mask with an area always gets `OP_BEGIN` / `OP_END`; its `OP_END` carries `[parts, invert,
+  overlay, 0]` then per part `[kind, combine, invert, words]` and its words (`grade/compile.rs::cover_words`). The
+  Whole picture's `OP_END` stays wordless, so parts 1 to 3 grades compile to the same words.
+- **Copies** of a following gradient ride in the program: `[count, reach, 0, 0]` then `[at.x, at.y, turn, scale]`
+  each, sorted by `at.y`; the shader (`grade_copies`) binary-searches the rows within `reach` of the pixel (reach −1
+  for a linear, which reaches everywhere).
+- Coverage is worked out at `OP_END` from the saved colour (`OP_BEGIN`'s, which rides through area passes in
+  `kept`), so range parts read the picture as graded so far; `END` mixes by `amount × coverage`.
+- **Overlay** (`GradeMask.overlay`, set only by the editor): `run_grade` returns that mask's coverage, passes keep
+  it in `kept`'s alpha, and the composite mixes in `(1, 0.02, 0.02)` at `0.5 × coverage` after the grade.
+- CPU twins in `grade/maths.rs`: `linear_cover`, `radial_cover` (roundness as the vignette), `colour_range_cover`
+  (Oklab, lightness counted half, `range_widths`), `luminance_cover`, `combine`, `part_cover`, `area_cover`.
+
+### Editor (bpe-studio `grade_mode/`)
+
+- `masks.rs` (left column): the Whole picture, then each mask with its first part's icon, its name, a note in red
+  when what it follows isn't there, and its eye. Click selects (`GradeMode.mask`); drag reorders; double-click or
+  Rename edits the name in place; right-click Duplicate, Invert, Move up / down, Delete. **Add mask** (the four
+  kinds), **Show overlay (O)**, then the Histogram.
+- `panels.rs` shows the selected mask: its name and Add panel, Amount and Invert, then **Parts** (`parts.rs`),
+  then its panels. A part's box: fold, name (a click picks the gradient whose handles show), how it joins (a small
+  Add / Subtract / Intersect menu, not on the first part), its switch, right-click Reset part, Move up / down,
+  Remove part. A Colour Range shows its swatches with Pick (the eyedropper) and Remove. **Add part** has Add /
+  Subtract / Intersect submenus of the four kinds.
+- `handles.rs`: on the preview, the selected mask's picked (or first) gradient on its first place, from
+  `GradeMode.shown` (the stack as last drawn, a `RefCell` set while the frame is built). Linear: its three lines, a
+  pin, a turn dot; an outer line sets Feather, the middle line moves it. Radial: its edge and where the fade starts,
+  a pin, four size dots, a turn dot. A drag works from the part as it was at the press; each drag is one undo step;
+  values go through `GradeEdit::Set` (keyed at the playhead when keyed). Split's line takes the press first.
+- **O** toggles the overlay (Grade mode, nothing focused); `show_on` sets it on the selected mask only. The
+  preview's `Drawn` key holds the overlay and the selected mask.
+- `GradeEdit` works per mask: `AddPanel(mask, kind)`, `ResetOrder(mask)`, `Enable(layer, on)`, and `AddMask`,
+  `RemoveMask`, `MoveMask`, `DuplicateMask`, `Rename`, `AddPart`, `RemovePart`, `MovePart`, `RemoveRangePick`;
+  `Applied.added` is a new mask (the column selects it).
+
+### Checks
+
+- Picture tests: radial and linear against the maths, Add / Subtract / Intersect, Amount 0, the overlay (also
+  through a pass split), a luminance ramp, a colour range, every-ball copies, a mask with an area step inside.
+- Kit tests: new mask, hidden mask or part, places on a ball / every ball / in the world, Grows, a missing target,
+  a ball's turn. Editor tests: Add mask, the mask menu, parts and Add part, the overlay on the selected mask only,
+  the handle drag maths.
+- Full-size look scene `grading-masks` (a glow on every ball, a darker cooler top, warmer highlights inside an
+  oval). `restarts.rs::grade_settings_restart_nothing` checks at least 140 grade settings.

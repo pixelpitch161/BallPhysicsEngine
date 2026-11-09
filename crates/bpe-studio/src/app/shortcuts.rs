@@ -53,6 +53,9 @@ impl Studio {
             if pressed(Modifiers::NONE, Key::Y) {
                 self.grade.toggle_split();
             }
+            if pressed(Modifiers::NONE, Key::O) {
+                self.grade.overlay = !self.grade.overlay;
+            }
         }
         if ctx.input(|i| i.key_pressed(Key::Home)) {
             self.seek(0.0);
