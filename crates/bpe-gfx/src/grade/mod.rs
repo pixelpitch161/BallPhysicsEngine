@@ -14,7 +14,7 @@ mod scopes;
 #[cfg(test)]
 mod tests;
 
-pub use compile::{Program, compile};
+pub use compile::{Program, Segment, compile};
 pub use scopes::{Histogram, HistogramBins};
 
 /// Samples in a curve's lookup row (`shaders/grade.wgsl` reads the same number).
@@ -38,3 +38,30 @@ pub const OP_DARK_TINT: u32 = 9;
 
 /// Samples in the HSL panel's row over the Oklab hue, one a degree (`shaders/grade.wgsl` reads the same number).
 pub const HUE_SAMPLES: usize = 360;
+
+/// Area steps (part 3): they read the pixels around a pixel, so each group of them starts a new
+/// pass (see `compile.rs`).
+pub const OP_SHARPEN: u32 = 10;
+pub const OP_TEXTURE: u32 = 11;
+pub const OP_CLARITY: u32 = 12;
+pub const OP_DEHAZE: u32 = 13;
+/// An area step only when its Highlights keep bright parts bright under a dark vignette.
+pub const OP_VIGNETTE: u32 = 14;
+/// Point steps (part 3).
+pub const OP_GRAIN: u32 = 15;
+pub const OP_GRADIENT_MAP: u32 = 16;
+
+/// Samples in the gradient map's row (`shaders/grade.wgsl` reads the same number).
+pub const MAP_SAMPLES: usize = 256;
+
+/// Mips of the blur pyramid an area pass reads (half size first); fewer on a small picture.
+pub const PYRAMID_LEVELS: u32 = 8;
+
+/// The blurs area steps read, as a Gaussian's σ in pixels of the video (the scene's own size):
+/// Texture's fine and coarse ends, Clarity's surround, Dehaze's surround and the vignette's
+/// Highlights' surround.
+pub const TEXTURE_FINE: f32 = 2.0;
+pub const TEXTURE_COARSE: f32 = 8.0;
+pub const CLARITY_BLUR: f32 = 40.0;
+pub const DEHAZE_BLUR: f32 = 80.0;
+pub const VIGNETTE_BLUR: f32 = 6.0;

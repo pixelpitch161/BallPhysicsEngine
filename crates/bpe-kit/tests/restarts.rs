@@ -269,5 +269,5 @@ fn grade_settings_restart_nothing() {
         assert_eq!(prints(&with(&base, ThingId::ROOT, place, &key, v)), before, "{key}");
         checked += 1;
     }
-    assert!(checked >= 90, "only {checked} grade settings changed");
+    assert!(checked >= 110, "only {checked} grade settings changed");
 }

@@ -1,9 +1,17 @@
 // The colour grade (colour grading, docs/notes/grading.md): the stack compiled by
-// grade/compile.rs, run as a program over one pixel of the linear HDR picture, inside the
-// composite before the roll-off. Word 0 is [steps, split, 0, 0]; each step is [op, space,
-// words, extra] then its data. The numbers below match grade/mod.rs.
+// grade/compile.rs, run as a program over one pixel of the linear HDR picture, before the
+// roll-off. Word 0 is [segments, split, 0, 0], then a word per segment [first word, steps,
+// pyramid, 0]; each step is [op, space, words, extra] then its data. A segment is one pass: the
+// last runs inside the composite, the others in fs_grade_pass (post.wgsl) into an HDR pair.
+// The numbers below match grade/mod.rs.
 
 @group(2) @binding(0) var<storage, read> grade_prog: array<vec4<f32>>;
+// The previous pass's colour and kept colour (what a weaker mask started from), and the blur
+// pyramid of that colour (tone space, the least channel's tone value in alpha). A grade of one
+// pass binds 1x1 stand-ins.
+@group(2) @binding(1) var grade_in: texture_2d<f32>;
+@group(2) @binding(2) var grade_kept_in: texture_2d<f32>;
+@group(2) @binding(3) var grade_pyr: texture_2d<f32>;
 
 const GRADE_SAMPLES: u32 = 1024u;
 
@@ -20,6 +28,19 @@ const OP_HUE: u32 = 6u;
 const OP_POINT: u32 = 7u;
 const OP_WHEELS: u32 = 8u;
 const OP_DARK_TINT: u32 = 9u;
+const OP_SHARPEN: u32 = 10u;
+const OP_TEXTURE: u32 = 11u;
+const OP_CLARITY: u32 = 12u;
+const OP_DEHAZE: u32 = 13u;
+const OP_VIGNETTE: u32 = 14u;
+const OP_GRAIN: u32 = 15u;
+const OP_GRADIENT_MAP: u32 = 16u;
+
+const MAP_SAMPLES: u32 = 256u;
+// The blur of mip 0 of the pyramid, in output pixels; each mip after doubles it.
+const PYR_SIGMA: f32 = 1.2;
+// Lift's softening near black (grade/maths.rs LIFT_SOFT).
+const LIFT_SOFT: f32 = 0.05;
 
 const HUE_SAMPLES: u32 = 360u;
 const TAU: f32 = 6.2831853;
@@ -216,18 +237,208 @@ fn grade_dark_tint(gain: vec3<f32>, c: vec3<f32>) -> vec3<f32> {
     return c * (vec3<f32>(1.0) + (gain - vec3<f32>(1.0)) * w);
 }
 
-// The grade over one linear colour at `uv` across the picture.
-fn run_grade(colour: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
-    let head = grade_prog[0];
-    // Left of the editor's split the picture is shown as it was.
-    if uv.x < head.y {
-        return colour;
+
+fn tone3(c: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(tone1(c.r), tone1(c.g), tone1(c.b));
+}
+
+fn least(c: vec3<f32>) -> f32 {
+    return min(c.r, min(c.g, c.b));
+}
+
+// Where the grade is working: across the picture (0..1), the output pixel, the output's size and
+// output pixels per pixel of the video.
+struct GradeAt {
+    uv: vec2<f32>,
+    pix: vec2<i32>,
+    size: vec2<f32>,
+    scale: f32,
+};
+
+struct GradeOut {
+    colour: vec3<f32>,
+    kept: vec3<f32>,
+};
+
+// A tone-space colour with its tone luma moved by `delta` (grade/maths.rs `lift`).
+fn grade_lift(c: vec3<f32>, delta: f32) -> vec3<f32> {
+    let y = luma(c);
+    let ratio = max(y + delta + LIFT_SOFT, 0.0) / max(y + LIFT_SOFT, 1e-4);
+    return (c + LIFT_SOFT) * ratio - LIFT_SOFT;
+}
+
+fn grade_soft(d: f32, limit: f32) -> f32 {
+    return limit * tanh(d / limit);
+}
+
+// Mip `level` of the pyramid at `uv` through a cubic B-spline (four bilinear taps), so the
+// blur has no blocks.
+fn grade_bspline(uv: vec2<f32>, level: u32) -> vec4<f32> {
+    let size = vec2<f32>(textureDimensions(grade_pyr, level));
+    let p = uv * size - 0.5;
+    let i = floor(p);
+    let f = p - i;
+    let f2 = f * f;
+    let f3 = f2 * f;
+    let w0 = (-f3 + 3.0 * f2 - 3.0 * f + 1.0) / 6.0;
+    let w1 = (3.0 * f3 - 6.0 * f2 + 4.0) / 6.0;
+    let w2 = (-3.0 * f3 + 3.0 * f2 + 3.0 * f + 1.0) / 6.0;
+    let w3 = f3 / 6.0;
+    let g0 = w0 + w1;
+    let g1 = w2 + w3;
+    let c0 = (i - 0.5 + w1 / g0) / size;
+    let c1 = (i + 1.5 + w3 / g1) / size;
+    let l = f32(level);
+    let a = textureSampleLevel(grade_pyr, samp, c0, l) * g0.x + textureSampleLevel(grade_pyr, samp, vec2<f32>(c1.x, c0.y), l) * g1.x;
+    let b = textureSampleLevel(grade_pyr, samp, vec2<f32>(c0.x, c1.y), l) * g0.x + textureSampleLevel(grade_pyr, samp, c1, l) * g1.x;
+    return a * g0.y + b * g1.y;
+}
+
+// The pass input blurred by a Gaussian of about `sigma` output pixels (tone space, the least
+// channel in alpha): between two mips, or below mip 0 between the pixel itself (`own`) and mip 0.
+fn grade_blur(uv: vec2<f32>, sigma: f32, own: vec4<f32>) -> vec4<f32> {
+    if sigma <= PYR_SIGMA {
+        return mix(own, grade_bspline(uv, 0u), max(sigma, 0.0) / PYR_SIGMA);
     }
-    let steps = u32(head.x);
+    let top = f32(textureNumLevels(grade_pyr) - 1u);
+    let l = min(log2(sigma / PYR_SIGMA), top);
+    let l0 = floor(l);
+    let a = grade_bspline(uv, u32(l0));
+    if l0 >= top {
+        return a;
+    }
+    return mix(a, grade_bspline(uv, u32(l0) + 1u), l - l0);
+}
+
+fn grade_own(src: vec3<f32>) -> vec4<f32> {
+    let p = tone3(src);
+    return vec4<f32>(p, least(p));
+}
+
+// Sharpening (Detail): the input's tone luma against a Gaussian round it, held under the Detail
+// limit, added to `c` (tone space). d: [gain, limit, radius in video pixels, 0].
+fn grade_sharpen(c: vec3<f32>, src: vec3<f32>, d: vec4<f32>, at: GradeAt) -> vec3<f32> {
+    let s = d.z * at.scale;
+    if s < 0.05 {
+        return c;
+    }
+    let k = i32(min(ceil(2.0 * s), 6.0));
+    let last = vec2<i32>(textureDimensions(grade_in)) - vec2<i32>(1);
+    var sum = 0.0;
+    var weights = 0.0;
+    for (var dy = -k; dy <= k; dy++) {
+        for (var dx = -k; dx <= k; dx++) {
+            let q = clamp(at.pix + vec2<i32>(dx, dy), vec2<i32>(0), last);
+            let w = exp(-f32(dx * dx + dy * dy) / (2.0 * s * s));
+            sum += w * luma(tone3(textureLoad(grade_in, q, 0).rgb));
+            weights += w;
+        }
+    }
+    let diff = luma(tone3(src)) - sum / weights;
+    return grade_lift(c, d.x * grade_soft(diff, d.y));
+}
+
+// Texture: the band of detail between two blurs. d: [gain, limit, fine σ, coarse σ].
+fn grade_texture(c: vec3<f32>, src: vec3<f32>, d: vec4<f32>, at: GradeAt) -> vec3<f32> {
+    let own = grade_own(src);
+    let band = luma(grade_blur(at.uv, d.z * at.scale, own).rgb) - luma(grade_blur(at.uv, d.w * at.scale, own).rgb);
+    return grade_lift(c, d.x * grade_soft(band, d.y));
+}
+
+// Clarity: the pixel against a wide blur round it, mostly in the midtones. d: [gain, limit, σ, 0].
+fn grade_clarity(c: vec3<f32>, src: vec3<f32>, d: vec4<f32>, at: GradeAt) -> vec3<f32> {
+    let own = grade_own(src);
+    let y = luma(own.rgb);
+    let x = 2.0 * y - 1.0;
+    let w = clamp(1.0 - 0.75 * x * x, 0.25, 1.0);
+    let diff = y - luma(grade_blur(at.uv, d.z * at.scale, own).rgb);
+    return grade_lift(c, d.x * w * grade_soft(diff, d.y));
+}
+
+// Dehaze (see grade/maths.rs `dehaze`) on linear `c`. d: [amount, σ, 0, 0].
+fn grade_dehaze(c: vec3<f32>, src: vec3<f32>, d: vec4<f32>, at: GradeAt) -> vec3<f32> {
+    let b = grade_blur(at.uv, d.y * at.scale, grade_own(src));
+    if d.x >= 0.0 {
+        let veil = clamp(min(least(src), untone1(b.a)), 0.0, 0.8);
+        let v = 0.75 * d.x * veil;
+        return max(c - vec3<f32>(v), vec3<f32>(0.0)) / (1.0 - v);
+    }
+    let fog = 0.55 + 0.45 * clamp(untone1(luma(b.rgb)), 0.0, 1.0);
+    return mix(c, vec3<f32>(fog), -0.6 * d.x);
+}
+
+// The post-crop vignette (see grade/maths.rs `vignette_weight`, `vignette`) on linear `c`.
+fn grade_vignette(c: vec3<f32>, src: vec3<f32>, w: vec4<f32>, more: vec4<f32>, at: GradeAt) -> vec3<f32> {
+    let p = (at.uv - 0.5) * 2.0;
+    let circle = p * at.size / min(at.size.x, at.size.y);
+    let q = mix(p, circle, max(w.w, 0.0));
+    let n = 2.0 - 6.0 * min(w.w, 0.0);
+    let dist = pow(pow(abs(q.x), n) + pow(abs(q.y), n), 1.0 / n);
+    let v = grade_smooth(w.y - 0.5 * w.z, w.y + 0.5 * w.z, dist);
+    if w.x < 0.0 {
+        var keep = 0.0;
+        if more.x > 0.0 {
+            let local = untone1(luma(grade_blur(at.uv, more.y * at.scale, grade_own(src)).rgb));
+            keep = more.x * grade_smooth(0.3, 1.0, local);
+        }
+        return c * max(1.0 + w.x * v * (1.0 - keep), 0.0);
+    }
+    let t = tone3(c);
+    let lifted = t + (vec3<f32>(1.0) - t) * (w.x * v);
+    return vec3<f32>(untone1(lifted.r), untone1(lifted.g), untone1(lifted.b));
+}
+
+// Smooth value noise in -1..1 on the lattice of `p`, from the composite's hash, for `seed`.
+fn grade_noise(p: vec2<f32>, seed: u32) -> f32 {
+    let i = floor(p);
+    let f = p - i;
+    let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    let b = vec2<i32>(i);
+    let h00 = dither_noise(bitcast<vec2<u32>>(b), seed).x;
+    let h10 = dither_noise(bitcast<vec2<u32>>(b + vec2<i32>(1, 0)), seed).x;
+    let h01 = dither_noise(bitcast<vec2<u32>>(b + vec2<i32>(0, 1)), seed).x;
+    let h11 = dither_noise(bitcast<vec2<u32>>(b + vec2<i32>(1, 1)), seed).x;
+    return mix(mix(h00, h10, u.x), mix(h01, h11, u.x), u.y) * 2.0 - 1.0;
+}
+
+// Grain on linear `c`: a new pattern each frame (the frame's time is the seed), the same for the
+// same frame. d: [amount, cell in video pixels, roughness, 0].
+fn grade_grain(c: vec3<f32>, d: vec4<f32>, at: GradeAt) -> vec3<f32> {
+    let seed = bitcast<u32>(g.view.w) * 747796405u;
+    let p = (vec2<f32>(at.pix) + 0.5) / max(at.scale, 1e-4) / d.y;
+    let r = d.z;
+    let n1 = grade_noise(p, seed ^ 0x68bc21ebu);
+    let n2 = grade_noise(p * 2.1 + 17.3, seed ^ 0x02e5be93u);
+    let n3 = grade_noise(p * 0.37 + 5.1, seed ^ 0x967a889bu);
+    let n = (n1 + 0.6 * r * n2) * (1.0 + 0.8 * r * n3) / (1.0 + 0.6 * r);
+    return max(c * exp2(1.2 * d.x * n) + vec3<f32>(0.0015 * d.x * n), vec3<f32>(0.0));
+}
+
+// The gradient map (see grade/maths.rs `gradient_map`) on tone-space `c`.
+fn grade_map(at: u32, amount: f32, c: vec3<f32>) -> vec3<f32> {
+    let y = luma(c);
+    let t = clamp(y, 0.0, 1.0) * f32(MAP_SAMPLES - 1u);
+    let i = min(u32(t), MAP_SAMPLES - 2u);
+    let m = mix(grade_prog[at + 1u + i].xyz, grade_prog[at + 2u + i].xyz, t - f32(i)) * max(y, 1.0);
+    return mix(c, m, amount);
+}
+
+// Segment `seg` of the grade over one linear colour (and the colour a weaker mask started from)
+// at `here`.
+fn run_grade(colour: vec3<f32>, kept: vec3<f32>, here: GradeAt, seg: u32) -> GradeOut {
+    var result: GradeOut;
+    result.colour = colour;
+    result.kept = kept;
+    // Left of the editor's split the picture is shown as it was.
+    if here.uv.x < grade_prog[0].y {
+        return result;
+    }
+    let table = grade_prog[1u + seg];
+    let steps = u32(table.y);
     var c = colour;
     var space = SPACE_LINEAR;
-    var saved = colour;
-    var at = 1u;
+    var saved = kept;
+    var at = u32(table.x);
     for (var k = 0u; k < steps; k++) {
         let h = grade_prog[at];
         let op = u32(h.x);
@@ -253,6 +464,20 @@ fn run_grade(colour: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
             c = grade_wheels(at, c);
         } else if op == OP_DARK_TINT {
             c = grade_dark_tint(grade_prog[at + 1u].xyz, c);
+        } else if op == OP_SHARPEN {
+            c = grade_sharpen(c, colour, grade_prog[at + 1u], here);
+        } else if op == OP_TEXTURE {
+            c = grade_texture(c, colour, grade_prog[at + 1u], here);
+        } else if op == OP_CLARITY {
+            c = grade_clarity(c, colour, grade_prog[at + 1u], here);
+        } else if op == OP_DEHAZE {
+            c = grade_dehaze(c, colour, grade_prog[at + 1u], here);
+        } else if op == OP_VIGNETTE {
+            c = grade_vignette(c, colour, grade_prog[at + 1u], grade_prog[at + 2u], here);
+        } else if op == OP_GRAIN {
+            c = grade_grain(c, grade_prog[at + 1u], here);
+        } else if op == OP_GRADIENT_MAP {
+            c = grade_map(at, h.w, c);
         } else if op == OP_BEGIN {
             saved = c;
         } else if op == OP_END {
@@ -262,5 +487,7 @@ fn run_grade(colour: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
     }
     let out = grade_space(c, space, SPACE_LINEAR);
     // Anything that came out not a number is black, never a speck of garbage.
-    return select(out, vec3<f32>(0.0), out != out);
+    result.colour = select(out, vec3<f32>(0.0), out != out);
+    result.kept = select(saved, vec3<f32>(0.0), saved != saved);
+    return result;
 }

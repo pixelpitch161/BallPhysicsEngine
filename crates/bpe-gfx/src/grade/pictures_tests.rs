@@ -401,3 +401,203 @@ fn calibration_then_hsl_is_not_hsl_then_calibration() {
     let b = draw(&graded(colour, b)).unwrap();
     assert!(!close(centre(&a), centre(&b), 3), "{:?} vs {:?}", centre(&a), centre(&b));
 }
+
+// ---------------------------------------------------------------------------------------------
+// Part 3: area steps (passes), Detail and Effects.
+
+use crate::frame::{GradeDetail, GradeEffects};
+
+/// A grey picture with a grey ball of `radius` in the middle.
+fn ball_on(bg: f32, ball: f32, radius: f32) -> Frame {
+    let mut f = grey(bg);
+    crate::pictures::plain_ball(&mut f, glam::Vec2::ZERO, radius, [ball, ball, ball, 1.0], 0.0);
+    f
+}
+
+fn sharpen(amount: f32) -> GradePanel {
+    GradePanel::Detail(GradeDetail { amount, radius: 1.5, detail: 100.0 })
+}
+
+fn effects(e: GradeEffects) -> GradePanel {
+    GradePanel::Effects(e)
+}
+
+/// The green channel along row `y`.
+fn row(p: &[u8], y: u32) -> Vec<i32> {
+    (0..N).map(|x| at(p, x, y)[1]).collect()
+}
+
+fn mean(p: &[u8]) -> f64 {
+    p.chunks(4).map(|c| c[1] as f64).sum::<f64>() / (N * N) as f64
+}
+
+fn all_close(a: &[u8], b: &[u8], by: i32) -> bool {
+    (0..N).all(|y| (0..N).all(|x| close(at(a, x, y), at(b, x, y), by)))
+}
+
+#[test]
+fn detail_effects_and_basic_presence_at_their_defaults_draw_the_same_bytes() {
+    let frame = ball_on(0.1, 0.6, 12.0);
+    let Some(plain) = draw(&frame) else { return };
+    let defaults = panels(vec![
+        GradePanel::Basic(GradeBasic { texture: 0.0, clarity: -0.0, dehaze: 0.0, ..GradeBasic::default() }),
+        GradePanel::Detail(GradeDetail { radius: 3.0, ..GradeDetail::default() }),
+        effects(GradeEffects { vignette_highlights: 80.0, grain_size: 90.0, ..GradeEffects::default() }),
+    ]);
+    assert!(defaults.is_identity());
+    assert!(plain == draw(&graded(frame, defaults)).unwrap());
+}
+
+#[test]
+fn a_pass_split_leaves_point_steps_as_they_were() {
+    // Sharpening a flat picture changes nothing, so the grade around it must come out the same
+    // in three passes as in one.
+    let frame = flat([0.3, 0.2, 0.1]);
+    let one = panels(vec![GradePanel::Basic(GradeBasic { exposure: 1.0, saturation: -50.0, ..GradeBasic::default() })]);
+    let three = panels(vec![
+        GradePanel::Basic(GradeBasic { exposure: 1.0, ..GradeBasic::default() }),
+        sharpen(150.0),
+        GradePanel::Basic(GradeBasic { saturation: -50.0, ..GradeBasic::default() }),
+        sharpen(150.0),
+    ]);
+    assert_eq!(crate::grade::compile(&three).segments.len(), 3);
+    let Some(a) = draw(&graded(frame.clone(), one)) else { return };
+    let b = draw(&graded(frame, three)).unwrap();
+    assert!(all_close(&a, &b, 1), "{:?} vs {:?}", centre(&a), centre(&b));
+}
+
+#[test]
+fn a_mask_at_half_amount_works_across_a_pass_split() {
+    let mut stack =
+        panels(vec![GradePanel::Basic(GradeBasic { exposure: 1.0, ..GradeBasic::default() }), sharpen(100.0)]);
+    stack.masks[0].amount = 0.5;
+    let Some(half) = draw(&graded(grey(0.2), stack)) else { return };
+    let want = draw(&grey(0.3)).unwrap();
+    assert!(close(centre(&half), centre(&want), 1), "{:?} vs {:?}", centre(&half), centre(&want));
+}
+
+#[test]
+fn the_split_line_holds_with_area_steps() {
+    let stack = GradeStack {
+        split: Some(0.5),
+        ..panels(vec![sharpen(100.0), GradePanel::Basic(GradeBasic { exposure: 2.0, ..GradeBasic::default() })])
+    };
+    let Some(split) = draw(&graded(grey(0.05), stack)) else { return };
+    let plain = draw(&grey(0.05)).unwrap();
+    assert!(close(at(&split, 10, 32), at(&plain, 10, 32), 1));
+    assert!(at(&split, 50, 32)[0] > at(&plain, 50, 32)[0] + 20);
+}
+
+#[test]
+fn sharpening_overshoots_both_sides_of_an_edge_and_leaves_flat_parts() {
+    let frame = ball_on(0.05, 0.5, 14.0);
+    let Some(plain) = draw(&frame) else { return };
+    let sharp = draw(&graded(frame, panels(vec![sharpen(150.0)]))).unwrap();
+    let (p, s) = (row(&plain, 32), row(&sharp, 32));
+    let (pmax, pmin) = (*p.iter().max().unwrap(), *p.iter().min().unwrap());
+    let (smax, smin) = (*s.iter().max().unwrap(), *s.iter().min().unwrap());
+    assert!(smax > pmax + 4 && smin < pmin - 4, "plain {pmin}..{pmax}, sharpened {smin}..{smax}");
+    assert!(close(at(&sharp, 2, 2), at(&plain, 2, 2), 1), "the background far off is untouched");
+    assert!(close(centre(&sharp), centre(&plain), 2), "the ball's flat middle is nearly untouched");
+}
+
+#[test]
+fn clarity_widens_or_narrows_the_difference_between_a_ball_and_its_surround() {
+    let frame = ball_on(0.1, 0.3, 14.0);
+    let clarity = |c: f32| panels(vec![GradePanel::Basic(GradeBasic { clarity: c, ..GradeBasic::default() })]);
+    let Some(plain) = draw(&frame) else { return };
+    let up = draw(&graded(frame.clone(), clarity(100.0))).unwrap();
+    let down = draw(&graded(frame, clarity(-100.0))).unwrap();
+    let gap = |p: &[u8]| centre(p)[1] - at(p, 3, 3)[1];
+    assert!(gap(&up) > gap(&plain) + 6, "{} vs {}", gap(&up), gap(&plain));
+    assert!(gap(&down) < gap(&plain) - 6, "{} vs {}", gap(&down), gap(&plain));
+}
+
+#[test]
+fn texture_brings_out_or_smooths_small_detail() {
+    let frame = ball_on(0.1, 0.4, 2.5);
+    let texture = |t: f32| panels(vec![GradePanel::Basic(GradeBasic { texture: t, ..GradeBasic::default() })]);
+    let Some(plain) = draw(&frame) else { return };
+    let up = draw(&graded(frame.clone(), texture(100.0))).unwrap();
+    let down = draw(&graded(frame, texture(-100.0))).unwrap();
+    assert!(centre(&up)[1] > centre(&plain)[1] + 3, "{:?} vs {:?}", centre(&up), centre(&plain));
+    assert!(centre(&down)[1] < centre(&plain)[1] - 3, "{:?} vs {:?}", centre(&down), centre(&plain));
+}
+
+#[test]
+fn dehaze_clears_a_hazy_grey_keeps_white_and_minus_fogs_black() {
+    let dehaze = |d: f32| panels(vec![GradePanel::Basic(GradeBasic { dehaze: d, ..GradeBasic::default() })]);
+    let Some(plain) = draw(&grey(0.4)) else { return };
+    let cleared = draw(&graded(grey(0.4), dehaze(100.0))).unwrap();
+    assert!(centre(&cleared)[1] < centre(&plain)[1] - 20, "{:?}", centre(&cleared));
+    let white = draw(&graded(grey(1.0), dehaze(100.0))).unwrap();
+    assert_eq!(centre(&white), [255; 3]);
+    let fogged = draw(&graded(grey(0.0), dehaze(-100.0))).unwrap();
+    assert!(centre(&fogged)[1] > 100, "{:?}", centre(&fogged));
+}
+
+#[test]
+fn the_vignette_darkens_or_lightens_the_corners_and_highlights_keep_bright_ones() {
+    let vignette = |amount: f32, highlights: f32| {
+        panels(vec![effects(GradeEffects {
+            vignette_amount: amount,
+            vignette_highlights: highlights,
+            ..GradeEffects::default()
+        })])
+    };
+    let Some(plain) = draw(&grey(0.3)) else { return };
+    let dark = draw(&graded(grey(0.3), vignette(-100.0, 0.0))).unwrap();
+    assert!(close(centre(&dark), centre(&plain), 1));
+    assert!(at(&dark, 0, 0)[1] < 20, "{:?}", at(&dark, 0, 0));
+    let light = draw(&graded(grey(0.3), vignette(100.0, 0.0))).unwrap();
+    assert!(at(&light, 0, 0)[1] > 245, "{:?}", at(&light, 0, 0));
+    // A bright picture: without Highlights its corners go dark, with them they stay.
+    let bright = draw(&graded(grey(2.0), vignette(-100.0, 0.0))).unwrap();
+    let kept = draw(&graded(grey(2.0), vignette(-100.0, 100.0))).unwrap();
+    assert!(at(&bright, 0, 0)[1] < 100 && at(&kept, 0, 0)[1] == 255, "{:?} {:?}", at(&bright, 0, 0), at(&kept, 0, 0));
+}
+
+#[test]
+fn grain_is_the_same_for_the_same_frame_and_new_for_another() {
+    let grain = panels(vec![effects(GradeEffects { grain_amount: 60.0, ..GradeEffects::default() })]);
+    let frame = graded(grey(0.2), grain);
+    let Some(a) = draw(&frame) else { return };
+    let b = draw(&frame).unwrap();
+    assert!(a == b, "the same frame drew different grain");
+    let later = draw(&Frame { time: 1.0 / 60.0, ..frame.clone() }).unwrap();
+    assert!(a != later, "the next frame has the same grain");
+    let plain = draw(&grey(0.2)).unwrap();
+    let moved = (0..N * N).filter(|i| a[(*i * 4) as usize] != plain[(*i * 4) as usize]).count();
+    assert!(moved > (N * N / 2) as usize, "only {moved} pixels have grain");
+    assert!((mean(&a) - mean(&plain)).abs() < 2.0, "{} vs {}", mean(&a), mean(&plain));
+}
+
+#[test]
+fn the_gradient_map_recolours_a_grey_by_its_brightness() {
+    let map = GradeEffects {
+        map: bpe_core::Gradient::even(&[bpe_core::Color::rgb(0, 0, 0), bpe_core::Color::rgb(255, 0, 0)]),
+        map_amount: 100.0,
+        ..GradeEffects::default()
+    };
+    let Some(red) = draw(&graded(grey(0.18), panels(vec![effects(map)]))) else { return };
+    let c = centre(&red);
+    assert!(c[0] > c[1] + 60 && c[1] <= 2 && c[2] <= 2, "{c:?}");
+}
+
+#[test]
+fn two_area_passes_each_build_their_pyramid() {
+    // Clarity, then a point step, then Clarity again: two pyramids, three passes.
+    let frame = ball_on(0.1, 0.3, 14.0);
+    let clarity = GradeBasic { clarity: 60.0, ..GradeBasic::default() };
+    let twice = panels(vec![
+        GradePanel::Basic(clarity.clone()),
+        GradePanel::Basic(GradeBasic { exposure: 0.2, ..GradeBasic::default() }),
+        GradePanel::Basic(clarity),
+    ]);
+    let p = crate::grade::compile(&twice);
+    assert_eq!(p.segments.iter().filter(|s| s.pyramid).count(), 2);
+    let Some(plain) = draw(&frame) else { return };
+    let graded = draw(&graded(frame, twice)).unwrap();
+    let gap = |p: &[u8]| centre(p)[1] - at(p, 3, 3)[1];
+    assert!(gap(&graded) > gap(&plain) + 6);
+}

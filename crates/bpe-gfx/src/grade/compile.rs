@@ -1,6 +1,8 @@
-//! The stack as the program the composite runs: a list of steps, each in the space it works in.
+//! The stack as the program the grade passes run: a list of steps, each in the space it works in,
+//! cut into segments where an area step needs the pixels around it.
 //!
-//! Word 0 is the header (`[steps, split, 0, 0]`). Each step starts with `[op, space, words, extra]`
+//! Word 0 is the header (`[segments, split, 0, 0]`), then one word per segment (`[first word,
+//! steps, needs the pyramid (0/1), 0]`). Each step starts with `[op, space, words, extra]`
 //! (`words` counting the header) and its data follows:
 //! - [`OP_MATRIX`] (linear): three rows of a 3×3 matrix.
 //! - [`OP_CURVE`] (tone): the slope at 0 per channel, then [`CURVE_SAMPLES`] offsets from the
@@ -13,33 +15,83 @@
 //!   `maths::PickWords`).
 //! - [`OP_WHEELS`] (Oklab): Colour Grading, five words (see `maths::WheelsWords`).
 //! - [`OP_DARK_TINT`] (linear): Calibration's Shadows Tint, the gain on the darks.
+//! - Area steps, each first in its segment or after other area steps:
+//!   [`OP_SHARPEN`] (tone) `[gain, limit, σ, 0]`; [`OP_TEXTURE`] (tone) `[gain, limit, σ fine,
+//!   σ coarse]`; [`OP_CLARITY`] (tone) `[gain, limit, σ, 0]`; [`OP_DEHAZE`] (linear) `[amount, σ, 0,
+//!   0]`; σ in pixels of the video.
+//! - [`OP_VIGNETTE`] (linear): `[amount, middle, width, roundness]`, `[highlights, σ, 0, 0]`; an
+//!   area step when its Highlights work.
+//! - [`OP_GRAIN`] (linear): `[amount, cell, roughness, 0]`.
+//! - [`OP_GRADIENT_MAP`] (tone): `extra` is the amount, then [`MAP_SAMPLES`] colours (tone space).
 
 use super::maths::{self, ToneCurves};
 use super::*;
 use crate::frame::{
-    GradeBasic, GradeCalibration, GradeColourGrading, GradeHsl, GradeMask, GradePanel, GradePointColour, GradeStack,
-    GradeToneCurve,
+    GradeBasic, GradeCalibration, GradeColourGrading, GradeDetail, GradeEffects, GradeHsl, GradeMask, GradePanel,
+    GradePointColour, GradeStack, GradeToneCurve,
 };
 
 /// The compiled grade.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Program {
     pub words: Vec<[f32; 4]>,
     pub steps: u32,
+    /// What each pass runs, in order: one for a grade without area steps.
+    pub segments: Vec<Segment>,
 }
 
-impl Program {
-    /// Whether the program does nothing (the composite then skips the grade).
-    pub fn is_empty(&self) -> bool {
-        self.steps == 0
+/// One pass's share of the program.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Segment {
+    /// The word its first step starts at.
+    pub first: u32,
+    pub steps: u32,
+    /// Its area steps read the blur pyramid of the pass's input.
+    pub pyramid: bool,
+}
+
+/// What kind of step: area steps start a segment (sharing it with area steps straight before).
+#[derive(Clone, Copy, PartialEq)]
+enum Reach {
+    Point,
+    /// An area step; `true` when it reads the pyramid.
+    Area(bool),
+}
+
+/// The program as it is built: steps in `body`, segments starting at body words.
+struct Builder {
+    body: Vec<[f32; 4]>,
+    steps: u32,
+    segments: Vec<Segment>,
+    after_area: bool,
+}
+
+impl Builder {
+    fn step(&mut self, op: u32, space: u32, extra: f32, data: impl IntoIterator<Item = [f32; 4]>) {
+        self.step_reaching(Reach::Point, op, space, extra, data);
     }
 
-    fn step(&mut self, op: u32, space: u32, extra: f32, data: impl IntoIterator<Item = [f32; 4]>) {
-        let at = self.words.len();
-        self.words.push([op as f32, space as f32, 0.0, extra]);
-        self.words.extend(data);
-        self.words[at][2] = (self.words.len() - at) as f32;
+    fn step_reaching(
+        &mut self,
+        reach: Reach,
+        op: u32,
+        space: u32,
+        extra: f32,
+        data: impl IntoIterator<Item = [f32; 4]>,
+    ) {
+        if let Reach::Area(pyramid) = reach {
+            if !self.after_area {
+                self.segments.push(Segment { first: self.body.len() as u32, steps: 0, pyramid: false });
+            }
+            self.segments.last_mut().expect("one at least").pyramid |= pyramid;
+        }
+        self.after_area = reach != Reach::Point;
+        let at = self.body.len();
+        self.body.push([op as f32, space as f32, 0.0, extra]);
+        self.body.extend(data);
+        self.body[at][2] = (self.body.len() - at) as f32;
         self.steps += 1;
+        self.segments.last_mut().expect("one at least").steps += 1;
     }
 
     /// The tone curve `f` (tone value to tone value, per channel) as a step.
@@ -65,6 +117,20 @@ impl Program {
         }
         if !b.tone_identity() {
             self.curve(|p| [maths::basic_tone(p, b); 3]);
+        }
+        // Presence's area sliders, together so they share one pass and one pyramid.
+        let unit = |v: f32| if v.is_finite() { (v / 100.0).clamp(-1.0, 1.0) } else { 0.0 };
+        let (texture, clarity, dehaze) = (unit(b.texture), unit(b.clarity), unit(b.dehaze));
+        if texture != 0.0 {
+            let data = [[1.2 * texture, 0.1, TEXTURE_FINE, TEXTURE_COARSE]];
+            self.step_reaching(Reach::Area(true), OP_TEXTURE, SPACE_TONE, 0.0, data);
+        }
+        if clarity != 0.0 {
+            let data = [[0.9 * clarity, 0.15, CLARITY_BLUR, 0.0]];
+            self.step_reaching(Reach::Area(true), OP_CLARITY, SPACE_TONE, 0.0, data);
+        }
+        if dehaze != 0.0 {
+            self.step_reaching(Reach::Area(true), OP_DEHAZE, SPACE_LINEAR, 0.0, [[dehaze, DEHAZE_BLUR, 0.0, 0.0]]);
         }
         if !b.colour_identity() {
             let (v, s) = ((b.vibrance / 100.0).clamp(-1.0, 1.0), (b.saturation / 100.0).clamp(-1.0, 1.0));
@@ -120,6 +186,38 @@ impl Program {
         }
     }
 
+    fn detail(&mut self, d: &GradeDetail) {
+        let ok = |v: f32, lo: f32, hi: f32, or: f32| if v.is_finite() { v.clamp(lo, hi) } else { or };
+        let amount = ok(d.amount, 0.0, 150.0, 0.0) / 100.0;
+        if amount == 0.0 {
+            return;
+        }
+        let limit = maths::sharpen_limit(ok(d.detail, 0.0, 100.0, 25.0) as f64) as f32;
+        let data = [[amount, limit, ok(d.radius, 0.5, 3.0, 1.0), 0.0]];
+        self.step_reaching(Reach::Area(false), OP_SHARPEN, SPACE_TONE, 0.0, data);
+    }
+
+    fn effects(&mut self, e: &GradeEffects) {
+        let unit = |v: f32| if v.is_finite() { (v / 100.0).clamp(0.0, 1.0) } else { 0.0 };
+        let map = unit(e.map_amount);
+        if map > 0.0 {
+            let row = maths::gradient_row(e).into_iter().map(|c| [c[0] as f32, c[1] as f32, c[2] as f32, 0.0]);
+            self.step(OP_GRADIENT_MAP, SPACE_TONE, map, row);
+        }
+        let w = maths::vignette_words(e).map(|v| v as f32);
+        if w[0] != 0.0 {
+            let highlights = unit(e.vignette_highlights);
+            // Highlights only work under a darkening vignette, and need the brightness round a pixel.
+            let reach = if highlights > 0.0 && w[0] < 0.0 { Reach::Area(true) } else { Reach::Point };
+            self.step_reaching(reach, OP_VIGNETTE, SPACE_LINEAR, 0.0, [w, [highlights, VIGNETTE_BLUR, 0.0, 0.0]]);
+        }
+        let grain = unit(e.grain_amount);
+        if grain > 0.0 {
+            let cell = 1.0 + 3.0 * unit(e.grain_size);
+            self.step(OP_GRAIN, SPACE_LINEAR, 0.0, [[grain, cell, unit(e.grain_roughness), 0.0]]);
+        }
+    }
+
     fn mask(&mut self, m: &GradeMask) {
         let amount = if m.amount.is_finite() { m.amount.clamp(0.0, 1.0) } else { 0.0 };
         if amount <= 0.0 || m.panels.iter().all(GradePanel::is_identity) {
@@ -136,6 +234,8 @@ impl Program {
                 GradePanel::Hsl(h) => self.hsl(h),
                 GradePanel::PointColour(p) => self.point_colour(p),
                 GradePanel::ColourGrading(g) => self.colour_grading(g),
+                GradePanel::Detail(d) => self.detail(d),
+                GradePanel::Effects(e) => self.effects(e),
                 GradePanel::Calibration(c) => self.calibration(c),
             }
         }
@@ -148,13 +248,25 @@ impl Program {
 /// The step of the slope at 0 worked out from.
 const SLOPE_STEP: f64 = 1e-4;
 
+impl Program {
+    /// Whether the program does nothing (the composite then skips the grade).
+    pub fn is_empty(&self) -> bool {
+        self.steps == 0
+    }
+}
+
 /// The program for `stack`: its masks in order, panels at their defaults left out.
 pub fn compile(stack: &GradeStack) -> Program {
-    let mut program = Program { words: vec![[0.0; 4]], steps: 0 };
+    let mut b = Builder { body: Vec::new(), steps: 0, segments: vec![Segment::default()], after_area: false };
     for m in &stack.masks {
-        program.mask(m);
+        b.mask(m);
     }
     let split = stack.split.filter(|s| s.is_finite()).map_or(0.0, |s| s.clamp(0.0, 1.0));
-    program.words[0] = [program.steps as f32, split, 0.0, 0.0];
-    program
+    let start = 1 + b.segments.len() as u32;
+    let segments: Vec<Segment> = b.segments.iter().map(|s| Segment { first: s.first + start, ..*s }).collect();
+    let mut words = Vec::with_capacity(start as usize + b.body.len());
+    words.push([segments.len() as f32, split, 0.0, 0.0]);
+    words.extend(segments.iter().map(|s| [s.first as f32, s.steps as f32, if s.pyramid { 1.0 } else { 0.0 }, 0.0]));
+    words.extend(b.body);
+    Program { words, steps: b.steps, segments }
 }

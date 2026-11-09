@@ -53,6 +53,8 @@ fn a_new_grade_is_the_whole_picture_with_basic_then_tone_curve_at_their_defaults
             (HSL.to_string(), "HSL / Colour".to_string()),
             (POINT_COLOUR.to_string(), "Point Colour".to_string()),
             (COLOUR_GRADING.to_string(), "Colour Grading".to_string()),
+            (DETAIL.to_string(), "Detail".to_string()),
+            (EFFECTS.to_string(), "Effects".to_string()),
             (CALIBRATION.to_string(), "Calibration".to_string()),
         ]
     );
@@ -97,7 +99,7 @@ fn add_panel_makes_numbered_copies_and_reset_order_puts_them_after_their_first()
     let second = add_panel(&mut scene, reg, whole, TONE_CURVE).unwrap();
     let third_basic = add_panel(&mut scene, reg, whole, BASIC).unwrap();
     let names: Vec<String> = kinds(&scene).into_iter().map(|(_, n)| n).collect();
-    let colour = ["HSL / Colour", "Point Colour", "Colour Grading", "Calibration"];
+    let colour = ["HSL / Colour", "Point Colour", "Colour Grading", "Detail", "Effects", "Calibration"];
     let with = |names: &[&str]| names.iter().chain(&colour).map(|n| n.to_string()).collect::<Vec<_>>();
     let mut want = vec!["Basic", "Tone Curve"];
     want.extend(colour);
@@ -179,7 +181,7 @@ fn the_colour_panels_reach_the_stack_with_their_values() {
     let (kit, mut scene) = graded();
     let whole = whole_of(card(&scene)).unwrap();
     let ids: Vec<LayerId> = panels_of(card(&scene), whole).iter().map(|l| l.id).collect();
-    let (hsl, point, wheels, calibration) = (ids[2], ids[3], ids[4], ids[5]);
+    let (hsl, point, wheels, calibration) = (ids[2], ids[3], ids[4], ids[7]);
     let params = &mut scene.card_mut(ThingId::ROOT, SlotId::Grade).unwrap().params;
     params.set(&format!("{hsl}/blue_saturation"), Value::Number(-100.0));
     params.set(&format!("{hsl}/red_hue"), Value::Number(20.0));
@@ -205,7 +207,7 @@ fn the_colour_panels_reach_the_stack_with_their_values() {
     assert!(
         matches!(&panels[4], GradePanel::ColourGrading(g) if g.shadows.hue == 210.0 && g.shadows.saturation == 30.0 && g.blending == 50.0)
     );
-    assert!(matches!(&panels[5], GradePanel::Calibration(c) if c.red_hue == -15.0));
+    assert!(matches!(&panels[7], GradePanel::Calibration(c) if c.red_hue == -15.0));
 }
 
 #[test]
@@ -221,4 +223,33 @@ fn point_colour_s_free_slot_is_the_first_unused_one() {
     assert_eq!(p.free_slot(), None);
     assert_eq!(pick_prefix(0), "pick1_");
     assert!(PointColourPanel::defs().iter().any(|d| d.key == "pick8_range" && d.default == Value::Number(50.0)));
+}
+
+#[test]
+fn presence_detail_and_effects_reach_the_stack_with_their_values() {
+    let (kit, mut scene) = graded();
+    let whole = whole_of(card(&scene)).unwrap();
+    let ids: Vec<LayerId> = panels_of(card(&scene), whole).iter().map(|l| l.id).collect();
+    let (basic, detail, effects) = (ids[0], ids[5], ids[6]);
+    let map = bpe_core::Gradient::even(&[bpe_core::Color::rgb(20, 0, 60), bpe_core::Color::rgb(255, 200, 0)]);
+    let params = &mut scene.card_mut(ThingId::ROOT, SlotId::Grade).unwrap().params;
+    params.set(&format!("{basic}/clarity"), Value::Number(35.0));
+    params.set(&format!("{basic}/dehaze"), Value::Number(-20.0));
+    params.set(&format!("{detail}/amount"), Value::Number(80.0));
+    params.set(&format!("{detail}/radius"), Value::Number(2.0));
+    params.set(&format!("{effects}/grain_amount"), Value::Number(30.0));
+    params.set(&format!("{effects}/map"), Value::Gradient(map.clone()));
+    params.set(&format!("{effects}/map_amount"), Value::Number(40.0));
+    let s = stack_of(&kit, &scene);
+    let panels = &s.masks[0].panels;
+    assert!(matches!(&panels[0], GradePanel::Basic(b) if b.clarity == 35.0 && b.dehaze == -20.0 && b.texture == 0.0));
+    assert!(matches!(&panels[5], GradePanel::Detail(d) if d.amount == 80.0 && d.radius == 2.0 && d.detail == 25.0));
+    assert!(
+        matches!(&panels[6], GradePanel::Effects(e) if e.grain_amount == 30.0 && e.map_amount == 40.0 && e.map == map
+            && e.vignette_midpoint == 50.0 && e.grain_size == 25.0)
+    );
+    assert!(!s.is_identity());
+    // The panels' defaults are the frame's defaults.
+    assert_eq!(DetailPanel::default().gpu(), bpe_gfx::GradeDetail::default());
+    assert_eq!(EffectsPanel::default().gpu(), bpe_gfx::GradeEffects::default());
 }

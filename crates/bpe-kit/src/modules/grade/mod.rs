@@ -7,7 +7,8 @@
 //!
 //! - `basic.rs`: the Basic panel; `tone_curve.rs`: the Tone Curve panel;
 //! - `hsl.rs`: HSL / Colour; `point_colour.rs`: Point Colour; `colour_grading.rs`: Colour Grading's
-//!   wheels; `calibration.rs`: Calibration;
+//!   wheels; `detail.rs`: Detail (sharpening); `effects.rs`: Effects (vignette, grain, gradient
+//!   map); `calibration.rs`: Calibration;
 //! - here: the kinds, the starting card, adding and ordering panels, and the stack the scene's
 //!   draw puts on the frame ([`stack`]).
 
@@ -19,6 +20,8 @@ use bpe_core::{
 pub mod basic;
 pub mod calibration;
 pub mod colour_grading;
+pub mod detail;
+pub mod effects;
 pub mod hsl;
 pub mod point_colour;
 #[cfg(test)]
@@ -28,6 +31,8 @@ pub mod tone_curve;
 pub use basic::BasicPanel;
 pub use calibration::CalibrationPanel;
 pub use colour_grading::ColourGradingPanel;
+pub use detail::DetailPanel;
+pub use effects::EffectsPanel;
 pub use hsl::HslPanel;
 pub use point_colour::{PICKS, PointColourPanel, PointPick, pick_prefix};
 pub use tone_curve::{CURVE_KEYS, CurveMode, ToneCurvePanel};
@@ -42,11 +47,13 @@ pub const TONE_CURVE: &str = "grade.tone_curve";
 pub const HSL: &str = "grade.hsl";
 pub const POINT_COLOUR: &str = "grade.point_colour";
 pub const COLOUR_GRADING: &str = "grade.colour_grading";
+pub const DETAIL: &str = "grade.detail";
+pub const EFFECTS: &str = "grade.effects";
 pub const CALIBRATION: &str = "grade.calibration";
 
 /// Lightroom Classic's panel order: a mask's panels start in it, and Reset order puts them back
-/// in it. Later parts add their panels in place (Detail and Effects go before Calibration).
-pub const PANEL_ORDER: [&str; 6] = [BASIC, TONE_CURVE, HSL, POINT_COLOUR, COLOUR_GRADING, CALIBRATION];
+/// in it.
+pub const PANEL_ORDER: [&str; 8] = [BASIC, TONE_CURVE, HSL, POINT_COLOUR, COLOUR_GRADING, DETAIL, EFFECTS, CALIBRATION];
 
 /// The Grade card's own settings.
 #[derive(Clone, Debug, PartialEq, Settings)]
@@ -160,7 +167,7 @@ impl LayerKind for PanelKind {
 }
 
 /// Every panel kind, in Lightroom's order.
-pub fn panel_kinds() -> [PanelKind; 6] {
+pub fn panel_kinds() -> [PanelKind; 8] {
     [
         PanelKind {
             id: BASIC,
@@ -191,6 +198,18 @@ pub fn panel_kinds() -> [PanelKind; 6] {
             name: "Colour Grading",
             help: "Colour wheels tinting the shadows, midtones and highlights, and the whole picture.",
             defs: ColourGradingPanel::defs,
+        },
+        PanelKind {
+            id: DETAIL,
+            name: "Detail",
+            help: "Sharpening: how strongly, how wide and how fine the sharpened detail is.",
+            defs: DetailPanel::defs,
+        },
+        PanelKind {
+            id: EFFECTS,
+            name: "Effects",
+            help: "The post-crop vignette, film grain that moves with the video, and the gradient map.",
+            defs: EffectsPanel::defs,
         },
         PanelKind {
             id: CALIBRATION,
@@ -304,6 +323,8 @@ pub fn stack(card: Option<&ResolvedSlot>) -> bpe_gfx::GradeStack {
                         COLOUR_GRADING => {
                             Some(bpe_gfx::GradePanel::ColourGrading(ColourGradingPanel::from_params(&params).gpu()))
                         }
+                        DETAIL => Some(bpe_gfx::GradePanel::Detail(DetailPanel::from_params(&params).gpu())),
+                        EFFECTS => Some(bpe_gfx::GradePanel::Effects(EffectsPanel::from_params(&params).gpu())),
                         CALIBRATION => {
                             Some(bpe_gfx::GradePanel::Calibration(CalibrationPanel::from_params(&params).gpu()))
                         }
