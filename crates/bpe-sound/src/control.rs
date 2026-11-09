@@ -249,7 +249,7 @@ impl ControlSampler {
         let heard = shapes
             .iter()
             .map(|s| Heard {
-                filter: HitFilter::new(s.spec.thing, 0.0, 0.0, s.spec.heard_from.clone()),
+                filter: HitFilter::new(s.spec.thing, 0.0, 0.0, s.spec.heard_from.clone()).hearing(s.spec.balls),
                 done: 0,
                 last: None,
                 hits: Vec::new(),
@@ -350,10 +350,15 @@ impl Shape {
         }
         let per_step = SAMPLE_RATE as f64 / world.steps_per_second.max(1) as f64;
         let thing = self.spec.thing;
-        // In sample order, as the engine hears them (hits can land out of order within a step).
+        // In sample order, as the engine hears them (hits can land out of order within a step):
+        // a rule's note on this thing, and whatever else reaches the voices (the filter keeps the
+        // thing's own, W10).
         let mut new: Vec<(u64, &bpe_runtime::Event)> = events[h.done..]
             .iter()
-            .filter(|e| matches!(e.kind, EventKind::Hit | EventKind::Note) && e.b.map(|b| b.thing) == Some(thing))
+            .filter(|e| match e.kind {
+                EventKind::Note => e.b.map(|b| b.thing) == Some(thing),
+                _ => crate::hits::plays(&e.kind) && (e.a.thing == thing || e.b.is_some_and(|b| b.thing == thing)),
+            })
             .map(|e| (hit_sample(e, per_step), e))
             .collect();
         new.sort_by_key(|(sample, _)| *sample);
@@ -369,6 +374,11 @@ impl Shape {
             };
             let curve = crate::voices::StrengthCurve::of_knobs(knob(k::STRENGTH_FULL_AT), knob(k::STRENGTH_CURVE));
             h.filter.set(knob(k::MIN_STRENGTH) / 100.0, knob(k::RETRIGGER) / 1000.0, curve);
+            // A ball's sound hears the hit from its own ball (W10); a rule's note is as it is.
+            let e = &match e.kind {
+                EventKind::Note => e.clone(),
+                _ => h.filter.seen(e),
+            };
             let hit = BlockHit { offset: 0, event: e.clone() };
             // A rule's note (rules part 6) passes no filter: its velocity is its strength.
             let accepted = match e.kind {

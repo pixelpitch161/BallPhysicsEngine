@@ -256,12 +256,16 @@ impl BallsSettings {
     }
 }
 
-const SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Motion, SlotId::Bounce, SlotId::Health];
+/// The kind's id.
+pub const KIND: &str = "balls";
+
+/// Sound (W10): its balls' hits play the thing's own sound.
+const SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Motion, SlotId::Bounce, SlotId::Sound, SlotId::Health];
 const DEFAULT_SLOTS: &[SlotId] = &[SlotId::Look, SlotId::Motion, SlotId::Bounce];
 
 impl ThingKind for BallsKind {
     fn id(&self) -> &'static str {
-        "balls"
+        KIND
     }
     fn family(&self) -> &'static str {
         "Bouncers"

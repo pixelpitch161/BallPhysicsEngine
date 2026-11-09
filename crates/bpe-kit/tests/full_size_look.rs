@@ -508,6 +508,48 @@ fn look_shots(reg: &Registry) -> Vec<Shot> {
     out
 }
 
+/// Every ready-made look for balls (a grid of 30, still and moving sideways so trails show) and shapes (a grid of
+/// 18 rounded rectangles), on a plain scene with no gravity.
+fn ready_shots(reg: &Registry) -> Vec<Shot> {
+    use bpe_kit::ready_looks::{Wears, add_with_look, all};
+    let mut balls = Scene::empty(reg);
+    no_gravity(&mut balls);
+    for (i, look) in all().iter().filter(|l| l.wears == Wears::Balls).enumerate() {
+        let id = add_with_look(&mut balls, reg, "balls", ThingId::ROOT, look).expect("a ball look");
+        let t = balls.things.get_mut(&id).unwrap();
+        let mut s = BallsSettings::from_params(&t.params);
+        s.radius = 44.0;
+        s.velocity = Vec2::new(260.0, 0.0);
+        t.params = s.to_params();
+        let (col, row) = ((i % 5) as f32, (i / 5) as f32);
+        t.transform.position = Vec2::new(-400.0 + col * 200.0, -750.0 + row * 300.0);
+    }
+    let mut still = balls.clone();
+    for t in still.things.values_mut().filter(|t| t.kind == "balls") {
+        let mut s = BallsSettings::from_params(&t.params);
+        s.velocity = Vec2::ZERO;
+        t.params = s.to_params();
+    }
+    let mut shapes = Scene::empty(reg);
+    for (i, look) in all().iter().filter(|l| l.wears == Wears::Shape).enumerate() {
+        let id = add_with_look(&mut shapes, reg, "shape", ThingId::ROOT, look).expect("a shape look");
+        let t = shapes.things.get_mut(&id).unwrap();
+        let mut s = ShapeSettings::from_params(&t.params);
+        s.start = bpe_kit::ShapeStart::Ellipse;
+        s.width = 220.0;
+        s.height = 150.0;
+        s.fill = bpe_kit::ShapeFill::Filled;
+        t.params = s.to_params();
+        let (col, row) = ((i % 3) as f32, (i / 3) as f32);
+        t.transform.position = Vec2::new(-340.0 + col * 340.0, -760.0 + row * 300.0);
+    }
+    vec![
+        shot("ready-balls-still", still, vec![0.0]),
+        shot("ready-balls-moving", balls, vec![0.7]),
+        shot("ready-shapes", shapes, vec![0.5]),
+    ]
+}
+
 fn wanted(name: &str, only: &Option<String>) -> bool {
     only.as_ref().is_none_or(|o| o.split(',').any(|o| !o.is_empty() && name.contains(o)))
 }
@@ -549,8 +591,13 @@ fn render_at_full_size() {
             lit.push(shot(format!("{}-{q}", base.name), scene, base.times.clone()));
         }
     }
-    let groups =
-        [("lighting", lit), ("demos", demo_shots(&reg)), ("families", family_shots(&reg)), ("looks", look_shots(&reg))];
+    let groups = [
+        ("lighting", lit),
+        ("demos", demo_shots(&reg)),
+        ("families", family_shots(&reg)),
+        ("looks", look_shots(&reg)),
+        ("ready", ready_shots(&reg)),
+    ];
     let mut count = 0;
     for (group, shots) in groups {
         let mut thumbs = Vec::new();

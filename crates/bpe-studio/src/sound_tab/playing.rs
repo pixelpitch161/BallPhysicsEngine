@@ -88,8 +88,14 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx) {
         if particles {
             return;
         }
+        // A ball's sound hears its own balls: what they must hit to play (W10).
+        let (heard, help) = if super::moments::is_balls(cx) {
+            ("Hits on", "Its balls play only when they hit these")
+        } else {
+            ("Heard from", "Only hits from these balls play")
+        };
         ui.horizontal(|ui| {
-            let label = ui.label(RichText::new("Heard from").small().color(style::MUTED));
+            let label = ui.label(RichText::new(heard).small().color(style::MUTED)).on_hover_text(help);
             let mut target = match cx.get("play_heard_from") {
                 Value::Target(t) => t,
                 _ => bpe_core::Target::Anything,

@@ -425,6 +425,15 @@ pub struct VoiceSettings {
     /// Each burst plays a note.
     #[setting(label = "Bursts", group = "Playing")]
     pub moments_burst: bool,
+    /// A Balls or Emitter thing's sound (W10): an emitter firing one of its balls plays a note.
+    #[setting(label = "Balls fired", group = "Playing")]
+    pub moments_fire: bool,
+    /// One of its balls coming into a catcher plays a note (an emitter: also a ball it catches).
+    #[setting(label = "Balls caught", group = "Playing")]
+    pub moments_catch: bool,
+    /// One of its balls broken by a rule plays a note.
+    #[setting(label = "Balls broken", group = "Playing")]
+    pub moments_break: bool,
     /// The most notes its particles play a second; the strongest are kept.
     #[setting(label = "Most notes a second", range(1, 2000), unit = "per s", group = "Playing", keyframe)]
     pub moments_most: f32,
@@ -534,6 +543,9 @@ impl Default for VoiceSettings {
             moments_land: true,
             moments_born: false,
             moments_burst: false,
+            moments_fire: false,
+            moments_catch: false,
+            moments_break: false,
             moments_most: 30.0,
             moments_strength: MomentStrength::Speed,
             notes_slots: vec![NoteSlot { notes: vec![60], order_clicked: Vec::new() }],
@@ -576,7 +588,7 @@ impl ModuleKind for VoiceKind {
         "Sound"
     }
     fn help(&self) -> &'static str {
-        "The shape's sound: two oscillators, envelopes and the notes its hits play."
+        "The thing's sound: two oscillators, envelopes and the notes its hits play."
     }
     fn slot(&self) -> SlotId {
         SlotId::Sound
@@ -584,12 +596,20 @@ impl ModuleKind for VoiceKind {
     fn settings(&self) -> &'static [SettingDef] {
         VoiceSettings::defs()
     }
-    /// Shapes play hits; Particles things play their particles' moments (particles part 7).
+    /// Shapes play hits; Particles things play their particles' moments (particles part 7);
+    /// Balls and Emitters play their own balls' hits, fires, catches and breaks (W10).
     fn fits(&self, thing_kind: &str) -> bool {
         thing_kind == crate::things::shape::KIND
             || thing_kind == crate::things::particles::KIND
             || thing_kind == crate::things::text::KIND
+            || hears_own_balls(thing_kind)
     }
+}
+
+/// Whether a thing of `thing_kind` has balls of its own whose hits and moments its sound plays
+/// (Balls and Emitters, W10), rather than the hits of balls on it.
+pub fn hears_own_balls(thing_kind: &str) -> bool {
+    thing_kind == crate::things::balls::KIND || thing_kind == crate::things::emitter::KIND
 }
 
 /// The card "Enable sound" adds: Osc A Triangle, Osc B off, ADSR 1 on Osc A Gain (ADSR 2,
@@ -702,12 +722,14 @@ mod tests {
     }
 
     #[test]
-    fn voice_card_fits_only_shapes_and_particles() {
+    fn voice_card_fits_things_that_make_sound() {
         let reg = reg();
         let kind = reg.module(VOICE).unwrap();
         assert_eq!(kind.slot(), SlotId::Sound);
-        assert!(kind.fits("shape") && kind.fits("particles"));
-        for t in ["balls", "camera", "folder", "scene"] {
+        for t in ["shape", "particles", "text", "balls", "emitter"] {
+            assert!(kind.fits(t), "{t}");
+        }
+        for t in ["camera", "folder", "scene", "light", "rig"] {
             assert!(!kind.fits(t), "{t}");
         }
     }

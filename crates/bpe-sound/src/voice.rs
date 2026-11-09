@@ -140,7 +140,10 @@ impl VoiceSource for TestTone {
 
     fn on_block(&mut self, _cx: &BlockCx, hits: &[BlockHit], out_l: &mut [f32; BLOCK], out_r: &mut [f32; BLOCK]) {
         let length = self.length();
-        let mine = |h: &&BlockHit| h.event.a.thing == self.thing || h.event.b.is_some_and(|b| b.thing == self.thing);
+        let mine = |h: &&BlockHit| {
+            crate::hits::touches(&h.event.kind)
+                && (h.event.a.thing == self.thing || h.event.b.is_some_and(|b| b.thing == self.thing))
+        };
         let mut starting = hits.iter().filter(mine).peekable();
         for i in 0..BLOCK {
             while starting.next_if(|h| h.offset as usize <= i).is_some() {

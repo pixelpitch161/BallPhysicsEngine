@@ -293,3 +293,19 @@ air (a known gap). Tests: `bpe-kit/src/air/follow_tests.rs`.
   of the scene changed), changes each setting it can (numbers, whole numbers, switches, choices, points, colours,
   text) one at a time, plays 1.5 s and checks that whatever moved the balls changed the physics fingerprint and
   whatever moved a beside thing's particles changed the beside fingerprint. About 43,000 changes, some 20 s.
+
+## Ready-made looks (E12, 2026-11-08)
+
+`bpe-kit/src/ready_looks/`: 30 ball looks (Clean, Shiny, Neon, Fire, Trippy) and 18 shape looks (Clean, Glow,
+Colour), each a `ReadyLook` whose `build(main colours) -> Recipe` lists existing layer kinds bottom first with only
+their changed values (`Settings::to_params`), sub-layers, the card's own values (a Surface) and `RPulse`s. Nothing new
+is drawn or saved: `apply(scene, reg, thing, look, Colours, How)` turns the recipe into a `CopiedLook` and pastes it
+(`Replace`: `Scene::paste_look`, keeping the group layers and the ball Body's `ball_shape`/`roundness`; `OnTop`:
+`paste_layer` for every layer but the Body, whose sub-layers (Heat glow, Gives off light) go onto the thing's own
+Body with `paste_sub_layer`). `add_with_look` takes the new thing out again if the look can't go on. Pulses aren't in a `CopiedLook`, so they're put on afterwards by the
+layer's place among the top-level, non-group layers (recipes keep Drawn → Around → Reaction order, a test checks).
+`Colours::Mine` passes the thing's own colours (`own_colours`: a ball's Body colours, a shape's lowest Colour layer's;
+none for a shape without one) as the main colour of looks with `takes_colour`. `add_with_look` adds a thing and
+dresses it. `favourites(kind)` feeds the add menu. Tests in `ready_looks/tests.rs` paste every look on Balls, an
+Emitter and a Shape with both colour choices and resolve them without problems, and check every stored key is a real
+setting.

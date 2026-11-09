@@ -687,7 +687,8 @@ impl Fx {
                     (Sidechain::Hits, Some(shape)) => {
                         let mut n = 0;
                         for h in cx.hits {
-                            let on_shape = h.event.a.thing == *shape || h.event.b.is_some_and(|b| b.thing == *shape);
+                            let on_shape = crate::hits::touches(&h.event.kind)
+                                && (h.event.a.thing == *shape || h.event.b.is_some_and(|b| b.thing == *shape));
                             if on_shape && n < MAX_KEY_HITS {
                                 // A rule's note (rules part 6) keys by its velocity.
                                 let s = match h.event.kind {

@@ -259,6 +259,8 @@ pub struct ShapeSpec {
     /// The Distance (its place in `mods.dists`) whose range holds the notes, for In range.
     pub zone: Option<usize>,
     pub heard_from: bpe_core::Target,
+    /// On a Balls or Emitter thing (W10): it hears its own balls, these moments of them.
+    pub balls: Option<super::BallMoments>,
     pub slots: Vec<NoteSlot>,
     /// How hits pick notes and how the slots take turns.
     pub notes: NotesSpec,
@@ -543,7 +545,8 @@ impl ShapeVoice {
             now[k::MIN_STRENGTH] / 100.0,
             now[k::RETRIGGER] / 1000.0,
             spec.heard_from.clone(),
-        );
+        )
+        .hearing(spec.balls);
         // By source: the envelope it is (usize::MAX for other modulators).
         let mut source_env = [usize::MAX; MAX_SOURCES];
         let mut src = [Src::None; MAX_SOURCES];
@@ -1174,6 +1177,8 @@ impl ShapeVoice {
                 self.rule_note(cx, at, sample, hit);
                 continue;
             }
+            // A ball's sound hears the hit from its own ball (W10); a shape's as it is.
+            let hit = &BlockHit { offset: hit.offset, event: self.filter.seen(&hit.event) };
             let Some(strength) = self.filter.accept(hit, sample, cx.world) else { continue };
             let ball = hit.event.a;
             let seed = mix(sample
@@ -1509,6 +1514,7 @@ impl ShapeVoice {
                         }
                         continue;
                     }
+                    let hit = &BlockHit { offset: hit.offset, event: self.filter.seen(&hit.event) };
                     if self.filter.accept(hit, *sample, world).is_none() {
                         continue;
                     }
