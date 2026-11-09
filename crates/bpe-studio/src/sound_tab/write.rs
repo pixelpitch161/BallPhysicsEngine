@@ -157,13 +157,10 @@ pub fn import_midi(scene: &mut Scene, reg: &Registry, id: ThingId, import: &Midi
     write(scene, reg, &at("notes_slots"), Value::Slots(import.slots.clone()), time);
     write(scene, reg, &at("notes_low_octave"), Value::Int(import.low_octave as i64), time);
     write(scene, reg, &at("notes_octaves"), Value::Int(import.octaves as i64), time);
-    if let Some(bpm) = import.bpm {
-        write(scene, reg, &root("tempo"), Value::Number(bpm), time);
-    }
-    if let Some((top, bottom)) = import.time_signature {
-        write(scene, reg, &root("time_top"), Value::Int(top as i64), time);
-        write(scene, reg, &root("time_bottom"), Value::Choice(bottom.to_string()), time);
-    }
+    let (top, bottom) = import.time_signature;
+    write(scene, reg, &root("tempo"), Value::Number(import.bpm), time);
+    write(scene, reg, &root("time_top"), Value::Int(top as i64), time);
+    write(scene, reg, &root("time_bottom"), Value::Choice(bottom.to_string()), time);
     match &import.timing {
         SlotTiming::ByTempo { every, bars } => {
             write(scene, reg, &at("notes_change"), Value::Choice("by_tempo".into()), time);
@@ -375,8 +372,8 @@ mod tests {
             slots: vec![slot(&[60, 64, 67]), slot(&[57, 60, 64])],
             chords: 4,
             left_out: 0,
-            bpm: Some(96.0),
-            time_signature: Some((3, 4)),
+            bpm: 96.0,
+            time_signature: (3, 4),
             tempo_changes: false,
             timing: SlotTiming::ByTempo { every: 2, bars: true },
             low_octave: 4,

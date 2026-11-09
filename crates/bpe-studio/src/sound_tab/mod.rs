@@ -113,10 +113,10 @@ pub enum TabEdit {
         key: String,
         file: sample_panel::LoadedFile,
     },
-    /// Save sound…: the card to a `.ballsound` file the user picks.
-    SaveSound,
-    /// Load sound…: a `.ballsound` file the user picks in place of the card.
-    LoadSound,
+    /// Save sound…: the card to the `.ballsound` file the user picked.
+    SaveSound(std::path::PathBuf),
+    /// Load sound…: the `.ballsound` file the user picked, in place of the card.
+    LoadSound(std::path::PathBuf),
     /// A MIDI file's chords into the slots, its tempo into the scene (W11).
     ImportMidi {
         file: String,
@@ -437,14 +437,18 @@ pub fn show(
                             "Save this sound (its oscillators, layers, modulators, notes and samples) as a file to \
                              load on anything",
                         );
-                        if save.clicked() {
-                            cx.edits.push(TabEdit::SaveSound);
+                        if save.clicked()
+                            && let Some(path) = pick_save_path(cx.scene, id)
+                        {
+                            cx.edits.push(TabEdit::SaveSound(path));
                         }
                     }
                     let load = ui.button("Load sound…").on_hover_text("Load a saved sound in place of this one");
-                    if load.clicked() {
+                    if load.clicked()
+                        && let Some(path) = pick_load_path()
+                    {
                         cx.edits.push(TabEdit::OwnStep);
-                        cx.edits.push(TabEdit::LoadSound);
+                        cx.edits.push(TabEdit::LoadSound(path));
                     }
                 });
                 r.context_menu(|ui| {
@@ -461,13 +465,17 @@ pub fn show(
                     }
                     ui.separator();
                     if ui.add_enabled(card.is_some(), egui::Button::new("Save sound…")).clicked() {
-                        cx.edits.push(TabEdit::SaveSound);
                         ui.close();
+                        if let Some(path) = pick_save_path(cx.scene, id) {
+                            cx.edits.push(TabEdit::SaveSound(path));
+                        }
                     }
                     if ui.button("Load sound…").clicked() {
-                        cx.edits.push(TabEdit::OwnStep);
-                        cx.edits.push(TabEdit::LoadSound);
                         ui.close();
+                        if let Some(path) = pick_load_path() {
+                            cx.edits.push(TabEdit::OwnStep);
+                            cx.edits.push(TabEdit::LoadSound(path));
+                        }
                     }
                 });
             });
@@ -562,6 +570,24 @@ fn body(ui: &mut Ui, inspector: &mut Inspector, cx: &mut TabCx) {
     });
 }
 
+/// Where to save the thing's sound: a file picker, named after the thing.
+fn pick_save_path(scene: &Scene, id: ThingId) -> Option<std::path::PathBuf> {
+    let name = scene.things.get(&id).map(|t| t.name.clone()).unwrap_or_default();
+    rfd::FileDialog::new()
+        .set_title("Save sound")
+        .add_filter("Ball Studio sound", &[write::SOUND_EXTENSION])
+        .set_file_name(format!("{}.{}", crate::export_window::safe_file_name(&name), write::SOUND_EXTENSION))
+        .save_file()
+}
+
+/// A saved sound to load: a file picker.
+fn pick_load_path() -> Option<std::path::PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("Load sound")
+        .add_filter("Ball Studio sound", &[write::SOUND_EXTENSION])
+        .pick_file()
+}
+
 /// A path's file name, for a note.
 fn file_name(path: &std::path::Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
@@ -598,40 +624,25 @@ fn apply(inspector: &mut Inspector, scene: &mut Scene, kit: &Kit, id: ThingId, t
                 None => false,
             },
             TabEdit::LoadSample { key, file } => write::load_sample(scene, reg, id, &key, &file, time),
-            TabEdit::SaveSound => {
-                let name = scene.things.get(&id).map(|t| t.name.clone()).unwrap_or_default();
-                let picked = rfd::FileDialog::new()
-                    .set_title("Save sound")
-                    .add_filter("Ball Studio sound", &[write::SOUND_EXTENSION])
-                    .set_file_name(format!("{name}.{}", write::SOUND_EXTENSION))
-                    .save_file();
-                if let Some(path) = picked {
-                    let note = match write::save_sound(scene, id, &path) {
-                        Ok(()) => (format!("Saved {}.", file_name(&path)), false),
-                        Err(e) => (e, true),
-                    };
-                    inspector.sound.note = Some(TabNote { thing: id, text: note.0, problem: note.1 });
-                }
+            TabEdit::SaveSound(path) => {
+                let (text, problem) = match write::save_sound(scene, id, &path) {
+                    Ok(()) => (format!("Saved {}.", file_name(&path)), false),
+                    Err(e) => (e, true),
+                };
+                inspector.sound.note = Some(TabNote { thing: id, text, problem });
                 false
             }
-            TabEdit::LoadSound => {
-                let picked = rfd::FileDialog::new()
-                    .set_title("Load sound")
-                    .add_filter("Ball Studio sound", &[write::SOUND_EXTENSION])
-                    .pick_file();
-                match picked.map(|path| (write::load_sound(scene, reg, id, &path), path)) {
-                    Some((Ok(()), path)) => {
-                        inspector.sound.note =
-                            Some(TabNote { thing: id, text: format!("Loaded {}.", file_name(&path)), problem: false });
-                        true
-                    }
-                    Some((Err(e), _)) => {
-                        inspector.sound.note = Some(TabNote { thing: id, text: e, problem: true });
-                        false
-                    }
-                    None => false,
+            TabEdit::LoadSound(path) => match write::load_sound(scene, reg, id, &path) {
+                Ok(()) => {
+                    inspector.sound.note =
+                        Some(TabNote { thing: id, text: format!("Loaded {}.", file_name(&path)), problem: false });
+                    true
                 }
-            }
+                Err(text) => {
+                    inspector.sound.note = Some(TabNote { thing: id, text, problem: true });
+                    false
+                }
+            },
             TabEdit::ImportMidi { file, import } => {
                 let said = write::import_midi(scene, reg, id, &import, time);
                 inspector.sound.note =

@@ -28,9 +28,9 @@ pub struct MidiImport {
     pub chords: usize,
     pub left_out: usize,
     /// The file's first tempo (quarter notes a minute), clamped to the scene's 20..300.
-    pub bpm: Option<f64>,
+    pub bpm: f64,
     /// Its first time signature: beats in a bar and beat note (2, 4, 8 or 16).
-    pub time_signature: Option<(u32, u32)>,
+    pub time_signature: (u32, u32),
     /// The tempo changes later in the file (the chords' times follow them; the scene keeps one).
     pub tempo_changes: bool,
     pub timing: SlotTiming,
@@ -141,23 +141,30 @@ pub fn import(bytes: &[u8]) -> Result<MidiImport, String> {
     let slots: Vec<NoteSlot> =
         distinct.iter().take(MAX_SLOTS).map(|n| NoteSlot { notes: n.clone(), order_clicked: Vec::new() }).collect();
 
-    let bpm = tempos.first().map(|(_, us)| (60_000_000.0 / (*us).max(1) as f64).clamp(20.0, 300.0));
+    // A file that says nothing is 120 BPM in 4/4 (MIDI's own default), and the scene is set so too,
+    // so the chords are counted as the scene will play them.
+    let first_bpm = tempos.first().map_or(120.0, |(_, us)| 60_000_000.0 / (*us).max(1) as f64);
+    let bpm = first_bpm.clamp(20.0, 300.0);
     let tempo_changes = tempos.iter().skip(1).any(|(_, us)| Some(*us) != tempos.first().map(|t| t.1));
-    let time_signature = signature.and_then(|(_, num, denom)| {
-        let bottom = 1u32.checked_shl(denom as u32)?;
-        [2, 4, 8, 16].contains(&bottom).then_some(((num as u32).clamp(1, 16), bottom))
-    });
-    let (top, bottom) = time_signature.unwrap_or((4, 4));
+    let time_signature = signature
+        .and_then(|(_, num, denom)| {
+            let bottom = 1u32.checked_shl(denom as u32)?;
+            [2, 4, 8, 16].contains(&bottom).then_some(((num as u32).clamp(1, 16), bottom))
+        })
+        .unwrap_or((4, 4));
+    let (top, bottom) = time_signature;
 
     // Uniform: every chord as long, a whole number of beats, from the start, through the slots
     // in order.
     let first_len = chords[0].1 - chords[0].0;
     let in_order = slot_of.iter().enumerate().all(|(k, s)| *s == k % distinct.len());
-    let even = chords.iter().all(|(s, e, _)| e - s == first_len);
+    // The last chord lasts as long as its notes are held, so only the ones before it count.
+    let even = chords[..chords.len() - 1].iter().all(|(s, e, _)| e - s == first_len);
     let beat_ticks = 4 * ppq;
     let whole_beats = first_len > 0 && (first_len * bottom as u64).is_multiple_of(beat_ticks);
     let beats = if whole_beats { first_len * bottom as u64 / beat_ticks } else { 0 };
-    let uniform = chords[0].0 == 0 && in_order && even && whole_beats && left_out == 0 && !tempo_changes;
+    let uniform =
+        chords[0].0 == 0 && in_order && even && whole_beats && left_out == 0 && !tempo_changes && bpm == first_bpm;
     let timing = if uniform && beats % top as u64 == 0 && beats / top as u64 <= 64 {
         SlotTiming::ByTempo { every: (beats / top as u64) as u32, bars: true }
     } else if uniform && beats <= 64 {
@@ -264,8 +271,8 @@ mod tests {
         assert_eq!(m.slots[0].notes, [60, 64, 67]);
         assert_eq!(m.slots[1].notes, [57, 60, 64]);
         assert_eq!(m.chords, 4);
-        assert_eq!(m.bpm, Some(100.0));
-        assert_eq!(m.time_signature, Some((4, 4)));
+        assert_eq!(m.bpm, 100.0);
+        assert_eq!(m.time_signature, (4, 4));
         assert_eq!(m.timing, SlotTiming::ByTempo { every: 1, bars: true });
         assert_eq!((m.low_octave, m.octaves), (4, 2));
     }
@@ -286,7 +293,7 @@ mod tests {
         notes.extend(chord(3 * 480, 480, &[62, 65]));
         notes.extend(chord(4 * 480, BAR, &[60, 64]));
         let m = import(&file(&[(0, 500_000)], None, &notes)).unwrap();
-        assert_eq!(m.time_signature, None);
+        assert_eq!(m.time_signature, (4, 4), "4/4 when the file says nothing");
         match m.timing {
             SlotTiming::Keys(keys) => assert_eq!(keys, [(0.0, 1), (1.5, 2), (2.0, 1)]),
             other => panic!("{other:?}"),
@@ -299,7 +306,7 @@ mod tests {
         let m = import(&file(&[], None, &notes)).unwrap();
         assert_eq!(m.slots.len(), 1);
         assert_eq!(m.slots[0].notes, [60, 64, 67]);
-        assert_eq!(m.bpm, None);
+        assert_eq!(m.bpm, 120.0);
         assert_eq!(m.timing, SlotTiming::Keys(vec![(0.5, 1)]), "120 BPM when the file says nothing");
     }
 
@@ -332,7 +339,7 @@ mod tests {
         notes.extend(chord(BAR + 480, 480, &[64]));
         let m = import(&file(&[(0, 500_000), (BAR, 1_000_000)], None, &notes)).unwrap();
         assert!(m.tempo_changes);
-        assert_eq!(m.bpm, Some(120.0));
+        assert_eq!(m.bpm, 120.0);
         match m.timing {
             SlotTiming::Keys(keys) => assert_eq!(keys, [(0.0, 1), (2.0, 2), (3.0, 3)]),
             other => panic!("{other:?}"),

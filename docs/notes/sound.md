@@ -211,7 +211,7 @@ sound files hears exactly what it heard before.
   `Arc` through a `Weak`; `decoded()` counts finished decodes and `busy()` says one is running (the editor's
   `follow_bakes` rebuilds the patch on either, as for `WaveBank::baked`).
 - **Sampler** (`bpe-dsp/src/sampler.rs`): `SampleData` (both channels, peaks per 64 frames, mip levels by a 65-tap
-  halfband for samples up to 30 s, picked so a step stays at most 2^0.25), `SamplerVoice` (4-point Hermite, Start,
+  halfband for samples up to 30 s, picked so a step stays at most 2^0.6, about a fifth), `SamplerVoice` (4-point Hermite, Start,
   Loop Off / Forward / Ping-pong between Loop start and end, an equal-power Loop fade on Forward, Reverse, a wait
   before the note's first sample). `Wave::Sample` on Osc A or B (`OscSettings` `sample`, `sample_root`,
   `sample_follow`, `sample_start`, `sample_loop`, `sample_loop_start/end`, `sample_loop_fade`, `sample_reverse`;

@@ -55,9 +55,23 @@ fn open(bytes: &Arc<[u8]>) -> Result<(Box<dyn FormatReader>, u32), String> {
     Ok((reader, id))
 }
 
+/// Runs `f` on a thread of its own, so a damaged file that makes the decoder panic is only a
+/// file the program can't read (and never closes the editor, whose crash hook watches its own
+/// thread).
+fn guarded<T: Send>(f: impl FnOnce() -> Result<T, String> + Send) -> Result<T, String> {
+    std::thread::scope(|s| match std::thread::Builder::new().name("sound file check".into()).spawn_scoped(s, f) {
+        Ok(handle) => handle.join().unwrap_or_else(|_| Err(format!("The file {NOT_A_SOUND}"))),
+        Err(_) => Err("Couldn't start reading the sound file.".into()),
+    })
+}
+
 /// A quick look at `bytes` (no decoding): whether it is a sound file the program reads, and its
 /// length, channels and rate.
 pub fn probe(bytes: &Arc<[u8]>) -> Result<AudioInfo, String> {
+    guarded(|| probe_here(bytes))
+}
+
+fn probe_here(bytes: &Arc<[u8]>) -> Result<AudioInfo, String> {
     let (reader, id) = open(bytes)?;
     let track = reader.tracks().iter().find(|t| t.id == id).expect("the track found");
     let p = &track.codec_params;
@@ -73,6 +87,10 @@ pub fn probe(bytes: &Arc<[u8]>) -> Result<AudioInfo, String> {
 /// Decodes `bytes` to left and right at 48 kHz (mono on both sides; of more than two channels,
 /// the first two), with the copies and peaks [`SampleData`] makes.
 pub fn decode(bytes: &Arc<[u8]>) -> Result<SampleData, String> {
+    guarded(|| decode_here(bytes))
+}
+
+fn decode_here(bytes: &Arc<[u8]>) -> Result<SampleData, String> {
     let (mut reader, id) = open(bytes)?;
     let params = reader.tracks().iter().find(|t| t.id == id).expect("the track found").codec_params.clone();
     let rate = params.sample_rate.ok_or_else(|| format!("The file {NOT_A_SOUND}"))?;
@@ -265,9 +283,10 @@ impl SampleBank {
                     let data = decode(&mine).map(Arc::new);
                     Self::with(|bank| {
                         bank.insert(&mine, data);
+                        // Counted before it stops being busy, so the editor never sees neither.
+                        DECODED.fetch_add(1, Ordering::SeqCst);
                         bank.decoding.retain(|w| !w.upgrade().is_some_and(|b| Arc::ptr_eq(&b, &mine)));
                     });
-                    DECODED.fetch_add(1, Ordering::SeqCst);
                 });
                 if started.is_err() {
                     bank.decoding.retain(|w| !w.upgrade().is_some_and(|b| Arc::ptr_eq(&b, bytes)));
@@ -376,6 +395,23 @@ mod tests {
         assert!(probe(&junk).is_err());
         assert!(decode(&junk).is_err());
         assert!(decode(&Arc::from(&b""[..])).is_err());
+    }
+
+    #[test]
+    fn a_wav_saying_zero_hz_is_refused_not_a_crash() {
+        // The decoder panics on a sample rate of 0; that is a file the program can't read.
+        let mut bytes = wav(440.0, 0.05, 48_000, 1).to_vec();
+        bytes[24..28].copy_from_slice(&0u32.to_le_bytes());
+        let bytes: Arc<[u8]> = bytes.into();
+        assert!(probe(&bytes).is_err());
+        assert!(decode(&bytes).is_err());
+        let held = bytes.clone();
+        let start = std::time::Instant::now();
+        while SampleBank::ready(&held).is_none() {
+            assert!(start.elapsed().as_secs() < 10, "the background read ends");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(SampleBank::ready(&held).unwrap().is_err());
     }
 
     #[test]

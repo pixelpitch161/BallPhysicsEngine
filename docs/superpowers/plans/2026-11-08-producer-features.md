@@ -58,7 +58,7 @@ none of this sounds and looks exactly as before. The physics goldens and the sou
   routes move it per block, as they move a wave.
 - **Playback** (`bpe-dsp/src/sampler.rs`: `SampleData`, `SamplerVoice`, `SamplerParams`): 4-point Hermite
   interpolation. For samples up to 30 s, octave-down copies (mip levels, halfband-filtered, up to 4) are made at
-  decode, and a block reads the level that keeps its own step at most 2^0.25, so pitching up doesn't alias.
+  decode, and a block reads the level that keeps its own step at most 2^0.6 (about a fifth), so pitching up barely aliases and keeps its top end.
   Start is where each note begins. Loop Off plays once and goes silent at the end; Forward jumps from Loop end
   back to Loop start (with Loop fade, the last stretch before Loop end crossfades, equal power, into the stretch
   before Loop start, so the seam doesn't click); Ping-pong runs back and forth. A loop is entered only by playing

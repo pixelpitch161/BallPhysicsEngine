@@ -38,6 +38,9 @@ impl LoadedFile {
 /// Reads `path` for keeping, or says in plain words why it can't be.
 pub fn read_sound_file(path: &std::path::Path) -> Result<LoadedFile, String> {
     let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if std::fs::metadata(path).is_ok_and(|m| m.len() > bpe_sound::audio::MAX_FILE_BYTES as u64) {
+        return Err(format!("{file} is too big (over 200 MB)."));
+    }
     let bytes: Arc<[u8]> = std::fs::read(path).map_err(|e| format!("Couldn't read {file}: {e}"))?.into();
     bpe_sound::audio::probe(&bytes).map_err(|_| format!("{file} {NOT_A_SOUND}"))?;
     Ok(LoadedFile { file, bytes })

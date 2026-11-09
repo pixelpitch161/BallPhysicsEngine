@@ -14,8 +14,8 @@ pub const MIP_UP_TO: usize = 30 * 48_000;
 /// The most copies a sample has: the full one and four octaves down.
 pub const MAX_LEVELS: usize = 5;
 /// How far a copy may be read faster than its own speed before the next copy down is used, in
-/// octaves.
-const LEVEL_SLACK: f64 = 0.25;
+/// octaves (about 1.5 times: up to a fifth up reads the full copy, keeping its top end).
+const LEVEL_SLACK: f64 = 0.6;
 /// Half the taps of the halfband filter the copies are made with.
 const HALF_TAPS: usize = 32;
 
@@ -204,7 +204,9 @@ fn loop_of(data: &SampleData, p: &SamplerParams) -> Option<Loop> {
         return None;
     }
     let n = data.frames as f64;
-    let (ls, le) = (p.loop_start.clamp(0.0, 1.0) * n, p.loop_end.clamp(0.0, 1.0) * n);
+    let (a, b) = (p.loop_start.clamp(0.0, 1.0) * n, p.loop_end.clamp(0.0, 1.0) * n);
+    // Ends set the wrong way round still loop between them.
+    let (ls, le) = (a.min(b), a.max(b));
     if le - ls < 2.0 {
         return None;
     }

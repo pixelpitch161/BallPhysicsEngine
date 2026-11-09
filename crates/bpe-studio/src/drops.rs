@@ -63,6 +63,11 @@ impl Studio {
                 Dropped::Scene => {}
                 Dropped::Font => self.drop_font(&name, bytes()),
                 Dropped::Picture => self.drop_picture(&name, bytes()),
+                Dropped::Sound
+                    if std::fs::metadata(&path).is_ok_and(|m| m.len() > bpe_sound::audio::MAX_FILE_BYTES as u64) =>
+                {
+                    self.report(ProblemKind::File, format!("{name} is too big (over 200 MB)."));
+                }
                 Dropped::Sound => self.drop_song(&name, bytes()),
                 Dropped::Other => self.report(ProblemKind::File, cant_open(&name)),
             }
