@@ -230,14 +230,15 @@ pub fn run_chunks_indexed(specks: &mut [Speck], threads: usize, f: &(dyn Fn(usiz
     }
     let chunks: Vec<(usize, &mut [Speck])> = specks.chunks_mut(CHUNK).enumerate().collect();
     let per = chunks.len().div_ceil(threads);
-    std::thread::scope(|scope| {
+    // On the lasting pool, so no thread is started per pass.
+    rayon::scope(|scope| {
         let mut left = chunks.into_iter();
         loop {
             let group: Vec<(usize, &mut [Speck])> = left.by_ref().take(per).collect();
             if group.is_empty() {
                 break;
             }
-            scope.spawn(move || {
+            scope.spawn(move |_| {
                 for (k, chunk) in group {
                     chunk.iter_mut().enumerate().for_each(|(i, s)| f(k * CHUNK + i, s));
                 }
@@ -270,13 +271,14 @@ pub fn run_chunks_with<T: Send>(
         }
         groups.push(group);
     }
-    std::thread::scope(|scope| {
-        let handles: Vec<_> = groups
-            .into_iter()
-            .map(|group| scope.spawn(move || group.into_iter().map(run).collect::<Vec<T>>()))
-            .collect();
-        handles.into_iter().flat_map(|h| h.join().expect("a particle chunk")).collect()
-    })
+    // Each group fills its own slot, so the results come back in chunk order whoever finishes first.
+    let mut outs: Vec<Vec<T>> = (0..groups.len()).map(|_| Vec::new()).collect();
+    rayon::scope(|scope| {
+        for (group, out) in groups.into_iter().zip(outs.iter_mut()) {
+            scope.spawn(move |_| *out = group.into_iter().map(run).collect());
+        }
+    });
+    outs.into_iter().flatten().collect()
 }
 
 /// Every alive ball in the world, by thing then row, for the particles to meet.

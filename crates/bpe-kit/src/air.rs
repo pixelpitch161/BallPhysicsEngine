@@ -12,8 +12,8 @@
 //! when the camera moves, the cells both places share are kept. Outside the grid the air is the
 //! ambient wind ([`AirSpec::ambient`]). Each step: calm towards the wind, balls stir, heat rises,
 //! swirls are kept, then semi-Lagrangian advection and a Jacobi pressure projection. The work
-//! splits rows into fixed bands on threads, every cell reading only the previous buffers, so any
-//! number of threads gives the same air.
+//! splits rows into fixed bands on a lasting pool of threads (rayon's), every cell reading only the
+//! previous buffers, so any number of threads gives the same air.
 
 use bpe_core::ThingId;
 use bpe_runtime::{Outline, World, wall_velocity};
@@ -431,12 +431,15 @@ impl Air {
 
         // Calm towards the wind.
         let calm = (-fin(self.spec.calm).max(0.0) * DT).exp();
-        for r in 0..rows {
-            for c in 0..cols {
-                let k = r * cols + c;
-                let w = self.spec.ambient(self.centre(c, r), time);
-                self.vel[k] = w + (self.vel[k] - w) * calm;
-            }
+        {
+            let (spec, origin) = (&self.spec, self.origin.as_vec2());
+            let f = |r: usize, row: &mut [Vec2]| {
+                for (c, v) in row.iter_mut().enumerate() {
+                    let w = spec.ambient((Vec2::new(c as f32, r as f32) + origin + 0.5) * h, time);
+                    *v = w + (*v - w) * calm;
+                }
+            };
+            by_rows(&mut self.vel, cols, threads, &f);
         }
 
         // Balls stir the cells round them, in body-row order.
@@ -489,16 +492,21 @@ impl Air {
         // Swirls kept: vorticity confinement.
         let swirls = fin(self.spec.swirls);
         if swirls != 0.0 && cols > 2 && rows > 2 {
-            let curl = curl_of(&self.vel, cols, rows, h);
+            let curl = curl_of(&self.vel, cols, rows, h, threads);
             let at = |c: usize, r: usize| curl[r * cols + c].abs();
-            for r in 1..rows - 1 {
+            // Each cell reads only the curl: the rows can go in any order.
+            let f = |r: usize, row: &mut [Vec2]| {
+                if r == 0 || r == rows - 1 {
+                    return;
+                }
                 for c in 1..cols - 1 {
                     let grad = Vec2::new(at(c + 1, r) - at(c - 1, r), at(c, r + 1) - at(c, r - 1));
                     let Some(n) = grad.try_normalize() else { continue };
                     let w = curl[r * cols + c];
-                    self.vel[r * cols + c] += Vec2::new(n.y * w, -n.x * w) * swirls * h * DT * 8.0;
+                    row[c] += Vec2::new(n.y * w, -n.x * w) * swirls * h * DT * 8.0;
                 }
-            }
+            };
+            by_rows(&mut self.vel, cols, threads, &f);
         }
 
         // Carried along by itself.
@@ -535,16 +543,20 @@ impl Air {
             spec.ambient((Vec2::new(c as f32, r as f32) + origin.as_vec2() + 0.5) * h, time)
         });
 
-        for k in 0..cols * rows {
-            let mut v = new_vel[k];
-            if !v.is_finite() {
-                let (c, r) = (k % cols, k / cols);
-                v = self.spec.ambient(self.centre(c, r), time);
+        let (new_vel, new_heat) = (&new_vel, &new_heat);
+        let f = |r: usize, vel: &mut [Vec2], heat: &mut [f32]| {
+            for c in 0..cols {
+                let k = r * cols + c;
+                let mut v = new_vel[k];
+                if !v.is_finite() {
+                    v = spec.ambient((Vec2::new(c as f32, r as f32) + origin.as_vec2() + 0.5) * h, time);
+                }
+                vel[c] = v.clamp_length_max(ceiling);
+                let t = new_heat[k];
+                heat[c] = if t.is_finite() { t.clamp(0.0, MOST_HEAT) } else { 0.0 };
             }
-            self.vel[k] = v.clamp_length_max(ceiling);
-            let t = new_heat[k];
-            self.heat[k] = if t.is_finite() { t.clamp(0.0, MOST_HEAT) } else { 0.0 };
-        }
+        };
+        by_rows2(&mut self.vel, &mut self.heat, cols, threads, &f);
     }
 
     /// Every cell's middle and velocity, for drawing (row by row).
@@ -572,18 +584,19 @@ where
 
 /// Each cell's curl (how fast the air turns there), with the grid's edge cells' neighbours
 /// clamped.
-fn curl_of(vel: &[Vec2], cols: usize, rows: usize, h: f32) -> Vec<f32> {
+fn curl_of(vel: &[Vec2], cols: usize, rows: usize, h: f32, threads: usize) -> Vec<f32> {
     let at = |c: usize, r: usize| vel[r * cols + c];
     let mut out = vec![0.0; cols * rows];
-    for r in 0..rows {
-        for c in 0..cols {
+    let f = |r: usize, row: &mut [f32]| {
+        for (c, cell) in row.iter_mut().enumerate() {
             let (l, rt) = (c.saturating_sub(1), (c + 1).min(cols - 1));
             let (u, d) = (r.saturating_sub(1), (r + 1).min(rows - 1));
             let dvy_dx = (at(rt, r).y - at(l, r).y) / (h * (rt - l).max(1) as f32);
             let dvx_dy = (at(c, d).x - at(c, u).x) / (h * (d - u).max(1) as f32);
-            out[r * cols + c] = dvy_dx - dvx_dy;
+            *cell = dvy_dx - dvx_dy;
         }
-    }
+    };
+    by_rows(&mut out, cols, threads, &f);
     out
 }
 
@@ -605,9 +618,10 @@ fn by_rows2<A: Send, B: Send>(a: &mut [A], b: &mut [B], cols: usize, threads: us
         return;
     }
     let per = bands(rows, threads);
-    std::thread::scope(|scope| {
+    // On the lasting pool: a step runs this some 25 times, too often to start threads for.
+    rayon::scope(|scope| {
         for (band, (ba, bb)) in a.chunks_mut(per * cols).zip(b.chunks_mut(per * cols)).enumerate() {
-            scope.spawn(move || {
+            scope.spawn(move |_| {
                 for (i, (ra, rb)) in ba.chunks_mut(cols).zip(bb.chunks_mut(cols)).enumerate() {
                     f(band * per + i, ra, rb);
                 }
@@ -626,9 +640,9 @@ fn by_rows<A: Send>(a: &mut [A], cols: usize, threads: usize, f: &(dyn Fn(usize,
         return;
     }
     let per = bands(rows, threads);
-    std::thread::scope(|scope| {
+    rayon::scope(|scope| {
         for (band, ba) in a.chunks_mut(per * cols).enumerate() {
-            scope.spawn(move || {
+            scope.spawn(move |_| {
                 for (i, ra) in ba.chunks_mut(cols).enumerate() {
                     f(band * per + i, ra);
                 }
@@ -679,24 +693,25 @@ fn project(
         {
             let p = &p;
             let div = &div;
+            // The busiest loop of the air: neighbours by index, past the grid's edge 0 and in a solid
+            // cell the cell's own pressure, added in the same order as ever (left, right, up, down).
             let f = |r: usize, out: &mut [f32]| {
+                let row = r * cols;
+                let up = (r > 0).then(|| row - cols);
+                let down = (r + 1 < rows).then(|| row + cols);
                 for (c, cell) in out.iter_mut().enumerate() {
-                    let k = r * cols + c;
+                    let k = row + c;
                     if solid[k] {
                         *cell = 0.0;
                         continue;
                     }
                     let mine = p[k];
-                    let at = |c: i64, r: i64| -> f32 {
-                        if c < 0 || r < 0 || c >= cols as i64 || r >= rows as i64 {
-                            0.0
-                        } else {
-                            let k = r as usize * cols + c as usize;
-                            if solid[k] { mine } else { p[k] }
-                        }
-                    };
-                    let (ci, ri) = (c as i64, r as i64);
-                    *cell = (at(ci - 1, ri) + at(ci + 1, ri) + at(ci, ri - 1) + at(ci, ri + 1) - h * h * div[k]) * 0.25;
+                    let side = |k: usize| if solid[k] { mine } else { p[k] };
+                    let left = if c > 0 { side(k - 1) } else { 0.0 };
+                    let right = if c + 1 < cols { side(k + 1) } else { 0.0 };
+                    let top = up.map_or(0.0, |u| side(u + c));
+                    let bottom = down.map_or(0.0, |d| side(d + c));
+                    *cell = (left + right + top + bottom - h * h * div[k]) * 0.25;
                 }
             };
             by_rows(&mut next, cols, threads, &f);
@@ -711,8 +726,8 @@ fn project(
             if solid[k] { mine } else { p[k] }
         }
     };
-    for r in 0..rows {
-        for c in 0..cols {
+    let f = |r: usize, row: &mut [Vec2]| {
+        for (c, v) in row.iter_mut().enumerate() {
             let k = r * cols + c;
             if solid[k] {
                 continue;
@@ -723,9 +738,10 @@ fn project(
                 p_at(ci + 1, ri, mine) - p_at(ci - 1, ri, mine),
                 p_at(ci, ri + 1, mine) - p_at(ci, ri - 1, mine),
             ) / (2.0 * h);
-            vel[k] -= grad;
+            *v -= grad;
         }
-    }
+    };
+    by_rows(vel, cols, threads, &f);
 }
 
 /// The world's air, when it has one.

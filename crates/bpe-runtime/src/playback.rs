@@ -14,7 +14,7 @@ use crate::{Event, Log, Sims, World};
 const CHECKPOINT_SECONDS: f64 = 0.5;
 /// Most memory the checkpoints of one playback may use. Past this, every other one is dropped
 /// and they are taken half as often.
-const CHECKPOINT_BYTES: usize = 192 << 20;
+pub const CHECKPOINT_BYTES: usize = 192 << 20;
 /// Most video memory the checkpoints of one playback may use (Huge swarms' particles), thinned
 /// the same way.
 pub const GPU_CHECKPOINT_BYTES: usize = 1 << 30;
@@ -27,8 +27,11 @@ pub struct Playback {
     world: World,
     log: Log,
     sims: Arc<Sims>,
-    /// Snapshots in step order, each with how long the log was at the time.
-    checkpoints: Vec<(World, usize)>,
+    /// Snapshots in step order, each with how long the log was at the time and its bytes beside
+    /// the one before it (the paths they share are counted once, in the earliest, see
+    /// [`World::memory_beside`]): kept, as adding them up again at every snapshot would take
+    /// longer than the run.
+    checkpoints: Vec<(World, usize, usize)>,
     checkpoint_every: u64,
     /// Most memory its checkpoints may use.
     budget: usize,
@@ -45,9 +48,27 @@ impl Playback {
     /// playback keeps more than the main one).
     pub fn with_budget(scene: &Scene, resolved: &Resolved, sims: Arc<Sims>, budget: usize) -> Self {
         let world = World::build(scene, resolved, &sims);
+        Self::of(world, sims, budget)
+    }
+
+    /// A playback of a world nobody draws ([`World::build_unseen`]: the sound engine's, the
+    /// editor's particle thread's), its checkpoints within `budget` bytes.
+    pub fn unseen(scene: &Scene, resolved: &Resolved, sims: Arc<Sims>, budget: usize) -> Self {
+        let world = World::build_unseen(scene, resolved, &sims);
+        Self::of(world, sims, budget)
+    }
+
+    /// The same playback taking no checkpoints after the first (the start): for a run that only
+    /// goes forward (the export's sound). Seeking back still works, from the start.
+    pub fn forward_only(mut self) -> Self {
+        self.checkpoint_every = u64::MAX;
+        self
+    }
+
+    fn of(world: World, sims: Arc<Sims>, budget: usize) -> Self {
         let checkpoint_every = (CHECKPOINT_SECONDS * world.steps_per_second.max(1) as f64).ceil() as u64;
         Self {
-            checkpoints: vec![(world.clone(), 0)],
+            checkpoints: vec![(world.clone(), 0, world.memory())],
             world,
             log: Log::default(),
             sims,
@@ -102,8 +123,8 @@ impl Playback {
     pub fn seek_within(&mut self, time: f64, budget: Option<Duration>) -> bool {
         let target = crate::step_at(time, self.world.steps_per_second);
         if target < self.world.step {
-            let index = self.checkpoints.partition_point(|(w, _)| w.step <= target).max(1) - 1;
-            let (world, len) = &self.checkpoints[index];
+            let index = self.checkpoints.partition_point(|(w, _, _)| w.step <= target).max(1) - 1;
+            let (world, len, _) = &self.checkpoints[index];
             self.world = world.clone();
             self.log.truncate(*len);
             self.log.truncate_camera(self.world.step);
@@ -112,7 +133,7 @@ impl Playback {
         while self.world.step < target {
             self.world.step(&self.sims, &mut self.log);
             if self.world.step.is_multiple_of(self.checkpoint_every)
-                && self.checkpoints.last().is_some_and(|(w, _)| w.step < self.world.step)
+                && self.checkpoints.last().is_some_and(|(w, _, _)| w.step < self.world.step)
             {
                 self.save_checkpoint();
             }
@@ -131,8 +152,8 @@ impl Playback {
     /// this playback (the editor's effect warm-up). The same as seeking a copy there.
     pub fn rewound(&self, time: f64) -> Playback {
         let target = crate::step_at(time, self.world.steps_per_second);
-        let index = self.checkpoints.partition_point(|(w, _)| w.step <= target).max(1) - 1;
-        let (world, len) = &self.checkpoints[index];
+        let index = self.checkpoints.partition_point(|(w, _, _)| w.step <= target).max(1) - 1;
+        let (world, len, _) = &self.checkpoints[index];
         let mut log = self.log.clone();
         log.truncate(*len);
         log.truncate_camera(world.step);
@@ -140,7 +161,7 @@ impl Playback {
             world: world.clone(),
             log,
             sims: self.sims.clone(),
-            checkpoints: vec![(world.clone(), *len)],
+            checkpoints: vec![(world.clone(), *len, world.memory())],
             checkpoint_every: self.checkpoint_every,
             budget: self.budget,
             gpu_budget: self.gpu_budget,
@@ -162,18 +183,27 @@ impl Playback {
 
     /// Bytes the playback holds: the world, its log and every checkpoint.
     pub fn memory(&self) -> usize {
-        self.world.memory() + self.log.memory() + self.checkpoints.iter().map(|(w, _)| w.memory()).sum::<usize>()
+        self.world.memory_beside(self.checkpoints.last().map(|c| &c.0))
+            + self.log.memory()
+            + self.checkpoints.iter().map(|c| c.2).sum::<usize>()
     }
 
     fn save_checkpoint(&mut self) {
-        self.checkpoints.push((self.world.clone(), self.log.len()));
-        let bytes: usize = self.checkpoints.iter().map(|(w, _)| w.memory()).sum();
-        let gpu: usize = self.checkpoints.iter().map(|(w, _)| w.gpu_memory()).sum();
+        let copy = self.world.clone();
+        let bytes = copy.memory_beside(self.checkpoints.last().map(|c| &c.0));
+        self.checkpoints.push((copy, self.log.len(), bytes));
+        let bytes: usize = self.checkpoints.iter().map(|c| c.2).sum();
+        let gpu: usize = self.checkpoints.iter().map(|(w, _, _)| w.gpu_memory()).sum();
         if (bytes > self.budget || gpu > self.gpu_budget) && self.checkpoints.len() > 2 {
             // Keep the first one and every other one after it, and take them half as often.
             self.checkpoint_every *= 2;
             let every = self.checkpoint_every;
-            self.checkpoints.retain(|(w, _)| w.step.is_multiple_of(every));
+            self.checkpoints.retain(|(w, _, _)| w.step.is_multiple_of(every));
+            // Each now owns what the dropped ones before it shared with it: count them again.
+            for k in 0..self.checkpoints.len() {
+                let (before, rest) = self.checkpoints.split_at_mut(k);
+                rest[0].2 = rest[0].0.memory_beside(before.last().map(|c| &c.0));
+            }
         }
     }
 }
@@ -237,7 +267,7 @@ mod tests {
         heavy.seek(10.0);
         assert_eq!(heavy.world().gpu_memory(), 1 << 20);
         assert!(heavy.checkpoint_count() < plain.checkpoint_count(), "thinned");
-        let gpu: usize = heavy.checkpoints.iter().map(|(w, _)| w.gpu_memory()).sum();
+        let gpu: usize = heavy.checkpoints.iter().map(|(w, _, _)| w.gpu_memory()).sum();
         assert!(gpu <= 10 << 20, "within the budget: {gpu}");
         assert_eq!(heavy.world().bodies[&DOTS].position, plain.world().bodies[&DOTS].position);
     }
@@ -254,5 +284,23 @@ mod tests {
         assert_eq!(copy.world().bodies[&DOTS].position, fresh.world().bodies[&DOTS].position);
         assert_eq!(copy.log().hash(), fresh.log().hash());
         assert_eq!(p.time(), 3.0, "the playback itself stays where it was");
+    }
+
+    /// A forward-only playback keeps just its start and still gets everywhere a normal one does.
+    #[test]
+    fn a_forward_only_playback_matches_and_can_still_go_back() {
+        let (scene, resolved, sims) = dots_in_ring(20);
+        let sims = Arc::new(sims);
+        let mut normal = Playback::new(&scene, &resolved, sims.clone());
+        let mut forward = Playback::unseen(&scene, &resolved, sims, CHECKPOINT_BYTES).forward_only();
+        normal.seek(4.0);
+        forward.seek(4.0);
+        assert_eq!(forward.checkpoint_count(), 1);
+        assert_eq!(forward.world().bodies[&DOTS].position, normal.world().bodies[&DOTS].position);
+        assert_eq!(forward.log().hash(), normal.log().hash());
+        normal.seek(1.5);
+        forward.seek(1.5);
+        assert_eq!(forward.world().bodies[&DOTS].position, normal.world().bodies[&DOTS].position);
+        assert_eq!(forward.log().hash(), normal.log().hash());
     }
 }

@@ -21,6 +21,8 @@ png = "0.18"
 # contours into one clean outline.
 rustybuzz.workspace = true
 i_overlay.workspace = true
+# One lasting pool of worker threads for the air and particle steps (already in the build through other crates).
+rayon = "1"
 
 [features]
 # The test scenes (and the shape-plus-ball `new_scene`): only tests turn this on, so the program ships

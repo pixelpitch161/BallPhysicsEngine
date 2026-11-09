@@ -268,6 +268,18 @@ impl World {
     /// and Bounce modules it uses. Modules without a sim are left out; a thing without one
     /// builds nothing, but can still be named by a target.
     pub fn build(scene: &Scene, resolved: &Resolved, sims: &Sims) -> World {
+        Self::build_with(scene, resolved, sims, true)
+    }
+
+    /// [`World::build`] for a world nobody draws (the sound engine's, the editor's particle and
+    /// aiming threads'): it keeps none of the balls' past for trails and particle layers, which
+    /// only drawing reads. What the physics itself reads of it (a Text's standings, which ask in
+    /// their `after_build`) is still kept, and the balls move exactly as in a drawn world.
+    pub fn build_unseen(scene: &Scene, resolved: &Resolved, sims: &Sims) -> World {
+        Self::build_with(scene, resolved, sims, false)
+    }
+
+    fn build_with(scene: &Scene, resolved: &Resolved, sims: &Sims, drawn: bool) -> World {
         let mut world = World {
             step: 0,
             steps_per_second: 240,
@@ -366,7 +378,7 @@ impl World {
                     if !sim.in_main(r) {
                         world.decoration.insert(*id);
                     }
-                    if let Some(want) = sim.history(r) {
+                    if let Some(want) = sim.history(r).filter(|_| drawn) {
                         world.keep_history(*id, want);
                     }
                 }
@@ -794,10 +806,18 @@ impl World {
         self.modules.get(&thing)?.get(&slot).map(|s| (s.kind.as_str(), s.state.as_ref()))
     }
 
-    /// Bytes the world takes, for playback budgets.
+    /// Bytes the world takes, for playback budgets. The balls' paths it shares with copies (jump
+    /// points) count their share, so the copies together count them once.
     pub fn memory(&self) -> usize {
+        self.memory_beside(None)
+    }
+
+    /// [`World::memory`] beside `earlier` (an earlier copy of this world, a jump point): the ball
+    /// paths it still shares with it are counted there.
+    pub fn memory_beside(&self, earlier: Option<&World>) -> usize {
+        let history = self.history.iter().map(|(id, h)| h.memory_beside(earlier.and_then(|e| e.history.get(id))));
         self.bodies.values().map(Bodies::memory).sum::<usize>()
-            + self.history.values().map(History::memory).sum::<usize>()
+            + history.sum::<usize>()
             + self.state_memory.values().sum::<usize>()
             + std::mem::size_of::<World>()
     }
@@ -1083,8 +1103,9 @@ impl World {
                 continue;
             }
             let Some(bodies) = self.bodies.get(id) else { continue };
+            let gone = bodies.live_rows().start;
             let each = (0..bodies.len())
-                .map(|row| match sim.light_pull(s.state_for(row)) {
+                .map(|row| match (row >= gone).then(|| sim.light_pull(s.state_for(row))).flatten() {
                     Some(p) if bodies.alive[row] && !bodies.held[row] => light.pull(self, log, *id, row, time, &p),
                     _ => Vec2::ZERO,
                 })
@@ -1148,6 +1169,10 @@ impl World {
         // parent moved to.
         let order = self.order.clone();
 
+        // Removed balls at the front of each table are skipped from here on.
+        for bodies in self.bodies.values_mut() {
+            bodies.note_gone();
+        }
         // Spawn: things add what they release this step.
         for id in &order {
             if let Some(sim) = self.kinds.get(id).and_then(|kind| sims.thing(kind)) {
@@ -1161,7 +1186,7 @@ impl World {
         // Clamp speeds, remember where everything started and find the fastest ball.
         let mut fastest: f32 = 0.0;
         for bodies in self.bodies.values_mut() {
-            for i in 0..bodies.len() {
+            for i in bodies.live_rows() {
                 if !bodies.alive[i] {
                     continue;
                 }
@@ -1263,7 +1288,7 @@ impl World {
             {
                 let cx = SimCx { thing: *id, time, seed };
                 if s.varies() {
-                    for i in 0..bodies.len() {
+                    for i in bodies.live_rows() {
                         if bodies.alive[i] {
                             sim.forces_one(s.state_for(i), bodies, i, gravity, dt, &cx);
                         }
@@ -1284,14 +1309,15 @@ impl World {
             }
             // The lights' pull (Moths), worked out at the step's start.
             if let Some(pull) = pulls.get(id) {
-                for (i, p) in pull.iter().enumerate().take(bodies.len()) {
+                for (i, p) in pull.iter().enumerate().take(bodies.len()).skip(bodies.live_rows().start) {
                     if bodies.alive[i] && !bodies.held[i] {
                         bodies.velocity[i] += *p * dt;
                     }
                 }
             }
             bodies.start.copy_from_slice(&bodies.position);
-            for i in 0..bodies.len() {
+            // (A removed ball below `gone_below` that was held kept no speed when it went.)
+            for i in bodies.live_rows() {
                 if bodies.alive[i] && !bodies.held[i] {
                     let v = bodies.velocity[i];
                     bodies.position[i] += v * dt;
@@ -1346,7 +1372,7 @@ impl World {
                 let wall_bounce = modules.get(wall_id).and_then(|m| m.get(&SlotId::Bounce));
                 let decider = decide(sims, wall_bounce, mover_bounce);
                 let special = is_special(own, &matcher, *mover, *wall_id);
-                for i in 0..bodies.len() {
+                for i in bodies.live_rows() {
                     if !bodies.alive[i] || bodies.held[i] {
                         continue;
                     }
@@ -1485,7 +1511,7 @@ impl World {
             }
             for (wall_id, wall) in walls.iter().filter(|(_, w)| !w.passes) {
                 let before = walls_before.get(wall_id).unwrap_or(&wall.outline);
-                for i in 0..bodies.len() {
+                for i in bodies.live_rows() {
                     if bodies.alive[i] {
                         let (previous, velocity) = (bodies.previous[i], bodies.velocity[i]);
                         let at = &mut bodies.position[i];
@@ -2741,6 +2767,25 @@ mod tests {
         bare.advance_to(1.0, &sims, &mut bare_log);
         assert_eq!(bare.bodies, world.bodies);
         assert_eq!(bare_log.events(), log.events());
+    }
+
+    /// A world nobody draws (the sound engine's, the particle thread's) keeps no trail paths and
+    /// steps exactly as a drawn one.
+    #[test]
+    fn an_unseen_world_keeps_no_trail_paths_and_steps_the_same() {
+        let (mut scene, _, sims) = dots_in_ring(12);
+        crate::testing::give(&mut scene, DOTS, SlotId::Trail, "trail.test", &[]);
+        let resolved = resolve(&scene, &reg());
+        let mut drawn = World::build(&scene, &resolved, &sims);
+        let mut unseen = World::build_unseen(&scene, &resolved, &sims);
+        assert!(drawn.history.contains_key(&DOTS));
+        assert!(unseen.history.is_empty());
+        let (mut drawn_log, mut unseen_log) = (Log::default(), Log::default());
+        drawn.advance_to(5.0, &sims, &mut drawn_log);
+        unseen.advance_to(5.0, &sims, &mut unseen_log);
+        assert_eq!(unseen.bodies, drawn.bodies);
+        assert_eq!(unseen_log.hash(), drawn_log.hash());
+        assert!(unseen.memory() < drawn.memory());
     }
 
     /// A fast ball's history runs through every bounce: a trail drawn through it turns where the
