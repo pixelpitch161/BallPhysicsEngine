@@ -218,6 +218,7 @@ fn settings(ui: &mut Ui, scene: &Scene, kit: &Kit, rule: &Rule, block_id: BlockI
         track: style::MUTED,
         follow: None,
         vary: None,
+        offers: None,
     };
     let right = ui.available_rect_before_wrap().right();
     let mut out: Vec<(String, Value)> = Vec::new();

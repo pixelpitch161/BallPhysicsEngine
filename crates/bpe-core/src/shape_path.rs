@@ -50,21 +50,24 @@ pub fn nearest_on_segment(a: Vec2, b: Vec2, q: Vec2) -> (f32, Vec2, f32) {
     (t, p, (q - p).length())
 }
 
+/// Whether the side from `a` to `b` crosses the line running right from `p`: the one step of every
+/// even-odd inside test (counting how many sides a ray from the point crosses).
+#[inline]
+pub fn crosses(a: Vec2, b: Vec2, p: Vec2) -> bool {
+    (a.y > p.y) != (b.y > p.y) && p.x < a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x)
+}
+
 /// Whether `q` is inside the closed polygon `points`, counting crossings (even-odd), so a
 /// self-crossing outline still has an inside.
 pub fn inside_polygon(points: &[Vec2], q: Vec2) -> bool {
-    let mut inside = false;
     let n = points.len();
-    for i in 0..n {
-        let (p, r) = (points[i], points[(i + 1) % n]);
-        if (p.y > q.y) != (r.y > q.y) {
-            let x = p.x + (q.y - p.y) / (r.y - p.y) * (r.x - p.x);
-            if q.x < x {
-                inside = !inside;
-            }
-        }
-    }
-    inside
+    (0..n).filter(|&i| crosses(points[i], points[(i + 1) % n], q)).count() % 2 == 1
+}
+
+/// Whether `q` is inside the closed polygons `contours` taken together (even-odd over all of
+/// them, so a letter's holes are holes).
+pub fn inside_contours(contours: &[Vec<Vec2>], q: Vec2) -> bool {
+    contours.iter().filter(|c| inside_polygon(c, q)).count() % 2 == 1
 }
 
 impl ShapePath {
@@ -411,6 +414,34 @@ impl ShapePath {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_inside_tests_count_crossings_as_every_copy_did() {
+        // The test each copy of the inside check wrote out by hand (W14 made them one).
+        let by_hand = |points: &[Vec2], p: Vec2| {
+            let n = points.len();
+            let mut on = false;
+            for i in 0..n {
+                let (a, b) = (points[i], points[(i + 1) % n]);
+                if (a.y > p.y) != (b.y > p.y) && p.x < a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x) {
+                    on = !on;
+                }
+            }
+            on
+        };
+        let star: Vec<Vec2> =
+            (0..10).map(|k| Vec2::from_angle(k as f32 * 0.628_318_5) * if k % 2 == 0 { 100.0 } else { 40.0 }).collect();
+        let hole: Vec<Vec2> = star.iter().map(|p| *p * 0.2).collect();
+        for y in -60..60 {
+            for x in -60..60 {
+                let p = Vec2::new(x as f32 * 1.9 + 0.3, y as f32 * 1.7 - 0.1);
+                assert_eq!(inside_polygon(&star, p), by_hand(&star, p));
+                let both = by_hand(&star, p) != by_hand(&hole, p);
+                assert_eq!(inside_contours(&[star.clone(), hole.clone()], p), both);
+            }
+        }
+        assert!(inside_polygon(&star, Vec2::ZERO) && !inside_contours(&[star.clone(), hole], Vec2::ZERO));
+    }
 
     fn hexagon() -> ShapePath {
         ShapePath::even(6)

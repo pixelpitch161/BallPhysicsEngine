@@ -134,6 +134,20 @@ pub struct GridCx<'a> {
     pub follow: Option<&'a crate::follow::FollowCx<'a>>,
     /// Varying these settings across the thing's balls (none: the menu doesn't offer it).
     pub vary: Option<&'a crate::vary::VaryCx<'a>>,
+    /// Which choices of a setting its dropdown offers (none: every one), as the thing's kind says
+    /// ([`bpe_core::ThingKind::offers`]).
+    pub offers: Option<&'a OffersOf<'a>>,
+}
+
+/// Whether a dropdown offers a choice, by its saved name.
+type Offers<'a> = dyn Fn(&str) -> bool + 'a;
+
+/// Whether a setting's dropdown offers a choice, by its saved name.
+pub type OffersOf<'a> = dyn Fn(&SettingDef, &str) -> bool + 'a;
+
+/// The choices `def`'s dropdown offers in `cx`.
+fn offers_of<'a>(cx: &'a GridCx, def: &'a SettingDef) -> Option<impl Fn(&str) -> bool + 'a> {
+    cx.offers.map(|o| move |choice: &str| o(def, choice))
 }
 
 /// How wide the label column of every settings grid in a panel `panel` wide is: the Design
@@ -588,7 +602,11 @@ fn setting(
                     to_response = Some(b);
                     a
                 }
-                _ => widget(ui, def, unit, value, name.id, bar, cx.choices, grad_row.is_some()),
+                _ => {
+                    let offers = offers_of(cx, def);
+                    let offers = offers.as_ref().map(|o| o as &Offers);
+                    widget(ui, def, unit, value, name.id, bar, cx.choices, grad_row.is_some(), offers)
+                }
             })
         };
         let r = match trailing {
@@ -686,7 +704,7 @@ fn setting(
                 .inner
             });
             let r = widget_cell(ui, right, |ui| {
-                style::wells(ui, |ui| widget(ui, def, unit, end, to_name.id, bar.with("to"), cx.choices, false))
+                style::wells(ui, |ui| widget(ui, def, unit, end, to_name.id, bar.with("to"), cx.choices, false, None))
             });
             if r.changed() {
                 varies.push(VaryEdit::To(end.clone()));
@@ -1676,6 +1694,7 @@ fn widget(
     bar: egui::Id,
     choices: &TargetChoices,
     big: bool,
+    offers: Option<&Offers>,
 ) -> Response {
     use crate::setting_snap::after_drag;
     // Distances and angles land on the grid while it snaps (and Alt isn't held).
@@ -1759,7 +1778,8 @@ fn widget(
             let mut response = style::raised(ui, |ui| {
                 egui::ComboBox::from_id_salt(def.key).selected_text(pretty(current)).show_ui(ui, |ui| {
                     let mut picked = false;
-                    for choice in names.iter() {
+                    // Only the choices that make sense where the thing is (the one picked always shows above).
+                    for choice in names.iter().filter(|c| offers.is_none_or(|o| o(c))) {
                         picked |= ui.selectable_value(current, (*choice).to_owned(), pretty(choice)).changed();
                     }
                     picked
@@ -2197,6 +2217,7 @@ mod tests {
                         track: style::TEXT,
                         follow: None,
                         vary: None,
+                        offers: None,
                     };
                     let got = settings_grid(ui, "g", defs, |k| state.values[k].clone(), &cx);
                     for (key, value) in got.changes {
@@ -2409,6 +2430,7 @@ mod tests {
                     track: style::TEXT,
                     follow: None,
                     vary: None,
+                    offers: None,
                 };
                 settings_grid(ui, "g", defs, |k| value(k).unwrap(), &cx);
             });
@@ -2465,6 +2487,7 @@ mod tests {
                 track: style::TEXT,
                 follow: None,
                 vary: None,
+                offers: None,
             };
             settings_grid(ui, "g", defs, |k| value(k).unwrap(), &cx);
         });
@@ -2704,6 +2727,38 @@ mod tests {
         assert_eq!(*h.state(), 123.0);
     }
 
+    #[test]
+    fn a_dropdown_offers_only_the_choices_that_fit() {
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let defs = bpe_kit::things::light::LightSettings::defs();
+        let def = defs.iter().find(|d| d.key == "rides_on").unwrap();
+        let choices = Box::leak(Box::new(TargetChoices::default()));
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(400.0, 300.0))
+            .with_context_setup(style::apply)
+            .build_ui_state(
+                move |ui, v: &mut Value| {
+                    let name = ui.label(def.label).id;
+                    // A light in a shape: its middle or its edge.
+                    let offers = |c: &str| matches!(c, "the_middle" | "the_edge");
+                    widget(ui, def, def.unit, v, name, egui::Id::unique("bar"), choices, false, Some(&offers));
+                },
+                Value::Choice("the_middle".into()),
+            );
+        h.run();
+        let combo =
+            h.query_all_by_label("Rides on").find(|n| n.accesskit_node().role() == egui::accesskit::Role::ComboBox);
+        combo.expect("the dropdown").click();
+        h.run();
+        assert!(h.query_all_by_label("The edge").next().is_some());
+        assert!(
+            h.query_all_by_label("Each ball").next().is_none() && h.query_all_by_label("Ball number").next().is_none()
+        );
+        h.query_all_by_label("The edge").last().unwrap().click();
+        h.run();
+        assert_eq!(*h.state(), Value::Choice("the_edge".into()));
+    }
+
     /// A setting row's widget for `def` holding `value`, the grid snapping at 60 px and 15°.
     fn widget_harness(def: SettingDef, value: Value) -> egui_kittest::Harness<'static, Value> {
         use crate::setting_snap::{SettingSnap, put};
@@ -2716,7 +2771,7 @@ mod tests {
                     put(ui.ctx(), Some(SettingSnap { length: 60.0, angle: 15.0 }));
                     let name = ui.label(def.label).id;
                     let unit = def.unit;
-                    widget(ui, &def, unit, v, name, egui::Id::unique("bar"), choices, false);
+                    widget(ui, &def, unit, v, name, egui::Id::unique("bar"), choices, false, None);
                 },
                 value,
             );

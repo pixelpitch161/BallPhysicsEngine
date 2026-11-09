@@ -110,11 +110,8 @@ pub fn tile_of(contours: &[Vec<Vec2>], hash: u64) -> Option<GlyphTile> {
                 let e = b - a;
                 let h = ((p - a).dot(e) / e.length_squared().max(1e-12)).clamp(0.0, 1.0);
                 best = best.min((p - a - e * h).length_squared());
-                if (a.y > p.y) != (b.y > p.y) {
-                    let cross = a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x);
-                    if p.x < cross {
-                        inside = !inside;
-                    }
+                if bpe_core::shape_path::crosses(a, b, p) {
+                    inside = !inside;
                 }
             }
             let d = best.sqrt().min(reach * 2.0);

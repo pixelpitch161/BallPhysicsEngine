@@ -676,6 +676,7 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             t.z_order = 1;
         }
     }
+    crate::riding::fit_choice(scene, id);
     for (kind, params, subs) in layers {
         let layer = scene.add_layer(reg, id, SlotId::Look, kind)?;
         put(scene, id, layer, &params);

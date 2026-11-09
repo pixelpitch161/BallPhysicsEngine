@@ -665,6 +665,80 @@ fn link_shots(reg: &Registry) -> Vec<Shot> {
     out
 }
 
+/// One way to ride a parent (W14): small lights on each letter of a Text with sparks off its outline and a
+/// light on its pen, a light on a ball's rim and a label riding round a shape's edge, in a dim lit room.
+fn riding_shots(reg: &Registry) -> Vec<Shot> {
+    use bpe_kit::things::light::{LightType, add_light};
+    use bpe_kit::things::particles::looks::{Look, add_particles};
+    let mut s = room(reg, Vec2::new(-250.0, 450.0), 70.0);
+    lighting(&mut s, "ambient", Value::Number(0.15));
+    let light = first_of(&s, "light");
+    s.things.get_mut(&light).unwrap().params.set("strength", Value::Number(0.3));
+    let text = add_thing(&mut s, reg, "text", ThingId::ROOT).unwrap();
+    let t = s.things.get_mut(&text).unwrap();
+    t.screen = Some(false);
+    t.transform.position = Vec2::new(0.0, -350.0);
+    t.params.set("words", Value::Text("RIDE".into()));
+    t.params.set("size", Value::Number(260.0));
+    let on = |s: &mut Scene, id: ThingId, pairs: &[(&str, Value)]| {
+        for (k, v) in pairs {
+            s.things.get_mut(&id).unwrap().params.set(k, v.clone());
+        }
+    };
+    let each = add_light(&mut s, reg, LightType::Point, text).unwrap();
+    let warm = Value::Color(bpe_core::Color::rgb(0xff, 0xa0, 0x50));
+    on(
+        &mut s,
+        each,
+        &[
+            ("rides_on", Value::Choice("each_letter".into())),
+            ("size", Value::Number(6.0)),
+            ("reach", Value::Number(320.0)),
+            ("strength", Value::Number(1.4)),
+            ("colour", warm),
+        ],
+    );
+    let sparks = add_particles(&mut s, reg, Look::Empty, text).unwrap();
+    on(
+        &mut s,
+        sparks,
+        &[
+            ("rides_on", Value::Choice("the_edge".into())),
+            ("rate", Value::Number(300.0)),
+            ("speed", Value::Number(60.0)),
+        ],
+    );
+    let ball = first_of(&s, "balls");
+    let rim = add_light(&mut s, reg, LightType::Point, ball).unwrap();
+    let cool = Value::Color(bpe_core::Color::rgb(0x60, 0xc0, 0xff));
+    on(
+        &mut s,
+        rim,
+        &[
+            ("rides_on", Value::Choice("the_edge".into())),
+            ("edge_at", Value::Number(0.125)),
+            ("size", Value::Number(5.0)),
+            ("reach", Value::Number(400.0)),
+            ("strength", Value::Number(1.6)),
+            ("colour", cool),
+        ],
+    );
+    add_shape(&mut s, reg, Vec2::new(250.0, 450.0), ShapeSettings::default());
+    let shape = s.order.iter().copied().rfind(|id| s.things[id].kind == "shape").unwrap();
+    let label = add_thing(&mut s, reg, "text", shape).unwrap();
+    on(
+        &mut s,
+        label,
+        &[
+            ("words", Value::Text("EDGE".into())),
+            ("size", Value::Number(60.0)),
+            ("rides_on", Value::Choice("the_edge".into())),
+            ("edge_at", Value::Number(0.625)),
+        ],
+    );
+    vec![shot("riding", s, vec![0.0, 1.0])]
+}
+
 /// Every ready-made look for balls (a grid of 30, still and moving sideways so trails show) and shapes (a grid of
 /// 18 rounded rectangles), on a plain scene with no gravity.
 fn ready_shots(reg: &Registry) -> Vec<Shot> {
@@ -755,6 +829,7 @@ fn render_at_full_size() {
         ("looks", look_shots(&reg)),
         ("ready", ready_shots(&reg)),
         ("links", link_shots(&reg)),
+        ("riding", riding_shots(&reg)),
     ];
     let mut count = 0;
     for (group, shots) in groups {

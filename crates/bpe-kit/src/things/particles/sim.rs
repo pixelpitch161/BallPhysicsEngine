@@ -224,6 +224,22 @@ impl ThingSim for ParticlesSim {
     /// name).
     fn physics_print_extra(&self, scene: &bpe_core::Scene, thing: &Thing, resolved: &ResolvedThing) -> u64 {
         let s = ParticlesSettings::from_params(&resolved.params);
+        // Riding a Text: its letters (as saved) and where it sits.
+        let ridden_text = thing
+            .parent
+            .filter(|_| s.from == BornFrom::RidingItsParent)
+            .filter(|p| scene.things.get(p).is_some_and(|t| t.kind == crate::things::text::KIND));
+        if let Some(text) = ridden_text {
+            let t = &scene.things[&text];
+            let place = [t.transform.position.x, t.transform.position.y, t.transform.rotation];
+            let place = place.iter().fold(0u64, |h, x| h.rotate_left(21) ^ x.to_bits() as u64);
+            let look = format!("{:?}", t.slots.get(&SlotId::Look));
+            let look = look.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3));
+            return crate::things::text::shape::letters_hash(scene, text)
+                ^ place
+                ^ look.rotate_left(7)
+                ^ t.screen.map_or(2, u64::from);
+        }
         if typed_in_a_font(&s) {
             let none = super::spots::SpotsKey::None;
             return super::spots::word_font(&s, Some(scene), &none).map_or(0, |f| f.data.id);

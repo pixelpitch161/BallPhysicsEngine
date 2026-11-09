@@ -101,10 +101,9 @@ fn listed(scene: &Scene, reg: &Registry) -> Vec<Source> {
             let s = LightSettings::from_params(&thing.params);
             let kind = kind_word(s.kind);
             // What it rides: its parent past any rigs, as the picture places it.
-            let rides =
-                bpe_kit::things::rig::fixtures::ridden(scene, id).and_then(|p| scene.things.get(&p)).filter(|p| {
-                    bpe_kit::things::light::RIDES.contains(&p.kind.as_str()) || p.kind == bpe_kit::things::text::KIND
-                });
+            let rides = bpe_kit::things::rig::fixtures::ridden(scene, id)
+                .and_then(|p| scene.things.get(&p))
+                .filter(|p| bpe_kit::riding::RIDDEN.contains(&p.kind.as_str()));
             let what = match rides {
                 Some(p) => format!("{kind} · on {}", p.name),
                 None => kind.to_owned(),
@@ -243,8 +242,7 @@ pub fn light_parent(scene: &Scene, primary: Option<ThingId>) -> ThingId {
         .and_then(|t| {
             let inside = t.kind == "folder"
                 || t.kind == bpe_kit::things::rig::RIG
-                || t.kind == bpe_kit::things::text::KIND
-                || bpe_kit::things::light::RIDES.contains(&t.kind.as_str());
+                || bpe_kit::riding::RIDDEN.contains(&t.kind.as_str());
             if inside { Some(t.id) } else { t.parent }
         })
         .unwrap_or(ThingId::ROOT)

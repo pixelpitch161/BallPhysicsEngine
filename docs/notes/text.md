@@ -51,7 +51,7 @@ Seconds / Beats / Hits (Hits of), Starts at, Each takes, Every, Stays for; `appe
 `LetterMove` per letter, its opacity in `clip[2]`). Words keys hold. **Set text** rule block `do.text`
 (`rules/text.rs`: Replace / Add a line / Show the next line / Clear → `Action::Text`/`TextOp`, kept in
 `RulesState.texts` as `RuleText`; Show the next line shows line n alone from `nexts[n−1]`). **Riding**: a Text inside
-a Balls, Emitter or Shape thing sits on it (Riding group: Rides on Each ball / The middle / Ball number), its Position
+a Balls, Emitter or Shape thing sits on it (Riding group: Rides on Each ball / The middle / Ball number / The edge with Round the edge; the shared `riding::RidesOn`, W14 in `engine.md`), its Position
 the offset; `text_copies(&TextAt)` gives one `TextNow` a ball (`TextNow.ball`, `shown`), `text_now` the first. **Fast
 letters** (Words group, Automatic for riding each ball or standings / Always / Never): a letter is `PathInstance`
 kind 3 (`bpe_gfx::PATH_GLYPH`, `Frame::push_glyph`) reading a glyph distance tile (`text/tiles.rs::tile_for`, 128²

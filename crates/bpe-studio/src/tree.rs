@@ -491,12 +491,12 @@ pub fn show(
 }
 
 /// Where a new Particles thing goes: into a selected folder or a thing it can ride (balls, an
-/// emitter, a shape), else beside the selection, else under Scene settings.
+/// emitter, a shape, a Text), else beside the selection, else under Scene settings.
 pub fn particles_parent(scene: &Scene, primary: Option<ThingId>) -> ThingId {
     primary
         .and_then(|s| scene.things.get(&s))
         .and_then(|t| {
-            let inside = t.kind == "folder" || bpe_kit::things::particles::RIDES.contains(&t.kind.as_str());
+            let inside = t.kind == "folder" || bpe_kit::riding::RIDDEN.contains(&t.kind.as_str());
             if inside { Some(t.id) } else { t.parent }
         })
         .unwrap_or(ThingId::ROOT)

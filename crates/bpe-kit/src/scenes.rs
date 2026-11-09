@@ -940,7 +940,7 @@ pub fn lit_demo(reg: &Registry) -> Scene {
     let middle = add_light(&mut scene, reg, LightType::Point, ball).expect("a light");
     let mut cool = LightSettings::of_kind(LightType::Point);
     cool.position = Vec2::ZERO;
-    cool.rides_on = crate::things::light::RidesOn::TheMiddle;
+    cool.rides_on = crate::riding::RidesOn::TheMiddle;
     cool.colour = Color::rgb(0x6c, 0xb4, 0xff);
     cool.strength = 1.4;
     cool.reach = 1100.0;
@@ -1360,7 +1360,8 @@ pub fn glow_demo(reg: &Registry) -> Scene {
 /// the dark where light has been. Not in [`all`].
 pub fn club_demo(reg: &Registry) -> Scene {
     use crate::modules::look::layers::heat::{SUB_HEAT, SubHeat};
-    use crate::things::light::{FlickerStyle, Gobo, LightSettings, LightType, RidesOn, add_light};
+    use crate::riding::RidesOn;
+    use crate::things::light::{FlickerStyle, Gobo, LightSettings, LightType, add_light};
     let mut scene = lit_room(reg);
     scene.name = "Club demo".into();
     let root = scene.things.get_mut(&ThingId::ROOT).expect("root");

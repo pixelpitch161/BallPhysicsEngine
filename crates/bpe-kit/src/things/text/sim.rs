@@ -39,6 +39,8 @@ pub struct TextState {
     pub standings: bool,
     /// Its settings as they are now (keys applied).
     pub params: Params,
+    /// Its Look card as it is now, whose letter moves (Draw on's pen among them) what rides it sees.
+    pub look: Option<Arc<bpe_core::ResolvedSlot>>,
     /// Whether it is a wall at all: set in the world, riding nothing.
     pub walled: bool,
     /// Its settings changed since its letters were last laid out.
@@ -67,7 +69,7 @@ fn can_be_a_wall(thing: &Thing, world: &World) -> bool {
     let rides = thing
         .parent
         .filter(|p| *p != ThingId::ROOT)
-        .is_some_and(|p| world.kind_of(p).is_some_and(|k| crate::things::light::RIDES.contains(&k)));
+        .is_some_and(|p| world.kind_of(p).is_some_and(|k| crate::riding::RIDDEN_BY_TEXT.contains(&k)));
     !on_screen && !rides
 }
 
@@ -77,7 +79,7 @@ pub fn walled_in(scene: &Scene, thing: &Thing) -> bool {
         .parent
         .filter(|p| *p != ThingId::ROOT)
         .and_then(|p| scene.things.get(&p))
-        .is_some_and(|p| crate::things::light::RIDES.contains(&p.kind.as_str()));
+        .is_some_and(|p| crate::riding::RIDDEN_BY_TEXT.contains(&p.kind.as_str()));
     !thing.screen.unwrap_or(true) && !rides
 }
 
@@ -237,6 +239,7 @@ impl ThingSim for TextSim {
             spin,
             standings,
             params: resolved.params.clone(),
+            look: resolved.slots.get(&bpe_core::SlotId::Look).cloned().map(Arc::new),
             walled,
             dirty: true,
             letters: None,
@@ -276,6 +279,10 @@ impl ThingSim for TextSim {
             if st.params != resolved.params {
                 st.params = resolved.params.clone();
                 st.dirty = true;
+            }
+            let look = resolved.slots.get(&bpe_core::SlotId::Look);
+            if st.look.as_deref() != look {
+                st.look = look.cloned().map(Arc::new);
             }
         }
     }

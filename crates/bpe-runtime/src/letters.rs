@@ -3,7 +3,7 @@
 //! *part* of its thing: what a contact names, so a rule, a health or a sound can tell the letters
 //! apart.
 
-use bpe_core::shape_path::nearest_on_segment;
+use bpe_core::shape_path::{crosses, nearest_on_segment};
 use glam::Vec2;
 
 /// One letter's outline: its contours (each closed) and its box, in the Text's own frame.
@@ -62,12 +62,8 @@ impl LetterWall {
         for c in self.contours() {
             let n = c.len();
             for i in 0..n {
-                let (a, b) = (c[i], c[(i + 1) % n]);
-                if (a.y > p.y) != (b.y > p.y) {
-                    let x = a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x);
-                    if p.x < x {
-                        inside = !inside;
-                    }
+                if crosses(c[i], c[(i + 1) % n], p) {
+                    inside = !inside;
                 }
             }
         }

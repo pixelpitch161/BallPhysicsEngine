@@ -4,13 +4,14 @@
 //! a thing or a particle never changes another's.
 
 use bpe_core::ThingId;
-use bpe_runtime::{EventKind, Log, Outline, World};
+use bpe_runtime::{EventKind, Log, World};
 use glam::Vec2;
 
 use super::beats::Moments;
 use super::state::{HomeFrame, ParticlesState, Speck};
-use super::{AreaShape, BornFrom, Edge, Emit, Heading, ParticlesSettings, RidesOn};
+use super::{AreaShape, BornFrom, Edge, Emit, Heading, ParticlesSettings};
 use crate::modules::look::layers::particles::emit::{hash, impact};
+use crate::riding::{Dice, Letters, Ridden, Ride, letters_in_world};
 
 /// The most particles one moment (a hit, a burst) lets off.
 pub const MOST_AT_ONCE: u32 = 100_000;
@@ -54,6 +55,8 @@ pub struct BirthCx<'a> {
     pub angle: f32,
     /// Where a word's, picture's or grid's places are now.
     pub homes: HomeFrame,
+    /// The Text it rides, laid out once for the moment (when it rides one).
+    pub text: std::cell::OnceCell<Option<std::rc::Rc<Letters>>>,
 }
 
 /// Where place `spot` (index + 1) of a word, picture or grid is now, as a birth there.
@@ -68,65 +71,21 @@ pub fn screen(world: &World, margin: f32) -> (Vec2, Vec2) {
     (world.camera.center, half.max(Vec2::ZERO))
 }
 
-/// The points round `outline`, evenly spread by length.
-fn outline_points(outline: &Outline) -> Vec<Vec2> {
-    crate::things::light::draw::outline_points(outline)
+/// What a riding source's parent is now (a Text read once a step), and how it rides it.
+fn ridden<'a>(s: &ParticlesSettings, cx: &'a BirthCx, parent: Option<ThingId>) -> (Ridden<'a>, Ride) {
+    let ride = Ride { on: s.rides_on, ball_number: s.ball_number, edge_at: 0.0 };
+    let text = |id: ThingId| cx.text.get_or_init(|| letters_in_world(cx.world, id).map(std::rc::Rc::new)).clone();
+    (Ridden::of(cx.world, parent, text), ride)
 }
 
-/// A point `t` (0 to 1) of the way round the closed polygon `points`, by length, and the way out
-/// of it there (away from its middle).
-fn round_points(points: &[Vec2], t: f32) -> Option<(Vec2, Vec2)> {
-    let n = points.len();
-    if n == 0 {
-        return None;
-    }
-    let len = |i: usize| points[i].distance(points[(i + 1) % n]);
-    let total: f32 = (0..n).map(len).sum();
-    let mut left = t.clamp(0.0, 1.0) * total;
-    let middle = points.iter().copied().sum::<Vec2>() / n as f32;
-    for i in 0..n {
-        let l = len(i);
-        if left <= l || i == n - 1 {
-            let (a, b) = (points[i], points[(i + 1) % n]);
-            let at = a.lerp(b, if l > 0.0 { (left / l).clamp(0.0, 1.0) } else { 0.0 });
-            return Some((at, (at - middle).try_normalize().unwrap_or(Vec2::NEG_Y)));
-        }
-        left -= l;
-    }
-    None
-}
-
-/// Whether `p` is inside the closed polygon `points` (even-odd).
-fn inside(points: &[Vec2], p: Vec2) -> bool {
-    let n = points.len();
-    let mut on = false;
-    for i in 0..n {
-        let (a, b) = (points[i], points[(i + 1) % n]);
-        if (a.y > p.y) != (b.y > p.y) && p.x < a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x) {
-            on = !on;
-        }
-    }
-    on
-}
-
-/// The alive balls of `parent` as `(row, place, velocity, radius)`.
-fn balls_of(world: &World, parent: ThingId) -> Vec<(usize, Vec2, Vec2, f32)> {
-    let Some(b) = world.bodies.get(&parent) else { return Vec::new() };
-    (0..b.len()).filter(|&r| b.alive[r]).map(|r| (r, b.position[r], b.velocity[r], b.radius[r])).collect()
-}
-
-/// How many places a riding source has right now (balls ridden one by one; 1 otherwise), for
-/// Steady's rate a ball.
-pub fn riding_count(s: &ParticlesSettings, world: &World, parent: Option<ThingId>) -> usize {
-    if s.from != BornFrom::RidingItsParent
-        || !matches!(s.rides_on, RidesOn::EachBall | RidesOn::TheEdge | RidesOn::Inside)
-    {
+/// How many places a riding source has right now (balls or letters ridden one by one; 1
+/// otherwise), for Steady's rate a ball (or a letter).
+pub fn riding_count(s: &ParticlesSettings, cx: &BirthCx, parent: Option<ThingId>) -> usize {
+    if s.from != BornFrom::RidingItsParent {
         return 1;
     }
-    match parent.and_then(|p| world.bodies.get(&p)) {
-        Some(b) => b.alive.iter().filter(|a| **a).count(),
-        None => 1,
-    }
+    let (ridden, ride) = ridden(s, cx, parent);
+    ridden.count(&ride)
 }
 
 /// Where a birth with dice `seed` is, from the source (not a hit). `None` when there is nowhere
@@ -165,76 +124,23 @@ pub fn place_for(s: &ParticlesSettings, cx: &BirthCx, parent: Option<ThingId>, s
         // Born only from the parent's particles (`fed_places`); on its own, at its place.
         BornFrom::ItsParentsParticles => here(cx.anchor),
         BornFrom::RidingItsParent => {
-            let Some(parent) = parent.filter(|p| *p != ThingId::ROOT) else { return Some(here(cx.anchor)) };
-            let balls = balls_of(cx.world, parent);
-            if cx.world.bodies.contains_key(&parent) {
-                if balls.is_empty() {
-                    return None;
-                }
-                let middle = || {
-                    let n = balls.len() as f32;
-                    let at = balls.iter().map(|b| b.1).sum::<Vec2>() / n;
-                    let v = balls.iter().map(|b| b.2).sum::<Vec2>() / n;
-                    Place { at, velocity: v, impact: 1.0, ..Place::default() }
-                };
-                let pick = balls[(hash(&[seed, 7]) as usize) % balls.len()];
-                let on = |b: (usize, Vec2, Vec2, f32), at: Vec2, out: Option<Vec2>| Place {
-                    at,
-                    velocity: b.2,
-                    out,
-                    ball: b.0 as u32 + 1,
-                    impact: 1.0,
-                    spot: 0,
-                    kin: None,
-                };
-                return Some(match s.rides_on {
-                    RidesOn::EachBall => on(pick, pick.1, None),
-                    RidesOn::TheMiddle => middle(),
-                    RidesOn::BallNumber => {
-                        let bodies = &cx.world.bodies[&parent];
-                        let row = bodies.row_of(s.ball_number.saturating_sub(1)).filter(|&r| bodies.alive[r])?;
-                        let b = balls.iter().copied().find(|b| b.0 == row)?;
-                        on(b, b.1, None)
-                    }
-                    RidesOn::TheEdge => {
-                        let out = Vec2::from_angle(u1 * std::f32::consts::TAU);
-                        on(pick, pick.1 + out * pick.3, Some(out))
-                    }
-                    RidesOn::Inside => {
-                        let out = Vec2::from_angle(u1 * std::f32::consts::TAU);
-                        on(pick, pick.1 + out * pick.3 * u2.sqrt(), Some(out))
-                    }
-                });
-            }
-            if let Some(wall) = cx.world.walls.get(&parent) {
-                let centre = wall.outline.center();
-                let velocity = wall.velocity;
-                let points = outline_points(&wall.outline);
-                let place = |at: Vec2, out: Option<Vec2>| Place { at, velocity, out, impact: 1.0, ..Place::default() };
-                return Some(match s.rides_on {
-                    RidesOn::TheEdge => match round_points(&points, u1) {
-                        Some((at, out)) => place(at, Some(out)),
-                        None => place(centre, None),
-                    },
-                    RidesOn::Inside => {
-                        let (lo, hi) = points
-                            .iter()
-                            .fold((Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY)), |(lo, hi), p| {
-                                (lo.min(*p), hi.max(*p))
-                            });
-                        let tried = (0..8).find_map(|k| {
-                            let p = lo + (hi - lo) * Vec2::new(unit(seed, 20 + 2 * k), unit(seed, 21 + 2 * k));
-                            inside(&points, p).then_some(p)
-                        });
-                        let at = tried.unwrap_or(centre);
-                        place(at, (at - centre).try_normalize())
-                    }
-                    _ => place(centre, None),
-                });
-            }
+            let (ridden, ride) = ridden(s, cx, parent);
             // A parent the world doesn't move (a folder): its own place.
+            if matches!(ridden, Ridden::Nothing) {
+                return Some(here(cx.anchor));
+            }
+            let unit = |k: u32| unit(seed, k);
+            let spot = ridden.pick(&ride, &Dice { pick: hash(&[seed, 7]) as usize, unit: &unit })?;
             let _ = u3;
-            here(cx.anchor)
+            Place {
+                at: spot.at,
+                velocity: spot.velocity,
+                out: spot.out,
+                ball: spot.ball.map_or(0, |(_, row)| row as u32 + 1),
+                impact: 1.0,
+                spot: 0,
+                kin: None,
+            }
         }
         BornFrom::AWordOrPicture | BornFrom::AGrid => {
             let n = cx.homes.spots.len();
@@ -456,7 +362,7 @@ fn births_for(
     } else {
         match s.emit {
             Emit::Steady => {
-                let n = riding_count(&s, cx.world, st.parent) as f64;
+                let n = riding_count(&s, cx, st.parent) as f64;
                 st.carry += s.rate.max(0.0) as f64 * n * super::step::DT as f64;
                 if !st.carry.is_finite() {
                     st.carry = 0.0;

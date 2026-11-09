@@ -13,7 +13,7 @@ use bpe_runtime::{Log, Pose, World};
 use glam::Vec2;
 
 use super::show::{LetterMove, appear_times, letter_move, shows_whole, unit_of};
-use super::{FastLetters, KIND, TextBalls, TextPath, TextRides, TextSettings};
+use super::{FastLetters, KIND, RidesOn, TextBalls, TextPath, TextSettings};
 use crate::modules::look::shape::ShapeStack;
 use crate::modules::look::shape::gpu::Geometry;
 use crate::modules::look::shape::units::{MOST_UNIT_RECORDS, MOST_UNIT_SETS, UnitLayer, UnitPlace, records_for_unit};
@@ -245,13 +245,13 @@ fn ball_names(at: &TextAt) -> BallNames {
 }
 
 /// Where each copy sits: the Text's own pose, or, inside a group of balls, an emitter or a shape,
-/// on what it rides (moved by its Position), with the ball each rides.
+/// on what it rides (moved by its Position), with the ball each rides (`crate::riding`).
 fn riding_places(at: &TextAt, s: &TextSettings, screen: bool, own: Pose) -> Vec<(Pose, Option<(ThingId, usize)>)> {
     let Some(thing) = at.tree.things.get(&at.id) else { return vec![(own, None)] };
     let parent = thing
         .parent
         .filter(|p| *p != ThingId::ROOT)
-        .filter(|p| at.tree.things.get(p).is_some_and(|t| crate::things::light::RIDES.contains(&t.kind.as_str())));
+        .filter(|p| at.tree.things.get(p).is_some_and(|t| crate::riding::RIDDEN_BY_TEXT.contains(&t.kind.as_str())));
     let Some(parent) = parent else { return vec![(own, None)] };
     // A group of balls that isn't there (switched off): no labels.
     let balls = at.tree.things.get(&parent).is_some_and(|t| matches!(t.kind.as_str(), "balls" | "emitter"));
@@ -260,31 +260,13 @@ fn riding_places(at: &TextAt, s: &TextSettings, screen: bool, own: Pose) -> Vec<
     }
     let offset = thing.transform.position;
     let seen = |p: Vec2| if screen { at.world.camera.to_screen(p) } else { p };
-    let pose_at = |p: Vec2| Pose { position: seen(p) + offset, ..own };
-    if let Some(b) = at.world.bodies.get(&parent) {
-        let alive = || (0..b.len()).filter(|&r| b.alive[r]);
-        return match s.rides_on {
-            TextRides::EachBall => alive().map(|r| (pose_at(b.position[r]), Some((parent, r)))).collect(),
-            TextRides::BallNumber => b
-                .row_of(s.ball_number.saturating_sub(1))
-                .filter(|&r| b.alive[r])
-                .map(|r| (pose_at(b.position[r]), Some((parent, r))))
-                .into_iter()
-                .collect(),
-            TextRides::TheMiddle => {
-                let n = alive().count();
-                if n == 0 {
-                    return Vec::new();
-                }
-                let sum = alive().fold(Vec2::ZERO, |a, r| a + b.position[r]);
-                vec![(pose_at(sum / n as f32), None)]
-            }
-        };
+    let ridden = crate::riding::Ridden::of(at.world, Some(parent), |_| None);
+    match ridden.spots(&crate::riding::Ride::from(s)) {
+        Some(spots) => {
+            spots.into_iter().map(|spot| (Pose { position: seen(spot.at) + offset, ..own }, spot.ball)).collect()
+        }
+        None => vec![(own, None)],
     }
-    if let Some(wall) = at.world.walls.get(&parent) {
-        return vec![(pose_at(crate::things::light::draw::outline_centre(&wall.outline)), None)];
-    }
-    vec![(own, None)]
 }
 
 /// How each letter of `layout` shows at `at`'s moment; `rule_line` the moment a rule showed the
@@ -430,7 +412,7 @@ impl ThingDraw for TextDraw {
         if !benders.is_empty()
             && let Some(wall) = cx.world.walls.get(&cx.thing.id)
         {
-            let points = crate::things::light::draw::outline_contours(&wall.outline).into_iter().flatten();
+            let points = crate::outline::contours(&wall.outline).into_iter().flatten();
             let half = 0.5 * wall.outline.thickness().max(0.0);
             if let Some(round) = bpe_gfx::Bender::round(points, half + 2.0, 0) {
                 scene.benders.extend(benders.into_iter().map(|index| bpe_gfx::Bender { index, ..round }));
@@ -452,7 +434,7 @@ fn fast_letters(s: &TextSettings, copies: &[TextNow]) -> bool {
         FastLetters::Always => true,
         FastLetters::Never => false,
         FastLetters::Automatic => {
-            (s.rides_on == TextRides::EachBall && copies.iter().any(|c| c.ball.is_some()))
+            (matches!(s.rides_on, RidesOn::EachBall | RidesOn::TheEdge) && copies.iter().any(|c| c.ball.is_some()))
                 || !live::standings_in(&s.words).is_empty()
         }
     }

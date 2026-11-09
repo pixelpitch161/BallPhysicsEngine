@@ -50,6 +50,7 @@ pub fn add_thing(scene: &mut Scene, reg: &Registry, kind: &str, parent: ThingId)
     if (kind == crate::things::light::LIGHT || kind == crate::things::rig::RIG) && !lit {
         scene.add_slot(reg, ThingId::ROOT, SlotId::Lighting, crate::modules::lighting::LIGHTING)?;
     }
+    crate::riding::fit_choice(scene, id);
     Ok(id)
 }
 

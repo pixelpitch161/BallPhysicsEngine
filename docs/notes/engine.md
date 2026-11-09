@@ -370,3 +370,51 @@ moved. `crates/bpe-kit/tests/speed_check.rs` holds ignored timing tests (release
 | The sound engine's copy of that scene, 60 s | 341 ms, 134 MB | 220-245 ms, 2-3 MB |
 | Moths / light pressure, 5 s | 110 / 95 ms | 59-76 / 47 ms |
 
+
+## One way to ride a parent (W14, 2026-11-09)
+
+Spec `docs/superpowers/specs/2026-11-09-one-way-to-ride-design.md`, plan `docs/superpowers/plans/2026-11-09-one-way-to-ride.md`.
+
+- **One Rides on choice**, `bpe-kit/src/riding.rs::RidesOn` (Each ball, The middle, Ball number, The edge, Inside, Each
+  letter, The pen), used by the Light, Particles and Text settings (each kind's old enum is gone; `light::RidesOn`,
+  `particles::RidesOn` and `text::RidesOn` re-export it). Light's `a_point_on_the_edge` is now `the_edge`. What can
+  ride what: `RIDDEN` (balls, emitter, shape, text: lights and particles) and `RIDDEN_BY_TEXT` (no text: a Text doesn't
+  ride a Text), `can_ride`. `offered(rider, parent)` lists the choices that fit (Inside for particles only); the
+  editor's dropdown asks `ThingKind::offers(scene, thing, key, choice)` (default every choice; lights, particles and
+  texts answer through `riding::offers`, past rigs for a light) through `GridCx.offers`, set only on a thing's own
+  settings grid. `fit_choice` turns a just-added thing's choice into The middle when its parent doesn't offer it
+  (`add_thing`, `add_light`, the Particles looks); a stale choice (a thing moved since) falls back to The middle.
+- **Where**: `Ridden::of(world, parent, text)` reads the parent now (`Nothing`, `Balls`, `Shape` with the wall's
+  velocity or else the pose's, `Text(Rc<Letters>)`); `spots(&Ride)` gives every lamp or label place (`None`: keep its
+  own place), `pick(&Ride, &Dice)` one random particle birth place (the old particle code's float order, pinned by
+  `riding_tests.rs::particles_are_born_on_balls_and_shapes_where_they_always_were`), `count` the Steady rate's
+  "a ball" (balls one by one, or letters for Each letter). The edge on balls is each ball's rim at the share
+  (`rim`: 0 the top, clockwise), on a shape `outline::round_one` of its points, on a Text `outline::round` over every
+  shown letter contour in order. Lights and Texts have **Round the edge** (`edge_at`, keyframable); particles spread
+  round at random.
+- **Text parents**: `Letters::of(&TextAt)` (from `text_now`: shown letters' middles and world contours, built once in
+  a `OnceCell`; the middle of `bounds()`; the pen through `text::moves::pen_of`; a screen Text through the camera).
+  Lights read a Text as it is drawn (its Look's letter moves); `letters_in_world` (particles, the camera, the editor's
+  handles) reads `TextState.params` and the new `TextState.look` (the resolved Look card, kept in `build` and
+  `settings_changed`), so Draw on's pen moves there too, but hit- and sound-led letter moves don't. `BirthCx.text`
+  caches it for a particle step. A Particles thing riding a Text hashes the Text's `letters_hash`, Look card and place
+  in `physics_print_extra`, so editing the Text restarts it.
+- **Placement card**: the old 0-based Item row is **Follows** The whole group / One ball, with **Ball it follows** from
+  1 (`Attach::Ride.item` still holds the ball's number from 0).
+- **Outline toolbox**, `bpe-kit/src/outline.rs`: `centre`, `points` (`ROUND_POINTS` 96), `contours` (moved from
+  `light/draw.rs`), `round`/`round_one` (a share by length round one or several contours, wrapping, with the way out;
+  replaces `light::draw::point_round` and the particles' `round_points`), `inside`/`inside_any`, `bounds`. The even-odd
+  crossing step is one function, `bpe_core::shape_path::crosses`, used by `inside_polygon`, `inside_contours`, the
+  runtime's letters, the laser and the glyph tiles (shatter's half-plane clip is a different test).
+- **Changed for old scenes**: particles and lights in a Text in the world ride its letters (not its wall's own place or
+  longest outline); a light in a Text left on Each ball rides the letters' middle; a camera following a light on a Text
+  hashes the Text (`camera/sim.rs::followed_lights_hash`). Known gap: particles and the camera read the Text's keys
+  only as far as its sim keys them (Spin, and the Words/Path/Balls groups), so Show keys on a ridden Text are seen by
+  lights but not by particles.
+- The Placement card's riding rows are **Follows** and **Ball it follows**, so they never share a name with a rider's
+  own Rides on and Ball number.
+- **Look check** (`full_size_look.rs`, shot `riding`): a lamp on each letter of a world Text, sparks on its edge, a
+  light round a ball's rim and a label on a shape's outline. A lamp riding Each letter sits inside its own letter, so
+  the parts of the letter it can't see in a straight line stay unlit, the same as any lamp placed inside a world
+  Text before (lighting's rule, not riding's); move it with its Position to light the whole letter.
+- Goldens unchanged.

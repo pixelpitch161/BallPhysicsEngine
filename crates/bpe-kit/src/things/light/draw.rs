@@ -1,25 +1,24 @@
 //! A light in the picture: nothing drawn of its own, only its light, through the
 //! [`ThingDraw::light`] hook. It reads where it is from its Position, or from what it rides when
-//! its parent in the tree is a Balls, Emitter or Shape thing.
+//! its parent in the tree is a Balls, Emitter, Shape or Text thing (`crate::riding`).
 
 use bpe_core::{Settings, ThingId};
 use bpe_gfx::{DrawCx, Frame, LightGpu, LightScene, ThingDraw};
-use bpe_runtime::{EventKind, Outline, World};
+use bpe_runtime::{EventKind, World};
 use glam::Vec2;
 
 use super::laser::{self, Meets};
 use super::{
-    AreaShape, AtThings, Falloff, FlickerStyle, LightColour, LightSettings, LightType, LightsUp, Points, RidesOn,
-    StripAlong,
+    AreaShape, AtThings, Falloff, FlickerStyle, LightColour, LightSettings, LightType, LightsUp, Points, StripAlong,
 };
+use crate::riding::{Letters, Ridden, Ride, letters_in_world};
 use crate::things::rig::pattern::Drive;
+use crate::things::text::TextAt;
 
 pub struct LightDraw;
 
 /// The most rays a light beam's band is traced with.
 const MOST_RAYS: u32 = 64;
-/// How many points a round outline is cut into for a strip running along it.
-const ROUND_POINTS: usize = 96;
 /// A hit this fast or faster flares a light fully.
 const FULL_HIT: f32 = 600.0;
 
@@ -82,13 +81,29 @@ pub struct Place {
 pub fn places(cx: &DrawCx, s: &LightSettings) -> Vec<Place> {
     // A rig only groups lights: a light rides what its rig sits in.
     let parent = crate::things::rig::fixtures::ridden(cx.tree, cx.resolved.id);
-    let mut out = if let Some(text) =
-        parent.filter(|p| cx.tree.things.get(p).is_some_and(|t| t.kind == crate::things::text::KIND))
-    {
-        text_places(cx, text, s)
-    } else {
-        places_in(cx.world, parent, s)
+    // A Text is read as it is drawn (its letter moves too).
+    let text = |id: ThingId| {
+        let r = cx.scene.things.get(&id)?;
+        let at = TextAt {
+            scene: Some(cx.scene),
+            log: Some(cx.log),
+            sound: cx.sound,
+            look: r.slots.get(&bpe_core::SlotId::Look),
+            ..TextAt::new(cx.tree, &r.params, cx.world, id, cx.time)
+        };
+        Letters::of(&at).map(std::rc::Rc::new)
     };
+    let ridden = Ridden::of(cx.world, parent, text);
+    let mut out = places_on(&ridden, s);
+    if s.kind != LightType::Point && s.points == Points::AtThePen {
+        // Pointing at the pen of the Text it is in: aimed there, nowhere while there is none.
+        let Ridden::Text(t) = &ridden else { return out };
+        let Some(pen) = t.pen() else { return Vec::new() };
+        for p in &mut out {
+            p.aim = Some(pen);
+        }
+        return out;
+    }
     aim_places(cx.world, s, cx.resolved.id, &mut out);
     out
 }
@@ -115,93 +130,30 @@ pub fn aim_places(world: &World, s: &LightSettings, me: ThingId, places: &mut [P
     }
 }
 
-/// Where a light inside Text `text` shines from (Text part 4): on its Draw on pen, its middle, or
-/// its own Position, aimed at the pen when it points there. Nothing where it needs a pen and there
-/// is none.
-fn text_places(cx: &DrawCx, text: ThingId, s: &LightSettings) -> Vec<Place> {
-    use crate::things::text::draw::{TextAt, text_now};
-    let own = Place { at: s.position, ..Place::default() };
-    let Some(r) = cx.scene.things.get(&text) else { return vec![own] };
-    let at = TextAt {
-        scene: Some(cx.scene),
-        log: Some(cx.log),
-        sound: cx.sound,
-        look: r.slots.get(&bpe_core::SlotId::Look),
-        ..TextAt::new(cx.tree, &r.params, cx.world, text, cx.time)
-    };
-    let wants_pen = s.rides_on == RidesOn::ThePen || (s.kind != LightType::Point && s.points == Points::AtThePen);
-    // A Text in the world that is a wall of its letters: ridden like any wall (as the editor's handles read it).
-    let walled = cx.world.walls.contains_key(&text);
-    if !wants_pen && (walled || s.rides_on != RidesOn::TheMiddle) {
-        return places_in(cx.world, Some(text), s);
-    }
-    let pen = if wants_pen { crate::things::text::moves::pen(&at) } else { None };
-    if wants_pen && pen.is_none() {
-        return Vec::new();
-    }
-    let place = match s.rides_on {
-        RidesOn::ThePen => pen.map_or(own, |p| Place { at: p + s.position, ..own }),
-        RidesOn::TheMiddle if walled => places_in(cx.world, Some(text), s).into_iter().next().unwrap_or(own),
-        RidesOn::TheMiddle => match text_now(&at).and_then(|now| now.bounds().map(|(lo, hi)| (now, 0.5 * (lo + hi)))) {
-            Some((now, mid)) => {
-                let screen = cx.tree.things.get(&text).is_none_or(|t| t.screen.unwrap_or(true));
-                let p = now.to_world(mid);
-                Place { at: if screen { cx.world.camera.to_world(p) } else { p } + s.position, ..own }
-            }
-            None => own,
-        },
-        _ => places_in(cx.world, Some(text), s).into_iter().next().unwrap_or(own),
-    };
-    let aim = if s.points == Points::AtThePen { pen } else { None };
-    vec![Place { aim, ..place }]
+/// Where a light riding `parent` (its tree parent, past any rigs) shines from in `world`: its Position, or what it
+/// rides moved by its Position. The editor's handles and the camera use this too, so they sit on the light (a Text
+/// read as its sim has it).
+pub fn places_in(world: &World, parent: Option<ThingId>, s: &LightSettings) -> Vec<Place> {
+    places_on(&Ridden::of(world, parent, |id| letters_in_world(world, id).map(std::rc::Rc::new)), s)
 }
 
-/// Where a light riding `parent` (its tree parent, past any rigs) shines from in `world`: its Position, or what it
-/// rides moved by its Position. The editor's handles use this too, so they sit on the light.
-pub fn places_in(world: &World, parent: Option<ThingId>, s: &LightSettings) -> Vec<Place> {
-    let own = Place { at: s.position, ..Place::default() };
-    let Some(parent) = parent.filter(|&p| p != ThingId::ROOT) else { return vec![own] };
-    if let Some(bodies) = world.bodies.get(&parent) {
-        let ball = |row: usize| Place {
-            at: bodies.position[row] + s.position,
-            velocity: bodies.velocity[row],
-            skip: bodies.radius[row],
-            ball: Some((parent, row as u32)),
-            aim: None,
-        };
-        let alive = || (0..bodies.len()).filter(|&r| bodies.alive[r]);
-        return match s.rides_on {
-            RidesOn::EachBall => alive().map(ball).collect(),
-            RidesOn::BallNumber => {
-                let row = bodies.row_of(s.ball_number.saturating_sub(1)).filter(|&r| bodies.alive[r]);
-                row.map(ball).into_iter().collect()
-            }
-            // A ball group has no edge: the middle of its balls.
-            RidesOn::TheMiddle | RidesOn::APointOnTheEdge | RidesOn::ThePen => {
-                let n = alive().count();
-                if n == 0 {
-                    return Vec::new();
-                }
-                let (sum, vel) = alive()
-                    .fold((Vec2::ZERO, Vec2::ZERO), |(p, v), r| (p + bodies.position[r], v + bodies.velocity[r]));
-                vec![Place { at: sum / n as f32 + s.position, velocity: vel / n as f32, ..Place::default() }]
-            }
-        };
+/// Where a light riding `ridden` shines from: one place a spot, moved by its Position.
+fn places_on(ridden: &Ridden, s: &LightSettings) -> Vec<Place> {
+    let ride = Ride { on: s.rides_on, ball_number: s.ball_number, edge_at: s.edge_at };
+    match ridden.spots(&ride) {
+        // A parent the world doesn't move (a folder, the scene): the light sits at its Position.
+        None => vec![Place { at: s.position, ..Place::default() }],
+        Some(spots) => spots
+            .into_iter()
+            .map(|spot| Place {
+                at: spot.at + s.position,
+                velocity: spot.velocity,
+                skip: spot.radius,
+                ball: spot.ball.map(|(id, row)| (id, row as u32)),
+                aim: None,
+            })
+            .collect(),
     }
-    if let Some(wall) = world.walls.get(&parent) {
-        let pose = world.poses.get(&parent).copied().unwrap_or_default();
-        let at = match s.rides_on {
-            RidesOn::APointOnTheEdge => point_round(&outline_points(&wall.outline), s.edge_at),
-            _ => outline_centre(&wall.outline),
-        };
-        return vec![Place {
-            at: at + s.position,
-            velocity: if wall.velocity != Vec2::ZERO { wall.velocity } else { pose.velocity },
-            ..Place::default()
-        }];
-    }
-    // A parent the world doesn't move (a folder): the light sits at its Position.
-    vec![own]
 }
 
 /// Adds the light at `place` to the scene, as its rigs drive it.
@@ -643,97 +595,13 @@ fn strip_outline(world: &World, s: &LightSettings, me: ThingId) -> Vec<Vec2> {
         .matching(&s.strip_shape, me)
         .into_iter()
         .find_map(|id| world.walls.get(&id))
-        .map(|w| outline_points(&w.outline))
+        .map(|w| crate::outline::points(&w.outline))
         .unwrap_or_default()
-}
-
-/// The middle of an outline.
-pub fn outline_centre(outline: &Outline) -> Vec2 {
-    match outline {
-        Outline::Ring { center, .. }
-        | Outline::Box { center, .. }
-        | Outline::Ellipse { center, .. }
-        | Outline::Path { center, .. }
-        | Outline::Letters { center, .. } => *center,
-    }
-}
-
-/// An outline's centre line in the world as a closed list of points, starting at its top.
-pub fn outline_points(outline: &Outline) -> Vec<Vec2> {
-    let round = |center: Vec2, half: Vec2, angle: f32| -> Vec<Vec2> {
-        let turn = Vec2::from_angle(angle);
-        (0..ROUND_POINTS)
-            .map(|k| {
-                let t = -std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU * k as f32 / ROUND_POINTS as f32;
-                center + turn.rotate(Vec2::new(half.x * t.cos(), half.y * t.sin()))
-            })
-            .collect()
-    };
-    match outline {
-        Outline::Ring { center, radius, sides, .. } if *sides < 3 => round(*center, Vec2::splat(*radius), 0.0),
-        Outline::Ring { .. } | Outline::Box { .. } => outline.corners(),
-        Outline::Ellipse { center, half, angle, .. } => round(*center, *half, *angle),
-        Outline::Path { center, angle, scale, points, .. } => {
-            let turn = Vec2::from_angle(*angle);
-            points.iter().map(|p| *center + turn.rotate(*p * *scale)).collect()
-        }
-        // A Text's letters: its longest contour (what wants one closed list gets one letter's
-        // outline; what wants every side reads `outline_contours`).
-        Outline::Letters { .. } => outline_contours(outline).into_iter().max_by_key(Vec::len).unwrap_or_default(),
-    }
-}
-
-/// Every closed contour of an outline's centre line in the world: one for every outline but a
-/// Text's letters, which give each letter's every contour.
-pub fn outline_contours(outline: &Outline) -> Vec<Vec<Vec2>> {
-    match outline {
-        Outline::Letters { center, angle, letters, .. } => {
-            let turn = Vec2::from_angle(*angle);
-            letters
-                .list
-                .iter()
-                .flat_map(|l| l.contours())
-                .map(|c| c.iter().map(|p| *center + turn.rotate(*p)).collect())
-                .collect()
-        }
-        _ => vec![outline_points(outline)],
-    }
-}
-
-/// The point `share` of the way round a closed list of points (0 and 1 its first point).
-pub fn point_round(points: &[Vec2], share: f32) -> Vec2 {
-    let n = points.len();
-    if n == 0 {
-        return Vec2::ZERO;
-    }
-    let side = |k: usize| points[k].distance(points[(k + 1) % n]);
-    let total: f32 = (0..n).map(side).sum();
-    if total <= 0.0 {
-        return points[0];
-    }
-    let mut left = share.rem_euclid(1.0) * total;
-    for k in 0..n {
-        let d = side(k);
-        if left <= d {
-            return points[k].lerp(points[(k + 1) % n], left / d.max(1e-9));
-        }
-        left -= d;
-    }
-    points[0]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_point_goes_round_by_its_share() {
-        let square = [Vec2::new(0.0, 0.0), Vec2::new(10.0, 0.0), Vec2::new(10.0, 10.0), Vec2::new(0.0, 10.0)];
-        assert_eq!(point_round(&square, 0.0), Vec2::ZERO);
-        assert_eq!(point_round(&square, 0.125), Vec2::new(5.0, 0.0));
-        assert_eq!(point_round(&square, 0.5), Vec2::new(10.0, 10.0));
-        assert_eq!(point_round(&square, 1.25), Vec2::new(10.0, 0.0));
-    }
 
     #[test]
     fn a_light_points_by_its_direction_its_spin_or_its_ball() {
@@ -776,7 +644,7 @@ mod tests {
         assert!(aim_at(&world, &mid, me).unwrap().distance(middle) < 1e-3);
         // A shape: its outline's middle.
         let at_shape = LightSettings { aim_at: bpe_core::Target::Thing(SHAPE), ..s.clone() };
-        let centre = outline_centre(&world.walls[&SHAPE].outline);
+        let centre = crate::outline::centre(&world.walls[&SHAPE].outline);
         assert_eq!(aim_at(&world, &at_shape, me), Some(centre));
         // Nothing named there: its Direction; a point light, or another Points, aims nowhere.
         let gone = LightSettings { aim_at: bpe_core::Target::Thing(ThingId(77)), direction: 30.0, ..s.clone() };
@@ -815,13 +683,5 @@ mod tests {
             (0..50).map(|k| flicker(k as f64 / 10.0, 1.0, 4.0, FlickerStyle::Candle, 2)).collect::<Vec<_>>(),
             "another seed, another flicker"
         );
-    }
-
-    #[test]
-    fn a_round_outline_starts_at_its_top() {
-        let ring = Outline::Ring { center: Vec2::new(5.0, 5.0), radius: 10.0, sides: 0, angle: 0.0, thickness: 4.0 };
-        let points = outline_points(&ring);
-        assert_eq!(points.len(), ROUND_POINTS);
-        assert!(points[0].distance(Vec2::new(5.0, -5.0)) < 1e-4, "{:?}", points[0]);
     }
 }
