@@ -413,4 +413,8 @@ Spec `docs/superpowers/specs/2026-11-09-one-way-to-ride-design.md`, plan `docs/s
   lights but not by particles.
 - The Placement card's riding rows are **Follows** and **Ball it follows**, so they never share a name with a rider's
   own Rides on and Ball number.
+- **Look check** (`full_size_look.rs`, shot `riding`): a lamp on each letter of a world Text, sparks on its edge, a
+  light round a ball's rim and a label on a shape's outline. A lamp riding Each letter sits inside its own letter, so
+  the parts of the letter it can't see in a straight line stay unlit, the same as any lamp placed inside a world
+  Text before (lighting's rule, not riding's); move it with its Position to light the whole letter.
 - Goldens unchanged.

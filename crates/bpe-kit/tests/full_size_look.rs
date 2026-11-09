@@ -733,7 +733,7 @@ fn riding_shots(reg: &Registry) -> Vec<Shot> {
             ("words", Value::Text("EDGE".into())),
             ("size", Value::Number(60.0)),
             ("rides_on", Value::Choice("the_edge".into())),
-            ("edge_at", Value::Number(0.375)),
+            ("edge_at", Value::Number(0.625)),
         ],
     );
     vec![shot("riding", s, vec![0.0, 1.0])]
