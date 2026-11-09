@@ -265,3 +265,25 @@ sizes the field by the frame's world width (`lighting.rs::field_divisor`, roundi
 than the video's), so a 540-wide preview at Good gets divisor 1. Exports and the other picture tests keep the
 Quality's share of the renderer's size (at 270 × 480 a coarser field than any export, which keeps the thin-line
 code covered).
+
+**Liquid and Soft smoke lit by the real lights** (review W15 / G11, 2026-11-09, spec
+`docs/superpowers/specs/2026-11-08-liquid-smoke-real-light-design.md`, plan
+`docs/superpowers/plans/lighting/liquid-smoke-real-light.md`, tests `bpe-kit/src/things/particles/tests_real_light.rs`
+and `bpe-kit/tests/lit_liquid_pictures.rs`, look shot `lit-liquid-smoke`). The Liquid layer lost its own 6-way
+Surface: `LiquidLayer.surface` is the shared 15-chip `SurfaceKind` (default Plastic) and its numbers are the Surface
+sub-layer's (`liquid::defs()` inserts `surface::sub_defs()` after it, Plastic's values as defaults; `params_of` adds a
+kind's preset values, as the editor's pick writes them). Light angle, Shine, Rim light (key `own_rim`), Bend, Tint and
+the Sky colours sit in a "Without lighting" fold: with no Lighting card, or at Lit 0, the old pretend light draws
+(`pretend_code` maps the 15 kinds onto its 6 codes). With one, `LiquidStyle.d = [lit, stamp, blocks, 0]` and
+`liquid.wgsl::real_lit` writes the light passes as a ball's layers do: picture plain colour, pass 1 colour × Lit,
+pass 2 (blocks, height, index) with the height a quarter-circle rim of Roundness (the pretend normal's shape),
+nothing in tint (8) or the glass picture (9), and see-through kinds left out of the behind-glass picture (−1). Each
+Liquid layer of every Particles Look takes a surface index after every thing's and Surface sub-layer's
+(`surface::taken`, `liquid::surface_index`, thing then layer order, shown or not); the Particles `light` hook puts
+`gpu(SurfaceGpu::SHEET)` there, sets `refracts` for see-through kinds and, for a real-lit liquid that blocks light
+and whose Surface bends light, a `Bender::round` box round its blobs with its index (free glass in pass 9 would
+overwrite the index in the surface picture, so the mix would not see glass). Soft smoke in a lit scene (Lit above 0)
+gets `FieldLook.shade.w = SMOKE_RELIEF (40 world px) × Shading`: `fields.wgsl` drops its pretend facing and writes
+its density as a height into the surface picture, so the lamps light the side facing them. Known gap: smoke drawn in
+front of a ball that blocks light thins the ball's shadow where it covers it (its surface write replaces the ball's).
+Unlit pictures are unchanged; goldens don't move.

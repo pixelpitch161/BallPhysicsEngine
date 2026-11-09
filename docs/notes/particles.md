@@ -114,14 +114,15 @@ Shadow/Glow/Outline subs, cut at jumps), `particles.marks` ("Marks that stay", `
 `ParticlesState.marks`, made in `step::end_step` from the touch flags `meets.rs` sets in `Speck.flags` bits 16..19
 (once per particle a reason: On shapes, On the edges, When they die), `prune` caps at Most marks and drops faded ones;
 drawn as dots with splats and a drip) and `particles.liquid` (`liquid.rs`: `LiquidLayer` Blob size, Level, Edge
-softness, Roundness, Surface Matte/Plastic/Chrome/Metal/Glass/Toon, Light angle, Shine, Bend, Tint, Sky, Rim; no
-sub-layers, no Colour split). The stepping reads only `wants.rs::Wants` (trail points, marks kept) from the Look, and
+softness, Roundness, Surface (since W15 the shared 15 chips with their numbers; Light angle, Shine, Bend, Tint, Sky,
+Rim light under "Without lighting"); no sub-layers, no Colour split). The stepping reads only `wants.rs::Wants` (trail points, marks kept) from the Look, and
 `ThingSim::beside_print_extra` (hashed by `beside_fingerprint`, never the main part's) rebuilds the particle playback
 only when that changes. A liquid is `Frame.liquids` (`bpe_gfx::Liquid { blobs, style, front }`): `bpe-gfx/src/liquid.rs`
 `LiquidPass` splats `LiquidBlob`s additively into a full-size Rgba16Float field (its own bind group: style only) and
 `shaders/liquid.wgsl` `fs_surface` cuts it at Level and shades it (Glass samples the copied-under picture bent by the
-normal), after the scene pass (behind) and after the flashes (front), and in layer frames; light passes draw it as
-covering black (nothing in the surface picture). Every draw layer has the **Experimental** fold (`modifiers.rs`
+normal), after the scene pass (behind) and after the flashes (front), and in layer frames; without a Lighting card
+(or at Lit 0) light passes draw it as covering black (nothing in the surface picture). With one, the real lights
+shade it and Soft smoke (W15, `docs/notes/lighting.md`, "Liquid and Soft smoke lit by the real lights"). Every draw layer has the **Experimental** fold (`modifiers.rs`
 through `Kind.dynamic`: Mirror 2..12 ways round The middle of the picture / The thing they ride / A point, Mirrored
 copies; Colour split (three added channel copies along the velocity; not on Liquid, Soft smoke, Flame or Web lines,
 `defs_without_split`), Glitch (bands torn sideways, `Tears`, pure in time)); applied on the CPU to `Pieces`, blobs and

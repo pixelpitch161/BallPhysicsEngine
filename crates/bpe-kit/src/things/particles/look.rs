@@ -333,7 +333,7 @@ look_settings! {
 
 look_settings! {
     /// Soft smoke: the particles splatted into one soft cloud, thick where many meet, broken up by
-    /// drifting detail and lit from one side.
+    /// drifting detail and lit from one side (with a Lighting card, by the real lights).
     SmokeLayer {
         /// How thick the smoke gets where particles meet.
         #[setting(label = "Thickness", group = "Smoke", span(0, 6), simple, keyframe, pulse)]
@@ -353,10 +353,12 @@ look_settings! {
         /// Which way it drifts.
         #[setting(label = "Drift way", group = "Smoke", when = "drift", span(-180, 180), unit = "°", keyframe)]
         drift_way: f32 = -90.0,
-        /// How much the side facing the light is lit and the far side shaded.
+        /// How much the side facing the light is lit and the far side shaded (with a Lighting
+        /// card, the side facing each real light).
         #[setting(label = "Shading", group = "Smoke", range(0, 1), keyframe)]
         shading: f32 = 0.6,
-        /// The way the light comes from.
+        /// The way its own light comes from (only without a Lighting card, or at Lit 0: with one,
+        /// the real lights shade it).
         #[setting(label = "Light from", group = "Smoke", when = "shading", span(-180, 180), unit = "°", keyframe)]
         light_from: f32 = -135.0,
         /// How much darker it is where it is thickest.
@@ -850,7 +852,7 @@ pub fn kinds() -> Vec<Kind> {
                 super::liquid::LIQUID,
                 "Liquid",
                 "The particles run together into one smooth, shiny surface: water, goo, liquid metal or glass.",
-                super::liquid::LiquidLayer::defs,
+                super::liquid::defs,
             )
         },
         whole(

@@ -28,6 +28,9 @@ struct Style {
     c: vec4<f32>,
     sky_top: vec4<f32>,
     sky_bottom: vec4<f32>,
+    // Shaded by the real lights (W15): Lit (0: its own light), surface stamp (index, + 4096 when
+    // see-through), how much it blocks light.
+    d: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -129,14 +132,17 @@ fn fs_surface(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     }
     let shown = cover * clamp(st.c.y, 0.0, 1.0);
     let code = i32(st.a.w + 0.5);
+    let mode = g.light.x;
+    if st.d.x > 0.0 {
+        return real_lit(f.rgb / max(here, 1e-5), shown, inside, unit, mode);
+    }
     // The light passes: covering black (lighting leaves it as drawn), nothing in the surface
     // picture (it blocks no light), whole where it covers in the tags.
-    let mode = g.light.x;
     if mode > 0.5 {
         // Light pass 9, the glass picture (glass and light part 3): glass that bends lamp light
         // is free glass there, its index of refraction over its cover.
         if mode > 8.5 {
-            if code == GLASS && st.c.z > 1.0001 {
+            if st.c.z > 1.0001 {
                 return vec4<f32>(st.c.z * shown, 0.0, 0.0, shown);
             }
             return vec4<f32>(0.0);
@@ -205,4 +211,45 @@ fn fs_surface(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     }
     c = c + vec3<f32>(rim);
     return vec4<f32>(max(c, vec3<f32>(0.0)) * shown, shown);
+}
+
+// A liquid the real lights shade (W15), `colour` its colour, `shown` how much of it shows here,
+// `inside` how far in from its edge (pixels) and `unit` the world units a pixel covers: its plain
+// colour in the picture, and in the light passes its colour × Lit, its surface (how much it
+// blocks, its height, its Surface's table index) and the rest as a pretend liquid's, so the
+// lighting mix lights and shades it as it does a ball.
+fn real_lit(colour: vec3<f32>, shown: f32, inside: f32, unit: f32, mode: f32) -> vec4<f32> {
+    if mode > 0.5 {
+        // Neither free glass (its glass bends lamp light through its surface, as a shape's does)
+        // nor tint.
+        if mode > 7.5 {
+            return vec4<f32>(0.0);
+        }
+        if mode < 1.5 {
+            return vec4<f32>(max(colour, vec3<f32>(0.0)) * st.d.x * shown, shown);
+        }
+        if mode < 2.5 {
+            // The height: the edge rounds over within Roundness (a quarter circle), flat inside,
+            // the same shape the pretend light's normal has.
+            let round_px = max(st.a.z / unit, 0.5);
+            let x = clamp(max(inside, 0.0) / round_px, 0.0, 1.0);
+            let h = st.a.z * sqrt(max(1.0 - (1.0 - x) * (1.0 - x), 0.0));
+            // A Stage takes what blocks whole, as a ball's layers do.
+            var blocks = clamp(st.d.z, 0.0, 1.0);
+            if g.light.z > 0.5 {
+                blocks = select(0.0, 1.0, blocks > 0.0);
+            }
+            let index = st.d.y % 4096.0;
+            return vec4<f32>(blocks, h, index, 1.0) * shown;
+        }
+        if mode > 5.5 {
+            return select(vec4<f32>(0.0), vec4<f32>(0.0, 0.0, 0.0, 1.0), shown >= 0.5);
+        }
+        return vec4<f32>(0.0, 0.0, 0.0, shown);
+    }
+    // See-through: left out of the picture behind glass, which the mix shows through it.
+    if mode < -0.5 && st.d.y >= 4095.5 {
+        return vec4<f32>(0.0);
+    }
+    return vec4<f32>(max(colour, vec3<f32>(0.0)) * shown, shown);
 }

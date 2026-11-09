@@ -399,7 +399,100 @@ fn demo_shots(reg: &Registry) -> Vec<Shot> {
         at("stage-camera-orbit-far", stage_camera(reg, -40.0)),
         at("stage-depth-of-field", stage_depth_of_field(reg)),
         at("gradient-seams", gradient_seams(reg)),
+        at("lit-liquid-smoke", lit_liquid_smoke(reg, true)),
+        at("lit-liquid-smoke-own-light", lit_liquid_smoke(reg, false)),
     ]
+}
+
+/// A Particles thing at `at` whose only Look layer is `kind` with `params`: a still crowd of `w` x `h`, one
+/// particle of `size` every `room` square pixels.
+struct Crowd {
+    at: Vec2,
+    w: f32,
+    h: f32,
+    size: f32,
+    room: f32,
+}
+
+fn add_crowd(scene: &mut Scene, reg: &Registry, c: Crowd, kind: &str, params: bpe_core::Params) {
+    let Crowd { at, w, h, size, room } = c;
+    use bpe_kit::things::particles::looks::{Look, add_particles};
+    use bpe_kit::things::particles::{BornFrom, Emit, ParticlesSettings};
+    let id = add_particles(scene, reg, Look::Empty, ThingId::ROOT).unwrap();
+    let source = ParticlesSettings {
+        from: BornFrom::AnArea,
+        emit: Emit::OnceAtTheStart,
+        count: (w * h / room) as u32,
+        speed: 0.0,
+        life: 100.0,
+        size,
+        size_spread: 0.0,
+        width: w,
+        height: h,
+        ..ParticlesSettings::default()
+    };
+    let t = scene.things.get_mut(&id).unwrap();
+    t.params = source.to_params();
+    t.transform.position = at;
+    let old: Vec<bpe_core::LayerId> = scene.things[&id].slots[&SlotId::Look].layers.iter().map(|l| l.id).collect();
+    let layer = scene.add_layer(reg, id, SlotId::Look, kind).unwrap();
+    for l in old {
+        scene.remove_layer(reg, id, SlotId::Look, l).unwrap();
+    }
+    let card = scene.card_mut(id, SlotId::Look).unwrap();
+    for (k, v) in params.0 {
+        card.params.0.insert(bpe_core::layered_key(layer, &k), v);
+    }
+}
+
+/// W15: liquid and soft smoke lit by the real lights. A Plastic and a Glass puddle (over stripes, so
+/// the glass shows what is behind it, and blocking light, so it bends the lamp's light), Soft smoke
+/// above, a warm lamp low on the left and a ball casting its shadow over the Plastic puddle. `real` false sets
+/// Lit 0 on all three: their own light, to compare.
+fn lit_liquid_smoke(reg: &Registry, real: bool) -> Scene {
+    use bpe_kit::modules::look::surface::SurfaceKind;
+    use bpe_kit::paint::Paint;
+    use bpe_kit::things::particles::liquid::{LIQUID, LiquidLayer, params_of};
+    use bpe_kit::things::particles::look::{SMOKE, SmokeLayer};
+    let mut s = room(reg, Vec2::new(-120.0, 120.0), 50.0);
+    let root = s.things.get_mut(&ThingId::ROOT).unwrap();
+    let mut settings = bpe_kit::SceneSettings::from_params(&root.params);
+    let (k, w) = (bpe_core::Color::rgb(0x1c, 0x1c, 0x24), bpe_core::Color::rgb(0xb0, 0xb0, 0xb8));
+    let colours: Vec<bpe_core::Color> = (0..19).map(|i| if i % 2 == 0 { k } else { w }).collect();
+    settings.background = Paint { colours: bpe_core::Gradient::even(&colours), span: 1080.0, ..Paint::default() };
+    root.params = settings.to_params();
+    let mut lamp = light(LightType::Point, Vec2::new(-420.0, -60.0), 8.0, 1.6);
+    lamp.height = 60.0;
+    lamp.colour = bpe_core::Color::rgb(0xff, 0xb0, 0x60);
+    set_light(&mut s, &lamp);
+    let puddle = |surface, colour| {
+        let mut p = params_of(&LiquidLayer {
+            surface,
+            roundness: 40.0,
+            colour: Paint::solid(colour),
+            ..LiquidLayer::default()
+        });
+        p.set("blocks_light", Value::Bool(true));
+        p.set("lit", Value::Number(if real { 1.0 } else { 0.0 }));
+        p
+    };
+    let plastic = puddle(SurfaceKind::Plastic, bpe_core::Color::rgb(0x30, 0x70, 0xd0));
+    let puddle_at = |at, w, h| Crowd { at, w, h, size: 6.0, room: 40.0 };
+    add_crowd(&mut s, reg, puddle_at(Vec2::new(-60.0, 300.0), 260.0, 160.0), LIQUID, plastic);
+    let glass = puddle(SurfaceKind::Glass, bpe_core::Color::rgb(0xe0, 0xf0, 0xff));
+    add_crowd(&mut s, reg, puddle_at(Vec2::new(220.0, 60.0), 200.0, 200.0), LIQUID, glass);
+    let smoke = SmokeLayer {
+        shading: 0.8,
+        opacity: 0.9,
+        puff: 4.0,
+        colour: Paint::solid(bpe_core::Color::rgb(0xe0, 0xe0, 0xe0)),
+        ..SmokeLayer::default()
+    };
+    let mut smoke = smoke.to_params();
+    smoke.set("lit", Value::Number(if real { 1.0 } else { 0.0 }));
+    let cloud = Crowd { at: Vec2::new(0.0, -360.0), w: 320.0, h: 180.0, size: 16.0, room: 200.0 };
+    add_crowd(&mut s, reg, cloud, SMOKE, smoke);
+    s
 }
 
 /// The stage demo seen through its Stage camera moved `orbit` degrees round.
