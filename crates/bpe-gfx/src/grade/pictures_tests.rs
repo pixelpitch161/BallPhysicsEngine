@@ -265,3 +265,139 @@ fn a_long_stack_grows_the_program_s_buffer() {
     assert!(renderer.histogram(&device).is_some());
     assert!(!renderer.histogram_pending(), "taken");
 }
+
+// ---------------------------------------------------------------------------------------------
+// Part 2: the colour panels.
+
+use crate::frame::{GradeCalibration, GradeColourGrading, GradeHsl, GradePick, GradePointColour, GradeWheel};
+use crate::grade::maths;
+
+/// The colours the colour panels are checked on (linear light).
+const SWATCHES: [[f32; 3]; 9] = [
+    // Brighter than white (the roll-off squeezes both sides alike) and a hue just under 360°.
+    [1.8, 0.4, 0.1],
+    [0.5, 0.05, 0.15],
+    [0.6, 0.05, 0.03],
+    [0.7, 0.35, 0.02],
+    [0.05, 0.4, 0.08],
+    [0.03, 0.2, 0.55],
+    [0.3, 0.05, 0.4],
+    [0.18, 0.18, 0.18],
+    [0.02, 0.015, 0.01],
+];
+
+/// A colour panel worked out on the CPU, in its working space.
+fn on_cpu(panel: &GradePanel, c: [f32; 3]) -> [f32; 3] {
+    let c = c.map(|v| v as f64);
+    let lab = |f: &dyn Fn([f64; 3]) -> [f64; 3]| maths::unoklab(f(maths::oklab(c)));
+    let out = match panel {
+        GradePanel::Hsl(h) => {
+            let row = maths::hsl_row(h);
+            lab(&|l| maths::hsl(l, &row))
+        }
+        GradePanel::PointColour(p) => {
+            let picks: Vec<maths::PickWords> = p.picks.iter().filter_map(maths::pick_words).collect();
+            lab(&|l| maths::point_colour(l, &picks))
+        }
+        GradePanel::ColourGrading(g) => {
+            let w = maths::wheels_words(g);
+            lab(&|l| maths::colour_wheels(l, &w))
+        }
+        GradePanel::Calibration(k) => {
+            let m = if k.primaries_identity() { c } else { maths::apply_matrix(&maths::calibration_matrix(k), c) };
+            maths::dark_tint(m, maths::dark_tint_gain(k.shadows_tint))
+        }
+        _ => unreachable!("only the colour panels"),
+    };
+    out.map(|v| v.max(0.0) as f32)
+}
+
+fn colour_panels() -> Vec<GradePanel> {
+    let hsl = GradeHsl {
+        hue: [40.0, -30.0, 20.0, 60.0, -50.0, 70.0, -20.0, 35.0],
+        saturation: [-40.0, 30.0, 50.0, -60.0, 20.0, 80.0, -30.0, 10.0],
+        luminance: [20.0, -30.0, 40.0, -50.0, 25.0, -60.0, 15.0, -10.0],
+    };
+    let wheel = |hue, saturation, luminance| GradeWheel { hue, saturation, luminance };
+    vec![
+        GradePanel::Hsl(hsl),
+        GradePanel::PointColour(GradePointColour {
+            picks: vec![
+                GradePick { colour: [0.6, 0.05, 0.03], hue: 60.0, saturation: -30.0, luminance: 40.0, range: 70.0 },
+                GradePick { colour: [0.03, 0.2, 0.55], hue: -40.0, saturation: 50.0, luminance: -20.0, range: 30.0 },
+            ],
+        }),
+        GradePanel::ColourGrading(GradeColourGrading {
+            shadows: wheel(210.0, 40.0, 20.0),
+            midtones: wheel(30.0, 25.0, -10.0),
+            highlights: wheel(50.0, 30.0, 15.0),
+            global: wheel(300.0, 10.0, -20.0),
+            blending: 70.0,
+            balance: -30.0,
+        }),
+        GradePanel::Calibration(GradeCalibration {
+            shadows_tint: 40.0,
+            red_hue: 50.0,
+            red_saturation: -30.0,
+            green_hue: -40.0,
+            green_saturation: 60.0,
+            blue_hue: 30.0,
+            blue_saturation: 40.0,
+        }),
+    ]
+}
+
+#[test]
+fn the_colour_panels_on_the_gpu_match_their_maths() {
+    if draw(&grey(0.5)).is_none() {
+        return;
+    }
+    for panel in colour_panels() {
+        for c in SWATCHES {
+            let got = centre(&draw(&graded(flat(c), panels(vec![panel.clone()]))).unwrap());
+            let want = centre(&draw(&flat(on_cpu(&panel, c))).unwrap());
+            assert!(close(got, want, 2), "{panel:?} on {c:?}: GPU {got:?}, maths {want:?}");
+        }
+    }
+}
+
+#[test]
+fn the_colour_panels_at_their_defaults_draw_the_same_bytes() {
+    let mut frame = two_tone([0.02, 0.01, 0.0], [0.6, 0.7, 2.0]);
+    crate::pictures::plain_ball(&mut frame, glam::Vec2::new(5.0, -3.0), 12.0, [0.9, 0.3, 0.1, 1.0], 0.0);
+    let Some(plain) = draw(&frame) else { return };
+    let defaults = panels(vec![
+        GradePanel::Hsl(GradeHsl::default()),
+        GradePanel::PointColour(GradePointColour { picks: vec![GradePick::default()] }),
+        GradePanel::ColourGrading(GradeColourGrading { balance: 40.0, ..GradeColourGrading::default() }),
+        GradePanel::Calibration(GradeCalibration::default()),
+    ]);
+    assert!(defaults.is_identity());
+    assert!(draw(&graded(frame, defaults)).unwrap() == plain, "a colour panel at its defaults changed the picture");
+}
+
+#[test]
+fn hsl_blue_saturation_down_greys_a_blue_patch_and_leaves_a_red_one() {
+    let mut hsl = GradeHsl::default();
+    hsl.saturation[5] = -100.0;
+    let stack = panels(vec![GradePanel::Hsl(hsl)]);
+    let Some(blue) = draw(&graded(flat([0.03, 0.08, 0.6]), stack.clone())) else { return };
+    let b = centre(&blue);
+    assert!((b[0] - b[1]).abs() <= 2 && (b[1] - b[2]).abs() <= 2, "blue greyed: {b:?}");
+    let red = centre(&draw(&graded(flat([0.6, 0.04, 0.03]), stack)).unwrap());
+    let plain = centre(&draw(&flat([0.6, 0.04, 0.03])).unwrap());
+    assert!(close(red, plain, 1), "red kept: {red:?} vs {plain:?}");
+}
+
+#[test]
+fn calibration_then_hsl_is_not_hsl_then_calibration() {
+    let mut hsl = GradeHsl::default();
+    hsl.saturation[0] = -100.0;
+    let calibration = GradeCalibration { red_hue: 100.0, red_saturation: 100.0, ..GradeCalibration::default() };
+    let colour = flat([0.5, 0.06, 0.04]);
+    let a = panels(vec![GradePanel::Hsl(hsl.clone()), GradePanel::Calibration(calibration.clone())]);
+    let b = panels(vec![GradePanel::Calibration(calibration), GradePanel::Hsl(hsl)]);
+    let Some(a) = draw(&graded(colour.clone(), a)) else { return };
+    let b = draw(&graded(colour, b)).unwrap();
+    assert!(!close(centre(&a), centre(&b), 3), "{:?} vs {:?}", centre(&a), centre(&b));
+}

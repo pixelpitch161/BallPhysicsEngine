@@ -7,10 +7,19 @@
 //!   straight line per channel, sample `i` at `u = i / CURVE_SAMPLES`, `p = u / (1 − u)`.
 //! - [`OP_CHROMA`] (Oklab): `[vibrance, saturation, 0, 0]` (−1..1).
 //! - [`OP_BEGIN`] / [`OP_END`] (linear): a mask weaker than full; `extra` of the end is its amount.
+//! - [`OP_HUE`] (Oklab): the HSL panel, [`HUE_SAMPLES`] samples over the hue of `[turn, saturation,
+//!   luminance, 0]` (see `maths::hsl_row`).
+//! - [`OP_POINT`] (Oklab): Point Colour; `extra` is the number of picks, three words each (see
+//!   `maths::PickWords`).
+//! - [`OP_WHEELS`] (Oklab): Colour Grading, five words (see `maths::WheelsWords`).
+//! - [`OP_DARK_TINT`] (linear): Calibration's Shadows Tint, the gain on the darks.
 
 use super::maths::{self, ToneCurves};
 use super::*;
-use crate::frame::{GradeBasic, GradeMask, GradePanel, GradeStack, GradeToneCurve};
+use crate::frame::{
+    GradeBasic, GradeCalibration, GradeColourGrading, GradeHsl, GradeMask, GradePanel, GradePointColour, GradeStack,
+    GradeToneCurve,
+};
 
 /// The compiled grade.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -71,6 +80,46 @@ impl Program {
         self.curve(|p| curves.at(p));
     }
 
+    fn hsl(&mut self, h: &GradeHsl) {
+        if h.is_identity() {
+            return;
+        }
+        let row = maths::hsl_row(h).into_iter().map(|w| w.map(|v| v as f32));
+        self.step(OP_HUE, SPACE_OKLAB, 0.0, row);
+    }
+
+    fn point_colour(&mut self, p: &GradePointColour) {
+        let picks: Vec<maths::PickWords> = p.picks.iter().filter_map(maths::pick_words).collect();
+        if picks.is_empty() {
+            return;
+        }
+        let f = |v: [f64; 3]| [v[0] as f32, v[1] as f32, v[2] as f32, 0.0];
+        let data: Vec<[f32; 4]> = picks.iter().flat_map(|p| [f(p.lab), f(p.shift), f(p.inv)]).collect();
+        self.step(OP_POINT, SPACE_OKLAB, picks.len() as f32, data);
+    }
+
+    fn colour_grading(&mut self, g: &GradeColourGrading) {
+        if g.is_identity() {
+            return;
+        }
+        let w = maths::wheels_words(g);
+        let f = |v: [f64; 4]| v.map(|x| x as f32);
+        let data: Vec<[f32; 4]> = std::iter::once(f(w.head)).chain(w.regions.map(f)).collect();
+        self.step(OP_WHEELS, SPACE_OKLAB, 0.0, data);
+    }
+
+    fn calibration(&mut self, c: &GradeCalibration) {
+        if !c.primaries_identity() {
+            let m = maths::calibration_matrix(c);
+            let rows = m.map(|r| [r[0] as f32, r[1] as f32, r[2] as f32, 0.0]);
+            self.step(OP_MATRIX, SPACE_LINEAR, 0.0, rows);
+        }
+        if c.shadows_tint != 0.0 && c.shadows_tint.is_finite() {
+            let g = maths::dark_tint_gain(c.shadows_tint);
+            self.step(OP_DARK_TINT, SPACE_LINEAR, 0.0, [[g[0] as f32, g[1] as f32, g[2] as f32, 0.0]]);
+        }
+    }
+
     fn mask(&mut self, m: &GradeMask) {
         let amount = if m.amount.is_finite() { m.amount.clamp(0.0, 1.0) } else { 0.0 };
         if amount <= 0.0 || m.panels.iter().all(GradePanel::is_identity) {
@@ -84,6 +133,10 @@ impl Program {
             match panel {
                 GradePanel::Basic(b) => self.basic(b),
                 GradePanel::ToneCurve(t) => self.tone_curve(t),
+                GradePanel::Hsl(h) => self.hsl(h),
+                GradePanel::PointColour(p) => self.point_colour(p),
+                GradePanel::ColourGrading(g) => self.colour_grading(g),
+                GradePanel::Calibration(c) => self.calibration(c),
             }
         }
         if weak {

@@ -140,7 +140,13 @@ pub struct GridCx<'a> {
     /// Which choices of a setting its dropdown offers (none: every one), as the thing's kind says
     /// ([`bpe_core::ThingKind::offers`]).
     pub offers: Option<&'a OffersOf<'a>>,
+    /// The colours a number setting's rail shows under it, left to right (the grade's colour
+    /// sliders: the video owns colour); none for a plain rail.
+    pub rails: Option<&'a RailsOf<'a>>,
 }
+
+/// The colours under a number setting's rail, by its key ([`GridCx::rails`]).
+pub type RailsOf<'a> = dyn Fn(&str) -> Option<Vec<Color32>> + 'a;
 
 /// Whether a dropdown offers a choice, by its saved name.
 type Offers<'a> = dyn Fn(&str) -> bool + 'a;

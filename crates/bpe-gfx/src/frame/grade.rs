@@ -42,6 +42,10 @@ impl Default for GradeMask {
 pub enum GradePanel {
     Basic(GradeBasic),
     ToneCurve(GradeToneCurve),
+    Hsl(GradeHsl),
+    PointColour(GradePointColour),
+    ColourGrading(GradeColourGrading),
+    Calibration(GradeCalibration),
 }
 
 impl GradePanel {
@@ -50,6 +54,10 @@ impl GradePanel {
         match self {
             GradePanel::Basic(b) => b.is_identity(),
             GradePanel::ToneCurve(t) => t.is_identity(),
+            GradePanel::Hsl(h) => h.is_identity(),
+            GradePanel::PointColour(p) => p.is_identity(),
+            GradePanel::ColourGrading(c) => c.is_identity(),
+            GradePanel::Calibration(c) => c.is_identity(),
         }
     }
 }
@@ -136,5 +144,135 @@ impl GradeToneCurve {
         let on_line = |c: &[CurvePoint]| c.iter().all(|p| p.x == p.y);
         [self.highlights, self.lights, self.darks, self.shadows].iter().all(|v| *v == 0.0)
             && [&self.rgb, &self.red, &self.green, &self.blue].iter().all(|c| on_line(c))
+    }
+}
+
+/// The HSL / Colour panel: hue, saturation and luminance for Lightroom's eight bands (red,
+/// orange, yellow, green, aqua, blue, purple, magenta), each −100..100.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GradeHsl {
+    pub hue: [f32; 8],
+    pub saturation: [f32; 8],
+    pub luminance: [f32; 8],
+}
+
+impl GradeHsl {
+    /// Whether every slider is 0.
+    pub fn is_identity(&self) -> bool {
+        [self.hue, self.saturation, self.luminance].iter().flatten().all(|v| *v == 0.0)
+    }
+}
+
+/// The Point Colour panel: the used picks, in slot order.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GradePointColour {
+    pub picks: Vec<GradePick>,
+}
+
+impl GradePointColour {
+    /// Whether no pick moves anything.
+    pub fn is_identity(&self) -> bool {
+        self.picks.iter().all(GradePick::is_identity)
+    }
+}
+
+/// One picked colour of Point Colour and how the colours near it change.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GradePick {
+    /// The picked colour, in linear light.
+    pub colour: [f32; 3],
+    /// Hue, Saturation and Luminance shifts, −100..100.
+    pub hue: f32,
+    pub saturation: f32,
+    pub luminance: f32,
+    /// How far from the pick a colour may be and still be moved, 0..100.
+    pub range: f32,
+}
+
+impl Default for GradePick {
+    fn default() -> Self {
+        Self { colour: [1.0, 0.0, 0.0], hue: 0.0, saturation: 0.0, luminance: 0.0, range: 50.0 }
+    }
+}
+
+impl GradePick {
+    /// Whether it shifts nothing.
+    pub fn is_identity(&self) -> bool {
+        self.hue == 0.0 && self.saturation == 0.0 && self.luminance == 0.0
+    }
+}
+
+/// One wheel of Colour Grading: the tint's hue (0..360°, Lightroom's: 0 red, 120 green, 240
+/// blue), its strength (0..100) and the region's luminance (−100..100).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GradeWheel {
+    pub hue: f32,
+    pub saturation: f32,
+    pub luminance: f32,
+}
+
+impl GradeWheel {
+    /// No tint and no luminance (the hue alone does nothing).
+    pub fn is_identity(&self) -> bool {
+        self.saturation == 0.0 && self.luminance == 0.0
+    }
+}
+
+/// The Colour Grading panel: three tone wheels and a global one, how much the regions overlap
+/// (Blending 0..100) and where shadows give way to highlights (Balance −100..100).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GradeColourGrading {
+    pub shadows: GradeWheel,
+    pub midtones: GradeWheel,
+    pub highlights: GradeWheel,
+    pub global: GradeWheel,
+    pub blending: f32,
+    pub balance: f32,
+}
+
+impl Default for GradeColourGrading {
+    fn default() -> Self {
+        Self {
+            shadows: GradeWheel::default(),
+            midtones: GradeWheel::default(),
+            highlights: GradeWheel::default(),
+            global: GradeWheel::default(),
+            blending: 50.0,
+            balance: 0.0,
+        }
+    }
+}
+
+impl GradeColourGrading {
+    /// Whether no wheel tints or moves luminance (Blending and Balance alone do nothing).
+    pub fn is_identity(&self) -> bool {
+        [self.shadows, self.midtones, self.highlights, self.global].iter().all(GradeWheel::is_identity)
+    }
+}
+
+/// The Calibration panel: Shadows Tint and the red, green and blue primaries' hue and
+/// saturation, each −100..100.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GradeCalibration {
+    pub shadows_tint: f32,
+    pub red_hue: f32,
+    pub red_saturation: f32,
+    pub green_hue: f32,
+    pub green_saturation: f32,
+    pub blue_hue: f32,
+    pub blue_saturation: f32,
+}
+
+impl GradeCalibration {
+    /// Whether no primary moves.
+    pub fn primaries_identity(&self) -> bool {
+        [self.red_hue, self.red_saturation, self.green_hue, self.green_saturation, self.blue_hue, self.blue_saturation]
+            .iter()
+            .all(|v| *v == 0.0)
+    }
+
+    /// Whether every slider is 0.
+    pub fn is_identity(&self) -> bool {
+        self.shadows_tint == 0.0 && self.primaries_identity()
     }
 }

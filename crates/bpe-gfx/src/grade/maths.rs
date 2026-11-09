@@ -436,3 +436,321 @@ pub fn chroma_scale(lab: [f64; 3], vibrance: f64, saturation: f64) -> f64 {
     let skin = (-(off / 0.35).powi(2)).exp();
     (1.0 + vibrance * dull * (1.0 - 0.5 * skin)) * (1.0 + saturation)
 }
+
+// ---------------------------------------------------------------------------------------------
+// Colour (part 2): HSL / Colour, Point Colour, Colour Grading, Calibration.
+
+use crate::frame::{GradeCalibration, GradeColourGrading, GradeHsl, GradePick};
+use std::f64::consts::{PI, TAU};
+
+/// Hermite smoothstep from `a` to `b` (0 below, 1 above).
+pub fn smoothstep(a: f64, b: f64, x: f64) -> f64 {
+    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// An sRGB-encoded channel (0..1) as linear light.
+fn srgb_to_linear(v: f64) -> f64 {
+    untone(v.clamp(0.0, 1.0))
+}
+
+/// The linear colour at HSV hue `degrees` with full saturation and value (Lightroom's hues: 0
+/// red, 120 green, 240 blue).
+pub fn hsv_colour(degrees: f64) -> [f64; 3] {
+    let h = degrees.rem_euclid(360.0) / 60.0;
+    let x = 1.0 - ((h % 2.0) - 1.0).abs();
+    let (r, g, b) = match h as u32 {
+        0 => (1.0, x, 0.0),
+        1 => (x, 1.0, 0.0),
+        2 => (0.0, 1.0, x),
+        3 => (0.0, x, 1.0),
+        4 => (x, 0.0, 1.0),
+        _ => (1.0, 0.0, x),
+    };
+    [srgb_to_linear(r), srgb_to_linear(g), srgb_to_linear(b)]
+}
+
+/// An Oklab colour's lightness, chroma and hue (radians, 0..τ; 0 for a grey).
+pub fn lch(lab: [f64; 3]) -> [f64; 3] {
+    let c = (lab[1] * lab[1] + lab[2] * lab[2]).sqrt();
+    let h = if c < 1e-7 { 0.0 } else { lab[2].atan2(lab[1]).rem_euclid(TAU) };
+    [lab[0], c, h]
+}
+
+/// Lightness, chroma and hue back to Oklab.
+pub fn from_lch([l, c, h]: [f64; 3]) -> [f64; 3] {
+    [l, c * h.cos(), c * h.sin()]
+}
+
+/// The Oklab hue (radians) of the colour at HSV hue `degrees`.
+pub fn oklab_hue_of(degrees: f64) -> f64 {
+    lch(oklab(hsv_colour(degrees)))[2]
+}
+
+/// The direction in Oklab's (a, b) of the colour at HSV hue `degrees`, of length 1.
+pub fn hsv_hue_direction(degrees: f64) -> [f64; 2] {
+    let h = oklab_hue_of(degrees);
+    [h.cos(), h.sin()]
+}
+
+/// Lightroom's HSL bands (red, orange, yellow, green, aqua, blue, purple, magenta) as HSV hues.
+pub const BAND_HSV_HUES: [f64; 8] = [0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 270.0, 300.0];
+
+/// The bands' names, as the panel shows them.
+pub const BAND_NAMES: [&str; 8] = ["Red", "Orange", "Yellow", "Green", "Aqua", "Blue", "Purple", "Magenta"];
+
+/// The bands' centres as Oklab hues (radians, rising: red ≈ 29°, magenta ≈ 328°).
+pub fn band_hues() -> [f64; 8] {
+    static HUES: std::sync::OnceLock<[f64; 8]> = std::sync::OnceLock::new();
+    *HUES.get_or_init(|| BAND_HSV_HUES.map(oklab_hue_of))
+}
+
+/// How far (as a share of the way to the next band) a band keeps a hue to itself before it starts
+/// to share it: a colour near a band's centre is moved by that band in full.
+pub const BAND_FLAT: f64 = 0.15;
+
+/// How much each band owns Oklab hue `h` (radians): the two bands either side share it by a
+/// smoothstep (each band keeps the hues nearest it to itself), so the weights add to 1 and a band's
+/// centre is its alone.
+pub fn band_weights(h: f64) -> [f64; 8] {
+    let centres = band_hues();
+    let h = h.rem_euclid(TAU);
+    let mut w = [0.0; 8];
+    for i in 0..8 {
+        let (a, j) = (centres[i], (i + 1) % 8);
+        let gap = (centres[j] - a).rem_euclid(TAU);
+        let along = (h - a).rem_euclid(TAU);
+        if along < gap {
+            let s = smoothstep(BAND_FLAT, 1.0 - BAND_FLAT, along / gap);
+            w[i] = 1.0 - s;
+            w[j] = s;
+            return w;
+        }
+    }
+    w[0] = 1.0;
+    w
+}
+
+/// How far (radians) band `i`'s Hue slider at ±100 turns it: 0.75 of the way to the next band
+/// (+) or the one before (−).
+pub fn band_turn(i: usize, hue: f64) -> f64 {
+    let centres = band_hues();
+    let t = (hue / 100.0).clamp(-1.0, 1.0);
+    let gap = if t >= 0.0 {
+        (centres[(i + 1) % 8] - centres[i]).rem_euclid(TAU)
+    } else {
+        (centres[i] - centres[(i + 7) % 8]).rem_euclid(TAU)
+    };
+    0.75 * gap * t
+}
+
+/// The HSL panel as a lookup row over the Oklab hue: [`super::HUE_SAMPLES`] samples (sample i at
+/// i°), each `[hue turn (radians), saturation −1..1, luminance −1..1, 0]`.
+pub fn hsl_row(p: &GradeHsl) -> Vec<[f64; 4]> {
+    let n = |v: f32| if v.is_finite() { v as f64 } else { 0.0 };
+    let turns: [f64; 8] = std::array::from_fn(|i| band_turn(i, n(p.hue[i])));
+    (0..super::HUE_SAMPLES)
+        .map(|i| {
+            let w = band_weights((i as f64).to_radians());
+            let sum = |f: &dyn Fn(usize) -> f64| (0..8).map(|b| w[b] * f(b)).sum::<f64>();
+            [
+                sum(&|b| turns[b]),
+                sum(&|b| (n(p.saturation[b]) / 100.0).clamp(-1.0, 1.0)),
+                sum(&|b| (n(p.luminance[b]) / 100.0).clamp(-1.0, 1.0)),
+                0.0,
+            ]
+        })
+        .collect()
+}
+
+/// The row at Oklab hue `h` (radians), between samples, wrapping round.
+pub fn hsl_sample(row: &[[f64; 4]], h: f64) -> [f64; 4] {
+    let n = row.len();
+    let t = h.rem_euclid(TAU) / TAU * n as f64;
+    let i = (t.floor() as usize).min(n - 1);
+    let (a, b, f) = (row[i], row[(i + 1) % n], t - i as f64);
+    std::array::from_fn(|k| a[k] + (b[k] - a[k]) * f)
+}
+
+/// How much a colour of chroma `c` takes a luminance move (none for a grey).
+pub fn chroma_weight(c: f64) -> f64 {
+    (c / 0.08).clamp(0.0, 1.0)
+}
+
+/// The HSL panel on an Oklab colour (as the shader does it).
+pub fn hsl(lab: [f64; 3], row: &[[f64; 4]]) -> [f64; 3] {
+    let [l, c, h] = lch(lab);
+    if c < 1e-7 {
+        return lab;
+    }
+    let [turn, s, lum, _] = hsl_sample(row, h);
+    from_lch([l * (0.8 * lum * chroma_weight(c)).exp2(), c * (1.0 + s).max(0.0), h + turn])
+}
+
+/// The most a Point Colour pick's Hue turns colours (radians).
+pub const PICK_TURN: f64 = 40.0 * PI / 180.0;
+
+/// A Point Colour pick as the shader reads it: where it is in Oklab, its shifts (hue turn in
+/// radians, saturation and luminance −1..1) and one over its widths in lightness, chroma, hue.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PickWords {
+    pub lab: [f64; 3],
+    pub shift: [f64; 3],
+    pub inv: [f64; 3],
+}
+
+/// Pick `p` as words, or `None` when it shifts nothing.
+pub fn pick_words(p: &GradePick) -> Option<PickWords> {
+    if p.is_identity() {
+        return None;
+    }
+    let n = |v: f32| if v.is_finite() { (v as f64 / 100.0).clamp(-1.0, 1.0) } else { 0.0 };
+    let r = if p.range.is_finite() { (p.range as f64 / 100.0).clamp(0.0, 1.0) } else { 0.5 };
+    let colour = p.colour.map(|v| if v.is_finite() { v.max(0.0) as f64 } else { 0.0 });
+    Some(PickWords {
+        lab: oklab(colour),
+        shift: [n(p.hue) * PICK_TURN, n(p.saturation), n(p.luminance)],
+        inv: [1.0 / (0.08 + 0.32 * r), 1.0 / (0.04 + 0.16 * r), 1.0 / (0.03 + 0.14 * r)],
+    })
+}
+
+/// The composite's roll-off (`shaders/post.wgsl::roll_off`): a colour past white squeezed back to
+/// what the screen shows.
+pub fn roll_off(c: [f64; 3]) -> [f64; 3] {
+    let peak = c[0].max(c[1]).max(c[2]);
+    if peak <= 1.0 {
+        return c;
+    }
+    let white = c[0].min(c[1]).min(c[2]).clamp(0.0, 1.0);
+    let over = (luminance(c) - 1.0).max(0.0);
+    let whiter = (white * white).max(over / (over + 0.5)) * ((peak - 1.0) * 4.0).min(1.0);
+    c.map(|v| v / peak + (1.0 - v / peak) * whiter)
+}
+
+/// An Oklab colour past white as the screen shows it (through [`roll_off`]): a glow is matched
+/// by the colour the eyedropper picks from the finished picture, not by how far above white it is.
+pub fn tamed(lab: [f64; 3]) -> [f64; 3] {
+    let lin = unoklab(lab);
+    if lin[0].max(lin[1]).max(lin[2]) > 1.0 { oklab(roll_off(lin)) } else { lab }
+}
+
+/// How much pick `p` takes the Oklab colour `lab` (1 on the pick, 0 far from it).
+pub fn pick_weight(lab: [f64; 3], p: &PickWords) -> f64 {
+    let [l, c, h] = lch(tamed(lab));
+    let [lp, cp, hp] = lch(p.lab);
+    let dh = 2.0 * (c * cp).sqrt() * ((h - hp) / 2.0).sin();
+    let d = (((l - lp) * p.inv[0]).powi(2) + ((c - cp) * p.inv[1]).powi(2) + (dh * p.inv[2]).powi(2)).sqrt();
+    1.0 - smoothstep(0.35, 1.0, d)
+}
+
+/// The Point Colour panel on an Oklab colour: every pick's weight from the colour as it came,
+/// then each pick's shifts in turn.
+pub fn point_colour(lab: [f64; 3], picks: &[PickWords]) -> [f64; 3] {
+    let weights: Vec<f64> = picks.iter().map(|p| pick_weight(lab, p)).collect();
+    let mut out = lab;
+    for (p, w) in picks.iter().zip(weights) {
+        if w <= 0.0 {
+            continue;
+        }
+        let [l, c, h] = lch(out);
+        out = from_lch([l * (0.8 * p.shift[2] * w).exp2(), c * (1.0 + p.shift[1] * w).max(0.0), h + p.shift[0] * w]);
+    }
+    out
+}
+
+/// Oklab lightness of 18% grey: where Balance 0 puts the middle of the tones.
+pub fn grey_lightness() -> f64 {
+    oklab([0.18; 3])[0]
+}
+
+/// Colour Grading as the shader reads it: `head` is `[pivot, overlap, global log2 gain, 0]`,
+/// then one `[Δa, Δb, ΔL, 0]` for shadows, midtones, highlights and global.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WheelsWords {
+    pub head: [f64; 4],
+    pub regions: [[f64; 4]; 4],
+}
+
+/// The panel's words.
+pub fn wheels_words(g: &GradeColourGrading) -> WheelsWords {
+    let n = |v: f32, lo: f64, hi: f64| if v.is_finite() { (v as f64).clamp(lo, hi) } else { 0.0 };
+    let balance = n(g.balance, -100.0, 100.0) / 100.0;
+    let blending = if g.blending.is_finite() { (g.blending as f64).clamp(0.0, 100.0) / 100.0 } else { 0.5 };
+    let pivot = (grey_lightness() - 0.3 * balance).clamp(0.15, 0.85);
+    let region = |w: &crate::frame::GradeWheel, lum_scale: f64| {
+        let [da, db] = hsv_hue_direction(n(w.hue, -1e6, 1e6));
+        let s = n(w.saturation, 0.0, 100.0) / 100.0 * 0.10;
+        [da * s, db * s, n(w.luminance, -100.0, 100.0) / 100.0 * lum_scale, 0.0]
+    };
+    let mut global = region(&g.global, 0.0);
+    global[2] = 0.0;
+    WheelsWords {
+        head: [pivot, 0.02 + 0.313 * blending, n(g.global.luminance, -100.0, 100.0) / 100.0 * 0.5, 0.0],
+        regions: [region(&g.shadows, 0.2), region(&g.midtones, 0.2), region(&g.highlights, 0.2), global],
+    }
+}
+
+/// The shadows, midtones and highlights weights of Oklab lightness `l` (they add to 1).
+pub fn wheel_weights(l: f64, pivot: f64, overlap: f64) -> [f64; 3] {
+    let x0 = l.clamp(0.0, 1.0);
+    let x = if x0 < pivot { 0.5 * x0 / pivot } else { 0.5 + 0.5 * (x0 - pivot) / (1.0 - pivot) };
+    let s = 1.0 - smoothstep(1.0 / 3.0 - overlap, 1.0 / 3.0 + overlap, x);
+    let h = smoothstep(2.0 / 3.0 - overlap, 2.0 / 3.0 + overlap, x);
+    [s, (1.0 - s - h).max(0.0), h]
+}
+
+/// Colour Grading on an Oklab colour (as the shader does it).
+pub fn colour_wheels(lab: [f64; 3], w: &WheelsWords) -> [f64; 3] {
+    let l = lab[0];
+    let weights = wheel_weights(l, w.head[0], w.head[1]);
+    let tint = (l / 0.25).clamp(0.0, 1.0);
+    let mut out = lab;
+    let mut lift = 0.0;
+    for (r, region) in w.regions.iter().enumerate() {
+        let k = if r < 3 { weights[r] } else { 1.0 };
+        out[1] += region[0] * k * tint;
+        out[2] += region[1] * k * tint;
+        lift += region[2] * k;
+    }
+    out[0] = ((l + lift) * w.head[2].exp2()).max(0.0);
+    out
+}
+
+/// The Calibration panel's primaries as a linear-light matrix (rows, like [`basic_matrix`]):
+/// each primary turned by its Hue (±30°) and its chroma scaled by its Saturation, then the columns
+/// scaled so white, and so every grey, stays exactly as it was.
+pub fn calibration_matrix(c: &GradeCalibration) -> [[f64; 3]; 3] {
+    let n = |v: f32| if v.is_finite() { (v as f64 / 100.0).clamp(-1.0, 1.0) } else { 0.0 };
+    let moves = [(c.red_hue, c.red_saturation), (c.green_hue, c.green_saturation), (c.blue_hue, c.blue_saturation)];
+    let mut p: Mat3 = [[0.0; 3]; 3];
+    for (i, (hue, sat)) in moves.iter().enumerate() {
+        let mut e = [0.0; 3];
+        e[i] = 1.0;
+        let [l, ch, h] = lch(oklab(e));
+        let moved = unoklab(from_lch([l, ch * (1.0 + 0.6 * n(*sat)).max(0.0), h + n(*hue) * 30f64.to_radians()]));
+        for (row, v) in p.iter_mut().zip(moved) {
+            row[i] = v;
+        }
+    }
+    let k = apply(&inverse(&p), [1.0; 3]);
+    p.map(|row| [row[0] * k[0], row[1] * k[1], row[2] * k[2]])
+}
+
+/// Rec. 709 luminance of a linear colour.
+pub fn luminance(c: [f64; 3]) -> f64 {
+    0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+}
+
+/// The gain Shadows Tint (−100 green .. 100 magenta) puts on the darks, at the same luminance.
+pub fn dark_tint_gain(tint: f32) -> [f64; 3] {
+    let t = if tint.is_finite() { (tint as f64 / 100.0).clamp(-1.0, 1.0) } else { 0.0 };
+    let raw = [1.0 + 0.25 * t, 1.0 - 0.35 * t, 1.0 + 0.25 * t];
+    let y = luminance(raw);
+    raw.map(|v| v / y)
+}
+
+/// Shadows Tint on a linear colour: the gain in full on black's side, gone by 18% luminance.
+pub fn dark_tint(c: [f64; 3], gain: [f64; 3]) -> [f64; 3] {
+    let w = 1.0 - smoothstep(0.0, 0.18, luminance(c));
+    std::array::from_fn(|i| c[i] * (1.0 + (gain[i] - 1.0) * w))
+}

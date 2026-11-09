@@ -257,10 +257,10 @@ mod tests {
             build_frame(scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
             frame
         };
-        // A new card is at its defaults: two panels that do nothing.
+        // A new card is at its defaults: a panel of each kind, doing nothing.
         let fresh = at(&scene);
         assert_eq!(fresh.grade.masks.len(), 1);
-        assert_eq!(fresh.grade.masks[0].panels.len(), 2);
+        assert_eq!(fresh.grade.masks[0].panels.len(), grade::PANEL_ORDER.len());
         assert!(fresh.grade.is_identity());
         scene.card_mut(ThingId::ROOT, SlotId::Grade).unwrap().params.set(&format!("{basic}/temp"), Value::Number(25.0));
         let warm = at(&scene);

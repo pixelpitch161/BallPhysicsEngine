@@ -397,6 +397,7 @@ fn demo_shots(reg: &Registry) -> Vec<Shot> {
         at("graded-sunset", scenes::graded_sunset(reg)),
         at("grading-basic", grading_basic(reg)),
         at("grading-curves", grading_curves(reg)),
+        at("grading-colour", grading_colour(reg)),
         at("stage-camera-orbit", stage_camera(reg, 25.0)),
         at("stage-camera-orbit-far", stage_camera(reg, -40.0)),
         at("stage-depth-of-field", stage_depth_of_field(reg)),
@@ -463,6 +464,48 @@ fn grading_curves(reg: &Registry) -> Scene {
             ("blue", curve(&[(0.0, 0.12), (0.5, 0.45), (1.0, 0.9)])),
         ],
     )
+}
+
+/// The colour demo through the colour panels: HSL turning and greying some bands, a Point Colour
+/// pick, a teal-and-orange split tone from the Colour Grading wheels and Calibration's primaries
+/// (look for banding where hues meet, odd hues near greys and clipped colours).
+fn grading_colour(reg: &Registry) -> Scene {
+    use bpe_kit::modules::grade;
+    let mut scene = scenes::colour_demo(reg);
+    grade::ensure_grade(&mut scene, reg);
+    let card = scene.card(ThingId::ROOT, SlotId::Grade).expect("made above");
+    let panels: Vec<_> =
+        grade::panels_of(card, grade::whole_of(card).expect("made above")).iter().map(|l| l.id).collect();
+    let n = Value::Number;
+    let settings: [(usize, &str, Value); 22] = [
+        (2, "red_hue", n(30.0)),
+        (2, "orange_saturation", n(40.0)),
+        (2, "yellow_luminance", n(-30.0)),
+        (2, "green_saturation", n(-80.0)),
+        (2, "aqua_hue", n(-40.0)),
+        (2, "blue_saturation", n(60.0)),
+        (2, "blue_luminance", n(-40.0)),
+        (2, "purple_hue", n(50.0)),
+        (2, "magenta_saturation", n(-50.0)),
+        (3, "pick1_on", Value::Bool(true)),
+        (3, "pick1_colour", Value::Color(bpe_core::Color::rgb(255, 120, 40))),
+        (3, "pick1_hue", n(-30.0)),
+        (3, "pick1_luminance", n(30.0)),
+        (3, "pick1_range", n(70.0)),
+        (4, "shadows_hue", n(195.0)),
+        (4, "shadows_saturation", n(45.0)),
+        (4, "highlights_hue", n(35.0)),
+        (4, "highlights_saturation", n(35.0)),
+        (4, "midtones_luminance", n(10.0)),
+        (4, "balance", n(-20.0)),
+        (5, "shadows_tint", n(25.0)),
+        (5, "blue_hue", n(-40.0)),
+    ];
+    let params = &mut scene.card_mut(ThingId::ROOT, SlotId::Grade).expect("made above").params;
+    for (panel, key, v) in settings {
+        params.set(&bpe_core::layered_key(panels[panel], key), v);
+    }
+    scene
 }
 
 /// A Particles thing at `at` whose only Look layer is `kind` with `params`: a still crowd of `w` x `h`, one

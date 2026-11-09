@@ -443,6 +443,7 @@ fn shape_body(ui: &mut Ui, cx: &LookCx, edits: &mut Vec<Edit>) {
         follow: Some(&follow),
         vary: None,
         offers: None,
+        rails: None,
     };
     let out = settings_grid(ui, ("shape body", cx.id), &defs, get, &grid);
     edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetOwn(key.into(), value)));
@@ -478,6 +479,7 @@ fn size_row(ui: &mut Ui, cx: &LookCx, edits: &mut Vec<Edit>) {
         follow: Some(&follow),
         vary: vary.as_ref(),
         offers: None,
+        rails: None,
     };
     let out = settings_grid(ui, ("look size", cx.id), std::slice::from_ref(&def), get, &grid);
     edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetOwn(key.into(), value)));
@@ -522,6 +524,7 @@ pub(crate) fn layer_settings(
         follow: Some(&follow),
         vary: vary.as_ref(),
         offers: None,
+        rails: None,
     };
     let out = settings_grid(ui, ("layer", cx.id, cx.slot, layer.0), defs, get, &grid);
     crate::inspector::fold_groups(inspector, (cx.id, Some(cx.slot)), &out.folds);

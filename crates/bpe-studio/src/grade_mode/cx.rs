@@ -104,6 +104,8 @@ pub enum GradeEdit {
     ResetOrder,
     /// A panel switched on or off.
     EnablePanel(LayerId, bool),
+    /// A Point Colour panel's pick in slot `.1` (0..8) given up: every value, key and pulse of it goes.
+    RemovePick(LayerId, usize),
 }
 
 /// What applying the edits did.
@@ -151,6 +153,7 @@ pub fn apply(scene: &mut Scene, kit: &Kit, time: f64, edits: Vec<GradeEdit>) -> 
                     && scene.card(root, slot).map(|c| &c.layers) != before.as_ref()
             }
             GradeEdit::ResetPanel(id) => reset_panel(scene, id),
+            GradeEdit::RemovePick(id, slot) => clear(scene, &format!("{id}/{}", grade::pick_prefix(slot)), None),
             GradeEdit::ResetOrder => whole.is_some_and(|w| grade::reset_order(scene, reg, w)),
             GradeEdit::EnablePanel(id, on) => scene.set_layer_enabled(reg, root, slot, id, on).is_ok(),
         };
@@ -162,15 +165,21 @@ pub fn apply(scene: &mut Scene, kit: &Kit, time: f64, edits: Vec<GradeEdit>) -> 
 /// curve shows). True when any was there.
 fn reset_panel(scene: &mut Scene, id: LayerId) -> bool {
     let prefix = format!("{id}/");
-    let mine = |a: &Address| a.thing == ThingId::ROOT && a.slot == Some(SlotId::Grade) && a.key.starts_with(&prefix);
+    let view = format!("{prefix}{VIEW_KEY}");
+    clear(scene, &prefix, Some(&view))
+}
+
+/// Takes every value, key and pulse whose key starts with `prefix` off the Grade card, but the
+/// value of `keep`. True when any was there.
+fn clear(scene: &mut Scene, prefix: &str, keep: Option<&str>) -> bool {
+    let mine = |a: &Address| a.thing == ThingId::ROOT && a.slot == Some(SlotId::Grade) && a.key.starts_with(prefix);
     let (tracks, pulses) = (scene.tracks.len(), scene.pulses.len());
     scene.tracks.retain(|a, _| !mine(a));
     scene.pulses.retain(|a, _| !mine(a));
     let mut changed = scene.tracks.len() != tracks || scene.pulses.len() != pulses;
     if let Some(card) = scene.card_mut(ThingId::ROOT, SlotId::Grade) {
         let count = card.params.0.len();
-        let view = format!("{prefix}{VIEW_KEY}");
-        card.params.0.retain(|k, _| !k.starts_with(&prefix) || *k == view);
+        card.params.0.retain(|k, _| !k.starts_with(prefix) || Some(k.as_str()) == keep);
         changed |= card.params.0.len() != count;
     }
     changed

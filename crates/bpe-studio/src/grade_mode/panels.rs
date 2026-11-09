@@ -1,7 +1,7 @@
 //! Grade mode's panel column: the Whole picture's panels in the order they work, each with a
 //! header (fold, name, on/off, dragged to a new place; right-click for Reset panel, Move up or
 //! down, Remove and Reset order) over its settings, and Add panel for another (a copy is "Tone
-//! Curve 2").
+//! Curve 2"). The colour panels' bodies are in `colour.rs`.
 
 use super::cx::{GradeCx, GradeEdit, card_or_start, full_key};
 use super::{Channel, GradeMode};
@@ -9,7 +9,9 @@ use crate::app::Studio;
 use crate::style;
 use crate::widgets::{GridCx, KeyMark, TargetChoices, settings_grid};
 use bpe_core::{Layer, LayerId, SettingDef, Settings, ThingId, Value};
-use bpe_kit::modules::grade::{self, BASIC, CurveMode, PANEL_ORDER, TONE_CURVE};
+use bpe_kit::modules::grade::{
+    self, BASIC, CALIBRATION, COLOUR_GRADING, CurveMode, HSL, PANEL_ORDER, POINT_COLOUR, TONE_CURVE,
+};
 use eframe::egui::{self, RichText, Sense, Ui};
 
 /// The column, with its edits applied.
@@ -143,6 +145,10 @@ fn panel(
             match layer.kind.as_str() {
                 BASIC => basic(ui, gx, id, edits),
                 TONE_CURVE => tone_curve(ui, mode, gx, id, edits),
+                HSL => super::colour::hsl(ui, mode, gx, id, edits),
+                POINT_COLOUR => super::colour::point_colour(ui, mode, gx, id, edits),
+                COLOUR_GRADING => super::colour::colour_grading(ui, mode, gx, id, edits),
+                CALIBRATION => super::colour::calibration(ui, gx, id, edits),
                 _ => {}
             }
         }
@@ -210,8 +216,16 @@ fn drop_line(ui: &mut Ui, mode: &GradeMode, headers: &[(LayerId, egui::Rect)]) {
     ui.painter().hline(x, y, egui::Stroke::new(2.0, style::TEXT));
 }
 
-/// A panel's settings grid over `defs`, its changes gathered as edits.
-fn grid(ui: &mut Ui, gx: &GradeCx, id: LayerId, defs: &[SettingDef], edits: &mut Vec<GradeEdit>) {
+/// A panel's settings grid over `defs`, its changes gathered as edits. `rails` gives a colour
+/// strip under the sliders that show a colour range.
+pub(super) fn grid(
+    ui: &mut Ui,
+    gx: &GradeCx,
+    id: LayerId,
+    defs: &[SettingDef],
+    rails: Option<&crate::widgets::RailsOf>,
+    edits: &mut Vec<GradeEdit>,
+) {
     let (scene, reg) = (gx.scene, &gx.kit.registry);
     let get = |key: &str| gx.get(Some(id), key);
     let marks = |key: &str| {
@@ -241,6 +255,7 @@ fn grid(ui: &mut Ui, gx: &GradeCx, id: LayerId, defs: &[SettingDef], edits: &mut
         follow: Some(&follow),
         vary: None,
         offers: None,
+        rails,
     };
     let out = settings_grid(ui, ("grade panel", id.0), defs, get, &cx);
     for (key, value) in out.changes {
@@ -252,7 +267,7 @@ fn grid(ui: &mut Ui, gx: &GradeCx, id: LayerId, defs: &[SettingDef], edits: &mut
 }
 
 fn basic(ui: &mut Ui, gx: &GradeCx, id: LayerId, edits: &mut Vec<GradeEdit>) {
-    grid(ui, gx, id, grade::BasicPanel::defs(), edits);
+    grid(ui, gx, id, grade::BasicPanel::defs(), Some(&super::colour::basic_rails), edits);
 }
 
 fn tone_curve(ui: &mut Ui, mode: &mut GradeMode, gx: &GradeCx, id: LayerId, edits: &mut Vec<GradeEdit>) {
@@ -289,7 +304,7 @@ fn tone_curve(ui: &mut Ui, mode: &mut GradeMode, gx: &GradeCx, id: LayerId, edit
         .filter(|d| d.key != "mode" && !grade::CURVE_KEYS.contains(&d.key))
         .cloned()
         .collect();
-    grid(ui, gx, id, &defs, edits);
+    grid(ui, gx, id, &defs, None, edits);
     if curve_mode == CurveMode::Point {
         ui.label(
             RichText::new("Click the curve to add a point, drag to move it, double-click a point to take it away.")

@@ -277,3 +277,250 @@ fn a_baked_curve_reads_back_as_the_curve_within_a_hair() {
         assert!((got - want).abs() < 2e-4, "{x}: {got} vs {want}");
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Part 2: the colour panels.
+
+use crate::frame::{GradeCalibration, GradeColourGrading, GradeHsl, GradePick, GradePointColour, GradeWheel};
+
+const RED: [f64; 3] = [1.0, 0.0, 0.0];
+const BLUE: [f64; 3] = [0.0, 0.0, 1.0];
+
+fn chroma(c: [f64; 3]) -> f64 {
+    lch(oklab(c))[1]
+}
+
+fn hue_deg(c: [f64; 3]) -> f64 {
+    lch(oklab(c))[2].to_degrees()
+}
+
+fn near3(a: [f64; 3], b: [f64; 3], by: f64) -> bool {
+    (0..3).all(|i| (a[i] - b[i]).abs() <= by)
+}
+
+fn steps_of(panel: GradePanel) -> u32 {
+    compile(&GradeStack { masks: vec![GradeMask { amount: 1.0, panels: vec![panel] }], split: None }).steps
+}
+
+#[test]
+fn the_bands_sit_on_lightroom_s_hues_in_rising_order_and_share_every_hue() {
+    let c = band_hues().map(f64::to_degrees);
+    let want = [29.2, 52.8, 109.8, 142.5, 194.8, 264.1, 293.8, 328.4];
+    for i in 0..8 {
+        assert!((c[i] - want[i]).abs() < 0.2, "{}: {} not {}", BAND_NAMES[i], c[i], want[i]);
+    }
+    for d in 0..3600 {
+        let w = band_weights((d as f64 / 10.0).to_radians());
+        assert!((w.iter().sum::<f64>() - 1.0).abs() < 1e-12, "{d}");
+        assert!(w.iter().filter(|v| **v > 0.0).count() <= 2, "at most two bands share a hue");
+    }
+    for (i, h) in band_hues().iter().enumerate() {
+        assert!((band_weights(*h)[i] - 1.0).abs() < 1e-9, "a band's centre is its alone");
+    }
+}
+
+#[test]
+fn hsl_at_its_defaults_adds_no_step_and_its_row_is_all_zero() {
+    assert_eq!(steps_of(GradePanel::Hsl(GradeHsl::default())), 0);
+    assert!(hsl_row(&GradeHsl::default()).iter().flatten().all(|v| *v == 0.0));
+    let mut h = GradeHsl::default();
+    h.luminance[3] = 10.0;
+    assert_eq!(steps_of(GradePanel::Hsl(h)), 1);
+}
+
+#[test]
+fn hsl_blue_saturation_down_greys_blue_and_leaves_red() {
+    let mut h = GradeHsl::default();
+    h.saturation[5] = -100.0;
+    let row = hsl_row(&h);
+    let blue = unoklab(hsl(oklab(BLUE), &row));
+    assert!(chroma(blue) < 1e-4, "{blue:?}");
+    let red = unoklab(hsl(oklab(RED), &row));
+    assert!(near3(red, RED, 1e-6), "{red:?}");
+    // A blue a little off the band's centre is greyed in full too.
+    let off = unoklab(hsl(oklab([0.03, 0.08, 0.6]), &row));
+    assert!(chroma(off) < 1e-4, "{off:?}");
+}
+
+#[test]
+fn hsl_red_hue_up_turns_red_towards_orange_and_greys_never_move() {
+    let mut h = GradeHsl::default();
+    h.hue[0] = 100.0;
+    let row = hsl_row(&h);
+    let turned = hue_deg(unoklab(hsl(oklab(RED), &row)));
+    assert!(turned > 29.2 + 15.0 && turned < 52.8, "{turned}");
+    let all = GradeHsl { hue: [100.0; 8], saturation: [100.0; 8], luminance: [-100.0; 8] };
+    let row = hsl_row(&all);
+    for v in [0.0, 0.05, 0.18, 1.0, 4.0] {
+        let g = unoklab(hsl(oklab([v; 3]), &row));
+        assert!(near3(g, [v; 3], 1e-6 * v.max(1.0)), "{v}: {g:?}");
+    }
+}
+
+#[test]
+fn hsl_luminance_down_darkens_a_band_and_dull_colours_less() {
+    let mut h = GradeHsl::default();
+    h.luminance[5] = -100.0;
+    let row = hsl_row(&h);
+    let blue = hsl(oklab(BLUE), &row);
+    assert!(blue[0] < oklab(BLUE)[0] * 0.6, "{blue:?}");
+    let dull = [0.30, 0.30, 0.34];
+    let moved = hsl(oklab(dull), &row)[0] / oklab(dull)[0];
+    assert!(moved > 0.6 && moved < 1.0, "{moved}");
+}
+
+fn pick(colour: [f32; 3]) -> GradePick {
+    GradePick { colour, ..GradePick::default() }
+}
+
+#[test]
+fn a_point_colour_pick_greys_its_colour_and_leaves_far_ones() {
+    let picks: Vec<PickWords> =
+        [GradePick { saturation: -100.0, ..pick([1.0, 0.0, 0.0]) }].iter().filter_map(pick_words).collect();
+    let red = unoklab(point_colour(oklab(RED), &picks));
+    assert!(chroma(red) < 1e-4, "{red:?}");
+    let blue = unoklab(point_colour(oklab(BLUE), &picks));
+    assert!(near3(blue, BLUE, 1e-6), "{blue:?}");
+    let grey = unoklab(point_colour(oklab([0.2; 3]), &picks));
+    assert!(near3(grey, [0.2; 3], 1e-6), "a grey is far from red");
+}
+
+#[test]
+fn a_point_colour_s_range_widens_what_it_takes_and_a_still_pick_adds_nothing() {
+    let near = unoklab(from_lch({
+        let [l, c, h] = lch(oklab(RED));
+        [l, c, h + 20f64.to_radians()]
+    }));
+    let weight = |range: f32| {
+        let p = pick_words(&GradePick { saturation: -100.0, range, ..pick([1.0, 0.0, 0.0]) }).unwrap();
+        pick_weight(oklab(near), &p)
+    };
+    assert!(
+        weight(0.0) < weight(50.0) && weight(50.0) < weight(100.0),
+        "{} {} {}",
+        weight(0.0),
+        weight(50.0),
+        weight(100.0)
+    );
+    assert!(weight(100.0) > 0.75, "Range 100 takes most of a red 20° away");
+    assert!(weight(0.0) < 0.05, "Range 0 hardly any");
+    assert!(pick_words(&pick([1.0, 0.0, 0.0])).is_none());
+    let still = GradePointColour { picks: vec![pick([1.0, 0.0, 0.0])] };
+    assert_eq!(steps_of(GradePanel::PointColour(still)), 0);
+}
+
+fn wheel(hue: f32, saturation: f32, luminance: f32) -> GradeWheel {
+    GradeWheel { hue, saturation, luminance }
+}
+
+#[test]
+fn the_tone_regions_share_every_lightness_and_balance_moves_them() {
+    let w = wheels_words(&GradeColourGrading::default());
+    for i in 0..=200 {
+        let l = i as f64 / 200.0;
+        let k = wheel_weights(l, w.head[0], w.head[1]);
+        assert!((k.iter().sum::<f64>() - 1.0).abs() < 1e-12, "{l}: {k:?}");
+    }
+    assert!(wheel_weights(0.1, w.head[0], w.head[1])[0] > 0.95);
+    assert!(wheel_weights(0.95, w.head[0], w.head[1])[2] > 0.95);
+    let mid = grey_lightness();
+    assert!(wheel_weights(mid, w.head[0], w.head[1])[1] > 0.95, "middle grey is the midtones'");
+    let up = wheels_words(&GradeColourGrading { balance: 100.0, ..Default::default() });
+    let l = mid + 0.1;
+    assert!(
+        wheel_weights(l, up.head[0], up.head[1])[2] > wheel_weights(l, w.head[0], w.head[1])[2],
+        "Balance + gives the highlights more"
+    );
+    let hard = wheels_words(&GradeColourGrading { blending: 0.0, ..Default::default() });
+    let soft = wheels_words(&GradeColourGrading { blending: 100.0, ..Default::default() });
+    let l = 0.3;
+    assert!(wheel_weights(l, hard.head[0], hard.head[1])[0] > wheel_weights(l, soft.head[0], soft.head[1])[0]);
+}
+
+#[test]
+fn a_shadows_tint_warms_the_darks_and_leaves_white_and_black() {
+    let g = GradeColourGrading { shadows: wheel(30.0, 60.0, 0.0), ..Default::default() };
+    assert_eq!(steps_of(GradePanel::ColourGrading(g.clone())), 1);
+    let w = wheels_words(&g);
+    let dark = unoklab(colour_wheels(oklab([0.03; 3]), &w));
+    assert!(dark[0] > dark[2] * 1.2, "warmer: {dark:?}");
+    let white = unoklab(colour_wheels(oklab([1.0; 3]), &w));
+    assert!(near3(white, [1.0; 3], 1e-3), "{white:?}");
+    let black = unoklab(colour_wheels(oklab([0.0; 3]), &w));
+    assert!(near3(black, [0.0; 3], 1e-12), "{black:?}");
+    let hue_only = GradeColourGrading { shadows: wheel(200.0, 0.0, 0.0), blending: 10.0, ..Default::default() };
+    assert_eq!(steps_of(GradePanel::ColourGrading(hue_only)), 0, "a hue with no saturation does nothing");
+}
+
+#[test]
+fn colour_grading_luminance_lifts_its_region_and_global_scales_all() {
+    let lift = wheels_words(&GradeColourGrading { shadows: wheel(0.0, 0.0, 100.0), ..Default::default() });
+    let dark = colour_wheels(oklab([0.02; 3]), &lift)[0];
+    assert!(dark > oklab([0.02; 3])[0] + 0.15, "{dark}");
+    let bright = colour_wheels(oklab([0.9; 3]), &lift)[0];
+    assert!((bright - oklab([0.9; 3])[0]).abs() < 0.01, "{bright}");
+    let global = wheels_words(&GradeColourGrading { global: wheel(0.0, 0.0, -100.0), ..Default::default() });
+    let l = colour_wheels(oklab([0.5; 3]), &global)[0];
+    assert!((l / oklab([0.5; 3])[0] - (-0.5f64).exp2()).abs() < 1e-9);
+}
+
+#[test]
+fn the_wheel_s_hues_point_the_way_lightroom_s_do() {
+    // 0 red, 120 green, 240 blue: the tint's direction is the colour's own.
+    for (deg, colour) in [(0.0, RED), (120.0, [0.0, 1.0, 0.0]), (240.0, BLUE)] {
+        let [a, b] = hsv_hue_direction(deg);
+        let h = b.atan2(a).rem_euclid(std::f64::consts::TAU).to_degrees();
+        assert!((h - hue_deg(colour)).abs() < 1e-6, "{deg}: {h}");
+    }
+}
+
+#[test]
+fn calibration_keeps_every_grey_and_turns_its_primaries() {
+    let c = GradeCalibration {
+        red_hue: 60.0,
+        red_saturation: -40.0,
+        green_hue: -30.0,
+        green_saturation: 80.0,
+        blue_hue: 100.0,
+        blue_saturation: 100.0,
+        ..Default::default()
+    };
+    let m = calibration_matrix(&c);
+    for v in [0.0, 0.1, 0.18, 1.0, 5.0] {
+        assert!(near3(apply_matrix(&m, [v; 3]), [v; 3], 1e-9 * v.max(1.0)), "{v}");
+    }
+    let only = |c: GradeCalibration| apply_matrix(&calibration_matrix(&c), RED);
+    let turned = only(GradeCalibration { red_hue: 100.0, ..Default::default() });
+    assert!(hue_deg(turned) > hue_deg(RED) + 5.0, "Red + goes towards orange: {turned:?}");
+    let duller = only(GradeCalibration { red_saturation: -100.0, ..Default::default() });
+    assert!(chroma(duller) < chroma(RED) * 0.9, "{duller:?}");
+    let still = calibration_matrix(&GradeCalibration::default());
+    assert!(near3(apply_matrix(&still, [0.3, 0.5, 0.7]), [0.3, 0.5, 0.7], 1e-6));
+    assert_eq!(steps_of(GradePanel::Calibration(GradeCalibration::default())), 0);
+    assert_eq!(steps_of(GradePanel::Calibration(c)), 1);
+}
+
+#[test]
+fn shadows_tint_makes_darks_magenta_at_their_brightness_and_leaves_white() {
+    let g = dark_tint_gain(100.0);
+    assert!((luminance(g) - 1.0).abs() < 1e-12);
+    let dark = dark_tint([0.02; 3], g);
+    assert!(dark[1] < dark[0] && dark[1] < dark[2], "{dark:?}");
+    assert!((luminance(dark) - 0.02).abs() < 1e-9);
+    assert_eq!(dark_tint([0.5; 3], g), [0.5; 3]);
+    assert_eq!(dark_tint([0.0; 3], g), [0.0; 3]);
+    let green = dark_tint([0.02; 3], dark_tint_gain(-100.0));
+    assert!(green[1] > green[0]);
+    let both = GradeCalibration { shadows_tint: -20.0, red_hue: 5.0, ..Default::default() };
+    assert_eq!(steps_of(GradePanel::Calibration(both)), 2);
+}
+
+#[test]
+fn a_pick_takes_a_glow_that_shows_as_its_colour() {
+    // A glow far above white is matched by the colour the screen shows it as.
+    let glow = [4.0, 0.6, 0.2];
+    let shown = roll_off(glow);
+    assert!(shown.iter().all(|v| *v <= 1.0) && shown[0] > shown[2], "{shown:?}");
+    let p = pick_words(&GradePick { saturation: -50.0, ..pick(shown.map(|v| v as f32)) }).unwrap();
+    assert!(pick_weight(oklab(glow), &p) > 0.8, "{}", pick_weight(oklab(glow), &p));
+}

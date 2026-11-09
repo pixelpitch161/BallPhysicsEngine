@@ -6,6 +6,8 @@
 //! sub-layers, in the order they work; a panel kind may be added more than once.
 //!
 //! - `basic.rs`: the Basic panel; `tone_curve.rs`: the Tone Curve panel;
+//! - `hsl.rs`: HSL / Colour; `point_colour.rs`: Point Colour; `colour_grading.rs`: Colour Grading's
+//!   wheels; `calibration.rs`: Calibration;
 //! - here: the kinds, the starting card, adding and ordering panels, and the stack the scene's
 //!   draw puts on the frame ([`stack`]).
 
@@ -15,11 +17,19 @@ use bpe_core::{
 };
 
 pub mod basic;
+pub mod calibration;
+pub mod colour_grading;
+pub mod hsl;
+pub mod point_colour;
 #[cfg(test)]
 mod tests;
 pub mod tone_curve;
 
 pub use basic::BasicPanel;
+pub use calibration::CalibrationPanel;
+pub use colour_grading::ColourGradingPanel;
+pub use hsl::HslPanel;
+pub use point_colour::{PICKS, PointColourPanel, PointPick, pick_prefix};
 pub use tone_curve::{CURVE_KEYS, CurveMode, ToneCurvePanel};
 
 /// The card kind.
@@ -29,10 +39,14 @@ pub const WHOLE: &str = "grade.whole";
 /// The panel kinds.
 pub const BASIC: &str = "grade.basic";
 pub const TONE_CURVE: &str = "grade.tone_curve";
+pub const HSL: &str = "grade.hsl";
+pub const POINT_COLOUR: &str = "grade.point_colour";
+pub const COLOUR_GRADING: &str = "grade.colour_grading";
+pub const CALIBRATION: &str = "grade.calibration";
 
 /// Lightroom Classic's panel order: a mask's panels start in it, and Reset order puts them back
-/// in it. Later parts add their panels in place.
-pub const PANEL_ORDER: [&str; 2] = [BASIC, TONE_CURVE];
+/// in it. Later parts add their panels in place (Detail and Effects go before Calibration).
+pub const PANEL_ORDER: [&str; 6] = [BASIC, TONE_CURVE, HSL, POINT_COLOUR, COLOUR_GRADING, CALIBRATION];
 
 /// The Grade card's own settings.
 #[derive(Clone, Debug, PartialEq, Settings)]
@@ -146,7 +160,7 @@ impl LayerKind for PanelKind {
 }
 
 /// Every panel kind, in Lightroom's order.
-pub fn panel_kinds() -> [PanelKind; 2] {
+pub fn panel_kinds() -> [PanelKind; 6] {
     [
         PanelKind {
             id: BASIC,
@@ -159,6 +173,30 @@ pub fn panel_kinds() -> [PanelKind; 2] {
             name: "Tone Curve",
             help: "The parametric curve's four regions and the point curves, for all channels or one.",
             defs: ToneCurvePanel::defs,
+        },
+        PanelKind {
+            id: HSL,
+            name: "HSL / Colour",
+            help: "Hue, saturation and luminance of each of eight colour bands, from red round to magenta.",
+            defs: HslPanel::defs,
+        },
+        PanelKind {
+            id: POINT_COLOUR,
+            name: "Point Colour",
+            help: "Up to eight colours picked from the picture, each moving the colours near it.",
+            defs: PointColourPanel::defs,
+        },
+        PanelKind {
+            id: COLOUR_GRADING,
+            name: "Colour Grading",
+            help: "Colour wheels tinting the shadows, midtones and highlights, and the whole picture.",
+            defs: ColourGradingPanel::defs,
+        },
+        PanelKind {
+            id: CALIBRATION,
+            name: "Calibration",
+            help: "The shadows' tint and the red, green and blue primaries' hue and saturation.",
+            defs: CalibrationPanel::defs,
         },
     ]
 }
@@ -259,6 +297,16 @@ pub fn stack(card: Option<&ResolvedSlot>) -> bpe_gfx::GradeStack {
                     match l.kind.as_str() {
                         BASIC => Some(bpe_gfx::GradePanel::Basic(BasicPanel::from_params(&params).gpu())),
                         TONE_CURVE => Some(bpe_gfx::GradePanel::ToneCurve(ToneCurvePanel::from_params(&params).gpu())),
+                        HSL => Some(bpe_gfx::GradePanel::Hsl(HslPanel::from_params(&params).gpu())),
+                        POINT_COLOUR => {
+                            Some(bpe_gfx::GradePanel::PointColour(PointColourPanel::from_params(&params).gpu()))
+                        }
+                        COLOUR_GRADING => {
+                            Some(bpe_gfx::GradePanel::ColourGrading(ColourGradingPanel::from_params(&params).gpu()))
+                        }
+                        CALIBRATION => {
+                            Some(bpe_gfx::GradePanel::Calibration(CalibrationPanel::from_params(&params).gpu()))
+                        }
                         _ => None,
                     }
                 })

@@ -8,6 +8,7 @@ mod meter;
 mod swatch;
 mod tokens;
 mod track;
+mod video;
 
 pub use controls::*;
 pub use fonts::{ensure_text_fonts, family_ready, medium, mono, semibold, text_family};
@@ -18,6 +19,7 @@ pub use meter::{level_meter, loudness_graph, loudness_row};
 pub use swatch::surface_swatch;
 pub use tokens::*;
 pub use track::{colour_of, track_color};
+pub use video::{video, video_bytes};
 
 use eframe::egui::{self, CornerRadius, FontFamily, FontId, Margin, Shadow, Stroke, TextStyle};
 
