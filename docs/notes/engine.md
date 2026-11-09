@@ -12,7 +12,9 @@ Dependencies go bottom to top:
 - `bpe-core`: the data model. Things sit in a tree (`scene.rs`), each with its own params and its own cards in
   `slots`. Also values, colours/gradients, blend modes, animation (keyframes and pulses on hits), save/load
   (`save.rs`), edits (`edit.rs`: `add_slot`, `remove_slot`, `set_slot_kind`) and **resolve** (`resolve.rs`: each
-  card's defaults under the thing's own values). A setting's `Address` is `{ thing, slot, key }`.
+  card's defaults under the thing's own values; `Resolved.things` holds `Arc<ResolvedThing>`, and whatever changes a
+  thing per frame, keyframes, pulses, gradient moves, rules, copies it with `Arc::make_mut`, so only the things that
+  animate are copied, review S22). A setting's `Address` is `{ thing, slot, key }`.
   `registry.rs` holds the plugin registry. `ModuleKind` is the trait for a card kind (the name is historical).
   A card can hold **layers** (`layers.rs`, `Slot.layers`): each `Layer { id, kind, name, enabled, only }` is of a
   `LayerKind` whose `LayerSection` is Drawn, Reaction or Group, kept in that order in the Vec (index 0 is the base
@@ -235,6 +237,9 @@ Dependencies go bottom to top:
   48 kHz (`AUDIO_ARGS`); a scene without sound gets a silent track. Frames draw with `build_frame_with` and a
   `ControlSampler` when a setting follows sound. `--stems` and `--midi` (`ExportOptions`)
   save the stems and the MIDI file beside the video.
+  Frames go to ffmpeg as BT.709 TV-range 4:2:0 planes worked out on the graphics card (`bpe_gfx::yuv`,
+  `Readback::with_layout`; `yuv420p` for x264 and NVENC, `nv12` for AMF and Quick Sync, `Encoder::layout`), not RGBA
+  (review S23, `docs/superpowers/plans/lighting/picture-speed.md`).
 
 **Picture fixes, workstream W3 (2026-11-08, plan `docs/superpowers/plans/2026-11-08-picture-fixes-w3.md`).** The
 final pass (`post.wgsl::fs_composite`) leaves every colour up to 1 as it is (white is 255; the old per-channel

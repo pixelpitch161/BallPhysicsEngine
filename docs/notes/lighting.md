@@ -265,3 +265,17 @@ sizes the field by the frame's world width (`lighting.rs::field_divisor`, roundi
 than the video's), so a 540-wide preview at Good gets divisor 1. Exports and the other picture tests keep the
 Quality's share of the renderer's size (at 270 × 480 a coarser field than any export, which keeps the thin-line
 code covered).
+
+**Lighting and picture speed** (review W8, 2026-11-09, plan `docs/superpowers/plans/lighting/picture-speed.md`,
+bench `bpe-kit/tests/light_speed.rs`, ignored). Every picture byte-identical. **S19**: from 8 lights on
+(`TILED_FROM`) `LightTiles::build` bins the lights into 32-pixel screen tiles on the CPU (sun everywhere, others by
+Reach plus their size, the camera's turn and zoom applied) and packs the lists after the light links in the `links`
+buffer (the main pass has no storage buffer to spare); `lights_near`/`light_in` walk only a tile's lights in `lamps`,
+`shade`, `hit_light` and `lamps_on`. `Renderer::set_light_tiles(false)` turns them off (tests compare). The Lights
+tab warns above 64 lights (`many_lights_warning`). **S20**: on a Stage the direct pass skips a light's surface
+shadow unless Glow in the dark, light memory or rainbows read it, and its UV part unless UV pictures or memory do.
+**S21**: gradient rows upload only when their key changes. **S22**: `Resolved.things` is `Arc`ed, copied only where
+something animates. **S24**: no bloom chain at bloom 0, bind groups kept between frames (`BindCache`), UV and tag
+pictures only while used (`keep_uv_and_tags`). S23 (export colours on the card) is in `engine.md` under `bpe-cli`.
+S18 (one pass for the scene's light pictures) skipped by Aedan: under a tenth of a lit frame. On lavapipe at
+540 x 960: Stage 545 to 292 ms, shiny surfaces 715 to 432 ms, 120 lights on a Stage 1505 to 1058 ms.
