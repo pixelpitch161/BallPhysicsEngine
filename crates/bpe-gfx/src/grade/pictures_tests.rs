@@ -891,7 +891,7 @@ fn expand_and_feather_reach_past_the_ball_as_the_maths_says() {
         // How far the pixel is from the nearest pixel at least half covered (the edge's pixel).
         let d = (centre_x - 7.5).max(0.0);
         let cover = maths::things_cover(0.0, d, expand as f64, feather as f64, 1.0, false);
-        let want = byte(v as f64 * (1.0 + cover));
+        let want = byte(v * (1.0 + cover));
         let got = at(&p, x, 32)[1];
         assert!((got - want).abs() <= 3, "x {x}: {got} wants {want}");
     }

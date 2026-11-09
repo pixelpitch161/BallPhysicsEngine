@@ -74,8 +74,12 @@ struct Drawn {
     particles: Option<u64>,
     /// Grade mode's compare view, Split line, overlay and selected mask, in Grade mode.
     /// The stroke being painted's points so far, too.
-    grade: Option<(crate::grade_mode::Compare, u32, bool, Option<LayerId>, Option<usize>)>,
+    grade: Option<GradeDrawn>,
 }
+
+/// Grade mode's part of [`Drawn`]: the compare view, the Split line's bits, the overlay, the
+/// selected mask, and how many points the stroke being painted has.
+type GradeDrawn = (crate::grade_mode::Compare, u32, bool, Option<LayerId>, Option<usize>);
 
 /// Something in the preview that can be dragged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
