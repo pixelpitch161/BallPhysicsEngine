@@ -249,4 +249,27 @@ strokes words, `scenes_words`), `pickers.rs` (`TargetChoices`, `who_picker`, `ta
 
 ## As built
 
-(filled in when done)
+PR #177, 2026-11-09. Every task landed as planned; `docs/notes/file-map.md` is the map of the result.
+
+- **Lighting shader**: `shaders/lighting/` (12 files), joined by `LIGHTING_WGSL` into text byte-identical to the old
+  `lighting.wgsl`. **Pass names**: `light_pass.rs` + `shaders/light_passes.wgsl` (`PASS_*`, `light_pass(x)`), included
+  before `tint.wgsl` in every shader that reads the pass (scene, sprites, fields, swarm, liquid); test
+  `the_shaders_name_the_same_passes`. Shaders see Behind as -1; `paths.wgsl` lost an unreachable `7` branch.
+- **lighting/**: `mod.rs`, `binds.rs`, `glass.rs`, `kit.rs` (`LightKit::build` with small descriptor helpers),
+  `passes.rs` (`Binder`, one method per pass), `run.rs` (`RunPlan`, `upload`, `Lighting::run` about 50 lines),
+  `targets.rs`, `tiles.rs`, `tests.rs`. The caustics, bent-light and ribbon uploads now happen before the passes are
+  encoded (queue writes land at submit, so nothing changes).
+- **frame/**: build, instances, trails, particles, paths, layers, cull, light, effects, ripples, tests, tint_tests.
+- **renderer/** (new, scene, draw, targets, grade, paint) and `readback.rs`, out of `lib.rs`.
+- **world/**: build, step, animate, lend, prints, tests.
+- **Editor**: `app/` (runs, playing, files, actions, autosave, problems, shortcuts, panels, dialogs, tests);
+  `inspector/` (header, find, own, placement, slots with `slot_header`/`slot_body`, physics, surface, add_card, edits,
+  emitter_card/, tests; `show` is now a list of calls); `widgets/` (grid, setting, menu, numbers, pickers, words, tests).
+- The style test `no_panel_names_its_own_colour` now skips test files (`tests.rs`, `*_tests.rs`) and inline
+  `mod tests {` blocks instead of stopping at the first `#[cfg(test)]`, so it reads the split files whole.
+- Not cut up (still long, each in its own topic file now): `renderer/new.rs::new`, `renderer/scene.rs::render_scene`,
+  `tree.rs::show`, `preview.rs::show`, `text/looks.rs::add_text`, `rules/actions.rs::apply_rule_actions`.
+
+Verified: workspace tests pass (`--test-threads=2`), `#[test]` counts equal main's plus the one new test, CI green
+(goldens debug and release unchanged), and the full-size look check's 799 files (pictures, crops, sheets) are
+byte-identical to main's (`cmp`).
