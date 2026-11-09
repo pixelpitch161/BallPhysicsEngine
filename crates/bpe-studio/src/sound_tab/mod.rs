@@ -387,7 +387,7 @@ pub fn show(
         let mut cx = TabCx { scene, kit, choices, id, time, colour, notes_clip, hot, edits: Vec::new() };
         let card = scene.card(id, SlotId::Sound).filter(|c| c.kind == VOICE);
         let on = card.is_some() && cx.flag("enabled");
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt("sound tab").auto_shrink([false, false]).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.add_space(10.0);
                 let mut ticked = on;
@@ -744,13 +744,14 @@ pub(crate) mod tests {
         let mut h = studio_harness(BALL, false);
         assert!(h.query_by_label("Sound").is_some(), "a ball has its own sound (W10)");
         assert!(h.query_by_label("Settings").is_some());
+        assert!(h.query_by_label("Looks").is_some(), "and its ready-made looks");
         let reg = bpe_kit::registry();
         let studio = &mut h.state_mut().0;
         let folder = bpe_kit::add_thing(&mut studio.scene, &reg, "folder", ThingId::ROOT).unwrap();
         studio.selection.set(folder);
         h.run();
         assert!(h.query_by_label("Sound").is_none());
-        assert!(h.query_by_label("Settings").is_none());
+        assert!(h.query_by_label("Looks").is_none(), "a folder has no tabs");
     }
 
     #[test]
