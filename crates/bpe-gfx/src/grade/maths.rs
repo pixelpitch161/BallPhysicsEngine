@@ -614,11 +614,24 @@ pub fn pick_words(p: &GradePick) -> Option<PickWords> {
     })
 }
 
-/// An Oklab colour brighter than white scaled back to white's lightness, keeping its hue and how
-/// colourful it is for its brightness: a glow is matched by the colour it shows as on screen
-/// (which the eyedropper picks), not by how far above white it is.
+/// The composite's roll-off (`shaders/post.wgsl::roll_off`): a colour past white squeezed back to
+/// what the screen shows.
+pub fn roll_off(c: [f64; 3]) -> [f64; 3] {
+    let peak = c[0].max(c[1]).max(c[2]);
+    if peak <= 1.0 {
+        return c;
+    }
+    let white = c[0].min(c[1]).min(c[2]).clamp(0.0, 1.0);
+    let over = (luminance(c) - 1.0).max(0.0);
+    let whiter = (white * white).max(over / (over + 0.5)) * ((peak - 1.0) * 4.0).min(1.0);
+    c.map(|v| v / peak + (1.0 - v / peak) * whiter)
+}
+
+/// An Oklab colour past white as the screen shows it (through [`roll_off`]): a glow is matched
+/// by the colour the eyedropper picks from the finished picture, not by how far above white it is.
 pub fn tamed(lab: [f64; 3]) -> [f64; 3] {
-    if lab[0] > 1.0 { lab.map(|v| v / lab[0]) } else { lab }
+    let lin = unoklab(lab);
+    if lin[0].max(lin[1]).max(lin[2]) > 1.0 { oklab(roll_off(lin)) } else { lab }
 }
 
 /// How much pick `p` takes the Oklab colour `lab` (1 on the pick, 0 far from it).

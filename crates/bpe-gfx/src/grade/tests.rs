@@ -517,9 +517,10 @@ fn shadows_tint_makes_darks_magenta_at_their_brightness_and_leaves_white() {
 
 #[test]
 fn a_pick_takes_a_glow_that_shows_as_its_colour() {
-    // A glow far above white shows as about its colour divided by its brightest channel.
+    // A glow far above white is matched by the colour the screen shows it as.
     let glow = [4.0, 0.6, 0.2];
-    let shown = [1.0, 0.15, 0.05];
+    let shown = roll_off(glow);
+    assert!(shown.iter().all(|v| *v <= 1.0) && shown[0] > shown[2], "{shown:?}");
     let p = pick_words(&GradePick { saturation: -50.0, ..pick(shown.map(|v| v as f32)) }).unwrap();
     assert!(pick_weight(oklab(glow), &p) > 0.8, "{}", pick_weight(oklab(glow), &p));
 }

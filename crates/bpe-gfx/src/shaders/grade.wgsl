@@ -162,10 +162,12 @@ fn grade_smooth(a: f32, b: f32, x: f32) -> f32 {
 // Point Colour (see grade/maths.rs `point_colour`): `n` picks of three words from `at + 1`, every
 // weight from the colour as it came.
 fn grade_point(at: u32, n: u32, lab: vec3<f32>) -> vec3<f32> {
-    // Brighter than white is matched as the colour it shows as (grade/maths.rs `tamed`).
+    // Past white is matched as the colour it shows as (grade/maths.rs `tamed`; roll_off is the
+    // composite's, post.wgsl).
     var tamed = lab;
-    if lab.x > 1.0 {
-        tamed = lab / lab.x;
+    let lin = oklab_to_lin(lab);
+    if max(lin.r, max(lin.g, lin.b)) > 1.0 {
+        tamed = lin_to_oklab(roll_off(lin));
     }
     let lch = grade_lch(tamed);
     var out = lab;
