@@ -52,15 +52,16 @@ copies a thing (`Arc::make_mut`) only when something on it changes.
 
 `bpe_gfx::yuv`: `PixelLayout` (`Rgba`, `Yuv420p` for x264 and NVENC, `Nv12` for AMF and Quick Sync) and
 `VideoPlanes`, two passes (`shaders/yuv.wgsl`) that turn the output picture into BT.709 TV-range planes, the chroma
-from each 2 x 2 block's mean colour. `Readback::with_layout` reads the planes back (falls back to RGBA for odd
+sited left as H.264 expects by default (its pair's two rows, across columns weighted 1/4, 1/2, 1/4). `Readback::with_layout` reads the planes back (falls back to RGBA for odd
 sizes). The export pipes them as `-pix_fmt yuv420p`/`nv12` with BT.709 TV-range tags: 1.5 bytes a pixel instead of
 4, and no conversion on ffmpeg's CPU. `yuv_of_rgba` is the CPU reference the tests compare with.
 
 ## S24: smaller costs
 
 - Bloom's down and up chain is skipped when the frame's bloom is 0 (its first picture cleared once).
-- `Lighting` keeps its bind groups between frames (`BindCache`, keyed by the layout and what each entry binds; at
-  most 256, cleared when its pictures are remade).
+- `Lighting` keeps its bind groups between frames (`BindCache`, keyed by the layout and what each entry binds; each
+  frame drops the groups the last one didn't use, so a buffer that grew isn't kept alive; at most 256, cleared when
+  its pictures are remade).
 - The UV and tag pictures exist only while the scene uses them (`keep_uv_and_tags`).
 
 ## Checks
@@ -81,5 +82,6 @@ sizes). The export pipes them as `-pix_fmt yuv420p`/`nv12` with BT.709 TV-range 
 Before and after pictures of all 12 speed scenes are byte-identical. Frame times at 540 x 960 on lavapipe, before
 and after: Stage 545 to 292 ms, shiny surfaces 715 to 432 ms, 120 lights on a Stage 1505 to 1058 ms, 120 lights of
 short reach 472 to 359 ms, 120 lights that each reach most of the picture 1615 to 1515 ms (every light really
-reaches most pixels there). Left: Flat shiny pixels still work a light's shadow out twice (the direct pass has no
+reaches most pixels there). The review's three small points were taken: a strip whose segments aren't all in the
+buffer goes in every tile, unused bind groups are dropped each frame, and the chroma is sited left. Left: Flat shiny pixels still work a light's shadow out twice (the direct pass has no
 surface table bound), and S18.

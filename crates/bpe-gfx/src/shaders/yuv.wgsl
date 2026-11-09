@@ -29,11 +29,17 @@ fn fs_luma(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     return vec4<f32>(byte(16.0 + 219.0 * luma(c)), 0.0, 0.0, 1.0);
 }
 
-// Cb and Cr (8-bit steps) of the 2 x 2 block this half-size pixel covers, from its mean colour.
+// One column of the 2 rows this half-size pixel covers: their mean colour.
+fn rows_at(x: i32, y: i32) -> vec3<f32> {
+    return 0.5 * (textureLoad(picture, vec2<i32>(x, y), 0).rgb + textureLoad(picture, vec2<i32>(x, y + 1), 0).rgb);
+}
+
+// Cb and Cr (8-bit steps) of this half-size pixel, sited as H.264 expects by default (left: on the
+// left column of its pair, between its two rows), from the colour there: its two rows' mean, across
+// the columns either side weighted 1/4, 1/2, 1/4 (the first column stands in for the one before it).
 fn chroma(pos: vec4<f32>) -> vec2<f32> {
     let at = vec2<i32>(pos.xy) * 2;
-    let c = 0.25 * (textureLoad(picture, at, 0).rgb + textureLoad(picture, at + vec2<i32>(1, 0), 0).rgb
-        + textureLoad(picture, at + vec2<i32>(0, 1), 0).rgb + textureLoad(picture, at + vec2<i32>(1, 1), 0).rgb);
+    let c = 0.25 * rows_at(max(at.x - 1, 0), at.y) + 0.5 * rows_at(at.x, at.y) + 0.25 * rows_at(at.x + 1, at.y);
     let y = luma(c);
     let cb = (c.b - y) / (2.0 * (1.0 - KB));
     let cr = (c.r - y) / (2.0 * (1.0 - KR));

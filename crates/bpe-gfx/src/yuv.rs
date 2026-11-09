@@ -184,7 +184,8 @@ impl VideoPlanes {
 }
 
 /// The BT.709 TV-range planes of a `width` x `height` RGBA picture worked out on the CPU, as the
-/// shader does (the chroma from each 2 x 2 block's mean colour): what the tests compare with.
+/// shader does (the chroma sited left, H.264's default: see `chroma` in yuv.wgsl): what the tests
+/// compare with.
 pub fn yuv_of_rgba(rgba: &[u8], width: u32, height: u32, layout: PixelLayout) -> Vec<u8> {
     let (w, h) = (width as usize, height as usize);
     let at = |x: usize, y: usize| {
@@ -206,10 +207,13 @@ pub fn yuv_of_rgba(rgba: &[u8], width: u32, height: u32, layout: PixelLayout) ->
     for y in 0..ch {
         for x in 0..cw {
             let mut c = [0.0f32; 3];
-            for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-                let p = at(2 * x + dx, 2 * y + dy);
-                for k in 0..3 {
-                    c[k] += 0.25 * p[k];
+            let left = (2 * x).max(1) - 1;
+            for (column, weight) in [(left, 0.25f32), (2 * x, 0.5), (2 * x + 1, 0.25)] {
+                for dy in 0..2 {
+                    let p = at(column, 2 * y + dy);
+                    for k in 0..3 {
+                        c[k] += 0.5 * weight * p[k];
+                    }
                 }
             }
             let l = luma(c);

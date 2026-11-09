@@ -66,12 +66,14 @@ struct Uniform {
 pub const MOST_DICHROIC: usize = 16;
 
 /// Bind groups kept between frames (review S24): [`Lighting::run`] binds the same buffers and
-/// pictures frame after frame, so each group is made once and found again by what it binds. Emptied
-/// when the pictures are made again and when it holds [`MOST_KEPT_BINDS`] (a buffer that grew is a
-/// new buffer, and the groups binding the old one would keep it alive).
+/// pictures frame after frame, so each group is made once and found again by what it binds. Each
+/// frame starts by dropping the groups the last frame didn't use ([`BindCache::sweep`]: a buffer
+/// that grew is a new buffer, and the groups binding the old one would keep it alive); also emptied
+/// when the pictures are made again and when it holds [`MOST_KEPT_BINDS`].
 #[derive(Default)]
 struct BindCache {
-    groups: std::sync::Mutex<std::collections::HashMap<BindKey, wgpu::BindGroup>>,
+    /// Each group and whether it was used since the last sweep.
+    groups: std::sync::Mutex<std::collections::HashMap<BindKey, (wgpu::BindGroup, bool)>>,
 }
 
 const MOST_KEPT_BINDS: usize = 256;
@@ -115,15 +117,22 @@ impl BindCache {
         }
         let key = BindKey { layout: desc.layout.clone(), entries };
         let mut groups = self.groups.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(g) = groups.get(&key) {
+        if let Some((g, used)) = groups.get_mut(&key) {
+            *used = true;
             return g.clone();
         }
         if groups.len() >= MOST_KEPT_BINDS {
             groups.clear();
         }
         let g = device.create_bind_group(desc);
-        groups.insert(key, g.clone());
+        groups.insert(key, (g.clone(), true));
         g
+    }
+
+    /// Drops the groups not used since the last sweep (and what only they kept alive).
+    fn sweep(&self) {
+        let mut groups = self.groups.lock().unwrap_or_else(|e| e.into_inner());
+        groups.retain(|_, (_, used)| std::mem::replace(used, false));
     }
 
     fn clear(&self) {
@@ -216,6 +225,13 @@ impl LightTiles {
             } else if kind > 3.5 && l.p4[3] >= 1.0 {
                 let first = l.p4[2].max(0.0) as usize;
                 let n = l.p4[3] as usize;
+                if first.saturating_add(n) > segments.len() {
+                    // Its segments aren't all there: the shader reads stand-ins, so every tile.
+                    for list in &mut lists {
+                        list.push(i);
+                    }
+                    continue;
+                }
                 for s in segments.iter().skip(first).take(n) {
                     let mid = [(s[0] + s[2]) * 0.5, (s[1] + s[3]) * 0.5];
                     let half_len = 0.5 * ((s[2] - s[0]).powi(2) + (s[3] - s[1]).powi(2)).sqrt();
@@ -2046,6 +2062,7 @@ impl Lighting {
         let behind_view = t.behind.as_ref().filter(|_| has_behind).map_or(&t.dummy_colour.1, |b| &b.1);
         let bg_view = t.bg_glow.as_ref().filter(|_| into_bg).map_or(&t.dummy_colour.1, |b| &b.1);
         let binds = &self.binds;
+        binds.sweep();
         let stage_group = binds.get(
             device,
             &wgpu::BindGroupDescriptor {
