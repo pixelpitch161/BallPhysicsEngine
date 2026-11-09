@@ -113,7 +113,7 @@ pub fn render_sound(
     mut progress: impl FnMut(f64) -> bool,
 ) -> anyhow::Result<()> {
     let resolved = resolve_scene(scene, &kit.registry);
-    let mut engine = Engine::new(scene, &resolved, kit);
+    let mut engine = Engine::offline(scene, &resolved, kit);
     engine.set_end(seconds);
     let total = frames_in(seconds);
     let mut written_files: Vec<PathBuf> = vec![path.to_path_buf()];
@@ -202,7 +202,7 @@ pub fn render_sound(
 /// clips).
 pub fn render_samples(scene: &Scene, kit: &Kit, seconds: f64) -> Vec<f32> {
     let resolved = resolve_scene(scene, &kit.registry);
-    let mut engine = Engine::new(scene, &resolved, kit);
+    let mut engine = Engine::offline(scene, &resolved, kit);
     engine.set_end(seconds);
     let total = frames_in(seconds);
     let mut out = Vec::with_capacity(total * 2);

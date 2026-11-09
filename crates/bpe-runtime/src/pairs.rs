@@ -70,15 +70,36 @@ impl Grid {
 
     /// The three runs of entries (one per column) that make up the 3 x 3 cells around (cx, cy).
     pub fn runs_around(&self, cx: i32, cy: i32) -> [Range<usize>; 3] {
-        [-1, 0, 1].map(|dx| {
-            let (from, to) = (key(cx + dx, cy - 1), key(cx + dx, cy + 1));
-            let first = self.cells.partition_point(|c| c.0 < from);
-            let last = first + self.cells[first..].partition_point(|c| c.0 <= to);
-            match (self.cells.get(first), last > first) {
-                (Some(c), true) => c.1 as usize..self.cells[last - 1].2 as usize,
-                _ => 0..0,
-            }
-        })
+        [-1, 0, 1].map(|dx| self.column_run(cx + dx, cy - 1, cy + 1))
+    }
+
+    /// The run of entries of column `cx`'s cells from row `cy0` to `cy1`.
+    fn column_run(&self, cx: i32, cy0: i32, cy1: i32) -> Range<usize> {
+        let (from, to) = (key(cx, cy0), key(cx, cy1));
+        let first = self.cells.partition_point(|c| c.0 < from);
+        let last = first + self.cells[first..].partition_point(|c| c.0 <= to);
+        match (self.cells.get(first), last > first) {
+            (Some(c), true) => c.1 as usize..self.cells[last - 1].2 as usize,
+            _ => 0..0,
+        }
+    }
+
+    /// Runs of entries that together hold every item in the cells from `(cx0, cy0)` to `(cx1, cy1)`
+    /// (corners included), each item once: one run per column, or one per occupied cell when the
+    /// box is wider than there are cells.
+    pub fn runs_in(&self, (cx0, cy0): (i32, i32), (cx1, cy1): (i32, i32)) -> Vec<Range<usize>> {
+        let columns = cx1 as i64 - cx0 as i64 + 1;
+        if columns <= 0 || cy1 < cy0 {
+            return Vec::new();
+        }
+        if columns as usize <= self.cells.len() {
+            (cx0..=cx1).map(|cx| self.column_run(cx, cy0, cy1)).filter(|r| !r.is_empty()).collect()
+        } else {
+            self.cells()
+                .filter(|((cx, cy), _)| (cx0..=cx1).contains(cx) && (cy0..=cy1).contains(cy))
+                .map(|(_, run)| run)
+                .collect()
+        }
     }
 
     /// Calls `f(i, j)` once for every pair of items in the same or neighbouring cells, with
@@ -106,6 +127,14 @@ const PAIR_PASSES: usize = 6;
 const PAIR_SLOP: f32 = 0.5;
 /// How much of the rest of an overlap one substep eases apart.
 const PAIR_BIAS: f32 = 0.2;
+
+/// A ball this many times the median radius is big: it meets its neighbours apart from the grid
+/// (W7, S16), so the grid's cells stay sized for the others.
+const BIG_TIMES: f32 = 4.0;
+/// Big balls are handled apart only while there is at most one in this many balls...
+const BIG_SHARE: usize = 8;
+/// ... and no more than this many (each pair of big balls is checked, whatever the distance).
+const MOST_BIG: usize = 16;
 
 /// Which two balls a contact is between, `a` first in `(thing, item)` order.
 type PairKey = (ThingId, u32, ThingId, u32);
@@ -228,7 +257,6 @@ pub(crate) fn collide_pairs(
     // Gather the balls that take part, in (thing, item) order.
     let mut rules: Vec<RuleOf> = Vec::new();
     let mut balls: Vec<Ball> = Vec::new();
-    let mut largest: f32 = 0.0;
     for (thing, b) in bodies.iter() {
         let Some(s) = modules.get(thing).and_then(|m| m.get(&SlotId::Bounce)) else { continue };
         let Some(sim) = sims.module(&s.kind) else { continue };
@@ -239,9 +267,8 @@ pub(crate) fn collide_pairs(
         let (friction, varies) = (rule.friction, s.varies());
         rules.push((*thing, sim, s, rule, bounciness, thing_press));
         let rule = rules.len() - 1;
-        for i in 0..b.len() {
+        for i in b.live_rows() {
             if b.alive[i] && !b.held[i] {
-                largest = largest.max(b.radius[i]);
                 let (bounciness, friction) = if varies {
                     let own = s.state_for(i);
                     (sim.bounciness(own), sim.pairs(own).map_or(friction, |r| r.friction))
@@ -269,7 +296,6 @@ pub(crate) fn collide_pairs(
         return;
     }
     let Pairs { grid, warm } = pairs;
-    grid.rebuild(largest * 2.0, balls.iter().map(|b| b.position));
 
     // The walls the balls lean on, in support order; balls are sorted by (thing, item).
     let mut holds: Vec<Hold> = Vec::new();
@@ -289,8 +315,8 @@ pub(crate) fn collide_pairs(
 
     // Gather this substep's contacts in grid order, with what each one aims for.
     let mut contacts: Vec<ContactPair> = Vec::new();
-    grid.for_each_pair(|i, j| {
-        let (i, j) = (i as usize, j as usize);
+    let spot = |i: usize| (balls[i].position, balls[i].radius);
+    close_pairs(grid, balls.len(), spot, |i, j| {
         let (ri, rj) = (balls[i].rule, balls[j].rule);
         let (ti, tj) = (balls[i].thing, balls[j].thing);
         if !matches(&rules[ri].3.target, ti, tj) || !matches(&rules[rj].3.target, tj, ti) {
@@ -455,6 +481,58 @@ pub(crate) fn collide_pairs(
     }
 }
 
+/// Calls `f(i, j)` with `i < j` once for every pair of the `count` balls (`spot(i)` is ball `i`'s
+/// position and radius) that may touch, in a fixed order. Usually every pair from the grid, in grid
+/// order (see [`Grid::for_each_pair`]). When a few balls are much bigger than the rest (W7, S16)
+/// the grid holds only the others, sized for them, and the big balls' pairs (the grid cells each
+/// one's reach covers, and the other big balls) come after, in index order.
+fn close_pairs(grid: &mut Grid, count: usize, spot: impl Fn(usize) -> (Vec2, f32), mut f: impl FnMut(usize, usize)) {
+    let bigs = big_balls(count, |i| spot(i).1);
+    let largest = |of: &mut dyn Iterator<Item = usize>| of.map(|i| spot(i).1).fold(0.0f32, f32::max);
+    if bigs.is_empty() {
+        grid.rebuild(largest(&mut (0..count)) * 2.0, (0..count).map(|i| spot(i).0));
+        grid.for_each_pair(|i, j| f(i as usize, j as usize));
+        return;
+    }
+    // The grid's items are the small balls, in order: `small` maps them back.
+    let small: Vec<usize> = (0..count).filter(|i| bigs.binary_search(i).is_err()).collect();
+    let reach_small = largest(&mut small.iter().copied());
+    grid.rebuild(reach_small * 2.0, small.iter().map(|&i| spot(i).0));
+    grid.for_each_pair(|i, j| f(small[i as usize], small[j as usize]));
+    let mut big_pairs: Vec<(usize, usize)> = Vec::new();
+    for (k, &g) in bigs.iter().enumerate() {
+        let (at, radius) = spot(g);
+        let reach = Vec2::splat(radius + reach_small);
+        for run in grid.runs_in(grid.cell_of(at - reach), grid.cell_of(at + reach)) {
+            big_pairs.extend(grid.run(run).map(|j| small[j as usize]).map(|j| (g.min(j), g.max(j))));
+        }
+        big_pairs.extend(bigs[k + 1..].iter().map(|&h| (g, h)));
+    }
+    big_pairs.sort_unstable();
+    big_pairs.dedup();
+    for (i, j) in big_pairs {
+        f(i, j);
+    }
+}
+
+/// The balls (indices, in order) much bigger than most, when there are a few of them: radius over
+/// [`BIG_TIMES`] the median, no more than one ball in [`BIG_SHARE`] and [`MOST_BIG`] in all. Empty
+/// otherwise.
+fn big_balls(count: usize, radius: impl Fn(usize) -> f32) -> Vec<usize> {
+    if count < BIG_SHARE {
+        return Vec::new();
+    }
+    // Balls of much the same size (most scenes): nothing to sort out.
+    let (least, most) = (0..count).map(&radius).fold((f32::INFINITY, 0.0f32), |(l, m), r| (l.min(r), m.max(r)));
+    if most <= least * BIG_TIMES {
+        return Vec::new();
+    }
+    let mut radii: Vec<f32> = (0..count).map(&radius).collect();
+    let median = *radii.select_nth_unstable_by(count / 2, f32::total_cmp).1;
+    let bigs: Vec<usize> = (0..count).filter(|&i| radius(i) > median * BIG_TIMES).collect();
+    if bigs.len() * BIG_SHARE <= count && bigs.len() <= MOST_BIG { bigs } else { Vec::new() }
+}
+
 /// Removes ball `item` of `thing` and logs it.
 pub fn pop(bodies: &mut Bodies, item: usize, thing: ThingId, step: u64, log: &mut Log) {
     bodies.alive[item] = false;
@@ -505,5 +583,95 @@ mod tests {
         assert_eq!(grid.cells().count(), 2);
         grid.rebuild(f32::NAN, [Vec2::ZERO].into_iter());
         assert_eq!(grid.cell, 1.0);
+    }
+
+    /// Every pair of balls that overlaps, by checking them all.
+    fn overlapping(spots: &[(Vec2, f32)]) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        for i in 0..spots.len() {
+            for j in i + 1..spots.len() {
+                if (spots[j].0 - spots[i].0).length() < spots[i].1 + spots[j].1 {
+                    out.push((i, j));
+                }
+            }
+        }
+        out
+    }
+
+    /// With a few big balls among small ones, the pairs offered still hold every overlapping pair
+    /// (and each pair once); without any, they are the grid's, in its order.
+    #[test]
+    fn big_balls_apart_still_meet_everything_they_touch() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f32 / (1u64 << 53) as f32
+        };
+        for layout in 0..12 {
+            let n = 200 + layout * 37;
+            let mut spots: Vec<(Vec2, f32)> =
+                (0..n).map(|_| (Vec2::new(next() * 600.0 - 300.0, next() * 900.0), 3.0 + next() * 4.0)).collect();
+            let giants = 1 + layout % 4;
+            for g in 0..giants {
+                let i = (g * 53 + layout * 7) % n;
+                spots[i].1 = 60.0 + next() * 200.0;
+            }
+            assert_eq!(big_balls(n, |i| spots[i].1).len(), giants, "layout {layout}");
+            let mut grid = Grid::default();
+            let mut offered = Vec::new();
+            close_pairs(&mut grid, n, |i| spots[i], |i, j| offered.push((i, j)));
+            assert!(offered.iter().all(|&(i, j)| i < j));
+            let mut unique = offered.clone();
+            unique.sort_unstable();
+            unique.dedup();
+            assert_eq!(unique.len(), offered.len(), "every pair once");
+            for pair in overlapping(&spots) {
+                assert!(unique.binary_search(&pair).is_ok(), "layout {layout}: {pair:?} missed");
+            }
+            assert!(offered.len() < n * n / 8, "not every pair: {}", offered.len());
+        }
+        // No big ball: exactly the grid's pairs over every ball, as before.
+        let spots: Vec<(Vec2, f32)> = (0..300).map(|_| (Vec2::new(next() * 300.0, next() * 300.0), 4.0)).collect();
+        let (mut grid, mut plain) = (Grid::default(), Grid::default());
+        let mut offered = Vec::new();
+        close_pairs(&mut grid, spots.len(), |i| spots[i], |i, j| offered.push((i, j)));
+        plain.rebuild(8.0, spots.iter().map(|s| s.0));
+        let mut before = Vec::new();
+        plain.for_each_pair(|i, j| before.push((i as usize, j as usize)));
+        assert_eq!(offered, before);
+        // Too many big ones (more than one in eight) is not "a few": the grid takes them all.
+        let mut many = spots.clone();
+        for s in many.iter_mut().step_by(5) {
+            s.1 = 40.0;
+        }
+        assert!(big_balls(many.len(), |i| many[i].1).is_empty());
+        // More than a handful, even if few beside the rest: the grid takes them all.
+        let mut crowd: Vec<(Vec2, f32)> = (0..2000).map(|i| (Vec2::new(i as f32, 0.0), 4.0)).collect();
+        for s in crowd.iter_mut().step_by(100) {
+            s.1 = 40.0;
+        }
+        assert!(big_balls(crowd.len(), |i| crowd[i].1).is_empty(), "20 big ones, over {MOST_BIG}");
+        crowd.truncate(1500);
+        assert_eq!(big_balls(crowd.len(), |i| crowd[i].1).len(), 15);
+    }
+
+    #[test]
+    fn runs_in_a_box_hold_each_item_once() {
+        let points: Vec<Vec2> = (0..400).map(|i| Vec2::new((i % 20) as f32 * 7.0, (i / 20) as f32 * 7.0)).collect();
+        let mut grid = Grid::default();
+        grid.rebuild(10.0, points.iter().copied());
+        for (from, to) in [((2, 3), (6, 9)), ((-5, -5), (100, 100)), ((-3, 0), (-1, 4)), ((4, 4), (4, 4))] {
+            let mut got: Vec<u32> = grid.runs_in(from, to).into_iter().flat_map(|r| grid.run(r)).collect();
+            got.sort_unstable();
+            let want: Vec<u32> = (0..400u32)
+                .filter(|&i| {
+                    let (cx, cy) = grid.cell_of(points[i as usize]);
+                    (from.0..=to.0).contains(&cx) && (from.1..=to.1).contains(&cy)
+                })
+                .collect();
+            assert_eq!(got, want, "{from:?} {to:?}");
+        }
     }
 }

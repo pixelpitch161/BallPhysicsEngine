@@ -47,7 +47,8 @@ impl AimJob {
             let _done = Finished(done);
             // Told to stop, its test flights give up and keep nothing.
             let _stop = StopWith::new(Some(stop.clone()));
-            let mut world = World::build(&scene, &resolved, &sims);
+            // Nothing draws this run, so it keeps no trail paths.
+            let mut world = World::build_unseen(&scene, &resolved, &sims);
             let until = bpe_runtime::step_at(duration, world.steps_per_second);
             let mut log = Log::default();
             while world.step < until && !stop.load(Ordering::Relaxed) {

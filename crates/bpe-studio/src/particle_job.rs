@@ -100,7 +100,7 @@ impl ParticleJob {
             .spawn(move || {
                 crate::thread_priority::set_this_thread(crate::thread_priority::Priority::Low);
                 bpe_gfx::swarm::use_on_this_thread(card);
-                let mut playback = Playback::with_budget(&scene, &resolved, sims, BUDGET);
+                let mut playback = Playback::unseen(&scene, &resolved, sims, BUDGET);
                 let mut published = None;
                 while !theirs.stop.load(Ordering::Relaxed) {
                     let target = f64::from_bits(theirs.target.load(Ordering::Acquire));

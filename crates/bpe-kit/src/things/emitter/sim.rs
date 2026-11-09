@@ -383,7 +383,7 @@ fn fire_round(st: &mut EmitterState, bodies: &mut Bodies, at: &Moment, log: Opti
         match s.earlier {
             Earlier::Keep => {}
             Earlier::FadeOut => {
-                for row in 0..st.rows.len() {
+                for row in bodies.live_rows().start..st.rows.len() {
                     if st.rows.round[row] < round && bodies.alive[row] && st.rows.fade_from[row].is_none() {
                         st.rows.fade_from[row] = Some(at.step);
                     }
@@ -393,7 +393,7 @@ fn fire_round(st: &mut EmitterState, bodies: &mut Bodies, at: &Moment, log: Opti
                 // Balls of earlier rounds still waiting on their Gap never go.
                 st.pending.retain(|l| l.round >= round);
                 if let Some(log) = log {
-                    for row in 0..st.rows.len() {
+                    for row in bodies.live_rows().start..st.rows.len() {
                         if st.rows.round[row] < round && bodies.alive[row] {
                             pop(bodies, row, at.thing, at.step, log);
                         }
@@ -663,7 +663,7 @@ fn arrivals(world: &World, me: ThingId, s: &EmitterSettings, centre: Vec2) -> Ve
         if !caught {
             continue;
         }
-        for row in 0..bodies.len() {
+        for row in bodies.live_rows() {
             if !bodies.alive[row] || bodies.held[row] {
                 continue;
             }
@@ -974,7 +974,7 @@ impl ThingSim for EmitterSim {
             let st = state_mut::<EmitterState>(st.as_mut());
             let fade = st.settings.fade_steps(rate);
             if fade > 0 {
-                for row in 0..st.rows.len() {
+                for row in bodies.live_rows().start..st.rows.len() {
                     if bodies.alive[row] && st.rows.fade_from[row].is_some_and(|f| step >= f + fade) {
                         pop(bodies, row, thing, step, log);
                     }

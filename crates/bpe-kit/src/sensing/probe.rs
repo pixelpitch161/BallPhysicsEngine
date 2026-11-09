@@ -3,7 +3,7 @@
 //! and shapes. No bounce, light field or haze. It never reads itself: the scene it resolves for
 //! the lights is animated with no light sensing in, and nothing that makes light reads it back.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use bpe_core::{Animation, Inputs, LightSource, Resolved, Scene, Settings, SlotId, ThingId, Value};
@@ -41,6 +41,15 @@ pub struct Probe {
     /// The lamps at the moments last asked (asked many times a step: once a ball), newest last.
     /// A few, so worlds of several runs asking in turn (test flights on threads) don't thrash.
     cache: Mutex<Vec<(Moment, Arc<Lamps>)>>,
+    /// The settings with the keys applied at the last moment worked out, kept to apply the next
+    /// moment's keys to (applying writes only the keyed settings, from scratch) instead of copying
+    /// `resolved` again every step (W7, S17). `None` while another moment is being worked out.
+    now: Mutex<Option<Resolved>>,
+    /// Things whose Look some key writes: their look is read again at every moment.
+    keyed_looks: BTreeSet<ThingId>,
+    /// What every other thing's look says about light, read once (by thing and whether light
+    /// through glass takes its colour, which the Lighting card's keys can change).
+    looks: Mutex<BTreeMap<(ThingId, bool), Arc<LookLight>>>,
 }
 
 /// How many moments the probe keeps.
@@ -82,7 +91,18 @@ impl Probe {
             Some(_) => true,
             None => false,
         });
-        Probe { scene: Arc::new(scene.clone()), resolved: kept, animation, sound, cache: Mutex::new(Vec::new()) }
+        let keyed_looks =
+            animation.destinations().into_iter().filter(|d| d.1 == Some(SlotId::Look)).map(|d| d.0).collect();
+        Probe {
+            scene: Arc::new(scene.clone()),
+            resolved: kept,
+            animation,
+            sound,
+            cache: Mutex::new(Vec::new()),
+            now: Mutex::new(None),
+            keyed_looks,
+            looks: Mutex::new(BTreeMap::new()),
+        }
     }
 
     /// The lamps and blockers at `time`, with `world` and `log` as they are.
@@ -105,7 +125,9 @@ impl Probe {
     }
 
     fn work_out(&self, world: &World, log: &Log, time: f64) -> Lamps {
-        let mut now = self.resolved.clone();
+        // The keyed copy from the last moment, when no other run is working one out right now.
+        let mut kept = self.now.try_lock().ok();
+        let mut now = kept.as_mut().and_then(|k| k.take()).unwrap_or_else(|| self.resolved.clone());
         if !self.animation.is_empty() {
             let levels = self.sound.as_deref().map(|sound| bpe_runtime::LevelsAt { sound, world, log });
             // No light sensing in: the probe never reads itself.
@@ -117,9 +139,43 @@ impl Probe {
             };
             self.animation.apply(&mut now, time, &inputs);
         }
+        let rules = world.rules().filter(|r| r.changes_picture());
+        let lamps = if rules.is_none() && !bpe_core::gradient_extras::any_in(&now) {
+            // Only the keys changed anything: the looks no key writes read as they always do.
+            let look_of = |id: ThingId, look: &bpe_core::ResolvedSlot, glass: bool| {
+                if self.keyed_looks.contains(&id) {
+                    return Arc::new(LookLight::of(look, glass));
+                }
+                if let Ok(looks) = self.looks.lock()
+                    && let Some(known) = looks.get(&(id, glass))
+                {
+                    return known.clone();
+                }
+                let fresh = Arc::new(LookLight::of(look, glass));
+                if let Ok(mut looks) = self.looks.lock() {
+                    looks.insert((id, glass), fresh.clone());
+                }
+                fresh
+            };
+            Lamps::of(&self.scene, &self.resolved, &now, world, log, time, &look_of)
+        } else {
+            let mut changed = now.clone();
+            Self::changed_by(&mut changed, rules, time);
+            Lamps::of(&self.scene, &self.resolved, &changed, world, log, time, &|_, look, glass| {
+                Arc::new(LookLight::of(look, glass))
+            })
+        };
+        if let Some(kept) = kept.as_mut() {
+            **kept = Some(now);
+        }
+        lamps
+    }
+
+    /// `now` with what the rules and moving gradients change, as the frame builder applies them.
+    fn changed_by(now: &mut Resolved, rules: Option<&bpe_runtime::RulesState>, time: f64) {
         // What the rules changed, as the frame builder applies it.
-        if let Some(rules) = world.rules().filter(|r| r.changes_picture()) {
-            rules.apply_whole(&mut now, time, |_| true);
+        if let Some(rules) = rules {
+            rules.apply_whole(now, time, |_| true);
             // Every broken thing is gone at once here, even while its Break look still plays out
             // in the picture: the probe is also what the physics senses light with, and break
             // looks are drawn only.
@@ -129,10 +185,9 @@ impl Probe {
         }
         // Gradients' companions, as the frame builder applies them (light colours can be
         // gradients).
-        if bpe_core::gradient_extras::any_in(&now) {
-            bpe_core::gradient_extras::apply_moves(&mut now, time);
+        if bpe_core::gradient_extras::any_in(now) {
+            bpe_core::gradient_extras::apply_moves(now, time);
         }
-        Lamps::of(&self.scene, &self.resolved, &now, world, log, time)
     }
 
     /// The light on body row `row` of `thing`.
@@ -300,7 +355,17 @@ struct Lamps {
 }
 
 impl Lamps {
-    fn of(scene: &Scene, base: &Resolved, now: &Resolved, world: &World, log: &Log, time: f64) -> Lamps {
+    /// The lamps and blockers of `now` (keyed, `base` before keys); `look_of` reads what a thing's
+    /// Look says about light (the probe keeps the ones no key changes).
+    fn of(
+        scene: &Scene,
+        base: &Resolved,
+        now: &Resolved,
+        world: &World,
+        log: &Log,
+        time: f64,
+        look_of: &dyn Fn(ThingId, &bpe_core::ResolvedSlot, bool) -> Arc<LookLight>,
+    ) -> Lamps {
         let card = now.things.get(&ThingId::ROOT).and_then(|r| r.slots.get(&SlotId::Lighting));
         let Some(card) = card.filter(|c| c.kind == LIGHTING) else {
             // No Lighting card: the picture is unlit, as if lit evenly at 1 everywhere.
@@ -359,7 +424,7 @@ impl Lamps {
                 continue;
             }
             let Some(look) = r.slots.get(&SlotId::Look) else { continue };
-            let look = LookLight::of(look, settings.glass_colour());
+            let look = look_of(*id, look, settings.glass_colour());
             if let Some(b) = world.bodies.get(id) {
                 for row in 0..b.len() {
                     if !b.alive[row] {

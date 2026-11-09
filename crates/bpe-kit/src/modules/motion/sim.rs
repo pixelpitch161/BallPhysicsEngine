@@ -33,7 +33,8 @@ impl ModuleSim for BasicMotionSim {
         let m = &state::<MotionState>(st).settings;
         let pull = (gravity * m.gravity_scale + m.wind) * dt;
         let keep = (1.0 - m.drag * dt).max(0.0);
-        for (v, alive) in bodies.velocity.iter_mut().zip(&bodies.alive) {
+        let from = bodies.live_rows().start;
+        for (v, alive) in bodies.velocity.iter_mut().zip(&bodies.alive).skip(from) {
             if *alive {
                 *v = (*v + pull) * keep;
             }

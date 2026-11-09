@@ -312,3 +312,39 @@ fn light_spreads_vary_motion_ball_by_ball() {
     }
     assert!(near.0 / near.1 as f32 > far.0 / far.1 as f32 + 10.0, "{near:?} {far:?}");
 }
+
+/// The probe keeps its keyed settings and the looks no key writes between moments (W7, S17): asked
+/// at moments forward and back, it gives exactly what a fresh probe gives at each, with a keyed
+/// light and a ball whose glow is keyed beside one whose look isn't.
+#[test]
+fn a_probe_asked_again_and_again_matches_a_fresh_one() {
+    let (mut scene, light, kit) = lit("ring", Vec2::new(0.0, -300.0), 0.2);
+    let strength = Address::own(light, "strength");
+    scene.set_key(&kit.registry, &strength, 0.0, Value::Number(0.2)).unwrap();
+    scene.set_key(&kit.registry, &strength, 2.0, Value::Number(1.5)).unwrap();
+    let body = scene.card(BALLS, SlotId::Look).unwrap().layers[0].id;
+    let glow = scene
+        .add_sub_layer(&kit.registry, BALLS, SlotId::Look, body, crate::modules::look::layers::gives_light::SUB_LIGHT)
+        .unwrap();
+    let glow_strength = Address::on(BALLS, SlotId::Look, &bpe_core::layered_key(glow, "strength"));
+    scene.set_key(&kit.registry, &glow_strength, 0.0, Value::Number(0.0)).unwrap();
+    scene.set_key(&kit.registry, &glow_strength, 2.0, Value::Number(4.0)).unwrap();
+    let mut world = world_of(&scene, &kit);
+    place(&mut world, &[Vec2::ZERO, Vec2::new(90.0, 0.0), Vec2::new(0.0, 140.0)]);
+    let kept = probe_of(&scene, &kit);
+    let log = Log::default();
+    for t in [0.0, 0.5, 1.25, 2.0, 0.75, 0.1, 1.9] {
+        let fresh = probe_of(&scene, &kit);
+        for row in 0..3 {
+            let (a, b) = (kept.ball(&world, &log, BALLS, row, t), fresh.ball(&world, &log, BALLS, row, t));
+            assert_eq!((a.light, a.shadow), (b.light, b.shadow), "row {row} at {t}");
+        }
+        let (a, b) = (
+            kept.level(&world, &log, light, &LightSource::Strength, t),
+            fresh.level(&world, &log, light, &LightSource::Strength, t),
+        );
+        assert_eq!(a, b, "strength at {t}");
+    }
+    let early = kept.ball(&world, &log, BALLS, 1, 0.0).light;
+    assert!(kept.ball(&world, &log, BALLS, 1, 2.0).light > early, "the keys do change the light");
+}
