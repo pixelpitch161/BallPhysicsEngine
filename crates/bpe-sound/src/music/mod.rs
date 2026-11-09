@@ -2,11 +2,13 @@
 //! presets. Pure functions, no sound.
 
 pub mod chord_name;
+pub mod midi_import;
 pub mod presets;
 pub mod scale;
 pub mod voicing;
 
 pub use chord_name::{chord_name, note_name};
+pub use midi_import::{MidiImport, SlotTiming};
 pub use presets::{Mood, PRESETS, Preset, chord_labels, realise};
 pub use scale::{in_scale, move_into_key, scale_steps};
 pub use voicing::{ChordSpec, Voicing, voice_progression};

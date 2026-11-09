@@ -19,7 +19,7 @@ pub fn shape_of(wave: Wave) -> Option<WaveShape> {
         Wave::Triangle => Some(WaveShape::Triangle),
         Wave::Saw => Some(WaveShape::Saw),
         Wave::Square => Some(WaveShape::Square),
-        Wave::Noise => None,
+        Wave::Noise | Wave::Sample => None,
     }
 }
 

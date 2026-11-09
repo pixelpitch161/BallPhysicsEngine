@@ -347,6 +347,10 @@ pub struct Scene {
     /// none in a new scene, and then left out of the saved file.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub pictures: BTreeMap<String, crate::scene_pictures::ScenePicture>,
+    /// Sound files picked for an oscillator's Sample or the Mixer's Backing track, by name (W11,
+    /// see [`crate::scene_audio`]): none in a new scene, and then left out of the saved file.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub audio: BTreeMap<String, crate::scene_audio::SceneAudio>,
 }
 
 impl Default for Scene {
@@ -362,6 +366,7 @@ impl Default for Scene {
             rules: crate::rules::Rules::default(),
             fonts: BTreeMap::new(),
             pictures: BTreeMap::new(),
+            audio: BTreeMap::new(),
         }
     }
 }

@@ -661,7 +661,7 @@ impl Studio {
             light_solo: Default::default(),
             light_show: Default::default(),
             show_air: false,
-            tables_baked: WaveBank::baked(),
+            tables_baked: WaveBank::baked() + bpe_sound::SampleBank::decoded(),
             snapshot: None,
             unsaved_at: std::cell::Cell::new(None),
             hold_runs: false,
@@ -1778,14 +1778,15 @@ impl Studio {
     /// (until then the oscillators that need them are silent). Looks again shortly while a bake
     /// is under way.
     fn follow_bakes(&mut self, ctx: &egui::Context) {
-        let baked = WaveBank::baked();
+        // A wavetable baked or a sound file read: the patch that was waiting on it is built again.
+        let baked = WaveBank::baked() + bpe_sound::SampleBank::decoded();
         if baked != self.tables_baked {
             self.tables_baked = baked;
             if let Some(job) = &mut self.sound {
                 job.patch(SoundPatch::build_ready(&self.scene, &self.resolved, &self.kit));
             }
         }
-        if WaveBank::busy() {
+        if WaveBank::busy() || bpe_sound::SampleBank::busy() {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
     }
@@ -3424,13 +3425,26 @@ mod tests {
     fn a_dropped_file_ball_studio_cant_use_is_reported() {
         let mut h = editor_harness(Studio::headless());
         let before = h.state().scene.clone();
-        drop_file(&mut h, "song.wav", b"RIFF");
+        drop_file(&mut h, "notes.txt", b"hello");
         assert_eq!(h.state().scene, before);
         let problem = h.state().problem.as_ref().map(|p| (p.kind, p.text.clone()));
-        assert_eq!(problem, Some((ProblemKind::File, crate::drops::cant_open("song.wav"))));
+        assert_eq!(problem, Some((ProblemKind::File, crate::drops::cant_open("notes.txt"))));
+        drop_file(&mut h, "broken.wav", b"RIFF");
+        assert_eq!(h.state().scene, before, "a sound file that can't be read is refused");
+        assert!(h.state().problem.as_ref().is_some_and(|p| p.text.contains("broken.wav")));
         drop_file(&mut h, "fake.png", b"GIF89a");
         assert_eq!(h.state().scene, before, "a picture that isn't a PNG is refused");
         assert!(h.state().problem.as_ref().is_some_and(|p| p.text.contains("fake.png")));
+    }
+
+    #[test]
+    fn a_dropped_song_becomes_the_backing_track() {
+        let mut h = editor_harness(Studio::headless());
+        let kit = h.state().kit.clone();
+        drop_file(&mut h, "My song.wav", &bpe_sound::audio::sine_wav(220.0, 0.2, 44_100, 2));
+        assert!(h.state().scene.audio.contains_key("My song"));
+        assert_eq!(crate::mixer::backing::backing_name(&h.state().scene, &kit), "My song");
+        assert!(h.state().status.contains("backing track"), "{}", h.state().status);
     }
 
     #[test]

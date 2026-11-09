@@ -271,6 +271,7 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
         hits_lane(ui, studio, &ruler, &mut timeline.hit_ticks);
+        song_lane(ui, studio, &ruler);
         if !studio.scene.rules.is_empty() {
             rules_lane(ui, studio, &ruler);
         }
@@ -358,6 +359,54 @@ fn hits_lane(ui: &mut Ui, studio: &Studio, ruler: &Ruler, hit_ticks: &mut HitTic
         let tick = Rect::from_min_max(Pos2::new(x - 1.0, strip.top() + 2.0), Pos2::new(x + 1.0, strip.bottom() - 2.0));
         painter.rect_filled(tick, 0.0, hit_colour(&studio.scene, thing));
     }
+    playhead(&painter, studio, ruler, rect);
+}
+
+/// The Song lane, shown while the Mixer has a backing track: the song's waveform where it plays
+/// (from Starts at), dimmed while it is off.
+fn song_lane(ui: &mut Ui, studio: &Studio, ruler: &Ruler) {
+    let name = crate::mixer::backing::backing_name(&studio.scene, &studio.kit);
+    if name.is_empty() {
+        return;
+    }
+    let mixer = |key: &str| {
+        let a = Address::on(ThingId::ROOT, bpe_core::SlotId::Mixer, key);
+        studio.scene.value_at_time(&studio.kit.registry, &a, 0.0)
+    };
+    let on = matches!(mixer("backing_on"), Some(Value::Bool(true)));
+    let start = mixer("backing_at").as_ref().and_then(crate::mixer::number).unwrap_or(0.0);
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), LANE_HEIGHT), Sense::hover());
+    let cell = Rect::from_min_size(rect.min, egui::vec2(LABEL_WIDTH, LANE_HEIGHT));
+    name_cell(ui, cell, egui::Label::new(RichText::new("Song").small().color(style::MUTED)).selectable(false));
+    let strip = strip_of(rect, ruler);
+    let painter = ui.painter_at(rect);
+    paint_beats(&painter, ruler, strip);
+    let data = studio.scene.audio.get(&name).and_then(|a| bpe_sound::SampleBank::ready(&a.bytes)).and_then(Result::ok);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, format!("Song lane, {name}")));
+    if let Some(data) = data {
+        let peaks = data.peaks();
+        let seconds = data.seconds();
+        let colour = if on { style::TEXT.gamma_multiply(0.7) } else { style::FAINT };
+        let mid = strip.center().y;
+        let half = strip.height() * 0.45;
+        let (from, to) = (ruler.x_of(start).max(strip.left()), ruler.x_of(start + seconds).min(strip.right()));
+        let mut x = from.floor();
+        while x < to {
+            // The song's share under this pixel column.
+            let (a, b) = (ruler.time_of(x) - start, ruler.time_of(x + 1.0) - start);
+            let n = peaks.len();
+            let i = ((a.max(0.0) / seconds * n as f64) as usize).min(n);
+            let j = ((b.max(0.0) / seconds * n as f64).ceil() as usize).max(i + 1).min(n);
+            let peak = peaks[i.min(j)..j].iter().fold(0.0f32, |m, v| m.max(*v));
+            let h = (peak.min(1.0) * half).max(0.5);
+            painter.line_segment(
+                [Pos2::new(x + 0.5, mid - h), Pos2::new(x + 0.5, mid + h)],
+                egui::Stroke::new(1.0, colour),
+            );
+            x += 1.0;
+        }
+    }
+    response.on_hover_text(format!("{name}, from {}", clock(start)));
     playhead(&painter, studio, ruler, rect);
 }
 

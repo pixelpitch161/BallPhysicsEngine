@@ -193,3 +193,44 @@ Balls or Emitter thing hears exactly what it heard before.
   a Text.
 - Tests: `bpe-sound/tests/ball_sound.rs`, `hit_filter.rs` (`a_balls_sound_sees_a_hit_from_its_own_ball`), the Sound
   tab's `balls_and_emitters_have_a_sound_tab_with_their_balls_moments`.
+
+## Samples, backing track, saved sounds, MIDI import (W11, 2026-11-08)
+
+Plan and design: `docs/superpowers/plans/2026-11-08-producer-features.md`. No golden moves: a scene that keeps no
+sound files hears exactly what it heard before.
+
+- **Sound files in the scene** (`bpe-core/src/scene_audio.rs`): `Scene.audio` (name → `SceneAudio`, base64 bytes,
+  left out when empty), `add_audio` (same bytes keep one name; a clash gets "name (2)"), `bring_audio` (another
+  scene's files in, returning the renames), `sound_clip(card)`, and save prunes audio no `a_sample` / `b_sample` /
+  `backing` names (`AUDIO_KEYS`, `is_audio_key`). The W5 things clipboard (`clip.rs`) carries the audio its things
+  name, as it carries fonts and pictures.
+- **Reading** (`bpe-sound/src/audio.rs`): `probe` (fast, the editor's check), `decode` (symphonia: WAV, FLAC, MP3,
+  OGG, AIFF; gapless; rubato `FftFixedIn` to 48 kHz with its delay trimmed; mono doubled; 200 MB cap),
+  `guess_root("Piano C4.wav")` (C5 = 60), `sine_wav` (tests). `SampleBank`: `get` decodes there and then (export,
+  tests), `ready` hands back a finished decode or starts one on a "sound file decode" thread, keyed by the bytes'
+  `Arc` through a `Weak`; `decoded()` counts finished decodes and `busy()` says one is running (the editor's
+  `follow_bakes` rebuilds the patch on either, as for `WaveBank::baked`).
+- **Sampler** (`bpe-dsp/src/sampler.rs`): `SampleData` (both channels, peaks per 64 frames, mip levels by a 65-tap
+  halfband for samples up to 30 s, picked so a step stays at most 2^0.25), `SamplerVoice` (4-point Hermite, Start,
+  Loop Off / Forward / Ping-pong between Loop start and end, an equal-power Loop fade on Forward, Reverse, a wait
+  before the note's first sample). `Wave::Sample` on Osc A or B (`OscSettings` `sample`, `sample_root`,
+  `sample_follow`, `sample_start`, `sample_loop`, `sample_loop_start/end`, `sample_loop_fade`, `sample_reverse`;
+  none keyframed: read when the patch is built). `patch.rs::osc_spec` fills `OscSpec.sample` from `Tables::sample`
+  (Bake: `get`; Ready: `ready`, the patch pending while it decodes; a missing or unreadable file is silence, never
+  pending). `voices/shape.rs::render_note` steps the sample at 2^((pitch − root)/12) with Follow notes on, else
+  2^((pitch − note)/12) (Octave, Semi, Cents, pitch modulation still move it). Warp, Unison, Sub and Phase don't
+  apply to a sample (their `when` says so).
+- **Backing track** (Mixer `backing`, `backing_on`, `backing_at` −600..600 s, `backing_level` dB): `patch.rs::Backing`
+  (start in samples, gain), added by `Engine::render_voices` into the master input after the voices and buses, at
+  sound time, so it goes through the Master (Input, limiter, ceiling, end fade), seeks and exports with the mix; in
+  the Master stem, not the bus stems. `has_sound` is true for a scene whose only sound is its backing track.
+- **Saved sounds** (`.ballsound`): RON `(format: 1, card, audio)` via `sound_file_text` / `read_sound_file` (plain
+  errors for a file that isn't one, or one from a newer version).
+- **MIDI import** (`music/midi_import.rs`, midly): notes starting within a 32nd note are a chord; distinct chords fill
+  up to 16 slots in first-played order (the rest counted in `left_out`; drums on channel 10 skipped); the first tempo
+  (clamped 20..300) and time signature come across; evenly spaced chords on whole beats or bars give By tempo (Every
+  N bars or beats, Forward), anything else Only on keyframes with a Jump to slot key per chord (seconds through the
+  file's tempo map); the keyboard range is widened to show every note.
+- Tests: `bpe-dsp` sampler unit tests; `bpe-sound/tests/sampler.rs` (root, follow off, missing, loop, backing at,
+  negative start, level, off, seek), the FLAC/MP3/OGG/AIFF fixtures in `tests/data/`, `midi_import` unit tests,
+  `alloc.rs` (sample voices and a backing track allocate nothing).

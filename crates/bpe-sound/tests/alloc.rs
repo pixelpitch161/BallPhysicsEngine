@@ -331,4 +331,52 @@ fn render_does_not_allocate() {
     }
     assert!(heard, "the lit scene was heard while counting");
     assert!(meters.mod_value(shape.0, shared).unwrap() > 0.0, "the shared Light hears the lamp");
+
+    // Sample oscillators (W11): Osc A looping forward with a fade, Osc B ping-pong in reverse
+    // from partway in, chords of them, and a backing track under the mix.
+    let mut sampled = new_scene(reg);
+    bpe_kit::ensure_mixer(&mut sampled, reg);
+    let tone = sampled.add_audio("Tone", bpe_sound::audio::sine_wav(330.0, 0.5, 44_100, 2));
+    let song = sampled.add_audio("Song", bpe_sound::audio::sine_wav(110.0, 3.0, 48_000, 2));
+    let shape = sampled.order.iter().copied().find(|id| sampled.things[id].kind == "shape").unwrap();
+    let mut card = starter_voice(reg);
+    let mut v = VoiceSettings::from_params(&card.params);
+    v.a.wave = bpe_kit::sound::Wave::Sample;
+    v.a.sample = tone.clone();
+    v.a.sample_loop = bpe_kit::sound::SampleLoop::Forward;
+    v.a.sample_loop_start = 20.0;
+    v.a.sample_loop_end = 80.0;
+    v.a.sample_loop_fade = 30.0;
+    v.b.on = true;
+    v.b.wave = bpe_kit::sound::Wave::Sample;
+    v.b.sample = tone;
+    v.b.sample_loop = bpe_kit::sound::SampleLoop::PingPong;
+    v.b.sample_reverse = true;
+    v.b.sample_start = 40.0;
+    v.notes_slots = vec![bpe_core::NoteSlot { notes: vec![48, 60, 67, 79], order_clicked: vec![] }];
+    v.notes_plays = bpe_kit::sound::Plays::AllAtOnce;
+    card.params = v.to_params();
+    sampled.things.get_mut(&shape).unwrap().slots.insert(SlotId::Sound, card);
+    {
+        let card = sampled.card_mut(root, mixer).unwrap();
+        card.params.set("backing", bpe_core::Value::Text(song));
+        card.params.set("backing_at", bpe_core::Value::Number(0.2));
+    }
+    let resolved = resolve_scene(&sampled, reg);
+    let mut e = Engine::new(&sampled, &resolved, &kit);
+    for _ in 0..200 {
+        e.render(&mut block);
+    }
+    let mut heard = false;
+    for _ in 0..1_000 {
+        e.step_physics();
+        ALLOCATIONS.store(0, Ordering::SeqCst);
+        COUNTING.store(true, Ordering::SeqCst);
+        e.render_prepared(&mut block);
+        COUNTING.store(false, Ordering::SeqCst);
+        assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0, "a block with samples and a backing track allocated");
+        assert!(block.iter().all(|v| v.is_finite()));
+        heard |= block.iter().any(|&v| v != 0.0);
+    }
+    assert!(heard, "the samples and the song were heard while counting");
 }

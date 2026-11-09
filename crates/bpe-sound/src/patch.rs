@@ -11,11 +11,11 @@ use crate::voices::shape::{DistSpec, EnvSpec, HitSpec, LfoSpec, LightSpec, ModsS
 use crate::voices::slots::NotesSpec;
 use crate::{ShapeVoice, TempoMap, VoiceSource};
 use bpe_core::{Address, LayerId, Resolved, ResolvedSlot, Scene, Settings, SlotId, ThingId, Value};
-use bpe_dsp::{TableSet, WarpModeId, WaveBank, WaveShape};
+use bpe_dsp::{LoopMode, SampleData, SamplerParams, TableSet, WarpModeId, WaveBank, WaveShape};
 use bpe_kit::sound::{
     ADSR, AdsrSettings, CHAIN_KINDS, ChainEqSettings, DISTANCE, DistanceSettings, DistortionSettings, EQ, FILTER,
     FilterSettings, HIT, HitSettings, LFO, LIGHT_MOD, LfoSettings, LightModSettings, MODULATION, MixerSettings,
-    ModulationSettings, OscSettings, Slope, VOICE, VoiceSettings, Wave,
+    ModulationSettings, OscSettings, SampleLoop, Slope, VOICE, VoiceSettings, Wave,
 };
 use bpe_kit::things::shape::ShapeSettings;
 use bpe_kit::{Kit, SceneSettings};
@@ -36,6 +36,46 @@ pub struct SoundPatch {
     pub pending: bool,
     /// Where the clip ends (the scene's Duration), for the Master's End fade.
     pub end: f64,
+    /// The Mixer's backing track, when it has one that is on and decoded (W11).
+    pub backing: Option<Backing>,
+}
+
+/// A backing track ready to play: the song, the sound-time sample its first frame plays on, and
+/// its level.
+#[derive(Clone, Debug)]
+pub struct Backing {
+    pub audio: Arc<SampleData>,
+    pub start: i64,
+    pub gain: f32,
+}
+
+impl Backing {
+    /// The backing track named by the Mixer settings `m`, when it is on and the scene keeps it.
+    pub fn of(scene: &Scene, m: &MixerSettings, tables: Tables, pending: &mut bool) -> Option<Backing> {
+        if !m.backing_on || m.backing.is_empty() {
+            return None;
+        }
+        let audio = tables.sample(scene, &m.backing, pending)?;
+        let start = (m.backing_at as f64 * crate::SAMPLE_RATE as f64).round() as i64;
+        Some(Backing { audio, start, gain: bpe_dsp::db_to_gain(m.backing_level) })
+    }
+
+    /// Adds the song's block starting at sound-time sample `at` to `l`/`r`. Never allocates.
+    pub fn add(&self, at: u64, l: &mut [f32; crate::BLOCK], r: &mut [f32; crate::BLOCK]) {
+        let first = at as i64 - self.start;
+        let frames = self.audio.frames() as i64;
+        if first >= frames || first + crate::BLOCK as i64 <= 0 {
+            return;
+        }
+        let (sl, sr) = self.audio.channels();
+        for i in 0..crate::BLOCK {
+            let j = first + i as i64;
+            if (0..frames).contains(&j) {
+                l[i] += sl[j as usize] * self.gain;
+                r[i] += sr[j as usize] * self.gain;
+            }
+        }
+    }
 }
 
 /// How a patch gets its wavetables.
@@ -62,6 +102,24 @@ impl Tables {
             Tables::Skip => None,
         }
     }
+
+    /// The decoded sound file the scene keeps as `name` (W11), the same way: decoded there and
+    /// then, only if ready (else it starts decoding and the patch is pending), or none. A missing
+    /// or unreadable file is none and never pending.
+    pub(crate) fn sample(self, scene: &Scene, name: &str, pending: &mut bool) -> Option<Arc<SampleData>> {
+        let bytes = &scene.audio.get(name)?.bytes;
+        match self {
+            Tables::Bake => crate::SampleBank::get(bytes).ok(),
+            Tables::Ready => match crate::SampleBank::ready(bytes) {
+                Some(d) => d.ok(),
+                None => {
+                    *pending = true;
+                    None
+                }
+            },
+            Tables::Skip => None,
+        }
+    }
 }
 
 /// The table a wave reads, for a tabled wave that plays (`runs`: it is on, or the other
@@ -75,13 +133,35 @@ fn table_of(o: &OscSettings, runs: bool, tables: Tables, pending: &mut bool) -> 
         Wave::Triangle => WaveShape::Triangle,
         Wave::Saw => WaveShape::Saw,
         Wave::Square => WaveShape::Square,
-        Wave::Noise => return None,
+        Wave::Noise | Wave::Sample => return None,
     };
     tables.get(wave, WarpModeId::from_index(o.warp_mode.index()), pending)
 }
 
-fn osc_spec(o: &OscSettings, runs: bool, tables: Tables, pending: &mut bool) -> OscSpec {
+/// How a sample oscillator plays its sample.
+pub(crate) fn sampler_params(o: &OscSettings) -> SamplerParams {
+    let frames_per_ms = crate::SAMPLE_RATE as f64 / 1000.0;
+    SamplerParams {
+        start: o.sample_start as f64 / 100.0,
+        loop_mode: match o.sample_loop {
+            SampleLoop::Off => LoopMode::Off,
+            SampleLoop::Forward => LoopMode::Forward,
+            SampleLoop::PingPong => LoopMode::PingPong,
+        },
+        loop_start: o.sample_loop_start as f64 / 100.0,
+        loop_end: o.sample_loop_end as f64 / 100.0,
+        fade_frames: o.sample_loop_fade.max(0.0) as f64 * frames_per_ms,
+        reverse: o.sample_reverse,
+    }
+}
+
+fn osc_spec(scene: &Scene, o: &OscSettings, runs: bool, tables: Tables, pending: &mut bool) -> OscSpec {
+    let sample = if runs && o.wave == Wave::Sample { tables.sample(scene, &o.sample, pending) } else { None };
     OscSpec {
+        sampler: sampler_params(o),
+        sample_root: o.sample_root.clamp(0, 127) as f32,
+        sample_follow: o.sample_follow,
+        sample,
         on: o.on,
         wave: o.wave,
         noise: o.noise,
@@ -248,8 +328,8 @@ fn spec_with(
         thing: id,
         index,
         osc: [
-            osc_spec(&v.a, v.a.on || chain.raw_needed[0], tables, pending),
-            osc_spec(&v.b, v.b.on || chain.raw_needed[1], tables, pending),
+            osc_spec(scene, &v.a, v.a.on || chain.raw_needed[0], tables, pending),
+            osc_spec(scene, &v.b, v.b.on || chain.raw_needed[1], tables, pending),
         ],
         envs,
         play_mode: v.play_mode,
@@ -437,6 +517,10 @@ pub fn patch_fingerprint(scene: &Scene, resolved: &Resolved) -> u64 {
     for (a, p) in scene.pulses.iter().filter(|(a, _)| sounds(a.slot)) {
         put(&(a, p));
     }
+    // Samples and the backing track are named by the settings above; the bytes under a name.
+    for (name, a) in &scene.audio {
+        put(&(name, a.bytes.len(), Arc::as_ptr(&a.bytes) as *const u8 as usize));
+    }
     // Light modulators read the lights through the probe.
     if bpe_kit::sensing::uses_light(scene) {
         put(&(bpe_kit::sensing::has_lighting(scene), bpe_kit::sensing::fingerprint(scene)));
@@ -500,12 +584,23 @@ impl SoundPatch {
                 routes.push(ShapeRoute::main_only(bus));
             }
         }
-        SoundPatch { master, master_keys, tempo, voices, routes, buses, pending, end: settings.duration as f64 }
+        let backing = Backing::of(scene, &master, tables, &mut pending);
+        SoundPatch {
+            master,
+            master_keys,
+            tempo,
+            voices,
+            routes,
+            buses,
+            pending,
+            end: settings.duration as f64,
+            backing,
+        }
     }
 
     /// Whether anything in it makes sound.
     pub fn is_silent(&self) -> bool {
-        self.voices.is_empty()
+        self.voices.is_empty() && self.backing.is_none()
     }
 
     /// The things whose hits it can hear, sorted: every voice's thing and every shape a bus

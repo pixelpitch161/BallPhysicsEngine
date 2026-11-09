@@ -1,7 +1,8 @@
-//! The Mixer: the left panel's other face. The tempo row, then the console strips (Bus 1, Bus 2,
+//! The Mixer: the left panel's other face. The tempo row and the backing track, then the console strips (Bus 1, Bus 2,
 //! Bus 3 and the Master), then the loudness readouts and graph. A bus effect or the Master opens
 //! its editor under the strips' tops, across the three buses, in place of their sends and pans.
 
+pub mod backing;
 pub mod cx;
 pub mod editors;
 pub mod master;
@@ -44,6 +45,8 @@ pub struct Mixer {
     pub eq_menu: Option<usize>,
     /// The Master's last reading, for its editor.
     pub reading: Option<MeterReading>,
+    /// Why the last song chosen for the backing track couldn't be read.
+    pub backing_note: Option<String>,
 }
 
 /// What is being renamed in the Mixer.
@@ -106,6 +109,7 @@ pub fn show(
         // Measured before anything is drawn: a row wider than the panel widens what is left.
         let width = ((ui.available_width() - 3.0 * GAP) / 4.0).floor().max(MIN_STRIP_W);
         tempo_row(ui, scene, kit, time);
+        backing::row(ui, scene, kit, &mut mixer.backing_note);
         style::divider(ui);
         let choices = crate::widgets::TargetChoices::default();
         let graph =

@@ -26,6 +26,7 @@ pub mod resolve;
 pub mod rules;
 pub mod save;
 pub mod scene;
+pub mod scene_audio;
 pub mod scene_fonts;
 pub mod scene_pictures;
 pub mod settings;
@@ -55,6 +56,10 @@ pub use resolve::{Problem, ProblemKind, Resolved, ResolvedLayer, ResolvedSlot, R
 pub use rules::{Block, BlockId, BlockSection, Rule, RuleBlockKind, RuleId, Rules, Who};
 pub use save::{LoadError, load, save};
 pub use scene::{Attach, Scene, Slot, SlotStash, Target, Thing, TrackColour, Transform};
+pub use scene_audio::{
+    AUDIO_KEYS, SOUND_FILE_FORMAT, SceneAudio, SoundClip, audio_names_in, is_audio_key, read_sound_file,
+    rename_audio_in, sound_file_text,
+};
 pub use scene_fonts::SceneFont;
 pub use scene_pictures::{PICTURE_KEY, ScenePicture};
 pub use settings::{
