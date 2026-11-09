@@ -271,6 +271,9 @@ fn lighting_shots(reg: &Registry) -> Vec<Shot> {
         let mut p = light(LightType::Area, Vec2::new(0.0, -450.0), 10.0, 2.0);
         p.width = 200.0;
         p.length = 40.0;
+        // Across the picture (an area light's Direction is where its width runs; 90, down, would poke it out of
+        // the ring).
+        p.direction = 0.0;
         p.height = 120.0;
         set_light(&mut s, &p);
         add_ball(&mut s, reg, Vec2::new(-260.0, -250.0), 25.0);
@@ -328,6 +331,51 @@ fn lighting_shots(reg: &Registry) -> Vec<Shot> {
         lighting(&mut s, "looking_down", Value::Number(16.0));
         out.push(shot("stage-one", s, vec![0.0]));
     }
+    {
+        // A wide area panel right by the ring's top: nothing may leak out past the ring, and the balls' shadows
+        // narrow to a point.
+        let mut s = room(reg, Vec2::new(0.0, -100.0), 60.0);
+        let mut p = light(LightType::Area, Vec2::new(0.0, -420.0), 10.0, 2.0);
+        p.width = 360.0;
+        p.length = 30.0;
+        p.direction = 0.0;
+        p.height = 80.0;
+        set_light(&mut s, &p);
+        add_ball(&mut s, reg, Vec2::new(-220.0, -50.0), 25.0);
+        let mut bar = ShapeSettings::rectangle(160.0, 20.0, 4.0);
+        bar.fill = bpe_kit::things::shape::ShapeFill::Filled;
+        add_shape(&mut s, reg, Vec2::new(150.0, 150.0), bar);
+        lighting(&mut s, "shadow_length", Value::Number(4000.0));
+        out.push(shot("area-wide", s, vec![0.0]));
+    }
+    {
+        // A strip light along a line across the top: shadows from the whole strip, not from its nearest point.
+        let mut s = room(reg, Vec2::new(-60.0, 0.0), 50.0);
+        let mut p = light(LightType::Strip, Vec2::new(0.0, -380.0), 6.0, 2.0);
+        p.length = 500.0;
+        p.width = 8.0;
+        p.direction = 0.0;
+        set_light(&mut s, &p);
+        add_ball(&mut s, reg, Vec2::new(200.0, -150.0), 20.0);
+        add_shape(&mut s, reg, Vec2::new(-150.0, 300.0), ShapeSettings::polygon(6, 70.0, 3.0));
+        lighting(&mut s, "shadow_length", Value::Number(4000.0));
+        out.push(shot("strip", s, vec![0.0]));
+    }
+    {
+        // Thin hollow shapes on a Stage: their shadows on the back wall must be even inside, not striped.
+        let mut s = room(reg, Vec2::new(250.0, 450.0), 40.0);
+        let mut p = light(LightType::Point, Vec2::new(-300.0, -550.0), 20.0, 2.5);
+        p.height = 400.0;
+        p.reach = 3500.0;
+        set_light(&mut s, &p);
+        add_shape(&mut s, reg, Vec2::new(-120.0, -150.0), ShapeSettings::polygon(6, 120.0, 3.0));
+        let mut e = ShapeSettings::ellipse(240.0, 70.0, 4.0);
+        e.turn = 20.0;
+        add_shape(&mut s, reg, Vec2::new(60.0, 150.0), e);
+        lighting(&mut s, "depth", Value::Choice("stage".into()));
+        lighting(&mut s, "looking_down", Value::Number(16.0));
+        out.push(shot("stage-thin", s, vec![0.0]));
+    }
     out
 }
 
@@ -342,11 +390,179 @@ fn demo_shots(reg: &Registry) -> Vec<Shot> {
         at("light-show", scenes::light_show(reg)),
         at("glow-demo", scenes::glow_demo(reg)),
         at("club-demo", scenes::club_demo(reg)),
+        shot("club-haze-with-the-air", haze_with_the_air(reg), vec![1.0, 1.05, 3.0]),
         at("water-demo", scenes::water_demo(reg)),
         at("colour-demo", scenes::colour_demo(reg)),
         at("blend-demo", scenes::blend_demo(reg)),
         at("graded-sunset", scenes::graded_sunset(reg)),
+        at("stage-camera-orbit", stage_camera(reg, 25.0)),
+        at("stage-camera-orbit-far", stage_camera(reg, -40.0)),
+        at("stage-depth-of-field", stage_depth_of_field(reg)),
+        at("gradient-seams", gradient_seams(reg)),
+        at("lit-liquid-smoke", lit_liquid_smoke(reg, true)),
+        at("lit-liquid-smoke-own-light", lit_liquid_smoke(reg, false)),
     ]
+}
+
+/// A Particles thing at `at` whose only Look layer is `kind` with `params`: a still crowd of `w` x `h`, one
+/// particle of `size` every `room` square pixels.
+struct Crowd {
+    at: Vec2,
+    w: f32,
+    h: f32,
+    size: f32,
+    room: f32,
+}
+
+fn add_crowd(scene: &mut Scene, reg: &Registry, c: Crowd, kind: &str, params: bpe_core::Params) {
+    let Crowd { at, w, h, size, room } = c;
+    use bpe_kit::things::particles::looks::{Look, add_particles};
+    use bpe_kit::things::particles::{BornFrom, Emit, ParticlesSettings};
+    let id = add_particles(scene, reg, Look::Empty, ThingId::ROOT).unwrap();
+    let source = ParticlesSettings {
+        from: BornFrom::AnArea,
+        emit: Emit::OnceAtTheStart,
+        count: (w * h / room) as u32,
+        speed: 0.0,
+        life: 100.0,
+        size,
+        size_spread: 0.0,
+        width: w,
+        height: h,
+        ..ParticlesSettings::default()
+    };
+    let t = scene.things.get_mut(&id).unwrap();
+    t.params = source.to_params();
+    t.transform.position = at;
+    let old: Vec<bpe_core::LayerId> = scene.things[&id].slots[&SlotId::Look].layers.iter().map(|l| l.id).collect();
+    let layer = scene.add_layer(reg, id, SlotId::Look, kind).unwrap();
+    for l in old {
+        scene.remove_layer(reg, id, SlotId::Look, l).unwrap();
+    }
+    let card = scene.card_mut(id, SlotId::Look).unwrap();
+    for (k, v) in params.0 {
+        card.params.0.insert(bpe_core::layered_key(layer, &k), v);
+    }
+}
+
+/// W15: liquid and soft smoke lit by the real lights. A Plastic and a Glass puddle (over stripes, so
+/// the glass shows what is behind it, and blocking light, so it bends the lamp's light), Soft smoke
+/// above, a warm lamp low on the left and a ball casting its shadow over the Plastic puddle. `real` false sets
+/// Lit 0 on all three: their own light, to compare.
+fn lit_liquid_smoke(reg: &Registry, real: bool) -> Scene {
+    use bpe_kit::modules::look::surface::SurfaceKind;
+    use bpe_kit::paint::Paint;
+    use bpe_kit::things::particles::liquid::{LIQUID, LiquidLayer, params_of};
+    use bpe_kit::things::particles::look::{SMOKE, SmokeLayer};
+    let mut s = room(reg, Vec2::new(-120.0, 120.0), 50.0);
+    let root = s.things.get_mut(&ThingId::ROOT).unwrap();
+    let mut settings = bpe_kit::SceneSettings::from_params(&root.params);
+    let (k, w) = (bpe_core::Color::rgb(0x1c, 0x1c, 0x24), bpe_core::Color::rgb(0xb0, 0xb0, 0xb8));
+    let colours: Vec<bpe_core::Color> = (0..19).map(|i| if i % 2 == 0 { k } else { w }).collect();
+    settings.background = Paint { colours: bpe_core::Gradient::even(&colours), span: 1080.0, ..Paint::default() };
+    root.params = settings.to_params();
+    let mut lamp = light(LightType::Point, Vec2::new(-420.0, -60.0), 8.0, 1.6);
+    lamp.height = 60.0;
+    lamp.colour = bpe_core::Color::rgb(0xff, 0xb0, 0x60);
+    set_light(&mut s, &lamp);
+    let puddle = |surface, colour| {
+        let mut p = params_of(&LiquidLayer {
+            surface,
+            roundness: 40.0,
+            colour: Paint::solid(colour),
+            ..LiquidLayer::default()
+        });
+        p.set("blocks_light", Value::Bool(true));
+        p.set("lit", Value::Number(if real { 1.0 } else { 0.0 }));
+        p
+    };
+    let plastic = puddle(SurfaceKind::Plastic, bpe_core::Color::rgb(0x30, 0x70, 0xd0));
+    let puddle_at = |at, w, h| Crowd { at, w, h, size: 6.0, room: 40.0 };
+    add_crowd(&mut s, reg, puddle_at(Vec2::new(-60.0, 300.0), 260.0, 160.0), LIQUID, plastic);
+    let glass = puddle(SurfaceKind::Glass, bpe_core::Color::rgb(0xe0, 0xf0, 0xff));
+    add_crowd(&mut s, reg, puddle_at(Vec2::new(220.0, 60.0), 200.0, 200.0), LIQUID, glass);
+    let smoke = SmokeLayer {
+        shading: 0.8,
+        opacity: 0.9,
+        puff: 4.0,
+        colour: Paint::solid(bpe_core::Color::rgb(0xe0, 0xe0, 0xe0)),
+        ..SmokeLayer::default()
+    };
+    let mut smoke = smoke.to_params();
+    smoke.set("lit", Value::Number(if real { 1.0 } else { 0.0 }));
+    let cloud = Crowd { at: Vec2::new(0.0, -360.0), w: 320.0, h: 180.0, size: 16.0, room: 200.0 };
+    add_crowd(&mut s, reg, cloud, SMOKE, smoke);
+    s
+}
+
+/// The stage demo seen through its Stage camera moved `orbit` degrees round.
+fn stage_camera(reg: &Registry, orbit: f64) -> Scene {
+    let mut s = scenes::stage_demo(reg);
+    let camera = bpe_kit::ensure_camera(&mut s, reg);
+    let params = &mut s.things.get_mut(&camera).unwrap().params;
+    params.set("stage_camera", Value::Bool(true));
+    params.set("orbit", Value::Number(orbit));
+    s
+}
+
+/// The stage demo with depth of field, focused on the balls: the wall and floor well blurred.
+fn stage_depth_of_field(reg: &Registry) -> Scene {
+    let mut s = scenes::stage_demo(reg);
+    lighting(&mut s, "depth_of_field", Value::Bool(true));
+    lighting(&mut s, "focus_at", Value::Number(40.0));
+    lighting(&mut s, "dof_blur", Value::Number(0.3));
+    s
+}
+
+/// Two big still balls painted inside by a Sweep and a Spiral gradient that doesn't loop, so their last colour meets
+/// their first in a seam (which should be as smooth as any edge).
+fn gradient_seams(reg: &Registry) -> Scene {
+    use bpe_core::{Color, Gradient, Mix, layered_key};
+    let mut s = new_scene(reg);
+    no_gravity(&mut s);
+    first_ball(&mut s, Vec2::new(0.0, -420.0), |b| b.radius = 330.0);
+    let first = first_of(&s, "balls");
+    add_ball(&mut s, reg, Vec2::new(0.0, 420.0), 330.0);
+    let second = s.things.values().filter(|t| t.kind == "balls").map(|t| t.id).max().expect("the copy");
+    let colours = Gradient::spread(
+        &[Color::rgb(240, 80, 120), Color::rgb(250, 200, 80), Color::rgb(160, 60, 250)],
+        Mix::Even,
+        false,
+    );
+    for (ball, form) in [(first, "sweep"), (second, "spiral")] {
+        let layers = &s.card(ball, SlotId::Look).unwrap().layers;
+        let glow = layers.iter().find(|l| l.kind == "layer.glow").map(|l| l.id);
+        if let Some(glow) = glow {
+            s.remove_layer(reg, ball, SlotId::Look, glow).unwrap();
+        }
+        let pattern = s.add_layer(reg, ball, SlotId::Look, "layer.pattern").unwrap();
+        s.move_layer(reg, ball, SlotId::Look, pattern, 1).unwrap();
+        let p = &mut s.card_mut(ball, SlotId::Look).unwrap().params;
+        p.set(&layered_key(pattern, "in_pattern"), Value::Choice("gradient".into()));
+        p.set(&layered_key(pattern, "in_from"), Value::Choice("own_gradient".into()));
+        p.set(&layered_key(pattern, "in_colours"), Value::Gradient(colours.clone()));
+        p.set(&layered_key(pattern, "in_colours~form"), Value::Choice(form.into()));
+    }
+    s
+}
+
+/// The club demo with its haze carried by a gusty Air card wind, and the balls following the air
+/// (W13): the haze drifts with the wind, the balls with it.
+fn haze_with_the_air(reg: &Registry) -> Scene {
+    let mut s = scenes::club_demo(reg);
+    lighting(&mut s, "haze_moves", Value::Choice("with_the_air".into()));
+    bpe_kit::things::particles::air::ensure_air_card(&mut s, reg).unwrap();
+    let air = s.card_mut(ThingId::ROOT, SlotId::Air).unwrap();
+    for (k, v) in [("wind_speed", 220.0), ("wind_direction", -30.0), ("gusts", 0.6), ("gust_every", 1.5)] {
+        air.params.set(k, Value::Number(v));
+    }
+    let balls: Vec<ThingId> = s.things.values().filter(|t| t.kind == "balls").map(|t| t.id).collect();
+    for b in balls {
+        if let Some(m) = s.card_mut(b, SlotId::Motion) {
+            m.params.set("follow_air", Value::Number(1.5));
+        }
+    }
+    s
 }
 
 /// The physics test-scene families that draw something worth seeing: text, particles, emitters.
@@ -383,6 +599,48 @@ fn look_shots(reg: &Registry) -> Vec<Shot> {
         out.push(shot(format!("text-look-{}", slug(look.name())), scene, vec![2.0]));
     }
     out
+}
+
+/// Every ready-made look for balls (a grid of 30, still and moving sideways so trails show) and shapes (a grid of
+/// 18 rounded rectangles), on a plain scene with no gravity.
+fn ready_shots(reg: &Registry) -> Vec<Shot> {
+    use bpe_kit::ready_looks::{Wears, add_with_look, all};
+    let mut balls = Scene::empty(reg);
+    no_gravity(&mut balls);
+    for (i, look) in all().iter().filter(|l| l.wears == Wears::Balls).enumerate() {
+        let id = add_with_look(&mut balls, reg, "balls", ThingId::ROOT, look).expect("a ball look");
+        let t = balls.things.get_mut(&id).unwrap();
+        let mut s = BallsSettings::from_params(&t.params);
+        s.radius = 44.0;
+        s.velocity = Vec2::new(260.0, 0.0);
+        t.params = s.to_params();
+        let (col, row) = ((i % 5) as f32, (i / 5) as f32);
+        t.transform.position = Vec2::new(-400.0 + col * 200.0, -750.0 + row * 300.0);
+    }
+    let mut still = balls.clone();
+    for t in still.things.values_mut().filter(|t| t.kind == "balls") {
+        let mut s = BallsSettings::from_params(&t.params);
+        s.velocity = Vec2::ZERO;
+        t.params = s.to_params();
+    }
+    let mut shapes = Scene::empty(reg);
+    for (i, look) in all().iter().filter(|l| l.wears == Wears::Shape).enumerate() {
+        let id = add_with_look(&mut shapes, reg, "shape", ThingId::ROOT, look).expect("a shape look");
+        let t = shapes.things.get_mut(&id).unwrap();
+        let mut s = ShapeSettings::from_params(&t.params);
+        s.start = bpe_kit::ShapeStart::Ellipse;
+        s.width = 220.0;
+        s.height = 150.0;
+        s.fill = bpe_kit::ShapeFill::Filled;
+        t.params = s.to_params();
+        let (col, row) = ((i % 3) as f32, (i / 3) as f32);
+        t.transform.position = Vec2::new(-340.0 + col * 340.0, -760.0 + row * 300.0);
+    }
+    vec![
+        shot("ready-balls-still", still, vec![0.0]),
+        shot("ready-balls-moving", balls, vec![0.7]),
+        shot("ready-shapes", shapes, vec![0.5]),
+    ]
 }
 
 fn wanted(name: &str, only: &Option<String>) -> bool {
@@ -426,8 +684,13 @@ fn render_at_full_size() {
             lit.push(shot(format!("{}-{q}", base.name), scene, base.times.clone()));
         }
     }
-    let groups =
-        [("lighting", lit), ("demos", demo_shots(&reg)), ("families", family_shots(&reg)), ("looks", look_shots(&reg))];
+    let groups = [
+        ("lighting", lit),
+        ("demos", demo_shots(&reg)),
+        ("families", family_shots(&reg)),
+        ("looks", look_shots(&reg)),
+        ("ready", ready_shots(&reg)),
+    ];
     let mut count = 0;
     for (group, shots) in groups {
         let mut thumbs = Vec::new();

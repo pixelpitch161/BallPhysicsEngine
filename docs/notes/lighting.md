@@ -201,8 +201,8 @@ shaders. `tests/bake_pictures.rs` (bpe-cli); `scenes::bake_demo` is test-only.
   code, its settings from its header through `dynamic_defs`, checked by `bpe_gfx::picture_problem`). Each takes
   Mix (unclamped), Blend, Takes (Whole picture / Light only / Glow only, `TakesChoice`; picture stage only) and Glow
   above, then the header's own settings under plain keys (at most 6 Simple, `with_simple_room`). `EffectsDraw`
-  pushes one `EffectCall` per shown layer. Old `shader.<id>` cards become a one-layer stack on load
-  (`effects/upgrade.rs`, `add_upgrade(u32::MAX, single_effect_to_stack)`). Header lines gain `hard [a, b]`,
+  pushes one `EffectCall` per shown layer. (Old `shader.<id>` cards are no longer upgraded on load; the test
+  scenes build their stacks with `effects/upgrade.rs::stack_of`.) Header lines gain `hard [a, b]`,
   `// choice key = default [a, b, c]` and `// memory: <seconds>` / `// memory: fade <key>` (`memory_seconds`:
   frames until under 1/4096, at most `MAX_MEMORY` 10 s); the prelude gains the ball list (`ball_count`, `ball_uv`,
   `ball_radius`, `ball_color`, `ball_hit`, `ball_seed`, `nearest_ball`, from `Frame.ball_marks`, pushed by the
@@ -214,4 +214,94 @@ shaders. `tests/bake_pictures.rs` (bpe-cli); `scenes::bake_demo` is test-only.
   contour lines of the balls' summed field by marching squares). A Light's **Negative** flips its strength
   (`fs_light` clamps the summed light at 0). The editor's Effects card is `look_editor/effects.rs`; after a jump
   in time, `preview/warm.rs` replays the effects' remembered seconds on a spare renderer
-  (`Playback::rewound`), 6 frames per editor frame, and swaps it in ("Warming up effects… N%").
+  (`Playback::rewound`), as many frames as fit in 8 ms per editor frame, and swaps it in ("Warming up effects…
+  N%"); see `editor.md`, "Responsiveness", for how it builds its frames and when the spare goes.
+
+**Picture fixes, workstream W3 (2026-11-08).** Depth of field reads wide blurs from a quarter-size box-filtered copy
+(`fs_dof_small` into `Targets.dof_small`, bound at group 0 binding 2 in place of `lit_picture`, which the pass never
+reads: a new binding would pass the 16 sampled textures a pass may have). Each copy texel keeps the least blur of
+its 4 × 4 pixels in alpha, and a tap blends to the copy (from 6 to 14 px of blur) only where that blur reaches it,
+so something sharp nearby isn't smeared in; wide blurs lose their speckle. The Stage camera keeps a ball's read
+point off every ball drawn over it in the front picture (`stage_camera.wgsl::cam_uncovered`: higher z-order, or the
+same and listed later; `SphereGpu.c.w` carries the thing's z-order), mirrored out across the circle 2 px past that
+ball's edge, so an orbit no longer paints the neighbour's outline across a ball as a dark arc, and intersecting
+balls meet at a clean curve instead of a jagged, fringed one.
+
+**Haze With the air (W13)**: `HazeMoves::WithTheAir` (shader code 1, the Drifting clouds) drifts as far as the
+scene's air carried them (`Air.drift`, the ambient wind × dt summed each step by the scene sim) × Speed; Still
+without an Air card. `LightingSettings::haze_drift` works the offset out on the CPU for every mode (Drifting and
+Swirling: direction × Speed × 100 px/s × time, as the shader did) and `SceneDraw` puts it in `haze_more.xy`; the
+shader subtracts it (`haze_density`). While the haze moves with the air the scene sim `reads_air`
+(`bpe_runtime::air_read`): every world senses the Air keys and the physics fingerprint counts the Air card and its
+keys, so an Air edit restarts the playback whose air it drifts with (the sound's too, as its fingerprint includes the
+physics'). Haze gusts don't travel as waves.
+
+**Shadow quality** (review W2, 2026-11-08, plan `docs/superpowers/plans/lighting/shadow-quality.md`, test
+`bpe-kit/tests/shadow_quality.rs`, look shots `area-wide`, `strip`, `stage-thin` in `full_size_look.rs`). All in
+`lighting.wgsl` but V5. **V1**: `march` counts a step toward the Quality's steps only when the ray is at least two
+texels from every blocker and moves at least an even share of the way (`fair`: way / steps), so creeping past a
+ball, along a thin wall or down a lane between rows of balls no longer runs out of steps and leaks, within
+`max(12 × steps, 400)` rounds (`slab_march` the same, a texel, `max(8 × steps, 300)`). So the Quality's steps no
+longer end a march early; a ray runs to its end or the cap (the Quality now sets the field's fineness, the rays
+across a lamp and the cap). Draft costs more per creeping ray than before; the soft edge (and, for Area and Strip lights, `clear`) uses `nearest_between` (Aaltonen's estimate: where the ray
+came nearest between two samples). **V2**: Area and Strip lights' shadows come from all of the light
+(`extended_seen`: the way to the middle of what it covers, its half width seen as `ang` (at most `MOST_SEEN`), the
+march ending at its edge, not its Size short of its nearest point); `visibility(.., src)` aims each ray across the
+lamp at the light's point nearest where it would end (`extended_stop`), takes `MOST_LAMP_RAYS` (9) of them, and a
+`wide` march stops once a sample is clearer than the rest of the way is long (walls round the light no longer
+darken everything in contours). `shade` does the same in Flat; on a Stage it aims `sphere_shadow`/`slab_visibility`
+at the middle at the light's height. The light's amount still comes from its nearest point; the light probe and the
+bake's traced bounce still use the nearest point. **V3**: `slab_visibility` is `slab_march` per ray plus Flat's
+rays across the lamp (`lamp_share`, shared with `visibility`) when the middle ray goes into a solid shape;
+no picture check on a Stage (one, `slab_confirm`, was tried: on small pictures it let dotted lines of light through
+thin walls); `SlabRay.over` lets light over the shapes' front. **V4**:
+`fs_field` adds `edge_inset` outside blockers (the seed texel cut by how much its blockers cover, `foot_cover`, only
+where the texel behind it is wholly covered, only for solid blockers and not on Draft, gated by its steps so preview and
+video agree): shadow edges move about 2.5× more evenly on Ultra and 1.7× on Good; Draft is left as it was (it made
+its 4-pixel texels worse).
+Still open: the texel steps of a thin shape's contact shadow right beside it on a Stage. **V5**:
+`Renderer::preview_field_like_video(true)` (the editor's preview and its warm-up spare; `shadow_quality.rs` too)
+sizes the field by the frame's world width (`lighting.rs::field_divisor`, rounding down: never coarser in the scene
+than the video's), so a 540-wide preview at Good gets divisor 1. Exports and the other picture tests keep the
+Quality's share of the renderer's size (at 270 × 480 a coarser field than any export, which keeps the thin-line
+code covered).
+
+**Lighting and picture speed** (review W8, 2026-11-09, plan `docs/superpowers/plans/lighting/picture-speed.md`,
+bench `bpe-kit/tests/light_speed.rs`, ignored). Every picture byte-identical. **S19**: from 8 lights on
+(`TILED_FROM`) `LightTiles::build` bins the lights into 32-pixel screen tiles on the CPU (sun everywhere, others by
+Reach plus their size, the camera's turn and zoom applied) and packs the lists after the light links in the `links`
+buffer (the main pass has no storage buffer to spare); `lights_near`/`light_in` walk only a tile's lights in `lamps`,
+`shade`, `hit_light` and `lamps_on`. `Renderer::set_light_tiles(false)` turns them off (tests compare). The Lights
+tab warns above 64 lights (`many_lights_warning`). **S20**: on a Stage the direct pass skips a light's surface
+shadow unless Glow in the dark, light memory or rainbows read it, and its UV part unless UV pictures or memory do.
+**S21**: gradient rows upload only when their key changes. **S22**: `Resolved.things` is `Arc`ed, copied only where
+something animates. **S24**: no bloom chain at bloom 0, bind groups kept between frames (`BindCache`), UV and tag
+pictures only while used (`keep_uv_and_tags`). S23 (export colours on the card) is in `engine.md` under `bpe-cli`.
+S18 (one pass for the scene's light pictures) skipped by Aedan: under a tenth of a lit frame. On lavapipe at
+540 x 960: Stage 545 to 292 ms, shiny surfaces 715 to 432 ms, 120 lights on a Stage 1505 to 1058 ms.
+
+**Liquid and Soft smoke lit by the real lights** (review W15 / G11, 2026-11-09, spec
+`docs/superpowers/specs/2026-11-08-liquid-smoke-real-light-design.md`, plan
+`docs/superpowers/plans/lighting/liquid-smoke-real-light.md`, tests `bpe-kit/src/things/particles/tests_real_light.rs`
+and `bpe-kit/tests/lit_liquid_pictures.rs`, look shot `lit-liquid-smoke`). The Liquid layer lost its own 6-way
+Surface: `LiquidLayer.surface` is the shared 15-chip `SurfaceKind` (default Plastic) and its numbers are the Surface
+sub-layer's (`liquid::defs()` inserts `surface::sub_defs()` after it, Plastic's values as defaults; `params_of` adds a
+kind's preset values, as the editor's pick writes them). Light angle, Shine, Rim light (key `own_rim`), Bend, Tint and
+the Sky colours sit in a "Without lighting" fold: with no Lighting card, or at Lit 0, the old pretend light draws
+(`pretend_code` maps the 15 kinds onto its 6 codes). With one, `LiquidStyle.d = [lit, stamp, blocks, 0]` and
+`liquid.wgsl::real_lit` writes the light passes as a ball's layers do: picture plain colour, pass 1 colour × Lit,
+pass 2 (blocks, height, index) with the height a quarter-circle rim of Roundness (the pretend normal's shape),
+nothing in tint (8) or the glass picture (9), and see-through kinds left out of the behind-glass picture (−1). Each
+Liquid layer of every Particles Look takes a surface index after every thing's and Surface sub-layer's
+(`surface::taken`, `liquid::surface_index`, thing then layer order, shown or not); the Particles `light` hook puts
+`gpu(SurfaceGpu::SHEET)` there, sets `refracts` for see-through kinds and, for a real-lit liquid that blocks light
+and whose Surface bends light, a `Bender::round` box round its blobs with its index (free glass in pass 9 would
+overwrite the index in the surface picture, so the mix would not see glass). A real liquid writes its colour's depth
+in the tint picture (`tint_out`, so `liquid.wgsl` is built after `tint.wgsl`; `Frame::see_through_blockers` counts a
+liquid that blocks part of the light) and its link number (`LiquidStyle.d.w`, `links::number_of`) in the tags. Its
+Surface numbers leave out `liquid::NOT_ON_A_LIQUID` (Throws light, Facets, Facet gaps). Soft smoke in a lit scene
+(Lit above 0) that covers (not Add) and is drawn Behind gets `FieldLook.shade.w = SMOKE_RELIEF (40 world px) ×
+Shading`: `fields.wgsl` drops its pretend facing and writes its density as a height into the surface picture, so the
+lamps light the side facing them. Smoke in front keeps its own light: its cover would take over the surface index of
+every ball and shape under it (the premultiplied blend leaves a fraction, read as matte). Unlit pictures are
+unchanged; goldens don't move.

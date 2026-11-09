@@ -278,3 +278,64 @@ fn looks_that_follow_the_air_add_the_air_card_once() {
     add_particles(&mut plain, &reg, Look::Snow, ThingId::ROOT).unwrap();
     assert!(!plain.things[&ThingId::ROOT].slots.contains_key(&SlotId::Air));
 }
+
+/// Balls that follow the air feel the heat of particles that warm it: such a thing steps with the
+/// physics then, so the editor's playback, the whole scene's and the sound's move the balls alike.
+#[test]
+fn heating_particles_step_with_the_balls_that_follow_the_air() {
+    use crate::testing::BALLS;
+    let kit = kit();
+    let reg = &kit.registry;
+    let scene_with = |follow: f64| {
+        let mut scene = crate::new_scene(reg);
+        let heater = still_crowd(&mut scene, ThingId::ROOT);
+        add_force(&mut scene, heater, RISE, &[("strength", Value::Number(0.0)), ("heats", Value::Number(1.0))]);
+        let motion = scene.card_mut(BALLS, SlotId::Motion).unwrap();
+        motion.params.set("gravity_scale", Value::Number(0.0));
+        motion.params.set("follow_air", Value::Number(follow));
+        scene.things.get_mut(&BALLS).unwrap().params.set("velocity", Value::Vec2([0.0, 0.0]));
+        (scene, heater)
+    };
+    let (still, heater) = scene_with(0.0);
+    let resolved = resolve(&still, reg);
+    assert!(!main_part(&still, &resolved, &kit.sims).things.contains_key(&heater), "no ball feels it: beside");
+    let (scene, heater) = scene_with(5.0);
+    let resolved = resolve(&scene, reg);
+    let main = main_part(&scene, &resolved, &kit.sims);
+    assert!(main.things.contains_key(&heater), "a ball feels its heat: it steps with the physics");
+    let mut log = Log::default();
+    let mut editor = World::build(&scene, &main, &kit.sims);
+    editor.advance_to(2.0, &kit.sims, &mut log);
+    let mut whole = World::build(&scene, &resolved, &kit.sims);
+    whole.advance_to(2.0, &kit.sims, &mut Log::default());
+    let (a, b) = (&editor.bodies[&BALLS], &whole.bodies[&BALLS]);
+    assert_eq!((&a.position, &a.velocity), (&b.position, &b.velocity));
+    assert!(a.velocity[0].y < -1.0, "the warmed air lifts the ball: {}", a.velocity[0]);
+}
+
+/// A thing fed by its parent's particles never counts as heating the air: its parent may step
+/// beside the physics, and while balls follow the air it puts no heat in, in any world.
+#[test]
+fn particles_fed_by_their_parent_dont_heat_the_air_the_balls_follow() {
+    use crate::testing::BALLS;
+    let kit = kit();
+    let reg = &kit.registry;
+    let mut scene = crate::new_scene(reg);
+    let parent = still_crowd(&mut scene, ThingId::ROOT);
+    let child = add_particles(&mut scene, reg, Look::Empty, parent).unwrap();
+    let card = &mut scene.things.get_mut(&child).unwrap().params;
+    let mut s = ParticlesSettings::from_params(card);
+    s.from = BornFrom::ItsParentsParticles;
+    *card = s.to_params();
+    add_force(&mut scene, child, RISE, &[("strength", Value::Number(0.0)), ("heats", Value::Number(1.0))]);
+    scene.card_mut(BALLS, SlotId::Motion).unwrap().params.set("follow_air", Value::Number(5.0));
+    let resolved = resolve(&scene, reg);
+    let main = main_part(&scene, &resolved, &kit.sims);
+    assert!(!main.things.contains_key(&parent) && !main.things.contains_key(&child), "both beside");
+    let mut log = Log::default();
+    let mut editor = World::build(&scene, &main, &kit.sims);
+    editor.advance_to(1.5, &kit.sims, &mut log);
+    let mut whole = World::build(&scene, &resolved, &kit.sims);
+    whole.advance_to(1.5, &kit.sims, &mut Log::default());
+    assert_eq!(editor.bodies[&BALLS].position, whole.bodies[&BALLS].position, "the balls move alike");
+}

@@ -82,7 +82,7 @@ fn glint_dice(a: u32, b: u32, c: u32) -> f32 {
     h ^= h >> 12;
     h = h.wrapping_mul(0x297A_2D39);
     h ^= h >> 15;
-    (h >> 8) as f32 / (1u32 << 24) as f32
+    bpe_core::dice::unit24(h)
 }
 
 /// Diamond fire's star glints (glass and light part 4b): in a lit scene, each ball whose surface
@@ -143,7 +143,7 @@ pub fn ball_seed(thing: ThingId, index: usize) -> f32 {
     x ^= x >> 12;
     x = x.wrapping_mul(0x8a7d_9c3b);
     x ^= x >> 16;
-    (x >> 8) as f32 / (1u32 << 24) as f32
+    bpe_core::dice::unit24(x)
 }
 
 /// What each ball of the thing being drawn wears: the Look card's own stack, or, when its
@@ -632,6 +632,9 @@ pub fn push_ball_light(cx: &DrawCx, scene: &mut bpe_gfx::LightScene) {
         (t.turn + t.spin * cx.time as f32 + own).to_radians()
     };
     let see = s.see_through.clamp(0.0, 1.0);
+    // Its z-order, so the Stage camera knows which balls are drawn over which.
+    let range = bpe_core::Thing::Z_ORDER_RANGE;
+    let z = if cx.resolved.screen { 0 } else { cx.thing.z_order.clamp(*range.start(), *range.end()) } as f32;
     // Glass and light part 1: how much its light takes its colour, and deeper where thick.
     let finite = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
     for i in 0..bodies.len() {
@@ -642,7 +645,7 @@ pub fn push_ball_light(cx: &DrawCx, scene: &mut bpe_gfx::LightScene) {
         scene.spheres.push(bpe_gfx::SphereGpu {
             a: [at.x, at.y, bodies.radius[i], see],
             b: [tint[0], tint[1], tint[2], finite(s.thick_tint)],
-            c: [index as f32, finite(s.tints), turn_of(i), 0.0],
+            c: [index as f32, finite(s.tints), turn_of(i), z],
         });
     }
     // Balls that throw lamp light back like mirrors (part 4a): one thrower round them all.
@@ -1222,7 +1225,6 @@ mod tests {
     #[test]
     fn the_classic_ball_draws_its_body_shine_and_glow_through_one_layered_instance() {
         let frame = frame_after(0.0, |_| {});
-        assert!(frame.balls.is_empty() && frame.looks.is_empty(), "the old paths draw no ball");
         assert_eq!(frame.layered.len(), 1);
         let codes: Vec<u32> = ball_records(&frame).iter().map(|l| l.head[0]).collect();
         assert_eq!(codes, [LayerGpu::BODY, LayerGpu::SHINE, LayerGpu::GLOW]);

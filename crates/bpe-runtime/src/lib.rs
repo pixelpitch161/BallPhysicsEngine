@@ -3,6 +3,7 @@
 //! A [`World`] is built from a resolved scene by plugins, stepped at a fixed rate, and writes
 //! everything that happens to a [`Log`] that drawing reads.
 
+pub mod air;
 pub mod bodies;
 pub mod camera;
 pub mod events;
@@ -23,6 +24,7 @@ mod track;
 pub mod walls;
 pub mod world;
 
+pub use air::{AirSim, air_felt, air_read};
 pub use bodies::Bodies;
 pub use camera::CameraView;
 pub use events::{Event, EventKind, Log, Party, hit_strength};

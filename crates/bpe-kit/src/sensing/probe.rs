@@ -76,13 +76,13 @@ impl Probe {
             if !reads(r) {
                 continue;
             }
-            let mut r = r.clone();
+            let mut r = (**r).clone();
             if LOOKED.contains(&r.kind.as_str()) {
                 r.slots.retain(|slot, _| *slot == SlotId::Look);
             } else if r.id == ThingId::ROOT {
                 r.slots.retain(|slot, _| *slot == SlotId::Lighting);
             }
-            kept.things.insert(*id, r);
+            kept.things.insert(*id, Arc::new(r));
         }
         let mut animation = Animation::new(scene, &kept);
         animation.retain(|thing, slot, _| match kept.things.get(&thing) {

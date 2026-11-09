@@ -313,10 +313,15 @@ mod tests {
 
     #[test]
     fn a_glass_liquid_carries_how_much_it_bends_lamp_light() {
-        use crate::things::particles::liquid::{LiquidLayer, Surface};
-        let glass = LiquidLayer { surface: Surface::Glass, ..LiquidLayer::default() };
-        assert!((glass.style(1.0).c[2] - 1.33).abs() < 1e-6);
-        let plastic = LiquidLayer { surface: Surface::Plastic, ..LiquidLayer::default() };
-        assert_eq!(plastic.style(1.0).c[2], 0.0);
+        use crate::modules::look::surface::{SurfaceKind, SurfaceSettings};
+        use crate::things::particles::liquid::{LiquidLayer, params_of};
+        let style = |kind| {
+            let l = LiquidLayer { surface: kind, ..LiquidLayer::default() };
+            let mut s = SurfaceSettings::from_params(&params_of(&l));
+            s.bends_light = 1.33;
+            l.style(1.0, &s, None)
+        };
+        assert!((style(SurfaceKind::Glass).c[2] - 1.33).abs() < 1e-6);
+        assert_eq!(style(SurfaceKind::Plastic).c[2], 0.0);
     }
 }

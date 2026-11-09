@@ -6,6 +6,7 @@ use crate::voices::knobs::track_value;
 use bpe_core::Track;
 use bpe_dsp::{Smoother, TruePeakLimiter, db_to_gain};
 use bpe_kit::sound::MixerSettings;
+use bpe_runtime::{ChangeKey, RulesState};
 
 /// The keys on the Master's Input and Output, if any.
 #[derive(Clone, Debug, Default)]
@@ -23,6 +24,8 @@ pub struct Master {
     /// Input and Output as set (dB), for when they have no keys.
     base: (f32, f32),
     keys: MasterKeys,
+    /// Where a rule's change of Input and Output is kept (W13).
+    ruled: [ChangeKey; 2],
 }
 
 impl Master {
@@ -35,6 +38,7 @@ impl Master {
             release: f32::NAN,
             base: (settings.master_input, settings.master_output),
             keys: MasterKeys::default(),
+            ruled: [crate::ruled::mixer_key("master_input"), crate::ruled::mixer_key("master_output")],
         };
         m.set(settings);
         m.input.reset(db_to_gain(settings.master_input));
@@ -59,10 +63,13 @@ impl Master {
         self.keys = keys;
     }
 
-    /// Heads Input and Output for where their keys are at `time` (seconds). Never allocates.
-    pub fn at(&mut self, time: f64) {
+    /// Heads Input and Output for where their keys and the rules' changes (`rules`, W13) are at
+    /// `time` (seconds). Never allocates.
+    pub fn at(&mut self, time: f64, rules: Option<&RulesState>) {
         let input = self.keys.input.as_ref().and_then(|t| track_value(t, time)).unwrap_or(self.base.0);
         let output = self.keys.output.as_ref().and_then(|t| track_value(t, time)).unwrap_or(self.base.1);
+        let input = crate::ruled::at(rules, &self.ruled[0], input, time);
+        let output = crate::ruled::at(rules, &self.ruled[1], output, time);
         self.input.set_target(db_to_gain(input));
         self.output.set_target(db_to_gain(output));
     }
@@ -85,18 +92,23 @@ impl Master {
         self.limiter.gain_reduction_db()
     }
 
-    /// Runs one block in place.
+    /// Runs one block in place: Input, the limiter, Output, with the ceiling last. Output's cut
+    /// comes after the limiter (it lowers the finished sound); its boost goes in before it, so a
+    /// louder Output pushes into the limiter and never past the ceiling. (A peak limiter scales:
+    /// boosting then limiting at the ceiling is limiting lower then boosting.)
     pub fn process(&mut self, l: &mut [f32; BLOCK], r: &mut [f32; BLOCK]) {
-        for (a, b) in l.iter_mut().zip(r.iter_mut()) {
-            let g = self.input.next();
+        let mut cut = [1.0f32; BLOCK];
+        for ((a, b), c) in l.iter_mut().zip(r.iter_mut()).zip(cut.iter_mut()) {
+            let o = self.output.next();
+            let g = self.input.next() * o.max(1.0);
+            *c = o.min(1.0);
             *a *= g;
             *b *= g;
         }
         self.limiter.process(l, r);
-        for (a, b) in l.iter_mut().zip(r.iter_mut()) {
-            let g = self.output.next();
-            *a *= g;
-            *b *= g;
+        for ((a, b), c) in l.iter_mut().zip(r.iter_mut()).zip(cut) {
+            *a *= c;
+            *b *= c;
         }
     }
 }

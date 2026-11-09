@@ -62,8 +62,10 @@ pub struct Inspector {
     pub group_view: crate::look_editor::GroupView,
     /// The window's GPU, for the ball view; none in tests.
     pub render: Option<eframe::egui_wgpu::RenderState>,
-    /// Each shape's tab: its settings or its sound.
+    /// Each thing's tab: its settings, its ready-made looks or its sound.
     pub tab: BTreeMap<ThingId, InspectorTab>,
+    /// The Looks tab's own state.
+    pub looks: crate::looks_page::LooksPage,
     /// The Sound tab's own state.
     pub sound: crate::sound_tab::SoundTab,
     /// Keys clicked on a Sound tab's keyboard this frame, for the studio to play: (shape, note).
@@ -87,29 +89,70 @@ pub struct Inspector {
     pub aim_checks: BTreeMap<ThingId, bpe_kit::things::emitter::aim::AimCheck>,
     /// "Preview final frame" was pressed on the Lighting card (the app draws it).
     pub final_frame_wanted: bool,
+    /// What is typed in the Find a setting box; while it holds something, the settings it finds
+    /// show in place of the cards.
+    pub find: String,
 }
+
+/// The Find a setting box.
+mod find;
 
 /// The Emitter card.
 #[path = "emitter_card/mod.rs"]
 pub(crate) mod emitter_card;
 
-/// What the inspector shows of a shape.
+/// What the inspector shows of a thing with tabs (a shape, a Balls group, an emitter, a Particles thing, a Text).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum InspectorTab {
     #[default]
     Settings,
+    /// Ready-made looks, on Balls, Emitters and Shapes.
+    Looks,
     Sound,
 }
 
 impl Inspector {
-    /// Whether `primary` is a shape (or a Particles thing) showing its Sound tab (the inspector is
-    /// wide then).
-    pub fn sound_open(&self, scene: &Scene, primary: Option<ThingId>) -> bool {
+    /// Whether `primary` shows its Sound tab (a shape, a Text, a Particles, Balls or Emitter thing) or its Looks
+    /// tab (Balls, Emitters, Shapes): the inspector is wide then.
+    pub fn wide_open(&self, scene: &Scene, primary: Option<ThingId>) -> bool {
         primary.is_some_and(|id| {
-            scene.things.get(&id).is_some_and(|t| sounds(&t.kind))
-                && self.tab.get(&id).copied().unwrap_or_default() == InspectorTab::Sound
+            scene.things.get(&id).is_some_and(|t| {
+                let tab = self.tab.get(&id).copied().unwrap_or_default();
+                tab == InspectorTab::Sound && sounds(&t.kind)
+                    || tab == InspectorTab::Looks && bpe_kit::ready_looks::wears(&t.kind).is_some()
+            })
         })
     }
+}
+
+/// The tabs of things of `kind`, with their names and what they show; none for a thing without tabs.
+fn tabs(kind: &str) -> Vec<(InspectorTab, &'static str, &'static str)> {
+    let looks = bpe_kit::ready_looks::wears(kind).is_some();
+    let mut out = Vec::new();
+    let settings = match kind {
+        SHAPE => "The shape's outline, look and how it moves",
+        bpe_kit::things::text::KIND => "The words, their look and what balls do at them",
+        bpe_kit::things::particles::KIND => "Where the particles come from, how they move and look",
+        bpe_kit::things::emitter::KIND => "What it fires, how its balls look and move, what it catches",
+        _ => "The balls' size, look and how they move",
+    };
+    if looks || sounds(kind) {
+        out.push((InspectorTab::Settings, "Settings", settings));
+    }
+    if looks {
+        out.push((InspectorTab::Looks, "Looks", "Ready-made looks to start from"));
+    }
+    if sounds(kind) {
+        let sound = match kind {
+            SHAPE => "The sound the shape makes when balls hit it",
+            bpe_kit::things::text::KIND => "The sound the letters make when balls hit them",
+            bpe_kit::things::emitter::KIND => "The sound its balls make when they are fired, hit things or are caught",
+            bpe_kit::things::particles::KIND => "The sound the particles make when they hit things, land or burst",
+            _ => "The sound its balls make when they hit things",
+        };
+        out.push((InspectorTab::Sound, "Sound", sound));
+    }
+    out
 }
 
 /// One of the inspector's cards, as the jump bar names it.
@@ -180,6 +223,9 @@ pub(crate) enum Edit {
     /// A key at the playhead holding the setting's value as it stands (a slot's setting, or the
     /// thing's own with `None`), for every selected thing that has the setting.
     NewKey(Option<SlotId>, String),
+    /// Every key of the setting goes (it keeps the value it has at the playhead), for every
+    /// selected thing that has the setting.
+    ClearKeys(Option<SlotId>, String),
     /// The setting (a slot's, or the thing's own with `None`) follows a part of a shape's sound,
     /// or stops following with `None`, for every selected thing that has the setting.
     Follow(Option<SlotId>, String, Option<bpe_core::PulseSource>),
@@ -220,6 +266,9 @@ pub(crate) enum Edit {
     LoadFont(String, std::sync::Arc<[u8]>),
     /// The scene forgets its font of this name.
     RemoveFont(String),
+    /// A PNG the scene keeps, under the name given (or the next free one like it), which every
+    /// selected thing's Picture then shows.
+    LoadPicture(String, std::sync::Arc<[u8]>),
 }
 
 /// Whether `a` is a part of a vary (its To, spread or easing) on a setting that doesn't vary
@@ -289,37 +338,30 @@ pub fn show(
         style::ensure_text_fonts(ui.ctx(), scene);
     }
 
-    // A shape's (or a Particles thing's, or a Text's) settings or its sound.
-    if sounds(&thing.kind) {
+    // A thing's settings, its ready-made looks or its sound.
+    let chips = tabs(&thing.kind);
+    if !chips.is_empty() {
         let mut tab = inspector.tab.get(&id).copied().unwrap_or_default();
-        let chips: [(InspectorTab, &str, &str); 2] = if thing.kind == SHAPE {
-            [
-                (InspectorTab::Settings, "Settings", "The shape's outline, look and how it moves"),
-                (InspectorTab::Sound, "Sound", "The sound the shape makes when balls hit it"),
-            ]
-        } else if thing.kind == bpe_kit::things::text::KIND {
-            [
-                (InspectorTab::Settings, "Settings", "The words, their look and what balls do at them"),
-                (InspectorTab::Sound, "Sound", "The sound the letters make when balls hit them"),
-            ]
-        } else {
-            [
-                (InspectorTab::Settings, "Settings", "Where the particles come from, how they move and look"),
-                (InspectorTab::Sound, "Sound", "The sound the particles make when they hit things, land or burst"),
-            ]
-        };
+        if !chips.iter().any(|c| c.0 == tab) {
+            tab = InspectorTab::Settings;
+        }
         ui.horizontal(|ui| {
             ui.add_space(CARD_MARGIN as f32);
             crate::look_editor::ball_view::segmented(ui, &mut tab, &chips);
         });
         ui.add_space(4.0);
         inspector.tab.insert(id, tab);
-        if tab == InspectorTab::Sound {
-            return crate::sound_tab::show(ui, inspector, scene, kit, &choices, id, time);
+        match tab {
+            InspectorTab::Sound => return crate::sound_tab::show(ui, inspector, scene, kit, &choices, id, time),
+            InspectorTab::Looks => return crate::looks_page::show(ui, inspector, scene, kit, &selected, id, time),
+            InspectorTab::Settings => {}
         }
     }
 
-    let marked = jump_bar(ui, inspector, id, kind, &thing);
+    find::find_box(ui, inspector);
+    let finding = inspector.find.trim().to_owned();
+    let marked =
+        if finding.is_empty() { jump_bar(ui, inspector, id, kind, &thing) } else { marked_card(inspector, id) };
     inspector.card_tops.clear();
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         if selected.len() > 1 {
@@ -397,6 +439,10 @@ pub fn show(
             label_width: lw,
             applies: &applies,
         };
+        if !finding.is_empty() {
+            find::results(ui, inspector, &cx, kind, &finding, &mut edits);
+            return;
+        }
         if id == ThingId::ROOT {
             // The root's settings are one card per group.
             for (i, name) in bpe_kit::ROOT_CARDS.into_iter().enumerate() {
@@ -639,12 +685,14 @@ pub fn show(
             });
         }
 
-        // ---------- + Add slot ----------
+        // ---------- + Add card ----------
         ui.add_space(8.0);
         let missing: Vec<SlotId> = kind
             .slots()
             .iter()
             .copied()
+            // Sound is turned on from the Sound tab, not added as a card.
+            .filter(|s| s.in_card_list())
             .filter(|s| !thing.slots.contains_key(s) && reg.kinds_fitting(*s, kind).next().is_some())
             .collect();
         // Motion and Bounce are one entry, Physics, at the first of them. It adds every Physics
@@ -666,7 +714,7 @@ pub fn show(
             }
         }
         ui.add_enabled_ui(!missing.is_empty(), |ui| {
-            ui.menu_button("+ Add slot", |ui| {
+            ui.menu_button("+ Add card", |ui| {
                 for (label, slots, help) in &entries {
                     if ui.button(*label).on_hover_text(help).clicked() {
                         edits.extend(slots.iter().map(|s| Edit::AddSlot(*s)));
@@ -675,7 +723,7 @@ pub fn show(
                 }
             })
             .response
-            .on_disabled_hover_text("Every slot this kind can use is already shown");
+            .on_disabled_hover_text("Every card this kind can use is already shown");
         });
     });
     // A jump to a card that wasn't drawn (it went away) is dropped.
@@ -684,6 +732,16 @@ pub fn show(
     // another card there, draw again so the bar catches up.
     if marked_card(inspector, id) != marked {
         ui.ctx().request_repaint();
+    }
+
+    // A PNG chosen for a Picture is kept in the scene.
+    if let Some(picked) = crate::picture_picker::take_request(ui.ctx()) {
+        if crate::picture_picker::is_png(&picked.bytes) {
+            crate::picture_picker::set_note(ui.ctx(), None);
+            edits.push(Edit::LoadPicture(picked.name, picked.bytes));
+        } else {
+            crate::picture_picker::set_note(ui.ctx(), Some(crate::picture_picker::NOT_A_PICTURE));
+        }
     }
 
     // Load font and Remove in the Font picker change the scene.
@@ -745,6 +803,15 @@ pub fn show(
                 true
             }
             Edit::RemoveFont(name) => scene.remove_font(&name),
+            Edit::LoadPicture(name, bytes) => {
+                let name = scene.add_picture(&name, bytes);
+                let key = bpe_core::PICTURE_KEY;
+                for t in reached_key(scene, &selected, id, None, key) {
+                    let a = Address::own(t, key);
+                    set_or_key(scene, reg, &a, Value::Text(name.clone()), time, &mut inspector.keyed_edit);
+                }
+                true
+            }
             Edit::SetOwnHere(key, value) => {
                 set_or_key(scene, reg, &Address::own(id, &key), value, time, &mut inspector.keyed_edit)
             }
@@ -774,6 +841,14 @@ pub fn show(
                         continue;
                     }
                     any |= new_key(scene, reg, &a, time);
+                }
+                any
+            }
+            Edit::ClearKeys(slot, key) => {
+                let mut any = false;
+                for t in reached_key(scene, &selected, id, slot, &key) {
+                    let a = Address { thing: t, slot, key: key.clone() };
+                    any |= clear_keys(scene, reg, &a, time);
                 }
                 any
             }
@@ -840,9 +915,13 @@ pub(crate) fn has_ball_look(kind: &str) -> bool {
 /// The kind whose outline settings show under its Look's Body.
 const SHAPE: &str = bpe_kit::things::shape::KIND;
 
-/// Whether things of `kind` have a Sound tab: shapes, and Particles things (particles part 7).
+/// Whether things of `kind` have a Sound tab: shapes, Text, Particles things (particles part 7),
+/// and Balls and Emitters (W10).
 pub(crate) fn sounds(kind: &str) -> bool {
-    kind == SHAPE || kind == bpe_kit::things::particles::KIND || kind == bpe_kit::things::text::KIND
+    kind == SHAPE
+        || kind == bpe_kit::things::particles::KIND
+        || kind == bpe_kit::things::text::KIND
+        || bpe_kit::sound::hears_own_balls(kind)
 }
 
 /// After a shape's own setting `key` was set: a new Sides or Start from starts the outline afresh,
@@ -1160,6 +1239,11 @@ fn mark_for(scene: &Scene, def: &SettingDef, a: &Address) -> KeyMark {
 }
 
 /// A key at `time` holding the setting's value there, replacing a key already at that time.
+/// Removes every key of the setting at `a`, leaving the value it has at `time`.
+pub(crate) fn clear_keys(scene: &mut Scene, reg: &bpe_core::Registry, a: &Address, time: f64) -> bool {
+    scene.clear_keys(reg, a, time)
+}
+
 fn new_key(scene: &mut Scene, reg: &bpe_core::Registry, a: &Address, time: f64) -> bool {
     let Some(value) = scene.value_at_time(reg, a, time) else { return false };
     scene.set_key(reg, a, time, value).is_ok()
@@ -1232,8 +1316,7 @@ fn physics_card(
 /// A plain card's settings: the card in `slot`, of kind `card_kind`, as a grid with folding
 /// groups. Its edits are pushed to `edits`.
 fn slot_grid(ui: &mut Ui, inspector: &mut Inspector, cx: &OwnCx, slot: SlotId, card_kind: &str, edits: &mut Vec<Edit>) {
-    let (scene, reg, id, time) = (cx.scene, &cx.kit.registry, cx.id, cx.time);
-    let Some(ckind) = reg.module(card_kind) else { return };
+    let Some(ckind) = cx.kit.registry.module(card_kind) else { return };
     let defs = ckind.settings();
     debug_assert!(
         unknown_groups(defs).is_empty(),
@@ -1241,6 +1324,20 @@ fn slot_grid(ui: &mut Ui, inspector: &mut Inspector, cx: &OwnCx, slot: SlotId, c
         card_kind,
         unknown_groups(defs)
     );
+    slot_grid_of(ui, inspector, cx, slot, ("slot", cx.id, slot), defs, edits);
+}
+
+/// The grid of `defs`, settings of the thing's card in `slot`.
+fn slot_grid_of(
+    ui: &mut Ui,
+    inspector: &mut Inspector,
+    cx: &OwnCx,
+    slot: SlotId,
+    grid_id: impl std::hash::Hash + std::fmt::Debug,
+    defs: &[SettingDef],
+    edits: &mut Vec<Edit>,
+) {
+    let (scene, reg, id, time) = (cx.scene, &cx.kit.registry, cx.id, cx.time);
     ui.add_space(4.0);
     let at = |key: &str| Address::on(id, slot, key);
     let get = |key: &str| scene.value_at_time(reg, &at(key), time).expect("a card's settings all resolve");
@@ -1266,10 +1363,11 @@ fn slot_grid(ui: &mut Ui, inspector: &mut Inspector, cx: &OwnCx, slot: SlotId, c
         follow: Some(&follow),
         vary: vary.as_ref(),
     };
-    let out = settings_grid(ui, ("slot", id, slot), defs, get, &grid);
+    let out = settings_grid(ui, grid_id, defs, get, &grid);
     fold_groups(inspector, (id, Some(slot)), &out.folds);
     edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key.into(), value)));
     edits.extend(out.new_keys.into_iter().map(|key| Edit::NewKey(Some(slot), key.into())));
+    edits.extend(out.cleared.into_iter().map(|key| Edit::ClearKeys(Some(slot), key.into())));
     edits.extend(out.follows.into_iter().map(|(key, source)| Edit::Follow(Some(slot), key.into(), source)));
     edits.extend(out.varies.into_iter().map(|(key, v)| crate::vary::edit(Some(slot), key, v)));
 }
@@ -1347,6 +1445,7 @@ fn surface_section(
     let out = settings_grid(ui, ("surface", id, slot), &defs, get, &grid);
     edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key.into(), value)));
     edits.extend(out.new_keys.into_iter().map(|key| Edit::NewKey(Some(slot), key.into())));
+    edits.extend(out.cleared.into_iter().map(|key| Edit::ClearKeys(Some(slot), key.into())));
     edits.extend(out.follows.into_iter().map(|(key, source)| Edit::Follow(Some(slot), key.into(), source)));
     ui.add_space(4.0);
 }
@@ -1409,6 +1508,7 @@ fn own_grid(
     fold_groups(inspector, (id, None), &out.folds);
     edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetOwn(key.into(), value)));
     edits.extend(out.new_keys.into_iter().map(|key| Edit::NewKey(None, key.into())));
+    edits.extend(out.cleared.into_iter().map(|key| Edit::ClearKeys(None, key.into())));
     edits.extend(out.follows.into_iter().map(|(key, source)| Edit::Follow(None, key.into(), source)));
     edits.extend(out.varies.into_iter().map(|(key, v)| crate::vary::edit(None, key, v)));
 }
@@ -1961,6 +2061,107 @@ mod tests {
         assert!(h.get_by_label("Create Keyframe").accesskit_node().is_disabled());
     }
 
+    /// The setting menu's button whose label starts with `start`.
+    fn menu_button_starting<'a>(h: &'a Harness<'_, State>, start: &str) -> egui_kittest::Node<'a> {
+        h.get_all_by_role(Role::Button)
+            .find(|n| n.accesskit_node().label().is_some_and(|l| l.starts_with(start)))
+            .unwrap_or_else(|| panic!("no {start}"))
+    }
+
+    fn find(h: &mut Harness<'_, State>, text: &str) {
+        h.get_by_label(find::FIND).click();
+        h.run();
+        h.get_by_label(find::FIND).type_text(text);
+        h.run();
+    }
+
+    #[test]
+    fn find_a_setting_shows_every_setting_it_names_on_any_card() {
+        let mut h = harness(Some(ThingId(2)));
+        find(&mut h, "streng");
+        assert!(h.query_all_by_label_contains("Glow").next().is_some(), "the Glow layer's heading");
+        assert!(h.query_all_by_label("Strength").next().is_some(), "its Strength row");
+        assert!(h.query_by_role_and_label(Role::Label, "Placement").is_none(), "the cards are gone");
+        assert!(h.query_by_role_and_label(Role::Button, "Thing").is_none(), "and the jump bar");
+        // A found row edits as it does in its card.
+        menu_of(&mut h, "Strength");
+        h.get_by_label("Create Keyframe").click();
+        h.run();
+        let keyed: Vec<&Address> = h.state().scene.tracks.keys().collect();
+        assert!(
+            keyed.iter().any(|a| a.thing == ThingId(2) && a.slot == Some(SlotId::Look) && a.key.ends_with("/strength")),
+            "a layer's Strength got a key: {keyed:?}"
+        );
+        // Escape empties the box.
+        find(&mut h, "x");
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert!(h.state().inspector.find.is_empty(), "{:?}", h.state().inspector.find);
+        // Nothing found says so; Clear brings the cards back.
+        h.state_mut().inspector.find = "zzzz".into();
+        h.run();
+        assert!(h.query_by_label("No settings match \u{201c}zzzz\u{201d}.").is_some());
+        h.get_by_label("Clear").click();
+        h.run();
+        assert!(h.state().inspector.find.is_empty());
+        assert!(h.query_by_role_and_label(Role::Button, "Thing").is_some(), "the jump bar is back");
+    }
+
+    #[test]
+    fn reset_to_default_and_remove_all_keyframes_are_in_the_setting_menu() {
+        let mut h = harness(Some(ThingId(2)));
+        let size = Address::own(ThingId(2), "radius");
+        let start = h.state().scene.things[&ThingId(2)].params.get("radius").cloned();
+        menu_of(&mut h, "Size");
+        assert!(menu_button_starting(&h, "Reset to default").accesskit_node().is_disabled(), "at its default");
+        assert!(h.get_by_label("Remove all keyframes").accesskit_node().is_disabled(), "no keys yet");
+        h.key_press(egui::Key::Escape);
+        h.run();
+        h.state_mut().scene.things.get_mut(&ThingId(2)).unwrap().params.set("radius", Value::Number(40.0));
+        h.run();
+        menu_of(&mut h, "Size");
+        menu_button_starting(&h, "Reset to default").click();
+        h.run();
+        assert_eq!(h.state().scene.things[&ThingId(2)].params.get("radius").cloned(), start);
+        // Two keys, then all of them go; the size stays as it is at the playhead.
+        {
+            let s = h.state_mut();
+            let reg = &s.kit.registry;
+            s.scene.set_key(reg, &size, 0.0, Value::Number(10.0)).unwrap();
+            s.scene.set_key(reg, &size, 2.0, Value::Number(30.0)).unwrap();
+            s.time = 1.0;
+        }
+        h.run();
+        menu_of(&mut h, "Size");
+        h.get_by_label("Remove all keyframes").click();
+        h.run();
+        assert!(!h.state().scene.tracks.contains_key(&size));
+        assert_eq!(h.state().scene.things[&ThingId(2)].params.get("radius"), Some(&Value::Number(20.0)));
+    }
+
+    #[test]
+    fn a_picture_chosen_for_particles_is_kept_in_the_scene() {
+        let reg = bpe_kit::registry();
+        let mut scene = bpe_kit::new_scene(&reg);
+        let id = bpe_kit::add_thing(&mut scene, &reg, "particles", ThingId::ROOT).unwrap();
+        let mut h = harness_of(scene, Some(id));
+        let png: std::sync::Arc<[u8]> = b"\x89PNG\r\n\x1a\nrest".to_vec().into();
+        let ctx = h.ctx.clone();
+        let picked = crate::picture_picker::PictureRequest { name: "Logo".into(), bytes: png.clone() };
+        crate::picture_picker::request(&ctx, picked);
+        h.run();
+        let scene = &h.state().scene;
+        assert_eq!(scene.pictures["Logo"].bytes, png);
+        assert_eq!(scene.things[&id].params.get("picture"), Some(&Value::Text("Logo".into())));
+        // A file that isn't a PNG is refused, and says so.
+        let before = h.state().scene.clone();
+        let ctx = h.ctx.clone();
+        let wrong = crate::picture_picker::PictureRequest { name: "x".into(), bytes: b"GIF89a".to_vec().into() };
+        crate::picture_picker::request(&ctx, wrong);
+        h.run();
+        assert_eq!(h.state().scene, before);
+    }
+
     #[test]
     fn a_copied_value_pastes_into_another_things_setting() {
         let mut h = harness(Some(ThingId(2)));
@@ -2024,7 +2225,7 @@ mod tests {
         h.run();
         assert!(!h.state().scene.things[&ThingId(2)].slots.contains_key(&SlotId::Look));
         assert!(!h.state().scene.tracks.contains_key(&glow), "the card's keys go with it");
-        h.get_by_label("+ Add slot").click();
+        h.get_by_label("+ Add card").click();
         h.run();
         h.get_by_label("Look").click();
         h.run();
@@ -2048,7 +2249,7 @@ mod tests {
         let has_look =
             |h: &Harness<'_, State>, t: ThingId| h.state().scene.things[&t].slots.contains_key(&SlotId::Look);
         assert!(!has_look(&h, ThingId(2)) && !has_look(&h, other));
-        h.get_by_label("+ Add slot").click();
+        h.get_by_label("+ Add card").click();
         h.run();
         h.get_by_label("Look").click();
         h.run();
@@ -2143,15 +2344,15 @@ mod tests {
         let mut h = harness(Some(ThingId(2)));
         // A new ball has every card a ball starts with: trails and particles are layers of its Look.
         // Only Health (rules part 4) is left to add.
-        h.get_by_label("+ Add slot").click();
+        h.get_by_label("+ Add card").click();
         h.run();
         h.get_by_label("Health").click();
         h.run();
         assert_eq!(h.state().scene.things[&ThingId(2)].slots[&SlotId::Health].kind, "health");
-        assert!(h.get_by_label("+ Add slot").accesskit_node().is_disabled());
+        assert!(h.get_by_label("+ Add card").accesskit_node().is_disabled());
         h.state_mut().scene.things.get_mut(&ThingId(2)).unwrap().slots.remove(&SlotId::Motion);
         h.run();
-        h.get_by_label("+ Add slot").click();
+        h.get_by_label("+ Add card").click();
         h.run();
         assert!(h.query_all_by_label("Trail").next().is_none(), "trails are layers of the Look");
         assert!(h.query_all_by_label("Particles").next().is_none(), "particles are layers of the Look");
@@ -2899,7 +3100,7 @@ mod tests {
         let mut h = harness(Some(ThingId(2)));
         h.get_by_label("Remove Physics").click();
         h.run();
-        h.get_by_label("+ Add slot").click();
+        h.get_by_label("+ Add card").click();
         h.run();
         assert_eq!(h.query_all_by_label("Physics").count(), 1, "one Physics entry in the menu");
         h.get_by_label("Physics").click();
@@ -2958,7 +3159,7 @@ mod tests {
             s.resolved = resolve(&s.scene, &s.kit.registry);
         }
         h.run();
-        h.get_by_label("+ Add slot").click();
+        h.get_by_label("+ Add card").click();
         h.run();
         h.get_all_by_label("Physics").last().expect("the Physics entry").click();
         h.run();

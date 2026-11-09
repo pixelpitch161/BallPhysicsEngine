@@ -28,6 +28,8 @@ wgpu = "30"
 rfd = "0.17"
 cpal = "0.18"
 rubato = "0.16"
+# Sound files (samples and backing tracks): WAV, FLAC, MP3, OGG Vorbis and AIFF.
+symphonia = { version = "0.5.5", default-features = false, features = ["wav", "pcm", "adpcm", "flac", "mp3", "ogg", "vorbis", "aiff"] }
 rtrb = "0.3"
 hound = "3.5"
 midly = "0.5"

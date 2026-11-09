@@ -189,9 +189,6 @@ pub fn layer_def(
     kind.dynamic_defs(&with_defaults).iter().find(|d| d.key == key)
 }
 
-/// A fix to a scene loaded from an older format.
-pub type Upgrade = fn(&mut crate::Scene);
-
 /// Every registered kind, by id.
 #[derive(Default)]
 pub struct Registry {
@@ -199,9 +196,6 @@ pub struct Registry {
     modules: BTreeMap<&'static str, Box<dyn ModuleKind>>,
     /// In the order they were registered, which is the order the editor lists them in.
     layers: Vec<Box<dyn LayerKind>>,
-    /// Scene fixes for files older than a format, in the order they were added (see
-    /// [`Registry::add_upgrade`]).
-    upgrades: Vec<(u32, Upgrade)>,
     /// Rule block kinds, in the order they were registered (the block menu's order).
     blocks: Vec<Box<dyn crate::rules::RuleBlockKind>>,
 }
@@ -238,17 +232,6 @@ impl Registry {
         let id = k.id();
         self.check_new(id);
         self.blocks.push(Box::new(k));
-    }
-
-    /// Adds a fix that [`crate::load`] runs on a scene whose file format is below `below`, after
-    /// mending it and before cleaning its settings. Fixes run in the order they were added.
-    pub fn add_upgrade(&mut self, below: u32, f: Upgrade) {
-        self.upgrades.push((below, f));
-    }
-
-    /// The fixes a file of `format` needs, in order.
-    pub fn upgrades_for(&self, format: u32) -> impl Iterator<Item = fn(&mut crate::Scene)> + '_ {
-        self.upgrades.iter().filter(move |(below, _)| format < *below).map(|(_, f)| *f)
     }
 
     fn check_new(&self, id: &str) {

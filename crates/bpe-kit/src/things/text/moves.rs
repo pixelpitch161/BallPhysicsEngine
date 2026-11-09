@@ -316,7 +316,7 @@ pub fn apply(at: &TextAt, moves: &[(Move, Vec<u32>)], now: &mut TextNow) {
                 }
                 Move::Beat(b) => {
                     let every = finite(b.every, 1.0).max(0.01) as f64 * beat;
-                    let u = t - k as f64 * finite(b.later, 0.0).max(0.0) as f64;
+                    let u = t - at.world.first_beat - k as f64 * finite(b.later, 0.0).max(0.0) as f64;
                     let j = if every > 0.0 && every.is_finite() && u >= 0.0 {
                         let since = u - (u / every).floor() * every;
                         hop(since / finite(b.takes, 0.3).max(0.01) as f64)

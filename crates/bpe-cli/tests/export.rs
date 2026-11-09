@@ -335,3 +335,45 @@ fn a_scene_with_text_exports_a_frame() {
     // The white I in the middle, the background at the side.
     assert!(at(w / 2, h / 2) > at(w / 10, h / 2) + 300, "{} vs {}", at(w / 2, h / 2), at(w / 10, h / 2));
 }
+
+/// Review S23: the frames go to ffmpeg as video colours worked out on the graphics card. A
+/// near-lossless export's first frame decodes to the planes the CPU works out from the same frame
+/// drawn alone (the encoder's own rounding aside: the high profile can't be fully lossless), and the
+/// file says BT.709 TV range.
+#[test]
+fn exported_colours_are_the_frames_own() {
+    let Some((device, queue)) = ready() else { return };
+    let kit = kit();
+    let scene = new_scene(&kit.registry);
+    let dir = temp_dir("colours");
+    let path = dir.join("colours.mp4");
+    let mut options = ExportOptions::new(path.clone());
+    options.max_frames = Some(1);
+    options.scale = 0.25;
+    options.crf = 1;
+    options.encoder = Encoder::Cpu;
+    export_video(&device, &queue, &scene, &kit, &options, |_, _| true).unwrap();
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let (rgba, (w, h), _) = bpe_cli::final_frame(&device, &queue, &scene, &kit, 0.0, 0.25, None, &stop).unwrap();
+    let want = bpe_gfx::yuv::yuv_of_rgba(&rgba, w, h, bpe_gfx::yuv::PixelLayout::Yuv420p);
+    let decoded = std::process::Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(&path)
+        .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-"])
+        .output()
+        .unwrap();
+    assert_eq!(decoded.stdout.len(), want.len(), "{}", String::from_utf8_lossy(&decoded.stderr));
+    let diffs: Vec<u8> = decoded.stdout.iter().zip(&want).map(|(a, b)| a.abs_diff(*b)).collect();
+    let worst = *diffs.iter().max().unwrap();
+    let mean = diffs.iter().map(|&d| d as f64).sum::<f64>() / diffs.len() as f64;
+    eprintln!("video against the CPU's planes: mean {mean:.3}, worst {worst}");
+    assert!(mean < 0.5 && worst <= 8, "the video's first frame is off: mean {mean}, worst {worst}");
+    let probe = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v", "-show_entries", "stream=color_range,color_space", "-of", "csv"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&probe.stdout);
+    assert!(text.contains("tv") && text.contains("bt709"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

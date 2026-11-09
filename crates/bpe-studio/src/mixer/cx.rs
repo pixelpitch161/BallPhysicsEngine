@@ -26,6 +26,8 @@ pub enum MixEdit {
     Set(Address, Value),
     /// A key at the playhead holding the setting's value as it stands.
     NewKey(Address),
+    /// Every key of the setting goes; it keeps the value it has now.
+    ClearKeys(Address),
     /// A new effect of `kind` at the end of bus `lane` (0..2); its editor opens.
     Add {
         kind: &'static str,
@@ -173,6 +175,7 @@ impl MixCx<'_> {
             ValueMenu::Nothing => {}
             ValueMenu::Paste(v) => self.edits.push(MixEdit::Set(a, v)),
             ValueMenu::CreateKey => self.edits.push(MixEdit::NewKey(a)),
+            ValueMenu::RemoveKeys => self.edits.push(MixEdit::ClearKeys(a)),
         }
     }
 
@@ -263,6 +266,7 @@ pub fn apply(scene: &mut Scene, kit: &Kit, time: f64, edits: Vec<MixEdit>, copie
                 Some(v) => scene.set_key(reg, &a, time, v).is_ok(),
                 None => false,
             },
+            MixEdit::ClearKeys(a) => crate::inspector::clear_keys(scene, reg, &a, time),
             MixEdit::Add { kind, lane } => match scene.add_layer_in(reg, root, slot, kind, Some(lane)) {
                 Ok(id) => {
                     out.pick = Some(Some(MixerPick::Layer(id)));

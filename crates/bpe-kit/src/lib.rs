@@ -6,7 +6,7 @@ pub mod air;
 mod layer_tests;
 pub mod modules;
 pub mod paint;
-pub mod rng;
+pub mod ready_looks;
 pub mod rules;
 #[cfg(any(test, feature = "test-scenes"))]
 pub mod scenes;
@@ -66,6 +66,7 @@ pub fn sims() -> Sims {
     s.add_health(modules::health::HealthCardSim);
     // Light sensing: worlds whose physics follows light get the probe (none do unless asked).
     s.light = Some(std::sync::Arc::new(sensing::KitLight));
+    s.air = Some(std::sync::Arc::new(air::KitAir));
     s
 }
 
@@ -155,13 +156,6 @@ pub fn registry() -> Registry {
     r.add_layer(OwnEffect);
     sound::register(&mut r);
     rules::register(&mut r);
-    // Format 8 masks open as Cut sub-layers.
-    r.add_upgrade(9, modules::look::layers::masks_to_cuts);
-    // Trail and Particles cards before format 10 open as layers of the Look.
-    r.add_upgrade(10, modules::look::layers::cards_to_layers::cards_to_layers);
-    // A scene's one Shader card opens as an Effects stack. Every format runs it: it does nothing
-    // to a scene without an old card.
-    r.add_upgrade(u32::MAX, modules::effects::upgrade::single_effect_to_stack);
     r
 }
 
@@ -259,7 +253,7 @@ mod tests {
         assert_eq!((s.tempo, s.time_top, s.time_bottom), (120.0, 4, things::scene::TimeBottom::Four));
         assert_eq!(things::scene::TimeBottom::Eight.beats(), 8);
         let defs = SceneSettings::defs();
-        for key in ["tempo", "time_top", "time_bottom"] {
+        for key in ["tempo", "time_top", "time_bottom", "first_beat"] {
             let d = defs.iter().find(|d| d.key == key).unwrap();
             assert_eq!(d.group, "Sound", "{key}");
             assert!(!d.flags.keyframe, "{key} is not keyframed");
@@ -276,6 +270,7 @@ mod tests {
         root.params.set("tempo", Value::Number(93.5));
         root.params.set("time_top", Value::Int(7));
         root.params.set("time_bottom", Value::Choice("8".into()));
+        root.params.set("first_beat", Value::Number(0.4));
         let resolved = resolve(&scene, &kit.registry);
         assert!(resolved.problems.is_empty(), "{:?}", resolved.problems);
         assert_eq!(SceneSettings::from_params(&resolved.things[&ThingId::ROOT].params).tempo, 93.5);

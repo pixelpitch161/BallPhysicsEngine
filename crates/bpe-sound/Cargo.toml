@@ -21,6 +21,8 @@ glam.workspace = true
 anyhow.workspace = true
 hound.workspace = true
 midly.workspace = true
+rubato.workspace = true
+symphonia.workspace = true
 
 [dev-dependencies]
 bpe-kit = { workspace = true, features = ["test-scenes"] }

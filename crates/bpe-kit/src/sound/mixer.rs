@@ -110,7 +110,8 @@ pub struct MixerSettings {
     /// Turns the whole mix up or down before the limiter.
     #[setting(label = "Input", range(-24, 24), unit = "dB", keyframe, group = "Master")]
     pub master_input: f32,
-    /// Turns the finished sound up or down after the limiter.
+    /// Turns the finished sound up or down. Turned up, it pushes into the limiter, so the
+    /// sound never goes past the Ceiling.
     #[setting(label = "Output", range(-24, 24), unit = "dB", keyframe, group = "Master")]
     pub master_output: f32,
     /// The loudest the sound may get, peaks between samples included.
@@ -119,6 +120,22 @@ pub struct MixerSettings {
     /// How quickly the limiter lets go after a peak.
     #[setting(label = "Release", range(1, 1000), unit = "ms", group = "Master")]
     pub master_release: f32,
+    /// Fades the sound out over the last this many seconds of the video (0 is off).
+    #[setting(label = "End fade", range(0, 30), span(0, 10), unit = "s", group = "Master")]
+    pub master_end_fade: f32,
+    /// A song (or any sound file) the scene keeps, played with the mix from Starts at (W11): the
+    /// name of one the scene keeps, empty for none.
+    #[setting(label = "Backing track", group = "Backing track")]
+    pub backing: String,
+    /// Whether the backing track plays.
+    #[setting(label = "On", group = "Backing track")]
+    pub backing_on: bool,
+    /// Where in the video the song's start plays; below 0 starts partway into the song.
+    #[setting(label = "Starts at", range(-600, 600), span(-30, 30), unit = "s", group = "Backing track")]
+    pub backing_at: f32,
+    /// How loud the song plays into the Master.
+    #[setting(label = "Level", range(-60, 12), unit = "dB", group = "Backing track")]
+    pub backing_level: f32,
     #[setting(paint, prefix = "bus1_", label = "Bus 1", group = "Bus 1")]
     pub bus1: BusSettings,
     #[setting(paint, prefix = "bus2_", label = "Bus 2", group = "Bus 2")]
@@ -134,6 +151,11 @@ impl Default for MixerSettings {
             master_output: 0.0,
             master_ceiling: -1.0,
             master_release: 60.0,
+            master_end_fade: 0.0,
+            backing: String::new(),
+            backing_on: true,
+            backing_at: 0.0,
+            backing_level: 0.0,
             bus1: BusSettings::numbered(1),
             bus2: BusSettings::numbered(2),
             bus3: BusSettings::numbered(3),

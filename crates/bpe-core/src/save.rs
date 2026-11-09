@@ -8,6 +8,8 @@ use std::fmt;
 pub enum LoadError {
     /// It has no format number, so the old editor wrote it.
     OldEditor,
+    /// An earlier version wrote it, in this format, which this one no longer opens.
+    TooOld(u32),
     /// A later version wrote it, in this format.
     Newer(u32),
     /// It isn't a readable scene. Holds the parser's message.
@@ -18,6 +20,9 @@ impl fmt::Display for LoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             LoadError::OldEditor => write!(f, "This scene was made with the old Ball Studio"),
+            LoadError::TooOld(_) => {
+                write!(f, "This scene was made with an earlier version of Ball Studio that this one can't open")
+            }
             LoadError::Newer(_) => write!(f, "This scene was made with a newer version of Ball Studio"),
             LoadError::Broken(e) => write!(f, "This scene file is damaged: {e}"),
         }
@@ -28,6 +33,11 @@ impl std::error::Error for LoadError {}
 
 /// The scene as pretty RON text.
 pub fn save(scene: &Scene) -> String {
+    // Pictures and sound files nothing names any more stay out of the file.
+    let pruned = scene.without_unused_pictures();
+    let scene = pruned.as_ref().unwrap_or(scene);
+    let pruned = scene.without_unused_audio();
+    let scene = pruned.as_ref().unwrap_or(scene);
     ron::ser::to_string_pretty(scene, ron::ser::PrettyConfig::default()).expect("scenes always serialize")
 }
 
@@ -35,23 +45,19 @@ pub fn save(scene: &Scene) -> String {
 /// type are dropped and numbers are pulled into range; settings and kinds the registry doesn't
 /// know are kept for `resolve` to report.
 pub fn load(text: &str, reg: &Registry) -> Result<Scene, LoadError> {
-    let format = match probe_format(text)? {
+    match probe_format(text)? {
         None => return Err(LoadError::OldEditor),
-        // Format 7 is format 8 without sound, so it opens as it is.
-        Some(v) if v < Scene::OLDEST_FORMAT => return Err(LoadError::OldEditor),
+        // Formats below 7 are the old editor's (Version 1).
+        Some(v) if v < 7 => return Err(LoadError::OldEditor),
+        Some(v) if v < Scene::OLDEST_FORMAT => return Err(LoadError::TooOld(v)),
         Some(v) if v > Scene::FORMAT => return Err(LoadError::Newer(v)),
-        Some(v) => v,
-    };
+        Some(_) => {}
+    }
     let mut scene: Scene = ron::from_str(text).map_err(|e| LoadError::Broken(e.to_string()))?;
     if !scene.mend() {
         return Err(LoadError::Broken("it has no scene settings".into()));
     }
     scene.give_colours();
-    for upgrade in reg.upgrades_for(format) {
-        upgrade(&mut scene);
-    }
-    // An older format opens as this one: saving it again writes the new number.
-    scene.format = Scene::FORMAT;
 
     for thing in scene.things.values_mut() {
         if let Some(kind) = reg.thing(&thing.kind) {
@@ -242,25 +248,6 @@ mod tests {
     }
 
     #[test]
-    fn upgrades_run_only_on_files_older_than_their_format() {
-        fn rename(s: &mut Scene) {
-            for t in s.things.values_mut() {
-                t.name = format!("{} upgraded", t.name);
-            }
-        }
-        let mut r = testkit::registry();
-        r.add_upgrade(12, rename);
-        let mut s = Scene::empty(&r);
-        let b = testkit::push(&mut s, "balls", ThingId::ROOT);
-        let text = save(&s);
-        assert!(text.contains("format: 12"), "{text}");
-        assert_eq!(load(&text, &r).unwrap().things[&b].name, s.things[&b].name, "a format 12 file is left");
-        let old = load(&text.replace("format: 12", "format: 11"), &r).unwrap();
-        assert_eq!(old.things[&b].name, format!("{} upgraded", s.things[&b].name));
-        assert_eq!(old.format, Scene::FORMAT);
-    }
-
-    #[test]
     fn format_three_to_six_files_are_old() {
         for v in 3..=6 {
             assert_eq!(load(&format!("(format: {v})"), &testkit::registry()).unwrap_err(), LoadError::OldEditor);
@@ -322,7 +309,7 @@ mod tests {
         assert_eq!(back.things[&a].parent, Some(ThingId::ROOT));
         assert_eq!(back.things[&b].id, b);
         assert_eq!(back.next_thing, b.0 + 1);
-        let e = load("(format: 7)", &r).unwrap_err();
+        let e = load("(format: 12)", &r).unwrap_err();
         assert_eq!(e.to_string(), "This scene file is damaged: it has no scene settings");
     }
 
@@ -348,13 +335,21 @@ mod tests {
     }
 
     #[test]
-    fn format_7_files_still_load() {
+    fn files_of_an_earlier_version_are_refused_with_a_clear_message() {
         let r = testkit::registry();
         let mut s = Scene::empty(&r);
         testkit::push(&mut s, "balls", ThingId::ROOT);
-        let text = save(&s).replacen("format: 12", "format: 7", 1);
-        assert!(text.contains("format: 7"));
-        assert_eq!(load(&text, &r).unwrap(), s);
+        let text = save(&s);
+        for v in 7..Scene::FORMAT {
+            let old = text.replacen(&format!("format: {}", Scene::FORMAT), &format!("format: {v}"), 1);
+            let e = load(&old, &r).unwrap_err();
+            assert_eq!(e, LoadError::TooOld(v));
+            assert_eq!(
+                e.to_string(),
+                "This scene was made with an earlier version of Ball Studio that this one can't open"
+            );
+        }
+        assert_eq!(load(&text, &r).unwrap(), s, "this version's own files open");
     }
 
     #[test]

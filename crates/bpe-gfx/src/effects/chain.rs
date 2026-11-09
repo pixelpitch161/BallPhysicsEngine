@@ -58,7 +58,7 @@ pub(crate) struct Fx {
     beat: [f32; 4],
 }
 
-struct Compiled {
+pub(crate) struct Compiled {
     pipeline: wgpu::RenderPipeline,
     history: bool,
     /// A lens effect's pre-pass: its `bright` at half size, what it asks for, and where its
@@ -87,7 +87,16 @@ pub(crate) struct Chain {
     black: wgpu::TextureView,
     /// Stands in for the object picture when nothing drew one: no things anywhere.
     no_objects: wgpu::TextureView,
-    compiled: BTreeMap<u64, Result<Compiled, String>>,
+    /// The effects this chain has drawn with, from the store (where they are built, shared
+    /// with every renderer on the device; in the editor on a background thread).
+    compiled: BTreeMap<u64, crate::programs::EffectBuilt>,
+    store: crate::ProgramStore,
+    /// An effect this frame asked for was still being built, so the frame left it out (or drew
+    /// the call's last built text instead).
+    pub(crate) waiting: bool,
+    /// Each call's last text that built, by the call's key: while its new text (code being typed)
+    /// builds, the call draws with this one rather than blinking off.
+    last_built: BTreeMap<u64, u64>,
     /// The effects this frame asked for, for the problem list and for pruning.
     used: BTreeSet<u64>,
     uniforms: Vec<wgpu::Buffer>,
@@ -209,6 +218,9 @@ impl Chain {
             black,
             no_objects,
             compiled: BTreeMap::new(),
+            store: crate::ProgramStore::default(),
+            waiting: false,
+            last_built: BTreeMap::new(),
             used: BTreeSet::new(),
             uniforms: Vec::new(),
             used_uniforms: 0,
@@ -254,6 +266,7 @@ impl Chain {
     /// Starts a frame: forgets which effects and uniforms the last one used.
     pub(crate) fn begin_frame(&mut self) {
         self.used.clear();
+        self.waiting = false;
         self.used_uniforms = 0;
         self.lens_uniforms = 0;
         self.light = None;
@@ -271,6 +284,8 @@ impl Chain {
             let used = &self.used;
             self.compiled.retain(|k, _| used.contains(k));
         }
+        let compiled = &self.compiled;
+        self.last_built.retain(|_, k| compiled.contains_key(k));
     }
 
     /// Why effects this frame asked for could not be built, one line each.
@@ -278,12 +293,19 @@ impl Chain {
         self.used.iter().filter_map(|k| self.compiled.get(k)?.as_ref().err().map(String::as_str))
     }
 
+    /// Builds its effects in `store` from now on (see [`crate::Renderer::share_programs`]).
+    pub(crate) fn share(&mut self, store: &crate::ProgramStore) {
+        self.store = store.clone();
+    }
+
     fn compile(&mut self, device: &wgpu::Device, wgsl: &str) -> u64 {
         let key = key_of(wgsl);
         self.used.insert(key);
         if !self.compiled.contains_key(&key) {
-            let result = build(device, &self.pipeline_layout, wgsl);
-            self.compiled.insert(key, result);
+            match self.store.lock().effect(device, &self.pipeline_layout, key, wgsl) {
+                Some(built) => _ = self.compiled.insert(key, built),
+                None => self.waiting = true,
+            }
         }
         key
     }
@@ -310,8 +332,16 @@ impl Chain {
             e.stage == stage && e.blend != 0.0 && on.runs(frame, e) && (lit || takes_of(stage, on, e) != Takes::Light)
         };
         for call in frame.effects.iter().filter(picked) {
-            let key = self.compile(device, &call.wgsl);
+            let mut key = self.compile(device, &call.wgsl);
+            if !self.compiled.contains_key(&key)
+                && let Some(&last) = self.last_built.get(&call.key)
+            {
+                // Still building: the call's text as it last built, meanwhile.
+                key = last;
+                self.used.insert(key);
+            }
             if self.compiled.get(&key).is_some_and(|c| c.is_ok()) {
+                self.last_built.insert(call.key, key);
                 active.push((call, key));
             }
         }
@@ -645,7 +675,7 @@ pub(crate) fn base_uniform(frame: &Frame, width: u32, height: u32) -> Fx {
 }
 
 /// Builds the render pipeline for one effect, or says why it could not be.
-fn build(device: &wgpu::Device, layout: &wgpu::PipelineLayout, wgsl: &str) -> Result<Compiled, String> {
+pub(crate) fn build(device: &wgpu::Device, layout: &wgpu::PipelineLayout, wgsl: &str) -> Result<Compiled, String> {
     let name = name_of(wgsl);
     let full = assemble(wgsl).map_err(|e| format!("{name}: {e}"))?;
     let header = super::parse(wgsl).map_err(|e| format!("{name}: {e}"))?;
@@ -767,11 +797,11 @@ fn copy(encoder: &mut wgpu::CommandEncoder, from: &wgpu::Texture, to: &wgpu::Tex
 pub(crate) mod tests {
     use super::*;
     use crate::{
-        BallInstance, EffectCall, FlashInstance, Frame, HitMark, Renderer, ShapeInstance, test_device, thing_code,
+        EffectCall, FlashInstance, Frame, HitMark, LayerGpu, LayeredInstance, Renderer, test_device, thing_code,
     };
     use bpe_core::ThingId;
-    use bpe_runtime::Outline;
     use glam::Vec2;
+    use std::sync::Arc;
 
     pub(crate) const W: u32 = 270;
     pub(crate) const H: u32 = 480;
@@ -783,25 +813,76 @@ pub(crate) mod tests {
     const GREEN: &str =
         "// name: Green\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { return vec3<f32>(0.0, 1.0, 0.0); }\n";
 
+    /// A ball drawn with a body and, when `glow` is above 0, a glow of that strength in its own
+    /// colour; `code` is its thing code plus half its seed.
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) struct Ball {
+        pub center: Vec2,
+        pub radius: f32,
+        pub color: [f32; 4],
+        pub code: f32,
+        pub seed: f32,
+        pub glow: f32,
+    }
+
+    /// Draws `b` into `frame`.
+    pub(crate) fn put(frame: &mut Frame, b: Ball) {
+        let first = frame.look_layers.len() as u32;
+        let normal = bpe_core::Blend::Normal.shader_code();
+        frame.look_layers.push(LayerGpu {
+            head: [LayerGpu::BODY, normal, 0, 0],
+            amount: [1.0, 0.0, 0.0, 0.0],
+            ..LayerGpu::ZERO
+        });
+        // A glow 0.8 radii big reaches 2.2 times that past the edge.
+        let mut reach = 1.45;
+        if b.glow > 0.0 {
+            frame.look_layers.push(LayerGpu {
+                head: [LayerGpu::GLOW, normal, 1, 0],
+                amount: [1.0, b.glow, 0.0, 0.0],
+                p0: [0.8, 0.0, 0.0, 0.0],
+                ..LayerGpu::ZERO
+            });
+            reach += 2.2 * 0.8;
+        }
+        frame.layered.push(LayeredInstance {
+            center: b.center.into(),
+            radius: b.radius,
+            seed: b.seed,
+            body: b.color,
+            stretch: [1.0, 0.0, 1.0, 1.0],
+            form: [0.0, 0.15, 0.0, reach],
+            misc: [1.0, b.code, 0.0, 0.0],
+            vary: crate::NO_VARY,
+            range: [first, frame.look_layers.len() as u32 - first, 0, 0],
+            ..LayeredInstance::default()
+        });
+    }
+
+    /// Takes the last ball drawn into `frame` back out (its records stay, unused).
+    pub(crate) fn take(frame: &mut Frame) -> Ball {
+        let i = frame.layered.pop().expect("a ball");
+        let glow = if i.range[1] > 1 { frame.look_layers[i.range[0] as usize + 1].amount[1] } else { 0.0 };
+        Ball { center: i.center.into(), radius: i.radius, color: i.body, code: i.misc[1], seed: i.seed, glow }
+    }
+
     /// Ball A (thing 2) left, ball B (thing 3) right, a box wall (thing 1) whose top runs along
     /// y = -450, no bloom.
     pub(crate) fn two_balls_frame() -> Frame {
         let mut frame = Frame { bloom: 0.0, ..Frame::default() };
-        let wall = Outline::Box { center: Vec2::ZERO, half: Vec2::new(500.0, 450.0), angle: 0.0, thickness: 24.0 };
-        frame.shapes.push(
-            ShapeInstance::outline(&wall, crate::PaintGpu::default(), [1.0, 1.0, 1.0, 1.0], 0.0)
-                .code(thing_code(ThingId(1))),
-        );
-        let ball = |center: Vec2, thing: u32, seed: f32| BallInstance {
-            center: center.into(),
+        let corners =
+            [Vec2::new(-500.0, -450.0), Vec2::new(500.0, -450.0), Vec2::new(500.0, 450.0), Vec2::new(-500.0, 450.0)];
+        frame.push_path(Vec2::ZERO, 0.0, 1.0, 12.0, Some(&corners), [1.0; 4], thing_code(ThingId(1)));
+        let ball = |center: Vec2, thing: u32, seed: f32| Ball {
+            center,
             radius: 70.0,
-            glow: 0.0,
             color: [1.0, 0.25, 0.25, 1.0],
-            code: [thing_code(ThingId(thing)) + seed * 0.5, seed, 0.0, 0.0],
-            paint: crate::PaintGpu::default(),
+            code: thing_code(ThingId(thing)) + seed * 0.5,
+            seed,
+            glow: 0.0,
         };
-        frame.balls.push(ball(A, 2, 0.2));
-        frame.balls.push(ball(B, 3, 0.6));
+        put(&mut frame, ball(A, 2, 0.2));
+        put(&mut frame, ball(B, 3, 0.6));
         frame
     }
 
@@ -842,6 +923,36 @@ pub(crate) mod tests {
         assert_eq!(name_of(GREEN), "Green");
         assert_eq!(name_of("fn effect("), "effect");
         assert_eq!(std::mem::size_of::<Fx>(), 688);
+    }
+
+    #[test]
+    fn a_background_store_leaves_an_effect_out_until_it_is_built_then_shares_it() {
+        let Ok((device, queue)) = test_device() else { return };
+        let store = crate::ProgramStore::in_background();
+        let mut frame = two_balls_frame();
+        frame.effects.push(call(GREEN, 0.0, Stage::Picture));
+        let mut renderer = Renderer::new(&device, W, H);
+        renderer.share_programs(&store);
+        renderer.render(&device, &queue, &frame);
+        let first = renderer.read_output(&device, &queue).unwrap();
+        // Unless the thread was quicker than the frame, the effect was still being built.
+        if renderer.programs_waiting() {
+            assert!(!green(pixel(&first, EMPTY)), "an effect still building is left out");
+        }
+        store.wait();
+        renderer.render(&device, &queue, &frame);
+        let built = renderer.read_output(&device, &queue).unwrap();
+        assert!(!renderer.programs_waiting());
+        assert!(green(pixel(&built, EMPTY)), "once built it draws");
+        // Another renderer on the store draws with it at once: it is built only once.
+        let mut other = Renderer::new(&device, W, H);
+        other.share_programs(&store);
+        other.render(&device, &queue, &frame);
+        assert!(!other.programs_waiting(), "shared: nothing to build again");
+        assert!(green(pixel(&other.read_output(&device, &queue).unwrap(), EMPTY)));
+        let key = key_of(GREEN);
+        let shared = |r: &Renderer| r.chain.compiled.get(&key).and_then(|c| c.as_ref().ok()).cloned();
+        assert!(Arc::ptr_eq(&shared(&renderer).unwrap(), &shared(&other).unwrap()));
     }
 
     #[test]
@@ -919,8 +1030,8 @@ pub(crate) mod tests {
     #[test]
     fn a_material_finds_a_thing_drawn_in_a_blend_layer() {
         let mut frame = two_balls_frame();
-        let b = frame.balls.pop().unwrap();
-        frame.layer_mut(bpe_core::Blend::Screen, 1.0, false).balls.push(b);
+        let b = take(&mut frame);
+        put(frame.layer_mut(bpe_core::Blend::Screen, 1.0, false), b);
         frame.effects.push(call(GREEN, thing_code(ThingId(3)), Stage::Picture));
         let Some(after) = render(&frame) else { return };
         assert!(green(pixel(&after, B)), "{:?}: the layered ball is in the object picture", pixel(&after, B));
@@ -936,8 +1047,8 @@ pub(crate) mod tests {
         };
         let mut frame = two_balls_frame();
         grey(&mut frame);
-        let b = frame.balls.pop().unwrap();
-        frame.layer_mut(bpe_core::Blend::Normal, 0.5, false).balls.push(b);
+        let b = take(&mut frame);
+        put(frame.layer_mut(bpe_core::Blend::Normal, 0.5, false), b);
         let Some(plain) = render(&frame) else { return };
         frame.effects.push(call(GREEN, thing_code(ThingId(3)), Stage::Things));
         let after = render(&frame).unwrap();
@@ -946,7 +1057,7 @@ pub(crate) mod tests {
         assert!(p[1] > p[0] + 60 && p[1] > p[2] + 60, "{p:?}: the material paints the layered ball");
         let mut green_under = two_balls_frame();
         grey(&mut green_under);
-        green_under.balls.pop();
+        take(&mut green_under);
         let grey_only = render(&green_under).unwrap();
         let g = pixel(&grey_only, B);
         assert!(p[0] <= g[0] + 2, "{p:?} vs grey {g:?}: the ball's red is gone, not mixed over green");
@@ -965,8 +1076,8 @@ pub(crate) mod tests {
                 let mut frame = two_balls_frame();
                 let c = [0.6, 0.6, 0.6, 1.0];
                 frame.background = crate::BackgroundPaint { row: 0, ends: Some([c, c]), ..Default::default() };
-                let b = frame.balls.pop().unwrap();
-                frame.layer_mut(blend, 1.0, each).balls.push(b);
+                let b = take(&mut frame);
+                put(frame.layer_mut(blend, 1.0, each), b);
                 assert_eq!(frame.layers[0].each, each);
                 frame.effects.push(call(GREEN, thing_code(ThingId(3)), Stage::Things));
                 render(&frame)
@@ -1003,11 +1114,11 @@ pub(crate) mod tests {
             let shot = |b_colour: Option<[f32; 4]>, material: bool| {
                 let mut frame = two_balls_frame();
                 grey(&mut frame);
-                let mut b = frame.balls.pop().unwrap();
+                let mut b = take(&mut frame);
                 if let Some(c) = b_colour {
                     b.color = c;
                 }
-                place(&mut frame).balls.push(b);
+                put(place(&mut frame), b);
                 if material {
                     frame.effects.push(call(TURN_THINGS, 0.0, Stage::Things));
                 }
@@ -1048,9 +1159,9 @@ pub(crate) mod tests {
         for (name, place) in places {
             let mut frame = two_balls_frame();
             grey(&mut frame);
-            let mut b = frame.balls.pop().unwrap();
+            let mut b = take(&mut frame);
             b.glow = 1.5;
-            place(&mut frame).balls.push(b);
+            put(place(&mut frame), b);
             let Some(plain) = render(&frame) else { return };
             let halo = pixel(&plain, B + Vec2::new(110.0, 0.0));
             assert!(halo[0] > halo[1] + 30, "{name}: {halo:?}, the glow shows outside the ball");
@@ -1075,17 +1186,17 @@ pub(crate) mod tests {
             let shot = |turned: bool| {
                 let mut frame = two_balls_frame();
                 grey(&mut frame);
-                let mut b = frame.balls.pop().unwrap();
+                let mut b = take(&mut frame);
                 let mut c = b;
-                c.center = (B + Vec2::new(0.0, 60.0)).into();
-                c.code[0] = thing_code(ThingId(4)) + 0.25;
+                c.center = B + Vec2::new(0.0, 60.0);
+                c.code = thing_code(ThingId(4)) + 0.25;
                 c.color = [0.25, 1.0, 0.25, 1.0];
                 if turned {
                     b.color = [0.25, 0.25, 1.0, 1.0];
                     c.color = [1.0, 0.25, 0.25, 1.0];
                 }
-                frame.target_mut(-3, bpe_core::Blend::Normal, 1.0, false, false).balls.push(c);
-                place(&mut frame).balls.push(b);
+                put(frame.target_mut(-3, bpe_core::Blend::Normal, 1.0, false, false), c);
+                put(place(&mut frame), b);
                 if !turned {
                     frame.effects.push(call(TURN_THINGS, 0.0, Stage::Things));
                 }
@@ -1106,8 +1217,8 @@ pub(crate) mod tests {
         const ECHO: &str = "// name: Echo things\nfn effect(uv: vec2<f32>, p: Params) -> vec3<f32> { return prev(uv) * 0.5 + sample(uv); }\n";
         let mut renderer = Renderer::new(&device, W, H);
         let mut frame = two_balls_frame();
-        let b = frame.balls.pop().unwrap();
-        frame.layer_mut(bpe_core::Blend::Screen, 1.0, false).balls.push(b);
+        let b = take(&mut frame);
+        put(frame.layer_mut(bpe_core::Blend::Screen, 1.0, false), b);
         frame.effects.push(call(ECHO, 0.0, Stage::Things));
         renderer.render(&device, &queue, &frame);
         let keys: Vec<_> = renderer.chain.slots.keys().copied().collect();
@@ -1178,14 +1289,16 @@ pub(crate) mod tests {
         use super::super::{BUILTINS, defaults};
         let Ok((device, queue)) = test_device() else { return };
         let mut renderer = Renderer::new(&device, W, H);
-        // Bigger balls, a blue one on the right, and a hit at the left one a tenth of a second ago.
+        // Bigger balls, a bright one on the left, a blue one on the right, and a hit at the left one a tenth of a second ago.
         let mut base = two_balls_frame();
-        for b in &mut base.balls {
+        for b in &mut base.layered {
             b.radius = 100.0;
         }
-        base.balls[1].color = [0.25, 0.25, 1.0, 1.0];
-        for (b, seed) in base.balls.clone().iter().zip([0.2, 0.6]) {
-            let c = b.color;
+        base.layered[1].body = [0.25, 0.25, 1.0, 1.0];
+        // The left one past white, so Lens flare has a light to throw its ghosts from.
+        base.layered[0].body = [3.0, 0.75, 0.75, 1.0];
+        for (b, seed) in base.layered.clone().iter().zip([0.2, 0.6]) {
+            let c = b.body;
             base.ball_marks.push(crate::BallMark {
                 center: b.center,
                 radius: b.radius,

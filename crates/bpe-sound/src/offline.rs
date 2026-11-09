@@ -21,14 +21,21 @@ pub fn largest_chunk_bytes() -> usize {
     LARGEST_CHUNK.load(Ordering::Relaxed)
 }
 
-/// Whether anything in the scene makes sound: an enabled thing with a sound card that is on.
+/// Whether anything in the scene makes sound: an enabled thing with a sound card that is on, or
+/// a backing track that is on and kept in the scene.
 pub fn has_sound(scene: &Scene) -> bool {
-    scene.things.values().filter(|t| t.enabled).any(|t| {
-        let card = t.slots.get(&SlotId::Sound).is_some_and(|c| c.params.get("enabled") != Some(&Value::Bool(false)));
-        #[cfg(feature = "test-tone")]
-        let card = card || t.tags.iter().any(|tag| tag.starts_with("test-tone"));
-        card
-    })
+    let backing = scene
+        .card(bpe_core::ThingId::ROOT, SlotId::Mixer)
+        .map(|c| MixerSettings::from_params(&c.params))
+        .is_some_and(|m| m.backing_on && scene.audio.contains_key(&m.backing));
+    backing
+        || scene.things.values().filter(|t| t.enabled).any(|t| {
+            let card =
+                t.slots.get(&SlotId::Sound).is_some_and(|c| c.params.get("enabled") != Some(&Value::Bool(false)));
+            #[cfg(feature = "test-tone")]
+            let card = card || t.tags.iter().any(|tag| tag.starts_with("test-tone"));
+            card
+        })
 }
 
 /// Frames in `seconds` of sound.
@@ -52,8 +59,8 @@ pub fn render_to_wav(
 /// Files the export may save beside the mix.
 #[derive(Clone, Debug, Default)]
 pub struct Extras {
-    /// One 24-bit WAV per bus (after its fader, mute and solo) and one of the master (after
-    /// the limiter), in that order.
+    /// One 32-bit float WAV per bus (after its fader, mute and solo, so nothing is cut off at
+    /// full scale) and one of the master (after the limiter), in that order.
     pub stems: Option<([PathBuf; BUSES], PathBuf)>,
     /// A MIDI file of the notes the shapes played.
     pub midi: Option<PathBuf>,
@@ -107,6 +114,7 @@ pub fn render_sound(
 ) -> anyhow::Result<()> {
     let resolved = resolve_scene(scene, &kit.registry);
     let mut engine = Engine::offline(scene, &resolved, kit);
+    engine.set_end(seconds);
     let total = frames_in(seconds);
     let mut written_files: Vec<PathBuf> = vec![path.to_path_buf()];
     let remove_all = |files: &[PathBuf]| {
@@ -119,7 +127,7 @@ pub fn render_sound(
     if let Some((buses, master)) = &extras.stems {
         engine.record_stems(true);
         for p in buses.iter().chain([master]) {
-            match WavOut::create_24(p) {
+            match WavOut::create(p) {
                 Ok(w) => {
                     stems.push(w);
                     written_files.push(p.clone());
@@ -158,7 +166,7 @@ pub fn render_sound(
         LARGEST_CHUNK.fetch_max(chunk.capacity() * size_of::<f32>(), Ordering::Relaxed);
         let mut result = out.write(&chunk);
         for (w, c) in stems.iter_mut().zip(&stem_chunks) {
-            result = result.and_then(|()| w.write_24(c));
+            result = result.and_then(|()| w.write(c));
         }
         if let Err(e) = result {
             drop(out);
@@ -195,6 +203,7 @@ pub fn render_sound(
 pub fn render_samples(scene: &Scene, kit: &Kit, seconds: f64) -> Vec<f32> {
     let resolved = resolve_scene(scene, &kit.registry);
     let mut engine = Engine::offline(scene, &resolved, kit);
+    engine.set_end(seconds);
     let total = frames_in(seconds);
     let mut out = Vec::with_capacity(total * 2);
     let mut block = [0.0f32; BLOCK * 2];

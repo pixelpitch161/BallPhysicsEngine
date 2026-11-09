@@ -319,11 +319,13 @@ fn cam_solid(h: CamHit) -> CamSolid {
     if h.kind == 1u {
         // A ball: once the camera moves, read a little inside its drawn edge, so the picture round
         // it doesn't ring a turning ball.
+        // Kept off the balls drawn over it in the front picture, too: what that shows there is
+        // them, and seen from the side their outline would cross this ball as a thin arc.
         let sp = spheres[h.id];
         let at = cam_rest_point(h.p);
-        let off = at - sp.a.xy;
+        let off = cam_uncovered(h.id, at, 2.0 * px) - sp.a.xy;
         let most = max(sp.a.z - 1.5 * px, 0.0);
-        let inside = select(at, sp.a.xy + off * (most / max(length(off), 1e-6)), length(off) > most);
+        let inside = sp.a.xy + off * (min(length(off), most) / max(length(off), 1e-6));
         let read = world_to_uv(mix(at, inside, moving));
         return CamSolid(cam_lit(read), read);
     }
@@ -345,6 +347,40 @@ fn cam_solid(h: CamHit) -> CamSolid {
         return CamSolid(cam_wall(uv), uv);
     }
     return CamSolid(cam_lit(uv), uv);
+}
+
+// Picture-plane point `p` (world) moved off every ball drawn over ball `id` (a higher z-order, or
+// the same and listed later) and `rim` past its edge, where the front picture shows that ball and
+// not this one: mirrored out across the circle `rim` past its edge, so what is read there is this
+// ball just beside it, smoothly (moving every such point onto that circle would smear it into
+// streaks). Each ball is listed in the sphere grid's cells out past its edge, so the cell holding
+// `p` lists every ball covering it.
+fn cam_uncovered(id: u32, p_in: vec2<f32>, rim: f32) -> vec2<f32> {
+    var p = p_in;
+    if st.more.w < 0.5 {
+        return p;
+    }
+    let me = spheres[id];
+    let size = vec2<i32>(st.grid_size.xy);
+    let c = clamp(vec2<i32>(floor((p - st.grid.xy) / st.grid.z)), vec2<i32>(0), size - 1);
+    let range = cells[c.y * size.x + c.x];
+    for (var k = 0u; k < min(range.y, MOST_IN_CELL); k++) {
+        let index = items[range.x + k];
+        let other = spheres[index];
+        let over = other.c.w > me.c.w || (other.c.w == me.c.w && index > id);
+        if index == id || !over {
+            continue;
+        }
+        let off = p - other.a.xy;
+        let keep = other.a.z + rim;
+        let d = length(off);
+        if d < keep {
+            // Straight out from its centre; from the very middle, toward this ball's centre.
+            let way = select(normalize(me.a.xy - other.a.xy + vec2<f32>(1e-6, 0.0)), off / d, d > 1e-6);
+            p = other.a.xy + way * (2.0 * keep - d);
+        }
+    }
+    return p;
 }
 
 struct CamSeen {

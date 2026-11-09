@@ -9,6 +9,7 @@ use crate::inspector::Inspector;
 use crate::mixer::{self, Mixer};
 use crate::particle_job::ParticleJob;
 use crate::preview::Preview;
+use crate::recovery::{self, CrashCopy, CrashSlot, Orphan};
 use crate::selection::Selection;
 use crate::settings::ListenSettings;
 use crate::sound_job::SoundJob;
@@ -23,24 +24,75 @@ use bpe_runtime::{Playback, fingerprint};
 use bpe_sound::SoundPatch;
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, RichText, Stroke};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Most time spent catching the simulation up in one go. A long stretch, such as a scrub far
 /// ahead on a huge scene, is worked out over several frames by the preview instead of
 /// freezing the editor.
 pub(crate) const CATCH_UP_BUDGET: Duration = Duration::from_millis(12);
+/// How long a held drag rests before the runs it changed start over (the physics, the
+/// particles, the aiming and the sound): a slider drag rebuilds them when let go or paused on.
+pub(crate) const RUNS_REST: Duration = Duration::from_millis(100);
 /// How often missing speakers are looked for again.
 const SPEAKERS_RETRY: Duration = Duration::from_secs(2);
 /// The longest wait between looks for speakers (each look waits twice the last).
 const SPEAKERS_RETRY_MOST: Duration = Duration::from_secs(30);
+
+/// Where a problem in the status line came from, so each source clears only its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProblemKind {
+    /// The speakers or the sound thread.
+    Speakers,
+    /// The graphics card.
+    Graphics,
+    /// Opening or saving a scene.
+    File,
+    /// Making a video.
+    Export,
+    /// Restoring autosaved work.
+    Recovery,
+    /// The autosave itself.
+    Autosave,
+}
+
+/// A failure shown in the status line in the problem colour until it is dismissed (or its source
+/// clears it), so a later "Undone." can't hide it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Problem {
+    pub kind: ProblemKind,
+    pub text: String,
+}
+
+/// What the graphics card has complained about, gathered from any thread.
+#[derive(Default)]
+pub struct GpuErrors {
+    /// The first complaint, in full.
+    pub first: Option<String>,
+    /// How many complaints so far.
+    pub count: u32,
+    /// The card stopped responding.
+    pub lost: bool,
+}
+
+/// Autosaved work from an editor that closed unexpectedly, offered back at the start.
+pub struct Offer {
+    pub orphan: Orphan,
+    pub scene: Scene,
+    /// The scene's name and how long ago it was saved, for the question.
+    pub name: String,
+    pub when: String,
+    /// The scene's own file was saved after this copy was made: restoring would bring back
+    /// older work.
+    pub file_newer: bool,
+}
 
 /// Something that would throw away unsaved changes.
 pub enum Pending {
     Close,
     Open,
     New,
-    /// A recent file from the toolbar's Recent menu.
+    /// A recent file from the toolbar's Recent menu, or a scene dropped on the window.
     OpenPath(PathBuf),
 }
 
@@ -126,6 +178,9 @@ pub struct Studio {
     /// The part of it the sound hears ([`sound_fingerprint`]): the sound starts its run over
     /// only when this changes.
     pub sound_fingerprint: u64,
+    /// What the sound's settings were built from ([`bpe_sound::patch_fingerprint`]): the patch is
+    /// built again and sent only when this changes (not on a colour drag).
+    pub patch_print: u64,
     /// The scene's sound as the picture reads it, while some setting follows sound.
     pub follow: Option<std::sync::Arc<bpe_sound::ControlSampler>>,
     /// The scene's light as the picture reads it, while something senses light (Follow light, a
@@ -141,7 +196,10 @@ pub struct Studio {
     pub looping: bool,
     pub selection: Selection,
     pub history: History,
+    /// The info line: what just happened ("Saved x.", "Undone.").
     pub status: String,
+    /// A failure, shown before the info line until it is dismissed.
+    pub problem: Option<Problem>,
     /// What is wrong with a shader module the preview skipped, shown in the status line.
     pub shader_problem: Option<String>,
     /// The preview's lighting, when it is lit: how many lights and the GPU's time on them (ms).
@@ -197,6 +255,8 @@ pub struct Studio {
     speakers_wait: Duration,
     /// The sound thread itself stopped (not the speakers): it isn't started again by itself.
     sound_broken: bool,
+    /// The speakers' dropouts already told of in the status line.
+    underruns_seen: u64,
     /// The listening volume changed and is saved once it has rested (not on every frame of a
     /// drag).
     listen_unsaved: Option<Instant>,
@@ -215,6 +275,52 @@ pub struct Studio {
     /// Wavetables baked in the background when the sound was last built
     /// ([`WaveBank::baked`]); more means it is built again.
     tables_baked: u64,
+    /// The scene as last recorded: each frame's edit is found by comparing with it, so the
+    /// scene isn't copied every frame. `None` after an edit made outside the frame's own
+    /// recording (an undo, an opened file…): the next frame copies the scene afresh.
+    snapshot: Option<Scene>,
+    /// Whether the scene differs from the saved one, as worked out at a revision.
+    unsaved_at: std::cell::Cell<Option<(u64, bool)>>,
+    /// A pointer button is held on something other than the preview's handles (a slider, a
+    /// knob, a key on the timeline): edits that change the physics, the particles or the sound
+    /// keep the runs they have until it is let go or rests ([`RUNS_REST`]).
+    pub hold_runs: bool,
+    /// When a held edit last changed what the runs were built from, while they wait to start over.
+    pub runs_due: Option<Instant>,
+    /// The things the runs were last built with: an edit that adds or removes one never waits,
+    /// so the runs never hold a thing the scene no longer has.
+    runs_things: Vec<ThingId>,
+    /// This editor's autosave session (the windowed editor only).
+    pub recovery: Option<recovery::Session>,
+    /// The scene as last sent to the autosave, while it is unsaved.
+    autosaved: Option<Scene>,
+    /// When the autosave last looked; `None` looks at the next frame.
+    autosaved_at: Option<Instant>,
+    /// The scene was unsaved at the last look, so a recovery copy may exist.
+    was_unsaved: bool,
+    /// The unsaved scene a crash would save.
+    crash_slot: CrashSlot,
+    /// When the crash copy was last refreshed.
+    crash_copied_at: Option<Instant>,
+    /// Autosaved work to offer back.
+    pub offer: Option<Offer>,
+    /// The graphics card's complaints, filled by the device's error handler.
+    pub gpu_errors: Arc<Mutex<GpuErrors>>,
+    /// How many of them the status line has told of.
+    gpu_told: u32,
+    /// The card being lost is already in the status line.
+    gpu_lost_told: bool,
+    /// The editor is asking whether to stop a running export and close.
+    pub ask_stop_export: bool,
+    /// The window's context, to wake it for the next autosave.
+    repaint: Option<egui::Context>,
+    /// What was copied last, things or timeline keys (kept through New and Open).
+    pub clipboard: crate::things::Clipboard,
+    /// Words put on the system clipboard at the next frame's shortcuts, after a copy here: on
+    /// Windows, Ctrl+V reaches the program only when the system clipboard holds something.
+    pub copied_note: Option<String>,
+    /// The window's title as last sent.
+    title: String,
 }
 
 impl Studio {
@@ -227,6 +333,15 @@ impl Studio {
             bpe_gfx::swarm::use_on_this_thread(Some(bpe_gfx::swarm::SwarmGpu::for_device(&rs.device, &rs.queue)));
         }
         let mut studio = Self::blank();
+        if let Some(rs) = &cc.wgpu_render_state {
+            studio.catch_gpu_errors(&rs.device, &cc.egui_ctx);
+        }
+        if let Some(dir) = settings::settings_dir() {
+            studio.panels.export = crate::export_window::ExportWindow::load_in(&dir);
+        }
+        if let Some(dir) = recovery::recovery_dir() {
+            studio.start_recovery(&dir, settings::settings_dir().map(|d| d.join("last-crash.txt")));
+        }
         studio.grid = Grid::load();
         studio.inspector_width = settings::load_inspector_width();
         studio.sound_width = settings::load_sound_width();
@@ -262,12 +377,224 @@ impl Studio {
         Self::with_scene(kit, scene)
     }
 
+    /// Sends the window's graphics card complaints to the status line instead of letting wgpu
+    /// close the editor.
+    fn catch_gpu_errors(&self, device: &egui_wgpu::wgpu::Device, ctx: &egui::Context) {
+        let (errors, repaint) = (self.gpu_errors.clone(), ctx.clone());
+        device.on_uncaptured_error(Arc::new(move |error| {
+            let mut errors = errors.lock().unwrap_or_else(|e| e.into_inner());
+            errors.first.get_or_insert_with(|| error.to_string());
+            errors.count += 1;
+            repaint.request_repaint();
+        }));
+        let (errors, repaint) = (self.gpu_errors.clone(), ctx.clone());
+        device.set_device_lost_callback(move |reason, _| {
+            // Destroyed is the editor's own shutdown.
+            if reason != egui_wgpu::wgpu::DeviceLostReason::Destroyed {
+                errors.lock().unwrap_or_else(|e| e.into_inner()).lost = true;
+                repaint.request_repaint();
+            }
+        });
+    }
+
+    /// Starts autosaving into `dir`, offers back the newest work an editor left there when it
+    /// closed unexpectedly, and makes a crash save the unsaved scene first.
+    pub fn start_recovery(&mut self, dir: &Path, crash_report: Option<PathBuf>) {
+        recovery::tidy(dir);
+        if let Some(orphan) = recovery::orphans(dir).into_iter().next() {
+            self.offer_back(orphan);
+        }
+        match recovery::Session::start(dir) {
+            Ok(session) => {
+                if crash_report.is_some() {
+                    recovery::install_crash_hook(self.crash_slot.clone(), session.files().clone(), crash_report);
+                }
+                self.recovery = Some(session);
+            }
+            Err(error) => self.report(ProblemKind::Recovery, format!("Autosave is off: {error}")),
+        }
+    }
+
+    /// Reads autosaved work to offer back; a copy that can't be read is set aside and reported.
+    fn offer_back(&mut self, orphan: Orphan) {
+        let loaded = orphan
+            .read()
+            .map_err(|e| e.to_string())
+            .and_then(|text| bpe_core::load(&text, &self.kit.registry).map_err(|e| e.to_string()));
+        match loaded {
+            Ok(scene) => {
+                let when = recovery::how_long_ago(orphan.saved_at, std::time::SystemTime::now());
+                let file_newer = orphan
+                    .original
+                    .as_ref()
+                    .and_then(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+                    .is_some_and(|saved| saved > orphan.saved_at);
+                self.offer = Some(Offer { name: scene.name.clone(), scene, orphan, when, file_newer });
+            }
+            Err(error) => {
+                orphan.set_aside();
+                self.report(ProblemKind::Recovery, format!("Couldn't restore the autosaved work: {error}"));
+            }
+        }
+    }
+
+    /// Takes the offered work back: the recovered scene, under its own file name, still unsaved.
+    pub fn restore(&mut self) {
+        let Some(offer) = self.offer.take() else { return };
+        let original = offer.orphan.original.clone();
+        // What the scene's own file holds now, so the unsaved mark is honest.
+        let on_disk = original
+            .as_ref()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|text| bpe_core::load(&text, &self.kit.registry).ok());
+        self.replace_scene(offer.scene, original);
+        self.saved = self.held(on_disk.unwrap_or_else(|| bpe_kit::new_studio_scene(&self.kit.registry)));
+        self.unsaved_at.set(None);
+        // Into this editor's own autosave first; the old copy goes only once ours is written.
+        if let Some(session) = &self.recovery {
+            session.write(self.scene.clone(), self.path.clone());
+            session.flush();
+            self.autosaved = Some(self.scene.clone());
+            self.autosaved_at = Some(Instant::now());
+            self.was_unsaved = true;
+            if !matches!(session.outcome(), Some(Err(_))) {
+                offer.orphan.discard();
+            }
+        }
+        self.status = format!("Restored your work (saved automatically {}).", offer.when);
+    }
+
+    /// Throws the offered work away.
+    pub fn discard_offer(&mut self) {
+        if let Some(offer) = self.offer.take() {
+            offer.orphan.discard();
+            self.status = "Discarded the autosaved work.".into();
+        }
+    }
+
+    /// `scene` as the editor holds every scene: with its camera and its mixer card.
+    fn held(&self, mut scene: Scene) -> Scene {
+        bpe_kit::ensure_camera(&mut scene, &self.kit.registry);
+        bpe_kit::ensure_mixer(&mut scene, &self.kit.registry);
+        scene
+    }
+
+    /// Shows a failure in the status line until it is dismissed or its source clears it.
+    pub fn report(&mut self, kind: ProblemKind, text: impl Into<String>) {
+        self.problem = Some(Problem { kind, text: text.into() });
+    }
+
+    /// Clears the problem in the status line if it came from `kind`.
+    pub fn clear_problem(&mut self, kind: ProblemKind) {
+        if self.problem.as_ref().is_some_and(|p| p.kind == kind) {
+            self.problem = None;
+        }
+    }
+
+    /// Copies unsaved work to the recovery folder every [`recovery::AUTOSAVE_EVERY`], keeps the
+    /// copy a crash would save fresh, and deletes the copy once the work is saved. Gives how long
+    /// until it wants to look again.
+    fn autosave(&mut self, now: Instant) -> Option<Duration> {
+        let session = self.recovery.as_ref()?;
+        match session.outcome() {
+            Some(Ok(())) => self.clear_problem(ProblemKind::Autosave),
+            Some(Err(error)) => self.report(ProblemKind::Autosave, format!("Couldn't autosave your work: {error}")),
+            None => {}
+        }
+        let session = self.recovery.as_ref()?;
+        if !self.unsaved() {
+            // A copy may exist even if the autosave didn't write it (a crash copy): always clear.
+            if std::mem::take(&mut self.was_unsaved) {
+                session.clear();
+                self.autosaved = None;
+                *self.crash_slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                self.crash_copied_at = None;
+            }
+            return None;
+        }
+        self.was_unsaved = true;
+        let mut wait: Option<Duration> = None;
+        let mut soon = |d: Duration| wait = Some(wait.map_or(d, |w| w.min(d)));
+        let since_copy = self.crash_copied_at.map_or(recovery::CRASH_COPY_EVERY, |t| now.duration_since(t));
+        {
+            let mut slot = self.crash_slot.lock().unwrap_or_else(|e| e.into_inner());
+            let stale = slot.as_ref().is_none_or(|c| c.scene != self.scene || c.original != self.path);
+            if stale && since_copy >= recovery::CRASH_COPY_EVERY {
+                *slot = Some(CrashCopy { scene: self.scene.clone(), original: self.path.clone() });
+                self.crash_copied_at = Some(now);
+            } else if stale {
+                soon(recovery::CRASH_COPY_EVERY - since_copy);
+            }
+        }
+        let since_save = self.autosaved_at.map_or(recovery::AUTOSAVE_EVERY, |t| now.duration_since(t));
+        if self.autosaved.as_ref() != Some(&self.scene) {
+            if since_save >= recovery::AUTOSAVE_EVERY {
+                session.write(self.scene.clone(), self.path.clone());
+                self.autosaved = Some(self.scene.clone());
+                self.autosaved_at = Some(now);
+            } else {
+                soon(recovery::AUTOSAVE_EVERY - since_save);
+            }
+        }
+        // Nothing waiting to be copied: no need to wake the window.
+        wait
+    }
+
+    /// Tells the status line what the graphics card complained about since the last frame.
+    fn tell_gpu_errors(&mut self) {
+        let (first, count, lost) = {
+            let errors = self.gpu_errors.lock().unwrap_or_else(|e| e.into_inner());
+            (errors.first.clone(), errors.count, errors.lost)
+        };
+        if lost && !self.gpu_lost_told {
+            self.gpu_lost_told = true;
+            // Save for recovery now: drawing is gone, the scene isn't.
+            self.autosaved_at = None;
+            self.report(
+                ProblemKind::Graphics,
+                "The graphics card stopped responding. Your unsaved work was autosaved; save it if you can, then \
+                 close and reopen Ball Studio.",
+            );
+        } else if count > self.gpu_told
+            && !self.gpu_lost_told
+            && let Some(first) = first
+        {
+            let line = first.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("unknown").to_string();
+            let times = if count > 1 { format!(" ({count} times)") } else { String::new() };
+            let text = format!("The graphics card reported a problem{times}: {line}");
+            if self.gpu_told == 0 {
+                // Told once; a complaint that repeats every frame only counts up in place, so it can
+                // be dismissed and never hides another problem.
+                self.report(ProblemKind::Graphics, text);
+            } else if let Some(problem) = self.problem.as_mut().filter(|p| p.kind == ProblemKind::Graphics) {
+                problem.text = text;
+            }
+        }
+        self.gpu_told = count;
+    }
+
+    /// Puts how the last export ended in the status line.
+    fn tell_export_news(&mut self) {
+        match self.panels.export.take_news() {
+            Some(crate::export_window::ExportNews::Saved { name, seconds }) => {
+                self.status = format!("Video saved: {name} ({}).", crate::export_window::minutes(seconds));
+                self.clear_problem(ProblemKind::Export);
+            }
+            Some(crate::export_window::ExportNews::Failed { headline }) => {
+                self.report(ProblemKind::Export, format!("The export failed. {headline}"));
+            }
+            Some(crate::export_window::ExportNews::Cancelled) => self.status = "Export cancelled.".into(),
+            None => {}
+        }
+    }
+
     fn with_scene(kit: Arc<Kit>, mut scene: Scene) -> Self {
         // Every scene the editor holds has its sound's Master.
         bpe_kit::ensure_mixer(&mut scene, &kit.registry);
         let resolved = resolve_scene(&scene, &kit.registry);
         let fingerprint = fingerprint(&scene, &resolved, &kit.sims);
         let sound_fingerprint = sound_fingerprint(&scene, &resolved, &kit.sims);
+        let patch_print = bpe_sound::patch_fingerprint(&scene, &resolved);
         // Started first, so the playback's own build waits on its work instead of doing it again.
         let aim_job = aim_job_for(&scene, &resolved, &kit);
         let playback = main_playback(&scene, &resolved, &kit);
@@ -275,6 +602,7 @@ impl Studio {
         let particle_job = ParticleJob::start_if_wanted(&scene, &resolved, kit.sims.clone(), 0.0);
         let follow = follow_of(&scene, &resolved);
         let light_probe = light_probe_of(&scene, &resolved, &follow);
+        let runs_things = scene.things.keys().copied().collect();
         Self {
             saved: scene.clone(),
             scene,
@@ -286,6 +614,7 @@ impl Studio {
             particle_print,
             fingerprint,
             sound_fingerprint,
+            patch_print,
             follow,
             light_probe,
             revision: 0,
@@ -324,6 +653,7 @@ impl Studio {
             speakers_retry: None,
             speakers_wait: SPEAKERS_RETRY,
             sound_broken: false,
+            underruns_seen: 0,
             listen_unsaved: None,
             listen: ListenSettings::default(),
             left: LeftPanel::Things,
@@ -331,7 +661,28 @@ impl Studio {
             light_solo: Default::default(),
             light_show: Default::default(),
             show_air: false,
-            tables_baked: WaveBank::baked(),
+            tables_baked: WaveBank::baked() + bpe_sound::SampleBank::decoded(),
+            snapshot: None,
+            unsaved_at: std::cell::Cell::new(None),
+            hold_runs: false,
+            runs_due: None,
+            runs_things,
+            problem: None,
+            recovery: None,
+            autosaved: None,
+            autosaved_at: None,
+            was_unsaved: false,
+            crash_slot: Arc::default(),
+            crash_copied_at: None,
+            offer: None,
+            gpu_errors: Arc::default(),
+            gpu_told: 0,
+            gpu_lost_told: false,
+            ask_stop_export: false,
+            repaint: None,
+            clipboard: Default::default(),
+            copied_note: None,
+            title: String::new(),
         }
     }
 
@@ -355,6 +706,7 @@ impl Studio {
     /// aiming has got, while it runs.
     /// While the particle playback is behind, the playback waits where it is for it (or goes
     /// only as far as it has got), so the particles drawn are the balls' own moment.
+    #[cfg(test)]
     pub fn sim_target(&self) -> f64 {
         self.sim_target_with(self.particle_job.as_ref().map(|job| job.reached()))
     }
@@ -404,8 +756,17 @@ impl Studio {
         self.aim_job.as_ref().and_then(|job| job.holding(self.sim_time()))
     }
 
+    /// Whether the scene differs from the saved one. Worked out once a revision, not on every
+    /// frame the toolbar is drawn.
     pub fn unsaved(&self) -> bool {
-        self.scene != self.saved
+        if let Some((revision, unsaved)) = self.unsaved_at.get()
+            && revision == self.revision
+        {
+            return unsaved;
+        }
+        let unsaved = self.scene != self.saved;
+        self.unsaved_at.set(Some((self.revision, unsaved)));
+        unsaved
     }
 
     /// Puts a new thing in the middle of whatever the preview is looking at. A thing stuck to
@@ -425,6 +786,7 @@ impl Studio {
 
     /// Records the edit that turned `before` into the scene as it is now, unless nothing
     /// changed, and brings the simulation along.
+    #[cfg(test)]
     pub fn after_edit(&mut self, before: Scene) {
         self.edited(before, false);
     }
@@ -438,6 +800,13 @@ impl Studio {
         if self.scene == before {
             return;
         }
+        self.record_change(before, separate);
+        // Made outside the frame's own recording: the next frame starts from the scene as it is.
+        self.snapshot = None;
+    }
+
+    /// Records the change from `before` (known to differ) and brings the simulation along.
+    fn record_change(&mut self, before: Scene, separate: bool) {
         if std::mem::take(&mut self.panels.inspector.own_step) {
             self.history.end_merging();
         }
@@ -449,40 +818,76 @@ impl Studio {
     /// a new colour keeps the balls where they are.
     pub(crate) fn scene_changed(&mut self) {
         self.resolved = resolve_scene(&self.scene, &self.kit.registry);
-        let fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
-        let rebuilt = fingerprint != self.fingerprint;
         self.follow = follow_of(&self.scene, &self.resolved);
         self.light_probe = light_probe_of(&self.scene, &self.resolved, &self.follow);
+        self.time = self.time.min(self.duration());
+        self.revision += 1;
+        self.restart_runs();
+    }
+
+    /// Starts over the runs the scene as it is now changes: the physics (and its aiming), the
+    /// particle playback, the sound. While [`Studio::hold_runs`] is on they are left as they are
+    /// and noted due ([`Studio::runs_due`]): the preview shows the old run drawn with the new
+    /// looks until the drag is let go or rests ([`Studio::settle_runs`]).
+    fn restart_runs(&mut self) {
+        let fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
+        let particle_print = bpe_runtime::beside_fingerprint(&self.scene, &self.resolved, &self.kit.sims);
+        let heard = sound_fingerprint(&self.scene, &self.resolved, &self.kit.sims);
+        let rebuilt = fingerprint != self.fingerprint;
+        let particles = particle_print != self.particle_print;
+        let sound_rebuilt = heard != self.sound_fingerprint;
+        let same_things = self.scene.things.keys().eq(self.runs_things.iter());
+        if self.hold_runs && same_things && (rebuilt || particles || sound_rebuilt) {
+            self.runs_due = Some(Instant::now());
+            return;
+        }
+        self.runs_due = None;
+        if rebuilt || particles || sound_rebuilt {
+            self.runs_things = self.scene.things.keys().copied().collect();
+        }
         if rebuilt {
             self.fingerprint = fingerprint;
             self.aim_job = aim_job_for(&self.scene, &self.resolved, &self.kit);
             self.playback = main_playback(&self.scene, &self.resolved, &self.kit);
         }
-        self.time = self.time.min(self.duration());
         // A particle edit starts the particle playback over, and nothing else.
-        let particle_print = bpe_runtime::beside_fingerprint(&self.scene, &self.resolved, &self.kit.sims);
-        if particle_print != self.particle_print {
+        if particles {
             self.particle_print = particle_print;
             self.particle_job =
                 ParticleJob::start_if_wanted(&self.scene, &self.resolved, self.kit.sims.clone(), self.time);
         }
-        self.revision += 1;
         // The sound follows: a physics change starts its world over (no hits from the old
         // layout), anything else swaps the settings in where it is. How much of the balls' past
         // trails keep is the editor's alone: the sound plays on through it.
-        let heard = sound_fingerprint(&self.scene, &self.resolved, &self.kit.sims);
-        let sound_rebuilt = heard != self.sound_fingerprint;
         self.sound_fingerprint = heard;
+        let patch_print = bpe_sound::patch_fingerprint(&self.scene, &self.resolved);
+        let patch_changed = patch_print != self.patch_print;
+        self.patch_print = patch_print;
         if let Some(job) = &mut self.sound {
             if sound_rebuilt {
                 job.rebuild(&self.scene, &self.resolved);
                 if self.playing {
                     job.seek(self.time);
                 }
-            } else {
+            } else if patch_changed {
                 job.patch(SoundPatch::build_ready(&self.scene, &self.resolved, &self.kit));
             }
         }
+    }
+
+    /// Starts the held runs over once the drag that changed them is let go (`pointer_down`
+    /// false) or has rested [`RUNS_REST`]. Returns how long to look again in, while they wait.
+    pub(crate) fn settle_runs(&mut self, pointer_down: bool) -> Option<Duration> {
+        let since = self.runs_due?;
+        let rested = since.elapsed();
+        if pointer_down && self.hold_runs && rested < RUNS_REST {
+            return Some(RUNS_REST - rested);
+        }
+        let hold = std::mem::replace(&mut self.hold_runs, false);
+        self.restart_runs();
+        self.revision += 1;
+        self.hold_runs = hold && pointer_down;
+        None
     }
 
     pub fn replace_scene(&mut self, mut scene: Scene, path: Option<PathBuf>) {
@@ -506,6 +911,7 @@ impl Studio {
         self.resolved = resolve_scene(&self.scene, &self.kit.registry);
         self.fingerprint = fingerprint(&self.scene, &self.resolved, &self.kit.sims);
         self.sound_fingerprint = sound_fingerprint(&self.scene, &self.resolved, &self.kit.sims);
+        self.patch_print = bpe_sound::patch_fingerprint(&self.scene, &self.resolved);
         self.aim_job = aim_job_for(&self.scene, &self.resolved, &self.kit);
         self.playback = main_playback(&self.scene, &self.resolved, &self.kit);
         self.particle_print = bpe_runtime::beside_fingerprint(&self.scene, &self.resolved, &self.kit.sims);
@@ -513,6 +919,10 @@ impl Studio {
         self.follow = follow_of(&self.scene, &self.resolved);
         self.light_probe = light_probe_of(&self.scene, &self.resolved, &self.follow);
         self.revision += 1;
+        self.snapshot = None;
+        self.runs_due = None;
+        self.runs_things = self.scene.things.keys().copied().collect();
+        self.unsaved_at.set(None);
         // The file chosen to export to was the last scene's.
         self.panels.export.path = None;
         if let Some(job) = &mut self.sound {
@@ -525,12 +935,102 @@ impl Studio {
         self.status = "Started a new scene.".into();
     }
 
+    // ---------- copying things (W5) ----------
+
+    /// Copies `ids` (with everything under them) to the clipboard. False when there was nothing
+    /// that can be copied (the scene settings, the camera).
+    pub fn copy_things(&mut self, ids: &[ThingId]) -> bool {
+        let Some(clip) = self.scene.copy_things(&self.kit.registry, ids) else {
+            if !ids.is_empty() {
+                self.status = "The scene settings and the camera can't be copied.".into();
+            }
+            return false;
+        };
+        let clipboard = crate::things::Clipboard::Things(clip);
+        self.status = format!("Copied {}.", clipboard.things_words().unwrap_or_default());
+        self.copied_note = Some(format!("Ball Studio: {}", self.status));
+        self.clipboard = clipboard;
+        true
+    }
+
+    /// Pastes the copied things beside `at` (into it when it is a folder; with `None`, beside the
+    /// selection) and selects them, as an undo step of its own. False with no things copied.
+    pub fn paste_things(&mut self, at: Option<ThingId>) -> bool {
+        let crate::things::Clipboard::Things(clip) = &self.clipboard else { return false };
+        let clip = clip.clone();
+        let (parent, after) = crate::things::paste_place(&self.scene, at.or(self.selection.primary));
+        match self.scene.paste_things(&self.kit.registry, &clip, parent, after) {
+            Ok(pasted) if !pasted.tops.is_empty() => {
+                tree::select_all(&mut self.selection, &pasted.tops);
+                self.status = crate::things::pasted_words(&clip, &pasted);
+                self.separate_edit = true;
+                true
+            }
+            _ => {
+                self.status = "Nothing to paste: this scene has its camera already.".into();
+                false
+            }
+        }
+    }
+
+    /// Duplicates the selected things with everything under them, each copy right after its
+    /// original, and selects the copies, as an undo step of its own.
+    pub fn duplicate_selection(&mut self) -> bool {
+        let ids = self.selection.all(&self.scene);
+        let copies = crate::things::duplicate(&mut self.scene, &self.kit.registry, &ids);
+        if copies.is_empty() {
+            return false;
+        }
+        tree::select_all(&mut self.selection, &copies);
+        self.separate_edit = true;
+        true
+    }
+
+    /// Deletes the selected things (never the scene settings or the camera), as an undo step of
+    /// its own.
+    pub fn delete_selection(&mut self) -> bool {
+        let ids = self.selection.all(&self.scene);
+        let reg = &self.kit.registry;
+        let gone = tree::delete_things(&mut self.panels.tree, &mut self.scene, reg, &mut self.selection, ids);
+        if gone.is_some() {
+            self.separate_edit = true;
+        }
+        gone.is_some()
+    }
+
+    /// Steps the playhead `n` video frames (with `beat`, `n` beats) from the frame (or beat) it
+    /// is on, and pauses.
+    pub fn step(&mut self, n: f64, beat: bool) {
+        let settings = self.settings();
+        let unit = if beat {
+            bpe_sound::TempoMap::from_settings(&settings).beat_seconds()
+        } else {
+            1.0 / f64::from(settings.fps.max(1))
+        };
+        if !(unit.is_finite() && unit > 0.0) {
+            return;
+        }
+        let at = (self.time / unit).round();
+        self.set_playing(false);
+        self.seek((at + n) * unit);
+    }
+
+    /// The window's title: the scene's name, a dot while it has unsaved changes, then the app's.
+    pub fn window_title(&self) -> String {
+        let name = self.scene.name.trim();
+        let name = if name.is_empty() { "Untitled" } else { name };
+        let dot = if self.unsaved() { " •" } else { "" };
+        format!("{name}{dot} – Ball Studio")
+    }
+
     pub fn undo(&mut self) -> bool {
         if !self.history.undo(&mut self.scene) {
             return false;
         }
         self.status = "Undone.".into();
+        self.panels.timeline.selected.clear();
         self.recorded = true;
+        self.snapshot = None;
         self.scene_changed();
         true
     }
@@ -540,7 +1040,9 @@ impl Studio {
             return false;
         }
         self.status = "Redone.".into();
+        self.panels.timeline.selected.clear();
         self.recorded = true;
+        self.snapshot = None;
         self.scene_changed();
         true
     }
@@ -568,16 +1070,23 @@ impl Studio {
 
     // ---------- playback ----------
 
-    /// Moves the playhead. The simulation follows within the budget; the preview catches up
-    /// the rest a budget per frame.
+    /// Moves the playhead. The preview catches the simulation up, one budget a frame: seeking
+    /// itself steps nothing, so a scrub spends the frame's catch-up time once, not twice.
     pub fn seek(&mut self, time: f64) {
         self.time = time.clamp(0.0, self.duration());
-        self.playback.seek_within(self.sim_target(), Some(CATCH_UP_BUDGET));
         if self.playing
             && let Some(job) = &mut self.sound
         {
             job.seek(self.time);
         }
+    }
+
+    /// Steps the playback all the way to the playhead (tests; the editor catches up a budget a
+    /// frame in the preview).
+    #[cfg(test)]
+    pub fn catch_up(&mut self) {
+        let target = self.sim_target();
+        self.playback.seek(target);
     }
 
     pub fn set_playing(&mut self, playing: bool) {
@@ -587,7 +1096,7 @@ impl Studio {
         if let Some(job) = &mut self.sound
             && playing != self.playing
         {
-            if playing { job.play(self.time) } else { job.pause() }
+            if playing { job.play(self.time) } else { job.pause(self.time) }
         }
         self.playing = playing;
         self.last_tick = None;
@@ -637,10 +1146,13 @@ impl Studio {
             && job.failed()
         {
             if job.device_failed() {
-                self.status = "The speakers stopped working. Looking for them again…".into();
+                self.report(ProblemKind::Speakers, "The speakers stopped working. Looking for them again…");
             } else {
                 // A sound thread that stopped by itself would stop again: no looping restarts.
-                self.status = "The sound stopped working. Save, then close and reopen Ball Studio.".into();
+                self.report(
+                    ProblemKind::Speakers,
+                    "The sound stopped working. Save, then close and reopen Ball Studio.",
+                );
                 self.sound_broken = true;
             }
             self.sound = None;
@@ -673,12 +1185,27 @@ impl Studio {
         self.speakers_retry = None;
         self.speakers_wait = SPEAKERS_RETRY;
         self.status = "The speakers are back.".into();
+        self.clear_problem(ProblemKind::Speakers);
+    }
+
+    /// Says so in the status line when the sound couldn't keep up with the speakers.
+    fn note_dropouts(&mut self) {
+        let Some(job) = &self.sound else { return };
+        let underruns = job.shared().underruns();
+        if underruns > self.underruns_seen {
+            self.underruns_seen = underruns;
+            self.status = "Sound can't keep up: try fewer voices or effects.".into();
+        } else if underruns < self.underruns_seen {
+            // New speakers count from 0.
+            self.underruns_seen = underruns;
+        }
     }
 
     fn apply_listen(&self) {
         if let Some(job) = &self.sound {
             job.shared().set_volume(self.listen.volume);
             job.shared().set_muted(!self.listen.on);
+            job.shared().set_speaker_delay_ms(self.listen.speaker_delay_ms);
         }
     }
 
@@ -689,6 +1216,14 @@ impl Studio {
         let dt = self.last_tick.replace(now).map_or(0.0, |last| (now - last).as_secs_f64().min(0.25));
         self.save_listen_if_rested(Some(now));
         self.keep_speakers(now);
+        self.note_dropouts();
+        self.tell_gpu_errors();
+        self.tell_export_news();
+        if let Some(wait) = self.autosave(now)
+            && let Some(ctx) = &self.repaint
+        {
+            ctx.request_repaint_after(wait);
+        }
         if !self.playing {
             return;
         }
@@ -717,7 +1252,7 @@ impl Studio {
     }
 
     /// Runs `action` now, or asks to save first if there are unsaved changes.
-    fn guard(&mut self, action: Pending, ctx: &egui::Context) {
+    pub(crate) fn guard(&mut self, action: Pending, ctx: &egui::Context) {
         if self.unsaved() {
             self.confirm = Some(action);
         } else {
@@ -753,7 +1288,7 @@ impl Studio {
         let text = match std::fs::read_to_string(path) {
             Ok(text) => text,
             Err(error) => {
-                self.status = format!("Couldn't read {}: {error}", path.display());
+                self.report(ProblemKind::File, format!("Couldn't open {}: {error}", path.display()));
                 return false;
             }
         };
@@ -762,10 +1297,11 @@ impl Studio {
                 settings::remember_scene(path);
                 self.replace_scene(scene, Some(path.to_path_buf()));
                 self.status = format!("Opened {}.", file_label(path));
+                self.clear_problem(ProblemKind::File);
                 true
             }
             Err(error) => {
-                self.status = error.to_string();
+                self.report(ProblemKind::File, error.to_string());
                 false
             }
         }
@@ -787,16 +1323,19 @@ impl Studio {
             }
         };
         let Some(path) = path else { return false };
-        match std::fs::write(&path, bpe_core::save(&self.scene)) {
+        // Written beside it and swapped in, keeping the version before as "<name> (backup).ron".
+        match crate::files::write_safely(&path, &bpe_core::save(&self.scene), true) {
             Ok(()) => {
                 self.status = format!("Saved {}.", file_label(&path));
+                self.clear_problem(ProblemKind::File);
                 settings::remember_scene(&path);
                 self.path = Some(path);
                 self.saved = self.scene.clone();
+                self.unsaved_at.set(None);
                 true
             }
             Err(error) => {
-                self.status = format!("Couldn't save {}: {error}", path.display());
+                self.report(ProblemKind::File, format!("Couldn't save {}: {error}", path.display()));
                 false
             }
         }
@@ -842,6 +1381,58 @@ impl Studio {
         }
         if ctx.input(|i| i.key_pressed(Key::Home)) {
             self.seek(0.0);
+        }
+        if ctx.input(|i| i.key_pressed(Key::End)) {
+            self.set_playing(false);
+            self.seek(self.duration());
+        }
+        // Left and Right step one frame; with Shift, one beat. (Shift first: the plain shortcut
+        // matches with Shift held too.)
+        if pressed(Modifiers::SHIFT, Key::ArrowLeft) {
+            self.step(-1.0, true);
+        } else if pressed(Modifiers::NONE, Key::ArrowLeft) {
+            self.step(-1.0, false);
+        }
+        if pressed(Modifiers::SHIFT, Key::ArrowRight) {
+            self.step(1.0, true);
+        } else if pressed(Modifiers::NONE, Key::ArrowRight) {
+            self.step(1.0, false);
+        }
+    }
+
+    /// The keys that act on what is selected, read after the panels so a panel that used one
+    /// (the timeline's Delete on a selected key) keeps it: Ctrl+D, Ctrl+C, Ctrl+V, and Delete
+    /// from the Lights or Mixer tab (the Things tab's tree reads Delete itself).
+    pub(crate) fn late_shortcuts(&mut self, ctx: &egui::Context) {
+        if let Some(note) = self.copied_note.take() {
+            ctx.copy_text(note);
+        }
+        if ctx.text_edit_focused() || self.confirm.is_some() || self.offer.is_some() || self.ask_stop_export {
+            return;
+        }
+        let pressed = |modifiers, key| ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(modifiers, key)));
+        // egui-winit sends Ctrl+C and Ctrl+V as copy and paste events instead of keys, and Ctrl+V
+        // only when the system clipboard holds text (or a picture): a copy here puts a note there.
+        let event = |f: fn(&egui::Event) -> bool| ctx.input(|i| i.events.iter().any(f));
+        let copy = pressed(Modifiers::COMMAND, Key::C) | event(|e| matches!(e, egui::Event::Copy));
+        let paste = pressed(Modifiers::COMMAND, Key::V)
+            | event(|e| matches!(e, egui::Event::Paste(_) | egui::Event::PasteImage(_)));
+        if pressed(Modifiers::COMMAND, Key::D) {
+            self.duplicate_selection();
+        }
+        if copy && !timeline::copy_keys(self) {
+            let ids = self.selection.all(&self.scene);
+            self.copy_things(&ids);
+        }
+        if paste {
+            match &self.clipboard {
+                crate::things::Clipboard::Keys(_) => _ = timeline::paste_keys(self),
+                crate::things::Clipboard::Things(_) => _ = self.paste_things(None),
+                crate::things::Clipboard::Empty => {}
+            }
+        }
+        if self.left != LeftPanel::Things && pressed(Modifiers::NONE, Key::Delete) {
+            self.delete_selection();
         }
     }
 
@@ -969,6 +1560,7 @@ impl Studio {
                     .show(ui, |ui| {
                         ui.set_min_width(ui.available_width());
                         left_switch(ui, &mut left);
+                        self.panels.tree.paste_words = self.clipboard.things_words();
                         tree::show(
                             ui,
                             &mut self.panels.tree,
@@ -982,8 +1574,22 @@ impl Studio {
                 if let Some(message) = tree.message {
                     self.status = message;
                 }
+                if let Some(ids) = &tree.copy {
+                    self.copy_things(ids);
+                }
+                if let Some(at) = tree.paste {
+                    self.paste_things(Some(at));
+                }
+                if tree.picked {
+                    // A thing picked in the tree is what Ctrl+C copies now, not the timeline's keys.
+                    self.panels.timeline.selected.clear();
+                }
+                self.separate_edit |= tree.separate;
                 if let Some(id) = tree.added {
                     self.place_added(id);
+                    if tree.looks {
+                        self.panels.inspector.tab.insert(id, crate::inspector::InspectorTab::Looks);
+                    }
                 }
                 if tree.removed.is_some() {
                     // Deleting is always its own undo step.
@@ -1048,10 +1654,10 @@ impl Studio {
     }
 
     pub(crate) fn inspector_panel(&mut self, ui: &mut egui::Ui) -> f32 {
-        // A shape's Sound tab is wide (Osc A and Osc B side by side), with a width of its own:
+        // A Sound tab is wide (Osc A and Osc B side by side), and so is a Looks tab, with a width of their own:
         // a panel of its own id keeps each width as it was left.
         // (The Mixer's editors open in the Mixer itself: the inspector always shows the selection.)
-        let sound = self.panels.inspector.sound_open(&self.scene, self.selection.primary);
+        let sound = self.panels.inspector.wide_open(&self.scene, self.selection.primary);
         let (id, width, range) = if sound {
             ("inspector sound", self.sound_width, settings::SOUND_WIDTH_RANGE)
         } else {
@@ -1136,13 +1742,23 @@ impl Studio {
     /// history already: as its own undo step when it asked to be. A thing selected takes the
     /// inspector back from a rule block.
     pub(crate) fn record_frame(&mut self, before: Scene) {
-        if std::mem::take(&mut self.recorded) {
-            self.separate_edit = false;
-        } else if std::mem::take(&mut self.separate_edit) {
-            self.after_separate_edit(before);
+        let recorded = std::mem::take(&mut self.recorded);
+        let separate = std::mem::take(&mut self.separate_edit);
+        if self.scene == before {
+            self.snapshot = Some(before);
         } else {
-            self.after_edit(before);
+            if !recorded {
+                self.record_change(before, separate);
+            }
+            // Changed in place this frame: whether it is unsaved is worked out afresh.
+            self.unsaved_at.set(None);
+            self.snapshot = Some(self.scene.clone());
         }
+        self.after_frame();
+    }
+
+    /// What every frame does after its edit is recorded.
+    fn after_frame(&mut self) {
         if self.selection.primary.is_some() {
             self.panels.rules.picked = None;
         }
@@ -1162,14 +1778,15 @@ impl Studio {
     /// (until then the oscillators that need them are silent). Looks again shortly while a bake
     /// is under way.
     fn follow_bakes(&mut self, ctx: &egui::Context) {
-        let baked = WaveBank::baked();
+        // A wavetable baked or a sound file read: the patch that was waiting on it is built again.
+        let baked = WaveBank::baked() + bpe_sound::SampleBank::decoded();
         if baked != self.tables_baked {
             self.tables_baked = baked;
             if let Some(job) = &mut self.sound {
                 job.patch(SoundPatch::build_ready(&self.scene, &self.resolved, &self.kit));
             }
         }
-        if WaveBank::busy() {
+        if WaveBank::busy() || bpe_sound::SampleBank::busy() {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
     }
@@ -1228,12 +1845,38 @@ impl Studio {
 
     fn status_line(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_centered(|ui| {
+            if let Some(problem) = &self.problem {
+                let (dot, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                ui.painter().circle_filled(dot.center(), 3.5, style::PROBLEM);
+                let text = RichText::new(&problem.text).small().color(style::PROBLEM);
+                let width = (ui.available_width() * 0.6).max(120.0);
+                ui.scope(|ui| {
+                    ui.set_max_width(width);
+                    ui.add(egui::Label::new(text).truncate()).on_hover_text(&problem.text);
+                });
+                let dismiss = ui
+                    .add(egui::Button::new(RichText::new("×").color(style::PROBLEM)).frame(false).small())
+                    .on_hover_text("Dismiss");
+                dismiss.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Dismiss"));
+                if dismiss.clicked() {
+                    self.problem = None;
+                }
+                ui.label(RichText::new("·").small().color(style::FAINT));
+            }
             ui.label(RichText::new(&self.status).small().color(style::MUTED));
             if let Some(problem) = &self.shader_problem {
-                ui.label(RichText::new(format!("· Shader skipped: {problem}")).small().color(style::TEXT));
+                ui.label(RichText::new(format!("· Shader skipped: {problem}")).small().color(style::PROBLEM));
             }
-            if self.panels.export.busy() {
-                ui.label(RichText::new("· Exporting…").small().color(style::MUTED));
+            if let Some(percent) = self.panels.export.progress_percent() {
+                let exporting = ui
+                    .add(
+                        egui::Label::new(RichText::new(format!("· Exporting {percent}%")).small().color(style::TEXT))
+                            .sense(egui::Sense::click()),
+                    )
+                    .on_hover_text("Show the export window");
+                if exporting.clicked() {
+                    self.panels.export.open = true;
+                }
             }
             if let Some((lights, ms)) = self.lighting {
                 ui.label(RichText::new(lighting_readout(lights, ms)).small().color(style::MUTED));
@@ -1246,6 +1889,92 @@ impl Studio {
                 ui.label(RichText::new(particles_readout(a.0 + b.0, a.1 + b.1)).small().color(style::MUTED));
             }
         });
+    }
+
+    /// "A video is still exporting (40%). Stop it and close?"
+    fn stop_export_dialog(&mut self, ctx: &egui::Context) {
+        if !self.ask_stop_export {
+            return;
+        }
+        if !self.panels.export.busy() {
+            // It finished while asking: carry on closing.
+            self.ask_stop_export = false;
+            self.close_after_export(ctx);
+            return;
+        }
+        let percent = self.panels.export.progress_percent().unwrap_or(0);
+        let mut stop = None;
+        egui::Modal::new(egui::Id::unique("stop-export")).show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.heading(format!("A video is still exporting ({percent}%). Stop it and close?"));
+            ui.label(RichText::new("The unfinished video will be deleted.").color(style::MUTED));
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.add(style::primary_button("Keep exporting")).clicked() {
+                    stop = Some(false);
+                }
+                if ui.button("Stop and close").clicked() {
+                    stop = Some(true);
+                }
+            });
+        });
+        ctx.request_repaint_after(Duration::from_millis(250));
+        match stop {
+            Some(true) => {
+                self.ask_stop_export = false;
+                self.panels.export.shutdown();
+                // The news of the stopped export is not wanted on the way out.
+                let _ = self.panels.export.take_news();
+                self.close_after_export(ctx);
+            }
+            Some(false) => self.ask_stop_export = false,
+            None => {}
+        }
+    }
+
+    /// Closes, asking about unsaved changes first.
+    fn close_after_export(&mut self, ctx: &egui::Context) {
+        self.guard(Pending::Close, ctx);
+    }
+
+    /// "Ball Studio closed unexpectedly. Restore your last work?"
+    fn restore_dialog(&mut self, ctx: &egui::Context) {
+        let Some(offer) = &self.offer else { return };
+        let (name, when, file_newer) = (offer.name.clone(), offer.when.clone(), offer.file_newer);
+        let mut choice = None;
+        egui::Modal::new(egui::Id::unique("restore-work")).show(ctx, |ui| {
+            ui.set_width(420.0);
+            ui.heading("Ball Studio closed unexpectedly");
+            ui.label(format!("Restore your last work on \"{name}\"? It was saved automatically {when}."));
+            if file_newer {
+                ui.label(
+                    RichText::new(
+                        "Its file was saved again after this copy was made, so restoring would bring back older work.",
+                    )
+                    .color(style::PROBLEM),
+                );
+            }
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                // The safer choice leads: Discard when the file is newer.
+                let (restore, discard) = if file_newer {
+                    (ui.button("Restore"), ui.add(style::primary_button("Discard")))
+                } else {
+                    (ui.add(style::primary_button("Restore")), ui.button("Discard"))
+                };
+                if restore.clicked() {
+                    choice = Some(true);
+                }
+                if discard.clicked() {
+                    choice = Some(false);
+                }
+            });
+        });
+        match choice {
+            Some(true) => self.restore(),
+            Some(false) => self.discard_offer(),
+            None => {}
+        }
     }
 
     fn confirm_dialog(&mut self, ctx: &egui::Context) {
@@ -1287,13 +2016,31 @@ impl eframe::App for Studio {
         self.panels.export.shutdown();
         self.save_listen_if_rested(None);
         self.sound = None;
+        // The autosaved copy goes once the work is saved or was thrown away on purpose ("Don't
+        // save"); otherwise it stays, to be offered back at the next start. A panic on the way out
+        // must not write the copy back either.
+        *self.crash_slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        if let Some(session) = &self.recovery
+            && (self.closing || !self.unsaved())
+        {
+            session.clear();
+        }
+        self.recovery = None;
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        if ctx.input(|i| i.viewport().close_requested()) && !self.closing && self.unsaved() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.confirm = Some(Pending::Close);
+        if ctx.input(|i| i.viewport().close_requested()) && !self.closing {
+            if self.panels.export.busy() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.ask_stop_export = true;
+            } else if self.unsaved() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.confirm = Some(Pending::Close);
+            }
+        }
+        if self.repaint.is_none() {
+            self.repaint = Some(ctx.clone());
         }
         self.tick();
         // What the inspector's distance and angle settings snap to while dragged this frame.
@@ -1302,10 +2049,16 @@ impl eframe::App for Studio {
             // The Look editor's ball view draws with the window's GPU.
             self.panels.inspector.render = frame.wgpu_render_state().cloned();
         }
-        let before = self.scene.clone();
+        // The scene as the frame starts: kept from the last frame's recording, copied only after
+        // an edit.
+        let before = self.snapshot.take().unwrap_or_else(|| self.scene.clone());
         let revision = self.revision;
         self.recorded = false;
-        if self.confirm.is_none() {
+        let (input, pointer_down) = ctx.input(|i| (!i.events.is_empty() || i.pointer.any_down(), i.pointer.any_down()));
+        // A held slider changes the physics many times a second: the runs start over when it
+        // is let go or rests. A drag in the preview moves the things it shows, so it doesn't wait.
+        self.hold_runs = pointer_down && !self.panels.preview.as_ref().is_some_and(Preview::dragging);
+        if self.confirm.is_none() && self.offer.is_none() && !self.ask_stop_export {
             self.shortcuts(&ctx);
         }
 
@@ -1341,6 +2094,10 @@ impl eframe::App for Studio {
             .frame(egui::Frame::new().fill(style::STAGE))
             .show(ui, |ui| preview::show(ui, frame, self))
             .inner;
+        if self.confirm.is_none() && self.offer.is_none() && !self.ask_stop_export {
+            self.late_shortcuts(&ctx);
+            self.take_drops(&ctx);
+        }
         if outcome.clicked {
             self.set_playing(false);
         }
@@ -1386,8 +2143,24 @@ impl eframe::App for Studio {
             None => {}
         }
         self.confirm_dialog(&ctx);
+        self.stop_export_dialog(&ctx);
+        self.restore_dialog(&ctx);
 
-        self.record_frame(before);
+        if quiet_frame(self.playing, input, self.recorded || self.separate_edit, self.revision != revision) {
+            // Playing with nothing pressed or typed: nothing can have edited the scene.
+            self.snapshot = Some(before);
+            self.after_frame();
+        } else {
+            self.record_frame(before);
+        }
+        if let Some(wait) = self.settle_runs(pointer_down) {
+            ctx.request_repaint_after(wait);
+        }
+        let title = self.window_title();
+        if title != self.title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.title = title;
+        }
         self.send_auditions();
         self.follow_bakes(&ctx);
         if self.revision != revision {
@@ -1404,6 +2177,12 @@ impl eframe::App for Studio {
             ctx.request_repaint();
         }
     }
+}
+
+/// Whether a frame can skip looking for an edit: playing, with no input this frame, nothing
+/// flagged as edited and the scene's revision unchanged.
+pub(crate) fn quiet_frame(playing: bool, input: bool, flagged: bool, revised: bool) -> bool {
+    playing && !input && !flagged && !revised
 }
 
 /// The toolbar's frame: the panel grey with a soft line under it.
@@ -1467,12 +2246,16 @@ fn light_probe_of(
     bpe_kit::sensing::uses_light(scene).then(|| bpe_kit::sensing::probe(scene, resolved, sound))
 }
 
-/// The status line's lighting readout: "· Lighting: 3 lights, 1.8 ms", with a warning past 256
-/// lights (each one costs every pixel a shadow march).
+/// Past this many lights in a frame the editor warns that they can slow the picture (review S19):
+/// each costs every pixel it reaches a shadow march.
+pub const MANY_LIGHTS: usize = 64;
+
+/// The status line's lighting readout: "· Lighting: 3 lights, 1.8 ms", with a warning past
+/// [`MANY_LIGHTS`].
 pub fn lighting_readout(lights: usize, ms: Option<f32>) -> String {
     let count = if lights == 1 { "1 light".to_owned() } else { format!("{lights} lights") };
     let time = ms.map(|ms| format!(", {ms:.1} ms")).unwrap_or_default();
-    let warn = if lights > 256 { " (that many lights is slow: try Quality Draft)" } else { "" };
+    let warn = if lights > MANY_LIGHTS { " (that many lights is slow: see the Lights tab)" } else { "" };
     format!("· Lighting: {count}{time}{warn}")
 }
 
@@ -1577,7 +2360,7 @@ mod tests {
     }
 
     #[test]
-    fn a_trail_length_edit_patches_the_sound_and_keeps_it_playing() {
+    fn a_trail_length_edit_keeps_the_sound_playing() {
         let mut studio = Studio::headless();
         let kit = studio.kit.clone();
         let before = studio.scene.clone();
@@ -1596,7 +2379,38 @@ mod tests {
         studio.after_edit(before);
         assert_ne!(studio.fingerprint, physics, "the editor keeps a longer history for the trail");
         let sent = studio.sound.as_ref().unwrap().recorded();
-        assert_eq!(sent, ["seek", "play", "patch"], "the sound plays on");
+        assert_eq!(sent, ["seek", "play"], "the sound plays on, its settings untouched");
+    }
+
+    #[test]
+    fn only_a_sound_edit_builds_the_sound_again() {
+        let mut studio = Studio::headless();
+        let kit = studio.kit.clone();
+        let shape = studio.scene.order.iter().copied().find(|id| studio.scene.things[id].kind == "shape").unwrap();
+        let before = studio.scene.clone();
+        studio
+            .scene
+            .things
+            .get_mut(&shape)
+            .unwrap()
+            .slots
+            .insert(SlotId::Sound, bpe_kit::sound::starter_voice(&kit.registry));
+        studio.after_edit(before);
+        studio.sound = Some(SoundJob::recording());
+        // A picture drag, frame after frame: nothing for the sound.
+        for k in 1..6 {
+            let before = studio.scene.clone();
+            let bloom = Address::own(ThingId::ROOT, "bloom");
+            studio.scene.set_at(&kit.registry, &bloom, Value::Number(k as f64 * 0.1)).unwrap();
+            studio.after_edit(before);
+        }
+        assert!(studio.sound.as_ref().unwrap().recorded().is_empty(), "a picture edit leaves the sound alone");
+        // A sound knob does.
+        let before = studio.scene.clone();
+        let gain = Address::on(shape, SlotId::Sound, "a_gain");
+        studio.scene.set_at(&kit.registry, &gain, Value::Number(-9.0)).unwrap();
+        studio.after_edit(before);
+        assert_eq!(studio.sound.as_ref().unwrap().recorded(), ["patch"]);
     }
 
     #[test]
@@ -1976,14 +2790,428 @@ mod tests {
         let mut studio = Studio::headless();
         let old = concat!(env!("CARGO_MANIFEST_DIR"), "/../bpe-core/tests/data/old-editor-scene.ron");
         studio.open_path(Path::new(old));
-        assert_eq!(studio.status, "This scene was made with the old Ball Studio");
+        let problem = studio.problem.clone().expect("a failed open is a problem, not a grey status");
+        assert_eq!(
+            problem,
+            Problem { kind: ProblemKind::File, text: "This scene was made with the old Ball Studio".into() }
+        );
         assert_eq!(studio.scene.things.len(), 3);
+        studio.undo();
+        assert!(studio.problem.is_some(), "a later message doesn't hide it");
+    }
+
+    #[test]
+    fn problems_stay_until_their_own_source_clears_them() {
+        let mut studio = Studio::headless();
+        studio.report(ProblemKind::File, "Couldn't save");
+        studio.clear_problem(ProblemKind::Speakers);
+        assert_eq!(
+            studio.problem.as_ref().map(|p| p.kind),
+            Some(ProblemKind::File),
+            "the speakers can't clear a save failure"
+        );
+        studio.report(ProblemKind::Speakers, "The speakers stopped working.");
+        studio.clear_problem(ProblemKind::Speakers);
+        assert_eq!(studio.problem, None);
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ball-studio-app-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn session_file(studio: &Studio) -> PathBuf {
+        let session = studio.recovery.as_ref().expect("autosaving");
+        session.flush();
+        session.files().scene.clone()
+    }
+
+    #[test]
+    fn unsaved_work_is_autosaved_and_the_copy_goes_once_it_is_saved() {
+        let dir = temp_dir("autosave");
+        let mut studio = Studio::blank();
+        studio.start_recovery(&dir.join("recovery"), None);
+        let now = Instant::now();
+        studio.autosave(now);
+        assert!(!session_file(&studio).exists(), "nothing unsaved, nothing copied");
+        let before = studio.scene.clone();
+        studio.scene.name = "Changed".into();
+        studio.after_edit(before);
+        assert_eq!(studio.autosave(now), None, "everything copied: nothing to wake for");
+        assert!(session_file(&studio).exists(), "the first change is copied at once");
+        let first = std::fs::read_to_string(session_file(&studio)).unwrap();
+        let before = studio.scene.clone();
+        studio.scene.name = "Changed again".into();
+        studio.after_edit(before);
+        let wait = studio.autosave(now + Duration::from_secs(5)).expect("wakes for the next copy");
+        assert!(wait <= recovery::AUTOSAVE_EVERY - Duration::from_secs(5), "{wait:?}");
+        assert_eq!(std::fs::read_to_string(session_file(&studio)).unwrap(), first, "not again within the minute");
+        studio.autosave(now + recovery::AUTOSAVE_EVERY);
+        assert!(std::fs::read_to_string(session_file(&studio)).unwrap().contains("Changed again"), "a minute later");
+        let crash = studio.crash_slot.lock().unwrap().as_ref().map(|c| c.scene.name.clone());
+        assert_eq!(crash.as_deref(), Some("Changed again"), "a crash would save the latest");
+        studio.path = Some(dir.join("Mine.ron"));
+        assert!(studio.save(false));
+        studio.autosave(now + recovery::AUTOSAVE_EVERY * 2);
+        assert!(!session_file(&studio).exists(), "saved, so the copy goes");
+        assert!(studio.crash_slot.lock().unwrap().is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_copy_written_by_a_caught_panic_still_goes_when_the_work_is_saved() {
+        let dir = temp_dir("caught");
+        let mut studio = Studio::blank();
+        studio.start_recovery(&dir.join("recovery"), None);
+        studio.path = Some(dir.join("Mine.ron"));
+        assert!(studio.save(false));
+        let now = Instant::now();
+        studio.scene.name = "Edited".into();
+        studio.autosaved_at = Some(now); // within the minute: the autosave hasn't written it
+        studio.autosave(now);
+        let files = studio.recovery.as_ref().unwrap().files().clone();
+        assert!(recovery::crash_save(&studio.crash_slot, &files), "a panic (caught, say) writes the copy");
+        assert!(session_file(&studio).exists());
+        assert!(studio.save(false));
+        studio.autosave(now);
+        assert!(!session_file(&studio).exists(), "saved, so it goes too");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_clean_exit_keeps_the_copy_only_when_work_was_not_saved_or_thrown_away() {
+        use eframe::App;
+        for (closing, kept) in [(false, true), (true, false)] {
+            let dir = temp_dir(if kept { "exit-kept" } else { "exit-gone" });
+            let mut studio = Studio::blank();
+            studio.start_recovery(&dir, None);
+            studio.scene.name = "Unsaved".into();
+            studio.autosave(Instant::now());
+            let file = session_file(&studio);
+            // `closing` is set by "Don't save"; without it, the editor was closed some other way.
+            studio.closing = closing;
+            studio.on_exit();
+            assert_eq!(file.exists(), kept, "closing: {closing}");
+            assert!(studio.crash_slot.lock().unwrap().is_none(), "a panic on the way out writes nothing");
+            assert_eq!(recovery::orphans(&dir).len(), usize::from(kept));
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn restoring_with_the_dialog_or_discarding_it() {
+        for restore in [true, false] {
+            let dir = temp_dir(if restore { "dialog-restore" } else { "dialog-discard" });
+            let mut crashed = Studio::blank();
+            crashed.start_recovery(&dir, None);
+            crashed.scene.name = "Left behind".into();
+            crashed.autosave(Instant::now());
+            session_file(&crashed);
+            drop(crashed.recovery.take());
+            let mut studio = Studio::blank();
+            studio.start_recovery(&dir, None);
+            let mut h = Harness::builder()
+                .with_size(egui::vec2(1000.0, 600.0))
+                .with_max_steps(20)
+                .allow_missing_glyphs()
+                .with_context_setup(style::apply)
+                .build_ui_state(
+                    |ui, studio: &mut Studio| {
+                        egui::CentralPanel::default().show(ui, |_| {});
+                        let ctx = ui.ctx().clone();
+                        studio.restore_dialog(&ctx);
+                    },
+                    studio,
+                );
+            h.run();
+            assert!(h.query_by_label("Ball Studio closed unexpectedly").is_some());
+            h.get_by_label(if restore { "Restore" } else { "Discard" }).click();
+            h.run();
+            assert!(h.state().offer.is_none());
+            assert_eq!(h.state().scene.name == "Left behind", restore);
+            assert!(h.query_by_label("Ball Studio closed unexpectedly").is_none());
+            assert_eq!(recovery::orphans(&dir), vec![], "the old copy is gone either way");
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn an_older_copy_than_its_file_warns_and_leads_with_discard() {
+        let dir = temp_dir("older");
+        let file = dir.join("Mine.ron");
+        let mut crashed = Studio::blank();
+        crashed.path = Some(file.clone());
+        assert!(crashed.save(false));
+        crashed.start_recovery(&dir.join("recovery"), None);
+        crashed.scene.name = "Older work".into();
+        crashed.autosave(Instant::now());
+        let copy = session_file(&crashed);
+        drop(crashed.recovery.take());
+        let earlier = std::time::SystemTime::now() - Duration::from_secs(3600);
+        std::fs::File::options().write(true).open(&copy).unwrap().set_modified(earlier).unwrap();
+        let mut studio = Studio::blank();
+        studio.start_recovery(&dir.join("recovery"), None);
+        assert!(studio.offer.as_ref().unwrap().file_newer, "the file was saved after the copy");
+        assert_eq!(studio.offer.as_ref().unwrap().when, "1 hour ago");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_autosave_failure_is_told_and_cleared_when_a_later_one_works() {
+        let dir = temp_dir("autosave-fail");
+        let mut studio = Studio::blank();
+        studio.start_recovery(&dir, None);
+        let blocker = crate::files::sibling(&studio.recovery.as_ref().unwrap().files().path, ".tmp");
+        std::fs::create_dir_all(&blocker).unwrap();
+        studio.scene.name = "A".into();
+        let now = Instant::now();
+        studio.autosave(now);
+        session_file(&studio);
+        studio.autosave(now);
+        assert_eq!(studio.problem.as_ref().map(|p| p.kind), Some(ProblemKind::Autosave));
+        std::fs::remove_dir_all(&blocker).unwrap();
+        studio.scene.name = "B".into();
+        studio.autosave(now + recovery::AUTOSAVE_EVERY);
+        session_file(&studio);
+        studio.autosave(now + recovery::AUTOSAVE_EVERY);
+        assert_eq!(studio.problem, None, "it works again");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn work_left_by_a_crash_is_offered_back_under_its_own_file_and_still_unsaved() {
+        let dir = temp_dir("restore");
+        let recovery_dir = dir.join("recovery");
+        let file = dir.join("Mine.ron");
+        let mut crashed = Studio::blank();
+        assert!({
+            crashed.path = Some(file.clone());
+            crashed.save(false)
+        });
+        crashed.start_recovery(&recovery_dir, None);
+        crashed.scene.name = "Unsaved work".into();
+        crashed.autosave(Instant::now());
+        session_file(&crashed);
+        // The editor is gone without a clean exit: its lock goes with it.
+        drop(crashed.recovery.take());
+
+        let mut studio = Studio::blank();
+        studio.start_recovery(&recovery_dir, None);
+        let offer = studio.offer.as_ref().expect("offered back");
+        assert_eq!(offer.name, "Unsaved work");
+        assert_eq!(offer.when, "less than a minute ago");
+        studio.restore();
+        assert_eq!(studio.scene.name, "Unsaved work");
+        assert_eq!(studio.path, Some(file.clone()));
+        assert!(studio.unsaved(), "the file still holds the old version");
+        assert!(studio.status.starts_with("Restored your work"), "{}", studio.status);
+        studio.autosave(Instant::now());
+        let own = session_file(&studio);
+        assert!(own.exists(), "into this editor's own autosave at once");
+        assert_eq!(recovery::orphans(&recovery_dir), vec![], "the old copy is gone, ours is held");
+
+        let mut next = Studio::blank();
+        next.start_recovery(&dir.join("elsewhere"), None);
+        assert!(next.offer.is_none(), "nothing left behind there");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn autosaved_work_that_cannot_be_read_is_set_aside_and_reported() {
+        let dir = temp_dir("broken");
+        std::fs::write(dir.join("session-1-1.ron"), "not a scene").unwrap();
+        let mut studio = Studio::blank();
+        studio.start_recovery(&dir, None);
+        assert!(studio.offer.is_none());
+        assert_eq!(studio.problem.as_ref().map(|p| p.kind), Some(ProblemKind::Recovery));
+        assert!(dir.join("session-1-1.ron.broken").is_file(), "kept, not offered again");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_save_keeps_the_version_before_as_a_backup() {
+        let dir = temp_dir("backup");
+        let file = dir.join("Mine.ron");
+        let mut studio = Studio::blank();
+        studio.path = Some(file.clone());
+        studio.scene.name = "First".into();
+        assert!(studio.save(false));
+        studio.scene.name = "Second".into();
+        assert!(studio.save(false));
+        let backup = crate::files::backup_path(&file);
+        assert!(std::fs::read_to_string(backup).unwrap().contains("First"));
+        assert!(std::fs::read_to_string(&file).unwrap().contains("Second"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_graphics_card_complaint_is_a_problem_not_a_crash() {
+        let mut studio = Studio::headless();
+        {
+            let mut errors = studio.gpu_errors.lock().unwrap();
+            errors.first = Some("Validation Error\n\nCaused by:\n  bad buffer".into());
+            errors.count = 3;
+        }
+        studio.tell_gpu_errors();
+        let problem = studio.problem.clone().unwrap();
+        assert_eq!(problem.kind, ProblemKind::Graphics);
+        assert_eq!(problem.text, "The graphics card reported a problem (3 times): Validation Error");
+        studio.gpu_errors.lock().unwrap().count = 5;
+        studio.tell_gpu_errors();
+        assert_eq!(
+            studio.problem.as_ref().unwrap().text,
+            "The graphics card reported a problem (5 times): Validation Error",
+            "counts up in place"
+        );
+        studio.problem = None;
+        studio.gpu_errors.lock().unwrap().count = 9;
+        studio.tell_gpu_errors();
+        assert_eq!(studio.problem, None, "a dismissed complaint stays dismissed however often it repeats");
+        studio.report(ProblemKind::File, "Couldn't save");
+        studio.gpu_errors.lock().unwrap().count = 12;
+        studio.tell_gpu_errors();
+        assert_eq!(studio.problem.as_ref().unwrap().kind, ProblemKind::File, "never hides another problem");
+        studio.gpu_errors.lock().unwrap().lost = true;
+        studio.tell_gpu_errors();
+        assert!(studio.problem.unwrap().text.starts_with("The graphics card stopped responding"));
+    }
+
+    #[test]
+    fn an_export_ending_is_told_in_the_status_line() {
+        let mut studio = Studio::headless();
+        let sender = studio.panels.export.pretend_busy(1, 4);
+        sender.send(Err(anyhow::anyhow!("ffmpeg failed: Permission denied"))).unwrap();
+        let settings = studio.settings();
+        let ctx = egui::Context::default();
+        studio.panels.export.show(&ctx, &studio.scene, &settings, None, &studio.kit);
+        studio.tell_export_news();
+        let problem = studio.problem.clone().unwrap();
+        assert_eq!(problem.kind, ProblemKind::Export);
+        assert!(problem.text.contains("open in a player"), "{}", problem.text);
+    }
+
+    fn dialogs_harness(studio: Studio) -> Harness<'static, Studio> {
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1000.0, 600.0))
+            .with_max_steps(20)
+            .allow_missing_glyphs()
+            .with_context_setup(style::apply)
+            .build_ui_state(
+                |ui, studio: &mut Studio| {
+                    egui::Panel::bottom("status").show(ui, |ui| studio.status_line(ui));
+                    egui::CentralPanel::default().show(ui, |_| {});
+                    let ctx = ui.ctx().clone();
+                    studio.stop_export_dialog(&ctx);
+                },
+                studio,
+            );
+        h.run();
+        h
+    }
+
+    #[test]
+    fn a_problem_shows_in_the_status_line_until_dismissed() {
+        let mut studio = Studio::headless();
+        studio.report(ProblemKind::File, "Couldn't save Mine.ron: access denied");
+        let mut h = dialogs_harness(studio);
+        assert!(h.query_by_label("Couldn't save Mine.ron: access denied").is_some());
+        h.get_by_label("Dismiss").click();
+        h.run();
+        assert_eq!(h.state().problem, None);
+        assert!(h.query_by_label("Dismiss").is_none());
+    }
+
+    #[test]
+    fn closing_while_exporting_asks_first_and_can_keep_exporting() {
+        let mut studio = Studio::headless();
+        let sender = studio.panels.export.pretend_busy(2, 5);
+        studio.ask_stop_export = true;
+        let mut h = dialogs_harness(studio);
+        assert!(h.query_by_label("A video is still exporting (40%). Stop it and close?").is_some());
+        assert!(h.query_by_label("· Exporting 40%").is_some(), "the status line shows the percentage");
+        h.get_by_label("Keep exporting").click();
+        h.run();
+        assert!(!h.state().ask_stop_export);
+        assert!(h.state().panels.export.busy(), "still exporting");
+        h.state_mut().ask_stop_export = true;
+        h.run();
+        drop(sender);
+        h.get_by_label("Stop and close").click();
+        h.run();
+        assert!(!h.state().panels.export.busy(), "stopped");
+        assert!(h.state().closing, "nothing unsaved, so it closes");
+    }
+
+    #[test]
+    fn a_held_physics_edit_keeps_the_run_until_let_go_or_rested() {
+        let mut studio = Studio::headless();
+        let physics = studio.fingerprint;
+        let nudge = |studio: &mut Studio| {
+            let before = studio.scene.clone();
+            studio.scene.things.get_mut(&ThingId(2)).unwrap().transform.position.x += 40.0;
+            studio.after_edit(before);
+        };
+        studio.hold_runs = true;
+        let revision = studio.revision;
+        nudge(&mut studio);
+        assert_eq!(studio.fingerprint, physics, "held: the old run plays on");
+        assert!(studio.runs_due.is_some());
+        assert!(studio.revision > revision, "the picture is drawn again with the new settings");
+        assert!(studio.settle_runs(true).is_some(), "still held and just changed: it waits");
+        assert_eq!(studio.fingerprint, physics);
+        assert!(studio.settle_runs(false).is_none(), "let go");
+        assert_ne!(studio.fingerprint, physics, "the run starts over");
+        assert!(studio.runs_due.is_none());
+        // Held again, then rested on.
+        studio.hold_runs = true;
+        let physics = studio.fingerprint;
+        nudge(&mut studio);
+        assert_eq!(studio.fingerprint, physics);
+        studio.runs_due = Some(Instant::now() - RUNS_REST);
+        assert!(studio.settle_runs(true).is_none());
+        assert_ne!(studio.fingerprint, physics, "a rest starts it over while still held");
+        assert!(studio.hold_runs, "and the drag is still held");
+    }
+
+    #[test]
+    fn a_held_edit_that_adds_or_removes_a_thing_never_waits() {
+        let mut studio = Studio::headless();
+        studio.hold_runs = true;
+        let before = studio.scene.clone();
+        bpe_kit::add_thing(&mut studio.scene, &studio.kit.registry, "balls", ThingId::ROOT).unwrap();
+        let physics = studio.fingerprint;
+        studio.after_edit(before);
+        assert!(studio.runs_due.is_none());
+        assert_ne!(studio.fingerprint, physics, "the runs have every thing the scene has");
+    }
+
+    #[test]
+    fn a_held_look_edit_waits_for_nothing() {
+        let mut studio = Studio::headless();
+        studio.hold_runs = true;
+        let before = studio.scene.clone();
+        let look = Address::on(ThingId(2), SlotId::Look, "2/strength");
+        studio.scene.set_at(&studio.kit.registry, &look, Value::Number(1.0)).unwrap();
+        studio.after_edit(before);
+        assert!(studio.runs_due.is_none(), "a look edit changes no run");
+    }
+
+    #[test]
+    fn only_a_quiet_playing_frame_skips_looking_for_an_edit() {
+        assert!(quiet_frame(true, false, false, false));
+        assert!(!quiet_frame(false, false, false, false), "paused frames always look");
+        assert!(!quiet_frame(true, true, false, false), "a click or key may edit");
+        assert!(!quiet_frame(true, false, true, false));
+        assert!(!quiet_frame(true, false, false, true));
     }
 
     #[test]
     fn a_look_edit_keeps_the_playback_and_a_gravity_edit_restarts_it() {
         let mut studio = Studio::headless();
         studio.seek(2.0);
+        studio.catch_up();
         let before = studio.scene.clone();
         // The test ball's Glow layer's Strength.
         let look = Address::on(ThingId(2), SlotId::Look, "2/strength");
@@ -2069,5 +3297,244 @@ mod tests {
         assert!(started.elapsed() < Duration::from_millis(500), "a scrub blocked for {:?}", started.elapsed());
         assert_eq!(studio.time, 20.0);
         assert!(studio.playback.time() < 20.0, "the preview catches the rest up a budget per frame");
+    }
+
+    /// The editor's panels as `ui` lays them out, with its keyboard shortcuts before and after
+    /// them and each frame's change recorded as it records them.
+    fn editor_harness(studio: Studio) -> Harness<'static, Studio> {
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1400.0, 900.0))
+            .with_step_dt(1.0 / 60.0)
+            .with_max_steps(120)
+            .allow_missing_glyphs()
+            .with_context_setup(style::apply)
+            .build_ui_state(
+                |ui, studio: &mut Studio| {
+                    let ctx = ui.ctx().clone();
+                    let before = studio.scene.clone();
+                    studio.recorded = false;
+                    studio.shortcuts(&ctx);
+                    egui::Panel::bottom("timeline").show(ui, |ui| timeline::show(ui, studio));
+                    studio.left_panel(ui, &before);
+                    egui::CentralPanel::default().show(ui, |_| {});
+                    studio.late_shortcuts(&ctx);
+                    studio.take_drops(&ctx);
+                    studio.record_frame(before);
+                },
+                studio,
+            );
+        h.run();
+        h
+    }
+
+    fn thing_named(studio: &Studio, name: &str) -> Option<ThingId> {
+        studio.scene.things.values().find(|t| t.name == name).map(|t| t.id)
+    }
+
+    #[test]
+    fn ctrl_d_duplicates_the_selection_as_its_own_undo_step() {
+        let mut studio = Studio::headless();
+        studio.selection.set(ThingId(2));
+        let mut h = editor_harness(studio);
+        h.key_press_modifiers(Modifiers::COMMAND, Key::D);
+        h.run();
+        let copy = thing_named(h.state(), "Ball copy").expect("a copy");
+        assert_eq!(h.state().selection.primary, Some(copy), "the copy is selected");
+        assert!(h.state_mut().undo());
+        assert!(thing_named(h.state(), "Ball copy").is_none());
+    }
+
+    #[test]
+    fn copied_things_paste_into_a_new_scene() {
+        let mut studio = Studio::headless();
+        studio.selection.set(ThingId(2));
+        let mut h = editor_harness(studio);
+        h.key_press_modifiers(Modifiers::COMMAND, Key::C);
+        h.run();
+        assert_eq!(h.state().status, "Copied Ball.");
+        h.state_mut().new_scene();
+        h.run();
+        assert!(thing_named(h.state(), "Ball").is_none());
+        h.key_press_modifiers(Modifiers::COMMAND, Key::V);
+        h.run();
+        let ball = thing_named(h.state(), "Ball").expect("pasted");
+        assert_eq!(h.state().selection.primary, Some(ball));
+        assert_eq!(h.state().scene.things[&ball].parent, Some(ThingId::ROOT));
+        assert!(h.state().status.starts_with("Pasted Ball."), "{}", h.state().status);
+        assert!(h.state().unsaved());
+        // The row menu pastes too, beside the row picked.
+        let rows = h.state().scene.things.len();
+        h.get_by_label("Ball").click_secondary();
+        h.run();
+        h.get_by_label("Paste Ball Ctrl+V").click();
+        h.run();
+        assert_eq!(h.state().scene.things.len(), rows + 1);
+        assert!(thing_named(h.state(), "Ball copy").is_some());
+    }
+
+    /// A file dropped in a test: its name and bytes.
+    #[derive(Debug)]
+    struct TestDrop(PathBuf, Vec<u8>);
+
+    impl egui::DroppedFile for TestDrop {
+        fn path(&self) -> &Path {
+            &self.0
+        }
+        fn bytes(&self) -> Result<Vec<u8>, String> {
+            Ok(self.1.clone())
+        }
+    }
+
+    fn drop_file(h: &mut Harness<'_, Studio>, name: &str, bytes: &[u8]) {
+        let file = Arc::new(TestDrop(PathBuf::from(name), bytes.to_vec()));
+        h.input_mut().dropped_files.push(file);
+        h.run();
+    }
+
+    #[test]
+    fn a_dropped_png_becomes_a_particles_picture_kept_in_the_scene() {
+        let mut h = editor_harness(Studio::headless());
+        let png = b"\x89PNG\r\n\x1a\nrest";
+        drop_file(&mut h, "Logo.png", png);
+        let s = h.state();
+        assert_eq!(&*s.scene.pictures["Logo"].bytes, &png[..]);
+        let id = s.selection.primary.expect("a new Particles thing, selected");
+        let thing = &s.scene.things[&id];
+        assert_eq!(thing.kind, "particles");
+        assert_eq!(thing.params.get("picture"), Some(&Value::Text("Logo".into())));
+        assert_eq!(thing.params.get("word_from"), Some(&Value::Choice("picture".into())));
+        let things = s.scene.things.len();
+        // Dropped again with it selected, the same thing shows it: no second thing, no second copy.
+        drop_file(&mut h, "Logo.png", png);
+        assert_eq!(h.state().scene.things.len(), things);
+        assert_eq!(h.state().scene.pictures.len(), 1);
+        assert!(h.state_mut().undo(), "a drop is an undo step");
+    }
+
+    #[test]
+    fn a_dropped_font_is_kept_and_sets_the_selected_text_in_it() {
+        let mut studio = Studio::headless();
+        let kit = studio.kit.clone();
+        let text = bpe_kit::add_thing(&mut studio.scene, &kit.registry, bpe_kit::things::text::KIND, ThingId::ROOT);
+        let text = text.unwrap();
+        studio.selection.set(text);
+        let mut h = editor_harness(studio);
+        let bytes = std::fs::read(bpe_kit::text::fonts::repo_fonts_dir().join("BebasNeue.ttf")).unwrap();
+        drop_file(&mut h, "BebasNeue.ttf", &bytes);
+        assert!(h.state().scene.fonts.contains_key("Bebas Neue"));
+        assert_eq!(h.state().scene.things[&text].params.get("font"), Some(&Value::Text("Bebas Neue".into())));
+    }
+
+    #[test]
+    fn a_dropped_file_ball_studio_cant_use_is_reported() {
+        let mut h = editor_harness(Studio::headless());
+        let before = h.state().scene.clone();
+        drop_file(&mut h, "notes.txt", b"hello");
+        assert_eq!(h.state().scene, before);
+        let problem = h.state().problem.as_ref().map(|p| (p.kind, p.text.clone()));
+        assert_eq!(problem, Some((ProblemKind::File, crate::drops::cant_open("notes.txt"))));
+        drop_file(&mut h, "broken.wav", b"RIFF");
+        assert_eq!(h.state().scene, before, "a sound file that can't be read is refused");
+        assert!(h.state().problem.as_ref().is_some_and(|p| p.text.contains("broken.wav")));
+        drop_file(&mut h, "fake.png", b"GIF89a");
+        assert_eq!(h.state().scene, before, "a picture that isn't a PNG is refused");
+        assert!(h.state().problem.as_ref().is_some_and(|p| p.text.contains("fake.png")));
+    }
+
+    #[test]
+    fn a_dropped_song_becomes_the_backing_track() {
+        let mut h = editor_harness(Studio::headless());
+        let kit = h.state().kit.clone();
+        drop_file(&mut h, "My song.wav", &bpe_sound::audio::sine_wav(220.0, 0.2, 44_100, 2));
+        assert!(h.state().scene.audio.contains_key("My song"));
+        assert_eq!(crate::mixer::backing::backing_name(&h.state().scene, &kit), "My song");
+        assert!(h.state().status.contains("backing track"), "{}", h.state().status);
+    }
+
+    #[test]
+    fn a_scene_with_only_its_camera_counts_as_empty() {
+        let studio = Studio::headless();
+        assert!(!crate::preview::is_empty_scene(&studio.scene), "the headless scene has a ball");
+        let kit = bpe_kit::kit();
+        let scene = bpe_kit::new_studio_scene(&kit.registry);
+        assert!(crate::preview::is_empty_scene(&scene), "the blank project the editor opens to is");
+    }
+
+    #[test]
+    fn delete_works_from_the_mixer_tab() {
+        let mut studio = Studio::headless();
+        studio.selection.set(ThingId(2));
+        studio.left = LeftPanel::Mixer;
+        let mut h = editor_harness(studio);
+        h.key_press(Key::Delete);
+        h.run();
+        assert!(!h.state().scene.things.contains_key(&ThingId(2)));
+        assert!(h.state_mut().undo(), "its own undo step");
+        assert!(h.state().scene.things.contains_key(&ThingId(2)));
+    }
+
+    #[test]
+    fn arrows_step_a_frame_or_a_beat_and_end_goes_to_the_end() {
+        let mut studio = Studio::headless();
+        studio.seek(1.0);
+        let mut h = editor_harness(studio);
+        h.key_press(Key::ArrowRight);
+        h.run();
+        assert!((h.state().time - (1.0 + 1.0 / 60.0)).abs() < 1e-9, "{}", h.state().time);
+        h.key_press(Key::ArrowLeft);
+        h.key_press(Key::ArrowLeft);
+        h.run();
+        assert!((h.state().time - (1.0 - 1.0 / 60.0)).abs() < 1e-9, "{}", h.state().time);
+        // A beat is half a second at 120 BPM: from the beat it is nearest.
+        h.key_press_modifiers(Modifiers::SHIFT, Key::ArrowRight);
+        h.run();
+        assert!((h.state().time - 1.5).abs() < 1e-9, "{}", h.state().time);
+        h.key_press(Key::End);
+        h.run();
+        assert_eq!(h.state().time, 20.0);
+        h.key_press(Key::Home);
+        h.run();
+        assert_eq!(h.state().time, 0.0);
+    }
+
+    #[test]
+    fn ctrl_c_and_ctrl_v_copy_the_timelines_keys_when_some_are_picked() {
+        let mut studio = Studio::headless();
+        let size = Address::own(ThingId(2), "radius");
+        studio.scene.set_key(&studio.kit.registry, &size, 2.0, Value::Number(60.0)).unwrap();
+        studio.selection.set(ThingId(2));
+        let mut h = editor_harness(studio);
+        h.get_by_label("Key at 0:02.00 of Ball · Size").click();
+        h.run();
+        h.key_press_modifiers(Modifiers::COMMAND, Key::C);
+        h.run();
+        assert!(matches!(h.state().clipboard, crate::things::Clipboard::Keys(_)));
+        h.state_mut().seek(6.0);
+        h.key_press_modifiers(Modifiers::COMMAND, Key::V);
+        h.run();
+        let times: Vec<f64> = h.state().scene.tracks[&size].keys.iter().map(|k| k.time).collect();
+        assert_eq!(times, [2.0, 6.0]);
+        // Picking a thing in the tree lets go of the keys: Ctrl+C copies the thing.
+        h.get_by_label("Ball").click();
+        h.run();
+        assert!(h.state().panels.timeline.selected.is_empty());
+        h.key_press_modifiers(Modifiers::COMMAND, Key::C);
+        h.run();
+        assert!(matches!(h.state().clipboard, crate::things::Clipboard::Things(_)));
+    }
+
+    #[test]
+    fn the_window_title_names_the_scene_and_marks_unsaved_changes() {
+        let mut studio = Studio::headless();
+        studio.scene.name = "Drop".into();
+        studio.saved = studio.scene.clone();
+        assert_eq!(studio.window_title(), "Drop – Ball Studio");
+        // Each edit moves the revision on, as recording a frame's edit does.
+        studio.scene.name = "Drop 2".into();
+        studio.revision += 1;
+        assert_eq!(studio.window_title(), "Drop 2 • – Ball Studio");
+        studio.scene.name = "  ".into();
+        studio.revision += 1;
+        assert_eq!(studio.window_title(), "Untitled • – Ball Studio");
     }
 }

@@ -70,7 +70,7 @@ mod tests {
         assert_eq!(hue_rgb(2.0 / 3.0), [0.0, 0.0, 1.0]);
         let y = hue_rgb(1.0 / 6.0);
         assert!((y[0] - 1.0).abs() < 1e-5 && (y[1] - 1.0).abs() < 1e-5 && y[2] == 0.0);
-        let src = include_str!("shaders/lighting.wgsl");
+        let src = crate::LIGHTING_WGSL;
         assert!(src.contains("abs(fract(vec3<f32>(h) + vec3<f32>(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0) - 1.0"));
     }
 

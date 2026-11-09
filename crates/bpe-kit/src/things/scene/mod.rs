@@ -4,6 +4,12 @@
 pub mod draw;
 pub mod sim;
 
+/// The First beat at setting as seconds the beat counting can use (0 when it is not a
+/// number, at most 600).
+pub fn first_beat_seconds(first_beat: f32) -> f64 {
+    if first_beat.is_finite() { (first_beat as f64).clamp(0.0, 600.0) } else { 0.0 }
+}
+
 pub use sim::SceneSim;
 
 use crate::paint::Paint;
@@ -134,6 +140,10 @@ pub struct SceneSettings {
     /// the physics doesn't.
     #[setting(label = "Tempo", range(20, 300), unit = "BPM", group = "Sound")]
     pub tempo: f32,
+    /// Where the first beat (and the first bar) lands, so the beats line up with a song that
+    /// doesn't start on one. Everything that counts beats or bars counts from here.
+    #[setting(label = "First beat at", range(0, 600), span(0, 10), unit = "s", group = "Sound")]
+    pub first_beat: f32,
     /// The time signature's top number: beats in a bar.
     #[setting(label = "Beats in a bar", range(1, 16), group = "Sound")]
     pub time_top: u32,
@@ -169,6 +179,7 @@ impl Default for SceneSettings {
             bg_glow_from: crate::modules::look::layers::gives_light::EmitFrom::ItsColours,
             bg_glow_colour: Color::WHITE,
             tempo: 120.0,
+            first_beat: 0.0,
             time_top: 4,
             time_bottom: TimeBottom::Four,
         }

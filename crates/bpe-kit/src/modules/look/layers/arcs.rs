@@ -157,17 +157,11 @@ pub struct ArcMoment {
     pub beat: Option<(f32, f32)>,
 }
 
-fn hash(mut x: u32) -> u32 {
-    x ^= x >> 16;
-    x = x.wrapping_mul(0x7feb_352d);
-    x ^= x >> 15;
-    x = x.wrapping_mul(0x846c_a68b);
-    x ^ (x >> 16)
-}
+use bpe_core::dice::lowbias32 as hash;
 
 /// 0 to 1 from a seed.
 fn unit(seed: u32) -> f32 {
-    (hash(seed) >> 8) as f32 / (1u32 << 24) as f32
+    bpe_core::dice::unit24(hash(seed))
 }
 
 /// Smooth value noise along one line, -1 to 1.

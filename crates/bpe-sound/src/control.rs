@@ -74,7 +74,7 @@ pub fn heard_fingerprint(scene: &Scene) -> u64 {
         }
     };
     if let Some(root) = scene.things.get(&ThingId::ROOT) {
-        for key in ["tempo", "time_top", "time_bottom"] {
+        for key in ["tempo", "time_top", "time_bottom", "first_beat"] {
             put(&Address::own(ThingId::ROOT, key), &root.params.get(key));
         }
         if let Some(mixer) = root.slots.get(&SlotId::Mixer) {
@@ -137,6 +137,8 @@ struct Bus {
     plays: bool,
     fader: f32,
     keyed: Option<Track>,
+    /// Where a rule's change of its fader is kept (W13).
+    ruled: bpe_runtime::ChangeKey,
 }
 
 /// One sounding shape.
@@ -202,14 +204,16 @@ struct Shared {
     light: [f32; k::MAX_EACH],
 }
 
-/// The knobs of `spec` at `time`: as set, keyed ones from their tracks.
-fn knobs_at(spec: &ShapeSpec, time: f64) -> Values {
+/// The knobs of `spec` at `time`: as set, keyed ones from their tracks, then what the rules of
+/// `world` change (as the engine reads them, W13).
+fn knobs_at(spec: &ShapeSpec, time: f64, world: &World) -> Values {
     let mut v = spec.base;
     for (i, track) in &spec.keyed {
         if let Some(x) = k::track_value(track, time) {
             v[*i] = x;
         }
     }
+    crate::voices::shape::rule_knobs(spec, world.rules(), time, &mut v);
     v
 }
 
@@ -238,13 +242,14 @@ impl ControlSampler {
                 plays: b.on && !b.mute && (!any_solo || b.solo),
                 fader: b.fader,
                 keyed: scene.tracks.get(&a).filter(|t| !t.keys.is_empty()).cloned(),
+                ruled: crate::ruled::mixer_key(&a.key),
             }
         });
         let shapes: Vec<Shape> = shape_specs(scene, resolved).into_iter().map(Shape::new).collect();
         let heard = shapes
             .iter()
             .map(|s| Heard {
-                filter: HitFilter::new(s.spec.thing, 0.0, 0.0, s.spec.heard_from.clone()),
+                filter: HitFilter::new(s.spec.thing, 0.0, 0.0, s.spec.heard_from.clone()).hearing(s.spec.balls),
                 done: 0,
                 last: None,
                 hits: Vec::new(),
@@ -265,6 +270,7 @@ impl ControlSampler {
                     return 0.0;
                 }
                 let fader = bus.keyed.as_ref().and_then(|tr| k::track_value(tr, time)).unwrap_or(bus.fader);
+                let fader = crate::ruled::at(world.rules(), &bus.ruled, fader, time);
                 let mut sum = 0.0;
                 for (i, s) in self.shapes.iter().enumerate() {
                     if s.spec.bus == *n {
@@ -344,10 +350,15 @@ impl Shape {
         }
         let per_step = SAMPLE_RATE as f64 / world.steps_per_second.max(1) as f64;
         let thing = self.spec.thing;
-        // In sample order, as the engine hears them (hits can land out of order within a step).
+        // In sample order, as the engine hears them (hits can land out of order within a step):
+        // a rule's note on this thing, and whatever else reaches the voices (the filter keeps the
+        // thing's own, W10).
         let mut new: Vec<(u64, &bpe_runtime::Event)> = events[h.done..]
             .iter()
-            .filter(|e| matches!(e.kind, EventKind::Hit | EventKind::Note) && e.b.map(|b| b.thing) == Some(thing))
+            .filter(|e| match e.kind {
+                EventKind::Note => e.b.map(|b| b.thing) == Some(thing),
+                _ => crate::hits::plays(&e.kind) && (e.a.thing == thing || e.b.is_some_and(|b| b.thing == thing)),
+            })
             .map(|e| (hit_sample(e, per_step), e))
             .collect();
         new.sort_by_key(|(sample, _)| *sample);
@@ -361,7 +372,13 @@ impl Shape {
                     .and_then(|(_, tr)| k::track_value(tr, time))
                     .unwrap_or(self.spec.base[place])
             };
-            h.filter.set(knob(k::MIN_STRENGTH) / 100.0, knob(k::RETRIGGER) / 1000.0);
+            let curve = crate::voices::StrengthCurve::of_knobs(knob(k::STRENGTH_FULL_AT), knob(k::STRENGTH_CURVE));
+            h.filter.set(knob(k::MIN_STRENGTH) / 100.0, knob(k::RETRIGGER) / 1000.0, curve);
+            // A ball's sound hears the hit from its own ball (W10); a rule's note is as it is.
+            let e = &match e.kind {
+                EventKind::Note => e.clone(),
+                _ => h.filter.seen(e),
+            };
             let hit = BlockHit { offset: 0, event: e.clone() };
             // A rule's note (rules part 6) passes no filter: its velocity is its strength.
             let accepted = match e.kind {
@@ -525,7 +542,9 @@ impl Shape {
                 _ => 0,
             };
             let since = seconds(t.saturating_sub(started)) as f64;
-            out.lfo[i] = lfo_value(&p, p.rate_hz.max(0.0) * since, since, l.seed);
+            // Running free, the cycles count from its origin (the first beat when synced).
+            let from = if started == 0 { p.origin } else { 0.0 };
+            out.lfo[i] = lfo_value(&p, p.rate_hz.max(0.0) * (since - from), since, l.seed);
         }
         for (i, d) in m.dists.iter().enumerate().take(k::MAX_EACH) {
             if m.dist_per_note(i) {
@@ -595,11 +614,11 @@ impl Shape {
             }
             Src::Hit(i) => {
                 let hv = match &n.hit {
-                    // A rule's note's strength is its velocity, as the engine has it.
-                    Some(h) if h.event.kind == EventKind::Note => {
+                    // The strength the hit played at (a rule note's is its velocity), as the
+                    // engine has it.
+                    Some(h) => {
                         HitValues { strength: h.strength, ..hit_values(world, self.spec.thing, &h.event, h.seed) }
                     }
-                    Some(h) => hit_values(world, self.spec.thing, &h.event, h.seed),
                     None => HitValues { strength: 1.0, ..HitValues::default() },
                 };
                 let at = |key: usize| kv[k::hit(i, key)];
@@ -634,7 +653,7 @@ impl Shape {
         } else {
             return 0.0;
         };
-        let kv = knobs_at(&self.spec, time);
+        let kv = knobs_at(&self.spec, time, world);
         let shared = self.shared(tempo, &kv, hits, world, log, t);
         match src {
             Src::Lfo(i) if !m.lfo_per_note(i) => shared.lfo[i],
@@ -651,7 +670,7 @@ impl Shape {
     /// How loud the shape is: the largest among its notes of its gain knobs (moved by their adding
     /// routes) times their scaling routes (Output's Volume, and the louder oscillator's Gain and Level).
     fn level(&self, tempo: &TempoMap, hits: &[Accepted], world: &World, log: &Log, t: u64, time: f64) -> f32 {
-        let kv = knobs_at(&self.spec, time);
+        let kv = knobs_at(&self.spec, time, world);
         let shared = self.shared(tempo, &kv, hits, world, log, t);
         let matrix = &self.spec.matrix;
         let mut vals = vec![0.0; self.src.len()];

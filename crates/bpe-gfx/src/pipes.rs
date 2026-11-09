@@ -452,7 +452,7 @@ mod tests {
 
     #[test]
     fn falloff_matches_the_shader() {
-        let src = include_str!("shaders/lighting.wgsl");
+        let src = crate::LIGHTING_WGSL;
         assert!(src.contains("return w * w / (1.0 + 16.0 * x * x);"));
         assert_eq!(falloff(0.0, 100.0, 0.0), 1.0);
         assert_eq!(falloff(100.0, 100.0, 1.0), 0.0);

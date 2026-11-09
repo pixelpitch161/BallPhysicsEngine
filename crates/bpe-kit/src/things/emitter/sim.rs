@@ -1019,7 +1019,7 @@ impl ThingSim for EmitterSim {
     }
 
     /// Aims worked out by test-firing are kept by the scene's fingerprint.
-    fn needs_fingerprint(&self, resolved: &ResolvedThing) -> bool {
+    fn needs_physics_print(&self, resolved: &ResolvedThing) -> bool {
         EmitterSettings::from_params(&resolved.params).aim == Aim::ThroughBounces
     }
 
@@ -1055,7 +1055,7 @@ impl ThingSim for EmitterSim {
     }
 
     /// The marker, the look-only variety and Leave trails change only how it looks.
-    fn affects_physics(&self, key: &str) -> bool {
+    fn key_restarts_physics(&self, key: &str) -> bool {
         !(key.starts_with("marker")
             || key.starts_with("flash_")
             || key.starts_with("ripple")

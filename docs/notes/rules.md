@@ -76,7 +76,7 @@ round's carried to the next step (`RulesState.carried`). A shape's **Balls pass 
 Part 4 is in (plan `part4.md`): **Health**. A **Health card** (`SlotId::Health`, last in `SlotId::ALL`; kind `health`,
 `bpe-kit/src/modules/health/`: Starting health (varies across balls at launch), Hits take Each hit / By strength /
 Nothing, Least strength, Only hits from (a `Target`), At zero Break / Nothing) goes on balls, emitters and shapes from
-"+ Add slot". The world keeps health in `RulesState.health` (`bpe-runtime/src/rules/health.rs`: `Health`, `Hp` per body
+"+ Add card". The world keeps health in `RulesState.health` (`bpe-runtime/src/rules/health.rs`: `Health`, `Hp` per body
 row, one for a thing without balls; the kit's `HealthSim` turns the card into a `HealthCard`); a scene with a Health card
 and no rule still gets a `RulesState`. The Rules stage first `fill`s new balls' starting health and works out the
 step's hits (`damage`, at zero the card's `at_zero` template `aimed` into `pending`), then runs the rules with
@@ -103,3 +103,16 @@ Show, crossfading from what showed) and `do.note` (`EventKind::Note`, tag 21: `b
 `normal.x` length, `speed` velocity; `HitCursor` places it, `ShapeVoice::rule_note` plays it past the hit filter (a
 drone on its own voice), `catch_up` replays its picks, `ControlSampler` hears it, MIDI records it). Tags 12..19 are left
 for parts 3 to 5. `tests/golden-rules*.txt` gain "Slow motion"; `bpe-sound/tests/rule_notes.rs`.
+
+**W13, more cards.** Change setting's Card (`CardChoice`) gains **Health**, **Air**, **Sound** and **Mixer**. Air and
+Health changes are physics (`World::is_physics` counts `BESIDE_SLOTS` and Health): an Air change reaches the scene
+sim's `settings_changed` (the air re-reads its card), a Health change prepares the card again in `World::animate`
+(`Health::set_card`: Least strength, Hits take, Only hits from and At zero from then on, Starting health for balls
+filled after it; balls keep the health they have). A rule changing Follow the air makes the air felt
+(`BlockSim::changes`). Sound and Mixer changes are never physics: the sound engine folds them each block from its own
+physics world's `RulesState` (`RulesState::whole_changes`, `bpe_sound::ruled`). `change::sound_reads` keeps a
+Sound/Mixer setting to keyframed, non-hold numbers; the editor's menu (`rules_panel/setting_menu.rs::heard_keys`)
+narrows it to `bpe_sound::voice_rule_keys` / `mixer_rule_keys`. A Set for good no longer clears the setting's list
+when added: `prune` drops what it hides `HIDDEN_KEPT` (0.1 s) after it is fully in, as the sound engine reads the
+changes a step behind its physics (the values are the same: a Set fully in gives its value whatever came before). Tests: `rules/health_tests.rs` (Least strength,
+Starting health, the wind), `bpe-sound/tests/rule_changes.rs`.

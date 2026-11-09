@@ -17,7 +17,7 @@ Moved word for word from CLAUDE.md on 2026-11-08 (workstream W1). Add each finis
   `widgets::setting_snapper`), Alt held is free (so Alt+click resets from the label only), typed numbers stay exact.
   `NumberFeel.snap` drives `span_slider` and `two_ended`; egui sliders and boxes snap after the fact (`after_drag`).
   Motion and Bounce show as one **Physics** card (`Card::Physics`, `PHYSICS` in `inspector.rs`: one header, Remove,
-  "+ Add slot" entry and jump-bar chip; each card's grid inside); the scene still keeps the two cards.
+  "+ Add card" entry and jump-bar chip; each card's grid inside); the scene still keeps the two cards.
   A selected shape is moulded in the preview (`shape_handles.rs`: corners, sides, bend handles, a circle's edge,
   Shift mirrors across the shape's middle line, right-click Add point / Create curve / Straighten / Delete point /
   Turn into points); a `look.shape` card shows the Look editor without the ball view or Reactions, and its Body
@@ -89,3 +89,215 @@ Moved word for word from CLAUDE.md on 2026-11-08 (workstream W1). Add each finis
   modulator | Level, the buses, and Stop following sound; a following slider shows a band ("Follows …"); the
   pulse lane says what it follows. `Studio.follow` holds a `ControlSampler` for `build_frame_with` while any
   setting follows sound.
+
+## Responsiveness (W6, 2026-11-08, plan `plans/2026-11-08-editor-responsiveness.md`)
+
+- **One picture recipe.** `preview::compose` builds every preview frame: soloed lights (`lights_panel::soloed`),
+  `follow` and `light_probe`, the World view's camera (`world_look`) and the Show bar (`show_light`). `draw_picture`
+  and the effects' warm-up (`preview/warm.rs::draw_at`) both use it, and the warm-up lends the particle playback's
+  particles to any replayed frame of the same step (in practice the playhead's own, the one swapped in; the replayed
+  frames before it have no particles, since the particle playback only holds the playhead's moment). A warm-up
+  restarts when the light show or the solo changes (`Seen`, `Warmup::light`).
+- **Warm-up budget.** It replays frames for `WARM_BUDGET` (8 ms) per editor frame (at least one) and keeps the spare
+  renderer `SPARE_KEEP` (2 s) after its last use, then drops it (`Shown::spare_used`, `warm::spare_due` asks for the
+  repaint that drops it).
+- **Held edits.** `Studio::hold_runs` is on while a pointer button is held anywhere but on a preview handle
+  (`Preview::dragging`). `scene_changed` always re-resolves and bumps the revision, then `restart_runs` compares the
+  physics, particle and sound fingerprints; held, a change only sets `runs_due` and the preview draws the old run with
+  the new looks. `settle_runs` (end of each frame) restarts them when the button is let go or after `RUNS_REST`
+  (100 ms) without a change. Preview drags restart every frame, so a dragged thing follows the pointer.
+- **Seeking** (`Studio::seek`) only moves the playhead; the preview's `draw_picture` catches the playback up one
+  `CATCH_UP_BUDGET` a frame. Tests use `Studio::catch_up`.
+- **Recording edits.** `Studio::snapshot` is the scene as last recorded: the frame compares the scene with it once
+  (`record_frame`) and copies the scene only when it changed. `after_edit`, undo, redo and `replace_scene` clear it
+  (the next frame copies afresh). A playing frame with no input, nothing flagged and the same revision skips even the
+  compare (`quiet_frame`). `unsaved()` is worked out once per revision (`unsaved_at`).
+- **Undo size.** `History` keeps `Step { scene, bytes }` (`bytes` = the scene's RON length, counted by
+  `history::scene_bytes` without writing the text); past `UNDO_BYTES` (256 MiB) in undo and redo, or `UNDO_LIMIT`
+  steps, the oldest undo steps go, never the newest.
+- **Look card views.** The ball view and the Group view keep a `ball_view::MiniCache`: the small scene is made each
+  frame and compared; it is resolved and hashed (`content_key`) only when it changed, and the ball view keeps the
+  `World` built from it (`build_view_frame_in` sets every ball's place, size, speed, life and hits afresh). Moving
+  and Hit repaint every 33 ms with the window in front, 250 ms behind other windows.
+- **Timeline.** The Hits lane's ticks are `timeline::HitTicks`, read once per hit as the log grows and again from the
+  start only for a new revision, ruler, length or a shorter log. The slot marks follow a growing log at most every
+  200 ms while playing (`SLOT_MARKS_EVERY`).
+- **Particles** are lent to the preview's world without copying: `particle_job::Snapshot::states` holds
+  `Arc<dyn ThingState>` and `Snapshot::lent` boxes the pointer (the runtime reads a boxed `Arc` as the state).
+- **Shaders off the editor's thread.** `bpe_gfx::ProgramStore` also holds the lighting's pipelines
+  (`lighting::LightKit`, with the Stage camera's `stage_camera_pass::StageKit`; `Lighting::with_kit` and
+  `StageCameraPass::with_kit` make the per-renderer buffers and pictures) and the picture effects
+  (`Programs::effect`, `effects::chain::Compiled` behind an `Arc`; `Chain::share`). A background store (the editor's
+  `preview::shared_programs`) builds them on their own threads: a lit frame draws unlit and an effect is left out
+  until ready, and `Renderer::programs_waiting` makes the views draw again in 50 ms. Exports and tests use the
+  default store, which builds at once, so their pictures never change. Every editor view shares one store, so each
+  shader is built once. While typing an effect's code, the call keeps drawing its last text that built until the new
+  one is ready (`Chain::last_built`); finished builds of text no longer asked for are collected each time
+  (`Programs::collect_effects`). A warm-up waits for the preview's shaders and starts over if the spare renderer
+  meets one still building (it shares the preview's own store). A store's pipelines belong to one device: never
+  share a store between devices (test devices give equal ids, so a mix-up isn't caught).
+- **Known limit.** While a slider is held, the preview draws the old run's places with the new looks, so a look that
+  depends on a physics setting (say a size) can look slightly off until you let go.
+
+## Never lose work, exports and errors (W4, 2026-11-08)
+
+Plan `docs/superpowers/plans/2026-11-08-never-lose-work.md` (findings E1 to E6 and C4 of the improvement review).
+
+- **Status line problems** (`app.rs`): `Studio.status` is the grey info line; `Studio.problem: Option<Problem>`
+  (`ProblemKind` Speakers, Graphics, File, Export, Recovery, Autosave) shows first in `style::PROBLEM` with a painted dot and a
+  "Dismiss" ×, and stays until dismissed or its own source calls `clear_problem(kind)` (the speakers coming back
+  clears only a Speakers problem; a good save or open clears File). Use `report(kind, text)` for any failure, never
+  `status`. The shader-skipped readout is in the problem colour too.
+- **Safe saves** (`files.rs`): `write_safely(path, text, backup)` writes `<name>.tmp`, `sync_all`s it, copies the old
+  file to `backup_path` (`My scene (backup).ron`, opens from the Open dialog) and renames the temp file over. Used by
+  `Studio::save` and the autosave.
+- **Autosave and recovery** (`recovery.rs`): each windowed editor owns `session-<pid>-<millis>.{ron,path,lock}` in
+  `settings_dir()/recovery/`, holding `.lock` with `File::try_lock` for its life (an unreadable lock counts as
+  held; `tidy` skips locks under 30 s old). `Studio::autosave` (from `tick`, which wakes the window with
+  `request_repaint_after` only while a copy is still owed) sends a clone to the session's worker thread on the first
+  change and then at most every `AUTOSAVE_EVERY` (60 s) while unsaved; the worker reports each write (`outcome`), so
+  an Autosave problem appears on failure and clears on the next success. The files are always cleared when the scene
+  goes from unsaved to saved/opened/new (`was_unsaved`; the crash hook may have written a copy the autosave didn't),
+  and on a clean exit (`on_exit`: when not unsaved or after "Don't save"; it empties the crash slot first). `recovery::orphans` lists
+  sessions whose lock can be taken, newest first; `start_recovery` tidies dead locks and offers the newest orphan
+  in the "Ball Studio closed unexpectedly" modal (Restore / Discard; when the scene's file is newer than the copy it
+  warns and leads with Discard, `Offer.file_newer`); `restore` keeps the original file name, sets `saved` to what
+  that file holds so the unsaved mark is honest, and deletes the old copy only after its own is written and flushed. A copy that won't load is renamed `.ron.broken` and
+  reported. Older orphans wait for later starts. Headless studios (tests) never autosave unless a test calls
+  `start_recovery` with a temporary folder.
+- **Crashes and the graphics card** (C4): `catch_gpu_errors` sets the window device's `on_uncaptured_error` (into
+  `Studio.gpu_errors`; `tell_gpu_errors` reports the first as a Graphics problem and afterwards only counts up in
+  place, so a per-frame complaint can be dismissed and never hides another problem) and a device-lost callback
+  (Destroyed ignored; triggers an immediate autosave). `recovery::install_crash_hook` wraps the panic hook: on the
+  editor's own thread only, `crash_save` `try_lock`s `Studio.crash_slot` (refreshed at most every `CRASH_COPY_EVERY`
+  = 1 s while unsaved), writes the session copy through its own `.crash.tmp` files and `last-crash.txt` in the
+  settings folder, then the default hook runs. `files::write_via` retries the final rename a few times on
+  PermissionDenied (OneDrive or an antivirus holding the file on Windows). The export and Preview final frame
+  threads set their own device's error handler (a complaint stops the job with an error) and a job whose thread
+  disconnects ends as "stopped unexpectedly" instead of looking busy forever.
+- **Export** (`export_window.rs`): `progress_percent`, `take_news` (Saved / Failed / Cancelled, told by
+  `tell_export_news`: "Video saved: x.mp4 (1:02 min)." or an Export problem). The status line shows "· Exporting 40%"
+  (click opens the window). Closing while exporting asks "A video is still exporting (40%). Stop it and close?"
+  (`Studio.ask_stop_export`, `stop_export_dialog`; Stop runs `shutdown` then the usual unsaved question).
+  `explain_export_error` turns raw errors into a plain sentence (file in use, disk full, ffmpeg won't start, no H.264,
+  out of memory, graphics card stopped, no adapter, stopped unexpectedly); the window shows it in the problem colour
+  with a collapsed Details fold (scrolling, selectable log, Copy details). A target file that can't be opened for
+  writing fails before the sound render. Choices (size, compression, encoder by `Encoder::key`, stems, MIDI, ffmpeg)
+  are remembered in `export-next.txt` (`ExportWindow::load_in`, written when they change); not the file or Bake.
+  `pretend_busy` fakes a running job for tests.
+
+## Editor workflow (W5, 2026-11-08)
+
+Plan `docs/superpowers/plans/2026-11-08-editor-workflow.md` (findings E7 to E14 of the improvement review).
+
+- **Shortcuts** (`app.rs`): `shortcuts` (first in the frame) adds End (to the end) and Left/Right (a video frame;
+  with Shift a beat, from `TempoMap`; `Studio::step`, pauses). `late_shortcuts` runs after the central panel, so a
+  focused text box or the timeline has had the keys first: Ctrl+D (`duplicate_selection`), Ctrl+C / Ctrl+V (also
+  egui's `Event::Copy` / `Event::Paste` / `Event::PasteImage`, which egui-winit sends instead of the keys): the
+  timeline's picked keys first, else things. egui-winit sends Ctrl+V only when the system clipboard holds text or a
+  picture, so every copy here also puts "Ball Studio: Copied …" there (`Studio.copied_note`, sent by
+  `late_shortcuts`); Delete when the left panel isn't Things (the tree takes it itself there). Each is an own undo step
+  (`separate_edit`). The window title is `window_title()` ("Name • – Ball Studio"; Untitled when blank), sent with
+  `ViewportCommand::Title` only when it changes.
+- **Copy, paste, duplicate things** (`bpe-core/src/clip.rs`, `bpe-studio/src/things.rs`): `Scene::copy_things` makes a
+  `ThingClip` of the tops of the selection with everything under them, their tracks, pulses and the fonts and
+  pictures they name; the scene settings and cameras are left out. `paste_things(clip, parent, after)` gives new ids
+  (kept attachments only under the same parent), "X copy" names when taken, new track colours, relinks Target /
+  Who / LightScenes / pulse sources (inside the clip to the copies; outside kept only if the same thing is there
+  by id, kind and name, else Anything, counted in `Pasted.unlinked` and said in the status line) and renames
+  clashing fonts and pictures. `Studio.clipboard` (`Clipboard::{Empty, Things, Keys}`) lasts through New and Open.
+  The tree's row menu has Duplicate, Copy, Paste <what> and Delete with their shortcuts (`Button::shortcut_text`;
+  kittest labels them "Paste Ball Ctrl+V"). Paste goes into a selected folder, beside another selected thing, else
+  under the scene. "+ Add thing" sits at the top of the tree.
+- **Timeline keys** (`timeline/mod.rs`): `Timeline.selected` is a set of `(Address, index)`; click picks one,
+  Shift/Ctrl+click adds or removes, dragging on a lane's empty part draws a box (Shift adds), Escape clears.
+  `picked_at` keeps each picked key's time as the timeline last drew; a key whose index now holds another time (a
+  key added in front of it elsewhere) drops out, and undo/redo clear the selection. Dragging
+  a picked key moves them all (`GroupDrag` keeps the tracks as the drag began; `Scene::move_keys` lays them out
+  again each frame and settles at the end, keys put on others replacing them; never before 0). The key menu's Ease
+  applies to every picked key, plus Copy N keys, Repeat every bar / every 2 bars (copies of the picked keys every
+  bar, or every `floor(span / bar) + 1` bars so the first key's copy never lands on the last key, to the end of the
+  video, at most `MOST_REPEATS`), Delete N keys. Copied keys (`KeyClip`, times from the first)
+  paste at the playhead onto the open thing (the lane menu's "Paste N keys at the playhead", or Ctrl+V), onto the
+  same settings where it has them.
+- **Setting menu** (`widgets.rs::row_menu_following`): Reset to default (<value>) (greyed at the default) and Remove
+  all keyframes (greyed with no keys; `Scene::clear_keys` keeps the value at the playhead). `GridOutcome.cleared` and
+  `ValueMenu::RemoveKeys` carry it; every grid caller adds `Edit::ClearKeys` beside `Edit::NewKey`, and the Mixer,
+  Master, Sound tab and Lights strip knobs call `inspector::clear_keys`. A widget's own double-click no longer
+  resets (it starts typing in a number box); the label's double-click or Alt+click still does.
+- **Pictures in the scene** (`bpe-core/src/scene_pictures.rs`, `picture_picker.rs`): `Scene.pictures` holds PNG bytes
+  by name (base64 in the file, left out when empty; pictures no `picture` setting names are left out on save). The
+  Picture row's "…" reads the file into a `PictureRequest`; the inspector checks the PNG signature, keeps it
+  (`add_picture`, same bytes → same name) and sets every selected thing's Picture. Particles' `SpotsKey::Picture`
+  reads the kept bytes first (an older scene's file path still works); `reads_tree` is true for a picture
+  source so the world keeps the scene for it. A name that is neither kept nor a file
+  shows "Picture not found" in the problem colour.
+- **Empty preview and drops** (`preview.rs`, `drops.rs`): a scene with only its settings and cameras shows a hint in
+  the middle of the preview; files held over the window show "Drop to open it". `Studio::take_drops` (after
+  `late_shortcuts`): a `.ron` opens (asking to save first; the first scene only), a `.ttf` / `.otf` is kept with
+  `add_font` and the selected Texts are set in it, a `.png` is kept and the selected Particles things (else a new
+  one) form it (`from = a_word_or_picture`, `word_from = picture`); anything else is a File problem. egui 0.37's
+  dropped files are `Arc<dyn DroppedFile>` (`path()`, `bytes()`); tests push their own.
+- **Find a setting** (`inspector/find.rs`): a box above the jump bar. While it holds text, the cards and jump bar give
+  way to every setting whose name or section holds every word typed, under its card's title (the thing's own, each plain card's,
+  each layer's "Look · Glow"), with sections blanked so nothing folds away; rows edit, key and follow as in their
+  card. Escape or Clear empties it. "+ Add slot" is now "+ Add card".
+
+## Ready-made looks (E12, 2026-11-08)
+
+Spec `docs/superpowers/specs/2026-11-08-ready-made-looks-design.md`, plan `plans/2026-11-08-ready-made-looks.md`. The
+looks themselves are in `bpe-kit/src/ready_looks/` (`engine.md`).
+
+- **Looks tab** (`looks_page/`): Balls and Emitters get Settings | Looks tabs, Shapes Settings | Looks | Sound
+  (`inspector.rs::tabs`, `InspectorTab::Looks`). `Inspector::wide_open` (was `sound_open`) is true on a Sound or Looks
+  tab, so the inspector takes the Sound tab's wide width. `LooksPage` (in `Inspector.looks`) keeps the family shown,
+  the Find a look words, the look picked per wearer kind (`Wears`), Colours (The look's / Keep mine) and the line under
+  the buttons. Three columns from 600 points wide (families, tiles, preview), else stacked.
+- **Tiles** (`grid.rs`, `thumbs.rs`): a click picks a look; hovering shows it in the preview. Each tile is the look
+  worn by the selected ball itself (a `ball_view::mini_scene` with the look applied, its trail moving when it has one)
+  or, for a shape look, by a sample solid ellipse holding the shape's own Look first. One shared 168 px `Renderer`
+  draws them, at most `PER_FRAME` (4) a frame, and each is copied into a texture of its own; a tile is drawn again
+  only when its key (the thing's kind, Look card, Look keys and pulses, radius, the look and colours) changes, or its
+  shaders were still building. Without a GPU (and until drawn) a tile paints the look's two swatch colours
+  (`grid::swatch`, also used by the add menu).
+- **Preview** (`preview.rs`, `shape_view.rs`): a ball look is the Look editor's ball view
+  (`ball_view::show_dressed`, the small scene dressed with the look) with Still / Moving / Hit; a shape look is
+  `ShapeView`, the shape alone on the dark ground with Still / Playing / Hit, framed by the path's `reach`. Use this
+  look (Replace) and Add its layers on top (OnTop) put the *picked* look on the primary and every selected thing that
+  can wear it (`ready_looks::fits`: the kind and a Look card), each with its own colours under Keep mine; each press
+  sets `own_step`, so it is one Ctrl+Z of its own however soon it follows another edit. Keep mine is greyed when no
+  thing reached has colours to keep (looks with colours of their own, shapes with no Colour layer); the buttons are
+  greyed for a thing with no Look card. The page's scroll area has its own id (`"looks page"`, and the Sound tab's
+  `"sound tab"`), so the tabs keep their own scroll places. A tile that can't be drawn is remembered by its key and
+  not tried again every frame.
+- **Add menu** (`tree.rs::with_looks`): Balls, Emitter and Shape are submenus: Plain, the seven favourites with their
+  swatch (`Action::AddWithLook` → `ready_looks::add_with_look`), More looks… (`Action::AddForLooks`: a plain one,
+  `TreeOutcome.looks`, and the app opens its Looks tab). Tree tests click the kind, then Plain.
+
+## Producer features (W11, 2026-11-08)
+
+Plan `docs/superpowers/plans/2026-11-08-producer-features.md`; the engine side is in `sound.md`.
+
+- **Sample panel** (`sound_tab/sample_panel.rs`): the Sample chip on Osc A or B shows the sample's name and Load…
+  (`pick_sound_file`, `read_sound_file` probes it; a problem goes to the tab's note), "Sample not found" or the file's
+  read error, "Reading the sound file…" while it decodes, the waveform from the peaks with Start (a line) and the loop
+  (a shaded span, reversed with Reverse), the knobs (Gain, Level, Octave, Semi, Cents, Pan; Root, Start, Loop
+  start/end, Loop fade), Loop chips and the Follow notes and Reverse switches. `TabEdit::LoadSample` →
+  `write::load_sample` keeps the file and sets Root from a note in its name.
+- **Save sound… / Load sound…** (Enable sound row, right side, and its right-click menu): `write::save_sound` /
+  `load_sound` (`.ballsound`, through `files::write_safely`); a sound loaded or pasted brings its sound files, renamed
+  on a clash (`copy_clip` / `paste_clip`; the inspector's sound clipboard is a `SoundClip`). What happened shows as a
+  `TabNote` under Enable sound, on that thing only.
+- **Import MIDI…** (Notes header, `notes/header.rs::read_midi`): `TabEdit::ImportMidi` → `write::import_midi` writes
+  the slots, keyboard range, the scene's tempo and time signature and Slots change (or clears and sets Jump to slot
+  keys from First beat at), and the note says how many chords went into how many slots, what was left out and
+  whether the tempo changes in the file. One undo step.
+- **Backing track row** (`mixer/backing.rs`, under the tempo row): Load song…, the name and length, ×, On, Starts at,
+  Level, and a problem line. `set_backing` is shared with drops: a dropped WAV, FLAC, MP3, OGG or AIFF becomes the
+  backing track (`drops.rs::drop_song`).
+- **Song lane** (`timeline/mod.rs::song_lane`, under Hits while there is a backing track): the song's waveform where
+  it plays, dimmed while off.
+- `app.rs::follow_bakes` also follows `SampleBank::decoded()` / `busy()`.
+- Tests: `osc.rs` `sample_shows_its_panel_and_says_when_the_sample_is_missing`, `sound_tab`
+  `save_and_load_sound_and_import_midi_are_offered`, `write.rs` (load sample, save/load across scenes with a rename,
+  copy across scenes, import MIDI By tempo and as keys), `mixer/backing.rs`, the drop tests in `app.rs`.

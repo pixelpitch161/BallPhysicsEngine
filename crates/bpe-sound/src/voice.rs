@@ -38,9 +38,22 @@ pub trait VoiceSource: Send {
     /// voice goes on as it would have from the start. May take a while; never on the steady
     /// sound path.
     fn catch_up(&mut self, _hits: &[(u64, BlockHit)], _upto: u64, _tempo: &TempoMap, _world: &World) {}
+    /// After the physics moved (never on the steady sound path, so it may work and allocate):
+    /// works out ahead what its blocks will read from `world`, such as the light on the balls.
+    fn prepare(&mut self, _world: &World, _log: &bpe_runtime::Log) {}
     /// Takes over what `old` (the same thing's voice from before a patch swap) is still
     /// playing, so ringing notes carry on.
     fn adopt(&mut self, _old: &mut dyn VoiceSource) {}
+    /// How long a note it starts can still be heard, in seconds, at the longest its keys set
+    /// (`tempo` for lengths in beats). A seek warms up at least this long.
+    fn warm_up(&self, _tempo: &TempoMap) -> f64 {
+        0.0
+    }
+    /// Whether it holds notes for as long as something lasts (a drone, a gate until the next
+    /// hit): a seek then warms up at least [`crate::patch::HELD_WARM_UP`].
+    fn holds(&self) -> bool {
+        false
+    }
     /// Fades everything out over `ms` (its thing went away); then it stays silent.
     fn fade_out(&mut self, _ms: f32) {}
     /// Whether it is making no sound and will make none (a faded-out voice can then go).
@@ -127,7 +140,10 @@ impl VoiceSource for TestTone {
 
     fn on_block(&mut self, _cx: &BlockCx, hits: &[BlockHit], out_l: &mut [f32; BLOCK], out_r: &mut [f32; BLOCK]) {
         let length = self.length();
-        let mine = |h: &&BlockHit| h.event.a.thing == self.thing || h.event.b.is_some_and(|b| b.thing == self.thing);
+        let mine = |h: &&BlockHit| {
+            crate::hits::touches(&h.event.kind)
+                && (h.event.a.thing == self.thing || h.event.b.is_some_and(|b| b.thing == self.thing))
+        };
         let mut starting = hits.iter().filter(mine).peekable();
         for i in 0..BLOCK {
             while starting.next_if(|h| h.offset as usize <= i).is_some() {
@@ -152,6 +168,10 @@ impl VoiceSource for TestTone {
 
     fn reset(&mut self) {
         self.notes = [u64::MAX; 16];
+    }
+
+    fn warm_up(&self, _tempo: &TempoMap) -> f64 {
+        self.length() as f64 / crate::SAMPLE_RATE as f64
     }
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {

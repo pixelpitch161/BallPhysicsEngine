@@ -47,8 +47,8 @@ struct FieldLook {
     kind: vec4<f32>,
     // amount, size, drift x, drift y
     detail: vec4<f32>,
-    // smoke: shading, light from (radians), dark inside, 0; flame: bend, flicker, flicker speed,
-    // brightness
+    // smoke: shading, light from (radians), dark inside, relief (world pixels: above 0 the real
+    // lights shade it, W15); flame: bend, flicker, flicker speed, brightness
     shade: vec4<f32>,
     light: vec4<f32>,
     emit: vec4<f32>,
@@ -174,8 +174,12 @@ fn field_colour(in: FieldOut) -> vec4<f32> {
     // Per world pixel (the samples are two field texels, four output pixels, apart), times 4 px:
     // the same at any picture size or zoom.
     let slope = vec2<f32>(gx, gy) / max(g.view.z, 1e-6) * look.kind.w;
-    // Lit where the density falls off towards the light, shaded where it rises.
-    let facing = clamp(-dot(slope, towards) * 2.0, -1.0, 1.0);
+    // Lit where the density falls off towards the light, shaded where it rises; in a lit scene
+    // (a relief) the real lights do that through its height instead.
+    var facing = clamp(-dot(slope, towards) * 2.0, -1.0, 1.0);
+    if look.shade.w > 0.0 {
+        facing = 0.0;
+    }
     var shade = 1.0 + clamp(look.shade.x, 0.0, 1.0) * facing * 0.6;
     shade = shade * mix(1.0, exp(-dens * 0.6), clamp(look.shade.z, 0.0, 1.0));
     let rgb = tint * max(shade, 0.0);
@@ -187,7 +191,19 @@ fn field_colour(in: FieldOut) -> vec4<f32> {
 
 @fragment
 fn fs_field(in: FieldOut) -> @location(0) vec4<f32> {
-    return light_flat(field_colour(in), look.light.x, look.light.y, look.emit.rgb, look.extra);
+    let c = field_colour(in);
+    // Smoke the real lights shade (W15): in the surface picture it stands up by its cover, so the
+    // lighting mix turns each puff's side to the lights; a matte sheet (surface 0).
+    let m = g.light.x;
+    if look.kind.x < 0.5 && look.shade.w > 0.0 && look.extra.y < 0.5 && m > 1.5 && m < 2.5 {
+        let a = clamp(c.a, 0.0, 1.0);
+        var blocks = clamp(look.light.y, 0.0, 1.0);
+        if g.light.z > 0.5 {
+            blocks = select(0.0, 1.0, blocks > 0.0);
+        }
+        return vec4<f32>(blocks * a, look.shade.w * a * a, 0.0, a);
+    }
+    return light_flat(c, look.light.x, look.light.y, look.emit.rgb, look.extra);
 }
 
 @fragment

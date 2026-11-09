@@ -7,11 +7,11 @@
 //! or adds colours that go with the first. How the colours mix, Loop, each gap's blend and the
 //! gradient's companions are in the tabs under the bar (`gradient_tabs.rs`).
 
+use bpe_core::dice::Rng;
 use bpe_core::{Color, Gradient, Mix, Stop};
 use bpe_kit::paint::harmony::{Harmony, add_matching};
 use bpe_kit::paint::palette_gen;
 use bpe_kit::paint::palettes::{Palette, built_in};
-use bpe_kit::rng::Rng;
 use eframe::egui::{
     self, Color32, Popup, PopupCloseBehavior, Pos2, Rect, Response, Sense, Stroke, Ui, Vec2, color_picker::Alpha,
 };

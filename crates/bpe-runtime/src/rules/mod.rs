@@ -43,6 +43,11 @@ pub const MOST_REMEMBERED: usize = 4096;
 /// The most changes one setting keeps at a time (see [`RulesState::add_change`]).
 pub const MOST_CHANGES: usize = 64;
 
+/// Seconds a change hidden under a Set fully in for good is kept: longer than the sound engine's
+/// physics runs ahead of the block it plays (a step and a few blocks), so the sound folds the same
+/// changes the physics did at its time.
+const HIDDEN_KEPT: f64 = 0.1;
+
 /// The slowest and fastest the simulation can run (Slow motion's pace).
 pub const MIN_PACE: f32 = 0.01;
 pub const MAX_PACE: f32 = 8.0;
@@ -595,13 +600,12 @@ impl RulesState {
 
     // --- Changes ------------------------------------------------------------------------------
 
-    /// Adds a running change; a Set with no glide that lasts for good replaces what was there.
+    /// Adds a running change. A Set with no glide that lasts for good hides what was there from
+    /// its start on; [`RulesState::prune`] drops what it hides a little later, as the sound engine,
+    /// which reads the changes just behind the physics, may still be before it (W13).
     pub(crate) fn add_change(&mut self, key: ChangeKey, change: Change) {
         let now = change.start;
         let list = self.changes.entry(key.clone()).or_default();
-        if change.covers() && change.glide <= 0.0 {
-            list.clear();
-        }
         list.push(change);
         // A setting keeps at most MOST_CHANGES: changes fully in for good that add (or multiply)
         // one after another become one, else the oldest goes.
@@ -631,7 +635,10 @@ impl RulesState {
         for (key, list) in self.changes.iter_mut() {
             let before = list.len();
             list.retain(|c| !c.done(time));
-            if let Some(last) = list.iter().rposition(|c| c.covers() && time >= c.start + c.glide.max(0.0)) {
+            // A Set fully in for good gives its value whatever came before it (a weight of 1), so
+            // keeping what it hides changes no setting; it goes once the sound has passed it too.
+            let hidden = |c: &Change| c.covers() && time >= c.start + c.glide.max(0.0) + HIDDEN_KEPT;
+            if let Some(last) = list.iter().rposition(hidden) {
                 list.drain(..last);
             }
             if list.len() != before && list.is_empty() {
@@ -791,6 +798,21 @@ impl RulesState {
         (!rows.is_empty()).then_some(Ruled { time, rows })
     }
 
+    /// `thing`'s changes for the whole thing on `slot`, by setting key, in key order (the sound
+    /// engine folds those on its Sound and Mixer cards once a block). Never allocates.
+    pub fn whole_changes(&self, thing: ThingId, slot: Option<SlotId>) -> impl Iterator<Item = (&str, &[Change])> {
+        let from = ChangeKey { thing, slot, row: None, key: String::new() };
+        self.changes
+            .range(from..)
+            .take_while(move |(k, _)| k.thing == thing && k.slot == slot && k.row.is_none())
+            .map(|(k, l)| (k.key.as_str(), l.as_slice()))
+    }
+
+    /// Whether `thing` has a change for the whole thing on `slot`.
+    pub fn has_whole_changes(&self, thing: ThingId, slot: Option<SlotId>) -> bool {
+        self.whole_changes(thing, slot).next().is_some()
+    }
+
     /// Every change on `key` (for tests and the editor).
     pub fn changes_on(&self, key: &ChangeKey) -> &[Change] {
         self.changes.get(key).map_or(&[], Vec::as_slice)
@@ -824,7 +846,7 @@ impl Ruled {
 
 /// The params of `thing`'s own settings (`slot` none) or of its card in `slot`.
 pub(crate) fn params_mut(resolved: &mut Resolved, thing: ThingId, slot: Option<SlotId>) -> Option<&mut Params> {
-    let r = resolved.things.get_mut(&thing)?;
+    let r = std::sync::Arc::make_mut(resolved.things.get_mut(&thing)?);
     match slot {
         None => Some(&mut r.params),
         Some(slot) => r.slots.get_mut(&slot).map(|s| &mut s.params),

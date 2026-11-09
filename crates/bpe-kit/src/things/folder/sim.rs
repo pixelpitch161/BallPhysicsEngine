@@ -19,7 +19,7 @@ impl ThingSim for FolderSim {
         world.poses.insert(thing, pose);
     }
 
-    fn affects_physics(&self, _key: &str) -> bool {
+    fn key_restarts_physics(&self, _key: &str) -> bool {
         true
     }
 }

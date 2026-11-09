@@ -142,6 +142,8 @@ pub struct World {
     /// read them (particles born on the beat).
     pub beat_seconds: f64,
     pub beats_in_bar: u32,
+    /// Where the first beat is, in seconds (the scene's First beat at): beats count from there.
+    pub first_beat: f64,
     /// Bytes each thing's state takes beyond its own struct, for the states that hold a lot
     /// Their sims note it; [`World::memory`] counts it for playback budgets.
     pub state_memory: BTreeMap<ThingId, usize>,
@@ -160,7 +162,7 @@ pub struct World {
     /// Every built thing's parent, how it hangs off it and its own transform.
     attach: BTreeMap<ThingId, (ThingId, Attach, Transform)>,
     /// Per thing and slot, the module kind and its prepared state (Motion and Bounce).
-    modules: BTreeMap<ThingId, Prepared>,
+    pub(crate) modules: BTreeMap<ThingId, Prepared>,
     /// The keyframes and pulses that move physics settings, with the resolved scene they are
     /// written into step by step. `None` when nothing physical is animated.
     animated: Option<Animated>,
@@ -173,8 +175,14 @@ pub struct World {
     /// Each ball's pull from the lights this step (Moths), by thing and body row, in pixels per
     /// second squared: worked out once a step after Spawn, added in every substep.
     pulls: BTreeMap<ThingId, Vec<Vec2>>,
+    /// Whether some ball follows the scene's air ([`crate::air_felt`]): the air then wakes at the
+    /// build and steps with the physics, at the start of every step.
+    pub air_felt: bool,
+    /// The air each ball that follows it is in this step and how hard it follows (px/s, per s), by
+    /// thing and body row: worked out once a step after Spawn, used in every substep.
+    pub(crate) air_at: BTreeMap<ThingId, Vec<(Vec2, f32)>>,
     /// The scene's physics fingerprint (the one without the history, [`sound_fingerprint`]'s),
-    /// when some thing's sim asked for it ([`crate::ThingSim::needs_fingerprint`]). Two worlds
+    /// when some thing's sim asked for it ([`crate::ThingSim::needs_physics_print`]). Two worlds
     /// with the same one run alike step for step, so work keyed by it can be shared.
     pub fingerprint: Option<u64>,
     /// The scene's rules as they run (none without an enabled rule).
@@ -237,8 +245,8 @@ pub fn physics_animation(scene: &Scene, resolved: &Resolved, sims: &Sims) -> Opt
         Some(slot) if BESIDE_SLOTS.contains(&slot) => true,
         Some(_) => false,
         None => match (resolved.things.get(&thing).and_then(|r| sims.thing(&r.kind)), scene.things.get(&thing)) {
-            (Some(s), Some(t)) => s.affects_physics_in(scene, t, bpe_core::vary::base_key(key)),
-            (Some(s), None) => s.affects_physics(bpe_core::vary::base_key(key)),
+            (Some(s), Some(t)) => s.key_restarts_physics_here(scene, t, bpe_core::vary::base_key(key)),
+            (Some(s), None) => s.key_restarts_physics(bpe_core::vary::base_key(key)),
             (None, _) => false,
         },
     });
@@ -288,6 +296,7 @@ impl World {
             video: Vec2::new(1080.0, 1920.0),
             beat_seconds: 0.5,
             beats_in_bar: 4,
+            first_beat: 0.0,
             state_memory: BTreeMap::new(),
             gpu_memory: BTreeMap::new(),
             kinds: BTreeMap::new(),
@@ -301,6 +310,8 @@ impl World {
             sound: None,
             light: None,
             pulls: BTreeMap::new(),
+            air_felt: false,
+            air_at: BTreeMap::new(),
             fingerprint: None,
             rules: None,
             pace: 1.0,
@@ -315,7 +326,7 @@ impl World {
         }
         // Worked out first: a thing may cache work by it while it builds.
         let wants_fingerprint =
-            resolved.things.values().any(|r| sims.thing(&r.kind).is_some_and(|s| s.needs_fingerprint(r)));
+            resolved.things.values().any(|r| sims.thing(&r.kind).is_some_and(|s| s.needs_physics_print(r)));
         if wants_fingerprint {
             world.fingerprint = Some(sound_fingerprint(scene, resolved, sims));
         }
@@ -335,8 +346,15 @@ impl World {
         // (the editor's main playback) leaves out the keys only those things read, so an Air
         // key following sound or light gives it no sound or light to work out.
         // (A rule may keep such a thing in the main playback: it is built, so it senses too.)
+        // Balls that follow the air (and haze moving with it) read the Air card's keys in every
+        // world.
+        world.air_felt = crate::air_felt(scene, sims);
         let decorated = resolved.things.values().any(|r| sims.thing(&r.kind).is_some_and(|s| !s.in_main(r)));
-        let sensed = if decorated { animation.clone() } else { animation.as_ref().and_then(main_animation) };
+        let sensed = if decorated || crate::air_read(scene, resolved, sims) {
+            animation.clone()
+        } else {
+            animation.as_ref().and_then(main_animation)
+        };
         // Things that need the walls (none of today's kinds) are built in a second pass, so
         // an arena after them in the tree is there all the same; they come last in `order`. A
         // thing without a sim is still known by kind and tags, so a target can name it.
@@ -392,6 +410,12 @@ impl World {
             if let Some(sim) = world.kinds.get(&id).and_then(|kind| sims.thing(kind)) {
                 sim.after_build(id, &mut world);
             }
+        }
+        // Balls that follow the air find it awake from the start, in every world.
+        if world.air_felt
+            && let Some(air) = sims.air.clone()
+        {
+            air.wake(&mut world);
         }
         // Light sensing, only when something physical follows light: the probe is there before
         // the balls' places in light spreads are first worked out.
@@ -489,6 +513,16 @@ impl World {
             }
             let Some(r) = animated.resolved.things.get(&thing) else { continue };
             match slot {
+                // A rule changed the Health card: the thing's card is read again (each ball keeps
+                // the health it has).
+                Some(SlotId::Health) => {
+                    if let Some(s) = r.slots.get(&SlotId::Health)
+                        && let Some(sim) = sims.health(&s.kind)
+                        && let Some(rules) = self.rules.as_mut()
+                    {
+                        rules.health.set_card(thing, sim.prepare(&s.params));
+                    }
+                }
                 Some(slot) => {
                     if let Some(s) = r.slots.get(&slot)
                         && let Some(msim) = sims.module(&s.kind)
@@ -542,12 +576,13 @@ impl World {
     /// every Motion and Bounce setting, and a thing's own settings its sim says do.
     pub fn is_physics(&self, sims: &Sims, thing: ThingId, slot: Option<SlotId>, key: &str) -> bool {
         match slot {
-            Some(slot) => SIM_SLOTS.contains(&slot),
+            // The air and health a rule changes move the physics too (W13).
+            Some(slot) => SIM_SLOTS.contains(&slot) || BESIDE_SLOTS.contains(&slot) || slot == SlotId::Health,
             None => self
                 .kinds
                 .get(&thing)
                 .and_then(|k| sims.thing(k))
-                .is_some_and(|s| s.affects_physics(bpe_core::vary::base_key(key))),
+                .is_some_and(|s| s.key_restarts_physics(bpe_core::vary::base_key(key))),
         }
     }
 
@@ -865,7 +900,13 @@ impl World {
             gravity: self.gravity,
             bodies: self.bodies.iter().filter(|(id, _)| kept(id)).map(|(id, b)| (*id, b.clone())).collect(),
             walls: self.walls.iter().filter(|(id, _)| kept(id)).map(|(id, w)| (*id, w.clone())).collect(),
-            states: self.states.iter().filter(|(id, _)| kept(id)).map(|(id, s)| (*id, s.clone())).collect(),
+            // The air goes along while balls follow it (it lives under the scene's id).
+            states: self
+                .states
+                .iter()
+                .filter(|(id, _)| kept(id) || (self.air_felt && **id == ThingId::ROOT))
+                .map(|(id, s)| (*id, s.clone()))
+                .collect(),
             poses: self.poses.clone(),
             names: self.names.clone(),
             tags: self.tags.clone(),
@@ -875,6 +916,7 @@ impl World {
             video: self.video,
             beat_seconds: self.beat_seconds,
             beats_in_bar: self.beats_in_bar,
+            first_beat: self.first_beat,
             state_memory: BTreeMap::new(),
             gpu_memory: BTreeMap::new(),
             kinds: self.kinds.clone(),
@@ -894,6 +936,8 @@ impl World {
             sound: self.sound.clone(),
             light: self.light.clone(),
             pulls: BTreeMap::new(),
+            air_felt: self.air_felt,
+            air_at: BTreeMap::new(),
             fingerprint: self.fingerprint,
             // A test flight finds its ways as if no rule acted from now on, health staying as it is.
             rules: self.rules.as_ref().and_then(crate::rules::RulesState::lone),
@@ -1137,6 +1181,7 @@ impl World {
         }
         self.refresh_rows(sims, log);
         self.work_out_pulls(sims, log);
+        self.work_out_air(sims);
 
         // Clamp speeds, remember where everything started and find the fastest ball.
         let mut fastest: f32 = 0.0;
@@ -1234,7 +1279,7 @@ impl World {
     /// Forces from the Motion modules, then Integrate, per body thing.
     fn move_bodies(&mut self, sims: &Sims, dt: f32) {
         let time = self.sim_clock();
-        let World { gravity, bodies, modules, seed, pulls, .. } = self;
+        let World { gravity, bodies, modules, seed, pulls, air_at, .. } = self;
         let gravity = *gravity;
         let seed = *seed;
         for (id, bodies) in bodies.iter_mut() {
@@ -1250,6 +1295,16 @@ impl World {
                     }
                 } else {
                     sim.forces_at(s.state.as_ref(), bodies, gravity, dt, &cx);
+                }
+            }
+            // The air (Follow the air), worked out at the step's start.
+            if let Some(air) = air_at.get(id) {
+                for (i, (wind, grip)) in air.iter().enumerate().take(bodies.len()) {
+                    if *grip > 0.0 && bodies.alive[i] && !bodies.held[i] {
+                        let take = 1.0 - (-grip * dt).exp();
+                        let v = bodies.velocity[i];
+                        bodies.velocity[i] = v + (*wind - v) * take;
+                    }
                 }
             }
             // The lights' pull (Moths), worked out at the step's start.
@@ -1619,7 +1674,12 @@ pub fn sound_fingerprint(scene: &Scene, resolved: &Resolved, sims: &Sims) -> u64
 /// step with it ([`crate::ThingSim::in_main`] false) and no enabled rule reads it
 /// ([`crate::BlockSim::keeps`]: a rule that reads it changes the balls, so it steps with them).
 pub fn is_beside(scene: &Scene, sims: &Sims, id: ThingId, r: &bpe_core::ResolvedThing) -> bool {
-    if !sims.thing(&r.kind).is_some_and(|s| !s.in_main(r)) {
+    let Some(sim) = sims.thing(&r.kind) else { return false };
+    if sim.in_main(r) {
+        return false;
+    }
+    // Heat moves the air the balls follow: a thing that heats it steps with them.
+    if sim.heats_air(r) && crate::air_felt(scene, sims) {
         return false;
     }
     let tags = scene.things.get(&id).map_or(NO_TAGS, |t| &t.tags);
@@ -1689,7 +1749,7 @@ fn beside_hash(
     for (id, r) in &resolved.things {
         let Some(sim) = sims.thing(&r.kind).filter(|s| s.in_main(r)) else { continue };
         for (key, value) in r.params.iter() {
-            if sim.affects_beside(key) {
+            if sim.key_restarts_beside(key) {
                 h.bytes(&id.0.to_le_bytes());
                 h.bytes(key.as_bytes());
                 h.value(value);
@@ -1703,9 +1763,9 @@ fn beside_hash(
         let sim = sims.thing(&r.kind).expect("a beside thing has a sim");
         let Some(thing) = scene.things.get(id) else { continue };
         h.bytes(&id.0.to_le_bytes());
-        h.bytes(&sim.more_fingerprint(r).to_le_bytes());
+        h.bytes(&sim.beside_print_extra(r).to_le_bytes());
         // What else of the saved scene it reads (the Text a Particles thing spells).
-        let more = sim.fingerprint_more(scene, thing, r);
+        let more = sim.physics_print_extra(scene, thing, r);
         if more != 0 {
             h.bytes(&more.to_le_bytes());
         }
@@ -1720,7 +1780,7 @@ fn beside_hash(
             h.value(value);
         }
         for (slot, s) in r.slots.iter().filter(|(slot, _)| !SIM_SLOTS.contains(slot)) {
-            for (key, value) in s.params.iter().filter(|(key, _)| sim.beside_card_key(*slot, key)) {
+            for (key, value) in s.params.iter().filter(|(key, _)| sim.card_key_restarts_beside(*slot, key)) {
                 h.bytes(&[*slot as u8]);
                 h.bytes(key.as_bytes());
                 h.value(value);
@@ -1826,12 +1886,12 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
         }
         if let Some(sim) = sims.thing(&r.kind) {
             for (key, value) in r.params.iter() {
-                if sim.affects_physics_in(scene, thing, bpe_core::vary::base_key(key)) {
+                if sim.key_restarts_physics_here(scene, thing, bpe_core::vary::base_key(key)) {
                     h.bytes(key.as_bytes());
                     h.value(value);
                 }
             }
-            let more = sim.fingerprint_more(scene, thing, r);
+            let more = sim.physics_print_extra(scene, thing, r);
             if more != 0 {
                 h.bytes(b"more");
                 h.bytes(&more.to_le_bytes());
@@ -1847,7 +1907,7 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
             h.bytes(tag.as_bytes());
         }
         // Only modules the processor simulates count, and the cards of a thing that reads its own.
-        let owns = sims.thing(&r.kind).is_some_and(|s| s.own_cards());
+        let owns = sims.thing(&r.kind).is_some_and(|s| s.steps_own_cards());
         for slot in SIM_SLOTS {
             if let Some(s) = r.slots.get(&slot)
                 && (owns || sims.module(&s.kind).is_some())
@@ -1867,7 +1927,7 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
             }
         }
         // What else its stepping keeps (two-way particles' trails and marks), so a change rebuilds it.
-        if let Some(more) = sims.thing(&r.kind).map(|s| s.more_fingerprint(r)).filter(|m| *m != 0) {
+        if let Some(more) = sims.thing(&r.kind).map(|s| s.beside_print_extra(r)).filter(|m| *m != 0) {
             h.bytes(b"more");
             h.bytes(&more.to_le_bytes());
         }
@@ -1886,9 +1946,11 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
             }
         }
     }
-    // A thing in the physics that reads its own cards (two-way particles) may read the air too:
-    // then the air's cards and keys count.
-    if resolved.things.values().any(|r| sims.thing(&r.kind).is_some_and(|s| s.own_cards())) {
+    // A thing in the physics that reads its own cards (two-way particles) may read the air too,
+    // and balls that follow the air (or haze moving with it) do: then the air's cards and keys
+    // count.
+    let felt = crate::air_read(scene, resolved, sims);
+    if felt || resolved.things.values().any(|r| sims.thing(&r.kind).is_some_and(|s| s.steps_own_cards())) {
         for (id, r) in &resolved.things {
             for slot in BESIDE_SLOTS {
                 if let Some(s) = r.slots.get(&slot) {
@@ -1918,8 +1980,11 @@ fn fingerprint_of(scene: &Scene, resolved: &Resolved, sims: &Sims, history: bool
         }
     }
     // Keyframes and pulses on physics settings: moving a key changes the run. Keys on the cards
-    // only the things beside the physics read are theirs ([`beside_fingerprint`]).
-    let animation = physics_animation(scene, resolved, sims).as_ref().and_then(main_animation);
+    // only the things beside the physics read are theirs ([`beside_fingerprint`]), unless balls
+    // follow the air: then the air's keys (and the sound or light they follow) move the balls.
+    let animation = physics_animation(scene, resolved, sims)
+        .as_ref()
+        .and_then(|a| if felt { Some(a.clone()) } else { main_animation(a) });
     if let Some(animation) = &animation {
         for a in animation.addresses() {
             h.bytes(format!("{a:?}").as_bytes());

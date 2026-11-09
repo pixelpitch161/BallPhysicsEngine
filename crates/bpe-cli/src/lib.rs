@@ -6,6 +6,7 @@
 
 use anyhow::{Context, bail};
 use bpe_core::{Scene, Settings};
+use bpe_gfx::yuv::PixelLayout;
 use bpe_gfx::{Frame, Readback, Renderer, build_frame_sensing, wgpu};
 use bpe_kit::{Kit, SceneSettings};
 use bpe_runtime::{Log, World};
@@ -29,7 +30,7 @@ pub struct ExportOptions {
     pub max_frames: Option<u32>,
     /// Which video encoder to use.
     pub encoder: Encoder,
-    /// Also save each bus and the master as 24-bit WAVs beside the video.
+    /// Also save each bus and the master as 32-bit float WAVs beside the video.
     pub stems: bool,
     /// Also save the notes the shapes played as a MIDI file beside the video.
     pub midi: bool,
@@ -84,6 +85,17 @@ impl Encoder {
         }
     }
 
+    /// The short name [`Encoder::from_name`] reads back: auto, cpu, nvidia, amd or intel.
+    pub fn key(self) -> &'static str {
+        match self {
+            Encoder::Auto => "auto",
+            Encoder::Cpu => "cpu",
+            Encoder::Nvidia => "nvidia",
+            Encoder::Amd => "amd",
+            Encoder::Intel => "intel",
+        }
+    }
+
     pub fn from_name(name: &str) -> Option<Self> {
         Some(match name {
             "auto" => Encoder::Auto,
@@ -93,6 +105,15 @@ impl Encoder {
             "intel" | "qsv" => Encoder::Intel,
             _ => return None,
         })
+    }
+
+    /// The pixel format this encoder takes, as the export hands it the frames (`-pix_fmt` in
+    /// [`Encoder::args`]): planar for x264 and NVENC, nv12 for AMF and Quick Sync.
+    pub fn layout(self) -> PixelLayout {
+        match self {
+            Encoder::Auto | Encoder::Cpu | Encoder::Nvidia => PixelLayout::Yuv420p,
+            Encoder::Amd | Encoder::Intel => PixelLayout::Nv12,
+        }
     }
 
     /// ffmpeg arguments for this encoder at x264-style quality `crf` and speed `preset`.
@@ -445,16 +466,26 @@ fn draw_video(
     mut progress: impl FnMut(u32) -> bool,
 ) -> anyhow::Result<()> {
     let Picture { width, height, fps, total, encoder } = *picture;
+    // The frames come back as the encoder's own video colours, worked out on the graphics card
+    // (review S23); RGBA (converted by ffmpeg) only for a size 4:2:0 can't take.
+    let layout = encoder.layout();
+    let layout = if layout.fits(width, height) { layout } else { PixelLayout::Rgba };
     let mut ffmpeg = Command::new(&options.ffmpeg);
     ffmpeg.args(["-hide_banner", "-loglevel", "error", "-y"]);
-    ffmpeg.args(["-f", "rawvideo", "-pix_fmt", "rgba", "-s", &format!("{width}x{height}"), "-r", &fps.to_string()]);
+    ffmpeg.args(["-f", "rawvideo", "-pix_fmt", layout.ffmpeg_name(), "-s", &format!("{width}x{height}")]);
+    ffmpeg.args(["-r", &fps.to_string()]);
+    if layout != PixelLayout::Rgba {
+        ffmpeg.args(["-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]);
+    }
     ffmpeg.args(["-i", "-"]);
     if silence {
         // A silent stereo track, so apps that expect sound take the clip.
         ffmpeg.args(["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]);
         ffmpeg.args(["-map", "0:v", "-map", "1:a"]);
     }
-    ffmpeg.args(["-vf", "scale=out_color_matrix=bt709:out_range=tv"]);
+    if layout == PixelLayout::Rgba {
+        ffmpeg.args(["-vf", "scale=out_color_matrix=bt709:out_range=tv"]);
+    }
     ffmpeg.args(encoder.args(options.crf, &options.preset));
     ffmpeg.args(["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]);
     if silence {
@@ -485,7 +516,7 @@ fn draw_video(
     };
 
     let mut renderer = Renderer::new(device, width, height);
-    let mut readback = Readback::new(device, width, height, FRAMES_IN_FLIGHT);
+    let mut readback = Readback::with_layout(device, width, height, FRAMES_IN_FLIGHT, layout);
     // Drawn from a run that keeps pace with the frames, exactly as the preview plays.
     let mut maker = FrameMaker::new(scene, kit);
     let bake = bake_for(scene, kit, options.bake);
@@ -787,6 +818,13 @@ fn collect_stderr(child: &mut Child) -> std::thread::JoinHandle<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn encoder_keys_read_back() {
+        for encoder in [Encoder::Auto, Encoder::Cpu, Encoder::Nvidia, Encoder::Amd, Encoder::Intel] {
+            assert_eq!(Encoder::from_name(encoder.key()), Some(encoder));
+        }
+    }
 
     #[test]
     fn only_a_graphics_card_failure_is_tried_again_on_the_cpu() {
