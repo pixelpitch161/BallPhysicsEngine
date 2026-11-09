@@ -74,6 +74,8 @@ pub const MOST_DICHROIC: usize = 16;
 struct BindCache {
     /// Each group and whether it was used since the last sweep.
     groups: std::sync::Mutex<std::collections::HashMap<BindKey, (wgpu::BindGroup, bool)>>,
+    /// How many groups it has made (for tests).
+    made: std::sync::atomic::AtomicUsize,
 }
 
 const MOST_KEPT_BINDS: usize = 256;
@@ -125,6 +127,7 @@ impl BindCache {
             groups.clear();
         }
         let g = device.create_bind_group(desc);
+        self.made.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         groups.insert(key, (g.clone(), true));
         g
     }
@@ -139,8 +142,8 @@ impl BindCache {
         self.groups.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
-    fn len(&self) -> usize {
-        self.groups.lock().unwrap_or_else(|e| e.into_inner()).len()
+    fn made(&self) -> usize {
+        self.made.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -1713,9 +1716,10 @@ impl Lighting {
         t.behind.clone()
     }
 
-    /// How many bind groups the lighting keeps (review S24; a test checks a second frame adds none).
-    pub(crate) fn binds_kept(&self) -> usize {
-        self.binds.len()
+    /// How many bind groups the lighting has made (review S24; a test checks a frame like the last
+    /// makes none).
+    pub(crate) fn binds_made(&self) -> usize {
+        self.binds.made()
     }
 
     /// The 1b uniform at `index`, made the first time.

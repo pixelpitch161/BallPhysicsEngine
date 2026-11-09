@@ -1688,9 +1688,9 @@ impl Renderer {
         self.light_tiles = on;
     }
 
-    /// How many bind groups the lighting keeps between frames (review S24; for tests).
-    pub fn lighting_binds_kept(&self) -> usize {
-        self.lighting.as_ref().map_or(0, |l| l.binds_kept())
+    /// How many bind groups the lighting has made (review S24: it keeps them between frames; for tests).
+    pub fn lighting_binds_made(&self) -> usize {
+        self.lighting.as_ref().map_or(0, |l| l.binds_made())
     }
 
     pub fn lighting_stats(&self) -> Option<(usize, Option<f32>)> {

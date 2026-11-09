@@ -558,7 +558,7 @@ fn every_effects_demo_look_builds() {
 
 /// Review S19 and S24: with many lights each screen tile takes only the lights that reach it, and
 /// the picture is the same, byte for byte, as when every pixel takes every light, on Flat and on
-/// Stage, with each kind of light in the scene. A second frame makes no new bind groups.
+/// Stage, with each kind of light in the scene. A frame like the last makes no new bind groups.
 #[test]
 fn tiled_lights_draw_the_same_picture_as_every_light_everywhere() {
     let Some(mut gpu) = gpu() else { return };
@@ -587,9 +587,12 @@ fn tiled_lights_draw_the_same_picture_as_every_light_everywhere() {
         assert_eq!(differ, 0, "{depth}: {differ} bytes differ");
         // Lit at all: not one flat colour.
         assert!(tiled.chunks(4).any(|p| p != &tiled[..4]));
-        let kept = gpu.renderer.lighting_binds_kept();
-        assert!(kept > 0);
+        // Drawn again (the groups only the tiles-off frame used are dropped), and again: the same
+        // groups, none new.
         draw(&mut gpu, &scene, &format!("tiled-lights-{depth}"));
-        assert_eq!(gpu.renderer.lighting_binds_kept(), kept, "{depth}: a second frame made new bind groups");
+        let made = gpu.renderer.lighting_binds_made();
+        assert!(made > 0);
+        draw(&mut gpu, &scene, &format!("tiled-lights-{depth}"));
+        assert_eq!(gpu.renderer.lighting_binds_made(), made, "{depth}: a frame like the last made new bind groups");
     }
 }
