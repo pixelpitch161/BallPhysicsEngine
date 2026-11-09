@@ -102,7 +102,12 @@ fn label_of(scene: &Scene, kit: &Kit, a: &Address) -> String {
         Some(slot) if let Some((layer, _)) = bpe_core::split_layered(&a.key) => {
             // A layer's setting goes by the layer's own name: "Ball · Outline · Width".
             let name = found.and_then(|t| t.slots.get(&slot)).and_then(|c| c.layer(layer)).map(|l| l.name.as_str());
-            match def.map(|d| d.group).filter(|g| !g.is_empty() && slot == SlotId::Mixer) {
+            // A label its layer has more than once ("Red" for HSL's hue, saturation and luminance)
+            // goes with its group: "Scene settings · HSL / Colour · Saturation · Red".
+            let kind = found.and_then(|t| t.slots.get(&slot)).and_then(|c| c.layer(layer)).map(|l| l.kind.as_str());
+            let defs = kind.and_then(|k| kit.registry.layer(k)).map(|k| k.settings()).unwrap_or(&[]);
+            let shared = def.is_some_and(|d| defs.iter().filter(|o| o.label == d.label).count() > 1);
+            match def.map(|d| d.group).filter(|g| !g.is_empty() && (slot == SlotId::Mixer || shared)) {
                 // A bus effect's band: "Scene settings · Equalizer · Band 5 · Frequency".
                 Some(group) => format!("{thing} · {} · {group} · {setting}", name.unwrap_or("?")),
                 None => format!("{thing} · {} · {setting}", name.unwrap_or("?")),

@@ -219,6 +219,7 @@ fn settings(ui: &mut Ui, scene: &Scene, kit: &Kit, rule: &Rule, block_id: BlockI
         follow: None,
         vary: None,
         offers: None,
+        rails: None,
     };
     let right = ui.available_rect_before_wrap().right();
     let mut out: Vec<(String, Value)> = Vec::new();

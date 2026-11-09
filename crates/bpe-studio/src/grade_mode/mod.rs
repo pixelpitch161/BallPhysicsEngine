@@ -4,7 +4,9 @@
 //! mask's panels in the order they work, and the preview compares After, Before and Split.
 //!
 //! - `cx.rs`: reading the card and applying edits; `panels.rs`: the panel column;
-//! - `curve.rs`: the Tone Curve's graph; `scopes.rs`: the Histogram.
+//! - `curve.rs`: the Tone Curve's graph; `scopes.rs`: the Histogram;
+//! - `colour.rs`: the colour panels' bodies (HSL / Colour, Point Colour, Colour Grading,
+//!   Calibration) and their coloured rails; `wheel.rs`: Colour Grading's colour wheel.
 //!
 //! Everything here but the card itself is the editor's own: never saved, never exported.
 
@@ -14,12 +16,14 @@ use bpe_core::{LayerId, Slot};
 use eframe::egui::{self, RichText, Ui};
 use std::collections::{BTreeMap, BTreeSet};
 
+pub mod colour;
 pub mod curve;
 pub mod cx;
 pub mod panels;
 pub mod scopes;
 #[cfg(test)]
 mod tests;
+pub mod wheel;
 
 /// The editor's two faces: building the scene, or grading its picture. Not saved.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -74,6 +78,39 @@ impl Channel {
     }
 }
 
+/// Which sliders an HSL / Colour panel shows (Lightroom's tabs).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HslView {
+    #[default]
+    Hue,
+    Saturation,
+    Luminance,
+    All,
+}
+
+impl HslView {
+    pub const ALL: [HslView; 4] = [HslView::Hue, HslView::Saturation, HslView::Luminance, HslView::All];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            HslView::Hue => "Hue",
+            HslView::Saturation => "Saturation",
+            HslView::Luminance => "Luminance",
+            HslView::All => "All",
+        }
+    }
+}
+
+/// Which wheels a Colour Grading panel shows (Lightroom's views).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WheelView {
+    /// Shadows, midtones and highlights side by side.
+    #[default]
+    ThreeWay,
+    /// One region's wheel, big, with its sliders: 0 shadows, 1 midtones, 2 highlights, 3 global.
+    One(usize),
+}
+
 /// Grade mode's own state.
 pub struct GradeMode {
     pub compare: Compare,
@@ -95,6 +132,12 @@ pub struct GradeMode {
     pub bins: Option<Box<bpe_gfx::grade::HistogramBins>>,
     /// The picture changed since the last count was asked for: count again when that one is in.
     pub recount: bool,
+    /// The sliders each HSL / Colour panel shows.
+    pub hsl_view: BTreeMap<LayerId, HslView>,
+    /// The wheels each Colour Grading panel shows.
+    pub wheel_view: BTreeMap<LayerId, WheelView>,
+    /// The pick each Point Colour panel shows (its slot, 0..8).
+    pub pick: BTreeMap<LayerId, usize>,
     /// The card the column shows before the scene has one.
     start: Option<Slot>,
 }
@@ -112,6 +155,9 @@ impl Default for GradeMode {
             curve_drag: None,
             bins: None,
             recount: false,
+            hsl_view: BTreeMap::new(),
+            wheel_view: BTreeMap::new(),
+            pick: BTreeMap::new(),
             start: None,
         }
     }

@@ -72,6 +72,7 @@ pub(super) fn surface_section(
         follow: Some(&follow),
         vary: None,
         offers: None,
+        rails: None,
     };
     let out = settings_grid(ui, ("surface", id, slot), &defs, get, &grid);
     edits.extend(out.changes.into_iter().map(|(key, value)| Edit::SetSlot(slot, key.into(), value)));

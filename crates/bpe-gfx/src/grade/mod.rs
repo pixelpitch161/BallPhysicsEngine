@@ -31,3 +31,10 @@ pub const OP_CURVE: u32 = 2;
 pub const OP_CHROMA: u32 = 3;
 pub const OP_BEGIN: u32 = 4;
 pub const OP_END: u32 = 5;
+pub const OP_HUE: u32 = 6;
+pub const OP_POINT: u32 = 7;
+pub const OP_WHEELS: u32 = 8;
+pub const OP_DARK_TINT: u32 = 9;
+
+/// Samples in the HSL panel's row over the Oklab hue, one a degree (`shaders/grade.wgsl` reads the same number).
+pub const HUE_SAMPLES: usize = 360;

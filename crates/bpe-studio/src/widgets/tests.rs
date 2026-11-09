@@ -254,6 +254,7 @@ fn balls_grid(keyed: bool) -> egui_kittest::Harness<'static, State> {
                     follow: None,
                     vary: None,
                     offers: None,
+                    rails: None,
                 };
                 let got = settings_grid(ui, "g", defs, |k| state.values[k].clone(), &cx);
                 for (key, value) in got.changes {
@@ -466,6 +467,7 @@ fn open_grid(defs: &'static [SettingDef]) -> egui_kittest::Harness<'static> {
                 follow: None,
                 vary: None,
                 offers: None,
+                rails: None,
             };
             settings_grid(ui, "g", defs, |k| value(k).unwrap(), &cx);
         });
@@ -523,6 +525,7 @@ fn a_section_with_no_shown_rows_has_no_heading() {
             follow: None,
             vary: None,
             offers: None,
+            rails: None,
         };
         settings_grid(ui, "g", defs, |k| value(k).unwrap(), &cx);
     });

@@ -20,7 +20,7 @@ Each folder's `mod.rs` starts with a short map of its own files; this page is th
 | `frame/layers.rs`, `cull.rs` | Blend layers and the overlay; the view (`set_view`), list limits and culling |
 | `frame/light.rs` | What the lighting reads: `LightScene`, `LightGpu`, `LightingGpu`, surfaces, mirrors, spheres, throwers, pipes, benders, `LightShow` |
 | `frame/effects.rs` | `EffectCall`, `Stage`, `Takes`, `BackgroundPaint` |
-| `frame/grade.rs` | The picture's grade: `GradeStack`, `GradeMask`, `GradePanel`, `GradeBasic`, `GradeToneCurve` |
+| `frame/grade.rs` | The picture's grade: `GradeStack`, `GradeMask`, `GradePanel`, `GradeBasic`, `GradeToneCurve`, the colour panels (`GradeHsl`, `GradePointColour`, `GradeColourGrading`, `GradeCalibration`) |
 | `grade/` + `shaders/grade.wgsl`, `shaders/scopes.wgsl` | The grade compiled to a program (`compile.rs`), its maths (`maths.rs`), the Histogram (`scopes.rs`) |
 | `frame/ripples.rs` | Ripple sources |
 | `renderer/` | The `Renderer`. `mod.rs`: its fields and small accessors, `Globals`, `FrameBuffers`, `GrowableBuffer`, vertex layouts |
@@ -57,7 +57,7 @@ Each folder's `mod.rs` starts with a short map of its own files; this page is th
 | `widgets/mod.rs` | What setting rows share: `GridCx`, `Row`, `TargetChoices`, `GridOutcome` |
 | `widgets/grid.rs`, `setting.rs`, `menu.rs` | The settings grid and group headings; one setting's row and widget; its right-click menu |
 | `widgets/numbers.rs`, `pickers.rs`, `words.rs` | Number sliders and their feel; who, target and colour pickers; settings in words |
-| `grade_mode/` | Grade mode: `mod.rs` (state, the mode switch, the masks column), `cx.rs` (reading the card, `GradeEdit`, `apply`), `panels.rs` (the panel column), `curve.rs` (the Tone Curve graph), `scopes.rs` (the Histogram) |
+| `grade_mode/` | Grade mode: `mod.rs` (state, the mode switch, the masks column), `cx.rs` (reading the card, `GradeEdit`, `apply`), `panels.rs` (the panel column), `curve.rs` (the Tone Curve graph), `scopes.rs` (the Histogram), `colour.rs` (the colour panels' bodies and coloured rails), `wheel.rs` (Colour Grading's wheel) |
 | `mixer/`, `lights_panel/`, `look_editor/`, `timeline/`, `preview/` + `preview.rs`, `rules_panel/`, `sound_tab/`, `looks_page/`, `style/` | Unchanged by the split: see `editor.md` |
 
 ## bpe-runtime (the physics)
@@ -94,7 +94,8 @@ Part 1 is built (`docs/notes/grading.md`): `SlotId::Grade` and the `Mask`, `Mask
 `shaders/grade.wgsl` in `bpe-gfx` (run in the composite, `renderer/grade.rs`); Grade mode in
 `bpe-studio/src/grade_mode/` (chosen in `app/mod.rs::ui`, the switch in `app/panels.rs`, keys in
 `app/shortcuts.rs`, the preview's compare in `preview.rs`, the timeline filter in `timeline/mod.rs`, the Scene
-settings summary in `inspector/own.rs::grade_summary`). Later parts add panels to `modules/grade/`, steps to
+settings summary in `inspector/own.rs::grade_summary`). Part 2 added the colour panels (`hsl.rs`, `point_colour.rs`, `colour_grading.rs`,
+`calibration.rs` in the kit; four ops in `grade/compile.rs` and the shader). Later parts add panels to `modules/grade/`, steps to
 `grade/compile.rs` and the shader, and masks as more `Mask` layers.
 
 ## Still long

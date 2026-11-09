@@ -428,18 +428,19 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         world_view::draw_camera(&painter, &studio.scene, &studio.resolved, world, studio.playback.log(), &view, active);
     }
 
-    // Grade mode only looks: no handles, no picking; Split has its line.
-    if grading {
+    // Pick from picture: the click picks a colour and does nothing else (in Grade mode too: Point
+    // Colour picks from the picture as it is shown).
+    if crate::eyedropper::target(ui.ctx()).is_some() {
         preview.drag = None;
-        split_line(ui, &response, rect, studio);
+        pick_colour(ui, &response, rect, &preview.renderer, device, &render_state.queue);
         studio.panels.preview = Some(preview);
         return outcome;
     }
 
-    // Pick from picture: the click picks a colour and does nothing else.
-    if crate::eyedropper::target(ui.ctx()).is_some() {
+    // Grade mode only looks: no handles; Split has its line.
+    if grading {
         preview.drag = None;
-        pick_colour(ui, &response, rect, &preview.renderer, device, &render_state.queue);
+        split_line(ui, &response, rect, studio);
         studio.panels.preview = Some(preview);
         return outcome;
     }

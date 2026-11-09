@@ -16,6 +16,13 @@ const OP_CURVE: u32 = 2u;
 const OP_CHROMA: u32 = 3u;
 const OP_BEGIN: u32 = 4u;
 const OP_END: u32 = 5u;
+const OP_HUE: u32 = 6u;
+const OP_POINT: u32 = 7u;
+const OP_WHEELS: u32 = 8u;
+const OP_DARK_TINT: u32 = 9u;
+
+const HUE_SAMPLES: u32 = 360u;
+const TAU: f32 = 6.2831853;
 
 // The tone space: the sRGB transfer curve, the same formula carried on above 1, mirrored below 0.
 fn tone1(x: f32) -> f32 {
@@ -118,6 +125,90 @@ fn grade_chroma(lab: vec3<f32>, vibrance: f32, saturation: f32) -> vec3<f32> {
     return vec3<f32>(lab.x, lab.yz * scale);
 }
 
+// Oklab to lightness, chroma, hue (0 for a grey: atan2(0, 0) may not be a number on every card).
+fn grade_lch(lab: vec3<f32>) -> vec3<f32> {
+    let c = length(lab.yz);
+    var h = 0.0;
+    if c >= 1e-7 {
+        h = atan2(lab.z, lab.y);
+    }
+    return vec3<f32>(lab.x, c, h);
+}
+
+fn grade_from_lch(lch: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(lch.x, lch.y * cos(lch.z), lch.y * sin(lch.z));
+}
+
+// The HSL panel (see grade/maths.rs `hsl`): its row over the hue at `at`.
+fn grade_hsl(at: u32, lab: vec3<f32>) -> vec3<f32> {
+    let lch = grade_lch(lab);
+    if lch.y < 1e-7 {
+        return lab;
+    }
+    let turns = lch.z / TAU;
+    let t = (turns - floor(turns)) * f32(HUE_SAMPLES);
+    let i = min(u32(t), HUE_SAMPLES - 1u);
+    let j = (i + 1u) % HUE_SAMPLES;
+    let row = mix(grade_prog[at + 1u + i], grade_prog[at + 1u + j], t - f32(i));
+    let k = clamp(lch.y / 0.08, 0.0, 1.0);
+    return grade_from_lch(vec3<f32>(lch.x * exp2(0.8 * row.z * k), lch.y * max(1.0 + row.y, 0.0), lch.z + row.x));
+}
+
+fn grade_smooth(a: f32, b: f32, x: f32) -> f32 {
+    let t = clamp((x - a) / (b - a), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+// Point Colour (see grade/maths.rs `point_colour`): `n` picks of three words from `at + 1`, every
+// weight from the colour as it came.
+fn grade_point(at: u32, n: u32, lab: vec3<f32>) -> vec3<f32> {
+    let lch = grade_lch(lab);
+    var out = lab;
+    for (var k = 0u; k < n; k++) {
+        let p = at + 1u + 3u * k;
+        let pick = grade_lch(grade_prog[p].xyz);
+        let shift = grade_prog[p + 1u].xyz;
+        let inv = grade_prog[p + 2u].xyz;
+        let dh = 2.0 * sqrt(lch.y * pick.y) * sin((lch.z - pick.z) * 0.5);
+        let d = length(vec3<f32>((lch.x - pick.x) * inv.x, (lch.y - pick.y) * inv.y, dh * inv.z));
+        let w = 1.0 - grade_smooth(0.35, 1.0, d);
+        if w > 0.0 {
+            let now = grade_lch(out);
+            out = grade_from_lch(vec3<f32>(now.x * exp2(0.8 * shift.z * w), now.y * max(1.0 + shift.y * w, 0.0), now.z + shift.x * w));
+        }
+    }
+    return out;
+}
+
+// Colour Grading (see grade/maths.rs `colour_wheels`).
+fn grade_wheels(at: u32, lab: vec3<f32>) -> vec3<f32> {
+    let head = grade_prog[at + 1u];
+    let x0 = clamp(lab.x, 0.0, 1.0);
+    let pivot = head.x;
+    var x = 0.5 + 0.5 * (x0 - pivot) / (1.0 - pivot);
+    if x0 < pivot {
+        x = 0.5 * x0 / pivot;
+    }
+    let ws = 1.0 - grade_smooth(1.0 / 3.0 - head.y, 1.0 / 3.0 + head.y, x);
+    let wh = grade_smooth(2.0 / 3.0 - head.y, 2.0 / 3.0 + head.y, x);
+    let wm = max(1.0 - ws - wh, 0.0);
+    let s = grade_prog[at + 2u];
+    let m = grade_prog[at + 3u];
+    let h = grade_prog[at + 4u];
+    let g = grade_prog[at + 5u];
+    let tint = clamp(lab.x / 0.25, 0.0, 1.0);
+    let ab = lab.yz + (s.xy * ws + m.xy * wm + h.xy * wh + g.xy) * tint;
+    let l = max((lab.x + s.z * ws + m.z * wm + h.z * wh) * exp2(head.z), 0.0);
+    return vec3<f32>(l, ab);
+}
+
+// Calibration's Shadows Tint (see grade/maths.rs `dark_tint`).
+fn grade_dark_tint(gain: vec3<f32>, c: vec3<f32>) -> vec3<f32> {
+    let y = dot(vec3<f32>(0.2126, 0.7152, 0.0722), c);
+    let w = 1.0 - grade_smooth(0.0, 0.18, y);
+    return c * (vec3<f32>(1.0) + (gain - vec3<f32>(1.0)) * w);
+}
+
 // The grade over one linear colour at `uv` across the picture.
 fn run_grade(colour: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
     let head = grade_prog[0];
@@ -147,6 +238,14 @@ fn run_grade(colour: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
         } else if op == OP_CHROMA {
             let n = grade_prog[at + 1u];
             c = grade_chroma(c, n.x, n.y);
+        } else if op == OP_HUE {
+            c = grade_hsl(at, c);
+        } else if op == OP_POINT {
+            c = grade_point(at, u32(h.w), c);
+        } else if op == OP_WHEELS {
+            c = grade_wheels(at, c);
+        } else if op == OP_DARK_TINT {
+            c = grade_dark_tint(grade_prog[at + 1u].xyz, c);
         } else if op == OP_BEGIN {
             saved = c;
         } else if op == OP_END {

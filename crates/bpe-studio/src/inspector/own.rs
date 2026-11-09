@@ -177,6 +177,7 @@ pub(super) fn own_grid(
         follow: Some(&follow),
         vary: vary.as_ref(),
         offers: Some(&offers),
+        rails: None,
     };
     let out = settings_grid(ui, grid, defs, get, &grid_cx);
     fold_groups(inspector, (id, None), &out.folds);

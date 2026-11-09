@@ -53,6 +53,8 @@ pub(super) fn setting(
     let before = value.clone();
     let mut changed = false;
     let mut to_response: Option<Response> = None;
+    // A colour strip goes under the rail, so it is placed before the widget is drawn.
+    let strip = cx.rails.and_then(|rails| rails(def.key)).map(|colours| (ui.painter().add(egui::Shape::Noop), colours));
     let response = widget_cell(ui, right, |ui| {
         let mut draw = |ui: &mut Ui| {
             style::wells(ui, |ui| match (two_ended, to.as_mut()) {
@@ -89,6 +91,11 @@ pub(super) fn setting(
         changed |= r.changed();
         r
     });
+    if let Some((at, colours)) = strip {
+        let rail = ui.ctx().data(|d| d.get_temp::<egui::Rect>(response.id.with("rail"))).unwrap_or(response.rect);
+        let y = rail.center().y;
+        ui.painter().set(at, colour_strip(egui::Rect::from_x_y_ranges(rail.x_range(), y + 3.0..=y + 6.0), &colours));
+    }
     let own_clicks = matches!(def.ty, ValueType::Color | ValueType::Gradient);
     if changed && !own_clicks && right_button_busy(ui) {
         *value = before.clone();
@@ -226,6 +233,32 @@ pub(super) fn companions_pasted(def: &SettingDef, extras: &[(&'static str, Value
 
 /// The band under a following setting's slider: from its value to where the sound takes it at
 /// full level, in the colour of what it follows, named "Follows <what>" for the screen reader.
+/// `colours` evenly spread from left to right across `rect`, blended between.
+pub fn colour_strip(rect: egui::Rect, colours: &[Color32]) -> egui::Shape {
+    let mut mesh = egui::Mesh::default();
+    let n = colours.len();
+    if n == 0 || !rect.is_positive() {
+        return egui::Shape::Noop;
+    }
+    for (i, c) in colours.iter().enumerate() {
+        let t = if n == 1 { 0.0 } else { i as f32 / (n - 1) as f32 };
+        let x = rect.left() + rect.width() * t;
+        mesh.colored_vertex(egui::pos2(x, rect.top()), *c);
+        mesh.colored_vertex(egui::pos2(x, rect.bottom()), *c);
+        if n == 1 {
+            mesh.colored_vertex(egui::pos2(rect.right(), rect.top()), *c);
+            mesh.colored_vertex(egui::pos2(rect.right(), rect.bottom()), *c);
+        }
+    }
+    let quads = if n == 1 { 1 } else { n - 1 } as u32;
+    for q in 0..quads {
+        let i = q * 2;
+        mesh.add_triangle(i, i + 1, i + 2);
+        mesh.add_triangle(i + 1, i + 3, i + 2);
+    }
+    egui::Shape::mesh(mesh)
+}
+
 pub(super) fn follow_band(
     ui: &mut Ui,
     def: &SettingDef,

@@ -218,6 +218,7 @@ pub(super) fn slot_grid_of(
         follow: Some(&follow),
         vary: vary.as_ref(),
         offers: None,
+        rails: None,
     };
     let out = settings_grid(ui, grid_id, defs, get, &grid);
     fold_groups(inspector, (id, Some(slot)), &out.folds);
