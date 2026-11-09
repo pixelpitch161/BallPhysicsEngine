@@ -1587,6 +1587,9 @@ impl Studio {
                 self.separate_edit |= tree.separate;
                 if let Some(id) = tree.added {
                     self.place_added(id);
+                    if tree.looks {
+                        self.panels.inspector.tab.insert(id, crate::inspector::InspectorTab::Looks);
+                    }
                 }
                 if tree.removed.is_some() {
                     // Deleting is always its own undo step.
@@ -1651,10 +1654,10 @@ impl Studio {
     }
 
     pub(crate) fn inspector_panel(&mut self, ui: &mut egui::Ui) -> f32 {
-        // A shape's Sound tab is wide (Osc A and Osc B side by side), with a width of its own:
+        // A Sound tab is wide (Osc A and Osc B side by side), and so is a Looks tab, with a width of their own:
         // a panel of its own id keeps each width as it was left.
         // (The Mixer's editors open in the Mixer itself: the inspector always shows the selection.)
-        let sound = self.panels.inspector.sound_open(&self.scene, self.selection.primary);
+        let sound = self.panels.inspector.wide_open(&self.scene, self.selection.primary);
         let (id, width, range) = if sound {
             ("inspector sound", self.sound_width, settings::SOUND_WIDTH_RANGE)
         } else {

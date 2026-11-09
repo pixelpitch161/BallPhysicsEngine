@@ -42,6 +42,8 @@ pub struct TreeOutcome {
     pub picked: bool,
     /// This edit is an undo step of its own (Duplicate).
     pub separate: bool,
+    /// The thing added should open on its Looks tab ("More looks…").
+    pub looks: bool,
 }
 
 /// Where a dragged row is let go over another row.
@@ -68,6 +70,10 @@ enum Action {
     /// Delete this row: with everything else selected when the row is part of the selection.
     DeleteRow(ThingId),
     Add(&'static str),
+    /// A thing of this kind wearing a ready-made look.
+    AddWithLook(&'static str, &'static str),
+    /// A plain thing of this kind, opened on its Looks tab.
+    AddForLooks(&'static str),
     /// A light of this kind: inside a selected Balls, Emitter or Shape thing it rides on it.
     AddLight(bpe_kit::things::light::LightType),
     /// A Particles thing with this starting look: inside a selected Balls, Emitter or Shape thing
@@ -89,6 +95,49 @@ enum Action {
     Drop(ThingId, ThingId, Drop),
     /// Give the thing another track colour.
     Colour(ThingId, TrackColour),
+}
+
+/// Into a selected folder, beside any other selected thing, or under Scene settings: where the add menu puts a
+/// new thing.
+fn add_parent(scene: &Scene, selection: &Selection) -> ThingId {
+    selection
+        .primary
+        .and_then(|s| scene.things.get(&s))
+        .and_then(|t| if t.kind == "folder" { Some(t.id) } else { t.parent })
+        .unwrap_or(ThingId::ROOT)
+}
+
+/// The add menu's entry for a kind that wears ready-made looks: a submenu of Plain, the favourite looks (each with
+/// its two colours) and More looks….
+fn with_looks(ui: &mut Ui, kind: &dyn bpe_core::ThingKind) -> Option<Action> {
+    let mut action = None;
+    let id = kind.id();
+    ui.menu_button(kind.name(), |ui| {
+        ui.set_min_width(150.0);
+        if ui.button("Plain").on_hover_text(kind.help()).clicked() {
+            action = Some(Action::Add(id));
+            ui.close();
+        }
+        ui.separator();
+        for look in bpe_kit::ready_looks::favourites(id) {
+            let button = egui::Button::new(look.name).min_size(egui::vec2(ui.available_width(), 0.0));
+            let response = ui.add(button).on_hover_text(look.help);
+            // Its two colours at the right end, so the menu shows what each look is.
+            let r = response.rect;
+            let swatch = Rect::from_center_size(r.right_center() - egui::vec2(12.0, 0.0), egui::vec2(14.0, 14.0));
+            crate::looks_page::grid::swatch(ui.painter(), swatch, look);
+            if response.clicked() {
+                action = Some(Action::AddWithLook(id, look.id));
+                ui.close();
+            }
+        }
+        ui.separator();
+        if ui.button("More looks…").on_hover_text("Adds a plain one and opens its Looks tab").clicked() {
+            action = Some(Action::AddForLooks(id));
+            ui.close();
+        }
+    });
+    action
 }
 
 /// The headings of the "Add thing" menu, in order. Kinds in no family follow Folder.
@@ -193,6 +242,13 @@ pub fn show(
                                     }
                                 }
                             });
+                            continue;
+                        }
+                        if bpe_kit::ready_looks::wears(kind.id()).is_some() {
+                            // Plain, a few favourite looks, then the Looks tab for every look.
+                            if let Some(a) = with_looks(ui, *kind) {
+                                action = Some(a);
+                            }
                             continue;
                         }
                         if let Some(a) = button(ui, *kind) {
@@ -332,13 +388,27 @@ pub fn show(
                 out.edited = true;
             }
         }
+        Some(Action::AddWithLook(kind, look)) => {
+            let parent = add_parent(scene, selection);
+            let added = bpe_kit::ready_looks::find(look)
+                .ok_or(bpe_core::EditError::NotAccepted)
+                .and_then(|look| bpe_kit::ready_looks::add_with_look(scene, reg, kind, parent, look));
+            if let Ok(id) = added {
+                selection.set(id);
+                out.edited = true;
+                out.added = Some(id);
+            }
+        }
+        Some(Action::AddForLooks(kind)) => {
+            if let Ok(id) = bpe_kit::add_thing(scene, reg, kind, add_parent(scene, selection)) {
+                selection.set(id);
+                out.edited = true;
+                out.added = Some(id);
+                out.looks = true;
+            }
+        }
         Some(Action::Add(kind)) => {
-            // Into a selected folder, beside any other selected thing, or under Scene settings.
-            let parent = selection
-                .primary
-                .and_then(|s| scene.things.get(&s))
-                .and_then(|t| if t.kind == "folder" { Some(t.id) } else { t.parent })
-                .unwrap_or(ThingId::ROOT);
+            let parent = add_parent(scene, selection);
             // The kit gives the thing the cards its kind starts with, such as a ball's look; a new
             // rig comes with four spots.
             let added = if kind == bpe_kit::things::rig::RIG {
@@ -1138,6 +1208,8 @@ mod tests {
         selection: Selection,
         messages: Vec<String>,
         added: Vec<ThingId>,
+        /// An add asked for its Looks tab.
+        outcomes_looks: bool,
         history: crate::history::History,
     }
 
@@ -1153,6 +1225,7 @@ mod tests {
             selection: Selection::default(),
             messages: Vec::new(),
             added: Vec::new(),
+            outcomes_looks: false,
             history: crate::history::History::default(),
         };
         let mut h = Harness::builder()
@@ -1173,6 +1246,7 @@ mod tests {
                     }
                     s.messages.extend(out.message);
                     s.added.extend(out.added);
+                    s.outcomes_looks |= out.looks;
                 },
                 state,
             );
@@ -1218,6 +1292,8 @@ mod tests {
         h.get_by_label("+ Add thing").click();
         h.run();
         h.get_by_label("Balls").click();
+        h.run();
+        h.get_by_label("Plain").click();
         h.run();
         let s = h.state();
         assert_eq!(s.scene.things.len(), 4);
@@ -1384,6 +1460,8 @@ mod tests {
         h.get_by_label("+ Add thing").click();
         h.run();
         h.get_by_label("Balls").click();
+        h.run();
+        h.get_by_label("Plain").click();
         h.run();
         assert_eq!(h.state().scene.things[&ThingId(4)].parent, Some(f));
     }
@@ -1793,11 +1871,47 @@ mod tests {
     }
 
     #[test]
+    fn the_add_menu_adds_a_ball_wearing_a_favourite_look() {
+        let mut h = harness();
+        h.get_by_label("+ Add thing").click();
+        h.run();
+        h.get_by_label("Balls").click();
+        h.run();
+        for look in bpe_kit::ready_looks::favourites("balls") {
+            assert!(h.query_by_label(look.name).is_some(), "{} in the menu", look.name);
+        }
+        h.get_by_label("Chrome").click();
+        h.run();
+        let s = h.state();
+        let id = s.selection.primary.expect("the new balls are selected");
+        let card = s.scene.card(id, bpe_core::SlotId::Look).unwrap();
+        let shine = bpe_kit::modules::look::layers::SHINE;
+        assert!(card.layers.iter().any(|l| l.kind == shine), "it wears Chrome");
+    }
+
+    #[test]
+    fn more_looks_adds_a_plain_emitter_for_the_looks_tab() {
+        let mut h = harness();
+        h.get_by_label("+ Add thing").click();
+        h.run();
+        h.get_by_label("Emitter").click();
+        h.run();
+        h.get_by_label("More looks…").click();
+        h.run();
+        let s = h.state();
+        let id = s.selection.primary.expect("the new emitter is selected");
+        assert_eq!(s.scene.things[&id].kind, bpe_kit::things::emitter::KIND);
+        assert!(s.outcomes_looks, "it opens on its Looks tab");
+    }
+
+    #[test]
     fn the_add_menu_says_what_it_added() {
         let mut h = harness();
         h.get_by_label("+ Add thing").click();
         h.run();
         h.get_by_label("Balls").click();
+        h.run();
+        h.get_by_label("Plain").click();
         h.run();
         assert_eq!(h.state().added, [ThingId(3)]);
     }

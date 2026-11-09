@@ -47,7 +47,7 @@ pub const RADIUS_SHARE: f32 = 0.35;
 /// The view's largest size, in points.
 const MAX_SIZE: f32 = 300.0;
 /// The dark ground.
-const DARK: Color = Color::rgb(0x15, 0x15, 0x15); // scene colour
+pub(crate) const DARK: Color = Color::rgb(0x15, 0x15, 0x15); // scene colour
 /// How fast the ball hits in Hit, in pixels per second (a full flash).
 const HIT_SPEED: f32 = 600.0;
 
@@ -304,14 +304,33 @@ pub fn show(
     time: f64,
     swap: Option<(&str, Value)>,
 ) -> Option<ViewOut> {
+    let dress = |mini: &mut Scene| {
+        if let Some((key, value)) = &swap
+            && let Some(card) = mini.card_mut(id, SlotId::Look)
+        {
+            card.params.set(key, value.clone());
+        }
+    };
+    show_dressed(ui, view, render, scene, kit, id, number, time, &dress)
+}
+
+/// [`show`] with the small scene changed by `dress` before it is drawn (the Looks tab tries a look on it).
+#[allow(clippy::too_many_arguments)]
+pub fn show_dressed(
+    ui: &mut Ui,
+    view: &mut BallView,
+    render: Option<&egui_wgpu::RenderState>,
+    scene: &Scene,
+    kit: &Kit,
+    id: ThingId,
+    number: u32,
+    time: f64,
+    dress: &dyn Fn(&mut Scene),
+) -> Option<ViewOut> {
     buttons(ui, view);
     let side = ui.available_width().clamp(40.0, MAX_SIZE);
     let mut mini = mini_scene(scene, kit, id, view.ground)?;
-    if let Some((key, value)) = swap
-        && let Some(card) = mini.card_mut(id, SlotId::Look)
-    {
-        card.params.set(key, value);
-    }
+    dress(&mut mini);
     view.cache.update(mini, kit, id);
     let radius = match scene.value_at_time(&kit.registry, &Address::own(id, "radius"), time) {
         Some(Value::Number(r)) => r as f32,
