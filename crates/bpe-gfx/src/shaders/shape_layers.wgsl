@@ -230,7 +230,7 @@ fn shade_shape_layers(
         return tint_out(out.rgb / out.a, tint_presence(out.a, cover), TINT_BLOCKS, 1.0, TINT_THICK);
     }
     // The emission pass may give off darkness (negative light) where it covers nothing.
-    let seen = select(max(out.r, max(out.g, out.b)), max(abs(out.r), max(abs(out.g), abs(out.b))), g.light.x > 2.5);
+    let seen = select(max(out.r, max(out.g, out.b)), max(abs(out.r), max(abs(out.g), abs(out.b))), light_pass(g.light.x) >= PASS_EMISSION);
     if out.a < 1e-4 && seen < 1e-4 {
         discard;
     }

@@ -1,17 +1,16 @@
 // Glass and light part 1: the tint picture (light pass 8). Every thing that blocks light writes
 // how deep it is, per channel, as optical depth (-ln of the share it lets through), with alpha 0:
 // the pipelines blend premultiplied "over", so depths add and what passes multiplies, red glass
-// over blue glass letting through only what both do. lighting.wgsl's `fs_field` reads it into the
+// over blue glass letting through only what both do. the lighting shader's `fs_field` reads it into the
 // blockers' field.
 
-const TINT_PASS: f32 = 8.0;
 // How much deeper the colour is where a thing is thickest at Deeper when thick 1 (the colour's
-// depth times 1 + THICK x thickness): lighting.wgsl's THICK_DEPTH.
+// depth times 1 + THICK x thickness): the lighting shader's THICK_DEPTH.
 const THICK: f32 = 2.0;
 
 // Whether this is the tint pass.
 fn tint_pass() -> bool {
-    return g.light.x > 7.5;
+    return light_pass(g.light.x) >= PASS_TINT;
 }
 
 // A colour's hue and saturation at full brightness (its brightest channel 1): how a see-through

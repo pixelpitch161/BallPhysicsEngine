@@ -132,32 +132,32 @@ fn fs_surface(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     }
     let shown = cover * clamp(st.c.y, 0.0, 1.0);
     let code = i32(st.a.w + 0.5);
-    let mode = g.light.x;
+    let mode = light_pass(g.light.x);
     if st.d.x > 0.0 {
         return real_lit(f.rgb / max(here, 1e-5), shown, inside, unit, mode);
     }
     // The light passes: covering black (lighting leaves it as drawn), nothing in the surface
     // picture (it blocks no light), whole where it covers in the tags.
-    if mode > 0.5 {
+    if mode >= PASS_LIT {
         // Light pass 9, the glass picture (glass and light part 3): glass that bends lamp light
         // is free glass there, its index of refraction over its cover.
-        if mode > 8.5 {
+        if mode >= PASS_GLASS {
             if st.c.z > 1.0001 {
                 return vec4<f32>(st.c.z * shown, 0.0, 0.0, shown);
             }
             return vec4<f32>(0.0);
         }
         // Nothing in the surface or the tint picture (pass 8): it blocks no light.
-        if (mode > 1.5 && mode < 2.5) || mode > 7.5 {
+        if mode == PASS_SURFACE || mode >= PASS_TINT {
             return vec4<f32>(0.0);
         }
-        if mode > 5.5 {
+        if mode >= PASS_TAGS {
             return select(vec4<f32>(0.0), vec4<f32>(0.0, 0.0, 0.0, 1.0), shown >= 0.5);
         }
         return vec4<f32>(0.0, 0.0, 0.0, shown);
     }
     // Glass is see-through: left out of the picture behind glass.
-    if mode < -0.5 && code == GLASS {
+    if mode <= PASS_BEHIND && code == GLASS {
         return vec4<f32>(0.0);
     }
     let colour = f.rgb / max(here, 1e-5);
@@ -218,21 +218,21 @@ fn fs_surface(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 // colour in the picture, and in the light passes its colour × Lit, its surface (how much it
 // blocks, its height, its Surface's table index) and the rest as a pretend liquid's, so the
 // lighting mix lights and shades it as it does a ball.
-fn real_lit(colour: vec3<f32>, shown: f32, inside: f32, unit: f32, mode: f32) -> vec4<f32> {
-    if mode > 0.5 {
+fn real_lit(colour: vec3<f32>, shown: f32, inside: f32, unit: f32, mode: i32) -> vec4<f32> {
+    if mode >= PASS_LIT {
         // Nothing in the glass picture (its glass bends lamp light through its surface, as a
         // shape's does); in the tint picture (pass 8) its colour's depth where it blocks light,
         // as a sprite's (tint.wgsl).
-        if mode > 8.5 {
+        if mode >= PASS_GLASS {
             return vec4<f32>(0.0);
         }
-        if mode > 7.5 {
+        if mode >= PASS_TINT {
             return tint_out(colour, shown, st.d.z, 1.0, 0.0);
         }
-        if mode < 1.5 {
+        if mode <= PASS_LIT {
             return vec4<f32>(max(colour, vec3<f32>(0.0)) * st.d.x * shown, shown);
         }
-        if mode < 2.5 {
+        if mode <= PASS_SURFACE {
             // The height: the edge rounds over within Roundness (a quarter circle), flat inside,
             // the same shape the pretend light's normal has.
             let round_px = max(st.a.z / unit, 0.5);
@@ -246,14 +246,14 @@ fn real_lit(colour: vec3<f32>, shown: f32, inside: f32, unit: f32, mode: f32) ->
             let index = st.d.y % 4096.0;
             return vec4<f32>(blocks, h, index, 1.0) * shown;
         }
-        if mode > 5.5 {
+        if mode >= PASS_TAGS {
             // The tags: whole where it covers half or more, with its thing's link number.
             return select(vec4<f32>(0.0), vec4<f32>(0.0, st.d.w, 0.0, 1.0), shown >= 0.5);
         }
         return vec4<f32>(0.0, 0.0, 0.0, shown);
     }
     // See-through: left out of the picture behind glass, which the mix shows through it.
-    if mode < -0.5 && st.d.y >= 4095.5 {
+    if mode <= PASS_BEHIND && st.d.y >= 4095.5 {
         return vec4<f32>(0.0);
     }
     return vec4<f32>(max(colour, vec3<f32>(0.0)) * shown, shown);

@@ -1,13 +1,13 @@
 // Glass and light part 3: free glass (particles and glass liquid that bend lamp light, drawn into
 // the glass picture by light pass 9: index of refraction × cover in R, cover in A) marked in the
 // surface picture, drawn over a copy of it. Where something solid is it stays as it is; elsewhere
-// R (blocking), G (height) and A (cover) stay and B becomes free glass's code (lighting.wgsl's
+// R (blocking), G (height) and A (cover) stay and B becomes free glass's code (the lighting shader's
 // `free_glass_of`): -(1 + 16 q_ior + q_cover), whole numbers half floats keep exactly.
 
 @group(0) @binding(0) var glass_pic: texture_2d<f32>;
 @group(0) @binding(1) var under: texture_2d<f32>;
 
-// lighting.wgsl's SOLID.
+// the lighting shader's SOLID.
 const SOLID: f32 = 0.98;
 
 struct GlassOut {

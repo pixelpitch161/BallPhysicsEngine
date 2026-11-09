@@ -2,6 +2,10 @@
 
 Moved word for word from CLAUDE.md on 2026-11-08 (workstream W1). Add each finished part's "as built" summary here, not in CLAUDE.md.
 
+**File map:** on 2026-11-09 (W17) the big files became folders (`lighting/`, `shaders/lighting/`, `frame/`,
+`renderer/`, `world/`, `app/`, `inspector/`, `widgets/`). Older notes below may name the old files; `file-map.md` says
+where each one is now.
+
 Part 1 is in (plan `part1.md`, "As built" at its end): **coloured shadows and stained glass**. Light pass 8, the
 **tint picture** (`TINT_PASS`, `shaders/tint.wgsl`: `tint_out` writes optical depth `−ln(share) + (−ln T)(1 + THICK ·
 thick)` with alpha 0, so premultiplied over adds depths and what passes multiplies; `T = mix(1, chroma, tints ·

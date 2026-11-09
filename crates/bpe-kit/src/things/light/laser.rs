@@ -315,7 +315,7 @@ pub fn index_at(index: f32, rainbow: f32, w: f32) -> f32 {
     (index + rainbow * DISPERSION * 0.5 * w).max(1.0)
 }
 
-/// A wavelength's colour for `w` from -1 (red) to 1 (violet): `lighting.wgsl::spectral`'s three
+/// A wavelength's colour for `w` from -1 (red) to 1 (violet): the lighting shader's `spectral`'s three
 /// triangles (before its scale, which the shares divide out).
 pub fn spectral(w: f32) -> [f32; 3] {
     let hat = |c: f32| (1.0 - (w - c).abs() / 0.6).max(0.0);

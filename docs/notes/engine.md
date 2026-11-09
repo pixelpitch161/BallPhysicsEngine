@@ -2,6 +2,10 @@
 
 Moved word for word from CLAUDE.md on 2026-11-08 (workstream W1). Add each finished part's "as built" summary here, not in CLAUDE.md.
 
+**File map:** on 2026-11-09 (W17) the big files became folders (`lighting/`, `shaders/lighting/`, `frame/`,
+`renderer/`, `world/`, `app/`, `inspector/`, `widgets/`). Older notes below may name the old files; `file-map.md` says
+where each one is now.
+
 ## Crate map
 
 Dependencies go bottom to top:
@@ -77,7 +81,7 @@ Dependencies go bottom to top:
   (`sound.rs`): `SoundAt` (a scene's sound levels from the world and log), `SoundMaker` in `Sims.sound` (a world
   whose physics settings follow sound gets one at build and reads it at the previous step's end in `animate`),
   `LevelsAt` adapts it to core's `SoundLevels`; `fingerprint` then counts only what Follow sound reads (`SoundMaker::fingerprint`, `bpe_sound::control::heard_fingerprint`: tempo, playing/notes, envelopes, modulators, routes, osc on/Gain/Level, Volume, bus, bus on/mute/solo/fader).
-- `bpe-gfx`: the renderer. Things draw into a frame (`frame.rs`) and the GPU draws it: gradients, blend, grade,
+- `bpe-gfx`: the renderer. Things draw into a frame (`frame/`) and the GPU draws it: gradients, blend, grade,
   shader effects, particles and trails. Trails are strips of `TrailVertex` (`style`: soft edge, band) in
   `Frame.trails` (under the balls) and `Frame.trails_front` (over them); particles are `Particle` sprites
   (`sprites.rs`, `shaders/sprites.wgsl`: a shape code per sprite, soft edge and band, a negative alpha adds light)
@@ -121,7 +125,7 @@ Dependencies go bottom to top:
   its renderers and builds programs on a background thread (`ProgramStore::in_background`,
   `preview::shared_programs`), exports build them while drawing.
   **Lighting** (spec `docs/superpowers/specs/2026-11-06-lighting-design.md`, plans `docs/superpowers/plans/lighting/`;
-  `lighting.rs`, `shaders/lighting.wgsl`): a frame with `Frame.light` (`LightScene`) draws the things again in light
+  `lighting/`, `shaders/lighting/`): a frame with `Frame.light` (`LightScene`) draws the things again in light
   passes picked by `Globals.light.x`: 1 lit colour (colour × Lit), 2 surface (blocks, height, cover), 3 the light
   things give off (only when `LightScene.glows`, `Frame::gives_light`), 4 the background's own light alone. Then a
   jump-flood distance field of blockers, `fs_direct` (each Light thing's light on surfaces and in the air, soft
@@ -247,7 +251,7 @@ final pass (`post.wgsl::fs_composite`) leaves every colour up to 1 as it is (whi
 shoulder from 0.8 made it 247); above 1, `roll_off` scales the colour by its brightest channel (hue kept, so glowing
 crowds don't drift to lavender) and turns it toward white by the more of its white light (least channel, squared) and `over / (over + 0.5)` (over = brightness past 1), eased in over the first quarter past 1: shines and lamp-lit walls burn white, saturated glows keep their colour. Neutral colours past 1 show as plain white (no shoulder). Its dither is a triangular ±1
 step from a PCG hash (`dither_noise`, no `sin`), the same on every channel and faded out over the first and last
-step, so pure black and white stay exact. Strips (`frame.rs::strip`) give every corner sharper than 60° a join: both
+step, so pure black and white stay exact. Strips (`frame/trails.rs::strip`) give every corner sharper than 60° a join: both
 segments meet at the inner mitre point and a fan rounds the outside, so trail bounces have no square notch. Smoke
 trails fill each gap between puffs with up to 8 evenly spaced puffs sharing one puff's cover (`trail/draw.rs`,
 `fill_most` keeps every ball under `MAX_PARTICLES`). Tests: `frame::tests::a_strip_s_sharp_corners_*`,

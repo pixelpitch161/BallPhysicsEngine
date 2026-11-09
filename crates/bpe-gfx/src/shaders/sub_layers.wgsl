@@ -278,7 +278,7 @@ fn sub_flash(p: Piece, m: LayerGpu, hit: vec4<f32>) -> Piece {
         var r = p;
         r.light_in += colour * clamp(p.a_in, 0.0, 1.0);
         r.light_out += colour * clamp(p.a_out, 0.0, 1.0);
-        if g.light.x > 2.5 && g.light.x < 3.5 {
+        if light_pass(g.light.x) == PASS_EMISSION {
             HEAT_IN += colour * clamp(p.a_in, 0.0, 1.0) * max(m.amount.z, 0.0);
             HEAT_OUT += colour * clamp(p.a_out, 0.0, 1.0) * max(m.amount.z, 0.0);
         }

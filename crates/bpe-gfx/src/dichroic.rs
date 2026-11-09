@@ -1,7 +1,7 @@
 //! Dichroic glass (glass and light part 4b, plan `docs/superpowers/plans/glass-light/part4.md`,
 //! decision 1): light meeting a dichroic surface splits into a hue that goes through and the
 //! opposite hue that bounces off, both turning with the angle it meets the surface at. The same
-//! rule as lighting.wgsl's `dichroic_hue`, `dichroic_through` and `dichroic_back` (the laser
+//! rule as the lighting shader's `dichroic_hue`, `dichroic_through` and `dichroic_back` (the laser
 //! beams and the sphere caustics use this one).
 
 /// A surface's dichroic numbers: how dichroic (0 not), how far the hue turns from straight on to
@@ -46,7 +46,7 @@ impl Dichroic {
     }
 
     /// The colour a mirror's light thrown off it takes: the opposite hue at full strength, mixed
-    /// in by how dichroic it is (lighting.wgsl's `dichroic_back` with share 1).
+    /// in by how dichroic it is (the lighting shader's `dichroic_back` with share 1).
     pub fn back(&self, cos: f32) -> [f32; 3] {
         let d = self.amount.clamp(0.0, 1.0);
         self.hue_at(cos).map(|c| 1.0 - c * d)

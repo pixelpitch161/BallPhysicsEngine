@@ -67,7 +67,7 @@ impl Composite {
     /// `picture` from before. `slot` tells the layers of one frame apart. `each`: the layer's
     /// things blended with each other into it, so it covers wherever any of them drew.
     /// `surface`: the lighting's surface picture (light mode 2), which keeps how much the things
-    /// cover in its alpha (lighting.wgsl's `cover_block` reads it).
+    /// cover in its alpha (the lighting shader's `cover_block` reads it).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn composite(
         &mut self,

@@ -43,7 +43,7 @@ pub enum LightType {
 }
 
 impl LightType {
-    /// Its number in lighting.wgsl.
+    /// Its number in the lighting shader.
     pub fn code(self) -> f32 {
         match self {
             Self::Point => 0.0,
@@ -105,7 +105,7 @@ pub enum Gobo {
 }
 
 impl Gobo {
-    /// Its number in lighting.wgsl.
+    /// Its number in the lighting shader.
     pub fn code(self) -> f32 {
         match self {
             Self::None => 0.0,

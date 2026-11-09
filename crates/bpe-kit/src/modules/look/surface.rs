@@ -146,7 +146,7 @@ pub enum Reflects {
 }
 
 impl Reflects {
-    /// Its number in lighting.wgsl.
+    /// Its number in the lighting shader.
     pub fn code(self) -> f32 {
         match self {
             Self::Nothing => 0.0,
@@ -181,7 +181,7 @@ pub enum MirrorSide {
 }
 
 impl MirrorSide {
-    /// Its number in lighting.wgsl (0 off, 1 outside, 2 inside, 3 both).
+    /// Its number in the lighting shader (0 off, 1 outside, 2 inside, 3 both).
     pub fn code(self) -> f32 {
         match self {
             Self::Off => 0.0,

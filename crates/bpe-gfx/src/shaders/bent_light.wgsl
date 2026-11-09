@@ -1,7 +1,7 @@
 
 // ---------- light bent by glass (glass and light part 3, bent_light.rs) ----------
 //
-// Pasted after lighting.wgsl. For each (light, bender) pair `cs_bent` sends photons from the light
+// Pasted after the lighting shader. For each (light, bender) pair `cs_bent` sends photons from the light
 // toward the bender's box: each steps through the picture (by the blockers' field in the open, half
 // a pixel near and in things), bends in and out of glass that bends light (`bender_at`), takes the
 // colour of what it passes through, and from where it first leaves glass keeps each straight

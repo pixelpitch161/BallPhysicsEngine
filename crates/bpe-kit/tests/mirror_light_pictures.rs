@@ -185,7 +185,7 @@ fn a_flat_mirror_throws_light_where_the_reflection_says() {
                 let (a, b) = (light(&on, x, y), light(&off, x, y));
                 if cross.abs() < 100.0 && a < 0.9 {
                     // What a lamp at the image would give there (the lamp's strength 1, falloff as
-                    // lighting.wgsl's for a point light of reach 2000).
+                    // the lighting shader's for a point light of reach 2000).
                     let r = p.distance(image) / 2000.0;
                     let image_gives = (1.0 - r.powi(4)).max(0.0).powi(2) / (1.0 + 16.0 * r * r);
                     let thrown = a - b;

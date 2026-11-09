@@ -18,7 +18,8 @@ struct Globals {
     bg_to: vec4<f32>,
     grade: vec4<f32>,
     grade_more: vec4<f32>,
-    // Lighting (see lighting.wgsl): x 0 draws the picture as always, 1 each thing's lit colour,
+    // Lighting (see the lighting shader, `shaders/lighting/`; light_passes.wgsl names the passes): x 0 draws the
+    // picture as always, 1 each thing's lit colour,
     // 2 its surface, 3 the light it gives off, 4 the light the background gives off alone; y how
     // much the background takes light.
     light: vec4<f32>,
@@ -37,10 +38,10 @@ struct Globals {
 // (mode 2), or the light `emit` (straight) it gives off where it covers (mode 3); `c` itself
 // otherwise.
 fn light_flat(c: vec4<f32>, lit: f32, blocks: f32, emit: vec3<f32>, extra: vec4<f32>) -> vec4<f32> {
-    let m = g.light.x;
+    let m = light_pass(g.light.x);
     // Light pass 8, the tint picture (tint.wgsl): its colour's depth where it blocks light, its
     // antialiased edge divided out (as `hard_block`).
-    if m > 7.5 {
+    if m >= PASS_TINT {
         if extra.y > 0.5 || c.a <= 1e-5 {
             return vec4<f32>(0.0);
         }
@@ -48,20 +49,20 @@ fn light_flat(c: vec4<f32>, lit: f32, blocks: f32, emit: vec3<f32>, extra: vec4<
         return tint_out(c.rgb / c.a, min(p, 1.0), blocks, 1.0, 0.0);
     }
     // Light passes 5 (what glows under UV) and 6 (what catches beams, link numbers).
-    if m > 4.5 {
+    if m >= PASS_UV {
         return light_extra(c, extra);
     }
     // Shown only under UV light: nothing in the picture or the other light passes.
     if extra.y > 0.5 {
         return vec4<f32>(0.0);
     }
-    if m < 0.5 {
+    if m <= PASS_PICTURE {
         return c;
     }
-    if m < 1.5 {
+    if m <= PASS_LIT {
         return vec4<f32>(c.rgb * lit, c.a);
     }
-    if m > 2.5 {
+    if m >= PASS_EMISSION {
         // The light it gives off, where it covers (light covering nothing by how bright it is).
         let k = select(c.a, max(c.r, max(c.g, c.b)), c.a <= 0.0);
         return vec4<f32>(emit * k, c.a);
@@ -79,10 +80,10 @@ fn light_flat(c: vec4<f32>, lit: f32, blocks: f32, emit: vec3<f32>, extra: vec4<
 var<private> AA_COVER: f32 = -1.0;
 
 // The least antialiased cover at which the surface pass (lighting's mode 2) takes a blocker
-// whole: lighting.wgsl's BLOCK_LEAST, below which a pixel doesn't block.
+// whole: the lighting shader's BLOCK_LEAST, below which a pixel doesn't block.
 const HARD_FROM: f32 = 0.1;
 
-// The surface picture's R in Flat (lighting.wgsl): how much the things over the pixel block,
+// The surface picture's R in Flat (the lighting shader): how much the things over the pixel block,
 // by how see-through they are (`blocks` premultiplied by `cover`, the antialiased edge alone,
 // which is divided out where it is at least HARD_FROM), so a pixel half covered by a solid line
 // reads 1 and one under a half see-through wall 0.5. Below HARD_FROM it stays cover-weighted, so
@@ -98,7 +99,7 @@ fn hard_block(blocks: f32, cover: f32) -> f32 {
 // what is behind, when it doesn't glow). Pass 6: how much it catches beams and its thing's link
 // number, both times its cover.
 fn light_extra(c: vec4<f32>, extra: vec4<f32>) -> vec4<f32> {
-    if g.light.x < 5.5 {
+    if light_pass(g.light.x) <= PASS_UV {
         return vec4<f32>(c.rgb * max(extra.x, 0.0), c.a);
     }
     // Shown only under UV light: it neither catches beams nor takes a link number.
@@ -130,7 +131,7 @@ fn tag_rain(z: f32) -> f32 {
 // the link number is written whole where the thing covers at least half the pixel and not at all
 // elsewhere, so two things' numbers never mix at an edge. Other passes pass `t` through.
 fn hard_tags(t: vec4<f32>) -> vec4<f32> {
-    if g.light.x < 5.5 || g.light.x > 6.5 {
+    if light_pass(g.light.x) != PASS_TAGS {
         return t;
     }
     // B: how much it makes rainbows (part 4b), soft like the beams.
@@ -194,10 +195,10 @@ fn screen_to_world(q: vec2<f32>) -> vec2<f32> {
 @fragment
 fn fs_background(in: BgOut) -> @location(0) vec4<f32> {
     let c = background_colour(in);
-    if g.light.x > 3.5 && g.light.x < 4.5 {
+    if light_pass(g.light.x) == PASS_BACKGROUND {
         return vec4<f32>(g.light_emit[0].rgb + g.light_emit[1].rgb * c.rgb, 1.0);
     }
-    if g.light.x > 2.5 && g.light.x < 3.5 {
+    if light_pass(g.light.x) == PASS_EMISSION {
         // The things' light: the background covers nothing there (its own is drawn alone).
         return vec4<f32>(0.0);
     }

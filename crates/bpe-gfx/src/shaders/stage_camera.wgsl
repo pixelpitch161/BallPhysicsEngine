@@ -1,6 +1,6 @@
 // ---------- Stage camera moves (lighting part 5; stage_camera_pass.rs, stage_camera.rs) ----------
 //
-// Pasted after lighting.wgsl, so its structs, `world_to_uv`, `field_at`, `floor_y` and the sphere
+// Pasted after the lighting shader, so its structs, `world_to_uv`, `field_at`, `floor_y` and the sphere
 // grid are this pass's too. Group 0 is the light pass's (`picture` is the picture before
 // lighting, `surface` the surface picture, `field` the blockers' field), group 2 the stage's
 // (spheres and their grid); group 3 is this pass's own. A ray from the moved camera is coloured
