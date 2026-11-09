@@ -122,6 +122,14 @@ fn is_base(reg: &Registry, card: &Slot, index: usize) -> bool {
 /// At most this many sub-layers on one layer.
 pub const MAX_SUBS: usize = 12;
 
+/// At most this many parts and panels on one mask of a colour grade.
+pub const MAX_MASK_SUBS: usize = 40;
+
+/// At most this many sub-layers on a layer of `section`.
+fn max_subs(section: LayerSection) -> usize {
+    if section == LayerSection::Mask { MAX_MASK_SUBS } else { MAX_SUBS }
+}
+
 /// Where the block of layer `index` ends: past the sub-layers that follow it.
 fn block_end(card: &Slot, index: usize) -> usize {
     let id = card.layers[index].id;
@@ -284,7 +292,9 @@ impl Scene {
                 LayerSection::Around => around_end(reg, card),
                 LayerSection::Reaction => group_start(reg, card),
                 LayerSection::Group => card.layers.len(),
-                LayerSection::Sub => return Err(EditError::NotAccepted),
+                // A grade's masks go after the others (the base mask, Whole picture, is first).
+                LayerSection::Mask => card.layers.len(),
+                LayerSection::Sub | LayerSection::MaskPart | LayerSection::Panel => return Err(EditError::NotAccepted),
                 s @ (LayerSection::Chain | LayerSection::Modulator | LayerSection::Effect | LayerSection::Force) => {
                     sound_end(reg, card, s, lane)
                 }
@@ -327,7 +337,13 @@ impl Scene {
             parent: Some(parent),
             ..Layer::default()
         };
-        let at = block_end(card, index);
+        // A mask's part goes after its other parts, before its panels.
+        let at = if sk.section() == LayerSection::MaskPart {
+            let subs = &card.layers[index + 1..block_end(card, index)];
+            index + 1 + subs.iter().take_while(|l| section_of(reg, l) == LayerSection::MaskPart).count()
+        } else {
+            block_end(card, index)
+        };
         self.layer_card_mut(thing, slot).layers.insert(at, layer);
         Ok(id)
     }
@@ -336,15 +352,52 @@ impl Scene {
     fn check_sub(reg: &Registry, card: &Slot, index: usize, sk: &dyn LayerKind) -> Result<(), EditError> {
         let parent = &card.layers[index];
         let pk = reg.layer(&parent.kind).ok_or(EditError::NotAccepted)?;
-        // A base layer (the Body) takes sub-layers only when its kind says so.
-        let refused = !matches!(pk.section(), LayerSection::Drawn | LayerSection::Around)
+        // A grade's mask takes parts and panels; a drawn or around layer takes sub-layers. A base
+        // layer (the Body, Whole picture) takes them only when its kind says so.
+        let fits = match pk.section() {
+            LayerSection::Drawn | LayerSection::Around => sk.section() == LayerSection::Sub,
+            LayerSection::Mask => matches!(sk.section(), LayerSection::MaskPart | LayerSection::Panel),
+            _ => false,
+        };
+        let refused = !fits
             || !pk.takes_subs()
             || parent.parent.is_some()
-            || sk.section() != LayerSection::Sub
             || sk.card() != card.kind
             || !pk.takes_sub(sk.id())
-            || subs_of(card, parent.id).len() >= MAX_SUBS;
+            || subs_of(card, parent.id).len() >= max_subs(pk.section());
         if refused { Err(EditError::NotAccepted) } else { Ok(()) }
+    }
+
+    /// Moves sub-layer `id` to place `to` among its layer's sub-layers of its own section
+    /// (counting from 0; past the last is the last): a grade's panel among its mask's panels, a
+    /// part among its parts. Every other layer keeps its place. For a drawn layer's sub-layers this
+    /// is [`Scene::move_sub_layer`].
+    pub fn move_sub_layer_in(
+        &mut self,
+        reg: &Registry,
+        thing: ThingId,
+        slot: SlotId,
+        id: LayerId,
+        to: usize,
+    ) -> Result<(), EditError> {
+        let card = self.layer_card(thing, slot)?;
+        let index = card.layer_index(id).ok_or(EditError::NoLayer(id))?;
+        let parent = card.layers[index].parent.ok_or(EditError::NotAccepted)?;
+        let section = section_of(reg, &card.layers[index]);
+        let places: Vec<usize> = (0..card.layers.len())
+            .filter(|&i| card.layers[i].parent == Some(parent) && section_of(reg, &card.layers[i]) == section)
+            .collect();
+        let from = places.iter().position(|&i| i == index).expect("the layer itself");
+        let to = to.min(places.len() - 1);
+        if to == from {
+            return Ok(());
+        }
+        let card = self.layer_card_mut(thing, slot);
+        let layer = card.layers.remove(index);
+        // Siblings of one section sit together. Moving later, the sibling at `to` has moved up one
+        // as the layer came out, so this lands just after it; moving earlier, just before it.
+        card.layers.insert(places[to], layer);
+        Ok(())
     }
 
     /// Moves sub-layer `id` to place `to` among its layer's sub-layers (counting from 0, the first
@@ -466,6 +519,24 @@ impl Scene {
             card.layers.insert(to, layer);
             return Ok(());
         }
+        if section == Some(LayerSection::Mask) {
+            // A grade's masks move among themselves, with their parts and panels, never under the
+            // base mask (Whole picture).
+            let masks: Vec<usize> = (0..card.layers.len())
+                .filter(|&i| card.layers[i].parent.is_none() && section_of(reg, &card.layers[i]) == LayerSection::Mask)
+                .collect();
+            let lowest = usize::from(is_base(reg, card, 0));
+            if to < lowest || to >= masks.len() {
+                return Err(EditError::NotAccepted);
+            }
+            let end = block_end(card, index);
+            let card = self.layer_card_mut(thing, slot);
+            let block: Vec<Layer> = card.layers.drain(index..end).collect();
+            let tops: Vec<usize> = (0..card.layers.len()).filter(|&i| card.layers[i].parent.is_none()).collect();
+            let at = tops.get(to).copied().unwrap_or(card.layers.len());
+            card.layers.splice(at..at, block);
+            return Ok(());
+        }
         let group = section == Some(LayerSection::Group);
         let around = section == Some(LayerSection::Around);
         let drawn = section == Some(LayerSection::Drawn) && card.layers[index].parent.is_none();
@@ -517,8 +588,12 @@ impl Scene {
             return Err(EditError::OnlyOne(kind.name().into()));
         }
         // A sub-layer's copy sits beside it, while its layer has room for one more.
+        let room = |parent: LayerId| {
+            let section = card.layer(parent).map_or(LayerSection::Drawn, |p| section_of(reg, p));
+            subs_of(card, parent).len() < max_subs(section)
+        };
         if let Some(parent) = layer.parent
-            && subs_of(card, parent).len() >= MAX_SUBS
+            && !room(parent)
         {
             return Err(EditError::NotAccepted);
         }
@@ -1061,6 +1136,89 @@ mod tests {
         assert_eq!(shown, [true, false], "the pasted look shows what the copied one showed");
         let pasted = s.paste_layer(&r, other, LOOK, &layer).unwrap();
         assert!(!s.card(other, LOOK).unwrap().layer(pasted).unwrap().enabled);
+    }
+
+    /// The test grade on the scene settings: the whole picture with two panels.
+    fn graded() -> (Registry, Scene, [LayerId; 3]) {
+        let r = testkit::registry();
+        let mut s = Scene::empty(&r);
+        let root = ThingId::ROOT;
+        s.add_slot(&r, root, SlotId::Grade, "grade.test").unwrap();
+        let whole = s.add_layer(&r, root, SlotId::Grade, "mask.whole").unwrap();
+        let a = s.add_sub_layer(&r, root, SlotId::Grade, whole, "panel.test").unwrap();
+        let b = s.add_sub_layer(&r, root, SlotId::Grade, whole, "panel.test").unwrap();
+        (r, s, [whole, a, b])
+    }
+
+    fn grade_names(s: &Scene) -> Vec<(String, Option<u32>)> {
+        s.card(ThingId::ROOT, SlotId::Grade)
+            .unwrap()
+            .layers
+            .iter()
+            .map(|l| (l.name.clone(), l.parent.map(|p| p.0)))
+            .collect()
+    }
+
+    #[test]
+    fn a_grade_s_masks_hold_parts_before_panels_and_panels_move_among_panels() {
+        let (r, mut s, [whole, a, b]) = graded();
+        let (root, grade) = (ThingId::ROOT, SlotId::Grade);
+        let w = Some(whole.0);
+        assert_eq!(grade_names(&s), np(&[("Whole picture", None), ("Panel", w), ("Panel 2", w)]));
+        // A part goes before the panels, after the other parts.
+        let p1 = s.add_sub_layer(&r, root, grade, whole, "part.test").unwrap();
+        s.add_sub_layer(&r, root, grade, whole, "part.test").unwrap();
+        assert_eq!(
+            grade_names(&s),
+            np(&[("Whole picture", None), ("Part", w), ("Part 2", w), ("Panel", w), ("Panel 2", w)])
+        );
+        // Panels move among the panels only: place 0 is the first panel, not the first part.
+        s.move_sub_layer_in(&r, root, grade, b, 0).unwrap();
+        assert_eq!(
+            grade_names(&s),
+            np(&[("Whole picture", None), ("Part", w), ("Part 2", w), ("Panel 2", w), ("Panel", w)])
+        );
+        s.move_sub_layer_in(&r, root, grade, b, 9).unwrap();
+        assert_eq!(grade_names(&s)[3..], np(&[("Panel", w), ("Panel 2", w)]));
+        s.move_sub_layer_in(&r, root, grade, p1, 1).unwrap();
+        assert_eq!(grade_names(&s)[1..3], np(&[("Part 2", w), ("Part", w)]));
+        let _ = a;
+        // Panels and parts are sub-layers only, and only a mask takes them.
+        assert_eq!(s.add_layer(&r, root, grade, "panel.test"), Err(EditError::NotAccepted));
+        assert_eq!(s.add_sub_layer(&r, root, grade, b, "panel.test"), Err(EditError::NotAccepted));
+        let ball = s.add_thing(&r, "balls", root).unwrap();
+        s.add_slot(&r, ball, SlotId::Look, "look.stack").unwrap();
+        let ring = s.add_layer(&r, ball, SlotId::Look, "layer.ring").unwrap();
+        assert_eq!(s.add_sub_layer(&r, ball, SlotId::Look, ring, "panel.test"), Err(EditError::NotAccepted));
+    }
+
+    #[test]
+    fn the_whole_picture_stays_first_and_masks_move_with_their_panels() {
+        let (r, mut s, [whole, _, _]) = graded();
+        let (root, grade) = (ThingId::ROOT, SlotId::Grade);
+        assert_eq!(s.remove_layer(&r, root, grade, whole), Err(EditError::BaseLayer));
+        assert_eq!(s.set_layer_enabled(&r, root, grade, whole, false), Err(EditError::BaseLayer));
+        assert_eq!(s.move_layer(&r, root, grade, whole, 1), Err(EditError::BaseLayer));
+        let m1 = s.add_layer(&r, root, grade, "mask.test").unwrap();
+        let m2 = s.add_layer(&r, root, grade, "mask.test").unwrap();
+        s.add_sub_layer(&r, root, grade, m1, "panel.test").unwrap();
+        let tops = |s: &Scene| -> Vec<LayerId> {
+            s.card(root, grade).unwrap().layers.iter().filter(|l| l.parent.is_none()).map(|l| l.id).collect()
+        };
+        assert_eq!(tops(&s), [whole, m1, m2]);
+        assert_eq!(s.move_layer(&r, root, grade, m2, 0), Err(EditError::NotAccepted), "never under the whole picture");
+        s.move_layer(&r, root, grade, m2, 1).unwrap();
+        assert_eq!(tops(&s), [whole, m2, m1]);
+        let card = s.card(root, grade).unwrap();
+        let last = card.layers.last().unwrap();
+        assert_eq!(last.parent, Some(m1), "the mask's panel moved with it");
+        // Removing a mask takes its panels.
+        s.remove_layer(&r, root, grade, m1).unwrap();
+        assert!(s.card(root, grade).unwrap().layers.iter().all(|l| l.parent != Some(m1)));
+        // A mask takes more than a drawn layer's twelve.
+        for _ in 0..30 {
+            s.add_sub_layer(&r, root, grade, whole, "panel.test").unwrap();
+        }
     }
 
     fn names_and_parents(s: &Scene, b: ThingId) -> Vec<(String, Option<u32>)> {

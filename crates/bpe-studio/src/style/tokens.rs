@@ -79,3 +79,11 @@ pub const HEAT: [(f32, Color32); 7] = [
     (2.0, Color32::from_rgb(0xff, 0x3b, 0x2f)),
     (3.0, Color32::from_rgb(0xff, 0xff, 0xff)),
 ];
+
+/// The picture's channels in the Histogram and the Tone Curve (the video's own red, green and
+/// blue, softened to read on the panel).
+pub const CHANNEL_RED: Color32 = Color32::from_rgb(0xe8, 0x5c, 0x5c);
+pub const CHANNEL_GREEN: Color32 = Color32::from_rgb(0x5c, 0xc8, 0x70);
+pub const CHANNEL_BLUE: Color32 = Color32::from_rgb(0x5c, 0x8e, 0xf0);
+/// The Histogram's brightness, under the channels.
+pub const CHANNEL_LUMA: Color32 = Color32::from_rgba_premultiplied(0x4a, 0x4a, 0x4a, 0x90);

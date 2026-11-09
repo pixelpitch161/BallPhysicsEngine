@@ -7,8 +7,8 @@
 //! - `instances.rs`: the GPU records of balls, layers and path pieces; `trails.rs`, `particles.rs`
 //!   and `paths.rs`: trails and streaks, sprites and fields, shapes and text.
 //! - `layers.rs`: blend layers and the overlay; `cull.rs`: the view, list limits and culling.
-//! - `light.rs`: what the lighting reads ([`LightScene`]); `effects.rs`: effect calls, the
-//!   background and the grade; `ripples.rs`: ripple sources.
+//! - `light.rs`: what the lighting reads ([`LightScene`]); `effects.rs`: effect calls and the
+//!   background; `grade.rs`: the colour grade ([`GradeStack`]); `ripples.rs`: ripple sources.
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -25,6 +25,7 @@ pub use bpe_runtime::hit_strength;
 mod build;
 mod cull;
 mod effects;
+mod grade;
 mod instances;
 mod layers;
 mod light;
@@ -39,6 +40,7 @@ mod trails;
 
 pub use build::*;
 pub use effects::*;
+pub use grade::*;
 pub use instances::*;
 use layers::*;
 pub use light::*;
@@ -107,8 +109,9 @@ pub struct Frame {
     /// amount, in the order they were first drawn into. Each is mixed into the picture after
     /// this frame's own lists.
     pub layers: Vec<BlendLayer>,
-    /// The colour grade run over the finished picture. Only the top frame's counts.
-    pub grade: Grade,
+    /// The colour grade run over the linear picture before the roll-off. Only the top frame's
+    /// counts.
+    pub grade: GradeStack,
     /// The scene's lights, when it has a Lighting card (only the top frame's counts). `None`
     /// draws the picture exactly as it was before lighting.
     pub light: Option<LightScene>,
@@ -227,7 +230,7 @@ impl Default for Frame {
             overlay: None,
             video: (1080, 1920),
             layers: Vec::new(),
-            grade: Grade::default(),
+            grade: GradeStack::default(),
             light: None,
             ball_marks: Vec::new(),
             ripples: false,
@@ -266,7 +269,7 @@ impl Frame {
         self.background = BackgroundPaint::default();
         self.camera = CameraView::default();
         self.layers.clear();
-        self.grade = Grade::default();
+        self.grade = GradeStack::default();
         self.light = None;
         self.ball_marks.clear();
         self.ripples = false;

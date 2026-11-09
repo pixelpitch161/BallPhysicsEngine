@@ -41,9 +41,9 @@ Colour paints	4	b962b1e0aaa906da
 Blend modes	0.5	f7a49836d7a69241
 Blend modes	2	7fc39db0b24e7b76
 Blend modes	4	849b5b53a2c44bb1
-Graded sunset	0.5	ed8d772ccced8001
-Graded sunset	2	fd54af1ea40fe8c7
-Graded sunset	4	d16698396c2aa3fe
+Graded sunset	0.5	24daeca42fe8ec0d
+Graded sunset	2	1a811a784b3e435c
+Graded sunset	4	6959617443576221
 Ellipse focus	0.5	a07fc13ec58e3142
 Ellipse focus	2	9e32d090616f72e9
 Ellipse focus	4	3e270b4b0210971a

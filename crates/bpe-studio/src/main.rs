@@ -14,6 +14,7 @@ mod files;
 mod final_frame;
 mod follow;
 mod font_picker;
+mod grade_mode;
 mod gradient_bar;
 mod gradient_editor;
 mod gradient_form_chips;

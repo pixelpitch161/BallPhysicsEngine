@@ -13,7 +13,7 @@ pub fn first_beat_seconds(first_beat: f32) -> f64 {
 pub use sim::SceneSim;
 
 use crate::paint::Paint;
-use bpe_core::{Choice, Color, Gradient, SettingDef, Settings, SlotId, ThingKind};
+use bpe_core::{Choice, Color, SettingDef, Settings, SlotId, ThingKind};
 use glam::Vec2;
 
 pub struct SceneKind;
@@ -108,34 +108,6 @@ pub struct SceneSettings {
     /// How bright the whole picture is.
     #[setting(label = "Exposure", range(0.1, 4), keyframe, pulse, group = "Picture")]
     pub exposure: f32,
-    /// Makes the finished picture lighter or darker.
-    #[setting(label = "Brightness", range(-1, 1), group = "Picture", keyframe, pulse)]
-    pub grade_brightness: f32,
-    /// Spreads the colours apart from the middle grey, or pulls them together.
-    #[setting(label = "Contrast", range(-1, 1), group = "Picture", keyframe, pulse)]
-    pub grade_contrast: f32,
-    /// More colourful, or towards grey at -1.
-    #[setting(label = "Saturation", range(-1, 1), group = "Picture", keyframe, pulse)]
-    pub grade_saturation: f32,
-    /// Warms the picture towards red, or cools it towards blue.
-    #[setting(label = "Warm / cool", range(-1, 1), group = "Picture", keyframe, pulse)]
-    pub grade_warmth: f32,
-    /// Tints the picture towards magenta, or towards green.
-    #[setting(label = "Tint", range(-1, 1), group = "Picture", keyframe, pulse)]
-    pub grade_tint: f32,
-    /// Darkens the corners of the picture.
-    #[setting(label = "Vignette", range(0, 1), group = "Picture", keyframe, pulse)]
-    pub grade_vignette: f32,
-    /// How far out from the middle the vignette starts.
-    #[setting(label = "Vignette size", range(0, 1), group = "Picture", keyframe, pulse)]
-    pub grade_vignette_size: f32,
-    /// Recolours the picture by its brightness: dark parts take the first colours, light parts
-    /// the last.
-    #[setting(label = "Gradient map", group = "Picture", keyframe)]
-    pub grade_map: Gradient,
-    /// How much of the gradient map's colour replaces the picture's own.
-    #[setting(label = "Gradient map amount", range(0, 1), group = "Picture", keyframe, pulse)]
-    pub grade_map_amount: f32,
     /// How fast the music goes, in beats a minute. Sound and the timeline's grid follow it;
     /// the physics doesn't.
     #[setting(label = "Tempo", range(20, 300), unit = "BPM", group = "Sound")]
@@ -164,15 +136,6 @@ impl Default for SceneSettings {
             fps: 60,
             steps_per_second: 240,
             exposure: 1.0,
-            grade_brightness: 0.0,
-            grade_contrast: 0.0,
-            grade_saturation: 0.0,
-            grade_warmth: 0.0,
-            grade_tint: 0.0,
-            grade_vignette: 0.0,
-            grade_vignette_size: 0.5,
-            grade_map: Gradient::even(&[Color::rgb(0, 0, 0), Color::WHITE]),
-            grade_map_amount: 0.0,
             seed: 1,
             background_on_screen: true,
             bg_glow: 0.0,
@@ -182,23 +145,6 @@ impl Default for SceneSettings {
             first_beat: 0.0,
             time_top: 4,
             time_bottom: TimeBottom::Four,
-        }
-    }
-}
-
-impl SceneSettings {
-    /// The colour grade these settings run over the finished picture.
-    pub fn grade(&self) -> bpe_gfx::Grade {
-        bpe_gfx::Grade {
-            brightness: self.grade_brightness,
-            contrast: self.grade_contrast,
-            saturation: self.grade_saturation,
-            warmth: self.grade_warmth,
-            tint: self.grade_tint,
-            vignette: self.grade_vignette,
-            vignette_size: self.grade_vignette_size,
-            map: self.grade_map.clone(),
-            map_amount: self.grade_map_amount,
         }
     }
 }
@@ -220,7 +166,7 @@ impl ThingKind for SceneKind {
         SceneSettings::defs()
     }
     fn slots(&self) -> &'static [SlotId] {
-        &[SlotId::Shader, SlotId::Lighting, SlotId::Air, SlotId::Mixer]
+        &[SlotId::Shader, SlotId::Lighting, SlotId::Air, SlotId::Mixer, SlotId::Grade]
     }
     fn default_slots(&self) -> &'static [SlotId] {
         &[]
@@ -270,29 +216,16 @@ mod tests {
                 "Its light's colour"
             ]
         );
-        assert_eq!(
-            labels_in("Picture"),
-            [
-                "Bloom",
-                "Exposure",
-                "Brightness",
-                "Contrast",
-                "Saturation",
-                "Warm / cool",
-                "Tint",
-                "Vignette",
-                "Vignette size",
-                "Gradient map",
-                "Gradient map amount"
-            ]
-        );
+        // The grade moved to its own card (colour grading).
+        assert_eq!(labels_in("Picture"), ["Bloom", "Exposure"]);
+        assert!(SceneSettings::defs().iter().all(|d| !d.key.starts_with("grade_")));
     }
 
     #[test]
     fn scene_settings_keep_their_effects_slot_to_themselves() {
         let k = SceneKind;
         assert_eq!(k.name(), "Scene settings");
-        assert_eq!(k.slots(), &[SlotId::Shader, SlotId::Lighting, SlotId::Air, SlotId::Mixer]);
+        assert_eq!(k.slots(), &[SlotId::Shader, SlotId::Lighting, SlotId::Air, SlotId::Mixer, SlotId::Grade]);
         assert!(k.default_slots().is_empty());
         assert_eq!(k.slot_label(SlotId::Shader), "Effects");
     }
@@ -313,39 +246,5 @@ mod tests {
         let d = SceneSettings::default().background;
         assert_eq!((d.angle, d.span, d.centre), (90.0, 1920.0, Vec2::ZERO));
         assert_eq!(d.colours.stops.len(), 1, "a plain grey");
-    }
-
-    #[test]
-    fn the_grade_is_nine_keyframed_settings_on_the_picture_card() {
-        let defs = SceneSettings::defs();
-        let keys = [
-            ("grade_brightness", "Brightness"),
-            ("grade_contrast", "Contrast"),
-            ("grade_saturation", "Saturation"),
-            ("grade_warmth", "Warm / cool"),
-            ("grade_tint", "Tint"),
-            ("grade_vignette", "Vignette"),
-            ("grade_vignette_size", "Vignette size"),
-            ("grade_map", "Gradient map"),
-            ("grade_map_amount", "Gradient map amount"),
-        ];
-        for (key, label) in keys {
-            let d = defs.iter().find(|d| d.key == key).unwrap_or_else(|| panic!("{key} missing"));
-            assert_eq!((d.label, d.group), (label, "Picture"), "{key}");
-            assert!(d.flags.keyframe, "{key}");
-            assert_eq!(d.flags.pulse, key != "grade_map", "{key}");
-        }
-        assert_eq!(defs.iter().filter(|d| d.group == "Picture" && d.key.starts_with("grade_")).count(), 9);
-        let map = defs.iter().find(|d| d.key == "grade_map").unwrap();
-        assert_eq!(map.ty, bpe_core::ValueType::Gradient);
-        let range = |key: &str| defs.iter().find(|d| d.key == key).unwrap().range;
-        for key in ["grade_brightness", "grade_contrast", "grade_saturation", "grade_warmth", "grade_tint"] {
-            assert_eq!(range(key), Some((-1.0, 1.0)), "{key}");
-        }
-        for key in ["grade_vignette", "grade_vignette_size", "grade_map_amount"] {
-            assert_eq!(range(key), Some((0.0, 1.0)), "{key}");
-        }
-        let d = SceneSettings::default();
-        assert_eq!(d.grade(), bpe_gfx::Grade::default());
     }
 }

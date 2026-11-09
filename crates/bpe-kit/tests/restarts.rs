@@ -241,3 +241,33 @@ fn every_setting_that_changes_a_run_restarts_it() {
     assert!(checked > 1000 && moved_balls > 100 && moved_beside > 20, "too little was checked");
     assert!(stale.is_empty(), "{} edits would leave a stale preview:\n{}", stale.len(), stale.join("\n"));
 }
+
+#[test]
+fn grade_settings_restart_nothing() {
+    // The grade only colours the finished picture: no edit to it may restart the physics, the
+    // sound or the particles.
+    let kit = bpe_kit::kit();
+    let (reg, sims) = (&kit.registry, &kit.sims);
+    let mut base = bpe_kit::new_scene(reg);
+    bpe_kit::add_thing(&mut base, reg, "particles", ThingId::ROOT).expect("particles");
+    bpe_kit::modules::grade::ensure_grade(&mut base, reg);
+    let prints = |scene: &Scene| {
+        let resolved = bpe_kit::resolve_scene(scene, reg);
+        (
+            fingerprint(scene, &resolved, sims),
+            beside_fingerprint(scene, &resolved, sims),
+            bpe_runtime::world::sound_fingerprint(scene, &resolved, sims),
+        )
+    };
+    let before = prints(&base);
+    let mut checked = 0;
+    for (place, key, def) in settings_of(&base, reg, ThingId::ROOT) {
+        if !matches!(place, Place::Card(bpe_core::SlotId::Grade)) {
+            continue;
+        }
+        let Some(v) = changed(def, &value_at(&base, ThingId::ROOT, place, &key, def)) else { continue };
+        assert_eq!(prints(&with(&base, ThingId::ROOT, place, &key, v)), before, "{key}");
+        checked += 1;
+    }
+    assert!(checked >= 15, "only {checked} grade settings changed");
+}

@@ -158,6 +158,7 @@ pub fn registry() -> Registry {
     r.add_layer(OwnEffect);
     sound::register(&mut r);
     rules::register(&mut r);
+    modules::grade::register(&mut r);
     r
 }
 

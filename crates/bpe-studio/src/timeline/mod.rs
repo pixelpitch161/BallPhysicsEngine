@@ -220,9 +220,14 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
             );
         }
     }
-    let groups = groups_for(&studio.scene, &studio.kit);
-    // Only the selected thing's group is open; with nothing selected, the scene settings'.
-    let open = studio.selection.primary.unwrap_or(ThingId::ROOT);
+    let grading = studio.mode == crate::grade_mode::EditorMode::Grade;
+    let mut groups = groups_for(&studio.scene, &studio.kit);
+    if grading {
+        grade_lanes_only(&mut groups);
+    }
+    // Only the selected thing's group is open; with nothing selected, the scene settings'. In
+    // Grade mode, the scene settings' grade lanes.
+    let open = if grading { ThingId::ROOT } else { studio.selection.primary.unwrap_or(ThingId::ROOT) };
     let mut timeline = std::mem::take(&mut studio.panels.timeline);
     // A selected key that is gone is no longer selected, and a key in a folded group is out of
     // sight, so it isn't either (Delete would remove it unseen).
@@ -231,9 +236,11 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
     timeline.selected.retain(|(a, i)| {
         let Some(key) = tracks.get(a).and_then(|t| t.keys.get(*i)) else { return false };
         let same = picked_at.get(&(a.clone(), *i)).is_none_or(|t| t.to_bits() == key.time.to_bits());
-        a.thing == open && same
+        // In Grade mode only the grade's keys show, so only they stay selected.
+        a.thing == open && same && (!grading || a.slot == Some(bpe_core::SlotId::Grade))
     });
-    if timeline.drag.as_ref().is_some_and(|d| d.picked.iter().any(|(a, _)| a.thing != open)) {
+    let hidden = |a: &Address| a.thing != open || (grading && a.slot != Some(bpe_core::SlotId::Grade));
+    if timeline.drag.as_ref().is_some_and(|d| d.picked.iter().any(|(a, _)| hidden(a))) {
         timeline.drag = None;
     }
     if timeline.single().is_none() {
@@ -275,7 +282,15 @@ pub fn show(ui: &mut Ui, studio: &mut Studio) {
         if !studio.scene.rules.is_empty() {
             rules_lane(ui, studio, &ruler);
         }
-        if groups.is_empty() {
+        if grading {
+            ui.add_space(4.0);
+            let hint = if groups.is_empty() {
+                "Only grade keyframes show in Grade mode. Right-click a panel's setting and pick Create keyframe."
+            } else {
+                "Only grade keyframes show in Grade mode."
+            };
+            ui.label(RichText::new(hint).small().color(style::MUTED));
+        } else if groups.is_empty() {
             ui.add_space(6.0);
             let hint = "Right-click a setting and pick Create keyframe. Its lane shows up here under its thing.";
             ui.label(RichText::new(hint).small().color(style::MUTED));
@@ -1114,6 +1129,17 @@ fn curve_window(ui: &mut Ui, studio: &mut Studio, timeline: &mut Timeline) {
     if !open {
         timeline.curve_open = false;
     }
+}
+
+/// Grade mode's timeline: the scene settings' grade lanes alone.
+pub fn grade_lanes_only(groups: &mut Vec<lanes::Group>) {
+    groups.retain(|g| g.thing == ThingId::ROOT);
+    for g in groups.iter_mut() {
+        g.lanes.retain(|l| l.address.slot == Some(bpe_core::SlotId::Grade));
+        g.slots = false;
+        g.rounds = false;
+    }
+    groups.retain(|g| !g.lanes.is_empty());
 }
 
 #[cfg(test)]

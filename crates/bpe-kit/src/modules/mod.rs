@@ -3,6 +3,7 @@
 pub mod air;
 pub mod bounce;
 pub mod effects;
+pub mod grade;
 pub mod health;
 pub mod light_scenes;
 pub mod lighting;

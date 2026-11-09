@@ -6,7 +6,7 @@ struct Globals {
     bg_paint: vec4<f32>,
     // The background place: direction, span, centre xy.
     bg_place: vec4<f32>,
-    // x: bloom strength, y: exposure, z: 1 to run the colour grade
+    // x: bloom strength, y: exposure, z: 1 to run the colour grade (grade.wgsl)
     post: vec4<f32>,
     // centre xy, zoom, turn
     camera: vec4<f32>,
@@ -14,18 +14,12 @@ struct Globals {
     bg: vec4<f32>,
     bg_from: vec4<f32>,
     bg_to: vec4<f32>,
-    // The colour grade: brightness, contrast, saturation, warmth.
-    grade: vec4<f32>,
-    // The colour grade: tint, vignette, vignette size, gradient map amount.
-    grade_more: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var src: texture_2d<f32>;
 @group(1) @binding(1) var samp: sampler;
 @group(1) @binding(2) var bloom_tex: texture_2d<f32>;
-// The grade's gradient map, 256 by 1, linear light.
-@group(1) @binding(3) var grade_map: texture_2d<f32>;
 
 struct FsIn {
     @builtin(position) pos: vec4<f32>,
@@ -117,31 +111,6 @@ fn dither_noise(p: vec2<u32>, k: u32) -> vec3<f32> {
     return vec3<f32>(v >> vec3<u32>(8u)) / 16777216.0;
 }
 
-// The scene's colour grade on display-ready (sRGB-encoded) colours, in this order: gradient
-// map, brightness, contrast, saturation, warmth, tint, vignette; then clamped to 0..1.
-fn grade(colour: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
-    var c = colour;
-    let amount = g.grade_more.w;
-    if amount > 0.0 {
-        // The baked row's first texel is at 0 and its last at 1.
-        let t = clamp(luma(c), 0.0, 1.0) * (255.0 / 256.0) + 0.5 / 256.0;
-        let m = textureSampleLevel(grade_map, samp, vec2<f32>(t, 0.5), 0.0).rgb;
-        c = mix(c, vec3<f32>(srgb_encode(m.r), srgb_encode(m.g), srgb_encode(m.b)), amount);
-    }
-    c *= 1.0 + g.grade.x;
-    c = (c - 0.5) * (1.0 + g.grade.y) + 0.5;
-    c = mix(vec3<f32>(luma(c)), c, 1.0 + g.grade.z);
-    c.r += 0.1 * g.grade.w;
-    c.b -= 0.1 * g.grade.w;
-    c.g -= 0.1 * g.grade_more.x;
-    // smoothstep(size, 1, d), written out so a size of 1 (equal edges) is no step, not a NaN.
-    let d = length((uv - 0.5) * 2.0) / sqrt(2.0);
-    let size = g.grade_more.z;
-    let s = clamp((d - size) / max(1.0 - size, 1e-5), 0.0, 1.0);
-    c *= 1.0 - g.grade_more.y * s * s * (3.0 - 2.0 * s);
-    return clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
-}
-
 @fragment
 fn fs_composite(in: FsIn) -> @location(0) vec4<f32> {
     let hdr = textureSample(src, samp, in.uv).rgb;
@@ -149,17 +118,20 @@ fn fs_composite(in: FsIn) -> @location(0) vec4<f32> {
     let c = (hdr + bloom * g.post.x * 0.35) * g.post.y;
     // Clamped to the half floats' largest first: summed glows can reach infinity, and inf / inf
     // would draw the hottest spot black.
-    let mapped = roll_off(clamp(c, vec3<f32>(0.0), vec3<f32>(65504.0)));
+    var lin = clamp(c, vec3<f32>(0.0), vec3<f32>(65504.0));
+    // The colour grade works on the linear picture, light above white kept, before the roll-off
+    // squeezes it into the screen's range. With no grade it is skipped altogether, so the picture
+    // is exactly as without it.
+    if g.post.z > 0.5 {
+        lin = clamp(run_grade(lin, in.uv), vec3<f32>(0.0), vec3<f32>(65504.0));
+    }
+    let mapped = roll_off(lin);
     // Triangular dither of ±1 step, the same on every channel (two uniform numbers summed): no banding survives the
     // 8-bit output, and no sin() whose precision differs from GPU to GPU.
     let n = dither_noise(vec2<u32>(in.pos.xy), 0u);
     let dither = (n.x + n.y - 1.0) / 255.0;
     // The output texture is plain Rgba8Unorm holding sRGB-encoded values (what egui and video encoders expect).
-    var out = vec3<f32>(srgb_encode(mapped.r), srgb_encode(mapped.g), srgb_encode(mapped.b));
-    // At its defaults the grade is skipped altogether, so the picture is exactly as without it.
-    if g.post.z > 0.5 {
-        out = grade(out, in.uv);
-    }
+    let out = vec3<f32>(srgb_encode(mapped.r), srgb_encode(mapped.g), srgb_encode(mapped.b));
     // Pure black and pure white stay exact (no speckle on a black background); the dither fades
     // in over the first and last step.
     let room = clamp(min(out, vec3<f32>(1.0) - out) * 255.0, vec3<f32>(0.0), vec3<f32>(1.0));

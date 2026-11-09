@@ -33,7 +33,6 @@ impl Targets {
         post_layout: &wgpu::BindGroupLayout,
         composite_layout: &wgpu::BindGroupLayout,
         sampler: &wgpu::Sampler,
-        grade_map: &wgpu::TextureView,
     ) -> Self {
         let (width, height) = (width.max(1), height.max(1));
         let texture = |label, w: u32, h: u32, format, usage| {
@@ -94,7 +93,6 @@ impl Targets {
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&hdr) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&bloom[0]) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(grade_map) },
             ],
         });
         Self {

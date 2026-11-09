@@ -11,7 +11,7 @@ mod paint;
 mod scene;
 mod targets;
 
-use grade::GradeMap;
+use grade::GradeGpu;
 use paint::PaintTexture;
 use targets::Targets;
 
@@ -50,7 +50,7 @@ pub(crate) struct Globals {
     pub(crate) bg_paint: [f32; 4],
     /// The background's place: direction in degrees, span, centre xy.
     pub(crate) bg_place: [f32; 4],
-    /// x: bloom strength, y: exposure, z: 1 to run the colour grade, w: in a layer whose things
+    /// x: bloom strength, y: exposure, z: 1 to run the colour grade (`grade.wgsl`), w: in a layer whose things
     /// blend with each other, the blend's `shader_code` (see each.wgsl).
     pub(crate) post: [f32; 4],
     /// The camera: centre xy, zoom, turn in radians.
@@ -61,10 +61,6 @@ pub(crate) struct Globals {
     /// The two colours of a plain blend the background mixes itself (`bg.w` is 1 then).
     pub(crate) bg_from: [f32; 4],
     pub(crate) bg_to: [f32; 4],
-    /// The colour grade: brightness, contrast, saturation, warmth.
-    pub(crate) grade: [f32; 4],
-    /// The colour grade: tint, vignette, vignette size, gradient map amount.
-    pub(crate) grade_more: [f32; 4],
     /// Lighting: x the light pass (0 the picture as always, 1 lit colour, 2 surface, 3 the light
     /// things give off), y how much the background takes light, z 1 in Stage (see the lighting shader).
     pub(crate) light: [f32; 4],
@@ -93,7 +89,7 @@ impl Globals {
                 frame.background.repeat,
             ],
             bg_place: frame.background.place,
-            post: [frame.bloom, frame.exposure, if frame.grade.is_default() { 0.0 } else { 1.0 }, 0.0],
+            post: [frame.bloom, frame.exposure, if frame.grade.is_identity() { 0.0 } else { 1.0 }, 0.0],
             camera: [camera.center.x, camera.center.y, camera.zoom, camera.turn],
             bg: [
                 if frame.background_on_screen { 1.0 } else { 0.0 },
@@ -103,8 +99,6 @@ impl Globals {
             ],
             bg_from: frame.background.ends.map_or([0.0; 4], |e| e[0]),
             bg_to: frame.background.ends.map_or([0.0; 4], |e| e[1]),
-            grade: [frame.grade.brightness, frame.grade.contrast, frame.grade.saturation, frame.grade.warmth],
-            grade_more: [frame.grade.tint, frame.grade.vignette, frame.grade.vignette_size, frame.grade.map_amount],
             light: [0.0; 4],
             light_emit: [[0.0; 4]; 2],
             bg_form: frame.background.form,
@@ -164,7 +158,9 @@ pub struct Renderer {
     /// The overlay frame's own gradients: its instances name rows of its own atlas.
     pub(crate) overlay_paint: PaintTexture,
     pub(crate) targets: Targets,
-    pub(crate) grade_map: GradeMap,
+    pub(crate) grade: GradeGpu,
+    /// The Histogram of the finished picture, made the first time the editor asks for it.
+    pub(crate) histogram: Option<crate::grade::Histogram>,
     /// Lighting's passes and pictures, made the first time a frame is lit.
     pub(crate) lighting: Option<lighting::Lighting>,
     /// The Stage camera's pass (lighting part 5), made the first time a frame is seen moved.
@@ -391,15 +387,8 @@ impl Renderer {
 
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
         if self.size() != (width.max(1), height.max(1)) {
-            self.targets = Targets::new(
-                device,
-                width,
-                height,
-                &self.post_layout,
-                &self.composite_layout,
-                &self.sampler,
-                &self.grade_map.view,
-            );
+            self.targets =
+                Targets::new(device, width, height, &self.post_layout, &self.composite_layout, &self.sampler);
         }
     }
 
@@ -501,6 +490,33 @@ impl Renderer {
     pub fn lighting_stats(&self) -> Option<(usize, Option<f32>)> {
         let ms = self.light_timer.as_ref().and_then(|t| t.as_ref()).and_then(|t| t.last_ms);
         self.lit_lights.map(|n| (n, ms))
+    }
+
+    /// Starts counting the finished picture into the Histogram (Grade mode's scope), unless a
+    /// count is still on its way; [`Renderer::histogram`] gives it once the GPU has done it.
+    /// Only the editor asks: an export never does.
+    pub fn request_histogram(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        let histogram = self.histogram.get_or_insert_with(|| crate::grade::Histogram::new(device));
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("histogram") });
+        let size = (self.targets.width, self.targets.height);
+        if histogram.encode(device, &mut encoder, &self.targets.output_view, size) {
+            queue.submit([encoder.finish()]);
+            histogram.after_submit();
+        }
+    }
+
+    /// Whether a Histogram count is on its way (asked for and not yet taken).
+    pub fn histogram_pending(&self) -> bool {
+        self.histogram.as_ref().is_some_and(|h| h.busy())
+    }
+
+    /// The Histogram's latest counts, once the GPU has them (looks without waiting).
+    pub fn histogram(&mut self, device: &wgpu::Device) -> Option<Box<crate::grade::HistogramBins>> {
+        let histogram = self.histogram.as_mut()?;
+        if histogram.busy() {
+            let _ = device.poll(wgpu::PollType::Poll);
+        }
+        histogram.take()
     }
 
     /// Copies the output image back to the CPU as tightly packed RGBA bytes (sRGB-encoded).

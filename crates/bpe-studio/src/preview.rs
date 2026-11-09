@@ -72,6 +72,8 @@ struct Drawn {
     light: (LightShow, Vec<LightSource>),
     /// The world step of the particles drawn (the particle playback's), when there are some.
     particles: Option<u64>,
+    /// Grade mode's compare view and Split line, in Grade mode.
+    grade: Option<(crate::grade_mode::Compare, u32)>,
 }
 
 /// Something in the preview that can be dragged.
@@ -241,29 +243,34 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         ui.label("The preview needs the wgpu renderer.");
         return Outcome::default();
     };
-    // A two-part switch in the corner: the on part is inverted.
-    ui.horizontal(|ui| {
-        ui.add_space(8.0);
-        let frame = egui::Frame::new().stroke(Stroke::new(1.0, style::LINE)).corner_radius(style::RADIUS);
-        frame.show(ui, |ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            let modes = [
-                (PreviewMode::Camera, "Camera", "Exactly what the video shows"),
-                (
-                    PreviewMode::World,
-                    "World",
-                    "The whole world: scroll to zoom, drag with the middle button to pan, F to frame",
-                ),
-            ];
-            for (mode, name, help) in modes {
-                let on = studio.preview_mode == mode;
-                let button = style::toggle_button(name, on).frame_when_inactive(on).min_size(egui::vec2(0.0, 24.0));
-                if ui.add(button).on_hover_text(help).clicked() {
-                    studio.preview_mode = mode;
+    let grading = studio.mode == crate::grade_mode::EditorMode::Grade;
+    // A two-part switch in the corner: the on part is inverted. Grade mode compares instead.
+    if grading {
+        compare_switch(ui, studio);
+    } else {
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            let frame = egui::Frame::new().stroke(Stroke::new(1.0, style::LINE)).corner_radius(style::RADIUS);
+            frame.show(ui, |ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let modes = [
+                    (PreviewMode::Camera, "Camera", "Exactly what the video shows"),
+                    (
+                        PreviewMode::World,
+                        "World",
+                        "The whole world: scroll to zoom, drag with the middle button to pan, F to frame",
+                    ),
+                ];
+                for (mode, name, help) in modes {
+                    let on = studio.preview_mode == mode;
+                    let button = style::toggle_button(name, on).frame_when_inactive(on).min_size(egui::vec2(0.0, 24.0));
+                    if ui.add(button).on_hover_text(help).clicked() {
+                        studio.preview_mode = mode;
+                    }
                 }
-            }
+            });
         });
-    });
+    }
     let settings = studio.settings();
     let (video_width, video_height) = (settings.width.max(1), settings.height.max(1));
     let mut area = ui.available_rect_before_wrap().shrink(12.0);
@@ -277,7 +284,8 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         area.max.y -= 32.0;
         bar
     });
-    let world_mode = studio.preview_mode == PreviewMode::World;
+    // Grade mode grades the video's picture: always the Camera view.
+    let world_mode = studio.preview_mode == PreviewMode::World && !grading;
     // The picture's size in screen units, and where it goes on screen.
     let (picture, rect) = if world_mode {
         let w = (video_height as f32 * area.width() / area.height().max(1.0)).round().max(2.0) as u32;
@@ -329,6 +337,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         preview.drawn = None;
     }
 
+    let drawn_before = preview.drawn.as_ref().map(|d| (d.revision, d.time.to_bits(), d.step, d.grade));
     let catching_up = draw_picture(
         studio,
         device,
@@ -338,6 +347,7 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         &mut preview.drawn,
         look,
     );
+    let mut redrawn = preview.drawn.as_ref().map(|d| (d.revision, d.time.to_bits(), d.step, d.grade)) != drawn_before;
     if warm::update(&mut preview, studio, device, &render_state.queue, catching_up, look) {
         // The warm renderer took the cold one's place: the picture shows its output now.
         render_state.renderer.write().update_egui_texture_from_wgpu_texture(
@@ -346,6 +356,11 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
             wgpu::FilterMode::Linear,
             preview.texture,
         );
+        redrawn = true;
+    }
+    if grading {
+        // After the warm-up's swap, so the renderer counted is the one shown.
+        count_histogram(studio, &mut preview.renderer, device, &render_state.queue, redrawn, ui.ctx());
     }
     if warm::busy(&preview) {
         ui.ctx().request_repaint();
@@ -411,6 +426,14 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         let world = studio.playback.world();
         let active = preview.drag.as_ref().map(|d| d.handle);
         world_view::draw_camera(&painter, &studio.scene, &studio.resolved, world, studio.playback.log(), &view, active);
+    }
+
+    // Grade mode only looks: no handles, no picking; Split has its line.
+    if grading {
+        preview.drag = None;
+        split_line(ui, &response, rect, studio);
+        studio.panels.preview = Some(preview);
+        return outcome;
     }
 
     // Pick from picture: the click picks a colour and does nothing else.
@@ -708,6 +731,8 @@ fn draw_picture(
         look,
         light: (studio.light_show, studio.light_solo.iter().copied().collect()),
         particles: None,
+        grade: (studio.mode == crate::grade_mode::EditorMode::Grade)
+            .then(|| (studio.grade.compare, studio.grade.split.to_bits())),
     };
     let now = Drawn { particles: particles.as_ref().map(|p| p.step), ..now };
     if drawn.as_ref() != Some(&now) {
@@ -758,6 +783,107 @@ pub(crate) fn compose(
         world_look(frame, camera, size);
     }
     show_light(frame, studio.light_show);
+    if studio.mode == crate::grade_mode::EditorMode::Grade {
+        studio.grade.show_on(&mut frame.grade);
+    }
+}
+
+/// Grade mode's corner switch: After, Before, or Split.
+fn compare_switch(ui: &mut Ui, studio: &mut Studio) {
+    use crate::grade_mode::Compare;
+    ui.horizontal(|ui| {
+        ui.add_space(8.0);
+        let frame = egui::Frame::new().stroke(Stroke::new(1.0, style::LINE)).corner_radius(style::RADIUS);
+        frame.show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            for (compare, name, help) in [
+                (Compare::After, "After", "The graded picture"),
+                (Compare::Before, "Before", "The picture without the grade (\\ switches)"),
+                (
+                    Compare::Split,
+                    "Split",
+                    "Without the grade left of the line, graded right of it: drag the line (Y switches)",
+                ),
+            ] {
+                let on = studio.grade.compare == compare;
+                let button = style::toggle_button(name, on).frame_when_inactive(on).min_size(egui::vec2(0.0, 24.0));
+                if ui.add(button).on_hover_text(help).clicked() {
+                    studio.grade.compare = compare;
+                }
+            }
+        });
+    });
+}
+
+/// Counts the picture into the Histogram after it was drawn again (or until it has counts), and
+/// takes the counts once the GPU has them.
+fn count_histogram(
+    studio: &mut Studio,
+    renderer: &mut Renderer,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    redrawn: bool,
+    ctx: &egui::Context,
+) {
+    if let Some(bins) = renderer.histogram(device) {
+        studio.grade.bins = Some(bins);
+    }
+    // A picture drawn since the last count is counted once that count is in. The renderer itself
+    // knows whether a count is on its way (a swapped-in renderer, or a failed read, has none).
+    studio.grade.recount |= redrawn || studio.grade.bins.is_none();
+    if studio.grade.recount && !renderer.histogram_pending() {
+        renderer.request_histogram(device, queue);
+        studio.grade.recount = false;
+    }
+    if renderer.histogram_pending() {
+        // Looked at again soon: the counts come back without anything else asking for a frame.
+        ctx.request_repaint_after(std::time::Duration::from_millis(16));
+    }
+}
+
+/// The Split view's line across the picture at `rect`: white, dragged left and right.
+fn split_line(ui: &mut Ui, response: &egui::Response, rect: Rect, studio: &mut Studio) {
+    if studio.grade.compare != crate::grade_mode::Compare::Split {
+        return;
+    }
+    let x = rect.left() + rect.width() * studio.grade.split.clamp(0.0, 1.0);
+    let grab = Rect::from_x_y_ranges(x - 6.0..=x + 6.0, rect.y_range());
+    let near = response.hover_pos().is_some_and(|p| grab.contains(p));
+    if response.drag_started() && ui.input(|i| i.pointer.press_origin()).is_some_and(|p| grab.contains(p)) {
+        studio.grade.split_drag = true;
+    }
+    // The preview draws again by itself when the line moves: `Drawn` holds where it is.
+    if studio.grade.split_drag
+        && let Some(p) = response.interact_pointer_pos()
+    {
+        studio.grade.split = ((p.x - rect.left()) / rect.width().max(1.0)).clamp(0.0, 1.0);
+    }
+    if response.drag_stopped() {
+        studio.grade.split_drag = false;
+    }
+    if near || studio.grade.split_drag {
+        ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+    }
+    let x = rect.left() + rect.width() * studio.grade.split.clamp(0.0, 1.0);
+    let painter = ui.painter_at(rect);
+    painter.vline(x, rect.y_range(), Stroke::new(3.0, style::OUTLINE));
+    painter.vline(x, rect.y_range(), Stroke::new(1.5, style::TEXT_STRONG));
+    let knob = Rect::from_center_size(egui::pos2(x, rect.center().y), egui::vec2(10.0, 28.0));
+    painter.rect_filled(knob, style::RADIUS, style::TEXT_STRONG);
+    painter.text(
+        egui::pos2(x - 8.0, rect.top() + 8.0),
+        egui::Align2::RIGHT_TOP,
+        "Before",
+        egui::FontId::proportional(11.0),
+        style::TEXT_STRONG,
+    );
+    painter.text(
+        egui::pos2(x + 8.0, rect.top() + 8.0),
+        egui::Align2::LEFT_TOP,
+        "After",
+        egui::FontId::proportional(11.0),
+        style::TEXT_STRONG,
+    );
 }
 
 /// Makes `frame` the World view's: seen through `camera` at `size`, without what is stuck to the

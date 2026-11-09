@@ -41,11 +41,15 @@ pub enum SlotId {
     /// The scene's air (particles part 2, the Air card): only the scene settings have one. Last,
     /// so no other slot's place in [`SlotId::ALL`] moves.
     Air,
+    /// The scene's colour grade (the Grade card, edited in Grade mode): only the scene settings
+    /// have one, and it is not shown in the inspector's card list. Last, so no other slot's place
+    /// in [`SlotId::ALL`] moves.
+    Grade,
 }
 
 impl SlotId {
     /// Every slot, in the order the inspector shows them. `slot as usize` indexes this list.
-    pub const ALL: [SlotId; 11] = [
+    pub const ALL: [SlotId; 12] = [
         SlotId::Look,
         SlotId::Trail,
         SlotId::Motion,
@@ -57,6 +61,7 @@ impl SlotId {
         SlotId::Mixer,
         SlotId::Health,
         SlotId::Air,
+        SlotId::Grade,
     ];
 
     /// The name shown in the inspector.
@@ -73,13 +78,15 @@ impl SlotId {
             SlotId::Mixer => "Mixer",
             SlotId::Health => "Health",
             SlotId::Air => "Air",
+            SlotId::Grade => "Grade",
         }
     }
 
-    /// Whether the inspector lists this slot's card with the others. The sound and the mixer have
-    /// panels of their own; Trail and Particles are kept only for the test scenes' old cards.
+    /// Whether the inspector lists this slot's card with the others. The sound, the mixer and the
+    /// grade have panels of their own; Trail and Particles are kept only for the test scenes' old
+    /// cards.
     pub fn in_card_list(self) -> bool {
-        !matches!(self, SlotId::Sound | SlotId::Mixer | SlotId::Trail | SlotId::Particles)
+        !matches!(self, SlotId::Sound | SlotId::Mixer | SlotId::Grade | SlotId::Trail | SlotId::Particles)
     }
 }
 
@@ -89,9 +96,11 @@ mod tests {
 
     #[test]
     fn sound_and_mixer_slots_are_last_and_hidden() {
-        assert_eq!(SlotId::ALL.len(), 11);
+        assert_eq!(SlotId::ALL.len(), 12);
         assert_eq!(SlotId::ALL[9], SlotId::Health);
         assert_eq!(SlotId::ALL[10], SlotId::Air);
+        assert_eq!(SlotId::ALL[11], SlotId::Grade);
+        assert!(!SlotId::Grade.in_card_list(), "the grade has Grade mode of its own");
         assert!(SlotId::Air.in_card_list());
         assert!(SlotId::Health.in_card_list());
         assert_eq!(SlotId::ALL[7], SlotId::Sound);

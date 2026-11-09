@@ -377,6 +377,39 @@ layer_kind!(WashLayerKind, "group.wash", "Wash", RingLayer, Group, false, false,
 layer_kind!(SwirlLayerKind, "group.swirl", "Swirl", RingLayer, Group, true, false, false);
 layer_kind!(ChainTestKind, "chain.test", "Filter", RingLayer, Chain, true, false, false, "sound.test");
 layer_kind!(ModTestKind, "mod.test", "LFO", PopLayer, Modulator, true, false, false, "sound.test");
+layer_kind!(WholeTestKind, "mask.whole", "Whole picture", PopLayer, Mask, false, true, true, "grade.test");
+layer_kind!(MaskTestKind, "mask.test", "Mask", PopLayer, Mask, true, false, true, "grade.test");
+layer_kind!(PartTestKind, "part.test", "Part", RingLayer, MaskPart, true, false, false, "grade.test");
+layer_kind!(PanelTestKind, "panel.test", "Panel", RingLayer, Panel, true, false, false, "grade.test");
+
+/// A colour grade card holding masks with parts and panels.
+pub struct GradeTestKind;
+/// The grade's base mask.
+pub struct WholeTestKind;
+/// A grade's mask.
+pub struct MaskTestKind;
+/// A part of a grade's mask.
+pub struct PartTestKind;
+/// A grade's panel.
+pub struct PanelTestKind;
+
+impl ModuleKind for GradeTestKind {
+    fn id(&self) -> &'static str {
+        "grade.test"
+    }
+    fn name(&self) -> &'static str {
+        "Grade"
+    }
+    fn help(&self) -> &'static str {
+        "A test grade."
+    }
+    fn slot(&self) -> SlotId {
+        SlotId::Grade
+    }
+    fn settings(&self) -> &'static [SettingDef] {
+        &[]
+    }
+}
 
 /// A sound card holding chain layers and modulators.
 pub struct SoundTestKind;
@@ -425,6 +458,11 @@ pub fn registry() -> Registry {
     r.add_module(SoundTestKind);
     r.add_layer(ChainTestKind);
     r.add_layer(ModTestKind);
+    r.add_module(GradeTestKind);
+    r.add_layer(WholeTestKind);
+    r.add_layer(MaskTestKind);
+    r.add_layer(PartTestKind);
+    r.add_layer(PanelTestKind);
     for k in TEST_BLOCKS {
         r.add_block(k);
     }

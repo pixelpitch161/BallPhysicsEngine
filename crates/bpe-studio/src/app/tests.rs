@@ -1243,3 +1243,47 @@ fn the_window_title_names_the_scene_and_marks_unsaved_changes() {
     studio.revision += 1;
     assert_eq!(studio.window_title(), "Untitled • – Ball Studio");
 }
+
+#[test]
+fn d_switches_build_and_grade_and_grade_mode_keys_compare() {
+    use crate::grade_mode::{Compare, EditorMode};
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(400.0, 200.0))
+        .allow_missing_glyphs()
+        .with_context_setup(style::apply)
+        .build_ui_state(|ui, s: &mut Studio| s.shortcuts(&ui.ctx().clone()), Studio::headless());
+    h.run();
+    assert_eq!(h.state().mode, EditorMode::Build);
+    // In Build mode \ and Y do nothing to the grade view.
+    h.key_press(egui::Key::Backslash);
+    h.run();
+    assert_eq!(h.state().grade.compare, Compare::After);
+    h.key_press(egui::Key::D);
+    h.run();
+    assert_eq!(h.state().mode, EditorMode::Grade);
+    h.key_press(egui::Key::Backslash);
+    h.run();
+    assert_eq!(h.state().grade.compare, Compare::Before);
+    h.key_press(egui::Key::Y);
+    h.run();
+    assert_eq!(h.state().grade.compare, Compare::Split);
+    h.key_press(egui::Key::D);
+    h.run();
+    assert_eq!(h.state().mode, EditorMode::Build);
+}
+
+#[test]
+fn the_toolbar_switches_to_grade_mode() {
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1500.0, 80.0))
+        .allow_missing_glyphs()
+        .with_context_setup(style::apply)
+        .build_ui_state(|ui, s: &mut Studio| s.toolbar(ui), Studio::headless());
+    h.run();
+    h.get_by_label("Grade").click();
+    h.run();
+    assert_eq!(h.state().mode, crate::grade_mode::EditorMode::Grade);
+    h.get_by_label("Build").click();
+    h.run();
+    assert_eq!(h.state().mode, crate::grade_mode::EditorMode::Build);
+}

@@ -12,8 +12,6 @@ struct Globals {
     bg: vec4<f32>,
     bg_from: vec4<f32>,
     bg_to: vec4<f32>,
-    grade: vec4<f32>,
-    grade_more: vec4<f32>,
     // Lighting (see the lighting shader, `shaders/lighting/`; light_passes.wgsl names the passes): x 0 draws the
     // picture as always, 1 each thing's lit colour,
     // 2 its surface; y how much the background takes light.

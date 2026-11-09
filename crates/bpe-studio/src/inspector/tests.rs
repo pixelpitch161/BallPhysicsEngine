@@ -927,24 +927,25 @@ fn the_header_eye_hides_and_shows_the_thing() {
 }
 
 #[test]
-fn the_picture_card_shows_the_grade() {
+fn scene_settings_sum_up_the_grade_and_open_grade_mode() {
     let reg = bpe_kit::registry();
+    // No grade yet: the card says so and offers Grade mode.
+    let mut h = harness_of(bpe_kit::new_scene(&reg), Some(ThingId::ROOT));
+    h.run();
+    assert!(h.query_by_role_and_label(Role::Label, "Grade").is_some(), "a Grade card");
+    assert!(h.query_all_by_label("No grade yet: the video shows the picture as it is drawn.").next().is_some());
+    assert!(h.query_all_by_role_and_label(Role::Slider, "Brightness").next().is_none(), "the old grade is gone");
+    h.get_by_label("Open in Grade mode").click();
+    h.run();
+    assert!(h.state().inspector.open_grade);
+    // The graded sunset: on, with its Basic panel changed; the switch turns it off.
     let mut h = harness_of(bpe_kit::scenes::graded_sunset(&reg), Some(ThingId::ROOT));
-    // At the start the map amount is 0, yet the map still shows.
     h.run();
-    let slider = |h: &Harness<'_, State>, label: &str| h.query_all_by_role_and_label(Role::Slider, label).count() > 0;
-    assert!(h.query_by_role_and_label(Role::Label, "Picture").is_some(), "a Picture card");
-    assert!(slider(&h, "Brightness"), "the Brightness setting");
-    assert!(slider(&h, "Vignette"), "the Vignette setting");
-    assert!(h.query_all_by_label("Gradient map").next().is_some(), "the Gradient map setting at t=0");
-    // The card folds like the others.
-    h.get_by_label("Hide Picture").click();
+    assert!(h.query_all_by_label("Changed: Basic.").next().is_some());
+    h.query_all_by_role_and_label(Role::CheckBox, "Grade on").next().expect("the switch").click();
     h.run();
-    assert!(!slider(&h, "Vignette"), "the grade's rows fold away");
-    assert!(h.state().inspector.collapsed.contains(&(ThingId::ROOT, None, "Picture")));
-    h.get_by_label("Show Picture").click();
-    h.run();
-    assert!(slider(&h, "Vignette"));
+    let card = h.state().scene.card(ThingId::ROOT, SlotId::Grade).unwrap();
+    assert_eq!(card.params.get("on"), Some(&Value::Bool(false)));
 }
 
 /// The kinds of the layers of the scene's Effects card, bottom first.
@@ -1230,7 +1231,10 @@ fn scene_settings_shows_a_card_per_group() {
         last = top;
     }
     let tops: Vec<Card> = h.state().inspector.card_tops.iter().map(|(c, _)| *c).collect();
-    assert_eq!(tops, bpe_kit::ROOT_CARDS.map(Card::Section), "the cards in order, and nothing else");
+    // Then the Grade summary (colour grading), edited in Grade mode.
+    let mut want: Vec<Card> = bpe_kit::ROOT_CARDS.map(Card::Section).to_vec();
+    want.push(Card::Section("Grade"));
+    assert_eq!(tops, want, "the cards in order, and nothing else");
     assert!(h.query_by_label("Hide Scene settings").is_none(), "no single Scene settings card");
 }
 

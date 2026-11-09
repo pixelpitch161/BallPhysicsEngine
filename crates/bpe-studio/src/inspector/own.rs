@@ -22,6 +22,8 @@ pub(super) fn kind_card(
             }
             root_card(ui, inspector, cx, name, edits);
         }
+        ui.add_space(6.0);
+        grade_summary(ui, inspector, cx, edits);
     } else if kind.id() == EMITTER {
         card(ui, |ui| {
             let title = kind.name().to_owned();
@@ -183,6 +185,59 @@ pub(super) fn own_grid(
     edits.extend(out.cleared.into_iter().map(|key| Edit::ClearKeys(None, key.into())));
     edits.extend(out.follows.into_iter().map(|(key, source)| Edit::Follow(None, key.into(), source)));
     edits.extend(out.varies.into_iter().map(|(key, v)| crate::vary::edit(None, key, v)));
+}
+
+/// Scene settings' Grade card: whether the grade is on, how many panels are changed, and the
+/// way to Grade mode, where it is edited.
+pub(super) fn grade_summary(ui: &mut Ui, inspector: &mut Inspector, cx: &OwnCx, edits: &mut Vec<Edit>) {
+    use bpe_kit::modules::grade;
+    let card_kind = Card::Section("Grade");
+    card(ui, |ui| {
+        let header = ui.horizontal_wrapped(|ui| {
+            let open = fold_arrow(ui, &mut inspector.collapsed, card_kind.fold_key(cx.id), "Grade");
+            ui.label(RichText::new("Grade").font(style::semibold(13.0)));
+            open
+        });
+        card_header(ui, inspector, card_kind, &header.response);
+        if !header.inner {
+            return;
+        }
+        match cx.thing.slots.get(&SlotId::Grade).filter(|c| c.kind == grade::GRADE) {
+            None => {
+                ui.label(
+                    RichText::new("No grade yet: the video shows the picture as it is drawn.").color(style::MUTED),
+                );
+            }
+            Some(slot) => {
+                let gx = crate::grade_mode::cx::GradeCx { scene: cx.scene, kit: cx.kit, card: slot, time: cx.time };
+                ui.horizontal(|ui| {
+                    let label = ui.label("Grade on");
+                    let mut on = gx.on();
+                    if style::switch(ui, &mut on).labelled_by(label.id).changed() {
+                        edits.push(Edit::SetSlot(SlotId::Grade, "on".into(), Value::Bool(on)));
+                    }
+                });
+                let names: Vec<String> = grade::whole_of(slot)
+                    .map(|w| {
+                        grade::panels_of(slot, w).iter().filter(|p| gx.changed(p.id)).map(|p| p.name.clone()).collect()
+                    })
+                    .unwrap_or_default();
+                let words = if names.is_empty() {
+                    "Every panel is at its start.".to_owned()
+                } else {
+                    format!("Changed: {}.", names.join(", "))
+                };
+                ui.label(RichText::new(words).color(style::MUTED));
+            }
+        }
+        ui.add_space(4.0);
+        let open = ui.button("Open in Grade mode").on_hover_text(
+            "Grade the finished picture's colour with Lightroom's panels (D switches between Build and Grade)",
+        );
+        if open.clicked() {
+            inspector.open_grade = true;
+        }
+    });
 }
 
 /// One of the root's cards: the root's own settings whose group is `name`, under a title that

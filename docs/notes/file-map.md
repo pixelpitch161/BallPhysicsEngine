@@ -19,18 +19,20 @@ Each folder's `mod.rs` starts with a short map of its own files; this page is th
 | `frame/trails.rs`, `particles.rs`, `paths.rs` | Trails and streaks (strips); sprites (`Particle`) and fields; shapes and text as paths and glyphs |
 | `frame/layers.rs`, `cull.rs` | Blend layers and the overlay; the view (`set_view`), list limits and culling |
 | `frame/light.rs` | What the lighting reads: `LightScene`, `LightGpu`, `LightingGpu`, surfaces, mirrors, spheres, throwers, pipes, benders, `LightShow` |
-| `frame/effects.rs` | `EffectCall`, `Stage`, `Takes`, `BackgroundPaint`, and the picture's **`Grade`** |
+| `frame/effects.rs` | `EffectCall`, `Stage`, `Takes`, `BackgroundPaint` |
+| `frame/grade.rs` | The picture's grade: `GradeStack`, `GradeMask`, `GradePanel`, `GradeBasic`, `GradeToneCurve` |
+| `grade/` + `shaders/grade.wgsl`, `shaders/scopes.wgsl` | The grade compiled to a program (`compile.rs`), its maths (`maths.rs`), the Histogram (`scopes.rs`) |
 | `frame/ripples.rs` | Ripple sources |
 | `renderer/` | The `Renderer`. `mod.rs`: its fields and small accessors, `Globals`, `FrameBuffers`, `GrowableBuffer`, vertex layouts |
 | `renderer/new.rs` | Building it: every pipeline, layout and sampler (the composite/post pipeline too) |
-| `renderer/scene.rs` | Rendering a frame: `render`, `render_scene` (the scene pass and lighting), `finish` (effects, bloom, the grade map sync and the composite pass) |
+| `renderer/scene.rs` | Rendering a frame: `render`, `render_scene` (the scene pass and lighting), `finish` (effects, bloom, the grade program's sync and the composite pass) |
 | `renderer/draw.rs` | The draw calls inside the passes: backgrounds, balls, things, sprites, liquids, glass, overlay, layers |
-| `renderer/targets.rs`, `grade.rs`, `paint.rs` | The renderer's pictures (HDR, bloom levels, object and layer pictures); the grade's lookup texture (`GradeMap`); the paint texture |
+| `renderer/targets.rs`, `grade.rs`, `paint.rs` | The renderer's pictures (HDR, bloom levels, object and layer pictures); the grade program's buffer (`GradeGpu`); the paint texture |
 | `readback.rs` | `Readback`: frames back to the CPU for export (RGBA or video colours) |
 | `light_pass.rs` + `shaders/light_passes.wgsl` | The light-pass numbers by name (`PICTURE`, `LIT`, `SURFACE`, `EMISSION`, `BACKGROUND`, `UV`, `TAGS`, `BEHIND`, `TINT`, `GLASS`); shaders test `light_pass(g.light.x) == PASS_LIT` and so on. A test keeps the two lists equal |
 | `lighting/` | The lighting passes. `mod.rs`: `Lighting` and its uniform; `kit.rs`: pipelines and layouts (`LightKit`); `run.rs`: one frame's lighting in order (plan, upload, passes); `passes.rs`: each pass's encoding; `targets.rs`: its pictures and quality tiers; `glass.rs`: dichroic, caustic and stage uniforms, the rainbow, `SphereGrid`, `photons_per_pair`; `binds.rs`: the bind group cache; `tiles.rs`: light tiles |
 | `shaders/lighting/` | The lighting shader, one file per pass, joined in this order by `LIGHTING_WGSL`: `bindings`, `field`, `shadows`, `direct`, `light_field`, `haze_bloom`, `stage`, `shade`, `mix`, `dof_floor`, `bake`, `caustics` (then `common.wgsl`) |
-| `shaders/post.wgsl` | Bloom and the composite (`fs_composite`: exposure, roll-off, sRGB, the grade, dither) |
+| `shaders/post.wgsl` | Bloom and the composite (`fs_composite`: exposure, the grade (`run_grade`), roll-off, sRGB, dither) |
 | `effects/` | The Effects stack (`chain.rs`), lens effects, built-in effects |
 
 ## bpe-studio (the editor)
@@ -55,6 +57,7 @@ Each folder's `mod.rs` starts with a short map of its own files; this page is th
 | `widgets/mod.rs` | What setting rows share: `GridCx`, `Row`, `TargetChoices`, `GridOutcome` |
 | `widgets/grid.rs`, `setting.rs`, `menu.rs` | The settings grid and group headings; one setting's row and widget; its right-click menu |
 | `widgets/numbers.rs`, `pickers.rs`, `words.rs` | Number sliders and their feel; who, target and colour pickers; settings in words |
+| `grade_mode/` | Grade mode: `mod.rs` (state, the mode switch, the masks column), `cx.rs` (reading the card, `GradeEdit`, `apply`), `panels.rs` (the panel column), `curve.rs` (the Tone Curve graph), `scopes.rs` (the Histogram) |
 | `mixer/`, `lights_panel/`, `look_editor/`, `timeline/`, `preview/` + `preview.rs`, `rules_panel/`, `sound_tab/`, `looks_page/`, `style/` | Unchanged by the split: see `editor.md` |
 
 ## bpe-runtime (the physics)
@@ -84,22 +87,15 @@ Notes written before the split name the old files. They are now:
 | `bpe-studio/src/emitter_card/` | `inspector/emitter_card/` |
 | `bpe-runtime/src/world.rs` | `world/` |
 
-## Where the colour grading goes
+## Where the colour grading is
 
-For the colour-grading build (spec `docs/superpowers/specs/2026-11-09-colour-grading-design.md`):
-
-- **Data**: `SlotId::Grade` in `bpe-core/src/ids.rs` (`in_card_list` false, like the Mixer); the `Mask`,
-  `MaskPart` and `Panel` sections in `bpe-core/src/layers.rs`; the card kind in a new `bpe-kit/src/modules/grade/`,
-  registered in `bpe-kit/src/lib.rs::kit()`.
-- **Frame**: `Frame.grade` is in `frame/mod.rs` and `Grade` in `frame/effects.rs`; a `GradeStack` fits a new
-  `frame/grade.rs`, filled by the scene's draw (`bpe-kit/src/things/scene/draw.rs`).
-- **Renderer**: the composite pipeline is built in `renderer/new.rs`, its pass runs in `renderer/scene.rs::finish`,
-  the grade's textures are `renderer/grade.rs`, and the shader is `shaders/post.wgsl` (`fs_composite`). The
-  editor's preview clears the grade in `bpe-studio/src/preview.rs`.
-- **Editor**: the Build | Grade switch goes in the toolbar (`app/panels.rs`), the D key in `app/shortcuts.rs`, the
-  mode's own panels in a new folder like `mixer/`, chosen in `app/mod.rs` (`ui`) and `app/panels.rs`
-  (`left_panel`, `inspector_panel`); the Scene settings summary in `inspector/own.rs` (`root_card`); the editor's own
-  remembered choices in `settings.rs`.
+Part 1 is built (`docs/notes/grading.md`): `SlotId::Grade` and the `Mask`, `MaskPart`, `Panel` sections in
+`bpe-core`; the card and panels in `bpe-kit/src/modules/grade/`; `frame/grade.rs`, `grade/` and
+`shaders/grade.wgsl` in `bpe-gfx` (run in the composite, `renderer/grade.rs`); Grade mode in
+`bpe-studio/src/grade_mode/` (chosen in `app/mod.rs::ui`, the switch in `app/panels.rs`, keys in
+`app/shortcuts.rs`, the preview's compare in `preview.rs`, the timeline filter in `timeline/mod.rs`, the Scene
+settings summary in `inspector/own.rs::grade_summary`). Later parts add panels to `modules/grade/`, steps to
+`grade/compile.rs` and the shader, and masks as more `Mask` layers.
 
 ## Still long
 
