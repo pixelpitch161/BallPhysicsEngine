@@ -189,4 +189,8 @@ Built as planned (summary in `docs/notes/grading.md`, "Part 3 as built"). Where 
 - The lightening vignette leaves light past white where it is (it pulled it down to white).
 - Grain smaller than an output pixel is weakened by its size in output pixels, so a small preview isn't grainier
   than the export scaled down.
+- Look check: grain speckled the balls' highlights (`exp2` grain on values past white). It now fades by the
+  pixel's peak channel (smoothstep 0.6 to 1.5); a fade by luma didn't stop it on saturated pink. Faint wavy
+  lines in the lit demo's haze show only under a strong contrast stretch and appear with every part 3 setting
+  off, so they come from the scene and parts 1-2's strong Shadows/Highlights, not part 3.
 - Left of the Split line, with area steps, the picture passes through the f16 pairs (within a level of Before).

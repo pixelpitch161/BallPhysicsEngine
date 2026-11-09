@@ -417,7 +417,10 @@ fn grade_grain(c: vec3<f32>, d: vec4<f32>, at: GradeAt) -> vec3<f32> {
     let n3 = grade_noise(p * 0.37 + 5.1, seed ^ 0x967a889bu);
     // A grain smaller than an output pixel would average out in the export scaled down: weaker.
     let n = (n1 + 0.6 * r * n2) * (1.0 + 0.8 * r * n3) / (1.0 + 0.6 * r) * min(d.y * at.scale, 1.0);
-    return max(c * exp2(1.2 * d.x * n) + vec3<f32>(0.0015 * d.x * n), vec3<f32>(0.0));
+    // Like film, it fades out in the brightest parts: past white a ±30% grain would burn to
+    // speckles of white where the roll-off whitens hot light.
+    let fade = 1.0 - grade_smooth(0.6, 1.5, max(c.r, max(c.g, c.b)));
+    return max(c * exp2(1.2 * d.x * n * fade) + vec3<f32>(0.0015 * d.x * n), vec3<f32>(0.0));
 }
 
 // The gradient map (see grade/maths.rs `gradient_map`) on tone-space `c`.

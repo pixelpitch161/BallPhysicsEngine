@@ -217,6 +217,7 @@ Plan: `docs/superpowers/plans/colour-grading/part3.md` (every number is stated t
     frame's time bits (`Globals.view.w`), so no per-frame upload and the same frame always matches; cell
     `1 + 3·size` video px; roughness adds a finer octave and coarse clumping; `c·2^(1.2·a·n) + 0.0015·a·n`, with
     `n` scaled by the cell's size in output pixels when under one (a small preview isn't grainier than the export).
+    It fades out on bright light (`1 − smoothstep(0.6, 1.5, peak channel)`), so ball highlights don't speckle.
   - Gradient map (`OP_GRADIENT_MAP` 16, tone): 256 baked colours in tone space picked by the tone luma (scaled by
     the luma when past white), mixed by Amount.
 - Picture tests (`grade/pictures_tests.rs`): defaults byte-identical; a pass split keeps point steps within 1/255;
