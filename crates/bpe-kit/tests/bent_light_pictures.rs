@@ -11,7 +11,8 @@
 
 use bpe_core::{Params, Registry, Scene, Settings, ShapePath, SlotId, ThingId, Value, layered_key};
 use bpe_gfx::{Frame, LightShow, Renderer, build_frame, test_device};
-use bpe_kit::things::particles::liquid::{LIQUID, LiquidLayer, Surface};
+use bpe_kit::modules::look::surface::SurfaceKind as Surface;
+use bpe_kit::things::particles::liquid::{LIQUID, LiquidLayer, params_of};
 use bpe_kit::things::particles::look::{SPRITES, SpritesLayer};
 use bpe_kit::things::particles::looks::{Look, add_particles};
 use bpe_kit::things::particles::{BornFrom, Emit, ParticlesSettings};
@@ -400,7 +401,13 @@ fn a_bubble_that_bends_light_focuses_it() {
 fn a_glass_liquid_bends_light_and_a_plastic_one_doesnt() {
     let Some(mut gpu) = gpu() else { return };
     let reg = reg();
-    let liquid = |surface| LiquidLayer { surface, size: 2.0, ..LiquidLayer::default() }.to_params();
+    // Lit by the real lights, a glass liquid bends lamp light as a glass shape does: when it blocks
+    // light.
+    let liquid = |surface| {
+        let mut p = params_of(&LiquidLayer { surface, size: 2.0, ..LiquidLayer::default() });
+        p.set("blocks_light", Value::Bool(true));
+        p
+    };
     let glass = particles_room(&reg, 60, 20.0, LIQUID, liquid(Surface::Glass));
     draw_at(&mut gpu, &glass, "liquid-glass", 0.5);
     assert!(gpu.renderer.bent_photons() > 0, "a glass liquid sends photons");
@@ -414,10 +421,12 @@ fn a_glass_liquid_bends_light_and_a_plastic_one_doesnt() {
 fn free_glass_leaves_what_is_under_it_as_it_is() {
     let Some(mut gpu) = gpu() else { return };
     let reg = reg();
-    // With Glass caustics 0 a glass liquid that bends light draws just as one that doesn't.
+    // With Glass caustics 0 a glass liquid that bends light draws just as one that doesn't (kept to
+    // its own look by Lit 0, where how much it bends changes nothing else).
     let liquid = |bends: f32| {
-        let mut p = LiquidLayer { surface: Surface::Glass, size: 2.0, ..LiquidLayer::default() }.to_params();
+        let mut p = params_of(&LiquidLayer { surface: Surface::Glass, size: 2.0, ..LiquidLayer::default() });
         p.set("bends_light", Value::Number(bends.into()));
+        p.set("lit", Value::Number(0.0));
         p
     };
     let bending = caustics(&particles_room(&reg, 60, 20.0, LIQUID, liquid(1.33)), 0.0);

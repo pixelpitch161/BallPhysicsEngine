@@ -707,10 +707,12 @@ pub struct FieldLook {
     pub kind: [f32; 4],
     /// Noise detail: amount 0 to 1, size (world pixels), drift x, drift y (world pixels a second).
     pub detail: [f32; 4],
-    /// Smoke: shading, the way the light comes from (radians), dark inside, 0. Flame: bend
-    /// (world pixels), flicker 0 to 1, flicker speed (per second), brightness.
+    /// Smoke: shading, the way the light comes from (radians), dark inside, relief (world pixels
+    /// it stands up where thickest: above 0, in a lit scene, the real lights shade it instead of
+    /// its own light, W15). Flame: bend (world pixels), flicker 0 to 1, flicker speed (per
+    /// second), brightness.
     pub shade: [f32; 4],
-    /// As [`Particle::light`], [`Particle::emit`] and [`Particle::extra`] (lighting; 0 for now).
+    /// As [`Particle::light`], [`Particle::emit`] and [`Particle::extra`] (lighting).
     pub light: [f32; 4],
     pub emit: [f32; 4],
     pub extra: [f32; 4],
@@ -1873,6 +1875,7 @@ impl Frame {
             || self.trails.iter().chain(&self.trails_front).any(|v| v.light[1] > 0.0)
             || self.particles.iter().chain(&self.particles_front).any(|p| p.light[1] > 0.0)
             || self.fields.iter().chain(&self.fields_front).any(|f| f.look.light[1] > 0.0)
+            || self.liquids.iter().any(|l| l.style.real() && part(l.style.d[2]))
             || self.layers.iter().any(|l| l.frame.see_through_blockers())
             || self.overlay.as_deref().is_some_and(Frame::see_through_blockers)
     }
@@ -1887,7 +1890,7 @@ impl Frame {
                 let reach = p.place[3].abs().max(p.style[0].abs()) * 1.5 + 2.0;
                 Bender::round([p.at()], reach, FREE_BENDER)
             });
-        let blobs = self.liquids.iter().filter(|l| l.style.glass() && l.style.c[2] > BENDS_FROM).flat_map(|l| {
+        let blobs = self.liquids.iter().filter(|l| l.style.c[2] > BENDS_FROM).flat_map(|l| {
             l.blobs.iter().filter_map(|b| {
                 Bender::round([Vec2::new(b.place[0], b.place[1])], b.place[2].abs() * 2.0 + 2.0, FREE_BENDER)
             })

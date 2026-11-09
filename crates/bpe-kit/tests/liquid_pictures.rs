@@ -6,9 +6,10 @@
 
 use bpe_core::{Choice, Color, Gradient, LayerId, Params, Registry, Scene, Settings, SlotId, ThingId, layered_key};
 use bpe_gfx::{Frame, Renderer, build_frame, test_device};
+use bpe_kit::modules::look::surface::SurfaceKind as Surface;
 use bpe_kit::paint::Paint;
 use bpe_kit::things::light::{LightType, add_light};
-use bpe_kit::things::particles::liquid::{LIQUID, LiquidLayer, Surface};
+use bpe_kit::things::particles::liquid::{LIQUID, LiquidLayer, params_of};
 use bpe_kit::things::particles::look::{SPRITES, SpritesLayer};
 use bpe_kit::things::particles::looks::{Look, add_particles};
 use bpe_kit::things::particles::modifiers::{Mirror, Modifiers};
@@ -167,7 +168,7 @@ fn puddle(surface: Surface, bend: f32) -> Scene {
         colour: Paint::solid(Color::rgb(0xe0, 0x30, 0x20)),
         ..LiquidLayer::default()
     };
-    only_layer(&mut scene, id, LIQUID, layer.to_params());
+    only_layer(&mut scene, id, LIQUID, params_of(&layer));
     scene
 }
 

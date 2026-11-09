@@ -5,7 +5,9 @@
 //! strips and sprites from the state, Liquid as blobs the GPU runs together), then the layer's
 //! Experimental modifiers worked over what it drew. In a lit scene each layer's sprites and field
 //! carry its Lighting (`light`, `extra`) and the light its Gives off light sub-layers give
-//! (`emit`), as a ball's around layers do (part 7); a liquid carries none.
+//! (`emit`), as a ball's around layers do (part 7). In a scene with a Lighting card a Liquid and
+//! Soft smoke are shaded by the real lights (W15): a liquid through its own Surface (its table
+//! entry from [`ThingDraw::light`]), smoke by the slope of its density.
 
 use std::f32::consts::TAU;
 
@@ -19,7 +21,7 @@ use glam::Vec2;
 
 use super::KIND;
 use super::births::{signed, unit};
-use super::liquid::LiquidLayer;
+use super::liquid::{LiquidLayer, RealLight};
 use super::look::{
     ColourFrom, Common, Drawn, FineDetail, FlameLayer, GlitterLayer, LookLayer, MoreShape, Only, PointAlong,
     ShapesLayer, SmokeLayer, WebLayer, layers_of,
@@ -94,6 +96,18 @@ impl ThingDraw for ParticlesDraw {
         pieces.give_light(layer.emit);
         if let Some(f) = field.as_mut() {
             f.look.light = [layer.light[0], layer.light[1], 0.0, 0.0];
+            // Smoke in a lit scene stands up by its density, so the real lights shade it (W15):
+            // smoke that covers (not adding its light, which covers nothing to stand up in) and
+            // is drawn behind the balls (in front, its cover would take over the surface of every
+            // ball and shape under it, so it keeps its own light).
+            if let Drawn::Smoke(s) = &layer.drawn
+                && lit_scene(cx)
+                && layer.light[0] > 0.0
+                && f.look.kind[1] < 0.5
+                && layer.common.place == AroundPlace::Behind
+            {
+                f.look.shade[3] = SMOKE_RELIEF * s.shading.clamp(0.0, 1.0);
+            }
             // A field has no one colour: its light is the sub-layer's own and its tint.
             f.look.emit = layer.emit.map_or([0.0; 4], |e| e.at([1.0; 4]));
             if let Some(more) = more_in(layer.more, cx, frame.light.as_mut()) {
@@ -103,6 +117,40 @@ impl ThingDraw for ParticlesDraw {
         pieces.into_frame_with_field(frame, layer.common.place == AroundPlace::InFront, field);
         drew.stamp(frame, layer.light, layer.more, cx);
     }
+
+    /// Each shown Liquid layer's Surface, in its place in the lit frame's table (W15); a liquid
+    /// whose Surface bends light and that blocks light bends lamp light as a glass shape does (a
+    /// bender round its blobs).
+    fn light(&self, cx: &DrawCx, scene: &mut bpe_gfx::LightScene) {
+        let Some(look) = cx.resolved.slots.get(&SlotId::Look).filter(|l| l.kind == super::look::CARD) else {
+            return;
+        };
+        for layer in layers_of(look) {
+            let Drawn::Liquid(l) = &layer.drawn else { continue };
+            let Some(index) = super::liquid::surface_index(cx.scene, cx.thing.id, layer.id) else { continue };
+            let s = super::liquid::surface_of(&look.layer_params(layer.id));
+            scene.set_surface(index, s.gpu(bpe_gfx::SurfaceGpu::SHEET));
+            scene.refracts |= s.see_through();
+            let real = layer.light[0] > 0.0;
+            if real && layer.light[1] > 0.0 && crate::modules::look::surface::bends(&s) {
+                let liquid = state_of(cx.world, cx.thing.id).and_then(|st| liquid_of(cx, st, &layer, l));
+                let edges = liquid.iter().flat_map(|q| q.blobs.iter()).flat_map(|b| {
+                    let r = Vec2::splat(b.place[2].abs());
+                    [Vec2::new(b.place[0], b.place[1]) - r, Vec2::new(b.place[0], b.place[1]) + r]
+                });
+                scene.benders.extend(bpe_gfx::Bender::round(edges, 2.0, index));
+            }
+        }
+    }
+}
+
+/// How high a lit Soft smoke stands where it is thickest, at Shading 1 (world pixels): the slope
+/// the real lights shade it by.
+pub const SMOKE_RELIEF: f32 = 40.0;
+
+/// Whether the scene has a Lighting card (so its frames are lit).
+fn lit_scene(cx: &DrawCx) -> bool {
+    cx.scene.things.get(&ThingId::ROOT).is_some_and(|r| r.slots.contains_key(&SlotId::Lighting))
 }
 
 /// Whether `layer` draws particle `s` at particle step `now`.
@@ -970,7 +1018,18 @@ pub fn liquid_of(cx: &DrawCx, st: &ParticlesState, layer: &LookLayer, l: &Liquid
     if m.glitches() {
         glitch_blobs(&mut blobs, &Tears::new(m, &view_of(cx), cx.time, layer.id.0));
     }
-    (!blobs.is_empty()).then(|| Liquid { blobs, style: l.style(c.opacity), front: c.place == AroundPlace::InFront })
+    let look = cx.resolved.slots.get(&SlotId::Look)?;
+    let s = super::liquid::surface_of(&look.layer_params(layer.id));
+    // In a lit scene, and not kept to its own look by Lit 0, the real lights shade it (W15).
+    let real = (lit_scene(cx) && layer.light[0] > 0.0).then(|| {
+        use crate::modules::look::surface;
+        let index = super::liquid::surface_index(cx.scene, cx.thing.id, layer.id).unwrap_or(0);
+        let blocks = if layer.light[1] > 0.0 { surface::keeps_of(surface::passes(&s)) } else { 0.0 };
+        let link = crate::things::light::links::number_of(cx.scene, cx.thing.id);
+        RealLight { lit: layer.light[0], stamp: surface::stamp(index, &s), blocks, link }
+    });
+    let style = l.style(c.opacity, &s, real);
+    (!blobs.is_empty()).then(|| Liquid { blobs, style, front: c.place == AroundPlace::InFront })
 }
 
 /// Whether a Huge swarm draws layers drawn as `drawn` (Soft smoke, Flame and Web lines need the
