@@ -117,6 +117,9 @@ pub struct Spot {
     pub radius: f32,
 }
 
+/// A box: its lowest and highest corners.
+type Box2 = (Vec2, Vec2);
+
 /// A Text being ridden, as it shows now, with its places in the world.
 pub struct Letters {
     pub now: TextNow,
@@ -124,6 +127,10 @@ pub struct Letters {
     pub screen: bool,
     pub camera: CameraView,
     shown: OnceCell<Vec<(Vec2, Vec<Vec<Vec2>>)>>,
+    /// Every shown contour together, their box and their middle, worked out once (a particle
+    /// step asks for them at every birth).
+    all: OnceCell<(Vec<Vec<Vec2>>, Option<Box2>)>,
+    middle: OnceCell<Option<Vec2>>,
 }
 
 impl Letters {
@@ -131,7 +138,14 @@ impl Letters {
     pub fn of(at: &TextAt) -> Option<Letters> {
         let now = text_now(at)?;
         let screen = at.tree.things.get(&at.id).is_none_or(|t| t.screen.unwrap_or(true));
-        Some(Letters { now, screen, camera: at.world.camera, shown: OnceCell::new() })
+        Some(Letters {
+            now,
+            screen,
+            camera: at.world.camera,
+            shown: OnceCell::new(),
+            all: OnceCell::new(),
+            middle: OnceCell::new(),
+        })
     }
 
     /// A point of the Text's own frame in the world.
@@ -161,7 +175,17 @@ impl Letters {
 
     /// The middle of its letters in the world (of every letter as placed, shown or not).
     pub fn middle(&self) -> Option<Vec2> {
-        self.now.bounds().map(|(lo, hi)| self.world_of(0.5 * (lo + hi)))
+        *self.middle.get_or_init(|| self.now.bounds().map(|(lo, hi)| self.world_of(0.5 * (lo + hi))))
+    }
+
+    /// Every shown letter's contours together, in the world, and their box.
+    pub fn outlines(&self) -> (&[Vec<Vec2>], Option<(Vec2, Vec2)>) {
+        let (all, bounds) = self.all.get_or_init(|| {
+            let all: Vec<Vec<Vec2>> = self.shown().iter().flat_map(|(_, c)| c.iter().cloned()).collect();
+            let bounds = outline::bounds(all.iter().flatten());
+            (all, bounds)
+        });
+        (all, *bounds)
     }
 
     /// How fast the Text moves, in the world.
@@ -297,8 +321,7 @@ impl<'a> Ridden<'a> {
                 match ride.on {
                     RidesOn::EachLetter => t.shown().iter().map(|(m, _)| here(*m, None)).collect(),
                     RidesOn::TheEdge => {
-                        let all: Vec<&[Vec2]> =
-                            t.shown().iter().flat_map(|(_, c)| c.iter().map(Vec::as_slice)).collect();
+                        let all: Vec<&[Vec2]> = t.outlines().0.iter().map(Vec::as_slice).collect();
                         match outline::round(&all, ride.edge_at) {
                             Some((at, out)) => vec![here(at, Some(out))],
                             None => vec![Self::text_middle(t)],
@@ -374,13 +397,13 @@ impl<'a> Ridden<'a> {
                 match ride.on {
                     RidesOn::EachLetter => letter().map(|at| here(at, out(at))),
                     RidesOn::TheEdge => {
-                        let all: Vec<&[Vec2]> = shown.iter().flat_map(|(_, c)| c.iter().map(Vec::as_slice)).collect();
+                        let all: Vec<&[Vec2]> = t.outlines().0.iter().map(Vec::as_slice).collect();
                         outline::round(&all, u1).map(|(at, way)| here(at, Some(way)))
                     }
                     RidesOn::Inside => {
-                        let all: Vec<Vec<Vec2>> = shown.iter().flat_map(|(_, c)| c.iter().cloned()).collect();
-                        let found = outline::bounds(all.iter().flatten())
-                            .and_then(|(lo, hi)| tried_inside(lo, hi, dice, 16, |p| outline::inside_any(&all, p)));
+                        let (all, bounds) = t.outlines();
+                        let found =
+                            bounds.and_then(|(lo, hi)| tried_inside(lo, hi, dice, 16, |p| outline::inside_any(all, p)));
                         found.or_else(letter).map(|at| here(at, out(at)))
                     }
                     RidesOn::ThePen => t.pen().map(|p| here(p, None)),

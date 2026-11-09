@@ -278,3 +278,45 @@ fn a_thing_added_inside_a_shape_or_a_text_starts_on_the_middle() {
     let kind = reg.thing(light::LIGHT).unwrap();
     assert!(!kind.offers(&scene, in_rig, "rides_on", "each_ball") && kind.offers(&scene, in_rig, "kind", "spot"));
 }
+
+#[test]
+fn an_edit_to_the_text_particles_ride_starts_them_over() {
+    use crate::modules::look::shape::moves::DRAW_ON;
+    let reg = crate::registry();
+    let (mut scene, id) = a_text("HI", Vec2::ZERO, |_, _| {});
+    let specks = crate::add_thing(&mut scene, &reg, particles::KIND, id).unwrap();
+    scene.things.get_mut(&specks).unwrap().params.set("from", Value::Choice("riding_its_parent".into()));
+    let kit = crate::kit();
+    let print = |scene: &Scene| {
+        let resolved = resolve(scene, &kit.registry);
+        let sim = kit.sims.thing(particles::KIND).unwrap();
+        sim.physics_print_extra(scene, &scene.things[&specks], &resolved.things[&specks])
+    };
+    let before = print(&scene);
+    let mut words = scene.clone();
+    words.things.get_mut(&id).unwrap().params.set("words", Value::Text("HO".into()));
+    let mut moved = scene.clone();
+    moved.things.get_mut(&id).unwrap().transform.position = Vec2::new(10.0, 0.0);
+    let mut drawn = scene.clone();
+    crate::testing::set_layer(&mut drawn, id, DRAW_ON, "takes", Value::Number(3.0));
+    for (what, changed) in [("words", words), ("place", moved), ("Draw on", drawn)] {
+        assert_ne!(print(&changed), before, "{what}");
+    }
+    // A camera following a light on the Text starts over too.
+    let lamp = light::add_light(&mut scene, &reg, light::LightType::Point, id).unwrap();
+    let camera = scene.things.values().find(|t| t.kind == "camera").map(|t| t.id);
+    let camera = camera.unwrap_or_else(|| crate::add_thing(&mut scene, &reg, "camera", ThingId::ROOT).unwrap());
+    {
+        let p = &mut scene.things.get_mut(&camera).unwrap().params;
+        p.set("follow", Value::Bool(true));
+        p.set("follow_target", Value::Target(bpe_core::Target::Thing(lamp)));
+        let cam = |scene: &Scene| {
+            let resolved = resolve(scene, &kit.registry);
+            let sim = kit.sims.thing("camera").unwrap();
+            sim.physics_print_extra(scene, &scene.things[&camera], &resolved.things[&camera])
+        };
+        let before = cam(&scene);
+        scene.things.get_mut(&id).unwrap().params.set("words", Value::Text("HA".into()));
+        assert_ne!(cam(&scene), before, "the camera follows the light on the letters");
+    }
+}

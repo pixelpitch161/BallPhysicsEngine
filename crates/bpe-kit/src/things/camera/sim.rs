@@ -185,7 +185,13 @@ fn followed_lights_hash(scene: &bpe_core::Scene, me: ThingId, s: &CameraSettings
         let Some(t) = scene.things.get(&id) else { continue };
         id.0.hash(&mut h);
         format!("{:?}", t.params).hash(&mut h);
-        format!("{:?}", crate::things::rig::fixtures::ridden(scene, id)).hash(&mut h);
+        let ridden = crate::things::rig::fixtures::ridden(scene, id);
+        format!("{ridden:?}").hash(&mut h);
+        // A light on a Text sits on its letters: what lays them out and moves them counts too.
+        if let Some(text) = ridden.and_then(|p| scene.things.get(&p)).filter(|p| p.kind == crate::things::text::KIND) {
+            crate::things::text::shape::letters_hash(scene, text.id).hash(&mut h);
+            format!("{:?}{:?}{:?}", text.transform, text.screen, text.slots.get(&bpe_core::SlotId::Look)).hash(&mut h);
+        }
         for (a, track) in scene.tracks.iter().filter(|(a, _)| a.thing == id) {
             format!("{a:?}{track:?}").hash(&mut h);
         }

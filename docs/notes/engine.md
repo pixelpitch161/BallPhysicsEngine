@@ -399,11 +399,18 @@ Spec `docs/superpowers/specs/2026-11-09-one-way-to-ride-design.md`, plan `docs/s
   `settings_changed`), so Draw on's pen moves there too, but hit- and sound-led letter moves don't. `BirthCx.text`
   caches it for a particle step. A Particles thing riding a Text hashes the Text's `letters_hash`, Look card and place
   in `physics_print_extra`, so editing the Text restarts it.
-- **Placement card**: the old 0-based Item row is **Rides on** The whole group / One ball, with **Ball number** from 1
-  (`Attach::Ride.item` still holds the ball's number from 0).
+- **Placement card**: the old 0-based Item row is **Follows** The whole group / One ball, with **Ball it follows** from
+  1 (`Attach::Ride.item` still holds the ball's number from 0).
 - **Outline toolbox**, `bpe-kit/src/outline.rs`: `centre`, `points` (`ROUND_POINTS` 96), `contours` (moved from
   `light/draw.rs`), `round`/`round_one` (a share by length round one or several contours, wrapping, with the way out;
   replaces `light::draw::point_round` and the particles' `round_points`), `inside`/`inside_any`, `bounds`. The even-odd
   crossing step is one function, `bpe_core::shape_path::crosses`, used by `inside_polygon`, `inside_contours`, the
   runtime's letters, the laser and the glyph tiles (shatter's half-plane clip is a different test).
+- **Changed for old scenes**: particles and lights in a Text in the world ride its letters (not its wall's own place or
+  longest outline); a light in a Text left on Each ball rides the letters' middle; a camera following a light on a Text
+  hashes the Text (`camera/sim.rs::followed_lights_hash`). Known gap: particles and the camera read the Text's keys
+  only as far as its sim keys them (Spin, and the Words/Path/Balls groups), so Show keys on a ridden Text are seen by
+  lights but not by particles.
+- The Placement card's riding rows are **Follows** and **Ball it follows**, so they never share a name with a rider's
+  own Rides on and Ball number.
 - Goldens unchanged.

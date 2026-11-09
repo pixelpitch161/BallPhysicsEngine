@@ -9,8 +9,9 @@ Riding was set four different ways:
 
 - **Lights** had their own Rides on list: Each ball, The middle, Ball number, A point on the edge, The pen. A light
   inside a Text could ride its middle or its pen, but not each letter.
-- **Particles** had another: Each ball, The middle, Ball number, The edge, Inside. A Particles thing inside a Text
-  rode nothing (it was born at its own place).
+- **Particles** had another: Each ball, The middle, Ball number, The edge, Inside. A Particles thing inside a screen
+  Text rode nothing (it was born at its own place); inside a Text in the world it rode the letters' wall as a shape
+  (its own place for the middle, the longest letter outline for the edge).
 - **Text** had a third: Each ball, The middle, Ball number. Inside a shape it sat at the middle and could not sit on
   the edge.
 - **The Placement card** rides one ball by an "Item" number counted from 0 (-1 for all), where every other ball
@@ -64,8 +65,8 @@ restarts when the Text's saved settings or its font change (the same hash a Part
 
 ### The Placement card
 
-Its Item row becomes **Rides on**: The whole group / One ball, with **Ball number** counted from 1 (stored as before,
-so the runtime is unchanged).
+Its Item row becomes **Follows**: The whole group / One ball, with **Ball it follows** counted from 1 (stored as
+before, so the runtime is unchanged; named apart from a rider's own Rides on and Ball number, which can show beside it).
 
 ### One riding module and one outline toolbox (C7)
 
@@ -87,6 +88,17 @@ so the runtime is unchanged).
   always wraps (1 is the top again, as 0 is).
 - Old scene files: no compatibility needed (owner's rule), but the renamed `a_point_on_the_edge` simply reads as the
   default.
+
+### Changes to existing scenes (accepted)
+
+- Particles and lights inside a Text in the world now ride its letters as a Text (the middle of the letters' box, all
+  the letters' outlines), not its wall's own place and longest outline.
+- A light inside a Text whose saved choice is Each ball, Ball number or Inside (the old default) now sits at the
+  letters' middle moved by its Position, not at its Position alone (the Laser writing look's laser among them). A rig
+  added inside a Text puts its spots on the Text.
+- A camera following a light inside a Text follows the light where it now is; its fingerprint hashes the Text.
+- Riders that only see the world (particles, the camera) read the Text's settings and Look card as its sim has them:
+  keys on the Text that don't restart the physics aren't followed there (lights, drawn, see them).
 
 ## Not in this workstream
 

@@ -1206,7 +1206,7 @@ fn position_rows(ui: &mut Ui, scene: &Scene, thing: &bpe_core::Thing, lw: f32, r
         if thing.parent.and_then(|p| scene.things.get(&p)).is_some_and(|p| p.kind == "balls") {
             // The same words as every other thing that rides balls: one ball, by its number from 1
             // (kept as the ball's number from 0).
-            grid_label(ui, lw, "Rides on").on_hover_text("The whole group, or one of its balls");
+            grid_label(ui, lw, "Follows").on_hover_text("The whole group, or one of its balls");
             widget_cell(ui, right, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     let whole = ui.add(egui::Button::selectable(item.is_none(), "The whole group"));
@@ -1223,7 +1223,7 @@ fn position_rows(ui: &mut Ui, scene: &Scene, thing: &bpe_core::Thing, lw: f32, r
             });
             ui.end_row();
             if let Some(i) = item {
-                let label = grid_label(ui, lw, "Ball number").on_hover_text("Which ball it rides, counted from 1");
+                let label = grid_label(ui, lw, "Ball it follows").on_hover_text("Which ball it rides, counted from 1");
                 let mut n: u64 = i as u64 + 1;
                 if ui.add(DragValue::new(&mut n).range(1..=10000)).labelled_by(label.id).changed() {
                     picked = Some(n.saturating_sub(1) as u32);
@@ -2510,7 +2510,7 @@ mod tests {
         let ride = Attach::Ride { offset: Vec2::ZERO, turn_with_parent: true, item: None };
         scene.set_parent(ThingId(1), ThingId(2), ride).unwrap();
         let mut h = harness_of(scene, Some(ThingId(1)));
-        assert!(h.query_all_by_label("Ball number").next().is_none(), "the whole group: no number");
+        assert!(h.query_all_by_label("Ball it follows").next().is_none(), "the whole group: no number");
         h.get_by_label("One ball").click();
         h.run();
         let item = |h: &Harness<'static, State>| match h.state().scene.things[&ThingId(1)].attach {
@@ -2518,7 +2518,7 @@ mod tests {
             Attach::Group => panic!("still riding"),
         };
         assert_eq!(item(&h), Some(0), "ball number 1 is the first ball");
-        assert!(h.query_all_by_label("Ball number").next().is_some());
+        assert!(h.query_all_by_label("Ball it follows").next().is_some());
         h.get_by_label("The whole group").click();
         h.run();
         assert_eq!(item(&h), None);
