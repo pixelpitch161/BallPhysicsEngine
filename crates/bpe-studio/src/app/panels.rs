@@ -33,7 +33,7 @@ pub(super) fn bar_frame() -> egui::Frame {
 }
 
 /// The tree's and the inspector's frame: the panel grey, touching its neighbours with a soft line.
-pub(super) fn side_frame() -> egui::Frame {
+pub(crate) fn side_frame() -> egui::Frame {
     egui::Frame::new()
         .fill(style::PANEL)
         .inner_margin(egui::Margin::symmetric(10, 6))
@@ -64,6 +64,8 @@ impl Studio {
                 if ui.add(export).on_hover_text("Render the scene to an mp4").clicked() {
                     self.clicked = Some(ToolbarClick::Export);
                 }
+                ui.add_space(6.0);
+                crate::grade_mode::mode_switch(ui, &mut self.mode);
             });
             // The gap before Export counts as part of the right side.
             let width = right.response.rect.width() + ui.spacing().item_spacing.x;
@@ -417,6 +419,10 @@ impl Studio {
                 ui.label(RichText::new("·").small().color(style::FAINT));
             }
             ui.label(RichText::new(&self.status).small().color(style::MUTED));
+            if self.mode == crate::grade_mode::EditorMode::Grade {
+                let hint = "· Grade mode: \\ shows Before, Y splits the picture, D goes back to Build";
+                ui.label(RichText::new(hint).small().color(style::FAINT));
+            }
             if let Some(problem) = &self.shader_problem {
                 ui.label(RichText::new(format!("· Shader skipped: {problem}")).small().color(style::PROBLEM));
             }

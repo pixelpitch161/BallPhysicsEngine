@@ -96,6 +96,8 @@ pub struct Inspector {
     pub aim_checks: BTreeMap<ThingId, bpe_kit::things::emitter::aim::AimCheck>,
     /// "Preview final frame" was pressed on the Lighting card (the app draws it).
     pub final_frame_wanted: bool,
+    /// "Open in Grade mode" was pressed on Scene settings' Grade card (the app switches).
+    pub open_grade: bool,
     /// What is typed in the Find a setting box; while it holds something, the settings it finds
     /// show in place of the cards.
     pub find: String,

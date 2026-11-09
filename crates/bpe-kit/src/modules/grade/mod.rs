@@ -10,8 +10,8 @@
 //!   draw puts on the frame ([`stack`]).
 
 use bpe_core::{
-    EditError, KindId, Layer, LayerId, LayerKind, LayerSection, ModuleKind, Registry, ResolvedSlot, Scene,
-    SettingDef, Settings, Slot, SlotId, ThingId,
+    EditError, KindId, Layer, LayerId, LayerKind, LayerSection, ModuleKind, Registry, ResolvedSlot, Scene, SettingDef,
+    Settings, Slot, SlotId, ThingId,
 };
 
 pub mod basic;

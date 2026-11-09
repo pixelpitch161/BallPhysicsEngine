@@ -36,8 +36,13 @@ fn the_tone_space_is_srgb_carried_on_past_white() {
 #[test]
 fn every_tone_slider_rises_at_its_ends_and_does_nothing_at_0() {
     type Slider = fn(f64, f64) -> f64;
-    let sliders: [(&str, Slider); 5] =
-        [("contrast", contrast), ("highlights", highlights), ("shadows", shadows), ("whites", whites), ("blacks", blacks)];
+    let sliders: [(&str, Slider); 5] = [
+        ("contrast", contrast),
+        ("highlights", highlights),
+        ("shadows", shadows),
+        ("whites", whites),
+        ("blacks", blacks),
+    ];
     for (name, f) in sliders {
         for amount in [-100.0, -50.0, 50.0, 100.0] {
             rises(|p| f(p, amount), &format!("{name} {amount}"));
@@ -145,7 +150,8 @@ fn luma(c: [f64; 3]) -> f64 {
 #[test]
 fn white_balance_keeps_a_grey_s_luminance_and_warms_or_cools_it() {
     let grey = [0.2; 3];
-    let of = |temp: f32, tint: f32| apply_matrix(&basic_matrix(&GradeBasic { temp, tint, ..GradeBasic::default() }), grey);
+    let of =
+        |temp: f32, tint: f32| apply_matrix(&basic_matrix(&GradeBasic { temp, tint, ..GradeBasic::default() }), grey);
     let none = of(0.0, 0.0);
     assert_eq!(none, grey);
     for (temp, tint) in [(100.0, 0.0), (-100.0, 0.0), (0.0, 100.0), (0.0, -100.0), (40.0, -30.0)] {
@@ -190,7 +196,11 @@ fn a_panel_at_its_defaults_compiles_to_nothing() {
             panels: vec![
                 GradePanel::Basic(GradeBasic { exposure: -0.0, ..GradeBasic::default() }),
                 GradePanel::ToneCurve(GradeToneCurve {
-                    rgb: vec![CurvePoint::new(0.0, 0.0, 0.0), CurvePoint::new(0.4, 0.4, 0.0), CurvePoint::new(1.0, 1.0, 0.0)],
+                    rgb: vec![
+                        CurvePoint::new(0.0, 0.0, 0.0),
+                        CurvePoint::new(0.4, 0.4, 0.0),
+                        CurvePoint::new(1.0, 1.0, 0.0),
+                    ],
                     ..GradeToneCurve::default()
                 }),
             ],
@@ -200,7 +210,13 @@ fn a_panel_at_its_defaults_compiles_to_nothing() {
     assert!(stack.is_identity());
     assert!(compile(&stack).is_empty());
     assert!(GradeStack::default().is_identity());
-    let weak = GradeStack { masks: vec![GradeMask { amount: 0.0, ..basic(GradeBasic { exposure: 1.0, ..GradeBasic::default() }).masks[0].clone() }], split: None };
+    let weak = GradeStack {
+        masks: vec![GradeMask {
+            amount: 0.0,
+            ..basic(GradeBasic { exposure: 1.0, ..GradeBasic::default() }).masks[0].clone()
+        }],
+        split: None,
+    };
     assert!(weak.is_identity() && compile(&weak).is_empty(), "a mask at amount 0 does nothing");
     assert_eq!(straight_curve().len(), 2);
 }
@@ -245,7 +261,14 @@ fn read_curve(p: &Program, at: usize, x: f64, ch: usize) -> f64 {
 
 #[test]
 fn a_baked_curve_reads_back_as_the_curve_within_a_hair() {
-    let b = GradeBasic { contrast: 60.0, highlights: -80.0, shadows: 40.0, whites: 30.0, blacks: -20.0, ..GradeBasic::default() };
+    let b = GradeBasic {
+        contrast: 60.0,
+        highlights: -80.0,
+        shadows: 40.0,
+        whites: 30.0,
+        blacks: -20.0,
+        ..GradeBasic::default()
+    };
     let p = compile(&basic(b.clone()));
     for i in -20..2000 {
         let x = i as f64 * 0.001;

@@ -75,9 +75,17 @@ impl Histogram {
             cache: None,
         });
         let buffer = |label, usage| {
-            device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: BINS * 4, usage, mapped_at_creation: false })
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: BINS * 4,
+                usage,
+                mapped_at_creation: false,
+            })
         };
-        let bins = buffer("histogram bins", wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST);
+        let bins = buffer(
+            "histogram bins",
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+        );
         let read = buffer("histogram read", wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST);
         Self { pipeline, layout, bins, read, reading: Arc::new(Mutex::new(Reading::Free)), group: None }
     }
@@ -113,7 +121,8 @@ impl Histogram {
         }
         encoder.clear_buffer(&self.bins, 0, None);
         {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("histogram"), timestamp_writes: None });
+            let mut pass = encoder
+                .begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("histogram"), timestamp_writes: None });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.group.as_ref().expect("made above").1, &[]);
             pass.dispatch_workgroups(size.0.div_ceil(16), size.1.div_ceil(16), 1);

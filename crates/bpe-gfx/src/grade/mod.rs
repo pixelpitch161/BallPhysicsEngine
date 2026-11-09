@@ -8,9 +8,9 @@
 
 mod compile;
 pub mod maths;
-mod scopes;
 #[cfg(test)]
 mod pictures_tests;
+mod scopes;
 #[cfg(test)]
 mod tests;
 

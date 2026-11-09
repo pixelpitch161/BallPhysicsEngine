@@ -47,6 +47,7 @@ mod shortcuts;
 mod tests;
 
 use files::file_label;
+pub(crate) use panels::side_frame;
 use panels::*;
 use playing::*;
 use runs::*;
@@ -263,6 +264,11 @@ pub struct Studio {
     pub listen: ListenSettings,
     /// The left panel's face (not saved in the scene).
     pub left: LeftPanel,
+    /// Build or Grade (the editor's own, not saved): Grade mode's columns take the side panels'
+    /// place.
+    pub mode: crate::grade_mode::EditorMode,
+    /// Grade mode's own state: the compare view, folded panels, the Histogram.
+    pub grade: crate::grade_mode::GradeMode,
     /// What the bottom panel shows: the timeline or the rules (the editor's own setting).
     pub bottom: settings::BottomView,
     /// The Lights tab's soloed lights: the editor's alone, never saved or exported.
@@ -445,6 +451,8 @@ impl Studio {
             listen_unsaved: None,
             listen: ListenSettings::default(),
             left: LeftPanel::Things,
+            mode: Default::default(),
+            grade: Default::default(),
             bottom: settings::BottomView::Timeline,
             light_solo: Default::default(),
             light_show: Default::default(),
@@ -632,8 +640,16 @@ impl eframe::App for Studio {
             .min_size(110.0)
             .max_size(520.0)
             .show(ui, |ui| timeline::show(ui, self));
-        self.left_panel(ui, &before);
-        self.inspector_panel(ui);
+        if self.mode == crate::grade_mode::EditorMode::Grade {
+            crate::grade_mode::left(ui, self);
+            crate::grade_mode::right(ui, self);
+        } else {
+            self.left_panel(ui, &before);
+            self.inspector_panel(ui);
+            if std::mem::take(&mut self.panels.inspector.open_grade) {
+                self.mode = crate::grade_mode::EditorMode::Grade;
+            }
+        }
         if std::mem::take(&mut self.panels.inspector.keyed_edit) {
             // A key landed at the playhead; a drag while playing would otherwise key every frame.
             self.set_playing(false);

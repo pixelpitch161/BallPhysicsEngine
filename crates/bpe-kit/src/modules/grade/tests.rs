@@ -74,7 +74,8 @@ fn panels_reach_the_stack_in_their_order_with_their_values_and_hidden_ones_are_s
     let s = stack_of(&kit, &scene);
     assert!(matches!(s.masks[0].panels[0], GradePanel::ToneCurve(_)));
     // A panel switched off works no more.
-    scene.card_mut(ThingId::ROOT, SlotId::Grade).unwrap().layers.iter_mut().find(|l| l.id == curve).unwrap().enabled = false;
+    scene.card_mut(ThingId::ROOT, SlotId::Grade).unwrap().layers.iter_mut().find(|l| l.id == curve).unwrap().enabled =
+        false;
     let s = stack_of(&kit, &scene);
     assert_eq!(s.masks[0].panels.len(), 1);
     assert!(matches!(s.masks[0].panels[0], GradePanel::Basic(_)));

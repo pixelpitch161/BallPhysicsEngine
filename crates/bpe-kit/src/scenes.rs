@@ -476,7 +476,8 @@ pub fn graded_sunset(reg: &Registry) -> Scene {
     // A warm, contrasty grade whose colour comes up over the video.
     crate::modules::grade::ensure_grade(&mut scene, reg);
     let card = scene.card(ThingId::ROOT, SlotId::Grade).expect("made above");
-    let basic = crate::modules::grade::panels_of(card, crate::modules::grade::whole_of(card).expect("made above"))[0].id;
+    let basic =
+        crate::modules::grade::panels_of(card, crate::modules::grade::whole_of(card).expect("made above"))[0].id;
     let params = &mut scene.card_mut(ThingId::ROOT, SlotId::Grade).expect("made above").params;
     params.set(&format!("{basic}/temp"), Value::Number(30.0));
     params.set(&format!("{basic}/contrast"), Value::Number(20.0));

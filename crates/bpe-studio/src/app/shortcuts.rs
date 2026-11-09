@@ -39,6 +39,21 @@ impl Studio {
         if ctx.memory(|m| m.focused().is_some()) {
             return;
         }
+        // D switches between Build and Grade; in Grade mode \ shows Before and Y the Split.
+        if pressed(Modifiers::NONE, Key::D) {
+            self.mode = match self.mode {
+                crate::grade_mode::EditorMode::Build => crate::grade_mode::EditorMode::Grade,
+                crate::grade_mode::EditorMode::Grade => crate::grade_mode::EditorMode::Build,
+            };
+        }
+        if self.mode == crate::grade_mode::EditorMode::Grade {
+            if pressed(Modifiers::NONE, Key::Backslash) {
+                self.grade.toggle_before();
+            }
+            if pressed(Modifiers::NONE, Key::Y) {
+                self.grade.toggle_split();
+            }
+        }
         if ctx.input(|i| i.key_pressed(Key::Home)) {
             self.seek(0.0);
         }

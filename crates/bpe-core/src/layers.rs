@@ -1151,7 +1151,12 @@ mod tests {
     }
 
     fn grade_names(s: &Scene) -> Vec<(String, Option<u32>)> {
-        s.card(ThingId::ROOT, SlotId::Grade).unwrap().layers.iter().map(|l| (l.name.clone(), l.parent.map(|p| p.0))).collect()
+        s.card(ThingId::ROOT, SlotId::Grade)
+            .unwrap()
+            .layers
+            .iter()
+            .map(|l| (l.name.clone(), l.parent.map(|p| p.0)))
+            .collect()
     }
 
     #[test]

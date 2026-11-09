@@ -18,7 +18,8 @@ pub struct GradeStack {
 impl GradeStack {
     /// Whether the grade changes nothing: no panel of any mask does anything.
     pub fn is_identity(&self) -> bool {
-        self.masks.iter().all(|m| !(m.amount > 0.0) || m.panels.iter().all(GradePanel::is_identity))
+        // A NaN amount counts as none.
+        self.masks.iter().all(|m| m.amount.is_nan() || m.amount <= 0.0 || m.panels.iter().all(GradePanel::is_identity))
     }
 }
 

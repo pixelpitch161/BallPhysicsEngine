@@ -31,10 +31,7 @@ fn hermite(x0: f64, x1: f64, y0: f64, y1: f64, d0: f64, d1: f64, x: f64) -> f64 
     let h = x1 - x0;
     let t = (x - x0) / h;
     let (t2, t3) = (t * t, t * t * t);
-    (2.0 * t3 - 3.0 * t2 + 1.0) * y0
-        + (t3 - 2.0 * t2 + t) * h * d0
-        + (-2.0 * t3 + 3.0 * t2) * y1
-        + (t3 - t2) * h * d1
+    (2.0 * t3 - 3.0 * t2 + 1.0) * y0 + (t3 - 2.0 * t2 + t) * h * d0 + (-2.0 * t3 + 3.0 * t2) * y1 + (t3 - t2) * h * d1
 }
 
 /// Contrast (−100..100) on tone value `p`: an S through black, middle grey and white, steeper

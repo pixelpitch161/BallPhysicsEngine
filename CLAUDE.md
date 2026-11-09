@@ -62,6 +62,7 @@ Each area's detailed notes are in `docs/notes/`; its design is in `docs/superpow
 | Editor (design system, inspector, Look editor, timeline, Mixer, Sound tab) | `editor.md` | `specs/2026-11-03-design-system-editor-design.md`, `specs/2026-11-03-ball-look-editor-design.md` |
 | Sub-layers, trails and particle layers, the staying Line | `engine.md` (bpe-core, bpe-kit) | `specs/2026-11-04-sublayers-trails-physics-design.md`, `plans/2026-11-04-sublayers-part1.md`, `plans/2026-11-04-trail-particle-layers.md`, `plans/2026-11-05-trail-bounce-corners.md`, `plans/trails/staying-lines.md` |
 | Where each file is (split folders, old file names, where colour grading goes) | `file-map.md` | `plans/2026-11-09-split-giant-files.md` |
+| Colour grading (Grade card, panels, GPU grade program, Grade mode, Histogram) | `grading.md` | `specs/2026-11-09-colour-grading-design.md`, `plans/colour-grading/` |
 | Checks, picture tests, this guide | this file | `plans/2026-11-08-safety-nets-lean-guide.md` |
 
 ## Crate map

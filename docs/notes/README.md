@@ -15,6 +15,7 @@ pitfalls, with one line per area pointing here. Read the file for the area you t
 | `text.md` | The Text thing: fonts and layout, live words, letters as walls, letter moves, experimental effects |
 | `sound.md` | bpe-dsp and bpe-sound: voices, chains, modulators, notes, buses, Follow sound, export audio |
 | `file-map.md` | Where each file is: the folders the giant files were split into (W17), old file names, where colour grading goes |
+| `grading.md` | Colour grading: the Grade card, its panels as layers, the GPU grade program, Grade mode, the Histogram |
 | `editor.md` | bpe-studio: design system, panels, inspector cards, Look editor, emitter card, timeline, Mixer, Sound tab |
 
 ## Keeping notes

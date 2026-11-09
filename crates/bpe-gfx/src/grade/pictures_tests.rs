@@ -100,7 +100,11 @@ fn panels_that_do_almost_nothing_change_nothing_by_more_than_a_step() {
     let tiny = panels(vec![
         GradePanel::Basic(GradeBasic { exposure: 1e-6, contrast: 1e-4, saturation: 1e-4, ..GradeBasic::default() }),
         GradePanel::ToneCurve(GradeToneCurve {
-            rgb: vec![CurvePoint::new(0.0, 0.0, 0.0), CurvePoint::new(0.5, 0.5001, 0.0), CurvePoint::new(1.0, 1.0, 0.0)],
+            rgb: vec![
+                CurvePoint::new(0.0, 0.0, 0.0),
+                CurvePoint::new(0.5, 0.5001, 0.0),
+                CurvePoint::new(1.0, 1.0, 0.0),
+            ],
             ..GradeToneCurve::default()
         }),
     ]);
@@ -108,7 +112,12 @@ fn panels_that_do_almost_nothing_change_nothing_by_more_than_a_step() {
     let graded = draw(&graded(frame, tiny)).unwrap();
     for y in 0..N {
         for x in 0..N {
-            assert!(close(at(&plain, x, y), at(&graded, x, y), 1), "({x}, {y}): {:?} vs {:?}", at(&plain, x, y), at(&graded, x, y));
+            assert!(
+                close(at(&plain, x, y), at(&graded, x, y), 1),
+                "({x}, {y}): {:?} vs {:?}",
+                at(&plain, x, y),
+                at(&graded, x, y)
+            );
         }
     }
 }
@@ -165,8 +174,7 @@ fn panel_order_is_processing_order() {
     };
     let grey_out = GradeBasic { saturation: -100.0, ..GradeBasic::default() };
     let colour = flat([0.1, 0.3, 0.2]);
-    let curve_last =
-        panels(vec![GradePanel::Basic(grey_out.clone()), GradePanel::ToneCurve(red_up.clone())]);
+    let curve_last = panels(vec![GradePanel::Basic(grey_out.clone()), GradePanel::ToneCurve(red_up.clone())]);
     let curve_first = panels(vec![GradePanel::ToneCurve(red_up), GradePanel::Basic(grey_out)]);
     let Some(a) = draw(&graded(colour.clone(), curve_last)) else { return };
     let b = draw(&graded(colour, curve_first)).unwrap();
@@ -205,7 +213,7 @@ fn the_histogram_counts_every_pixel_of_a_flat_picture_by_its_colour() {
     renderer.request_histogram(&device, &queue);
     let _ = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
     let bins = renderer.histogram(&device).expect("counted");
-    let all = (N * N) as u32;
+    let all = N * N;
     // The dither spreads a flat colour over the steps either side of it (the pixel read is one of
     // them).
     for ch in 0..3 {

@@ -387,14 +387,8 @@ impl Renderer {
 
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
         if self.size() != (width.max(1), height.max(1)) {
-            self.targets = Targets::new(
-                device,
-                width,
-                height,
-                &self.post_layout,
-                &self.composite_layout,
-                &self.sampler,
-            );
+            self.targets =
+                Targets::new(device, width, height, &self.post_layout, &self.composite_layout, &self.sampler);
         }
     }
 

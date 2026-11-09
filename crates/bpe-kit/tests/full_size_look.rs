@@ -411,7 +411,8 @@ fn graded(mut scene: Scene, reg: &Registry, basic: &[(&str, Value)], curve: &[(&
     use bpe_kit::modules::grade;
     grade::ensure_grade(&mut scene, reg);
     let card = scene.card(ThingId::ROOT, SlotId::Grade).expect("made above");
-    let panels: Vec<_> = grade::panels_of(card, grade::whole_of(card).expect("made above")).iter().map(|l| l.id).collect();
+    let panels: Vec<_> =
+        grade::panels_of(card, grade::whole_of(card).expect("made above")).iter().map(|l| l.id).collect();
     let params = &mut scene.card_mut(ThingId::ROOT, SlotId::Grade).expect("made above").params;
     for (panel, settings) in [(panels[0], basic), (panels[1], curve)] {
         for (key, v) in settings {
