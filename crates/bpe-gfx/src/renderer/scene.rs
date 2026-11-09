@@ -446,6 +446,18 @@ impl Renderer {
             self.bloom_black = true;
         }
         {
+            // A grade with area steps runs all its passes but the last first; the composite runs
+            // the last.
+            let tools = grade::GradeTools {
+                globals_layout: &self.globals_layout,
+                composite_layout: &self.composite_layout,
+                post_layout: &self.post_layout,
+                sampler: &self.sampler,
+                globals: &self.globals_group,
+                composite: &self.targets.composite,
+            };
+            let size = (self.targets.width, self.targets.height);
+            let (grade_group, last) = self.grade.run_passes(device, &mut encoder, &tools, &frame.grade, size);
             let mut pass = begin_pass(
                 &mut encoder,
                 &self.targets.output_view,
@@ -455,8 +467,8 @@ impl Renderer {
             pass.set_pipeline(&self.composite);
             pass.set_bind_group(0, &self.globals_group, &[]);
             pass.set_bind_group(1, &self.targets.composite, &[]);
-            pass.set_bind_group(2, &self.grade.group, &[]);
-            pass.draw(0..3, 0..1);
+            pass.set_bind_group(2, &grade_group, &[]);
+            pass.draw(0..3, last..last + 1);
         }
         queue.submit([encoder.finish()]);
         if timed && let Some(Some(t)) = &self.light_timer {

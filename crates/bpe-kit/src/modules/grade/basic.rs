@@ -1,5 +1,5 @@
 //! The Basic panel: white balance, tone and presence, as Lightroom Classic names them, with its
-//! slider ranges. Texture, Clarity and Dehaze come with the grade's area steps (part 3).
+//! slider ranges. Texture, Clarity and Dehaze look at the pixels around each pixel (area steps).
 
 use bpe_core::Settings;
 
@@ -31,6 +31,15 @@ pub struct BasicPanel {
     /// Where black is: down crushes more to black, up lifts black to a grey.
     #[setting(label = "Blacks", range(-100, 100), keyframe, pulse, group = "Tone")]
     pub blacks: f32,
+    /// Medium-sized detail (surfaces, patterns) stronger, or smoothed away.
+    #[setting(label = "Texture", range(-100, 100), keyframe, pulse, group = "Presence")]
+    pub texture: f32,
+    /// More or less contrast between neighbouring parts, mostly in the midtones; down softens.
+    #[setting(label = "Clarity", range(-100, 100), keyframe, pulse, group = "Presence")]
+    pub clarity: f32,
+    /// Takes a veil of haze or glow off the picture, or lays a fog over it.
+    #[setting(label = "Dehaze", range(-100, 100), keyframe, pulse, group = "Presence")]
+    pub dehaze: f32,
     /// More or less colour, mostly in dull colours, sparing skin.
     #[setting(label = "Vibrance", range(-100, 100), keyframe, pulse, group = "Presence")]
     pub vibrance: f32,
@@ -52,6 +61,9 @@ impl BasicPanel {
             shadows: n(self.shadows),
             whites: n(self.whites),
             blacks: n(self.blacks),
+            texture: n(self.texture),
+            clarity: n(self.clarity),
+            dehaze: n(self.dehaze),
             vibrance: n(self.vibrance),
             saturation: n(self.saturation),
         }

@@ -10,7 +10,7 @@ use crate::style;
 use crate::widgets::{GridCx, KeyMark, TargetChoices, settings_grid};
 use bpe_core::{Layer, LayerId, SettingDef, Settings, ThingId, Value};
 use bpe_kit::modules::grade::{
-    self, BASIC, CALIBRATION, COLOUR_GRADING, CurveMode, HSL, PANEL_ORDER, POINT_COLOUR, TONE_CURVE,
+    self, BASIC, CALIBRATION, COLOUR_GRADING, CurveMode, DETAIL, EFFECTS, HSL, PANEL_ORDER, POINT_COLOUR, TONE_CURVE,
 };
 use eframe::egui::{self, RichText, Sense, Ui};
 
@@ -148,6 +148,8 @@ fn panel(
                 HSL => super::colour::hsl(ui, mode, gx, id, edits),
                 POINT_COLOUR => super::colour::point_colour(ui, mode, gx, id, edits),
                 COLOUR_GRADING => super::colour::colour_grading(ui, mode, gx, id, edits),
+                DETAIL => grid(ui, gx, id, grade::DetailPanel::defs(), None, edits),
+                EFFECTS => grid(ui, gx, id, grade::EffectsPanel::defs(), None, edits),
                 CALIBRATION => super::colour::calibration(ui, gx, id, edits),
                 _ => {}
             }

@@ -2,8 +2,8 @@
 
 Lightroom-style colour grading of the finished picture, edited in the editor's **Grade mode**. Spec:
 `docs/superpowers/specs/2026-11-09-colour-grading-design.md` (approved 2026-11-09, six parts). Plans:
-`docs/superpowers/plans/colour-grading/`. Parts 1 and 2 are built; parts 3 to 6 add area steps, masks, the
-remaining panels and scopes.
+`docs/superpowers/plans/colour-grading/`. Parts 1 to 3 are built; parts 4 to 6 add masks, the grading tools and
+scopes.
 
 ## Part 1 as built (the grade itself)
 
@@ -164,3 +164,75 @@ Plan: `docs/superpowers/plans/colour-grading/part2.md` (every maths choice is st
 - Full-size look scene `grading-colour` (the colour demo through all four colour panels). Every other scene renders
   byte-identical to before.
 - `restarts.rs::grade_settings_restart_nothing` checks well over 90 grade settings.
+
+## Part 3 as built (Detail and Effects)
+
+Plan: `docs/superpowers/plans/colour-grading/part3.md` (every number is stated there).
+
+### Panels (bpe-kit `modules/grade/`)
+
+- `PANEL_ORDER` is Basic, Tone Curve, HSL / Colour, Point Colour, Colour Grading, **Detail** (`grade.detail`),
+  **Effects** (`grade.effects`), Calibration. The starting card has eight panels; Calibration is layer 8.
+- Basic gains `texture`, `clarity`, `dehaze` (Presence, before Vibrance). They run after the tone sliders and
+  before Vibrance and Saturation, as one area group.
+- `detail.rs`: Sharpening `amount` (0..150), `radius` (0.5..3 px of the video, default 1), `detail` (25).
+- `effects.rs`: Post-crop vignette `vignette_amount`, `_midpoint` (50), `_roundness`, `_feather` (50),
+  `_highlights`; Grain `grain_amount`, `_size` (25), `_roughness` (50); Gradient map `map` (a `Gradient`, keyframes,
+  no pulse) and `map_amount`. Inside the panel: map, then vignette, then grain.
+
+### Passes (bpe-gfx)
+
+- **Area steps** (`OP_SHARPEN` 10, `OP_TEXTURE` 11, `OP_CLARITY` 12, `OP_DEHAZE` 13, and `OP_VIGNETTE` 14 when its
+  Highlights work under a dark vignette) read the pixels round a pixel. `compile.rs` cuts the program into
+  **segments**: an area step starts one, area steps next to each other share it. Word 0 is `[segments, split, 0,
+  0]`, then a table word per segment `[first word, steps, pyramid, 0]`. A grade without area steps is one segment
+  and runs inside the composite exactly as before (byte-identical).
+- `renderer/grade.rs` (`GradeGpu::run_passes`): every segment but the last runs `fs_grade_pass` into an HDR
+  **pair** (colour and kept colour, so a weaker mask's starting colour survives a split), ping-ponged; the
+  composite runs the last segment from the last pair. The segment number is the draw's instance (`vs_grade`). Pass
+  0 starts from `(hdr + bloom) × exposure` like the composite. Between passes values stay within f16 (negatives
+  kept, NaN black). Pipelines and pictures are made the first time a frame has area steps. Left of the editor's
+  Split line the picture passes through the f16 pairs too, so with area steps it can differ from Before by a level.
+- **The pyramid**: before a segment that needs it, its input is downsampled into one half-size texture of up to 8
+  mips (`fs_grade_down0` makes tone-space colour with the least channel's tone in alpha; `fs_grade_down` the rest,
+  bloom's 13-tap filter). `grade_blur` reads a σ through a cubic B-spline between two mips (mip k ≈ σ 1.9·2^k
+  output pixels, measured on an impulse), below mip 0 mixing in the pixel itself.
+- **Video pixels**: every blur size and the grain's cell are in pixels of the scene's video and turned into output
+  pixels by `output height / video height`, so a small preview looks like the export scaled down.
+- Maths (`grade/maths.rs` twins, tests in `grade/tests.rs`):
+  - Texture, Clarity and Sharpening move the tone luma through `lift` (keeps a bright colour's channel ratios,
+    an even shift near black), held back by `soft_limit` (tanh). Texture: blurs σ 2 vs 8 video px, ×1.2, limit 0.1.
+    Clarity: the pixel vs σ 40, ×0.9, limit 0.15, weighted to midtones (`clarity_weight`). Sharpening: the
+    pixel's luma vs a Gaussian of Radius (σ at most 3 output pixels, taps to `ceil(2σ)`, reading the tone luma
+    each pass writes in its colour's alpha), ×amount/100, limit `0.02 + 0.5·(detail/100)²`. `soft_limit`'s
+    argument is clamped to ±10 (tanh from exp is NaN on some back ends).
+  - Dehaze +: veil = least of the pixel's own least channel and the σ 80 blurred dark channel, capped 0.8;
+    `v = 0.75·d·veil`; `(c − v)/(1 − v)` (white stays white). −: a light fog (0.55..1 by the local brightness)
+    mixed in by 0.6·|d|.
+  - Vignette: `p = (uv − 0.5)·2`, roundness + blends to a circle on the short side, − a superellipse (rounder
+    rectangle); middle `0.35 + 0.9·midpoint`, width `0.02 + feather`; − darkens like exposure, Highlights keep
+    places whose σ 6 surround is bright (`smoothstep(0.3, 1)`); + lightens towards white in tone space (past
+    white is left alone).
+  - Grain (`OP_GRAIN` 15, linear): monochrome quintic value noise from the composite's PCG hash, seeded by the
+    frame's time bits (`Globals.view.w`), so no per-frame upload and the same frame always matches; cell
+    `1 + 3·size` video px; roughness adds a finer octave and coarse clumping; `c·2^(1.2·a·n) + 0.0015·a·n`, with
+    `n` scaled by the cell's size in output pixels when under one (a small preview isn't grainier than the export).
+    It fades out on bright light (`1 − smoothstep(0.6, 1.5, peak channel)`), so ball highlights don't speckle.
+  - Gradient map (`OP_GRADIENT_MAP` 16, tone): 256 baked colours in tone space picked by the tone luma (scaled by
+    the luma when past white), mixed by Amount.
+- Picture tests (`grade/pictures_tests.rs`): defaults byte-identical; a pass split keeps point steps within 1/255;
+  a half-amount mask across a split; the split line; Sharpening overshoots both sides of an edge and leaves flat
+  parts; Clarity ±; Texture ±; Dehaze clears grey, keeps white, fogs black; vignette ± and Highlights; grain the
+  same for one frame, new for the next, mean kept; gradient map; two pyramids in one grade.
+
+### Editor (bpe-studio)
+
+- Detail and Effects are the ordinary settings grid (`panels.rs`); the gradient map's row is the ordinary gradient
+  setting.
+
+### Checks
+
+- Full-size look scene `grading-detail` (the lit demo through Texture, Clarity, Dehaze, Sharpening, a dark
+  vignette with Highlights, grain and a light gradient map). `grading-colour` indexes Calibration as panel 7.
+  Every other scene renders byte-identical to before.
+- `restarts.rs::grade_settings_restart_nothing` checks at least 110 grade settings.

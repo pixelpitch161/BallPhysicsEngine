@@ -10,14 +10,7 @@ impl Renderer {
         });
         let post_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("post shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                concat!(
-                    include_str!("../shaders/post.wgsl"),
-                    include_str!("../shaders/grade.wgsl"),
-                    include_str!("../shaders/common.wgsl")
-                )
-                .into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(grade::post_source().into()),
         });
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("globals"),
@@ -318,7 +311,7 @@ impl Renderer {
             "composite",
             &composite_pipeline_layout,
             &post_shader,
-            "vs_fullscreen",
+            "vs_grade",
             "fs_composite",
             &[],
             TriangleList,

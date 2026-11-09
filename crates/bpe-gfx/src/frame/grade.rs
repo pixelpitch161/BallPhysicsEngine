@@ -45,6 +45,8 @@ pub enum GradePanel {
     Hsl(GradeHsl),
     PointColour(GradePointColour),
     ColourGrading(GradeColourGrading),
+    Detail(GradeDetail),
+    Effects(GradeEffects),
     Calibration(GradeCalibration),
 }
 
@@ -57,6 +59,8 @@ impl GradePanel {
             GradePanel::Hsl(h) => h.is_identity(),
             GradePanel::PointColour(p) => p.is_identity(),
             GradePanel::ColourGrading(c) => c.is_identity(),
+            GradePanel::Detail(d) => d.is_identity(),
+            GradePanel::Effects(e) => e.is_identity(),
             GradePanel::Calibration(c) => c.is_identity(),
         }
     }
@@ -74,6 +78,12 @@ pub struct GradeBasic {
     pub shadows: f32,
     pub whites: f32,
     pub blacks: f32,
+    /// Medium-sized detail stronger or smoother (an area step).
+    pub texture: f32,
+    /// Local contrast in the midtones (an area step).
+    pub clarity: f32,
+    /// A veil of haze taken off or laid on (an area step).
+    pub dehaze: f32,
     pub vibrance: f32,
     pub saturation: f32,
 }
@@ -81,7 +91,12 @@ pub struct GradeBasic {
 impl GradeBasic {
     /// Whether every number is 0 (a key passing through 0 may land on −0, which counts as 0).
     pub fn is_identity(&self) -> bool {
-        self.linear_identity() && self.tone_identity() && self.colour_identity()
+        self.linear_identity() && self.tone_identity() && self.area_identity() && self.colour_identity()
+    }
+
+    /// No Texture, Clarity or Dehaze.
+    pub fn area_identity(&self) -> bool {
+        self.texture == 0.0 && self.clarity == 0.0 && self.dehaze == 0.0
     }
 
     /// No white balance and no exposure.
@@ -274,5 +289,77 @@ impl GradeCalibration {
     /// Whether every slider is 0.
     pub fn is_identity(&self) -> bool {
         self.shadows_tint == 0.0 && self.primaries_identity()
+    }
+}
+
+/// The Detail panel: Sharpening's Amount (0..150), Radius (0.5..3 pixels of the video) and
+/// Detail (0..100, how much of the finest detail and its halos are let through).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GradeDetail {
+    pub amount: f32,
+    pub radius: f32,
+    pub detail: f32,
+}
+
+impl Default for GradeDetail {
+    fn default() -> Self {
+        Self { amount: 0.0, radius: 1.0, detail: 25.0 }
+    }
+}
+
+impl GradeDetail {
+    /// No sharpening.
+    pub fn is_identity(&self) -> bool {
+        self.amount == 0.0
+    }
+}
+
+/// The Effects panel: the post-crop vignette, grain that moves from frame to frame, and the
+/// gradient map (the picture's brightness recoloured).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GradeEffects {
+    /// −100 (dark corners) .. 100 (light corners).
+    pub vignette_amount: f32,
+    /// 0..100: how far out it starts.
+    pub vignette_midpoint: f32,
+    /// −100 (a rounder rectangle) .. 100 (a circle).
+    pub vignette_roundness: f32,
+    /// 0..100: how soft its edge is.
+    pub vignette_feather: f32,
+    /// 0..100: how much bright things keep their brightness under a dark vignette.
+    pub vignette_highlights: f32,
+    /// 0..100.
+    pub grain_amount: f32,
+    /// 0..100: how big a grain is.
+    pub grain_size: f32,
+    /// 0..100: how uneven the grain is.
+    pub grain_roughness: f32,
+    /// The colours the picture's brightness is mapped to, dark to light.
+    pub map: bpe_core::Gradient,
+    /// 0..100: how much of the mapped colour replaces the picture's own.
+    pub map_amount: f32,
+}
+
+impl Default for GradeEffects {
+    fn default() -> Self {
+        Self {
+            vignette_amount: 0.0,
+            vignette_midpoint: 50.0,
+            vignette_roundness: 0.0,
+            vignette_feather: 50.0,
+            vignette_highlights: 0.0,
+            grain_amount: 0.0,
+            grain_size: 25.0,
+            grain_roughness: 50.0,
+            map: bpe_core::Gradient::even(&[bpe_core::Color::rgb(0, 0, 0), bpe_core::Color::WHITE]),
+            map_amount: 0.0,
+        }
+    }
+}
+
+impl GradeEffects {
+    /// No vignette, grain or map.
+    pub fn is_identity(&self) -> bool {
+        self.vignette_amount == 0.0 && self.grain_amount == 0.0 && self.map_amount == 0.0
     }
 }

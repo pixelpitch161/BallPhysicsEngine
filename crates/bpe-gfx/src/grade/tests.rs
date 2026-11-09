@@ -226,7 +226,7 @@ fn a_basic_panel_compiles_to_one_step_per_space_it_works_in() {
     let p = compile(&basic(GradeBasic { temp: 20.0, contrast: 30.0, vibrance: 10.0, ..GradeBasic::default() }));
     assert_eq!(p.steps, 3);
     let ops: Vec<(u32, u32)> = {
-        let mut at = 1;
+        let mut at = p.segments[0].first as usize;
         let mut out = Vec::new();
         while at < p.words.len() {
             let h = p.words[at];
@@ -236,9 +236,12 @@ fn a_basic_panel_compiles_to_one_step_per_space_it_works_in() {
         out
     };
     assert_eq!(ops, [(OP_MATRIX, SPACE_LINEAR), (OP_CURVE, SPACE_TONE), (OP_CHROMA, SPACE_OKLAB)]);
-    assert_eq!(p.words[0][0], 3.0);
+    // One segment (no area steps), its three steps right after the table.
+    assert_eq!(p.words[0][0], 1.0);
+    assert_eq!(p.words[1], [2.0, 3.0, 0.0, 0.0]);
+    assert_eq!(p.segments, [Segment { first: 2, steps: 3, pyramid: false }]);
     // A curve step: its header, the slopes at 0 and its samples.
-    assert_eq!(p.words.len(), 1 + 4 + (2 + CURVE_SAMPLES) + 2);
+    assert_eq!(p.words.len(), 2 + 4 + (2 + CURVE_SAMPLES) + 2);
     // The split rides in the header.
     let split = GradeStack { split: Some(0.4), ..basic(GradeBasic { exposure: 1.0, ..GradeBasic::default() }) };
     assert_eq!(compile(&split).words[0], [1.0, 0.4, 0.0, 0.0]);
@@ -273,7 +276,7 @@ fn a_baked_curve_reads_back_as_the_curve_within_a_hair() {
     for i in -20..2000 {
         let x = i as f64 * 0.001;
         let want = basic_tone(x, &b);
-        let got = read_curve(&p, 1, x, 0);
+        let got = read_curve(&p, p.segments[0].first as usize, x, 0);
         assert!((got - want).abs() < 2e-4, "{x}: {got} vs {want}");
     }
 }
@@ -523,4 +526,195 @@ fn a_pick_takes_a_glow_that_shows_as_its_colour() {
     assert!(shown.iter().all(|v| *v <= 1.0) && shown[0] > shown[2], "{shown:?}");
     let p = pick_words(&GradePick { saturation: -50.0, ..pick(shown.map(|v| v as f32)) }).unwrap();
     assert!(pick_weight(oklab(glow), &p) > 0.8, "{}", pick_weight(oklab(glow), &p));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Part 3: area steps, Detail and Effects.
+
+use crate::frame::{GradeDetail, GradeEffects};
+
+fn program(panels: Vec<GradePanel>) -> Program {
+    compile(&GradeStack { masks: vec![GradeMask { amount: 1.0, panels }], split: None })
+}
+
+/// Each segment's ops, in order.
+fn segment_ops(p: &Program) -> Vec<Vec<u32>> {
+    p.segments
+        .iter()
+        .map(|s| {
+            let mut at = s.first as usize;
+            (0..s.steps)
+                .map(|_| {
+                    let op = p.words[at][0] as u32;
+                    at += p.words[at][2] as usize;
+                    op
+                })
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn an_area_step_starts_a_segment_that_reads_the_pyramid() {
+    let p = program(vec![GradePanel::Basic(GradeBasic { exposure: 1.0, clarity: 40.0, ..GradeBasic::default() })]);
+    assert_eq!(segment_ops(&p), [vec![OP_MATRIX], vec![OP_CLARITY]]);
+    assert!(!p.segments[0].pyramid && p.segments[1].pyramid);
+    // The table holds the same.
+    assert_eq!(p.words[0][0], 2.0);
+    assert_eq!(p.words[2], [p.segments[1].first as f32, 1.0, 1.0, 0.0]);
+    assert_eq!(p.steps, 2);
+}
+
+#[test]
+fn area_steps_side_by_side_share_a_segment() {
+    let b = GradeBasic { texture: 20.0, clarity: 30.0, dehaze: 40.0, saturation: 10.0, ..GradeBasic::default() };
+    let p = program(vec![
+        GradePanel::Basic(b.clone()),
+        GradePanel::Detail(GradeDetail { amount: 50.0, ..Default::default() }),
+    ]);
+    // Saturation is a point step between them, so Sharpening starts its own.
+    assert_eq!(segment_ops(&p), [vec![], vec![OP_TEXTURE, OP_CLARITY, OP_DEHAZE, OP_CHROMA], vec![OP_SHARPEN]]);
+    let b = GradeBasic { saturation: 0.0, ..b };
+    let p = program(vec![GradePanel::Basic(b), GradePanel::Detail(GradeDetail { amount: 50.0, ..Default::default() })]);
+    assert_eq!(segment_ops(&p), [vec![], vec![OP_TEXTURE, OP_CLARITY, OP_DEHAZE, OP_SHARPEN]]);
+    assert!(p.segments[1].pyramid);
+}
+
+#[test]
+fn sharpening_alone_needs_no_pyramid_and_an_empty_first_pass() {
+    let p = program(vec![GradePanel::Detail(GradeDetail { amount: 40.0, ..Default::default() })]);
+    assert_eq!(segment_ops(&p), [vec![], vec![OP_SHARPEN]]);
+    assert!(!p.segments[1].pyramid);
+    let w = p.words[p.segments[1].first as usize + 1];
+    assert_eq!(w, [0.4, sharpen_limit(25.0) as f32, 1.0, 0.0]);
+}
+
+#[test]
+fn a_vignette_is_an_area_step_only_with_highlights_under_a_dark_one() {
+    let e = |amount: f32, highlights: f32| {
+        program(vec![GradePanel::Effects(GradeEffects {
+            vignette_amount: amount,
+            vignette_highlights: highlights,
+            grain_amount: 10.0,
+            ..GradeEffects::default()
+        })])
+    };
+    assert_eq!(segment_ops(&e(-50.0, 0.0)), [vec![OP_VIGNETTE, OP_GRAIN]]);
+    assert_eq!(segment_ops(&e(50.0, 80.0)), [vec![OP_VIGNETTE, OP_GRAIN]]);
+    assert_eq!(segment_ops(&e(-50.0, 80.0)), [vec![], vec![OP_VIGNETTE, OP_GRAIN]]);
+}
+
+#[test]
+fn detail_and_effects_at_their_defaults_add_nothing() {
+    assert!(GradeDetail::default().is_identity() && GradeEffects::default().is_identity());
+    assert_eq!(steps_of(GradePanel::Detail(GradeDetail { radius: 3.0, detail: 90.0, ..Default::default() })), 0);
+    let quiet = GradeEffects { vignette_midpoint: 10.0, grain_size: 90.0, ..GradeEffects::default() };
+    assert_eq!(steps_of(GradePanel::Effects(quiet)), 0);
+    assert!(GradeBasic { texture: -0.0, ..GradeBasic::default() }.is_identity());
+    assert!(!GradeBasic { dehaze: 1.0, ..GradeBasic::default() }.is_identity());
+    let map = GradeEffects { map_amount: 50.0, ..GradeEffects::default() };
+    let p = program(vec![GradePanel::Effects(map)]);
+    assert_eq!(segment_ops(&p), [vec![OP_GRADIENT_MAP]]);
+    assert_eq!(p.words[p.segments[0].first as usize][2] as usize, 1 + MAP_SAMPLES);
+}
+
+#[test]
+fn lift_moves_a_grey_by_exactly_the_change_and_keeps_a_bright_colour_s_ratios() {
+    for y in [0.0, 0.1, 0.5, 0.9, 1.5] {
+        for d in [-0.05, 0.02, 0.2] {
+            let out = lift([y; 3], d);
+            let want = (y + d).max(-LIFT_SOFT);
+            assert!(out.iter().all(|v| (v - want).abs() < 1e-12), "{y} {d}: {out:?}");
+        }
+    }
+    let c = [0.9, 0.5, 0.3];
+    let out = lift(c, 0.05);
+    let ratio = |c: [f64; 3]| (c[0] + LIFT_SOFT) / (c[2] + LIFT_SOFT);
+    assert!((ratio(out) - ratio(c)).abs() < 1e-12);
+    assert!((luminance(out) - luminance(c) - 0.05).abs() < 1e-9);
+}
+
+#[test]
+fn soft_limit_is_odd_rising_and_never_past_its_limit() {
+    let mut last = f64::NEG_INFINITY;
+    for i in -400..=400 {
+        let d = i as f64 * 0.01;
+        let y = soft_limit(d, 0.15);
+        assert!(y >= last && y.abs() <= 0.15 && (y + soft_limit(-d, 0.15)).abs() < 1e-12);
+        last = y;
+    }
+    assert!((soft_limit(0.001, 0.15) - 0.001).abs() < 1e-6, "small changes pass as they are");
+    assert!(sharpen_limit(0.0) < sharpen_limit(25.0) && sharpen_limit(25.0) < sharpen_limit(100.0));
+}
+
+#[test]
+fn clarity_works_most_in_the_midtones() {
+    assert_eq!(clarity_weight(0.5), 1.0);
+    assert!(clarity_weight(0.1) < clarity_weight(0.3));
+    assert_eq!(clarity_weight(3.0), 0.25);
+    assert_eq!(clarity_weight(-1.0), 0.25);
+}
+
+#[test]
+fn dehaze_takes_a_veil_off_keeping_white_and_black_and_minus_lays_a_fog() {
+    let haze = [0.5, 0.5, 0.5];
+    let out = dehaze(haze, 0.5, 0.5, 0.5, 1.0);
+    assert!(out[0] < 0.5 && out[0] > 0.0, "{out:?}");
+    assert_eq!(dehaze([1.0; 3], 1.0, 0.6, 0.6, 1.0), [1.0; 3]);
+    assert_eq!(dehaze([0.0; 3], 0.0, 0.6, 0.6, 1.0), [0.0; 3]);
+    // A colour in haze comes back more colourful.
+    let c = [0.6, 0.4, 0.3];
+    let out = dehaze(c, 0.3, 0.3, 0.4, 1.0);
+    assert!(out[0] / out[2] > c[0] / c[2]);
+    // No channel gains more than 2.5 times.
+    let hot = dehaze([0.95, 0.9, 0.9], 0.9, 0.95, 0.9, 1.0);
+    assert!(hot.iter().zip([0.95, 0.9, 0.9]).all(|(a, b)| a / b <= 2.5 + 1e-9), "{hot:?}");
+    let fogged = dehaze([0.0; 3], 0.0, 0.0, 0.2, -1.0);
+    assert!(fogged[0] > 0.3, "{fogged:?}");
+}
+
+#[test]
+fn the_vignette_lies_in_the_corners_not_the_middle() {
+    let e = |m: f32, r: f32, f: f32| {
+        vignette_words(&GradeEffects {
+            vignette_amount: -100.0,
+            vignette_midpoint: m,
+            vignette_roundness: r,
+            vignette_feather: f,
+            ..GradeEffects::default()
+        })
+    };
+    let size = [1080.0, 1920.0];
+    let w = e(50.0, 0.0, 50.0);
+    assert_eq!(vignette_weight([0.5, 0.5], size, w), 0.0);
+    assert!(vignette_weight([0.0, 0.0], size, w) > 0.99);
+    // Further out with a bigger midpoint; harder with no feather.
+    let edge = [0.0, 0.5];
+    assert!(vignette_weight(edge, size, e(90.0, 0.0, 50.0)) < vignette_weight(edge, size, w));
+    let hard = e(50.0, 0.0, 0.0);
+    assert!(vignette_weight([0.5, 0.5], size, hard) == 0.0 && vignette_weight([0.02, 0.02], size, hard) == 1.0);
+    // A circle reaches further down the tall picture's sides than the ellipse does.
+    let side = [0.5, 0.08];
+    assert!(vignette_weight(side, size, e(50.0, 100.0, 50.0)) > vignette_weight(side, size, w));
+    // Darkens by the weight; Highlights keeps a bright place; up lightens towards white.
+    assert_eq!(vignette([0.5; 3], 1.0, -1.0, 0.0, 0.0), [0.0; 3]);
+    assert_eq!(vignette([2.0; 3], 1.0, -1.0, 1.0, 2.0), [2.0; 3]);
+    let up = vignette([0.2; 3], 1.0, 0.5, 0.0, 0.0);
+    assert!(up[0] > 0.2 && up[0] < 1.0);
+}
+
+#[test]
+fn the_gradient_map_runs_from_its_first_colour_to_its_last() {
+    let e = GradeEffects {
+        map: bpe_core::Gradient::even(&[bpe_core::Color::rgb(0, 0, 255), bpe_core::Color::rgb(255, 0, 0)]),
+        map_amount: 100.0,
+        ..GradeEffects::default()
+    };
+    let row = gradient_row(&e);
+    assert_eq!(row.len(), MAP_SAMPLES);
+    assert!(near3(gradient_map([0.0; 3], &row, 1.0), [0.0, 0.0, 1.0], 1e-6));
+    assert!(near3(gradient_map([1.0; 3], &row, 1.0), [1.0, 0.0, 0.0], 1e-6));
+    // Brighter than white stays bright; amount 0 leaves the colour.
+    assert!(gradient_map([2.0; 3], &row, 1.0)[0] > 1.9);
+    assert_eq!(gradient_map([0.3, 0.2, 0.1], &row, 0.0), [0.3, 0.2, 0.1]);
 }

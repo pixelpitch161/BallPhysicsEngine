@@ -440,7 +440,7 @@ pub fn chroma_scale(lab: [f64; 3], vibrance: f64, saturation: f64) -> f64 {
 // ---------------------------------------------------------------------------------------------
 // Colour (part 2): HSL / Colour, Point Colour, Colour Grading, Calibration.
 
-use crate::frame::{GradeCalibration, GradeColourGrading, GradeHsl, GradePick};
+use crate::frame::{GradeCalibration, GradeColourGrading, GradeEffects, GradeHsl, GradePick};
 use std::f64::consts::{PI, TAU};
 
 /// Hermite smoothstep from `a` to `b` (0 below, 1 above).
@@ -753,4 +753,107 @@ pub fn dark_tint_gain(tint: f32) -> [f64; 3] {
 pub fn dark_tint(c: [f64; 3], gain: [f64; 3]) -> [f64; 3] {
     let w = 1.0 - smoothstep(0.0, 0.18, luminance(c));
     std::array::from_fn(|i| c[i] * (1.0 + (gain[i] - 1.0) * w))
+}
+
+// ---- Part 3: area steps and effects (the per-pixel parts; `shaders/grade.wgsl` twins) ----
+
+/// Lift's softening near black: a change of tone luma keeps a bright colour's channel ratios and
+/// becomes an even shift near black (so black can still be lifted).
+pub const LIFT_SOFT: f64 = 0.05;
+
+/// `c` (tone space) with its tone luma moved by `delta`.
+pub fn lift(c: [f64; 3], delta: f64) -> [f64; 3] {
+    let y = luminance(c);
+    let ratio = (y + delta + LIFT_SOFT).max(0.0) / (y + LIFT_SOFT).max(1e-4);
+    c.map(|v| (v + LIFT_SOFT) * ratio - LIFT_SOFT)
+}
+
+/// `d` softly held under `limit` (odd, rising, never past ±limit): how area steps keep halos down.
+pub fn soft_limit(d: f64, limit: f64) -> f64 {
+    limit * (d / limit).tanh()
+}
+
+/// Sharpening's halo limit for Detail (0..100): small at 0, so big edges get little more.
+pub fn sharpen_limit(detail: f64) -> f64 {
+    let t = (detail / 100.0).clamp(0.0, 1.0);
+    0.02 + 0.5 * t * t
+}
+
+/// Clarity's weight at tone luma `y`: the midtones most, the ends and past white a quarter.
+pub fn clarity_weight(y: f64) -> f64 {
+    let x = 2.0 * y - 1.0;
+    (1.0 - 0.75 * x * x).clamp(0.25, 1.0)
+}
+
+/// The most a veil of haze may be (linear), and how much of it Dehaze +100 takes off.
+pub const VEIL_MOST: f64 = 0.8;
+pub const VEIL_TAKEN: f64 = 0.75;
+
+/// Dehaze `d` (−1..1) on linear `c`, given the pass input's own least channel (`own`), the dark
+/// channel round it (`local_dark`) and the brightness round it (`local_luma`), all linear.
+pub fn dehaze(c: [f64; 3], own: f64, local_dark: f64, local_luma: f64, d: f64) -> [f64; 3] {
+    if d >= 0.0 {
+        let veil = own.min(local_dark).clamp(0.0, VEIL_MOST);
+        let v = VEIL_TAKEN * d * veil;
+        c.map(|x| (x - v).max(0.0) / (1.0 - v))
+    } else {
+        let fog = 0.55 + 0.45 * local_luma.clamp(0.0, 1.0);
+        let h = 0.6 * -d;
+        c.map(|x| x + (fog - x) * h)
+    }
+}
+
+/// The vignette's words: `[amount, middle, width, roundness]` (amount and roundness −1..1).
+pub fn vignette_words(e: &GradeEffects) -> [f64; 4] {
+    let f = |v: f32, lo: f64, hi: f64| if v.is_finite() { (v as f64 / 100.0).clamp(lo, hi) } else { 0.0 };
+    [
+        f(e.vignette_amount, -1.0, 1.0),
+        0.35 + 0.9 * f(e.vignette_midpoint, 0.0, 1.0),
+        0.02 + f(e.vignette_feather, 0.0, 1.0),
+        f(e.vignette_roundness, -1.0, 1.0),
+    ]
+}
+
+/// How much of the vignette lies at `uv` (0..1 across and down) on a picture `size` (any unit):
+/// 0 inside it, 1 out where it is full.
+pub fn vignette_weight(uv: [f64; 2], size: [f64; 2], w: [f64; 4]) -> f64 {
+    let [_, mid, width, r] = w;
+    let p = [(uv[0] - 0.5) * 2.0, (uv[1] - 0.5) * 2.0];
+    let short = size[0].min(size[1]).max(1e-9);
+    let circle = [p[0] * size[0] / short, p[1] * size[1] / short];
+    let k = r.max(0.0);
+    let q = [p[0] + (circle[0] - p[0]) * k, p[1] + (circle[1] - p[1]) * k];
+    let n = 2.0 - 6.0 * r.min(0.0);
+    let d = (q[0].abs().powf(n) + q[1].abs().powf(n)).powf(1.0 / n);
+    smoothstep(mid - 0.5 * width, mid + 0.5 * width, d)
+}
+
+/// The vignette on linear `c` at weight `v`, with Highlights `h` (0..1) and the linear brightness
+/// round it.
+pub fn vignette(c: [f64; 3], v: f64, amount: f64, h: f64, local_luma: f64) -> [f64; 3] {
+    if amount < 0.0 {
+        let keep = h * smoothstep(0.3, 1.0, local_luma);
+        let gain = (1.0 + amount * v * (1.0 - keep)).max(0.0);
+        c.map(|x| x * gain)
+    } else {
+        let t = amount * v;
+        // Past white stays where it is.
+        c.map(|x| untone(tone(x) + (1.0 - tone(x)).max(0.0) * t))
+    }
+}
+
+/// The gradient map's row: [`MAP_SAMPLES`] colours of `e.map` in tone space, the first at 0.
+pub fn gradient_row(e: &GradeEffects) -> Vec<[f64; 3]> {
+    e.map.bake(super::MAP_SAMPLES).into_iter().map(|s| [0, 1, 2].map(|i| tone(s[i] as f64))).collect()
+}
+
+/// The gradient map on tone-space `c` with its row, by `amount` (0..1).
+pub fn gradient_map(c: [f64; 3], row: &[[f64; 3]], amount: f64) -> [f64; 3] {
+    let y = luminance(c);
+    let t = y.clamp(0.0, 1.0) * (row.len() - 1) as f64;
+    let i = (t as usize).min(row.len() - 2);
+    let f = t - i as f64;
+    let over = y.max(1.0);
+    let m = [0, 1, 2].map(|k| (row[i][k] + (row[i + 1][k] - row[i][k]) * f) * over);
+    [0, 1, 2].map(|k| c[k] + (m[k] - c[k]) * amount)
 }

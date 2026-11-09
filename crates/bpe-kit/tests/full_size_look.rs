@@ -398,6 +398,7 @@ fn demo_shots(reg: &Registry) -> Vec<Shot> {
         at("grading-basic", grading_basic(reg)),
         at("grading-curves", grading_curves(reg)),
         at("grading-colour", grading_colour(reg)),
+        at("grading-detail", grading_detail(reg)),
         at("stage-camera-orbit", stage_camera(reg, 25.0)),
         at("stage-camera-orbit-far", stage_camera(reg, -40.0)),
         at("stage-depth-of-field", stage_depth_of_field(reg)),
@@ -498,8 +499,47 @@ fn grading_colour(reg: &Registry) -> Scene {
         (4, "highlights_saturation", n(35.0)),
         (4, "midtones_luminance", n(10.0)),
         (4, "balance", n(-20.0)),
-        (5, "shadows_tint", n(25.0)),
-        (5, "blue_hue", n(-40.0)),
+        (7, "shadows_tint", n(25.0)),
+        (7, "blue_hue", n(-40.0)),
+    ];
+    let params = &mut scene.card_mut(ThingId::ROOT, SlotId::Grade).expect("made above").params;
+    for (panel, key, v) in settings {
+        params.set(&bpe_core::layered_key(panels[panel], key), v);
+    }
+    scene
+}
+
+/// The lit demo through the area steps and effects: Texture, Clarity and Dehaze, Sharpening, a
+/// dark vignette whose Highlights keep the lamps, grain and a light gradient map (look for halos at
+/// edges, blocks or rings in the blurs, the grain's look and banding in the vignette).
+fn grading_detail(reg: &Registry) -> Scene {
+    use bpe_kit::modules::grade;
+    let mut scene = scenes::lit_demo(reg);
+    grade::ensure_grade(&mut scene, reg);
+    let card = scene.card(ThingId::ROOT, SlotId::Grade).expect("made above");
+    let panels: Vec<_> =
+        grade::panels_of(card, grade::whole_of(card).expect("made above")).iter().map(|l| l.id).collect();
+    let n = Value::Number;
+    let map = bpe_core::Gradient::even(&[
+        bpe_core::Color::rgb(20, 10, 60),
+        bpe_core::Color::rgb(200, 90, 60),
+        bpe_core::Color::rgb(255, 240, 200),
+    ]);
+    let settings: [(usize, &str, Value); 14] = [
+        (0, "texture", n(40.0)),
+        (0, "clarity", n(45.0)),
+        (0, "dehaze", n(25.0)),
+        (5, "amount", n(70.0)),
+        (5, "radius", n(1.2)),
+        (5, "detail", n(40.0)),
+        (6, "vignette_amount", n(-60.0)),
+        (6, "vignette_feather", n(70.0)),
+        (6, "vignette_highlights", n(60.0)),
+        (6, "grain_amount", n(30.0)),
+        (6, "grain_size", n(30.0)),
+        (6, "grain_roughness", n(60.0)),
+        (6, "map", Value::Gradient(map)),
+        (6, "map_amount", n(20.0)),
     ];
     let params = &mut scene.card_mut(ThingId::ROOT, SlotId::Grade).expect("made above").params;
     for (panel, key, v) in settings {

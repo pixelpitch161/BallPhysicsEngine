@@ -111,19 +111,126 @@ fn dither_noise(p: vec2<u32>, k: u32) -> vec3<f32> {
     return vec3<f32>(v >> vec3<u32>(8u)) / 16777216.0;
 }
 
-@fragment
-fn fs_composite(in: FsIn) -> @location(0) vec4<f32> {
-    let hdr = textureSample(src, samp, in.uv).rgb;
-    let bloom = textureSample(bloom_tex, samp, in.uv).rgb;
+// The grade's passes and the composite draw one triangle whose instance is the grade segment
+// they run (grade.wgsl).
+struct GradeIn {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) @interpolate(flat) seg: u32,
+};
+
+@vertex
+fn vs_grade(@builtin(vertex_index) i: u32, @builtin(instance_index) seg: u32) -> GradeIn {
+    let uv = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+    var out: GradeIn;
+    out.pos = vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
+    out.uv = vec2<f32>(uv.x, 1.0 - uv.y);
+    out.seg = seg;
+    return out;
+}
+
+// The picture the grade starts from: the HDR picture and its bloom, times the exposure.
+fn composite_input(uv: vec2<f32>) -> vec3<f32> {
+    let hdr = textureSample(src, samp, uv).rgb;
+    let bloom = textureSample(bloom_tex, samp, uv).rgb;
     let c = (hdr + bloom * g.post.x * 0.35) * g.post.y;
     // Clamped to the half floats' largest first: summed glows can reach infinity, and inf / inf
     // would draw the hottest spot black.
-    var lin = clamp(c, vec3<f32>(0.0), vec3<f32>(65504.0));
+    return clamp(c, vec3<f32>(0.0), vec3<f32>(65504.0));
+}
+
+// Segment `in.seg` of the grade: the first from the picture, the others from the last pass.
+fn graded(in: GradeIn, first: vec3<f32>) -> GradeOut {
+    let size = vec2<f32>(textureDimensions(src));
+    // Output pixels per pixel of the video (the scene's own size): blurs and grain are measured in
+    // the video's pixels, so a smaller preview looks like the export scaled down.
+    let scale = size.y * g.view.y * 0.5;
+    let pix = vec2<i32>(in.pos.xy);
+    let here = GradeAt(in.uv, pix, size, scale);
+    if in.seg == 0u {
+        return run_grade(first, first, here, 0u);
+    }
+    return run_grade(textureLoad(grade_in, pix, 0).rgb, textureLoad(grade_kept_in, pix, 0).rgb, here, in.seg);
+}
+
+struct GradePassOut {
+    @location(0) colour: vec4<f32>,
+    @location(1) kept: vec4<f32>,
+};
+
+// A grade pass before the last: its colour (tone luma in alpha) and kept colour, in what half
+// floats hold.
+@fragment
+fn fs_grade_pass(in: GradeIn) -> GradePassOut {
+    let first = composite_input(in.uv);
+    let o = graded(in, first);
+    let most = vec3<f32>(65504.0);
+    var out: GradePassOut;
+    let colour = clamp(o.colour, -most, most);
+    // Its tone luma rides in alpha, for Sharpening's neighbours.
+    out.colour = vec4<f32>(colour, luma(tone3(colour)));
+    out.kept = vec4<f32>(clamp(o.kept, -most, most), 1.0);
+    return out;
+}
+
+// One tap of the first pyramid level: the linear pass picture in tone space, its least channel's
+// tone value in alpha.
+fn grade_tap(uv: vec2<f32>, offset: vec2<f32>, texel: vec2<f32>) -> vec4<f32> {
+    let lin = clamp(textureSample(src, samp, uv + offset * texel).rgb, vec3<f32>(-64.0), vec3<f32>(64.0));
+    let p = tone3(lin);
+    return vec4<f32>(p, least(p));
+}
+
+fn grade_tap4(uv: vec2<f32>, offset: vec2<f32>, texel: vec2<f32>) -> vec4<f32> {
+    return textureSample(src, samp, uv + offset * texel);
+}
+
+// The 13 taps of fs_downsample, weighted the same.
+fn thirteen(a: vec4<f32>, b: vec4<f32>, c: vec4<f32>, d: vec4<f32>, e: vec4<f32>, f: vec4<f32>, gg: vec4<f32>,
+    h: vec4<f32>, i: vec4<f32>, j: vec4<f32>, k: vec4<f32>, l: vec4<f32>, m: vec4<f32>) -> vec4<f32> {
+    return e * 0.125 + (a + c + gg + i) * 0.03125 + (b + d + f + h) * 0.0625 + (j + k + l + m) * 0.125;
+}
+
+// The grade pyramid's first level, from a pass's linear picture.
+@fragment
+fn fs_grade_down0(in: FsIn) -> @location(0) vec4<f32> {
+    let t = 1.0 / vec2<f32>(textureDimensions(src));
+    let uv = in.uv;
+    return thirteen(
+        grade_tap(uv, vec2<f32>(-2.0, -2.0), t), grade_tap(uv, vec2<f32>(0.0, -2.0), t),
+        grade_tap(uv, vec2<f32>(2.0, -2.0), t), grade_tap(uv, vec2<f32>(-2.0, 0.0), t),
+        grade_tap(uv, vec2<f32>(0.0, 0.0), t), grade_tap(uv, vec2<f32>(2.0, 0.0), t),
+        grade_tap(uv, vec2<f32>(-2.0, 2.0), t), grade_tap(uv, vec2<f32>(0.0, 2.0), t),
+        grade_tap(uv, vec2<f32>(2.0, 2.0), t), grade_tap(uv, vec2<f32>(-1.0, -1.0), t),
+        grade_tap(uv, vec2<f32>(1.0, -1.0), t), grade_tap(uv, vec2<f32>(-1.0, 1.0), t),
+        grade_tap(uv, vec2<f32>(1.0, 1.0), t),
+    );
+}
+
+// Each further level of the grade pyramid, from the one before (all four channels).
+@fragment
+fn fs_grade_down(in: FsIn) -> @location(0) vec4<f32> {
+    let t = 1.0 / vec2<f32>(textureDimensions(src));
+    let uv = in.uv;
+    return thirteen(
+        grade_tap4(uv, vec2<f32>(-2.0, -2.0), t), grade_tap4(uv, vec2<f32>(0.0, -2.0), t),
+        grade_tap4(uv, vec2<f32>(2.0, -2.0), t), grade_tap4(uv, vec2<f32>(-2.0, 0.0), t),
+        grade_tap4(uv, vec2<f32>(0.0, 0.0), t), grade_tap4(uv, vec2<f32>(2.0, 0.0), t),
+        grade_tap4(uv, vec2<f32>(-2.0, 2.0), t), grade_tap4(uv, vec2<f32>(0.0, 2.0), t),
+        grade_tap4(uv, vec2<f32>(2.0, 2.0), t), grade_tap4(uv, vec2<f32>(-1.0, -1.0), t),
+        grade_tap4(uv, vec2<f32>(1.0, -1.0), t), grade_tap4(uv, vec2<f32>(-1.0, 1.0), t),
+        grade_tap4(uv, vec2<f32>(1.0, 1.0), t),
+    );
+}
+
+@fragment
+fn fs_composite(in: GradeIn) -> @location(0) vec4<f32> {
+    var lin = composite_input(in.uv);
     // The colour grade works on the linear picture, light above white kept, before the roll-off
     // squeezes it into the screen's range. With no grade it is skipped altogether, so the picture
-    // is exactly as without it.
+    // is exactly as without it. A grade of several passes ran its earlier ones before this.
     if g.post.z > 0.5 {
-        lin = clamp(run_grade(lin, in.uv), vec3<f32>(0.0), vec3<f32>(65504.0));
+        lin = clamp(graded(in, lin).colour, vec3<f32>(0.0), vec3<f32>(65504.0));
     }
     let mapped = roll_off(lin);
     // Triangular dither of ±1 step, the same on every channel (two uniform numbers summed): no banding survives the

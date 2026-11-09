@@ -9,8 +9,12 @@ use egui_kittest::{
 };
 
 fn harness_with(studio: Studio) -> Harness<'static, Studio> {
+    harness_sized(studio, 2400.0)
+}
+
+fn harness_sized(studio: Studio, height: f32) -> Harness<'static, Studio> {
     let mut h = Harness::builder()
-        .with_size(egui::vec2(420.0, 2400.0))
+        .with_size(egui::vec2(420.0, height))
         .with_step_dt(1.0 / 60.0)
         .with_max_steps(120)
         .allow_missing_glyphs()
@@ -34,7 +38,9 @@ fn names(scene: &Scene) -> Vec<String> {
 
 /// The starting card's panel names, in order.
 fn start_names() -> Vec<String> {
-    ["Basic", "Tone Curve", "HSL / Colour", "Point Colour", "Colour Grading", "Calibration"].map(String::from).to_vec()
+    ["Basic", "Tone Curve", "HSL / Colour", "Point Colour", "Colour Grading", "Detail", "Effects", "Calibration"]
+        .map(String::from)
+        .to_vec()
 }
 
 /// The panels' names with the first two swapped.
@@ -152,7 +158,7 @@ fn the_header_menu_moves_resets_and_removes_panels() {
     right_click(&mut h, at);
     pick(&mut h, "Remove panel");
     assert_eq!(names(&h.state().scene)[..2], ["Basic", "HSL / Colour"]);
-    for name in ["HSL / Colour", "Point Colour", "Colour Grading", "Calibration"] {
+    for name in ["HSL / Colour", "Point Colour", "Colour Grading", "Detail", "Effects", "Calibration"] {
         let id = panel_id(&h.state().scene, name);
         apply(h.state_mut(), vec![cx::GradeEdit::RemovePanel(id)]);
     }
@@ -499,4 +505,31 @@ fn a_lane_whose_label_its_panel_shares_names_its_group() {
     crate::timeline::grade_lanes_only(&mut groups);
     let lanes: Vec<_> = groups.iter().flat_map(|g| &g.lanes).collect();
     assert_eq!(lanes[0].short, "HSL / Colour · Saturation · Blue");
+}
+
+#[test]
+fn detail_and_effects_show_their_settings_and_a_drag_sharpens_less_widely() {
+    // Tall enough that the Detail panel is on screen.
+    let mut h = harness_sized(Studio::headless(), 6000.0);
+    for name in ["Texture", "Clarity", "Dehaze", "Radius", "Midpoint", "Roundness", "Feather", "Size"] {
+        assert_eq!(sliders(&h, name), 1, "{name}");
+    }
+    // Only Detail and Effects have an Amount: Detail's, the vignette's, the grain's and the
+    // gradient map's.
+    assert_eq!(sliders(&h, "Amount"), 4);
+    assert!(h.query_all_by_label("Gradient").next().is_some(), "the gradient map's row");
+    // A drag on Radius to the left end makes the card with the narrowest sharpening.
+    let rect = h.get_all_by_role_and_label(Role::Slider, "Radius").next().unwrap().rect();
+    let (start, end) = (rect.center(), egui::pos2(rect.left() - 40.0, rect.center().y));
+    h.hover_at(start);
+    press(&mut h, start, true, egui::PointerButton::Primary);
+    h.step();
+    h.event(egui::Event::PointerMoved(end));
+    h.step();
+    press(&mut h, end, false, egui::PointerButton::Primary);
+    h.run();
+    assert_eq!(number(&h, "Detail", "radius"), 0.5);
+    let resolved = bpe_core::resolve(&h.state().scene, &h.state().kit.registry);
+    let stack = grade::stack(resolved.things[&ThingId::ROOT].slots.get(&SlotId::Grade));
+    assert!(stack.masks[0].panels.iter().any(|p| matches!(p, bpe_gfx::GradePanel::Detail(d) if d.radius == 0.5)));
 }
