@@ -706,3 +706,144 @@ fn the_overlay_shows_only_on_the_selected_mask() {
     assert_eq!(overlays.iter().filter(|(_, o)| *o).collect::<Vec<_>>(), [&(mask.0, true)]);
     assert_eq!(*studio.grade.shown.borrow(), stack, "the handles read the stack as drawn");
 }
+
+/// A studio with a Brush mask, selected, and the preview's last grade as drawn.
+fn brushed_studio() -> (Studio, bpe_core::LayerId, bpe_core::LayerId) {
+    let mut studio = Studio::headless();
+    apply(&mut studio, vec![cx::GradeEdit::AddMask(grade::BRUSH)]);
+    let mask = studio.grade.mask.expect("the new mask is selected");
+    let part = grade::parts_of(card(&studio.scene), mask)[0].id;
+    redraw(&studio);
+    (studio, mask, part)
+}
+
+/// What the preview does when it draws: the grade as shown.
+fn redraw(studio: &Studio) {
+    let resolved = bpe_core::resolve(&studio.scene, &studio.kit.registry);
+    let mut stack = grade::stack(resolved.things[&ThingId::ROOT].slots.get(&SlotId::Grade), None);
+    studio.grade.show_on(&mut stack);
+}
+
+fn strokes(studio: &Studio, part: bpe_core::LayerId) -> bpe_core::Strokes {
+    match card(&studio.scene).params.get(&format!("{part}/strokes")) {
+        Some(Value::Strokes(s)) => s.clone(),
+        _ => Default::default(),
+    }
+}
+
+/// A 400 × 400 preview of a 400 × 400 video (one preview pixel a video pixel) with the brush on it.
+fn brush_harness(studio: Studio) -> Harness<'static, Studio> {
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(400.0, 400.0))
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(120)
+        .allow_missing_glyphs()
+        .with_context_setup(style::apply)
+        .build_ui_state(
+            |ui, s: &mut Studio| {
+                let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 400.0));
+                let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                redraw(s);
+                handles::preview(ui, &response, rect, 1.0, s);
+            },
+            studio,
+        );
+    h.run();
+    h
+}
+
+#[test]
+fn a_drag_paints_one_stroke_with_the_chosen_brush_as_one_edit() {
+    let (studio, _mask, part) = brushed_studio();
+    assert!(strokes(&studio, part).list.is_empty(), "a new brush has nothing painted");
+    let mut h = brush_harness(studio);
+    let path = [Pos2::new(150.0, 200.0), Pos2::new(180.0, 200.0), Pos2::new(220.0, 210.0), Pos2::new(250.0, 220.0)];
+    h.hover_at(path[0]);
+    h.run();
+    press(&mut h, path[0], true, egui::PointerButton::Primary);
+    h.step();
+    for p in &path[1..] {
+        h.hover_at(*p);
+        h.step();
+    }
+    assert!(h.state().grade.painting.is_some(), "painting while held");
+    assert!(strokes(h.state(), part).list.is_empty(), "no edit until it is let go");
+    press(&mut h, path[3], false, egui::PointerButton::Primary);
+    h.run();
+    assert!(h.state().grade.painting.is_none());
+    let list = strokes(h.state(), part).list;
+    assert_eq!(list.len(), 1, "{list:?}");
+    let s = &list[0];
+    // Brush A: 80 px, Feather 50, Flow 100, Density 100; points from the picture's middle.
+    assert_eq!((s.size, s.softness, s.strength, s.density, s.erase), (80.0, 0.5, 1.0, 1.0, false));
+    assert!(s.points.len() >= 2, "{:?}", s.points);
+    let last = s.points.last().unwrap();
+    assert!((last[0] - 50.0).abs() < 1.0 && (last[1] - 20.0).abs() < 1.0, "{last:?}");
+}
+
+#[test]
+fn erase_and_alt_erase_and_brushes_keep_their_own_settings() {
+    let mut b = brush::Brushes::default();
+    assert!(!b.stroke(vec![], 1.0, false).erase);
+    assert!(b.stroke(vec![], 1.0, true).erase, "Alt held");
+    b.tool = brush::Tool::B;
+    b.chosen_mut().size = 40.0;
+    let s = b.stroke(vec![], 2.0, false);
+    assert_eq!((s.size, s.softness), (20.0, 0.0), "in the place's units: px over its scale");
+    b.tool = brush::Tool::A;
+    assert_eq!(b.chosen().size, 80.0, "A kept its own size");
+    b.tool = brush::Tool::Erase;
+    assert!(b.stroke(vec![], 1.0, false).erase);
+}
+
+#[test]
+fn the_stroke_being_painted_shows_on_the_preview_before_it_is_kept() {
+    let (mut studio, mask, part) = brushed_studio();
+    let place = brush::place_of(&studio.grade.shown.borrow(), mask, part).expect("a brush on the screen has a place");
+    let stroke = studio.grade.brushes.stroke(vec![[0.0, 0.0]], place.scale, false);
+    studio.grade.painting =
+        Some(brush::Painting { mask, part, place, before: Default::default(), stroke: stroke.clone() });
+    redraw(&studio);
+    let shown = studio.grade.shown.borrow();
+    let m = shown.masks.iter().find(|m| m.id == mask.0).unwrap();
+    match &m.area.as_ref().unwrap().parts[0].shape {
+        bpe_gfx::GradeShape::Brush(b) => assert_eq!(b.strokes.list, [stroke]),
+        other => panic!("{other:?}"),
+    }
+    assert!(strokes(&studio, part).list.is_empty(), "nothing kept yet");
+}
+
+#[test]
+fn a_brushs_box_has_its_brushes_its_stroke_count_and_clear() {
+    let (mut studio, _mask, part) = brushed_studio();
+    let mut h = harness_with(studio);
+    assert!(h.query_all_by_label("Paint on the picture").next().is_some());
+    assert!(h.query_all_by_role_and_label(Role::Slider, "Size").next().is_some());
+    assert!(h.query_all_by_role_and_label(Role::Slider, "Density").next().is_some());
+    pick(&mut h, "B");
+    assert_eq!(h.state().grade.brushes.tool, brush::Tool::B);
+    studio = std::mem::replace(h.state_mut(), Studio::headless());
+    let dot = bpe_core::Stroke { points: vec![[0.0, 0.0]], size: 9.0, strength: 1.0, ..Default::default() };
+    let painted = bpe_core::Strokes { list: vec![dot.clone(), dot] };
+    apply(&mut studio, vec![cx::GradeEdit::Set(format!("{part}/strokes"), Value::Strokes(painted))]);
+    let mut h = harness_with(studio);
+    assert!(h.query_all_by_label("2 strokes").next().is_some());
+    pick(&mut h, "Clear");
+    assert!(strokes(h.state(), part).list.is_empty());
+}
+
+#[test]
+fn add_mask_offers_brush_and_things_and_a_things_part_shows_its_settings() {
+    let mut h = masks_harness(Studio::headless());
+    h.get_by_label("Add mask").click();
+    h.run();
+    assert!(h.query_all_by_role_and_label(Role::Button, "Brush").next().is_some());
+    pick(&mut h, "Things");
+    let studio = std::mem::replace(h.state_mut(), Studio::headless());
+    let mask = studio.grade.mask.unwrap();
+    assert_eq!(grade::parts_of(card(&studio.scene), mask)[0].kind, grade::THINGS);
+    let h = harness_with(studio);
+    assert!(h.query_all_by_role_and_label(Role::Slider, "Expand").next().is_some());
+    assert!(h.query_all_by_role_and_label(Role::Slider, "Feather").next().is_some());
+    assert!(h.query_all_by_label("Only").next().is_some());
+}

@@ -142,6 +142,9 @@ struct SpriteOut {
     @location(5) @interpolate(flat) light: vec3<f32>,
     @location(6) @interpolate(flat) emit: vec3<f32>,
     @location(7) @interpolate(flat) extra: vec4<f32>,
+    // The thing it is the body of (`shape.z`, a thing code; 0 for none), read only by the
+    // silhouettes of Things masks (colour grading part 5).
+    @location(9) @interpolate(flat) code: u32,
 };
 
 fn to_screen(p: vec2<f32>) -> vec2<f32> {
@@ -195,6 +198,7 @@ fn sprite_out(vi: u32, v: SpriteIn) -> SpriteOut {
         // Its tail reaches past its body's width at full swing.
         across = size * 1.3;
     }
+    out.code = v.shape.z;
     let half = vec2<f32>(reach, across) + vec2<f32>(margin);
     let at = corner * half;
     out.pos = to_clip(v.place.xy + rotate(at, v.place.z));

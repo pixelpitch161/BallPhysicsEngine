@@ -37,8 +37,9 @@ pub use detail::DetailPanel;
 pub use effects::EffectsPanel;
 pub use hsl::HslPanel;
 pub use masks::{
-    COLOUR_RANGE, ColourRangePart, Combine, LINEAR, LUMINANCE_RANGE, LinearPart, LuminanceRangePart, MASK,
-    MaskSettings, PART_KINDS, Placed, RADIAL, RadialPart, add_mask, add_part, masks_of, parts_of,
+    BRUSH, BrushPart, COLOUR_RANGE, ColourRangePart, Combine, LINEAR, LUMINANCE_RANGE, LinearPart, LuminanceRangePart,
+    MASK, MaskSettings, PART_KINDS, Placed, RADIAL, RadialPart, THINGS, ThingsOnly, ThingsPart, add_mask, add_part,
+    masks_of, parts_of,
 };
 pub use point_colour::{PICKS, PointColourPanel, PointPick, pick_prefix};
 pub use tone_curve::{CURVE_KEYS, CurveMode, ToneCurvePanel};

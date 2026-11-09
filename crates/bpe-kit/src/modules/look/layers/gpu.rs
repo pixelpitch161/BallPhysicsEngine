@@ -1279,8 +1279,13 @@ mod tests {
             let outline = s.add_layer(reg, b, SlotId::Look, OUTLINE).unwrap();
             let shading = s.add_layer(reg, b, SlotId::Look, SHADING).unwrap();
             set(reg, s, b, shading, "kind", Value::Choice("brush".into()));
-            let stroke =
-                bpe_core::Stroke { points: vec![[0.0, 0.0]], size: 0.2, softness: 0.0, strength: 1.0, erase: false };
+            let stroke = bpe_core::Stroke {
+                points: vec![[0.0, 0.0]],
+                size: 0.2,
+                softness: 0.0,
+                strength: 1.0,
+                ..Default::default()
+            };
             set(reg, s, b, shading, "strokes", Value::Strokes(bpe_core::Strokes { list: vec![stroke] }));
             ids.extend([pat, outline]);
         });

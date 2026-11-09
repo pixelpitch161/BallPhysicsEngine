@@ -101,6 +101,7 @@ impl ThingDraw for ParticlesDraw {
         let mut field = draw_layer(cx, st, &layer, &mut pieces);
         // What the layer itself drew gives off its light; everything it drew takes its Lighting.
         pieces.give_light(layer.emit);
+        pieces.mark_thing(bpe_gfx::thing_code(cx.thing.id) as u32);
         if let Some(f) = field.as_mut() {
             f.look.light = [layer.light[0], layer.light[1], 0.0, 0.0];
             // Smoke in a lit scene stands up by its density, so the real lights shade it (W15):
@@ -1105,7 +1106,8 @@ fn swarm_look(cx: &DrawCx, st: &ParticlesState, layer: &LookLayer) -> Option<bpe
     let now_s = st.step as f32 * super::step::DT;
     look.t0 = [super::step::DT, cx.time as f32, now_s, c.opacity];
     look.t1 = [c.age, c.share, c.twinkle, c.twinkle_speed];
-    look.t2 = [c.size, amount, 0.0, 0.0];
+    // w: the thing code its body's particles carry into Things masks' silhouettes.
+    look.t2 = [c.size, amount, 0.0, bpe_gfx::thing_code(cx.thing.id)];
     // Its colours.
     let p = &c.colour;
     let straight = p.form() == GradientForm::Straight;

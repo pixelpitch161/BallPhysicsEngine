@@ -9,7 +9,7 @@ use super::{GradeMode, scopes};
 use crate::app::Studio;
 use crate::style;
 use bpe_core::{Layer, LayerId, Params, Slot, Value};
-use bpe_kit::modules::grade::{self, COLOUR_RANGE, LINEAR, LUMINANCE_RANGE, PART_KINDS, RADIAL};
+use bpe_kit::modules::grade::{self, BRUSH, COLOUR_RANGE, LINEAR, LUMINANCE_RANGE, PART_KINDS, RADIAL, THINGS};
 use eframe::egui::{self, RichText, Sense, Stroke, Ui};
 
 /// The column: masks, Add mask, the overlay switch and the Histogram, with its edits applied.
@@ -242,6 +242,8 @@ pub fn part_name(kind: &str) -> &'static str {
     match kind {
         LINEAR => "Linear Gradient",
         RADIAL => "Radial Gradient",
+        BRUSH => "Brush",
+        THINGS => "Things",
         COLOUR_RANGE => "Colour Range",
         LUMINANCE_RANGE => "Luminance Range",
         _ => "Part",
@@ -293,6 +295,17 @@ fn kind_icon(ui: &mut Ui, kind: Option<&str>, on: bool) {
         Some(COLOUR_RANGE) => {
             p.circle_filled(c, 5.0, ink);
             p.circle_filled(c, 2.0, style::PANEL);
+        }
+        Some(BRUSH) => {
+            // A brush dab: a soft round blob with a short stroke trailing off it.
+            p.circle_filled(c + egui::vec2(1.5, -1.5), 3.5, ink);
+            p.line_segment([c + egui::vec2(-1.0, 1.0), c + egui::vec2(-5.0, 5.0)], Stroke::new(1.6, ink));
+        }
+        Some(THINGS) => {
+            // A ball over a square.
+            let square = egui::Rect::from_min_size(rect.min + egui::vec2(1.5, 5.0), egui::vec2(7.5, 7.5));
+            p.rect_stroke(square, 1.0, Stroke::new(1.2, ink), egui::StrokeKind::Inside);
+            p.circle_filled(c + egui::vec2(2.0, -2.0), 3.8, ink);
         }
         Some(LUMINANCE_RANGE) => {
             p.circle_stroke(c, 5.5, Stroke::new(1.2, ink));

@@ -70,6 +70,12 @@ impl Pieces {
         self.particles[OWN].iter_mut().for_each(|s| s.emit = e.at(s.color));
     }
 
+    /// Marks what the layer itself drew (not its shadows, glows and outlines) as thing `code`'s
+    /// body, for Things masks' silhouettes (colour grading part 5).
+    pub fn mark_thing(&mut self, code: u32) {
+        self.particles[OWN].iter_mut().for_each(|s| s.shape[2] = code);
+    }
+
     /// How many particles in all.
     pub fn particle_count(&self) -> usize {
         self.particles.iter().map(Vec::len).sum()

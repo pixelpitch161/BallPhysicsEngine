@@ -784,7 +784,7 @@ fn a_radial_gradient_covers_inside_and_fades_over_its_feather() {
     assert_eq!(radial_cover(n, &GradePlace::SCREEN, [100.0, 0.0], 1.0), 0.0);
     assert_eq!(radial_cover(n, &GradePlace::SCREEN, [40.0, 0.0], 1.0), 1.0);
     // At a place: offset turned and scaled with it, sizes scaled.
-    let place = GradePlace { at: [100.0, 50.0], turn: std::f32::consts::FRAC_PI_2, scale: 2.0 };
+    let place = GradePlace { at: [100.0, 50.0], turn: std::f32::consts::FRAC_PI_2, scale: 2.0, world: false };
     let n = radial_numbers(&radial_at(10.0, 0.0, 20.0));
     assert_eq!(radial_cover(n, &place, [100.0, 70.0], 1.0), 1.0, "its middle moved down by 2 × 10");
     assert!(radial_cover(n, &place, [100.0, 70.0 + 19.0], 1.0) > 0.0, "radius 2 × 10");
@@ -920,4 +920,106 @@ fn copies_are_sorted_down_the_screen() {
     let copies = &p.words[end + 4..end + 8];
     assert_eq!(copies[0][..2], [3.0, -1.0], "three copies; a linear reaches everywhere");
     assert_eq!(copies[1..].iter().map(|w| w[1]).collect::<Vec<_>>(), vec![-10.0, 10.0, 30.0]);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Part 5: Things selections, the brush's words and the Stage camera.
+
+use crate::frame::{GradeBrush, GradeThings};
+
+fn things_part(things: Option<Vec<u32>>, expand: f32) -> GradePart {
+    GradePart {
+        combine: GradeCombine::Add,
+        invert: false,
+        shape: GradeShape::Things(GradeThings { things, background: false, expand, feather: 4.0 }),
+        id: 0,
+    }
+}
+
+fn exposed_mask(parts: Vec<GradePart>) -> GradeMask {
+    GradeMask {
+        amount: 1.0,
+        area: Some(GradeArea { parts, invert: false }),
+        panels: vec![GradePanel::Basic(GradeBasic { exposure: 1.0, ..GradeBasic::default() })],
+        ..GradeMask::default()
+    }
+}
+
+#[test]
+fn things_parts_share_a_selection_by_their_things_and_none_names_no_thing() {
+    let stack = GradeStack {
+        masks: vec![
+            exposed_mask(vec![things_part(Some(vec![3, 1]), 10.0), things_part(Some(vec![1, 3, 3]), 30.0)]),
+            exposed_mask(vec![things_part(None, 0.0), things_part(Some(vec![]), 0.0)]),
+        ],
+        split: None,
+    };
+    let p = compile(&stack);
+    assert_eq!(p.selections.len(), 2, "{:?}", p.selections);
+    assert_eq!(p.selections[0].things, Some(vec![1, 3]));
+    assert_eq!(p.selections[0].reach, 34.0, "the most Expand + Feather asked of it");
+    assert_eq!(p.selections[1].things, None);
+    // A grade without Things parts has none.
+    let plain = GradeStack { masks: vec![exposed_mask(vec![])], split: None };
+    assert!(compile(&plain).selections.is_empty());
+}
+
+#[test]
+fn past_the_most_selections_a_things_part_covers_nothing() {
+    let parts = (0..MAX_SELECTIONS as u32 + 2).map(|i| things_part(Some(vec![i + 1]), 0.0)).collect();
+    let p = compile(&GradeStack { masks: vec![exposed_mask(parts)], split: None });
+    assert_eq!(p.selections.len(), MAX_SELECTIONS);
+}
+
+#[test]
+fn a_brush_without_paint_covers_nothing_and_with_it_has_a_grid() {
+    let empty = GradeShape::Brush(GradeBrush { strokes: Default::default(), places: vec![GradePlace::SCREEN] });
+    assert_eq!(part_cover(&empty, [0.2; 3], [0.0, 0.0], 1.0), 0.0);
+    let dot = bpe_core::Stroke { points: vec![[0.0, 0.0]], size: 20.0, strength: 1.0, ..Default::default() };
+    let painted = GradeShape::Brush(GradeBrush {
+        strokes: bpe_core::Strokes { list: vec![dot] },
+        places: vec![GradePlace { at: [100.0, 0.0], ..GradePlace::SCREEN }],
+    });
+    assert!(part_cover(&painted, [0.2; 3], [100.0, 0.0], 1.0) > 0.99);
+    assert!(part_cover(&painted, [0.2; 3], [0.0, 0.0], 1.0) < 0.01);
+    let words = compile(&GradeStack {
+        masks: vec![exposed_mask(vec![GradePart { shape: painted, ..things_part(None, 0.0) }])],
+        split: None,
+    });
+    assert!(words.words.len() > 10, "the grid is in the program");
+}
+
+#[test]
+fn a_moved_stage_camera_puts_world_places_where_it_shows_them_and_leaves_the_screen_alone() {
+    use crate::{StageCamera, StageLayout, StageView};
+    let flat = crate::CameraView { center: glam::Vec2::new(30.0, -40.0), zoom: 1.3, turn: 0.2 };
+    let cam = StageCamera { orbit: 25.0, tilt: 10.0, ..StageCamera::default() };
+    let layout = StageLayout { back: 240.0, k: 0.0, floor: None };
+    let view = StageView::solve(&cam, &flat, glam::Vec2::new(1080.0, 1920.0), layout);
+    assert!(view.motion > 0.0);
+    let ball = glam::Vec2::new(200.0, 150.0);
+    let s = flat.to_screen(ball);
+    let on_ball = GradePlace { at: s.into(), turn: 0.0, scale: 1.3, world: true };
+    let screen = GradePlace { at: [10.0, 20.0], ..GradePlace::SCREEN };
+    let radial = |places| {
+        GradeShape::Radial(GradeRadial {
+            x: 0.0,
+            y: 0.0,
+            width: 50.0,
+            height: 50.0,
+            angle: 0.0,
+            roundness: 0.0,
+            feather: 0.0,
+            places,
+        })
+    };
+    let part = |shape| GradePart { shape, ..things_part(None, 0.0) };
+    let mut stack = GradeStack { masks: vec![exposed_mask(vec![part(radial(vec![on_ball, screen]))])], split: None };
+    stack.see_through(&view);
+    let GradeShape::Radial(r) = &stack.masks[0].area.as_ref().unwrap().parts[0].shape else { panic!() };
+    let seen = view.screen_of(ball).unwrap();
+    assert!((glam::Vec2::from(r.places[0].at) - seen).length() < 0.01, "{:?} {seen:?}", r.places[0]);
+    let k = view.scale_at(ball).unwrap();
+    assert!((r.places[0].scale - k).abs() < 1e-3, "{} {k}", r.places[0].scale);
+    assert_eq!(r.places[1], screen);
 }

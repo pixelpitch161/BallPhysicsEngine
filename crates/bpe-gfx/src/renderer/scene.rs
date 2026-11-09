@@ -445,6 +445,9 @@ impl Renderer {
             drop(begin_pass(&mut encoder, &self.targets.bloom[0], "no bloom", wgpu::LoadOp::Clear(wgpu::Color::BLACK)));
             self.bloom_black = true;
         }
+        // Things masks read the things' silhouettes and how far each pixel is from them.
+        let things = self.draw_silhouettes(device, queue, &mut encoder, frame, moved);
+        self.grade.set_things(device, things.as_ref());
         {
             // A grade with area steps runs all its passes but the last first; the composite runs
             // the last.

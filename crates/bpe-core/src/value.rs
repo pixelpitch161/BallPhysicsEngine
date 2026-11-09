@@ -97,9 +97,18 @@ fn is_false(v: &bool) -> bool {
     !*v
 }
 
-/// One brush stroke on a ball: the points it went through, in ball space (-1 to 1 across the
-/// ball, y down, before the ball turns), and the brush it was painted with.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+fn one() -> f32 {
+    1.0
+}
+
+fn is_one(v: &f32) -> bool {
+    *v == 1.0
+}
+
+/// One brush stroke: the points it went through and the brush it was painted with. On a ball
+/// they are in ball space (-1 to 1 across the ball, y down, before the ball turns); on a grade
+/// mask's Brush, in its place's units (video pixels).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Stroke {
     pub points: Vec<[f32; 2]>,
     /// The brush's radius, in ball radii.
@@ -111,6 +120,16 @@ pub struct Stroke {
     /// It takes paint away instead of adding it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub erase: bool,
+    /// The most paint it builds up to, 0 to 1 (Lightroom's Density): it never takes away paint
+    /// that is already there. 1 paints as strokes always did.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub density: f32,
+}
+
+impl Default for Stroke {
+    fn default() -> Self {
+        Self { points: Vec::new(), size: 0.0, softness: 0.0, strength: 0.0, erase: false, density: 1.0 }
+    }
 }
 
 /// Every stroke painted on one brush setting, oldest first.
@@ -125,6 +144,7 @@ impl Strokes {
         self.list.iter().all(|s| {
             s.size.is_finite()
                 && s.softness.is_finite()
+                && s.density.is_finite()
                 && s.strength.is_finite()
                 && s.points.iter().all(|p| p[0].is_finite() && p[1].is_finite())
         })
@@ -152,6 +172,10 @@ impl std::hash::Hash for Strokes {
                 x.to_bits().hash(h);
             }
             s.erase.hash(h);
+            // Only a density other than 1 counts, so strokes from before it hash as they did.
+            if s.density != 1.0 {
+                s.density.to_bits().hash(h);
+            }
         }
     }
 }
@@ -263,8 +287,13 @@ mod tests {
 
     #[test]
     fn strokes_round_trip_and_hash_by_their_numbers() {
-        let one =
-            Stroke { points: vec![[0.0, 0.5], [0.25, -0.5]], size: 0.2, softness: 0.5, strength: 1.0, erase: false };
+        let one = Stroke {
+            points: vec![[0.0, 0.5], [0.25, -0.5]],
+            size: 0.2,
+            softness: 0.5,
+            strength: 1.0,
+            ..Default::default()
+        };
         let strokes = Strokes { list: vec![one.clone(), Stroke { erase: true, ..one.clone() }] };
         let v = Value::Strokes(strokes.clone());
         let text = ron::to_string(&v).unwrap();
@@ -274,8 +303,15 @@ mod tests {
         let nan = Strokes { list: vec![Stroke { size: f32::NAN, ..one.clone() }] };
         assert!(!ValueType::Strokes.accepts(&Value::Strokes(nan)));
         assert_eq!(strokes.hash64(), strokes.clone().hash64());
-        let moved = Strokes { list: vec![Stroke { points: vec![[0.0, 0.5], [0.25, -0.4]], ..one }] };
+        let moved = Strokes { list: vec![Stroke { points: vec![[0.0, 0.5], [0.25, -0.4]], ..one.clone() }] };
         assert_ne!(strokes.hash64(), moved.hash64());
+        // Density is saved and hashed only when it isn't 1, so older strokes read and hash the same.
+        assert!(!text.contains("density"), "{text}");
+        let thin = Strokes { list: vec![Stroke { density: 0.5, ..one }] };
+        let text = ron::to_string(&Value::Strokes(thin.clone())).unwrap();
+        assert!(text.contains("density"), "{text}");
+        assert_eq!(ron::from_str::<Value>(&text).unwrap(), Value::Strokes(thin.clone()));
+        assert_ne!(thin.hash64(), Strokes { list: vec![Stroke { density: 1.0, ..thin.list[0].clone() }] }.hash64());
     }
 
     #[test]

@@ -374,6 +374,22 @@ fn each_layer_draws_every_particle_with_its_sub_layers() {
 }
 
 #[test]
+fn its_own_sprites_carry_the_thing_for_things_masks_and_its_glows_do_not() {
+    let reg = registry();
+    let (mut scene, id) = scene_with(Look::Empty);
+    let source =
+        ParticlesSettings { emit: Emit::OnceAtTheStart, count: 16, life: 10.0, ..ParticlesSettings::default() };
+    set_source(&mut scene, id, &source);
+    let look = scene.things[&id].slots[&SlotId::Look].layers[0].id;
+    scene.add_sub_layer(&reg, id, SlotId::Look, look, SUB_GLOW).unwrap();
+    let (frame, _, _) = frame_of(&scene, 0.5);
+    let code = bpe_gfx::thing_code(id) as u32;
+    assert_eq!(frame.particles.len(), 32);
+    assert!(frame.particles[..16].iter().all(|p| p.shape[2] == 0), "the glows");
+    assert!(frame.particles[16..].iter().all(|p| p.shape[2] == code), "its own");
+}
+
+#[test]
 fn a_share_and_the_rest_split_the_particles_between_two_layers() {
     let reg = registry();
     let (mut scene, id) = scene_with(Look::Empty);

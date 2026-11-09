@@ -38,6 +38,18 @@ fn coverage(s: &Stroke, d: f32) -> f32 {
     t * t * (3.0 - 2.0 * t) * s.strength.clamp(0.0, 1.0)
 }
 
+/// Paint `l` with a stroke of coverage `v` laid on it: erasing takes `v` of it away; painting
+/// adds `v` of what is missing, up to the stroke's density (never taking away paint already over
+/// it). At density 1 this is the plain sum.
+pub fn lay(l: f32, v: f32, s: &Stroke) -> f32 {
+    if s.erase {
+        l * (1.0 - v)
+    } else {
+        let density = if s.density.is_finite() { s.density.clamp(0.0, 1.0) } else { 1.0 };
+        (l + v * (1.0 - l)).min(density.max(l))
+    }
+}
+
 /// Paints one stroke onto `level` (one value per tile pixel, 0 to 1).
 fn apply(level: &mut [f32], s: &Stroke) {
     if s.points.is_empty() {
@@ -57,7 +69,7 @@ fn apply(level: &mut [f32], s: &Stroke) {
             let q = [((x as f32 + 0.5) / TILE as f32) * 2.0 - 1.0, ((y as f32 + 0.5) / TILE as f32) * 2.0 - 1.0];
             let v = coverage(s, stroke_distance(q, s));
             let l = &mut level[y * TILE + x];
-            *l = if s.erase { *l * (1.0 - v) } else { *l + v * (1.0 - *l) };
+            *l = lay(*l, v, s);
         }
     }
 }
@@ -180,7 +192,14 @@ mod tests {
     use super::*;
 
     fn line(erase: bool) -> Stroke {
-        Stroke { points: vec![[-0.5, 0.0], [0.5, 0.0]], size: 0.1, softness: 0.5, strength: 1.0, erase }
+        Stroke {
+            points: vec![[-0.5, 0.0], [0.5, 0.0]],
+            size: 0.1,
+            softness: 0.5,
+            strength: 1.0,
+            erase,
+            ..Default::default()
+        }
     }
 
     /// The tile's paint at ball point `q`.
@@ -200,7 +219,7 @@ mod tests {
 
     #[test]
     fn a_painted_disc_knows_how_far_its_edge_is() {
-        let disc = Stroke { points: vec![[0.0, 0.0]], size: 0.4, softness: 0.0, strength: 1.0, erase: false };
+        let disc = Stroke { points: vec![[0.0, 0.0]], size: 0.4, softness: 0.0, strength: 1.0, ..Default::default() };
         let tile = rasterise(&Strokes { list: vec![disc] });
         assert_eq!(tile.len(), 2 * TILE * TILE);
         let edge = dist(&tile, [0.4, 0.0]);
@@ -261,5 +280,17 @@ mod tests {
         assert_eq!(&*tile(&strokes).1, rasterise(&strokes).as_slice());
         strokes.list[2].points.push([0.4, 0.1]);
         assert_eq!(&*tile(&strokes).1, rasterise(&strokes).as_slice(), "and again as the stroke grows");
+    }
+
+    #[test]
+    fn density_caps_what_strokes_build_up_to_and_never_takes_paint_away() {
+        let thin = Stroke { density: 0.5, ..line(false) };
+        let once = rasterise(&Strokes { list: vec![thin.clone()] });
+        let twice = rasterise(&Strokes { list: vec![thin.clone(), thin.clone()] });
+        assert_eq!(at(&once, [0.0, 0.0]), 128, "half at the middle");
+        assert_eq!(at(&twice, [0.0, 0.0]), 128, "a second stroke builds no further");
+        let full_then_thin = rasterise(&Strokes { list: vec![line(false), thin] });
+        assert_eq!(at(&full_then_thin, [0.0, 0.0]), 255, "a thin stroke over full paint leaves it full");
+        assert_eq!(lay(0.3, 0.5, &line(false)), 0.3 + 0.5 * 0.7, "density 1 is the plain sum");
     }
 }

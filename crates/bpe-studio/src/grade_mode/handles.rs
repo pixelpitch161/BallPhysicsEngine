@@ -1,5 +1,5 @@
 //! A gradient's handles on the preview in Grade mode: the selected mask's selected (or first)
-//! Linear or Radial part, drawn where it is (its first place: on the screen, in the world, or on
+//! Linear or Radial part (a Brush part paints instead, `brush.rs`), drawn where it is (its first place: on the screen, in the world, or on
 //! the thing or ball it follows). A Linear Gradient shows its three lines (full effect, middle,
 //! none), a pin that moves it and a dot that turns it; dragging an outer line changes Feather. A
 //! Radial Gradient shows its edge and where its fade starts, a pin, four size dots and a turn dot.
@@ -13,7 +13,7 @@ use crate::app::Studio;
 use crate::style;
 use bpe_core::{LayerId, Slot, SlotId, ThingId, Value};
 use bpe_gfx::{GradeLinear, GradePlace, GradeRadial, GradeShape, GradeStack};
-use bpe_kit::modules::grade::{self, LINEAR, RADIAL};
+use bpe_kit::modules::grade::{self, BRUSH, LINEAR, RADIAL};
 use eframe::egui::{self, CursorIcon, Pos2, Rect, Stroke, Ui};
 use std::collections::BTreeMap;
 
@@ -60,16 +60,21 @@ pub enum Shape {
     Radial(GradeRadial),
 }
 
-/// The part of `mask` whose handles show: the one picked in the column while it is there, else
-/// its first gradient.
+/// Whether a part of `kind` shows something on the preview: a gradient's handles or a brush.
+pub fn has_handles(kind: &str) -> bool {
+    kind == LINEAR || kind == RADIAL || kind == BRUSH
+}
+
+/// The part of `mask` whose handles (or brush) show: the one picked in the column while it is
+/// there, else its first gradient or brush.
 pub fn handle_part(card: &Slot, picked: &BTreeMap<LayerId, LayerId>, mask: LayerId) -> Option<LayerId> {
     let parts = grade::parts_of(card, mask);
-    let gradient = |id: LayerId| parts.iter().any(|l| l.id == id && (l.kind == LINEAR || l.kind == RADIAL));
+    let handled = |id: LayerId| parts.iter().any(|l| l.id == id && has_handles(&l.kind));
     picked
         .get(&mask)
         .copied()
-        .filter(|p| gradient(*p))
-        .or_else(|| parts.iter().find(|l| l.kind == LINEAR || l.kind == RADIAL).map(|l| l.id))
+        .filter(|p| handled(*p))
+        .or_else(|| parts.iter().find(|l| has_handles(&l.kind)).map(|l| l.id))
 }
 
 /// Part `part` of mask `mask` as the preview last drew it, on its first place.
@@ -273,6 +278,13 @@ pub fn dragged(grab: &Grab, p: [f32; 2]) -> Vec<(&'static str, f32)> {
 
 /// The handles in Grade mode: drawn, and dragged. `view_scale` is preview pixels per video pixel.
 pub fn preview(ui: &mut Ui, response: &egui::Response, rect: Rect, view_scale: f32, studio: &mut Studio) {
+    // A Brush part paints instead.
+    if let Some(painted) = super::brush::painted(studio) {
+        studio.grade.handle = None;
+        super::brush::preview(ui, response, rect, view_scale, studio, painted);
+        return;
+    }
+    studio.grade.painting = None;
     let found = (|| {
         let card = studio.scene.card(ThingId::ROOT, SlotId::Grade).filter(|c| c.kind == grade::GRADE)?;
         let mask = studio.grade.mask.filter(|m| grade::masks_of(card).iter().any(|l| l.id == *m))?;
@@ -422,7 +434,7 @@ mod tests {
         let out = dragged(&g, [130.0, 10.0]);
         assert!(close(out[0].1, 130.0) && close(out[1].1, 10.0), "{out:?}");
         // Following a turned, bigger thing: the move is in its own units.
-        let place = GradePlace { at: [500.0, 0.0], turn: std::f32::consts::FRAC_PI_2, scale: 2.0 };
+        let place = GradePlace { at: [500.0, 0.0], turn: std::f32::consts::FRAC_PI_2, scale: 2.0, world: false };
         let start = place.point(100.0, -50.0);
         let g = grab(Shape::Radial(radial()), place, Handle::Move, start);
         let out = dragged(&g, add(start, [0.0, 20.0]));

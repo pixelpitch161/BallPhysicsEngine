@@ -1006,7 +1006,39 @@ pub fn part_cover(shape: &GradeShape, c: [f64; 3], p: [f64; 2], px: f64) -> f64 
         GradeShape::Radial(r) => most(&r.places, &|q| radial_cover(radial_numbers(r), q, p, px)),
         GradeShape::ColourRange(r) => colour_range_cover(c, &range_picks(r), range_widths(r.refine)),
         GradeShape::LuminanceRange(l) => luminance_cover(c, luminance_numbers(l)),
+        // A Things part needs the silhouettes the renderer draws: see `things_cover`.
+        GradeShape::Things(_) => 0.0,
+        GradeShape::Brush(b) => match crate::grade::brush::grid(&b.strokes) {
+            Some(g) => most(&b.places, &|q| brush_cover(&g, q, p)),
+            None => 0.0,
+        },
     }
+}
+
+/// A screen point in a place's own units (the inverse of [`placed`]).
+pub fn unplaced(place: &GradePlace, p: [f64; 2]) -> [f64; 2] {
+    let d = [p[0] - place.at[0] as f64, p[1] - place.at[1] as f64];
+    let (s, c) = (place.turn as f64).sin_cos();
+    let k = 1.0 / place.scale as f64;
+    [(d[0] * c + d[1] * s) * k, (-d[0] * s + d[1] * c) * k]
+}
+
+/// One copy of a Brush at `place`, at screen point `p`: its grid's paint there.
+pub fn brush_cover(grid: &crate::grade::brush::BrushGrid, place: &GradePlace, p: [f64; 2]) -> f64 {
+    grid.sample(unplaced(place, p))
+}
+
+/// How much a Things part covers a pixel whose silhouette field says `cover` (the chosen things'
+/// coverage there) and `distance` (output pixels to the nearest pixel at least half covered):
+/// the silhouette itself, grown by `expand` and faded out over `feather` (pixels of the video,
+/// `scale` output pixels each); `background` covers the rest instead.
+pub fn things_cover(cover: f64, distance: f64, expand: f64, feather: f64, scale: f64, background: bool) -> f64 {
+    let (e, f) = (expand.max(0.0) * scale, feather.max(0.0) * scale);
+    let mut v = cover.clamp(0.0, 1.0);
+    if e + f > 0.0 {
+        v = v.max(1.0 - smoothstep(e - 0.5, e + f + 0.5, distance - 0.5));
+    }
+    if background { 1.0 - v } else { v }
 }
 
 /// How much a mask's area covers screen point `p` (pixels of the video from the middle, y down)

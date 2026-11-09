@@ -13,8 +13,11 @@
 //!   invert, overlay, 0]` then each part `[kind, combine, invert, words]` and its words:
 //!   [`PART_LINEAR`] `[x, y, angle, feather]` then copies; [`PART_RADIAL`] `[x, y, half width,
 //!   half height]`, `[angle, roundness, feather, 0]` then copies; [`PART_COLOUR`] `[picks, inner,
-//!   outer, 0]` then a pick a word (Oklab); [`PART_LUMINANCE`] `[low, high, fade, 0]`. Copies are
-//!   `[count, reach, 0, 0]` then `[at x, at y, turn, scale]` each, sorted by `at y`.
+//!   outer, 0]` then a pick a word (Oklab); [`PART_LUMINANCE`] `[low, high, fade, 0]`;
+//!   [`PART_THINGS`] `[layer of the things field (−1 none), expand, feather, background]` (video
+//!   pixels); [`PART_BRUSH`] `[x0, y0, 1 / texel, 0]`, `[width, height, grid word, 0]`, copies,
+//!   then the grid (three bytes a lane, see `brush::BrushGrid::words`). Copies are `[count,
+//!   reach, 0, 0]` then `[at x, at y, turn, scale]` each, sorted by `at y`.
 //! - [`OP_HUE`] (Oklab): the HSL panel, [`HUE_SAMPLES`] samples over the hue of `[turn, saturation,
 //!   luminance, 0]` (see `maths::hsl_row`).
 //! - [`OP_POINT`] (Oklab): Point Colour; `extra` is the number of picks, three words each (see
@@ -34,7 +37,7 @@ use super::maths::{self, ToneCurves};
 use super::*;
 use crate::frame::{
     GradeArea, GradeBasic, GradeCalibration, GradeColourGrading, GradeCombine, GradeDetail, GradeEffects, GradeHsl,
-    GradeMask, GradePanel, GradePlace, GradePointColour, GradeShape, GradeStack, GradeToneCurve,
+    GradeMask, GradePanel, GradePlace, GradePointColour, GradeShape, GradeStack, GradeThings, GradeToneCurve,
 };
 
 /// The compiled grade.
@@ -44,6 +47,19 @@ pub struct Program {
     pub steps: u32,
     /// What each pass runs, in order: one for a grade without area steps.
     pub segments: Vec<Segment>,
+    /// The choices of things its Things parts read silhouettes of, in the things field's
+    /// layers' order (none without Things parts: no silhouettes are drawn).
+    pub selections: Vec<Selection>,
+}
+
+/// One choice of things the renderer draws a silhouette of (a layer of the things field).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Selection {
+    /// Their codes, sorted (`None`: every thing).
+    pub things: Option<Vec<u32>>,
+    /// The furthest past their edges any part on it reaches, in pixels of the video: how far its
+    /// distances are needed.
+    pub reach: f32,
 }
 
 /// One pass's share of the program.
@@ -70,6 +86,7 @@ struct Builder {
     steps: u32,
     segments: Vec<Segment>,
     after_area: bool,
+    selections: Vec<Selection>,
 }
 
 impl Builder {
@@ -251,28 +268,58 @@ impl Builder {
             }
         }
         if weak {
-            let words = m.area.as_ref().map(|a| cover_words(a, overlay)).unwrap_or_default();
+            let words = m.area.as_ref().map(|a| self.cover_words(a, overlay)).unwrap_or_default();
             self.step(OP_END, SPACE_LINEAR, amount, words);
         }
     }
-}
 
-/// `OP_END`'s words for a mask's area: `[parts, invert, overlay, 0]`, then each part `[kind,
-/// combine, invert, words]` and its own words (see the module's notes).
-fn cover_words(area: &GradeArea, overlay: bool) -> Vec<[f32; 4]> {
-    let flag = |b: bool| if b { 1.0 } else { 0.0 };
-    let mut out = vec![[area.parts.len() as f32, flag(area.invert), flag(overlay), 0.0]];
-    for part in &area.parts {
-        let (kind, data) = part_words(&part.shape);
-        let combine = match part.combine {
-            GradeCombine::Add => COMBINE_ADD,
-            GradeCombine::Subtract => COMBINE_SUBTRACT,
-            GradeCombine::Intersect => COMBINE_INTERSECT,
-        };
-        out.push([kind as f32, combine as f32, flag(part.invert), (data.len() + 1) as f32]);
-        out.extend(data);
+    /// The things field's layer for a Things part's choice (made the first time it is asked
+    /// for), `None` past [`MAX_SELECTIONS`] or for an empty choice.
+    fn selection(&mut self, t: &GradeThings) -> Option<usize> {
+        let mut things = t.things.clone();
+        if let Some(list) = things.as_mut() {
+            list.sort_unstable();
+            list.dedup();
+            if list.is_empty() {
+                return None;
+            }
+        }
+        let reach = t.reach();
+        if let Some(i) = self.selections.iter().position(|s| s.things == things) {
+            self.selections[i].reach = self.selections[i].reach.max(reach);
+            return Some(i);
+        }
+        if self.selections.len() >= MAX_SELECTIONS {
+            return None;
+        }
+        self.selections.push(Selection { things, reach });
+        Some(self.selections.len() - 1)
     }
-    out
+
+    /// `OP_END`'s words for a mask's area: `[parts, invert, overlay, 0]`, then each part `[kind,
+    /// combine, invert, words]` and its own words (see the module's notes).
+    fn cover_words(&mut self, area: &GradeArea, overlay: bool) -> Vec<[f32; 4]> {
+        let flag = |b: bool| if b { 1.0 } else { 0.0 };
+        let mut out = vec![[area.parts.len() as f32, flag(area.invert), flag(overlay), 0.0]];
+        for part in &area.parts {
+            let (kind, data) = match &part.shape {
+                GradeShape::Things(t) => {
+                    let layer = self.selection(t).map_or(-1.0, |i| i as f32);
+                    let ok = |v: f32| if v.is_finite() { v.clamp(0.0, crate::MOST_REACH) } else { 0.0 };
+                    (PART_THINGS, vec![[layer, ok(t.expand), ok(t.feather), flag(t.background)]])
+                }
+                shape => part_words(shape),
+            };
+            let combine = match part.combine {
+                GradeCombine::Add => COMBINE_ADD,
+                GradeCombine::Subtract => COMBINE_SUBTRACT,
+                GradeCombine::Intersect => COMBINE_INTERSECT,
+            };
+            out.push([kind as f32, combine as f32, flag(part.invert), (data.len() + 1) as f32]);
+            out.extend(data);
+        }
+        out
+    }
 }
 
 fn f4(v: [f64; 4]) -> [f32; 4] {
@@ -307,6 +354,20 @@ fn part_words(shape: &GradeShape) -> (u32, Vec<[f32; 4]>) {
             let [low, high, fade] = maths::luminance_numbers(l);
             (PART_LUMINANCE, vec![[low as f32, high as f32, fade as f32, 0.0]])
         }
+        GradeShape::Brush(b) => match brush::grid(&b.strokes) {
+            Some(g) => {
+                let copies = copies(&b.places, g.reach());
+                let grid_at = 2 + copies.len();
+                let mut data = vec![[g.origin[0], g.origin[1], 1.0 / g.texel, 0.0]];
+                data.push([g.size[0] as f32, g.size[1] as f32, grid_at as f32, 0.0]);
+                data.extend(copies);
+                data.extend(g.words());
+                (PART_BRUSH, data)
+            }
+            // No paint: no copies, so it covers nothing.
+            None => (PART_BRUSH, vec![[0.0; 4], [0.0; 4], [0.0; 4]]),
+        },
+        GradeShape::Things(_) => unreachable!("worked out by the builder"),
     }
 }
 
@@ -335,7 +396,13 @@ impl Program {
 
 /// The program for `stack`: its masks in order, panels at their defaults left out.
 pub fn compile(stack: &GradeStack) -> Program {
-    let mut b = Builder { body: Vec::new(), steps: 0, segments: vec![Segment::default()], after_area: false };
+    let mut b = Builder {
+        body: Vec::new(),
+        steps: 0,
+        segments: vec![Segment::default()],
+        after_area: false,
+        selections: Vec::new(),
+    };
     for m in &stack.masks {
         b.mask(m);
     }
@@ -346,5 +413,5 @@ pub fn compile(stack: &GradeStack) -> Program {
     words.push([segments.len() as f32, split, 0.0, 0.0]);
     words.extend(segments.iter().map(|s| [s.first as f32, s.steps as f32, if s.pyramid { 1.0 } else { 0.0 }, 0.0]));
     words.extend(b.body);
-    Program { words, steps: b.steps, segments }
+    Program { words, steps: b.steps, segments, selections: b.selections }
 }

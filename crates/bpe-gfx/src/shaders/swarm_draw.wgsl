@@ -18,7 +18,7 @@ struct SwarmLook {
     t0: vec4<f32>,
     // Only's age, Only's share, twinkle, twinkle speed
     t1: vec4<f32>,
-    // size ×, blend amount, softness, 0
+    // size ×, blend amount, softness, the thing's code (for Things masks' silhouettes)
     t2: vec4<f32>,
     // sprites: length = size × x + speed × y; streaks: stretch, least, width; shapes: length,
     // pixel grid, turn by (radians), flap speed; glitter: shimmer, light from (radians),
@@ -313,7 +313,12 @@ fn vs_swarm(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) ->
     v.place = vec4<f32>(m.place, m.turn, size);
     v.color = colour;
     v.style = vec4<f32>(size, 1.0, 0.0, 0.0);
-    v.shape = vec4<u32>(look.k0.y, 0u, 0u, 0u);
+    // A Things mask's silhouette (colour grading part 5) takes the body's particles only.
+    var code = 0u;
+    if look.k0.z == SW_ROLE_OWN {
+        code = u32(max(look.t2.w, 0.0));
+    }
+    v.shape = vec4<u32>(look.k0.y, 0u, code, 0u);
     v.light = vec4<f32>(0.0);
     v.emit = vec4<f32>(0.0);
     v.extra = vec4<f32>(0.0);

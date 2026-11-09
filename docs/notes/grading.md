@@ -2,8 +2,7 @@
 
 Lightroom-style colour grading of the finished picture, edited in the editor's **Grade mode**. Spec:
 `docs/superpowers/specs/2026-11-09-colour-grading-design.md` (approved 2026-11-09, six parts). Plans:
-`docs/superpowers/plans/colour-grading/`. Parts 1 to 4 are built; parts 5 and 6 add the rest of the masks (Things,
-Brush), the grading tools and scopes.
+`docs/superpowers/plans/colour-grading/`. Parts 1 to 5 are built; part 6 adds the grading tools and scopes.
 
 ## Part 1 as built (the grade itself)
 
@@ -298,8 +297,7 @@ Plan: `docs/superpowers/plans/colour-grading/part4.md` (decisions 1 to 19 hold e
   a pin, four size dots, a turn dot. A drag works from the part as it was at the press, less what following
   sound or light added there (`Grab.pulsed`), so a pulse isn't baked in; each drag is one undo step;
   values go through `GradeEdit::Set` (keyed at the playhead when keyed). Split's line takes the press first.
-- Known gap: following gradients are placed through the flat camera (`world.camera`), so under the Stage camera's
-  perspective they drift off the balls.
+- Part 4's gap (following gradients drifting off the balls under the moved Stage camera) is fixed in part 5.
 - **O** toggles the overlay (Grade mode, nothing focused); `show_on` sets it on the selected mask only. The
   preview's `Drawn` key holds the overlay and the selected mask.
 - `GradeEdit` works per mask: `AddPanel(mask, kind)`, `ResetOrder(mask)`, `Enable(layer, on)`, and `AddMask`,
@@ -315,3 +313,99 @@ Plan: `docs/superpowers/plans/colour-grading/part4.md` (decisions 1 to 19 hold e
   the handle drag maths.
 - Full-size look scene `grading-masks` (a glow on every ball, a darker cooler top, warmer highlights inside an
   oval). `restarts.rs::grade_settings_restart_nothing` checks at least 140 grade settings.
+
+## Part 5 as built (masks, second half: Things and Brush)
+
+Plan: `docs/superpowers/plans/colour-grading/part5.md` (decisions 1 to 20 hold every number).
+
+### Data (bpe-core, bpe-kit `modules/grade/masks.rs`)
+
+- **`Stroke.density`** (bpe-core, Lightroom's Density, default 1; saved and hashed only when not 1): the most paint
+  a stroke builds up to. Painting `l` with coverage `v`: `l' = max(l, min(l + v(1 − l), density))`; erasing
+  `l(1 − v)` (`paint::brush::lay`). At 1 this is the old sum, so ball brushes draw as before.
+- **Brush** (`grade.part.brush`, `BrushPart`): `combine`, `invert`, `strokes` (never keyed, hidden from the grid),
+  and the gradients' `place` / `target` / `ball` / `turns` / `grows`. Points and sizes are in the place's units
+  (video px from where it sits, as the gradients' X / Y). A brush with no place (nothing to follow) is left out.
+- **Things** (`grade.part.things`, `ThingsPart`): `combine`, `invert`, `only` (`ThingsOnly`: Balls (balls and
+  emitters), Shapes, Text, Particles, Background, One thing), `target` (One thing's), `expand` and `feather` (video
+  px, 0..1000 each, span 0..200, keyframe, pulse; together they reach at most `MOST_REACH` 2000). `ThingsPart::things(world)` gives the sorted thing codes
+  (`thing_code(id)` as whole numbers), `None` with `background` for Background, or nothing at all when One thing
+  names nothing there (the part is then left out and its row says "Thing not found"). A kind with no things now
+  covers nothing (inverted, everything).
+- `PART_KINDS` has six kinds in the editor's order: Linear, Radial, Brush, Colour Range, Luminance Range, Things.
+  Every `GradePlace` that `places` makes but the screen's has `world: true`.
+- Particles carry their thing: a Particles thing's own sprites get its code in `Particle.shape[2]`
+  (`Pieces::mark_thing`, its own pieces only, not shadows, glows or outlines), a Huge swarm's look in `t2.w`
+  (`vs_swarm` passes it on for the body role only). Nothing else reads them, so every picture is unchanged.
+
+### GPU (bpe-gfx)
+
+- `frame/grade.rs`: `GradeShape::Things(GradeThings { things: Option<Vec<u32>>, background, expand, feather })`,
+  `GradeShape::Brush(GradeBrush { strokes, places })`, `GradePlace.world`, `MOST_REACH`.
+- **The brush grid** (`grade/brush.rs`): strokes rasterised on the CPU into 8-bit paint over their box (points ±
+  size, snapped out to 64), one texel per `max(2, longest side / 1024)` units, each stroke laid on by `lay`.
+  Cached by the strokes' hash (32 grids, 16 paint-level sets, least recently used out; a set adding one stroke to a cached one starts from it).
+  Program words (`PART_BRUSH` 6): `[x0, y0, 1 / texel, 0]`, `[w, h, grid word, 0]`, the copies (reach = the
+  furthest grid corner), then the grid, three bytes a lane as a whole number (`b0 + 256 b1 + 65536 b2`, read
+  exactly, never bit-cast), twelve texels a word. Sampled bilinearly, 0 outside, copies joined by the most. No
+  paint: three zero words, covering nothing. CPU twin `maths::brush_cover` (`BrushGrid::sample`).
+- **Silhouettes** (`renderer/silhouettes.rs`, `shaders/silhouette_*.wgsl`): compile groups the Things parts by
+  their thing list into `Program.selections` (at most `MAX_SELECTIONS` = 8; past that a part covers nothing; `reach`
+  the most `expand + feather` asked; an empty list never gets one). `Renderer::finish` draws them only when there
+  are selections, before the grade passes. For each: the frame's bodies drawn again in drawing order (layers below
+  0; own sprites behind, swarms between them where they sit, shapes and text; layers behind the balls; balls;
+  sprites in front; layers above) into an `Rgba8Unorm` picture with premultiplied over: a chosen thing adds its
+  coverage in red, any thing covers in alpha (so what is in front of a chosen thing hides it). The stuck-to-screen
+  overlay draws the same way into its own picture. Codes are looked up by binary search in a storage buffer, the
+  selection at a dynamic uniform offset. Fields, liquids, trails and glows are not in silhouettes.
+- **Distance by jump flooding** (`silhouette_jfa.wgsl`): the seed pass lays the overlay's picture over the world's
+  (reading the world's through the moved Stage camera's uv, as `see_objects` does) and seeds pixels whose chosen
+  coverage is at least 0.5; steps from `nextpow2(reach × scale + 2) / 2` down to 1, then one more 1 (`scale` =
+  output height / video height); the last pass writes layer `i` of the **things field** (`Rgba16Float` array: r
+  chosen coverage, g distance in output px, `1e4` with none, a every thing's coverage). Seeds are `Rgba32Float`.
+- **Grade group 2 binding 4**: `grade_things` (the field, a 1×1 stand-in without Things parts; `GradeGpu::set_things`
+  regroups only when it changes). `PART_THINGS` 5 words `[layer or −1, expand, feather, background]`; coverage
+  `v = s` with no Expand or Feather, else `max(s, 1 − smoothstep(E − 0.5, E + F + 0.5, d − 0.5))` (E, F in output
+  px), Background `1 − v`. CPU twin `maths::things_cover` (`part_cover` gives Things 0: it needs the picture).
+- **Stage camera drift fix**: `build_frame` ends with `GradeStack::see_through(&view)` when the Stage camera has
+  moved: each world place goes back to the world through the flat camera and onto the screen through
+  `StageView::screen_of`, its scale `scale_at × scale / zoom`, its turn along a 10 px step of its own x way; a place
+  behind the camera is dropped. A big gradient stuck to the world is placed by its middle (it doesn't bend with
+  the perspective).
+
+### Editor (bpe-studio `grade_mode/`)
+
+- Add mask and Add part offer the six kinds; icons: a brush dab, a ball over a square. A Brush or a Linear / Radial
+  counts as a part with handles (`handles::has_handles`); when it is a Brush, `handles::preview` hands the preview
+  to `brush::preview`.
+- `brush.rs`: brushes **A** (80 px, Feather 50, Flow 100, Density 100), **B** (25, 0, 100, 100) and **Erase** (60,
+  50, 100, 100), editor state only. The circle shows Size and where the feather starts. A press (or a click, a dot)
+  starts a stroke in the part's first place's units; points at least one video px apart; Alt erases; letting go
+  keeps it as one edit (one undo step). While painting, `show_on` puts the stroke into the preview's stack and the
+  `Drawn` key holds its point count. Size → `size / place scale`, Feather → softness, Flow → strength, Density →
+  density.
+- A Brush's box: A / B / Erase chips, Size, Feather, Flow, Density sliders for the chosen brush, the stroke count
+  ("Paint on the picture" with none) and Clear. A Things part shows Only, Which thing, Expand and Feather.
+
+### Checks
+
+- Picture tests: a chosen ball and not another, a thing in front hiding the chosen one, Expand and Feather against
+  the maths, Background and inverted, a Particles thing's own sprite, no silhouettes without Things parts, a brush
+  stroke against the maths along five rows, erase and density, a brush on every ball.
+- CPU tests: the grid (middle full, edge none, erase, density cap, incremental equals whole), selections shared by
+  their things, at most eight, an empty brush covers nothing, `see_through` puts a ball's place on the moved camera's
+  ball and leaves the screen alone. Kit: Things codes, One thing missing, Brush and Things in the stack, a
+  Particles thing's sprites marked. Editor: a drag paints one stroke as one edit, the brushes keep their own
+  settings, the painted stroke shows before it is kept, the brush box, Add mask Things.
+- Full-size look scenes `grading-things` (balls brighter grown out, the background cooler, a painted swoosh) and
+  `grading-stage-follow` (a mask on every ball under the swung Stage camera). `grade_settings_restart_nothing`
+  adds a Brush and a Things part and checks at least 150 settings.
+- Known limits: past eight different thing lists a Things part covers nothing; fields and liquids aren't in a
+  Particles thing's silhouette; a ball counts whole at any opacity above 0 (as effects find things), so a nearly
+  see-through ball still hides what is behind it in a Things mask; One thing pointed at a Folder covers nothing
+  (a folder draws nothing; its children aren't followed); a baked frame's silhouettes come from its last sample;
+  `see_through` runs whenever the Stage camera has moved, so in the first editor frames of a swung camera, before
+  the lighting shaders are built and the picture is still flat, following masks sit off for a moment.
+- The brush caches (`grade/brush.rs`) keep 16 sets of paint levels and 32 grids, dropping the least recently used;
+  a stroke being painted looks up the strokes before it every frame, so they stay kept and each frame paints only
+  the new stroke.
