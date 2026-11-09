@@ -9,7 +9,10 @@ mod grade;
 mod new;
 mod paint;
 mod scene;
+mod silhouettes;
 mod targets;
+
+pub(crate) use silhouettes::sprite_silhouette_source;
 
 use grade::GradeGpu;
 use paint::PaintTexture;
@@ -165,6 +168,9 @@ pub struct Renderer {
     pub(crate) lighting: Option<lighting::Lighting>,
     /// The Stage camera's pass (lighting part 5), made the first time a frame is seen moved.
     pub(crate) stage_camera: Option<stage_camera_pass::StageCameraPass>,
+    /// Things masks' silhouettes and their field (colour grading part 5), made the first time a
+    /// frame's grade has a Things part.
+    pub(crate) silhouettes: Option<silhouettes::Silhouettes>,
     /// Times the light passes, when the device can (`None` inside: it can't; tried once).
     pub(crate) light_timer: Option<Option<timing::LightTimer>>,
     /// The last frame's lighting: how many lights it drew, `None` when it wasn't lit.

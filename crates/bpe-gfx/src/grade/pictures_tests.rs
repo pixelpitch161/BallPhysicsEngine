@@ -771,7 +771,7 @@ fn every_ball_copies_grade_round_each_place_and_not_between() {
 fn turned_and_scaled_copies_are_found_by_their_reach_on_the_gpu() {
     // A wide flat ellipse, turned a quarter and doubled at one place: a tall one 12 wide and 40 high.
     let v = 0.18;
-    let tall = GradePlace { at: [12.0, 0.0], turn: std::f32::consts::FRAC_PI_2, scale: 2.0 };
+    let tall = GradePlace { at: [12.0, 0.0], turn: std::f32::consts::FRAC_PI_2, scale: 2.0, world: false };
     let small = GradePlace { at: [-12.0, -20.0], ..GradePlace::SCREEN };
     let shape = GradeShape::Radial(GradeRadial {
         x: 0.0,

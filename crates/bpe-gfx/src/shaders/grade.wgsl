@@ -12,6 +12,10 @@
 @group(2) @binding(1) var grade_in: texture_2d<f32>;
 @group(2) @binding(2) var grade_kept_in: texture_2d<f32>;
 @group(2) @binding(3) var grade_pyr: texture_2d<f32>;
+// The things field (colour grading part 5, silhouettes.rs): a layer for each choice of things
+// the Things parts read: r the chosen things' coverage, g the distance (output pixels) to the
+// nearest pixel they half cover, a every thing's coverage. A 1x1 stand-in without Things parts.
+@group(2) @binding(4) var grade_things: texture_2d_array<f32>;
 
 const GRADE_SAMPLES: u32 = 1024u;
 
@@ -43,6 +47,8 @@ const PART_LINEAR: u32 = 1u;
 const PART_RADIAL: u32 = 2u;
 const PART_COLOUR: u32 = 3u;
 const PART_LUMINANCE: u32 = 4u;
+const PART_THINGS: u32 = 5u;
+const PART_BRUSH: u32 = 6u;
 const COMBINE_SUBTRACT: u32 = 1u;
 const COMBINE_INTERSECT: u32 = 2u;
 const MAX_BALLS: u32 = 4096u;
@@ -484,9 +490,40 @@ fn grade_radial_one(n0: vec4<f32>, n1: vec4<f32>, q: vec4<f32>, p: vec2<f32>, px
     return 1.0 - grade_smooth(inner, 1.0, dist);
 }
 
-// A gradient's copies from word `at` ([count, reach, 0, 0], then one place a word, sorted down
-// the screen), joined with Add: only those whose row is within reach of the pixel's are looked at.
-fn grade_copies(kind: u32, n0: vec4<f32>, n1: vec4<f32>, at: u32, p: vec2<f32>, px: f32) -> f32 {
+// Texel `(x, y)` of a brush grid `w` texels wide whose words start at `g` (three bytes a lane,
+// see grade/brush.rs `words`), 0..1; none outside its `size`.
+fn grade_brush_texel(g: u32, size: vec2<f32>, x: i32, y: i32) -> f32 {
+    if x < 0 || y < 0 || f32(x) >= size.x || f32(y) >= size.y {
+        return 0.0;
+    }
+    let i = u32(y) * u32(size.x) + u32(x);
+    let lane = (i / 3u) % 4u;
+    let word = grade_prog[g + i / 12u];
+    let packed = u32(word[lane] + 0.5);
+    return f32((packed >> (8u * (i % 3u))) & 255u) / 255.0;
+}
+
+// One copy of a Brush at place `q` (see grade/maths.rs `brush_cover`). n0: [x0, y0, 1 / texel,
+// 0], n1: [width, height, grid word, 0]; `g` the grid's first word.
+fn grade_brush_one(n0: vec4<f32>, n1: vec4<f32>, g: u32, q: vec4<f32>, p: vec2<f32>) -> f32 {
+    let d = p - q.xy;
+    let s = sin(q.z);
+    let co = cos(q.z);
+    let local = vec2<f32>(d.x * co + d.y * s, -d.x * s + d.y * co) / q.w;
+    let t = (local - n0.xy) * n0.z - 0.5;
+    let base = floor(t);
+    let f = t - base;
+    let x = i32(base.x);
+    let y = i32(base.y);
+    let top = mix(grade_brush_texel(g, n1.xy, x, y), grade_brush_texel(g, n1.xy, x + 1, y), f.x);
+    let bottom = mix(grade_brush_texel(g, n1.xy, x, y + 1), grade_brush_texel(g, n1.xy, x + 1, y + 1), f.x);
+    return mix(top, bottom, f.y);
+}
+
+// A gradient's or brush's copies from word `at` ([count, reach, 0, 0], then one place a word,
+// sorted down the screen), joined with Add: only those whose row is within reach of the pixel's
+// are looked at. `g` is a brush's grid word.
+fn grade_copies(kind: u32, n0: vec4<f32>, n1: vec4<f32>, at: u32, g: u32, p: vec2<f32>, px: f32) -> f32 {
     let head = grade_prog[at];
     let count = min(u32(head.x), MAX_BALLS);
     let reach = head.y;
@@ -512,6 +549,8 @@ fn grade_copies(kind: u32, n0: vec4<f32>, n1: vec4<f32>, at: u32, p: vec2<f32>, 
         }
         if kind == PART_LINEAR {
             best = max(best, grade_linear_one(n0, q, p, px));
+        } else if kind == PART_BRUSH {
+            best = max(best, grade_brush_one(n0, n1, g, q, p));
         } else {
             best = max(best, grade_radial_one(n0, n1, q, p, px));
         }
@@ -544,14 +583,42 @@ fn grade_luminance(n: vec4<f32>, c: vec3<f32>) -> f32 {
     return grade_smooth(n.x - n.z, n.x, y) * (1.0 - grade_smooth(n.y, n.y + n.z, y));
 }
 
+// A Things part (see grade/maths.rs `things_cover`). n: [layer, expand, feather, background],
+// in pixels of the video; `scale` output pixels each.
+fn grade_things_part(n: vec4<f32>, here: GradeAt) -> f32 {
+    var v = 0.0;
+    if n.x >= 0.0 {
+        let size = vec2<i32>(textureDimensions(grade_things));
+        let at = clamp(here.pix, vec2<i32>(0), size - 1);
+        let f = textureLoad(grade_things, at, i32(n.x + 0.5), 0);
+        let e = n.y * here.scale;
+        let fe = n.z * here.scale;
+        v = clamp(f.r, 0.0, 1.0);
+        if e + fe > 0.0 {
+            v = max(v, 1.0 - grade_smooth(e - 0.5, e + fe + 0.5, f.g - 0.5));
+        }
+    }
+    if n.w > 0.5 {
+        v = 1.0 - v;
+    }
+    return v;
+}
+
 // One part of kind `kind` whose words start at `d`, at screen point `p`, over the colour the mask
 // started from.
-fn grade_part(kind: u32, d: u32, c: vec3<f32>, p: vec2<f32>, px: f32) -> f32 {
+fn grade_part(kind: u32, d: u32, c: vec3<f32>, p: vec2<f32>, px: f32, here: GradeAt) -> f32 {
     if kind == PART_LINEAR {
-        return grade_copies(kind, grade_prog[d], vec4<f32>(0.0), d + 1u, p, px);
+        return grade_copies(kind, grade_prog[d], vec4<f32>(0.0), d + 1u, 0u, p, px);
     }
     if kind == PART_RADIAL {
-        return grade_copies(kind, grade_prog[d], grade_prog[d + 1u], d + 2u, p, px);
+        return grade_copies(kind, grade_prog[d], grade_prog[d + 1u], d + 2u, 0u, p, px);
+    }
+    if kind == PART_BRUSH {
+        let n1 = grade_prog[d + 1u];
+        return grade_copies(kind, grade_prog[d], n1, d + 2u, d + u32(n1.z), p, px);
+    }
+    if kind == PART_THINGS {
+        return grade_things_part(grade_prog[d], here);
     }
     if kind == PART_COLOUR {
         return grade_colour_range(d, c);
@@ -574,7 +641,7 @@ fn grade_cover(at: u32, c: vec3<f32>, here: GradeAt) -> f32 {
     var w = at + 1u;
     for (var i = 0u; i < n; i++) {
         let ph = grade_prog[w];
-        var v = grade_part(u32(ph.x), w + 1u, c, p, unit);
+        var v = grade_part(u32(ph.x), w + 1u, c, p, unit, here);
         if ph.z > 0.5 {
             v = 1.0 - v;
         }

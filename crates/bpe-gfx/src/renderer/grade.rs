@@ -15,6 +15,9 @@ pub(crate) struct GradeGpu {
     /// The program with 1x1 stand-ins for the pass pictures: a grade of one pass.
     pub(crate) group: wgpu::BindGroup,
     stand_in: wgpu::TextureView,
+    /// The things field the groups bind (a 1x1 stand-in until a Things part needs one).
+    things: wgpu::TextureView,
+    no_things: wgpu::TextureView,
     /// The stack the buffer holds the program of, and that program.
     held: Option<(GradeStack, Program)>,
     /// What a grade of several passes draws with, made the first time one runs.
@@ -82,7 +85,7 @@ fn read_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     buffer: &wgpu::Buffer,
-    [colour, kept, pyramid]: [&wgpu::TextureView; 3],
+    [colour, kept, pyramid, things]: [&wgpu::TextureView; 4],
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("grade program"),
@@ -92,6 +95,7 @@ fn read_group(
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(colour) },
             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(kept) },
             wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(pyramid) },
+            wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(things) },
         ],
     })
 }
@@ -120,13 +124,62 @@ impl GradeGpu {
                 texture_entry(1),
                 texture_entry(2),
                 texture_entry(3),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let stand_in = hdr_texture(device, "grade stand-in", (1, 1), 1).create_view(&Default::default());
+        let no_things = hdr_texture(device, "no things field", (1, 1), 1).create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
         // Room for a Basic panel and a Tone Curve before it first grows.
         let buffer = Self::make_buffer(device, 4 * (grade::CURVE_SAMPLES as u64 + 8));
-        let group = read_group(device, &layout, &buffer, [&stand_in; 3]);
-        Self { layout, buffer, group, stand_in, held: None, areas: None }
+        let group = read_group(device, &layout, &buffer, [&stand_in, &stand_in, &stand_in, &no_things]);
+        let things = no_things.clone();
+        Self { layout, buffer, group, stand_in, things, no_things, held: None, areas: None }
+    }
+
+    /// The program the buffer holds, when it is `stack`'s (what the silhouettes are drawn for).
+    pub(crate) fn program(&self, stack: &GradeStack) -> Option<&Program> {
+        match &self.held {
+            Some((s, p)) if !stack.is_identity() && s == stack => Some(p),
+            _ => None,
+        }
+    }
+
+    /// Makes the groups read the things field `field` (`None`: the stand-in), when it changed.
+    pub(crate) fn set_things(&mut self, device: &wgpu::Device, field: Option<&wgpu::TextureView>) {
+        let view = field.unwrap_or(&self.no_things);
+        if *view == self.things {
+            return;
+        }
+        self.things = view.clone();
+        self.regroup(device);
+    }
+
+    /// Makes every group again (a new buffer or things field).
+    fn regroup(&mut self, device: &wgpu::Device) {
+        let s = &self.stand_in;
+        self.group = read_group(device, &self.layout, &self.buffer, [s, s, s, &self.things]);
+        if let Some(a) = self.areas.as_mut() {
+            a.reads = [0, 1].map(|i| {
+                read_group(
+                    device,
+                    &self.layout,
+                    &self.buffer,
+                    [&a.pairs[i][0], &a.pairs[i][1], &a.pyramid, &self.things],
+                )
+            });
+        }
     }
 
     fn make_buffer(device: &wgpu::Device, words: u64) -> wgpu::Buffer {
@@ -149,12 +202,7 @@ impl GradeGpu {
         if words * WORD > self.buffer.size() {
             // Half again, so a growing stack doesn't remake it every frame.
             self.buffer = Self::make_buffer(device, words + words / 2);
-            self.group = read_group(device, &self.layout, &self.buffer, [&self.stand_in; 3]);
-            if let Some(a) = self.areas.as_mut() {
-                a.reads = [0, 1].map(|i| {
-                    read_group(device, &self.layout, &self.buffer, [&a.pairs[i][0], &a.pairs[i][1], &a.pyramid])
-                });
-            }
+            self.regroup(device);
         }
         queue.write_buffer(&self.buffer, 0, bytemuck::cast_slice(&program.words));
         self.held = Some((stack.clone(), program));
@@ -279,8 +327,9 @@ impl GradeGpu {
         };
         let mip_sources = mips[..mips.len() - 1].iter().map(source).collect();
         let pair_sources = [0, 1].map(|i| source(&pairs[i][0]));
-        let reads =
-            [0, 1].map(|i| read_group(device, &self.layout, &self.buffer, [&pairs[i][0], &pairs[i][1], &pyramid]));
+        let reads = [0, 1].map(|i| {
+            read_group(device, &self.layout, &self.buffer, [&pairs[i][0], &pairs[i][1], &pyramid, &self.things])
+        });
         let (pass, down0, down) = pipelines;
         self.areas = Some(Areas { pass, down0, down, size, pairs, mips, mip_sources, pair_sources, reads, pyramid });
     }

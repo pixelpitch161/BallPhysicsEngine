@@ -269,6 +269,11 @@ pub fn build_frame_sensing(
     for l in &mut frame.layers {
         l.frame.camera = world.camera;
     }
+    // Masks stuck to things go where the moved Stage camera shows those things (colour grading
+    // part 5): their places were worked out on the flat picture.
+    if let Some(view) = frame.stage_view().filter(|v| v.motion > 0.0) {
+        frame.grade.see_through(&view);
+    }
     frame.lift_overlay_extras();
     frame.fit_lists();
 }

@@ -20,6 +20,42 @@ impl GradeStack {
     pub fn is_identity(&self) -> bool {
         self.masks.iter().all(|m| !m.does_something())
     }
+
+    /// Places every gradient and brush that sits in the world (or follows something) where the
+    /// moved Stage camera `view` shows it: back into the world through the flat camera it was
+    /// placed through, then onto the screen through `view`. Its scale follows how big things show
+    /// there, its turn the way its own x way shows; a place behind the camera is dropped. Places on
+    /// the screen stay where they are.
+    pub fn see_through(&mut self, view: &crate::StageView) {
+        let flat = view.view;
+        let zoom = if flat.zoom.is_finite() && flat.zoom > 0.0 { flat.zoom } else { 1.0 };
+        let moved = |p: &GradePlace| -> Option<GradePlace> {
+            if !p.world {
+                return Some(*p);
+            }
+            let at = glam::Vec2::from(p.at);
+            let world = flat.to_world(at);
+            let seen = view.screen_of(world)?;
+            let k = view.scale_at(world)?;
+            let way = glam::Vec2::new(p.turn.cos(), p.turn.sin()) * 10.0;
+            let ahead = view.screen_of(flat.to_world(at + way))? - seen;
+            let turn = if ahead.length() > 1e-6 { ahead.y.atan2(ahead.x) } else { p.turn };
+            let out = GradePlace { at: seen.into(), turn, scale: k * p.scale / zoom, world: true };
+            crate::grade::maths::place_ok(&out).then_some(out)
+        };
+        for mask in &mut self.masks {
+            let Some(area) = mask.area.as_mut() else { continue };
+            for part in &mut area.parts {
+                let places = match &mut part.shape {
+                    GradeShape::Linear(l) => &mut l.places,
+                    GradeShape::Radial(r) => &mut r.places,
+                    GradeShape::Brush(b) => &mut b.places,
+                    _ => continue,
+                };
+                *places = places.iter().filter_map(moved).collect();
+            }
+        }
+    }
 }
 
 /// One mask of the grade (the Whole picture, or a mask over part of it) and its panels in
@@ -90,6 +126,42 @@ pub enum GradeShape {
     Radial(GradeRadial),
     ColourRange(GradeColourRange),
     LuminanceRange(GradeLuminanceRange),
+    Things(GradeThings),
+    Brush(GradeBrush),
+}
+
+/// A Things part: exactly what chosen things draw (their bodies as seen, with soft edges),
+/// grown by Expand and faded out over Feather, or the background where no thing draws.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GradeThings {
+    /// The chosen things' codes ([`crate::thing_code`] as whole numbers), sorted; `None` for every
+    /// thing. An empty list covers nothing.
+    pub things: Option<Vec<u32>>,
+    /// Covers where no chosen thing does instead (with `things` `None`: the background).
+    pub background: bool,
+    /// How far out from the things it reaches at full strength, in pixels of the video.
+    pub expand: f32,
+    /// How far past that it fades out, in pixels of the video.
+    pub feather: f32,
+}
+
+impl GradeThings {
+    /// How far past a thing's edge it reaches, in pixels of the video.
+    pub fn reach(&self) -> f32 {
+        let ok = |v: f32| if v.is_finite() { v.clamp(0.0, MOST_REACH) } else { 0.0 };
+        ok(self.expand) + ok(self.feather)
+    }
+}
+
+/// The furthest a Things part's Expand or Feather reaches, in pixels of the video.
+pub const MOST_REACH: f32 = 2000.0;
+
+/// A Brush part: painted strokes, in its place's units (pixels of the video from its place).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GradeBrush {
+    pub strokes: bpe_core::Strokes,
+    /// One copy at each place, as a gradient's.
+    pub places: Vec<GradePlace>,
 }
 
 /// Where a gradient sits, in screen units (pixels of the video from the picture's middle, y down,
@@ -102,10 +174,13 @@ pub struct GradePlace {
     /// Radians, clockwise on screen.
     pub turn: f32,
     pub scale: f32,
+    /// Placed through the camera (in the world, or following something), so a moved Stage camera
+    /// moves it too ([`GradeStack::see_through`]). The GPU never reads it.
+    pub world: bool,
 }
 
 impl GradePlace {
-    pub const SCREEN: GradePlace = GradePlace { at: [0.0, 0.0], turn: 0.0, scale: 1.0 };
+    pub const SCREEN: GradePlace = GradePlace { at: [0.0, 0.0], turn: 0.0, scale: 1.0, world: false };
 
     /// Where the point `(x, y)` of a gradient placed here is on the screen.
     pub fn point(&self, x: f32, y: f32) -> [f32; 2] {

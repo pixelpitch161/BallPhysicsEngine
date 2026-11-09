@@ -346,7 +346,7 @@ fn gradients_sit_on_a_ball_on_every_ball_or_in_the_world() {
     // In the world, the camera moving right moves it left on the screen, and its zoom scales it.
     world.camera = bpe_runtime::CameraView { center: glam::Vec2::new(100.0, 0.0), zoom: 2.0, turn: 0.0 };
     let w = places(Some(&world), Placed::InTheWorld, &balls, 1, false, false);
-    assert_eq!(w, [GradePlace { at: [-200.0, 0.0], turn: 0.0, scale: 2.0 }]);
+    assert_eq!(w, [GradePlace { at: [-200.0, 0.0], turn: 0.0, scale: 2.0, world: true }]);
     assert_eq!(places(Some(&world), Placed::OnTheScreen, &balls, 1, false, false), [GradePlace::SCREEN]);
     // Nothing there: no place, and the row says so.
     let gone = Target::Thing(ThingId(999));

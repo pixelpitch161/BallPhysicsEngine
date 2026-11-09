@@ -1,19 +1,21 @@
 //! The grade's masks (colour grading part 4, `docs/notes/grading.md`): after the Whole picture,
 //! each mask works on part of the picture. A mask is a layer (`grade.mask`) whose sub-layers are
-//! first its **parts** (`LayerSection::MaskPart`: Linear and Radial Gradients, Colour and
-//! Luminance Ranges, joined in order by Add, Subtract or Intersect) and then its **panels**.
+//! first its **parts** (`LayerSection::MaskPart`: Linear and Radial Gradients, Brush, Colour and
+//! Luminance Ranges and Things (part 5), joined in order by Add, Subtract or Intersect) and then
+//! its **panels**.
 //!
-//! A gradient sits on the screen, in the world, on a thing, on one ball or on every ball (a copy
-//! round each); [`places`] works out where through the world's camera at the scene's draw, so the
-//! picture's grade only ever sees the screen.
+//! A gradient or a brush sits on the screen, in the world, on a thing, on one ball or on every
+//! ball (a copy round each); [`places`] works out where through the world's camera at the scene's
+//! draw, so the picture's grade only ever sees the screen. A Things part names the things whose
+//! silhouettes it covers by their thing codes.
 
 use bpe_core::{
     Choice, Color, EditError, KindId, Layer, LayerId, LayerKind, LayerSection, Params, Registry, ResolvedSlot, Scene,
-    SettingDef, Settings, Slot, SlotId, Target, ThingId, Value, layered_key,
+    SettingDef, Settings, Slot, SlotId, Strokes, Target, ThingId, Value, layered_key,
 };
 use bpe_gfx::{
-    GradeArea, GradeColourRange, GradeCombine, GradeLinear, GradeLuminanceRange, GradePart, GradePlace, GradeRadial,
-    GradeShape,
+    GradeArea, GradeBrush, GradeColourRange, GradeCombine, GradeLinear, GradeLuminanceRange, GradePart, GradePlace,
+    GradeRadial, GradeShape, GradeThings, thing_code,
 };
 use bpe_runtime::World;
 use glam::Vec2;
@@ -27,8 +29,10 @@ pub const LINEAR: &str = "grade.part.linear";
 pub const RADIAL: &str = "grade.part.radial";
 pub const COLOUR_RANGE: &str = "grade.part.colour_range";
 pub const LUMINANCE_RANGE: &str = "grade.part.luminance_range";
+pub const BRUSH: &str = "grade.part.brush";
+pub const THINGS: &str = "grade.part.things";
 /// Every part kind, in the order the editor offers them.
-pub const PART_KINDS: [&str; 4] = [LINEAR, RADIAL, COLOUR_RANGE, LUMINANCE_RANGE];
+pub const PART_KINDS: [&str; 6] = [LINEAR, RADIAL, BRUSH, COLOUR_RANGE, LUMINANCE_RANGE, THINGS];
 
 /// How many colours a Colour Range can pick.
 pub const RANGE_PICKS: usize = 5;
@@ -357,6 +361,130 @@ impl Default for LuminanceRangePart {
     }
 }
 
+/// Painted strokes' settings.
+#[derive(Clone, Debug, PartialEq, Settings)]
+pub struct BrushPart {
+    /// How it joins the parts above it (the first part is always added).
+    #[setting(label = "Combine", group = "Part")]
+    pub combine: Combine,
+    /// Covers where it isn't painted instead.
+    #[setting(label = "Invert", group = "Part")]
+    pub invert: bool,
+    /// What is painted, in its place's pixels (painted in Grade mode).
+    #[setting(label = "Strokes", group = "Brush")]
+    pub strokes: Strokes,
+    /// Fixed on the screen, in the world, or following a thing, one ball or every ball.
+    #[setting(label = "Placed", group = "Moving")]
+    pub place: Placed,
+    /// What it follows.
+    #[setting(label = "Follow what", when = "place=on_a_thing|on_one_ball|on_every_ball", group = "Moving")]
+    pub target: Target,
+    /// Which ball (its number in its group).
+    #[setting(label = "Ball number", when = "place=on_one_ball", range(1, 1e9), span(1, 100), group = "Moving")]
+    pub ball: u32,
+    /// Turns as the thing turns (a ball: the way it is going).
+    #[setting(label = "Turns with it", when = "place=on_a_thing|on_one_ball|on_every_ball", group = "Moving")]
+    pub turns: bool,
+    /// Bigger on a bigger ball (the strokes are for a ball of 24 px).
+    #[setting(label = "Grows with it", when = "place=on_a_thing|on_one_ball|on_every_ball", group = "Moving")]
+    pub grows: bool,
+}
+
+impl Default for BrushPart {
+    fn default() -> Self {
+        Self {
+            combine: Combine::Add,
+            invert: false,
+            strokes: Strokes::default(),
+            place: Placed::OnTheScreen,
+            target: balls(),
+            ball: 1,
+            turns: false,
+            grows: false,
+        }
+    }
+}
+
+/// Which things a Things part covers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum ThingsOnly {
+    /// Every Balls group's and Emitter's balls.
+    #[default]
+    Balls,
+    Shapes,
+    Text,
+    /// Every Particles thing's own particles.
+    Particles,
+    /// Where no thing is.
+    Background,
+    /// One thing (or a tag, or a kind).
+    OneThing,
+}
+
+/// A Things part's settings: what chosen things draw, as they show.
+#[derive(Clone, Debug, PartialEq, Settings)]
+pub struct ThingsPart {
+    /// How it joins the parts above it (the first part is always added).
+    #[setting(label = "Combine", group = "Part")]
+    pub combine: Combine,
+    /// Covers everything but the things instead.
+    #[setting(label = "Invert", group = "Part")]
+    pub invert: bool,
+    /// Which things it covers.
+    #[setting(label = "Only", group = "Things")]
+    pub only: ThingsOnly,
+    /// The thing (a tag or a kind too) it covers.
+    #[setting(label = "Which thing", when = "only=one_thing", group = "Things")]
+    pub target: Target,
+    /// Grows the covered part out round the things by this far (to take in their glow).
+    #[setting(label = "Expand", range(0, 1e4), span(0, 200), unit = "px", keyframe, pulse, group = "Things")]
+    pub expand: f32,
+    /// Fades out over this far past the grown edge.
+    #[setting(label = "Feather", range(0, 1e4), span(0, 200), unit = "px", keyframe, pulse, group = "Things")]
+    pub feather: f32,
+}
+
+impl Default for ThingsPart {
+    fn default() -> Self {
+        Self {
+            combine: Combine::Add,
+            invert: false,
+            only: ThingsOnly::Balls,
+            target: balls(),
+            expand: 0.0,
+            feather: 0.0,
+        }
+    }
+}
+
+impl ThingsPart {
+    /// The things it covers this moment, as the grade names them: `None` for Background (every
+    /// thing, turned over), `Some` the sorted thing codes. `None` from the outer option: One thing
+    /// names nothing there, so the part is left out.
+    pub fn things(&self, world: Option<&World>) -> Option<(Option<Vec<u32>>, bool)> {
+        let kinds: &[&str] = match self.only {
+            ThingsOnly::Background => return Some((None, true)),
+            ThingsOnly::Balls => &[crate::things::balls::KIND, crate::things::emitter::KIND],
+            ThingsOnly::Shapes => &[crate::things::shape::KIND],
+            ThingsOnly::Text => &[crate::things::text::KIND],
+            ThingsOnly::Particles => &[crate::things::particles::KIND],
+            ThingsOnly::OneThing => &[],
+        };
+        let ids: Vec<ThingId> = match (world, self.only) {
+            (None, _) => Vec::new(),
+            (Some(w), ThingsOnly::OneThing) => w.matching(&self.target, ThingId::ROOT),
+            (Some(w), _) => kinds.iter().flat_map(|k| w.matching(&Target::Kind(KindId::from(*k)), ThingId::ROOT)).collect(),
+        };
+        if self.only == ThingsOnly::OneThing && ids.is_empty() {
+            return None;
+        }
+        let mut codes: Vec<u32> = ids.into_iter().map(|id| thing_code(id) as u32).collect();
+        codes.sort_unstable();
+        codes.dedup();
+        Some((Some(codes), false))
+    }
+}
+
 /// A mask kind on the Grade card.
 pub struct MaskKind;
 
@@ -429,7 +557,7 @@ impl LayerKind for PartKind {
 }
 
 /// Every part kind, in the order the editor offers them.
-pub fn part_kinds() -> [PartKind; 4] {
+pub fn part_kinds() -> [PartKind; 6] {
     [
         PartKind {
             id: LINEAR,
@@ -444,6 +572,12 @@ pub fn part_kinds() -> [PartKind; 4] {
             defs: RadialPart::defs,
         },
         PartKind {
+            id: BRUSH,
+            name: "Brush",
+            help: "Paint where it covers, in Grade mode: on the screen, in the world or on things.",
+            defs: BrushPart::defs,
+        },
+        PartKind {
             id: COLOUR_RANGE,
             name: "Colour Range",
             help: "The colours near up to five colours picked from the picture.",
@@ -454,6 +588,13 @@ pub fn part_kinds() -> [PartKind; 4] {
             name: "Luminance Range",
             help: "The parts of the picture between a low and a high brightness.",
             defs: LuminanceRangePart::defs,
+        },
+        PartKind {
+            id: THINGS,
+            name: "Things",
+            help: "Exactly what chosen things draw, as they show: balls, shapes, text, particles, one thing, or \
+                   the background. Expand and Feather grow it out to take in their glow.",
+            defs: ThingsPart::defs,
         },
     ]
 }
@@ -514,7 +655,7 @@ pub fn places(
     let camera = world.map(|w| w.camera).unwrap_or_default();
     let on = |at: Vec2, turn: f32, scale: f32| {
         let s = camera.to_screen(at);
-        GradePlace { at: [s.x, s.y], turn: turn - camera.turn, scale: camera.zoom * scale }
+        GradePlace { at: [s.x, s.y], turn: turn - camera.turn, scale: camera.zoom * scale, world: true }
     };
     let grow = |radius: f32| if grows && radius.is_finite() && radius > 0.0 { radius / GROW_RADIUS } else { 1.0 };
     let heading = |v: Vec2| if turns && v.is_finite() && v.length() >= 1.0 { v.y.atan2(v.x) } else { 0.0 };
@@ -611,6 +752,14 @@ pub fn follow_note(world: &World, kind: &str, params: &Params) -> Option<String>
             let s = RadialPart::from_params(params);
             (s.place, s.target, s.ball)
         }
+        BRUSH => {
+            let s = BrushPart::from_params(params);
+            (s.place, s.target, s.ball)
+        }
+        THINGS => {
+            let s = ThingsPart::from_params(params);
+            return s.things(Some(world)).is_none().then(|| "Thing not found".into());
+        }
         _ => return None,
     };
     match place {
@@ -667,6 +816,20 @@ pub fn area(card: &ResolvedSlot, mask: LayerId, world: Option<&World>, invert: b
                         feather: s.feather,
                         places,
                     });
+                    (s.combine, s.invert, shape)
+                }
+                BRUSH => {
+                    let s = BrushPart::from_params(&params);
+                    let places = places(world, s.place, &s.target, s.ball, s.turns, s.grows);
+                    if places.is_empty() {
+                        return None;
+                    }
+                    (s.combine, s.invert, GradeShape::Brush(GradeBrush { strokes: s.strokes, places }))
+                }
+                THINGS => {
+                    let s = ThingsPart::from_params(&params);
+                    let (things, background) = s.things(world)?;
+                    let shape = GradeShape::Things(GradeThings { things, background, expand: s.expand, feather: s.feather });
                     (s.combine, s.invert, shape)
                 }
                 COLOUR_RANGE => {

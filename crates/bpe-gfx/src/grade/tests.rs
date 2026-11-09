@@ -784,7 +784,7 @@ fn a_radial_gradient_covers_inside_and_fades_over_its_feather() {
     assert_eq!(radial_cover(n, &GradePlace::SCREEN, [100.0, 0.0], 1.0), 0.0);
     assert_eq!(radial_cover(n, &GradePlace::SCREEN, [40.0, 0.0], 1.0), 1.0);
     // At a place: offset turned and scaled with it, sizes scaled.
-    let place = GradePlace { at: [100.0, 50.0], turn: std::f32::consts::FRAC_PI_2, scale: 2.0 };
+    let place = GradePlace { at: [100.0, 50.0], turn: std::f32::consts::FRAC_PI_2, scale: 2.0, world: false };
     let n = radial_numbers(&radial_at(10.0, 0.0, 20.0));
     assert_eq!(radial_cover(n, &place, [100.0, 70.0], 1.0), 1.0, "its middle moved down by 2 × 10");
     assert!(radial_cover(n, &place, [100.0, 70.0 + 19.0], 1.0) > 0.0, "radius 2 × 10");

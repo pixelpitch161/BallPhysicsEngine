@@ -6,6 +6,7 @@
 //! - `scopes.rs`: the [`Histogram`] of the finished picture, for the editor;
 //! - the shader is `shaders/grade.wgsl`, run inside the composite (`shaders/post.wgsl`).
 
+pub mod brush;
 mod compile;
 pub mod maths;
 #[cfg(test)]
@@ -14,7 +15,7 @@ mod scopes;
 #[cfg(test)]
 mod tests;
 
-pub use compile::{Program, Segment, compile};
+pub use compile::{Program, Segment, Selection, compile};
 pub use scopes::{Histogram, HistogramBins};
 
 /// Samples in a curve's lookup row (`shaders/grade.wgsl` reads the same number).
@@ -72,6 +73,13 @@ pub const PART_LINEAR: u32 = 1;
 pub const PART_RADIAL: u32 = 2;
 pub const PART_COLOUR: u32 = 3;
 pub const PART_LUMINANCE: u32 = 4;
+/// Part 5: what chosen things draw, and painted strokes.
+pub const PART_THINGS: u32 = 5;
+pub const PART_BRUSH: u32 = 6;
+
+/// The most different choices of things a frame's Things parts draw silhouettes for; past them a
+/// Things part covers nothing.
+pub const MAX_SELECTIONS: usize = 8;
 pub const COMBINE_ADD: u32 = 0;
 pub const COMBINE_SUBTRACT: u32 = 1;
 pub const COMBINE_INTERSECT: u32 = 2;

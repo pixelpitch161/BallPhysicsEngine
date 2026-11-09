@@ -438,6 +438,7 @@ impl Renderer {
             histogram: None,
             lighting: None,
             stage_camera: None,
+            silhouettes: None,
             light_timer: None,
             lit_lights: None,
             field_like_video: false,

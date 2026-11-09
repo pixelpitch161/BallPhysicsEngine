@@ -1457,8 +1457,13 @@ mod tests {
         let mut h = harness();
         add(&mut h, "+ Add layer", "Shading");
         let shading = layer_named(&h, BALL, "Shading");
-        let stroke =
-            bpe_core::Stroke { points: vec![[0.0, 0.0]], size: 0.2, softness: 0.0, strength: 1.0, erase: false };
+        let stroke = bpe_core::Stroke {
+            points: vec![[0.0, 0.0]],
+            size: 0.2,
+            softness: 0.0,
+            strength: 1.0,
+            ..Default::default()
+        };
         {
             let params = &mut h.state_mut().scene.card_mut(BALL, SlotId::Look).unwrap().params;
             params.set(&layered_key(shading.id, "kind"), Value::Choice("brush".into()));

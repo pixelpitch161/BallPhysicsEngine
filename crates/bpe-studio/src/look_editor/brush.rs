@@ -53,6 +53,7 @@ impl Painting {
             softness: brush.softness,
             strength: brush.strength,
             erase: brush.erase,
+            density: 1.0,
         });
         out
     }

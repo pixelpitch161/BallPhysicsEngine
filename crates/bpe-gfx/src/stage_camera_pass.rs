@@ -233,6 +233,11 @@ impl StageCameraPass {
         &self.pictures.as_ref().expect("ensured").background.1
     }
 
+    /// Where each output pixel is seen from in the flat picture (the last [`Self::run`]'s).
+    pub(crate) fn uv_view(&self) -> Option<&wgpu::TextureView> {
+        self.pictures.as_ref().map(|p| &p.uv.1)
+    }
+
     /// What the camera saw: the picture, the picture before lighting, the lit colour.
     pub(crate) fn seen(&self) -> &[Picture; 3] {
         &self.pictures.as_ref().expect("ensured").seen

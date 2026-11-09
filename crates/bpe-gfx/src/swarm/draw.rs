@@ -99,6 +99,9 @@ pub(crate) struct SwarmDraw {
     layout: wgpu::PipelineLayout,
     module: wgpu::ShaderModule,
     group_layout: wgpu::BindGroupLayout,
+    /// Drawing swarms' bodies into a Things mask's silhouette (colour grading part 5), made the
+    /// first time a frame with swarms has one.
+    silhouette: Option<wgpu::RenderPipeline>,
 }
 
 fn make(
@@ -107,6 +110,7 @@ fn make(
     module: &wgpu::ShaderModule,
     fs: &str,
     blend: wgpu::BlendState,
+    format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("swarm"),
@@ -124,11 +128,7 @@ fn make(
             module,
             entry_point: Some(fs),
             compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: HDR_FORMAT,
-                blend: Some(blend),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
+            targets: &[Some(wgpu::ColorTargetState { format, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })],
         }),
         multiview_mask: None,
         cache: None,
@@ -182,15 +182,17 @@ impl SwarmDraw {
             label: Some("swarm"),
             source: wgpu::ShaderSource::Wgsl(source.into()),
         });
-        let pipeline = make(device, &layout, &module, "fs_sprite", wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
-        Self { pipeline, each: BTreeMap::new(), layout, module, group_layout }
+        let pipeline =
+            make(device, &layout, &module, "fs_sprite", wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING, HDR_FORMAT);
+        Self { pipeline, each: BTreeMap::new(), layout, module, group_layout, silhouette: None }
     }
 
     /// Makes the pipeline for swarms in a layer whose things blend with each other by `blend`.
     pub(crate) fn ensure_each(&mut self, device: &wgpu::Device, blend: Blend) {
         let code = blend.shader_code();
         if !self.each.contains_key(&code) {
-            let p = make(device, &self.layout, &self.module, "fs_swarm_each", crate::each::blend_state(blend));
+            let p =
+                make(device, &self.layout, &self.module, "fs_swarm_each", crate::each::blend_state(blend), HDR_FORMAT);
             self.each.insert(code, p);
         }
     }
@@ -211,6 +213,51 @@ impl SwarmDraw {
         let pipeline = each.and_then(|b| self.each.get(&b.shader_code())).unwrap_or(&self.pipeline);
         pass.set_pipeline(pipeline);
         pass.set_bind_group(1, group, &[]);
+        pass.draw_indirect(&run.counts, 0);
+    }
+
+    /// Makes the pipeline drawing swarms into a silhouette, its choice of things at group 2.
+    pub(crate) fn ensure_silhouette(
+        &mut self,
+        device: &wgpu::Device,
+        globals_layout: &wgpu::BindGroupLayout,
+        select_layout: &wgpu::BindGroupLayout,
+    ) {
+        if self.silhouette.is_some() {
+            return;
+        }
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("swarm silhouettes"),
+            bind_group_layouts: &[Some(globals_layout), Some(&self.group_layout), Some(select_layout)],
+            immediate_size: 0,
+        });
+        let source = crate::renderer::sprite_silhouette_source(include_str!("../shaders/swarm_draw.wgsl"));
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("swarm silhouettes"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        let blend = wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING;
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        self.silhouette = Some(make(device, &layout, &module, "fs_sprite_silhouette", blend, format));
+    }
+
+    /// Draws run `index`'s bodies into a silhouette (the globals bound at group 0): binds group 1
+    /// and the choice `select` at group 2.
+    pub(crate) fn draw_silhouette(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        gpu: &FrameSwarms,
+        front: bool,
+        index: usize,
+        (select, offset): (&wgpu::BindGroup, u32),
+    ) {
+        let Some(pipeline) = self.silhouette.as_ref() else { return };
+        let list = if front { &gpu.front } else { &gpu.back };
+        let Some(run) = list.get(index) else { return };
+        let Some(group) = run.group.as_ref() else { return };
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(1, group, &[]);
+        pass.set_bind_group(2, select, &[offset]);
         pass.draw_indirect(&run.counts, 0);
     }
 }
