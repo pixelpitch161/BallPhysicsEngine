@@ -1,53 +1,73 @@
-//! The grade's lookup texture.
+//! The colour grade's program on the GPU: the compiled stack (`crate::grade::compile`) in a
+//! storage buffer the composite reads at group 2.
 
 use super::*;
+use crate::grade::{self, Program};
 
-/// Samples in the grade map's row (post.wgsl reads 256).
-pub(crate) const GRADE_WIDTH: usize = 256;
-
-/// The colour grade's gradient map, baked into one 256×1 row the composite reads. It is always
-/// there, and written only when a frame maps by an amount above 0 with a gradient it does not
-/// hold yet.
-pub(crate) struct GradeMap {
-    pub(crate) texture: wgpu::Texture,
-    pub(crate) view: wgpu::TextureView,
-    /// The gradient baked into the texture, once one has been.
-    pub(crate) baked: Option<bpe_core::Gradient>,
+/// The grade's buffer and bind group. The stack is compiled and written only when it differs
+/// from the last frame's; the buffer grows (and its bind group is made again) when a program
+/// does not fit.
+pub(crate) struct GradeGpu {
+    pub(crate) layout: wgpu::BindGroupLayout,
+    buffer: wgpu::Buffer,
+    pub(crate) group: wgpu::BindGroup,
+    /// The stack the buffer holds the program of.
+    held: Option<GradeStack>,
 }
 
-impl GradeMap {
+/// Bytes in one program word.
+const WORD: u64 = 16;
+
+impl GradeGpu {
     pub(crate) fn new(device: &wgpu::Device) -> Self {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("grade map"),
-            size: wgpu::Extent3d { width: GRADE_WIDTH as u32, height: 1, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba16Float,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("grade layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(WORD),
+                },
+                count: None,
+            }],
         });
-        let view = texture.create_view(&Default::default());
-        Self { texture, view, baked: None }
+        // Room for a Basic panel and a Tone Curve before it first grows.
+        let (buffer, group) = Self::make(device, &layout, 4 * (grade::CURVE_SAMPLES as u64 + 8));
+        Self { layout, buffer, group, held: None }
     }
 
-    /// Bakes `grade`'s map into the texture when it is used and not there already.
-    pub(crate) fn sync(&mut self, queue: &wgpu::Queue, grade: &Grade) {
-        if grade.map_amount <= 0.0 || self.baked.as_ref() == Some(&grade.map) {
+    fn make(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, words: u64) -> (wgpu::Buffer, wgpu::BindGroup) {
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("grade program"),
+            size: words.max(1) * WORD,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("grade program"),
+            layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
+        });
+        (buffer, group)
+    }
+
+    /// Makes the buffer hold `stack`'s program, when the composite runs it (the stack does
+    /// something: see `Globals::new`).
+    pub(crate) fn sync(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, stack: &GradeStack) {
+        if stack.is_identity() || self.held.as_ref() == Some(stack) {
             return;
         }
-        let mut row = [[0.0; 4]; GRADE_WIDTH];
-        row.copy_from_slice(&grade.map.bake(GRADE_WIDTH));
-        queue.write_texture(
-            self.texture.as_image_copy(),
-            &gradients::half_texels(&[row]),
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(GRADE_WIDTH as u32 * 8),
-                rows_per_image: None,
-            },
-            wgpu::Extent3d { width: GRADE_WIDTH as u32, height: 1, depth_or_array_layers: 1 },
-        );
-        self.baked = Some(grade.map.clone());
+        let program: Program = grade::compile(stack);
+        let words = program.words.len() as u64;
+        if words * WORD > self.buffer.size() {
+            // Half again, so a growing stack doesn't remake it every frame.
+            let (buffer, group) = Self::make(device, &self.layout, words + words / 2);
+            self.buffer = buffer;
+            self.group = group;
+        }
+        queue.write_buffer(&self.buffer, 0, bytemuck::cast_slice(&program.words));
+        self.held = Some(stack.clone());
     }
 }

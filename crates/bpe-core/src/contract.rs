@@ -68,8 +68,8 @@ pub fn check_registry(reg: &Registry) -> Vec<String> {
         if reg.module(kind.card()).is_none() {
             fails.push(format!("{}: its card kind \"{}\" is not registered", kind.id(), kind.card()));
         }
-        if kind.base() && kind.section() != crate::LayerSection::Drawn {
-            fails.push(format!("{}: a base layer must be drawn", kind.id()));
+        if kind.base() && !matches!(kind.section(), crate::LayerSection::Drawn | crate::LayerSection::Mask) {
+            fails.push(format!("{}: a base layer must be drawn (or a grade's Whole picture)", kind.id()));
         }
     }
     for kind in reg.blocks() {

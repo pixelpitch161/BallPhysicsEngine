@@ -17,7 +17,7 @@ impl ThingDraw for SceneDraw {
 
     fn draw(&self, cx: &DrawCx, frame: &mut Frame) {
         let s = SceneSettings::from_params(&cx.resolved.params);
-        frame.grade = s.grade();
+        frame.grade = crate::modules::grade::stack(cx.resolved.slots.get(&bpe_core::SlotId::Grade));
         frame.width = s.width.max(2);
         frame.height = s.height.max(2);
         frame.video = (frame.width, frame.height);
@@ -238,31 +238,53 @@ mod tests {
     }
 
     #[test]
-    fn the_scene_s_grade_reaches_the_frame() {
+    fn the_scene_s_grade_card_reaches_the_frame() {
+        use crate::modules::grade;
+        use bpe_core::SlotId;
         let plain = drawn(|_| {}, None);
-        assert!(plain.grade.is_default(), "{:?}", plain.grade);
-        let graded = drawn(
-            |p| {
-                p.set("grade_warmth", Value::Number(0.25));
-                p.set("grade_vignette", Value::Number(0.5));
-                p.set("grade_vignette_size", Value::Number(0.3));
-                p.set("grade_map_amount", Value::Number(0.75));
-            },
-            None,
-        );
-        let g = &graded.grade;
-        assert_eq!((g.warmth, g.vignette, g.vignette_size, g.map_amount), (0.25, 0.5, 0.3, 0.75));
-        assert!(!g.is_default());
-        assert!(graded.overlay.as_ref().is_none_or(|o| o.grade.is_default()));
+        assert!(plain.grade.is_identity() && plain.grade.masks.is_empty(), "{:?}", plain.grade);
+        let kit = crate::kit();
+        let mut scene = crate::new_scene(&kit.registry);
+        assert!(grade::ensure_grade(&mut scene, &kit.registry));
+        assert!(!grade::ensure_grade(&mut scene, &kit.registry), "only once");
+        let card = scene.card(ThingId::ROOT, SlotId::Grade).unwrap();
+        let whole = grade::whole_of(card).unwrap();
+        let basic = grade::panels_of(card, whole)[0].id;
+        let at = |scene: &bpe_core::Scene| {
+            let resolved = bpe_core::resolve(scene, &kit.registry);
+            let world = World::build(scene, &resolved, &kit.sims);
+            let mut frame = Frame::default();
+            build_frame(scene, &resolved, &world, &Log::default(), 0.0, &kit.draws, &mut frame);
+            frame
+        };
+        // A new card is at its defaults: two panels that do nothing.
+        let fresh = at(&scene);
+        assert_eq!(fresh.grade.masks.len(), 1);
+        assert_eq!(fresh.grade.masks[0].panels.len(), 2);
+        assert!(fresh.grade.is_identity());
+        scene.card_mut(ThingId::ROOT, SlotId::Grade).unwrap().params.set(&format!("{basic}/temp"), Value::Number(25.0));
+        let warm = at(&scene);
+        let bpe_gfx::GradePanel::Basic(b) = &warm.grade.masks[0].panels[0] else { panic!("Basic first") };
+        assert_eq!(b.temp, 25.0);
+        assert!(!warm.grade.is_identity());
+        assert!(warm.overlay.as_ref().is_none_or(|o| o.grade.is_identity()));
+        // Off, the grade is skipped and its settings kept.
+        scene.card_mut(ThingId::ROOT, SlotId::Grade).unwrap().params.set("on", Value::Bool(false));
+        assert!(at(&scene).grade.masks.is_empty());
+        let card = scene.card(ThingId::ROOT, SlotId::Grade).unwrap();
+        assert_eq!(card.params.get(&format!("{basic}/temp")), Some(&Value::Number(25.0)));
     }
 
     #[test]
-    fn a_grade_key_at_its_default_value_gives_a_default_grade_at_that_time() {
-        use bpe_core::{Address, Ease};
+    fn a_grade_key_at_its_default_value_does_nothing_at_that_time() {
+        use bpe_core::{Address, Ease, SlotId};
         let kit = crate::kit();
         let mut scene = crate::new_scene(&kit.registry);
-        let a = Address { thing: ThingId::ROOT, slot: None, key: "grade_warmth".into() };
-        for (t, v) in [(0.0, 0.5), (1.0, 0.0), (2.0, 0.5)] {
+        crate::modules::grade::ensure_grade(&mut scene, &kit.registry);
+        let card = scene.card(ThingId::ROOT, SlotId::Grade).unwrap();
+        let basic = crate::modules::grade::panels_of(card, crate::modules::grade::whole_of(card).unwrap())[0].id;
+        let a = Address { thing: ThingId::ROOT, slot: Some(SlotId::Grade), key: format!("{basic}/vibrance") };
+        for (t, v) in [(0.0, 50.0), (1.0, 0.0), (2.0, 50.0)] {
             let i = scene.set_key(&kit.registry, &a, t, Value::Number(v)).unwrap();
             scene.set_ease(&a, i, Ease::Linear);
         }
@@ -273,7 +295,7 @@ mod tests {
             build_frame(&scene, &resolved, &world, &Log::default(), t, &kit.draws, &mut frame);
             frame
         };
-        assert!(!at(0.5).grade.is_default());
-        assert!(at(1.0).grade.is_default(), "{:?}", at(1.0).grade);
+        assert!(!at(0.5).grade.is_identity());
+        assert!(at(1.0).grade.is_identity(), "{:?}", at(1.0).grade);
     }
 }

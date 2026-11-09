@@ -1,4 +1,4 @@
-//! The picture's own looks: effect calls, the background paint and the grade.
+//! The picture's own looks: effect calls and the background paint.
 
 use super::*;
 
@@ -124,62 +124,5 @@ impl Default for BackgroundPaint {
             pattern: 0.0,
             form: [0.0; 4],
         }
-    }
-}
-
-/// The scene's colour grade, run in screen space on the finished, display-ready picture (after
-/// the effects, bloom and tonemapping). At its defaults it changes nothing: the composite skips
-/// it altogether.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Grade {
-    /// -1 to 1: the colour is multiplied by 1 plus this.
-    pub brightness: f32,
-    /// -1 to 1: spreads the colours from (or pulls them into) the middle grey.
-    pub contrast: f32,
-    /// -1 (grey) to 1 (twice as colourful).
-    pub saturation: f32,
-    /// -1 (cool, bluer) to 1 (warm, redder).
-    pub warmth: f32,
-    /// -1 (greener) to 1 (magenta).
-    pub tint: f32,
-    /// 0 to 1: how dark the corners go.
-    pub vignette: f32,
-    /// 0 to 1: how far from the middle the darkening starts.
-    pub vignette_size: f32,
-    /// The colours the picture's brightness is mapped to, dark to light.
-    pub map: bpe_core::Gradient,
-    /// 0 to 1: how much of the mapped colour replaces the picture's own.
-    pub map_amount: f32,
-}
-
-impl Default for Grade {
-    fn default() -> Self {
-        Self {
-            brightness: 0.0,
-            contrast: 0.0,
-            saturation: 0.0,
-            warmth: 0.0,
-            tint: 0.0,
-            vignette: 0.0,
-            vignette_size: 0.5,
-            map: bpe_core::Gradient::even(&[bpe_core::Color::rgb(0, 0, 0), bpe_core::Color::WHITE]),
-            map_amount: 0.0,
-        }
-    }
-}
-
-impl Grade {
-    /// Whether the grade changes nothing: every value at its default. The map only counts once
-    /// its amount is above 0, and the vignette's size once the vignette is above 0.
-    pub fn is_default(&self) -> bool {
-        let d = Self::default();
-        self.brightness == d.brightness
-            && self.contrast == d.contrast
-            && self.saturation == d.saturation
-            && self.warmth == d.warmth
-            && self.tint == d.tint
-            && self.vignette == d.vignette
-            && (self.vignette == 0.0 || self.vignette_size == d.vignette_size)
-            && self.map_amount == d.map_amount
     }
 }

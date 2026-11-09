@@ -11,7 +11,12 @@ impl Renderer {
         let post_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("post shader"),
             source: wgpu::ShaderSource::Wgsl(
-                concat!(include_str!("../shaders/post.wgsl"), include_str!("../shaders/common.wgsl")).into(),
+                concat!(
+                    include_str!("../shaders/post.wgsl"),
+                    include_str!("../shaders/grade.wgsl"),
+                    include_str!("../shaders/common.wgsl")
+                )
+                .into(),
             ),
         });
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
@@ -72,7 +77,7 @@ impl Renderer {
         });
         let composite_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("composite layout"),
-            entries: &[texture_entry(0), sampler_entry, texture_entry(2), texture_entry(3)],
+            entries: &[texture_entry(0), sampler_entry, texture_entry(2)],
         });
         let paint_layout = gradients::paint_layout(device);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -150,9 +155,11 @@ impl Renderer {
             bind_group_layouts: &[Some(&globals_layout), Some(&post_layout)],
             immediate_size: 0,
         });
+        // Group 2 is the colour grade's program (`grade.wgsl`).
+        let grade = GradeGpu::new(device);
         let composite_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("composite pipeline layout"),
-            bind_group_layouts: &[Some(&globals_layout), Some(&composite_layout)],
+            bind_group_layouts: &[Some(&globals_layout), Some(&composite_layout), Some(&grade.layout)],
             immediate_size: 0,
         });
         let additive = wgpu::BlendState {
@@ -387,8 +394,7 @@ impl Renderer {
             ])
         };
 
-        let grade_map = GradeMap::new(device);
-        let targets = Targets::new(device, width, height, &post_layout, &composite_layout, &sampler, &grade_map.view);
+        let targets = Targets::new(device, width, height, &post_layout, &composite_layout, &sampler);
         let first_height = gradients::atlas_height(0, device.limits().max_texture_dimension_2d as usize);
         let ripples = ripples::Ripples::new(device);
         let paint = PaintTexture::new(device, &paint_layout, &sampler, first_height, &ripples);
@@ -435,7 +441,8 @@ impl Renderer {
             paint,
             overlay_paint,
             targets,
-            grade_map,
+            grade,
+            histogram: None,
             lighting: None,
             stage_camera: None,
             light_timer: None,

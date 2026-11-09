@@ -395,6 +395,8 @@ fn demo_shots(reg: &Registry) -> Vec<Shot> {
         at("colour-demo", scenes::colour_demo(reg)),
         at("blend-demo", scenes::blend_demo(reg)),
         at("graded-sunset", scenes::graded_sunset(reg)),
+        at("grading-basic", grading_basic(reg)),
+        at("grading-curves", grading_curves(reg)),
         at("stage-camera-orbit", stage_camera(reg, 25.0)),
         at("stage-camera-orbit-far", stage_camera(reg, -40.0)),
         at("stage-depth-of-field", stage_depth_of_field(reg)),
@@ -402,6 +404,64 @@ fn demo_shots(reg: &Registry) -> Vec<Shot> {
         at("lit-liquid-smoke", lit_liquid_smoke(reg, true)),
         at("lit-liquid-smoke-own-light", lit_liquid_smoke(reg, false)),
     ]
+}
+
+/// `scene` given a Grade card, with `basic` and `curve` setting its Basic and Tone Curve panels.
+fn graded(mut scene: Scene, reg: &Registry, basic: &[(&str, Value)], curve: &[(&str, Value)]) -> Scene {
+    use bpe_kit::modules::grade;
+    grade::ensure_grade(&mut scene, reg);
+    let card = scene.card(ThingId::ROOT, SlotId::Grade).expect("made above");
+    let panels: Vec<_> = grade::panels_of(card, grade::whole_of(card).expect("made above")).iter().map(|l| l.id).collect();
+    let params = &mut scene.card_mut(ThingId::ROOT, SlotId::Grade).expect("made above").params;
+    for (panel, settings) in [(panels[0], basic), (panels[1], curve)] {
+        for (key, v) in settings {
+            params.set(&bpe_core::layered_key(panel, key), v.clone());
+        }
+    }
+    scene
+}
+
+/// The lit demo through a strong Basic panel: cooler, more contrast, its glows pulled back under
+/// white, its shadows opened and more colour (look for banding in the smooth falloffs).
+fn grading_basic(reg: &Registry) -> Scene {
+    let n = Value::Number;
+    graded(
+        scenes::lit_demo(reg),
+        reg,
+        &[
+            ("temp", n(-35.0)),
+            ("tint", n(10.0)),
+            ("exposure", n(0.3)),
+            ("contrast", n(40.0)),
+            ("highlights", n(-100.0)),
+            ("shadows", n(60.0)),
+            ("whites", n(-20.0)),
+            ("blacks", n(-30.0)),
+            ("vibrance", n(50.0)),
+            ("saturation", n(10.0)),
+        ],
+        &[],
+    )
+}
+
+/// The colour demo through the Tone Curve: a lifted parametric darks and lights, an S point
+/// curve and a cross-processed look from the red and blue curves.
+fn grading_curves(reg: &Registry) -> Scene {
+    use bpe_core::CurvePoint;
+    let n = Value::Number;
+    let curve = |points: &[(f32, f32)]| Value::Curve(points.iter().map(|&(x, y)| CurvePoint::new(x, y, 0.0)).collect());
+    graded(
+        scenes::colour_demo(reg),
+        reg,
+        &[],
+        &[
+            ("darks", n(25.0)),
+            ("lights", n(-15.0)),
+            ("rgb", curve(&[(0.0, 0.05), (0.25, 0.18), (0.75, 0.85), (1.0, 1.0)])),
+            ("red", curve(&[(0.0, 0.0), (0.5, 0.58), (1.0, 1.0)])),
+            ("blue", curve(&[(0.0, 0.12), (0.5, 0.45), (1.0, 0.9)])),
+        ],
+    )
 }
 
 /// A Particles thing at `at` whose only Look layer is `kind` with `params`: a still crowd of `w` x `h`, one

@@ -106,6 +106,15 @@ pub enum LayerSection {
     /// A Particles thing's forces (its Motion card), applied in list order; they move among
     /// themselves, in no lane.
     Force,
+    /// A colour grade's mask (the Grade card): the base mask (Whole picture) first, then the
+    /// masks in the order they work. Its parts and panels are its sub-layers.
+    Mask,
+    /// A part of a mask (a gradient, a range, a brush), a sub-layer of its mask before its panels,
+    /// combined in list order.
+    MaskPart,
+    /// A grade panel (Basic, Tone Curve, ...), a sub-layer of its mask after its parts. List order
+    /// is processing order.
+    Panel,
 }
 
 /// A kind of layer in a card that holds a stack of them (the balls' Look), such as an outline

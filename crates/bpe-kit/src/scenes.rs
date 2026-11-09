@@ -417,7 +417,7 @@ pub fn blend_demo(reg: &Registry) -> Scene {
 
 /// The palette and grade showcase: balls painted from the Sunset palette in a ring whose wall
 /// wears the Triad colours that match it, a cluster of glowing balls that Screen onto each other,
-/// and a warm, contrasty grade with a vignette whose Sunset gradient map comes in over the video.
+/// and a warm, contrasty Grade card whose Vibrance comes up over the video.
 pub fn graded_sunset(reg: &Registry) -> Scene {
     let hex = |h: u32| Color::rgb((h >> 16) as u8, (h >> 8) as u8, h as u8);
     let mut sunset = crate::paint::palettes::built_in()
@@ -439,11 +439,6 @@ pub fn graded_sunset(reg: &Registry) -> Scene {
             span: 1900.0,
             ..Paint::default()
         };
-        s.grade_warmth = 0.3;
-        s.grade_contrast = 0.2;
-        s.grade_vignette = 0.4;
-        s.grade_map = sunset.clone();
-        s.grade_map_amount = 0.0;
     });
     b.shape(ShapeSettings::circle(470.0, 14.0));
     b.balls("Sunset balls", Vec2::new(0.0, -150.0), |s| {
@@ -477,11 +472,20 @@ pub fn graded_sunset(reg: &Registry) -> Scene {
         ..classic_look()
     };
     b.own_module(glow, "look.basic", screen.to_params());
-    b.track(
-        own(ThingId::ROOT, "grade_map_amount"),
-        &[(0.0, Value::Number(0.0), Ease::Linear), (duration as f64, Value::Number(0.5), Ease::Linear)],
-    );
-    b.finish()
+    let mut scene = b.finish();
+    // A warm, contrasty grade whose colour comes up over the video.
+    crate::modules::grade::ensure_grade(&mut scene, reg);
+    let card = scene.card(ThingId::ROOT, SlotId::Grade).expect("made above");
+    let basic = crate::modules::grade::panels_of(card, crate::modules::grade::whole_of(card).expect("made above"))[0].id;
+    let params = &mut scene.card_mut(ThingId::ROOT, SlotId::Grade).expect("made above").params;
+    params.set(&format!("{basic}/temp"), Value::Number(30.0));
+    params.set(&format!("{basic}/contrast"), Value::Number(20.0));
+    let vibrance = Address { thing: ThingId::ROOT, slot: Some(SlotId::Grade), key: format!("{basic}/vibrance") };
+    for (t, v) in [(0.0, 0.0), (duration as f64, 40.0)] {
+        let i = scene.set_key(reg, &vibrance, t, Value::Number(v)).expect("a keyframed setting");
+        scene.set_ease(&vibrance, i, Ease::Linear);
+    }
+    scene
 }
 
 /// Where one of a thing's cards comes from while a test scene is being built. Every thing ends
@@ -704,22 +708,10 @@ impl<'a> Builder<'a> {
         id
     }
 
-    /// Keys on one setting: (time, value, ease into the next).
-    fn track(&mut self, a: Address, keys: &[(f64, Value, Ease)]) {
-        for (time, value, ease) in keys {
-            let i = self.scene.set_key(self.reg, &a, *time, value.clone()).expect("the setting takes keys");
-            self.scene.set_ease(&a, i, *ease);
-        }
-    }
-
     /// Makes `id` ride on `parent`.
     fn ride(&mut self, id: ThingId, parent: ThingId, offset: Vec2, turn_with_parent: bool) {
         self.scene.set_parent(id, parent, Attach::Ride { offset, turn_with_parent, item: None }).expect("no loops");
     }
-}
-
-fn own(thing: ThingId, key: &str) -> Address {
-    Address::own(thing, key)
 }
 
 /// The new-scene default: a circle shape and one ball.

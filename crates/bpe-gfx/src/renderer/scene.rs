@@ -162,7 +162,7 @@ impl Renderer {
         }
         self.paint.sync(device, queue, &self.paint_layout, &self.sampler, &frame.gradients, &self.ripples);
         self.paint.bind_ripples(device, &self.paint_layout, &self.sampler, &self.ripples);
-        self.grade_map.sync(queue, &frame.grade);
+        self.grade.sync(device, queue, &frame.grade);
         if let Some(o) = overlay {
             self.overlay_paint.sync(device, queue, &self.paint_layout, &self.sampler, &o.gradients, &self.ripples);
             self.overlay_paint.bind_ripples(device, &self.paint_layout, &self.sampler, &self.ripples);
@@ -455,6 +455,7 @@ impl Renderer {
             pass.set_pipeline(&self.composite);
             pass.set_bind_group(0, &self.globals_group, &[]);
             pass.set_bind_group(1, &self.targets.composite, &[]);
+            pass.set_bind_group(2, &self.grade.group, &[]);
             pass.draw(0..3, 0..1);
         }
         queue.submit([encoder.finish()]);

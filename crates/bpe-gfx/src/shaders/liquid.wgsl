@@ -12,8 +12,6 @@ struct Globals {
     bg: vec4<f32>,
     bg_from: vec4<f32>,
     bg_to: vec4<f32>,
-    grade: vec4<f32>,
-    grade_more: vec4<f32>,
     // x: the light pass (0 the picture, 1 lit colour, 2 surface, 3 light given off, 5 UV,
     // 6 tags, -1 the picture behind glass)
     light: vec4<f32>,
