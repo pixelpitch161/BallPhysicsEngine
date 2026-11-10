@@ -643,6 +643,7 @@ impl eframe::App for Studio {
         if self.mode == crate::grade_mode::EditorMode::Grade {
             crate::grade_mode::left(ui, self);
             crate::grade_mode::right(ui, self);
+            crate::grade_mode::scopes_strip(ui, self);
         } else {
             self.left_panel(ui, &before);
             self.inspector_panel(ui);

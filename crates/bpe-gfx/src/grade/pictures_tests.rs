@@ -1,6 +1,7 @@
 //! Picture tests for the colour grade, on the software GPU (`test_device`).
 
 use crate::frame::{GradeBasic, GradeMask, GradePanel, GradeStack, GradeToneCurve};
+use crate::grade::{ClipView, Clipping, ScopeCounts, ScopeKind};
 use crate::{BackgroundPaint, Frame, Renderer};
 use bpe_core::CurvePoint;
 
@@ -210,9 +211,7 @@ fn the_histogram_counts_every_pixel_of_a_flat_picture_by_its_colour() {
         let bytes = renderer.read_output(&device, &queue).unwrap();
         centre(&bytes)
     };
-    renderer.request_histogram(&device, &queue);
-    let _ = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
-    let bins = renderer.histogram(&device).expect("counted");
+    let bins = scope(&device, &queue, &mut renderer, ScopeKind::Histogram).histogram().expect("a histogram");
     let all = N * N;
     // The dither spreads a flat colour over the steps either side of it (the pixel read is one of
     // them).
@@ -224,9 +223,98 @@ fn the_histogram_counts_every_pixel_of_a_flat_picture_by_its_colour() {
     }
     assert_eq!(bins[3].iter().sum::<u32>(), all);
     // Asked again, it counts again.
-    renderer.request_histogram(&device, &queue);
+    renderer.request_scope(&device, &queue, ScopeKind::Histogram);
     let _ = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
-    assert!(renderer.histogram(&device).is_some());
+    assert!(renderer.scope(&device).is_some());
+}
+
+/// Scope `kind` of what `renderer` drew last.
+fn scope(device: &wgpu::Device, queue: &wgpu::Queue, renderer: &mut Renderer, kind: ScopeKind) -> ScopeCounts {
+    renderer.request_scope(device, queue, kind);
+    let _ = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+    let counts = renderer.scope(device).expect("counted");
+    assert_eq!((counts.kind, counts.counts.len(), counts.size), (kind, kind.bins(), (N, N)));
+    counts
+}
+
+/// The flat picture of linear colour `c` drawn, its middle pixel and a renderer holding it.
+fn drawn_flat(device: &wgpu::Device, queue: &wgpu::Queue, c: [f32; 3]) -> (Renderer, [i32; 3]) {
+    let mut renderer = Renderer::new(device, N, N);
+    renderer.render(device, queue, &flat(c));
+    let pixel = centre(&renderer.read_output(device, queue).unwrap());
+    (renderer, pixel)
+}
+
+#[test]
+fn a_flat_picture_s_waveform_and_parade_sit_at_its_levels_in_every_column_it_covers() {
+    let Ok((device, queue)) = crate::test_device() else { return };
+    let (mut renderer, pixel) = drawn_flat(&device, &queue, [0.5, 0.1, 0.02]);
+    let wave = scope(&device, &queue, &mut renderer, ScopeKind::Waveform);
+    // 64 pixels across count into every fourth of the 256 columns, 64 pixels each.
+    let luma = (0.2126 * pixel[0] as f64 + 0.7152 * pixel[1] as f64 + 0.0722 * pixel[2] as f64).round() as usize;
+    for column in [0, 4, 128, 252] {
+        let near: u32 = (luma - 2..=luma + 2).map(|l| wave.wave(0, l, column)).sum();
+        assert_eq!(near, N, "column {column} at level {luma}");
+    }
+    assert_eq!((0..256).map(|l| wave.wave(0, l, 1)).sum::<u32>(), 0, "no pixel counts in column 1");
+    assert_eq!(wave.counts.iter().sum::<u32>(), N * N);
+    let parade = scope(&device, &queue, &mut renderer, ScopeKind::Parade);
+    for (ch, v) in pixel.iter().enumerate() {
+        let v = *v as usize;
+        let near: u32 = (v.saturating_sub(2)..=(v + 2).min(255)).map(|l| parade.wave(ch, l, 8)).sum();
+        assert_eq!(near, N, "channel {ch} at {v}");
+    }
+    assert_eq!(parade.counts.iter().sum::<u32>(), 3 * N * N);
+}
+
+#[test]
+fn a_flat_colour_lands_on_its_place_on_the_vectorscope() {
+    let Ok((device, queue)) = crate::test_device() else { return };
+    let (mut renderer, pixel) = drawn_flat(&device, &queue, [0.6, 0.05, 0.02]);
+    let vs = scope(&device, &queue, &mut renderer, ScopeKind::Vectorscope);
+    let (u, v) = crate::grade::vectorscope_point(pixel.map(|c| c as f64 / 255.0));
+    assert!(u < 110.0 && v > 180.0, "a red sits left of the middle and high up: {u} {v}");
+    let (u, v) = (u.round() as usize, v.round() as usize);
+    let near: u32 =
+        (v - 2..=v + 2).flat_map(|y| (u - 2..=u + 2).map(move |x| (x, y))).map(|(x, y)| vs.counts[y * 256 + x]).sum();
+    assert_eq!(near, N * N, "every pixel round ({u}, {v})");
+    // A grey sits in the middle.
+    let (mut renderer, _) = drawn_flat(&device, &queue, [0.2; 3]);
+    let vs = scope(&device, &queue, &mut renderer, ScopeKind::Vectorscope);
+    let middle: u32 = (126..=129).flat_map(|y| (126..=129).map(move |x| y * 256 + x)).map(|i| vs.counts[i]).sum();
+    assert_eq!(middle, N * N);
+}
+
+/// The clipping picture `view` makes of the flat picture of linear colour `c`, its middle pixel.
+fn clipped(c: [f32; 3], view: ClipView) -> Option<[u8; 4]> {
+    let (device, queue) = crate::test_device().ok()?;
+    let (renderer, _) = drawn_flat(&device, &queue, c);
+    let mut clipping = Clipping::new(&device);
+    assert!(clipping.run(&device, &queue, renderer.output_view(), renderer.size(), view), "made the first time");
+    assert!(!clipping.run(&device, &queue, renderer.output_view(), renderer.size(), view), "kept after");
+    let bytes = clipping.read(&device, &queue).expect("read");
+    let i = ((N / 2 * N + N / 2) * 4) as usize;
+    Some([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]])
+}
+
+#[test]
+fn j_marks_white_red_and_black_blue_and_nothing_else() {
+    let Some(white) = clipped([1.0; 3], ClipView::Marks) else { return };
+    assert_eq!(white, [255, 0, 0, 255]);
+    assert_eq!(clipped([0.0; 3], ClipView::Marks), Some([0, 64, 255, 255]));
+    assert_eq!(clipped([0.3; 3], ClipView::Marks), Some([0, 0, 0, 0]), "a grey isn't marked");
+    assert_eq!(clipped([4.0, 0.1, 0.1], ClipView::Marks), Some([0, 0, 0, 0]), "only red at white isn't all white");
+}
+
+#[test]
+fn the_alt_views_show_which_channels_clip() {
+    let Some(red) = clipped([4.0, 0.1, 0.1], ClipView::Whites) else { return };
+    assert_eq!(red, [255, 0, 0, 255], "only red reaches white");
+    assert_eq!(clipped([0.3; 3], ClipView::Whites), Some([0, 0, 0, 255]), "nothing clips: black");
+    assert_eq!(clipped([1.0; 3], ClipView::Whites), Some([255, 255, 255, 255]));
+    assert_eq!(clipped([0.3; 3], ClipView::Blacks), Some([255, 255, 255, 255]), "nothing clips: white");
+    assert_eq!(clipped([0.0; 3], ClipView::Blacks), Some([0, 0, 0, 255]));
+    assert_eq!(clipped([0.0, 0.0, 0.5], ClipView::Blacks), Some([0, 0, 255, 255]), "red and green at black");
 }
 
 #[test]
@@ -258,12 +346,12 @@ fn a_long_stack_grows_the_program_s_buffer() {
     renderer.render(&device, &queue, &graded(grey(0.1), five));
     let b = renderer.read_output(&device, &queue).unwrap();
     assert!(centre(&b)[0] > centre(&a)[0] + 10, "{:?} vs {:?}", centre(&b), centre(&a));
-    assert!(!renderer.histogram_pending());
-    renderer.request_histogram(&device, &queue);
-    assert!(renderer.histogram_pending(), "asked for");
+    assert!(!renderer.scope_pending());
+    renderer.request_scope(&device, &queue, ScopeKind::Waveform);
+    assert!(renderer.scope_pending(), "asked for");
     let _ = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
-    assert!(renderer.histogram(&device).is_some());
-    assert!(!renderer.histogram_pending(), "taken");
+    assert!(renderer.scope(&device).is_some());
+    assert!(!renderer.scope_pending(), "taken");
 }
 
 // ---------------------------------------------------------------------------------------------

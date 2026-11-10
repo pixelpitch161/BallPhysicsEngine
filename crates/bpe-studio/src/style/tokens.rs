@@ -85,5 +85,7 @@ pub const HEAT: [(f32, Color32); 7] = [
 pub const CHANNEL_RED: Color32 = Color32::from_rgb(0xe8, 0x5c, 0x5c);
 pub const CHANNEL_GREEN: Color32 = Color32::from_rgb(0x5c, 0xc8, 0x70);
 pub const CHANNEL_BLUE: Color32 = Color32::from_rgb(0x5c, 0x8e, 0xf0);
+/// The Waveform's trace (at full strength; fainter where fewer pixels sit).
+pub const SCOPE_TRACE: Color32 = Color32::from_rgb(0xd6, 0xd6, 0xd6);
 /// The Histogram's brightness, under the channels.
 pub const CHANNEL_LUMA: Color32 = Color32::from_rgba_premultiplied(0x4a, 0x4a, 0x4a, 0x90);

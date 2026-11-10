@@ -25,6 +25,7 @@ pub mod registry;
 pub mod resolve;
 pub mod rules;
 pub mod save;
+pub mod saved_grade;
 pub mod scene;
 pub mod scene_audio;
 pub mod scene_fonts;
@@ -54,7 +55,10 @@ pub use light_scenes::{LIGHT_SCENES_KEY, LightingScene, SceneLight};
 pub use registry::{LayerKind, LayerSection, ModuleKind, Registry, ThingKind, layer_def};
 pub use resolve::{Problem, ProblemKind, Resolved, ResolvedLayer, ResolvedSlot, ResolvedThing, resolve};
 pub use rules::{Block, BlockId, BlockSection, Rule, RuleBlockKind, RuleId, Rules, Who};
-pub use save::{LoadError, load, save};
+pub use save::{LoadError, clean_card, load, save};
+pub use saved_grade::{
+    GRADE_EXTENSION, GRADE_SNAPSHOTS_KEY, GradeSnapshot, SavedGrade, grade_file_text, read_grade_file,
+};
 pub use scene::{Attach, Scene, Slot, SlotStash, Target, Thing, TrackColour, Transform};
 pub use scene_audio::{
     AUDIO_KEYS, SOUND_FILE_FORMAT, SceneAudio, SoundClip, audio_names_in, is_audio_key, read_sound_file,

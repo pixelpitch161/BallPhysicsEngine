@@ -435,7 +435,7 @@ impl Renderer {
             overlay_paint,
             targets,
             grade,
-            histogram: None,
+            scopes: None,
             lighting: None,
             stage_camera: None,
             silhouettes: None,

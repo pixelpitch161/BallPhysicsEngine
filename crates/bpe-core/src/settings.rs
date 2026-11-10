@@ -408,6 +408,18 @@ impl SettingValue for Vec<crate::LightingScene> {
     }
 }
 
+impl SettingValue for Vec<crate::GradeSnapshot> {
+    fn value_type() -> ValueType {
+        ValueType::Snapshots
+    }
+    fn to_value(&self) -> Value {
+        Value::Snapshots(self.clone())
+    }
+    fn from_value(v: &Value) -> Option<Self> {
+        if let Value::Snapshots(x) = v { Some(x.clone()) } else { None }
+    }
+}
+
 impl SettingValue for Strokes {
     fn value_type() -> ValueType {
         ValueType::Strokes
@@ -478,6 +490,7 @@ fn is_on(v: &Value) -> bool {
         Value::Routes(rs) => !rs.is_empty(),
         Value::Slots(ss) => !ss.is_empty(),
         Value::LightScenes(ss) => !ss.is_empty(),
+        Value::Snapshots(ss) => !ss.is_empty(),
         _ => true,
     }
 }

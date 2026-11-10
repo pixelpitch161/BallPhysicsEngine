@@ -123,6 +123,17 @@ pub enum GradeEdit {
     MovePart(LayerId, usize),
     /// A Colour Range's pick in slot `.1` (0..5) given up.
     RemoveRangePick(LayerId, usize),
+    /// The grade as it is kept as a new snapshot.
+    SaveSnapshot,
+    /// Snapshot `.0`'s grade put back.
+    RestoreSnapshot(usize),
+    /// The grade as it is put into snapshot `.0`.
+    UpdateSnapshot(usize),
+    /// Snapshot `.0` named anew (blank keeps its name).
+    RenameSnapshot(usize, String),
+    RemoveSnapshot(usize),
+    /// A saved grade (from a `.grade` file) put on in place of the grade.
+    LoadGrade(Box<bpe_core::SavedGrade>),
 }
 
 /// What applying the edits did.
@@ -133,6 +144,9 @@ pub struct Applied {
     pub keyed: bool,
     /// The mask a new mask or copy made, to select.
     pub added: Option<LayerId>,
+    /// A snapshot or saved grade replaced the grade (its own undo step; the editor forgets what
+    /// it was in the middle of).
+    pub replaced: bool,
 }
 
 /// Applies `edits` to the scene, giving it its Grade card first.
@@ -212,6 +226,20 @@ pub fn apply(scene: &mut Scene, kit: &Kit, time: f64, edits: Vec<GradeEdit>) -> 
                     && scene.card(root, slot).and_then(|c| c.layer(id)).map(|l| l.name.clone()) != before
             }
             GradeEdit::AddPart(mask, kind, combine) => grade::add_part(scene, reg, mask, kind, combine).is_ok(),
+            GradeEdit::SaveSnapshot => grade::snapshots::add_snapshot(scene, reg).is_ok(),
+            GradeEdit::RestoreSnapshot(i) => {
+                let done = grade::snapshots::restore_snapshot(scene, reg, i);
+                out.replaced |= done;
+                done
+            }
+            GradeEdit::UpdateSnapshot(i) => grade::snapshots::update_snapshot(scene, reg, i),
+            GradeEdit::RenameSnapshot(i, name) => grade::snapshots::rename_snapshot(scene, reg, i, &name),
+            GradeEdit::RemoveSnapshot(i) => grade::snapshots::remove_snapshot(scene, reg, i),
+            GradeEdit::LoadGrade(saved) => {
+                let done = grade::snapshots::put_grade(scene, reg, &saved);
+                out.replaced |= done;
+                done
+            }
         };
     }
     out

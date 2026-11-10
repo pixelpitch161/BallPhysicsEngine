@@ -1267,6 +1267,18 @@ fn d_switches_build_and_grade_and_grade_mode_keys_compare() {
     h.key_press(egui::Key::Y);
     h.run();
     assert_eq!(h.state().grade.compare, Compare::Split);
+    // J shows the clipping (and again hides it); Esc stops the targeted tool.
+    h.key_press(egui::Key::J);
+    h.run();
+    assert!(h.state().grade.clipping);
+    assert_eq!(h.state().grade.clip_view(), bpe_gfx::grade::ClipView::Marks);
+    h.key_press(egui::Key::J);
+    h.run();
+    assert!(!h.state().grade.clipping);
+    h.state_mut().grade.targeted = Some(bpe_core::LayerId(2));
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert_eq!(h.state().grade.targeted, None);
     h.key_press(egui::Key::D);
     h.run();
     assert_eq!(h.state().mode, EditorMode::Build);

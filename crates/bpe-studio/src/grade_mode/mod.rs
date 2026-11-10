@@ -1,13 +1,17 @@
 //! Grade mode (colour grading, `docs/notes/grading.md`): the editor's second face, for the
 //! scene's Grade card. Build | Grade in the toolbar (or D) switches. In Grade mode the left
-//! column lists the masks (the Whole picture, then the masks) and the Histogram, the right column
-//! the selected mask's parts and panels in the order they work, and the preview compares After,
-//! Before and Split, with the selected gradient's handles and the mask overlay (O).
+//! column lists the masks (the Whole picture, then the masks), the snapshots and the grade files,
+//! the right column the selected mask's parts and panels in the order they work, the strip under
+//! the preview the scopes, and the preview compares After, Before and Split, with the selected
+//! gradient's handles, the mask overlay (O), clipping (J, or Alt on a tone slider) and the
+//! targeted adjustment tool.
 //!
 //! - `cx.rs`: reading the card and applying edits; `panels.rs`: the panel column;
 //! - `masks.rs`: the masks list; `parts.rs`: a mask's parts; `handles.rs`: a gradient's handles
 //!   on the preview; `brush.rs`: painting a Brush part on the preview;
-//! - `curve.rs`: the Tone Curve's graph; `scopes.rs`: the Histogram;
+//! - `curve.rs`: the Tone Curve's graph; `scopes.rs`: the scopes strip (Histogram, Waveform, RGB
+//!   Parade, Vectorscope); `target.rs`: the targeted adjustment tool; `snapshots.rs`: snapshots
+//!   and Save / Load grade;
 //! - `colour.rs`: the colour panels' bodies (HSL / Colour, Point Colour, Colour Grading,
 //!   Calibration) and their coloured rails; `wheel.rs`: Colour Grading's colour wheel.
 //!
@@ -28,6 +32,8 @@ pub mod masks;
 pub mod panels;
 pub mod parts;
 pub mod scopes;
+pub mod snapshots;
+pub mod target;
 #[cfg(test)]
 mod tests;
 pub mod wheel;
@@ -135,10 +141,34 @@ pub struct GradeMode {
     pub headers: Vec<(LayerId, egui::Rect)>,
     /// The curve point being dragged: panel, channel, point.
     pub curve_drag: Option<(LayerId, Channel, usize)>,
-    /// The Histogram's latest counts.
-    pub bins: Option<Box<bpe_gfx::grade::HistogramBins>>,
+    /// The scope the strip shows.
+    pub scope: bpe_gfx::grade::ScopeKind,
+    /// The latest scope counts (of the scope shown, or about to be counted again).
+    pub counts: Option<bpe_gfx::grade::ScopeCounts>,
+    /// How many counts have come in, so the scope's picture is made once for each.
+    pub counted: u64,
+    /// The picture of the counts, and which count it was made from.
+    pub scope_image: Option<(u64, egui::TextureHandle)>,
     /// The picture changed since the last count was asked for: count again when that one is in.
     pub recount: bool,
+    /// J: the clipping marks on the picture.
+    pub clipping: bool,
+    /// The Alt view of a tone slider being dragged (whites or blacks), while Alt is held.
+    pub alt_clip: bpe_gfx::grade::ClipView,
+    /// The panel the targeted adjustment tool works on.
+    pub targeted: Option<LayerId>,
+    /// The tool's drag on the picture.
+    pub target_drag: Option<target::Drag>,
+    /// The snapshot the pointer is over: the preview shows it.
+    pub peek: Option<usize>,
+    /// The scene and its resolve with the peeked snapshot on, for (snapshot, scene revision).
+    pub peeked: std::cell::RefCell<Option<Peeked>>,
+    /// The snapshot whose name is being typed, and what is typed so far.
+    pub snapshot_renaming: Option<(usize, String)>,
+    /// A grade file to save or load, asked for this frame.
+    pub ask_file: Option<snapshots::FileAsk>,
+    /// What the last Save grade or Load grade did, and whether it went wrong.
+    pub file_note: Option<(String, bool)>,
     /// The sliders each HSL / Colour panel shows.
     pub hsl_view: BTreeMap<LayerId, HslView>,
     /// The wheels each Colour Grading panel shows.
@@ -183,8 +213,20 @@ impl Default for GradeMode {
             dragging: None,
             headers: Vec::new(),
             curve_drag: None,
-            bins: None,
+            scope: Default::default(),
+            counts: None,
+            counted: 0,
+            scope_image: None,
             recount: false,
+            clipping: false,
+            alt_clip: Default::default(),
+            targeted: None,
+            target_drag: None,
+            peek: None,
+            peeked: Default::default(),
+            snapshot_renaming: None,
+            ask_file: None,
+            file_note: None,
             hsl_view: BTreeMap::new(),
             wheel_view: BTreeMap::new(),
             pick: BTreeMap::new(),
@@ -204,7 +246,38 @@ impl Default for GradeMode {
     }
 }
 
+/// A copy of the scene with a snapshot put on, for the preview while the pointer is over it.
+pub struct Peeked {
+    pub snapshot: usize,
+    pub revision: u64,
+    pub scene: bpe_core::Scene,
+    pub resolved: bpe_core::Resolved,
+}
+
 impl GradeMode {
+    /// What the clipping picture over the preview shows: the Alt view while it is held, else J's
+    /// marks when on.
+    pub fn clip_view(&self) -> bpe_gfx::grade::ClipView {
+        use bpe_gfx::grade::ClipView;
+        match self.alt_clip {
+            ClipView::Off if self.clipping => ClipView::Marks,
+            view => view,
+        }
+    }
+
+    /// Forgets what it was in the middle of, when the whole grade is replaced (a snapshot or a
+    /// loaded grade): a stroke, a handle, a name being typed, the targeted tool, drags.
+    pub fn forget_passing(&mut self) {
+        self.painting = None;
+        self.handle = None;
+        self.renaming = None;
+        self.targeted = None;
+        self.target_drag = None;
+        self.curve_drag = None;
+        self.dragging = None;
+        self.mask_drag = None;
+    }
+
     /// The mask the right column shows on `card`: the selected one while it is there, else the
     /// Whole picture.
     pub fn mask_of(&self, card: &Slot) -> Option<LayerId> {
@@ -276,7 +349,12 @@ pub fn mode_switch(ui: &mut Ui, mode: &mut EditorMode) {
     });
 }
 
-/// The left column in Grade mode: the masks, then the Histogram.
+/// The scopes strip under the preview in Grade mode (between the side columns).
+pub fn scopes_strip(ui: &mut Ui, studio: &mut Studio) {
+    scopes::strip(ui, studio);
+}
+
+/// The left column in Grade mode: the masks, then the snapshots and grade files.
 pub fn left(ui: &mut Ui, studio: &mut Studio) {
     egui::Panel::left("grade masks")
         .default_size(260.0)
@@ -314,5 +392,10 @@ pub fn apply(studio: &mut Studio, edits: Vec<cx::GradeEdit>) {
     }
     if let Some(mask) = applied.added {
         studio.grade.mask = Some(mask);
+    }
+    if applied.replaced {
+        // Its own undo step, whatever came just before.
+        studio.separate_edit = true;
+        studio.grade.forget_passing();
     }
 }
