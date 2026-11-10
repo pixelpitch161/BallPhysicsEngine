@@ -86,15 +86,23 @@ pub fn bar(ui: &mut Ui, brush: &mut Brush) {
             }
         }
     });
-    let row = |ui: &mut Ui, name: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>, help: &str| {
-        ui.horizontal(|ui| {
-            let label = ui.label(RichText::new(name).color(style::MUTED)).on_hover_text(help);
-            ui.add(Slider::new(value, range).fixed_decimals(2)).labelled_by(label.id);
-        });
-    };
-    row(ui, "Brush size", &mut brush.size, 0.02..=0.5, "How wide the brush is, as a share of the ball's radius");
-    row(ui, "Brush softness", &mut brush.softness, 0.0..=1.0, "0 paints a hard edge, 1 fades all the way in");
-    row(ui, "Brush strength", &mut brush.strength, 0.0..=1.0, "How much one stroke paints");
+    // A double-click on a slider's rail puts the brush's starting value back.
+    let start = Brush::default();
+    let row =
+        |ui: &mut Ui, name: &str, value: &mut f32, start: f32, range: std::ops::RangeInclusive<f32>, help: &str| {
+            ui.horizontal(|ui| {
+                let label = ui.label(RichText::new(name).color(style::MUTED)).on_hover_text(help);
+                let r = ui.add(Slider::new(value, range).fixed_decimals(2)).labelled_by(label.id);
+                if crate::widgets::rail_double_clicked(&r, crate::widgets::slider_rail(ui, &r)) {
+                    *value = start;
+                }
+            });
+        };
+    let size_help = "How wide the brush is, as a share of the ball's radius";
+    row(ui, "Brush size", &mut brush.size, start.size, 0.02..=0.5, size_help);
+    let softness_help = "0 paints a hard edge, 1 fades all the way in";
+    row(ui, "Brush softness", &mut brush.softness, start.softness, 0.0..=1.0, softness_help);
+    row(ui, "Brush strength", &mut brush.strength, start.strength, 0.0..=1.0, "How much one stroke paints");
 }
 
 /// Paints with the pointer on the view: a press starts a stroke, dragging adds to it, and

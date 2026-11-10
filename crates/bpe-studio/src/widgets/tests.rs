@@ -904,3 +904,63 @@ fn a_hard_range_still_holds() {
     drag_rail(&mut h, -4000.0);
     assert_eq!(*h.state(), 0.0);
 }
+
+/// Two clicks at `at`, a step after each press and each release (the harness's quarter-second
+/// steps are too slow for egui's 0.3 s double-click, so it waits longer here).
+fn double_click<S>(h: &mut egui_kittest::Harness<'_, S>, at: egui::Pos2) {
+    h.ctx.options_mut(|o| o.input_options.max_double_click_delay = 2.0);
+    h.hover_at(at);
+    h.run();
+    for _ in 0..2 {
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton {
+                pos: at,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.step();
+        }
+    }
+    h.run();
+}
+
+#[test]
+fn double_clicking_a_slider_puts_its_default_back() {
+    use eframe::egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable;
+    let mut h = balls_grid(false);
+    let default = def_in(bpe_kit::BallsSettings::defs(), "radius").unwrap().default.clone();
+    h.state_mut().values.insert("radius", Value::Number(150.0));
+    h.run();
+    // Size has a hard range, so it is an egui slider. Three quarters along its rail, far from the default.
+    let rail = h.get_by_role_and_label(Role::Slider, "Size").rect();
+    double_click(&mut h, egui::pos2(rail.left() + rail.width() * 0.75, rail.center().y));
+    assert_eq!(h.state().values["radius"], default);
+}
+
+#[test]
+fn double_clicking_a_span_slider_puts_its_default_back() {
+    use eframe::egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable;
+    let mut h = balls_grid(false);
+    let default = def_in(bpe_kit::BallsSettings::defs(), "turn").unwrap().default.clone();
+    h.state_mut().values.insert("turn", Value::Number(400.0));
+    h.run();
+    // Turn has a usual span and can go past it, so it is a span slider.
+    let rail = h.get_by_role_and_label(Role::Slider, "Turn").rect();
+    double_click(&mut h, egui::pos2(rail.left() + rail.width() * 0.8, rail.center().y));
+    assert_eq!(h.state().values["turn"], default);
+}
+
+#[test]
+fn double_clicking_a_number_box_types_rather_than_resets() {
+    use eframe::egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable;
+    let mut h = balls_grid(false);
+    h.state_mut().values.insert("radius", Value::Number(150.0));
+    h.run();
+    let field = h.get_all_by_role_and_label(Role::SpinButton, "Size").next().unwrap().rect().center();
+    double_click(&mut h, field);
+    assert_eq!(h.state().values["radius"], Value::Number(150.0), "the box opens for typing; the value stays");
+}

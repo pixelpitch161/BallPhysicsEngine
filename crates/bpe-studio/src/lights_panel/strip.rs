@@ -142,6 +142,12 @@ fn fader(ui: &mut Ui, studio: &mut Studio, reg: &Registry, source: &Source) {
     if r.changed() && !widgets::right_button_busy(ui) {
         crate::inspector::set_or_key(&mut studio.scene, reg, &a, Value::Number(x), time, &mut keyed);
     }
+    // A double-click on the rail puts the default strength back, in the same undo step as its
+    // first click (which jumped the knob there).
+    let rail = ui.ctx().data(|d| d.get_temp::<egui::Rect>(r.id.with("rail")));
+    if rail.is_some_and(|rail| widgets::rail_double_clicked(&r, rail)) && Value::Number(x) != def.default {
+        crate::inspector::set_or_key(&mut studio.scene, reg, &a, def.default.clone(), time, &mut keyed);
+    }
     let mark = Some(KeyMark { can_key: def.flags.keyframe, keyed: studio.scene.keyed(&a), pulsed: false });
     let choices = widgets::TargetChoices::default();
     match widgets::value_menu(&r, def, def.unit, &now, mark, &choices) {

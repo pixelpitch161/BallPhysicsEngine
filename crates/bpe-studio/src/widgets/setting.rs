@@ -101,10 +101,20 @@ pub(super) fn setting(
         *value = before.clone();
         changed = false;
     }
-    // Only the label resets (double-click or Alt+click), and the menu's Reset to default: a
-    // double-click on a number box starts typing into it, and on a gradient bar adds a stop.
+    // The label resets (double-click or Alt+click), a slider's rail on a double-click, and the
+    // menu's Reset to default. A double-click on a number box starts typing into it instead, and
+    // on a gradient bar adds a stop. Only sliders keep a rail (also for Follow bands).
     let fallback = def.default.clone();
     if resettable(&name, value, &fallback, true) {
+        changed = true;
+    }
+    let rail = ui.ctx().data(|d| d.get_temp::<egui::Rect>(response.id.with("rail")));
+    if !own_clicks
+        && let Some(rail) = rail
+        && rail_double_clicked(&response, rail)
+        && *value != fallback
+    {
+        *value = fallback.clone();
         changed = true;
     }
     let follow = cx.follow.map(|f| (f, def.key));
@@ -299,6 +309,20 @@ pub(super) fn reset_clicked(response: &Response, alt_too: bool) -> bool {
     // Sliders only sense drags, so a click on one shows up as a drag that stops where it started.
     let clicked = response.clicked() || (response.drag_stopped() && clicked);
     (clicked && alt && alt_too) || (clicked && many_clicks && !response.ctx.text_edit_focused())
+}
+
+/// Where an egui `Slider`'s rail is, from the response it gave just now: its left
+/// `slider_width`, the number box to its right.
+pub fn slider_rail(ui: &Ui, r: &Response) -> egui::Rect {
+    egui::Rect::from_min_size(r.rect.min, Vec2::new(ui.spacing().slider_width.min(r.rect.width()), r.rect.height()))
+}
+
+/// Whether a slider's `response` was double-clicked on its `rail`, which puts the slider back to
+/// its default. Not on its number box, where a double-click starts typing; nor with Alt held,
+/// which drags freely past the grid on a rail.
+pub fn rail_double_clicked(response: &Response, rail: egui::Rect) -> bool {
+    let (alt, at) = response.ctx.input(|i| (i.modifiers.alt, i.pointer.interact_pos()));
+    !alt && reset_clicked(response, false) && at.is_some_and(|p| rail.contains(p))
 }
 
 /// Puts `value` back to `fallback` on a double-click or (with `alt_too`) Alt+click. True when it

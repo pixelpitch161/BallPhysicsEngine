@@ -278,10 +278,16 @@ fn colours_tab(ui: &mut Ui, def: &SettingDef, g: &mut Gradient, bar: egui::Id, c
         let mut m = g.stops[i].middle * 100.0;
         let slider = egui::Slider::new(&mut m, 1.0..=99.0).fixed_decimals(0).suffix("%");
         let r = style::wells(ui, |ui| ui.add(slider));
+        let rail = crate::widgets::slider_rail(ui, &r);
         name_it(ui, &r, format!("{name} middle"));
         let r = r.on_hover_text("Where the halfway colour of this gap sits (or its hard edge, in Steps)");
         if r.changed() {
             g.stops[i].middle = (m / 100.0).clamp(0.01, 0.99);
+            changed = true;
+        }
+        // A double-click on the rail puts it back halfway.
+        if crate::widgets::rail_double_clicked(&r, rail) && g.stops[i].middle != 0.5 {
+            g.stops[i].middle = 0.5;
             changed = true;
         }
     });
@@ -671,6 +677,30 @@ pub(crate) mod tests {
         h.run();
         let m = h.state().gradient().stops[0].middle;
         assert!((0.01..0.45).contains(&m), "dragged left: {m}");
+    }
+
+    #[test]
+    fn double_clicking_the_middle_puts_it_back_halfway() {
+        let mut h = harness(three());
+        let rail = h.get_by_label("Colours middle").rect();
+        let at = egui::pos2(rail.left() + 4.0, rail.center().y);
+        // Two clicks well inside a double-click, whatever the harness's step.
+        h.ctx.options_mut(|o| o.input_options.max_double_click_delay = 2.0);
+        h.hover_at(at);
+        h.run();
+        for _ in 0..2 {
+            for pressed in [true, false] {
+                h.event(egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                });
+                h.step();
+            }
+        }
+        h.run();
+        assert_eq!(h.state().gradient().stops[0].middle, 0.5);
     }
 
     #[test]

@@ -8,6 +8,19 @@ use egui_kittest::{
     kittest::{NodeT, Queryable},
 };
 
+/// Two clicks at `at`, a step after each press and each release.
+fn double_click(h: &mut Harness<'_, Studio>, at: Pos2) {
+    h.hover_at(at);
+    h.run();
+    for _ in 0..2 {
+        press(h, at, true, egui::PointerButton::Primary);
+        h.step();
+        press(h, at, false, egui::PointerButton::Primary);
+        h.step();
+    }
+    h.run();
+}
+
 fn harness_with(studio: Studio) -> Harness<'static, Studio> {
     harness_sized(studio, 2400.0)
 }
@@ -197,16 +210,10 @@ fn a_double_click_puts_a_setting_back_and_the_switch_turns_a_panel_off() {
     let studio = graded_studio();
     let basic = panel_id(&studio.scene, "Basic");
     let mut h = harness_with(studio);
-    let at = h.get_all_by_role_and_label(Role::Slider, "Temp").next().unwrap().rect().center();
-    h.hover_at(at);
-    h.run();
-    for _ in 0..2 {
-        press(&mut h, at, true, egui::PointerButton::Primary);
-        h.step();
-        press(&mut h, at, false, egui::PointerButton::Primary);
-        h.step();
-    }
-    h.run();
+    // Near the rail's right end, so the click alone lands far from the default of 0.
+    let rail = h.get_all_by_role_and_label(Role::Slider, "Temp").next().unwrap().rect();
+    let at = egui::pos2(rail.left() + rail.width() * 0.85, rail.center().y);
+    double_click(&mut h, at);
     let card = h.state().scene.card(ThingId::ROOT, SlotId::Grade).unwrap();
     assert_eq!(card.params.get(&format!("{basic}/temp")).cloned().unwrap_or(Value::Number(0.0)), Value::Number(0.0));
     h.get_by_role_and_label(Role::CheckBox, "Basic on").click();
@@ -1163,4 +1170,14 @@ fn save_grade_and_load_grade_go_through_a_file() {
     std::fs::write(&path, "nonsense").unwrap();
     assert_eq!(snapshots::load_from(&mut other, &path), ("That file isn't a saved grade.".to_string(), true));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn double_clicking_a_brush_slider_puts_its_starting_value_back() {
+    let (mut studio, _mask, _part) = brushed_studio();
+    studio.grade.brushes.chosen_mut().feather = 10.0;
+    let mut h = harness_with(studio);
+    let rail = h.get_all_by_role_and_label(Role::Slider, "Feather").next().unwrap().rect();
+    double_click(&mut h, egui::pos2(rail.left() + rail.width() * 0.9, rail.center().y));
+    assert_eq!(h.state().grade.brushes.chosen().feather, 50.0, "Brush A starts at Feather 50");
 }
