@@ -298,3 +298,12 @@ modify `crates/bpe-studio/src/app/mod.rs` (show the window each frame, pause/res
     at size 120; Every bounce makes two's reads "N BALLS" at 140 and its ring wears Laser.
   - `Lib` helpers that no scene used yet were left out (clippy denies dead code); add them back when a scene needs
     them.
+- Review fixes (one Opus review): keys behind the window (Delete in the tree and timeline, F, Space, Escape) are
+  taken by `ScenesWindow::take_keys` at the start of the frame; Escape in Find a scene only leaves the box; `stop()`
+  wakes the thread under the lock (no lost wake-up) and drops the clips; a thread that dies isn't restarted; a hover
+  takes over the preview only after 0.3 s; a picked scene hidden by the filters isn't previewed; the first scene's
+  clip waits for the posters; the two play-through tests became one run per scene.
+- Left for later parts: window tests find every tile by name, so once more scenes than fit at 1440 x 960 exist they
+  need `scroll_to_me()` or a taller harness; the "something hits" check needs an opt-out for a scene without hits;
+  the sound check listens to the first 6 s only. If a save question after Open scene is cancelled, the project
+  stays paused.

@@ -619,6 +619,8 @@ impl eframe::App for Studio {
         // A held slider changes the physics many times a second: the runs start over when it
         // is let go or rests. A drag in the preview moves the things it shows, so it doesn't wait.
         self.hold_runs = pointer_down && !self.panels.preview.as_ref().is_some_and(Preview::dragging);
+        // The Scenes window takes the keys the panels behind it would act on, before any of them is drawn.
+        self.panels.scenes.take_keys(&ctx);
         if self.confirm.is_none() && self.offer.is_none() && !self.ask_stop_export && !self.panels.scenes.open {
             self.shortcuts(&ctx);
         }

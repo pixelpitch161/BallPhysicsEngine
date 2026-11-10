@@ -45,8 +45,8 @@ opens to a blank project; the scenes are only reached through the toolbar's **Sc
 
 - `bpe-kit/tests/library.rs`: `ids_names_and_info_are_tidy`, `levels_so_far`, `every_scene_builds_tidily` (known
   kinds incl. rule blocks, no resolve problems, length, unique thing names, no default rule names, save/load round
-  trip), `every_scene_plays_its_full_length` (no rule problems or busy rules, nothing goes to infinity, something
-  hits), `payoffs_land_on_time`, `every_scene_draws_a_picture` (saves a PNG to the temp dir when one is flat).
+  trip), `every_scene_plays_its_full_length_and_lands_its_payoff` (one run each: no rule problems or busy rules,
+  nothing goes to infinity, something hits, the payoff on time), `every_scene_draws_a_picture` (saves a PNG to the temp dir when one is flat).
 - `bpe-sound/tests/library_sound.rs`: `every_scene_with_sound_sounds` (its sound level matches, peak between 0.001
   and 1.0 over the first seconds). Lives in bpe-sound because bpe-kit can't depend on it.
 - `bpe-kit/tests/full_size_look.rs`: the `library` group.
@@ -59,11 +59,15 @@ opens to a blank project; the scenes are only reached through the toolbar's **Sc
   the editor, at most 1320 x 820: header (count, Find a scene, close cross), filters (Level then Kind, counts in
   mono, a kind that is on turns off), the tile grid (poster or swatch gradient, level badge, name, kinds; click
   picks, double-click opens), and the preview column (clip at the sound's clock, Playing/Paused, Sound on/off, m:ss
-  time, facts line, about, Uses, Good things to change first, Open scene, Cancel). Escape closes.
+  time, facts line, about, Uses, Good things to change first, Open scene, Cancel). Escape closes (in Find a scene
+  it only leaves the box). `take_keys` runs at the start of the editor's frame and takes Delete, Backspace, F, Space
+  and Escape away from the panels behind the window. A tile only takes over the preview after 0.3 s of hover; a
+  picked scene the filters hide isn't previewed; the first scene's clip waits for the posters unless asked for.
 - `filter.rs`: `Filter { level, kind, words }` with `shown`, `level_count`, `kind_count`, `is_clear`.
 - `pictures.rs`: `Pictures`, one thread with its own `headless_device` (FinalFrame's pattern), started on the first
   ask and ended when the window closes. Posters by `bpe_cli::final_frame` at 1/6 (180 x 320), unbaked; clips by
-  `bpe_cli::preview_clip` at 0.2 (216 x 384), `CLIP_FPS` 24, the last `CLIPS_KEPT` 3 kept. A newer clip ask cuts the
+  `bpe_cli::preview_clip` at 0.2 (216 x 384), `CLIP_FPS` 24, the last `CLIPS_KEPT` 3 kept while the window is open
+  (closing drops them; posters stay). A thread that dies isn't started again (the window says there's no preview). A newer clip ask cuts the
   one being drawn (tickets drop its late frames); a cut clip starts over when asked again. `Pictures::none()` draws
   nothing (tests, no device) and `with_device` takes a test device.
 - `sound.rs`: `PreviewSound`, its own `SoundJob` on the speakers (the editor's is paused), started once the clip is

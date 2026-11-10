@@ -54,6 +54,10 @@ pub struct ScenesWindow {
     posters_asked: bool,
     /// The tiles shown last frame, whose posters go first.
     last_shown: Vec<&'static str>,
+    /// Escape was pressed this frame outside a text box.
+    escape: bool,
+    /// Find a scene had the keyboard last frame (egui lets go of it on Escape before the frame is drawn).
+    find_focused: bool,
 }
 
 impl Default for ScenesWindow {
@@ -69,6 +73,8 @@ impl Default for ScenesWindow {
             was_playing: false,
             posters_asked: false,
             last_shown: Vec::new(),
+            escape: false,
+            find_focused: false,
         }
     }
 }
@@ -115,17 +121,41 @@ impl ScenesWindow {
         self.hovered = None;
     }
 
+    /// Takes the keys the editor behind the window would act on (Delete removing things or keys, F framing the
+    /// world, Escape letting go of keys, Space playing), so they only reach the window. Called at the start of the
+    /// editor's frame, before any panel reads them; Escape is kept for closing the window. Escape in a text box
+    /// only leaves the box.
+    pub fn take_keys(&mut self, ctx: &egui::Context) {
+        if !self.open {
+            return;
+        }
+        let typing = self.find_focused || ctx.text_edit_focused();
+        ctx.input_mut(|i| {
+            // Escape is used up either way: in the box it only left the box.
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) && !typing {
+                self.escape = true;
+            }
+            if !typing {
+                let behind = [egui::Key::Delete, egui::Key::Backspace, egui::Key::F, egui::Key::Space];
+                i.events.retain(|e| !matches!(e, egui::Event::Key { key, .. } if behind.contains(key)));
+            }
+        });
+    }
+
     fn close(&mut self) {
         self.open = false;
+        self.find_focused = false;
         self.sound.stop();
         self.pictures.stop();
         self.hovered = None;
     }
 
-    /// The scene the preview shows: the hovered one, else the picked one, else the first shown.
-    fn previewed(&self, shown: &[&'static Entry]) -> Option<&'static Entry> {
-        let id = self.hovered.map(|h| h.0).or(self.picked);
-        id.and_then(library::find).or_else(|| shown.first().copied())
+    /// The scene the preview shows: the one hovered for a moment, else the picked one while the filters show it,
+    /// else the first shown. A pointer only passing over tiles leaves the preview as it is.
+    fn previewed(&self, shown: &[&'static Entry], now: f64) -> Option<&'static Entry> {
+        let hovered = self.hovered.filter(|(_, since)| now - since >= HOVER_WAIT).map(|h| h.0);
+        let picked = self.picked.filter(|id| shown.iter().any(|e| e.info.id == *id));
+        hovered.or(picked).and_then(library::find).or_else(|| shown.first().copied())
     }
 
     /// Shows the window while it is open.
@@ -133,6 +163,7 @@ impl ScenesWindow {
         if !self.open {
             return None;
         }
+        self.take_keys(ctx);
         self.pictures.poll(ctx);
         if !self.posters_asked {
             for e in library::all() {
@@ -164,7 +195,7 @@ impl ScenesWindow {
             ui.set_max_size(inner);
             self.contents(ui, &shown, now, &mut act);
         });
-        if act.is_none() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        if std::mem::take(&mut self.escape) && act.is_none() {
             act = Some(Act::Close);
         }
         let repaint = self.sound.playing() || self.pictures.busy() || self.hovered.is_some();
@@ -187,13 +218,15 @@ impl ScenesWindow {
     /// Asks for the previewed scene's clip (a hovered tile after a moment) and plays its sound once the clip is
     /// ready; a change of scene stops the sound.
     fn follow_preview(&mut self, shown: &[&'static Entry], kit: &Arc<Kit>, ctx: &egui::Context, volume: f32, now: f64) {
-        let Some(entry) = self.previewed(shown) else {
+        let Some(entry) = self.previewed(shown, now) else {
             self.sound.stop();
             return;
         };
         let id = entry.info.id;
-        let hovered_long = self.hovered.is_some_and(|(h, since)| h == id && now - since >= HOVER_WAIT);
-        if self.hovered.is_none() || hovered_long {
+        // The first scene shown, nobody having asked for it, waits for the tiles' posters.
+        let asked =
+            self.picked == Some(id) || self.hovered.is_some_and(|(h, since)| h == id && now - since >= HOVER_WAIT);
+        if asked || !self.pictures.posters_waiting() {
             self.pictures.ask_clip(id, kit, ctx);
         }
         if self.sound.previewing() != Some(id) {
@@ -226,7 +259,7 @@ impl ScenesWindow {
             let (s, l) = column(PREVIEW_W);
             ui.allocate_ui_with_layout(s, l, |ui| {
                 ui.set_width(PREVIEW_W);
-                egui::ScrollArea::vertical().id_salt("scene preview").show(ui, |ui| self.preview(ui, shown, act));
+                egui::ScrollArea::vertical().id_salt("scene preview").show(ui, |ui| self.preview(ui, shown, now, act));
             });
         });
     }
@@ -248,6 +281,7 @@ impl ScenesWindow {
                     .desired_width(260.0)
                     .hint_text("bounce, escape, glass…");
                 let edit = ui.add(edit);
+                self.find_focused = edit.has_focus();
                 let label = ui.label(RichText::new("Find a scene").color(style::MUTED));
                 edit.labelled_by(label.id);
             });
@@ -346,8 +380,8 @@ impl ScenesWindow {
         if elided { response.on_hover_text(info.name) } else { response }
     }
 
-    fn preview(&mut self, ui: &mut Ui, shown: &[&'static Entry], act: &mut Option<Act>) {
-        let Some(entry) = self.previewed(shown) else {
+    fn preview(&mut self, ui: &mut Ui, shown: &[&'static Entry], now: f64, act: &mut Option<Act>) {
+        let Some(entry) = self.previewed(shown, now) else {
             ui.label(RichText::new("Pick a scene to see it here.").color(style::MUTED));
             return;
         };

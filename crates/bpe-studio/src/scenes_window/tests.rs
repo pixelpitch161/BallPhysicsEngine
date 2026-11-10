@@ -209,3 +209,44 @@ fn the_words_under_the_tiles_read_right() {
     let info = &library::find("first-bounce").unwrap().info;
     assert_eq!(facts(info), "Starter · Bounce and drop · 12 s · one simple sound");
 }
+
+#[test]
+fn escape_in_the_find_box_only_leaves_it() {
+    let mut h = opened(Studio::headless());
+    h.get_by_label("Find a scene").click();
+    h.run();
+    h.get_by_label("Find a scene").type_text("ring");
+    h.run();
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().panels.scenes.open, "the first Escape leaves the box");
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(!h.state().panels.scenes.open, "the next closes the window");
+}
+
+#[test]
+fn keys_meant_for_the_editor_dont_reach_it_while_the_window_is_open() {
+    let ctx = egui::Context::default();
+    let mut window = ScenesWindow { pictures: Pictures::none(), ..Default::default() };
+    window.open(false, true);
+    let key = |key| egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let input = egui::RawInput {
+        events: vec![key(egui::Key::Delete), key(egui::Key::F), key(egui::Key::A)],
+        ..Default::default()
+    };
+    let mut seen = (true, true, false);
+    let mut out = ctx.run_ui(input, |ui| {
+        window.take_keys(ui.ctx());
+        seen =
+            ui.input(|i| (i.key_pressed(egui::Key::Delete), i.key_pressed(egui::Key::F), i.key_pressed(egui::Key::A)));
+    });
+    out.textures_delta.clear();
+    assert_eq!(seen, (false, false, true), "Delete and F are taken; other keys still reach the window");
+}

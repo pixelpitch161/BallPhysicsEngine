@@ -101,8 +101,9 @@ fn play(e: &Entry, reg: &Registry) -> (Scene, World, Log) {
     (scene, world, log)
 }
 
+/// Plays every scene once, its whole length: nothing goes wrong on the way, and its payoff lands on time.
 #[test]
-fn every_scene_plays_its_full_length() {
+fn every_scene_plays_its_full_length_and_lands_its_payoff() {
     let reg = kit().registry;
     for e in library::all() {
         let id = e.info.id;
@@ -123,43 +124,41 @@ fn every_scene_plays_its_full_length() {
                 }
             }
         }
+        // Every scene so far is about things hitting; a later one that isn't (words, liquid) can say so here.
         assert!(log.events().iter().any(|ev| ev.kind == EventKind::Hit), "{id}: nothing ever hits");
+        if let Some(payoff) = e.info.payoff {
+            payoff_lands(e, payoff, &scene, &world, &log);
+        }
     }
 }
 
-#[test]
-fn payoffs_land_on_time() {
-    let reg = kit().registry;
-    for e in library::all() {
-        let Some(payoff) = e.info.payoff else { continue };
-        let id = e.info.id;
-        let (scene, world, log) = play(e, &reg);
-        let rate = world.steps_per_second as f64;
-        let when = match payoff.what {
-            PayoffEvent::RuleFires(name) => {
-                let rule = scene.rules.list.iter().find(|r| r.name == name).unwrap_or_else(|| panic!("{id}: {name}"));
-                log.events()
-                    .iter()
-                    .find(|ev| ev.kind == EventKind::Rule && ev.b.as_ref().is_some_and(|b| (b.item >> 16) == rule.id.0))
-                    .map(|ev| ev.step as f64 / rate)
-            }
-            PayoffEvent::Breaks(name) => {
-                let thing = scene.things.values().find(|t| t.name == name).unwrap_or_else(|| panic!("{id}: {name}"));
-                log.events()
-                    .iter()
-                    .find(|ev| ev.kind == EventKind::Break && ev.a.thing == thing.id)
-                    .map(|ev| ev.step as f64 / rate)
-            }
-            PayoffEvent::Counter(..) => panic!("{id}: counter payoffs are checked from part 3"),
-        };
-        let when = when.unwrap_or_else(|| panic!("{id}: the payoff never happens"));
-        assert!(
-            (when - payoff.at_seconds).abs() <= payoff.within_seconds,
-            "{id}: the payoff is at {when:.2} s, not {:.2} ± {:.2}",
-            payoff.at_seconds,
-            payoff.within_seconds
-        );
-    }
+fn payoff_lands(e: &Entry, payoff: library::Payoff, scene: &Scene, world: &World, log: &Log) {
+    let id = e.info.id;
+    let rate = world.steps_per_second as f64;
+    let when = match payoff.what {
+        PayoffEvent::RuleFires(name) => {
+            let rule = scene.rules.list.iter().find(|r| r.name == name).unwrap_or_else(|| panic!("{id}: {name}"));
+            log.events()
+                .iter()
+                .find(|ev| ev.kind == EventKind::Rule && ev.b.as_ref().is_some_and(|b| (b.item >> 16) == rule.id.0))
+                .map(|ev| ev.step as f64 / rate)
+        }
+        PayoffEvent::Breaks(name) => {
+            let thing = scene.things.values().find(|t| t.name == name).unwrap_or_else(|| panic!("{id}: {name}"));
+            log.events()
+                .iter()
+                .find(|ev| ev.kind == EventKind::Break && ev.a.thing == thing.id)
+                .map(|ev| ev.step as f64 / rate)
+        }
+        PayoffEvent::Counter(..) => panic!("{id}: counter payoffs are checked from part 3"),
+    };
+    let when = when.unwrap_or_else(|| panic!("{id}: the payoff never happens"));
+    assert!(
+        (when - payoff.at_seconds).abs() <= payoff.within_seconds,
+        "{id}: the payoff is at {when:.2} s, not {:.2} ± {:.2}",
+        payoff.at_seconds,
+        payoff.within_seconds
+    );
 }
 
 /// Whether more than 2% of the picture differs clearly from its first pixel.

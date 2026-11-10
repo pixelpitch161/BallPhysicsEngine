@@ -4,8 +4,8 @@
 //!
 //! Posters are kept for the rest of the session. Clips are kept for the last [`CLIPS_KEPT`] scenes asked for; a
 //! newer clip ask goes first, and one cut short starts again from the beginning when it is asked for again.
-//! Closing the window ends the thread (it has nothing to draw while the editor is in use) and the next ask starts
-//! a new one.
+//! Closing the window ends the thread (it has nothing to draw while the editor is in use) and drops the clips; the
+//! next ask starts a new thread.
 
 use bpe_gfx::wgpu;
 use bpe_kit::Kit;
@@ -265,9 +265,11 @@ impl Pictures {
             self.take(ctx, done);
         }
         if ended {
-            // The thread stopped (it panicked, or found no device): what it was making won't come.
+            // The thread stopped (it panicked, or found no device): what it was making won't come, and it isn't
+            // started again, so a thread that always fails can't be started over and over.
             self.worker = None;
             self.forget_waiting();
+            self.missing.get_or_insert_with(|| "drawing the pictures stopped unexpectedly".into());
         }
     }
 
@@ -339,11 +341,22 @@ impl Pictures {
     /// Stops drawing and ends the thread; what was waiting is asked for again next time. What was drawn stays.
     pub fn stop(&mut self) {
         if let Some(worker) = self.worker.take() {
+            // Under the lock, so the thread is either drawing (and sees the flags) or already waiting (and is
+            // woken): it can't check the flags, miss the wake and sleep forever.
+            let _queue = worker.shared.lock();
             worker.shared.quit.store(true, Ordering::Relaxed);
             worker.shared.cut.store(true, Ordering::Relaxed);
             worker.shared.wake.notify_all();
         }
         self.forget_waiting();
+        // Clips are big (a 15 s one is over 100 MB of pictures): they go with the window. Posters stay.
+        self.clips.clear();
+        self.clip_order.clear();
+    }
+
+    /// Posters asked for and not drawn yet.
+    pub fn posters_waiting(&self) -> bool {
+        self.worker.is_some() && self.posters.values().any(|p| matches!(p, Poster::Asked))
     }
 
     /// The thread is running.
@@ -508,7 +521,8 @@ mod tests {
         assert!(!pictures.busy());
         pictures.stop();
         assert!(!pictures.running());
-        assert!(pictures.poster("first-bounce").is_some(), "what was drawn stays");
+        assert!(pictures.poster("first-bounce").is_some(), "the posters stay");
+        assert!(matches!(pictures.clip("first-bounce"), Clip::NotAsked), "the clips go with the window");
     }
 
     #[test]
