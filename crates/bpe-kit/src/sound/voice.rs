@@ -842,7 +842,7 @@ mod tests {
         // Every number knob takes keys (a sample's place settings and Pitch follows size are read
         // once, when the sound is built).
         let built = |k: &str| k.contains("sample_") || k.starts_with("play_size_");
-        for d in defs.iter().filter(|d| matches!(d.default, Value::Number(_)) && !built(&d.key)) {
+        for d in defs.iter().filter(|d| matches!(d.default, Value::Number(_)) && !built(d.key)) {
             assert!(d.flags.keyframe, "{}", d.key);
         }
         for d in AdsrSettings::defs().iter().filter(|d| matches!(d.default, Value::Number(_))) {
