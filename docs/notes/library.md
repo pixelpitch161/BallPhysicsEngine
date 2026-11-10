@@ -103,6 +103,12 @@ also has the drum voices Kick (a sine with a fast pitch drop), Hat (short noise)
   makes nothing until the emitter has a ball, so a rule's Fire a round on an emitter set to By a rule starts it
   (One to a million). It needs a graphics card on the thread (`bpe_gfx::swarm::use_for_now`) to draw.
 - Text in a dark lit scene takes the light: `Lib::unlit` keeps it bright. Neon sign text lights the room itself.
+- **Play a note with no Note plays 60** (middle C), not the thing's own note: name the note, or pitch from the shape's
+  next note. A rule's counter change is seen from the next step, so a rule that sets a counter can't gate another
+  rule on the same beat: put that beat's sound in the setting rule.
+- `do.flash` on a ball whose look has no Flash on hit or Colour on hit layer does nothing (Glow orb, Electric).
+- Posters are drawn on the PC that opens the Scenes window, where maths differs slightly: put a chaotic scene's
+  poster well after the moment it shows.
 
 ## Checks
 

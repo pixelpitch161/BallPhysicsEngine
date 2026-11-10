@@ -168,8 +168,8 @@ and set the spots themselves. Gotchas are in `docs/notes/library.md`.
 | 27 | Club night | 30 s | Kick, clap, hats and bass balls land on a 120 bpm grid (`on_the_beat`); a chase rig on the beat, a strobe rig each bar, a mirror ball, haze. | none |
 | 28 | Splash glass | 26 s | A Glass box open at the top holding a spring-home particle crowd drawn as a Glass liquid; glass balls drop in three at a time and splash it; a spot lamp from the side. | none |
 | 29 | The simulation is the song | 36 s | Random plinks in a ring, then each player drops onto the stage every two bars from the top of its bounce; "N OF 5 PLAYING"; the drop rule at bar 13. | RuleFires "The drop" at 24.125 s |
-| 30 | Escape on the drop | 32 s | Three spinning rings; each escape shatters a ring. The last escape (20.34 s) shatters in slow motion and the drop waits for the next bar (21 s): text, zoom, lamp blue to pink, the rig on, the full beat. A room keeps the ball on screen afterwards. | Counter "Dropped" 1 at 21 s |
-| 31 | One to a million | 30 s | Each escape spawns two balls in the middle (balls double); at 256 the rule sets the count to 1,000,000, shatters the ring and fires an emitter whose ball carries a Huge swarm fountain. | Counter "Balls" 1,000,000 at 16.8 s |
+| 30 | Escape on the drop | 32 s | Three spinning rings; each escape shatters a ring. The last escape (20.34 s) shatters in slow motion and the drop waits for the next bar (21 s): text, zoom, lamp blue to pink, the rig on, the full beat. A room keeps the ball on screen afterwards. | Counter "Dropped" 1 at 21 s (poster 25 s, after the drop wherever the escape falls) |
+| 31 | One to a million | 30 s | Each escape spawns two balls in the middle (balls double); at 256 the rule sets the count to 1,000,000, shatters the ring and fires an emitter whose ball carries a Huge swarm fountain. | Counter "Balls" 1,000,000 at 16.8 s (poster 24 s) |
 | 32 | Diamond fire | 30 s | A spinning five-sided glass diamond (Prism chip with Fire 1, Dichroic 0.35, Rainbow 2) splits a white beam into rainbow rays; 18 diamond balls under gravity hit it; shatters at 100 hits. | Counter "Hits" 100 at 18.23 s |
 | 33 | Mirror maze | 30 s | A red laser bounces round six neon-edged chrome mirrors (Health 7, shatter), two light pipes and a spinning prism; four glowing balls break the mirrors; at the last one the laser turns white and the prism fans it into a rainbow. | RuleFires "The last mirror breaks" at 22.0 s |
 
@@ -178,7 +178,7 @@ Changes from the decisions above, and why:
 - **Escape on the drop**: the drop is a `when.beat` (every bar) rule waiting on the counter the last escape sets,
   not the escape itself. The escape timing is chaotic (a 0.03 px/s change moved it by 20 s), so a drop hung on it
   could land off the beat on another computer; the bar never does. Payoff is the Dropped counter.
-- **One to a million**: no Seed tuning was needed; the spawn's Random way and the ball-to-ball hits give the
+- **One to a million**: no Seed tuning was needed; the spawn's Random way (each new ball its own way) gives the
   doubling, and the swarm starts from a rule (an emitter fired By a rule carrying the swarm), not by keyframes.
 - **Diamond fire**: a pentagon, not a square (parallel sides cancel the split); gravity on so the balls keep hitting.
 - **Mirror maze**: the laser is red and turns white at the end, so the rainbow is the reveal; the mirrors are
@@ -186,3 +186,9 @@ Changes from the decisions above, and why:
   start of 0 is met at once.
 - **Club night / The simulation is the song**: the scene's Gravity is doubled and the Gravity × values halved,
   because Gravity × only goes to 5 and the save clamps it.
+
+Review fixes: the speakers' rule notes name their note (Play a note's default is 60); claps on beats 2 and 4 (no
+offset, every second beat); the drop plays its own downbeat kick (a counter changes from the next step) and the soft
+beat stops at the escape; flashes on balls without a flash layer removed; the counting rules no longer repeat the
+top number (so changing "A million" or "The hundredth hit" alone works); posters at moments past any likely shift
+of the chaotic escapes (they are drawn on the PC that opens the Scenes window).

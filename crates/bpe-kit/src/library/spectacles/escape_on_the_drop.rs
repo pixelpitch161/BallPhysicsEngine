@@ -41,7 +41,7 @@ pub(crate) const ENTRY: Entry = Entry {
                        (the rule \"The drop: on the bar after the escape\").",
         sound: SoundLevel::Designed,
         seconds: 32.0,
-        poster_seconds: DROP + 0.3,
+        poster_seconds: 25.0,
         preview_seconds: 15.0,
         swatch: [0xff2fa0, 0x080a18],
         payoff: Some(Payoff { what: PayoffEvent::Counter("Dropped", 1.0), at_seconds: DROP, within_seconds: 0.05 }),
@@ -52,7 +52,7 @@ pub(crate) const ENTRY: Entry = Entry {
 /// The ball gets out of the last ring at 20.34 s, so the drop comes on the bar after it, at 21 s.
 const DROP: f64 = 21.0;
 const TEMPO: f32 = 120.0;
-/// Bars start on whole even seconds (from 1 s), so 21 s is one.
+/// Bars start every 2 s from 1 s (1, 3, 5 …), so 21 s is one.
 const FIRST_BEAT: f32 = 1.0;
 const THE_DROP: &str = "The drop: on the bar after the escape";
 
@@ -62,6 +62,10 @@ const RINGS: [(&str, f32, f32, f32, [u8; 3]); 3] = [
     ("Middle ring", 300.0, 0.10, -55.0, [62, 65, 69]),
     ("Outer ring", 420.0, 0.08, 32.0, [69, 72, 76]),
 ];
+
+/// The speakers' notes.
+const KICK: i64 = 33;
+const CLAP: i64 = 62;
 
 /// The light before and after the drop.
 const COLD: u32 = 0x4a8cff;
@@ -116,8 +120,8 @@ fn build(reg: &Registry) -> Scene {
         lib.tone(id, tone);
         id
     };
-    let kick = speaker(&mut lib, "Kick speaker", -400.0, Tone::Kick, 33);
-    let clap = speaker(&mut lib, "Clap speaker", 400.0, Tone::Clap, 62);
+    let kick = speaker(&mut lib, "Kick speaker", -400.0, Tone::Kick, KICK as u8);
+    let clap = speaker(&mut lib, "Clap speaker", 400.0, Tone::Clap, CLAP as u8);
 
     let title = lib.text(Look::HookTitle, "Title", "WAIT FOR\nTHE DROP");
     lib.params(title, |t: &mut TextSettings| t.size = 110.0);
@@ -181,7 +185,6 @@ fn build(reg: &Registry) -> Scene {
                 ("do.count", vec![("counter", text("Escaped")), ("amount", n(1.0))]),
                 ("do.text", vec![("who", lib.who(title)), ("words", text("HERE IT\nCOMES"))]),
                 ("do.slow", vec![("speed", n(0.3)), ("lasts", choice("for_a_time")), ("seconds", n(0.6))]),
-                ("do.flash", vec![("who", lib.who(ball)), ("strength", n(1.0))]),
             ]),
         }
         lib.rule_doing(
@@ -196,32 +199,35 @@ fn build(reg: &Registry) -> Scene {
     lib.rule_doing(
         THE_DROP,
         &[("when.beat", vec![("every", choice("bar"))]), counter("Escaped", "over"), counter("Dropped", "under")],
-        &the_drop(&lib, title, lamp, rig),
+        &the_drop(&lib, title, lamp, rig, kick),
     );
     let dropped = |test: &str| counter("Dropped", test);
     lib.rule_doing(
         "A soft beat before the drop",
-        &[("when.beat", vec![("every", choice("bar"))]), dropped("under")],
-        &[("do.note", vec![("who", lib.who(kick)), ("velocity", n(0.5))])],
+        &[("when.beat", vec![("every", choice("bar"))]), counter("Escaped", "under")],
+        &[("do.note", vec![("who", lib.who(kick)), ("note", int(KICK)), ("velocity", n(0.5))])],
     );
     lib.rule_doing(
         "Four on the floor after the drop",
         &[("when.beat", vec![]), dropped("over")],
-        &[("do.note", vec![("who", lib.who(kick)), ("velocity", n(1.0))])],
+        &[("do.note", vec![("who", lib.who(kick)), ("note", int(KICK)), ("velocity", n(1.0))])],
     );
     lib.rule_doing(
         "Claps on two and four after the drop",
-        &[("when.beat", vec![("offset", n(1.0))]), ("if.every", vec![("n", int(2))]), dropped("over")],
-        &[("do.note", vec![("who", lib.who(clap)), ("velocity", n(0.9))])],
+        // Every second beat from the first bar's first: beats 2 and 4.
+        &[("when.beat", vec![]), ("if.every", vec![("n", int(2))]), dropped("over")],
+        &[("do.note", vec![("who", lib.who(clap)), ("note", int(CLAP)), ("velocity", n(0.9))])],
     );
     lib.reverb(3.0, 30.0);
     lib.finish()
 }
 
 /// The drop, on the bar after the last escape: everything it changes.
-fn the_drop<'k>(lib: &Lib, title: ThingId, lamp: ThingId, rig: ThingId) -> Vec<Block<'k>> {
+fn the_drop<'k>(lib: &Lib, title: ThingId, lamp: ThingId, rig: ThingId, kick: ThingId) -> Vec<Block<'k>> {
     vec![
         ("do.count", vec![("counter", text("Dropped")), ("amount", n(1.0))]),
+        // The counter changes from the next step, so the drop plays its own downbeat.
+        ("do.note", vec![("who", lib.who(kick)), ("note", int(KICK)), ("velocity", n(1.0))]),
         ("do.text", vec![("who", lib.who(title)), ("words", text("DROP!"))]),
         ("do.camera", vec![("mode", choice("zoom_punch")), ("punch", n(0.2))]),
         (

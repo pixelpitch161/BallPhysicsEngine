@@ -123,10 +123,7 @@ fn build(reg: &Registry) -> Scene {
     let (b, d) = (lib.who(balls), lib.who(diamond));
     lib.rule_doing(
         "A diamond ball hits the diamond",
-        &[
-            ("when.hit", vec![("who", b.clone()), ("whom", d.clone())]),
-            ("if.counter", vec![("counter", text(HITS)), ("test", choice("under")), ("amount", n(TOP))]),
-        ],
+        &[("when.hit", vec![("who", b.clone()), ("whom", d.clone())])],
         &[("do.count", vec![("counter", text(HITS)), ("amount", n(1.0))])],
     );
     lib.rule_doing(

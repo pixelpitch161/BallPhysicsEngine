@@ -1,4 +1,4 @@
-//! One to a million: a ball in a spinning ring with a gap. Every ball that gets out is replaced by two new ones
+//! One to a million: a ball in a spinning ring with a gap. Every ball that gets out brings two new ones
 //! in the middle, so the balls double and double. When the count reaches its top, the ring shatters and a Huge
 //! swarm of a million sparks pours out of the middle.
 
@@ -24,7 +24,7 @@ pub(crate) const ENTRY: Entry = Entry {
         name: "One to a million",
         level: Level::Spectacle,
         kinds: &[Kind::Escape, Kind::LiquidSmokeSparks],
-        about: "One ball in a spinning ring. Every ball that gets out is replaced by two new ones in the middle, \
+        about: "One ball in a spinning ring. Every ball that gets out brings two new ones into the middle, \
                 so the balls double and double. When the count reaches its top, the ring shatters and a swarm of a \
                 million sparks pours out.",
         uses: &[
@@ -40,7 +40,7 @@ pub(crate) const ENTRY: Entry = Entry {
                        \"A million\"), and the swarm's colours.",
         sound: SoundLevel::Designed,
         seconds: 30.0,
-        poster_seconds: MILLION + 1.0,
+        poster_seconds: 24.0,
         preview_seconds: 15.0,
         swatch: [0xffb02f, 0x0b0814],
         payoff: Some(Payoff { what: PayoffEvent::Counter(BALLS, A_MILLION), at_seconds: MILLION, within_seconds: 0.1 }),
@@ -148,7 +148,8 @@ fn build(reg: &Registry) -> Scene {
             ("when.enter", vec![("who", b.clone()), ("zone", r.clone()), ("way", choice("leaves"))]),
             // A ball that bounces back in through the gap and out again counts once.
             ("if.only", vec![("n", int(1)), ("per", choice("each_ball"))]),
-            ("if.counter", vec![("counter", text(BALLS)), ("test", choice("under")), ("amount", n(TOP))]),
+            // Until the million (whatever count "A million" waits for).
+            ("if.counter", vec![("counter", text(BALLS)), ("test", choice("under")), ("amount", n(A_MILLION))]),
         ],
         &[
             ("do.count", vec![("counter", text(BALLS)), ("amount", n(2.0))]),
@@ -187,7 +188,6 @@ fn build(reg: &Registry) -> Scene {
             ("do.text", vec![("who", lib.who(count)), ("words", text("1,000,000"))]),
             ("do.slow", vec![("speed", n(0.3)), ("lasts", choice("for_a_time")), ("seconds", n(1.2))]),
             ("do.camera", vec![("mode", choice("zoom_punch")), ("punch", n(0.2))]),
-            ("do.flash", vec![("who", b.clone()), ("strength", n(1.0))]),
         ],
     );
     lib.rule(

@@ -21,7 +21,7 @@ pub(crate) const ENTRY: Entry = Entry {
         name: "Prism rainbow",
         level: Level::InBetween,
         kinds: &[Kind::LightAndGlass],
-        about: "A beam of white light shines through a slowly spinning glass prism and fans out into a rainbow \
+        about: "A beam of white light shines through a glass prism, slowly rocking to and fro, and fans out into a rainbow \
                 that sweeps round the dark. Pearls drop onto the prism, ring it and bounce off through the colours.",
         uses: &["Light beam", "Shape: prism glass, spin", "Emitter", "Lighting", "Sound"],
         change_first: "The prism's Spin keys and Rainbow split, the beam's width and angle, and how often pearls drop.",
