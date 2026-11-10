@@ -67,6 +67,16 @@ fn edit_as<S: Settings>(params: &mut Params, f: impl FnOnce(&mut S)) {
     }
 }
 
+/// Where a ball of `radius` falling at `g` px/s² must be at 0 s, and how fast it goes, so that it lands on the
+/// floor every `every` seconds, first at `first` seconds (as long as nothing else touches it).
+pub(crate) fn on_the_beat(floor_top: f32, radius: f32, g: f32, every: f64, first: f64) -> (f32, f32) {
+    let up = g * every as f32 / 2.0;
+    // How long since it last left the floor.
+    let since = (every - first.rem_euclid(every)).rem_euclid(every) as f32;
+    let height = up * since - g * since * since / 2.0;
+    (floor_top - radius - height, -(up - g * since))
+}
+
 /// A rule block: its kind and the settings it changes.
 pub(crate) type Block<'k> = (&'k str, Vec<(&'k str, Value)>);
 
@@ -470,6 +480,19 @@ impl<'a> Lib<'a> {
             .unwrap_or_else(|e| panic!("{name}: {e}"));
         self.scene.rename_thing(id, name);
         id
+    }
+
+    /// Makes the setting `key` (on `slot`, or the thing's own for `None`) follow how loud `shape` is (Follow
+    /// sound): `amount` is added at full loudness, and the setting stays within `range`.
+    pub fn follow_sound(&mut self, id: ThingId, slot: Option<SlotId>, key: &str, shape: ThingId, amount: f64, range: (f64, f64)) {
+        let address = bpe_core::Address { thing: id, slot, key: key.into() };
+        let pulse = bpe_core::Pulse {
+            source: bpe_core::PulseSource::Sound { shape, source: bpe_core::SoundSource::Level },
+            amount: Value::Number(amount),
+            range: Some(range),
+            ..Default::default()
+        };
+        self.scene.pulses.insert(address, pulse);
     }
 
     /// The thing as a rule names it.

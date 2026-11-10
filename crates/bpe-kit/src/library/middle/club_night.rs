@@ -4,7 +4,7 @@
 use bpe_core::{Gradient, Registry, Scene, Settings, SlotId, ThingId};
 use glam::Vec2;
 
-use crate::library::build::{Lib, Tone, hex};
+use crate::library::build::{Lib, Tone, hex, on_the_beat};
 use crate::library::{Entry, Kind, Level, SceneInfo, SoundLevel};
 use crate::modules::lighting::LightingSettings;
 use crate::modules::look::surface::SurfaceKind;
@@ -104,16 +104,6 @@ const DANCERS: [Dancer; 4] = [
         notes: &[45, 45, 45, 45, 41, 41, 41, 41, 48, 48, 48, 48, 43, 43, 43, 43],
     },
 ];
-
-/// Where a ball of `radius` falling at `g` px/s² must be at 0 s, and how fast it goes, so that it lands on the
-/// floor every `every` seconds, first at `first` seconds (as long as nothing else touches it).
-pub(crate) fn on_the_beat(floor_top: f32, radius: f32, g: f32, every: f64, first: f64) -> (f32, f32) {
-    let up = g * every as f32 / 2.0;
-    // How long since it last left the floor.
-    let since = (every - first.rem_euclid(every)).rem_euclid(every) as f32;
-    let height = up * since - g * since * since / 2.0;
-    (floor_top - radius - height, -(up - g * since))
-}
 
 fn build(reg: &Registry) -> Scene {
     let mut lib = Lib::new(reg, 30.0);
