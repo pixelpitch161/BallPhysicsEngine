@@ -66,6 +66,24 @@ fn edit_as<S: Settings>(params: &mut Params, f: impl FnOnce(&mut S)) {
     }
 }
 
+/// A rule block: its kind and the settings it changes.
+pub(crate) type Block<'k> = (&'k str, Vec<(&'k str, Value)>);
+
+/// A ready voice for a scene's sound ([`Lib::tone`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Tone {
+    /// Two sines an octave apart that ring on.
+    Bell,
+    /// A bright, short saw with a square under it.
+    Pluck,
+    /// A soft wooden knock.
+    Mallet,
+    /// A soft, long note.
+    Pad,
+    /// A low saw with a sine under it.
+    Bass,
+}
+
 /// A built-in scene being made.
 pub(crate) struct Lib<'a> {
     pub reg: &'a Registry,
@@ -131,10 +149,34 @@ impl<'a> Lib<'a> {
             .unwrap_or_else(|e| panic!("{look}: {e}"));
     }
 
-    /// Dresses a shape in a ready-made look, its Colour layer then set to `colour`.
+    /// Dresses a ball or shape in a ready-made look in `colour`: as the editor's "Keep mine" does, the colour
+    /// goes where the look's main colour goes (a neon tube's tube and glow, a glow orb's halo). A look that takes
+    /// no colour keeps its own, with only its Colour layer (a ball's Body) set to `colour`.
     pub fn look_in(&mut self, id: ThingId, look: &str, colour: Color) {
-        use crate::modules::look::shape::PAINT;
         self.look(id, look);
+        self.own_colour(id, colour);
+        let ready = ready_looks::find(look).expect("found above");
+        if ready.takes_colour {
+            ready_looks::apply(&mut self.scene, self.reg, id, ready, Colours::Mine, How::Replace)
+                .unwrap_or_else(|e| panic!("{look}: {e}"));
+        }
+    }
+
+    /// Sets a thing's own colours, the ones "Keep mine" reads: a ball's Body, or a shape's Colour layer.
+    fn own_colour(&mut self, id: ThingId, colour: Color) {
+        use crate::modules::look::layers::BODY;
+        let card = self.scene.card_mut(id, SlotId::Look).expect("a Look card");
+        if let Some(body) = card.layers.iter().find(|x| x.kind == BODY) {
+            let key = layered_key(body.id, "colours");
+            card.params.set(&key, Value::Gradient(bpe_core::Gradient::solid(colour)));
+        } else {
+            self.colour_in(id, colour);
+        }
+    }
+
+    /// Sets a shape's or a Text's Colour layer to one colour.
+    pub fn colour_in(&mut self, id: ThingId, colour: Color) {
+        use crate::modules::look::shape::PAINT;
         let card = self.scene.card_mut(id, SlotId::Look).expect("a Look card");
         let paint = card.layers.iter().find(|x| x.kind == PAINT && x.parent.is_none()).expect("a Colour layer").id;
         card.params.set(&layered_key(paint, "colours"), Value::Gradient(bpe_core::Gradient::solid(colour)));
@@ -146,20 +188,42 @@ impl<'a> Lib<'a> {
         self.scene.things.get_mut(&id).expect("a thing").slots.insert(SlotId::Sound, card);
     }
 
-    /// A rule named `name` whose blocks follow one another.
-    pub fn rule(&mut self, name: &str, blocks: &[(&str, Vec<(&str, Value)>)]) -> RuleId {
+    /// A rule named `name` whose blocks follow one another: a When, Ifs and one Do at the end (a Do passes
+    /// nothing on; for several Dos use `rule_doing`).
+    pub fn rule(&mut self, name: &str, blocks: &[Block]) -> RuleId {
+        self.rule_doing(name, blocks, &[])
+    }
+
+    /// A rule named `name`: the `chain` (a When, then Ifs) follows one another, and each of `dos` comes
+    /// after the chain's last block. A Do block passes nothing on, so a rule that does several things
+    /// hangs each one off the same block.
+    pub fn rule_doing(&mut self, name: &str, chain: &[Block], dos: &[Block]) -> RuleId {
         let rule = self.scene.add_rule(name);
         let mut last: Option<BlockId> = None;
-        for (kind, set) in blocks {
-            let id = self.scene.add_block(self.reg, rule, kind, last).unwrap_or_else(|e| panic!("{kind}: {e}"));
-            for (k, v) in set {
-                self.scene
-                    .set_block_param(self.reg, rule, id, k, v.clone())
-                    .unwrap_or_else(|e| panic!("{name}: {kind} {k}: {e}"));
-            }
-            last = Some(id);
+        for (kind, set) in chain {
+            last = Some(self.block(name, rule, kind, set, last));
+        }
+        for (kind, set) in dos {
+            self.block(name, rule, kind, set, last);
         }
         rule
+    }
+
+    fn block(
+        &mut self,
+        name: &str,
+        rule: RuleId,
+        kind: &str,
+        set: &[(&str, Value)],
+        after: Option<BlockId>,
+    ) -> BlockId {
+        let id = self.scene.add_block(self.reg, rule, kind, after).unwrap_or_else(|e| panic!("{kind}: {e}"));
+        for (k, v) in set {
+            self.scene
+                .set_block_param(self.reg, rule, id, k, v.clone())
+                .unwrap_or_else(|e| panic!("{name}: {kind} {k}: {e}"));
+        }
+        id
     }
 
     /// A Text made from one of the Text's own looks (a hook title, a hit counter), named and with its words.
@@ -218,6 +282,101 @@ impl<'a> Lib<'a> {
             v.notes_root = root;
             v.notes_scale = scale;
         });
+    }
+
+    /// Gives `id` the starter sound playing `steps` one after another, a step a hit (a step of several
+    /// notes is a chord), starting again after the last.
+    pub fn melody(&mut self, id: ThingId, steps: &[&[u8]]) {
+        if self.scene.card(id, SlotId::Sound).is_none() {
+            self.sound(id);
+        }
+        self.card(id, SlotId::Sound, |v: &mut VoiceSettings| {
+            v.notes_melody = steps
+                .iter()
+                .map(|n| {
+                    // A step's notes low to high, as the editor keeps them (and the file wants them).
+                    let mut notes = n.to_vec();
+                    notes.sort_unstable();
+                    notes.dedup();
+                    NoteSlot { notes, order_clicked: Vec::new() }
+                })
+                .collect();
+            v.notes_plays = Plays::Melody;
+        });
+    }
+
+    /// Makes `id`'s sound (made if missing) `tone`: its oscillators and envelope.
+    pub fn tone(&mut self, id: ThingId, tone: Tone) {
+        use crate::sound::{AdsrSettings, Wave};
+        if self.scene.card(id, SlotId::Sound).is_none() {
+            self.sound(id);
+        }
+        // (Osc A wave, unison, Osc B: wave, octave, level in dB, envelope: attack, decay, release in ms, sustain in %)
+        let (a, unison, b, (attack, decay, sustain, release)) = match tone {
+            Tone::Bell => (Wave::Sine, 1, Some((Wave::Sine, 1, -10.0)), (1.0, 1400.0, 0.0, 900.0)),
+            Tone::Pluck => (Wave::Saw, 3, Some((Wave::Square, -1, -14.0)), (1.0, 260.0, 0.0, 220.0)),
+            Tone::Mallet => (Wave::Sine, 1, Some((Wave::Triangle, 2, -16.0)), (1.0, 450.0, 0.0, 300.0)),
+            Tone::Pad => (Wave::Triangle, 2, Some((Wave::Sine, -1, -8.0)), (25.0, 1600.0, 0.0, 1200.0)),
+            Tone::Bass => (Wave::Saw, 1, Some((Wave::Sine, -1, -4.0)), (2.0, 380.0, 0.0, 200.0)),
+        };
+        self.card(id, SlotId::Sound, |v: &mut VoiceSettings| {
+            v.a.wave = a;
+            v.a.unison = unison;
+            if let Some((wave, octave, level)) = b {
+                v.b.on = true;
+                v.b.wave = wave;
+                v.b.octave = octave;
+                v.b.level = level;
+                // The envelope shapes Osc B as it does Osc A.
+                let route = bpe_core::ModRoute { target: "b_gain".into(), ..v.routes[0].clone() };
+                if !v.routes.contains(&route) {
+                    v.routes.push(route);
+                }
+            }
+        });
+        self.layer_params(id, SlotId::Sound, LayerId(0), |e: &mut AdsrSettings| {
+            e.attack = attack;
+            e.decay = decay;
+            e.sustain = sustain;
+            e.release = release;
+        });
+    }
+
+    /// A reverb on the Mixer's first bus, where every sound goes unless sent elsewhere.
+    pub fn reverb(&mut self, decay: f32, mix: f32) {
+        use crate::sound::fx::ReverbSettings;
+        crate::ensure_mixer(&mut self.scene, self.reg);
+        let layer = self
+            .scene
+            .add_layer_in(self.reg, ThingId::ROOT, SlotId::Mixer, crate::sound::fx::REVERB, Some(0))
+            .expect("the kit has the reverb");
+        self.layer_params(ThingId::ROOT, SlotId::Mixer, layer, |r: &mut ReverbSettings| {
+            r.decay = decay;
+            r.mix = mix;
+        });
+    }
+
+    /// An emitter named `name` at `at`, its settings changed by `f`.
+    pub fn emitter(
+        &mut self,
+        name: &str,
+        at: Vec2,
+        f: impl FnOnce(&mut crate::things::emitter::EmitterSettings),
+    ) -> ThingId {
+        let id = self.add(crate::things::emitter::KIND, ThingId::ROOT, name);
+        self.at(id, at);
+        self.params(id, f);
+        id
+    }
+
+    /// Keyframes the setting `key` (on `slot`, or the thing's own settings for `None`) through `keys`
+    /// (time, value), moving evenly from one to the next.
+    pub fn keys(&mut self, id: ThingId, slot: Option<SlotId>, key: &str, keys: &[(f64, Value)]) {
+        let a = bpe_core::Address { thing: id, slot, key: key.into() };
+        for (t, v) in keys {
+            let i = self.scene.set_key(self.reg, &a, *t, v.clone()).unwrap_or_else(|e| panic!("{key}: {e}"));
+            self.scene.tracks.get_mut(&a).expect("keyed").keys[i].ease = bpe_core::Ease::Linear;
+        }
     }
 
     /// Gives `id` the card the editor's Add card puts in `slot` (a Health card, say).

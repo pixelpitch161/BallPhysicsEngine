@@ -6,6 +6,7 @@
 //! scene as built-in; it is an ordinary scene.
 
 pub(crate) mod build;
+mod middle;
 mod starters;
 
 use bpe_core::{Registry, Scene, Settings, ThingId};
@@ -205,6 +206,16 @@ static ENTRIES: &[Entry] = &[
     starters::breakable_bricks::ENTRY,
     starters::bounce_off_words::ENTRY,
     starters::sparks_on_hit::ENTRY,
+    middle::will_it_escape::ENTRY,
+    middle::escape_layers::ENTRY,
+    middle::melody_per_bounce::ENTRY,
+    middle::polyrhythm_rings::ENTRY,
+    middle::all_meet_at_once::ENTRY,
+    middle::hypnotic_petals::ENTRY,
+    middle::red_vs_blue::ENTRY,
+    middle::colour_wars::ENTRY,
+    middle::marble_race::ENTRY,
+    middle::merge_and_grow::ENTRY,
 ];
 
 /// Every built-in scene, in the order the Scenes window lists them.
