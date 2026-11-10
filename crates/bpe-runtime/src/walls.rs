@@ -111,8 +111,11 @@ pub struct Gaps {
     /// [`Outline::angle`], from [`Outline::center`], over [`Outline::reach`]) from the first
     /// corner clockwise, closed, with the place of each point (rising, below 1). `None`: by the
     /// angle from the top (a ring's own point, or an ellipse's over its half-axes).
-    pub guide: Option<(Arc<[Vec2]>, Arc<[f32]>)>,
+    pub guide: Option<Guide>,
 }
+
+/// An outline's own points and the place of each (see [`Gaps::guide`]).
+pub type Guide = (Arc<[Vec2]>, Arc<[f32]>);
 
 impl Gaps {
     /// `p` (in the scene) in `outline`'s own frame, over its reach.
