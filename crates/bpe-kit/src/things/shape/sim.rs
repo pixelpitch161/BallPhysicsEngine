@@ -632,4 +632,22 @@ mod tests {
         assert!((turned - FRAC_PI_2).abs() < 0.02, "the gap turned with the shape: {turned}");
         assert!((b1 - mid).length() < (b0 - mid).length() * 0.85, "and shrank with it");
     }
+
+    #[test]
+    fn a_box_drawn_anticlockwise_cuts_only_its_gap() {
+        // A rectangle whose corners go round the other way still draws as a box (corners clockwise):
+        // the drawn cut is the gap's own short arc, not the rest of the band.
+        let mut s =
+            ShapeSettings { gaps: 1, gap_at: 0.3, gap_size: 0.1, ..ShapeSettings::rectangle(600.0, 400.0, 8.0) };
+        s.path.points.reverse();
+        let scene = with(s);
+        let w = world(&scene);
+        let wall = &w.walls[&SHAPE];
+        assert!(matches!(wall.outline, bpe_runtime::Outline::Box { .. }), "{:?}", wall.outline);
+        let gaps = wall.gaps.as_deref().unwrap();
+        let form = super::super::draw::wall_form(wall);
+        let cuts = super::super::draw::gap_cuts(&form, wall, gaps);
+        let (from, to, _, _) = cuts[0];
+        assert!((to - from).rem_euclid(1.0) < 0.2, "a short cut: {from} to {to}");
+    }
 }

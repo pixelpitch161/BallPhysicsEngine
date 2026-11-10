@@ -688,6 +688,22 @@ fn keep_gapped(
     if !inside && (*position - wall.outline.center()).length() > wall.outline.reach() + limit {
         return None;
     }
+    // A ball too big for the room inside sits at its middle, as in a closed ring or box.
+    let room = match wall.outline {
+        Outline::Ring { radius, sides: 0, .. } => Some(radius),
+        Outline::Ring { radius, sides, .. } => Some(radius * (PI / sides.max(3) as f32).cos()),
+        Outline::Box { half, .. } | Outline::Ellipse { half, .. } => Some(half.min_element()),
+        Outline::Path { .. } | Outline::Letters { .. } => None,
+    };
+    if inside && room.is_some_and(|room| limit >= room) {
+        *position = wall.outline.center();
+        return None;
+    }
+    // Well inside the circle the outline holds, or cheaply known clear: nothing to meet.
+    let middle = (*position - wall.outline.center()).length();
+    if inside && room.is_some_and(|room| middle <= room - limit) || wall.outline.clear_by(*position, limit, inside) {
+        return None;
+    }
     let mut p = *position;
     let mut pushed: Option<Vec2> = None;
     for _ in 0..4 {
@@ -696,6 +712,15 @@ fn keep_gapped(
             // Open here: only the nearer end of the opening, a round cap, is in the way.
             let (a, b) = gaps.ends(&wall.outline, k);
             let end = if (p - a).length_squared() <= (p - b).length_squared() { a } else { b };
+            if wall.outline.inside(p) != inside {
+                // On the wrong side with the opening nearest: it crossed the closed band just
+                // beside an end, so it goes back to its own side off that end.
+                let probe = near + line * (1e-3 * limit.max(1e-3));
+                let side = if wall.outline.inside(probe) == inside { line } else { -line };
+                p = end + side * limit;
+                pushed = Some(side);
+                continue;
+            }
             let away = p - end;
             if away.length() >= limit - SETTLED {
                 break;
@@ -1423,6 +1448,39 @@ mod tests {
             assert!(hits >= 1, "{place}");
             assert!(at.length() < 300.0, "{place}: got out at {at}");
         }
+    }
+
+    #[test]
+    fn a_small_fast_ball_crossing_beside_an_end_stays_in() {
+        // A ball 5 big in a band 4 thick (7 from the line) heading almost straight out, crossing the
+        // closed band a hair past the gap's end (0.30 of the way round), 14 px a step: its end
+        // point's nearest outline point is in the opening, but it crossed where the ring is closed.
+        let mut wall =
+            hollow(Outline::Ring { center: Vec2::ZERO, radius: 300.0, sides: 0, angle: 0.0, thickness: 4.0 });
+        wall.gaps = Some(Arc::new(Gaps { spans: vec![(0.25, 0.05)], guide: None }));
+        let mut escaped = 0;
+        for k in 0..40 {
+            let place = 0.3001 + k as f32 * 0.00002;
+            for tilt in [-0.02f32, -0.01, 0.0] {
+                let out = Vec2::new((place * TAU).sin(), -(place * TAU).cos());
+                let previous = out * 293.0;
+                let mut at = previous + Vec2::from_angle(tilt).rotate(out) * 14.0;
+                keep_clear_from(&mut at, previous, &wall.outline, out * 3360.0, 5.0, Touch::Edge, &wall);
+                if !wall.outline.inside(at) {
+                    escaped += 1;
+                }
+            }
+        }
+        assert_eq!(escaped, 0, "a ball that crossed the closed band is put back inside");
+    }
+
+    #[test]
+    fn a_ball_too_big_for_a_gapped_ring_sits_at_its_middle() {
+        let wall = gapped_ring();
+        let mut at = Vec2::new(40.0, 10.0);
+        let c = keep_clear_from(&mut at, Vec2::new(30.0, 10.0), &wall.outline, Vec2::X, 320.0, Touch::Edge, &wall);
+        assert!(c.is_none());
+        assert_eq!(at, Vec2::ZERO);
     }
 
     #[test]

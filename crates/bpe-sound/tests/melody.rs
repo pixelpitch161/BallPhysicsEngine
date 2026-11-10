@@ -160,3 +160,37 @@ fn a_bigger_ball_plays_lower() {
     assert!((pitch_at(10.0, 12.0) - 72.0).abs() < 1e-3, "an octave up at half the size");
     assert!((pitch_at(40.0, -7.0) - 67.0).abs() < 1e-3, "a minus amount goes up as it grows");
 }
+
+#[test]
+fn switching_to_melody_lands_on_the_step_from_the_start() {
+    // Two hits played while Plays was Up count too: switched to Melody, the third hit plays step 3.
+    let kit = kit();
+    let up = voiced(&kit, |v| {
+        melody(v);
+        v.notes_plays = Plays::Up;
+    });
+    let scene = voiced(&kit, melody);
+    let p = world(&scene, &kit);
+    let mut old = voice(&up, &kit);
+    for k in 0..2 {
+        block(&mut old, p.world(), k * 3000, &[hit(&up)]);
+    }
+    let mut v = voice(&scene, &kit);
+    v.adopt(&mut old);
+    block(&mut v, p.world(), 6000, &[hit(&scene)]);
+    let now = v.playing_notes();
+    assert!(now.contains(&64) && now.contains(&67), "{now:?}");
+}
+
+#[test]
+fn a_melody_chord_strums_down() {
+    use bpe_kit::sound::StrumDir;
+    let pick = bpe_sound::voices::pick::melody_pick(&[60, 64, 67], 0.1, StrumDir::Down, 1);
+    assert_eq!(pick.notes(), [67, 64, 60]);
+    assert!((pick.strum - 0.05).abs() < 1e-6);
+    let up = bpe_sound::voices::pick::melody_pick(&[60, 64, 67], 0.0, StrumDir::Up, 1);
+    assert_eq!((up.notes(), up.strum), (&[60u8, 64, 67][..], 0.0));
+    let mut any = bpe_sound::voices::pick::melody_pick(&[60, 64, 67], 0.0, StrumDir::Random, 7).notes().to_vec();
+    any.sort_unstable();
+    assert_eq!(any, [60, 64, 67], "every note, in some order");
+}

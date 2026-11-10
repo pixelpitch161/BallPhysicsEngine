@@ -440,7 +440,15 @@ pub fn gap_cuts(form: &WallForm, wall: &Wall, gaps: &bpe_runtime::Gaps) -> Vec<(
         .map(|k| {
             let (a, b) = gaps.ends(&wall.outline, k);
             let (a, b) = (to_form(a), to_form(b));
-            (form_along(form, a), form_along(form, b), a, b)
+            let (from, to) = (form_along(form, a), form_along(form, b));
+            // The drawn form may go round the other way from the outline the physics measures (a
+            // box from a path drawn anticlockwise): the cut is the arc holding the opening's middle.
+            let middle = form_along(form, to_form(gaps.at(&wall.outline, gaps.spans[k].0)));
+            if (middle - from).rem_euclid(1.0) <= (to - from).rem_euclid(1.0) {
+                (from, to, a, b)
+            } else {
+                (to, from, b, a)
+            }
         })
         .collect()
 }

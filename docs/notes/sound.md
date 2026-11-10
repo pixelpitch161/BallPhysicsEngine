@@ -245,11 +245,14 @@ measuring setting is **Which balls**. Phase units are "°".
 `Vec<NoteSlot>` as the slots, one entry a step and a chord when it has several notes, at most `MAX_MELODY` 1024).
 **At the end** (`MelodyEnd`) Starts again or Holds the last; Repeat each holds a step for that many hits; Octave
 range and the slots are not read. `NotesSpec` carries the melody; `ShapeVoice::pick_for` picks
-`voices/pick.rs::melody_step(len, hits, repeat, end)` from `melody_hits`, counted from the clip's start (reset with
-the voice, carried by `adopt`, and counted by `catch_up`, so a seek lands on the same step). **Pitch follows size**
+`voices/pick.rs::melody_step(len, hits, repeat, end)` from `melody_hits`: every accepted hit from the clip's start,
+whatever Plays is (reset with the voice, carried by `adopt`, counted by `catch_up`, so a switch to Melody or a seek
+lands on the same step). A chord step strums as All at once does (`melody_pick`: Strum, its direction). **Pitch follows size**
 (`play_size_pitch`, semitones per doubling, 0 off; minus goes up as it grows) against **Size for the written note**
 (`play_size_at`, 20 px): `start_note` adds `-amount × log2(radius / size)` (at most 4 octaves) to the note's pitch,
-glide target and unison, read from the ball that played it (`size_shift`); not snapped to the key, not keyframed.
+glide target and unison, read from the ball that played it (`size_shift`, from the sound engine's world as the block
+plays); not snapped to the key, not keyframed. The note logged (MIDI export, rule notes) is the heard pitch to the
+nearest semitone.
 `ShapeVoice::playing_pitches` is for tests. MIDI import also gives `melody` (every chord in time order, up to 1024,
 with `melody_left_out` and its keyboard range). Editor: while Plays is Melody the slot grid rests, the keyboard
 shows and toggles the picked step, and `sound_tab/notes/melody.rs` shows step chips ("Step N"), Add step, Remove

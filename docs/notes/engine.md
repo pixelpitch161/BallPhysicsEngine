@@ -437,7 +437,9 @@ Spec `docs/superpowers/specs/2026-11-09-one-way-to-ride-design.md`, plan `docs/s
   each a round cap; elsewhere it is pushed back to its own side as before. Which side a ball is on comes from its
   side at the start of the step, unless it crossed the outline through an opening (`own_side`), so a ball leaves
   through a gap and comes back in through one, and a fast ball beside a gap still bounces. `middle_crossing` ignores
-  crossings through an opening.
+  crossings through an opening. A ball that crossed the closed band just beside an end (its nearest point already
+  in the opening) goes back to its own side off that end; a ball too big for the room inside sits at the middle, as
+  in a closed ring; a ball well inside the circle the outline holds skips the search.
 - **Drawing**: `things/shape/draw.rs::gap_cuts` turns each opening into its two ends along the shader's own `along`
   measure (`form_along`, the CPU twin of `paths.wgsl::path_along`) plus the end points, and `Frame::cut_gaps` stores
   them as records the path instance points at (`PathInstance.gaps`: first record, count). `paths.wgsl::gap_cut`

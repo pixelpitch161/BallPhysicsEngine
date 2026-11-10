@@ -942,6 +942,8 @@ impl ShapeVoice {
         let across = if self.spec.width > 0.0 { (point.x / (self.spec.width * 0.5)).clamp(-1.0, 1.0) } else { 0.0 };
         let mono = self.spec.play_mode == PlayMode::Mono && !self.own_voice;
         let pitch = note as f32 + size_shift(&self.spec.notes, cx.world, ball);
+        // The note logged (MIDI export, rule notes) is the one heard, to the nearest semitone.
+        let heard = pitch.round().clamp(0.0, 127.0) as u8;
         if mono && self.notes.meta[0].active && !self.notes.meta[0].fading {
             // Mono with a note still sounding: the envelopes start again from where they are
             // and the pitch glides there.
@@ -988,7 +990,7 @@ impl ShapeVoice {
                 n.light[i].note_on(&ncx);
             }
             self.notes.meta[0].started = sample;
-            self.log_note(cx, sample, note, strength);
+            self.log_note(cx, sample, heard, strength);
             return Some(0);
         }
         let (slot, steal) = if mono {
@@ -1008,7 +1010,7 @@ impl ShapeVoice {
             (s.slot, s.steal)
         };
         // Logged once it has a voice (a note with none plays nothing).
-        self.log_note(cx, sample, note, strength);
+        self.log_note(cx, sample, heard, strength);
         if let Some(s) = steal {
             self.notes.slots[s].fade_out(STEAL_MS);
         }
@@ -1154,18 +1156,18 @@ impl ShapeVoice {
     /// Hit `hit` (accepted) at `sample` picks its notes. Returns them, the strum and the seed.
     fn pick_for(&mut self, cx: &BlockCx, hit: &BlockHit, time: f64) -> super::notes::NotePick {
         let slot = self.slot_now();
+        // Every accepted hit counts for the melody, whatever Plays is now, so a switch to Melody
+        // or a seek lands on the step playing from the start would.
+        let melody_hit = self.melody_hits;
+        self.melody_hits += 1;
         if self.spec.notes.plays == bpe_kit::sound::Plays::Melody {
             // The next step of the melody: a note, or every note of a chord.
             let n = &self.spec.notes;
-            let at = super::pick::melody_step(n.melody.len(), self.melody_hits, n.repeat, n.melody_end);
-            self.melody_hits += 1;
-            let mut pick = super::notes::NotePick::default();
-            for &note in at.map_or(&[][..], |k| &n.melody[k].notes[..]) {
-                pick.push(note.min(127));
-            }
-            pick.strum =
-                if pick.notes().len() > 1 { n.strum_s(time).max(0.0) / (pick.notes().len() - 1) as f32 } else { 0.0 };
-            return pick;
+            let Some(k) = super::pick::melody_step(n.melody.len(), melody_hit, n.repeat, n.melody_end) else {
+                return Default::default();
+            };
+            let seed = mix(((self.spec.thing.0 as u64) << 32) ^ mix(melody_hit ^ 0x3E10));
+            return super::pick::melody_pick(&n.melody[k].notes, n.strum_s(time), n.strum_dir, seed);
         }
         let Some(notes) = self.spec.slots.get(slot) else { return Default::default() };
         let ball = hit.event.a;

@@ -134,6 +134,25 @@ pub fn melody_step(len: usize, hits: u64, repeat: u32, end: bpe_kit::sound::Melo
     })
 }
 
+/// A melody step's `notes` (lowest first) as one pick, strummed as All at once strums: over
+/// `strum_s` in `dir` (Random shuffled by `seed`).
+pub fn melody_pick(notes: &[u8], strum_s: f32, dir: StrumDir, seed: u64) -> NotePick {
+    let n = notes.len().min(MAX_PICK);
+    let mut pick = NotePick::default();
+    let random = if dir == StrumDir::Random { n } else { 0 };
+    let order = shuffled(random, seed);
+    for (i, &shuffled_i) in order.iter().enumerate().take(n) {
+        let j = match dir {
+            StrumDir::Up => i,
+            StrumDir::Down => n - 1 - i,
+            StrumDir::Random => shuffled_i as usize,
+        };
+        pick.push(notes[j].min(127));
+    }
+    pick.strum = if n > 1 { strum_s.max(0.0) / (n - 1) as f32 } else { 0.0 };
+    pick
+}
+
 /// 0..len in an order shuffled by `seed` (Fisher–Yates).
 fn shuffled(len: usize, seed: u64) -> [u8; MAX_RUN] {
     let mut p = [0u8; MAX_RUN];
