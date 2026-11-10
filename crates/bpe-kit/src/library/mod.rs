@@ -199,6 +199,12 @@ static ENTRIES: &[Entry] = &[
     starters::rainbow_drop::ENTRY,
     starters::fountain::ENTRY,
     starters::string_art::ENTRY,
+    starters::spinning_triangle::ENTRY,
+    starters::neon_tube::ENTRY,
+    starters::lit_room::ENTRY,
+    starters::breakable_bricks::ENTRY,
+    starters::bounce_off_words::ENTRY,
+    starters::sparks_on_hit::ENTRY,
 ];
 
 /// Every built-in scene, in the order the Scenes window lists them.

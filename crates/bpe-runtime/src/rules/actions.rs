@@ -57,6 +57,10 @@ pub enum Action {
     /// Splits one ball into `into` balls fanned `spread` radians across its way, going `speed`
     /// times as fast; `share` shares its area out between them, else each keeps its size.
     Split { thing: ThingId, row: u32, into: u32, spread: f32, speed: f32, share: bool },
+    /// Merges two touching balls into one (rules: Merge balls): ball `row` of `thing` (That)
+    /// takes in ball `other_row` of `other`, which is removed. `size_match` (a share) merges only
+    /// balls whose sizes are that close; `grow` says how big the merged ball is.
+    Merge { thing: ThingId, row: u32, other: ThingId, other_row: u32, size_match: Option<f32>, grow: Grow },
     /// Adds balls to a thing: each one's place, velocity and size (`None`: the thing's own),
     /// fanned out from `from`; a ball whose place is across a wall from there starts at `from`.
     Spawn { thing: ThingId, from: Vec2, balls: Vec<(Vec2, Vec2, Option<f32>)> },
@@ -83,6 +87,15 @@ pub enum TextOp {
     NextLine,
     /// No words.
     Clear,
+}
+
+/// How big a merged ball is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Grow {
+    /// As big (in area) as the two together: two equal balls make one √2 times as wide.
+    AddAreas,
+    /// That ball's size times this.
+    Times(f32),
 }
 
 /// How a Count action changes its counter.
@@ -439,6 +452,11 @@ impl World {
                         self.split(sims, &mut rules, thing, row, into, spread, speed, share);
                     }
                 }
+                Action::Merge { thing, row, other, other_row, size_match, grow } => {
+                    if !rules.broken.contains(&thing) && !rules.broken.contains(&other) {
+                        self.merge(&mut rules, (thing, row), (other, other_row), size_match, grow, log);
+                    }
+                }
                 Action::Spawn { thing, from, balls } => {
                     if rules.broken.contains(&thing) {
                         continue;
@@ -591,6 +609,75 @@ impl World {
 }
 
 impl World {
+    /// Merges ball `other` into ball `that` (see [`Action::Merge`]): `that` moves to their
+    /// area-weighted middle (unless that is across a wall from it), keeps their momentum (mass by
+    /// area, as balls meeting balls have it) and grows; `other` is removed (a Remove event) and its
+    /// rule state forgotten. Nothing happens unless both are live, different balls whose sizes
+    /// match within `size_match`.
+    fn merge(
+        &mut self,
+        rules: &mut super::RulesState,
+        that: (ThingId, u32),
+        other: (ThingId, u32),
+        size_match: Option<f32>,
+        grow: Grow,
+        log: &mut Log,
+    ) {
+        if that == other {
+            return;
+        }
+        let live = |w: &World, (t, r): (ThingId, u32)| {
+            w.bodies.get(&t).filter(|b| (r as usize) < b.len() && b.alive[r as usize]).map(|b| {
+                let i = r as usize;
+                (b.position[i], b.velocity[i], b.radius[i])
+            })
+        };
+        let (Some((pa, va, ra)), Some((pb, vb, rb))) = (live(self, that), live(self, other)) else { return };
+        // A held (frozen) ball counts with the way it will go on.
+        let held = |f: &[Frozen], (t, r): (ThingId, u32)| f.iter().position(|f| f.thing == t && f.row == r);
+        let va = held(&rules.frozen, that).map_or(va, |k| rules.frozen[k].velocity);
+        let vb = held(&rules.frozen, other).map_or(vb, |k| rules.frozen[k].velocity);
+        if let Some(share) = size_match
+            && (ra - rb).abs() > share.max(0.0) * ra.max(rb)
+        {
+            return;
+        }
+        let (ma, mb) = (ra * ra, rb * rb);
+        let total = ma + mb;
+        if !(total > 0.0 && total.is_finite()) {
+            return;
+        }
+        let middle = (pa * ma + pb * mb) / total;
+        let velocity = (va * ma + vb * mb) / total;
+        let radius = match grow {
+            Grow::AddAreas => total.sqrt(),
+            Grow::Times(t) => ra * t,
+        };
+        if !(middle.is_finite() && velocity.is_finite() && radius.is_finite()) {
+            return;
+        }
+        let place = if self.clear_way(pa, middle) { middle } else { pa };
+        let step = self.step;
+        // The other ball goes first, so its trail runs out where it was.
+        if let Some(b) = self.bodies.get_mut(&other.0) {
+            let i = other.1 as usize;
+            pop(b, i, other.0, step, log);
+            b.held[i] = false;
+        }
+        rules.frozen.retain(|f| !(f.thing == other.0 && f.row == other.1));
+        rules.forget_row(other.0, other.1);
+        let b = self.bodies.get_mut(&that.0).expect("checked live");
+        let i = that.1 as usize;
+        b.position[i] = place;
+        b.previous[i] = place;
+        b.start[i] = place;
+        b.radius[i] = radius.max(0.5);
+        match held(&rules.frozen, that) {
+            Some(k) => rules.frozen[k].velocity = velocity,
+            None => b.velocity[i] = velocity,
+        }
+    }
+
     /// Whether `to` is on the same side as `from` of every wall balls bounce off: a ball whose
     /// centre was at `from` may be put at `to`.
     pub fn clear_way(&self, from: Vec2, to: Vec2) -> bool {

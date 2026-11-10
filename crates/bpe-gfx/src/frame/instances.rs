@@ -276,11 +276,25 @@ pub struct PathInstance {
     /// in `Frame::path_points` (in the shape's own units), how many (0: no clip), how far it has
     /// faded (0 shows it whole, 1 not at all), spare. All 0 draws it as ever.
     pub clip: [f32; 4],
+    /// A shape's openings (Gaps): its first record in `Frame::path_points` and how many (0: none),
+    /// spare, spare. Each opening is two records: where round the outline it runs (from, to, as
+    /// the shaders' `along` measures it, wrapping when from > to) and its two round ends (x, y, x,
+    /// y in shape units). See [`Frame::cut_gaps`](crate::Frame::cut_gaps).
+    pub gaps: [f32; 4],
 }
 
 impl Default for PathInstance {
     fn default() -> Self {
-        Self { a: [0.0; 4], b: [0.0; 4], c: [0.0; 4], color: [0.0; 4], layers: [0; 4], hit: NO_HIT, clip: [0.0; 4] }
+        Self {
+            a: [0.0; 4],
+            b: [0.0; 4],
+            c: [0.0; 4],
+            color: [0.0; 4],
+            layers: [0; 4],
+            hit: NO_HIT,
+            clip: [0.0; 4],
+            gaps: [0.0; 4],
+        }
     }
 }
 

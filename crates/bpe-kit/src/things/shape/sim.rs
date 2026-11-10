@@ -2,8 +2,10 @@
 
 use std::f32::consts::FRAC_PI_2;
 
+use std::sync::Arc;
+
 use bpe_core::{ResolvedThing, Settings, Thing, ThingId};
-use bpe_runtime::{Outline, Pose, ThingSim, Wall, World, state_mut};
+use bpe_runtime::{Gaps, Outline, Pose, ThingSim, Wall, World, state_mut};
 use glam::Vec2;
 
 use super::{KIND, ShapeFill, ShapeSettings, ShapeStart};
@@ -27,6 +29,8 @@ pub struct ShapeState {
     /// Its outline in shape units, moulded or not (`ShapeSettings::outline_path`): the corners
     /// and sides a hit's Place and Side are read against.
     pub path: bpe_core::ShapePath,
+    /// Its openings (Gaps), measured on the outline's own frame so they turn and shrink with it.
+    pub gaps: Option<Arc<Gaps>>,
 }
 
 impl ShapeState {
@@ -71,6 +75,7 @@ impl ShapeState {
             growth,
             velocity: anchor.velocity,
             passes: self.settings.passes,
+            gaps: self.gaps.clone(),
         }
     }
 }
@@ -114,6 +119,38 @@ pub fn base_outline(settings: &ShapeSettings, center: Vec2, turn: f32) -> Outlin
     }
 }
 
+/// The openings `settings` asks for on `base` (the outline at full size, built turned by
+/// `rotation`): `None` with no gaps. A round ring and an ellipse measure places by the angle from
+/// their own top; any other outline by the length along its own corners from the first.
+pub fn gaps_for(settings: &ShapeSettings, base: &Outline, rotation: f32) -> Option<Arc<Gaps>> {
+    let spans = settings.gap_spans();
+    if spans.is_empty() {
+        return None;
+    }
+    let guide = match base {
+        Outline::Ring { sides: 0..3, .. } | Outline::Ellipse { .. } => None,
+        _ => {
+            let points = settings.outline_path().flatten(bpe_core::shape_path::FLATTEN);
+            if points.len() < 3 {
+                return None;
+            }
+            let turn = Vec2::from_angle(rotation - base.angle());
+            let (unit, reach) = (settings.unit(), base.reach().max(1e-6));
+            let own: Vec<Vec2> = points.iter().map(|p| turn.rotate(*p * unit) / reach).collect();
+            let n = own.len();
+            let mut along = Vec::with_capacity(n);
+            let mut total = 0.0f32;
+            for i in 0..n {
+                along.push(total);
+                total += (own[(i + 1) % n] - own[i]).length();
+            }
+            let places: Vec<f32> = along.iter().map(|a| if total > 0.0 { a / total } else { 0.0 }).collect();
+            Some((own.into(), places.into()))
+        }
+    };
+    Some(Arc::new(Gaps { spans, guide }))
+}
+
 impl ThingSim for ShapeSim {
     fn kind(&self) -> &'static str {
         KIND
@@ -125,7 +162,8 @@ impl ThingSim for ShapeSim {
         let rotation = anchor.angle;
         let base = base_outline(&settings, anchor.position, rotation);
         let path = settings.outline_path();
-        let st = ShapeState { settings, base, rotation, angle: 0.0, scale: 1.0, anchor, path };
+        let gaps = gaps_for(&settings, &base, rotation);
+        let st = ShapeState { settings, base, rotation, angle: 0.0, scale: 1.0, anchor, path, gaps };
         let spin = st.settings.spin.to_radians();
         world.walls.insert(thing.id, st.wall(&anchor, 0.0));
         world.poses.insert(thing.id, Pose { spin: anchor.spin + spin, ..anchor });
@@ -147,6 +185,12 @@ impl ThingSim for ShapeSim {
         // (which would allocate every step).
         if (s.start, s.sides, &s.path) != (settings.start, settings.sides, &settings.path) {
             st.path = settings.outline_path();
+        }
+        // The openings follow their own keys and the outline's form; a key on Size alone keeps them
+        // (they are measured in the outline's own frame).
+        let form = |s: &ShapeSettings| (s.start, s.sides, s.path.clone(), s.width / s.height.max(1e-6), s.turn, s.fill);
+        if st.settings.gap_spans() != settings.gap_spans() || form(&st.settings) != form(&settings) {
+            st.gaps = gaps_for(&settings, &st.base, st.rotation);
         }
         st.settings = settings;
         let wall = st.wall(&anchor, growth);
@@ -537,5 +581,73 @@ mod tests {
         let mut w = world(&with(s));
         w.advance_to(10.0, &kit().sims, &mut Log::default());
         assert!(matches!(w.walls[&SHAPE].outline, Outline::Path { scale, .. } if (scale - 100.0).abs() < 1e-2));
+    }
+
+    #[test]
+    fn no_gaps_build_a_closed_wall_and_a_filled_shape_ignores_them() {
+        assert!(world(&with(ShapeSettings::circle(300.0, 4.0))).walls[&SHAPE].gaps.is_none());
+        let filled = ShapeSettings { gaps: 2, fill: ShapeFill::Filled, ..ShapeSettings::circle(300.0, 4.0) };
+        assert!(world(&with(filled)).walls[&SHAPE].gaps.is_none());
+        let open = ShapeSettings { gaps: 2, ..ShapeSettings::circle(300.0, 4.0) };
+        let gaps = world(&with(open)).walls[&SHAPE].gaps.clone().expect("gaps");
+        assert_eq!(gaps.spans, vec![(0.0, 0.06), (0.5, 0.06)]);
+    }
+
+    #[test]
+    fn gap_size_is_capped_so_some_band_is_left() {
+        let s = ShapeSettings { gaps: 8, gap_size: 0.5, ..ShapeSettings::circle(300.0, 4.0) };
+        for (_, half) in s.gap_spans() {
+            assert!((half * 2.0 - 0.9 / 8.0).abs() < 1e-6, "{half}");
+        }
+    }
+
+    /// A spinning hexagon's gap turns with it: its ends stay at the same places of the outline.
+    #[test]
+    fn gaps_turn_and_shrink_with_the_shape() {
+        let kit = kit();
+        let mut s = ShapeSettings { gaps: 1, gap_at: 0.5, gap_size: 0.1, ..ShapeSettings::polygon(6, 400.0, 6.0) };
+        s.spin = 90.0;
+        s.shrink = 0.2;
+        s.min_size = 200.0;
+        let scene = with(s);
+        let mut w = world(&scene);
+        let mid = scene.things[&SHAPE].transform.position;
+        let ends = |w: &World| {
+            let wall = &w.walls[&SHAPE];
+            wall.gaps.as_ref().unwrap().ends(&wall.outline, 0)
+        };
+        let (a0, b0) = ends(&w);
+        // Places along the hexagon read back the way they were set.
+        let wall = w.walls[&SHAPE].clone();
+        let g = wall.gaps.as_ref().unwrap();
+        assert!((g.place(&wall.outline, a0) - 0.45).abs() < 1e-3 && (g.place(&wall.outline, b0) - 0.55).abs() < 1e-3);
+        // Half way round from the first corner (the top left one of this flat-topped hexagon) is the
+        // bottom right corner.
+        let middle = g.at(&wall.outline, 0.5);
+        assert!((middle - (mid + Vec2::from_angle(std::f32::consts::FRAC_PI_3) * 400.0)).length() < 0.5, "{middle}");
+        w.advance_to(1.0, &kit.sims, &mut Log::default());
+        let (a1, b1) = ends(&w);
+        let turn = |p: Vec2| (p - mid).to_angle();
+        let turned = (turn(a1) - turn(a0)).rem_euclid(std::f32::consts::TAU);
+        assert!((turned - FRAC_PI_2).abs() < 0.02, "the gap turned with the shape: {turned}");
+        assert!((b1 - mid).length() < (b0 - mid).length() * 0.85, "and shrank with it");
+    }
+
+    #[test]
+    fn a_box_drawn_anticlockwise_cuts_only_its_gap() {
+        // A rectangle whose corners go round the other way still draws as a box (corners clockwise):
+        // the drawn cut is the gap's own short arc, not the rest of the band.
+        let mut s =
+            ShapeSettings { gaps: 1, gap_at: 0.3, gap_size: 0.1, ..ShapeSettings::rectangle(600.0, 400.0, 8.0) };
+        s.path.points.reverse();
+        let scene = with(s);
+        let w = world(&scene);
+        let wall = &w.walls[&SHAPE];
+        assert!(matches!(wall.outline, bpe_runtime::Outline::Box { .. }), "{:?}", wall.outline);
+        let gaps = wall.gaps.as_deref().unwrap();
+        let form = super::super::draw::wall_form(wall);
+        let cuts = super::super::draw::gap_cuts(&form, wall, gaps);
+        let (from, to, _, _) = cuts[0];
+        assert!((to - from).rem_euclid(1.0) < 0.2, "a short cut: {from} to {to}");
     }
 }

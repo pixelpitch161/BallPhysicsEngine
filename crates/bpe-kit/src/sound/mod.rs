@@ -21,7 +21,9 @@ pub use mods::{
     LfoStart, LightFollows, LightModSettings, LightReads, MAX_OF_EACH, MOD_KINDS, Measure, NoteFeel, NoteLength,
     add_modulator, count_of, curve_numbers, kind_name, numbered_name, turn_on_distance,
 };
-pub use notes::{BeatsOrBars, Change, MAX_SLOTS, NOTE_NAMES, Plays, Root, Scale, SlotOrder, StrumDir};
+pub use notes::{
+    BeatsOrBars, Change, MAX_MELODY, MAX_SLOTS, MelodyEnd, NOTE_NAMES, Plays, Root, Scale, SlotOrder, StrumDir,
+};
 pub use voice::{
     GateMode, GateUnit, MomentStrength, NoiseColour, OscSettings, PhaseMode, PlayMode, PlayWhen, SILENT_DB, SampleLoop,
     SubOctave, SubWave, VOICE, VoiceKind, VoiceSettings, WarpMode, Wave, hears_own_balls, starter_voice,

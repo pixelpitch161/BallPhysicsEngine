@@ -271,6 +271,7 @@ mod tests {
             growth: 0.0,
             velocity: Vec2::ZERO,
             passes: false,
+            gaps: None,
         };
         let walls = [&wall];
         let m = Motion { walls: &walls, pull_to: None };
@@ -300,7 +301,7 @@ mod tests {
 
     fn ring(radius: f32) -> Wall {
         let outline = Outline::Ring { center: Vec2::ZERO, radius, sides: 0, angle: 0.0, thickness: 2.0 };
-        Wall { outline, solid: false, spin: 0.0, growth: 0.0, velocity: Vec2::ZERO, passes: false }
+        Wall { outline, solid: false, spin: 0.0, growth: 0.0, velocity: Vec2::ZERO, passes: false, gaps: None }
     }
 
     #[test]

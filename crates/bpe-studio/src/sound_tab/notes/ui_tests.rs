@@ -315,3 +315,42 @@ fn jump_to_slot_says_it_works_by_keys() {
     assert!(h.query_by_label("Jump to slot").is_some());
     assert!(h.query_by_label("keys only: right-click it, Create Keyframe").is_some(), "the plain value does nothing");
 }
+
+fn melody_of(h: &H) -> Vec<Vec<u8>> {
+    match choice(h, super::melody::MELODY) {
+        Some(Value::Slots(s)) => s.into_iter().map(|s| s.notes).collect(),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Clicks a control that may sit below the fold.
+fn press(h: &mut H, name: &str) {
+    h.get_by_role_and_label(Role::Button, name).scroll_to_me();
+    h.run();
+    h.get_by_role_and_label(Role::Button, name).click();
+    h.run();
+}
+
+#[test]
+fn melody_steps_can_be_added_and_removed() {
+    let mut h = sounding();
+    let reg = bpe_kit::registry();
+    let plays = Address::on(SHAPE, SlotId::Sound, "notes_plays");
+    h.state_mut().0.scene.set_at(&reg, &plays, Value::Choice("melody".into())).unwrap();
+    h.run();
+    assert!(h.query_by_role_and_label(Role::Button, "Slot 1").is_none(), "the slots rest");
+    assert_eq!(melody_of(&h), Vec::<Vec<u8>>::new());
+    press(&mut h, "C5");
+    assert_eq!(melody_of(&h), [vec![60]], "a key on an empty melody makes step 1");
+    press(&mut h, "Add step");
+    press(&mut h, "E5");
+    press(&mut h, "G5");
+    assert_eq!(melody_of(&h), [vec![60], vec![64, 67]], "the new step is picked; a chord");
+    assert!(h.query_by_role_and_label(Role::Button, "Step 2").is_some());
+    press(&mut h, "Step 1");
+    press(&mut h, "Remove step");
+    assert_eq!(melody_of(&h), [vec![64, 67]]);
+    press(&mut h, "Clear melody");
+    assert_eq!(melody_of(&h), Vec::<Vec<u8>>::new());
+    assert!(h.query_by_label("Import MIDI as a melody").is_some());
+}

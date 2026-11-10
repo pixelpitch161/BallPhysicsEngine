@@ -11,7 +11,7 @@ mod remains;
 mod shows;
 mod sim;
 
-pub use actions::{Action, CountHow, MotionChange, TextOp, WHOLE};
+pub use actions::{Action, CountHow, Grow, MotionChange, TextOp, WHOLE};
 pub use changes::{Change, ChangeKey, How, apply_to, fold};
 pub use firing::{Firing, Signal, Values};
 pub use health::{Health, HealthCard, HealthChange, HealthMoment, HealthSim, Hp, Takes, aimed};

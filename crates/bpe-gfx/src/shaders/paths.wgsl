@@ -21,6 +21,9 @@ struct PathIn {
     // A broken thing's look (rules part 3): the first corner of its convex clip in path_points
     // (shape units), how many (0: none), how far it has faded, spare.
     @location(6) clip: vec4<f32>,
+    // A shape's openings (Gaps): the first of its records in path_points, how many, spare, spare
+    // (see `gap_cut`).
+    @location(7) gaps: vec4<f32>,
 };
 
 struct PathOut {
@@ -33,6 +36,7 @@ struct PathOut {
     @location(5) @interpolate(flat) layers: vec4<u32>,
     @location(6) @interpolate(flat) hit: vec4<f32>,
     @location(7) @interpolate(flat) clip: vec4<f32>,
+    @location(8) @interpolate(flat) gaps: vec4<f32>,
 };
 
 @group(2) @binding(4) var<storage, read> path_points: array<vec4<f32>>;
@@ -113,6 +117,7 @@ fn vs_path(@builtin(vertex_index) i: u32, s: PathIn) -> PathOut {
     out.layers = s.layers;
     out.hit = s.hit;
     out.clip = s.clip;
+    out.gaps = s.gaps;
     return out;
 }
 
@@ -173,10 +178,75 @@ fn glyph_signed(q: vec2<f32>, b: vec4<f32>) -> f32 {
     return (past - inside) * half;
 }
 
+// ---- Gaps: openings in a shape's band (`Frame::cut_gaps`) ----
+
+// Where round the outline the point nearest `q` (shape units) is, 0 to 1 clockwise from point 0
+// (a circle's or an ellipse's top, an ellipse by the angle it is drawn with), as `shape_at`
+// measures it. Only shapes take gaps: a letter's contours never come here.
+fn path_along(q: vec2<f32>, b: vec4<f32>) -> f32 {
+    let tau = 6.28318531;
+    if b.y < 0.5 {
+        return fract(atan2(q.x, -q.y) / tau + 1.0);
+    }
+    if b.y > 1.5 {
+        let ab = max(b.zw, vec2<f32>(1e-6));
+        let c = ellipse_nearest(q, ab);
+        return fract(atan2(c.x / ab.x, -c.y / ab.y) / tau + 1.0);
+    }
+    let first = u32(b.z);
+    let n = u32(b.w);
+    var best = 1e30;
+    var best_at = 0.0;
+    var total = 0.0;
+    for (var k = 0u; k < n; k++) {
+        let p0 = path_points[first + k].xy;
+        let p1 = path_points[first + (k + 1u) % n].xy;
+        let e = p1 - p0;
+        let len = length(e);
+        let h = clamp(dot(q - p0, e) / max(dot(e, e), 1e-12), 0.0, 1.0);
+        let d = length(q - p0 - e * h);
+        if d < best {
+            best = d;
+            best_at = total + h * len;
+        }
+        total += len;
+    }
+    return best_at / max(total, 1e-6);
+}
+
+// `sd` (the signed distance from the outline at `q`, world pixels) with the shape's openings cut
+// out: where the outline's nearest point (`along` round it) is in an opening, the distance to the
+// nearer of its two round ends instead, with the same sign. `scale` is world pixels per shape unit.
+fn gap_cut(q: vec2<f32>, along: f32, sd: f32, gaps: vec4<f32>, scale: f32) -> f32 {
+    let first = u32(gaps.x + 0.5);
+    let n = u32(gaps.y + 0.5);
+    for (var k = 0u; k < n; k++) {
+        let span = path_points[first + 2u * k];
+        let wraps = span.x > span.y;
+        let open = select(along >= span.x && along <= span.y, along >= span.x || along <= span.y, wraps);
+        if open {
+            let ends = path_points[first + 2u * k + 1u];
+            let d = min(length(q - ends.xy), length(q - ends.zw)) * scale;
+            return select(d, -d, sd < 0.0);
+        }
+    }
+    return sd;
+}
+
 // Distance from the outline in world pixels: negative inside (even-odd, so a self-crossing
 // outline still has an inside). A letter's points are several closed contours (see
 // `Frame::push_letter`: z 2 a contour's first point, z 1 its last, w its count less one).
 fn path_signed(in: PathOut) -> f32 {
+    let sd = path_signed_whole(in);
+    if in.gaps.y < 0.5 {
+        return sd;
+    }
+    let q = path_local(in);
+    return gap_cut(q, path_along(q, in.b), sd, in.gaps, in.a.w);
+}
+
+// `path_signed` of the whole outline, before any openings are cut.
+fn path_signed_whole(in: PathOut) -> f32 {
     let q = path_local(in);
     if in.b.y < 0.5 {
         return (length(q) - 1.0) * in.a.w;
@@ -307,7 +377,7 @@ fn shade_path_unstyled(in: PathOut) -> vec4<f32> {
         }
     }
     if in.layers.y > 0u {
-        return shade_shape_layers(in.world, in.a, in.b, in.c, in.layers, in.hit, keep);
+        return shade_shape_layers(in.world, in.a, in.b, in.c, in.layers, in.hit, in.gaps, keep);
     }
     var cover = path_cover(in) * abs(in.color.a);
     if keep < 1.0 {

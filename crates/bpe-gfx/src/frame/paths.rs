@@ -35,8 +35,26 @@ impl Frame {
             layers: [0, 0, PathInstance::NO_PROGRAM, 0],
             hit: NO_HIT,
             clip: [0.0; 4],
+            gaps: [0.0; 4],
         });
         self.paths.len() - 1
+    }
+
+    /// Cuts openings into shape `index` (a band, from [`Frame::push_path`] or
+    /// [`Frame::push_ellipse`]): each `(from, to, end_a, end_b)` is where round the outline the
+    /// opening runs, as the shaders measure it (`path_along` in paths.wgsl), and its two ends in the shape's
+    /// own units. Where the outline's nearest point is in an opening, the shape is drawn as the
+    /// round ends of its band there.
+    pub fn cut_gaps(&mut self, index: usize, gaps: &[(f32, f32, Vec2, Vec2)]) {
+        if gaps.is_empty() || index >= self.paths.len() {
+            return;
+        }
+        let first = self.path_points.len();
+        for &(from, to, a, b) in gaps {
+            self.path_points.push([from, to, 0.0, 0.0]);
+            self.path_points.push([a.x, a.y, b.x, b.y]);
+        }
+        self.paths[index].gaps = [first as f32, gaps.len() as f32, 0.0, 0.0];
     }
 
     /// Adds an exact ellipse with half-axes `axes` (shape units, the larger one at most 1) to the
@@ -62,6 +80,7 @@ impl Frame {
             layers: [0, 0, PathInstance::NO_PROGRAM, 0],
             hit: NO_HIT,
             clip: [0.0; 4],
+            gaps: [0.0; 4],
         });
         self.paths.len() - 1
     }
@@ -121,6 +140,7 @@ impl Frame {
             layers: [0, 0, PathInstance::NO_PROGRAM, 0],
             hit: NO_HIT,
             clip: [clip_first as f32, 4.0, 0.0, 0.0],
+            gaps: [0.0; 4],
         });
         Some(self.paths.len() - 1)
     }
@@ -176,6 +196,7 @@ impl Frame {
             layers: [0, 0, PathInstance::NO_PROGRAM, 0],
             hit: NO_HIT,
             clip: [clip_first as f32, 4.0, 0.0, 0.0],
+            gaps: [0.0; 4],
         });
         Some(self.paths.len() - 1)
     }

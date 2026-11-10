@@ -469,6 +469,9 @@ pub struct ShapeVoice {
     slot_hits: u64,
     /// The slot's turn those hits count from.
     slot_turn: u64,
+    /// Accepted hits since the start of the clip, for Plays Melody (never starts again with a
+    /// slot).
+    melody_hits: u64,
     strums: [Strum; MAX_STRUMS],
     n_strums: usize,
     /// The notes held (Always, In range): their voice slots and notes.
@@ -621,6 +624,7 @@ impl ShapeVoice {
             picker: AnyPick::new(spec.notes.plays),
             clock: SlotClock::new(spec.slots.len(), super::slots::clock_seed(spec.thing)),
             slot_hits: 0,
+            melody_hits: 0,
             slot_turn: 0,
             strums: [Strum {
                 sample: 0,
@@ -710,6 +714,17 @@ impl ShapeVoice {
             .map(|i| self.notes.slots[i].note)
             .collect();
         v.sort_unstable();
+        v
+    }
+
+    /// The pitches sounding now (not fading), in semitones from MIDI 0, lowest first: a note's
+    /// pitch after Pitch follows size. For tests; allocates.
+    pub fn playing_pitches(&self) -> Vec<f32> {
+        let mut v: Vec<f32> = (0..CAPACITY)
+            .filter(|&i| self.notes.meta[i].active && !self.notes.meta[i].fading)
+            .map(|i| self.notes.slots[i].pitch)
+            .collect();
+        v.sort_unstable_by(f32::total_cmp);
         v
     }
 
@@ -926,6 +941,9 @@ impl ShapeVoice {
         let ncx = NoteCx { sample, hit: hv, ball: (ball != AUDITION_BALL).then_some(ball) };
         let across = if self.spec.width > 0.0 { (point.x / (self.spec.width * 0.5)).clamp(-1.0, 1.0) } else { 0.0 };
         let mono = self.spec.play_mode == PlayMode::Mono && !self.own_voice;
+        let pitch = note as f32 + size_shift(&self.spec.notes, cx.world, ball);
+        // The note logged (MIDI export, rule notes) is the one heard, to the nearest semitone.
+        let heard = pitch.round().clamp(0.0, 127.0) as u8;
         if mono && self.notes.meta[0].active && !self.notes.meta[0].fading {
             // Mono with a note still sounding: the envelopes start again from where they are
             // and the pitch glides there.
@@ -940,11 +958,11 @@ impl ShapeVoice {
             n.across = across;
             if glide > 0 {
                 n.glide_from = n.pitch;
-                n.glide_to = note as f32;
+                n.glide_to = pitch;
                 n.glide_len = glide;
                 n.glide_left = glide;
             } else {
-                n.pitch = note as f32;
+                n.pitch = pitch;
                 n.glide_left = 0;
             }
             for e in 0..envs {
@@ -972,7 +990,7 @@ impl ShapeVoice {
                 n.light[i].note_on(&ncx);
             }
             self.notes.meta[0].started = sample;
-            self.log_note(cx, sample, note, strength);
+            self.log_note(cx, sample, heard, strength);
             return Some(0);
         }
         let (slot, steal) = if mono {
@@ -992,7 +1010,7 @@ impl ShapeVoice {
             (s.slot, s.steal)
         };
         // Logged once it has a voice (a note with none plays nothing).
-        self.log_note(cx, sample, note, strength);
+        self.log_note(cx, sample, heard, strength);
         if let Some(s) = steal {
             self.notes.slots[s].fade_out(STEAL_MS);
         }
@@ -1001,7 +1019,7 @@ impl ShapeVoice {
             std::array::from_fn(|e| if e < envs { self.gate_samples(e, cx.tempo) } else { u64::MAX });
         let params: [EnvParams; MAX_ENVS] =
             std::array::from_fn(|e| if e < envs { self.env_params(e) } else { EnvParams::default() });
-        let unison = self.unison_params(note as f32);
+        let unison = self.unison_params(pitch);
         let osc_on = self.plays;
         let subs: [(SubWaveId, u8); 2] = std::array::from_fn(|o| {
             let spec = &self.spec.osc[o];
@@ -1021,7 +1039,7 @@ impl ShapeVoice {
         n.strength = strength;
         n.ball = ball;
         n.across = across;
-        n.pitch = note as f32;
+        n.pitch = pitch;
         n.glide_left = 0;
         n.fade = 1.0;
         n.fade_step = 0.0;
@@ -1138,6 +1156,19 @@ impl ShapeVoice {
     /// Hit `hit` (accepted) at `sample` picks its notes. Returns them, the strum and the seed.
     fn pick_for(&mut self, cx: &BlockCx, hit: &BlockHit, time: f64) -> super::notes::NotePick {
         let slot = self.slot_now();
+        // Every accepted hit counts for the melody, whatever Plays is now, so a switch to Melody
+        // or a seek lands on the step playing from the start would.
+        let melody_hit = self.melody_hits;
+        self.melody_hits += 1;
+        if self.spec.notes.plays == bpe_kit::sound::Plays::Melody {
+            // The next step of the melody: a note, or every note of a chord.
+            let n = &self.spec.notes;
+            let Some(k) = super::pick::melody_step(n.melody.len(), melody_hit, n.repeat, n.melody_end) else {
+                return Default::default();
+            };
+            let seed = mix(((self.spec.thing.0 as u64) << 32) ^ mix(melody_hit ^ 0x3E10));
+            return super::pick::melody_pick(&n.melody[k].notes, n.strum_s(time), n.strum_dir, seed);
+        }
         let Some(notes) = self.spec.slots.get(slot) else { return Default::default() };
         let ball = hit.event.a;
         let n = &self.spec.notes;
@@ -2028,6 +2059,7 @@ impl VoiceSource for ShapeVoice {
         self.picker.reset();
         self.slot_hits = 0;
         self.slot_turn = 0;
+        self.melody_hits = 0;
         self.n_strums = 0;
         self.n_held = 0;
         for m in &mut self.lfo {
@@ -2055,6 +2087,7 @@ impl VoiceSource for ShapeVoice {
         self.clock.take_over(&old.clock, &self.spec.notes);
         self.slot_turn = old.slot_turn;
         self.slot_hits = old.slot_hits;
+        self.melody_hits = old.melody_hits;
         if self.spec.notes.plays == old.spec.notes.plays {
             self.picker = old.picker;
         }
@@ -2294,4 +2327,20 @@ impl VoiceSource for ShapeVoice {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
+}
+
+/// Pitch follows size: semitones to add to a note `ball` plays, `size_pitch` lower for each
+/// doubling of its size past `size_at` (higher for a smaller ball), at most four octaves either
+/// way. Nothing for a ball no longer in the world, or a key clicked by hand.
+fn size_shift(n: &super::slots::NotesSpec, world: &bpe_runtime::World, ball: Party) -> f32 {
+    if n.size_pitch == 0.0 || ball == AUDITION_BALL {
+        return 0.0;
+    }
+    let Some(r) = world.bodies.get(&ball.thing).and_then(|b| b.radius.get(ball.item as usize).copied()) else {
+        return 0.0;
+    };
+    if r.is_nan() || r <= 0.0 {
+        return 0.0;
+    }
+    (-n.size_pitch * (r / n.size_at.max(1.0)).log2()).clamp(-48.0, 48.0)
 }

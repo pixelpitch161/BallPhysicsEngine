@@ -131,6 +131,15 @@ impl<'a> Lib<'a> {
             .unwrap_or_else(|e| panic!("{look}: {e}"));
     }
 
+    /// Dresses a shape in a ready-made look, its Colour layer then set to `colour`.
+    pub fn look_in(&mut self, id: ThingId, look: &str, colour: Color) {
+        use crate::modules::look::shape::PAINT;
+        self.look(id, look);
+        let card = self.scene.card_mut(id, SlotId::Look).expect("a Look card");
+        let paint = card.layers.iter().find(|x| x.kind == PAINT && x.parent.is_none()).expect("a Colour layer").id;
+        card.params.set(&layered_key(paint, "colours"), Value::Gradient(bpe_core::Gradient::solid(colour)));
+    }
+
     /// Gives `id` the sound "Enable sound" adds (the starter voice).
     pub fn sound(&mut self, id: ThingId) {
         let card = crate::sound::starter_voice(self.reg);
@@ -158,6 +167,16 @@ impl<'a> Lib<'a> {
         let id = add_text(&mut self.scene, self.reg, look, ThingId::ROOT).unwrap_or_else(|e| panic!("{name}: {e}"));
         self.scene.rename_thing(id, name);
         self.params(id, |s: &mut TextSettings| s.words = words.into());
+        id
+    }
+
+    /// A Text made from one of the Text's own looks with its own words in place of the look's, laid out (and
+    /// its balls placed) for them.
+    pub fn text_saying(&mut self, look: Look, name: &str, words: &str) -> ThingId {
+        let id =
+            crate::things::text::looks::add_text_saying(&mut self.scene, self.reg, look, ThingId::ROOT, Some(words))
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+        self.scene.rename_thing(id, name);
         id
     }
 
@@ -199,6 +218,30 @@ impl<'a> Lib<'a> {
             v.notes_root = root;
             v.notes_scale = scale;
         });
+    }
+
+    /// Gives `id` the card the editor's Add card puts in `slot` (a Health card, say).
+    pub fn fill(&mut self, id: ThingId, slot: SlotId) {
+        crate::fill_slot(&mut self.scene, self.reg, id, slot).unwrap_or_else(|e| panic!("{slot:?}: {e}"));
+    }
+
+    /// A light of `kind` named `name` at `at`, its settings changed by `f`. The scene gets its Lighting card
+    /// as the editor gives it with the first light.
+    pub fn light(
+        &mut self,
+        name: &str,
+        kind: crate::things::light::LightType,
+        at: Vec2,
+        f: impl FnOnce(&mut crate::things::light::LightSettings),
+    ) -> ThingId {
+        let id = crate::things::light::add_light(&mut self.scene, self.reg, kind, ThingId::ROOT)
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        self.scene.rename_thing(id, name);
+        self.params(id, |l: &mut crate::things::light::LightSettings| {
+            l.position = at;
+            f(l);
+        });
+        id
     }
 
     /// The thing as a rule names it.

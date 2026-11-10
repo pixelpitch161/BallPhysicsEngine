@@ -120,6 +120,39 @@ pub fn place(plays: Plays, s: u64, len: usize, seed: u64) -> usize {
     }
 }
 
+/// The melody step a hit plays: `hits` accepted hits came before it, each step held for `repeat`
+/// hits; past the last of `len` steps it starts again or holds the last. `None` for an empty
+/// melody.
+pub fn melody_step(len: usize, hits: u64, repeat: u32, end: bpe_kit::sound::MelodyEnd) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let step = hits / repeat.max(1) as u64;
+    Some(match end {
+        bpe_kit::sound::MelodyEnd::Wrap => (step % len as u64) as usize,
+        bpe_kit::sound::MelodyEnd::Hold => step.min(len as u64 - 1) as usize,
+    })
+}
+
+/// A melody step's `notes` (lowest first) as one pick, strummed as All at once strums: over
+/// `strum_s` in `dir` (Random shuffled by `seed`).
+pub fn melody_pick(notes: &[u8], strum_s: f32, dir: StrumDir, seed: u64) -> NotePick {
+    let n = notes.len().min(MAX_PICK);
+    let mut pick = NotePick::default();
+    let random = if dir == StrumDir::Random { n } else { 0 };
+    let order = shuffled(random, seed);
+    for (i, &shuffled_i) in order.iter().enumerate().take(n) {
+        let j = match dir {
+            StrumDir::Up => i,
+            StrumDir::Down => n - 1 - i,
+            StrumDir::Random => shuffled_i as usize,
+        };
+        pick.push(notes[j].min(127));
+    }
+    pick.strum = if n > 1 { strum_s.max(0.0) / (n - 1) as f32 } else { 0.0 };
+    pick
+}
+
 /// 0..len in an order shuffled by `seed` (Fisher–Yates).
 fn shuffled(len: usize, seed: u64) -> [u8; MAX_RUN] {
     let mut p = [0u8; MAX_RUN];
@@ -331,6 +364,8 @@ impl AnyPick {
             Plays::ByLetter => AnyPick::Who(WhoPick { who: Who::Letter }),
             Plays::SpellNotes => AnyPick::Spell(SpellPick),
             Plays::AllAtOnce => AnyPick::Chord(ChordPick),
+            // The voice plays a melody itself (`melody_step`); a slot read as one runs up.
+            Plays::Melody => AnyPick::Step(StepPick(Plays::Up)),
             p => AnyPick::Step(StepPick(p)),
         }
     }

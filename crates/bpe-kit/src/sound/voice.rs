@@ -5,7 +5,7 @@
 
 use super::adsr::{ADSR, AdsrSettings};
 use super::mods::{DISTANCE, LFO};
-use super::notes::{BeatsOrBars, Change, Plays, Root, Scale, SlotOrder, StrumDir};
+use super::notes::{BeatsOrBars, Change, MelodyEnd, Plays, Root, Scale, SlotOrder, StrumDir};
 use bpe_core::{
     Choice, GroupOpts, Layer, LayerId, ModRoute, ModuleKind, NoteSlot, Params, ROUTES_KEY, Registry, SettingDef,
     SettingGroup, Settings, Slot, SlotId, Target, Value,
@@ -465,6 +465,20 @@ pub struct VoiceSettings {
     /// 0 only hard hits get loud. 0 is straight.
     #[setting(label = "Strength curve", range(-100, 100), group = "Playing", keyframe)]
     pub play_curve: f32,
+    /// A bigger ball plays lower: semitones down for every doubling of the ball's size (below 0,
+    /// higher). 0 leaves the pitch alone.
+    #[setting(label = "Pitch follows size", range(-48, 48), span(-24, 24), unit = "st", group = "Playing")]
+    pub play_size_pitch: f32,
+    /// The ball size that plays the notes as written.
+    #[setting(
+        label = "Size for the written note",
+        range(1, 2000),
+        span(2, 200),
+        unit = "px",
+        group = "Playing",
+        when = "play_size_pitch"
+    )]
+    pub play_size_at: f32,
     /// Which balls' hits play notes.
     #[setting(label = "Hits from", group = "Playing")]
     pub play_heard_from: Target,
@@ -522,6 +536,12 @@ pub struct VoiceSettings {
     /// How each hit picks notes from the slot playing.
     #[setting(label = "Plays", group = "Notes")]
     pub notes_plays: Plays,
+    /// Plays Melody: the steps, one a hit (each a note or a chord), up to 1024.
+    #[setting(label = "Melody", group = "Notes", when = "notes_plays=melody")]
+    pub notes_melody: Vec<NoteSlot>,
+    /// What the melody does after its last step.
+    #[setting(label = "At the end", group = "Notes", when = "notes_plays=melody")]
+    pub notes_melody_end: MelodyEnd,
     /// How long a chord takes to strum, first note to last (0 plays them together).
     #[setting(
         label = "Strum",
@@ -599,6 +619,8 @@ impl Default for VoiceSettings {
             play_retrigger: 30.0,
             play_full_at: 1500.0,
             play_curve: 0.0,
+            play_size_pitch: 0.0,
+            play_size_at: 20.0,
             play_heard_from: Target::Anything,
             play_when: PlayWhen::OnHit,
             play_zone: String::new(),
@@ -618,6 +640,8 @@ impl Default for VoiceSettings {
             notes_root: Root::C,
             notes_scale: Scale::Major,
             notes_plays: Plays::Random,
+            notes_melody: Vec::new(),
+            notes_melody_end: MelodyEnd::Wrap,
             notes_strum: 0.0,
             notes_strum_dir: StrumDir::Up,
             notes_repeat: 1,
@@ -760,7 +784,7 @@ mod tests {
         assert_eq!(def("notes_scale").default, Value::Choice("major".into()));
         assert_eq!(def("notes_root").default, Value::Choice("c".into()));
         assert_eq!(Scale::ALL.len(), 12);
-        assert_eq!(Plays::ALL.len(), 15);
+        assert_eq!(Plays::ALL.len(), 16);
         assert_eq!(Root::Fs.label(), "F#");
     }
 
@@ -815,9 +839,10 @@ mod tests {
         assert_eq!(noise.when, "a_wave=noise");
         let sub = defs.iter().find(|d| d.key == "b_sub_level").unwrap();
         assert_eq!(sub.when, "b_wave!=noise and b_wave!=sample and b_sub!=off");
-        // Every number knob takes keys (a sample's place settings are read once, when the sound
-        // is built).
-        for d in defs.iter().filter(|d| matches!(d.default, Value::Number(_)) && !d.key.contains("sample_")) {
+        // Every number knob takes keys (a sample's place settings and Pitch follows size are read
+        // once, when the sound is built).
+        let built = |k: &str| k.contains("sample_") || k.starts_with("play_size_");
+        for d in defs.iter().filter(|d| matches!(d.default, Value::Number(_)) && !built(d.key)) {
             assert!(d.flags.keyframe, "{}", d.key);
         }
         for d in AdsrSettings::defs().iter().filter(|d| matches!(d.default, Value::Number(_))) {

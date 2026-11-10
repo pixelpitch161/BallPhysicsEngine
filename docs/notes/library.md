@@ -32,6 +32,11 @@ opens to a blank project; the scenes are only reached through the toolbar's **Sc
 4. Look at it at full size: `LOOK_OUT=<dir> LOOK_ONLY=library cargo test --release -p bpe-kit --test full_size_look
    -- --ignored --nocapture` (three moments per scene: the poster, 40% and 80%).
 
+Helpers in `library/build.rs`: `new`, `scene_settings`, `add`, `at`, `params`, `card`, `fill` (the card Add card puts
+in a slot, a Health card say), `layer`, `layer_params`, `look`, `look_in` (a ready look, then its Colour layer set to
+one colour), `sound`, `notes`, `rule`, `text`, `text_saying`, `ring`, `ball`, `light` (a light at a place; the scene
+gets its Lighting card), `who`, `finish`.
+
 ### Gotchas found while building
 
 - A rule's Change setting Multiply compounds per firing, but a Balls `radius` is clamped to its range (200), so
@@ -40,6 +45,11 @@ opens to a blank project; the scenes are only reached through the toolbar's **Sc
   scene.
 - Emitter rounds that fade before they land never hit: keep `fade_time` longer than the fall.
 - The Hit counter Text look is 260 big for a number alone; with a word beside it use about 120 to 140.
+- A single ball with no gravity bounces on a repeating path, so it keeps hitting the same few bricks: Breakable
+  bricks uses three balls fanned out. Time a poster on a hit (a throwaway test printing the Hit events' times
+  helps) when the idea is what a hit throws, as in Sparks on hit.
+- A real-letter Text look's balls are placed for its own words: use `Lib::text_saying` (`add_text_saying`) to give
+  it other words, never change Words afterwards. Balls inside a word glows on its own; keep the scene's bloom 0.
 
 ## Checks
 
@@ -83,3 +93,6 @@ opens to a blank project; the scenes are only reached through the toolbar's **Sc
 
 - Part 1 (2026-11-10): the library, starters 1 to 8 (First bounce, Ball in a circle, Grow every bounce, Shrinking
   box, Every bounce makes two, Rainbow drop, Fountain, String art), preview clips in bpe-cli and the Scenes window.
+- Part 2 (2026-11-10): starters 9 to 14 (Spinning triangle, Neon tube, Lit room, Breakable bricks, Bounce off words,
+  Sparks on hit) and three new pieces for later scenes: Gap in a shape (`engine.md`), Merge balls (`rules.md`) and
+  Plays Melody with Pitch follows size (`sound.md`). Plan `docs/superpowers/plans/built-in-scenes/part2.md`.

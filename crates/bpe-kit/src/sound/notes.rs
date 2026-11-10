@@ -141,10 +141,13 @@ pub enum Plays {
     SpellNotes,
     /// Every note together (or strummed).
     AllAtOnce,
+    /// Each hit plays the next step of the Melody list (a note, or a chord), from the first hit
+    /// of the video; the slots are not read.
+    Melody,
 }
 
 impl Plays {
-    pub const ALL: [Plays; 15] = [
+    pub const ALL: [Plays; 16] = [
         Plays::Random,
         Plays::Shuffle,
         Plays::Up,
@@ -160,6 +163,7 @@ impl Plays {
         Plays::ByLetter,
         Plays::SpellNotes,
         Plays::AllAtOnce,
+        Plays::Melody,
     ];
 
     pub fn label(self) -> &'static str {
@@ -179,6 +183,7 @@ impl Plays {
             Plays::ByLetter => "By letter",
             Plays::SpellNotes => "Spell notes",
             Plays::AllAtOnce => "All at once",
+            Plays::Melody => "Melody",
         }
     }
 }
@@ -278,3 +283,27 @@ impl SlotOrder {
 
 /// The most slots a shape has.
 pub const MAX_SLOTS: usize = 16;
+
+/// The most steps a melody holds.
+pub const MAX_MELODY: usize = 1024;
+
+/// What a melody does after its last step.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Choice)]
+pub enum MelodyEnd {
+    /// Starts again from the first step.
+    #[default]
+    Wrap,
+    /// Keeps playing the last step.
+    Hold,
+}
+
+impl MelodyEnd {
+    pub const ALL: [MelodyEnd; 2] = [MelodyEnd::Wrap, MelodyEnd::Hold];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MelodyEnd::Wrap => "Starts again",
+            MelodyEnd::Hold => "Holds the last",
+        }
+    }
+}

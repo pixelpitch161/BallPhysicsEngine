@@ -113,6 +113,7 @@ fn every_kind_is_registered_with_settings_under_rule() {
             "when.signal",
             "if.counter",
             "do.split",
+            "do.merge",
             "do.spawn",
             "do.fire",
             "do.tag",

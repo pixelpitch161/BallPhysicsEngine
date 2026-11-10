@@ -106,6 +106,17 @@ pub struct ShapeSettings {
     /// The moulded outline, in the shape's own units. Empty: the even polygon.
     #[setting(label = "Corners", group = "Body", when = "start=polygon")]
     pub path: ShapePath,
+    /// How many openings the band has, spread evenly round it: balls get out (and in) through
+    /// them. 0 is closed.
+    #[setting(label = "Gaps", group = "Body", when = "fill=hollow", range(0, 8))]
+    pub gaps: u32,
+    /// How wide each opening is, as a share of the way round.
+    #[setting(label = "Gap size", group = "Body", when = "gaps", range(0.01, 0.5), keyframe)]
+    pub gap_size: f32,
+    /// Where the first opening's middle is: the way round from the first corner, clockwise, as a
+    /// share of the whole (the others follow evenly). It turns and shrinks with the shape.
+    #[setting(label = "Gap at", group = "Body", when = "gaps", range(0, 1), keyframe)]
+    pub gap_at: f32,
     /// How fast the shape turns, clockwise.
     #[setting(label = "Spin", range(-360, 360), unit = "°/s", simple, keyframe)]
     pub spin: f32,
@@ -133,6 +144,9 @@ impl Default for ShapeSettings {
             fill: ShapeFill::Hollow,
             thickness: 8.0,
             path: ShapePath::default(),
+            gaps: 0,
+            gap_size: 0.12,
+            gap_at: 0.0,
             spin: 0.0,
             shrink: 0.0,
             min_size: 100.0,
@@ -178,6 +192,20 @@ impl ShapeSettings {
         let (a, b) = (width * 0.5 / size, height * 0.5 / size);
         let path = ShapePath { points: vec![[-a, -b], [a, -b], [a, b], [-a, b]], bends: vec![None; 4] };
         Self { start: ShapeStart::Polygon, sides: 4, size, thickness, path, ..Self::default() }
+    }
+
+    /// Each opening's middle and half its width as a share of the way round (none for a filled
+    /// shape). Gap size is capped so some band is always left: with N gaps each is at most
+    /// 0.9 / N of the way round.
+    pub fn gap_spans(&self) -> Vec<(f32, f32)> {
+        if self.fill == ShapeFill::Filled || self.gaps == 0 {
+            return Vec::new();
+        }
+        let n = self.gaps.min(8);
+        let size = if self.gap_size.is_finite() { self.gap_size } else { 0.12 };
+        let size = size.clamp(0.01, 0.5).min(0.9 / n as f32);
+        let at = if self.gap_at.is_finite() { self.gap_at } else { 0.0 };
+        (0..n).map(|k| ((at + k as f32 / n as f32).rem_euclid(1.0), size * 0.5)).collect()
     }
 
     /// The moulded outline when there is a usable one (a polygon with a path of 3 or more corners).
@@ -254,8 +282,21 @@ mod tests {
     #[test]
     fn the_body_settings_sit_under_body_and_the_rest_do_not() {
         for d in ShapeSettings::defs() {
-            let body =
-                ["start", "sides", "size", "width", "height", "turn", "fill", "thickness", "path"].contains(&d.key);
+            let body = [
+                "start",
+                "sides",
+                "size",
+                "width",
+                "height",
+                "turn",
+                "fill",
+                "thickness",
+                "path",
+                "gaps",
+                "gap_size",
+                "gap_at",
+            ]
+            .contains(&d.key);
             assert_eq!(d.group == BODY_HEADINGS[0], body, "{}", d.key);
         }
         let d = ShapeSettings::default();

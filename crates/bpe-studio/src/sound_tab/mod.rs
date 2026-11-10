@@ -122,6 +122,11 @@ pub enum TabEdit {
         file: String,
         import: Box<bpe_sound::music::MidiImport>,
     },
+    /// A MIDI file's chords, in the order they play, into the melody; its tempo into the scene.
+    ImportMidiMelody {
+        file: String,
+        import: Box<bpe_sound::music::MidiImport>,
+    },
     /// A line for the tab to show about a file.
     Note {
         text: String,
@@ -645,6 +650,12 @@ fn apply(inspector: &mut Inspector, scene: &mut Scene, kit: &Kit, id: ThingId, t
             },
             TabEdit::ImportMidi { file, import } => {
                 let said = write::import_midi(scene, reg, id, &import, time);
+                inspector.sound.note =
+                    Some(TabNote { thing: id, text: format!("{said} from {file}."), problem: false });
+                true
+            }
+            TabEdit::ImportMidiMelody { file, import } => {
+                let said = write::import_midi_melody(scene, reg, id, &import, time);
                 inspector.sound.note =
                     Some(TabNote { thing: id, text: format!("{said} from {file}."), problem: false });
                 true
