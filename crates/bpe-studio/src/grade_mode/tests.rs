@@ -923,6 +923,22 @@ fn a_scope_s_picture_puts_its_counts_where_they_belong() {
 }
 
 #[test]
+fn a_waveform_of_an_odd_width_has_no_stripes() {
+    use bpe_gfx::grade::{ScopeCounts, ScopeKind};
+    // A flat grey 405 pixels wide: columns take one or two pixel columns, as the counting does.
+    let (width, height) = (405usize, 10u32);
+    let mut counts = vec![0u32; ScopeKind::Waveform.bins()];
+    for x in 0..width {
+        counts[128 * 256 + (x * 256 / width).min(255)] += height;
+    }
+    let raw: Vec<u32> = (0..256).map(|c| counts[128 * 256 + c]).collect();
+    assert!(raw.iter().max() > raw.iter().min(), "the counts differ by column");
+    let even = scopes::even_columns(&ScopeCounts { kind: ScopeKind::Waveform, counts, size: (width as u32, height) });
+    let level: Vec<u32> = (0..256).map(|c| even.counts[128 * 256 + c]).collect();
+    assert!(level.iter().all(|&n| n.abs_diff(16) <= 1), "{level:?}");
+}
+
+#[test]
 fn alt_dragging_whites_shows_the_whites_view_until_let_go() {
     use bpe_gfx::grade::ClipView;
     let mut h = harness_with(graded_blank());
@@ -1074,6 +1090,7 @@ fn save_snapshot_adds_a_row_a_click_restores_it_and_hovering_shows_it() {
     click_at(&mut h, at);
     let list = grade::snapshots::snapshots_of(&h.state().scene);
     assert_eq!(list.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["Snapshot 1"]);
+    assert!(std::mem::take(&mut h.state_mut().separate_edit), "saving one is its own undo step");
     apply(h.state_mut(), vec![cx::GradeEdit::Set(exposure.clone(), Value::Number(-1.0))]);
     h.run();
     let row = top_button(&h, "Snapshot 1");

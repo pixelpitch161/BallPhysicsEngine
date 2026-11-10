@@ -558,6 +558,21 @@ fn a_saved_grade_loads_into_another_scene_cleaned() {
     assert_eq!(read.params.get("0/1/no_such"), None);
     assert_eq!(read.params.get(&exposure), Some(&Value::Number(5.0)), "pulled into range");
     assert!(!read.tracks.contains_key("1/no_such"));
+    // A key out of range is pulled in; the card's own `on` can't be keyed or pulsed.
+    let mut keyed = grade.clone();
+    keyed.tracks.get_mut(&exposure).unwrap().keys[0].value = Value::Number(1e9);
+    keyed.tracks.insert("on".into(), keyed.tracks[&exposure].clone());
+    keyed.pulses.insert("on".into(), bpe_core::Pulse::default());
+    let read = snapshots::clean_grade(keyed, reg).unwrap();
+    assert_eq!(read.tracks[&exposure].keys[0].value, Value::Number(5.0));
+    assert!(!read.tracks.contains_key("on") && !read.pulses.contains_key("on"));
+    // A restored snapshot is cleaned the same way.
+    let mut stale = grade.clone();
+    stale.params.set(&exposure, Value::Number(99.0));
+    let list = vec![bpe_core::GradeSnapshot { name: "Old".into(), grade: stale }];
+    scene.set_at(reg, &at(bpe_core::GRADE_SNAPSHOTS_KEY), Value::Snapshots(list)).unwrap();
+    assert!(snapshots::restore_snapshot(&mut scene, reg, 0));
+    assert_eq!(card(&scene).params.get(&exposure), Some(&Value::Number(5.0)));
     let mut headless = grade.clone();
     headless.layers.remove(0);
     let refused = snapshots::read_grade(&bpe_core::grade_file_text(&headless), reg);

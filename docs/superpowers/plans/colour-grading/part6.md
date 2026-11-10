@@ -175,3 +175,18 @@ What part 6 adds: **Waveform, RGB Parade, Vectorscope** next to the Histogram in
 - A loaded grade's One thing part names a thing by its id in the scene it came from; in another scene that id may be
   a different thing (or none: "Thing not found").
 - The targeted tool reads the picture as shown (after the grade), not the colour each panel sees.
+
+## As built
+
+Built as planned; `docs/notes/grading.md` ("Part 6 as built") has the summary. What changed on the way:
+
+- The clipping program is its own file (`shaders/clipping.wgsl`) so its bindings don't meet the scopes'.
+- The scope picture is remade once per count (`GradeMode.counted`), not per size and kind.
+- After the review: a double-click on a snapshot no longer renames (its first click restored it), so renaming is
+  from the menu; saving, updating, renaming and deleting a snapshot are each their own undo step; the targeted
+  tool hides the mask overlay while it is on, as the eyedropper does; the Waveform and Parade are evened out per
+  column (`even_columns`) so odd preview widths don't stripe; restoring a snapshot is cleaned the same way as
+  loading a file (`clean_grade`), which also refuses keys and pulses on settings that can't take them and pulls key
+  values into range; the peeked scene copy is dropped once nothing is hovered.
+- Kept as planned: J marks only pixels where all three channels clip (the spec's "red above white"); the Alt views
+  show single channels.

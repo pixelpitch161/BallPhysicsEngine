@@ -97,9 +97,6 @@ fn row(ui: &mut Ui, mode: &mut GradeMode, index: usize, s: &GradeSnapshot, edits
     if response.clicked() {
         edits.push(GradeEdit::RestoreSnapshot(index));
     }
-    if response.double_clicked() {
-        mode.snapshot_renaming = Some((index, s.name.clone()));
-    }
     response.context_menu(|ui| {
         if ui.button("Rename").clicked() {
             mode.snapshot_renaming = Some((index, s.name.clone()));

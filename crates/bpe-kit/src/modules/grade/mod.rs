@@ -72,7 +72,7 @@ pub struct GradeCard {
     pub on: bool,
     /// Named versions of the whole grade to come back to (`snapshots.rs`). Never keyframed;
     /// listed in Grade mode's left column, not in a settings grid.
-    #[setting(label = "Snapshots", group = "Snapshots")]
+    #[setting(label = "Snapshots", group = "Basics")]
     pub snapshots: Vec<bpe_core::GradeSnapshot>,
 }
 

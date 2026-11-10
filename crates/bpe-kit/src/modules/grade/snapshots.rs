@@ -132,11 +132,13 @@ pub fn remove_snapshot(scene: &mut Scene, reg: &Registry, index: usize) -> bool 
     set_snapshots(scene, reg, list).is_ok()
 }
 
-/// Puts snapshot `index`'s grade on the scene. True when anything changed.
+/// Puts snapshot `index`'s grade on the scene, cleaned as a loaded grade is (so a snapshot kept
+/// from an earlier kit brings back only what the kit still has). True when anything changed.
 pub fn restore_snapshot(scene: &mut Scene, reg: &Registry, index: usize) -> bool {
-    match snapshots_of(scene).get(index) {
-        Some(s) => put_grade(scene, reg, &s.grade),
-        None => false,
+    let Some(s) = snapshots_of(scene).into_iter().nth(index) else { return false };
+    match clean_grade(s.grade, reg) {
+        Ok(grade) => put_grade(scene, reg, &grade),
+        Err(_) => false,
     }
 }
 
@@ -145,38 +147,59 @@ pub fn grade_text(scene: &Scene, reg: &Registry) -> String {
     grade_file_text(&capture(scene, reg))
 }
 
-/// The grade a `.grade` file's text holds, cleaned against the registry as a scene file is:
-/// settings and layers the kit doesn't know or can't hold go, and so do keys and pulses of
-/// settings the cleaned card doesn't have. A grade without its Whole picture first is refused.
+/// The grade a `.grade` file's text holds, cleaned (see `clean_grade`).
 pub fn read_grade(text: &str, reg: &Registry) -> Result<SavedGrade, String> {
-    let file = read_grade_file(text)?;
+    clean_grade(read_grade_file(text)?, reg)
+}
+
+/// `grade` cleaned against the registry as a scene file is: settings and layers the kit doesn't
+/// know or can't hold go; so do keys of settings the cleaned card doesn't have or that can't be
+/// keyed (pulses likewise), and key values are pulled into their setting's range. A grade without
+/// its Whole picture first is refused.
+pub fn clean_grade(grade: SavedGrade, reg: &Registry) -> Result<SavedGrade, String> {
     let mut card = Slot::new(GRADE);
-    card.params = file.params;
+    card.params = grade.params;
     card.params.remove(GRADE_SNAPSHOTS_KEY);
-    card.layers = file.layers;
-    card.used_ids = file.used_ids;
+    card.layers = grade.layers;
+    card.used_ids = grade.used_ids;
     clean_card(&mut card, reg);
     let wholes = card.layers.iter().filter(|l| l.kind == WHOLE).count();
     if wholes != 1 || card.layers.first().is_none_or(|l| l.kind != WHOLE || l.parent.is_some()) {
         return Err("That file isn't a saved grade.".into());
     }
-    let keeps = |key: &str, value: Option<&Value>| {
-        let def = match split_layered(key) {
+    let def_of = |key: &str| -> Option<&'static bpe_core::SettingDef> {
+        match split_layered(key) {
             Some((id, plain)) => {
-                let Some(kind) = card.layer(id).and_then(|l| reg.layer(&l.kind)) else { return false };
+                let kind = card.layer(id).and_then(|l| reg.layer(&l.kind))?;
                 let get = |k: &str| card.params.get(&bpe_core::layered_key(id, k)).cloned();
                 layer_def(kind, &get, plain)
             }
             None => GradeCard::defs().iter().find(|d| d.key == key && d.key != GRADE_SNAPSHOTS_KEY),
-        };
-        def.is_some_and(|d| value.is_none_or(|v| d.ty.accepts(v)))
+        }
     };
-    let tracks = file
+    let tracks = grade
         .tracks
         .into_iter()
-        .filter(|(key, track)| track.keys.iter().all(|k| keeps(key, Some(&k.value))) && keeps(key, None))
+        .filter_map(|(key, mut track)| {
+            let def = def_of(&key).filter(|d| d.flags.keyframe)?;
+            if !track.keys.iter().all(|k| def.ty.accepts(&k.value)) {
+                return None;
+            }
+            for k in &mut track.keys {
+                k.value = def.clamp(k.value.clone());
+            }
+            track.range = def.range;
+            Some((key, track))
+        })
         .collect();
-    let pulses = file.pulses.into_iter().filter(|(key, _)| keeps(key, None)).collect();
+    let pulses = grade
+        .pulses
+        .into_iter()
+        .filter_map(|(key, mut pulse)| {
+            pulse.range = def_of(&key).filter(|d| d.flags.pulse)?.range;
+            Some((key, pulse))
+        })
+        .collect();
     Ok(SavedGrade { params: card.params, layers: card.layers, used_ids: card.used_ids, tracks, pulses })
 }
 

@@ -393,9 +393,11 @@ pub fn apply(studio: &mut Studio, edits: Vec<cx::GradeEdit>) {
     if let Some(mask) = applied.added {
         studio.grade.mask = Some(mask);
     }
-    if applied.replaced {
+    if applied.replaced || applied.separate {
         // Its own undo step, whatever came just before.
         studio.separate_edit = true;
+    }
+    if applied.replaced {
         studio.grade.forget_passing();
     }
 }

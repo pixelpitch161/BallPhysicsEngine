@@ -2,7 +2,7 @@
 
 Lightroom-style colour grading of the finished picture, edited in the editor's **Grade mode**. Spec:
 `docs/superpowers/specs/2026-11-09-colour-grading-design.md` (approved 2026-11-09, six parts). Plans:
-`docs/superpowers/plans/colour-grading/`. Parts 1 to 5 are built; part 6 adds the grading tools and scopes.
+`docs/superpowers/plans/colour-grading/`. All six parts are built (part 6, the scopes and grading tools, last).
 
 ## Part 1 as built (the grade itself)
 
@@ -285,7 +285,7 @@ Plan: `docs/superpowers/plans/colour-grading/part4.md` (decisions 1 to 19 hold e
 - `masks.rs` (left column): the Whole picture, then each mask with its first part's icon, its name, a note in red
   when what it follows isn't there, and its eye. Click selects (`GradeMode.mask`); drag reorders; double-click or
   Rename edits the name in place; right-click Duplicate, Invert, Move up / down, Delete. **Add mask** (the four
-  kinds), **Show overlay (O)**, then the Histogram.
+  kinds), **Show overlay (O)**, then (since part 6) Snapshots; the Histogram moved to the scopes strip.
 - `panels.rs` shows the selected mask: its name and Add panel, Amount and Invert, then **Parts** (`parts.rs`),
   then its panels. A part's box: fold, name (a click picks the gradient whose handles show), how it joins (a small
   Add / Subtract / Intersect menu, not on the first part), its switch, right-click Reset part, Move up / down,
@@ -409,3 +409,83 @@ Plan: `docs/superpowers/plans/colour-grading/part5.md` (decisions 1 to 20 hold e
 - The brush caches (`grade/brush.rs`) keep 16 sets of paint levels and 32 grids, dropping the least recently used;
   a stroke being painted looks up the strokes before it every frame, so they stay kept and each frame paints only
   the new stroke.
+
+## Part 6 as built (scopes, clipping, targeted tool, snapshots, grade files)
+
+Plan: `docs/superpowers/plans/colour-grading/part6.md`. Nothing here changes the composite: exported frames are
+byte-identical to part 5, and no new full-size look scene was needed.
+
+### Data (bpe-core, bpe-kit)
+
+- `bpe-core/src/saved_grade.rs`: `SavedGrade { params, layers, used_ids, tracks, pulses }` (one grade: the card
+  without its snapshots, plus the Grade card's keyframes and pulses keyed by setting) and `GradeSnapshot { name,
+  grade }`. `Value::Snapshots` / `ValueType::Snapshots` hold them (fingerprint tag 16); a valid one has finite
+  numbers and no snapshots inside. `clean_card` (save.rs) cleans one card the way loading a scene does.
+- `.grade` files (`GRADE_EXTENSION`): RON `{ format, grade }` with the scene format. `read_grade_file` says
+  "That file isn't a saved grade." / a newer or earlier version / "That grade file is damaged.".
+- The Grade card's `snapshots` setting. `bpe-kit/src/modules/grade/snapshots.rs`: `capture`,
+  `put_grade` (replaces the params but keeps `snapshots`, the layers with `used_ids` at least the old next id, and
+  the Grade tracks and pulses), `clean_grade` (what loading and restoring both go through), `add_snapshot` ("Snapshot N", the first free N), `update_`, `rename_` (trimmed,
+  blank keeps the name), `remove_`, `restore_snapshot`; `grade_text`, `read_grade` (cleans through a temporary
+  card, needs exactly one Whole picture first with no parent, drops keys and tracks whose setting doesn't exist
+  or whose value doesn't fit or that can't be keyed or pulsed; key values are pulled into range) and
+  `load_grade_text`. Loading keeps the scene's own snapshots; files never hold any.
+
+### GPU (bpe-gfx)
+
+- `grade/scopes.rs` + `shaders/scopes.wgsl`: `Scopes` (was `Histogram`) counts one `ScopeKind` at a time from the
+  finished 8-bit picture into one storage buffer: Histogram 4 × 256, Waveform 256 levels × 256 columns (Rec. 709
+  luma), Parade 3 × 256 × 256, Vectorscope 256 × 256 (Cb right, Cr up; `vectorscope_point` places a colour).
+  Only the asked kind's words are cleared, copied and read back, without blocking. `Renderer::request_scope`,
+  `scope_pending`, `scope` replace the histogram calls; `read_rgba8` is shared with `read_output`.
+- `shaders/clipping.wgsl` + `Clipping`: its own Rgba8 texture from the shown picture. `ClipView::Marks` (J): red
+  where every channel is at white (≥ 254.5/255), blue where every channel is at black, clear elsewhere.
+  `Whites`: each channel at white lit, black elsewhere; `Blacks`: each channel at black dark, white elsewhere. It
+  is an overlay in the editor only: exports, the eyedropper, the targeted tool and the scopes read the clean picture.
+
+### Editor (bpe-studio `grade_mode/`)
+
+- **Scopes strip** (`scopes.rs`, `Panel::bottom("grade scopes")`, 180 px, 120 to 360): chips Histogram, Waveform,
+  RGB Parade, Vectorscope (`GradeMode.scope`; a change asks for a recount). The counts come back as `counts`
+  with a generation `counted`; the picture (`picture`, 256 × 256, the Parade 768 × 256) is made once per
+  generation (the Waveform and Parade evened out first, `even_columns`, so a width that isn't a multiple of 256
+  doesn't stripe), each bin's ink `strength = ln(1+n)/ln(1+r)` against the 99th percentile of non-empty bins. Marks:
+  0/25/50/75/100 lines; the Vectorscope's 75% targets for R, Y, G, C, B, M and the skin line at 123°.
+- **Clipping**: J toggles `GradeMode.clipping` (status line says so; a "Clipping (J)" pill shows). Holding Alt
+  while dragging Exposure, Highlights or Whites shows the Whites view, Shadows or Blacks the Blacks view
+  (`panels::alt_view`), until the button or Alt is let go. `GradeMode::clip_view` picks; `preview.rs` runs
+  `Clipping` after each redraw and paints its texture over the picture.
+- **Targeted adjustment** (`target.rs`): a target toggle on the Tone Curve's chip row and on HSL / Colour's tab
+  row; one panel at a time (`GradeMode.targeted`; Esc or the panel going turns it off). On the picture, a press
+  reads the colour there and aims: Parametric moves the region its brightness is in (by the splits); Point moves
+  the nearest point within 0.04 or adds one on the curve (room 0.01 either side, at most the curve's points); HSL
+  moves the bands the Oklab hue is in by their weights, on the shown part (All = saturation). Up raises, 0.5 per
+  point for sliders and 1/300 per point for curves, Shift a tenth; the drag is one undo step from the press. While it is on the mask overlay (O) stays off, as for the
+  eyedropper, so it reads the picture itself.
+- **Snapshots** (`snapshots.rs`, the left column under the masks): Save snapshot; each row restores on click (its
+  own undo step, `separate_edit`, and `forget_passing` drops drags and strokes in the middle), shows itself in the
+  preview while hovered (`GradeMode.peek`; `preview::peeked` caches the scene with it put on, by snapshot and
+  revision); right-click Rename (in place), Update and Delete. Saving, updating, renaming and deleting are each
+  their own undo step too. A double-click doesn't rename (its first click would restore). **Save grade…** and **Load
+  grade…** open the system picker ("Ball Studio grade", `.grade`); `save_to` / `load_from` say what happened under
+  the buttons. A load is one undo step.
+
+### Checks
+
+- Picture tests: the four scope kinds on flat pictures (bins, the Waveform and Parade at the level in every
+  column, a colour on its Vectorscope place), J marks white red and black blue and nothing else (an over-white red
+  isn't marked), the Alt views per channel, the clip texture kept between runs.
+- Kit: a snapshot brings back the grade with masks, keys and pulses; names in turn, rename, update, remove; a saved
+  grade loads into another scene cleaned (exposure 99 → 5), a file without its Whole picture is refused;
+  `grade_settings_restart_nothing` also adds a snapshot. Core: the file round trip, newer and broken files, NaN and
+  nested snapshots.
+- Editor: the chips and the scope picture from counts, the picture maths, J and Esc, Alt-drag on Whites, the
+  targeted tool's aims (Shadows / Highlights / Darks, a point added and moved, Blue's saturation most, Luminance),
+  a targeted drag on the picture as one edit, the toggles, Save snapshot / restore / hover, one undo for a restore,
+  the menu, Save grade and Load grade through a file.
+- Known limits: J marks a pixel only when all three channels clip (the Alt views show single channels); the
+  scopes and clipping count the overlay when O shows it; one damaged snapshot in a scene file drops the whole list
+  (the value is checked whole); a loaded grade's One thing part names a
+  thing by its id, so in another scene it may point at a different thing or none; the targeted tool reads the
+  picture as shown (after the grade), so a strong grade moves what the graded colour is in.
+

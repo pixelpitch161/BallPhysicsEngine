@@ -349,9 +349,10 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         preview.drawn = None;
     }
 
-    // While a colour is picked from the picture the overlay stays off, so the pick (and the
-    // Histogram) read the picture itself.
-    studio.grade.picking = crate::eyedropper::target(ui.ctx()).is_some();
+    // While a colour is picked from the picture (the eyedropper, or the targeted tool on) the
+    // overlay stays off, so the pick and the scopes read the picture itself.
+    studio.grade.picking = crate::eyedropper::target(ui.ctx()).is_some()
+        || (studio.mode == crate::grade_mode::EditorMode::Grade && crate::grade_mode::target::active(studio));
     let drawn_before = preview.drawn.as_ref().map(|d| (d.revision, d.time.to_bits(), d.step, d.grade));
     let catching_up = draw_picture(
         studio,
@@ -851,10 +852,12 @@ pub(crate) fn compose(
 /// The copy of the scene with the snapshot the pointer is over put on, made once for each
 /// snapshot and scene revision (`None` inside when nothing is peeked).
 fn peeked(studio: &Studio) -> Option<std::cell::Ref<'_, Option<crate::grade_mode::Peeked>>> {
-    if studio.mode != crate::grade_mode::EditorMode::Grade {
+    let peek = studio.grade.peek.filter(|_| studio.mode == crate::grade_mode::EditorMode::Grade);
+    let Some(index) = peek else {
+        // Nothing hovered: the copy goes (it is a whole scene).
+        studio.grade.peeked.replace(None);
         return None;
-    }
-    let index = studio.grade.peek?;
+    };
     let fresh =
         studio.grade.peeked.borrow().as_ref().is_some_and(|p| p.snapshot == index && p.revision == studio.revision);
     if !fresh {

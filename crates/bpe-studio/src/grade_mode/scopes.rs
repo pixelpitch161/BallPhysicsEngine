@@ -190,6 +190,14 @@ pub fn strength(n: u32, r: f64) -> f32 {
 /// A count's picture: Waveform 256 × 256 and Parade 768 × 256 (whites at the top), Vectorscope
 /// 256 × 256 (Cr up). The Histogram draws itself and has none (an empty picture).
 pub fn picture(c: &ScopeCounts) -> egui::ColorImage {
+    let even;
+    let c = match c.kind {
+        ScopeKind::Waveform | ScopeKind::Parade => {
+            even = even_columns(c);
+            &even
+        }
+        _ => c,
+    };
     let r = reference(&c.counts);
     let (w, h) = (SCOPE_COLUMNS, SCOPE_LEVELS);
     match c.kind {
@@ -220,6 +228,29 @@ pub fn picture(c: &ScopeCounts) -> egui::ColorImage {
             egui::ColorImage::new([w, h], pixels)
         }
     }
+}
+
+/// A Waveform's or Parade's counts as if every column took the same number of the picture's
+/// pixel columns: a picture whose width isn't a multiple of 256 gives some columns one more pixel
+/// column than others (the counting is `min(x * 256 / width, 255)`), which would show as stripes.
+pub fn even_columns(c: &ScopeCounts) -> ScopeCounts {
+    let width = c.size.0 as usize;
+    let mut takes = [0usize; SCOPE_COLUMNS];
+    for x in 0..width {
+        takes[(x * SCOPE_COLUMNS / width).min(SCOPE_COLUMNS - 1)] += 1;
+    }
+    let mean = width as f64 / SCOPE_COLUMNS as f64;
+    let counts = c
+        .counts
+        .iter()
+        .enumerate()
+        .map(|(i, &n)| match takes[i % SCOPE_COLUMNS] {
+            _ if n == 0 => 0,
+            0 => n,
+            k => ((f64::from(n) * mean / k as f64).round() as u32).max(1),
+        })
+        .collect();
+    ScopeCounts { kind: c.kind, counts, size: c.size }
 }
 
 /// The colour (sRGB-encoded) at Vectorscope bin `(u, v)`, at a middling brightness.
