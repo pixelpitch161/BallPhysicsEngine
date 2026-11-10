@@ -10,6 +10,7 @@
 //! - `hsl.rs`: HSL / Colour; `point_colour.rs`: Point Colour; `colour_grading.rs`: Colour Grading's
 //!   wheels; `detail.rs`: Detail (sharpening); `effects.rs`: Effects (vignette, grain, gradient
 //!   map); `calibration.rs`: Calibration;
+//! - `snapshots.rs`: snapshots and grade files (a whole grade kept to come back to);
 //! - here: the kinds, the starting card, adding and ordering panels, and the stack the scene's
 //!   draw puts on the frame ([`stack`]).
 
@@ -26,6 +27,7 @@ pub mod effects;
 pub mod hsl;
 pub mod masks;
 pub mod point_colour;
+pub mod snapshots;
 #[cfg(test)]
 mod tests;
 pub mod tone_curve;
@@ -68,11 +70,15 @@ pub struct GradeCard {
     /// Off, the grade is skipped and every setting kept (Lightroom's switch for the whole edit).
     #[setting(label = "Grade on", group = "Basics")]
     pub on: bool,
+    /// Named versions of the whole grade to come back to (`snapshots.rs`). Never keyframed;
+    /// listed in Grade mode's left column, not in a settings grid.
+    #[setting(label = "Snapshots", group = "Basics")]
+    pub snapshots: Vec<bpe_core::GradeSnapshot>,
 }
 
 impl Default for GradeCard {
     fn default() -> Self {
-        Self { on: true }
+        Self { on: true, snapshots: Vec::new() }
     }
 }
 

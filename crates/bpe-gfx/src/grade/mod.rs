@@ -3,7 +3,8 @@
 //!
 //! - `maths.rs`: the working spaces, white balance, the tone sliders and curves, on the CPU;
 //! - `compile.rs`: the stack as a [`Program`] (the words the shader reads);
-//! - `scopes.rs`: the [`Histogram`] of the finished picture, for the editor;
+//! - `scopes.rs`: the [`Scopes`] of the finished picture (Histogram, Waveform, RGB Parade,
+//!   Vectorscope) and the [`Clipping`] views, for the editor;
 //! - the shader is `shaders/grade.wgsl`, run inside the composite (`shaders/post.wgsl`).
 
 pub mod brush;
@@ -16,7 +17,9 @@ mod scopes;
 mod tests;
 
 pub use compile::{Program, Segment, Selection, compile};
-pub use scopes::{Histogram, HistogramBins};
+pub use scopes::{
+    ClipView, Clipping, HistogramBins, SCOPE_COLUMNS, SCOPE_LEVELS, ScopeCounts, ScopeKind, Scopes, vectorscope_point,
+};
 
 /// Samples in a curve's lookup row (`shaders/grade.wgsl` reads the same number).
 pub const CURVE_SAMPLES: usize = 1024;

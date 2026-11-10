@@ -13,6 +13,13 @@ pub fn video(c: [f64; 3]) -> Color32 {
     Color32::from_rgb(byte(c[0]), byte(c[1]), byte(c[2])) // scene colour
 }
 
+/// A colour of the video already encoded for the screen (0..1 each, clamped): the Vectorscope's
+/// colours.
+pub fn scope_hue(c: [f64; 3]) -> Color32 {
+    let byte = |v: f64| (if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 } * 255.0).round() as u8;
+    Color32::from_rgb(byte(c[0]), byte(c[1]), byte(c[2])) // scene colour
+}
+
 /// A scene colour (sRGB bytes) on screen.
 pub fn video_bytes(c: bpe_core::Color) -> Color32 {
     Color32::from_rgb(c.r, c.g, c.b) // scene colour

@@ -51,6 +51,10 @@ pub struct Preview {
     spare: Option<Renderer>,
     /// What the last picture showed and whether its effects' memory is short, to see jumps by.
     shown: warm::Shown,
+    /// Grade mode's clipping picture over the preview (J, Alt), its texture on screen, and the
+    /// view it was last worked out for.
+    clipping: Option<(bpe_gfx::grade::Clipping, egui::TextureId)>,
+    clipped: bpe_gfx::grade::ClipView,
 }
 
 impl Preview {
@@ -78,8 +82,9 @@ struct Drawn {
 }
 
 /// Grade mode's part of [`Drawn`]: the compare view, the Split line's bits, the overlay, the
-/// selected mask, and how many points the stroke being painted has.
-type GradeDrawn = (crate::grade_mode::Compare, u32, bool, Option<LayerId>, Option<usize>);
+/// selected mask, how many points the stroke being painted has, and the snapshot shown while the
+/// pointer is over it.
+type GradeDrawn = (crate::grade_mode::Compare, u32, bool, Option<LayerId>, Option<usize>, Option<usize>);
 
 /// Something in the preview that can be dragged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -329,6 +334,8 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
             warm: None,
             spare: None,
             shown: warm::Shown::default(),
+            clipping: None,
+            clipped: Default::default(),
         }
     });
     if preview.renderer.size() != (width, height) {
@@ -342,9 +349,10 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         preview.drawn = None;
     }
 
-    // While a colour is picked from the picture the overlay stays off, so the pick (and the
-    // Histogram) read the picture itself.
-    studio.grade.picking = crate::eyedropper::target(ui.ctx()).is_some();
+    // While a colour is picked from the picture (the eyedropper, or the targeted tool on) the
+    // overlay stays off, so the pick and the scopes read the picture itself.
+    studio.grade.picking = crate::eyedropper::target(ui.ctx()).is_some()
+        || (studio.mode == crate::grade_mode::EditorMode::Grade && crate::grade_mode::target::active(studio));
     let drawn_before = preview.drawn.as_ref().map(|d| (d.revision, d.time.to_bits(), d.step, d.grade));
     let catching_up = draw_picture(
         studio,
@@ -368,7 +376,8 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     }
     if grading {
         // After the warm-up's swap, so the renderer counted is the one shown.
-        count_histogram(studio, &mut preview.renderer, device, &render_state.queue, redrawn, ui.ctx());
+        count_scope(studio, &mut preview.renderer, device, &render_state.queue, redrawn, ui.ctx());
+        clip_picture(&mut preview, studio.grade.clip_view(), redrawn, render_state);
     }
     if warm::busy(&preview) {
         ui.ctx().request_repaint();
@@ -390,6 +399,14 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
     let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
     ui.painter().image(preview.texture, rect, uv, style::UNTINTED);
+    if grading && studio.grade.clip_view() != bpe_gfx::grade::ClipView::Off {
+        if let Some((_, texture)) = &preview.clipping {
+            ui.painter().image(*texture, rect, uv, style::UNTINTED);
+        }
+        if studio.grade.clipping {
+            corner_pill(&ui.painter_at(rect), rect, "Clipping (J)");
+        }
+    }
     if let Some(done) = studio.aiming() {
         aiming_pill(&ui.painter_at(rect), rect, done);
     } else if let Some(done) = studio.particles_waiting() {
@@ -448,12 +465,23 @@ pub fn show(ui: &mut Ui, frame: &eframe::Frame, studio: &mut Studio) -> Outcome 
         return outcome;
     }
 
-    // Grade mode: Split has its line, the selected mask's gradient its handles.
+    // Grade mode: Split has its line, then the targeted tool (while on) or the selected mask's
+    // gradient its handles.
     if grading {
         preview.drag = None;
         split_line(ui, &response, rect, studio);
         if !studio.grade.split_drag {
-            crate::grade_mode::handles::preview(ui, &response, rect, view_scale, studio);
+            if crate::grade_mode::target::active(studio) {
+                let read = |p: Pos2| {
+                    let uv = (p - rect.min) / rect.size();
+                    let pixels = preview.renderer.read_output(device, &render_state.queue).ok()?;
+                    let c = crate::eyedropper::pixel_at(&pixels, preview.renderer.size(), egui::vec2(uv.x, uv.y))?;
+                    Some([c.r, c.g, c.b])
+                };
+                crate::grade_mode::target::preview(ui, &response, rect, studio, read);
+            } else {
+                crate::grade_mode::handles::preview(ui, &response, rect, view_scale, studio);
+            }
         }
         studio.panels.preview = Some(preview);
         return outcome;
@@ -754,6 +782,7 @@ fn draw_picture(
                 studio.grade.overlay_shown(),
                 studio.grade.mask,
                 painting,
+                studio.grade.peek,
             )
         }),
     };
@@ -787,10 +816,19 @@ pub(crate) fn compose(
     look: Option<(CameraView, (u32, u32))>,
     frame: &mut Frame,
 ) {
-    let solo = lights_panel::soloed(&studio.scene, &studio.resolved, &studio.light_solo);
+    // While the pointer is over a snapshot, the picture is built from a copy of the scene with it
+    // put on (lights aren't soloed meanwhile).
+    let peeked = peeked(studio);
+    let peek = peeked.as_ref().and_then(|p| p.as_ref());
+    let solo =
+        if peek.is_none() { lights_panel::soloed(&studio.scene, &studio.resolved, &studio.light_solo) } else { None };
+    let (scene, resolved) = match peek {
+        Some(p) => (&p.scene, &p.resolved),
+        None => (&studio.scene, solo.as_ref().unwrap_or(&studio.resolved)),
+    };
     build_frame_sensing(
-        &studio.scene,
-        solo.as_ref().unwrap_or(&studio.resolved),
+        scene,
+        resolved,
         world,
         log,
         time,
@@ -809,6 +847,33 @@ pub(crate) fn compose(
     if studio.mode == crate::grade_mode::EditorMode::Grade {
         studio.grade.show_on(&mut frame.grade);
     }
+}
+
+/// The copy of the scene with the snapshot the pointer is over put on, made once for each
+/// snapshot and scene revision (`None` inside when nothing is peeked).
+fn peeked(studio: &Studio) -> Option<std::cell::Ref<'_, Option<crate::grade_mode::Peeked>>> {
+    let peek = studio.grade.peek.filter(|_| studio.mode == crate::grade_mode::EditorMode::Grade);
+    let Some(index) = peek else {
+        // Nothing hovered: the copy goes (it is a whole scene).
+        studio.grade.peeked.replace(None);
+        return None;
+    };
+    let fresh =
+        studio.grade.peeked.borrow().as_ref().is_some_and(|p| p.snapshot == index && p.revision == studio.revision);
+    if !fresh {
+        let reg = &studio.kit.registry;
+        let snapshot = bpe_kit::modules::grade::snapshots::snapshots_of(&studio.scene).into_iter().nth(index)?;
+        let mut scene = studio.scene.clone();
+        bpe_kit::modules::grade::snapshots::put_grade(&mut scene, reg, &snapshot.grade);
+        let resolved = bpe_kit::resolve_scene(&scene, reg);
+        studio.grade.peeked.replace(Some(crate::grade_mode::Peeked {
+            snapshot: index,
+            revision: studio.revision,
+            scene,
+            resolved,
+        }));
+    }
+    Some(studio.grade.peeked.borrow())
 }
 
 /// Grade mode's corner switch: After, Before, or Split.
@@ -838,9 +903,9 @@ fn compare_switch(ui: &mut Ui, studio: &mut Studio) {
     });
 }
 
-/// Counts the picture into the Histogram after it was drawn again (or until it has counts), and
-/// takes the counts once the GPU has them.
-fn count_histogram(
+/// Counts the picture into the scope shown after it was drawn again (or until it has counts of
+/// that scope), and takes the counts once the GPU has them.
+fn count_scope(
     studio: &mut Studio,
     renderer: &mut Renderer,
     device: &wgpu::Device,
@@ -848,20 +913,70 @@ fn count_histogram(
     redrawn: bool,
     ctx: &egui::Context,
 ) {
-    if let Some(bins) = renderer.histogram(device) {
-        studio.grade.bins = Some(bins);
+    let kind = studio.grade.scope;
+    if let Some(counts) = renderer.scope(device) {
+        // A count of a scope no longer shown is let go; the one shown is asked for below.
+        if counts.kind == kind {
+            studio.grade.counts = Some(counts);
+            studio.grade.counted += 1;
+        }
     }
     // A picture drawn since the last count is counted once that count is in. The renderer itself
     // knows whether a count is on its way (a swapped-in renderer, or a failed read, has none).
-    studio.grade.recount |= redrawn || studio.grade.bins.is_none();
-    if studio.grade.recount && !renderer.histogram_pending() {
-        renderer.request_histogram(device, queue);
+    let have = studio.grade.counts.as_ref().is_some_and(|c| c.kind == kind);
+    studio.grade.recount |= redrawn || !have;
+    if studio.grade.recount && !renderer.scope_pending() {
+        renderer.request_scope(device, queue, kind);
         studio.grade.recount = false;
     }
-    if renderer.histogram_pending() {
+    if renderer.scope_pending() {
         // Looked at again soon: the counts come back without anything else asking for a frame.
         ctx.request_repaint_after(std::time::Duration::from_millis(16));
     }
+}
+
+/// Works out Grade mode's clipping picture (J, Alt) from the picture shown, when a view is on and
+/// the picture or the view changed, and points its egui texture at it.
+fn clip_picture(
+    preview: &mut Preview,
+    view: bpe_gfx::grade::ClipView,
+    redrawn: bool,
+    render_state: &eframe::egui_wgpu::RenderState,
+) {
+    if view == bpe_gfx::grade::ClipView::Off {
+        preview.clipped = view;
+        return;
+    }
+    let device = &render_state.device;
+    let fresh = preview.clipping.is_none();
+    let (clipping, texture) =
+        preview.clipping.get_or_insert_with(|| (bpe_gfx::grade::Clipping::new(device), egui::TextureId::default()));
+    // A first picture, a new size or a swapped renderer makes the picture anew; redrawn says so.
+    if !(fresh || redrawn || preview.clipped != view) {
+        return;
+    }
+    preview.clipped = view;
+    let made = clipping.run(device, &render_state.queue, preview.renderer.output_view(), preview.renderer.size(), view);
+    let Some(target) = clipping.view() else { return };
+    if fresh {
+        *texture = render_state.renderer.write().register_native_texture(device, target, wgpu::FilterMode::Linear);
+    } else if made {
+        render_state.renderer.write().update_egui_texture_from_wgpu_texture(
+            device,
+            target,
+            wgpu::FilterMode::Linear,
+            *texture,
+        );
+    }
+}
+
+/// A small pill in the picture's top right corner.
+fn corner_pill(painter: &egui::Painter, rect: Rect, text: &str) {
+    let galley = painter.layout_no_wrap(text.to_owned(), FontId::proportional(12.0), style::TEXT_STRONG);
+    let size = galley.size() + egui::vec2(14.0, 6.0);
+    let back = Rect::from_min_size(egui::pos2(rect.right() - size.x - 10.0, rect.top() + 10.0), size);
+    painter.rect_filled(back, style::RADIUS, style::PILL);
+    painter.galley(back.min + egui::vec2(7.0, 3.0), galley, style::TEXT_STRONG);
 }
 
 /// The Split view's line across the picture at `rect`: white, dragged left and right.

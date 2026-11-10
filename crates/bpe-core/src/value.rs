@@ -1,6 +1,6 @@
 //! Setting values, their types, and sparse maps of them.
 
-use crate::{Color, CurvePoint, Gradient, LightingScene, ModRoute, NoteSlot, ShapePath, Target};
+use crate::{Color, CurvePoint, GradeSnapshot, Gradient, LightingScene, ModRoute, NoteSlot, ShapePath, Target};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -34,6 +34,8 @@ pub enum Value {
     LightScenes(Vec<LightingScene>),
     /// Who a rule block points at. Never keyframed.
     Who(crate::rules::Who),
+    /// The Grade card's snapshots (colour grading part 6). Never keyframed.
+    Snapshots(Vec<GradeSnapshot>),
 }
 
 /// What kind of value a setting holds.
@@ -64,6 +66,8 @@ pub enum ValueType {
     LightScenes,
     /// Who a rule block points at; never keyframed.
     Who,
+    /// A grade's snapshots; never keyframed.
+    Snapshots,
 }
 
 impl ValueType {
@@ -88,6 +92,7 @@ impl ValueType {
             (ValueType::Slots, Value::Slots(ss)) => ss.iter().all(NoteSlot::is_valid),
             (ValueType::Curve, Value::Curve(c)) => crate::curve_is_valid(c),
             (ValueType::LightScenes, Value::LightScenes(ss)) => ss.iter().all(LightingScene::is_valid),
+            (ValueType::Snapshots, Value::Snapshots(ss)) => ss.iter().all(GradeSnapshot::is_valid),
             _ => false,
         }
     }

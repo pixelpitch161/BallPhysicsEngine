@@ -276,4 +276,8 @@ fn grade_settings_restart_nothing() {
         checked += 1;
     }
     assert!(checked >= 150, "only {checked} grade settings changed");
+    // Snapshots (part 6) aren't a value `changed` makes: saving one restarts nothing either.
+    let mut snapped = base.clone();
+    grade::snapshots::add_snapshot(&mut snapped, reg).expect("a snapshot");
+    assert_eq!(prints(&snapped), before, "snapshots");
 }

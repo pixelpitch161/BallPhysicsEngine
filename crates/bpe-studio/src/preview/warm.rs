@@ -284,6 +284,8 @@ mod tests {
             warm: None,
             spare: None,
             shown: Shown::default(),
+            clipping: None,
+            clipped: Default::default(),
         }
     }
 

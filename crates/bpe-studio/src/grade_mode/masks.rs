@@ -2,17 +2,17 @@
 //! work, with its kind's icon, its name, a note when what it follows isn't there, and its eye. A
 //! click shows the mask's parts and panels on the right; a drag moves it; a double-click renames
 //! it; right-click for Rename, Duplicate, Invert, Move up or down and Delete. Under the list, Add
-//! mask, the overlay switch (O) and the Histogram.
+//! mask and the overlay switch (O); then the snapshots and grade files (`snapshots.rs`).
 
+use super::GradeMode;
 use super::cx::{self, GradeCx, GradeEdit, full_key};
-use super::{GradeMode, scopes};
 use crate::app::Studio;
 use crate::style;
 use bpe_core::{Layer, LayerId, Params, Slot, Value};
 use bpe_kit::modules::grade::{self, BRUSH, COLOUR_RANGE, LINEAR, LUMINANCE_RANGE, PART_KINDS, RADIAL, THINGS};
 use eframe::egui::{self, RichText, Sense, Stroke, Ui};
 
-/// The column: masks, Add mask, the overlay switch and the Histogram, with its edits applied.
+/// The column: masks, Add mask, the overlay switch, then the snapshots, with its edits applied.
 pub fn column(ui: &mut Ui, studio: &mut Studio) {
     ui.label(RichText::new("Masks").font(style::semibold(13.0)));
     ui.add_space(4.0);
@@ -40,17 +40,9 @@ pub fn column(ui: &mut Ui, studio: &mut Studio) {
         ui.add_space(6.0);
         overlay_switch(ui, mode);
     }
-    ui.add_space(14.0);
-    ui.label(RichText::new("Histogram").font(style::semibold(13.0)));
-    ui.add_space(4.0);
-    scopes::histogram(ui, studio.grade.bins.as_deref());
-    ui.add_space(4.0);
-    ui.label(
-        RichText::new("The finished picture's red, green, blue and brightness, darks on the left.")
-            .small()
-            .color(style::FAINT),
-    );
     super::apply(studio, edits);
+    ui.add_space(14.0);
+    super::snapshots::section(ui, studio);
 }
 
 /// The Whole picture's row: its eye is the whole grade's switch.

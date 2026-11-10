@@ -107,7 +107,14 @@ pub fn hsl(ui: &mut Ui, mode: &mut GradeMode, gx: &GradeCx, id: LayerId, edits: 
             (*v, v.name(), help)
         })
         .collect();
-    if let Some(v) = chips(ui, now, &all) {
+    let picked = ui
+        .horizontal(|ui| {
+            super::target::toggle(ui, mode, id);
+            ui.add_space(4.0);
+            chips(ui, now, &all)
+        })
+        .inner;
+    if let Some(v) = picked {
         mode.hsl_view.insert(id, v);
     }
     let view = mode.hsl_view.get(&id).copied().unwrap_or_default();

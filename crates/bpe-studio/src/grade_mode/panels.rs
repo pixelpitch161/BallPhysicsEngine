@@ -17,6 +17,10 @@ use eframe::egui::{self, RichText, Sense, Ui};
 
 /// The column, with its edits applied.
 pub fn column(ui: &mut Ui, studio: &mut Studio) {
+    // An Alt view of clipping lasts while Alt and the button are held (`basic`).
+    if !ui.input(|i| i.modifiers.alt && i.pointer.primary_down()) {
+        studio.grade.alt_clip = bpe_gfx::grade::ClipView::Off;
+    }
     let start = studio.grade.start(&studio.kit.registry);
     let time = studio.sim_time();
     let mut edits = Vec::new();
@@ -154,7 +158,7 @@ fn panel(
         if open {
             ui.add_space(4.0);
             match layer.kind.as_str() {
-                BASIC => basic(ui, gx, id, edits),
+                BASIC => basic(ui, mode, gx, id, edits),
                 TONE_CURVE => tone_curve(ui, mode, gx, id, edits),
                 HSL => super::colour::hsl(ui, mode, gx, id, edits),
                 POINT_COLOUR => super::colour::point_colour(ui, mode, gx, id, edits),
@@ -279,8 +283,30 @@ pub(super) fn grid(
     edits.extend(out.follows.into_iter().map(|(key, source)| GradeEdit::Follow(full_key(Some(id), key), source)));
 }
 
-fn basic(ui: &mut Ui, gx: &GradeCx, id: LayerId, edits: &mut Vec<GradeEdit>) {
+fn basic(ui: &mut Ui, mode: &mut GradeMode, gx: &GradeCx, id: LayerId, edits: &mut Vec<GradeEdit>) {
+    let before = edits.len();
     grid(ui, gx, id, grade::BasicPanel::defs(), Some(&super::colour::basic_rails), edits);
+    // Lightroom's Alt-drag: dragging a tone slider with Alt held shows what clips.
+    if ui.input(|i| i.modifiers.alt && i.pointer.primary_down()) {
+        for edit in &edits[before..] {
+            if let GradeEdit::Set(key, _) = edit
+                && let Some(view) = key.strip_prefix(&format!("{id}/")).and_then(alt_view)
+            {
+                mode.alt_clip = view;
+            }
+        }
+    }
+}
+
+/// The clipping view Alt shows while Basic's setting `key` is dragged, if any: Exposure,
+/// Highlights and Whites show what reaches white, Shadows and Blacks what reaches black.
+pub fn alt_view(key: &str) -> Option<bpe_gfx::grade::ClipView> {
+    use bpe_gfx::grade::ClipView;
+    match key {
+        "exposure" | "highlights" | "whites" => Some(ClipView::Whites),
+        "shadows" | "blacks" => Some(ClipView::Blacks),
+        _ => None,
+    }
 }
 
 fn tone_curve(ui: &mut Ui, mode: &mut GradeMode, gx: &GradeCx, id: LayerId, edits: &mut Vec<GradeEdit>) {
@@ -298,8 +324,10 @@ fn tone_curve(ui: &mut Ui, mode: &mut GradeMode, gx: &GradeCx, id: LayerId, edit
                 edits.push(GradeEdit::Set(full_key(Some(id), "mode"), Value::Choice(bpe_core::Choice::name(m).into())));
             }
         }
+        ui.add_space(6.0);
+        super::target::toggle(ui, mode, id);
         if curve_mode == CurveMode::Point {
-            ui.add_space(8.0);
+            ui.add_space(6.0);
             let now = mode.channel.get(&id).copied().unwrap_or_default();
             for c in Channel::ALL {
                 let chip = style::toggle_button(c.name(), now == c).small();

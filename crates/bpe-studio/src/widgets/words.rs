@@ -64,6 +64,8 @@ pub fn value_words(value: &Value, unit: &str, choices: &TargetChoices) -> String
         Value::Curve(c) => format!("{} points", c.len()),
         Value::LightScenes(l) => scenes_words(l.len()),
         Value::Who(w) => who_words(w, choices),
+        Value::Snapshots(l) if l.len() == 1 => "1 snapshot".to_owned(),
+        Value::Snapshots(l) => format!("{} snapshots", l.len()),
     }
 }
 

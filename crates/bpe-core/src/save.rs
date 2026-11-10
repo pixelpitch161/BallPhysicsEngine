@@ -124,6 +124,16 @@ mod probe {
     }
 }
 
+/// Cleans a card the way opening a scene does: values its kind (and its layers' kinds) can't
+/// hold or doesn't know go, numbers are pulled into range, and sub-layers without their layer
+/// go. A card of a kind the registry doesn't know is left as it is.
+pub fn clean_card(card: &mut crate::Slot, reg: &Registry) {
+    if let Some(kind) = reg.module(&card.kind) {
+        clean(&mut card.params, kind.settings());
+    }
+    clean_layers(card, reg);
+}
+
 /// Keeps one layer per id, then cleans each layer's settings like a card's: a layered key of a
 /// layer that isn't in the card goes, and so does a value its layer kind can't hold or doesn't
 /// know. Layers of unknown kinds keep everything, for `resolve` to report.

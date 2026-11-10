@@ -39,7 +39,8 @@ impl Studio {
         if ctx.memory(|m| m.focused().is_some()) {
             return;
         }
-        // D switches between Build and Grade; in Grade mode \ shows Before and Y the Split.
+        // D switches between Build and Grade; in Grade mode \ shows Before, Y the Split, O the overlay,
+        // J the clipping, and Esc stops the targeted tool.
         if pressed(Modifiers::NONE, Key::D) {
             self.mode = match self.mode {
                 crate::grade_mode::EditorMode::Build => crate::grade_mode::EditorMode::Grade,
@@ -55,6 +56,13 @@ impl Studio {
             }
             if pressed(Modifiers::NONE, Key::O) {
                 self.grade.overlay = !self.grade.overlay;
+            }
+            if pressed(Modifiers::NONE, Key::J) {
+                self.grade.clipping = !self.grade.clipping;
+            }
+            if self.grade.targeted.is_some() && pressed(Modifiers::NONE, Key::Escape) {
+                self.grade.targeted = None;
+                self.grade.target_drag = None;
             }
         }
         if ctx.input(|i| i.key_pressed(Key::Home)) {

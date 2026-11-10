@@ -524,6 +524,11 @@ pub(super) fn widget(
         (ValueType::LightScenes, Value::LightScenes(list)) => {
             ui.label(RichText::new(scenes_words(list.len())).color(style::MUTED)).labelled_by(name)
         }
+        // A grade's snapshots are listed in Grade mode's left column.
+        (ValueType::Snapshots, Value::Snapshots(list)) => {
+            let words = if list.len() == 1 { "1 snapshot".to_owned() } else { format!("{} snapshots", list.len()) };
+            ui.label(RichText::new(words).color(style::MUTED)).labelled_by(name)
+        }
         _ => ui.label(RichText::new("This setting holds a value of the wrong kind").color(style::TEXT)),
     }
 }

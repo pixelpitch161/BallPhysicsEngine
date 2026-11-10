@@ -462,3 +462,119 @@ fn brush_and_things_parts_reach_the_stack() {
     let m = s.masks.iter().find(|m| m.id == fresh.0).unwrap();
     assert_eq!(bpe_gfx::grade::maths::area_cover(m.area.as_ref().unwrap(), [0.5; 3], [0.0, 0.0], 1.0), 0.0);
 }
+
+// ---------- Part 6: snapshots and grade files ----------
+
+fn exposure_key(scene: &Scene) -> String {
+    let c = card(scene);
+    format!("{}/exposure", panels_of(c, whole_of(c).unwrap())[0].id)
+}
+
+fn at(key: &str) -> bpe_core::Address {
+    bpe_core::Address::on(ThingId::ROOT, SlotId::Grade, key)
+}
+
+#[test]
+fn a_snapshot_brings_back_the_grade_with_its_masks_keys_and_pulses() {
+    let (kit, mut scene) = graded();
+    let reg = &kit.registry;
+    let exposure = exposure_key(&scene);
+    scene.set_at(reg, &at(&exposure), Value::Number(1.0)).unwrap();
+    scene.set_key(reg, &at(&exposure), 2.0, Value::Number(1.5)).unwrap();
+    let mask = add_mask(&mut scene, reg, RADIAL).unwrap();
+    scene
+        .set_pulse(reg, &at(&format!("{mask}/amount")), bpe_core::PulseSource::Hits, Value::Number(20.0), 0.3)
+        .unwrap();
+    let saved = scene.clone();
+    assert_eq!(snapshots::add_snapshot(&mut scene, reg), Ok(0));
+    // Change everything: another exposure, no keys, no pulses, no mask.
+    scene.tracks.clear();
+    scene.pulses.clear();
+    scene.set_at(reg, &at(&exposure), Value::Number(-2.0)).unwrap();
+    scene.remove_layer(reg, ThingId::ROOT, SlotId::Grade, mask).unwrap();
+    assert!(snapshots::restore_snapshot(&mut scene, reg, 0));
+    assert_eq!(scene.tracks, saved.tracks);
+    assert_eq!(scene.pulses, saved.pulses);
+    let (now, was) = (card(&scene), card(&saved));
+    assert_eq!(now.layers, was.layers);
+    assert_eq!(now.params.get(&exposure), Some(&Value::Number(1.0)));
+    assert_eq!(snapshots::snapshots_of(&scene).len(), 1, "the snapshots stay");
+    assert!(!snapshots::restore_snapshot(&mut scene, reg, 0), "restoring again changes nothing");
+    assert!(!snapshots::restore_snapshot(&mut scene, reg, 3), "no such snapshot");
+}
+
+#[test]
+fn snapshots_are_named_in_turn_renamed_updated_and_removed() {
+    let (kit, mut scene) = graded();
+    let reg = &kit.registry;
+    snapshots::add_snapshot(&mut scene, reg).unwrap();
+    snapshots::add_snapshot(&mut scene, reg).unwrap();
+    let names = |s: &Scene| snapshots::snapshots_of(s).into_iter().map(|s| s.name).collect::<Vec<_>>();
+    assert_eq!(names(&scene), ["Snapshot 1", "Snapshot 2"]);
+    assert!(snapshots::rename_snapshot(&mut scene, reg, 0, "  Warm dusk "));
+    assert!(!snapshots::rename_snapshot(&mut scene, reg, 0, "  "), "blank keeps the name");
+    assert_eq!(names(&scene), ["Warm dusk", "Snapshot 2"]);
+    assert!(!snapshots::update_snapshot(&mut scene, reg, 1), "the grade hasn't changed");
+    let exposure = exposure_key(&scene);
+    scene.set_at(reg, &at(&exposure), Value::Number(0.7)).unwrap();
+    assert!(snapshots::update_snapshot(&mut scene, reg, 1));
+    assert_eq!(snapshots::snapshots_of(&scene)[1].grade.params.get(&exposure), Some(&Value::Number(0.7)));
+    assert!(snapshots::remove_snapshot(&mut scene, reg, 0));
+    assert_eq!(names(&scene), ["Snapshot 2"]);
+    snapshots::add_snapshot(&mut scene, reg).unwrap();
+    assert_eq!(names(&scene), ["Snapshot 2", "Snapshot 1"], "the first free name");
+    // A snapshot never holds snapshots, and the scene file keeps them.
+    assert!(
+        snapshots::snapshots_of(&scene).iter().all(|s| s.grade.params.get(bpe_core::GRADE_SNAPSHOTS_KEY).is_none())
+    );
+    let opened = bpe_core::load(&bpe_core::save(&scene), reg).unwrap();
+    assert_eq!(snapshots::snapshots_of(&opened), snapshots::snapshots_of(&scene));
+}
+
+#[test]
+fn a_saved_grade_loads_into_another_scene_cleaned() {
+    let (kit, mut scene) = graded();
+    let reg = &kit.registry;
+    let exposure = exposure_key(&scene);
+    scene.set_at(reg, &at(&exposure), Value::Number(0.8)).unwrap();
+    scene.set_key(reg, &at(&exposure), 1.0, Value::Number(0.2)).unwrap();
+    add_mask(&mut scene, reg, LINEAR).unwrap();
+    snapshots::add_snapshot(&mut scene, reg).unwrap();
+    let text = snapshots::grade_text(&scene, reg);
+    assert!(!text.contains("snapshots"), "a grade file leaves the snapshots out");
+    // Into a scene with no grade yet, which keeps its own snapshot list (none).
+    let mut other = Scene::empty(reg);
+    snapshots::load_grade_text(&mut other, reg, &text).unwrap();
+    assert_eq!(card(&other).layers, card(&scene).layers);
+    assert_eq!(card(&other).params.get(&exposure), Some(&Value::Number(0.8)));
+    assert_eq!(other.tracks, scene.tracks);
+    assert!(snapshots::snapshots_of(&other).is_empty());
+    // Settings it doesn't know, keys of them, and a grade without its Whole picture.
+    let mut grade = snapshots::capture(&scene, reg);
+    grade.params.set("0/1/no_such", Value::Number(1.0));
+    grade.params.set(&exposure, Value::Number(99.0));
+    grade.tracks.insert("1/no_such".into(), bpe_core::Track::default());
+    let read = snapshots::read_grade(&bpe_core::grade_file_text(&grade), reg).unwrap();
+    assert_eq!(read.params.get("0/1/no_such"), None);
+    assert_eq!(read.params.get(&exposure), Some(&Value::Number(5.0)), "pulled into range");
+    assert!(!read.tracks.contains_key("1/no_such"));
+    // A key out of range is pulled in; the card's own `on` can't be keyed or pulsed.
+    let mut keyed = grade.clone();
+    keyed.tracks.get_mut(&exposure).unwrap().keys[0].value = Value::Number(1e9);
+    keyed.tracks.insert("on".into(), keyed.tracks[&exposure].clone());
+    keyed.pulses.insert("on".into(), bpe_core::Pulse::default());
+    let read = snapshots::clean_grade(keyed, reg).unwrap();
+    assert_eq!(read.tracks[&exposure].keys[0].value, Value::Number(5.0));
+    assert!(!read.tracks.contains_key("on") && !read.pulses.contains_key("on"));
+    // A restored snapshot is cleaned the same way.
+    let mut stale = grade.clone();
+    stale.params.set(&exposure, Value::Number(99.0));
+    let list = vec![bpe_core::GradeSnapshot { name: "Old".into(), grade: stale }];
+    scene.set_at(reg, &at(bpe_core::GRADE_SNAPSHOTS_KEY), Value::Snapshots(list)).unwrap();
+    assert!(snapshots::restore_snapshot(&mut scene, reg, 0));
+    assert_eq!(card(&scene).params.get(&exposure), Some(&Value::Number(5.0)));
+    let mut headless = grade.clone();
+    headless.layers.remove(0);
+    let refused = snapshots::read_grade(&bpe_core::grade_file_text(&headless), reg);
+    assert_eq!(refused, Err("That file isn't a saved grade.".into()));
+}

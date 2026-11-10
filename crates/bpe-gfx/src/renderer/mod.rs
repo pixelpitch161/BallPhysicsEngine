@@ -163,7 +163,7 @@ pub struct Renderer {
     pub(crate) targets: Targets,
     pub(crate) grade: GradeGpu,
     /// The Histogram of the finished picture, made the first time the editor asks for it.
-    pub(crate) histogram: Option<crate::grade::Histogram>,
+    pub(crate) scopes: Option<crate::grade::Scopes>,
     /// Lighting's passes and pictures, made the first time a frame is lit.
     pub(crate) lighting: Option<lighting::Lighting>,
     /// The Stage camera's pass (lighting part 5), made the first time a frame is seen moved.
@@ -498,72 +498,83 @@ impl Renderer {
         self.lit_lights.map(|n| (n, ms))
     }
 
-    /// Starts counting the finished picture into the Histogram (Grade mode's scope), unless a
-    /// count is still on its way; [`Renderer::histogram`] gives it once the GPU has done it.
-    /// Only the editor asks: an export never does.
-    pub fn request_histogram(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
-        let histogram = self.histogram.get_or_insert_with(|| crate::grade::Histogram::new(device));
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("histogram") });
+    /// Starts counting the finished picture into scope `kind` (Grade mode's scopes), unless a
+    /// count is still on its way; [`Renderer::scope`] gives it once the GPU has done it. Only the
+    /// editor asks: an export never does.
+    pub fn request_scope(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, kind: crate::grade::ScopeKind) {
+        let scopes = self.scopes.get_or_insert_with(|| crate::grade::Scopes::new(device));
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("scopes") });
         let size = (self.targets.width, self.targets.height);
-        if histogram.encode(device, &mut encoder, &self.targets.output_view, size) {
+        if scopes.encode(device, &mut encoder, &self.targets.output_view, size, kind) {
             queue.submit([encoder.finish()]);
-            histogram.after_submit();
+            scopes.after_submit();
         }
     }
 
-    /// Whether a Histogram count is on its way (asked for and not yet taken).
-    pub fn histogram_pending(&self) -> bool {
-        self.histogram.as_ref().is_some_and(|h| h.busy())
+    /// Whether a scope count is on its way (asked for and not yet taken).
+    pub fn scope_pending(&self) -> bool {
+        self.scopes.as_ref().is_some_and(|h| h.busy())
     }
 
-    /// The Histogram's latest counts, once the GPU has them (looks without waiting).
-    pub fn histogram(&mut self, device: &wgpu::Device) -> Option<Box<crate::grade::HistogramBins>> {
-        let histogram = self.histogram.as_mut()?;
-        if histogram.busy() {
+    /// The latest scope counts, once the GPU has them (looks without waiting).
+    pub fn scope(&mut self, device: &wgpu::Device) -> Option<crate::grade::ScopeCounts> {
+        let scopes = self.scopes.as_mut()?;
+        if scopes.busy() {
             let _ = device.poll(wgpu::PollType::Poll);
         }
-        histogram.take()
+        scopes.take()
     }
 
     /// Copies the output image back to the CPU as tightly packed RGBA bytes (sRGB-encoded).
     pub fn read_output(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> anyhow::Result<Vec<u8>> {
         let (width, height) = self.size();
-        let row = width as usize * 4;
-        let padded_row = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("readback"),
-            size: (padded_row * height as usize) as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("readback") });
-        encoder.copy_texture_to_buffer(
-            self.targets.output.as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padded_row as u32),
-                    rows_per_image: Some(height),
-                },
-            },
-            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-        );
-        queue.submit([encoder.finish()]);
-        let slice = buffer.slice(..);
-        let (sender, receiver) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = sender.send(result);
-        });
-        device.poll(wgpu::PollType::wait_indefinitely())?;
-        receiver.recv()??;
-        let mapped = slice.get_mapped_range()?;
-        let mut pixels = Vec::with_capacity(row * height as usize);
-        for chunk in mapped.chunks(padded_row) {
-            pixels.extend_from_slice(&chunk[..row]);
-        }
-        drop(mapped);
-        buffer.unmap();
-        Ok(pixels)
+        read_rgba8(device, queue, &self.targets.output, width, height)
     }
+}
+
+/// Copies an `Rgba8Unorm` texture `width` × `height` back to the CPU as tightly packed RGBA bytes.
+pub(crate) fn read_rgba8(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+) -> anyhow::Result<Vec<u8>> {
+    let row = width as usize * 4;
+    let padded_row = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("readback"),
+        size: (padded_row * height as usize) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("readback") });
+    encoder.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_row as u32),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+    );
+    queue.submit([encoder.finish()]);
+    let slice = buffer.slice(..);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |result| {
+        let _ = sender.send(result);
+    });
+    device.poll(wgpu::PollType::wait_indefinitely())?;
+    receiver.recv()??;
+    let mapped = slice.get_mapped_range()?;
+    let mut pixels = Vec::with_capacity(row * height as usize);
+    for chunk in mapped.chunks(padded_row) {
+        pixels.extend_from_slice(&chunk[..row]);
+    }
+    drop(mapped);
+    buffer.unmap();
+    Ok(pixels)
 }
