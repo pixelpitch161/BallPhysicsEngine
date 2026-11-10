@@ -108,7 +108,7 @@ pub struct ShapeSettings {
     pub path: ShapePath,
     /// How many openings the band has, spread evenly round it: balls get out (and in) through
     /// them. 0 is closed.
-    #[setting(label = "Gaps", group = "Body", when = "fill=hollow", range(0, 8), simple)]
+    #[setting(label = "Gaps", group = "Body", when = "fill=hollow", range(0, 8))]
     pub gaps: u32,
     /// How wide each opening is, as a share of the way round.
     #[setting(label = "Gap size", group = "Body", when = "gaps", range(0.01, 0.5), keyframe)]

@@ -839,9 +839,10 @@ mod tests {
         assert_eq!(noise.when, "a_wave=noise");
         let sub = defs.iter().find(|d| d.key == "b_sub_level").unwrap();
         assert_eq!(sub.when, "b_wave!=noise and b_wave!=sample and b_sub!=off");
-        // Every number knob takes keys (a sample's place settings are read once, when the sound
-        // is built).
-        for d in defs.iter().filter(|d| matches!(d.default, Value::Number(_)) && !d.key.contains("sample_")) {
+        // Every number knob takes keys (a sample's place settings and Pitch follows size are read
+        // once, when the sound is built).
+        let built = |k: &str| k.contains("sample_") || k.starts_with("play_size_");
+        for d in defs.iter().filter(|d| matches!(d.default, Value::Number(_)) && !built(&d.key)) {
             assert!(d.flags.keyframe, "{}", d.key);
         }
         for d in AdsrSettings::defs().iter().filter(|d| matches!(d.default, Value::Number(_))) {
