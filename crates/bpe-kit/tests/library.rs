@@ -44,7 +44,7 @@ fn ids_names_and_info_are_tidy() {
 #[test]
 fn levels_so_far() {
     let count = |l: Level| library::all().iter().filter(|e| e.info.level == l).count();
-    assert_eq!((count(Level::Starter), count(Level::InBetween), count(Level::Spectacle)), (14, 0, 0));
+    assert_eq!((count(Level::Starter), count(Level::InBetween), count(Level::Spectacle)), (14, 10, 0));
 }
 
 /// Every kind the scene names (things, cards, layers, rule blocks) is one the program has.
@@ -150,7 +150,7 @@ fn payoff_lands(e: &Entry, payoff: library::Payoff, scene: &Scene, world: &World
                 .find(|ev| ev.kind == EventKind::Break && ev.a.thing == thing.id)
                 .map(|ev| ev.step as f64 / rate)
         }
-        PayoffEvent::Counter(..) => panic!("{id}: counter payoffs are checked from part 3"),
+        PayoffEvent::Counter(name, amount) => counter_reaches(e, name, amount),
     };
     let when = when.unwrap_or_else(|| panic!("{id}: the payoff never happens"));
     assert!(
@@ -159,6 +159,31 @@ fn payoff_lands(e: &Entry, payoff: library::Payoff, scene: &Scene, world: &World
         payoff.at_seconds,
         payoff.within_seconds
     );
+}
+
+/// The first moment (to 1/60 s) the rules' counter `name` reaches `amount`, from below (or from above
+/// when it starts at or over it), replaying the scene: the log keeps no counters.
+fn counter_reaches(e: &Entry, name: &str, amount: f64) -> Option<f64> {
+    let kit = kit();
+    let scene = e.scene(&kit.registry);
+    let resolved = resolve(&scene, &kit.registry);
+    let mut world = World::build(&scene, &resolved, &kit.sims);
+    let mut log = Log::default();
+    let count = |w: &World| w.rules().map_or(0.0, |r| r.counter(name));
+    let rising = count(&world) < amount;
+    let mut frame = 0u32;
+    loop {
+        let t = frame as f64 / 60.0;
+        if t > e.info.seconds {
+            return None;
+        }
+        world.advance_to(t, &kit.sims, &mut log);
+        let c = count(&world);
+        if (rising && c >= amount) || (!rising && c <= amount) {
+            return Some(t);
+        }
+        frame += 1;
+    }
 }
 
 /// Whether more than 2% of the picture differs clearly from its first pixel.
