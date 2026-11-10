@@ -110,21 +110,6 @@ impl<'a> Lib<'a> {
         edit_as(&mut card.params, f);
     }
 
-    /// Sets one of a card's own settings.
-    pub fn card_set(&mut self, id: ThingId, slot: SlotId, key: &str, v: Value) {
-        self.scene.card_mut(id, slot).unwrap_or_else(|| panic!("no {slot:?} card")).params.set(key, v);
-    }
-
-    /// Gives `id` its starting card in `slot` (for slots a kind doesn't start with, like Sound or Health).
-    pub fn fill(&mut self, id: ThingId, slot: SlotId) {
-        crate::fill_slot(&mut self.scene, self.reg, id, slot).unwrap_or_else(|e| panic!("{slot:?}: {e}"));
-    }
-
-    /// The first layer of `kind` on the card, if it has one.
-    pub fn find_layer(&self, id: ThingId, slot: SlotId, kind: &str) -> Option<LayerId> {
-        self.scene.card(id, slot)?.layers.iter().find(|l| l.kind == kind).map(|l| l.id)
-    }
-
     /// A new layer of `kind` on the card.
     pub fn layer(&mut self, id: ThingId, slot: SlotId, kind: &str) -> LayerId {
         self.scene.add_layer(self.reg, id, slot, kind).unwrap_or_else(|e| panic!("{kind}: {e}"))
@@ -139,23 +124,10 @@ impl<'a> Lib<'a> {
         put_back(&mut card.params, &prefix, own);
     }
 
-    /// Sets one of a layer's settings.
-    pub fn layer_set(&mut self, id: ThingId, slot: SlotId, layer: LayerId, key: &str, v: Value) {
-        let card = self.scene.card_mut(id, slot).unwrap_or_else(|| panic!("no {slot:?} card"));
-        card.params.set(&layered_key(layer, key), v);
-    }
-
     /// Dresses a ball or shape in a ready-made look (its own colours replaced by the look's).
     pub fn look(&mut self, id: ThingId, look: &str) {
         let ready = ready_looks::find(look).unwrap_or_else(|| panic!("no ready-made look {look}"));
         ready_looks::apply(&mut self.scene, self.reg, id, ready, Colours::Look, How::Replace)
-            .unwrap_or_else(|e| panic!("{look}: {e}"));
-    }
-
-    /// Dresses a ball or shape in a ready-made look in its own colours.
-    pub fn look_mine(&mut self, id: ThingId, look: &str) {
-        let ready = ready_looks::find(look).unwrap_or_else(|| panic!("no ready-made look {look}"));
-        ready_looks::apply(&mut self.scene, self.reg, id, ready, Colours::Mine, How::Replace)
             .unwrap_or_else(|e| panic!("{look}: {e}"));
     }
 

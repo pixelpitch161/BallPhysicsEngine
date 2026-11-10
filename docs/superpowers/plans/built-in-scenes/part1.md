@@ -279,3 +279,22 @@ modify `crates/bpe-studio/src/app/mod.rs` (show the window each frame, pause/res
 - [ ] **Step 4:** Push, open the PR (draft → ready once green), subscribe, merge when checks and review pass.
 - [ ] **Step 5:** Write `/mnt/project-files/ballphysics/builtin-scenes/part1-handover.md` (what landed, decisions
   made, gotchas, what part 2 starts with) and message the coordinator to start part 2 in a fresh thread.
+
+## As built
+
+- Tasks 1 to 7 landed as planned. Decisions made along the way (Aedan was away; noted here and in the handover):
+  - **Clips are 24 frames a second and the last 3 are kept** (the spec said 30 and 4): a 15 s clip at 216 x 384 is
+    about 120 MB of textures at 30 fps, so 4 of them would hold half a gigabyte of graphics memory. 24 fps still
+    reads as smooth motion for bouncing balls.
+  - **A clip cut short starts again** when it is asked for again, rather than being finished later: the frame maker
+    can't resume, and a preview clip takes a few seconds.
+  - **The preview's sound starts when its clip is ready**, so picture and sound start together; hovering across the
+    tiles doesn't start a sound job for every tile.
+  - **The pictures thread ends when the window closes** (and starts again on the next open), so no second graphics
+    device is held while the editor is in use. Posters already drawn stay for the session.
+  - The preview's sound uses the editor's listening volume, and Sound starts on or off as the editor's speaker is.
+  - Grow every bounce: a Balls radius can't pass 200, so the ring is 320 (a 200 ball nearly fills it), the ball
+    starts at 600 px/s and grows ×1.08 a bounce, reaching full size at about 14.5 s. Its counter reads "N BOUNCES"
+    at size 120; Every bounce makes two's reads "N BALLS" at 140 and its ring wears Laser.
+  - `Lib` helpers that no scene used yet were left out (clippy denies dead code); add them back when a scene needs
+    them.

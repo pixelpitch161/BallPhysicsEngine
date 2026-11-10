@@ -47,7 +47,7 @@ pub(super) const SAVE_STATUS_WIDTH: f32 = 180.0;
 pub(super) const MIN_SAVE_STATUS_WIDTH: f32 = 90.0;
 
 impl Studio {
-    pub(super) fn toolbar(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn toolbar(&mut self, ui: &mut egui::Ui) {
         // Export sits at the right, as wide as it was last drawn; everything else gets the
         // room left of it and wraps onto a second line rather than running under it.
         let right_id = ui.make_persistent_id("toolbar right");
@@ -100,6 +100,12 @@ impl Studio {
         })
         .response
         .on_hover_text("Open a scene you opened or saved lately");
+        if style::toolbar_button(ui, "Scenes")
+            .on_hover_text("Open one of the built-in scenes, from simple starters to full spectacles")
+            .clicked()
+        {
+            self.clicked = Some(ToolbarClick::Scenes);
+        }
         if style::toolbar_button(ui, "Save").on_hover_text("Save this scene (Ctrl+S)").clicked() {
             self.clicked = Some(ToolbarClick::Save);
         }
