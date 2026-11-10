@@ -190,7 +190,16 @@ impl Entry {
 }
 
 /// Every built-in scene, in the order the Scenes window lists them.
-static ENTRIES: &[Entry] = &[starters::first_bounce::ENTRY];
+static ENTRIES: &[Entry] = &[
+    starters::first_bounce::ENTRY,
+    starters::ball_in_a_circle::ENTRY,
+    starters::grow_every_bounce::ENTRY,
+    starters::shrinking_box::ENTRY,
+    starters::every_bounce_makes_two::ENTRY,
+    starters::rainbow_drop::ENTRY,
+    starters::fountain::ENTRY,
+    starters::string_art::ENTRY,
+];
 
 /// Every built-in scene, in the order the Scenes window lists them.
 pub fn all() -> &'static [Entry] {

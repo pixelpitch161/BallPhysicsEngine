@@ -1079,6 +1079,17 @@ fn apply_set(scene: &mut Scene) {
     }
 }
 
+/// Every built-in scene (`bpe_kit::library`) at its poster moment and two more, named `library-<id>`.
+fn library_shots(reg: &Registry) -> Vec<Shot> {
+    bpe_kit::library::all()
+        .iter()
+        .map(|e| {
+            let i = &e.info;
+            shot(format!("library-{}", i.id), e.scene(reg), vec![i.poster_seconds, i.seconds * 0.4, i.seconds * 0.8])
+        })
+        .collect()
+}
+
 #[test]
 #[ignore = "renders full-size pictures to look at; run with --ignored"]
 fn render_at_full_size() {
@@ -1114,6 +1125,7 @@ fn render_at_full_size() {
         ("ready", ready_shots(&reg)),
         ("links", link_shots(&reg)),
         ("riding", riding_shots(&reg)),
+        ("library", library_shots(&reg)),
     ];
     let mut count = 0;
     for (group, shots) in groups {

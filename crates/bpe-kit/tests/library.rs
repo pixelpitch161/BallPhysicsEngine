@@ -11,7 +11,8 @@ use bpe_runtime::{Log, Playback, World};
 use std::collections::BTreeSet;
 
 fn is_kebab(id: &str) -> bool {
-    !id.is_empty() && id.split('-').all(|w| !w.is_empty() && w.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()))
+    !id.is_empty()
+        && id.split('-').all(|w| !w.is_empty() && w.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()))
 }
 
 #[test]
@@ -43,7 +44,7 @@ fn ids_names_and_info_are_tidy() {
 #[test]
 fn levels_so_far() {
     let count = |l: Level| library::all().iter().filter(|e| e.info.level == l).count();
-    assert_eq!((count(Level::Starter), count(Level::InBetween), count(Level::Spectacle)), (1, 0, 0));
+    assert_eq!((count(Level::Starter), count(Level::InBetween), count(Level::Spectacle)), (8, 0, 0));
 }
 
 /// Every kind the scene names (things, cards, layers, rule blocks) is one the program has.
@@ -139,10 +140,7 @@ fn payoffs_land_on_time() {
                 let rule = scene.rules.list.iter().find(|r| r.name == name).unwrap_or_else(|| panic!("{id}: {name}"));
                 log.events()
                     .iter()
-                    .find(|ev| {
-                        ev.kind == EventKind::Rule
-                            && ev.b.as_ref().is_some_and(|b| (b.item >> 16) == rule.id.0)
-                    })
+                    .find(|ev| ev.kind == EventKind::Rule && ev.b.as_ref().is_some_and(|b| (b.item >> 16) == rule.id.0))
                     .map(|ev| ev.step as f64 / rate)
             }
             PayoffEvent::Breaks(name) => {
@@ -167,7 +165,8 @@ fn payoffs_land_on_time() {
 /// Whether more than 2% of the picture differs clearly from its first pixel.
 fn has_a_picture(pixels: &[u8]) -> bool {
     let first = &pixels[..4];
-    let differ = pixels.chunks_exact(4).filter(|p| p.iter().zip(first).take(3).any(|(a, b)| a.abs_diff(*b) > 8)).count();
+    let differ =
+        pixels.chunks_exact(4).filter(|p| p.iter().zip(first).take(3).any(|(a, b)| a.abs_diff(*b) > 8)).count();
     differ * 50 > pixels.len() / 4
 }
 

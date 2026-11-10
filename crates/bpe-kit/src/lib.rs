@@ -4,10 +4,10 @@
 pub mod air;
 #[cfg(test)]
 mod layer_tests;
+pub mod library;
 pub mod modules;
 pub mod outline;
 pub mod paint;
-pub mod library;
 pub mod ready_looks;
 pub mod riding;
 pub mod rules;

@@ -2,14 +2,16 @@
 //! the editor makes, so a built-in scene is exactly what a person could have built by hand.
 
 use bpe_core::{
-    BlockId, Color, LayerId, Params, Registry, RuleId, Scene, Settings, SlotId, ThingId, Value, layered_key,
+    BlockId, Color, LayerId, NoteSlot, Params, Registry, RuleId, Scene, Settings, SlotId, ThingId, Value, Who,
+    layered_key,
 };
 use glam::Vec2;
 
 use crate::ready_looks::{self, Colours, How};
-use crate::things::text::looks::{Look, add_text};
+use crate::sound::{Plays, Root, Scale, VoiceSettings};
 use crate::things::text::TextSettings;
-use crate::{SceneSettings, add_thing};
+use crate::things::text::looks::{Look, add_text};
+use crate::{BallsSettings, BasicMotion, SceneSettings, ShapeSettings, add_thing};
 
 /// A colour from 0xRRGGBB.
 pub(crate) fn hex(rgb: u32) -> Color {
@@ -185,6 +187,51 @@ impl<'a> Lib<'a> {
         self.scene.rename_thing(id, name);
         self.params(id, |s: &mut TextSettings| s.words = words.into());
         id
+    }
+
+    /// A hollow ring of `radius` at `at`, wearing the ready-made shape look `look`.
+    pub fn ring(&mut self, name: &str, at: Vec2, radius: f32, thickness: f32, look: &str) -> ThingId {
+        let id = self.add("shape", ThingId::ROOT, name);
+        self.at(id, at);
+        self.params(id, |s: &mut ShapeSettings| *s = ShapeSettings::circle(radius, thickness));
+        self.look(id, look);
+        id
+    }
+
+    /// One ball of `radius` at `at` setting off at `velocity`, pulled by the scene's gravity, wearing the
+    /// ready-made look `look`.
+    pub fn ball(&mut self, name: &str, at: Vec2, radius: f32, velocity: Vec2, look: &str) -> ThingId {
+        let id = self.add("balls", ThingId::ROOT, name);
+        self.at(id, at);
+        self.params(id, |s: &mut BallsSettings| {
+            s.radius = radius;
+            s.velocity = velocity;
+        });
+        self.card(id, SlotId::Motion, |m: &mut BasicMotion| m.gravity_scale = 1.0);
+        self.look(id, look);
+        id
+    }
+
+    /// Gives `id` the starter sound playing `notes` (MIDI numbers, middle C 60) as slot 1, picked by
+    /// `plays`, in the key of `root` `scale`.
+    pub fn notes(&mut self, id: ThingId, notes: &[u8], plays: Plays, root: Root, scale: Scale) {
+        if self.scene.card(id, SlotId::Sound).is_none() {
+            self.sound(id);
+        }
+        let mut sorted = notes.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        self.card(id, SlotId::Sound, |v: &mut VoiceSettings| {
+            v.notes_slots = vec![NoteSlot { notes: sorted, order_clicked: Vec::new() }];
+            v.notes_plays = plays;
+            v.notes_root = root;
+            v.notes_scale = scale;
+        });
+    }
+
+    /// The thing as a rule names it.
+    pub fn who(&self, id: ThingId) -> Value {
+        Value::Who(Who::Thing { thing: id, ball: None })
     }
 
     pub fn finish(self) -> Scene {
