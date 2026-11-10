@@ -626,3 +626,33 @@ fn a_split_balls_number_finds_a_child_once_it_is_gone() {
     // The middle one (the ball's own row) breaks first, then the next with its number.
     assert_eq!(world.bodies[&BALLS].alive, [false, false, true]);
 }
+
+/// A ring with a gap at 3 o'clock and the ball fired at it from the middle with no gravity: it
+/// gets out through the gap, and When it leaves the ring fires once, as it gets out.
+#[test]
+fn a_ball_escapes_through_a_gap_and_leaves_fires() {
+    let (mut scene, kit) = starter();
+    scene.things.get_mut(&ThingId::ROOT).unwrap().params.set("gravity", Value::Vec2([0.0, 0.0]));
+    let ring = ShapeSettings { gaps: 1, gap_at: 0.25, gap_size: 0.12, ..ShapeSettings::circle(400.0, 8.0) };
+    scene.things.get_mut(&SHAPE).unwrap().params = ring.to_params();
+    let mid = scene.things[&SHAPE].transform.position;
+    let ball = scene.things.get_mut(&BALLS).unwrap();
+    ball.transform.position = mid;
+    ball.params.set("velocity", Value::Vec2([700.0, 0.0]));
+    let (rule, ids) = lane(
+        &mut scene,
+        &kit.registry,
+        &[("when.enter", vec![("zone", who(thing(SHAPE))), ("way", choice("leaves"))])],
+    );
+    let (world, log) = run(&scene, &kit, 2.0);
+    let p = world.bodies[&BALLS].position[0];
+    assert!((p - mid).length() > 450.0, "it got out: {p}");
+    assert_eq!(fired(&log, rule, ids[0]).len(), 1, "left once");
+    assert!(steps_of(&log, EventKind::Hit).is_empty(), "it touched nothing on the way out");
+    // The same ring closed keeps it in.
+    let closed = ShapeSettings { gaps: 0, ..ring };
+    scene.things.get_mut(&SHAPE).unwrap().params = closed.to_params();
+    let (world, log) = run(&scene, &kit, 2.0);
+    assert!((world.bodies[&BALLS].position[0] - mid).length() < 400.0);
+    assert!(fired(&log, rule, ids[0]).is_empty());
+}

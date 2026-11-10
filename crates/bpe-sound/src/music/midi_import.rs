@@ -37,6 +37,13 @@ pub struct MidiImport {
     /// The keyboard range that shows every note: its lowest octave and how many octaves.
     pub low_octave: i32,
     pub octaves: i32,
+    /// Every chord in the order it plays (at most [`bpe_kit::sound::MAX_MELODY`]), for Import
+    /// MIDI as a melody, how many chords past that were left out, and the keyboard range that
+    /// shows all of them.
+    pub melody: Vec<NoteSlot>,
+    pub melody_left_out: usize,
+    pub melody_low_octave: i32,
+    pub melody_octaves: i32,
 }
 
 struct Note {
@@ -185,10 +192,20 @@ pub fn import(bytes: &[u8]) -> Result<MidiImport, String> {
         SlotTiming::Keys(keys)
     };
 
-    let all = slots.iter().flat_map(|s| s.notes.iter().copied());
-    let (lo, hi) = all.fold((127u8, 0u8), |(lo, hi), n| (lo.min(n), hi.max(n)));
-    let low_octave = (lo / 12) as i32;
-    let octaves = ((hi / 12) as i32 - low_octave + 1).clamp(1, 8);
+    let range = |all: &mut dyn Iterator<Item = u8>| {
+        let (lo, hi) = all.fold((127u8, 0u8), |(lo, hi), n| (lo.min(n), hi.max(n)));
+        let low = (lo / 12) as i32;
+        (low, ((hi / 12) as i32 - low + 1).clamp(1, 8))
+    };
+    let (low_octave, octaves) = range(&mut slots.iter().flat_map(|s| s.notes.iter().copied()));
+    let max_melody = bpe_kit::sound::MAX_MELODY;
+    let melody: Vec<NoteSlot> = chords
+        .iter()
+        .take(max_melody)
+        .map(|(_, _, keys)| NoteSlot { notes: keys.clone(), order_clicked: Vec::new() })
+        .collect();
+    let melody_left_out = chords.len().saturating_sub(max_melody);
+    let (melody_low_octave, melody_octaves) = range(&mut melody.iter().flat_map(|s| s.notes.iter().copied()));
     Ok(MidiImport {
         slots,
         chords: chords.len(),
@@ -199,6 +216,10 @@ pub fn import(bytes: &[u8]) -> Result<MidiImport, String> {
         timing,
         low_octave,
         octaves,
+        melody,
+        melody_left_out,
+        melody_low_octave,
+        melody_octaves,
     })
 }
 
@@ -320,6 +341,22 @@ mod tests {
             SlotTiming::Keys(keys) => assert_eq!(keys.len(), 16),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn a_melody_keeps_every_chord_in_time_order_with_repeats() {
+        // C, E, C, G then a C-E chord: five steps, the repeated C kept.
+        let notes = [(0, 480, 60, 0), (480, 480, 64, 0), (960, 480, 60, 0), (1440, 480, 67, 0), (1920, 480, 60, 0)];
+        let mut notes = notes.to_vec();
+        notes.push((1920, 480, 64, 0));
+        let m = import(&file(&[(0, 500_000)], None, &notes)).unwrap();
+        let steps: Vec<Vec<u8>> = m.melody.iter().map(|s| s.notes.clone()).collect();
+        assert_eq!(steps, vec![vec![60], vec![64], vec![60], vec![67], vec![60, 64]]);
+        assert_eq!(m.slots.len(), 4, "the slots still hold the distinct chords");
+        assert_eq!((m.melody_left_out, m.melody_low_octave, m.melody_octaves), (0, 5, 1));
+        let long: Vec<_> = (0..1030u64).map(|i| (i * 120, 120, 40 + (i % 30) as u8, 0)).collect();
+        let m = import(&file(&[(0, 500_000)], None, &long)).unwrap();
+        assert_eq!((m.melody.len(), m.melody_left_out), (1024, 6));
     }
 
     #[test]

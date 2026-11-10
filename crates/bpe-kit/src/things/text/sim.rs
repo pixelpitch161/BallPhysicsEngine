@@ -195,6 +195,7 @@ fn refresh(id: ThingId, world: &mut World, relay: bool) {
         growth: 0.0,
         velocity: pose.velocity,
         passes: s.balls == TextBalls::PassThrough,
+        gaps: None,
     });
     let chars: Option<Arc<[char]>> = changed
         .then(|| letters.as_ref().map_or_else(|| Arc::from([]), |l| l.layout.letters.iter().map(|l| l.ch).collect()));

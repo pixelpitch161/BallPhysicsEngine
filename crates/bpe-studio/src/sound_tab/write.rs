@@ -198,6 +198,30 @@ pub fn import_midi(scene: &mut Scene, reg: &Registry, id: ThingId, import: &Midi
     said
 }
 
+/// Writes a MIDI import into thing `id`'s melody (every chord in the order it plays) and Plays
+/// Melody, and its tempo and time signature into the scene. Returns what it did, in plain words.
+pub fn import_midi_melody(scene: &mut Scene, reg: &Registry, id: ThingId, import: &MidiImport, time: f64) -> String {
+    let at = |key: &str| Address::on(id, SlotId::Sound, key);
+    let root = |key: &str| Address::own(ThingId::ROOT, key);
+    write(scene, reg, &at("notes_plays"), Value::Choice("melody".into()), time);
+    write(scene, reg, &at("notes_melody"), Value::Slots(import.melody.clone()), time);
+    write(scene, reg, &at("notes_low_octave"), Value::Int(import.melody_low_octave as i64), time);
+    write(scene, reg, &at("notes_octaves"), Value::Int(import.melody_octaves as i64), time);
+    let (top, bottom) = import.time_signature;
+    write(scene, reg, &root("tempo"), Value::Number(import.bpm), time);
+    write(scene, reg, &root("time_top"), Value::Int(top as i64), time);
+    write(scene, reg, &root("time_bottom"), Value::Choice(bottom.to_string()), time);
+    let n = import.melody.len();
+    let mut said = format!("Imported a melody of {n} step{}", if n == 1 { "" } else { "s" });
+    if import.melody_left_out > 0 {
+        said += &format!(" ({} more chords left out: a melody has up to 1024 steps)", import.melody_left_out);
+    }
+    if import.tempo_changes {
+        said += " (the tempo changes in the file; the scene keeps its first tempo)";
+    }
+    said
+}
+
 /// `card` with its layers numbered from 0 and everything that names a layer following.
 fn renumbered(card: &Slot) -> Slot {
     let map: Vec<(LayerId, LayerId)> = card.layers.iter().enumerate().map(|(i, l)| (l.id, LayerId(i as u32))).collect();
@@ -378,6 +402,10 @@ mod tests {
             timing: SlotTiming::ByTempo { every: 2, bars: true },
             low_octave: 4,
             octaves: 2,
+            melody: vec![slot(&[60, 64, 67]), slot(&[57, 60, 64]), slot(&[60, 64, 67]), slot(&[57, 60, 64])],
+            melody_left_out: 0,
+            melody_low_octave: 4,
+            melody_octaves: 2,
         };
         let said = import_midi(&mut scene, reg, shape, &import, 0.0);
         assert_eq!(said, "Imported 4 chords into 2 slots");
@@ -398,5 +426,11 @@ mod tests {
         let jump = Address::on(shape, SlotId::Sound, "notes_jump");
         let keys: Vec<(f64, Value)> = scene.tracks[&jump].keys.iter().map(|k| (k.time, k.value.clone())).collect();
         assert_eq!(keys, vec![(0.5, Value::Int(1)), (2.0, Value::Int(2)), (2.5, Value::Int(1))]);
+        // As a melody: every chord in order, Plays Melody, the slots left as they are.
+        let said = import_midi_melody(&mut scene, reg, shape, &import, 0.0);
+        assert_eq!(said, "Imported a melody of 4 steps");
+        assert_eq!(own(&scene, "notes_melody"), Some(Value::Slots(import.melody.clone())));
+        assert_eq!(own(&scene, "notes_plays"), Some(Value::Choice("melody".into())));
+        assert_eq!(own(&scene, "notes_slots"), Some(Value::Slots(import.slots.clone())));
     }
 }

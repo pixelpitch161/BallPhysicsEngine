@@ -1,6 +1,6 @@
 //! How hits play notes: Poly or Mono, how many notes at once, Glide (Mono), the softest hit
-//! that plays, the retrigger guard, how a hit's speed becomes its strength and which balls are
-//! heard.
+//! that plays, the retrigger guard, how a hit's speed becomes its strength, Pitch follows size
+//! and which balls are heard.
 
 use super::{TabCx, panel};
 use crate::style;
@@ -19,6 +19,14 @@ fn ms(v: f64) -> String {
 
 fn speed(v: f64) -> String {
     format!("{v:.0} px/s")
+}
+
+fn semitones(v: f64) -> String {
+    format!("{v:.1} st")
+}
+
+fn px(v: f64) -> String {
+    format!("{v:.0} px")
 }
 
 fn percent(v: f64) -> String {
@@ -49,6 +57,14 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx) {
             cx.knob(ui, "play_curve", "Curve", &plain).on_hover_text(
                 "Bends how a hit's speed turns into its strength: up makes soft hits louder, down keeps them quiet",
             );
+            cx.knob(ui, "play_size_pitch", "Pitch follows size", &semitones).on_hover_text(
+                "Semitones lower each time the ball that plays is twice as big (higher when smaller); minus turns \
+                 it round. 0 is off",
+            );
+            if cx.number("play_size_pitch") != 0.0 {
+                cx.knob(ui, "play_size_at", "Size for the written note", &px)
+                    .on_hover_text("A ball this big plays the notes as written");
+            }
         });
         // A Particles thing has no outline to be in range of, and hears only its own particles.
         let particles = super::moments::is_particles(cx);

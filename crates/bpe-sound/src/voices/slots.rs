@@ -12,7 +12,9 @@ use super::notes::mix;
 use crate::{BlockHit, SAMPLE_RATE, TempoMap};
 use bpe_core::{Address, Scene, Settings, SlotId, ThingId, Track, Value};
 use bpe_kit::SceneSettings;
-use bpe_kit::sound::{BeatsOrBars, Change, MAX_SLOTS, Plays, SlotOrder, StrumDir, VoiceSettings};
+use bpe_kit::sound::{
+    BeatsOrBars, Change, MAX_MELODY, MAX_SLOTS, MelodyEnd, Plays, SlotOrder, StrumDir, VoiceSettings,
+};
 use bpe_runtime::World;
 
 /// A shape's notes settings that are not slots, as the engine reads them.
@@ -33,6 +35,13 @@ pub struct NotesSpec {
     pub order: SlotOrder,
     /// The Slot keyframes.
     pub jump: Option<Track>,
+    /// Plays Melody: its steps (at most [`MAX_MELODY`]) and what it does after the last.
+    pub melody: std::sync::Arc<[bpe_core::NoteSlot]>,
+    pub melody_end: MelodyEnd,
+    /// Pitch follows size: semitones down per doubling of the ball's size (0 off), and the size
+    /// that plays the note as written.
+    pub size_pitch: f32,
+    pub size_at: f32,
 }
 
 impl Default for NotesSpec {
@@ -60,6 +69,10 @@ impl NotesSpec {
             every_hits: v.notes_every_hits.clamp(1, 256) as u32,
             order: v.notes_order,
             jump,
+            melody: v.notes_melody.iter().take(MAX_MELODY).cloned().collect(),
+            melody_end: v.notes_melody_end,
+            size_pitch: if v.play_size_pitch.is_finite() { v.play_size_pitch.clamp(-48.0, 48.0) } else { 0.0 },
+            size_at: if v.play_size_at.is_finite() { v.play_size_at.clamp(1.0, 2000.0) } else { 20.0 },
         }
     }
 

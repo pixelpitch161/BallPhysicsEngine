@@ -214,6 +214,11 @@ fn draw_part(cx: &DrawCx, frame: &mut Frame, part: u32) {
         form.half *= s.scale.max(0.0);
     }
     let index = push_form(&form, BODY_WHITE, thing_code(cx.thing.id), frame);
+    // Its openings, measured on the wall as it stands (a letter move or a pop moves the drawing,
+    // and the openings with it).
+    if let Some(gaps) = wall.gaps.as_deref().filter(|_| !wall.solid) {
+        frame.cut_gaps(index, &gap_cuts(&wall_form(wall), wall, gaps));
+    }
     // Ripples measure from its outline (once, not again for the part over its Blend layer).
     // A shattered shape's outline is in pieces, so it gives no ripples.
     let shattered = remains.as_ref().is_some_and(|(_, l)| l.look == crate::rules::breaks::BreakLook::Shatter);
@@ -425,6 +430,48 @@ pub fn wall_form(wall: &Wall) -> WallForm {
             ellipse: None,
         },
     }
+}
+
+/// Each of `wall`'s openings as `Frame::cut_gaps` takes it: where round `form` (the wall's own
+/// drawing) it runs, as the shaders measure it, and its two ends in `form`'s shape units.
+pub fn gap_cuts(form: &WallForm, wall: &Wall, gaps: &bpe_runtime::Gaps) -> Vec<(f32, f32, Vec2, Vec2)> {
+    let to_form = |p: Vec2| Vec2::from_angle(-form.turn).rotate(p - form.center) / form.scale.max(1e-6);
+    (0..gaps.spans.len())
+        .map(|k| {
+            let (a, b) = gaps.ends(&wall.outline, k);
+            let (a, b) = (to_form(a), to_form(b));
+            (form_along(form, a), form_along(form, b), a, b)
+        })
+        .collect()
+}
+
+/// Where round `form` the point nearest `q` (its shape units) is, 0 to 1 clockwise from its first
+/// point (a circle's or an ellipse's top; an ellipse by the angle it is drawn with): the shaders'
+/// `along` (`path_along` in paths.wgsl, `shape_at` in shape_layers.wgsl).
+pub fn form_along(form: &WallForm, q: Vec2) -> f32 {
+    use std::f32::consts::TAU;
+    if let Some(ab) = form.ellipse {
+        let ab = ab.max(Vec2::splat(1e-6));
+        let c = bpe_runtime::nearest_on_ellipse(ab, q);
+        return ((c.x / ab.x).atan2(-c.y / ab.y) / TAU).rem_euclid(1.0);
+    }
+    let Some(ps) = form.points.as_deref().filter(|p| p.len() >= 2) else {
+        return (q.x.atan2(-q.y) / TAU).rem_euclid(1.0);
+    };
+    let n = ps.len();
+    let (mut best, mut best_at, mut total) = (f32::INFINITY, 0.0f32, 0.0f32);
+    for k in 0..n {
+        let (p0, p1) = (ps[k], ps[(k + 1) % n]);
+        let e = p1 - p0;
+        let h = ((q - p0).dot(e) / e.dot(e).max(1e-12)).clamp(0.0, 1.0);
+        let d = (q - p0 - e * h).length();
+        if d < best {
+            best = d;
+            best_at = total + h * e.length();
+        }
+        total += e.length();
+    }
+    best_at / total.max(1e-6)
 }
 
 /// The most corners a mirror wall's outline takes (a circle or an ellipse is cut into this many).

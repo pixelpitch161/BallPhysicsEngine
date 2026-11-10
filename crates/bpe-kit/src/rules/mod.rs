@@ -15,7 +15,7 @@
 //!
 //! Part 5 (plan `docs/superpowers/plans/rules/part5.md`) adds When [`events::Enter`],
 //! [`events::Fired`], [`events::Removed`], [`counts::CountReached`], [`level::CrossesLevel`],
-//! [`signals::HearSignal`]; If [`counts::CounterIs`]; Do [`balls::Split`], [`balls::Spawn`],
+//! [`signals::HearSignal`]; If [`counts::CounterIs`]; Do [`balls::Split`], [`balls::Merge`] (built-in scenes part 2), [`balls::Spawn`],
 //! [`balls::FireRound`], [`tags::Tag`], [`counts::Count`], [`signals::SendSignal`].
 //!
 //! [`RuleBlockKind`]: bpe_core::RuleBlockKind
@@ -51,6 +51,8 @@ mod health_tests;
 mod spectacle_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_merge;
 #[cfg(test)]
 mod tests_part5;
 
@@ -115,6 +117,7 @@ pub fn register(r: &mut Registry) {
     r.add_block(signals::HearSignal);
     r.add_block(counts::CounterIs);
     r.add_block(balls::Split);
+    r.add_block(balls::Merge);
     r.add_block(balls::Spawn);
     r.add_block(balls::FireRound);
     r.add_block(tags::Tag);
@@ -156,6 +159,7 @@ pub fn add_sims(s: &mut Sims) {
     s.add_block(signals::HearSignal);
     s.add_block(counts::CounterIs);
     s.add_block(balls::Split);
+    s.add_block(balls::Merge);
     s.add_block(balls::Spawn);
     s.add_block(balls::FireRound);
     s.add_block(tags::Tag);

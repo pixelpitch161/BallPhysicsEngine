@@ -120,6 +120,20 @@ pub fn place(plays: Plays, s: u64, len: usize, seed: u64) -> usize {
     }
 }
 
+/// The melody step a hit plays: `hits` accepted hits came before it, each step held for `repeat`
+/// hits; past the last of `len` steps it starts again or holds the last. `None` for an empty
+/// melody.
+pub fn melody_step(len: usize, hits: u64, repeat: u32, end: bpe_kit::sound::MelodyEnd) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let step = hits / repeat.max(1) as u64;
+    Some(match end {
+        bpe_kit::sound::MelodyEnd::Wrap => (step % len as u64) as usize,
+        bpe_kit::sound::MelodyEnd::Hold => step.min(len as u64 - 1) as usize,
+    })
+}
+
 /// 0..len in an order shuffled by `seed` (Fisher–Yates).
 fn shuffled(len: usize, seed: u64) -> [u8; MAX_RUN] {
     let mut p = [0u8; MAX_RUN];
@@ -331,6 +345,8 @@ impl AnyPick {
             Plays::ByLetter => AnyPick::Who(WhoPick { who: Who::Letter }),
             Plays::SpellNotes => AnyPick::Spell(SpellPick),
             Plays::AllAtOnce => AnyPick::Chord(ChordPick),
+            // The voice plays a melody itself (`melody_step`); a slot read as one runs up.
+            Plays::Melody => AnyPick::Step(StepPick(Plays::Up)),
             p => AnyPick::Step(StepPick(p)),
         }
     }

@@ -94,6 +94,97 @@ pub struct Wall {
     /// Balls go through it (a zone): it bounces nothing, though everything else (lights, the
     /// probe, rules' Enters / Leaves) still sees it.
     pub passes: bool,
+    /// Where a hollow wall is open (a shape's Gaps); `None` for a closed wall, which keeps today's
+    /// maths exactly. A filled wall ignores them.
+    pub gaps: Option<Arc<Gaps>>,
+}
+
+/// Openings in a hollow wall. A ball meets no wall where the outline is open; the ends of each
+/// opening are round caps of the band's half thickness. Places are measured as a shape's Place
+/// is: the way round from its first corner, clockwise, as a share of the whole (0..1); for a
+/// round ring or an ellipse by the angle from its own top.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Gaps {
+    /// Each opening's middle and half its width, in places.
+    pub spans: Vec<(f32, f32)>,
+    /// How places are measured on an outline that isn't round: its own outline (turned back by
+    /// [`Outline::angle`], from [`Outline::center`], over [`Outline::reach`]) from the first
+    /// corner clockwise, closed, with the place of each point (rising, below 1). `None`: by the
+    /// angle from the top (a ring's own point, or an ellipse's over its half-axes).
+    pub guide: Option<(Arc<[Vec2]>, Arc<[f32]>)>,
+}
+
+impl Gaps {
+    /// `p` (in the scene) in `outline`'s own frame, over its reach.
+    fn own(outline: &Outline, p: Vec2) -> Vec2 {
+        own(outline.center(), outline.angle(), p) / outline.reach().max(1e-6)
+    }
+
+    /// Where on `outline` the point `q` (on or near it) is, 0..1.
+    pub fn place(&self, outline: &Outline, q: Vec2) -> f32 {
+        let o = Self::own(outline, q);
+        let Some((points, places)) = &self.guide else {
+            let o = match *outline {
+                Outline::Ellipse { half, .. } => o * outline.reach() / half.max(Vec2::splat(1e-6)),
+                _ => o,
+            };
+            return (o.x.atan2(-o.y) / TAU).rem_euclid(1.0);
+        };
+        let n = points.len();
+        let mut best = (f32::INFINITY, 0.0f32);
+        for i in 0..n {
+            let (a, b) = (points[i], points[(i + 1) % n]);
+            let (t, _, d) = nearest_on_segment(a, b, o);
+            if d < best.0 {
+                let to = if i + 1 < n { places[i + 1] } else { 1.0 };
+                best = (d, places[i] + (to - places[i]) * t);
+            }
+        }
+        best.1.rem_euclid(1.0)
+    }
+
+    /// The point of `outline` at `place` (0..1).
+    pub fn at(&self, outline: &Outline, place: f32) -> Vec2 {
+        let place = place.rem_euclid(1.0);
+        let own = match &self.guide {
+            None => {
+                let d = Vec2::new((place * TAU).sin(), -(place * TAU).cos());
+                match *outline {
+                    Outline::Ellipse { half, .. } => d * half / outline.reach().max(1e-6),
+                    _ => d,
+                }
+            }
+            Some((points, places)) => {
+                let n = points.len();
+                let i = places.partition_point(|&p| p <= place).saturating_sub(1).min(n.saturating_sub(1));
+                let to = if i + 1 < n { places[i + 1] } else { 1.0 };
+                let t = if to > places[i] { (place - places[i]) / (to - places[i]) } else { 0.0 };
+                points[i].lerp(points[(i + 1) % n], t.clamp(0.0, 1.0))
+            }
+        };
+        let p = outline.center() + Vec2::from_angle(outline.angle()).rotate(own * outline.reach());
+        // On the true outline (the guide is cut into straight pieces).
+        outline.nearest(p).0
+    }
+
+    /// The opening `place` is in, by its index.
+    pub fn open(&self, place: f32) -> Option<usize> {
+        self.spans.iter().position(|&(middle, half)| ((place - middle + 0.5).rem_euclid(1.0) - 0.5).abs() < half)
+    }
+
+    /// The opening the point `q` of `outline` is in.
+    pub fn open_at(&self, outline: &Outline, q: Vec2) -> Option<usize> {
+        if self.spans.is_empty() {
+            return None;
+        }
+        self.open(self.place(outline, q))
+    }
+
+    /// The two ends of opening `k` on `outline`, in the scene.
+    pub fn ends(&self, outline: &Outline, k: usize) -> (Vec2, Vec2) {
+        let (middle, half) = self.spans[k];
+        (self.at(outline, middle - half), self.at(outline, middle + half))
+    }
 }
 
 /// Where a ball met a wall.
@@ -484,6 +575,9 @@ pub fn keep_clear_from(
         // A hair's breadth on its own side, so the next step still knows which side that is.
         Touch::Middle => (MIDDLE_GAP, 0.0),
     };
+    if let Some(gaps) = wall.gaps.as_deref().filter(|_| !wall.solid) {
+        return keep_gapped(position, previous, before, velocity, radius, radius + band, wall, gaps);
+    }
     if !wall.solid && before.inside(previous) {
         match &wall.outline {
             Outline::Path { .. } | Outline::Ellipse { .. } | Outline::Letters { .. } => {
@@ -512,7 +606,7 @@ pub fn middle_crossing(
     velocity: Vec2,
     wall: &Wall,
 ) -> Option<(Contact, f32)> {
-    let inside = !wall.solid && before.inside(previous);
+    let inside = own_side(previous, start, before, wall);
     let own = |p: Vec2| wall.outline.inside(p) == inside;
     if !own(start) {
         return None;
@@ -530,6 +624,12 @@ pub fn middle_crossing(
     }
     let within = (lo + hi) * 0.5;
     let (point, line, part) = wall.outline.nearest_part(start.lerp(moved_to, within));
+    // Where the outline is open the ball goes on through.
+    if let Some(gaps) = wall.gaps.as_deref().filter(|_| !wall.solid)
+        && gaps.open_at(&wall.outline, point).is_some()
+    {
+        return None;
+    }
     let normal = if (start - point).dot(line) >= 0.0 { line } else { -line };
     let wall_velocity = wall.velocity + wall_velocity(point, wall.outline.center(), wall.spin, wall.growth);
     let speed = (velocity - wall_velocity).dot(-normal);
@@ -539,8 +639,88 @@ pub fn middle_crossing(
 /// Whether `p` is on the side of `wall` a ball whose centre was at `previous` belongs on, judged
 /// as [`keep_clear_from`] judges it against `before`.
 pub fn on_own_side(p: Vec2, previous: Vec2, before: &Outline, wall: &Wall) -> bool {
+    wall.outline.inside(p) == own_side(previous, p, before, wall)
+}
+
+/// Whether a ball whose centre was at `previous` at the start of the step and is at `now` belongs
+/// inside `wall`: inside when `previous` was inside `before` (a filled wall keeps every ball
+/// outside). Through an opening of a wall with gaps the side changes: a ball whose centre crossed
+/// the outline where it is open belongs on the side it went to.
+fn own_side(previous: Vec2, now: Vec2, before: &Outline, wall: &Wall) -> bool {
     let inside = !wall.solid && before.inside(previous);
-    wall.outline.inside(p) == inside
+    let Some(gaps) = wall.gaps.as_deref().filter(|_| !wall.solid) else { return inside };
+    if wall.outline.inside(now) == inside {
+        return inside;
+    }
+    // Where along the way from `previous` it crossed the outline.
+    let (mut lo, mut hi) = (0.0f32, 1.0f32);
+    for _ in 0..24 {
+        let mid = (lo + hi) * 0.5;
+        if wall.outline.inside(previous.lerp(now, mid)) == inside {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let (crossed, _) = wall.outline.nearest(previous.lerp(now, (lo + hi) * 0.5));
+    if gaps.open_at(&wall.outline, crossed).is_some() { !inside } else { inside }
+}
+
+/// [`keep_clear_from`] for a hollow wall with openings: keeps the ball's centre at least `limit`
+/// from the outline where it is closed and from the round ends of each opening, on its own side
+/// ([`own_side`]).
+#[allow(clippy::too_many_arguments)]
+fn keep_gapped(
+    position: &mut Vec2,
+    previous: Vec2,
+    before: &Outline,
+    velocity: Vec2,
+    radius: f32,
+    limit: f32,
+    wall: &Wall,
+    gaps: &Gaps,
+) -> Option<Contact> {
+    const SETTLED: f32 = 1e-3;
+    let inside = own_side(previous, *position, before, wall);
+    if !inside && (*position - wall.outline.center()).length() > wall.outline.reach() + limit {
+        return None;
+    }
+    let mut p = *position;
+    let mut pushed: Option<Vec2> = None;
+    for _ in 0..4 {
+        let (near, line, _) = wall.outline.nearest_part(p);
+        if let Some(k) = gaps.open_at(&wall.outline, near) {
+            // Open here: only the nearer end of the opening, a round cap, is in the way.
+            let (a, b) = gaps.ends(&wall.outline, k);
+            let end = if (p - a).length_squared() <= (p - b).length_squared() { a } else { b };
+            let away = p - end;
+            if away.length() >= limit - SETTLED {
+                break;
+            }
+            let side = away.try_normalize().unwrap_or(if wall.outline.inside(p) == inside { line } else { -line });
+            p = end + side * limit;
+            pushed = Some(side);
+            continue;
+        }
+        let away = p - near;
+        let p_inside = wall.outline.inside(p);
+        if p_inside == inside && away.length() >= limit - SETTLED {
+            break;
+        }
+        let side = match away.try_normalize() {
+            Some(n) if p_inside == inside => n,
+            Some(n) => -n,
+            None => {
+                let probe = near + line * (1e-3 * limit.max(1e-3));
+                if wall.outline.inside(probe) == inside { line } else { -line }
+            }
+        };
+        p = near + side * limit;
+        pushed = Some(side);
+    }
+    let side = pushed?;
+    *position = p;
+    contact(p, velocity, radius, -side, wall, 0)
 }
 
 /// Keeps the ball's centre at least `limit` from the centre line on one side of it: inside when
@@ -689,7 +869,7 @@ mod tests {
     use std::f32::consts::FRAC_PI_2;
 
     fn hollow(outline: Outline) -> Wall {
-        Wall { outline, solid: false, spin: 0.0, growth: 0.0, velocity: Vec2::ZERO, passes: false }
+        Wall { outline, solid: false, spin: 0.0, growth: 0.0, velocity: Vec2::ZERO, passes: false, gaps: None }
     }
 
     fn ring(radius: f32) -> Wall {
@@ -1165,5 +1345,116 @@ mod tests {
             keep_clear_from(&mut q, at, &wall.outline, Vec2::new(-50.0, 0.0), 20.0, Touch::Edge, &wall);
             assert!(((q - near).length() - 25.0).abs() < 1e-2, "{:?}: {q}", wall.outline);
         }
+    }
+
+    /// A ring of radius 300 (band 10) with one opening at 3 o'clock, a tenth of the way round.
+    fn gapped_ring() -> Wall {
+        let mut wall =
+            hollow(Outline::Ring { center: Vec2::ZERO, radius: 300.0, sides: 0, angle: 0.0, thickness: 10.0 });
+        wall.gaps = Some(Arc::new(Gaps { spans: vec![(0.25, 0.05)], guide: None }));
+        wall
+    }
+
+    /// Moves a ball of radius `r` from `at` at `v` for `steps` steps of 1/240 s against `wall`,
+    /// bouncing it fully; gives where it ends and how many contacts it had.
+    fn run(wall: &Wall, mut at: Vec2, mut v: Vec2, r: f32, steps: usize) -> (Vec2, usize, Vec<Contact>) {
+        let mut contacts = Vec::new();
+        for _ in 0..steps {
+            let previous = at;
+            at += v / 240.0;
+            if let Some(c) = keep_clear(&mut at, previous, v, r, wall) {
+                v = reflect(v, &c, 1.0);
+                contacts.push(c);
+            }
+        }
+        (at, contacts.len(), contacts)
+    }
+
+    #[test]
+    fn a_ball_leaves_a_ring_through_its_gap() {
+        let (at, hits, _) = run(&gapped_ring(), Vec2::ZERO, Vec2::new(600.0, 0.0), 20.0, 240);
+        assert_eq!(hits, 0, "it met nothing on the way out");
+        assert!(at.x > 500.0, "{at}");
+        // And it stays out: outside the ring it is kept outside the band.
+        let (at, _, _) = run(&gapped_ring(), Vec2::new(0.0, -420.0), Vec2::new(0.0, 900.0), 20.0, 240);
+        assert!(at.y < -300.0, "a ball outside is kept outside where the ring is closed: {at}");
+    }
+
+    #[test]
+    fn a_ball_bounces_off_the_closed_part() {
+        let (at, hits, contacts) = run(&gapped_ring(), Vec2::ZERO, Vec2::new(-600.0, 0.0), 20.0, 240);
+        assert!(hits >= 1);
+        assert!(at.length() < 300.0, "{at}");
+        assert!((contacts[0].normal - Vec2::X).length() < 1e-3, "{:?}", contacts[0]);
+    }
+
+    #[test]
+    fn a_ball_hits_an_end_of_the_gap() {
+        let wall = gapped_ring();
+        let gaps = wall.gaps.clone().unwrap();
+        let (top_end, _) = gaps.ends(&wall.outline, 0);
+        // The end nearer the top, at 0.2 of the way round.
+        let want = Vec2::new((0.2 * TAU).sin(), -(0.2 * TAU).cos()) * 300.0;
+        assert!((top_end - want).length() < 1e-2, "{top_end} {want}");
+        let v = top_end.normalize() * 600.0;
+        let (_, hits, contacts) = run(&wall, Vec2::ZERO, v, 20.0, 120);
+        assert!(hits >= 1, "it hits the round end");
+        let c = contacts[0];
+        assert!((c.normal + top_end.normalize()).length() < 0.05, "straight back off the cap: {:?}", c);
+        assert!((c.point - top_end).length() < 5.0 + 1e-2, "{:?}", c.point);
+    }
+
+    #[test]
+    fn a_ball_outside_comes_back_in_through_the_gap() {
+        let (at, hits, _) = run(&gapped_ring(), Vec2::new(500.0, 0.0), Vec2::new(-600.0, 0.0), 20.0, 120);
+        assert_eq!(hits, 0);
+        assert!(at.x < 250.0 && at.length() < 300.0, "{at}");
+    }
+
+    #[test]
+    fn a_fast_ball_beside_the_gap_does_not_get_through() {
+        // Aimed at the closed band just past the gap's end (0.32 of the way round), fast.
+        for place in [0.32f32, 0.18, 0.5, 0.9] {
+            let aim = Vec2::new((place * TAU).sin(), -(place * TAU).cos());
+            let (at, hits, _) = run(&gapped_ring(), Vec2::ZERO, aim * 4000.0, 20.0, 480);
+            assert!(hits >= 1, "{place}");
+            assert!(at.length() < 300.0, "{place}: got out at {at}");
+        }
+    }
+
+    #[test]
+    fn a_wall_without_gaps_keeps_todays_side() {
+        let wall = ring(300.0);
+        assert!(on_own_side(Vec2::new(10.0, 0.0), Vec2::ZERO, &wall.outline, &wall));
+        assert!(!on_own_side(Vec2::new(400.0, 0.0), Vec2::ZERO, &wall.outline, &wall));
+        // Across an opening the ball's side is the one it went to.
+        let gapped = gapped_ring();
+        assert!(on_own_side(Vec2::new(400.0, 0.0), Vec2::new(250.0, 0.0), &gapped.outline, &gapped));
+        assert!(!on_own_side(Vec2::new(-400.0, 0.0), Vec2::new(-250.0, 0.0), &gapped.outline, &gapped));
+    }
+
+    #[test]
+    fn places_go_round_from_the_top_or_the_first_corner() {
+        let wall = gapped_ring();
+        let gaps = wall.gaps.as_deref().unwrap();
+        for (p, want) in [(Vec2::new(0.0, -300.0), 0.0), (Vec2::new(300.0, 0.0), 0.25), (Vec2::new(0.0, 300.0), 0.5)] {
+            assert!((gaps.place(&wall.outline, p) - want).abs() < 1e-4, "{p}");
+        }
+        // A square outline with a guide: its corners a quarter apart.
+        let square: Vec<Vec2> =
+            [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)].into_iter().map(Vec2::from).collect();
+        let outline = path(square.clone(), 100.0, 0.3, 4.0);
+        let reach = outline.reach();
+        let guide: Vec<Vec2> = square.iter().map(|p| *p * 100.0 / reach).collect();
+        let g = Gaps { spans: vec![(0.5, 0.1)], guide: Some((guide.into(), vec![0.0, 0.25, 0.5, 0.75].into())) };
+        let world = |p: Vec2| Vec2::new(10.0, -20.0) + Vec2::from_angle(0.3).rotate(p * 100.0);
+        for (k, c) in square.iter().enumerate() {
+            let place = g.place(&outline, world(*c));
+            let off = (place - k as f32 * 0.25).abs();
+            assert!(off < 1e-4 || (k == 0 && off > 1.0 - 1e-4), "corner {k}: {place}");
+            assert!((g.at(&outline, k as f32 * 0.25) - world(*c)).length() < 1e-3);
+        }
+        assert_eq!(g.open_at(&outline, world(Vec2::new(1.0, 1.0))), Some(0));
+        assert_eq!(g.open_at(&outline, world(Vec2::new(-1.0, -1.0))), None);
     }
 }

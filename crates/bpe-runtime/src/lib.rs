@@ -44,8 +44,8 @@ pub use rules::{
 };
 pub use sound::{LevelsAt, SoundAt, SoundMaker};
 pub use walls::{
-    Contact, MAX_SIDES, Outline, Touch, Wall, keep_clear, keep_clear_from, nearest_on_ellipse, on_own_side, reflect,
-    wall_velocity,
+    Contact, Gaps, MAX_SIDES, Outline, Touch, Wall, keep_clear, keep_clear_from, nearest_on_ellipse, on_own_side,
+    reflect, wall_velocity,
 };
 pub use world::{
     BESIDE_SLOTS, Between, Card, Lent, RunId, World, beside_fingerprint, fingerprint, has_beside, heard_part,

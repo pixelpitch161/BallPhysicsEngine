@@ -18,6 +18,8 @@ struct LayeredShape {
 };
 
 var<private> layered_shape: LayeredShape;
+// The shape's openings (its instance's `gaps`, see `gap_cut` in paths.wgsl), set beside it.
+var<private> layered_gaps: vec4<f32>;
 
 // Where a point is against the shape: `q` in shape units; `sd` the signed distance to the
 // outline's centre line in world pixels (negative inside, even-odd); `edge` the distance to the
@@ -88,6 +90,9 @@ fn shape_at(world: vec2<f32>) -> ShapeAt {
             sd = select(best, -best, inside) * s.a.w;
             along = best_at / max(total, 1e-6);
         }
+    }
+    if layered_gaps.y > 0.5 {
+        sd = gap_cut(q, along, sd, layered_gaps, s.a.w);
     }
     var edge = sd;
     if s.b.x > 0.0 {
@@ -207,9 +212,11 @@ fn shade_shape_layers(
     c: vec4<f32>,
     layers: vec4<u32>,
     hit: vec4<f32>,
+    gaps: vec4<f32>,
     keep: f32,
 ) -> vec4<f32> {
     layered_shape = LayeredShape(a, b, c, layers, hit);
+    layered_gaps = gaps;
     // For Ripples (paint.wgsl): measured from everything but the shape itself.
     paint_world = world;
     paint_own = vec3<f32>(a.xy, 1.0);

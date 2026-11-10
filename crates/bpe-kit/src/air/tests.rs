@@ -86,7 +86,7 @@ fn balls_stir_less_when_told_and_not_at_all_at_zero() {
 fn a_shape_blocks_the_wind_and_moves_the_air_in_it() {
     let mut w = world();
     let outline = Outline::Ring { center: Vec2::ZERO, radius: 150.0, sides: 0, angle: 0.0, thickness: 4.0 };
-    let wall = Wall { outline, solid: true, spin: 0.0, growth: 0.0, velocity: Vec2::ZERO, passes: false };
+    let wall = Wall { outline, solid: true, spin: 0.0, growth: 0.0, velocity: Vec2::ZERO, passes: false, gaps: None };
     w.walls.insert(ThingId(901), wall.clone());
     let spec = AirSpec { wind_speed: 200.0, swirls: 0.0, ..AirSpec::default() };
     let mut air = awake(spec.clone(), &w);
@@ -176,7 +176,7 @@ fn one_thread_and_many_give_the_same_air() {
         Outline::Box { center: Vec2::new(150.0, 200.0), half: Vec2::new(120.0, 30.0), angle: 0.3, thickness: 6.0 };
     w.walls.insert(
         ThingId(901),
-        Wall { outline, solid: true, spin: 0.0, growth: 0.0, velocity: Vec2::ZERO, passes: false },
+        Wall { outline, solid: true, spin: 0.0, growth: 0.0, velocity: Vec2::ZERO, passes: false, gaps: None },
     );
     // Fine cells, so the grid is big enough to split.
     let spec = AirSpec { cell: 8.0, wind_speed: 80.0, gusts: 0.5, ..AirSpec::default() };

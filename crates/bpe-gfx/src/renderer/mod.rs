@@ -38,8 +38,9 @@ pub(crate) const LAYERED_ATTRIBUTES: [wgpu::VertexAttribute; 13] = wgpu::vertex_
     12 => Float32x4
 ];
 
-pub(crate) const PATH_ATTRIBUTES: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
-    0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Uint32x4, 5 => Float32x4, 6 => Float32x4
+pub(crate) const PATH_ATTRIBUTES: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
+    0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Uint32x4, 5 => Float32x4, 6 => Float32x4,
+    7 => Float32x4
 ];
 
 pub(crate) const FLASH_ATTRIBUTES: [wgpu::VertexAttribute; 3] =

@@ -134,6 +134,7 @@ fn pieces_bounce_off_the_shapes_and_stay_in() {
         growth: 0.0,
         velocity: Vec2::ZERO,
         passes: false,
+        gaps: None,
     };
     let walls = [&ring];
     let s = start();

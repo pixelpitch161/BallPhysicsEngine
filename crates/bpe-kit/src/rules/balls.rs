@@ -1,4 +1,4 @@
-//! Do blocks that make balls: Split, Spawn balls and Fire a round. The balls are added at the next
+//! Do blocks that make (or join) balls: Split, Merge balls, Spawn balls and Fire a round. The balls are added at the next
 //! step's start through the thing's own sim (`ThingSim::add_ball`), at most
 //! `bpe_runtime::rules::MAX_BALLS` live balls a thing.
 
@@ -100,6 +100,104 @@ impl BlockSim for Split {
             };
             for row in rows {
                 out.push(Action::Split { thing, row, into, spread, speed, share: s.share });
+            }
+        }
+    }
+}
+
+/// How big a merged ball is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum MergeGrow {
+    /// As big (in area) as the two together: two equal balls make one 1.41 times as wide.
+    #[default]
+    AddAreas,
+    /// That ball's own size times Amount.
+    KeepSize,
+}
+
+/// Merges two touching balls into one (fired by When hit with a ball as the Other).
+pub struct Merge;
+
+#[derive(Clone, Debug, PartialEq, Settings)]
+pub struct MergeSettings {
+    /// The ball that stays: it keeps its look, number and tags.
+    #[setting(label = "Who", simple, group = "Rule")]
+    pub who: Who,
+    /// The ball it takes in, which is removed.
+    #[setting(label = "With", simple, group = "Rule")]
+    pub with: Who,
+    /// Only balls of (about) the same size merge.
+    #[setting(label = "Only same size", simple, group = "Rule")]
+    pub same_size: bool,
+    /// How close in size counts as the same.
+    #[setting(label = "Size match", when = "same_size", range(0, 100), span(0, 50), unit = "%", group = "Rule")]
+    pub size_match: f32,
+    #[setting(label = "Grow", group = "Rule")]
+    pub grow: MergeGrow,
+    /// The merged ball's size as a share of That's.
+    #[setting(label = "Amount", when = "grow=keep_size", range(0, 100), span(0, 3), unit = "×", group = "Rule")]
+    pub times: f32,
+}
+
+impl Default for MergeSettings {
+    fn default() -> Self {
+        MergeSettings {
+            who: Who::That,
+            with: Who::Other,
+            same_size: true,
+            size_match: 5.0,
+            grow: MergeGrow::AddAreas,
+            times: 1.0,
+        }
+    }
+}
+
+block_kind!(
+    Merge,
+    "do.merge",
+    "Merge balls",
+    Do,
+    MergeSettings,
+    "Two touching balls become one: Who stays, wearing its own look, and takes in the size and speed of With.",
+    values = [],
+    from = ["times"]
+);
+
+#[derive(Clone, Debug)]
+struct MergeState {
+    s: MergeSettings,
+    times: Amount,
+}
+
+impl BlockSim for Merge {
+    fn kind(&self) -> &'static str {
+        "do.merge"
+    }
+    fn section(&self) -> BlockSection {
+        BlockSection::Do
+    }
+    fn prepare(&self, params: &Params, _cx: &PrepareCx) -> Result<Box<dyn ThingState>, String> {
+        let s = MergeSettings::from_params(params);
+        Ok(Box::new(MergeState { times: Amount::read(params, "times", s.times as f64), s }))
+    }
+    fn act(&self, st: &mut dyn ThingState, firing: &Firing, cx: &StageCx, out: &mut Vec<Action>) {
+        let m = state::<MergeState>(st);
+        let s = &m.s;
+        let size_match = s.same_size.then(|| s.size_match.clamp(0.0, 100.0) / 100.0);
+        let grow = match s.grow {
+            MergeGrow::AddAreas => bpe_runtime::rules::Grow::AddAreas,
+            MergeGrow::KeepSize => bpe_runtime::rules::Grow::Times((m.times.or_fixed(firing) as f32).max(0.0)),
+        };
+        // Each one ball of Who with each one ball of With.
+        let balls = |who: &Who| -> Vec<(ThingId, u32)> {
+            targets(cx, who, firing).into_iter().filter_map(|(t, r)| Some((t, r?))).collect()
+        };
+        let others = balls(&s.with);
+        for (thing, row) in balls(&s.who) {
+            for &(other, other_row) in &others {
+                if (thing, row) != (other, other_row) {
+                    out.push(Action::Merge { thing, row, other, other_row, size_match, grow });
+                }
             }
         }
     }

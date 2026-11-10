@@ -253,7 +253,15 @@ impl ThingSim for TestWall {
             Outline::Ring { center: base.position, radius: s.radius, sides: 0, angle: base.angle, thickness: 2.0 };
         world.walls.insert(
             thing.id,
-            Wall { outline, solid: false, spin: s.spin, growth: 0.0, velocity: base.velocity, passes: false },
+            Wall {
+                outline,
+                solid: false,
+                spin: s.spin,
+                growth: 0.0,
+                velocity: base.velocity,
+                passes: false,
+                gaps: None,
+            },
         );
         world.poses.insert(thing.id, Pose { spin: s.spin, ..base });
         world.states.insert(thing.id, Box::new(s.spin));

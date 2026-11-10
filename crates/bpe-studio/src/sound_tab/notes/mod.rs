@@ -8,6 +8,7 @@
 
 pub mod grid;
 pub mod header;
+pub mod melody;
 pub mod presets_menu;
 
 use super::keys::{KEYS_H, KeyGeom, keyboard_at};
@@ -46,6 +47,8 @@ pub struct NotesState {
     pub lit_until: BTreeMap<ThingId, Box<[f64; 128]>>,
     /// The shape whose notes were last read from the meters, and on which frame.
     pub last_read: Option<(ThingId, u64)>,
+    /// The melody step each shape's keyboard shows and edits while Plays is Melody.
+    pub melody_picked: BTreeMap<ThingId, usize>,
 }
 
 /// How long a note stays lit after it was last heard sounding.
@@ -237,9 +240,19 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx, state: &mut NotesState, playing: Option
         let width = ui.available_width();
         let left = ui.cursor().left();
         let geom = KeyGeom::new(left + GUTTER, (width - GUTTER - MARKER_W).max(60.0), low, n_oct);
+        let is_melody = cx.choice::<Plays>("notes_plays") == Plays::Melody;
         let mut rows = slots(cx);
         let picked = state.picked.get(&cx.id).copied().unwrap_or(0).min(rows.len() - 1);
-        let ops = grid::show(ui, cx, state, &rows, picked, geom, playing, sounding);
+        let ops = if is_melody {
+            ui.label(
+                RichText::new("Plays Melody: the slots rest while each hit plays the melody's next step.")
+                    .small()
+                    .color(style::MUTED),
+            );
+            Vec::new()
+        } else {
+            grid::show(ui, cx, state, &rows, picked, geom, playing, sounding)
+        };
         // A row number clicked picks that row for the keyboard now.
         let picked = state.picked.get(&cx.id).copied().unwrap_or(0).min(rows.len() - 1);
         // The keyboard, lined up with the grid's columns.
@@ -248,21 +261,35 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx, state: &mut NotesState, playing: Option
             egui::pos2(geom.left, rect.top()),
             Vec2::new(geom.kw * 7.0 * n_oct as f32, KEYS_H),
         );
-        let lit = rows[picked].notes.clone();
+        let steps = melody::steps(cx);
+        let step = melody::picked(cx, state).min(steps.len().saturating_sub(1));
+        let lit = if is_melody {
+            steps.get(step).map(|s| s.notes.clone()).unwrap_or_default()
+        } else {
+            rows[picked].notes.clone()
+        };
         let in_key = |n: u8| scale != Scale::Chromatic && in_scale(root, scale, n);
         let mut ops = ops;
         if let Some(note) = keyboard_at(ui, keys_rect, geom, &lit, sounding, cx.colour, &in_key) {
-            ops.push(RowOp::Toggle(picked, note));
+            if is_melody {
+                melody::apply_ops(cx, state, &[melody::StepOp::Toggle(step, note)]);
+            } else {
+                ops.push(RowOp::Toggle(picked, note));
+            }
             cx.edits.push(TabEdit::Audition(note));
         }
-        ui.label(
-            RichText::new(
-                "Each row is a slot, lined up with the keys: click in a row to turn its notes on or off. The keys \
-                 show the picked row; click one to hear it.",
-            )
-            .small()
-            .color(style::MUTED),
-        );
+        if is_melody {
+            melody::show(ui, cx, state);
+        } else {
+            ui.label(
+                RichText::new(
+                    "Each row is a slot, lined up with the keys: click in a row to turn its notes on or off. The \
+                     keys show the picked row; click one to hear it.",
+                )
+                .small()
+                .color(style::MUTED),
+            );
+        }
         // The rows' edits, in the order made.
         let mut changed = false;
         let mut now_picked = picked;
