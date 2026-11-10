@@ -115,6 +115,8 @@ pub enum Pending {
     New,
     /// A recent file from the toolbar's Recent menu, or a scene dropped on the window.
     OpenPath(PathBuf),
+    /// A built-in scene from the Scenes window, by its id.
+    OpenBuiltIn(&'static str),
 }
 
 /// What the panels remember between frames.
@@ -131,6 +133,8 @@ pub struct Panels {
     pub mixer: Mixer,
     /// The Rules view in the bottom panel.
     pub rules: crate::rules_panel::RulesPanel,
+    /// The Scenes window: the built-in scenes.
+    pub scenes: crate::scenes_window::ScenesWindow,
 }
 
 /// What the left panel shows: the things in the scene, every light, or the Mixer.
@@ -146,6 +150,7 @@ enum ToolbarClick {
     New,
     Open,
     Recent(PathBuf),
+    Scenes,
     Save,
     SaveAs,
     Undo,
@@ -614,7 +619,9 @@ impl eframe::App for Studio {
         // A held slider changes the physics many times a second: the runs start over when it
         // is let go or rests. A drag in the preview moves the things it shows, so it doesn't wait.
         self.hold_runs = pointer_down && !self.panels.preview.as_ref().is_some_and(Preview::dragging);
-        if self.confirm.is_none() && self.offer.is_none() && !self.ask_stop_export {
+        // The Scenes window takes the keys the panels behind it would act on, before any of them is drawn.
+        self.panels.scenes.take_keys(&ctx);
+        if self.confirm.is_none() && self.offer.is_none() && !self.ask_stop_export && !self.panels.scenes.open {
             self.shortcuts(&ctx);
         }
 
@@ -659,7 +666,7 @@ impl eframe::App for Studio {
             .frame(egui::Frame::new().fill(style::STAGE))
             .show(ui, |ui| preview::show(ui, frame, self))
             .inner;
-        if self.confirm.is_none() && self.offer.is_none() && !self.ask_stop_export {
+        if self.confirm.is_none() && self.offer.is_none() && !self.ask_stop_export && !self.panels.scenes.open {
             self.late_shortcuts(&ctx);
             self.take_drops(&ctx);
         }
@@ -696,17 +703,8 @@ impl eframe::App for Studio {
             self.panels.final_frame.start(&ctx, &self.scene, &self.kit, frames, ask);
         }
         self.panels.final_frame.show(&ctx);
-        match self.clicked.take() {
-            Some(ToolbarClick::New) => self.guard(Pending::New, &ctx),
-            Some(ToolbarClick::Open) => self.guard(Pending::Open, &ctx),
-            Some(ToolbarClick::Recent(path)) => self.guard(Pending::OpenPath(path), &ctx),
-            Some(ToolbarClick::Save) => _ = self.save(false),
-            Some(ToolbarClick::SaveAs) => _ = self.save(true),
-            Some(ToolbarClick::Undo) => _ = self.undo(),
-            Some(ToolbarClick::Redo) => _ = self.redo(),
-            Some(ToolbarClick::Export) => self.panels.export.open = true,
-            None => {}
-        }
+        self.take_toolbar_click(&ctx);
+        self.scenes_window(&ctx);
         self.confirm_dialog(&ctx);
         self.stop_export_dialog(&ctx);
         self.restore_dialog(&ctx);
@@ -740,6 +738,43 @@ impl eframe::App for Studio {
         }
         if self.playing {
             ctx.request_repaint();
+        }
+    }
+}
+
+impl Studio {
+    /// Does what the toolbar's button clicked this frame asks.
+    pub(crate) fn take_toolbar_click(&mut self, ctx: &egui::Context) {
+        match self.clicked.take() {
+            Some(ToolbarClick::New) => self.guard(Pending::New, ctx),
+            Some(ToolbarClick::Open) => self.guard(Pending::Open, ctx),
+            Some(ToolbarClick::Recent(path)) => self.guard(Pending::OpenPath(path), ctx),
+            Some(ToolbarClick::Scenes) => self.open_scenes_window(),
+            Some(ToolbarClick::Save) => _ = self.save(false),
+            Some(ToolbarClick::SaveAs) => _ = self.save(true),
+            Some(ToolbarClick::Undo) => _ = self.undo(),
+            Some(ToolbarClick::Redo) => _ = self.redo(),
+            Some(ToolbarClick::Export) => self.panels.export.open = true,
+            None => {}
+        }
+    }
+
+    /// Opens the Scenes window, pausing the project (and its sound) so only the preview plays.
+    pub(crate) fn open_scenes_window(&mut self) {
+        let playing = self.playing;
+        self.set_playing(false);
+        self.panels.scenes.open(playing, self.listen.on);
+    }
+
+    /// Shows the Scenes window while it is open, and does what it asks: opening a scene goes through the same
+    /// question about unsaved work as Open; closing it plays the project again if it was playing.
+    pub(crate) fn scenes_window(&mut self, ctx: &egui::Context) {
+        let volume = self.listen.volume;
+        match self.panels.scenes.show(ctx, &self.kit, volume) {
+            Some(crate::scenes_window::WindowOutcome::Open(id)) => self.guard(Pending::OpenBuiltIn(id), ctx),
+            Some(crate::scenes_window::WindowOutcome::Closed { was_playing: true }) => self.set_playing(true),
+            Some(crate::scenes_window::WindowOutcome::Closed { was_playing: false }) => {}
+            None => {}
         }
     }
 }

@@ -25,8 +25,8 @@ i_overlay.workspace = true
 rayon = "1"
 
 [features]
-# The test scenes (and the shape-plus-ball `new_scene`): only tests turn this on, so the program ships
-# with no built-in scenes.
+# The test scenes (and the shape-plus-ball `new_scene`): only tests turn this on. They are not the
+# built-in scenes people open from the Scenes window (`library/`), which always ship.
 test-scenes = []
 
 [dev-dependencies]

@@ -34,6 +34,7 @@ mod picture_picker;
 mod preview;
 mod recovery;
 mod rules_panel;
+mod scenes_window;
 mod selection;
 mod setting_snap;
 mod settings;

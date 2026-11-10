@@ -84,7 +84,22 @@ impl Studio {
             Pending::Open => self.open(),
             Pending::New => self.new_scene(),
             Pending::OpenPath(path) => _ = self.open_path(&path),
+            Pending::OpenBuiltIn(id) => _ = self.open_built_in(id),
         }
+    }
+
+    /// Opens the built-in scene `id` as a new project with no file yet: an ordinary scene, made fresh, that owns
+    /// every setting (spec 2026-11-10-built-in-scenes). An unknown id leaves the current scene and says so.
+    pub fn open_built_in(&mut self, id: &str) -> bool {
+        let Some(entry) = bpe_kit::library::find(id) else {
+            self.report(ProblemKind::File, format!("There is no built-in scene called {id}."));
+            return false;
+        };
+        let scene = entry.scene(&self.kit.registry);
+        self.replace_scene(scene, None);
+        self.status = format!("Opened the built-in scene {}. Save it to keep your changes.", entry.info.name);
+        self.clear_problem(ProblemKind::File);
+        true
     }
 
     pub fn open(&mut self) {
