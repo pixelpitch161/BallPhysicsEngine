@@ -741,6 +741,47 @@ pub fn final_frame(
     Ok((pixels, (width, height), started.elapsed().as_secs_f32()))
 }
 
+/// Draws the first `seconds` of the scene at `fps` frames a second and `scale` times its video size, unbaked,
+/// handing each frame to `each(index, rgba, size)`: the short looping clips the Scenes window plays. Returns
+/// how many frames it drew; `stop` set ends it between frames with an error.
+#[allow(clippy::too_many_arguments)]
+pub fn preview_clip(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    scene: &Scene,
+    kit: &Kit,
+    seconds: f64,
+    fps: u32,
+    scale: f32,
+    stop: &AtomicBool,
+    mut each: impl FnMut(u32, Vec<u8>, (u32, u32)),
+) -> anyhow::Result<u32> {
+    // Huge swarms step on the card the picture is drawn with.
+    let _card = bpe_gfx::swarm::use_for_now(Some(bpe_gfx::swarm::SwarmGpu::for_device(device, queue)));
+    let (_, video) = video_of(scene, kit)?;
+    let size = output_size(video.width, video.height, scale);
+    let fps = fps.max(1);
+    let total = (seconds.max(0.0) * fps as f64).ceil() as u32;
+    let mut renderer = Renderer::new(device, size.0, size.1);
+    let mut maker = FrameMaker::new(scene, kit);
+    for index in 0..total {
+        if stop.load(Ordering::Relaxed) {
+            bail!("stopped");
+        }
+        let frame = maker.frame(index as f64 / fps as f64);
+        renderer.render(device, queue, &frame);
+        // The first frames can come before every in-ball program is ready.
+        while renderer.programs_waiting() {
+            if stop.load(Ordering::Relaxed) {
+                bail!("stopped");
+            }
+            renderer.render(device, queue, &frame);
+        }
+        each(index, renderer.read_output(device, queue)?, size);
+    }
+    Ok(total)
+}
+
 /// Looks for ffmpeg on PATH, next to this program, and where common Windows installers put
 /// it (winget, Chocolatey, Scoop, C:\ffmpeg). A program started from Explorer may not see a
 /// PATH change from a recent install, so the install folders are checked directly too.
