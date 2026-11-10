@@ -299,3 +299,34 @@ fn many_lights_show_a_warning_on_the_lights_tab() {
     h.run();
     assert!(h.query_by_label_contains("lights are lit.").is_none());
 }
+
+#[test]
+fn double_clicking_the_fader_puts_the_default_strength_back() {
+    let (mut studio, id) = lit_studio();
+    let reg = &studio.kit.clone().registry;
+    let a = Address::own(id, "strength");
+    studio.scene.set_at(reg, &a, Value::Number(3.5)).unwrap();
+    let default = studio.scene.def_at(reg, &a).unwrap().default.clone();
+    let mut h = harness(studio);
+    // Near the rail's left end, so the click alone lands far from the default.
+    let rail =
+        h.query_all_by_label("Torch strength").find(|n| n.accesskit_node().role() == Role::Slider).unwrap().rect();
+    let at = egui::pos2(rail.left() + 4.0, rail.center().y);
+    h.hover_at(at);
+    h.run();
+    for _ in 0..2 {
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.step();
+        }
+    }
+    h.run();
+    assert_eq!(h.state().scene.value_at(reg, &a), Some(default));
+    assert!(h.state_mut().undo());
+    assert_eq!(h.state().scene.value_at(reg, &a), Some(Value::Number(3.5)), "one undo step");
+}

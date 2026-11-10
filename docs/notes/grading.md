@@ -74,7 +74,7 @@ Lightroom-style colour grading of the finished picture, edited in the editor's *
   heights, brightness filled, channels as lines); the right column (`panels.rs`) shows the panels in order. Each
   header folds, has an on/off switch (the layer's `enabled`), drags to a new place (a line shows where it lands),
   and right-clicks for Reset panel, Move up/down, Remove panel (refused for the last) and Reset order. **Add
-  panel** adds one at the end. Settings are the ordinary settings grid: double-click resets, right-click keys or
+  panel** adds one at the end. Settings are the ordinary settings grid: a double-click on a name or a slider's rail resets, right-click keys or
   follows.
 - The Tone Curve's graph (`curve.rs`): Parametric shows the curve and its splits; Point shows the channel chosen
   by the RGB/Red/Green/Blue chips: a click adds a point, a drag moves it (ends move only up and down), a

@@ -84,7 +84,6 @@ pub fn number_slider<N: egui::emath::Numeric>(
         slider = slider.logarithmic(true);
     }
     // The rail left of the knob is a lighter grey; nothing else here uses the selection colour.
-    let width = ui.spacing().slider_width;
     let r = ui
         .scope(|ui| {
             ui.visuals_mut().selection.bg_fill = style::SLIDER_FILL;
@@ -92,7 +91,7 @@ pub fn number_slider<N: egui::emath::Numeric>(
         })
         .inner;
     // Where the rail is, for a following setting's band.
-    let rail = egui::Rect::from_min_size(r.rect.min, Vec2::new(width.min(r.rect.width()), r.rect.height()));
+    let rail = super::setting::slider_rail(ui, &r);
     ui.ctx().data_mut(|d| d.insert_temp(r.id.with("rail"), rail));
     if let Some(snap) = feel.snap
         && !(min > 0.0 && max / min > 1000.0)

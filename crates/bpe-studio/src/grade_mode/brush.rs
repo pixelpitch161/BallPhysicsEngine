@@ -270,17 +270,24 @@ pub fn bar(ui: &mut Ui, mode: &mut GradeMode, id: LayerId, strokes: &Strokes, ed
             }
         }
     });
+    // A double-click on a slider's rail puts this brush's starting value back.
+    let start = Brushes::default().settings[mode.brushes.tool.index()];
     let b = mode.brushes.chosen_mut();
-    let slider = |ui: &mut Ui, label: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>, help: &str| {
-        ui.horizontal(|ui| {
-            let l = ui.label(RichText::new(label).small().color(style::MUTED));
-            ui.add(egui::Slider::new(value, range).max_decimals(0)).labelled_by(l.id).on_hover_text(help);
-        });
-    };
-    slider(ui, "Size", &mut b.size, 1.0..=1000.0, "The brush's radius, in pixels of the video");
-    slider(ui, "Feather", &mut b.feather, 0.0..=100.0, "How far in from its edge it fades");
-    slider(ui, "Flow", &mut b.flow, 0.0..=100.0, "How much one stroke paints");
-    slider(ui, "Density", &mut b.density, 0.0..=100.0, "The most paint strokes build up to");
+    let slider =
+        |ui: &mut Ui, label: &str, value: &mut f32, start: f32, range: std::ops::RangeInclusive<f32>, help: &str| {
+            ui.horizontal(|ui| {
+                let l = ui.label(RichText::new(label).small().color(style::MUTED));
+                let r = ui.add(egui::Slider::new(value, range).max_decimals(0)).labelled_by(l.id);
+                if crate::widgets::rail_double_clicked(&r, crate::widgets::slider_rail(ui, &r)) {
+                    *value = start;
+                }
+                r.on_hover_text(help);
+            });
+        };
+    slider(ui, "Size", &mut b.size, start.size, 1.0..=1000.0, "The brush's radius, in pixels of the video");
+    slider(ui, "Feather", &mut b.feather, start.feather, 0.0..=100.0, "How far in from its edge it fades");
+    slider(ui, "Flow", &mut b.flow, start.flow, 0.0..=100.0, "How much one stroke paints");
+    slider(ui, "Density", &mut b.density, start.density, 0.0..=100.0, "The most paint strokes build up to");
     ui.horizontal(|ui| {
         let n = strokes.list.len();
         let words = match n {

@@ -27,6 +27,7 @@ pub use menu::*;
 pub use numbers::*;
 pub(crate) use pickers::*;
 use setting::*;
+pub use setting::{rail_double_clicked, slider_rail};
 pub use words::*;
 
 /// What a Target setting can point at: the scene's things, tags and kinds, by name.

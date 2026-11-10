@@ -227,8 +227,15 @@ Plan `docs/superpowers/plans/2026-11-08-editor-workflow.md` (findings E7 to E14 
 - **Setting menu** (`widgets.rs::row_menu_following`): Reset to default (<value>) (greyed at the default) and Remove
   all keyframes (greyed with no keys; `Scene::clear_keys` keeps the value at the playhead). `GridOutcome.cleared` and
   `ValueMenu::RemoveKeys` carry it; every grid caller adds `Edit::ClearKeys` beside `Edit::NewKey`, and the Mixer,
-  Master, Sound tab and Lights strip knobs call `inspector::clear_keys`. A widget's own double-click no longer
-  resets (it starts typing in a number box); the label's double-click or Alt+click still does.
+  Master, Sound tab and Lights strip knobs call `inspector::clear_keys`. The label's double-click or Alt+click
+  resets, and so does a double-click on a slider's rail (2026-11-10, `plans/2026-11-10-double-click-reset.md`).
+- **Double-click a slider to reset** (`widgets/setting.rs`): `slider_rail` is an egui `Slider`'s rail (left
+  `slider_width`), `rail_double_clicked(response, rail)` is a double-click inside it. `setting()` reads the rail rect
+  both slider kinds keep at `response.id.with("rail")` (rows without a slider keep none) and puts `def.default` back.
+  A number box's double-click still starts typing, nothing on a rail resets with Alt held (Alt drags past the grid), and
+  the two-ended Vary slider resets only from its name. The same double-click puts back the Lights strip's Strength
+  (the setting's default, one undo step with the click before it), the Grade and Look editor brush sliders (the brush's starting values) and
+  a gradient gap's Middle (50 %).
 - **Pictures in the scene** (`bpe-core/src/scene_pictures.rs`, `picture_picker.rs`): `Scene.pictures` holds PNG bytes
   by name (base64 in the file, left out when empty; pictures no `picture` setting names are left out on save). The
   Picture row's "…" reads the file into a `PictureRequest`; the inspector checks the PNG signature, keeps it

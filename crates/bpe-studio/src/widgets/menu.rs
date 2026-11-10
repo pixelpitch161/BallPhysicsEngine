@@ -126,7 +126,7 @@ pub(super) fn row_menu_following(
         let reset = format!("Reset to default ({})", value_words(default, unit, choices));
         let reset = ui
             .add_enabled(value != default, egui::Button::new(reset))
-            .on_hover_text("Put this setting back as it starts (also: double-click its name)")
+            .on_hover_text("Put this setting back as it starts (also: double-click its name or its slider)")
             .on_disabled_hover_text("It is at its default already");
         if reset.clicked() {
             pick = MenuPick::Paste(default.clone());
