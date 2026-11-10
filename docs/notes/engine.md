@@ -422,3 +422,30 @@ Spec `docs/superpowers/specs/2026-11-09-one-way-to-ride-design.md`, plan `docs/s
   the parts of the letter it can't see in a straight line stay unlit, the same as any lamp placed inside a world
   Text before (lighting's rule, not riding's); move it with its Position to light the whole letter.
 - Goldens unchanged.
+
+## Gaps in a shape (built-in scenes part 2, 2026-11-10)
+
+- **Settings** (`things/shape/mod.rs`, Body, hollow only): **Gaps** (0 to 8, 0 closed), **Gap size** (share of the
+  way round, 0.01 to 0.5, capped at 0.9 / Gaps so some band is left, keyframed) and **Gap at** (the first opening's
+  middle, from the first corner clockwise, keyframed; the others follow evenly). `ShapeSettings::gap_spans()` gives
+  each (middle, half width).
+- **Physics** (`bpe-runtime/src/walls.rs`): `Wall.gaps: Option<Arc<Gaps>>` (`None` takes exactly the old path, so
+  goldens are unchanged). `Gaps { spans, guide }` measures a place round the outline the same way as Place on the
+  edge: by the angle from the top for a round ring or ellipse, otherwise along a `Guide` (the outline's own flattened
+  points and the place of each, built by `things/shape/sim.rs::gaps_for` and rebuilt when the form or gaps change).
+  `keep_clear_from` hands a gapped hollow wall to `keep_gapped`: a ball beside an opening only meets its two ends,
+  each a round cap; elsewhere it is pushed back to its own side as before. Which side a ball is on comes from its
+  side at the start of the step, unless it crossed the outline through an opening (`own_side`), so a ball leaves
+  through a gap and comes back in through one, and a fast ball beside a gap still bounces. `middle_crossing` ignores
+  crossings through an opening.
+- **Drawing**: `things/shape/draw.rs::gap_cuts` turns each opening into its two ends along the shader's own `along`
+  measure (`form_along`, the CPU twin of `paths.wgsl::path_along`) plus the end points, and `Frame::cut_gaps` stores
+  them as records the path instance points at (`PathInstance.gaps`: first record, count). `paths.wgsl::gap_cut`
+  removes the band in an opening and rounds its ends; Look layers (glow, ripples drawn in `shape_layers.wgsl`) see
+  the same cut through `layered_gaps`.
+- **Not yet gap-aware** (they see the closed outline): lights' shadows and light probes, hit ripples' spread, mirror
+  outlines, shatter pieces, the emitter's aim planner and the Huge swarm.
+- Tests: `walls.rs` (leaves through its gap, bounces off the closed part, hits an end, comes back in, a fast ball
+  beside the gap, places from the top or first corner), `things/shape/sim.rs` (no gaps, capped size, turning and
+  shrinking with the shape), `rules/tests_part5.rs` (a ball escaping through a gap fires Leaves), `tests/
+  gap_pictures.rs` (every outline cut, glow cut) and the full-size `gaps` picture.

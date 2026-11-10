@@ -233,3 +233,24 @@ Each scene is tuned until it passes the library checks; poster seconds where the
 - [ ] One Opus review of the branch; fix what it finds.
 - [ ] Push, draft PR, subscribe; when green and reviewed, merge.
 - [ ] Handover `/mnt/project-files/ballphysics/builtin-scenes/part2-handover.md`, memory, message the coordinator.
+
+## As built
+
+All six tasks landed as planned, with these changes made while building:
+
+- **Gaps**: the drawing cuts the band in the shader at the gap ends measured by the shader's own `along` (computed on
+  the CPU by `form_along`), so it lines up on moulded outlines too. The guide type is `walls::Guide`.
+- **Merge**: tests needed the balls' Bounce cards' Hit other balls on (off by default); the notes say so.
+- **Melody**: the melody lives in `NotesSpec` (not `ShapeSpec`); a step holds at most 16 notes. While Plays is
+  Melody the slot grid is hidden (a line says the slots rest) and the keyboard edits the picked step. The editor's
+  clear button is **Clear melody**. Import MIDI as a melody also sets Plays to Melody and the keyboard range.
+- **Pitch follows size**: `ShapeVoice::playing_pitches` was added for its test. The size setting shows only when the
+  amount isn't 0.
+- **Text with other words**: `add_text_saying` (and `Lib::text_saying`) gives a Text look its words before the
+  letters are laid out, so Balls inside a word places its balls in BOUNCE's letters.
+- **Scenes**: Breakable bricks uses three balls fanned out ("Balls") and Starting health 2, as one ball with no
+  gravity bounced on a repeating path and broke one brick in 25 s; it now clears the wall in about 21 s. Lit room's
+  five marble balls launch each a different way at 650 px/s with bounciness 1, so they don't settle in a row. Sparks
+  on hit throws 36 brighter sparks a hit plus a puff of smoke, its poster just after a hit (4.75 s). Bounce off words
+  has no bloom (its look glows on its own). Helpers added: `fill`, `light`, `look_in`, `text_saying`.
+- The Scenes window tests needed no change.

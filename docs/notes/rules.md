@@ -122,3 +122,12 @@ fade by the look's alpha in `particles/draw.rs::draw_around`), and a Break namin
 tag or Anything keeps it stepping in the main world (`BlockSim::keeps`), so the editor and export agree. **Flash** on
 a Light or Rig flares the light (see `lighting.md`). Tests in `spectacle_tests.rs`
 (`a_flash_flares_a_light_and_every_light_of_a_rig`, `a_broken_particles_thing_fades_out`).
+
+**Merge balls (built-in scenes part 2, 2026-11-10).** `do.merge` (`bpe-kit/src/rules/balls.rs`, "Merge balls"):
+Who (That) takes in With (Other) when they touch, usually after a `when.hit` between balls (the balls' Bounce cards
+need Hit other balls on). **Only same size** (on, within **Size match**, 5%) and **Grow** (Adds their areas, or
+Keeps its size × **Amount**). `Action::Merge` in `bpe-runtime/src/rules/actions.rs` is applied at the next step's start:
+both balls must still be there and not broken; the kept ball goes to the area-weighted middle (or stays where it is
+when that isn't clear of walls), keeps the momentum of both (mass by radius²; a frozen velocity counts), and the
+other is removed (logged as a Remove) with its row forgotten. A Merge across two things keeps Who's thing. A ball is
+never merged twice in a step or with itself. Tests: `rules/tests_merge.rs`.
