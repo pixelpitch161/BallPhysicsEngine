@@ -166,7 +166,7 @@ fn build(reg: &Registry) -> Scene {
     lib.at(title, Vec2::new(0.0, -720.0));
     let count = lib.text(Look::HitCounter, "Mirrors left", "MIRRORS LEFT: {counter Mirrors left}");
     lib.params(count, |t: &mut TextSettings| t.size = 60.0);
-    lib.at(count, Vec2::new(0.0, 760.0));
+    lib.at(count, Vec2::new(0.0, -540.0));
     lib.unlit(title);
     lib.unlit(count);
 

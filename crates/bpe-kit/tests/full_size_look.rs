@@ -1139,6 +1139,8 @@ fn render_at_full_size() {
     let (device, queue) = test_device().expect("a graphics device (set up as for the picture tests)");
     let renderer = Renderer::new(&device, W, H);
     let mut gpu = Gpu { device, queue, renderer };
+    // A Huge swarm moves on the graphics card named for this thread (One to a million's sparks).
+    let _card = bpe_gfx::swarm::use_for_now(Some(bpe_gfx::swarm::SwarmGpu::for_device(&gpu.device, &gpu.queue)));
 
     let mut lit = Vec::new();
     for base in lighting_shots(&reg) {
