@@ -383,6 +383,7 @@ fn lighting_shots(reg: &Registry) -> Vec<Shot> {
 fn demo_shots(reg: &Registry) -> Vec<Shot> {
     let at = |name: &str, scene: Scene| shot(name, scene, vec![1.0]);
     vec![
+        shot("gaps", gaps(reg), vec![0.0, 2.0]),
         at("lit-demo", scenes::lit_demo(reg)),
         at("stage-demo", scenes::stage_demo(reg)),
         at("surfaces-demo", scenes::surfaces_demo(reg)),
@@ -832,6 +833,36 @@ fn gradient_seams(reg: &Registry) -> Scene {
 
 /// The club demo with its haze carried by a gusty Air card wind, and the balls following the air
 /// (W13): the haze drifts with the wind, the balls with it.
+/// Gaps in shapes: a glowing ring with two gaps round a hexagon with one, a ball inside each, so the
+/// caps' round ends and the glow at the gaps are seen.
+fn gaps(reg: &Registry) -> Scene {
+    let mut scene = bpe_kit::new_studio_scene(reg);
+    let place = |scene: &mut Scene, settings: ShapeSettings, look: &str| {
+        let id = add_thing(scene, reg, "shape", ThingId::ROOT).unwrap();
+        let t = scene.things.get_mut(&id).unwrap();
+        t.params = settings.to_params();
+        t.transform.position = Vec2::ZERO;
+        let ready = bpe_kit::ready_looks::find(look).unwrap();
+        let (mine, how) = (bpe_kit::ready_looks::Colours::Look, bpe_kit::ready_looks::How::Replace);
+        bpe_kit::ready_looks::apply(scene, reg, id, ready, mine, how).unwrap();
+    };
+    let ring = ShapeSettings { gaps: 2, gap_size: 0.08, gap_at: 0.125, ..ShapeSettings::circle(470.0, 14.0) };
+    place(&mut scene, ring, "shape.glow_ring");
+    let hexagon =
+        ShapeSettings { gaps: 1, gap_size: 0.1, gap_at: 0.5, spin: 25.0, ..ShapeSettings::polygon(6, 300.0, 10.0) };
+    place(&mut scene, hexagon, "shape.neon_tube");
+    let ball = scene.things.values().find(|t| t.kind == "balls").map(|t| t.id);
+    if let Some(ball) = ball {
+        let t = scene.things.get_mut(&ball).unwrap();
+        t.transform.position = Vec2::new(0.0, -100.0);
+        let mut b = BallsSettings::from_params(&t.params);
+        b.radius = 24.0;
+        b.velocity = Vec2::new(300.0, 500.0);
+        t.params = b.to_params();
+    }
+    scene
+}
+
 fn haze_with_the_air(reg: &Registry) -> Scene {
     let mut s = scenes::club_demo(reg);
     lighting(&mut s, "haze_moves", Value::Choice("with_the_air".into()));

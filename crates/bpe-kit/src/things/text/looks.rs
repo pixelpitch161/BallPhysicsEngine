@@ -202,6 +202,19 @@ fn custom_balls(places: Vec<[f32; 2]>, radius: f32) -> BallsSettings {
 /// A Text with the `look` filled in, under `parent`; a lit look gives the scene its Lighting card
 /// when it has none, and Shadow lettering and Glass letters add a lamp beside it.
 pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) -> Result<ThingId, EditError> {
+    add_text_saying(scene, reg, look, parent, None)
+}
+
+/// [`add_text`] with the look's own words replaced by `words`, before its letters are laid out
+/// (so a real-letter look's size fits them and its balls sit in their letters).
+pub fn add_text_saying(
+    scene: &mut Scene,
+    reg: &Registry,
+    look: Look,
+    parent: ThingId,
+    words: Option<&str>,
+) -> Result<ThingId, EditError> {
+    let say = |own: &str| -> String { words.unwrap_or(own).into() };
     let mut s = TextSettings::default();
     let mut screen = true;
     let mut position = Vec2::ZERO;
@@ -238,7 +251,7 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
     match look {
         Look::Empty => {}
         Look::HookTitle => {
-            s.words = "WAIT FOR\nTHE LAST\nONE…".into();
+            s.words = say("WAIT FOR\nTHE LAST\nONE…");
             s.size = 120.0;
             s.line_spacing = 0.95;
             // Each word pops in after the one before.
@@ -266,7 +279,7 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             ));
         }
         Look::SpinningRing => {
-            s.words = "ROUND AND ROUND • ROUND AND ROUND • ".into();
+            s.words = say("ROUND AND ROUND • ROUND AND ROUND • ");
             s.font = "Bebas Neue".into();
             s.size = 70.0;
             s.letter_spacing = 6.0;
@@ -277,7 +290,7 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             layers.push((look::PAINT, vec![("colours", solid(Color::rgb(0xff, 0xd8, 0x4a)))], vec![]));
         }
         Look::NeonSign => {
-            s.words = "NEON".into();
+            s.words = say("NEON");
             s.font = "Monoton".into();
             s.size = 200.0;
             screen = false;
@@ -306,7 +319,7 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             ));
         }
         Look::GlassLetters => {
-            s.words = "GLASS".into();
+            s.words = say("GLASS");
             s.font = "Bowlby One".into();
             s.size = 220.0;
             screen = false;
@@ -317,7 +330,7 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             card.extend(preset_values(SurfaceKind::Glass));
         }
         Look::ShadowLettering => {
-            s.words = "SUN".into();
+            s.words = say("SUN");
             s.size = 260.0;
             screen = false;
             let mut g = Gradient::even(&[Color::rgb(0xff, 0xe7, 0xb0), Color::rgb(0xc4, 0x7f, 0x34)]);
@@ -333,7 +346,7 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             ));
         }
         Look::FlowingGradient => {
-            s.words = "FLOW".into();
+            s.words = say("FLOW");
             s.size = 220.0;
             let rainbow = crate::paint::palettes::built_in()
                 .into_iter()
@@ -352,14 +365,14 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             ));
         }
         Look::HitCounter => {
-            s.words = "{hits}".into();
+            s.words = say("{hits}");
             s.size = 260.0;
             position = Vec2::new(0.0, -600.0);
             layers.push((look::PAINT, vec![("colours", solid(Color::WHITE))], vec![]));
             layers.push(outlined(10.0));
         }
         Look::CountdownTimer => {
-            s.words = "{countdown 30|m:ss}".into();
+            s.words = say("{countdown 30|m:ss}");
             s.font = "Space Mono".into();
             s.size = 150.0;
             position = Vec2::new(0.0, -620.0);
@@ -367,7 +380,7 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             layers.push(outlined(6.0));
         }
         Look::LyricsOnTheBeat => {
-            s.words = "HERE IT COMES\nWATCH IT FALL\nONE MORE TIME\nDROP".into();
+            s.words = say("HERE IT COMES\nWATCH IT FALL\nONE MORE TIME\nDROP");
             s.size = 110.0;
             s.show = ShowBy::LineByLine;
             s.timed_by = TimedBy::Beats;
@@ -380,7 +393,7 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             layers.push(outlined(7.0));
         }
         Look::LabelsOnBalls => {
-            s.words = "{ball number}".into();
+            s.words = say("{ball number}");
             s.size = 36.0;
             screen = false;
             // Inside the picked group of balls, else the first there is.
@@ -395,7 +408,7 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             layers.push(outlined(4.0));
         }
         Look::RaceLeaderboard => {
-            s.words = "{standings down 5}".into();
+            s.words = say("{standings down 5}");
             s.font = "Space Mono".into();
             s.size = 42.0;
             s.align = Align::Left;
@@ -406,7 +419,7 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             layers.push(outlined(4.0));
         }
         Look::BallsInsideAWord => {
-            s.words = "BALLS".into();
+            s.words = say("BALLS");
             s.font = "Bowlby One".into();
             s.size = 360.0;
             s.balls = TextBalls::BounceInside;
@@ -427,7 +440,7 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             balls = Some(BallsBeside { settings: b, position: Vec2::ZERO, falls: false });
         }
         Look::BounceOffLetters => {
-            s.words = "BOUNCE".into();
+            s.words = say("BOUNCE");
             s.font = "Archivo Black".into();
             s.size = 300.0;
             s.balls = TextBalls::BounceOff;
@@ -442,7 +455,7 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             balls = Some(BallsBeside { settings: b, position: Vec2::new(0.0, -250.0), falls: true });
         }
         Look::PourInAndFill => {
-            s.words = "FILL".into();
+            s.words = say("FILL");
             s.font = "Bowlby One".into();
             s.size = 420.0;
             s.balls = TextBalls::BounceInside;
@@ -462,7 +475,7 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             balls = Some(BallsBeside { settings: b, position: Vec2::ZERO, falls: true });
         }
         Look::LettersBreakApart => {
-            s.words = "SMASH".into();
+            s.words = say("SMASH");
             s.font = "Bungee".into();
             s.size = 280.0;
             s.balls = TextBalls::BounceOff;
@@ -482,7 +495,7 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             balls = Some(BallsBeside { settings: b, position: Vec2::new(0.0, -250.0), falls: true });
         }
         Look::LettersThatPlayNotes => {
-            s.words = "FACADE".into();
+            s.words = say("FACADE");
             s.font = "Fredoka".into();
             s.weight = 600.0;
             s.size = 260.0;
@@ -503,7 +516,7 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             balls = Some(BallsBeside { settings: b, position: Vec2::new(0.0, -250.0), falls: true });
         }
         Look::WordMadeOfBalls => {
-            s.words = "HI".into();
+            s.words = say("HI");
             s.font = "Bowlby One".into();
             s.size = 300.0;
             screen = false;
@@ -521,13 +534,13 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             balls = Some(BallsBeside { settings: b, position, falls: false });
         }
         Look::ParticleWord => {
-            s.words = "GONE".into();
+            s.words = say("GONE");
             s.font = "Space Grotesk".into();
             s.size = 160.0;
             screen = false;
         }
         Look::LaserWriting => {
-            s.words = "LASER".into();
+            s.words = say("LASER");
             s.font = "Orbitron".into();
             s.size = 200.0;
             screen = false;
@@ -550,7 +563,7 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             ));
         }
         Look::TextFollowsSound => {
-            s.words = "BASS".into();
+            s.words = say("BASS");
             s.size = 260.0;
             layers.push((look::PAINT, vec![("colours", solid(Color::rgb(0x8a, 0xf0, 0xff)))], vec![]));
             layers.push(outlined(6.0));
@@ -560,7 +573,7 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             ));
         }
         Look::Glitch => {
-            s.words = "GLITCH".into();
+            s.words = say("GLITCH");
             s.font = "Bungee".into();
             s.size = 150.0;
             layers.push((look::PAINT, vec![("colours", solid(Color::WHITE))], vec![]));
@@ -578,7 +591,7 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             ));
         }
         Look::MeltingText => {
-            s.words = "MELT".into();
+            s.words = say("MELT");
             s.font = "Bowlby One".into();
             s.size = 220.0;
             let mut g = Gradient::even(&[Color::rgb(0xff, 0xcf, 0x4a), Color::rgb(0xff, 0x4f, 0x8b)]);
@@ -604,7 +617,7 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             ));
         }
         Look::KaleidoscopeWords => {
-            s.words = "WOW".into();
+            s.words = say("WOW");
             s.font = "Bungee".into();
             s.size = 80.0;
             s.spin = 70.0;
@@ -635,7 +648,7 @@ pub fn add_text(scene: &mut Scene, reg: &Registry, look: Look, parent: ThingId) 
             ));
         }
         Look::EchoStack => {
-            s.words = "DEEP".into();
+            s.words = say("DEEP");
             s.size = 200.0;
             layers.push((look::PAINT, vec![("colours", solid(Color::WHITE))], vec![]));
             layers.push(outlined(5.0));

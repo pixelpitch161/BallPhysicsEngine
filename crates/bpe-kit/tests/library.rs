@@ -44,7 +44,7 @@ fn ids_names_and_info_are_tidy() {
 #[test]
 fn levels_so_far() {
     let count = |l: Level| library::all().iter().filter(|e| e.info.level == l).count();
-    assert_eq!((count(Level::Starter), count(Level::InBetween), count(Level::Spectacle)), (8, 0, 0));
+    assert_eq!((count(Level::Starter), count(Level::InBetween), count(Level::Spectacle)), (14, 0, 0));
 }
 
 /// Every kind the scene names (things, cards, layers, rule blocks) is one the program has.
