@@ -7,6 +7,7 @@ mod layer_tests;
 pub mod modules;
 pub mod outline;
 pub mod paint;
+pub mod library;
 pub mod ready_looks;
 pub mod riding;
 pub mod rules;
