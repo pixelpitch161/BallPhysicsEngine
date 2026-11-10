@@ -19,7 +19,8 @@ opens to a blank project; the scenes are only reached through the toolbar's **Sc
   `card::<S>` edit settings read as `S` (only non-default keys are kept, unknown keys stay); `ball` sets Gravity × 1
   (the Motion card's default is 0); `notes` takes MIDI numbers (middle C 60). Value helpers `hex`, `n`, `int`,
   `choice`, `text`.
-- `starters/` and `middle/` (the in-between scenes): one file per scene, each with `pub(crate) const ENTRY`.
+- `starters/`, `middle/` (the in-between scenes) and `spectacles/`: one file per scene, each with `pub(crate) const
+  ENTRY`.
 
 ### Adding a scene
 
@@ -37,7 +38,11 @@ Colour layer set to one colour), `sound`, `notes`, `melody` (Plays Melody with t
 Bell, Pluck, Mallet, Pad, Bass: the oscillators and envelope, with the envelope routed to Osc B too), `reverb` (a
 Reverb on the Mixer's first bus), `keys` (keyframes, moving evenly), `rule`, `rule_doing` (a chain of When and Ifs,
 then several Dos each hung off its last block), `text`, `text_saying`, `ring`, `ball`, `emitter`, `light` (a light at
-a place; the scene gets its Lighting card), `who`, `finish`. `Block` is a rule block's kind and settings.
+a place; the scene gets its Lighting card; `light_in` puts it in a parent, so a lamp can ride a ball), `surface` (a
+Look's Surface chip with its preset numbers, then any changes), `particles` (a Particles thing from a ready look,
+named), `unlit` (every layer of a Look at Lit 0, so words stay bright in a dark lit scene), `who`, `finish`. `Tone`
+also has the drum voices Kick (a sine with a fast pitch drop), Hat (short noise) and Clap (noise and a triangle).
+`Block` is a rule block's kind and settings.
 
 ### Gotchas found while building
 
@@ -71,6 +76,39 @@ a place; the scene gets its Lighting card), `who`, `finish`. `Block` is a rule b
 - A Race leaderboard block is centred on its place; at size 30 under a title, (-190, -470) keeps it on screen.
 - A real-letter Text look's balls are placed for its own words: use `Lib::text_saying` (`add_text_saying`) to give
   it other words, never change Words afterwards. Balls inside a word glows on its own; keep the scene's bloom 0.
+
+- **Gravity × is clamped to -5..5 on load** (and a shape's thickness 0 opens as 0.5): the save round trip catches
+  it. Club night and The simulation is the song double the scene's Gravity instead of using Gravity × 6 or 8.
+- **Beat balls**: a ball with bounciness 1 under gravity keeps exact time if it never starts touching the floor (a
+  ball starting on it gains energy). `middle/club_night.rs::on_the_beat` works out a start height and speed for a
+  landing every so many seconds; the first beat is 0.125 s in so no ball starts on the floor.
+- A **Rig**'s defaults are Tail 1 and Off level 0.1: a Strobe rig needs both at 0 or it's always on.
+- **Flat stained glass**: a glass shape bends light into caustics; at Bends light 1 its shadow is flat and tinted.
+  Pale glass gives pale shadows: the panes use See-through 0.9, Tints 1 and the paint at 0.9.
+- A **Light beam** bends through glass only when At shapes isn't Stop; a prism's rainbow shows only at some turns
+  (Prism rainbow rocks its spin with keyframes). Two parallel sides cancel the split, so a square diamond makes no
+  fan: Diamond fire's is a pentagon. A single-colour laser fans into copies of its own colour (Mirror maze turns
+  its laser white at the end).
+- An emitter's marker shows in the picture: `Marker::None` hides it. A Fan of one ball aims straight down the middle;
+  Splash glass fires three a round in Random order so they land in different places.
+- **Chaos and timing**: a ball with no gravity in spinning rings is chaotic: a velocity off by 0.03 px/s moved
+  Escape on the drop's middle escape from 10 s to 31 s. Give the exact value the tuning used (it builds the velocity
+  from the same angle and speed), and don't hang a musical moment on a chaotic one: the drop is a `when.beat` rule
+  waiting for the counter the escape sets, so it always lands on a bar, even on Windows' slightly different maths.
+- **A `when.beat` rule logs a Rule event on every beat** even when its Ifs stop it, so a RuleFires payoff on it fires
+  at the first beat; use a Counter payoff on what its Dos set. A `when.count` rule logs only when the count crosses.
+- A Counter payoff on a counter that starts at 0 and falls to 0 is met at once: Mirror maze checks its last rule
+  (`when.count` Falls to 0) with RuleFires instead.
+- **A Huge swarm from a rule**: a Particles thing riding an emitter's balls (Riding its parent, Each ball, Steady)
+  makes nothing until the emitter has a ball, so a rule's Fire a round on an emitter set to By a rule starts it
+  (One to a million). It needs a graphics card on the thread (`bpe_gfx::swarm::use_for_now`) to draw.
+- Text in a dark lit scene takes the light: `Lib::unlit` keeps it bright. Neon sign text lights the room itself.
+- **Play a note with no Note plays 60** (middle C), not the thing's own note: name the note, or pitch from the shape's
+  next note. A rule's counter change is seen from the next step, so a rule that sets a counter can't gate another
+  rule on the same beat: put that beat's sound in the setting rule.
+- `do.flash` on a ball whose look has no Flash on hit or Colour on hit layer does nothing (Glow orb, Electric).
+- Posters are drawn on the PC that opens the Scenes window, where maths differs slightly: put a chaotic scene's
+  poster well after the moment it shows.
 
 ## Checks
 
@@ -122,3 +160,8 @@ a place; the scene gets its Lighting card), `who`, `finish`. `Block` is a rule b
   bounce, Polyrhythm rings, All meet at once, Hypnotic petals, Red vs Blue, Colour wars, Marble race, Merge and grow),
   every one `SoundLevel::Designed` (`Lib::tone` voices and a reverb), payoffs on five of them (two counters, two
   breaks, one rule), and the counter payoff check. No engine change. Plan `docs/superpowers/plans/built-in-scenes/part3.md`.
+- Part 4 (2026-11-10): the in-between scenes 25 to 28 in `library/middle/` (Stained glass, Prism rainbow, Club night,
+  Splash glass) and the first five spectacles in `library/spectacles/` (The simulation is the song, Escape on the
+  drop, One to a million, Diamond fire, Mirror maze), all `SoundLevel::Designed`, payoffs on the five spectacles
+  (one rule, four counters). New helpers `surface`, `light_in`, `particles`, `unlit` and the drum tones. No engine
+  change. Plan `docs/superpowers/plans/built-in-scenes/part4.md`.

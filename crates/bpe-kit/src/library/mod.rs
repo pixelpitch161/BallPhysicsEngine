@@ -7,6 +7,7 @@
 
 pub(crate) mod build;
 mod middle;
+mod spectacles;
 mod starters;
 
 use bpe_core::{Registry, Scene, Settings, ThingId};
@@ -216,6 +217,15 @@ static ENTRIES: &[Entry] = &[
     middle::colour_wars::ENTRY,
     middle::marble_race::ENTRY,
     middle::merge_and_grow::ENTRY,
+    middle::stained_glass::ENTRY,
+    middle::prism_rainbow::ENTRY,
+    middle::club_night::ENTRY,
+    middle::splash_glass::ENTRY,
+    spectacles::the_simulation_is_the_song::ENTRY,
+    spectacles::escape_on_the_drop::ENTRY,
+    spectacles::one_to_a_million::ENTRY,
+    spectacles::diamond_fire::ENTRY,
+    spectacles::mirror_maze::ENTRY,
 ];
 
 /// Every built-in scene, in the order the Scenes window lists them.

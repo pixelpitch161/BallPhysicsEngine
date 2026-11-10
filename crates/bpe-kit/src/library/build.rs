@@ -7,6 +7,7 @@ use bpe_core::{
 };
 use glam::Vec2;
 
+use crate::modules::look::surface::{SurfaceKind, SurfaceSettings, preset_values};
 use crate::ready_looks::{self, Colours, How};
 use crate::sound::{Plays, Root, Scale, VoiceSettings};
 use crate::things::text::TextSettings;
@@ -82,6 +83,12 @@ pub(crate) enum Tone {
     Pad,
     /// A low saw with a sine under it.
     Bass,
+    /// A kick drum: a sine whose pitch drops fast.
+    Kick,
+    /// A closed hi-hat: a short tick of noise.
+    Hat,
+    /// A clap: a burst of noise with a little tone under it.
+    Clap,
 }
 
 /// A built-in scene being made.
@@ -140,6 +147,18 @@ impl<'a> Lib<'a> {
         let mut own = strip(&card.params, &prefix);
         edit_as(&mut own, f);
         put_back(&mut card.params, &prefix, own);
+    }
+
+    /// Keeps every layer of a thing's Look in its own colours, whatever the scene's light (each layer's Lit at 0),
+    /// so words stay bright in a dark lit scene.
+    pub fn unlit(&mut self, id: ThingId) {
+        let reg = self.reg;
+        let card = self.scene.card_mut(id, SlotId::Look).unwrap_or_else(|| panic!("no Look card"));
+        let lit = |kind: &str| reg.layer(kind).is_some_and(|k| k.light_defs().iter().any(|d| d.key == "lit"));
+        let layers: Vec<LayerId> = card.layers.iter().filter(|l| lit(&l.kind)).map(|l| l.id).collect();
+        for layer in layers {
+            card.params.set(&layered_key(layer, "lit"), Value::Number(0.0));
+        }
     }
 
     /// Dresses a ball or shape in a ready-made look (its own colours replaced by the look's).
@@ -318,6 +337,9 @@ impl<'a> Lib<'a> {
             Tone::Mallet => (Wave::Sine, 1, Some((Wave::Triangle, 2, -16.0)), (1.0, 450.0, 0.0, 300.0)),
             Tone::Pad => (Wave::Triangle, 2, Some((Wave::Sine, -1, -8.0)), (25.0, 1600.0, 0.0, 1200.0)),
             Tone::Bass => (Wave::Saw, 1, Some((Wave::Sine, -1, -4.0)), (2.0, 380.0, 0.0, 200.0)),
+            Tone::Kick => (Wave::Sine, 1, Some((Wave::Triangle, 0, -18.0)), (0.5, 320.0, 0.0, 120.0)),
+            Tone::Hat => (Wave::Noise, 1, None, (0.5, 45.0, 0.0, 30.0)),
+            Tone::Clap => (Wave::Noise, 1, Some((Wave::Triangle, 1, -14.0)), (1.0, 150.0, 0.0, 120.0)),
         };
         self.card(id, SlotId::Sound, |v: &mut VoiceSettings| {
             v.a.wave = a;
@@ -340,6 +362,22 @@ impl<'a> Lib<'a> {
             e.sustain = sustain;
             e.release = release;
         });
+        if let Tone::Kick = tone {
+            // A second, fast envelope drops the pitch two octaves into the note: the kick's thump.
+            let drop = self.layer(id, SlotId::Sound, crate::sound::ADSR);
+            self.layer_params(id, SlotId::Sound, drop, |e: &mut AdsrSettings| {
+                e.attack = 0.0;
+                e.decay = 45.0;
+                e.sustain = 0.0;
+                e.release = 20.0;
+            });
+            self.card(id, SlotId::Sound, |v: &mut VoiceSettings| {
+                for target in ["a_semi", "b_semi"] {
+                    let route = bpe_core::ModRoute { source: drop, target: target.into(), ..v.routes[0].clone() };
+                    v.routes.push(bpe_core::ModRoute { amount: 0.5, ..route });
+                }
+            });
+        }
     }
 
     /// A reverb on the Mixer's first bus, where every sound goes unless sent elsewhere.
@@ -393,13 +431,44 @@ impl<'a> Lib<'a> {
         at: Vec2,
         f: impl FnOnce(&mut crate::things::light::LightSettings),
     ) -> ThingId {
-        let id = crate::things::light::add_light(&mut self.scene, self.reg, kind, ThingId::ROOT)
+        self.light_in(ThingId::ROOT, name, kind, at, f)
+    }
+
+    /// A light as [`Lib::light`], inside `parent`: inside a Balls thing it rides the ball.
+    pub fn light_in(
+        &mut self,
+        parent: ThingId,
+        name: &str,
+        kind: crate::things::light::LightType,
+        at: Vec2,
+        f: impl FnOnce(&mut crate::things::light::LightSettings),
+    ) -> ThingId {
+        let id = crate::things::light::add_light(&mut self.scene, self.reg, kind, parent)
             .unwrap_or_else(|e| panic!("{name}: {e}"));
         self.scene.rename_thing(id, name);
         self.params(id, |l: &mut crate::things::light::LightSettings| {
             l.position = at;
             f(l);
         });
+        id
+    }
+
+    /// Sets the Look card's Surface to the chip `kind` with its numbers, as picking the chip in the editor does,
+    /// then changes them with `f`.
+    pub fn surface(&mut self, id: ThingId, kind: SurfaceKind, f: impl FnOnce(&mut SurfaceSettings)) {
+        let card = self.scene.card_mut(id, SlotId::Look).expect("a Look card");
+        card.params.set("surface", Value::Choice(bpe_core::Choice::name(kind).into()));
+        for (k, v) in preset_values(kind) {
+            card.params.set(k, v);
+        }
+        self.card(id, SlotId::Look, f);
+    }
+
+    /// A Particles thing from the ready look `look`, named `name`, under `parent`.
+    pub fn particles(&mut self, look: crate::things::particles::looks::Look, parent: ThingId, name: &str) -> ThingId {
+        let id = crate::things::particles::looks::add_particles(&mut self.scene, self.reg, look, parent)
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        self.scene.rename_thing(id, name);
         id
     }
 
