@@ -17,7 +17,7 @@ use crate::things::particles::{BornFrom, Emit, ParticlesSettings, RidesOn};
 use crate::things::shape::ShapeFill;
 use crate::things::text::TextSettings;
 use crate::things::text::looks::Look;
-use crate::{BasicBounce, SceneSettings, ShapeSettings};
+use crate::{BasicBounce, BasicMotion, SceneSettings, ShapeSettings};
 
 pub(crate) const ENTRY: Entry = Entry {
     info: SceneInfo {
@@ -40,7 +40,7 @@ pub(crate) const ENTRY: Entry = Entry {
                        colours (the Water's Liquid layer).",
         sound: SoundLevel::Designed,
         seconds: 32.0,
-        poster_seconds: 26.0,
+        poster_seconds: 27.0,
         preview_seconds: 15.0,
         swatch: [0x3aa8ff, 0x060b14],
         payoff: Some(Payoff { what: PayoffEvent::Counter(SPILLED, 1.0), at_seconds: SPILL, within_seconds: 0.1 }),
@@ -50,7 +50,7 @@ pub(crate) const ENTRY: Entry = Entry {
 
 const SPILLED: &str = "Spilled";
 /// When the first drop gets out (for the payoff check and the poster).
-const SPILL: f64 = 18.0;
+const SPILL: f64 = 21.89;
 
 /// The ring.
 const RING_AT: Vec2 = Vec2::new(-80.0, 60.0);
@@ -99,6 +99,7 @@ fn build(reg: &Registry) -> Scene {
         s.most_balls = 800;
         s.marker = Marker::None;
     });
+    lib.card(tap, SlotId::Motion, |m: &mut BasicMotion| m.gravity_scale = 1.0);
     lib.card(tap, SlotId::Bounce, |b: &mut BasicBounce| {
         b.bounciness = 0.15;
         b.friction = 0.3;
@@ -139,11 +140,11 @@ fn build(reg: &Registry) -> Scene {
     });
 
     let title = lib.text(Look::HookTitle, "Title", "WILL IT\nOVERFLOW?");
-    lib.params(title, |t: &mut TextSettings| t.size = 110.0);
-    lib.at(title, Vec2::new(0.0, -760.0));
+    lib.params(title, |t: &mut TextSettings| t.size = 105.0);
+    lib.at(title, Vec2::new(0.0, -790.0));
     let count = lib.text(Look::HitCounter, "Drop count", "{counter Drops} DROPS");
-    lib.params(count, |t: &mut TextSettings| t.size = 110.0);
-    lib.at(count, Vec2::new(0.0, -520.0));
+    lib.params(count, |t: &mut TextSettings| t.size = 80.0);
+    lib.at(count, Vec2::new(0.0, -480.0));
 
     let (t, r) = (lib.who(tap), lib.who(ring));
     lib.rule(

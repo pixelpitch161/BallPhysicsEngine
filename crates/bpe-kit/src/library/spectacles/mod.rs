@@ -3,6 +3,7 @@
 pub(crate) mod diamond_fire;
 pub(crate) mod escape_on_the_drop;
 pub(crate) mod fire_tornado;
+pub(crate) mod letter_smash;
 pub(crate) mod liquid_escape;
 pub(crate) mod mirror_maze;
 pub(crate) mod one_to_a_million;

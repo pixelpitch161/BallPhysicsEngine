@@ -229,6 +229,7 @@ static ENTRIES: &[Entry] = &[
     spectacles::fire_tornado::ENTRY,
     spectacles::word_from_chaos::ENTRY,
     spectacles::liquid_escape::ENTRY,
+    spectacles::letter_smash::ENTRY,
 ];
 
 /// Every built-in scene, in the order the Scenes window lists them.
