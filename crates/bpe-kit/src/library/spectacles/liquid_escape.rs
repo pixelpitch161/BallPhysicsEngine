@@ -6,12 +6,12 @@ use glam::Vec2;
 
 use crate::library::build::{Lib, Tone, choice, hex, int, n, text};
 use crate::library::{Entry, Kind, Level, Payoff, PayoffEvent, SceneInfo, SoundLevel};
+use crate::modules::look::layers::particles::ParticleFade;
 use crate::modules::look::surface::SurfaceKind;
 use crate::paint::{Follow, Paint};
 use crate::sound::{Plays, Root, Scale};
 use crate::things::emitter::{Directions, EmitterSettings, FireOrder, FireWhen, Marker};
 use crate::things::particles::liquid::{LIQUID, LiquidLayer};
-use crate::modules::look::layers::particles::ParticleFade;
 use crate::things::particles::looks::Look as Specks;
 use crate::things::particles::{BornFrom, Emit, ParticlesSettings, RidesOn};
 use crate::things::shape::ShapeFill;

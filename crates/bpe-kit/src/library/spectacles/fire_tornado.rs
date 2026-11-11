@@ -13,9 +13,9 @@ use crate::paint::{Follow, Paint};
 use crate::sound::{Plays, Root, Scale};
 use crate::things::light::LightType;
 use crate::things::particles::forces::{DRAG, DragForce, RISE, SWIRL, SwirlForce};
-use crate::things::particles::more_forces::{PULL, PUSH, PullForce, PushForce, Toward};
 use crate::things::particles::look::{FlameLayer, STREAKS, StreaksLayer};
 use crate::things::particles::looks::Look as Specks;
+use crate::things::particles::more_forces::{PULL, PUSH, PullForce, PushForce, Toward};
 use crate::things::particles::{AreaShape, BornFrom, Heading, ParticlesSettings};
 use crate::things::text::TextSettings;
 use crate::things::text::looks::Look;
@@ -235,7 +235,10 @@ fn build(reg: &Registry) -> Scene {
     lib.rule_doing(
         "The bass comes in at 200°",
         &[("when.beat", vec![("offset", n(0.5))]), heat_over(200.0)],
-        &[("do.note", vec![("who", lib.who(bass)), ("pitch_from", choice("the_shapes_next_note")), ("velocity", n(0.8))])],
+        &[(
+            "do.note",
+            vec![("who", lib.who(bass)), ("pitch_from", choice("the_shapes_next_note")), ("velocity", n(0.8))],
+        )],
     );
     lib.rule_doing(
         "Hats at 600°",
@@ -253,7 +256,12 @@ fn build(reg: &Registry) -> Scene {
         "The firestorm",
         &[(
             "when.count",
-            vec![("of", choice("a_counter")), ("counter", text(HEAT)), ("reach", choice("rises_to")), ("amount", n(TOP))],
+            vec![
+                ("of", choice("a_counter")),
+                ("counter", text(HEAT)),
+                ("reach", choice("rises_to")),
+                ("amount", n(TOP)),
+            ],
         )],
         &[
             ("do.text", vec![("who", lib.who(title)), ("words", text("FIRESTORM!"))]),
@@ -262,11 +270,21 @@ fn build(reg: &Registry) -> Scene {
             ("do.change", vec![("who", lib.who(flames)), ("setting", text("rate")), ("to_number", n(1400.0))]),
             (
                 "do.change",
-                vec![("who", lib.who(flames)), ("card", choice("motion")), ("setting", swirl_key), ("to_number", n(700.0))],
+                vec![
+                    ("who", lib.who(flames)),
+                    ("card", choice("motion")),
+                    ("setting", swirl_key),
+                    ("to_number", n(700.0)),
+                ],
             ),
             (
                 "do.change",
-                vec![("who", lib.who(flames)), ("card", choice("motion")), ("setting", whirl_key), ("to_number", n(900.0))],
+                vec![
+                    ("who", lib.who(flames)),
+                    ("card", choice("motion")),
+                    ("setting", whirl_key),
+                    ("to_number", n(900.0)),
+                ],
             ),
             ("do.change", vec![("who", lib.who(embers)), ("setting", text("rate")), ("to_number", n(300.0))]),
             ("do.change", vec![("who", lib.who(glow)), ("setting", text("strength")), ("to_number", n(2.2))]),
@@ -284,4 +302,3 @@ fn force(lib: &mut Lib, id: ThingId, kind: &str) -> LayerId {
         None => lib.layer(id, SlotId::Motion, kind),
     }
 }
-

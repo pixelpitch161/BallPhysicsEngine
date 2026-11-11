@@ -98,7 +98,8 @@ fn build(reg: &Registry) -> Scene {
     let word = lib.text_saying(Look::ParticleWord, "Word", "ORDER");
     lib.params(word, |t: &mut TextSettings| t.size = 180.0);
     lib.at(word, Vec2::new(0.0, 60.0));
-    let specks = lib.scene.things.values().find(|t| t.kind == crate::things::particles::KIND).map(|t| t.id).expect("the specks");
+    let specks =
+        lib.scene.things.values().find(|t| t.kind == crate::things::particles::KIND).map(|t| t.id).expect("the specks");
     lib.scene.rename_thing(specks, "Specks");
     lib.params(specks, |p: &mut ParticlesSettings| {
         p.spacing = 4.0;
@@ -152,13 +153,7 @@ fn build(reg: &Registry) -> Scene {
     amount(&mut lib, swirl, &chaos);
     amount(&mut lib, drag, &chaos);
     amount(&mut lib, spring, &home);
-    let blasts = [
-        (0.0, n(1.0)),
-        (0.3, n(0.0)),
-        (SCATTER, n(0.0)),
-        (SCATTER + 0.05, n(1.0)),
-        (SCATTER + 0.3, n(0.0)),
-    ];
+    let blasts = [(0.0, n(1.0)), (0.3, n(0.0)), (SCATTER, n(0.0)), (SCATTER + 0.05, n(1.0)), (SCATTER + 0.3, n(0.0))];
     amount(&mut lib, blast, &blasts);
 
     // Hidden until the first blast has torn the word apart.
@@ -198,7 +193,14 @@ fn build(reg: &Registry) -> Scene {
         ("if.counter", vec![("counter", text(name)), ("test", choice(test)), ("amount", n(amount))])
     };
     let note = |id: ThingId, pitch: u8, velocity: f64| {
-        ("do.note", vec![("who", Value::Who(bpe_core::Who::Thing { thing: id, ball: None })), ("note", int(pitch as i64)), ("velocity", n(velocity))])
+        (
+            "do.note",
+            vec![
+                ("who", Value::Who(bpe_core::Who::Thing { thing: id, ball: None })),
+                ("note", int(pitch as i64)),
+                ("velocity", n(velocity)),
+            ],
+        )
     };
     let next = |id: ThingId, velocity: f64| {
         (
@@ -212,7 +214,10 @@ fn build(reg: &Registry) -> Scene {
     };
     lib.rule(
         "Thirty-two beats to the drop",
-        &[("when.time", vec![("at", n(0.0))]), ("do.count", vec![("counter", text(BEATS_LEFT)), ("how", choice("set")), ("amount", n(32.0))])],
+        &[
+            ("when.time", vec![("at", n(0.0))]),
+            ("do.count", vec![("counter", text(BEATS_LEFT)), ("how", choice("set")), ("amount", n(32.0))]),
+        ],
     );
     lib.rule_doing(
         "Each beat brings the drop closer",
@@ -257,7 +262,10 @@ fn build(reg: &Registry) -> Scene {
     );
     lib.rule_doing(
         "A chord on each bar from the drop",
-        &[("when.beat", vec![("every", choice("bar"))]), ("if.between", vec![("from", n(DROP - 0.01)), ("to", n(30.0))])],
+        &[
+            ("when.beat", vec![("every", choice("bar"))]),
+            ("if.between", vec![("from", n(DROP - 0.01)), ("to", n(30.0))]),
+        ],
         &[next(chords, 0.7)],
     );
     lib.rule_doing(

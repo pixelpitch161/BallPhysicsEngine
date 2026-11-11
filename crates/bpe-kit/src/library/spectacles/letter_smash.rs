@@ -90,7 +90,13 @@ fn build(reg: &Registry) -> Scene {
     );
 
     // The look's balls, and more raining in from the top.
-    let balls = lib.scene.things.values().find(|t| t.kind == crate::things::balls::KIND).map(|t| t.id).expect("the look's balls");
+    let balls = lib
+        .scene
+        .things
+        .values()
+        .find(|t| t.kind == crate::things::balls::KIND)
+        .map(|t| t.id)
+        .expect("the look's balls");
     lib.scene.rename_thing(balls, "Wrecking balls");
     lib.card(balls, SlotId::Bounce, |b: &mut BasicBounce| b.bounciness = 0.95);
     lib.look_in(balls, "glow_orb", hex(0xffd23a));

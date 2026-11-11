@@ -99,6 +99,8 @@ pub(crate) enum Tone {
     Hat,
     /// A clap: a burst of noise with a little tone under it.
     Clap,
+    /// A soft piano: a triangle with a sine an octave up, fading slowly.
+    Piano,
 }
 
 /// A built-in scene being made.
@@ -350,6 +352,7 @@ impl<'a> Lib<'a> {
             Tone::Kick => (Wave::Sine, 1, Some((Wave::Triangle, 0, -18.0)), (0.5, 320.0, 0.0, 120.0)),
             Tone::Hat => (Wave::Noise, 1, None, (0.5, 45.0, 0.0, 30.0)),
             Tone::Clap => (Wave::Noise, 1, Some((Wave::Triangle, 1, -14.0)), (1.0, 150.0, 0.0, 120.0)),
+            Tone::Piano => (Wave::Triangle, 1, Some((Wave::Sine, 1, -9.0)), (2.0, 2200.0, 0.0, 1500.0)),
         };
         self.card(id, SlotId::Sound, |v: &mut VoiceSettings| {
             v.a.wave = a;
@@ -484,7 +487,15 @@ impl<'a> Lib<'a> {
 
     /// Makes the setting `key` (on `slot`, or the thing's own for `None`) follow how loud `shape` is (Follow
     /// sound): `amount` is added at full loudness, and the setting stays within `range`.
-    pub fn follow_sound(&mut self, id: ThingId, slot: Option<SlotId>, key: &str, shape: ThingId, amount: f64, range: (f64, f64)) {
+    pub fn follow_sound(
+        &mut self,
+        id: ThingId,
+        slot: Option<SlotId>,
+        key: &str,
+        shape: ThingId,
+        amount: f64,
+        range: (f64, f64),
+    ) {
         let address = bpe_core::Address { thing: id, slot, key: key.into() };
         let pulse = bpe_core::Pulse {
             source: bpe_core::PulseSource::Sound { shape, source: bpe_core::SoundSource::Level },
