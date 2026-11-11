@@ -476,7 +476,7 @@ impl<'a> Lib<'a> {
     }
 
     /// Makes the setting `key` (on `slot`, or the thing's own for `None`) follow how loud `shape` is (Follow
-    /// sound): `amount` is added at full loudness, and the setting stays within `range`.
+    /// sound): `amount` is added at full loudness, and the setting stays within `range` (and its own limits).
     pub fn follow_sound(
         &mut self,
         id: ThingId,
@@ -487,13 +487,28 @@ impl<'a> Lib<'a> {
         range: (f64, f64),
     ) {
         let address = bpe_core::Address { thing: id, slot, key: key.into() };
-        let pulse = bpe_core::Pulse {
-            source: bpe_core::PulseSource::Sound { shape, source: bpe_core::SoundSource::Level },
-            amount: Value::Number(amount),
-            range: Some(range),
-            ..Default::default()
-        };
-        self.scene.pulses.insert(address, pulse);
+        let source = bpe_core::PulseSource::Sound { shape, source: bpe_core::SoundSource::Level };
+        let decay = bpe_core::Pulse::default().decay;
+        self.scene
+            .set_pulse(self.reg, &address, source, Value::Number(amount), decay)
+            .unwrap_or_else(|e| panic!("{key}: {e}"));
+        // Within the setting's own limits.
+        let pulse = self.scene.pulses.get_mut(&address).expect("just set");
+        pulse.range = Some(match pulse.range {
+            Some((lo, hi)) => (range.0.max(lo), range.1.min(hi)),
+            None => range,
+        });
+    }
+
+    /// Takes the dark outline off a Text: on short words in the default font each letter's outline is drawn over
+    /// its neighbour, cutting into letters that sit close (TT, RS).
+    pub fn no_outline(&mut self, id: ThingId) {
+        let card = self.scene.card(id, SlotId::Look).expect("a Look card");
+        let outlines: Vec<LayerId> =
+            card.layers.iter().filter(|l| l.kind == crate::modules::look::shape::OUTLINE).map(|l| l.id).collect();
+        for layer in outlines {
+            self.scene.remove_layer(self.reg, id, SlotId::Look, layer).expect("an outline layer");
+        }
     }
 
     /// The thing as a rule names it.

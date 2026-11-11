@@ -226,7 +226,11 @@ fn build(reg: &Registry) -> Scene {
     );
     lib.rule_doing(
         "A soft kick on each bar before the drop",
-        &[("when.beat", vec![("every", choice("bar"))]), counter(DROPPED, "under", 0.5)],
+        // Up to the bar before the drop, which plays its own kick.
+        &[
+            ("when.beat", vec![("every", choice("bar"))]),
+            ("if.between", vec![("from", n(0.0)), ("to", n(DROP - 0.01))]),
+        ],
         &[note(kick, KICK, 0.45)],
     );
     lib.rule_doing(

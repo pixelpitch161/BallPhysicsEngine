@@ -1,6 +1,6 @@
 //! Fire tornado, seen from above: a molten ball beats across the eye of a whirl of fire on every beat, and each
 //! hit makes the fire hotter. The air whirls the flames round and into the eye and flings embers out, all throbbing
-//! with the kick; when the heat reaches its top the firestorm breaks out: the whirl doubles, the light flares and
+//! with the kick; when the heat reaches its top the firestorm breaks out: the whirl nearly doubles, the light flares and
 //! the full beat comes in.
 
 use bpe_core::{Blend, Color, Gradient, LayerId, Registry, Scene, SlotId, ThingId};
@@ -40,7 +40,8 @@ pub(crate) const ENTRY: Entry = Entry {
             "Text",
             "Sound",
         ],
-        change_first: "The flames' forces (Rise and Swirl on their Forces card), the heat each landing adds, and \
+        change_first: "The flames' forces (Pull to's Strength and Orbit, and Swirl, on their Motion card), the heat \
+                       each landing adds, and \
                        the scene's Tempo (then the ball's speed).",
         sound: SoundLevel::Designed,
         seconds: 32.0,
@@ -233,8 +234,9 @@ fn build(reg: &Registry) -> Scene {
         ],
     );
     lib.rule_doing(
-        "The bass comes in at 200°",
-        &[("when.beat", vec![("offset", n(0.5))]), heat_over(200.0)],
+        // From the ninth landing, so its first note starts a bar of four and the chords change on the bar.
+        "The bass comes in at 225°",
+        &[("when.beat", vec![("offset", n(0.5))]), heat_over(225.0)],
         &[(
             "do.note",
             vec![("who", lib.who(bass)), ("pitch_from", choice("the_shapes_next_note")), ("velocity", n(0.8))],
@@ -247,7 +249,7 @@ fn build(reg: &Registry) -> Scene {
     );
     lib.rule_doing(
         "Claps on two and four in the firestorm",
-        &[("when.beat", vec![("offset", n(1.0))]), ("if.every", vec![("n", int(2))]), heat_over(TOP)],
+        &[("when.beat", vec![]), ("if.every", vec![("n", int(2))]), heat_over(TOP)],
         &[("do.note", vec![("who", lib.who(clap)), ("note", int(CLAP as i64)), ("velocity", n(0.9))])],
     );
     let swirl_key = text(&bpe_core::layered_key(swirl, "strength"));
@@ -267,6 +269,7 @@ fn build(reg: &Registry) -> Scene {
             ("do.text", vec![("who", lib.who(title)), ("words", text("FIRESTORM!"))]),
             ("do.camera", vec![("mode", choice("zoom_punch")), ("punch", n(0.2))]),
             ("do.flash", vec![("who", lib.who(glow))]),
+            // Fewer flames, so the stronger whirl doesn't blow out to white.
             ("do.change", vec![("who", lib.who(flames)), ("setting", text("rate")), ("to_number", n(1400.0))]),
             (
                 "do.change",
@@ -286,7 +289,6 @@ fn build(reg: &Registry) -> Scene {
                     ("to_number", n(900.0)),
                 ],
             ),
-            ("do.change", vec![("who", lib.who(embers)), ("setting", text("rate")), ("to_number", n(300.0))]),
             ("do.change", vec![("who", lib.who(glow)), ("setting", text("strength")), ("to_number", n(2.2))]),
         ],
     );

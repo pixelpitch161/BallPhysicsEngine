@@ -33,13 +33,13 @@ pub(crate) const ENTRY: Entry = Entry {
             "Slow motion",
             "Text",
         ],
-        change_first: "The tempo (Scene settings), how hard gravity pulls (the rules' To), and the chords (the Box's \
+        change_first: "The tempo (Scene settings), how hard gravity pulls (Scene settings' Gravity and the flip rules' To), and the chords (the Box's \
                        Sound card).",
         sound: SoundLevel::Designed,
         seconds: 32.0,
         poster_seconds: 30.5,
         preview_seconds: 12.0,
-        swatch: [0x9a5aff, 0x07060f],
+        swatch: [0x9a5aff, 0x2a2638],
         payoff: Some(Payoff { what: PayoffEvent::RuleFires(ZERO_G), at_seconds: ZERO_AT, within_seconds: 0.02 }),
     },
     build,

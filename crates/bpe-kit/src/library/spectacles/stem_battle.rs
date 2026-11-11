@@ -1,5 +1,5 @@
 //! Stem battle: four balls fight in an arena, and each one is a part of the song (drums, bass, chords and
-//! melody), played by its own speaker under the arena. Each hit takes health; a ball out of health shatters
+//! melody), shown by its own speaker under the arena. Each hit takes health; a ball out of health shatters
 //! and its speaker fades to silence and goes dark, until one part plays on alone.
 
 use bpe_core::{Registry, Scene, SlotId, Target, ThingId, Value};
@@ -24,7 +24,7 @@ pub(crate) const ENTRY: Entry = Entry {
         level: Level::Spectacle,
         kinds: &[Kind::BattlesAndRaces, Kind::Music],
         about: "Four balls fight in an arena, and each is a part of the song: drums, bass, chords and melody, each \
-                played by its own speaker. A ball out of health shatters and its part fades to silence, until one \
+                shown by its own glowing speaker. A ball out of health shatters and its part fades to silence, until one \
                 part plays on alone.",
         uses: &[
             "Balls: hit each other",
@@ -113,10 +113,11 @@ fn build(reg: &Registry) -> Scene {
         let glow = card.layers.iter().find(|l| l.kind == GLOW).map(|l| l.id).expect("a glow");
         let strength = bpe_core::layered_key(glow, "strength");
         lib.scene.card_mut(speaker, SlotId::Look).expect("a Look").params.set(&strength, n(0.25));
-        lib.follow_sound(speaker, Some(SlotId::Look), &strength, voice, 3.0, (0.0, 3.5));
+        lib.follow_sound(speaker, Some(SlotId::Look), &strength, voice, 3.0, (0.0, 2.0));
         let label = lib.text(Look::HitCounter, &format!("{name} label"), &name.to_uppercase());
         lib.params(label, |t: &mut TextSettings| t.size = 40.0);
         lib.at(label, Vec2::new(x, 560.0));
+        lib.no_outline(label);
 
         let ball = lib.add("balls", ThingId::ROOT, name);
         lib.at(ball, ARENA_AT + at);

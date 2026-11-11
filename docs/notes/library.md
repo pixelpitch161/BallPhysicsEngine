@@ -43,7 +43,8 @@ Look's Surface chip with its preset numbers, then any changes), `particles` (a P
 named), `unlit` (every layer of a Look at Lit 0, so words stay bright in a dark lit scene), `who`, `finish`. `Tone`
 also has the drum voices Kick (a sine with a fast pitch drop), Hat (short noise) and Clap (noise and a triangle). Part 5
 added `follow_sound` (a setting follows how loud a shape is: Follow sound's Level, an amount and a range) and
-`Tone::Piano` (a triangle with a sine an octave up, fading slowly).
+`Tone::Piano` (a triangle with a sine an octave up, fading slowly) and `no_outline` (takes a Text's dark outline
+  off: in the default font each letter's outline is drawn over its neighbour, cutting into close pairs like TT).
 `Block` is a rule block's kind and settings.
 
 ### Gotchas found while building
@@ -113,7 +114,8 @@ added `follow_sound` (a setting follows how loud a shape is: Follow sound's Leve
   poster well after the moment it shows.
 - **An emitter starts with Gravity × 0** on its Motion card: drops that should fall need `gravity_scale = 1`
   (Liquid escape's first version piled up by pressure alone and its spilled drops floated off sideways).
-- **A thing's place can't be keyframed** (only shape settings like Turn, Spin, Gap at): Golden hour's setting sun is
+- **A Balls or Shape thing's place can't be keyframed** (only shape settings like Turn, Spin, Gap at; a Light's
+  Position can): Golden hour's setting sun is
   a big glowing ball beside the box with no gravity and a slow downward speed.
 - **Broken things drop out of every rule target**: a broken shape can't play a note or have its Volume faded.
   Stem battle keeps each part's sound on a look-less voice and breaks only the visible speaker (Fade out), whose
@@ -123,7 +125,8 @@ added `follow_sound` (a setting follows how loud a shape is: Follow sound's Leve
 - `when.hit` takes Who, Hits (`whom`) and At least (`min_strength`); a Countdown timer's words need the start and
   format, as in `{countdown 36|m:ss}`.
 - A rule's Change on the Scene settings' gravity takes effect at once; flipping it with two Set rules on alternate
-  bars (`when.beat` Every 2 bars, offsets 4 and 8 beats) keeps it exact, where Multiply would stack.
+  bars (`when.beat` Every 2 bars, offsets 4 and 8 beats) says plainly which way is up and leaves a clean Set to
+  zero for the end.
 - A shape's sound plays on every touch: a pile of 24 balls landing is a wall of notes, so Gravity flips every bar
   limits the Box to 6 voices and a 25% Min hit strength.
 

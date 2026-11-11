@@ -1,5 +1,5 @@
-//! Letter smash: the word SMASH is a wall, and balls rain down on it. Every letter can take a few hits; each
-//! hit glitches the word, the letters melt more the more they are hurt, and a letter out of health shatters.
+//! Letter smash: the word SMASH is a wall, and balls rain down on it. Every letter can take 26 hard hits; each
+//! hit glitches the word, the standing letters melt as they are hurt, and a letter out of health shatters.
 //! When the last one goes the word is gone.
 
 use bpe_core::{Address, Pulse, PulseSource, Registry, Scene, SlotId, ThingId, Value, layered_key};
@@ -9,7 +9,7 @@ use crate::library::build::{Lib, Tone, choice, hex, int, n, text};
 use crate::library::{Entry, Kind, Level, Payoff, PayoffEvent, SceneInfo, SoundLevel};
 use crate::modules::look::shape::effects::MELT;
 use crate::paint::Paint;
-use crate::sound::{Plays, Root, Scale};
+use crate::sound::{Plays, Root, Scale, VoiceSettings};
 use crate::things::emitter::{Directions, EmitterSettings, FireWhen, Marker};
 use crate::things::text::TextSettings;
 use crate::things::text::looks::Look;
@@ -21,14 +21,15 @@ pub(crate) const ENTRY: Entry = Entry {
         name: "Letter smash",
         level: Level::Spectacle,
         kinds: &[Kind::Words],
-        about: "The word SMASH is a wall, and balls rain down on it. Every hit glitches the word, the letters melt \
-                more the more they are hurt, and a letter out of health shatters, until the word is gone.",
+        about: "The word SMASH is a wall, and balls rain down on it. Every hit glitches the word, the standing \
+                letters melt as they are hurt, and a letter out of health shatters, until the word is gone.",
         uses: &[
             "Text: real letters with health",
             "Text effects: glitch, colour split, melt",
             "Follow health",
             "Emitter",
-            "Rules: health, counter, break, slow motion",
+            "Health: shatter at zero",
+            "Rules: health, counter, slow motion",
             "Sound",
         ],
         change_first: "The word (the Text \"Word\"), each letter's Starting health on its Health card, and how hard \
@@ -55,18 +56,24 @@ fn build(reg: &Registry) -> Scene {
     lib.scene_settings(|s: &mut SceneSettings| {
         s.background = Paint::solid(hex(0x0b0710));
         s.bloom = 0.3;
-        s.tempo = 110.0;
     });
     let room = lib.add("shape", ThingId::ROOT, "Room");
     lib.params(room, |s: &mut ShapeSettings| *s = ShapeSettings::rectangle(1020.0, 1860.0, 10.0));
     lib.look_in(room, "shape.chrome_edge", hex(0x2a2236));
     lib.notes(room, &[45, 52, 57], Plays::Random, Root::A, Scale::Minor);
     lib.tone(room, Tone::Kick);
+    // A thud on the hard hits only, never a drum roll.
+    lib.card(room, SlotId::Sound, |v: &mut VoiceSettings| {
+        v.play_voices = 4;
+        v.play_min_strength = 35.0;
+    });
 
     let word = lib.text_saying(Look::LettersBreakApart, "Word", "SMASH");
     // Each letter its own note, low to high.
     lib.notes(word, &[57, 60, 64, 67, 69], Plays::ByLetter, Root::A, Scale::Minor);
     lib.tone(word, Tone::Pluck);
+    // Only the hits that hurt a letter sing.
+    lib.card(word, SlotId::Sound, |v: &mut VoiceSettings| v.play_min_strength = 40.0);
     lib.card(word, SlotId::Health, |h: &mut crate::modules::health::HealthSettings| {
         h.start = HEALTH;
         // Only real hits count, not a ball rolling on a letter.
@@ -123,6 +130,7 @@ fn build(reg: &Registry) -> Scene {
     let count = lib.text(Look::HitCounter, "Letters counter", "LETTERS LEFT: {counter Letters left}");
     lib.params(count, |t: &mut TextSettings| t.size = 70.0);
     lib.at(count, Vec2::new(0.0, 700.0));
+    lib.no_outline(count);
 
     let w = lib.who(word);
     lib.rule(

@@ -9,7 +9,7 @@ use crate::library::{Entry, Kind, Level, Payoff, PayoffEvent, SceneInfo, SoundLe
 use crate::modules::look::layers::particles::ParticleFade;
 use crate::modules::look::surface::SurfaceKind;
 use crate::paint::{Follow, Paint};
-use crate::sound::{Plays, Root, Scale};
+use crate::sound::{Plays, Root, Scale, VoiceSettings};
 use crate::things::emitter::{Directions, EmitterSettings, FireOrder, FireWhen, Marker};
 use crate::things::particles::liquid::{LIQUID, LiquidLayer};
 use crate::things::particles::looks::Look as Specks;
@@ -72,6 +72,11 @@ fn build(reg: &Registry) -> Scene {
     lib.look_in(ring, "shape.glass", hex(0xbfe4ff));
     lib.notes(ring, &[64, 67, 69, 71, 74, 76, 79], Plays::Random, Root::E, Scale::MinorPentatonic);
     lib.tone(ring, Tone::Mallet);
+    // Hundreds of drops: a few notes on the hard knocks, not one for every touch.
+    lib.card(ring, SlotId::Sound, |v: &mut VoiceSettings| {
+        v.play_voices = 6;
+        v.play_min_strength = 30.0;
+    });
     let pool = lib.add("shape", ThingId::ROOT, "Pool");
     lib.at(pool, Vec2::new(0.0, 900.0));
     lib.params(pool, |s: &mut ShapeSettings| {
@@ -80,6 +85,10 @@ fn build(reg: &Registry) -> Scene {
     lib.look_in(pool, "shape.solid", hex(0x0d1a2c));
     lib.notes(pool, &[40, 47, 52], Plays::Random, Root::E, Scale::MinorPentatonic);
     lib.tone(pool, Tone::Pad);
+    lib.card(pool, SlotId::Sound, |v: &mut VoiceSettings| {
+        v.play_voices = 4;
+        v.play_min_strength = 30.0;
+    });
 
     // High in the ring, above where the water stops.
     let tap = lib.emitter("Tap", RING_AT + Vec2::new(0.0, -290.0), |s: &mut EmitterSettings| {
