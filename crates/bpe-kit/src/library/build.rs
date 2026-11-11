@@ -89,6 +89,8 @@ pub(crate) enum Tone {
     Hat,
     /// A clap: a burst of noise with a little tone under it.
     Clap,
+    /// A soft piano: a triangle with a sine an octave up, fading slowly.
+    Piano,
 }
 
 /// A built-in scene being made.
@@ -340,6 +342,7 @@ impl<'a> Lib<'a> {
             Tone::Kick => (Wave::Sine, 1, Some((Wave::Triangle, 0, -18.0)), (0.5, 320.0, 0.0, 120.0)),
             Tone::Hat => (Wave::Noise, 1, None, (0.5, 45.0, 0.0, 30.0)),
             Tone::Clap => (Wave::Noise, 1, Some((Wave::Triangle, 1, -14.0)), (1.0, 150.0, 0.0, 120.0)),
+            Tone::Piano => (Wave::Triangle, 1, Some((Wave::Sine, 1, -9.0)), (2.0, 2200.0, 0.0, 1500.0)),
         };
         self.card(id, SlotId::Sound, |v: &mut VoiceSettings| {
             v.a.wave = a;
@@ -470,6 +473,42 @@ impl<'a> Lib<'a> {
             .unwrap_or_else(|e| panic!("{name}: {e}"));
         self.scene.rename_thing(id, name);
         id
+    }
+
+    /// Makes the setting `key` (on `slot`, or the thing's own for `None`) follow how loud `shape` is (Follow
+    /// sound): `amount` is added at full loudness, and the setting stays within `range` (and its own limits).
+    pub fn follow_sound(
+        &mut self,
+        id: ThingId,
+        slot: Option<SlotId>,
+        key: &str,
+        shape: ThingId,
+        amount: f64,
+        range: (f64, f64),
+    ) {
+        let address = bpe_core::Address { thing: id, slot, key: key.into() };
+        let source = bpe_core::PulseSource::Sound { shape, source: bpe_core::SoundSource::Level };
+        let decay = bpe_core::Pulse::default().decay;
+        self.scene
+            .set_pulse(self.reg, &address, source, Value::Number(amount), decay)
+            .unwrap_or_else(|e| panic!("{key}: {e}"));
+        // Within the setting's own limits.
+        let pulse = self.scene.pulses.get_mut(&address).expect("just set");
+        pulse.range = Some(match pulse.range {
+            Some((lo, hi)) => (range.0.max(lo), range.1.min(hi)),
+            None => range,
+        });
+    }
+
+    /// Takes the dark outline off a Text: on short words in the default font each letter's outline is drawn over
+    /// its neighbour, cutting into letters that sit close (TT, RS).
+    pub fn no_outline(&mut self, id: ThingId) {
+        let card = self.scene.card(id, SlotId::Look).expect("a Look card");
+        let outlines: Vec<LayerId> =
+            card.layers.iter().filter(|l| l.kind == crate::modules::look::shape::OUTLINE).map(|l| l.id).collect();
+        for layer in outlines {
+            self.scene.remove_layer(self.reg, id, SlotId::Look, layer).expect("an outline layer");
+        }
     }
 
     /// The thing as a rule names it.

@@ -226,6 +226,13 @@ static ENTRIES: &[Entry] = &[
     spectacles::one_to_a_million::ENTRY,
     spectacles::diamond_fire::ENTRY,
     spectacles::mirror_maze::ENTRY,
+    spectacles::fire_tornado::ENTRY,
+    spectacles::word_from_chaos::ENTRY,
+    spectacles::liquid_escape::ENTRY,
+    spectacles::letter_smash::ENTRY,
+    spectacles::stem_battle::ENTRY,
+    spectacles::gravity_flips_every_bar::ENTRY,
+    spectacles::golden_hour::ENTRY,
 ];
 
 /// Every built-in scene, in the order the Scenes window lists them.
