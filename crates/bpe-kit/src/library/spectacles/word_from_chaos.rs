@@ -11,7 +11,7 @@ use crate::paint::Paint;
 use crate::sound::{Plays, Root, Scale};
 use crate::things::particles::ParticlesSettings;
 use crate::things::particles::forces::{DRAG, DragForce, SWIRL, SwirlForce, WIND};
-use crate::things::particles::meets::{AtEdges, MeetsSettings};
+use crate::things::particles::meets::{AtEdges, AtShapes, MeetsSettings};
 use crate::things::particles::more_forces::{FLOW, Falloff, FlowForce, PUSH, Pattern, PushForce, SPRING, Toward};
 use crate::things::text::TextSettings;
 use crate::things::text::looks::Look;
@@ -100,8 +100,16 @@ fn build(reg: &Registry) -> Scene {
     lib.at(word, Vec2::new(0.0, 60.0));
     let specks = lib.scene.things.values().find(|t| t.kind == crate::things::particles::KIND).map(|t| t.id).expect("the specks");
     lib.scene.rename_thing(specks, "Specks");
-    lib.params(specks, |p: &mut ParticlesSettings| p.spacing = 5.0);
-    lib.card(specks, SlotId::Bounce, |m: &mut MeetsSettings| m.at_edges = AtEdges::Bounce);
+    lib.params(specks, |p: &mut ParticlesSettings| {
+        p.spacing = 4.0;
+        p.size *= 1.4;
+    });
+    // The room's walls keep the chaos in.
+    lib.card(specks, SlotId::Bounce, |m: &mut MeetsSettings| {
+        m.at_shapes = AtShapes::Bounce;
+        m.bounciness = 0.6;
+        m.at_edges = AtEdges::Bounce;
+    });
     // The look's gusts of wind make way for the chaos below.
     let wind = layer_of(&lib, specks, SlotId::Motion, WIND);
     lib.scene.remove_layer(reg, specks, SlotId::Motion, wind).expect("the wind");
@@ -111,14 +119,14 @@ fn build(reg: &Registry) -> Scene {
     let flow = lib.layer(specks, SlotId::Motion, FLOW);
     lib.layer_params(specks, SlotId::Motion, flow, |f: &mut FlowForce| {
         f.pattern = Pattern::Noise;
-        f.speed = 520.0;
+        f.speed = 220.0;
         f.size = 320.0;
         f.grip = 1.2;
         f.changes = 0.3;
     });
     let swirl = lib.layer(specks, SlotId::Motion, SWIRL);
     lib.layer_params(specks, SlotId::Motion, swirl, |w: &mut SwirlForce| {
-        w.strength = 900.0;
+        w.strength = 1500.0;
         w.size = 170.0;
         w.drift = 40.0;
     });
