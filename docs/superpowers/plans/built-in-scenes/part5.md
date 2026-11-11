@@ -143,3 +143,41 @@ gravity_flips_every_bar, golden_hour}.rs`; modify `library/spectacles/mod.rs`, `
 - [ ] Push, draft PR, subscribe; when green and reviewed, merge.
 - [ ] Final handover `/mnt/project-files/ballphysics/builtin-scenes/part5-handover.md`, memory, tell the coordinator
   the built-in scenes work is finished.
+
+## As built
+
+All seven scenes are in `library/spectacles/`, listed 34 to 40 in `ENTRIES`; `levels_so_far` is (14, 14, 12). No
+engine change, so no golden moved. Where a scene differs from its decision above:
+
+1. **Fire tornado** became a top-down fire whirl: the side-on column blew out to a white blob and its orbit flung
+   the flames sideways. A molten ball bounces straight across the Eye ring once a beat (no gravity, bounciness 1,
+   its speed set from the ring's size and the beat), so every landing is on the beat; Heat climbs 25 a landing and
+   the firestorm lights at 1000 (23.7 s). Flames are born from a long thin rectangle whose Turn is keyed round and
+   round, pulled in with Orbit and stirred with Swirl; embers are pushed out in the other direction with streaks.
+   The flames' heat and the fire light's strength follow the Eye's sound. Bass, hats and claps come in as the heat
+   climbs (rules on the counter), from look-less speakers.
+2. **Word from chaos**: the specks bounce off the room's walls (At shapes Bounce) and a gentle Noise flow (220) with
+   a strong Swirl (1500) keeps them spread through the room; a stronger flow herded them into the edges. Three glow
+   balls bounce through the room for the hits. Drop at 16 s (payoff), scatter at 22 s.
+3. **Liquid escape**: the drops are the emitter's balls with no look, each carrying a short-lived Water speck
+   drawn as one Liquid layer; the emitter needed Gravity × 1 (it starts at 0). The live number is "{n} DROPS". The
+   ring fills nearly to the brim before the gap at two o'clock spills (21.9 s) and the water pours into the pool.
+4. **Letter smash**: each letter takes 26 hits of at least 250 px/s; balls rain in from an emitter. Letters break at
+   about 14.6, 15.2, 18.4, 21.0 and 25.3 s.
+5. **Stem battle**: a broken thing drops out of every rule target, so the visible speaker can't also be the voice:
+   each part plays from a look-less voice in the Band folder, and its speaker (a neon box whose glow follows the
+   voice) fades out when its ball breaks while the voice's Volume glides to -60 dB. The winner can't be hurt any
+   more (a Change on every Balls thing's Health Takes). Knockouts at 16.3, 21.5 and 26.5 s; the drums win. The
+   title says "ONE PART PLAYS ON" rather than a name, so it stays true on any machine.
+6. **Gravity flips every bar**: two Set rules on alternate bars (Every 2 bars, offsets 4 and 8 beats) instead of
+   Multiply; gravity 2600 so the pile crosses the box in about two beats. The rig's spots hang inside the box's lid
+   (above it, the lid shaded them). Zero gravity comes half a second into the thirteenth flip (26.5 s) with the pile
+   in mid-air, and the balls' bounciness goes to 1 so they float round the box. The Box plays 6 voices with a 25% Min
+   hit strength, so a landing is a chord, not a wall of notes.
+7. **Golden hour**: a thing's place can't be keyframed, so the setting sun is a big glowing ball beside the box,
+   sinking slowly with no gravity. The Sun light's elevation, colour and strength are keyed lower and redder. Slopes
+   tilt 0.2 rad with Friction 0 (at 0.14 rad with friction the balls stopped and sat). A landing of at least 60 px/s
+   plays the next note with a 1.5-beat cooldown; the tune (the opening phrase of Gymnopédie No. 1, twice) ends at
+   26.9 s (payoff), and the title says "GOODNIGHT, SUN". Grade: Basic (warm, a little contrast), Tone curve (gentle
+   S), Colour grading (teal shadows, orange highlights), Effects (vignette, grain).
+8. Helpers: `follow_sound` and `Tone::Piano`. `on_the_beat` stays in Club night (no new scene used it).

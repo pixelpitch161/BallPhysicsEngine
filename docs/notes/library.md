@@ -41,7 +41,9 @@ then several Dos each hung off its last block), `text`, `text_saying`, `ring`, `
 a place; the scene gets its Lighting card; `light_in` puts it in a parent, so a lamp can ride a ball), `surface` (a
 Look's Surface chip with its preset numbers, then any changes), `particles` (a Particles thing from a ready look,
 named), `unlit` (every layer of a Look at Lit 0, so words stay bright in a dark lit scene), `who`, `finish`. `Tone`
-also has the drum voices Kick (a sine with a fast pitch drop), Hat (short noise) and Clap (noise and a triangle).
+also has the drum voices Kick (a sine with a fast pitch drop), Hat (short noise) and Clap (noise and a triangle). Part 5
+added `follow_sound` (a setting follows how loud a shape is: Follow sound's Level, an amount and a range) and
+`Tone::Piano` (a triangle with a sine an octave up, fading slowly).
 `Block` is a rule block's kind and settings.
 
 ### Gotchas found while building
@@ -109,6 +111,21 @@ also has the drum voices Kick (a sine with a fast pitch drop), Hat (short noise)
 - `do.flash` on a ball whose look has no Flash on hit or Colour on hit layer does nothing (Glow orb, Electric).
 - Posters are drawn on the PC that opens the Scenes window, where maths differs slightly: put a chaotic scene's
   poster well after the moment it shows.
+- **An emitter starts with Gravity × 0** on its Motion card: drops that should fall need `gravity_scale = 1`
+  (Liquid escape's first version piled up by pressure alone and its spilled drops floated off sideways).
+- **A thing's place can't be keyframed** (only shape settings like Turn, Spin, Gap at): Golden hour's setting sun is
+  a big glowing ball beside the box with no gravity and a slow downward speed.
+- **Broken things drop out of every rule target**: a broken shape can't play a note or have its Volume faded.
+  Stem battle keeps each part's sound on a look-less voice and breaks only the visible speaker (Fade out), whose
+  glow follows the voice's sound.
+- Balls on a gentle slope with Friction come to a stop and sit: Golden hour's slopes tilt 0.2 rad with Friction 0.
+- Spot lights hung above a box are shaded by its lid: Gravity flips every bar moves the rig's spots inside it.
+- `when.hit` takes Who, Hits (`whom`) and At least (`min_strength`); a Countdown timer's words need the start and
+  format, as in `{countdown 36|m:ss}`.
+- A rule's Change on the Scene settings' gravity takes effect at once; flipping it with two Set rules on alternate
+  bars (`when.beat` Every 2 bars, offsets 4 and 8 beats) keeps it exact, where Multiply would stack.
+- A shape's sound plays on every touch: a pile of 24 balls landing is a wall of notes, so Gravity flips every bar
+  limits the Box to 6 voices and a 25% Min hit strength.
 
 ## Checks
 
@@ -165,3 +182,10 @@ also has the drum voices Kick (a sine with a fast pitch drop), Hat (short noise)
   drop, One to a million, Diamond fire, Mirror maze), all `SoundLevel::Designed`, payoffs on the five spectacles
   (one rule, four counters). New helpers `surface`, `light_in`, `particles`, `unlit` and the drum tones. No engine
   change. Plan `docs/superpowers/plans/built-in-scenes/part4.md`.
+- Part 5 (2026-11-11): the last seven spectacles in `library/spectacles/` (Fire tornado, Word from chaos, Liquid
+  escape, Letter smash, Stem battle, Gravity flips every bar, Golden hour), so the library holds all 40 (14 / 14 /
+  12). Payoffs: Fire tornado's Heat counter reaching 1000 on the beat (23.7 s), the drop of Word from chaos (16 s),
+  the first drop out of Liquid escape (21.9 s), the last letter of Letter smash (25.3 s), the last part standing in
+  Stem battle (26.5 s), zero gravity (26.5 s) and the tune finishing in Golden hour (26.9 s). New helpers
+  `follow_sound` and `Tone::Piano`; Golden hour is the first scene with a Grade card (`ensure_grade`, then its
+  panels' sub-layers). No engine change. Plan `docs/superpowers/plans/built-in-scenes/part5.md`.

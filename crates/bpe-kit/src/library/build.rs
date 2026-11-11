@@ -67,16 +67,6 @@ fn edit_as<S: Settings>(params: &mut Params, f: impl FnOnce(&mut S)) {
     }
 }
 
-/// Where a ball of `radius` falling at `g` px/s² must be at 0 s, and how fast it goes, so that it lands on the
-/// floor every `every` seconds, first at `first` seconds (as long as nothing else touches it).
-pub(crate) fn on_the_beat(floor_top: f32, radius: f32, g: f32, every: f64, first: f64) -> (f32, f32) {
-    let up = g * every as f32 / 2.0;
-    // How long since it last left the floor.
-    let since = (every - first.rem_euclid(every)).rem_euclid(every) as f32;
-    let height = up * since - g * since * since / 2.0;
-    (floor_top - radius - height, -(up - g * since))
-}
-
 /// A rule block: its kind and the settings it changes.
 pub(crate) type Block<'k> = (&'k str, Vec<(&'k str, Value)>);
 
