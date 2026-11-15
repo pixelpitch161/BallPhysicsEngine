@@ -1,6 +1,7 @@
 //! Which hits on a shape play a note: hard enough, not too soon after the same ball's last one
-//! (Min gap; with Whole sound, after any ball's), and from the balls the shape listens to. A Balls or Emitter thing's sound (W10) hears its own
-//! balls instead: what they hit, and their fires, catches and breaks.
+//! (Min gap; with Whole sound, after any ball's), and from the balls the shape listens to. A
+//! Balls or Emitter thing's sound (W10) hears its own balls instead: what they hit, and their
+//! fires, catches and breaks.
 
 use crate::BlockHit;
 use bpe_core::{Target, ThingId};
@@ -198,8 +199,9 @@ impl HitFilter {
     }
 
     /// Takes over another filter's memory of the balls.
+    /// A switch between Per ball and Whole sound starts afresh (the old table counts the other way).
     pub fn take_memory(&mut self, other: &HitFilter) {
-        if other.guard.len() == self.guard.len() {
+        if other.guard.len() == self.guard.len() && other.whole == self.whole {
             self.guard.copy_from_slice(&other.guard);
         }
     }

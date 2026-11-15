@@ -427,7 +427,7 @@ pub fn clock_seed(thing: ThingId) -> u64 {
 }
 
 /// Where `shape`'s slots change from the start to `end` (sound samples), and to which slot, as
-/// its voice would play them: hits filtered by its Min hit strength, Retrigger guard and Heard
+/// its voice would play them: hits filtered by its Min hit strength, Min gap and Heard
 /// from as set (not keyed). `hits` are the clip's hits so far, in sample order. Empty when the
 /// shape has no sound or one slot.
 pub fn slot_changes(
