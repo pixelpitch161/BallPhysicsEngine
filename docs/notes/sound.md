@@ -36,7 +36,7 @@ The editor's sound panels are in `editor.md`; the design is `docs/superpowers/sp
   the chain layers `chain.modulation`, `chain.filter`, `chain.distortion` and `chain.eq` (8 bands like the bus EQ,
   run per sample with `Eq8::tick`) are in `bpe-kit/src/sound/chain.rs`,
   a Modulation's `source` text being "" (the other osc), "a", "b" or a layer id) becomes a `ShapeVoice`
-  (`voices/shape.rs`, built by `patch::shape_voice`): hits pass the `HitFilter` (min strength, retrigger, Heard from),
+  (`voices/shape.rs`, built by `patch::shape_voice`): hits pass the `HitFilter` (min strength, Min gap, Heard from),
   `NotePicker` picks a note of slot 0, `Voices` (`alloc.rs`) gives it a slot (Poly up to 16, the oldest fading in 5 ms;
   Mono glides). Every number knob has a place in `knobs::layout` (keys read once a block from `ShapeSpec.keyed`),
   `ModMatrix` (`modmatrix.rs`) applies routes as Serum does: an Amount is a share of the knob's own travel from where it is set, clamped at its ends (Hz knobs turn in ratios, `turns_in_ratios`, the same in the engine and the editor's knob and ring); the one exception is an ADSR on a level knob (Gain, Level, Sub level, Volume, `combine_of(key, from_envelope)`), a VCA per sample (`scale_by_routes`), other routes on level knobs adding dB per sample (`offset_by_routes`), the
@@ -167,7 +167,7 @@ Balls or Emitter thing hears exactly what it heard before.
 - **Filter** (`voices/hit_filter.rs`): `BallMoments` (`of`, `of_thing`) on `ShapeSpec.balls` and
   `HitFilter.balls` (`hearing`). `HitFilter::seen` turns a hit round for a ball voice so `a` is its own ball and `b`
   what that ball met (the normal flipped); `take_hits`, `catch_up`, Follow sound and `slot_changes` read the seen
-  event, so the retrigger guard, By ball, Each note's ball and By letter (`b` a Text) work from its own ball. `accept`
+  event, so Min gap, By ball, Each note's ball and By letter (`b` a Text) work from its own ball. `accept`
   (via `hears`): a shape takes only `Hit` and `Moment` with `b` = it (as before); a ball voice takes a `Hit` from its
   own ball (Hit a ball when `b.thing` is in `world.bodies`, else Hit a shape; Heard from names `b`), `Spawn` with `b`
   = it, `Enter` with it on either side, `Break` with `a` = it. Fires, catches and breaks go through the same strength
@@ -259,3 +259,15 @@ shows and toggles the picked step, and `sound_tab/notes/melody.rs` shows step ch
 step, Clear melody, At the end, a strip of the steps and **Import MIDI as a melody…** (`TabEdit::ImportMidiMelody`,
 `write::import_midi_melody`, which also sets Plays Melody). Pitch follows size sits in the Playing panel. Tests:
 `bpe-sound/tests/melody.rs`, `midi_import` unit tests, `notes/melody.rs` and `notes/ui_tests.rs`.
+
+## Min gap (was Retrigger guard), 2026-11-15
+
+Aedan found the Retrigger knob did nothing audible. It worked, but it only held back the same ball and stopped at
+500 ms, while a ball round a circle usually hits less often than that. It is now **Min gap** (`play_gap`, 0 to
+5000 ms, default 30, the knob `k::GAP`) with **Min gap counts** (`play_gap_counts`, `GapCounts::PerBall` /
+`WholeSound`, chips under the Playing knobs). Whole sound gives every ball one shared key in the `HitFilter` table
+(`WHOLE_KEY`, set by `HitFilter::counting`, carried in `ShapeSpec.gap_counts`), so a hit waits from any ball's last
+note; a hit held back starts no gap. The voice, Follow sound (`control.rs`) and `slots.rs`'s By hits all count the
+same way. Rule notes still pass no filter. Defaults are unchanged, so goldens are too. Tests: `shape_voice.rs`
+`min_gap_*` and `whole_sound_min_gap_holds_back_every_ball`, `sound_tab/playing.rs`
+`min_gap_can_count_the_whole_sound`.

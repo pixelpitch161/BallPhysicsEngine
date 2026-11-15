@@ -156,7 +156,7 @@ fn build(reg: &Registry) -> Scene {
     });
     lib.notes(marbles, &[60, 62, 64, 67, 69, 72, 74, 76], Plays::Random, Root::C, Scale::MajorPentatonic);
     lib.tone(marbles, Tone::Mallet);
-    lib.card(marbles, SlotId::Sound, |v: &mut VoiceSettings| v.play_retrigger = 60.0);
+    lib.card(marbles, SlotId::Sound, |v: &mut VoiceSettings| v.play_gap = 60.0);
     // The camera rides with the pack, kept inside the course.
     let camera = *lib.scene.things.iter().find(|(_, t)| t.kind == "camera").expect("a camera").0;
     let m = lib.who(marbles);

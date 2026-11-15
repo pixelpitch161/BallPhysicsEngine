@@ -77,7 +77,7 @@ fn build(reg: &Registry) -> Scene {
     lib.tone(petals, Tone::Pad);
     lib.card(petals, SlotId::Sound, |v: &mut VoiceSettings| {
         // Three hundred balls hit it: a note at most every eighth of a second.
-        v.play_retrigger = 125.0;
+        v.play_gap = 125.0;
         v.out_volume = -6.0;
     });
     let emitter = lib.emitter("Balls", flower_at, |e| {

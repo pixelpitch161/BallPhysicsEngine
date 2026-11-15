@@ -82,7 +82,7 @@ fn steps(notes: &[&[u8]]) -> Vec<NoteSlot> {
 fn melody(v: &mut VoiceSettings) {
     v.notes_plays = Plays::Melody;
     v.notes_melody = steps(&[&[60], &[62], &[64, 67]]);
-    v.play_retrigger = 0.0;
+    v.play_gap = 0.0;
 }
 
 #[test]

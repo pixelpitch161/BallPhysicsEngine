@@ -1,17 +1,20 @@
-//! Which hits on a shape play a note: hard enough, not too soon after the same ball's last one,
-//! and from the balls the shape listens to. A Balls or Emitter thing's sound (W10) hears its own
+//! Which hits on a shape play a note: hard enough, not too soon after the same ball's last one
+//! (Min gap; with Whole sound, after any ball's), and from the balls the shape listens to. A Balls or Emitter thing's sound (W10) hears its own
 //! balls instead: what they hit, and their fires, catches and breaks.
 
 use crate::BlockHit;
 use bpe_core::{Target, ThingId};
-use bpe_kit::sound::VoiceSettings;
+use bpe_kit::sound::{GapCounts, VoiceSettings};
 use bpe_runtime::{Event, EventKind, World};
 
 /// A hit at this speed (px/s) or more is full strength, unless a sound's Full strength at says
 /// otherwise.
 pub const STRONG_HIT: f32 = 1500.0;
-/// Balls the retrigger guard remembers at once.
+/// Balls Min gap remembers at once.
 const GUARD_SLOTS: usize = 2048;
+/// The one key every ball shares when Min gap counts the whole sound (never a ball's own key,
+/// and not 0, which marks an empty slot).
+const WHOLE_KEY: u64 = u64::MAX;
 /// How far a ball's slot may be from where it hashes to.
 const PROBE: usize = 8;
 
@@ -95,8 +98,11 @@ pub struct HitFilter {
     pub min_strength: f32,
     /// How a hit's speed becomes its strength.
     pub curve: StrengthCurve,
-    /// Samples a ball must wait before it plays again.
-    pub retrigger: u64,
+    /// Samples a ball (or with `whole`, any ball) must wait after the last note before it plays
+    /// again: Min gap.
+    pub gap: u64,
+    /// Min gap counts from any ball's last note (Whole sound), not each ball's own.
+    pub whole: bool,
     pub heard_from: Target,
     /// Each ball's key (`thing << 32 | item`, plus one; 0 for empty) and its last played sample.
     guard: Vec<(u64, u64)>,
@@ -104,18 +110,25 @@ pub struct HitFilter {
 
 impl HitFilter {
     /// Allocates its table: build it off the audio path.
-    pub fn new(shape: ThingId, min_strength: f32, retrigger_s: f32, heard_from: Target) -> Self {
+    pub fn new(shape: ThingId, min_strength: f32, gap_s: f32, heard_from: Target) -> Self {
         let mut f = HitFilter {
             shape,
             balls: None,
             min_strength: 0.0,
             curve: StrengthCurve::default(),
-            retrigger: 0,
+            gap: 0,
+            whole: false,
             heard_from,
             guard: vec![(0, 0); GUARD_SLOTS],
         };
-        f.set(min_strength, retrigger_s, StrengthCurve::default());
+        f.set(min_strength, gap_s, StrengthCurve::default());
         f
+    }
+
+    /// Min gap counts from any ball's last note (`GapCounts::WholeSound`) or each ball's own.
+    pub fn counting(mut self, counts: GapCounts) -> Self {
+        self.whole = counts == GapCounts::WholeSound;
+        self
     }
 
     /// The filter of a Balls or Emitter thing's sound (`Some`), hearing its own balls' `moments`;
@@ -143,7 +156,7 @@ impl HitFilter {
     }
 
     /// Whether `e` (as [`HitFilter::seen`] gives it) is one this sound plays, before its strength
-    /// and the retrigger guard: on a shape, a hit or a particle moment on it from the balls it
+    /// and Min gap: on a shape, a hit or a particle moment on it from the balls it
     /// hears; on a Balls or Emitter thing, one of its balls' moments it plays.
     fn hears(&self, e: &Event, world: &World) -> bool {
         let me = self.shape;
@@ -173,9 +186,9 @@ impl HitFilter {
     }
 
     /// New thresholds and strength curve (keyframed knobs move them every block).
-    pub fn set(&mut self, min_strength: f32, retrigger_s: f32, curve: StrengthCurve) {
+    pub fn set(&mut self, min_strength: f32, gap_s: f32, curve: StrengthCurve) {
         self.min_strength = min_strength.clamp(0.0, 1.0);
-        self.retrigger = (retrigger_s.max(0.0) * crate::SAMPLE_RATE) as u64;
+        self.gap = (gap_s.max(0.0) * crate::SAMPLE_RATE) as u64;
         self.curve = curve;
     }
 
@@ -203,14 +216,15 @@ impl HitFilter {
         if s < self.min_strength {
             return None;
         }
-        let key = ((ball.thing.0 as u64) << 32 | ball.item as u64).wrapping_add(1);
+        // Whole sound: every ball shares one key, so the gap counts from any ball's note.
+        let key = if self.whole { WHOLE_KEY } else { ((ball.thing.0 as u64) << 32 | ball.item as u64).wrapping_add(1) };
         let home = (key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 53) as usize % GUARD_SLOTS;
         let mut free = None;
         for k in 0..PROBE {
             let i = (home + k) % GUARD_SLOTS;
             let (held, last) = self.guard[i];
             if held == key {
-                if self.retrigger > 0 && sample < last.saturating_add(self.retrigger) && sample >= last {
+                if self.gap > 0 && sample < last.saturating_add(self.gap) && sample >= last {
                     return None;
                 }
                 self.guard[i].1 = sample;

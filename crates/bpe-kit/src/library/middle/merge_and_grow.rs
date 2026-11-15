@@ -68,7 +68,7 @@ fn build(reg: &Registry) -> Scene {
         // An octave lower each time a ball's size doubles.
         v.play_size_pitch = 12.0;
         v.play_size_at = 14.0;
-        v.play_retrigger = 50.0;
+        v.play_gap = 50.0;
     });
     // Balls within 35% of each other's size merge, so the sizes keep climbing to a few big balls.
     let b = lib.who(balls);

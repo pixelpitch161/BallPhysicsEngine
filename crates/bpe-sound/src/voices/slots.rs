@@ -457,11 +457,11 @@ pub fn slot_changes(
     );
     let accepted: Vec<u64> = if spec.change == Change::ByHits {
         let balls = scene.things.get(&shape).and_then(|t| super::BallMoments::of_thing(&t.kind, &v));
-        let mut f =
-            HitFilter::new(shape, v.play_min_strength / 100.0, v.play_retrigger / 1000.0, v.play_heard_from.clone())
-                .hearing(balls);
+        let mut f = HitFilter::new(shape, v.play_min_strength / 100.0, v.play_gap / 1000.0, v.play_heard_from.clone())
+            .hearing(balls)
+            .counting(v.play_gap_counts);
         let curve = super::StrengthCurve::of_knobs(v.play_full_at, v.play_curve);
-        f.set(v.play_min_strength / 100.0, v.play_retrigger / 1000.0, curve);
+        f.set(v.play_min_strength / 100.0, v.play_gap / 1000.0, curve);
         hits.iter()
             .filter(|(at, h)| {
                 let h = BlockHit { offset: h.offset, event: f.seen(&h.event) };

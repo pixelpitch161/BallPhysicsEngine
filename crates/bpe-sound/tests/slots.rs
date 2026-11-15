@@ -212,7 +212,7 @@ fn by_hits_counts_accepted_hits_only() {
         v.notes_change = Change::ByHits;
         v.notes_every_hits = 2;
         v.play_min_strength = 50.0;
-        v.play_retrigger = 0.0;
+        v.play_gap = 0.0;
     });
     let p = world(&scene, &kit);
     let mut v = voice(&scene, &kit);
@@ -298,7 +298,7 @@ fn up_order_after_a_seek_matches_from_the_start() {
     let scene = voiced(&kit, |v| {
         v.notes_slots = vec![NoteSlot { notes: (0..count as u8).map(|i| 60 + 2 * i).collect(), order_clicked: vec![] }];
         v.notes_plays = Plays::Up;
-        v.play_retrigger = 0.0;
+        v.play_gap = 0.0;
     });
     let resolved = resolve_scene(&scene, &kit.registry);
     let render = |seek: Option<f64>| -> Vec<f32> {
@@ -338,7 +338,7 @@ fn a_strummed_note_after_a_hit_still_ends_at_the_next_hit() {
         v.notes_plays = Plays::AllAtOnce;
         v.notes_strum = 100.0;
         v.play_voices = 16;
-        v.play_retrigger = 0.0;
+        v.play_gap = 0.0;
     });
     // Every envelope holds at full level until the next hit.
     let shape = shape_of(&scene);
