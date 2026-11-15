@@ -268,6 +268,8 @@ pub struct ShapeSpec {
     /// The Distance (its place in `mods.dists`) whose range holds the notes, for In range.
     pub zone: Option<usize>,
     pub heard_from: bpe_core::Target,
+    /// Whether Min gap counts from each ball's last note or any ball's.
+    pub gap_counts: bpe_kit::sound::GapCounts,
     /// On a Balls or Emitter thing (W10): it hears its own balls, these moments of them.
     pub balls: Option<super::BallMoments>,
     pub slots: Vec<NoteSlot>,
@@ -555,13 +557,10 @@ impl ShapeVoice {
     /// Builds the voice (allocates: off the audio path).
     pub fn new(spec: ShapeSpec) -> ShapeVoice {
         let now = spec.base;
-        let filter = HitFilter::new(
-            spec.thing,
-            now[k::MIN_STRENGTH] / 100.0,
-            now[k::RETRIGGER] / 1000.0,
-            spec.heard_from.clone(),
-        )
-        .hearing(spec.balls);
+        let filter =
+            HitFilter::new(spec.thing, now[k::MIN_STRENGTH] / 100.0, now[k::GAP] / 1000.0, spec.heard_from.clone())
+                .hearing(spec.balls)
+                .counting(spec.gap_counts);
         // By source: the envelope it is (usize::MAX for other modulators).
         let mut source_env = [usize::MAX; MAX_SOURCES];
         let mut src = [Src::None; MAX_SOURCES];
@@ -1212,7 +1211,7 @@ impl ShapeVoice {
     /// Every hit on this shape that plays, and the auditions, start their notes. The slot
     /// changes landing in the block come before the hits on their samples.
     fn take_hits(&mut self, cx: &BlockCx, hits: &[BlockHit]) {
-        self.filter.set(self.now[k::MIN_STRENGTH] / 100.0, self.now[k::RETRIGGER] / 1000.0, self.curve());
+        self.filter.set(self.now[k::MIN_STRENGTH] / 100.0, self.now[k::GAP] / 1000.0, self.curve());
         self.clock.begin_block(cx.start_sample, BLOCK as u32, cx.time, &self.spec.notes, cx.tempo);
         self.start_strums(cx);
         for hit in hits {
@@ -1546,7 +1545,7 @@ impl ShapeVoice {
             let end = start + block;
             if next < hits.len() && hits[next].0 < end {
                 self.read_keys(time, world.rules());
-                self.filter.set(self.now[k::MIN_STRENGTH] / 100.0, self.now[k::RETRIGGER] / 1000.0, self.curve());
+                self.filter.set(self.now[k::MIN_STRENGTH] / 100.0, self.now[k::GAP] / 1000.0, self.curve());
                 let cx = BlockCx { start_sample: start, time, tempo, world, log: &no_log, playing: true };
                 while next < hits.len() && hits[next].0 < end {
                     let (sample, hit) = &hits[next];

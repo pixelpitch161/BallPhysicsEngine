@@ -15,12 +15,12 @@ use glam::Vec2;
 const SHAPE: ThingId = ThingId(1);
 const BALLS: ThingId = ThingId(2);
 
-/// Puts the starter sound on `id`, its settings changed by `edit` (the retrigger guard off, so
+/// Puts the starter sound on `id`, its settings changed by `edit` (Min gap off, so
 /// every hit counts).
 fn give_sound(scene: &mut Scene, kit: &Kit, id: ThingId, edit: impl FnOnce(&mut VoiceSettings)) {
     let mut card = starter_voice(&kit.registry);
     let mut v = VoiceSettings::from_params(&card.params);
-    v.play_retrigger = 0.0;
+    v.play_gap = 0.0;
     edit(&mut v);
     let mut params: Params = v.to_params();
     for (k, val) in card.params.iter() {

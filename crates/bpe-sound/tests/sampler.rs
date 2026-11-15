@@ -37,7 +37,7 @@ fn sampled(kit: &Kit, hz: f64, edit: impl FnOnce(&mut VoiceSettings)) -> Scene {
     let name = scene.add_audio("Tone", wav(hz, 1.0, 44_100));
     let mut card = starter_voice(&kit.registry);
     let mut v = VoiceSettings::from_params(&card.params);
-    v.play_retrigger = 0.0;
+    v.play_gap = 0.0;
     v.a.wave = Wave::Sample;
     v.a.sample = name;
     v.a.sample_root = 69;

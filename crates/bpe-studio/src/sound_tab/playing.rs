@@ -1,11 +1,11 @@
 //! How hits play notes: Poly or Mono, how many notes at once, Glide (Mono), the softest hit
-//! that plays, the retrigger guard, how a hit's speed becomes its strength, Pitch follows size
+//! that plays, Min gap, how a hit's speed becomes its strength, Pitch follows size
 //! and which balls are heard.
 
 use super::{TabCx, panel};
 use crate::style;
 use bpe_core::Value;
-use bpe_kit::sound::{ADSR, DISTANCE, PlayMode, PlayWhen};
+use bpe_kit::sound::{ADSR, DISTANCE, GapCounts, PlayMode, PlayWhen};
 use bpe_sound::modmatrix::{Combine, combine_of};
 use eframe::egui::{RichText, Ui};
 
@@ -50,8 +50,10 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx) {
             }
             cx.knob(ui, "play_min_strength", "Min strength", &percent)
                 .on_hover_text("Softer hits than this play nothing. 100 % is a hit at Full strength speed.");
-            cx.knob(ui, "play_retrigger", "Retrigger", &ms)
-                .on_hover_text("A ball hitting again sooner than this plays no new note");
+            cx.knob(ui, "play_gap", "Min gap", &ms).on_hover_text(
+                "A hit this soon after the last note plays nothing: the same ball's last note (Per ball) or any \
+                 ball's (Whole sound). 0 is off",
+            );
             cx.knob(ui, "play_full_at", "Full at", &speed)
                 .on_hover_text("A hit this fast or faster plays at full strength; slower ones are softer");
             cx.knob(ui, "play_curve", "Curve", &plain).on_hover_text(
@@ -65,6 +67,14 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx) {
                 cx.knob(ui, "play_size_at", "Size for the written note", &px)
                     .on_hover_text("A ball this big plays the notes as written");
             }
+        });
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Min gap counts").small().color(style::MUTED));
+            cx.chips(
+                ui,
+                "play_gap_counts",
+                &[(GapCounts::PerBall, "Per ball"), (GapCounts::WholeSound, "Whole sound")],
+            );
         });
         // A Particles thing has no outline to be in range of, and hears only its own particles.
         let particles = super::moments::is_particles(cx);
@@ -190,6 +200,18 @@ mod tests {
         h.run();
         assert!(h.query_by_label("Turn a Distance on to hold notes in its range").is_some(), "none on yet");
         assert!(h.query_by_label("In range of").is_some());
+    }
+
+    #[test]
+    fn min_gap_can_count_the_whole_sound() {
+        let mut h = sounding();
+        assert!(h.query_by_role_and_label(Role::Slider, "Min gap").is_some());
+        h.get_by_label("Whole sound").scroll_to_me();
+        h.run();
+        h.get_by_label("Whole sound").click();
+        h.run();
+        let card = h.state().0.scene.card(super::super::tests::SHAPE, bpe_core::SlotId::Sound).unwrap();
+        assert_eq!(card.params.get("play_gap_counts"), Some(&bpe_core::Value::Choice("whole_sound".into())));
     }
 
     #[test]

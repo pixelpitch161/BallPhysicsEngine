@@ -25,8 +25,8 @@ pub use notes::{
     BeatsOrBars, Change, MAX_MELODY, MAX_SLOTS, MelodyEnd, NOTE_NAMES, Plays, Root, Scale, SlotOrder, StrumDir,
 };
 pub use voice::{
-    GateMode, GateUnit, MomentStrength, NoiseColour, OscSettings, PhaseMode, PlayMode, PlayWhen, SILENT_DB, SampleLoop,
-    SubOctave, SubWave, VOICE, VoiceKind, VoiceSettings, WarpMode, Wave, hears_own_balls, starter_voice,
+    GapCounts, GateMode, GateUnit, MomentStrength, NoiseColour, OscSettings, PhaseMode, PlayMode, PlayWhen, SILENT_DB,
+    SampleLoop, SubOctave, SubWave, VOICE, VoiceKind, VoiceSettings, WarpMode, Wave, hears_own_balls, starter_voice,
 };
 
 use bpe_core::Registry;

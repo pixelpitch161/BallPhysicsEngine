@@ -165,6 +165,16 @@ pub enum PlayMode {
     Mono,
 }
 
+/// What Min gap counts from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum GapCounts {
+    /// Each ball waits from its own last note: other balls still play.
+    #[default]
+    PerBall,
+    /// Every hit waits from the sound's last note, whichever ball played it.
+    WholeSound,
+}
+
 /// How loud a Particles thing's moments play (particles part 7).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
 pub enum MomentStrength {
@@ -448,9 +458,13 @@ pub struct VoiceSettings {
     /// Hits softer than this play nothing.
     #[setting(label = "Min hit strength", range(0, 100), unit = "%", group = "Playing", keyframe)]
     pub play_min_strength: f32,
-    /// A ball hitting again sooner than this plays nothing.
-    #[setting(label = "Retrigger guard", range(0, 500), unit = "ms", group = "Playing", keyframe)]
-    pub play_retrigger: f32,
+    /// A hit this soon after the last note plays nothing: the same ball's last note (Per ball) or
+    /// any ball's (Whole sound).
+    #[setting(label = "Min gap", range(0, 5000), unit = "ms", group = "Playing", keyframe)]
+    pub play_gap: f32,
+    /// Whether Min gap counts from the same ball's last note or from any ball's.
+    #[setting(label = "Min gap counts", group = "Playing")]
+    pub play_gap_counts: GapCounts,
     /// A hit this fast or faster plays at full strength; slower ones are softer.
     #[setting(
         label = "Full strength at",
@@ -616,7 +630,8 @@ impl Default for VoiceSettings {
             play_voices: 16,
             play_glide: 0.0,
             play_min_strength: 0.0,
-            play_retrigger: 30.0,
+            play_gap: 30.0,
+            play_gap_counts: GapCounts::PerBall,
             play_full_at: 1500.0,
             play_curve: 0.0,
             play_size_pitch: 0.0,
@@ -746,7 +761,7 @@ mod tests {
         assert!(v.a.on && v.a.wave == Wave::Triangle);
         assert!(!v.b.on);
         assert_eq!(v.notes_slots, vec![NoteSlot { notes: vec![60], order_clicked: vec![] }]);
-        assert_eq!((v.out_bus, v.play_mode, v.play_voices, v.play_retrigger), (1, PlayMode::Poly, 16, 30.0));
+        assert_eq!((v.out_bus, v.play_mode, v.play_voices, v.play_gap), (1, PlayMode::Poly, 16, 30.0));
         assert_eq!(v.routes.len(), 1);
         let r = &v.routes[0];
         assert_eq!(

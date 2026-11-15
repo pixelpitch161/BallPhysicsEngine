@@ -249,7 +249,9 @@ impl ControlSampler {
         let heard = shapes
             .iter()
             .map(|s| Heard {
-                filter: HitFilter::new(s.spec.thing, 0.0, 0.0, s.spec.heard_from.clone()).hearing(s.spec.balls),
+                filter: HitFilter::new(s.spec.thing, 0.0, 0.0, s.spec.heard_from.clone())
+                    .hearing(s.spec.balls)
+                    .counting(s.spec.gap_counts),
                 done: 0,
                 last: None,
                 hits: Vec::new(),
@@ -373,7 +375,7 @@ impl Shape {
                     .unwrap_or(self.spec.base[place])
             };
             let curve = crate::voices::StrengthCurve::of_knobs(knob(k::STRENGTH_FULL_AT), knob(k::STRENGTH_CURVE));
-            h.filter.set(knob(k::MIN_STRENGTH) / 100.0, knob(k::RETRIGGER) / 1000.0, curve);
+            h.filter.set(knob(k::MIN_STRENGTH) / 100.0, knob(k::GAP) / 1000.0, curve);
             // A ball's sound hears the hit from its own ball (W10); a rule's note is as it is.
             let e = &match e.kind {
                 EventKind::Note => e.clone(),

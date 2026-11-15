@@ -2,7 +2,7 @@
 //! to its limits, filters and fades.
 
 use bpe_core::{LayerId, Params, Scene, Settings, SlotId, Target, ThingId, layered_key};
-use bpe_kit::sound::{AdsrSettings, GateMode, PlayMode, VoiceSettings, Wave, starter_voice};
+use bpe_kit::sound::{AdsrSettings, GapCounts, GateMode, PlayMode, VoiceSettings, Wave, starter_voice};
 use bpe_kit::{Kit, kit, new_scene, resolve_scene};
 use bpe_runtime::{Event, EventKind, Party, Playback, World};
 use bpe_sound::patch::shape_voice;
@@ -212,7 +212,7 @@ fn mono_glide_reaches_pitch_in_its_time() {
 }
 
 #[test]
-fn retrigger_guard_drops_a_second_hit_within_30ms() {
+fn min_gap_drops_a_second_hit_within_30ms() {
     let kit = kit();
     let scene = voiced(&kit, |_, a| {
         a.sustain = 100.0;
@@ -230,6 +230,45 @@ fn retrigger_guard_drops_a_second_hit_within_30ms() {
     // Another ball isn't held back by the first one's guard.
     run(&mut v, p.world(), 40, 2, &[(40, hit(ball, 1, shape, 0, 1500.0))]);
     assert_eq!(v.sounding(), 3);
+}
+
+#[test]
+fn min_gap_holds_a_ball_back_for_seconds() {
+    let kit = kit();
+    let scene = voiced(&kit, |v, a| {
+        v.play_gap = 2_000.0;
+        a.sustain = 100.0;
+        a.gate_ms = 5_000.0;
+    });
+    let (shape, ball) = (shape_of(&scene), ball_of(&scene));
+    let p = world(&scene, &kit);
+    let mut v = voice(&scene, &kit);
+    // A block is 64 samples (4/3 ms): 1.5 s on is inside the 2 s gap, 2.1 s on is past it.
+    run(&mut v, p.world(), 0, 1, &[(0, hit(ball, 0, shape, 0, 1500.0))]);
+    run(&mut v, p.world(), 1, 1125, &[(1125, hit(ball, 0, shape, 0, 1500.0))]);
+    assert_eq!(v.sounding(), 1, "1.5 s after its last note the ball plays nothing");
+    run(&mut v, p.world(), 1126, 450, &[(1575, hit(ball, 0, shape, 0, 1500.0))]);
+    assert_eq!(v.sounding(), 2, "2.1 s after, it plays again");
+}
+
+#[test]
+fn whole_sound_min_gap_holds_back_every_ball() {
+    let kit = kit();
+    let scene = voiced(&kit, |v, a| {
+        v.play_gap = 100.0;
+        v.play_gap_counts = GapCounts::WholeSound;
+        a.sustain = 100.0;
+        a.gate_ms = 5_000.0;
+    });
+    let (shape, ball) = (shape_of(&scene), ball_of(&scene));
+    let p = world(&scene, &kit);
+    let mut v = voice(&scene, &kit);
+    // Another ball 40 ms after the first note: held back too. 120 ms after: it plays.
+    run(&mut v, p.world(), 0, 30, &[(0, hit(ball, 0, shape, 0, 1500.0))]);
+    run(&mut v, p.world(), 30, 60, &[(30, hit(ball, 1, shape, 0, 1500.0))]);
+    assert_eq!(v.sounding(), 1, "the gap counts from any ball's note");
+    run(&mut v, p.world(), 90, 2, &[(90, hit(ball, 1, shape, 0, 1500.0))]);
+    assert_eq!(v.sounding(), 2, "a hit held back starts no gap of its own");
 }
 
 #[test]

@@ -336,6 +336,7 @@ fn spec_with(
         play_when: v.play_when,
         zone: zone_of(&v, &mods),
         heard_from: v.play_heard_from.clone(),
+        gap_counts: v.play_gap_counts,
         balls: scene.things.get(&id).and_then(|t| crate::voices::BallMoments::of_thing(&t.kind, &v)),
         slots: v.notes_slots.clone(),
         notes: NotesSpec::from_settings(

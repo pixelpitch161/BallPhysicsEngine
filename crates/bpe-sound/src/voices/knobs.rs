@@ -47,7 +47,7 @@ pub const SHAPE_KEYS: [&str; 9] = [
     "play_voices",
     "play_glide",
     "play_min_strength",
-    "play_retrigger",
+    "play_gap",
     "out_volume",
     "out_pan",
     "out_follow_hit",
@@ -57,7 +57,7 @@ pub const SHAPE_KEYS: [&str; 9] = [
 pub const VOICES: usize = 2 * OSC_LEN;
 pub const GLIDE: usize = VOICES + 1;
 pub const MIN_STRENGTH: usize = VOICES + 2;
-pub const RETRIGGER: usize = VOICES + 3;
+pub const GAP: usize = VOICES + 3;
 pub const VOLUME: usize = VOICES + 4;
 pub const OUT_PAN: usize = VOICES + 5;
 pub const FOLLOW_HIT: usize = VOICES + 6;
