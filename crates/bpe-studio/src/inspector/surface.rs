@@ -13,6 +13,19 @@ pub(super) fn surface_section(
     ball: bool,
     edits: &mut Vec<Edit>,
 ) {
+    surface_section_keeping(ui, inspector, cx, slot, &|k| ball || k != "bulge", edits);
+}
+
+/// [`surface_section`] showing only the numbers `keep` takes (a Liquid thing's Look holds the
+/// numbers a Surface sub-layer has, but Throws light and the facets, liquid part 3).
+pub(super) fn surface_section_keeping(
+    ui: &mut Ui,
+    inspector: &mut Inspector,
+    cx: &OwnCx,
+    slot: SlotId,
+    keep: &dyn Fn(&str) -> bool,
+    edits: &mut Vec<Edit>,
+) {
     use bpe_core::Choice;
     use bpe_kit::modules::look::surface::{self, SurfaceKind, preset_values};
     const GROUP: &str = "Surface";
@@ -36,7 +49,7 @@ pub(super) fn surface_section(
             let kind = SurfaceKind::from_name(name).expect("one of the names");
             if surface_chip(ui, i, &crate::widgets::pretty(name), kind == now).clicked() && kind != now {
                 edits.push(Edit::SetSlot(slot, "surface".into(), Value::Choice((*name).into())));
-                for (key, value) in preset_values(kind) {
+                for (key, value) in preset_values(kind).into_iter().filter(|(k, _)| keep(k)) {
                     edits.push(Edit::SetSlot(slot, key.into(), value));
                 }
             }
@@ -50,7 +63,7 @@ pub(super) fn surface_section(
     }
     let defs: Vec<SettingDef> = surface::defs()
         .iter()
-        .filter(|d| d.key != "surface" && (ball || d.key != "bulge"))
+        .filter(|d| d.key != "surface" && keep(d.key))
         .map(|d| SettingDef { group: "", ..d.clone() })
         .collect();
     let marks = |key: &str| {

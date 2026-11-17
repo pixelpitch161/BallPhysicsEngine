@@ -1823,8 +1823,12 @@ pub fn liquid_scenes(reg: &Registry) -> Vec<(String, Scene)> {
         |l| {
             l.mix_style = MixStyle::Paint;
             l.mix_speed = 0.5;
+            // Paint: solid and glossy (liquid part 3).
+            l.clarity = 0.0;
+            l.ripples = 0.0;
         },
     );
+    set_liquid_surface(&mut paint, id, crate::modules::look::surface::SurfaceKind::Plastic);
     add_pour(&mut paint, reg, id, |p| {
         p.place = Vec2::new(0.0, -300.0);
         p.width = 50.0;
@@ -1832,6 +1836,74 @@ pub fn liquid_scenes(reg: &Registry) -> Vec<(String, Scene)> {
         p.colour = blue;
     });
     vec![("Liquid water".into(), water), ("Liquid paint mixing".into(), paint)]
+}
+
+/// Gives Liquid thing `id`'s Look Surface `kind`, with its numbers (as the editor's chips do).
+pub fn set_liquid_surface(scene: &mut Scene, id: ThingId, kind: crate::modules::look::surface::SurfaceKind) {
+    use crate::things::liquid::look::is_surface_number;
+    let Some(card) = scene.card_mut(id, SlotId::Look) else { return };
+    card.params.set("surface", Value::Choice(bpe_core::Choice::name(kind).into()));
+    for (k, v) in crate::modules::look::surface::preset_values(kind) {
+        if is_surface_number(k) {
+            card.params.set(k, v);
+        }
+    }
+}
+
+/// Liquid part 3's look scenes (test only: never built in, the owner asked for none). "Liquid
+/// looks": the water test scene with every Look layer on (foam, bubbles, things inside, mist,
+/// caustics, wet walls, wet balls) and a little thin film, in its own light. "Liquid lit pool":
+/// the same under a lamp (real lighting). "Liquid glow": green liquid giving off light in a dark
+/// lit room, with pink poured in.
+pub fn liquid_look_scenes(reg: &Registry) -> Vec<(String, Scene)> {
+    use crate::things::light::{LightType, add_light};
+    use crate::things::liquid::look::{BUBBLES, CAUSTICS, FOAM, INSIDE, MIST, WET_BALLS, WET_WALLS};
+    let ring = |scene: &Scene| scene.things.values().find(|t| t.kind == "shape").map(|t| t.id).expect("a ring");
+    let mut looks = new_scene(reg);
+    let shape = ring(&looks);
+    let id = add_liquid(&mut looks, reg, shape, |f| f.level = 0.45, |l| l.thin_film = 0.2);
+    for kind in [FOAM, BUBBLES, INSIDE, MIST, CAUSTICS, WET_WALLS, WET_BALLS] {
+        looks.add_layer(reg, id, SlotId::Look, kind).expect("a Look layer");
+    }
+    let mut lit = looks.clone();
+    let root = lit.things.get_mut(&ThingId::ROOT).expect("root");
+    let mut s = SceneSettings::from_params(&root.params);
+    s.background = Paint::solid(Color::rgb(0x30, 0x34, 0x40));
+    root.params = s.to_params();
+    let light = add_light(&mut lit, reg, LightType::Point, ThingId::ROOT).expect("a light");
+    lit.things.get_mut(&light).expect("light").params.set("position", Value::Vec2([-300.0, -500.0]));
+    let mut glow = new_scene(reg);
+    let root = glow.things.get_mut(&ThingId::ROOT).expect("root");
+    let mut s = SceneSettings::from_params(&root.params);
+    s.background = Paint::solid(Color::rgb(0x08, 0x08, 0x0c));
+    s.bloom = 0.4;
+    root.params = s.to_params();
+    let shape = ring(&glow);
+    let id = add_liquid(
+        &mut glow,
+        reg,
+        shape,
+        |f| {
+            f.level = 0.3;
+            f.colour = Paint::solid(Color::rgb(0x30, 0xff, 0x70));
+        },
+        |l| {
+            l.glow = 1.2;
+            l.clarity = 0.0;
+            l.mixing_shows = 0.8;
+        },
+    );
+    set_liquid_surface(&mut glow, id, crate::modules::look::surface::SurfaceKind::Plastic);
+    add_pour(&mut glow, reg, id, |p| {
+        p.place = Vec2::new(0.0, -300.0);
+        p.width = 40.0;
+        p.speed = 400.0;
+        p.colour = Paint::solid(Color::rgb(0xff, 0x30, 0xc0));
+    });
+    let light = add_light(&mut glow, reg, LightType::Point, ThingId::ROOT).expect("a light");
+    glow.things.get_mut(&light).expect("light").params.set("position", Value::Vec2([0.0, -600.0]));
+    glow.things.get_mut(&light).expect("light").params.set("strength", Value::Number(0.3));
+    vec![("Liquid looks".into(), looks), ("Liquid lit pool".into(), lit), ("Liquid glow".into(), glow)]
 }
 
 #[cfg(test)]

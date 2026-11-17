@@ -1,6 +1,7 @@
-//! A Liquid thing's two cards with lists (liquid part 1): its **Fill** (the settings, then its
-//! Pours) and its **Meets** (the settings, then its rules for other liquids). Each list has an add
-//! menu, drag to reorder, the row menus, and under it the picked one's settings.
+//! A Liquid thing's cards with lists (liquid part 1): its **Fill** (the settings, then its
+//! Pours), its **Meets** (the settings, then its rules for other liquids) and (liquid part 3) its
+//! **Look** (the settings, then its layers: foam, bubbles and more). Each list has an add menu,
+//! drag to reorder, the row menus, and under it the picked one's settings.
 
 use bpe_core::{LayerId, LayerSection};
 use eframe::egui::{RichText, Ui};
@@ -22,11 +23,12 @@ fn list_of(
     inspector: &mut Inspector,
     cx: &LookCx,
     (title, add, empty): (&str, &str, &str),
+    section: LayerSection,
     edits: &mut Vec<Edit>,
 ) {
     let Some(card) = cx.card() else { return };
     ui.add_space(6.0);
-    list_header(ui, cx, card, title, add, LayerSection::Force, edits);
+    list_header(ui, cx, card, title, add, section, edits);
     let Some(picked) = picked(inspector, cx, card) else {
         ui.label(RichText::new(empty).small().color(style::FAINT));
         return;
@@ -36,14 +38,14 @@ fn list_of(
     for layer in tops.iter().rev() {
         rows.push((layer.id, layer_list::piece(ui, inspector, cx, card, layer, picked, edits)));
     }
-    layer_list::section_drop_target(ui, cx, card, &rows, LayerSection::Force, edits);
+    layer_list::section_drop_target(ui, cx, card, &rows, section, edits);
     picked_settings(ui, inspector, cx, card, picked, false, edits);
 }
 
 /// The Fill card's Pours, under its settings.
 pub fn show_pours(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec<Edit>) {
     let words = ("Pours", "+ Add pour", "None yet. Add a pour to pour liquid in from a spout.");
-    list_of(ui, inspector, cx, words, edits);
+    list_of(ui, inspector, cx, words, LayerSection::Force, edits);
 }
 
 /// The Meets card's rules for other liquids, under its settings.
@@ -53,7 +55,15 @@ pub fn show_others(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &
         "+ Add other liquid",
         "None yet: it meets other liquids with its own Look's mixing. Add one to layer or mix differently.",
     );
-    list_of(ui, inspector, cx, words, edits);
+    list_of(ui, inspector, cx, words, LayerSection::Force, edits);
+}
+
+/// The Look card's layers (foam, bubbles, things inside, mist, caustics, wet walls, wet balls),
+/// under its settings.
+pub fn show_layers(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec<Edit>) {
+    let words =
+        ("Layers", "+ Add layer", "None yet. Add foam, bubbles, glitter, mist, caustics or wet walls and balls.");
+    list_of(ui, inspector, cx, words, LayerSection::Around, edits);
 }
 
 #[cfg(test)]

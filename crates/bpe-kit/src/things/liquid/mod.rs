@@ -15,6 +15,7 @@ pub mod births;
 pub mod cards;
 pub mod draw;
 pub mod feel;
+pub mod look;
 pub mod rules;
 pub mod sim;
 pub mod state;
@@ -22,7 +23,10 @@ pub mod state;
 mod tests;
 #[cfg(test)]
 mod tests_balls;
+#[cfg(test)]
+mod tests_look;
 pub mod walls;
+pub mod wet;
 
 use std::cell::Cell;
 
@@ -30,9 +34,10 @@ use bpe_core::{Choice, SettingDef, Settings, SlotId, ThingKind};
 
 pub use cards::{
     ColourFrom, FILL, FillSettings, Floats, LOOK, LookSettings, MEETS, Meeting, MeetsSettings, MixStyle, MixesWhen,
-    OTHER, OtherLiquid, POUR, PourLayer, RuleStyle,
+    OTHER, OtherLiquid, POUR, PourLayer, RuleStyle, ShowsAs,
 };
 pub use feel::taken_colours;
+pub use look::{LookLayers, look_defs};
 pub use state::{LiquidState, hash_of, inputs_hash, state_of};
 
 /// The thing kind's id.

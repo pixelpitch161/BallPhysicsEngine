@@ -5,6 +5,7 @@ use bpe_core::{Choice, Color, LayerSection, ModuleKind, ResolvedSlot, SettingDef
 use glam::Vec2;
 
 use crate::modules::look::layers::Kind;
+use crate::modules::look::surface::SurfaceKind;
 use crate::paint::Paint;
 
 use super::num;
@@ -472,22 +473,127 @@ pub struct LookSettings {
     #[setting(label = "Swirl detail", range(0, 1), span(0, 1), keyframe, group = "Colour mixing")]
     pub swirl_detail: f32,
     /// Where the surface is cut from the drops: lower is fuller, higher leaner.
-    #[setting(label = "Edge", range(0.01, 10), span(0.1, 1), keyframe, group = "Surface")]
+    #[setting(label = "Edge", range(0.01, 10), span(0.1, 1), keyframe, group = "Shape of the surface")]
     pub level: f32,
-    #[setting(label = "Edge softness", range(0, 1e9), span(0, 10), unit = "px", keyframe, group = "Surface")]
+    #[setting(
+        label = "Edge softness",
+        range(0, 1e9),
+        span(0, 10),
+        unit = "px",
+        keyframe,
+        group = "Shape of the surface"
+    )]
     pub softness: f32,
     /// How far in from the edge the surface rounds over.
-    #[setting(label = "Roundness", range(0, 1e9), span(0, 40), unit = "px", keyframe, group = "Surface")]
+    #[setting(label = "Roundness", range(0, 1e9), span(0, 40), unit = "px", keyframe, group = "Shape of the surface")]
     pub roundness: f32,
-    #[setting(label = "Shine", range(0, 1), span(0, 1), keyframe, group = "Surface")]
+    /// How far its own light's highlight shines (only without a Lighting card, or at Lit 0).
+    #[setting(label = "Shine", range(0, 1), span(0, 1), keyframe, pulse, group = "Its own light")]
     pub shine: f32,
-    #[setting(label = "Light from", span(-180, 180), unit = "°", keyframe, group = "Surface")]
+    /// The way its own light comes from, on the screen (only without a Lighting card, or at Lit 0).
+    #[setting(label = "Light from", span(-180, 180), unit = "°", keyframe, group = "Its own light")]
     pub light_angle: f32,
-    #[setting(label = "Opacity", range(0, 1), span(0, 1), keyframe, group = "Surface")]
+    #[setting(label = "Opacity", range(0, 1), span(0, 1), keyframe, pulse, group = "Shape of the surface")]
     pub opacity: f32,
     /// Drawn over the balls instead of behind them.
-    #[setting(label = "In front of the balls", group = "Surface")]
+    #[setting(label = "In front of the balls", group = "Shape of the surface")]
     pub in_front: bool,
+    // ---- Liquid part 3: looking real ----
+    /// What its surface is like, as a ball's: picking one sets the numbers under it. With a
+    /// Lighting card the real lights shade it so; without one it takes the nearest of its own
+    /// pretend looks.
+    #[setting(label = "Surface", group = "Surface", simple)]
+    pub surface: SurfaceKind,
+    /// How hard the surface hides the drops it is made of: higher is smoother and rounder, lower
+    /// shows smaller drops and finer splashes.
+    #[setting(label = "Smoothing", range(0, 1e9), span(0, 1), keyframe, group = "Shape of the surface")]
+    pub smoothing: f32,
+    /// How far in you see before its colour takes over: 0 is solid, more is clearer.
+    #[setting(label = "Clarity", range(0, 1e9), span(0, 600), unit = "px", simple, keyframe, pulse, group = "Inside")]
+    pub clarity: f32,
+    /// What its colour turns to deep down (times its colour): darker is deeper water.
+    #[setting(label = "Deep colour", when = "clarity", group = "Inside")]
+    pub deep: Color,
+    /// Soft bright edges where light soaks in (milk, jelly).
+    #[setting(label = "Light soaks in", range(0, 1e9), span(0, 1), keyframe, pulse, group = "Inside")]
+    pub soaks_in: f32,
+    /// Its own light round its edge (only without a Lighting card, or at Lit 0).
+    #[setting(label = "Rim light", range(0, 1), span(0, 1), keyframe, group = "Its own light")]
+    pub own_rim: f32,
+    /// How much of the sky it mirrors (only without a Lighting card, or at Lit 0).
+    #[setting(label = "Reflects the sky", range(0, 1e9), span(0, 1), keyframe, group = "Its own light")]
+    pub sky_reflects: f32,
+    #[setting(label = "Sky top", group = "Its own light")]
+    pub sky_top: Color,
+    #[setting(label = "Sky bottom", group = "Its own light")]
+    pub sky_bottom: Color,
+    /// How far it bends what is behind it (only without a Lighting card, or at Lit 0, and only
+    /// where it is clear or glass).
+    #[setting(label = "Bend", range(0, 1e9), span(0, 60), unit = "px", keyframe, pulse, group = "Its own light")]
+    pub bend: f32,
+    /// How much glass takes on its colour.
+    #[setting(label = "Tint", range(0, 1), span(0, 1), keyframe, group = "Its own light")]
+    pub tint: f32,
+    /// Splits what it bends into a rainbow.
+    #[setting(label = "Rainbow split", when = "bend", range(0, 1), span(0, 1), keyframe, group = "Its own light")]
+    pub split: f32,
+    /// Fine ripples on its surface, smooth to choppy.
+    #[setting(label = "Ripples", range(0, 1e9), span(0, 1), keyframe, pulse, group = "On its surface")]
+    pub ripples: f32,
+    #[setting(
+        label = "Ripple size",
+        when = "ripples",
+        range(1, 1e9),
+        span(2, 80),
+        unit = "px",
+        keyframe,
+        group = "On its surface"
+    )]
+    pub ripple_size: f32,
+    /// Rainbow colours that slide over it (soap, oil).
+    #[setting(label = "Thin film", range(0, 1), span(0, 1), keyframe, pulse, group = "On its surface")]
+    pub thin_film: f32,
+    #[setting(
+        label = "Film size",
+        when = "thin_film",
+        range(1, 1e9),
+        span(5, 200),
+        unit = "px",
+        keyframe,
+        group = "On its surface"
+    )]
+    pub film_size: f32,
+    /// A line just inside its edge.
+    #[setting(label = "Outline", range(0, 1e9), span(0, 10), unit = "px", keyframe, pulse, group = "On its surface")]
+    pub outline: f32,
+    #[setting(label = "Outline colour", when = "outline", group = "On its surface")]
+    pub outline_colour: Color,
+    /// Light it gives off (with a Lighting card it lights the things near it).
+    #[setting(label = "Gives off light", range(0, 1e9), span(0, 4), keyframe, pulse, group = "On its surface")]
+    pub glow: f32,
+    /// Shows where colours are mixing.
+    #[setting(label = "Mixing shows", range(0, 1), span(0, 1), keyframe, pulse, group = "Colour mixing")]
+    pub mixing_shows: f32,
+    #[setting(label = "Shows as", when = "mixing_shows", group = "Colour mixing")]
+    pub shows_as: ShowsAs,
+    /// How much the scene's lights light it: 0 keeps its own light.
+    #[setting(label = "Lit", range(0, 1e9), span(0, 1), keyframe, group = "With lighting")]
+    pub lit: f32,
+    /// Whether it casts shadows (a see-through Surface lets its share of light through).
+    #[setting(label = "Blocks light", group = "With lighting")]
+    pub blocks_light: bool,
+}
+
+/// What Mixing shows draws where colours are mixing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Choice)]
+pub enum ShowsAs {
+    /// Sparkles.
+    #[default]
+    Shimmer,
+    /// A soft glow (with a Lighting card it lights the scene).
+    Glow,
+    /// White froth.
+    Foam,
 }
 
 impl Default for LookSettings {
@@ -506,6 +612,29 @@ impl Default for LookSettings {
             light_angle: -45.0,
             opacity: 1.0,
             in_front: false,
+            surface: SurfaceKind::Glass,
+            smoothing: 0.25,
+            clarity: 160.0,
+            deep: Color::rgb(110, 140, 170),
+            soaks_in: 0.0,
+            own_rim: 0.0,
+            sky_reflects: 0.3,
+            sky_top: Color::rgb(225, 235, 255),
+            sky_bottom: Color::rgb(40, 40, 50),
+            bend: 14.0,
+            tint: 0.3,
+            split: 0.0,
+            ripples: 0.3,
+            ripple_size: 18.0,
+            thin_film: 0.0,
+            film_size: 40.0,
+            outline: 0.0,
+            outline_colour: Color::rgb(255, 255, 255),
+            glow: 0.0,
+            mixing_shows: 0.0,
+            shows_as: ShowsAs::Shimmer,
+            lit: 1.0,
+            blocks_light: true,
         }
     }
 }
@@ -523,6 +652,22 @@ impl LookSettings {
             shine: num(s.shine, d.shine).clamp(0.0, 1.0),
             light_angle: num(s.light_angle, d.light_angle),
             opacity: num(s.opacity, d.opacity).clamp(0.0, 1.0),
+            smoothing: num(s.smoothing, d.smoothing).max(0.0),
+            clarity: num(s.clarity, d.clarity).max(0.0),
+            soaks_in: num(s.soaks_in, d.soaks_in).max(0.0),
+            own_rim: num(s.own_rim, d.own_rim).clamp(0.0, 1.0),
+            sky_reflects: num(s.sky_reflects, d.sky_reflects).max(0.0),
+            bend: num(s.bend, d.bend).max(0.0),
+            tint: num(s.tint, d.tint).clamp(0.0, 1.0),
+            split: num(s.split, d.split).clamp(0.0, 1.0),
+            ripples: num(s.ripples, d.ripples).max(0.0),
+            ripple_size: num(s.ripple_size, d.ripple_size).max(1.0),
+            thin_film: num(s.thin_film, d.thin_film).clamp(0.0, 1.0),
+            film_size: num(s.film_size, d.film_size).max(1.0),
+            outline: num(s.outline, d.outline).max(0.0),
+            glow: num(s.glow, d.glow).max(0.0),
+            mixing_shows: num(s.mixing_shows, d.mixing_shows).clamp(0.0, 1.0),
+            lit: num(s.lit, d.lit).max(0.0),
             ..s
         }
     }
@@ -580,9 +725,9 @@ card!(
     LookCard,
     LOOK,
     "Look",
-    "How the liquid looks: its colour, how colours mix, its surface.",
+    "How the liquid looks: its colour, how colours mix, its surface, and layers of foam, bubbles and more.",
     SlotId::Look,
-    LookSettings::defs()
+    super::look::look_defs()
 );
 
 /// The Pour and Other liquid layer kinds.
@@ -615,4 +760,7 @@ pub fn kinds() -> Vec<Kind> {
             OtherLiquid::defs,
         ),
     ]
+    .into_iter()
+    .chain(super::look::kinds())
+    .collect()
 }

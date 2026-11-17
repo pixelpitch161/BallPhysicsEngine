@@ -317,3 +317,36 @@ fn the_feel_is_the_same_every_time() {
     let ball = BallGpu { x: [20.0, 16.0], v: [3.0, 20.0], r: 3.0, mask: 1 };
     assert_eq!(feel_in_water(&[ball], 120, 12), feel_in_water(&[ball], 120, 12));
 }
+
+#[test]
+fn the_wet_grid_marks_walls_under_the_liquid_dries_and_is_copied() {
+    let mut body = Body::new(card(), 40, 40);
+    let (step, _) = water(40, 120.0, STYLE_BLEND);
+    // A wall band on two rows across the box (row 12, which the heap starts over and leaves as it
+    // spreads, and row 36, under it) and down the right-hand side at the top, far from it.
+    let mut band = Vec::new();
+    let mut node =
+        |x: u32, y: u32| band.push(WallNode { index: y * 40 + x, n: [0.0, -1.0], dist: 5.0, half: 2.0, v: [0.0; 2] });
+    for x in 2..38 {
+        node(x, 12);
+        node(x, 36);
+    }
+    for y in 2..8 {
+        node(37, y);
+    }
+    let heap = lattice(3, 20, 10, 38, |_, _| [0.2, 0.4, 0.9, 1.0]);
+    body.step(&StepIn { step, births: &heap, walls: Some(band.as_slice()), balls: &[], feel: false, fresh: false });
+    let wet = body.read_wet();
+    let at = |w: &[f32], x: u32, y: u32| w[(y * 40 + x) as usize];
+    assert_eq!(at(&wet, 10, 36), 1.0, "a wall under the liquid is wet");
+    assert_eq!(at(&wet, 10, 12), 1.0, "and where it starts");
+    assert_eq!(at(&wet, 37, 4), 0.0, "a wall it never reached is dry");
+    assert_eq!(at(&wet, 10, 30), 0.0, "only walls get wet");
+    let copy = body.clone();
+    assert_eq!(copy.read_wet(), wet, "a copy holds the same wet grid");
+    run(&mut body, &step, &[], 700);
+    let wet = body.read_wet();
+    assert_eq!(at(&wet, 10, 36), 1.0, "still under it");
+    let left = at(&wet, 10, 12);
+    assert!(left > 0.0 && left < 0.95, "drying where it has gone: {left}");
+}
