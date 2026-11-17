@@ -8,12 +8,14 @@ pub mod distance;
 pub mod hit;
 pub mod lfo;
 pub mod light;
+pub mod liquid;
 pub mod order;
 
 pub use distance::{DistanceMod, DistanceParams};
 pub use hit::{HitMod, HitValues, hit_values};
 pub use lfo::{LfoMod, LfoParams, lfo_rate_hz};
 pub use light::{LightMod, LightParams, LightTable, light_value};
+pub use liquid::{LiquidMod, LiquidParams, liquid_value};
 pub use order::mod_order;
 
 use crate::TempoMap;

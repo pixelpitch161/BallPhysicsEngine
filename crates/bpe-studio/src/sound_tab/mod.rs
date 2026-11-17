@@ -104,6 +104,8 @@ pub enum TabEdit {
     CopyNotes(Vec<u8>),
     /// The setting stops following this shape's sound.
     Unfollow(Address),
+    /// A Liquid thing's starting sound in place of its sound (liquid part 5).
+    StartFrom(bpe_kit::sound::LiquidPreset),
     /// The edits made with this one are an undo step of their own (a preset, a key change, a
     /// row's edit), never merged with a knob turned just before.
     OwnStep,
@@ -499,6 +501,9 @@ pub fn show(
                         "Turn it on and the particles play notes when they hit things, land or burst."
                     } else if moments::is_balls(&cx) {
                         "Turn it on and its balls play a note when they hit things."
+                    } else if moments::is_liquid(&cx) {
+                        "Turn it on and the liquid plays a splash when a ball lands in it. Once it is on, pick \
+                         another sound to start from."
                     } else {
                         "Turn it on and the shape plays a note each time a ball hits it."
                     };
@@ -563,6 +568,9 @@ fn body(ui: &mut Ui, inspector: &mut Inspector, cx: &mut TabCx) {
     } else if moments::is_balls(cx) {
         moments::show_balls(ui, cx);
         ui.add_space(8.0);
+    } else if moments::is_liquid(cx) {
+        moments::show_liquid(ui, cx);
+        ui.add_space(8.0);
     }
     let level = inspector.meters.as_ref().map_or(f32::NEG_INFINITY, |m| m.take_shape(cx.id.0));
     if level > f32::NEG_INFINITY {
@@ -619,6 +627,7 @@ fn apply(inspector: &mut Inspector, scene: &mut Scene, kit: &Kit, id: ThingId, t
             },
             TabEdit::ClearKeys(a) => crate::inspector::clear_keys(scene, reg, &a, time),
             TabEdit::Enable => write::enable(scene, reg, id),
+            TabEdit::StartFrom(preset) => write::start_from(scene, reg, id, preset),
             TabEdit::Disable => write::disable(scene, reg, id),
             TabEdit::CopySound => {
                 inspector.clipboard.sound = write::copy_clip(scene, id);
@@ -978,6 +987,34 @@ pub(crate) mod tests {
             click_switch(&mut h, "Break");
             assert_eq!(card(&h, id).unwrap().params.get("moments_break"), Some(&Value::Bool(true)), "{kind}");
         }
+    }
+
+    #[test]
+    fn a_liquid_starts_from_its_splash_and_from_any_other_sound() {
+        let reg = bpe_kit::registry();
+        let mut h = studio_harness(SHAPE, false);
+        let id = {
+            let studio = &mut h.state_mut().0;
+            let id = bpe_kit::add_thing(&mut studio.scene, &reg, bpe_kit::things::liquid::KIND, ThingId::ROOT).unwrap();
+            studio.selection.set(id);
+            id
+        };
+        h.run();
+        assert!(h.query_by_label("Sound").is_some(), "a Liquid thing has a Sound chip");
+        h.state_mut().0.panels.inspector.tab.insert(id, InspectorTab::Sound);
+        h.run();
+        click_switch(&mut h, "Enable sound");
+        let splash = card(&h, id).expect("a Sound card");
+        assert_eq!(splash, bpe_kit::sound::liquid_sound(&reg, bpe_kit::sound::LiquidPreset::Splash));
+        assert!(h.query_all_by_label("A ball splashes in").next().is_some(), "its moments");
+        h.get_by_label("Bubbles").scroll_to_me();
+        h.run();
+        h.get_by_label("Bubbles").click();
+        h.run();
+        assert_eq!(card(&h, id), Some(bpe_kit::sound::liquid_sound(&reg, bpe_kit::sound::LiquidPreset::Bubbles)));
+        h.state_mut().0.undo();
+        h.run();
+        assert_eq!(card(&h, id), Some(splash), "one undo step back to the splash");
     }
 
     #[test]

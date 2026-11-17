@@ -88,13 +88,47 @@ impl BallMoments {
     }
 }
 
-/// A shape's hit filter (or a Balls or Emitter thing's, when `balls` is set).
+/// Which of its liquid's moments a Liquid thing's sound plays (liquid part 5).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LiquidMoments {
+    /// A ball splashing in fast.
+    pub splash: bool,
+    /// A ball going in, and coming out.
+    pub go_in: bool,
+    pub come_out: bool,
+    /// Its pours pouring.
+    pub pour: bool,
+    /// Bubbles from balls moving under it.
+    pub bubbles: bool,
+}
+
+impl LiquidMoments {
+    pub fn of(v: &VoiceSettings) -> Self {
+        LiquidMoments {
+            splash: v.moments_splash,
+            go_in: v.moments_go_in,
+            come_out: v.moments_come_out,
+            pour: v.moments_pour,
+            bubbles: v.moments_bubbles,
+        }
+    }
+
+    /// The moments of thing `thing_kind`'s sound `v`: `None` unless it is a Liquid thing.
+    pub fn of_thing(thing_kind: &str, v: &VoiceSettings) -> Option<Self> {
+        bpe_kit::sound::hears_liquid(thing_kind).then(|| Self::of(v))
+    }
+}
+
+/// A shape's hit filter (or a Balls or Emitter thing's, when `balls` is set; a Liquid thing's,
+/// when `liquid` is).
 #[derive(Clone, Debug)]
 pub struct HitFilter {
     /// The thing whose sound it is.
     pub shape: ThingId,
     /// Set on a Balls or Emitter thing's sound: it hears its own balls, these moments of them.
     pub balls: Option<BallMoments>,
+    /// Set on a Liquid thing's sound (liquid part 5): it hears these moments of its liquid.
+    pub liquid: Option<LiquidMoments>,
     /// 0..1: hits softer than this play nothing.
     pub min_strength: f32,
     /// How a hit's speed becomes its strength.
@@ -115,6 +149,7 @@ impl HitFilter {
         let mut f = HitFilter {
             shape,
             balls: None,
+            liquid: None,
             min_strength: 0.0,
             curve: StrengthCurve::default(),
             gap: 0,
@@ -136,6 +171,12 @@ impl HitFilter {
     /// `None` keeps a shape's.
     pub fn hearing(mut self, moments: Option<BallMoments>) -> Self {
         self.balls = moments;
+        self
+    }
+
+    /// The filter of a Liquid thing's sound (`Some`), hearing its liquid's `moments`.
+    pub fn hearing_liquid(mut self, moments: Option<LiquidMoments>) -> Self {
+        self.liquid = moments;
         self
     }
 
@@ -161,6 +202,22 @@ impl HitFilter {
     /// hears; on a Balls or Emitter thing, one of its balls' moments it plays.
     fn hears(&self, e: &Event, world: &World) -> bool {
         let me = self.shape;
+        if let Some(m) = self.liquid {
+            // A Liquid thing hears its own liquid's moments: `b` is the liquid, `a` the ball (or,
+            // pouring, the liquid itself, which no Hits from names).
+            let Some(code) = e.b.filter(|b| e.kind == EventKind::Liquid && b.thing == me).map(|b| b.item) else {
+                return false;
+            };
+            use bpe_kit::things::liquid::{BUBBLE, POURING, feel};
+            return match code {
+                POURING => m.pour && e.a.thing == me,
+                feel::SPLASH => m.splash && world.names(&self.heard_from, me, e.a.thing),
+                feel::ENTER => m.go_in && world.names(&self.heard_from, me, e.a.thing),
+                feel::LEAVE => m.come_out && world.names(&self.heard_from, me, e.a.thing),
+                BUBBLE => m.bubbles && world.names(&self.heard_from, me, e.a.thing),
+                _ => false,
+            };
+        }
         let Some(m) = self.balls else {
             if !e.b.is_some_and(|b| b.thing == me) {
                 return false;

@@ -271,3 +271,17 @@ note; a hit held back starts no gap. The voice, Follow sound (`control.rs`) and 
 same way. Rule notes still pass no filter. Defaults are unchanged, so goldens are too. Tests: `shape_voice.rs`
 `min_gap_*` and `whole_sound_min_gap_holds_back_every_ball`, `sound_tab/playing.rs`
 `min_gap_can_count_the_whole_sound`.
+
+## Liquid sounds (liquid part 5, 2026-11-17)
+
+A Liquid thing has a Sound card (`LiquidMoments` in `voices/hit_filter.rs`: splash, go in, come out, pour, bubbles;
+`hits.rs` plays `EventKind::Liquid`) and six starting sounds (`bpe_kit::sound::presets`). Any voice can take
+**Pitch from** (`play_pitch_from`: Off, Speed, Depth, Colour) with **Pitch range** (`play_pitch_range`, semitones),
+**Deepest at** (`play_deep_at`, px) and **Muffled under liquid** (`play_under`, 0..100 %) to **Muffled to**
+(`play_under_cutoff`, Hz). They live in `NotesSpec` and `voices/liquid.rs`: Speed adds range × strength, Depth
+takes range × depth / Deepest at off the note, Colour moves the note by the liquid's hue round the wheel × range and
+snaps it up into the key (two liquids each ≥ 20 % of the contacts play a chord of their colours), and a muffled note
+runs a 12 dB low-pass (`Muffle`, per note, retuned in Mono) at 20 kHz × (cutoff / 20 kHz)^(under × depth). The
+**Liquid modulator** (`mod.liquid`, `LiquidModSettings`, `mods/liquid.rs`, `Src::Liquid`) reads `stats_of` once a
+block: Slosh (mean speed / Full at), Mix amount, Level or Amount, of the liquids its target names. Follow sound
+reads it unsmoothed (`control.rs`). None of it allocates (`alloc.rs`). Defaults leave every existing sound as it was.
