@@ -193,6 +193,12 @@ pub trait ThingSim: Send + Sync + 'static {
     fn heard(&self, _resolved: &ResolvedThing) -> Option<u64> {
         None
     }
+    /// For a thing that would step beside the physics: whether something of the scene as a whole
+    /// reads it as the physics steps, so it steps there instead (a Liquid thing while some sound
+    /// hears a liquid). Read by [`crate::world::is_beside`].
+    fn kept_by_scene(&self, _scene: &bpe_core::Scene, _id: bpe_core::ThingId) -> bool {
+        false
+    }
     /// Does the thing step its own Motion and Bounce cards (they have no module sims)? When it
     /// steps with the physics, [`crate::fingerprint`] then hashes them whole, layers and all.
     fn steps_own_cards(&self) -> bool {

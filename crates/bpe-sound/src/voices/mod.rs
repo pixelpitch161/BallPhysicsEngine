@@ -4,12 +4,13 @@
 pub mod alloc;
 pub mod hit_filter;
 pub mod knobs;
+pub mod liquid;
 pub mod notes;
 pub mod pick;
 pub mod shape;
 pub mod slots;
 
-pub use hit_filter::{BallMoments, HitFilter, STRONG_HIT, StrengthCurve, strength};
+pub use hit_filter::{BallMoments, HitFilter, LiquidMoments, STRONG_HIT, StrengthCurve, strength};
 pub use notes::{NotePick, NotePicker, PickCx};
 pub use pick::{AnyPick, RandomPick};
 pub use shape::{LEAVE_MS, ShapeSpec, ShapeVoice, note_hz};

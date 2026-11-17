@@ -17,6 +17,45 @@ pub fn is_balls(cx: &TabCx) -> bool {
     cx.scene.things.get(&cx.id).is_some_and(|t| bpe_kit::sound::hears_own_balls(&t.kind))
 }
 
+/// Whether the tab's thing is a Liquid thing, whose sound plays its liquid's moments (liquid
+/// part 5).
+pub fn is_liquid(cx: &TabCx) -> bool {
+    cx.scene.things.get(&cx.id).is_some_and(|t| bpe_kit::sound::hears_liquid(&t.kind))
+}
+
+/// Draws a Liquid thing's Moments panel (liquid part 5): which of its moments play, and the
+/// starting sounds to start again from.
+pub fn show_liquid(ui: &mut Ui, cx: &mut TabCx) {
+    panel(ui, |ui| {
+        ui.label(RichText::new("Plays when").font(style::semibold(13.0)));
+        ui.horizontal_wrapped(|ui| {
+            for (key, name, help) in [
+                ("moments_splash", "A ball splashes in", "A ball landing in it at its Splashes from speed or faster"),
+                ("moments_go_in", "A ball goes in", "A ball going into it, about half under"),
+                ("moments_come_out", "A ball comes out", "A ball coming back out of it"),
+                ("moments_pour", "It pours", "Its pours while they pour, about 30 notes a second each"),
+                ("moments_bubbles", "Balls bubble under it", "Balls moving under it give off bubbles, more the faster they go"),
+            ] {
+                ui.horizontal(|ui| {
+                    cx.switch(ui, key, name).on_hover_text(help);
+                    ui.label(RichText::new(name).small().color(style::TEXT));
+                });
+                ui.add_space(6.0);
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("Start from").small().color(style::MUTED));
+            for preset in bpe_kit::sound::LiquidPreset::ALL {
+                let help = format!("{}. Replaces this sound.", preset.help());
+                if ui.small_button(preset.name()).on_hover_text(help).clicked() {
+                    cx.edits.push(super::TabEdit::OwnStep);
+                    cx.edits.push(super::TabEdit::StartFrom(preset));
+                }
+            }
+        });
+    });
+}
+
 /// Whether the tab's thing is an Emitter.
 fn is_emitter(cx: &TabCx) -> bool {
     cx.scene.things.get(&cx.id).is_some_and(|t| t.kind == bpe_kit::things::emitter::KIND)

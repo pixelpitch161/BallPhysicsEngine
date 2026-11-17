@@ -100,7 +100,9 @@ pub fn is_beside(scene: &Scene, sims: &Sims, id: ThingId, r: &bpe_core::Resolved
         }
         _ => false,
     });
-    !(read_by_a_rule || read_by_a_thing || sound_followed)
+    // The scene as a whole reads it as it steps (a sound that hears a liquid).
+    let kept = || sim.kept_by_scene(scene, id);
+    !(read_by_a_rule || read_by_a_thing || sound_followed || kept())
 }
 
 /// `resolved` without the things `drop` says, borrowed when it drops none.

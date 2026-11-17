@@ -21,9 +21,10 @@ pub fn hit_sample(event: &Event, samples_per_step: f64) -> u64 {
 
 /// Whether events of `kind` reach the voices: hits, the notes rules play, the moments a
 /// Particles thing's sound plays, and the fires, catches and breaks a Balls or Emitter thing's
-/// sound plays (W10). Each voice's [`crate::voices::HitFilter`] takes only its own kinds.
+/// sound plays (W10), and a liquid's moments a Liquid thing's sound plays (liquid part 5). Each
+/// voice's [`crate::voices::HitFilter`] takes only its own kinds.
 pub fn plays(kind: &EventKind) -> bool {
-    touches(kind) || matches!(kind, EventKind::Spawn | EventKind::Enter | EventKind::Break)
+    touches(kind) || matches!(kind, EventKind::Spawn | EventKind::Enter | EventKind::Break | EventKind::Liquid)
 }
 
 /// Whether events of `kind` are touches on a thing: hits, rules' notes and particles' moments

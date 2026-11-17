@@ -5,7 +5,7 @@
 use super::{TabCx, panel};
 use crate::style;
 use bpe_core::Value;
-use bpe_kit::sound::{ADSR, DISTANCE, GapCounts, PlayMode, PlayWhen};
+use bpe_kit::sound::{ADSR, DISTANCE, GapCounts, PitchFrom, PlayMode, PlayWhen};
 use bpe_sound::modmatrix::{Combine, combine_of};
 use eframe::egui::{RichText, Ui};
 
@@ -31,6 +31,49 @@ fn px(v: f64) -> String {
 
 fn percent(v: f64) -> String {
     format!("{v:.0} %")
+}
+
+fn hz(v: f64) -> String {
+    format!("{v:.0} Hz")
+}
+
+/// The liquid's say in a note (liquid part 5): Pitch from Speed, Depth or Colour, and the muffle
+/// of a ball under a liquid.
+fn liquid(ui: &mut Ui, cx: &mut TabCx) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Pitch from").small().color(style::MUTED)).on_hover_text(
+            "Speed: faster hits play higher. Depth: a ball deeper under a liquid plays lower. Colour: the colour \
+             of the liquid round the ball picks the note, in the key; two liquids touching it play a chord",
+        );
+        cx.chips(
+            ui,
+            "play_pitch_from",
+            &[
+                (PitchFrom::Off, "Off"),
+                (PitchFrom::Speed, "Speed"),
+                (PitchFrom::Depth, "Depth"),
+                (PitchFrom::Colour, "Colour"),
+            ],
+        );
+    });
+    let from = cx.choice::<PitchFrom>("play_pitch_from");
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        if from != PitchFrom::Off {
+            cx.knob(ui, "play_pitch_range", "Pitch range", &semitones).on_hover_text(
+                "Semitones across the whole range: the fastest hit, the deepest ball or the colour wheel",
+            );
+        }
+        cx.knob(ui, "play_under", "Muffled under liquid", &percent)
+            .on_hover_text("How much a ball under a liquid sounds muffled, more the deeper it is. 0 is off");
+        if cx.number("play_under") > 0.0 {
+            cx.knob(ui, "play_under_cutoff", "Muffled to", &hz).on_hover_text("The highest a fully muffled note goes");
+        }
+        if from == PitchFrom::Depth || cx.number("play_under") > 0.0 {
+            cx.knob(ui, "play_deep_at", "Deepest at", &px)
+                .on_hover_text("A ball this far under the surface is as deep (and as muffled) as it gets");
+        }
+    });
 }
 
 /// Draws the Playing panel.
@@ -76,6 +119,7 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx) {
                 &[(GapCounts::PerBall, "Per ball"), (GapCounts::WholeSound, "Whole sound")],
             );
         });
+        liquid(ui, cx);
         // A Particles thing has no outline to be in range of, and hears only its own particles.
         let particles = super::moments::is_particles(cx);
         ui.horizontal(|ui| {

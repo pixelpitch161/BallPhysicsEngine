@@ -9,8 +9,11 @@
 //! Everything the drops add up on the grid is added in fixed point (integer atomics), and every
 //! drop is moved by one thread, so the same card always makes the same drops.
 
+mod stats;
 #[cfg(test)]
 mod tests;
+
+pub use stats::{STAT_WORDS, STATS_LEN, stat_at};
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
@@ -280,6 +283,9 @@ pub mod feel_at {
     /// batch), and the liquid's mean speed there (f32 bits, grid units a second).
     pub const WET: usize = 8;
     pub const FLOW: usize = 9;
+    /// How deep it is (liquid part 5): cells of liquid straight above its top, against gravity
+    /// (× 16, at most 255 cells; 0 at or above the surface).
+    pub const DEPTH: usize = 12;
     /// Contacts with each liquid (16 words).
     pub const LIQUIDS: usize = 16;
 }
@@ -292,6 +298,7 @@ pub struct Feel {
     index: wgpu::SubmissionIndex,
     balls: usize,
     answer: Arc<AtomicU8>,
+    /// Every ball's words, then every liquid's [`STATS_LEN`] stat words.
     got: std::sync::OnceLock<Vec<i32>>,
 }
 
@@ -310,8 +317,18 @@ impl Feel {
     /// Every ball's [`FEEL_WORDS`] words, waiting for the card when they aren't back yet (all
     /// zero if the read failed).
     pub fn wait(&self) -> &[i32] {
+        &self.all()[..self.balls * FEEL_WORDS]
+    }
+
+    /// Every liquid's [`STAT_WORDS`] sums as the batch left the drops (liquid part 5; `u32`s),
+    /// waiting as [`Feel::wait`] does.
+    pub fn stats(&self) -> &[u32] {
+        bytemuck::cast_slice(&self.all()[self.balls * FEEL_WORDS..])
+    }
+
+    fn all(&self) -> &[i32] {
         self.got.get_or_init(|| {
-            let words = self.balls * FEEL_WORDS;
+            let words = self.balls * FEEL_WORDS + STATS_LEN;
             let _ =
                 self.device.poll(wgpu::PollType::Wait { submission_index: Some(self.index.clone()), timeout: None });
             while self.answer.load(Ordering::Acquire) == WAITING {
@@ -1051,24 +1068,27 @@ impl Body {
     }
 
     /// Sends back what `balls` balls felt over the liquid steps since the last one sent (those
-    /// stepped with [`StepIn::feel`], the first of them [`StepIn::fresh`]); `None` with no balls.
-    /// The next step that records starts afresh.
+    /// stepped with [`StepIn::feel`], the first of them [`StepIn::fresh`]), and every liquid's
+    /// sums as the drops are now ([`Feel::stats`]; with no balls, only those). `None` before the
+    /// body has stepped. The next step that records starts afresh.
     pub fn send_feel(&mut self, balls: u32) -> Option<Arc<Feel>> {
-        if balls == 0 {
-            return None;
-        }
         let device = self.gpu.device.clone();
         let scratch = self.scratch.as_mut()?;
         let bytes = balls as u64 * FEEL_WORDS as u64 * 4;
-        let feel = scratch.feel.at_least(&device, bytes);
+        let stat_bytes = (STATS_LEN * 4) as u64;
+        let feel = (balls > 0).then(|| scratch.feel.at_least(&device, bytes));
         let staging = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("liquid feel read"),
-            size: bytes,
+            size: bytes + stat_bytes,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("liquid feel") });
-        encoder.copy_buffer_to_buffer(&feel, 0, &staging, 0, bytes);
+        if let Some(feel) = &feel {
+            encoder.copy_buffer_to_buffer(feel, 0, &staging, 0, bytes);
+        }
+        let sums = stats::encode(&device, &mut encoder, &self.drops, &self.counts, self.bound);
+        encoder.copy_buffer_to_buffer(&sums, 0, &staging, bytes, stat_bytes);
         let index = self.gpu.queue.submit([encoder.finish()]);
         let answer = Arc::new(AtomicU8::new(WAITING));
         let told = answer.clone();

@@ -8,13 +8,14 @@ pub mod hit;
 pub mod lfo;
 pub mod lfo_view;
 pub mod light;
+pub mod liquid;
 pub mod routes;
 pub mod row;
 
 use super::{SoundTab, TabCx, TabEdit, adsr_view};
 use crate::style::{self, ModRing};
 use bpe_core::{LayerId, ModRoute, SlotId};
-use bpe_kit::sound::{ADSR, DISTANCE, HIT, LFO, LIGHT_MOD, MOD_KINDS};
+use bpe_kit::sound::{ADSR, DISTANCE, HIT, LFO, LIGHT_MOD, LIQUID_MOD, MOD_KINDS};
 use bpe_sound::Meters;
 use bpe_sound::modmatrix::{Combine, is_level_key, route_ends};
 use eframe::egui::{RichText, Ui};
@@ -146,6 +147,7 @@ pub fn show(ui: &mut Ui, cx: &mut TabCx, tab: &mut SoundTab, meters: Option<&Met
         LFO => lfo::show(ui, cx, tab, m.id, meters),
         HIT => hit::show(ui, cx, m.id, meters),
         LIGHT_MOD => light::show(ui, cx, m.id, meters),
+        LIQUID_MOD => liquid::show(ui, cx, m.id, meters),
         _ => {}
     }
     routes::show(ui, cx, m.id, &m.name);

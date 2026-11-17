@@ -52,7 +52,31 @@ pub fn enable(scene: &mut Scene, reg: &Registry, id: ThingId) -> bool {
     }
     match scene.things.get_mut(&id) {
         Some(thing) => {
-            thing.slots.insert(SlotId::Sound, starter_voice(reg));
+            // A Liquid thing starts from its Splash (liquid part 5).
+            let card = if bpe_kit::sound::hears_liquid(&thing.kind) {
+                bpe_kit::sound::liquid_sound(reg, bpe_kit::sound::LiquidPreset::Splash)
+            } else {
+                starter_voice(reg)
+            };
+            thing.slots.insert(SlotId::Sound, card);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Puts the Liquid starting sound `preset` on `id` in place of its sound, switched on (its keys
+/// and Follow sound links on the old card's settings go with it).
+pub fn start_from(scene: &mut Scene, reg: &Registry, id: ThingId, preset: bpe_kit::sound::LiquidPreset) -> bool {
+    if scene.card(id, SlotId::Sound).is_some() {
+        scene.remove_slot(id, SlotId::Sound);
+    }
+    if scene.add_slot(reg, id, SlotId::Sound, VOICE).is_err() {
+        return false;
+    }
+    match scene.things.get_mut(&id) {
+        Some(thing) => {
+            thing.slots.insert(SlotId::Sound, bpe_kit::sound::liquid_sound(reg, preset));
             true
         }
         None => false,

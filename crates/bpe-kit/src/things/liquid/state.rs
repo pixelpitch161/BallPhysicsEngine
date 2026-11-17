@@ -67,6 +67,10 @@ pub struct Host {
     pub news: Vec<bpe_runtime::Event>,
     /// The colour each ball has taken from the liquid (linear rgb, and how much).
     pub taken: Arc<BTreeMap<(ThingId, u32), [f32; 4]>>,
+    /// How each ball the last feel found touching the liquid is wet (liquid part 5).
+    pub wet: Arc<BTreeMap<(ThingId, u32), super::sound::Wet>>,
+    /// Every liquid's stat words from the last feel, by its number on the card (part 5).
+    pub sums: Option<Arc<Vec<u32>>>,
 }
 
 impl Host {
@@ -92,6 +96,8 @@ pub struct LiquidState {
     pub meets: MeetsSettings,
     pub others: Vec<OtherLiquid>,
     pub look: LookSettings,
+    /// Which of its moments its sound logs (part 5).
+    pub sound: super::sound::LiquidSound,
     /// Its liquid's number in the body (0 to 15), `None` past the 16th Liquid thing.
     pub index: Option<usize>,
     /// Drops born so far (the next one's serial).
@@ -120,6 +126,7 @@ impl LiquidState {
             meets: MeetsSettings::default(),
             others: Vec::new(),
             look: LookSettings::default(),
+            sound: Default::default(),
             index: None,
             born: 0,
             owed: Vec::new(),
@@ -195,13 +202,14 @@ pub fn drops_hash(drops: &[Drop]) -> u64 {
 /// what a restart test compares (cheap, unlike reading the drops back).
 pub fn inputs_hash(st: &LiquidState) -> u64 {
     let text = format!(
-        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
         st.settings,
         st.fill,
         st.pours,
         st.meets,
         st.others,
-        st.look.stepped()
+        st.look.stepped(),
+        st.sound
     );
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in text.bytes() {

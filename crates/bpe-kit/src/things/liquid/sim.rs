@@ -45,6 +45,7 @@ fn read_into(st: &mut LiquidState, resolved: &ResolvedThing) {
     st.meets = MeetsSettings::read(meets);
     st.others = OtherLiquid::read_all(meets);
     st.look = LookSettings::read(card(resolved, SlotId::Look, LOOK));
+    st.sound = super::sound::LiquidSound::read(resolved.slots.get(&SlotId::Sound));
 }
 
 /// The Liquid things of `world`, in tree order.
@@ -291,6 +292,9 @@ fn step_once(world: &World, taken: &mut [(ThingId, Box<dyn ThingState>)], balls:
     let Some(mut host) = host_st.host.take() else { return };
     let dt = 1.0 / host.rate as f32;
     let mut births: Vec<Drop> = Vec::new();
+    // Its sound hears a pour pouring about POUR_RATE times a second (part 5).
+    let pour_every = (host.rate / super::sound::POUR_RATE).max(1);
+    let hear_pours = host.step % pour_every == 0;
     {
         let mut all: Vec<&mut LiquidState> = vec![host_st];
         all.extend(rest.iter_mut().map(|(_, b)| state_mut::<LiquidState>(b.as_mut())));
@@ -298,7 +302,14 @@ fn step_once(world: &World, taken: &mut [(ThingId, Box<dyn ThingState>)], balls:
         for st in all.iter_mut() {
             births.extend(births::level_moved(st, world, &host.layout));
             for k in 0..st.pours.len() {
-                births.extend(births::pour(st, k, world, &host.layout, dt, host.step));
+                let born = births::pour(st, k, world, &host.layout, dt, host.step);
+                if hear_pours && st.sound.pours && !born.is_empty() {
+                    let mid = born.iter().map(|d| Vec2::from(d.x)).sum::<Vec2>() / born.len() as f32;
+                    let v = born.iter().map(|d| Vec2::from(d.v)).sum::<Vec2>() / born.len() as f32;
+                    let (place, v) = (host.layout.to_world(mid), v * host.layout.cell);
+                    host.news.push(super::sound::pour_event(world.step, st.id, k, place, v));
+                }
+                births.extend(born);
             }
         }
     }
@@ -383,6 +394,8 @@ impl ThingSim for LiquidSim {
             numbers: Vec::new(),
             news: Vec::new(),
             taken: Default::default(),
+            wet: Default::default(),
+            sums: None,
         };
         if let Some(body) = host.body.as_mut() {
             // Born still: a step with no time in it puts them on the card with the walls band.
@@ -455,12 +468,20 @@ impl ThingSim for LiquidSim {
             host.pending = None;
             feel::all_left(host, world);
         }
-        if main && stepped > 0 && !balls.is_empty() {
+        // The feel goes back after every batch, with no balls too: the liquids' sums come with it
+        // (part 5).
+        if main && stepped > 0 {
             let liquids: Vec<(usize, ThingId, f32)> =
                 numbered(&taken).iter().filter_map(|s| Some((s.index?, s.id, s.meets.splash_from))).collect();
+            let bubbles = numbered(&taken)
+                .iter()
+                .filter(|s| s.sound.bubbles)
+                .filter_map(|s| s.index)
+                .fold(0u16, |m, l| m | (1 << l));
             let host = state_mut::<LiquidState>(taken[0].1.as_mut()).host.as_mut().expect("the host");
             if let Some(body) = host.body.as_mut() {
-                let felt = Felt { balls: from, liquids, cell: layout.cell, span: stepped as f32 / rate as f32 };
+                let felt =
+                    Felt { balls: from, liquids, cell: layout.cell, span: stepped as f32 / rate as f32, bubbles };
                 host.pending = Arc::make_mut(body).send_feel(balls.len() as u32).map(|f| (f, Arc::new(felt)));
             }
         }
@@ -505,6 +526,12 @@ impl ThingSim for LiquidSim {
         pushes && me.enabled && scene.things.get(&other).is_some_and(|t| t.kind == KIND)
     }
 
+    /// A scene whose sound hears a liquid keeps every Liquid thing in the main world, so their
+    /// events and readings are in the world the sound reads (part 5).
+    fn kept_by_scene(&self, scene: &Scene, _id: ThingId) -> bool {
+        super::sound::scene_hears_liquid(scene)
+    }
+
     /// Every setting moves the liquid (beside the physics, this only lets keys reach
     /// `settings_changed`).
     fn key_restarts_physics(&self, _key: &str) -> bool {
@@ -519,7 +546,9 @@ impl ThingSim for LiquidSim {
             .iter()
             .filter(|t| scene.things.get(t).is_some_and(|t| t.kind == KIND))
             .position(|t| *t == thing.id);
-        self.beside_print_extra(resolved) ^ (place.map_or(u64::MAX, |p| p as u64) << 52)
+        // The moments its sound logs change the log (part 5).
+        let sound = super::sound::LiquidSound::read(resolved.slots.get(&SlotId::Sound)).code();
+        self.beside_print_extra(resolved) ^ (place.map_or(u64::MAX, |p| p as u64) << 52) ^ (sound << 44)
     }
 
     /// The Look's mixing is read by the stepping.

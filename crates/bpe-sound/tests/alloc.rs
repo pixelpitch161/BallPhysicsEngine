@@ -379,4 +379,59 @@ fn render_does_not_allocate() {
         heard |= block.iter().any(|&v| v != 0.0);
     }
     assert!(heard, "the samples and the song were heard while counting");
+
+    // Liquid part 5: water with the Bubbles sound, and its sinking ball muffled under it, pitched
+    // by the water's colour and moved by a Liquid modulator.
+    let (d, q) = bpe_gfx::test_device().expect("a graphics device (install mesa-vulkan-drivers)");
+    bpe_gfx::swarm::use_on_this_thread(Some(bpe_gfx::swarm::SwarmGpu::for_device(&d, &q)));
+    let mut wet = bpe_kit::scenes::liquid_scenes(reg).into_iter().find(|(n, _)| n == "Liquid water").unwrap().1;
+    let liquid = wet.order.iter().copied().find(|t| wet.things[t].kind == bpe_kit::things::liquid::KIND).unwrap();
+    let ball = wet.things.values().find(|t| t.kind == "balls").unwrap().id;
+    {
+        let card = wet.card_mut(liquid, SlotId::Bounce).unwrap();
+        let mut m = bpe_kit::things::liquid::cards::MeetsSettings::from_params(&card.params);
+        m.ball_weight = 3.0;
+        card.params = m.to_params();
+    }
+    let bubbles = bpe_kit::sound::liquid_sound(reg, bpe_kit::sound::LiquidPreset::Bubbles);
+    wet.things.get_mut(&liquid).unwrap().slots.insert(SlotId::Sound, bubbles);
+    let mut card = starter_voice(reg);
+    let mut v = VoiceSettings::from_params(&card.params);
+    v.play_under = 1.0;
+    v.play_pitch_from = bpe_kit::sound::PitchFrom::Colour;
+    card.params = v.to_params();
+    wet.things.get_mut(&ball).unwrap().slots.insert(SlotId::Sound, card);
+    let slosh = add_modulator(&mut wet, reg, ball, bpe_kit::sound::LIQUID_MOD).unwrap();
+    {
+        let card = wet.card_mut(ball, SlotId::Sound).unwrap();
+        let mut routes = match card.params.get(bpe_core::ROUTES_KEY) {
+            Some(bpe_core::Value::Routes(r)) => r.clone(),
+            _ => Vec::new(),
+        };
+        routes.push(bpe_core::ModRoute {
+            source: slosh,
+            target: "a_cents".into(),
+            amount: 0.3,
+            bipolar: false,
+            invert: false,
+        });
+        card.params.set(bpe_core::ROUTES_KEY, bpe_core::Value::Routes(routes));
+    }
+    let resolved = resolve_scene(&wet, reg);
+    let mut e = Engine::new(&wet, &resolved, &kit);
+    for _ in 0..200 {
+        e.render(&mut block);
+    }
+    let mut heard = false;
+    for _ in 0..2_000 {
+        e.step_physics();
+        ALLOCATIONS.store(0, Ordering::SeqCst);
+        COUNTING.store(true, Ordering::SeqCst);
+        e.render_prepared(&mut block);
+        COUNTING.store(false, Ordering::SeqCst);
+        assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0, "a block hearing a liquid allocated");
+        assert!(block.iter().all(|v| v.is_finite()));
+        heard |= block.iter().any(|&v| v != 0.0);
+    }
+    assert!(heard, "the liquid was heard while counting");
 }
