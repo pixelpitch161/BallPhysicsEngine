@@ -10,7 +10,7 @@ pub mod draw;
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, OnceLock};
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
@@ -153,7 +153,10 @@ struct Pipelines {
 pub struct SwarmGpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
-    pipelines: Pipelines,
+    /// Made the first time a swarm steps, so a card for a scene without one costs nothing.
+    pipelines: OnceLock<Pipelines>,
+    /// The liquid pipelines of the same card, made the first time a liquid asks.
+    liquid: OnceLock<Arc<crate::liquid_sim::LiquidCard>>,
 }
 
 impl std::fmt::Debug for SwarmGpu {
@@ -161,9 +164,6 @@ impl std::fmt::Debug for SwarmGpu {
         f.write_str("SwarmGpu")
     }
 }
-
-/// Every device's pipelines made so far.
-static MADE: Mutex<Vec<Weak<SwarmGpu>>> = Mutex::new(Vec::new());
 
 thread_local! {
     /// The card this thread's worlds step their swarms on.
@@ -242,19 +242,29 @@ fn pipeline(
 }
 
 impl SwarmGpu {
-    /// The swarm pipelines of `device`, made the first time they are asked for.
+    /// Makes the swarm pipelines of `device`. Whoever draws on the device keeps the card and
+    /// names it with [`use_for_now`]; cards are never looked up by device, because devices of two
+    /// wgpu instances (the editor's window and an export's own) can compare equal.
     pub fn for_device(device: &wgpu::Device, queue: &wgpu::Queue) -> Arc<SwarmGpu> {
-        let mut made = MADE.lock().unwrap_or_else(|e| e.into_inner());
-        made.retain(|w| w.strong_count() > 0);
-        if let Some(gpu) = made.iter().filter_map(Weak::upgrade).find(|g| g.device == *device) {
-            return gpu;
-        }
-        let gpu = Arc::new(SwarmGpu::new(device.clone(), queue.clone()));
-        made.push(Arc::downgrade(&gpu));
-        gpu
+        Arc::new(SwarmGpu::new(device.clone(), queue.clone()))
+    }
+
+    /// The liquid pipelines of this card, made the first time they are asked for.
+    pub fn liquid(&self) -> Arc<crate::liquid_sim::LiquidCard> {
+        self.liquid.get_or_init(|| crate::liquid_sim::LiquidCard::for_device(&self.device, &self.queue)).clone()
     }
 
     fn new(device: wgpu::Device, queue: wgpu::Queue) -> SwarmGpu {
+        SwarmGpu { device, queue, pipelines: OnceLock::new(), liquid: OnceLock::new() }
+    }
+
+    /// The swarm step's pipelines, made the first time they are asked for.
+    fn pipelines(&self) -> &Pipelines {
+        self.pipelines.get_or_init(|| Self::make_pipelines(&self.device))
+    }
+
+    fn make_pipelines(device: &wgpu::Device) -> Pipelines {
+        let device = device.clone();
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("swarm step"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/swarm_step.wgsl").into()),
@@ -265,7 +275,7 @@ impl SwarmGpu {
             min_binding_size: None,
         };
         let (r, w) = (storage(true), storage(false));
-        let pipelines = Pipelines {
+        Pipelines {
             births: pipeline(&device, &module, "cs_births", &[(0, uniform), (2, r), (3, r), (4, w), (5, w), (10, w)]),
             moves: pipeline(
                 &device,
@@ -281,8 +291,7 @@ impl SwarmGpu {
                 "cs_scatter",
                 &[(0, uniform), (4, w), (5, w), (6, w), (7, w), (8, w), (9, w), (10, w)],
             ),
-        };
-        SwarmGpu { device, queue, pipelines }
+        }
     }
 
     pub fn device(&self) -> &wgpu::Device {
@@ -577,7 +586,7 @@ impl SwarmBuffers {
         let flags = scratch.flags.at_least(device, room * 2 * 4).clone();
         let sums = scratch.sums.at_least(device, room.div_ceil(WORKGROUP as u64) * 4).clone();
         let uniform = scratch.uniform.clone();
-        let p = &gpu.pipelines;
+        let p = gpu.pipelines();
         let group = |layout: &wgpu::BindGroupLayout, entries: &[wgpu::BindGroupEntry]| {
             device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("swarm step"), layout, entries })
         };

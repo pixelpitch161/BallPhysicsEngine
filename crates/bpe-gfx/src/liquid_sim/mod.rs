@@ -17,7 +17,7 @@ pub use stats::{STAT_WORDS, STATS_LEN, stat_at};
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
@@ -605,25 +605,18 @@ impl std::fmt::Debug for LiquidCard {
     }
 }
 
-static MADE: Mutex<Vec<Weak<LiquidCard>>> = Mutex::new(Vec::new());
-
 impl LiquidCard {
-    /// The liquid pipelines of `device`, made the first time they are asked for.
+    /// Makes the liquid pipelines of `device`. They are never looked up by device: devices of two
+    /// wgpu instances (the editor's window and an export's own) can compare equal, and a liquid
+    /// stepped on the editor's card can't be drawn with the export's.
     pub fn for_device(device: &wgpu::Device, queue: &wgpu::Queue) -> Arc<LiquidCard> {
-        let mut made = MADE.lock().unwrap_or_else(|e| e.into_inner());
-        made.retain(|w| w.strong_count() > 0);
-        if let Some(card) = made.iter().filter_map(Weak::upgrade).find(|c| c.device == *device) {
-            return card;
-        }
-        let card = Arc::new(LiquidCard::new(device.clone(), queue.clone()));
-        made.push(Arc::downgrade(&card));
-        card
+        Arc::new(LiquidCard::new(device.clone(), queue.clone()))
     }
 
     /// The card this thread's worlds step on: the one named for Huge swarms
     /// ([`crate::swarm::on_this_thread`]), so one naming covers every thing on the card.
     pub fn on_this_thread() -> Option<Arc<LiquidCard>> {
-        crate::swarm::on_this_thread().map(|s| LiquidCard::for_device(s.device(), s.queue()))
+        crate::swarm::on_this_thread().map(|s| s.liquid())
     }
 
     fn new(device: wgpu::Device, queue: wgpu::Queue) -> LiquidCard {
