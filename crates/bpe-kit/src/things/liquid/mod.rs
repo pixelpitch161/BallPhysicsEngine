@@ -173,7 +173,7 @@ pub struct LiquidSettings {
     #[setting(label = "Seconds", when = "remember", range(0.1, 60), span(1, 20), unit = "s", group = "Un-mix")]
     pub unmix_seconds: f32,
     /// While on, the whole liquid plays its remembered seconds backwards (colours un-mix too).
-    #[setting(label = "Un-mixing", when = "remember", keyframe, group = "Un-mix")]
+    #[setting(label = "Un-mixing", when = "remember", group = "Un-mix")]
     pub unmixing: bool,
     /// How many drops make the liquid in the editor (the first Liquid thing's is used for all).
     #[setting(label = "Detail", simple, group = "Detail")]
