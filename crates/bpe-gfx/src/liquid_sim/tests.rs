@@ -566,8 +566,9 @@ fn the_wet_grid_marks_walls_under_the_liquid_dries_and_is_copied() {
     // A wall band on two rows across the box (row 12, which the heap starts over and leaves as it
     // spreads, and row 36, under it) and down the right-hand side at the top, far from it.
     let mut band = Vec::new();
-    let mut node =
-        |x: u32, y: u32| band.push(WallNode { index: y * 40 + x, n: [0.0, -1.0], dist: 5.0, half: -1.0, v: [0.0; 2], wall: 255 });
+    let mut node = |x: u32, y: u32| {
+        band.push(WallNode { index: y * 40 + x, n: [0.0, -1.0], dist: 5.0, half: -1.0, v: [0.0; 2], wall: 255 })
+    };
     for x in 2..38 {
         node(x, 12);
         node(x, 36);
