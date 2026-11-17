@@ -151,6 +151,91 @@ export may use different cards (an export with Finer export off still re-steps t
 export's card, so a tiny difference in the card's float order could move balls). With a particle job
 running, a main-world liquid steps twice (once in the physics, once beside it for the particles).
 
+
+## Part 3, as built: looking real
+
+Plan: `docs/superpowers/plans/liquid/part3.md`.
+
+**What the owner sees.** The Liquid's **Look** card: Its colour and Colour mixing (with **Mixing
+shows**, Shows as Shimmer / Glow / Foam), then the **Surface** chips (the 15 a ball wears; picking
+one sets its numbers, the Particles Liquid layer's set: no Throws light or facets; a new Liquid is
+**Glass**), **Shape of the surface** (Edge, Edge softness, Roundness, **Smoothing**, Opacity, In
+front), **Inside** (**Clarity** 160 px, **Deep colour**, **Light soaks in**), **On its surface**
+(**Ripples** and size, **Thin film** and size, **Outline** and colour, **Gives off light**), **Its own
+light** (folded: Shine, Light from, Rim light, Reflects the sky, Sky top/bottom, **Bend**, Tint,
+**Rainbow split**; used without a Lighting card or at Lit 0) and **With lighting** (**Lit**, **Blocks
+light**), and a **Layers** list: **White water and foam**, **Bubbles**, **Things inside**, **Mist**,
+**Caustics**, **Wet walls**, **Wet balls** (each at most once).
+
+**Drawing** (`bpe-gfx/src/liquid.rs`, `shaders/liquid.wgsl::full_surface`). `LiquidStyle` grew
+`h..w` (STRIDE 512); `v.w = 1` marks a Liquid thing's full look, and the Particles Liquid layer
+(all of them 0) takes the old code path unchanged. The colour-weights target is now Rgba16Float:
+r the colour weight, g foam (`w × foaminess`: from speed, and from the drop's `kick` for
+Splashes foam), b speed / 1000, a kick. **Depth** is how far below the top a pixel is: marched up
+the screen's "world up" in 24 steps (range from Clarity × 3, the caustics' reach, foam's On top,
+bubble size), then halved down to a pixel between the last two steps (a straight guess between
+them is off by an amount that repeats every step, which showed as stripes). **How far in from the
+edge** (`inside_far`): the field's height over the level by its slope holds only near the edge
+(drops resting in rows leave dips between the rows where it comes out small, which showed as
+thin rainbow and highlight stripes), so further in it is the most of 3, 6, 12 and 24 px that has
+the field over the level in eight directions. Foam's On top and the film's rings follow depth. Clarity: `through = exp(−depth / clarity)`, cover `1 − 0.85 × through`, colour ×
+`mix(1, deep, 1 − through)`. With Bend (and Clarity, or a Glass kind) and its own light, the pass
+reads the picture behind it (`LiquidStyle::reads_behind`, which the renderer uses instead of
+`glass()` to copy it first) bent by the normal, split into a rainbow by Rainbow split. Ripples
+(two octaves of value noise in world units) tilt the normal and add to the height written for the
+real lights. Thin film is a cosine rainbow by noise, depth and time. Caustics are ridged value
+noise, warped, `pow(a × b, 8)`, fading by Reach down. Bubbles are world-space cells rising at Rise
+speed, popping within their size of the top. Mixing shows reads the colour 3 px either side.
+Smoothing sets the drop reach (`1 + 2 × smoothing` cells; the default 0.25 is part 1's 1.5) and
+the inside level `π reach²`. **Things inside** and **Mist** are drawn after the surface by
+`liquid_dots.wgsl` straight from the drops (`DROP_FLOATS` = 20, the one number to change if the
+`Drop` grows): a drop whose `hash(serial) < share` and whose middle is inside the surface is a
+fleck (glinting by `hash(serial, floor(time × 8))`); a drop outside the surface is a mist dot.
+
+**With a Lighting card** (Lit > 0): `style.d = [lit, stamp, blocks, link]` and `real_lit` (now with
+the light it gives off and its ripples' height): picture = colour + glow, pass 1 colour × Lit,
+pass 2 height (rim + ripples), pass 3 (emission) = Gives off light + caustics + soak + Mixing shows
+Glow, so the liquid lights the scene. Surface index: after `surface::taken` and every Particles
+Liquid layer (`particles::liquid::layers_taken`), by its place among Liquid things
+(`things::liquid::draw::surface_index`). `LiquidDraw::light` puts `gpu(SHEET)` in the table, sets
+`refracts` for see-through kinds, and for a liquid that blocks light with a Surface that bends
+light a `Bender` box round the host's Area. Blocks light = `keeps_of(passes(s))`.
+
+**Wet walls** (`bpe-gfx/src/liquid_sim/wet.rs`, `shaders/liquid_wet.wgsl`). Each body keeps a wet
+grid (`4 × cols × rows` f32: two halves of wetness swapped each liquid step, then each node's face
+distance and side; copied by `Clone`, counted in `bytes()`): after each step's last substep a node
+in the walls band with mass (over 0.05) is 1, any other band node keeps `exp(−dt / 6 s)` and moves
+`6 dt` of the way towards 0.97 × the node above, off the band 0. A band node knows which side of a
+hollow wall the liquid is on (more mass two cells along the normal or against it, else what it
+knew before; never another node's side, which is written in the same pass) and its distance from the wall's face on that side; a node past the face (under
+−0.5 cells) stays dry, since the drops' weights reach across a thin wall, and `fs_wet` shows the
+film only from the face to about 2 cells in (interpolated, so it follows the wall smoothly; at
+first it was drawn by whole cells outside the ring, in steps). It is always worked out (one thread a node), read only by the draw
+(`fs_wet`, before the splat, its own group), so it needs no fingerprint. Dries in reads it as a
+floor `exp(−dries / 6)`; Streaks break it up by a column noise. `DropsSource` carries the buffer,
+the grid size and the newest half.
+
+**Wet balls** (`kit things/liquid/wet.rs`): wetness from the log alone (`wetness`: 1 after a
+ball's In, `exp(−t / dries)` after its Out), so seeking and exports agree; drawn into
+`particles_front` as a tint disc, an added highlight and a hanging drip. Only a liquid in the main
+world (Pushes balls) logs In/Out, so only it wets balls.
+
+**Tests.** `bpe-gfx liquid_sim::tests::the_wet_grid_marks_walls_under_the_liquid_dries_and_is_copied`,
+`only_the_liquids_side_of_a_thin_wall_gets_wet`;
+`bpe-kit things::liquid::tests_look` (Look defs, layer kinds, style numbers only for layers that
+are on, the Particles layer's style untouched, surface index, real lighting and the table, wet
+balls from a log); `bpe-kit/tests/liquid_look_pictures.rs` (clear water near its top is nearer
+what is behind than solid water and shows less of it deep down, glow brightens, foam whitens, the real lights
+change it, every layer draws). Test scenes `scenes::liquid_look_scenes` ("Liquid looks", "Liquid
+lit pool", "Liquid glow"); look shots `liquid-looks`, `liquid-lit`, `liquid-glow`.
+
+**Known gaps (part 3).** No Shader layers (picture effects) on the Liquid's Look: it is drawn by its
+own pass. Foam doesn't last after a drop slows (that needs per-drop memory). Wet balls need the
+liquid to push balls. The wet grid is the body's, shared by every Liquid thing: Wet walls on one
+liquid shows where any liquid has been, in its own colour. The depth march looks straight up the screen, so a liquid under an overhang
+reads as shallow there. Caustics and bubbles are patterns in the world, not traced from the
+surface or moved by the flow.
+
 ## Part 5, as built: Sound (2026-11-17)
 
 **Sound card on a Liquid thing.** `liquid::slots()` includes Sound, and the inspector's Sound tab

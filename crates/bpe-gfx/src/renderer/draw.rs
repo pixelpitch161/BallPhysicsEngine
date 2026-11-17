@@ -396,7 +396,7 @@ impl Renderer {
     ) {
         let Some(pass) = self.liquid.as_ref() else { return };
         for l in f.liquids.iter().filter(|l| l.front == front && pass.has(l)) {
-            if l.style.glass() && self.light_mode == light_pass::PICTURE {
+            if l.style.reads_behind() && self.light_mode == light_pass::PICTURE {
                 self.copy_under(encoder);
             }
             pass.draw(encoder, l, globals, view);

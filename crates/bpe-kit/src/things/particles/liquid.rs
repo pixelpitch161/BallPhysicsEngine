@@ -152,6 +152,17 @@ pub fn surface_index(scene: &Resolved, id: ThingId, layer: LayerId) -> Option<u3
     None
 }
 
+/// How many surface table indices the scene's Particles Liquid layers take (after
+/// [`surface::taken`]'s): what [`surface_index`] numbers. Liquid things are numbered after them.
+pub fn layers_taken(scene: &Resolved) -> u32 {
+    scene
+        .things
+        .values()
+        .filter_map(|t| t.slots.get(&SlotId::Look).filter(|l| l.kind == super::look::CARD))
+        .map(|look| look.layers.iter().filter(|l| l.kind == LIQUID && l.parent.is_none()).count() as u32)
+        .sum()
+}
+
 /// How a liquid takes the real lights of a lit scene (W15): its layer's Lit (above 0), its
 /// surface stamp ([`surface::stamp`]), how much it blocks light and its thing's link number
 /// (`links::number_of`, for lights that light up only some things).
