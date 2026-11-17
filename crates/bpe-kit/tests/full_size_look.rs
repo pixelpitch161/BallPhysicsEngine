@@ -413,7 +413,16 @@ fn demo_shots(reg: &Registry) -> Vec<Shot> {
         // yellow paint.
         shot("liquid-water", liquid_scene(reg, "Liquid water"), vec![0.5, 2.0]),
         shot("liquid-mixing", liquid_scene(reg, "Liquid paint mixing"), vec![1.5, 3.0]),
+        // Liquid part 3: every Look layer in its own light, under a lamp, and glowing.
+        shot("liquid-looks", liquid_look(reg, "Liquid looks"), vec![1.0, 2.5, 2.55]),
+        shot("liquid-lit", liquid_look(reg, "Liquid lit pool"), vec![1.0, 2.5]),
+        shot("liquid-glow", liquid_look(reg, "Liquid glow"), vec![2.0]),
     ]
+}
+
+/// One of liquid part 3's look scenes.
+fn liquid_look(reg: &Registry, name: &str) -> Scene {
+    scenes::liquid_look_scenes(reg).into_iter().find(|(n, _)| n == name).map(|(_, s)| s).expect("a liquid look scene")
 }
 
 /// One of liquid part 1's test scenes.

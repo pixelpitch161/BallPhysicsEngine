@@ -144,6 +144,20 @@ fn slot_body(
         }
         return;
     }
+    // A Liquid thing's Look (liquid part 3): the Surface chips and numbers, its own settings, then
+    // its layers.
+    if card_kind == bpe_kit::things::liquid::LOOK {
+        use bpe_kit::things::liquid::look::is_surface_number;
+        ui.add_space(4.0);
+        surface_section_keeping(ui, inspector, cx, slot, &|k| is_surface_number(k), edits);
+        if let Some(ckind) = kit.registry.module(card_kind) {
+            let defs: Vec<SettingDef> =
+                ckind.settings().iter().filter(|d| d.key != "surface" && !is_surface_number(d.key)).cloned().collect();
+            slot_grid_of(ui, inspector, cx, slot, ("slot", id, slot), &defs, edits);
+        }
+        crate::look_editor::liquid::show_layers(ui, inspector, &look, edits);
+        return;
+    }
     slot_grid(ui, inspector, cx, slot, card_kind, edits);
     // A Liquid thing's lists: its Pours and its rules for other liquids.
     if card_kind == bpe_kit::things::liquid::FILL {

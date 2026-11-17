@@ -17,10 +17,11 @@ use crate::{GrowableBuffer, HDR_FORMAT, util};
 
 /// The field picture's format: blendable floats, colour × weight and the weight.
 const FIELD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
-/// The drops' colour weights' format.
-const WEIGHTS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
+/// The drops' colour weights' format: the colour weight, and (liquid part 3) the drops' foam,
+/// speed and kick, each times its weight.
+const WEIGHTS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// Uniforms sit this far apart for dynamic offsets.
-const STRIDE: u64 = 256;
+const STRIDE: u64 = 512;
 /// The most blobs one liquid draws (a guard far above what a layer makes).
 pub const MOST_BLOBS: usize = 200_000;
 
@@ -66,6 +67,44 @@ pub struct LiquidStyle {
     pub f: [f32; 4],
     /// Drops on the card: the one colour (linear rgb, w spare).
     pub g: [f32; 4],
+    /// Liquid part 3, a Liquid thing's full look (read only when `v[3]` is 1; the Particles
+    /// Liquid layer leaves all of these 0 and draws as before). Clarity (world units: how far in
+    /// you see before its colour takes over, 0 solid), Light soaks in, Reflects (the pretend
+    /// sky), Rainbow split.
+    pub h: [f32; 4],
+    /// Deep colour (linear, multiplied with its colour deep down), outline width (world units).
+    pub i: [f32; 4],
+    /// Ripples, ripple size (world units), Thin film, film size (world units).
+    pub j: [f32; 4],
+    /// Gives off light, Mixing shows, shows as (0 shimmer, 1 glow, 2 foam), w spare.
+    pub k: [f32; 4],
+    /// Outline colour (linear), w spare.
+    pub l: [f32; 4],
+    /// White water and foam: amount (0 none), from speed (world units a second), splashes foam,
+    /// on top (world units).
+    pub m: [f32; 4],
+    /// Foam colour (linear), froth size (world units).
+    pub n: [f32; 4],
+    /// Bubbles: amount (0 none), size, size variety, rise speed (world units a second).
+    pub o: [f32; 4],
+    /// Bubbles: wobble, shine; Caustics: amount (0 none), size (world units).
+    pub p: [f32; 4],
+    /// Caustics: speed, deep (world units); Things inside: share (0 none), size (world units).
+    pub q: [f32; 4],
+    /// Things inside: one colour (linear), 1 to use it (else each drop's own).
+    pub r: [f32; 4],
+    /// Things inside: sparkle; Mist: amount (0 none), size (world units); w spare.
+    pub s: [f32; 4],
+    /// Caustics colour (linear), w spare.
+    pub t: [f32; 4],
+    /// Wet walls: amount (0 none), the wet grid's dry floor (`exp(−dries / DRY_SECONDS)`),
+    /// streaks, w spare.
+    pub u: [f32; 4],
+    /// The wet grid's columns, rows and newest half (the pass fills these from the drops), and 1
+    /// for a full look.
+    pub v: [f32; 4],
+    /// Wet walls' colour (linear), w spare.
+    pub w: [f32; 4],
 }
 
 impl LiquidStyle {
@@ -80,6 +119,27 @@ impl LiquidStyle {
     /// Whether the real lights shade it (W15).
     pub fn real(&self) -> bool {
         self.d[0] > 0.0
+    }
+
+    /// Whether it is a Liquid thing's full look (liquid part 3).
+    pub fn full(&self) -> bool {
+        self.v[3] > 0.5
+    }
+
+    /// Whether its surface pass reads the picture behind it (which must be copied first): its
+    /// pretend Glass, or (a full look) any surface that bends what is behind it and is clear.
+    pub fn reads_behind(&self) -> bool {
+        self.glass() || (self.full() && !self.real() && self.b[2] > 0.0 && self.h[0] > 0.0)
+    }
+
+    /// Whether its drops are drawn one by one after the surface (Things inside, Mist).
+    pub fn dots(&self) -> bool {
+        self.full() && (self.q[2] > 0.0 || self.s[1] > 0.0)
+    }
+
+    /// Whether it draws wet walls before the surface.
+    pub fn wet(&self) -> bool {
+        self.full() && self.u[0] > 0.0
     }
 }
 
@@ -107,6 +167,10 @@ struct Placed {
     /// A liquid of drops on the card: its splat's group (the style and the drops) and the buffer
     /// its draw's numbers are in.
     drops: Option<(wgpu::BindGroup, wgpu::Buffer)>,
+    /// Liquid part 3: its dots' group (style, drops, field) and its wet walls' group (style,
+    /// field, wet grid), when it draws them.
+    dots: Option<wgpu::BindGroup>,
+    wet: Option<wgpu::BindGroup>,
 }
 
 pub(crate) struct LiquidPass {
@@ -116,6 +180,12 @@ pub(crate) struct LiquidPass {
     drops_layout: wgpu::BindGroupLayout,
     surface: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
+    /// Liquid part 3: drops one by one after the surface (Things inside, Mist), and the wet walls
+    /// before it.
+    dots: wgpu::RenderPipeline,
+    dots_layout: wgpu::BindGroupLayout,
+    wet: wgpu::RenderPipeline,
+    wet_layout: wgpu::BindGroupLayout,
     /// The splat pass's group: the style alone (the field is its target).
     splat_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
@@ -282,6 +352,74 @@ impl LiquidPass {
             multiview_mask: None,
             cache: None,
         });
+        let storage = |binding, visibility| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let dots_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("liquid dots"),
+            entries: &[
+                util::uniform_entry(0, S::VERTEX_FRAGMENT, true),
+                storage(1, S::VERTEX),
+                util::float_texture_entry(2, S::VERTEX),
+            ],
+        });
+        let wet_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("liquid wet"),
+            entries: &[
+                util::uniform_entry(0, S::VERTEX_FRAGMENT, true),
+                util::float_texture_entry(1, S::FRAGMENT),
+                storage(5, S::FRAGMENT),
+            ],
+        });
+        let over = |label, module: &wgpu::ShaderModule, vs, fs, layout: &wgpu::BindGroupLayout| {
+            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some(label),
+                bind_group_layouts: &[Some(globals_layout), Some(layout)],
+                immediate_size: 0,
+            });
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module,
+                    entry_point: Some(vs),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: if vs == "vs_full" {
+                        wgpu::PrimitiveTopology::TriangleList
+                    } else {
+                        wgpu::PrimitiveTopology::TriangleStrip
+                    },
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module,
+                    entry_point: Some(fs),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: HDR_FORMAT,
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let dots_module = util::shader(device, "liquid dots", &[include_str!("shaders/liquid_dots.wgsl")]);
+        let dots = over("liquid dots", &dots_module, "vs_dot", "fs_dot", &dots_layout);
+        let wet = over("liquid wet walls", &module, "vs_full", "fs_wet", &wet_layout);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("liquid behind"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -296,6 +434,10 @@ impl LiquidPass {
             drops_layout,
             surface,
             layout,
+            dots,
+            dots_layout,
+            wet,
+            wet_layout,
             splat_layout,
             sampler,
             uniforms: None,
@@ -321,7 +463,7 @@ impl LiquidPass {
         self.placed.clear();
         let mut blobs: Vec<LiquidBlob> = Vec::new();
         let mut styles: Vec<u8> = Vec::new();
-        let mut drops: Vec<(usize, &crate::liquid_sim::DropsSource)> = Vec::new();
+        let mut drops: Vec<(usize, &crate::liquid_sim::DropsSource, bool, bool)> = Vec::new();
         for (i, l) in liquids.enumerate() {
             // Drops on another card than this renderer's can't be drawn here.
             let on_card = l.drops.as_ref().filter(|d| d.device == *device);
@@ -331,15 +473,27 @@ impl LiquidPass {
             }
             let offset = i as u64 * STRIDE;
             styles.resize(offset as usize, 0);
-            styles.extend_from_slice(bytemuck::bytes_of(&l.style));
+            let mut style = l.style;
+            if let Some(d) = on_card {
+                // Where its wet grid's newest half is.
+                style.v = [d.grid.0 as f32, d.grid.1 as f32, d.wet_half as f32, style.v[3]];
+            }
+            styles.extend_from_slice(bytemuck::bytes_of(&style));
             styles.resize((offset + STRIDE) as usize, 0);
             let key = l as *const Liquid as usize;
             self.placed.insert(
                 key,
-                Placed { offset: offset as u32, first: blobs.len() as u32, count: count as u32, drops: None },
+                Placed {
+                    offset: offset as u32,
+                    first: blobs.len() as u32,
+                    count: count as u32,
+                    drops: None,
+                    dots: None,
+                    wet: None,
+                },
             );
             if let Some(d) = on_card {
-                drops.push((key, d));
+                drops.push((key, d, l.style.dots(), l.style.wet()));
             }
             blobs.extend_from_slice(&l.blobs[..count]);
         }
@@ -406,7 +560,7 @@ impl LiquidPass {
                 wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(weights) },
             ],
         }));
-        for (key, d) in drops {
+        for (key, d, dots, wet) in drops {
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("liquid drops"),
                 layout: &self.drops_layout,
@@ -415,8 +569,32 @@ impl LiquidPass {
                     wgpu::BindGroupEntry { binding: 1, resource: d.drops.as_entire_binding() },
                 ],
             });
+            let dots = dots.then(|| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("liquid dots"),
+                    layout: &self.dots_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: style() },
+                        wgpu::BindGroupEntry { binding: 1, resource: d.drops.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(field) },
+                    ],
+                })
+            });
+            let wet = wet.then(|| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("liquid wet walls"),
+                    layout: &self.wet_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: style() },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(field) },
+                        wgpu::BindGroupEntry { binding: 5, resource: d.wet.as_entire_binding() },
+                    ],
+                })
+            });
             if let Some(p) = self.placed.get_mut(&key) {
                 p.drops = Some((group, d.counts.clone()));
+                p.dots = dots;
+                p.wet = wet;
             }
         }
     }
@@ -440,6 +618,13 @@ impl LiquidPass {
         else {
             return;
         };
+        if let Some(wet) = &p.wet {
+            let mut pass = crate::begin_pass(encoder, target, "liquid wet walls", wgpu::LoadOp::Load);
+            pass.set_pipeline(&self.wet);
+            pass.set_bind_group(0, globals, &[]);
+            pass.set_bind_group(1, wet, &[p.offset]);
+            pass.draw(0..3, 0..1);
+        }
         if let Some((drops, counts)) = &p.drops {
             let clear =
                 wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store };
@@ -472,6 +657,11 @@ impl LiquidPass {
         pass.set_bind_group(0, globals, &[]);
         pass.set_bind_group(1, group, &[p.offset]);
         pass.draw(0..3, 0..1);
+        if let (Some(dots), Some((_, counts))) = (&p.dots, &p.drops) {
+            pass.set_pipeline(&self.dots);
+            pass.set_bind_group(1, dots, &[p.offset]);
+            pass.draw_indirect(counts, 0);
+        }
     }
 }
 

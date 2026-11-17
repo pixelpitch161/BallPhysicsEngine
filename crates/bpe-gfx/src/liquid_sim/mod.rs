@@ -23,7 +23,10 @@ use std::time::Instant;
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-/// The most drops a body holds: 2^20, so its biggest buffer (80 bytes a drop, 80 MiB) stays under
+mod wet;
+pub use wet::DRY_SECONDS;
+
+/// The most drops a body holds: 2^20, so its biggest buffer (96 bytes a drop, 96 MiB) stays under
 /// the 128 MiB a storage buffer may be bound with on every card (wgpu's default limits).
 pub const MOST_DROPS: u32 = 1 << 20;
 /// The most Liquid things one body holds.
@@ -566,6 +569,8 @@ pub struct LiquidCard {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipelines: Vec<(wgpu::ComputePipeline, wgpu::BindGroupLayout)>,
+    /// The wet grid's (liquid part 3).
+    wet: Arc<wet::WetPipeline>,
     /// The stats pass (part 5).
     stats: stats::Pipe,
     /// Dropped bodies' scratch, by grid nodes, for the next copy to step with: the editor copies
@@ -658,8 +663,9 @@ impl LiquidCard {
                 (pipeline, group)
             })
             .collect();
+        let wet = Arc::new(wet::WetPipeline::new(&device));
         let stats = stats::pipe(&device);
-        LiquidCard { device, queue, pipelines, stats, spares: Mutex::new(Vec::new()) }
+        LiquidCard { device, queue, pipelines, wet, stats, spares: Mutex::new(Vec::new()) }
     }
 
     pub fn device(&self) -> &wgpu::Device {
@@ -778,6 +784,8 @@ pub struct Body {
     ms: Arc<AtomicU32>,
     in_flight: VecDeque<wgpu::SubmissionIndex>,
     steps: u32,
+    /// How wet each node near a wall is (liquid part 3, Wet walls).
+    wet: wet::WetGrid,
     /// Un-mix's samples of the drops, oldest first. Never changed once written, so copies share
     /// them.
     history: VecDeque<Arc<Sample>>,
@@ -839,6 +847,11 @@ pub struct DropsSource {
     pub drops: wgpu::Buffer,
     /// Its first four words are the draw's arguments.
     pub counts: wgpu::Buffer,
+    /// The wet grid (liquid part 3): `4 × cols × rows` floats (two halves of
+    /// wetness, the half `wet_half` the newest, then each node's face distance and side).
+    pub wet: wgpu::Buffer,
+    pub grid: (u32, u32),
+    pub wet_half: u32,
 }
 
 impl PartialEq for DropsSource {
@@ -861,6 +874,7 @@ impl Clone for Body {
             encoder.copy_buffer_to_buffer(&self.drops, 0, &drops, 0, n * std::mem::size_of::<Drop>() as u64);
         }
         encoder.copy_buffer_to_buffer(&self.counts, 0, &counts, 0, 32);
+        let wet = self.wet.copy(device, &mut encoder);
         self.gpu.queue.submit([encoder.finish()]);
         Body {
             gpu: self.gpu.clone(),
@@ -880,6 +894,7 @@ impl Clone for Body {
             steps: self.steps,
             history: self.history.clone(),
             into: self.into,
+            wet,
         }
     }
 }
@@ -904,6 +919,7 @@ impl Body {
         let room = LEAST_ROOM;
         let drops = drops_buffer(&gpu.device, room);
         let counts = counts_buffer(&gpu.device);
+        let wet = wet::WetGrid::new(&gpu.device, cols * rows);
         Body {
             gpu,
             cols,
@@ -921,6 +937,7 @@ impl Body {
             steps: 0,
             history: VecDeque::new(),
             into: 0,
+            wet,
         }
     }
 
@@ -951,12 +968,20 @@ impl Body {
 
     /// Bytes the drops take on the card (and what a copy of them takes).
     pub fn bytes(&self) -> usize {
-        self.room as usize * std::mem::size_of::<Drop>()
+        self.room as usize * std::mem::size_of::<Drop>() + self.wet.bytes()
     }
 
     /// What the renderer draws the drops from.
     pub fn source(&self) -> DropsSource {
-        DropsSource { device: self.gpu.device.clone(), drops: self.drops.clone(), counts: self.counts.clone() }
+        DropsSource {
+            device: self.gpu.device.clone(),
+            drops: self.drops.clone(),
+            counts: self.counts.clone(),
+            wet: self.wet.buffer.clone(),
+            grid: (self.cols, self.rows),
+            // The half the last step wrote.
+            wet_half: (self.steps + 1) % 2,
+        }
     }
 
     fn ensure_room(&mut self, n: u32) {
@@ -1142,6 +1167,10 @@ impl Body {
             run(E::Scatter, drop_groups);
             run(E::Packed, 1);
         }
+        // How wet the walls are, after the last substep's grid (liquid part 3).
+        let dt = input.step.time[0] * step.grid[2] as f32;
+        let grids = (&scratch.grid, &scratch.solid);
+        self.wet.run(device, queue, &gpu.wet, &mut encoder, (self.cols, self.rows), self.steps % 2, dt, grids);
         let ask = self.reader.as_ref().is_none_or(|r| !r.busy);
         if ask {
             let reader = self.reader.get_or_insert_with(|| CountReader {
@@ -1413,6 +1442,26 @@ impl Body {
             return Vec::new();
         }
         bytemuck::cast_slice::<u8, Drop>(&a.slice(..).get_mapped_range().expect("mapped"))[..count].to_vec()
+    }
+
+    /// The wet grid's newest half (liquid part 3), node by node (row by row), waiting for the card.
+    pub fn read_wet(&self) -> Vec<f32> {
+        let device = &self.gpu.device;
+        let cells = (self.cols * self.rows) as u64;
+        let staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("liquid wet read"),
+            size: cells * 4,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("liquid wet read") });
+        let half = ((self.steps + 1) % 2) as u64;
+        encoder.copy_buffer_to_buffer(&self.wet.buffer, half * cells * 4, &staging, 0, cells * 4);
+        self.gpu.queue.submit([encoder.finish()]);
+        staging.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        bytemuck::cast_slice::<u8, f32>(&staging.slice(..).get_mapped_range().expect("mapped")).to_vec()
     }
 }
 

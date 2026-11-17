@@ -16,6 +16,7 @@ pub mod cards;
 pub mod draw;
 pub mod feel;
 pub mod forces;
+pub mod look;
 pub mod rules;
 pub mod sim;
 pub mod sound;
@@ -25,10 +26,13 @@ mod tests;
 #[cfg(test)]
 mod tests_balls;
 #[cfg(test)]
+mod tests_look;
+#[cfg(test)]
 mod tests_part4;
 #[cfg(test)]
 mod tests_sound;
 pub mod walls;
+pub mod wet;
 
 use std::cell::Cell;
 
@@ -37,9 +41,10 @@ use bpe_core::{Choice, SettingDef, Settings, SlotId, ThingKind};
 pub use cards::{
     CURRENT, ChangesBall, ColourFrom, CurrentKind, CurrentLayer, DRAIN, DrainLayer, FILL, FillSettings, FillWith,
     Floats, Forces, HEAT, HeatLayer, LOOK, LookSettings, MAGNET, MEETS, MagnetAt, MagnetLayer, Meeting, MeetsSettings,
-    MixStyle, MixesWhen, OTHER, OtherLiquid, POUR, PourLayer, RuleStyle,
+    MixStyle, MixesWhen, OTHER, OtherLiquid, POUR, PourLayer, RuleStyle, ShowsAs,
 };
 pub use feel::taken_colours;
+pub use look::{LookLayers, look_defs};
 pub use sound::{BUBBLE, LiquidSound, POURING, Stat, Wet, scene_hears_liquid, stats_of, wet_of};
 pub use state::{LiquidState, hash_of, inputs_hash, state_of};
 

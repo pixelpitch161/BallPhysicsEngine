@@ -558,3 +558,62 @@ fn unmix_plays_the_drops_back_to_where_they_were() {
     run(&mut body, &step, &[], 10);
     assert!(all_finite(&body.read()));
 }
+
+#[test]
+fn the_wet_grid_marks_walls_under_the_liquid_dries_and_is_copied() {
+    let mut body = Body::new(card(), 40, 40);
+    let (step, _) = water(40, 120.0, STYLE_BLEND);
+    // A wall band on two rows across the box (row 12, which the heap starts over and leaves as it
+    // spreads, and row 36, under it) and down the right-hand side at the top, far from it.
+    let mut band = Vec::new();
+    let mut node =
+        |x: u32, y: u32| band.push(WallNode { index: y * 40 + x, n: [0.0, -1.0], dist: 5.0, half: -1.0, v: [0.0; 2], wall: 255 });
+    for x in 2..38 {
+        node(x, 12);
+        node(x, 36);
+    }
+    for y in 2..8 {
+        node(37, y);
+    }
+    let heap = lattice(3, 20, 10, 38, |_, _| [0.2, 0.4, 0.9, 1.0]);
+    body.step(&StepIn { step, births: &heap, walls: Some(band.as_slice()), balls: &[], feel: false, fresh: false });
+    let wet = body.read_wet();
+    let at = |w: &[f32], x: u32, y: u32| w[(y * 40 + x) as usize];
+    assert_eq!(at(&wet, 10, 36), 1.0, "a wall under the liquid is wet");
+    assert_eq!(at(&wet, 10, 12), 1.0, "and where it starts");
+    assert_eq!(at(&wet, 37, 4), 0.0, "a wall it never reached is dry");
+    assert_eq!(at(&wet, 10, 30), 0.0, "only walls get wet");
+    let copy = body.clone();
+    assert_eq!(copy.read_wet(), wet, "a copy holds the same wet grid");
+    run(&mut body, &step, &[], 700);
+    let wet = body.read_wet();
+    assert_eq!(at(&wet, 10, 36), 1.0, "still under it");
+    let left = at(&wet, 10, 12);
+    assert!(left > 0.0 && left < 0.95, "drying where it has gone: {left}");
+}
+
+#[test]
+fn only_the_liquids_side_of_a_thin_wall_gets_wet() {
+    // A thin hollow wall along row 20 (its line through the nodes there), liquid resting on it: the
+    // nodes on its line and above are on the liquid's side; those under it (which the drops'
+    // weights reach across the wall) stay dry.
+    let mut body = Body::new(card(), 40, 40);
+    let (step, _) = water(40, 120.0, STYLE_BLEND);
+    let mut band = Vec::new();
+    for y in 18..23 {
+        for x in 0..40 {
+            let dist = 20.0 - y as f32;
+            band.push(WallNode { index: y * 40 + x, n: [0.0, -1.0], dist, half: 0.1, v: [0.0; 2], wall: 255 });
+        }
+    }
+    let heap = lattice(3, 37, 12, 20, |_, _| [0.2, 0.4, 0.9, 1.0]);
+    body.step(&StepIn { step, births: &heap, walls: Some(band.as_slice()), balls: &[], feel: false, fresh: false });
+    run(&mut body, &step, &[], 120);
+    let wet = body.read_wet();
+    let at = |x: u32, y: u32| wet[(y * 40 + x) as usize];
+    assert_eq!(at(20, 19), 1.0, "the liquid's side is wet");
+    for x in 4..36 {
+        assert_eq!(at(x, 21), 0.0, "the far side stays dry at {x}");
+        assert_eq!(at(x, 22), 0.0, "the far side stays dry at {x}");
+    }
+}

@@ -104,6 +104,12 @@ pub const SECTION_ORDER: &[&str] = &[
     "Its colour",
     "Colour mixing",
     "Surface",
+    // A Liquid thing's Look (liquid part 3).
+    "Shape of the surface",
+    "Inside",
+    "On its surface",
+    "Its own light",
+    "With lighting",
     "Lighting",
     "Room",
     "Stage",
@@ -135,7 +141,8 @@ pub const SECTION_ORDER: &[&str] = &[
 ];
 
 /// The sections that stay folded until opened.
-pub const FOLDED_SECTIONS: &[&str] = &["Variation", "Blending", "Other balls", "Against some things", "Surface"];
+pub const FOLDED_SECTIONS: &[&str] =
+    &["Variation", "Blending", "Other balls", "Against some things", "Surface", "Its own light"];
 
 /// Where a group sits in [`SECTION_ORDER`]; a group ending in " variation" (a paint's own
 /// variation rows) ranks with "Variation". `None` for a group that is not a section.

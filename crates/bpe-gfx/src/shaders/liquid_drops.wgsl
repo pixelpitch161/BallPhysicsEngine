@@ -27,11 +27,23 @@ struct Style {
     f: vec4<f32>,
     // Drops on the card: the one colour.
     g: vec4<f32>,
+    // Liquid part 3 (see liquid.wgsl): only `m` (foam) is read here.
+    h: vec4<f32>,
+    i: vec4<f32>,
+    j: vec4<f32>,
+    k: vec4<f32>,
+    l: vec4<f32>,
+    // Foam: amount, from speed (world units a second), splashes foam, on top.
+    m: vec4<f32>,
 };
+
+// Numbers a drop takes in the card's buffer (liquid_sim.wgsl's `Drop`): x at 0, v at 2, colour at
+// 8, kind at 13, serial at 14, kick at 15.
+const DROP_FLOATS: u32 = 24u;
 
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var<uniform> st: Style;
-// The drops, 24 numbers each (liquid_sim.wgsl's `Drop`): x, v, c, colour, j, kind, serial, ...
+// The drops, DROP_FLOATS numbers each (liquid_sim.wgsl's `Drop`): x, v, c, colour, j, kind, serial, ...
 @group(1) @binding(1) var<storage, read> drops: array<f32>;
 
 fn to_clip(p: vec2<f32>) -> vec4<f32> {
@@ -51,12 +63,14 @@ struct DropOut {
     // Where in the drop, its reach 1.
     @location(0) at: vec2<f32>,
     @location(1) colour: vec3<f32>,
+    // Liquid part 3: its foam (0 to 1), speed (world units a second / 1000) and kick.
+    @location(2) more: vec3<f32>,
 };
 
 @vertex
 fn vs_drop(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> DropOut {
     var out: DropOut;
-    let at = ii * 24u;
+    let at = ii * DROP_FLOATS;
     let x = vec2<f32>(drops[at], drops[at + 1u]);
     let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u)) * 2.0 - 1.0;
     let r = max(st.e.w, 0.0);
@@ -68,6 +82,16 @@ fn vs_drop(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
         c = st.g.rgb;
     }
     out.colour = select(vec3<f32>(0.0), c, c == c);
+    // How fast it moves, and how much it foams: from its speed and from being splashed.
+    let v = vec2<f32>(drops[at + 2u], drops[at + 3u]) * st.e.z;
+    let speed = select(0.0, length(v), v.x == v.x && v.y == v.y);
+    let kick = clamp(select(0.0, drops[at + 15u], drops[at + 15u] == drops[at + 15u]), 0.0, 1.0);
+    var foam = 0.0;
+    if st.m.x > 0.0 {
+        let least = max(st.m.y, 1.0);
+        foam = clamp(smoothstep(least, 2.0 * least, speed) + st.m.z * kick, 0.0, 1.0);
+    }
+    out.more = vec3<f32>(foam, min(speed, 1e5) / 1000.0, kick);
     // Another liquid's drop: nowhere.
     let kind = bitcast<u32>(drops[at + 13u]) & 255u;
     if st.f.z >= 0.0 && kind != u32(st.f.z + 0.5) {
@@ -78,7 +102,7 @@ fn vs_drop(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
 
 struct Fields {
     @location(0) field: vec4<f32>,
-    @location(1) weights: f32,
+    @location(1) weights: vec4<f32>,
 };
 
 @fragment
@@ -94,6 +118,6 @@ fn fs_drop(in: DropOut) -> Fields {
     let cw = pow(k, 3.0 + 21.0 * clamp(st.f.x, 0.0, 1.0)) + 0.002 * w;
     var out: Fields;
     out.field = vec4<f32>(in.colour * cw, w);
-    out.weights = cw;
+    out.weights = vec4<f32>(cw, w * in.more.x, w * in.more.y, w * in.more.z);
     return out;
 }
