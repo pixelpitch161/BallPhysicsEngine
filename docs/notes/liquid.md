@@ -44,7 +44,7 @@ Liquid thing in tree order (the host, `Host` in `state.rs`). It is stepped besid
 a second. The host's after-build lays the grid over the Area (from the camera's shot at the start,
 grown to hold every liquid's shape; bigger cells past 2,000,000 nodes), makes the body and pours in
 every Fill in one still step. Each liquid step gathers every liquid's Level changes and Pours
-(`births.rs`; a pour makes width × speed ÷ (cell² / 4) drops a second), the walls band, the balls
+(`births.rs`; a pour makes width × speed × Rate ÷ (cell² / 4) drops a second), the walls band, the balls
 (when some liquid's Balls push it) and the meeting rules (Layer wins when either side says so).
 At most 16 Liquid things take part; the rest draw nothing. Export detail is used where
 `exporting_for_now()` is held (`bpe-cli`'s video, final frame and frames exports).
@@ -63,3 +63,18 @@ hashes a Liquid thing's `inputs_hash` (what its stepping reads), since that test
 `golden_liquid.rs` pins the births (exact on the processor) and the drop counts per second; the
 drops' places are checked on the machine only (a seek and a second run give the same), since a
 graphics driver's arithmetic can differ. `full_size_look.rs` has `liquid-water` and `liquid-mixing`.
+
+**Limits** (from the part 1 review). A body holds at most 2^20 drops (`MOST_DROPS`, 80 MiB: under
+the 128 MiB a storage buffer may be bound with on every card). The kit keeps it there on its own,
+so how many drops are kept never hangs on when the card's count came back: every liquid's Most
+drops together are at most 800,000 (`MOST_KEPT`; each scaled down evenly past it, `share_most` sets
+`LiquidState::kept`) and at most 200,000 drops are born a liquid step. The card clips births
+against its own count too. Weight steps as at most 20 (the fixed-point sums clamp past it),
+viscosity is clamped before mixing sums it, and the Surface pull's stiffness never passes what the
+substeps keep stable. The beside fingerprint hashes beside things' tags and their order among
+themselves (rules name tags; the first Liquid thing sets the area). The editor copies the body once
+a picture (a snapshot shares it): dropped bodies give their step scratch (grid, walls, bins) back
+to the card for the next copy (`LiquidCard::spares`), and the host keeps the walls band
+(`Host::band`) so a copy puts it on again without working it out. Under Detail the Liquid's
+settings say about how many drops fill 100 × 100 px.
+

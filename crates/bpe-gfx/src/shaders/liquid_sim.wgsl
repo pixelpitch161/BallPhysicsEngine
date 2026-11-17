@@ -122,7 +122,8 @@ fn liquid_of(d: Drop) -> u32 {
 @compute @workgroup_size(256)
 fn cs_births(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x;
-    if i >= st.counts.x {
+    // Only as many as there is room for (cs_births_done counts the same).
+    if i >= st.counts.x || counts[1] + i >= st.counts.y {
         return;
     }
     drops[counts[1] + i] = births[i];

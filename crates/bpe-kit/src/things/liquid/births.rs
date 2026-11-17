@@ -3,7 +3,7 @@
 //! times its speed fills).
 
 use bpe_core::dice::Stream;
-use bpe_gfx::liquid_sim::{Drop, MOST_DROPS, STOPS};
+use bpe_gfx::liquid_sim::{Drop, STOPS};
 use bpe_runtime::{Wall, World};
 use glam::Vec2;
 
@@ -141,7 +141,7 @@ pub fn first_fill(st: &mut LiquidState, world: &World, layout: &Layout) -> Vec<D
     let region = region(st, world);
     let (bottom, top) = (extent(&region, layout).1.y, level_y(&region, layout, st.fill.level));
     st.filled = st.fill.level;
-    let most = st.fill.most.min(MOST_DROPS);
+    let most = st.kept;
     fill_between(st, world, layout, bottom, top, most)
 }
 
@@ -160,7 +160,7 @@ pub fn level_moved(st: &mut LiquidState, world: &World, layout: &Layout) -> Vec<
     if level > st.filled + row {
         let (from, to) = (level_y(&region, layout, st.filled), level_y(&region, layout, level));
         st.filled = level;
-        let most = st.fill.most.min(MOST_DROPS);
+        let most = st.kept;
         return fill_between(st, world, layout, from, to, most);
     }
     if level < st.filled - row {
@@ -180,7 +180,7 @@ pub fn pour(st: &mut LiquidState, k: usize, world: &World, layout: &Layout, dt: 
     let region = region(st, world);
     let kind = kind_of(st, &region);
     let per_drop = layout.cell * layout.cell * 0.25;
-    let owed = st.owed[k] + p.width * p.speed * dt / per_drop;
+    let owed = st.owed[k] + p.width * p.speed * p.rate * dt / per_drop;
     let owed = if owed.is_finite() { owed.min(MOST_A_STEP as f32 + 1.0) } else { 0.0 };
     let n = owed.floor() as u32;
     st.owed[k] = owed - n as f32;

@@ -37,7 +37,7 @@ pub struct FillSettings {
     #[setting(label = "Colour strength", range(0, 1e9), span(0, 4), keyframe, group = "Fill")]
     pub strength: f32,
     /// The most drops this liquid keeps: past it the oldest go.
-    #[setting(label = "Most drops", range(1, 4000000), span(1000, 1000000), group = "Fill")]
+    #[setting(label = "Most drops", range(1, 800000), span(1000, 800000), group = "Fill")]
     pub most: u32,
 }
 
@@ -70,6 +70,10 @@ pub struct PourLayer {
     /// How fast it comes out (with Width, how much comes out a second).
     #[setting(label = "Speed", range(0, 1e9), span(0, 2000), unit = "px/s", simple, keyframe, pulse)]
     pub speed: f32,
+    /// How much comes out, times what Width and Speed pour (0 pours nothing; above 1 it comes out
+    /// thicker than it would flow).
+    #[setting(label = "Rate", range(0, 1e9), span(0, 4), unit = "×", keyframe, pulse)]
+    pub rate: f32,
     /// How far each drop's way can stray from Aim.
     #[setting(label = "Spread", range(0, 180), span(0, 45), unit = "°", keyframe)]
     pub spread: f32,
@@ -87,6 +91,7 @@ impl Default for PourLayer {
             aim: 90.0,
             width: 40.0,
             speed: 300.0,
+            rate: 1.0,
             spread: 4.0,
             colour: one_colour(WATER),
             strength: 1.0,
@@ -110,6 +115,7 @@ impl PourLayer {
                     aim: num(s.aim, d.aim),
                     width: num(s.width, d.width).max(0.0),
                     speed: num(s.speed, d.speed).max(0.0),
+                    rate: num(s.rate, d.rate).max(0.0),
                     spread: num(s.spread, d.spread).clamp(0.0, 180.0),
                     strength: num(s.strength, d.strength).max(0.0),
                     ..s

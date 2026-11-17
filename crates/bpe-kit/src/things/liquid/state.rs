@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use bpe_core::ThingId;
-use bpe_gfx::liquid_sim::{Body, Drop};
+use bpe_gfx::liquid_sim::{Body, Drop, WallNode};
 use bpe_runtime::{Wall, World};
 use glam::Vec2;
 
@@ -53,6 +53,8 @@ pub struct Host {
     pub step: u32,
     /// The walls the band was last worked out from.
     pub walls_seen: BTreeMap<ThingId, Wall>,
+    /// The band worked out from them, for a copied body to put on again without working it out.
+    pub band: Option<Arc<Vec<WallNode>>>,
 }
 
 impl Host {
@@ -88,6 +90,9 @@ pub struct LiquidState {
     pub filled: f32,
     /// The Level fell this step: drops above the new level go.
     pub cut: Option<f32>,
+    /// The most drops it keeps now: its Most drops, or its share of [`MOST_KEPT`] when every
+    /// liquid's Most drops add up to more ([`share_most`]).
+    pub kept: u32,
     /// The first Liquid thing's: the body every one shares.
     pub host: Option<Host>,
 }
@@ -108,6 +113,7 @@ impl LiquidState {
             owed: Vec::new(),
             filled: 0.0,
             cut: None,
+            kept: 0,
             host: None,
         }
     }
@@ -115,6 +121,23 @@ impl LiquidState {
     /// Bytes its body takes on the card.
     pub fn gpu_memory(&self) -> usize {
         self.host.as_ref().and_then(|h| h.body.as_ref()).map_or(0, |b| b.bytes())
+    }
+}
+
+/// The most drops every liquid keeps between them, and the most born in one liquid step: together
+/// under [`bpe_gfx::liquid_sim::MOST_DROPS`], so the card never runs out of room and how many are
+/// kept never depends on when the card's count came back.
+pub const MOST_KEPT: u32 = 800_000;
+pub const MOST_BORN_A_STEP: usize = 200_000;
+
+/// Sets each liquid's `kept`: its Most drops, scaled down evenly when they add up to more than
+/// [`MOST_KEPT`].
+pub fn share_most<'a>(states: impl IntoIterator<Item = &'a mut LiquidState>) {
+    let mut all: Vec<&mut LiquidState> = states.into_iter().filter(|s| s.index.is_some()).collect();
+    let sum: u64 = all.iter().map(|s| s.fill.most as u64).sum();
+    let scale = if sum > MOST_KEPT as u64 { MOST_KEPT as f64 / sum as f64 } else { 1.0 };
+    for s in all.iter_mut() {
+        s.kept = ((s.fill.most as f64 * scale) as u32).max(1);
     }
 }
 

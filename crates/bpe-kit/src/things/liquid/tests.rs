@@ -216,3 +216,27 @@ fn a_lower_level_cuts_the_liquid_and_a_higher_one_adds_to_it() {
     world.advance_to(0.6, &kit.sims, &mut Log::default());
     assert!(drops(&world).len() > before, "a higher level adds drops");
 }
+
+#[test]
+fn every_liquids_most_drops_together_stay_under_the_cards_room() {
+    use super::state::{MOST_BORN_A_STEP, MOST_KEPT, share_most};
+    let mut states: Vec<LiquidState> = (0..3)
+        .map(|k| {
+            let mut s = LiquidState::new(ThingId(10 + k), None);
+            s.index = Some(k as usize);
+            s.fill.most = 800_000;
+            s
+        })
+        .collect();
+    share_most(states.iter_mut());
+    let kept: u32 = states.iter().map(|s| s.kept).sum();
+    assert!(kept <= MOST_KEPT, "{kept}");
+    assert!(states.iter().all(|s| s.kept == states[0].kept), "shared evenly");
+    assert!(kept as usize + MOST_BORN_A_STEP < bpe_gfx::liquid_sim::MOST_DROPS as usize);
+    // Under the limit, each keeps its own.
+    states[0].fill.most = 1000;
+    states[1].fill.most = 2000;
+    states[2].fill.most = 3000;
+    share_most(states.iter_mut());
+    assert_eq!(states.iter().map(|s| s.kept).collect::<Vec<_>>(), [1000, 2000, 3000]);
+}

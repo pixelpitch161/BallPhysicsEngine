@@ -20,7 +20,7 @@ use super::births;
 use super::cards::{
     FILL, FillSettings, LOOK, LookSettings, MEETS, Meeting, MeetsSettings, MixStyle, OtherLiquid, PourLayer, RuleStyle,
 };
-use super::state::{Host, Layout, LiquidState, state_of};
+use super::state::{Host, Layout, LiquidState, MOST_BORN_A_STEP, share_most, state_of};
 use super::walls;
 use super::{AreaFrom, KIND, LiquidSettings, exporting};
 
@@ -135,6 +135,8 @@ fn rule(world: &World, st: &LiquidState, other: &LiquidState) -> (u32, MixStyle,
 /// How far a pressure wave may travel in a substep, in cells. At 0.4 still water slowly gains
 /// energy and tears itself into foam within a second; 0.15 stays still.
 const CFL: f32 = 0.15;
+/// The heaviest a liquid steps as (Weight goes higher, the card's fixed-point sums don't).
+const MOST_WEIGHT: f32 = 20.0;
 
 fn step_settings(world: &World, host: &Host, list: &[&LiquidState], mixing: bool) -> StepGpu {
     let layout = &host.layout;
@@ -166,16 +168,17 @@ fn step_settings(world: &World, host: &Host, list: &[&LiquidState], mixing: bool
     for (i, st) in list.iter().enumerate().take(MOST_LIQUIDS) {
         let s = &st.settings;
         free |= matches!(births::region(st, world), births::Region::Free);
-        let viscosity = 25_600.0 * s.thickness * s.thickness / (layout.cell * layout.cell);
-        let floor = st.born.saturating_sub(st.fill.most);
+        // Clamped here, before mixing sums it in fixed point: a thick liquid meeting a thin one would
+        // overflow the sums and flip its thickness.
+        let viscosity = (25_600.0 * s.thickness * s.thickness / (layout.cell * layout.cell)).min(step.more[0]);
+        // The card's mass and momentum sums are fixed point: past this they clamp.
+        let weight = s.weight.clamp(0.05, MOST_WEIGHT);
+        // The pull is a stiffness too: never past what the substeps keep stable.
+        let pull = (0.25 * s.surface_pull * s.surface_pull).min(cap / stiff[i].min(cap).max(1e-6));
+        let floor = st.born.saturating_sub(st.kept);
         step.liquids[i] = LiquidGpu {
-            a: [
-                stiff[i].min(cap),
-                0.25 * s.surface_pull * s.surface_pull,
-                lerp(0.3, 0.01, s.spray),
-                8.0 * s.settles * s.settles,
-            ],
-            b: [viscosity, s.weight, s.gravity, if st.meets.balls_push { 1.0 } else { 0.0 }],
+            a: [stiff[i].min(cap), pull, lerp(0.3, 0.01, s.spray), 8.0 * s.settles * s.settles],
+            b: [viscosity, weight, s.gravity, if st.meets.balls_push { 1.0 } else { 0.0 }],
             c: [st.look.mix_style.code() as f32, 0.0, 0.0, st.cut.unwrap_or(LiquidGpu::NO_CUT)],
             d: [floor, 0, 0, 0],
         };
@@ -237,6 +240,7 @@ fn step_once(world: &World, taken: &mut [(ThingId, Box<dyn ThingState>)]) {
     {
         let mut all: Vec<&mut LiquidState> = vec![host_st];
         all.extend(rest.iter_mut().map(|(_, b)| state_mut::<LiquidState>(b.as_mut())));
+        share_most(all.iter_mut().map(|s| &mut **s));
         for st in all.iter_mut() {
             births.extend(births::level_moved(st, world, &host.layout));
             for k in 0..st.pours.len() {
@@ -244,6 +248,7 @@ fn step_once(world: &World, taken: &mut [(ThingId, Box<dyn ThingState>)]) {
             }
         }
     }
+    births.truncate(MOST_BORN_A_STEP);
     let host_st = state_mut::<LiquidState>(host_part[0].1.as_mut());
     let mut list: Vec<&LiquidState> = vec![&*host_st];
     list.extend(rest.iter().map(|(_, b)| (**b).as_any().downcast_ref::<LiquidState>().expect("a Liquid state")));
@@ -258,10 +263,18 @@ fn step_once(world: &World, taken: &mut [(ThingId, Box<dyn ThingState>)]) {
         let body = Arc::make_mut(body);
         let now = walls::walls_now(world);
         let changed = now != host.walls_seen || walls::moving(&now);
-        let band = (changed || !body.walls_ready()).then(|| walls::band(&now, &host.layout));
+        if changed || host.band.is_none() {
+            host.band = Some(Arc::new(walls::band(&now, &host.layout)));
+        }
+        let band = (changed || !body.walls_ready()).then(|| host.band.clone()).flatten();
         host.walls_seen = now;
         let balls = if any_push { balls(world, &host.layout) } else { Vec::new() };
-        body.step(&StepIn { step: settings, births: &births, walls: band.as_deref(), balls: &balls });
+        body.step(&StepIn {
+            step: settings,
+            births: &births,
+            walls: band.as_deref().map(|b| b.as_slice()),
+            balls: &balls,
+        });
     }
     host.step += 1;
     state_mut::<LiquidState>(host_part[0].1.as_mut()).host = Some(host);
@@ -302,18 +315,20 @@ impl ThingSim for LiquidSim {
             st.filled = 0.0;
             st.cut = None;
         }
+        share_most(taken.iter_mut().map(|(_, b)| state_mut::<LiquidState>(b.as_mut())));
         // The fills, with the other liquids out of the world: their regions read only the walls.
         for (_, b) in taken.iter_mut() {
             births.extend(births::first_fill(state_mut::<LiquidState>(b.as_mut()), world, &layout));
         }
-        let mut host = Host { body, layout, rate, step: 0, walls_seen: walls::walls_now(world) };
+        let mut host = Host { body, layout, rate, step: 0, walls_seen: walls::walls_now(world), band: None };
         if let Some(body) = host.body.as_mut() {
             // Born still: a step with no time in it puts them on the card with the walls band.
             let mut settings = StepGpu::default();
             settings.grid[2] = 1;
             settings.grid[3] = taken.len().min(MOST_LIQUIDS) as u32;
-            let band = walls::band(&host.walls_seen, &layout);
+            let band = Arc::new(walls::band(&host.walls_seen, &layout));
             Arc::make_mut(body).step(&StepIn { step: settings, births: &births, walls: Some(&band), balls: &[] });
+            host.band = Some(band);
         }
         state_mut::<LiquidState>(taken[0].1.as_mut()).host = Some(host);
         give_back(world, taken);

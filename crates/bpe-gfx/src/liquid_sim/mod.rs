@@ -20,8 +20,9 @@ use std::time::Instant;
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-/// The most drops a body holds.
-pub const MOST_DROPS: u32 = 4_000_000;
+/// The most drops a body holds: 2^20, so its biggest buffer (80 bytes a drop, 80 MiB) stays under
+/// the 128 MiB a storage buffer may be bound with on every card (wgpu's default limits).
+pub const MOST_DROPS: u32 = 1 << 20;
 /// The most Liquid things one body holds.
 pub const MOST_LIQUIDS: usize = 16;
 /// The most grid nodes a body has (the Liquid thing grows its cell to stay under).
@@ -334,6 +335,30 @@ pub struct LiquidCard {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipelines: Vec<(wgpu::ComputePipeline, wgpu::BindGroupLayout)>,
+    /// Dropped bodies' scratch, by grid nodes, for the next copy to step with: the editor copies
+    /// its body about once a picture (a snapshot shares it), and a new grid each time was most of
+    /// a copy's cost.
+    spares: Mutex<Vec<(u32, Scratch)>>,
+}
+
+/// The most dropped bodies' scratch a card keeps.
+const MOST_SPARES: usize = 4;
+
+impl LiquidCard {
+    fn take_spare(&self, cells: u32) -> Option<Scratch> {
+        let mut spares = self.spares.lock().ok()?;
+        let k = spares.iter().position(|(c, _)| *c == cells)?;
+        Some(spares.swap_remove(k).1)
+    }
+
+    fn give_spare(&self, cells: u32, scratch: Scratch) {
+        if let Ok(mut spares) = self.spares.lock() {
+            if spares.len() >= MOST_SPARES {
+                spares.remove(0);
+            }
+            spares.push((cells, scratch));
+        }
+    }
 }
 
 impl std::fmt::Debug for LiquidCard {
@@ -400,7 +425,7 @@ impl LiquidCard {
                 (pipeline, group)
             })
             .collect();
-        LiquidCard { device, queue, pipelines }
+        LiquidCard { device, queue, pipelines, spares: Mutex::new(Vec::new()) }
     }
 
     pub fn device(&self) -> &wgpu::Device {
@@ -590,13 +615,22 @@ impl Clone for Body {
             counts,
             room,
             bound: self.bound,
-            scratch: None,
+            // Its walls band is put on again either way (a spare's is another body's).
+            scratch: self.gpu.take_spare(self.cols * self.rows),
             walls_ready: false,
             reader: None,
             hint: Arc::new(AtomicU32::new(self.hint.load(Ordering::Relaxed))),
             ms: Arc::new(AtomicU32::new(self.ms.load(Ordering::Relaxed))),
             in_flight: VecDeque::new(),
             steps: self.steps,
+        }
+    }
+}
+
+impl std::ops::Drop for Body {
+    fn drop(&mut self) {
+        if let Some(scratch) = self.scratch.take() {
+            self.gpu.give_spare(self.cols * self.rows, scratch);
         }
     }
 }
@@ -683,13 +717,14 @@ impl Body {
         self.room = room;
     }
 
-    /// One liquid step: births appended (as many as fit under [`MOST_DROPS`]), the walls band put
+    /// One liquid step: births appended (as many as fit under [`MOST_DROPS`], counted on the card,
+    /// so how many fit never hangs on when a count came back), the walls band put
     /// on when given, `step.grid[2]` substeps, mixing when `step.flags[0]` is 1, the dead removed.
     pub fn step(&mut self, input: &StepIn) {
         self.take_count();
         self.wait_for_room();
-        let births = (input.births.len() as u32).min(MOST_DROPS.saturating_sub(self.bound));
-        let bound = self.bound + births;
+        let births = (input.births.len() as u32).min(MOST_DROPS);
+        let bound = self.bound.saturating_add(births).min(MOST_DROPS);
         self.ensure_room(bound.max(1));
         let gpu = self.gpu.clone();
         let (device, queue) = (&gpu.device, &gpu.queue);
