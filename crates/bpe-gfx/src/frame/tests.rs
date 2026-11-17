@@ -55,10 +55,10 @@ fn free_glass_is_bending_sprites_and_glass_liquid() {
     assert!(one.lo[0] <= 85.0 && one.hi[0] >= 115.0 && one.lo[1] <= 35.0 && one.hi[1] >= 65.0, "{one:?}");
     let blob = crate::liquid::LiquidBlob { place: [-200.0, 0.0, 20.0, 1.0], colour: [1.0; 4] };
     let mut style = crate::liquid::LiquidStyle { a: [0.5, 1.0, 1.0, 4.0], ..Default::default() };
-    frame.liquids.push(crate::liquid::Liquid { blobs: vec![blob], style, front: false });
+    frame.liquids.push(crate::liquid::Liquid { blobs: vec![blob], style, front: false, drops: None });
     assert_eq!(frame.free_glass_box(), Some(one), "a glass liquid with Bends light 1");
     style.c[2] = 1.33;
-    frame.liquids.push(crate::liquid::Liquid { blobs: vec![blob], style, front: false });
+    frame.liquids.push(crate::liquid::Liquid { blobs: vec![blob], style, front: false, drops: None });
     let both = frame.free_glass_box().unwrap();
     assert!(both.lo[0] <= -240.0 && both.hi[0] >= 115.0, "{both:?}");
     // Inside a blend layer's own frame too.

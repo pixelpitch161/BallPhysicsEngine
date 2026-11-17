@@ -1762,6 +1762,78 @@ pub fn shadow_switch(reg: &Registry) -> Scene {
     scene
 }
 
+/// A Liquid thing under `parent`, its Fill and Look as `fill` and `look` leave them.
+pub fn add_liquid(
+    scene: &mut Scene,
+    reg: &Registry,
+    parent: ThingId,
+    fill: impl FnOnce(&mut crate::things::liquid::FillSettings),
+    look: impl FnOnce(&mut crate::things::liquid::LookSettings),
+) -> ThingId {
+    use crate::things::liquid::{FillSettings, KIND, LookSettings};
+    let id = crate::add_thing(scene, reg, KIND, parent).expect("kit kinds are registered");
+    let card = scene.card_mut(id, SlotId::Motion).expect("a fill");
+    let mut f = FillSettings::from_params(&card.params);
+    fill(&mut f);
+    card.params = f.to_params();
+    let card = scene.card_mut(id, SlotId::Look).expect("a look");
+    let mut l = LookSettings::from_params(&card.params);
+    look(&mut l);
+    card.params = l.to_params();
+    id
+}
+
+/// Adds a Pour to Liquid thing `id`, as `edit` leaves it.
+pub fn add_pour(
+    scene: &mut Scene,
+    reg: &Registry,
+    id: ThingId,
+    edit: impl FnOnce(&mut crate::things::liquid::PourLayer),
+) {
+    use crate::things::liquid::{POUR, PourLayer};
+    let layer = scene.add_layer(reg, id, SlotId::Motion, POUR).expect("a pour");
+    let mut p = PourLayer::default();
+    edit(&mut p);
+    let card = scene.card_mut(id, SlotId::Motion).expect("a fill");
+    for (k, v) in p.to_params().iter() {
+        card.params.set(&bpe_core::layered_key(layer, k), v.clone());
+    }
+}
+
+/// Liquid part 1's test scenes (not built-in scenes): water in the new scene's ring with its ball
+/// dropping in; and yellow paint in the ring with blue paint poured in from above, mixing to green.
+pub fn liquid_scenes(reg: &Registry) -> Vec<(String, Scene)> {
+    use crate::things::liquid::MixStyle;
+    let ring = |scene: &Scene| scene.things.values().find(|t| t.kind == "shape").map(|t| t.id).expect("a ring");
+    let mut water = new_scene(reg);
+    let shape = ring(&water);
+    add_liquid(&mut water, reg, shape, |f| f.level = 0.4, |_| {});
+    let mut paint = new_scene(reg);
+    let shape = ring(&paint);
+    let yellow = Paint::solid(Color::rgb(0xf2, 0xd0, 0x20));
+    let blue = Paint::solid(Color::rgb(0x20, 0x40, 0xe0));
+    let id = add_liquid(
+        &mut paint,
+        reg,
+        shape,
+        |f| {
+            f.level = 0.3;
+            f.colour = yellow;
+        },
+        |l| {
+            l.mix_style = MixStyle::Paint;
+            l.mix_speed = 0.5;
+        },
+    );
+    add_pour(&mut paint, reg, id, |p| {
+        p.place = Vec2::new(0.0, -300.0);
+        p.width = 50.0;
+        p.speed = 400.0;
+        p.colour = blue;
+    });
+    vec![("Liquid water".into(), water), ("Liquid paint mixing".into(), paint)]
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{registry, scenes};

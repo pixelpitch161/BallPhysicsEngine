@@ -167,6 +167,9 @@ pub(super) fn beside_hash(
             }
         }
     }
+    // The beside things in tree order (only their order among themselves counts).
+    let beside_order: Vec<ThingId> =
+        scene.order.iter().copied().filter(|t| resolved.things.get(t).is_some_and(|r| chosen(*t, r))).collect();
     for (id, r) in &resolved.things {
         if !chosen(*id, r) {
             continue;
@@ -186,6 +189,14 @@ pub(super) fn beside_hash(
         h.f32(thing.transform.position.y);
         h.f32(thing.transform.rotation);
         h.bytes(&[thing.enabled as u8]);
+        // Its tags (what a rule naming a tag finds) and its place in the tree (the first Liquid
+        // thing sets every liquid's area).
+        for tag in &thing.tags {
+            h.bytes(tag.as_bytes());
+            h.bytes(&[0]);
+        }
+        let place = beside_order.iter().position(|t| t == id).map_or(u32::MAX, |k| k as u32);
+        h.bytes(&place.to_le_bytes());
         for (key, value) in r.params.iter() {
             h.bytes(key.as_bytes());
             h.value(value);

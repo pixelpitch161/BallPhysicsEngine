@@ -87,6 +87,16 @@ pub(super) fn kind_card(
                     own_grid(ui, inspector, cx, ("kind", id), &defs, edits);
                 } else {
                     own_grid(ui, inspector, cx, ("kind", id), kind.settings(), edits);
+                    if kind.id() == bpe_kit::things::liquid::KIND {
+                        let s =
+                            <bpe_kit::things::liquid::LiquidSettings as bpe_core::Settings>::from_params(&thing.params);
+                        let words = format!(
+                            "About {} drops in 100 × 100 px, {} when exporting",
+                            s.detail.drops_per_100px(),
+                            s.export_detail.drops_per_100px()
+                        );
+                        ui.label(RichText::new(words).color(style::MUTED));
+                    }
                 }
             }
         });

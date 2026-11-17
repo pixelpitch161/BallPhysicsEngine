@@ -148,7 +148,7 @@ impl ModuleKind for BasicBounceKind {
     }
     /// Every thing with this slot but a Particles thing, which has its own card.
     fn fits(&self, thing_kind: &str) -> bool {
-        thing_kind != crate::things::particles::KIND
+        thing_kind != crate::things::particles::KIND && thing_kind != crate::things::liquid::KIND
     }
     fn settings(&self) -> &'static [SettingDef] {
         BasicBounce::defs()

@@ -13,6 +13,7 @@ pub mod group_view;
 mod handles;
 mod layer_list;
 mod layer_rows;
+pub mod liquid;
 pub mod particles;
 
 pub use ball_view::BallView;

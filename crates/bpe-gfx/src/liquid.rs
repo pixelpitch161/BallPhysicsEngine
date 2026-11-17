@@ -17,6 +17,8 @@ use crate::{GrowableBuffer, HDR_FORMAT, util};
 
 /// The field picture's format: blendable floats, colour × weight and the weight.
 const FIELD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// The drops' colour weights' format.
+const WEIGHTS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
 /// Uniforms sit this far apart for dynamic offsets.
 const STRIDE: u64 = 256;
 /// The most blobs one liquid draws (a guard far above what a layer makes).
@@ -54,6 +56,16 @@ pub struct LiquidStyle {
     /// how much it blocks light (0 to 1), its thing's link number (pass 6, for lights that light up
     /// only some things).
     pub d: [f32; 4],
+    /// Drops on the card ([`LiquidDrops`]): the grid's origin (world xy), its cell (world units)
+    /// and each drop's reach (world units).
+    pub e: [f32; 4],
+    /// Drops on the card: Swirl detail (0 colours blend over a drop's whole reach, 1 sharp), 1
+    /// when the colours are read from the second field (the drops' own colour weights), the
+    /// liquid's number (only its drops are drawn; below 0 every drop), and 1 to draw every drop
+    /// in `g`'s colour instead of its own.
+    pub f: [f32; 4],
+    /// Drops on the card: the one colour (linear rgb, w spare).
+    pub g: [f32; 4],
 }
 
 impl LiquidStyle {
@@ -71,27 +83,37 @@ impl LiquidStyle {
     }
 }
 
-/// One liquid to draw: its blobs and how it looks, behind the balls or in front of them.
+/// One liquid to draw: its blobs (or its drops on the card) and how it looks, behind the balls
+/// or in front of them.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Liquid {
     pub blobs: Vec<LiquidBlob>,
     pub style: LiquidStyle,
     /// Drawn over the balls.
     pub front: bool,
+    /// The drops of a Liquid thing, drawn straight from the card's buffers (the style's `e` and
+    /// `f` say where and how): drawn instead of `blobs`.
+    pub drops: Option<crate::liquid_sim::DropsSource>,
 }
 
 /// Where a liquid's numbers sit in this frame's buffers.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct Placed {
     /// Its uniform's offset.
     offset: u32,
     /// Its blobs' first instance and count.
     first: u32,
     count: u32,
+    /// A liquid of drops on the card: its splat's group (the style and the drops) and the buffer
+    /// its draw's numbers are in.
+    drops: Option<(wgpu::BindGroup, wgpu::Buffer)>,
 }
 
 pub(crate) struct LiquidPass {
     splat: wgpu::RenderPipeline,
+    /// Drops on the card, into the field and the colour weights.
+    splat_drops: wgpu::RenderPipeline,
+    drops_layout: wgpu::BindGroupLayout,
     surface: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     /// The splat pass's group: the style alone (the field is its target).
@@ -99,7 +121,8 @@ pub(crate) struct LiquidPass {
     sampler: wgpu::Sampler,
     uniforms: Option<wgpu::Buffer>,
     blobs: GrowableBuffer,
-    field: Option<(u32, u32, wgpu::TextureView)>,
+    /// The field, and the drops' colour weights.
+    field: Option<(u32, u32, wgpu::TextureView, wgpu::TextureView)>,
     group: Option<wgpu::BindGroup>,
     splat_group: Option<wgpu::BindGroup>,
     /// This frame's liquids, by their address (the frame stays put between upload and draw).
@@ -123,6 +146,7 @@ impl LiquidPass {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                util::float_texture_entry(4, S::FRAGMENT),
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -139,6 +163,28 @@ impl LiquidPass {
             bind_group_layouts: &[Some(globals_layout), Some(&splat_layout)],
             immediate_size: 0,
         });
+        let drops_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("liquid drops"),
+            entries: &[
+                util::uniform_entry(0, S::VERTEX_FRAGMENT, true),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: S::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let drops_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("liquid drops"),
+            bind_group_layouts: &[Some(globals_layout), Some(&drops_layout)],
+            immediate_size: 0,
+        });
+        let drops_module = util::shader(device, "liquid drops", &[include_str!("shaders/liquid_drops.wgsl")]);
         let module = util::shader(
             device,
             "liquid",
@@ -178,6 +224,39 @@ impl LiquidPass {
             multiview_mask: None,
             cache: None,
         });
+        let weights = wgpu::BlendState { color: add, alpha: add };
+        let splat_drops = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("liquid splat drops"),
+            layout: Some(&drops_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &drops_module,
+                entry_point: Some("vs_drop"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, ..Default::default() },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &drops_module,
+                entry_point: Some("fs_drop"),
+                compilation_options: Default::default(),
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format: FIELD_FORMAT,
+                        blend: Some(weights),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(wgpu::ColorTargetState {
+                        format: WEIGHTS_FORMAT,
+                        blend: Some(weights),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                ],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
         let surface = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("liquid surface"),
             layout: Some(&pipeline_layout),
@@ -213,6 +292,8 @@ impl LiquidPass {
         });
         Self {
             splat,
+            splat_drops,
+            drops_layout,
             surface,
             layout,
             splat_layout,
@@ -240,25 +321,34 @@ impl LiquidPass {
         self.placed.clear();
         let mut blobs: Vec<LiquidBlob> = Vec::new();
         let mut styles: Vec<u8> = Vec::new();
+        let mut drops: Vec<(usize, &crate::liquid_sim::DropsSource)> = Vec::new();
         for (i, l) in liquids.enumerate() {
-            let count = l.blobs.len().min(MOST_BLOBS);
-            if count == 0 {
+            // Drops on another card than this renderer's can't be drawn here.
+            let on_card = l.drops.as_ref().filter(|d| d.device == *device);
+            let count = if on_card.is_some() { 0 } else { l.blobs.len().min(MOST_BLOBS) };
+            if count == 0 && on_card.is_none() {
                 continue;
             }
             let offset = i as u64 * STRIDE;
             styles.resize(offset as usize, 0);
             styles.extend_from_slice(bytemuck::bytes_of(&l.style));
             styles.resize((offset + STRIDE) as usize, 0);
+            let key = l as *const Liquid as usize;
             self.placed.insert(
-                l as *const Liquid as usize,
-                Placed { offset: offset as u32, first: blobs.len() as u32, count: count as u32 },
+                key,
+                Placed { offset: offset as u32, first: blobs.len() as u32, count: count as u32, drops: None },
             );
+            if let Some(d) = on_card {
+                drops.push((key, d));
+            }
             blobs.extend_from_slice(&l.blobs[..count]);
         }
         if self.placed.is_empty() {
             return;
         }
-        self.blobs.upload(device, queue, bytemuck::cast_slice(&blobs));
+        if !blobs.is_empty() {
+            self.blobs.upload(device, queue, bytemuck::cast_slice(&blobs));
+        }
         let need = styles.len() as u64;
         if self.uniforms.as_ref().is_none_or(|b| b.size() < need) {
             self.uniforms = Some(device.create_buffer(&wgpu::BufferDescriptor {
@@ -270,20 +360,29 @@ impl LiquidPass {
         }
         let uniforms = self.uniforms.as_ref().expect("made above");
         queue.write_buffer(uniforms, 0, &styles);
-        if self.field.as_ref().is_none_or(|(w, h, _)| (*w, *h) != (width, height)) {
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("liquid field"),
-                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: FIELD_FORMAT,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
-            self.field = Some((width, height, texture.create_view(&Default::default())));
+        if self.field.as_ref().is_none_or(|(w, h, _, _)| (*w, *h) != (width, height)) {
+            let texture = |label, format| {
+                device
+                    .create_texture(&wgpu::TextureDescriptor {
+                        label: Some(label),
+                        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
+                    })
+                    .create_view(&Default::default())
+            };
+            self.field = Some((
+                width,
+                height,
+                texture("liquid field", FIELD_FORMAT),
+                texture("liquid colour weights", WEIGHTS_FORMAT),
+            ));
         }
-        let field = &self.field.as_ref().expect("made above").2;
+        let (_, _, field, weights) = self.field.as_ref().expect("made above");
         let style = || {
             wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                 buffer: uniforms,
@@ -304,8 +403,22 @@ impl LiquidPass {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(field) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(behind) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(weights) },
             ],
         }));
+        for (key, d) in drops {
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("liquid drops"),
+                layout: &self.drops_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: style() },
+                    wgpu::BindGroupEntry { binding: 1, resource: d.drops.as_entire_binding() },
+                ],
+            });
+            if let Some(p) = self.placed.get_mut(&key) {
+                p.drops = Some((group, d.counts.clone()));
+            }
+        }
     }
 
     /// Whether `liquid` was uploaded this frame (it has blobs).
@@ -322,12 +435,30 @@ impl LiquidPass {
         globals: &wgpu::BindGroup,
         target: &wgpu::TextureView,
     ) {
-        let (Some(p), Some(group), Some(splat_group), Some((_, _, field))) =
+        let (Some(p), Some(group), Some(splat_group), Some((_, _, field, weights))) =
             (self.placed.get(&(liquid as *const Liquid as usize)), &self.group, &self.splat_group, &self.field)
         else {
             return;
         };
-        {
+        if let Some((drops, counts)) = &p.drops {
+            let clear =
+                wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store };
+            let attach = |view| {
+                Some(wgpu::RenderPassColorAttachment { view, resolve_target: None, ops: clear, depth_slice: None })
+            };
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("liquid splat drops"),
+                color_attachments: &[attach(field), attach(weights)],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.splat_drops);
+            pass.set_bind_group(0, globals, &[]);
+            pass.set_bind_group(1, drops, &[p.offset]);
+            pass.draw_indirect(counts, 0);
+        } else {
             let mut pass =
                 crate::begin_pass(encoder, field, "liquid splat", wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
             pass.set_pipeline(&self.splat);

@@ -198,7 +198,7 @@ const PHYSICS: [SlotId; 2] = [SlotId::Motion, SlotId::Bounce];
 /// Whether `slot` of a thing of kind `kind` shows in the one Physics card: a Particles thing
 /// shows its Motion (forces) and Meets things as cards of their own.
 fn in_physics(kind: &str, slot: SlotId) -> bool {
-    PHYSICS.contains(&slot) && kind != bpe_kit::things::particles::KIND
+    PHYSICS.contains(&slot) && kind != bpe_kit::things::particles::KIND && kind != bpe_kit::things::liquid::KIND
 }
 
 /// The slots of [`PHYSICS`] the thing has, in that order.

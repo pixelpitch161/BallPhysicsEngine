@@ -145,6 +145,13 @@ fn slot_body(
         return;
     }
     slot_grid(ui, inspector, cx, slot, card_kind, edits);
+    // A Liquid thing's lists: its Pours and its rules for other liquids.
+    if card_kind == bpe_kit::things::liquid::FILL {
+        crate::look_editor::liquid::show_pours(ui, inspector, &look, edits);
+    }
+    if card_kind == bpe_kit::things::liquid::MEETS {
+        crate::look_editor::liquid::show_others(ui, inspector, &look, edits);
+    }
     if card_kind == bpe_kit::modules::lighting::LIGHTING && !is_folded(inspector, (id, Some(slot)), "Scenes") {
         crate::light_scenes_panel::show(ui, inspector, scene, &kit.registry, time, edits);
     }

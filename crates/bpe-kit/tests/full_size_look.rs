@@ -409,7 +409,16 @@ fn demo_shots(reg: &Registry) -> Vec<Shot> {
         at("gradient-seams", gradient_seams(reg)),
         at("lit-liquid-smoke", lit_liquid_smoke(reg, true)),
         at("lit-liquid-smoke-own-light", lit_liquid_smoke(reg, false)),
+        // Liquid part 1: water in the ring with its ball dropping in, and blue paint poured into
+        // yellow paint.
+        shot("liquid-water", liquid_scene(reg, "Liquid water"), vec![0.5, 2.0]),
+        shot("liquid-mixing", liquid_scene(reg, "Liquid paint mixing"), vec![1.5, 3.0]),
     ]
+}
+
+/// One of liquid part 1's test scenes.
+fn liquid_scene(reg: &Registry, name: &str) -> Scene {
+    scenes::liquid_scenes(reg).into_iter().find(|(n, _)| n == name).map(|(_, s)| s).expect("a liquid scene")
 }
 
 /// `scene` given a Grade card, with `basic` and `curve` setting its Basic and Tone Curve panels.
