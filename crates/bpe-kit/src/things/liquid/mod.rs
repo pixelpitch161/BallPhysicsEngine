@@ -18,6 +18,7 @@ pub mod feel;
 pub mod look;
 pub mod rules;
 pub mod sim;
+pub mod sound;
 pub mod state;
 #[cfg(test)]
 mod tests;
@@ -25,6 +26,8 @@ mod tests;
 mod tests_balls;
 #[cfg(test)]
 mod tests_look;
+#[cfg(test)]
+mod tests_sound;
 pub mod walls;
 pub mod wet;
 
@@ -38,6 +41,7 @@ pub use cards::{
 };
 pub use feel::taken_colours;
 pub use look::{LookLayers, look_defs};
+pub use sound::{BUBBLE, LiquidSound, POURING, Stat, Wet, scene_hears_liquid, stats_of, wet_of};
 pub use state::{LiquidState, hash_of, inputs_hash, state_of};
 
 /// The thing kind's id.
@@ -236,8 +240,9 @@ impl ThingKind for LiquidKind {
     fn settings(&self) -> &'static [SettingDef] {
         LiquidSettings::defs()
     }
+    /// Its sound (liquid part 5) is in the Sound slot, not a default card.
     fn slots(&self) -> &'static [SlotId] {
-        &[SlotId::Motion, SlotId::Bounce, SlotId::Look]
+        &[SlotId::Motion, SlotId::Bounce, SlotId::Look, SlotId::Sound]
     }
     fn default_slots(&self) -> &'static [SlotId] {
         &[SlotId::Motion, SlotId::Bounce, SlotId::Look]

@@ -158,6 +158,7 @@ fn tabs(kind: &str) -> Vec<(InspectorTab, &'static str, &'static str)> {
         bpe_kit::things::text::KIND => "The words, their look and what balls do at them",
         bpe_kit::things::particles::KIND => "Where the particles come from, how they move and look",
         bpe_kit::things::emitter::KIND => "What it fires, how its balls look and move, what it catches",
+        bpe_kit::things::liquid::KIND => "How much liquid, where it pours, how it flows and looks",
         _ => "The balls' size, look and how they move",
     };
     if looks || sounds(kind) {
@@ -172,6 +173,7 @@ fn tabs(kind: &str) -> Vec<(InspectorTab, &'static str, &'static str)> {
             bpe_kit::things::text::KIND => "The sound the letters make when balls hit them",
             bpe_kit::things::emitter::KIND => "The sound its balls make when they are fired, hit things or are caught",
             bpe_kit::things::particles::KIND => "The sound the particles make when they hit things, land or burst",
+            bpe_kit::things::liquid::KIND => "The sound the liquid makes when balls splash in, come out, or it pours",
             _ => "The sound its balls make when they hit things",
         };
         out.push((InspectorTab::Sound, "Sound", sound));
@@ -360,12 +362,9 @@ pub(crate) fn has_ball_look(kind: &str) -> bool {
 const SHAPE: &str = bpe_kit::things::shape::KIND;
 
 /// Whether things of `kind` have a Sound tab: shapes, Text, Particles things (particles part 7),
-/// and Balls and Emitters (W10).
+/// Balls and Emitters (W10) and Liquid things (liquid part 5).
 pub(crate) fn sounds(kind: &str) -> bool {
-    kind == SHAPE
-        || kind == bpe_kit::things::particles::KIND
-        || kind == bpe_kit::things::text::KIND
-        || bpe_kit::sound::hears_own_balls(kind)
+    bpe_kit::sound::makes_sound(kind)
 }
 
 /// What drawing a thing's own settings reads.

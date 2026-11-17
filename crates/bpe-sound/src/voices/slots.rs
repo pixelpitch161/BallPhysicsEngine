@@ -42,6 +42,17 @@ pub struct NotesSpec {
     /// that plays the note as written.
     pub size_pitch: f32,
     pub size_at: f32,
+    /// Pitch from (liquid part 5): what else moves the pitch, by how many semitones, and the
+    /// depth that counts as deepest (px).
+    pub pitch_from: bpe_kit::sound::PitchFrom,
+    pub pitch_range: f32,
+    pub deep_at: f32,
+    /// Muffled under liquid (0..1) and the cutoff (Hz) a fully muffled note is cut to.
+    pub under: f32,
+    pub under_cutoff: f32,
+    /// The sound's key, for Pitch from Colour.
+    pub root: bpe_kit::sound::Root,
+    pub scale: bpe_kit::sound::Scale,
 }
 
 impl Default for NotesSpec {
@@ -73,6 +84,17 @@ impl NotesSpec {
             melody_end: v.notes_melody_end,
             size_pitch: if v.play_size_pitch.is_finite() { v.play_size_pitch.clamp(-48.0, 48.0) } else { 0.0 },
             size_at: if v.play_size_at.is_finite() { v.play_size_at.clamp(1.0, 2000.0) } else { 20.0 },
+            pitch_from: v.play_pitch_from,
+            pitch_range: if v.play_pitch_range.is_finite() { v.play_pitch_range.clamp(-48.0, 48.0) } else { 0.0 },
+            deep_at: if v.play_deep_at.is_finite() { v.play_deep_at.max(1.0) } else { 150.0 },
+            under: if v.play_under.is_finite() { (v.play_under / 100.0).clamp(0.0, 1.0) } else { 0.0 },
+            under_cutoff: if v.play_under_cutoff.is_finite() {
+                v.play_under_cutoff.clamp(20.0, 20000.0)
+            } else {
+                300.0
+            },
+            root: v.notes_root,
+            scale: v.notes_scale,
         }
     }
 
@@ -459,6 +481,7 @@ pub fn slot_changes(
         let balls = scene.things.get(&shape).and_then(|t| super::BallMoments::of_thing(&t.kind, &v));
         let mut f = HitFilter::new(shape, v.play_min_strength / 100.0, v.play_gap / 1000.0, v.play_heard_from.clone())
             .hearing(balls)
+            .hearing_liquid(scene.things.get(&shape).and_then(|t| super::LiquidMoments::of_thing(&t.kind, &v)))
             .counting(v.play_gap_counts);
         let curve = super::StrengthCurve::of_knobs(v.play_full_at, v.play_curve);
         f.set(v.play_min_strength / 100.0, v.play_gap / 1000.0, curve);

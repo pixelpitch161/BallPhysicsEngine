@@ -8,6 +8,7 @@ pub mod lfo_curve;
 pub mod mixer;
 pub mod mods;
 pub mod notes;
+pub mod presets;
 pub mod voice;
 
 pub use adsr::{ADSR, AdsrKind, AdsrSettings};
@@ -17,16 +18,19 @@ pub use chain::{
 };
 pub use mixer::{BUSES, BusSettings, MIXER, MixerKind, MixerSettings};
 pub use mods::{
-    DISTANCE, DistanceSettings, Follows, HIT, HitPick, HitSettings, LFO, LIGHT_MOD, LfoPreset, LfoSettings, LfoShape,
-    LfoStart, LightFollows, LightModSettings, LightReads, MAX_OF_EACH, MOD_KINDS, Measure, NoteFeel, NoteLength,
-    add_modulator, count_of, curve_numbers, kind_name, numbered_name, turn_on_distance,
+    DISTANCE, DistanceSettings, Follows, HIT, HitPick, HitSettings, LFO, LIGHT_MOD, LIQUID_MOD, LfoPreset, LfoSettings,
+    LfoShape, LfoStart, LightFollows, LightModSettings, LightReads, LiquidModSettings, LiquidReads, MAX_OF_EACH,
+    MOD_KINDS, Measure, NoteFeel, NoteLength, add_modulator, count_of, curve_numbers, kind_name, numbered_name,
+    turn_on_distance,
 };
 pub use notes::{
     BeatsOrBars, Change, MAX_MELODY, MAX_SLOTS, MelodyEnd, NOTE_NAMES, Plays, Root, Scale, SlotOrder, StrumDir,
 };
+pub use presets::{LiquidPreset, liquid_sound};
 pub use voice::{
-    GapCounts, GateMode, GateUnit, MomentStrength, NoiseColour, OscSettings, PhaseMode, PlayMode, PlayWhen, SILENT_DB,
-    SampleLoop, SubOctave, SubWave, VOICE, VoiceKind, VoiceSettings, WarpMode, Wave, hears_own_balls, starter_voice,
+    GapCounts, GateMode, GateUnit, MomentStrength, NoiseColour, OscSettings, PhaseMode, PitchFrom, PlayMode, PlayWhen,
+    SILENT_DB, SampleLoop, SubOctave, SubWave, VOICE, VoiceKind, VoiceSettings, WarpMode, Wave, hears_liquid,
+    hears_own_balls, makes_sound, starter_voice,
 };
 
 use bpe_core::Registry;
@@ -39,6 +43,7 @@ pub fn register(reg: &mut Registry) {
     fx::register(reg);
     reg.add_layer(mods::DistanceKind);
     reg.add_layer(mods::LightModKind);
+    reg.add_layer(mods::LiquidModKind);
     reg.add_layer(mods::LfoKind);
     reg.add_layer(mods::HitKind);
     reg.add_layer(chain::ModulationKind);

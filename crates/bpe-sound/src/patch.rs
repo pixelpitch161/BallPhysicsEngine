@@ -7,15 +7,17 @@ use crate::chain_graph::{ChainGraph, chain_layers};
 use crate::master::MasterKeys;
 use crate::modmatrix::ModMatrix;
 use crate::voices::knobs;
-use crate::voices::shape::{DistSpec, EnvSpec, HitSpec, LfoSpec, LightSpec, ModsSpec, OscSpec, Probe, ShapeSpec};
+use crate::voices::shape::{
+    DistSpec, EnvSpec, HitSpec, LfoSpec, LightSpec, LiquidSpec, ModsSpec, OscSpec, Probe, ShapeSpec,
+};
 use crate::voices::slots::NotesSpec;
 use crate::{ShapeVoice, TempoMap, VoiceSource};
 use bpe_core::{Address, LayerId, Resolved, ResolvedSlot, Scene, Settings, SlotId, ThingId, Value};
 use bpe_dsp::{LoopMode, SampleData, SamplerParams, TableSet, WarpModeId, WaveBank, WaveShape};
 use bpe_kit::sound::{
     ADSR, AdsrSettings, CHAIN_KINDS, ChainEqSettings, DISTANCE, DistanceSettings, DistortionSettings, EQ, FILTER,
-    FilterSettings, HIT, HitSettings, LFO, LIGHT_MOD, LfoSettings, LightModSettings, MODULATION, MixerSettings,
-    ModulationSettings, OscSettings, SampleLoop, Slope, VOICE, VoiceSettings, Wave,
+    FilterSettings, HIT, HitSettings, LFO, LIGHT_MOD, LIQUID_MOD, LfoSettings, LightModSettings, LiquidModSettings,
+    MODULATION, MixerSettings, ModulationSettings, OscSettings, SampleLoop, Slope, VOICE, VoiceSettings, Wave,
 };
 use bpe_kit::things::shape::ShapeSettings;
 use bpe_kit::{Kit, SceneSettings};
@@ -321,6 +323,7 @@ fn spec_with(
             || mod_ids.dists.contains(l)
             || mod_ids.hits.contains(l)
             || mod_ids.lights.contains(l)
+            || mods.liquids.iter().any(|m| m.id == *l)
     };
     let routes: Vec<_> = v.routes.iter().filter(|r| runs(&r.source)).cloned().collect();
     let matrix = ModMatrix::build(&routes, &knobs::targets(&layout), &ids);
@@ -338,6 +341,7 @@ fn spec_with(
         heard_from: v.play_heard_from.clone(),
         gap_counts: v.play_gap_counts,
         balls: scene.things.get(&id).and_then(|t| crate::voices::BallMoments::of_thing(&t.kind, &v)),
+        liquid: scene.things.get(&id).and_then(|t| crate::voices::LiquidMoments::of_thing(&t.kind, &v)),
         slots: v.notes_slots.clone(),
         notes: NotesSpec::from_settings(
             &v,
@@ -430,6 +434,12 @@ fn mods_of(id: ThingId, card: &ResolvedSlot, routes: &[bpe_core::ModRoute]) -> M
             LightSpec { id: l.id, heard: Arc::new(settings.heard_from.clone()), settings }
         })
         .collect();
+    let liquids: Vec<LiquidSpec> = of(LIQUID_MOD)
+        .map(|l| LiquidSpec {
+            id: l.id,
+            params: crate::mods::LiquidParams::of(&LiquidModSettings::from_params(&card.layer_params(l.id))),
+        })
+        .collect();
     let running: Vec<LayerId> = card
         .layers
         .iter()
@@ -439,10 +449,11 @@ fn mods_of(id: ThingId, card: &ResolvedSlot, routes: &[bpe_core::ModRoute]) -> M
                 || dists.iter().any(|m| m.id == *l)
                 || hits.iter().any(|m| m.id == *l)
                 || lights.iter().any(|m| m.id == *l)
+                || liquids.iter().any(|m| m.id == *l)
         })
         .collect();
     let (order, _) = crate::mods::mod_order(routes, &running);
-    ModsSpec { lfos, dists, hits, lights, order, probe: None }
+    ModsSpec { lfos, dists, hits, lights, liquids, order, probe: None }
 }
 
 /// The shape's layer chains: their structure from the scene's card (switched-off layers keep
