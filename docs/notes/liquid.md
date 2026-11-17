@@ -170,7 +170,7 @@ Colour mixing gains **Fades** and **Fades to**. The Rules have a Do **Un-mix** b
 **Drops** are 96 bytes now: `spare` is (temperature, dryness) and `f` is the elastic stretch F after it
 (`liquid_drops.wgsl` reads 24 numbers a drop). `kind` bit 9 is `FROZEN`; a stain's liquid number is 16 + its
 liquid's (`STAIN_BASE`), so a liquid's own draw never shows it; `liquid_of` is `kind & 15`. Every kernel but
-compaction skips stains.
+compaction skips stains, and part 5's stats (`liquid_stats.wgsl`, which reads the same 96-byte drop) leave them out.
 
 **The solver** (`liquid_sim.wgsl`). Stretch adds a deviatoric neo-Hookean stress μ(b/J − ½tr(b/J)I) in p2g,
 μ = min(¼·Stretch, 1) × the stiffness (never a faster wave than the substeps are chosen for); g2p moves F with C and
@@ -187,7 +187,7 @@ of masks, so keyframed paint settings work without rebuilding the band. React is
 7..10, heat and fizz in `pairs2`): at each mixing a drop's reacting contact weight gives a chance against a hash of
 (serial, liquid, step); a turned drop takes the target's number, its Fill colour (`LiquidGpu.m`), heat and a fizz
 kick; it takes the made liquid's newest serial (`LiquidGpu.d.y`) so its Most drops keeps it, and ties between
-reacting neighbours go to the lower liquid number. Fades run at each mixing. Changes the ball sums shrink × mass and dissolves × mass into feel words 12 and 13.
+reacting neighbours go to the lower liquid number. Fades run at each mixing. Changes the ball sums shrink × mass and dissolves × mass into feel words 14 and 15 (12 is part 5's depth).
 
 **Un-mix.** With Remember on, every 1/60 s `cs_record` packs every drop (20 bytes: place as u16 fractions of the
 grid, colour 10:10:10 square-root coded up to 4, kind and temperature, serial, strength and dryness) into a new card
@@ -225,3 +225,59 @@ out only when drawn); the Air card's wind isn't read (use a Wind current). Leaks
 (a ball's colour is worked out only when drawn). Reaction sounds are part 5's, a glow by temperature part 3's. One
 Liquid thing can't un-mix while the others go on (they are one body). The force table holds 48; later layers are
 left out. A rule's Un-mix plays back all that is remembered (no For).
+
+## Part 5, as built: Sound (2026-11-17)
+
+**Sound card on a Liquid thing.** `liquid::slots()` includes Sound, and the inspector's Sound tab
+(`bpe_kit::sound::makes_sound`, `hears_liquid`) shows on Liquid things. Enable sound gives the
+**Splash** starting sound (`bpe_kit::sound::presets::liquid_sound`); the Moments panel
+(`sound_tab/moments.rs::show_liquid`) has switches for *A ball splashes in* (`moments_splash`,
+on), *goes in*, *comes out*, *It pours* and *Balls bubble under it*, and a **Start from** row of
+the six starting sounds (Splash, Plop, Drip, Glug, Pour, Bubbles; `TabEdit::StartFrom`, one undo
+step). Each is an ordinary Sound card built on the starter voice (noise or sine/triangle, plucked
+envelopes, a Filter chain layer id 6 and a Hit modulator id 7 where needed). The voice hears its
+liquid's events (`LiquidMoments` in `hit_filter.rs`): Splash/Enter/Leave name the liquid as `b`,
+pours and bubbles come only from its own liquid.
+
+**New events.** Item 3 **POURING** (`sound.rs`): each pour that gave birth on a step logs at most
+30 a second (`POUR_RATE`), at the pour's place with its speed. Item 4 **BUBBLE**: a ball inside a
+liquid (`feel::apply`) gives off bubbles at 8 a second per 100 px/s (at most 60), rolled on the
+shared dice by step, ball and liquid (chance = rate × the seconds the feel covered). Pours are
+pushed to `host.news` by the liquid steps and logged at the end of the same `after_step`, so the log
+stays in step order. Both are logged only when the liquid's own Sound card asks
+(`LiquidSound` in `LiquidState`, in `inputs_hash` and `physics_print_extra`), so goldens don't
+move.
+
+**Staying with the physics.** `ThingSim::kept_by_scene` (new hook, read by `is_beside`) keeps
+every Liquid thing in the main world when `scene_hears_liquid`: a Liquid thing's sound is on, or any
+sound has Muffled under liquid above 0, Pitch from Depth or Colour, or an enabled Liquid modulator.
+A kept liquid that doesn't push balls still sends no drag, so the balls move as without it (test).
+
+**Readings from the card.** `cs_feel` also walks up against gravity from just above each ball's top
+while cells hold > 0.3 of a drop, up to 255 cells, and stores depth×16 at feel word 12
+(`feel_at::DEPTH`). A new pass `liquid_stats.wgsl` sums per liquid (12 words: drops, speed×4 up to 4095,
+row, colour 0..63 and its square per channel), read back with the feel (`Feel::stats`). The
+feel is also sent after a main batch with no balls when the scene hears a liquid (`Host::heard`,
+read from `World::tree`; the Liquid thing now `reads_tree`). The host keeps `wet` (by ball:
+depth px, contact colour, the top four liquids' shares) and `sums`. `wet_of(world, ball)` and
+`stats_of(world, pick)` (drops, mean speed, height 0..1, colour, mixed 0..1 from the largest
+channel's spread, amount = drops / kept) read them without allocating.
+
+**Sound side** (also in `docs/notes/sound.md`): Pitch from (Off/Speed/Depth/Colour) with Pitch
+range, Deepest at, Muffled under liquid and Muffled to in the Playing panel; the Liquid modulator
+(Reads Slosh / Mix amount / Level / Amount, which liquid, Full at, Smooth, Invert).
+
+**Tests.** `liquid_sim::tests` (`a_ball_deeper_in_the_water_has_more_above_it`,
+`the_stats_count_every_drop_and_their_colour`), `things::liquid::tests_sound` (hearing only when
+asked; a sounding non-pushing liquid is in the main world, logs splashes and leaves the ball alone;
+pours ~30/s only for a Pour sound; a sinking ball is wet, bubbles, and the stats read right; paint
+reads less mixed; seek), `sound::presets` (each plays one moment), `bpe-sound/tests/liquid_sound.rs`
+(splash plays and is silent without; muffled is duller; colour moves the note; the modulator hears
+Amount), `alloc.rs` (a liquid scene's blocks don't allocate), `voices::liquid` unit tests, and the
+studio's `a_liquid_starts_from_its_splash_and_from_any_other_sound`.
+
+**Known gaps (part 5).** Follow sound reads the Liquid modulator unsmoothed. Depth is measured
+straight up against gravity from the ball's top in cells, so a ball under an overhang of liquid
+reads the liquid above it only. Colour chords need two liquids each at least 20 % of a ball's
+contacts. Pitch from Depth/Colour and the muffle read the sound world as the note starts (up to a
+block past the hit), as Pitch follows size does. Height reads wrong past 4094 rows.

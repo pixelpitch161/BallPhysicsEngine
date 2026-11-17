@@ -25,6 +25,7 @@ rubato.workspace = true
 symphonia.workspace = true
 
 [dev-dependencies]
+bpe-gfx.workspace = true
 bpe-kit = { workspace = true, features = ["test-scenes"] }
 
 [[test]]

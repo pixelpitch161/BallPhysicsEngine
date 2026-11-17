@@ -175,6 +175,21 @@ pub enum GapCounts {
     WholeSound,
 }
 
+/// What else moves a note's pitch (liquid part 5).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
+pub enum PitchFrom {
+    /// The notes play as written.
+    #[default]
+    Off,
+    /// A faster hit plays higher, up to Pitch range at Full strength.
+    Speed,
+    /// A ball deeper under a liquid plays lower, Pitch range lower at Deepest at.
+    Depth,
+    /// The colour of the liquid round the ball picks the note (its hue across Pitch range, in the
+    /// key); where several liquids touch it, each one's colour plays its note together.
+    Colour,
+}
+
 /// How loud a Particles thing's moments play (particles part 7).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
 pub enum MomentStrength {
@@ -493,6 +508,36 @@ pub struct VoiceSettings {
         when = "play_size_pitch"
     )]
     pub play_size_at: f32,
+    /// What else moves the pitch (liquid part 5): the hit's speed, how deep its ball is under a
+    /// liquid, or the liquid's colour round it.
+    #[setting(label = "Pitch from", group = "Playing")]
+    pub play_pitch_from: PitchFrom,
+    /// How far Pitch from moves the pitch (semitones; below 0 the other way).
+    #[setting(
+        label = "Pitch range",
+        range(-48, 48),
+        span(-24, 24),
+        unit = "st",
+        group = "Playing",
+        when = "play_pitch_from!=off"
+    )]
+    pub play_pitch_range: f32,
+    /// How deep under a liquid a ball must be for the full Pitch from Depth and the full muffle.
+    #[setting(label = "Deepest at", range(1, 100000), span(10, 1000), unit = "px", group = "Playing")]
+    pub play_deep_at: f32,
+    /// How much a note is muffled when its ball is under a liquid, more the deeper it is (0 off).
+    #[setting(label = "Muffled under liquid", range(0, 100), unit = "%", group = "Playing")]
+    pub play_under: f32,
+    /// What a note fully muffled is cut down to (a low-pass).
+    #[setting(
+        label = "Muffled to",
+        range(20, 20000),
+        span(50, 5000),
+        unit = "Hz",
+        group = "Playing",
+        when = "play_under"
+    )]
+    pub play_under_cutoff: f32,
     /// Which balls' hits play notes.
     #[setting(label = "Hits from", group = "Playing")]
     pub play_heard_from: Target,
@@ -532,6 +577,21 @@ pub struct VoiceSettings {
     /// What makes a particle's note louder.
     #[setting(label = "Strength from", group = "Playing")]
     pub moments_strength: MomentStrength,
+    /// A Liquid thing's sound (liquid part 5): a ball splashing into it fast plays a note.
+    #[setting(label = "Splashes", group = "Playing")]
+    pub moments_splash: bool,
+    /// A ball going into it plays a note.
+    #[setting(label = "Balls go in", group = "Playing")]
+    pub moments_go_in: bool,
+    /// A ball coming out of it plays a note.
+    #[setting(label = "Balls come out", group = "Playing")]
+    pub moments_come_out: bool,
+    /// Its pours play notes while they pour (about 30 a second each).
+    #[setting(label = "Pours", group = "Playing")]
+    pub moments_pour: bool,
+    /// Balls moving under it give off bubbles that play notes (more the faster they go).
+    #[setting(label = "Bubbles", group = "Playing")]
+    pub moments_bubbles: bool,
     /// The notes, slot by slot (part 2 plays slot 1).
     #[setting(label = "Notes", group = "Notes")]
     pub notes_slots: Vec<NoteSlot>,
@@ -636,6 +696,11 @@ impl Default for VoiceSettings {
             play_curve: 0.0,
             play_size_pitch: 0.0,
             play_size_at: 20.0,
+            play_pitch_from: PitchFrom::Off,
+            play_pitch_range: 12.0,
+            play_deep_at: 150.0,
+            play_under: 0.0,
+            play_under_cutoff: 300.0,
             play_heard_from: Target::Anything,
             play_when: PlayWhen::OnHit,
             play_zone: String::new(),
@@ -649,6 +714,11 @@ impl Default for VoiceSettings {
             moments_break: false,
             moments_most: 30.0,
             moments_strength: MomentStrength::Speed,
+            moments_splash: true,
+            moments_go_in: false,
+            moments_come_out: false,
+            moments_pour: false,
+            moments_bubbles: false,
             notes_slots: vec![NoteSlot { notes: vec![60], order_clicked: Vec::new() }],
             notes_low_octave: 4,
             notes_octaves: 3,
@@ -706,7 +776,19 @@ impl ModuleKind for VoiceKind {
             || thing_kind == crate::things::particles::KIND
             || thing_kind == crate::things::text::KIND
             || hears_own_balls(thing_kind)
+            || hears_liquid(thing_kind)
     }
+}
+
+/// Whether a thing of `thing_kind` is a Liquid thing, whose sound plays its liquid's moments
+/// (liquid part 5): balls splashing, going in and coming out, its pours and bubbles.
+pub fn hears_liquid(thing_kind: &str) -> bool {
+    thing_kind == crate::things::liquid::KIND
+}
+
+/// Whether things of `thing_kind` can have a Sound card.
+pub fn makes_sound(thing_kind: &str) -> bool {
+    VoiceKind.fits(thing_kind)
 }
 
 /// Whether a thing of `thing_kind` has balls of its own whose hits and moments its sound plays
@@ -856,7 +938,13 @@ mod tests {
         assert_eq!(sub.when, "b_wave!=noise and b_wave!=sample and b_sub!=off");
         // Every number knob takes keys (a sample's place settings and Pitch follows size are read
         // once, when the sound is built).
-        let built = |k: &str| k.contains("sample_") || k.starts_with("play_size_");
+        let built = |k: &str| {
+            k.contains("sample_")
+                || k.starts_with("play_size_")
+                || k.starts_with("play_pitch_")
+                || k.starts_with("play_under")
+                || k == "play_deep_at"
+        };
         for d in defs.iter().filter(|d| matches!(d.default, Value::Number(_)) && !built(d.key)) {
             assert!(d.flags.keyframe, "{}", d.key);
         }

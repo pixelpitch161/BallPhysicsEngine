@@ -15,8 +15,11 @@ pub const LFO: &str = "mod.lfo";
 pub const HIT: &str = "mod.hit";
 /// Light you can hear (lighting part 7): how much light falls on the balls.
 pub const LIGHT_MOD: &str = "mod.light";
+/// Liquid you can hear (liquid part 5): how a liquid sloshes, how mixed it is, how high it stands
+/// and how much of it there is.
+pub const LIQUID_MOD: &str = "mod.liquid";
 /// Every modulator kind, in the order the + menu offers them.
-pub const MOD_KINDS: [&str; 5] = [super::adsr::ADSR, DISTANCE, LFO, HIT, LIGHT_MOD];
+pub const MOD_KINDS: [&str; 6] = [super::adsr::ADSR, DISTANCE, LFO, HIT, LIGHT_MOD, LIQUID_MOD];
 /// The most modulators of one kind a sound has.
 pub const MAX_OF_EACH: usize = 8;
 /// Where a Distance's Far starts when it is turned on, in scene pixels.
@@ -390,6 +393,48 @@ impl Default for LightModSettings {
     }
 }
 
+/// What a Liquid modulator reads of the liquid.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, bpe_core::Choice)]
+pub enum LiquidReads {
+    /// How fast its drops move: still is nothing, Full at is full.
+    #[default]
+    Slosh,
+    /// How evenly its colours have blended: one colour all through is full, two side by side
+    /// nothing.
+    Mixed,
+    /// How high it stands in its area: the bottom is nothing, the top full.
+    Height,
+    /// How much of it there is: none is nothing, its Most drops full.
+    Amount,
+}
+
+/// How a liquid moves, mixes, stands and fills, read from the liquid once a block (liquid
+/// part 5). Its settings are read when the sound is built.
+#[derive(Clone, Debug, PartialEq, Settings)]
+pub struct LiquidModSettings {
+    /// What it reads.
+    #[setting(label = "Reads")]
+    pub reads: LiquidReads,
+    /// Which Liquid things it reads (together when it names several).
+    #[setting(label = "Liquid")]
+    pub liquid: Target,
+    /// How fast the drops must move on average to read as full.
+    #[setting(label = "Full at", range(1, 1e9), span(10, 2000), unit = "px/s", when = "reads=slosh")]
+    pub full_at: f32,
+    /// How long it takes to follow a change.
+    #[setting(label = "Smooth", range(0, 1e9), span(0, 1000), unit = "ms")]
+    pub smooth: f32,
+    /// Full when it reads nothing, nothing when full.
+    #[setting(label = "Invert")]
+    pub invert: bool,
+}
+
+impl Default for LiquidModSettings {
+    fn default() -> Self {
+        Self { reads: LiquidReads::Slosh, liquid: Target::Anything, full_at: 200.0, smooth: 50.0, invert: false }
+    }
+}
+
 /// A wave of its own, drawn or random.
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct LfoSettings {
@@ -528,6 +573,13 @@ mod_kind!(
     "Moves knobs as light falls on the balls (needs a Lighting card).",
     LightModSettings
 );
+mod_kind!(
+    LiquidModKind,
+    LIQUID_MOD,
+    "Liquid",
+    "Moves knobs as a liquid sloshes, mixes, rises and fills.",
+    LiquidModSettings
+);
 
 /// The name a new modulator of `kind` shows: "ADSR", "Distance", "LFO" or "Hit".
 pub fn kind_name(kind: &str) -> &'static str {
@@ -536,6 +588,7 @@ pub fn kind_name(kind: &str) -> &'static str {
         LFO => "LFO",
         HIT => "Hit",
         LIGHT_MOD => "Light",
+        LIQUID_MOD => "Liquid",
         _ => "ADSR",
     }
 }

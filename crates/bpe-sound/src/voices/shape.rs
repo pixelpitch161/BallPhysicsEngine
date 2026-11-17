@@ -18,7 +18,8 @@ use super::slots::{NotesSpec, SlotClock};
 use crate::chain::{Buf, ChainSpec, VoiceChain};
 use crate::modmatrix::{Combine, ModMatrix};
 use crate::mods::{
-    DistanceMod, DistanceParams, HitMod, HitValues, LfoMod, LfoParams, LightMod, LightParams, ModCx, Modulator, NoteCx,
+    DistanceMod, DistanceParams, HitMod, HitValues, LfoMod, LfoParams, LightMod, LightParams, LiquidMod, ModCx,
+    Modulator, NoteCx,
 };
 use crate::{BLOCK, BlockCx, BlockHit, VoiceSource};
 use bpe_core::{LayerId, NoteSlot, ShapePath, Target, ThingId, Track};
@@ -137,6 +138,13 @@ pub struct LightSpec {
     pub heard: Arc<Target>,
 }
 
+/// One Liquid layer that runs (liquid part 5).
+#[derive(Clone, Debug)]
+pub struct LiquidSpec {
+    pub id: LayerId,
+    pub params: crate::mods::LiquidParams,
+}
+
 /// The scene's light probe, which the Light modulators read.
 #[derive(Clone)]
 pub struct Probe(pub Arc<dyn bpe_runtime::LightAt>);
@@ -155,6 +163,8 @@ pub struct ModsSpec {
     pub dists: Vec<DistSpec>,
     pub hits: Vec<HitSpec>,
     pub lights: Vec<LightSpec>,
+    /// The Liquid layers (shared by the voice, no knobs).
+    pub liquids: Vec<LiquidSpec>,
     pub order: Vec<LayerId>,
     /// The light probe, when there are Light layers and the scene has a Lighting card.
     pub probe: Option<Probe>,
@@ -189,6 +199,7 @@ enum Src {
     Dist(usize),
     Hit(usize),
     Light(usize),
+    Liquid(usize),
 }
 
 /// An LFO's settings for a block from the knobs `kv` (keys and routes applied).
@@ -251,7 +262,7 @@ fn knob_range(src: Src) -> (usize, usize) {
         Src::Dist(i) => (k::dist(i, 0), k::dist(i, k::DIST_LEN)),
         Src::Hit(i) => (k::hit(i, 0), k::hit(i, k::HIT_LEN)),
         Src::Light(i) => (k::light(i, 0), k::light(i, k::LIGHT_LEN)),
-        Src::None => (0, 0),
+        Src::Liquid(_) | Src::None => (0, 0),
     }
 }
 
@@ -272,6 +283,8 @@ pub struct ShapeSpec {
     pub gap_counts: bpe_kit::sound::GapCounts,
     /// On a Balls or Emitter thing (W10): it hears its own balls, these moments of them.
     pub balls: Option<super::BallMoments>,
+    /// On a Liquid thing (liquid part 5): it hears these moments of its liquid.
+    pub liquid: Option<super::LiquidMoments>,
     pub slots: Vec<NoteSlot>,
     /// How hits pick notes and how the slots take turns.
     pub notes: NotesSpec,
@@ -343,6 +356,8 @@ struct Note {
     light: [LightMod; MAX_EACH],
     /// Every route source's value at the end of the last block, as this note heard it.
     src_prev: [f32; MAX_SOURCES],
+    /// Muffled under a liquid (liquid part 5).
+    muffle: super::liquid::Muffle,
 }
 
 impl Note {
@@ -377,6 +392,7 @@ impl Note {
             hit: std::array::from_fn(|_| HitMod::default()),
             light: std::array::from_fn(|_| LightMod::new(heard.clone())),
             src_prev: [0.0; MAX_SOURCES],
+            muffle: Default::default(),
         }
     }
 
@@ -523,6 +539,7 @@ pub struct ShapeVoice {
     dist_src: [Option<usize>; MAX_EACH],
     hit_src: [Option<usize>; MAX_EACH],
     light_src: [Option<usize>; MAX_EACH],
+    liquid_src: [Option<usize>; MAX_EACH],
     /// The modulators besides the envelopes, in the order they run.
     order: Vec<Src>,
     /// The shape's shared modulators (a Free or Restart LFO, a Distance not following each
@@ -530,6 +547,7 @@ pub struct ShapeVoice {
     lfo: [LfoMod; MAX_EACH],
     dist: [DistanceMod; MAX_EACH],
     light: [LightMod; MAX_EACH],
+    liquid: [LiquidMod; MAX_EACH],
     /// The shared sources' values at the end of the block before and this one.
     shared_prev: [f32; MAX_SOURCES],
     shared_now: [f32; MAX_SOURCES],
@@ -560,12 +578,14 @@ impl ShapeVoice {
         let filter =
             HitFilter::new(spec.thing, now[k::MIN_STRENGTH] / 100.0, now[k::GAP] / 1000.0, spec.heard_from.clone())
                 .hearing(spec.balls)
+                .hearing_liquid(spec.liquid)
                 .counting(spec.gap_counts);
         // By source: the envelope it is (usize::MAX for other modulators).
         let mut source_env = [usize::MAX; MAX_SOURCES];
         let mut src = [Src::None; MAX_SOURCES];
         let (mut lfo_src, mut dist_src, mut hit_src) = ([None; MAX_EACH], [None; MAX_EACH], [None; MAX_EACH]);
         let mut light_src = [None; MAX_EACH];
+        let mut liquid_src = [None; MAX_EACH];
         let n_src = spec.matrix.sources().len().min(MAX_SOURCES);
         for (s, id) in spec.matrix.sources().iter().enumerate().take(MAX_SOURCES) {
             let m = &spec.mods;
@@ -584,6 +604,9 @@ impl ShapeVoice {
             } else if let Some(i) = m.lights.iter().position(|x| x.id == *id) {
                 src[s] = Src::Light(i);
                 light_src[i] = Some(s);
+            } else if let Some(i) = m.liquids.iter().take(MAX_EACH).position(|x| x.id == *id) {
+                src[s] = Src::Liquid(i);
+                liquid_src[i] = Some(s);
             }
         }
         let order: Vec<Src> = spec
@@ -599,6 +622,7 @@ impl ShapeVoice {
                     .or_else(|| m.dists.iter().position(|x| x.id == *id).map(Src::Dist))
                     .or_else(|| m.hits.iter().position(|x| x.id == *id).map(Src::Hit))
                     .or_else(|| m.lights.iter().position(|x| x.id == *id).map(Src::Light))
+                    .or_else(|| m.liquids.iter().take(MAX_EACH).position(|x| x.id == *id).map(Src::Liquid))
             })
             .collect();
         let anything = Arc::new(Target::Anything);
@@ -666,6 +690,7 @@ impl ShapeVoice {
             dist_src,
             hit_src,
             light_src,
+            liquid_src,
             order,
             lfo: std::array::from_fn(|i| LfoMod::new(spec.mods.lfos.get(i).map_or(0, |l| l.seed))),
             dist: std::array::from_fn(|i| {
@@ -673,6 +698,14 @@ impl ShapeVoice {
             }),
             light: std::array::from_fn(|i| {
                 LightMod::new(spec.mods.lights.get(i).map_or_else(|| anything.clone(), |d| d.heard.clone()))
+            }),
+            liquid: std::array::from_fn(|i| {
+                LiquidMod::new(
+                    spec.mods
+                        .liquids
+                        .get(i)
+                        .map_or_else(|| crate::mods::LiquidParams::of(&Default::default()), |l| l.params.clone()),
+                )
             }),
             shared_prev: [0.0; MAX_SOURCES],
             shared_now: [0.0; MAX_SOURCES],
@@ -789,6 +822,9 @@ impl ShapeVoice {
         if let Some(i) = m.hits.iter().position(|x| x.id == layer) {
             return Some(notes().map(|n| self.notes.slots[n].hit[i].value()).fold(0.0, f32::max));
         }
+        if let Some(i) = m.liquids.iter().take(MAX_EACH).position(|x| x.id == layer) {
+            return Some(self.liquid[i].value());
+        }
         let e = self.spec.envs.iter().take(MAX_ENVS).position(|x| x.id == layer)?;
         Some(notes().map(|n| self.notes.slots[n].env[e].level()).fold(0.0, f32::max))
     }
@@ -807,6 +843,7 @@ impl ShapeVoice {
                 Src::Lfo(i) if !self.spec.mods.lfo_per_note(i) => self.shared_now[s],
                 Src::Dist(i) if !self.spec.mods.dist_per_note(i) => self.shared_now[s],
                 Src::Light(i) if !self.spec.mods.light_per_note(i) => self.shared_now[s],
+                Src::Liquid(_) => self.shared_now[s],
                 Src::None => 0.0,
                 _ => self.note_max[s],
             };
@@ -848,6 +885,13 @@ impl ShapeVoice {
                     self.light[i].next_block(&mcx);
                     if let Some(s) = self.light_src[i] {
                         vals[s] = self.light[i].value();
+                        self.shared_now[s] = vals[s];
+                    }
+                }
+                Src::Liquid(i) => {
+                    self.liquid[i].next_block(&mcx);
+                    if let Some(s) = self.liquid_src[i] {
+                        vals[s] = self.liquid[i].value();
                         self.shared_now[s] = vals[s];
                     }
                 }
@@ -940,7 +984,11 @@ impl ShapeVoice {
         let ncx = NoteCx { sample, hit: hv, ball: (ball != AUDITION_BALL).then_some(ball) };
         let across = if self.spec.width > 0.0 { (point.x / (self.spec.width * 0.5)).clamp(-1.0, 1.0) } else { 0.0 };
         let mono = self.spec.play_mode == PlayMode::Mono && !self.own_voice;
-        let pitch = note as f32 + size_shift(&self.spec.notes, cx.world, ball);
+        let own_ball = (ball != AUDITION_BALL).then_some(ball);
+        let pitch = note as f32
+            + size_shift(&self.spec.notes, cx.world, ball)
+            + super::liquid::pitch_shift(&self.spec.notes, cx.world, own_ball, strength);
+        let muffle = super::liquid::muffle_cutoff(&self.spec.notes, cx.world, own_ball);
         // The note logged (MIDI export, rule notes) is the one heard, to the nearest semitone.
         let heard = pitch.round().clamp(0.0, 127.0) as u8;
         if mono && self.notes.meta[0].active && !self.notes.meta[0].fading {
@@ -955,6 +1003,7 @@ impl ShapeVoice {
             n.strength = strength;
             n.ball = ball;
             n.across = across;
+            n.muffle.retune(muffle);
             if glide > 0 {
                 n.glide_from = n.pitch;
                 n.glide_to = pitch;
@@ -1047,6 +1096,7 @@ impl ShapeVoice {
         n.age = 0;
         n.env_ids = ids;
         n.chain.reset();
+        n.muffle.set(muffle);
         for o in 0..2 {
             n.noise[o].seed(mix(seed ^ (o as u64 + 1)));
             if !osc_on[o] {
@@ -1243,6 +1293,12 @@ impl ShapeVoice {
             self.hit_arrives(at, sample);
             self.group = sample;
             let pick = self.pick_for(cx, hit, cx.time);
+            // Pitch from Colour: the colour of the liquid round the ball picks the notes.
+            let pick = if self.spec.notes.pitch_from == bpe_kit::sound::PitchFrom::Colour {
+                super::liquid::colour_pick(&self.spec.notes, cx.world, ball, pick)
+            } else {
+                pick
+            };
             self.clock.hit(&self.spec.notes);
             let gap = (pick.strum as f64 * crate::SAMPLE_RATE as f64).max(0.0);
             for (i, &note) in pick.notes().iter().enumerate() {
@@ -1855,6 +1911,8 @@ impl ShapeVoice {
                 sc.note_r[s] += out_r[s] * lv[s] * pr;
             }
         }
+        // Muffled under a liquid (liquid part 5): nothing when off.
+        n.muffle.run(&mut sc.note_l, &mut sc.note_r);
         // The output: Volume and Pan, pulled across by Follow hit.
         let follow = (moved[k::FOLLOW_HIT] / 100.0).clamp(0.0, 1.0);
         let (ol, or) = pan_gains(self.pans[2].value() + follow * n.across);
@@ -2070,6 +2128,9 @@ impl VoiceSource for ShapeVoice {
         for m in &mut self.light {
             m.reset();
         }
+        for m in &mut self.liquid {
+            m.reset();
+        }
         self.shared_prev = [0.0; MAX_SOURCES];
         self.shared_now = [0.0; MAX_SOURCES];
         self.note_max = [0.0; MAX_SOURCES];
@@ -2120,6 +2181,11 @@ impl VoiceSource for ShapeVoice {
         for (i, d) in self.spec.mods.lights.iter().enumerate() {
             if let Some(j) = old.spec.mods.lights.iter().position(|o| o.id == d.id) {
                 self.light[i].take_over(&old.light[j]);
+            }
+        }
+        for (i, d) in self.spec.mods.liquids.iter().enumerate().take(MAX_EACH) {
+            if let Some(j) = old.spec.mods.liquids.iter().take(MAX_EACH).position(|o| o.id == d.id) {
+                self.liquid[i].take_over(&old.liquid[j]);
             }
         }
         // Each source's values, by layer.
@@ -2301,7 +2367,7 @@ impl VoiceSource for ShapeVoice {
         let m = &self.spec.mods;
         let envs = self.spec.envs.iter().take(MAX_ENVS).map(|e| e.id);
         let others = m.lfos.iter().map(|x| x.id).chain(m.dists.iter().map(|x| x.id)).chain(m.hits.iter().map(|x| x.id));
-        let others = others.chain(m.lights.iter().map(|x| x.id));
+        let others = others.chain(m.lights.iter().map(|x| x.id)).chain(m.liquids.iter().map(|x| x.id));
         for layer in envs.chain(others) {
             if let Some(v) = self.mod_value(layer) {
                 f(layer, v, self.lfo_position(layer).unwrap_or(f32::NAN));

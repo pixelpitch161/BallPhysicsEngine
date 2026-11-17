@@ -150,7 +150,7 @@ const WHEN_HITS: u32 = 2u;
 @group(0) @binding(10) var<storage, read_write> spare: array<Drop>;
 @group(0) @binding(11) var<storage, read_write> mixout: array<vec4<f32>>;
 // per ball FEEL words: push x y, touching mass, colour × mass (rgb), drag × mass, carry × mass,
-// wet ring points, flow x y (f32 bits), take × mass, 4 spare, contacts with each liquid (16)
+// wet ring points, flow x y (f32 bits), take × mass, depth (cells × 16), 3 spare, contacts with each liquid (16)
 @group(0) @binding(12) var<storage, read_write> feel: array<atomic<i32>>;
 // Un-mix: the sample being written, and the newer and older samples played back between
 @group(0) @binding(13) var<storage, read_write> sample: array<u32>;
@@ -588,8 +588,8 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
                     atomicAdd(&feel[fb + 6u], fixed(mass * lq.e.y, S_TOUCH));
                     atomicAdd(&feel[fb + 7u], fixed(mass * lq.e.z, S_TOUCH));
                     atomicAdd(&feel[fb + 11u], fixed(mass * lq.g.w, S_TOUCH));
-                    atomicAdd(&feel[fb + 12u], fixed(mass * lq.n.x, S_TOUCH));
-                    atomicAdd(&feel[fb + 13u], fixed(mass * lq.n.y, S_TOUCH));
+                    atomicAdd(&feel[fb + 14u], fixed(mass * lq.n.x, S_TOUCH));
+                    atomicAdd(&feel[fb + 15u], fixed(mass * lq.n.y, S_TOUCH));
                     atomicAdd(&feel[fb + 16u + me], 1);
                 }
                 // Balls heat it.
@@ -1176,6 +1176,7 @@ fn cs_feel(@builtin(global_invocation_id) id: vec3<u32>) {
         atomicStore(&feel[fb + 8u], 0);
         atomicStore(&feel[fb + 9u], 0);
         atomicStore(&feel[fb + 10u], 0);
+        atomicStore(&feel[fb + 12u], 0);
         return;
     }
     let points = max(st.feel.y, 1u);
@@ -1200,6 +1201,25 @@ fn cs_feel(@builtin(global_invocation_id) id: vec3<u32>) {
     atomicStore(&feel[fb + 8u], i32(wet));
     atomicStore(&feel[fb + 9u], bitcast<i32>(flow.x));
     atomicStore(&feel[fb + 10u], bitcast<i32>(flow.y));
+    // How deep it is (liquid part 5): cells of liquid straight above its top, against gravity.
+    var up = vec2<f32>(0.0, -1.0);
+    let g = st.time.yz;
+    if dot(g, g) > 1e-12 {
+        up = -normalize(g);
+    }
+    let top = bx + up * (wf(at + 4u) + 1.0);
+    var depth = 0u;
+    for (var k = 0u; k < 255u; k = k + 1u) {
+        let q = vec2<i32>(round(top + up * f32(k)));
+        if q.x < 0 || q.y < 0 || q.x >= i32(st.grid.x) || q.y >= i32(st.grid.y) {
+            break;
+        }
+        if f32(atomicLoad(&grid[4u * node(q.x, q.y) + 3u])) / S_M <= 0.3 {
+            break;
+        }
+        depth = depth + 1u;
+    }
+    atomicStore(&feel[fb + 12u], i32(depth * 16u));
 }
 
 // ---- Un-mix: samples of the drops, and playing them back -----------------------------------

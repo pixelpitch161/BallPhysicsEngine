@@ -11,6 +11,8 @@ use std::sync::Arc;
 
 use bpe_core::ThingId;
 use bpe_gfx::liquid_sim::{FEEL_WORDS, MOST_LIQUIDS, RING, S_PUSH, S_TOUCH, feel_at};
+
+use super::sound::{BUBBLE, Wet, bubbles_now, sums_of};
 use bpe_runtime::{Event, EventKind, Party, World};
 use glam::Vec2;
 
@@ -47,6 +49,8 @@ pub struct Felt {
     pub cell: f32,
     /// The seconds of liquid the batch covered.
     pub span: f32,
+    /// The liquids (by number) whose sound hears bubbles (part 5).
+    pub bubbles: u16,
 }
 
 fn word(words: &[i32], k: usize) -> f32 {
@@ -94,6 +98,7 @@ pub fn apply(host: &mut Host, world: &mut World) {
     let mut news = Vec::new();
     let mut taken: Option<BTreeMap<(ThingId, u32), [f32; 4]>> = None;
     let mut sizes: Option<BTreeMap<(ThingId, u32), f32>> = None;
+    let mut wet_balls: BTreeMap<(ThingId, u32), Wet> = BTreeMap::new();
     for (i, &(thing, row)) in felt.balls.iter().enumerate() {
         let Some(w) = words.get(i * FEEL_WORDS..(i + 1) * FEEL_WORDS) else { break };
         let Some(bodies) = world.bodies.get_mut(&thing) else { continue };
@@ -148,6 +153,27 @@ pub fn apply(host: &mut Host, world: &mut World) {
         // Which liquids it is in: each liquid's share of the wet ring by its share of the contacts.
         let counts: Vec<f32> = (0..MOST_LIQUIDS).map(|l| word(w, feel_at::LIQUIDS + l).max(0.0)).collect();
         let all: f32 = counts.iter().sum();
+        if touch > 0.0 && all > 0.0 {
+            // How it is wet, for the sound (part 5): the depth above it, the colour round it and the
+            // liquids touching it, most first.
+            let mut wet = Wet {
+                depth: (word(w, feel_at::DEPTH) / 16.0 * cell).max(0.0),
+                colour: [0, 1, 2].map(|c| (word(w, feel_at::COLOUR + c) / S_TOUCH / touch).max(0.0)),
+                ..Wet::default()
+            };
+            let mut shares: Vec<(usize, f32)> = (0..MOST_LIQUIDS).map(|l| (l, counts[l] / all)).collect();
+            shares.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+            for &(l, share) in shares.iter().filter(|s| s.1 > 0.0) {
+                let Some(&(_, liquid, _)) = felt.liquids.iter().find(|x| x.0 == l) else { continue };
+                if wet.n < wet.liquids.len() {
+                    wet.liquids[wet.n] = (liquid, share);
+                    wet.n += 1;
+                }
+            }
+            if wet.colour.iter().all(|c| c.is_finite()) && wet.depth.is_finite() {
+                wet_balls.insert((thing, row), wet);
+            }
+        }
         for &(l, liquid, splash_from) in felt.liquids.iter().filter(|x| x.0 < MOST_LIQUIDS) {
             let share = if all > 0.0 { wet * counts[l] / all } else { 0.0 };
             let key = (thing, row, l as u8);
@@ -157,6 +183,13 @@ pub fn apply(host: &mut Host, world: &mut World) {
             }
             if !was && share >= IN_AT {
                 news.push(event(world, (thing, row), liquid, ENTER, place, v));
+            }
+            // Moving under it, it gives off bubbles its sound may hear (part 5).
+            if felt.bubbles & (1 << l) != 0
+                && inside.contains(&key)
+                && bubbles_now(v.length(), world.step, felt.span, (thing, row), l as u8)
+            {
+                news.push(event(world, (thing, row), liquid, BUBBLE, place, v));
             }
             // It splashes as it first touches the liquid, fast enough.
             if share > 0.0 {
@@ -191,6 +224,8 @@ pub fn apply(host: &mut Host, world: &mut World) {
     host.inside = inside;
     host.touching = touching;
     host.numbers = felt.liquids.iter().map(|&(l, liquid, _)| (l, liquid)).collect();
+    host.wet = Arc::new(wet_balls);
+    host.sums = sums_of(feel.stats()).map(Arc::new);
     host.news.extend(news);
     // Rows of balls gone from the world no longer keep a colour.
     if host.taken.keys().any(|&(thing, row)| !still_there(world, thing, row)) {

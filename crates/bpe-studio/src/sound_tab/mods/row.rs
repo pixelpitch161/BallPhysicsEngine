@@ -8,7 +8,7 @@ use super::super::{SoundTab, TabCx, TabEdit, name_it};
 use super::{ModDrag, ModInfo, list};
 use crate::style;
 use bpe_core::{LayerId, SlotId};
-use bpe_kit::sound::{ADSR, DISTANCE, HIT, LFO, LIGHT_MOD, MAX_OF_EACH, count_of};
+use bpe_kit::sound::{ADSR, DISTANCE, HIT, LFO, LIGHT_MOD, LIQUID_MOD, MAX_OF_EACH, count_of};
 use eframe::egui::{self, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 
 /// A tile's size.
@@ -188,8 +188,14 @@ fn four_arrows(painter: &egui::Painter, rect: Rect, ink: egui::Color32) {
 fn plus(ui: &mut Ui, cx: &mut TabCx) {
     let card = cx.scene.card(cx.id, SlotId::Sound);
     let r = ui.menu_button(egui::RichText::new("+").font(style::semibold(16.0)), |ui| {
-        for (kind, label) in [(ADSR, "ADSR"), (DISTANCE, "Distance"), (LFO, "LFO"), (HIT, "Hit"), (LIGHT_MOD, "Light")]
-        {
+        for (kind, label) in [
+            (ADSR, "ADSR"),
+            (DISTANCE, "Distance"),
+            (LFO, "LFO"),
+            (HIT, "Hit"),
+            (LIGHT_MOD, "Light"),
+            (LIQUID_MOD, "Liquid"),
+        ] {
             let room = card.is_some_and(|c| count_of(c, kind) < MAX_OF_EACH);
             let b =
                 ui.add_enabled(room, egui::Button::new(label)).on_disabled_hover_text("Eight is the most of a kind");

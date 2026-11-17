@@ -75,6 +75,13 @@ pub struct Host {
     pub sizes: Arc<BTreeMap<(ThingId, u32), f32>>,
     /// Balls dissolved, for the next after-step to remove (with the log).
     pub dissolved: Vec<(ThingId, u32)>,
+    /// How each ball the last feel found touching the liquid is wet (liquid part 5).
+    pub wet: Arc<BTreeMap<(ThingId, u32), super::sound::Wet>>,
+    /// Every liquid's stat words from the last feel, by its number on the card (part 5).
+    pub sums: Option<Arc<Vec<u32>>>,
+    /// Whether some sound in the scene hears a liquid (`scene_hears_liquid`, read as the world is
+    /// built): the feel then goes back with no balls too, for the liquids' sums (part 5).
+    pub heard: bool,
 }
 
 impl Host {
@@ -106,6 +113,8 @@ pub struct LiquidState {
     pub rain_owed: f32,
     /// The balls it is made from (From balls) as last seen: place, speed, size.
     pub seen: BTreeMap<(ThingId, u32), (Vec2, Vec2, f32)>,
+    /// Which of its moments its sound logs (part 5).
+    pub sound: super::sound::LiquidSound,
     /// Its liquid's number in the body (0 to 15), `None` past the 16th Liquid thing.
     pub index: Option<usize>,
     /// Drops born so far (the next one's serial).
@@ -137,6 +146,7 @@ impl LiquidState {
             forces: Forces::default(),
             rain_owed: 0.0,
             seen: BTreeMap::new(),
+            sound: Default::default(),
             index: None,
             born: 0,
             owed: Vec::new(),
@@ -212,14 +222,15 @@ pub fn drops_hash(drops: &[Drop]) -> u64 {
 /// what a restart test compares (cheap, unlike reading the drops back).
 pub fn inputs_hash(st: &LiquidState) -> u64 {
     let text = format!(
-        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
         st.settings,
         st.fill,
         st.pours,
         st.meets,
         st.others,
         st.look.stepped(),
-        st.forces
+        st.forces,
+        st.sound
     );
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in text.bytes() {

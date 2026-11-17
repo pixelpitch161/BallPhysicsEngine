@@ -299,6 +299,46 @@ fn feel_in_water(balls: &[BallGpu], settle: u32, feel: u32) -> Vec<i32> {
     body.send_feel(balls.len() as u32).expect("some balls").wait().to_vec()
 }
 
+/// The same water's stat words after `settle` steps, with no balls.
+fn stats_in_water(settle: u32) -> (Vec<u32>, usize) {
+    let mut body = Body::new(card(), 40, 40);
+    let (step, _) = water(40, 120.0, STYLE_BLEND);
+    let band = floor(40, 30);
+    let drops = lattice(2, 38, 10, 30, |_, _| [0.2, 0.4, 0.8, 1.0]);
+    for k in 0..settle {
+        let walls = if k == 0 { Some(band.as_slice()) } else { None };
+        let births = if k == 0 { drops.as_slice() } else { &[] };
+        body.step(&StepIn { step, births, walls, balls: &[], feel: true, fresh: k == 0 });
+    }
+    (body.send_feel(0).expect("a stepped body").stats().to_vec(), drops.len())
+}
+
+#[test]
+fn a_ball_deeper_in_the_water_has_more_above_it() {
+    let deep = BallGpu { x: [12.0, 24.0], v: [0.0, 0.0], r: 2.0, mask: 1 };
+    let shallow = BallGpu { x: [28.0, 13.0], v: [0.0, 0.0], r: 2.0, mask: 1 };
+    let f = feel_in_water(&[deep, shallow], 480, 24);
+    let depth = |b: usize| f[b * FEEL_WORDS + feel_at::DEPTH] as f32 / 16.0;
+    // Its top (24 - 2 - 1) is about 11 cells under the surface at 10.
+    assert!(depth(0) > 6.0 && depth(0) < 15.0, "about 11 cells under: {}", depth(0));
+    assert!(depth(1) < 3.0, "at the top: {}", depth(1));
+}
+
+#[test]
+fn the_stats_count_every_drop_and_their_colour() {
+    let (s, n) = stats_in_water(60);
+    assert_eq!(s.len(), STATS_LEN);
+    assert_eq!(s[stat_at::DROPS] as usize, n, "every drop is liquid 0's");
+    assert!(s[STAT_WORDS..].iter().all(|w| *w == 0), "no other liquid");
+    let mean = |c: usize| s[stat_at::COLOUR + c] as f32 / n as f32 / 63.0;
+    for (c, want) in [0.2f32, 0.4, 0.8].into_iter().enumerate() {
+        assert!((mean(c) - want).abs() < 0.02, "channel {c}: {}", mean(c));
+    }
+    let row = s[stat_at::ROW] as f32 / n as f32;
+    assert!(row > 14.0 && row < 26.0, "the water's middle row: {row}");
+    assert_eq!(stats_in_water(60).0, s, "the same every time");
+}
+
 #[test]
 fn a_ball_held_under_still_water_is_pushed_up_and_feels_wet() {
     let ball = BallGpu { x: [20.0, 20.0], v: [0.0, 0.0], r: 3.0, mask: 1 };

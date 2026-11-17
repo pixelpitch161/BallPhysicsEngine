@@ -128,6 +128,7 @@ pub fn menu(scene: &Scene) -> FollowMenu {
         let Some(thing) = scene.things.get(id).filter(|t| {
             [shape::KIND, text::KIND, particles::KIND].contains(&t.kind.as_str())
                 || bpe_kit::sound::hears_own_balls(&t.kind)
+                || bpe_kit::sound::hears_liquid(&t.kind)
         }) else {
             continue;
         };

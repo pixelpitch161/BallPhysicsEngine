@@ -158,6 +158,7 @@ enum Src {
     Dist(usize),
     Hit(usize),
     Light(usize),
+    Liquid(usize),
 }
 
 /// A hit that plays on a shape.
@@ -202,6 +203,7 @@ struct Shared {
     lfo: [f32; k::MAX_EACH],
     dist: [f32; k::MAX_EACH],
     light: [f32; k::MAX_EACH],
+    liquid: [f32; k::MAX_EACH],
 }
 
 /// The knobs of `spec` at `time`: as set, keyed ones from their tracks, then what the rules of
@@ -251,6 +253,7 @@ impl ControlSampler {
             .map(|s| Heard {
                 filter: HitFilter::new(s.spec.thing, 0.0, 0.0, s.spec.heard_from.clone())
                     .hearing(s.spec.balls)
+                    .hearing_liquid(s.spec.liquid)
                     .counting(s.spec.gap_counts),
                 done: 0,
                 last: None,
@@ -323,6 +326,8 @@ impl Shape {
                     Src::Hit(i)
                 } else if let Some(i) = m.lights.iter().take(k::MAX_EACH).position(|x| x.id == *id) {
                     Src::Light(i)
+                } else if let Some(i) = m.liquids.iter().take(k::MAX_EACH).position(|x| x.id == *id) {
+                    Src::Liquid(i)
                 } else {
                     Src::None
                 }
@@ -564,6 +569,10 @@ impl Shape {
                 out.light[i] = light_value(&p, &l.heard, probe, world, log, self.spec.thing, None).unwrap_or(0.0);
             }
         }
+        // A Liquid reads the world as it is (the engine smooths it over its Smooth).
+        for (i, l) in m.liquids.iter().enumerate().take(k::MAX_EACH) {
+            out.liquid[i] = crate::mods::liquid_value(&l.params, world, self.spec.thing);
+        }
         out
     }
 
@@ -607,6 +616,7 @@ impl Shape {
                 ball.and_then(|b| distance_value(&p, &m.dists[i].heard, world, self.spec.thing, Some(b))).unwrap_or(0.0)
             }
             Src::Light(i) if !m.light_per_note(i) => shared.light[i],
+            Src::Liquid(i) => shared.liquid[i],
             Src::Light(i) => {
                 let Some(probe) = m.probe() else { return 0.0 };
                 let p = light_params(&m.lights[i], i, kv);
@@ -652,6 +662,8 @@ impl Shape {
             Src::Hit(i)
         } else if let Some(i) = m.lights.iter().take(k::MAX_EACH).position(|x| x.id == layer) {
             Src::Light(i)
+        } else if let Some(i) = m.liquids.iter().take(k::MAX_EACH).position(|x| x.id == layer) {
+            Src::Liquid(i)
         } else {
             return 0.0;
         };
@@ -661,6 +673,7 @@ impl Shape {
             Src::Lfo(i) if !m.lfo_per_note(i) => shared.lfo[i],
             Src::Dist(i) if !m.dist_per_note(i) => shared.dist[i],
             Src::Light(i) if !m.light_per_note(i) => shared.light[i],
+            Src::Liquid(i) => shared.liquid[i],
             _ => self
                 .notes(tempo, &kv, hits, world, t)
                 .iter()
