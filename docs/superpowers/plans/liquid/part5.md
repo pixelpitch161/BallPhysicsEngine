@@ -47,7 +47,7 @@ the liquid sloshes, how mixed it is, how high it stands and how much of it there
    is over 0.3, and stores the count × 16. `things::liquid::wet_of(world, ball)` reads it without allocating.
 5. **Liquid stats** (per liquid, for the modulator and Colour notes): a new shader `liquid_stats.wgsl` (its own
    pipeline, made once on the `LiquidCard`, so the step's ENTRIES list is untouched) runs over the drops when the
-   feel is sent and sums per liquid in `u32` atomics: count, speed (×16, at most 2047 a drop), row (at most 4094),
+   feel is sent and sums per liquid in `u32` atomics: count, speed (×4, at most 4095 a drop), row (at most 4094),
    colour channels quantised to 0..63 and their squares (all fit 2^20 drops in u32). `send_feel` now copies the feel
    and the 16 × 12 stat words into one read-back and is sent after every batch in the main world, also with no balls
    (so a pour-only scene's modulators move); `Feel::stats()` gives them. `host.stats` keeps per liquid `Stat { drops,
@@ -128,3 +128,18 @@ the liquid sloshes, how mixed it is, how high it stands and how much of it there
 - A main-world liquid now waits for a read-back every world step even without balls: a little slower, only when a
   liquid pushes balls or makes sound.
 - Parallel parts 3 and 4 edit the same shader and files: rebase on main before merging, keep my edits in new files.
+
+## As built (2026-11-17)
+
+Built as planned; the summary is in `docs/notes/liquid.md` ("Part 5, as built") and `docs/notes/sound.md`
+("Liquid sounds"). Changes from the plan after testing and review:
+
+- Pour events are logged at the end of the same `after_step` that stepped the liquid (they were a step late and
+  broke the log's step order).
+- A bubble's chance is its rate × the seconds the feel covered (right at 120 Hz liquid steps too).
+- The stats pass reads speed × 4 (up to 4095 a drop, 1023 cells a second) so fast sloshes can be read, and its
+  pipeline is made with the card's others (a pipeline cached across devices broke tests).
+- The feel goes back with no balls only when the scene hears a liquid (`Host::heard`, the Liquid thing now
+  `reads_tree`), so liquid scenes without sound don't wait on the card each step.
+- Amount reads drops over the liquid's Most drops (its share of the cap), and the Bubbles moment switch is named
+  "Balls bubble under it".

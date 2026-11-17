@@ -88,20 +88,23 @@ fn a_liquid_plays_its_splash_and_is_silent_without_its_sound() {
 fn a_ball_under_the_liquid_sounds_muffled() {
     gpu();
     let kit = bpe_sound::kit();
-    let (mut scene, _, ball) = sinking(&kit);
-    let mut card = starter_voice(&kit.registry);
+    // The bubbles of the sinking ball play under the water (its top goes under after about
+    // 2.5 s; before then it is at the surface and plays as it is).
+    let (mut scene, liquid, _) = sinking(&kit);
+    let mut card = liquid_sound(&kit.registry, LiquidPreset::Bubbles);
     voice(&mut card, |v| v.a.wave = bpe_kit::sound::Wave::Saw);
-    scene.things.get_mut(&ball).unwrap().slots.insert(SlotId::Sound, card.clone());
-    let open = render(&kit, &scene, 6.0);
+    scene.things.get_mut(&liquid).unwrap().slots.insert(SlotId::Sound, card.clone());
+    let deep = (2.6 * 48_000.0) as usize * 2;
+    let open = render(&kit, &scene, 4.0).split_off(deep);
     voice(&mut card, |v| {
-        v.play_under = 1.0;
+        v.play_under = 100.0;
         v.play_deep_at = 20.0;
     });
-    scene.things.get_mut(&ball).unwrap().slots.insert(SlotId::Sound, card);
-    let muffled = render(&kit, &scene, 6.0);
+    scene.things.get_mut(&liquid).unwrap().slots.insert(SlotId::Sound, card);
+    let muffled = render(&kit, &scene, 4.0).split_off(deep);
     let (a, b) = (brightness(&open), brightness(&muffled));
     eprintln!("open {a}, muffled {b}; energy {} and {}", energy(&open), energy(&muffled));
-    assert!(energy(&open) > 1e-3 && energy(&muffled) > 0.0, "the ball's hits under water play");
+    assert!(energy(&open) > 1e-3 && energy(&muffled) > 0.0, "the bubbles under water play");
     assert!(b < a * 0.5, "muffled {b} against open {a}");
 }
 

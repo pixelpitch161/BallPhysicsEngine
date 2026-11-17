@@ -136,7 +136,7 @@ fn stat_from(t: &[u64; STAT_WORDS], kept: u64, layout: &Layout) -> Stat {
     let row = mean(stat_at::ROW) + 0.5;
     Stat {
         drops: n.min(u64::from(u32::MAX)) as u32,
-        speed: (mean(stat_at::SPEED) / 16.0) as f32 * layout.cell,
+        speed: (mean(stat_at::SPEED) / 4.0) as f32 * layout.cell,
         height: (1.0 - row / layout.rows.max(1) as f64).clamp(0.0, 1.0) as f32,
         colour,
         mixed: (1.0 - spread).clamp(0.0, 1.0) as f32,
@@ -163,14 +163,14 @@ pub(crate) fn pour_event(step: u64, liquid: ThingId, k: usize, point: Vec2, v: V
     }
 }
 
-/// Whether a ball moving at `speed` px/s under a liquid gives off a bubble at world step `step`
-/// (`per_second` steps a second): a roll of the shared dice on the step and the ball.
-pub(crate) fn bubbles_now(speed: f32, step: u64, per_second: u32, ball: (ThingId, u32), liquid: u8) -> bool {
+/// Whether a ball moving at `speed` px/s under a liquid gives off a bubble at world step `step`,
+/// the feel having covered `span` seconds: a roll of the shared dice on the step and the ball.
+pub(crate) fn bubbles_now(speed: f32, step: u64, span: f32, ball: (ThingId, u32), liquid: u8) -> bool {
     if !speed.is_finite() || speed <= 0.0 {
         return false;
     }
     let rate = (speed / BUBBLE_SPEED * BUBBLES_A_SECOND).min(MOST_BUBBLES);
-    let chance = rate / per_second.max(1) as f32;
+    let chance = rate * span.max(0.0);
     let roll = bpe_core::dice::hash(&[step as u32, (step >> 32) as u32, ball.0.0, ball.1, u32::from(liquid), 0xB0B]);
     bpe_core::dice::unit24(roll) < chance
 }

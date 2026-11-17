@@ -449,6 +449,8 @@ pub struct LiquidCard {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipelines: Vec<(wgpu::ComputePipeline, wgpu::BindGroupLayout)>,
+    /// The stats pass (part 5).
+    stats: stats::Pipe,
     /// Dropped bodies' scratch, by grid nodes, for the next copy to step with: the editor copies
     /// its body about once a picture (a snapshot shares it), and a new grid each time was most of
     /// a copy's cost.
@@ -539,7 +541,8 @@ impl LiquidCard {
                 (pipeline, group)
             })
             .collect();
-        LiquidCard { device, queue, pipelines, spares: Mutex::new(Vec::new()) }
+        let stats = stats::pipe(&device);
+        LiquidCard { device, queue, pipelines, stats, spares: Mutex::new(Vec::new()) }
     }
 
     pub fn device(&self) -> &wgpu::Device {
@@ -1087,7 +1090,7 @@ impl Body {
         if let Some(feel) = &feel {
             encoder.copy_buffer_to_buffer(feel, 0, &staging, 0, bytes);
         }
-        let sums = stats::encode(&device, &mut encoder, &self.drops, &self.counts, self.bound);
+        let sums = stats::encode(&self.gpu.stats, &device, &mut encoder, &self.drops, &self.counts, self.bound);
         encoder.copy_buffer_to_buffer(&sums, 0, &staging, bytes, stat_bytes);
         let index = self.gpu.queue.submit([encoder.finish()]);
         let answer = Arc::new(AtomicU8::new(WAITING));

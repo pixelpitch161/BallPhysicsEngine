@@ -3,8 +3,6 @@
 //! (`shaders/liquid_stats.wgsl`) when [`super::Body::send_feel`] sends the feel back, so they come
 //! back with it ([`super::Feel::stats`]).
 
-use std::sync::{Arc, Mutex};
-
 use super::{MOST_LIQUIDS, WORKGROUP};
 
 /// Words each liquid's sums take.
@@ -16,7 +14,7 @@ pub const STATS_LEN: usize = MOST_LIQUIDS * STAT_WORDS;
 pub mod stat_at {
     /// How many drops.
     pub const DROPS: usize = 0;
-    /// Their speeds (grid units a second × 16, at most 2047 a drop).
+    /// Their speeds (grid units a second × 4, at most 4095 a drop: 1023 cells a second).
     pub const SPEED: usize = 1;
     /// Their rows (grid units down from the top, at most 4094).
     pub const ROW: usize = 2;
@@ -25,19 +23,13 @@ pub mod stat_at {
     pub const SQUARE: usize = 6;
 }
 
-struct Pipe {
-    device: wgpu::Device,
+/// The stats pipeline of one card (made with the card's others: a pipeline is its device's own).
+pub(super) struct Pipe {
     pipeline: wgpu::ComputePipeline,
     layout: wgpu::BindGroupLayout,
 }
 
-static PIPES: Mutex<Vec<Arc<Pipe>>> = Mutex::new(Vec::new());
-
-fn pipe(device: &wgpu::Device) -> Arc<Pipe> {
-    let mut pipes = PIPES.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(p) = pipes.iter().find(|p| p.device == *device) {
-        return p.clone();
-    }
+pub(super) fn pipe(device: &wgpu::Device) -> Pipe {
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("liquid stats"),
         source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/liquid_stats.wgsl").into()),
@@ -69,22 +61,19 @@ fn pipe(device: &wgpu::Device) -> Arc<Pipe> {
         compilation_options: Default::default(),
         cache: None,
     });
-    // Pipes of devices no longer used would only grow the list: a program has one or two.
-    let p = Arc::new(Pipe { device: device.clone(), pipeline, layout });
-    pipes.push(p.clone());
-    p
+    Pipe { pipeline, layout }
 }
 
 /// Sums every liquid's drops (`bound` at most, as many as `counts[1]` says) into a new buffer,
 /// on `encoder`, and returns it ([`STATS_LEN`] words, copy-from).
 pub(super) fn encode(
+    p: &Pipe,
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
     drops: &wgpu::Buffer,
     counts: &wgpu::Buffer,
     bound: u32,
 ) -> wgpu::Buffer {
-    let p = pipe(device);
     let stats = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("liquid stats"),
         size: (STATS_LEN * 4) as u64,

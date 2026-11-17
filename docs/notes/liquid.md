@@ -167,7 +167,9 @@ pours and bubbles come only from its own liquid.
 **New events.** Item 3 **POURING** (`sound.rs`): each pour that gave birth on a step logs at most
 30 a second (`POUR_RATE`), at the pour's place with its speed. Item 4 **BUBBLE**: a ball inside a
 liquid (`feel::apply`) gives off bubbles at 8 a second per 100 px/s (at most 60), rolled on the
-shared dice by step, ball and liquid. Both are logged only when the liquid's own Sound card asks
+shared dice by step, ball and liquid (chance = rate × the seconds the feel covered). Pours are
+pushed to `host.news` by the liquid steps and logged at the end of the same `after_step`, so the log
+stays in step order. Both are logged only when the liquid's own Sound card asks
 (`LiquidSound` in `LiquidState`, in `inputs_hash` and `physics_print_extra`), so goldens don't
 move.
 
@@ -178,9 +180,10 @@ A kept liquid that doesn't push balls still sends no drag, so the balls move as 
 
 **Readings from the card.** `cs_feel` also walks up against gravity from just above each ball's top
 while cells hold > 0.3 of a drop, up to 255 cells, and stores depth×16 at feel word 12
-(`feel_at::DEPTH`). A new pass `liquid_stats.wgsl` sums per liquid (12 words: drops, speed×16,
+(`feel_at::DEPTH`). A new pass `liquid_stats.wgsl` sums per liquid (12 words: drops, speed×4 up to 4095,
 row, colour 0..63 and its square per channel), read back with the feel (`Feel::stats`). The
-feel is now sent after every main batch, with or without balls. The host keeps `wet` (by ball:
+feel is also sent after a main batch with no balls when the scene hears a liquid (`Host::heard`,
+read from `World::tree`; the Liquid thing now `reads_tree`). The host keeps `wet` (by ball:
 depth px, contact colour, the top four liquids' shares) and `sums`. `wet_of(world, ball)` and
 `stats_of(world, pick)` (drops, mean speed, height 0..1, colour, mixed 0..1 from the largest
 channel's spread, amount = drops / kept) read them without allocating.
@@ -201,4 +204,5 @@ studio's `a_liquid_starts_from_its_splash_and_from_any_other_sound`.
 **Known gaps (part 5).** Follow sound reads the Liquid modulator unsmoothed. Depth is measured
 straight up against gravity from the ball's top in cells, so a ball under an overhang of liquid
 reads the liquid above it only. Colour chords need two liquids each at least 20 % of a ball's
-contacts.
+contacts. Pitch from Depth/Colour and the muffle read the sound world as the note starts (up to a
+block past the hit), as Pitch follows size does. Height reads wrong past 4094 rows.

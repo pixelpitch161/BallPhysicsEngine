@@ -37,7 +37,7 @@ fn cs_stats(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     let base = min(d.kind & 255u, 15u) * WORDS;
     atomicAdd(&stats[base], 1u);
-    atomicAdd(&stats[base + 1u], u32(clamp(length(d.v) * 16.0, 0.0, 2047.0)));
+    atomicAdd(&stats[base + 1u], u32(clamp(length(d.v) * 4.0, 0.0, 4095.0)));
     atomicAdd(&stats[base + 2u], u32(clamp(d.x.y, 0.0, 4094.0)));
     for (var k = 0u; k < 3u; k = k + 1u) {
         var c = d.colour[k];

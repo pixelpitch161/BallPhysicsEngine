@@ -397,7 +397,7 @@ fn render_does_not_allocate() {
     wet.things.get_mut(&liquid).unwrap().slots.insert(SlotId::Sound, bubbles);
     let mut card = starter_voice(reg);
     let mut v = VoiceSettings::from_params(&card.params);
-    v.play_under = 1.0;
+    v.play_under = 100.0;
     v.play_pitch_from = bpe_kit::sound::PitchFrom::Colour;
     card.params = v.to_params();
     wet.things.get_mut(&ball).unwrap().slots.insert(SlotId::Sound, card);
@@ -434,4 +434,7 @@ fn render_does_not_allocate() {
         heard |= block.iter().any(|&v| v != 0.0);
     }
     assert!(heard, "the liquid was heard while counting");
+    // The graphics card goes before the thread's own storage does.
+    drop(e);
+    bpe_gfx::swarm::use_on_this_thread(None);
 }

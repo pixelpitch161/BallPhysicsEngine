@@ -71,6 +71,9 @@ pub struct Host {
     pub wet: Arc<BTreeMap<(ThingId, u32), super::sound::Wet>>,
     /// Every liquid's stat words from the last feel, by its number on the card (part 5).
     pub sums: Option<Arc<Vec<u32>>>,
+    /// Whether some sound in the scene hears a liquid (`scene_hears_liquid`, read as the world is
+    /// built): the feel then goes back with no balls too, for the liquids' sums (part 5).
+    pub heard: bool,
 }
 
 impl Host {

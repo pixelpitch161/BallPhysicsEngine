@@ -155,7 +155,7 @@ pub fn apply(host: &mut Host, world: &mut World) {
             // Moving under it, it gives off bubbles its sound may hear (part 5).
             if felt.bubbles & (1 << l) != 0
                 && inside.contains(&key)
-                && bubbles_now(v.length(), world.step, world.steps_per_second, (thing, row), l as u8)
+                && bubbles_now(v.length(), world.step, felt.span, (thing, row), l as u8)
             {
                 news.push(event(world, (thing, row), liquid, BUBBLE, place, v));
             }

@@ -34,7 +34,11 @@ pub fn show_liquid(ui: &mut Ui, cx: &mut TabCx) {
                 ("moments_go_in", "A ball goes in", "A ball going into it, about half under"),
                 ("moments_come_out", "A ball comes out", "A ball coming back out of it"),
                 ("moments_pour", "It pours", "Its pours while they pour, about 30 notes a second each"),
-                ("moments_bubbles", "Balls bubble under it", "Balls moving under it give off bubbles, more the faster they go"),
+                (
+                    "moments_bubbles",
+                    "Balls bubble under it",
+                    "Balls moving under it give off bubbles, more the faster they go",
+                ),
             ] {
                 ui.horizontal(|ui| {
                     cx.switch(ui, key, name).on_hover_text(help);

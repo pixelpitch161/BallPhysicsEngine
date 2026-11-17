@@ -119,6 +119,9 @@ fn pours_log_while_they_pour_when_the_sound_asks() {
     let pours = liquid_items(&log, POURING);
     eprintln!("{pours} pours in a second");
     assert!((10..=31).contains(&pours), "about 30 a second: {pours}");
+    assert!(log.events().windows(2).all(|w| w[0].step <= w[1].step), "the log is in step order");
+    let hits = log.events().iter().filter(|e| e.kind == EventKind::Hit).count();
+    eprintln!("{hits} hits");
     let e = log.events().iter().find(|e| e.b.is_some_and(|b| b.item == POURING)).unwrap();
     assert_eq!((e.a.thing, e.b.unwrap().thing), (id, id));
     assert!(e.speed > 0.0);

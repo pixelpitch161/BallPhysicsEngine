@@ -346,6 +346,11 @@ impl ThingSim for LiquidSim {
         KIND
     }
 
+    /// It reads whether the scene's sounds hear a liquid (part 5).
+    fn reads_tree(&self, _resolved: &ResolvedThing) -> bool {
+        true
+    }
+
     fn build(&self, thing: &Thing, resolved: &ResolvedThing, world: &mut World) {
         let mut st = LiquidState::new(thing.id, thing.parent);
         read_into(&mut st, resolved);
@@ -396,6 +401,7 @@ impl ThingSim for LiquidSim {
             taken: Default::default(),
             wet: Default::default(),
             sums: None,
+            heard: world.tree.as_deref().is_some_and(super::sound::scene_hears_liquid),
         };
         if let Some(body) = host.body.as_mut() {
             // Born still: a step with no time in it puts them on the card with the walls band.
@@ -468,9 +474,10 @@ impl ThingSim for LiquidSim {
             host.pending = None;
             feel::all_left(host, world);
         }
-        // The feel goes back after every batch, with no balls too: the liquids' sums come with it
-        // (part 5).
-        if main && stepped > 0 {
+        // The feel goes back after every batch with balls, and with none too when a sound hears
+        // the liquids' sums that come with it (part 5).
+        let heard = state_mut::<LiquidState>(taken[0].1.as_mut()).host.as_ref().is_some_and(|h| h.heard);
+        if main && stepped > 0 && (heard || !balls.is_empty()) {
             let liquids: Vec<(usize, ThingId, f32)> =
                 numbered(&taken).iter().filter_map(|s| Some((s.index?, s.id, s.meets.splash_from))).collect();
             let bubbles = numbered(&taken)
@@ -483,6 +490,13 @@ impl ThingSim for LiquidSim {
                 let felt =
                     Felt { balls: from, liquids, cell: layout.cell, span: stepped as f32 / rate as f32, bubbles };
                 host.pending = Arc::make_mut(body).send_feel(balls.len() as u32).map(|f| (f, Arc::new(felt)));
+            }
+        }
+        // What the liquid steps logged (its pours) is stamped with this world step: logged now,
+        // in step order.
+        if let Some(host) = state_mut::<LiquidState>(taken[0].1.as_mut()).host.as_mut() {
+            for e in std::mem::take(&mut host.news) {
+                log.push(e);
             }
         }
         give_back(world, taken);
