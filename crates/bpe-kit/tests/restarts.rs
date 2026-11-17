@@ -9,6 +9,7 @@
 //! curves, routes...) are skipped.
 
 use bpe_core::{Color, Registry, Resolved, Scene, SettingDef, ThingId, Value, ValueType, layered_key};
+use bpe_kit::things::liquid::LiquidState;
 use bpe_kit::things::particles::state::ParticlesState;
 use bpe_runtime::{Playback, Sims, beside_fingerprint, fingerprint, main_part};
 use std::sync::Arc;
@@ -99,6 +100,11 @@ fn outcome(scene: &Scene, resolved: &Resolved, sims: &Arc<Sims>) -> Outcome {
         for id in &world.beside {
             if let Some(p) = world.states.get(id).and_then(|s| (**s).as_any().downcast_ref::<ParticlesState>()) {
                 beside.push((*id, bpe_kit::things::particles::step::hash_of(p)));
+            }
+            // A Liquid thing: what its stepping reads (its drops are on the graphics card, which
+            // this test doesn't name).
+            if let Some(l) = world.states.get(id).and_then(|s| (**s).as_any().downcast_ref::<LiquidState>()) {
+                beside.push((*id, bpe_kit::things::liquid::inputs_hash(l)));
             }
         }
     }

@@ -804,9 +804,8 @@ pub fn lighting_readout(lights: usize, ms: Option<f32>) -> String {
     format!("· Lighting: {count}{time}{warn}")
 }
 
-/// The status line's particles readout: "· Particles: 12,400, 1.8 ms" (how long the last
-/// particle step took).
-pub fn particles_readout(count: usize, ms: f32) -> String {
+/// `count` with a comma every three digits.
+fn grouped(count: usize) -> String {
     let digits = count.to_string();
     let mut grouped = String::new();
     for (i, c) in digits.chars().enumerate() {
@@ -815,5 +814,17 @@ pub fn particles_readout(count: usize, ms: f32) -> String {
         }
         grouped.push(c);
     }
-    format!("· Particles: {grouped}, {ms:.1} ms")
+    grouped
+}
+
+/// The status line's particles readout: "· Particles: 12,400, 1.8 ms" (how long the last
+/// particle step took).
+pub fn particles_readout(count: usize, ms: f32) -> String {
+    format!("· Particles: {}, {ms:.1} ms", grouped(count))
+}
+
+/// The status line's liquid readout: "· Liquid: 120,000 drops, 3.2 ms" (how long the last liquid
+/// step took on the graphics card).
+pub fn liquid_readout(count: usize, ms: f32) -> String {
+    format!("· Liquid: {} drops, {ms:.1} ms", grouped(count))
 }

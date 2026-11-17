@@ -304,6 +304,8 @@ fn export_with(
 ) -> anyhow::Result<()> {
     // Huge swarms step on the card the video is drawn with.
     let _card = bpe_gfx::swarm::use_for_now(Some(bpe_gfx::swarm::SwarmGpu::for_device(device, queue)));
+    // Liquids use their Export detail.
+    let _export = bpe_kit::things::liquid::exporting_for_now();
     let (_, video) = video_of(scene, kit)?;
     let (width, height) = output_size(video.width, video.height, options.scale);
     let fps = video.fps.max(1);
@@ -695,6 +697,8 @@ pub fn final_frame(
 ) -> anyhow::Result<(Vec<u8>, (u32, u32), f32)> {
     // Huge swarms step on the card the picture is drawn with.
     let _card = bpe_gfx::swarm::use_for_now(Some(bpe_gfx::swarm::SwarmGpu::for_device(device, queue)));
+    // Liquids use their Export detail.
+    let _export = bpe_kit::things::liquid::exporting_for_now();
     let (_, video) = video_of(scene, kit)?;
     let (width, height) = output_size(video.width, video.height, scale);
     let fps = video.fps.max(1);
@@ -758,6 +762,8 @@ pub fn preview_clip(
 ) -> anyhow::Result<u32> {
     // Huge swarms step on the card the picture is drawn with.
     let _card = bpe_gfx::swarm::use_for_now(Some(bpe_gfx::swarm::SwarmGpu::for_device(device, queue)));
+    // Liquids use their Export detail.
+    let _export = bpe_kit::things::liquid::exporting_for_now();
     let (_, video) = video_of(scene, kit)?;
     let size = output_size(video.width, video.height, scale);
     let fps = fps.max(1);

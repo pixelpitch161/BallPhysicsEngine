@@ -20,7 +20,7 @@ same: there's no backward compatibility until the owner is happy with the softwa
 ## Core ideas
 
 - **Things in a tree** (`bpe-core/src/scene.rs`): Scene settings (the root), Camera, Balls, Emitter, Shape, Light,
-  Rig, Particles, Text, Folder. Every thing **owns its settings**: nothing is shared, linked, inherited or locked,
+  Rig, Particles, Text, Liquid, Folder. Every thing **owns its settings**: nothing is shared, linked, inherited or locked,
   and there's no Library, presets or randomize. A thing's **cards** live in `Thing.slots` as `Slot { kind, params,
   stash }` (Look, Motion, Bounce, Health, Sound; the scene adds Effects in its Shader slot, Lighting, Air, Mixer).
   A card kind is a `ModuleKind` (the name is historical). A setting's address is `{ thing, slot, key }`.
@@ -64,6 +64,7 @@ Each area's detailed notes are in `docs/notes/`; its design is in `docs/superpow
 | Where each file is (split folders, old file names, where colour grading goes) | `file-map.md` | `plans/2026-11-09-split-giant-files.md` |
 | Colour grading (Grade card, panels, GPU grade program, Grade mode, Histogram) | `grading.md` | `specs/2026-11-09-colour-grading-design.md`, `plans/colour-grading/` |
 | Built-in scenes (library, Scenes window) | `library.md` | `specs/2026-11-10-built-in-scenes-design.md`, `plans/built-in-scenes/` |
+| Liquid thing (GPU liquid, fill and pours, colour mixing, walls band, drops drawn from the card) | `liquid.md` | `specs/2026-11-17-liquid-thing-design.md`, `plans/liquid/` |
 | Checks, picture tests, this guide | this file | `plans/2026-11-08-safety-nets-lean-guide.md` |
 
 ## Crate map

@@ -46,6 +46,7 @@ pub use timing::FEATURES as TIMING_FEATURES;
 mod layers_tests;
 #[cfg(test)]
 mod lens_tests;
+pub mod liquid_sim;
 mod masks;
 #[cfg(test)]
 mod paint_tests;

@@ -182,6 +182,7 @@ impl LiquidLayer {
             sky_top: sky(self.sky_top),
             sky_bottom: sky(self.sky_bottom),
             d: real.map_or([0.0; 4], |r| [r.lit.max(0.0), r.stamp, r.blocks.clamp(0.0, 1.0), r.link]),
+            ..LiquidStyle::default()
         }
     }
 

@@ -1037,7 +1037,7 @@ pub fn liquid_of(cx: &DrawCx, st: &ParticlesState, layer: &LookLayer, l: &Liquid
         RealLight { lit: layer.light[0], stamp: surface::stamp(index, &s), blocks, link }
     });
     let style = l.style(c.opacity, &s, real);
-    (!blobs.is_empty()).then(|| Liquid { blobs, style, front: c.place == AroundPlace::InFront })
+    (!blobs.is_empty()).then(|| Liquid { blobs, style, front: c.place == AroundPlace::InFront, drops: None })
 }
 
 /// Whether a Huge swarm draws layers drawn as `drawn` (Soft smoke, Flame and Web lines need the

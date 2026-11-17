@@ -12,6 +12,7 @@ use std::thread::Thread;
 use std::time::Duration;
 
 use bpe_core::{Resolved, Scene, ThingId};
+use bpe_kit::things::liquid::LiquidState;
 use bpe_kit::things::particles::state::ParticlesState;
 use bpe_runtime::{Playback, Sims, ThingState};
 
@@ -35,6 +36,9 @@ pub struct Snapshot {
     pub count: usize,
     /// How long their last particle step took, in milliseconds, all things together.
     pub step_ms: f32,
+    /// The Liquid things' drops (as the card last said), how long their last liquid step took in
+    /// milliseconds, and whether there is a card to move them on: `None` without a Liquid thing.
+    pub liquid: Option<(u32, f32, bool)>,
 }
 
 impl Snapshot {
@@ -49,6 +53,7 @@ impl Snapshot {
         let world = playback.world();
         let mut states = Vec::new();
         let (mut count, mut step_ms) = (0, 0.0);
+        let mut liquid = None;
         // The air too, for Show air (and to draw with the particles).
         let air = world.states.get(&ThingId::ROOT).filter(|s| (***s).as_any().is::<bpe_kit::air::Air>());
         if let Some(air) = air {
@@ -60,10 +65,13 @@ impl Snapshot {
                     count += p.count();
                     step_ms += p.last_ms;
                 }
+                if let Some(h) = (**state).as_any().downcast_ref::<LiquidState>().and_then(|l| l.host.as_ref()) {
+                    liquid = Some((h.count_hint(), h.step_ms(), h.body.is_some()));
+                }
                 states.push((*id, Arc::from(state.clone())));
             }
         }
-        Snapshot { step: world.step, time: world.time(), states, count, step_ms }
+        Snapshot { step: world.step, time: world.time(), states, count, step_ms, liquid }
     }
 }
 

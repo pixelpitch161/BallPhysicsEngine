@@ -141,7 +141,7 @@ fn with_looks(ui: &mut Ui, kind: &dyn bpe_core::ThingKind) -> Option<Action> {
 }
 
 /// The headings of the "Add thing" menu, in order. Kinds in no family follow Folder.
-const FAMILIES: [&str; 5] = ["Bouncers", "Shapes", "Text", "Lights", "Particles"];
+const FAMILIES: [&str; 6] = ["Bouncers", "Shapes", "Text", "Lights", "Particles", "Liquids"];
 
 /// Draws the tree and applies what was clicked. `selection` follows the clicks.
 pub fn show(
@@ -1027,6 +1027,8 @@ enum Icon {
     Lamp,
     /// A rig: a bar with lamps hanging from it.
     Rig,
+    /// A liquid: a drop.
+    Drop,
     /// A Particles thing: a scatter of specks.
     Specks,
     /// A Text: a capital T.
@@ -1047,6 +1049,7 @@ fn icon_shape(kind: &str) -> Icon {
         "rig" => Icon::Rig,
         bpe_kit::things::particles::KIND => Icon::Specks,
         bpe_kit::things::text::KIND => Icon::Letter,
+        bpe_kit::things::liquid::KIND => Icon::Drop,
         _ => Icon::Diamond,
     }
 }
@@ -1115,6 +1118,17 @@ fn paint_icon(painter: &egui::Painter, rect: Rect, kind: &str, ink: Color32) {
             painter.rect_filled(bar, 0.5, ink);
             let stem = Rect::from_center_size(c + Vec2::new(0.0, r * 0.15), Vec2::new(r * 0.5, r * 1.75));
             painter.rect_filled(stem, 0.5, ink);
+        }
+        Icon::Drop => {
+            // A round bottom drawn up to a point.
+            let middle = c + Vec2::new(0.0, r * 0.35);
+            painter.circle_filled(middle, r * 0.7, ink);
+            let tip = vec![
+                c + Vec2::new(0.0, -r * 1.05),
+                middle + Vec2::new(r * 0.66, -r * 0.25),
+                middle + Vec2::new(-r * 0.66, -r * 0.25),
+            ];
+            painter.add(egui::Shape::convex_polygon(tip, ink, Stroke::NONE));
         }
         Icon::Diamond => {
             let points =

@@ -29,6 +29,12 @@ struct Style {
     // Shaded by the real lights (W15): Lit (0: its own light), surface stamp (index, + 4096 when
     // see-through), how much it blocks light.
     d: vec4<f32>,
+    // Drops on the card (liquid part 1): the grid's origin xy, its cell, each drop's reach.
+    e: vec4<f32>,
+    // Drops on the card: Swirl detail, colours from the colour weights (1).
+    f: vec4<f32>,
+    // Drops on the card: the one colour.
+    g: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -36,6 +42,8 @@ struct Style {
 @group(1) @binding(1) var field: texture_2d<f32>;
 @group(1) @binding(2) var behind: texture_2d<f32>;
 @group(1) @binding(3) var smp: sampler;
+// A Liquid thing's colour weights: what its field's colour is over.
+@group(1) @binding(4) var weights: texture_2d<f32>;
 
 fn to_clip(p: vec2<f32>) -> vec4<f32> {
     let c = g.camera;
@@ -91,6 +99,16 @@ fn vs_full(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
     return vec4<f32>(x, y, 0.0, 1.0);
 }
 
+// The liquid's colour at pixel `px`, from its field `f`: over the colour weights for a Liquid
+// thing's drops, else over the field's weight.
+fn colour_of(f: vec4<f32>, px: vec2<i32>) -> vec3<f32> {
+    if st.f.y > 0.5 {
+        let w = textureLoad(weights, px, 0).r;
+        return f.rgb / max(w, 1e-5);
+    }
+    return f.rgb / max(f.a, 1e-5);
+}
+
 fn density(p: vec2<i32>, size: vec2<i32>) -> f32 {
     return textureLoad(field, clamp(p, vec2<i32>(0), size - 1), 0).a;
 }
@@ -132,7 +150,7 @@ fn fs_surface(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let code = i32(st.a.w + 0.5);
     let mode = light_pass(g.light.x);
     if st.d.x > 0.0 {
-        return real_lit(f.rgb / max(here, 1e-5), shown, inside, unit, mode);
+        return real_lit(colour_of(f, px), shown, inside, unit, mode);
     }
     // The light passes: covering black (lighting leaves it as drawn), nothing in the surface
     // picture (it blocks no light), whole where it covers in the tags.
@@ -158,7 +176,7 @@ fn fs_surface(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     if mode <= PASS_BEHIND && code == GLASS {
         return vec4<f32>(0.0);
     }
-    let colour = f.rgb / max(here, 1e-5);
+    let colour = colour_of(f, px);
     // The normal: the edge rounds over within Roundness, flat inside it.
     let round_px = max(st.a.z / unit, 0.5);
     let x = clamp(max(inside, 0.0) / round_px, 0.0, 1.0);
