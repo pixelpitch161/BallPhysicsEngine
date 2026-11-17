@@ -23,6 +23,7 @@ What he asked for, in his words or confirmed by him:
 | Favourite part | Colour mixing: "the colors of the liquid (or multiple liquids) blend and mix with each other". The mixing section was approved too. |
 | Mixing comes when? | In the first part, not as a later add-on (proposed, approved). |
 | How it's built | **A**: a graphics-card liquid that reports its push on each ball back every step. |
+| Export of a ball-pushing liquid | **Match the preview, with a finer-export switch** (section 5, Detail). |
 
 ## 2. Goals, non-goals, anti-goals
 
@@ -127,8 +128,8 @@ status line shows the drop count. The builder sets the numbers so Normal runs a 
 speed on Aedan's RX 9070 XT and Extreme reaches several hundred thousand drops for export.
 
 Changing Preview Detail changes how the preview moves (it's a different simulation). When no liquid pushes balls,
-export uses Export Detail and only the liquid's look differs. **When a liquid pushes balls** (awaiting Aedan's pick;
-written here as the recommended option): export uses the **Preview** Detail by default so ball paths, hits and sound
+export uses Export Detail and only the liquid's look differs. **When a liquid pushes balls** (Aedan picked "Match, with a
+finer-export switch", 2026-11-17): export uses the **Preview** Detail by default so ball paths, hits and sound
 come out exactly as tuned, and a **Finer export** switch on the Liquid card exports at Export Detail with the warning
 "Balls will take different paths from the preview." The sound engine always steps at the Detail the picture it
 belongs to uses (Preview in the editor, the export's in `bpe-cli`), so hits line up.
