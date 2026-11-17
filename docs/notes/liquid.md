@@ -365,3 +365,19 @@ straight up against gravity from the ball's top in cells, so a ball under an ove
 reads the liquid above it only. Colour chords need two liquids each at least 20 % of a ball's
 contacts. Pitch from Depth/Colour and the muffle read the sound world as the note starts (up to a
 block past the hit), as Pitch follows size does. Height reads wrong past 4094 rows.
+
+## Fix: exports and Preview final frame with a liquid (2026-11-17)
+
+In the editor, exporting a scene with a Liquid thing (and Preview final frame) failed with a graphics card
+validation error, while `bpe-render-next` worked. The export draws on its own `headless_device()`, made from a new
+wgpu instance, while the editor's window card stays named on the main thread. `wgpu::Device`'s `==` compares only
+the device id, and every instance numbers its devices from the same start, so `SwarmGpu::for_device` and
+`LiquidCard::for_device` (which looked up a registry of cards by device) handed the export the editor's card: the
+liquid stepped on the editor's device and was drawn with the export's. Huge swarms had the same flaw.
+
+As built: there is no registry. `SwarmGpu::for_device` and `LiquidCard::for_device` always make a new card (the swarm pipelines are made on first use); the
+caller keeps the card and names it with `swarm::use_for_now`. A `SwarmGpu` owns its `LiquidCard`
+(`SwarmGpu::liquid()`, made on first use), and `LiquidCard::on_this_thread()` takes the named card's. Never match
+GPU objects of different wgpu instances with `==` (the renderer's `DropsSource.device == *device` check has the same
+blind spot, harmless today because each world draws with the device it stepped on). Regression test:
+`bpe-cli/tests/liquid_export.rs`, which keeps an "editor" card named while it draws a final frame on a second device.
