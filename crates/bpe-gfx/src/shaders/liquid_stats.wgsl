@@ -13,6 +13,7 @@ struct Drop {
     kick: f32,
     mat: vec2<f32>,
     spare: vec2<f32>,
+    f: vec4<f32>,
 };
 
 const WORDS: u32 = 12u;
@@ -35,7 +36,11 @@ fn cs_stats(@builtin(global_invocation_id) id: vec3<u32>) {
     if !(finite(d.x.x) && finite(d.x.y) && finite(d.v.x) && finite(d.v.y)) {
         return;
     }
-    let base = min(d.kind & 255u, 15u) * WORDS;
+    // A stain (liquid part 4: liquid number 16 and up) is no liquid's drop.
+    if (d.kind & 255u) >= 16u {
+        return;
+    }
+    let base = (d.kind & 15u) * WORDS;
     atomicAdd(&stats[base], 1u);
     atomicAdd(&stats[base + 1u], u32(clamp(length(d.v) * 4.0, 0.0, 4095.0)));
     atomicAdd(&stats[base + 2u], u32(clamp(d.x.y, 0.0, 4094.0)));

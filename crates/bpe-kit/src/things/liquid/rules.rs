@@ -6,13 +6,13 @@ use std::collections::BTreeSet;
 
 use bpe_core::{BlockSection, Choice, Params, Settings, ThingId, Who};
 use bpe_runtime::rules::WHOLE;
-use bpe_runtime::{BlockSim, EventKind, Firing, Party, PrepareCx, StageCx, ThingState, Values, state};
+use bpe_runtime::{Action, BlockSim, EventKind, Firing, Party, PrepareCx, StageCx, ThingState, Values, state};
 
 use super::KIND;
 use super::feel::{ENTER, LEAVE, SPLASH};
 use crate::rules::block_kind;
 use crate::rules::when::ball_values;
-use crate::rules::who::matches;
+use crate::rules::who::{matches, targets};
 
 /// What the block watches for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Choice)]
@@ -113,6 +113,67 @@ impl BlockSim for LiquidWhen {
                 normal: ev.normal,
                 values,
             });
+        }
+    }
+}
+
+/// Do: **Un-mix** (liquid part 4): the liquid plays back what it remembers (the first Liquid
+/// thing's Remember for Un-mix and Seconds), colours un-mixing. All Liquid things are one body of
+/// liquid, so naming one plays back all of them.
+pub struct LiquidUnmix;
+
+#[derive(Clone, Debug, PartialEq, Settings)]
+pub struct LiquidUnmixSettings {
+    /// The Liquid things to play back (they share one liquid: naming any plays it all back).
+    #[setting(label = "Liquid", simple, group = "Rule")]
+    pub liquid: Who,
+}
+
+impl Default for LiquidUnmixSettings {
+    fn default() -> Self {
+        LiquidUnmixSettings { liquid: Who::Anything }
+    }
+}
+
+block_kind!(
+    LiquidUnmix,
+    "do.unmix",
+    "Un-mix",
+    Do,
+    LiquidUnmixSettings,
+    "Plays a liquid's last seconds backwards, colours un-mixing (its Liquid card's Remember for Un-mix must be on).",
+    values = [],
+    from = []
+);
+
+impl BlockSim for LiquidUnmix {
+    fn kind(&self) -> &'static str {
+        "do.unmix"
+    }
+    fn section(&self) -> BlockSection {
+        BlockSection::Do
+    }
+    fn prepare(&self, params: &Params, _cx: &PrepareCx) -> Result<Box<dyn ThingState>, String> {
+        Ok(Box::new(LiquidUnmixSettings::from_params(params)))
+    }
+
+    /// A rule that plays the liquid back keeps every Liquid thing with the physics (they share one
+    /// body, which plays back in the world the rule runs in).
+    fn keeps(&self, _params: &Params, _thing: ThingId, kind: &str, _tags: &BTreeSet<String>) -> bool {
+        kind == KIND
+    }
+
+    fn act(&self, st: &mut dyn ThingState, firing: &Firing, cx: &StageCx, out: &mut Vec<Action>) {
+        let s = state::<LiquidUnmixSettings>(st);
+        let mut named: Vec<ThingId> = targets(cx, &s.liquid, firing)
+            .into_iter()
+            .map(|(thing, _)| thing)
+            .filter(|t| cx.world.kind_of(*t) == Some(KIND))
+            .collect();
+        named.dedup();
+        // One is enough: the liquid is one body.
+        if let Some(&thing) = named.first() {
+            out.push(Action::Fire { thing });
         }
     }
 }

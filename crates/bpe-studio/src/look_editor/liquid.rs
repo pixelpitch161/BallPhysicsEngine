@@ -42,9 +42,13 @@ fn list_of(
     picked_settings(ui, inspector, cx, card, picked, false, edits);
 }
 
-/// The Fill card's Pours, under its settings.
+/// The Fill card's Pours and forces (Heat, Drain, Current, Magnet), under its settings.
 pub fn show_pours(ui: &mut Ui, inspector: &mut Inspector, cx: &LookCx, edits: &mut Vec<Edit>) {
-    let words = ("Pours", "+ Add pour", "None yet. Add a pour to pour liquid in from a spout.");
+    let words = (
+        "Pours and forces",
+        "+ Add pour or force",
+        "None yet. Add a pour to pour liquid in from a spout, or heat, a drain, a current or a magnet.",
+    );
     list_of(ui, inspector, cx, words, LayerSection::Force, edits);
 }
 
@@ -94,7 +98,7 @@ mod tests {
         selection.set(id);
         let state = State { inspector: Inspector::default(), scene, kit, resolved, selection };
         let mut h = Harness::builder()
-            .with_size(egui::vec2(420.0, 4000.0))
+            .with_size(egui::vec2(420.0, 8000.0))
             .with_step_dt(1.0 / 60.0)
             .with_max_steps(120)
             .allow_missing_glyphs()
@@ -131,8 +135,11 @@ mod tests {
         for title in ["Fill", "Meets", "Look", "Balls push it", "Mix style"] {
             assert!(h.query_all_by_label(title).next().is_some(), "{title}");
         }
-        h.get_by_label("+ Add pour").click();
+        h.get_by_label("+ Add pour or force").click();
         h.run();
+        for name in ["Heat", "Drain", "Current", "Magnet"] {
+            assert!(h.query_all_by_label(name).next().is_some(), "the menu offers {name}");
+        }
         h.get_by_label("Pour").click();
         h.run();
         assert_eq!(kinds(&h, id, SlotId::Motion), [POUR]);

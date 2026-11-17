@@ -96,6 +96,17 @@ pub(super) fn kind_card(
                             s.export_detail.drops_per_100px()
                         );
                         ui.label(RichText::new(words).color(style::MUTED));
+                        if s.remember {
+                            // 20 bytes a drop, 60 times a second.
+                            let mb = 20.0 * 60.0 * s.unmix_seconds.clamp(0.1, 60.0) * 100_000.0 / 1e6;
+                            let most = bpe_gfx::liquid_sim::MOST_HISTORY_BYTES as f32 / 1e6;
+                            let words = format!(
+                                "Un-mix keeps about {:.0} MB of video memory for every 100,000 drops (at most {most:.0} MB, \
+                                 so more drops remember fewer seconds)",
+                                mb.min(most)
+                            );
+                            ui.label(RichText::new(words).color(style::MUTED));
+                        }
                     }
                 }
             }

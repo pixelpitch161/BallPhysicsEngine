@@ -11,7 +11,7 @@ use bpe_runtime::{Wall, World};
 use glam::Vec2;
 
 use super::LiquidSettings;
-use super::cards::{FillSettings, LookSettings, MeetsSettings, OtherLiquid, PourLayer};
+use super::cards::{FillSettings, Forces, LookSettings, MeetsSettings, OtherLiquid, PourLayer};
 
 /// Where the grid sits in the world: node `(x, y)` is at `origin + (x, y) · cell`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -67,6 +67,14 @@ pub struct Host {
     pub news: Vec<bpe_runtime::Event>,
     /// The colour each ball has taken from the liquid (linear rgb, and how much).
     pub taken: Arc<BTreeMap<(ThingId, u32), [f32; 4]>>,
+    /// Un-mix (part 4): liquid steps a rule still asks it to play back, and whether it is playing
+    /// back now.
+    pub unmix_left: u32,
+    pub rewinding: bool,
+    /// Each ball's size when a liquid that changes balls first touched it.
+    pub sizes: Arc<BTreeMap<(ThingId, u32), f32>>,
+    /// Balls dissolved, for the next after-step to remove (with the log).
+    pub dissolved: Vec<(ThingId, u32)>,
     /// How each ball the last feel found touching the liquid is wet (liquid part 5).
     pub wet: Arc<BTreeMap<(ThingId, u32), super::sound::Wet>>,
     /// Every liquid's stat words from the last feel, by its number on the card (part 5).
@@ -99,6 +107,12 @@ pub struct LiquidState {
     pub meets: MeetsSettings,
     pub others: Vec<OtherLiquid>,
     pub look: LookSettings,
+    /// Its Fill card's Heat, Drain, Current and Magnet layers.
+    pub forces: Forces,
+    /// The rain's share of a raindrop still owed.
+    pub rain_owed: f32,
+    /// The balls it is made from (From balls) as last seen: place, speed, size.
+    pub seen: BTreeMap<(ThingId, u32), (Vec2, Vec2, f32)>,
     /// Which of its moments its sound logs (part 5).
     pub sound: super::sound::LiquidSound,
     /// Its liquid's number in the body (0 to 15), `None` past the 16th Liquid thing.
@@ -129,6 +143,9 @@ impl LiquidState {
             meets: MeetsSettings::default(),
             others: Vec::new(),
             look: LookSettings::default(),
+            forces: Forces::default(),
+            rain_owed: 0.0,
+            seen: BTreeMap::new(),
             sound: Default::default(),
             index: None,
             born: 0,
@@ -142,7 +159,7 @@ impl LiquidState {
 
     /// Bytes its body takes on the card.
     pub fn gpu_memory(&self) -> usize {
-        self.host.as_ref().and_then(|h| h.body.as_ref()).map_or(0, |b| b.bytes())
+        self.host.as_ref().and_then(|h| h.body.as_ref()).map_or(0, |b| b.bytes() + b.history_bytes())
     }
 }
 
@@ -205,13 +222,14 @@ pub fn drops_hash(drops: &[Drop]) -> u64 {
 /// what a restart test compares (cheap, unlike reading the drops back).
 pub fn inputs_hash(st: &LiquidState) -> u64 {
     let text = format!(
-        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
         st.settings,
         st.fill,
         st.pours,
         st.meets,
         st.others,
         st.look.stepped(),
+        st.forces,
         st.sound
     );
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;

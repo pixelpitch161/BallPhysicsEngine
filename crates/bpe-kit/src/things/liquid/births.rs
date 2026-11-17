@@ -9,8 +9,8 @@ use glam::Vec2;
 
 use crate::paint::{Inputs, Paint, colour_at};
 
-use super::cards::PourLayer;
-use super::state::{Layout, LiquidState};
+use super::cards::{FillWith, PourLayer};
+use super::state::{Layout, LiquidState, MOST_BORN_A_STEP};
 
 /// The most drops one pour makes in a liquid step.
 pub const MOST_A_STEP: u32 = 20_000;
@@ -89,6 +89,11 @@ fn colour(paint: &Paint, world: &World, p: Vec2, index: usize, count: usize, tim
     [f(c[0]), f(c[1]), f(c[2]), strength]
 }
 
+/// The colour a reaction that makes liquid `st` gives its drops: its Fill colour at the start.
+pub fn made_colour(st: &LiquidState, world: &World) -> [f32; 4] {
+    colour(&st.fill.colour, world, Vec2::ZERO, 0, 1, 0.0, st.fill.strength)
+}
+
 /// The drop `kind` of liquid `st`: its number, and [`STOPS`] when it isn't in a shape.
 pub fn kind_of(st: &LiquidState, region: &Region) -> u32 {
     let index = st.index.unwrap_or(0) as u32;
@@ -133,23 +138,263 @@ pub fn fill_between(st: &mut LiquidState, world: &World, layout: &Layout, from: 
     out
 }
 
-/// The Fill's first drops, up to Level (none when Fill at the start is off).
+/// The Fill's first drops, up to Level (none when Fill at the start is off), or in the shape of
+/// a picture or a word.
 pub fn first_fill(st: &mut LiquidState, world: &World, layout: &Layout) -> Vec<Drop> {
     if !st.fill.fill || st.index.is_none() {
         return Vec::new();
+    }
+    if st.fill.fill_with != FillWith::Level {
+        let drops = picture_or_word(st, world, layout);
+        return heated(st, drops);
     }
     let region = region(st, world);
     let (bottom, top) = (extent(&region, layout).1.y, level_y(&region, layout, st.fill.level));
     st.filled = st.fill.level;
     let most = st.kept;
-    fill_between(st, world, layout, bottom, top, most)
+    let drops = fill_between(st, world, layout, bottom, top, most);
+    heated(st, drops)
+}
+
+/// `drops` at the liquid's Temperature.
+fn heated(st: &LiquidState, drops: Vec<Drop>) -> Vec<Drop> {
+    let t = st.settings.temperature;
+    drops.into_iter().map(|d| d.at_heat(t)).collect()
+}
+
+/// The places (from the thing's place, pixels) and colours of a Fill made of a picture's solid
+/// parts or a word's letters, on a lattice `spacing` apart.
+fn shaped(st: &LiquidState, world: &World, spacing: f32) -> Vec<(Vec2, Option<[f32; 3]>)> {
+    match st.fill.fill_with {
+        FillWith::Level => Vec::new(),
+        FillWith::AWord => crate::things::particles::spots::word_spots(
+            &st.fill.text,
+            st.fill.letter_height,
+            crate::things::particles::Weight::SemiBold,
+            spacing,
+        )
+        .into_iter()
+        .map(|p| (p, None))
+        .collect(),
+        FillWith::APicture => {
+            use crate::things::particles::spots::{read_png, read_png_from};
+            let path = &st.fill.picture;
+            if path.trim().is_empty() {
+                return Vec::new();
+            }
+            let kept = world.tree.as_deref().and_then(|t| t.pictures.get(path)).map(|p| p.bytes.clone());
+            let picture = match kept {
+                Some(bytes) => read_png_from(std::io::Cursor::new(&bytes[..])),
+                None => read_png(path),
+            };
+            let Some((rgba, w, h)) = picture else { return Vec::new() };
+            let width = st.fill.picture_width.max(1.0);
+            let scale = width / w as f32;
+            let size = Vec2::new(width, h as f32 * scale);
+            let (cols, rows) = ((size.x / spacing).floor() as i64, (size.y / spacing).floor() as i64);
+            // At most 4000 × 4000 places looked at, and 2 million kept: far more than any region holds.
+            let mut out = Vec::new();
+            'rows: for j in 0..rows.min(4_000) {
+                for i in 0..cols.min(4_000) {
+                    if out.len() >= 2_000_000 {
+                        break 'rows;
+                    }
+                    let p = Vec2::new((i as f32 + 0.5) * spacing, (j as f32 + 0.5) * spacing);
+                    let (px, py) = ((p.x / scale) as usize, (p.y / scale) as usize);
+                    if px >= w || py >= h {
+                        continue;
+                    }
+                    let c = &rgba[(py * w + px) * 4..][..4];
+                    if c[3] < 128 {
+                        continue;
+                    }
+                    let linear = bpe_core::Color { r: c[0], g: c[1], b: c[2], a: 255 }.to_linear();
+                    out.push((p - size * 0.5, Some([linear[0], linear[1], linear[2]])));
+                }
+            }
+            out
+        }
+    }
+}
+
+/// A Fill made of a picture or a word: drops two a cell over it, round the thing's place, in
+/// the picture's colours (a word in the Fill colour), only where a drop may be.
+fn picture_or_word(st: &mut LiquidState, world: &World, layout: &Layout) -> Vec<Drop> {
+    let region = region(st, world);
+    let kind = kind_of(st, &region);
+    let anchor = world.anchor(st.id);
+    let turn = Vec2::from_angle(anchor.angle);
+    let (lo, hi) = layout.inner();
+    let spots: Vec<(Vec2, Option<[f32; 3]>)> = shaped(st, world, layout.cell * 0.5)
+        .into_iter()
+        .map(|(p, c)| (anchor.position + turn.rotate(p), c))
+        .filter(|(p, _)| p.cmpge(lo).all() && p.cmple(hi).all() && room_at(world, &region, layout, *p))
+        .take(st.kept as usize)
+        .collect();
+    let time = world.step as f32 / world.steps_per_second.max(1) as f32;
+    let count = spots.len();
+    let mut out = Vec::with_capacity(count);
+    for (i, (p, c)) in spots.into_iter().enumerate() {
+        let colour = match c {
+            Some(rgb) => [rgb[0], rgb[1], rgb[2], st.fill.strength],
+            None => colour(&st.fill.colour, world, p, i, count, time, st.fill.strength),
+        };
+        out.push(Drop::new(layout.to_grid(p).to_array(), [0.0, 0.0], colour, kind, st.born));
+        st.born = st.born.wrapping_add(1);
+    }
+    out
+}
+
+/// How many cells down from the top a raindrop looks for room.
+const MOST_RAIN_TRIES: u32 = 400;
+/// The most drops a raindrop or a ball's burst is made of.
+const MOST_A_CLUMP: u32 = 5_000;
+
+/// `n` drops filling a disc of `radius` (pixels) round `centre`, on a sunflower's spiral.
+fn disc(centre: Vec2, radius: f32, n: u32) -> impl Iterator<Item = Vec2> {
+    let golden = std::f32::consts::PI * (3.0 - 5f32.sqrt());
+    (0..n).map(move |k| {
+        let r = radius * ((k as f32 + 0.5) / n as f32).sqrt();
+        centre + Vec2::from_angle(k as f32 * golden) * r
+    })
+}
+
+/// How many drops fill a disc of `radius` pixels (at least one).
+fn drops_in(radius: f32, layout: &Layout) -> u32 {
+    let per_drop = layout.cell * layout.cell * 0.25;
+    let n = std::f32::consts::PI * radius * radius / per_drop;
+    if n.is_finite() { (n.round() as u32).clamp(1, MOST_A_CLUMP) } else { 1 }
+}
+
+/// Which way is down: along gravity, or down the screen without it.
+fn down(world: &World) -> Vec2 {
+    let g = world.gravity.normalize_or_zero();
+    if g == Vec2::ZERO { Vec2::Y } else { g }
+}
+
+/// The rain's drops for one liquid step of `dt` seconds: raindrops at random along the top of
+/// what the liquid fills, falling at Rain speed.
+pub fn rain(st: &mut LiquidState, world: &World, layout: &Layout, dt: f32, step: u32) -> Vec<Drop> {
+    if st.fill.rain <= 0.0 || st.index.is_none() {
+        st.rain_owed = 0.0;
+        return Vec::new();
+    }
+    let owed = st.rain_owed + st.fill.rain * dt;
+    let owed = if owed.is_finite() { owed.min(1000.0) } else { 0.0 };
+    let n = owed.floor() as u32;
+    st.rain_owed = owed - n as f32;
+    if n == 0 {
+        return Vec::new();
+    }
+    let region = region(st, world);
+    let kind = kind_of(st, &region);
+    let (lo, hi) = extent(&region, layout);
+    let radius = st.fill.rain_size * 0.5;
+    let each = drops_in(radius, layout);
+    let v = down(world) * st.fill.rain_speed;
+    let time = step as f32 * dt;
+    let mut dice = Stream::new(st.id.0.wrapping_mul(0x9e37_79b9) ^ 0x5241_494e, step);
+    let mut out = Vec::new();
+    for _ in 0..n {
+        // No more than one liquid step can take.
+        if out.len() >= MOST_BORN_A_STEP {
+            break;
+        }
+        // From the top down to the first place a drop may be (a round shape's top is narrow).
+        let x = lo.x + (hi.x - lo.x) * dice.unit();
+        let top = lo.y + radius + layout.cell;
+        let Some(centre) = (0..MOST_RAIN_TRIES)
+            .map(|k| Vec2::new(x, top + k as f32 * layout.cell))
+            .take_while(|p| p.y < hi.y)
+            .find(|p| room_at(world, &region, layout, *p))
+        else {
+            continue;
+        };
+        for (i, p) in disc(centre, radius, each).enumerate() {
+            let c = colour(&st.fill.colour, world, p, i, each as usize, time, st.fill.strength);
+            out.push(Drop::new(layout.to_grid(p).to_array(), (v / layout.cell).to_array(), c, kind, st.born));
+            st.born = st.born.wrapping_add(1);
+        }
+    }
+    heated(st, out)
+}
+
+/// The drops balls make for one liquid step of `dt` seconds: leaked off the back of each moving
+/// ball the Fill card's Balls names, and (on the world step's first liquid step, `first`) a
+/// burst where a ball seen last world step has gone.
+pub fn from_balls(st: &mut LiquidState, world: &World, layout: &Layout, dt: f32, step: u32, first: bool) -> Vec<Drop> {
+    let fill = &st.fill;
+    if (fill.leaks <= 0.0 && fill.bursts <= 0.0) || st.index.is_none() {
+        st.seen.clear();
+        return Vec::new();
+    }
+    let region = region(st, world);
+    let kind = kind_of(st, &region);
+    let time = step as f32 * dt;
+    let mut out: Vec<(Vec2, Vec2)> = Vec::new();
+    let mut now = std::collections::BTreeMap::new();
+    let mut dice = Stream::new(st.id.0.wrapping_mul(0x85eb_ca6b) ^ 0x4241_4c4c, step);
+    for (&thing, b) in &world.bodies {
+        if !world.names(&fill.from_balls, st.id, thing) {
+            continue;
+        }
+        for r in b.live_rows() {
+            let (x, v, radius) = (b.position[r], b.velocity[r], b.radius[r]);
+            if !b.alive[r] || !x.is_finite() || !v.is_finite() || !radius.is_finite() {
+                continue;
+            }
+            now.insert((thing, r as u32), (x, v, radius));
+            if fill.leaks > 0.0 {
+                let speed = v.length();
+                let n = fill.leaks * (speed / 500.0).min(4.0) * dt + dice.unit();
+                let back = x - v.normalize_or_zero() * (radius + layout.cell * 0.5);
+                for _ in 0..(n.floor() as u32).min(MOST_A_CLUMP) {
+                    if out.len() >= MOST_BORN_A_STEP {
+                        break;
+                    }
+                    let jitter = Vec2::new(dice.signed(), dice.signed()) * layout.cell * 0.5;
+                    out.push((back + jitter, v * 0.5));
+                }
+            }
+        }
+    }
+    if first && fill.bursts > 0.0 {
+        for (key, &(x, v, radius)) in &st.seen {
+            if now.contains_key(key) {
+                continue;
+            }
+            let n = drops_in(radius * fill.bursts.sqrt(), layout);
+            for p in disc(x, radius * fill.bursts.sqrt().max(0.5), n.min(MOST_BORN_A_STEP as u32)) {
+                if out.len() >= MOST_BORN_A_STEP {
+                    break;
+                }
+                let away = (p - x).normalize_or_zero() * 120.0;
+                out.push((p, v + away));
+            }
+        }
+    }
+    if first {
+        st.seen = if fill.bursts > 0.0 { now } else { Default::default() };
+    }
+    let (lo, hi) = layout.inner();
+    let count = out.len();
+    let mut drops = Vec::with_capacity(count);
+    for (i, (p, v)) in out.into_iter().enumerate() {
+        if !(p.cmpge(lo).all() && p.cmple(hi).all() && room_at(world, &region, layout, p)) {
+            continue;
+        }
+        let c = colour(&st.fill.colour, world, p, i, count, time, st.fill.strength);
+        drops.push(Drop::new(layout.to_grid(p).to_array(), (v / layout.cell).to_array(), c, kind, st.born));
+        st.born = st.born.wrapping_add(1);
+    }
+    heated(st, drops)
 }
 
 /// What a Level that moved since the last fill does: a rise adds drops up to it, a fall cuts the
 /// liquid at it this step (`st.cut`, in grid y).
 pub fn level_moved(st: &mut LiquidState, world: &World, layout: &Layout) -> Vec<Drop> {
     st.cut = None;
-    if !st.fill.fill || st.index.is_none() {
+    if !st.fill.fill || st.fill.fill_with != FillWith::Level || st.index.is_none() {
         return Vec::new();
     }
     let level = st.fill.level;
@@ -161,7 +406,8 @@ pub fn level_moved(st: &mut LiquidState, world: &World, layout: &Layout) -> Vec<
         let (from, to) = (level_y(&region, layout, st.filled), level_y(&region, layout, level));
         st.filled = level;
         let most = st.kept;
-        return fill_between(st, world, layout, from, to, most);
+        let drops = fill_between(st, world, layout, from, to, most);
+        return heated(st, drops);
     }
     if level < st.filled - row {
         st.filled = level;
@@ -208,5 +454,5 @@ pub fn pour(st: &mut LiquidState, k: usize, world: &World, layout: &Layout, dt: 
         out.push(Drop::new(g.to_array(), (v / layout.cell).to_array(), c, kind, st.born));
         st.born = st.born.wrapping_add(1);
     }
-    out
+    heated(st, out)
 }

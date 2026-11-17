@@ -9,6 +9,7 @@
 //! (W15): its colour, height and surface index go into the light passes.
 
 use bpe_core::{Resolved, SlotId, ThingId};
+use bpe_gfx::liquid_sim::STAIN_BASE;
 use bpe_gfx::{DrawCx, Frame, Liquid, LiquidStyle, ThingDraw};
 
 use super::KIND;
@@ -26,6 +27,9 @@ pub struct LiquidDraw;
 pub fn reach_of(smoothing: f32) -> f32 {
     1.0 + 2.0 * smoothing.clamp(0.0, 4.0)
 }
+/// Where a stain's surface is cut, against its peak field (1 for one lone drop): low, so one
+/// dried drop shows.
+const STAIN_LEVEL: f32 = 0.35;
 
 /// How a liquid takes the real lights of a lit scene: its Lit (above 0), its surface stamp, how
 /// much it blocks light and its thing's link number.
@@ -166,6 +170,28 @@ impl ThingDraw for LiquidDraw {
         let grid = (host.layout.origin, host.layout.cell);
         let style = style_of(&look, &layers, index, grid, real);
         frame.liquids.push(Liquid { blobs: Vec::new(), style, front: look.in_front, drops: Some(body.source()) });
+        // Its stains (part 4): flat marks where drops dried, behind the balls, never lit.
+        let me = state_of(cx.world, cx.thing.id).map(|s| &s.settings);
+        if let Some(s) = me.filter(|s| s.dries > 0.0 && s.stains) {
+            let reach = reach_of(look.smoothing);
+            let flat = LookSettings {
+                level: STAIN_LEVEL / (std::f32::consts::PI * reach * reach),
+                roundness: 0.0,
+                shine: 0.0,
+                bend: 0.0,
+                split: 0.0,
+                ripples: 0.0,
+                thin_film: 0.0,
+                outline: 0.0,
+                glow: 0.0,
+                softness: look.softness.max(1.0),
+                opacity: look.opacity * s.stain_strength,
+                ..look.clone()
+            };
+            let stains = STAIN_BASE as usize + index;
+            let style = style_of(&flat, &LookLayers::default(), stains, grid, None);
+            frame.liquids.push(Liquid { blobs: Vec::new(), style, front: false, drops: Some(body.source()) });
+        }
         if let Some(w) = &layers.wet_balls {
             let wet = super::wet::wetness(cx.log, cx.world.steps_per_second, cx.time, cx.thing.id, w.dries);
             let colour = lin(look.colour);

@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use bpe_core::{ResolvedThing, Scene, SlotId, Thing, ThingId};
 use bpe_gfx::liquid_sim::{
-    BallGpu, Body, Drop, LiquidCard, LiquidGpu, MEET_LAYER, MEET_MIX, MIX_EVERY, MOST_LIQUIDS, MOST_NODES,
-    MOST_SUBSTEPS, StepGpu, StepIn,
+    BallGpu, Body, Drop, LiquidCard, LiquidGpu, MEET_LAYER, MEET_MIX, MIX_EVERY, MOST_HISTORY_BYTES, MOST_LIQUIDS,
+    MOST_NODES, MOST_SUBSTEPS, SAMPLE_DROP_BYTES, StepGpu, StepIn,
 };
 use bpe_runtime::{Log, ThingSim, ThingState, World, state_mut};
 
@@ -21,8 +21,10 @@ use glam::Vec2;
 
 use super::births;
 use super::cards::{
-    FILL, FillSettings, LOOK, LookSettings, MEETS, Meeting, MeetsSettings, MixStyle, OtherLiquid, PourLayer, RuleStyle,
+    FILL, FillSettings, Forces, LOOK, LookSettings, MEETS, Meeting, MeetsSettings, MixStyle, OtherLiquid, PourLayer,
+    RuleStyle,
 };
+use super::forces;
 use super::state::{Host, Layout, LiquidState, MOST_BORN_A_STEP, share_most, state_of};
 use super::walls;
 use super::{AreaFrom, KIND, LiquidSettings, exporting};
@@ -40,6 +42,7 @@ fn read_into(st: &mut LiquidState, resolved: &ResolvedThing) {
     let fill = card(resolved, SlotId::Motion, FILL);
     st.fill = FillSettings::read(fill);
     st.pours = PourLayer::read_all(fill);
+    st.forces = Forces::read(fill);
     st.owed.resize(st.pours.len(), 0.0);
     let meets = card(resolved, SlotId::Bounce, MEETS);
     st.meets = MeetsSettings::read(meets);
@@ -137,13 +140,32 @@ fn rule(world: &World, st: &LiquidState, other: &LiquidState) -> (u32, MixStyle,
     (MEET_MIX, style, if r.own_speed { r.speed } else { st.look.mix_speed })
 }
 
-/// One liquid step's settings for the liquids `list` (in their numbers' order).
+/// How liquid `st` reacts with liquid `other` (its rule naming it says React): the number of the
+/// liquid it makes, the reaction's speed, heat and fizz.
+fn reaction(
+    world: &World,
+    st: &LiquidState,
+    other: &LiquidState,
+    list: &[&LiquidState],
+) -> Option<(usize, f32, f32, f32)> {
+    if st.id == other.id {
+        return None;
+    }
+    let r = st.others.iter().find(|r| world.names(&r.liquid, st.id, other.id))?;
+    if r.meeting != Meeting::React {
+        return None;
+    }
+    let makes = list.iter().find(|l| world.names(&r.makes, st.id, l.id))?.index?;
+    Some((makes, r.react_speed * r.react_speed, r.heat, r.fizz))
+}
+
 /// How far a pressure wave may travel in a substep, in cells. At 0.4 still water slowly gains
 /// energy and tears itself into foam within a second; 0.15 stays still.
 const CFL: f32 = 0.15;
 /// The heaviest a liquid steps as (Weight goes higher, the card's fixed-point sums don't).
 const MOST_WEIGHT: f32 = 20.0;
 
+/// One liquid step's settings for the liquids `list` (in their numbers' order).
 fn step_settings(world: &World, host: &Host, list: &[&LiquidState], mixing: bool) -> StepGpu {
     let layout = &host.layout;
     let dt = 1.0 / host.rate as f32;
@@ -192,15 +214,45 @@ fn step_settings(world: &World, host: &Host, list: &[&LiquidState], mixing: bool
             a: [stiff[i].min(cap), pull, lerp(0.3, 0.01, s.spray), 8.0 * s.settles * s.settles],
             b: [viscosity, weight, s.gravity, if m.balls_push { 1.0 } else { 0.0 }],
             c: [st.look.mix_style.code() as f32, 0.0, 0.0, st.cut.unwrap_or(LiquidGpu::NO_CUT)],
-            d: [floor, 0, 0, 0],
+            d: [floor, st.born, 0, 0],
             e: [push, only(DRAG_RATE * m.drag * (1.0 + 8.0 * s.thickness.min(10.0))), only(m.carries), m.sticks],
             f: [ink[0], ink[1], ink[2], m.ink],
-            g: [m.splash, m.splash_from / layout.cell, m.wakes, only(m.take)],
+            g: [m.splash, m.splash_from / layout.cell, m.wakes, only(m.take_now())],
+            h: [
+                (0.25 * s.stretch).min(1.0),
+                s.tears_at.min(20.0).ln(),
+                if s.freezes { s.freezes_below } else { -1.0 },
+                s.melts_above.max(if s.freezes { s.freezes_below } else { 0.0 }),
+            ],
+            i: [s.cools, s.warms, s.cold_thickens, s.dries],
+            j: [
+                if s.stains { 1.0 } else { 0.0 },
+                st.look.fades,
+                if m.balls_push { m.balls_heat } else { 0.0 },
+                m.paint,
+            ],
+            k: lin(st.look.fades_to),
+            l: lin(m.paint_colour),
+            m: births::made_colour(st, world),
+            n: {
+                let (shrink, dissolves) = m.change();
+                [shrink, if dissolves { 1.0 } else { 0.0 }, 0.0, 0.0]
+            },
         };
     }
+    step.extra[0] = host.step;
+    forces::add_all(&mut step, world, layout, list);
+    forces::set_paints(&mut step, world, host.walls_seen.keys(), list);
     step.flags[3] = u32::from(free);
     for (i, a) in list.iter().enumerate().take(MOST_LIQUIDS) {
         for (j, b) in list.iter().enumerate().take(MOST_LIQUIDS) {
+            // A reaction either side names makes them react (this side's rule first).
+            if let Some((makes, speed, heat, fizz)) =
+                reaction(world, a, b, list).or_else(|| reaction(world, b, a, list))
+            {
+                step.set_react(i, j, makes, speed, heat, fizz);
+                continue;
+            }
             let (mode, style, speed) = rule(world, a, b);
             // Layer wins: if either says they stay apart, they do.
             let (back, _, _) = rule(world, b, a);
@@ -209,6 +261,12 @@ fn step_settings(world: &World, host: &Host, list: &[&LiquidState], mixing: bool
         }
     }
     step
+}
+
+/// A colour as linear rgb (and 0).
+fn lin(c: bpe_core::Color) -> [f32; 4] {
+    let l = c.to_linear();
+    [l[0], l[1], l[2], 0.0]
 }
 
 /// How fast a ball fully under a liquid of Drag 1 and Thickness 0 loses its speed through it, a
@@ -277,6 +335,9 @@ fn numbered(taken: &[(ThingId, Box<dyn ThingState>)]) -> Vec<&LiquidState> {
     list
 }
 
+/// Un-mix keeps this many samples of the liquid a second.
+pub const UNMIX_SAMPLES: u32 = 60;
+
 /// What one liquid step tells the card about the balls.
 struct BallsIn<'a> {
     balls: &'a [BallGpu],
@@ -291,6 +352,35 @@ fn step_once(world: &World, taken: &mut [(ThingId, Box<dyn ThingState>)], balls:
     let host_st = state_mut::<LiquidState>(host_part[0].1.as_mut());
     let Some(mut host) = host_st.host.take() else { return };
     let dt = 1.0 / host.rate as f32;
+    let (remember, seconds) = (host_st.settings.remember, host_st.settings.unmix_seconds);
+    let every = (host.rate / UNMIX_SAMPLES).max(1);
+    // Un-mix: played back while any liquid's Un-mixing is on, or a rule asked for it.
+    let asked =
+        rest.iter().filter_map(|(_, b)| (**b).as_any().downcast_ref::<LiquidState>()).any(|s| s.settings.unmixing)
+            || host_st.settings.unmixing;
+    // How many samples it keeps: Seconds of them, at most about MOST_HISTORY_BYTES of the drops
+    // every liquid can hold now (never the card's count, which comes back at no set time): a
+    // liquid holds no more than it has made, nor more than its Most drops.
+    let holds = |s: &LiquidState| s.born.min(s.kept) as u64;
+    let kept: u64 = holds(host_st)
+        + rest.iter().filter_map(|(_, b)| (**b).as_any().downcast_ref::<LiquidState>()).map(holds).sum::<u64>();
+    let most_samples = ((seconds * UNMIX_SAMPLES as f32).ceil() as usize + 1)
+        .min((MOST_HISTORY_BYTES as u64 / (kept.max(1) * SAMPLE_DROP_BYTES as u64)).max(2) as usize);
+    let samples = host.body.as_ref().map_or(0, |b| b.samples());
+    host.rewinding = remember && samples > 0 && (asked || host.unmix_left > 0);
+    if host.rewinding {
+        let list = numbered(taken);
+        let settings = step_settings(world, &host, &list, false);
+        drop(list);
+        if let Some(body) = host.body.as_mut() {
+            let more = Arc::make_mut(body).rewind_step(&settings, balls.balls, every);
+            host.unmix_left = if more { host.unmix_left.saturating_sub(1) } else { 0 };
+        }
+        host.step += 1;
+        state_mut::<LiquidState>(taken[0].1.as_mut()).host = Some(host);
+        return;
+    }
+    host.unmix_left = 0;
     let mut births: Vec<Drop> = Vec::new();
     // Its sound hears a pour pouring about POUR_RATE times a second (part 5).
     let pour_every = (host.rate / super::sound::POUR_RATE).max(1);
@@ -311,23 +401,26 @@ fn step_once(world: &World, taken: &mut [(ThingId, Box<dyn ThingState>)], balls:
                 }
                 births.extend(born);
             }
+            births.extend(births::rain(st, world, &host.layout, dt, host.step));
+            births.extend(births::from_balls(st, world, &host.layout, dt, host.step, balls.fresh));
         }
     }
     births.truncate(MOST_BORN_A_STEP);
     let list = numbered(taken);
     let mixing = host.step % MIX_EVERY == MIX_EVERY - 1;
+    // The walls now, before the settings: Shapes paint it numbers walls as the band does.
+    let now = walls::walls_now(world);
+    let changed = now != host.walls_seen || walls::moving(&now);
+    if changed || host.band.is_none() {
+        host.band = Some(Arc::new(walls::band(&now, &host.layout)));
+    }
+    host.walls_seen = now;
     let settings = step_settings(world, &host, &list, mixing);
     drop(list);
     if let Some(body) = host.body.as_mut() {
         // A body shared with a copy of the world is copied first: the copy needs its walls again.
         let body = Arc::make_mut(body);
-        let now = walls::walls_now(world);
-        let changed = now != host.walls_seen || walls::moving(&now);
-        if changed || host.band.is_none() {
-            host.band = Some(Arc::new(walls::band(&now, &host.layout)));
-        }
         let band = (changed || !body.walls_ready()).then(|| host.band.clone()).flatten();
-        host.walls_seen = now;
         body.step(&StepIn {
             step: settings,
             births: &births,
@@ -336,6 +429,13 @@ fn step_once(world: &World, taken: &mut [(ThingId, Box<dyn ThingState>)], balls:
             feel: balls.feel,
             fresh: balls.fresh,
         });
+        if !remember {
+            if body.samples() > 0 {
+                body.forget();
+            }
+        } else if host.step % every == 0 {
+            body.record(most_samples);
+        }
     }
     host.step += 1;
     state_mut::<LiquidState>(taken[0].1.as_mut()).host = Some(host);
@@ -399,6 +499,10 @@ impl ThingSim for LiquidSim {
             numbers: Vec::new(),
             news: Vec::new(),
             taken: Default::default(),
+            unmix_left: 0,
+            rewinding: false,
+            sizes: Default::default(),
+            dissolved: Vec::new(),
             wet: Default::default(),
             sums: None,
             heard: world.tree.as_deref().is_some_and(super::sound::scene_hears_liquid),
@@ -432,6 +536,16 @@ impl ThingSim for LiquidSim {
             for e in std::mem::take(&mut host.news) {
                 log.push(e);
             }
+            // Balls a liquid dissolved go now, with the log to tell of it.
+            let gone = std::mem::take(&mut host.dissolved);
+            for (thing, row) in gone {
+                if let Some(b) = world.bodies.get_mut(&thing)
+                    && (row as usize) < b.len()
+                    && b.alive[row as usize]
+                {
+                    bpe_runtime::pop(b, row as usize, thing, world.step, log);
+                }
+            }
         }
         let due = due(world.step, world.steps_per_second, rate);
         let main = !world.beside.contains(&id);
@@ -447,6 +561,9 @@ impl ThingSim for LiquidSim {
         // The balls as this world step left them, the same for every liquid step it takes.
         let (balls, from) = balls(world, &layout, &numbered(&taken));
         let mut stepped = 0u32;
+        // A batch that played back (Un-mix) sends back no feel: its words aren't the balls'.
+        let mut rewound = false;
+        let mut fresh = true;
         loop {
             let at = state_mut::<LiquidState>(taken[0].1.as_mut()).host.as_ref().map_or(due, |h| h.step);
             if at >= due {
@@ -464,11 +581,16 @@ impl ThingSim for LiquidSim {
                     .collect();
                 &moved[..]
             };
-            let with = BallsIn { balls: now, feel: main, fresh: stepped == 0 };
+            let with = BallsIn { balls: now, feel: main, fresh };
             step_once(world, &mut taken, &with);
+            let back = state_mut::<LiquidState>(taken[0].1.as_mut()).host.as_ref().is_some_and(|h| h.rewinding);
+            rewound |= back;
+            fresh = back;
             stepped += 1;
         }
-        if main && stepped > 0 && balls.is_empty() {
+        if rewound {
+            state_mut::<LiquidState>(taken[0].1.as_mut()).host.as_mut().expect("the host").pending = None;
+        } else if main && stepped > 0 && balls.is_empty() {
             // No ball is met any more: the ones that were in a liquid have left it.
             let host = state_mut::<LiquidState>(taken[0].1.as_mut()).host.as_mut().expect("the host");
             host.pending = None;
@@ -477,7 +599,7 @@ impl ThingSim for LiquidSim {
         // The feel goes back after every batch with balls, and with none too when a sound hears
         // the liquids' sums that come with it (part 5).
         let heard = state_mut::<LiquidState>(taken[0].1.as_mut()).host.as_ref().is_some_and(|h| h.heard);
-        if main && stepped > 0 && (heard || !balls.is_empty()) {
+        if !rewound && main && stepped > 0 && (heard || !balls.is_empty()) {
             let liquids: Vec<(usize, ThingId, f32)> =
                 numbered(&taken).iter().filter_map(|s| Some((s.index?, s.id, s.meets.splash_from))).collect();
             let bubbles = numbered(&taken)
@@ -565,14 +687,37 @@ impl ThingSim for LiquidSim {
         self.beside_print_extra(resolved) ^ (place.map_or(u64::MAX, |p| p as u64) << 52) ^ (sound << 44)
     }
 
-    /// The Look's mixing is read by the stepping.
+    /// The Look's mixing and fading are read by the stepping.
     fn card_key_restarts_beside(&self, slot: SlotId, key: &str) -> bool {
-        slot == SlotId::Look && matches!(key, "mix_style" | "mix_speed" | "mixes_when")
+        slot == SlotId::Look && matches!(key, "mix_style" | "mix_speed" | "mixes_when" | "fades" | "fades_to")
     }
 
     fn beside_print_extra(&self, resolved: &ResolvedThing) -> u64 {
-        let (style, speed, when) = LookSettings::read(card(resolved, SlotId::Look, LOOK)).stepped();
-        (style.code() as u64) | (u64::from(speed) << 8) | ((when.code() as u64) << 40) | (1 << 48)
+        let (style, speed, when, fades, to) = LookSettings::read(card(resolved, SlotId::Look, LOOK)).stepped();
+        let to = u64::from(u32::from_le_bytes([to.r, to.g, to.b, to.a]));
+        let fading = (u64::from(fades) ^ to.rotate_left(17)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        ((style.code() as u64) | (u64::from(speed) << 8) | ((when.code() as u64) << 40) | (1 << 48)) ^ fading
+    }
+
+    /// A rule's Un-mix: the whole liquid plays back what it remembers (the first Liquid thing's
+    /// Seconds).
+    fn fire_now(&self, _thing: ThingId, world: &mut World) -> bool {
+        let Some(&first) = liquids(world).first() else { return false };
+        let Some(st) = world.states.get_mut(&first).and_then(|s| (**s).as_any_mut().downcast_mut::<LiquidState>())
+        else {
+            return false;
+        };
+        if !st.settings.remember {
+            return false;
+        }
+        let steps = (st.settings.unmix_seconds * st.settings.steps.per_second() as f32).ceil() as u32;
+        match st.host.as_mut() {
+            Some(host) => {
+                host.unmix_left = host.unmix_left.max(steps);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Its Fill and Meets cards have no module sims: it reads them itself.

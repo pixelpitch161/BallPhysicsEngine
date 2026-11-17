@@ -129,6 +129,7 @@ fn every_kind_is_registered_with_settings_under_rule() {
             "do.health",
             "when.particles",
             "when.liquid",
+            "do.unmix",
             "do.text"
         ]
     );

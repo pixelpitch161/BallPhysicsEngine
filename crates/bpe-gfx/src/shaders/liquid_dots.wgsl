@@ -43,7 +43,7 @@ struct Style {
     s: vec4<f32>,
 };
 
-const DROP_FLOATS: u32 = 20u;
+const DROP_FLOATS: u32 = 24u;
 
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var<uniform> st: Style;

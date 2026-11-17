@@ -389,13 +389,13 @@ fn lattice_step(size: Vec2, spacing: f32) -> f32 {
 }
 
 /// A PNG picture's pixels as RGBA, with its size; `None` when it can't be read.
-fn read_png(path: &str) -> Option<(Vec<u8>, usize, usize)> {
+pub(crate) fn read_png(path: &str) -> Option<(Vec<u8>, usize, usize)> {
     let file = std::fs::File::open(path).ok()?;
     read_png_from(std::io::BufReader::new(file))
 }
 
 /// [`read_png`] from any reader: a file, or bytes kept in the scene.
-fn read_png_from<R: std::io::BufRead + std::io::Seek>(from: R) -> Option<(Vec<u8>, usize, usize)> {
+pub(crate) fn read_png_from<R: std::io::BufRead + std::io::Seek>(from: R) -> Option<(Vec<u8>, usize, usize)> {
     let limits = png::Limits { bytes: MOST_PIXELS * 4 + (16 << 20) };
     let mut decoder = png::Decoder::new_with_limits(from, limits);
     decoder.set_transformations(png::Transformations::normalize_to_color8());

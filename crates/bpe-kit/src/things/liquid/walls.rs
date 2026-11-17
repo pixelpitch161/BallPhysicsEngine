@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use bpe_core::ThingId;
-use bpe_gfx::liquid_sim::WallNode;
+use bpe_gfx::liquid_sim::{MOST_PAINTING_WALLS, WallNode};
 use bpe_runtime::{Wall, World};
 use glam::Vec2;
 
@@ -62,7 +62,9 @@ fn face(dist: f32, half: f32) -> f32 {
 pub fn band(walls: &BTreeMap<ThingId, Wall>, layout: &Layout) -> Vec<WallNode> {
     let mut nodes: BTreeMap<u32, WallNode> = BTreeMap::new();
     let (cols, rows) = (layout.cols as i64, layout.rows as i64);
-    for w in walls.values() {
+    for (number, w) in walls.values().enumerate() {
+        // Its number, for Shapes paint it (the walls after the first 64 paint nothing).
+        let wall = if number < MOST_PAINTING_WALLS { number as u32 } else { 255 };
         let reach = REACH * layout.cell + half_of(w);
         // Half its band in cells; a filled wall says so with -1.
         let half = if w.solid { -1.0 } else { half_of(w) / layout.cell };
@@ -94,7 +96,8 @@ pub fn band(walls: &BTreeMap<ThingId, Wall>, layout: &Layout) -> Vec<WallNode> {
                         if face(dist, half).abs() >= REACH {
                             continue;
                         }
-                        let node = WallNode { index, n: n.to_array(), dist, half, v: (v / layout.cell).to_array() };
+                        let node =
+                            WallNode { index, n: n.to_array(), dist, half, v: (v / layout.cell).to_array(), wall };
                         nodes
                             .entry(index)
                             .and_modify(|e| {

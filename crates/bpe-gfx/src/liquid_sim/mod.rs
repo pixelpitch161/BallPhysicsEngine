@@ -26,7 +26,7 @@ use wgpu::util::DeviceExt;
 mod wet;
 pub use wet::DRY_SECONDS;
 
-/// The most drops a body holds: 2^20, so its biggest buffer (80 bytes a drop, 80 MiB) stays under
+/// The most drops a body holds: 2^20, so its biggest buffer (96 bytes a drop, 96 MiB) stays under
 /// the 128 MiB a storage buffer may be bound with on every card (wgpu's default limits).
 pub const MOST_DROPS: u32 = 1 << 20;
 /// The most Liquid things one body holds.
@@ -39,6 +39,30 @@ pub const MIX_EVERY: u32 = 4;
 pub const MOST_SUBSTEPS: u32 = 64;
 /// A drop's `kind` bit: it stops at the area's edges (a liquid that fills the scene).
 pub const STOPS: u32 = 256;
+/// A drop's `kind` bit: it is frozen (a stiff solid until it melts).
+pub const FROZEN: u32 = 512;
+/// A stain's liquid number is this plus its liquid's: the liquid's own draw never shows it, and
+/// nothing moves it.
+pub const STAIN_BASE: u32 = 16;
+/// The most forces (heat, drains, currents, magnets) a liquid step reads.
+pub const MOST_FORCES: usize = 48;
+/// Force kinds ([`ForceGpu::c`]`[0]`).
+pub const FORCE_HEAT: u32 = 0;
+pub const FORCE_DRAIN: u32 = 1;
+pub const FORCE_PUMP: u32 = 2;
+pub const FORCE_WHIRLPOOL: u32 = 3;
+pub const FORCE_WIND: u32 = 4;
+pub const FORCE_MAGNET: u32 = 5;
+/// The most walls that can paint the liquid (a band node's wall number is below it, or 255).
+pub const MOST_PAINTING_WALLS: usize = 64;
+/// A sample of the drops for Un-mix: 5 words a drop, after a 4-word header (the count).
+pub const SAMPLE_WORDS: usize = 5;
+/// The most bytes Un-mix's history keeps.
+/// About the most Un-mix keeps on the card: callers turn it into a number of samples from a
+/// drop count that never depends on timing ([`Body::record`] counts samples only).
+pub const MOST_HISTORY_BYTES: usize = 256 << 20;
+/// Bytes one drop takes in an Un-mix sample.
+pub const SAMPLE_DROP_BYTES: usize = SAMPLE_WORDS * 4;
 /// A drop's share of a grid cell (two drops a cell each way).
 pub const DROP_VOLUME: f32 = 0.25;
 /// Liquid steps submitted and not yet done before the stepping thread waits.
@@ -60,8 +84,10 @@ pub const WHEN_HITS: u32 = 2;
 /// Meeting modes in a pair rule.
 pub const MEET_MIX: u32 = 0;
 pub const MEET_LAYER: u32 = 1;
+/// Meeting drops of the two turn into a third liquid (the pair's target).
+pub const MEET_REACT: u32 = 2;
 
-/// One drop. Matches `Drop` in liquid_sim.wgsl (80 bytes).
+/// One drop. Matches `Drop` in liquid_sim.wgsl (96 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct Drop {
@@ -83,18 +109,31 @@ pub struct Drop {
     pub kick: f32,
     /// Weight and viscosity moved away from its liquid's by mixing.
     pub mat: [f32; 2],
+    /// Its temperature (0 to 1) and how dry it is (it goes past its own threshold).
     pub spare: [f32; 2],
+    /// Its elastic stretch F (xx, xy, yx, yy): the identity at rest.
+    pub f: [f32; 4],
 }
 
 impl Drop {
     /// A new drop at rest at `x` (grid units), moving at `v`.
     pub fn new(x: [f32; 2], v: [f32; 2], colour: [f32; 4], kind: u32, serial: u32) -> Drop {
-        Drop { x, v, colour, kind, serial, j: 1.0, ..Default::default() }
+        Drop { x, v, colour, kind, serial, j: 1.0, f: [1.0, 0.0, 0.0, 1.0], ..Default::default() }
     }
 
-    /// Its liquid's index.
+    /// The same drop at temperature `t`.
+    pub fn at_heat(self, t: f32) -> Drop {
+        Drop { spare: [if t.is_finite() { t.clamp(0.0, 1.0) } else { 0.5 }, 0.0], ..self }
+    }
+
+    /// Whether it is a stain (a dried drop's mark).
+    pub fn is_stain(&self) -> bool {
+        (self.kind & 255) >= STAIN_BASE
+    }
+
+    /// Its liquid's index (a stain's too).
     pub fn liquid(&self) -> usize {
-        (self.kind & 255) as usize
+        (self.kind & 15) as usize
     }
 }
 
@@ -108,7 +147,7 @@ pub struct LiquidGpu {
     pub b: [f32; 4],
     /// Mix style, 0, 0, the cut line (grid y: drops above it go; -1e30 none).
     pub c: [f32; 4],
-    /// The serial floor, 0, 0, 0.
+    /// The serial floor, the newest serial (drops a reaction makes take it), 0, 0.
     pub d: [u32; 4],
     /// With the balls: push scale (1 / the ball's density to it, 0: it pushes no balls), drag
     /// (per second, fully under), carry (how much of its own speed it gives a ball), sticks.
@@ -117,6 +156,33 @@ pub struct LiquidGpu {
     pub f: [f32; 4],
     /// Splash size, splashes from (grid units a second), wakes, balls take its colour.
     pub g: [f32; 4],
+    /// Stretch (its shear stiffness), tears at (the stretch's log), freezes below (-1: never),
+    /// melts above.
+    pub h: [f32; 4],
+    /// Cools, warms, cold thickens it, dries (a second).
+    pub i: [f32; 4],
+    /// Stains (0 or 1), fades (a second), balls heat it, shapes paint it.
+    pub j: [f32; 4],
+    /// The colour it fades to (linear rgb).
+    pub k: [f32; 4],
+    /// The colour shapes paint it (linear rgb).
+    pub l: [f32; 4],
+    /// The colour a reaction that makes it gives its drops (linear rgb, strength).
+    pub m: [f32; 4],
+    /// What it does to the balls in it: shrink rate (a second, below 0 grows), dissolves (0 or 1).
+    pub n: [f32; 4],
+}
+
+/// One force on the liquid, in grid units. Matches `Force` in liquid_sim.wgsl.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct ForceGpu {
+    /// Place x, y, reach, strength.
+    pub a: [f32; 4],
+    /// A way (x, y, unit) and two more numbers (see each kind).
+    pub b: [f32; 4],
+    /// Kind ([`FORCE_HEAT`]...), the liquids it moves (bit k for liquid k), spikes, 0.
+    pub c: [u32; 4],
 }
 
 impl LiquidGpu {
@@ -137,10 +203,17 @@ pub struct StepGpu {
     pub ball_grid: [u32; 4],
     /// What the balls feel: recorded this step (0 or 1), 0, 0, 0.
     pub feel: [u32; 4],
+    /// The liquid step's number (the dice), how many forces, 0, 0.
+    pub extra: [u32; 4],
     pub paint: [[f32; 4]; 8],
     pub back: [[f32; 4]; 8],
     pub liquids: [LiquidGpu; MOST_LIQUIDS],
     pub pairs: [[u32; 4]; 64],
+    /// A reacting pair's heat and fizz (0 to 255 each, bits 0..7 and 8..15).
+    pub pairs2: [[u32; 4]; 64],
+    pub forces: [ForceGpu; MOST_FORCES],
+    /// Each wall number's liquids it paints (bit k for liquid k), 4 to a vec4.
+    pub paints: [[u32; 4]; 16],
 }
 
 impl Default for StepGpu {
@@ -155,10 +228,14 @@ impl Default for StepGpu {
             words_at: [0; 4],
             ball_grid: [0; 4],
             feel: [0; 4],
+            extra: [0; 4],
             paint,
             back,
             liquids: [LiquidGpu::default(); MOST_LIQUIDS],
             pairs: [[0; 4]; 64],
+            pairs2: [[0; 4]; 64],
+            forces: [ForceGpu::default(); MOST_FORCES],
+            paints: [[0; 4]; 16],
         }
     }
 }
@@ -172,6 +249,35 @@ impl StepGpu {
         }
         let rate = if rate.is_finite() { (rate.clamp(0.0, 1.0) * 65535.0).round() as u32 } else { 0 };
         self.pairs[a * 4 + b / 4][b % 4] = (mode & 3) | ((style & 7) << 2) | ((when & 3) << 5) | (rate << 16);
+    }
+
+    /// Makes liquid `a` meeting liquid `b` react into liquid `makes` at `rate` (0 to 1), each
+    /// turned drop warmed by `heat` and thrown up by `fizz` (0 to 1 each).
+    pub fn set_react(&mut self, a: usize, b: usize, makes: usize, rate: f32, heat: f32, fizz: f32) {
+        if a >= MOST_LIQUIDS || b >= MOST_LIQUIDS || makes >= MOST_LIQUIDS {
+            return;
+        }
+        let unit = |x: f32, top: f32| if x.is_finite() { (x.clamp(0.0, 1.0) * top).round() as u32 } else { 0 };
+        self.pairs[a * 4 + b / 4][b % 4] = MEET_REACT | ((makes as u32 & 15) << 7) | (unit(rate, 65535.0) << 16);
+        self.pairs2[a * 4 + b / 4][b % 4] = unit(heat, 255.0) | (unit(fizz, 255.0) << 8);
+    }
+
+    /// Adds a force; false when the table is full.
+    pub fn add_force(&mut self, f: ForceGpu) -> bool {
+        let n = self.extra[1] as usize;
+        if n >= MOST_FORCES {
+            return false;
+        }
+        self.forces[n] = f;
+        self.extra[1] += 1;
+        true
+    }
+
+    /// Sets the liquids wall number `wall` paints.
+    pub fn set_paints(&mut self, wall: usize, mask: u32) {
+        if wall < MOST_PAINTING_WALLS {
+            self.paints[wall / 4][wall % 4] = mask;
+        }
     }
 }
 
@@ -249,6 +355,8 @@ pub struct WallNode {
     pub dist: f32,
     pub half: f32,
     pub v: [f32; 2],
+    /// Its wall's number (for Shapes paint it), 255 for none.
+    pub wall: u32,
 }
 
 /// One ball the drops meet, in grid units, and the liquids that meet it (bit `k` for liquid `k`).
@@ -282,6 +390,9 @@ pub mod feel_at {
     pub const DRAG: usize = 6;
     pub const CARRY: usize = 7;
     pub const TAKE: usize = 11;
+    /// Each touching liquid's shrink rate (below 0 grows), and whether it dissolves, times the
+    /// touching mass.
+    pub const CHANGE: usize = 14;
     /// How many of the [`super::RING`] points round it are in the liquid (last step of the
     /// batch), and the liquid's mean speed there (f32 bits, grid units a second).
     pub const WET: usize = 8;
@@ -388,7 +499,7 @@ const UNIFORM: wgpu::BindingType = wgpu::BindingType::Buffer {
 fn binding_type(b: u32) -> wgpu::BindingType {
     match b {
         0 => UNIFORM,
-        2 | 6 => storage(true),
+        2 | 6 | 14 | 15 => storage(true),
         _ => storage(false),
     }
 }
@@ -418,6 +529,9 @@ const ENTRIES: &[(&str, &[u32])] = &[
     ("cs_packed", &[3]),
     ("cs_feel", &[0, 3, 4, 6, 12]),
     ("cs_tick", &[3]),
+    ("cs_record", &[0, 1, 3, 13]),
+    ("cs_rewind", &[0, 1, 3, 6, 14, 15]),
+    ("cs_rewind_done", &[0, 3, 14, 15]),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -445,6 +559,9 @@ enum E {
     Packed,
     Feel,
     Tick,
+    Record,
+    Rewind,
+    RewindDone,
 }
 
 /// The card the Liquid things step on: its device, its queue and the compute pipelines.
@@ -669,6 +786,25 @@ pub struct Body {
     steps: u32,
     /// How wet each node near a wall is (liquid part 3, Wet walls).
     wet: wet::WetGrid,
+    /// Un-mix's samples of the drops, oldest first. Never changed once written, so copies share
+    /// them.
+    history: VecDeque<Arc<Sample>>,
+    /// Liquid steps played back into the gap before the newest sample.
+    into: u32,
+}
+
+/// One sample of every drop, for Un-mix ([`SAMPLE_WORDS`] words a drop after a 4-word header
+/// holding the count).
+pub struct Sample {
+    buffer: wgpu::Buffer,
+    /// The most drops it can hold.
+    bound: u32,
+}
+
+impl Sample {
+    pub fn bytes(&self) -> usize {
+        self.buffer.size() as usize
+    }
 }
 
 impl std::fmt::Debug for Body {
@@ -756,6 +892,8 @@ impl Clone for Body {
             ms: Arc::new(AtomicU32::new(self.ms.load(Ordering::Relaxed))),
             in_flight: VecDeque::new(),
             steps: self.steps,
+            history: self.history.clone(),
+            into: self.into,
             wet,
         }
     }
@@ -797,6 +935,8 @@ impl Body {
             ms: Arc::new(AtomicU32::new(0)),
             in_flight: VecDeque::new(),
             steps: 0,
+            history: VecDeque::new(),
+            into: 0,
             wet,
         }
     }
@@ -884,7 +1024,7 @@ impl Body {
         if let Some(w) = walls {
             for n in w {
                 words.extend([n.index, n.n[0].to_bits(), n.n[1].to_bits(), n.dist.to_bits()]);
-                words.extend([n.v[0].to_bits(), n.v[1].to_bits(), n.half.to_bits()]);
+                words.extend([n.v[0].to_bits(), n.v[1].to_bits(), n.half.to_bits(), n.wall]);
             }
         }
         let wall_count = walls.map_or(0, |w| w.len() as u32);
@@ -921,7 +1061,7 @@ impl Body {
         let sums = scratch.sums.at_least(device, (half as u64).div_ceil(WORKGROUP as u64) * 4 + 4);
         let items = scratch.items.at_least(device, room * 4);
         let spare = scratch.spare.at_least(device, room * drop_size);
-        let mixout = scratch.mixout.at_least(device, room * 32);
+        let mixout = scratch.mixout.at_least(device, room * 48);
         let felt = if input.feel { ball_count } else { 0 };
         let feel = scratch.feel.at_least(device, (felt.max(1) as usize * FEEL_WORDS * 4) as u64);
         let buffers: [&wgpu::Buffer; 13] = [
@@ -1129,6 +1269,145 @@ impl Body {
         });
         let _ = device.poll(wgpu::PollType::Poll);
         Some(Arc::new(Feel { device, staging, index, balls: balls as usize, answer, got: std::sync::OnceLock::new() }))
+    }
+
+    /// Keeps a sample of every drop as they are once the queued steps are done, for Un-mix; then
+    /// forgets the oldest past `most` samples (by count only, so every run keeps the same).
+    pub fn record(&mut self, most: usize) {
+        self.into = 0;
+        let device = self.gpu.device.clone();
+        let bound = self.bound.min(self.room);
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("liquid sample"),
+            size: 16 + bound.max(1) as u64 * SAMPLE_WORDS as u64 * 4,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        let Some(uniform) = self.scratch.as_ref().map(|s| s.uniform.clone()) else { return };
+        let group = self.bind(E::Record, &[(0, &uniform), (1, &self.drops), (3, &self.counts), (13, &buffer)]);
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("liquid record") });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("liquid record"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.gpu.pipeline(E::Record).0);
+            pass.set_bind_group(0, &group, &[]);
+            pass.dispatch_workgroups((bound + 1).div_ceil(WORKGROUP), 1, 1);
+        }
+        self.in_flight.push_back(self.gpu.queue.submit([encoder.finish()]));
+        self.history.push_back(Arc::new(Sample { buffer, bound }));
+        while self.history.len() > most.max(1) {
+            self.history.pop_front();
+        }
+    }
+
+    /// Forgets every sample.
+    pub fn forget(&mut self) {
+        self.history.clear();
+        self.into = 0;
+    }
+
+    /// How many samples Un-mix has.
+    pub fn samples(&self) -> usize {
+        self.history.len()
+    }
+
+    /// Bytes Un-mix's samples take on the card (shared with copies of the body).
+    pub fn history_bytes(&self) -> usize {
+        self.history.iter().map(|s| s.bytes()).sum()
+    }
+
+    fn bind(&self, e: E, entries: &[(u32, &wgpu::Buffer)]) -> wgpu::BindGroup {
+        let entries: Vec<wgpu::BindGroupEntry> = entries.iter().map(|(b, buf)| entry(*b, buf)).collect();
+        self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("liquid history"),
+            layout: &self.gpu.pipeline(e).1,
+            entries: &entries,
+        })
+    }
+
+    /// One liquid step played backwards: the drops slid from the newest sample towards the one
+    /// before, `every` steps a sample, the newest forgotten once passed, then kept out of `balls`
+    /// (place only). `step` gives the liquids (their Balls push it). False when there is nothing
+    /// before the newest sample left: the drops are then the oldest sample's.
+    pub fn rewind_step(&mut self, step: &StepGpu, balls: &[BallGpu], every: u32) -> bool {
+        let Some(_) = self.history.back() else { return false };
+        // A count asked for before the rewind no longer bounds the drops.
+        if let Some(r) = self.reader.as_mut() {
+            r.after = u32::MAX;
+        }
+        self.take_count();
+        self.wait_for_room();
+        let every = every.max(1);
+        self.into += 1;
+        if self.into >= every && self.history.len() >= 2 {
+            self.history.pop_back();
+            self.into = 0;
+        }
+        let n = self.history.len();
+        let newer = self.history[n - 1].clone();
+        let older = if n >= 2 { self.history[n - 2].clone() } else { newer.clone() };
+        let t = if n >= 2 { self.into as f32 / every as f32 } else { 0.0 };
+        let chosen = if t >= 0.5 { older.bound } else { newer.bound };
+        self.ensure_room(newer.bound.max(older.bound).max(1));
+        let gpu = self.gpu.clone();
+        let (device, queue) = (&gpu.device, &gpu.queue);
+        let cells = self.cols * self.rows;
+        let scratch = self.scratch.get_or_insert_with(|| Scratch::new(device, cells));
+        let mut words = Vec::new();
+        let (balls_at, starts_at, items_at, ball_cols, ball_rows, ball_count) =
+            put_balls(&mut words, balls, self.cols, self.rows, 0.0);
+        if words.is_empty() {
+            words.push(0);
+        }
+        let mut st = *step;
+        st.grid[0] = self.cols;
+        st.grid[1] = self.rows;
+        st.counts = [0, self.room, self.room.max(cells), cells];
+        st.flags = [0, 0, ball_count, st.flags[3]];
+        st.words_at = [0, 0, balls_at, starts_at];
+        st.ball_grid = [ball_cols, ball_rows, BALL_CELL.to_bits(), items_at];
+        st.feel = [0, RING, 0, 0];
+        st.extra[2] = t.to_bits();
+        st.extra[3] = u32::from(t >= 0.5);
+        queue.write_buffer(&scratch.uniform, 0, bytemuck::bytes_of(&st));
+        let words_buffer = scratch.words.at_least(device, words.len() as u64 * 4);
+        queue.write_buffer(&words_buffer, 0, bytemuck::cast_slice(&words));
+        let uniform = scratch.uniform.clone();
+        let rewind = self.bind(
+            E::Rewind,
+            &[
+                (0, &uniform),
+                (1, &self.drops),
+                (3, &self.counts),
+                (6, &words_buffer),
+                (14, &newer.buffer),
+                (15, &older.buffer),
+            ],
+        );
+        let done =
+            self.bind(E::RewindDone, &[(0, &uniform), (3, &self.counts), (14, &newer.buffer), (15, &older.buffer)]);
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("liquid rewind") });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("liquid rewind"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&gpu.pipeline(E::Rewind).0);
+            pass.set_bind_group(0, &rewind, &[]);
+            pass.dispatch_workgroups(chosen.max(1).div_ceil(WORKGROUP), 1, 1);
+            pass.set_pipeline(&gpu.pipeline(E::RewindDone).0);
+            pass.set_bind_group(0, &done, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        self.in_flight.push_back(queue.submit([encoder.finish()]));
+        let _ = device.poll(wgpu::PollType::Poll);
+        self.bound = chosen;
+        self.steps += 1;
+        n >= 2
     }
 
     /// Every drop as the card has it once its queued steps are done (waits: tests and tools only).
