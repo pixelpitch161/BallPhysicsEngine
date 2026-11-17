@@ -150,3 +150,78 @@ card and wait on it, so aiming in a scene with a main-world liquid is slower. Th
 export may use different cards (an export with Finer export off still re-steps the liquid on the
 export's card, so a tiny difference in the card's float order could move balls). With a particle job
 running, a main-world liquid steps twice (once in the physics, once beside it for the particles).
+
+
+## Part 4, as built: stranger liquids
+
+Plan: `docs/superpowers/plans/liquid/part4.md` (with its As built).
+
+**What the owner sees.** The Liquid's own settings gain **Stretch** and **Tears at** (How it flows), a **Heat** group
+(Temperature, Cools, Warms, Cold thickens it, Freezes with Freezes below / Melts above, Dries up, Stains, Stain
+strength) and an **Un-mix** group (Remember for Un-mix, Seconds, Un-mixing; the inspector shows about how much video
+memory it keeps). The Fill card gains **Fill with** (Level / A picture / A word, with Picture, Picture width, Text,
+Letter height), a **Rain** group (Rain, Raindrop size, Rain speed) and a **From balls** group (Balls, Leaks, Bursts),
+and its list is **Pours and forces**: Pour, **Heat**, **Drain**, **Current** (Pump / Whirlpool / Wind) and **Magnet**
+(at its place or on balls, with Spikes). The Meets card gains **Changes the ball** (Off / Dissolves / Shrinks /
+Grows / Takes its colour) with Change speed, **Balls heat it**, and a **With the shapes** group (Shapes paint it,
+Paint colour, Painting shapes); an Other liquid rule can **React** (Makes, Reaction speed, Heat, Fizz). The Look's
+Colour mixing gains **Fades** and **Fades to**. The Rules have a Do **Un-mix** block.
+
+**Drops** are 96 bytes now: `spare` is (temperature, dryness) and `f` is the elastic stretch F after it
+(`liquid_drops.wgsl` reads 24 numbers a drop). `kind` bit 9 is `FROZEN`; a stain's liquid number is 16 + its
+liquid's (`STAIN_BASE`), so a liquid's own draw never shows it; `liquid_of` is `kind & 15`. Every kernel but
+compaction skips stains.
+
+**The solver** (`liquid_sim.wgsl`). Stretch adds a deviatoric neo-Hookean stress μ(b/J − ½tr(b/J)I) in p2g,
+μ = min(¼·Stretch, 1) × the stiffness (never a faster wave than the substeps are chosen for); g2p moves F with C and
+resets it to I when a drop is stretched past Tears at (log of the larger singular value of b/J, Tears at capped at
+20) or its J goes bad. Heat (`spare[0]`) is lost at the surface (exposure from the gathered volume), gained in Heat
+layers and from touching balls, and shared with neighbours at each mixing. Cold thickens viscosity by
+1 + 30·k·(1−T)². Freezing sets `FROZEN` (F reset, μ at least ½ the stiffness, viscosity at the cap, snaps only past
+3×); melting clears it. Drying adds Dries × exposure a second; a drop passing its own threshold (0.5..1.5 by a hash
+of its serial) goes, or becomes a stain with Stains on. Forces are a 48-entry table in the step uniform
+(`ForceGpu`, kinds heat, drain, pump, whirlpool, wind, magnet; `forces.rs` fills it in grid units each step from
+the layers, a ball-magnet one entry per named ball); drains also remove drops in `alive`. Shapes paint it through
+the walls band's 8th word, each node's wall number in `walls_now` order (first 64), and a per-step `paints` table
+of masks, so keyframed paint settings work without rebuilding the band. React is pair mode 2 (target in bits
+7..10, heat and fizz in `pairs2`): at each mixing a drop's reacting contact weight gives a chance against a hash of
+(serial, liquid, step); a turned drop takes the target's number, its Fill colour (`LiquidGpu.m`), heat and a fizz
+kick; it takes the made liquid's newest serial (`LiquidGpu.d.y`) so its Most drops keeps it, and ties between
+reacting neighbours go to the lower liquid number. Fades run at each mixing. Changes the ball sums shrink × mass and dissolves × mass into feel words 12 and 13.
+
+**Un-mix.** With Remember on, every 1/60 s `cs_record` packs every drop (20 bytes: place as u16 fractions of the
+grid, colour 10:10:10 square-root coded up to 4, kind and temperature, serial, strength and dryness) into a new card
+buffer. `Body::history` is a `VecDeque<Arc<Sample>>`: samples never change, so world copies share them for free
+(their bytes count in `gpu_memory`); past Seconds × 60 samples, or about 256 MiB worked out from every liquid's
+kept Most drops (never the card's count, so every run keeps the same number), the oldest go. While Un-mixing is on (any
+Liquid thing's switch) or a rule asked (`fire_now`, `Host::unmix_left` liquid steps), each liquid step is
+`Body::rewind_step` instead: `cs_rewind` writes the drops between the newest sample and the one before, sliding
+those with the same serial and kind at the same index, speed and stretch reset, then pushed out of the balls that
+push it; past a sample the newest is dropped, so the liquid goes on from where it was played back to. No births,
+mixing or feel while playing back; a batch that played back sends no feel.
+
+**From balls, rain, pictures** (`births.rs`). Raindrops are sunflower discs of drops born at the first free place
+down from the region's top. A ball the Fill's Balls names leaks Leaks × (speed / 500, at most 4) drops a second off
+its back; one seen last world step and gone now bursts into Bursts × its area of drops (`LiquidState::seen`). A Fill
+of a picture reads the PNG (or the scene's kept copy, through `particles::spots::read_png*`) on a half-cell
+lattice, its solid parts in their own colours; a word fills its letters in the Fill colour. All births take the
+liquid's Temperature.
+
+**Changes the ball** (`feel.rs`): radius × e^(−rate·wet·span); `Host::sizes` keeps each ball's size when first
+changed: Shrinks stops at 0.3 of it, Grows at 3 times, Dissolves removes the ball under 0.2 (a Remove event in the
+next after-step, `bpe_runtime::pop`). Takes its colour lifts Balls take its colour to the change speed.
+
+**Stains** draw as a second `Liquid` push from `draw.rs` (liquid number 16 + n, edge level 0.35 so one drop shows,
+no roundness or shine, opacity × Stain strength, behind the balls), only for a liquid with Dries up and Stains.
+
+**Restarts and tests.** `inputs_hash` adds the force layers; `fades` / `fades_to` are in
+`card_key_restarts_beside` and `beside_print_extra`. Tests: `liquid_sim::tests` (stretch holds a blob and tears at
+its limit, ice keeps its shape, a drain and a magnet, a reaction and fading, drying and stains, record and play
+back with a shared copy), `things::liquid::tests_part4` (rain, bursts, leaks, a word and a picture, a rule's
+Un-mix, dissolve / shrink / grow, shapes paint it, a reaction, a seek with everything on).
+
+**Not done (part 4).** Balls with a Heat glow sub-layer and Light things don't heat the liquid (Heat glow is worked
+out only when drawn); the Air card's wind isn't read (use a Wind current). Leaks and bursts are in the Fill colour
+(a ball's colour is worked out only when drawn). Reaction sounds are part 5's, a glow by temperature part 3's. One
+Liquid thing can't un-mix while the others go on (they are one body). The force table holds 48; later layers are
+left out. A rule's Un-mix plays back all that is remembered (no For).

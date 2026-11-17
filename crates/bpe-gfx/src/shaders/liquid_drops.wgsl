@@ -31,7 +31,7 @@ struct Style {
 
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var<uniform> st: Style;
-// The drops, 20 numbers each (liquid_sim.wgsl's `Drop`): x, v, c, colour, j, kind, serial, ...
+// The drops, 24 numbers each (liquid_sim.wgsl's `Drop`): x, v, c, colour, j, kind, serial, ...
 @group(1) @binding(1) var<storage, read> drops: array<f32>;
 
 fn to_clip(p: vec2<f32>) -> vec4<f32> {
@@ -56,7 +56,7 @@ struct DropOut {
 @vertex
 fn vs_drop(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> DropOut {
     var out: DropOut;
-    let at = ii * 20u;
+    let at = ii * 24u;
     let x = vec2<f32>(drops[at], drops[at + 1u]);
     let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u)) * 2.0 - 1.0;
     let r = max(st.e.w, 0.0);

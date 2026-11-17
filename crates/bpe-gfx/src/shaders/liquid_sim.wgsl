@@ -21,7 +21,10 @@ struct Drop {
     kick: f32,
     // weight and viscosity offsets from its liquid's (mixing moves them)
     mat: vec2<f32>,
+    // temperature (0..1), dryness
     spare: vec2<f32>,
+    // its elastic stretch F: xx, xy, yx, yy (the identity at rest)
+    f: vec4<f32>,
 };
 
 struct Liquid {
@@ -40,6 +43,29 @@ struct Liquid {
     f: vec4<f32>,
     // splash size, splashes from (cells/s), wakes, balls take its colour
     g: vec4<f32>,
+    // stretch (a share of its stiffness), tears at (log), freezes below (-1 never), melts above
+    h: vec4<f32>,
+    // cools, warms, cold thickens it, dries (a second)
+    i: vec4<f32>,
+    // stains (0/1), fades (a second), balls heat it, shapes paint it
+    j: vec4<f32>,
+    // the colour it fades to
+    k: vec4<f32>,
+    // the colour shapes paint it
+    l: vec4<f32>,
+    // the colour (and strength) a reaction that makes it gives
+    m: vec4<f32>,
+    // to the balls in it: shrink rate (below 0 grows), dissolves (0/1)
+    n: vec4<f32>,
+};
+
+struct Force {
+    // place xy, reach, strength
+    a: vec4<f32>,
+    // a way xy, two more numbers
+    b: vec4<f32>,
+    // kind, the liquids it moves (mask), spikes, 0
+    c: vec4<u32>,
 };
 
 struct Step {
@@ -60,6 +86,8 @@ struct Step {
     ball_grid: vec4<u32>,
     // what the balls feel: recorded (0/1), ring points, 0, 0
     feel: vec4<u32>,
+    // the liquid step's number, forces, un-mix's t (f32 bits), un-mix takes the older sample (0/1)
+    extra: vec4<u32>,
     // Paint: each band's basis (blue, green, red) and its way back (r, g, b rows over 8 bands)
     paint: array<vec4<f32>, 8>,
     back: array<vec4<f32>, 8>,
@@ -67,6 +95,11 @@ struct Step {
     // 16 × 16 meeting rules, 4 to a vec4: mode (bits 0..1: 0 mix, 1 layer) | style
     // << 2 (3 bits) | when << 5 (2 bits) | rate × 65535 << 16
     pairs: array<vec4<u32>, 64>,
+    // a reacting pair's heat (bits 0..7) and fizz (8..15)
+    pairs2: array<vec4<u32>, 64>,
+    forces: array<Force, 48>,
+    // the liquids each wall number paints, 4 to a vec4
+    paints: array<vec4<u32>, 16>,
 };
 
 const WG: u32 = 256u;
@@ -74,6 +107,16 @@ const S_M: f32 = 1048576.0;
 const S_P: f32 = 4096.0;
 const LIMIT: f32 = 33554432.0;
 const STOPS: u32 = 256u;
+const FROZEN: u32 = 512u;
+const STAIN_BASE: u32 = 16u;
+const MEET_REACT: u32 = 2u;
+const FORCE_HEAT: u32 = 0u;
+const FORCE_DRAIN: u32 = 1u;
+const FORCE_PUMP: u32 = 2u;
+const FORCE_WHIRLPOOL: u32 = 3u;
+const FORCE_WIND: u32 = 4u;
+const FORCE_MAGNET: u32 = 5u;
+const SAMPLE_WORDS: u32 = 5u;
 const FEEL: u32 = 32u;
 const S_PUSH: f32 = 64.0;
 const S_TOUCH: f32 = 256.0;
@@ -109,6 +152,10 @@ const WHEN_HITS: u32 = 2u;
 // per ball FEEL words: push x y, touching mass, colour × mass (rgb), drag × mass, carry × mass,
 // wet ring points, flow x y (f32 bits), take × mass, 4 spare, contacts with each liquid (16)
 @group(0) @binding(12) var<storage, read_write> feel: array<atomic<i32>>;
+// Un-mix: the sample being written, and the newer and older samples played back between
+@group(0) @binding(13) var<storage, read_write> sample: array<u32>;
+@group(0) @binding(14) var<storage, read> newer: array<u32>;
+@group(0) @binding(15) var<storage, read> older: array<u32>;
 
 var<workgroup> shared_sums: array<u32, 256>;
 
@@ -130,7 +177,33 @@ fn fixed(x: f32, scale: f32) -> i32 {
 }
 
 fn liquid_of(d: Drop) -> u32 {
-    return min(d.kind & 255u, 15u);
+    return d.kind & 15u;
+}
+
+fn is_stain(d: Drop) -> bool {
+    return (d.kind & 255u) >= STAIN_BASE;
+}
+
+fn hash(x: u32) -> u32 {
+    var h = x * 747796405u + 2891336453u;
+    h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
+    return (h >> 22u) ^ h;
+}
+
+// 0 to 1 from a number.
+fn unit(x: u32) -> f32 {
+    return f32(hash(x) >> 8u) / 16777216.0;
+}
+
+// How dry drop `d` gets before it goes: its own, from its serial.
+fn dries_at(d: Drop) -> f32 {
+    return 0.5 + unit(d.serial * 31u + (d.kind & 15u));
+}
+
+// How much of the drop is out at the edge of the liquid (0 deep inside, 1 alone), from the
+// volume its nodes hold.
+fn exposure(vd: f32) -> f32 {
+    return clamp((0.9 - vd) / 0.5, 0.0, 1.0);
 }
 
 // ---- births and walls ----------------------------------------------------------------------
@@ -179,20 +252,21 @@ fn cs_clear_solid(@builtin(global_invocation_id) id: vec3<u32>) {
     solid[2u * k + 1u] = vec4<f32>(0.0);
 }
 
-// Each band entry: node, normal xy, distance, wall speed xy (6 words).
+// Each band entry: node, normal xy, distance, wall speed xy, half, wall number (8 words).
 @compute @workgroup_size(256)
 fn cs_put_solid(@builtin(global_invocation_id) id: vec3<u32>) {
     let e = id.x;
     if e >= st.words_at.y {
         return;
     }
-    let at = st.words_at.x + e * 7u;
+    let at = st.words_at.x + e * 8u;
     let k = words[at];
     if k >= st.counts.w {
         return;
     }
     solid[2u * k] = vec4<f32>(wf(at + 1u), wf(at + 2u), wf(at + 3u), 1.0);
-    solid[2u * k + 1u] = vec4<f32>(wf(at + 4u), wf(at + 5u), wf(at + 6u), 0.0);
+    // .w: the wall's number (Shapes paint it)
+    solid[2u * k + 1u] = vec4<f32>(wf(at + 4u), wf(at + 5u), wf(at + 6u), f32(words[at + 7u]));
 }
 
 // The face of the wall at a node (`s`, `t`: its two solid entries) for a point `line_d` from the
@@ -241,12 +315,18 @@ fn cs_p2g(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
     let p = drops[i];
-    if !finite2(p.x) || !finite2(p.v) {
+    if !finite2(p.x) || !finite2(p.v) || is_stain(p) {
         return;
     }
     let lq = st.liquids[liquid_of(p)];
     let weight = max(lq.b.y + p.mat.x, 0.05);
-    let nu = clamp(lq.b.x + p.mat.y, 0.0, st.more.x);
+    let frozen = (p.kind & FROZEN) != 0u;
+    // Cold thickens it; frozen, it is as thick as it can be.
+    let cold = 1.0 - clamp(p.spare.x, 0.0, 1.0);
+    var nu = clamp((lq.b.x + p.mat.y) * (1.0 + 30.0 * lq.i.z * cold * cold), 0.0, st.more.x);
+    if frozen {
+        nu = st.more.x;
+    }
     let vol = 0.25;
     let mass = weight * vol;
     let j = p.j;
@@ -260,9 +340,27 @@ fn cs_p2g(@builtin(global_invocation_id) id: vec3<u32>) {
     let dt = st.time.x;
     // σ = −p I + μ (C + Cᵀ), μ = ν ρ; affine = −dt · vol · 4 · σ + m C.
     let mu = nu * weight;
-    let sxx = -pressure + mu * 2.0 * p.c.x;
-    let sxy = mu * (p.c.y + p.c.z);
-    let syy = -pressure + mu * 2.0 * p.c.w;
+    var sxx = -pressure + mu * 2.0 * p.c.x;
+    var sxy = mu * (p.c.y + p.c.z);
+    var syy = -pressure + mu * 2.0 * p.c.w;
+    // Stretch: the elastic part, its shape only (b / J less its mean: pressure keeps the volume).
+    var share = lq.h.x;
+    if frozen {
+        share = max(share, 0.5);
+    }
+    if share > 0.0 {
+        let f = p.f;
+        let jf = f.x * f.w - f.y * f.z;
+        if jf > 0.05 && abs(jf) < 1e6 {
+            let bxx = (f.x * f.x + f.y * f.y) / jf;
+            let bxy = (f.x * f.z + f.y * f.w) / jf;
+            let byy = (f.z * f.z + f.w * f.w) / jf;
+            let me = share * stiff;
+            sxx = sxx + me * 0.5 * (bxx - byy);
+            syy = syy - me * 0.5 * (bxx - byy);
+            sxy = sxy + me * bxy;
+        }
+    }
     let k = -dt * vol * 4.0;
     let axx = k * sxx + mass * p.c.x;
     let axy = k * sxy + mass * p.c.y;
@@ -343,10 +441,11 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
     var p = drops[i];
-    if !finite2(p.x) || !finite2(p.v) {
+    if !finite2(p.x) || !finite2(p.v) || is_stain(p) {
         return;
     }
     let lq = st.liquids[liquid_of(p)];
+    let me = liquid_of(p);
     let dt = st.time.x;
     let base = base_of(p.x);
     let fx = p.x - vec2<f32>(base);
@@ -366,6 +465,58 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     }
     p.j = 1.0 / max(vd, 0.05);
+    let open = exposure(vd);
+    // Heat: lost at the surface, gained near heat.
+    var heat = p.spare.x;
+    heat = heat - lq.i.x * open * heat * dt;
+    // The forces on it: heat, drains, currents and magnets.
+    for (var e = 0u; e < st.extra.y; e = e + 1u) {
+        let fo = st.forces[e];
+        if ((fo.c.y >> me) & 1u) == 0u {
+            continue;
+        }
+        let rel = p.x - fo.a.xy;
+        let d = length(rel);
+        var dir = vec2<f32>(0.0);
+        if d > 1e-4 {
+            dir = -rel / d;
+        }
+        let reach = max(fo.a.z, 1e-3);
+        let fall = max(1.0 - d / reach, 0.0);
+        switch fo.c.x {
+            case FORCE_HEAT: {
+                if fall > 0.0 {
+                    let to = select(0.0, 1.0, fo.a.w > 0.0);
+                    heat = heat + (to - heat) * (1.0 - exp(-lq.i.y * abs(fo.a.w) * fall * dt));
+                }
+            }
+            case FORCE_DRAIN, FORCE_WHIRLPOOL: {
+                // A pull in (a.w) and a spin round (b.z), fading out to its reach.
+                let spin = vec2<f32>(-dir.y, dir.x);
+                v = v + dt * fall * (fo.a.w * dir + fo.b.z * spin) * min(d, 1.0);
+            }
+            case FORCE_PUMP: {
+                let way = fo.b.xy;
+                let along = dot(rel, way);
+                let across = abs(dot(rel, vec2<f32>(-way.y, way.x)));
+                let half = max(fo.b.w, 1e-3);
+                if along >= 0.0 && along <= fo.b.z && across <= half {
+                    v = v + dt * fo.a.w * way * (1.0 - across / half);
+                }
+            }
+            case FORCE_WIND: {
+                v = v + dt * fo.a.w * fo.b.xy * open;
+            }
+            case FORCE_MAGNET: {
+                if fall > 0.0 && d > 1e-3 {
+                    let a = atan2(rel.y, rel.x);
+                    let lobes = 1.0 + fo.b.z * cos(f32(fo.c.z) * a);
+                    v = v + dt * fo.a.w * fall * fall * lobes * dir * min(d * 0.5, 1.0);
+                }
+            }
+            default: {}
+        }
+    }
     v = v * exp(-lq.a.w * dt);
     let speed = length(v);
     if speed > st.time.w {
@@ -379,7 +530,6 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
     let x0 = p.x;
     // The balls push it aside (before the walls, so a ball never pushes a drop through one).
     if st.flags.z > 0u && lq.b.w > 0.5 {
-        let me = liquid_of(p);
         let mass = max(lq.b.y + p.mat.x, 0.05) * 0.25;
         let record = st.feel.x == 1u;
         let range = ball_cell(p.x);
@@ -438,7 +588,13 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
                     atomicAdd(&feel[fb + 6u], fixed(mass * lq.e.y, S_TOUCH));
                     atomicAdd(&feel[fb + 7u], fixed(mass * lq.e.z, S_TOUCH));
                     atomicAdd(&feel[fb + 11u], fixed(mass * lq.g.w, S_TOUCH));
+                    atomicAdd(&feel[fb + 12u], fixed(mass * lq.n.x, S_TOUCH));
+                    atomicAdd(&feel[fb + 13u], fixed(mass * lq.n.y, S_TOUCH));
                     atomicAdd(&feel[fb + 16u + me], 1);
+                }
+                // Balls heat it.
+                if lq.j.z > 0.0 {
+                    heat = heat + (1.0 - heat) * (1.0 - exp(-4.0 * lq.j.z * dt));
                 }
             } else if lq.e.w > 0.0 && dist < r + 1.5 {
                 // It clings: pulled in, and taking the ball's speed; the ball carries it.
@@ -469,6 +625,11 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
         if s0.w > 0.5 && t.z >= 0.0 && any(p.x != x0) {
             f = vec3<f32>(s.xy * side0, side0 * line_d - t.z);
         }
+        // Shapes paint it: the drop takes the paint of a wall it touches.
+        let wall = u32(t.w + 0.5);
+        if lq.j.w > 0.0 && f.z < 1.0 && wall < 64u && ((st.paints[wall / 4u][wall % 4u] >> me) & 1u) == 1u {
+            p.colour = vec4<f32>(mix(p.colour.rgb, lq.l.rgb, 1.0 - exp(-12.0 * lq.j.w * dt)), p.colour.a);
+        }
         if f.z < 0.5 {
             p.x = p.x + f.xy * min(0.5 - f.z, 4.0);
             let vw = t.xy;
@@ -488,6 +649,61 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
         if p.x.x > hi.x - 0.05 { p.x.x = hi.x - 0.05; v.x = min(v.x, 0.0); }
         if p.x.y < lo.y + 0.05 { p.x.y = lo.y + 0.05; v.y = max(v.y, 0.0); }
         if p.x.y > hi.y - 0.05 { p.x.y = hi.y - 0.05; v.y = min(v.y, 0.0); }
+    }
+    // Freezing and melting.
+    heat = clamp(heat, 0.0, 1.0);
+    var frozen = (p.kind & FROZEN) != 0u;
+    if lq.h.z >= 0.0 {
+        if !frozen && heat < lq.h.z {
+            frozen = true;
+            p.kind = p.kind | FROZEN;
+            p.f = vec4<f32>(1.0, 0.0, 0.0, 1.0);
+        } else if frozen && heat > lq.h.w {
+            frozen = false;
+            p.kind = p.kind & ~FROZEN;
+        }
+    } else if frozen {
+        frozen = false;
+        p.kind = p.kind & ~FROZEN;
+    }
+    p.spare.x = heat;
+    // Stretch: F moves with the liquid; stretched past Tears at (3 times for ice) it snaps.
+    if lq.h.x > 0.0 || frozen {
+        let f = p.f;
+        var g = vec4<f32>(
+            (1.0 + dt * c.x) * f.x + dt * c.y * f.z,
+            (1.0 + dt * c.x) * f.y + dt * c.y * f.w,
+            dt * c.z * f.x + (1.0 + dt * c.w) * f.z,
+            dt * c.z * f.y + (1.0 + dt * c.w) * f.w,
+        );
+        let jf = g.x * g.w - g.y * g.z;
+        var snap = !(jf > 0.05) || !(abs(jf) < 1e6);
+        if !snap {
+            let bxx = (g.x * g.x + g.y * g.y) / jf;
+            let bxy = (g.x * g.z + g.y * g.w) / jf;
+            let byy = (g.z * g.z + g.w * g.w) / jf;
+            let half = 0.5 * (bxx + byy);
+            let disc = sqrt(max(half * half - (bxx * byy - bxy * bxy), 0.0));
+            let strain = 0.5 * max(abs(log(max(half + disc, 1e-6))), abs(log(max(half - disc, 1e-6))));
+            var limit = lq.h.y;
+            if frozen {
+                limit = 1.0986;
+            }
+            snap = strain > limit;
+        }
+        if snap {
+            g = vec4<f32>(1.0, 0.0, 0.0, 1.0);
+        }
+        p.f = g;
+    }
+    // Drying, at its surface: past its own point it goes (or stays as a stain).
+    if lq.i.w > 0.0 {
+        p.spare.y = p.spare.y + lq.i.w * open * dt;
+        if lq.j.x > 0.5 && p.spare.y > dries_at(p) {
+            p.kind = (STAIN_BASE + me) | (p.kind & STOPS);
+            v = vec2<f32>(0.0);
+            c = vec4<f32>(0.0);
+        }
     }
     p.v = v;
     p.c = c;
@@ -635,9 +851,21 @@ fn cs_mix(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
     let p = drops[i];
+    if is_stain(p) {
+        mixout[3u * i] = vec4<f32>(0.0);
+        mixout[3u * i + 1u] = vec4<f32>(0.0);
+        mixout[3u * i + 2u] = vec4<f32>(0.0);
+        return;
+    }
     let li = liquid_of(p);
     let wi = max(st.liquids[li].b.y + p.mat.x, 0.05);
     let ni = st.liquids[li].b.x + p.mat.y;
+    var acc_t = 0;
+    var react_w = 0;
+    var react_best = 0;
+    var react_rule = 0u;
+    var react_more = 0u;
+    var react_lj = 255u;
     var acc_c = vec3<i32>(0);
     var acc_m = vec2<i32>(0);
     var acc_x = vec2<i32>(0);
@@ -660,6 +888,9 @@ fn cs_mix(@builtin(global_invocation_id) id: vec3<u32>) {
                     continue;
                 }
                 let o = drops[j];
+                if is_stain(o) {
+                    continue;
+                }
                 let off = p.x - o.x;
                 let d = length(off);
                 if d >= 1.0 {
@@ -667,9 +898,21 @@ fn cs_mix(@builtin(global_invocation_id) id: vec3<u32>) {
                 }
                 let w = (1.0 - d) * (1.0 - d);
                 acc_w = acc_w + q(w);
+                // Heat passes between neighbours, whatever liquid.
+                acc_t = acc_t + q(w * (o.spare.x - p.spare.x));
                 let lj = liquid_of(o);
                 let rule = st.pairs[li * 4u + lj / 4u][lj % 4u];
                 let mode = rule & 3u;
+                if mode == MEET_REACT {
+                    react_w = react_w + q(w);
+                    // Ties go to the lower liquid number: the order of drops in a cell is not set.
+                    if q(w) > react_best || (q(w) == react_best && lj < react_lj) {
+                        react_best = q(w);
+                        react_lj = lj;
+                        react_rule = rule;
+                        react_more = st.pairs2[li * 4u + lj / 4u][lj % 4u];
+                    }
+                }
                 let style = (rule >> 2u) & 7u;
                 let when = (rule >> 5u) & 3u;
                 let rate = f32(rule >> 16u) / 65535.0;
@@ -702,10 +945,22 @@ fn cs_mix(@builtin(global_invocation_id) id: vec3<u32>) {
     var dc = vec3<f32>(0.0);
     var dm = vec2<f32>(0.0);
     var dpos = vec2<f32>(0.0);
+    var dt_heat = 0.0;
+    var turn = vec4<f32>(0.0);
     if acc_w > 0 {
         let total = f32(acc_w);
         dc = vec3<f32>(acc_c) / total;
         dm = vec2<f32>(acc_m) / total;
+        dt_heat = 0.25 * f32(acc_t) / total;
+        // A reaction: the chance it turns this mixing, by how much of what it reacts with touches it.
+        if react_w > 0 {
+            let rate = f32(react_rule >> 16u) / 65535.0;
+            let chance = 1.0 - exp(-8.0 * rate * f32(react_w) / Q);
+            if unit(p.serial * 7919u + li * 104729u + st.extra.x * 15485863u) < chance {
+                let makes = (react_rule >> 7u) & 15u;
+                turn = vec4<f32>(f32(makes) + 1.0, f32(react_more & 255u) / 255.0, f32((react_more >> 8u) & 255u) / 255.0, 0.0);
+            }
+        }
         let g = vec2<f32>(st.time.y, st.time.z);
         let gl = length(g);
         var up = vec2<f32>(0.0, -1.0);
@@ -714,8 +969,9 @@ fn cs_mix(@builtin(global_invocation_id) id: vec3<u32>) {
         }
         dpos = vec2<f32>(acc_x) / total * st.more.z + up * (f32(acc_lift) / total) * st.more.w;
     }
-    mixout[2u * i] = vec4<f32>(dc, 0.0);
-    mixout[2u * i + 1u] = vec4<f32>(dpos, dm);
+    mixout[3u * i] = vec4<f32>(dc, dt_heat);
+    mixout[3u * i + 1u] = vec4<f32>(dpos, dm);
+    mixout[3u * i + 2u] = turn;
 }
 
 @compute @workgroup_size(256)
@@ -725,11 +981,42 @@ fn cs_mix_apply(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
     var p = drops[i];
-    let a = mixout[2u * i];
-    let b = mixout[2u * i + 1u];
+    if is_stain(p) {
+        return;
+    }
+    let a = mixout[3u * i];
+    let b = mixout[3u * i + 1u];
+    let r = mixout[3u * i + 2u];
     p.colour = vec4<f32>(max(p.colour.rgb + a.xyz, vec3<f32>(0.0)), p.colour.w);
+    p.spare.x = clamp(p.spare.x + a.w, 0.0, 1.0);
     p.x = p.x + b.xy;
     p.mat = p.mat + b.zw;
+    // Fades: the colour drifts to the liquid's Fades to.
+    let lq = st.liquids[liquid_of(p)];
+    if lq.j.y > 0.0 {
+        p.colour = vec4<f32>(mix(p.colour.rgb, lq.k.rgb, 1.0 - exp(-lq.j.y * st.more.y)), p.colour.w);
+    }
+    // It reacted: it is now the liquid the reaction makes, warmed and thrown up by the fizz.
+    if r.x > 0.5 {
+        let makes = u32(r.x - 0.5) & 15u;
+        let to = st.liquids[makes];
+        p.kind = makes | (p.kind & STOPS);
+        // Its serial is the made liquid's newest, so that liquid's Most drops keeps it as new.
+        p.serial = to.d.y;
+        p.colour = to.m;
+        p.mat = vec2<f32>(0.0);
+        p.f = vec4<f32>(1.0, 0.0, 0.0, 1.0);
+        p.spare = vec2<f32>(clamp(p.spare.x + r.y, 0.0, 1.0), 0.0);
+        if r.z > 0.0 {
+            let g = vec2<f32>(st.time.y, st.time.z);
+            var up = vec2<f32>(0.0, -1.0);
+            if length(g) > 1e-5 {
+                up = -normalize(g);
+            }
+            let side = unit(p.serial * 2654435761u + st.extra.x) - 0.5;
+            p.v = p.v + r.z * 40.0 * (up + vec2<f32>(-up.y, up.x) * side);
+        }
+    }
     drops[i] = p;
 }
 
@@ -743,8 +1030,25 @@ fn alive(p: Drop) -> bool {
     if p.serial < lq.d.x {
         return false;
     }
+    if is_stain(p) {
+        let lo = vec2<f32>(2.0);
+        let hi = vec2<f32>(f32(st.grid.x) - 2.0, f32(st.grid.y) - 2.0);
+        return all(p.x >= lo) && all(p.x <= hi);
+    }
     if p.x.y < lq.c.w {
         return false;
+    }
+    // Dried up (with no stains to leave).
+    if lq.i.w > 0.0 && p.spare.y > dries_at(p) {
+        return false;
+    }
+    // Down a drain.
+    let me = liquid_of(p);
+    for (var e = 0u; e < st.extra.y; e = e + 1u) {
+        let fo = st.forces[e];
+        if fo.c.x == FORCE_DRAIN && ((fo.c.y >> me) & 1u) == 1u && length(p.x - fo.a.xy) < fo.b.w {
+            return false;
+        }
     }
     let lo = vec2<f32>(2.0);
     let hi = vec2<f32>(f32(st.grid.x) - 2.0, f32(st.grid.y) - 2.0);
@@ -896,4 +1200,141 @@ fn cs_feel(@builtin(global_invocation_id) id: vec3<u32>) {
     atomicStore(&feel[fb + 8u], i32(wet));
     atomicStore(&feel[fb + 9u], bitcast<i32>(flow.x));
     atomicStore(&feel[fb + 10u], bitcast<i32>(flow.y));
+}
+
+// ---- Un-mix: samples of the drops, and playing them back -----------------------------------
+
+fn colour_code(c: vec3<f32>) -> u32 {
+    let s = sqrt(clamp(c / 4.0, vec3<f32>(0.0), vec3<f32>(1.0))) * 1023.0;
+    let u = vec3<u32>(round(s));
+    return u.x | (u.y << 10u) | (u.z << 20u);
+}
+
+fn colour_back(w: u32) -> vec3<f32> {
+    let s = vec3<f32>(f32(w & 1023u), f32((w >> 10u) & 1023u), f32((w >> 20u) & 1023u)) / 1023.0;
+    return s * s * 4.0;
+}
+
+// Each drop as 5 words after a 4-word header holding the count: its place (fractions of the grid),
+// colour, kind and temperature, serial, strength and dryness.
+@compute @workgroup_size(256)
+fn cs_record(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x;
+    let n = counts[4];
+    if i == 0u {
+        sample[0] = n;
+        sample[1] = 0u;
+        sample[2] = 0u;
+        sample[3] = 0u;
+    }
+    if i >= n || 4u + (i + 1u) * SAMPLE_WORDS > arrayLength(&sample) {
+        return;
+    }
+    let p = drops[i];
+    let size = vec2<f32>(f32(st.grid.x), f32(st.grid.y));
+    let at = 4u + i * SAMPLE_WORDS;
+    sample[at] = pack2x16unorm(clamp(p.x / size, vec2<f32>(0.0), vec2<f32>(1.0)));
+    sample[at + 1u] = colour_code(p.colour.rgb);
+    sample[at + 2u] = pack2x16float(vec2<f32>(f32(p.kind & 1023u), p.spare.x));
+    sample[at + 3u] = p.serial;
+    sample[at + 4u] = pack2x16float(vec2<f32>(min(p.colour.w, 60000.0), min(p.spare.y, 60000.0)));
+}
+
+fn sample_word(old: bool, k: u32) -> u32 {
+    if old {
+        return older[k];
+    }
+    return newer[k];
+}
+
+fn sample_count(old: bool) -> u32 {
+    if old {
+        return min(older[0], (arrayLength(&older) - 4u) / SAMPLE_WORDS);
+    }
+    return min(newer[0], (arrayLength(&newer) - 4u) / SAMPLE_WORDS);
+}
+
+@compute @workgroup_size(256)
+fn cs_rewind(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x;
+    let old = st.extra.w == 1u;
+    let n = sample_count(old);
+    if i >= n || i >= st.counts.y {
+        return;
+    }
+    let t = bitcast<f32>(st.extra.z);
+    let size = vec2<f32>(f32(st.grid.x), f32(st.grid.y));
+    let at = 4u + i * SAMPLE_WORDS;
+    var x = unpack2x16unorm(sample_word(old, at)) * size;
+    var colour = colour_back(sample_word(old, at + 1u));
+    let kt = unpack2x16float(sample_word(old, at + 2u));
+    let kind = u32(kt.x + 0.5);
+    let serial = sample_word(old, at + 3u);
+    let more = unpack2x16float(sample_word(old, at + 4u));
+    // The same drop in the other sample: slide between the two.
+    if i < sample_count(!old) && sample_word(!old, at + 3u) == serial
+        && u32(unpack2x16float(sample_word(!old, at + 2u)).x + 0.5) == kind {
+        let x2 = unpack2x16unorm(sample_word(!old, at)) * size;
+        let c2 = colour_back(sample_word(!old, at + 1u));
+        // t runs from the newer sample (0) to the older (1).
+        var from_x = x2;
+        var from_c = c2;
+        var to_x = x;
+        var to_c = colour;
+        if !old {
+            from_x = x;
+            from_c = colour;
+            to_x = x2;
+            to_c = c2;
+        }
+        x = mix(from_x, to_x, t);
+        colour = mix(from_c, to_c, t);
+    }
+    var p: Drop;
+    p.x = x;
+    p.v = vec2<f32>(0.0);
+    p.c = vec4<f32>(0.0);
+    p.colour = vec4<f32>(colour, more.x);
+    p.j = 1.0;
+    p.kind = kind;
+    p.serial = serial;
+    p.kick = 0.0;
+    p.mat = vec2<f32>(0.0);
+    p.spare = vec2<f32>(kt.y, more.y);
+    p.f = vec4<f32>(1.0, 0.0, 0.0, 1.0);
+    // Balls still push it aside (its place only).
+    let lq = st.liquids[liquid_of(p)];
+    if st.flags.z > 0u && lq.b.w > 0.5 && !is_stain(p) {
+        let range = ball_cell(p.x);
+        for (var e = range.x; e < range.y; e = e + 1u) {
+            let bi = words[st.ball_grid.w + e];
+            let ba = st.words_at.z + bi * BALL_WORDS;
+            if ((words[ba + 5u] >> liquid_of(p)) & 1u) == 0u {
+                continue;
+            }
+            let bx = vec2<f32>(wf(ba), wf(ba + 1u));
+            let r = wf(ba + 4u) + 0.5;
+            let off = p.x - bx;
+            let dist = length(off);
+            if dist < r {
+                var nn = vec2<f32>(0.0, -1.0);
+                if dist > 1e-5 {
+                    nn = off / dist;
+                }
+                p.x = bx + nn * r;
+            }
+        }
+    }
+    drops[i] = p;
+}
+
+@compute @workgroup_size(1)
+fn cs_rewind_done() {
+    let n = min(sample_count(st.extra.w == 1u), st.counts.y);
+    counts[0] = 4u;
+    counts[1] = n;
+    counts[2] = 0u;
+    counts[3] = 0u;
+    counts[4] = n;
+    counts[7] = 0u;
 }

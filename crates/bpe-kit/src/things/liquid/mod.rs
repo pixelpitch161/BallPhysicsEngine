@@ -15,6 +15,7 @@ pub mod births;
 pub mod cards;
 pub mod draw;
 pub mod feel;
+pub mod forces;
 pub mod rules;
 pub mod sim;
 pub mod state;
@@ -22,6 +23,8 @@ pub mod state;
 mod tests;
 #[cfg(test)]
 mod tests_balls;
+#[cfg(test)]
+mod tests_part4;
 pub mod walls;
 
 use std::cell::Cell;
@@ -29,8 +32,9 @@ use std::cell::Cell;
 use bpe_core::{Choice, SettingDef, Settings, SlotId, ThingKind};
 
 pub use cards::{
-    ColourFrom, FILL, FillSettings, Floats, LOOK, LookSettings, MEETS, Meeting, MeetsSettings, MixStyle, MixesWhen,
-    OTHER, OtherLiquid, POUR, PourLayer, RuleStyle,
+    CURRENT, ChangesBall, ColourFrom, CurrentKind, CurrentLayer, DRAIN, DrainLayer, FILL, FillSettings, FillWith,
+    Floats, Forces, HEAT, HeatLayer, LOOK, LookSettings, MAGNET, MEETS, MagnetAt, MagnetLayer, Meeting, MeetsSettings,
+    MixStyle, MixesWhen, OTHER, OtherLiquid, POUR, PourLayer, RuleStyle,
 };
 pub use feel::taken_colours;
 pub use state::{LiquidState, hash_of, inputs_hash, state_of};
@@ -120,6 +124,57 @@ pub struct LiquidSettings {
     /// How hard the scene's gravity pulls it (below 0 it falls upwards).
     #[setting(label = "Gravity", span(-2, 2), unit = "×", keyframe, pulse, group = "How it flows")]
     pub gravity: f32,
+    /// How much it holds together in strands and springs back, like slime or jelly.
+    #[setting(label = "Stretch", range(0, 1e9), span(0, 1), keyframe, pulse, group = "How it flows")]
+    pub stretch: f32,
+    /// How far a stretchy liquid pulls (times its length) before it snaps.
+    #[setting(
+        label = "Tears at",
+        when = "stretch",
+        range(1, 1e9),
+        span(1, 5),
+        unit = "×",
+        keyframe,
+        pulse,
+        group = "How it flows"
+    )]
+    pub tears_at: f32,
+    /// How hot new liquid is (0 cold, 1 hot).
+    #[setting(label = "Temperature", range(0, 1), span(0, 1), keyframe, pulse, group = "Heat")]
+    pub temperature: f32,
+    /// How fast it loses heat at its surface.
+    #[setting(label = "Cools", range(0, 1e9), span(0, 2), unit = "/s", keyframe, pulse, group = "Heat")]
+    pub cools: f32,
+    /// How fast it takes heat from Heat places (on the Fill card) and hot balls.
+    #[setting(label = "Warms", range(0, 1e9), span(0, 2), unit = "/s", keyframe, pulse, group = "Heat")]
+    pub warms: f32,
+    /// How much thicker it gets as it cools (lava).
+    #[setting(label = "Cold thickens it", range(0, 1e9), span(0, 1), keyframe, pulse, group = "Heat")]
+    pub cold_thickens: f32,
+    /// It turns solid when it is cold enough, and melts again when warm.
+    #[setting(label = "Freezes", group = "Heat")]
+    pub freezes: bool,
+    #[setting(label = "Freezes below", when = "freezes", range(0, 1), span(0, 1), keyframe, group = "Heat")]
+    pub freezes_below: f32,
+    #[setting(label = "Melts above", when = "freezes", range(0, 1), span(0, 1), keyframe, group = "Heat")]
+    pub melts_above: f32,
+    /// How fast it dries up at its surface (0: never).
+    #[setting(label = "Dries up", range(0, 1e9), span(0, 1), unit = "/s", keyframe, pulse, group = "Heat")]
+    pub dries: f32,
+    /// Dried drops leave a mark where they were.
+    #[setting(label = "Stains", when = "dries", group = "Heat")]
+    pub stains: bool,
+    #[setting(label = "Stain strength", when = "dries and stains", range(0, 1), span(0, 1), keyframe, group = "Heat")]
+    pub stain_strength: f32,
+    /// Keep the last Seconds of the liquid so it can play backwards (the first Liquid thing's is
+    /// used for all; it takes video memory).
+    #[setting(label = "Remember for Un-mix", group = "Un-mix")]
+    pub remember: bool,
+    #[setting(label = "Seconds", when = "remember", range(0.1, 60), span(1, 20), unit = "s", group = "Un-mix")]
+    pub unmix_seconds: f32,
+    /// While on, the whole liquid plays its remembered seconds backwards (colours un-mix too).
+    #[setting(label = "Un-mixing", when = "remember", keyframe, group = "Un-mix")]
+    pub unmixing: bool,
     /// How many drops make the liquid in the editor (the first Liquid thing's is used for all).
     #[setting(label = "Detail", simple, group = "Detail")]
     pub detail: Detail,
@@ -150,6 +205,21 @@ impl Default for LiquidSettings {
             spray: 0.3,
             settles: 0.2,
             gravity: 1.0,
+            stretch: 0.0,
+            tears_at: 2.0,
+            temperature: 0.5,
+            cools: 0.0,
+            warms: 1.0,
+            cold_thickens: 0.0,
+            freezes: false,
+            freezes_below: 0.2,
+            melts_above: 0.3,
+            dries: 0.0,
+            stains: false,
+            stain_strength: 0.5,
+            remember: false,
+            unmix_seconds: 5.0,
+            unmixing: false,
             detail: Detail::Normal,
             export_detail: Detail::Fine,
             finer_export: false,
@@ -178,6 +248,17 @@ impl LiquidSettings {
             spray: num(s.spray, d.spray).clamp(0.0, 1.0),
             settles: num(s.settles, d.settles).max(0.0),
             gravity: num(s.gravity, d.gravity),
+            stretch: num(s.stretch, 0.0).max(0.0),
+            tears_at: num(s.tears_at, d.tears_at).max(1.0),
+            temperature: num(s.temperature, d.temperature).clamp(0.0, 1.0),
+            cools: num(s.cools, 0.0).max(0.0),
+            warms: num(s.warms, d.warms).max(0.0),
+            cold_thickens: num(s.cold_thickens, 0.0).max(0.0),
+            freezes_below: num(s.freezes_below, d.freezes_below).clamp(0.0, 1.0),
+            melts_above: num(s.melts_above, d.melts_above).clamp(0.0, 1.0),
+            dries: num(s.dries, 0.0).max(0.0),
+            stain_strength: num(s.stain_strength, d.stain_strength).clamp(0.0, 1.0),
+            unmix_seconds: num(s.unmix_seconds, d.unmix_seconds).clamp(0.1, 60.0),
             margin: num(s.margin, d.margin).max(0.0),
             ..s
         }

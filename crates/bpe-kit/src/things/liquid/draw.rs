@@ -3,6 +3,7 @@
 //! Every Liquid thing draws only its own drops, with its own Look.
 
 use bpe_core::SlotId;
+use bpe_gfx::liquid_sim::STAIN_BASE;
 use bpe_gfx::{DrawCx, Frame, Liquid, LiquidStyle, ThingDraw};
 
 use super::KIND;
@@ -16,6 +17,8 @@ pub struct LiquidDraw;
 const REACH: f32 = 1.5;
 /// The field inside the liquid: four drops a cell, each `(1 − d²)³` over its reach.
 const INSIDE: f32 = std::f32::consts::PI * REACH * REACH;
+/// Where a stain's surface is cut: low, so one lone dried drop shows (its peak is 1).
+const STAIN_LEVEL: f32 = 0.35;
 /// The pretend light's Plastic.
 const PLASTIC: f32 = 1.0;
 
@@ -48,5 +51,20 @@ impl ThingDraw for LiquidDraw {
         let look = LookSettings::read(cx.resolved.slots.get(&SlotId::Look).filter(|c| c.kind == LOOK));
         let style = style_of(&look, index, host.layout.origin, host.layout.cell);
         frame.liquids.push(Liquid { blobs: Vec::new(), style, front: look.in_front, drops: Some(body.source()) });
+        // Its stains (part 4): flat marks where drops dried, behind the balls.
+        let me = state_of(cx.world, cx.thing.id).map(|s| &s.settings);
+        if let Some(s) = me.filter(|s| s.dries > 0.0 && s.stains) {
+            let flat = LookSettings {
+                level: STAIN_LEVEL / INSIDE,
+                roundness: 0.0,
+                shine: 0.0,
+                softness: look.softness.max(1.0),
+                opacity: look.opacity * s.stain_strength,
+                ..look.clone()
+            };
+            let stains = STAIN_BASE as usize + index;
+            let style = style_of(&flat, stains, host.layout.origin, host.layout.cell);
+            frame.liquids.push(Liquid { blobs: Vec::new(), style, front: false, drops: Some(body.source()) });
+        }
     }
 }

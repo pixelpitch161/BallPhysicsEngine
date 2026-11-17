@@ -24,6 +24,13 @@ pub const IN_AT: f32 = 0.35;
 /// How fast a ball takes the liquid's colour, a second, at Balls take its colour 1 and fully under.
 pub const TAKE_RATE: f32 = 3.0;
 
+/// Changes the ball: Shrinks stops at this share of the ball's size when it first met the
+/// liquid, Grows at this many times it, and Dissolves removes it under this share (a tiny ball is
+/// thrown about by the drops, so it goes before it is a speck).
+pub const SMALLEST: f32 = 0.3;
+pub const BIGGEST: f32 = 3.0;
+pub const DISSOLVED: f32 = 0.2;
+
 /// What a Liquid event's party `b` carries as its item.
 pub const ENTER: u32 = 0;
 pub const LEAVE: u32 = 1;
@@ -86,6 +93,7 @@ pub fn apply(host: &mut Host, world: &mut World) {
     let mut touching: BTreeSet<(ThingId, u32, u8)> = BTreeSet::new();
     let mut news = Vec::new();
     let mut taken: Option<BTreeMap<(ThingId, u32), [f32; 4]>> = None;
+    let mut sizes: Option<BTreeMap<(ThingId, u32), f32>> = None;
     for (i, &(thing, row)) in felt.balls.iter().enumerate() {
         let Some(w) = words.get(i * FEEL_WORDS..(i + 1) * FEEL_WORDS) else { break };
         let Some(bodies) = world.bodies.get_mut(&thing) else { continue };
@@ -111,6 +119,30 @@ pub fn apply(host: &mut Host, world: &mut World) {
             let after = v + dv;
             if after.is_finite() {
                 bodies.velocity[r] = clamp_len(after, ceiling);
+            }
+        }
+        // Changes the ball (part 4): it shrinks (dissolving, it goes) or grows while in it.
+        if touch > 0.0 && wet > 0.0 {
+            let shrink = word(w, feel_at::CHANGE) / S_TOUCH / touch;
+            let dissolves = word(w, feel_at::CHANGE + 1) / S_TOUCH / touch;
+            let k = shrink * wet * span;
+            if k != 0.0 && k.is_finite() {
+                let map = sizes.get_or_insert_with(|| (*host.sizes).clone());
+                let first = *map.entry((thing, row)).or_insert(bodies.radius[r]);
+                let now = bodies.radius[r] * (-k).exp();
+                let now = if dissolves > 0.5 {
+                    if now < (first * DISSOLVED).max(0.5) && !host.dissolved.contains(&(thing, row)) {
+                        host.dissolved.push((thing, row));
+                    }
+                    now
+                } else if k > 0.0 {
+                    now.max(first * SMALLEST)
+                } else {
+                    now.min(first * BIGGEST)
+                };
+                if now.is_finite() {
+                    bodies.radius[r] = now.max(0.01);
+                }
             }
         }
         // Which liquids it is in: each liquid's share of the wet ring by its share of the contacts.
@@ -167,6 +199,13 @@ pub fn apply(host: &mut Host, world: &mut World) {
     }
     if let Some(map) = taken {
         host.taken = Arc::new(map);
+    }
+    if host.sizes.keys().any(|&(thing, row)| !still_there(world, thing, row)) {
+        let map = sizes.get_or_insert_with(|| (*host.sizes).clone());
+        map.retain(|&(thing, row), _| still_there(world, thing, row));
+    }
+    if let Some(map) = sizes {
+        host.sizes = Arc::new(map);
     }
 }
 
