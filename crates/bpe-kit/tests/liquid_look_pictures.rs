@@ -1,5 +1,5 @@
 //! Liquid part 3 in pictures: a Liquid thing's look. Clear water shows what is behind it near its
-//! top and turns to its deep colour further down; light it gives off brightens it; foam whitens
+//! top and less of it further down; light it gives off brightens it; foam whitens
 //! it; under a lamp the real lights shade it. The checks compare pixels with each other, so they
 //! hold on any GPU.
 //!
@@ -120,7 +120,7 @@ const DEEP: ((f32, f32), (f32, f32)) = ((-150.0, 420.0), (150.0, 470.0));
 const ABOVE: ((f32, f32), (f32, f32)) = ((-200.0, -40.0), (-120.0, 0.0));
 
 #[test]
-fn clear_water_shows_what_is_behind_it_near_the_top_and_is_deeper_further_down() {
+fn clear_water_shows_what_is_behind_it_near_the_top_and_less_further_down() {
     let mut gpu = gpu();
     // Both Plastic (a clear Glass at Clarity 0 is all see-through), with no ripples.
     let plastic = |clarity: f32| {
@@ -143,7 +143,10 @@ fn clear_water_shows_what_is_behind_it_near_the_top_and_is_deeper_further_down()
         distance(shallow, behind) < distance(solid_shallow, behind),
         "clear water near its top is nearer what is behind: {shallow:?} vs {solid_shallow:?} (behind {behind:?})"
     );
-    assert!(bright(deep) < bright(shallow), "deeper is darker: {deep:?} vs {shallow:?}");
+    assert!(
+        distance(deep, behind) > distance(shallow, behind) + 5.0,
+        "deeper down it shows less of what is behind: {deep:?} vs {shallow:?} (behind {behind:?})"
+    );
 }
 
 #[test]

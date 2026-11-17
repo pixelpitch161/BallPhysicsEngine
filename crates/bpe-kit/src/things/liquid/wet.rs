@@ -67,7 +67,7 @@ pub fn draw_wet_balls(
             continue;
         }
         let (at, radius) = (bodies.position[r], bodies.radius[r]);
-        if !at.is_finite() || !(radius > 0.0) {
+        if !at.is_finite() || radius.is_nan() || radius <= 0.0 {
             continue;
         }
         let tint = layer.tint * k * 0.5;

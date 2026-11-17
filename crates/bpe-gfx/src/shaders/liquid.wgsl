@@ -365,7 +365,6 @@ fn depth_below(px: vec2<i32>, size: vec2<i32>, level: f32, unit: f32, range: f32
     let up = vec2<f32>(-sin(w), -cos(w));
     let reach = range / unit;
     let step = reach / 24.0;
-    var last = textureLoad(field, px, 0).a;
     for (var k = 1; k <= 24; k++) {
         let at = vec2<f32>(px) + up * step * f32(k);
         let q = vec2<i32>(round(at));
@@ -374,13 +373,57 @@ fn depth_below(px: vec2<i32>, size: vec2<i32>, level: f32, unit: f32, range: f32
         }
         let here = density(q, size);
         if here < level {
-            // Between the last step and this one, where the field crosses the level.
-            let t = clamp((last - level) / max(last - here, 1e-6), 0.0, 1.0);
-            return (f32(k - 1) + t) * step * unit;
+            // Between the last step and this one: halve the gap down to a pixel (a straight guess
+            // between the two is off by up to a step, and by an amount that repeats every step,
+            // which showed as stripes along the top).
+            var a = f32(k - 1) * step;
+            var b = f32(k) * step;
+            for (var i = 0; i < 8; i++) {
+                if b - a <= 0.5 {
+                    break;
+                }
+                let m = 0.5 * (a + b);
+                let qm = vec2<i32>(round(vec2<f32>(px) + up * m));
+                if density(qm, size) < level {
+                    b = m;
+                } else {
+                    a = m;
+                }
+            }
+            return 0.5 * (a + b) * unit;
         }
-        last = here;
     }
     return range;
+}
+
+// How far in from the edge pixel `px` is (pixels), from `near` (the field's height over the level
+// by its slope, which only holds near the edge: drops resting in rows leave dips between the rows
+// where it comes out small, which showed as stripes). Further in, the most of 3, 6, 12 and 24 px
+// that has the field over the level all round it, in eight directions.
+fn inside_far(px: vec2<i32>, size: vec2<i32>, level: f32, near: f32) -> f32 {
+    var best = near;
+    var r = 3.0;
+    for (var k = 0; k < 4; k++) {
+        if r <= best {
+            r = r * 2.0;
+            continue;
+        }
+        var all_in = true;
+        for (var d = 0; d < 8; d++) {
+            let a = f32(d) * 0.7853982;
+            let q = px + vec2<i32>(round(vec2<f32>(cos(a), sin(a)) * r));
+            if q.x < 0 || q.y < 0 || q.x >= size.x || q.y >= size.y || density(q, size) < level {
+                all_in = false;
+                break;
+            }
+        }
+        if !all_in {
+            break;
+        }
+        best = r;
+        r = r * 2.0;
+    }
+    return best;
 }
 
 // Ridged noise for the caustics' bright lines.
@@ -423,10 +466,11 @@ fn bubble(p: vec2<f32>, depth: f32, t: f32) -> vec2<f32> {
     return vec2<f32>((ring * 0.8 + spot * 1.5) * pop, cover * pop);
 }
 
-// A thin film's rainbow at world point `p`, `rim` world units in from the edge, at time `t`.
-fn film_colour(p: vec2<f32>, rim: f32, t: f32) -> vec3<f32> {
+// A thin film's rainbow at world point `p`, `depth` world units below the top, at time `t`: rings
+// along the top within 40 pixels of it.
+fn film_colour(p: vec2<f32>, depth: f32, t: f32) -> vec3<f32> {
     let size = max(st.j.w, 1.0);
-    let k = vnoise(p / size + vec2<f32>(t * 0.07, t * 0.05)) * 1.6 + rim / size * 0.25 + t * 0.05;
+    let k = vnoise(p / size + vec2<f32>(t * 0.07, t * 0.05)) * 1.6 + smoothstep(0.0, 40.0 * max(g.view.z, 1e-4), depth) * 0.5 + t * 0.05;
     return 0.5 + 0.5 * cos(6.2832 * (k + vec3<f32>(0.0, 0.33, 0.67)));
 }
 
@@ -439,7 +483,7 @@ fn full_surface(
     f: vec4<f32>,
     grad: vec2<f32>,
     slope: f32,
-    inside: f32,
+    near_edge: f32,
     unit: f32,
     shown: f32,
     code: i32,
@@ -448,6 +492,7 @@ fn full_surface(
     let size = vec2<i32>(textureDimensions(field));
     let dims = vec2<f32>(size);
     let level = max(st.a.x, 1e-4);
+    let inside = inside_far(px, size, level, near_edge);
     let t = g.view.w;
     let world = world_of(xy, dims);
     let real = st.d.x > 0.0;
@@ -467,7 +512,6 @@ fn full_surface(
     }
     range = min(range, 4000.0);
     let depth = depth_below(px, size, level, unit, range);
-    let rim = max(inside, 0.0) * unit;
 
     // The normal: the edge rounds over within Roundness, flat inside it, with ripples on top.
     let round_px = max(st.a.z / unit, 0.5);
@@ -577,7 +621,7 @@ fn full_surface(
     // Thin film: a rainbow sliding over it.
     if st.j.z > 0.0 {
         let film = clamp(st.j.z, 0.0, 1.0) * (0.35 + 0.65 * (1.0 - n.z));
-        c = mix(c, c * 0.5 + film_colour(world, rim, t) * 0.8, film);
+        c = mix(c, c * 0.5 + film_colour(world, depth, t) * 0.8, film);
     }
     // Caustics: bright moving ripples, strongest near the top.
     if st.p.z > 0.0 {
@@ -594,7 +638,7 @@ fn full_surface(
     // White water and foam: where its drops are fast or splashed, near the top.
     if st.m.x > 0.0 {
         let foamy = clamp(wt.g / max(f.a, 1e-5), 0.0, 1.0);
-        let top = 1.0 - smoothstep(0.0, max(st.m.w, 1.0), min(depth, rim));
+        let top = 1.0 - smoothstep(0.0, max(st.m.w, 1.0), depth);
         let froth = smoothstep(0.25, 0.75, vnoise(world / max(st.n.w, 0.5)) * 0.6 + foamy * 0.7);
         let k = clamp(st.m.x * foamy * mix(0.35, 1.0, top) * (0.5 + 0.5 * froth), 0.0, 1.0);
         c = mix(c, st.n.rgb * (0.75 + 0.25 * lambert), k);
@@ -656,9 +700,10 @@ fn full_surface(
     return vec4<f32>(max(c, vec3<f32>(0.0)) * alpha + max(glow, vec3<f32>(0.0)) * shown, alpha);
 }
 
-// Wet walls (liquid part 3): the wet grid (`wet_grid`, a storage buffer of `2 × cols × rows`
-// floats, the newest half `st.v.z`) drawn as a film in the wet colour, in streaks, before the
-// liquid itself.
+// Wet walls (liquid part 3): the wet grid (`wet_grid`, a storage buffer of `4 × cols × rows`
+// floats: two halves of wetness, the newest `st.v.z`, then each node's distance from its wall's
+// face on the liquid's side) drawn as a film in the wet colour, in streaks, before the liquid
+// itself, only within a cell or two of the face (so it follows the wall smoothly).
 @group(1) @binding(5) var<storage, read> wet_grid: array<f32>;
 
 fn wet_at(x: i32, y: i32) -> f32 {
@@ -669,6 +714,16 @@ fn wet_at(x: i32, y: i32) -> f32 {
     }
     let half = u32(st.v.z + 0.5) * u32(cols * rows);
     return wet_grid[half + u32(y * cols + x)];
+}
+
+// How far node (x, y) is from its wall's face on the liquid's side (grid units; far off the grid).
+fn face_at(x: i32, y: i32) -> f32 {
+    let cols = i32(st.v.x);
+    let rows = i32(st.v.y);
+    if x < 0 || y < 0 || x >= cols || y >= rows {
+        return 4.0;
+    }
+    return wet_grid[2u * u32(cols * rows) + u32(y * cols + x)];
 }
 
 @fragment
@@ -684,8 +739,10 @@ fn fs_wet(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let x = i32(i.x);
     let y = i32(i.y);
     let wet = mix(mix(wet_at(x, y), wet_at(x + 1, y), fr.x), mix(wet_at(x, y + 1), wet_at(x + 1, y + 1), fr.x), fr.y);
+    let face = mix(mix(face_at(x, y), face_at(x + 1, y), fr.x), mix(face_at(x, y + 1), face_at(x + 1, y + 1), fr.x), fr.y);
+    let near = smoothstep(-0.2, 0.15, face) * (1.0 - smoothstep(0.9, 2.2, face));
     let floor_ = clamp(st.u.y, 0.0, 0.999);
-    let shown = clamp((wet - floor_) / (1.0 - floor_), 0.0, 1.0);
+    let shown = clamp((wet - floor_) / (1.0 - floor_), 0.0, 1.0) * near;
     if shown <= 0.0 {
         return vec4<f32>(0.0);
     }

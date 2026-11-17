@@ -173,7 +173,12 @@ light**), and a **Layers** list: **White water and foam**, **Bubbles**, **Things
 r the colour weight, g foam (`w × foaminess`: from speed, and from the drop's `kick` for
 Splashes foam), b speed / 1000, a kick. **Depth** is how far below the top a pixel is: marched up
 the screen's "world up" in 24 steps (range from Clarity × 3, the caustics' reach, foam's On top,
-bubble size). Clarity: `through = exp(−depth / clarity)`, cover `1 − 0.85 × through`, colour ×
+bubble size), then halved down to a pixel between the last two steps (a straight guess between
+them is off by an amount that repeats every step, which showed as stripes). **How far in from the
+edge** (`inside_far`): the field's height over the level by its slope holds only near the edge
+(drops resting in rows leave dips between the rows where it comes out small, which showed as
+thin rainbow and highlight stripes), so further in it is the most of 3, 6, 12 and 24 px that has
+the field over the level in eight directions. Foam's On top and the film's rings follow depth. Clarity: `through = exp(−depth / clarity)`, cover `1 − 0.85 × through`, colour ×
 `mix(1, deep, 1 − through)`. With Bend (and Clarity, or a Glass kind) and its own light, the pass
 reads the picture behind it (`LiquidStyle::reads_behind`, which the renderer uses instead of
 `glass()` to copy it first) bent by the normal, split into a rainbow by Rainbow split. Ripples
@@ -197,10 +202,15 @@ Liquid layer (`particles::liquid::layers_taken`), by its place among Liquid thin
 light a `Bender` box round the host's Area. Blocks light = `keeps_of(passes(s))`.
 
 **Wet walls** (`bpe-gfx/src/liquid_sim/wet.rs`, `shaders/liquid_wet.wgsl`). Each body keeps a wet
-grid (two halves of `cols × rows` f32, swapped each liquid step, copied by `Clone`, counted in
-`bytes()`): after each step's last substep a node in the walls band with mass (over 0.05) is 1,
-any other band node keeps `exp(−dt / 6 s)` and moves `6 dt` of the way towards 0.97 × the node
-above, off the band 0. It is always worked out (one thread a node), read only by the draw
+grid (`4 × cols × rows` f32: two halves of wetness swapped each liquid step, then each node's face
+distance and side; copied by `Clone`, counted in `bytes()`): after each step's last substep a node
+in the walls band with mass (over 0.05) is 1, any other band node keeps `exp(−dt / 6 s)` and moves
+`6 dt` of the way towards 0.97 × the node above, off the band 0. A band node knows which side of a
+hollow wall the liquid is on (more mass two cells along the normal or against it, else the node
+above's side) and its distance from the wall's face on that side; a node past the face (under
+−0.5 cells) stays dry, since the drops' weights reach across a thin wall, and `fs_wet` shows the
+film only from the face to about 2 cells in (interpolated, so it follows the wall smoothly; at
+first it was drawn by whole cells outside the ring, in steps). It is always worked out (one thread a node), read only by the draw
 (`fs_wet`, before the splat, its own group), so it needs no fingerprint. Dries in reads it as a
 floor `exp(−dries / 6)`; Streaks break it up by a column noise. `DropsSource` carries the buffer,
 the grid size and the newest half.
@@ -210,11 +220,12 @@ ball's In, `exp(−t / dries)` after its Out), so seeking and exports agree; dra
 `particles_front` as a tint disc, an added highlight and a hanging drip. Only a liquid in the main
 world (Pushes balls) logs In/Out, so only it wets balls.
 
-**Tests.** `bpe-gfx liquid_sim::tests::the_wet_grid_marks_walls_under_the_liquid_dries_and_is_copied`;
+**Tests.** `bpe-gfx liquid_sim::tests::the_wet_grid_marks_walls_under_the_liquid_dries_and_is_copied`,
+`only_the_liquids_side_of_a_thin_wall_gets_wet`;
 `bpe-kit things::liquid::tests_look` (Look defs, layer kinds, style numbers only for layers that
 are on, the Particles layer's style untouched, surface index, real lighting and the table, wet
 balls from a log); `bpe-kit/tests/liquid_look_pictures.rs` (clear water near its top is nearer
-what is behind than solid water and darker deep down, glow brightens, foam whitens, the real lights
+what is behind than solid water and shows less of it deep down, glow brightens, foam whitens, the real lights
 change it, every layer draws). Test scenes `scenes::liquid_look_scenes` ("Liquid looks", "Liquid
 lit pool", "Liquid glow"); look shots `liquid-looks`, `liquid-lit`, `liquid-glow`.
 

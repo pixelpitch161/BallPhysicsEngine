@@ -83,7 +83,8 @@ impl WetPipeline {
     }
 }
 
-/// A body's wet grid: `2 × cells` floats on the card and its small uniform.
+/// A body's wet grid: `4 × cells` floats on the card (two halves of wetness, each node's face
+/// distance and its side; see liquid_wet.wgsl) and its small uniform.
 pub(super) struct WetGrid {
     pub(super) buffer: wgpu::Buffer,
     uniform: wgpu::Buffer,
@@ -114,7 +115,7 @@ impl WetGrid {
     /// A dry grid of `cells` nodes.
     pub(super) fn new(device: &wgpu::Device, cells: u32) -> WetGrid {
         // New buffers are zeroed: dry.
-        WetGrid { buffer: grid_buffer(device, (cells as u64 * 2 * 4).max(256)), uniform: uniform(device) }
+        WetGrid { buffer: grid_buffer(device, (cells as u64 * 4 * 4).max(256)), uniform: uniform(device) }
     }
 
     /// A copy (queued on `encoder`).
