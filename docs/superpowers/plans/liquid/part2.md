@@ -144,3 +144,18 @@ liquid (a lone copy keeps only the flying thing's world).
 - Lag + stiff contact may make a floating ball jitter: Drag damps it; if not enough, average the push over the batch.
 - Weakly compressible pressure may over- or under-float: calibrate with the float test before tuning anything else.
 - Blocking wait per world step costs the card's latency (≈0.2–1 ms); only main-world liquids pay it.
+
+## As built
+
+Built as planned, with these changes (detail in `docs/notes/liquid.md`):
+
+- The ring is sampled 2 cells outside the ball (not 1.25) and a point is wet over 0.3 volume (not 0.4); a ball no
+  drop touched gets no ring at all.
+- In at 0.35 and out under 0.15 (not 0.55 / 0.35): a floating ball's share rarely passed 0.55. **Splash** fires on
+  the first touch at Splashes from or faster, not with an Enter.
+- The balls move through a liquid step (`cs_tick`, `ball_now`) and through the later liquid steps of one world step,
+  so a held ball isn't hit by the same drops every substep.
+- After review: a When Liquid rule keeps every Liquid thing (one shared host); the push scale is capped at 10; a
+  liquid that doesn't push balls sends no drag, carry or take; liquids are looked up by their card number; when no
+  ball is met the balls in a liquid leave it at once; taken colours of gone balls are dropped.
+

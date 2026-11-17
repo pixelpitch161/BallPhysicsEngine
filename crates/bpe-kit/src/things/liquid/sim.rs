@@ -182,16 +182,19 @@ fn step_settings(world: &World, host: &Host, list: &[&LiquidState], mixing: bool
         let pull = (0.25 * s.surface_pull * s.surface_pull).min(cap / stiff[i].min(cap).max(1e-6));
         let floor = st.born.saturating_sub(st.kept);
         let m = &st.meets;
-        let push = if m.two_way() { 1.0 / m.ball_density(weight) } else { 0.0 };
+        let two_way = m.two_way();
+        // At most ten times the push water gives: the card sums each ball's push in fixed point.
+        let push = if two_way { (1.0 / m.ball_density(weight)).min(10.0) } else { 0.0 };
+        let only = |x: f32| if two_way { x } else { 0.0 };
         let ink = bpe_core::Color::to_linear(m.ink_colour);
         step.liquids[i] = LiquidGpu {
             a: [stiff[i].min(cap), pull, lerp(0.3, 0.01, s.spray), 8.0 * s.settles * s.settles],
             b: [viscosity, weight, s.gravity, if m.balls_push { 1.0 } else { 0.0 }],
             c: [st.look.mix_style.code() as f32, 0.0, 0.0, st.cut.unwrap_or(LiquidGpu::NO_CUT)],
             d: [floor, 0, 0, 0],
-            e: [push, DRAG_RATE * m.drag * (1.0 + 8.0 * s.thickness.min(10.0)), m.carries, m.sticks],
+            e: [push, only(DRAG_RATE * m.drag * (1.0 + 8.0 * s.thickness.min(10.0))), only(m.carries), m.sticks],
             f: [ink[0], ink[1], ink[2], m.ink],
-            g: [m.splash, m.splash_from / layout.cell, m.wakes, m.take],
+            g: [m.splash, m.splash_from / layout.cell, m.wakes, only(m.take)],
         };
     }
     step.flags[3] = u32::from(free);
@@ -377,6 +380,7 @@ impl ThingSim for LiquidSim {
             pending: None,
             inside: Default::default(),
             touching: Default::default(),
+            numbers: Vec::new(),
             news: Vec::new(),
             taken: Default::default(),
         };
@@ -445,8 +449,15 @@ impl ThingSim for LiquidSim {
             step_once(world, &mut taken, &with);
             stepped += 1;
         }
+        if main && stepped > 0 && balls.is_empty() {
+            // No ball is met any more: the ones that were in a liquid have left it.
+            let host = state_mut::<LiquidState>(taken[0].1.as_mut()).host.as_mut().expect("the host");
+            host.pending = None;
+            feel::all_left(host, world);
+        }
         if main && stepped > 0 && !balls.is_empty() {
-            let liquids: Vec<(ThingId, f32)> = numbered(&taken).iter().map(|s| (s.id, s.meets.splash_from)).collect();
+            let liquids: Vec<(usize, ThingId, f32)> =
+                numbered(&taken).iter().filter_map(|s| Some((s.index?, s.id, s.meets.splash_from))).collect();
             let host = state_mut::<LiquidState>(taken[0].1.as_mut()).host.as_mut().expect("the host");
             if let Some(body) = host.body.as_mut() {
                 let felt = Felt { balls: from, liquids, cell: layout.cell, span: stepped as f32 / rate as f32 };

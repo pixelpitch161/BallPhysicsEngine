@@ -34,8 +34,8 @@ pub const SPLASH: u32 = 2;
 pub struct Felt {
     /// Each ball: its thing and body row.
     pub balls: Vec<(ThingId, u32)>,
-    /// Each liquid's thing and how fast a ball must go in to splash (px/s), by liquid number.
-    pub liquids: Vec<(ThingId, f32)>,
+    /// Each liquid's number on the card, its thing and how fast a ball must go in to splash (px/s).
+    pub liquids: Vec<(usize, ThingId, f32)>,
     /// Pixels a grid cell.
     pub cell: f32,
     /// The seconds of liquid the batch covered.
@@ -116,7 +116,7 @@ pub fn apply(host: &mut Host, world: &mut World) {
         // Which liquids it is in: each liquid's share of the wet ring by its share of the contacts.
         let counts: Vec<f32> = (0..MOST_LIQUIDS).map(|l| word(w, feel_at::LIQUIDS + l).max(0.0)).collect();
         let all: f32 = counts.iter().sum();
-        for (l, &(liquid, splash_from)) in felt.liquids.iter().enumerate().take(MOST_LIQUIDS) {
+        for &(l, liquid, splash_from) in felt.liquids.iter().filter(|x| x.0 < MOST_LIQUIDS) {
             let share = if all > 0.0 { wet * counts[l] / all } else { 0.0 };
             let key = (thing, row, l as u8);
             let was = host.inside.contains(&key);
@@ -149,21 +149,55 @@ pub fn apply(host: &mut Host, world: &mut World) {
     }
     // Balls that were in a liquid and aren't now (out of it, or no longer met), while still there.
     for &(thing, row, l) in host.inside.difference(&inside) {
-        let Some(&(liquid, _)) = felt.liquids.get(l as usize) else { continue };
-        let Some(bodies) = world.bodies.get(&thing) else { continue };
-        let r = row as usize;
-        if r < bodies.len() && bodies.alive[r] {
-            news.push(event(world, (thing, row), liquid, LEAVE, bodies.position[r], bodies.velocity[r]));
+        let Some(&(_, liquid, _)) = felt.liquids.iter().find(|x| x.0 == l as usize) else { continue };
+        if let Some(e) = leave(world, (thing, row), liquid) {
+            news.push(e);
         }
     }
     // In ball, then liquid, then kind order whatever order they were found in.
     news.sort_by_key(|e| (e.a, e.b));
     host.inside = inside;
     host.touching = touching;
+    host.numbers = felt.liquids.iter().map(|&(l, liquid, _)| (l, liquid)).collect();
     host.news.extend(news);
+    // Rows of balls gone from the world no longer keep a colour.
+    if host.taken.keys().any(|&(thing, row)| !still_there(world, thing, row)) {
+        let map = taken.get_or_insert_with(|| (*host.taken).clone());
+        map.retain(|&(thing, row), _| still_there(world, thing, row));
+    }
     if let Some(map) = taken {
         host.taken = Arc::new(map);
     }
+}
+
+fn still_there(world: &World, thing: ThingId, row: u32) -> bool {
+    world.bodies.get(&thing).is_some_and(|b| (row as usize) < b.len() && b.alive[row as usize])
+}
+
+/// A Leave event for a ball still in the world.
+fn leave(world: &World, ball: (ThingId, u32), liquid: ThingId) -> Option<Event> {
+    let bodies = world.bodies.get(&ball.0)?;
+    let r = ball.1 as usize;
+    (r < bodies.len() && bodies.alive[r])
+        .then(|| event(world, ball, liquid, LEAVE, bodies.position[r], bodies.velocity[r]))
+}
+
+/// When no ball is met any more: every ball that was in a liquid leaves it (the liquid by its
+/// number in `host.numbers`), and nothing is touching.
+pub fn all_left(host: &mut Host, world: &World) {
+    if host.inside.is_empty() && host.touching.is_empty() {
+        return;
+    }
+    let mut news: Vec<Event> = std::mem::take(&mut host.inside)
+        .into_iter()
+        .filter_map(|(thing, row, l)| {
+            let liquid = host.numbers.iter().find(|x| x.0 == l as usize)?.1;
+            leave(world, (thing, row), liquid)
+        })
+        .collect();
+    news.sort_by_key(|e| (e.a, e.b));
+    host.touching.clear();
+    host.news.extend(news);
 }
 
 /// The colours the balls of `thing` took from the world's liquid (linear rgb and how much, by

@@ -94,7 +94,7 @@ Goes in / Comes out / Splashes / Goes in or out; values speed, size, hits, ball,
 **Where it steps.** A liquid with Balls push it and Pushes balls on is `in_main`, and its `keeps`
 holds every other Liquid thing in the main world too (they share one body), so the shared liquid is
 never split between worlds. Pushes balls is a plain switch (not keyframed), read from the saved
-card. A When Liquid rule keeps the liquids it names. The host knows it is in the main world by
+card. A When Liquid rule keeps every Liquid thing (they share one host, so naming one keeps them all). The host knows it is in the main world by
 `!world.beside.contains(&id)`; only then does it record and read back. In the main world every
 Liquid setting restarts the physics: Fill and Meets are hashed whole (`steps_own_cards`) and
 `physics_print_extra` adds the Look's stepped mixing and the thing's place among the Liquid things.
@@ -119,7 +119,10 @@ and snapshots read the same words).
 
 **What the balls get** (`kit things/liquid/feel.rs::apply`). Δv = push / (π r²) plus drag towards
 Carries × the liquid's speed at rate 3/s × Drag × (1 + 8 × Thickness) × how wet the ring is, over
-the batch's span; held balls keep their speed. A light ball floats by the liquid's own pressure (no
+the batch's span; held balls keep their speed. The push scale (1 / the ball's density) is capped at 10
+so the fixed-point sums can't overflow, and a liquid that doesn't push balls sends no drag, carry or
+take. When no ball is met any more the balls that were in a liquid get their Leave events at once
+(`feel::all_left`), and taken colours of balls gone from the world are dropped. A light ball floats by the liquid's own pressure (no
 buoyancy formula): in the water test scene Ball weight 0.3 floats at the top and 3.0 sinks, slower
 in a thick liquid. Events: a ball is *in* a liquid once its share of the ring (wet × that liquid's
 share of its contacts) passes 0.35 and *out* under 0.15 (or when no longer met); **Splash** is the
@@ -140,3 +143,10 @@ ball out of the water or not in its mask feels nothing; the feel is the same twi
 goes in and splashes; Pushes balls off hits as without; seeking; taken colour and ink; a rule
 hears it), `golden_liquid.rs` (a main-world liquid's balls and log match after a seek), and
 `restarts.rs` hashes main-world liquids' `inputs_hash`.
+
+**Known gaps (part 2).** A camera or sound that follows one liquid doesn't pull it into the main
+world (only Pushes balls and a When Liquid rule do). Aim test flights copy the world with its liquid
+card and wait on it, so aiming in a scene with a main-world liquid is slower. The preview and an
+export may use different cards (an export with Finer export off still re-steps the liquid on the
+export's card, so a tiny difference in the card's float order could move balls). With a particle job
+running, a main-world liquid steps twice (once in the physics, once beside it for the particles).

@@ -61,6 +61,8 @@ pub struct Host {
     /// Which balls are in which liquid (thing, row, liquid number), and which touch it.
     pub inside: std::collections::BTreeSet<(ThingId, u32, u8)>,
     pub touching: std::collections::BTreeSet<(ThingId, u32, u8)>,
+    /// The liquids' numbers on the card and their things, as last felt.
+    pub numbers: Vec<(usize, ThingId)>,
     /// Events worked out from the feel, for the next after-step to log.
     pub news: Vec<bpe_runtime::Event>,
     /// The colour each ball has taken from the liquid (linear rgb, and how much).

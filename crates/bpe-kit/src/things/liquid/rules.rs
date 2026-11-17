@@ -83,16 +83,11 @@ impl BlockSim for LiquidWhen {
         Ok(Box::new(LiquidWhenSettings::from_params(params)))
     }
 
-    /// A Liquid thing its Liquid names steps with the physics: one by id, or every one for any
-    /// other Who (a rule may tag one at any time).
-    fn keeps(&self, params: &Params, thing: ThingId, kind: &str, _tags: &BTreeSet<String>) -> bool {
-        if kind != KIND {
-            return false;
-        }
-        match LiquidWhenSettings::from_params(params).liquid {
-            Who::Thing { thing: named, .. } => named == thing,
-            _ => true,
-        }
+    /// Every Liquid thing steps with the physics while a rule reads liquid events: the scene's
+    /// liquids share one card host, so they must all be in the same world (keeping only the named
+    /// one would split them between the main world and the one beside it).
+    fn keeps(&self, _params: &Params, _thing: ThingId, kind: &str, _tags: &BTreeSet<String>) -> bool {
+        kind == KIND
     }
 
     fn fire(&self, st: &mut dyn ThingState, cx: &StageCx, out: &mut Vec<Firing>) {
