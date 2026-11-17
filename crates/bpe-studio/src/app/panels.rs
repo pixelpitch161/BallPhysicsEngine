@@ -453,7 +453,10 @@ impl Studio {
                 let (a, b) = (beside.unwrap_or_default(), main.unwrap_or_default());
                 ui.label(RichText::new(particles_readout(a.0 + b.0, a.1 + b.1)).small().color(style::MUTED));
             }
-            if let Some(liquid) = self.particle_job.as_ref().and_then(|job| job.latest()).and_then(|p| p.liquid) {
+            // A liquid beside the physics comes from the particles thread; one that pushes balls
+            // from the main playback.
+            let beside_liquid = self.particle_job.as_ref().and_then(|job| job.latest()).and_then(|p| p.liquid);
+            if let Some(liquid) = beside_liquid.or_else(|| main_liquid(self.playback.world())) {
                 let (text, colour) = match liquid {
                     (count, ms, true) => (liquid_readout(count as usize, ms), style::MUTED),
                     (_, _, false) => ("· Liquid needs the graphics card".to_owned(), style::PROBLEM),

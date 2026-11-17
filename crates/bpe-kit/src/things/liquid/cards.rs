@@ -125,23 +125,205 @@ impl PourLayer {
     }
 }
 
+/// How heavy the balls are to a liquid.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Choice)]
+pub enum Floats {
+    /// As heavy as Ball weight (water's Weight is 1): lighter than the liquid floats.
+    #[default]
+    ByBallWeight,
+    /// Always lighter than the liquid: they float high.
+    Floats,
+    /// Always heavier: they sink.
+    Sinks,
+    /// Nearly as heavy as the liquid: they float low and bob.
+    Bobs,
+}
+
+/// Magenta ink.
+const INK: Color = Color { r: 230, g: 40, b: 160, a: 255 };
+
 /// The Meets card.
 #[derive(Clone, Debug, PartialEq, Settings)]
 pub struct MeetsSettings {
     /// Balls push the liquid aside. Off, they pass through it.
     #[setting(label = "Balls push it", simple, group = "With the balls")]
     pub balls_push: bool,
+    /// The liquid pushes back: balls float, sink, are slowed and carried. Every liquid then moves
+    /// with the physics (a change to any of them restarts it).
+    #[setting(label = "Pushes balls", when = "balls_push", simple, group = "With the balls")]
+    pub pushes_balls: bool,
+    /// Which balls it meets.
+    #[setting(label = "Meets balls", when = "balls_push", group = "With the balls")]
+    pub target: Target,
+    #[setting(label = "Floats or sinks", when = "balls_push and pushes_balls", simple, group = "With the balls")]
+    pub floats: Floats,
+    /// How heavy a ball is to it (water's Weight is 1): lighter than the liquid floats.
+    #[setting(
+        label = "Ball weight",
+        when = "balls_push and pushes_balls and floats=by_ball_weight",
+        range(0.01, 1e9),
+        span(0.05, 4),
+        unit = "×",
+        keyframe,
+        pulse,
+        group = "With the balls"
+    )]
+    pub ball_weight: f32,
+    /// How much it slows balls moving through it (more in a thicker liquid).
+    #[setting(
+        label = "Drag",
+        when = "balls_push and pushes_balls",
+        range(0, 1e9),
+        span(0, 4),
+        keyframe,
+        pulse,
+        group = "With the balls"
+    )]
+    pub drag: f32,
+    /// How much its currents and waves move balls along.
+    #[setting(
+        label = "Carries balls",
+        when = "balls_push and pushes_balls",
+        range(0, 1e9),
+        span(0, 2),
+        keyframe,
+        pulse,
+        group = "With the balls"
+    )]
+    pub carries: f32,
+    /// How much a ball landing hard throws up (1 as it comes; more throws it higher).
+    #[setting(
+        label = "Splash size",
+        when = "balls_push",
+        range(0, 1e9),
+        span(0, 4),
+        keyframe,
+        pulse,
+        group = "With the balls"
+    )]
+    pub splash: f32,
+    /// How fast a ball must go in to splash.
+    #[setting(
+        label = "Splashes from",
+        when = "balls_push",
+        range(0, 1e9),
+        span(0, 3000),
+        unit = "px/s",
+        keyframe,
+        group = "With the balls"
+    )]
+    pub splash_from: f32,
+    /// The liquid clings to balls and drips off as they leave.
+    #[setting(
+        label = "Sticks to balls",
+        when = "balls_push",
+        range(0, 1e9),
+        span(0, 1),
+        keyframe,
+        pulse,
+        group = "With the balls"
+    )]
+    pub sticks: f32,
+    /// Moving balls pull the liquid behind them along: wakes and waves.
+    #[setting(
+        label = "Wakes",
+        when = "balls_push",
+        range(0, 1e9),
+        span(0, 4),
+        keyframe,
+        pulse,
+        group = "With the balls"
+    )]
+    pub wakes: f32,
+    /// Balls colour the liquid they touch with the Ink colour.
+    #[setting(
+        label = "Balls drop ink",
+        when = "balls_push",
+        range(0, 1e9),
+        span(0, 1),
+        keyframe,
+        pulse,
+        group = "With the balls"
+    )]
+    pub ink: f32,
+    #[setting(label = "Ink colour", when = "balls_push and ink", keyframe, group = "With the balls")]
+    pub ink_colour: Color,
+    /// Balls come out tinted with the colour of the liquid they were in.
+    #[setting(
+        label = "Balls take its colour",
+        when = "balls_push and pushes_balls",
+        range(0, 1e9),
+        span(0, 1),
+        keyframe,
+        pulse,
+        group = "With the balls"
+    )]
+    pub take: f32,
 }
 
 impl Default for MeetsSettings {
     fn default() -> Self {
-        MeetsSettings { balls_push: true }
+        MeetsSettings {
+            balls_push: true,
+            pushes_balls: true,
+            target: Target::Anything,
+            floats: Floats::ByBallWeight,
+            ball_weight: 0.5,
+            drag: 1.0,
+            carries: 1.0,
+            splash: 1.0,
+            splash_from: 400.0,
+            sticks: 0.0,
+            wakes: 0.0,
+            ink: 0.0,
+            ink_colour: INK,
+            take: 0.0,
+        }
     }
 }
 
 impl MeetsSettings {
+    /// The card's settings, any number that isn't one read as its default.
     pub fn read(card: Option<&ResolvedSlot>) -> MeetsSettings {
-        card.map(|c| MeetsSettings::from_params(&c.params)).unwrap_or_default()
+        let s = card.map(|c| MeetsSettings::from_params(&c.params)).unwrap_or_default();
+        MeetsSettings::fixed(s)
+    }
+
+    /// The settings of a saved card (`params` as saved: Pushes balls is never keyframed).
+    pub fn of_saved(params: &bpe_core::Params) -> MeetsSettings {
+        MeetsSettings::fixed(MeetsSettings::from_params(params))
+    }
+
+    fn fixed(s: MeetsSettings) -> MeetsSettings {
+        let d = MeetsSettings::default();
+        MeetsSettings {
+            ball_weight: num(s.ball_weight, d.ball_weight).max(0.01),
+            drag: num(s.drag, d.drag).max(0.0),
+            carries: num(s.carries, d.carries).max(0.0),
+            splash: num(s.splash, d.splash).max(0.0),
+            splash_from: num(s.splash_from, d.splash_from).max(0.0),
+            sticks: num(s.sticks, d.sticks).max(0.0),
+            wakes: num(s.wakes, d.wakes).max(0.0),
+            ink: num(s.ink, d.ink).max(0.0),
+            take: num(s.take, d.take).max(0.0),
+            ..s
+        }
+    }
+
+    /// Whether the liquid pushes the balls back (it then steps with the physics).
+    pub fn two_way(&self) -> bool {
+        self.balls_push && self.pushes_balls
+    }
+
+    /// A ball's density to a liquid of `weight`.
+    pub fn ball_density(&self, weight: f32) -> f32 {
+        match self.floats {
+            Floats::ByBallWeight => self.ball_weight,
+            Floats::Floats => 0.4 * weight,
+            Floats::Sinks => 2.5 * weight,
+            Floats::Bobs => 0.85 * weight,
+        }
+        .max(0.01)
     }
 }
 

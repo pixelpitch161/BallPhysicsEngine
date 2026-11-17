@@ -38,6 +38,14 @@ pub(super) fn light_probe_of(
 
 /// How many particles the main world's (two-way) Particles things have and how long their last
 /// step took, or `None` when it has none.
+/// The main playback's liquid, when one steps with the physics: its drop count, milliseconds a
+/// step and whether it has the graphics card.
+pub(super) fn main_liquid(world: &bpe_runtime::World) -> Option<(u32, f32, bool)> {
+    let st = bpe_kit::things::liquid::state::host_of(world)?;
+    let h = st.host.as_ref()?;
+    (!world.beside.contains(&st.id)).then(|| (h.count_hint(), h.step_ms(), h.body.is_some()))
+}
+
 pub(super) fn main_particles(world: &bpe_runtime::World) -> Option<(usize, f32)> {
     use bpe_kit::things::particles::state::ParticlesState;
     let mut found = None;

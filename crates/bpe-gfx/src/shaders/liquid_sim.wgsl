@@ -33,6 +33,13 @@ struct Liquid {
     c: vec4<f32>,
     // serial floor (drops born before it go), 0, 0, 0
     d: vec4<u32>,
+    // with the balls: push scale (1 / the ball's density to it, 0 pushes none), drag (per
+    // second), carry, sticks
+    e: vec4<f32>,
+    // ink rgb, how much ink
+    f: vec4<f32>,
+    // splash size, splashes from (cells/s), wakes, balls take its colour
+    g: vec4<f32>,
 };
 
 struct Step {
@@ -51,6 +58,8 @@ struct Step {
     words_at: vec4<u32>,
     // the ball grid: cols, rows, cell (grid cells, as bits), where the cells' items are
     ball_grid: vec4<u32>,
+    // what the balls feel: recorded (0/1), ring points, 0, 0
+    feel: vec4<u32>,
     // Paint: each band's basis (blue, green, red) and its way back (r, g, b rows over 8 bands)
     paint: array<vec4<f32>, 8>,
     back: array<vec4<f32>, 8>,
@@ -65,6 +74,10 @@ const S_M: f32 = 1048576.0;
 const S_P: f32 = 4096.0;
 const LIMIT: f32 = 33554432.0;
 const STOPS: u32 = 256u;
+const FEEL: u32 = 32u;
+const S_PUSH: f32 = 64.0;
+const S_TOUCH: f32 = 256.0;
+const BALL_WORDS: u32 = 6u;
 
 const STYLE_PAINT: u32 = 0u;
 const STYLE_LIGHT: u32 = 1u;
@@ -93,6 +106,9 @@ const WHEN_HITS: u32 = 2u;
 @group(0) @binding(9) var<storage, read_write> items: array<u32>;
 @group(0) @binding(10) var<storage, read_write> spare: array<Drop>;
 @group(0) @binding(11) var<storage, read_write> mixout: array<vec4<f32>>;
+// per ball FEEL words: push x y, touching mass, colour × mass (rgb), drag × mass, carry × mass,
+// wet ring points, flow x y (f32 bits), take × mass, 4 spare, contacts with each liquid (16)
+@group(0) @binding(12) var<storage, read_write> feel: array<atomic<i32>>;
 
 var<workgroup> shared_sums: array<u32, 256>;
 
@@ -136,6 +152,21 @@ fn cs_births_done() {
     counts[2] = 0u;
     counts[3] = 0u;
     counts[4] = counts[1];
+    counts[7] = 0u;
+}
+
+// Counts the substeps taken: the balls move on along their speed in each.
+@compute @workgroup_size(1)
+fn cs_tick() {
+    counts[7] = counts[7] + 1u;
+}
+
+// Where ball `at` is in this substep: where it was at the liquid step's start, moved on along
+// its speed for the substeps taken so far.
+fn ball_now(at: u32) -> vec2<f32> {
+    let x = vec2<f32>(wf(at), wf(at + 1u));
+    let v = vec2<f32>(wf(at + 2u), wf(at + 3u));
+    return x + v * (f32(counts[7]) * st.time.x);
 }
 
 @compute @workgroup_size(256)
@@ -348,28 +379,81 @@ fn cs_g2p(@builtin(global_invocation_id) id: vec3<u32>) {
     let x0 = p.x;
     // The balls push it aside (before the walls, so a ball never pushes a drop through one).
     if st.flags.z > 0u && lq.b.w > 0.5 {
+        let me = liquid_of(p);
+        let mass = max(lq.b.y + p.mat.x, 0.05) * 0.25;
+        let record = st.feel.x == 1u;
         let range = ball_cell(p.x);
         for (var e = range.x; e < range.y; e = e + 1u) {
             let bi = words[st.ball_grid.w + e];
-            let at = st.words_at.z + bi * 5u;
-            let bx = vec2<f32>(wf(at), wf(at + 1u));
+            let at = st.words_at.z + bi * BALL_WORDS;
+            if ((words[at + 5u] >> me) & 1u) == 0u {
+                continue;
+            }
+            let bx = ball_now(at);
             let bv = vec2<f32>(wf(at + 2u), wf(at + 3u));
             let r = wf(at + 4u) + 0.5;
             let off = p.x - bx;
             let dist = length(off);
+            var n = vec2<f32>(0.0, -1.0);
+            if dist > 1e-5 {
+                n = off / dist;
+            }
+            let fb = bi * FEEL;
             if dist < r {
-                var n = vec2<f32>(0.0, -1.0);
-                if dist > 1e-5 {
-                    n = off / dist;
-                }
                 p.x = bx + n * r;
                 var vr = v - bv;
                 let vn = dot(vr, n);
                 if vn < 0.0 {
                     vr = vr - vn * n;
+                    // The ball takes what the drop lost: its push, by 1 / its density here.
+                    if record {
+                        let push = mass * vn * n * lq.e.x;
+                        atomicAdd(&feel[fb], fixed(push.x, S_PUSH));
+                        atomicAdd(&feel[fb + 1u], fixed(push.y, S_PUSH));
+                    }
+                    // A hard hit splashes: thrown out harder (Splash size over 1), or slid
+                    // along the ball less (under 1).
+                    let hit = -vn - lq.g.y;
+                    if hit > 0.0 {
+                        if lq.g.x > 1.0 {
+                            vr = vr + n * ((lq.g.x - 1.0) * 0.5 * hit);
+                        } else {
+                            let vt = vr - dot(vr, n) * n;
+                            vr = vr - vt * (1.0 - max(lq.g.x, 0.0));
+                        }
+                    }
                 }
                 v = vr + bv;
                 p.kick = 1.0;
+                // Ink: the drop's colour runs to the ball's ink.
+                if lq.f.w > 0.0 {
+                    let t = 1.0 - exp(-12.0 * lq.f.w * dt);
+                    p.colour = vec4<f32>(mix(p.colour.rgb, lq.f.rgb, t), p.colour.a);
+                }
+                if record {
+                    atomicAdd(&feel[fb + 2u], fixed(mass, S_TOUCH));
+                    atomicAdd(&feel[fb + 3u], fixed(mass * p.colour.r, S_TOUCH));
+                    atomicAdd(&feel[fb + 4u], fixed(mass * p.colour.g, S_TOUCH));
+                    atomicAdd(&feel[fb + 5u], fixed(mass * p.colour.b, S_TOUCH));
+                    atomicAdd(&feel[fb + 6u], fixed(mass * lq.e.y, S_TOUCH));
+                    atomicAdd(&feel[fb + 7u], fixed(mass * lq.e.z, S_TOUCH));
+                    atomicAdd(&feel[fb + 11u], fixed(mass * lq.g.w, S_TOUCH));
+                    atomicAdd(&feel[fb + 16u + me], 1);
+                }
+            } else if lq.e.w > 0.0 && dist < r + 1.5 {
+                // It clings: pulled in, and taking the ball's speed; the ball carries it.
+                let before = v;
+                v = mix(v, bv, 1.0 - exp(-20.0 * lq.e.w * dt)) - n * (40.0 * lq.e.w * dt);
+                if record {
+                    let push = -mass * (v - before) * lq.e.x;
+                    atomicAdd(&feel[fb], fixed(push.x, S_PUSH));
+                    atomicAdd(&feel[fb + 1u], fixed(push.y, S_PUSH));
+                }
+            }
+            // Wakes: the liquid just behind a moving ball is pulled along after it.
+            if lq.g.z > 0.0 && dist >= r && dist < r + 3.0 && dot(off, bv) < 0.0 {
+                let fade = 1.0 - (dist - r) / 3.0;
+                v = v + (bv - v) * ((1.0 - exp(-4.0 * lq.g.z * dt)) * fade);
             }
         }
     }
@@ -766,4 +850,50 @@ fn cs_scatter(@builtin(global_invocation_id) id: vec3<u32>, @builtin(workgroup_i
 fn cs_packed() {
     counts[1] = counts[6];
     counts[4] = counts[6];
+}
+
+// ---- what the balls feel -------------------------------------------------------------------
+
+// Each ball's ring: how many of RING points two cells outside it are in the liquid, and the liquid's
+// mean speed there (after the last substep, the grid holds the speeds and the volume).
+@compute @workgroup_size(256)
+fn cs_feel(@builtin(global_invocation_id) id: vec3<u32>) {
+    // (bindings: the step, counts, grid, words, feel)
+    let bi = id.x;
+    if bi >= st.flags.z || st.feel.x == 0u {
+        return;
+    }
+    let at = st.words_at.z + bi * BALL_WORDS;
+    let bx = ball_now(at);
+    let r = wf(at + 4u) + 2.0;
+    let fb = bi * FEEL;
+    // A ball no drop of a liquid that meets it touched is in none.
+    if atomicLoad(&feel[fb + 2u]) == 0 {
+        atomicStore(&feel[fb + 8u], 0);
+        atomicStore(&feel[fb + 9u], 0);
+        atomicStore(&feel[fb + 10u], 0);
+        return;
+    }
+    let points = max(st.feel.y, 1u);
+    var wet = 0u;
+    var flow = vec2<f32>(0.0);
+    for (var k = 0u; k < points; k = k + 1u) {
+        let a = 6.2831853 * (f32(k) + 0.5) / f32(points);
+        let q = vec2<i32>(round(bx + r * vec2<f32>(cos(a), sin(a))));
+        if q.x < 0 || q.y < 0 || q.x >= i32(st.grid.x) || q.y >= i32(st.grid.y) {
+            continue;
+        }
+        let n = node(q.x, q.y);
+        let vol = f32(atomicLoad(&grid[4u * n + 3u])) / S_M;
+        if vol > 0.3 {
+            wet = wet + 1u;
+            flow = flow + vec2<f32>(bitcast<f32>(atomicLoad(&grid[4u * n + 1u])), bitcast<f32>(atomicLoad(&grid[4u * n + 2u])));
+        }
+    }
+    if wet > 0u {
+        flow = flow / f32(wet);
+    }
+    atomicStore(&feel[fb + 8u], i32(wet));
+    atomicStore(&feel[fb + 9u], bitcast<i32>(flow.x));
+    atomicStore(&feel[fb + 10u], bitcast<i32>(flow.y));
 }

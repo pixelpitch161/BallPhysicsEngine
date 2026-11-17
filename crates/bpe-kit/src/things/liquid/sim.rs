@@ -3,17 +3,20 @@
 //! Area, makes the body of drops on the graphics card and pours in every Liquid thing's Fill.
 //! Then, last in each world step, it takes every liquid step due (240 or 120 a second), with
 //! every Liquid thing's births, the walls band (again when the walls moved), the balls and the
-//! meeting rules. A Liquid thing reads the balls and walls and changes nothing anything else reads,
-//! so it is stepped beside the physics.
+//! meeting rules. A liquid that pushes balls back steps with the physics (and keeps every other
+//! Liquid thing there with it): its card records what each ball felt, and the next world step's
+//! first substep gives it to them (`feel.rs`). Otherwise the liquids are stepped beside it.
 
 use std::sync::Arc;
 
-use bpe_core::{ResolvedThing, SlotId, Thing, ThingId};
+use bpe_core::{ResolvedThing, Scene, SlotId, Thing, ThingId};
 use bpe_gfx::liquid_sim::{
     BallGpu, Body, Drop, LiquidCard, LiquidGpu, MEET_LAYER, MEET_MIX, MIX_EVERY, MOST_LIQUIDS, MOST_NODES,
     MOST_SUBSTEPS, StepGpu, StepIn,
 };
 use bpe_runtime::{Log, ThingSim, ThingState, World, state_mut};
+
+use super::feel::{self, Felt};
 use glam::Vec2;
 
 use super::births;
@@ -58,10 +61,12 @@ fn shot(world: &World) -> (Vec2, Vec2) {
 /// The biggest the Area can be each way, in pixels.
 const MOST_AREA: f32 = 100_000.0;
 
-/// The grid for the liquids `ids` (the host's Area and Detail).
-fn layout(world: &World, host: &LiquidState, ids: &[ThingId]) -> Layout {
+/// The grid for the liquids `ids` (the host's Area and Detail). A liquid that steps with the
+/// physics exports at the preview's Detail, so the balls go as they were tuned, unless the host
+/// asks for a Finer export.
+fn layout(world: &World, host: &LiquidState, ids: &[ThingId], main: bool) -> Layout {
     let s = &host.settings;
-    let detail = if exporting() { s.export_detail } else { s.detail };
+    let detail = if exporting() && (!main || s.finer_export) { s.export_detail } else { s.detail };
     let shapes = ids
         .iter()
         .filter_map(|t| state_of(world, *t))
@@ -176,11 +181,17 @@ fn step_settings(world: &World, host: &Host, list: &[&LiquidState], mixing: bool
         // The pull is a stiffness too: never past what the substeps keep stable.
         let pull = (0.25 * s.surface_pull * s.surface_pull).min(cap / stiff[i].min(cap).max(1e-6));
         let floor = st.born.saturating_sub(st.kept);
+        let m = &st.meets;
+        let push = if m.two_way() { 1.0 / m.ball_density(weight) } else { 0.0 };
+        let ink = bpe_core::Color::to_linear(m.ink_colour);
         step.liquids[i] = LiquidGpu {
             a: [stiff[i].min(cap), pull, lerp(0.3, 0.01, s.spray), 8.0 * s.settles * s.settles],
-            b: [viscosity, weight, s.gravity, if st.meets.balls_push { 1.0 } else { 0.0 }],
+            b: [viscosity, weight, s.gravity, if m.balls_push { 1.0 } else { 0.0 }],
             c: [st.look.mix_style.code() as f32, 0.0, 0.0, st.cut.unwrap_or(LiquidGpu::NO_CUT)],
             d: [floor, 0, 0, 0],
+            e: [push, DRAG_RATE * m.drag * (1.0 + 8.0 * s.thickness.min(10.0)), m.carries, m.sticks],
+            f: [ink[0], ink[1], ink[2], m.ink],
+            g: [m.splash, m.splash_from / layout.cell, m.wakes, m.take],
         };
     }
     step.flags[3] = u32::from(free);
@@ -196,20 +207,43 @@ fn step_settings(world: &World, host: &Host, list: &[&LiquidState], mixing: bool
     step
 }
 
-/// Every ball, in grid units.
-fn balls(world: &World, layout: &Layout) -> Vec<BallGpu> {
+/// How fast a ball fully under a liquid of Drag 1 and Thickness 0 loses its speed through it, a
+/// second.
+const DRAG_RATE: f32 = 3.0;
+
+/// Every ball some liquid of `list` meets (its Balls push it on and its Meets balls naming the
+/// ball's thing), in grid units with the mask of those liquids, and where each came from. Balls
+/// wholly outside the grid are left out.
+fn balls(world: &World, layout: &Layout, list: &[&LiquidState]) -> (Vec<BallGpu>, Vec<(ThingId, u32)>) {
     let mut out = Vec::new();
-    for b in world.bodies.values() {
-        for r in 0..b.len() {
-            let (x, v, radius) = (b.position[r], b.velocity[r], b.radius[r]);
-            if b.alive[r] && x.is_finite() && v.is_finite() && radius.is_finite() {
-                let g = layout.to_grid(x);
-                let v = v / layout.cell;
-                out.push(BallGpu { x: g.to_array(), v: v.to_array(), r: radius.max(0.0) / layout.cell });
+    let mut from = Vec::new();
+    let size = Vec2::new(layout.cols as f32, layout.rows as f32);
+    for (&thing, b) in &world.bodies {
+        let mut mask = 0u32;
+        for st in list {
+            if let Some(k) = st.index.filter(|_| st.meets.balls_push && world.names(&st.meets.target, st.id, thing)) {
+                mask |= 1 << k;
             }
         }
+        if mask == 0 {
+            continue;
+        }
+        for r in b.live_rows() {
+            let (x, v, radius) = (b.position[r], b.velocity[r], b.radius[r]);
+            if !(b.alive[r] && x.is_finite() && v.is_finite() && radius.is_finite()) {
+                continue;
+            }
+            let g = layout.to_grid(x);
+            let rg = radius.max(0.0) / layout.cell;
+            if g.x + rg < 0.0 || g.y + rg < 0.0 || g.x - rg > size.x || g.y - rg > size.y {
+                continue;
+            }
+            let v = v / layout.cell;
+            out.push(BallGpu { x: g.to_array(), v: v.to_array(), r: rg, mask });
+            from.push((thing, r as u32));
+        }
     }
-    out
+    (out, from)
 }
 
 /// Takes the Liquid states `ids` out of the world (to work on several at once).
@@ -230,8 +264,25 @@ fn note_memory(world: &mut World, id: ThingId) {
     }
 }
 
+/// The Liquid states of `taken`, with a liquid number, in their numbers' order.
+fn numbered(taken: &[(ThingId, Box<dyn ThingState>)]) -> Vec<&LiquidState> {
+    let mut list: Vec<&LiquidState> =
+        taken.iter().map(|(_, b)| (**b).as_any().downcast_ref::<LiquidState>().expect("a Liquid state")).collect();
+    list.retain(|s| s.index.is_some());
+    list.sort_by_key(|s| s.index);
+    list
+}
+
+/// What one liquid step tells the card about the balls.
+struct BallsIn<'a> {
+    balls: &'a [BallGpu],
+    /// Record what they feel, and start afresh.
+    feel: bool,
+    fresh: bool,
+}
+
 /// One liquid step of the host (taken out of the world, at `taken[0]`) and every other liquid.
-fn step_once(world: &World, taken: &mut [(ThingId, Box<dyn ThingState>)]) {
+fn step_once(world: &World, taken: &mut [(ThingId, Box<dyn ThingState>)], balls: &BallsIn) {
     let (host_part, rest) = taken.split_at_mut(1);
     let host_st = state_mut::<LiquidState>(host_part[0].1.as_mut());
     let Some(mut host) = host_st.host.take() else { return };
@@ -249,14 +300,9 @@ fn step_once(world: &World, taken: &mut [(ThingId, Box<dyn ThingState>)]) {
         }
     }
     births.truncate(MOST_BORN_A_STEP);
-    let host_st = state_mut::<LiquidState>(host_part[0].1.as_mut());
-    let mut list: Vec<&LiquidState> = vec![&*host_st];
-    list.extend(rest.iter().map(|(_, b)| (**b).as_any().downcast_ref::<LiquidState>().expect("a Liquid state")));
-    list.retain(|s| s.index.is_some());
-    list.sort_by_key(|s| s.index);
+    let list = numbered(taken);
     let mixing = host.step % MIX_EVERY == MIX_EVERY - 1;
     let settings = step_settings(world, &host, &list, mixing);
-    let any_push = list.iter().any(|s| s.meets.balls_push);
     drop(list);
     if let Some(body) = host.body.as_mut() {
         // A body shared with a copy of the world is copied first: the copy needs its walls again.
@@ -268,16 +314,17 @@ fn step_once(world: &World, taken: &mut [(ThingId, Box<dyn ThingState>)]) {
         }
         let band = (changed || !body.walls_ready()).then(|| host.band.clone()).flatten();
         host.walls_seen = now;
-        let balls = if any_push { balls(world, &host.layout) } else { Vec::new() };
         body.step(&StepIn {
             step: settings,
             births: &births,
             walls: band.as_deref().map(|b| b.as_slice()),
-            balls: &balls,
+            balls: balls.balls,
+            feel: balls.feel,
+            fresh: balls.fresh,
         });
     }
     host.step += 1;
-    state_mut::<LiquidState>(host_part[0].1.as_mut()).host = Some(host);
+    state_mut::<LiquidState>(taken[0].1.as_mut()).host = Some(host);
 }
 
 impl ThingSim for LiquidSim {
@@ -303,7 +350,7 @@ impl ThingSim for LiquidSim {
             return;
         }
         let Some(host_st) = state_of(world, id) else { return };
-        let layout = layout(world, host_st, &ids);
+        let layout = layout(world, host_st, &ids, !world.beside.contains(&id));
         let rate = host_st.settings.steps.per_second();
         let body = LiquidCard::on_this_thread().map(|gpu| Arc::new(Body::new(gpu, layout.cols, layout.rows)));
         let mut taken = take(world, &ids);
@@ -320,14 +367,28 @@ impl ThingSim for LiquidSim {
         for (_, b) in taken.iter_mut() {
             births.extend(births::first_fill(state_mut::<LiquidState>(b.as_mut()), world, &layout));
         }
-        let mut host = Host { body, layout, rate, step: 0, walls_seen: walls::walls_now(world), band: None };
+        let mut host = Host {
+            body,
+            layout,
+            rate,
+            step: 0,
+            walls_seen: walls::walls_now(world),
+            band: None,
+            pending: None,
+            inside: Default::default(),
+            touching: Default::default(),
+            news: Vec::new(),
+            taken: Default::default(),
+        };
         if let Some(body) = host.body.as_mut() {
             // Born still: a step with no time in it puts them on the card with the walls band.
             let mut settings = StepGpu::default();
             settings.grid[2] = 1;
             settings.grid[3] = taken.len().min(MOST_LIQUIDS) as u32;
             let band = Arc::new(walls::band(&host.walls_seen, &layout));
-            Arc::make_mut(body).step(&StepIn { step: settings, births: &births, walls: Some(&band), balls: &[] });
+            let still =
+                StepIn { step: settings, births: &births, walls: Some(&band), balls: &[], feel: false, fresh: false };
+            Arc::make_mut(body).step(&still);
             host.band = Some(band);
         }
         state_mut::<LiquidState>(taken[0].1.as_mut()).host = Some(host);
@@ -335,24 +396,78 @@ impl ThingSim for LiquidSim {
         note_memory(world, id);
     }
 
-    /// The host takes every liquid step due, last in the world step.
-    fn after_step(&self, id: ThingId, world: &mut World, _log: &mut Log) {
+    /// The host logs what the balls did in the liquid, then takes every liquid step due, last in
+    /// the world step; in the main world it then sends back what the balls felt.
+    fn after_step(&self, id: ThingId, world: &mut World, log: &mut Log) {
         let Some(rate) = state_of(world, id).and_then(|s| s.host.as_ref()).map(|h| h.rate) else { return };
+        if let Some(host) = world
+            .states
+            .get_mut(&id)
+            .and_then(|s| (**s).as_any_mut().downcast_mut::<LiquidState>())
+            .and_then(|s| s.host.as_mut())
+        {
+            for e in std::mem::take(&mut host.news) {
+                log.push(e);
+            }
+        }
         let due = due(world.step, world.steps_per_second, rate);
+        let main = !world.beside.contains(&id);
         let ids = liquids(world);
         // The host first.
         let mut ids: Vec<ThingId> = ids.into_iter().filter(|t| *t != id).collect();
         ids.insert(0, id);
         let mut taken = take(world, &ids);
+        let Some(layout) = state_mut::<LiquidState>(taken[0].1.as_mut()).host.as_ref().map(|h| h.layout) else {
+            give_back(world, taken);
+            return;
+        };
+        // The balls as this world step left them, the same for every liquid step it takes.
+        let (balls, from) = balls(world, &layout, &numbered(&taken));
+        let mut stepped = 0u32;
         loop {
             let at = state_mut::<LiquidState>(taken[0].1.as_mut()).host.as_ref().map_or(due, |h| h.step);
             if at >= due {
                 break;
             }
-            step_once(world, &mut taken);
+            // A later liquid step of the same world step sees the balls moved on along their speed.
+            let ahead = stepped as f32 / rate as f32;
+            let moved: Vec<BallGpu>;
+            let now = if stepped == 0 {
+                &balls[..]
+            } else {
+                moved = balls
+                    .iter()
+                    .map(|b| BallGpu { x: [b.x[0] + b.v[0] * ahead, b.x[1] + b.v[1] * ahead], ..*b })
+                    .collect();
+                &moved[..]
+            };
+            let with = BallsIn { balls: now, feel: main, fresh: stepped == 0 };
+            step_once(world, &mut taken, &with);
+            stepped += 1;
+        }
+        if main && stepped > 0 && !balls.is_empty() {
+            let liquids: Vec<(ThingId, f32)> = numbered(&taken).iter().map(|s| (s.id, s.meets.splash_from)).collect();
+            let host = state_mut::<LiquidState>(taken[0].1.as_mut()).host.as_mut().expect("the host");
+            if let Some(body) = host.body.as_mut() {
+                let felt = Felt { balls: from, liquids, cell: layout.cell, span: stepped as f32 / rate as f32 };
+                host.pending = Arc::make_mut(body).send_feel(balls.len() as u32).map(|f| (f, Arc::new(felt)));
+            }
         }
         give_back(world, taken);
         note_memory(world, id);
+    }
+
+    /// In the main world: the balls get what they felt in the last liquid steps, once, at the
+    /// first substep.
+    fn forces(&self, id: ThingId, world: &mut World, _dt: f32) {
+        if !state_of(world, id).and_then(|s| s.host.as_ref()).is_some_and(|h| h.pending.is_some()) {
+            return;
+        }
+        let Some(mut boxed) = world.states.remove(&id) else { return };
+        if let Some(host) = state_mut::<LiquidState>(boxed.as_mut()).host.as_mut() {
+            feel::apply(host, world);
+        }
+        world.states.insert(id, boxed);
     }
 
     fn settings_changed(&self, id: ThingId, resolved: &ResolvedThing, world: &mut World) {
@@ -361,15 +476,39 @@ impl ThingSim for LiquidSim {
         }
     }
 
-    /// Decoration: it reads the balls and walls and nothing reads it.
-    fn in_main(&self, _resolved: &ResolvedThing) -> bool {
-        false
+    /// It steps with the physics when it pushes the balls back; otherwise it is decoration (it
+    /// reads the balls and walls and nothing reads it).
+    fn in_main(&self, resolved: &ResolvedThing) -> bool {
+        MeetsSettings::read(card(resolved, SlotId::Bounce, MEETS)).two_way()
     }
 
-    /// Every setting moves the liquid; it is stepped beside the physics, so this only lets keys
-    /// reach `settings_changed`.
+    /// A liquid that pushes balls keeps every other Liquid thing in the main world with it: they
+    /// share one body of liquid.
+    fn keeps(&self, scene: &Scene, me: &Thing, other: ThingId) -> bool {
+        let pushes = me
+            .slots
+            .get(&SlotId::Bounce)
+            .filter(|c| c.kind == MEETS)
+            .map_or_else(MeetsSettings::default, |c| MeetsSettings::of_saved(&c.params))
+            .two_way();
+        pushes && me.enabled && scene.things.get(&other).is_some_and(|t| t.kind == KIND)
+    }
+
+    /// Every setting moves the liquid (beside the physics, this only lets keys reach
+    /// `settings_changed`).
     fn key_restarts_physics(&self, _key: &str) -> bool {
         true
+    }
+
+    /// In the main world its Look's mixing moves the drops, and the first Liquid thing sets the
+    /// area: both count in the physics fingerprint.
+    fn physics_print_extra(&self, scene: &Scene, thing: &Thing, resolved: &ResolvedThing) -> u64 {
+        let place = scene
+            .order
+            .iter()
+            .filter(|t| scene.things.get(t).is_some_and(|t| t.kind == KIND))
+            .position(|t| *t == thing.id);
+        self.beside_print_extra(resolved) ^ (place.map_or(u64::MAX, |p| p as u64) << 52)
     }
 
     /// The Look's mixing is read by the stepping.

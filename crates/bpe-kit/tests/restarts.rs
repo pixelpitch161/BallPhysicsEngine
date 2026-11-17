@@ -92,6 +92,13 @@ fn outcome(scene: &Scene, resolved: &Resolved, sims: &Arc<Sims>) -> Outcome {
             h = h.rotate_left(5) ^ (p.x.to_bits() as u64) ^ ((p.y.to_bits() as u64) << 32);
         }
     }
+    // A Liquid thing in the main world (it pushes balls): what its stepping reads, as the balls
+    // would feel it on a graphics card (which this test doesn't name).
+    for (id, s) in &physics.world().states {
+        if let Some(l) = (**s).as_any().downcast_ref::<LiquidState>() {
+            h = h.rotate_left(11) ^ id.0 as u64 ^ bpe_kit::things::liquid::inputs_hash(l);
+        }
+    }
     let mut beside = Vec::new();
     if bpe_runtime::has_beside(scene, resolved, sims) {
         let mut whole = Playback::new(scene, resolved, sims.clone());

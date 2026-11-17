@@ -41,8 +41,11 @@ impl AimJob {
         let stop = Arc::new(AtomicBool::new(false));
         let (scene, resolved) = (scene.clone(), resolved.clone());
         let job = AimJob { reached: reached.clone(), done: done.clone(), stop: stop.clone() };
+        // A liquid that pushes balls steps on the editor's card here too.
+        let card = bpe_gfx::swarm::on_this_thread();
         let spawned = std::thread::Builder::new().name("aiming".into()).spawn(move || {
             crate::thread_priority::set_this_thread(crate::thread_priority::Priority::Low);
+            bpe_gfx::swarm::use_on_this_thread(card);
             // Done however it ends, a panic included, so the playback is never held for good.
             let _done = Finished(done);
             // Told to stop, its test flights give up and keep nothing.

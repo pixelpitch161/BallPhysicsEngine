@@ -23,6 +23,9 @@ fn water(rows: u32, g: f32, style: u32) -> (StepGpu, LiquidGpu) {
         b: [1.0, 1.0, 1.0, 1.0],
         c: [style as f32, 0.0, 0.0, LiquidGpu::NO_CUT],
         d: [0; 4],
+        e: [1.0, 3.0, 1.0, 0.0],
+        f: [0.0; 4],
+        g: [1.0, 1e9, 0.0, 0.0],
     };
     step.liquids[0] = liquid;
     step.set_pair(0, 0, MEET_MIX, style, WHEN_ALWAYS, 1.0);
@@ -51,7 +54,7 @@ fn run(body: &mut Body, step: &StepGpu, first: &[Drop], steps: u32) {
         let mut s = *step;
         s.flags[0] = u32::from(k % MIX_EVERY == MIX_EVERY - 1);
         let births = if k == 0 { first } else { &[] };
-        body.step(&StepIn { step: s, births, walls: None, balls: &[] });
+        body.step(&StepIn { step: s, births, walls: None, balls: &[], feel: false, fresh: false });
     }
 }
 
@@ -233,14 +236,84 @@ fn walls_hold_the_liquid_and_balls_push_it_aside() {
         }
     }
     let drops = lattice(4, 36, 10, 20, |_, _| [1.0; 4]);
-    let ball = BallGpu { x: [20.0, 24.0], v: [0.0, 0.0], r: 4.0 };
+    let ball = BallGpu { x: [20.0, 24.0], v: [0.0, 0.0], r: 4.0, mask: 1 };
     for k in 0..600 {
         let walls = if k == 0 { Some(band.as_slice()) } else { None };
         let births = if k == 0 { drops.as_slice() } else { &[] };
-        body.step(&StepIn { step, births, walls, balls: &[ball] });
+        body.step(&StepIn { step, births, walls, balls: &[ball], feel: false, fresh: false });
     }
     let out = body.read();
     assert!(out.iter().all(|d| d.x[1] < 30.0 + 0.6), "a drop went through the floor");
     let inside = out.iter().filter(|d| ((d.x[0] - 20.0).powi(2) + (d.x[1] - 24.0).powi(2)).sqrt() < 4.0).count();
     assert_eq!(inside, 0, "drops inside the ball");
+}
+
+/// A floor at y = `at` across a `cols`-wide grid (normal up).
+fn floor(cols: u32, at: u32) -> Vec<WallNode> {
+    let mut band = Vec::new();
+    for y in (at - 4)..(at + 4) {
+        for x in 0..cols {
+            band.push(WallNode {
+                index: y * cols + x,
+                n: [0.0, -1.0],
+                dist: at as f32 - y as f32,
+                half: -1.0,
+                v: [0.0, 0.0],
+            });
+        }
+    }
+    band
+}
+
+/// Water from y = 10 to the floor at 30 settled for `settle` steps, then `feel` steps with
+/// `balls` recorded; what they felt.
+fn feel_in_water(balls: &[BallGpu], settle: u32, feel: u32) -> Vec<i32> {
+    let mut body = Body::new(card(), 40, 40);
+    let (mut step, _) = water(40, 120.0, STYLE_BLEND);
+    // Calm water: the substeps the Liquid thing takes (a pressure wave 0.15 cells a substep).
+    let c = step.liquids[0].a[0].sqrt();
+    let substeps = ((c / 240.0 / 0.15).ceil() as u32).clamp(1, MOST_SUBSTEPS);
+    let dt = 1.0 / (240.0 * substeps as f32);
+    step.grid[2] = substeps;
+    step.time[0] = dt;
+    step.time[3] = 0.45 / dt;
+    step.more[0] = 0.2 / dt;
+    let band = floor(40, 30);
+    let drops = lattice(2, 38, 10, 30, |_, _| [0.2, 0.4, 0.8, 1.0]);
+    for k in 0..settle + feel {
+        let walls = if k == 0 { Some(band.as_slice()) } else { None };
+        let births = if k == 0 { drops.as_slice() } else { &[] };
+        let recording = k >= settle;
+        body.step(&StepIn { step, births, walls, balls, feel: recording, fresh: k == settle });
+    }
+    body.send_feel(balls.len() as u32).expect("some balls").wait().to_vec()
+}
+
+#[test]
+fn a_ball_held_under_still_water_is_pushed_up_and_feels_wet() {
+    let ball = BallGpu { x: [20.0, 20.0], v: [0.0, 0.0], r: 3.0, mask: 1 };
+    let f = feel_in_water(&[ball], 480, 240);
+    let push_y = f[feel_at::PUSH + 1] as f32 / S_PUSH;
+    assert!(push_y < 0.0, "pushed up (y is down): {push_y}");
+    assert!(f[feel_at::TOUCH] > 0, "touched");
+    assert!(f[feel_at::WET] >= RING as i32 - 4, "under all round: {}", f[feel_at::WET]);
+    assert!(f[feel_at::LIQUIDS] > 0, "contacts with liquid 0");
+    // The upward push is about the water it puts aside: π r² × weight × g × the time.
+    // (The water still sloshes a little after the ball was put in it.)
+    let expected = std::f32::consts::PI * 3.5 * 3.5 * 1.0 * 120.0 * 240.0 / 240.0;
+    assert!(-push_y > expected * 0.2 && -push_y < expected * 2.0, "push {push_y}, about {expected}");
+}
+
+#[test]
+fn a_ball_out_of_the_water_or_not_in_its_mask_feels_nothing() {
+    let dry = BallGpu { x: [20.0, 4.0], v: [0.0, 0.0], r: 2.0, mask: 1 };
+    let unmet = BallGpu { x: [20.0, 20.0], v: [0.0, 0.0], r: 3.0, mask: 0b10 };
+    let f = feel_in_water(&[dry, unmet], 200, 8);
+    assert!(f.iter().all(|w| *w == 0), "{f:?}");
+}
+
+#[test]
+fn the_feel_is_the_same_every_time() {
+    let ball = BallGpu { x: [20.0, 16.0], v: [3.0, 20.0], r: 3.0, mask: 1 };
+    assert_eq!(feel_in_water(&[ball], 120, 12), feel_in_water(&[ball], 120, 12));
 }
