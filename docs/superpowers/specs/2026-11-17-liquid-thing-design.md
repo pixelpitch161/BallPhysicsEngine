@@ -23,6 +23,7 @@ What he asked for, in his words or confirmed by him:
 | Favourite part | Colour mixing: "the colors of the liquid (or multiple liquids) blend and mix with each other". The mixing section was approved too. |
 | Mixing comes when? | In the first part, not as a later add-on (proposed, approved). |
 | How it's built | **A**: a graphics-card liquid that reports its push on each ball back every step. |
+| On approval | "Don't make new scenes. Add an option for balls to not push liquids. Other than that, looks good" (2026-11-17). |
 | Export of a ball-pushing liquid | **Match the preview, with a finer-export switch** (section 5, Detail). |
 
 ## 2. Goals, non-goals, anti-goals
@@ -170,7 +171,8 @@ Heat sources: balls with a Heat glow sub-layer, Light things with heat, and a "H
 
 | Setting | Does |
 | --- | --- |
-| Pushes balls | Whether this liquid's drops push balls. Balls always push every liquid aside (one way), on or off. |
+| Pushes balls | Whether this liquid's drops push balls. |
+| Balls push it | Whether balls push this liquid aside (default on). Off: balls pass through it like ghosts and the liquid moves only by itself (Aedan, 2026-11-17). Enter/Leave events still come from where balls are. |
 | Floats or sinks | By each ball's own weight (radius², as `TwoWayOut`), or forced: Always floats, Always sinks, Bobs. |
 | Ball weight | Multiplier on how heavy balls are to the liquid. |
 | Drag | How much it slows balls moving through it. |
@@ -291,8 +293,8 @@ The sound engine steps its own physics playback, so it runs the liquid too (sect
 - **Where** (designer's call): all Liquid things in a scene share **one** simulation, so they can always meet. If any
   of them has Pushes balls on, the whole shared liquid runs in the main world (`ThingSim::in_main` true,
   `steps_own_cards`) and its physics settings count in the physics fingerprint; if none does, it runs beside the main
-  world and edits to it restart only the liquid. Balls push the liquid either way (uploaded every liquid step), so a
-  beside liquid follows the main world's ball movement, as the Huge swarm does.
+  world and edits to it restart only the liquid. Balls push each liquid whose Balls push it is on (balls uploaded every liquid
+  step), so a beside liquid follows the main world's ball movement, as the Huge swarm does.
 - **The card**: every playback that steps a world holding a Liquid thing must have the graphics card named on its
   thread (as the swarm does). The sound engine and the aim job gain it. With no card, a Liquid thing holds no drops and
   the editor shows "Liquid needs the graphics card" on the thing; tests use `bpe_gfx::test_device()`.
@@ -336,9 +338,9 @@ by the thread when CI is green.
 
 1. **The liquid itself, with colour and mixing.** The Liquid thing and cards, the shared simulation on the card
    (water through honey: Thickness, Weight, Springiness, Settles, Spray, Surface pull, Gravity), Fill and Pour, the
-   Area, shapes blocking it, balls pushing it aside (one way), Detail, checkpoints, every playback given the card,
+   Area, shapes blocking it, balls pushing it aside (one way, with the Balls push it switch), Detail, checkpoints, every playback given the card,
    beside the main world only (Pushes balls arrives in part 2), and a **speed readout** in the status line (drops and
-   milliseconds a liquid step) so Detail's numbers can be set from Aedan's own card the next time he installs. Colour per
+   milliseconds a liquid step) so Detail's numbers can be set from Aedan's own card the next time Aedan installs. Colour per
    drop, several Liquid things sharing one body, Other liquids Mix / Layer, Mix styles Paint, Light, Blend, Marble,
    Keep apart, Mix speed, Mixes when, Swirl detail. A plain lit-free surface draw (smooth, no grain) so it can be seen.
 2. **Balls.** Pushes balls on (main world, read-back, one step late), Floats or sinks, Drag, Carries, Splash size,
@@ -348,8 +350,8 @@ by the thread when CI is green.
 4. **Stranger liquids.** Stretch and Tears at, Heat (temperature, cooling, freezing, melting, drying, stains), React,
    Rain, From balls, Drains, Currents, Magnets, Changes the ball, Shapes paint it, Picture in the liquid, Fades,
    Un-mix.
-5. **Sound.** The Sound card, splash voices, underwater, modulators, colour as notes; plus a few built-in liquid
-   scenes in the Scenes window (Aedan asked for built-in scenes; these extend that library).
+5. **Sound.** The Sound card, splash voices, underwater, modulators, colour as notes. No new built-in scenes
+   (Aedan, 2026-11-17: "Don't make new scenes").
 
 Parts 3 and 4 can run side by side after 2; 5 after 2.
 
@@ -359,8 +361,8 @@ Parts 3 and 4 can run side by side after 2; 5 after 2.
 - No changes to the Particles thing or its Liquid layer, and no tool to convert one to the other.
 - No hardware ray tracing (the lighting system decided against it).
 - No backward compatibility work: there are no old Liquid things.
-- No built-in or example scenes outside part 5's additions to the Scenes window library, and the editor still opens
-  blank.
+- No new built-in or example scenes (Aedan, 2026-11-17), and the editor still opens blank. Test scenes behind
+  `test-scenes` and look-check scenes are fine.
 
 ## 14. Left to the builder
 
